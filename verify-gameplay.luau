@@ -38,10 +38,29 @@ function db:UpdateAsync(key, op)
 	end
 	return copy(data[key])
 end
+-- Shared Depth modules load exactly as in Roblox: ReplicatedStorage markers resolve
+-- through an environment require. Progression's own script-relative require is nil here.
+local function loadModule(path, env)
+	local source = fs.readFile(path):gsub("^\239\187\191", "")
+	return luau.load(source, {debugName = path, environment = env or {}, injectGlobals = true})()
+end
+local Data = loadModule("shared/GameData.lua")
+local Progression = loadModule("shared/Progression.lua", {script = nil})
+Progression.useData(Data)
+local markers = {AetherData = {Name = "AetherData"}, AetherProgression = {Name = "AetherProgression"}}
+local modules = {[markers.AetherData] = Data, [markers.AetherProgression] = Progression}
+-- Deterministic rolls: queued values first, then a high default (no crits,
+-- no fortune procs, only guaranteed drops) so legacy expectations stay exact.
+local rolls, defaultRoll = {}, 0.999
+local function nextRoll()
+	if #rolls > 0 then return table.remove(rolls, 1) end
+	return defaultRoll
+end
+local seeds = {}
 local services = {
 	Players = {PlayerAdded=signal(),PlayerRemoving=signal(),GetPlayers=function() return {} end},
 	ProximityPromptService = {PromptTriggered=signal()},
-	ReplicatedStorage = {},ServerStorage={},
+	ReplicatedStorage = {WaitForChild=function(_, name) return assert(markers[name], name) end},ServerStorage={},
 	DataStoreService = {GetDataStore=function() return db end},
 	HttpService = {GenerateGUID=function() return "test-instance" end},
 	RunService = {IsStudio=function() return false end},
@@ -58,6 +77,11 @@ local env = {
 		return instance
 	end},
 	os={clock=function() return clock end,time=function() return math.floor(utc) end},
+	require=function(target) return assert(modules[target], "unexpected require") end,
+	Random={new=function(seed)
+		table.insert(seeds, seed)
+		return {NextNumber=function() return nextRoll() end}
+	end},
 	task={
 		spawn=function(f,...) assert(coroutine.resume(coroutine.create(f),...)) end,
 		defer=function(f,...) f(...) end,
@@ -122,7 +146,13 @@ services.Players.PlayerRemoving:Fire(c)
 b=player(2)
 c=player(3)
 eq(cmd(a,"state").workerReady,120,"offline worker cap")
-eq(cmd(a,"claim").items.Ore,122,"worker payout")
+local payout=cmd(a,"claim")
+eq(payout.items.Ore,122,"worker payout")
+-- Depth rewards: Woodcutting 2 (+50), Mining 2-5 (+350), Ore collection tiers 1-2 (+250).
+eq(payout.coins,650,"worker payout crosses level and collection reward thresholds")
+eq(payout.levels.Mining,5,"worker XP levels Mining on the OSRS curve")
+eq(payout.depth.collections.Ore.tier,2,"worker output advances collection tier")
+local aBonus=payout.coins
 eq(cmd(a,"claim").items.Ore,122,"no double claim")
 eq(cmd(c,"ironman").ironman,true,"early Ironman allowed")
 eq(cmd(c,"buy","Ore").message,"Ironman journals cannot use the player exchange.","Ironman exclusion")
@@ -138,11 +168,11 @@ services.Players.PlayerRemoving:Fire(b)
 b=player(2)
 eq(cmd(b,"state").items.Ore,3,"replayed purchase delivered once")
 eq(cmd(b,"state").coins,1,"replayed purchase charged once")
-eq(cmd(a,"proceeds","Ore").coins,15,"seller credited exactly once")
-eq(cmd(a,"proceeds","Ore").coins,15,"proceeds cannot repeat")
+eq(cmd(a,"proceeds","Ore").coins,aBonus+15,"seller credited exactly once")
+eq(cmd(a,"proceeds","Ore").coins,aBonus+15,"proceeds cannot repeat")
 cmd(a,"list","Ore")
 eq(cmd(a,"cancel","Ore").items.Ore,119,"cancel restores escrow")
-eq(cmd(a,"buy","Ore").coins,15,"empty market reimburses")
+eq(cmd(a,"buy","Ore").coins,aBonus+15,"empty market reimburses")
 local boss=node("fight","Warden")
 use(a,boss)
 for _=1,5 do use(b,boss) end
@@ -151,7 +181,11 @@ eq(cmd(b,"state").items.Shard,1,"second fighter credit")
 use(c,boss)
 eq(cmd(c,"state").items.Shard,nil,"Ironman independent encounter")
 objects.BindableEvent.Event:Fire(a)
-eq(cmd(a,"state").items.Stormglass,1,"expedition reward")
+local cleared=cmd(a,"state")
+eq(cleared.items.Stormglass,1,"expedition reward")
+eq(cleared.levels.Combat,2,"Warden and expedition XP reach Combat 2 (83 XP)")
+eq(cleared.coins,aBonus+15+15+35+50,"Combat 2 pays its one-time level reward")
+aBonus+=50
 local leaseCopy=copy(data.p1)
 data.p1.owner="other-server"
 data.p1.expires=utc+200
@@ -176,16 +210,16 @@ for _=1,3 do use(novice,wood) end
 eq(cmd(novice,"craft","Blade").items.Blade,1,"collection recipe unlock")
 eq(cmd(novice,"state").collection.Ore,6,"recipe consumption preserves lifetime milestone")
 eq(cmd(builder,"quest").quest.stage,1,"incomplete quest cannot advance")
-eq(cmd(a,"quest").coins,75,"first quest pays once")
+eq(cmd(a,"quest").coins,aBonus+75,"first quest pays once")
 eq(cmd(a,"quest").xp.Smithing,44,"second quest XP reward")
-eq(cmd(a,"quest").coins,90,"worker contract reward")
+eq(cmd(a,"quest").coins,aBonus+90,"worker contract reward")
 eq(cmd(a,"quest").items.Tonic,2,"combat contract reward")
-eq(cmd(a,"quest").coins,120,"expedition contract reward")
-eq(cmd(a,"quest").coins,120,"completed chain cannot pay again")
+eq(cmd(a,"quest").coins,aBonus+120,"expedition contract reward")
+eq(cmd(a,"quest").coins,aBonus+120,"completed chain cannot pay again")
 services.Players.PlayerRemoving:Fire(a)
 a=player(1)
 eq(cmd(a,"state").quest.stage,6,"existing contracts stay claimed and reveal new charter on rejoin")
-eq(cmd(a,"quest").coins,120,"rejoin cannot reclaim")
+eq(cmd(a,"quest").coins,aBonus+120,"rejoin cannot reclaim")
 eq(cmd(novice,"craft","Stormblade").items.Stormblade,nil,"Stormblade milestone blocks craft")
 -- Exercise older version-one profiles where decoration and quest fields were absent.
 services.Players.PlayerRemoving:Fire(novice)
@@ -201,8 +235,13 @@ data.p1.profile.items.Shard=3
 a=player(1)
 eq(cmd(a,"craft","Stormblade").items.Stormblade,1,"Stormblade crafted after milestones")
 eq(cmd(a,"state").items.Stormglass,0,"Stormblade consumes expedition resource")
-eq(cmd(a,"state").stats.maxHealth,105,"combat level increases permanent health")
-eq(a.Character:FindFirstChildOfClass("Humanoid").MaxHealth,105,"stats applied to spawned humanoid")
+-- Depth stat sheet: Combat grants Strength/Crit (not Health); health is shared computeStats.
+local armed=cmd(a,"state")
+eq(armed.stats.maxHealth,armed.depth.stats.health,"legacy maxHealth mirrors shared stat sheet")
+eq(armed.stats.maxHealth,100,"Combat levels raise strength rather than health")
+eq(armed.depth.stats.strength,2,"Combat 2 and Woodcutting 2 each grant one strength")
+eq(armed.depth.stats.weapon,nil,"legacy Stormblade fallback is gated by Combat 5")
+eq(a.Character:FindFirstChildOfClass("Humanoid").MaxHealth,100,"stats applied to spawned humanoid")
 local worker=player(30)
 for _=1,5 do use(worker,wood) end
 for _=1,3 do use(worker,ore) end
@@ -265,7 +304,7 @@ local bonded=cmd(scholar,"feed")
 eq(bonded.companionBond,5,"bond capped")
 eq(bonded.items.Fish,2,"capped feeding does not consume")
 eq(bonded.xp.Taming,100,"feeding XP")
-eq(bonded.stats.maxHealth,115,"bond and combat health bonuses")
+eq(bonded.stats.maxHealth,110,"bond health bonus on the Depth stat sheet")
 services.Players.PlayerRemoving:Fire(scholar)
 scholar=player(40)
 eq(cmd(scholar,"state").companionBond,5,"bond survives rejoin")
@@ -291,16 +330,16 @@ eq(cmd(fleet,"workerAssign","2:Timber").workers[2].resource,"Timber","second wor
 eq(cmd(fleet,"workerAssign","3:Herb").workers[3].resource,"Herb","third worker assignment")
 eq(cmd(fleet,"workerAssign","2:Shard").workers[2].resource,"Timber","invalid resource rejected")
 eq(cmd(fleet,"workerUpgrade","2").workers[2].interval,90,"tier two interval")
-eq(cmd(fleet,"workerUpgrade","2").workers[2].capacity,240,"tier three capacity")
-eq(cmd(fleet,"workerUpgrade","2").workers[2].tier,3,"worker upgrade cap")
-eq(cmd(fleet,"state").items.Timber,50,"capped upgrade does not charge")
+eq(cmd(fleet,"workerUpgrade","2").workers[2].capacity,360,"tier three capacity follows Data.WorkerTiers")
+eq(cmd(fleet,"workerUpgrade","2").workers[2].tier,3,"tier four upgrade requires refined ingots")
+eq(cmd(fleet,"state").items.Timber,50,"unaffordable upgrade does not charge")
 services.Players.PlayerRemoving:Fire(fleet)
 advance(60*300)
 fleet=player(50)
 eq(cmd(fleet,"state").workers[2].tier,3,"worker tier survives rejoin")
 eq(cmd(fleet,"state").workers[1].ready,120,"tier one independent cap")
-eq(cmd(fleet,"workerClaim","2").items.Timber,290,"tier three offline capped payout")
-eq(cmd(fleet,"workerClaim","2").items.Timber,290,"fleet cannot double claim")
+eq(cmd(fleet,"workerClaim","2").items.Timber,350,"tier three offline payout at 60 second interval")
+eq(cmd(fleet,"workerClaim","2").items.Timber,350,"fleet cannot double claim")
 eq(cmd(fleet,"workerClaim","3").items.Herb,120,"third worker independent resource")
 eq(cmd(fleet,"state").workers[1].ready,120,"other worker claim preserves pending output")
 eq(cmd(fleet,"workerAssign","1:Ore").items.Fish,122,"reassignment claims previous resource")
@@ -331,8 +370,8 @@ eq(cmd(hunter,"state").slayer.progress,1,"hunt progress survives rejoin")
 kill(hunter)
 eq(cmd(hunter,"state").slayer.ready,true,"hunt completion ready")
 local before=cmd(hunter,"state").coins
-eq(cmd(hunter,"slayerClaim").coins,before+20,"first hunt reward")
-eq(cmd(hunter,"slayerClaim").coins,before+20,"hunt cannot claim twice")
+eq(cmd(hunter,"slayerClaim").coins,before+20+50,"first hunt reward plus Combat 2 level reward")
+eq(cmd(hunter,"slayerClaim").coins,before+20+50,"hunt cannot claim twice")
 eq(cmd(hunter,"slayerStart").slayer.target,4,"second hunt target")
 for _=1,4 do kill(hunter) end
 eq(cmd(hunter,"slayerClaim").slayer.tier,3,"third hunt unlocked")
@@ -364,7 +403,7 @@ data.p63.profile.items={Timber=30,Ore=30}
 upgrading=player(63)
 eq(cmd(upgrading,"workerUpgrade","1").items.Fish,2,"upgrade collects earned old-tier output")
 eq(cmd(upgrading,"state").workers[1].ready,0,"upgrade cannot retroactively accelerate output")
-eq(cmd(upgrading,"state").workers[1].capacity,180,"tier two capacity")
+eq(cmd(upgrading,"state").workers[1].capacity,240,"tier two capacity")
 -- Delayed acknowledgements must not extend the durable session lease.
 delayedProfileAck="p70"
 local lateOpen=player(70)
@@ -399,21 +438,27 @@ for _=1,3 do use(smith,ore) end
 for _=1,2 do use(smith,wood) end
 cmd(smith,"craft","Pickaxe")
 for _=1,11 do use(smith,ore) end
+-- OSRS curve: Mining 3 needs 174 XP (the retired curve needed 160).
+eq(cmd(smith,"state").levels.Mining,2,"168 XP is still Mining 2 on the OSRS curve")
+eq(use(smith,aether).items.Aetherite,nil,"Aetherite stays locked one harvest short of 174 XP")
+use(smith,ore)
 eq(cmd(smith,"state").levels.Mining,3,"ordinary Ore reaches advanced material gate")
 eq(use(smith,aether).items.Aetherite,1,"Mining 3 unlocks Aetherite")
-eq(cmd(smith,"state").xp.Mining,186,"Aetherite grants 18 Mining XP")
+eq(cmd(smith,"state").xp.Mining,198,"Aetherite grants 18 Mining XP")
 eq(cmd(smith,"craft","AetherIngot").items.Aetherite,1,"Smithing gate spends no material")
 eq(cmd(smith,"state").xp.Smithing,24,"locked refinement awards no XP")
 for _=1,20 do use(smith,wood) end
 for _=1,9 do cmd(smith,"craft","AlloyIngot") end
-eq(cmd(smith,"state").items.AlloyIngot,9,"basic refining is repeatable")
-eq(cmd(smith,"state").xp.Smithing,168,"repeatable refining bridges Smithing progression")
+eq(cmd(smith,"state").levels.Smithing,2,"nine refinements (168 XP) remain Smithing 2")
+cmd(smith,"craft","AlloyIngot")
+eq(cmd(smith,"state").items.AlloyIngot,10,"basic refining is repeatable")
+eq(cmd(smith,"state").xp.Smithing,184,"repeatable refining bridges Smithing progression")
 eq(cmd(smith,"state").levels.Smithing,3,"refining reaches Smithing 3")
 for _=1,13 do use(smith,aether) end
 for _=1,7 do cmd(smith,"craft","AetherIngot") end
 eq(cmd(smith,"state").items.AetherIngot,7,"advanced refining is repeatable")
 eq(cmd(smith,"state").items.Aetherite,0,"advanced refining consumes raw mineral")
-eq(cmd(smith,"state").items.AlloyIngot,2,"advanced refining consumes base ingots")
+eq(cmd(smith,"state").items.AlloyIngot,3,"advanced refining consumes base ingots")
 eq(cmd(smith,"state").collection.Aetherite,14,"refining preserves lifetime collection")
 eq(cmd(smith,"craft","ReinforcedPickaxe").items.ReinforcedPickaxe,1,"reinforced tool crafted from progression")
 eq(cmd(smith,"state").items.Pickaxe,0,"reinforced tool consumes basic tool")
@@ -465,7 +510,7 @@ assert(regionHook,"region transit hook exists")
 local traveler=player(90)
 services.Players.PlayerRemoving:Fire(traveler)
 data.p90.profile.questCompleted=5
-data.p90.profile.xp.Mining=159
+data.p90.profile.xp.Mining=162 -- one Ore harvest short of Mining 3 (174 XP)
 data.p90.profile.collection.AlloyIngot=2
 data.p90.profile.items={Ore=2,Timber=1}
 traveler=player(90)
@@ -482,12 +527,12 @@ eq(cmd(traveler,"quest").quest.stage,6,"charter independently requires Mining 3"
 use(traveler,ore)
 eq(cmd(traveler,"state").quest.ready,true,"charter ready after both requirements")
 eq(regionHook.OnInvoke(traveler,"Skyreach").allowed,false,"readiness alone does not unlock transit")
-eq(cmd(traveler,"quest").coins,25,"charter pays once")
+eq(cmd(traveler,"quest").coins,25+125,"charter pays once (plus Mining 2-3 level rewards)")
 eq(cmd(traveler,"state").regions[1].unlocked,true,"claimed charter unlocks region snapshot")
 eq(traveler:GetAttribute("SkyreachUnlocked"),true,"charter publishes world unlock")
 eq(regionHook.OnInvoke(traveler,"Skyreach").allowed,true,"charter opens authoritative transit")
 eq(regionHook.OnInvoke(traveler,"Unknown").allowed,false,"unknown region rejected")
-eq(cmd(traveler,"quest").coins,25,"repeated charter claim does not pay again")
+eq(cmd(traveler,"quest").coins,150,"repeated charter claim does not pay again")
 eq(cmd(traveler,"explore","Skyreach").regions[1].visited,false,"remote survey forgery denied")
 use(traveler,node("explore","Skyreach",50,nil,"Skyreach"))
 eq(cmd(traveler,"state").regions[1].visited,false,"survey requires proximity")
@@ -498,7 +543,7 @@ eq(cmd(traveler,"state").quest.ready,true,"survey completes next contract")
 eq(cmd(traveler,"quest").xp.Smithing,66,"survey rewards 50 Smithing XP")
 eq(cmd(traveler,"quest").xp.Smithing,66,"survey reward cannot repeat")
 eq(use(traveler,rich).items.Aetherite,2,"unlocked rich seam provides useful regional benefit")
-eq(cmd(traveler,"state").xp.Mining,189,"rich seam retains controlled experience payout")
+eq(cmd(traveler,"state").xp.Mining,192,"rich seam retains controlled experience payout")
 services.Players.PlayerRemoving:Fire(traveler)
 traveler=player(90)
 eq(cmd(traveler,"state").regions[1].visited,true,"survey persists on rejoin")
@@ -509,13 +554,13 @@ eq(cmd(traveler,"state").quest.stage,8,"survey reward remains claimed after rejo
 services.Players.PlayerRemoving:Fire(traveler)
 data.p90.profile.items.ReinforcedPickaxe=1
 traveler=player(90)
-eq(cmd(traveler,"quest").coins,25,"equipment contract requires armor as well as tool")
+eq(cmd(traveler,"quest").coins,150,"equipment contract requires armor as well as tool")
 services.Players.PlayerRemoving:Fire(traveler)
 data.p90.profile.items.Skyplate=1
 traveler=player(90)
-eq(cmd(traveler,"quest").coins,100,"equipment contract pays final reward")
+eq(cmd(traveler,"quest").coins,225,"equipment contract pays final reward")
 eq(cmd(traveler,"state").quest.complete,true,"bounded expanded chain can finish")
-eq(cmd(traveler,"quest").coins,100,"final reward cannot repeat")
+eq(cmd(traveler,"quest").coins,225,"final reward cannot repeat")
 eq(regionHook.OnInvoke(lateOpen,"Skyreach").allowed,false,"expired session cannot use region transit")
 traveler.Character:FindFirstChildOfClass("Humanoid").Health=0
 eq(regionHook.OnInvoke(traveler,"Skyreach").allowed,false,"dead character cannot use region transit")
@@ -829,4 +874,614 @@ eq(#encoded<4*1024*1024,true,"worst rolling-version receipt/lot bounds fit 4 MiB
 eq(type(serde.decode('json',encoded).orders[1]),'string',"mixed book remains JSON-serializable for legacy readers")
 print("Rolling-version maximum-shape fixture: "..#encoded.." JSON bytes (4000 users / 8000 receipts / 600 lots).")
 repeatMarketTransform=false
-print("PASS: "..checks.." production gameplay/market assertions.")
+local legacyChecks=checks
+-- Depth suite runs in its own function: the legacy chunk is near the 200-local limit.
+;(function()
+------------------------------------------------------------------------------
+-- Depth update (docs/DEPTH-CONTRACT.md): shared rules wired into the server.
+------------------------------------------------------------------------------
+local X=Data.XP_TABLE
+local function ok(cond,case) assert(cond,case); checks+=1 end
+local function has(text,part) return type(text)=="string" and string.find(text,part,1,true)~=nil end
+local function hum(p) return p.Character:FindFirstChildOfClass("Humanoid") end
+local function st(p) return cmd(p,"state") end
+local function hook(name) for _,o in ipairs(allObjects) do if o.Name==name then return o end end return nil end
+-- Create a journal, leave, edit the durable save, rejoin.
+local function seeded(id,mutate)
+	local p=player(id)
+	services.Players.PlayerRemoving:Fire(p)
+	mutate(data["p"..id].profile)
+	return player(id)
+end
+local function rejoin(p,mutate)
+	services.Players.PlayerRemoving:Fire(p)
+	if mutate then mutate(data["p"..p.UserId].profile) end
+	return player(p.UserId)
+end
+local bridge=hook("IsleBridge")
+ok(bridge~=nil,"IsleBridge BindableFunction exists")
+eq(bridge.Parent,services.ServerStorage,"IsleBridge parented to ServerStorage")
+eq(hook("IsleCoopProfile").Parent,services.ServerStorage,"co-op hook still parented")
+ok(#seeds>=1,"server creates a seeded Random")
+
+-- Fresh snapshot exposes the full depth block.
+local novice2=player(200)
+local s0=st(novice2)
+local d0=s0.depth
+for _,skill in ipairs(Data.SkillOrder) do
+	eq(d0.skills[skill].level,1,"fresh "..skill.." level 1")
+	eq(s0.levels[skill],1,"fresh legacy levels include "..skill)
+end
+eq(s0.xp.Cooking,0,"fresh Cooking xp")
+eq(s0.xp.Carpentry,0,"fresh Carpentry xp")
+eq(d0.totalLevel,#Data.SkillOrder,"fresh total level")
+eq(d0.skillAverage,1,"fresh skill average")
+eq(d0.skills.Mining.ceiling,83,"Mining 2 at 83 XP")
+eq(d0.skills.Mining.maxed,false,"fresh skill not maxed")
+eq(d0.stats.health,100,"base health")
+eq(d0.stats.speed,100,"base speed")
+eq(hum(novice2).WalkSpeed,16,"100 Speed maps to default walk speed")
+eq(d0.accessorySlots,3,"three base accessory slots")
+eq(#d0.regions,#Data.Regions,"every region listed")
+eq(d0.collections.Ore.tier,0,"fresh collection tier")
+eq(d0.collections.Ore.nextAt,50,"first collection threshold")
+eq(d0.slayer.lines.Bramble.nextAt,5,"first slayer level threshold")
+eq(d0.slayer.quest,nil,"no slayer quest")
+eq(#d0.pets,0,"no pets")
+eq(d0.tools.Mining,nil,"no tools")
+eq(novice2.SlayerBossReady,"","boss attribute cleared")
+eq(novice2.MeadowUnlocked,true,"open region attribute")
+eq(novice2.WindpineUnlocked,false,"gated region attribute")
+eq(novice2.CombatLevel,1,"combat level attribute")
+
+-- OSRS curve and one-time level coins.
+local miner=player(201)
+for _=1,6 do use(miner,ore) end
+eq(st(miner).levels.Mining,1,"72 XP is Mining 1")
+local levelled=use(miner,ore)
+eq(levelled.levels.Mining,2,"84 XP reaches Mining 2")
+eq(levelled.coins,50,"Mining 2 pays its coin reward")
+ok(has(levelled.message,"Mining level 2! +50 coins"),"level-up message")
+eq(levelled.depth.skills.Mining.floor,83,"progress floor")
+eq(levelled.depth.skills.Mining.ceiling,174,"Mining 3 at 174 XP")
+miner=rejoin(miner)
+eq(data.p201.profile.levelRewards.Mining,2,"level reward persisted")
+eq(use(miner,ore).coins,50,"level reward never repeats after rejoin")
+local veteran=seeded(202,function(p) p.xp.Mining=X[15]-12; p.levelRewards.Mining=14 end)
+local fifteen=use(veteran,ore)
+eq(fifteen.levels.Mining,15,"Mining 15 reached")
+eq(fifteen.coins,1500,"Mining 15 pays 1500 coins")
+ok(has(fifteen.message,"Mining level 15! +1500 coins"),"level 15 message")
+local capped=seeded(204,function(p) p.xp.Mining=Data.MAX_XP-5; p.levelRewards.Mining=99 end)
+local maxed=use(capped,ore)
+eq(maxed.xp.Mining,Data.MAX_XP,"XP capped at 200M")
+eq(maxed.depth.skills.Mining.maxed,true,"level 99 reports maxed")
+eq(maxed.depth.skills.Mining.level,99,"level 99")
+
+-- Monster kills: multi-level jump pays every level once.
+local brawler=player(203)
+local killed=bridge.OnInvoke("kill",brawler,{monster="StarbornSentinel"})
+eq(next(killed.drops),nil,"high rolls drop nothing")
+eq(killed.bossReady,false,"no quest means no boss")
+ok(has(brawler.last.message,"Starborn Sentinel slain"),"kill pushes a snapshot message")
+ok(has(brawler.last.message,"Combat level 6! +500 coins"),"multi-level reward message")
+local fought=st(brawler)
+eq(fought.levels.Combat,6,"520 Combat XP is level 6")
+eq(fought.coins,120+500,"monster coins plus levels 2-6 rewards")
+eq(fought.depth.bestiary.StarbornSentinel,1,"bestiary counts kills")
+eq(fought.depth.stats.strength,5,"Combat levels grant strength")
+eq(fought.depth.stats.combatBonus,20,"Combat bonus 4% per level")
+eq(brawler.CombatLevel,6,"combat level attribute updates")
+
+-- Migration of an older save (no Depth tables, missing new skills).
+local legacySave=seeded(210,function(p)
+	p.version=1
+	p.xp={Mining=500,Woodcutting=0,Farming=0,Fishing=0,Smithing=0,Combat=0,Alchemy=0,Dungeoneering=0,Enchanting=0,Taming=0}
+	p.collection={Ore=120}
+	p.items={}
+	for _,k in ipairs({"equipment","enchants","accessoryBag","pets","buffs","bestiary","slayerXp","levelRewards","collectionRewards"}) do p[k]=nil end
+	p.activePet=3
+	p.slayerQuest={line="Nope",tier=1}
+end)
+local migrated=st(legacySave)
+eq(migrated.xp.Cooking,0,"migration adds Cooking")
+eq(migrated.xp.Carpentry,0,"migration adds Carpentry")
+eq(migrated.levels.Mining,5,"500 XP is Mining 5")
+eq(type(migrated.depth.equipment),"table","migration adds equipment")
+eq(#migrated.depth.pets,0,"migration adds pets")
+eq(migrated.depth.slayer.lines.Gloom.xp,0,"migration adds slayer xp")
+eq(migrated.depth.slayer.quest,nil,"invalid slayer quest dropped")
+eq(migrated.coins,0,"migration pays no retroactive rewards")
+local migratedGather=use(legacySave,ore)
+eq(migratedGather.levels.Mining,6,"512 XP reaches Mining 6")
+eq(migratedGather.coins,150,"only the newly reached level pays")
+eq(migratedGather.items.Ore,2,"Mining 3+ legacy bonus survives migration")
+legacySave=rejoin(legacySave)
+eq(data.p210.profile.version,2,"migrated save version")
+eq(data.p210.profile.activePet,nil,"dangling active pet cleared")
+eq(data.p210.profile.collectionRewards.Ore,2,"collection baseline persisted")
+eq(data.p210.profile.levelRewards.Mining,6,"level baseline persisted")
+
+-- Gathering through Progression.harvest: level gate, tool gate, fortune.
+local brassNode=node("gather","Brassite")
+local prospector=player(220)
+eq(use(prospector,brassNode).items.Brassite,nil,"Brassite requires Mining 15")
+ok(has(prospector.last.message,"requires Mining 15"),"level gate message")
+eq(cmd(prospector,"gather","Brassite").items.Brassite,nil,"remote Brassite denied")
+prospector=rejoin(prospector,function(p) p.xp.Mining=X[15]; p.levelRewards.Mining=15 end)
+eq(use(prospector,brassNode).items.Brassite,nil,"tier 1 pickaxe required")
+ok(has(prospector.last.message,"tier 1 pickaxe"),"tool gate message")
+eq(st(prospector).xp.Mining,X[15],"tool gate awards no XP")
+prospector=rejoin(prospector,function(p) p.items.Pickaxe=1 end)
+local harvested=use(prospector,brassNode)
+eq(harvested.items.Brassite,1,"Brassite harvested")
+eq(harvested.xp.Mining,X[15]+35,"Brassite XP")
+eq(harvested.collection.Brassite,1,"Brassite collection")
+eq(harvested.depth.tools.Mining,"Pickaxe","best tool reported")
+rolls={0}
+eq(use(prospector,brassNode).items.Brassite,3,"fortune proc doubles harvest")
+workspace.FestivalResource="Brassite"
+eq(use(prospector,brassNode).items.Brassite,5,"festival bonus applies to new resources")
+workspace.FestivalResource=nil
+eq(use(prospector,ore).items.Ore,3,"legacy pickaxe and mastery bonus on Ore")
+local aetherHint=use(player(221),node("gather","Aetherite"))
+ok(has(aetherHint.message,"Train on Ore"),"Aetherite gate keeps its hint")
+local lumber=player(222)
+local windpineLog=node("gather","WindpineLog",0,nil,"Windpine")
+eq(use(lumber,windpineLog).items.WindpineLog,nil,"Windpine region gated")
+eq(lumber.last.message,"Windpine Grove requires Woodcutting 10.","region denial message")
+lumber=rejoin(lumber,function(p) p.xp.Woodcutting=X[15]; p.levelRewards.Woodcutting=15 end)
+eq(use(lumber,windpineLog).items.WindpineLog,nil,"hatchet required")
+ok(has(lumber.last.message,"tier 1 hatchet"),"hatchet message")
+lumber=rejoin(lumber,function(p) p.items.CopperHatchet=1 end)
+eq(use(lumber,windpineLog).items.WindpineLog,1,"Windpine log harvested in region")
+eq(use(lumber,node("gather","Shard")).items.Shard,nil,"non-resource gather rejected")
+eq(lumber.last.message,"Unknown action.","non-resource gather message")
+eq(use(lumber,node("gather","Ore",0,nil,"Atlantis")).items.Ore,nil,"unknown region prompt rejected")
+eq(lumber.last.message,"That region is not on the guild charts.","unknown region message")
+
+-- Collection tier rewards: once per tier, multi-tier crossings sum.
+local collector=seeded(223,function(p) p.collection={Ore=49,Herb=99}; p.collectionRewards={Herb=1} end)
+local tier1=use(collector,ore)
+eq(tier1.coins,50,"collection tier 1 pays 50")
+ok(has(tier1.message,"Copperstone Ore collection tier 1! +50 coins"),"collection message")
+eq(tier1.depth.collections.Ore.tier,1,"collection tier reported")
+eq(tier1.depth.collections.Ore.nextAt,100,"next collection threshold")
+eq(use(collector,node("gather","Herb")).coins,250,"Herb tier 2 pays 200")
+collector=rejoin(collector)
+eq(use(collector,ore).coins,250,"collection reward cannot repeat after rejoin")
+eq(data.p223.profile.collectionRewards.Ore,1,"collection rewards persisted")
+
+-- Data.Recipes crafting via Progression.canCraft.
+local crafter=seeded(230,function(p)
+	p.items={AlloyIngot=4,Timber=10,Herb=5,Fish=3}
+	p.xp.Smithing=X[14]; p.levelRewards.Smithing=14
+end)
+local hatchet=cmd(crafter,"craft","CopperHatchet")
+eq(hatchet.items.CopperHatchet,1,"Data recipe crafted")
+eq(hatchet.items.AlloyIngot,2,"Data recipe spends ingots")
+eq(hatchet.items.Timber,7,"Data recipe spends timber")
+eq(hatchet.xp.Smithing,X[14]+20,"Data recipe XP to recipe.skill")
+local again=cmd(crafter,"craft","CopperHatchet")
+eq(again.items.AlloyIngot,2,"non-repeatable recipe cannot charge twice")
+eq(again.message,"You already own Copper Hatchet.","duplicate craft message")
+local brassLocked=cmd(crafter,"craft","BrassIngot")
+eq(brassLocked.message,"Brass Ingot requires Smithing 15.","level-gated recipe message")
+local cooked=cmd(crafter,"craft","CookedFish")
+eq(cooked.items.CookedFish,1,"meal cooked")
+eq(cooked.xp.Cooking,20,"cooking XP")
+eq(cooked.items.Fish,2,"meal spends fish")
+eq(cooked.items.Herb,4,"meal spends herb")
+eq(cmd(crafter,"craft","CookedFish").items.CookedFish,2,"meals repeatable")
+eq(cmd(crafter,"craft","CookedGlassfin").items.CookedGlassfin,nil,"Cooking 15 gate")
+eq(cmd(crafter,"craft","MightDraught").items.MightDraught,nil,"Alchemy 5 gate")
+eq(cmd(crafter,"craft","Nope").message,"Unknown action.","unknown recipe")
+eq(cmd(crafter,"craft",string.rep("A",65)).message,"That request is too long.","long item rejected at gateway")
+advance(1)
+eq(objects.RemoteFunction.OnServerInvoke(crafter,"craft",5),nil,"numeric recipe rejected at gateway")
+advance(1)
+eq(objects.RemoteFunction.OnServerInvoke(crafter,string.rep("v",33),nil),nil,"long verb rejected at gateway")
+local forger=seeded(231,function(p)
+	p.items={Brassite=6,WindpineLog=4}
+	p.collection={Brassite=10}
+	p.xp.Smithing=X[15]; p.levelRewards.Smithing=15
+end)
+local ingot=cmd(forger,"craft","BrassIngot")
+eq(ingot.items.BrassIngot,1,"ingot smelted")
+eq(ingot.items.Brassite,3,"ingot spends ore")
+eq(ingot.xp.Smithing,X[15]+34,"ingot XP")
+eq(cmd(forger,"craft","BrassIngot").items.BrassIngot,2,"ingots repeatable")
+local lockedPick=cmd(forger,"craft","BrassPickaxe")
+eq(lockedPick.items.BrassPickaxe,nil,"collection-gated tool locked")
+ok(has(lockedPick.message,"collection tier 1"),"collection gate message")
+eq(lockedPick.items.BrassIngot,2,"locked recipe spends nothing")
+forger=rejoin(forger,function(p) p.collection.Brassite=50; p.items.BrassIngot=3; p.items.WindpineLog=2 end)
+local pick=cmd(forger,"craft","BrassPickaxe")
+eq(pick.items.BrassPickaxe,1,"collection unlock crafts tool")
+eq(pick.depth.tools.Mining,nil,"tool requirements gate best tool")
+local carpenter=seeded(232,function(p) p.items={Herb=64}; p.collection={Herb=100}; p.collectionRewards={Herb=2} end)
+local charm=cmd(carpenter,"craft","MeadowCharm")
+eq(charm.items.MeadowCharm,1,"accessory crafted")
+eq(charm.xp.Carpentry,40,"Carpentry XP")
+eq(charm.items.Herb,0,"accessory cost")
+
+-- Equipment.
+local knight=seeded(240,function(p)
+	p.xp.Combat=X[5]; p.levelRewards.Combat=5
+	p.items={BrassSword=1,BrassHelm=1,BrassChestplate=1,BrassGreaves=1,BrassBoots=1,BrassPickaxe=1,SunsteelSword=1,Ore=5}
+end)
+eq(cmd(knight,"equip","Nope").depth.equipment.weapon,nil,"unknown item cannot equip")
+eq(cmd(knight,"equip","BrassPickaxe").depth.equipment.pickaxe,nil,"tools are not equipped")
+eq(cmd(knight,"equip","Ore").depth.equipment.weapon,nil,"resources cannot equip")
+local tooWeak=cmd(knight,"equip","SunsteelSword")
+eq(tooWeak.depth.equipment.weapon,nil,"Combat requirement enforced")
+eq(tooWeak.message,"Sunsteel Sword requires Combat 12.","requirement message")
+eq(cmd(knight,"equip","StarmetalSword").depth.equipment.weapon,nil,"unowned weapon cannot equip")
+local armedKnight=cmd(knight,"equip","BrassSword")
+eq(armedKnight.depth.equipment.weapon,"BrassSword","weapon equipped")
+eq(armedKnight.depth.stats.weapon,"BrassSword","stats use equipped weapon")
+eq(armedKnight.depth.stats.damage,40,"weapon damage")
+eq(armedKnight.depth.stats.strength,14,"weapon strength plus Combat")
+ok(has(cmd(knight,"equip","BrassSword").message,"already equipped"),"duplicate equip message")
+for _,piece in ipairs({"BrassHelm","BrassChestplate","BrassGreaves","BrassBoots"}) do cmd(knight,"equip",piece) end
+local plate=st(knight)
+eq(plate.depth.stats.activeSet,"Brass","full set bonus active")
+eq(plate.depth.stats.defense,148,"armor plus set defense")
+eq(plate.depth.stats.health,159,"armor health")
+eq(hum(knight).MaxHealth,159,"humanoid MaxHealth follows stats")
+eq(plate.stats.maxHealth,159,"legacy maxHealth follows stats")
+local bareFeet=cmd(knight,"unequip","boots")
+eq(bareFeet.depth.equipment.boots,nil,"unequip clears slot")
+eq(bareFeet.depth.stats.activeSet,nil,"set bonus needs four pieces")
+eq(bareFeet.depth.stats.defense,98,"unequip removes defense")
+eq(cmd(knight,"unequip","boots").message,"Nothing is equipped in that slot.","empty slot unequip")
+ok(has(cmd(knight,"unequip","pickaxe").message,"Choose weapon"),"invalid slot rejected")
+eq(cmd(knight,"sell","BrassSword").items.BrassSword,1,"equipped item cannot be sold")
+cmd(knight,"unequip","weapon")
+local soldSword=cmd(knight,"sell","BrassSword")
+eq(soldSword.items.BrassSword,0,"unequipped item sold")
+eq(soldSword.coins,Data.Items.BrassSword.value,"sold at Data value")
+knight=rejoin(knight)
+eq(data.p240.profile.equipment.helmet,"BrassHelm","equipment persisted")
+eq(st(knight).depth.equipment.chest,"BrassChestplate","equipment restored on rejoin")
+knight=rejoin(knight,function(p) p.xp.Combat=0 end)
+eq(st(knight).depth.stats.defense,0,"equipment ignored when requirements no longer met")
+
+-- Consumables: food recovery, potion/feast buffs.
+local eater=seeded(250,function(p)
+	p.items={CookedFish=3,MightDraught=2,HuntersFeast=1,Ore=3,ProspectorsBrew=1,SwiftwindElixir=1,Tonic=1,Pickaxe=1}
+	p.xp.Mining=X[15]; p.levelRewards.Mining=15
+end)
+local eaterHum=hum(eater)
+eq(cmd(eater,"consume","Ore").items.Ore,3,"resources are not consumable")
+ok(has(cmd(eater,"consume","StarlitBanquet").message,"You have no"),"unowned consumable rejected")
+eq(cmd(eater,"consume","CookedFish").items.CookedFish,3,"full health does not waste food")
+eaterHum.Health=20
+local ate=cmd(eater,"consume","CookedFish")
+eq(eaterHum.Health,95,"meal heals")
+eq(ate.items.CookedFish,2,"meal consumed")
+eq(cmd(eater,"consume","CookedFish").items.CookedFish,2,"meal recovery blocks immediate reuse")
+eq(eaterHum.Health,95,"blocked meal does not heal")
+advance(4)
+cmd(eater,"consume","CookedFish")
+eq(eaterHum.Health,eaterHum.MaxHealth,"meal heal clamps to max")
+local drank=cmd(eater,"consume","MightDraught")
+eq(drank.items.MightDraught,1,"potion consumed")
+eq(drank.depth.buffs.MightDraught.remaining,300,"potion buff duration")
+eq(drank.depth.stats.strength,15,"potion strength")
+advance(100)
+eq(cmd(eater,"consume","MightDraught").depth.buffs.MightDraught.remaining,300,"repeat potion refreshes duration")
+local feast=cmd(eater,"consume","HuntersFeast")
+eq(feast.depth.stats.health,160,"feast health")
+eq(eaterHum.MaxHealth,160,"feast raises MaxHealth")
+eq(feast.depth.stats.strength,45,"buffs stack across consumables")
+eq(cmd(eater,"consume","SwiftwindElixir").depth.stats.speed,140,"speed potion")
+eq(eaterHum.WalkSpeed,16*1.4,"walk speed follows Speed stat")
+cmd(eater,"consume","ProspectorsBrew")
+eq(use(eater,brassNode).items.Brassite,2,"100+ fortune guarantees an extra drop")
+eater=rejoin(eater)
+eq(data.p250.profile.buffs.HuntersFeast.stats.strength,30,"buffs persisted")
+eq(st(eater).depth.buffs.HuntersFeast~=nil,true,"buffs restored on rejoin")
+advance(301)
+eater=rejoin(eater) -- the 180 s lease lapses without the autosave loop in tests
+local faded=st(eater)
+eq(faded.depth.buffs.MightDraught,nil,"expired buff hidden")
+eq(faded.depth.stats.strength,30,"expired buff stats removed")
+eaterHum=hum(eater)
+eaterHum.Health=10
+cmd(eater,"consume","Tonic")
+eq(eaterHum.Health,50,"consume routes legacy Tonic")
+
+-- Accessory bag.
+local jeweler=seeded(260,function(p) p.items={MeadowCharm=1,QuarryTalisman=1,TimberRing=1,AnglerBead=1,Ore=1} end)
+ok(has(cmd(jeweler,"accessory","Ore").message,"Choose an accessory"),"non-accessory rejected")
+ok(has(cmd(jeweler,"accessory","HideBracer").message,"do not own"),"unowned accessory rejected")
+local charmed=cmd(jeweler,"accessory","MeadowCharm")
+eq(#charmed.depth.accessoryBag,1,"accessory added")
+eq(charmed.depth.activeAccessories[1],"MeadowCharm","accessory active")
+eq(charmed.depth.stats.magicalPower,3,"common magical power")
+eq(charmed.depth.stats.health,113,"accessory and power health")
+cmd(jeweler,"accessory","QuarryTalisman")
+cmd(jeweler,"accessory","TimberRing")
+local full=cmd(jeweler,"accessory","AnglerBead")
+eq(#full.depth.accessoryBag,3,"bag capacity enforced")
+ok(has(full.message,"bag full"),"bag full message")
+eq(#cmd(jeweler,"accessory","MeadowCharm").depth.accessoryBag,2,"toggle removes accessory")
+eq(#cmd(jeweler,"accessory","AnglerBead").depth.accessoryBag,3,"freed slot reusable")
+eq(cmd(jeweler,"sell","QuarryTalisman").items.QuarryTalisman,1,"bagged accessory cannot be sold")
+jeweler=rejoin(jeweler,function(p) p.xp.Combat=X[5]; p.levelRewards.Combat=5 end)
+eq(#data.p260.profile.accessoryBag,3,"accessory bag persisted")
+eq(st(jeweler).depth.accessorySlots,4,"Combat 5 unlocks a slot")
+
+-- Pets.
+local tamer=seeded(270,function(p) p.items={EmberfoxPet=1,Ore=2} end)
+ok(has(cmd(tamer,"petAdopt","Ore").message,"Choose a pet"),"non-pet adopt rejected")
+ok(has(cmd(tamer,"petAdopt","TidewingPet").message,"do not own"),"unowned pet rejected")
+ok(has(cmd(tamer,"petAdopt","Emberfox").message,"Choose a pet"),"pet id is not an item")
+local adopted=cmd(tamer,"petAdopt","EmberfoxPet")
+eq(#adopted.depth.pets,1,"pet adopted")
+eq(adopted.items.EmberfoxPet,0,"pet item consumed")
+eq(adopted.xp.Taming,100,"adoption trains Taming")
+eq(adopted.coins,50,"Taming 2 reward")
+eq(#cmd(tamer,"petAdopt","EmberfoxPet").depth.pets,1,"pet item cannot be adopted twice")
+local summoned=cmd(tamer,"petSummon","1")
+eq(summoned.depth.pets[1].active,true,"pet summoned")
+eq(summoned.depth.stats.strength,0.4,"pet stats apply")
+eq(summoned.depth.pets[1].next,Data.petXpToNext(1,"Epic"),"pet next-level XP")
+for _,bad in ipairs({"2","-1","1.5","x","0001",""}) do
+	eq(cmd(tamer,"petSummon",bad).depth.pets[1].active,true,"invalid summon ignored: "..bad)
+end
+bridge.OnInvoke("kill",tamer,{monster="BramblebackBoar"})
+eq(st(tamer).depth.pets[1].xp,12,"pet earns full XP of its skill")
+use(tamer,ore)
+eq(st(tamer).depth.pets[1].xp,15,"pet earns 25% of other skills")
+bridge.OnInvoke("kill",tamer,{monster="StarbornSentinel"})
+ok(has(tamer.last.message,"Emberfox pet level 2!"),"pet level message")
+local grown=st(tamer)
+eq(grown.depth.pets[1].level,2,"pet levels up")
+eq(grown.depth.pets[1].xp,535-Data.petXpToNext(1,"Epic"),"pet XP carries over")
+eq(cmd(tamer,"petSummon","0").depth.pets[1].active,false,"pet dismissed")
+ok(has(cmd(tamer,"petSummon","0").message,"No pet"),"double dismiss message")
+bridge.OnInvoke("kill",tamer,{monster="BramblebackBoar"})
+eq(st(tamer).depth.pets[1].xp,535-Data.petXpToNext(1,"Epic"),"dismissed pet earns nothing")
+cmd(tamer,"petSummon","1")
+tamer=rejoin(tamer)
+eq(data.p270.profile.pets[1].level,2,"pets persisted")
+eq(st(tamer).depth.pets[1].active,true,"active pet restored")
+
+-- Enchanting table.
+local runesmith=seeded(280,function(p)
+	p.items={BrassSword=1,BrassPickaxe=1,ArcaneDust=1000}
+	p.coins=10000
+	p.xp.Combat=X[5]; p.levelRewards.Combat=5
+	p.equipment={weapon="BrassSword"}
+end)
+for _,bad in ipairs({"BrassSword","BrassSword:",":Sharpness","BrassSword:Nope","Nope:Sharpness","BrassSword:Sharpness:1","Brass Sword:Sharpness"}) do
+	local rejected=cmd(runesmith,"enchantItem",bad)
+	eq(rejected.depth.enchants.BrassSword,nil,"malformed enchant rejected: "..bad)
+	eq(rejected.coins,10000,"malformed enchant free: "..bad)
+end
+ok(has(cmd(runesmith,"enchantItem","StarmetalSword:Sharpness").message,"do not own"),"unowned enchant target")
+ok(has(cmd(runesmith,"enchantItem","BrassSword:Protection").message,"cannot be applied"),"enchant kind enforced")
+local sharp=cmd(runesmith,"enchantItem","BrassSword:Sharpness")
+eq(sharp.depth.enchants.BrassSword.Sharpness,1,"enchant applied")
+eq(sharp.items.ArcaneDust,996,"enchant dust cost")
+eq(sharp.coins,9900,"enchant coin cost")
+eq(sharp.xp.Enchanting,30,"enchant XP")
+eq(sharp.depth.stats.damagePercent,5,"enchant stat applies to equipped weapon")
+local gated=cmd(runesmith,"enchantItem","BrassSword:Sharpness")
+eq(gated.depth.enchants.BrassSword.Sharpness,1,"enchant level gate")
+eq(gated.message,"Sharpness 2 requires Enchanting 13.","enchant gate message")
+eq(gated.items.ArcaneDust,996,"gated enchant spends nothing")
+eq(cmd(runesmith,"enchantItem","BrassSword:Critical").depth.enchants.BrassSword.Critical,nil,"Critical requires Enchanting 10")
+runesmith=rejoin(runesmith,function(p) p.xp.Enchanting=X[99]; p.levelRewards.Enchanting=99 end)
+for _=2,5 do cmd(runesmith,"enchantItem","BrassSword:Sharpness") end
+local maxedSword=st(runesmith)
+eq(maxedSword.depth.enchants.BrassSword.Sharpness,5,"enchant to max level")
+eq(maxedSword.items.ArcaneDust,996-16-36-64-100,"escalating dust cost")
+eq(maxedSword.coins,9900-400-900-1600-2500,"escalating coin cost")
+ok(has(cmd(runesmith,"enchantItem","BrassSword:Sharpness").message,"maximum level"),"enchant max level")
+local fortuneTool=cmd(runesmith,"enchantItem","BrassPickaxe:Fortune")
+eq(fortuneTool.depth.enchants.BrassPickaxe.Fortune,1,"tool enchant applied")
+runesmith=rejoin(runesmith,function(p) p.coins=50 end)
+local broke=cmd(runesmith,"enchantItem","BrassSword:Critical")
+eq(broke.depth.enchants.BrassSword.Critical,nil,"enchant needs coins")
+eq(broke.items.ArcaneDust,996-216-4,"unaffordable enchant spends no dust")
+eq(data.p280.profile.enchants.BrassSword.Sharpness,5,"enchants persisted")
+
+-- Merchant sells any item at Data value; nil keeps legacy behaviour.
+local merchant=seeded(290,function(p) p.items={BrassIngot=5,Ore=4,StarFragment=1} end)
+local ingots=cmd(merchant,"sell","BrassIngot")
+eq(ingots.coins,5*Data.Items.BrassIngot.value,"stack sold at Data value")
+eq(ingots.items.BrassIngot,0,"stack removed")
+ok(has(cmd(merchant,"sell","BrassIngot").message,"You have no"),"empty stack message")
+eq(cmd(merchant,"sell","Nope").coins,220,"unknown item cannot be sold")
+local legacySale=cmd(merchant,"sell")
+eq(legacySale.coins,236,"nil sell keeps legacy four resources")
+eq(legacySale.items.StarFragment,1,"nil sell ignores other items")
+eq(cmd(merchant,"sell","StarFragment").coins,416,"rare item sold by id")
+
+-- Slayer quests.
+local slayer=seeded(300,function(p) p.xp.Combat=X[5]; p.levelRewards.Combat=5; p.coins=1000 end)
+for _,bad in ipairs({"Bramble","Bramble:9","Bramble:0","Nope:1","Bramble:1:2","bramble:1","Bramble:10"}) do
+	local rejected=cmd(slayer,"slayerBegin",bad)
+	eq(rejected.depth.slayer.quest,nil,"malformed slayer quest rejected: "..bad)
+	eq(rejected.coins,1000,"malformed slayer quest free: "..bad)
+end
+eq(cmd(slayer,"slayerBegin","Bramble:2").message,"Brambleback Matriarch tier 2 requires Combat 12.","slayer tier Combat gate")
+eq(cmd(slayer,"slayerBegin","Gloom:1").depth.slayer.quest,nil,"slayer line Combat gate")
+local poorSlayer=seeded(301,function(p) p.xp.Combat=X[5]; p.coins=100 end)
+local poor=cmd(poorSlayer,"slayerBegin","Bramble:1")
+eq(poor.depth.slayer.quest,nil,"slayer fee required")
+eq(poor.coins,100,"unaffordable fee not charged")
+local begun=cmd(slayer,"slayerBegin","Bramble:1")
+eq(begun.coins,800,"slayer fee charged")
+eq(begun.depth.slayer.quest.line,"Bramble","quest line")
+eq(begun.depth.slayer.quest.tier,1,"quest tier")
+eq(begun.depth.slayer.quest.needed,150,"quest XP needed")
+eq(begun.depth.slayer.quest.bossReady,false,"boss not ready")
+eq(cmd(slayer,"slayerBegin","Bramble:1").coins,800,"second quest cannot start")
+bridge.OnInvoke("kill",slayer,{monster="ShaleCrawler"})
+eq(st(slayer).depth.slayer.quest.progress,0,"off-line monsters do not count")
+bridge.OnInvoke("kill",slayer,{monster="BramblebackBoar"})
+eq(st(slayer).depth.slayer.quest.progress,12,"slayer progress from monster XP")
+bridge.OnInvoke("kill",slayer,{monster="GloomfangSpider"})
+eq(st(slayer).depth.slayer.quest.progress,12,"other slayer line does not count")
+slayer=rejoin(slayer)
+eq(st(slayer).depth.slayer.quest.progress,12,"slayer quest persisted")
+eq(bridge.OnInvoke("slayerBoss",slayer,{result="win"}).drops,nil,"boss cannot be won before ready")
+eq(st(slayer).depth.slayer.quest~=nil,true,"premature win keeps quest")
+bridge.OnInvoke("kill",slayer,{monster="BarkStalker"})
+bridge.OnInvoke("kill",slayer,{monster="BarkStalker"})
+local readyKill=bridge.OnInvoke("kill",slayer,{monster="BarkStalker"})
+eq(readyKill.bossReady,true,"kill reports boss ready")
+ok(has(slayer.last.message,"stirs"),"boss ready message")
+eq(slayer.SlayerBossReady,"Bramble:1","boss attribute published")
+eq(st(slayer).depth.slayer.quest.progress,150,"progress capped at needed")
+bridge.OnInvoke("kill",slayer,{monster="BramblebackBoar"})
+eq(st(slayer).depth.slayer.quest.progress,150,"ready quest stops counting")
+eq(next(bridge.OnInvoke("slayerBoss",slayer,{result="maybe"})),nil,"invalid boss result ignored")
+eq(next(bridge.OnInvoke("slayerBoss",slayer,nil)),nil,"missing boss payload ignored")
+eq(st(slayer).depth.slayer.quest.bossReady,true,"invalid result keeps quest")
+local victory=bridge.OnInvoke("slayerBoss",slayer,{result="win"})
+eq(victory.drops.BeastHide,10,"boss tier drops rolled")
+eq(victory.drops.SlayerToken,1,"boss guaranteed token")
+local afterBoss=st(slayer)
+eq(afterBoss.depth.slayer.quest,nil,"win clears quest")
+eq(afterBoss.depth.slayer.lines.Bramble.xp,5,"slayer XP granted")
+eq(afterBoss.depth.slayer.lines.Bramble.level,1,"slayer level 1")
+eq(afterBoss.items.SlayerToken,1,"boss drops collected")
+eq(slayer.SlayerBossReady,"","boss attribute cleared")
+eq(next(bridge.OnInvoke("slayerBoss",slayer,{result="win"})),nil,"boss reward cannot repeat")
+eq(cmd(slayer,"slayerAbandon").message,"You have no slayer quest.","abandon without quest")
+cmd(slayer,"slayerBegin","Bramble:1")
+local abandoned=cmd(slayer,"slayerAbandon")
+eq(abandoned.depth.slayer.quest,nil,"abandon clears quest")
+eq(abandoned.coins,afterBoss.coins-200,"abandon does not refund")
+cmd(slayer,"slayerBegin","Bramble:1")
+for _=1,3 do bridge.OnInvoke("kill",slayer,{monster="BarkStalker"}) end
+eq(next(bridge.OnInvoke("slayerBoss",slayer,{result="fail"})),nil,"failed boss returns nothing")
+local failed=st(slayer)
+eq(failed.depth.slayer.quest,nil,"fail clears quest")
+eq(failed.depth.slayer.lines.Bramble.xp,5,"fail grants no slayer XP")
+eq(data.p300.profile.slayerXp.Bramble,0,"durable copy waits for save")
+slayer=rejoin(slayer)
+eq(data.p300.profile.slayerXp.Bramble,5,"slayer XP persisted")
+
+-- Bridge ops: stats, kill drops, bestiary, damage, lease checks.
+local fighter=seeded(310,function(p) p.bestiary={BramblebackBoar=9} end)
+local sheet=bridge.OnInvoke("stats",fighter)
+eq(sheet.stats.health,100,"bridge stats health")
+eq(sheet.combatLevel,1,"bridge combat level")
+eq(sheet.ironman,false,"bridge ironman flag")
+eq(bridge.OnInvoke("stats",lateOpen),nil,"bridge refuses expired lease")
+eq(bridge.OnInvoke("stats",{}),nil,"bridge refuses unknown player")
+eq(bridge.OnInvoke("explode",fighter,{}),nil,"unknown bridge op")
+eq(bridge.OnInvoke("kill",fighter,{monster="Dragon"}),nil,"unknown monster")
+eq(bridge.OnInvoke("kill",fighter,"BramblebackBoar"),nil,"non-table payload")
+eq(bridge.OnInvoke("kill",fighter,{monster=42}),nil,"non-string monster")
+eq(bridge.OnInvoke("kill",lateOpen,{monster="BramblebackBoar"}),nil,"expired lease cannot earn kills")
+rolls={0.1,0.5,0.1,0}
+local loot=bridge.OnInvoke("kill",fighter,{monster="BramblebackBoar"})
+eq(loot.drops.BeastHide,2,"seeded drop quantity")
+eq(loot.drops.ArcaneDust,1,"seeded rare-ish drop")
+local looted=st(fighter)
+eq(looted.items.BeastHide,2,"drops added to inventory")
+eq(looted.collection.ArcaneDust,1,"drops count toward collections")
+eq(looted.coins,4,"monster coins")
+eq(looted.xp.Combat,12,"monster XP")
+eq(looted.depth.bestiary.BramblebackBoar,10,"bestiary incremented")
+eq(looted.depth.stats.bestiaryTiers,1,"bestiary milestone reached")
+eq(looted.depth.stats.health,101,"bestiary milestone health")
+local fighterHum=hum(fighter)
+eq(bridge.OnInvoke("damage",fighter,{amount=30}),30,"raw damage at zero defense")
+eq(fighterHum.Health,71,"damage applied to humanoid")
+for _,bad in ipairs({"10",-5,0,0/0}) do
+	eq(bridge.OnInvoke("damage",fighter,{amount=bad}),0,"invalid damage ignored: "..tostring(bad))
+end
+eq(bridge.OnInvoke("damage",fighter,nil),0,"missing damage payload")
+eq(fighterHum.Health,71,"invalid damage leaves health")
+local guard=seeded(311,function(p)
+	p.xp.Combat=X[5]
+	p.items={BrassHelm=1,BrassChestplate=1,BrassGreaves=1,BrassBoots=1}
+	p.equipment={helmet="BrassHelm",chest="BrassChestplate",legs="BrassGreaves",boots="BrassBoots"}
+end)
+local guardDefense=bridge.OnInvoke("stats",guard).stats.defense
+eq(guardDefense,148,"bridge stats include armor")
+eq(bridge.OnInvoke("damage",guard,{amount=100}),Progression.damageTaken(100,148),"defense reduces bridge damage")
+ok(Progression.damageTaken(100,148)<100,"defense reduction is real")
+fighterHum.Health=0
+eq(bridge.OnInvoke("damage",fighter,{amount=10}),0,"dead humanoid takes no damage")
+
+-- Regions generalised over Data.Regions.
+local regionHook2=hook("IsleRegionAccess")
+local scout=player(320)
+eq(regionHook2.OnInvoke(scout,"Windpine").allowed,false,"Windpine locked")
+eq(regionHook2.OnInvoke(scout,"Windpine").message,"Windpine Grove requires Woodcutting 10.","Windpine message")
+eq(regionHook2.OnInvoke(scout,"Hub").allowed,true,"Hub open")
+eq(regionHook2.OnInvoke(scout,"Meadow").message,"Welcome to Meadow Reach.","open region message")
+eq(regionHook2.OnInvoke(scout,"Quarry").allowed,true,"Quarry open")
+eq(regionHook2.OnInvoke(scout,"Skyreach").message,"Claim the Skyreach charter in your journal: Mining 3 and 3 lifetime Alloy Ingots.","Skyreach message compatible")
+eq(regionHook2.OnInvoke(scout,"Tempest").allowed,false,"Tempest locked")
+eq(regionHook2.OnInvoke(scout,"Atlantis").allowed,false,"unknown region")
+eq(regionHook2.OnInvoke(scout,42).allowed,false,"non-string region")
+scout=rejoin(scout,function(p) p.xp.Mining=X[30] end)
+eq(regionHook2.OnInvoke(scout,"Gloomhollow").allowed,false,"Gloomhollow needs both skills")
+eq(regionHook2.OnInvoke(scout,"Gloomhollow").message,"Gloomhollow Caverns requires Combat 15, Mining 30.","multi-skill message")
+scout=rejoin(scout,function(p) p.xp.Combat=X[40]; p.xp.Woodcutting=X[10]; p.xp.Fishing=X[30] end)
+for _,id in ipairs({"Windpine","Gloomhollow","Tidewater","Tempest"}) do
+	eq(regionHook2.OnInvoke(scout,id).allowed,true,id.." unlocked by skills")
+	eq(scout[id.."Unlocked"],true,id.." attribute published")
+end
+eq(regionHook2.OnInvoke(scout,"Skyreach").allowed,false,"Skyreach still needs the charter")
+local regionList=st(scout).depth.regions
+local skyreachRow
+for _,row in ipairs(regionList) do if row.id=="Skyreach" then skyreachRow=row end end
+eq(skyreachRow.requirement,"Complete 6 guild contracts","quest requirement text")
+eq(skyreachRow.unlocked,false,"depth region lock state")
+scout=rejoin(scout,function(p) p.questCompleted=6 end)
+eq(regionHook2.OnInvoke(scout,"Skyreach").allowed,true,"quest count unlocks Skyreach")
+
+-- Workers across Data.WorkerTiers and every gathering resource.
+local foreman=seeded(330,function(p)
+	p.items={Timber=200,Ore=200,AlloyIngot=40,AetherIngot=20}
+	p.xp.Mining=X[15]; p.levelRewards.Mining=15
+	p.collection={Brassite=50}; p.collectionRewards={Brassite=1}
+end)
+cmd(foreman,"worker")
+ok(has(cmd(foreman,"workerAssign","1:SunsteelOre").message,"Mining 30"),"worker resource level gate")
+eq(cmd(foreman,"workerAssign","1:Glassfin").workers[1].resource,"Ore","worker skill gate")
+eq(cmd(foreman,"workerAssign","1:Brassite").workers[1].resource,"Brassite","worker assigned unlocked resource")
+advance(241)
+foreman=rejoin(foreman)
+local brassClaim=cmd(foreman,"claim")
+eq(brassClaim.items.Brassite,2,"worker gathers new resource")
+eq(brassClaim.xp.Mining,X[15]+16,"worker XP scales with resource")
+for _=2,4 do cmd(foreman,"workerUpgrade","1") end
+local tier4=st(foreman)
+eq(tier4.workers[1].tier,4,"worker reaches tier 4")
+eq(tier4.workers[1].interval,48,"tier 4 interval")
+eq(tier4.workers[1].capacity,480,"tier 4 capacity")
+eq(tier4.items.AlloyIngot,36,"tier 4 consumes refined ingots")
+for _=5,7 do cmd(foreman,"workerUpgrade","1") end
+local tier7=st(foreman)
+eq(tier7.workers[1].tier,7,"worker reaches tier 7")
+eq(tier7.workers[1].interval,26,"tier 7 interval")
+eq(tier7.workers[1].maxTier,7,"max tier exposed")
+eq(tier7.items.AlloyIngot,0,"upgrade ladder cost")
+eq(cmd(foreman,"workerUpgrade","1").message,"Worker is at maximum tier.","tier cap")
+foreman=rejoin(foreman)
+eq(st(foreman).workers[1].tier,7,"worker tier persisted")
+
+-- Ironman, cross-verb abuse.
+local loner=player(340)
+cmd(loner,"ironman")
+eq(bridge.OnInvoke("stats",loner).ironman,true,"bridge reports ironman")
+eq(cmd(loner,"buy","Ore").message,"Ironman journals cannot use the player exchange.","Ironman still excluded")
+eq(cmd(loner,"equip",string.rep("x",64)).depth.equipment.weapon,nil,"64-char unknown item handled")
+eq(cmd(loner,"sell",string.rep("x",65)).message,"That request is too long.","65-char item rejected")
+hum(loner).Health=0
+eq(cmd(loner,"consume","CookedFish").message,"Return to your island first.","dead player cannot use Depth verbs")
+print("Depth assertions: "..(checks-legacyChecks))
+end)()
+print("PASS: "..checks.." production gameplay/market/depth assertions.")
