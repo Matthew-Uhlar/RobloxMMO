@@ -267,7 +267,19 @@ local function snapshot(options)
 		slayer = { tier = 1, active = true, progress = 1, target = 2, ready = false, completed = 0, coins = 20, xp = 30 },
 		workers = { { resource = "Ore", tier = 1, ready = 3, interval = 120, capacity = 60 } }, decorations = { Garden = true },
 		started = true, companionBond = 2, enchantRank = 1,
+		economy = {
+			bazaar = { item = "Ore", bids = { { price = 20, qty = 30, orders = 2 }, { price = 18, qty = 5, orders = 1 } }, asks = { { price = 25, qty = 10, orders = 1 } },
+				bestBid = 20, bestAsk = 25, spread = 5, openOrders = 4, mine = {}, claimUnits = 3, claimCoins = 40, fetchedAt = 0, revision = 3, matchingPolicy = "Highest bid first." },
+			auction = { category = "weapon", page = 1, pages = 2, total = 9, proceeds = 50, returns = 1, fetchedAt = 0, revision = 2,
+				listings = { { id = 4, item = "SunsteelSword", price = 900, remaining = 3600, own = false }, { id = 5, item = "BrassSword", price = 1000, remaining = 60, own = true } } },
+			orders = { { item = "Ore", id = 7, side = "bid", price = 20, qty = 10 }, { item = "Herb", id = 2, side = "ask", price = 4, qty = 5 } },
+			listings = { { cat = "weapon", id = 5, item = "BrassSword", price = 1000, expires = 500 }, { cat = "pet", id = 9, item = "EmberfoxPet", price = 150, expires = 50 } },
+			pending = options.econPending == true, readyIn = 0, serverTime = 100,
+		},
 	}
+	if options.ironman then
+		result.ironman = true
+	end
 	if options.depth == false then
 		return result
 	end
@@ -311,6 +323,8 @@ local function snapshot(options)
 			buffs = { MightDraught = { remaining = "soon" }, Broken = 3 }, collections = { Ore = 5, Timber = { count = "many" } }, bestiary = { BramblebackBoar = "lots", Ghost = 3 },
 			slayer = { lines = { Bramble = 3 }, quest = { line = "Unknown", tier = "II" } }, enchants = { BrassSword = { Mystery = 2 }, Blade = 4 }, regions = { 3, { id = 7 } },
 		}
+		result.economy = { bazaar = 5, auction = { category = "weapon", listings = { 7, { id = "x" }, { id = 3, item = 4 } }, pages = "two" },
+			orders = { 1, "x", { id = "no" }, { id = 3, item = "Nope", side = "bid" } }, listings = { { cat = 3 }, { id = 2, item = "BrassSword", cat = "weapon", expires = "soon" } }, serverTime = "now" }
 	end
 	return result
 end
@@ -435,7 +449,7 @@ end
 local checks = 0
 local pages = {
 	Journal = { "Bearing", "Regions", "Crew" }, Hero = { "Skills", "Gear", "Enchant", "Accessories", "Pets" }, Satchel = { "Items", "Collections" },
-	Workshop = { "Forge", "Hearth", "Cauldron", "Workbench", "Workers", "Home" }, Hunt = { "Slayer", "Bestiary" }, Ledger = { "Bank", "Market", "Merchant" },
+	Workshop = { "Forge", "Hearth", "Cauldron", "Workbench", "Workers", "Home" }, Hunt = { "Slayer", "Bestiary" }, Ledger = { "Bank", "Market", "Orders", "Auctions", "Merchant" },
 }
 local tabOrder = { "Journal", "Hero", "Satchel", "Workshop", "Hunt", "Ledger" }
 local verbs = {
@@ -456,6 +470,18 @@ local verbs = {
 	end,
 	slayerAbandon = function(item) return item == nil end,
 	craft = function(item) return type(item) == "string" and #item <= 64 end,
+	bazaar = function(item) return Data.Economy.isCommodity(item) end,
+	bid = function(item) local id, q, pr = tostring(item):match("^(%w+):(%d+):(%d+)$") return id ~= nil and Data.Economy.isCommodity(id) and tonumber(q) >= 1 and tonumber(pr) >= 1 end,
+	offer = function(item) local id = tostring(item):match("^(%w+):%d+:%d+$") return id ~= nil and Data.Economy.isCommodity(id) end,
+	buyNow = function(item) local id = tostring(item):match("^(%w+):%d+:%d+$") return id ~= nil and Data.Economy.isCommodity(id) end,
+	sellToBid = function(item) local id = tostring(item):match("^(%w+):%d+$") or tostring(item):match("^(%w+):%d+:%d+$") return id ~= nil and Data.Economy.isCommodity(id) end,
+	bidCancel = function(item) local id = tostring(item):match("^(%w+):%d+$") return id ~= nil and Data.Economy.isCommodity(id) end,
+	bidClaim = function(item) return Data.Economy.isCommodity(item) end,
+	ahBrowse = function(item) local cat = tostring(item):match("^(%a+):%d+$") return cat ~= nil and Data.Economy.categoryNames[cat] ~= nil end,
+	ahList = function(item) local id, pr = tostring(item):match("^(%w+):(%d+)$") return id ~= nil and Data.Economy.auctionCategory(id) ~= nil and tonumber(pr) >= 1 end,
+	ahBuy = function(item) local cat = tostring(item):match("^(%a+):%d+:%d+$") return cat ~= nil and Data.Economy.categoryNames[cat] ~= nil end,
+	ahCancel = function(item) local cat = tostring(item):match("^(%a+):%d+$") return cat ~= nil and Data.Economy.categoryNames[cat] ~= nil end,
+	ahClaim = function(item) return Data.Economy.categoryNames[item] ~= nil end,
 }
 local function checkSent(ui)
 	for _, entry in ipairs(ui.sent) do
@@ -662,6 +688,104 @@ do
 		checks += 1
 	end
 	checkSent(ui)
+end
+-- 5b. Ledger → Orders and Auctions: review/confirm flows send validated verbs.
+do
+	local ui = run()
+	press(find(ui.gui, "AtlasButton"))
+	visit(ui, "Ledger", "Orders")
+	assert(find(ui.scroll, "CommodityOre") and find(ui.scroll, "Book"), "Orders draws the commodity grid and order book")
+	local bookText = {}
+	for _, object in ipairs(find(ui.scroll, "Book"):GetDescendants()) do
+		if object.ClassName == "TextLabel" then table.insert(bookText, object.Text) end
+	end
+	local joinedBook = table.concat(bookText, " | ")
+	assert(joinedBook:find("spread 5", 1, true) and joinedBook:find("ASK  25", 1, true) and joinedBook:find("BID  20", 1, true), "depth and spread shown: " .. joinedBook)
+	press(find(ui.scroll, "SectionOrders"))
+	press(find(ui.scroll, "GroupMaterials"))
+	press(find(ui.scroll, "CommodityBeastHide"))
+	press(find(ui.scroll, "GroupMining"))
+	press(find(ui.scroll, "CommodityOre"))
+	find(ui.scroll, "BazaarQuantity").Text = "12"
+	find(ui.scroll, "BazaarPrice").Text = "21"
+	press(find(ui.scroll, "PlaceBuyorder"))
+	assert(find(ui.scroll, "ConfirmButton"), "buy order asks for review")
+	press(find(ui.scroll, "CancelButton"))
+	assert(not find(ui.scroll, "ConfirmButton"), "review can be cancelled")
+	press(find(ui.scroll, "PlaceBuyorder"))
+	press(find(ui.scroll, "ConfirmButton"))
+	press(find(ui.scroll, "PlaceSelloffer"))
+	press(find(ui.scroll, "ConfirmButton"))
+	press(find(ui.scroll, "InstantBuynow"))
+	press(find(ui.scroll, "ConfirmButton"))
+	find(ui.scroll, "BazaarPrice").Text = ""
+	press(find(ui.scroll, "InstantInstantsell"))
+	press(find(ui.scroll, "ConfirmButton"))
+	find(ui.scroll, "BazaarQuantity").Text = "641"
+	local before = #ui.sent
+	press(find(ui.scroll, "PlaceBuyorder"))
+	assert(#ui.sent == before and not find(ui.scroll, "ConfirmButton"), "out-of-range quantity is refused locally")
+	press(find(ui.scroll, "Order7Cancel"))
+	press(find(ui.scroll, "Order2Claim"))
+	press(find(ui.scroll, "ClaimButton"))
+	visit(ui, "Ledger", "Auctions")
+	assert(find(ui.scroll, "Listing4") and find(ui.scroll, "Mine5"), "Auctions draws listings and your listings")
+	assert(find(ui.scroll, "Listing5Yours"), "own listing cannot be bought")
+	press(find(ui.scroll, "Listing4Buy"))
+	press(find(ui.scroll, "ConfirmButton"))
+	press(find(ui.scroll, "PagerNext"))
+	press(find(ui.scroll, "AuctionPets"))
+	press(find(ui.scroll, "AuctionWeapons"))
+	assert(not find(ui.scroll, "ListableBrassSword"), "equipped gear is not offered for listing")
+	assert(not find(ui.scroll, "ListableMeadowCharm"), "bagged accessories are not offered for listing")
+	press(find(ui.scroll, "ListableSunsteelSword"))
+	find(ui.scroll, "AuctionPrice").Text = "1250"
+	visit(ui, "Ledger", "Auctions")
+	local fee = {}
+	for _, object in ipairs(find(ui.scroll, "ListPreview"):GetDescendants()) do
+		if object.ClassName == "TextLabel" then table.insert(fee, object.Text) end
+	end
+	assert(table.concat(fee, " "):find("Fee 13 coins", 1, true), "fee preview shows 1% rounded up: " .. table.concat(fee, " | "))
+	press(find(ui.scroll, "ListPreviewReviewlisting"))
+	press(find(ui.scroll, "ConfirmButton"))
+	press(find(ui.scroll, "Mine5Cancel"))
+	press(find(ui.scroll, "Mine9Claim"))
+	press(find(ui.scroll, "Mine9Cancel"))
+	noFailures(ui, "economy flows")
+	local log = {}
+	for _, entry in ipairs(ui.sent) do
+		table.insert(log, entry[1] .. "=" .. tostring(entry[2]))
+	end
+	local joined = table.concat(log, " ")
+	for _, expected in ipairs({ "bazaar=Ore", "bazaar=BeastHide", "bid=Ore:12:21", "offer=Ore:12:21", "buyNow=Ore:12:21", "sellToBid=Ore:12 ",
+		"bidCancel=Ore:7", "bidClaim=Herb", "bidClaim=Ore", "ahBrowse=weapon:1", "ahBuy=weapon:4:900", "ahBrowse=weapon:2", "ahBrowse=pet:1",
+		"ahList=SunsteelSword:1250", "ahCancel=weapon:5", "ahClaim=pet" }) do
+		assert((joined .. " "):find(expected, 1, true), "expected " .. expected .. " in " .. joined)
+		checks += 1
+	end
+	assert(not joined:find("ahCancel=pet", 1, true), "expired listing cannot be cancelled")
+	checkSent(ui)
+	checks += 7
+	-- Ironman and recovering orders.
+	local iron = run({ snapshot = snapshot({ ironman = true }) })
+	press(find(iron.gui, "AtlasButton"))
+	visit(iron, "Ledger", "Orders")
+	assert(not find(iron.scroll, "PlaceBuyorder"), "Ironman sees no Bazaar controls")
+	visit(iron, "Ledger", "Auctions")
+	assert(not find(iron.scroll, "AuctionWeapons"), "Ironman sees no Auction House controls")
+	for _, entry in ipairs(iron.sent) do
+		assert(entry[1] ~= "bazaar" and entry[1] ~= "ahBrowse", "Ironman never queries the markets")
+	end
+	local recovering = run({ snapshot = snapshot({ econPending = true }) })
+	press(find(recovering.gui, "AtlasButton"))
+	visit(recovering, "Ledger", "Orders")
+	local recoveringText = {}
+	for _, object in ipairs(recovering.scroll:GetDescendants()) do
+		if object.ClassName == "TextLabel" then table.insert(recoveringText, object.Text) end
+	end
+	assert(table.concat(recoveringText, " "):find("Order recovering", 1, true), "pending order is explained")
+	noFailures(recovering, "pending")
+	checks += 3
 end
 -- 6. XP popup and level-up banner between snapshots.
 do

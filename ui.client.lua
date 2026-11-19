@@ -2459,6 +2459,301 @@ local function drawCoop()
 	row("Shared ledger", "Refresh after crew activity or to check new invitations.", "Refresh", function() sendCoop("state") end)
 end
 
+-- Economy: Bazaar standing orders (Orders) and the Auction House (Auctions).
+-- All page state lives in one table (the chunk is at the local-register limit).
+local U={group="Mining",item="Ore",qty="10",price="",cat="weapon",page=1,listItem=nil,listPrice="",confirm=nil}
+function U.rules()
+	local rules=Data and type(Data.Economy)=="table" and Data.Economy or nil
+	return {orderCap=num(rules and rules.orderCap,10),listingCap=num(rules and rules.listingCap,10),maxQuantity=num(rules and rules.maxQuantity,640),
+		maxPrice=num(rules and rules.maxPrice,1000000),feePercent=num(rules and rules.feePercent,1),
+		categories=type(rules and rules.auctionCategories)=="table" and rules.auctionCategories or {"weapon","armor","tool","accessory","pet"},
+		names=type(rules and rules.categoryNames)=="table" and rules.categoryNames or {weapon="Weapons",armor="Armor",tool="Tools",accessory="Accessories",pet="Pets"},
+		groups=type(rules and rules.bazaarGroups)=="table" and rules.bazaarGroups or {"Mining","Woodcutting","Fishing","Farming","Materials"}}
+end
+function U.economy() return tbl(state.economy) end
+function U.fee(price)
+	local rules=Data and type(Data.Economy)=="table" and Data.Economy
+	if rules and type(rules.auctionFee)=="function" then return rules.auctionFee(price) end
+	return math.max(1,math.ceil(price/100))
+end
+function U.whole(value,low,high)
+	if type(value)~="string" or not value:match("^%d+$") or #value>7 then return nil end
+	local n=tonumber(value)
+	if not n or n<low or n>high then return nil end
+	return n
+end
+function U.commodities(group)
+	local list={}
+	for id,def in pairs(tbl(Data and Data.Items)) do
+		if type(def)=="table" and (def.kind=="resource" or def.kind=="material") then
+			local own=def.kind=="resource" and type(Data.ResourceSkill)=="table" and Data.ResourceSkill[id] or "Materials"
+			if own==group then table.insert(list,id) end
+		end
+	end
+	table.sort(list,function(a,b)
+		local da,db=itemDef(a),itemDef(b)
+		local ta,tb=num(da and da.tier,0),num(db and db.tier,0)
+		if ta~=tb then return ta<tb end
+		return tostring(da and da.name or a)<tostring(db and db.name or b)
+	end)
+	return list
+end
+function U.field(title,name,value,placeholder,onChange)
+	local field=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,70),deep))
+	rounded(field,8,slate)
+	label(field,title,10,3,UDim.new(1,-20),20,bold,11,mint)
+	local box=make("TextBox",field,{Name=name,Position=UDim2.fromOffset(10,24),Size=UDim2.new(1,-20,0,44),BackgroundTransparency=1,Text=value,PlaceholderText=placeholder,PlaceholderColor3=muted,TextColor3=ivory,TextSize=16,Font=bold,ClearTextOnFocus=false,Selectable=true,TextXAlignment=Enum.TextXAlignment.Left,MultiLine=false})
+	box.SelectionGained:Connect(function() revealSelection(box) end)
+	box:GetPropertyChangedSignal("Text"):Connect(function() onChange(box.Text:sub(1,12)) end)
+	return box
+end
+-- Confirmation pattern shared with the Market page: review, then Confirm or Cancel.
+function U.review()
+	local confirm=U.confirm
+	if not confirm then return false end
+	row(confirm.title,confirm.detail,"Confirm",function()
+		U.confirm=nil
+		send(confirm.verb,confirm.payload)
+	end)
+	row("Keep deciding","Cancel this review without placing anything.","Cancel",function() U.confirm=nil;render() end)
+	return true
+end
+function U.ask(title,detail,verb,payload)
+	U.confirm={title=title,detail=detail,verb=verb,payload=payload}
+	scroll.CanvasPosition=Vector2.zero
+	render()
+end
+function U.refresh(section,quiet)
+	if not send or state.ironman then return end
+	if section=="Orders" then send("bazaar",U.item,quiet)
+	elseif section=="Auctions" then send("ahBrowse",U.cat..":"..U.page,quiet) end
+end
+function U.depthLines(view)
+	local lines={}
+	local asks,bids=tbl(view.asks),tbl(view.bids)
+	for i=math.min(5,#asks),1,-1 do
+		local level=tbl(asks[i])
+		table.insert(lines,paint("ASK  "..fmt(level.price).."  ×"..fmt(level.qty),"E8806A").."  ·  "..fmt(level.orders).." order"..(num(level.orders,0)==1 and "" or "s"))
+	end
+	if #asks==0 then table.insert(lines,paint("No sell offers","E8806A")) end
+	table.insert(lines,paint("— spread "..(view.spread and fmt(view.spread).." coins" or "—").." —","F9CC77"))
+	for i=1,math.min(5,#bids) do
+		local level=tbl(bids[i])
+		table.insert(lines,paint("BID  "..fmt(level.price).."  ×"..fmt(level.qty),"9EE7D2").."  ·  "..fmt(level.orders).." order"..(num(level.orders,0)==1 and "" or "s"))
+	end
+	if #bids==0 then table.insert(lines,paint("No buy orders","9EE7D2")) end
+	return lines
+end
+function U.drawOrders()
+	heading("BAZAAR    /    STANDING ORDERS")
+	if state.ironman then row("Sealed charter","Player trading is unavailable in Ironman.");return end
+	local rules,econ=U.rules(),U.economy()
+	if U.review() then return end
+	sectionBar(rules.groups,U.group,function(name)
+		U.group=name
+		local first=U.commodities(name)[1]
+		if first then U.item=first;U.refresh("Orders") end
+		render()
+	end,{small=true,prefix="Group",maxPer=5})
+	local list=U.commodities(U.group)
+	if #list==0 then card({motif="Ledger",title="Field guide loading…",detail="Commodity records have not arrived yet."});return end
+	if not table.find(list,U.item) then U.item=list[1] end
+	local size=compactAtlas and 48 or 58
+	local grid=gridHolder(UDim2.fromOffset(size,size),6)
+	for i,id in ipairs(list) do
+		local on=id==U.item
+		local cell=tile(grid,"Commodity"..id,i,function()
+			U.item=id
+			U.confirm=nil
+			render()
+			U.refresh("Orders")
+		end)
+		make("UIStroke",cell,{Color=on and gold or slate,Transparency=on and 0 or .5,Thickness=on and 2 or 1})
+		local art=itemIcon(cell,id,size-10)
+		art.Position=UDim2.fromOffset(5,5)
+	end
+	local item=U.item
+	local def=itemDef(item)
+	local view=tbl(econ.bazaar)
+	local fresh=view.item==item
+	local held=count("items",item)
+	card({name="Book",item=item,title=escape(itemName(item)),titleColor=rgb(itemHex(item)),
+		subtitle="Held ×"..fmt(held).."  ·  merchant "..fmt(num(def and def.value,0)).." each",
+		badge=fresh and view.bestBid and (fmt(view.bestBid).." bid") or nil,badgeColor=mint,
+		detail=fresh and ("Best ask "..(view.bestAsk and fmt(view.bestAsk) or "—").."  ·  best bid "..(view.bestBid and fmt(view.bestBid) or "—").."  ·  spread "..(view.spread and fmt(view.spread) or "—")..". Prices are per unit; your own orders are excluded from the best prices.") or "Refresh to read this order book.",
+		lines=fresh and U.depthLines(view) or nil,
+		actions={{caption="Refresh",fn=function() U.refresh("Orders") end}}})
+	heading("PLACE    /    QUANTITY AND UNIT PRICE")
+	U.field("QUANTITY (1–"..rules.maxQuantity..")","BazaarQuantity",U.qty,"Whole units",function(value) U.qty=value end)
+	U.field("UNIT PRICE (1–"..fmt(rules.maxPrice)..")","BazaarPrice",U.price,"Whole coins per unit",function(value) U.price=value end)
+	local function inputs(needPrice)
+		local qty=U.whole(U.qty,1,rules.maxQuantity)
+		local price=U.whole(U.price,1,rules.maxPrice)
+		if not qty then notify("Choose a quantity from 1 to "..rules.maxQuantity..".");return nil end
+		if needPrice and not price then notify("Choose a whole unit price from 1 to "..fmt(rules.maxPrice).." coins.");return nil end
+		return qty,price
+	end
+	local name=itemName(item)
+	card({name="Place",motif="Ledger",title="Buy order or sell offer",subtitle=fmt(#tbl(econ.orders)).." / "..rules.orderCap.." open orders",
+		detail="A buy order escrows quantity × price from your purse and fills when players sell. A sell offer escrows goods from your satchel. Crossing orders fill immediately at the resting price.",
+		actions={
+			{caption="Buy order",primary=true,fn=function()
+				local qty,price=inputs(true)
+				if not qty then return end
+				if num(state.coins,0)<qty*price then notify("Your purse needs "..fmt(qty*price).." coins to escrow this order.");return end
+				U.ask("Review buy order","Buy up to "..qty.." "..name.." at "..fmt(price).." each. "..fmt(qty*price).." coins are escrowed now; anything filled below your price is refunded, and the rest can be cancelled for a refund.","bid",item..":"..qty..":"..price)
+			end},
+			{caption="Sell offer",fn=function()
+				local qty,price=inputs(true)
+				if not qty then return end
+				if held<qty then notify("You hold "..fmt(held).." "..name..".");return end
+				U.ask("Review sell offer","Offer "..qty.." "..name.." at "..fmt(price).." each. The goods are escrowed until sold or cancelled; collect coins with Claim.","offer",item..":"..qty..":"..price)
+			end},
+		}})
+	card({name="Instant",motif="Ledger",title="Instant trade",subtitle=fresh and ("Best bid "..(view.bestBid and fmt(view.bestBid) or "—").."  ·  best ask "..(view.bestAsk and fmt(view.bestAsk) or "—")) or "Refresh for current prices",
+		detail="Instant sell fills the highest buy orders (oldest first at equal price) down to your unit price, or any price if blank. Buy now fills the lowest offers up to your price; nothing rests.",
+		actions={
+			{caption="Instant sell",primary=true,fn=function()
+				local qty=U.whole(U.qty,1,rules.maxQuantity)
+				if not qty then notify("Choose a quantity from 1 to "..rules.maxQuantity..".");return end
+				if held<qty then notify("You hold "..fmt(held).." "..name..".");return end
+				local floor=U.whole(U.price,1,rules.maxPrice)
+				local estimate=fresh and view.bestBid and (" Best bid now: "..fmt(view.bestBid).." each.") or ""
+				U.ask("Review instant sell","Sell up to "..qty.." "..name..(floor and (" at no less than "..fmt(floor).." each") or " to the highest bids").."."..estimate.." Unsold units are returned.","sellToBid",item..":"..qty..(floor and (":"..floor) or ""))
+			end},
+			{caption="Buy now",fn=function()
+				local qty,price=inputs(true)
+				if not qty then return end
+				if num(state.coins,0)<qty*price then notify("Your purse needs "..fmt(qty*price).." coins for this limit.");return end
+				U.ask("Review buy now","Buy up to "..qty.." "..name.." at no more than "..fmt(price).." each. Unfilled coins are returned immediately.","buyNow",item..":"..qty..":"..price)
+			end},
+		}})
+	heading("YOUR ORDERS    /    CLAIM AND CANCEL")
+	local orders=tbl(econ.orders)
+	if fresh and (num(view.claimUnits,0)>0 or num(view.claimCoins,0)>0) then
+		row("Filled and ready",fmt(view.claimUnits).." "..name.." and "..fmt(view.claimCoins).." coins are waiting.","Claim",function() send("bidClaim",item) end)
+	end
+	if #orders==0 then row("No open orders","Orders you place appear here. Filled goods and sale coins are collected with Claim.") end
+	for index,o in ipairs(orders) do
+		if index>12 then break end
+		o=tbl(o)
+		local oid,oitem=o.id,o.item
+		if type(oitem)=="string" and type(oid)=="number" then
+			local buy=o.side=="bid"
+			card({name="Order"..oid,item=oitem,title=(buy and "Buy " or "Sell ")..escape(itemName(oitem)),titleColor=rgb(itemHex(oitem)),
+				subtitle="#"..oid.."  ·  "..fmt(o.qty).." open at "..fmt(o.price).." each",badge=buy and "BID" or "ASK",badgeColor=buy and mint or ember,
+				actions={{caption="Claim",fn=function() send("bidClaim",oitem) end},{caption="Cancel",fn=function() send("bidCancel",oitem..":"..oid) end}}})
+		end
+	end
+	if econ.pending==true then row("Order recovering","Your last order is still being recorded. Any Bazaar action finishes it first.") end
+	row("How matching works",type(view.matchingPolicy)=="string" and view.matchingPolicy or "Highest bid and lowest offer fill first; equal prices fill oldest first.")
+end
+function U.listable()
+	local d=depth()
+	local bag=tbl(d and d.accessoryBag)
+	local enchants=tbl(d and d.enchants)
+	local set={}
+	for _,kind in ipairs(U.rules().categories) do set[kind]=true end
+	local list={}
+	for id,n in pairs(tbl(state.items)) do
+		local def=itemDef(id)
+		if num(n,0)>0 and def and set[def.kind] and not equippedSlotOf(id) and not table.find(bag,id) and not next(tbl(enchants[id])) then table.insert(list,id) end
+	end
+	table.sort(list,function(a,b) return itemName(a)<itemName(b) end)
+	return list
+end
+function U.drawAuctions()
+	heading("AUCTION HOUSE    /    BUY IT NOW")
+	if state.ironman then row("Sealed charter","Player trading is unavailable in Ironman.");return end
+	local rules,econ=U.rules(),U.economy()
+	if U.review() then return end
+	local names,keys={},{}
+	for _,kind in ipairs(rules.categories) do table.insert(names,rules.names[kind] or kind);keys[rules.names[kind] or kind]=kind end
+	sectionBar(names,rules.names[U.cat] or U.cat,function(name)
+		U.cat=keys[name] or "weapon"
+		U.page=1
+		render()
+		U.refresh("Auctions")
+	end,{small=true,prefix="Auction",maxPer=5})
+	local view=tbl(econ.auction)
+	local fresh=view.category==U.cat
+	if not fresh then
+		row((rules.names[U.cat] or U.cat).." listings","Read the current buy-it-now listings in this category.","Refresh",function() U.refresh("Auctions") end)
+	else
+		local listings=tbl(view.listings)
+		if #listings==0 then row("No listings","Nothing is listed in "..(rules.names[U.cat] or U.cat).." right now.","Refresh",function() U.refresh("Auctions") end) end
+		for _,l in ipairs(listings) do
+			l=tbl(l)
+			local lid,litem,price=l.id,l.item,num(l.price,0)
+			if type(litem)=="string" and type(lid)=="number" then
+				local def=itemDef(litem)
+				card({name="Listing"..lid,item=litem,title=escape(itemName(litem)),titleColor=rgb(itemHex(litem)),
+					subtitle=escape((def and def.rarity or "Common").." "..kindLabel(def)).."  ·  "..clock(l.remaining).." left",
+					badge=fmt(price).." ¢",badgeColor=gold,detail=def and def.stats and statText(def.stats) or nil,
+					actions={l.own and {caption="Yours",disabled=true,reason="You cannot buy your own listing.",fn=function() end}
+						or {caption="Buy",primary=true,fn=function()
+							if num(state.coins,0)<price then notify("Your purse needs "..fmt(price).." coins.");return end
+							U.ask("Review purchase","Buy "..itemName(litem).." for "..fmt(price).." coins. It goes straight to your satchel; if it already sold, your coins are returned.","ahBuy",U.cat..":"..lid..":"..price)
+						end}}})
+			end
+		end
+		local pages=num(view.pages,1)
+		card({name="Pager",motif="Ledger",title="Page "..fmt(view.page).." of "..fmt(pages),subtitle=fmt(view.total).." active listings · cheapest first",
+			actions={{caption="Previous",disabled=num(view.page,1)<=1,reason="This is the first page.",fn=function() U.page=math.max(1,num(view.page,1)-1);U.refresh("Auctions") end},
+				{caption="Next",disabled=num(view.page,1)>=pages,reason="This is the last page.",fn=function() U.page=num(view.page,1)+1;U.refresh("Auctions") end}}})
+		if num(view.proceeds,0)>0 or num(view.returns,0)>0 then
+			row("Ready to collect",fmt(view.proceeds).." coins of sales and "..fmt(view.returns).." expired item(s) in "..(rules.names[U.cat] or U.cat)..".","Claim",function() send("ahClaim",U.cat) end)
+		end
+	end
+	heading("SELL    /    LIST FROM YOUR SATCHEL")
+	local listable=U.listable()
+	if #listable==0 then
+		row("Nothing to list","Unequipped, unenchanted gear, tools, accessories and pet items from your satchel can be listed. Unequip or remove from your accessory bag first.")
+	else
+		if U.listItem and not table.find(listable,U.listItem) then U.listItem=nil end
+		local size=compactAtlas and 48 or 58
+		local grid=gridHolder(UDim2.fromOffset(size,size),6)
+		for i,id in ipairs(listable) do
+			local on=id==U.listItem
+			local cell=tile(grid,"Listable"..id,i,function() U.listItem=if U.listItem==id then nil else id;render() end)
+			make("UIStroke",cell,{Color=on and gold or slate,Transparency=on and 0 or .5,Thickness=on and 2 or 1})
+			local art=itemIcon(cell,id,size-10)
+			art.Position=UDim2.fromOffset(5,5)
+		end
+		local chosen=U.listItem
+		if chosen then
+			U.field("BUY-IT-NOW PRICE","AuctionPrice",U.listPrice,"1–"..fmt(rules.maxPrice).." whole coins",function(value) U.listPrice=value end)
+			local price=U.whole(U.listPrice,1,rules.maxPrice)
+			local fee=price and U.fee(price)
+			card({name="ListPreview",item=chosen,title=escape(itemName(chosen)),titleColor=rgb(itemHex(chosen)),
+				subtitle=price and ("Fee "..fmt(fee).." coins ("..rules.feePercent.."%, not refunded)") or "Enter a price to preview the fee",
+				detail="Listings last 24 hours; unsold items return through Claim. "..fmt(#tbl(econ.listings)).." / "..rules.listingCap.." listings used.",
+				actions={{caption="Review listing",primary=true,fn=function()
+					local p=U.whole(U.listPrice,1,rules.maxPrice)
+					if not p then notify("Choose a whole price from 1 to "..fmt(rules.maxPrice).." coins.");return end
+					if num(state.coins,0)<U.fee(p) then notify("The listing fee is "..fmt(U.fee(p)).." coins.");return end
+					U.ask("Review listing","List one "..itemName(chosen).." for "..fmt(p).." coins. The "..fmt(U.fee(p)).."-coin listing fee is spent now and is not refunded on cancel or expiry.","ahList",chosen..":"..p)
+				end}}})
+		end
+	end
+	heading("YOUR LISTINGS")
+	local mine=tbl(econ.listings)
+	if #mine==0 then row("No listings","Your listings appear here until sold, cancelled or claimed.") end
+	local now=num(econ.serverTime,0)
+	for index,l in ipairs(mine) do
+		if index>12 then break end
+		l=tbl(l)
+		local lid,litem,cat=l.id,l.item,l.cat
+		if type(litem)=="string" and type(lid)=="number" and type(cat)=="string" then
+			local left=num(l.expires,0)-now
+			card({name="Mine"..lid,item=litem,title=escape(itemName(litem)),titleColor=rgb(itemHex(litem)),
+				subtitle=fmt(l.price).." coins  ·  "..(left>0 and (clock(left).." left") or "expired — claim to return"),
+				actions={{caption="Claim",fn=function() send("ahClaim",cat) end},{caption="Cancel",disabled=left<=0,reason="Expired listings return through Claim.",fn=function() send("ahCancel",cat..":"..lid) end}}})
+		end
+	end
+	if econ.pending==true then row("Order recovering","Your last order is still being recorded. Any Auction House action finishes it first.") end
+end
+Pages.drawOrders,Pages.drawAuctions,Pages.econ=U.drawOrders,U.drawAuctions,U
 Pages.drawBank,Pages.drawMarket,Pages.drawMerchant,Pages.drawCoop=drawBank,drawMarket,drawMerchant,drawCoop
 end
 
@@ -2472,7 +2767,7 @@ local sectionLists={
 	Satchel={"Items","Collections"},
 	Workshop={"Forge","Hearth","Cauldron","Workbench","Workers","Home"},
 	Hunt={"Slayer","Bestiary"},
-	Ledger={"Bank","Market","Merchant"},
+	Ledger={"Bank","Market","Orders","Auctions","Merchant"},
 }
 sectionOf={Journal="Bearing",Hero="Skills",Satchel="Items",Workshop="Forge",Hunt="Slayer",Ledger="Bank"}
 local drawers={
@@ -2482,7 +2777,7 @@ local drawers={
 	Workshop={Forge=function() Pages.drawStation("Forge") end,Hearth=function() Pages.drawStation("Hearth") end,Cauldron=function() Pages.drawStation("Cauldron") end,
 		Workbench=function() Pages.drawStation("Workbench") end,Workers=Pages.drawWorkers,Home=Pages.drawHome},
 	Hunt={Slayer=Pages.drawSlayer,Bestiary=Pages.drawBestiary},
-	Ledger={Bank=Pages.drawBank,Market=Pages.drawMarket,Merchant=Pages.drawMerchant},
+	Ledger={Bank=Pages.drawBank,Market=Pages.drawMarket,Orders=Pages.drawOrders,Auctions=Pages.drawAuctions,Merchant=Pages.drawMerchant},
 }
 local function resetTransient()
 	confirmIron=false
@@ -2490,10 +2785,12 @@ local function resetTransient()
 	sellConfirm=nil
 	abandonConfirm=false
 	purchaseReview=nil
+	if Pages.econ then Pages.econ.confirm=nil end
 end
 local function refreshSection(tab,section)
 	if tab=="Journal" and section=="Crew" and sendCoop then sendCoop("state") end
 	if tab=="Ledger" and section=="Market" and send and not state.ironman then send("market",marketItem) end
+	if tab=="Ledger" and Pages.econ then Pages.econ.refresh(section) end
 end
 local function drawPage()
 	local tab=current
@@ -2879,6 +3176,7 @@ end)
 task.spawn(function()
 	while task.wait(5) do
 		if synced and atlas.Visible and current=="Ledger" and sectionOf.Ledger=="Market" and not state.ironman and not Input:GetFocusedTextBox() then send("market",marketItem,true) end
+		if synced and atlas.Visible and current=="Ledger" and Pages.econ and not Pages.econ.confirm and not Input:GetFocusedTextBox() then Pages.econ.refresh(sectionOf.Ledger,true) end
 	end
 end)
 task.spawn(function()

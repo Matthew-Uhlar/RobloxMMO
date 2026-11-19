@@ -18,6 +18,8 @@ update.Parent = ReplicatedStorage
 
 local exchangeAction, resumeExchange
 local marketViews,marketReads={},{}
+-- Economy (Bazaar orders + Auction House); defined with the market at the end of this file.
+local Econ={views={},reads={}}
 local profiles, cooldown, lastRead, saving, preview, leaseEnd = {}, {}, {}, {}, {}, {}
 local stateRead, exchangeReady, sessionOwner, opening = {}, {}, {}, {}
 -- Unfinished sessions per UserId on this server (opening, live or closing).
@@ -336,7 +338,7 @@ local function snapshot(player,message)
 	local legacyStats,stats=applyStats(player,p)
 	return {xp=p.xp,items=p.items,consumables=provisions,collection=p.collection,coins=p.coins,bank=p.bank,bankRevision=p.bankRevision or 0,worker=p.worker,
 		ironman=p.ironman,levels=levels,enchantRank=p.enchantRank or 0,workerResource=p.workerResource or "Ore",workerReady=ready(p),workers=workerState(p),message=message or "",kills=p.kills,
-		companionBond=p.companionBond or 0,market=marketViews[player],recipes=recipeState(p),regions=regionState(p),stats=legacyStats,quest=questState(p),slayer=slayerState(p),started=p.started,decorations=p.decorations,preview=preview[player]==true,
+		companionBond=p.companionBond or 0,market=marketViews[player],economy=Econ.view and Econ.view(player,p),recipes=recipeState(p),regions=regionState(p),stats=legacyStats,quest=questState(p),slayer=slayerState(p),started=p.started,decorations=p.decorations,preview=preview[player]==true,
 		depth=depthState(p,stats)}
 end
 local function claimWorker(p,slot)
@@ -427,6 +429,7 @@ end
 local function forget(player)
 	profiles[player],cooldown[player],lastRead[player],preview[player],leaseEnd[player]=nil,nil,nil,nil,nil
 	marketViews[player],marketReads[player],stateRead[player],exchangeReady[player]=nil,nil,nil,nil
+	Econ.views[player],Econ.reads[player]=nil,nil
 	sessionOwner[player],opening[player]=nil,nil
 	local set=userSessions[player.UserId]
 	if set then
@@ -499,7 +502,7 @@ local function open(player)
 			end
 		end)
 	end
-	if profile.pending or profile.pricedPending then task.defer(function() if resumeExchange then resumeExchange(player) end end) end
+	if profile.pending or profile.pricedPending or profile.econPending then task.defer(function() if resumeExchange then resumeExchange(player) end end) end
 	player.CharacterAdded:Connect(spawnCharacter)
 	if player.Character then task.spawn(spawnCharacter,player.Character) end
 	update:FireClient(player,snapshot(player,if preview[player] then "Studio practice session • saving unavailable" else "Journal opened"))
@@ -542,7 +545,9 @@ local function perform(player,verb,item,prompt)
 	cooldown[player]=os.clock()+(if prompt then 0.65 else 0.24)
 	local region=prompt and prompt:GetAttribute("IsleRegion")
 	if region and not regionAllowed(p,region) then return regionDenied(region) end
-	if verb=="market" or verb=="list" or verb=="buy" or verb=="proceeds" or verb=="cancel" then
+	if Econ.verbs and Econ.verbs[verb] then
+		return Econ.action(player,verb,item or "")
+	elseif verb=="market" or verb=="list" or verb=="buy" or verb=="proceeds" or verb=="cancel" then
 		return exchangeAction(player,verb,item or "Ore")
 	elseif verb=="station" and prompt then
 		local stations={Forge="Forge open • smelt ingots and forge gear.",Hearth="Hearth lit • cook meals and feasts.",
@@ -1260,4 +1265,511 @@ resumeExchange=function(player)
 		if player.Parent then update:FireClient(player,snapshot(player,message)) end
 		if (p.pricedPending or p.pending)==order then break end
 	end
+	if Econ.resume then Econ.resume(player) end
+end
+
+------------------------------------------------------------------------------
+-- Economy: Bazaar standing orders (commodities) and the Auction House (gear).
+-- Same durability pattern as the exchange above: escrow is taken into the
+-- profile (p.econPending) and saved before the shared key is written; each
+-- shared key keeps one receipt per trader, so a replayed order applies exactly
+-- once and recovery on rejoin is idempotent. Keys: bazaar_v1_<item>, auction_v1_<kind>.
+------------------------------------------------------------------------------
+do
+local Rules=Data.Economy
+local previewEcon={}
+local READ_INTERVAL=2
+local categorySet={}
+for _,kind in ipairs(Rules.auctionCategories) do categorySet[kind]=true end
+local bazaarVerbs={bid=true,offer=true,buyNow=true,sellToBid=true,bidCancel=true,bidClaim=true}
+Econ.verbs={bazaar=true,ahBrowse=true,ahList=true,ahBuy=true,ahCancel=true,ahClaim=true}
+for verb in pairs(bazaarVerbs) do Econ.verbs[verb]=true end
+local function whole(raw,digits,low,high)
+	if type(raw)~="string" or not string.match(raw,"^%d+$") or #raw>digits then return nil end
+	local n=tonumber(raw)
+	if not n or n<low or n>high or n%1~=0 then return nil end
+	return n
+end
+local function itemName(id) return Data.Items[id] and Data.Items[id].name or id end
+local function mirror(p)
+	if type(p.econOrders)~="table" then p.econOrders={} end
+	if type(p.econListings)~="table" then p.econListings={} end
+	return p.econOrders,p.econListings
+end
+local function normalizeBazaar(book)
+	book=book or {}
+	book.bids=book.bids or {}
+	book.asks=book.asks or {}
+	book.claims=book.claims or {}
+	book.receipts=book.receipts or {}
+	book.accounts=book.accounts or 0
+	book.nextId=book.nextId or 0
+	book.revision=book.revision or 0
+	book.version=1
+	return book
+end
+local function normalizeAuction(book)
+	book=book or {}
+	book.listings=book.listings or {}
+	book.proceeds=book.proceeds or {}
+	book.returns=book.returns or {}
+	book.receipts=book.receipts or {}
+	book.accounts=book.accounts or 0
+	book.nextId=book.nextId or 0
+	book.revision=book.revision or 0
+	book.version=1
+	return book
+end
+-- Bids are kept highest price first, asks lowest first; equal prices keep
+-- arrival order (FIFO), so the head of each list is always next to fill.
+local function insertOrder(list,order,descending)
+	local at=#list+1
+	for i,o in ipairs(list) do
+		if (descending and order.price>o.price) or (not descending and order.price<o.price) then at=i;break end
+	end
+	table.insert(list,at,order)
+end
+-- A taker crosses the opposite side at each maker's price, skipping its own orders.
+local function take(book,uid,side,qty,limit)
+	local orders=if side=="buy" then book.asks else book.bids
+	local filled,value,i=0,0,1
+	while qty>0 and i<=#orders do
+		local o=orders[i]
+		if (side=="buy" and o.price>limit) or (side=="sell" and o.price<limit) then break end
+		if o.owner==uid then
+			i+=1
+		else
+			local n=math.min(qty,o.qty)
+			o.qty-=n
+			qty-=n
+			filled+=n
+			value+=n*o.price
+			local claim=book.claims[o.owner] or {units=0,coins=0}
+			book.claims[o.owner]=claim
+			if side=="buy" then claim.coins+=n*o.price else claim.units+=n end
+			if o.qty==0 then table.remove(orders,i) else i+=1 end
+		end
+	end
+	return filled,value
+end
+-- Receipts store open orders compactly ({id,price,qty,1=bid|2=ask}) to keep
+-- the worst-case book (accountCap receipts) well inside the DataStore limit.
+local function ownOrders(book,uid,compact)
+	local open={}
+	for _,side in ipairs({"bids","asks"}) do
+		for _,o in ipairs(book[side]) do
+			if o.owner==uid then
+				table.insert(open,if compact then {o.id,o.price,o.qty,if side=="bids" then 1 else 2} else {id=o.id,side=if side=="bids" then "bid" else "ask",price=o.price,qty=o.qty})
+			end
+		end
+	end
+	return open
+end
+local function joined(text,more) return if text~="" then text.." "..more else more end
+local function bazaarTrade(book,uid,order)
+	book=normalizeBazaar(book)
+	local receipt=book.receipts[uid]
+	if receipt and receipt.seq>=order.seq then return book end
+	if not receipt then
+		if book.accounts>=Rules.accountCap then return nil end
+		book.accounts+=1
+	end
+	local verb,qty,price,name=order.verb,order.qty or 0,order.price or 0,itemName(order.item)
+	local coins,units,text=0,0,""
+	local room=#book.bids+#book.asks<Rules.bookCap
+	if verb=="bid" or verb=="buyNow" then
+		local filled,cost=take(book,uid,"buy",qty,price)
+		units=filled
+		coins=filled*price-cost
+		local rest=qty-filled
+		if filled>0 then text="Bought "..filled.." "..name.." for "..cost.." coins." end
+		if rest>0 and verb=="bid" and room then
+			book.nextId+=1
+			insertOrder(book.bids,{id=book.nextId,owner=uid,price=price,qty=rest},true)
+			text=joined(text,"Buy order #"..book.nextId..": "..rest.." "..name.." at "..price.." each, coins escrowed.")
+		elseif rest>0 then
+			coins+=rest*price
+			text=joined(text,(if verb=="bid" then "The order book is full; " else "No sell offer at or below "..price.."; ")..rest.." unfilled, coins returned.")
+		end
+	elseif verb=="offer" or verb=="sellToBid" then
+		local filled,value=take(book,uid,"sell",qty,price)
+		coins=value
+		local rest=qty-filled
+		if filled>0 then text="Sold "..filled.." "..name.." for "..value.." coins." end
+		if rest>0 and verb=="offer" and room then
+			book.nextId+=1
+			insertOrder(book.asks,{id=book.nextId,owner=uid,price=price,qty=rest},false)
+			text=joined(text,"Sell offer #"..book.nextId..": "..rest.." "..name.." at "..price.." each, goods escrowed.")
+		elseif rest>0 then
+			units+=rest
+			text=joined(text,(if verb=="offer" then "The order book is full; " else "No buy order at or above "..price.."; ")..rest.." unsold returned.")
+		end
+	elseif verb=="bidCancel" then
+		local found,side
+		for _,list in ipairs({"bids","asks"}) do
+			for i,o in ipairs(book[list]) do
+				if o.id==order.id and o.owner==uid then found=table.remove(book[list],i);side=list;break end
+			end
+			if found then break end
+		end
+		if found and side=="bids" then
+			coins+=found.qty*found.price
+			text="Buy order #"..found.id.." cancelled; "..found.qty*found.price.." escrowed coins refunded."
+		elseif found then
+			units+=found.qty
+			text="Sell offer #"..found.id.." cancelled; "..found.qty.." "..name.." returned."
+		else
+			text="Order #"..order.id.." is no longer open; it may have filled."
+		end
+	end
+	-- Every write also collects this trader's filled goods and sale coins.
+	local claim=book.claims[uid]
+	book.claims[uid]=nil
+	if claim and (claim.units>0 or claim.coins>0) then
+		units+=claim.units
+		coins+=claim.coins
+		text=joined(text,"Collected "..claim.units.." "..name.." and "..claim.coins.." coins from filled orders.")
+	elseif verb=="bidClaim" then
+		text="Nothing to collect yet."
+	end
+	book.receipts[uid]={seq=order.seq,coins=coins,items=if units>0 then {[order.item]=units} else {},text=text,open=ownOrders(book,uid,true)}
+	book.revision+=1
+	return book
+end
+-- Expired listings leave the board; the item waits for its seller's claim.
+local function purgeExpired(book,now)
+	local i=1
+	while i<=#book.listings do
+		local l=book.listings[i]
+		if l.expires<=now then
+			local back=book.returns[l.seller] or {}
+			back[l.item]=(back[l.item] or 0)+1
+			book.returns[l.seller]=back
+			table.remove(book.listings,i)
+		else
+			i+=1
+		end
+	end
+end
+local function ownListings(book,uid)
+	local open={}
+	for _,l in ipairs(book.listings) do
+		if l.seller==uid then table.insert(open,{l.id,l.item,l.price,l.expires}) end
+	end
+	return open
+end
+local function auctionTrade(book,uid,order,now)
+	book=normalizeAuction(book)
+	local receipt=book.receipts[uid]
+	if receipt and receipt.seq>=order.seq then return book end
+	if not receipt then
+		if book.accounts>=Rules.accountCap then return nil end
+		book.accounts+=1
+	end
+	purgeExpired(book,now)
+	local coins,items,text=0,{},""
+	local function give(id,n) items[id]=(items[id] or 0)+n end
+	local verb=order.verb
+	local index
+	for i,l in ipairs(book.listings) do if l.id==order.id then index=i;break end end
+	local listing=index and book.listings[index]
+	if verb=="ahList" then
+		if #book.listings>=Rules.auctionCap then
+			give(order.item,1)
+			coins+=order.fee
+			text="The Auction House is full. Your item and listing fee were returned."
+		else
+			book.nextId+=1
+			table.insert(book.listings,{id=book.nextId,seller=uid,item=order.item,price=order.price,expires=now+Rules.auctionDuration})
+			text="Listed "..itemName(order.item).." for "..order.price.." coins (listing #"..book.nextId..", fee "..order.fee.." coins). It expires in 24 hours."
+		end
+	elseif verb=="ahBuy" then
+		if not listing then
+			coins+=order.price
+			text="That listing is gone (sold, cancelled or expired). Your coins were returned."
+		elseif listing.seller==uid then
+			coins+=order.price
+			text="You cannot buy your own listing. Your coins were returned."
+		elseif listing.price>order.price then
+			coins+=order.price
+			text="That listing costs more than you offered. Your coins were returned."
+		else
+			table.remove(book.listings,index)
+			book.proceeds[listing.seller]=(book.proceeds[listing.seller] or 0)+listing.price
+			give(listing.item,1)
+			coins+=order.price-listing.price
+			text="Bought "..itemName(listing.item).." for "..listing.price.." coins."
+		end
+	elseif verb=="ahCancel" then
+		if listing and listing.seller==uid then
+			table.remove(book.listings,index)
+			give(listing.item,1)
+			text="Listing #"..listing.id.." cancelled; "..itemName(listing.item).." returned. The listing fee is not refunded."
+		else
+			text="That listing is no longer open; it may have sold or expired."
+		end
+	end
+	-- Every write also collects this seller's proceeds and expired items.
+	local proceeds=book.proceeds[uid] or 0
+	local back=book.returns[uid]
+	book.proceeds[uid],book.returns[uid]=nil,nil
+	local returned=0
+	for id,n in pairs(back or {}) do give(id,n);returned+=n end
+	if proceeds>0 or returned>0 then
+		coins+=proceeds
+		text=joined(text,"Collected "..proceeds.." coins of sales and "..returned.." expired item"..(if returned==1 then "" else "s")..".")
+	elseif verb=="ahClaim" then
+		text="Nothing to collect in this category yet."
+	end
+	book.receipts[uid]={seq=order.seq,coins=coins,items=items,text=text,open=ownListings(book,uid)}
+	book.revision+=1
+	return book
+end
+local function depthOf(list)
+	local levels={}
+	for _,o in ipairs(list) do
+		local last=levels[#levels]
+		if last and last.price==o.price then
+			last.qty+=o.qty
+			last.orders+=1
+		elseif #levels<Rules.depth then
+			table.insert(levels,{price=o.price,qty=o.qty,orders=1})
+		else
+			break
+		end
+	end
+	return levels
+end
+local function bestOther(list,uid)
+	for _,o in ipairs(list) do if o.owner~=uid then return o.price end end
+	return nil
+end
+local function bazaarView(book,item,uid,now)
+	book=normalizeBazaar(book)
+	local bestBid,bestAsk=bestOther(book.bids,uid),bestOther(book.asks,uid)
+	local claim=book.claims[uid]
+	return {item=item,bids=depthOf(book.bids),asks=depthOf(book.asks),bestBid=bestBid,bestAsk=bestAsk,
+		spread=if bestBid and bestAsk then bestAsk-bestBid else nil,openOrders=#book.bids+#book.asks,mine=ownOrders(book,uid),
+		claimUnits=claim and claim.units or 0,claimCoins=claim and claim.coins or 0,fetchedAt=now,revision=book.revision,
+		matchingPolicy="Highest bid and lowest offer fill first; equal prices fill oldest first. Your own orders never match each other."}
+end
+local function auctionView(book,cat,uid,page,now)
+	book=normalizeAuction(book)
+	local active,expired={},0
+	for _,l in ipairs(book.listings) do
+		if l.expires>now then table.insert(active,l) elseif l.seller==uid then expired+=1 end
+	end
+	table.sort(active,function(a,b) if a.price~=b.price then return a.price<b.price end return a.id<b.id end)
+	local pages=math.max(1,math.ceil(#active/Rules.pageSize))
+	page=math.clamp(page,1,pages)
+	local rows={}
+	for i=(page-1)*Rules.pageSize+1,math.min(#active,page*Rules.pageSize) do
+		local l=active[i]
+		table.insert(rows,{id=l.id,item=l.item,price=l.price,remaining=l.expires-now,own=l.seller==uid})
+	end
+	for _,n in pairs(book.returns[uid] or {}) do expired+=n end
+	return {category=cat,page=page,pages=pages,total=#active,listings=rows,proceeds=book.proceeds[uid] or 0,returns=expired,fetchedAt=now,revision=book.revision}
+end
+-- Validates a request without changing the profile. Returns the order or a message.
+local function prepare(p,verb,item)
+	local orders,listings=mirror(p)
+	if bazaarVerbs[verb] then
+		local id,a,b
+		if verb=="bidClaim" then id=string.match(item,"^(%w+)$")
+		elseif verb=="bidCancel" then id,a=string.match(item,"^(%w+):(%d+)$")
+		else
+			id,a,b=string.match(item,"^(%w+):(%d+):(%d+)$")
+			if not id and verb=="sellToBid" then id,a=string.match(item,"^(%w+):(%d+)$") end
+		end
+		if not id or not Rules.isCommodity(id) then return nil,"Choose a Bazaar commodity (a resource or material) and a valid order." end
+		local order={kind="bazaar",verb=verb,item=id,key="bazaar_v1_"..id,coins=0,units=0}
+		if verb=="bidCancel" then
+			order.id=whole(a,9,1,999999999)
+			if not order.id then return nil,"Choose one of your order numbers." end
+		elseif verb~="bidClaim" then
+			order.qty=whole(a,3,1,Rules.maxQuantity)
+			if not order.qty then return nil,"Choose a whole quantity from 1 to "..Rules.maxQuantity.."." end
+			order.price=if verb=="sellToBid" and b==nil then Rules.minPrice else whole(b,7,Rules.minPrice,Rules.maxPrice)
+			if not order.price then return nil,"Use a whole unit price from 1 to 1,000,000 coins." end
+			if (verb=="bid" or verb=="offer") and #orders>=Rules.orderCap then return nil,"You already have "..Rules.orderCap.." open Bazaar orders. Claim or cancel one first." end
+			if verb=="bid" or verb=="buyNow" then
+				order.coins=order.qty*order.price
+				if p.coins<order.coins then return nil,"You need "..order.coins.." purse coins to escrow this order." end
+			else
+				order.units=order.qty
+				if (p.items[id] or 0)<order.qty then return nil,"You need "..order.qty.." "..itemName(id).." in your satchel." end
+			end
+		end
+		return order
+	end
+	if verb=="ahList" then
+		local id,raw=string.match(item,"^(%w+):(%d+)$")
+		local cat=id and Rules.auctionCategory(id)
+		if not cat then return nil,"Choose a weapon, armor piece, tool, accessory or pet item to auction." end
+		local price=whole(raw,7,Rules.minPrice,Rules.maxPrice)
+		if not price then return nil,"Use a whole buy-it-now price from 1 to 1,000,000 coins." end
+		if (p.items[id] or 0)<1 then return nil,"You do not have "..itemName(id).."." end
+		if isEquipped(p,id) then return nil,"Unequip "..itemName(id).." (or take it out of your accessory bag) before listing it." end
+		if type(p.enchants[id])=="table" and next(p.enchants[id]) then return nil,"Enchanted gear cannot be auctioned: enchants stay bound to your journal." end
+		if #listings>=Rules.listingCap then return nil,"You already have "..Rules.listingCap.." auction listings. Claim or cancel one first." end
+		local fee=Rules.auctionFee(price)
+		if p.coins<fee then return nil,"The listing fee is "..fee.." purse coins." end
+		return {kind="auction",verb=verb,cat=cat,key="auction_v1_"..cat,item=id,price=price,fee=fee,coins=fee,units=1}
+	end
+	local cat,a,b
+	if verb=="ahBuy" then cat,a,b=string.match(item,"^(%a+):(%d+):(%d+)$")
+	elseif verb=="ahCancel" then cat,a=string.match(item,"^(%a+):(%d+)$")
+	else cat=string.match(item,"^(%a+)$") end
+	if not cat or not categorySet[cat] then return nil,"Choose an auction category and listing." end
+	local order={kind="auction",verb=verb,cat=cat,key="auction_v1_"..cat,coins=0,units=0}
+	if verb~="ahClaim" then
+		order.id=whole(a,9,1,999999999)
+		if not order.id then return nil,"Choose a listing." end
+	end
+	if verb=="ahBuy" then
+		order.price=whole(b,7,Rules.minPrice,Rules.maxPrice)
+		if not order.price then return nil,"Use the listing's whole coin price." end
+		if p.coins<order.price then return nil,"You need "..order.price.." purse coins to buy this listing." end
+		order.coins=order.price
+	end
+	return order
+end
+local function refund(p,order)
+	p.coins+=order.coins
+	if order.units>0 then p.items[order.item]=(p.items[order.item] or 0)+order.units end
+end
+local function remember(player,order,committed,uid,now)
+	local views=Econ.views[player] or {}
+	Econ.views[player]=views
+	if order.kind=="bazaar" then
+		views.bazaar=bazaarView(committed,order.item,uid,now)
+	else
+		local page=if views.auction and views.auction.category==order.cat then views.auction.page else 1
+		views.auction=auctionView(committed,order.cat,uid,page,now)
+	end
+end
+local function settle(player)
+	local p=profiles[player]
+	local order=p.econPending
+	if not persist(player,false) then return "Market waiting for a journal save. Try again." end
+	local uid=tostring(player.UserId)
+	local now=os.time()
+	local function apply(old)
+		if order.kind=="bazaar" then return bazaarTrade(old,uid,order) end
+		return auctionTrade(old,uid,order,now)
+	end
+	local committed
+	local ok=pcall(function()
+		if preview[player] then
+			committed=apply(deepCopy(previewEcon[order.key]))
+			if committed then previewEcon[order.key]=deepCopy(committed) end
+		else
+			committed=store:UpdateAsync(order.key,apply)
+		end
+	end)
+	if not ok then return "Order pending. The exchange will retry safely." end
+	local receipt=type(committed)=="table" and type(committed.receipts)=="table" and committed.receipts[uid] or nil
+	if not receipt or receipt.seq~=order.seq then
+		refund(p,order)
+		p.econPending=nil
+		return "This market is at capacity. Your escrow was returned."
+	end
+	p.coins+=receipt.coins
+	for id,n in pairs(receipt.items or {}) do
+		if Data.Items[id] and n>0 then p.items[id]=(p.items[id] or 0)+n end
+	end
+	local orders,listings=mirror(p)
+	local kept={}
+	if order.kind=="bazaar" then
+		for _,o in ipairs(orders) do if o.item~=order.item then table.insert(kept,o) end end
+		for _,o in ipairs(receipt.open or {}) do table.insert(kept,{item=order.item,id=o[1],price=o[2],qty=o[3],side=if o[4]==1 then "bid" else "ask"}) end
+		p.econOrders=kept
+	else
+		for _,l in ipairs(listings) do if l.cat~=order.cat then table.insert(kept,l) end end
+		for _,l in ipairs(receipt.open or {}) do table.insert(kept,{cat=order.cat,id=l[1],item=l[2],price=l[3],expires=l[4]}) end
+		p.econListings=kept
+	end
+	p.econPending=nil
+	remember(player,order,committed,uid,now)
+	return receipt.text
+end
+local function read(player,verb,item)
+	if os.clock()<(Econ.reads[player] or 0) then return "Prices were refreshed moments ago. Try again shortly." end
+	local key,id,cat,page
+	if verb=="bazaar" then
+		id=string.match(item,"^(%w+)$")
+		if not id or not Rules.isCommodity(id) then return "Choose a Bazaar commodity (a resource or material)." end
+		key="bazaar_v1_"..id
+	else
+		local raw
+		cat,raw=string.match(item,"^(%a+):(%d+)$")
+		if not cat then cat=string.match(item,"^(%a+)$") end
+		page=if raw then whole(raw,2,1,Rules.maxPage) else 1
+		if not cat or not categorySet[cat] or not page then return "Choose an auction category and page." end
+		key="auction_v1_"..cat
+	end
+	Econ.reads[player]=os.clock()+READ_INTERVAL
+	local ok,book=pcall(function()
+		if preview[player] then return deepCopy(previewEcon[key]) end
+		return store:GetAsync(key)
+	end)
+	if not ok then return "The ledger could not be read. Your previous view may be stale." end
+	local views=Econ.views[player] or {}
+	Econ.views[player]=views
+	local uid=tostring(player.UserId)
+	if verb=="bazaar" then
+		views.bazaar=bazaarView(book,id,uid,os.time())
+		return itemName(id).." order book refreshed. Prices are per unit."
+	end
+	views.auction=auctionView(book,cat,uid,page,os.time())
+	return Rules.categoryNames[cat].." auctions refreshed (page "..views.auction.page.." of "..views.auction.pages..")."
+end
+Econ.action=function(player,verb,item,resume)
+	local p=profiles[player]
+	if p.ironman then return "Ironman journals cannot use the Bazaar or Auction House." end
+	if exchangeBusy[player] then return "An order is already being processed." end
+	if type(item)~="string" then item="" end
+	if verb=="bazaar" or verb=="ahBrowse" then return read(player,verb,item) end
+	local pending=p.econPending
+	local order
+	if not pending then
+		local problem
+		order,problem=prepare(p,verb,item)
+		if not order then return problem end
+	end
+	-- Every writing verb touches the player key and a shared key; pace them.
+	if not resume and os.clock()<(exchangeReady[player] or 0) then
+		return "The exchange is still recording your last order. Try again in "..math.ceil(exchangeReady[player]-os.clock()).."s."
+	end
+	if not pending then
+		p.coins-=order.coins
+		if order.units>0 then p.items[order.item]-=order.units end
+		p.started=true
+		p.econSeq=(tonumber(p.econSeq) or 0)+1
+		order.seq=p.econSeq
+		p.econPending=order
+	end
+	exchangeReady[player]=os.clock()+EXCHANGE_COOLDOWN
+	exchangeBusy[player]=true
+	local ok,message=pcall(settle,player)
+	exchangeBusy[player]=nil
+	if not ok then return "Exchange delayed. Retry to recover your order." end
+	if pending and not resume and not p.econPending then message="Recovered your earlier order first: "..message end
+	return message
+end
+Econ.resume=function(player)
+	local p=profiles[player]
+	if not p or not p.econPending or p.ironman then return end
+	local message=Econ.action(player,p.econPending.verb,"",true)
+	if player.Parent then update:FireClient(player,snapshot(player,message)) end
+end
+-- Snapshot data (Ledger → Orders / Auctions). Mirrors list this journal's
+-- open orders and listings as of its last write; views are the last read.
+Econ.view=function(player,p)
+	local views=Econ.views[player] or {}
+	return {bazaar=views.bazaar,auction=views.auction,
+		orders=if type(p.econOrders)=="table" then deepCopy(p.econOrders) else {},
+		listings=if type(p.econListings)=="table" then deepCopy(p.econListings) else {},
+		pending=p.econPending~=nil,readyIn=math.max(0,math.ceil((exchangeReady[player] or 0)-os.clock())),serverTime=os.time()}
+end
 end

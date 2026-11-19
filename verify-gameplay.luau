@@ -22,14 +22,24 @@ local function advance(seconds) clock += seconds; utc += seconds end
 local data, injectedFailure = {}, false
 local delayedProfileAck = nil
 local repeatMarketTransform=false
+-- Economy keys (bazaar_v1_*, auction_v1_*): "before" fails without committing,
+-- "after" commits and then loses the acknowledgement; repeatEcon retries transforms.
+local econFailure, repeatEcon, econReadFailure = nil, false, false
 local db = {}
-function db:GetAsync(key) return copy(data[key]) end
+function db:GetAsync(key)
+	if econReadFailure and (key:match("^bazaar") or key:match("^auction")) then econReadFailure=false; error("Injected read outage") end
+	return copy(data[key])
+end
 function db:UpdateAsync(key, op)
 	db.writes=(db.writes or 0)+1
 	if db.onUpdate and key:match("^p%d") then local hook=db.onUpdate; db.onUpdate=nil; hook(key) end
+	local econKey = key:match("^bazaar") or key:match("^auction")
+	if econKey and econFailure=="before" then econFailure=nil; error("Injected outage before commit") end
 	if repeatMarketTransform and key:match("^market") then op(copy(data[key])) end
+	if repeatEcon and econKey then op(copy(data[key])) end
 	local value = op(copy(data[key]))
 	if value then data[key] = copy(value) end
+	if econKey and econFailure=="after" then econFailure=nil; error("Injected lost acknowledgement after durable commit") end
 	if injectedFailure and key:match("^market") then
 		injectedFailure=false
 		error("Injected lost acknowledgement after durable commit")
@@ -1654,6 +1664,442 @@ do
 	eq(rawUse(picker,nodeA).items.Ore,3,"node regrows after its respawn time")
 	print("PASS: review regression checks.")
 end
+;(function()
+------------------------------------------------------------------------------
+-- Economy: Bazaar standing orders and the Auction House (Data.Economy).
+------------------------------------------------------------------------------
+local before=checks
+local Rules=Data.Economy
+-- Requests here advance only os.clock (cooldowns); journal leases follow os.time,
+-- which moves only where a test needs listings to expire.
+local function cmd(p,verb,item)
+	clock+=1
+	return objects.RemoteFunction.OnServerInvoke(p,verb,item)
+end
+local function trade(p,verb,item)
+	clock+=6
+	return cmd(p,verb,item)
+end
+local function ok(cond,case) assert(cond,case); checks+=1 end
+local function has(text,part) return type(text)=="string" and string.find(text,part,1,true)~=nil end
+local function econPlayer(id,coins,items,mutate)
+	local p=player(id)
+	services.Players.PlayerRemoving:Fire(p)
+	local profile=data["p"..id].profile
+	profile.coins=coins
+	profile.items=items or {}
+	if mutate then mutate(profile) end
+	return player(id)
+end
+local function rejoin(p)
+	services.Players.PlayerRemoving:Fire(p)
+	return player(p.UserId)
+end
+local function st(p) return cmd(p,"state") end
+local function econ(p) return st(p).economy end
+local function bazaar(item) return data["bazaar_v1_"..item] end
+local function auction(cat) return data["auction_v1_"..cat] end
+local function orderId(p,item,side)
+	for _,o in ipairs(econ(p).orders) do if o.item==item and (side==nil or o.side==side) then return o.id end end
+	return nil
+end
+local function listingId(p,item)
+	for _,l in ipairs(econ(p).listings) do if l.item==item then return l.id,l.cat end end
+	return nil
+end
+
+-- Shared data contract.
+eq(Rules.auctionFee(1000),10,"listing fee is 1%")
+eq(Rules.auctionFee(150),2,"listing fee rounds up")
+eq(Rules.auctionFee(5),1,"listing fee is at least one coin")
+eq(Rules.isCommodity("Brassite"),true,"resources are Bazaar commodities")
+eq(Rules.isCommodity("BeastHide"),true,"materials are Bazaar commodities")
+eq(Rules.isCommodity("BrassSword"),false,"gear is not a commodity")
+eq(Rules.auctionCategory("BrassSword"),"weapon","weapons auction under weapon")
+eq(Rules.auctionCategory("EmberfoxPet"),"pet","pet items auction under pet")
+eq(Rules.auctionCategory("Ore"),nil,"commodities are not auctionable")
+
+-- Bad input never escrows anything.
+local probe=econPlayer(2000,500,{Brassite=50,BrassSword=1})
+for _,bad in ipairs({"Brassite:0:5","Brassite:641:5","Brassite:5:0","Brassite:5:1000001","Brassite:5:-1","Brassite:5:1.5",
+	"Brassite:5:1e3","Brassite: 5:5","Brassite:5:5:5","BrassSword:1:5","Nope:1:1","","Brassite","Brassite:0005:5","Brassite:5:00000005"}) do
+	local s=trade(probe,"bid",bad)
+	eq(s.coins,500,"invalid bid escrows nothing: "..bad)
+end
+for _,bad in ipairs({"Brassite:0","Brassite:641","Brassite:5:0","BrassSword:1","Brassite:-3"}) do
+	eq(trade(probe,"sellToBid",bad).items.Brassite,50,"invalid instant sell escrows nothing: "..bad)
+end
+eq(trade(probe,"offer","Brassite:51:5").items.Brassite,50,"offer cannot exceed satchel")
+eq(has(trade(probe,"bid","Brassite:100:6").message,"You need 600 purse coins"),true,"unfunded bid refused")
+for _,bad in ipairs({"BrassSword:0","BrassSword:1000001","Brassite:5","BrassSword","BrassSword:5:5","Nope:5","BrassSword:1.5"}) do
+	local s=trade(probe,"ahList",bad)
+	eq(s.items.BrassSword==1 and s.coins==500,true,"invalid listing escrows nothing: "..bad)
+end
+for _,bad in ipairs({"weapon:1","weapon:x:5","nope:1:5","weapon:1:0","weapon:0:5","weapon:1:5:5"}) do
+	eq(trade(probe,"ahBuy",bad).coins,500,"invalid purchase escrows nothing: "..bad)
+end
+eq(has(trade(probe,"ahBuy","weapon:1:600").message,"You need 600 purse coins"),true,"unfunded purchase refused")
+eq(has(trade(probe,"ahCancel","nope:1").message,"auction category"),true,"bad cancel category refused")
+eq(has(trade(probe,"ahClaim","weapon:1").message,"auction category"),true,"bad claim refused")
+eq(has(trade(probe,"bidCancel","Brassite:x").message,"Bazaar commodity"),true,"bad order number refused")
+eq(has(cmd(probe,"bazaar","BrassSword").message,"Bazaar commodity"),true,"gear has no order book")
+clock+=3
+eq(has(cmd(probe,"ahBrowse","nope").message,"auction category"),true,"unknown auction category")
+clock+=3
+eq(has(cmd(probe,"ahBrowse","weapon:0").message,"auction category"),true,"page zero refused")
+clock+=3
+eq(cmd(probe,"ahBrowse","weapon:50").economy.auction.page,1,"page past the end clamps to the last page")
+eq(probe.kicked,nil,"bad input never disturbs the session")
+eq(bazaar("Nope"),nil,"bad input never creates a book")
+
+-- Bazaar matching: highest bid first, FIFO at equal price, maker's price.
+local seller=econPlayer(2001,0,{Brassite=100})
+local b1=econPlayer(2002,10000,{})
+local b2=econPlayer(2003,10000,{})
+local b3=econPlayer(2004,10000,{})
+repeatEcon=true
+local placed=trade(b1,"bid","Brassite:10:20")
+eq(placed.coins,9800,"bid escrows quantity x price")
+eq(has(placed.message,"Buy order #1"),true,"bid confirms its order number")
+eq(#placed.economy.orders,1,"snapshot lists the open order")
+eq(placed.economy.orders[1].side,"bid","mirror records the side")
+eq(placed.economy.bazaar.bids[1].price,20,"write refreshes the order book view")
+eq(trade(b2,"bid","Brassite:10:25").coins,9750,"higher bid escrows")
+eq(trade(b3,"bid","Brassite:10:20").coins,9800,"equal later bid escrows")
+repeatEcon=false
+eq(#bazaar("Brassite").bids,3,"transform retries do not duplicate bids")
+eq(bazaar("Brassite").nextId,3,"order ids deterministic under transform retry")
+eq(bazaar("Brassite").bids[1].owner,"2003","highest bid at the head")
+eq(bazaar("Brassite").bids[2].owner,"2002","older equal bid before newer")
+eq(bazaar("Brassite").bids[3].owner,"2004","newer equal bid last")
+local view=cmd(seller,"bazaar","Brassite").economy.bazaar
+eq(view.bestBid,25,"quote shows best bid")
+eq(view.bestAsk,nil,"no asks yet")
+eq(view.spread,nil,"no spread without both sides")
+eq(view.bids[2].qty,20,"depth aggregates equal prices")
+eq(view.bids[2].orders,2,"depth counts orders per level")
+local sold=trade(seller,"sellToBid","Brassite:15")
+eq(sold.coins,350,"instant sell fills best bid then next at each bid's price")
+eq(sold.items.Brassite,85,"instant sell spends exactly the filled units")
+eq(has(sold.message,"Sold 15"),true,"instant sell reports the fill")
+eq(bazaar("Brassite").bids[1].owner,"2002","filled bid leaves the book")
+eq(bazaar("Brassite").bids[1].qty,5,"partial fill keeps the remainder")
+eq(bazaar("Brassite").bids[2].qty,10,"FIFO: newer equal bid untouched")
+eq(bazaar("Brassite").claims["2003"].units,10,"filled units wait for the buyer")
+eq(bazaar("Brassite").claims["2002"].units,5,"partial fill claimable")
+local claimed=trade(b1,"bidClaim","Brassite")
+eq(claimed.items.Brassite,5,"buyer claims filled goods")
+eq(claimed.coins,9800,"claim does not touch escrow")
+eq(claimed.economy.orders[1].qty,5,"mirror shows the remaining quantity")
+eq(trade(b1,"bidClaim","Brassite").message,"Nothing to collect yet.","claim cannot repeat")
+eq(trade(b1,"state").items.Brassite,5,"repeat claim pays nothing")
+local floor=trade(seller,"sellToBid","Brassite:10:21")
+eq(floor.items.Brassite,85,"instant sell respects a minimum price")
+eq(has(floor.message,"No buy order"),true,"unmatched instant sell explains itself")
+eq(trade(seller,"offer","Brassite:5:30").items.Brassite,80,"sell offer escrows goods")
+local spread=cmd(b1,"bazaar","Brassite").economy.bazaar
+eq(spread.bestAsk,30,"best ask from resting offers")
+eq(spread.bestBid,20,"best bid excludes the viewer's own order")
+eq(spread.spread,10,"spread is best ask minus best bid")
+eq(spread.asks[1].qty,5,"ask depth")
+local crossed=trade(b1,"bid","Brassite:3:35")
+eq(crossed.items.Brassite,8,"crossing bid fills immediately")
+eq(crossed.coins,9710,"crossing bid pays the ask and refunds the improvement")
+eq(#crossed.economy.orders,1,"fully filled bid does not rest")
+local now=trade(b1,"buyNow","Brassite:5:40")
+eq(now.items.Brassite,10,"buy now fills what is offered")
+eq(now.coins,9650,"buy now refunds the unfilled remainder")
+eq(bazaar("Brassite").asks[1],nil,"filled offer leaves the book")
+local proceeds=trade(seller,"bidClaim","Brassite")
+eq(proceeds.coins,500,"offer seller collects sale coins at the ask price")
+-- Cancel and refund.
+local b3Order=orderId(b3,"Brassite")
+local cancelled=trade(b3,"bidCancel","Brassite:"..b3Order)
+eq(cancelled.coins,10000,"cancel refunds the remainder")
+eq(#cancelled.economy.orders,0,"cancel clears the mirror")
+eq(has(trade(b3,"bidCancel","Brassite:"..b3Order).message,"no longer open"),true,"cancel cannot repeat")
+eq(trade(b3,"state").coins,10000,"repeat cancel refunds nothing")
+eq(trade(b1,"bidCancel","Brassite:"..orderId(b1,"Brassite")).coins,9750,"partially filled bid refunds only the remainder")
+eq(trade(b2,"bidClaim","Brassite").items.Brassite,10,"fully filled buyer claims later")
+-- Self-trade prevention.
+trade(seller,"bid","Brassite:1:100")
+local selfSell=trade(seller,"sellToBid","Brassite:1")
+eq(selfSell.items.Brassite,80,"own bid never buys your own sale")
+eq(cmd(seller,"bazaar","Brassite").economy.bazaar.bestBid,nil,"own bid hidden from your best bid")
+local sellerBid=orderId(seller,"Brassite","bid")
+eq(trade(seller,"bidCancel","Brassite:"..sellerBid).coins,500,"cancel refunds own bid escrow")
+-- Coin and goods conservation across every trade.
+local coins,units=0,0
+for _,p in ipairs({seller,b1,b2,b3}) do
+	local s=st(p)
+	coins+=s.coins
+	units+=s.items.Brassite or 0
+end
+eq(coins,30000,"Bazaar conserves coins (no fee)")
+eq(units,100,"Bazaar conserves goods")
+eq(#bazaar("Brassite").bids+#bazaar("Brassite").asks,0,"book empty after settlement")
+eq(next(bazaar("Brassite").claims),nil,"no unclaimed fills remain")
+
+-- Order cap (10 across commodities), quantity cap, book capacity.
+local capper=econPlayer(2010,10000,{BeastHide=5})
+for i=1,9 do trade(capper,"bid","Herb:1:"..i) end
+eq(#trade(capper,"offer","BeastHide:1:50").economy.orders,10,"ten orders across commodities")
+local refused=trade(capper,"bid","Herb:1:20")
+eq(has(refused.message,"10 open Bazaar orders"),true,"eleventh order refused")
+eq(refused.coins,10000-45,"refused order escrows nothing")
+eq(trade(capper,"buyNow","Herb:1:1").coins,10000-45,"instant orders need no slot and refund unfilled")
+local firstHerb
+for _,o in ipairs(econ(capper).orders) do if o.item=="Herb" then firstHerb=o;break end end
+eq(trade(capper,"bidCancel","Herb:"..firstHerb.id).coins,10000-45+firstHerb.price,"cancel frees a slot and refunds its price")
+eq(#trade(capper,"bid","Herb:640:1").economy.orders,10,"640 units allowed")
+eq(trade(capper,"state").coins,10000-45+firstHerb.price-640,"maximum quantity escrows exactly")
+local saved=Rules.bookCap
+Rules.bookCap=#bazaar("Herb").bids+#bazaar("Herb").asks
+local full=trade(capper,"sellToBid","BeastHide:1")
+eq(full.items.BeastHide,4,"instant sell into an empty side returns goods")
+trade(capper,"bidCancel","BeastHide:"..orderId(capper,"BeastHide"))
+local herbFull=econPlayer(2011,100,{})
+local fullBid=trade(herbFull,"bid","Herb:2:7")
+eq(fullBid.coins,100,"full book refunds a resting bid")
+eq(has(fullBid.message,"order book is full"),true,"full book explains itself")
+Rules.bookCap=saved
+local savedAccounts=Rules.accountCap
+Rules.accountCap=bazaar("Herb").accounts
+local stranger=econPlayer(2012,100,{})
+local capacity=trade(stranger,"bid","Herb:2:7")
+eq(capacity.coins,100,"account capacity refunds escrow")
+eq(has(capacity.message,"at capacity"),true,"account capacity explains itself")
+eq(capacity.economy.pending,false,"refused order leaves nothing pending")
+Rules.accountCap=savedAccounts
+
+-- Injected failures: lost acknowledgement replays exactly once on rejoin.
+local ghost=econPlayer(2020,1000,{})
+econFailure="after"
+local lost=trade(ghost,"bid","Glowcap:10:30")
+eq(lost.coins,700,"ambiguous bid keeps its escrow")
+eq(lost.economy.pending,true,"ambiguous bid stays pending")
+eq(has(lost.message,"retry safely"),true,"ambiguous bid explains the retry")
+services.Players.PlayerRemoving:Fire(ghost)
+eq(data.p2020.profile.econPending.verb,"bid","pending order persists in the journal")
+eq(data.p2020.profile.econPending.coins,300,"pending escrow persists")
+ghost=player(2020)
+local replayed=st(ghost)
+eq(replayed.coins,700,"replayed bid charged once")
+eq(replayed.economy.pending,false,"rejoin settles the pending order")
+eq(#replayed.economy.orders,1,"replayed bid mirrored once")
+eq(#bazaar("Glowcap").bids,1,"replayed bid placed once")
+ghost=rejoin(ghost)
+eq(st(ghost).coins,700,"second rejoin changes nothing")
+eq(#bazaar("Glowcap").bids,1,"second rejoin places nothing")
+-- A seller's lost acknowledgement after filling the bid.
+local farmer=econPlayer(2021,0,{Glowcap=10})
+econFailure="after"
+local lostSale=trade(farmer,"sellToBid","Glowcap:4")
+eq(lostSale.items.Glowcap,6,"ambiguous sale keeps goods in escrow")
+eq(lostSale.coins,0,"ambiguous sale pays nothing yet")
+eq(bazaar("Glowcap").bids[1].qty,6,"sale committed durably")
+farmer=rejoin(farmer)
+eq(st(farmer).coins,120,"replayed sale pays once")
+eq(st(farmer).items.Glowcap,6,"replayed sale returns nothing extra")
+farmer=rejoin(farmer)
+eq(st(farmer).coins,120,"sale replay cannot repeat")
+-- Outage before commit: the next request finishes the pending order first.
+econFailure="before"
+local outage=trade(farmer,"sellToBid","Glowcap:2")
+eq(outage.items.Glowcap,4,"outage holds escrow")
+eq(outage.economy.pending,true,"outage leaves the order pending")
+eq(bazaar("Glowcap").bids[1].qty,6,"outage committed nothing")
+local recovered=trade(farmer,"bidClaim","Glowcap")
+eq(has(recovered.message,"Recovered your earlier order first"),true,"next request recovers first")
+eq(recovered.coins,180,"recovered sale pays once")
+eq(recovered.items.Glowcap,4,"recovered sale spends goods once")
+eq(bazaar("Glowcap").bids[1].qty,4,"recovered sale filled once")
+local ghostClaim=trade(ghost,"bidClaim","Glowcap")
+eq(ghostClaim.items.Glowcap,6,"buyer claims fills made while it was away")
+eq(ghostClaim.coins,700,"claim leaves escrow for the remainder")
+eq(trade(ghost,"bidCancel","Glowcap:"..orderId(ghost,"Glowcap")).coins,820,"cancel refunds the unfilled four")
+eq(st(ghost).coins+st(farmer).coins,1000,"coins conserved through failures")
+eq(st(ghost).items.Glowcap+st(farmer).items.Glowcap,10,"goods conserved through failures")
+-- Cancellation with a lost acknowledgement.
+local hesitant=econPlayer(2022,0,{Moonbloom=8})
+trade(hesitant,"offer","Moonbloom:8:9")
+econFailure="after"
+eq(trade(hesitant,"bidCancel","Moonbloom:"..orderId(hesitant,"Moonbloom")).items.Moonbloom,0,"ambiguous cancel waits for its receipt")
+hesitant=rejoin(hesitant)
+eq(st(hesitant).items.Moonbloom,8,"cancel replay returns goods once")
+eq(#bazaar("Moonbloom").asks,0,"cancel replay removes the offer once")
+hesitant=rejoin(hesitant)
+eq(st(hesitant).items.Moonbloom,8,"cancel replay cannot repeat")
+-- Read failures keep the previous view.
+econReadFailure=true
+clock+=3
+eq(has(cmd(hesitant,"bazaar","Moonbloom").message,"could not be read"),true,"quote outage is reported")
+-- Shared cooldown with the legacy exchange.
+local busy=econPlayer(2023,100,{Fish=3})
+trade(busy,"list","Fish:12")
+eq(has(cmd(busy,"bid","Fish:1:5").message,"still recording"),true,"Bazaar shares the exchange cooldown")
+eq(st(busy).coins,100,"cooldown refusal escrows nothing")
+eq(trade(busy,"bid","Fish:1:5").coins,95,"after the cooldown the bid is accepted")
+
+-- Auction House.
+local merchant=econPlayer(2101,1000,{BrassSword=2,BrassHelm=1,Blade=1,MeadowCharm=1,EmberfoxPet=1},function(p)
+	p.equipment={helmet="BrassHelm"}
+	p.accessoryBag={"MeadowCharm"}
+	p.enchants={Blade={Sharpness=1}}
+end)
+local collector=econPlayer(2102,5000,{})
+local equipped=trade(merchant,"ahList","BrassHelm:500")
+eq(has(equipped.message,"Unequip"),true,"equipped gear cannot be listed")
+eq(equipped.items.BrassHelm,1,"equipped refusal keeps the item")
+eq(has(trade(merchant,"ahList","MeadowCharm:100").message,"accessory bag"),true,"bagged accessory cannot be listed")
+local enchanted=trade(merchant,"ahList","Blade:100")
+eq(has(enchanted.message,"Enchanted gear cannot be auctioned"),true,"enchanted gear refused")
+eq(enchanted.coins,1000,"refusals charge no fee")
+eq(has(trade(merchant,"ahList","StormBlade:100").message,"weapon, armor"),true,"unknown gear refused")
+eq(has(trade(merchant,"ahList","Stormblade:100").message,"You do not have"),true,"unowned gear refused")
+local listed=trade(merchant,"ahList","BrassSword:1000")
+eq(listed.coins,990,"listing charges a 1% fee")
+eq(listed.items.BrassSword,1,"listing escrows one item")
+eq(listed.economy.listings[1].cat,"weapon","mirror records the category")
+eq(listed.economy.listings[1].price,1000,"mirror records the price")
+eq(auction("weapon").listings[1].expires,math.floor(utc)+86400,"listing expires in 24 hours")
+eq(trade(merchant,"ahList","EmberfoxPet:150").coins,988,"fee rounds up")
+clock+=3
+local browse=cmd(collector,"ahBrowse","weapon").economy.auction
+eq(browse.total,1,"browse lists active listings")
+eq(browse.listings[1].item,"BrassSword","browse shows the item")
+eq(browse.listings[1].own,false,"browse marks other sellers")
+local swordId=browse.listings[1].id
+local bought=trade(collector,"ahBuy","weapon:"..swordId..":1000")
+eq(bought.coins,4000,"purchase pays the price")
+eq(bought.items.BrassSword,1,"purchase delivers the item")
+local again=trade(collector,"ahBuy","weapon:"..swordId..":1000")
+eq(again.coins,4000,"a sold listing cannot sell twice")
+eq(has(again.message,"listing is gone"),true,"sold listing explains itself")
+local petId=listingId(merchant,"EmberfoxPet")
+local own=trade(merchant,"ahBuy","pet:"..petId..":150")
+eq(own.coins,988,"own listing purchase refunded")
+eq(has(own.message,"own listing"),true,"own purchase explains itself")
+eq(has(trade(collector,"ahBuy","pet:"..petId..":149").message,"costs more"),true,"underpaying is refused")
+eq(st(collector).coins,4000,"underpayment refunded")
+local claim=trade(merchant,"ahClaim","weapon")
+eq(claim.coins,1988,"seller claims proceeds")
+eq(#claim.economy.listings,1,"sold listing leaves the mirror")
+eq(trade(merchant,"ahClaim","weapon").message,"Nothing to collect in this category yet.","proceeds cannot repeat")
+eq(st(merchant).coins+st(collector).coins,6000-12,"coins conserved minus listing fees")
+-- Expiry returns the item; the fee is a sink.
+advance(86401)
+merchant,collector=rejoin(merchant),rejoin(collector)
+clock+=3
+eq(cmd(collector,"ahBrowse","pet").economy.auction.total,0,"expired listings leave the board")
+eq(has(trade(collector,"ahBuy","pet:"..petId..":150").message,"listing is gone"),true,"expired listing cannot be bought")
+eq(auction("pet").returns["2101"].EmberfoxPet,1,"another trader's write moves expired items to returns")
+clock+=3
+eq(cmd(merchant,"ahBrowse","pet").economy.auction.returns,1,"seller sees the waiting return")
+local back=trade(merchant,"ahClaim","pet")
+eq(back.items.EmberfoxPet,1,"expired item returned")
+eq(back.coins,1988,"expiry refunds no fee")
+eq(#back.economy.listings,0,"expired listing leaves the mirror")
+eq(trade(merchant,"ahClaim","pet").items.EmberfoxPet,1,"expiry return cannot repeat")
+-- Expiry claimed directly by its seller (no intervening writes).
+trade(merchant,"ahList","EmberfoxPet:40")
+advance(86401)
+merchant,collector=rejoin(merchant),rejoin(collector)
+local direct=trade(merchant,"ahClaim","pet")
+eq(direct.items.EmberfoxPet,1,"seller's own claim returns an expired listing")
+eq(direct.coins,1987,"second listing fee was spent")
+-- Cancel returns the item but keeps the fee.
+local cancelItem=trade(collector,"ahList","BrassSword:50")
+eq(cancelItem.coins,3999,"cheap listing fee is one coin")
+local cancelAh=trade(collector,"ahCancel","weapon:"..listingId(collector,"BrassSword"))
+eq(cancelAh.items.BrassSword,1,"cancel returns the item")
+eq(cancelAh.coins,3999,"cancel keeps the fee")
+eq(has(cancelAh.message,"not refunded"),true,"cancel explains the fee")
+eq(has(trade(collector,"ahCancel","weapon:"..swordId).message,"no longer open"),true,"cannot cancel another's or a closed listing")
+-- Lost acknowledgements on list and buy replay once.
+econFailure="after"
+local lostList=trade(merchant,"ahList","BrassSword:300")
+eq(lostList.items.BrassSword,0,"ambiguous listing keeps the item in escrow")
+eq(lostList.coins,1984,"ambiguous listing holds the fee")
+merchant=rejoin(merchant)
+eq(st(merchant).coins,1984,"replayed listing charges the fee once")
+eq(st(merchant).items.BrassSword,0,"replayed listing escrows once")
+eq(#auction("weapon").listings,1,"replayed listing created once")
+eq(#st(merchant).economy.listings,1,"replayed listing mirrored once")
+local relisted=auction("weapon").listings[1].id
+econFailure="after"
+local lostBuy=trade(collector,"ahBuy","weapon:"..relisted..":300")
+eq(lostBuy.coins,3699,"ambiguous purchase holds the price")
+eq(lostBuy.items.BrassSword,1,"ambiguous purchase delivers nothing yet")
+collector=rejoin(collector)
+eq(st(collector).items.BrassSword,2,"replayed purchase delivers once")
+eq(st(collector).coins,3699,"replayed purchase charges once")
+eq(auction("weapon").proceeds["2101"],300,"seller credited once")
+collector=rejoin(collector)
+eq(st(collector).items.BrassSword,2,"purchase replay cannot repeat")
+eq(trade(merchant,"ahClaim","weapon").coins,2284,"seller collects replayed sale once")
+eq(st(merchant).coins+st(collector).coins,6000-17,"AH conserves coins minus five listing fees")
+-- Listing cap.
+local hoarder=econPlayer(2103,1000,{CopperHoe=11})
+for i=1,10 do trade(hoarder,"ahList","CopperHoe:"..(100+i)) end
+local capped=trade(hoarder,"ahList","CopperHoe:5")
+eq(has(capped.message,"10 auction listings"),true,"eleventh listing refused")
+eq(capped.items.CopperHoe,1,"refused listing keeps the item")
+eq(capped.coins,1000-20,"ten listing fees of two coins each")
+clock+=3
+local page=cmd(collector,"ahBrowse","tool:2").economy.auction
+eq(page.total,10,"browse counts every active listing")
+eq(page.pages,2,"browse pages by eight")
+eq(#page.listings,2,"second page holds the rest")
+eq(page.listings[1].price,109,"listings sorted by price")
+local savedAh=Rules.auctionCap
+Rules.auctionCap=10
+local overflow=econPlayer(2104,100,{CopperHoe=1})
+local fullAh=trade(overflow,"ahList","CopperHoe:500")
+eq(fullAh.items.CopperHoe,1,"full Auction House returns the item")
+eq(fullAh.coins,100,"full Auction House refunds the fee")
+Rules.auctionCap=savedAh
+
+-- Ironman journals cannot use either market.
+local iron=econPlayer(2105,1000,{Brassite=10,BrassSword=1})
+cmd(iron,"ironman")
+for _,attempt in ipairs({{"bid","Brassite:1:5"},{"offer","Brassite:1:5"},{"sellToBid","Brassite:1"},{"buyNow","Brassite:1:5"},
+	{"bidClaim","Brassite"},{"ahList","BrassSword:100"},{"ahBuy","weapon:1:1"},{"ahClaim","weapon"},{"bazaar","Brassite"},{"ahBrowse","weapon"}}) do
+	local s=trade(iron,attempt[1],attempt[2])
+	eq(s.message,"Ironman journals cannot use the Bazaar or Auction House.","Ironman refused: "..attempt[1])
+end
+eq(st(iron).coins,1000,"Ironman coins untouched")
+eq(st(iron).items.BrassSword,1,"Ironman gear untouched")
+eq(st(iron).economy.bazaar,nil,"Ironman receives no market view")
+-- Worst-case shared keys stay well inside the 4 MB DataStore value limit.
+local serde=require("@lune/serde")
+local text=string.rep("x",260)
+local worstBazaar={bids={},asks={},claims={},receipts={},accounts=Rules.accountCap,nextId=999999999,revision=999999999,version=1}
+for i=1,Rules.bookCap do table.insert(worstBazaar.bids,{id=999999000+i,owner=tostring(9000000000+i),price=Rules.maxPrice,qty=Rules.maxQuantity}) end
+for u=1,Rules.accountCap do
+	local uid=tostring(9000000000+u)
+	local open={}
+	for k=1,Rules.orderCap do table.insert(open,{999999000+k,Rules.maxPrice,Rules.maxQuantity,1}) end
+	worstBazaar.receipts[uid]={seq=9999999,coins=640000000,items={AetherheartLog=640},text=text,open=open}
+	worstBazaar.claims[uid]={units=640000,coins=640000000000}
+end
+local bazaarBytes=#serde.encode("json",worstBazaar)
+ok(bazaarBytes<3200000,"worst-case Bazaar book fits: "..bazaarBytes)
+local worstAuction={listings={},proceeds={},returns={},receipts={},accounts=Rules.accountCap,nextId=999999999,revision=999999999,version=1}
+for i=1,Rules.auctionCap do table.insert(worstAuction.listings,{id=999999000+i,seller=tostring(9000000000+i),item="CelestialChestplate",price=Rules.maxPrice,expires=1999999999}) end
+for u=1,Rules.accountCap do
+	local uid=tostring(9000000000+u)
+	local open={}
+	for k=1,Rules.listingCap do table.insert(open,{999999000+k,"CelestialChestplate",Rules.maxPrice,1999999999}) end
+	worstAuction.receipts[uid]={seq=9999999,coins=1000000,items={CelestialChestplate=10,CelestialGreaves=10},text=text,open=open}
+	worstAuction.proceeds[uid]=10000000
+	worstAuction.returns[uid]={CelestialChestplate=10}
+end
+local auctionBytes=#serde.encode("json",worstAuction)
+ok(auctionBytes<3200000,"worst-case Auction House key fits: "..auctionBytes)
+print("Economy maximum-shape fixtures: Bazaar "..bazaarBytes.." / Auction "..auctionBytes.." JSON bytes.")
+print("PASS: "..(checks-before).." economy (Bazaar / Auction House) assertions.")
+end)()
 print("PASS: "..checks.." production gameplay/market/depth assertions.")
 do
 	local visitor=player(990)
