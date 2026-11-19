@@ -25,6 +25,8 @@ local repeatMarketTransform=false
 local db = {}
 function db:GetAsync(key) return copy(data[key]) end
 function db:UpdateAsync(key, op)
+	db.writes=(db.writes or 0)+1
+	if db.onUpdate and key:match("^p%d") then local hook=db.onUpdate; db.onUpdate=nil; hook(key) end
 	if repeatMarketTransform and key:match("^market") then op(copy(data[key])) end
 	local value = op(copy(data[key]))
 	if value then data[key] = copy(value) end
@@ -90,28 +92,48 @@ local env = {
 }
 local source=fs.readFile("server.server.lua"):gsub("^\239\187\191","")
 luau.load(source,{environment=env,injectGlobals=true})()
-local function player(id)
+local function player(id,deferred)
 	local humanoid={Health=100,MaxHealth=100,Died=signal(),TakeDamage=function(self,n) self.Health-=n end}
 	local root={Position=Vector3.zero}
 	local p={GetAttribute=function(self,key) return self[key] end,SetAttribute=function(self,key,value) self[key]=value end,UserId=id,Parent=true,CharacterAdded=signal(),Kick=function(self,why) self.kicked=why end}
 	p.Character={FindFirstChild=function() return root end,FindFirstChildOfClass=function() return humanoid end,
 		WaitForChild=function() return humanoid end}
-	services.Players.PlayerAdded:Fire(p)
+	if not deferred then services.Players.PlayerAdded:Fire(p) end
 	return p
 end
 local function cmd(p,verb,item)
 	advance(1)
 	return objects.RemoteFunction.OnServerInvoke(p,verb,item)
 end
+-- Writing market verbs share a per-player exchange cooldown (6 s).
+local function trade(p,verb,item)
+	advance(6)
+	return cmd(p,verb,item)
+end
 local function node(verb,item,distance,owner,region)
 	return {Enabled=true,MaxActivationDistance=10,GetAttribute=function(_,key)
 		return ({IsleAction=verb,IsleItem=item,OwnerUserId=owner,IsleRegion=region})[key]
 	end,FindFirstAncestorWhichIsA=function() return {Position=Vector3.new(distance or 0,0,0)} end}
 end
-local function use(p,n)
-	advance(1)
+-- Resource nodes deplete per player per prompt for Data.ResourceTiers respawn
+-- seconds; `use` waits out a node's regrowth (as a player would) before gathering.
+local harvestedAt=setmetatable({},{__mode="k"})
+local function rawUse(p,n)
 	services.ProximityPromptService.PromptTriggered:Fire(n,p)
 	return p.last
+end
+local function use(p,n)
+	advance(1)
+	local item=n:GetAttribute("IsleItem")
+	local resource=n:GetAttribute("IsleAction")=="gather" and type(item)=="string" and Progression.resource(item)
+	local last=resource and harvestedAt[n] and harvestedAt[n][p]
+	if last and clock-last<resource.respawn then advance(resource.respawn-(clock-last)) end
+	local state=rawUse(p,n)
+	if resource and state and type(state.message)=="string" and state.message:sub(1,1)=="+" then
+		harvestedAt[n]=harvestedAt[n] or setmetatable({},{__mode="k"})
+		harvestedAt[n][p]=clock
+	end
+	return state
 end
 local checks=0
 local function eq(actual,expected,case)
@@ -155,24 +177,24 @@ eq(payout.depth.collections.Ore.tier,2,"worker output advances collection tier")
 local aBonus=payout.coins
 eq(cmd(a,"claim").items.Ore,122,"no double claim")
 eq(cmd(c,"ironman").ironman,true,"early Ironman allowed")
-eq(cmd(c,"buy","Ore").message,"Ironman journals cannot use the player exchange.","Ironman exclusion")
+eq(trade(c,"buy","Ore").message,"Ironman journals cannot use the player exchange.","Ironman exclusion")
 for _=1,4 do use(b,ore) end
 eq(cmd(b,"sell","Ore").coins,16,"merchant payout")
 eq(cmd(b,"deposit").bank,16,"deposit")
 b.Character:FindFirstChildOfClass("Humanoid").Died:Fire()
 eq(cmd(b,"withdraw").coins,16,"bank survives death")
-eq(cmd(a,"list","Ore").items.Ore,119,"listing reserves bundle")
+eq(trade(a,"list","Ore").items.Ore,119,"listing reserves bundle")
 injectedFailure=true
-eq(cmd(b,"buy","Ore").coins,1,"purchase reservation on lost acknowledgement")
+eq(trade(b,"buy","Ore").coins,1,"purchase reservation on lost acknowledgement")
 services.Players.PlayerRemoving:Fire(b)
 b=player(2)
 eq(cmd(b,"state").items.Ore,3,"replayed purchase delivered once")
 eq(cmd(b,"state").coins,1,"replayed purchase charged once")
-eq(cmd(a,"proceeds","Ore").coins,aBonus+15,"seller credited exactly once")
-eq(cmd(a,"proceeds","Ore").coins,aBonus+15,"proceeds cannot repeat")
-cmd(a,"list","Ore")
-eq(cmd(a,"cancel","Ore").items.Ore,119,"cancel restores escrow")
-eq(cmd(a,"buy","Ore").coins,aBonus+15,"empty market reimburses")
+eq(trade(a,"proceeds","Ore").coins,aBonus+15,"seller credited exactly once")
+eq(trade(a,"proceeds","Ore").coins,aBonus+15,"proceeds cannot repeat")
+trade(a,"list","Ore")
+eq(trade(a,"cancel","Ore").items.Ore,119,"cancel restores escrow")
+eq(trade(a,"buy","Ore").coins,aBonus+15,"empty market reimburses")
 local boss=node("fight","Warden")
 use(a,boss)
 for _=1,5 do use(b,boss) end
@@ -186,12 +208,12 @@ eq(cleared.items.Stormglass,1,"expedition reward")
 eq(cleared.levels.Combat,2,"Warden and expedition XP reach Combat 2 (83 XP)")
 eq(cleared.coins,aBonus+15+15+35+50,"Combat 2 pays its one-time level reward")
 aBonus+=50
-local leaseCopy=copy(data.p1)
-data.p1.owner="other-server"
-data.p1.expires=utc+200
-local duplicate=player(1)
+-- A journal leased by another server is refused. (Same-server rejoins wait for
+-- the previous session instead; see the rejoin regression block at the end.)
+data.p4={owner="other-server",expires=utc+200,profile=copy(data.p1.profile)}
+local duplicate=player(4)
 eq(duplicate.kicked~=nil,true,"foreign lease rejects duplicate session")
-data.p1=leaseCopy
+data.p4=nil
 local builder=player(20)
 eq(cmd(builder,"decorate","Lanterns").decorations.Lanterns,nil,"unfunded decoration denied")
 for _=1,5 do use(builder,wood) end
@@ -413,7 +435,7 @@ local lateSave=player(71)
 for _=1,4 do use(lateSave,ore) end
 cmd(lateSave,"sell","Ore")
 delayedProfileAck="p71"
-local stalled=cmd(lateSave,"buy","Ore")
+local stalled=trade(lateSave,"buy","Ore")
 eq(stalled.message,"Market waiting for a journal save. Try again.","expired reservation save blocks market")
 eq(data.market_v1_Ore.receipts["71"],nil,"expired reservation never reaches market")
 eq(cmd(lateSave,"slayerStart").message,"Waiting for journal sync.","delayed save preserves durable lease deadline")
@@ -454,6 +476,10 @@ cmd(smith,"craft","AlloyIngot")
 eq(cmd(smith,"state").items.AlloyIngot,10,"basic refining is repeatable")
 eq(cmd(smith,"state").xp.Smithing,184,"repeatable refining bridges Smithing progression")
 eq(cmd(smith,"state").levels.Smithing,3,"refining reaches Smithing 3")
+-- Node regrowth makes these harvests take real time; rejoin to renew the 180 s lease
+-- (tests have no autosave loop).
+services.Players.PlayerRemoving:Fire(smith)
+smith=player(80)
 for _=1,13 do use(smith,aether) end
 for _=1,7 do cmd(smith,"craft","AetherIngot") end
 eq(cmd(smith,"state").items.AetherIngot,7,"advanced refining is repeatable")
@@ -675,10 +701,10 @@ local olderSeller=marketPlayer(101,0,{Fish=12})
 local newerSeller=marketPlayer(102,0,{Fish=12})
 local bidder=marketPlayer(103,100,{Fish=12})
 repeatMarketTransform=true
-eq(cmd(highSeller,"list","Fish:30").items.Fish,9,"custom ask reserves exactly one lot")
-cmd(olderSeller,"list","Fish:12")
-cmd(newerSeller,"list","Fish:12")
-cmd(bidder,"list","Fish:5")
+eq(trade(highSeller,"list","Fish:30").items.Fish,9,"custom ask reserves exactly one lot")
+trade(olderSeller,"list","Fish:12")
+trade(newerSeller,"list","Fish:12")
+trade(bidder,"list","Fish:5")
 eq(#data.market_v1_Fish.pricedOrders,4,"repeated transforms do not duplicate listings")
 eq(data.market_v1_Fish.nextPricedOrder,4,"order sequence deterministic under transform retry")
 local fishQuote=cmd(bidder,"market","Fish").market
@@ -687,33 +713,33 @@ eq(fishQuote.openLots,4,"quote shows lot count")
 eq(fishQuote.ownLots,1,"quote shows own lots")
 eq(fishQuote.lotSize,3,"quote states three-unit quantity")
 eq(fishQuote.maxPrice,10000,"quote advertises price limit")
-eq(cmd(bidder,"buy","Fish:20").coins,88,"best ask fills with price-improvement refund")
+eq(trade(bidder,"buy","Fish:20").coins,88,"best ask fills with price-improvement refund")
 eq(data.market_v1_Fish.proceeds["101"],12,"oldest equal-price seller fills first")
 eq(data.market_v1_Fish.proceeds["102"],nil,"newer equal-price ask waits")
 eq(data.market_v1_Fish.proceeds["100"],nil,"expensive oldest ask does not jump price priority")
-eq(cmd(bidder,"buy","Fish:12").coins,76,"second equal-price ask fills next")
+eq(trade(bidder,"buy","Fish:12").coins,76,"second equal-price ask fills next")
 eq(data.market_v1_Fish.proceeds["102"],12,"second seller credited actual ask")
-eq(cmd(bidder,"buy","Fish:10").coins,76,"limit below market reimburses reservation")
+eq(trade(bidder,"buy","Fish:10").coins,76,"limit below market reimburses reservation")
 eq(cmd(bidder,"state").items.Fish,15,"no-match does not deliver goods")
-eq(cmd(bidder,"cancel","Fish").items.Fish,18,"cancel returns own priced goods")
-eq(cmd(olderSeller,"proceeds","Fish").coins,12,"seller collects actual ask proceeds")
-eq(cmd(olderSeller,"proceeds","Fish").coins,12,"priced proceeds cannot replay")
+eq(trade(bidder,"cancel","Fish").items.Fish,18,"cancel returns own priced goods")
+eq(trade(olderSeller,"proceeds","Fish").coins,12,"seller collects actual ask proceeds")
+eq(trade(olderSeller,"proceeds","Fish").coins,12,"priced proceeds cannot replay")
 for _,bad in ipairs({"Fish:0","Fish:10001","Fish:-1","Fish:1.5","Fish:1e3","Fish:nan","Fish: 12","Fish:12:2"}) do
-	local invalid=cmd(newerSeller,"list",bad)
+	local invalid=trade(newerSeller,"list",bad)
 	eq(invalid.items.Fish,9,"invalid ask cannot reserve goods: "..bad)
 end
-eq(cmd(newerSeller,"list","Aetherite:5").items.Fish,9,"unsupported commodity rejected")
-eq(cmd(bidder,"buy","Fish:10000").coins,76,"unfunded buy limit rejected without debit")
+eq(trade(newerSeller,"list","Aetherite:5").items.Fish,9,"unsupported commodity rejected")
+eq(trade(bidder,"buy","Fish:10000").coins,76,"unfunded buy limit rejected without debit")
 local recoveryBuyer=marketPlayer(104,200,{})
 injectedFailure=true
-eq(cmd(recoveryBuyer,"buy","Fish:50").coins,150,"ambiguous purchase retains full durable reservation")
+eq(trade(recoveryBuyer,"buy","Fish:50").coins,150,"ambiguous purchase retains full durable reservation")
 services.Players.PlayerRemoving:Fire(recoveryBuyer)
 eq(data.p104.profile.pricedPending.price,50,"pending purchase persists custom limit")
 recoveryBuyer=player(104)
 eq(cmd(recoveryBuyer,"state").coins,170,"rejoin returns exact price-improvement once")
 eq(cmd(recoveryBuyer,"state").items.Fish,3,"rejoin delivers priced purchase once")
-eq(cmd(highSeller,"proceeds","Fish").coins,30,"lost acknowledgement credits seller exactly once")
-eq(cmd(highSeller,"proceeds","Fish").coins,30,"seller cannot recollect recovered sale")
+eq(trade(highSeller,"proceeds","Fish").coins,30,"lost acknowledgement credits seller exactly once")
+eq(trade(highSeller,"proceeds","Fish").coins,30,"seller cannot recollect recovered sale")
 -- Migration keeps the existing market key, seller balances, receipts and FIFO.
 local legacySeller=marketPlayer(110,0,{})
 services.Players.PlayerRemoving:Fire(legacySeller)
@@ -722,9 +748,9 @@ legacySeller=player(110)
 data.market_v1_Herb={orders={"110"},proceeds={},receipts={['110']={seq=1,coins=0,units=0,text="legacy listing"}},accounts=1}
 local legacyBuyer=marketPlayer(111,100,{})
 eq(cmd(legacyBuyer,"market","Herb").market.bestAsk,9,"legacy lot quotes original fixed price")
-eq(cmd(legacyBuyer,"buy","Herb:20").coins,91,"legacy lot fills at original price")
+eq(trade(legacyBuyer,"buy","Herb:20").coins,91,"legacy lot fills at original price")
 eq(data.market_v1_Herb.version,2,"legacy book migrates in place")
-eq(cmd(legacySeller,"proceeds","Herb").coins,9,"migrated seller proceeds preserved")
+eq(trade(legacySeller,"proceeds","Herb").coins,9,"migrated seller proceeds preserved")
 local oldPending=marketPlayer(112,91,{})
 services.Players.PlayerRemoving:Fire(oldPending)
 data.p112.profile.marketSeq=1
@@ -734,39 +760,39 @@ oldPending=player(112)
 eq(cmd(oldPending,"state").coins,91,"legacy pending buy uses historical reserved amount")
 eq(cmd(oldPending,"state").items.Herb,3,"legacy pending buy still delivers")
 eq(data.market_v1_Herb.proceeds['113'],9,"legacy pending seller paid historical price")
-eq(cmd(c,"list","Fish:10").message,"Waiting for journal sync.","expired journal cannot open priced asks")
+eq(trade(c,"list","Fish:10").message,"Waiting for journal sync.","expired journal cannot open priced asks")
 local ironTrader=marketPlayer(114,100,{Fish=3})
 cmd(ironTrader,"ironman")
-eq(cmd(ironTrader,"buy","Fish:10").coins,100,"Ironman priced buy cannot reserve coins")
+eq(trade(ironTrader,"buy","Fish:10").coins,100,"Ironman priced buy cannot reserve coins")
 eq(cmd(ironTrader,"market","Fish").market,nil,"Ironman cannot query player market")
 local replaySeller=marketPlayer(115,0,{Timber=6})
 injectedFailure=true
-eq(cmd(replaySeller,"list","Timber:37").items.Timber,3,"ambiguous priced listing holds goods in escrow")
+eq(trade(replaySeller,"list","Timber:37").items.Timber,3,"ambiguous priced listing holds goods in escrow")
 services.Players.PlayerRemoving:Fire(replaySeller)
 replaySeller=player(115)
 eq(cmd(replaySeller,"state").items.Timber,3,"listing recovery cannot duplicate reserved goods")
 eq(#data.market_v1_Timber.pricedOrders,1,"listing recovery creates only one order")
 eq(data.market_v1_Timber.pricedOrders[1].price,37,"listing recovery retains chosen ask")
 injectedFailure=true
-cmd(replaySeller,"cancel","Timber")
+trade(replaySeller,"cancel","Timber")
 services.Players.PlayerRemoving:Fire(replaySeller)
 replaySeller=player(115)
 eq(cmd(replaySeller,"state").items.Timber,6,"cancellation recovery returns escrow once")
 eq(#data.market_v1_Timber.pricedOrders,0,"recovered cancellation removes order once")
-cmd(replaySeller,"list","Timber:23")
+trade(replaySeller,"list","Timber:23")
 local replayBuyer=marketPlayer(116,40,{})
-cmd(replayBuyer,"buy","Timber:30")
+trade(replayBuyer,"buy","Timber:30")
 injectedFailure=true
-eq(cmd(replaySeller,"proceeds","Timber").coins,0,"ambiguous proceeds wait for receipt recovery")
+eq(trade(replaySeller,"proceeds","Timber").coins,0,"ambiguous proceeds wait for receipt recovery")
 services.Players.PlayerRemoving:Fire(replaySeller)
 replaySeller=player(115)
 eq(cmd(replaySeller,"state").coins,23,"proceeds recovery grants actual ask once")
-eq(cmd(replaySeller,"proceeds","Timber").coins,23,"recovered proceeds cannot repeat")
+eq(trade(replaySeller,"proceeds","Timber").coins,23,"recovered proceeds cannot repeat")
 -- Two distinct old fixed-price lots retain their FIFO order when both migrate.
 data.market_v1_Ore.orders={"117","118"}
 data.market_v1_Ore.nextOrder=nil
 local migrationBuyer=marketPlayer(119,50,{})
-cmd(migrationBuyer,"buy","Ore:20")
+trade(migrationBuyer,"buy","Ore:20")
 eq(data.market_v1_Ore.proceeds['117'],15,"legacy migration preserves oldest lot priority")
 eq(data.market_v1_Ore.orders[1],'118',"legacy migration preserves remaining seller")
 eq(type(data.market_v1_Ore.orders[1]),"string","legacy queue retains old server serialization format")
@@ -800,7 +826,7 @@ local function oldMarket(trader,verb,item,seq)
 end
 data.market_v1_Fish=nil
 local mixedSeller=marketPlayer(120,0,{Fish=6})
-cmd(mixedSeller,"list","Fish:9")
+trade(mixedSeller,"list","Fish:9")
 eq(data.market_v1_Fish.receipts['120'].seq,0,"priced user registers harmless legacy receipt")
 eq(data.market_v1_Fish.accounts,1,"priced user counts toward shared legacy account limit")
 oldMarket('121','list','Fish',1)
@@ -810,25 +836,25 @@ oldMarket('122','buy','Fish',1)
 eq(data.market_v1_Fish.proceeds['121'],18,"old buyer after new writer pays fixed lot price")
 eq(#data.market_v1_Fish.pricedOrders,1,"old buyer cannot misprice new custom lot")
 local mixedBuyer=marketPlayer(123,100,{})
-eq(cmd(mixedBuyer,"buy","Fish:20").coins,91,"new buyer after old writer matches custom ask")
+eq(trade(mixedBuyer,"buy","Fish:20").coins,91,"new buyer after old writer matches custom ask")
 oldMarket('120','proceeds','Fish',1)
 eq(data.market_v1_Fish.receipts['120'].coins,9,"old server can collect shared priced proceeds")
 eq(data.market_v1_Fish.accounts,4,"old action reuses priced user's account registration")
 eq(data.market_v1_Fish.pricedReceipts['120'].units,0,"old receipt cannot overwrite new receipt stream")
 oldMarket('124','list','Fish',1)
-cmd(mixedSeller,"list","Fish:18")
-cmd(mixedBuyer,"buy","Fish:20")
+trade(mixedSeller,"list","Fish:18")
+trade(mixedBuyer,"buy","Fish:20")
 eq(data.market_v1_Fish.proceeds['124'],18,"equal-price mixed queues prioritize legacy lot")
 eq(#data.market_v1_Fish.pricedOrders,1,"mixed queue tie leaves priced lot intact")
-cmd(mixedBuyer,"buy","Fish:20")
+trade(mixedBuyer,"buy","Fish:20")
 eq(#data.market_v1_Fish.pricedOrders,0,"new buyer can consume remaining priced lot")
 -- Actual baseline open reuses old.profile, and persist table.clone's the whole
 -- profile then clones known nested maps/workers. Unknown additive fields survive.
 local hopper=marketPlayer(130,200,{})
 local hopSeller=marketPlayer(131,0,{Fish=3})
-cmd(hopSeller,"list","Fish:23")
+trade(hopSeller,"list","Fish:23")
 injectedFailure=true
-eq(cmd(hopper,"buy","Fish:40").coins,160,"hop fixture retains priced reservation")
+eq(trade(hopper,"buy","Fish:40").coins,160,"hop fixture retains priced reservation")
 services.Players.PlayerRemoving:Fire(hopper)
 eq(data.p130.profile.pending,nil,"new reservation is invisible to legacy pending recovery")
 local baselineProfile=data.p130.profile -- baseline open: profile=old and old.profile or fresh()
@@ -860,11 +886,11 @@ for i=1,4000 do
 end
 data.market_v1_Timber=capacity
 local capped=marketPlayer(9000,100,{Timber=3})
-eq(cmd(capped,"list","Timber:100").items.Timber,3,"combined receipt budget returns unallocated escrow")
+eq(trade(capped,"list","Timber:100").items.Timber,3,"combined receipt budget returns unallocated escrow")
 eq(data.market_v1_Timber.pricedAccounts,2000,"new writer cannot exceed shared account budget")
 data.market_v1_Timber.proceeds['3000']=57
 local existingSeller=marketPlayer(3000,0,{})
-eq(cmd(existingSeller,"proceeds","Timber").coins,57,"existing legacy seller can collect at full shared capacity")
+eq(trade(existingSeller,"proceeds","Timber").coins,57,"existing legacy seller can collect at full shared capacity")
 for i=2001,4000 do capacity.pricedReceipts[tostring(i)]={seq=1,coins=10000,units=3,text=string.rep('x',180)} end
 capacity.accounts=4000;capacity.pricedAccounts=4000
 for i=1,300 do capacity.orders[i]=tostring(i);capacity.pricedOrders[i]={seller=tostring(i+300),price=10000,sequence=i} end
@@ -1340,10 +1366,11 @@ eq(slayer.SlayerBossReady,"Bramble:1","boss attribute published")
 eq(st(slayer).depth.slayer.quest.progress,150,"progress capped at needed")
 bridge.OnInvoke("kill",slayer,{monster="BramblebackBoar"})
 eq(st(slayer).depth.slayer.quest.progress,150,"ready quest stops counting")
-eq(next(bridge.OnInvoke("slayerBoss",slayer,{result="maybe"})),nil,"invalid boss result ignored")
-eq(next(bridge.OnInvoke("slayerBoss",slayer,nil)),nil,"missing boss payload ignored")
+eq(bridge.OnInvoke("slayerBoss",slayer,{result="maybe"}).ok,false,"invalid boss result ignored")
+eq(bridge.OnInvoke("slayerBoss",slayer,nil).ok,false,"missing boss payload ignored")
 eq(st(slayer).depth.slayer.quest.bossReady,true,"invalid result keeps quest")
 local victory=bridge.OnInvoke("slayerBoss",slayer,{result="win"})
+eq(victory.ok,true,"boss win report accepted")
 eq(victory.drops.BeastHide,10,"boss tier drops rolled")
 eq(victory.drops.SlayerToken,1,"boss guaranteed token")
 local afterBoss=st(slayer)
@@ -1352,7 +1379,7 @@ eq(afterBoss.depth.slayer.lines.Bramble.xp,5,"slayer XP granted")
 eq(afterBoss.depth.slayer.lines.Bramble.level,1,"slayer level 1")
 eq(afterBoss.items.SlayerToken,1,"boss drops collected")
 eq(slayer.SlayerBossReady,"","boss attribute cleared")
-eq(next(bridge.OnInvoke("slayerBoss",slayer,{result="win"})),nil,"boss reward cannot repeat")
+eq(bridge.OnInvoke("slayerBoss",slayer,{result="win"}).ok,false,"boss reward cannot repeat")
 eq(cmd(slayer,"slayerAbandon").message,"You have no slayer quest.","abandon without quest")
 cmd(slayer,"slayerBegin","Bramble:1")
 local abandoned=cmd(slayer,"slayerAbandon")
@@ -1360,7 +1387,9 @@ eq(abandoned.depth.slayer.quest,nil,"abandon clears quest")
 eq(abandoned.coins,afterBoss.coins-200,"abandon does not refund")
 cmd(slayer,"slayerBegin","Bramble:1")
 for _=1,3 do bridge.OnInvoke("kill",slayer,{monster="BarkStalker"}) end
-eq(next(bridge.OnInvoke("slayerBoss",slayer,{result="fail"})),nil,"failed boss returns nothing")
+local failReport=bridge.OnInvoke("slayerBoss",slayer,{result="fail"})
+eq(failReport.ok,true,"failed boss report accepted")
+eq(failReport.drops,nil,"failed boss returns no drops")
 local failed=st(slayer)
 eq(failed.depth.slayer.quest,nil,"fail clears quest")
 eq(failed.depth.slayer.lines.Bramble.xp,5,"fail grants no slayer XP")
@@ -1477,13 +1506,154 @@ eq(st(foreman).workers[1].tier,7,"worker tier persisted")
 local loner=player(340)
 cmd(loner,"ironman")
 eq(bridge.OnInvoke("stats",loner).ironman,true,"bridge reports ironman")
-eq(cmd(loner,"buy","Ore").message,"Ironman journals cannot use the player exchange.","Ironman still excluded")
+eq(trade(loner,"buy","Ore").message,"Ironman journals cannot use the player exchange.","Ironman still excluded")
 eq(cmd(loner,"equip",string.rep("x",64)).depth.equipment.weapon,nil,"64-char unknown item handled")
 eq(cmd(loner,"sell",string.rep("x",65)).message,"That request is too long.","65-char item rejected")
 hum(loner).Health=0
 eq(cmd(loner,"consume","CookedFish").message,"Return to your island first.","dead player cannot use Depth verbs")
 print("Depth assertions: "..(checks-legacyChecks))
 end)()
+------------------------------------------------------------------------------
+-- Review regressions (H1, H2, M3, L1-L4, node regrowth).
+------------------------------------------------------------------------------
+do
+	local function has(text,part) return type(text)=="string" and string.find(text,part,1,true)~=nil end
+	local function hum(p) return p.Character:FindFirstChildOfClass("Humanoid") end
+	local function seeded(id,mutate)
+		local p=player(id)
+		services.Players.PlayerRemoving:Fire(p)
+		mutate(data["p"..id].profile)
+		return player(id)
+	end
+	local function close(actual,expected,case) eq(math.abs(actual-expected)<1e-6,true,case.." ("..tostring(actual)..")") end
+	local bridge
+	for _,o in ipairs(allObjects) do if o.Name=="IsleBridge" then bridge=o end end
+
+	-- H1: MaxHealth changes keep the health fraction; toggling gear never heals.
+	local toggler=seeded(600,function(p)
+		p.items={MeadowCharm=1,BrassHelm=1}
+		p.xp.Combat=Data.XP_TABLE[5]; p.levelRewards.Combat=5
+	end)
+	local h=hum(toggler)
+	h.Health=50
+	local on=cmd(toggler,"accessory","MeadowCharm")
+	eq(h.MaxHealth,on.depth.stats.health,"accessory raises MaxHealth")
+	close(h.Health,50/100*h.MaxHealth,"accessory keeps the health fraction instead of adding the increase")
+	for _=1,5 do cmd(toggler,"accessory","MeadowCharm") end
+	eq(h.MaxHealth,100,"accessory removed after an even number of toggles")
+	close(h.Health,50,"accessory toggling heals nothing")
+	for _=1,3 do cmd(toggler,"equip","BrassHelm"); cmd(toggler,"unequip","helmet") end
+	close(h.Health,50,"equip/unequip toggling heals nothing")
+	local worn=cmd(toggler,"accessory","MeadowCharm").depth.stats.health
+	h.Health=0
+	eq(cmd(toggler,"state").depth.stats.health,worn,"stat sheet unchanged while dead")
+	-- A freshly spawned character still receives its full sheet.
+	local spawned={Health=100,MaxHealth=100,Died=signal(),TakeDamage=function(self,n) self.Health-=n end}
+	local root={Position=Vector3.zero}
+	toggler.Character={FindFirstChild=function() return root end,FindFirstChildOfClass=function() return spawned end,WaitForChild=function() return spawned end}
+	toggler.CharacterAdded:Fire(toggler.Character)
+	eq(spawned.MaxHealth,worn,"spawn applies the stat sheet")
+	eq(spawned.Health,worn,"spawn grants the raw increase")
+
+	-- H2: writing market verbs are paced; empty cancels skip the DataStore.
+	local spammer=seeded(601,function(p) p.items={Fish=6}; p.coins=50 end)
+	eq(trade(spammer,"list","Fish:20").items.Fish,3,"first listing settles")
+	local writes=db.writes
+	local spam=cmd(spammer,"proceeds","Fish")
+	eq(has(spam.message,"still recording"),true,"proceeds inside the exchange cooldown refused")
+	eq(cmd(spammer,"list","Fish:20").items.Fish,3,"listing inside the cooldown reserves nothing")
+	eq(cmd(spammer,"buy","Fish:20").coins,50,"buy inside the cooldown reserves nothing")
+	eq(db.writes,writes,"cooldown spam performs no DataStore writes")
+	advance(6)
+	eq(cmd(spammer,"cancel","Fish").items.Fish,6,"cancel after the cooldown settles")
+	eq(cmd(spammer,"state").market.ownLots,0,"view tracks own lots")
+	writes=db.writes
+	advance(6)
+	eq(cmd(spammer,"cancel","Fish").message,"You have no open listing here.","cached view answers an empty cancel")
+	eq(db.writes,writes,"empty cancel skips the DataStore round-trip")
+	eq(has(cmd(spammer,"list","Fish:20").message,"Listed 3"),true,"empty cancel does not start the cooldown")
+	writes=db.writes
+	eq(has(cmd(spammer,"cancel","Fish").message,"still recording"),true,"own lot cancel waits for the cooldown")
+	eq(db.writes,writes,"refused cancel does not write")
+	local other=seeded(602,function(p) p.coins=50 end)
+	cmd(other,"market","Fish")
+	advance(6)
+	eq(cmd(other,"cancel","Fish").message,"You have no open listing here.","another trader's lots are not own lots")
+
+	-- M3: a same-server rejoin waits for the previous session to finish saving.
+	local first=player(603)
+	use(first,ore)
+	local second=player(603,true)
+	local joining=coroutine.create(function() services.Players.PlayerAdded:Fire(second) end)
+	assert(coroutine.resume(joining))
+	eq(coroutine.status(joining),"suspended","rejoin waits while the old session is live")
+	eq(cmd(second,"state").loading,true,"waiting session has no journal yet")
+	services.Players.PlayerRemoving:Fire(first)
+	assert(coroutine.resume(joining))
+	eq(coroutine.status(joining),"dead","rejoin proceeds once the old session closed")
+	eq(cmd(second,"state").items.Ore,1,"rejoin loads the final save, not a stale autosave")
+	eq(string.match(data.p603.owner,"^test%-instance#%d+$")~=nil,true,"lease owner carries a session token")
+	local stuck=player(604)
+	local late=player(604,true)
+	local blocked=coroutine.create(function() services.Players.PlayerAdded:Fire(late) end)
+	assert(coroutine.resume(blocked))
+	advance(16)
+	assert(coroutine.resume(blocked))
+	eq(has(late.kicked,"still saving"),true,"rejoin gives up after the bounded wait")
+	eq(cmd(stuck,"state").items~=nil,true,"timed-out rejoin leaves the live session intact")
+	services.Players.PlayerRemoving:Fire(stuck)
+
+	-- L1: a player who leaves while the journal loads leaves nothing behind.
+	local leaver=player(605,true)
+	db.onUpdate=function() leaver.Parent=nil end
+	services.Players.PlayerAdded:Fire(leaver)
+	eq(data.p605.owner,"","abandoned open releases the lease")
+	eq(cmd(leaver,"state").loading,true,"abandoned open keeps no profile")
+	eq(bridge.OnInvoke("stats",leaver),nil,"abandoned open keeps no live lease")
+	services.Players.PlayerRemoving:Fire(leaver)
+	local returning=player(605)
+	eq(returning.kicked,nil,"abandoned open does not block the next session")
+	eq(cmd(returning,"state").loading,nil,"next session opens immediately")
+
+	-- L2: an unapplied boss report tells Combat so it can re-arm.
+	eq(bridge.OnInvoke("slayerBoss",lateOpen,{result="win"}).ok,false,"lapsed lease reports boss failure")
+
+	-- L3: migration drops unknown or malformed pets and keeps the active pointer.
+	local keeper=seeded(606,function(p)
+		p.pets={{id="Nope",level=1,xp=0},{id="Emberfox",level=2,xp=5},{id="Emberfox",xp=0},"junk"}
+		p.activePet=2
+	end)
+	local pets=cmd(keeper,"state").depth.pets
+	eq(#pets,1,"invalid pets dropped on migration")
+	eq(pets[1].level,2,"valid pet kept")
+	eq(pets[1].active,true,"active pet index remapped")
+	eq(has(cmd(keeper,"petSummon","2").message,"Choose a pet you have adopted"),true,"summoning a missing pet is refused")
+
+	-- L4: full state snapshots are throttled to twice a second.
+	local poller=player(607)
+	advance(1)
+	eq(objects.RemoteFunction.OnServerInvoke(poller,"state")~=nil,true,"first state poll answered")
+	advance(0.1)
+	eq(objects.RemoteFunction.OnServerInvoke(poller,"state"),nil,"rapid state poll throttled")
+	advance(0.5)
+	eq(objects.RemoteFunction.OnServerInvoke(poller,"state")~=nil,true,"state poll answered after the interval")
+
+	-- Node regrowth: per player, per prompt, for Data.ResourceTiers respawn seconds.
+	local nodeA,nodeB=node("gather","Ore"),node("gather","Ore")
+	local picker,neighbour=player(608),player(609)
+	advance(1)
+	eq(rawUse(picker,nodeA).items.Ore,1,"first harvest")
+	advance(1)
+	local regrowing=rawUse(picker,nodeA)
+	eq(regrowing.message,"This node is regrowing (2s).","depleted node refuses the same player")
+	eq(regrowing.items.Ore,1,"depleted node pays nothing")
+	eq(rawUse(neighbour,nodeA).items.Ore,1,"another player can harvest the same node")
+	advance(1)
+	eq(rawUse(picker,nodeB).items.Ore,2,"a different node is unaffected")
+	advance(1)
+	eq(rawUse(picker,nodeA).items.Ore,3,"node regrows after its respawn time")
+	print("PASS: review regression checks.")
+end
 print("PASS: "..checks.." production gameplay/market/depth assertions.")
 do
 	local visitor=player(990)

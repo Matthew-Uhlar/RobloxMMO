@@ -39,7 +39,8 @@ local function ok(cond, case) assert(cond, case); checks += 1 end
 -- Doubles
 ------------------------------------------------------------------------------
 local function world()
-	local w = {clock = 100, rolls = {}, calls = {}, positions = {}, alive = {}, stats = {}, heals = {}, list = {}}
+	local w = {clock = 100, rolls = {}, calls = {}, positions = {}, alive = {}, stats = {}, heals = {}, list = {},
+		replies = {slayerBoss = {ok = true}}, playerCalls = 0}
 	function w.rng()
 		if #w.rolls > 0 then return table.remove(w.rolls, 1) end
 		return 0.5
@@ -63,13 +64,14 @@ local function world()
 		Data = Data, Progression = P,
 		now = function() return w.clock end,
 		rng = w.rng,
-		players = function() return w.list end,
+		players = function() w.playerCalls += 1; return w.list end,
 		alive = function(p) return w.alive[p] == true end,
 		position = function(p) return w.positions[p] end,
 		heal = function(p, percent) table.insert(w.heals, {player = p, percent = percent}) end,
-		bridge = function(op, player, payload)
+		bridge = function(op, player, payload, done)
 			table.insert(w.calls, {op = op, player = player, payload = payload})
 			if op == "stats" then return w.stats[player] end
+			if done then done(w.replies[op]) end
 			return nil
 		end,
 	})
@@ -500,6 +502,88 @@ do
 end
 
 ------------------------------------------------------------------------------
+-- Review regressions: M1 cooldown drift, M2 shared snapshot, L2 boss re-arm.
+------------------------------------------------------------------------------
+do
+	-- M1: swinging at the edge of the grace window never beats the base rate.
+	local w = world()
+	local L = w.logic
+	local marker = L.addMarker("dps", "StarbornSentinel", 1, origin)
+	L.dueSpawns()
+	local target = model("dummy")
+	local r = L.register(marker, target, Vector3.new(0, 1, 0), {radius = 2})
+	r.hp, r.maxHp = 1e12, 1e12
+	local hero = w.player("hero", Vector3.new(5, 1, 0))
+	local landed, duration = 0, 30
+	local start = w.clock
+	while w.clock < start + duration do
+		if L.attack(hero, "attack", target) then landed += 1 end
+		w.clock += C.BASE_COOLDOWN - C.COOLDOWN_GRACE + 0.001
+	end
+	ok(landed <= math.floor(duration / C.BASE_COOLDOWN) + 2, "sustained swings stay at the base cooldown (" .. landed .. ")")
+	local onTime = 0
+	w.clock += 1
+	for i = 1, 20 do
+		if L.attack(hero, "attack", target) then onTime += 1 end
+		w.clock += C.BASE_COOLDOWN + (if i % 2 == 0 then 0.05 else -0.05) -- network jitter
+	end
+	eq(onTime, 20, "jittered on-time swings (early within the grace) all land")
+
+	-- M2: one player snapshot per tick; sleep beyond ACTIVE_RANGE.
+	local w2 = world()
+	local L2 = w2.logic
+	local m2 = L2.addMarker("pack", "Thornling", 3, origin)
+	L2.dueSpawns()
+	local pack = {}
+	for i = 1, 3 do pack[i] = L2.register(m2, model("t" .. i), Vector3.new(i, 2, 0)) end
+	local far = w2.player("far", Vector3.new(C.ACTIVE_RANGE + 10, 3, 0))
+	w2.player("farther", Vector3.new(0, 3, C.ACTIVE_RANGE + 30))
+	w2.playerCalls = 0
+	L2.beginTick()
+	for _, mob in ipairs(pack) do eq(L2.think(mob).kind, "sleep", "no player within " .. C.ACTIVE_RANGE .. " studs: sleep") end
+	near(L2.nearestPlayerDistance(pack[1]), (Vector3.new(C.ACTIVE_RANGE + 10, 3, 0) - pack[1].position).Magnitude, "nearest player distance from the snapshot")
+	L2.endTick()
+	eq(w2.playerCalls, 1, "all monsters share one player list per tick")
+	w2.positions[far] = Vector3.new(30, 3, 0)
+	L2.beginTick()
+	w2.positions[far] = Vector3.new(500, 3, 0)
+	ok(L2.think(pack[1]).kind ~= "sleep", "think uses the tick snapshot")
+	L2.endTick()
+	eq(L2.think(pack[1]).kind, "sleep", "outside a tick live positions are used")
+
+	-- L2: an unapplied slayerBoss report re-arms the boss instead of dropping it.
+	local w3 = world()
+	local L3 = w3.logic
+	local owner = w3.player("owner", Vector3.new(0, 3, 0))
+	w3.replies.slayerBoss = {ok = false, reason = "sync"}
+	local _, spec = L3.bossAttribute(owner, "Bramble:1")
+	local boss = L3.registerBoss(owner, spec, model("b"), Vector3.new(0, 3, -8))
+	w3.stats[owner].stats = {damage = 1e9, strength = 0, critChance = 0, critDamage = 0, attackSpeed = 0}
+	ok(L3.attack(owner, "attack", boss.model).killed, "boss slain")
+	eq(#L3.dueRearms(), 0, "re-arm waits a moment")
+	ok(L3.hasPlayerState(owner), "re-arm is tracked per player")
+	w3.clock += C.BOSS_REARM_DELAY
+	local due = L3.dueRearms()
+	eq(due[1], owner, "unapplied win re-arms the boss")
+	eq(#L3.dueRearms(), 0, "re-arm fires once")
+	eq((L3.bossAttribute(owner, "Bramble:1")), "spawn", "re-read attribute queues the boss again")
+	w3.replies.slayerBoss = {ok = true}
+	local again = L3.registerBoss(owner, L3.pendingBosses()[1].spec, model("b2"), Vector3.new(0, 3, -8))
+	L3.attack(owner, "attack", again.model)
+	w3.clock += C.BOSS_REARM_DELAY
+	eq(#L3.dueRearms(), 0, "applied win does not re-arm")
+	w3.replies.slayerBoss = nil
+	L3.bossAttribute(owner, "Bramble:1")
+	L3.registerBoss(owner, L3.pendingBosses()[1].spec, model("b3"), Vector3.new(0, 3, -8))
+	w3.clock += C.BOSS_DURATION
+	L3.bossTick()
+	L3.playerRemoving(owner)
+	w3.clock += C.BOSS_REARM_DELAY
+	eq(#L3.dueRearms(), 0, "leaving clears a pending re-arm")
+	ok(not L3.hasPlayerState(owner), "no per-player state after leave")
+end
+
+------------------------------------------------------------------------------
 -- Static checks on the runtime and client
 ------------------------------------------------------------------------------
 do
@@ -587,12 +671,15 @@ do
 	child(replicated, object("ModuleScript", {Name = "AetherProgression"}))
 	local serverStorage = object("ServerStorage")
 	local strong = false
+	local bossReply = {ok = true}
 	child(serverStorage, object("BindableFunction", {Name = "IsleBridge", Invoke = function(_, op, player, payload)
 		table.insert(bridgeCalls, {op = op, player = player, payload = payload})
 		if op == "stats" then
 			return {stats = {damage = if strong then 1000000 else 10, strength = 0, critChance = 0, critDamage = 50, attackSpeed = 0}, combatLevel = 3, ironman = false}
 		elseif op == "damage" then
 			return 7
+		elseif op == "slayerBoss" then
+			return bossReply
 		end
 		return {}
 	end}))
@@ -689,6 +776,30 @@ do
 	tick(0.6)
 	eq(#live(), 4, "markers spawn once MonsterId arrives (default Count 2)")
 
+	-- M2: limb welds animate only near players; distant monsters write nothing.
+	local thorn
+	for _, m in ipairs(live()) do if m:GetAttribute("MonsterId") == "Thornling" then thorn = m end end
+	local petalWeld
+	for _, o in ipairs(created) do
+		if o.ClassName == "Weld" and o.Part0 == thorn.PrimaryPart and o.Part1 and o.Part1.Name == "Petal1" then petalWeld = o end
+	end
+	ok(petalWeld ~= nil, "animated weld found")
+	local c0 = petalWeld.C0
+	tick(1)
+	ok(petalWeld.C0 ~= c0, "limbs animate with a player within " .. C.ANIMATE_RANGE .. " studs")
+	root.Position = Vector3.new(0, 3, 100)
+	tick(0.2)
+	c0 = petalWeld.C0
+	tick(1)
+	eq(petalWeld.C0, c0, "limbs freeze beyond the animation range")
+	root.Position = Vector3.new(0, 3, 400)
+	tick(0.2)
+	local frozen = thorn.PrimaryPart.CFrame
+	tick(2)
+	eq(thorn.PrimaryPart.CFrame, frozen, "monsters with no player in range write no CFrame")
+	root.Position = Vector3.new(40, 3, 0)
+	tick(0.2)
+
 	-- Aggro and monster strikes through the bridge.
 	root.Position = Vector3.new(8, 3, 0)
 	tick(4)
@@ -728,6 +839,24 @@ do
 	local fails = 0
 	for _, c in ipairs(bridgeCalls) do if c.op == "slayerBoss" and c.payload.result == "fail" then fails += 1 end end
 	eq(fails, 1, "timeout reported as a failure once")
+	tick(C.BOSS_REARM_DELAY + 1)
+	local respawned = 0
+	for _, m in ipairs(live()) do if m:GetAttribute("Boss") then respawned += 1 end end
+	eq(respawned, 0, "an applied report does not re-arm the boss")
+	-- L2: the server could not apply the report (lease lapsed): the boss comes back.
+	bossReply = {ok = false, reason = "sync"}
+	hero:SetAttribute("SlayerBossReady", "Bramble:1")
+	tick(0.6)
+	local unreported
+	for _, m in ipairs(live()) do if m:GetAttribute("Boss") then unreported = m end end
+	ok(unreported ~= nil, "boss summoned again")
+	tick(C.BOSS_DURATION + 1)
+	ok(unreported.destroyed, "unreported boss despawned on timeout")
+	tick(C.BOSS_REARM_DELAY + 1)
+	local rearmed
+	for _, m in ipairs(live()) do if m:GetAttribute("Boss") and not m.destroyed then rearmed = m end end
+	ok(rearmed ~= nil and rearmed ~= unreported, "unapplied boss report re-arms the boss from SlayerBossReady")
+	bossReply = {ok = true}
 
 	-- Marker removal and leaving.
 	spawnsFolder.ChildRemoved:Fire(late)

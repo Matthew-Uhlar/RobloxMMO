@@ -19,8 +19,15 @@ update.Parent = ReplicatedStorage
 local exchangeAction, resumeExchange
 local marketViews,marketReads={},{}
 local profiles, cooldown, lastRead, saving, preview, leaseEnd = {}, {}, {}, {}, {}, {}
+local stateRead, exchangeReady, sessionOwner, opening = {}, {}, {}, {}
+-- Unfinished sessions per UserId on this server (opening, live or closing).
+local userSessions = {}
 local enemies = setmetatable({}, {__mode = "k"})
+-- Per-player resource node depletion: [prompt] = {[player] = os.clock() ready time}.
+local nodeRegrowth = setmetatable({}, {__mode = "k"})
 local uid = HttpService:GenerateGUID(false)
+local sessionSeq = 0
+local STATE_INTERVAL, EXCHANGE_COOLDOWN, REJOIN_WAIT = 0.5, 6, 15
 local store
 pcall(function()
 	store = DataStoreService:GetDataStore("Islebound_RPG_v1")
@@ -204,7 +211,7 @@ local function regionDenied(region)
 	if not def then return "That region is not on the guild charts." end
 	return def.name.." requires "..regionRequirement(def).."."
 end
-local function applyStats(player,p)
+local function applyStats(player,p,spawned)
 	local stats=Progression.computeStats(p,os.time())
 	player:SetAttribute("SkyreachUnlocked",(p.questCompleted or 0)>=6)
 	for _,region in ipairs(Data.Regions) do player:SetAttribute(region.id.."Unlocked",regionAllowed(p,region.id)) end
@@ -221,9 +228,14 @@ local function applyStats(player,p)
 	player:SetAttribute("SlayerBossReady",if quest and quest.bossReady then quest.line..":"..quest.tier else "")
 	local humanoid=player.Character and player.Character:FindFirstChildOfClass("Humanoid")
 	if humanoid and humanoid.MaxHealth~=health then
-		local increase=math.max(0,health-humanoid.MaxHealth)
+		local oldMax,current=humanoid.MaxHealth,humanoid.Health
 		humanoid.MaxHealth=health
-		if humanoid.Health>0 then humanoid.Health=math.min(health,humanoid.Health+increase) end
+		if current>0 then
+			-- A fresh character receives its full sheet; later stat changes (gear,
+			-- accessories, pets, buffs) keep the health fraction so toggling never heals.
+			humanoid.Health=if spawned then math.min(health,current+math.max(0,health-oldMax))
+				else math.clamp(current/math.max(oldMax,1)*health,0,health)
+		end
 	end
 	local walk=Progression.walkSpeed(stats.speed)
 	if humanoid and humanoid.WalkSpeed~=walk then humanoid.WalkSpeed=walk end
@@ -351,6 +363,7 @@ local function persist(player,release)
 	local p=profiles[player]
 	if not p then return true end
 	saving[player]=true
+	local owner=sessionOwner[player]
 	workerFleet(p)
 	-- Deep copy: every nested Depth table (pets, buffs, enchants...) is snapshotted.
 	local payload=deepCopy(p)
@@ -358,13 +371,13 @@ local function persist(player,release)
 	local committed
 	local ok=pcall(function()
 		committed=store:UpdateAsync("p"..player.UserId,function(old)
-			owned=old~=nil and old.owner==uid
+			owned=old~=nil and old.owner==owner
 			if not owned then return nil end
-			return {owner=if release then "" else uid, expires=os.time()+180,profile=payload}
+			return {owner=if release then "" else owner, expires=os.time()+180,profile=payload}
 		end)
 	end)
 	saving[player]=nil
-	owned=owned and committed~=nil and committed.owner==(if release then "" else uid)
+	owned=owned and committed~=nil and committed.owner==(if release then "" else owner)
 	if ok and owned then leaseEnd[player]=committed.expires end
 	if not release and ok and not owned and player.Parent then player:Kick("Your journal opened in another server. Please rejoin.") end
 	return ok and owned and (release or committed.expires>os.time())
@@ -395,40 +408,87 @@ local function migrate(profile)
 			if tier>0 then profile.collectionRewards[id]=tier end
 		end
 	end
-	if profile.activePet~=nil and not profile.pets[profile.activePet] then profile.activePet=nil end
+	-- Drop unknown or malformed pets, keeping the active pet pointed at the same entry.
+	local pets,active={},nil
+	for index,pet in ipairs(profile.pets) do
+		if type(pet)=="table" and type(pet.id)=="string" and Data.PetById[pet.id] and type(pet.level)=="number" and pet.level==pet.level then
+			table.insert(pets,pet)
+			if profile.activePet==index then active=#pets end
+		end
+	end
+	profile.pets=pets
+	profile.activePet=active
 	local quest=profile.slayerQuest
 	if quest~=nil and (type(quest)~="table" or not Data.Slayers[quest.line] or not Data.Slayers[quest.line].tiers[quest.tier]) then profile.slayerQuest=nil end
 	profile.version=math.max(tonumber(profile.version) or 1,2)
 	workerFleet(profile)
 end
+-- Clears every per-player table and ends this player's session slot.
+local function forget(player)
+	profiles[player],cooldown[player],lastRead[player],preview[player],leaseEnd[player]=nil,nil,nil,nil,nil
+	marketViews[player],marketReads[player],stateRead[player],exchangeReady[player]=nil,nil,nil,nil
+	sessionOwner[player],opening[player]=nil,nil
+	local set=userSessions[player.UserId]
+	if set then
+		set[player]=nil
+		if not next(set) then userSessions[player.UserId]=nil end
+	end
+end
+-- Leases written by any session of this server ("<uid>" legacy or "<uid>#<n>").
+local function ownedByThisServer(owner)
+	return owner==uid or (type(owner)=="string" and string.sub(owner,1,#uid+1)==uid.."#")
+end
 local function open(player)
+	-- A rejoin on this server waits until the previous session (still loading or
+	-- saving) has finished, so it never loads a stale autosave.
+	local deadline=os.clock()+REJOIN_WAIT
+	while userSessions[player.UserId] and os.clock()<deadline do task.wait(0.1) end
+	if not player.Parent then return end
+	if userSessions[player.UserId] then
+		player:Kick("Your journal is still saving. Please rejoin in a moment.")
+		return
+	end
+	userSessions[player.UserId]={[player]=true}
+	opening[player]=true
+	sessionSeq+=1
+	local owner=uid.."#"..sessionSeq
+	sessionOwner[player]=owner
 	local profile,conflict
 	local committed
 	local ok=pcall(function()
 		committed=store:UpdateAsync("p"..player.UserId,function(old)
-			if old and old.owner~="" and old.owner~=uid and old.expires>os.time() then
+			-- Every earlier session of this server has finished (above), so its lease may be taken over.
+			if old and old.owner~="" and not ownedByThisServer(old.owner) and old.expires>os.time() then
 				conflict=true
 				return nil
 			end
 			profile=old and old.profile or fresh()
-			return {owner=uid,expires=os.time()+180,profile=profile}
+			return {owner=owner,expires=os.time()+180,profile=profile}
 		end)
 	end)
-	if ok and (not committed or committed.owner~=uid) then conflict=true end
+	if ok and (not committed or committed.owner~=owner) then conflict=true end
 	if conflict or (not ok and not RunService:IsStudio()) then
+		forget(player)
 		player:Kick("Your journal is busy. Please rejoin in a moment.")
 		return
 	end
 	if not ok then profile=fresh(); preview[player]=true else profile=committed.profile end
-	migrate(profile)
+	-- Never strand the session slot (and block same-server rejoins) on a bad save.
+	if not pcall(migrate,profile) then
+		forget(player)
+		player:Kick("Your journal could not be opened. Please rejoin in a moment.")
+		return
+	end
 	profiles[player]=profile
 	for name in pairs(decorations) do player:SetAttribute("Home"..name,profile.decorations[name]==true) end
 	leaseEnd[player]=if preview[player] then os.time()+180 else committed.expires
-	if not player.Parent then persist(player,true); profiles[player]=nil; return end
+	opening[player]=nil
+	-- Abandoned open (the player left while loading): release and clear everything.
+	if not player.Parent then persist(player,true); forget(player); return end
 	local function spawnCharacter(character)
 		local humanoid=character:WaitForChild("Humanoid",10)
 		if not humanoid then return end
-		applyStats(player,profile)
+		applyStats(player,profile,true)
 		humanoid.Died:Connect(function()
 			local p=profiles[player]
 			if p then
@@ -491,6 +551,9 @@ local function perform(player,verb,item,prompt)
 	elseif verb=="gather" and prompt and type(item)=="string" and Data.ResourceSkill[item] then
 		local resource=Progression.resource(item)
 		local skill=resource.skill
+		local regrowth=nodeRegrowth[prompt]
+		local readyAt=regrowth and regrowth[player]
+		if readyAt and os.clock()<readyAt then return "This node is regrowing ("..math.ceil(readyAt-os.clock()).."s)." end
 		-- Legacy bonuses stack into the harvest base before fortune.
 		local bonus=0
 		if resource.index==1 and level(p.xp[skill])>=3 then bonus+=1 end
@@ -507,6 +570,8 @@ local function perform(player,verb,item,prompt)
 		collect(p,item,result.amount)
 		grantXp(p,skill,result.xp)
 		p.started=true
+		if not regrowth then regrowth=setmetatable({},{__mode="k"}); nodeRegrowth[prompt]=regrowth end
+		regrowth[player]=os.clock()+(tonumber(resource.respawn) or 3)
 		return "+"..result.amount.." "..resource.name.."   ·   +"..result.xp.." "..skill.." XP"
 	elseif verb=="explore" and prompt and item=="Skyreach" and region=="Skyreach" then
 		if p.skyreachVisited then return "Skyreach is already charted. Gather rich Aetherite or continue your guild contracts." end
@@ -635,10 +700,11 @@ local function perform(player,verb,item,prompt)
 			return "Pet dismissed."
 		end
 		local pet=p.pets[index]
-		if not pet then return "Choose a pet you have adopted." end
+		local petDef=type(pet)=="table" and Data.PetById[pet.id]
+		if not petDef then return "Choose a pet you have adopted." end
 		if p.activePet==index then return "That pet is already summoned." end
 		p.activePet=index
-		return Data.PetById[pet.id].name.." summoned."
+		return petDef.name.." summoned."
 	elseif verb=="petAdopt" then
 		local def=validId(item) and Data.Items[item]
 		local petDef=def and def.kind=="pet" and Data.PetById[def.pet]
@@ -835,7 +901,12 @@ action.OnServerInvoke=function(player,verb,item)
 	if type(verb)~="string" or #verb>32 or (item~=nil and type(item)~="string") then return nil end
 	if os.clock()<(lastRead[player] or 0) then return nil end
 	lastRead[player]=os.clock()+0.08
-	if verb=="state" then return snapshot(player) end
+	if verb=="state" then
+		-- Full snapshots are expensive (stats + every builder); poll at most twice a second.
+		if os.clock()<(stateRead[player] or 0) then return nil end
+		stateRead[player]=os.clock()+STATE_INTERVAL
+		return snapshot(player)
+	end
 	if item~=nil and #item>64 then return snapshot(player,"That request is too long.") end
 	return snapshot(player,perform(player,verb,item,nil))
 end
@@ -853,10 +924,11 @@ end)
 Players.PlayerAdded:Connect(open)
 for _,player in ipairs(Players:GetPlayers()) do task.spawn(open,player) end
 local function close(player)
+	-- Still loading: open() notices the departure, releases the lease and forgets.
+	if opening[player] then return end
 	while exchangeBusy[player] do task.wait(0.1) end
 	for _=1,3 do if persist(player,true) then break end; task.wait(1) end
-	profiles[player],cooldown[player],lastRead[player],preview[player],leaseEnd[player]=nil,nil,nil,nil,nil
-	marketViews[player],marketReads[player]=nil,nil
+	forget(player)
 	for _,arena in pairs(enemies) do
 		arena[player.UserId]=nil
 		for _,boss in pairs(arena) do boss.hits[player]=nil end
@@ -944,7 +1016,10 @@ bridge.OnInvoke=function(op,player,payload)
 		return amount
 	end
 	local p=live(player)
-	if not p then return nil end
+	if not p then
+		-- Combat re-arms the boss when its report could not be applied.
+		return if op=="slayerBoss" then {ok=false,reason="sync"} else nil
+	end
 	if op=="stats" then
 		return {stats=Progression.computeStats(p,os.time()),combatLevel=level(p.xp.Combat),ironman=p.ironman==true}
 	elseif op=="kill" then
@@ -971,12 +1046,12 @@ bridge.OnInvoke=function(op,player,payload)
 	elseif op=="slayerBoss" then
 		local quest=p.slayerQuest
 		local result=payload.result
-		if not quest or not quest.bossReady or (result~="win" and result~="fail") then return {} end
+		if not quest or not quest.bossReady or (result~="win" and result~="fail") then return {ok=false,reason="invalid"} end
 		p.slayerQuest=nil
 		local line=Data.Slayers[quest.line]
 		if result=="fail" then
 			notify(player,"The "..line.name.." escaped. Your slayer quest failed.")
-			return {}
+			return {ok=true}
 		end
 		local tier=line.tiers[quest.tier]
 		local stats=Progression.computeStats(p,os.time())
@@ -984,7 +1059,7 @@ bridge.OnInvoke=function(op,player,payload)
 		local drops=Progression.rollDrops(tier.drops,stats.magicFind,roll,stats.petLuck)
 		for item,n in pairs(drops) do collect(p,item,n) end
 		notify(player,line.name.." defeated • +"..tier.xp.." "..quest.line.." Slayer XP"..dropText(drops))
-		return {drops=drops}
+		return {ok=true,drops=drops}
 	end
 	return nil
 end
@@ -1127,7 +1202,7 @@ local function settle(player)
 	if order.protocol==2 then p.pricedPending=nil else p.pending=nil end
 	return result.text
 end
-exchangeAction=function(player,verb,item)
+exchangeAction=function(player,verb,item,resume)
 	local p=profiles[player]
 	local price
 	if verb=="list" or verb=="buy" then
@@ -1150,7 +1225,17 @@ exchangeAction=function(player,verb,item)
 		return "Market quote refreshed. Three units per lot; buy uses your maximum total price."
 	end
 	price=price or marketPrices[item]
-	if not p.pending and not p.pricedPending then
+	local idle=not p.pending and not p.pricedPending
+	-- The cached view is exact for own lots: they only grow through this session's
+	-- own listings, each of which refreshes the view when it commits. Proceeds grow
+	-- through other players' purchases, so collecting them always reads the DataStore.
+	local view=marketViews[player]
+	if idle and verb=="cancel" and view and view.item==item and view.ownLots==0 then return "You have no open listing here." end
+	-- Every writing verb touches the player key and the shared market key; pace them.
+	if not resume and os.clock()<(exchangeReady[player] or 0) then
+		return "The exchange is still recording your last order. Try again in "..math.ceil(exchangeReady[player]-os.clock()).."s."
+	end
+	if idle then
 		if verb=="list" and not spend(p,{[item]=3}) then return "A market lot needs 3 "..item.."." end
 		if verb=="buy" then
 			if p.coins<price then return "You need "..price.." purse coins to reserve this buy limit." end
@@ -1160,6 +1245,7 @@ exchangeAction=function(player,verb,item)
 		p.pricedSeq=(p.pricedSeq or 0)+1
 		p.pricedPending={seq=p.pricedSeq,verb=verb,item=item,price=price,protocol=2}
 	end
+	exchangeReady[player]=os.clock()+EXCHANGE_COOLDOWN
 	exchangeBusy[player]=true
 	local ok,message=pcall(settle,player)
 	exchangeBusy[player]=nil
@@ -1170,7 +1256,7 @@ resumeExchange=function(player)
 	for _=1,2 do
 		if not p or not (p.pending or p.pricedPending) then break end
 		local order=p.pricedPending or p.pending
-		local message=exchangeAction(player,order.verb,order.item)
+		local message=exchangeAction(player,order.verb,order.item,true)
 		if player.Parent then update:FireClient(player,snapshot(player,message)) end
 		if (p.pricedPending or p.pending)==order then break end
 	end

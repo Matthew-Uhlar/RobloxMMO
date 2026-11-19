@@ -38,7 +38,10 @@ local C = {
 	MAX_MONSTERS = 90,          -- marker monsters (bosses are capped at one per player)
 	PASSIVE_MAX_LEVEL = 4,
 	WANDER_RADIUS = 12,
-	ACTIVE_RANGE = 160,         -- monsters with no player this close sleep
+	ACTIVE_RANGE = 120,         -- monsters with no player this close sleep (no CFrame writes)
+	ANIMATE_RANGE = 80,         -- limb welds animate only with a player this close
+	ANIMATE_STEP = 1 / 5,       -- limb animation rate (movement stays at the AI rate)
+	BOSS_REARM_DELAY = 5,       -- re-read SlayerBossReady after an unapplied boss report
 	FX_RANGE = 110,
 	MAX_RADIUS_BONUS = 6,
 	DEFAULT_COUNT = 2,
@@ -336,6 +339,7 @@ end
 -- env = {Data, Progression, bridge(op, player, payload), now(), rng(),
 --        position(player) -> Vector3?, alive(player) -> bool, players() -> {player},
 --        heal(player, percentOfMaxHealth)}
+-- bridge(op, player, payload, done?) may answer later through done(reply).
 local function createLogic(env)
 	local Data, Progression = env.Data, env.Progression
 	local L = {C = C}
@@ -346,11 +350,43 @@ local function createLogic(env)
 	local nextAttack = {}    -- [player] = time
 	local bosses = {}        -- [player] = record
 	local pendingBoss = {}   -- [player] = spec
+	local rearm = {}         -- [player] = time to re-read SlayerBossReady
 	local liveCount = 0
+	-- One snapshot of every player per AI tick, shared by all monsters.
+	local tick = nil         -- {list, alive = {[player] = bool}, pos = {[player] = Vector3?}}
 
 	local function flat(v) return Vector3.new(v.X, 0, v.Z) end
 	local function flatDist(a, b) return (flat(a) - flat(b)).Magnitude end
 	L.flatDist = flatDist
+
+	-- Per-tick player snapshot ----------------------------------------------
+	function L.beginTick()
+		local list, alive, pos = {}, {}, {}
+		for _, player in ipairs(env.players()) do
+			table.insert(list, player)
+			alive[player] = env.alive(player) == true
+			pos[player] = env.position(player)
+		end
+		tick = {list = list, alive = alive, pos = pos}
+	end
+	function L.endTick() tick = nil end
+	local function playerList() return if tick then tick.list else env.players() end
+	local function isAlive(player)
+		if tick and tick.alive[player] ~= nil then return tick.alive[player] end
+		return env.alive(player)
+	end
+	local function positionOf(player)
+		if tick and tick.alive[player] ~= nil then return tick.pos[player] end
+		return env.position(player)
+	end
+	function L.nearestPlayerDistance(r)
+		local best = math.huge
+		for _, player in ipairs(playerList()) do
+			local pos = positionOf(player)
+			if pos then best = math.min(best, (pos - r.position).Magnitude) end
+		end
+		return best
+	end
 
 	function L.attackCooldown(attackSpeed)
 		local as = math.clamp(tonumber(attackSpeed) or 0, 0, 100)
@@ -492,7 +528,9 @@ local function createLogic(env)
 		local info = L.statsFor(player)
 		if not info then return nil, "stats" end
 		local stats = info.stats
-		nextAttack[player] = env.now() + L.attackCooldown(stats.attackSpeed)
+		-- Measured from the scheduled time, not the (possibly early) swing, so the
+		-- latency grace never compounds into extra sustained DPS.
+		nextAttack[player] = math.max(env.now(), nextAttack[player] or 0) + L.attackCooldown(stats.attackSpeed)
 		local raw, crit = Progression.meleeDamage(stats, env.rng)
 		local dealt = Progression.damageTaken(raw, r.defense)
 		local applied = math.min(dealt, r.hp)
@@ -531,7 +569,7 @@ local function createLogic(env)
 		if r.boss then
 			credited = {r.owner}
 			L.unregister(r)
-			env.bridge("slayerBoss", r.owner, {result = "win"})
+			L.reportBoss(r.owner, "win")
 		else
 			credited = L.creditEligible(r)
 			L.unregister(r)
@@ -544,9 +582,9 @@ local function createLogic(env)
 	function L.nearestAggro(r)
 		if r.passive and not r.provoked then return nil end
 		local best, bestDist
-		for _, player in ipairs(env.players()) do
-			if env.alive(player) then
-				local pos = env.position(player)
+		for _, player in ipairs(playerList()) do
+			if isAlive(player) then
+				local pos = positionOf(player)
 				if pos then
 					local d = flatDist(pos, r.position)
 					local info = L.peekStats(player)
@@ -560,11 +598,7 @@ local function createLogic(env)
 		return best
 	end
 	local function anyPlayerNear(r, range)
-		for _, player in ipairs(env.players()) do
-			local pos = env.position(player)
-			if pos and (pos - r.position).Magnitude <= range then return true end
-		end
-		return false
+		return L.nearestPlayerDistance(r) <= range
 	end
 	function L.strike(r, player)
 		r.nextHit = env.now() + r.attackCooldown
@@ -577,7 +611,7 @@ local function createLogic(env)
 		local now = env.now()
 		if r.boss then
 			local owner = r.owner
-			local pos = env.alive(owner) and env.position(owner)
+			local pos = isAlive(owner) and positionOf(owner)
 			if not pos then return {kind = "idle"} end
 			r.target = owner
 		else
@@ -595,14 +629,14 @@ local function createLogic(env)
 				return {kind = "leash", goal = r.home, speed = r.speed * 1.25, stop = 0}
 			end
 			if r.target then
-				local pos = env.alive(r.target) and env.position(r.target)
+				local pos = isAlive(r.target) and positionOf(r.target)
 				if not pos or flatDist(pos, r.home) > C.LEASH_RANGE + 8 then r.target = nil end
 			end
 			if not r.target then r.target = L.nearestAggro(r) end
 			if not r.target and not anyPlayerNear(r, C.ACTIVE_RANGE) then return {kind = "sleep"} end
 		end
 		if r.target then
-			local pos = env.position(r.target)
+			local pos = positionOf(r.target)
 			local reach = C.MONSTER_REACH + r.radius
 			local d = flatDist(pos, r.position)
 			if d <= reach then
@@ -693,8 +727,27 @@ local function createLogic(env)
 		local r = bosses[player]
 		if not r then return nil end
 		L.unregister(r)
-		env.bridge("slayerBoss", player, {result = "fail"})
+		L.reportBoss(player, "fail")
 		return r
+	end
+	-- The bridge answers {ok = true} once the quest is resolved. Anything else
+	-- (lease lapsed, bridge missing or erroring) leaves the quest bossReady, so
+	-- re-read SlayerBossReady shortly and summon the boss again.
+	function L.reportBoss(player, result)
+		env.bridge("slayerBoss", player, {result = result}, function(reply)
+			if type(reply) ~= "table" or reply.ok ~= true then L.rearmBoss(player) end
+		end)
+	end
+	function L.rearmBoss(player)
+		rearm[player] = env.now() + C.BOSS_REARM_DELAY
+	end
+	function L.dueRearms()
+		local now, due = env.now(), {}
+		for player, at in pairs(rearm) do
+			if now >= at and not bosses[player] then table.insert(due, player) end
+		end
+		for _, player in ipairs(due) do rearm[player] = nil end
+		return due
 	end
 	function L.bossTick()
 		local now, failed = env.now(), {}
@@ -710,7 +763,7 @@ local function createLogic(env)
 
 	-- Players ----------------------------------------------------------------
 	function L.playerRemoving(player)
-		statsCache[player], nextAttack[player], pendingBoss[player] = nil, nil, nil
+		statsCache[player], nextAttack[player], pendingBoss[player], rearm[player] = nil, nil, nil, nil
 		local removed = {}
 		local boss = bosses[player]
 		if boss then L.unregister(boss); table.insert(removed, boss) end
@@ -721,7 +774,7 @@ local function createLogic(env)
 		return removed
 	end
 	function L.hasPlayerState(player)
-		return statsCache[player] ~= nil or nextAttack[player] ~= nil or pendingBoss[player] ~= nil or bosses[player] ~= nil
+		return statsCache[player] ~= nil or nextAttack[player] ~= nil or pendingBoss[player] ~= nil or bosses[player] ~= nil or rearm[player] ~= nil
 	end
 	return L
 end
@@ -807,7 +860,7 @@ local Logic = createLogic({
 			humanoid.Health = math.min(humanoid.MaxHealth, humanoid.Health + humanoid.MaxHealth * percent / 100)
 		end
 	end,
-	bridge = function(op, player, payload)
+	bridge = function(op, player, payload, done)
 		if op == "stats" then return invokeBridge(op, player, payload) end
 		-- Mutating ops may yield inside the Adventure script; never block the AI loop.
 		task.spawn(function()
@@ -815,6 +868,7 @@ local Logic = createLogic({
 			if op == "damage" and type(result) == "number" and player.Parent then
 				fxRemote:FireClient(player, "hurt", {amount = result})
 			end
+			if done then done(result) end
 		end)
 		return nil
 	end,
@@ -955,17 +1009,26 @@ local function buildModel(name, plan, opts)
 	return model, root, {label = label, fill = fill, welds = welds}
 end
 
-local function place(r)
+-- Writes the root CFrame only when it changed. The idle bob runs only with a
+-- player close enough to see it, so idle monsters further away replicate nothing.
+local function place(r, near)
 	local v = view[r]
 	if not v then return end
 	local t = os.clock() + v.phase
 	local plan = v.plan
-	local bob = if plan.flying then math.sin(t * 2) * 0.5 * plan.scale else math.sin(t * 3) * 0.08 * plan.scale
+	local bob = 0
+	if near ~= false then
+		bob = if plan.flying then math.sin(t * 2) * 0.5 * plan.scale else math.sin(t * 3) * 0.08 * plan.scale
+	end
 	local lunge = 0
 	if r.lungeUntil and os.clock() < r.lungeUntil then
 		lunge = math.sin((r.lungeUntil - os.clock()) / 0.25 * math.pi) * 1.2 * plan.scale
 	end
-	v.root.CFrame = CFrame.new(r.position + Vector3.new(0, bob, 0)) * CFrame.Angles(0, r.yaw, 0) * CFrame.new(0, 0, -lunge)
+	local cf = CFrame.new(r.position + Vector3.new(0, bob, 0)) * CFrame.Angles(0, r.yaw, 0) * CFrame.new(0, 0, -lunge)
+	if v.placed ~= cf then
+		v.placed = cf
+		v.root.CFrame = cf
+	end
 end
 
 local axes = {X = function(a) return CFrame.Angles(a, 0, 0) end, Y = function(a) return CFrame.Angles(0, a, 0) end, Z = function(a) return CFrame.Angles(0, 0, a) end}
@@ -1112,7 +1175,7 @@ end)
 
 -- One loop for all AI --------------------------------------------------------
 local AI_STEP = 1 / 15
-local accumulator, housekeeping = 0, 0
+local accumulator, housekeeping, animClock = 0, 0, 0
 RunService.Heartbeat:Connect(function(dt)
 	accumulator += dt
 	if accumulator < AI_STEP then return end
@@ -1122,12 +1185,19 @@ RunService.Heartbeat:Connect(function(dt)
 	if housekeeping >= 0.5 then
 		housekeeping = 0
 		for _, marker in ipairs(Logic.dueSpawns()) do spawnMarkerMonster(marker) end
+		for _, player in ipairs(Logic.dueRearms()) do
+			if player.Parent and playerConnections[player] then onBossAttribute(player) end
+		end
 		for _, pending in ipairs(Logic.pendingBosses()) do spawnBoss(pending.player, pending.spec) end
 	end
 	for _, failed in ipairs(Logic.bossTick()) do
 		if failed.player.Parent then fxRemote:FireClient(failed.player, "bossFail", {reason = failed.reason}) end
 		destroyView(failed.record, false)
 	end
+	animClock += step
+	local animTick = animClock >= C.ANIMATE_STEP
+	if animTick then animClock = 0 end
+	Logic.beginTick()
 	for _, r in ipairs(Logic.records()) do
 		local v = view[r]
 		if v then
@@ -1145,9 +1215,11 @@ RunService.Heartbeat:Connect(function(dt)
 					if d.Magnitude > 0.1 then r.yaw = math.atan2(-d.X, -d.Z) end
 				end
 				if action.healed then updateBar(r) end
-				place(r)
-				animate(r, moved)
+				local near = Logic.nearestPlayerDistance(r) <= C.ANIMATE_RANGE
+				place(r, near)
+				if near and animTick then animate(r, moved) end
 			end
 		end
 	end
+	Logic.endTick()
 end)
