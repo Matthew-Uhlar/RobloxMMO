@@ -83,7 +83,7 @@ Static definitions (names, colours, recipes, monsters…) are read by the client
 |---|---|---|
 | `"stats"` | nil | `{stats=<computeStats>, combatLevel=n, ironman=bool}` or `nil` if no live profile |
 | `"kill"` | `{monster=monsterId}` | grants monster XP (Combat), coins, rolled drops (Magic Find / Pet Luck via `Progression.rollDrops`), bestiary +1, pet XP, slayer progress (if `monster.slayer == quest.line`, progress += monster.xp). Fires a snapshot with a message. Returns `{drops={[id]=n}, bossReady=bool}` |
-| `"slayerBoss"` | `{result="win"|"fail"}` | win: grant `tiers[t].xp` slayer XP, roll tier drops, clear quest; fail: clear quest. Returns `{drops=...}` or `{}` |
+| `"slayerBoss"` | `{result="win"|"fail"}` | win: grant `tiers[t].xp` slayer XP, roll tier drops, clear quest; fail: clear quest. Returns `{ok=true, drops=...}`, or `{ok=false, reason}` when the lease lapsed or the quest is invalid (Combat re-arms the boss after 5 s) |
 | `"damage"` | `{amount=raw}` | applies `Progression.damageTaken(raw, stats.defense)` to the player's humanoid; returns damage applied |
 
 Adventure also sets player attribute `SlayerBossReady = "Line:tier"` (or `""`) whenever a quest's boss becomes ready/cleared. Combat watches it to spawn the boss.
