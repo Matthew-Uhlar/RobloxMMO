@@ -2,6 +2,7 @@
 local Players = game:GetService("Players")
 local Storage = game:GetService("ServerStorage")
 local RunService = game:GetService("RunService")
+local CollectionService=game:GetService("CollectionService")
 local origin = Vector3.new(0, 42, 1800)
 local dark = Color3.fromRGB(37, 52, 71)
 local gold = Color3.fromRGB(255, 193, 94)
@@ -20,6 +21,13 @@ local function block(name, offset, size, color, material)
 	p.Material = material
 	p.Parent = arena
 	return p
+end
+local function artwork(anchor,shape,scale)
+	anchor.Transparency=1
+	anchor:SetAttribute("Shape",shape)
+	anchor:SetAttribute("SculptureScale",scale)
+	anchor:SetAttribute("VisualState","Active")
+	CollectionService:AddTag(anchor,"AetherSculpture")
 end
 
 local function prompt(part, title, action, callback, distance)
@@ -50,6 +58,7 @@ for i = 0, 7 do
 end
 local heart = block("Eclipse Heart", Vector3.new(0, 6, 0), Vector3.new(7, 7, 7), gold, Enum.Material.Neon)
 heart.Shape = Enum.PartType.Ball
+artwork(heart,"EclipseAstrolabe",1.25)
 local label = Instance.new("BillboardGui")
 label.Size = UDim2.fromOffset(320, 60)
 label.StudsOffset = Vector3.new(0, 7, 0)
@@ -90,6 +99,7 @@ warning.CanCollide = false
 warning.Transparency = 1
 
 local function display()
+	heart:SetAttribute("VisualState",if remaining>0 or guardsAlive() then "Shielded" elseif pulse>=3.5 then "Warning" else "Active")
 	caption.Text = if remaining > 0 then "HOLLOW OBSERVATORY\nTune the prisms  •  " .. (3 - remaining) .. " / 3"
 		elseif guardsAlive() then "SENTINEL HALL\nEnter the northern passage • defeat both guardians"
 		else "ECLIPSE HEART  •  " .. health .. " / 12\nStep outside the amber pulse"
@@ -98,22 +108,22 @@ local function reset()
 	table.clear(charged)
 	remaining, health, pulse = 3, 12, 0
 	guardianHealth = {6, 6}
-	for _, guardian in guardians do guardian.Color = gold end
+	for _, guardian in guardians do guardian.Color = gold;guardian:SetAttribute("VisualState","Active") end
 	warning.Transparency = 1
-	for _, p in pylons do p.Color = teal end
+	for _, p in pylons do p.Color = teal;p:SetAttribute("VisualState","Active") end
 	display()
 end
 for index, x in ipairs({-13,13}) do
 	local guardian = block("Sentinel "..index, Vector3.new(x,5,-112), Vector3.new(5,8,5), gold, Enum.Material.Metal)
+	artwork(guardian,"ObservatorySentinel",1.4)
 	table.insert(guardians, guardian)
-	block("Sentinel crown", Vector3.new(x,10,-112), Vector3.new(7,1,7), teal, Enum.Material.Neon)
 	prompt(guardian, "Sentinel • defeat to open the core passage", "Strike guardian", function(player, character)
 		local member = members[player]
 		if not member or remaining > 0 or guardianHealth[index] <= 0 or os.clock()-member.last < 0.8 then return end
 		member.last = os.clock()
 		member.contributed = true
 		guardianHealth[index] = math.max(0, guardianHealth[index] - (if roles[player]=="Berserk" then 2 else 1))
-		if guardianHealth[index] == 0 then guardian.Color = dark else
+		if guardianHealth[index] == 0 then guardian.Color = dark;guardian:SetAttribute("VisualState","Defeated") else
 			local humanoid = character:FindFirstChildOfClass("Humanoid")
 			humanoid:TakeDamage(if roles[player]=="Tank" then 3 else 6)
 		end
@@ -124,12 +134,14 @@ for i = 1, 3 do
 	local a = i * math.pi * 2 / 3
 	local p = block("Resonance prism", Vector3.new(math.cos(a)*22, 5, math.sin(a)*22), Vector3.new(3, 7, 3), teal, Enum.Material.Neon)
 	p.Orientation = Vector3.new(0, i*45, 12)
+	artwork(p,"AetherCrystal",1.3)
 	table.insert(pylons, p)
 	prompt(p, "Resonance prism", "Tune prism", function(player)
 		if not members[player] or charged[i] then return end
 		charged[i] = true
 		members[player].contributed = true
 		p.Color = gold
+		p:SetAttribute("VisualState","Tuned")
 		remaining -= 1
 		display()
 	end)
@@ -199,6 +211,7 @@ RunService.Heartbeat:Connect(function(dt)
 		end
 	end
 	warning.Transparency = if pulse >= 3.5 then 0.25 else 1
+	heart:SetAttribute("VisualState",if pulse>=3.5 then "Warning" else "Active")
 end)
 local function watch(player)
 	player.CharacterRemoving:Connect(function() leave(player) end)

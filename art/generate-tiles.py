@@ -28,7 +28,7 @@ def intensity(kind, x, y):
     if kind == "brass":
         return 221 + 3*math.sin(TAU*32*v) + 9*((x+y) % 64 < 2) + grain
     # Interlocking strata with thin, irregular mineral veins.
-    strata = math.sin(TAU * (4*v + .38*math.sin(TAU*u) + .2*u*0))
+    strata = math.sin(TAU * (4*v + .38*math.sin(TAU*u)))
     return 207 + 8*strata + 15*(abs(strata) < .09) + grain
 
 

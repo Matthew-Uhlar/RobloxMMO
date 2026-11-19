@@ -29,16 +29,19 @@ recipes.AlloyIngot={Ore=2,Timber=1}
 recipes.AetherIngot={Aetherite=2,AlloyIngot=1}
 recipes.ReinforcedPickaxe={AetherIngot=3,Timber=5,Pickaxe=1}
 recipes.Skyplate={AetherIngot=4,Herb=4}
+recipes.ExpeditionRation={Fish=2,Herb=1}
+recipeGates.ExpeditionRation={Fish=5}
 recipeGates.AlloyIngot={}
 recipeGates.AetherIngot={}
 recipeGates.ReinforcedPickaxe={Aetherite=6}
 recipeGates.Skyplate={Aetherite=8}
 local recipeLevels={AetherIngot=3,ReinforcedPickaxe=3,Skyplate=3}
-local repeatableRecipes={Tonic=true,AlloyIngot=true,AetherIngot=true}
+local repeatableRecipes={Tonic=true,ExpeditionRation=true,AlloyIngot=true,AetherIngot=true}
+local consumables={Tonic={healing=40,recovery=0,action="Drink"},ExpeditionRation={healing=65,recovery=12,action="Eat"}}
 local recipeDescriptions={Pickaxe="+1 Ore per harvest",Blade="+8 Warden strike damage",Tonic="Restore up to 40 health",
 	Stormblade="+12 Warden strike damage",AlloyIngot="Repeatable refining trains Smithing; used in Aether Ingots",
 	AetherIngot="Refined material for reinforced equipment",ReinforcedPickaxe="Replaces Pickaxe: +2 Ore and +1 Aetherite per harvest",
-	Skyplate="Automatically equipped: +2 defense"}
+	Skyplate="Automatically equipped: +2 defense",ExpeditionRation="Restore up to 65 health; wait 12 seconds between rations"}
 local decorations={Lanterns={Timber=5},Garden={Herb=3,Timber=3},Deck={Timber=10,Ore=5}}
 local function fresh()
 	return {version=1, xp={Mining=0,Woodcutting=0,Farming=0,Fishing=0,Smithing=0,Combat=0,Alchemy=0,Dungeoneering=0,Enchanting=0,Taming=0},
@@ -68,8 +71,8 @@ local function level(xp)
 end
 local function recipeState(p)
 	local result={}
-	for _,item in ipairs({"Pickaxe","Blade","Tonic","AlloyIngot","AetherIngot","ReinforcedPickaxe","Skyplate","Stormblade"}) do
-		local skill=if item=="Tonic" then "Alchemy" else "Smithing"
+	for _,item in ipairs({"Pickaxe","Blade","Tonic","AlloyIngot","AetherIngot","ReinforcedPickaxe","Skyplate","Stormblade","ExpeditionRation"}) do
+		local skill=if consumables[item] then "Alchemy" else "Smithing"
 		local required=recipeLevels[item] or 1
 		local unlocked=level(p.xp[skill])>=required
 		for material,amount in pairs(recipeGates[item]) do if (p.collection[material] or 0)<amount then unlocked=false end end
@@ -136,8 +139,13 @@ local function snapshot(player,message)
 	local p=profiles[player]
 	if not p then return {loading=true,message="Opening your journal…"} end
 	local levels={}
+	local provisions={}
+	for item,config in pairs(consumables) do
+		provisions[item]={healing=config.healing,recovery=config.recovery,action=config.action,
+			readyIn=if item=="ExpeditionRation" then math.max(0,(p.rationReadyAt or 0)-os.time()) else 0}
+	end
 	for skill,xp in pairs(p.xp) do levels[skill]=level(xp) end
-	return {xp=p.xp,items=p.items,collection=p.collection,coins=p.coins,bank=p.bank,worker=p.worker,
+	return {xp=p.xp,items=p.items,consumables=provisions,collection=p.collection,coins=p.coins,bank=p.bank,worker=p.worker,
 		ironman=p.ironman,levels=levels,enchantRank=p.enchantRank or 0,workerResource=p.workerResource or "Ore",workerReady=ready(p),workers=workerState(p),message=message or "",kills=p.kills,
 		companionBond=p.companionBond or 0,recipes=recipeState(p),regions=regionState(p),stats=applyStats(player,p),quest=questState(p),slayer=slayerState(p),started=p.started,decorations=p.decorations,preview=preview[player]==true}
 end
@@ -318,7 +326,7 @@ local function perform(player,verb,item,prompt)
 		p.xp.Enchanting+=30
 		return "Weapon enchantment rank "..p.enchantRank.." • +30 Enchanting XP."
 	elseif verb=="craft" and recipes[item] then
-		local skill=if item=="Tonic" then "Alchemy" else "Smithing"
+		local skill=if consumables[item] then "Alchemy" else "Smithing"
 		if level(p.xp[skill])<(recipeLevels[item] or 1) then return item.." requires "..skill.." "..recipeLevels[item]..". Refine Alloy Ingots to train Smithing." end
 		for material,required in pairs(recipeGates[item]) do
 			if (p.collection[material] or 0)<required then return "Recipe unlocks at "..required.." lifetime "..material.."." end
@@ -395,10 +403,15 @@ local function perform(player,verb,item,prompt)
 		p.ironman=true
 		return "Ironman journal sealed. Your Warden hunts are solo."
 	elseif verb=="heal" then
+		item=item or "Tonic"
+		local provision=consumables[item]
+		if not provision then return "Choose a Tonic or ExpeditionRation." end
 		if humanoid.Health>=humanoid.MaxHealth then return "Already at full health." end
-		if not spend(p,{Tonic=1}) then return "Craft a Tonic with 2 Herb." end
-		humanoid.Health=math.min(humanoid.MaxHealth,humanoid.Health+40)
-		return "Tonic restored up to 40 health."
+		if item=="ExpeditionRation" and os.time()<(p.rationReadyAt or 0) then return "Wait "..(p.rationReadyAt-os.time()).." seconds before another ration." end
+		if not spend(p,{[item]=1}) then return "Craft "..item.." in the Forge first." end
+		if item=="ExpeditionRation" then p.rationReadyAt=os.time()+provision.recovery end
+		humanoid.Health=math.min(humanoid.MaxHealth,humanoid.Health+provision.healing)
+		return item.." restored up to "..provision.healing.." health."
 	elseif verb=="fight" and prompt then
 		p.started=true
 		local now=os.clock()
@@ -617,6 +630,7 @@ resumeExchange=function(player)
 		if player.Parent then update:FireClient(player,snapshot(player,message)) end
 	end
 end
+
 
 
 

@@ -27,3 +27,6 @@ See [PUBLISHING.md](PUBLISHING.md) for account setup, credentials, deployment, v
 
 The new experience was created privately in Studio on November 19, 2026. No destination variables are needed: add only the Roblox credential secret `ROBLOX_API_KEY` for deployment. [Open the game page](https://www.roblox.com/games/73453386951995) (access remains private until configured).
 
+
+Source and workflows are uploaded. [GitHub CI run 44492070676](https://github.com/Matthew-Uhlar/RobloxMMO/actions/runs/44492070676) passed tool installation, game tests/build, release validation and artifact upload for commit `975be9c88688def742f15a8b30d91b29c4824588`. Download the `Aether-Isles-975be9c88688def742f15a8b30d91b29c4824588` artifact from that run. Roblox API deployment is still separate.
+

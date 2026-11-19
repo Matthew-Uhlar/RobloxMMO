@@ -18,8 +18,34 @@ local function rgb(hex)
 end
 local ink, deep, slate = rgb("102733"), rgb("091923"), rgb("244857")
 local ivory, muted, mint, gold = rgb("FFF4D9"), rgb("BECECA"), rgb("9EE7D2"), rgb("F9CC77")
+local clothTexture,clothContent
+local materials=ReplicatedStorage:FindFirstChild("MaterialArt")
+if materials then
+	local ok,data=pcall(require,materials)
+	if ok and type(data)=="table" then
+		if type(data.gui)=="string" and data.gui~="" then clothTexture=data.gui end
+		if type(data.getGuiContent)=="function" then
+			local ready,content=pcall(data.getGuiContent)
+			if ready then clothContent=content end
+		end
+	end
+end
 local function panel(parent, position, size, color)
-	return make("Frame", parent, { Position = position, Size = size, BackgroundColor3 = color, BorderSizePixel = 0 })
+	local textured=(clothContent or clothTexture) and (color==ink or color==deep or color==slate) and (size.X.Scale>0 or size.X.Offset>=32) and (size.Y.Scale>0 or size.Y.Offset>=28)
+	local properties={Name="Frame",Position=position,Size=size,BackgroundColor3=color,BorderSizePixel=0}
+	if textured then
+		if clothContent then properties.ImageContent=clothContent else properties.Image=clothTexture end
+		properties.ImageTransparency=.91
+		properties.ScaleType=Enum.ScaleType.Tile
+		properties.TileSize=UDim2.fromOffset(128,128)
+	end
+	return make(textured and "ImageLabel" or "Frame",parent,properties)
+end
+local function garment(object)
+	if not clothTexture and not clothContent then return end
+	local fabric=make("ImageLabel",object,{Name="WovenSurface",Size=UDim2.fromScale(1,1),BackgroundTransparency=1,ImageTransparency=.95,ScaleType=Enum.ScaleType.Tile,TileSize=UDim2.fromOffset(128,128),Active=false,Selectable=false})
+	if clothContent then fabric.ImageContent=clothContent else fabric.Image=clothTexture end
+	make("UICorner",fabric,{CornerRadius=UDim.new(0,8)})
 end
 local function rounded(object, radius, edge)
 	make("UICorner", object, { CornerRadius = UDim.new(0, radius) })
@@ -41,6 +67,26 @@ local function label(parent, value, x, y, w, h, font, size, color)
 	})
 end
 local full, bold, book, regular = UDim.new(1, 0), Enum.Font.GothamBold, Enum.Font.Antique, Enum.Font.Gotham
+local function controlEngraving(parent,caption)
+	local emblem=make("Frame",parent,{Name="ControlEngraving",Position=UDim2.new(1,-17,0,3),Size=UDim2.fromOffset(12,12),BackgroundTransparency=1,Active=false})
+	local function mark(x,y,w,h,angle)
+		local part=make("Frame",emblem,{Position=UDim2.fromScale(x,y),Size=UDim2.fromScale(w,h),AnchorPoint=Vector2.new(.5,.5),BackgroundColor3=gold,BackgroundTransparency=.18,BorderSizePixel=0,Rotation=angle or 0,Active=false})
+		return part
+	end
+	if caption=="Craft" or caption=="Build" or caption=="Upgrade" or caption=="Forge" then
+		mark(.45,.6,.15,.7,-35);mark(.65,.3,.6,.22,-35)
+	elseif caption=="Collect" or caption=="Claim" or caption=="Deposit" or caption=="Withdraw" or caption=="Buy" or caption=="Sell all" then
+		local coin=mark(.5,.5,.65,.65,0);make("UICorner",coin,{CornerRadius=UDim.new(1,0)});mark(.5,.5,.1,.42,0).BackgroundColor3=deep
+	elseif caption=="Confirm" or caption=="Accept" then
+		mark(.32,.6,.15,.4,-40);mark(.62,.45,.15,.75,40)
+	elseif caption=="Cancel" or caption=="Close" then
+		mark(.5,.5,.12,.8,45);mark(.5,.5,.12,.8,-45)
+	elseif caption=="Feed" or caption=="Eat" or caption=="Drink" then
+		mark(.5,.5,.45,.65,35);mark(.5,.5,.07,.8,35).BackgroundColor3=deep
+	else
+		mark(.5,.5,.5,.5,45);mark(.5,.5,.18,.18,45).BackgroundColor3=deep
+	end
+end
 local function button(parent, caption, pos, dim, action)
 	local b = make("TextButton", parent, {
 		Name = caption:gsub("[^%w]", "").."Button",
@@ -56,6 +102,8 @@ local function button(parent, caption, pos, dim, action)
 		Selectable = true,
 	})
 	rounded(b, 8, gold)
+	garment(b)
+	controlEngraving(b,caption)
 	make("UIGradient", b, {Color=ColorSequence.new(Color3.new(1,1,1),rgb("A6C8C9")),Rotation=90})
 	local pressScale=make("UIScale",b,{Scale=1})
 	b.MouseButton1Down:Connect(function() TweenService:Create(pressScale,TweenInfo.new(.08),{Scale=.96}):Play() end)
@@ -140,6 +188,10 @@ local function motif(parent,kind,size)
 		local bag=stroke(.5,.58,.52,.48,0,mint);rounded(bag,4)
 		local loop=stroke(.5,.27,.28,.22,0,gold);rounded(loop,5)
 		stroke(.5,.55,.12,.2,0,deep)
+	elseif kind=="Ration" then
+		local parcel=stroke(.5,.55,.58,.48,-12,mint);rounded(parcel,4)
+		stroke(.5,.55,.10,.52,-12,gold);stroke(.5,.55,.62,.09,-12,gold)
+		stroke(.48,.24,.22,.32,38,mint)
 	elseif kind=="Co-op" then
 		for _,x in ipairs({.3,.7}) do local gem=stroke(x,.35,.2,.2,45,mint);rounded(gem,3);stroke(x,.64,.24,.27,0,gold) end
 		stroke(.5,.76,.63,.055,0,mint)
@@ -171,6 +223,7 @@ local iconMappings={
 	{"homestead","FloatingIslet"},{"Deck","FloatingIslet"},{"Smithing","AlloyIngot"},{"Combat","Blade"},{"Enchant","AetherCrystal"},{"Alchemy","Tonic"},
 }
 local function titleArt(parent,title,size,page)
+	if title:find("ExpeditionRation",1,true) then return motif(parent,"Ration",size) end
 	for _,mapping in ipairs(iconMappings) do if title:find(mapping[1],1,true) then return thumbnail(parent,mapping[2],size) end end
 	return motif(parent,page,size)
 end
@@ -245,6 +298,7 @@ notice.BackgroundColor3 = deep
 notice.BackgroundTransparency = 0.03
 notice.Visible = false
 rounded(notice, 8, slate)
+garment(notice)
 notice.AutomaticSize = Enum.AutomaticSize.Y
 notice.TextTruncate = Enum.TextTruncate.None
 make("UIPadding", notice, {PaddingTop=UDim.new(0,8),PaddingBottom=UDim.new(0,8),PaddingLeft=UDim.new(0,12),PaddingRight=UDim.new(0,12)})
@@ -405,7 +459,7 @@ local function drawJournal()
 	if state.regions and #state.regions>0 then
 		heading("REGIONS    /    EXPEDITION CHARTERS")
 		for _,region in ipairs(state.regions) do
-			row(region.name,region.visited and "Survey complete. Return through the Compass Quay transit beacon." or (region.unlocked and "Charter unlocked. Travel from Compass Quay and survey the region." or region.requirement))
+			row(region.name,region.visited and "Survey complete. Return through the Brassfall Quarry transit beacon." or (region.unlocked and "Charter unlocked. Travel from Brassfall Quarry and survey the region." or region.requirement))
 		end
 	end
 	heading("02    /    SKILL RECORD")
@@ -461,15 +515,15 @@ local function drawPack()
 		row("Your satchel is empty", "Use a gathering prompt to collect your first resource.")
 	end
 	for _, key in ipairs(keys) do
-		local use = key == "Tonic"
-		row(
-			key .. "   ×" .. state.items[key],
-			use and "Drink to restore health." or "Carried in your satchel.",
-			use and "Drink" or nil,
-			function()
-				send("heal")
-			end
-		)
+		local consumable=state.consumables and state.consumables[key]
+		local detail="Carried in your satchel."
+		if consumable then
+			detail="Restores up to " .. consumable.healing .. " health."
+			if consumable.recovery>0 then detail ..= " Recovery: " .. consumable.recovery .. " seconds between uses." end
+			if consumable.readyIn>0 then detail ..= " " .. math.ceil(consumable.readyIn) .. " seconds remaining at last check; use again when recovered." end
+		end
+		row(key .. "   ×" .. state.items[key],detail,consumable and consumable.action or nil,function() send("heal",key) end)
+
 	end
 	heading("02    /    COLLECTION LOG")
 	local resources = {}
@@ -744,6 +798,8 @@ for i, name in ipairs({ "Journal", "Satchel", "Workshop", "Ledger", "Co-op" }) d
 		if name == "Co-op" and sendCoop then sendCoop("state") end
 	end)
 	b.Text = ""
+	local engraving=b:FindFirstChild("ControlEngraving")
+	if engraving then engraving:Destroy() end
 	local tabIcon=motif(b,name,23)
 	tabIcon.Name="TabIcon"
 	tabIcon.Position=UDim2.new(.5,-11,0,4)

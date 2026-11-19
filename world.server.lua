@@ -257,6 +257,10 @@ prompt(boss,"Strike","Shellwarden","fight","Warden")
 disk(wild,"Warden dais",V(0,.1,-104),7,.22,shale,ST,true)
 sign(wild,V(6,0,-83),"Shellwarden","WARDEN REACH   /   HUNT",rose,0,10)
 local gate=block(wild,"ExpeditionGate",V(0,2,-121),V(2,4,2),teal,Enum.Material.Glass,false)
+gate.Transparency=1
+gate:SetAttribute("Shape","ObservatoryArch")
+gate:SetAttribute("SculptureScale",1)
+Tags:AddTag(gate,"AetherSculpture")
 for _,x in ipairs({-3.2,3.2}) do block(wild,"Vault pier",V(x,3.5,-121),V(2,7,2.4),rock,ST,true) end
 block(wild,"Vault lintel",V(0,7.5,-121),V(9,1.4,2.4),brass,SM,false)
 sign(wild,V(-8,0,-119),"Vault Gate","EXPEDITION   /   ENTRY",brass,0,7)

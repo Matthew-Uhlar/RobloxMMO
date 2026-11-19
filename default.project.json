@@ -3,7 +3,8 @@
   "tree": {
     "$className": "DataModel",
     "ReplicatedStorage": {
-      "AetherArt": { "$path": "art/PropCatalog.lua" }
+      "AetherArt": { "$path": "art/PropCatalog.lua" },
+      "MaterialArt": { "$path": "art/MaterialArt.lua" }
     },
     "ServerScriptService": {
       "Adventure": { "$path": "server.server.lua" },

@@ -159,6 +159,9 @@ for _,obj in world:GetDescendants() do
 end
 check(parts>300 and prompts>=25 and signs>=20,"world landmarks and interactions exist")
 check(#tags.AetherSculpture>=30,"custom world sculptures registered")
+local observatoryGate=world:FindFirstChild("ExpeditionGate",true)
+check(observatoryGate:GetAttribute("Shape")=="ObservatoryArch","expedition entrance uses authored gate arch")
+check(observatoryGate.Transparency==1 and not observatoryGate.CanCollide,"gate art preserves open transit collider")
 local advancedOre=world:FindFirstChild("Aetherite seam",true)
 check(advancedOre~=nil,"advanced mining node exists")
 check(advancedOre:FindFirstChildOfClass("ProximityPrompt"):GetAttribute("IsleItem")=="Aetherite","advanced mining routes to validated server action")

@@ -12,11 +12,11 @@ Suggested description, based only on implemented content: “Explore floating is
 
 ## GitHub setup
 
-1. Push this source to [Matthew-Uhlar/RobloxMMO](https://github.com/Matthew-Uhlar/RobloxMMO), including `.github/workflows`. Put the workflows on the default branch. [Manual workflows require that placement](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow).
+1. **Completed:** source and workflows are on the default branch of [Matthew-Uhlar/RobloxMMO](https://github.com/Matthew-Uhlar/RobloxMMO). [CI run 44492070676](https://github.com/Matthew-Uhlar/RobloxMMO/actions/runs/44492070676) passed installation, tests/build, release validation and artifact upload.
 2. In repository Settings > Environments, create `roblox-production`. Restrict its deployment branches to the default branch. Optional required reviewers provide a separate release checkpoint.
 3. No destination variables are required; the workflow is bound to universe `10777817254` and place `73453386951995`.
 4. Create an Open Cloud API key in Creator Dashboard with asset Read/Write for the target and `universe.place:read` for destination validation. Store it as the environment secret `ROBLOX_API_KEY`. Keep permissions limited to this destination. Use an expiry and network restrictions compatible with the chosen runner; dynamic GitHub-hosted IPs require an appropriate runner/network strategy. See [API keys](https://create.roblox.com/docs/cloud/auth/api-keys) and [GitHub environment secrets](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets). Never paste credentials into this repository.
-5. Enable GitHub Actions if disabled. Run **Build and verify** and download its place artifact. The installer requires HTTPS access to GitHub release metadata/assets and a published asset SHA256 digest; it fails closed if missing.
+5. **Completed:** GitHub Actions builds successfully. Download artifact `Aether-Isles-975be9c88688def742f15a8b30d91b29c4824588` from the passing run above. It was independently confirmed present and unexpired through the GitHub connector (artifact ID `14512614347`, ZIP size 70,133 bytes). Subsequent pushes build new artifacts automatically.
 
 ## Publish an update
 
@@ -45,6 +45,10 @@ Read requests retry transient HTTP 429/5xx/network errors up to four times. Uplo
 
 ## Verification limits
 
-Local script parsing, offline dry-run validation, invalid-input rejection and YAML policy checks are automated. Until a real API key and successful GitHub run are supplied, tool downloads, HTTP publishing and GitHub execution remain unverified end to end. This workflow does not claim the unfinished full game scope is complete.
+Local script parsing, offline dry-run validation, invalid-input rejection and YAML policy checks are automated. Tool installation, game tests/build, release checks and artifact upload succeeded in GitHub CI run `44492070676` for commit `975be9c88688def742f15a8b30d91b29c4824588`. Roblox HTTP publishing remains unverified until a valid API key is supplied and the separate publish workflow succeeds. This workflow does not claim the unfinished full game scope is complete.
 
 
+
+## Can GitHub publish without a Roblox credential?
+
+No supported GitHub workload-identity/OIDC trust exchange was found in the current official Roblox documentation. Roblox documents [API keys](https://create.roblox.com/docs/cloud/auth/api-keys) and [OAuth authorization-code/refresh-token flows](https://create.roblox.com/docs/cloud/auth/oauth2-reference). OAuth still requires a Roblox app registration, user authorization and tokens; Roblox's OpenID provider authenticates users and does not establish GitHub Actions workload trust. This is a documentation-based conclusion, not a claim that future support is impossible. The provided workflow therefore requires `ROBLOX_API_KEY`; GitHub's `GITHUB_TOKEN` or `id-token: write` alone does not provide documented Roblox publishing authorization.
