@@ -454,4 +454,150 @@ Data.WorkerTiers = {
 	{interval=48,capacity=480},{interval=40,capacity=640},{interval=32,capacity=800},{interval=26,capacity=1000},
 }
 
+------------------------------------------------------------------------------
+-- Dungeons (owned by the Dungeons team; append-only section).
+-- Observatory floors I-V (Catacombs-style floors, OSRS raid-style grading).
+-- Pure data + pure rules: expedition.server.lua runs the encounter, the
+-- IsleExpeditionReward handler in server.server.lua pays out, and
+-- verify-expedition.luau checks these formulas directly.
+------------------------------------------------------------------------------
+item("ObservatoryEssence",{name="Observatory Essence",kind="material",rarity="Rare",color="8E7CC3",value=30,description="Condensed starlight from cleared Observatory floors."})
+Data.Sets.Observatory = {id="Observatory",name="Starwright Regalia",pieces={},bonus={intelligence=40,magicFind=6,health=60},text="+40 Intelligence, +6 Magic Find, +60 Health",color="8E7CC3"}
+local observatoryArmor = {
+	{id="ObservatoryHelm",slot="helmet",name="Starwright Hood",stats={defense=45,health=35,intelligence=15},level=5},
+	{id="ObservatoryVestment",slot="chest",name="Starwright Vestment",stats={defense=85,health=70,intelligence=25},level=12},
+	{id="ObservatoryGreaves",slot="legs",name="Starwright Greaves",stats={defense=70,health=55,intelligence=20},level=12},
+	{id="ObservatoryTreads",slot="boots",name="Starwright Treads",stats={defense=40,health=30,speed=5},level=5},
+}
+for _, a in ipairs(observatoryArmor) do
+	item(a.id,{name=a.name,kind="armor",slot=a.slot,set="Observatory",rarity="Epic",color="8E7CC3",stats=a.stats,dungeon=true,
+		requires={Combat=a.level,Dungeoneering=a.level},value=400+a.level*30,
+		description="Observatory chest drop. Part of the Starwright Regalia set. Requires Dungeoneering "..a.level.."."})
+	table.insert(Data.Sets.Observatory.pieces, a.id)
+end
+item("LenswrightSaber",{name="Lenswright Saber",kind="weapon",slot="weapon",rarity="Rare",color="7FB8E8",dungeon=true,
+	stats={damage=85,strength=35,critDamage=20,intelligence=20},requires={Combat=8,Dungeoneering=5},value=520,
+	description="Observatory Floor II+ chest drop. Requires Dungeoneering 5."})
+item("EclipseGlaive",{name="Eclipse Glaive",kind="weapon",slot="weapon",rarity="Epic",color="E0A458",dungeon=true,
+	stats={damage=150,strength=60,critChance=5,critDamage=40},requires={Combat=20,Dungeoneering=20},value=2400,
+	description="Observatory Floor IV+ chest drop. Requires Dungeoneering 20."})
+item("AstrarchFang",{name="Astrarch Fang",kind="weapon",slot="weapon",rarity="Legendary",color="B48EF0",dungeon=true,
+	stats={damage=230,strength=90,critChance=8,critDamage=70,intelligence=40},requires={Combat=30,Dungeoneering=30},value=9000,
+	description="Observatory Floor V chest drop. Requires Dungeoneering 30."})
+-- Dungeon-only accessories: no recipe; only Observatory chests drop them.
+item("AstrolabeCharm",{name="Astrolabe Charm",kind="accessory",rarity="Epic",color=Data.Rarity.Epic.color,dungeon=true,
+	stats={magicFind=4,intelligence=15,health=20},value=40*Data.Rarity.Epic.rank^2,
+	description="Accessory. Magical Power "..Data.Rarity.Epic.power..". Dungeon-only: Observatory chests."})
+item("UmbralOrrery",{name="Umbral Orrery",kind="accessory",rarity="Legendary",color=Data.Rarity.Legendary.color,dungeon=true,
+	stats={magicFind=6,strength=10,critDamage=10},value=40*Data.Rarity.Legendary.rank^2,
+	description="Accessory. Magical Power "..Data.Rarity.Legendary.power..". Dungeon-only: Observatory Floor V."})
+
+-- Party, pad, cooldown and credit rules.
+Data.Dungeons = {
+	maxParty = 5,              -- the matchmaking pad admits at most five delvers
+	padSeconds = 10,           -- stand on the pad within this window to join the run
+	padRadius = 8,             -- studs from the pad centre (horizontal)
+	clearCooldown = 90,        -- seconds between reward credits per player
+	ironmanDamageShare = 0.30, -- Ironman credited only when solo or >= 30% of party damage
+	contributionShare = 0.10,  -- "contributed" = >= 10% of the party's contribution points
+	tuneWeight = 0.05,         -- one prism tuning = 5% of the floor's total HP in contribution points
+	baseGuardianHp = 6, baseCoreHp = 12, baseGuardianHit = 6,
+}
+-- mechanics: orderedPrisms (II+), shieldPhases (III+: core HP fractions that
+-- raise a shield until the prisms are retuned), addWaves (IV+: wisps that ward
+-- the core while alive), enrage (V: after N seconds boss damage and tempo rise).
+-- boss.kind: pulse (stand outside radius), ring (stand inside inner),
+-- meteor (move off the marked delver), eclipse (alternates pulse and ring).
+Data.DungeonFloors = {
+	{index=1,numeral="I",name="Observatory Floor I",subtitle="Entrance",level=1,hpMult=1,damageMult=1,par=180,mechanics={},
+		boss={name="Eclipse Heart",attack="Amber Pulse",kind="pulse",radius=13.5,damage=18,interval=5,telegraph=1.5},
+		rewards={dungeoneeringXp=60,combatXp=80,coins=35,stormglass=1,essence=1},
+		chest={{item="ObservatoryEssence",chance=0.25,min=1,max=2},{item="AstrolabeCharm",chance=0.004,min=1,max=1}}},
+	{index=2,numeral="II",name="Observatory Floor II",subtitle="Lens Gallery",level=5,hpMult=1.75,damageMult=1.5,par=240,mechanics={orderedPrisms=true},
+		boss={name="Lens Tyrant",attack="Refraction Ring",kind="ring",inner=10,radius=30,damage=24,interval=6,telegraph=2},
+		rewards={dungeoneeringXp=150,combatXp=180,coins=90,stormglass=1,essence=2},
+		chest={{item="ObservatoryEssence",chance=0.35,min=1,max=3},{item="LenswrightSaber",chance=0.02,min=1,max=1},{item="ObservatoryHelm",chance=0.03,min=1,max=1},
+			{item="ObservatoryTreads",chance=0.03,min=1,max=1},{item="AstrolabeCharm",chance=0.006,min=1,max=1}}},
+	{index=3,numeral="III",name="Observatory Floor III",subtitle="Gyre Vault",level=12,hpMult=2.75,damageMult=2.1,par=300,mechanics={orderedPrisms=true,shieldPhases={0.66,0.33}},
+		boss={name="Gyre Oracle",attack="Starfall",kind="meteor",radius=9,damage=30,interval=6,telegraph=2},
+		rewards={dungeoneeringXp=320,combatXp=360,coins=200,stormglass=2,essence=4},
+		chest={{item="ObservatoryEssence",chance=0.45,min=2,max=4},{item="ObservatoryVestment",chance=0.025,min=1,max=1},{item="ObservatoryGreaves",chance=0.025,min=1,max=1},
+			{item="LenswrightSaber",chance=0.03,min=1,max=1},{item="AstrolabeCharm",chance=0.01,min=1,max=1}}},
+	{index=4,numeral="IV",name="Observatory Floor IV",subtitle="Regent's Dome",level=20,hpMult=4,damageMult=2.8,par=360,
+		mechanics={orderedPrisms=true,shieldPhases={0.5},addWaves={every=20,count=2,hp=4}},
+		boss={name="Hollow Regent",attack="Eclipse Sweep",kind="pulse",radius=20,damage=34,interval=5,telegraph=2},
+		rewards={dungeoneeringXp=600,combatXp=650,coins=400,stormglass=3,essence=6},
+		chest={{item="ObservatoryEssence",chance=0.55,min=3,max=6},{item="EclipseGlaive",chance=0.012,min=1,max=1},{item="ObservatoryVestment",chance=0.04,min=1,max=1},
+			{item="StarFragment",chance=0.03,min=1,max=1},{item="AstrolabeCharm",chance=0.015,min=1,max=1}}},
+	{index=5,numeral="V",name="Observatory Floor V",subtitle="Umbral Apex",level=30,hpMult=5.5,damageMult=3.6,par=420,
+		mechanics={orderedPrisms=true,shieldPhases={0.66,0.33},addWaves={every=18,count=3,hp=5},enrage={after=240,damageMult=2,intervalMult=0.5}},
+		boss={name="Umbral Astrarch",attack="Total Eclipse",kind="eclipse",inner=10,radius=13.5,damage=40,interval=5,telegraph=2},
+		rewards={dungeoneeringXp=1000,combatXp=1050,coins=750,stormglass=4,essence=9},
+		chest={{item="ObservatoryEssence",chance=0.65,min=4,max=8},{item="AstrarchFang",chance=0.006,min=1,max=1},{item="EclipseGlaive",chance=0.02,min=1,max=1},
+			{item="StarFragment",chance=0.05,min=1,max=2},{item="AstrolabeCharm",chance=0.02,min=1,max=1},{item="UmbralOrrery",chance=0.004,min=1,max=1}}},
+}
+-- Grades: score 0-300 (speed + survival + puzzle, 100 each). mult scales XP,
+-- coins and essence; chance scales the chest's rare roll (before Magic Find).
+Data.DungeonGrades = {
+	{grade="S+",min=290,mult=1.6,chance=2,bonusStormglass=1},
+	{grade="S",min=260,mult=1.35,chance=1.5,bonusStormglass=1},
+	{grade="A",min=220,mult=1.15,chance=1.25,bonusStormglass=0},
+	{grade="B",min=170,mult=1,chance=1,bonusStormglass=0},
+	{grade="C",min=110,mult=0.8,chance=0.8,bonusStormglass=0},
+	{grade="D",min=0,mult=0.6,chance=0.5,bonusStormglass=0},
+}
+Data.DungeonGradeById = {}
+for _, g in ipairs(Data.DungeonGrades) do Data.DungeonGradeById[g.grade] = g end
+function Data.dungeonFloorStats(floorIndex)
+	local f = Data.DungeonFloors[floorIndex] or Data.DungeonFloors[1]
+	local d = Data.Dungeons
+	return {guardianHp=math.ceil(d.baseGuardianHp*f.hpMult),coreHp=math.ceil(d.baseCoreHp*f.hpMult),
+		guardianHit=math.floor(d.baseGuardianHit*f.damageMult),addHp=f.mechanics.addWaves and math.ceil(f.mechanics.addWaves.hp*f.hpMult) or 0}
+end
+-- Score: speed (full until par, 0 at twice par) + survival (-20 per death)
+-- + puzzle skill (-15 per wrong tuning), each clamped to 0..100.
+function Data.dungeonScore(floorIndex, seconds, deaths, mistakes)
+	local f = Data.DungeonFloors[floorIndex] or Data.DungeonFloors[1]
+	local over = math.max(0, (seconds or 0) - f.par)
+	local speed = math.clamp(100 - over * 100 / f.par, 0, 100)
+	local survival = math.clamp(100 - (deaths or 0) * 20, 0, 100)
+	local skill = math.clamp(100 - (mistakes or 0) * 15, 0, 100)
+	return math.floor(speed + survival + skill + 0.5), {speed=speed,survival=survival,skill=skill}
+end
+function Data.dungeonGrade(score)
+	for _, g in ipairs(Data.DungeonGrades) do if score >= g.min then return g.grade end end
+	return "D"
+end
+-- Rewards for one credited clear. chest is a drop table for Progression.rollDrops.
+function Data.dungeonRewards(floorIndex, grade)
+	local f = Data.DungeonFloors[floorIndex] or Data.DungeonFloors[1]
+	local g = Data.DungeonGradeById[grade] or Data.DungeonGradeById.B
+	local r = f.rewards
+	local chest = {}
+	for _, d in ipairs(f.chest) do
+		table.insert(chest,{item=d.item,chance=math.min(1,d.chance*g.chance),min=d.min,max=d.max})
+	end
+	return {dungeoneeringXp=math.floor(r.dungeoneeringXp*g.mult),combatXp=math.floor(r.combatXp*g.mult),coins=math.floor(r.coins*g.mult),
+		items={Stormglass=r.stormglass+g.bonusStormglass,ObservatoryEssence=math.max(1,math.floor(r.essence*g.mult))},chest=chest}
+end
+function Data.dungeonCooldownReady(lastClear, now)
+	return lastClear == nil or now - lastClear >= Data.Dungeons.clearCooldown
+end
+-- Ironman journals keep solo integrity: credited when they ran the floor alone
+-- or personally dealt >= 30% of the party's damage. Other journals always pass.
+function Data.dungeonIronmanCredit(ironman, partySize, damageShare)
+	if not ironman then return true end
+	return (partySize or 1) <= 1 or (damageShare or 0) >= Data.Dungeons.ironmanDamageShare
+end
+-- Meaningful participation: damage + weighted tunings >= 10% of the party total.
+function Data.dungeonContributed(points, totalPoints)
+	if not points or points <= 0 or not totalPoints or totalPoints <= 0 then return false end
+	return points / totalPoints >= Data.Dungeons.contributionShare
+end
+function Data.dungeonFloorUnlocked(floorIndex, dungeoneeringLevel)
+	local f = Data.DungeonFloors[floorIndex]
+	return f ~= nil and (dungeoneeringLevel or 1) >= f.level
+end
+-- End Dungeons section.
+
 return Data

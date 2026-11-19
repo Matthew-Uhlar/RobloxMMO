@@ -2224,6 +2224,73 @@ Pages.drawSlayer,Pages.drawBestiary=drawSlayer,drawBestiary
 end
 
 ------------------------------------------------------------------------------
+-- Hunt › Dungeon: Observatory floors, grading and credit rules (Dungeons team).
+-- Read-only: floors are chosen at the in-world daises by the Vault Gate.
+------------------------------------------------------------------------------
+do
+local dungeonUi={violet="8E7CC3"}
+function dungeonUi.drops(list)
+	local parts={}
+	for _,drop in ipairs(tbl(list)) do
+		if type(drop)=="table" then table.insert(parts,paint(escape(itemName(drop.item)),itemHex(drop.item)).." ("..chance(drop.chance)..")") end
+	end
+	return table.concat(parts,", ")
+end
+function dungeonUi.mechanics(m)
+	m=tbl(m)
+	local out={}
+	if m.orderedPrisms then table.insert(out,"Tune prisms in the order shown") end
+	if type(m.shieldPhases)=="table" then table.insert(out,"Core shields at "..#m.shieldPhases.." HP thresholds; retune to break") end
+	if type(m.addWaves)=="table" then table.insert(out,num(m.addWaves.count,0).." umbral wisps every "..num(m.addWaves.every,0).."s ward the boss") end
+	if type(m.enrage)=="table" then table.insert(out,"Enrages after "..num(m.enrage.after,0).."s ("..num(m.enrage.damageMult,1).."× damage)") end
+	return #out>0 and table.concat(out,"  ·  ") or "The original three-prism encounter"
+end
+local function drawDungeon()
+	if not Data or type(Data.DungeonFloors)~="table" or type(Data.Dungeons)~="table" then dataMissing() return end
+	local levels=skillsOf(state)
+	local level=levels.Dungeoneering and levels.Dungeoneering.level or 1
+	local rules=Data.Dungeons
+	local result=player:GetAttribute("DungeonResult")
+	local notice=player:GetAttribute("ExpeditionNotice")
+	local chosen=num(player:GetAttribute("ExpeditionFloor"),1)
+	card({name="DungeonSummary",motif="Hunt",accent=rgb(dungeonUi.violet),title="The Hollow Observatory",titleColor=rgb(lighten(dungeonUi.violet,.35)),
+		subtitle="Dungeoneering "..level.."  ·  Selected: Floor "..numeral(chosen),badge="Party ≤ "..num(rules.maxParty,5),badgeColor=ivory,
+		detail="Choose a floor at the daises beside the Vault Gate, open the run at the gate, then stand on the matchmaking pad within "..num(rules.padSeconds,10).."s to join.",
+		lines={type(result)=="string" and result~="" and ("Last clear: "..escape(result)) or nil,
+			type(notice)=="string" and notice~="" and paint(escape(notice),"F9CC77") or nil}})
+	heading("FLOORS")
+	for index,f in ipairs(Data.DungeonFloors) do
+		if type(f)=="table" then
+			local need=num(f.level,1)
+			local open=level>=need
+			local boss=tbl(f.boss)
+			local rw=tbl(f.rewards)
+			card({name="DungeonFloor"..index,motif="Hunt",locked=not open,accent=open and rgb(dungeonUi.violet) or nil,
+				title=escape(f.name or ("Floor "..index)).."  ·  "..escape(f.subtitle or ""),titleColor=open and ivory or muted,
+				subtitle="Boss: "..escape(boss.name or "?").."  ·  "..paint(escape(boss.attack or ""),"E8806A"),
+				badge=(open and check or cross).." Dungeoneering "..need,badgeColor=ivory,
+				detail=dungeonUi.mechanics(f.mechanics),
+				lines={"Grade B reward: "..fmt(rw.dungeoneeringXp).." Dungeoneering XP  ·  "..fmt(rw.combatXp).." Combat XP  ·  "..fmt(rw.coins).." coins  ·  "..num(rw.stormglass,0).." Stormglass",
+					"Chest: "..dungeonUi.drops(f.chest)}})
+		end
+	end
+	heading("SCORE & GRADE")
+	local grades={}
+	for _,g in ipairs(tbl(Data.DungeonGrades)) do
+		if type(g)=="table" then table.insert(grades,paint(escape(g.grade),"F9CC77").." ≥"..num(g.min,0).." ×"..num(g.mult,1)) end
+	end
+	card({name="DungeonGrades",motif="Hunt",title="Score = speed + survival + puzzle",titleColor=gold,subtitle="Each part 0–100 · total 300",
+		detail="Speed is full until the floor's par time and reaches 0 at twice par. Each death costs 20 survival; each wrong prism costs 15 puzzle.",
+		lines={table.concat(grades,"   "),"Higher grades multiply XP, coins and essence, add Stormglass at S/S+, and boost the chest's rare roll (Magic Find applies too)."}})
+	card({name="DungeonRules",motif="Hunt",title="Fair credit",titleColor=ivory,
+		lines={"Contribute at least "..math.floor(num(rules.contributionShare,0.1)*100).."% of the party's damage and tuning to open the chest.",
+			"Chest cooldown: "..num(rules.clearCooldown,90).."s between credited clears.",
+			"Ironman journals are credited on solo clears or with "..math.floor(num(rules.ironmanDamageShare,0.3)*100).."% of the party's damage."}})
+end
+Pages.drawDungeon=drawDungeon
+end
+
+------------------------------------------------------------------------------
 -- Ledger: bank, market, merchant
 ------------------------------------------------------------------------------
 do
@@ -2471,7 +2538,7 @@ local sectionLists={
 	Hero={"Skills","Gear","Enchant","Accessories","Pets"},
 	Satchel={"Items","Collections"},
 	Workshop={"Forge","Hearth","Cauldron","Workbench","Workers","Home"},
-	Hunt={"Slayer","Bestiary"},
+	Hunt={"Slayer","Bestiary","Dungeon"},
 	Ledger={"Bank","Market","Merchant"},
 }
 sectionOf={Journal="Bearing",Hero="Skills",Satchel="Items",Workshop="Forge",Hunt="Slayer",Ledger="Bank"}
@@ -2481,7 +2548,7 @@ local drawers={
 	Satchel={Items=Pages.drawItems,Collections=Pages.drawCollections},
 	Workshop={Forge=function() Pages.drawStation("Forge") end,Hearth=function() Pages.drawStation("Hearth") end,Cauldron=function() Pages.drawStation("Cauldron") end,
 		Workbench=function() Pages.drawStation("Workbench") end,Workers=Pages.drawWorkers,Home=Pages.drawHome},
-	Hunt={Slayer=Pages.drawSlayer,Bestiary=Pages.drawBestiary},
+	Hunt={Slayer=Pages.drawSlayer,Bestiary=Pages.drawBestiary,Dungeon=Pages.drawDungeon},
 	Ledger={Bank=Pages.drawBank,Market=Pages.drawMarket,Merchant=Pages.drawMerchant},
 }
 local function resetTransient()

@@ -966,15 +966,48 @@ game:BindToClose(function()
 end)
 local expedition = Instance.new("BindableEvent")
 expedition.Name = "IsleExpeditionReward"
-expedition.Event:Connect(function(player)
+-- Dungeons: result {floor, grade, score, partySize, damageShare} from expedition.server.lua
+-- (a bare Fire(player) is a legacy Floor I, grade B clear). The profile re-checks
+-- the floor's Dungeoneering gate, the 90 s clear cooldown and the Ironman rule.
+expedition.Event:Connect(function(player,result)
 	local p=profiles[player]
 	if not p or (not preview[player] and os.time()>=(leaseEnd[player] or 0)) then return end
+	result=if type(result)=="table" then result else {}
+	local floorIndex=if type(result.floor)=="number" and Data.DungeonFloors[result.floor] then result.floor else 1
+	local floor=Data.DungeonFloors[floorIndex]
+	local grade=if type(result.grade)=="string" and Data.DungeonGradeById[result.grade] then result.grade else "B"
+	local score=if type(result.score)=="number" and result.score==result.score then math.clamp(math.floor(result.score),0,300) else 0
+	local partySize=if type(result.partySize)=="number" then result.partySize else 1
+	local share=if type(result.damageShare)=="number" and result.damageShare==result.damageShare then result.damageShare else 1
+	local now=os.time()
+	local dungeons=type(p.dungeons)=="table" and p.dungeons or {lastClear=0,clears={},best={}}
+	p.dungeons=dungeons
+	dungeons.clears=dungeons.clears or {}
+	dungeons.best=dungeons.best or {}
+	if level(p.xp.Dungeoneering)<floor.level then return end
+	if not Data.dungeonCooldownReady(dungeons.lastClear,now) then
+		update:FireClient(player,snapshot(player,"Observatory chest cooling down • wait "..(Data.Dungeons.clearCooldown-(now-dungeons.lastClear)).."s between credited clears."))
+		return
+	end
+	if not Data.dungeonIronmanCredit(p.ironman==true,partySize,share) then
+		update:FireClient(player,snapshot(player,"Ironman journals need a solo clear or 30% of the party's damage for Observatory credit."))
+		return
+	end
+	dungeons.lastClear=now
+	local key=tostring(floorIndex)
+	dungeons.clears[key]=(dungeons.clears[key] or 0)+1
+	if score>(dungeons.best[key] or 0) then dungeons.best[key]=score end
+	local reward=Data.dungeonRewards(floorIndex,grade)
 	p.started=true
-	grantXp(p,"Combat",80)
-	grantXp(p,"Dungeoneering",60)
-	p.coins+=35
-	collect(p,"Stormglass",1)
-	update:FireClient(player,snapshot(player,"Expedition cleared • Stormglass, 35 coins, 80 Combat and 60 Dungeoneering XP"))
+	grantXp(p,"Combat",reward.combatXp)
+	grantXp(p,"Dungeoneering",reward.dungeoneeringXp)
+	p.coins+=reward.coins
+	for item,n in pairs(reward.items) do collect(p,item,n) end
+	local stats=Progression.computeStats(p,now)
+	local drops=Progression.rollDrops(reward.chest,stats.magicFind,roll,stats.petLuck)
+	for item,n in pairs(drops) do collect(p,item,n) end
+	update:FireClient(player,snapshot(player,floor.name.." cleared • Grade "..grade.." • +"..reward.coins.." coins, +"..reward.combatXp.." Combat and +"
+		..reward.dungeoneeringXp.." Dungeoneering XP, "..reward.items.Stormglass.." Stormglass"..dropText(drops)))
 end)
 expedition.Parent=ServerStorage
 
@@ -1022,6 +1055,9 @@ bridge.OnInvoke=function(op,player,payload)
 	end
 	if op=="stats" then
 		return {stats=Progression.computeStats(p,os.time()),combatLevel=level(p.xp.Combat),ironman=p.ironman==true}
+	elseif op=="dungeon" then
+		-- Dungeons: floor gate + Ironman flag for expedition.server.lua.
+		return {level=level(p.xp.Dungeoneering),ironman=p.ironman==true}
 	elseif op=="kill" then
 		local monsterId=payload.monster
 		local monster=validId(monsterId) and Data.Monsters[monsterId]
