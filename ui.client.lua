@@ -97,6 +97,17 @@ local function controlEngraving(parent,caption)
 		mark(.5,.5,.5,.5,45);mark(.5,.5,.18,.18,45).BackgroundColor3=deep
 	end
 end
+local function revealSelection(object)
+	local scroller=object:FindFirstAncestorWhichIsA("ScrollingFrame")
+	if not scroller then return end
+	local top=object.AbsolutePosition.Y-scroller.AbsolutePosition.Y
+	local bottom=top+object.AbsoluteSize.Y
+	local shift=if top<4 then top-4 elseif bottom>scroller.AbsoluteSize.Y-4 then bottom-scroller.AbsoluteSize.Y+4 else 0
+	if shift~=0 then
+		local maximum=math.max(0,scroller.AbsoluteCanvasSize.Y-scroller.AbsoluteSize.Y)
+		scroller.CanvasPosition=Vector2.new(scroller.CanvasPosition.X,math.clamp(scroller.CanvasPosition.Y+shift,0,maximum))
+	end
+end
 local function button(parent, caption, pos, dim, action)
 	local b = make("TextButton", parent, {
 		Name = caption:gsub("[^%w]", "").."Button",
@@ -119,6 +130,7 @@ local function button(parent, caption, pos, dim, action)
 	b.MouseButton1Down:Connect(function() TweenService:Create(pressScale,TweenInfo.new(.08),{Scale=.96}):Play() end)
 	b.MouseButton1Up:Connect(function() TweenService:Create(pressScale,TweenInfo.new(.12),{Scale=1}):Play() end)
 	b.MouseLeave:Connect(function() pressScale.Scale=1 end)
+	b.SelectionGained:Connect(function() revealSelection(b) end)
 	b.Activated:Connect(action)
 	return b
 end
@@ -714,6 +726,7 @@ local function drawBank()
 			updatePreview()
 		end)
 	end
+	input.SelectionGained:Connect(function() revealSelection(input) end)
 	input:GetPropertyChangedSignal("Text"):Connect(function()
 		bankAmount=input.Text:sub(1,20)
 		updatePreview()
