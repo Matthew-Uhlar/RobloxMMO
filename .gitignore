@@ -1,0 +1,9 @@
+.tools/
+.env
+.env.*
+*.rbxl
+*.rbxlx
+*.rbxl.lock
+*.rbxlx.lock
+publish-receipt.json
+*.log

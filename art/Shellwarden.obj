@@ -1,0 +1,317 @@
+mtllib isles.mtl
+o Shellwarden
+v 0.6 1 -3
+v 0.424 1.566 -3
+v 0 1.8 -3
+v -0.424 1.566 -3
+v -0.6 1 -3
+v -0.424 0.434 -3
+v 0 0.2 -3
+v 0.424 0.434 -3
+v 1.7 1 -2.3
+v 1.202 1.778 -2.3
+v 0 2.1 -2.3
+v -1.202 1.778 -2.3
+v -1.7 1 -2.3
+v -1.202 0.222 -2.3
+v 0 -0.1 -2.3
+v 1.202 0.222 -2.3
+v 2.7 1.55 0
+v 1.909 3.07 0
+v 0 3.7 0
+v -1.909 3.07 0
+v -2.7 1.55 0
+v -1.909 0.03 0
+v 0 -0.6 0
+v 1.909 0.03 0
+v 1.8 1.25 2.8
+v 1.273 2.169 2.8
+v 0 2.55 2.8
+v -1.273 2.169 2.8
+v -1.8 1.25 2.8
+v -1.273 0.331 2.8
+v 0 -0.05 2.8
+v 1.273 0.331 2.8
+v 0.6 1 3.6
+v 0.424 1.354 3.6
+v 0 1.5 3.6
+v -0.424 1.354 3.6
+v -0.6 1 3.6
+v -0.424 0.646 3.6
+v 0 0.5 3.6
+v 0.424 0.646 3.6
+v -1.25 1.1 -1.7
+v -2.6 1.7 -0.7
+v -3.6 -0.95 -0.6
+v -2.4 -0.95 -1.05
+v -3.2 1 -1.2
+v -1.25 1.1 -0.2
+v -2.6 1.7 0.8
+v -3.6 -0.95 0.9
+v -2.4 -0.95 0.45
+v -3.2 1 0.3
+v -1.25 1.1 1.3
+v -2.6 1.7 2.3
+v -3.6 -0.95 2.4
+v -2.4 -0.95 1.95
+v -3.2 1 1.8
+v -0.8 1 -2.4
+v -1.25 1.65 -2.5
+v -2.1 2.5 -4.75
+v -1.45 0.4 -3.35
+v -1.8 1.2 -3.2
+v -0.3 1 -3.05
+v -0.85 1 -2.95
+v -0.73 1.3 -3
+v -0.6 1.15 -3.18
+v -0.3 2.8 -0.4
+v -1.5 2.6 -0.6
+v -1.3 2.65 0.6
+v -0.4 3 0.9
+v -1 4.65 0.85
+v 1.25 1.1 -1.7
+v 2.6 1.7 -0.7
+v 3.6 -0.95 -0.6
+v 2.4 -0.95 -1.05
+v 3.2 1 -1.2
+v 1.25 1.1 -0.2
+v 2.6 1.7 0.8
+v 3.6 -0.95 0.9
+v 2.4 -0.95 0.45
+v 3.2 1 0.3
+v 1.25 1.1 1.3
+v 2.6 1.7 2.3
+v 3.6 -0.95 2.4
+v 2.4 -0.95 1.95
+v 3.2 1 1.8
+v 0.8 1 -2.4
+v 1.25 1.65 -2.5
+v 2.1 2.5 -4.75
+v 1.45 0.4 -3.35
+v 1.8 1.2 -3.2
+v 0.3 1 -3.05
+v 0.85 1 -2.95
+v 0.73 1.3 -3
+v 0.6 1.15 -3.18
+v 0.3 2.8 -0.4
+v 1.5 2.6 -0.6
+v 1.3 2.65 0.6
+v 0.4 3 0.9
+v 1 4.65 0.85
+usemtl midnight
+f 1 2 9
+f 9 2 10
+usemtl stone
+f 2 3 10
+f 10 3 11
+usemtl lavender
+f 3 4 11
+f 11 4 12
+usemtl stone
+f 4 5 12
+f 12 5 13
+usemtl midnight
+f 5 6 13
+f 13 6 14
+usemtl stone
+f 6 7 14
+f 14 7 15
+usemtl lavender
+f 7 8 15
+f 15 8 16
+usemtl stone
+f 8 1 16
+f 16 1 9
+f 9 10 17
+f 17 10 18
+usemtl lavender
+f 10 11 18
+f 18 11 19
+usemtl stone
+f 11 12 19
+f 19 12 20
+usemtl midnight
+f 12 13 20
+f 20 13 21
+usemtl stone
+f 13 14 21
+f 21 14 22
+usemtl lavender
+f 14 15 22
+f 22 15 23
+usemtl stone
+f 15 16 23
+f 23 16 24
+usemtl midnight
+f 16 9 24
+f 24 9 17
+usemtl lavender
+f 17 18 25
+f 25 18 26
+usemtl stone
+f 18 19 26
+f 26 19 27
+usemtl midnight
+f 19 20 27
+f 27 20 28
+usemtl stone
+f 20 21 28
+f 28 21 29
+usemtl lavender
+f 21 22 29
+f 29 22 30
+usemtl stone
+f 22 23 30
+f 30 23 31
+usemtl midnight
+f 23 24 31
+f 31 24 32
+usemtl stone
+f 24 17 32
+f 32 17 25
+f 25 26 33
+f 33 26 34
+usemtl midnight
+f 26 27 34
+f 34 27 35
+usemtl stone
+f 27 28 35
+f 35 28 36
+usemtl lavender
+f 28 29 36
+f 36 29 37
+usemtl stone
+f 29 30 37
+f 37 30 38
+usemtl midnight
+f 30 31 38
+f 38 31 39
+usemtl stone
+f 31 32 39
+f 39 32 40
+usemtl lavender
+f 32 25 40
+f 40 25 33
+usemtl stone
+f 1 3 2
+f 33 34 35
+f 1 4 3
+f 33 35 36
+f 1 5 4
+f 33 36 37
+f 1 6 5
+f 33 37 38
+f 1 7 6
+f 33 38 39
+f 1 8 7
+f 33 39 40
+usemtl midnight
+f 41 42 45
+usemtl bronze
+f 42 43 45
+usemtl midnight
+f 43 44 45
+usemtl bronze
+f 44 41 45
+f 41 43 42
+f 41 44 43
+usemtl midnight
+f 46 47 50
+usemtl bronze
+f 47 48 50
+usemtl midnight
+f 48 49 50
+usemtl bronze
+f 49 46 50
+f 46 48 47
+f 46 49 48
+usemtl midnight
+f 51 52 55
+usemtl bronze
+f 52 53 55
+usemtl midnight
+f 53 54 55
+usemtl bronze
+f 54 51 55
+f 51 53 52
+f 51 54 53
+usemtl gold
+f 56 57 60
+usemtl bronze
+f 57 58 60
+usemtl gold
+f 58 59 60
+usemtl bronze
+f 59 56 60
+f 56 58 57
+f 56 59 58
+usemtl ember
+f 61 62 64
+f 62 63 64
+f 63 61 64
+f 61 63 62
+usemtl aqua
+f 65 66 69
+usemtl teal
+f 66 67 69
+usemtl aqua
+f 67 68 69
+usemtl teal
+f 68 65 69
+f 65 67 66
+f 65 68 67
+usemtl midnight
+f 70 71 74
+usemtl bronze
+f 71 72 74
+usemtl midnight
+f 72 73 74
+usemtl bronze
+f 73 70 74
+f 70 72 71
+f 70 73 72
+usemtl midnight
+f 75 76 79
+usemtl bronze
+f 76 77 79
+usemtl midnight
+f 77 78 79
+usemtl bronze
+f 78 75 79
+f 75 77 76
+f 75 78 77
+usemtl midnight
+f 80 81 84
+usemtl bronze
+f 81 82 84
+usemtl midnight
+f 82 83 84
+usemtl bronze
+f 83 80 84
+f 80 82 81
+f 80 83 82
+usemtl gold
+f 85 86 89
+usemtl bronze
+f 86 87 89
+usemtl gold
+f 87 88 89
+usemtl bronze
+f 88 85 89
+f 85 87 86
+f 85 88 87
+usemtl ember
+f 90 91 93
+f 91 92 93
+f 92 90 93
+f 90 92 91
+usemtl aqua
+f 94 95 98
+usemtl teal
+f 95 96 98
+usemtl aqua
+f 96 97 98
+usemtl teal
+f 97 94 98
+f 94 96 95
+f 94 97 96

@@ -21,6 +21,9 @@ The installer selects Lune 0.11.1 and Rojo 7.7.1 release archives and verifies t
 
 Repository: [Matthew-Uhlar/RobloxMMO](https://github.com/Matthew-Uhlar/RobloxMMO).
 
-Pushes and pull requests run tests and upload a downloadable place artifact. **Publish Roblox place** is a separate manual workflow; it rebuilds and tests the selected default-branch revision before uploading to an explicitly configured destination. It does not create an experience or change public audience access.
+Pushes and pull requests run tests and upload a downloadable place artifact. **Publish Roblox place** is a separate manual workflow; it rebuilds and tests the selected default-branch revision before uploading to the verified new Aether Isles destination (universe `10777817254`, place `73453386951995`). It does not create an experience or change public audience access.
 
 See [PUBLISHING.md](PUBLISHING.md) for account setup, credentials, deployment, verification and recovery. Never put API keys or Roblox cookies in source, issues, command-line arguments or screenshots.
+
+The new experience was created privately in Studio on November 19, 2026. No destination variables are needed: add only the Roblox credential secret `ROBLOX_API_KEY` for deployment. [Open the game page](https://www.roblox.com/games/73453386951995) (access remains private until configured).
+
