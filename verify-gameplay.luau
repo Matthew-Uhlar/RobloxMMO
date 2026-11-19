@@ -21,8 +21,11 @@ local clock, utc = 10, 1500000000
 local function advance(seconds) clock += seconds; utc += seconds end
 local data, injectedFailure = {}, false
 local delayedProfileAck = nil
+local repeatMarketTransform=false
 local db = {}
+function db:GetAsync(key) return copy(data[key]) end
 function db:UpdateAsync(key, op)
+	if repeatMarketTransform and key:match("^market") then op(copy(data[key])) end
 	local value = op(copy(data[key]))
 	if value then data[key] = copy(value) end
 	if injectedFailure and key:match("^market") then
@@ -614,11 +617,216 @@ eq(cmd(banker,"state").bank,287,"distant bank prompt rejected")
 eq(use(banker,node("bank",nil,0,96)).bank,288,"legacy owner bank prompt deposits all")
 eq(cmd(banker,"withdraw").coins,288,"legacy nil withdrawal remains compatible")
 eq(cmd(lateOpen,"deposit","all:0").message,"Waiting for journal sync.","expired session cannot bank")
+-- Priced asks retain reservation/receipt recovery and migrate fixed lots in place.
+local function marketPlayer(id,coins,items)
+	local p=player(id)
+	services.Players.PlayerRemoving:Fire(p)
+	data["p"..id].profile.coins=coins
+	data["p"..id].profile.items=items or {}
+	return player(id)
+end
+local highSeller=marketPlayer(100,0,{Fish=12})
+local olderSeller=marketPlayer(101,0,{Fish=12})
+local newerSeller=marketPlayer(102,0,{Fish=12})
+local bidder=marketPlayer(103,100,{Fish=12})
+repeatMarketTransform=true
+eq(cmd(highSeller,"list","Fish:30").items.Fish,9,"custom ask reserves exactly one lot")
+cmd(olderSeller,"list","Fish:12")
+cmd(newerSeller,"list","Fish:12")
+cmd(bidder,"list","Fish:5")
+eq(#data.market_v1_Fish.pricedOrders,4,"repeated transforms do not duplicate listings")
+eq(data.market_v1_Fish.nextPricedOrder,4,"order sequence deterministic under transform retry")
+local fishQuote=cmd(bidder,"market","Fish").market
+eq(fishQuote.bestAsk,12,"quote excludes buyer's cheaper own listing")
+eq(fishQuote.openLots,4,"quote shows lot count")
+eq(fishQuote.ownLots,1,"quote shows own lots")
+eq(fishQuote.lotSize,3,"quote states three-unit quantity")
+eq(fishQuote.maxPrice,10000,"quote advertises price limit")
+eq(cmd(bidder,"buy","Fish:20").coins,88,"best ask fills with price-improvement refund")
+eq(data.market_v1_Fish.proceeds["101"],12,"oldest equal-price seller fills first")
+eq(data.market_v1_Fish.proceeds["102"],nil,"newer equal-price ask waits")
+eq(data.market_v1_Fish.proceeds["100"],nil,"expensive oldest ask does not jump price priority")
+eq(cmd(bidder,"buy","Fish:12").coins,76,"second equal-price ask fills next")
+eq(data.market_v1_Fish.proceeds["102"],12,"second seller credited actual ask")
+eq(cmd(bidder,"buy","Fish:10").coins,76,"limit below market reimburses reservation")
+eq(cmd(bidder,"state").items.Fish,15,"no-match does not deliver goods")
+eq(cmd(bidder,"cancel","Fish").items.Fish,18,"cancel returns own priced goods")
+eq(cmd(olderSeller,"proceeds","Fish").coins,12,"seller collects actual ask proceeds")
+eq(cmd(olderSeller,"proceeds","Fish").coins,12,"priced proceeds cannot replay")
+for _,bad in ipairs({"Fish:0","Fish:10001","Fish:-1","Fish:1.5","Fish:1e3","Fish:nan","Fish: 12","Fish:12:2"}) do
+	local invalid=cmd(newerSeller,"list",bad)
+	eq(invalid.items.Fish,9,"invalid ask cannot reserve goods: "..bad)
+end
+eq(cmd(newerSeller,"list","Aetherite:5").items.Fish,9,"unsupported commodity rejected")
+eq(cmd(bidder,"buy","Fish:10000").coins,76,"unfunded buy limit rejected without debit")
+local recoveryBuyer=marketPlayer(104,200,{})
+injectedFailure=true
+eq(cmd(recoveryBuyer,"buy","Fish:50").coins,150,"ambiguous purchase retains full durable reservation")
+services.Players.PlayerRemoving:Fire(recoveryBuyer)
+eq(data.p104.profile.pricedPending.price,50,"pending purchase persists custom limit")
+recoveryBuyer=player(104)
+eq(cmd(recoveryBuyer,"state").coins,170,"rejoin returns exact price-improvement once")
+eq(cmd(recoveryBuyer,"state").items.Fish,3,"rejoin delivers priced purchase once")
+eq(cmd(highSeller,"proceeds","Fish").coins,30,"lost acknowledgement credits seller exactly once")
+eq(cmd(highSeller,"proceeds","Fish").coins,30,"seller cannot recollect recovered sale")
+-- Migration keeps the existing market key, seller balances, receipts and FIFO.
+local legacySeller=marketPlayer(110,0,{})
+services.Players.PlayerRemoving:Fire(legacySeller)
+data.p110.profile.marketSeq=1
+legacySeller=player(110)
+data.market_v1_Herb={orders={"110"},proceeds={},receipts={['110']={seq=1,coins=0,units=0,text="legacy listing"}},accounts=1}
+local legacyBuyer=marketPlayer(111,100,{})
+eq(cmd(legacyBuyer,"market","Herb").market.bestAsk,9,"legacy lot quotes original fixed price")
+eq(cmd(legacyBuyer,"buy","Herb:20").coins,91,"legacy lot fills at original price")
+eq(data.market_v1_Herb.version,2,"legacy book migrates in place")
+eq(cmd(legacySeller,"proceeds","Herb").coins,9,"migrated seller proceeds preserved")
+local oldPending=marketPlayer(112,91,{})
+services.Players.PlayerRemoving:Fire(oldPending)
+data.p112.profile.marketSeq=1
+data.p112.profile.pending={seq=1,verb="buy",item="Herb"}
+data.market_v1_Herb.orders={"113"}
+oldPending=player(112)
+eq(cmd(oldPending,"state").coins,91,"legacy pending buy uses historical reserved amount")
+eq(cmd(oldPending,"state").items.Herb,3,"legacy pending buy still delivers")
+eq(data.market_v1_Herb.proceeds['113'],9,"legacy pending seller paid historical price")
+eq(cmd(c,"list","Fish:10").message,"Waiting for journal sync.","expired journal cannot open priced asks")
+local ironTrader=marketPlayer(114,100,{Fish=3})
+cmd(ironTrader,"ironman")
+eq(cmd(ironTrader,"buy","Fish:10").coins,100,"Ironman priced buy cannot reserve coins")
+eq(cmd(ironTrader,"market","Fish").market,nil,"Ironman cannot query player market")
+local replaySeller=marketPlayer(115,0,{Timber=6})
+injectedFailure=true
+eq(cmd(replaySeller,"list","Timber:37").items.Timber,3,"ambiguous priced listing holds goods in escrow")
+services.Players.PlayerRemoving:Fire(replaySeller)
+replaySeller=player(115)
+eq(cmd(replaySeller,"state").items.Timber,3,"listing recovery cannot duplicate reserved goods")
+eq(#data.market_v1_Timber.pricedOrders,1,"listing recovery creates only one order")
+eq(data.market_v1_Timber.pricedOrders[1].price,37,"listing recovery retains chosen ask")
+injectedFailure=true
+cmd(replaySeller,"cancel","Timber")
+services.Players.PlayerRemoving:Fire(replaySeller)
+replaySeller=player(115)
+eq(cmd(replaySeller,"state").items.Timber,6,"cancellation recovery returns escrow once")
+eq(#data.market_v1_Timber.pricedOrders,0,"recovered cancellation removes order once")
+cmd(replaySeller,"list","Timber:23")
+local replayBuyer=marketPlayer(116,40,{})
+cmd(replayBuyer,"buy","Timber:30")
+injectedFailure=true
+eq(cmd(replaySeller,"proceeds","Timber").coins,0,"ambiguous proceeds wait for receipt recovery")
+services.Players.PlayerRemoving:Fire(replaySeller)
+replaySeller=player(115)
+eq(cmd(replaySeller,"state").coins,23,"proceeds recovery grants actual ask once")
+eq(cmd(replaySeller,"proceeds","Timber").coins,23,"recovered proceeds cannot repeat")
+-- Two distinct old fixed-price lots retain their FIFO order when both migrate.
+data.market_v1_Ore.orders={"117","118"}
+data.market_v1_Ore.nextOrder=nil
+local migrationBuyer=marketPlayer(119,50,{})
+cmd(migrationBuyer,"buy","Ore:20")
+eq(data.market_v1_Ore.proceeds['117'],15,"legacy migration preserves oldest lot priority")
+eq(data.market_v1_Ore.orders[1],'118',"legacy migration preserves remaining seller")
+eq(type(data.market_v1_Ore.orders[1]),"string","legacy queue retains old server serialization format")
+-- Exact legacy trade behavior from deployed commit d8e1874 (before priced lots).
+-- Run it against books modified by production v2, in both operation orders.
+local function legacyTrade(book,trader,order)
+	local fixed={Ore=15,Timber=12,Herb=9,Fish=18}
+	book=book or {orders={},proceeds={},receipts={},accounts=0}
+	local receipt=book.receipts[trader]
+	if receipt and receipt.seq>=order.seq then return book end
+	if not receipt and book.accounts>=4000 then return nil end
+	if not receipt then book.accounts+=1 end
+	local price=fixed[order.item]
+	local result={seq=order.seq,coins=0,units=0,text=""}
+	if order.verb=="list" then
+		if #book.orders>=300 then result.units=3 else table.insert(book.orders,trader) end
+	elseif order.verb=="buy" or order.verb=="cancel" then
+		local index=table.find(book.orders,trader)
+		if order.verb=="buy" then index=nil;for i,seller in ipairs(book.orders) do if seller~=trader then index=i;break end end end
+		if index then
+			local seller=table.remove(book.orders,index)
+			if order.verb=="buy" then book.proceeds[seller]=(book.proceeds[seller] or 0)+price end
+			result.units=3
+		else result.coins=if order.verb=="buy" then price else 0 end
+	else result.coins=book.proceeds[trader] or 0;book.proceeds[trader]=nil end
+	book.receipts[trader]=result
+	return book
+end
+local function oldMarket(trader,verb,item,seq)
+	return db:UpdateAsync("market_v1_"..item,function(old) return legacyTrade(old,trader,{verb=verb,item=item,seq=seq}) end)
+end
+data.market_v1_Fish=nil
+local mixedSeller=marketPlayer(120,0,{Fish=6})
+cmd(mixedSeller,"list","Fish:9")
+eq(data.market_v1_Fish.receipts['120'].seq,0,"priced user registers harmless legacy receipt")
+eq(data.market_v1_Fish.accounts,1,"priced user counts toward shared legacy account limit")
+oldMarket('121','list','Fish',1)
+eq(data.market_v1_Fish.orders[1],'121',"old listing after new write retains string seller")
+eq(#data.market_v1_Fish.pricedOrders,1,"old listing preserves separately priced lots")
+oldMarket('122','buy','Fish',1)
+eq(data.market_v1_Fish.proceeds['121'],18,"old buyer after new writer pays fixed lot price")
+eq(#data.market_v1_Fish.pricedOrders,1,"old buyer cannot misprice new custom lot")
+local mixedBuyer=marketPlayer(123,100,{})
+eq(cmd(mixedBuyer,"buy","Fish:20").coins,91,"new buyer after old writer matches custom ask")
+oldMarket('120','proceeds','Fish',1)
+eq(data.market_v1_Fish.receipts['120'].coins,9,"old server can collect shared priced proceeds")
+eq(data.market_v1_Fish.accounts,4,"old action reuses priced user's account registration")
+eq(data.market_v1_Fish.pricedReceipts['120'].units,0,"old receipt cannot overwrite new receipt stream")
+oldMarket('124','list','Fish',1)
+cmd(mixedSeller,"list","Fish:18")
+cmd(mixedBuyer,"buy","Fish:20")
+eq(data.market_v1_Fish.proceeds['124'],18,"equal-price mixed queues prioritize legacy lot")
+eq(#data.market_v1_Fish.pricedOrders,1,"mixed queue tie leaves priced lot intact")
+cmd(mixedBuyer,"buy","Fish:20")
+eq(#data.market_v1_Fish.pricedOrders,0,"new buyer can consume remaining priced lot")
+-- Actual baseline open reuses old.profile, and persist table.clone's the whole
+-- profile then clones known nested maps/workers. Unknown additive fields survive.
+local hopper=marketPlayer(130,200,{})
+local hopSeller=marketPlayer(131,0,{Fish=3})
+cmd(hopSeller,"list","Fish:23")
+injectedFailure=true
+eq(cmd(hopper,"buy","Fish:40").coins,160,"hop fixture retains priced reservation")
+services.Players.PlayerRemoving:Fire(hopper)
+eq(data.p130.profile.pending,nil,"new reservation is invisible to legacy pending recovery")
+local baselineProfile=data.p130.profile -- baseline open: profile=old and old.profile or fresh()
+eq(baselineProfile.pricedPending.price,40,"legacy load preserves unknown priced reservation")
+oldMarket('132','list','Fish',1)
+baselineProfile.coins-=18
+baselineProfile.marketSeq=1
+local oldResult=oldMarket('130','buy','Fish',1).receipts['130']
+baselineProfile.items.Fish=(baselineProfile.items.Fish or 0)+oldResult.units
+baselineProfile.coins+=oldResult.coins
+local baselinePayload=table.clone(baselineProfile) -- baseline persist, unchanged statements
+for _,k in ipairs({'items','xp','collection','decorations'}) do baselinePayload[k]=table.clone(baselineProfile[k]) end
+baselinePayload.workers={}
+for slot,w in ipairs(baselineProfile.workers) do baselinePayload.workers[slot]=table.clone(w) end
+data.p130={owner='',expires=utc+180,profile=copy(baselinePayload)}
+eq(data.p130.profile.pricedPending.price,40,"legacy save preserves unknown priced reservation")
+hopper=player(130)
+eq(cmd(hopper,"state").coins,159,"new rejoin reconciles both legacy spend and priced refund")
+eq(cmd(hopper,"state").items.Fish,6,"cross-version hop delivers each purchase exactly once")
+eq(data.market_v1_Fish.receipts['130'].coins,0,"legacy receipt remains unchanged after priced recovery")
+eq(data.market_v1_Fish.pricedReceipts['130'].coins,17,"priced refund remains in separate receipt")
+-- Both versions share a 4000-user registry (priced users get a harmless legacy
+-- sequence-zero receipt). At most two receipts per registered user are retained.
+local serde=require('@lune/serde')
+local capacity={orders={},pricedOrders={},proceeds={},receipts={},pricedReceipts={},accounts=4000,pricedAccounts=2000}
+for i=1,4000 do
+	capacity.receipts[tostring(i)]={seq=1,coins=10000,units=3,text=string.rep('x',180)}
+	if i<=2000 then capacity.pricedReceipts[tostring(i)]={seq=1,coins=10000,units=3,text=string.rep('x',180)} end
+end
+data.market_v1_Timber=capacity
+local capped=marketPlayer(9000,100,{Timber=3})
+eq(cmd(capped,"list","Timber:100").items.Timber,3,"combined receipt budget returns unallocated escrow")
+eq(data.market_v1_Timber.pricedAccounts,2000,"new writer cannot exceed shared account budget")
+data.market_v1_Timber.proceeds['3000']=57
+local existingSeller=marketPlayer(3000,0,{})
+eq(cmd(existingSeller,"proceeds","Timber").coins,57,"existing legacy seller can collect at full shared capacity")
+for i=2001,4000 do capacity.pricedReceipts[tostring(i)]={seq=1,coins=10000,units=3,text=string.rep('x',180)} end
+capacity.accounts=4000;capacity.pricedAccounts=4000
+for i=1,300 do capacity.orders[i]=tostring(i);capacity.pricedOrders[i]={seller=tostring(i+300),price=10000,sequence=i} end
+for i=1,4000 do capacity.proceeds[tostring(i)]=1000000000 end
+local encoded=serde.encode('json',capacity)
+eq(#encoded<4*1024*1024,true,"worst rolling-version receipt/lot bounds fit 4 MiB JSON budget")
+eq(type(serde.decode('json',encoded).orders[1]),'string',"mixed book remains JSON-serializable for legacy readers")
+print("Rolling-version maximum-shape fixture: "..#encoded.." JSON bytes (4000 users / 8000 receipts / 600 lots).")
+repeatMarketTransform=false
 print("PASS: "..checks.." production gameplay/market assertions.")
-
-
-
-
-
-
-

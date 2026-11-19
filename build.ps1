@@ -6,6 +6,10 @@ Push-Location $PSScriptRoot
 try {
     $lune = Join-Path $ToolDirectory 'lune.exe'
     $rojo = Join-Path $ToolDirectory 'rojo.exe'
+    & node art/generate-import.cjs --check
+    if ($LASTEXITCODE -ne 0) { throw 'Original mesh import bundle is stale' }
+    & node art/import/verify-import.cjs
+    if ($LASTEXITCODE -ne 0) { throw 'Original mesh geometry verification failed' }
     foreach ($test in @('verify-gameplay.luau', 'verify-world.luau', 'verify-expedition.luau', 'verify-coop.luau')) {
         & $lune run $test
         if ($LASTEXITCODE -ne 0) { throw "Verification failed in $test" }

@@ -734,39 +734,109 @@ local function drawBank()
 	input.FocusLost:Connect(function() updatePreview() end)
 	updatePreview()
 end
-local function drawTrade()
-	drawBank()
-	heading("02    /    MERCHANT")
-	row("Sell raw materials", "Sell all eligible materials in your satchel.", "Sell all", function()
-		send("sell")
-	end)
-	heading("03    /    PLAYER EXCHANGE")
-	if state.ironman then
-		row("Sealed charter", "Player trading is unavailable in Ironman.")
+local ledgerSection="Bank"
+local marketItem="Ore"
+local marketQuotes,marketChanges,buyLimits,listPrices={},{},{},{}
+local purchaseReview
+local function quoteAge(quote)
+	return math.max(0,math.floor(workspace:GetServerTimeNow()-(quote.fetchedAt or 0)))
+end
+local function validPrice(value,quote)
+	if not value or not value:match("^%d+$") or #value>5 then return nil end
+	local price=tonumber(value)
+	if not price or price<(quote.minPrice or 1) or price>(quote.maxPrice or 10000) then return nil end
+	return price
+end
+local function priceField(title,value,onChange)
+	local field=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,70),deep))
+	rounded(field,8,slate)
+	label(field,title,10,3,UDim.new(1,-20),20,bold,11,mint)
+	local box=make("TextBox",field,{Name=title:gsub("[^%w]","").."Input",Position=UDim2.fromOffset(10,24),Size=UDim2.new(1,-20,0,44),BackgroundTransparency=1,Text=value,PlaceholderText="1–10,000 whole coins per lot",PlaceholderColor3=muted,TextColor3=ivory,TextSize=16,Font=bold,ClearTextOnFocus=false,Selectable=true,TextXAlignment=Enum.TextXAlignment.Left,MultiLine=false})
+	box.SelectionGained:Connect(function() revealSelection(box) end)
+	box:GetPropertyChangedSignal("Text"):Connect(function() onChange(box.Text:sub(1,20)) end)
+	return box
+end
+local function drawMarket()
+	heading("MARKET    /    PLAYER ASK BOARD")
+	if state.ironman then row("Sealed charter","Player trading is unavailable in Ironman.");return end
+	local chooser=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,44),ink))
+	for index,item in ipairs({"Ore","Timber","Herb","Fish"}) do
+		local choice=button(chooser,item,UDim2.new((index-1)/4,0,0,0),UDim2.new(.25,-4,0,44),function()
+			marketItem=item
+			purchaseReview=nil
+			scroll.CanvasPosition=Vector2.zero
+			render()
+			send("market",item)
+		end)
+		choice.BackgroundColor3=item==marketItem and mint or slate
+		choice.TextColor3=item==marketItem and deep or ivory
+	end
+	local item=marketItem
+	local quote=marketQuotes[item]
+	if not quote then
+		row(item.." order board","Read current player asking prices before choosing a trade.","Refresh",function() send("market",item) end)
 		return
 	end
-	row("Commodity counter", "Each order trades 3 units. Sellers receive proceeds after a sale.")
-	for _, lot in ipairs({ { "Ore", 15 }, { "Timber", 12 }, { "Herb", 9 }, { "Fish", 18 } }) do
-		local item = lot[1]
-		local card = listItem(panel(scroll, UDim2.new(), UDim2.new(1, -7, 0, 116), deep))
-		rounded(card, 7, slate)
-		local art=titleArt(card,item,44,"Ledger")
-		art.Position=UDim2.fromOffset(8,7)
-		local lotTitle=label(card,item .. " ×3 / " .. lot[2] .. " coins",62,7,UDim.new(1,-70),44,bold,14,ivory)
-		lotTitle.TextWrapped=true
-		lotTitle.TextTruncate=Enum.TextTruncate.None
-		for index, command in ipairs({
-			{ "Buy", "buy" },
-			{ "List", "list" },
-			{ "Cancel", "cancel" },
-			{ "Collect", "proceeds" },
-		}) do
-			local verb = command[2]
-			button(card, command[1], UDim2.new((index - 1) / 4, 2, 0, 64), UDim2.new(1 / 4, -4, 0, 43), function()
-				send(verb, item)
-			end)
-		end
+	local units=quote.lotSize or 3
+	local age=quoteAge(quote)
+	local best=quote.bestAsk and (quote.bestAsk.." coins / "..units.." "..item) or "No other player asks"
+	row(item.." · best ask",best..". "..quote.openLots.." open lots; "..quote.ownLots.." are yours. Quote checked "..age.." seconds ago. Prices may change before a trade.","Refresh",function() send("market",item) end)
+	if marketChanges[item] then row("Best price updated",marketChanges[item].." Your purchase limit stays unchanged.") end
+	if age>=15 then row("Quote may be stale","Refresh for a current best ask. The server still enforces your maximum total price.") end
+	if not buyLimits[item] then buyLimits[item]=tostring(quote.bestAsk or quote.defaultPrice) end
+	if not listPrices[item] then listPrices[item]=tostring(quote.defaultPrice) end
+	heading("BUY    /    PRICE-PROTECTED LOT")
+	if purchaseReview and purchaseReview.item==item then
+		local review=purchaseReview
+		local latest=quote.bestAsk and ("Latest best ask: "..quote.bestAsk.." coins.") or "There is no eligible ask in this quote."
+		row("Review "..units.." "..item,"Maximum total: "..review.limit.." coins for one "..units.."-unit lot. "..latest.." The cheapest eligible lot at or below your limit fills; any difference is returned. If no lot meets your limit, the reservation is returned.","Confirm",function()
+			purchaseReview=nil
+			send("buy",item..":"..review.limit)
+		end)
+		row("Keep deciding","Cancel this review without placing a purchase.","Cancel",function() purchaseReview=nil;render() end)
+	else
+		local box=priceField("MAXIMUM TOTAL / "..units.." "..item,buyLimits[item],function(value) buyLimits[item]=value end)
+		local presets=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,44),ink))
+		button(presets,"Use best ask",UDim2.new(),UDim2.new(.5,-4,0,44),function()
+			if quote.bestAsk then buyLimits[item]=tostring(quote.bestAsk);box.Text=buyLimits[item] else notify("No eligible ask in this quote. Refresh to check again.") end
+		end)
+		button(presets,"Review buy",UDim2.new(.5,0,0,0),UDim2.new(.5,-4,0,44),function()
+			local limit=validPrice(buyLimits[item],quote)
+			if not limit then notify("Choose a maximum total of 1–10,000 whole coins.");return end
+			if state.coins<limit then notify("Your purse needs "..limit.." coins to reserve this purchase.");return end
+			purchaseReview={item=item,limit=limit,revision=quote.revision}
+			render()
+		end)
 	end
+	heading("SELL    /    YOUR ASKING PRICE")
+	priceField("ASK TOTAL / "..units.." "..item,listPrices[item],function(value) listPrices[item]=value end)
+	row("List "..units.." "..item,"Choose the total price for one lot. Your materials are reserved until sold or cancelled. "..count("items",item).." held in your satchel.","List lot",function()
+		local price=validPrice(listPrices[item],quote)
+		if not price then notify("Choose an asking total of 1–10,000 whole coins.");return end
+		send("list",item..":"..price)
+	end)
+	row("Your "..item.." orders",quote.ownLots.." open lots. Cancel returns your first fixed-price lot from the old market, or your oldest priced lot.","Cancel lot",function() send("cancel",item) end)
+	row(item.." sale proceeds",quote.proceeds.." coins waiting in this commodity ledger.","Collect",function() send("proceeds",item) end)
+	row("How matching works","Buy one lot at the lowest available ask from another player. At equal prices, listings from the old fixed-price market go first. Within each group, the oldest listing sells first.")
+end
+local function drawMerchant()
+	heading("MERCHANT    /    IMMEDIATE SALES")
+	row("Sell raw materials","Sell all eligible materials in your satchel to the merchant.","Sell all",function() send("sell") end)
+end
+local function drawTrade()
+	local sections=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,44),ink))
+	for index,name in ipairs({"Bank","Market","Merchant"}) do
+		local choice=button(sections,name,UDim2.new((index-1)/3,0,0,0),UDim2.new(1/3,-4,0,44),function()
+			ledgerSection=name
+			purchaseReview=nil
+			scroll.CanvasPosition=Vector2.zero
+			render()
+			if name=="Market" and not state.ironman then send("market",marketItem) end
+		end)
+		choice.BackgroundColor3=name==ledgerSection and mint or slate
+		choice.TextColor3=name==ledgerSection and deep or ivory
+	end
+	if ledgerSection=="Bank" then drawBank() elseif ledgerSection=="Market" then drawMarket() else drawMerchant() end
 end
 local function drawCoop()
 	heading("CO-OP    /    SHARED HOMESTEAD")
@@ -853,7 +923,10 @@ render = function()
 	if not atlas.Visible then
 		return
 	end
-	local restoreFocus = Input.GamepadEnabled and GuiService.SelectedObject and GuiService.SelectedObject:IsDescendantOf(scroll)
+	local selectedObject=GuiService.SelectedObject
+	local restoreFocus=selectedObject and selectedObject:IsDescendantOf(scroll)
+	local selectionName=restoreFocus and selectedObject.Name
+	local selectionClass=restoreFocus and selectedObject.ClassName
 	for _, child in ipairs(scroll:GetChildren()) do
 		if child:IsA("GuiObject") then
 			child:Destroy()
@@ -874,7 +947,13 @@ render = function()
 	else
 		heading("OPENING YOUR LEDGER…")
 	end
-	if restoreFocus then GuiService.SelectedObject = tabButtons[current] end
+	if restoreFocus then
+		local replacement
+		for _,object in scroll:GetDescendants() do
+			if object.Name==selectionName and object.ClassName==selectionClass and object:IsA("GuiObject") and object.Selectable then replacement=object;break end
+		end
+		GuiService.SelectedObject=replacement or tabButtons[current]
+	end
 	footer.Text = state.preview and "STUDIO PRACTICE     /     PROGRESS IS TEMPORARY"
 		or "AETHER ISLES     /     FIELD EDITION"
 end
@@ -886,6 +965,7 @@ for i, name in ipairs({ "Journal", "Satchel", "Workshop", "Ledger", "Co-op" }) d
 		scroll.CanvasPosition = Vector2.zero
 		render()
 		if name == "Co-op" and sendCoop then sendCoop("state") end
+		if name=="Ledger" and ledgerSection=="Market" and send and not state.ironman then send("market",marketItem) end
 	end)
 	b.Text = ""
 	local engraving=b:FindFirstChild("ControlEngraving")
@@ -914,6 +994,7 @@ openAtlas = function()
 	render()
 	if send then send("state") end
 	if current == "Co-op" and sendCoop then sendCoop("state") end
+	if current=="Ledger" and ledgerSection=="Market" and send and not state.ironman then send("market",marketItem) end
 	if Input.GamepadEnabled then
 		GuiService.SelectedObject = tabButtons[current]
 	end
@@ -934,21 +1015,29 @@ Input.InputBegan:Connect(function(input, used)
 end)
 local remote = ReplicatedStorage:WaitForChild("IsleAction")
 local updates = ReplicatedStorage:WaitForChild("IsleUpdate")
-local function accept(data)
+local function accept(data,quiet)
 	if type(data) ~= "table" or type(data.items) ~= "table" then
 		if type(data) == "table" then
 			notify(data.message)
 		end
 		return false
 	end
+	if type(data.market)=="table" and type(data.market.item)=="string" then
+		local quote=data.market
+		local previous=marketQuotes[quote.item]
+		if previous and previous.bestAsk~=quote.bestAsk then
+			marketChanges[quote.item]="Best ask changed from "..(previous.bestAsk and (previous.bestAsk.." coins") or "no offers").." to "..(quote.bestAsk and (quote.bestAsk.." coins") or "no offers").."."
+		end
+		marketQuotes[quote.item]=quote
+	end
 	state = data
 	synced = true
 	render()
-	notify(data.message)
+	if not quiet then notify(data.message) end
 	return true
 end
 local pending = false
-send = function(action, item)
+send = function(action, item, quiet)
 	if pending then
 		return
 	end
@@ -958,7 +1047,7 @@ send = function(action, item)
 	end)
 	pending = false
 	if ok then
-		accept(result)
+		accept(result,quiet)
 	else
 		notify("Your ledger could not be reached. Try again.")
 	end
@@ -992,6 +1081,11 @@ sendCoop = function(verb, item)
 end
 task.spawn(function()
 	ReplicatedStorage:WaitForChild("IsleCoopUpdate").OnClientEvent:Connect(acceptCoop)
+end)
+task.spawn(function()
+	while task.wait(5) do
+		if synced and atlas.Visible and current=="Ledger" and ledgerSection=="Market" and not state.ironman and not Input:GetFocusedTextBox() then send("market",marketItem,true) end
+	end
 end)
 updates.OnClientEvent:Connect(accept)
 while not synced do
