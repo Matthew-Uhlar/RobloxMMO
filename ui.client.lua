@@ -354,7 +354,15 @@ end
 -- Item art: tinted prop thumbnails (Catalog.iconShape / tintIndex when the art
 -- team ships them), pooled ViewportFrames and a cheap glyph fallback.
 ------------------------------------------------------------------------------
-local THUMB_BUDGET, POOL_LIMIT, TEMPLATE_LIMIT = 24, 48, 64
+-- Each thumbnail is a per-triangle WedgePart model inside a ViewportFrame, so phone
+-- (compact) layouts get a much smaller live/pooled budget.
+-- (Kept in one table: this chunk is close to Luau's 200 top-level local limit.)
+local TEMPLATE_LIMIT = 64
+local THUMBS = { budget = 24, pool = 48, compactBudget = 10, compactPool = 20, compact = false }
+function THUMBS.limits()
+	if THUMBS.compact then return THUMBS.compactBudget, THUMBS.compactPool end
+	return THUMBS.budget, THUMBS.pool
+end
 local artTemplates={}
 local templateCount=0
 local thumbnailCount=0
@@ -438,7 +446,7 @@ end
 -- template means rebuilding a page reuses the previous page's viewports.
 local function thumbnail(parent,name,size,tint,noFallback)
 	local template,key=artTemplate(name,tint)
-	if not template or thumbnailCount>=THUMB_BUDGET then
+	if not template or thumbnailCount>=(THUMBS.limits()) then
 		if noFallback then return nil end
 		return motif(parent,"Journal",size)
 	end
@@ -470,7 +478,7 @@ local function releaseViews(container)
 	for view,key in pairs(liveViews) do
 		if view.Parent==nil or view:IsDescendantOf(container) then
 			liveViews[view]=nil
-			if view.Parent~=nil and pooledViews<POOL_LIMIT then
+			if view.Parent~=nil and pooledViews<select(2,THUMBS.limits()) then
 				view.Parent=nil
 				viewPool[key]=viewPool[key] or {}
 				table.insert(viewPool[key],view)
@@ -479,6 +487,17 @@ local function releaseViews(container)
 				view:Destroy()
 			end
 		end
+	end
+end
+-- Drop pooled viewports beyond the current layout's pool budget.
+function THUMBS.trim()
+	local _,limit=THUMBS.limits()
+	for key,bucket in pairs(viewPool) do
+		while pooledViews>limit and #bucket>0 do
+			table.remove(bucket):Destroy()
+			pooledViews-=1
+		end
+		if #bucket==0 then viewPool[key]=nil end
 	end
 end
 local iconMappings={
@@ -569,10 +588,16 @@ local healthText=label(actionBar,"❤ —",12,0,UDim.new(.3,-12),30,bold,15,rgb(
 local defenseText=label(actionBar,"❈ —",0,0,UDim.new(.3,-12),30,bold,15,rgb("6BFF8E"))
 defenseText.Position=UDim2.new(.7,0,0,0)
 defenseText.TextXAlignment=Enum.TextXAlignment.Right
-local xpText=label(actionBar,"",0,0,UDim.new(.44,0),30,bold,13,gold)
-xpText.Position=UDim2.new(.28,0,0,0)
+-- XP popup owns the middle 40% between the health (0-30%) and defense (70-100%)
+-- readouts and shrinks its text instead of spilling over them.
+local xpText=label(actionBar,"",0,0,UDim.new(.4,0),30,bold,13,gold)
+xpText.Name="XpPopup"
+xpText.Position=UDim2.new(.3,0,0,0)
 xpText.TextXAlignment=Enum.TextXAlignment.Center
 xpText.RichText=true
+xpText.TextWrapped=false
+xpText.TextScaled=true
+make("UITextSizeConstraint",xpText,{MinTextSize=8,MaxTextSize=13})
 xpText.TextTransparency=1
 local banner=panel(gui,UDim2.new(.5,0,0,14),UDim2.new(.9,0,0,74),deep)
 banner.Name="LevelBanner"
@@ -621,9 +646,8 @@ local function closeAtlas()
 	shade.Visible = false
 	hud.Visible = true
 	actionBar.Visible = true
-	if Input.GamepadEnabled then
-		GuiService.SelectedObject = opener
-	end
+	-- Leave UI selection entirely so gamepad input drives the character again.
+	GuiService.SelectedObject = nil
 end
 local closeButton=button(head, "Close", UDim2.new(1, -64, 0, 10), UDim2.fromOffset(54, 43), closeAtlas)
 shade.Activated:Connect(closeAtlas)
@@ -655,12 +679,17 @@ garment(notice)
 notice.AutomaticSize = Enum.AutomaticSize.Y
 notice.TextTruncate = Enum.TextTruncate.None
 make("UIPadding", notice, {PaddingTop=UDim.new(0,8),PaddingBottom=UDim.new(0,8),PaddingLeft=UDim.new(0,12),PaddingRight=UDim.new(0,12)})
-make("UISizeConstraint", notice, { MaxSize = Vector2.new(560, 180) })
+make("UISizeConstraint", notice, { Name = "NoticeLimit", MaxSize = Vector2.new(560, 180) })
 local noticeIndex = 0
 local function notify(message)
 	if type(message)~="string" or message == "" then
 		return
 	end
+	-- Phones (compact layout): one short strip that stays clear of touch controls.
+	local compactToast = THUMBS.compact
+	notice:FindFirstChild("NoticeLimit").MaxSize = compactToast and Vector2.new(560, 60) or Vector2.new(560, 180)
+	notice.TextSize = compactToast and 12 or 13
+	notice.TextTruncate = compactToast and Enum.TextTruncate.AtEnd or Enum.TextTruncate.None
 	noticeIndex += 1
 	local token = noticeIndex
 	notice.Text = message
@@ -2503,9 +2532,13 @@ local function layoutTabs()
 	end
 end
 local function updateVitals() end
-render = function()
+render = function(fromPush)
 	local size=atlas.AbsoluteSize
 	compactAtlas=size.X<480 or size.Y<500
+	if THUMBS.compact~=compactAtlas then
+		THUMBS.compact=compactAtlas
+		THUMBS.trim()
+	end
 	railMode=compactAtlas and size.X>=560 and size.X>size.Y*1.3
 	local headHeight=railMode and 46 or (compactAtlas and 64 or 88)
 	head.Size=UDim2.new(1,0,0,headHeight)
@@ -2538,6 +2571,17 @@ render = function()
 	if not atlas.Visible then
 		return
 	end
+	-- A pushed snapshot must not destroy the TextBox being typed in; redraw once
+	-- focus is released instead.
+	-- (THUMBS.deferred doubles as the pending-redraw flag to spare a top-level local.)
+	if fromPush==true then
+		local ok,box=pcall(Input.GetFocusedTextBox,Input)
+		if ok and box~=nil and box:IsDescendantOf(atlas) then
+			THUMBS.deferred=true
+			return
+		end
+	end
+	THUMBS.deferred=false
 	local selectedObject=GuiService.SelectedObject
 	local restoreFocus=selectedObject and selectedObject:IsDescendantOf(scroll)
 	local selectionName=restoreFocus and selectedObject.Name
@@ -2685,7 +2729,7 @@ local function showNextBanner()
 	task.delay(3.4,showNextBanner)
 end
 local function celebrate(before,after)
-	local gains={}
+	local gains,bannered={},{}
 	for _,skill in ipairs(skillOrder()) do
 		local old,new=before[skill],after[skill]
 		if old and new and new.xp>old.xp then
@@ -2699,12 +2743,13 @@ local function celebrate(before,after)
 					end
 				end
 				table.insert(bannerQueue,{skill=skill,from=old.level,to=new.level,coins=coins})
+				if coins>0 then bannered[skill]=true end
 			end
 		end
 	end
 	if #gains>0 then
 		local parts={}
-		for i=1,math.min(3,#gains) do
+		for i=1,math.min(compactAtlas and 1 or 3,#gains) do
 			local gain=gains[i]
 			local percent=gain.info.maxed and "MAX" or (math.floor(gain.info.fraction*1000+.5)/10 .."%")
 			table.insert(parts,paint("+"..fmt(gain.amount).." "..gain.skill,lighten(skillHex(gain.skill),.35))..paint(" ("..percent..")","FFF4D9"))
@@ -2712,7 +2757,9 @@ local function celebrate(before,after)
 		showXp(table.concat(parts,"   "))
 	end
 	if #bannerQueue>0 and not bannerBusy then showNextBanner() end
+	return bannered
 end
+
 
 ------------------------------------------------------------------------------
 -- Server wiring
@@ -2737,12 +2784,23 @@ local function accept(data,quiet)
 	local before=synced and skillsOf(state) or nil
 	state = data
 	synced = true
-	render()
+	render(true)
+	local message=data.message
 	if before then
-		local ok,problem=pcall(celebrate,before,skillsOf(state))
-		if not ok then warn("XP popup failed: "..tostring(problem)) end
+		local ok,bannered=pcall(celebrate,before,skillsOf(state))
+		if not ok then warn("XP popup failed: "..tostring(bannered))
+		elseif type(bannered)=="table" and type(message)=="string" and next(bannered) then
+			-- The server appends "<Skill> level N! +X coins"; the level-up banner already
+			-- announces those coins, so drop that segment from the toast.
+			local kept={}
+			for segment in (message.."   ·   "):gmatch("(.-)   ·   ") do
+				local skill=segment:match("^(%a+) level %d+! %+[%d,]+ coins$")
+				if not (skill and bannered[skill]) and segment~="" then table.insert(kept,segment) end
+			end
+			message=table.concat(kept,"   ·   ")
+		end
 	end
-	if not quiet then notify(data.message) end
+	if not quiet then notify(message) end
 	return true
 end
 local pending = false
@@ -2766,7 +2824,7 @@ local function acceptCoop(result)
 	coopState = result
 	coopError = nil
 	if result.groupId then coopConfirm = nil end
-	render()
+	render(true)
 	notify(result.message)
 	return true
 end
@@ -2799,14 +2857,21 @@ local function openStation()
 	if not tab then return end
 	if tab=="Workshop" then openTo("Workshop",station) else openTo("Hunt","Slayer") end
 end
-player:GetAttributeChangedSignal("IsleStation"):Connect(openStation)
--- World bumps IsleStationVisit on every trigger so revisiting the same
--- station (unchanged IsleStation) still reopens its tab.
+-- World sets IsleStation and then bumps IsleStationVisit on every trigger; only the
+-- counter opens the atlas, so each visit opens it exactly once (repeats included).
 player:GetAttributeChangedSignal("IsleStationVisit"):Connect(openStation)
--- Denied region warps explain themselves with a toast.
-player:GetAttributeChangedSignal("IsleRegionNotice"):Connect(function()
+-- Denied region warps explain themselves with a toast. World sets the message and
+-- then bumps IsleRegionNoticeCount, so an identical repeated denial still shows.
+player:GetAttributeChangedSignal("IsleRegionNoticeCount"):Connect(function()
 	local message=player:GetAttribute("IsleRegionNotice")
 	if type(message)=="string" and message~="" then notify(message) end
+end)
+-- Snapshots pushed while typing were deferred; draw the latest one now.
+Input.TextBoxFocusReleased:Connect(function()
+	if THUMBS.deferred then
+		THUMBS.deferred=false
+		task.defer(render)
+	end
 end)
 task.spawn(function()
 	ReplicatedStorage:WaitForChild("IsleCoopUpdate").OnClientEvent:Connect(acceptCoop)

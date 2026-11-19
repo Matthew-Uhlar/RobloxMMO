@@ -66,38 +66,20 @@ shapes.HideRoll={vertices={{-1.0333,-0.561,0.3772},{-0.9016,-0.3842,0.7381},{-0.
 shapes.OreCluster={vertices={{0.2866,-0.1,0.0887},{0.0042,-0.1,0.3},{-0.284,-0.1,0.0967},{-0.1798,-0.1,-0.2402},{0.1729,-0.1,-0.2452},{0.321,0.992,0.0993},{0.0048,0.992,0.336},{-0.3181,0.992,0.1083},{-0.2013,0.992,-0.269},{0.1936,0.992,-0.2746},{0,1.6,0},{0.5565,-0.1961,0.1861},{0.3748,-0.1211,0.3542},{0.1893,0.0013,0.2219},{0.2564,0.002,-0.0278},{0.4833,-0.12,-0.05},{0.9535,0.4693,0.2946},{0.75,0.5533,0.4828},{0.5423,0.6905,0.3347},{0.6174,0.6913,0.055},{0.8716,0.5546,0.0302},{0.9474,0.9545,0.2943},{-0.1523,0.0198,0.2764},{-0.3448,-0.1295,0.4186},{-0.5414,-0.2153,0.2353},{-0.4703,-0.119,-0.0202},{-0.2298,0.0263,0.0052},{-0.57,0.7374,0.4305},{-0.7856,0.5702,0.5898},{-1.0058,0.4741,0.3845},{-0.9262,0.5819,0.0984},{-0.6568,0.7446,0.1268},{-1.0272,1.0026,0.4032},{0.274,-0.0777,-0.263},{0.0879,0.0199,-0.1576},{-0.1021,-0.0265,-0.2881},{-0.0334,-0.1527,-0.4742},{0.199,-0.1844,-0.4587},{0.4042,0.53,-0.6273},{0.1958,0.6393,-0.5092},{-0.017,0.5874,-0.6554},{0.0599,0.446,-0.8638},{0.3203,0.4105,-0.8464},{0.2494,0.843,-0.8968},{0.0384,-0.0815,0.4361},{-0.1276,-0.1719,0.5312},{-0.2971,-0.1435,0.4077},{-0.2358,-0.0357,0.2363},{-0.0285,0.0026,0.2538},{-0.0659,0.4583,0.7382},{-0.2519,0.3571,0.8448},{-0.4417,0.3888,0.7065},{-0.3731,0.5096,0.5145},{-0.1408,0.5525,0.5341},{-0.3189,0.7311,0.8194}},faces={{1,2,7,11},{1,7,6,11},{2,3,8,11},{2,8,7,11},{3,4,9,11},{3,9,8,11},{4,5,10,11},{4,10,9,11},{5,1,6,11},{5,6,10,11},{6,7,11,13},{7,8,11,11},{8,9,11,11},{9,10,11,11},{10,6,11,11},{1,3,2,11},{1,4,3,11},{1,5,4,11},{12,13,18,11},{12,18,17,11},{13,14,19,11},{13,19,18,11},{14,15,20,11},{14,20,19,11},{15,16,21,11},{15,21,20,11},{16,12,17,11},{16,17,21,11},{17,18,22,13},{18,19,22,11},{19,20,22,11},{20,21,22,11},{21,17,22,11},{12,14,13,11},{12,15,14,11},{12,16,15,11},{23,24,29,11},{23,29,28,11},{24,25,30,11},{24,30,29,11},{25,26,31,11},{25,31,30,11},{26,27,32,11},{26,32,31,11},{27,23,28,11},{27,28,32,11},{28,29,33,13},{29,30,33,11},{30,31,33,11},{31,32,33,11},{32,28,33,11},{23,25,24,11},{23,26,25,11},{23,27,26,11},{34,35,40,11},{34,40,39,11},{35,36,41,11},{35,41,40,11},{36,37,42,11},{36,42,41,11},{37,38,43,11},{37,43,42,11},{38,34,39,11},{38,39,43,11},{39,40,44,13},{40,41,44,11},{41,42,44,11},{42,43,44,11},{43,39,44,11},{34,36,35,11},{34,37,36,11},{34,38,37,11},{45,46,51,11},{45,51,50,11},{46,47,52,11},{46,52,51,11},{47,48,53,11},{47,53,52,11},{48,49,54,11},{48,54,53,11},{49,45,50,11},{49,50,54,11},{50,51,55,13},{51,52,55,11},{52,53,55,11},{53,54,55,11},{54,50,55,11},{45,47,46,11},{45,48,47,11},{45,49,48,11}}}
 -- END GENERATED PROPS
 
-local function wedgeFace(parent, a, b, c, color)
-	local ab, ac, bc = b - a, c - a, c - b
-	if ab.Magnitude > ac.Magnitude and ab.Magnitude > bc.Magnitude then
-		a, c = c, a
-	elseif ac.Magnitude > ab.Magnitude and ac.Magnitude > bc.Magnitude then
-		a, b = b, a
-	end
-	ab, ac, bc = b-a, c-a, c-b
-	local normal = ac:Cross(ab)
-	if normal.Magnitude < 0.0001 then return end
-	local right, back = normal.Unit, bc.Unit
-	local up = back:Cross(right).Unit
-	local height = math.abs(ab:Dot(up))
-	local function half(mid, x, z, width)
-		if width < 0.001 then return end
-		local part = Instance.new("WedgePart")
-		part.Anchored, part.CanCollide, part.CanTouch, part.CanQuery = true, false, false, false
-		part.CastShadow = false
-		part.Material, part.Color = Enum.Material.SmoothPlastic, color
-		part.Size = Vector3.new(0.05, height, width)
-		part.CFrame = CFrame.fromMatrix(mid, x, up, z)
-		part.Parent = parent
-	end
-	half((a+b)/2, right, back, math.abs(ab:Dot(back)))
-	half((a+c)/2, -right, -back, math.abs(ac:Dot(back)))
-end
+-- art/generate-props.cjs inserts generated props above this anchor. World props never
+-- fall back to per-triangle wedge parts (that path cost thousands of parts per home);
+-- without an EditableMesh they use the bounded proxies below or keep the anchor only.
+local function wedgeFace() end
 
 -- Shared prototypes avoid repeated mesh allocations for identical world props.
 -- BEGIN BOUNDED PROXIES
 -- Authored silhouettes for budget-limited clients; never triangle-per-part.
+-- Every shape placed in the world has a proxy of a few primitives (at most 18).
+local PROXY_SHAPES={ObservatoryArch=true,EclipseAstrolabe=true,ObservatorySentinel=true,AetherCrystal=true,
+	Lantern=true,WindpineCrown=true,Moonbloom=true,Pickaxe=true,Blade=true,Tonic=true,VaultChest=true,
+	TimberBundle=true,Surveyor=true,Shellwarden=true,Tidewing=true}
 local function makeProxy(shapeName,scale)
-	if shapeName~="ObservatoryArch" and shapeName~="EclipseAstrolabe" and shapeName~="ObservatorySentinel" and shapeName~="AetherCrystal" then return nil end
+	if not PROXY_SHAPES[shapeName] then return nil end
 	local model=Instance.new("Model")
 	local function part(position,size,shade,rotation,kind)
 		local p=Instance.new("Part")
@@ -135,6 +117,52 @@ local function makeProxy(shapeName,scale)
 			bar(side*1.6,-1.4,0,.65,.6,.65,1);bar(side*.9,1.9,0,.35,.7,.4,1,side*.25)
 		end
 		bar(0,2.15,0,.45,.8,.45,2)
+	elseif shapeName=="Lantern" then
+		bar(0,-.9,0,1.6,.35,1.4,6);bar(0,1.2,0,1.7,.3,1.5,2)
+		part(V(0,.15,0),V(.95,1.7,.95),5,CFrame.Angles(0,math.pi/4,0))
+		for _,c in ipairs({{.6,.55},{-.6,.55},{.6,-.55},{-.6,-.55}}) do part(V(c[1],.15,c[2]),V(.14,1.8,.14),1) end
+		bar(0,1.42,0,.35,.25,.35,1)
+	elseif shapeName=="WindpineCrown" then
+		bar(0,-.5,0,.42,4.2,.42,1)
+		part(V(0,.8,0),V(3.8,1.2,3.8),3,CFrame.Angles(0,math.pi/4,0))
+		part(V(0,1.9,0),V(2.7,1.1,2.7),4)
+		part(V(0,2.8,0),V(1.4,.9,1.4),3,CFrame.Angles(0,math.pi/4,0))
+	elseif shapeName=="Moonbloom" then
+		bar(0,-.85,0,1.4,.22,1.2,3);bar(0,-.25,0,.18,1.2,.18,4)
+		for i=0,3 do local a=i*math.pi/2;part(V(math.cos(a)*.5,.55,math.sin(a)*.5),V(.75,.18,.45),10,CFrame.Angles(0,-a,.35)) end
+		part(V(0,.6,0),V(.45,.45,.45),5,nil,Enum.PartType.Ball)
+	elseif shapeName=="Pickaxe" then
+		bar(0,-.2,0,.28,3.3,.28,1);bar(0,1.15,0,3,.36,.36,4)
+		bar(0,1.15,0,.5,.5,.5,6)
+	elseif shapeName=="Blade" then
+		bar(0,.9,0,.6,3.2,.15,5);bar(0,-.85,0,1.35,.22,.35,2)
+		bar(0,-1.55,0,.26,1.2,.26,6);bar(0,-2.1,0,.4,.3,.4,2)
+	elseif shapeName=="Tonic" then
+		part(V(0,-.15,0),V(1.45,1.45,1.45),4,nil,Enum.PartType.Ball)
+		bar(0,.75,0,.45,.6,.45,5);bar(0,1.05,0,.52,.25,.52,1)
+	elseif shapeName=="VaultChest" then
+		bar(0,-.2,0,2.5,1.3,1.5,2);bar(0,.6,0,2.6,.4,1.6,3)
+		bar(0,.1,-.8,.4,.5,.12,5)
+		for _,x in ipairs({-.8,.8}) do bar(x,0,0,.2,1.75,1.62,6) end
+	elseif shapeName=="TimberBundle" then
+		for _,c in ipairs({{-.45,-.25},{.4,-.3},{0,.3}}) do part(V(c[1],0,c[2]),V(.7,2.5,.7),1,CFrame.Angles(0,math.pi/4,0)) end
+		for _,y in ipairs({-.65,.65}) do bar(0,y,-.1,1.75,.18,1.4,3) end
+	elseif shapeName=="Surveyor" then
+		bar(0,-1.25,0,2.4,.5,2.4,6);bar(0,-.3,0,.6,1.5,.6,1)
+		bar(0,.55,0,2.6,.3,1.8,3);part(V(0,1.15,0),V(.42,.42,2.2),2,CFrame.Angles(.35,0,0))
+		part(V(0,1.75,.2),V(.55,.55,.55),5,CFrame.Angles(0,math.pi/4,math.pi/4))
+	elseif shapeName=="Shellwarden" then
+		part(V(0,1.8,-.2),V(5.6,3.2,5.6),9,CFrame.Angles(0,math.pi/4,0))
+		part(V(0,3.75,-.2),V(3,1.4,3),10,CFrame.Angles(0,math.pi/4,0))
+		bar(0,1,-3.9,1.8,1.4,1.6,6);bar(0,1.3,-4.6,1.2,.25,.2,5)
+		for _,c in ipairs({{2.6,1.8},{-2.6,1.8},{2.6,-1.8},{-2.6,-1.8}}) do part(V(c[1],-.35,c[2]),V(1,1.2,1),1) end
+	elseif shapeName=="Tidewing" then
+		part(V(0,.7,0),V(3.6,1.6,9),3)
+		for _,side in ipairs({-1,1}) do
+			part(V(side*5,.5,.3),V(7.6,.35,5.6),4,CFrame.Angles(0,0,side*.12))
+			part(V(side*1.2,.4,6.3),V(.6,.4,1.8),2)
+		end
+		part(V(0,.4,-5.4),V(.5,.5,3.6),1);part(V(0,1.6,1.6),V(1.2,.4,1.2),5)
 	else
 		bar(0,-.8,0,2.5,.6,2.2,9)
 		part(V(0,.7,0),V(.9,2.5,.9),5,CFrame.Angles(0,math.pi/4,.1))
@@ -220,14 +248,10 @@ local function prototype(shapeName,scale,tint)
 		end
 	end
 	if not visual then
+		-- Bounded authored proxy or nothing: the anchor's own geometry stays as-is.
 		visual=makeProxy(shapeName,scale) or clusterProxy(shapeName,scale,tint)
-		if not visual then
-			visual=Instance.new("Model")
-			for _,f in ipairs(shape.faces) do wedgeFace(visual,vertices[f[1]],vertices[f[2]],vertices[f[3]],shade(f[4])) end
-			visual.WorldPivot=CFrame.new()
-		end
 	end
-	visual.Name=shapeName.." Sculpture"
+	if visual then visual.Name=shapeName.." Sculpture" end
 	entry.visual,entry.mesh,entry.building=visual,mesh,false
 	return visual,not retain
 end
