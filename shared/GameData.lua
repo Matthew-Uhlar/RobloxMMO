@@ -600,4 +600,41 @@ function Data.dungeonFloorUnlocked(floorIndex, dungeoneeringLevel)
 end
 -- End Dungeons section.
 
+------------------------------------------------------------------------------
+-- Economy (Bazaar standing orders + Auction House). Appended by the Economy team.
+-- Bazaar: any resource/material item; prices are per unit. Auction House: one
+-- gear item per listing, 1% listing fee (coin sink), 24 hour expiry.
+------------------------------------------------------------------------------
+Data.Economy = {
+	orderCap=10, listingCap=10, maxQuantity=640, minPrice=1, maxPrice=1000000,
+	bookCap=400, auctionCap=600, accountCap=3000, depth=5, pageSize=8, maxPage=75,
+	auctionDuration=86400, feePercent=1,
+	auctionCategories={"weapon","armor","tool","accessory","pet"},
+	categoryNames={weapon="Weapons",armor="Armor",tool="Tools",accessory="Accessories",pet="Pets"},
+	bazaarGroups={"Mining","Woodcutting","Fishing","Farming","Materials"},
+}
+-- Listing fee: 1% of the buy-it-now price, rounded up, at least 1 coin.
+function Data.Economy.auctionFee(price)
+	return math.max(1, math.ceil(price * Data.Economy.feePercent / 100))
+end
+function Data.Economy.isCommodity(id)
+	local def = type(id) == "string" and Data.Items[id]
+	return def ~= nil and def ~= false and (def.kind == "resource" or def.kind == "material")
+end
+-- Auction category (item kind) for gear, or nil.
+function Data.Economy.auctionCategory(id)
+	local def = type(id) == "string" and Data.Items[id]
+	if not def then return nil end
+	for _, kind in ipairs(Data.Economy.auctionCategories) do
+		if def.kind == kind then return kind end
+	end
+	return nil
+end
+-- Bazaar chooser group for a commodity (gathering skill, or Materials).
+function Data.Economy.bazaarGroup(id)
+	local def = Data.Items[id]
+	if def and def.kind == "resource" then return Data.ResourceSkill[id] or "Materials" end
+	return "Materials"
+end
+
 return Data
