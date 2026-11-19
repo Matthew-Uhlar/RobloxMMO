@@ -63,6 +63,59 @@ local function wedgeFace(parent, a, b, c, color)
 end
 
 -- Shared prototypes avoid repeated mesh allocations for identical world props.
+-- BEGIN BOUNDED PROXIES
+-- Authored silhouettes for budget-limited clients; never triangle-per-part.
+local function makeProxy(shapeName,scale)
+	if shapeName~="ObservatoryArch" and shapeName~="EclipseAstrolabe" and shapeName~="ObservatorySentinel" and shapeName~="AetherCrystal" then return nil end
+	local model=Instance.new("Model")
+	local function part(position,size,shade,rotation,kind)
+		local p=Instance.new("Part")
+		p.Name="Authored proxy"
+		p.Anchored,p.CanCollide,p.CanTouch,p.CanQuery=true,false,false,false
+		p.CastShadow=false
+		p.Material=Enum.Material.SmoothPlastic
+		p.Color=palette[shade]
+		p.Size=size*scale
+		p.CFrame=CFrame.new(position*scale)*(rotation or CFrame.new())
+		if kind then p.Shape=kind end
+		p.Parent=model
+	end
+	local V=Vector3.new
+	local function bar(x,y,z,w,h,d,shade,angle) part(V(x,y,z),V(w,h,d),shade,CFrame.Angles(0,0,angle or 0)) end
+	if shapeName=="ObservatoryArch" then
+		for _,x in ipairs({-3.2,3.2}) do
+			bar(x,-.2,0,1.15,4.4,1.4,6);bar(x,-2.2,0,1.6,.4,1.7,1)
+			bar(x,.2,-.76,.25,3.3,.12,5);bar(x,1.8,0,1.5,.4,1.6,2)
+		end
+		for i=0,6 do local a=(i+.5)*math.pi/7;bar(math.cos(a)*3.2,2+math.sin(a)*3.2,0,.75,1.6,1.25,if i%2==0 then 3 else 2,a) end
+		bar(0,5.45,0,.85,.85,.7,5,math.pi/4)
+	elseif shapeName=="EclipseAstrolabe" then
+		for i=0,11 do local a=i*math.pi/6;bar(math.cos(a)*2.5,math.sin(a)*2.5,0,.25,1.36,.3,2,a) end
+		part(V(0,0,0),V(1.5,2,1.5),5,CFrame.Angles(0,math.pi/4,math.pi/4))
+		bar(0,-2.7,0,1.8,.4,1.6,6)
+		for i=0,3 do local a=i*math.pi/2;bar(math.cos(a)*1.6,math.sin(a)*1.6,0,.18,2.2,.2,1,a+math.pi/4) end
+	elseif shapeName=="ObservatorySentinel" then
+		bar(0,-.35,0,2.1,2.1,1.5,3);bar(0,-1.15,0,2.5,.28,1.5,2)
+		bar(0,1.35,0,1.45,1.15,1.1,6);bar(0,1.45,-.61,1.1,.22,.14,5)
+		bar(0,0,-.83,.75,.75,.2,5,math.pi/4)
+		for _,side in ipairs({-1,1}) do
+			bar(side*.65,-2,0,.85,1.3,1,6);bar(side*.65,-2.6,-.23,1,.3,1.45,1)
+			bar(side*1.6,.45,0,.75,1,1.4,2,side*.2);bar(side*1.6,-.65,0,.6,1.3,.8,3,side*.15)
+			bar(side*1.6,-1.4,0,.65,.6,.65,1);bar(side*.9,1.9,0,.35,.7,.4,1,side*.25)
+		end
+		bar(0,2.15,0,.45,.8,.45,2)
+	else
+		bar(0,-.8,0,2.5,.6,2.2,9)
+		part(V(0,.7,0),V(.9,2.5,.9),5,CFrame.Angles(0,math.pi/4,.1))
+		part(V(-.9,-.1,.2),V(.6,1.5,.6),4,CFrame.Angles(0,math.pi/4,.25))
+		part(V(.8,0,-.3),V(.6,1.7,.6),10,CFrame.Angles(0,math.pi/4,-.2))
+	end
+	model.WorldPivot=CFrame.new()
+	model:SetAttribute("BoundedProxy",true)
+	return model
+end
+-- END BOUNDED PROXIES
+
 -- Geometry fallback is selected globally after the first unavailable mesh allocation.
 local prototypes={}
 local prototypeCount=0
@@ -115,9 +168,12 @@ local function prototype(shapeName,scale)
 		end
 	end
 	if not visual then
-		visual=Instance.new("Model")
-		for _,f in ipairs(shape.faces) do wedgeFace(visual,vertices[f[1]],vertices[f[2]],vertices[f[3]],palette[f[4]]) end
-		visual.WorldPivot=CFrame.new()
+		visual=makeProxy(shapeName,scale)
+		if not visual then
+			visual=Instance.new("Model")
+			for _,f in ipairs(shape.faces) do wedgeFace(visual,vertices[f[1]],vertices[f[2]],vertices[f[3]],palette[f[4]]) end
+			visual.WorldPivot=CFrame.new()
+		end
 	end
 	visual.Name=shapeName.." Sculpture"
 	entry.visual,entry.mesh,entry.building=visual,mesh,false

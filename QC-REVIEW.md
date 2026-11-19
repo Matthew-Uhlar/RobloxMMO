@@ -78,3 +78,13 @@ Screenshots verified Journal, Forge, Workers, Home, empty Satchel, Ledger and Co
 J opened the atlas. Selecting visible buttons through GuiService and sending Return activated tabs/selectors via normal input. Mouse simulation and ButtonA did not reliably activate in this run, so this is not a physical touchscreen or controller pass. The console contained one EditableMesh-budget warning, followed by functioning geometric fallback; repeated allocation-warning spam was not observed. This does not establish device frame rate or memory suitability.
 
 Play was stopped and Studio returned to Edit with device simulation set to default. No publication occurred. Subsequent consumable/control-texture edits require a fresh runtime check.
+
+## November 19 local dungeon, ration and texture smoke
+
+Synced the current eight production gameplay/world/UI/mesh/catalog sources into the unpublished local Studio and ran the live client. Both Observatory Sentinels rendered as native MeshParts. Screenshot review showed teal face/chest accents, brass armor and the authored body silhouette. EclipseAstrolabe and ObservatoryArch rendered through geometric fallback (536 and 576 descendants respectively); the ringed core and entry arch were visible. From the southern approach, the Island Assembly sign partially obscures the arch and should be repositioned during world polish.
+
+A temporary source change seeded only Studio preview profiles with three ExpeditionRations and two Tonics. The Satchel displayed the custom parcel icon, healing amount, recovery duration and Eat action. Normal GUI Return activation consumed a ration and restored health. A subsequent authoritative use followed immediately by another request consumed only one ration and returned `Wait 12 seconds before another ration.` on the second request. Natural Roblox regeneration was active, so the observed health total is not an isolated measurement of 65 healing. No persistent profile was seeded. The temporary test code was removed by restoring production Adventure source before the final restart.
+
+MaterialArt was synced and the UI's cached ImageContent integration compiled and ran. In this local client, CreateEditableImage failed with an engine memory-budget warning; no cloth ImageLabels were created. The original vector/native controls and flat backgrounds remained readable. The procedural cloth fallback is therefore implemented but its successful texture rendering is not verified by this run. A manual diagnostic module invocation also returned no Content. World PNG texture masters were not imported.
+
+Finished in Edit with device `default`, PlaceId 0 and the temporary seed absent. Cloud-backed Studio was not touched. No publication occurred in this review.
