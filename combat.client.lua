@@ -72,6 +72,41 @@ local banner = make("TextLabel", gui, {
 })
 round(banner, 10, gold)
 make("UISizeConstraint", banner, {MaxSize = Vector2.new(460, 40)})
+-- Layout: the atlas HUD (ui.client.lua, DisplayOrder 8) owns the top-left corner,
+-- x 10-315 and y 8-96. On wide screens the target panel and banner sit top-centre
+-- as before; on narrow ones (phone landscape 730x303) the panel moves top-right
+-- and the banner below the HUD; on very narrow ones both stack below the HUD.
+local HUD_RIGHT, HUD_BOTTOM, EDGE = 325, 104, 10
+local layoutKey
+local function layoutHud(isBoss)
+	local view = gui.AbsoluteSize
+	local width = if view and view.X > 0 then view.X else 1280
+	local key = width .. (if isBoss then "b" else "n")
+	if key == layoutKey then return end
+	layoutKey = key
+	local panelWidth = if isBoss then 380 else 300
+	local panelTop
+	if width / 2 - panelWidth / 2 >= HUD_RIGHT then
+		panel.AnchorPoint, panel.Position, panelTop = Vector2.new(0.5, 0), UDim2.new(0.5, 0, 0, EDGE), EDGE
+	elseif width - EDGE - HUD_RIGHT >= 220 then
+		panelWidth = math.min(panelWidth, width - EDGE - HUD_RIGHT)
+		panel.AnchorPoint, panel.Position, panelTop = Vector2.new(1, 0), UDim2.new(1, -EDGE, 0, EDGE), EDGE
+	else
+		panelWidth = math.min(panelWidth, width - 2 * EDGE)
+		panel.AnchorPoint, panel.Position, panelTop = Vector2.new(0.5, 0), UDim2.new(0.5, 0, 0, HUD_BOTTOM), HUD_BOTTOM
+	end
+	panel.Size = UDim2.fromOffset(panelWidth, 56)
+	local bannerWidth = math.min(460, width - 2 * EDGE)
+	local bannerTop = panelTop + 64
+	if width / 2 - bannerWidth / 2 < HUD_RIGHT then bannerTop = math.max(bannerTop, HUD_BOTTOM) end
+	banner.Size = UDim2.fromOffset(bannerWidth, 34)
+	banner.Position = UDim2.new(0.5, 0, 0, bannerTop)
+end
+layoutHud(false)
+gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+	layoutKey = nil
+	layoutHud(false)
+end)
 local bannerToken = 0
 local function showBanner(text, color)
 	bannerToken += 1
@@ -135,15 +170,22 @@ local function monsterFromPart(part)
 	end
 	return nil
 end
-local function nearestMonster()
-	local best, bestDist = nil, ATTACK_RANGE
+-- Holding attack calls this every frame; the tag scan is cached for 0.2s.
+local SCAN_INTERVAL = 0.2
+local scanAt, scanned = -math.huge, nil
+local function nearestMonster(fresh)
 	if canTarget(target) and distanceTo(target) <= ATTACK_RANGE then return target end
+	local now = os.clock()
+	if not fresh and now - scanAt < SCAN_INTERVAL and (scanned == nil or canTarget(scanned)) then return scanned end
+	scanAt = now
+	local best, bestDist = nil, ATTACK_RANGE
 	for _, model in ipairs(CollectionService:GetTagged("IsleMonster")) do
 		if canTarget(model) then
 			local d = distanceTo(model)
 			if d <= bestDist then best, bestDist = model, d end
 		end
 	end
+	scanned = best
 	return best
 end
 
@@ -203,13 +245,17 @@ end
 ------------------------------------------------------------------------------
 -- Input: click/tap a monster, touch button or ButtonR2 attack the nearest
 ------------------------------------------------------------------------------
+-- Include-only filter: invisible guard walls, prompt parts and props can never
+-- swallow a tap aimed at a monster (the server still validates range).
 local rayParams = RaycastParams.new()
-rayParams.FilterType = Enum.RaycastFilterType.Exclude
+rayParams.FilterType = Enum.RaycastFilterType.Include
 local function pick(screenPosition)
 	local camera = Workspace.CurrentCamera
 	if not camera then return nil end
+	local monsters = CollectionService:GetTagged("IsleMonster")
+	if #monsters == 0 then return nil end
 	local ray = camera:ScreenPointToRay(screenPosition.X, screenPosition.Y)
-	rayParams.FilterDescendantsInstances = {player.Character, camera}
+	rayParams.FilterDescendantsInstances = monsters
 	local hit = Workspace:Raycast(ray.Origin, ray.Direction * 300, rayParams)
 	return hit and monsterFromPart(hit.Instance)
 end
@@ -224,7 +270,7 @@ UserInputService.InputBegan:Connect(function(input, processed)
 		end
 	elseif input.KeyCode == Enum.KeyCode.ButtonR2 then
 		held = "pad"
-		local model = nearestMonster()
+		local model = nearestMonster(true)
 		if model then tryAttack(model) end
 	end
 end)
@@ -243,7 +289,7 @@ if attackButton then
 	attackButton.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
 			held = "button"
-			local model = nearestMonster()
+			local model = nearestMonster(true)
 			if model then tryAttack(model) end
 		end
 	end)
@@ -295,13 +341,40 @@ local function floatText(position, text, color, size)
 	}):Play()
 	task.delay(1, function() anchor:Destroy() end)
 end
+-- One reusable flash Highlight per monster (Roblox renders at most 31 at once);
+-- it is disabled between hits and destroyed when the monster leaves the world.
+local flashes = {} -- [model] = {highlight = Highlight, token = number}
+local function dropFlash(model)
+	local entry = flashes[model]
+	if not entry then return end
+	flashes[model] = nil
+	if entry.connection then entry.connection:Disconnect() end
+	entry.highlight:Destroy()
+end
 local function flash(model)
 	if not model or not model.Parent then return end
-	local highlight = make("Highlight", Workspace.CurrentCamera, {
-		Adornee = model, FillColor = Color3.new(1, 1, 1), FillTransparency = 0.35, OutlineTransparency = 1, DepthMode = Enum.HighlightDepthMode.Occluded,
-	})
+	local entry = flashes[model]
+	if not entry then
+		entry = {token = 0, highlight = make("Highlight", Workspace.CurrentCamera, {
+			Adornee = model, FillColor = Color3.new(1, 1, 1), FillTransparency = 1, OutlineTransparency = 1,
+			DepthMode = Enum.HighlightDepthMode.Occluded, Enabled = false,
+		})}
+		flashes[model] = entry
+		entry.connection = model.AncestryChanged:Connect(function()
+			if not model:IsDescendantOf(Workspace) then dropFlash(model) end
+		end)
+	end
+	entry.token += 1
+	local token = entry.token
+	local highlight = entry.highlight
+	highlight.Enabled = true
+	highlight.FillTransparency = 0.35
 	TweenService:Create(highlight, TweenInfo.new(0.18), {FillTransparency = 1}):Play()
-	task.delay(0.2, function() highlight:Destroy() end)
+	task.delay(0.2, function()
+		if flashes[model] ~= entry or entry.token ~= token then return end
+		highlight.Enabled = false
+		if not model.Parent then dropFlash(model) end
+	end)
 end
 local function burst(position, color, scale)
 	local tint = rgb(color)
@@ -378,7 +451,7 @@ RunService.RenderStepped:Connect(function()
 	barFill.Size = UDim2.fromScale(fraction, 1)
 	barFill.BackgroundColor3 = if isBoss then rgb("DC3C3C") elseif fraction > 0.5 then mint elseif fraction > 0.25 then gold else rgb("E6504A")
 	barText.Text = commas(hp) .. " / " .. commas(maxHp)
-	panel.Size = if isBoss then UDim2.fromOffset(380, 56) else UDim2.fromOffset(300, 56)
+	layoutHud(isBoss)
 	local expires = shown:GetAttribute("ExpiresAt")
 	if isBoss and expires then
 		local left = math.max(0, math.floor(expires - Workspace:GetServerTimeNow()))

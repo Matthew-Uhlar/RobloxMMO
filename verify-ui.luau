@@ -35,6 +35,7 @@ end
 local events = {
 	MouseButton1Down = true, MouseButton1Up = true, MouseLeave = true, SelectionGained = true, Activated = true,
 	FocusLost = true, OnClientEvent = true, HealthChanged = true, CharacterAdded = true, InputBegan = true,
+	TextBoxFocusReleased = true, InputEnded = true, TouchTapInWorld = true, RenderStepped = true, AncestryChanged = true,
 }
 local guiClasses = { Frame = true, TextLabel = true, TextButton = true, ImageLabel = true, ScrollingFrame = true, ViewportFrame = true, TextBox = true }
 local absoluteSize = roblox.Vector2.new(730, 303)
@@ -217,8 +218,9 @@ end
 function methods:GetServerTimeNow()
 	return os.clock()
 end
+local focusedTextBox = nil -- tests set this to simulate typing
 function methods:GetFocusedTextBox()
-	return nil
+	return focusedTextBox
 end
 
 ------------------------------------------------------------------------------
@@ -406,7 +408,7 @@ local function run(options)
 	local tabs = atlas:FindFirstChild("Tabs")
 	return {
 		gui = gui, atlas = atlas, scroll = scroll, tabs = tabs, sent = sent, warnings = warnings, player = player, update = update,
-		setSnapshot = function(value) current = value end,
+		setSnapshot = function(value) current = value end, input = services.UserInputService, guiService = services.GuiService,
 	}
 end
 local function find(root, name)
@@ -527,30 +529,109 @@ sweep(run({ data = false }), "no-data", false)
 sweep(run({ art = false }), "no-art", false)
 sweep(run({ artExports = true }), "art-exports", false)
 
--- 4. Station attribute opens the matching page.
+-- 4. Station visits open the matching page exactly once per visit (World sets
+-- IsleStation and then bumps IsleStationVisit).
 do
 	local ui = run()
-	ui.player:SetAttribute("IsleStation", "Hearth")
+	local visits = 0
+	local function stationVisit(value)
+		visits += 1
+		ui.player:SetAttribute("IsleStation", value)
+		ui.player:SetAttribute("IsleStationVisit", visits)
+	end
+	local function stateRequests()
+		local n = 0
+		for _, entry in ipairs(ui.sent) do
+			if entry[1] == "state" then n += 1 end
+		end
+		return n
+	end
+	local beforeOpen = stateRequests()
+	stationVisit("Hearth")
 	assert(ui.atlas.Visible and find(ui.scroll, "StationHearth"), "Hearth station opens the Workshop")
-	ui.player:SetAttribute("IsleStation", "Slayer")
+	assert(stateRequests() == beforeOpen + 1, "one station visit opens the atlas once")
+	stationVisit("Slayer")
 	assert(find(ui.scroll, "SlayerBramble"), "Slayer board opens the slayer page")
-	ui.player:SetAttribute("IsleStation", "Forge:2")
+	stationVisit("Forge:2")
 	assert(find(ui.scroll, "StationForge"), "suffixed station value")
 	-- Revisit: same IsleStation value, only the visit counter changes.
 	press(ui.tabs:FindFirstChild("LedgerButton"))
 	assert(not find(ui.scroll, "StationForge"), "left the Workshop")
-	ui.player:SetAttribute("IsleStationVisit", 7)
+	local beforeRevisit = stateRequests()
+	stationVisit("Forge:2")
 	assert(find(ui.scroll, "StationForge"), "revisiting the same station reopens its tab")
-	ui.player:SetAttribute("IsleRegionNotice", "Gloomhollow Caverns requires Mining 30.")
-	local toast
-	for _, object in ipairs(ui.gui:GetChildren()) do
-		if object.ClassName == "TextLabel" and object.Text == "Gloomhollow Caverns requires Mining 30." then
-			toast = object
+	assert(stateRequests() == beforeRevisit + 1, "a revisit opens the atlas once")
+	-- Region notices: the counter re-shows an identical repeated message.
+	local function toast()
+		for _, object in ipairs(ui.gui:GetChildren()) do
+			if object.ClassName == "TextLabel" and object.Text == "Gloomhollow Caverns requires Mining 30." then
+				return object
+			end
 		end
+		return nil
 	end
-	assert(toast and toast.Visible, "region notice toast")
+	ui.player:SetAttribute("IsleRegionNotice", "Gloomhollow Caverns requires Mining 30.")
+	ui.player:SetAttribute("IsleRegionNoticeCount", 1)
+	local shown = toast()
+	assert(shown and shown.Visible, "region notice toast")
+	shown.Visible = false
+	ui.player:SetAttribute("IsleRegionNotice", "Gloomhollow Caverns requires Mining 30.")
+	ui.player:SetAttribute("IsleRegionNoticeCount", 2)
+	assert(shown.Visible, "repeated identical region notice shows again")
+	-- Compact (730x303) toasts are capped well below the touch controls.
+	local limit = shown:FindFirstChild("NoticeLimit")
+	assert(limit and limit.MaxSize.Y <= 60, "compact toast height is capped")
+	assert(shown.TextTruncate == roblox.Enum.TextTruncate.AtEnd, "compact toast truncates instead of growing")
 	noFailures(ui, "stations")
-	checks += 5
+	checks += 10
+end
+-- 4b. Closing the atlas clears gamepad UI selection.
+do
+	local ui = run()
+	ui.input.GamepadEnabled = true
+	press(find(ui.gui, "AtlasButton"))
+	assert(ui.guiService.SelectedObject ~= nil, "opening with a gamepad selects a tab")
+	press(find(ui.atlas, "CloseButton"))
+	assert(not ui.atlas.Visible and ui.guiService.SelectedObject == nil, "closing the atlas clears SelectedObject")
+	noFailures(ui, "gamepad close")
+	checks += 2
+end
+-- 4c. A pushed snapshot while typing in the Bank keeps the TextBox; redraws on release.
+do
+	local ui = run()
+	press(find(ui.gui, "AtlasButton"))
+	visit(ui, "Ledger", "Bank")
+	local box = find(ui.scroll, "BankAmount")
+	assert(box, "bank amount TextBox")
+	focusedTextBox = box
+	ui.update.OnClientEvent:Fire(snapshot({ message = "Market moved" }))
+	assert(box.Parent ~= nil and find(ui.scroll, "BankAmount") == box, "typing TextBox survives a pushed snapshot")
+	focusedTextBox = nil
+	ui.input.TextBoxFocusReleased:Fire(box)
+	local redrawn = find(ui.scroll, "BankAmount")
+	assert(redrawn and redrawn ~= box, "deferred snapshot redraws once focus is released")
+	noFailures(ui, "typing")
+	checks += 3
+end
+-- 4d. Phone layout keeps the thumbnail budget small.
+do
+	local ui = run()
+	press(find(ui.gui, "AtlasButton"))
+	visit(ui, "Satchel", "Items")
+	local views = 0
+	for _, object in ipairs(ui.scroll:GetDescendants()) do
+		if object.ClassName == "ViewportFrame" then views += 1 end
+	end
+	assert(views > 0 and views <= 10, "compact layout draws at most 10 live thumbnails, drew " .. views)
+	local wide = run({ size = roblox.Vector2.new(760, 690) })
+	press(find(wide.gui, "AtlasButton"))
+	visit(wide, "Satchel", "Items")
+	local wideViews = 0
+	for _, object in ipairs(wide.scroll:GetDescendants()) do
+		if object.ClassName == "ViewportFrame" then wideViews += 1 end
+	end
+	assert(wideViews > views and wideViews <= 24, "desktop keeps the larger budget, drew " .. wideViews)
+	checks += 2
 end
 -- 5. Targeted flows: equip, enchant, sell confirmation, slayer begin/abandon.
 do
@@ -587,7 +668,8 @@ do
 	local ui = run()
 	local before = snapshot()
 	local nextLevel = Progression.levelForXp(before.xp.Mining) + 1
-	local after = snapshot({ xp = { Mining = Data.XP_TABLE[nextLevel] + 5 } })
+	local after = snapshot({ xp = { Mining = Data.XP_TABLE[nextLevel] + 5, Woodcutting = 900 },
+		message = "Mined ore   ·   Mining level " .. nextLevel .. "! +" .. Data.levelCoinReward(nextLevel) .. " coins" })
 	ui.update.OnClientEvent:Fire(after)
 	local banner = ui.gui:FindFirstChild("LevelBanner")
 	assert(banner.Visible, "level-up banner shows")
@@ -608,8 +690,109 @@ do
 		end
 	end
 	assert(xpLabel and xpLabel.Text:find("+", 1, true), "XP popup shows")
+	assert(not xpLabel.Text:find("Woodcutting", 1, true), "compact XP popup shows one entry")
+	assert(xpLabel.Position.X.Scale >= 0.3 and xpLabel.Position.X.Scale + xpLabel.Size.X.Scale <= 0.7001, "XP popup stays between health and defense")
+	local toast
+	for _, object in ipairs(ui.gui:GetChildren()) do
+		if object.ClassName == "TextLabel" and object.Text:find("Mined ore", 1, true) then toast = object end
+	end
+	assert(toast and toast.Visible, "rest of the server message still toasts")
+	assert(not toast.Text:find("coins", 1, true), "banner coins are not announced twice: " .. toast.Text)
 	noFailures(ui, "level-up")
-	checks += 3
+	checks += 6
+end
+
+-- 7. Combat HUD (combat.client.lua) never collides with the atlas HUD, which owns
+-- the top-left corner (x 10-315, y 8-96), at phone or desktop sizes.
+local function combatHud(size)
+	absoluteSize = size
+	local playerGui = new("PlayerGui")
+	local player = new("Player", { Name = "Tester", UserId = 1 })
+	playerGui.Parent = player
+	local replicated = new("ReplicatedStorage")
+	new("RemoteEvent", { Name = "IsleCombat" }).Parent = replicated
+	local fx = new("RemoteEvent", { Name = "IsleCombatFx" })
+	fx.Parent = replicated
+	local tagged = {}
+	local services = {
+		Players = new("Players", { LocalPlayer = player }), ReplicatedStorage = replicated,
+		UserInputService = new("UserInputService", { TouchEnabled = true }), RunService = new("RunService"),
+		TweenService = new("TweenService"), Workspace = new("Workspace"),
+		CollectionService = { GetTagged = function() return tagged end, HasTag = function(_, object) return table.find(tagged, object) ~= nil end },
+	}
+	local camera = new("Camera")
+	camera.Parent = services.Workspace
+	services.Workspace.CurrentCamera = camera
+	local game = new("DataModel")
+	function game.GetService(_, name) return assert(services[name], name) end
+	local delayed = {}
+	local env = {
+		game = game, Enum = roblox.Enum, UDim = roblox.UDim, UDim2 = roblox.UDim2, Vector2 = roblox.Vector2, Vector3 = roblox.Vector3,
+		CFrame = roblox.CFrame, Color3 = roblox.Color3, TweenInfo = { new = function() return {} end },
+		Instance = { new = function(class) return new(class) end }, RaycastParams = { new = function() return {} end },
+		typeof = function(value) return if data[value] then "Instance" else typeof(value) end,
+		task = { spawn = function(fn, ...) local co = coroutine.create(fn); assert(coroutine.resume(co, ...)) end,
+			delay = function(_, fn) table.insert(delayed, fn) end },
+	}
+	local chunk = luau.load(fs.readFile("combat.client.lua"), { debugName = "combat.client.lua", environment = env, injectGlobals = true })
+	chunk()
+	local hud = playerGui:FindFirstChild("IsleCombatHud")
+	local monster = new("Model", { Name = "Golem" })
+	monster.Parent = services.Workspace
+	monster:SetAttribute("Health", 10)
+	monster:SetAttribute("MaxHealth", 20)
+	return { hud = hud, fx = fx, monster = monster, tagged = tagged, run = services.RunService, workspace = services.Workspace, delayed = delayed }
+end
+local function box(object, width, height)
+	local size = object.Size
+	local w, h = size.X.Offset, size.Y.Offset
+	local x = object.Position.X.Scale * width + object.Position.X.Offset - object.AnchorPoint.X * w
+	local y = object.Position.Y.Scale * height + object.Position.Y.Offset - object.AnchorPoint.Y * h
+	return x, y, w, h
+end
+local function clearOfAtlasHud(x, y, w, h)
+	return x >= 325 or y >= 104 or x + w <= 0 or y + h <= 0
+end
+for _, size in ipairs({ roblox.Vector2.new(730, 303), roblox.Vector2.new(560, 320), roblox.Vector2.new(1366, 768) }) do
+	for _, boss in ipairs({ false, true }) do
+		local c = combatHud(size)
+		table.insert(c.tagged, c.monster)
+		if boss then
+			c.monster:SetAttribute("Boss", true)
+			c.monster:SetAttribute("OwnerUserId", 1)
+		end
+		-- A boss panel appears via the owner scan; a regular target via a hit marker.
+		c.fx.OnClientEvent:Fire("bossSpawn", { owner = 1, name = "Golem" })
+		c.run.RenderStepped:Fire()
+		local panel, banner
+		for _, child in ipairs(c.hud:GetChildren()) do
+			if child.Name == "Target" then panel = child elseif child.ClassName == "TextLabel" then banner = child end
+		end
+		local tag = size.X .. "x" .. size.Y .. (boss and " boss" or "")
+		local px, py, pw, ph = box(panel, size.X, size.Y)
+		local bx, by, bw, bh = box(banner, size.X, size.Y)
+		assert(clearOfAtlasHud(px, py, pw, ph), "target panel clears the atlas HUD at " .. tag)
+		assert(clearOfAtlasHud(bx, by, bw, bh), "combat banner clears the atlas HUD at " .. tag)
+		assert(px >= 0 and px + pw <= size.X and bx >= 0 and bx + bw <= size.X, "combat HUD stays on screen at " .. tag)
+		assert(by >= py + ph or bx >= px + pw or bx + bw <= px, "banner does not cover the target panel at " .. tag)
+		if boss then assert(panel.Visible and pw >= 220, "boss panel shows at " .. tag) end
+		checks += 5
+	end
+end
+-- 8. Hit flashes reuse one Highlight per monster.
+do
+	local c = combatHud(roblox.Vector2.new(730, 303))
+	table.insert(c.tagged, c.monster)
+	for _ = 1, 40 do
+		c.fx.OnClientEvent:Fire("hit", { model = c.monster, position = roblox.Vector3.new(), amount = 5 })
+	end
+	local highlights = 0
+	for _, object in ipairs(c.workspace:GetDescendants()) do
+		if object.ClassName == "Highlight" then highlights += 1 end
+	end
+	assert(highlights >= 1, "hit flash highlight created")
+	assert(highlights <= 2, "40 hits on one monster keep at most one flash highlight (+ target ring), found " .. highlights)
+	checks += 1
 end
 
 print("UI QA passed " .. checks .. " checks (" .. created .. " mock instances).")

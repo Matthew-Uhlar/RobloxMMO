@@ -292,19 +292,21 @@ local function warp(player,trigger,destination)
 		root.AssemblyLinearVelocity=Vector3.zero
 	end
 end
-local skyreach = island("Skyreach", V(208,36,52), 23, C("96ACAB"))
+-- Skyreach is wide enough that its landing (west rim) sits >= 40 studs from both
+-- monster markers (east rim); combat aggro range is 25.
+local skyreach = island("Skyreach", V(208,36,52), 30, C("96ACAB"))
+local SKYREACH_LANDING = V(184,40,52)
+-- Assigned with the regional beacons below: pcall + table check + denial notice.
+local regionTravel
 skyreach:SetAttribute("RegionId","Skyreach")
 local launch = sculpture(mine,"Charter beacon",V(123,2,0),"Lantern",1.2)
 sign(mine,V(119,0,-4),"Skyreach passage","GUILD CHARTER REQUIRED",brass,0,9)
 local launchPrompt=prompt(launch,"Ascend to Skyreach","Guild charter required")
 launchPrompt:SetAttribute("IsleWarpRegion","Skyreach")
 launchPrompt.Triggered:Connect(function(player)
-	local access = game:GetService("ServerStorage"):FindFirstChild("IsleRegionAccess")
-	if access and access:Invoke(player,"Skyreach").allowed then
-		warp(player,launch,V(199,40,52))
-	end
+	regionTravel(player,launch,"Skyreach",SKYREACH_LANDING)
 end)
-local descent = sculpture(skyreach,"Quarry beacon",V(193,38,52),"Lantern",1.1)
+local descent = sculpture(skyreach,"Quarry beacon",V(190,38,46),"Lantern",1.1)
 prompt(descent,"Return to quarry","Brassfall").Triggered:Connect(function(player)
 	warp(player,descent,V(118,4,1))
 end)
@@ -892,23 +894,29 @@ local function beaconProp(parent,pos,accent)
 	return post
 end
 local SKYWAY_LANDING=V(0,4,107)
+-- Every gated warp (Skyreach charter beacon included) asks the authoritative
+-- region check safely and tells the player why travel was refused.
+regionTravel=function(player,post,regionId,destination)
+	local region=Data.RegionById[regionId]
+	local access=ServerStorage:FindFirstChild("IsleRegionAccess")
+	if not region or not access then return end
+	local ok,result=pcall(access.Invoke,access,player,regionId)
+	if ok and type(result)=="table" and result.allowed then
+		warp(player,post,destination)
+	else
+		local message=if ok and type(result)=="table" and type(result.message)=="string" then result.message else region.name..": "..requirementText(region)
+		player:SetAttribute("IsleRegionNotice",message)
+		-- The counter lets the client re-show a repeated identical notice.
+		player:SetAttribute("IsleRegionNoticeCount",(tonumber(player:GetAttribute("IsleRegionNoticeCount")) or 0)+1)
+	end
+end
 local function regionWarp(parent,pos,regionId,destination)
 	local region=Data.RegionById[regionId]
 	assert(region,"unknown region "..tostring(regionId))
 	local post=beaconProp(parent,pos,REGION_ACCENT[regionId] or mint)
 	local q=prompt(post,"Travel to "..region.name,requirementText(region))
 	q:SetAttribute("IsleWarpRegion",regionId)
-	q.Triggered:Connect(function(player)
-		local access=ServerStorage:FindFirstChild("IsleRegionAccess")
-		if not access then return end
-		local ok,result=pcall(access.Invoke,access,player,regionId)
-		if ok and type(result)=="table" and result.allowed then
-			warp(player,post,destination)
-		else
-			local message=if ok and type(result)=="table" and type(result.message)=="string" then result.message else region.name..": "..requirementText(region)
-			player:SetAttribute("IsleRegionNotice",message)
-		end
-	end)
+	q.Triggered:Connect(function(player) regionTravel(player,post,regionId,destination) end)
 	return post
 end
 local function returnWarp(parent,pos,label)
@@ -1064,8 +1072,9 @@ spawnMarker("CinderMite",V(102,-4,-90),3,6)
 oreNode(mine,V(84,0,-20),"Ore")
 -- Skyreach: a sunsteel outcrop and the summit's guardians.
 oreNode(skyreach,V(214,36,64),"SunsteelOre","Skyreach")
-spawnMarker("BrassGolem",V(199,36,62),2,6)
-spawnMarker("StormHarrier",V(221,36,44),2,6)
+-- Markers keep >= 40 studs (flat) from every warp landing; see verify-world.
+spawnMarker("BrassGolem",V(228,36,60),2,6)
+spawnMarker("StormHarrier",V(226,36,40),2,6)
 
 -------------------------------------------------------------------------------
 -- Windpine Grove: towering pines, an emberoak hollow and the Aetherheart.
@@ -1100,7 +1109,7 @@ part(lodge,"Lodge roof",V(12.5,.5,9.4),CFrame.new(LP+V(0,7.2,0))*CFrame.Angles(m
 station(lodge,"Workbench",LP+V(0,.4,0),LP+V(0,0,-10),"Windpine Lodge")
 sign(grovewild,WP+V(-8,0,30),"Windpine Grove",requirementText(Data.RegionById.Windpine),REGION_ACCENT.Windpine,0,10)
 returnWarp(grovewild,WP+V(5,0,31),"Windpine Grove")
-spawnMarker("BarkStalker",WP+V(-14,0,9),3,8)
+spawnMarker("BarkStalker",WP+V(-15,0,-17),3,8)
 spawnMarker("GaleSprite",WP+V(9,0,-24),3,7)
 
 -------------------------------------------------------------------------------
@@ -1143,8 +1152,8 @@ oreNode(cave,GH+V(0,0,-21),"Voidstone","Gloomhollow")
 oreNode(cave,GH+V(19,0,1),"Prismite","Gloomhollow",1.2)
 fishSpot(cave,GH+V(-15,0,9),"AbyssKoi","Gloomhollow",V(1,0,.3),4,5.5)
 cropPatch(cave,GH+V(13,0,13),"Moonbloom","Gloomhollow")
-spawnMarker("GloomfangSpider",GH+V(-7,0,-2),3,7)
-spawnMarker("VoidWisp",GH+V(6,0,4),2,7)
+spawnMarker("GloomfangSpider",GH+V(-8,0,-14),3,7)
+spawnMarker("VoidWisp",GH+V(10,0,-12),2,7)
 oreNode(gloom,GH+V(-22,0,24),"SunsteelOre","Gloomhollow")
 station(gloom,"Forge",GH+V(15,0,31),GH,"Delvers' Forge")
 sign(gloom,GH+V(-9,0,33),"Gloomhollow Caverns",requirementText(Data.RegionById.Gloomhollow),REGION_ACCENT.Gloomhollow,0,9)
@@ -1250,12 +1259,12 @@ treeNode(tempest,TS+V(-22,0,10),"StarwoodLog","Tempest")
 cropPatch(tempest,TS+V(19,0,14),"Starfruit","Tempest")
 sign(tempest,TS+V(-8,0,25),"Tempest Spire",requirementText(Data.RegionById.Tempest),REGION_ACCENT.Tempest,0,10)
 returnWarp(tempest,TS+V(5,0,25),"Tempest Spire")
-spawnMarker("TempestWraith",TS+V(6,0,5),2,7)
-spawnMarker("StarbornSentinel",TS+V(-6,0,-4),1,6)
+spawnMarker("TempestWraith",TS+V(15,0,-17),2,6)
+spawnMarker("StarbornSentinel",TS+V(-16,0,-16),1,5)
 
 -- Skyway beacons on the Guild Terrace, plus a deep descent from Cinder Shelf.
 local destinations={
-	Windpine=WP+V(0,4,23),Gloomhollow=GH+V(0,4,29),Tidewater=TW+V(0,4,-28),Tempest=TS+V(0,4,19),
+	Windpine=WP+V(0,4,23),Gloomhollow=GH+V(0,4,29),Tidewater=TW+V(0,4,-28),Tempest=TS+V(0,4,22),
 }
 for i,id in ipairs({"Windpine","Gloomhollow","Tidewater","Tempest"}) do
 	local x=-13.5+(i-1)*9

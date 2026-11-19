@@ -201,7 +201,9 @@ check(proxySource~=nil,"bounded fallback source available")
 local makeProxy=luau.load("local palette=...\n"..proxySource.."\nreturn makeProxy",{
 	environment={Instance=roblox.Instance,Vector3=roblox.Vector3,CFrame=roblox.CFrame,Enum=roblox.Enum},injectGlobals=true,
 })(palette)
-local proxyLimits={ObservatoryArch=16,EclipseAstrolabe=18,ObservatorySentinel=18,AetherCrystal=4}
+local proxyLimits={ObservatoryArch=16,EclipseAstrolabe=18,ObservatorySentinel=18,AetherCrystal=4,
+	Lantern=8,WindpineCrown=4,Moonbloom=7,Pickaxe=3,Blade=4,Tonic=3,VaultChest=5,TimberBundle=5,
+	Surveyor=5,Shellwarden=8,Tidewing=7}
 for shape,limit in pairs(proxyLimits) do
 	local proxy=makeProxy(shape,1.4)
 	check(proxy:GetAttribute("BoundedProxy")==true,shape.." has bounded fallback")
@@ -212,7 +214,14 @@ for shape,limit in pairs(proxyLimits) do
 	end
 	proxy:Destroy()
 end
-check(makeProxy("Tidewing",1)==nil,"unrelated native/creature meshes remain unchanged")
+check(makeProxy("Sword",1)==nil,"inventory-only meshes get no world proxy")
+check(not meshSource:find('Instance.new%("WedgePart"%)'),"world props never fall back to per-triangle wedges")
+check(meshSource:find("if visual then visual.Name")~=nil,"no mesh and no proxy leaves only the anchor geometry")
+for _,anchor in ipairs(tags.AetherSculpture) do
+	local ok,shape=pcall(anchor.GetAttribute,anchor,"Shape")
+	if ok then check(proxyLimits[shape]~=nil,"world sculpture "..tostring(shape).." has a bounded proxy") end
+end
+check(proxyLimits.Tidewing~=nil,"companion Tidewing has a bounded proxy")
 local festival=luau.load(fs.readFile("festival.server.lua"),{environment={
 	game={GetService=function() return players end},workspace=world,Instance=roblox.Instance,
 	Vector3=roblox.Vector3,Vector2=roblox.Vector2,CFrame=roblox.CFrame,Color3=roblox.Color3,UDim2=roblox.UDim2,Enum=roblox.Enum,
@@ -368,7 +377,7 @@ local function standAt(t,trigger)
 		PivotTo=function(_,cf) t.landed=cf.Position end,
 	}
 end
-local warpedTo,returns,warps={},0,0
+local warpedTo,returns,warps,landings={},0,0,{}
 for _,q in world:GetDescendants() do
 	if not q:IsA("ProximityPrompt") then continue end
 	local id=q:GetAttribute("IsleWarpRegion")
@@ -382,10 +391,14 @@ for _,q in world:GetDescendants() do
 		q.Triggered:Fire(t)
 		check(#accessCalls==before+1 and accessCalls[#accessCalls][1]==t and accessCalls[#accessCalls][2]==id,id.." warp calls IsleRegionAccess with its region id")
 		check(t.landed==nil,id.." locked warp does not move the player")
-		if id~="Skyreach" then check(t.attributes.IsleRegionNotice=="Locked: "..id,id.." locked warp relays the server message") end
+		check(t.attributes.IsleRegionNotice=="Locked: "..id,id.." locked warp relays the server message")
+		check(t.attributes.IsleRegionNoticeCount==1,id.." locked warp bumps the notice counter")
+		q.Triggered:Fire(t)
+		check(t.attributes.IsleRegionNoticeCount==2 and t.landed==nil,id.." repeated identical denial is still observable")
 		allowRegion[id]=true
 		q.Triggered:Fire(t)
 		check(t.landed~=nil and onRegion(id,t.landed,2),id.." unlocked warp lands on its region island")
+		if t.landed then table.insert(landings,{id.." landing",t.landed}) end
 		local far=traveller()
 		standAt(far,{CFrame=q.Parent.CFrame+Vec(30,0,0)})
 		q.Triggered:Fire(far)
@@ -397,6 +410,25 @@ for _,q in world:GetDescendants() do
 		standAt(t,q.Parent)
 		q.Triggered:Fire(t)
 		check(t.landed~=nil and onRegion("Hub",t.landed,2),"return beacon lands on the Guild Terrace")
+		if t.landed then table.insert(landings,{"Skyway return landing",t.landed}) end
+	elseif not q:GetAttribute("IsleAction") then
+		-- Any other prompt that moves the player (quarry descent, quay/crew beacons).
+		local t=traveller()
+		standAt(t,q.Parent)
+		pcall(function() q.Triggered:Fire(t) end)
+		if t.landed then table.insert(landings,{q.ObjectText.." landing",t.landed}) end
+	end
+end
+-- Warp landings must sit outside monster aggro (25): every marker >= 40 studs flat.
+for _,obj in world:GetDescendants() do
+	if obj:IsA("SpawnLocation") then table.insert(landings,{obj.Name,obj.Position}) end
+end
+check(#landings>=8,"warp landing points collected for the aggro rule")
+for _,marker in spawnFolder:GetChildren() do
+	local m=marker.CFrame.Position
+	for _,landing in landings do
+		local d=landing[2]-m
+		check(Vec(d.X,0,d.Z).Magnitude>=40,marker.Name.." is >= 40 studs from "..landing[1])
 	end
 end
 for _,region in Data.Regions do
