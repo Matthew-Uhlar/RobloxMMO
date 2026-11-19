@@ -42,7 +42,16 @@ local function panel(parent, position, size, color)
 	return make(textured and "ImageLabel" or "Frame",parent,properties)
 end
 local function garment(object)
-	if not clothTexture and not clothContent then return end
+	if not clothTexture and not clothContent then
+		-- A small original stitch-and-diamond border needs no image allocation.
+		local trim=make("Frame",object,{Name="WovenSurface",Size=UDim2.fromScale(1,1),BackgroundTransparency=1,Active=false,Selectable=false})
+		for _,side in ipairs({0,1}) do
+			for index=1,3 do
+				make("Frame",trim,{Position=UDim2.new(side,side==0 and (5+index*5) or (-5-index*5),1,-5),Size=UDim2.fromOffset(3,1),BackgroundColor3=gold,BackgroundTransparency=.45,BorderSizePixel=0,Active=false})
+			end
+		end
+		return
+	end
 	local fabric=make("ImageLabel",object,{Name="WovenSurface",Size=UDim2.fromScale(1,1),BackgroundTransparency=1,ImageTransparency=.95,ScaleType=Enum.ScaleType.Tile,TileSize=UDim2.fromOffset(128,128),Active=false,Selectable=false})
 	if clothContent then fabric.ImageContent=clothContent else fabric.Image=clothTexture end
 	make("UICorner",fabric,{CornerRadius=UDim.new(0,8)})
@@ -50,7 +59,8 @@ end
 local function rounded(object, radius, edge)
 	make("UICorner", object, { CornerRadius = UDim.new(0, radius) })
 	if edge then
-		make("UIStroke", object, { Color = edge, Transparency = 0.32, Thickness = 1 })
+		local rim=make("UIStroke", object, { Color = edge, Transparency = 0.32, Thickness = 1 })
+		if not clothContent and not clothTexture then make("UIGradient",rim,{Color=ColorSequence.new(gold,slate),Rotation=35}) end
 	end
 end
 local function label(parent, value, x, y, w, h, font, size, color)
@@ -638,14 +648,81 @@ local function drawCraft()
 	end
 	if workshopSection=="Forge" then drawForge() elseif workshopSection=="Workers" then drawWorkers() else drawHome() end
 end
-local function drawTrade()
+local bankDirection="deposit"
+local bankAmount="all"
+local function drawBank()
 	heading("01    /    BANK LEDGER")
-	row("Purse   ·   " .. (state.coins or 0), "Transfer carried coins into the vault.", "Deposit", function()
-		send("deposit")
+	local balance=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,88),deep))
+	rounded(balance,10,gold)
+	local crest=motif(balance,"Ledger",42)
+	crest.Position=UDim2.fromOffset(10,12)
+	label(balance,"WAYFARER VAULT",64,8,UDim.new(1,-76),18,bold,10,gold)
+	label(balance,"Purse  "..state.coins.."     /     Vault  "..state.bank,64,29,UDim.new(1,-76),23,bold,compactAtlas and 13 or 16,ivory)
+	label(balance,"Stored coins are protected from death loss.",12,61,UDim.new(1,-24),19,regular,11,muted)
+	local direction=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,44),ink))
+	for index,option in ipairs({{"deposit","Deposit"},{"withdraw","Withdraw"}}) do
+		local selected=option[1]
+		local control=button(direction,option[2],UDim2.new((index-1)*.5,0,0,0),UDim2.new(.5,-4,0,44),function() bankDirection=selected;render() end)
+		control.BackgroundColor3=bankDirection==selected and mint or slate
+		control.TextColor3=bankDirection==selected and deep or ivory
+	end
+	local entry=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,44),deep))
+	rounded(entry,8,slate)
+	label(entry,"AMOUNT",10,0,UDim.new(0,72),44,bold,11,mint)
+	local input=make("TextBox",entry,{Name="BankAmount",Position=UDim2.fromOffset(87,0),Size=UDim2.new(1,-97,0,44),BackgroundTransparency=1,Text=bankAmount,PlaceholderText="Whole coins, half or all",PlaceholderColor3=muted,TextColor3=ivory,TextSize=16,Font=bold,ClearTextOnFocus=false,TextXAlignment=Enum.TextXAlignment.Left,Selectable=true,MultiLine=false})
+	local presets=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,44),ink))
+	local preview=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,54),deep))
+	rounded(preview,8,slate)
+	local projected=label(preview,"",10,5,UDim.new(1,-20),44,regular,compactAtlas and 12 or 13,muted)
+	projected.TextWrapped=true
+	projected.TextTruncate=Enum.TextTruncate.None
+	local transferRow=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,44),ink))
+	local transfer
+	local function requested()
+		local raw=bankAmount:lower():match("^%s*(.-)%s*$")
+		local available=bankDirection=="deposit" and state.coins or state.bank
+		local amount
+		if raw=="all" then amount=available elseif raw=="half" then amount=math.floor(available/2) elseif raw:match("^%d+$") and #raw<=10 then amount=tonumber(raw) end
+		if available==0 then return nil,raw,"No coins available in your "..(bankDirection=="deposit" and "purse." or "vault.") end
+		if not amount or amount<1 or ((raw~="all" and raw~="half") and amount>1000000000) or amount%1~=0 then return nil,raw,"Enter 1–1,000,000,000 whole coins, half or all." end
+		if amount>available then return nil,raw,"Amount exceeds the "..(bankDirection=="deposit" and "purse" or "vault").." balance." end
+		return amount,raw
+	end
+	local function updatePreview()
+		local amount,_,problem=requested()
+		if amount then
+			local purse=state.coins+(bankDirection=="deposit" and -amount or amount)
+			local vault=state.bank+(bankDirection=="deposit" and amount or -amount)
+			projected.Text="After transfer: Purse "..purse.."  /  Vault "..vault..". Your balance is checked again when you transfer."
+			projected.TextColor3=mint
+			transfer.Text=(bankDirection=="deposit" and "Deposit " or "Withdraw ")..amount.." coins"
+		else
+			projected.Text=problem
+			projected.TextColor3=gold
+			transfer.Text=bankDirection=="deposit" and "Deposit coins" or "Withdraw coins"
+		end
+	end
+	transfer=button(transferRow,"Transfer",UDim2.new(),UDim2.new(1,0,0,44),function()
+		local amount,raw,problem=requested()
+		if not amount then notify(problem);return end
+		send(bankDirection,raw..":"..tostring(state.bankRevision or 0))
 	end)
-	row("Vault   ·   " .. (state.bank or 0), "Return stored coins to your purse.", "Withdraw", function()
-		send("withdraw")
+	for index,preset in ipairs({"25","100","half","all"}) do
+		button(presets,preset=="half" and "Half" or (preset=="all" and "All" or preset),UDim2.new((index-1)/4,0,0,0),UDim2.new(.25,-4,0,44),function()
+			bankAmount=preset
+			input.Text=preset
+			updatePreview()
+		end)
+	end
+	input:GetPropertyChangedSignal("Text"):Connect(function()
+		bankAmount=input.Text:sub(1,20)
+		updatePreview()
 	end)
+	input.FocusLost:Connect(function() updatePreview() end)
+	updatePreview()
+end
+local function drawTrade()
+	drawBank()
 	heading("02    /    MERCHANT")
 	row("Sell raw materials", "Sell all eligible materials in your satchel.", "Sell all", function()
 		send("sell")

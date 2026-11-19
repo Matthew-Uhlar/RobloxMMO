@@ -145,7 +145,7 @@ local function snapshot(player,message)
 			readyIn=if item=="ExpeditionRation" then math.max(0,(p.rationReadyAt or 0)-os.time()) else 0}
 	end
 	for skill,xp in pairs(p.xp) do levels[skill]=level(xp) end
-	return {xp=p.xp,items=p.items,consumables=provisions,collection=p.collection,coins=p.coins,bank=p.bank,worker=p.worker,
+	return {xp=p.xp,items=p.items,consumables=provisions,collection=p.collection,coins=p.coins,bank=p.bank,bankRevision=p.bankRevision or 0,worker=p.worker,
 		ironman=p.ironman,levels=levels,enchantRank=p.enchantRank or 0,workerResource=p.workerResource or "Ore",workerReady=ready(p),workers=workerState(p),message=message or "",kills=p.kills,
 		companionBond=p.companionBond or 0,recipes=recipeState(p),regions=regionState(p),stats=applyStats(player,p),quest=questState(p),slayer=slayerState(p),started=p.started,decorations=p.decorations,preview=preview[player]==true}
 end
@@ -237,6 +237,7 @@ local function open(player)
 			if p then
 				local lost=math.floor(p.coins*0.10)
 				p.coins-=lost
+				p.bankRevision=(p.bankRevision or 0)+1
 				update:FireClient(player,snapshot(player,"You lost "..lost.." purse coins. Banked coins are safe."))
 			end
 		end)
@@ -390,14 +391,28 @@ local function perform(player,verb,item,prompt)
 		end
 		p.coins+=total
 		return "Merchant paid "..total.." coins."
-	elseif verb=="deposit" or verb=="bank" then
-		p.bank+=p.coins
-		p.coins=0
-		return "Purse deposited."
-	elseif verb=="withdraw" then
-		p.coins+=p.bank
-		p.bank=0
-		return "Savings withdrawn."
+	elseif verb=="deposit" or verb=="bank" or verb=="withdraw" then
+		local source=if verb=="withdraw" then "bank" else "coins"
+		local destination=if source=="bank" then "coins" else "bank"
+		local mode="all"
+		if item~=nil then
+			if #item>32 then return "Choose all, half, or a whole coin amount up to 1000000000." end
+			local revision
+			mode,revision=item:match("^([%a%d]+):(%d+)$")
+			if not mode or #revision>16 or tonumber(revision)~=(p.bankRevision or 0) then return "Ledger changed. Refresh and choose the amount again." end
+		end
+		local amount
+		if mode=="all" then amount=p[source]
+		elseif mode=="half" then amount=math.floor(p[source]/2)
+		elseif mode:match("^[1-9]%d*$") and #mode<=10 then amount=tonumber(mode)
+		end
+		if not amount or (mode~="all" and mode~="half" and amount>1000000000) then return "Choose all, half, or a whole coin amount up to 1000000000." end
+		if amount<1 then return "No coins to transfer with that amount." end
+		if amount>p[source] then return "Not enough coins in the "..(if source=="bank" then "vault." else "purse.") end
+		p[source]-=amount
+		p[destination]+=amount
+		p.bankRevision=(p.bankRevision or 0)+1
+		return (if source=="bank" then "Withdrew " else "Deposited ")..amount.." coins."
 	elseif verb=="ironman" then
 		if p.started then return "Choose Ironman before starting progression, construction, hunts or trading." end
 		p.ironman=true

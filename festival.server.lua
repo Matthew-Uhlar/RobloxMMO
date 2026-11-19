@@ -9,22 +9,25 @@ while not gate do
 end
 local board = Instance.new("Part")
 board.Name = "Island Assembly"
-board.Size = Vector3.new(4, 5, 2)
+board.Size = Vector3.new(6, 3, 1)
 board.Anchored = true
 board.Material = Enum.Material.Slate
 board.Color = Color3.fromRGB(26, 51, 60)
-board.CFrame = gate.CFrame + Vector3.new(8, 0, 0)
+board.CFrame = gate.CFrame + Vector3.new(16, 1, 8)
 board.Parent = workspace
-local sign = Instance.new("BillboardGui")
-sign.Size = UDim2.fromOffset(240, 56)
-sign.MaxDistance = 48
-sign.StudsOffset = Vector3.new(0, 5.5, 0)
+-- A fixed physical face cannot follow the camera across the expedition arch.
+local sign = Instance.new("SurfaceGui")
+sign.Face=Enum.NormalId.Back
+sign.CanvasSize=Vector2.new(480,240)
+sign.AlwaysOnTop=false
+sign.LightInfluence=0
 sign.Parent = board
 local title = Instance.new("TextLabel")
 title.BackgroundColor3 = board.Color
 title.TextColor3 = Color3.fromRGB(255, 220, 150)
 title.Font = Enum.Font.GothamBold
-title.TextSize = 15
+title.TextSize = 28
+title.TextWrapped=true
 title.Size = UDim2.fromScale(1, 1)
 title.Parent = sign
 local buttons = {}

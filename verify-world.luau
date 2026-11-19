@@ -173,12 +173,41 @@ check(archipelago:FindFirstChild("WayfarersRest_11")==nil,"leave cleans island")
 local c=player(33)
 check(c.RespawnLocation.Position==oldSpawn,"vacated slot reused")
 local meshSource=fs.readFile("mesh.client.lua")
+check(#luau.compile(meshSource)>0,"complete mesh renderer compiles with bounded fallback")
 local meshData=meshSource:match("(local palette = .-)local function wedgeFace")
 check(meshData~=nil,"embedded mesh data present")
 local shapes,palette=luau.load(meshData.."\nreturn shapes,palette",{
 	environment={Color3=roblox.Color3},injectGlobals=true,
 })()
 local catalog=luau.load(fs.readFile("art/PropCatalog.lua"),{injectGlobals=true})()
+local proxySource=meshSource:match("%-%- BEGIN BOUNDED PROXIES(.-)%-%- END BOUNDED PROXIES")
+check(proxySource~=nil,"bounded fallback source available")
+local makeProxy=luau.load("local palette=...\n"..proxySource.."\nreturn makeProxy",{
+	environment={Instance=roblox.Instance,Vector3=roblox.Vector3,CFrame=roblox.CFrame,Enum=roblox.Enum},injectGlobals=true,
+})(palette)
+local proxyLimits={ObservatoryArch=16,EclipseAstrolabe=18,ObservatorySentinel=18,AetherCrystal=4}
+for shape,limit in pairs(proxyLimits) do
+	local proxy=makeProxy(shape,1.4)
+	check(proxy:GetAttribute("BoundedProxy")==true,shape.." has bounded fallback")
+	check(#proxy:GetChildren()==limit,shape.." stays within authored primitive budget")
+	for _,part in ipairs(proxy:GetChildren()) do
+		check(part:IsA("Part") and not part:IsA("WedgePart"),shape.." avoids per-triangle wedges")
+		check(part.Anchored and not part.CanCollide and not part.CanTouch and not part.CanQuery,shape.." proxy cannot alter gameplay physics")
+	end
+	proxy:Destroy()
+end
+check(makeProxy("Tidewing",1)==nil,"unrelated native/creature meshes remain unchanged")
+local festival=luau.load(fs.readFile("festival.server.lua"),{environment={
+	game={GetService=function() return players end},workspace=world,Instance=roblox.Instance,
+	Vector3=roblox.Vector3,Vector2=roblox.Vector2,CFrame=roblox.CFrame,Color3=roblox.Color3,UDim2=roblox.UDim2,Enum=roblox.Enum,
+	task={wait=function() coroutine.yield() end},
+},injectGlobals=true})
+check(coroutine.resume(coroutine.create(festival)),"festival starts with fixed sign")
+local assembly=world:FindFirstChild("Island Assembly")
+check(assembly:FindFirstChildOfClass("BillboardGui")==nil,"festival sign cannot float over expedition gate")
+local assemblySign=assembly:FindFirstChildOfClass("SurfaceGui")
+check(assemblySign~=nil and not assemblySign.AlwaysOnTop and assemblySign.Face==roblox.Enum.NormalId.Back,"assembly uses physical hub-facing sign")
+check((assembly.CFrame.Position-gate.CFrame.Position).Magnitude>15,"assembly moved away from gate sightline")
 local meshNames={"Tidewing","Shellwarden"}
 for name in pairs(catalog.shapes) do table.insert(meshNames,name) end
 for _,name in meshNames do
