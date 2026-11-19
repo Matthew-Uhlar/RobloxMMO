@@ -491,5 +491,141 @@ for id,def in Data.Monsters do
 	check(row~=nil and row.Text:find(def.name,1,true)~=nil,def.name.." listed in the bestiary")
 end
 check(islandOf(leaderboard):GetAttribute("RegionId")=="Hub" and islandOf(bestiary):GetAttribute("RegionId")=="Hub","guild hall boards stand in the hub")
+-- Builder's Terrace: Carpentry hotspots render furniture from server attributes.
+do
+	local beforeChecks=checks
+	local builder=player(41,{FurnitureGarden="HerbPlanter",FurniturePortal="PortalFrame",HomePortal="Windpine"})
+	local home=archipelago:FindFirstChild("WayfarersRest_41")
+	local terrace=home:FindFirstChild("Builders Terrace")
+	check(terrace~=nil,"home gains a Builder's Terrace")
+	local homeCenter=home:FindFirstChild("Meadow").CFrame.Position
+	local terraceCenter=terrace:FindFirstChild("Meadow").CFrame.Position
+	check(math.abs(terraceCenter.X-homeCenter.X-Data.TERRACE_OFFSET.x)<.01,"terrace sits at the data offset")
+	local function flat(a,b) return math.sqrt((a.X-b.X)^2+(a.Z-b.Z)^2) end
+	check(flat(terraceCenter,homeCenter)-11>19,"terrace does not overlap the home island")
+	local hotspots=0
+	for _,h in ipairs(Data.Hotspots) do
+		local plinth=terrace:FindFirstChild(h.name.." hotspot")
+		check(plinth~=nil and plinth:GetAttribute("HotspotId")==h.id,h.id.." hotspot plinth exists")
+		local spot=plinth.CFrame.Position
+		check(math.abs(spot.X-homeCenter.X-h.x)<.01 and math.abs(spot.Z-homeCenter.Z-h.z)<.01,h.id.." hotspot at its data offset")
+		check(flat(spot,terraceCenter)+2.9<=11,h.id.." hotspot footprint stays on the terrace")
+		local q=plinth:FindFirstChildOfClass("ProximityPrompt")
+		check(q~=nil and q:GetAttribute("OwnerUserId")==41 and q:GetAttribute("IsleAction")==nil,h.id.." planner prompt is private and awards nothing")
+		hotspots+=1
+	end
+	check(hotspots==#Data.Hotspots,"every hotspot rendered")
+	for i,h in ipairs(Data.Hotspots) do
+		for j=i+1,#Data.Hotspots do
+			local o=Data.Hotspots[j]
+			check(math.sqrt((h.x-o.x)^2+(h.z-o.z)^2)>=5.8,h.id.." and "..o.id.." footprints never overlap")
+		end
+	end
+	-- Saved furniture restores on join.
+	local garden=terrace:FindFirstChild("Furniture_Garden")
+	check(garden~=nil and garden:GetAttribute("FurnitureId")=="HerbPlanter","saved furniture restored at join")
+	check(terrace:FindFirstChild("Garden Plot hotspot").Transparency==1,"occupied hotspot plinth hidden")
+	check(terrace:FindFirstChild("Furniture_Bench")==nil,"empty hotspot has no furniture")
+	-- Every furniture piece builds on its hotspot inside its footprint and budget.
+	local tester=player(42)
+	local testTerrace=archipelago:FindFirstChild("WayfarersRest_42"):FindFirstChild("Builders Terrace")
+	local testCenter=archipelago:FindFirstChild("WayfarersRest_42"):FindFirstChild("Meadow").CFrame.Position
+	for _,id in ipairs(Data.FurnitureOrder) do
+		local f=Data.Furniture[id]
+		local h=Data.HotspotById[f.hotspot]
+		tester:SetAttribute("Furniture"..h.id,id)
+		local model=testTerrace:FindFirstChild("Furniture_"..h.id)
+		check(model~=nil and model:GetAttribute("FurnitureId")==id,id.." renders")
+		local parts,maxReach,lowest=0,0,math.huge
+		local spot=testCenter+roblox.Vector3.new(h.x,0,h.z)
+		for _,obj in model:GetDescendants() do
+			if obj:IsA("BasePart") then
+				parts+=1
+				check(obj.Anchored and obj.Size.X>0 and obj.Size.Y>0 and obj.Size.Z>0,id.." part anchored with positive size")
+				local p=obj.CFrame.Position
+				maxReach=math.max(maxReach,flat(p,spot)+math.min(obj.Size.X,obj.Size.Z)/2)
+				lowest=math.min(lowest,p.Y-obj.Size.Y/2)
+			end
+		end
+		check(parts>=5 and parts<=20,id.." uses a bounded primitive count ("..parts..")")
+		check(maxReach<=2.95,id.." stays within its hotspot footprint ("..string.format("%.2f",maxReach)..")")
+		check(lowest>=testCenter.Y-.2,id.." sits on the terrace floor")
+		local stations=0
+		for _,obj in model:GetDescendants() do
+			if obj:IsA("ProximityPrompt") and obj:GetAttribute("IsleAction")=="station" then
+				stations+=1
+				check(obj:GetAttribute("OwnerUserId")==42,id.." station prompt is private")
+				check(table.find(f.effect.station,obj:GetAttribute("IsleItem"))~=nil,id.." station prompt matches its effect")
+			end
+		end
+		check(stations==#(f.effect.station or {}),id.." exposes one prompt per home station")
+		local size=#testTerrace:GetDescendants()
+		tester:SetAttribute("Furniture"..h.id,id)
+		check(#testTerrace:GetDescendants()==size,id.." repeat attribute cannot duplicate geometry")
+	end
+	-- Swapping, clearing and invalid values.
+	tester:SetAttribute("FurnitureBench","SturdyWorkbench")
+	check(testTerrace:FindFirstChild("Furniture_Bench"):GetAttribute("FurnitureId")=="SturdyWorkbench","replacement swaps the model")
+	local benchCount=0
+	for _,child in testTerrace:GetChildren() do if child.Name=="Furniture_Bench" then benchCount+=1 end end
+	check(benchCount==1,"one model per hotspot")
+	tester:SetAttribute("FurnitureBench","")
+	check(testTerrace:FindFirstChild("Furniture_Bench")==nil,"cleared hotspot removes the model")
+	check(testTerrace:FindFirstChild("Workshop Bench hotspot").Transparency==0,"cleared hotspot shows its plinth")
+	tester:SetAttribute("FurnitureBench","PortalFrame")
+	check(testTerrace:FindFirstChild("Furniture_Bench")==nil,"furniture for another hotspot is ignored")
+	tester:SetAttribute("FurnitureBench","Ghost")
+	check(testTerrace:FindFirstChild("Furniture_Bench")==nil,"unknown furniture is ignored")
+	tester:SetAttribute("FurnitureBench",7)
+	check(testTerrace:FindFirstChild("Furniture_Bench")==nil,"non-string furniture is ignored")
+	-- Planner prompt opens the Construction page for the owner only.
+	local plan=testTerrace:FindFirstChild("Workshop Bench hotspot"):FindFirstChildOfClass("ProximityPrompt")
+	plan.Triggered:Fire(tester)
+	check(tester:GetAttribute("IsleStation")=="Construction" and tester:GetAttribute("IsleStationVisit")==1,"planner opens the Construction page")
+	plan.Triggered:Fire(builder)
+	check(builder:GetAttribute("IsleStationVisit")==nil,"another player cannot use the planner")
+	-- Home station prompt opens the matching workshop tab for the owner.
+	tester:SetAttribute("FurnitureHearth","EmberoakRange")
+	local range=testTerrace:FindFirstChild("Furniture_Hearth")
+	for _,obj in range:GetDescendants() do
+		if obj:IsA("ProximityPrompt") and obj:GetAttribute("IsleItem")=="Cauldron" then obj.Triggered:Fire(tester) end
+	end
+	check(tester:GetAttribute("IsleStation")=="Cauldron","home Cauldron opens its station")
+	-- Home portal: travels through the authoritative region check.
+	local portal=terrace:FindFirstChild("Furniture_Portal")
+	local veilPrompt
+	for _,obj in portal:GetDescendants() do
+		if obj:IsA("ProximityPrompt") and obj:GetAttribute("IsleHomePortal") then veilPrompt=obj end
+	end
+	check(veilPrompt~=nil and veilPrompt:GetAttribute("OwnerUserId")==41,"portal prompt is private")
+	check(veilPrompt.ObjectText:find("Windpine",1,true)~=nil,"portal shows its attuned region")
+	standAt(builder,veilPrompt.Parent)
+	allowRegion.Windpine=false
+	local callsBefore=#accessCalls
+	veilPrompt.Triggered:Fire(builder)
+	check(#accessCalls==callsBefore+1 and accessCalls[#accessCalls][2]=="Windpine","portal asks IsleRegionAccess")
+	check(builder.landed==nil,"denied portal does not move the player")
+	allowRegion.Windpine=true
+	veilPrompt.Triggered:Fire(builder)
+	check(builder.landed~=nil and onRegion("Windpine",builder.landed,2),"attuned portal lands in its region")
+	local stranger=traveller()
+	standAt(stranger,veilPrompt.Parent)
+	veilPrompt.Triggered:Fire(stranger)
+	check(stranger.landed==nil and #accessCalls==callsBefore+2,"strangers cannot use a home portal")
+	builder:SetAttribute("HomePortal","")
+	check(veilPrompt.ObjectText:find("attune",1,true)~=nil,"unattuned portal explains itself")
+	standAt(builder,veilPrompt.Parent)
+	veilPrompt.Triggered:Fire(builder)
+	check(builder.landed==nil and type(builder:GetAttribute("IsleRegionNotice"))=="string","unattuned portal shows a notice")
+	builder:SetAttribute("HomePortal","Skyreach")
+	allowRegion.Skyreach=true
+	veilPrompt.Triggered:Fire(builder)
+	check(builder.landed~=nil and onRegion("Skyreach",builder.landed,2),"portal reaches Skyreach")
+	-- Leaving cleans the terrace with the home.
+	players.PlayerRemoving:Fire(builder)
+	check(archipelago:FindFirstChild("WayfarersRest_41")==nil,"leaving removes the terrace")
+	builder:SetAttribute("FurnitureBench","SturdyWorkbench")
+	print("Builder's Terrace: "..(checks-beforeChecks).." checks.")
+end
 print("Depth world: "..tierCount.." resource tiers / "..nodeCount.." gather nodes, "..markers.." spawn markers, "..warps.." gated warps, "..stationCount.." stations, "..staticParts.." static parts, "..staticLights.." lights.")
 print("World QA passed "..checks.." checks with "..parts.." parts, "..prompts.." prompts and "..signs.." sign surfaces.")

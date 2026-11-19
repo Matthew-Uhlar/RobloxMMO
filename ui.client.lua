@@ -1106,6 +1106,247 @@ Pages.drawBearing,Pages.drawRegions=drawBearing,drawRegions
 end
 
 ------------------------------------------------------------------------------
+-- Journal: quest log, achievement diaries and the Builder's Terrace
+-- (snapshot.journal; static definitions from Data.Quests/Diaries/Furniture).
+------------------------------------------------------------------------------
+do
+local QJ={line="Main",region="Meadow",hotspot="Bench",lampFor=nil,removeFor=nil}
+local function journal() local j=state.journal if type(j)=="table" then return j end return nil end
+local function journalData()
+	return Data and type(Data.Quests)=="table" and type(Data.Diaries)=="table" and type(Data.Furniture)=="table"
+		and type(Data.describeCheck)=="function"
+end
+local function checkLine(o,pair)
+	local ok,text=pcall(Data.describeCheck,o)
+	text=ok and type(text)=="string" and text or "Task"
+	local have,need=num(tbl(pair)[1],0),num(tbl(pair)[2],num(type(o)=="table" and (o.count or o.level or o.tier) or 1,1))
+	local met=have>=need
+	local amount=if need>1 then "  "..paint(fmt(have).." / "..fmt(need),met and "9EE7D2" or "B9C7CC") else ""
+	return (met and check or cross).." "..escape(text)..amount,met
+end
+local function statText(stats)
+	local parts={}
+	for stat,v in pairs(tbl(stats)) do
+		local def=Data.Stats and Data.Stats[stat]
+		table.insert(parts,"+"..fmt(v).." "..(def and def.name or stat))
+	end
+	table.sort(parts)
+	return table.concat(parts,", ")
+end
+local function rewardText(r)
+	r=tbl(r)
+	local parts={}
+	if num(r.points,0)>0 then table.insert(parts,r.points.." Quest Point"..(r.points==1 and "" or "s")) end
+	if num(r.coins,0)>0 then table.insert(parts,fmt(r.coins).." coins") end
+	for skill,amount in pairs(tbl(r.xp)) do table.insert(parts,fmt(amount).." "..skill.." XP") end
+	if type(r.lamp)=="table" then
+		local skills=type(r.lamp.skills)=="table" and table.concat(r.lamp.skills,"/") or "any skill"
+		table.insert(parts,"XP lamp: "..fmt(r.lamp.xp).." ("..skills..")")
+	end
+	for id,n in pairs(tbl(r.items)) do
+		local def=Data.Items[id]
+		table.insert(parts,n.." "..(def and def.name or id))
+	end
+	if type(r.perk)=="table" then table.insert(parts,"Perk "..statText(r.perk)) end
+	local unlock=tbl(r.unlock)
+	if num(unlock.accessorySlots,0)>0 then table.insert(parts,"+"..unlock.accessorySlots.." accessory slot") end
+	if num(unlock.workerHaste,0)>0 then table.insert(parts,"Workers "..math.floor(unlock.workerHaste*100+.5).."% faster") end
+	if type(unlock.shortcut)=="string" then table.insert(parts,"Portal attunement: "..unlock.shortcut) end
+	return escape(table.concat(parts,"  ·  "))
+end
+local function questStatus(entry)
+	if entry.done==true then return "DONE",mint end
+	if entry.ready==true then return "READY",gold end
+	if entry.available==true then return "ACTIVE",ivory end
+	return "LOCKED",ember
+end
+local function drawQuests()
+	local j=journal()
+	heading("QUEST LOG    /    "..fmt(j and j.questPoints or 0).." QUEST POINTS")
+	if not journalData() then dataMissing() return end
+	if not j then syncing("quest log") return end
+	sectionBar({"Main","Side"},QJ.line,function(name) QJ.line=name QJ.lampFor=nil render() end,{small=true,prefix="QuestLine"})
+	local entries={}
+	for _,entry in ipairs(tbl(j.quests)) do if type(entry)=="table" and type(entry.id)=="string" then entries[entry.id]=entry end end
+	local shown=0
+	for _,q in ipairs(Data.Quests) do
+		if (q.line=="main")==(QJ.line=="Main") then
+			local entry=entries[q.id] or EMPTY
+			local badge,color=questStatus(entry)
+			local lines={}
+			if entry.done~=true then
+				for i,o in ipairs(q.requires) do table.insert(lines,(i==1 and "Requires  " or "")..(checkLine(o,tbl(entry.requires)[i]))) end
+				for i,o in ipairs(q.objectives) do table.insert(lines,(i==1 and "Tasks  " or "")..(checkLine(o,tbl(entry.objectives)[i]))) end
+			end
+			table.insert(lines,"Rewards  "..rewardText(q.rewards))
+			local actions={}
+			local lamp=type(q.rewards.lamp)=="table" and q.rewards.lamp
+			local picking=QJ.lampFor==q.id and entry.ready==true and lamp
+			if entry.ready==true then
+				if picking then
+					table.insert(actions,{caption="Cancel",fn=function() QJ.lampFor=nil render() end})
+				else
+					table.insert(actions,{caption="Claim",primary=true,fn=function()
+						if lamp then QJ.lampFor=q.id render() else send("quest",q.id) end
+					end})
+				end
+			end
+			local region=Data.RegionById and Data.RegionById[q.region]
+			card({name="Quest"..q.id,motif="Journal",title=escape(q.title),titleColor=entry.done==true and muted or ivory,
+				subtitle=escape((region and region.name or q.region).."  ·  "..(q.line=="main" and "Main quest" or "Side quest")),
+				badge=badge,badgeColor=color,detail=entry.done~=true and escape(q.story or "") or nil,lines=lines,actions=actions,
+				after=picking and function(body,nextOrder)
+					para(body,"Choose a skill for your "..fmt(lamp.xp).." XP lamp:",nextOrder(),gold)
+					local skills=type(lamp.skills)=="table" and lamp.skills or Data.SkillOrder
+					local per=compactAtlas and 3 or 4
+					local height=compactAtlas and 34 or 38
+					local rows=math.ceil(#skills/per)
+					local grid=make("Frame",body,{Name="LampPicker",BackgroundTransparency=1,Size=UDim2.new(1,0,0,rows*(height+4)),LayoutOrder=nextOrder()})
+					for i,skill in ipairs(skills) do
+						local r,c=(i-1)//per,(i-1)%per
+						local b=button(grid,skill,UDim2.new(c/per,0,0,r*(height+4)),UDim2.new(1/per,-4,0,height),function()
+							QJ.lampFor=nil
+							send("quest",q.id..":"..skill)
+						end)
+						b.Name="Lamp"..skill
+						b.TextScaled=true
+						make("UITextSizeConstraint",b,{MinTextSize=9,MaxTextSize=13})
+					end
+				end or nil})
+			shown+=1
+		end
+	end
+	if shown==0 then row("No quests","The guild has no work of this kind yet.") end
+end
+local function drawDiaries()
+	heading("ACHIEVEMENT DIARIES")
+	if not journalData() then dataMissing() return end
+	local j=journal()
+	if not j then syncing("diaries") return end
+	local regions={}
+	for _,d in ipairs(Data.Diaries) do table.insert(regions,d.region) end
+	if not Data.DiaryByRegion[QJ.region] then QJ.region=regions[1] end
+	sectionBar(regions,QJ.region,function(name) QJ.region=name render() end,{small=true,prefix="Diary",maxPer=compactAtlas and 4 or 7})
+	local entry=EMPTY
+	local total=0
+	for _,e in ipairs(tbl(j.diaries)) do
+		if type(e)=="table" then
+			total+=math.clamp(num(e.claimed,0),0,4)
+			if e.region==QJ.region then entry=e end
+		end
+	end
+	local diary=Data.DiaryByRegion[QJ.region]
+	local claimed=num(entry.claimed,0)
+	card({name="DiarySummary",motif="Hunt",title=escape(diary.name),titleColor=gold,
+		subtitle=claimed.." / "..#Data.DiaryTiers.." tiers claimed  ·  "..total.." / "..(#Data.Diaries*#Data.DiaryTiers).." across the isles",
+		pips={total=#Data.DiaryTiers,filled=claimed,color=gold,labels={"E","M","H","El"}}})
+	local tiers={}
+	for _,t in ipairs(tbl(entry.tiers)) do if type(t)=="table" and type(t.tier)=="string" then tiers[t.tier]=t end end
+	for index,tierName in ipairs(Data.DiaryTiers) do
+		local def=diary.tiers[tierName]
+		local t=tiers[tierName] or EMPTY
+		local lines,done={},0
+		for i,o in ipairs(def.tasks) do
+			local text,met=checkLine(o,tbl(t.tasks)[i])
+			if met then done+=1 end
+			table.insert(lines,text)
+		end
+		table.insert(lines,"Perk  "..escape(statText(def.perk)).."  ·  "..fmt(Data.DiaryCoins[tierName]).." coins")
+		local isClaimed=t.claimed==true or index<=claimed
+		local badge,color="IN PROGRESS",ivory
+		if isClaimed then badge,color="CLAIMED",mint
+		elseif t.claimable==true then badge,color="READY",gold
+		elseif index>claimed+1 then badge,color="LOCKED",ember end
+		card({name="Diary"..QJ.region..tierName,motif="Hunt",title=tierName,titleColor=isClaimed and mint or ivory,badge=badge,badgeColor=color,
+			lines=lines,bar={fraction=done/#def.tasks,color=isClaimed and mint or gold,caption=done.." / "..#def.tasks.." tasks"},
+			actions=t.claimable==true and {{caption="Claim",primary=true,fn=function() send("diary",QJ.region..":"..tierName) end}} or nil})
+	end
+end
+local function costLine(costs)
+	local parts,ok={},true
+	local ids={}
+	for id in pairs(costs) do table.insert(ids,id) end
+	table.sort(ids)
+	for _,id in ipairs(ids) do
+		local need=costs[id]
+		local have=count("items",id)
+		local met=have>=need
+		if not met then ok=false end
+		local def=Data.Items[id]
+		table.insert(parts,(met and check or cross).." "..fmt(need).." "..escape(def and def.name or id).." "..paint("("..fmt(have)..")","B9C7CC"))
+	end
+	return table.concat(parts,"   "),ok
+end
+local function drawConstruction()
+	heading("BUILDER'S TERRACE    /    CARPENTRY")
+	if not journalData() then dataMissing() return end
+	local j=journal()
+	if not j then syncing("terrace plans") return end
+	local con=tbl(j.construction)
+	local furniture=tbl(con.furniture)
+	local carpentry=num(con.carpentry,1)
+	local portal=type(con.portal)=="string" and Data.RegionById[con.portal]
+	card({name="TerraceSummary",motif="Workshop",title="Carpentry "..carpentry,titleColor=gold,
+		subtitle="Build on the terrace west of your home landing",
+		lines={"Bonus accessory slots  +"..fmt(num(con.accessorySlots,0)).."   ·   Worker speed  +"..math.floor(num(con.workerHaste,0)*100+.5).."%",
+			"Home portal  "..(portal and escape(portal.name) or (furniture.Portal and "not attuned" or "no portal built")),
+			"Removing furniture returns "..math.floor(num(Data.FurnitureRefund,.5)*100).."% of its materials."}})
+	local names={}
+	for _,h in ipairs(Data.Hotspots) do table.insert(names,h.id) end
+	if not Data.HotspotById[QJ.hotspot] then QJ.hotspot=names[1] end
+	sectionBar(names,QJ.hotspot,function(name) QJ.hotspot=name QJ.removeFor=nil render() end,{small=true,prefix="Hotspot",maxPer=compactAtlas and 4 or 7})
+	local h=Data.HotspotById[QJ.hotspot]
+	local currentId=type(furniture[h.id])=="string" and Data.Furniture[furniture[h.id]] and furniture[h.id] or nil
+	local current=currentId and Data.Furniture[currentId]
+	local actions={}
+	if current then
+		if QJ.removeFor==h.id then
+			table.insert(actions,{caption="Keep",fn=function() QJ.removeFor=nil render() end})
+			table.insert(actions,{caption="Dismantle",fn=function() QJ.removeFor=nil send("remove",h.id) end})
+		else
+			table.insert(actions,{caption="Remove",fn=function() QJ.removeFor=h.id render() end})
+		end
+	end
+	card({name="Hotspot"..h.id.."Current",motif="Workshop",title=escape(h.name),titleColor=ivory,
+		subtitle=current and paint("Built: "..escape(current.name),"9EE7D2") or paint("Empty hotspot","B9C7CC"),
+		badge=current and "BUILT" or "EMPTY",badgeColor=current and mint or muted,
+		detail=current and escape(current.text) or "Choose a plan below. One piece per hotspot.",
+		lines={QJ.removeFor==h.id and paint("Dismantle for a partial refund?","E8806A") or nil},actions=actions,
+		after=current and current.effect.portal and function(body,nextOrder)
+			local regions=tbl(con.portalRegions)
+			para(body,"Attune the portal:",nextOrder(),gold)
+			local per=compactAtlas and 3 or 5
+			local height=compactAtlas and 34 or 38
+			local grid=make("Frame",body,{Name="PortalPicker",BackgroundTransparency=1,Size=UDim2.new(1,0,0,math.max(1,math.ceil(#regions/per))*(height+4)),LayoutOrder=nextOrder()})
+			for i,region in ipairs(regions) do
+				if type(region)=="string" and Data.RegionById[region] then
+					local r,c=(i-1)//per,(i-1)%per
+					local b=button(grid,Data.RegionById[region].name,UDim2.new(c/per,0,0,r*(height+4)),UDim2.new(1/per,-4,0,height),function() send("portal",region) end)
+					b.Name="Portal"..region
+					b.TextScaled=true
+					make("UITextSizeConstraint",b,{MinTextSize=8,MaxTextSize=12})
+					if con.portal==region then b.BackgroundColor3=mint b.TextColor3=deep end
+				end
+			end
+		end or nil})
+	for _,id in ipairs(Data.FurnitureOrder) do
+		local f=Data.Furniture[id]
+		if f.hotspot==h.id then
+			local costs,funded=costLine(f.costs)
+			local levelOk=carpentry>=f.level
+			local reason=if current then "Remove the current piece first." elseif not levelOk then "Requires Carpentry "..f.level.."." elseif not funded then "Gather the materials first." else nil
+			card({name="Plan"..id,motif="Workshop",title=escape(f.name),titleColor=levelOk and ivory or muted,
+				subtitle=(levelOk and check or cross).." Carpentry "..f.level.."  ·  +"..fmt(f.xp).." XP",
+				badge=currentId==id and "BUILT" or nil,badgeColor=mint,detail=escape(f.text),lines={costs},
+				actions={{caption="Build",primary=reason==nil,disabled=reason~=nil,reason=reason,fn=function() send("build",h.id..":"..id) end}}})
+		end
+	end
+end
+Pages.drawQuests,Pages.drawDiaries,Pages.drawConstruction=drawQuests,drawDiaries,drawConstruction
+Pages.resetJournal=function() QJ.lampFor=nil QJ.removeFor=nil end
+end
+
+------------------------------------------------------------------------------
 -- Hero: skills, gear, enchanting, accessories, pets
 ------------------------------------------------------------------------------
 do
@@ -2467,7 +2708,7 @@ end
 ------------------------------------------------------------------------------
 local tabOrder={"Journal","Hero","Satchel","Workshop","Hunt","Ledger"}
 local sectionLists={
-	Journal={"Bearing","Regions","Crew"},
+	Journal={"Bearing","Quests","Diaries","Construction","Regions","Crew"},
 	Hero={"Skills","Gear","Enchant","Accessories","Pets"},
 	Satchel={"Items","Collections"},
 	Workshop={"Forge","Hearth","Cauldron","Workbench","Workers","Home"},
@@ -2476,7 +2717,7 @@ local sectionLists={
 }
 sectionOf={Journal="Bearing",Hero="Skills",Satchel="Items",Workshop="Forge",Hunt="Slayer",Ledger="Bank"}
 local drawers={
-	Journal={Bearing=Pages.drawBearing,Regions=Pages.drawRegions,Crew=Pages.drawCoop},
+	Journal={Bearing=Pages.drawBearing,Quests=Pages.drawQuests,Diaries=Pages.drawDiaries,Construction=Pages.drawConstruction,Regions=Pages.drawRegions,Crew=Pages.drawCoop},
 	Hero={Skills=Pages.drawSkills,Gear=Pages.drawGear,Enchant=Pages.drawEnchant,Accessories=Pages.drawAccessories,Pets=Pages.drawPets},
 	Satchel={Items=Pages.drawItems,Collections=Pages.drawCollections},
 	Workshop={Forge=function() Pages.drawStation("Forge") end,Hearth=function() Pages.drawStation("Hearth") end,Cauldron=function() Pages.drawStation("Cauldron") end,
@@ -2490,6 +2731,7 @@ local function resetTransient()
 	sellConfirm=nil
 	abandonConfirm=false
 	purchaseReview=nil
+	Pages.resetJournal()
 end
 local function refreshSection(tab,section)
 	if tab=="Journal" and section=="Crew" and sendCoop then sendCoop("state") end
@@ -2848,14 +3090,14 @@ sendCoop = function(verb, item)
 end
 -- Crafting stations and the slayer board set IsleStation on the player; open
 -- the matching page. Values may carry a suffix ("Forge:3") so repeats fire.
-local stationTabs={Forge="Workshop",Hearth="Workshop",Cauldron="Workshop",Workbench="Workshop",Slayer="Hunt"}
+local stationTabs={Forge="Workshop",Hearth="Workshop",Cauldron="Workshop",Workbench="Workshop",Slayer="Hunt",Construction="Journal"}
 local function openStation()
 	local value=player:GetAttribute("IsleStation")
 	if type(value)~="string" then return end
 	local station=value:match("^(%a+)")
 	local tab=station and stationTabs[station]
 	if not tab then return end
-	if tab=="Workshop" then openTo("Workshop",station) else openTo("Hunt","Slayer") end
+	if tab=="Workshop" then openTo("Workshop",station) elseif tab=="Journal" then openTo("Journal","Construction") else openTo("Hunt","Slayer") end
 end
 -- World sets IsleStation and then bumps IsleStationVisit on every trigger; only the
 -- counter opens the atlas, so each visit opens it exactly once (repeats included).

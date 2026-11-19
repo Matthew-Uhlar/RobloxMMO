@@ -138,10 +138,15 @@ end
 local function workerConfig(w)
 	return Data.WorkerTiers[math.clamp(math.floor(tonumber(w.tier) or 1),1,#Data.WorkerTiers)]
 end
-local function workerReady(w)
+-- Construction and quest perks (p.perkWorkerHaste) shorten every worker cycle.
+local function workerInterval(p,w)
+	local haste=math.clamp(tonumber(p and p.perkWorkerHaste) or 0,0,Data.MAX_WORKER_HASTE)
+	return math.max(1,math.floor(workerConfig(w).interval*(1-haste)+0.5))
+end
+local function workerReady(w,p)
 	if not w then return 0 end
 	local config=workerConfig(w)
-	return math.clamp(math.floor((os.time()-w.lastClaim)/config.interval),0,config.capacity)
+	return math.clamp(math.floor((os.time()-w.lastClaim)/workerInterval(p,w)),0,config.capacity)
 end
 local function workerCost(tier)
 	local cost={Timber=5*tier,Ore=3*tier}
@@ -163,12 +168,12 @@ local function workerAllowed(p,resource)
 	end
 	return true
 end
-local function ready(p) return workerReady(workerFleet(p)[1]) end
+local function ready(p) return workerReady(workerFleet(p)[1],p) end
 local function workerState(p)
 	local result={}
 	for slot,w in ipairs(workerFleet(p)) do
 		local config=workerConfig(w)
-		result[slot]={slot=slot,resource=w.resource,tier=w.tier,ready=workerReady(w),interval=config.interval,capacity=config.capacity,maxTier=#Data.WorkerTiers}
+		result[slot]={slot=slot,resource=w.resource,tier=w.tier,ready=workerReady(w,p),interval=workerInterval(p,w),capacity=config.capacity,maxTier=#Data.WorkerTiers}
 	end
 	return result
 end
@@ -211,6 +216,304 @@ local function regionDenied(region)
 	if not def then return "That region is not on the guild charts." end
 	return def.name.." requires "..regionRequirement(def).."."
 end
+------------------------------------------------------------------------------
+-- Quests, achievement diaries and Carpentry construction (Quests team).
+-- Every check reads profile state server-side (Data.describeCheck kinds).
+-- Stat perks go to p.perkStats under "quest:", "diary:" and "furniture:" keys
+-- (Progression.computeStats adds them); non-stat perks are p.perkAccessorySlots
+-- and p.perkWorkerHaste. All three are rebuilt from the source records by
+-- Journal.refresh, so they can never drift from what the player has earned.
+------------------------------------------------------------------------------
+local Journal={}
+do
+	local tierIndex={}
+	for i,name in ipairs(Data.DiaryTiers) do tierIndex[name]=i end
+	local perkPrefixes={"quest:","diary:","furniture:"}
+	-- Accessory slots from perks: until Progression.accessorySlots reads
+	-- p.perkAccessorySlots itself (lead sets Progression.perkSlotsIntegrated),
+	-- the server extends it here so the bag verb and active accessories agree.
+	if not Progression.perkSlotsIntegrated then
+		local baseSlots=Progression.accessorySlots
+		Progression.perkSlotsIntegrated=true
+		Progression.accessorySlots=function(p)
+			local bonus=math.clamp(math.floor(tonumber(p and p.perkAccessorySlots) or 0),0,Data.MAX_PERK_SLOTS)
+			return math.min(Data.AccessoryBag.maxSlots+Data.MAX_PERK_SLOTS,baseSlots(p)+bonus)
+		end
+	end
+	function Journal.counters(p)
+		local c=p.counters
+		if type(c)~="table" then c={} p.counters=c end
+		for _,key in ipairs({"gathers","crafts","built"}) do
+			if type(c[key])~="table" then c[key]={} end
+		end
+		return c
+	end
+	function Journal.count(p,bucket,key,n)
+		local list=Journal.counters(p)[bucket]
+		list[key]=(list[key] or 0)+n
+	end
+	function Journal.questPoints(p)
+		local total=(p.questCompleted or 0)*Data.CONTRACT_QUEST_POINTS
+		for id in pairs(p.questsDone or {}) do
+			local q=Data.QuestById[id]
+			if q then total+=q.rewards.points or 0 end
+		end
+		return total
+	end
+	-- Returns have, need for one check.
+	function Journal.measure(p,o)
+		local kind=o.kind
+		if kind=="contracts" then return p.questCompleted or 0,o.count
+		elseif kind=="quest" then return if p.questsDone[o.quest] then 1 else 0,1
+		elseif kind=="questPoints" then return Journal.questPoints(p),o.count
+		elseif kind=="level" then return level(p.xp[o.skill]),o.level
+		elseif kind=="collect" then return p.collection[o.item] or 0,o.count
+		elseif kind=="collectionTier" then return Progression.collectionTier(p,o.item),o.tier
+		elseif kind=="have" then return p.items[o.item] or 0,o.count
+		elseif kind=="kills" then return p.bestiary[o.monster] or 0,o.count
+		elseif kind=="craft" then return Journal.counters(p).crafts[o.item] or 0,o.count
+		elseif kind=="gather" then return Journal.counters(p).gathers[o.region] or 0,o.count
+		elseif kind=="build" then return if (Journal.counters(p).built[o.furniture] or 0)>0 then 1 else 0,1
+		elseif kind=="slayer" then return Progression.slayerLevel(p.slayerXp[o.line] or 0),o.level
+		elseif kind=="flag" then return if p[o.flag]==true then 1 else 0,1
+		end
+		return 0,1
+	end
+	function Journal.met(p,list)
+		for _,o in ipairs(list) do
+			local have,need=Journal.measure(p,o)
+			if have<need then return false,o end
+		end
+		return true
+	end
+	function Journal.progress(p,list)
+		local out={}
+		for i,o in ipairs(list) do
+			local have,need=Journal.measure(p,o)
+			out[i]={math.min(have,need),need}
+		end
+		return out
+	end
+	function Journal.shortcuts(p)
+		local out={}
+		for id in pairs(p.questsDone) do
+			local q=Data.QuestById[id]
+			local region=q and q.rewards.unlock and q.rewards.unlock.shortcut
+			if region then out[region]=true end
+		end
+		return out
+	end
+	-- Regions the home portal can be attuned to (needs portal furniture).
+	function Journal.portalRegions(p)
+		local f=Data.Furniture[p.furniture.Portal or ""]
+		if not f then return {} end
+		local shortcuts=Journal.shortcuts(p)
+		local out={}
+		for _,region in ipairs(Data.PortalRegions) do
+			if shortcuts[region] or table.find(f.effect.portal,region) then table.insert(out,region) end
+		end
+		return out
+	end
+	function Journal.refresh(p)
+		local perks=if type(p.perkStats)=="table" then p.perkStats else {}
+		p.perkStats=perks
+		for key in pairs(perks) do
+			for _,prefix in ipairs(perkPrefixes) do
+				if type(key)=="string" and string.sub(key,1,#prefix)==prefix then perks[key]=nil end
+			end
+		end
+		local slots,haste=0,0
+		for id in pairs(p.questsDone) do
+			local q=Data.QuestById[id]
+			if q.rewards.perk then perks["quest:"..id]=table.clone(q.rewards.perk) end
+			local unlock=q.rewards.unlock
+			if unlock then slots+=unlock.accessorySlots or 0; haste+=unlock.workerHaste or 0 end
+		end
+		for region,claimed in pairs(p.diaries) do
+			local diary=Data.DiaryByRegion[region]
+			for i=1,claimed do
+				local tier=Data.DiaryTiers[i]
+				perks["diary:"..region..":"..tier]=table.clone(diary.tiers[tier].perk)
+			end
+		end
+		for hotspot,id in pairs(p.furniture) do
+			local effect=Data.Furniture[id].effect
+			if effect.perk then perks["furniture:"..hotspot]=table.clone(effect.perk) end
+			slots+=effect.accessorySlots or 0
+			haste+=effect.workerHaste or 0
+		end
+		p.perkAccessorySlots=math.min(Data.MAX_PERK_SLOTS,slots)
+		p.perkWorkerHaste=math.min(Data.MAX_WORKER_HASTE,haste)
+	end
+	-- Older saves and tampered records: keep only known quests, tiers, furniture.
+	function Journal.migrate(p)
+		local done={}
+		if type(p.questsDone)=="table" then
+			for id,v in pairs(p.questsDone) do if v==true and Data.QuestById[id] then done[id]=true end end
+		end
+		p.questsDone=done
+		local diaries={}
+		if type(p.diaries)=="table" then
+			for region,v in pairs(p.diaries) do
+				local n=tonumber(v)
+				if Data.DiaryByRegion[region] and n and n==n then
+					n=math.clamp(math.floor(n),0,#Data.DiaryTiers)
+					if n>0 then diaries[region]=n end
+				end
+			end
+		end
+		p.diaries=diaries
+		local furniture={}
+		if type(p.furniture)=="table" then
+			for hotspot,id in pairs(p.furniture) do
+				local f=type(id)=="string" and Data.Furniture[id]
+				if f and f.hotspot==hotspot then furniture[hotspot]=id end
+			end
+		end
+		p.furniture=furniture
+		local counters=Journal.counters(p)
+		for _,bucket in pairs({counters.gathers,counters.crafts,counters.built}) do
+			for key,v in pairs(bucket) do
+				local n=tonumber(v)
+				bucket[key]=if type(key)=="string" and n and n==n and n>0 then math.floor(math.min(n,1e9)) else nil
+			end
+		end
+		if p.homePortal~=nil and not table.find(Journal.portalRegions(p),p.homePortal) then p.homePortal=nil end
+		Journal.refresh(p)
+	end
+	-- World reads these attributes to render furniture and the home portal.
+	function Journal.apply(player,p)
+		for _,h in ipairs(Data.Hotspots) do player:SetAttribute("Furniture"..h.id,p.furniture[h.id] or "") end
+		player:SetAttribute("HomePortal",p.homePortal or "")
+	end
+	local function addItems(p,items)
+		for id,n in pairs(items or {}) do p.items[id]=(p.items[id] or 0)+n end
+	end
+	function Journal.claimQuest(p,item)
+		local id,skill=string.match(item,"^(%w+):(%w+)$")
+		id=id or string.match(item,"^%w+$")
+		local q=id and Data.QuestById[id]
+		if not q then return "That quest is not in your journal." end
+		if p.questsDone[id] then return q.title.." is already complete." end
+		local ok,missing=Journal.met(p,q.requires)
+		if not ok then return q.title.." requires: "..Data.describeCheck(missing).."." end
+		ok,missing=Journal.met(p,q.objectives)
+		if not ok then return q.title.." • still to do: "..Data.describeCheck(missing).."." end
+		local lamp=q.rewards.lamp
+		if lamp then
+			if not skill then return "Choose a skill for the "..lamp.xp.." XP lamp." end
+			if not Data.Skills[skill] or (lamp.skills and not table.find(lamp.skills,skill)) then return "This lamp cannot train "..skill.."." end
+		elseif skill then
+			return q.title.." has no XP lamp to rub."
+		end
+		local handIn={}
+		for _,o in ipairs(q.objectives) do
+			if o.kind=="have" and o.consume then handIn[o.item]=(handIn[o.item] or 0)+o.count end
+		end
+		if not spend(p,handIn) then return "Bring the items listed in "..q.title.."." end
+		local r=q.rewards
+		p.questsDone[id]=true
+		p.started=true
+		p.coins+=r.coins or 0
+		addItems(p,r.items)
+		for xpSkill,amount in pairs(r.xp or {}) do grantXp(p,xpSkill,amount) end
+		if lamp then grantXp(p,skill,lamp.xp) end
+		Journal.refresh(p)
+		local parts={"Quest complete • "..q.title,"+"..(r.points or 0).." Quest Points"}
+		if r.coins then table.insert(parts,"+"..r.coins.." coins") end
+		if lamp then table.insert(parts,"+"..lamp.xp.." "..skill.." XP") end
+		if r.unlock and r.unlock.shortcut then table.insert(parts,"portal attunement: "..Data.RegionById[r.unlock.shortcut].name) end
+		return table.concat(parts,"   ·   ")
+	end
+	function Journal.claimDiary(p,item)
+		local region,tier=string.match(item or "","^(%a+):(%a+)$")
+		local diary=region and Data.DiaryByRegion[region]
+		local index=tier and tierIndex[tier]
+		if not diary or not index then return "Choose a diary region and tier." end
+		local claimed=p.diaries[region] or 0
+		if index<=claimed then return diary.name.." "..tier.." is already claimed." end
+		if index>claimed+1 then return "Claim the "..Data.DiaryTiers[claimed+1].." tier of the "..diary.name.." first." end
+		local ok,missing=Journal.met(p,diary.tiers[tier].tasks)
+		if not ok then return diary.name.." "..tier.." • still to do: "..Data.describeCheck(missing).."." end
+		p.diaries[region]=index
+		p.started=true
+		local coins=Data.DiaryCoins[tier]
+		p.coins+=coins
+		Journal.refresh(p)
+		return diary.name.." "..tier.." complete • +"..coins.." coins and a permanent perk."
+	end
+	function Journal.build(player,p,item)
+		local hotspot,id=string.match(item or "","^(%a+):(%w+)$")
+		local h=hotspot and Data.HotspotById[hotspot]
+		local f=id and Data.Furniture[id]
+		if not h or not f then return "Choose a hotspot and a furniture plan." end
+		if f.hotspot~=hotspot then return f.name.." does not fit the "..h.name.."." end
+		local current=p.furniture[hotspot]
+		if current then return "Remove the "..Data.Furniture[current].name.." from the "..h.name.." first." end
+		local need=f.level
+		if level(p.xp.Carpentry)<need then return f.name.." requires Carpentry "..need.."." end
+		for material,n in pairs(f.costs) do
+			if (p.items[material] or 0)<n then return f.name.." needs "..n.." "..Data.Items[material].name.."." end
+		end
+		spend(p,f.costs)
+		p.furniture[hotspot]=id
+		Journal.count(p,"built",id,1)
+		grantXp(p,"Carpentry",f.xp)
+		p.started=true
+		Journal.refresh(p)
+		Journal.apply(player,p)
+		return f.name.." built on your terrace   ·   +"..f.xp.." Carpentry XP"
+	end
+	function Journal.remove(player,p,hotspot)
+		local h=type(hotspot)=="string" and Data.HotspotById[hotspot]
+		if not h then return "Choose a hotspot." end
+		local id=p.furniture[hotspot]
+		if not id then return "Nothing is built on the "..h.name.."." end
+		local f=Data.Furniture[id]
+		local refund={}
+		for material,n in pairs(f.costs) do refund[material]=math.floor(n*Data.FurnitureRefund) end
+		addItems(p,refund)
+		p.furniture[hotspot]=nil
+		if hotspot=="Portal" then p.homePortal=nil end
+		Journal.refresh(p)
+		Journal.apply(player,p)
+		return f.name.." dismantled • half of its materials returned."
+	end
+	function Journal.attune(player,p,region)
+		local def=type(region)=="string" and Data.RegionById[region]
+		if not def or not table.find(Data.PortalRegions,region) then return "Choose a region for your home portal." end
+		if not p.furniture.Portal then return "Build a Portal Frame on your terrace first." end
+		if not table.find(Journal.portalRegions(p),region) then return "Your portal cannot reach "..def.name.." yet. Quests attune more isles." end
+		if not regionAllowed(p,region) then return regionDenied(region) end
+		if p.homePortal==region then return "Your portal already opens to "..def.name.."." end
+		p.homePortal=region
+		Journal.apply(player,p)
+		return "Home portal attuned to "..def.name.."."
+	end
+	function Journal.state(p)
+		local quests={}
+		for i,q in ipairs(Data.Quests) do
+			local done=p.questsDone[q.id]==true
+			local available=done or Journal.met(p,q.requires)
+			quests[i]={id=q.id,done=done,available=available==true,ready=not done and available==true and Journal.met(p,q.objectives)==true,
+				requires=Journal.progress(p,q.requires),objectives=Journal.progress(p,q.objectives)}
+		end
+		local diaries={}
+		for i,d in ipairs(Data.Diaries) do
+			local claimed=p.diaries[d.region] or 0
+			local tiers={}
+			for t,name in ipairs(Data.DiaryTiers) do
+				local tasks=d.tiers[name].tasks
+				local complete=Journal.met(p,tasks)==true
+				tiers[t]={tier=name,tasks=Journal.progress(p,tasks),complete=complete,claimed=t<=claimed,claimable=complete and t==claimed+1}
+			end
+			diaries[i]={region=d.region,claimed=claimed,tiers=tiers}
+		end
+		return {questPoints=Journal.questPoints(p),contracts=p.questCompleted or 0,quests=quests,diaries=diaries,
+			construction={furniture=table.clone(p.furniture),portal=p.homePortal,portalRegions=Journal.portalRegions(p),
+				carpentry=level(p.xp.Carpentry),accessorySlots=p.perkAccessorySlots or 0,workerHaste=p.perkWorkerHaste or 0}}
+	end
+end
 local function applyStats(player,p,spawned)
 	local stats=Progression.computeStats(p,os.time())
 	player:SetAttribute("SkyreachUnlocked",(p.questCompleted or 0)>=6)
@@ -226,6 +529,7 @@ local function applyStats(player,p,spawned)
 	player:SetAttribute("CombatLevel",level(p.xp.Combat))
 	local quest=p.slayerQuest
 	player:SetAttribute("SlayerBossReady",if quest and quest.bossReady then quest.line..":"..quest.tier else "")
+	Journal.apply(player,p)
 	local humanoid=player.Character and player.Character:FindFirstChildOfClass("Humanoid")
 	if humanoid and humanoid.MaxHealth~=health then
 		local oldMax,current=humanoid.MaxHealth,humanoid.Health
@@ -337,17 +641,17 @@ local function snapshot(player,message)
 	return {xp=p.xp,items=p.items,consumables=provisions,collection=p.collection,coins=p.coins,bank=p.bank,bankRevision=p.bankRevision or 0,worker=p.worker,
 		ironman=p.ironman,levels=levels,enchantRank=p.enchantRank or 0,workerResource=p.workerResource or "Ore",workerReady=ready(p),workers=workerState(p),message=message or "",kills=p.kills,
 		companionBond=p.companionBond or 0,market=marketViews[player],recipes=recipeState(p),regions=regionState(p),stats=legacyStats,quest=questState(p),slayer=slayerState(p),started=p.started,decorations=p.decorations,preview=preview[player]==true,
-		depth=depthState(p,stats)}
+		depth=depthState(p,stats),journal=Journal.state(p)}
 end
 local function claimWorker(p,slot)
 	slot=slot or 1
 	local w=workerFleet(p)[slot]
 	if not w then return 0,"Ore",0 end
-	local count=workerReady(w)
+	local count=workerReady(w,p)
 	local resource=w.resource
 	local xp=0
 	if count>0 then
-		local interval=workerConfig(w).interval
+		local interval=workerInterval(p,w)
 		w.lastClaim=os.time()-((os.time()-w.lastClaim)%interval)
 		collect(p,resource,count)
 		local skill,each=workerXp(resource)
@@ -422,6 +726,7 @@ local function migrate(profile)
 	if quest~=nil and (type(quest)~="table" or not Data.Slayers[quest.line] or not Data.Slayers[quest.line].tiers[quest.tier]) then profile.slayerQuest=nil end
 	profile.version=math.max(tonumber(profile.version) or 1,2)
 	workerFleet(profile)
+	Journal.migrate(profile)
 end
 -- Clears every per-player table and ends this player's session slot.
 local function forget(player)
@@ -569,6 +874,7 @@ local function perform(player,verb,item,prompt)
 		end
 		collect(p,item,result.amount)
 		grantXp(p,skill,result.xp)
+		if region then Journal.count(p,"gathers",region,1) end
 		p.started=true
 		if not regrowth then regrowth=setmetatable({},{__mode="k"}); nodeRegrowth[prompt]=regrowth end
 		regrowth[player]=os.clock()+(tonumber(resource.respawn) or 3)
@@ -593,6 +899,16 @@ local function perform(player,verb,item,prompt)
 		p.coins+=hunt.coins
 		grantXp(p,"Combat",hunt.xp)
 		return "Hunt complete • +"..hunt.coins.." coins and +"..hunt.xp.." Combat XP."
+	elseif verb=="quest" and item~=nil then
+		return Journal.claimQuest(p,item)
+	elseif verb=="diary" then
+		return Journal.claimDiary(p,item)
+	elseif verb=="build" then
+		return Journal.build(player,p,item)
+	elseif verb=="remove" then
+		return Journal.remove(player,p,item)
+	elseif verb=="portal" then
+		return Journal.attune(player,p,item)
 	elseif verb=="quest" then
 		local state=questState(p)
 		if not state.ready then return "Complete the current guild contract first." end
@@ -633,6 +949,7 @@ local function perform(player,verb,item,prompt)
 		if not repeatableRecipes[item] and ((p.items[item] or 0)>0 or (item=="Pickaxe" and (p.items.ReinforcedPickaxe or 0)>0)) then return "Already equipped." end
 		if not spend(p,recipes[item]) then return "Gather the ingredients in your recipe journal." end
 		collect(p,item,1)
+		Journal.count(p,"crafts",item,1)
 		local experience=if item=="AlloyIngot" then 16 else 24
 		grantXp(p,skill,experience)
 		p.started=true
@@ -643,6 +960,7 @@ local function perform(player,verb,item,prompt)
 		if not ok then return why end
 		if not spend(p,recipe.costs) then return "Gather the ingredients in your recipe journal." end
 		collect(p,recipe.output,recipe.amount)
+		Journal.count(p,"crafts",recipe.output,recipe.amount)
 		grantXp(p,recipe.skill,recipe.xp)
 		p.started=true
 		return Data.Items[recipe.output].name.." crafted   ·   +"..recipe.xp.." "..recipe.skill.." XP"

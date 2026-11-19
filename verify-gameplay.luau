@@ -1662,3 +1662,373 @@ do
 	assert(cmd(visitor,"station","Forge").message=="Unknown action.","station requires a world prompt")
 	print("PASS: station prompt checks.")
 end
+
+------------------------------------------------------------------------------
+-- Quests & Achievements: quest line, diaries, Carpentry construction.
+------------------------------------------------------------------------------
+do
+	local before=checks
+	local function rejoin(pl)
+		services.Players.PlayerRemoving:Fire(pl)
+		return player(pl.UserId)
+	end
+	-- Seed a saved profile directly (as a long-lived player would have it), then join.
+	local function seeded(id,edit)
+		local pl=player(id)
+		cmd(pl,"state")
+		services.Players.PlayerRemoving:Fire(pl)
+		edit(data["p"..id].profile)
+		return player(id)
+	end
+	local function setLevel(prof,skill,lvl)
+		prof.xp[skill]=Progression.xpForLevel(lvl)
+		prof.levelRewards[skill]=lvl
+	end
+	local function setCollection(prof,item,n)
+		prof.collection[item]=n
+		prof.collectionRewards[item]=Progression.collectionTier(prof,item)
+	end
+	local function questEntry(s,id) return s.journal.quests[Data.QuestById[id].index] end
+	local function diaryEntry(s,region)
+		for _,d in ipairs(s.journal.diaries) do if d.region==region then return d end end
+	end
+
+	-- Data integrity.
+	local ids={}
+	for _,q in ipairs(Data.Quests) do
+		eq(ids[q.id],nil,"unique quest id "..q.id)
+		ids[q.id]=true
+		eq(#q.objectives>0 and q.rewards.points~=nil,true,"quest has objectives and Quest Points: "..q.id)
+	end
+	eq(#Data.Quests>=10,true,"ten or more new quests")
+	local lines={main=0,side=0}
+	for _,q in ipairs(Data.Quests) do lines[q.line]+=1 end
+	eq(lines.main>=4 and lines.side>=4,true,"main and side quests both exist")
+	eq(#Data.Diaries,7,"seven regional diaries")
+	for _,d in ipairs(Data.Diaries) do
+		for _,tier in ipairs(Data.DiaryTiers) do
+			local n=#d.tiers[tier].tasks
+			eq(n>=3 and n<=5,true,d.region.." "..tier.." has 3-5 tasks")
+		end
+	end
+	local furnitureCount=#Data.FurnitureOrder
+	eq(furnitureCount>=10 and furnitureCount<=15,true,"10-15 furniture pieces")
+	for _,id in ipairs(Data.FurnitureOrder) do
+		local f=Data.Furniture[id]
+		eq(Data.HotspotById[f.hotspot]~=nil and f.level>=1 and f.level<=99 and f.xp>0,true,"furniture "..id.." hotspot, level and XP")
+	end
+
+	-- Quest gating and claims.
+	local fresh=player(3001)
+	local s0=cmd(fresh,"state")
+	eq(s0.journal.questPoints,0,"fresh journal has no Quest Points")
+	eq(questEntry(s0,"SurveyorsOath").available,false,"main quest locked behind guild contracts")
+	eq(cmd(fresh,"quest","SurveyorsOath").message:find("requires",1,true)~=nil,true,"locked quest refuses claim")
+	eq(cmd(fresh,"quest","BrassfallEchoes").message:find("Surveyor's Oath",1,true)~=nil,true,"prior quest requirement named")
+	local hero=seeded(3002,function(prof)
+		prof.questCompleted=8
+		prof.bestiary.BramblebackBoar=10
+		setCollection(prof,"Herb",100)
+		prof.coins=0
+	end)
+	local s1=cmd(hero,"state")
+	eq(s1.journal.questPoints,8,"guild contracts count as Quest Points")
+	eq(questEntry(s1,"SurveyorsOath").available,true,"contracts unlock the main line")
+	eq(questEntry(s1,"SurveyorsOath").ready,true,"objectives evaluated from profile state")
+	eq(questEntry(s1,"SurveyorsOath").objectives[1][1],10,"kill objective progress")
+	local noSkill=cmd(hero,"quest","SurveyorsOath")
+	eq(noSkill.message:find("Choose a skill",1,true)~=nil,true,"lamp quest needs a skill choice")
+	eq(questEntry(noSkill,"SurveyorsOath").done,false,"lamp refusal claims nothing")
+	eq(noSkill.coins,0,"lamp refusal pays nothing")
+	eq(cmd(hero,"quest","SurveyorsOath:Nope").coins,0,"unknown lamp skill rejected")
+	eq(cmd(hero,"quest","SurveyorsOath:mining").coins,0,"lamp skill is case-sensitive")
+	local claimed=cmd(hero,"quest","SurveyorsOath:Mining")
+	eq(questEntry(claimed,"SurveyorsOath").done,true,"quest claimed")
+	eq(claimed.xp.Mining,600,"lamp XP to chosen skill")
+	eq(claimed.journal.questPoints,9,"Quest Points awarded")
+	local coinsAfter=claimed.coins
+	eq(coinsAfter>=400,true,"quest coins paid")
+	eq(cmd(hero,"quest","SurveyorsOath:Mining").coins,coinsAfter,"quest cannot be claimed twice")
+	eq(cmd(hero,"quest","SurveyorsOath:Combat").xp.Combat,0,"second claim cannot redirect the lamp")
+	hero=rejoin(hero)
+	local s2=cmd(hero,"state")
+	eq(questEntry(s2,"SurveyorsOath").done,true,"claimed quest survives rejoin")
+	eq(s2.journal.questPoints,9,"Quest Points survive rejoin")
+	eq(cmd(hero,"quest","SurveyorsOath:Mining").coins,coinsAfter,"rejoin cannot reclaim quest")
+	eq(cmd(hero,"quest").coins,coinsAfter,"finished guild chain still pays nothing")
+	eq(questEntry(s2,"BrassfallEchoes").available,false,"next main quest still gated by Mining 15")
+	-- Legacy contract chain is unaffected and keeps its own verb.
+	eq(cmd(fresh,"quest").quest.stage,1,"legacy contract verb still gated")
+
+	-- Lamp restricted to listed skills; perk reward reaches the stat sheet.
+	local gardener=seeded(3003,function(prof)
+		prof.questCompleted=2
+		prof.bestiary.Thornling=15
+		setCollection(prof,"Sunwheat",50)
+	end)
+	local g0=cmd(gardener,"state")
+	local baseFortune=g0.depth.stats.farmingFortune
+	eq(cmd(gardener,"quest","ThornlingGarden:Mining").xp.Mining,0,"lamp outside its skill list rejected")
+	local g1=cmd(gardener,"quest","ThornlingGarden:Farming")
+	eq(g1.xp.Farming,800,"restricted lamp accepted for listed skill")
+	local expected=baseFortune+5+4*(g1.levels.Farming-1)
+	eq(g1.depth.stats.farmingFortune,expected,"quest perk flows through computeStats")
+	gardener=rejoin(gardener)
+	eq(data.p3003.profile.perkStats["quest:ThornlingGarden"].farmingFortune,5,"quest perk stored in p.perkStats")
+	eq(cmd(gardener,"state").depth.stats.farmingFortune,expected,"quest perk persists")
+
+	-- Hand-in objectives and non-lamp quests.
+	local angler=seeded(3004,function(prof)
+		prof.questCompleted=4
+		setLevel(prof,"Fishing",10)
+		prof.items.Fish=25
+	end)
+	eq(cmd(angler,"quest","TidewingLullaby:Fishing").items.Fish,25,"skill suffix rejected for a quest without a lamp")
+	local a1=cmd(angler,"quest","TidewingLullaby")
+	eq(a1.items.Fish,5,"hand-in consumes exactly the objective amount")
+	eq(a1.items.CookedFish,5,"item reward")
+	eq(a1.xp.Taming,400,"fixed XP reward")
+	local tinker=seeded(3005,function(prof)
+		prof.questCompleted=6
+		setLevel(prof,"Smithing",20)
+		prof.bestiary.BrassGolem=10
+	end)
+	local t0=cmd(tinker,"state")
+	local slots0=t0.depth.accessorySlots
+	local t1=cmd(tinker,"quest","GolemHeartbeat")
+	eq(t1.message:find("Golem Core",1,true)~=nil,true,"missing hand-in item named")
+	eq(questEntry(t1,"GolemHeartbeat").ready,false,"hand-in item required")
+	services.Players.PlayerRemoving:Fire(tinker)
+	data.p3005.profile.items.GolemCore=1
+	tinker=player(3005)
+	local t2=cmd(tinker,"quest","GolemHeartbeat")
+	eq(questEntry(t2,"GolemHeartbeat").done,true,"hand-in quest completes")
+	eq(t2.items.GolemCore,0,"hand-in item consumed")
+	eq(t2.items.SunsteelIngot,5,"ingot reward")
+	eq(t2.depth.accessorySlots,slots0+1,"quest unlocks an accessory slot")
+	tinker=rejoin(tinker)
+	eq(cmd(tinker,"state").depth.accessorySlots,slots0+1,"accessory slot unlock persists")
+	eq(questEntry(cmd(tinker,"state"),"FeathersAloft").available,false,"follow-up side quest gated by Combat 25")
+
+	-- Quest Point requirement.
+	local veteran=seeded(3006,function(prof)
+		prof.questCompleted=8
+		prof.questsDone={HollowLantern=true}
+		setLevel(prof,"Combat",40)
+	end)
+	local v0=cmd(veteran,"state")
+	eq(v0.journal.questPoints,8+3,"Quest Points sum contracts and quests")
+	eq(questEntry(v0,"CrownOfTempest").available,false,"Quest Point requirement gates the finale")
+	eq(questEntry(v0,"CrownOfTempest").requires[3][1],11,"Quest Point requirement progress")
+	eq(questEntry(v0,"CrownOfTempest").requires[3][2],14,"Quest Point requirement")
+
+	-- Malformed or hostile quest requests.
+	for _,bad in ipairs({"","Nope","a:b:c","SurveyorsOath:","SurveyorsOath::Mining",":Mining","Surveyors Oath",string.rep("Q",64)}) do
+		local r=cmd(hero,"quest",bad)
+		eq(r.coins,coinsAfter,"malformed quest request pays nothing: "..bad)
+	end
+	eq(cmd(hero,"quest",string.rep("Q",65)).message,"That request is too long.","long quest id rejected")
+
+	-- Counters: crafts and region gathers.
+	local smith=seeded(3007,function(prof)
+		prof.items.Ore=20 prof.items.Timber=20
+		prof.questCompleted=6
+	end)
+	for _=1,3 do cmd(smith,"craft","AlloyIngot") end
+	local sm=cmd(smith,"state")
+	eq(diaryEntry(sm,"Quarry").tiers[1].tasks[3][1],3,"legacy crafts counted for diaries")
+	local rich=node("gather","Aetherite",0,nil,"Skyreach")
+	-- Aetherite needs Mining 3.
+	services.Players.PlayerRemoving:Fire(smith)
+	setLevel(data.p3007.profile,"Mining",5)
+	smith=player(3007)
+	use(smith,rich)
+	use(smith,rich)
+	use(smith,node("gather","Aetherite"))
+	local sm2=cmd(smith,"state")
+	eq(diaryEntry(sm2,"Skyreach").tiers[1].tasks[2][1],2,"only region-tagged gathers count for that region")
+	smith=rejoin(smith)
+	eq(diaryEntry(cmd(smith,"state"),"Skyreach").tiers[1].tasks[2][1],2,"gather counter persists")
+	eq(diaryEntry(cmd(smith,"state"),"Quarry").tiers[1].tasks[3][1],3,"craft counter persists")
+	-- Region gathers on a locked region do not count.
+	local outsider=seeded(3008,function(prof) setLevel(prof,"Mining",5) end)
+	use(outsider,rich)
+	eq(diaryEntry(cmd(outsider,"state"),"Skyreach").tiers[1].tasks[2][1],0,"locked region gather neither pays nor counts")
+
+	-- Achievement diaries.
+	local diarist=seeded(3009,function(prof)
+		prof.bestiary.BramblebackBoar=5
+		setCollection(prof,"Herb",50)
+		setCollection(prof,"Timber",49)
+		setLevel(prof,"Farming",5)
+		prof.coins=0
+	end)
+	local d0=cmd(diarist,"state")
+	local health0=d0.depth.stats.health
+	eq(diaryEntry(d0,"Meadow").tiers[1].complete,false,"incomplete diary tier")
+	local d1=cmd(diarist,"diary","Meadow:Easy")
+	eq(d1.message:find("Timber",1,true)~=nil,true,"diary names the missing task")
+	eq(d1.coins,0,"incomplete diary pays nothing")
+	eq(cmd(diarist,"diary","Meadow:Medium").message:find("Easy",1,true)~=nil,true,"diary tiers claimed in order")
+	services.Players.PlayerRemoving:Fire(diarist)
+	setCollection(data.p3009.profile,"Timber",50)
+	diarist=player(3009)
+	local d2=cmd(diarist,"state")
+	eq(diaryEntry(d2,"Meadow").tiers[1].claimable,true,"complete tier claimable")
+	local d3=cmd(diarist,"diary","Meadow:Easy")
+	eq(d3.coins,Data.DiaryCoins.Easy,"diary tier coins")
+	eq(diaryEntry(d3,"Meadow").claimed,1,"diary tier recorded")
+	eq(d3.depth.stats.health,health0+10,"diary perk adds health")
+	eq(cmd(diarist,"diary","Meadow:Easy").coins,Data.DiaryCoins.Easy,"diary tier cannot be claimed twice")
+	for _,bad in ipairs({"Meadow","Meadow:Legendary","Atlantis:Easy","meadow:easy","Meadow:Easy:Again",""}) do
+		eq(cmd(diarist,"diary",bad).coins,Data.DiaryCoins.Easy,"malformed diary request pays nothing: "..bad)
+	end
+	eq(cmd(diarist,"diary").coins,Data.DiaryCoins.Easy,"missing diary payload pays nothing")
+	diarist=rejoin(diarist)
+	local d4=cmd(diarist,"state")
+	eq(diaryEntry(d4,"Meadow").claimed,1,"diary claim persists")
+	eq(d4.depth.stats.health,health0+10,"diary perk persists")
+	eq(type(data.p3009.profile.perkStats["diary:Meadow:Easy"]),"table","diary perk stored in p.perkStats")
+	eq(diaryEntry(d4,"Meadow").tiers[2].claimable,false,"next tier needs its own tasks")
+
+	-- Tampered save fields are sanitized on open; other teams' perk keys survive.
+	local tamper=seeded(3010,function(prof)
+		prof.diaries={Meadow=-3,Quarry="2.7",Atlantis=2,Tempest=0/0}
+		prof.questsDone={Fake=true,SurveyorsOath="yes",ThornlingGarden=true}
+		prof.furniture={Bench="PortalFrame",Garden="Nope",Portal="PortalFrame",Hearth=7}
+		prof.perkStats={["diary:Meadow:Elite"]={health=9999},["lead:test"]={strength=1}}
+		prof.counters={gathers={Skyreach="lots",Windpine=-4,Tidewater=7},crafts=5}
+		prof.homePortal="Tempest"
+	end)
+	local tm=cmd(tamper,"state")
+	eq(diaryEntry(tm,"Meadow").claimed,0,"negative diary tier dropped")
+	eq(diaryEntry(tm,"Quarry").claimed,2,"fractional diary tier floored")
+	eq(diaryEntry(tm,"Tempest").claimed,0,"NaN diary tier dropped")
+	eq(questEntry(tm,"SurveyorsOath").done,false,"non-boolean quest record dropped")
+	eq(questEntry(tm,"ThornlingGarden").done,true,"valid quest record kept")
+	eq(tm.journal.construction.furniture.Bench,nil,"furniture on the wrong hotspot dropped")
+	eq(tm.journal.construction.furniture.Garden,nil,"unknown furniture dropped")
+	eq(tm.journal.construction.furniture.Portal,"PortalFrame","valid furniture kept")
+	eq(tm.journal.construction.portal,nil,"unattunable home portal cleared")
+	eq(tm.depth.stats.health<1000,true,"forged diary perk has no effect")
+	tamper=rejoin(tamper)
+	eq(data.p3010.profile.perkStats["diary:Meadow:Elite"],nil,"forged diary perk removed")
+	eq(data.p3010.profile.perkStats["lead:test"].strength,1,"other perk sources untouched")
+	eq(diaryEntry(tm,"Skyreach").tiers[1].tasks[2][1],0,"non-numeric counter dropped")
+	eq(diaryEntry(tm,"Windpine").tiers[1].tasks[1][1],0,"negative counter dropped")
+	eq(diaryEntry(tm,"Tidewater").tiers[1].tasks[1][1],7,"valid counter kept")
+
+	-- Carpentry construction.
+	local mason=seeded(3011,function(prof) prof.coins=0 end)
+	local m0=cmd(mason,"build","Bench:SturdyWorkbench")
+	eq(m0.message:find("needs",1,true)~=nil,true,"unfunded furniture refused")
+	eq(m0.journal.construction.furniture.Bench,nil,"unfunded furniture not placed")
+	eq(cmd(mason,"build","Bench:BrassWorkbench").message:find("Carpentry 25",1,true)~=nil,true,"Carpentry level gate")
+	eq(cmd(mason,"build","Garden:SturdyWorkbench").message:find("does not fit",1,true)~=nil,true,"furniture bound to its hotspot")
+	services.Players.PlayerRemoving:Fire(mason)
+	data.p3011.profile.items.Timber=100
+	data.p3011.profile.items.Ore=100
+	data.p3011.profile.items.Herb=40
+	mason=player(3011)
+	local m1=cmd(mason,"build","Bench:SturdyWorkbench")
+	eq(m1.items.Timber,80,"furniture charges Timber")
+	eq(m1.items.Ore,90,"furniture charges Ore")
+	eq(m1.xp.Carpentry,60,"furniture grants Carpentry XP")
+	eq(m1.journal.construction.furniture.Bench,"SturdyWorkbench","furniture placed")
+	eq(mason.FurnitureBench,"SturdyWorkbench","world attribute set for the hotspot")
+	eq(mason.FurnitureGarden,"","empty hotspots publish an empty attribute")
+	local m2=cmd(mason,"build","Bench:SturdyWorkbench")
+	eq(m2.message:find("Remove",1,true)~=nil,true,"occupied hotspot refuses a second piece")
+	eq(m2.items.Timber,80,"occupied hotspot charges nothing")
+	local m3=cmd(mason,"remove","Bench")
+	eq(m3.items.Timber,90,"removal refunds half the Timber")
+	eq(m3.items.Ore,95,"removal refunds half the Ore")
+	eq(m3.xp.Carpentry,60,"removal keeps earned XP")
+	eq(mason.FurnitureBench,"","removal clears the world attribute")
+	eq(cmd(mason,"remove","Bench").items.Timber,90,"empty hotspot refunds nothing")
+	for _,bad in ipairs({"Bench","Bench:",":SturdyWorkbench","Bench:Sturdy Workbench","Moon:SturdyWorkbench","Bench:Ghost","Bench:SturdyWorkbench:x"}) do
+		eq(cmd(mason,"build",bad).items.Timber,90,"malformed build pays and places nothing: "..bad)
+	end
+	eq(cmd(mason,"remove","Nowhere").items.Timber,90,"unknown hotspot removal refused")
+	eq(cmd(mason,"remove").items.Timber,90,"missing hotspot removal refused")
+	local m4=cmd(mason,"build","Bench:SturdyWorkbench")
+	eq(m4.xp.Carpentry,120,"rebuilding trains Carpentry again")
+	eq(cmd(mason,"build","Garden:HerbPlanter").journal.construction.furniture.Garden,nil,"Herb Planter needs Carpentry 5")
+	services.Players.PlayerRemoving:Fire(mason)
+	setLevel(data.p3011.profile,"Carpentry",5)
+	local carpentryBase=data.p3011.profile.xp.Carpentry
+	mason=player(3011)
+	eq(cmd(mason,"build","Garden:HerbPlanter").journal.construction.furniture.Garden,"HerbPlanter","Herb Planter built at Carpentry 5")
+	local m5=cmd(mason,"build","Hearth:ClayHearth")
+	eq(m5.journal.construction.furniture.Hearth,nil,"Clay Hearth needs Carpentry 10")
+	local farm0=cmd(mason,"state").depth.stats.farmingFortune
+	mason=rejoin(mason)
+	local m6=cmd(mason,"state")
+	eq(m6.journal.construction.furniture.Bench,"SturdyWorkbench","furniture persists across rejoin")
+	eq(m6.journal.construction.furniture.Garden,"HerbPlanter","second furniture persists")
+	eq(mason.FurnitureGarden,"HerbPlanter","rejoin restores world attributes")
+	eq(m6.depth.stats.farmingFortune,farm0,"furniture perk persists")
+	eq(type(data.p3011.profile.perkStats["furniture:Garden"]),"table","furniture perk stored in p.perkStats")
+	local m7=cmd(mason,"remove","Garden")
+	eq(m7.depth.stats.farmingFortune,farm0-8,"removing furniture removes its perk")
+	eq(cmd(mason,"ironman").ironman,false,"construction starts progression (no late Ironman)")
+	-- Builder's Charter: a build objective (ever built, so later removal keeps it).
+	services.Players.PlayerRemoving:Fire(mason)
+	data.p3011.profile.questCompleted=3
+	mason=player(3011)
+	eq(data.p3011.profile.perkStats["furniture:Garden"],nil,"furniture perk record cleared")
+	cmd(mason,"remove","Bench")
+	local m8=cmd(mason,"quest","BuildersCharter")
+	eq(questEntry(m8,"BuildersCharter").done,true,"build objective counts furniture ever built")
+	eq(m8.xp.Carpentry,carpentryBase+120+800,"charter XP reward")
+
+	-- Storage, dock and portal effects.
+	local architect=seeded(3012,function(prof)
+		setLevel(prof,"Carpentry",65)
+		prof.questCompleted=6
+		for id,n in pairs({WindpineLog=200,BrassIngot=40,EmberoakLog=100,SunsteelIngot=20,Aetherite=100,StarwoodLog=100,StarmetalIngot=30,Stormglass=5,GolemCore=5,GlimmerbarkLog=100,VoidforgedIngot=20}) do
+			prof.items[id]=n
+		end
+		prof.workers={{resource="Ore",tier=1,lastClaim=0}}
+		prof.worker=true
+	end)
+	local r0=cmd(architect,"state")
+	local slotsBase=r0.depth.accessorySlots
+	eq(r0.workers[1].interval,120,"base worker interval")
+	eq(cmd(architect,"build","Storage:TrinketCabinet").depth.accessorySlots,slotsBase+1,"Trinket Cabinet adds a slot")
+	cmd(architect,"remove","Storage")
+	eq(cmd(architect,"build","Storage:GildedReliquary").depth.accessorySlots,slotsBase+2,"Gilded Reliquary adds two slots")
+	eq(cmd(architect,"build","Dock:SurveyorDock").workers[1].interval,114,"Surveyor Dock speeds workers 5%")
+	cmd(architect,"remove","Dock")
+	eq(cmd(architect,"build","Dock:ClockworkDock").workers[1].interval,108,"Clockwork Dock speeds workers 10%")
+	eq(cmd(architect,"portal","Skyreach").message:find("Portal Frame",1,true)~=nil,true,"portal attunement needs a frame")
+	local r1=cmd(architect,"build","Portal:PortalFrame")
+	eq(r1.journal.construction.furniture.Portal,"PortalFrame","portal frame built")
+	eq(table.concat(r1.journal.construction.portalRegions,","),"Skyreach,Windpine","base portal destinations")
+	local r2=cmd(architect,"portal","Skyreach")
+	eq(r2.journal.construction.portal,"Skyreach","portal attuned")
+	eq(architect.HomePortal,"Skyreach","portal attribute for the world")
+	eq(cmd(architect,"portal","Windpine").journal.construction.portal,"Skyreach","locked region cannot be attuned")
+	eq(cmd(architect,"portal","Gloomhollow").journal.construction.portal,"Skyreach","unattuned isle refused")
+	eq(cmd(architect,"portal","Hub").journal.construction.portal,"Skyreach","non-portal region refused")
+	eq(cmd(architect,"portal","Atlantis").journal.construction.portal,"Skyreach","unknown region refused")
+	architect=rejoin(architect)
+	eq(cmd(architect,"state").journal.construction.portal,"Skyreach","portal attunement persists")
+	eq(architect.HomePortal,"Skyreach","portal attribute restored on rejoin")
+	local r3=cmd(architect,"remove","Portal")
+	eq(r3.journal.construction.portal,nil,"removing the frame clears the attunement")
+	eq(architect.HomePortal,"","portal attribute cleared")
+	local r4=cmd(architect,"build","Portal:StormglassGate")
+	eq(table.concat(r4.journal.construction.portalRegions,","),"Skyreach,Windpine,Gloomhollow,Tidewater","gate reaches four regions")
+	eq(r4.items.Stormglass,2,"gate charges Stormglass")
+	-- Quest shortcut unlocks a portal destination.
+	services.Players.PlayerRemoving:Fire(architect)
+	data.p3012.profile.questsDone={LeyLines=true}
+	architect=player(3012)
+	eq(table.find(cmd(architect,"state").journal.construction.portalRegions,"Tempest")~=nil,true,"Ley Lines shortcut attunes Tempest")
+	eq(cmd(architect,"portal","Tempest").journal.construction.portal,nil,"shortcut still respects the Combat 40 region gate")
+	-- Perk caps: non-stat perks never exceed their bounds.
+	eq(data.p3012.profile.perkAccessorySlots<=Data.MAX_PERK_SLOTS,true,"accessory perk slots capped")
+	eq(data.p3012.profile.perkWorkerHaste<=Data.MAX_WORKER_HASTE,true,"worker haste capped")
+	print("PASS: "..(checks-before).." quest/diary/construction assertions.")
+end
