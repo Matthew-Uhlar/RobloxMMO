@@ -536,8 +536,21 @@ do
 	assert(find(ui.scroll, "SlayerBramble"), "Slayer board opens the slayer page")
 	ui.player:SetAttribute("IsleStation", "Forge:2")
 	assert(find(ui.scroll, "StationForge"), "suffixed station value")
+	-- Revisit: same IsleStation value, only the visit counter changes.
+	press(ui.tabs:FindFirstChild("LedgerButton"))
+	assert(not find(ui.scroll, "StationForge"), "left the Workshop")
+	ui.player:SetAttribute("IsleStationVisit", 7)
+	assert(find(ui.scroll, "StationForge"), "revisiting the same station reopens its tab")
+	ui.player:SetAttribute("IsleRegionNotice", "Gloomhollow Caverns requires Mining 30.")
+	local toast
+	for _, object in ipairs(ui.gui:GetChildren()) do
+		if object.ClassName == "TextLabel" and object.Text == "Gloomhollow Caverns requires Mining 30." then
+			toast = object
+		end
+	end
+	assert(toast and toast.Visible, "region notice toast")
 	noFailures(ui, "stations")
-	checks += 3
+	checks += 5
 end
 -- 5. Targeted flows: equip, enchant, sell confirmation, slayer begin/abandon.
 do

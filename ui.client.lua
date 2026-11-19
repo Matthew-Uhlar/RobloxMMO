@@ -2800,6 +2800,14 @@ local function openStation()
 	if tab=="Workshop" then openTo("Workshop",station) else openTo("Hunt","Slayer") end
 end
 player:GetAttributeChangedSignal("IsleStation"):Connect(openStation)
+-- World bumps IsleStationVisit on every trigger so revisiting the same
+-- station (unchanged IsleStation) still reopens its tab.
+player:GetAttributeChangedSignal("IsleStationVisit"):Connect(openStation)
+-- Denied region warps explain themselves with a toast.
+player:GetAttributeChangedSignal("IsleRegionNotice"):Connect(function()
+	local message=player:GetAttribute("IsleRegionNotice")
+	if type(message)=="string" and message~="" then notify(message) end
+end)
 task.spawn(function()
 	ReplicatedStorage:WaitForChild("IsleCoopUpdate").OnClientEvent:Connect(acceptCoop)
 end)
