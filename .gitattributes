@@ -1,0 +1,4 @@
+art/*.obj text eol=lf
+art/*.mtl text eol=lf
+art/import/manifest.json text eol=lf
+*.glb binary

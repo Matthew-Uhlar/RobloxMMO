@@ -1,12 +1,12 @@
 # Aether Isles
 
-An original Roblox floating-island RPG, built from Luau source with Rojo. The local game includes gathering, crafting, persistent workers, Warden hunts, a cooperative Observatory expedition, private islands and shared homesteads.
+An original Roblox floating-island RPG, built from Luau source with Rojo. The local game includes gathering, crafting, persistent workers, Warden hunts, a cooperative Observatory expedition, private islands and shared homesteads. The latest source also includes revision-checked bank transfers and a player market with priced three-unit asks and maximum-price purchases.
 
-This is an unfinished development build. Engine playtesting, economy concurrency, device usability and the broader original feature scope are tracked in [PROJECT-STATUS.md](PROJECT-STATUS.md) and [QC-REVIEW.md](QC-REVIEW.md).
+This is an unfinished development build. Recorded local Studio smoke checks, remaining economy concurrency/device testing and the broader original feature scope are tracked in [PROJECT-STATUS.md](PROJECT-STATUS.md) and [QC-REVIEW.md](QC-REVIEW.md).
 
 ## Build locally
 
-Use PowerShell 7 on Windows:
+Use PowerShell 7 on Windows with Node.js installed. Node verifies the original mesh bundle as part of the build.
 
 ```powershell
 ./scripts/install-tools.ps1
@@ -21,12 +21,20 @@ The installer selects Lune 0.11.1 and Rojo 7.7.1 release archives and verifies t
 
 Repository: [Matthew-Uhlar/RobloxMMO](https://github.com/Matthew-Uhlar/RobloxMMO).
 
-Pushes and pull requests run tests and upload a downloadable place artifact. **Publish Roblox place** is a separate manual workflow; it rebuilds and tests the selected default-branch revision before uploading to the verified new Aether Isles destination (universe `10777817254`, place `73453386951995`). It does not create an experience or change public audience access.
+Pushes and pull requests run tests and upload a downloadable place artifact. The separate **Publish Roblox place** workflow is configured to run automatically after relevant gameplay changes reach `main`; a manual run on `main` remains available. It rebuilds and tests the selected revision before uploading to universe `10777817254`, place `73453386951995`. Deployment requires the Roblox credential described below. Neither CI success nor an automatic trigger proves that an upload completed, and the workflow does not change audience settings.
 
 See [PUBLISHING.md](PUBLISHING.md) for account setup, credentials, deployment, verification and recovery. Never put API keys or Roblox cookies in source, issues, command-line arguments or screenshots.
 
-The new experience was created privately in Studio on November 19, 2026. No destination variables are needed: add only the Roblox credential secret `ROBLOX_API_KEY` for deployment. [Open the game page](https://www.roblox.com/games/73453386951995) (access remains private until configured).
+The experience was created privately on November 19, 2026. Open Cloud confirms **Public** visibility, and Studio displays **ages 16+**. A separate-account player join remains unverified. No destination variables are needed; configure the `ROBLOX_API_KEY` environment secret for deployment. [Open the game page](https://www.roblox.com/games/73453386951995).
+
+The last cloud code explicitly confirmed by the primary agent is the **Skyreach** update. Deployment of the later Observatory, bank and trade updates is **unknown until a publish receipt/version check confirms it**. Their source and local Studio verification must not be described as a confirmed cloud release.
 
 
-Source and workflows are uploaded. [GitHub CI run 44492070676](https://github.com/Matthew-Uhlar/RobloxMMO/actions/runs/44492070676) passed tool installation, game tests/build, release validation and artifact upload for commit `975be9c88688def742f15a8b30d91b29c4824588`. Download the `Aether-Isles-975be9c88688def742f15a8b30d91b29c4824588` artifact from that run. Roblox API deployment is still separate.
+Source and workflows are uploaded. [GitHub CI run 44492070676](https://github.com/Matthew-Uhlar/RobloxMMO/actions/runs/44492070676) passed tool installation, game tests/build, release validation and artifact upload for commit `975be9c88688def742f15a8b30d91b29c4824588`. Download the `Aether-Isles-975be9c88688def742f15a8b30d91b29c4824588` artifact from that run. This historical run does not establish deployment of the latest source or continued artifact availability.
 
+
+## Current verification and original art
+
+Latest integrated checks: **371 gameplay, 10,702 world/mesh, 45 expedition and 47 co-op checks**, plus **nine source-matching compiled scripts/modules**. Local Studio smoke covered compact menus, ration use, bank amounts and a seeded priced-market buy/stale-limit refund. These checks do not establish live cross-server economy safety or physical-device performance.
+
+The [mesh import bundle](art/import/README.md) contains 20 original shapes. A blank Studio import preserved dimensions across 88 mesh parts. The importer displayed them in gray. A local candidate restores their original colors, and production access still needs verification. Runtime meshes retain their geometric fallback. EditableImage allocation failed in local smoke; original vector icons, stitched trim and flat menu artwork remain available without it.

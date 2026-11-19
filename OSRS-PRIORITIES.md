@@ -8,11 +8,15 @@ OSRS connects resource skills to encounter preparation. The Hunter Guild poll as
 
 Rank 1's bounded resource → production → useful equipment slice is implemented and integrated: Mining 3 Aetherite, repeatable Alloy/Aether Ingots, Reinforced Pickaxe yield and Skyplate defense. Rank 2 then advanced through a bounded eight-contract chain, persistent Skyreach charter, Brassfall Quarry transit, server-validated survey and rich Aetherite harvesting. Neither slice means the corresponding broad mechanic family is fully complete.
 
-Latest integrated checks: **214 gameplay / 7,081 world-mesh / 25 expedition / 47 co-op**, plus **eight source-matching compiled scripts/modules**. Presentation now includes an expanded original prop catalog, OBJ assets, 3D item thumbnails and split Forge/Workers/Home views. The game was privately published through Studio on November 19 to universe **10777817254**, place **73453386951995**. GitHub Actions built the source on main in [run 44492070676](https://github.com/Matthew-Uhlar/RobloxMMO/actions/runs/44492070676). These facts do not establish full device usability, live persistence concurrency or public-release readiness.
+Later bounded iterations advanced rank 3 with Expedition Rations and custom Observatory encounter art; rank 4 with revision-checked whole-amount/half/all bank transfers and projected balances; and rank 5 with priced three-unit asks, lowest-price matching with FIFO within each queue and legacy listings first at equal prices, maximum-price buy reservations, difference refunds and stale-limit recovery. Standing bids, gear auctions, deeper builds and live cross-server testing remain unfinished.
 
-The ranked backlog below remains the design sequence. Continue bounded improvements and verification in order; retain the original Hypixel/Roblox scope, including incomplete economy, co-op, workers, events and dungeon depth.
+Latest integrated checks: **371 gameplay / 10,702 world-mesh / 45 expedition / 47 co-op**, plus **nine source-matching compiled scripts/modules**. Local Studio smoke verified compact menus, native/fallback encounter art, ration use, amount-based banking, and a seeded buy whose best ask changed from 25 to 30 while the chosen 25-coin limit remained unchanged. This is not a live multiplayer economy test.
 
-Studio desktop and mobile-preview smoke checks passed on the earlier rank 1 build, with one mesh-budget fallback warning. The final rank 2 phone-preview recheck, live multiplayer and real persistence validation remain pending.
+The last cloud code explicitly confirmed by the primary agent is **Skyreach**. Later update deployment is unknown pending a publish receipt/version check. Studio currently displays **Public, ages 16+** according to the primary-agent observation; this does not establish which code is deployed or prove audience access. Source CI and local smoke remain separate evidence.
+
+Presentation includes custom item thumbnails, Forge/Workers/Home and Bank/Market/Merchant sections, vector action art and stitched fallback trim. The 20-shape GLB import bundle is prepared but not established as uploaded/integrated Roblox templates. EditableImage allocation failed during local smoke; successful procedural cloth rendering is still unverified.
+
+The ranked backlog below remains the design sequence. Bounded slices do not complete an entire mechanic family; preserve the original Hypixel/Roblox scope and its remaining economy, co-op, worker, event and dungeon requirements.
 
 Research/gameplay team review: November 17, 2026. This ranks engineering and game-design importance **for Aether Isles**, not OSRS player popularity or measured Roblox retention. Historical official polls establish proposed features and recorded voting; they do not establish a current complete mechanic specification. Aether Isles keeps original names, environments and art.
 
@@ -39,8 +43,8 @@ Scores are team judgments on 1–5 scales: **C** core-loop value (40%), **D** de
 | 1 | Skill → resource → production → useful equipment | 5/5/5/4 | 98 | Add a genuine second material tier, a repeatable training bridge and equipment with tested yield/defense effects. Existing ten skills alone do not meet this target. |
 | 2 | Quest-driven goals and region/activity unlocks | 5/5/4/4 | 94 | Expand five contracts into a readable progression path with server-enforced unlocks and a clear next activity. |
 | 3 | Combat preparation, equipment and consumables | 5/4/4/3 | 86 | Add meaningful build choices and enemies that test them; verify damage, healing and telegraphs in-engine. Rank 1 supplies the initial equipment foundation. |
-| 4 | Banking, inventory clarity and death recovery | 4/4/4/4 | 80 | Existing purse/bank split needs real rejoin/failure tests, clear item handling and readable death outcomes. |
-| 5 | Player economy and orders | 5/4/3/1 | 78 | Replace limited fixed-price lots with recoverable variable-price orders and gear auctions; validate real concurrent servers before readiness claims. |
+| 4 | Banking, inventory clarity and death recovery | 4/4/4/4 | 80 | Amount/half/all transfers and balance previews are implemented; real rejoin/failure tests, broader item handling and readable death outcomes remain. |
+| 5 | Player economy and orders | 5/4/3/1 | 78 | Priced asks and capped immediate buys now exist. Add standing bids and gear auctions, then validate real concurrent servers before readiness claims. |
 | 6 | Slayer-style assignments and earned unlocks | 4/3/4/4 | 74 | Existing three hunt tiers change kill counts only. Add varied targets, unlockable difficulty and reward choices. |
 | 7 | Co-op and self-sufficient mode integrity | 4/3/4/2 | 70 | Shared homestead foundation exists; broader shared progression, membership management and durable mode-isolation testing remain. |
 | 8 | Housing and construction utility | 3/3/5/3 | 68 | Move beyond fixed Garden/Lanterns/Deck choices toward purposeful, persistent layouts and upgrades. |
@@ -56,7 +60,7 @@ Unranked cross-cutting release requirements apply to every rank: server authorit
 
 ## Sequential execution agreement
 
-The primary agent approved rank 1 first; after integration and its checks, the primary agent authorized the bounded rank 2 slice recorded above. Subsequent work continues sequentially with explicit integration and verification. Separate teams may research, review and integrate **the same rank** concurrently.
+The primary agent approved rank 1 first; after integration and its checks, the primary agent authorized the bounded rank 2 slice recorded above. Bounded ranks 3–5 have since advanced as recorded above. Subsequent work continues sequentially with explicit integration and verification. Separate teams may research, review and integrate **the same rank** concurrently.
 
 Rank 1 slice:
 

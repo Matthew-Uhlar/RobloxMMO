@@ -1,5 +1,12 @@
 name: Publish Roblox place
 on:
+  push:
+    branches: [main]
+    paths:
+      - '*.lua'
+      - 'default.project.json'
+      - 'art/**'
+      - '!art/**/*.md'
   workflow_dispatch:
     inputs:
       confirm_place_id:
@@ -29,7 +36,7 @@ jobs:
           CONFIRM_PLACE_ID: ${{ inputs.confirm_place_id }}
         run: |
           if ($env:UNIVERSE_ID -notmatch '^[1-9][0-9]{0,15}$' -or $env:PLACE_ID -notmatch '^[1-9][0-9]{0,15}$') { throw 'Invalid configured destination IDs.' }
-          if ($env:CONFIRM_PLACE_ID -cne $env:PLACE_ID) { throw 'Place confirmation does not match configured target.' }
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch' -and $env:CONFIRM_PLACE_ID -cne $env:PLACE_ID) { throw 'Place confirmation does not match configured target.' }
       - name: Install pinned tools
         shell: pwsh
         env:

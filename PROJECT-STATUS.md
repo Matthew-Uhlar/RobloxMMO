@@ -1,42 +1,49 @@
 # Aether Isles development status
 
-Updated November 19, 2026. The full original goal remains in progress. Aether Isles is an evolving playable implementation, now privately published to a new Roblox experience through Studio.
+Updated November 19, 2026. The full original goal remains in progress.
 
-- Roblox universe: **10777817254**; place: **73453386951995**. [Experience](https://www.roblox.com/games/73453386951995/)
-- GitHub destination: [Matthew-Uhlar/RobloxMMO](https://github.com/Matthew-Uhlar/RobloxMMO). The initial main build passed and produced a downloadable Roblox place.
-- Latest integrated verification: **236 gameplay assertions, 10,575 world/mesh checks, 45 expedition checks, 47 co-op checks, and nine compiled packaged scripts/modules**.
-
-The Observatory update adds Expedition Rations, custom sentinel, portal and astrolabe meshes, combat-state artwork, and an original woven UI texture. The four world-material tile masters are in the repository. Their world-surface integration is pending.
+- Roblox universe **10777817254**, place **73453386951995**: [experience](https://www.roblox.com/games/73453386951995/).
+- Repository: [Matthew-Uhlar/RobloxMMO](https://github.com/Matthew-Uhlar/RobloxMMO).
+- Latest integrated verification: **371 gameplay, 10,702 world/mesh, 45 expedition and 47 co-op checks**, plus **nine packaged scripts/modules** matching source and compiling.
+- All eight cloud scripts matched the **Skyreach** source at `975be9c`. Deployment of later Observatory, bank and trade updates is **unknown** pending a publish receipt/version check.
+- Studio currently displays **Public, ages 16+**, according to the primary-agent observation. Audience settings are separate from code deployment and have not been independently join-tested.
 
 ## Implemented source
 
-- Personal island, central hub, gathering locations and travel prompts.
-- Ten experience tracks, lifetime collections, recipe gates, enchanting and crafted equipment.
-- Priority 1 progression slice: Mining 3 Aetherite, repeatable Alloy/Aether Ingot production, Reinforced Pickaxe gathering bonuses, Skyplate defense, and server-supplied recipe metadata. A fresh-profile test follows the full chain.
-- Priority 2 bounded slice: eight guild contracts, claimed Skyreach charter, Quarry transit to Skyreach Heights, server-validated survey, rich Aetherite seams, persistent unlocks and one-time rewards. This does not complete the full quest/region backlog.
-- Three independently assigned/upgradable workers with capped offline skill XP and visible home stations; bank, death purse loss and fixed-price commodity exchange.
-- Three tiers of repeatable Warden hunt contracts with eligible-participant rewards.
-- Persistent four-person co-op membership, explicit invitations, shared island supplies and three shared construction upgrades; separate personal inventory and progression.
-- Ironman restrictions, shared Warden combat and observatory puzzle encounter.
-- Server-local gathering elections.
-- Expanded original low-poly prop/creature geometry and OBJ masters, shared `art/PropCatalog.lua`, native mesh rendering with geometric fallback, and 3D item thumbnails.
-- Field guide, crafting, inventory, banking and exchange interface; Workshop split into Forge/Workers/Home, wrapping cards and region guidance.
+- Private home islands, shared hub, gathering destinations, travel prompts and fixed Garden/Lanterns/Deck improvements.
+- Ten XP tracks, lifetime collections, server-supplied recipe metadata, enchanting and equipment effects.
+- Mining 3 Aetherite, repeatable Alloy/Aether Ingots, Reinforced Pickaxe yield and Skyplate defense.
+- Eight contracts, persistent Skyreach charter, Brassfall Quarry transit, server-validated survey and rich Aetherite seams.
+- Three independently assigned/upgradable workers with capped offline production and visible owned stations.
+- Three Warden hunt tiers, eligible-participant rewards, Ironman restrictions, and the five-role prism/guardian/core Observatory expedition.
+- Expedition Rations linking Fishing/Alchemy to healing with a server-enforced recovery interval.
+- Four-person permanent co-op membership, explicit invitations, shared supplies/construction and separate personal progression; server-local elections.
+- Bank amount/half/all transfers with revision checks, projected balances and purse death loss.
+- Priced three-unit commodity asks (1–10,000 coins per lot), lowest-price matching with FIFO within each queue and legacy listings first at equal prices, capped immediate purchases, reservation/refund recovery, cancellation and sale proceeds. The UI shows quote age/price changes and requires purchase review/confirmation.
+- Custom creature/prop/encounter geometry, 3D item thumbnails, original navigation/action graphics, compact menus, Forge/Workers/Home and Bank/Market/Merchant sections.
+
+## Art delivery
+
+The [mesh import bundle](art/import/README.md) contains 20 original shapes, 2,126 indexed triangles, a GLB and source/hash manifest. It is import-ready, not evidence of uploaded Roblox assets or integrated permanent templates. Native EditableMesh visuals retain a bounded shared cache and geometric fallback. The four world tile masters remain unintegrated.
+
+MaterialArt provides one cached original cloth EditableImage where supported. Local allocation failed with an engine budget warning, so successful cloth rendering is unverified. Original vector graphics, stitched control/toast trim and flat artwork provide an allocation-free fallback.
 
 ## Verification
 
-November 19 integrated verification passed **214 / 7,081 / 25 / 47**, with **eight** packaged scripts/modules matching source and compiling. The local place was rebuilt. These suites cover selected production behaviors using service doubles and geometry validation, including the new progression chain, region gates, survey validation, migration and reward replay protection. They do not establish real DataStore concurrency, device usability, performance or retention.
+Headless suites exercise selected production logic using service doubles and geometry/packaging checks. They cover progression, region/quest gating, bank revisions, priced matching, replay/recovery and co-op coordination. They do not establish real DataStore concurrency or retention.
 
-Studio desktop and mobile-preview smoke checks passed on the earlier rank 1 build, with one mesh-budget fallback warning. The rank 2 phone preview opened all five tabs and all three Workshop sections. Private publishing through Studio is recorded. Full device visual review, real multiplayer and persistence failure/rejoin testing remain release requirements; publishing alone is not evidence that they passed.
+Recorded local Studio smoke includes all five atlas tabs and three Workshop sections on an iPhone landscape preview, native guardian/fallback core and arch art, ration use/recovery rejection, bank amount transfers and seeded priced-market buy/refund behavior. The market test changed the best ask from 25 to 30 coins without increasing the buyer's chosen 25-coin limit; a subsequent purchase at that limit returned its reservation. Temporary preview seeds were removed and the local Studio returned to Edit/default viewport.
+
+Physical touch keyboard/controller navigation, device performance, full two-client playthroughs and live persistence remain unverified. The short phone landscape viewport requires scrolling. Detailed evidence and limitations are in [QC-REVIEW.md](QC-REVIEW.md).
 
 ## Required remaining work
 
-- Verify islands in-engine; expand co-op beyond shared construction to skills/workers, membership lifecycle and deeper shared progression. Membership is currently permanent, with no leave/kick.
-- Expand beyond the implemented skill-material chain and single charter-gated region, following the sequential priorities in `OSRS-PRIORITIES.md`.
-- Verify the five dungeon classes in-engine and implement room progression and broader endgame encounters.
-- Implement variable-price commodity orders and gear auctions; validate economy and co-op persistence under live concurrency and service budgets.
-- Keep the source-backed research comparison and team conclusions aligned with implementation.
-- Verify meshes, all menus and signs in Roblox Studio on desktop and mobile.
-- Run real multiplayer playtests, persistence rejoin tests and a final requirement audit.
+- Standing buy orders, gear auctions and live cross-server economy validation.
+- Co-op skills/workers, leave/kick lifecycle and broader shared progression.
+- Deeper regions, activities, build choices, Slayer target variety, dungeon content and seasonal events.
+- Wider island construction/placement and persistent utility layouts.
+- Permanent mesh import/integration, texture delivery, complete sign/menu art review and device performance measurement.
+- Real multiplayer/rejoin/failure tests and requirement-by-requirement acceptance of the full original goal.
+- Confirm each intended cloud update with a receipt/version check and an actual join, independently of CI and audience settings.
 
-The working name and floating-island art direction were selected by the development team. The private publishing destination above is now established; the full original scope and public-release readiness remain unfinished.
-
+Automatic deployment after relevant main gameplay changes is configured in the workflow; manual publication on main remains available. Both require the credential and verification steps in [PUBLISHING.md](PUBLISHING.md). No source or CI milestone alone completes the game or proves deployment.

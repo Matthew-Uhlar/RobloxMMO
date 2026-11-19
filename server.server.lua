@@ -12,6 +12,7 @@ update.Name = "IsleUpdate"
 update.Parent = ReplicatedStorage
 
 local exchangeAction, resumeExchange
+local marketViews,marketReads={},{}
 local profiles, cooldown, lastRead, saving, preview, leaseEnd = {}, {}, {}, {}, {}, {}
 local enemies = setmetatable({}, {__mode = "k"})
 local uid = HttpService:GenerateGUID(false)
@@ -147,7 +148,7 @@ local function snapshot(player,message)
 	for skill,xp in pairs(p.xp) do levels[skill]=level(xp) end
 	return {xp=p.xp,items=p.items,consumables=provisions,collection=p.collection,coins=p.coins,bank=p.bank,bankRevision=p.bankRevision or 0,worker=p.worker,
 		ironman=p.ironman,levels=levels,enchantRank=p.enchantRank or 0,workerResource=p.workerResource or "Ore",workerReady=ready(p),workers=workerState(p),message=message or "",kills=p.kills,
-		companionBond=p.companionBond or 0,recipes=recipeState(p),regions=regionState(p),stats=applyStats(player,p),quest=questState(p),slayer=slayerState(p),started=p.started,decorations=p.decorations,preview=preview[player]==true}
+		companionBond=p.companionBond or 0,market=marketViews[player],recipes=recipeState(p),regions=regionState(p),stats=applyStats(player,p),quest=questState(p),slayer=slayerState(p),started=p.started,decorations=p.decorations,preview=preview[player]==true}
 end
 local function collect(p,item,count)
 	p.items[item]=(p.items[item] or 0)+count
@@ -242,7 +243,7 @@ local function open(player)
 			end
 		end)
 	end
-	if profile.pending then task.defer(function() if resumeExchange then resumeExchange(player) end end) end
+	if profile.pending or profile.pricedPending then task.defer(function() if resumeExchange then resumeExchange(player) end end) end
 	player.CharacterAdded:Connect(spawnCharacter)
 	if player.Character then task.spawn(spawnCharacter,player.Character) end
 	update:FireClient(player,snapshot(player,if preview[player] then "Studio practice session • saving unavailable" else "Journal opened"))
@@ -259,7 +260,7 @@ local function perform(player,verb,item,prompt)
 	cooldown[player]=os.clock()+(if prompt then 0.65 else 0.24)
 	local region=prompt and prompt:GetAttribute("IsleRegion")
 	if region and not regionAllowed(p,region) then return "Claim the Skyreach charter in your journal before entering this region." end
-	if verb=="list" or verb=="buy" or verb=="proceeds" or verb=="cancel" then
+	if verb=="market" or verb=="list" or verb=="buy" or verb=="proceeds" or verb=="cancel" then
 		return exchangeAction(player,verb,item or "Ore")
 	elseif verb=="gather" and prompt and gatheringSkills[item] then
 		local skill=gatheringSkills[item]
@@ -487,6 +488,7 @@ local function close(player)
 	while exchangeBusy[player] do task.wait(0.1) end
 	for _=1,3 do if persist(player,true) then break end; task.wait(1) end
 	profiles[player],cooldown[player],lastRead[player],preview[player],leaseEnd[player]=nil,nil,nil,nil,nil
+	marketViews[player],marketReads[player]=nil,nil
 	for _,arena in pairs(enemies) do
 		arena[player.UserId]=nil
 		for _,boss in pairs(arena) do boss.hits[player]=nil end
@@ -550,88 +552,155 @@ coopProfile.Parent=game:GetService("ServerStorage")
 -- keyed by sequence makes replay safe if a server crashes between the two writes.
 local marketPrices={Ore=15,Timber=12,Herb=9,Fish=18}
 local previewBooks={}
-local function trade(book,trader,order)
+local function normalizeBook(book,item)
 	book=book or {orders={},proceeds={},receipts={},accounts=0}
-	local receipt=book.receipts[trader]
+	book.pricedOrders=book.pricedOrders or {}
+	book.pricedReceipts=book.pricedReceipts or {}
+	book.pricedAccounts=book.pricedAccounts or 0
+	book.nextPricedOrder=book.nextPricedOrder or 0
+	book.revision=book.revision or 0
+	book.version=2
+	return book
+end
+local function quote(book,item,trader)
+	book=normalizeBook(book,item)
+	local best,own=nil,0
+	for _,seller in ipairs(book.orders) do
+		if seller==trader then own+=1 elseif not best or marketPrices[item]<best then best=marketPrices[item] end
+	end
+	for _,lot in ipairs(book.pricedOrders) do
+		if lot.seller==trader then own+=1 elseif not best or lot.price<best then best=lot.price end
+	end
+	return {item=item,bestAsk=best,ownLots=own,openLots=#book.orders+#book.pricedOrders,proceeds=book.proceeds[trader] or 0,
+		lotSize=3,minPrice=1,maxPrice=10000,defaultPrice=marketPrices[item],fetchedAt=os.time(),revision=book.revision,
+		matchingPolicy="Lowest ask; legacy lots first on equal price, then oldest within each queue."}
+end
+local function trade(book,trader,order)
+	book=normalizeBook(book,order.item)
+	local priced=order.protocol==2
+	local receipts=if priced then book.pricedReceipts else book.receipts
+	local receipt=receipts[trader]
 	if receipt and receipt.seq>=order.seq then return book end
-	if not receipt and book.accounts>=4000 then return nil end
-	if not receipt then book.accounts+=1 end
-	local price=marketPrices[order.item]
+	-- Reserve membership in the legacy account registry too. Old servers see a
+	-- harmless sequence-zero receipt, so both versions enforce one 4000-user cap.
+	-- Existing legacy sellers can always acquire a priced receipt and recover funds.
+	if not book.receipts[trader] then
+		if book.accounts>=4000 then return nil end
+		book.accounts+=1
+		if priced then book.receipts[trader]={seq=0,coins=0,units=0,text=""} end
+	end
+	if priced and not receipt then book.pricedAccounts+=1 end
+	local price=order.price or marketPrices[order.item]
 	local result={seq=order.seq,coins=0,units=0,text=""}
 	local verb=order.verb
 	if verb=="list" then
-		if #book.orders>=300 then
+		if #book.orders+#book.pricedOrders>=300 then
 			result.units=3
 			result.text="Order board full. Your goods were returned."
 		else
-			table.insert(book.orders,trader)
+			if priced then
+				book.nextPricedOrder+=1
+				table.insert(book.pricedOrders,{seller=trader,price=price,sequence=book.nextPricedOrder})
+			else table.insert(book.orders,trader) end
 			result.text="Listed 3 "..order.item.." for "..price.." coins."
 		end
 	elseif verb=="buy" or verb=="cancel" then
-		local index=table.find(book.orders,trader)
-		if verb=="buy" then
-			index=nil
-			for i,seller in ipairs(book.orders) do
-				if seller~=trader then index=i; break end
+		local index,legacyIndex,bestPrice
+		for i,seller in ipairs(book.orders) do
+			if (verb=="cancel" and seller==trader) or (verb=="buy" and seller~=trader and marketPrices[order.item]<=price) then
+				legacyIndex=i;bestPrice=marketPrices[order.item];break
 			end
 		end
-		if index then
-			local seller=table.remove(book.orders,index)
-			if verb=="buy" then book.proceeds[seller]=(book.proceeds[seller] or 0)+price end
+		for i,lot in ipairs(book.pricedOrders) do
+			if verb=="cancel" and lot.seller==trader then
+				if not legacyIndex and (not index or lot.sequence<book.pricedOrders[index].sequence) then index=i end
+			elseif verb=="buy" and lot.seller~=trader and lot.price<=price then
+				local best=index and book.pricedOrders[index]
+				if not bestPrice or lot.price<bestPrice or (not legacyIndex and best and lot.price==bestPrice and lot.sequence<best.sequence) then
+					index=i;legacyIndex=nil;bestPrice=lot.price
+				end
+			end
+		end
+		if index or legacyIndex then
+			local lot=if legacyIndex then {seller=table.remove(book.orders,legacyIndex),price=marketPrices[order.item]} else table.remove(book.pricedOrders,index)
+			if verb=="buy" then
+				book.proceeds[lot.seller]=(book.proceeds[lot.seller] or 0)+lot.price
+				result.coins=price-lot.price
+			end
 			result.units=3
-			result.text=if verb=="buy" then "Bought 3 "..order.item.." from a player." else "Listing cancelled. Goods returned."
+			result.text=if verb=="buy" then "Bought 3 "..order.item.." for "..lot.price.." coins; "..result.coins.." reserved coins returned." else "Listing cancelled. Goods returned; legacy lots are cancelled before priced lots."
 		else
 			result.coins=if verb=="buy" then price else 0
-			result.text=if verb=="buy" then "No other player is listing this resource." else "You have no open listing here."
+			result.text=if verb=="buy" then "No other player's lot is at or below your limit. Reserved coins returned." else "You have no open listing here."
 		end
 	else
 		result.coins=book.proceeds[trader] or 0
 		book.proceeds[trader]=nil
 		result.text="Collected "..result.coins.." coins from "..order.item.." sales."
 	end
-	book.receipts[trader]=result
+	receipts[trader]=result
+	book.revision+=1
 	return book
 end
 local function settle(player)
 	local p=profiles[player]
-	local order=p.pending
+	local order=p.pricedPending or p.pending
 	if not persist(player,false) then return "Market waiting for a journal save. Try again." end
 	local trader=tostring(player.UserId)
-	local result
+	local result,committed
 	local function apply(old)
 		local nextBook=trade(old,trader,order)
-		result=nextBook and nextBook.receipts[trader] or nil
 		return nextBook
 	end
 	local key="market_v1_"..order.item
 	local ok=pcall(function()
-		if preview[player] then previewBooks[key]=apply(previewBooks[key]) or previewBooks[key]
-		else store:UpdateAsync(key,apply) end
+		if preview[player] then committed=apply(previewBooks[key]);previewBooks[key]=committed or previewBooks[key]
+		else committed=store:UpdateAsync(key,apply) end
 	end)
 	if not ok then return "Order pending. The exchange will retry safely." end
+	result=committed and (if order.protocol==2 then committed.pricedReceipts[trader] else committed.receipts[trader]) or nil
+	if committed then marketViews[player]=quote(committed,order.item,trader) end
 	if not result then
-		result={units=if order.verb=="list" then 3 else 0,coins=if order.verb=="buy" then marketPrices[order.item] else 0,
+		result={units=if order.verb=="list" then 3 else 0,coins=if order.verb=="buy" then (order.price or marketPrices[order.item]) else 0,
 			text="This exchange is at capacity. Your reservation was returned."}
 	end
 	p.items[order.item]=(p.items[order.item] or 0)+result.units
 	p.coins+=result.coins
-	p.pending=nil
+	if order.protocol==2 then p.pricedPending=nil else p.pending=nil end
 	return result.text
 end
 exchangeAction=function(player,verb,item)
 	local p=profiles[player]
+	local price
+	if verb=="list" or verb=="buy" then
+		local commodity,raw=string.match(item,"^(%a+):(%d+)$")
+		if commodity then
+			price=tonumber(raw)
+			if #raw>5 or not price or price<1 or price>10000 or price%1~=0 then return "Use a whole lot price from 1 to 10000 coins." end
+			item=commodity
+		elseif string.find(item,":",1,true) then return "Use a whole lot price from 1 to 10000 coins." end
+	end
 	if not marketPrices[item] then return "Choose a market commodity." end
 	if p.ironman then return "Ironman journals cannot use the player exchange." end
 	if exchangeBusy[player] then return "An order is already being processed." end
-	if not p.pending then
+	if verb=="market" then
+		if os.clock()<(marketReads[player] or 0) then return "Quote refreshed recently. Prices can change; purchases use your limit." end
+		marketReads[player]=os.clock()+3
+		local ok,book=pcall(function() return if preview[player] then previewBooks["market_v1_"..item] else store:GetAsync("market_v1_"..item) end)
+		if not ok then return "Market quote unavailable. Your previous quote may be stale." end
+		marketViews[player]=quote(book,item,tostring(player.UserId))
+		return "Market quote refreshed. Three units per lot; buy uses your maximum total price."
+	end
+	price=price or marketPrices[item]
+	if not p.pending and not p.pricedPending then
 		if verb=="list" and not spend(p,{[item]=3}) then return "A market lot needs 3 "..item.."." end
 		if verb=="buy" then
-			if p.coins<marketPrices[item] then return "You need "..marketPrices[item].." purse coins." end
-			p.coins-=marketPrices[item]
+			if p.coins<price then return "You need "..price.." purse coins to reserve this buy limit." end
+			p.coins-=price
 		end
 		p.started=true
-		p.marketSeq=(p.marketSeq or 0)+1
-		p.pending={seq=p.marketSeq,verb=verb,item=item}
+		p.pricedSeq=(p.pricedSeq or 0)+1
+		p.pricedPending={seq=p.pricedSeq,verb=verb,item=item,price=price,protocol=2}
 	end
 	exchangeBusy[player]=true
 	local ok,message=pcall(settle,player)
@@ -640,9 +709,12 @@ exchangeAction=function(player,verb,item)
 end
 resumeExchange=function(player)
 	local p=profiles[player]
-	if p and p.pending then
-		local message=exchangeAction(player,p.pending.verb,p.pending.item)
+	for _=1,2 do
+		if not p or not (p.pending or p.pricedPending) then break end
+		local order=p.pricedPending or p.pending
+		local message=exchangeAction(player,order.verb,order.item)
 		if player.Parent then update:FireClient(player,snapshot(player,message)) end
+		if (p.pricedPending or p.pending)==order then break end
 	end
 end
 
