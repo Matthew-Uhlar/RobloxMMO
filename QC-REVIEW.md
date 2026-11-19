@@ -99,4 +99,6 @@ Screenshots showed readable review copy, custom commodity art and original stitc
 
 Latest integrated verification is **371 gameplay / 10,702 world-mesh / 45 expedition / 47 co-op**, with **nine** packaged scripts/modules. In a blank Studio file the GLB imported as 20 models and 88 mesh parts. The importer retained scale but displayed all surfaces in gray. An offline candidate restores the source colors. Asset ownership and production access are unverified.
 
+The final rolling-version market code also ran in a local Studio client with persistence disabled. Starting with 100 coins and nine Ore, the player listed three Ore at 30 coins, set a buy limit of 35, and filled at 25 with 10 refunded. A second order capped at 25 found no eligible seller and left the purse at 75 and inventory at nine Ore. The test used the production remote handler and an in-memory book. Cross-server persistence still needs a separate live test.
+
 Deployment boundary: the primary agent last confirmed Skyreach cloud code and later observed Studio displaying Public, ages 16+. Later Observatory/bank/trade deployment remains unknown until a publish receipt/version check confirms it. Audience settings, local smoke, CI and code deployment are separate evidence.

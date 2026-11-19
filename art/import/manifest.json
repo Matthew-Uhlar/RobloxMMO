@@ -2,7 +2,7 @@
   "format": 1,
   "metersPerStud": 0.28,
   "axes": "Right-handed +Y up; source X/Z and local origin preserved (no rotation/reflection).",
-  "glbSha256": "ca7501c3f385f94b48e6473c0b1df367ff82b83a8ae2f836ad5496203a7f4f62",
+  "glbSha256": "cecd0fddcb73495d0074c0c3283325b03aa8ec938a55b7e8b67d4e779c51fe1a",
   "materials": 18,
   "triangles": 2126,
   "models": [

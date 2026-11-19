@@ -127,7 +127,11 @@ function appendAccessor(document, binary, values, type, isIndex = false) {
 }
 
 function srgbToLinear(channel) {
-  return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+  const linear = channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+  // Canonical JSON precision: 12 decimal places (maximum rounding error 5e-13).
+  // V8 versions can differ in the last bit of nonlinear exponentiation; those
+  // insignificant bits must not change the import bundle's content hash.
+  return Number(linear.toFixed(12));
 }
 
 function addMaterial(document, materialIds, source, materialName) {
@@ -248,6 +252,49 @@ function createManifest(sources, document, glb) {
   };
 }
 
+function firstFieldDifference(expected, actual, location = '$') {
+  if (Object.is(expected, actual)) return null;
+  if (expected === null || actual === null || typeof expected !== 'object' || typeof actual !== 'object') {
+    return `${location}: stored=${JSON.stringify(expected)}, generated=${JSON.stringify(actual)}`;
+  }
+  const keys = [...new Set([...Object.keys(expected), ...Object.keys(actual)])];
+  for (const key of keys) {
+    const difference = firstFieldDifference(expected[key], actual[key], `${location}.${key}`);
+    if (difference) return difference;
+  }
+  return null;
+}
+
+function describeGlbDifference(stored, generated) {
+  let firstByte = 0;
+  while (firstByte < Math.min(stored.length, generated.length) && stored[firstByte] === generated[firstByte]) firstByte++;
+  const details = [
+    `Node ${process.version}; stored SHA256 ${sha256(stored)}; generated SHA256 ${sha256(generated)}`,
+    `First differing file byte ${firstByte}; lengths stored=${stored.length}, generated=${generated.length}`,
+  ];
+  try {
+    const storedJsonLength = stored.readUInt32LE(12);
+    const generatedJsonLength = generated.readUInt32LE(12);
+    const storedDocument = JSON.parse(stored.subarray(20, 20 + storedJsonLength));
+    const generatedDocument = JSON.parse(generated.subarray(20, 20 + generatedJsonLength));
+    details.push(firstFieldDifference(storedDocument, generatedDocument) || 'JSON field values match.');
+    const storedBinary = stored.subarray(28 + storedJsonLength);
+    const generatedBinary = generated.subarray(28 + generatedJsonLength);
+    let binaryOffset = 0;
+    while (binaryOffset < Math.min(storedBinary.length, generatedBinary.length)
+      && storedBinary[binaryOffset] === generatedBinary[binaryOffset]) binaryOffset++;
+    if (binaryOffset < Math.max(storedBinary.length, generatedBinary.length)) {
+      const viewIndex = generatedDocument.bufferViews.findIndex(view =>
+        binaryOffset >= (view.byteOffset || 0) && binaryOffset < (view.byteOffset || 0) + view.byteLength);
+      const accessorIndex = generatedDocument.accessors.findIndex(accessor => accessor.bufferView === viewIndex);
+      details.push(`First differing BIN byte ${binaryOffset}; bufferView=${viewIndex}, accessor=${accessorIndex}`);
+    } else details.push('BIN bytes match.');
+  } catch (error) {
+    details.push(`Could not inspect GLB chunks: ${error.message}`);
+  }
+  return details.join('\n');
+}
+
 function main() {
   const files = fs.readdirSync(SOURCE_DIRECTORY).filter(file => file.endsWith('.obj')).sort();
   const sources = files.map(readSource);
@@ -263,8 +310,11 @@ function main() {
   const manifestPath = path.join(OUTPUT_DIRECTORY, 'manifest.json');
 
   if (process.argv.includes('--check')) {
-    assert(fs.readFileSync(target).equals(glb), 'GLB differs from deterministic source build');
-    assert.strictEqual(fs.readFileSync(manifestPath, 'utf8'), manifestText);
+    const stored = fs.readFileSync(target);
+    assert(stored.equals(glb), 'GLB differs from deterministic source build\n' + describeGlbDifference(stored, glb));
+    const storedManifest = fs.readFileSync(manifestPath, 'utf8');
+    assert(storedManifest === manifestText, 'Manifest differs from deterministic source build\n'
+      + (firstFieldDifference(JSON.parse(storedManifest), manifest) || 'JSON formatting differs.'));
   } else {
     fs.mkdirSync(OUTPUT_DIRECTORY, { recursive: true });
     fs.writeFileSync(target, glb);
