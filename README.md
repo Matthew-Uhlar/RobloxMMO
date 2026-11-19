@@ -2,11 +2,15 @@
 
 An original Roblox floating-island RPG, built from Luau source with Rojo. The local game includes gathering, crafting, persistent workers, Warden hunts, a cooperative Observatory expedition, private islands and shared homesteads. The latest source also includes revision-checked bank transfers and a player market with priced three-unit asks and maximum-price purchases.
 
+The **Depth** update adds OSRS-style 1–99 skills with tiered resources and gear, SkyBlock-style stats, collections, accessories, pets and slayers, real-time combat, four new regions and a rebuilt menu atlas — see [PROJECT-STATUS.md](PROJECT-STATUS.md) and [docs/DEPTH-CONTRACT.md](docs/DEPTH-CONTRACT.md).
+
 This is an unfinished development build. Recorded local Studio smoke checks, remaining economy concurrency/device testing and the broader original feature scope are tracked in [PROJECT-STATUS.md](PROJECT-STATUS.md) and [QC-REVIEW.md](QC-REVIEW.md).
 
 ## Build locally
 
 Use PowerShell 7 on Windows with Node.js installed. Node verifies the original mesh bundle as part of the build.
+
+On Linux/macOS with Lune 0.11.1 and Rojo 7.7.1 on PATH (`cargo install lune --version 0.11.1 --locked` and `cargo install rojo --version 7.7.1 --locked`), run `./scripts/build.sh`.
 
 ```powershell
 ./scripts/install-tools.ps1

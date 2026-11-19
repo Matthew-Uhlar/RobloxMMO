@@ -8,6 +8,19 @@ Updated November 19, 2026. The full original goal remains in progress.
 - All eight cloud scripts matched the **Skyreach** source at `975be9c`. Deployment of later Observatory, bank and trade updates is **unknown** pending a publish receipt/version check.
 - Studio currently displays **Public, ages 16+**, according to the primary-agent observation. Audience settings are separate from code deployment and have not been independently join-tested.
 
+## Depth update (November 19, 2026)
+
+Built by five parallel teams (Server, Combat, World, UI, Art) against the shared contract in [docs/DEPTH-CONTRACT.md](docs/DEPTH-CONTRACT.md), then integrated and reviewed by the lead.
+
+- **Shared rules** (`shared/GameData.lua`, `shared/Progression.lua`): OSRS experience curve (levels 1–99, 13,034,431 XP at 99, 200M cap) across 12 skills; SkyBlock-style stat sheet (Health, Defense, Strength, Crit Chance/Damage, Speed, Intelligence, fortunes, Magic Find, Pet Luck) with per-level skill rewards and level-up coins.
+- **Content:** 148 items and 95 recipes — 26 gathering tiers across Mining/Woodcutting/Fishing/Farming with tool-tier gates and fortune; six metal tiers of ingots, swords, four-piece armor sets with set bonuses and tiered tools; cooking ladder and feasts; ten timed potions; 14 accessories with Magical Power; 8 levelling pets; 7 enchantments; nine-tier collections that unlock recipes; bestiary milestones.
+- **Combat:** 13 original real-time creatures with AI, aggro/leash, damage numbers and crits (SkyBlock damage formula), and three four-tier slayer lines with summoned bosses and slayer levels.
+- **World:** Guild Terrace with Forge/Hearth/Cauldron/Workbench stations, Slayer master and boards; Meadow Reach, Cinder Shelf and four gated regions (Windpine Grove, Gloomhollow Caverns, Tidewater Shoals, Tempest Spire) with server-checked warps, nodes for every resource tier and monster spawns.
+- **UI:** six-tab atlas (Journal, Hero, Satchel, Workshop, Hunt, Ledger) with Skills, Gear/stat sheet, Enchant, Accessories, Pets, rarity item grid, Collections, station crafting, Slayer and Bestiary pages, plus an action-bar HUD with XP popups and level-up banners. Phone landscape uses a left tab rail.
+- **Art:** 27 new original tintable low-poly icon shapes covering every item family, an icon renderer and preview sheet, and tinted ore-crystal polish on tier nodes.
+
+Verification after integration: 959 progression/data, 788+ gameplay/depth, 27,049 world/mesh, 45 expedition, 47 co-op, 302 combat and 1,200 UI smoke checks, plus 13 packaged scripts compiling and matching source. These are headless checks with service doubles; the Depth update has **not** yet been play-tested in Studio or deployed.
+
 ## Implemented source
 
 - Private home islands, shared hub, gathering destinations, travel prompts and fixed Garden/Lanterns/Deck improvements.
