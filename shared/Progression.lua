@@ -253,6 +253,17 @@ function Progression.computeStats(p, now)
 	for line, def in pairs(Data.Slayers) do
 		addStats(s, def.rewardStat, Progression.slayerLevel(p.slayerXp and p.slayerXp[line] or 0))
 	end
+	-- Permanent perks from quests, achievement diaries and construction:
+	-- p.perkStats = {[source] = {stat = value}}.
+	if type(p.perkStats) == "table" then
+		for _, perk in pairs(p.perkStats) do
+			if type(perk) == "table" then
+				for stat, v in pairs(perk) do
+					if type(v) == "number" and v == v and (Data.Stats[stat] or stat == "damage") then s[stat] = (s[stat] or 0) + v end
+				end
+			end
+		end
+	end
 	-- Legacy bonuses
 	s.health += (p.companionBond or 0) * 2
 	s.damage += (p.enchantRank or 0) * 3

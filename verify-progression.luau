@@ -151,3 +151,9 @@ eq(P.slayerLevel(1000000), 9, "slayer level 9")
 eq(P.accessorySlots({xp = {Combat = Data.XP_TABLE[25]}}), 8, "accessory slots grow with combat")
 
 print("PASS: " .. checks .. " progression/data assertions (" .. itemCount .. " items, " .. recipeCount .. " recipes).")
+do
+	local perky = {xp = {}, items = {}, collection = {}, perkStats = {diaryMeadow = {health = 25, strength = 5}, quest = {defense = 10, bogus = 99, health = 0/0}}}
+	local st = P.computeStats(perky, 0)
+	assert(st.health == 125 and st.strength == 5 and st.defense == 10 and st.bogus == nil, "perk stats flow into the stat sheet")
+	print("PASS: perk stat hook.")
+end
