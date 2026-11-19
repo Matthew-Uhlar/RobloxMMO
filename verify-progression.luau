@@ -157,3 +157,9 @@ do
 	assert(st.health == 125 and st.strength == 5 and st.defense == 10 and st.bogus == nil, "perk stats flow into the stat sheet")
 	print("PASS: perk stat hook.")
 end
+do
+	local bag = {xp = {Combat = Data.XP_TABLE[25]}, perkAccessorySlots = 99}
+	assert(P.accessorySlots(bag) == 8 + Data.MAX_PERK_SLOTS, "perk accessory slots capped")
+	assert(P.perkSlotsIntegrated == true, "server wrapper disabled")
+	print("PASS: accessory slot perks.")
+end

@@ -316,7 +316,39 @@ local function snapshot(options)
 		enchants = p.enchants,
 		regions = { { id = "Hub", name = "Aether Hub", unlocked = true, requirement = "" }, { id = "Gloomhollow", name = "Gloomhollow Caverns", unlocked = false, requirement = "Mining 30, Combat 15" } },
 	}
+	-- Quest journal: every status (done, ready with and without a lamp, active, locked).
+	local quests = {}
+	for i, q in ipairs(Data.Quests) do
+		local function pairsFor(list, met)
+			local out = {}
+			for k, o in ipairs(list) do
+				local need = o.count or o.level or o.tier or 1
+				out[k] = { if met then need else 0, need }
+			end
+			return out
+		end
+		local status = ({ SurveyorsOath = "done", ThornlingGarden = "ready", TidewingLullaby = "ready", BrassfallEchoes = "available" })[q.id]
+		quests[i] = { id = q.id, done = status == "done", available = status ~= nil, ready = status == "ready",
+			requires = pairsFor(q.requires, status ~= nil), objectives = pairsFor(q.objectives, status == "ready" or status == "done") }
+	end
+	local diaries = {}
+	for i, d in ipairs(Data.Diaries) do
+		local tiers = {}
+		for t, name in ipairs(Data.DiaryTiers) do
+			local tasks = {}
+			for k, o in ipairs(d.tiers[name].tasks) do tasks[k] = { t <= 2 and (o.count or o.level or 1) or 0, o.count or o.level or 1 } end
+			tiers[t] = { tier = name, tasks = tasks, complete = t <= 2, claimed = t == 1 and d.region == "Meadow", claimable = (t == 1 and d.region ~= "Meadow") or (t == 2 and d.region == "Meadow") }
+		end
+		diaries[i] = { region = d.region, claimed = d.region == "Meadow" and 1 or 0, tiers = tiers }
+	end
+	result.journal = options.noJournal and nil or {
+		questPoints = 12, contracts = 8, quests = quests, diaries = diaries,
+		construction = { furniture = { Bench = "SturdyWorkbench", Portal = "PortalFrame" }, portal = "Skyreach", portalRegions = { "Skyreach", "Windpine" },
+			carpentry = 32, accessorySlots = 1, workerHaste = 0.05 },
+	}
 	if options.malformed then
+		result.journal = { questPoints = "many", quests = { 3, { id = 7 }, { id = "SurveyorsOath", requires = "x", objectives = { 5 } } },
+			diaries = { "Meadow", { region = "Meadow", claimed = "two", tiers = { 4, { tier = 9 } } } }, construction = { furniture = { Bench = 3, Portal = "Ghost" }, portalRegions = { 5, "Atlantis" }, carpentry = "x" } }
 		result.depth = {
 			skills = "oops", totalLevel = "x", stats = 5, equipment = { weapon = 5, helmet = "NotAnItem" }, tools = { Mining = {} },
 			accessoryBag = { 1, "MeadowCharm" }, activeAccessories = 7, accessorySlots = "four", pets = { 1, { id = "Nope" }, { id = "Tidewing", level = "x" } },
@@ -448,7 +480,7 @@ end
 ------------------------------------------------------------------------------
 local checks = 0
 local pages = {
-	Journal = { "Bearing", "Regions", "Crew" }, Hero = { "Skills", "Gear", "Enchant", "Accessories", "Pets" }, Satchel = { "Items", "Collections" },
+	Journal = { "Bearing", "Quests", "Diaries", "Construction", "Regions", "Crew" }, Hero = { "Skills", "Gear", "Enchant", "Accessories", "Pets" }, Satchel = { "Items", "Collections" },
 	Workshop = { "Forge", "Hearth", "Cauldron", "Workbench", "Workers", "Home" }, Hunt = { "Slayer", "Bestiary" }, Ledger = { "Bank", "Market", "Orders", "Auctions", "Merchant" },
 }
 local tabOrder = { "Journal", "Hero", "Satchel", "Workshop", "Hunt", "Ledger" }
@@ -482,6 +514,22 @@ local verbs = {
 	ahBuy = function(item) local cat = tostring(item):match("^(%a+):%d+:%d+$") return cat ~= nil and Data.Economy.categoryNames[cat] ~= nil end,
 	ahCancel = function(item) local cat = tostring(item):match("^(%a+):%d+$") return cat ~= nil and Data.Economy.categoryNames[cat] ~= nil end,
 	ahClaim = function(item) return Data.Economy.categoryNames[item] ~= nil end,
+	quest = function(item)
+		if item == nil then return true end
+		local id, skill = tostring(item):match("^(%w+):(%w+)$")
+		if id then return Data.QuestById[id] ~= nil and Data.QuestById[id].rewards.lamp ~= nil and Data.Skills[skill] ~= nil end
+		return Data.QuestById[item] ~= nil and Data.QuestById[item].rewards.lamp == nil
+	end,
+	diary = function(item)
+		local region, tier = tostring(item):match("^(%a+):(%a+)$")
+		return region ~= nil and Data.DiaryByRegion[region] ~= nil and Data.DiaryByRegion[region].tiers[tier] ~= nil
+	end,
+	build = function(item)
+		local hotspot, id = tostring(item):match("^(%a+):(%w+)$")
+		return hotspot ~= nil and Data.Furniture[id] ~= nil and Data.Furniture[id].hotspot == hotspot
+	end,
+	remove = function(item) return Data.HotspotById[item] ~= nil end,
+	portal = function(item) return table.find(Data.PortalRegions, item) ~= nil end,
 }
 local function checkSent(ui)
 	for _, entry in ipairs(ui.sent) do
@@ -917,6 +965,97 @@ do
 	assert(highlights >= 1, "hit flash highlight created")
 	assert(highlights <= 2, "40 hits on one monster keep at most one flash highlight (+ target ring), found " .. highlights)
 	checks += 1
+end
+
+-- 9. Journal: quest log, lamp picker, diaries and the Builder's Terrace.
+sweep(run({ snapshot = snapshot({ noJournal = true }) }), "no-journal", true)
+for _, size in ipairs({ roblox.Vector2.new(730, 303), roblox.Vector2.new(420, 600) }) do
+	local ui = run({ size = size })
+	local tag = " @" .. size.X
+	press(find(ui.gui, "AtlasButton"))
+	local function lastSent() return ui.sent[#ui.sent] end
+	local function texts(object)
+		local out = {}
+		for _, child in ipairs(object:GetDescendants()) do
+			if child.ClassName == "TextLabel" or child.ClassName == "TextButton" then table.insert(out, tostring(child.Text)) end
+		end
+		return table.concat(out, "\n")
+	end
+	local function expect(condition, label) assert(condition, label .. tag); checks += 1 end
+	visit(ui, "Journal", "Quests")
+	noFailures(ui, "quests" .. tag)
+	expect(find(ui.scroll, "QuestSurveyorsOath") ~= nil, "main quest card drawn")
+	expect(texts(find(ui.scroll, "QuestSurveyorsOath")):find("DONE", 1, true) ~= nil, "completed quest badge")
+	expect(texts(find(ui.scroll, "QuestBrassfallEchoes")):find("ACTIVE", 1, true) ~= nil, "available quest badge")
+	expect(texts(find(ui.scroll, "QuestHollowLantern")):find("LOCKED", 1, true) ~= nil, "locked quest badge")
+	expect(texts(find(ui.scroll, "QuestHollowLantern")):find("✗", 1, true) ~= nil, "unmet requirement marked")
+	expect(texts(find(ui.scroll, "QuestBrassfallEchoes")):find("✓", 1, true) ~= nil, "met requirement marked")
+	expect(texts(find(ui.scroll, "QuestBrassfallEchoes")):find("Quest Points", 1, true) ~= nil, "rewards listed")
+	expect(find(ui.scroll, "QuestThornlingGarden") == nil, "side quests hidden on the main filter")
+	expect(find(ui.scroll, "QuestHollowLanternClaim") == nil, "locked quest has no claim")
+	press(find(ui.scroll, "QuestLineSide"))
+	expect(find(ui.scroll, "QuestThornlingGarden") ~= nil and find(ui.scroll, "QuestSurveyorsOath") == nil, "side filter")
+	local before = #ui.sent
+	press(find(ui.scroll, "QuestThornlingGardenClaim"))
+	expect(#ui.sent == before, "lamp quest opens the picker instead of sending")
+	expect(find(ui.scroll, "LampPicker") ~= nil, "lamp picker shown")
+	expect(find(ui.scroll, "LampFarming") ~= nil and find(ui.scroll, "LampWoodcutting") ~= nil, "lamp picker lists allowed skills")
+	expect(find(ui.scroll, "LampMining") == nil, "lamp picker hides other skills")
+	press(find(ui.scroll, "LampFarming"))
+	expect(lastSent()[1] == "quest" and lastSent()[2] == "ThornlingGarden:Farming", "lamp claim sends quest:skill")
+	press(find(ui.scroll, "QuestThornlingGardenClaim"))
+	press(find(ui.scroll, "QuestThornlingGardenCancel"))
+	expect(find(ui.scroll, "LampPicker") == nil, "cancel closes the lamp picker")
+	press(find(ui.scroll, "QuestTidewingLullabyClaim"))
+	expect(lastSent()[1] == "quest" and lastSent()[2] == "TidewingLullaby", "plain quest claim sends the quest id")
+	visit(ui, "Journal", "Diaries")
+	noFailures(ui, "diaries" .. tag)
+	expect(find(ui.scroll, "DiarySummary") ~= nil, "diary summary card")
+	expect(find(ui.scroll, "DiaryMeadowEasy") ~= nil and find(ui.scroll, "DiaryMeadowElite") ~= nil, "four tier cards")
+	expect(texts(find(ui.scroll, "DiaryMeadowEasy")):find("CLAIMED", 1, true) ~= nil, "claimed tier badge")
+	expect(find(ui.scroll, "DiaryMeadowEasyClaim") == nil, "claimed tier has no claim")
+	expect(texts(find(ui.scroll, "DiaryMeadowHard")):find("Perk", 1, true) ~= nil, "tier perk shown")
+	expect(texts(find(ui.scroll, "DiaryMeadowElite")):find("LOCKED", 1, true) ~= nil, "later tier locked")
+	press(find(ui.scroll, "DiaryMeadowMediumClaim"))
+	expect(lastSent()[1] == "diary" and lastSent()[2] == "Meadow:Medium", "diary claim payload")
+	press(find(ui.scroll, "DiaryTempest"))
+	expect(find(ui.scroll, "DiaryTempestEasy") ~= nil and find(ui.scroll, "DiaryMeadowEasy") == nil, "region switcher")
+	press(find(ui.scroll, "DiaryTempestEasyClaim"))
+	expect(lastSent()[2] == "Tempest:Easy", "region diary claim payload")
+	visit(ui, "Journal", "Construction")
+	noFailures(ui, "construction" .. tag)
+	expect(find(ui.scroll, "TerraceSummary") ~= nil, "terrace summary card")
+	expect(texts(find(ui.scroll, "TerraceSummary")):find("Skyreach", 1, true) ~= nil, "portal attunement shown")
+	expect(texts(find(ui.scroll, "HotspotBenchCurrent")):find("Sturdy Workbench", 1, true) ~= nil, "built furniture named")
+	expect(find(ui.scroll, "PlanSturdyWorkbench") ~= nil and find(ui.scroll, "PlanBrassWorkbench") ~= nil, "hotspot catalogue")
+	expect(find(ui.scroll, "PlanHerbPlanter") == nil, "catalogue filtered to the hotspot")
+	before = #ui.sent
+	press(find(ui.scroll, "PlanBrassWorkbenchBuild"))
+	expect(#ui.sent == before, "occupied hotspot build disabled")
+	press(find(ui.scroll, "HotspotBenchCurrentRemove"))
+	expect(#ui.sent == before and find(ui.scroll, "HotspotBenchCurrentDismantle") ~= nil, "removal asks for confirmation")
+	press(find(ui.scroll, "HotspotBenchCurrentDismantle"))
+	expect(lastSent()[1] == "remove" and lastSent()[2] == "Bench", "remove payload")
+	press(find(ui.scroll, "HotspotGarden"))
+	expect(find(ui.scroll, "PlanHerbPlanter") ~= nil, "hotspot switcher")
+	press(find(ui.scroll, "PlanHerbPlanterBuild"))
+	expect(lastSent()[1] == "build" and lastSent()[2] == "Garden:HerbPlanter", "build payload")
+	before = #ui.sent
+	press(find(ui.scroll, "PlanMoonbloomTerraceBuild"))
+	expect(#ui.sent == before, "Carpentry level gate disables build")
+	expect(texts(find(ui.scroll, "PlanMoonbloomTerrace")):find("✗", 1, true) ~= nil, "unmet level and costs marked")
+	press(find(ui.scroll, "HotspotPortal"))
+	expect(find(ui.scroll, "PortalPicker") ~= nil, "portal attunement picker")
+	expect(find(ui.scroll, "PortalGloomhollow") == nil, "only attunable regions offered")
+	press(find(ui.scroll, "PortalWindpine"))
+	expect(lastSent()[1] == "portal" and lastSent()[2] == "Windpine", "portal payload")
+	-- The terrace planner prompt opens this page.
+	press(ui.tabs:FindFirstChild("LedgerButton"))
+	ui.player:SetAttribute("IsleStation", "Construction")
+	ui.player:SetAttribute("IsleStationVisit", 1)
+	expect(find(ui.scroll, "TerraceSummary") ~= nil, "planner prompt opens the Construction page")
+	checkSent(ui)
+	noFailures(ui, "journal flow" .. tag)
 end
 
 print("UI QA passed " .. checks .. " checks (" .. created .. " mock instances).")

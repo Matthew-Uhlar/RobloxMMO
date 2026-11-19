@@ -92,8 +92,11 @@ end
 function Progression.accessorySlots(p)
 	local bag = Data.AccessoryBag
 	local combat = Progression.levelForXp(p.xp and p.xp.Combat or 0)
-	return math.min(bag.maxSlots, bag.baseSlots + combat // bag.slotsPerLevel.every)
+	local perk = math.clamp(math.floor(tonumber(p.perkAccessorySlots) or 0), 0, Data.MAX_PERK_SLOTS or 0)
+	return math.min(bag.maxSlots, bag.baseSlots + combat // bag.slotsPerLevel.every) + perk
 end
+-- Quest/construction accessory-slot perks are counted above (server skips its wrapper).
+Progression.perkSlotsIntegrated = true
 function Progression.meetsRequirements(p, requires)
 	if not requires then return true end
 	for skill, lvl in pairs(requires) do

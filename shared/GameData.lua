@@ -637,4 +637,233 @@ function Data.Economy.bazaarGroup(id)
 	return "Materials"
 end
 
+------------------------------------------------------------------------------
+-- Quests & Achievements (Quests team; append-only section).
+-- OSRS-style quest line with Quest Points and choose-a-skill XP lamps,
+-- per-region achievement diaries (Easy/Medium/Hard/Elite) and Carpentry
+-- construction on fixed home hotspots (SkyBlock island building).
+--
+-- A check is {kind=..., ...}; the server evaluates every check from profile
+-- state (never from the client):
+--   contracts {count}          guild contracts claimed (p.questCompleted)
+--   quest {quest}              a Data.Quests entry claimed
+--   questPoints {count}        Quest Points held
+--   level {skill,level}        skill level (OSRS curve)
+--   collect {item,count}       lifetime collection count
+--   collectionTier {item,tier} collection tier
+--   have {item,count,consume}  satchel count; consume=true hands items in on claim
+--   kills {monster,count}      bestiary kills
+--   craft {item,count}         items crafted (p.counters.crafts)
+--   gather {region,count}      harvests at that region's nodes (p.counters.gathers)
+--   build {furniture}          furniture ever built (p.counters.built)
+--   slayer {line,level}        slayer level of a line
+--   flag {flag}                p[flag] == true (e.g. skyreachVisited)
+-- Rewards: coins, items={id=n}, xp={Skill=n}, lamp={xp=n,skills={...}|nil},
+-- points (Quest Points), perk={stat=v} (written to p.perkStats),
+-- unlock={accessorySlots=n, workerHaste=fraction, shortcut=regionId}.
+------------------------------------------------------------------------------
+do
+local function qlist(...) return {...} end
+Data.Quests = {
+	-- Main line: continues after the eight guild contracts.
+	{id="SurveyorsOath",title="The Surveyor's Oath",line="main",region="Meadow",
+		story="Warden-captain Ysolde asks you to prove the guild charter in the field: thin the boars trampling the meadow herb beds.",
+		requires=qlist({kind="contracts",count=8}),
+		objectives=qlist({kind="kills",monster="BramblebackBoar",count=10},{kind="collect",item="Herb",count=100}),
+		rewards={coins=400,points=1,lamp={xp=600}}},
+	{id="BrassfallEchoes",title="Echoes under Brassfall",line="main",region="Quarry",
+		story="Something knocks beneath Brassfall Quarry. Clear the crawlers and smelt brass for the shoring beams.",
+		requires=qlist({kind="quest",quest="SurveyorsOath"},{kind="level",skill="Mining",level=15}),
+		objectives=qlist({kind="kills",monster="ShaleCrawler",count=15},{kind="collect",item="Brassite",count=50},{kind="craft",item="BrassIngot",count=5}),
+		rewards={coins=900,points=2,xp={Smithing=1200},unlock={accessorySlots=1}}},
+	{id="WindpineVigil",title="Windpine Vigil",line="main",region="Windpine",
+		story="The old grove-keeper Tamsin hears the windpines whisper of a stalker among the roots. Keep vigil and cut a clearing.",
+		requires=qlist({kind="quest",quest="BrassfallEchoes"},{kind="level",skill="Woodcutting",level=15}),
+		objectives=qlist({kind="gather",region="Windpine",count=40},{kind="kills",monster="BarkStalker",count=12}),
+		rewards={coins=1500,points=2,items={MightDraught=3},lamp={xp=2000,skills={"Mining","Woodcutting","Fishing","Farming"}}}},
+	{id="HollowLantern",title="The Hollow Lantern",line="main",region="Gloomhollow",
+		story="A miner's lantern still burns deep in Gloomhollow. Follow its light past the Gloomfang nests and weave a silk lifeline home.",
+		requires=qlist({kind="quest",quest="WindpineVigil"},{kind="level",skill="Mining",level=30},{kind="level",skill="Combat",level=15}),
+		objectives=qlist({kind="kills",monster="GloomfangSpider",count=20},{kind="collect",item="Voidstone",count=40},{kind="have",item="SpiderSilk",count=16,consume=true}),
+		rewards={coins=4000,points=3,lamp={xp=6000},unlock={shortcut="Gloomhollow"}}},
+	{id="CrownOfTempest",title="Crown of the Tempest",line="main",region="Tempest",
+		story="The storm atop Tempest Spire has a heart. Break the wraith host and the starborn sentinels, then face the Revenant itself.",
+		requires=qlist({kind="quest",quest="HollowLantern"},{kind="level",skill="Combat",level=40},{kind="questPoints",count=14}),
+		objectives=qlist({kind="kills",monster="TempestWraith",count=25},{kind="kills",monster="StarbornSentinel",count=5},{kind="slayer",line="Tempest",level=1}),
+		rewards={coins=20000,points=4,lamp={xp=25000},perk={strength=10,critDamage=10},unlock={workerHaste=0.05}}},
+	-- Side quests.
+	{id="TidewingLullaby",title="A Lullaby for the Tidewing",line="side",region="Hub",
+		story="The harbour Tidewings are restless. Bring fresh minnows and learn the angler's lullaby.",
+		requires=qlist({kind="contracts",count=4}),
+		objectives=qlist({kind="have",item="Fish",count=20,consume=true},{kind="level",skill="Fishing",level=10}),
+		rewards={coins=300,points=1,items={CookedFish=5},xp={Taming=400}}},
+	{id="ThornlingGarden",title="The Thornling Garden",line="side",region="Meadow",
+		story="Thornlings have rooted in the sunwheat rows. Weed them out and bring in the harvest.",
+		requires=qlist({kind="contracts",count=2}),
+		objectives=qlist({kind="kills",monster="Thornling",count=15},{kind="collect",item="Sunwheat",count=50}),
+		rewards={coins=600,points=1,lamp={xp=800,skills={"Farming","Woodcutting"}},perk={farmingFortune=5}}},
+	{id="BuildersCharter",title="The Builder's Charter",line="side",region="Hub",
+		story="Master joiner Orrin will register your homestead terrace once you raise your first workbench on it.",
+		requires=qlist({kind="contracts",count=3}),
+		objectives=qlist({kind="build",furniture="SturdyWorkbench"}),
+		rewards={coins=500,points=1,xp={Carpentry=800}}},
+	{id="CinderCartography",title="Cinder Cartography",line="side",region="Quarry",
+		story="The guild's quarry charts end where the cinder mites begin. Map the seams and the heights above them.",
+		requires=qlist({kind="collectionTier",item="Ore",tier=3},{kind="contracts",count=7}),
+		objectives=qlist({kind="kills",monster="CinderMite",count=10},{kind="gather",region="Skyreach",count=20}),
+		rewards={coins=800,points=1,xp={Mining=1500}}},
+	{id="GolemHeartbeat",title="The Golem's Heartbeat",line="side",region="Skyreach",
+		story="Brass golems on Skyreach beat in time. A tinker wants one of their cores to learn why.",
+		requires=qlist({kind="contracts",count=6},{kind="level",skill="Smithing",level=20}),
+		objectives=qlist({kind="kills",monster="BrassGolem",count=10},{kind="have",item="GolemCore",count=1,consume=true}),
+		rewards={coins=2500,points=2,items={SunsteelIngot=5},unlock={accessorySlots=1}}},
+	{id="FeathersAloft",title="Feathers Aloft",line="side",region="Skyreach",
+		story="Storm Harriers ride the updrafts above Skyreach. Gather their feathers for the guild's wind-reading charms.",
+		requires=qlist({kind="quest",quest="GolemHeartbeat"},{kind="level",skill="Combat",level=25}),
+		objectives=qlist({kind="kills",monster="StormHarrier",count=15},{kind="collect",item="StormFeather",count=30}),
+		rewards={coins=2000,points=2,perk={speed=5}}},
+	{id="ReefSong",title="Song of the Reef",line="side",region="Tidewater",
+		story="Reef Lurkers drown out the shoal's song. Quiet them and land the lanternrays that carry the melody.",
+		requires=qlist({kind="level",skill="Fishing",level=30},{kind="questPoints",count=3}),
+		objectives=qlist({kind="kills",monster="ReefLurker",count=15},{kind="gather",region="Tidewater",count=30},{kind="collect",item="Lanternray",count=25}),
+		rewards={coins=3000,points=2,lamp={xp=4000,skills={"Fishing","Cooking"}},perk={fishingFortune=10},unlock={shortcut="Tidewater"}}},
+	{id="LeyLines",title="Charting the Ley Lines",line="side",region="Hub",
+		story="With a portal frame on your terrace, the guild's ley-reader can tune it to the far isles.",
+		requires=qlist({kind="quest",quest="HollowLantern"},{kind="level",skill="Carpentry",level=30}),
+		objectives=qlist({kind="build",furniture="PortalFrame"},{kind="gather",region="Windpine",count=100}),
+		rewards={coins=5000,points=3,unlock={shortcut="Tempest"}}},
+}
+Data.QuestById = {}
+for i, quest in ipairs(Data.Quests) do quest.index = i; Data.QuestById[quest.id] = quest end
+-- Each claimed guild contract also counts as one Quest Point.
+Data.CONTRACT_QUEST_POINTS = 1
+
+------------------------------------------------------------------------------
+-- Achievement diaries: per region, four tiers, each claimed in order.
+------------------------------------------------------------------------------
+Data.DiaryTiers = {"Easy","Medium","Hard","Elite"}
+Data.DiaryCoins = {Easy=500,Medium=2500,Hard=10000,Elite=50000}
+local function k(monster, count) return {kind="kills",monster=monster,count=count} end
+local function c(item, count) return {kind="collect",item=item,count=count} end
+local function l(skill, lvl) return {kind="level",skill=skill,level=lvl} end
+local function cr(item, count) return {kind="craft",item=item,count=count} end
+local function g(region, count) return {kind="gather",region=region,count=count} end
+local function s(line, lvl) return {kind="slayer",line=line,level=lvl} end
+local function q(quest) return {kind="quest",quest=quest} end
+Data.Diaries = {
+	{region="Meadow",name="Meadow Reach Diary",tiers={
+		Easy={tasks={k("BramblebackBoar",5),c("Herb",50),c("Timber",50),l("Farming",5)},perk={health=10}},
+		Medium={tasks={k("Thornling",25),c("Sunwheat",100),cr("MightDraught",5),l("Farming",20)},perk={farmingFortune=10}},
+		Hard={tasks={k("BramblebackBoar",250),c("Glowcap",250),s("Bramble",3),l("Farming",40)},perk={farmingFortune=15,health=15}},
+		Elite={tasks={c("AetherLotus",500),k("Thornling",500),s("Bramble",6),l("Farming",75)},perk={farmingFortune=25,health=25}},
+	}},
+	{region="Quarry",name="Quarry Cay Diary",tiers={
+		Easy={tasks={c("Ore",100),k("ShaleCrawler",5),cr("AlloyIngot",5),l("Mining",5)},perk={defense=5}},
+		Medium={tasks={c("Brassite",100),k("CinderMite",25),cr("BrassIngot",10),l("Mining",20)},perk={miningFortune=10}},
+		Hard={tasks={c("SunsteelOre",250),k("CinderMite",250),cr("SunsteelIngot",25),l("Mining",45)},perk={miningFortune=15,defense=10}},
+		Elite={tasks={c("Celestium",250),cr("CelestialIngot",20),l("Mining",85),l("Smithing",75)},perk={miningFortune=25,defense=20}},
+	}},
+	{region="Skyreach",name="Skyreach Heights Diary",tiers={
+		Easy={tasks={{kind="flag",flag="skyreachVisited"},g("Skyreach",10),k("BrassGolem",1)},perk={speed=2}},
+		Medium={tasks={g("Skyreach",100),k("StormHarrier",25),k("BrassGolem",25),c("StormFeather",50)},perk={strength=5}},
+		Hard={tasks={k("BrassGolem",250),c("GolemCore",10),q("GolemHeartbeat"),l("Combat",35)},perk={strength=10,defense=10}},
+		Elite={tasks={k("StormHarrier",1000),g("Skyreach",2000),q("FeathersAloft"),l("Combat",60)},perk={strength=15,critDamage=10}},
+	}},
+	{region="Windpine",name="Windpine Grove Diary",tiers={
+		Easy={tasks={g("Windpine",10),k("BarkStalker",1),l("Woodcutting",15)},perk={foragingFortune=5}},
+		Medium={tasks={g("Windpine",150),k("GaleSprite",25),c("EmberoakLog",100),q("WindpineVigil")},perk={foragingFortune=10}},
+		Hard={tasks={k("BarkStalker",250),c("GlimmerbarkLog",250),l("Woodcutting",50),cr("VoidforgedHatchet",1)},perk={foragingFortune=15,strength=5}},
+		Elite={tasks={c("AetherheartLog",500),g("Windpine",3000),l("Woodcutting",80),k("GaleSprite",1000)},perk={foragingFortune=25,strength=10}},
+	}},
+	{region="Gloomhollow",name="Gloomhollow Caverns Diary",tiers={
+		Easy={tasks={g("Gloomhollow",10),k("GloomfangSpider",1),c("Voidstone",10)},perk={defense=5}},
+		Medium={tasks={k("GloomfangSpider",50),c("SpiderSilk",100),q("HollowLantern"),s("Gloom",1)},perk={critChance=1}},
+		Hard={tasks={k("VoidWisp",100),c("Prismite",100),s("Gloom",4),l("Mining",60)},perk={critDamage=10,defense=10}},
+		Elite={tasks={k("VoidWisp",1000),c("VoidEssence",500),s("Gloom",7),l("Mining",80)},perk={critChance=3,critDamage=15}},
+	}},
+	{region="Tidewater",name="Tidewater Shoals Diary",tiers={
+		Easy={tasks={g("Tidewater",10),k("ReefLurker",1),l("Fishing",30)},perk={fishingFortune=5}},
+		Medium={tasks={k("ReefLurker",50),c("Lanternray",100),cr("CookedStormeel",25),q("ReefSong")},perk={fishingFortune=10,seaCreatureChance=1}},
+		Hard={tasks={c("AbyssKoi",250),k("ReefLurker",500),l("Fishing",60),cr("HuntersFeast",10)},perk={fishingFortune=15,health=20}},
+		Elite={tasks={c("LeviathanScale",500),g("Tidewater",3000),l("Fishing",85),l("Cooking",75)},perk={fishingFortune=25,seaCreatureChance=3}},
+	}},
+	{region="Tempest",name="Tempest Spire Diary",tiers={
+		Easy={tasks={g("Tempest",10),k("TempestWraith",1),l("Combat",40)},perk={strength=5}},
+		Medium={tasks={k("TempestWraith",50),c("StarmetalOre",100),q("CrownOfTempest"),s("Tempest",1)},perk={strength=10}},
+		Hard={tasks={k("StarbornSentinel",100),s("Tempest",4),c("StarmetalOre",1000),l("Combat",60)},perk={critDamage=15,strength=10}},
+		Elite={tasks={k("StarbornSentinel",1000),s("Tempest",7),c("Celestium",1000),l("Combat",85)},perk={strength=20,critDamage=25,magicFind=3}},
+	}},
+}
+Data.DiaryByRegion = {}
+for _, d in ipairs(Data.Diaries) do Data.DiaryByRegion[d.region] = d end
+end
+
+------------------------------------------------------------------------------
+-- Carpentry construction: furniture on fixed home hotspots. Hotspot x/z are
+-- offsets from the home island centre (the Builder's Terrace sits west).
+-- effect: station={...} home crafting prompts, perk={stat=v},
+-- accessorySlots=n, workerHaste=fraction, portal={regionId...} (attunable).
+------------------------------------------------------------------------------
+Data.TERRACE_OFFSET = {x=-33,z=0}
+Data.Hotspots = {
+	{id="Bench",name="Workshop Bench",x=-27,z=5.2},
+	{id="Hearth",name="Kitchen Hearth",x=-33,z=7.4},
+	{id="Storage",name="Storage Nook",x=-39,z=5.2},
+	{id="Trophy",name="Trophy Alcove",x=-39,z=-5.2},
+	{id="Garden",name="Garden Plot",x=-33,z=-7.4},
+	{id="Dock",name="Surveyor Dock",x=-27,z=-5.2},
+	{id="Portal",name="Portal Circle",x=-36,z=0},
+}
+Data.HotspotById = {}
+for i, h in ipairs(Data.Hotspots) do h.index = i; Data.HotspotById[h.id] = h end
+Data.FurnitureRefund = 0.5
+Data.Furniture = {
+	SturdyWorkbench={name="Sturdy Workbench",hotspot="Bench",level=1,xp=60,costs={Timber=20,Ore=10},color="9C6B3E",effect={station={"Workbench"}},text="Home Workbench station."},
+	BrassWorkbench={name="Brass-bound Workbench",hotspot="Bench",level=25,xp=900,costs={WindpineLog=40,BrassIngot=10},color="D4A84B",effect={station={"Workbench","Forge"}},text="Home Workbench and Forge stations."},
+	StarforgedBench={name="Starforged Bench",hotspot="Bench",level=60,xp=9000,costs={StarwoodLog=60,StarmetalIngot=12},color="C9D6E3",effect={station={"Workbench","Forge"},perk={strength=5,miningSpeed=20}},text="Home Workbench and Forge; +5 Strength, +20 Mining Speed."},
+	ClayHearth={name="Clay Hearth",hotspot="Hearth",level=10,xp=250,costs={Timber=30,Ore=40,Herb=10},color="B5651D",effect={station={"Hearth"}},text="Home Hearth station."},
+	EmberoakRange={name="Emberoak Range",hotspot="Hearth",level=40,xp=2500,costs={EmberoakLog=50,SunsteelIngot=8},color="E07A5F",effect={station={"Hearth","Cauldron"},perk={health=15}},text="Home Hearth and Cauldron; +15 Health."},
+	TrinketCabinet={name="Trinket Cabinet",hotspot="Storage",level=15,xp=400,costs={WindpineLog=30,BrassIngot=6},color="6B8E5A",effect={accessorySlots=1},text="+1 accessory bag slot."},
+	GildedReliquary={name="Gilded Reliquary",hotspot="Storage",level=50,xp=5000,costs={GlimmerbarkLog=40,VoidforgedIngot=10,GolemCore=2},color="FFAA00",effect={accessorySlots=2},text="+2 accessory bag slots."},
+	TrophyStand={name="Beast Trophy Stand",hotspot="Trophy",level=20,xp=650,costs={WindpineLog=25,BeastHide=40},color="8D6346",effect={perk={strength=3}},text="+3 Strength."},
+	GrandTrophyWall={name="Grand Trophy Wall",hotspot="Trophy",level=55,xp=7000,costs={StarwoodLog=30,SpiderSilk=60,VoidEssence=10},color="5A5A8C",effect={perk={strength=6,critDamage=6}},text="+6 Strength, +6 Crit Damage."},
+	HerbPlanter={name="Herb Planter",hotspot="Garden",level=5,xp=120,costs={Timber=25,Herb=30},color="6BBF59",effect={perk={farmingFortune=8}},text="+8 Farming Fortune."},
+	MoonbloomTerrace={name="Moonbloom Terrace",hotspot="Garden",level=45,xp=3500,costs={GlimmerbarkLog=30,Moonbloom=60},color="B8C0FF",effect={perk={farmingFortune=20,foragingFortune=10}},text="+20 Farming Fortune, +10 Foraging Fortune."},
+	SurveyorDock={name="Surveyor Dock",hotspot="Dock",level=25,xp=900,costs={WindpineLog=40,BrassIngot=8},color="3C9291",effect={workerHaste=0.05},text="Workers gather 5% faster."},
+	ClockworkDock={name="Clockwork Dock",hotspot="Dock",level=60,xp=9000,costs={StarwoodLog=50,StarmetalIngot=8,GolemCore=3},color="E0B04A",effect={workerHaste=0.1},text="Workers gather 10% faster."},
+	PortalFrame={name="Portal Frame",hotspot="Portal",level=30,xp=1400,costs={EmberoakLog=40,SunsteelIngot=6,Aetherite=50},color="8EE6CB",effect={portal={"Skyreach","Windpine"}},text="Home portal to Skyreach or Windpine (quests attune more isles)."},
+	StormglassGate={name="Stormglass Gate",hotspot="Portal",level=65,xp=12000,costs={StarwoodLog=40,StarmetalIngot=10,Stormglass=3},color="7B8CDE",effect={portal={"Skyreach","Windpine","Gloomhollow","Tidewater"},perk={speed=5}},text="Home portal to four regions (quests attune Tempest); +5 Speed."},
+}
+Data.FurnitureOrder = {}
+for id, f in pairs(Data.Furniture) do f.id = id; table.insert(Data.FurnitureOrder, id) end
+table.sort(Data.FurnitureOrder, function(a, b)
+	local fa, fb = Data.Furniture[a], Data.Furniture[b]
+	if fa.level ~= fb.level then return fa.level < fb.level end
+	return a < b
+end)
+Data.PortalRegions = {"Skyreach","Windpine","Gloomhollow","Tidewater","Tempest"}
+Data.MAX_PERK_SLOTS = 6
+Data.MAX_WORKER_HASTE = 0.3
+
+-- Human-readable text for one check (shared by server messages and the UI).
+function Data.describeCheck(o)
+	local function nameOf(id) local def = Data.Items[id]; return def and def.name or tostring(id) end
+	local kind = type(o) == "table" and o.kind
+	if kind == "contracts" then return "Claim "..o.count.." guild contracts"
+	elseif kind == "quest" then local qd = Data.QuestById[o.quest]; return "Complete "..(qd and qd.title or tostring(o.quest))
+	elseif kind == "questPoints" then return o.count.." Quest Points"
+	elseif kind == "level" then return o.skill.." level "..o.level
+	elseif kind == "collect" then return "Collect "..o.count.." "..nameOf(o.item).." (lifetime)"
+	elseif kind == "collectionTier" then return nameOf(o.item).." collection tier "..o.tier
+	elseif kind == "have" then return (if o.consume then "Hand in " else "Hold ")..o.count.." "..nameOf(o.item)
+	elseif kind == "kills" then local m = Data.Monsters[o.monster]; return "Defeat "..o.count.." "..(m and m.name or tostring(o.monster))
+	elseif kind == "craft" then return "Craft "..o.count.." "..nameOf(o.item)
+	elseif kind == "gather" then local r = Data.RegionById[o.region]; return "Gather "..o.count.." times in "..(r and r.name or tostring(o.region))
+	elseif kind == "build" then local f = Data.Furniture[o.furniture]; return "Build a "..(f and f.name or tostring(o.furniture))
+	elseif kind == "slayer" then return o.line.." Slayer level "..o.level
+	elseif kind == "flag" then return if o.flag == "skyreachVisited" then "Survey the Skyreach summit" else "Complete "..tostring(o.flag)
+	end
+	return "Unknown task"
+end
+
 return Data

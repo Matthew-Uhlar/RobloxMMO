@@ -283,6 +283,8 @@ for i=1,8 do
 end
 
 local slots,homes={},{}
+-- Builder's Terrace furniture (attached at the end of this script, see homeTerrace.attach).
+local homeTerrace={}
 local function warp(player,trigger,destination)
 	local character=player.Character
 	local root=character and character:FindFirstChild("HumanoidRootPart")
@@ -333,7 +335,7 @@ local function settle(player)
 	spawn.Size,spawn.Position,spawn.Transparency=V(4,.45,4),center+V(0,.25,5),1
 	spawn.Duration,spawn.Parent=0,m
 	player.RespawnLocation=spawn
-	homes[player]={model=m,spawn=spawn,slot=slot,decorationConnections={}}
+	homes[player]={model=m,spawn=spawn,slot=slot,center=center,decorationConnections={}}
 	local function land(character)
 		local root=character:WaitForChild("HumanoidRootPart",10)
 		if root and homes[player] and player.Character==character then character:PivotTo(CFrame.new(spawn.Position+V(0,3.4,0))) end
@@ -433,6 +435,7 @@ local function settle(player)
 		end))
 		decorate(choice.key)
 	end
+	if homeTerrace.attach then homeTerrace.attach(player,homes[player]) end
 end
 Players.PlayerAdded:Connect(settle)
 Players.PlayerRemoving:Connect(function(player)
@@ -1273,3 +1276,264 @@ for i,id in ipairs({"Windpine","Gloomhollow","Tidewater","Tempest"}) do
 end
 regionWarp(shelf,CS+V(0,0,-18),"Gloomhollow",destinations.Gloomhollow)
 sign(shelf,CS+V(9,0,-17),"Deep descent","GLOOMHOLLOW   /   "..requirementText(Data.RegionById.Gloomhollow),REGION_ACCENT.Gloomhollow,0,9)
+
+-------------------------------------------------------------------------------
+-- Builder's Terrace (Carpentry construction). Each home gains a small terrace
+-- islet west of the landing with fixed hotspots (Data.Hotspots). The server
+-- publishes Furniture<Hotspot> = furnitureId ("" when empty) and HomePortal =
+-- regionId as player attributes; geometry rebuilds only when a value changes.
+-- Furniture is primitive-built (<= 16 parts each) inside a 2.9-stud footprint.
+-------------------------------------------------------------------------------
+do
+	local T=Data.TERRACE_OFFSET
+	local PORTAL_LANDING={Skyreach=SKYREACH_LANDING}
+	for id,pos in pairs(destinations) do PORTAL_LANDING[id]=pos end
+	local function openPlanner(player)
+		player:SetAttribute("IsleStation","Construction")
+		player:SetAttribute("IsleStationVisit",(player:GetAttribute("IsleStationVisit") or 0)+1)
+	end
+	-- Builders receive a local frame (facing the terrace centre) and a part helper.
+	local builders={}
+	local function legs(P,w,d,h,color)
+		for _,x in ipairs({-w/2+.2,w/2-.2}) do for _,z in ipairs({-d/2+.2,d/2-.2}) do P("Leg",V(.3,h,.3),x,h/2,z,color,WO) end end
+	end
+	builders.SturdyWorkbench=function(P,col)
+		local top=P("Bench top",V(4,.4,2),0,1.6,0,col,WO,true)
+		legs(P,4,2,1.4,darken(col,.3))
+		P("Lower shelf",V(3.6,.2,1.6),0,.5,0,darken(col,.15),WO)
+		P("Tool rack",V(3.6,1.6,.2),0,2.6,.9,darken(col,.25),WO)
+		P("Bench vise",V(.6,.5,.6),1.5,2.05,-.6,shale,MT)
+		P("Mallet",V(.9,.25,.25),-.9,1.95,-.2,timber,WO)
+		return top
+	end
+	builders.BrassWorkbench=function(P,col)
+		local top=builders.SturdyWorkbench(P,timber)
+		P("Brass edging",V(4.1,.15,.15),0,1.85,-1,col,MT)
+		P("Brass edging",V(4.1,.15,.15),0,1.85,1,col,MT)
+		P("Anvil",V(1,.6,.6),-1.2,2.1,-.4,ink,MT)
+		P("Hanging tongs",V(.15,.9,.15),1,2.7,.75,col,MT)
+		return top
+	end
+	builders.StarforgedBench=function(P,col)
+		local top=P("Starforged top",V(4,.45,2),0,1.6,0,darken(col,.55),MT,true)
+		legs(P,4,2,1.4,ink)
+		P("Star inlay",V(3.2,.05,.25),0,1.85,0,col,NE)
+		P("Anvil",V(1,.6,.6),-1.2,2.1,-.4,col,MT)
+		P("Forge crystal",V(.6,1.1,.6),1.2,2.4,-.3,mint,GL)
+		P("Rune panel",V(3.6,1.6,.2),0,2.6,.9,navy,SM)
+		P("Rune glow",V(2.8,.12,.05),0,3,.78,col,NE)
+		return top
+	end
+	builders.ClayHearth=function(P,col)
+		local base=P("Hearth body",V(3,2,2.2),0,1,0,col,Enum.Material.Brick,true)
+		P("Firebox",V(1.8,.9,.2),0,.8,-1.05,C("FF8A3D"),NE)
+		P("Mantel",V(3.4,.3,2.4),0,2.15,0,darken(col,.3),ST)
+		P("Chimney",V(1.1,2.6,1.1),0,3.6,.4,darken(col,.15),Enum.Material.Brick)
+		P("Cookpot",V(1,1,1),.9,2.75,-.4,ink,MT,false,BALL)
+		light(base,C("FFB36B"),.7,10)
+		return base
+	end
+	builders.EmberoakRange=function(P,col)
+		local base=P("Range body",V(4,1.8,2.2),0,.9,0,darken(col,.35),Enum.Material.Brick,true)
+		P("Range top",V(4.2,.25,2.4),0,1.9,0,ink,MT)
+		for _,x in ipairs({-1.1,1.1}) do P("Burner",V(.9,.08,.9),x,2.06,-.3,col,NE) end
+		P("Oven door",V(1.6,.9,.15),-.9,.9,-1.12,brass,MT)
+		P("Chimney",V(1,2.4,1),1.3,3.2,.6,darken(col,.2),Enum.Material.Brick)
+		P("Cauldron",V(1.2,1.2,1.2),-1.1,2.6,.3,ink,MT,false,BALL)
+		P("Brew glow",V(.9,.1,.9),-1.1,3.1,.3,C("C77DFF"),NE)
+		light(base,col,.8,11)
+		return base
+	end
+	builders.TrinketCabinet=function(P,col)
+		local body=P("Cabinet body",V(2.8,3.4,1.4),0,1.7,0,col,WO,true)
+		for _,x in ipairs({-.68,.68}) do
+			P("Cabinet door",V(1.25,2.8,.1),x,1.8,-.72,darken(col,.2),WO)
+			P("Brass pull",V(.12,.4,.12),x*.35,1.8,-.8,brass,MT)
+		end
+		P("Crown moulding",V(3.1,.3,1.6),0,3.55,0,darken(col,.35),WO)
+		P("Display glass",V(2.2,.6,.1),0,2.95,-.73,mint,GL)
+		return body
+	end
+	builders.GildedReliquary=function(P,col)
+		local chest=P("Reliquary chest",V(2.8,1.4,1.8),0,.7,0,navy,WO,true)
+		for _,x in ipairs({-.9,.9}) do P("Gilded band",V(.25,1.5,1.9),x,.75,0,col,MT) end
+		P("Lid",V(2.9,.35,1.9),0,1.55,0,darken(navy,.2),WO)
+		P("Glass dome",V(1.6,1.6,1.6),0,2.4,0,cream,GL,false,BALL).Transparency=.45
+		gem(P.model,"Reliquary gem",P.at(0,2.4,0),V(.5,.9,.5),C("FF55FF"),.4)
+		P("Clasp",V(.5,.5,.12),0,1.1,-.95,col,MT)
+		return chest
+	end
+	builders.TrophyStand=function(P,col)
+		local plinth=P("Trophy plinth",V(2.4,.6,1.6),0,.3,0,darken(col,.3),WO,true)
+		P("Post",V(.35,2.6,.35),0,1.9,.3,timber,WO)
+		P("Shield board",V(2,1.6,.2),0,2.8,.1,col,WO)
+		P("Hide trophy",V(1.4,1,.25),0,2.8,-.05,C("8D6346"),Enum.Material.Fabric)
+		for _,x in ipairs({-.75,.75}) do gem(P.model,"Tusk",P.at(x,3.5,-.15),V(.25,.9,.25),cream,x) end
+		return plinth
+	end
+	builders.GrandTrophyWall=function(P,col)
+		local wall=P("Trophy wall",V(4.6,3.6,.4),0,1.8,.8,darken(col,.3),WO,true)
+		P("Wall cap",V(4.9,.3,.6),0,3.75,.8,brass,MT)
+		for i,x in ipairs({-1.5,0,1.5}) do
+			P("Plaque",V(1.1,1.1,.15),x,2.3,.55,navy,WO)
+			gem(P.model,"Trophy crystal",P.at(x,2.3,.4),V(.4,.7,.4),({C("D8D8E8"),C("6A4C93"),C("4B6584")})[i],x)
+		end
+		P("Banner",V(1.2,1.6,.08),0,.95,.55,rose,Enum.Material.Fabric)
+		P("Brazier",V(.6,.8,.6),-2,.4,-.2,brass,MT)
+		P("Brazier flame",V(.4,.3,.4),-2,.95,-.2,C("FF8A3D"),NE)
+		return wall
+	end
+	builders.HerbPlanter=function(P,col)
+		local box=P("Planter box",V(3.6,.8,2.2),0,.4,0,timber,WO,true)
+		P("Planter soil",V(3.3,.1,1.9),0,.82,0,ink,GR)
+		for i=0,5 do
+			local x,z=-1.2+(i%3)*1.2,if i<3 then -.45 else .45
+			gem(P.model,"Herb sprout",P.at(x,1.2,z),V(.35,.7,.35),if i%2==0 then col else turf,i)
+		end
+		return box
+	end
+	builders.MoonbloomTerrace=function(P,col)
+		local lower=P("Lower bed",V(4,.7,2.4),0,.35,0,darken(navy,.2),ST,true)
+		P("Upper bed",V(2.6,.7,1.4),0,1.05,.4,navy,ST)
+		P("Bed soil",V(3.7,.08,.9),0,.73,-.6,ink,GR)
+		P("Upper soil",V(2.3,.08,1.1),0,1.43,.4,ink,GR)
+		for i=0,3 do gem(P.model,"Moonbloom",P.at(-1.4+i*.93,1.05,-.6),V(.6,.5,.6),col,i) end
+		for i=0,1 do gem(P.model,"Moonbloom",P.at(-.6+i*1.2,1.75,.4),V(.6,.5,.6),cream,i) end
+		for _,x in ipairs({-1.9,1.9}) do P("Arch post",V(.2,2.8,.2),x,1.4,.9,brass,MT) end
+		P("Arch beam",V(4,.2,.2),0,2.85,.9,brass,MT)
+		P("Arch lantern",V(.4,.4,.4),0,2.55,.9,mint,NE)
+		return lower
+	end
+	builders.SurveyorDock=function(P,col)
+		local pad=P("Dock platform",V(3.8,.4,3.2),0,.2,0,timber,WO,true)
+		P("Crane mast",V(.35,3.6,.35),-1.4,2.2,1,col,MT)
+		P("Crane jib",V(2.6,.25,.25),-.2,3.9,1,col,MT)
+		P("Crane line",V(.06,1.4,.06),1,3.1,1,ink,SM)
+		P("Supply crate",V(1,.9,1),1,1.9,1,timber,WO)
+		P("Mooring cleat",V(.6,.3,.3),1.2,.55,-1.2,brass,MT)
+		return pad
+	end
+	builders.ClockworkDock=function(P,col)
+		local pad=P("Dock platform",V(3.8,.4,3.2),0,.2,0,navy,MT,true)
+		for _,x in ipairs({-1.5,1.5}) do P("Brass pillar",V(.4,2.6,.4),x,1.5,1.2,brass,MT) end
+		P("Pillar lintel",V(3.4,.3,.4),0,2.9,1.2,brass,MT)
+		local gear=P("Great gear",V(.3,2,2),0,1.7,1,col,MT,false,Enum.PartType.Cylinder)
+		gear.CFrame=gear.CFrame*CFrame.Angles(0,math.pi/2,0)
+		P("Gear hub",V(.4,.6,.6),0,1.7,.8,ink,MT)
+		P("Clockwork core",V(.7,.7,.7),0,.75,-.6,mint,NE,false,BALL)
+		P("Core cage",V(1.1,.1,1.1),0,1.15,-.6,brass,MT)
+		return pad
+	end
+	builders.PortalFrame=function(P,col)
+		local base=P("Portal dais",V(4.2,.3,2),0,.15,0,ink,ST,true)
+		for _,x in ipairs({-1.7,1.7}) do P("Portal pillar",V(.6,4.2,.6),x,2.4,0,timber,WO) end
+		P("Portal lintel",V(4.2,.6,.8),0,4.7,0,timber,WO)
+		P("Lintel crystal",V(.5,.5,.5),0,5.15,0,col,NE)
+		local veil=P("Portal veil",V(2.8,3.9,.12),0,2.3,0,col,NE)
+		veil.Transparency=.4
+		light(veil,col,.8,10)
+		return base,veil
+	end
+	builders.StormglassGate=function(P,col)
+		local base=P("Gate dais",V(4.6,.3,2.2),0,.15,0,navy,ST,true)
+		local veil=P("Gate veil",V(.12,3.6,3.6),0,2.4,0,col,NE,false,Enum.PartType.Cylinder)
+		veil.CFrame=veil.CFrame*CFrame.Angles(0,math.pi/2,0)
+		veil.Transparency=.35
+		for i=1,8 do
+			local a=i*math.pi/4
+			gem(P.model,"Stormglass shard",P.at(math.cos(a)*2.05,2.4+math.sin(a)*2.05,0),V(.4,1.1,.4),if i%2==0 then col else mint,a)
+		end
+		light(veil,col,.9,12)
+		return base,veil
+	end
+	local function buildFurniture(parent,id,cf)
+		local f=Data.Furniture[id]
+		local model=group("Furniture_"..f.hotspot,parent)
+		model:SetAttribute("FurnitureId",id)
+		local P={model=model}
+		P.at=function(x,y,z) return (cf*CFrame.new(x,y,z)).Position end
+		setmetatable(P,{__call=function(_,name,size,x,y,z,color,mat,solid,shape)
+			return part(model,name,size,cf*CFrame.new(x,y,z),color,mat,solid,shape)
+		end})
+		local main,veil=builders[id](P,C(f.color))
+		return model,main,veil
+	end
+	local function hotspotFrame(center,h)
+		local pos=center+V(h.x,0,h.z)
+		local focus=center+V(T.x,0,T.z)
+		if (pos-focus).Magnitude<.5 then return CFrame.lookAt(pos,pos+V(1,0,0)) end
+		return CFrame.lookAt(pos,V(focus.X,pos.Y,focus.Z))
+	end
+	homeTerrace.builders=builders
+	homeTerrace.attach=function(player,home)
+		if not home or home.terrace then return end
+		local m,center=home.model,home.center
+		local tc=center+V(T.x,0,T.z)
+		local terrace=island("Builders Terrace",tc,11,C("A7B08A"))
+		terrace.Parent=m
+		home.terrace=terrace
+		bridge(terrace,center+V(-18.6,0,0),center+V(-22.4,0,0))
+		disk(terrace,"Terrace court",tc+V(0,.05,0),4.2,.12,navy,ST,true)
+		disk(terrace,"Court seal",tc+V(0,.13,0),1.4,.1,brass,MT,false)
+		sign(terrace,center+V(-15,0,-6),"Builder's Terrace","CARPENTRY   /   PLAN IN YOUR JOURNAL",brass,90,8)
+		local built,plinths,portalPrompt={},{},nil
+		local function refreshPortal()
+			if not portalPrompt then return end
+			local region=player:GetAttribute("HomePortal")
+			local def=type(region)=="string" and Data.RegionById[region]
+			portalPrompt.ObjectText=if def then "Home portal · "..def.name else "Home portal · attune in Journal"
+		end
+		local function refresh(h)
+			local value=player:GetAttribute("Furniture"..h.id)
+			local f=type(value)=="string" and Data.Furniture[value]
+			if f and f.hotspot~=h.id then f=nil end
+			local id=f and value or nil
+			if built[h.id] and built[h.id].id==id then return end
+			if built[h.id] then built[h.id].model:Destroy() end
+			built[h.id]=nil
+			if h.id=="Portal" then portalPrompt=nil end
+			plinths[h.id].Transparency=if id then 1 else 0
+			if not id or not m.Parent then return end
+			local model,main,veil=buildFurniture(terrace,id,hotspotFrame(center,h))
+			built[h.id]={id=id,model=model}
+			for _,kind in ipairs(f.effect.station or {}) do
+				local q=prompt(main,STATION[kind][1],kind.." · Home "..STATION[kind][2],"station",kind,player.UserId)
+				q.Triggered:Connect(function(user)
+					if user~=player then return end
+					user:SetAttribute("IsleStation",kind)
+					user:SetAttribute("IsleStationVisit",(user:GetAttribute("IsleStationVisit") or 0)+1)
+				end)
+			end
+			if f.effect.portal and veil then
+				portalPrompt=prompt(veil,"Step through","Home portal")
+				portalPrompt:SetAttribute("OwnerUserId",player.UserId)
+				portalPrompt:SetAttribute("IsleHomePortal",true)
+				portalPrompt.Triggered:Connect(function(user)
+					if user~=player then return end
+					local region=user:GetAttribute("HomePortal")
+					if type(region)=="string" and PORTAL_LANDING[region] then
+						regionTravel(user,veil,region,PORTAL_LANDING[region])
+					else
+						user:SetAttribute("IsleRegionNotice","Attune your home portal from the Construction page of your Journal.")
+						user:SetAttribute("IsleRegionNoticeCount",(tonumber(user:GetAttribute("IsleRegionNoticeCount")) or 0)+1)
+					end
+				end)
+				refreshPortal()
+			end
+		end
+		for _,h in ipairs(Data.Hotspots) do
+			local cf=hotspotFrame(center,h)
+			local plinth=part(terrace,h.name.." hotspot",V(4.4,.14,3.2),cf*CFrame.new(0,.07,0),cream,ST,false)
+			plinth.Transparency=0
+			plinth:SetAttribute("HotspotId",h.id)
+			plinths[h.id]=plinth
+			local q=prompt(plinth,"Plan",h.name)
+			q:SetAttribute("OwnerUserId",player.UserId)
+			q.Triggered:Connect(function(user) if user==player then openPlanner(user) end end)
+			table.insert(home.decorationConnections,player:GetAttributeChangedSignal("Furniture"..h.id):Connect(function() refresh(h) end))
+			refresh(h)
+		end
+		table.insert(home.decorationConnections,player:GetAttributeChangedSignal("HomePortal"):Connect(refreshPortal))
+	end
+	for player,home in pairs(homes) do homeTerrace.attach(player,home) end
+end
