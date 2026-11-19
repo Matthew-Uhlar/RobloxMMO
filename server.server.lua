@@ -484,6 +484,10 @@ local function perform(player,verb,item,prompt)
 	if region and not regionAllowed(p,region) then return regionDenied(region) end
 	if verb=="market" or verb=="list" or verb=="buy" or verb=="proceeds" or verb=="cancel" then
 		return exchangeAction(player,verb,item or "Ore")
+	elseif verb=="station" and prompt then
+		local stations={Forge="Forge open • smelt ingots and forge gear.",Hearth="Hearth lit • cook meals and feasts.",
+			Cauldron="Cauldron bubbling • brew potions.",Workbench="Workbench ready • craft accessories.",Slayer="The Slayer master awaits your contract."}
+		return stations[item] or "Station ready."
 	elseif verb=="gather" and prompt and type(item)=="string" and Data.ResourceSkill[item] then
 		local resource=Progression.resource(item)
 		local skill=resource.skill

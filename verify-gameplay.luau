@@ -1485,3 +1485,10 @@ eq(cmd(loner,"consume","CookedFish").message,"Return to your island first.","dea
 print("Depth assertions: "..(checks-legacyChecks))
 end)()
 print("PASS: "..checks.." production gameplay/market/depth assertions.")
+do
+	local visitor=player(990)
+	local msg=use(visitor,node("station","Forge")).message
+	assert(msg:find("Forge open"),"station prompt answered: "..tostring(msg))
+	assert(cmd(visitor,"station","Forge").message=="Unknown action.","station requires a world prompt")
+	print("PASS: station prompt checks.")
+end
