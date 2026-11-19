@@ -1,10 +1,15 @@
 -- Islebound authoritative progression. Only registered world prompts award resources.
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
 local DataStoreService = game:GetService("DataStoreService")
 local RunService = game:GetService("RunService")
 local HttpService = game:GetService("HttpService")
 local prompts = game:GetService("ProximityPromptService")
+-- Shared Depth rules (docs/DEPTH-CONTRACT.md). Pure data + pure functions.
+local Data = require(ReplicatedStorage:WaitForChild("AetherData"))
+local Progression = require(ReplicatedStorage:WaitForChild("AetherProgression"))
+Progression.useData(Data)
 local action = Instance.new("RemoteFunction")
 action.Name = "IsleAction"
 local update = Instance.new("RemoteEvent")
@@ -20,9 +25,9 @@ local store
 pcall(function()
 	store = DataStoreService:GetDataStore("Islebound_RPG_v1")
 end)
-local resources = {Timber="Woodcutting", Ore="Mining", Herb="Farming", Fish="Fishing"}
-local gatheringSkills=table.clone(resources)
-gatheringSkills.Aetherite="Mining"
+-- One seeded generator for every server roll (fortune, crits, drops).
+local rng = Random.new(os.time())
+local function roll() return rng:NextNumber() end
 local prices = {Timber=3, Ore=4, Herb=2, Fish=5}
 local recipes = {Pickaxe={Ore=3,Timber=2}, Blade={Ore=4,Timber=3}, Tonic={Herb=2},Stormblade={Stormglass=1,Shard=3,Ore=6}}
 local recipeGates={Pickaxe={Ore=3},Blade={Ore=6},Tonic={Herb=2},Stormblade={Ore=30}}
@@ -44,10 +49,78 @@ local recipeDescriptions={Pickaxe="+1 Ore per harvest",Blade="+8 Warden strike d
 	AetherIngot="Refined material for reinforced equipment",ReinforcedPickaxe="Replaces Pickaxe: +2 Ore and +1 Aetherite per harvest",
 	Skyplate="Automatically equipped: +2 defense",ExpeditionRation="Restore up to 65 health; wait 12 seconds between rations"}
 local decorations={Lanterns={Timber=5},Garden={Herb=3,Timber=3},Deck={Timber=10,Ore=5}}
-local function fresh()
-	return {version=1, xp={Mining=0,Woodcutting=0,Farming=0,Fishing=0,Smithing=0,Combat=0,Alchemy=0,Dungeoneering=0,Enchanting=0,Taming=0},
-		items={},collection={},decorations={},coins=0,bank=0,worker=false,ironman=false,started=false,lastClaim=0,kills=0}
+-- Depth constants.
+local gearSlots={weapon=true,helmet=true,chest=true,legs=true,boots=true}
+local collectionSet={}
+for _,id in ipairs(Data.CollectionItems) do collectionSet[id]=true end
+local MAX_PETS=64
+local function validId(value) return type(value)=="string" and #value>0 and #value<=64 end
+local function deepCopy(value)
+	if type(value)~="table" then return value end
+	local out={}
+	for k,v in pairs(value) do out[k]=deepCopy(v) end
+	return out
 end
+local function fresh()
+	local xp={}
+	for _,skill in ipairs(Data.SkillOrder) do xp[skill]=0 end
+	local slayerXp={}
+	for _,line in ipairs(Data.SlayerOrder) do slayerXp[line]=0 end
+	return {version=2, xp=xp,items={},collection={},decorations={},coins=0,bank=0,worker=false,ironman=false,started=false,lastClaim=0,kills=0,
+		equipment={},enchants={},accessoryBag={},pets={},buffs={},bestiary={},slayerXp=slayerXp,levelRewards={},collectionRewards={}}
+end
+local function level(xp)
+	return Progression.levelForXp(xp or 0)
+end
+-- Player-facing notices raised by shared helpers (level-ups, collection tiers);
+-- appended to the next snapshot message for that profile.
+local notes=setmetatable({},{__mode="k"})
+local function note(p,text)
+	local list=notes[p] or {}
+	notes[p]=list
+	table.insert(list,text)
+end
+-- Every XP grant: OSRS curve with cap, active pet share, one-time level coins.
+local function grantXp(p,skill,amount)
+	if not Data.Skills[skill] or type(amount)~="number" or amount<=0 then return end
+	local _,newLevel=Progression.addXp(p,skill,amount)
+	local pet,petDef=Progression.activePet(p)
+	local petLevel=pet and pet.level
+	Progression.addPetXp(p,skill,amount)
+	if pet and pet.level>petLevel then note(p,petDef.name.." pet level "..pet.level.."!") end
+	p.levelRewards=p.levelRewards or {}
+	local rewarded=p.levelRewards[skill] or 1
+	if newLevel>rewarded then
+		local coins=0
+		for lvl=rewarded+1,newLevel do coins+=Data.levelCoinReward(lvl) end
+		p.levelRewards[skill]=newLevel
+		p.coins+=coins
+		note(p,skill.." level "..newLevel.."! +"..coins.." coins")
+	end
+end
+local function collect(p,item,count)
+	p.items[item]=(p.items[item] or 0)+count
+	p.collection[item]=(p.collection[item] or 0)+count
+	if not collectionSet[item] then return end
+	p.collectionRewards=p.collectionRewards or {}
+	local tier=Progression.collectionTier(p,item)
+	local claimed=p.collectionRewards[item] or 0
+	if tier>claimed then
+		local coins=0
+		for t=claimed+1,tier do coins+=Data.collectionTierReward(t).coins end
+		p.collectionRewards[item]=tier
+		p.coins+=coins
+		note(p,Data.Items[item].name.." collection tier "..tier.."! +"..coins.." coins")
+	end
+end
+local function spend(p,cost)
+	for item,n in pairs(cost) do
+		if (p.items[item] or 0)<n then return false end
+	end
+	for item,n in pairs(cost) do p.items[item]-=n end
+	return true
+end
+-- Workers follow Data.WorkerTiers (SkyBlock minion tiers 1-7).
 local function workerFleet(p)
 	if not p.workers then
 		p.workers={}
@@ -55,20 +128,42 @@ local function workerFleet(p)
 	end
 	return p.workers
 end
+local function workerConfig(w)
+	return Data.WorkerTiers[math.clamp(math.floor(tonumber(w.tier) or 1),1,#Data.WorkerTiers)]
+end
 local function workerReady(w)
 	if not w then return 0 end
-	return math.clamp(math.floor((os.time()-w.lastClaim)/(150-w.tier*30)),0,60+w.tier*60)
+	local config=workerConfig(w)
+	return math.clamp(math.floor((os.time()-w.lastClaim)/config.interval),0,config.capacity)
+end
+local function workerCost(tier)
+	local cost={Timber=5*tier,Ore=3*tier}
+	if tier>=4 then cost.AlloyIngot=4*(tier-3); cost.AetherIngot=2*(tier-3) end
+	return cost
+end
+local function workerXp(resource)
+	local r=Progression.resource(resource)
+	if not r then return nil,0 end
+	return r.skill,if r.index==1 then 3 else math.max(3,r.xp//4)
+end
+local function workerAllowed(p,resource)
+	local r=type(resource)=="string" and Progression.resource(resource)
+	if not r then return false,"Choose a gathering resource such as Ore, Timber, Herb or Fish." end
+	if r.index==1 then return true end
+	if level(p.xp[r.skill])<r.level then return false,r.name.." workers require "..r.skill.." "..r.level.."." end
+	if Progression.collectionTier(p,resource)<1 then
+		return false,"Reach "..r.name.." collection tier 1 ("..Progression.collectionThreshold(resource,1).." lifetime) to assign workers."
+	end
+	return true
 end
 local function ready(p) return workerReady(workerFleet(p)[1]) end
 local function workerState(p)
 	local result={}
 	for slot,w in ipairs(workerFleet(p)) do
-		result[slot]={slot=slot,resource=w.resource,tier=w.tier,ready=workerReady(w),interval=150-w.tier*30,capacity=60+w.tier*60}
+		local config=workerConfig(w)
+		result[slot]={slot=slot,resource=w.resource,tier=w.tier,ready=workerReady(w),interval=config.interval,capacity=config.capacity,maxTier=#Data.WorkerTiers}
 	end
 	return result
-end
-local function level(xp)
-	return math.min(99,1+math.floor(math.sqrt(xp/40)))
 end
 local function recipeState(p)
 	local result={}
@@ -82,28 +177,63 @@ local function recipeState(p)
 	end
 	return result
 end
+-- Regions: Data.Regions requirements (quest = completed guild contracts).
+local function regionAllowed(p,region)
+	local def=type(region)=="string" and Data.RegionById[region]
+	if not def then return false end
+	local requires=def.requires or {}
+	if requires.quest and (p.questCompleted or 0)<requires.quest then return false end
+	for skill,lvl in pairs(requires.skills or {}) do
+		if level(p.xp[skill])<lvl then return false end
+	end
+	return true
+end
+local function regionRequirement(def)
+	local parts={}
+	local requires=def.requires or {}
+	if requires.quest then table.insert(parts,"Complete "..requires.quest.." guild contracts") end
+	local skills={}
+	for skill in pairs(requires.skills or {}) do table.insert(skills,skill) end
+	table.sort(skills)
+	for _,skill in ipairs(skills) do table.insert(parts,skill.." "..requires.skills[skill]) end
+	return table.concat(parts,", ")
+end
+local function regionDenied(region)
+	if region=="Skyreach" then return "Claim the Skyreach charter in your journal before entering this region." end
+	local def=type(region)=="string" and Data.RegionById[region]
+	if not def then return "That region is not on the guild charts." end
+	return def.name.." requires "..regionRequirement(def).."."
+end
 local function applyStats(player,p)
+	local stats=Progression.computeStats(p,os.time())
 	player:SetAttribute("SkyreachUnlocked",(p.questCompleted or 0)>=6)
+	for _,region in ipairs(Data.Regions) do player:SetAttribute(region.id.."Unlocked",regionAllowed(p,region.id)) end
 	local fleet=workerFleet(p)
 	for slot=1,3 do
 		local worker=fleet[slot]
 		player:SetAttribute("Worker"..slot.."Tier",if worker then worker.tier else 0)
 		player:SetAttribute("Worker"..slot.."Resource",if worker then worker.resource else "Ore")
 	end
-	local health=100+(level(p.xp.Combat)-1)*5+(level(p.xp.Farming)-1)*2+(p.companionBond or 0)*2
+	local health=stats.health
 	player:SetAttribute("CompanionBond",p.companionBond or 0)
+	player:SetAttribute("CombatLevel",level(p.xp.Combat))
+	local quest=p.slayerQuest
+	player:SetAttribute("SlayerBossReady",if quest and quest.bossReady then quest.line..":"..quest.tier else "")
 	local humanoid=player.Character and player.Character:FindFirstChildOfClass("Humanoid")
 	if humanoid and humanoid.MaxHealth~=health then
 		local increase=math.max(0,health-humanoid.MaxHealth)
 		humanoid.MaxHealth=health
 		if humanoid.Health>0 then humanoid.Health=math.min(health,humanoid.Health+increase) end
 	end
+	local walk=Progression.walkSpeed(stats.speed)
+	if humanoid and humanoid.WalkSpeed~=walk then humanoid.WalkSpeed=walk end
+	-- Legacy small-number defense (0-7) used by the Warden and the Observatory.
 	local armorDefense=if (p.items.Skyplate or 0)>0 then 2 else 0
 	local defense=math.min(5,math.floor((level(p.xp.Mining)-1)/3))+armorDefense
 	player:SetAttribute("SkillDefense",defense)
 	local enchantDamage=(p.enchantRank or 0)*3
 	player:SetAttribute("EnchantDamage",enchantDamage)
-	return {maxHealth=health,defense=defense,armorDefense=armorDefense,enchantDamage=enchantDamage}
+	return {maxHealth=health,defense=defense,armorDefense=armorDefense,enchantDamage=enchantDamage},stats
 end
 local quests={
 	{title="First sparks",detail="Gather 3 Ore. Reward 10 coins.",ready=function(p) return (p.collection.Ore or 0)>=3 end,coins=10},
@@ -119,9 +249,6 @@ local function regionState(p)
 	return {{id="Skyreach",name="Skyreach Heights",unlocked=(p.questCompleted or 0)>=6,visited=p.skyreachVisited==true,
 		requirement="Claim the Skyreach charter: Mining 3 and 3 lifetime Alloy Ingots.",benefit="Rich Aetherite seams yield one extra mineral per harvest."}}
 end
-local function regionAllowed(p,region)
-	return region=="Skyreach" and (p.questCompleted or 0)>=6
-end
 local function questState(p)
 	local stage=(p.questCompleted or 0)+1
 	local quest=quests[stage]
@@ -136,6 +263,49 @@ local function slayerState(p)
 	return {tier=tier,active=p.huntActive==true,progress=progress,target=config.target,
 		ready=p.huntActive==true and progress>=config.target,completed=p.huntsCompleted or 0,coins=config.coins,xp=config.xp}
 end
+-- snapshot.depth, exactly as docs/DEPTH-CONTRACT.md §3.
+local function depthState(p,stats)
+	local now=os.time()
+	local skills={}
+	for _,skill in ipairs(Data.SkillOrder) do
+		local xp=p.xp[skill] or 0
+		local progress=Progression.progress(xp)
+		skills[skill]={level=progress.level,xp=xp,floor=progress.floor,ceiling=progress.ceiling,fraction=progress.fraction,maxed=progress.maxed}
+	end
+	local total,average=Progression.totals(p)
+	local equipment={}
+	for slot,id in pairs(p.equipment) do equipment[slot]=id end
+	local tools={}
+	for skill in pairs(Data.ToolKind) do tools[skill]=(Progression.bestTool(p,skill)) end
+	local pets={}
+	for index,pet in ipairs(p.pets) do
+		local def=Data.PetById[pet.id]
+		local lvl=Progression.petLevel(pet)
+		table.insert(pets,{id=pet.id,level=lvl,xp=pet.xp or 0,next=if def and lvl<Data.PET_MAX_LEVEL then Data.petXpToNext(lvl,def.rarity) else nil,active=p.activePet==index})
+	end
+	local buffs={}
+	for id,buff in pairs(p.buffs) do
+		if buff.expires and buff.expires>now then buffs[id]={remaining=buff.expires-now,stats=buff.stats} end
+	end
+	local collections={}
+	for _,id in ipairs(Data.CollectionItems) do
+		local tier=Progression.collectionTier(p,id)
+		collections[id]={count=p.collection[id] or 0,tier=tier,nextAt=Progression.collectionThreshold(id,tier+1)}
+	end
+	local lines={}
+	for _,line in ipairs(Data.SlayerOrder) do
+		local xp=p.slayerXp[line] or 0
+		local lvl=Progression.slayerLevel(xp)
+		lines[line]={xp=xp,level=lvl,nextAt=Data.SlayerLevels[lvl+1]}
+	end
+	local regions={}
+	for _,def in ipairs(Data.Regions) do
+		table.insert(regions,{id=def.id,name=def.name,unlocked=regionAllowed(p,def.id),requirement=regionRequirement(def)})
+	end
+	return {skills=skills,totalLevel=total,skillAverage=average,stats=stats,equipment=equipment,tools=tools,
+		accessoryBag=table.clone(p.accessoryBag),activeAccessories=Progression.activeAccessories(p),accessorySlots=Progression.accessorySlots(p),
+		pets=pets,buffs=buffs,collections=collections,bestiary=p.bestiary,slayer={lines=lines,quest=p.slayerQuest},enchants=p.enchants,regions=regions}
+end
 local function snapshot(player,message)
 	local p=profiles[player]
 	if not p then return {loading=true,message="Opening your journal…"} end
@@ -146,35 +316,34 @@ local function snapshot(player,message)
 			readyIn=if item=="ExpeditionRation" then math.max(0,(p.rationReadyAt or 0)-os.time()) else 0}
 	end
 	for skill,xp in pairs(p.xp) do levels[skill]=level(xp) end
+	if notes[p] then
+		local extra=table.concat(notes[p],"   ·   ")
+		notes[p]=nil
+		message=if message and message~="" then message.."   ·   "..extra else extra
+	end
+	local legacyStats,stats=applyStats(player,p)
 	return {xp=p.xp,items=p.items,consumables=provisions,collection=p.collection,coins=p.coins,bank=p.bank,bankRevision=p.bankRevision or 0,worker=p.worker,
 		ironman=p.ironman,levels=levels,enchantRank=p.enchantRank or 0,workerResource=p.workerResource or "Ore",workerReady=ready(p),workers=workerState(p),message=message or "",kills=p.kills,
-		companionBond=p.companionBond or 0,market=marketViews[player],recipes=recipeState(p),regions=regionState(p),stats=applyStats(player,p),quest=questState(p),slayer=slayerState(p),started=p.started,decorations=p.decorations,preview=preview[player]==true}
-end
-local function collect(p,item,count)
-	p.items[item]=(p.items[item] or 0)+count
-	p.collection[item]=(p.collection[item] or 0)+count
-end
-local function spend(p,cost)
-	for item,n in pairs(cost) do
-		if (p.items[item] or 0)<n then return false end
-	end
-	for item,n in pairs(cost) do p.items[item]-=n end
-	return true
+		companionBond=p.companionBond or 0,market=marketViews[player],recipes=recipeState(p),regions=regionState(p),stats=legacyStats,quest=questState(p),slayer=slayerState(p),started=p.started,decorations=p.decorations,preview=preview[player]==true,
+		depth=depthState(p,stats)}
 end
 local function claimWorker(p,slot)
 	slot=slot or 1
 	local w=workerFleet(p)[slot]
-	if not w then return 0,"Ore" end
+	if not w then return 0,"Ore",0 end
 	local count=workerReady(w)
 	local resource=w.resource
+	local xp=0
 	if count>0 then
-		local interval=150-w.tier*30
+		local interval=workerConfig(w).interval
 		w.lastClaim=os.time()-((os.time()-w.lastClaim)%interval)
 		collect(p,resource,count)
-		p.xp[resources[resource]]+=count*3
+		local skill,each=workerXp(resource)
+		xp=count*each
+		if skill then grantXp(p,skill,xp) end
 	end
 	if slot==1 then p.lastClaim=w.lastClaim; p.workerResource=resource end
-	return count,resource
+	return count,resource,xp
 end
 local function persist(player,release)
 	if preview[player] or not profiles[player] then return true end
@@ -182,10 +351,9 @@ local function persist(player,release)
 	local p=profiles[player]
 	if not p then return true end
 	saving[player]=true
-	local payload=table.clone(p)
-	for _,k in ipairs({"items","xp","collection","decorations"}) do payload[k]=table.clone(p[k]) end
-	payload.workers={}
-	for slot,w in ipairs(workerFleet(p)) do payload.workers[slot]=table.clone(w) end
+	workerFleet(p)
+	-- Deep copy: every nested Depth table (pets, buffs, enchants...) is snapshotted.
+	local payload=deepCopy(p)
 	local owned=false
 	local committed
 	local ok=pcall(function()
@@ -200,6 +368,38 @@ local function persist(player,release)
 	if ok and owned then leaseEnd[player]=committed.expires end
 	if not release and ok and not owned and player.Parent then player:Kick("Your journal opened in another server. Please rejoin.") end
 	return ok and owned and (release or committed.expires>os.time())
+end
+-- Older saves gain Depth defaults. Level and collection rewards baseline at the
+-- save's current standing so migration never pays a retroactive windfall.
+local function migrate(profile)
+	profile.decorations=profile.decorations or {}
+	profile.items=profile.items or {}
+	profile.collection=profile.collection or {}
+	profile.xp=profile.xp or {}
+	for _,skill in ipairs(Data.SkillOrder) do
+		if type(profile.xp[skill])~="number" then profile.xp[skill]=0 end
+	end
+	for _,key in ipairs({"equipment","enchants","accessoryBag","pets","buffs","bestiary"}) do
+		if type(profile[key])~="table" then profile[key]={} end
+	end
+	if type(profile.slayerXp)~="table" then profile.slayerXp={} end
+	for _,line in ipairs(Data.SlayerOrder) do profile.slayerXp[line]=tonumber(profile.slayerXp[line]) or 0 end
+	if type(profile.levelRewards)~="table" then
+		profile.levelRewards={}
+		for _,skill in ipairs(Data.SkillOrder) do profile.levelRewards[skill]=level(profile.xp[skill]) end
+	end
+	if type(profile.collectionRewards)~="table" then
+		profile.collectionRewards={}
+		for _,id in ipairs(Data.CollectionItems) do
+			local tier=Progression.collectionTier(profile,id)
+			if tier>0 then profile.collectionRewards[id]=tier end
+		end
+	end
+	if profile.activePet~=nil and not profile.pets[profile.activePet] then profile.activePet=nil end
+	local quest=profile.slayerQuest
+	if quest~=nil and (type(quest)~="table" or not Data.Slayers[quest.line] or not Data.Slayers[quest.line].tiers[quest.tier]) then profile.slayerQuest=nil end
+	profile.version=math.max(tonumber(profile.version) or 1,2)
+	workerFleet(profile)
 end
 local function open(player)
 	local profile,conflict
@@ -220,11 +420,7 @@ local function open(player)
 		return
 	end
 	if not ok then profile=fresh(); preview[player]=true else profile=committed.profile end
-	profile.decorations=profile.decorations or {}
-	workerFleet(profile)
-	for skill in pairs(fresh().xp) do
-		if profile.xp[skill]==nil then profile.xp[skill]=0 end
-	end
+	migrate(profile)
 	profiles[player]=profile
 	for name in pairs(decorations) do player:SetAttribute("Home"..name,profile.decorations[name]==true) end
 	leaseEnd[player]=if preview[player] then os.time()+180 else committed.expires
@@ -248,6 +444,32 @@ local function open(player)
 	if player.Character then task.spawn(spawnCharacter,player.Character) end
 	update:FireClient(player,snapshot(player,if preview[player] then "Studio practice session • saving unavailable" else "Journal opened"))
 end
+local function live(player)
+	local p=profiles[player]
+	if p and (preview[player] or os.time()<(leaseEnd[player] or 0)) then return p end
+	return nil
+end
+-- Legacy provisions (Tonic, ExpeditionRation) keep their recovery rules.
+local function provision(p,humanoid,item)
+	local config=consumables[item]
+	if not config then return "Choose a Tonic or ExpeditionRation." end
+	if humanoid.Health>=humanoid.MaxHealth then return "Already at full health." end
+	if item=="ExpeditionRation" and os.time()<(p.rationReadyAt or 0) then return "Wait "..(p.rationReadyAt-os.time()).." seconds before another ration." end
+	if not spend(p,{[item]=1}) then return "Craft "..item.." in the Forge first." end
+	if item=="ExpeditionRation" then p.rationReadyAt=os.time()+config.recovery end
+	humanoid.Health=math.min(humanoid.MaxHealth,humanoid.Health+config.healing)
+	return item.." restored up to "..config.healing.." health."
+end
+local function isEquipped(p,item)
+	for _,id in pairs(p.equipment) do if id==item then return true end end
+	return table.find(p.accessoryBag,item)~=nil
+end
+local function dropText(drops)
+	local names={}
+	for item,n in pairs(drops) do table.insert(names,"+"..n.." "..(Data.Items[item] and Data.Items[item].name or item)) end
+	table.sort(names)
+	return if #names>0 then " • "..table.concat(names,", ") else ""
+end
 
 local exchangeBusy={}
 local function perform(player,verb,item,prompt)
@@ -259,23 +481,33 @@ local function perform(player,verb,item,prompt)
 	if os.clock()<(cooldown[player] or 0) then return "One moment…" end
 	cooldown[player]=os.clock()+(if prompt then 0.65 else 0.24)
 	local region=prompt and prompt:GetAttribute("IsleRegion")
-	if region and not regionAllowed(p,region) then return "Claim the Skyreach charter in your journal before entering this region." end
+	if region and not regionAllowed(p,region) then return regionDenied(region) end
 	if verb=="market" or verb=="list" or verb=="buy" or verb=="proceeds" or verb=="cancel" then
 		return exchangeAction(player,verb,item or "Ore")
-	elseif verb=="gather" and prompt and gatheringSkills[item] then
-		local skill=gatheringSkills[item]
-		if item=="Aetherite" and level(p.xp.Mining)<3 then return "Aetherite requires Mining 3. Train on Ore in Quarry Cay." end
+	elseif verb=="station" and prompt then
+		local stations={Forge="Forge open • smelt ingots and forge gear.",Hearth="Hearth lit • cook meals and feasts.",
+			Cauldron="Cauldron bubbling • brew potions.",Workbench="Workbench ready • craft accessories.",Slayer="The Slayer master awaits your contract."}
+		return stations[item] or "Station ready."
+	elseif verb=="gather" and prompt and type(item)=="string" and Data.ResourceSkill[item] then
+		local resource=Progression.resource(item)
+		local skill=resource.skill
+		-- Legacy bonuses stack into the harvest base before fortune.
+		local bonus=0
+		if resource.index==1 and level(p.xp[skill])>=3 then bonus+=1 end
 		local reinforced=(p.items.ReinforcedPickaxe or 0)>0
-		local amount=1+(if item~="Aetherite" and level(p.xp[skill])>=3 then 1 else 0)
-		if item=="Ore" then amount+=if reinforced then 2 elseif (p.items.Pickaxe or 0)>0 then 1 else 0 end
-		if item=="Aetherite" and reinforced then amount+=1 end
-		if item=="Aetherite" and region=="Skyreach" then amount+=1 end
-		if workspace:GetAttribute("FestivalResource")==item then amount+=1 end
-		collect(p,item,amount)
-		local experience=if item=="Aetherite" then 18 else 12
-		p.xp[skill]+=experience
+		if item=="Ore" then bonus+=if reinforced then 2 elseif (p.items.Pickaxe or 0)>0 then 1 else 0 end
+		if item=="Aetherite" and reinforced then bonus+=1 end
+		if region=="Skyreach" then bonus+=1 end
+		if workspace:GetAttribute("FestivalResource")==item then bonus+=1 end
+		local ok,result=Progression.harvest(p,item,Progression.computeStats(p,os.time()),roll,bonus)
+		if not ok then
+			if item=="Aetherite" then return result.." Train on Ore in Quarry Cay." end
+			return result
+		end
+		collect(p,item,result.amount)
+		grantXp(p,skill,result.xp)
 		p.started=true
-		return "+"..amount.." "..item.."   ·   +"..experience.." "..skill.." XP"
+		return "+"..result.amount.." "..resource.name.."   ·   +"..result.xp.." "..skill.." XP"
 	elseif verb=="explore" and prompt and item=="Skyreach" and region=="Skyreach" then
 		if p.skyreachVisited then return "Skyreach is already charted. Gather rich Aetherite or continue your guild contracts." end
 		p.skyreachVisited=true
@@ -294,7 +526,7 @@ local function perform(player,verb,item,prompt)
 		p.huntProgress=0
 		p.huntsCompleted=(p.huntsCompleted or 0)+1
 		p.coins+=hunt.coins
-		p.xp.Combat+=hunt.xp
+		grantXp(p,"Combat",hunt.xp)
 		return "Hunt complete • +"..hunt.coins.." coins and +"..hunt.xp.." Combat XP."
 	elseif verb=="quest" then
 		local state=questState(p)
@@ -303,7 +535,7 @@ local function perform(player,verb,item,prompt)
 		p.questCompleted=state.stage
 		p.started=true
 		p.coins+=quest.coins or 0
-		p.xp.Smithing+=quest.xp or 0
+		grantXp(p,"Smithing",quest.xp or 0)
 		if quest.tonics then collect(p,"Tonic",quest.tonics) end
 		return "Contract complete • "..quest.title
 	elseif verb=="decorate" and decorations[item] then
@@ -317,7 +549,7 @@ local function perform(player,verb,item,prompt)
 		if (p.companionBond or 0)>=5 then return "Your Tidewing companion is fully bonded." end
 		if not spend(p,{Fish=2}) then return "Feed your Tidewing 2 Fish to build its bond." end
 		p.companionBond=(p.companionBond or 0)+1
-		p.xp.Taming+=20
+		grantXp(p,"Taming",20)
 		p.started=true
 		return "Tidewing bond "..p.companionBond.."/5 • +20 Taming XP and +2 maximum health."
 	elseif verb=="enchant" then
@@ -325,7 +557,7 @@ local function perform(player,verb,item,prompt)
 		if (p.enchantRank or 0)>=3 then return "Your weapon enchantment is at maximum rank." end
 		if not spend(p,{Shard=2,Herb=4}) then return "Each enchantment needs 2 Shard and 4 Herb." end
 		p.enchantRank=(p.enchantRank or 0)+1
-		p.xp.Enchanting+=30
+		grantXp(p,"Enchanting",30)
 		return "Weapon enchantment rank "..p.enchantRank.." • +30 Enchanting XP."
 	elseif verb=="craft" and recipes[item] then
 		local skill=if consumables[item] then "Alchemy" else "Smithing"
@@ -337,9 +569,131 @@ local function perform(player,verb,item,prompt)
 		if not spend(p,recipes[item]) then return "Gather the ingredients in your recipe journal." end
 		collect(p,item,1)
 		local experience=if item=="AlloyIngot" then 16 else 24
-		p.xp[skill]+=experience
+		grantXp(p,skill,experience)
 		p.started=true
 		return item.." crafted   ·   +"..experience.." "..skill.." XP"
+	elseif verb=="craft" and validId(item) and Data.Recipes[item] then
+		local recipe=Data.Recipes[item]
+		local ok,why=Progression.canCraft(p,item)
+		if not ok then return why end
+		if not spend(p,recipe.costs) then return "Gather the ingredients in your recipe journal." end
+		collect(p,recipe.output,recipe.amount)
+		grantXp(p,recipe.skill,recipe.xp)
+		p.started=true
+		return Data.Items[recipe.output].name.." crafted   ·   +"..recipe.xp.." "..recipe.skill.." XP"
+	elseif verb=="equip" then
+		local def=validId(item) and Data.Items[item]
+		if not def or not gearSlots[def.slot] then return "Choose a weapon or armor piece to equip. Tools are used automatically." end
+		if (p.items[item] or 0)<1 then return "You do not own "..def.name.."." end
+		local allowed,missing=Progression.meetsRequirements(p,def.requires)
+		if not allowed then return def.name.." requires "..missing.."." end
+		if p.equipment[def.slot]==item then return def.name.." is already equipped." end
+		p.equipment[def.slot]=item
+		return "Equipped "..def.name.."."
+	elseif verb=="unequip" then
+		if type(item)~="string" or not gearSlots[item] then return "Choose weapon, helmet, chest, legs or boots." end
+		local id=p.equipment[item]
+		if not id then return "Nothing is equipped in that slot." end
+		p.equipment[item]=nil
+		return "Unequipped "..(Data.Items[id] and Data.Items[id].name or id).."."
+	elseif verb=="consume" then
+		local def=validId(item) and Data.Items[item]
+		if not def or def.kind~="consumable" then return "Choose food, a potion or a feast." end
+		if consumables[item] then return provision(p,humanoid,item) end
+		if (p.items[item] or 0)<1 then return "You have no "..def.name.."." end
+		if def.buff then
+			spend(p,{[item]=1})
+			p.buffs[item]={expires=os.time()+def.buff.duration,stats=table.clone(def.buff.stats)}
+			return def.name.." active for "..(def.buff.duration//60).." minutes."
+		end
+		if not def.heal then return "Nothing happens." end
+		if humanoid.Health>=humanoid.MaxHealth then return "Already at full health." end
+		if os.time()<(p.mealReadyAt or 0) then return "Wait "..(p.mealReadyAt-os.time()).." seconds before eating again." end
+		spend(p,{[item]=1})
+		if def.recovery then p.mealReadyAt=os.time()+def.recovery end
+		humanoid.Health=math.min(humanoid.MaxHealth,humanoid.Health+def.heal)
+		return def.name.." restored up to "..def.heal.." health."
+	elseif verb=="accessory" then
+		local def=validId(item) and Data.Items[item]
+		if not def or def.kind~="accessory" then return "Choose an accessory." end
+		local index=table.find(p.accessoryBag,item)
+		if index then
+			table.remove(p.accessoryBag,index)
+			return def.name.." removed from your accessory bag."
+		end
+		if (p.items[item] or 0)<1 then return "You do not own "..def.name.."." end
+		local slots=Progression.accessorySlots(p)
+		if #p.accessoryBag>=slots then return "Accessory bag full ("..slots.." slots). Raise Combat to unlock more." end
+		table.insert(p.accessoryBag,item)
+		return def.name.." added to your accessory bag."
+	elseif verb=="petSummon" then
+		local index=type(item)=="string" and #item<=3 and string.match(item,"^%d+$") and tonumber(item)
+		if not index then return "Choose a pet to summon." end
+		if index==0 then
+			if not p.activePet then return "No pet is summoned." end
+			p.activePet=nil
+			return "Pet dismissed."
+		end
+		local pet=p.pets[index]
+		if not pet then return "Choose a pet you have adopted." end
+		if p.activePet==index then return "That pet is already summoned." end
+		p.activePet=index
+		return Data.PetById[pet.id].name.." summoned."
+	elseif verb=="petAdopt" then
+		local def=validId(item) and Data.Items[item]
+		local petDef=def and def.kind=="pet" and Data.PetById[def.pet]
+		if not petDef then return "Choose a pet item to adopt." end
+		if (p.items[item] or 0)<1 then return "You do not own "..def.name.."." end
+		if #p.pets>=MAX_PETS then return "Your pet menu is full." end
+		spend(p,{[item]=1})
+		table.insert(p.pets,{id=petDef.id,level=1,xp=0})
+		grantXp(p,"Taming",25*Data.Rarity[petDef.rarity].rank)
+		p.started=true
+		return petDef.name.." adopted. Summon it from your pet menu."
+	elseif verb=="enchantItem" then
+		local target,enchantId
+		if validId(item) then target,enchantId=string.match(item,"^(%w+):(%w+)$") end
+		local def=target and Data.Items[target]
+		local enchant=enchantId and Data.Enchants[enchantId]
+		if not def or not enchant then return "Choose an item and an enchantment." end
+		if (p.items[target] or 0)<1 then return "You do not own "..def.name.."." end
+		if enchant.appliesTo~=def.kind then return enchant.name.." cannot be applied to "..def.name.."." end
+		local current=p.enchants[target] and p.enchants[target][enchantId] or 0
+		local nextLevel=current+1
+		if nextLevel>enchant.maxLevel then return enchant.name.." is already at maximum level." end
+		local need=Data.enchantSkillLevel(enchant,nextLevel)
+		if level(p.xp.Enchanting)<need then return enchant.name.." "..nextLevel.." requires Enchanting "..need.."." end
+		local cost=Data.enchantCost(nextLevel)
+		local materials={}
+		for material,n in pairs(cost) do if material~="coins" then materials[material]=n end end
+		if p.coins<(cost.coins or 0) then return enchant.name.." "..nextLevel.." costs "..(cost.coins or 0).." coins." end
+		if not spend(p,materials) then return enchant.name.." "..nextLevel.." needs "..(cost.ArcaneDust or 0).." Arcane Dust." end
+		p.coins-=cost.coins or 0
+		p.enchants[target]=p.enchants[target] or {}
+		p.enchants[target][enchantId]=nextLevel
+		local xp=Data.enchantXp(nextLevel)
+		grantXp(p,"Enchanting",xp)
+		p.started=true
+		return def.name.." enchanted with "..enchant.name.." "..nextLevel.." • +"..xp.." Enchanting XP."
+	elseif verb=="slayerBegin" then
+		local lineId,raw
+		if validId(item) then lineId,raw=string.match(item,"^(%a+):(%d)$") end
+		local line=lineId and Data.Slayers[lineId]
+		local tierIndex=raw and tonumber(raw)
+		local tier=line and tierIndex and line.tiers[tierIndex]
+		if not tier then return "Choose a slayer line and tier." end
+		if p.slayerQuest then return "Finish or abandon your current slayer quest first." end
+		local need=math.max(line.requires.Combat or 1,tier.combatLevel)
+		if level(p.xp.Combat)<need then return line.name.." tier "..tierIndex.." requires Combat "..need.."." end
+		if p.coins<tier.cost then return "Starting this quest costs "..tier.cost.." coins." end
+		p.coins-=tier.cost
+		p.slayerQuest={line=lineId,tier=tierIndex,progress=0,needed=tier.spawnXp,bossReady=false}
+		p.started=true
+		return "Slayer quest started: slay "..tier.spawnXp.." XP of "..line.line.." creatures to summon the "..line.name.."."
+	elseif verb=="slayerAbandon" then
+		if not p.slayerQuest then return "You have no slayer quest." end
+		p.slayerQuest=nil
+		return "Slayer quest abandoned. The fee is not refunded."
 	elseif verb=="workerResource" or verb=="workerAssign" then
 		local slot,resource=1,item
 		if verb=="workerAssign" then
@@ -348,7 +702,8 @@ local function perform(player,verb,item,prompt)
 		end
 		local w=slot and workerFleet(p)[slot]
 		if not w then return "Build this worker first." end
-		if not resources[resource] then return "Choose Ore, Timber, Herb or Fish." end
+		local allowed,why=workerAllowed(p,resource)
+		if not allowed then return why end
 		if resource==w.resource then return "Worker already gathering "..resource.."." end
 		local count,previous=claimWorker(p,slot)
 		w.resource=resource
@@ -371,9 +726,15 @@ local function perform(player,verb,item,prompt)
 		local slot=tonumber(item)
 		local w=slot and workerFleet(p)[slot]
 		if not w then return "Build this worker first." end
-		if w.tier>=3 then return "Worker is at maximum tier." end
+		if w.tier>=#Data.WorkerTiers then return "Worker is at maximum tier." end
 		local tier=w.tier+1
-		if not spend(p,{Timber=5*tier,Ore=3*tier}) then return "Upgrade needs "..(5*tier).." Timber and "..(3*tier).." Ore." end
+		local cost=workerCost(tier)
+		if not spend(p,cost) then
+			local parts={}
+			for material,n in pairs(cost) do table.insert(parts,n.." "..material) end
+			table.sort(parts)
+			return "Upgrade needs "..table.concat(parts,", ").."."
+		end
 		claimWorker(p,slot)
 		w.tier=tier
 		w.lastClaim=os.time()
@@ -382,16 +743,28 @@ local function perform(player,verb,item,prompt)
 	elseif verb=="claim" or verb=="workerClaim" then
 		local slot=if verb=="claim" then 1 else tonumber(item)
 		if not slot or not workerFleet(p)[slot] then return "Build this worker first." end
-		local n,resource=claimWorker(p,slot)
+		local n,resource,xp=claimWorker(p,slot)
 		if n<1 then return "Next resource is still being gathered." end
-		return "Collected "..n.." worker "..resource.." • +"..(n*3).." "..resources[resource].." XP."
+		local skill=workerXp(resource)
+		return "Collected "..n.." worker "..resource.." • +"..xp.." "..(skill or "").." XP."
 	elseif verb=="sell" then
-		local total=0
-		for raw,price in pairs(prices) do
-			if not item or raw==item then total+=(p.items[raw] or 0)*price; p.items[raw]=0 end
+		if item==nil or prices[item] then
+			local total=0
+			for raw,price in pairs(prices) do
+				if not item or raw==item then total+=(p.items[raw] or 0)*price; p.items[raw]=0 end
+			end
+			p.coins+=total
+			return "Merchant paid "..total.." coins."
 		end
+		local def=validId(item) and Data.Items[item]
+		if not def then return "The merchant does not buy that." end
+		local count=p.items[item] or 0
+		if count<1 then return "You have no "..def.name.." to sell." end
+		if isEquipped(p,item) then return "Unequip "..def.name.." before selling it." end
+		local total=count*(def.value or 1)
+		p.items[item]=0
 		p.coins+=total
-		return "Merchant paid "..total.." coins."
+		return "Merchant paid "..total.." coins for "..count.." "..def.name.."."
 	elseif verb=="deposit" or verb=="bank" or verb=="withdraw" then
 		local source=if verb=="withdraw" then "bank" else "coins"
 		local destination=if source=="bank" then "coins" else "bank"
@@ -419,15 +792,7 @@ local function perform(player,verb,item,prompt)
 		p.ironman=true
 		return "Ironman journal sealed. Your Warden hunts are solo."
 	elseif verb=="heal" then
-		item=item or "Tonic"
-		local provision=consumables[item]
-		if not provision then return "Choose a Tonic or ExpeditionRation." end
-		if humanoid.Health>=humanoid.MaxHealth then return "Already at full health." end
-		if item=="ExpeditionRation" and os.time()<(p.rationReadyAt or 0) then return "Wait "..(p.rationReadyAt-os.time()).." seconds before another ration." end
-		if not spend(p,{[item]=1}) then return "Craft "..item.." in the Forge first." end
-		if item=="ExpeditionRation" then p.rationReadyAt=os.time()+provision.recovery end
-		humanoid.Health=math.min(humanoid.MaxHealth,humanoid.Health+provision.healing)
-		return item.." restored up to "..provision.healing.." health."
+		return provision(p,humanoid,item or "Tonic")
 	elseif verb=="fight" and prompt then
 		p.started=true
 		local now=os.clock()
@@ -438,7 +803,9 @@ local function perform(player,verb,item,prompt)
 		if not boss or now-boss.last>30 then boss={hp=50,hits={},last=now}; arena[key]=boss end
 		if boss.hp<=0 then return "The Warden is reforming." end
 		boss.last=now
-		boss.hp-=8+level(p.xp.Combat)+(if (p.items.Blade or 0)>0 then 8 else 0)+(if (p.items.Stormblade or 0)>0 then 12 else 0)+(p.enchantRank or 0)*3
+		-- Depth damage formula, scaled to the 50-health starter Warden.
+		local melee=Progression.meleeDamage(Progression.computeStats(p,os.time()),roll)
+		boss.hp-=8+level(p.xp.Combat)+math.floor(melee/4)
 		boss.hits[player]=true
 		if boss.hp>0 then
 			humanoid:TakeDamage(math.max(1,9-(player:GetAttribute("SkillDefense") or 0)))
@@ -451,7 +818,7 @@ local function perform(player,verb,item,prompt)
 			local arenaPart=prompt:FindFirstAncestorWhichIsA("BasePart")
 			if q and (preview[ally] or os.time()<(leaseEnd[ally] or 0)) and allyHumanoid and allyHumanoid.Health>0
 				and allyRoot and arenaPart and (allyRoot.Position-arenaPart.Position).Magnitude<=40 then
-				q.xp.Combat+=40
+				grantXp(q,"Combat",40)
 				q.coins+=15
 				q.kills+=1
 				if q.huntActive then q.huntProgress=math.min(slayerState(q).target,(q.huntProgress or 0)+1) end
@@ -465,10 +832,11 @@ local function perform(player,verb,item,prompt)
 	return "Unknown action."
 end
 action.OnServerInvoke=function(player,verb,item)
-	if type(verb)~="string" or (item~=nil and type(item)~="string") then return nil end
+	if type(verb)~="string" or #verb>32 or (item~=nil and type(item)~="string") then return nil end
 	if os.clock()<(lastRead[player] or 0) then return nil end
 	lastRead[player]=os.clock()+0.08
 	if verb=="state" then return snapshot(player) end
+	if item~=nil and #item>64 then return snapshot(player,"That request is too long.") end
 	return snapshot(player,perform(player,verb,item,nil))
 end
 action.Parent=ReplicatedStorage
@@ -498,6 +866,24 @@ Players.PlayerRemoving:Connect(close)
 task.spawn(function()
 	while task.wait(55) do for player in pairs(profiles) do task.spawn(persist,player,false) end end
 end)
+-- Timed buffs: drop expired entries and re-apply stats so Health/Speed settle.
+task.spawn(function()
+	while task.wait(5) do
+		local now=os.time()
+		for player,p in pairs(profiles) do
+			local expired={}
+			for id,buff in pairs(p.buffs or {}) do
+				if not buff.expires or buff.expires<=now then table.insert(expired,id) end
+			end
+			if #expired>0 then
+				for _,id in ipairs(expired) do p.buffs[id]=nil end
+				local names={}
+				for _,id in ipairs(expired) do table.insert(names,Data.Items[id] and Data.Items[id].name or id) end
+				update:FireClient(player,snapshot(player,table.concat(names,", ").." wore off."))
+			end
+		end
+	end
+end)
 game:BindToClose(function()
 	local pending=0
 	for player in pairs(profiles) do
@@ -512,13 +898,13 @@ expedition.Event:Connect(function(player)
 	local p=profiles[player]
 	if not p or (not preview[player] and os.time()>=(leaseEnd[player] or 0)) then return end
 	p.started=true
-	p.xp.Combat+=80
-	p.xp.Dungeoneering+=60
+	grantXp(p,"Combat",80)
+	grantXp(p,"Dungeoneering",60)
 	p.coins+=35
 	collect(p,"Stormglass",1)
 	update:FireClient(player,snapshot(player,"Expedition cleared • Stormglass, 35 coins, 80 Combat and 60 Dungeoneering XP"))
 end)
-expedition.Parent=game:GetService("ServerStorage")
+expedition.Parent=ServerStorage
 
 -- World transit uses the same authoritative unlock as region resource prompts.
 local regionAccess=Instance.new("BindableFunction")
@@ -529,9 +915,80 @@ regionAccess.OnInvoke=function(player,region)
 	local humanoid=player.Character and player.Character:FindFirstChildOfClass("Humanoid")
 	if not humanoid or humanoid.Health<=0 then return {allowed=false,message="Return to your island first."} end
 	local allowed=regionAllowed(p,region)
-	return {allowed=allowed,message=if allowed then "Skyreach charter accepted." else "Claim the Skyreach charter in your journal: Mining 3 and 3 lifetime Alloy Ingots."}
+	if region=="Skyreach" then
+		return {allowed=allowed,message=if allowed then "Skyreach charter accepted." else "Claim the Skyreach charter in your journal: Mining 3 and 3 lifetime Alloy Ingots."}
+	end
+	if not allowed then return {allowed=false,message=regionDenied(region)} end
+	return {allowed=true,message="Welcome to "..Data.RegionById[region].name.."."}
 end
-regionAccess.Parent=game:GetService("ServerStorage")
+regionAccess.Parent=ServerStorage
+
+-- Server-to-server bridge consumed by Combat (docs/DEPTH-CONTRACT.md §4).
+local bridge=Instance.new("BindableFunction")
+bridge.Name="IsleBridge"
+local function notify(player,message)
+	if player.Parent then update:FireClient(player,snapshot(player,message)) end
+end
+bridge.OnInvoke=function(op,player,payload)
+	if type(op)~="string" or player==nil then return nil end
+	if type(payload)~="table" then payload={} end
+	if op=="damage" then
+		local raw=payload.amount
+		if type(raw)~="number" or raw~=raw or raw<=0 then return 0 end
+		local humanoid=player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+		if not humanoid or humanoid.Health<=0 then return 0 end
+		local p=profiles[player]
+		local defense=if p then Progression.computeStats(p,os.time()).defense else 0
+		local amount=Progression.damageTaken(math.min(raw,1e9),defense)
+		humanoid:TakeDamage(amount)
+		return amount
+	end
+	local p=live(player)
+	if not p then return nil end
+	if op=="stats" then
+		return {stats=Progression.computeStats(p,os.time()),combatLevel=level(p.xp.Combat),ironman=p.ironman==true}
+	elseif op=="kill" then
+		local monsterId=payload.monster
+		local monster=validId(monsterId) and Data.Monsters[monsterId]
+		if not monster then return nil end
+		local stats=Progression.computeStats(p,os.time())
+		p.started=true
+		grantXp(p,"Combat",monster.xp)
+		p.coins+=monster.coins
+		local drops=Progression.rollDrops(monster.drops,stats.magicFind,roll,stats.petLuck)
+		for item,n in pairs(drops) do collect(p,item,n) end
+		p.bestiary[monsterId]=(p.bestiary[monsterId] or 0)+1
+		local quest=p.slayerQuest
+		if quest and not quest.bossReady and monster.slayer==quest.line then
+			quest.progress=math.min(quest.needed,quest.progress+monster.xp)
+			if quest.progress>=quest.needed then
+				quest.bossReady=true
+				note(p,"The "..Data.Slayers[quest.line].name.." stirs! Defeat it to finish your slayer quest.")
+			end
+		end
+		notify(player,monster.name.." slain • +"..monster.coins.." coins, +"..monster.xp.." Combat XP"..dropText(drops))
+		return {drops=drops,bossReady=quest~=nil and quest.bossReady==true}
+	elseif op=="slayerBoss" then
+		local quest=p.slayerQuest
+		local result=payload.result
+		if not quest or not quest.bossReady or (result~="win" and result~="fail") then return {} end
+		p.slayerQuest=nil
+		local line=Data.Slayers[quest.line]
+		if result=="fail" then
+			notify(player,"The "..line.name.." escaped. Your slayer quest failed.")
+			return {}
+		end
+		local tier=line.tiers[quest.tier]
+		local stats=Progression.computeStats(p,os.time())
+		p.slayerXp[quest.line]=(p.slayerXp[quest.line] or 0)+tier.xp
+		local drops=Progression.rollDrops(tier.drops,stats.magicFind,roll,stats.petLuck)
+		for item,n in pairs(drops) do collect(p,item,n) end
+		notify(player,line.name.." defeated • +"..tier.xp.." "..quest.line.." Slayer XP"..dropText(drops))
+		return {drops=drops}
+	end
+	return nil
+end
+bridge.Parent=ServerStorage
 
 -- Only server co-op code can seal mode selection; personal inventory stays private.
 local coopProfile=Instance.new("BindableFunction")
@@ -545,7 +1002,8 @@ coopProfile.OnInvoke=function(player,seal)
 	end
 	return {ready=true,ironman=p.ironman==true,preview=preview[player]==true}
 end
-coopProfile.Parent=game:GetService("ServerStorage")
+coopProfile.Parent=ServerStorage
+
 
 
 -- The player journal reserves the payment before the market is touched. A receipt
@@ -717,9 +1175,3 @@ resumeExchange=function(player)
 		if (p.pricedPending or p.pending)==order then break end
 	end
 end
-
-
-
-
-
-

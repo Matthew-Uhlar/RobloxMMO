@@ -26,6 +26,14 @@ roblox.implementProperty("ProximityPrompt", "Triggered", function(prompt)
 end)
 local players={PlayerAdded=signal(),PlayerRemoving=signal(),GetPlayers=function() return {} end}
 local tags={}
+-- Shared data is the real module; region access is a recording double.
+local Data=luau.load(fs.readFile("shared/GameData.lua"))()
+local dataModule={Name="AetherData"}
+local accessCalls,allowRegion={},{}
+local regionAccess={Invoke=function(_,who,regionId)
+	table.insert(accessCalls,{who,regionId})
+	return {allowed=allowRegion[regionId]==true,message="Locked: "..tostring(regionId)}
+end}
 local services={
 	Players=players,
 	Lighting=roblox.Instance.new("Lighting"),
@@ -33,6 +41,8 @@ local services={
 		tags[tag]=tags[tag] or {}
 		table.insert(tags[tag],obj)
 	end},
+	ReplicatedStorage={WaitForChild=function(_,name) return if name=="AetherData" then dataModule else nil end},
+	ServerStorage={FindFirstChild=function(_,name) return if name=="IsleRegionAccess" then regionAccess else nil end},
 }
 local world=roblox.Instance.new("Workspace")
 local environment={
@@ -40,11 +50,17 @@ local environment={
 	workspace=world,Instance=roblox.Instance,Vector3=roblox.Vector3,
 	Vector2=roblox.Vector2,CFrame=roblox.CFrame,Color3=roblox.Color3,
 	UDim2=roblox.UDim2,Enum=roblox.Enum,task={spawn=function(fn,...) fn(...) end},
+	NumberRange=roblox.NumberRange,NumberSequence=roblox.NumberSequence,ColorSequence=roblox.ColorSequence,
+	require=function(module) assert(module==dataModule,"world requires only AetherData") return Data end,
 }
 local source=fs.readFile("world.server.lua")
 -- Lune does not synthesize BasePart.Position from CFrame as the engine does.
 source=source:gsub("plans%.Position","plans.CFrame.Position")
 luau.load(source,{environment=environment,injectGlobals=true})()
+local staticParts,staticLights=0,0
+for _,obj in world:GetDescendants() do
+	if obj:IsA("BasePart") then staticParts+=1 elseif obj:IsA("Light") then staticLights+=1 end
+end
 local function player(id,attributes)
 	local changed={}
 	local p={UserId=id,CharacterAdded=signal(),attributes=attributes or {}}
@@ -236,4 +252,212 @@ for _,name in meshNames do
 	end
 	print(name..": "..#vertices.." vertices / "..#faces.." triangles")
 end
+
+-- Depth update: regions, tiered nodes, monster grounds, stations, transit.
+local Vec=roblox.Vector3.new
+local VERB={Mining="Mine",Woodcutting="Chop",Fishing="Fish",Farming="Harvest"}
+local function islandOf(obj)
+	local node=obj
+	while node and node.Parent~=archipelago do node=node.Parent end
+	return node
+end
+local function onIsland(isle,pos,margin)
+	local ground=isle and isle:FindFirstChild("Meadow")
+	local radius=isle and isle:GetAttribute("IslandRadius")
+	if not ground or not radius then return false end
+	local c=ground.CFrame.Position
+	return Vec(pos.X-c.X,0,pos.Z-c.Z).Magnitude<=radius-(margin or 0) and pos.Y>=c.Y-1 and pos.Y<=c.Y+12
+end
+local function onRegion(regionId,pos,margin)
+	for _,isle in archipelago:GetChildren() do
+		if isle:GetAttribute("RegionId")==regionId and onIsland(isle,pos,margin) then return true end
+	end
+	return false
+end
+check(staticParts<2500,"static world stays under the 2500 part budget ("..staticParts..")")
+for _,obj in world:GetDescendants() do
+	if obj:IsA("BasePart") then check(obj.Anchored,"every world part is anchored") end
+end
+for _,region in Data.Regions do
+	local found=false
+	for _,isle in archipelago:GetChildren() do if isle:GetAttribute("RegionId")==region.id then found=true end end
+	check(found,region.id.." has a built island")
+end
+-- Every resource tier: at least one correctly attributed gather node.
+local gatherNodes={}
+for _,obj in world:GetDescendants() do
+	if obj:IsA("ProximityPrompt") and obj:GetAttribute("IsleAction")=="gather" and not obj:GetAttribute("OwnerUserId") then
+		local id=obj:GetAttribute("IsleItem")
+		gatherNodes[id]=gatherNodes[id] or {}
+		table.insert(gatherNodes[id],obj)
+	end
+end
+local tierCount,nodeCount=0,0
+for skill,tiers in Data.ResourceTiers do
+	for _,def in tiers do
+		tierCount+=1
+		local nodes=gatherNodes[def.id]
+		check(nodes~=nil and #nodes>=1,def.id.." has a gather node")
+		local formatted,ungated=false,false
+		for _,q in nodes do
+			nodeCount+=1
+			local target=q.Parent:GetAttribute("ResourceId")
+			check(target==nil or target==def.id,def.id.." node target matches")
+			if q.ObjectText==def.name.." (Lv "..def.level..")" and q.ActionText==VERB[skill] then formatted=true end
+			local isle=islandOf(q)
+			local host=isle and isle:GetAttribute("RegionId")
+			check(host~=nil,def.id.." node sits on a region island")
+			local region=q:GetAttribute("IsleRegion")
+			if region then
+				check(Data.RegionById[region]~=nil,def.id.." node names a valid region")
+				check(region==host,def.id.." node region matches its island")
+			else
+				ungated=true
+			end
+			if next(Data.RegionById[host].requires) then check(region==host,def.id.." node on a gated island carries IsleRegion") end
+			check(onIsland(isle,q.Parent.CFrame.Position,1),def.id.." node stands on its island")
+		end
+		check(formatted,def.id.." has a '"..VERB[skill].."' prompt labelled with name and level")
+		if def.level<=3 then check(ungated,def.id.." is available near home without a gate") end
+		if def.level>=30 then check(not ungated,def.id.." lives in a gated region") end
+	end
+end
+-- Every monster: spawn markers in its region on open ground.
+local spawnFolder=world:FindFirstChild("MonsterSpawns")
+check(spawnFolder~=nil and spawnFolder:IsA("Folder"),"Workspace.MonsterSpawns folder exists")
+local markerCount,markers={},0
+local floors={Meadow=true,["Floating foundation"]=true,["Grassy hillock"]=true,["Edge guard"]=true,["Hall floor"]=true,["Guild court"]=true,["Cavern roof"]=true}
+for _,marker in spawnFolder:GetChildren() do
+	markers+=1
+	check(marker:IsA("BasePart") and marker.Anchored and not marker.CanCollide and not marker.CanTouch and marker.Transparency==1,"spawn marker is invisible, anchored and non-colliding")
+	local id=marker:GetAttribute("MonsterId")
+	local def=Data.Monsters[id]
+	check(def~=nil,"spawn marker names a known monster")
+	check(marker:GetAttribute("Region")==def.region,id.." marker region matches data")
+	local count=marker:GetAttribute("Count")
+	check(type(count)=="number" and count>=1 and count<=4,id.." marker has a sane count")
+	local pos=marker.CFrame.Position
+	check(onRegion(def.region,pos,marker:GetAttribute("Radius") or 0),id.." marker and its roam radius sit inside "..def.region)
+	local isle
+	for _,candidate in archipelago:GetChildren() do
+		if candidate:GetAttribute("RegionId")==def.region and onIsland(candidate,pos) then isle=candidate end
+	end
+	for _,obj in isle:GetDescendants() do
+		if obj:IsA("BasePart") and obj.CanCollide and not floors[obj.Name] then
+			local d=obj.CFrame.Position-pos
+			check(Vec(d.X,0,d.Z).Magnitude>=4.5,id.." spawns on open ground (clear of "..obj.Name..")")
+		end
+	end
+	markerCount[id]=(markerCount[id] or 0)+1
+end
+for id in Data.Monsters do check(markerCount[id]~=nil,id.." has a spawn marker") end
+-- Warps: every beacon asks the authoritative region check with a valid id.
+local function traveller()
+	local t={attributes={}}
+	function t:GetAttribute(key) return self.attributes[key] end
+	function t:SetAttribute(key,value) self.attributes[key]=value end
+	return t
+end
+local function standAt(t,trigger)
+	local root={Position=trigger.CFrame.Position}
+	local hum={Health=100}
+	t.landed=nil
+	t.Character={
+		FindFirstChild=function(_,name) return if name=="HumanoidRootPart" then root else nil end,
+		FindFirstChildOfClass=function(_,class) return if class=="Humanoid" then hum else nil end,
+		PivotTo=function(_,cf) t.landed=cf.Position end,
+	}
+end
+local warpedTo,returns,warps={},0,0
+for _,q in world:GetDescendants() do
+	if not q:IsA("ProximityPrompt") then continue end
+	local id=q:GetAttribute("IsleWarpRegion")
+	if id then
+		warps+=1
+		check(Data.RegionById[id]~=nil,"warp names a valid region id")
+		local t=traveller()
+		standAt(t,q.Parent)
+		allowRegion[id]=false
+		local before=#accessCalls
+		q.Triggered:Fire(t)
+		check(#accessCalls==before+1 and accessCalls[#accessCalls][1]==t and accessCalls[#accessCalls][2]==id,id.." warp calls IsleRegionAccess with its region id")
+		check(t.landed==nil,id.." locked warp does not move the player")
+		if id~="Skyreach" then check(t.attributes.IsleRegionNotice=="Locked: "..id,id.." locked warp relays the server message") end
+		allowRegion[id]=true
+		q.Triggered:Fire(t)
+		check(t.landed~=nil and onRegion(id,t.landed,2),id.." unlocked warp lands on its region island")
+		local far=traveller()
+		standAt(far,{CFrame=q.Parent.CFrame+Vec(30,0,0)})
+		q.Triggered:Fire(far)
+		check(far.landed==nil,id.." warp requires standing at the beacon")
+		warpedTo[id]=true
+	elseif q:GetAttribute("IsleWarpReturn") then
+		returns+=1
+		local t=traveller()
+		standAt(t,q.Parent)
+		q.Triggered:Fire(t)
+		check(t.landed~=nil and onRegion("Hub",t.landed,2),"return beacon lands on the Guild Terrace")
+	end
+end
+for _,region in Data.Regions do
+	if next(region.requires) then check(warpedTo[region.id],region.id.." is reachable by a gated warp") end
+end
+check(returns>=4,"every depth region has a return beacon")
+-- Void safety: every region island is bridged or a warp destination; depth isles are guarded.
+local bridgeEnds={}
+for _,deck in world:GetDescendants() do
+	if deck:IsA("BasePart") and deck.Name=="Continuous bridge deck" then
+		local half=deck.CFrame.LookVector*deck.Size.Z/2
+		table.insert(bridgeEnds,deck.CFrame.Position+half)
+		table.insert(bridgeEnds,deck.CFrame.Position-half)
+	end
+end
+local legacyIsles={["Compass Quay"]=true,["Mosswake Grove"]=true,["Brassfall Quarry"]=true,Skyreach=true}
+for _,isle in archipelago:GetChildren() do
+	local id=isle:GetAttribute("RegionId")
+	if not id then continue end
+	local bridged=0
+	for _,p in bridgeEnds do if onIsland(isle,p+Vec(0,.3,0)) then bridged+=1 end end
+	local guards=0
+	for _,obj in isle:GetDescendants() do if obj.Name=="Edge guard" then guards+=1 end end
+	check(bridged>0 or warpedTo[id],isle.Name.." is reached by bridge or warp")
+	if not legacyIsles[isle.Name] then check(guards>=8,isle.Name.." has an invisible edge guard ring") end
+end
+-- Crafting stations and the Guild Hall.
+local stationSpots,stationCount={},0
+for _,q in world:GetDescendants() do
+	if q:IsA("ProximityPrompt") and q:GetAttribute("IsleAction")=="station" then
+		stationCount+=1
+		local kind=q:GetAttribute("IsleItem")
+		local t=traveller()
+		q.Triggered:Fire(t)
+		check(t.attributes.IsleStation==kind,kind.." station sets the IsleStation attribute")
+		q.Triggered:Fire(t)
+		check(t.attributes.IsleStationVisit==2,kind.." repeat visits are observable")
+		local region=islandOf(q):GetAttribute("RegionId")
+		stationSpots[kind]=stationSpots[kind] or {}
+		table.insert(stationSpots[kind],region)
+	end
+end
+local regional=0
+for _,kind in {"Forge","Hearth","Cauldron","Workbench","Slayer"} do
+	local spots=stationSpots[kind]
+	check(spots~=nil,kind.." station exists")
+	check(table.find(spots,"Hub")~=nil,kind.." station stands in the hub")
+	for _,r in spots do if r~="Hub" then regional+=1 end end
+end
+check(regional>=2,"regions host extra crafting stations")
+local leaderboard=world:FindFirstChild("Skill Leaderboard",true)
+check(leaderboard~=nil and leaderboard:FindFirstChildOfClass("SurfaceGui")~=nil,"guild hall skill leaderboard")
+for _,skill in Data.SkillOrder do
+	check(leaderboard:FindFirstChild("Row_"..skill,true)~=nil,skill.." row on the leaderboard")
+end
+local bestiary=world:FindFirstChild("Bestiary",true)
+check(bestiary~=nil and bestiary:IsA("BasePart"),"guild hall bestiary board")
+for id,def in Data.Monsters do
+	local row=bestiary:FindFirstChild("Row_"..id,true)
+	check(row~=nil and row.Text:find(def.name,1,true)~=nil,def.name.." listed in the bestiary")
+end
+check(islandOf(leaderboard):GetAttribute("RegionId")=="Hub" and islandOf(bestiary):GetAttribute("RegionId")=="Hub","guild hall boards stand in the hub")
+print("Depth world: "..tierCount.." resource tiers / "..nodeCount.." gather nodes, "..markers.." spawn markers, "..warps.." gated warps, "..stationCount.." stations, "..staticParts.." static parts, "..staticLights.." lights.")
 print("World QA passed "..checks.." checks with "..parts.." parts, "..prompts.." prompts and "..signs.." sign surfaces.")

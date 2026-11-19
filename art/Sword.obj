@@ -1,0 +1,243 @@
+# Original Aether Isles Sword
+mtllib AetherPalette.mtl
+v 0.0701 -0.4824 0.0217
+v -0.2164 -0.2849 0.0114
+v -0.4586 -0.0873 -0.1419
+v -0.1722 -0.2849 -0.1316
+v 1.0936 1.0872 0.3383
+v 0.8409 1.2615 0.3292
+v 0.6271 1.4358 0.194
+v 0.8799 1.2615 0.2031
+v 1.36 1.994 0.4207
+v -0.1388 -0.1831 -0.1392
+v -0.0844 -0.2238 -0.1224
+v 0.8593 1.1598 0.1695
+v 0.8048 1.2005 0.1527
+v -0.1447 -0.1831 -0.1201
+v -0.0903 -0.2238 -0.1033
+v 0.8534 1.1598 0.1886
+v 0.7989 1.2005 0.1718
+v -0.702 -0.0746 -0.4056
+v 0.2311 -0.7718 -0.1169
+v 0.3421 -0.6091 -0.0826
+v -0.5909 0.0882 -0.3712
+v -0.8084 -0.0746 -0.0616
+v 0.1247 -0.7718 0.227
+v 0.2357 -0.6091 0.2613
+v -0.6973 0.0882 -0.0273
+v -0.8149 0.2158 -0.43
+v -0.6549 -0.0569 -0.3805
+v -0.5084 0.0373 -0.3352
+v -0.6684 0.31 -0.3847
+v -0.9154 0.2158 -0.1052
+v -0.7554 -0.0569 -0.0557
+v -0.6089 0.0373 -0.0104
+v -0.7689 0.31 -0.0599
+v 0.2278 -0.7166 -0.1075
+v 0.5262 -0.7864 -0.0152
+v 0.5637 -0.6108 -0.0036
+v 0.2654 -0.5409 -0.0959
+v 0.1274 -0.7166 0.2173
+v 0.4257 -0.7864 0.3096
+v 0.4632 -0.6108 0.3212
+v 0.1649 -0.5409 0.229
+v -0.0963 -0.2279 -0.2391
+v -0.0652 -0.4232 -0.2295
+v -0.1918 -0.3418 -0.2059
+v -0.2829 -0.2605 -0.2969
+v -0.1563 -0.3418 -0.3205
+v -0.2517 -0.4558 -0.2872
+v -0.8085 -1.061 -0.3652
+v -0.653 -1.1772 -0.3171
+v -0.1812 -0.4854 -0.1712
+v -0.3367 -0.3692 -0.2193
+v -0.8735 -1.061 -0.1551
+v -0.718 -1.1772 -0.107
+v -0.2462 -0.4854 0.039
+v -0.4017 -0.3692 -0.0091
+v -0.7105 -1.0418 -0.2198
+v -0.6616 -1.3486 -0.2046
+v -0.8976 -1.2208 -0.0474
+v -1.0037 -1.093 -0.3105
+v -0.7676 -1.2208 -0.4677
+v -0.9547 -1.3999 -0.2953
+usemtl Shade11
+f 1 2 6
+usemtl Shade11
+f 1 6 5
+usemtl Shade11
+f 2 3 7
+usemtl Shade11
+f 2 7 6
+usemtl Shade11
+f 3 4 8
+usemtl Shade11
+f 3 8 7
+usemtl Shade11
+f 4 1 5
+usemtl Shade11
+f 4 5 8
+usemtl Shade11
+f 5 6 9
+usemtl Shade11
+f 6 7 9
+usemtl Shade11
+f 7 8 9
+usemtl Shade11
+f 8 5 9
+usemtl Shade11
+f 1 3 2
+usemtl Shade11
+f 1 4 3
+usemtl Shade13
+f 10 13 12
+usemtl Shade13
+f 10 12 11
+usemtl Shade13
+f 14 15 16
+usemtl Shade13
+f 14 16 17
+usemtl Shade13
+f 10 11 15
+usemtl Shade13
+f 10 15 14
+usemtl Shade13
+f 13 17 16
+usemtl Shade13
+f 13 16 12
+usemtl Shade13
+f 10 14 17
+usemtl Shade13
+f 10 17 13
+usemtl Shade13
+f 11 12 16
+usemtl Shade13
+f 11 16 15
+usemtl Shade2
+f 18 21 20
+usemtl Shade2
+f 18 20 19
+usemtl Shade2
+f 22 23 24
+usemtl Shade2
+f 22 24 25
+usemtl Shade2
+f 18 19 23
+usemtl Shade2
+f 18 23 22
+usemtl Shade2
+f 21 25 24
+usemtl Shade2
+f 21 24 20
+usemtl Shade2
+f 18 22 25
+usemtl Shade2
+f 18 25 21
+usemtl Shade2
+f 19 20 24
+usemtl Shade2
+f 19 24 23
+usemtl Shade2
+f 26 29 28
+usemtl Shade2
+f 26 28 27
+usemtl Shade2
+f 30 31 32
+usemtl Shade2
+f 30 32 33
+usemtl Shade2
+f 26 27 31
+usemtl Shade2
+f 26 31 30
+usemtl Shade2
+f 29 33 32
+usemtl Shade2
+f 29 32 28
+usemtl Shade2
+f 26 30 33
+usemtl Shade2
+f 26 33 29
+usemtl Shade2
+f 27 28 32
+usemtl Shade2
+f 27 32 31
+usemtl Shade2
+f 34 37 36
+usemtl Shade2
+f 34 36 35
+usemtl Shade2
+f 38 39 40
+usemtl Shade2
+f 38 40 41
+usemtl Shade2
+f 34 35 39
+usemtl Shade2
+f 34 39 38
+usemtl Shade2
+f 37 41 40
+usemtl Shade2
+f 37 40 36
+usemtl Shade2
+f 34 38 41
+usemtl Shade2
+f 34 41 37
+usemtl Shade2
+f 35 36 40
+usemtl Shade2
+f 35 40 39
+usemtl Shade5
+f 42 43 44
+usemtl Shade5
+f 47 44 43
+usemtl Shade5
+f 42 44 45
+usemtl Shade5
+f 47 45 44
+usemtl Shade5
+f 42 45 46
+usemtl Shade5
+f 47 46 45
+usemtl Shade5
+f 42 46 43
+usemtl Shade5
+f 47 43 46
+usemtl Shade12
+f 48 51 50
+usemtl Shade12
+f 48 50 49
+usemtl Shade12
+f 52 53 54
+usemtl Shade12
+f 52 54 55
+usemtl Shade12
+f 48 49 53
+usemtl Shade12
+f 48 53 52
+usemtl Shade12
+f 51 55 54
+usemtl Shade12
+f 51 54 50
+usemtl Shade12
+f 48 52 55
+usemtl Shade12
+f 48 55 51
+usemtl Shade12
+f 49 50 54
+usemtl Shade12
+f 49 54 53
+usemtl Shade2
+f 56 57 58
+usemtl Shade2
+f 61 58 57
+usemtl Shade2
+f 56 58 59
+usemtl Shade2
+f 61 59 58
+usemtl Shade2
+f 56 59 60
+usemtl Shade2
+f 61 60 59
+usemtl Shade2
+f 56 60 57
+usemtl Shade2
+f 61 57 60
