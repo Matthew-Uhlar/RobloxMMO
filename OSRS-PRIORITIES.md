@@ -1,12 +1,18 @@
 # OSRS mechanics: evidence and Aether Isles implementation order
 
+## Observatory iteration
+
+OSRS connects resource skills to encounter preparation. The Hunter Guild poll asked about cooking hunted meat for two stages of healing. In the first private Aether Isles release, fishing supplied worker tasks and companion food, while combat healing relied on tonics. The new Expedition Ration gives fishing a combat use. It restores up to 65 health and takes 12 seconds to become available again. Those values and the single heal are original Aether Isles tuning. Check whether players actually prepare rations before entering the Observatory during multiplayer playtests. [Jagex Hunter Guild poll](https://oldschool.runescape.com/polls/2023/1677)
+
 ## Implementation checkpoint — November 19, 2026
 
 Rank 1's bounded resource → production → useful equipment slice is implemented and integrated: Mining 3 Aetherite, repeatable Alloy/Aether Ingots, Reinforced Pickaxe yield and Skyplate defense. Rank 2 then advanced through a bounded eight-contract chain, persistent Skyreach charter, Brassfall Quarry transit, server-validated survey and rich Aetherite harvesting. Neither slice means the corresponding broad mechanic family is fully complete.
 
-Latest integrated checks: **214 gameplay / 7,081 world-mesh / 25 expedition / 47 co-op**, plus **eight source-matching compiled scripts/modules**. Presentation now includes an expanded original prop catalog, OBJ assets, 3D item thumbnails and split Forge/Workers/Home views. The game was privately published through Studio on November 19 to universe **10777817254**, place **73453386951995**. GitHub delivery to **Matthew-Uhlar/RobloxMMO** is underway. These facts do not establish full device usability, live persistence concurrency or public-release readiness.
+Latest integrated checks: **214 gameplay / 7,081 world-mesh / 25 expedition / 47 co-op**, plus **eight source-matching compiled scripts/modules**. Presentation now includes an expanded original prop catalog, OBJ assets, 3D item thumbnails and split Forge/Workers/Home views. The game was privately published through Studio on November 19 to universe **10777817254**, place **73453386951995**. GitHub Actions built the source on main in [run 44492070676](https://github.com/Matthew-Uhlar/RobloxMMO/actions/runs/44492070676). These facts do not establish full device usability, live persistence concurrency or public-release readiness.
 
 The ranked backlog below remains the design sequence. Continue bounded improvements and verification in order; retain the original Hypixel/Roblox scope, including incomplete economy, co-op, workers, events and dungeon depth.
+
+Studio desktop and mobile-preview smoke checks passed on the earlier rank 1 build, with one mesh-budget fallback warning. The final rank 2 phone-preview recheck, live multiplayer and real persistence validation remain pending.
 
 Research/gameplay team review: November 17, 2026. This ranks engineering and game-design importance **for Aether Isles**, not OSRS player popularity or measured Roblox retention. Historical official polls establish proposed features and recorded voting; they do not establish a current complete mechanic specification. Aether Isles keeps original names, environments and art.
 

@@ -26,6 +26,7 @@ local heartbeat=signal()
 local rewards={}
 local reward={Fire=function(_,p) rewards[p]=(rewards[p] or 0)+1 end}
 local services={Players=players,RunService={Heartbeat=heartbeat},
+	CollectionService={AddTag=function(part,anchor,tag) anchor:SetAttribute("TestArtTag",tag) end},
 	ServerStorage={FindFirstChild=function(_,name) return name=="IsleExpeditionReward" and reward or nil end}}
 local now=10
 local env={game={GetService=function(_,name) return services[name] end},workspace=world,
@@ -61,6 +62,15 @@ local function use(p,partName,action,move)
 	signals[prompt]:Fire(p)
 end
 local caption=world:FindFirstChild("TextLabel",true)
+local artCore=world:FindFirstChild("Eclipse Heart",true)
+check(artCore:GetAttribute("Shape")=="EclipseAstrolabe","heart uses original astrolabe mesh")
+check(artCore.CanCollide and artCore.Transparency==1,"heart hides placeholder but preserves collision")
+check(artCore:GetAttribute("VisualState")=="Shielded","heart art communicates puzzle gate")
+for index=1,2 do
+	local sentinel=world:FindFirstChild("Sentinel "..index,true)
+	check(sentinel:GetAttribute("Shape")=="ObservatorySentinel","sentinel uses custom enemy mesh")
+	check(sentinel.CanCollide and sentinel.Transparency==1,"sentinel retains authoritative collider")
+end
 local a,ar,ah=player()
 local b,br,bh=player()
 local c,cr,ch=player()
@@ -84,6 +94,7 @@ for _,prompt in pylons do
 	signals[prompt]:Fire(a)
 end
 check(caption.Text:find("SENTINEL HALL",1,true)~=nil,"prisms unlock guardian chamber")
+for _,p in pylons do check(p.Parent:GetAttribute("VisualState")=="Tuned","tuned prism art remains visible") end
 use(a,"Eclipse Heart","Strike core")
 check(caption.Text:find("SENTINEL HALL",1,true)~=nil,"core locked until guardians defeated")
 use(a,"Sentinel passage","Enter guardian chamber")
@@ -94,6 +105,8 @@ for index=1,2 do
 	for _=1,6 do use(a,"Sentinel "..index,"Strike guardian") end
 end
 check(caption.Text:find("12 / 12",1,true)~=nil,"guardians unlock core")
+for index=1,2 do check(world:FindFirstChild("Sentinel "..index,true):GetAttribute("VisualState")=="Defeated","defeated sentinel art marked") end
+check(artCore:GetAttribute("VisualState")=="Active","heart art reveals damageable phase")
 use(a,"Core passage","Return to core")
 check(ar.Position.Z==1778,"guardian exit opens")
 ah.Health=100
@@ -108,6 +121,7 @@ cr.Position=core.Position+r.Vector3.new(25,0,0)
 b:SetAttribute("SkillDefense",2)
 heartbeat:Fire(3.5)
 check(world:FindFirstChild("Pulse radius",true).Transparency==0.25,"pulse warning before damage")
+check(artCore:GetAttribute("VisualState")=="Warning","astrolabe reinforces amber pulse telegraph")
 heartbeat:Fire(1.5)
 check(bh.Health==93,"tank reduction and skill defense")
 check(ah.Health==100 and ch.Health==100,"outside pulse remains safe")
@@ -118,6 +132,9 @@ check(rewards[a]==1 and rewards[b]==1,"contributors rewarded once")
 check(rewards[c]==nil,"idle member has no reward")
 check(ar.Position.Z==-121 and br.Position.Z==-121,"victory returns party")
 check(caption.Text:find("0 / 3",1,true)~=nil,"victory resets encounter")
+check(artCore:GetAttribute("VisualState")=="Shielded","heart art resets with encounter")
+for index=1,2 do check(world:FindFirstChild("Sentinel "..index,true):GetAttribute("VisualState")=="Active","sentinel art revives on reset") end
+for _,p in pylons do check(p.Parent:GetAttribute("VisualState")=="Active","prism art resets") end
 use(a,"Eclipse Heart","Strike core")
 check(rewards[a]==1,"post-victory replay has no reward")
 use(a,"Healer oath","Choose role")

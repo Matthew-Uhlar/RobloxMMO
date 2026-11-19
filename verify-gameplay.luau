@@ -516,7 +516,54 @@ eq(cmd(traveler,"quest").coins,100,"final reward cannot repeat")
 eq(regionHook.OnInvoke(lateOpen,"Skyreach").allowed,false,"expired session cannot use region transit")
 traveler.Character:FindFirstChildOfClass("Humanoid").Health=0
 eq(regionHook.OnInvoke(traveler,"Skyreach").allowed,false,"dead character cannot use region transit")
+-- Rank 3 provisions: earned recipe, alternative healing, bounded consumption,
+-- and recovery survives a session change rather than resetting on reconnect.
+local cook=player(95)
+eq(cmd(cook,"craft","ExpeditionRation").items.ExpeditionRation,nil,"ration collection gate rejects novice")
+local fishNode=node("gather","Fish")
+for _=1,5 do use(cook,fishNode) end
+eq(cmd(cook,"craft","ExpeditionRation").items.Fish,5,"missing herb does not consume fish")
+for _=1,4 do use(cook,node("gather","Herb")) end
+local ration=cmd(cook,"craft","ExpeditionRation")
+eq(ration.items.ExpeditionRation,1,"fish collection unlocks ration recipe")
+eq(ration.items.Fish,3,"ration consumes two fish")
+eq(ration.items.Herb,3,"ration consumes one herb")
+eq(ration.xp.Alchemy,24,"ration preparation trains alchemy")
+eq(cmd(cook,"craft","ExpeditionRation").items.ExpeditionRation,2,"ration is repeatable")
+eq(cmd(cook,"heal","ExpeditionRation").items.ExpeditionRation,2,"full health does not waste ration")
+local cookHum=cook.Character:FindFirstChildOfClass("Humanoid")
+cookHum.Health=10
+eq(cmd(cook,"heal","Ore").items.ExpeditionRation,2,"unknown provision cannot consume ration")
+eq(cookHum.Health,10,"unknown provision cannot heal")
+local eaten=cmd(cook,"heal","ExpeditionRation")
+eq(cookHum.Health,75,"ration restores sixty-five actual health")
+eq(eaten.items.ExpeditionRation,1,"ration consumption is single unit")
+eq(eaten.consumables.ExpeditionRation.readyIn,12,"snapshot exposes ration recovery")
+eq(cmd(cook,"heal","ExpeditionRation").items.ExpeditionRation,1,"early ration cannot consume")
+eq(cookHum.Health,75,"early ration cannot heal")
+services.Players.PlayerRemoving:Fire(cook)
+cook=player(95)
+cookHum=cook.Character:FindFirstChildOfClass("Humanoid")
+cookHum.Health=20
+eq(cmd(cook,"heal","ExpeditionRation").items.ExpeditionRation,1,"ration recovery persists across rejoin")
+cmd(cook,"craft","Tonic")
+cmd(cook,"heal")
+eq(cookHum.Health,60,"legacy tonic intent remains forty-health alternative")
+advance(12)
+eq(cmd(cook,"heal","ExpeditionRation").items.ExpeditionRation,0,"ration usable after recovery")
+eq(cookHum.Health,cookHum.MaxHealth,"ration healing clamps to maximum health")
+cookHum.Health=20
+advance(12)
+cmd(cook,"heal","ExpeditionRation")
+eq(cookHum.Health,20,"empty ration inventory cannot heal")
+eq(cmd(cook,"state").items.ExpeditionRation,0,"empty ration inventory cannot go negative")
+use(cook,fishNode)
+use(cook,node("gather","Herb"))
+cmd(cook,"craft","ExpeditionRation")
+cookHum.Health=0
+eq(cmd(cook,"heal","ExpeditionRation").items.ExpeditionRation,1,"dead character cannot eat or consume")
 print("PASS: "..checks.." production gameplay/market assertions.")
+
 
 
 

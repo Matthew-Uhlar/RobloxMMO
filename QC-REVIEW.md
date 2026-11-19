@@ -68,3 +68,13 @@ Root also integrated shared Crew Haven geometry/travel/supply prompts and tested
 Final root-run build passes **140 gameplay, 2,243 world/mesh, 25 expedition and 47 co-op checks**, plus seven packaged scripts matching source and compiling. Independent agents reviewed the worker/UI/lease/co-op source during development; the final environment-isolation adjustment was root-reviewed and regression-tested after agents hit usage limits. This is not an independent engine approval.
 
 Outstanding: actual Studio/client/device playtests, live DataStore budgets/concurrency, variable-price orders/auctions, deeper co-op skills/workers, membership leave/kick, broader regions/activities, seasonal events and dungeon/enemy depth. Co-op membership is explicitly permanent in the UI; shared supplies never debit or credit personal inventories. The original game objective remains unfinished.
+
+## November 19 local Studio phone review
+
+Interface reviewer synced current server, world, UI, mesh renderer and prop catalog only into unpublished local Studio `89e47bb8-d020-45e6-9596-f7cac607688a` (PlaceId 0). The cloud-backed Studio was not modified. Used the Roblox device-simulator skill and dynamically selected iPhone 17 Pro, landscape, matching StarterGui LandscapeSensor. Runtime viewport was 750 x 381; AetherAtlas uses CoreUISafeInsets and the compact atlas measured 730 x 303 with a 706 x 144 scrolling content region.
+
+Screenshots verified Journal, Forge, Workers, Home, empty Satchel, Ledger and Co-op. Workshop opens with Forge recipes; companion is under Home. All five tab labels and three Workshop selectors were visible, and custom item thumbnails rendered. Lower Co-op cards remained readable after scrolling; wrapped labels had no measured TextBounds overflow. The short landscape viewport requires scrolling to expose lower portions of cards/action buttons, which is expected but remains a usability tradeoff.
+
+J opened the atlas. Selecting visible buttons through GuiService and sending Return activated tabs/selectors via normal input. Mouse simulation and ButtonA did not reliably activate in this run, so this is not a physical touchscreen or controller pass. The console contained one EditableMesh-budget warning, followed by functioning geometric fallback; repeated allocation-warning spam was not observed. This does not establish device frame rate or memory suitability.
+
+Play was stopped and Studio returned to Edit with device simulation set to default. No publication occurred. Subsequent consumable/control-texture edits require a fresh runtime check.

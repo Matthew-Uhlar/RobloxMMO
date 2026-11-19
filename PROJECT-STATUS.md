@@ -3,8 +3,10 @@
 Updated November 19, 2026. The full original goal remains in progress. Aether Isles is an evolving playable implementation, now privately published to a new Roblox experience through Studio.
 
 - Roblox universe: **10777817254**; place: **73453386951995**. [Experience](https://www.roblox.com/games/73453386951995/)
-- GitHub destination: [Matthew-Uhlar/RobloxMMO](https://github.com/Matthew-Uhlar/RobloxMMO). Delivery is underway; this document does not assert a completed push.
-- Latest integrated verification: **214 gameplay assertions, 7,081 world/mesh checks, 25 expedition checks, 47 co-op checks, and eight source-matching compiled packaged scripts/modules**.
+- GitHub destination: [Matthew-Uhlar/RobloxMMO](https://github.com/Matthew-Uhlar/RobloxMMO). The initial main build passed and produced a downloadable Roblox place.
+- Latest integrated verification: **236 gameplay assertions, 10,575 world/mesh checks, 45 expedition checks, 47 co-op checks, and nine compiled packaged scripts/modules**.
+
+The Observatory update adds Expedition Rations, custom sentinel, portal and astrolabe meshes, combat-state artwork, and an original woven UI texture. The four world-material tile masters are in the repository. Their world-surface integration is pending.
 
 ## Implemented source
 
@@ -24,7 +26,7 @@ Updated November 19, 2026. The full original goal remains in progress. Aether Is
 
 November 19 integrated verification passed **214 / 7,081 / 25 / 47**, with **eight** packaged scripts/modules matching source and compiling. The local place was rebuilt. These suites cover selected production behaviors using service doubles and geometry validation, including the new progression chain, region gates, survey validation, migration and reward replay protection. They do not establish real DataStore concurrency, device usability, performance or retention.
 
-Private publishing through Studio is recorded. Full desktop/mobile/tablet visual review, real multiplayer and persistence failure/rejoin testing remain release requirements; publishing alone is not evidence that they passed.
+Studio desktop and mobile-preview smoke checks passed on the earlier rank 1 build, with one mesh-budget fallback warning. The rank 2 phone preview opened all five tabs and all three Workshop sections. Private publishing through Studio is recorded. Full device visual review, real multiplayer and persistence failure/rejoin testing remain release requirements; publishing alone is not evidence that they passed.
 
 ## Required remaining work
 
