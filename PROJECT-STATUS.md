@@ -19,7 +19,11 @@ Built by five parallel teams (Server, Combat, World, UI, Art) against the shared
 - **UI:** six-tab atlas (Journal, Hero, Satchel, Workshop, Hunt, Ledger) with Skills, Gear/stat sheet, Enchant, Accessories, Pets, rarity item grid, Collections, station crafting, Slayer and Bestiary pages, plus an action-bar HUD with XP popups and level-up banners. Phone landscape uses a left tab rail.
 - **Art:** 27 new original tintable low-poly icon shapes covering every item family, an icon renderer and preview sheet, and tinted ore-crystal polish on tier nodes.
 
-Verification after integration: 959 progression/data, 788+ gameplay/depth, 27,049 world/mesh, 45 expedition, 47 co-op, 302 combat and 1,200 UI smoke checks, plus 13 packaged scripts compiling and matching source. These are headless checks with service doubles; the Depth update has **not** yet been play-tested in Studio or deployed.
+**QC pass:** two independent reviewers audited server/combat and client/world code; two fix teams resolved all 24 findings with regression tests — notably free healing from gear toggles, market DataStore spam (6 s exchange cooldown), swing-cooldown drift, server monster replication load (shared per-tick player snapshot, sleep/limb-rate limits), same-server rejoin duplication (per-session lease tokens), per-triangle wedge fallbacks in world art (bounded proxies), warp landings inside monster aggro, and phone-landscape HUD overlap. Resource nodes now regrow per player (`respawn` seconds).
+
+Known follow-ups: expedition clears have no cooldown (Stormglass farming) and Ironman expedition credit is looser than open-world combat; balance of the OSRS curve against current XP rates needs playtesting.
+
+Verification after integration: 959 progression/data, 837 gameplay/depth, 27,476 world/mesh, 45 expedition, 47 co-op, 328 combat and 1,246 UI smoke checks, plus 13 packaged scripts compiling and matching source. These are headless checks with service doubles; the Depth update has **not** yet been play-tested in Studio or deployed.
 
 ## Implemented source
 

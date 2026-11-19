@@ -98,7 +98,7 @@ Adventure also sets player attribute `SlayerBossReady = "Line:tier"` (or `""`) w
 
 ## 6. World (`world.server.lua`)
 
-New regions from `Data.Regions` (Windpine Grove, Gloomhollow Caverns, Tidewater Shoals, Tempest Spire) plus tier nodes on existing islands: gather prompts per §2, monster spawn markers per §5, crafting stations with `IsleAction="station"`, `IsleItem` ∈ `Forge|Hearth|Cauldron|Workbench` (server answers with the snapshot; the client opens the matching crafting tab via attribute `IsleStation` on the player), and warps gated through `IsleRegionAccess`.
+New regions from `Data.Regions` (Windpine Grove, Gloomhollow Caverns, Tidewater Shoals, Tempest Spire) plus tier nodes on existing islands: gather prompts per §2, monster spawn markers per §5, crafting stations with `IsleAction="station"`, `IsleItem` ∈ `Forge|Hearth|Cauldron|Workbench` (server answers with the snapshot; the client opens the matching crafting tab via attribute `IsleStation` on the player), and warps gated through `IsleRegionAccess` (a denial sets `IsleRegionNotice` and increments `IsleRegionNoticeCount`, which the client shows as a toast). Every monster spawn marker is ≥ 40 studs from every warp landing.
 
 ## 7. Art (`art/PropCatalog.lua` + generators)
 
