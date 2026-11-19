@@ -1,0 +1,1 @@
+-- Combat input, health bars and damage numbers. See docs/DEPTH-CONTRACT.md §5.

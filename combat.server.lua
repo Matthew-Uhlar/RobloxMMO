@@ -1,0 +1,1 @@
+-- Combat: real-time monsters, attacks, slayer bosses. See docs/DEPTH-CONTRACT.md §5.
