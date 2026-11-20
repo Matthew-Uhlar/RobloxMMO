@@ -189,7 +189,9 @@ do
 		for _,r in ipairs(tiers) do
 			local t=W.TypeById[r.id]
 			ok(t~=nil and t.kind=="gather" and t.output==r.id and t.skill==skill,r.id.." has a gathering worker type")
-			eq(t.collectionTier,if r.index==1 then 0 else 1,r.id.." worker collection gate")
+			eq(t.collectionTier,W.gatherCollectionTier(r),r.id.." worker collection gate")
+			if r.level>=60 then ok(t.collectionTier>=4 and t.collectionTier<=5,r.id.." high-tier worker needs collection tier 4-5") end
+			eq(t.region,W.ResourceRegion[r.id],r.id.." worker region gate")
 			eq(t.level,if r.index==1 then 1 else r.level,r.id.." worker level gate")
 			gather+=1
 		end
@@ -203,6 +205,7 @@ do
 		if t.kind=="combat" then
 			combat+=1
 			ok(t.speed>1,t.id.." combat workers are slower")
+			eq(t.collectionTier,3,t.id.." combat worker needs the drop collection tier 3")
 			ok(Data.Monsters and t.output~=nil,t.id.." produces a monster drop")
 		end
 		local press=W.Press[t.output]
@@ -273,12 +276,13 @@ do
 	-- Intervals: tier ladder x type speed x haste.
 	eq(W.interval("Ore",1,0),120,"tier 1 interval")
 	eq(W.interval("Ore",7,0),26,"tier 7 interval")
-	eq(W.interval("Celestium",4,0),48,"high tiers share the ladder")
+	eq(W.interval("Celestium",4,0),48*8,"high tiers share the ladder, paced by respawn (x8)")
 	eq(W.interval("Ore",1,0.3),84,"30% haste")
 	eq(W.interval("Ore",1,0.9),84,"haste capped by MAX_WORKER_HASTE")
-	eq(W.interval("ShardlingSentry",1,0),360,"Shardling Sentry 3x slower")
-	eq(W.interval("WispglowLantern",7,0),104,"Wispglow Lantern 4x tier 7")
-	eq(W.interval("HidetanSnare",2,0.1),122,"1.5x with 10% haste rounds")
+	eq(W.interval("ShardlingSentry",1,0),600,"Shardling Sentry 5x slower")
+	eq(W.interval("WispglowLantern",7,0),182,"Wispglow Lantern 7x tier 7")
+	eq(W.interval("HidetanSnare",2,0.1),324,"4x with 10% haste")
+	eq(W.interval("Brassite",1,0.3),202,"2.4x with 30% haste rounds")
 	-- Storage: tier + annex + chest.
 	eq(W.capacity({tier=1,upgrades={false,false}}),120,"tier 1 storage")
 	eq(W.capacity({tier=1,upgrades={"WorkerStoreAnnex",false}}),180,"annex +50%")
@@ -327,17 +331,17 @@ do
 	eq(W.settle(w,1000,0),0,"clock skew settles nothing")
 	eq(w.lastClaim,1000,"skew pulls lastClaim back")
 	w={resource="Ore",tier=1,lastClaim=0,fuel={id="StormcellCanister",expires=100000},upgrades={false,false}}
-	eq(W.settle(w,1200,0),12,"+25% fuel")
-	eq(w.carry,6000,"fuel carry")
+	eq(W.settle(w,1200,0),11,"+12% fuel")
+	eq(w.carry,2400,"fuel carry")
 	ok(w.fuel~=nil,"fuel still burning")
 	w={resource="Ore",tier=1,lastClaim=0,fuel={id="StormcellCanister",expires=600},upgrades={false,false}}
-	eq(W.settle(w,1200,0),11,"fuel counts only while burning")
+	eq(W.settle(w,1200,0),10,"fuel counts only while burning")
 	eq(w.fuel,nil,"burnt fuel cleared")
 	w={resource="Ore",tier=1,lastClaim=0,fuel={id="EverflameHeart",permanent=true},upgrades={false,false}}
-	eq(W.settle(w,1200,0),12,"permanent +25%")
+	eq(W.settle(w,1200,0),11,"permanent +10%")
 	ok(w.fuel and w.fuel.permanent,"permanent fuel stays")
-	eq(W.speedPercent(w,1200),125,"speed percent")
-	eq(W.perHour(w,1200,0),37.5,"output per hour")
+	eq(W.speedPercent(w,1200),110,"speed percent")
+	eq(W.perHour(w,1200,0),33,"output per hour")
 	w={resource="Ore",tier=1,lastClaim=0,upgrades={false,false}}
 	eq(W.settle(w,1200,0.3),14,"haste in settle")
 	-- Storage cap and auto-seller.
@@ -380,6 +384,10 @@ do
 	eq(W.blueprintCost("ShardlingSentry",7).CondensedShard,8,"combat blueprint tier 7")
 	eq(W.blueprintCost("Ore",8),nil,"no tier 8 blueprint")
 	eq(W.upgradeCost(4).AlloyIngot,4,"upgrade ladder unchanged")
+	eq(W.upgradeCost(3,"Celestium").CondensedCelestium,nil,"tiers 1-3 stay cheap")
+	eq(W.upgradeCost(4,"Celestium").CondensedCelestium,1,"tier 4 upgrade spends own Condensed output")
+	eq(W.upgradeCost(7,"ShardlingSentry").CondensedShard,W.blueprintCost("ShardlingSentry",7).CondensedShard,"upgrade Condensed cost equals the blueprint")
+	eq(W.upgradeCost(7,"Ore").AlloyIngot,16,"upgrade keeps the ingot ladder")
 	eq(W.buildCost(12).Timber,60,"slot 12 build cost")
 end
 
@@ -486,7 +494,7 @@ do
 	local f=cmd(p,"workerFuel","1:CharredBriquette")
 	eq(f.items.CharredBriquette,199,"one briquette burnt")
 	eq(f.workers[1].fuel.id,"CharredBriquette","fuel active")
-	eq(f.workers[1].speed,110,"+10% speed")
+	eq(f.workers[1].speed,105,"+5% speed")
 	eq(f.workers[1].fuel.remaining,1800,"30 minute burn")
 	f=cmd(p,"workerFuel","1:CharredBriquette:4")
 	eq(f.items.CharredBriquette,195,"stacked four more")
@@ -503,7 +511,7 @@ do
 	-- Production under fuel: 1200 s at +10% = 11 items.
 	cmd(p,"workerClaim","1")
 	p=rejoin(p,function(pr) pr.workers[1].lastClaim=utc-1199; pr.workers[1].carry=0; pr.workers[1].store={} end)
-	eq(st(p).workers[1].ready,11,"fuelled production (+10%)")
+	eq(st(p).workers[1].ready,10,"fuelled production (+5%)")
 	local un=cmd(p,"workerUnfuel","1")
 	ok(has(un.message,"not returned"),"timed fuel is consumed")
 	eq(un.items.CharredBriquette,195,"burnt fuel not refunded")
@@ -512,7 +520,7 @@ do
 	local perm=cmd(p,"workerFuel","1:EverflameHeart")
 	eq(perm.items.EverflameHeart,1,"permanent fuel placed")
 	ok(perm.workers[1].fuel.permanent,"permanent flag")
-	eq(perm.workers[1].speed,125,"permanent +25%")
+	eq(perm.workers[1].speed,110,"permanent +10%")
 	ok(has(cmd(p,"workerFuel","1:EverflameHeart").message,"already holds"),"permanent fuel cannot stack")
 	ok(has(cmd(p,"workerFuel","1:EverflameHeart:2").message,"between 1 and"),"permanent batch refused")
 	ok(has(cmd(p,"workerFuel","1:CharredBriquette").message,"is burning"),"timed fuel cannot join a permanent")
@@ -639,27 +647,37 @@ do
 		pr.workers={{resource="Ore",tier=1,lastClaim=utc}}
 		pr.xp.Combat=X[10]
 	end)
-	ok(has(cmd(p,"workerAssign","1:ShardlingSentry").message,"collection tier 1"),"combat worker needs the drop collection")
-	p=rejoin(p,function(pr) pr.collection.Shard=5 end)
+	ok(has(cmd(p,"workerAssign","1:ShardlingSentry").message,"collection tier 3"),"combat worker needs the drop collection tier 3")
+	p=rejoin(p,function(pr) pr.collection.Shard=24 end)
+	ok(has(cmd(p,"workerAssign","1:ShardlingSentry").message,"collection tier 3"),"24 shard collection is tier 2")
+	p=rejoin(p,function(pr) pr.collection.Shard=25 end)
 	local a=cmd(p,"workerAssign","1:ShardlingSentry")
 	eq(a.workers[1].resource,"ShardlingSentry","Shardling Sentry assigned")
 	eq(a.workers[1].output,"Shard","produces Warden Shards")
 	eq(a.workers[1].kind,"combat","combat kind")
-	eq(a.workers[1].interval,360,"3x slower")
+	eq(a.workers[1].interval,600,"5x slower")
 	ok(has(cmd(p,"workerAssign","1:WispglowLantern").message,"Combat 30"),"combat level gate")
 	local xp=st(p).xp.Combat
-	p=rejoin(p,function(pr) pr.workers[1].lastClaim=utc-360*4-10; pr.workers[1].carry=0 end)
+	p=rejoin(p,function(pr) pr.workers[1].lastClaim=utc-600*4-10; pr.workers[1].carry=0 end)
 	local c=cmd(p,"workerClaim","1")
 	eq(c.items.Shard,200+4,"shards produced")
 	eq(c.xp.Combat,xp+4*5,"combat XP per shard")
-	eq(c.collection.Shard,5+4,"shard collection advanced")
+	eq(c.collection.Shard,25+1,"combat output credits the collection at 25%")
+	-- 3 more shards: 3 carried units, then 1 more makes another collection point.
+	p=rejoin(p,function(pr) pr.workers[1].lastClaim=utc-600*3-10; pr.workers[1].carry=0 end)
+	c=cmd(p,"workerClaim","1")
+	eq(c.items.Shard,204+3,"three more shards")
+	eq(c.collection.Shard,26,"remainder carried, not credited")
+	p=rejoin(p,function(pr) eq(pr.workers[1].collectCarry,3,"collection carry persisted"); pr.workers[1].lastClaim=utc-600-10; pr.workers[1].carry=0 end)
+	c=cmd(p,"workerClaim","1")
+	eq(c.collection.Shard,27,"carry completes a collection point")
 	-- Shard blueprint path.
 	ok(has(cmd(p,"workerBlueprint","ShardlingSentry:2").message,"tier 1 first"),"assigning a type is not a unique craft")
 	local b=cmd(p,"workerBlueprint","ShardlingSentry:1")
 	ok(has(b.message,"Crafted unique"),"combat blueprint tier 1")
 	b=cmd(p,"workerBlueprint","ShardlingSentry:2")
 	ok(has(b.message,"Crafted unique"),"combat blueprint tier 2")
-	eq(b.items.Shard,204-32-64,"blueprints spend shards")
+	eq(b.items.Shard,208-32-64,"blueprints spend shards")
 end
 
 ------------------------------------------------------------------------------
@@ -813,6 +831,195 @@ do
 	eq(c.items.CharredBriquette,2,"briquettes craft in pairs")
 	c=cmd(p,"craft","WorkerBundler")
 	ok(has(c.message,"Carpentry 10") or (c.items.WorkerBundler or 0)==0,"bundler needs Carpentry 10")
+end
+
+------------------------------------------------------------------------------
+-- 10. Passive vs active balance (pure data model).
+-- Active gathering uses the verify-skills.luau Hunter/mastery model: one
+-- harvest per node respawn at best (a gather is a 1 s hold + 0.65 s prompt
+-- cooldown). Active combat: one kill per monster respawn (combat.server
+-- L.respawnDelay = 8 + 0.15 x level s), the Warden one per 8 s reform + one
+-- swing; drop/h = kills/h x chance x mean amount, best source.
+-- Max fleet: 12 workers at tier 7, best fuel, max haste, best legal
+-- composition (<= MAX_PER_TYPE per type, <= MAX_COMBAT combat workers).
+------------------------------------------------------------------------------
+do
+	local ACTION,GATHER=0.36+0.65,1+0.65
+	local HASTE=Data.MAX_WORKER_HASTE
+	local TOP=#Data.WorkerTiers
+	local bestFuel=0
+	for _,id in ipairs(W.FuelOrder) do bestFuel=math.max(bestFuel,W.Fuels[id].speed) end
+	eq(bestFuel,W.Fuels.SunforgeCatalyst.speed,"Sunforge is the best fuel")
+	ok(W.Fuels.EverflameHeart.speed<=bestFuel,"permanent fuel never beats the best timed fuel")
+	local function perWorker(typeId) return 3600*(100+bestFuel)/100/W.interval(typeId,TOP,HASTE) end
+	-- The model matches W.settle: a 48 h settle of a maxed worker (Sunforge, Coinchute, Vault).
+	for _,id in ipairs({"Ore","Crownstone","ShardlingSentry"}) do
+		local w={resource=id,tier=TOP,lastClaim=0,fuel={id="SunforgeCatalyst",expires=W.MAX_ACCRUAL},upgrades={"WorkerCoinchute",false},chest="WorkerVaultChest"}
+		local made=W.settle(w,W.MAX_ACCRUAL,HASTE)
+		local model=perWorker(id)*W.MAX_ACCRUAL/3600
+		ok(math.abs(made-model)<=1,id.." 48 h settle "..made.." matches the rate model "..string.format("%.1f",model))
+	end
+	local rows={}
+	for _,skill in ipairs({"Mining","Woodcutting","Fishing","Farming"}) do
+		local activeXp,activeItems=0,{}
+		for _,r in ipairs(Data.ResourceTiers[skill]) do
+			activeXp=math.max(activeXp,3600*r.xp/math.max(r.respawn,GATHER))
+			activeItems[r.id]=3600/math.max(r.respawn,GATHER)
+		end
+		-- Best legal XP composition: the highest-XP types, MAX_PER_TYPE each, 12 workers.
+		local types={}
+		for _,t in ipairs(W.Types) do if t.kind=="gather" and t.skill==skill then table.insert(types,t) end end
+		table.sort(types,function(a,b) return perWorker(a.id)*a.xp>perWorker(b.id)*b.xp end)
+		local fleetXp,left=0,W.MAX_SLOTS
+		for _,t in ipairs(types) do
+			local n=math.min(W.MAX_PER_TYPE,left)
+			fleetXp+=n*perWorker(t.id)*t.xp
+			left-=n
+			if left==0 then break end
+		end
+		eq(left,0,skill.." has enough types for a 12-worker fleet")
+		ok(fleetXp<=0.35*activeXp,string.format("%s max fleet %.0f XP/h <= 35%% of top active %.0f XP/h (%.1f%%)",skill,fleetXp,activeXp,100*fleetXp/activeXp))
+		ok(fleetXp*W.MAX_ACCRUAL/3600<=24*activeXp,skill.." 48 h offline fleet XP <= 24 h of top active play")
+		local worstShare,worstId=0,""
+		for _,t in ipairs(types) do
+			local items=W.MAX_PER_TYPE*perWorker(t.id)
+			local share=items/activeItems[t.output]
+			ok(share<=0.6,string.format("%s: %d maxed workers %.0f items/h <= 60%% of active %.0f/h (%.1f%%)",t.id,W.MAX_PER_TYPE,items,activeItems[t.output],100*share))
+			if share>worstShare then worstShare,worstId=share,t.id end
+		end
+		table.insert(rows,string.format("%s fleet %.0f XP/h vs active %.0f (%.1f%%), 48 h offline %.0f XP vs 24 h active %.0f; worst items %s %.1f%%",
+			skill,fleetXp,activeXp,100*fleetXp/activeXp,fleetXp*W.MAX_ACCRUAL/3600,24*activeXp,worstId,100*worstShare))
+	end
+	-- Worker XP per item is a tenth of a manual harvest (starters keep 3).
+	for _,t in ipairs(W.Types) do
+		if t.kind=="gather" and t.collectionTier>0 then
+			local xp=0
+			for _,x in ipairs(Data.ResourceTiers[t.skill]) do if x.id==t.output then xp=x.xp end end
+			ok(t.xp<=math.max(3,xp//10),t.id.." worker XP per item <= a tenth of a harvest")
+		end
+	end
+	-- Combat workers vs active farming of the same drop.
+	local active={Shard=3600/(8+ACTION)}
+	for _,m in pairs(Data.Monsters) do
+		local kills=3600/(8+(m.level or 1)*0.15)
+		for _,d in ipairs(m.drops or {}) do
+			active[d.item]=math.max(active[d.item] or 0,kills*d.chance*(d.min+d.max)/2)
+		end
+	end
+	local combatTypes=0
+	for _,t in ipairs(W.Types) do
+		if t.kind=="combat" then
+			combatTypes+=1
+			local bonus=if t.output=="ArcaneDust" then 1+1/W.Upgrades.WorkerGleamSprinkler.bonus.every else 1
+			local items=W.MAX_COMBAT*perWorker(t.id)*bonus
+			ok(active[t.output]~=nil,t.output.." has an active source")
+			local share=items/active[t.output]
+			ok(share<=0.3,string.format("%s: %d maxed combat workers %.0f/h <= 30%% of active %.0f/h (%.1f%%)",t.id,W.MAX_COMBAT,items,active[t.output],100*share))
+			local scale=Data.CollectionScale[t.output] or 1
+			local top=Data.CollectionTiers[#Data.CollectionTiers]*scale
+			local hours=top/(items/W.COMBAT_COLLECTION_DIV)
+			ok(hours>=24,string.format("%s top %s collection from workers alone takes %.0f h",t.id,t.output,hours))
+			table.insert(rows,string.format("%s %.0f/h vs active %.0f (%.1f%%), top collection %.0f h",t.id,items,active[t.output],100*share,hours))
+		end
+	end
+	ok(combatTypes>=5,"combat types modelled")
+	-- Slot pace: builds and tier 1-3 upgrades alone (no blueprints, no
+	-- Condensed) give at most 3 uniques per built worker.
+	local slots=W.BASE_SLOTS
+	for _=1,20 do
+		local nextSlots=W.slotsFor(3*slots)
+		if nextSlots==slots then break end
+		slots=nextSlots
+	end
+	ok(slots<9,"cheap builds and tier 1-3 upgrades stop at slot "..slots.." (< 9)")
+	ok(W.SlotUniques[9-W.BASE_SLOTS]>3*8,"slot 9 needs more than cheap crafts on 8 workers")
+	-- No merchant mints: worker parts, fuels, chests and pressed forms are worth at most their inputs.
+	for id,rec in pairs(Data.Recipes) do
+		if W.Fuels[id] or W.Upgrades[id] or W.Chests[id] or W.PressSource[id] then
+			local input=0
+			for cost,n in pairs(rec.costs) do input+=(Data.Items[cost] and Data.Items[cost].value or 0)*n end
+			ok(Data.Items[id].value*(rec.amount or 1)<=input,string.format("%s value %d x%d <= inputs %d",id,Data.Items[id].value,rec.amount or 1,input))
+		end
+	end
+	print("Passive vs active: "..table.concat(rows,"; "))
+end
+
+------------------------------------------------------------------------------
+-- 11. Fleet caps, region gates, idling legacy workers, tier 4 Condensed.
+------------------------------------------------------------------------------
+do
+	local X=Data.XP_TABLE
+	local p=seeded(9013,function(pr)
+		items(pr,{Timber=1000,Ore=1000})
+		pr.worker=true
+		pr.workers={{resource="Ore",tier=1,lastClaim=utc},{resource="Ore",tier=1,lastClaim=utc},{resource="Ore",tier=1,lastClaim=utc}}
+		pr.workerUniques={Ore=127,Timber=127,Fish=127}
+		pr.xp.Mining=X[99]
+		pr.collection.Crownstone=1000
+		pr.collection.Celestium=999
+	end)
+	eq(st(p).workerInfo.slots,6,"21 uniques open six slots")
+	local b=cmd(p,"workerBuild","4:Ore")
+	eq(#b.workers,3,"fourth Copperstone worker refused")
+	ok(has(b.message,"At most 3"),"type cap explained")
+	eq(cmd(p,"workerBuild","4:Timber").workers[4].resource,"Timber","another type builds")
+	ok(has(cmd(p,"workerAssign","4:Ore").message,"At most 3"),"assign respects the type cap")
+	local crown=cmd(p,"workerAssign","4:Crownstone")
+	eq(crown.workers[4].resource,"Timber","Crownstone needs its region")
+	ok(has(crown.message,"Shattered Crown"),"region gate explained")
+	ok(has(cmd(p,"workerBlueprint","Crownstone:1").message,"Shattered Crown"),"blueprints follow the region gate")
+	p=rejoin(p,function(pr) pr.xp.Combat=X[60]; pr.questsDone={CrownOfTempest=true} end)
+	eq(cmd(p,"workerAssign","4:Crownstone").workers[4].resource,"Crownstone","region unlocked: Crownstone worker")
+	ok(has(cmd(p,"workerAssign","1:Celestium").message,"collection tier 5"),"Celestium worker needs collection tier 5")
+	-- Crownstone pace and XP: one per 1200 s at tier 1, 42 Mining XP each.
+	p=rejoin(p,function(pr) pr.workers[4].lastClaim=utc-1200*2-5; pr.workers[4].carry=0 end)
+	local mxp=st(p).xp.Mining
+	local c=cmd(p,"workerClaim","4")
+	eq(c.items.Crownstone,2,"Crownstone worker pace")
+	eq(c.xp.Mining,mxp+2*42,"a tenth of a harvest's XP per item")
+	-- Combat cap: two combat workers at most.
+	p=rejoin(p,function(pr) pr.collection.Shard=25; pr.collection.BeastHide=125; pr.collection.StormFeather=75 end)
+	eq(cmd(p,"workerBuild","5:ShardlingSentry").workers[5].resource,"ShardlingSentry","first combat worker")
+	eq(cmd(p,"workerBuild","6:HidetanSnare").workers[6].resource,"HidetanSnare","second combat worker")
+	local g=cmd(p,"workerAssign","4:GalecatchPerch")
+	eq(g.workers[4].resource,"Crownstone","third combat worker refused")
+	ok(has(g.message,"At most 2 combat"),"combat cap explained")
+	eq(cmd(p,"workerAssign","6:GalecatchPerch").workers[6].resource,"GalecatchPerch","a combat worker may switch combat type")
+	-- Tier 4+ upgrades spend the type's Condensed output.
+	p=rejoin(p,function(pr) pr.items.AlloyIngot=50; pr.items.AetherIngot=50; pr.workers[1].tier=3 end)
+	local u=cmd(p,"workerUpgrade","1")
+	eq(u.workers[1].tier,3,"tier 4 needs Condensed Copperstone")
+	ok(has(u.message,"Condensed Copperstone Ore"),"upgrade cost names the Condensed form")
+	p=rejoin(p,function(pr) pr.items.CondensedOre=1 end)
+	u=cmd(p,"workerUpgrade","1")
+	eq(u.workers[1].tier,4,"tier 4 with Condensed output")
+	eq(u.items.CondensedOre or 0,0,"Condensed output spent")
+	eq(u.workers[1].upgradeCost.CondensedOre,2,"tier 5 asks for 2 Condensed")
+	-- Legacy fleets over the caps (or past new gates) idle instead of producing.
+	local legacy=seeded(9014,function(pr)
+		pr.worker=true
+		pr.workers={
+			{resource="Ore",tier=1,lastClaim=utc-1205},{resource="Ore",tier=1,lastClaim=utc-1205},{resource="Ore",tier=1,lastClaim=utc-1205},
+			{resource="Ore",tier=1,lastClaim=utc-1205,store={Ore=5}},
+			{resource="Celestium",tier=7,lastClaim=utc-1205,store={Celestium=7}},
+		}
+		pr.workerUniques={Ore=1}
+	end)
+	local s=st(legacy)
+	eq(s.workers[3].ready,10,"third Copperstone worker produces")
+	eq(s.workers[3].idle,nil,"within the cap: not idle")
+	ok(has(s.workers[4].idle,"At most 3"),"fourth Copperstone worker idles")
+	eq(s.workers[4].ready,5,"idle worker keeps its stored output")
+	ok(has(s.workers[5].idle,"Mining 85"),"no-longer-allowed worker idles")
+	eq(s.workers[5].ready,7,"idle Celestium worker keeps its store")
+	legacy=away(legacy,1200)
+	s=st(legacy)
+	eq(s.workers[4].ready,5,"idle worker produced nothing offline")
+	eq(s.workers[1].ready,20,"working worker produced offline")
+	local claim=cmd(legacy,"workerClaim","4")
+	eq(claim.items.Ore,5,"idle worker's store is claimable")
+	eq(cmd(legacy,"workerAssign","4:Timber").workers[4].idle,nil,"reassigning an idle worker resumes work")
+	eq(cmd(legacy,"workerClaim","5").items.Celestium,7,"idle Celestium store claimed once")
 end
 
 print("PASS: "..checks.." worker depth assertions.")

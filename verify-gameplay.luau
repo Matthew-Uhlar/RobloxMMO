@@ -1512,7 +1512,7 @@ eq(regionHook2.OnInvoke(scout,"Skyreach").allowed,true,"quest count unlocks Skyr
 
 -- Workers across Data.WorkerTiers and every gathering resource.
 local foreman=seeded(330,function(p)
-	p.items={Timber=200,Ore=200,AlloyIngot=40,AetherIngot=20}
+	p.items={Timber=200,Ore=200,AlloyIngot=40,AetherIngot=20,CondensedBrassite=15}
 	p.xp.Mining=X[15]; p.levelRewards.Mining=15
 	p.collection={Brassite=50}; p.collectionRewards={Brassite=1}
 end)
@@ -1520,21 +1520,23 @@ cmd(foreman,"worker")
 ok(has(cmd(foreman,"workerAssign","1:SunsteelOre").message,"Mining 30"),"worker resource level gate")
 eq(cmd(foreman,"workerAssign","1:Glassfin").workers[1].resource,"Ore","worker skill gate")
 eq(cmd(foreman,"workerAssign","1:Brassite").workers[1].resource,"Brassite","worker assigned unlocked resource")
-advance(241)
+advance(2*288+1) -- Workers depth: Brassite paces at 2.4x its respawn-scaled interval
 foreman=rejoin(foreman)
 local brassClaim=cmd(foreman,"claim")
 eq(brassClaim.items.Brassite,2,"worker gathers new resource")
-eq(brassClaim.xp.Mining,X[15]+16,"worker XP scales with resource")
+eq(brassClaim.xp.Mining,X[15]+6,"worker XP scales with resource (a tenth of a harvest)")
 for _=2,4 do cmd(foreman,"workerUpgrade","1") end
 local tier4=st(foreman)
 eq(tier4.workers[1].tier,4,"worker reaches tier 4")
-eq(tier4.workers[1].interval,48,"tier 4 interval")
+eq(tier4.workers[1].interval,115,"tier 4 interval (48 s x 2.4 Brassite pace)")
+eq(tier4.items.CondensedBrassite,14,"tier 4 spends Condensed Brassite")
 eq(tier4.workers[1].capacity,480,"tier 4 capacity")
 eq(tier4.items.AlloyIngot,36,"tier 4 consumes refined ingots")
 for _=5,7 do cmd(foreman,"workerUpgrade","1") end
 local tier7=st(foreman)
 eq(tier7.workers[1].tier,7,"worker reaches tier 7")
-eq(tier7.workers[1].interval,26,"tier 7 interval")
+eq(tier7.workers[1].interval,62,"tier 7 interval (26 s x 2.4)")
+eq(tier7.items.CondensedBrassite or 0,0,"tiers 4-7 spend 1+2+4+8 Condensed Brassite")
 eq(tier7.workers[1].maxTier,7,"max tier exposed")
 eq(tier7.items.AlloyIngot,0,"upgrade ladder cost")
 eq(cmd(foreman,"workerUpgrade","1").message,"Worker is at maximum tier.","tier cap")

@@ -1015,7 +1015,7 @@ local function settle(player)
 		local facing=if workerSlot>3 then CFrame.lookAt(position,V(yardCenter.X,position.Y,yardCenter.Z)) else CFrame.new(position)
 		local yaw=if workerSlot>3 then math.deg(math.atan2(-facing.LookVector.X,-facing.LookVector.Z)) else 0
 		disk(station,"Worker pad",position+V(0,.08,0),2.3,.16,navy,SM,false)
-		local ring=disk(station,"Tier ring",position+V(0,.05,0),2.6,.1,shale,SM,false)
+		local ring=disk(station,"Tier ring",position+V(0,.05,0),2.4,.1,shale,SM,false) -- 2.4: neighbouring yard rings (8-stud ring, 10 steps) never overlap
 		local engine=block(station,"Surveyor chassis",position+V(0,1.35,0),V(2.8,2.7,2.5),navy,SM,true)
 		local lensAt=position+V(0,1.7,0)+facing.LookVector*1.35
 		local lens=block(station,"Eye lens",lensAt,V(1.55,.38,.18),mint,SM,false)

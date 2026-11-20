@@ -2584,6 +2584,9 @@ do
 	-- Slot 2 (full, auto-selling): change its type to Herb from the Farming group.
 	press(find(ui.scroll, "WorkerSlot2"))
 	check(find(ui.scroll, "Worker2") ~= nil, "slot 2 detail")
+	-- Quick-refuel never spends a permanent fuel (Everflame Heart is held too).
+	press(find(ui.scroll, "WorkerRefuel"))
+	check(last()[1] == "workerFuel" and last()[2] == "2:CharredBriquette", "quick-refuel skips the permanent Everflame Heart")
 	check(find(ui.scroll, "WorkerTypeOre") ~= nil, "Mining types listed first")
 	press(find(ui.scroll, "WorkerGroupFarming"))
 	check(find(ui.scroll, "WorkerTypeHerb") ~= nil, "Farming types listed")
