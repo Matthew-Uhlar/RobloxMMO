@@ -3086,11 +3086,149 @@ Pages.drawBank,Pages.drawMarket,Pages.drawMerchant,Pages.drawCoop=drawBank,drawM
 end
 
 ------------------------------------------------------------------------------
+-- Journal → Calendar (Events team): the Skyward Calendar, live/next events with
+-- countdowns, the Starfall gift and the Festival Vendor. Dates come from the
+-- shared Data.calendarAt (deterministic from server time); claims and vendor
+-- access from snapshot.events. Countdown labels tick in place every second;
+-- the page redraws only when a day or event boundary passes.
+------------------------------------------------------------------------------
+do
+local CAL={timers={},boundary=math.huge,icons={BloomtideFair="Sunwheat",GlimmertideFestival="SunscaleCarp",DeepveinSurge="Brassite",HollowNight="GloamCandyOrb",StarfallVigil="StarfallShard"}}
+function CAL.ready()
+	return Data and type(Data.calendarAt)=="function" and type(Data.Events)=="table" and type(Data.EventVendor)=="table"
+		and type(Data.upcomingEvents)=="function" and type(Data.SeasonById)=="table"
+end
+-- Synced server clock where available (device clocks drift), else os.time().
+function CAL.now()
+	local ok,t=pcall(function() return workspace:GetServerTimeNow() end)
+	-- Stubbed or unsynced clocks report ~0; anything before 2020 falls back to os.time().
+	return math.floor(if ok and type(t)=="number" and t==t and t>1577836800 then t else os.time())
+end
+function CAL.featured()
+	local ok,id=pcall(function() return workspace:GetAttribute("FestivalResource") end)
+	return if ok and type(id)=="string" and itemDef(id) then itemName(id) else "voting…"
+end
+function CAL.span(seconds)
+	seconds=math.max(0,math.floor(num(seconds,0)))
+	if seconds>=86400 then return (seconds//86400).."d "..((seconds%86400)//3600).."h" end
+	if seconds>=3600 then return (seconds//3600).."h "..string.format("%02d",(seconds%3600)//60).."m" end
+	return (seconds//60).."m "..string.format("%02d",seconds%60).."s"
+end
+function CAL.listText(map,have)
+	local parts={}
+	for id,n in pairs(tbl(map)) do
+		local text=fmt(n).." "..escape(itemName(id))
+		if have then text=(count("items",id)>=n and check or cross).." "..text.."  "..paint("("..fmt(count("items",id))..")","B9C7CC") end
+		table.insert(parts,text)
+	end
+	table.sort(parts)
+	return table.concat(parts,"   ")
+end
+-- A countdown paragraph inside a card body; fn(now) returns its text.
+function CAL.timer(fn,color)
+	return function(body,nextOrder)
+		local copy=para(body,fn(CAL.now()),nextOrder(),color or gold,compactAtlas and 13 or 14)
+		copy.Name="Countdown"
+		table.insert(CAL.timers,{label=copy,fn=fn})
+	end
+end
+function CAL.when(cal,w)
+	local d=Data.calendarAt(w.starts)
+	return d.seasonName.." "..d.day..(if d.year~=cal.year then "  ·  Year "..d.year else "")
+end
+local function drawCalendar()
+	table.clear(CAL.timers)
+	CAL.boundary=math.huge
+	heading("SKYWARD CALENDAR    /    SEASONS & FESTIVALS")
+	if not CAL.ready() then dataMissing() return end
+	local now=CAL.now()
+	local cal=Data.calendarAt(now)
+	local season=tbl(Data.SeasonById[cal.season])
+	local events=tbl(state.events)
+	local claims=tbl(events.claims)
+	local perSeason=num(Data.Calendar.daysPerSeason,12)
+	CAL.boundary=math.min(cal.dayEnds,cal.eventEnds or math.huge)
+	local labels={}
+	for i,s in ipairs(Data.Calendar.seasons) do labels[i]=compactAtlas and s.name:sub(1,5) or s.name end
+	card({name="CalendarToday",motif="Journal",title=paint(escape(season.name or cal.season).." "..cal.day,season.color or "F9CC77"),
+		subtitle="Year "..fmt(cal.year).."  ·  day "..cal.dayOfYear.." of "..num(Data.Calendar.daysPerYear,48).."  ·  day "..cal.day.." of "..perSeason.." this season",
+		badge=paint(string.upper(tostring(season.skill or "")),"9EE7D2"),detail=escape(season.text or ""),
+		pips={total=#Data.Calendar.seasons,filled=cal.seasonIndex,color=safeColor(season.color,gold),labels=labels},
+		bar={fraction=(now-cal.dayStart)/Data.Calendar.dayLength,color=safeColor(season.color,mint),caption="Isle day "..cal.day.." of "..perSeason},
+		after=CAL.timer(function(t) return "Dusk in "..CAL.span(cal.dayEnds-t).."   ·   "..escape(season.name or "").." ends in "..CAL.span(cal.seasonEnds-t) end,muted)})
+	local upcoming=Data.upcomingEvents(now,14)
+	if cal.event then
+		local ev=tbl(Data.Events[cal.event])
+		local claimed=claims[cal.eventKey]~=nil
+		local actions=nil
+		if ev.gift then
+			actions={{caption=claimed and "Opened" or "Claim gift",primary=not claimed,disabled=claimed,reason="You already opened this vigil's gift.",name="CalendarClaim",
+				fn=function() send("eventGift") end}}
+		end
+		card({name="CalendarLive",item=CAL.icons[cal.event],title=paint("NOW  ·  "..escape(ev.name or cal.event),ev.color or "F9CC77"),
+			subtitle=escape(season.name or "").." "..cal.day.."  ·  "..math.floor(num(ev.duration,0)/60).."-minute festival",badge=paint("LIVE","9EE7D2"),
+			detail=escape(ev.text or ""),accent=safeColor(ev.color,gold),
+			lines={ev.gift and ("Gift: "..CAL.listText(ev.gift)..(claimed and ("  "..paint("✓ opened","9EE7D2")) or "")) or nil,
+				ev.drop and ("Festival-only: "..escape(itemName(ev.drop.item)).." ("..chance(ev.drop.chance).." per catch)") or nil,
+				ev.candy and ("Event drop: "..escape(itemName(ev.candy.item)).." ("..chance(ev.candy.chance).." per kill)") or nil,
+				ev.featuredMult and ("Featured crop: "..escape(CAL.featured()).."  (vote at the Island Assembly)") or nil},
+			bar={fraction=(now-num(cal.eventStarts,now))/math.max(1,num(ev.duration,1)),color=safeColor(ev.color,mint),caption="Festival underway"},
+			after=CAL.timer(function(t) return "Ends in "..CAL.span(cal.eventEnds-t) end),actions=actions})
+	end
+	heading("UPCOMING FESTIVALS")
+	local shown,listed=0,{[cal.event or ""]=true} -- next occurrence of each other festival
+	for _,w in ipairs(upcoming) do
+		if not listed[w.id] and shown<(compactAtlas and 3 or 4) then
+			listed[w.id]=true
+			shown+=1
+			local ev=tbl(Data.Events[w.id])
+			CAL.boundary=math.min(CAL.boundary,w.starts)
+			card({name="CalendarNext"..shown,item=CAL.icons[w.id],title=paint(escape(ev.name or w.id),ev.color or "FFF4D9"),
+				subtitle=escape(CAL.when(cal,w)).."  ·  "..math.floor(num(ev.duration,0)/60).." minutes",detail=escape(ev.text or ""),
+				after=CAL.timer(function(t) return "Starts in "..CAL.span(w.starts-t) end,mint)})
+		end
+	end
+	local open=num(events.vendorUntil,0)>now
+	heading("FESTIVAL VENDOR    /    "..(open and "OPEN" or "VISIT THE HUB STALL"))
+	if not open then
+		card({name="VendorClosed",motif="Ledger",title="Festival Vendor",titleColor=gold,subtitle="Hub stall beside the Island Assembly board",
+			detail="Trade Hollow Night candy, Starfall shards and Sunscale Carp for keepsakes. Visit the stall to open trading for "..math.floor(num(Data.EVENT_VENDOR_SECONDS,300)/60).." minutes."})
+	else
+		card({name="VendorOpen",motif="Ledger",title="Festival Vendor",titleColor=gold,subtitle="Trading open",
+			after=CAL.timer(function(t) return "Stall closes in "..CAL.span(num(events.vendorUntil,0)-t) end,muted)})
+	end
+	for _,offer in ipairs(Data.EventVendor) do
+		local rewardId=next(tbl(offer.reward))
+		local def=itemDef(rewardId)
+		local afford=true
+		for id,n in pairs(tbl(offer.costs)) do if count("items",id)<n then afford=false end end
+		local owned=offer.unique==true and count("items",rewardId)>0
+		local reason=(not open and "Visit the Festival Vendor on the hub first.") or (owned and "You already own one.") or (not afford and "You need more event currency.") or nil
+		card({name="Offer"..offer.id,item=rewardId,title=escape(CAL.listText(offer.reward)),titleColor=def and safeColor(rarityHex(def.rarity),ivory) or ivory,
+			subtitle=def and escape(def.rarity or "").."  ·  "..escape(def.kind or "") or nil,badge=owned and paint("OWNED","9EE7D2") or nil,
+			detail=def and escape(def.description or "") or nil,lines={"Cost: "..CAL.listText(offer.costs,true)},
+			actions={{caption="Trade",primary=reason==nil,disabled=reason~=nil,reason=reason,name="Trade"..offer.id,fn=function() send("eventTrade",offer.id) end}}})
+	end
+end
+Pages.drawCalendar=drawCalendar
+task.spawn(function()
+	while task.wait(1) do
+		if #CAL.timers>0 and atlas.Visible and current=="Journal" and sectionOf and sectionOf.Journal=="Calendar" then
+			local now=CAL.now()
+			if now>=CAL.boundary then render() else
+				for _,t in ipairs(CAL.timers) do pcall(function() t.label.Text=t.fn(now) end) end
+			end
+		end
+	end
+end)
+end
+
+------------------------------------------------------------------------------
 -- Navigation: six primary tabs, each with a section switcher.
 ------------------------------------------------------------------------------
 local tabOrder={"Journal","Hero","Satchel","Workshop","Hunt","Ledger"}
 local sectionLists={
-	Journal={"Bearing","Quests","Diaries","Construction","Regions","Crew"},
+	Journal={"Bearing","Quests","Diaries","Construction","Regions","Crew","Calendar"},
 	Hero={"Skills","Gear","Enchant","Accessories","Pets"},
 	Satchel={"Items","Collections"},
 	Workshop={"Forge","Hearth","Cauldron","Workbench","Workers","Home"},
@@ -3099,7 +3237,7 @@ local sectionLists={
 }
 sectionOf={Journal="Bearing",Hero="Skills",Satchel="Items",Workshop="Forge",Hunt="Slayer",Ledger="Bank"}
 local drawers={
-	Journal={Bearing=Pages.drawBearing,Quests=Pages.drawQuests,Diaries=Pages.drawDiaries,Construction=Pages.drawConstruction,Regions=Pages.drawRegions,Crew=Pages.drawCoop},
+	Journal={Bearing=Pages.drawBearing,Quests=Pages.drawQuests,Diaries=Pages.drawDiaries,Construction=Pages.drawConstruction,Regions=Pages.drawRegions,Crew=Pages.drawCoop,Calendar=Pages.drawCalendar},
 	Hero={Skills=Pages.drawSkills,Gear=Pages.drawGear,Enchant=Pages.drawEnchant,Accessories=Pages.drawAccessories,Pets=Pages.drawPets},
 	Satchel={Items=Pages.drawItems,Collections=Pages.drawCollections},
 	Workshop={Forge=function() Pages.drawStation("Forge") end,Hearth=function() Pages.drawStation("Hearth") end,Cauldron=function() Pages.drawStation("Cauldron") end,
@@ -3477,14 +3615,14 @@ sendCoop = function(verb, item)
 end
 -- Crafting stations and the slayer board set IsleStation on the player; open
 -- the matching page. Values may carry a suffix ("Forge:3") so repeats fire.
-local stationTabs={Forge="Workshop",Hearth="Workshop",Cauldron="Workshop",Workbench="Workshop",Slayer="Hunt",Construction="Journal"}
+local stationTabs={Forge="Workshop",Hearth="Workshop",Cauldron="Workshop",Workbench="Workshop",Slayer="Hunt",Construction="Journal",Calendar="Journal"}
 local function openStation()
 	local value=player:GetAttribute("IsleStation")
 	if type(value)~="string" then return end
 	local station=value:match("^(%a+)")
 	local tab=station and stationTabs[station]
 	if not tab then return end
-	if tab=="Workshop" then openTo("Workshop",station) elseif tab=="Journal" then openTo("Journal","Construction") else openTo("Hunt","Slayer") end
+	if tab=="Workshop" then openTo("Workshop",station) elseif tab=="Journal" then openTo("Journal",if station=="Calendar" then "Calendar" else "Construction") else openTo("Hunt","Slayer") end
 end
 -- World sets IsleStation and then bumps IsleStationVisit on every trigger; only the
 -- counter opens the atlas, so each visit opens it exactly once (repeats included).

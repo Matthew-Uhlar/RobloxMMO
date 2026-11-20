@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 node art/import/verify-import.cjs
-for test in verify-progression.luau verify-gameplay.luau verify-world.luau verify-expedition.luau verify-coop.luau verify-combat.luau verify-ui.luau; do
+for test in verify-progression.luau verify-gameplay.luau verify-world.luau verify-expedition.luau verify-coop.luau verify-combat.luau verify-ui.luau verify-festival.luau; do
   [ -f "$test" ] || continue
   echo "== $test"; lune run "$test"
 done

@@ -682,7 +682,8 @@ local function snapshot(player,message)
 	return {xp=p.xp,items=p.items,consumables=provisions,collection=p.collection,coins=p.coins,bank=p.bank,bankRevision=p.bankRevision or 0,worker=p.worker,
 		ironman=p.ironman,levels=levels,enchantRank=p.enchantRank or 0,workerResource=p.workerResource or "Ore",workerReady=ready(p),workers=workerState(p),message=message or "",kills=p.kills,
 		companionBond=p.companionBond or 0,market=marketViews[player],economy=Econ.view and Econ.view(player,p),recipes=recipeState(p),regions=regionState(p),stats=legacyStats,quest=questState(p),slayer=slayerState(p),started=p.started,decorations=p.decorations,preview=preview[player]==true,
-		depth=depthState(p,stats),journal=Journal.state(p)}
+		depth=depthState(p,stats),journal=Journal.state(p),
+		events={claims=p.eventClaims or {},vendorUntil=player:GetAttribute("EventVendorUntil") or 0,serverTime=os.time()}} -- Events hook: Calendar page state
 end
 local function claimWorker(p,slot)
 	slot=slot or 1
@@ -911,11 +912,17 @@ local function perform(player,verb,item,prompt)
 		if item=="Aetherite" and reinforced then bonus+=1 end
 		if region=="Skyreach" then bonus+=1 end
 		if workspace:GetAttribute("FestivalResource")==item then bonus+=1 end
+		-- Events hook: Skyward Calendar season/event effects (state published by festival.server.lua).
+		local event=Data.eventGather(item,Data.eventState(workspace,os.time()),roll)
+		bonus+=event.bonus
 		local ok,result=Progression.harvest(p,item,Progression.computeStats(p,os.time()),roll,bonus)
 		if not ok then
 			if item=="Aetherite" then return result.." Train on Ore in Quarry Cay." end
 			return result
 		end
+		-- Events hook: festival yield/XP multipliers apply exactly once, after fortune; festival-only catches.
+		result.amount*=event.mult; result.xp=math.floor(result.xp*event.xpMult)
+		for id,n in pairs(event.extra) do collect(p,id,n); note(p,"Festival catch • +"..n.." "..Data.Items[id].name) end
 		collect(p,item,result.amount)
 		grantXp(p,skill,result.xp)
 		if region then Journal.count(p,"gathers",region,1) end
@@ -1215,6 +1222,14 @@ local function perform(player,verb,item,prompt)
 		p[destination]+=amount
 		p.bankRevision=(p.bankRevision or 0)+1
 		return (if source=="bank" then "Withdrew " else "Deposited ")..amount.." coins."
+	elseif verb=="eventGift" or verb=="eventTrade" then
+		-- Events hook: Starfall gift / Festival Vendor trade; rules and persisted claims in Data.eventAction.
+		return Data.eventAction(p,verb,item,Data.eventState(workspace,os.time()),os.time(),collect,(player:GetAttribute("EventVendorUntil") or 0)>os.time())
+	elseif verb=="eventVendor" and prompt then
+		-- Events hook: the hub Festival Vendor opens trading for a few minutes and the Calendar page.
+		player:SetAttribute("EventVendorUntil",os.time()+Data.EVENT_VENDOR_SECONDS)
+		player:SetAttribute("IsleStation","Calendar"); player:SetAttribute("IsleStationVisit",(player:GetAttribute("IsleStationVisit") or 0)+1)
+		return "The Festival Vendor spreads out this season's wares."
 	elseif verb=="ironman" then
 		if p.started then return "Choose Ironman before starting progression, construction, hunts or trading." end
 		p.ironman=true
@@ -1440,6 +1455,8 @@ bridge.OnInvoke=function(op,player,payload)
 		p.coins+=monster.coins
 		local drops=Progression.rollDrops(monster.drops,stats.magicFind,roll,stats.petLuck)
 		for item,n in pairs(drops) do collect(p,item,n) end
+		-- Events hook: Hollow Night event-only drops (Data.eventKillDrops).
+		for item,n in pairs(Data.eventKillDrops(monsterId,Data.eventState(workspace,os.time()),roll)) do drops[item]=(drops[item] or 0)+n; collect(p,item,n) end
 		p.bestiary[monsterId]=(p.bestiary[monsterId] or 0)+1
 		local quest=p.slayerQuest
 		if quest and not quest.bossReady and monster.slayer==quest.line then
