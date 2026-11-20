@@ -45,9 +45,15 @@
 --                                      Magic level, magic weapon (damage/snare),
 --                                      range + line of sight, mana, glyphs (a staff
 --                                      supplies its elements), cooldowns
---     Every landed hit reports bridge "combatXp" {style, monster, tier, damage, spell}
---     (style XP: melee -> Combat, ranged -> Ranged, magic -> Magic, plus a Combat
---     share). Monsters take +30% from their weakness and -30% from their
+--     Damage XP (OSRS model): every hit accrues the damage it actually removed on
+--     the monster record (r.contributors[player] = {damage, xp = {[style] = dmg}});
+--     when the monster dies each credited contributor gets bridge "combatXp"
+--     {style, monster, tier, damage} per style (melee -> Combat, ranged -> Ranged,
+--     magic -> Magic, plus a 1/3 Combat share). A leash heal or a despawn
+--     discards the accrual, and leashing monsters cannot be targeted at all.
+--     A spell's cast XP is still immediate ({style = "magic", spell}). Hubward
+--     pays its tablet first, then teleports (refunded through bridge "refund"
+--     if the teleport fails), and is refused during an agility move. Monsters take +30% from their weakness and -30% from their
 --     defenceStyle (Progression.styleModifier). Mana lives here, per session:
 --     max = Intelligence, regenerating Data.CombatStyles.manaRegenPercent of max
 --     per second, replicated as player attributes Mana / MaxMana. Refusals with a
@@ -85,6 +91,8 @@ local C = {
 	MAX_RANGE = 40,             -- ranged / magic reach (Data.CombatStyles.maxRange wins when present)
 	DENY_INTERVAL = 0.3,        -- min seconds between "denied" notices per player
 	EYE_HEIGHT = 1.5,           -- line-of-sight rays start this far above the root
+	MANA_REFRESH = 10,          -- seconds before the mana tick re-reads a player's max mana
+	MANA_REFRESH_BUDGET = 4,    -- stats fetches the mana tick may make per tick
 }
 -- Refusal reasons worth telling the player about (cooldown/target spam stays silent).
 local DENY_REASONS = {style = true, weapon = true, ammo = true, ammoTier = true, sight = true, range = true,
@@ -527,6 +535,8 @@ local function createLogic(env)
 		local value = env.bridge("stats", player)
 		if type(value) ~= "table" or type(value.stats) ~= "table" then value = nil end
 		statsCache[player] = {value = value, at = now}
+		-- Every fresh stats fetch also refreshes the player's max mana.
+		if value then L.manaOf(player, value.stats) end
 		return value
 	end
 	function L.peekStats(player)
@@ -641,6 +651,8 @@ local function createLogic(env)
 	function L.validateTarget(player, target, range)
 		local r = L.resolve(target)
 		if not r or not r.alive then return false, "target" end
+		-- A leashing monster is walking home to heal: it cannot be hit (no free XP).
+		if r.leashing then return false, "leashing" end
 		if r.boss and r.owner ~= player then return false, "owner" end
 		if not env.alive(player) then return false, "dead" end
 		local pos = env.position(player)
@@ -679,14 +691,41 @@ local function createLogic(env)
 		if not payload.damage and not spellId then return end
 		env.bridge("combatXp", player, payload)
 	end
+	-- Contribution record: {damage = total removed from hp, xp = {[style] = damage}}.
+	-- Damage XP accrues here (capped by the hp actually removed) and is paid only
+	-- when the monster dies (L.payXp); a leash heal or a despawn discards it.
+	function L.contribution(r, player)
+		local c = r.contributors[player]
+		return if c then c.damage else 0
+	end
 	function L.landHit(player, r, dealt, style, spellId)
-		local applied = math.min(dealt, r.hp)
+		local applied = math.max(0, math.min(dealt, r.hp))
 		r.hp -= applied
-		r.contributors[player] = (r.contributors[player] or 0) + applied
+		local c = r.contributors[player]
+		if not c then
+			c = {damage = 0, xp = {}}
+			r.contributors[player] = c
+		end
+		c.damage += applied
+		if applied > 0 then c.xp[style] = (c.xp[style] or 0) + applied end
 		if not r.boss and not r.target and not r.leashing then r.target = player end
 		r.provoked = true
-		L.reportXp(player, r, style, applied, spellId)
+		-- Spell cast XP is immediate (it is paid for with glyphs and mana).
+		if spellId then L.reportXp(player, nil, "magic", 0, spellId) end
 		return applied
+	end
+	-- Pays each credited contributor the damage XP they accrued on r.
+	local XP_STYLES = {"melee", "ranged", "magic"}
+	function L.payXp(r, credited)
+		for _, player in ipairs(credited) do
+			local c = r.contributors[player]
+			if c then
+				for _, style in ipairs(XP_STYLES) do
+					local damage = c.xp[style]
+					if damage and damage > 0 then L.reportXp(player, r, style, damage) end
+				end
+			end
+		end
 	end
 	local function finish(result, r)
 		if r and r.hp <= 0 then
@@ -771,12 +810,23 @@ local function createLogic(env)
 		return m
 	end
 	-- Mana to replicate: {player, mana, max} for every player whose rounded value changed.
+	-- Bounded: only players below max regenerate (no stats needed), and at most
+	-- C.MANA_REFRESH_BUDGET players per tick fetch stats (first sight, or max
+	-- older than C.MANA_REFRESH); attacks and casts refresh max mana on the way.
 	function L.manaTick()
 		local updates = {}
+		local now, budget = env.now(), C.MANA_REFRESH_BUDGET
 		for _, player in ipairs(env.players()) do
-			local info = L.statsFor(player)
-			if info then
-				local m = L.manaOf(player, info.stats)
+			local m = mana[player]
+			local cached = statsCache[player]
+			if budget > 0 and (not m or not cached or now - cached.at >= C.MANA_REFRESH) then
+				budget -= 1
+				L.statsFor(player)
+				m = mana[player]
+			elseif m and m.current < m.max then
+				m = L.manaOf(player)
+			end
+			if m then
 				local current = math.floor(m.current)
 				if current ~= m.sentMana or m.max ~= m.sentMax then
 					m.sentMana, m.sentMax = current, m.max
@@ -813,6 +863,8 @@ local function createLogic(env)
 		local ready = spellReady[player] and spellReady[player][spell.id]
 		if ready and now < ready then return nil, "cooldown" end
 		if spell.kind == "teleport" and lastHurt[player] and now < lastHurt[player] + (tonumber(CS.combatLock) or 5) then return nil, "combat" end
+		-- An agility move would carry the player on after the teleport: refuse mid-move.
+		if spell.kind == "teleport" and env.moving and env.moving(player) then return nil, "teleport" end
 		local m = L.manaOf(player, info.stats)
 		if m.current < (spell.mana or 0) then return nil, "mana" end
 		local costs = Progression.glyphCost(spell, weapon)
@@ -821,19 +873,26 @@ local function createLogic(env)
 			if (tonumber(supplies[id]) or 0) < n then return nil, "glyphs" end
 		end
 		if r and not L.lineOfSight(pos, r) then return nil, "sight" end
-		if spell.kind == "teleport" and not (env.teleport and env.teleport(player) == true) then return nil, "teleport" end
+		-- Pay first (stale supplies must never buy a free teleport), then act.
 		if next(costs) then
 			local paid = env.bridge("consume", player, {items = costs})
 			if type(paid) ~= "table" or paid.ok ~= true then
 				for id in pairs(costs) do supplies[id] = 0 end
-				-- The tablet already moved the player; never undo a teleport.
-				if spell.kind ~= "teleport" then return nil, "glyphs" end
-			else
-				for id, n in pairs(costs) do
-					local left = type(paid.remaining) == "table" and tonumber(paid.remaining[id])
-					supplies[id] = left or math.max(0, (tonumber(supplies[id]) or 0) - n)
+				return nil, "glyphs"
+			end
+			for id, n in pairs(costs) do
+				local left = type(paid.remaining) == "table" and tonumber(paid.remaining[id])
+				supplies[id] = left or math.max(0, (tonumber(supplies[id]) or 0) - n)
+			end
+		end
+		if spell.kind == "teleport" and not (env.teleport and env.teleport(player) == true) then
+			if next(costs) then
+				local back = env.bridge("refund", player, {items = costs})
+				if type(back) == "table" and back.ok == true then
+					for id, n in pairs(costs) do supplies[id] = (tonumber(supplies[id]) or 0) + n end
 				end
 			end
+			return nil, "teleport"
 		end
 		m.current -= spell.mana or 0
 		if spell.kind == "damage" then
@@ -863,10 +922,10 @@ local function createLogic(env)
 	end
 	function L.creditEligible(r)
 		local contributors = 0
-		for _, dealt in pairs(r.contributors) do if dealt > 0 then contributors += 1 end end
+		for _, c in pairs(r.contributors) do if c.damage > 0 then contributors += 1 end end
 		local out = {}
-		for player, dealt in pairs(r.contributors) do
-			if dealt > 0 and env.alive(player) then
+		for player, c in pairs(r.contributors) do
+			if c.damage > 0 and env.alive(player) then
 				local pos = env.position(player)
 				if pos and (pos - r.position).Magnitude <= C.CREDIT_RANGE then
 					local info = L.peekStats(player)
@@ -883,14 +942,17 @@ local function createLogic(env)
 		if r.boss then
 			credited = {r.owner}
 			L.unregister(r)
+			L.payXp(r, credited)
 			L.reportBoss(r.owner, "win")
 		elseif r.sea then
 			credited = L.seaCredit(r)
 			L.unregister(r)
+			L.payXp(r, credited)
 			L.reportSea(r.owner, r.id, r.seq, if #credited > 0 then "kill" else "despawn", r.expires + C.SEA_REPORT_GRACE)
 		else
 			credited = L.creditEligible(r)
 			L.unregister(r)
+			L.payXp(r, credited)
 			for _, player in ipairs(credited) do env.bridge("kill", player, {monster = r.id}) end
 		end
 		return credited
@@ -939,7 +1001,7 @@ local function createLogic(env)
 			if r.leashing then
 				if fromHome <= C.RETURN_RADIUS then
 					r.leashing, r.provoked = false, false
-					r.hp, r.contributors = r.maxHp, {}
+					r.hp, r.contributors = r.maxHp, {} -- accrued damage XP is discarded
 					return {kind = "idle", healed = true}
 				end
 				if snared then return {kind = "idle"} end
@@ -1178,13 +1240,13 @@ local function createLogic(env)
 	function L.seaFailed(spec) L.reportSea(spec.owner, spec.id, spec.seq, "despawn") end
 	function L.seaCredit(r)
 		local owner = r.owner
-		if (r.contributors[owner] or 0) <= 0 or not env.alive(owner) then return {} end
+		if L.contribution(r, owner) <= 0 or not env.alive(owner) then return {} end
 		local pos = env.position(owner)
 		if not pos or (pos - r.position).Magnitude > C.CREDIT_RANGE then return {} end
 		local info = L.peekStats(owner)
 		if info and info.ironman == true then
-			for player, dealt in pairs(r.contributors) do
-				if player ~= owner and dealt > 0 then return {} end
+			for player, c in pairs(r.contributors) do
+				if player ~= owner and c.damage > 0 then return {} end
 			end
 		end
 		return {owner}
@@ -1293,6 +1355,11 @@ local Logic = createLogic({
 	Data = Data, Progression = Progression,
 	lineOfSight = function(from, r) return lineOfSight(from, r) end,
 	teleport = function(player) return teleportToHub(player) end,
+	-- server.server.lua sets AgilityMove "<anim>:<seq>" while a shortcut move runs.
+	moving = function(player)
+		local move = player:GetAttribute("AgilityMove")
+		return type(move) == "string" and move ~= ""
+	end,
 	now = os.clock,
 	rng = function() return random:NextNumber() end,
 	players = function() return Players:GetPlayers() end,
@@ -1311,8 +1378,8 @@ local Logic = createLogic({
 		end
 	end,
 	bridge = function(op, player, payload, done)
-		-- "stats" and "consume" (ammo/glyph payment) answer synchronously and never yield.
-		if op == "stats" or op == "consume" then return invokeBridge(op, player, payload) end
+		-- "stats", "consume" (ammo/glyph payment) and "refund" answer synchronously and never yield.
+		if op == "stats" or op == "consume" or op == "refund" then return invokeBridge(op, player, payload) end
 		-- Mutating ops may yield inside the Adventure script; never block the AI loop.
 		task.spawn(function()
 			local result = invokeBridge(op, player, payload)
