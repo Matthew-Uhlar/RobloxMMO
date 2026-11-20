@@ -21,8 +21,12 @@ local function rgb(hex)
 	hex = tostring(hex or "FFFFFF")
 	return Color3.fromRGB(tonumber(hex:sub(1, 2), 16) or 255, tonumber(hex:sub(3, 4), 16) or 255, tonumber(hex:sub(5, 6), 16) or 255)
 end
-local deep, ink, ivory, gold, mint = rgb("091923"), rgb("102733"), rgb("FFF4D9"), rgb("F9CC77"), rgb("9EE7D2")
-local bold = Enum.Font.GothamBold
+-- Palette and type match the atlas "Aether Brass" design system (ui.client.lua).
+local deep, ivory, gold, mint = rgb("0C1820"), rgb("F7EFDC"), rgb("F3C66E"), rgb("7FE3CC")
+local brass, brassDark, track, ember, raised = rgb("C9974A"), rgb("6B4E24"), rgb("060E14"), rgb("EF7D67"), rgb("2A4D5E")
+local heavy, display = Enum.Font.BuilderSansExtraBold, Enum.Font.FredokaOne
+local bold = heavy
+local white = Color3.new(1, 1, 1)
 
 local function make(class, parent, props)
 	local object = Instance.new(class)
@@ -30,10 +34,19 @@ local function make(class, parent, props)
 	object.Parent = parent
 	return object
 end
+-- Rim with a light top edge (Border mode: on a TextLabel the Contextual
+-- default would outline the text instead).
 local function round(parent, radius, stroke)
 	make("UICorner", parent, {CornerRadius = UDim.new(0, radius)})
-	-- Border mode: on a TextLabel/TextButton the Contextual default would outline the text instead.
-	if stroke then make("UIStroke", parent, {Color = stroke, Thickness = 1.5, Transparency = 0.15, ApplyStrokeMode = Enum.ApplyStrokeMode.Border}) end
+	if stroke then
+		local rim = make("UIStroke", parent, {Name = "Rim", Color = stroke, Thickness = 1.5, Transparency = 0.05, ApplyStrokeMode = Enum.ApplyStrokeMode.Border})
+		make("UIGradient", rim, {Rotation = 90, Color = ColorSequence.new(white, Color3.new(0.5, 0.5, 0.5))})
+		return rim
+	end
+	return nil
+end
+local function sheen(parent, bottom)
+	make("UIGradient", parent, {Name = "Sheen", Rotation = 90, Color = ColorSequence.new(white, Color3.new(bottom, bottom, bottom))})
 end
 
 ------------------------------------------------------------------------------
@@ -42,39 +55,67 @@ end
 local gui = make("ScreenGui", player:WaitForChild("PlayerGui"), {
 	Name = "IsleCombatHud", ResetOnSpawn = false, DisplayOrder = 5, ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 })
+local PANEL_HEIGHT = 58
+-- Target panel: level medallion, name, boss timer chip and a gradient HP meter
+-- (gloss + end cap). Bosses switch to ember rims and corner gems.
 local panel = make("Frame", gui, {
 	Name = "Target", AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 10),
-	Size = UDim2.fromOffset(300, 56), BackgroundColor3 = deep, BackgroundTransparency = 0.12, Visible = false,
+	Size = UDim2.fromOffset(300, PANEL_HEIGHT), BackgroundColor3 = deep, BackgroundTransparency = 0.06, Visible = false,
 })
-round(panel, 10, gold)
+local panelRim = round(panel, 12, brass)
+sheen(panel, 0.7)
 make("UISizeConstraint", panel, {MaxSize = Vector2.new(420, 70)})
+local ornaments = make("Frame", panel, {Name = "Ornaments", BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Visible = false})
+for _, c in ipairs({{0, 0}, {1, 0}, {0, 1}, {1, 1}}) do
+	local gem = make("Frame", ornaments, {AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(c[1], if c[1] == 0 then 5 else -5, c[2], if c[2] == 0 then 5 else -5),
+		Size = UDim2.fromOffset(6, 6), Rotation = 45, BackgroundColor3 = ember, BorderSizePixel = 0})
+	make("UIStroke", gem, {Color = track, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border})
+end
+local medal = make("Frame", panel, {Name = "Level", AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 9, 0.5, 0), Size = UDim2.fromOffset(40, 40),
+	BackgroundColor3 = raised, BorderSizePixel = 0})
+local medalRim = round(medal, 20, gold)
+sheen(medal, 0.5)
+local medalText = make("TextLabel", medal, {BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Font = display, TextSize = 16, TextColor3 = ivory,
+	TextStrokeTransparency = 0.35, TextStrokeColor3 = deep, Text = ""})
 local panelName = make("TextLabel", panel, {
-	BackgroundTransparency = 1, Position = UDim2.fromOffset(12, 4), Size = UDim2.new(1, -24, 0, 22),
-	Font = bold, TextSize = 16, TextColor3 = ivory, TextXAlignment = Enum.TextXAlignment.Left, Text = "",
+	BackgroundTransparency = 1, Position = UDim2.fromOffset(58, 6), Size = UDim2.new(1, -126, 0, 22),
+	Font = heavy, TextSize = 16, TextColor3 = ivory, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Text = "",
 })
 local panelTimer = make("TextLabel", panel, {
-	BackgroundTransparency = 1, Position = UDim2.fromOffset(12, 4), Size = UDim2.new(1, -24, 0, 22),
-	Font = bold, TextSize = 14, TextColor3 = gold, TextXAlignment = Enum.TextXAlignment.Right, Text = "",
+	AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -10, 0, 7), Size = UDim2.fromOffset(56, 20), BackgroundColor3 = track, BackgroundTransparency = 0.2,
+	Font = heavy, TextSize = 13, TextColor3 = gold, Text = "", Visible = false,
 })
+round(panelTimer, 10, brass)
 local barBack = make("Frame", panel, {
-	Position = UDim2.fromOffset(12, 30), Size = UDim2.new(1, -24, 0, 16), BackgroundColor3 = rgb("1F3B47"), BorderSizePixel = 0,
+	Position = UDim2.fromOffset(58, 31), Size = UDim2.new(1, -70, 0, 17), BackgroundColor3 = track, BorderSizePixel = 0,
 })
 round(barBack, 8)
--- A visible track: the ink fill alone disappeared against the deep panel.
-make("UIStroke", barBack, {Color = rgb("4C7680"), Thickness = 1, Transparency = 0.3, ApplyStrokeMode = Enum.ApplyStrokeMode.Border})
+-- A visible track: the fill alone disappeared against the deep panel.
+make("UIStroke", barBack, {Color = rgb("4C7680"), Thickness = 1, Transparency = 0.2, ApplyStrokeMode = Enum.ApplyStrokeMode.Border})
 local barFill = make("Frame", barBack, {Size = UDim2.fromScale(1, 1), BackgroundColor3 = mint, BorderSizePixel = 0})
 round(barFill, 8)
+make("UIGradient", barFill, {Color = ColorSequence.new(Color3.new(0.6, 0.6, 0.6), white)})
+local gloss = make("Frame", barFill, {BackgroundColor3 = white, BackgroundTransparency = 0.8, BorderSizePixel = 0, Position = UDim2.fromOffset(2, 1), Size = UDim2.new(1, -4, 0.42, 0)})
+round(gloss, 6)
+local barCap = make("Frame", barFill, {AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -1, 0.5, 0), Size = UDim2.fromOffset(5, 13), BackgroundColor3 = white, BorderSizePixel = 0})
+round(barCap, 3)
 local barText = make("TextLabel", barBack, {
-	BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Font = bold, TextSize = 12,
-	TextColor3 = ivory, TextStrokeTransparency = 0.4, Text = "", ZIndex = 2,
+	BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Font = heavy, TextSize = 12,
+	TextColor3 = ivory, TextStrokeTransparency = 0.3, TextStrokeColor3 = deep, Text = "", ZIndex = 2,
 })
+-- Event banner: a ribbon strip with brass end gems.
 local banner = make("TextLabel", gui, {
-	AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 74), Size = UDim2.fromOffset(460, 34),
-	BackgroundColor3 = deep, BackgroundTransparency = 0.15, Font = bold, TextSize = 16, TextColor3 = gold,
+	AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 76), Size = UDim2.fromOffset(460, 34),
+	BackgroundColor3 = deep, BackgroundTransparency = 0.06, Font = heavy, TextSize = 16, TextColor3 = gold,
 	Text = "", Visible = false,
 })
-round(banner, 10, gold)
+round(banner, 17, brass)
 make("UISizeConstraint", banner, {MaxSize = Vector2.new(460, 40)})
+for _, x in ipairs({0, 1}) do
+	local gem = make("Frame", banner, {Name = "End", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(x, if x == 0 then 16 else -16, 0.5, 0), Size = UDim2.fromOffset(8, 8),
+		Rotation = 45, BackgroundColor3 = gold, BorderSizePixel = 0})
+	make("UIStroke", gem, {Color = brassDark, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border})
+end
 -- Layout: the atlas HUD (ui.client.lua, DisplayOrder 8) owns the top-left corner,
 -- x 10-315 and y 8-96. On wide screens the target panel and banner sit top-centre
 -- as before; on narrow ones (phone landscape 730x303) the panel moves top-right
@@ -98,9 +139,9 @@ local function layoutHud(isBoss)
 		panelWidth = math.min(panelWidth, width - 2 * EDGE)
 		panel.AnchorPoint, panel.Position, panelTop = Vector2.new(0.5, 0), UDim2.new(0.5, 0, 0, HUD_BOTTOM), HUD_BOTTOM
 	end
-	panel.Size = UDim2.fromOffset(panelWidth, 56)
+	panel.Size = UDim2.fromOffset(panelWidth, PANEL_HEIGHT)
 	local bannerWidth = math.min(460, width - 2 * EDGE)
-	local bannerTop = panelTop + 64
+	local bannerTop = panelTop + PANEL_HEIGHT + 8
 	if width / 2 - bannerWidth / 2 < HUD_RIGHT then bannerTop = math.max(bannerTop, HUD_BOTTOM) end
 	banner.Size = UDim2.fromOffset(bannerWidth, 34)
 	banner.Position = UDim2.new(0.5, 0, 0, bannerTop)
@@ -123,10 +164,17 @@ local function ensureAttackButton()
 	if attackButton or not UserInputService.TouchEnabled then return end
 	attackButton = make("TextButton", gui, {
 		Name = "AttackButton", AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -110, 1, -40),
-		Size = UDim2.fromOffset(78, 78), BackgroundColor3 = deep, BackgroundTransparency = 0.1,
-		Font = bold, Text = "⚔", TextSize = 34, TextColor3 = gold, AutoButtonColor = true,
+		Size = UDim2.fromOffset(78, 78), BackgroundColor3 = raised, BackgroundTransparency = 0.05,
+		Font = heavy, Text = "⚔", TextSize = 30, TextColor3 = gold, AutoButtonColor = true, TextYAlignment = Enum.TextYAlignment.Top,
 	})
 	round(attackButton, 39, gold)
+	make("UIPadding", attackButton, {PaddingTop = UDim.new(0, 12)})
+	-- Inner brass ring and an ATTACK caption under the crossed blades.
+	local ring = make("Frame", attackButton, {AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, -6), Size = UDim2.new(1, -10, 1, 2), BackgroundTransparency = 1})
+	make("UICorner", ring, {CornerRadius = UDim.new(1, 0)})
+	make("UIStroke", ring, {Color = brass, Thickness = 1, Transparency = 0.45, ApplyStrokeMode = Enum.ApplyStrokeMode.Border})
+	make("TextLabel", attackButton, {Name = "Caption", AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -8), Size = UDim2.fromOffset(60, 12),
+		BackgroundTransparency = 1, Font = heavy, TextSize = 11, TextColor3 = ivory, Text = "ATTACK"})
 end
 ensureAttackButton()
 
@@ -453,9 +501,16 @@ RunService.RenderStepped:Connect(function()
 	local isBoss = shown:GetAttribute("Boss") == true
 	local hp, maxHp = shown:GetAttribute("Health") or 0, math.max(1, shown:GetAttribute("MaxHealth") or 1)
 	local fraction = math.clamp(hp / maxHp, 0, 1)
-	panelName.Text = "[Lv " .. tostring(shown:GetAttribute("Level") or "?") .. "] " .. tostring(shown:GetAttribute("DisplayName") or shown.Name)
-	panelName.TextColor3 = if isBoss then rgb("FF7B6E") else ivory
+	medalText.Text = tostring(shown:GetAttribute("Level") or "?")
+	panelName.Text = (if isBoss then "☠ " else "") .. tostring(shown:GetAttribute("DisplayName") or shown.Name)
+	panelName.TextColor3 = if isBoss then rgb("FF9C8E") else ivory
+	if panelRim then panelRim.Color = if isBoss then ember else brass end
+	if medalRim then medalRim.Color = if isBoss then ember else gold end
+	medal.BackgroundColor3 = if isBoss then rgb("5A1E1A") else raised
+	ornaments.Visible = isBoss
 	barFill.Size = UDim2.fromScale(fraction, 1)
+	barFill.Visible = fraction > 0
+	barCap.Visible = fraction > 0.04 and fraction < 0.995
 	barFill.BackgroundColor3 = if isBoss then rgb("DC3C3C") elseif fraction > 0.5 then mint elseif fraction > 0.25 then gold else rgb("E6504A")
 	barText.Text = commas(hp) .. " / " .. commas(maxHp)
 	layoutHud(isBoss)
@@ -463,7 +518,9 @@ RunService.RenderStepped:Connect(function()
 	if isBoss and expires then
 		local left = math.max(0, math.floor(expires - Workspace:GetServerTimeNow()))
 		panelTimer.Text = string.format("%d:%02d", left // 60, left % 60)
+		panelTimer.Visible = true
 	else
 		panelTimer.Text = ""
+		panelTimer.Visible = false
 	end
 end)

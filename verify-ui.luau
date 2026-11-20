@@ -36,6 +36,7 @@ local events = {
 	MouseButton1Down = true, MouseButton1Up = true, MouseLeave = true, SelectionGained = true, Activated = true,
 	FocusLost = true, OnClientEvent = true, HealthChanged = true, CharacterAdded = true, InputBegan = true,
 	TextBoxFocusReleased = true, InputEnded = true, TouchTapInWorld = true, RenderStepped = true, AncestryChanged = true, InputChanged = true, CharacterRemoving = true,
+	MouseEnter = true, SelectionLost = true,
 }
 local guiClasses = { Frame = true, TextLabel = true, TextButton = true, ImageLabel = true, ScrollingFrame = true, ViewportFrame = true, TextBox = true }
 local absoluteSize = roblox.Vector2.new(730, 303)
@@ -420,6 +421,7 @@ local function run(options)
 	local env = {
 		game = game, workspace = new("Workspace"), Enum = roblox.Enum, UDim = roblox.UDim, UDim2 = roblox.UDim2, Vector2 = roblox.Vector2,
 		Vector3 = roblox.Vector3, CFrame = roblox.CFrame, Color3 = roblox.Color3, ColorSequence = roblox.ColorSequence,
+		ColorSequenceKeypoint = roblox.ColorSequenceKeypoint, NumberSequence = roblox.NumberSequence, NumberSequenceKeypoint = roblox.NumberSequenceKeypoint,
 		TweenInfo = { new = function() return {} end },
 		Instance = { new = function(class) return new(class) end },
 		require = function(target)
@@ -910,7 +912,7 @@ local function combatHud(size)
 	local delayed = {}
 	local env = {
 		game = game, Enum = roblox.Enum, UDim = roblox.UDim, UDim2 = roblox.UDim2, Vector2 = roblox.Vector2, Vector3 = roblox.Vector3,
-		CFrame = roblox.CFrame, Color3 = roblox.Color3, TweenInfo = { new = function() return {} end },
+		CFrame = roblox.CFrame, Color3 = roblox.Color3, ColorSequence = roblox.ColorSequence, NumberSequence = roblox.NumberSequence, TweenInfo = { new = function() return {} end },
 		Instance = { new = function(class) return new(class) end }, RaycastParams = { new = function() return {} end },
 		typeof = function(value) return if data[value] then "Instance" else typeof(value) end,
 		task = { spawn = function(fn, ...) local co = coroutine.create(fn); assert(coroutine.resume(co, ...)) end,
@@ -1222,7 +1224,7 @@ do
 	function game.GetService(_, name) return assert(services[name], name) end
 	local env = {
 		game = game, workspace = workspace, Enum = roblox.Enum, UDim = roblox.UDim, UDim2 = roblox.UDim2, Vector2 = roblox.Vector2,
-		Vector3 = roblox.Vector3, CFrame = roblox.CFrame, Color3 = roblox.Color3, RaycastParams = { new = function() return {} end },
+		Vector3 = roblox.Vector3, CFrame = roblox.CFrame, Color3 = roblox.Color3, ColorSequence = roblox.ColorSequence, NumberSequence = roblox.NumberSequence, RaycastParams = { new = function() return {} end },
 		Instance = { new = function(class) return new(class) end },
 		typeof = function(value) return if data[value] then "Instance" else typeof(value) end,
 		require = function(target) assert(target == dataModule, "builder requires only AetherData") return Data end,

@@ -43,7 +43,7 @@ local events = {
 	MouseButton1Down = true, MouseButton1Up = true, MouseLeave = true, SelectionGained = true, Activated = true,
 	FocusLost = true, OnClientEvent = true, HealthChanged = true, CharacterAdded = true, InputBegan = true,
 	TextBoxFocusReleased = true, InputEnded = true, TouchTapInWorld = true, RenderStepped = true, AncestryChanged = true,
-	MouseEnter = true, SelectionLost = true, Completed = true, Heartbeat = true,
+	MouseEnter = true, SelectionLost = true, Completed = true, Heartbeat = true, InputChanged = true, CharacterRemoving = true,
 }
 local guiClasses = { Frame = true, TextLabel = true, TextButton = true, ImageLabel = true, ImageButton = true, ScrollingFrame = true, ViewportFrame = true, TextBox = true, CanvasGroup = true }
 H.guiClasses = guiClasses
@@ -238,8 +238,14 @@ end
 function methods:GetPlayers()
 	return { self.LocalPlayer }
 end
-function methods:Create()
-	return { Play = function() end, Completed = newSignal() }
+-- Tweens jump straight to their goals so renders show the settled state
+-- (open/close, slide-in and pop-in transitions end where they come to rest).
+function methods:Create(object, _, goals)
+	return { Play = function()
+		if type(goals) == "table" and object ~= nil and data[object] then
+			for key, value in pairs(goals) do object[key] = value end
+		end
+	end, Completed = newSignal() }
 end
 function methods:GetServerTimeNow()
 	return 100
@@ -474,7 +480,7 @@ function H.runCombat(size, player)
 	function game.GetService(_, name) return assert(services[name], name) end
 	local env = {
 		game = game, Enum = roblox.Enum, UDim = roblox.UDim, UDim2 = roblox.UDim2, Vector2 = roblox.Vector2, Vector3 = roblox.Vector3,
-		CFrame = roblox.CFrame, Color3 = roblox.Color3, TweenInfo = { new = function() return {} end },
+		CFrame = roblox.CFrame, Color3 = roblox.Color3, ColorSequence = roblox.ColorSequence, NumberSequence = roblox.NumberSequence, TweenInfo = { new = function() return {} end },
 		Instance = { new = function(class) return new(class) end }, RaycastParams = { new = function() return {} end },
 		typeof = function(value) return if data[value] then "Instance" else typeof(value) end,
 		task = baseTask(),
@@ -484,6 +490,59 @@ function H.runCombat(size, player)
 	local monster = new("Model", { Name = "Golem" })
 	monster.Parent = services.Workspace
 	return { hud = player:FindFirstChild("PlayerGui"):FindFirstChild("IsleCombatHud"), fx = fx, monster = monster, tagged = tagged, run = services.RunService }
+end
+
+-- A founded crew (Journal > Crew) for renders.
+function H.coopSample()
+	return {
+		groupId = "1", owner = 1, ironman = false, maxMembers = 4, message = "",
+		members = {
+			{ userId = 1, name = "Voyager", role = "Leader", points = 420, gathered = 120, deposited = 60, withdrawn = 10, built = 2, worker = 1 },
+			{ userId = 2, name = "Marisol", role = "Member", points = 180, gathered = 70, deposited = 20, withdrawn = 0, built = 1, worker = 0 },
+		},
+		level = { level = 2, xp = 340, floor = 200, nextXp = 600, stats = { health = 4 }, nextStats = { health = 8 }, storage = 200, workerSlots = 1, workerTier = 1,
+			nextStorage = 300, nextWorkers = 1 },
+		resources = { "Timber", "Ore", "Herb", "Fish" }, supplies = { Timber = 64, Ore = 30, Herb = 12, Fish = 0 },
+		workers = { { slot = 1, resource = "Ore", tier = 1, interval = 90, ready = 14, capacity = 40, upgradeCost = { Timber = 20, Ore = 10 } } },
+		decorations = { Garden = true }, log = { "Marisol deposited 10 Timber", "Voyager built Garden" },
+		outgoing = {}, kickReasons = { { id = "afk", text = "Inactive" } }, invites = {},
+	}
+end
+-- Loads build.client.lua (the island builder HUD) for an existing player.
+function H.runBuilder(size, player)
+	screen = size
+	local replicated = new("ReplicatedStorage")
+	local dataModule = new("ModuleScript", { Name = "AetherData" })
+	dataModule.Parent = replicated
+	local workspace = new("Workspace")
+	local camera = new("Camera", { ViewportSize = size })
+	camera.Parent = workspace
+	workspace.CurrentCamera = camera
+	camera.ViewportPointToRay = function(_, x, y) return { Origin = roblox.Vector3.new(x, 50, y), Direction = roblox.Vector3.new(0, -1, 0) } end
+	workspace.Raycast = function() return { Position = roblox.Vector3.new(4, 0, 6), Instance = workspace } end
+	player:SetAttribute("IslandCenter", roblox.Vector3.new(0, 0, 0))
+	player:SetAttribute("IslandPlacements", "")
+	local services = { Players = new("Players", { LocalPlayer = player }), ReplicatedStorage = replicated,
+		UserInputService = new("UserInputService", { MouseEnabled = true, TouchEnabled = true }), RunService = new("RunService"),
+		ContextActionService = { BindActionAtPriority = function() end, UnbindAction = function() end }, TweenService = new("TweenService") }
+	local game = new("DataModel")
+	function game.GetService(_, name) return assert(services[name], name) end
+	local env = {
+		game = game, workspace = workspace, Enum = roblox.Enum, UDim = roblox.UDim, UDim2 = roblox.UDim2, Vector2 = roblox.Vector2,
+		Vector3 = roblox.Vector3, CFrame = roblox.CFrame, Color3 = roblox.Color3, ColorSequence = roblox.ColorSequence, NumberSequence = roblox.NumberSequence,
+		TweenInfo = { new = function() return {} end }, RaycastParams = { new = function() return {} end },
+		Instance = { new = function(class) return new(class) end },
+		typeof = function(value) return if data[value] then "Instance" else typeof(value) end,
+		require = function() return Data end,
+	}
+	luau.load(fs.readFile("build.client.lua"), { debugName = "build.client.lua", environment = env, injectGlobals = true })()
+	return {
+		enter = function(mode, prop)
+			player:SetAttribute("IslandBuildMode", mode)
+			player:SetAttribute("IslandBuildProp", prop or "")
+			player:SetAttribute("IslandBuildRequest", (player:GetAttribute("IslandBuildRequest") or 0) + 1)
+		end,
+	}
 end
 
 function H.find(root, name)

@@ -37,7 +37,7 @@ outDir = positional[1] or outDir
 filter = positional[2]
 
 local pages = {
-	{ "Journal", { "Bearing", "Quests", "Diaries", "Construction", "Regions", "Crew" } },
+	{ "Journal", { "Bearing", "Quests", "Diaries", "Construction", "Regions", "Crew", "Calendar" } },
 	{ "Hero", { "Skills", "Gear", "Enchant", "Accessories", "Pets" } },
 	{ "Satchel", { "Items", "Collections" } },
 	{ "Workshop", { "Forge", "Hearth", "Cauldron", "Workbench", "Workers", "Home" } },
@@ -65,7 +65,7 @@ for _, spec in ipairs(sizes) do
 	local size = roblox.Vector2.new(spec[1], spec[2])
 	local shots = {}
 	-- Atlas pages
-	local ui = H.runAtlas(size)
+	local ui = H.runAtlas(size, { coop = H.coopSample() })
 	H.press(H.find(ui.gui, "AtlasButton"))
 	for _, page in ipairs(pages) do
 		local tab = page[1]
@@ -121,6 +121,13 @@ for _, spec in ipairs(sizes) do
 		combat.fx.OnClientEvent:Fire("bossSpawn", { owner = 1, name = "Brassfall Golem" })
 		combat.run.RenderStepped:Fire()
 		table.insert(shots, { id = "HUD", guis = screenTree(hudUi.playerGui) })
+	end
+	-- Island builder controls (build.client.lua) in place mode over the HUD.
+	if wanted("builder") then
+		local hudUi = H.runAtlas(size, { touch = true })
+		local builder = H.runBuilder(size, hudUi.player)
+		builder.enter("place", "LanternPost")
+		table.insert(shots, { id = "Builder", guis = screenTree(hudUi.playerGui) })
 	end
 	local file = outDir .. "/tree-" .. spec[3] .. ".json"
 	fs.writeFile(file, serde.encode("json", { screen = { spec[1], spec[2] }, label = spec[3], shots = shots }))

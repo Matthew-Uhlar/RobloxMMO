@@ -20,52 +20,91 @@ end
 local function rgb(hex)
 	return Color3.fromHex(hex)
 end
-local ink, deep, slate = rgb("102733"), rgb("091923"), rgb("244857")
-local ivory, muted, mint, gold = rgb("FFF4D9"), rgb("BECECA"), rgb("9EE7D2"), rgb("F9CC77")
-local ember, track = rgb("E8806A"), rgb("0B1E29")
-local clothTexture,clothContent
-local materials=ReplicatedStorage:FindFirstChild("MaterialArt")
-if materials then
-	local ok,data=pcall(require,materials)
-	if ok and type(data)=="table" then
-		if type(data.gui)=="string" and data.gui~="" then clothTexture=data.gui end
-		if type(data.getGuiContent)=="function" then
-			local ready,content=pcall(data.getGuiContent)
-			if ready then clothContent=content end
+------------------------------------------------------------------------------
+-- "Aether Brass" design system.
+-- Surfaces, darkest to brightest: track (wells, bar tracks) < deep (cards,
+-- tiles) < ink (window body) < slate (controls) < UI.raised (hover/selected).
+-- Brass rims and ornaments frame the important surfaces; mint marks state,
+-- gold marks primary actions and headings, ember marks danger/locked.
+-- Type scale: display FredokaOne (titles, banners) · heading Builder Sans
+-- ExtraBold 12-18 · label Builder Sans Bold · body Builder Sans Medium 12-14.
+-- Spacing on a 4px grid (4/8/12/16). Tokens and helpers live in one table
+-- (UI): this chunk sits at Luau's 200 top-level local limit.
+------------------------------------------------------------------------------
+local ink, deep, slate = rgb("12222C"), rgb("0C1820"), rgb("1E3946")
+local ivory, muted, mint, gold = rgb("F7EFDC"), rgb("A9BDC1"), rgb("7FE3CC"), rgb("F3C66E")
+local ember, track = rgb("EF7D67"), rgb("060E14")
+local UI = {
+	raised = rgb("2A4D5E"), line = rgb("2E4A58"), rim = rgb("557886"), brass = rgb("C9974A"), brassDark = rgb("6B4E24"),
+	copy = rgb("CBD8D9"), onGold = rgb("2B1B05"), white = Color3.new(1, 1, 1), black = Color3.new(0, 0, 0),
+	heavy = Enum.Font.BuilderSansExtraBold, display = Enum.Font.FredokaOne,
+}
+do
+	local materials = ReplicatedStorage:FindFirstChild("MaterialArt")
+	if materials then
+		local ok, data = pcall(require, materials)
+		if ok and type(data) == "table" then
+			if type(data.gui) == "string" and data.gui ~= "" then UI.clothTexture = data.gui end
+			if type(data.getGuiContent) == "function" then
+				local ready, content = pcall(data.getGuiContent)
+				if ready then UI.clothContent = content end
+			end
 		end
 	end
 end
 local function panel(parent, position, size, color)
-	local textured=(clothContent or clothTexture) and (color==ink or color==deep or color==slate) and (size.X.Scale>0 or size.X.Offset>=32) and (size.Y.Scale>0 or size.Y.Offset>=28)
+	local textured=(UI.clothContent or UI.clothTexture) and (color==ink or color==deep or color==slate) and (size.X.Scale>0 or size.X.Offset>=32) and (size.Y.Scale>0 or size.Y.Offset>=28)
 	local properties={Name="Frame",Position=position,Size=size,BackgroundColor3=color,BorderSizePixel=0}
 	if textured then
-		if clothContent then properties.ImageContent=clothContent else properties.Image=clothTexture end
-		properties.ImageTransparency=.91
+		if UI.clothContent then properties.ImageContent=UI.clothContent else properties.Image=UI.clothTexture end
+		properties.ImageTransparency=.93
 		properties.ScaleType=Enum.ScaleType.Tile
 		properties.TileSize=UDim2.fromOffset(128,128)
 	end
 	return make(textured and "ImageLabel" or "Frame",parent,properties)
 end
-local function garment(object)
-	if not clothTexture and not clothContent then
-		-- A small original stitch-and-diamond border needs no image allocation.
-		local trim=make("Frame",object,{Name="WovenSurface",Size=UDim2.fromScale(1,1),BackgroundTransparency=1,Active=false,Selectable=false})
-		for _,side in ipairs({0,1}) do
-			for index=1,3 do
-				make("Frame",trim,{Position=UDim2.new(side,side==0 and (5+index*5) or (-5-index*5),1,-5),Size=UDim2.fromOffset(3,1),BackgroundColor3=gold,BackgroundTransparency=.45,BorderSizePixel=0,Active=false})
-			end
-		end
-		return
-	end
-	local fabric=make("ImageLabel",object,{Name="WovenSurface",Size=UDim2.fromScale(1,1),BackgroundTransparency=1,ImageTransparency=.95,ScaleType=Enum.ScaleType.Tile,TileSize=UDim2.fromOffset(128,128),Active=false,Selectable=false})
-	if clothContent then fabric.ImageContent=clothContent else fabric.Image=clothTexture end
-	make("UICorner",fabric,{CornerRadius=UDim.new(0,8)})
+-- Vertical sheen: the fill colour is multiplied from `top` (light catches the
+-- upper edge) to `bottom` (shadowed foot).
+function UI.sheen(object,top,bottom)
+	top,bottom=top or 1,bottom or .74
+	return make("UIGradient",object,{Name="Sheen",Rotation=90,Color=ColorSequence.new(Color3.new(top,top,top),Color3.new(bottom,bottom,bottom))})
 end
+-- Inner bevel: a hairline highlight just inside the rim, bright at the top and
+-- fading out towards the bottom.
+function UI.bevel(object,radius,transparency)
+	local inner=make("Frame",object,{Name="Bevel",BackgroundTransparency=1,Position=UDim2.fromOffset(1,1),Size=UDim2.new(1,-2,1,-2),Active=false,Selectable=false})
+	make("UICorner",inner,{CornerRadius=UDim.new(0,math.max(0,radius-1))})
+	local line=make("UIStroke",inner,{Color=UI.white,Transparency=transparency or .8,Thickness=1})
+	make("UIGradient",line,{Rotation=90,Transparency=NumberSequence.new(0,1)})
+	return inner
+end
+-- Ornamental corners: a brass gem on each corner with L-bracket arms along
+-- both edges (built from rotated frames, no images).
+function UI.corners(object,color,size,inset)
+	size,inset=size or 7,inset or 6
+	local holder=make("Frame",object,{Name="Ornaments",BackgroundTransparency=1,Size=UDim2.fromScale(1,1),Active=false,Selectable=false})
+	local arm=math.floor(size*2.4)
+	for _,c in ipairs({{0,0},{1,0},{0,1},{1,1}}) do
+		local sx,sy=c[1]==0 and 1 or -1,c[2]==0 and 1 or -1
+		make("Frame",holder,{Name="ArmX",AnchorPoint=Vector2.new(c[1],.5),Position=UDim2.new(c[1],sx*(inset+size*.5),c[2],sy*inset),Size=UDim2.fromOffset(arm,1),BackgroundColor3=color,BackgroundTransparency=.3,BorderSizePixel=0})
+		make("Frame",holder,{Name="ArmY",AnchorPoint=Vector2.new(.5,c[2]),Position=UDim2.new(c[1],sx*inset,c[2],sy*(inset+size*.5)),Size=UDim2.fromOffset(1,arm),BackgroundColor3=color,BackgroundTransparency=.3,BorderSizePixel=0})
+		local gem=make("Frame",holder,{Name="Gem",AnchorPoint=Vector2.new(.5,.5),Position=UDim2.new(c[1],sx*inset,c[2],sy*inset),Size=UDim2.fromOffset(size,size),Rotation=45,BackgroundColor3=color,BorderSizePixel=0})
+		make("UIStroke",gem,{Color=track,Thickness=1,Transparency=.1})
+	end
+	return holder
+end
+-- Hairline divider that fades out at both ends.
+function UI.rule(parent,color,y,x)
+	local line=make("Frame",parent,{Name="Rule",BackgroundColor3=color or UI.brass,BorderSizePixel=0,Position=UDim2.new(0,x or 0,0,y or 0),Size=UDim2.new(1,-2*(x or 0),0,1),Active=false})
+	make("UIGradient",line,{Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,1),NumberSequenceKeypoint.new(.18,.2),NumberSequenceKeypoint.new(.82,.2),NumberSequenceKeypoint.new(1,1)})})
+	return line
+end
+-- Brass rim with a light top edge.
 local function rounded(object, radius, edge)
 	make("UICorner", object, { CornerRadius = UDim.new(0, radius) })
 	if edge then
-		local rim=make("UIStroke", object, { Color = edge, Transparency = 0.32, Thickness = 1 })
-		if not clothContent and not clothTexture then make("UIGradient",rim,{Color=ColorSequence.new(gold,slate),Rotation=35}) end
+		local rim=make("UIStroke", object, { Color = edge, Transparency = 0.12, Thickness = 1 })
+		make("UIGradient",rim,{Color=ColorSequence.new(UI.white,Color3.new(.55,.55,.55)),Rotation=90})
 	end
 end
 local compactAtlas = false
@@ -84,26 +123,30 @@ local function label(parent, value, x, y, w, h, font, size, color)
 		TextTruncate = Enum.TextTruncate.AtEnd,
 	})
 end
-local full, bold, book, regular = UDim.new(1, 0), Enum.Font.GothamBold, Enum.Font.Antique, Enum.Font.Gotham
-local function controlEngraving(parent,caption)
-	local emblem=make("Frame",parent,{Name="ControlEngraving",Position=UDim2.new(1,-17,0,3),Size=UDim2.fromOffset(12,12),BackgroundTransparency=1,Active=false})
-	local function mark(x,y,w,h,angle)
-		local part=make("Frame",emblem,{Position=UDim2.fromScale(x,y),Size=UDim2.fromScale(w,h),AnchorPoint=Vector2.new(.5,.5),BackgroundColor3=gold,BackgroundTransparency=.18,BorderSizePixel=0,Rotation=angle or 0,Active=false})
+local full, bold, book, regular = UDim.new(1, 0), Enum.Font.BuilderSansBold, Enum.Font.FredokaOne, Enum.Font.BuilderSansMedium
+-- Leading action glyph on card buttons (parts named "Cut" take the button fill).
+function UI.engrave(parent,caption)
+	-- (UIPadding offsets children too: -8 lands the glyph 10px inside the rim.)
+	local emblem=make("Frame",parent,{Name="ControlEngraving",AnchorPoint=Vector2.new(0,.5),Position=UDim2.new(0,-8,.5,0),Size=UDim2.fromOffset(13,13),BackgroundTransparency=1,Active=false})
+	local function mark(x,y,w,h,angle,cut)
+		local part=make("Frame",emblem,{Name=cut and "Cut" or "Mark",Position=UDim2.fromScale(x,y),Size=UDim2.fromScale(w,h),AnchorPoint=Vector2.new(.5,.5),BackgroundColor3=cut and parent.BackgroundColor3 or parent.TextColor3,BorderSizePixel=0,Rotation=angle or 0,Active=false})
 		return part
 	end
-	if caption=="Craft" or caption=="Build" or caption=="Upgrade" or caption=="Forge" or caption=="Enchant" then
-		mark(.45,.6,.15,.7,-35);mark(.65,.3,.6,.22,-35)
-	elseif caption=="Collect" or caption=="Claim" or caption=="Deposit" or caption=="Withdraw" or caption=="Buy" or caption=="Sell all" or caption=="Sell" or caption=="Begin" then
-		local coin=mark(.5,.5,.65,.65,0);make("UICorner",coin,{CornerRadius=UDim.new(1,0)});mark(.5,.5,.1,.42,0).BackgroundColor3=deep
+	if caption=="Craft" or caption=="Build" or caption=="Upgrade" or caption=="Forge" or caption=="Enchant" or caption=="Place" then
+		mark(.42,.62,.17,.72,-35);mark(.64,.3,.62,.26,-35)
+	elseif caption=="Collect" or caption=="Claim" or caption=="Deposit" or caption=="Withdraw" or caption=="Buy" or caption=="Sell all" or caption=="Sell" or caption=="Begin" or caption=="Trade" or caption=="Claim gift" then
+		local coin=mark(.5,.5,.8,.8,0);make("UICorner",coin,{CornerRadius=UDim.new(1,0)});mark(.5,.5,.12,.46,0,true)
 	elseif caption=="Confirm" or caption=="Accept" or caption=="Equip" or caption=="Summon" or caption=="Adopt" or caption=="Add" then
-		mark(.32,.6,.15,.4,-40);mark(.62,.45,.15,.75,40)
-	elseif caption=="Cancel" or caption=="Close" or caption=="Unequip" or caption=="Dismiss" or caption=="Remove" or caption=="Abandon" then
-		mark(.5,.5,.12,.8,45);mark(.5,.5,.12,.8,-45)
+		mark(.3,.62,.17,.42,-40);mark(.6,.46,.17,.8,40)
+	elseif caption=="Cancel" or caption=="Close" or caption=="Unequip" or caption=="Dismiss" or caption=="Remove" or caption=="Abandon" or caption=="Dismantle" then
+		mark(.5,.5,.15,.9,45);mark(.5,.5,.15,.9,-45)
 	elseif caption=="Feed" or caption=="Eat" or caption=="Drink" then
-		mark(.5,.5,.45,.65,35);mark(.5,.5,.07,.8,35).BackgroundColor3=deep
+		mark(.5,.5,.5,.72,35);mark(.5,.5,.09,.85,35,true)
 	else
-		mark(.5,.5,.5,.5,45);mark(.5,.5,.18,.18,45).BackgroundColor3=deep
+		mark(.5,.5,.58,.58,45);mark(.5,.5,.22,.22,45,true)
 	end
+	make("UIPadding",parent,{Name="GlyphPad",PaddingLeft=UDim.new(0,18),PaddingRight=UDim.new(0,4)})
+	return emblem
 end
 local function revealSelection(object)
 	local scroller=object:FindFirstAncestorWhichIsA("ScrollingFrame")
@@ -116,12 +159,50 @@ local function revealSelection(object)
 		scroller.CanvasPosition=Vector2.new(scroller.CanvasPosition.X,math.clamp(scroller.CanvasPosition.Y+shift,0,maximum))
 	end
 end
+-- Gamepad selection: one shared brass ring instead of the default blue box.
+UI.ring=make("Frame",nil,{Name="SelectionRing",BackgroundTransparency=1,Size=UDim2.fromScale(1,1)})
+make("UICorner",UI.ring,{CornerRadius=UDim.new(0,10)})
+make("UIStroke",UI.ring,{Color=gold,Thickness=2.5,Transparency=0})
+-- Hover/selection glow: a lazily created white wash tweened in and out.
+function UI.hover(b,on)
+	local glow=b:FindFirstChild("Hover")
+	if not glow then
+		if not on then return end
+		local corner=b:FindFirstChildOfClass("UICorner")
+		glow=make("Frame",b,{Name="Hover",BackgroundColor3=UI.white,BackgroundTransparency=1,Size=UDim2.fromScale(1,1),Active=false,Selectable=false})
+		make("UICorner",glow,{CornerRadius=corner and corner.CornerRadius or UDim.new(0,9)})
+	end
+	TweenService:Create(glow,TweenInfo.new(.12),{BackgroundTransparency=on and .9 or 1}):Play()
+end
 local function pressable(b)
 	local pressScale=make("UIScale",b,{Scale=1})
+	b.SelectionImageObject=UI.ring
 	b.MouseButton1Down:Connect(function() TweenService:Create(pressScale,TweenInfo.new(.08),{Scale=.96}):Play() end)
-	b.MouseButton1Up:Connect(function() TweenService:Create(pressScale,TweenInfo.new(.12),{Scale=1}):Play() end)
-	b.MouseLeave:Connect(function() pressScale.Scale=1 end)
-	b.SelectionGained:Connect(function() revealSelection(b) end)
+	b.MouseButton1Up:Connect(function() TweenService:Create(pressScale,TweenInfo.new(.12,Enum.EasingStyle.Back),{Scale=1}):Play() end)
+	b.MouseEnter:Connect(function() UI.hover(b,true) end)
+	b.MouseLeave:Connect(function() pressScale.Scale=1;UI.hover(b,false) end)
+	b.SelectionGained:Connect(function() revealSelection(b);UI.hover(b,true) end)
+	b.SelectionLost:Connect(function() UI.hover(b,false) end)
+end
+-- Button variants: secondary (default), primary (gold), selected (mint),
+-- disabled (sunken) and danger (ember copy).
+function UI.tone(b,kind)
+	local rim=b:FindFirstChild("Rim")
+	if kind=="primary" then
+		b.BackgroundColor3,b.TextColor3=gold,UI.onGold
+		if rim then rim.Color,rim.Transparency=rgb("FFE7A8"),0 end
+	elseif kind=="selected" then
+		b.BackgroundColor3,b.TextColor3=mint,deep
+		if rim then rim.Color,rim.Transparency=rgb("D8FFF5"),0 end
+	elseif kind=="disabled" then
+		b.BackgroundColor3,b.TextColor3=ink,muted
+		if rim then rim.Color,rim.Transparency=UI.line,.2 end
+	else
+		b.BackgroundColor3,b.TextColor3=slate,kind=="danger" and rgb("FFB3A4") or ivory
+		if rim then rim.Color,rim.Transparency=UI.rim,0 end
+	end
+	local mark=b:FindFirstChild("ControlEngraving")
+	if mark then for _,part in ipairs(mark:GetChildren()) do part.BackgroundColor3=part.Name=="Cut" and b.BackgroundColor3 or b.TextColor3 end end
 end
 local function button(parent, caption, pos, dim, action)
 	local b = make("TextButton", parent, {
@@ -132,15 +213,15 @@ local function button(parent, caption, pos, dim, action)
 		BackgroundColor3 = slate,
 		TextColor3 = ivory,
 		TextSize = 14,
-		Font = bold,
+		Font = UI.heavy,
 		BorderSizePixel = 0,
-		AutoButtonColor = true,
+		AutoButtonColor = false,
 		Selectable = true,
 	})
-	rounded(b, 8, gold)
-	garment(b)
-	controlEngraving(b,caption)
-	make("UIGradient", b, {Color=ColorSequence.new(Color3.new(1,1,1),rgb("A6C8C9")),Rotation=90})
+	make("UICorner",b,{CornerRadius=UDim.new(0,9)})
+	local rim=make("UIStroke",b,{Name="Rim",Color=UI.rim,Thickness=1,Transparency=0})
+	make("UIGradient",rim,{Rotation=90,Color=ColorSequence.new(UI.white,Color3.new(.42,.42,.42))})
+	UI.sheen(b,1,.8)
 	pressable(b)
 	b.Activated:Connect(action)
 	return b
@@ -150,22 +231,28 @@ local gui = make(
 	player:WaitForChild("PlayerGui"),
 	{ Name = "AetherAtlas", ResetOnSpawn = false, DisplayOrder = 8, ZIndexBehavior = Enum.ZIndexBehavior.Sibling }
 )
-local function compass(parent, x, y, size)
+-- Guild crest: brass ring, compass star (gold cardinals, mint diagonals) and core.
+function UI.compass(parent, x, y, size)
 	local badge = panel(parent, UDim2.fromOffset(x, y), UDim2.fromOffset(size, size), deep)
-	rounded(badge, size, gold)
-	for _, angle in ipairs({ 45, 135 }) do
-		local blade = panel(badge, UDim2.fromScale(0.5, 0.5), UDim2.fromScale(0.08, 0.81), mint)
-		blade.AnchorPoint = Vector2.new(0.5, 0.5)
-		blade.Rotation = angle
+	badge.Name="Crest"
+	make("UICorner",badge,{CornerRadius=UDim.new(1,0)})
+	local rim=make("UIStroke",badge,{Color=UI.brass,Thickness=1.5})
+	make("UIGradient",rim,{Rotation=90,Color=ColorSequence.new(rgb("FFE2A0"),rgb("6B4E24"))})
+	make("UIGradient",badge,{Rotation=90,Color=ColorSequence.new(rgb("2C5466"),rgb("0A151C"))}).Name="Sheen"
+	local ring=make("Frame",badge,{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),Size=UDim2.fromScale(.74,.74),BackgroundTransparency=1})
+	make("UICorner",ring,{CornerRadius=UDim.new(1,0)})
+	make("UIStroke",ring,{Color=UI.brass,Thickness=1,Transparency=.45})
+	local function blade(w,h,angle,color)
+		local part=make("Frame",badge,{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),Size=UDim2.fromScale(w,h),Rotation=angle,BackgroundColor3=color,BorderSizePixel=0})
+		return part
 	end
+	for _, angle in ipairs({ 45, 135 }) do blade(.07,.62,angle,mint) end
 	for _, angle in ipairs({ 0, 90 }) do
-		local blade = panel(badge, UDim2.fromScale(0.5, 0.5), UDim2.fromScale(0.10, 0.88), gold)
-		blade.AnchorPoint = Vector2.new(0.5, 0.5)
-		blade.Rotation = angle
+		local point=blade(.09,.86,angle,gold)
+		make("UIGradient",point,{Rotation=angle==0 and 90 or 0,Color=ColorSequence.new(rgb("FFF1C8"),rgb("C08A3A"))})
 	end
-	local core = panel(badge, UDim2.fromScale(0.5, 0.5), UDim2.fromScale(0.24, 0.24), ivory)
-	core.AnchorPoint = Vector2.new(0.5, 0.5)
-	core.Rotation = 45
+	local core=blade(.24,.24,45,ivory)
+	make("UIStroke",core,{Color=UI.brassDark,Thickness=1})
 	return badge
 end
 -- Original prop masters supply item art; no uploaded asset IDs are required.
@@ -413,39 +500,47 @@ local function artTemplate(name,tint)
 	templateCount+=1
 	return model,key
 end
+-- Page/tab glyphs drawn from rotated frames: a raised brass-rimmed plate with
+-- a two-tone mark. Tabs strip the plate (BackgroundTransparency 1).
 local function motif(parent,kind,size)
 	local frame=panel(parent,UDim2.new(),UDim2.fromOffset(size,size),deep)
-	rounded(frame,9,slate)
+	make("UICorner",frame,{CornerRadius=UDim.new(0,math.max(4,size//5))})
+	local rim=make("UIStroke",frame,{Name="Rim",Color=UI.brass,Thickness=1,Transparency=.35})
+	make("UIGradient",rim,{Rotation=90,Color=ColorSequence.new(UI.white,Color3.new(.4,.4,.4))})
+	make("UIGradient",frame,{Name="Sheen",Rotation=90,Color=ColorSequence.new(rgb("3A6A7C"),rgb("0E1C24"))})
 	local function stroke(x,y,w,h,angle,color)
-		local mark=panel(frame,UDim2.fromScale(x,y),UDim2.fromScale(w,h),color or gold)
-		mark.AnchorPoint=Vector2.new(.5,.5)
-		mark.Rotation=angle or 0
+		local mark=make("Frame",frame,{Position=UDim2.fromScale(x,y),Size=UDim2.fromScale(w,h),AnchorPoint=Vector2.new(.5,.5),Rotation=angle or 0,BackgroundColor3=color or gold,BorderSizePixel=0})
 		return mark
 	end
+	local function round(mark,r) make("UICorner",mark,{CornerRadius=UDim.new(r or 1,0)}) return mark end
 	if kind=="Ledger" then
-		for i=1,3 do local coin=stroke(.33+i*.1,.7-i*.13,.44,.17,0,i==3 and gold or mint);rounded(coin,size) end
+		for i=1,3 do local coin=round(stroke(.36+i*.08,.74-i*.14,.5,.2,0,i==3 and gold or mint));make("UIStroke",coin,{Color=deep,Thickness=1,Transparency=.3}) end
 	elseif kind=="Workshop" then
-		stroke(.48,.55,.10,.62,-32,mint);stroke(.56,.31,.55,.16,-32,gold)
+		stroke(.46,.58,.12,.62,-38,mint);local head=stroke(.6,.32,.56,.2,-38,gold);round(head,.25)
 	elseif kind=="Satchel" then
-		local bag=stroke(.5,.58,.52,.48,0,mint);rounded(bag,4)
-		local loop=stroke(.5,.27,.28,.22,0,gold);rounded(loop,5)
-		stroke(.5,.55,.12,.2,0,deep)
+		local bag=round(stroke(.5,.6,.6,.52,0,mint),.35)
+		round(stroke(.5,.27,.3,.18,0,gold),.5)
+		stroke(.5,.5,.6,.07,0,gold)
+		stroke(.5,.58,.12,.14,45,deep)
 	elseif kind=="Ration" then
-		local parcel=stroke(.5,.55,.58,.48,-12,mint);rounded(parcel,4)
+		local parcel=round(stroke(.5,.55,.58,.48,-12,mint),.2)
 		stroke(.5,.55,.10,.52,-12,gold);stroke(.5,.55,.62,.09,-12,gold)
 		stroke(.48,.24,.22,.32,38,mint)
 	elseif kind=="Co-op" then
-		for _,x in ipairs({.3,.7}) do local gem=stroke(x,.35,.2,.2,45,mint);rounded(gem,3);stroke(x,.64,.24,.27,0,gold) end
-		stroke(.5,.76,.63,.055,0,mint)
+		for _,x in ipairs({.3,.7}) do round(stroke(x,.34,.22,.22,0,mint));round(stroke(x,.66,.3,.26,0,gold),.4) end
+		stroke(.5,.8,.66,.06,0,mint)
 	elseif kind=="Hero" then
-		local shield=stroke(.5,.5,.5,.62,0,mint);rounded(shield,5)
-		stroke(.5,.5,.1,.48,0,gold);stroke(.5,.42,.36,.09,0,gold)
+		local shield=round(stroke(.5,.48,.54,.6,0,mint),.3)
+		stroke(.5,.66,.38,.38,45,mint)
+		stroke(.5,.5,.1,.5,0,gold);stroke(.5,.42,.36,.1,0,gold)
 	elseif kind=="Hunt" then
-		stroke(.5,.5,.1,.74,40,mint);stroke(.5,.5,.1,.74,-40,gold)
-		local eye=stroke(.5,.5,.24,.24,45,ivory);rounded(eye,3)
+		stroke(.5,.5,.09,.8,40,mint);stroke(.5,.5,.09,.8,-40,gold)
+		stroke(.29,.74,.26,.08,-50,gold);stroke(.71,.74,.26,.08,50,mint)
+		local eye=stroke(.5,.5,.22,.22,45,ivory);make("UIStroke",eye,{Color=deep,Thickness=1})
 	else
-		stroke(.5,.5,.13,.68,35,mint);stroke(.5,.5,.13,.68,-55,gold)
-		stroke(.5,.5,.24,.24,45,ivory)
+		-- Journal: an open chart with a compass needle.
+		stroke(.5,.52,.13,.72,35,mint);stroke(.5,.52,.13,.72,-55,gold)
+		local core=stroke(.5,.52,.24,.24,45,ivory);make("UIStroke",core,{Color=deep,Thickness=1})
 	end
 	return frame
 end
@@ -465,12 +560,15 @@ local function thumbnail(parent,name,size,tint,noFallback)
 		view.Position=UDim2.new()
 		view.AnchorPoint=Vector2.zero
 		view.BackgroundTransparency=0
+		local frameRim=view:FindFirstChild("Rim")
+		if frameRim then frameRim.Enabled=true end
 		view.Size=UDim2.fromOffset(size,size)
 		view.Visible=true
 		view.Parent=parent
 	else
-		view=make("ViewportFrame",parent,{Size=UDim2.fromOffset(size,size),BackgroundColor3=deep,BorderSizePixel=0,Ambient=rgb("B5D8DD"),LightColor=rgb("FFE1A6"),LightDirection=Vector3.new(-1,-1,-2)})
-		rounded(view,9,slate)
+		view=make("ViewportFrame",parent,{Size=UDim2.fromOffset(size,size),BackgroundColor3=rgb("10222C"),BorderSizePixel=0,Ambient=rgb("B5D8DD"),LightColor=rgb("FFE1A6"),LightDirection=Vector3.new(-1,-1,-2)})
+		make("UICorner",view,{CornerRadius=UDim.new(0,10)})
+		make("UIStroke",view,{Name="Rim",Color=UI.line,Thickness=1,Transparency=0})
 		local model=template:Clone()
 		model.Parent=view
 		local cf,dimensions=model:GetBoundingBox()
@@ -541,23 +639,34 @@ local function shapeFor(id,def)
 end
 local function itemGlyph(parent,def,size,locked)
 	local frame=panel(parent,UDim2.new(),UDim2.fromOffset(size,size),deep)
-	rounded(frame,9)
-	local gem=make("Frame",frame,{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),Size=UDim2.fromScale(.56,.56),Rotation=45,BackgroundColor3=locked and slate or safeColor(def and def.color,mint),BorderSizePixel=0})
-	rounded(gem,math.max(2,size//10))
-	make("UIGradient",gem,{Color=ColorSequence.new(Color3.new(1,1,1),rgb("7A9AA3")),Rotation=90})
-	local caption=label(frame,locked and "?" or initials(def and def.name or "?"),0,0,full,size,bold,locked and math.floor(size*.45) or math.max(9,math.floor(size*.28)),locked and muted or ivory)
+	frame.BackgroundTransparency=locked and 0 or 1
+	make("UICorner",frame,{CornerRadius=UDim.new(0,10)})
+	local color=locked and slate or safeColor(def and def.color,mint)
+	local gem=make("Frame",frame,{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),Size=UDim2.fromScale(.54,.54),Rotation=45,BackgroundColor3=color,BorderSizePixel=0})
+	make("UICorner",gem,{CornerRadius=UDim.new(0,math.max(2,size//10))})
+	make("UIGradient",gem,{Color=ColorSequence.new(Color3.new(1,1,1),rgb("6A8A93")),Rotation=90})
+	make("UIStroke",gem,{Color=locked and UI.line or UI.white,Thickness=1,Transparency=locked and 0 or .55})
+	local caption=label(frame,locked and "?" or initials(def and def.name or "?"),0,0,full,size,UI.heavy,locked and math.floor(size*.42) or math.max(9,math.floor(size*.27)),locked and muted or ivory)
 	caption.Size=UDim2.fromScale(1,1)
 	caption.TextXAlignment=Enum.TextXAlignment.Center
 	caption.TextYAlignment=Enum.TextYAlignment.Center
-	caption.TextStrokeTransparency=.35
+	caption.TextStrokeTransparency=.3
 	caption.TextStrokeColor3=deep
 	return frame
 end
--- Item icon with a rarity-coloured rim. locked shows a "?" (undiscovered).
+-- Item icon on a rarity plate: dark-to-rarity gradient, rarity rim, and a soft
+-- outer glow from Rare upwards. locked shows a sealed "?" (undiscovered).
 local function itemIcon(parent,id,size,locked)
 	local def=itemDef(id)
-	local holder=make("Frame",parent,{Name="ItemIcon",BackgroundTransparency=1,Size=UDim2.fromOffset(size,size),BorderSizePixel=0})
-	make("UICorner",holder,{CornerRadius=UDim.new(0,9)})
+	local rarity=def and def.rarity or "Common"
+	local tone=locked and slate or rgb(rarityHex(rarity))
+	local holder=make("Frame",parent,{Name="ItemIcon",BackgroundColor3=tone,BackgroundTransparency=0,Size=UDim2.fromOffset(size,size),BorderSizePixel=0})
+	make("UICorner",holder,{CornerRadius=UDim.new(0,10)})
+	make("UIGradient",holder,{Name="Plate",Rotation=90,Color=ColorSequence.new(Color3.new(.09,.11,.13),Color3.new(.34,.34,.34))})
+	if not locked and rarityRank(rarity)>=3 then
+		local glow=make("Frame",holder,{Name="Glow",AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),Size=UDim2.new(1,6,1,6),BackgroundColor3=tone,BackgroundTransparency=.8,BorderSizePixel=0,ZIndex=holder.ZIndex})
+		make("UICorner",glow,{CornerRadius=UDim.new(0,13)})
+	end
 	local art
 	local tinted=tintIndex()~=nil and def~=nil and type(def.color)=="string"
 	if not locked and def then
@@ -566,92 +675,244 @@ local function itemIcon(parent,id,size,locked)
 	end
 	if not art then
 		itemGlyph(holder,def or {name=tostring(id)},size,locked)
-	elseif not tinted and def and type(def.color)=="string" then
-		local dot=make("Frame",holder,{Name="Swatch",Position=UDim2.new(0,4,1,-10),Size=UDim2.fromOffset(6,6),BackgroundColor3=safeColor(def.color,mint),BorderSizePixel=0})
-		make("UICorner",dot,{CornerRadius=UDim.new(1,0)})
+	else
+		art.BackgroundTransparency=1
+		local frameRim=art:FindFirstChild("Rim")
+		if frameRim then frameRim.Enabled=false end
+		if not tinted and def and type(def.color)=="string" then
+			local dot=make("Frame",holder,{Name="Swatch",Position=UDim2.new(0,5,1,-11),Size=UDim2.fromOffset(6,6),BackgroundColor3=safeColor(def.color,mint),BorderSizePixel=0})
+			make("UICorner",dot,{CornerRadius=UDim.new(1,0)})
+			make("UIStroke",dot,{Color=deep,Thickness=1,Transparency=.2})
+		end
 	end
-	make("UIStroke",holder,{Name="Rarity",Color=locked and slate or rgb(rarityHex(def and def.rarity or "Common")),Thickness=locked and 1 or 1.5,Transparency=locked and .3 or .05})
+	local rim=make("UIStroke",holder,{Name="Rarity",Color=locked and UI.line or tone,Thickness=locked and 1 or 1.5,Transparency=locked and 0 or .05})
+	if not locked then make("UIGradient",rim,{Rotation=90,Color=ColorSequence.new(UI.white,Color3.new(.6,.6,.6))}) end
 	return holder
 end
 
 ------------------------------------------------------------------------------
--- HUD: guild badge, SkyBlock-style action bar, XP popups, level-up banner.
+-- HUD: guild badge, action bar (health / XP / defense pills), XP popups,
+-- level-up banner and toasts.
 ------------------------------------------------------------------------------
-local hud = panel(gui, UDim2.fromOffset(10, 8), UDim2.new(1, -20, 0, 88), ink)
-make("UISizeConstraint", hud, { MaxSize = Vector2.new(305, 88) })
-rounded(hud, 9, slate)
-compass(hud, 10, 10, 37)
-label(hud, "A E T H E R   I S L E S", 55, 7, UDim.new(1, -120), 20, bold, 11, mint)
-local purse = label(hud, "Opening ledger…", 55, 26, UDim.new(1, -130), 22, regular, 13, ivory)
-local instruction = label(hud, "Charting the islands…", 12, 53, UDim.new(1, -24), 28, bold, 13, gold)
+-- Guild badge (top-left; the combat HUD keeps clear of x 10-315, y 8-96).
+local hud = panel(gui, UDim2.fromOffset(10, 8), UDim2.new(1, -20, 0, 84), deep)
+hud.Name = "GuildBadge"
+hud.BackgroundTransparency = .06
+make("UISizeConstraint", hud, { MaxSize = Vector2.new(305, 84) })
+rounded(hud, 14, UI.brass)
+UI.sheen(hud, 1, .74)
+UI.bevel(hud, 14)
+UI.compass(hud, 10, 9, 40)
+label(hud, "AETHER  ISLES", 59, 8, UDim.new(1, -126), 14, UI.heavy, 11, gold)
+UI.purse = label(hud, "Opening ledger…", 59, 23, UDim.new(1, -126), 22, bold, 14, ivory)
+UI.purse.RichText = true
+UI.rule(hud, UI.brass, 55, 10).BackgroundTransparency = .35
+make("Frame", hud, {Name="GoalMark", AnchorPoint=Vector2.new(.5,.5), Position=UDim2.fromOffset(17, 69), Size=UDim2.fromOffset(6, 6), Rotation=45, BackgroundColor3=gold, BorderSizePixel=0})
+UI.goal = label(hud, "Charting the islands…", 27, 58, UDim.new(1, -38), 22, bold, 13, rgb("FFDFA0"))
 local openAtlas
-local opener = button(hud, "Atlas", UDim2.new(1, -67, 0, 8), UDim2.fromOffset(58, 42), function()
-	openAtlas()
-end)
-local actionBar=make("Frame",gui,{Name="ActionBar",AnchorPoint=Vector2.new(.5,1),Position=UDim2.new(.5,0,1,-8),Size=UDim2.new(.94,0,0,30),BackgroundColor3=deep,BackgroundTransparency=.22,BorderSizePixel=0})
-make("UISizeConstraint",actionBar,{MaxSize=Vector2.new(520,30)})
-rounded(actionBar,9,slate)
-local healthText=label(actionBar,"❤ —",12,0,UDim.new(.3,-12),30,bold,15,rgb("FF6B6B"))
-local defenseText=label(actionBar,"❈ —",0,0,UDim.new(.3,-12),30,bold,15,rgb("6BFF8E"))
-defenseText.Position=UDim2.new(.7,0,0,0)
-defenseText.TextXAlignment=Enum.TextXAlignment.Right
+do
+	local opener = button(hud, "Atlas", UDim2.new(1, -62, 0, 8), UDim2.fromOffset(52, 44), function()
+		openAtlas()
+	end)
+	opener.Text = ""
+	local rim = opener:FindFirstChild("Rim")
+	if rim then rim.Color = UI.brass end
+	local glyph = motif(opener, "Journal", 22)
+	glyph.Name = "AtlasGlyph"
+	glyph.AnchorPoint = Vector2.new(.5, 0)
+	glyph.Position = UDim2.new(.5, 0, 0, 4)
+	glyph.BackgroundTransparency = 1
+	glyph:FindFirstChild("Rim").Enabled = false
+	local caption = label(opener, "ATLAS", 0, 27, full, 14, UI.heavy, 11, ivory)
+	caption.TextXAlignment = Enum.TextXAlignment.Center
+	if not Input.TouchEnabled then
+		local key = make("TextLabel", opener, {Name="KeyHint", AnchorPoint=Vector2.new(1, 0), Position=UDim2.new(1, 5, 0, -5), Size=UDim2.fromOffset(15, 15),
+			BackgroundColor3=gold, Text="J", Font=UI.heavy, TextSize=11, TextColor3=UI.onGold, BorderSizePixel=0})
+		make("UICorner", key, {CornerRadius=UDim.new(0, 4)})
+		make("UIStroke", key, {Color=UI.brassDark, Thickness=1})
+	end
+end
+-- Action bar: three pills. Health (left 30%) and defense (right 30%) stay up;
+-- the XP pill (middle 40%) shows while an XP popup is live.
+local actionBar=make("Frame",gui,{Name="ActionBar",AnchorPoint=Vector2.new(.5,1),Position=UDim2.new(.5,0,1,-8),Size=UDim2.new(.94,0,0,32),BackgroundTransparency=1,BorderSizePixel=0})
+make("UISizeConstraint",actionBar,{MaxSize=Vector2.new(580,32)})
+function UI.pill(parent,name,position,size)
+	local pill=make("Frame",parent,{Name=name,Position=position,Size=size,BackgroundColor3=deep,BackgroundTransparency=.1,BorderSizePixel=0})
+	rounded(pill,16,UI.rim)
+	UI.sheen(pill,1,.78)
+	return pill
+end
+-- Round glyph chip (frame + label so the gradient never tints the glyph).
+function UI.chip(parent,glyph,color,size,x)
+	local chip=make("Frame",parent,{Name="Chip",AnchorPoint=Vector2.new(0,.5),Position=UDim2.new(0,x or 4,.5,0),Size=UDim2.fromOffset(size,size),BackgroundColor3=color,BorderSizePixel=0})
+	make("UICorner",chip,{CornerRadius=UDim.new(1,0)})
+	make("UIGradient",chip,{Rotation=90,Color=ColorSequence.new(UI.white,Color3.new(.5,.5,.5))})
+	make("UIStroke",chip,{Color=UI.white,Thickness=1,Transparency=.6})
+	local text=make("TextLabel",chip,{Name="Glyph",BackgroundTransparency=1,Size=UDim2.fromScale(1,1),Text=glyph,Font=UI.heavy,TextSize=math.floor(size*.62),TextColor3=UI.white,TextStrokeTransparency=.5,TextStrokeColor3=deep})
+	return chip,text
+end
+-- A gradient meter with gloss and a bright end cap (HUD and atlas share it).
+function UI.meter(parent,name,color,height)
+	local bar=make("Frame",parent,{Name=name,BackgroundColor3=track,BorderSizePixel=0,Size=UDim2.new(1,0,0,height)})
+	make("UICorner",bar,{CornerRadius=UDim.new(0,height//2)})
+	make("UIStroke",bar,{Color=UI.line,Transparency=0,Thickness=1})
+	local fill=make("Frame",bar,{Name="Fill",BackgroundColor3=color,BorderSizePixel=0,Size=UDim2.fromScale(1,1)})
+	make("UICorner",fill,{CornerRadius=UDim.new(0,height//2)})
+	make("UIGradient",fill,{Name="Shade",Color=ColorSequence.new(Color3.new(.62,.62,.62),UI.white)})
+	local gloss=make("Frame",fill,{Name="Gloss",BackgroundColor3=UI.white,BackgroundTransparency=.8,BorderSizePixel=0,Position=UDim2.fromOffset(2,1),Size=UDim2.new(1,-4,.42,0)})
+	make("UICorner",gloss,{CornerRadius=UDim.new(0,height//2)})
+	local cap=make("Frame",fill,{Name="Cap",AnchorPoint=Vector2.new(1,.5),Position=UDim2.new(1,-1,.5,0),Size=UDim2.fromOffset(math.max(3,height//3),math.max(2,height-4)),BackgroundColor3=color:Lerp(UI.white,.65),BorderSizePixel=0})
+	make("UICorner",cap,{CornerRadius=UDim.new(1,0)})
+	make("UIStroke",cap,{Color=color:Lerp(UI.white,.3),Thickness=2,Transparency=.45})
+	return bar,fill,cap
+end
+function UI.setMeter(fill,fraction)
+	fraction=math.clamp(num(fraction,0),0,1)
+	fill.Size=UDim2.fromScale(fraction,1)
+	fill.Visible=fraction>0
+	local cap=fill:FindFirstChild("Cap")
+	if cap then cap.Visible=fraction>.04 and fraction<.995 end
+end
+do
+	local health=UI.pill(actionBar,"HealthPill",UDim2.new(),UDim2.new(.3,-6,1,0))
+	UI.chip(health,"❤",rgb("E2504A"),24)
+	local meter
+	meter,UI.healthFill=UI.meter(health,"HealthMeter",rgb("F05A4E"),16)
+	meter.AnchorPoint=Vector2.new(0,.5)
+	meter.Position=UDim2.new(0,34,.5,0)
+	meter.Size=UDim2.new(1,-44,0,16)
+	UI.healthText=label(meter,"—",0,0,full,16,UI.heavy,12,ivory)
+	UI.healthText.Size=UDim2.fromScale(1,1)
+	UI.healthText.TextXAlignment=Enum.TextXAlignment.Center
+	UI.healthText.TextStrokeTransparency=.35
+	UI.healthText.TextStrokeColor3=deep
+	UI.healthText.ZIndex=2
+	local defense=UI.pill(actionBar,"DefensePill",UDim2.new(.7,6,0,0),UDim2.new(.3,-6,1,0))
+	UI.chip(defense,"❈",rgb("3FBF6A"),24)
+	UI.defenseText=label(defense,"—",34,0,UDim.new(1,-44),32,UI.heavy,15,rgb("9BF5B4"))
+	UI.defenseText.RichText=true
+	UI.xpPill=UI.pill(actionBar,"XpPill",UDim2.new(.3,6,0,0),UDim2.new(.4,-12,1,0))
+	UI.xpPill.Visible=false
+	UI.xpChip,UI.xpGlyph=UI.chip(UI.xpPill,"",gold,24)
+	local xpMeter
+	xpMeter,UI.xpFill=UI.meter(UI.xpPill,"XpMeter",gold,4)
+	xpMeter.Position=UDim2.new(0,38,1,-7)
+	xpMeter.Size=UDim2.new(1,-50,0,3)
+	xpMeter:FindFirstChildOfClass("UIStroke").Enabled=false
+end
 -- XP popup owns the middle 40% between the health (0-30%) and defense (70-100%)
--- readouts and shrinks its text instead of spilling over them.
-local xpText=label(actionBar,"",0,0,UDim.new(.4,0),30,bold,13,gold)
-xpText.Name="XpPopup"
-xpText.Position=UDim2.new(.3,0,0,0)
-xpText.TextXAlignment=Enum.TextXAlignment.Center
-xpText.RichText=true
-xpText.TextWrapped=false
-xpText.TextScaled=true
-make("UITextSizeConstraint",xpText,{MinTextSize=8,MaxTextSize=13})
-xpText.TextTransparency=1
+-- pills and shrinks its text instead of spilling over them.
+UI.xp=label(actionBar,"",0,0,UDim.new(.4,-58),24,UI.heavy,13,gold)
+UI.xp.Name="XpPopup"
+UI.xp.Position=UDim2.new(.3,44,0,1)
+UI.xp.TextXAlignment=Enum.TextXAlignment.Left
+UI.xp.RichText=true
+UI.xp.TextWrapped=false
+UI.xp.TextScaled=true
+make("UITextSizeConstraint",UI.xp,{MinTextSize=8,MaxTextSize=13})
+UI.xp.TextTransparency=1
 -- Level-up banner sits below the top HUD row: the combat target panel and its
 -- banner own y 10-138 (combat.client.lua), the atlas HUD the top-left corner.
-local banner=panel(gui,UDim2.new(.5,0,0,140),UDim2.new(.9,0,0,74),deep)
-banner.Name="LevelBanner"
-banner.AnchorPoint=Vector2.new(.5,0)
-banner.Visible=false
-banner.ZIndex=5
-make("UISizeConstraint",banner,{Name="BannerLimit",MaxSize=Vector2.new(420,74)})
-rounded(banner,12,gold)
-local bannerScale=make("UIScale",banner,{Scale=1})
-local bannerKicker=label(banner,"L E V E L   U P",0,6,full,16,bold,11,gold)
-bannerKicker.TextXAlignment=Enum.TextXAlignment.Center
-local bannerTitle=label(banner,"",0,21,full,30,book,24,ivory)
-bannerTitle.TextXAlignment=Enum.TextXAlignment.Center
-local bannerReward=label(banner,"",8,50,UDim.new(1,-16),20,bold,12,muted)
-bannerReward.TextXAlignment=Enum.TextXAlignment.Center
-bannerReward.RichText=true
-bannerReward.TextScaled=true
-make("UITextSizeConstraint",bannerReward,{MinTextSize=10,MaxTextSize=12})
+do
+	local banner=panel(gui,UDim2.new(.5,0,0,142),UDim2.new(.9,0,0,82),deep)
+	banner.Name="LevelBanner"
+	banner.AnchorPoint=Vector2.new(.5,0)
+	banner.Visible=false
+	banner.ZIndex=5
+	banner.BackgroundTransparency=.04
+	make("UISizeConstraint",banner,{Name="BannerLimit",MaxSize=Vector2.new(440,82)})
+	rounded(banner,14,gold)
+	UI.sheen(banner,1,.68)
+	UI.bevel(banner,14,.72)
+	UI.corners(banner,gold,6,7)
+	UI.bannerScale=make("UIScale",banner,{Scale=1})
+	for _,x in ipairs({0,1}) do
+		local wing=make("Frame",banner,{Name="RibbonEnd",AnchorPoint=Vector2.new(.5,.5),Position=UDim2.new(.5,(x==0 and -1 or 1)*66,0,1),Size=UDim2.fromOffset(16,16),Rotation=45,BackgroundColor3=UI.brass,BorderSizePixel=0})
+		make("UIStroke",wing,{Color=UI.brassDark,Thickness=1})
+	end
+	local ribbon=make("Frame",banner,{Name="Ribbon",AnchorPoint=Vector2.new(.5,.5),Position=UDim2.new(.5,0,0,1),Size=UDim2.fromOffset(128,22),BackgroundColor3=gold,BorderSizePixel=0})
+	make("UICorner",ribbon,{CornerRadius=UDim.new(0,6)})
+	make("UIStroke",ribbon,{Color=UI.brassDark,Thickness=1})
+	UI.sheen(ribbon,1,.78)
+	local kicker=label(ribbon,"LEVEL  UP",0,0,full,22,UI.heavy,12,UI.onGold)
+	kicker.TextXAlignment=Enum.TextXAlignment.Center
+	local emblem=make("Frame",banner,{Name="Emblem",AnchorPoint=Vector2.new(0,.5),Position=UDim2.new(0,16,.5,5),Size=UDim2.fromOffset(48,48),BackgroundColor3=mint,BorderSizePixel=0})
+	make("UICorner",emblem,{CornerRadius=UDim.new(1,0)})
+	make("UIGradient",emblem,{Rotation=90,Color=ColorSequence.new(UI.white,Color3.new(.45,.45,.45))})
+	local ring=make("UIStroke",emblem,{Color=gold,Thickness=2})
+	make("UIGradient",ring,{Rotation=90,Color=ColorSequence.new(UI.white,Color3.new(.55,.55,.55))})
+	UI.bannerInitial=label(emblem,"",0,0,full,48,book,20,UI.white)
+	UI.bannerInitial.Size=UDim2.fromScale(1,1)
+	UI.bannerInitial.TextXAlignment=Enum.TextXAlignment.Center
+	UI.bannerInitial.TextStrokeTransparency=.3
+	UI.bannerInitial.TextStrokeColor3=deep
+	UI.bannerTitle=label(banner,"",76,17,UDim.new(1,-92),32,book,26,ivory)
+	UI.bannerReward=label(banner,"",76,50,UDim.new(1,-92),20,bold,12,muted)
+	UI.bannerReward.RichText=true
+	UI.bannerReward.TextScaled=true
+	make("UITextSizeConstraint",UI.bannerReward,{MinTextSize=11,MaxTextSize=13})
+	UI.banner,UI.bannerEmblem=banner,emblem
+end
 
+------------------------------------------------------------------------------
+-- The atlas window: shade, drop shadow, brass double rim with ornamental
+-- corners, masthead, tab strip, page scroller and footer.
+------------------------------------------------------------------------------
 local shade = make("TextButton", gui, {
+	Name = "Shade",
 	Text = "",
 	AutoButtonColor = false,
-	BackgroundColor3 = deep,
-	BackgroundTransparency = 0.32,
+	BackgroundColor3 = track,
+	BackgroundTransparency = 0.35,
 	BorderSizePixel = 0,
 	Size = UDim2.fromScale(1, 1),
 	Visible = false,
 	Selectable = false,
 })
-local atlas = panel(gui, UDim2.fromScale(0.5, 0.5), UDim2.new(1, -20, 1, -20), ink)
-atlas.Name = "Atlas"
-atlas.Active = true
-atlas.AnchorPoint = Vector2.new(0.5, 0.5)
-atlas.Visible = false
-rounded(atlas, 12, gold)
-make("UISizeConstraint", atlas, { MaxSize = Vector2.new(760, 690) })
-local head = panel(atlas, UDim2.new(), UDim2.new(1, 0, 0, 88), slate)
-rounded(head, 12)
-make("UIGradient", head, { Color = ColorSequence.new(rgb("36706F"), ink), Rotation = 12 })
-local compassBadge=compass(head, 13, 10, 43)
-local guildLabel=label(head, "CARTOGRAPHERS' GUILD", 68, 6, UDim.new(1, -138), 19, bold, 10, mint)
-local titleLabel=label(head, "Voyager’s Atlas", 67, 24, UDim.new(1, -138), 33, book, 27, ivory)
-local mastheadCaption=label(head,"CHART YOUR COURSE  /  BUILD YOUR LEGACY",16,61,UDim.new(1,-32),17,bold,10,gold)
-local edge=panel(head,UDim2.new(0,14,1,-3),UDim2.new(1,-28,0,1),gold)
-edge.BackgroundTransparency=.5
+make("UIGradient", shade, {Rotation=90, Transparency=NumberSequence.new(.3, 0)})
+local atlas = make("Frame", gui, {Name="Atlas", Active=true, AnchorPoint=Vector2.new(.5, .5), Position=UDim2.fromScale(.5, .5),
+	Size=UDim2.new(1, -20, 1, -20), BackgroundTransparency=1, Visible=false})
+make("UISizeConstraint", atlas, { MaxSize = Vector2.new(860, 700) })
+UI.atlasScale = make("UIScale", atlas, {Scale=1})
+for _, spec in ipairs({{3, 5, .6, 18}, {9, 11, .84, 24}}) do
+	local shadow = make("Frame", atlas, {Name="Shadow", AnchorPoint=Vector2.new(.5, .5), Position=UDim2.new(.5, 0, .5, spec[2]), Size=UDim2.new(1, spec[1]*2, 1, spec[1]*2),
+		BackgroundColor3=UI.black, BackgroundTransparency=spec[3], BorderSizePixel=0})
+	make("UICorner", shadow, {CornerRadius=UDim.new(0, spec[4])})
+end
+do
+	local window = panel(atlas, UDim2.new(), UDim2.fromScale(1, 1), ink)
+	window.Name = "Window"
+	make("UICorner", window, {CornerRadius=UDim.new(0, 16)})
+	local rim = make("UIStroke", window, {Color=UI.brass, Thickness=1.5})
+	make("UIGradient", rim, {Rotation=90, Color=ColorSequence.new(rgb("FFE6AE"), rgb("6B4E24"))})
+	make("UIGradient", window, {Name="Sheen", Rotation=90, Color=ColorSequence.new(rgb("FFFFFF"), rgb("8E9CA2"))})
+	local inner = make("Frame", window, {Name="InnerRim", BackgroundTransparency=1, Position=UDim2.fromOffset(5, 5), Size=UDim2.new(1, -10, 1, -10)})
+	make("UICorner", inner, {CornerRadius=UDim.new(0, 12)})
+	make("UIStroke", inner, {Color=UI.brass, Transparency=.74, Thickness=1})
+	UI.corners(window, gold, 7, 8)
+end
+UI.head = make("Frame", atlas, {Name="Head", BackgroundTransparency=1, Size=UDim2.new(1, 0, 0, 70)})
+do
+	local wash = make("Frame", UI.head, {Name="Wash", BackgroundColor3=UI.raised, BackgroundTransparency=.3, Size=UDim2.fromScale(1, 1), BorderSizePixel=0})
+	make("UICorner", wash, {CornerRadius=UDim.new(0, 16)})
+	make("UIGradient", wash, {Rotation=90, Transparency=NumberSequence.new(.15, 1)})
+end
+UI.crest = UI.compass(UI.head, 16, 13, 44)
+UI.kicker = label(UI.head, "CARTOGRAPHERS' GUILD", 70, 12, UDim.new(1, -250), 14, UI.heavy, 11, mint)
+UI.title = label(UI.head, "Voyager’s Atlas", 69, 25, UDim.new(1, -250), 36, book, 28, ivory)
+make("UIGradient", UI.title, {Rotation=90, Color=ColorSequence.new(rgb("FFF7E2"), rgb("F2C15E"))})
+UI.headRule = UI.rule(UI.head, UI.brass, 69, 14)
+-- Purse chip in the masthead.
+UI.coins = make("Frame", UI.head, {Name="Purse", AnchorPoint=Vector2.new(1, .5), Position=UDim2.new(1, -66, .5, 0), Size=UDim2.fromOffset(128, 32), BackgroundColor3=track, BackgroundTransparency=.2, BorderSizePixel=0})
+rounded(UI.coins, 16, UI.brass)
+do
+	local coin = UI.chip(UI.coins, "", gold, 20, 6)
+	local inner = make("Frame", coin, {AnchorPoint=Vector2.new(.5, .5), Position=UDim2.fromScale(.5, .5), Size=UDim2.fromScale(.55, .55), BackgroundTransparency=1})
+	make("UICorner", inner, {CornerRadius=UDim.new(1, 0)})
+	make("UIStroke", inner, {Color=UI.brassDark, Thickness=1.5})
+	UI.coinText = label(UI.coins, "—", 30, 0, UDim.new(1, -40), 32, UI.heavy, 14, ivory)
+	UI.coinText.TextXAlignment = Enum.TextXAlignment.Right
+end
 local function closeAtlas()
 	atlas.Visible = false
 	shade.Visible = false
@@ -660,38 +921,52 @@ local function closeAtlas()
 	-- Leave UI selection entirely so gamepad input drives the character again.
 	GuiService.SelectedObject = nil
 end
-local closeButton=button(head, "Close", UDim2.new(1, -64, 0, 10), UDim2.fromOffset(54, 43), closeAtlas)
+UI.close = button(UI.head, "Close", UDim2.new(1, -54, 0, 15), UDim2.fromOffset(40, 40), closeAtlas)
+UI.close.Text = "✕"
+UI.close.TextSize = 18
 shade.Activated:Connect(closeAtlas)
-local tabs = panel(atlas, UDim2.fromOffset(10, 96), UDim2.new(1, -20, 0, 56), ink)
-tabs.Name = "Tabs"
+local tabs = make("Frame", atlas, {Name="Tabs", BackgroundTransparency=1, Position=UDim2.fromOffset(12, 76), Size=UDim2.new(1, -24, 0, 60)})
 local scroll = make("ScrollingFrame", atlas, {
-	Position = UDim2.fromOffset(12, 160),
-	Size = UDim2.new(1, -24, 1, -197),
+	Name = "Pages",
+	Position = UDim2.fromOffset(14, 146),
+	Size = UDim2.new(1, -28, 1, -180),
 	BackgroundTransparency = 1,
 	BorderSizePixel = 0,
 	ScrollBarThickness = 4,
-	ScrollBarImageColor3 = mint,
+	ScrollBarImageColor3 = UI.brass,
 	CanvasSize = UDim2.new(),
 	AutomaticCanvasSize = Enum.AutomaticSize.Y,
+	ScrollingDirection = Enum.ScrollingDirection.Y,
 })
-make("UIListLayout", scroll, { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 6) })
-local footer = label(atlas, "AETHER ISLES     /     FIELD EDITION", 14, 0, UDim.new(1, -28), 22, bold, 10, muted)
-footer.Position = UDim2.new(0, 14, 1, -27)
-local notice = label(gui, "", 0, 0, UDim.new(0.92, 0), 38, bold, 13, ivory)
+make("UIListLayout", scroll, { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 8) })
+make("UIPadding", scroll, {PaddingTop=UDim.new(0, 2), PaddingBottom=UDim.new(0, 10), PaddingLeft=UDim.new(0, 1)})
+UI.footRule = UI.rule(atlas, UI.brass, 0, 16)
+UI.footRule.Position = UDim2.new(0, 16, 1, -31)
+UI.footer = label(atlas, "", 18, 0, UDim.new(1, -36), 22, UI.heavy, 11, gold)
+UI.footer.Position = UDim2.new(0, 18, 1, -28)
+UI.hint = label(atlas, "", 18, 0, UDim.new(1, -36), 22, UI.heavy, 11, muted)
+UI.hint.Position = UDim2.new(0, 18, 1, -28)
+UI.hint.TextXAlignment = Enum.TextXAlignment.Right
+-- Toast: one strip above the action bar with a gold accent edge.
+local notice = label(gui, "", 0, 0, UDim.new(0.92, 0), 38, bold, 14, ivory)
+notice.Name = "Toast"
 notice.AnchorPoint = Vector2.new(0.5, 1)
-notice.Position = UDim2.new(0.5, 0, 1, -46)
+notice.Position = UDim2.new(0.5, 0, 1, -50)
 notice.TextXAlignment = Enum.TextXAlignment.Center
 notice.TextWrapped = true
 notice.BackgroundColor3 = deep
-notice.BackgroundTransparency = 0.03
+notice.BackgroundTransparency = 0.05
 notice.Visible = false
-rounded(notice, 8, slate)
-garment(notice)
+rounded(notice, 12, UI.brass)
 notice.AutomaticSize = Enum.AutomaticSize.Y
 notice.TextTruncate = Enum.TextTruncate.None
-make("UIPadding", notice, {PaddingTop=UDim.new(0,8),PaddingBottom=UDim.new(0,8),PaddingLeft=UDim.new(0,12),PaddingRight=UDim.new(0,12)})
+make("UIPadding", notice, {PaddingTop=UDim.new(0,9),PaddingBottom=UDim.new(0,9),PaddingLeft=UDim.new(0,18),PaddingRight=UDim.new(0,14)})
 make("UISizeConstraint", notice, { Name = "NoticeLimit", MaxSize = Vector2.new(560, 180) })
-local noticeIndex = 0
+do
+	local accent = make("Frame", notice, {Name="Accent", Position=UDim2.new(0, -11, 0, -2), Size=UDim2.new(0, 3, 1, 4), BackgroundColor3=gold, BorderSizePixel=0})
+	make("UICorner", accent, {CornerRadius=UDim.new(1, 0)})
+end
+UI.noticeIndex = 0
 local function notify(message)
 	if type(message)~="string" or message == "" then
 		return
@@ -699,16 +974,17 @@ local function notify(message)
 	-- Phones (compact layout): one short strip that stays clear of touch controls.
 	local compactToast = THUMBS.compact
 	notice:FindFirstChild("NoticeLimit").MaxSize = compactToast and Vector2.new(340, 60) or Vector2.new(560, 180)
-	notice.TextSize = compactToast and 12 or 13
+	notice.TextSize = compactToast and 12 or 14
 	notice.TextTruncate = compactToast and Enum.TextTruncate.AtEnd or Enum.TextTruncate.None
-	noticeIndex += 1
-	local token = noticeIndex
+	UI.noticeIndex += 1
+	local token = UI.noticeIndex
 	notice.Text = message
 	notice.Visible = true
 	notice.TextTransparency = 0.35
-	TweenService:Create(notice, TweenInfo.new(0.16), { TextTransparency = 0 }):Play()
+	notice.Position = UDim2.new(0.5, 0, 1, -42)
+	TweenService:Create(notice, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { TextTransparency = 0, Position = UDim2.new(0.5, 0, 1, -50) }):Play()
 	task.delay(3.6, function()
-		if token == noticeIndex then
+		if token == UI.noticeIndex then
 			notice.Visible = false
 		end
 	end)
@@ -750,11 +1026,36 @@ local function listItem(object)
 	object.LayoutOrder = order
 	return object
 end
+-- Section divider: gold diamond, heading in caps, optional meta copy on the
+-- right ("TITLE    /    META") and a brass hairline that fades to the right.
+-- A leading number ("01    /    NEXT BEARING") becomes a numbered medallion.
 local function heading(text)
-	local strip=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,29),ink))
-	local marker=panel(strip,UDim2.fromOffset(3,11),UDim2.fromOffset(6,6),gold)
-	marker.Rotation=45
-	label(strip,text,19,2,UDim.new(1,-25),25,bold,11,mint)
+	local h=compactAtlas and 26 or 30
+	local strip=listItem(make("Frame",scroll,{Name="Heading",BackgroundTransparency=1,Size=UDim2.new(1,-7,0,h)}))
+	local main,meta=tostring(text):match("^(.-)%s+/%s+(.+)$")
+	main=main or tostring(text)
+	local x=2
+	if main:match("^%d+$") and meta then
+		local medal=make("TextLabel",strip,{Name="Number",AnchorPoint=Vector2.new(0,.5),Position=UDim2.new(0,2,.5,-2),Size=UDim2.fromOffset(24,18),BackgroundColor3=gold,
+			Text=main,Font=UI.heavy,TextSize=11,TextColor3=UI.onGold,BorderSizePixel=0})
+		make("UICorner",medal,{CornerRadius=UDim.new(0,5)})
+		main,meta,x=meta,nil,32
+		local rest,more=main:match("^(.-)%s+/%s+(.+)$")
+		if rest then main,meta=rest,more end
+	else
+		local gem=make("Frame",strip,{Name="Gem",AnchorPoint=Vector2.new(.5,.5),Position=UDim2.new(0,7,.5,-2),Size=UDim2.fromOffset(8,8),Rotation=45,BackgroundColor3=gold,BorderSizePixel=0})
+		make("UIStroke",gem,{Color=UI.brassDark,Thickness=1})
+		x=20
+	end
+	local title=label(strip,main,x,0,UDim.new(1,-x),h-4,UI.heavy,compactAtlas and 12 or 13,gold)
+	if meta then
+		title.Size=UDim2.new(.62,-x,0,h-4)
+		local right=label(strip,meta,0,0,UDim.new(.38,0),h-4,bold,compactAtlas and 12 or 11,muted)
+		right.Position=UDim2.new(.62,0,0,0)
+		right.TextXAlignment=Enum.TextXAlignment.Right
+	end
+	local line=make("Frame",strip,{Name="Rule",BackgroundColor3=UI.brass,BorderSizePixel=0,Position=UDim2.new(0,2,1,-3),Size=UDim2.new(1,-2,0,1)})
+	make("UIGradient",line,{Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,0),NumberSequenceKeypoint.new(.6,.55),NumberSequenceKeypoint.new(1,1)})})
 end
 -- Simple title/detail/action rows share the card style (forward-declared card).
 local card
@@ -767,34 +1068,34 @@ local function count(map, key)
 	return type(source)=="table" and num(source[key],0) or 0
 end
 local function para(parent,value,order,color,size)
-	return make("TextLabel",parent,{Name="Copy",Text=value,RichText=true,BackgroundTransparency=1,Font=regular,TextSize=size or (compactAtlas and 12 or 13),TextColor3=color or muted,
+	return make("TextLabel",parent,{Name="Copy",Text=value,RichText=true,BackgroundTransparency=1,Font=regular,TextSize=size or (compactAtlas and 12 or 14),TextColor3=color or UI.copy,
 		TextXAlignment=Enum.TextXAlignment.Left,TextYAlignment=Enum.TextYAlignment.Top,TextWrapped=true,Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,LayoutOrder=order or 0})
 end
+-- Progress bar: sunken well, gradient fill with gloss and a glowing end cap.
 local function progress(parent,fraction,color,caption,height)
-	height=height or (compactAtlas and 14 or 16)
-	local bar=make("Frame",parent,{Name="Progress",BackgroundColor3=track,BorderSizePixel=0,Size=UDim2.new(1,0,0,height)})
-	make("UICorner",bar,{CornerRadius=UDim.new(0,height//2)})
-	make("UIStroke",bar,{Color=slate,Transparency=.2,Thickness=1})
-	local fill=make("Frame",bar,{Name="Fill",BackgroundColor3=color or mint,BorderSizePixel=0,Size=UDim2.new(math.clamp(num(fraction,0),0,1),0,1,0)})
-	make("UICorner",fill,{CornerRadius=UDim.new(0,height//2)})
-	make("UIGradient",fill,{Color=ColorSequence.new(Color3.new(1,1,1),rgb("9FB8BC")),Rotation=90})
+	height=height or (compactAtlas and 16 or 18)
+	local bar,fill=UI.meter(parent,"Progress",color or mint,height)
+	UI.setMeter(fill,fraction)
 	if caption then
-		local text=label(bar,caption,0,0,full,height,bold,math.max(9,height-4),ivory)
+		local text=label(bar,caption,0,0,full,height,UI.heavy,math.max(9,height-6),ivory)
+		text.Size=UDim2.fromScale(1,1)
 		text.TextXAlignment=Enum.TextXAlignment.Center
-		text.TextStrokeTransparency=.35
+		text.TextStrokeTransparency=.25
 		text.TextStrokeColor3=deep
 	end
 	return bar
 end
+-- Tier pips: filled segments glow in the line colour; the next one is outlined.
 local function pips(parent,total,filled,color,labels)
-	local strip=make("Frame",parent,{Name="Pips",BackgroundTransparency=1,Size=UDim2.new(1,0,0,compactAtlas and 16 or 18)})
+	local strip=make("Frame",parent,{Name="Pips",BackgroundTransparency=1,Size=UDim2.new(1,0,0,compactAtlas and 18 or 20)})
 	for i=1,total do
 		local reached=i<=filled
-		local pip=make("Frame",strip,{Position=UDim2.new((i-1)/total,1,0,0),Size=UDim2.new(1/total,-3,1,0),BackgroundColor3=reached and (color or gold) or track,BorderSizePixel=0})
-		make("UICorner",pip,{CornerRadius=UDim.new(0,4)})
-		if not reached then make("UIStroke",pip,{Color=slate,Transparency=.3,Thickness=1}) end
+		local pip=make("Frame",strip,{Position=UDim2.new((i-1)/total,1,0,0),Size=UDim2.new(1/total,-4,1,0),BackgroundColor3=reached and (color or gold) or track,BorderSizePixel=0})
+		make("UICorner",pip,{CornerRadius=UDim.new(0,5)})
+		if reached then UI.sheen(pip,1,.62)
+		else make("UIStroke",pip,{Color=i==filled+1 and (color or gold) or UI.line,Transparency=i==filled+1 and .2 or 0,Thickness=1}) end
 		if labels and labels[i] then
-			local text=label(pip,labels[i],0,0,full,compactAtlas and 16 or 18,bold,10,reached and deep or muted)
+			local text=label(pip,labels[i],0,0,full,compactAtlas and 18 or 20,UI.heavy,11,reached and deep or muted)
 			text.Size=UDim2.fromScale(1,1)
 			text.TextXAlignment=Enum.TextXAlignment.Center
 		end
@@ -806,12 +1107,15 @@ local function container(height)
 end
 local function gridHolder(cell,padding)
 	local holder=container()
-	make("UIGridLayout",holder,{CellSize=cell,CellPadding=UDim2.fromOffset(padding or 6,padding or 6),SortOrder=Enum.SortOrder.LayoutOrder})
+	make("UIGridLayout",holder,{CellSize=cell,CellPadding=UDim2.fromOffset(padding or 8,padding or 8),SortOrder=Enum.SortOrder.LayoutOrder})
+	make("UIPadding",holder,{PaddingTop=UDim.new(0,3),PaddingBottom=UDim.new(0,3),PaddingLeft=UDim.new(0,3)})
 	return holder
 end
+-- Tile: raised plate for grids (items, skills, slots); callers add a rim.
 local function tile(parent,name,layoutOrder,action)
-	local b=make("TextButton",parent,{Name=name,Text="",AutoButtonColor=true,BackgroundColor3=deep,BorderSizePixel=0,Selectable=true,LayoutOrder=layoutOrder or 0,ClipsDescendants=true})
-	make("UICorner",b,{CornerRadius=UDim.new(0,10)})
+	local b=make("TextButton",parent,{Name=name,Text="",AutoButtonColor=false,BackgroundColor3=rgb("10202A"),BorderSizePixel=0,Selectable=true,LayoutOrder=layoutOrder or 0,ClipsDescendants=true})
+	make("UICorner",b,{CornerRadius=UDim.new(0,12)})
+	UI.sheen(b,1,.7)
 	pressable(b)
 	b.Activated:Connect(action)
 	return b
@@ -821,71 +1125,90 @@ local function contentWidth()
 	if type(width)~="number" or width<=0 then width=compactAtlas and 420 or 700 end
 	return width-7
 end
--- Shared card: icon band (item art, motif or custom), rich title/subtitle,
--- badge, copy lines, progress bar, pips and right-aligned actions.
+-- Pill badge (status chip) right-aligned at y in a band.
+function UI.badge(parent,text,color,y)
+	local chip=make("TextLabel",parent,{Name="Badge",Text=text,RichText=true,AnchorPoint=Vector2.new(1,0),Position=UDim2.new(1,0,0,y),Size=UDim2.fromOffset(0,22),
+		AutomaticSize=Enum.AutomaticSize.X,BackgroundColor3=color,BackgroundTransparency=.84,Font=UI.heavy,TextSize=compactAtlas and 12 or 12,TextColor3=color,BorderSizePixel=0})
+	make("UICorner",chip,{CornerRadius=UDim.new(1,0)})
+	make("UIStroke",chip,{Color=color,Transparency=.45,Thickness=1})
+	make("UIPadding",chip,{PaddingLeft=UDim.new(0,10),PaddingRight=UDim.new(0,10)})
+	return chip
+end
+-- Corner tag on a tile (e.g. "E" for equipped): a small gold plate.
+function UI.tag(parent,text)
+	local chip=make("TextLabel",parent,{Name="Tag",Position=UDim2.fromOffset(4,4),Size=UDim2.fromOffset(16,16),BackgroundColor3=gold,Text=text,Font=UI.heavy,TextSize=11,TextColor3=UI.onGold,BorderSizePixel=0,ZIndex=2})
+	make("UICorner",chip,{CornerRadius=UDim.new(0,5)})
+	make("UIStroke",chip,{Color=UI.brassDark,Thickness=1})
+	return chip
+end
+-- Shared card: layered plate (sheen + bevel + rim), icon well, rich title and
+-- subtitle, status pill, copy lines, progress bar, pips and right-aligned
+-- actions (gold primary, slate secondary, sunken disabled).
 function card(o)
 	local box=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,0),o.fill or deep))
 	box.AutomaticSize=Enum.AutomaticSize.Y
 	if o.name then box.Name=o.name end
-	rounded(box,10,o.edge or slate)
+	make("UICorner",box,{CornerRadius=UDim.new(0,12)})
+	local rim=make("UIStroke",box,{Color=o.edge or UI.line,Thickness=o.edge and 1.5 or 1,Transparency=0})
+	make("UIGradient",rim,{Rotation=90,Color=ColorSequence.new(UI.white,Color3.new(.6,.6,.6))})
+	UI.sheen(box,1,.78)
+	UI.bevel(box,12,.88)
 	if o.accent then
-		local strip=make("Frame",box,{Name="Accent",Position=UDim2.fromOffset(0,8),Size=UDim2.new(0,4,1,-16),BackgroundColor3=o.accent,BorderSizePixel=0})
-		make("UICorner",strip,{CornerRadius=UDim.new(0,2)})
+		local strip=make("Frame",box,{Name="Accent",Position=UDim2.fromOffset(0,10),Size=UDim2.new(0,3,1,-20),BackgroundColor3=o.accent,BorderSizePixel=0})
+		make("UICorner",strip,{CornerRadius=UDim.new(1,0)})
+		local glow=make("Frame",box,{Name="AccentGlow",Position=UDim2.fromOffset(0,6),Size=UDim2.new(0,8,1,-12),BackgroundColor3=o.accent,BackgroundTransparency=.82,BorderSizePixel=0})
+		make("UICorner",glow,{CornerRadius=UDim.new(0,4)})
 	end
 	local body=make("Frame",box,{Name="Body",BackgroundTransparency=1,Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y})
-	local pad=compactAtlas and 9 or 11
+	local pad=compactAtlas and 10 or 14
 	make("UIPadding",body,{PaddingTop=UDim.new(0,pad),PaddingBottom=UDim.new(0,pad),PaddingLeft=UDim.new(0,pad+(o.accent and 4 or 0)),PaddingRight=UDim.new(0,pad)})
-	make("UIListLayout",body,{SortOrder=Enum.SortOrder.LayoutOrder,Padding=UDim.new(0,6)})
+	make("UIListLayout",body,{SortOrder=Enum.SortOrder.LayoutOrder,Padding=UDim.new(0,compactAtlas and 6 or 8)})
 	local index=0
 	local function nextOrder() index+=1 return index end
-	local iconSize=o.iconSize or (compactAtlas and 36 or 46)
+	local iconSize=o.iconSize or (compactAtlas and 38 or 48)
 	local hasIcon=o.item~=nil or o.icon~=nil or o.motif~=nil or o.locked
-	local titleSize=compactAtlas and 14 or 16
-	local bandHeight=hasIcon and iconSize or (o.subtitle and 38 or 20)
+	local titleSize=compactAtlas and 15 or 17
+	local bandHeight=hasIcon and iconSize or (o.subtitle and 40 or 22)
 	local band=make("Frame",body,{Name="Band",BackgroundTransparency=1,Size=UDim2.new(1,0,0,bandHeight),LayoutOrder=nextOrder()})
 	local textX=0
 	if hasIcon then
 		if o.item~=nil or o.locked then itemIcon(band,o.item,iconSize,o.locked)
 		elseif o.icon then o.icon(band,iconSize)
 		else motif(band,o.motif,iconSize) end
-		textX=iconSize+10
+		textX=iconSize+12
 	end
 	-- Badge column grows with its copy (rich tags stripped) instead of truncating.
 	local badgeWidth=0
 	if o.badge then
 		local plain=tostring(o.badge):gsub("<[^>]+>","")
-		badgeWidth=math.clamp((utf8.len(plain) or #plain)*(compactAtlas and 9 or 10)+10,compactAtlas and 64 or 84,compactAtlas and 150 or 190)
+		badgeWidth=math.clamp((utf8.len(plain) or #plain)*8+26,compactAtlas and 56 or 64,compactAtlas and 150 or 190)
 	end
-	local blockHeight=20+(o.subtitle and 18 or 0)
+	local blockHeight=22+(o.subtitle and 18 or 0)
 	local top=math.max(0,(bandHeight-blockHeight)//2)
-	local title=label(band,o.title or "",textX,top,UDim.new(1,-textX-badgeWidth-4),20,bold,titleSize,o.titleColor or ivory)
+	local title=label(band,o.title or "",textX,top,UDim.new(1,-textX-badgeWidth-6),22,UI.heavy,titleSize,o.titleColor or ivory)
 	title.RichText=true
 	if o.subtitle then
-		local sub=label(band,o.subtitle,textX,top+20,UDim.new(1,-textX-badgeWidth-4),17,regular,12,o.subtitleColor or muted)
+		local sub=label(band,o.subtitle,textX,top+21,UDim.new(1,-textX-badgeWidth-6),18,regular,compactAtlas and 12 or 13,o.subtitleColor or muted)
 		sub.RichText=true
 	end
-	if o.badge then
-		local badge=label(band,o.badge,0,0,UDim.new(0,badgeWidth),20,bold,compactAtlas and 12 or 13,o.badgeColor or gold)
-		badge.Position=UDim2.new(1,-badgeWidth,0,top)
-		badge.TextXAlignment=Enum.TextXAlignment.Right
-		badge.RichText=true
-	end
+	if o.badge then UI.badge(band,o.badge,o.badgeColor or gold,top) end
 	if type(o.detail)=="string" and o.detail~="" then para(body,o.detail,nextOrder(),o.detailColor) end
+	if o.before then o.before(body,nextOrder) end
 	local lines=o.lines or EMPTY
 	for i=1,16 do
 		local line=lines[i]
-		if type(line)=="string" and line~="" then para(body,line,nextOrder(),o.linesColor or muted) end
+		if type(line)=="string" and line~="" then para(body,line,nextOrder(),o.linesColor or muted,compactAtlas and 12 or 13) end
 	end
 	if o.pips then pips(body,o.pips.total,o.pips.filled,o.pips.color,o.pips.labels).LayoutOrder=nextOrder() end
 	if o.bar then progress(body,o.bar.fraction,o.bar.color,o.bar.caption).LayoutOrder=nextOrder() end
 	if o.after then o.after(body,nextOrder) end
 	if o.actions and #o.actions>0 then
-		local height=compactAtlas and 38 or 42
-		local width=compactAtlas and 100 or 116
+		local height=compactAtlas and 36 or 40
+		local width=compactAtlas and 104 or 124
 		local strip=make("Frame",body,{Name="Actions",BackgroundTransparency=1,Size=UDim2.new(1,0,0,height),LayoutOrder=nextOrder()})
-		local total=#o.actions*width+(#o.actions-1)*6
+		local total=#o.actions*width+(#o.actions-1)*8
 		for i,action in ipairs(o.actions) do
-			local x=-total+(i-1)*(width+6)
+			local x=-total+(i-1)*(width+8)
 			local b=button(strip,action.caption,UDim2.new(1,x,0,0),UDim2.fromOffset(width,height),function()
 				if action.disabled then notify(action.reason or "Not available yet.") return end
 				action.fn()
@@ -893,35 +1216,78 @@ function card(o)
 			b.Name=action.name or ((o.name or "Card")..(action.caption:gsub("[^%w]","")))
 			b.TextScaled=true
 			make("UITextSizeConstraint",b,{MinTextSize=11,MaxTextSize=14})
-			if action.disabled then b.BackgroundColor3=ink;b.TextColor3=muted end
-			if action.primary then b.BackgroundColor3=rgb("2F6D63") end
+			if #action.caption<=7 then UI.engrave(b,action.caption) end
+			local danger=action.caption=="Abandon" or action.caption=="Remove" or action.caption=="Dismantle" or action.caption=="Unequip" or action.caption=="Cancel lot"
+			UI.tone(b,action.disabled and "disabled" or (action.primary and "primary") or (danger and "danger") or nil)
 		end
 	end
 	return box
 end
--- Segmented control used for primary-page sections and in-page filters.
+-- Checklist: a sunken panel of tick boxes (✓ mint / ✗ ember), task copy and a
+-- right-aligned have/need count. items: {text=rich, met=bool, amount=string?}.
+function UI.checklist(body,nextOrder,caption,items)
+	if caption then
+		local cap=para(body,caption,nextOrder(),gold,12)
+		cap.Font=UI.heavy
+		cap.Name="Caption"
+	end
+	local list=make("Frame",body,{Name="Checklist",BackgroundColor3=track,BackgroundTransparency=.45,Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,LayoutOrder=nextOrder(),BorderSizePixel=0})
+	make("UICorner",list,{CornerRadius=UDim.new(0,8)})
+	make("UIListLayout",list,{SortOrder=Enum.SortOrder.LayoutOrder,Padding=UDim.new(0,3)})
+	make("UIPadding",list,{PaddingTop=UDim.new(0,6),PaddingBottom=UDim.new(0,6),PaddingLeft=UDim.new(0,8),PaddingRight=UDim.new(0,10)})
+	for i,item in ipairs(items) do
+		local line=make("Frame",list,{Name="Check",BackgroundTransparency=1,Size=UDim2.new(1,0,0,compactAtlas and 18 or 20),AutomaticSize=Enum.AutomaticSize.Y,LayoutOrder=i})
+		local box=make("TextLabel",line,{Name="Box",Position=UDim2.fromOffset(0,2),Size=UDim2.fromOffset(16,16),BackgroundColor3=item.met and mint or track,Text=item.met and "✓" or "✗",
+			Font=UI.heavy,TextSize=11,TextColor3=item.met and deep or ember,BorderSizePixel=0})
+		make("UICorner",box,{CornerRadius=UDim.new(0,4)})
+		if not item.met then make("UIStroke",box,{Color=UI.line,Thickness=1}) end
+		local amountWidth=item.amount and 78 or 0
+		local text=label(line,item.text,24,0,UDim.new(1,-24-amountWidth),compactAtlas and 18 or 20,regular,compactAtlas and 12 or 13,item.met and UI.copy or muted)
+		text.RichText=true
+		text.TextWrapped=true
+		text.TextTruncate=Enum.TextTruncate.None
+		text.AutomaticSize=Enum.AutomaticSize.Y
+		if item.amount then
+			local amount=label(line,item.amount,0,0,UDim.new(0,amountWidth),compactAtlas and 18 or 20,UI.heavy,compactAtlas and 12 or 13,item.met and mint or muted)
+			amount.Position=UDim2.new(1,-amountWidth,0,0)
+			amount.TextXAlignment=Enum.TextXAlignment.Right
+		end
+	end
+	return list
+end
+-- Segmented control: a sunken well with flat segments; the chosen segment is
+-- a raised gold (page sections) or mint (in-page filters) plate.
 local function sectionBar(options,selected,onPick,opts)
 	opts=opts or {}
 	local n=#options
 	if n==0 then return end
-	local maxPer=opts.maxPer or ((compactAtlas and not railMode) and 3 or 6)
+	local maxPer=opts.maxPer or ((compactAtlas and not railMode) and 3 or (compactAtlas and 6 or 7))
 	local rows=math.ceil(n/maxPer)
 	local per=math.ceil(n/rows)
-	local height=opts.small and (compactAtlas and 32 or 36) or (compactAtlas and 38 or 44)
-	local holder=container(rows*height+(rows-1)*4)
+	local height=opts.small and (compactAtlas and 30 or 32) or (compactAtlas and 34 or 38)
+	local inset=4
+	local holder=container(rows*height+(rows-1)*4+inset*2)
+	holder.Name=opts.small and "Filters" or "Sections"
+	holder.BackgroundColor3=track
+	holder.BackgroundTransparency=opts.small and .45 or .2
+	make("UICorner",holder,{CornerRadius=UDim.new(0,(height+inset*2)//2)})
+	make("UIStroke",holder,{Color=UI.line,Thickness=1,Transparency=0})
 	for i,name in ipairs(options) do
 		local r,c=(i-1)//per,(i-1)%per
-		local b=button(holder,name,UDim2.new(c/per,0,0,r*(height+4)),UDim2.new(1/per,-4,0,height),function() onPick(name) end)
-		b.Name=(opts.prefix or "Section")..(tostring(name):gsub("[^%w]",""))
-		b.TextScaled=true
-		make("UITextSizeConstraint",b,{MinTextSize=11,MaxTextSize=compactAtlas and 13 or 14})
-		if opts.small or per>3 then
-			local engraving=b:FindFirstChild("ControlEngraving")
-			if engraving then engraving:Destroy() end
-		end
 		local on=name==selected
-		b.BackgroundColor3=on and mint or slate
-		b.TextColor3=on and deep or ivory
+		local b=make("TextButton",holder,{Name=(opts.prefix or "Section")..(tostring(name):gsub("[^%w]","")),Text=tostring(name),AutoButtonColor=false,Selectable=true,BorderSizePixel=0,
+			Position=UDim2.new(c/per,c==0 and inset or inset//2,0,inset+r*(height+4)),Size=UDim2.new(1/per,(c==0 or c==per-1) and -inset*1.5 or -inset,0,height),
+			BackgroundColor3=on and (opts.small and mint or gold) or slate,BackgroundTransparency=on and 0 or 1,
+			Font=on and UI.heavy or bold,TextColor3=on and (opts.small and deep or UI.onGold) or muted,TextScaled=true})
+		make("UICorner",b,{CornerRadius=UDim.new(0,height//2)})
+		make("UITextSizeConstraint",b,{MinTextSize=11,MaxTextSize=compactAtlas and 13 or 14})
+		make("UIPadding",b,{PaddingLeft=UDim.new(0,6),PaddingRight=UDim.new(0,6),PaddingTop=UDim.new(0,4),PaddingBottom=UDim.new(0,4)})
+		if on then
+			UI.sheen(b,1,.74)
+			make("UIStroke",b,{Color=UI.white,Thickness=1,Transparency=.55})
+		end
+		pressable(b)
+		b.Activated:Connect(function() onPick(name) end)
 	end
 end
 local function syncing(what)
@@ -1009,7 +1375,7 @@ local function routeChart()
 	local chart=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,144),slate))
 	rounded(chart,10,gold)
 	make("UIGradient",chart,{Color=ColorSequence.new(rgb("34716E"),rgb("112A3A")),Rotation=25})
-	label(chart,"THE FIRST CROSSING",12,7,UDim.new(1,-24),19,bold,10,gold)
+	label(chart,"THE FIRST CROSSING",14,8,UDim.new(1,-24),19,UI.heavy,11,gold)
 	local line=panel(chart,UDim2.fromScale(.14,.56),UDim2.fromScale(.72,.012),mint)
 	line.BackgroundTransparency=.4
 	for i,landmark in ipairs({"Windpine","Compass Quay","Brassfall"}) do
@@ -1105,13 +1471,12 @@ local function journalData()
 	return Data and type(Data.Quests)=="table" and type(Data.Diaries)=="table" and type(Data.Furniture)=="table"
 		and type(Data.describeCheck)=="function"
 end
-local function checkLine(o,pair)
+local function checkItem(o,pair)
 	local ok,text=pcall(Data.describeCheck,o)
 	text=ok and type(text)=="string" and text or "Task"
 	local have,need=num(tbl(pair)[1],0),num(tbl(pair)[2],num(type(o)=="table" and (o.count or o.level or o.tier) or 1,1))
 	local met=have>=need
-	local amount=if need>1 then "  "..paint(fmt(have).." / "..fmt(need),met and "9EE7D2" or "B9C7CC") else ""
-	return (met and check or cross).." "..escape(text)..amount,met
+	return {text=escape(text),met=met,amount=need>1 and (fmt(have).." / "..fmt(need)) or nil},met
 end
 local function statText(stats)
 	local parts={}
@@ -1163,17 +1528,17 @@ local function drawQuests()
 		if (q.line=="main")==(QJ.line=="Main") then
 			local entry=entries[q.id] or EMPTY
 			local badge,color=questStatus(entry)
-			local lines={}
-			-- Grouped copy: a gold caption per group, indented checklist beneath it.
-			local function group(caption) table.insert(lines,"<b>"..paint(caption,"F9CC77").."</b>") end
+			-- Grouped checklists (requirements, then tasks) and a rewards line.
+			local requires,tasks={},{}
 			if entry.done~=true then
-				if #q.requires>0 then group("REQUIRES") end
-				for i,o in ipairs(q.requires) do table.insert(lines,"   "..(checkLine(o,tbl(entry.requires)[i]))) end
-				if #q.objectives>0 then group("TASKS") end
-				for i,o in ipairs(q.objectives) do table.insert(lines,"   "..(checkLine(o,tbl(entry.objectives)[i]))) end
+				for i,o in ipairs(q.requires) do table.insert(requires,(checkItem(o,tbl(entry.requires)[i]))) end
+				for i,o in ipairs(q.objectives) do table.insert(tasks,(checkItem(o,tbl(entry.objectives)[i]))) end
 			end
-			group("REWARDS")
-			table.insert(lines,"   "..rewardText(q.rewards))
+			local lines={"<b>"..paint("REWARDS  ","F3C66E").."</b>"..rewardText(q.rewards)}
+			local function checklists(body,nextOrder)
+				if #requires>0 then UI.checklist(body,nextOrder,"REQUIRES",requires) end
+				if #tasks>0 then UI.checklist(body,nextOrder,"TASKS",tasks) end
+			end
 			local actions={}
 			local lamp=type(q.rewards.lamp)=="table" and q.rewards.lamp
 			local picking=QJ.lampFor==q.id and entry.ready==true and lamp
@@ -1189,7 +1554,7 @@ local function drawQuests()
 			local region=Data.RegionById and Data.RegionById[q.region]
 			card({name="Quest"..q.id,motif="Journal",title=escape(q.title),titleColor=entry.done==true and muted or ivory,
 				subtitle=escape((region and region.name or q.region).."  ·  "..(q.line=="main" and "Main quest" or "Side quest")),
-				badge=badge,badgeColor=color,detail=entry.done~=true and escape(q.story or "") or nil,lines=lines,actions=actions,
+				badge=badge,badgeColor=color,detail=entry.done~=true and escape(q.story or "") or nil,before=checklists,lines=lines,actions=actions,
 				after=picking and function(body,nextOrder)
 					para(body,"Choose a skill for your "..fmt(lamp.xp).." XP lamp:",nextOrder(),gold)
 					-- lamp.exclude names skills the server refuses for this lamp (e.g. Dungeoneering, Carpentry).
@@ -1244,20 +1609,20 @@ local function drawDiaries()
 	for index,tierName in ipairs(Data.DiaryTiers) do
 		local def=diary.tiers[tierName]
 		local t=tiers[tierName] or EMPTY
-		local lines,done={},0
+		local items,done={},0
 		for i,o in ipairs(def.tasks) do
-			local text,met=checkLine(o,tbl(t.tasks)[i])
+			local item,met=checkItem(o,tbl(t.tasks)[i])
 			if met then done+=1 end
-			table.insert(lines,text)
+			table.insert(items,item)
 		end
-		table.insert(lines,"Perk  "..escape(statText(def.perk)).."  ·  "..fmt(Data.DiaryCoins[tierName]).." coins")
+		local lines={"<b>"..paint("REWARD  ","F3C66E").."</b>Perk  "..escape(statText(def.perk)).."  ·  "..fmt(Data.DiaryCoins[tierName]).." coins"}
 		local isClaimed=t.claimed==true or index<=claimed
 		local badge,color="IN PROGRESS",ivory
 		if isClaimed then badge,color="CLAIMED",mint
 		elseif t.claimable==true then badge,color="READY",gold
 		elseif index>claimed+1 then badge,color="LOCKED",ember end
 		card({name="Diary"..QJ.region..tierName,motif="Hunt",title=tierName,titleColor=isClaimed and mint or ivory,badge=badge,badgeColor=color,
-			lines=lines,bar={fraction=done/#def.tasks,color=isClaimed and mint or gold,caption=done.." / "..#def.tasks.." tasks"},
+			before=function(body,nextOrder) UI.checklist(body,nextOrder,nil,items) end,lines=lines,bar={fraction=done/#def.tasks,color=isClaimed and mint or gold,caption=done.." / "..#def.tasks.." tasks"},
 			actions=t.claimable==true and {{caption="Claim",primary=true,fn=function() send("diary",QJ.region..":"..tierName) end}} or nil})
 	end
 end
@@ -1504,7 +1869,7 @@ local function drawSkills()
 	if selectedSkill and levels[selectedSkill] then drawSkillDetail(selectedSkill,levels[selectedSkill]) heading("ALL SKILLS") end
 	local width=contentWidth()
 	local columns=width>=690 and 3 or (width>=400 and 2 or 1)
-	local cellHeight=compactAtlas and 100 or 110
+	local cellHeight=compactAtlas and 108 or 122
 	local grid=gridHolder(UDim2.new(1/columns,-6,0,cellHeight),6)
 	for i,skill in ipairs(skills) do
 		local info=levels[skill]
@@ -1515,48 +1880,79 @@ local function drawSkills()
 			scroll.CanvasPosition=Vector2.zero
 			render()
 		end)
-		make("UIStroke",tileButton,{Color=selectedSkill==skill and gold or color,Transparency=selectedSkill==skill and 0 or .55,Thickness=selectedSkill==skill and 2 or 1})
-		local accent=make("Frame",tileButton,{Position=UDim2.fromOffset(0,10),Size=UDim2.new(0,4,1,-20),BackgroundColor3=color,BorderSizePixel=0})
-		make("UICorner",accent,{CornerRadius=UDim.new(0,2)})
-		local nameText=label(tileButton,skill,12,compactAtlas and 5 or 7,UDim.new(1,-80),20,bold,compactAtlas and 13 or 15,ivory)
-		local levelText=label(tileButton,info.maxed and "MAX" or (info.level.." / "..maxLevel()),0,compactAtlas and 5 or 7,UDim.new(0,70),20,bold,compactAtlas and 12 or 14,rgb(lighten(hex,.3)))
-		levelText.Position=UDim2.new(1,-78,0,compactAtlas and 5 or 7)
+		local on=selectedSkill==skill
+		make("UIStroke",tileButton,{Color=on and gold or color,Transparency=on and 0 or .5,Thickness=on and 2 or 1})
+		-- Skill medallion: level number on a skill-coloured disc.
+		local medal=make("Frame",tileButton,{Name="Medal",Position=UDim2.fromOffset(10,10),Size=UDim2.fromOffset(compactAtlas and 34 or 40,compactAtlas and 34 or 40),BackgroundColor3=color,BorderSizePixel=0})
+		make("UICorner",medal,{CornerRadius=UDim.new(1,0)})
+		make("UIGradient",medal,{Rotation=90,Color=ColorSequence.new(UI.white,Color3.new(.42,.42,.42))})
+		local medalRim=make("UIStroke",medal,{Color=on and gold or rgb(lighten(hex,.45)),Thickness=1.5,Transparency=.1})
+		local medalText=label(medal,info.maxed and "★" or tostring(info.level),0,0,full,40,book,compactAtlas and 15 or 18,UI.white)
+		medalText.Size=UDim2.fromScale(1,1)
+		medalText.TextXAlignment=Enum.TextXAlignment.Center
+		medalText.TextStrokeTransparency=.35
+		medalText.TextStrokeColor3=deep
+		local textX=compactAtlas and 52 or 60
+		label(tileButton,skill,textX,compactAtlas and 9 or 10,UDim.new(1,-textX-60),20,UI.heavy,compactAtlas and 14 or 16,ivory)
+		local levelText=label(tileButton,info.maxed and "MAX" or ("/ "..maxLevel()),0,compactAtlas and 9 or 11,UDim.new(0,50),20,bold,compactAtlas and 12 or 12,muted)
+		levelText.Position=UDim2.new(1,-58,0,compactAtlas and 9 or 11)
 		levelText.TextXAlignment=Enum.TextXAlignment.Right
-		local reward=label(tileButton,statText(skillDef(skill).perLevel,1).." "..paint("/ level","BECECA"),12,compactAtlas and 25 or 29,UDim.new(1,-20),compactAtlas and 30 or 28,regular,compactAtlas and 10 or 11,muted)
+		local reward=label(tileButton,statText(skillDef(skill).perLevel,1,"  "),12,compactAtlas and 50 or 58,UDim.new(1,-20),compactAtlas and 18 or 20,regular,compactAtlas and 12 or 12,muted)
 		reward.RichText=true
-		reward.TextWrapped=true
-		reward.TextYAlignment=Enum.TextYAlignment.Top
 		local bar=progress(tileButton,info.fraction,color,nil,compactAtlas and 10 or 12)
-		bar.Position=UDim2.new(0,12,0,compactAtlas and 60 or 63)
-		bar.Size=UDim2.new(1,-22,0,compactAtlas and 10 or 12)
-		local remaining=info.maxed and (fmt(info.xp).." XP  ·  mastered") or (fmt(math.max(0,info.ceiling-info.xp)).." XP to "..(info.level+1).."  ·  "..math.floor(info.fraction*1000+.5)/10 .."%")
-		label(tileButton,remaining,12,compactAtlas and 76 or 82,UDim.new(1,-20),16,regular,compactAtlas and 10 or 11,muted)
+		bar.Position=UDim2.new(0,12,0,compactAtlas and 72 or 82)
+		bar.Size=UDim2.new(1,-24,0,compactAtlas and 10 or 12)
+		local remaining=info.maxed and (fmt(info.xp).." XP  ·  mastered") or (fmt(math.max(0,info.ceiling-info.xp)).." XP to "..(info.level+1))
+		label(tileButton,remaining,12,compactAtlas and 86 or 98,UDim.new(1,-80),18,bold,compactAtlas and 12 or 12,muted)
+		local pct=label(tileButton,info.maxed and "100%" or (math.floor(info.fraction*1000+.5)/10 .."%"),0,compactAtlas and 86 or 98,UDim.new(0,64),18,UI.heavy,compactAtlas and 12 or 12,rgb(lighten(hex,.35)))
+		pct.Position=UDim2.new(1,-76,0,compactAtlas and 86 or 98)
+		pct.TextXAlignment=Enum.TextXAlignment.Right
 	end
 end
 
 local selectedSlot="weapon"
+-- Stat sheet: two cards (Combat · Gathering & luck), each a clean list of
+-- glyph chip, name and right-aligned value with zebra rows.
 local function drawStatSheet(stats)
+	local groups={{title="COMBAT",keys={}},{title="GATHERING & LUCK",keys={}}}
+	local gathering={miningSpeed=true,miningFortune=true,foragingFortune=true,farmingFortune=true,fishingFortune=true,seaCreatureChance=true,magicFind=true,petLuck=true}
 	local keys={}
 	for _,key in ipairs(Data and Data.StatOrder or {}) do table.insert(keys,key) end
 	for _,key in ipairs({"effectiveHealth","damage","magicalPower","combatBonus"}) do table.insert(keys,key) end
+	for _,key in ipairs(keys) do
+		if num(stats[key],nil) then table.insert(groups[gathering[key] and 2 or 1].keys,key) end
+	end
 	local width=contentWidth()
-	local columns=width>=600 and 3 or (width>=340 and 2 or 1)
-	local grid=gridHolder(UDim2.new(1/columns,-6,0,compactAtlas and 28 or 32),5)
-	for i,key in ipairs(keys) do
-		local value=num(stats[key],nil)
-		if value then
+	local columns=width>=420 and 2 or 1
+	local rowHeight=compactAtlas and 24 or 28
+	local holder=container()
+	holder.Name="StatSheet"
+	make("UIGridLayout",holder,{CellSize=UDim2.new(1/columns,-8,0,0),CellPadding=UDim2.fromOffset(8,8),SortOrder=Enum.SortOrder.LayoutOrder})
+	local tallest=0
+	for _,group in ipairs(groups) do tallest=math.max(tallest,#group.keys) end
+	holder:FindFirstChildOfClass("UIGridLayout").CellSize=UDim2.new(1/columns,columns>1 and -4 or 0,0,30+tallest*rowHeight+12)
+	for g,group in ipairs(groups) do
+		local sheet=make("Frame",holder,{Name="Stats"..g,BackgroundColor3=deep,BorderSizePixel=0,LayoutOrder=g})
+		make("UICorner",sheet,{CornerRadius=UDim.new(0,12)})
+		make("UIStroke",sheet,{Color=UI.line,Thickness=1})
+		UI.sheen(sheet,1,.8)
+		UI.bevel(sheet,12,.88)
+		local cap=label(sheet,group.title,14,6,UDim.new(1,-28),20,UI.heavy,11,gold)
+		cap.Name="Caption"
+		UI.rule(sheet,UI.brass,28,10).BackgroundTransparency=.4
+		for i,key in ipairs(group.keys) do
 			local def=statDef(key)
-			local chip=make("Frame",grid,{Name="Stat"..key,BackgroundColor3=deep,BorderSizePixel=0,LayoutOrder=i})
-			make("UICorner",chip,{CornerRadius=UDim.new(0,8)})
-			make("UIStroke",chip,{Color=slate,Transparency=.35,Thickness=1})
-			local symbol=label(chip,def.symbol or "•",6,0,UDim.new(0,20),0,bold,compactAtlas and 13 or 15,rgb(lighten(def.color or "FFFFFF",.15)))
-			symbol.Size=UDim2.new(0,20,1,0)
-			symbol.TextXAlignment=Enum.TextXAlignment.Center
-			local name=label(chip,def.name or key,28,0,UDim.new(1,-96),0,regular,compactAtlas and 11 or 12,muted)
-			name.Size=UDim2.new(1,-96,1,0)
-			local amount=label(chip,statValue(key,value),0,0,UDim.new(0,64),0,bold,compactAtlas and 12 or 14,ivory)
-			amount.Position=UDim2.new(1,-70,0,0)
-			amount.Size=UDim2.new(0,64,1,0)
+			local y=34+(i-1)*rowHeight
+			local line=make("Frame",sheet,{Name="Stat"..key,Position=UDim2.fromOffset(6,y),Size=UDim2.new(1,-12,0,rowHeight),BackgroundColor3=UI.white,BackgroundTransparency=i%2==0 and .965 or 1,BorderSizePixel=0})
+			make("UICorner",line,{CornerRadius=UDim.new(0,6)})
+			local hex=lighten(def.color or "FFFFFF",.15)
+			local chip=make("TextLabel",line,{Name="Glyph",AnchorPoint=Vector2.new(0,.5),Position=UDim2.new(0,4,.5,0),Size=UDim2.fromOffset(rowHeight-6,rowHeight-6),BackgroundColor3=rgb(hex),BackgroundTransparency=.82,
+				Text=def.symbol or "•",Font=UI.heavy,TextSize=compactAtlas and 12 or 13,TextColor3=rgb(hex),BorderSizePixel=0})
+			make("UICorner",chip,{CornerRadius=UDim.new(1,0)})
+			local name=label(line,def.name or key,rowHeight+6,0,UDim.new(1,-rowHeight-80),rowHeight,regular,compactAtlas and 12 or 13,UI.copy)
+			name.Name="Name"
+			local amount=label(line,statValue(key,num(stats[key],0)),0,0,UDim.new(0,72),rowHeight,UI.heavy,compactAtlas and 13 or 14,ivory)
+			amount.Position=UDim2.new(1,-78,0,0)
 			amount.TextXAlignment=Enum.TextXAlignment.Right
 		end
 	end
@@ -1612,7 +2008,7 @@ local function drawGear()
 		if def then art=itemIcon(slotTile,id,iconSize) else art=motif(slotTile,"Hero",iconSize);art.BackgroundTransparency=.4 end
 		art.AnchorPoint=Vector2.new(.5,0)
 		art.Position=UDim2.new(.5,0,0,6)
-		local slotText=label(slotTile,string.upper(slotNames[slot]),0,iconSize+8,full,14,bold,9,mint)
+		local slotText=label(slotTile,string.upper(slotNames[slot]),0,iconSize+8,full,14,UI.heavy,11,gold)
 		slotText.TextXAlignment=Enum.TextXAlignment.Center
 		local nameText=label(slotTile,def and (auto and (def.name.." (auto)") or def.name) or "Empty",4,iconSize+22,UDim.new(1,-8),30,bold,compactAtlas and 10 or 11,def and rgb(itemHex(id)) or muted)
 		nameText.TextXAlignment=Enum.TextXAlignment.Center
@@ -1721,10 +2117,7 @@ local function drawEnchant()
 		make("UIStroke",pick,{Color=on and gold or slate,Transparency=on and 0 or .4,Thickness=on and 2 or 1})
 		local art=itemIcon(pick,id,size-12)
 		art.Position=UDim2.fromOffset(6,6)
-		if equippedSlotOf(id) then
-			local mark=label(pick,"E",0,2,UDim.new(0,14),14,bold,11,gold)
-			mark.Position=UDim2.new(1,-14,0,2)
-		end
+		if equippedSlotOf(id) then UI.tag(pick,"E") end
 	end
 	local id=enchantTarget
 	local def=itemDef(id)
@@ -1830,11 +2223,11 @@ local function drawAccessories()
 		local power=tbl(tbl(Data.Rarity)[def.rarity]).power
 		local statsLine=label(entry,statText(def.stats,1,"  "),size+14,compactAtlas and 24 or 28,UDim.new(1,-size-20),16,regular,compactAtlas and 10 or 11,muted)
 		statsLine.RichText=true
-		local status=label(entry,isActive and "ACTIVE" or (isBagged and "NO SLOT" or "ADD"),0,compactAtlas and 5 or 7,UDim.new(0,70),18,bold,10,isActive and mint or (isBagged and gold or muted))
+		local status=label(entry,isActive and "ACTIVE" or (isBagged and "NO SLOT" or "ADD"),0,compactAtlas and 5 or 7,UDim.new(0,70),18,UI.heavy,11,isActive and mint or (isBagged and gold or muted))
 		status.Position=UDim2.new(1,-76,0,compactAtlas and 5 or 7)
 		status.TextXAlignment=Enum.TextXAlignment.Right
 		if power then
-			local mp=label(entry,"✧ "..power,0,compactAtlas and 38 or 44,UDim.new(0,70),14,bold,10,rgb("FFAA00"))
+			local mp=label(entry,"✧ "..power,0,compactAtlas and 38 or 44,UDim.new(0,70),14,UI.heavy,11,rgb("FFAA00"))
 			mp.Position=UDim2.new(1,-76,0,compactAtlas and 38 or 44)
 			mp.TextXAlignment=Enum.TextXAlignment.Right
 		end
@@ -1984,7 +2377,13 @@ local function itemDetail(id)
 			if legacy then
 				table.insert(actions,{caption=tostring(legacy.action or "Use"),primary=true,fn=function() send("heal",id) end})
 			else
-				table.insert(actions,{caption=def.category=="food" and "Eat" or "Drink",primary=true,fn=function() send("consume",id) end})
+				table.insert(actions,{caption=def.category=="food" and "Eat" or "Drink",primary=true,fn=function()
+					if send("consume",id) then
+						-- [Animation] play the eat/drink gesture (animate.client.lua) after a successful consume.
+						local g=ReplicatedStorage:FindFirstChild("IsleGestureLocal")
+						if g then g:Fire(def.category=="food" and "eat" or "drink",nil,id) end
+					end
+				end})
 			end
 		elseif def.kind=="accessory" then
 			local bagged=table.find(tbl(d and d.accessoryBag),id)~=nil
@@ -2060,17 +2459,13 @@ local function drawItems()
 		art.Position=UDim2.fromOffset(5,5)
 		local n=count("items",id)
 		if n>1 then
-			local amount=label(slotTile,short(n),0,0,UDim.new(1,-6),16,bold,11,ivory)
-			amount.Position=UDim2.new(0,0,1,-17)
+			local amount=label(slotTile,short(n),0,0,UDim.new(1,-8),16,UI.heavy,12,ivory)
+			amount.Position=UDim2.new(0,0,1,-19)
 			amount.TextXAlignment=Enum.TextXAlignment.Right
 			amount.TextStrokeTransparency=.2
 			amount.TextStrokeColor3=deep
 		end
-		if equippedSlotOf(id) then
-			local mark=label(slotTile,"E",5,3,UDim.new(0,14),14,bold,11,gold)
-			mark.TextStrokeTransparency=.2
-			mark.TextStrokeColor3=deep
-		end
+		if equippedSlotOf(id) then UI.tag(slotTile,"E") end
 	end
 	para(container(),"Satchel value "..paint(fmt(worth).." coins","F9CC77").."  ·  tap an item for details and actions.",1,muted)
 end
@@ -2644,31 +3039,44 @@ local bankDirection="deposit"
 local bankAmount="all"
 local function drawBank()
 	heading("01    /    BANK LEDGER")
-	local balance=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,88),deep))
-	rounded(balance,10,gold)
-	local crest=motif(balance,"Ledger",42)
-	crest.Position=UDim2.fromOffset(10,12)
-	label(balance,"WAYFARER VAULT",64,8,UDim.new(1,-76),18,bold,10,gold)
-	label(balance,"Purse  "..fmt(num(state.coins,0)).."     /     Vault  "..fmt(num(state.bank,0)),64,29,UDim.new(1,-76),23,bold,compactAtlas and 13 or 16,ivory)
-	label(balance,"Stored coins are protected from death loss.",12,61,UDim.new(1,-24),19,regular,11,muted)
-	local direction=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,44),ink))
+	-- Balance plate: purse and vault as two big readouts.
+	local balance=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,compactAtlas and 84 or 96),deep))
+	balance.Name="Balance"
+	rounded(balance,12,UI.brass)
+	UI.sheen(balance,1,.74)
+	UI.bevel(balance,12)
+	UI.corners(balance,gold,5,6)
+	local crest=motif(balance,"Ledger",compactAtlas and 40 or 48)
+	crest.Position=UDim2.new(0,14,.5,compactAtlas and -20 or -24)
+	local x=compactAtlas and 64 or 76
+	for index,entry in ipairs({{"PURSE",num(state.coins,0),gold},{"VAULT",num(state.bank,0),mint}}) do
+		local column=make("Frame",balance,{Name=entry[1],BackgroundTransparency=1,Position=UDim2.new((index-1)*.5,index==1 and x or 8,0,compactAtlas and 10 or 12),Size=UDim2.new(.5,index==1 and -x or -20,0,52)})
+		label(column,entry[1],0,0,full,16,UI.heavy,11,entry[3])
+		label(column,fmt(entry[2]),0,16,full,32,book,compactAtlas and 22 or 26,ivory)
+	end
+	local note=label(balance,"Vault coins are protected from death loss.",x,0,UDim.new(1,-x-12),18,regular,compactAtlas and 12 or 12,muted)
+	note.Position=UDim2.new(0,x,1,compactAtlas and -22 or -26)
+	local direction=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,40),ink))
+	direction.BackgroundTransparency=1
 	for index,option in ipairs({{"deposit","Deposit"},{"withdraw","Withdraw"}}) do
 		local selected=option[1]
-		local control=button(direction,option[2],UDim2.new((index-1)*.5,0,0,0),UDim2.new(.5,-4,0,44),function() bankDirection=selected;render() end)
-		control.BackgroundColor3=bankDirection==selected and mint or slate
-		control.TextColor3=bankDirection==selected and deep or ivory
+		local control=button(direction,option[2],UDim2.new((index-1)*.5,index==1 and 0 or 4,0,0),UDim2.new(.5,-4,0,40),function() bankDirection=selected;render() end)
+		UI.tone(control,bankDirection==selected and "selected" or nil)
 	end
-	local entry=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,44),deep))
-	rounded(entry,8,slate)
-	label(entry,"AMOUNT",10,0,UDim.new(0,72),44,bold,11,mint)
-	local input=make("TextBox",entry,{Name="BankAmount",Position=UDim2.fromOffset(87,0),Size=UDim2.new(1,-97,0,44),BackgroundTransparency=1,Text=bankAmount,PlaceholderText="Whole coins, half or all",PlaceholderColor3=muted,TextColor3=ivory,TextSize=16,Font=bold,ClearTextOnFocus=false,TextXAlignment=Enum.TextXAlignment.Left,Selectable=true,MultiLine=false})
-	local presets=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,44),ink))
-	local preview=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,54),deep))
-	rounded(preview,8,slate)
-	local projected=label(preview,"",10,5,UDim.new(1,-20),44,regular,compactAtlas and 12 or 13,muted)
+	local entry=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,46),track))
+	entry.Name="AmountField"
+	rounded(entry,10,UI.line)
+	label(entry,"AMOUNT",14,0,UDim.new(0,72),46,UI.heavy,11,gold)
+	local input=make("TextBox",entry,{Name="BankAmount",Position=UDim2.fromOffset(90,0),Size=UDim2.new(1,-100,0,46),BackgroundTransparency=1,Text=bankAmount,PlaceholderText="Whole coins, half or all",PlaceholderColor3=muted,TextColor3=ivory,TextSize=17,Font=UI.heavy,ClearTextOnFocus=false,TextXAlignment=Enum.TextXAlignment.Left,Selectable=true,MultiLine=false})
+	local presets=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,38),ink))
+	presets.BackgroundTransparency=1
+	local preview=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,46),deep))
+	rounded(preview,10,UI.line)
+	local projected=label(preview,"",14,4,UDim.new(1,-28),38,regular,compactAtlas and 12 or 13,muted)
 	projected.TextWrapped=true
 	projected.TextTruncate=Enum.TextTruncate.None
 	local transferRow=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,44),ink))
+	transferRow.BackgroundTransparency=1
 	local transfer
 	local function requested()
 		local raw=bankAmount:lower():match("^%s*(.-)%s*$")
@@ -2694,13 +3102,14 @@ local function drawBank()
 			transfer.Text=bankDirection=="deposit" and "Deposit coins" or "Withdraw coins"
 		end
 	end
-	transfer=button(transferRow,"Transfer",UDim2.new(),UDim2.new(1,0,0,44),function()
+	transfer=button(transferRow,"Transfer",UDim2.fromOffset(1,0),UDim2.new(1,-2,0,44),function()
 		local amount,raw,problem=requested()
 		if not amount then notify(problem);return end
 		send(bankDirection,raw..":"..tostring(state.bankRevision or 0))
 	end)
+	UI.tone(transfer,"primary")
 	for index,preset in ipairs({"25","100","half","all"}) do
-		button(presets,preset=="half" and "Half" or (preset=="all" and "All" or preset),UDim2.new((index-1)/4,0,0,0),UDim2.new(.25,-4,0,44),function()
+		button(presets,preset=="half" and "Half" or (preset=="all" and "All" or preset),UDim2.new((index-1)/4,index==1 and 1 or 2,0,0),UDim2.new(.25,-4,0,38),function()
 			bankAmount=preset
 			input.Text=preset
 			updatePreview()
@@ -2725,10 +3134,11 @@ local function validPrice(value,quote)
 	return price
 end
 local function priceField(title,value,onChange)
-	local field=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,70),deep))
-	rounded(field,8,slate)
-	label(field,title,10,3,UDim.new(1,-20),20,bold,11,mint)
-	local box=make("TextBox",field,{Name=title:gsub("[^%w]","").."Input",Position=UDim2.fromOffset(10,24),Size=UDim2.new(1,-20,0,44),BackgroundTransparency=1,Text=value,PlaceholderText="1–10,000 whole coins per lot",PlaceholderColor3=muted,TextColor3=ivory,TextSize=16,Font=bold,ClearTextOnFocus=false,Selectable=true,TextXAlignment=Enum.TextXAlignment.Left,MultiLine=false})
+	local field=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,70),track))
+	field.Name="Field"
+	rounded(field,10,UI.line)
+	label(field,title,14,6,UDim.new(1,-28),18,UI.heavy,11,gold)
+	local box=make("TextBox",field,{Name=title:gsub("[^%w]","").."Input",Position=UDim2.fromOffset(14,24),Size=UDim2.new(1,-28,0,44),BackgroundTransparency=1,Text=value,PlaceholderText="1–10,000 whole coins per lot",PlaceholderColor3=muted,TextColor3=ivory,TextSize=17,Font=UI.heavy,ClearTextOnFocus=false,Selectable=true,TextXAlignment=Enum.TextXAlignment.Left,MultiLine=false})
 	box.SelectionGained:Connect(function() revealSelection(box) end)
 	box:GetPropertyChangedSignal("Text"):Connect(function() onChange(box.Text:sub(1,20)) end)
 	return box
@@ -2999,10 +3409,11 @@ function U.commodities(group)
 	return list
 end
 function U.field(title,name,value,placeholder,onChange)
-	local field=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,70),deep))
-	rounded(field,8,slate)
-	label(field,title,10,3,UDim.new(1,-20),20,bold,11,mint)
-	local box=make("TextBox",field,{Name=name,Position=UDim2.fromOffset(10,24),Size=UDim2.new(1,-20,0,44),BackgroundTransparency=1,Text=value,PlaceholderText=placeholder,PlaceholderColor3=muted,TextColor3=ivory,TextSize=16,Font=bold,ClearTextOnFocus=false,Selectable=true,TextXAlignment=Enum.TextXAlignment.Left,MultiLine=false})
+	local field=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,70),track))
+	field.Name="Field"
+	rounded(field,10,UI.line)
+	label(field,title,14,6,UDim.new(1,-28),18,UI.heavy,11,gold)
+	local box=make("TextBox",field,{Name=name,Position=UDim2.fromOffset(14,24),Size=UDim2.new(1,-28,0,44),BackgroundTransparency=1,Text=value,PlaceholderText=placeholder,PlaceholderColor3=muted,TextColor3=ivory,TextSize=17,Font=UI.heavy,ClearTextOnFocus=false,Selectable=true,TextXAlignment=Enum.TextXAlignment.Left,MultiLine=false})
 	box.SelectionGained:Connect(function() revealSelection(box) end)
 	box:GetPropertyChangedSignal("Text"):Connect(function() onChange(box.Text:sub(1,12)) end)
 	return box
@@ -3028,21 +3439,52 @@ function U.refresh(section,quiet)
 	if section=="Orders" then send("bazaar",U.item,quiet)
 	elseif section=="Auctions" then send("ahBrowse",U.cat..":"..U.page,quiet) end
 end
-function U.depthLines(view)
-	local lines={}
-	local asks,bids=tbl(view.asks),tbl(view.bids)
-	for i=math.min(5,#asks),1,-1 do
-		local level=tbl(asks[i])
-		table.insert(lines,paint("ASK  "..fmt(level.price).."  ×"..fmt(level.qty),"E8806A").."  ·  "..fmt(level.orders).." order"..(num(level.orders,0)==1 and "" or "s"))
+-- Order book: asks over bids, each level a row with a depth bar sized by
+-- quantity, the spread on a brass divider between them.
+function U.book(view)
+	return function(body,nextOrder)
+		local asks,bids=tbl(view.asks),tbl(view.bids)
+		local most=1
+		for _,level in ipairs(asks) do most=math.max(most,num(tbl(level).qty,0)) end
+		for _,level in ipairs(bids) do most=math.max(most,num(tbl(level).qty,0)) end
+		local book=make("Frame",body,{Name="OrderBook",BackgroundColor3=track,BackgroundTransparency=.35,Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,LayoutOrder=nextOrder(),BorderSizePixel=0})
+		make("UICorner",book,{CornerRadius=UDim.new(0,8)})
+		make("UIStroke",book,{Color=UI.line,Thickness=1})
+		make("UIListLayout",book,{SortOrder=Enum.SortOrder.LayoutOrder,Padding=UDim.new(0,2)})
+		make("UIPadding",book,{PaddingTop=UDim.new(0,6),PaddingBottom=UDim.new(0,6),PaddingLeft=UDim.new(0,8),PaddingRight=UDim.new(0,8)})
+		local index=0
+		local function line(text,meta,hex,fraction)
+			index+=1
+			local h=compactAtlas and 20 or 22
+			local row=make("Frame",book,{Name="Level",BackgroundTransparency=1,Size=UDim2.new(1,0,0,h),LayoutOrder=index})
+			if fraction then
+				local depthBar=make("Frame",row,{Name="Depth",AnchorPoint=Vector2.new(1,0),Position=UDim2.fromScale(1,0),Size=UDim2.fromScale(math.clamp(fraction,.04,1),1),BackgroundColor3=rgb(hex),BackgroundTransparency=.82,BorderSizePixel=0})
+				make("UICorner",depthBar,{CornerRadius=UDim.new(0,4)})
+			end
+			local left=label(row,text,6,0,UDim.new(.6,-6),h,UI.heavy,compactAtlas and 12 or 13,rgb(hex))
+			left.RichText=true
+			if meta then
+				local right=label(row,meta,0,0,UDim.new(.4,-8),h,bold,compactAtlas and 12 or 12,muted)
+				right.Position=UDim2.new(.6,0,0,0)
+				right.TextXAlignment=Enum.TextXAlignment.Right
+			end
+			return row
+		end
+		for i=math.min(5,#asks),1,-1 do
+			local level=tbl(asks[i])
+			line("ASK  "..fmt(level.price).."  ×"..fmt(level.qty),fmt(level.orders).." order"..(num(level.orders,0)==1 and "" or "s"),"EF7D67",num(level.qty,0)/most)
+		end
+		if #asks==0 then line("No sell offers",nil,"EF7D67") end
+		local spread=line("— spread "..(view.spread and fmt(view.spread).." coins" or "—").." —",nil,"F3C66E")
+		spread:FindFirstChildOfClass("TextLabel").TextXAlignment=Enum.TextXAlignment.Center
+		spread:FindFirstChildOfClass("TextLabel").Size=UDim2.new(1,-12,1,0)
+		UI.rule(spread,UI.brass,(compactAtlas and 20 or 22)-1,0).BackgroundTransparency=.5
+		for i=1,math.min(5,#bids) do
+			local level=tbl(bids[i])
+			line("BID  "..fmt(level.price).."  ×"..fmt(level.qty),fmt(level.orders).." order"..(num(level.orders,0)==1 and "" or "s"),"7FE3CC",num(level.qty,0)/most)
+		end
+		if #bids==0 then line("No buy orders",nil,"7FE3CC") end
 	end
-	if #asks==0 then table.insert(lines,paint("No sell offers","E8806A")) end
-	table.insert(lines,paint("— spread "..(view.spread and fmt(view.spread).." coins" or "—").." —","F9CC77"))
-	for i=1,math.min(5,#bids) do
-		local level=tbl(bids[i])
-		table.insert(lines,paint("BID  "..fmt(level.price).."  ×"..fmt(level.qty),"9EE7D2").."  ·  "..fmt(level.orders).." order"..(num(level.orders,0)==1 and "" or "s"))
-	end
-	if #bids==0 then table.insert(lines,paint("No buy orders","9EE7D2")) end
-	return lines
 end
 function U.drawOrders()
 	heading("BAZAAR    /    STANDING ORDERS")
@@ -3081,7 +3523,7 @@ function U.drawOrders()
 		subtitle="Held ×"..fmt(held).."  ·  merchant "..fmt(num(def and def.value,0)).." each",
 		badge=fresh and view.bestBid and (fmt(view.bestBid).." bid") or nil,badgeColor=mint,
 		detail=fresh and ("Best ask "..(view.bestAsk and fmt(view.bestAsk) or "—").."  ·  best bid "..(view.bestBid and fmt(view.bestBid) or "—").."  ·  spread "..(view.spread and fmt(view.spread) or "—")..". Prices are per unit; your own orders are excluded from the best prices.") or "Refresh to read this order book.",
-		lines=fresh and U.depthLines(view) or nil,
+		after=fresh and U.book(view) or nil,
 		actions={{caption="Refresh",fn=function() U.refresh("Orders") end}}})
 	heading("PLACE    /    QUANTITY AND UNIT PRICE")
 	U.field("QUANTITY (1–"..rules.maxQuantity..")","BazaarQuantity",U.qty,"Whole units",function(value) U.qty=value end)
@@ -3438,6 +3880,7 @@ local function drawPage()
 		resetTransient()
 		scroll.CanvasPosition=Vector2.zero
 		render()
+		UI.slide()
 		refreshSection(tab,name)
 	end,{prefix="Section"})
 	local drawer=drawers[tab] and drawers[tab][sectionOf[tab]]
@@ -3448,24 +3891,40 @@ local function layoutTabs()
 	for i,name in ipairs(tabOrder) do
 		local b=tabButtons[name]
 		if b then
+			local on=name==current
 			local icon=b:FindFirstChild("TabIcon")
 			local caption=b:FindFirstChild("TabCaption")
+			local glow=b:FindFirstChild("TabGlow")
 			if railMode then
 				b.Position=UDim2.new(0,0,(i-1)/n,0)
-				b.Size=UDim2.new(1,0,1/n,-4)
-				if icon then icon.Size=UDim2.fromOffset(18,18);icon.Position=UDim2.new(0,5,.5,-9) end
-				if caption then caption.Position=UDim2.fromOffset(26,0);caption.Size=UDim2.new(1,-28,1,0);caption.TextXAlignment=Enum.TextXAlignment.Left end
+				b.Size=UDim2.new(1,0,1/n,-5)
+				if icon then icon.Size=UDim2.fromOffset(22,22);icon.Position=UDim2.new(0,10,.5,-11) end
+				if caption then caption.Position=UDim2.fromOffset(38,0);caption.Size=UDim2.new(1,-40,1,0);caption.TextXAlignment=Enum.TextXAlignment.Left end
+				if glow then glow.AnchorPoint=Vector2.new(0,.5);glow.Position=UDim2.new(0,0,.5,0);glow.Size=UDim2.new(0,3,.56,0) end
 			else
 				b.Position=UDim2.new((i-1)/n,0,0,0)
-				b.Size=UDim2.new(1/n,-3,1,0)
-				if icon then icon.Size=UDim2.fromOffset(compactAtlas and 18 or 23,compactAtlas and 18 or 23);icon.Position=UDim2.new(.5,compactAtlas and -9 or -11,0,compactAtlas and 2 or 4) end
-				if caption then caption.Position=UDim2.fromOffset(2,compactAtlas and 22 or 30);caption.Size=UDim2.new(1,-4,0,20);caption.TextXAlignment=Enum.TextXAlignment.Center end
+				b.Size=UDim2.new(1/n,-6,1,0)
+				local s=compactAtlas and 20 or 28
+				if icon then icon.Size=UDim2.fromOffset(s,s);icon.Position=UDim2.new(.5,-s/2,0,compactAtlas and 4 or 6) end
+				if caption then caption.Position=UDim2.fromOffset(2,compactAtlas and 25 or 36);caption.Size=UDim2.new(1,-4,0,18);caption.TextXAlignment=Enum.TextXAlignment.Center end
+				if glow then glow.AnchorPoint=Vector2.new(.5,1);glow.Position=UDim2.new(.5,0,1,-1);glow.Size=UDim2.new(.44,0,0,3) end
 			end
-			b.BackgroundColor3 = name == current and mint or slate
-			b.TextColor3 = name == current and deep or ivory
-			if caption then caption.TextColor3=name==current and deep or ivory end
+			b.BackgroundTransparency=on and 0 or 1
+			local rim=b:FindFirstChild("Rim")
+			if rim then rim.Transparency=on and .05 or 1 end
+			if caption then
+				caption.TextColor3=on and gold or rgb("B7C8CB")
+				caption.Font=on and UI.heavy or bold
+			end
+			if glow then glow.Visible=on end
 		end
 	end
+end
+-- Page transition: the page slides up into place.
+function UI.slide()
+	local final=scroll.Position
+	scroll.Position=final+UDim2.fromOffset(0,10)
+	TweenService:Create(scroll,TweenInfo.new(.2,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{Position=final}):Play()
 end
 local function updateVitals() end
 render = function(fromPush)
@@ -3476,33 +3935,43 @@ render = function(fromPush)
 		THUMBS.trim()
 	end
 	railMode=compactAtlas and size.X>=560 and size.X>size.Y*1.3
-	local headHeight=railMode and 46 or (compactAtlas and 64 or 88)
-	head.Size=UDim2.new(1,0,0,headHeight)
-	mastheadCaption.Visible=not compactAtlas
-	guildLabel.Visible=not railMode
-	compassBadge.Size=UDim2.fromOffset(railMode and 32 or 43,railMode and 32 or 43)
-	compassBadge.Position=UDim2.fromOffset(railMode and 8 or 13,railMode and 7 or 10)
-	titleLabel.Position=UDim2.fromOffset(railMode and 48 or 67,railMode and 6 or 24)
-	titleLabel.TextSize=railMode and 22 or 27
-	closeButton.Position=railMode and UDim2.new(1,-58,0,4) or UDim2.new(1,-64,0,10)
-	closeButton.Size=railMode and UDim2.fromOffset(50,38) or UDim2.fromOffset(54,43)
+	local headHeight=railMode and 48 or (compactAtlas and 58 or 70)
+	UI.head.Size=UDim2.new(1,0,0,headHeight)
+	UI.headRule.Position=UDim2.new(0,14,0,headHeight-1)
+	UI.kicker.Visible=not compactAtlas
+	local crest=railMode and 32 or (compactAtlas and 38 or 44)
+	UI.crest.Size=UDim2.fromOffset(crest,crest)
+	UI.crest.Position=UDim2.fromOffset(railMode and 12 or (compactAtlas and 12 or 16),(headHeight-crest)//2)
+	UI.title.Position=UDim2.fromOffset(crest+(railMode and 20 or 24),railMode and 7 or (compactAtlas and 11 or 25))
+	UI.title.Size=UDim2.new(1,-crest-220,0,railMode and 32 or 36)
+	UI.title.TextSize=railMode and 22 or (compactAtlas and 24 or 28)
+	UI.kicker.Position=UDim2.fromOffset(crest+25,12)
+	local closeSize=railMode and 34 or (compactAtlas and 38 or 40)
+	UI.close.Size=UDim2.fromOffset(closeSize,closeSize)
+	UI.close.Position=UDim2.new(1,-closeSize-(railMode and 20 or 18),0,(headHeight-closeSize)//2)
+	UI.coins.Visible=size.X>=460
+	UI.coins.Position=UDim2.new(1,-closeSize-(railMode and 30 or 28),.5,0)
+	UI.coins.Size=UDim2.fromOffset(railMode and 118 or 132,railMode and 28 or 32)
+	UI.coinText.Text=fmt(num(state.coins,0))
 	if railMode then
-		tabs.Position=UDim2.fromOffset(8,headHeight+6)
-		tabs.Size=UDim2.new(0,98,1,-headHeight-12)
-		scroll.Position=UDim2.fromOffset(114,headHeight+6)
-		scroll.Size=UDim2.new(1,-122,1,-headHeight-12)
-		footer.Visible=false
+		tabs.Position=UDim2.fromOffset(12,headHeight+8)
+		tabs.Size=UDim2.new(0,112,1,-headHeight-18)
+		scroll.Position=UDim2.fromOffset(134,headHeight+8)
+		scroll.Size=UDim2.new(1,-146,1,-headHeight-16)
 	else
-		tabs.Position=UDim2.fromOffset(10,compactAtlas and 70 or 96)
-		tabs.Size=UDim2.new(1,-20,0,compactAtlas and 44 or 56)
-		local contentTop=compactAtlas and 122 or 160
-		scroll.Position=UDim2.fromOffset(12,contentTop)
-		scroll.Size=UDim2.new(1,-24,1,-contentTop-37)
-		footer.Visible=true
+		local tabHeight=compactAtlas and 46 or 60
+		tabs.Position=UDim2.fromOffset(14,headHeight+6)
+		tabs.Size=UDim2.new(1,-28,0,tabHeight)
+		local contentTop=headHeight+6+tabHeight+10
+		scroll.Position=UDim2.fromOffset(14,contentTop)
+		scroll.Size=UDim2.new(1,-28,1,-contentTop-36)
 	end
-	purse.Text = synced and ((state.ironman and "Ironman" or "Voyager") .. "   ·   " .. fmt(num(state.coins,0)) .. " coins")
+	UI.footer.Visible=not railMode
+	UI.hint.Visible=not railMode and not compactAtlas
+	UI.footRule.Visible=not railMode
+	UI.purse.Text = synced and ((state.ironman and "Ironman" or "Voyager") .. "   " .. paint("◆ " .. fmt(num(state.coins,0)), "F3C66E"))
 		or "Opening ledger…"
-	instruction.Text = synced and nextGoal() or "Charting the islands…"
+	UI.goal.Text = synced and nextGoal() or "Charting the islands…"
 	updateVitals()
 	if not atlas.Visible then
 		return
@@ -3547,40 +4016,49 @@ render = function(fromPush)
 		end
 		GuiService.SelectedObject=replacement or tabButtons[current]
 	end
-	footer.Text = state.preview and "STUDIO PRACTICE     /     PROGRESS IS TEMPORARY"
-		or "AETHER ISLES     /     FIELD EDITION"
+	UI.footer.Text = state.preview and "STUDIO PRACTICE  ·  PROGRESS IS TEMPORARY"
+		or (string.upper(current).."   ›   "..string.upper(tostring(sectionOf[current] or "")))
+	UI.hint.Text = Input.GamepadEnabled and "Ⓨ ATLAS   ·   Ⓑ CLOSE" or "J  OPEN / CLOSE   ·   CLICK OUTSIDE TO CLOSE"
 end
 for _, name in ipairs(tabOrder) do
-	local b = button(tabs, name, UDim2.new(), UDim2.new(1/#tabOrder, -3, 1, 0), function()
+	local b=make("TextButton",tabs,{Name=name.."Button",Text="",AutoButtonColor=false,BackgroundColor3=UI.raised,BackgroundTransparency=1,BorderSizePixel=0,Selectable=true})
+	make("UICorner",b,{CornerRadius=UDim.new(0,11)})
+	local rim=make("UIStroke",b,{Name="Rim",Color=gold,Thickness=1,Transparency=1})
+	make("UIGradient",rim,{Rotation=90,Color=ColorSequence.new(UI.white,Color3.new(.3,.3,.3))})
+	UI.sheen(b,1,.6)
+	pressable(b)
+	b.Activated:Connect(function()
 		current = name
 		resetTransient()
 		scroll.CanvasPosition = Vector2.zero
 		render()
+		UI.slide()
 		refreshSection(name,sectionOf[name])
 	end)
-	b.Text = ""
-	local engraving=b:FindFirstChild("ControlEngraving")
-	if engraving then engraving:Destroy() end
-	local tabIcon=motif(b,name,23)
+	local tabIcon=motif(b,name,28)
 	tabIcon.Name="TabIcon"
-	tabIcon.Position=UDim2.new(.5,-11,0,4)
 	tabIcon.BackgroundTransparency=1
-	local tabCaption=label(b,name,2,30,UDim.new(1,-4),20,bold,11,ivory)
+	tabIcon:FindFirstChild("Rim").Enabled=false
+	local tabCaption=label(b,name,2,36,UDim.new(1,-4),18,bold,13,ivory)
 	tabCaption.Name="TabCaption"
 	tabCaption.TextXAlignment=Enum.TextXAlignment.Center
 	tabCaption.TextScaled=true
 	make("UITextSizeConstraint",tabCaption,{MinTextSize=11,MaxTextSize=13})
-	b.TextSize = 13
-	b.TextScaled = true
-	make("UITextSizeConstraint", b, {MinTextSize=10,MaxTextSize=13})
+	local glow=make("Frame",b,{Name="TabGlow",BackgroundColor3=gold,BorderSizePixel=0,Visible=false})
+	make("UICorner",glow,{CornerRadius=UDim.new(1,0)})
+	make("UIStroke",glow,{Color=gold,Thickness=2,Transparency=.6})
 	tabButtons[name] = b
 end
 layoutTabs()
 atlas:GetPropertyChangedSignal("AbsoluteSize"):Connect(function() if atlas.Visible then render() end end)
 openAtlas = function()
 	atlas.Visible = true
-	atlas.Position=UDim2.new(.5,0,.5,8)
-	TweenService:Create(atlas,TweenInfo.new(.18,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{Position=UDim2.fromScale(.5,.5)}):Play()
+	atlas.Position=UDim2.new(.5,0,.5,16)
+	UI.atlasScale.Scale=.96
+	shade.BackgroundTransparency=1
+	TweenService:Create(atlas,TweenInfo.new(.22,Enum.EasingStyle.Quart,Enum.EasingDirection.Out),{Position=UDim2.fromScale(.5,.5)}):Play()
+	TweenService:Create(UI.atlasScale,TweenInfo.new(.26,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Scale=1}):Play()
+	TweenService:Create(shade,TweenInfo.new(.2),{BackgroundTransparency=.35}):Play()
 	hud.Visible = false
 	actionBar.Visible = false
 	shade.Visible = true
@@ -3622,9 +4100,15 @@ updateVitals=function()
 	local legacy=tbl(state.stats)
 	local maxHealth=humanoid and num(humanoid.MaxHealth,nil) or num(stats.health,nil) or num(legacy.maxHealth,nil)
 	local health=humanoid and num(humanoid.Health,nil) or maxHealth
-	healthText.Text=maxHealth and ("❤ "..fmt(math.max(0,math.floor(health or 0))).."/"..fmt(math.floor(maxHealth))) or "❤ —"
+	if maxHealth then
+		UI.healthText.Text=fmt(math.max(0,math.floor(health or 0))).." / "..fmt(math.floor(maxHealth))
+		UI.setMeter(UI.healthFill,(health or 0)/math.max(1,maxHealth))
+	else
+		UI.healthText.Text="—"
+		UI.setMeter(UI.healthFill,0)
+	end
 	local defense=num(stats.defense,nil) or num(legacy.defense,nil)
-	defenseText.Text=defense and ("❈ "..fmt(defense).." Defense") or "❈ —"
+	UI.defenseText.Text=defense and (fmt(defense)..'  <font size="10" color="#A9BDC1">DEFENSE</font>') or "—"
 end
 local function watchCharacter(character)
 	if not character then return end
@@ -3637,34 +4121,65 @@ local function watchCharacter(character)
 end
 player.CharacterAdded:Connect(watchCharacter)
 if player.Character then task.spawn(watchCharacter,player.Character) end
-local xpToken=0
-local function showXp(text,color)
-	xpToken+=1
-	local token=xpToken
-	xpText.Text=text
-	xpText.TextColor3=color or gold
-	xpText.TextTransparency=0
+UI.xpToken,UI.bannerQueue,UI.bannerBusy=0,{},false
+-- XP popup: skill medallion, gain text and the skill's level progress.
+local function showXp(text,skill,fraction)
+	UI.xpToken+=1
+	local token=UI.xpToken
+	local hex=skill and skillHex(skill) or "F3C66E"
+	UI.xp.Text=text
+	UI.xp.TextColor3=gold
+	UI.xp.TextTransparency=0
+	UI.xpPill.Visible=true
+	UI.xpChip.BackgroundColor3=rgb(hex)
+	UI.xpGlyph.Text=skill and initials(skill) or "✦"
+	UI.xpGlyph.TextSize=13
+	UI.xpFill.BackgroundColor3=rgb(lighten(hex,.15))
+	local cap=UI.xpFill:FindFirstChild("Cap")
+	if cap then cap.BackgroundColor3=rgb(lighten(hex,.7)) end
+	UI.setMeter(UI.xpFill,fraction or 0)
 	task.delay(2.6,function()
-		if token==xpToken then TweenService:Create(xpText,TweenInfo.new(.4),{TextTransparency=1}):Play() end
+		if token==UI.xpToken then
+			TweenService:Create(UI.xp,TweenInfo.new(.4),{TextTransparency=1}):Play()
+			task.delay(.4,function() if token==UI.xpToken then UI.xpPill.Visible=false end end)
+		end
 	end)
 end
-local bannerQueue,bannerBusy={},false
 local function showNextBanner()
-	local entry=table.remove(bannerQueue,1)
-	if not entry then bannerBusy=false;banner.Visible=false;return end
-	bannerBusy=true
+	local entry=table.remove(UI.bannerQueue,1)
+	local banner=UI.banner
+	if not entry then UI.bannerBusy=false;banner.Visible=false;return end
+	UI.bannerBusy=true
 	-- Narrow screens: keep the banner clear of the touch attack button (bottom right).
 	local view=gui.AbsoluteSize
-	banner:FindFirstChild("BannerLimit").MaxSize=Vector2.new(view and view.X<900 and 340 or 420,74)
+	local narrow=view and view.X<900
+	-- Short screens (phone landscape 303px): a slimmer banner that clears the toast.
+	local short=view and view.Y<340
+	local height=short and 68 or 82
+	banner:FindFirstChild("BannerLimit").MaxSize=Vector2.new(narrow and 340 or 440,height)
+	banner.Size=UDim2.new(.9,0,0,height)
+	banner.Position=UDim2.new(.5,0,0,short and 148 or 142)
+	UI.bannerTitle.Position=UDim2.fromOffset(76,short and 12 or 17)
+	UI.bannerReward.Position=UDim2.fromOffset(76,short and 42 or 50)
+	UI.bannerEmblem.Size=UDim2.fromOffset(short and 40 or 48,short and 40 or 48)
 	local hex=skillHex(entry.skill)
-	bannerTitle.Text=entry.skill.."  "..entry.from.."  →  "..entry.to
-	bannerTitle.TextColor3=rgb(lighten(hex,.35))
-	local reward=entry.coins>0 and paint("+"..fmt(entry.coins).." coins","F9CC77") or ""
-	local stats=statText(skillDef(entry.skill).perLevel,entry.to-entry.from,"  ")
-	bannerReward.Text=reward..(reward~="" and stats~="" and "   ·   " or "")..stats
+	UI.bannerTitle.Text=entry.skill.."  "..entry.from.." → "..entry.to
+	UI.bannerTitle.TextSize=narrow and 21 or 26
+	UI.bannerTitle.TextColor3=rgb(lighten(hex,.45))
+	UI.bannerEmblem.BackgroundColor3=rgb(hex)
+	UI.bannerInitial.Text=initials(entry.skill)
+	local reward=entry.coins>0 and paint("+"..fmt(entry.coins).." coins","F3C66E") or ""
+	local perLevel=tbl(skillDef(entry.skill).perLevel)
+	if narrow then
+		-- One stat on phones so the reward line stays on a single row.
+		local first=statKeys(perLevel)[1]
+		perLevel=first and {[first]=perLevel[first]} or perLevel
+	end
+	local stats=statText(perLevel,entry.to-entry.from,"  ")
+	UI.bannerReward.Text=reward..(reward~="" and stats~="" and "   ·   " or "")..stats
 	banner.Visible=true
-	bannerScale.Scale=.82
-	TweenService:Create(bannerScale,TweenInfo.new(.35,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Scale=1}):Play()
+	UI.bannerScale.Scale=.82
+	TweenService:Create(UI.bannerScale,TweenInfo.new(.35,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Scale=1}):Play()
 	task.delay(3.4,showNextBanner)
 end
 local function celebrate(before,after)
@@ -3681,7 +4196,7 @@ local function celebrate(before,after)
 						if ok then coins+=num(value,0) end
 					end
 				end
-				table.insert(bannerQueue,{skill=skill,from=old.level,to=new.level,coins=coins})
+				table.insert(UI.bannerQueue,{skill=skill,from=old.level,to=new.level,coins=coins})
 				if coins>0 then bannered[skill]=true end
 			end
 		end
@@ -3691,11 +4206,11 @@ local function celebrate(before,after)
 		for i=1,math.min(compactAtlas and 1 or 3,#gains) do
 			local gain=gains[i]
 			local percent=gain.info.maxed and "MAX" or (math.floor(gain.info.fraction*1000+.5)/10 .."%")
-			table.insert(parts,paint("+"..fmt(gain.amount).." "..gain.skill,lighten(skillHex(gain.skill),.35))..paint(" ("..percent..")","FFF4D9"))
+			table.insert(parts,paint("+"..fmt(gain.amount).." "..gain.skill,lighten(skillHex(gain.skill),.35))..paint("  "..percent,"F7EFDC"))
 		end
-		showXp(table.concat(parts,"   "))
+		showXp(table.concat(parts,"   "),gains[1].skill,gains[1].info.fraction)
 	end
-	if #bannerQueue>0 and not bannerBusy then showNextBanner() end
+	if #UI.bannerQueue>0 and not UI.bannerBusy then showNextBanner() end
 	return bannered
 end
 
@@ -3753,10 +4268,10 @@ send = function(action, item, quiet)
 	end)
 	pending = false
 	if ok then
-		accept(result,quiet)
-	else
-		notify("Your ledger could not be reached. Try again.")
+		return accept(result,quiet)
 	end
+	notify("Your ledger could not be reached. Try again.")
+	return false
 end
 local function acceptCoop(result)
 	if type(result) ~= "table" or type(result.members) ~= "table" then return false end
