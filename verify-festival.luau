@@ -621,3 +621,6 @@ ui = calendarUi(roblox.Vector2.new(844, 390), nil)
 eq(#ui.warnings, 0, "missing Calendar state tolerated")
 
 print(("Festival QA passed %d checks (calendar, %d event windows/year, board, server hooks, atlas)."):format(checks, #windows))
+
+-- Completion sentinel: scripts/build.sh fails if a suite stops early without erroring.
+print("SUITE-END verify-festival.luau")

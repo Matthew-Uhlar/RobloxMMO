@@ -1835,3 +1835,6 @@ end
 print("PASS: " .. (checks - stylesBefore) .. " combat style assertions in total.")
 
 print("Combat QA: " .. checks .. " checks passed.")
+
+-- Completion sentinel: scripts/build.sh fails if a suite stops early without erroring.
+print("SUITE-END verify-combat.luau")

@@ -651,3 +651,6 @@ check(noticeOf(slow):find("collapsed",1,true)~=nil,"run capped at twice par")
 check(rewards[slow]==nil and caption.Text:find("0 / 3",1,true)~=nil,"capped run pays nothing and resets")
 local runChecks=checks-baseChecks-dataChecks
 print("Expedition QA passed "..checks.." behavioral checks ("..baseChecks.." encounter, "..dataChecks.." dungeon rules, "..runChecks.." dungeon runs).")
+
+-- Completion sentinel: scripts/build.sh fails if a suite stops early without erroring.
+print("SUITE-END verify-expedition.luau")

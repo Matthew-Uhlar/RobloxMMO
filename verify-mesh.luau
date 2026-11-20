@@ -537,3 +537,6 @@ check(not fs.isFile("mesh.server.lua"), "no server-side forge: the server never 
 check(not MeshForgeSource:find("%.Transparency%s*=%s*1"), "forge only hides parts locally")
 
 print(string.format("Mesh QA passed %d checks: %d world shapes / %d triangles; forge success, failure, budget, late-tag and sign paths.", checks, worldCount, worldTriangles))
+
+-- Completion sentinel: scripts/build.sh fails if a suite stops early without erroring.
+print("SUITE-END verify-mesh.luau")

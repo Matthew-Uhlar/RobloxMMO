@@ -3681,3 +3681,6 @@ for _,id in ipairs({"BrassSword","Blade","SunsteelSword"}) do
 end
 print("PASS: "..(checks-before).." gear depth server assertions.")
 end)()
+
+-- Completion sentinel: scripts/build.sh fails if a suite stops early without erroring.
+print("SUITE-END verify-gameplay.luau")

@@ -5,7 +5,11 @@ cd "$(dirname "$0")/.."
 node art/import/verify-import.cjs
 for test in verify-progression.luau verify-gameplay.luau verify-world.luau verify-expedition.luau verify-coop.luau verify-combat.luau verify-ui.luau verify-festival.luau verify-gesture.luau verify-npc.luau verify-mesh.luau verify-skills.luau; do
   [ -f "$test" ] || continue
-  echo "== $test"; lune run "$test"
+  echo "== $test"
+  out=$(lune run "$test" 2>&1) || { echo "$out"; exit 1; }
+  echo "$out"
+  # A suite that yields forever is ended by Lune with exit 0; require its final sentinel.
+  echo "$out" | grep -q "^SUITE-END $test$" || { echo "FAIL: $test stopped before its end"; exit 1; }
 done
 rojo build default.project.json --output Aether-Isles.rbxl
 lune run verify.luau

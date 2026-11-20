@@ -2284,3 +2284,6 @@ do
 	print("Skill Mastery client: " .. (checks - masteryChecks) .. " checks.")
 end
 print("UI QA passed " .. checks .. " checks (" .. created .. " mock instances).")
+
+-- Completion sentinel: scripts/build.sh fails if a suite stops early without erroring.
+print("SUITE-END verify-ui.luau")

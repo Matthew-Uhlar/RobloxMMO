@@ -828,3 +828,6 @@ do
 	check(#ui.warnings==0,"real crew snapshot draws without errors")
 end
 print("PASS: "..count.." co-op assertions ("..legacy.." persistence/membership, "..(count-legacy).." lifecycle/progression).")
+
+-- Completion sentinel: scripts/build.sh fails if a suite stops early without erroring.
+print("SUITE-END verify-coop.luau")

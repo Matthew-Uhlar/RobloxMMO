@@ -702,3 +702,6 @@ eq(cmd("recall", "Home").message, "Recalled to Home.", "hook works again")
 ok(cmd("state").items ~= nil, "snapshot still served")
 
 print("verify-npc: " .. checks .. " checks passed (" .. #T.Order .. " townsfolk).")
+
+-- Completion sentinel: scripts/build.sh fails if a suite stops early without erroring.
+print("SUITE-END verify-npc.luau")

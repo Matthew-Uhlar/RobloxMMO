@@ -1022,3 +1022,6 @@ eq(cmd(cook, "craft", "RoastHopper").items.RoastHopper, 1, "hopper haunch cooks 
 leave(cook)
 print("PASS: " .. (checks - partC) .. " Agility & Hunter server assertions.")
 print("Agility & Hunter QA passed " .. checks .. " checks.")
+
+-- Completion sentinel: scripts/build.sh fails if a suite stops early without erroring.
+print("SUITE-END verify-skills.luau")

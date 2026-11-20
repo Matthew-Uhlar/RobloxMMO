@@ -1016,3 +1016,6 @@ do
 	near(G.breakdown({reforges = {CelestialSword = "Honed"}, books = {CelestialSword = {masterwork = true}}}, "CelestialSword").reforgeStats.critChance, 5, "legendary masterwork reaches mythic scaling")
 	print("PASS: " .. (checks - before) .. " gear depth data/formula assertions.")
 end
+
+-- Completion sentinel: scripts/build.sh fails if a suite stops early without erroring.
+print("SUITE-END verify-progression.luau")

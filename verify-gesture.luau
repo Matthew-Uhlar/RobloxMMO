@@ -653,3 +653,6 @@ ok(client:find("PromptButtonHoldBegan", 1, true) and client:find("PromptButtonHo
 ok(client:find('GetAttribute("ReducedMotion")', 1, true), "ReducedMotion honoured")
 
 print("verify-gesture: " .. checks .. " checks passed")
+
+-- Completion sentinel: scripts/build.sh fails if a suite stops early without erroring.
+print("SUITE-END verify-gesture.luau")
