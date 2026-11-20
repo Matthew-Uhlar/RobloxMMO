@@ -1108,6 +1108,254 @@ fx.OnClientEvent:Connect(function(kind, payload)
 end)
 
 ------------------------------------------------------------------------------
+-- World Boss HUD (Endgame team). IsleCombatFx kinds (combat.server.lua World
+-- Boss section):
+--   worldBoss          2 Hz while within the arena's HUD range: {id, name, level,
+--                      hp, maxHp, phase, phases, phaseName, enraged, enrageIn,
+--                      departIn, warded, top = {{name, damage, share, you}},
+--                      you = {rank, damage, share, tier}, fighters}
+--   telegraph          a warning disc {center, radius, kind disc|ring|safe, windup, name}
+--   bossStrike         the impact of a warning
+--   worldBossAnnounce  {kind warn|spawn|phase|enrage|win|depart, name, ...}
+--   worldBossLoot      {name, eligible, reason, rank, share, tier, drops, coins}
+-- Layout: the boss bar takes the target panel's top-lane slot (y 10-72, the
+-- target panel hides while it shows); the top-5 board sits under the minimap
+-- on screens at least 520 px tall, otherwise the bar's last line carries the
+-- leader and your rank. The loot summary is a centred card (auto-hides).
+------------------------------------------------------------------------------
+local WBH = {payload = nil, seenAt = 0, visible = false, discs = {}, lootToken = 0}
+WBH.TIER_COLOR = {Champion = rgb("FFAA00"), Vanguard = rgb("D36BFF"), Valiant = rgb("7C8CFF"), Participant = rgb("7FE3CC")}
+WBH.REASON = {share = "You dealt under 1% of its health.", dead = "You fell before it did.", range = "You were too far from the arena.",
+	idle = "You had not struck it in the last minute.", ironman = "Ironman journals need 30% of the damage.", sync = "Your journal was syncing; no reward."}
+WBH.BAR_HEIGHT = 62
+WBH.bar = make("Frame", gui, {Name = "WorldBossBar", AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 10),
+	Size = UDim2.fromOffset(380, WBH.BAR_HEIGHT), BackgroundColor3 = deep, BackgroundTransparency = 0.04, Visible = false})
+round(WBH.bar, 12, ember)
+sheen(WBH.bar, 0.7)
+WBH.title = make("TextLabel", WBH.bar, {Name = "Title", BackgroundTransparency = 1, Position = UDim2.fromOffset(12, 4), Size = UDim2.new(1, -96, 0, 18),
+	Font = heavy, TextSize = 15, TextColor3 = rgb("FFD86B"), TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Text = ""})
+WBH.timer = make("TextLabel", WBH.bar, {Name = "Enrage", AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -8, 0, 4), Size = UDim2.fromOffset(78, 18),
+	BackgroundColor3 = track, BackgroundTransparency = 0.2, Font = heavy, TextSize = 12, TextColor3 = gold, Text = ""})
+round(WBH.timer, 9, brass)
+WBH.track = make("Frame", WBH.bar, {Name = "Track", Position = UDim2.fromOffset(12, 24), Size = UDim2.new(1, -24, 0, 16), BackgroundColor3 = track, BorderSizePixel = 0})
+round(WBH.track, 8)
+WBH.fill = make("Frame", WBH.track, {Name = "Fill", Size = UDim2.fromScale(1, 1), BackgroundColor3 = rgb("DC3C3C"), BorderSizePixel = 0})
+round(WBH.fill, 8)
+WBH.phaseTicks = {}
+for i = 1, 2 do
+	WBH.phaseTicks[i] = make("Frame", WBH.track, {Name = "PhaseTick" .. i, AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromScale(if i == 1 then 0.66 else 0.33, 0),
+		Size = UDim2.new(0, 2, 1, 0), BackgroundColor3 = ivory, BackgroundTransparency = 0.3, BorderSizePixel = 0, ZIndex = 2})
+end
+WBH.hpText = make("TextLabel", WBH.track, {Name = "Health", BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Font = heavy, TextSize = 12,
+	TextColor3 = ivory, TextStrokeTransparency = 0.3, TextStrokeColor3 = deep, Text = "", ZIndex = 3})
+WBH.rankLine = make("TextLabel", WBH.bar, {Name = "Rank", BackgroundTransparency = 1, Position = UDim2.fromOffset(12, 42), Size = UDim2.new(1, -24, 0, 16),
+	Font = heavy, TextSize = 12, TextColor3 = ivory, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, RichText = true, Text = ""})
+-- Damage board (top 5 + you).
+WBH.board = make("Frame", gui, {Name = "WorldBossBoard", AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -10, 0, 206), Size = UDim2.fromOffset(176, 126),
+	BackgroundColor3 = deep, BackgroundTransparency = 0.08, Visible = false})
+round(WBH.board, 10, brass)
+make("TextLabel", WBH.board, {Name = "Header", BackgroundTransparency = 1, Position = UDim2.fromOffset(10, 4), Size = UDim2.new(1, -20, 0, 16), Font = heavy, TextSize = 12,
+	TextColor3 = gold, TextXAlignment = Enum.TextXAlignment.Left, Text = "DAMAGE  ·  TOP 5"})
+WBH.rows = {}
+for i = 1, 6 do
+	WBH.rows[i] = make("TextLabel", WBH.board, {Name = "Row" .. i, BackgroundTransparency = 1, Position = UDim2.fromOffset(10, 4 + i * 17), Size = UDim2.new(1, -20, 0, 16),
+		Font = heavy, TextSize = 12, TextColor3 = ivory, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, RichText = true, Text = ""})
+end
+-- End-of-fight loot summary.
+WBH.loot = make("Frame", gui, {Name = "WorldBossLoot", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(340, 210),
+	BackgroundColor3 = deep, BackgroundTransparency = 0.02, Visible = false, ZIndex = 10})
+round(WBH.loot, 14, gold)
+sheen(WBH.loot, 0.6)
+make("UISizeConstraint", WBH.loot, {MaxSize = Vector2.new(340, 210)})
+WBH.lootTitle = make("TextLabel", WBH.loot, {Name = "Title", BackgroundTransparency = 1, Position = UDim2.fromOffset(14, 8), Size = UDim2.new(1, -52, 0, 22),
+	Font = display, TextSize = 18, TextColor3 = gold, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Text = "", ZIndex = 11})
+WBH.lootClose = make("TextButton", WBH.loot, {Name = "Close", AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -8, 0, 8), Size = UDim2.fromOffset(28, 28),
+	BackgroundColor3 = raised, Font = heavy, TextSize = 14, TextColor3 = ivory, Text = "✕", ZIndex = 11})
+round(WBH.lootClose, 14, brass)
+WBH.lootClose.Activated:Connect(function() WBH.loot.Visible = false end)
+WBH.lootStanding = make("TextLabel", WBH.loot, {Name = "Standing", BackgroundTransparency = 1, Position = UDim2.fromOffset(14, 34), Size = UDim2.new(1, -28, 0, 18),
+	Font = heavy, TextSize = 14, TextColor3 = ivory, TextXAlignment = Enum.TextXAlignment.Left, RichText = true, Text = "", ZIndex = 11})
+WBH.lootList = make("TextLabel", WBH.loot, {Name = "Items", BackgroundTransparency = 1, Position = UDim2.fromOffset(14, 58), Size = UDim2.new(1, -28, 1, -66),
+	Font = heavy, TextSize = 13, TextColor3 = ivory, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, TextWrapped = true,
+	RichText = true, Text = "", ZIndex = 11})
+
+function WBH.itemName(id)
+	local def = Data and type(Data.Items) == "table" and Data.Items[id]
+	return if type(def) == "table" and type(def.name) == "string" then def.name else tostring(id)
+end
+function WBH.itemColor(id)
+	local def = Data and type(Data.Items) == "table" and Data.Items[id]
+	local rarity = type(def) == "table" and Data.Rarity and Data.Rarity[def.rarity]
+	return if rarity and type(rarity.color) == "string" then rarity.color else "F7EFDC"
+end
+function WBH.percent(share) return string.format("%.1f%%", (tonumber(share) or 0) * 100) end
+function WBH.clock(seconds)
+	seconds = math.max(0, math.floor(tonumber(seconds) or 0))
+	return string.format("%d:%02d", seconds // 60, seconds % 60)
+end
+-- Places the bar in the top lane (or under the tutorial tracker on narrow
+-- screens) and the board under the minimap when the screen is tall enough.
+function WBH.layout()
+	local view = gui.AbsoluteSize
+	local width = if view and view.X > 0 then view.X else 1280
+	local height = if view and view.Y > 0 then view.Y else 720
+	if not placeInLane(WBH.bar, 380, EDGE, WBH.BAR_HEIGHT, width) then
+		local _, right = laneFor(width)
+		WBH.bar.AnchorPoint, WBH.bar.Position = Vector2.new(0, 0), UDim2.fromOffset(EDGE, BELOW_HUD)
+		WBH.bar.Size = UDim2.fromOffset(math.max(160, math.min(380, right - EDGE)), WBH.BAR_HEIGHT)
+	end
+	local mapSize = if height < 520 then 118 else 156
+	WBH.tall = height >= 520
+	WBH.board.Position = UDim2.new(1, -EDGE, 0, mapSize + 42 + 8)
+	WBH.board.Size = UDim2.fromOffset(math.max(150, mapSize + 20), 126)
+end
+function WBH.render()
+	local p = WBH.payload
+	if not p then return end
+	local hp, maxHp = tonumber(p.hp) or 0, math.max(1, tonumber(p.maxHp) or 1)
+	local fraction = math.clamp(hp / maxHp, 0, 1)
+	WBH.title.Text = "☠ " .. tostring(p.name or "World boss") .. "  ·  Phase " .. tostring(p.phase or 1) .. "/" .. tostring(p.phases or 3)
+		.. (if type(p.phaseName) == "string" then " " .. p.phaseName else "")
+	WBH.fill.Size = UDim2.fromScale(fraction, 1)
+	WBH.fill.Visible = fraction > 0
+	WBH.fill.BackgroundColor3 = if p.warded then rgb("8E7CF0") elseif p.enraged then rgb("FF4F3A") else rgb("DC3C3C")
+	WBH.hpText.Text = commas(hp) .. " / " .. commas(maxHp) .. (if p.warded then "  ·  WARDED" else "")
+	local elapsed = os.clock() - WBH.seenAt
+	if p.enraged then
+		WBH.timer.Text, WBH.timer.TextColor3 = "ENRAGED", rgb("FF7B6E")
+	else
+		WBH.timer.Text, WBH.timer.TextColor3 = "Enrage " .. WBH.clock((tonumber(p.enrageIn) or 0) - elapsed), gold
+	end
+	local you = type(p.you) == "table" and p.you or nil
+	local top = type(p.top) == "table" and p.top or {}
+	local line
+	if you then
+		local tier = tostring(you.tier or "below credit")
+		local color = WBH.TIER_COLOR[you.tier]
+		local hex = if color then string.format("%02X%02X%02X", math.floor(color.R * 255), math.floor(color.G * 255), math.floor(color.B * 255)) else "A9BDC1"
+		line = "You <b>#" .. tostring(you.rank) .. "</b>  ·  " .. WBH.percent(you.share) .. '  ·  <font color="#' .. hex .. '">' .. tier .. "</font>"
+	else
+		line = '<font color="#A9BDC1">Strike it to join the damage board</font>'
+	end
+	if not WBH.tall and top[1] and not (top[1].you) then
+		line ..= "  ·  #1 " .. tostring(top[1].name) .. " " .. WBH.percent(top[1].share)
+	end
+	WBH.rankLine.Text = line
+	WBH.board.Visible = WBH.tall == true and #top > 0
+	for i, row in ipairs(WBH.rows) do
+		local e = top[i]
+		if i == 6 and you and you.rank and you.rank > 5 then
+			row.Text = '<font color="#7FE3CC">' .. tostring(you.rank) .. ". You  " .. WBH.percent(you.share) .. "</font>"
+		elseif e then
+			local name = tostring(e.name)
+			row.Text = (if e.you then '<font color="#7FE3CC">' else "") .. i .. ". " .. name .. "  " .. WBH.percent(e.share) .. (if e.you then "</font>" else "")
+		else
+			row.Text = ""
+		end
+	end
+end
+function WBH.show(payload)
+	WBH.payload, WBH.seenAt = payload, os.clock()
+	if not WBH.visible then
+		WBH.visible = true
+		layoutKey = nil
+		WBH.layout()
+	end
+	WBH.bar.Visible = true
+	WBH.render()
+end
+function WBH.hide()
+	WBH.visible = false
+	WBH.payload = nil
+	WBH.bar.Visible = false
+	WBH.board.Visible = false
+end
+-- Warning discs: a translucent cylinder that fills over the windup; "safe"
+-- marks the shelter (green) inside a red arena ring.
+function WBH.disc(payload)
+	local center = payload.center
+	if typeof(center) ~= "Vector3" then return end
+	local radius = math.clamp(tonumber(payload.radius) or 8, 2, 60)
+	local windup = math.clamp(tonumber(payload.windup) or 2, 0.3, 6)
+	local safe = payload.kind == "safe"
+	local disc = fxPart({Shape = Enum.PartType.Cylinder, Material = Enum.Material.Neon, Color = if safe then rgb("6BE38B") else rgb("FF4F3A"),
+		Transparency = 0.55, Size = Vector3.new(0.2, radius * 2, radius * 2), CFrame = CFrame.new(center + Vector3.new(0, 0.25, 0)) * CFrame.Angles(0, 0, math.pi / 2)})
+	disc.Name = "BossTelegraph"
+	disc.Parent = Workspace.CurrentCamera
+	TweenService:Create(disc, TweenInfo.new(windup, Enum.EasingStyle.Linear), {Transparency = 0.25}):Play()
+	table.insert(WBH.discs, disc)
+	task.delay(windup + 0.15, function()
+		local i = table.find(WBH.discs, disc)
+		if i then table.remove(WBH.discs, i) end
+		disc:Destroy()
+	end)
+	if payload.name then toast(tostring(payload.name) .. (if safe then "! Get close to the boss!" elseif payload.kind == "ring" then "! Get clear of the boss!" else "! Leave the red circle!")) end
+end
+function WBH.lootCard(p)
+	WBH.lootToken += 1
+	local token = WBH.lootToken
+	WBH.lootTitle.Text = tostring(p.name or "World boss") .. (if p.eligible then " defeated" else " · no reward")
+	if p.eligible then
+		local color = WBH.TIER_COLOR[p.tier] or ivory
+		local hex = string.format("%02X%02X%02X", math.floor(color.R * 255), math.floor(color.G * 255), math.floor(color.B * 255))
+		WBH.lootStanding.Text = "#" .. tostring(p.rank) .. "  ·  " .. WBH.percent(p.share) .. ' of its health  ·  <font color="#' .. hex .. '">' .. tostring(p.tier) .. "</font>"
+		local lines = {}
+		if tonumber(p.coins) then table.insert(lines, '<font color="#F3C66E">+' .. commas(tonumber(p.coins)) .. " coins</font>") end
+		local ids = {}
+		for id in pairs(type(p.drops) == "table" and p.drops or {}) do table.insert(ids, id) end
+		table.sort(ids)
+		for _, id in ipairs(ids) do
+			table.insert(lines, '<font color="#' .. WBH.itemColor(id) .. '">' .. tostring(p.drops[id]) .. "× " .. WBH.itemName(id) .. "</font>")
+		end
+		WBH.lootList.Text = table.concat(lines, "\n")
+	else
+		WBH.lootStanding.Text = if p.rank then "#" .. tostring(p.rank) .. "  ·  " .. WBH.percent(p.share) else ""
+		WBH.lootList.Text = WBH.REASON[p.reason] or "You did not earn a share of the hoard."
+	end
+	WBH.loot.Visible = true
+	task.delay(15, function() if WBH.lootToken == token then WBH.loot.Visible = false end end)
+end
+function WBH.announce(p)
+	local name = tostring(p.name or "A world boss")
+	if p.kind == "warn" then
+		showBanner(name .. " rides at dusk. The Eclipse Roost awaits!", rgb("B48CFF"))
+	elseif p.kind == "spawn" then
+		showBanner(name .. " has awakened in the Shattered Crown!", rgb("FFD86B"))
+	elseif p.kind == "phase" then
+		showBanner(name .. ": " .. tostring(p.phaseName or ("phase " .. tostring(p.phase))) .. "!", rgb("FF9C8E"))
+	elseif p.kind == "enrage" then
+		showBanner(name .. " is ENRAGED!", rgb("FF4F3A"))
+	elseif p.kind == "win" then
+		showBanner(name .. " has fallen!", rgb("FFD86B"))
+	elseif p.kind == "depart" then
+		showBanner(name .. (if p.reason == "empty" then " withdraws: no challengers remain." else " departs. Time ran out."), rgb("A9BDC1"))
+	end
+end
+fx.OnClientEvent:Connect(function(kind, payload)
+	if type(payload) ~= "table" then return end
+	if kind == "worldBoss" then
+		WBH.show(payload)
+	elseif kind == "telegraph" then
+		WBH.disc(payload)
+	elseif kind == "bossStrike" and typeof(payload.center) == "Vector3" then
+		burst(payload.center, if payload.kind == "safe" then "B48CFF" else "FF7B6E", 2)
+	elseif kind == "worldBossAnnounce" then
+		WBH.announce(payload)
+		if payload.kind == "win" or payload.kind == "depart" then WBH.hide() end
+	elseif kind == "worldBossLoot" then
+		WBH.lootCard(payload)
+	end
+end)
+gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(function() if WBH.visible then WBH.layout() end end)
+RunService.RenderStepped:Connect(function()
+	if not WBH.visible then return end
+	-- No update for 3 s: out of range or the fight ended unseen.
+	if os.clock() - WBH.seenAt > 3 then WBH.hide() return end
+	WBH.render()
+end)
+-- End World Boss HUD.
+
+------------------------------------------------------------------------------
 -- Per-frame: held attacks, target panel
 ------------------------------------------------------------------------------
 local function ownBoss()
@@ -1132,6 +1380,8 @@ RunService.RenderStepped:Connect(function()
 	if spellBar.Visible ~= (player:GetAttribute("IslandBuilding") ~= true and not talking()) then layoutSpellBar() end
 	if spellBar.Visible then refreshSlots(now) end
 	local shown = if boss and liveMonster(boss) then boss else target
+	-- World Boss HUD owns the top-lane slot while it shows.
+	if WBH.visible then shown = nil end
 	if not shown then
 		panel.Visible = false
 		return
