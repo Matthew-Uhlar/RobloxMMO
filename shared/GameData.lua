@@ -1001,4 +1001,206 @@ function Data.coopLevel(xp)
 end
 -- End Co-op section.
 
+------------------------------------------------------------------------------
+-- Events: the Skyward Calendar and its recurring festivals (Events team).
+-- Pure and deterministic: every server and client derives the same date from
+-- os.time() (seconds since the Unix epoch, always UTC, so DST never applies).
+--   1 isle day  = 9,150 s (2 h 32.5 min);  1 season = 12 days (~30.5 h)
+--   1 isle year = 4 seasons x 12 days = 48 days = 439,200 s (~5.08 real days)
+-- The year is deliberately not a whole number of real days: each year begins
+-- ~2 h later on the wall clock, so every event visits every time zone.
+-- festival.server.lua publishes the date as workspace attributes (AetherYear,
+-- AetherSeason, AetherDay, AetherEvent, AetherEventEnds, AetherEventKey); server hooks only
+-- honour an attribute that matches this calendar (Data.eventState).
+------------------------------------------------------------------------------
+Data.Calendar = {
+	epoch = 1577836800, -- 2020-01-01 00:00:00 UTC: dawn of Year 1, Bloomtide 1
+	dayLength = 9150,
+	daysPerSeason = 12,
+	seasonChance = 0.2, -- ambient season bonus: 20% chance of +1 for the season's skill
+	seasons = {
+		{id="Bloomtide",name="Bloomtide",skill="Farming",color="9BD77E",text="Spring growth: crop harvests have a 20% chance of +1."},
+		{id="Sunreach",name="Sunreach",skill="Fishing",color="FFD166",text="Long bright days: catches have a 20% chance of +1 fish."},
+		{id="Emberfall",name="Emberfall",skill="Woodcutting",color="E07A3F",text="Dry autumn wood: logs have a 20% chance of +1."},
+		{id="Frostveil",name="Frostveil",skill="Mining",color="A8D8F0",text="Frost-split seams: ore has a 20% chance of +1."},
+	},
+}
+Data.Calendar.daysPerYear = #Data.Calendar.seasons * Data.Calendar.daysPerSeason
+Data.Calendar.yearLength = Data.Calendar.daysPerYear * Data.Calendar.dayLength
+Data.SeasonById = {}
+for index, season in ipairs(Data.Calendar.seasons) do season.index = index; Data.SeasonById[season.id] = season end
+
+-- Event-only items (icons come from existing kinds via Catalog.iconShape).
+item("SunscaleCarp",{name="Sunscale Carp",kind="resource",skill="Fishing",tier=3,rarity="Rare",color="F4B860",value=30,description="Festival-only catch: bites only during the Glimmertide Festival. Traded at the Festival Vendor."})
+item("GloamCandyOrb",{name="Gloamdrop Candy",kind="material",rarity="Uncommon",color="C77DFF",value=6,description="Hollow Night candy dropped by island creatures. Event currency for the Festival Vendor."})
+item("StarfallShard",{name="Starfall Shard",kind="material",rarity="Rare",color="BFE3FF",value=20,description="A cold sliver of the Starfall Vigil gift. Event currency for the Festival Vendor."})
+item("StarfallCocoa",{name="Starfall Cocoa",kind="consumable",category="buff",rarity="Uncommon",color="A0694B",buff={stats={speed=20,intelligence=40,health=40},duration=900},value=40,description="+20 Speed, +40 Intelligence, +40 Health for 15 minutes."})
+local eventAccessories = {
+	{id="TidebloomCharm",name="Tidebloom Charm",rarity="Uncommon",stats={fishingFortune=15,seaCreatureChance=2},text="Glimmertide keepsake."},
+	{id="GloamlightLantern",name="Gloamlight Lantern",rarity="Rare",stats={strength=8,magicFind=3},text="Hollow Night keepsake."},
+	{id="FrostveilLocket",name="Frostveil Locket",rarity="Epic",stats={health=40,defense=15,intelligence=15},text="Starfall Vigil keepsake."},
+}
+for _, a in ipairs(eventAccessories) do
+	item(a.id,{name=a.name,kind="accessory",rarity=a.rarity,color=Data.Rarity[a.rarity].color,stats=a.stats,value=40*Data.Rarity[a.rarity].rank^2,
+		event=true,description=a.text.." Accessory. Magical Power "..Data.Rarity[a.rarity].power.."."})
+end
+
+-- Recurring events: `days` are days of `season`; each window opens `at` seconds
+-- after that isle day's dawn and lasts `duration` seconds (all fit inside a day).
+Data.EventOrder = {"BloomtideFair","GlimmertideFestival","DeepveinSurge","HollowNight","StarfallVigil"}
+Data.Events = {
+	BloomtideFair={name="Bloomtide Fair",season="Bloomtide",days={4,10},at=1800,duration=3600,color="9BD77E",skill="Farming",gatherBonus=1,featuredMult=2,
+		text="Every crop harvest +1. The Island Assembly ballot picks a featured crop that yields double."},
+	GlimmertideFestival={name="Glimmertide Festival",season="Sunreach",days={3,7,11},at=600,duration=2400,color="FFD166",skill="Fishing",gatherBonus=1,
+		drop={item="SunscaleCarp",chance=0.25},text="Every catch +1 fish, and a 25% chance of a festival-only Sunscale Carp."},
+	DeepveinSurge={name="Deepvein Surge",season="Emberfall",days={2,8},at=3000,duration=1800,color="D4A84B",skill="Mining",xpMult=2,
+		text="Double Mining XP on every ore vein."},
+	HollowNight={name="Hollow Night",season="Emberfall",days={5,12},at=5400,duration=2700,color="C77DFF",
+		candy={item="GloamCandyOrb",chance=0.5,per=25},text="Every creature has a 50% chance to drop Gloamdrop Candy (more from stronger foes)."},
+	StarfallVigil={name="Starfall Vigil",season="Frostveil",days={2,5,8,11},at=4200,duration=3600,color="BFE3FF",
+		gift={StarfallShard=3,StarfallCocoa=1},text="Claim one Starfall gift per vigil from the Calendar."},
+}
+-- Festival Vendor stock (hub prompt). `unique` rewards cannot be bought while owned.
+Data.EventVendor = {
+	{id="TidebloomCharm",reward={TidebloomCharm=1},costs={SunscaleCarp=16},unique=true},
+	{id="ArcaneDustBundle",reward={ArcaneDust=12},costs={GloamCandyOrb=8}},
+	{id="GloamlightLantern",reward={GloamlightLantern=1},costs={GloamCandyOrb=40},unique=true},
+	{id="StarfallCocoa",reward={StarfallCocoa=1},costs={StarfallShard=2}},
+	{id="StarFragment",reward={StarFragment=1},costs={StarfallShard=8,SunscaleCarp=8}},
+	{id="FrostveilLocket",reward={FrostveilLocket=1},costs={StarfallShard=10,GloamCandyOrb=30},unique=true},
+}
+Data.EventVendorById = {}
+for _, offer in ipairs(Data.EventVendor) do Data.EventVendorById[offer.id] = offer end
+Data.EVENT_VENDOR_SECONDS = 300 -- trading stays open this long after visiting the vendor
+
+-- Every event window of the isle year starting at yearStart, sorted by start.
+-- key = "<eventId>:<start>" names one occurrence (claims are per occurrence).
+function Data.eventWindows(yearStart)
+	local cal, list = Data.Calendar, {}
+	for _, id in ipairs(Data.EventOrder) do
+		local ev = Data.Events[id]
+		local season = Data.SeasonById[ev.season]
+		for _, d in ipairs(ev.days) do
+			local starts = yearStart + ((season.index - 1) * cal.daysPerSeason + d - 1) * cal.dayLength + ev.at
+			table.insert(list, {id=id, starts=starts, ends=starts+ev.duration, key=id..":"..starts})
+		end
+	end
+	table.sort(list, function(a, b) return a.starts < b.starts end)
+	return list
+end
+-- Date for a UTC timestamp. Floor division keeps dates before the epoch valid.
+function Data.calendarAt(t)
+	local cal = Data.Calendar
+	t = math.floor(tonumber(t) or 0)
+	local yearIndex = (t - cal.epoch) // cal.yearLength
+	local yearStart = cal.epoch + yearIndex * cal.yearLength
+	local dayIndex = (t - yearStart) // cal.dayLength
+	local seasonIndex = dayIndex // cal.daysPerSeason + 1
+	local season = cal.seasons[seasonIndex]
+	local dayStart = yearStart + dayIndex * cal.dayLength
+	local out = {year=yearIndex+1, yearStart=yearStart, yearEnds=yearStart+cal.yearLength, dayOfYear=dayIndex+1,
+		season=season.id, seasonName=season.name, seasonIndex=seasonIndex, day=dayIndex%cal.daysPerSeason+1,
+		dayStart=dayStart, dayEnds=dayStart+cal.dayLength, seasonEnds=yearStart+seasonIndex*cal.daysPerSeason*cal.dayLength}
+	for _, w in ipairs(Data.eventWindows(yearStart)) do
+		if w.starts <= t and t < w.ends then out.event, out.eventStarts, out.eventEnds, out.eventKey = w.id, w.starts, w.ends, w.key end
+	end
+	return out
+end
+-- The next `n` windows that have not ended at t (the current one first), across years.
+function Data.upcomingEvents(t, n)
+	n = n or 3
+	local out = {}
+	local yearStart = Data.calendarAt(t).yearStart
+	while #out < n do
+		for _, w in ipairs(Data.eventWindows(yearStart)) do
+			if w.ends > t and #out < n then table.insert(out, w) end
+		end
+		yearStart += Data.Calendar.yearLength
+	end
+	return out
+end
+-- Server-side event state from the published attributes (`source` has
+-- GetAttribute, e.g. workspace). An attribute only counts while it matches the
+-- calendar at `now`, so stale or missing publications grant nothing.
+function Data.eventState(source, now)
+	local function get(key)
+		local ok, value = pcall(function() return source:GetAttribute(key) end)
+		return if ok then value else nil
+	end
+	local cal = Data.calendarAt(now)
+	local state = {featured=get("FestivalResource")}
+	if get("AetherSeason") == cal.season then state.season = cal.season end
+	-- The occurrence key is a string, so the match is exact whatever the number precision.
+	if cal.event and get("AetherEvent") == cal.event and get("AetherEventKey") == cal.eventKey then
+		state.event, state.ends, state.key = cal.event, cal.eventEnds, cal.eventKey
+	end
+	return state
+end
+-- Gathering effects for one harvest: bonus joins the harvest base (before
+-- fortune); mult and xpMult apply once to the final result; extra = bonus items.
+function Data.eventGather(item, state, roll)
+	local out = {bonus=0, mult=1, xpMult=1, extra={}}
+	local skill = Data.ResourceSkill[item]
+	if not skill or type(state) ~= "table" then return out end
+	local season = Data.SeasonById[state.season]
+	if season and season.skill == skill and roll() < Data.Calendar.seasonChance then out.bonus += 1 end
+	local ev = Data.Events[state.event]
+	if ev and ev.skill == skill then
+		out.bonus += ev.gatherBonus or 0
+		out.xpMult = ev.xpMult or 1
+		if ev.featuredMult and state.featured == item then out.mult = ev.featuredMult end
+		if ev.drop and roll() < ev.drop.chance then out.extra[ev.drop.item] = 1 end
+	end
+	return out
+end
+-- Event-only creature drops (Hollow Night candy) for one kill.
+function Data.eventKillDrops(monsterId, state, roll)
+	local monster = Data.Monsters[monsterId]
+	local ev = type(state) == "table" and Data.Events[state.event]
+	if not monster or not ev or not ev.candy then return {} end
+	if roll() >= ev.candy.chance then return {} end
+	return {[ev.candy.item] = 1 + monster.level // ev.candy.per}
+end
+-- Starfall gift claims and Festival Vendor trades. Mutates the profile `p`
+-- (p.items, p.eventClaims) and grants through grant(p, itemId, count).
+-- Claims are keyed per occurrence and pruned once that occurrence has ended.
+function Data.eventAction(p, verb, arg, state, now, grant, atVendor)
+	local claims = if type(p.eventClaims) == "table" then p.eventClaims else {}
+	p.eventClaims = claims
+	for key, ends in pairs(claims) do
+		if type(ends) ~= "number" or ends <= now then claims[key] = nil end
+	end
+	local function names(map)
+		local parts = {}
+		for id, n in pairs(map) do table.insert(parts, n.." "..(Data.Items[id] and Data.Items[id].name or id)) end
+		table.sort(parts)
+		return table.concat(parts, ", ")
+	end
+	if verb == "eventGift" then
+		local ev = type(state) == "table" and Data.Events[state.event]
+		if not ev or not ev.gift or not state.key or now >= (state.ends or 0) then return "No Starfall gift is waiting. Check the Calendar for the next Starfall Vigil." end
+		if claims[state.key] then return "You already opened this vigil's Starfall gift." end
+		claims[state.key] = state.ends
+		for id, n in pairs(ev.gift) do grant(p, id, n) end
+		return "Starfall gift opened • +"..names(ev.gift)
+	elseif verb == "eventTrade" then
+		local offer = type(arg) == "string" and Data.EventVendorById[arg]
+		if not offer then return "The Festival Vendor does not stock that." end
+		if not atVendor then return "Visit the Festival Vendor on the hub to trade." end
+		if offer.unique then
+			for id in pairs(offer.reward) do
+				if (p.items[id] or 0) > 0 then return "You already own a "..Data.Items[id].name.."." end
+			end
+		end
+		for id, n in pairs(offer.costs) do
+			if (p.items[id] or 0) < n then return "You need "..names(offer.costs).."." end
+		end
+		for id, n in pairs(offer.costs) do p.items[id] -= n end
+		for id, n in pairs(offer.reward) do grant(p, id, n) end
+		return "Traded "..names(offer.costs).." for "..names(offer.reward).."."
+	end
+	return "Unknown festival action."
+end
+-- Events end
+
 return Data
