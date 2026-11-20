@@ -2435,6 +2435,303 @@ do
 	end
 end
 -- End Treasure Trails block.
+-- Slayer tasks (Slayer team). Rules and data: Data.SlayerTasks (shared/GameData.lua).
+-- Verbs (item <= 64 chars):
+--   slayerTask "<master>"    take a task from a master (Combat/Slayer gates, no
+--                            current task); weighted among reachable, unblocked
+--                            families (ST.assign), never the family just finished
+--                            when another is possible
+--   slayerSkip               pay ST.SKIP_COST points: a new task from the same
+--                            master; the streak is kept
+--   slayerCancel             drop the task for free; the streak resets to 0
+--   slayerBlock "<family>"   pay ST.BLOCK_COST points to stop a family being
+--                            assigned (ST.blockSlots); blocking the current task drops it
+--   slayerUnblock "<family>" free a block slot (no refund)
+--   slayerBuy "<shop id>"    ST.Shop: unlocks, extensions, consumables, titles, visor crafts
+--   slayerTitle "<id>|none"  wear an owned title (player attribute SlayerTitle)
+-- Credit: bridge "kill" (combat's credit rules: damage dealt, alive, within
+-- range, Ironman solo; multishot extras and party members each report their own
+-- kill) and "seaCreature" kills (owner only) call SlayerTasks.onKill. Only a kill
+-- of the assigned family counts; each pays ST.killXp Slayer XP. With Call of the
+-- Superior unlocked a land task kill rolls ST.SUPERIOR_CHANCE: the server issues
+-- a ticket {id, expires} under a per-player sequence and returns
+-- superior = {id, seq} in the kill reply; Combat spawns it by the dead monster,
+-- owned by this player, and settles it once through bridge "slayerSuperior"
+-- {seq, monster, result = "kill"|"despawn"} (unique loot, Slayer XP, superior
+-- log, +1 task progress). Bridge "stats" adds slayer = {level, family, visor}.
+-- Profile p.slayerTasks = {task = {master, family, amount, killed, extended} | nil,
+-- streak, completed, points, blocked = {family...}, unlocks = {[id] = true},
+-- superiors = {[superiorId] = kills}, title = shop id | "", last = family | nil}.
+-- Player attributes: SlayerTask "<family>:<killed>:<amount>" | "", SlayerTitle, SlayerLevel.
+-- Snapshot key: slayerTasks. Tickets are session-only (SlayerTasks.forget).
+------------------------------------------------------------------------------
+local SlayerTasks={verbs={slayerTask=true,slayerSkip=true,slayerCancel=true,slayerBlock=true,slayerUnblock=true,slayerBuy=true,slayerTitle=true},
+	tickets={},deniedAt={}}
+do
+	local ST=Data.SlayerTasks
+	local function count(v,limit)
+		local n=tonumber(v)
+		if not n or n~=n or n<0 then return 0 end
+		return math.floor(math.min(n,limit or 1e12))
+	end
+	local function itemName(id) return Data.Items[id] and Data.Items[id].name or tostring(id) end
+	local function familyName(id) local f=ST.FamilyById[id]; return f and f.name or tostring(id) end
+	-- Older saves gain an empty ledger; tampered entries are dropped or clamped.
+	function SlayerTasks.migrate(p)
+		local r=type(p.slayerTasks)=="table" and p.slayerTasks or {}
+		local out={streak=count(r.streak),completed=count(r.completed),points=count(r.points,1e9),blocked={},unlocks={},superiors={},title="",task=nil,last=nil}
+		local t=r.task
+		if type(t)=="table" and ST.MasterById[t.master] and ST.FamilyById[t.family] then
+			local amount=count(t.amount,ST.MAX_AMOUNT)
+			local killed=count(t.killed,amount)
+			if amount>=1 and killed<amount then out.task={master=t.master,family=t.family,amount=amount,killed=killed,extended=t.extended==true} end
+		end
+		local slots=0
+		if type(r.unlocks)=="table" then
+			for id,v in pairs(r.unlocks) do
+				local e=ST.ShopById[id]
+				if v==true and e and (e.kind=="unlock" or e.kind=="extend" or e.kind=="title") then out.unlocks[id]=true end
+			end
+		end
+		slots=ST.blockSlots(out.unlocks)
+		if type(r.blocked)=="table" then
+			for _,id in ipairs(r.blocked) do
+				if ST.FamilyById[id] and not table.find(out.blocked,id) and #out.blocked<slots then table.insert(out.blocked,id) end
+			end
+		end
+		if out.task and table.find(out.blocked,out.task.family) then out.task=nil end
+		if type(r.superiors)=="table" then
+			for id,n in pairs(r.superiors) do if ST.Superiors[id] and count(n)>0 then out.superiors[id]=count(n) end end
+		end
+		if type(r.title)=="string" and out.unlocks[r.title] and ST.ShopById[r.title].kind=="title" then out.title=r.title end
+		if ST.FamilyById[r.last] then out.last=r.last end
+		p.slayerTasks=out
+	end
+	local function ledger(p)
+		if type(p.slayerTasks)~="table" then SlayerTasks.migrate(p) end
+		return p.slayerTasks
+	end
+	local function slayerLevel(p) return level(p.xp.Slayer) end
+	-- Context for the pure rules: levels and the regions this journal may enter.
+	function SlayerTasks.context(p)
+		local levels={}
+		for _,skill in ipairs(Data.SkillOrder) do levels[skill]=level(p.xp[skill]) end
+		local regions={}
+		for _,r in ipairs(Data.Regions) do if regionAllowed(p,r.id) then regions[r.id]=true end end
+		return {combat=levels.Combat,slayer=levels.Slayer,levels=levels,regions=regions}
+	end
+	function SlayerTasks.publish(player,p)
+		local st=ledger(p)
+		local t=st.task
+		player:SetAttribute("SlayerTask",if t then t.family..":"..t.killed..":"..t.amount else "")
+		local title=st.title~="" and ST.ShopById[st.title]
+		player:SetAttribute("SlayerTitle",if title then title.title else "")
+		player:SetAttribute("SlayerLevel",slayerLevel(p))
+	end
+	-- Combat view (bridge "stats"): Slayer level, task family, equipped visor bonus.
+	function SlayerTasks.combat(p)
+		local st=ledger(p)
+		return {level=slayerLevel(p),family=st.task and st.task.family or nil,visor=ST.visorBonus(p.equipment and p.equipment.helmet)}
+	end
+	-- Snapshot (Hunt > Slayer page).
+	function SlayerTasks.state(player,p)
+		local st=ledger(p)
+		SlayerTasks.publish(player,p)
+		local ctx=SlayerTasks.context(p)
+		local masters,families={},{}
+		for _,m in ipairs(ST.Masters) do
+			local ok,reason=ST.masterAvailable(m.id,ctx)
+			masters[m.id]={ok=ok==true,reason=reason}
+		end
+		for _,f in ipairs(ST.Families) do
+			local ok,reason=ST.familyReachable(f.id,ctx)
+			families[f.id]={ok=ok==true,reason=reason}
+		end
+		local unlocks={}
+		for id in pairs(st.unlocks) do table.insert(unlocks,id) end
+		table.sort(unlocks)
+		local book=SlayerTasks.tickets[player]
+		local live=0
+		if book then for _ in pairs(book.live) do live+=1 end end
+		return {task=st.task and table.clone(st.task) or nil,streak=st.streak,completed=st.completed,points=st.points,blocked=table.clone(st.blocked),
+			blockSlots=ST.blockSlots(st.unlocks),unlocks=unlocks,superiors=table.clone(st.superiors),title=st.title,level=ctx.slayer,
+			masters=masters,families=families,superiorsLive=live,nextMult=ST.streakMult(st.streak+1)}
+	end
+	local function assign(p,masterId)
+		local st=ledger(p)
+		local task,reason=ST.assign(masterId,SlayerTasks.context(p),st.blocked,st.unlocks,roll(),roll(),st.last)
+		if not task then return nil,reason end
+		st.task=task
+		return task
+	end
+	local function taskText(task)
+		local m=ST.MasterById[task.master]
+		return (m and m.name or task.master).." assigns: slay "..task.amount.." "..familyName(task.family)..(if task.extended then " (extended)" else "").."."
+	end
+	-- Task completion: points (x streak), bounty, notices.
+	local function complete(p)
+		local st=ledger(p)
+		local task=st.task
+		st.task=nil
+		st.streak+=1
+		st.completed+=1
+		st.last=task.family
+		local mult=ST.streakMult(st.streak)
+		local points=ST.pointsFor(task.master,st.streak)
+		st.points+=points
+		local bounty=ST.bountyFor(task.master,st.unlocks)
+		p.coins+=bounty
+		note(p,"Slayer task complete! +"..points.." Slayer points"..(if mult>1 then " (streak "..st.streak.." x"..mult..")" else "").." · +"..bounty.." coins. Return to a master for a new task.")
+	end
+	-- One credited kill. Returns {id, seq} when a superior rises (land kills only).
+	function SlayerTasks.onKill(player,p,monsterId,monster,sea)
+		local st=ledger(p)
+		local task=st.task
+		if not task or not ST.inFamily(task.family,monsterId) then return nil end
+		task.killed=math.min(task.amount,task.killed+1)
+		grantXp(p,"Slayer",ST.killXp(monster))
+		local superior=nil
+		if not sea then
+			local id=ST.rollSuperior(st.unlocks.SuperiorCalling==true,monsterId,roll)
+			if id then superior=SlayerTasks.issue(player,id) end
+			if superior then note(p,"A "..ST.Superiors[id].name.." emerges! Only you can claim it.") end
+		end
+		if task.killed>=task.amount then complete(p) end
+		SlayerTasks.publish(player,p)
+		return superior
+	end
+	-- Superior tickets ------------------------------------------------------------
+	function SlayerTasks.book(player)
+		local book=SlayerTasks.tickets[player]
+		if not book then book={seq=0,live={}}; SlayerTasks.tickets[player]=book end
+		local now=os.clock()
+		for seq,ticket in pairs(book.live) do if now>ticket.expires then book.live[seq]=nil end end
+		return book
+	end
+	function SlayerTasks.issue(player,id)
+		local book=SlayerTasks.book(player)
+		local live=0
+		for _ in pairs(book.live) do live+=1 end
+		if live>=ST.SUPERIOR_LIVE then return nil end
+		book.seq+=1
+		book.live[book.seq]={id=id,expires=os.clock()+ST.SUPERIOR_LIFETIME+15}
+		return {id=id,seq=book.seq}
+	end
+	-- Bridge "slayerSuperior" {seq, monster, result}: settles a ticket once.
+	function SlayerTasks.superiorReport(player,p,payload)
+		local seq,id,result=payload.seq,payload.monster,payload.result
+		if type(seq)~="number" or seq%1~=0 or not validId(id) or (result~="kill" and result~="despawn") then return {ok=false,reason="invalid"} end
+		local book=SlayerTasks.tickets[player]
+		local ticket=book and book.live[seq]
+		if not ticket or ticket.id~=id then return {ok=false,reason="ticket"} end
+		book.live[seq]=nil
+		if result=="despawn" then return {ok=true,message="The superior withdrew."} end
+		if os.clock()>ticket.expires then return {ok=false,reason="expired"} end
+		local def=ST.Superiors[id]
+		local st=ledger(p)
+		local stats=Progression.computeStats(p,os.time())
+		p.started=true
+		local xp=ST.killXp(def)
+		grantXp(p,"Slayer",xp)
+		p.coins+=def.coins
+		local drops=Progression.rollDrops(def.drops,stats.magicFind,roll,stats.petLuck)
+		for item,n in pairs(drops) do collect(p,item,n) end
+		p.bestiary[def.base]=(p.bestiary[def.base] or 0)+1
+		st.superiors[id]=(st.superiors[id] or 0)+1
+		local task=st.task
+		if task and ST.inFamily(task.family,def.base) then
+			task.killed=math.min(task.amount,task.killed+1)
+			if task.killed>=task.amount then complete(p) end
+		end
+		SlayerTasks.publish(player,p)
+		local names={}
+		for item,n in pairs(drops) do table.insert(names,"+"..n.." "..itemName(item)) end
+		table.sort(names)
+		return {ok=true,drops=drops,message=def.name.." slain • +"..def.coins.." coins, +"..xp.." Slayer XP"..(if #names>0 then ", "..table.concat(names,", ") else "")}
+	end
+	-- Bridge "slayerDenied" {monster}: tell the player the Slayer level a monster needs (rate-limited).
+	function SlayerTasks.denied(player,p,payload)
+		local need=ST.slayerLevelFor(payload.monster)
+		if need<=0 or os.clock()<(SlayerTasks.deniedAt[player] or 0) then return nil end
+		SlayerTasks.deniedAt[player]=os.clock()+3
+		local def=Data.Monsters[payload.monster]
+		return "You need Slayer "..need.." to harm the "..def.name.." (you have "..slayerLevel(p)..")."
+	end
+	function SlayerTasks.forget(player)
+		SlayerTasks.tickets[player],SlayerTasks.deniedAt[player]=nil,nil
+	end
+	-- Verbs ------------------------------------------------------------------------
+	function SlayerTasks.action(player,p,verb,item)
+		local st=ledger(p)
+		local reply
+		if verb=="slayerTask" then
+			if st.task then return "You already have a task: "..ST.describe(st.task)..". Finish, skip or cancel it first." end
+			if not validId(item) or not ST.MasterById[item] then return "Choose a Slayer master." end
+			local task,reason=assign(p,item)
+			if not task then return ST.MasterById[item].name..": "..tostring(reason).."." end
+			reply=taskText(task)
+		elseif verb=="slayerSkip" then
+			if not st.task then return "You have no task to skip." end
+			if st.points<ST.SKIP_COST then return "Skipping costs "..ST.SKIP_COST.." Slayer points." end
+			local master=st.task.master
+			local skipped=st.task.family
+			st.points-=ST.SKIP_COST
+			st.task=nil
+			local task=assign(p,master)
+			if not task then reply="Task skipped (-"..ST.SKIP_COST.." points). "..ST.MasterById[master].name.." has nothing else for you right now."
+			else reply="Task skipped (-"..ST.SKIP_COST.." points). "..taskText(task) end
+			if task and task.family==skipped then reply..=" (the same family again)" end
+		elseif verb=="slayerCancel" then
+			if not st.task then return "You have no task to cancel." end
+			st.task=nil
+			local lost=st.streak
+			st.streak=0
+			reply="Task cancelled."..(if lost>0 then " Your streak of "..lost.." is broken." else "")
+		elseif verb=="slayerBlock" then
+			local f=validId(item) and ST.FamilyById[item]
+			if not f then return "Choose a monster family to block." end
+			if table.find(st.blocked,f.id) then return f.name.." is already blocked." end
+			if #st.blocked>=ST.blockSlots(st.unlocks) then return "Every block slot is full. Unblock a family first." end
+			if st.points<ST.BLOCK_COST then return "Blocking costs "..ST.BLOCK_COST.." Slayer points." end
+			st.points-=ST.BLOCK_COST
+			table.insert(st.blocked,f.id)
+			reply=f.name.." blocked (-"..ST.BLOCK_COST.." points)."
+			if st.task and st.task.family==f.id then st.task=nil; reply..=" Your current task was dropped (streak kept)." end
+		elseif verb=="slayerUnblock" then
+			local index=validId(item) and table.find(st.blocked,item)
+			if not index then return "That family is not blocked." end
+			table.remove(st.blocked,index)
+			reply=familyName(item).." unblocked."
+		elseif verb=="slayerBuy" then
+			local e=validId(item) and ST.ShopById[item]
+			local levels={}
+			for _,skill in ipairs(Data.SkillOrder) do levels[skill]=level(p.xp[skill]) end
+			local ok,reason=ST.canBuy(item,{points=st.points,unlocks=st.unlocks,levels=levels,items=p.items})
+			if not ok then return reason end
+			st.points-=e.cost
+			for id,n in pairs(e.costs or {}) do p.items[id]=(p.items[id] or 0)-n; if p.items[id]<=0 then p.items[id]=nil end end
+			if e.kind=="unlock" or e.kind=="extend" or e.kind=="title" then st.unlocks[e.id]=true end
+			if e.kind=="title" then st.title=e.id end
+			for id,n in pairs(e.gives or {}) do collect(p,id,n) end
+			reply=if e.kind=="craft" then "Assembled: "..itemName(next(e.gives)).."." elseif e.kind=="consumable" then "Bought "..e.name.." (-"..e.cost.." points)."
+				else "Unlocked "..e.name.." (-"..e.cost.." points)."
+		elseif verb=="slayerTitle" then
+			if item=="none" then st.title=""; reply="Title hidden."
+			else
+				local e=validId(item) and ST.ShopById[item]
+				if not e or e.kind~="title" or not st.unlocks[e.id] then return "You have not earned that title." end
+				st.title=e.id
+				reply="Now wearing the title "..e.title.."."
+			end
+		else
+			return "Unknown slayer action."
+		end
+		p.started=true
+		SlayerTasks.publish(player,p)
+		return reply
+	end
+end
+-- End Slayer tasks block.
 local function applyStats(player,p,spawned)
 	local stats=Progression.computeStats(p,os.time())
 	player:SetAttribute("SkyreachUnlocked",(p.questCompleted or 0)>=6)
@@ -2571,7 +2868,8 @@ local function snapshot(player,message)
 		dungeonClasses=Classes.state and Classes.state(p), -- Dungeon classes: Hunt > Dungeon page state
 		garden=Garden.state and Garden.state(player,p), -- Verdant Garden page state
 		prayer=Prayer.state(player,p,stats),thieving=Prayer.thievingState(player,p,stats), -- Prayer & Thieving page state
-		trails=Trails.state(player,p)} -- Treasure Trails: Satchel > Trails page state
+		trails=Trails.state(player,p), -- Treasure Trails: Satchel > Trails page state
+		slayerTasks=SlayerTasks.state(player,p)} -- Slayer tasks: Hunt > Slayer page state
 end
 -- Prayer & Thieving: drain-loop notices (prayer points ran out).
 Prayer.push=function(player,message) if player.Parent then update:FireClient(player,snapshot(player,message)) end end
@@ -2647,6 +2945,7 @@ local function migrate(profile)
 	Journal.migrate(profile)
 	Skills.migrate(profile) -- Agility & Hunter records + milestone perks
 	Prayer.migrate(profile) -- Prayer & Thieving: points, favourites, offerings, thefts
+	SlayerTasks.migrate(profile) -- Slayer tasks: task, streak, points, blocks, unlocks, superior log
 	Gear.migrate(profile) -- Gear depth: reforges, stars, books
 	Progression.masteryMigrate(profile) -- Skill Mastery: drop unknown/invalid nodes, reset overspent trees
 	if Garden.migrate then Garden.migrate(profile) end -- Verdant Garden: sanitise and bound p.garden
@@ -2705,6 +3004,7 @@ function Sea.report(player,p,payload)
 	local drops=Progression.rollDrops(monster.drops,stats.magicFind,roll,stats.petLuck)
 	for item,n in pairs(drops) do collect(p,item,n) end
 	p.bestiary[id]=(p.bestiary[id] or 0)+1
+	SlayerTasks.onKill(player,p,id,monster,true) -- Slayer tasks: sea creature task credit (owner only)
 	return {ok=true,drops=drops,message=monster.name.." slain • +"..monster.coins.." coins, +"..monster.fishingXp.." Fishing XP, +"..monster.xp.." Combat XP"}
 end
 local function forget(player)
@@ -2720,6 +3020,7 @@ local function forget(player)
 	end
 	Skills.forget(player) -- Agility runs, Hunter traps (session-only)
 	Prayer.forget(player) -- Prayer rites/altar window, Thieving stuns and cooldowns
+	SlayerTasks.forget(player) -- Slayer tasks: superior tickets
 	local set=userSessions[player.UserId]
 	if set then
 		set[player]=nil
@@ -3941,6 +4242,8 @@ local function perform(player,verb,item,prompt)
 		return Skills.action(player,p,verb,item,prompt,humanoid) -- Agility & Hunter
 	elseif Prayer.claims(verb,item) then
 		return Prayer.action(player,p,verb,item,prompt,humanoid) -- Prayer & Thieving
+	elseif SlayerTasks.verbs[verb] then
+		return SlayerTasks.action(player,p,verb,item) -- Slayer tasks
 	elseif Mastery.verbs[verb] then
 		return Mastery.action(player,p,verb,item) -- Skill Mastery
 	elseif Garden.verbs[verb] then
@@ -4689,13 +4992,14 @@ bridge.OnInvoke=function(op,player,payload)
 	if not p then
 		-- Combat re-arms the boss / resends the sea creature kill (ticket kept)
 		-- when its report could not be applied; Endgame: combat resends world boss rewards.
-		return if op=="slayerBoss" or op=="seaCreature" or op=="worldBoss" then {ok=false,reason="sync"} else nil
+		return if op=="slayerBoss" or op=="seaCreature" or op=="worldBoss" or op=="slayerSuperior" then {ok=false,reason="sync"} else nil
 	end
 	if op=="stats" then
 		return {stats=Progression.computeStats(p,os.time()),combatLevel=level(p.xp.Combat),ironman=p.ironman==true,
 			loadout=Progression.combatLoadout(p), -- Combat styles: weapon style, quiver, supplies, autocast
 			mastery=Progression.masteryCombat(p,os.time()), -- Skill Mastery perks combat applies (see Mastery block)
-			prayer=Prayer.combat(p)} -- Prayer: protection / offence / sap / mana (see Prayer & Thieving block)
+			prayer=Prayer.combat(p), -- Prayer: protection / offence / sap / mana (see Prayer & Thieving block)
+			slayer=SlayerTasks.combat(p)} -- Slayer tasks: Slayer level, task family, visor bonus
 	elseif op=="consume" then
 		return CombatStyles.consume(p,payload)
 	elseif op=="refund" then
@@ -4716,7 +5020,7 @@ bridge.OnInvoke=function(op,player,payload)
 		local monsterId=payload.monster
 		local monster=validId(monsterId) and Data.Monsters[monsterId]
 		-- Sea creatures pay only through their owner's ticket (op "seaCreature").
-		if not monster or monster.seaCreature or monster.worldBoss then return nil end
+		if not monster or monster.seaCreature or monster.worldBoss or monster.superior then return nil end
 		local stats=Progression.computeStats(p,os.time())
 		p.started=true
 		-- Pets depth: family abilities add % coins, Magic Find and slayer progress vs that line.
@@ -4739,8 +5043,9 @@ bridge.OnInvoke=function(op,player,payload)
 				note(p,"The "..Data.Slayers[quest.line].name.." stirs! Defeat it to finish your slayer quest.")
 			end
 		end
+		local superior=SlayerTasks.onKill(player,p,monsterId,monster) -- Slayer tasks: task credit, Slayer XP, superior roll
 		notify(player,monster.name.." slain • +"..coins.." coins"..dropText(drops))
-		return {drops=drops,bossReady=quest~=nil and quest.bossReady==true}
+		return {drops=drops,bossReady=quest~=nil and quest.bossReady==true,superior=superior}
 	elseif op=="worldBoss" then
 		local reply=Endgame.reward(player,p,payload)
 		if reply.message then notify(player,reply.message); reply.message=nil end
@@ -4748,6 +5053,12 @@ bridge.OnInvoke=function(op,player,payload)
 	elseif op=="seaCreature" then
 		local reply=Sea.report(player,p,payload)
 		if reply.message then notify(player,reply.message..dropText(reply.drops)); reply.message=nil end
+		return reply
+	elseif op=="slayerSuperior" or op=="slayerDenied" then
+		-- Slayer tasks: superior settlement (owner ticket) and slayer-level refusals.
+		if op=="slayerDenied" then local text=SlayerTasks.denied(player,p,payload); if text then notify(player,text) end return nil end
+		local reply=SlayerTasks.superiorReport(player,p,payload)
+		if reply.message then notify(player,reply.message); reply.message=nil end
 		return reply
 	elseif op=="slayerBoss" then
 		local quest=p.slayerQuest
@@ -4762,9 +5073,11 @@ bridge.OnInvoke=function(op,player,payload)
 		local tier=line.tiers[quest.tier]
 		local stats=Progression.computeStats(p,os.time())
 		p.slayerXp[quest.line]=(p.slayerXp[quest.line] or 0)+tier.xp
+		local skillXp=Data.SlayerTasks.bossXp(quest.line,quest.tier) -- Slayer tasks: boss lines also train the Slayer skill
+		grantXp(p,"Slayer",skillXp)
 		local drops=Progression.rollDrops(tier.drops,stats.magicFind,roll,stats.petLuck)
 		for item,n in pairs(drops) do collect(p,item,n) end
-		notify(player,line.name.." defeated • +"..tier.xp.." "..quest.line.." Slayer XP"..dropText(drops))
+		notify(player,line.name.." defeated • +"..tier.xp.." "..quest.line.." Slayer XP, +"..skillXp.." Slayer skill XP"..dropText(drops))
 		return {ok=true,drops=drops}
 	end
 	return nil

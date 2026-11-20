@@ -3978,6 +3978,184 @@ Pages.drawSlayer,Pages.drawBestiary=drawSlayer,drawBestiary
 end
 
 ------------------------------------------------------------------------------
+-- Slayer tasks (Slayer team): Hunt › Slayer gains a view bar. Tasks (the Slayer
+-- skill, current task, streak and points), Masters (requirements and task
+-- lists), Families (reach and the block list), Shop (unlocks, extensions,
+-- consumables, titles, visor crafts) and Superiors (the superior log); the
+-- Tasks view keeps the boss-line contracts below (shown as line ranks). Reads
+-- state.slayerTasks (server SlayerTasks.state) and Data.SlayerTasks; every
+-- button sends a validated verb (slayerTask/Skip/Cancel/Block/Unblock/Buy/Title).
+------------------------------------------------------------------------------
+do
+local ST=nil -- Data.SlayerTasks, resolved when the page draws
+local view="Tasks"
+local confirm=nil -- "cancel" | "skip" awaiting a second press
+local VIEWS={"Tasks","Masters","Families","Shop","Superiors"}
+local baseSlayer=Pages.drawSlayer
+local function familyName(id) local f=ST and ST.FamilyById[id] return f and f.name or tostring(id) end
+local function monsterNames(f)
+	local names={}
+	for _,id in ipairs(tbl(f and f.monsters)) do
+		local m=Data.Monsters[id]
+		if type(m)=="table" then
+			local region=Data.RegionById and Data.RegionById[m.region]
+			table.insert(names,escape(m.name)..(region and (" ("..escape(region.name)..")") or (m.seaCreature and " (fished up)" or "")))
+		end
+	end
+	return table.concat(names,", ")
+end
+local function drawSummary(st)
+	local levels=skillsOf(state)
+	local sk=tbl(levels.Slayer)
+	local lvl=num(sk.level,num(st.level,1))
+	card({name="SlayerTaskSummary",motif="Hunt",accent=rgb("B23A48"),title="Slayer "..lvl,titleColor=rgb(lighten("B23A48",.4)),
+		subtitle=fmt(num(st.points,0)).." points  ·  streak "..fmt(num(st.streak,0)).."  ·  "..fmt(num(st.completed,0)).." tasks done",
+		badge=paint(fmt(num(st.points,0)).." pts","F3C66E"),
+		detail="Kill your task's monsters to train Slayer (Slayer XP ≈ the monster's health ÷ "..ST.HP_PER_XP.."). Every 10th task in a row pays x5 points, every 50th x15, every 100th x25.",
+		bar=sk.fraction and {fraction=num(sk.fraction,0),color=rgb("B23A48"),caption=sk.maxed and "MAX LEVEL" or (fmt(num(sk.xp,0)).." Slayer XP")} or nil})
+end
+local function drawTask(st)
+	local task=type(st.task)=="table" and st.task or nil
+	heading("CURRENT    /    TASK")
+	if not task then
+		card({name="SlayerTaskNone",motif="Hunt",title="No task",titleColor=muted,subtitle="Visit a Slayer master",
+			detail="Choose a master on the Masters view (or speak to one in person). Next task pays x"..num(st.nextMult,1).." points."})
+		return
+	end
+	local f=ST.FamilyById[task.family]
+	local m=ST.MasterById[task.master]
+	local killed,amount=num(task.killed,0),math.max(1,num(task.amount,1))
+	local points=num(st.points,0)
+	local skipReason=points<ST.SKIP_COST and ("Needs "..ST.SKIP_COST.." points.") or nil
+	local actions
+	if confirm=="cancel" then
+		actions={{name="SlayerCancelConfirm",caption="Confirm cancel",fn=function() confirm=nil send("slayerCancel") end},{name="SlayerCancelKeep",caption="Keep task",fn=function() confirm=nil render() end}}
+	else
+		actions={{name="SlayerSkip",caption="Skip ("..ST.SKIP_COST.." pts)",disabled=skipReason~=nil,reason=skipReason,fn=function() send("slayerSkip") end},
+			{name="SlayerCancel",caption="Cancel",fn=function() confirm="cancel" render() end}}
+	end
+	local hex=f and f.color or "B23A48"
+	card({name="SlayerTaskCurrent",motif="Hunt",accent=rgb(hex),title=escape(familyName(task.family))..(task.extended and "  ·  extended" or ""),titleColor=rgb(lighten(hex,.4)),
+		subtitle="From "..escape(m and m.name or tostring(task.master)),badge=fmt(killed).." / "..fmt(amount),badgeColor=ivory,
+		detail="Hunt: "..monsterNames(f),
+		bar={fraction=killed/amount,color=rgb(hex),caption=fmt(amount-killed).." left"},
+		lines={"Completion: "..fmt(ST.pointsFor(task.master,num(st.streak,0)+1)).." points (x"..num(st.nextMult,1)..") + "..fmt(ST.bountyFor(task.master,{GildedBounty=table.find(tbl(st.unlocks),"GildedBounty")~=nil})).." coins"},
+		actions=actions})
+	if confirm=="cancel" then para(container(),paint("Cancelling is free but breaks your streak of "..num(st.streak,0)..".","E8806A"),1,muted) end
+end
+local function drawMasters(st)
+	heading("SLAYER    /    MASTERS")
+	local hasTask=type(st.task)=="table"
+	for _,m in ipairs(ST.Masters) do
+		local verdict=tbl(tbl(st.masters)[m.id])
+		local ok=verdict.ok==true
+		local total=0
+		for _,t in ipairs(m.tasks) do total+=t.weight end
+		local list={}
+		for _,t in ipairs(m.tasks) do
+			local fam=tbl(tbl(st.families)[t.family])
+			local blocked=table.find(tbl(st.blocked),t.family)~=nil
+			table.insert(list,(fam.ok==true and not blocked and check or cross).." "..escape(familyName(t.family)).." "..t.min.."–"..t.max.." ("..math.floor(t.weight/total*100+.5).."%)")
+		end
+		local reason=hasTask and "Finish, skip or cancel your task first." or (not ok and tostring(verdict.reason or "Unavailable")..".") or nil
+		card({name="SlayerMaster"..m.id,motif="Hunt",accent=rgb(m.color),title=escape(m.name),titleColor=rgb(lighten(m.color,.4)),
+			subtitle=escape((Data.RegionById[m.region] or {}).name or m.region).."  ·  Combat "..m.combat..(m.slayer>1 and ("  ·  Slayer "..m.slayer) or ""),
+			badge=paint(m.points.." pts / task",ok and "F3C66E" or "E8806A"),detail=escape(m.blurb),
+			lines={table.concat(list,"   "),"Bounty: "..fmt(m.bounty).." coins per task"},
+			actions={{name="SlayerGetTask"..m.id,caption="Get task",primary=reason==nil,disabled=reason~=nil,reason=reason,fn=function() send("slayerTask",m.id) end}}})
+	end
+end
+local function drawFamilies(st)
+	local blocked=tbl(st.blocked)
+	local slots=num(st.blockSlots,ST.BLOCK_SLOTS)
+	heading("FAMILIES    /    BLOCK LIST  "..#blocked.." / "..slots)
+	for _,f in ipairs(ST.Families) do
+		local verdict=tbl(tbl(st.families)[f.id])
+		local isBlocked=table.find(blocked,f.id)~=nil
+		local action
+		if isBlocked then action={name="SlayerUnblock"..f.id,caption="Unblock",fn=function() send("slayerUnblock",f.id) end}
+		else
+			local reason=(#blocked>=slots and "Every block slot is full.") or (num(st.points,0)<ST.BLOCK_COST and ("Needs "..ST.BLOCK_COST.." points.")) or nil
+			action={name="SlayerBlock"..f.id,caption="Block ("..ST.BLOCK_COST.." pts)",disabled=reason~=nil,reason=reason,fn=function() send("slayerBlock",f.id) end}
+		end
+		card({name="SlayerFamily"..f.id,motif="Hunt",accent=rgb(f.color),title=escape(f.name),titleColor=rgb(lighten(f.color,.4)),
+			subtitle="Slayer "..f.slayer..(f.sea and "  ·  sea creatures" or ""),
+			badge=isBlocked and paint("BLOCKED","E8806A") or (verdict.ok==true and paint("REACHABLE","9EE7D2") or paint(escape(tostring(verdict.reason or "Locked")),"A9BDC1")),
+			detail=monsterNames(f),actions={action}})
+	end
+end
+local function drawShop(st)
+	local owned={}
+	for _,id in ipairs(tbl(st.unlocks)) do owned[id]=true end
+	local levels=skillsOf(state)
+	local lvls={}
+	for skill,info in pairs(levels) do lvls[skill]=num(tbl(info).level,1) end
+	heading("POINTS    /    SHOP  ·  "..fmt(num(st.points,0)).." points")
+	for _,e in ipairs(ST.Shop) do
+		local ok,reason=ST.canBuy(e.id,{points=num(st.points,0),unlocks=owned,levels=lvls,items=tbl(state.items)})
+		local have=owned[e.id]==true
+		local costs={}
+		for id,n in pairs(e.costs or {}) do table.insert(costs,fmt(n).." "..paint(escape(itemName(id)),itemHex(id))) end
+		table.sort(costs)
+		local actions
+		if e.kind=="title" and have then
+			local wearing=st.title==e.id
+			actions={{name="SlayerWear"..e.id,caption=wearing and "Hide title" or "Wear",fn=function() send("slayerTitle",wearing and "none" or e.id) end}}
+		elseif have then
+			actions={{name="SlayerBuy"..e.id,caption="Owned",disabled=true,reason="Already unlocked."}}
+		else
+			actions={{name="SlayerBuy"..e.id,caption=e.kind=="craft" and "Assemble" or "Buy",primary=ok,disabled=not ok,reason=reason,fn=function() send("slayerBuy",e.id) end}}
+		end
+		card({name="SlayerShop"..e.id,motif="Hunt",title=escape(e.name),titleColor=have and mint or ivory,
+			subtitle=({unlock="Unlock",extend="Task extension",consumable="Consumable",title="Cosmetic title",craft="Visorwright"})[e.kind] or e.kind,
+			badge=have and paint("OWNED","7FE3CC") or paint(e.cost>0 and (fmt(e.cost).." pts") or "free",num(st.points,0)>=e.cost and "F3C66E" or "E8806A"),
+			detail=escape(e.text),lines={#costs>0 and ("Materials: "..table.concat(costs,", ")) or nil},actions=actions})
+	end
+end
+local function drawSuperiors(st)
+	local owned=table.find(tbl(st.unlocks),"SuperiorCalling")~=nil
+	local log=tbl(st.superiors)
+	local total=0
+	for _,n in pairs(log) do total+=num(n,0) end
+	card({name="SlayerSuperiorSummary",motif="Hunt",title="Superior log",titleColor=gold,subtitle=fmt(total).." superiors slain",
+		badge=owned and paint("CALLING","9EE7D2") or paint("LOCKED","E8806A"),
+		detail=owned and ("Each task kill has a 1 in "..math.floor(1/ST.SUPERIOR_CHANCE+.5).." chance to raise a superior. Only you can fight it; it withdraws after "..ST.SUPERIOR_LIFETIME.."s.")
+			or "Unlock Call of the Superior in the Shop to meet stronger variants with unique loot."})
+	heading("SUPERIORS")
+	for _,id in ipairs(ST.SuperiorOrder) do
+		local def=ST.Superiors[id]
+		local n=num(log[id],0)
+		if n>0 then
+			card({name="SlayerSuperior"..id,motif="Hunt",title=escape(def.name),titleColor=rgb(lighten(def.color,.35)),
+				subtitle="Lv "..def.level.."  ·  "..paint(fmt(def.hp).." ❤","FF6B6B").."  ·  "..fmt(ST.killXp(def)).." Slayer XP",badge=fmt(n).." slain",badgeColor=ivory})
+		else
+			card({name="SlayerSuperior"..id,locked=true,title="???",titleColor=muted,subtitle=escape(familyName(def.family)).." superior  ·  not yet met"})
+		end
+	end
+end
+local function drawSlayerTasks()
+	ST=Data and type(Data.SlayerTasks)=="table" and Data.SlayerTasks or nil
+	if not ST then return baseSlayer() end
+	sectionBar(VIEWS,view,function(name) view=name confirm=nil render() end,{small=true,prefix="SlayerView",maxPer=compactAtlas and 3 or 5})
+	local st=type(state.slayerTasks)=="table" and state.slayerTasks or nil
+	if view=="Tasks" then
+		if st then drawSummary(st) drawTask(st) else syncing("slayer tasks") end
+		heading("BOSS LINES    /    LINE RANKS")
+		para(container(),paint("Boss lines keep their own line ranks (1–9). Each boss slain also trains the Slayer skill.","A9BDC1"),1,muted)
+		return baseSlayer()
+	end
+	if not st then syncing("slayer tasks") return end
+	if view=="Masters" then drawMasters(st)
+	elseif view=="Masters" then drawMasters(st)
+	elseif view=="Families" then drawFamilies(st)
+	elseif view=="Shop" then drawShop(st)
+	else drawSuperiors(st) end
+end
+Pages.drawSlayer=drawSlayerTasks
+end
+-- End Slayer tasks section.
+
+------------------------------------------------------------------------------
 -- Hunt › Dungeon: Observatory classes, class levels, floors I–VII, Master Mode,
 -- secrets, grading and credit rules (Dungeons / Dungeon Classes teams).
 -- Floors are chosen at the in-world daises by the Vault Gate; the class and

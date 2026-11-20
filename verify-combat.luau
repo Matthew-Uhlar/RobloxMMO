@@ -156,7 +156,7 @@ do
 		ok(not signatures[signature], id .. " silhouette differs from the others")
 		signatures[signature] = true
 	end
-	eq(monsterCount, 17, "every monster in Data has a model (13 + 4 Shattered Crown)")
+	eq(monsterCount, 21, "every monster in Data has a model (13 + 4 Shattered Crown + 4 slayer-only)")
 	ok(Combat.blueprint("sprite", "A8DADC", false).flying and Combat.blueprint("harrier", "7B8CDE", false).flying, "flyers hover")
 	ok(not Combat.blueprint("golem", "D4A84B", false).flying, "golems walk")
 	for line, def in pairs(Data.Slayers) do
