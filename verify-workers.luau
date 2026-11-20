@@ -1022,5 +1022,39 @@ do
 	eq(cmd(legacy,"workerClaim","5").items.Celestium,7,"idle Celestium store claimed once")
 end
 
+------------------------------------------------------------------------------
+-- Pets depth: idle worker claims feed no pet hooks (player-XP multiplier,
+-- pet XP and Taming share, skilling-pet rolls).
+------------------------------------------------------------------------------
+do
+	local function farmer(id,withPet)
+		return seeded(id,function(pr)
+			pr.worker=true
+			pr.workers={{resource="Herb",tier=1,lastClaim=utc}}
+			if withPet then
+				pr.pets={{id="Mossback",level=50,xp=0,rarity="Legendary"}}
+				pr.activePet=1
+			end
+			pr.petSkillXp={Farming=9999}
+		end)
+	end
+	local petted,plain=farmer(9101,true),farmer(9102,false)
+	petted,plain=away(petted,600),away(plain,0)
+	-- Snapshots share the live profile tables, so read the numbers first.
+	local a0,b0=st(petted),st(plain)
+	ok(a0.workers[1].ready>0 and a0.workers[1].ready==b0.workers[1].ready,"both fleets accrued the same Herb")
+	local fa,fb,ta=a0.xp.Farming,b0.xp.Farming,a0.xp.Taming or 0
+	local a1=cmd(petted,"workerClaim","1")
+	local b1=cmd(plain,"workerClaim","1")
+	local gainA,gainB=a1.xp.Farming-fa,b1.xp.Farming-fb
+	ok(gainB>0,"worker claim grants Farming XP")
+	eq(gainA,gainB,"summoned pet's XP ability does not boost worker XP")
+	eq(a1.depth.pets[1].xp,0,"summoned pet earns no XP from worker claims")
+	eq(a1.xp.Taming or 0,ta,"no Taming share from worker claims")
+	eq(a1.items.BloomsnailPet,nil,"no skilling pet from worker XP")
+	services.Players.PlayerRemoving:Fire(petted)
+	eq(data["p9101"].profile.petSkillXp.Farming,9999,"worker XP banks nothing toward a skilling pet")
+end
+
 print("PASS: "..checks.." worker depth assertions.")
 print("SUITE-END verify-workers.luau")

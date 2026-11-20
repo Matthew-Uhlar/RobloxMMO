@@ -587,17 +587,17 @@ local verbs = {
 	accessory = function(item) return Data.Items[item] ~= nil and Data.Items[item].kind == "accessory" end,
 	petSummon = function(item) return type(item) == "string" and item:match("^%d+$") ~= nil end,
 	petAdopt = function(item) return Data.Items[item] ~= nil and Data.Items[item].kind == "pet" end,
-	-- Pets depth verbs.
+	-- Pets depth verbs name the pet "index:speciesId" (server checks both).
 	petItem = function(item)
-		local index, id = tostring(item):match("^(%d+):(%w*)$")
-		return index ~= nil and (id == "" or id == "none" or Data.PetDepth.HeldItems[id] ~= nil)
+		local index, species, id = tostring(item):match("^(%d+):(%w+):(%w*)$")
+		return index ~= nil and Data.PetById[species] ~= nil and (id == "" or id == "none" or Data.PetDepth.HeldItems[id] ~= nil)
 	end,
 	petCandy = function(item)
-		local index, id = tostring(item):match("^(%d+):(%w+)$")
-		return index ~= nil and Data.PetDepth.Candies[id] ~= nil
+		local index, species, id = tostring(item):match("^(%d+):(%w+):(%w+)$")
+		return index ~= nil and Data.PetById[species] ~= nil and Data.PetDepth.Candies[id] ~= nil
 	end,
-	petTierBoost = function(item) return tostring(item):match("^%d+$") ~= nil end,
-	petUpgrade = function(item) return tostring(item):match("^%d+$") ~= nil end,
+	petTierBoost = function(item) local index, species = tostring(item):match("^(%d+):(%w+)$") return index ~= nil and Data.PetById[species] ~= nil end,
+	petUpgrade = function(item) local index, species = tostring(item):match("^(%d+):(%w+)$") return index ~= nil and Data.PetById[species] ~= nil end,
 	petClaim = function(item) return item == nil end,
 	petCancel = function(item) return item == nil end,
 	petShop = function(item) return Data.PetDepth.ShopByItem[item] ~= nil end,
@@ -1164,6 +1164,29 @@ do
 	assert(find(quiet.gui:FindFirstChild("ActionBar"), "XpPopup").Text:find("+40 Combat", 1, true), "kill snapshot shows the XP popup")
 	noFailures(ui, "combat xp on kill")
 	checks += 4
+	-- Pets depth review fixes (on this run, no extra harness): the Roost Cancel
+	-- needs a Confirm and is hidden once ready; one candy button per type;
+	-- verbs carry index:speciesId.
+	local function last() return ui.sent[#ui.sent] or {} end
+	visit(ui, "Hero", "Pets")
+	noFailures(ui, "pets page")
+	local sentBefore = #ui.sent
+	press(find(ui.scroll, "PetCancelButton"))
+	assert(#ui.sent == sentBefore and find(ui.scroll, "PetCancelConfirm") ~= nil, "Roost cancel asks for confirmation first")
+	press(find(ui.scroll, "PetCancelConfirm"))
+	assert(last()[1] == "petCancel", "confirmed cancel sends petCancel")
+	press(find(ui.scroll, "PetCandyButton"))
+	assert(last()[1] == "petCandy" and last()[2] == "1:Tidewing:PetCandy", "Pet Candy button feeds Pet Candy: " .. tostring(last()[2]))
+	press(find(ui.scroll, "StarlitCandyButton"))
+	assert(last()[1] == "petCandy" and last()[2] == "1:Tidewing:StarlitCandy", "Starlit button feeds Starlit Candy: " .. tostring(last()[2]))
+	local readySnap = snapshot({ message = "" })
+	readySnap.depth.petDepth.upgrade.ready, readySnap.depth.petDepth.upgrade.remaining = true, 0
+	ui.update.OnClientEvent:Fire(readySnap)
+	visit(ui, "Hero", "Pets")
+	assert(find(ui.scroll, "PetCancelButton") == nil and find(ui.scroll, "PetCancelConfirm") == nil, "no Cancel once the Roost job is ready")
+	assert(find(ui.scroll, "PetClaimButton") ~= nil, "Claim shown when ready")
+	noFailures(ui, "pets roost buttons")
+	checks += 7
 end
 
 -- 7. Combat HUD (combat.client.lua) never collides with the atlas HUD, which owns

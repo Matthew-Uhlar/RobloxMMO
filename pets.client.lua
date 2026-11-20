@@ -4,7 +4,9 @@
 -- Data.PetDepth.bodyPlan (primitives only, <= 15 anchored, non-colliding,
 -- non-queryable parts), so nothing replicates per frame. Flyers and floaters
 -- hover and bob, ground pets hop while their owner moves; wings flap.
--- Followers beyond RANGE studs of the camera are released.
+-- Followers are built within RANGE studs of the camera and released beyond
+-- RELEASE_RANGE; between the two an existing follower is kept and a missing
+-- one is not built (hysteresis: no release/rebuild thrash at the edge).
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -15,6 +17,7 @@ if not ok or type(Data) ~= "table" or type(Data.PetDepth) ~= "table" then return
 local PD = Data.PetDepth
 
 local RANGE = 160
+local RELEASE_RANGE = 180
 local TICK = 1 / 30
 local SIDE = Vector3.new(-3.2, 0, 1.6) -- left of and slightly behind the owner (the legacy bond companion sits right)
 local SHAPES = {Ball = Enum.PartType.Ball, Block = Enum.PartType.Block, Cylinder = Enum.PartType.Cylinder}
@@ -24,7 +27,7 @@ folder.Name = "Companions"
 folder.Parent = workspace
 
 local followers = {} -- [player] = {key, model, parts, offsets, flaps, plan, pos, yaw, t}
-local Companions = {followers = followers, folder = folder}
+local Companions = {followers = followers, folder = folder, RANGE = RANGE, RELEASE_RANGE = RELEASE_RANGE}
 
 local function color(hex)
 	local okColor, value = pcall(Color3.fromHex, hex)
@@ -105,7 +108,8 @@ function Companions.step(dt)
 		local id, rarity = PD.parseAttribute(player:GetAttribute("ActivePet"))
 		local character = player.Character
 		local root = character and character:FindFirstChild("HumanoidRootPart")
-		local far = root and eye and (root.Position - eye).Magnitude > RANGE
+		local dist = root and eye and (root.Position - eye).Magnitude or 0
+		local far = dist > (if followers[player] then RELEASE_RANGE else RANGE)
 		if not id or not root or far then
 			release(player)
 		else

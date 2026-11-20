@@ -132,6 +132,19 @@ for id, c in pairs(PD.Candies) do
 	ok(Data.Items[id] and Data.Items[id].petItem == "candy" and c.xp > 0, id .. " candy")
 	ok(shop[id] or Data.Recipes[id] ~= nil or sources[id], id .. " obtainable")
 end
+-- No craft-and-sell mint: every pet recipe (gear, candy) sells for at most its inputs.
+local petRecipes = 0
+for id, rec in pairs(Data.Recipes) do
+	local out = Data.Items[rec.output]
+	if out and (out.kind == "petitem" or out.kind == "pet" or PD.RECIPE_CATEGORIES[rec.category]) then
+		petRecipes += 1
+		local input = 0
+		for cost, n in pairs(rec.costs) do input += (Data.Items[cost] and Data.Items[cost].value or 0) * n end
+		ok(out.value * (rec.amount or 1) <= input, string.format("%s value %d x%d <= inputs %d", id, out.value, rec.amount or 1, input))
+	end
+end
+ok(petRecipes >= 8, "pet recipes value-checked (" .. petRecipes .. ")")
+ok(Data.Items.PetCandy.value <= 162 and Data.Items.StarlitCandy.value < 4000, "candy no longer sells above its Hearth inputs")
 ok(Data.Items.AscendantPrism.petItem == "tierBoost" and sources.AscendantPrism, "Ascendant Prism tier boost drops")
 ok(sources.GlimmerClover and sources.TidepearlPendant and sources.StarlitCandy, "rare held items and Starlit Candy drop")
 for id, rec in pairs(Data.Recipes) do
@@ -305,6 +318,20 @@ near(P.petSkillXpMult(tideP, "Fishing"), 1.1, "Sky Diver +10% Fishing XP")
 eq(P.petSkillXpMult(tideP, "Mining"), 1, "no XP boost off-skill")
 eq(P.petSkillXpMult(bare(), "Fishing"), 1, "no pet no boost")
 near(P.petEffects(tideP).gather.Fishing, 15, "Undertow 15% doubled catches")
+-- Doubled harvests are a yield candidate in gatherYieldMult (max, never stacked).
+do
+	local hit, miss = function() return 0 end, function() return 0.999 end
+	local res = {resource = {skill = "Fishing"}}
+	local mult, perks = P.gatherYieldMult(tideP, res, hit, 0)
+	ok(mult == 2 and res.petDouble == true and perks == nil, "pet doubled harvest without mastery")
+	local res2 = {resource = {skill = "Fishing"}}
+	eq(P.gatherYieldMult(tideP, res2, miss, 0), 1, "missed pet roll")
+	eq(res2.petDouble, nil, "no flag on a miss")
+	local res3 = {resource = {skill = "Mining"}}
+	local calls = 0
+	eq(P.gatherYieldMult(tideP, res3, function() calls += 1 return 0 end, 0), 1, "off-skill pet: no double")
+	eq(calls, 0, "off-skill pet draws no roll")
+end
 local foxR = journal({id = "Emberfox", level = 50, xp = 0, rarity = "Rare"})
 near(P.petEffects(foxR).family.Bramble, 0.3 * 50 * 0.8, "Bramble Bane at Rare 50")
 eq(P.petEffects(journal({id = "Emberfox", level = 50, xp = 0, rarity = "Uncommon"})).family.Bramble, nil, "Bramble Bane locked at Uncommon")
@@ -508,58 +535,58 @@ for _ = 1, 11 do cmd(owner, "petShop", "PetCandy") end
 eq(st(owner).items.PetCandy, 12, "bought a stack")
 
 -- Candy: XP, cap and validation.
-local fed = cmd(owner, "petCandy", "1:PetCandy")
+local fed = cmd(owner, "petCandy", "1:Tidewing:PetCandy")
 local fedRow = fed.depth.pets[1]
 local eL, eX = PD.fromTotal(20000, "Rare")
 eq(fedRow.level, eL, "candy levels the pet")
 near(fedRow.xp, eX, "candy XP remainder")
 eq(fedRow.candy, 1, "one candy eaten")
 eq(fed.items.PetCandy, 11, "candy consumed")
-ok(has(cmd(owner, "petCandy", "1:Ore").message, "Choose a Pet Candy"), "non-candy refused")
-ok(has(cmd(owner, "petCandy", "9:PetCandy").message, "Choose one of your pets"), "missing pet refused")
-ok(has(cmd(owner, "petCandy", "x:PetCandy").message, "Choose one of your pets"), "bad index refused")
-ok(has(cmd(owner, "petCandy", "1:StarlitCandy").message, "You have no"), "unowned candy refused")
-for _ = 2, PD.CANDY_MAX do cmd(owner, "petCandy", "1:PetCandy") end
+ok(has(cmd(owner, "petCandy", "1:Tidewing:Ore").message, "Choose a Pet Candy"), "non-candy refused")
+ok(has(cmd(owner, "petCandy", "9:Tidewing:PetCandy").message, "Choose one of your pets"), "missing pet refused")
+ok(has(cmd(owner, "petCandy", "x:Tidewing:PetCandy").message, "Choose one of your pets"), "bad index refused")
+ok(has(cmd(owner, "petCandy", "1:Tidewing:StarlitCandy").message, "You have no"), "unowned candy refused")
+for _ = 2, PD.CANDY_MAX do cmd(owner, "petCandy", "1:Tidewing:PetCandy") end
 local capped = st(owner)
 eq(capped.depth.pets[1].candy, PD.CANDY_MAX, "candy uses reach the cap")
 eq(capped.items.PetCandy, 12 - PD.CANDY_MAX, "one candy per use")
-ok(has(cmd(owner, "petCandy", "1:PetCandy").message, "eaten all"), "capped pet refuses candy")
+ok(has(cmd(owner, "petCandy", "1:Tidewing:PetCandy").message, "eaten all"), "capped pet refuses candy")
 eq(st(owner).items.PetCandy, 12 - PD.CANDY_MAX, "refused candy is kept")
 
 -- Held items: equip, swap (old returns), remove, validation, effect.
 local giver = rejoin(owner, function(p) p.items.IronbarkCollar = 1; p.items.GlimmerClover = 1 end)
 owner = giver
 local defBefore = st(owner).depth.stats.defense
-local held = cmd(owner, "petItem", "1:IronbarkCollar")
+local held = cmd(owner, "petItem", "1:Tidewing:IronbarkCollar")
 eq(held.depth.pets[1].item, "IronbarkCollar", "collar equipped")
 eq(held.items.IronbarkCollar, 0, "collar moved from the satchel")
 eq(held.depth.stats.defense - defBefore, 25, "collar defense applies to the summoned pet")
-local swapped = cmd(owner, "petItem", "1:GlimmerClover")
+local swapped = cmd(owner, "petItem", "1:Tidewing:GlimmerClover")
 eq(swapped.depth.pets[1].item, "GlimmerClover", "clover swapped in")
 eq(swapped.items.IronbarkCollar, 1, "old item returned")
-ok(has(cmd(owner, "petItem", "1:GlimmerClover").message, "already holds"), "same item refused")
-ok(has(cmd(owner, "petItem", "1:IronbarkCollar").message, "now holds"), "swap back")
-ok(has(cmd(owner, "petItem", "1:Ore").message, "held item"), "non-held item refused")
-ok(has(cmd(owner, "petItem", "2:IronbarkCollar").message, "do not own"), "unowned held item refused")
-local removed = cmd(owner, "petItem", "1:none")
+ok(has(cmd(owner, "petItem", "1:Tidewing:GlimmerClover").message, "already holds"), "same item refused")
+ok(has(cmd(owner, "petItem", "1:Tidewing:IronbarkCollar").message, "now holds"), "swap back")
+ok(has(cmd(owner, "petItem", "1:Tidewing:Ore").message, "held item"), "non-held item refused")
+ok(has(cmd(owner, "petItem", "2:Emberfox:IronbarkCollar").message, "do not own"), "unowned held item refused")
+local removed = cmd(owner, "petItem", "1:Tidewing:none")
 eq(removed.depth.pets[1].item, nil, "item removed")
 eq(removed.items.IronbarkCollar, 1, "removed item returns")
-ok(has(cmd(owner, "petItem", "1:").message, "holds nothing"), "empty slot")
+ok(has(cmd(owner, "petItem", "1:Tidewing:").message, "holds nothing"), "empty slot")
 
 -- Tier Boost.
 owner = rejoin(owner, function(p) p.items.AscendantPrism = 2 end)
 local beforeTotal = (function() local r = st(owner).depth.pets[3] return PD.totalXp(r.level, r.xp, r.rarity) end)()
-local boosted = cmd(owner, "petTierBoost", "3")
+local boosted = cmd(owner, "petTierBoost", "3:Hearthpup")
 eq(boosted.depth.pets[3].rarity, "Rare", "Hearthpup boosted Uncommon -> Rare")
 eq(boosted.items.AscendantPrism, 1, "prism consumed")
 near(boosted.depth.pets[3].totalXp, beforeTotal, "tier boost keeps lifetime XP")
 owner = rejoin(owner, function(p) p.pets[3].rarity = "Legendary" end)
-ok(has(cmd(owner, "petTierBoost", "3").message, "already Legendary"), "Legendary cannot be boosted")
+ok(has(cmd(owner, "petTierBoost", "3:Hearthpup").message, "already Legendary"), "Legendary cannot be boosted")
 eq(st(owner).items.AscendantPrism, 1, "refused boost keeps the prism")
 
 -- The Roost: costs, timer, claim exactly once, cancel.
 owner = rejoin(owner, function(p) p.coins = 100 end)
-ok(has(cmd(owner, "petUpgrade", "1").message, "The Roost asks"), "too poor for the Roost")
+ok(has(cmd(owner, "petUpgrade", "1:Tidewing").message, "The Roost asks"), "too poor for the Roost")
 local cost = PD.upgradeCost(Data.PetById.Tidewing, "Rare")
 owner = rejoin(owner, function(p)
 	p.coins = cost.coins + 50
@@ -567,7 +594,7 @@ owner = rejoin(owner, function(p)
 	p.activePet = 2
 end)
 local lvlBefore = st(owner).depth.pets[1].level
-local started = cmd(owner, "petUpgrade", "1")
+local started = cmd(owner, "petUpgrade", "1:Tidewing")
 ok(has(started.message, "returns Epic"), "upgrade started: " .. tostring(started.message))
 eq(#started.depth.pets, 2, "pet handed to the Roost")
 eq(started.coins, 50, "coins paid")
@@ -577,7 +604,7 @@ eq(started.depth.pets[1].active, true, "active pointer follows the summoned pet"
 local job = started.depth.petDepth.upgrade
 ok(job and job.id == "Tidewing" and job.to == "Epic" and job.ready == false, "Roost job in the snapshot")
 eq(job.remaining, cost.seconds, "timer runs for the tier's duration")
-ok(has(cmd(owner, "petUpgrade", "1").message, "already caring"), "one Roost slot")
+ok(has(cmd(owner, "petUpgrade", "1:Emberfox").message, "already caring"), "one Roost slot")
 ok(has(cmd(owner, "petClaim").message, "more"), "early claim refused")
 -- Persistence while waiting.
 owner = rejoin(owner)
@@ -596,13 +623,13 @@ eq(#st(owner).depth.pets, 3, "second claim adds nothing")
 -- Cancel returns the pet without a refund.
 local cost2 = PD.upgradeCost(Data.PetById.Hearthpup, "Legendary")
 eq(cost2, nil, "Legendary Hearthpup cannot be upgraded")
-ok(has(cmd(owner, "petUpgrade", "2").message, "already Legendary"), "Roost refuses Legendary pets")
+ok(has(cmd(owner, "petUpgrade", "2:Hearthpup").message, "already Legendary"), "Roost refuses Legendary pets")
 local cost3 = PD.upgradeCost(Data.PetById.Emberfox, "Epic")
 owner = rejoin(owner, function(p)
 	p.coins = cost3.coins
 	for id, n in pairs(cost3.items) do p.items[id] = n end
 end)
-cmd(owner, "petUpgrade", "1")
+cmd(owner, "petUpgrade", "1:Emberfox")
 local cancelled = cmd(owner, "petCancel")
 ok(has(cancelled.message, "not refunded"), "cancel message")
 eq(cancelled.coins, 0, "cancel keeps the fee")
@@ -620,18 +647,72 @@ local cook = seeded(802, function(p)
 	p.petSkillXp = {Cooking = 9950}
 end)
 local xp0, tam0 = st(cook).xp.Cooking, st(cook).xp.Taming
-queue(0.001) -- the skilling pet roll (XP is granted first) ...
-queue(0.1) -- ... then Second Helping (15%) succeeds
+-- The cook already owns a Hearthpup, so the banked skilling-pet roll is spent
+-- without drawing a roll (no second copy of a species).
+queue(0.1) -- Second Helping (15%) succeeds
 local crafted = cmd(cook, "craft", "PetCandy")
 eq(crafted.xp.Cooking - xp0, 99, "Taste Tester +10% Cooking XP")
 eq(crafted.items.PetCandy, 2, "Second Helping doubled the craft")
 ok(has(crafted.message, "from your pet"), "extra craft message")
-eq(crafted.items.HearthpupPet, 1, "skilling pet roll after 10k banked XP")
+eq(crafted.items.HearthpupPet, nil, "no skilling pet while the species is owned")
 eq(crafted.xp.Taming - tam0, 0, "level-100 pets earn no XP, so no Taming share")
 eq(data.p802 and true, true, "cook saved")
 queue(0.9)
 local plainCraft = cmd(cook, "craft", "PetCandy")
 eq(plainCraft.items.PetCandy, 3, "failed proc crafts one")
+eq(#rolls, 0, "owned species: the skilling-pet bank drew no roll")
+eq(profileOf(cook).petSkillXp.Cooking, 9950 + 90 + 90 - PD.SKILL_PET_STEP, "owned species: banked XP still spent")
+-- Skilling pets: the first copy drops at the usual pace; while one is owned
+-- (satchel, roster or Roost) no further copy drops.
+local chef = seeded(808, function(p)
+	p.xp.Cooking = X[20]
+	p.levelRewards.Cooking = 20
+	p.items = {Sunwheat = 30, Duskberry = 20, Starfruit = 5}
+	p.petSkillXp = {Cooking = 9950}
+end)
+queue(0.001)
+local first = cmd(chef, "craft", "PetCandy")
+eq(first.items.HearthpupPet, 1, "skilling pet drops after 10k banked XP")
+chef = rejoin(chef, function(p) p.petSkillXp = {Cooking = 9950} end)
+queue(0.001)
+eq(cmd(chef, "craft", "PetCandy").items.HearthpupPet, 1, "no second skilling pet while one sits in the satchel")
+eq(#rolls, 1, "no roll drawn for an owned species")
+table.clear(rolls)
+chef = rejoin(chef, function(p)
+	p.items.HearthpupPet = nil
+	p.pets = {}
+	p.petUpgrade = {pet = {id = "Hearthpup", level = 3, xp = 0, rarity = "Uncommon"}, from = "Uncommon", to = "Rare", ends = utc + 999}
+	p.petSkillXp = {Cooking = 9950}
+end)
+queue(0.001)
+eq(cmd(chef, "craft", "PetCandy").items.HearthpupPet, nil, "a Hearthpup at the Roost still counts as owned")
+table.clear(rolls)
+chef = rejoin(chef, function(p) p.petUpgrade = nil; p.petSkillXp = {Cooking = 9950} end)
+queue(0.001)
+eq(cmd(chef, "craft", "PetCandy").items.HearthpupPet, 1, "with none of the species left, the pet can drop again")
+-- Pace: the first-drop chance per 10k step is still 10k / 400k.
+near(PD.skillPetChance(PD.SKILL_PET_STEP, 0), PD.SKILL_PET_STEP / PD.SKILL_PET_XP, "first drop ~1 per 400k XP")
+-- Extra crafts never duplicate one-of-a-kind outputs (gear, tools, accessories).
+local gearId
+for id, rec in pairs(Data.Recipes) do
+	local out = Data.Items[rec.output]
+	if rec.skill == "Smithing" and not rec.repeatable and out.kind ~= "material" and out.kind ~= "consumable" and not rec.collectionTier then gearId = id break end
+end
+ok(gearId ~= nil, "found a one-of-a-kind Smithing recipe")
+local gearRec = Data.Recipes[gearId]
+local smith = seeded(809, function(p)
+	p.xp.Smithing = Data.MAX_XP
+	p.levelRewards.Smithing = 99
+	p.items = table.clone(gearRec.costs)
+	p.pets = {{id = "Cindercrab", level = 100, xp = 0, rarity = "Legendary"}}
+	p.activePet = 1
+end)
+queue(0) -- would win the 10% Slag Sifter roll if gear rolled
+local forged = cmd(smith, "craft", gearId)
+eq(forged.items[gearRec.output], gearRec.amount, "gear crafted once: " .. tostring(forged.message))
+ok(not has(forged.message, "from your pet"), "no pet extra on gear")
+eq(#rolls, 1, "no extra-craft roll for one-of-a-kind outputs")
+table.clear(rolls)
 -- Taming share from a levelling pet.
 local trainer = seeded(803, function(p)
 	p.xp.Cooking = X[20]
@@ -689,6 +770,68 @@ eq(st(junk).depth.petDepth.upgrade, nil, "unknown Roost pet dropped")
 local good = seeded(807, function(p) p.petUpgrade = {pet = {id = "Burrowmole", level = 5, xp = 0}, to = "Rare", ends = utc + 100} end)
 local gs = st(good)
 ok(gs.depth.petDepth.upgrade and gs.depth.petDepth.upgrade.from == "Uncommon", "valid Roost job kept and normalised")
+-- Review fixes: Roost claims respect the roster cap, Cancel on a finished
+-- job claims, migration never deletes a Roost pet.
+local MAX_PETS = 64
+local function roster(n)
+	local list = {}
+	for i = 1, n do list[i] = {id = "Gustling", level = 1, xp = 0} end
+	return list
+end
+local full = seeded(811, function(p)
+	p.pets = roster(MAX_PETS)
+	p.petUpgrade = {pet = {id = "Burrowmole", level = 5, xp = 0, rarity = "Uncommon"}, from = "Uncommon", to = "Rare", ends = utc + 5}
+end)
+advance(10)
+local refused = cmd(full, "petClaim")
+ok(has(refused.message, "full"), "claim refused while the roster is full: " .. tostring(refused.message))
+eq(#refused.depth.pets, MAX_PETS, "nothing added past the cap")
+ok(refused.depth.petDepth.upgrade ~= nil and refused.depth.petDepth.upgrade.ready == true, "job stays at the Roost")
+full = rejoin(full, function(p) table.remove(p.pets) end)
+local finished = cmd(full, "petCancel")
+ok(has(finished.message, "returns Rare"), "cancel on a finished job claims instead: " .. tostring(finished.message))
+eq(finished.depth.pets[MAX_PETS].id, "Burrowmole", "finished pet returned")
+eq(finished.depth.pets[MAX_PETS].rarity, "Rare", "finished cancel keeps the upgrade")
+eq(finished.depth.petDepth.upgrade, nil, "Roost emptied once")
+local crowded = seeded(812, function(p)
+	p.pets = roster(MAX_PETS)
+	p.petUpgrade = {pet = {id = "Burrowmole", level = 5, xp = 0, rarity = "Uncommon"}, to = "Legendary", ends = utc + 50}
+end)
+local cs = st(crowded)
+eq(#cs.depth.pets, MAX_PETS + 1, "invalid Roost job returns its pet even past the cap")
+eq(cs.depth.pets[MAX_PETS + 1].id, "Burrowmole", "returned pet kept")
+-- Pet verbs name the pet as index:speciesId; a shifted roster is refused.
+local named = seeded(813, function(p)
+	p.pets = {{id = "Tidewing", level = 1, xp = 0}, {id = "Emberfox", level = 1, xp = 0}}
+	p.items = {PetCandy = 3, AscendantPrism = 1}
+end)
+ok(has(cmd(named, "petCandy", "1:PetCandy").message, "Choose one of your pets"), "bare index (old form) refused")
+ok(has(cmd(named, "petTierBoost", "1").message, "Choose one of your pets"), "bare index refused for tier boost")
+ok(has(cmd(named, "petCandy", "1:Emberfox:PetCandy").message, "moved"), "species mismatch refused")
+eq(st(named).items.PetCandy, 3, "mismatch spends nothing")
+ok(has(cmd(named, "petTierBoost", "2:Tidewing").message, "moved"), "tier boost checks the species")
+eq(st(named).items.AscendantPrism, 1, "prism kept on a mismatch")
+ok(has(cmd(named, "petTierBoost", "2:Emberfox:x").message, "Choose one of your pets"), "extra argument refused")
+ok(has(cmd(named, "petCandy", "2:Emberfox").message, "Choose one of your pets"), "candy needs a candy id")
+ok(has(cmd(named, "petCandy", "2:Emberfox:PetCandy").message, "enjoys"), "matching species accepted")
+-- Garden growth: the summoned pet's growth counts for the time it was summoned.
+local function gardener(id, summoned)
+	return seeded(id, function(p)
+		p.pets = {{id = "Bloomsnail", level = 100, xp = 0, rarity = "Legendary"}}
+		p.activePet = if summoned then 1 else nil
+		p.garden = {plots = {{crop = "Herb", grown = 0, at = utc}}}
+	end)
+end
+local withPet, without, lateGardener = gardener(814, true), gardener(815, false), gardener(816, false)
+st(withPet); st(without); st(lateGardener)
+advance(120)
+local dismissed = cmd(withPet, "petSummon", "0")
+local late = cmd(lateGardener, "petSummon", "1")
+local control = st(without)
+local fA, fB, fC = dismissed.garden.plots[1].fraction, control.garden.plots[1].fraction, late.garden.plots[1].fraction
+ok(fB > 0.2 and fB < 1, "control plot still growing (" .. fB .. ")")
+ok(fA - fB > 0.05, "growth before dismissal used the summoned pet (" .. fA .. " vs " .. fB .. ")")
+ok(math.abs(fC - fB) < 0.03, "summoning late does not backdate growth (" .. fC .. " vs " .. fB .. ")")
 -- Unknown verbs and malformed input.
 ok(has(cmd(owner, "petUpgrade", "1:2").message, "Choose one of your pets"), "malformed index refused")
 ok(has(cmd(owner, "petItem", nil).message, "Choose one of your pets"), "missing item refused")
@@ -704,6 +847,7 @@ local function vec(x, y, z)
 	return setmetatable(v, {
 		__add = function(a, b) return vec(a.X + b.X, a.Y + b.Y, a.Z + b.Z) end,
 		__sub = function(a, b) return vec(a.X - b.X, a.Y - b.Y, a.Z - b.Z) end,
+		__unm = function(a) return vec(-a.X, -a.Y, -a.Z) end,
 		__mul = function(a, b) if type(b) == "number" then return vec(a.X * b, a.Y * b, a.Z * b) end return vec(a.X * b.X, a.Y * b.Y, a.Z * b.Z) end,
 		__index = function(self, k)
 			if k == "Magnitude" then return math.sqrt(self.X ^ 2 + self.Y ^ 2 + self.Z ^ 2) end
@@ -799,6 +943,34 @@ live = 0
 for _, o in ipairs(folder.children) do if not o.destroyed then live += 1 end end
 eq(live, 0, "unknown species ignored")
 local _ = bob and far
+-- Range hysteresis: built within 160 studs, kept until beyond 180 (no thrash at the edge).
+local function edgeLive()
+	local n = 0
+	for _, o in ipairs(folder.children) do if not o.destroyed and has(o.Name, "Edge") then n += 1 end end
+	return n
+end
+local edge = clientPlayer("Edge", "Tidewing:Rare:3", vec(170, 0, 0))
+local function place(x) edge.root.Position = vec(x, 0, 0); edge.root.CFrame = cf(vec(x, 0, 0)) end
+heartbeat:Fire(0.05)
+eq(edgeLive(), 0, "not built at 170 studs")
+place(150)
+heartbeat:Fire(0.05)
+eq(edgeLive(), 1, "built within 160 studs")
+for _, x in ipairs({161, 170, 179, 165, 175}) do
+	place(x)
+	heartbeat:Fire(0.05)
+	eq(edgeLive(), 1, "kept at " .. x .. " studs")
+end
+local builtBefore = #folder.children
+place(160)
+heartbeat:Fire(0.05)
+eq(#folder.children, builtBefore, "no rebuild while it lingers at the edge")
+place(181)
+heartbeat:Fire(0.05)
+eq(edgeLive(), 0, "released beyond 180 studs")
+place(170)
+heartbeat:Fire(0.05)
+eq(edgeLive(), 0, "not rebuilt between 160 and 180")
 print("PASS: " .. (checks - partD) .. " companion client assertions.")
 
 print("Pets depth QA passed " .. checks .. " checks.")

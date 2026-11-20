@@ -2467,10 +2467,11 @@ function UI.PT.affordable(cost)
 	end
 	return true
 end
--- The Roost job: timer bar, Claim (once ready) and Cancel.
+-- The Roost job: timer bar, Claim (once ready) and Cancel (only while the
+-- timer runs, behind a Confirm step: the fee is never refunded).
 function UI.PT.roost(info)
 	local job=info.upgrade
-	if type(job)~="table" then return end
+	if type(job)~="table" then UI.PT.cancelConfirm=false return end
 	local def=tbl(tbl(Data.PetById)[job.id])
 	local PD=tbl(Data.PetDepth)
 	local total=num(tbl(tbl(PD.Upgrade)[job.to]).seconds,1)
@@ -2482,8 +2483,13 @@ function UI.PT.roost(info)
 		badge=ready and "READY" or clock(remaining),badgeColor=ready and mint or gold,
 		detail=ready and "Your companion is ready to come home at its new rarity." or "Growing into its new rarity. Its lifetime XP is kept; the level is recounted on the new curve.",
 		bar={fraction=ready and 1 or math.clamp(1-remaining/math.max(1,total),0,1),color=rgb(rarityHex(UI.PT.rarity(job.to))),caption=ready and "READY TO CLAIM" or (clock(remaining).." left")},
-		actions={{caption="Claim",primary=true,disabled=not ready,reason="The Roost needs "..clock(remaining).." more.",fn=function() send("petClaim") end},
-			{caption="Cancel",fn=function() send("petCancel") end}}})
+		actions=ready and {{caption="Claim",primary=true,name="PetClaimButton",fn=function() UI.PT.cancelConfirm=false;send("petClaim") end}}
+			or {{caption="Claim",primary=true,name="PetClaimButton",disabled=true,reason="The Roost needs "..clock(remaining).." more.",fn=function() send("petClaim") end},
+				UI.PT.cancelConfirm and {caption="Confirm",name="PetCancelConfirm",fn=function() UI.PT.cancelConfirm=false;send("petCancel") end}
+					or {caption="Cancel",name="PetCancelButton",fn=function() UI.PT.cancelConfirm=true;render() end},
+				UI.PT.cancelConfirm and {caption="Keep",name="PetCancelKeep",fn=function() UI.PT.cancelConfirm=false;render() end} or nil}})
+	-- Cancelling early forfeits the whole fee (coins and materials).
+	if UI.PT.cancelConfirm and not ready then para(container(),paint("Cancelling takes your pet home now at its old rarity. The Roost fee is not refunded. Confirm to cancel.","E8806A"),1,muted) end
 end
 -- One roster tile: rarity frame, icon, name, level, XP bar, summoned tag.
 function UI.PT.tile(grid,index,pet,selected)
@@ -2547,14 +2553,21 @@ function UI.PT.detail(index,pet)
 	local cost=type(pet.upgrade)=="table" and pet.upgrade or nil
 	if cost then table.insert(lines,paint("Roost → "..escape(tostring(cost.to)),rarityHex(UI.PT.rarity(cost.to))).."  "..clock(cost.seconds).."  ·  "..UI.PT.costLine(cost)) end
 	local actions={}
+	-- Pets depth verbs name the pet as "index:speciesId" (the server checks both).
+	local ref=index..":"..tostring(pet.id)
 	table.insert(actions,pet.active==true and {caption="Dismiss",fn=function() send("petSummon","0") end} or {caption="Summon",primary=true,fn=function() send("petSummon",tostring(index)) end})
-	local candyId=count("items","StarlitCandy")>0 and "StarlitCandy" or "PetCandy"
-	local candyBlocked=(candy>=candyMax and "This pet has eaten all its candy.") or (maxed and "Already level "..level..".") or (count("items",candyId)<1 and "Buy Pet Candy from the Roost keeper or cook it at the Hearth.") or nil
-	table.insert(actions,{caption="Candy",name="PetCandyButton",disabled=candyBlocked~=nil,reason=candyBlocked,fn=function() send("petCandy",index..":"..candyId) end})
+	-- One button per candy type, so the player picks which to feed.
+	for _,c in ipairs({{id="PetCandy",caption="Candy",button="PetCandyButton",none="Buy Pet Candy from the Roost keeper or cook it at the Hearth."},
+		{id="StarlitCandy",caption="Starlit",button="StarlitCandyButton",none="Starlit Candy drops from tier 3+ slayer bosses or is cooked at the Hearth."}}) do
+		local blocked=(candy>=candyMax and "This pet has eaten all its candy.") or (maxed and "Already level "..level..".") or (count("items",c.id)<1 and c.none) or nil
+		if c.id=="PetCandy" or count("items",c.id)>0 then
+			table.insert(actions,{caption=c.caption.." ×"..count("items",c.id),name=c.button,disabled=blocked~=nil,reason=blocked,fn=function() send("petCandy",ref..":"..c.id) end})
+		end
+	end
 	if cost then
 		local okCost,why=UI.PT.affordable(cost)
 		local busy=type(tbl(dget("petDepth")).upgrade)=="table"
-		table.insert(actions,{caption="Upgrade",name="PetUpgradeButton",disabled=busy or not okCost,reason=busy and "The Roost is caring for another pet." or why,fn=function() send("petUpgrade",tostring(index)) end})
+		table.insert(actions,{caption="Upgrade",name="PetUpgradeButton",disabled=busy or not okCost,reason=busy and "The Roost is caring for another pet." or why,fn=function() send("petUpgrade",ref) end})
 	end
 	card({name="PetDetail",item=tostring(pet.id).."Pet",title=escape(tostring(def.name or pet.id or "Pet")),titleColor=rgb(hex),edge=rgb(hex),
 		subtitle="Lv "..level.."  ·  "..paint(rarity,hex).."  ·  "..escape(tostring(def.skill or "")).." pet",badge=pet.active==true and "SUMMONED" or nil,badgeColor=mint,
@@ -2565,7 +2578,7 @@ function UI.PT.detail(index,pet)
 		card({name="PetPrism",item="AscendantPrism",title="Ascendant Prism  ×"..count("items","AscendantPrism"),titleColor=rgb(itemHex("AscendantPrism")),
 			subtitle="Tier Boost  ·  "..paint(rarity,hex).." → "..paint(escape(tostring(cost.to)),rarityHex(UI.PT.rarity(cost.to))),
 			detail="Raises this pet one rarity tier at once, skipping the Roost. Lifetime XP is kept.",
-			actions={{caption="Use",primary=true,name="PetPrismButton",fn=function() send("petTierBoost",tostring(index)) end}}})
+			actions={{caption="Use",primary=true,name="PetPrismButton",fn=function() send("petTierBoost",index..":"..tostring(pet.id)) end}}})
 	end
 	-- Held items: equip from the satchel, or take the current one off.
 	local owned={}
@@ -2574,12 +2587,12 @@ function UI.PT.detail(index,pet)
 		heading("HELD ITEM    /    CANDY "..candy.."/"..candyMax)
 		if held then
 			card({name="PetHeldCurrent",item=pet.item,title=escape(tostring(held.name or pet.item)),titleColor=rgb(itemHex(pet.item)),subtitle="Held by "..escape(tostring(def.name or pet.id)),
-				detail=escape(tostring(held.text or "")),actions={{caption="Remove",fn=function() send("petItem",index..":none") end}}})
+				detail=escape(tostring(held.text or "")),actions={{caption="Remove",fn=function() send("petItem",index..":"..tostring(pet.id)..":none") end}}})
 		end
 		for _,id in ipairs(owned) do
 			local h=tbl(PD.HeldItems[id])
 			card({name="PetHeld"..id,item=id,title=escape(itemName(id)).."  ×"..count("items",id),titleColor=rgb(itemHex(id)),detail=escape(tostring(h.text or "")),
-				actions={{caption="Equip",primary=true,fn=function() send("petItem",index..":"..id) end}}})
+				actions={{caption="Equip",primary=true,fn=function() send("petItem",index..":"..tostring(pet.id)..":"..id) end}}})
 		end
 	end
 end

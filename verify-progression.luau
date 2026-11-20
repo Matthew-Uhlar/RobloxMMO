@@ -888,6 +888,56 @@ do
 	local _, joined = P.harvest(farmer, "Herb", {farmingFortune = 0}, always(0.9999), 2, NOW)
 	eq(joined.amount, (1 + 2) * 2 * (1 + math.floor(joined.fortune / 100)), "capstone multiplies the base, fortune applies once")
 
+	-- Pets depth: the summoned pet's doubled harvest is one more x2 candidate in
+	-- gatherYieldMult (max with capstone and procs, never stacked). Max single
+	-- click with every roll hitting (fortune, mastery proc, pet proc) stays
+	-- <= 2.5x the pre-mastery max; that baseline keeps the pet's stats (its
+	-- fortune is a pre-mastery source) but not its proc.
+	local PDp = Data.PetDepth
+	print("Max single-click yield with a doubled-harvest pet (Legendary 100):")
+	for _, skill in ipairs(GATHER) do
+		local petId, best = nil, 0
+		for _, def in ipairs(Data.Pets) do
+			local v = PDp.effects(def, 100, "Legendary").gather[skill] or 0
+			if v > best then petId, best = def.id, v end
+		end
+		ok(petId ~= nil, skill .. " has a doubled-harvest pet")
+		local function click(mastered, proc, at, rng)
+			local p = gatherer(skill, mastered)
+			p.pets = {{id = petId, level = 100, xp = 0, rarity = "Legendary"}}
+			p.activePet = 1
+			local stats = sheet(p, skill)
+			if not proc then p.activePet = nil end
+			local r = Data.ResourceTiers[skill][1]
+			local evBonus, evMult = maxEventFor(skill)
+			local bonus = 1 + 1 + 1 + 1 + evBonus + (if r.id == "Ore" then 2 else 0)
+			local okH, res = P.harvest(p, r.id, stats, rng or always(0), bonus, at or NOW)
+			assert(okH, "pet max-yield harvest " .. skill .. ": " .. tostring(res))
+			return res.amount * evMult, res
+		end
+		local pre = click(false, false)
+		local petOnly, petRes = click(false, true)
+		local capPet, capRes = click(true, true)
+		local procPet, procRes = click(true, true, NOW + 100)
+		local missPet = click(true, true, NOW + 100, missThenHit())
+		local missPre = click(false, false, NOW, missThenHit())
+		print(string.format("  %-12s pre %5d  pet %5d  capstone+pet %5d  proc+pet %5d  (%.2fx / %.2fx)", skill, pre, petOnly, capPet, procPet, capPet / pre, procPet / pre))
+		ok(petRes.petDouble == true and petOnly == 2 * pre, skill .. " pet alone doubles the pre-mastery click")
+		ok(capRes.surge == true and capRes.petDouble == nil and capRes.multiplied == nil, skill .. " capstone running: the pet proc does not stack")
+		ok(not (procRes.multiplied and procRes.petDouble), skill .. " mastery proc and pet proc never both apply")
+		ok(capPet / pre <= 2.5, skill .. " capstone+pet max-yield ratio " .. string.format("%.2f", capPet / pre) .. " <= 2.5")
+		ok(procPet / pre <= 2.5, skill .. " proc+pet max-yield ratio " .. string.format("%.2f", procPet / pre) .. " <= 2.5")
+		ok(missPet / missPre <= 2.5, skill .. " pet remainder-miss ratio " .. string.format("%.2f", missPet / missPre) .. " <= 2.5")
+		-- The multiplier itself never exceeds x2 with a pet.
+		local pm = gatherer(skill, true)
+		pm.pets = {{id = petId, level = 100, xp = 0, rarity = "Legendary"}}
+		pm.activePet = 1
+		for _, at in ipairs({NOW, NOW + 100}) do
+			local m = P.gatherYieldMult(pm, {resource = {skill = skill}}, always(0), at)
+			ok(m <= 2, skill .. " yield multiplier with pet <= 2 (" .. m .. ")")
+		end
+	end
+
 	-- Regrowth: shortened to a floor, never instant.
 	eq(P.regrowthTime(15, 0), 15, "no skip keeps the timer")
 	eq(P.regrowthTime(15, 20), 12, "20% faster")
