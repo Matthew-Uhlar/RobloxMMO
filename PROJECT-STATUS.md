@@ -14,6 +14,7 @@ Updated November 19, 2026. The full original goal remains in progress.
 - **Sea creatures:** Fishing catches roll Sea Creature Chance (stats + rod + enchants) to hook one of 9 original creatures gated by Fishing level and waters, fought in real time with four aquatic body plans; owner-only ticketed credit, per-player/server caps, new materials, a rare pet and a legendary accessory, and a bestiary group.
 - **Co-op lifecycle & shared progression:** leave/kick/transfer/disband, expiring invitations, 24 h rejoin cooldown, Homestead levels 1–6 from contributions, up to two shared workers with offline accrual and claim-once semantics, satchel↔crew deposits with crash recovery, a crew stat perk, and a full Crew page. Group-Ironman crews trade only through their shared stores.
 - **Free-form island placement:** 27 decor/utility props in 8 categories placed on a 2-stud grid around protected zones (cap 120), with ghost preview, rotation, pick-up refunds, island value tiers and touch/gamepad controls.
+- **QC:** an independent wave-3 review found one minting path (free crew-prompt gathers withdrawable as real items) and co-op DataStore over-use; all six findings were fixed with regression tests — prompt units are build-only and capped, withdrawals are limited to each member's fair share, crew writes are batched with an 8 s read cache and 6 s action gate, re-founded crews keep undelivered withdrawals, the calendar publishes independently of the hub board, and sea creature kill reports retry until settled.
 
 ## Wave 2 (November 20, 2026)
 
