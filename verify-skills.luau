@@ -181,6 +181,61 @@ eq(HU.maxTraps(20), 2, "two traps at Hunter 20")
 eq(HU.maxTraps(40), 3, "three traps at Hunter 40")
 eq(HU.maxTraps(80), 5, "five traps at Hunter 80")
 eq(HU.maxTraps(99), HU.MAX_TRAPS, "trap count capped")
+-- Trap Luck is capped: more than HU.TRAP_LUCK_CAP buys nothing.
+for _, c in ipairs(HU.Creatures) do
+	ok(math.abs(HU.catchChance(c, 99, 1000) - HU.catchChance(c, 99, HU.TRAP_LUCK_CAP)) < 1e-12, c.id .. " Trap Luck capped")
+	ok(HU.catchChance(c, 99, HU.TRAP_LUCK_CAP) <= HU.catchChance(c, 99, 0) * 1.26, c.id .. " Trap Luck adds at most +25%")
+end
+-- XP/h pacing model (from data). One action = interact hold 0.36 s + the
+-- server's 0.65 s prompt cooldown; a gather is one hold (1 s) + cooldown, at
+-- best every node respawn. Traps: every spot of the ground the player may
+-- tend (min(maxTraps, spots)), each cycle = rolls until a catch or collapse
+-- plus collecting and re-setting (two actions). Nets: three spots whose
+-- shared post-catch swarm cooldown is creature.respawn, the player's own miss
+-- cooldown HU.NET_MISS_COOLDOWN, with the best net bonus, capped by the swing rate.
+do
+	local ACTION, GATHER = 0.36 + 0.65, 1 + 0.65
+	local TRAP_SPOTS, NET_SPOTS = 4, 3
+	local bestNet = 0
+	for _, id in ipairs(HU.Kits.net) do bestNet = math.max(bestNet, Data.Items[id].netBonus or 0) end
+	local function gatherRate(level)
+		local best = 0
+		for _, tiers in pairs(Data.ResourceTiers) do
+			for _, r in ipairs(tiers) do
+				if r.level <= level then best = math.max(best, 3600 * r.xp / math.max(r.respawn, GATHER)) end
+			end
+		end
+		return best
+	end
+	local function hunterRate(c, level, luck)
+		local p = HU.catchChance(c, level, luck)
+		if c.method == "net" then
+			p = math.min(0.95, p + bestNet)
+			local perSpot = c.respawn + (1 / p - 1) * math.max(HU.NET_MISS_COOLDOWN, ACTION)
+			return 3600 * c.xp * math.min(NET_SPOTS / perSpot, p / ACTION)
+		end
+		local traps = math.min(HU.maxTraps(level), TRAP_SPOTS)
+		local success = 1 - (1 - p) ^ HU.MAX_TICKS
+		local rolls = success / p
+		return traps * 3600 * c.xp * success / (HU.TICK * rolls + 2 * ACTION)
+	end
+	local celestium = 3600 * 300 / 20
+	for _, r in ipairs(Data.ResourceTiers.Mining) do if r.id == "Celestium" then celestium = 3600 * r.xp / math.max(r.respawn, GATHER) end end
+	local rows = {}
+	for i, c in ipairs(HU.Creatures) do
+		local nextLevel = if HU.Creatures[i + 1] then HU.Creatures[i + 1].level - 1 else 99
+		for _, at in ipairs({{c.level, 0}, {c.level, HU.TRAP_LUCK_CAP}, {nextLevel, 0}, {nextLevel, HU.TRAP_LUCK_CAP}}) do
+			local h, g = hunterRate(c, at[1], at[2]), gatherRate(at[1])
+			local ratio = h / g
+			ok(ratio >= 0.5 and ratio <= 1.5, string.format("%s at Hunter %d (Trap Luck %d): %.0f XP/h vs gathering %.0f (x%.2f) within 0.5..1.5",
+				c.id, at[1], at[2], h, g, ratio))
+		end
+		table.insert(rows, string.format("%s %d: %.0f-%.0f XP/h (gathering %.0f)", c.id, c.level, hunterRate(c, c.level, 0), hunterRate(c, nextLevel, HU.TRAP_LUCK_CAP), gatherRate(c.level)))
+	end
+	local top = hunterRate(HU.Creatures[#HU.Creatures], 99, HU.TRAP_LUCK_CAP)
+	ok(top / celestium >= 1.15 and top / celestium <= 1.45, string.format("top Hunter %.0f XP/h is about 1.3x Celestium mining %.0f (x%.2f)", top, celestium, top / celestium))
+	print("Hunter XP/h: " .. table.concat(rows, "; ") .. string.format("; top %.0f vs Celestium %.0f", top, celestium))
+end
 for method, kits in pairs(HU.Kits) do
 	for _, kit in ipairs(kits) do
 		local def = Data.Items[kit]
@@ -279,6 +334,12 @@ local promptSignals = {}
 roblox.implementProperty("ProximityPrompt", "Triggered", function(prompt)
 	if not promptSignals[prompt] then promptSignals[prompt] = signal() end
 	return promptSignals[prompt]
+end)
+-- Lune has no Instance events: give prompts a Destroying signal the server can watch.
+local destroyingSignals = {}
+roblox.implementProperty("ProximityPrompt", "Destroying", function(prompt)
+	if not destroyingSignals[prompt] then destroyingSignals[prompt] = signal() end
+	return destroyingSignals[prompt]
 end)
 local world = roblox.Instance.new("Workspace")
 local dataModule = {Name = "AetherData"}
@@ -417,6 +478,8 @@ for _, sc in ipairs(AG.Shortcuts) do
 		ok(onIsland(islandOf(other), to, 2), sc.id .. " lands on the far island")
 		ok(islandOf(q) ~= islandOf(other), sc.id .. " joins two islands")
 		eq(q:GetAttribute("IsleRegion"), if sc.region and GATED[sc.region] then sc.region else nil, sc.id .. " region gate")
+		local dest = islandOf(other):GetAttribute("Region")
+		eq(q:GetAttribute("ShortcutRegion"), if dest and GATED[dest] then dest else "", sc.id .. " end gates on its own destination region")
 		eq(q:GetAttribute("AgilityKind"), sc.kind, sc.id .. " animation kind")
 		ok(has(q.ObjectText, "Agility " .. sc.level), sc.id .. " shows its level")
 	end
@@ -560,6 +623,14 @@ end
 -- Lune does not derive BasePart.Position from CFrame (as the engine does); world parts are real instances here.
 local serverSource = fs.readFile("server.server.lua"):gsub("^\239\187\191", ""):gsub("base%.Position", "base.CFrame.Position")
 luau.load(serverSource, {environment = env, injectGlobals = true})()
+-- Instance-keyed state must be strong (Roblox can collect Instance wrappers held
+-- only by weak keys): the only weak tables left are keyed by profile tables.
+for line in string.gmatch(serverSource, "[^\n]+") do
+	if string.find(line, "__mode", 1, true) then
+		ok(string.match(line, "^local notes=") ~= nil or string.match(line, "^local CombatStyles=") ~= nil,
+			"no weak Instance-keyed table: " .. line)
+	end
+end
 local sweeper
 for _, co in ipairs(coroutines) do if yieldOf[co] == HU.TICK then sweeper = co end end
 ok(sweeper ~= nil, "trap sweep loop runs every Hunter tick")
@@ -795,6 +866,13 @@ ok(back ~= nil and has(back.message, "Rope Bridge"), "return trip from the landi
 finishMoves()
 ok((scout.root.Position - ends.MosswakeRopeBridge.B:GetAttribute("ShortcutTo")).Magnitude < 1e-3, "return lands at the start")
 ok(has(use(scout, ends.TempestGaleLine.A).message, "Tempest Spire requires"), "high shortcut gated by its destination")
+-- Reverse trip: Tempest -> Skyreach needs the Skyreach charter, not Tempest access.
+eq(ends.TempestGaleLine.B:GetAttribute("ShortcutRegion"), "Skyreach", "Tempest end leads to Skyreach")
+scout = rejoin(scout, function(prof) prof.xp.Agility = X[70]; prof.xp.Combat = X[40]; prof.questCompleted = 0 end)
+local reverse = use(scout, ends.TempestGaleLine.B)
+ok(has(reverse.message, "Skyreach charter"), "Tempest -> Skyreach refused without the Skyreach charter")
+eq(reverse.xp.Agility, X[70], "refused reverse trip pays nothing")
+ok(has(use(scout, ends.TempestGaleLine.A).message, "Gale Line"), "Skyreach -> Tempest only needs Tempest access")
 leave(scout)
 
 -- Skymark Exchange and the Windrunner outfit.
@@ -897,8 +975,19 @@ ok(has(use(hunter, hop[2]).message, "Traps 2/2"), "second trap at Hunter 20")
 ok(has(use(hunter, hop[3]).message, "tend 2 traps"), "third trap refused")
 leave(hunter)
 eq(hop[1].Parent:GetAttribute("TrapState"), "", "leaving clears your traps")
+rival = rejoin(rival) -- the longer trap collapse outlasts the test double's journal lease
 ok(has(use(rival, hop[1]).message, "Snare set"), "freed spot reusable")
 leave(rival)
+-- Trap state is held strongly and cleared when the prompt itself goes away.
+local destroyer = seeded(5015, function(prof) prof.items.SnareKit = 1 end)
+ok(has(use(destroyer, hop[4]).message, "Snare set"), "trap set before its prompt is destroyed")
+eq(destroyer.attrs.HunterTraps, "1/1", "trap counted")
+ok(destroyingSignals[hop[4]] ~= nil, "the server watches the trap prompt")
+destroyingSignals[hop[4]]:Fire()
+eq(hop[4].Parent:GetAttribute("TrapState"), "", "a destroyed prompt drops its trap")
+eq(destroyer.attrs.HunterTraps, "0/1", "and frees the owner's trap slot")
+ok(has(use(destroyer, hop[4]).message, "Snare set"), "a re-registered prompt starts clean")
+leave(destroyer)
 -- Nets and the log milestone.
 local moth
 for _, q in ipairs(prompts.net) do if q:GetAttribute("IsleItem") == "SunwingMoth" then moth = q end end
@@ -913,6 +1002,9 @@ ok(has(netted.message, "Caught a Sunwing Moth") and has(netted.message, "milesto
 ok((netted.items.SunwingDust or 0) >= 1, "net drop")
 eq(netted.depth.stats.trapLuck, HU.LogBonus.trapLuck, "log milestone grants Trap Luck")
 ok(has(use(netter, moth).message, "scattered"), "swarm cooldown")
+local poacher = seeded(5014, function(prof) prof.xp.Hunter = X[9]; prof.items.SkyNet = 1 end)
+ok(has(use(poacher, moth).message, "scattered"), "a catch scatters the swarm for every player at the spot")
+leave(poacher)
 advance(HU.CreatureById.SunwingMoth.respawn)
 queue(0.99)
 local miss = use(netter, moth)
