@@ -620,8 +620,9 @@ local function run(options)
 	function game.GetService(_, name)
 		return assert(services[name], name)
 	end
+	local world = new("Workspace")
 	local env = {
-		game = game, workspace = new("Workspace"), Enum = roblox.Enum, UDim = roblox.UDim, UDim2 = roblox.UDim2, Vector2 = roblox.Vector2,
+		game = game, workspace = world, Enum = roblox.Enum, UDim = roblox.UDim, UDim2 = roblox.UDim2, Vector2 = roblox.Vector2,
 		Vector3 = roblox.Vector3, CFrame = roblox.CFrame, Color3 = roblox.Color3, ColorSequence = roblox.ColorSequence,
 		ColorSequenceKeypoint = roblox.ColorSequenceKeypoint, NumberSequence = roblox.NumberSequence, NumberSequenceKeypoint = roblox.NumberSequenceKeypoint,
 		TweenInfo = { new = function() return {} end },
@@ -658,7 +659,7 @@ local function run(options)
 	local scroll = atlas:FindFirstChildOfClass("ScrollingFrame")
 	local tabs = atlas:FindFirstChild("Tabs")
 	return {
-		gui = gui, atlas = atlas, scroll = scroll, tabs = tabs, sent = sent, warnings = warnings, player = player, update = update,
+		gui = gui, atlas = atlas, scroll = scroll, tabs = tabs, sent = sent, warnings = warnings, player = player, update = update, workspace = world,
 		setSnapshot = function(value) current = value end, input = services.UserInputService, guiService = services.GuiService,
 	}
 end
@@ -1946,6 +1947,20 @@ do
 		assert(prayerRect.y + prayerRect.h <= spellRect.y and prayerRect.x + prayerRect.w <= spellRect.x + spellRect.w + 0.5, "prayer bar sits above the spell bar at " .. tag.name)
 		assert(player:GetAttribute("IsleHudLift") == spellRect.h + 6 + prayerRect.h + 6, "toasts lift above the spell and prayer bars at " .. tag.name)
 		checks += 4
+		-- Observatory party HUD (five delvers, classed: Q / R buttons) under the minimap.
+		player:SetAttribute("DungeonClass", "Aegis")
+		player:SetAttribute("DungeonAbilityReady", 12)
+		player:SetAttribute("DungeonUltimates", 2)
+		player:SetAttribute("DungeonParty", "Tester|Aegis|31;Bo|Mender|4;Cy||1;Di|Starshot|2;Ed|Arcanist|9")
+		local partyHud = atlas:FindFirstChild("DungeonPartyHud")
+		assert(partyHud and partyHud.Visible and partyHud:FindFirstChild("AbilityQ").Visible, "party HUD with Q / R shows at " .. tag.name)
+		local partyRect = rect(partyHud)
+		for _, name in ipairs({ "AbilityQ", "AbilityR" }) do
+			local r = rect(partyHud:FindFirstChild(name))
+			assert(r.y >= partyRect.y and r.y + r.h <= partyRect.y + partyRect.h + 0.5 and r.x >= partyRect.x and r.x + r.w <= partyRect.x + partyRect.w + 0.5,
+				name .. " inside the party HUD at " .. tag.name)
+		end
+		checks += 3
 		local persistent = {
 			{ "atlas badge", rect(atlas:FindFirstChild("GuildBadge")) },
 			{ "minimap", rect(wayfinder:FindFirstChild("Minimap")) },
@@ -1954,7 +1969,7 @@ do
 		local explore = table.clone(persistent)
 		for _, item in ipairs({ { "event banner", rect(banner) }, { "tutorial tracker", rect(tracker) },
 			{ "wayfinder toast", rect(wayfinder:FindFirstChild("WayfinderToast")) }, { "attack button", rect(attack) }, { "spell bar", spellRect },
-			{ "lap tracker", rect(lapTracker) }, { "trap counter", rect(trapCounter) }, { "prayer bar", prayerRect } }) do
+			{ "lap tracker", rect(lapTracker) }, { "trap counter", rect(trapCounter) }, { "prayer bar", prayerRect }, { "party HUD", partyRect } }) do
 			table.insert(explore, item)
 		end
 		noOverlap(table.move({ { "target panel", targetRect } }, 1, 1, #explore + 1, table.clone(explore)), tag)
@@ -2027,7 +2042,9 @@ do
 		assert(H.find(wbBar, "Title").Text:find("Phase 2/3", 1, true) and H.find(wbBar, "Rank").Text:find("#2", 1, true), "boss bar shows phase and your rank at " .. tag.name)
 		assert(H.find(wbBar, "Enrage").Text:find("Enrage", 1, true) and H.find(wbBar, "Health").Text:find("WARDED", 1, true), "boss bar shows enrage timer and ward at " .. tag.name)
 		local fighting = { { "world boss bar", rect(wbBar) } }
-		for _, item in ipairs(explore) do table.insert(fighting, item) end
+		-- The Observatory party HUD never coexists with a world boss fight (the
+		-- delver is inside the dungeon arena), so it shares the damage board's slot.
+		for _, item in ipairs(explore) do if item[1] ~= "party HUD" then table.insert(fighting, item) end end
 		if size.Y >= 520 then
 			assert(wbBoard.Visible and H.find(wbBoard, "Row1").Text:find("Ysolde", 1, true), "damage board lists the leader at " .. tag.name)
 			table.insert(fighting, { "damage board", rect(wbBoard) })
