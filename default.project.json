@@ -14,14 +14,16 @@
       "Assembly": { "$path": "festival.server.lua" },
       "Homesteads": { "$path": "coop.server.lua" },
       "Archipelago": { "$path": "world.server.lua" },
-      "Combat": { "$path": "combat.server.lua" }
+      "Combat": { "$path": "combat.server.lua" },
+      "GestureRelay": { "$path": "gesture.server.lua" }
     },
     "StarterPlayer": {
       "StarterPlayerScripts": {
         "FieldGuide": { "$path": "ui.client.lua" },
         "IslandArt": { "$path": "mesh.client.lua" },
         "CombatInput": { "$path": "combat.client.lua" },
-        "IslandBuilder": { "$path": "build.client.lua" }
+        "IslandBuilder": { "$path": "build.client.lua" },
+        "Gestures": { "$path": "animate.client.lua" }
       }
     },
     "Workspace": {

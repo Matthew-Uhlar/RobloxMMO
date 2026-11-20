@@ -216,7 +216,11 @@ local function slash()
 	-- Arm swing (local only): nudge the shoulder joint and restore it.
 	local character = player.Character
 	local shoulder = character and (character:FindFirstChild("RightShoulder", true) or character:FindFirstChild("Right Shoulder", true))
-	if shoulder and shoulder:IsA("Motor6D") and not armBusy then
+	-- [Animation] Route the swing through the shared gesture player (animate.client.lua) when it is running.
+	local gesture = ReplicatedStorage:FindFirstChild("IsleGestureLocal")
+	if gesture then
+		gesture:Fire("attack", target)
+	elseif shoulder and shoulder:IsA("Motor6D") and not armBusy then
 		armBusy = true
 		local rest = shoulder.C0
 		local swing = TweenService:Create(shoulder, TweenInfo.new(0.09, Enum.EasingStyle.Quad), {C0 = rest * CFrame.Angles(math.rad(110), 0, 0)})
