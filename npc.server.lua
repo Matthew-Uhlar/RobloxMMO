@@ -422,3 +422,21 @@ recall.OnInvoke = function(player, target)
 	return message
 end
 recall.Parent = ServerStorage
+
+-- Travel gate: ServerStorage.IsleTravelGate(player) → true, or the refusal
+-- message. The recall charm's location gates without its cooldown or a move,
+-- for other server-side travel (Treasure Trails waystone leaves): alive, not
+-- within T.RECALL_HURT_GRACE of taking damage, not inside an expedition.
+local travelGate = Instance.new("BindableFunction")
+travelGate.Name = "IsleTravelGate"
+travelGate.OnInvoke = function(player)
+	local hurt = lastHurt[player]
+	if hurt and os.clock() - hurt < T.RECALL_HURT_GRACE then return "You can't travel mid-fight. Catch your breath first." end
+	local character = player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if not root or not humanoid or humanoid.Health <= 0 then return "Return to your island first." end
+	if inExpedition(root) then return "The Observatory holds you. Finish or leave the expedition first." end
+	return true
+end
+travelGate.Parent = ServerStorage

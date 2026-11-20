@@ -6710,6 +6710,26 @@ function TT.gesture(name)
 	if api and api.Fire then pcall(function() api:Fire(name) end) end
 end
 -- Local puzzle buffer: {server=board the buffer starts from, board, moves}.
+-- Buffered moves are sent when the box is solved, at 40 moves, after
+-- TT.IDLE_SECONDS without a slide, when the atlas closes and when the page
+-- or tab changes (TT.flush), so a closed page never loses moves.
+TT.IDLE_SECONDS=2
+TT.token=0
+function TT.flush()
+	for tier,buf in pairs(TT.puzzle) do
+		if type(buf.moves)=="string" and #buf.moves>0 then
+			-- send() answers nil only while another request is in flight: keep the
+			-- moves and try again after the idle delay.
+			if send("trailSlide",tier..":"..buf.moves)~=nil then TT.puzzle[tier]=nil -- the reply's board is the truth from here
+			else task.delay(TT.IDLE_SECONDS,TT.flush) end
+		else
+			TT.puzzle[tier]=nil
+		end
+	end
+end
+atlas:GetPropertyChangedSignal("Visible"):Connect(function()
+	if not atlas.Visible then TT.flush() end
+end)
 function TT.slide(tier,row,index)
 	local TR=Data.Trails
 	local buf=TT.puzzle[tier]
@@ -6723,10 +6743,12 @@ function TT.slide(tier,row,index)
 	local nextBoard=TR.slide(buf.board,dir)
 	if not nextBoard then return end
 	buf.board,buf.moves=nextBoard,buf.moves..dir
+	TT.token+=1
 	if nextBoard==TR.SOLVED or #buf.moves>=40 then
-		local moves=buf.moves
-		TT.puzzle[tier]=nil -- the server's board (in the reply) is the truth from here
-		send("trailSlide",tier..":"..moves)
+		TT.flush()
+	else
+		local token=TT.token
+		task.delay(TT.IDLE_SECONDS,function() if TT.token==token then TT.flush() end end)
 	end
 	render()
 end
@@ -6913,6 +6935,7 @@ local drawers={
 	Ledger={Bank=Pages.drawBank,Market=Pages.drawMarket,Orders=Pages.drawOrders,Auctions=Pages.drawAuctions,Merchant=Pages.drawMerchant,Vendors=Pages.drawVendors},
 }
 local function resetTransient()
+	if Pages.TT then Pages.TT.flush() end -- Treasure Trails: send buffered puzzle moves on page change
 	confirmIron=false
 	coopConfirm=nil
 	sellConfirm=nil

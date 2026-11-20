@@ -447,7 +447,9 @@ end
 ------------------------------------------------------------------------------
 -- Environments
 ------------------------------------------------------------------------------
-local function baseTask()
+-- delays: optional list that records task.delay calls ({seconds, fn, args}) so a
+-- test can run them on demand; otherwise delayed callbacks never run.
+local function baseTask(delays)
 	return {
 		spawn = function(fn, ...)
 			local co = coroutine.create(fn)
@@ -455,7 +457,9 @@ local function baseTask()
 			assert(ok, problem)
 			return co
 		end,
-		delay = function() end,
+		delay = function(seconds, fn, ...)
+			if delays and type(fn) == "function" then table.insert(delays, { seconds = seconds, fn = fn, args = table.pack(...) }) end
+		end,
 		defer = function(fn, ...) fn(...) end,
 		wait = function() return coroutine.yield() end,
 	}
@@ -464,7 +468,7 @@ end
 function H.runAtlas(size, options)
 	options = options or {}
 	screen = size
-	local warnings, sent = {}, {}
+	local warnings, sent, delays = {}, {}, {}
 	local current = options.snapshot or H.snapshot()
 	local playerGui = new("PlayerGui")
 	local player = new("Player", { Name = "Voyager", DisplayName = "Voyager", UserId = 1 })
@@ -516,7 +520,7 @@ function H.runAtlas(size, options)
 			table.insert(warnings, table.concat(table.pack(...), " "))
 		end,
 		print = function() end,
-		task = baseTask(),
+		task = baseTask(delays),
 	}
 	local chunk = luau.load(fs.readFile("ui.client.lua"), { debugName = "ui.client.lua", environment = env, injectGlobals = true })
 	local main = coroutine.create(chunk)
@@ -528,6 +532,16 @@ function H.runAtlas(size, options)
 		gui = gui, atlas = atlas, scroll = atlas:FindFirstChildOfClass("ScrollingFrame"), tabs = atlas:FindFirstChild("Tabs"),
 		sent = sent, warnings = warnings, player = player, playerGui = playerGui, update = update, replicated = replicated,
 		setSnapshot = function(value) current = value end,
+		delays = delays,
+		-- Runs (and clears) every recorded task.delay callback of at most `upTo` seconds.
+		runDelays = function(upTo)
+			local due = {}
+			for i = #delays, 1, -1 do
+				if delays[i].seconds == nil or delays[i].seconds <= (upTo or math.huge) then table.insert(due, 1, table.remove(delays, i)) end
+			end
+			for _, d in ipairs(due) do d.fn(table.unpack(d.args, 1, d.args.n)) end
+			return #due
+		end,
 	}
 end
 -- Loads combat.client.lua into an existing player's PlayerGui. Pass the atlas

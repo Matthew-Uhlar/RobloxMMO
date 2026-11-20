@@ -2129,59 +2129,96 @@ do
 end
 -- End Prayer & Thieving block.
 ------------------------------------------------------------------------------
--- Treasure Trails (Treasure Trails team; self-contained block). Rules and the
--- step pool live in Data.Trails (shared/GameData.lua). Server-authoritative:
--- the step list, step index, seed, puzzle board and progress are stored in
--- p.trails and only ever advance by a validated action here; clients name a
--- tier or a gesture, never a step. Scroll drops and casket rolls draw from a
--- private per-profile stream (p.trails.r), so no shared roll() is consumed.
+-- Treasure Trails (Treasure Trails team; self-contained block). Shared rules
+-- live in Data.Trails (shared/GameData.lua); the step pool, generation, step
+-- text and the sanitiser are server-only (trails.lua -> ServerStorage.AetherTrails,
+-- so clients never receive an answer). Server-authoritative: the step list,
+-- step index, seed, puzzle board and progress are stored in p.trails and only
+-- ever advance by a validated action here; clients name a tier or a gesture,
+-- never a step. Scroll drops, trail seeds and casket rolls draw from one
+-- server-entropy Random.new() (never persisted, never derived from profile
+-- state), and a drop that could not be granted (scroll or trail already held)
+-- draws nothing. Location steps (dig / riddle / emote) complete only
+-- TR.MIN_STEP_SECONDS after the step began and once the reader could have
+-- travelled from the trail's previous location step (TR.TRAVEL_SPEED, capped
+-- at TR.WARP_SECONDS for legitimate warps).
 -- Verbs: trailBegin "<tier>", trailAbandon "<tier>", trailDig ["<tier>"],
 -- trailSearch ["<tier>"], trailEmote "<gesture>", trailSlide "<tier>:<UDLR...>",
 -- trailCheck, trailOpen "<tier>", trailTeleport "<leaf id>", trailLearn
 -- "<emote scroll id>", trailBanner "<banner id>|none".
+-- trailTeleport passes the recall gates (ServerStorage.IsleTravelGate from
+-- npc.server.lua: not mid-fight, not inside an expedition, alive), has its own
+-- cooldown (TR.TELEPORT_COOLDOWN) and zeroes the character's velocity.
 -- Hooks: Trails.event(p, kind, id) from the kill bridge, gathering (fishing
 -- counts as "fish"), thieving and hunter catches; Trails.migrate in migrate();
 -- snapshot key `trails`. Player attribute TrailBanner = banner name or "".
 ------------------------------------------------------------------------------
 do
-	local TR=Data.Trails
-	Trails.anchors={}
-	Trails.seq=0
-	local function rec(p)
-		if type(p.trails)~="table" then p.trails=TR.sanitize(nil) end
-		return p.trails
-	end
-	function Trails.migrate(p)
-		p.trails=TR.sanitize(p.trails)
-		if not p.trails.r then
-			Trails.seq+=1
-			p.trails.r=(os.time()*7919+Trails.seq*104729)%2147483646+1
+	-- Server-only step module; absent (e.g. a harness without it) = trails offline.
+	local TR
+	do
+		local okFind,module=pcall(function() return ServerStorage:FindFirstChild("AetherTrails") end)
+		if okFind and module then
+			local okReq,build=pcall(require,module)
+			if okReq and type(build)=="function" then
+				local okBuild,lib=pcall(build,Data)
+				if okBuild and type(lib)=="table" then TR=lib end
+			end
 		end
 	end
-	-- Private stream (Park-Miller) persisted with the profile.
-	function Trails.rand(p)
-		local t=rec(p)
-		local s=((tonumber(t.r) or 1)*48271)%2147483647
-		if s==0 then s=1 end
-		t.r=s
-		return (s-1)/2147483646
+	local Shared=Data.Trails
+	Trails.enabled=TR~=nil
+	Trails.anchors={} -- name -> {part=BasePart?, retry=os.clock() deadline for a miss}
+	Trails.random=Random.new() -- server entropy; never persisted
+	Trails.leafAt={} -- UserId -> os.clock() of the last waystone leaf (cleared on leave)
+	Players.PlayerRemoving:Connect(function(player) Trails.leafAt[player.UserId]=nil end)
+	local function emptyRecord()
+		local log={}
+		for _,tier in ipairs(Shared.TierOrder) do log[tier]={completed=0,opened=0} end
+		return {active={},log=log,uniques={},emotes={},version=Shared.VERSION}
 	end
-	local function tierOf(item) return type(item)=="string" and TR.Tiers[item] and item or nil end
+	local function rec(p)
+		if type(p.trails)~="table" then p.trails=if TR then (TR.sanitize(nil)) else emptyRecord() end
+		return p.trails
+	end
+	local function tierOf(item) return type(item)=="string" and Shared.Tiers[item] and item or nil end
 	local function nameOf(id) return Data.Items[id] and Data.Items[id].name or tostring(id) end
 	-- Reader context for step selection: levels and unlocked regions.
 	local function readerContext(p)
 		local levels,regions={},{}
-		for _,skill in ipairs(Data.SkillOrder) do levels[skill]=level(p.xp[skill] or 0) end
+		for _,skill in ipairs(Data.SkillOrder) do levels[skill]=level((p.xp or {})[skill] or 0) end
 		for _,def in ipairs(Data.Regions) do regions[def.id]=regionAllowed(p,def.id)==true end
 		return {levels=levels,regions=regions}
 	end
+	-- Sanitise with the reader's context; a trail that can no longer be drawn
+	-- for this reader is dropped and its scroll handed back.
+	function Trails.migrate(p)
+		if not TR then
+			if type(p.trails)~="table" then p.trails=emptyRecord() end
+			return
+		end
+		local clean,lost=TR.sanitize(p.trails,readerContext(p))
+		p.trails=clean
+		-- A step with no (or a future) start time starts its pacing clock now.
+		local now=os.time()
+		for _,a in pairs(clean.active) do
+			if a.began<=0 or a.began>now then a.began=now end
+			if a.lt and a.lt>now then a.lt=now end
+		end
+		p.items=type(p.items)=="table" and p.items or {}
+		for _,tier in ipairs(lost or {}) do
+			local scroll=Shared.Tiers[tier].scroll
+			if (p.items[scroll] or 0)<1 then p.items[scroll]=1 end
+		end
+	end
+	if __TrailsHarness then __TrailsHarness(Trails) end -- headless tests only (nil in Roblox)
 	function Trails.holds(p,tier)
-		return (p.items[TR.Tiers[tier].scroll] or 0)>0 or rec(p).active[tier]~=nil
+		return (p.items[Shared.Tiers[tier].scroll] or 0)>0 or rec(p).active[tier]~=nil
 	end
 	-- One scroll or active trail per tier: a second find is simply not made.
 	function Trails.grantScroll(p,tier)
 		if Trails.holds(p,tier) then return false end
-		local id=TR.Tiers[tier].scroll
+		local id=Shared.Tiers[tier].scroll
 		p.items[id]=(p.items[id] or 0)+1
 		return true
 	end
@@ -2217,6 +2254,7 @@ do
 	function Trails.settle(p)
 		local t=rec(p)
 		local out={}
+		if not TR then return out end
 		for _,tier in ipairs(TR.TierOrder) do
 			local a=t.active[tier]
 			local step=a and TR.StepById[a.steps[a.step]]
@@ -2228,11 +2266,13 @@ do
 	end
 	-- Content hook: kill / gather (fish) / thieve / catch. Rolls scroll drops
 	-- and counts skill steps.
+	-- A drop is rolled only when it could be granted: holding that tier's scroll
+	-- or trail draws nothing, so no player action steers the shared stream.
 	function Trails.event(p,kind,id)
-		if type(p)~="table" or type(p.trails)~="table" or type(id)~="string" then return end
+		if not TR or type(p)~="table" or type(p.trails)~="table" or type(id)~="string" then return end
 		if kind=="gather" and Data.ResourceSkill[id]=="Fishing" then kind="fish" end
 		for _,d in ipairs(TR.dropsFor(kind,id)) do
-			if Trails.rand(p)<d.chance and Trails.grantScroll(p,d.tier) then
+			if not Trails.holds(p,d.tier) and Trails.random:NextNumber()<d.chance and Trails.grantScroll(p,d.tier) then
 				note(p,"You found a "..nameOf(TR.Tiers[d.tier].scroll).."! Read it in Satchel › Trails.")
 			end
 		end
@@ -2246,15 +2286,21 @@ do
 		end
 	end
 	-- Positions: anchors under Workspace.Islands (contract §10), found by name.
+	-- Hits are kept while parented; misses are cached for TR.ANCHOR_MISS_SECONDS
+	-- so a missing anchor never turns every request into a recursive search.
 	function Trails.anchor(name)
 		local cached=Trails.anchors[name]
-		if cached and cached.Parent then return cached end
+		local now=os.clock()
+		if cached then
+			if cached.part and cached.part.Parent then return cached.part end
+			if not cached.part and now<cached.retry then return nil end
+		end
 		local ok,found=pcall(function()
 			local islands=workspace:FindFirstChild("Islands")
 			return islands and islands:FindFirstChild("Anchor_"..name,true)
 		end)
 		found=if ok then found else nil
-		Trails.anchors[name]=found
+		Trails.anchors[name]={part=found,retry=now+Shared.ANCHOR_MISS_SECONDS}
 		return found
 	end
 	local function rootPosition(player)
@@ -2286,9 +2332,9 @@ do
 		if t.active[tier] then return "You are already following a "..tier.." trail." end
 		local scroll=TR.Tiers[tier].scroll
 		if (p.items[scroll] or 0)<1 then return "You have no "..nameOf(scroll).."." end
-		local seed=math.floor(Trails.rand(p)*2147483645)+1
+		local seed=Trails.random:NextInteger(1,2147483646) -- server entropy, kept server-side
 		local steps=TR.generate(tier,seed,readerContext(p))
-		if #steps==0 then return "The scroll's ink has faded." end
+		if #steps==0 then return "You cannot make sense of this scroll yet: train further or open more of the isles, then read it again." end
 		p.items[scroll]-=1
 		local a={seed=seed,steps=steps,step=1}
 		t.active[tier]=a
@@ -2296,16 +2342,38 @@ do
 		p.started=true
 		return "You unroll the "..nameOf(scroll)..": "..TR.describe(TR.StepById[steps[1]]).text
 	end
+	-- Seconds a trail must still wait before its location step may complete:
+	-- TR.MIN_STEP_SECONDS since the step began, and the travel time from the
+	-- trail's previous location step (distance / TR.TRAVEL_SPEED, at most
+	-- TR.WARP_SECONDS). Depends only on time and the reader's own movement, so
+	-- the answer is checked only once this is 0 and a wait never leaks it.
+	function Trails.wait(player,tier,a)
+		local now=os.time()
+		local wait=(tonumber(a.began) or 0)+(Shared.MIN_STEP_SECONDS[tier] or 0)-now
+		local pos=rootPosition(player)
+		if a.lt and a.lx and a.lz and pos then
+			local dx,dz=pos.X-a.lx,pos.Z-a.lz
+			wait=math.max(wait,a.lt+math.min(math.sqrt(dx*dx+dz*dz)/Shared.TRAVEL_SPEED,Shared.WARP_SECONDS)-now)
+		end
+		return math.max(0,math.ceil(wait))
+	end
 	local function located(player,p,kind,tier,radius,fit,success,fail)
 		local list=current(p,kind,tier)
 		if #list==0 then return nil end
+		local waitFor
 		for _,c in ipairs(list) do
 			local s=c.step
-			if Trails.near(player,s.anchor,if kind=="dig" then s.east else 0,if kind=="dig" then s.north else 0,radius) and fit(c) then
+			local w=Trails.wait(player,c.tier,c.a)
+			if w>0 then
+				waitFor=math.min(waitFor or w,w)
+			elseif Trails.near(player,s.anchor,if kind=="dig" then s.east else 0,if kind=="dig" then s.north else 0,radius) and fit(c) then
 				if s.region and not regionAllowed(p,s.region) then return regionDenied(s.region) end
+				local pos=rootPosition(player)
+				if pos then c.a.lt,c.a.lx,c.a.lz=os.time(),pos.X,pos.Z end
 				return Trails.advance(p,c.tier,success(c))
 			end
 		end
+		if waitFor then return "The trail is still fresh: study the clue a little longer ("..waitFor.."s)." end
 		return fail
 	end
 	local function openCasket(p,tier)
@@ -2314,7 +2382,7 @@ do
 		if (p.items[id] or 0)<1 then return "You have no "..nameOf(id).."." end
 		local stats=Progression.computeStats(p,os.time())
 		local t=rec(p)
-		local loot=TR.openCasket(tier,function() return Trails.rand(p) end,stats.magicFind,stats.petLuck,Progression.rollDrops)
+		local loot=TR.openCasket(tier,function() return Trails.random:NextNumber() end,stats.magicFind,stats.petLuck,Progression.rollDrops)
 		p.items[id]-=1
 		t.log[tier].opened+=1
 		p.coins+=loot.coins
@@ -2335,6 +2403,7 @@ do
 		return text
 	end
 	function Trails.action(player,p,verb,item)
+		if not TR then return "The trail-keepers are still charting the isles. Try again shortly." end
 		local t=rec(p)
 		if verb=="trailBegin" then return begin(p,tierOf(item))
 		elseif verb=="trailAbandon" then
@@ -2388,11 +2457,24 @@ do
 			if not tp then return "Choose a waystone leaf." end
 			if (p.items[tp.id] or 0)<1 then return "You have no "..nameOf(tp.id).."." end
 			if not regionAllowed(p,tp.region) then return regionDenied(tp.region) end
+			local last=Trails.leafAt[player.UserId]
+			local now=os.clock()
+			if last and now-last<Shared.TELEPORT_COOLDOWN then
+				return "The Skyway is still settling from your last leaf ("..math.ceil(Shared.TELEPORT_COOLDOWN-(now-last)).."s)."
+			end
+			-- The recall gates (npc.server.lua): alive, not mid-fight, not in an expedition.
+			local gate=ServerStorage:FindFirstChild("IsleTravelGate")
+			if not gate then return "The leaf will not carry you right now." end
+			local okGate,verdict=pcall(gate.Invoke,gate,player)
+			if not okGate or verdict~=true then return if okGate and type(verdict)=="string" then verdict else "The leaf will not carry you right now." end
 			local a=Trails.anchor(tp.anchor)
 			local character=player.Character
-			if not a or not character then return "The leaf will not carry you right now." end
+			local root=character and character:FindFirstChild("HumanoidRootPart")
+			if not a or not root then return "The leaf will not carry you right now." end
 			p.items[tp.id]-=1
+			Trails.leafAt[player.UserId]=now
 			character:PivotTo(CFrame.new(a.CFrame.Position+Vector3.new(0,4,0)))
+			root.AssemblyLinearVelocity=Vector3.zero
 			return "The leaf crumbles to light: you step out at "..tp.name.."."
 		elseif verb=="trailLearn" then
 			local def=type(item)=="string" and Data.Items[item]
@@ -2415,6 +2497,7 @@ do
 	-- Snapshot key `trails` (step text and hints only; never the answers).
 	function Trails.state(player,p)
 		local t=rec(p)
+		if not TR then return {active={},log=t.log,uniques=t.uniques or {},emotes=t.emotes or {},spade=(p.items[Shared.SPADE] or 0)>0,offline=true} end
 		for _,text in ipairs(Trails.settle(p)) do note(p,text) end
 		local active={}
 		for _,tier in ipairs(TR.TierOrder) do

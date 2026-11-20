@@ -598,8 +598,15 @@ do
 	root.Position = V(10, 47, 1690)
 	ok(has(recallFn.OnInvoke(traveller, "Home"), "expedition"), "recall refused in the sentinel hall")
 	eq(character:GetPivot().Position, before, "a refused delver stays put")
+	-- The travel gate (trail waystone leaves) shares the expedition gate.
+	local gate = serverStorage:FindFirstChild("IsleTravelGate")
+	ok(gate ~= nil and gate.ClassName == "BindableFunction", "IsleTravelGate published")
+	ok(has(gate.OnInvoke(traveller), "Observatory"), "travel gate refuses inside an expedition")
+	eq(character:GetPivot().Position, before, "the travel gate never moves anyone")
 	root.Position = V(0, 5, 40)
+	eq(serverStorage:FindFirstChild("IsleTravelGate").OnInvoke(traveller), true, "travel gate open outside the run (and has no cooldown of its own)")
 	ok(has(recallFn.OnInvoke(traveller, "Hub"), "Recalled"), "recall works at the gate (outside the run)")
+	eq(serverStorage:FindFirstChild("IsleTravelGate").OnInvoke(traveller), true, "a fresh recall does not close the travel gate")
 	arena.Parent = nil
 	root.Position = V(0, 0, 0)
 end
@@ -614,6 +621,16 @@ clock += T.RECALL_COOLDOWN + 1
 humanoid2.Health = 50
 humanoid2.HealthChanged:Fire(50)
 ok(has(recallFn.OnInvoke(traveller, "Hub"), "mid-fight"), "damage tracked after respawn")
+do
+	local gate = serverStorage:FindFirstChild("IsleTravelGate")
+	ok(has(gate.OnInvoke(traveller), "mid-fight"), "travel gate: no travel right after damage")
+	clock += T.RECALL_HURT_GRACE + 1
+	eq(gate.OnInvoke(traveller), true, "travel gate reopens after the damage grace")
+	humanoid2.Health = 0
+	eq(gate.OnInvoke(traveller), "Return to your island first.", "travel gate: the fallen cannot travel")
+	humanoid2.Health = 50
+	humanoid2.HealthChanged:Fire(40)
+end
 players.PlayerRemoving:Fire(traveller)
 ok(has(recallFn.OnInvoke(traveller, "Hub"), "Recalled"), "state forgotten on leave")
 
