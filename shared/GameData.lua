@@ -2655,6 +2655,10 @@ local MA = {
 	TOKEN_TIERS = {5, 9},         -- collection tiers that each award one Mastery Token
 	RESPEC_BASE = 1000, RESPEC_PER_POINT = 60, RESPEC_GROWTH = 1.5, RESPEC_CAP = 2000000,
 	PERK_CAP = 100,               -- every chance perk is capped at 100%
+	PERK_CAPS = {rareFind=15},    -- tighter totals (after a capstone adds its share)
+	PASSIVE_CAPS = {respawnSkip=50, rareFind=15}, -- node totals before a capstone adds its share
+	REGROWTH_FLOOR = 2,           -- regrowth never drops below max(2 s, 25% of the node's base)
+	REGROWTH_FLOOR_SHARE = 0.25,
 	TreeOrder = {"Mining","Woodcutting","Fishing","Farming","Hunter","Melee","Ranged","Magic"},
 	Trees = {}, TreeById = {}, TreeOfSkill = {},
 }
@@ -2665,7 +2669,7 @@ MA.Perks = {
 	xpBoost     = {name="Lore",          text="+%s%% skill XP from this activity"},
 	doubleYield = {name="Twin yield",    text="%s%% chance to double a harvest"},
 	tripleYield = {name="Bountiful",     text="%s%% chance to triple a harvest"},
-	respawnSkip = {name="Quick regrowth",text="%s%% chance a node regrows instantly"},
+	respawnSkip = {name="Quick regrowth",text="Nodes regrow %s%% faster (floor: 25%% of the timer, min 2 s)"},
 	autoSmelt   = {name="Ember touch",   text="%s%% chance to smelt a bonus ingot from the ore"},
 	coinFind    = {name="Glint",         text="%s%% chance to find coins (5x the resource value)"},
 	trapTick    = {name="Hair trigger",  text="Traps check %s%% faster"},
@@ -2702,12 +2706,12 @@ end
 
 tree({id="Mining",skill="Mining",name="Deepvein Lattice",color="8C7A6B",activity="gather",
 	blurb="Read the stone: richer seams, ember-smelted ingots and veins that regrow under your pick.",nodes={
-	{id="SteadyPick",name="Steady Pick",x=3,y=1,max=10,stats={miningFortune=3}},
+	{id="SteadyPick",name="Steady Pick",x=3,y=1,max=10,stats={miningFortune=2}},
 	{id="QuarrySense",name="Quarry Sense",x=2,y=2,max=5,requires={"SteadyPick"},perks={xpBoost=2}},
 	{id="SeamReader",name="Seam Reader",x=4,y=2,max=5,requires={"SteadyPick"},perks={doubleYield=2}},
 	{id="Stoneskin",name="Stoneskin",x=1,y=3,max=10,level=15,requires={"QuarrySense"},stats={defense=2}},
 	{id="EmberVein",name="Ember Vein",x=3,y=3,max=5,level=25,requires={"QuarrySense","SeamReader"},perks={autoSmelt=3}},
-	{id="RichStrata",name="Rich Strata",x=5,y=3,max=10,level=15,requires={"SeamReader"},stats={miningFortune=5}},
+	{id="RichStrata",name="Rich Strata",x=5,y=3,max=10,level=15,requires={"SeamReader"},stats={miningFortune=3}},
 	{id="EchoingSeam",name="Echoing Seam",x=2,y=4,max=5,level=35,requires={"Stoneskin","EmberVein"},perks={respawnSkip=4}},
 	{id="GlintEye",name="Glint Eye",x=4,y=4,max=5,level=35,requires={"EmberVein","RichStrata"},perks={coinFind=2}},
 	{id="DelversLungs",name="Delver's Lungs",x=1,y=5,max=5,level=40,requires={"EchoingSeam"},stats={health=8}},
@@ -2715,31 +2719,31 @@ tree({id="Mining",skill="Mining",name="Deepvein Lattice",color="8C7A6B",activity
 	{id="MoltenCore",name="Molten Core",x=5,y=5,max=5,level=50,requires={"GlintEye"},perks={autoSmelt=3}},
 	{id="VeinSurge",name="Vein Surge",x=3,y=6,cost=5,level=60,requires={"FaultLine"},
 		ability={duration=20,cooldown=300,yieldMult=2,text="For 20 s every mining harvest yields x2."}},
-	{id="BedrockInstinct",name="Bedrock Instinct",x=1,y=6,max=3,cost=3,level=75,requires={"DelversLungs"},stats={miningFortune=15}},
+	{id="BedrockInstinct",name="Bedrock Instinct",x=1,y=6,max=3,cost=3,level=75,requires={"DelversLungs"},stats={miningFortune=8}},
 	{id="Geomancer",name="Geomancer",x=5,y=6,max=3,cost=3,level=85,requires={"MoltenCore"},perks={xpBoost=4}},
 }})
 
 tree({id="Woodcutting",skill="Woodcutting",name="Canopy Codex",color="5E8C4A",activity="gather",
 	blurb="Fell with the grain: twin logs, amber sap and saplings that spring back as you watch.",nodes={
-	{id="KeenEdge",name="Keen Edge",x=3,y=1,max=10,stats={foragingFortune=3}},
+	{id="KeenEdge",name="Keen Edge",x=3,y=1,max=10,stats={foragingFortune=2}},
 	{id="GrainReader",name="Grain Reader",x=2,y=2,max=5,requires={"KeenEdge"},perks={xpBoost=2}},
 	{id="TwinFell",name="Twin Fell",x=4,y=2,max=5,requires={"KeenEdge"},perks={doubleYield=2}},
 	{id="LumberShoulders",name="Lumber Shoulders",x=1,y=3,max=10,level=15,requires={"GrainReader"},stats={strength=1}},
 	{id="AmberSap",name="Amber Sap",x=3,y=3,max=5,level=25,requires={"GrainReader","TwinFell"},perks={coinFind=2}},
-	{id="Heartwood",name="Heartwood",x=5,y=3,max=10,level=15,requires={"TwinFell"},stats={foragingFortune=5}},
+	{id="Heartwood",name="Heartwood",x=5,y=3,max=10,level=15,requires={"TwinFell"},stats={foragingFortune=3}},
 	{id="SwiftSaplings",name="Swift Saplings",x=2,y=4,max=5,level=35,requires={"LumberShoulders","AmberSap"},perks={respawnSkip=5}},
 	{id="WoodlandStride",name="Woodland Stride",x=4,y=4,max=5,level=35,requires={"AmberSap","Heartwood"},stats={speed=2}},
 	{id="BarkHide",name="Bark Hide",x=1,y=5,max=5,level=40,requires={"SwiftSaplings"},stats={defense=3}},
 	{id="SplittingMaul",name="Splitting Maul",x=3,y=5,max=3,cost=2,level=50,requires={"SwiftSaplings","WoodlandStride"},perks={doubleYield=5}},
 	{id="GroveWisdom",name="Grove Wisdom",x=5,y=5,max=5,level=50,requires={"WoodlandStride"},perks={xpBoost=3}},
 	{id="TimberTempest",name="Timber Tempest",x=3,y=6,cost=5,level=60,requires={"SplittingMaul"},
-		ability={duration=30,cooldown=360,yieldMult=2,respawnSkip=100,text="For 30 s logs yield x2 and every tree regrows at once."}},
-	{id="Elderbark",name="Elderbark",x=1,y=6,max=3,cost=3,level=75,requires={"BarkHide"},stats={foragingFortune=15}},
+		ability={duration=30,cooldown=360,yieldMult=2,respawnSkip=25,text="For 30 s logs yield x2 and trees regrow 25% faster."}},
+	{id="Elderbark",name="Elderbark",x=1,y=6,max=3,cost=3,level=75,requires={"BarkHide"},stats={foragingFortune=8}},
 }})
 
 tree({id="Fishing",skill="Fishing",name="Tidewright Chart",color="3F7CAC",activity="gather",
 	blurb="Read the currents: doubled catches, salvaged trinkets and the deep things that rise to your line.",nodes={
-	{id="PatientLine",name="Patient Line",x=3,y=1,max=10,stats={fishingFortune=3}},
+	{id="PatientLine",name="Patient Line",x=3,y=1,max=10,stats={fishingFortune=2}},
 	{id="LureCraft",name="Lure Craft",x=2,y=2,max=5,requires={"PatientLine"},perks={xpBoost=2}},
 	{id="DoubleHook",name="Double Hook",x=4,y=2,max=5,requires={"PatientLine"},perks={doubleYield=2}},
 	{id="DeepCurrent",name="Deep Current",x=1,y=3,max=5,level=20,requires={"LureCraft"},stats={seaCreatureChance=1}},
@@ -2747,31 +2751,31 @@ tree({id="Fishing",skill="Fishing",name="Tidewright Chart",color="3F7CAC",activi
 	{id="BrineBlood",name="Brine Blood",x=5,y=3,max=10,level=15,requires={"DoubleHook"},stats={health=6}},
 	{id="AbyssalCall",name="Abyssal Call",x=1,y=4,max=5,level=40,requires={"DeepCurrent"},stats={seaCreatureChance=1}},
 	{id="ShoalSense",name="Shoal Sense",x=3,y=4,max=5,level=35,requires={"DeepCurrent","Salvager","BrineBlood"},perks={respawnSkip=4}},
-	{id="KrakenGrip",name="Kraken Grip",x=5,y=4,max=10,level=35,requires={"BrineBlood"},stats={fishingFortune=5}},
+	{id="KrakenGrip",name="Kraken Grip",x=5,y=4,max=10,level=35,requires={"BrineBlood"},stats={fishingFortune=3}},
 	{id="LeviathanLore",name="Leviathan Lore",x=2,y=5,max=5,level=50,requires={"AbyssalCall","ShoalSense"},stats={strength=2,critDamage=2}},
 	{id="CastNet",name="Cast Net",x=4,y=5,max=3,cost=2,level=50,requires={"ShoalSense","KrakenGrip"},perks={doubleYield=5}},
 	{id="Tidecall",name="Tidecall",x=3,y=6,cost=5,level=60,requires={"LeviathanLore","CastNet"},
 		ability={duration=30,cooldown=360,yieldMult=2,stats={seaCreatureChance=20},text="For 30 s catches yield x2 and +20 Sea Creature Chance."}},
 	{id="Stormsailor",name="Stormsailor",x=1,y=6,max=3,cost=3,level=75,requires={"LeviathanLore"},stats={seaCreatureChance=2}},
-	{id="Brinewise",name="Brinewise",x=5,y=6,max=3,cost=3,level=85,requires={"CastNet"},stats={fishingFortune=15}},
+	{id="Brinewise",name="Brinewise",x=5,y=6,max=3,cost=3,level=85,requires={"CastNet"},stats={fishingFortune=8}},
 }})
 
 tree({id="Farming",skill="Farming",name="Greenward Almanac",color="C9A227",activity="gather",
 	blurb="Tend the rows: bumper crops, triple furrows and fields that sprout again before you turn.",nodes={
-	{id="TilledRows",name="Tilled Rows",x=3,y=1,max=10,stats={farmingFortune=3}},
+	{id="TilledRows",name="Tilled Rows",x=3,y=1,max=10,stats={farmingFortune=2}},
 	{id="AlmanacStudy",name="Almanac Study",x=2,y=2,max=5,requires={"TilledRows"},perks={xpBoost=2}},
 	{id="BumperCrop",name="Bumper Crop",x=4,y=2,max=5,requires={"TilledRows"},perks={doubleYield=2}},
 	{id="HeartyHarvest",name="Hearty Harvest",x=1,y=3,max=10,level=15,requires={"AlmanacStudy"},stats={health=6}},
 	{id="MarketEye",name="Market Eye",x=3,y=3,max=5,level=25,requires={"AlmanacStudy","BumperCrop"},perks={coinFind=3}},
-	{id="RichLoam",name="Rich Loam",x=5,y=3,max=10,level=15,requires={"BumperCrop"},stats={farmingFortune=5}},
-	{id="QuickSprout",name="Quick Sprout",x=2,y=4,max=5,level=35,requires={"HeartyHarvest","MarketEye"},perks={respawnSkip=6}},
+	{id="RichLoam",name="Rich Loam",x=5,y=3,max=10,level=15,requires={"BumperCrop"},stats={farmingFortune=3}},
+	{id="QuickSprout",name="Quick Sprout",x=2,y=4,max=5,level=35,requires={"HeartyHarvest","MarketEye"},perks={respawnSkip=5}},
 	{id="SeedSaver",name="Seed Saver",x=4,y=4,max=5,level=35,requires={"MarketEye","RichLoam"},perks={doubleYield=2}},
-	{id="SunlitRows",name="Sunlit Rows",x=1,y=5,max=5,level=45,requires={"QuickSprout"},stats={farmingFortune=4}},
-	{id="TripleFurrow",name="Triple Furrow",x=3,y=5,max=3,cost=2,level=50,requires={"QuickSprout","SeedSaver"},perks={tripleYield=3}},
+	{id="SunlitRows",name="Sunlit Rows",x=1,y=5,max=5,level=45,requires={"QuickSprout"},stats={farmingFortune=1}},
+	{id="TripleFurrow",name="Triple Furrow",x=3,y=5,max=3,cost=2,level=50,requires={"QuickSprout","SeedSaver"},perks={doubleYield=5}},
 	{id="Pollinator",name="Pollinator",x=5,y=5,max=5,level=50,requires={"SeedSaver"},stats={petLuck=1}},
 	{id="VerdantBloom",name="Verdant Bloom",x=3,y=6,cost=5,level=60,requires={"TripleFurrow"},
-		ability={duration=20,cooldown=300,yieldMult=3,text="For 20 s every crop harvest yields x3."}},
-	{id="Harvestlord",name="Harvestlord",x=5,y=6,max=3,cost=3,level=75,requires={"Pollinator"},stats={farmingFortune=15}},
+		ability={duration=20,cooldown=300,yieldMult=2,text="For 20 s every crop harvest yields x2."}},
+	{id="Harvestlord",name="Harvestlord",x=5,y=6,max=3,cost=3,level=75,requires={"Pollinator"},stats={farmingFortune=6}},
 }})
 
 tree({id="Hunter",skill="Hunter",name="Trackways Map",color="A8763E",activity="hunt",
@@ -2781,7 +2785,7 @@ tree({id="Hunter",skill="Hunter",name="Trackways Map",color="A8763E",activity="h
 	{id="SnugKnots",name="Snug Knots",x=4,y=2,max=5,requires={"QuietStep"},stats={trapLuck=1}},
 	{id="SpringTension",name="Spring Tension",x=1,y=3,max=5,level=20,requires={"TrailLore"},perks={trapTick=3}},
 	{id="TwinSnare",name="Twin Snare",x=3,y=3,max=5,level=25,requires={"TrailLore","SnugKnots"},perks={doubleYield=3}},
-	{id="KeenNose",name="Keen Nose",x=5,y=3,max=5,level=25,requires={"SnugKnots"},perks={rareFind=4}},
+	{id="KeenNose",name="Keen Nose",x=5,y=3,max=5,level=25,requires={"SnugKnots"},perks={rareFind=1}},
 	{id="HairTrigger",name="Hair Trigger",x=2,y=4,max=5,level=40,requires={"SpringTension","TwinSnare"},perks={trapTick=3}},
 	{id="PeltGrader",name="Pelt Grader",x=4,y=4,max=10,level=35,requires={"TwinSnare","KeenNose"},stats={huntingFortune=4}},
 	{id="Fleetfoot",name="Fleetfoot",x=1,y=5,max=5,level=45,requires={"HairTrigger"},stats={speed=2}},
@@ -2789,7 +2793,7 @@ tree({id="Hunter",skill="Hunter",name="Trackways Map",color="A8763E",activity="h
 	{id="WildBond",name="Wild Bond",x=5,y=5,max=5,level=50,requires={"PeltGrader"},stats={petLuck=2}},
 	{id="LureSong",name="Lure Song",x=3,y=6,cost=5,level=60,requires={"MasterTrapper"},
 		ability={duration=60,cooldown=420,doubleYield=100,stats={trapLuck=25},text="For 60 s every catch pays double and +25 Trap Luck."}},
-	{id="Packmaster",name="Packmaster",x=1,y=6,max=3,cost=3,level=75,requires={"Fleetfoot"},perks={rareFind=10}},
+	{id="Packmaster",name="Packmaster",x=1,y=6,max=3,cost=3,level=75,requires={"Fleetfoot"},perks={rareFind=3}},
 }})
 
 tree({id="Melee",skill="Combat",style="melee",name="Warpath Codex",color="C8553D",activity="combat",

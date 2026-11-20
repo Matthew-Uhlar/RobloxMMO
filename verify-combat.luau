@@ -76,9 +76,13 @@ local function world()
 				-- Synchronous, atomic payment from w.inv[player] (combat styles).
 				local inv = w.inv[player] or {}
 				for id, n in pairs(payload.items) do if (inv[id] or 0) < n then return {ok = false, reason = "missing"} end end
-				local remaining = {}
-				for id, n in pairs(payload.items) do inv[id] -= n; remaining[id] = inv[id] end
-				return {ok = true, remaining = remaining}
+				local remaining, saved = {}, {}
+				for id, n in pairs(payload.items) do
+					-- w.glyphSave: Ink Thrift at 100% keeps every glyph (server Mastery.thrift).
+					if w.glyphSave and Data.Items[id] and Data.Items[id].category == "glyph" then saved[id] = n else inv[id] -= n end
+					remaining[id] = inv[id]
+				end
+				return {ok = true, remaining = remaining, saved = if next(saved) then saved else nil}
 			end
 			if op == "refund" then
 				local inv = w.inv[player] or {}
@@ -1868,6 +1872,50 @@ local function masteryOf(melee, ranged, magic, active)
 	return {melee = melee or {firstStrike = 0, execute = 0, xpBoost = 0},
 		ranged = ranged or {firstStrike = 0, execute = 0, arrowSave = 0, multishot = 1, xpBoost = 0},
 		magic = magic or {manaThrift = 0, glyphSave = 0, xpBoost = 0}, active = active or {}}
+end
+-- Refund after a failed teleport returns only what was spent: glyphs kept by
+-- Ink Thrift (glyphSave=100, consume reply "saved") are never refunded.
+do
+	local before = checks
+	local w = world()
+	local L = w.logic
+	Data.Spells.TestGlyphPort = {id = "TestGlyphPort", name = "Test Glyph Port", kind = "teleport", level = 1, mana = 0, xp = 10, cooldown = 3,
+		requiresWeapon = false, color = "F9CC77", costs = {GaleGlyph = 2, HubwardTablet = 1}}
+	Data.Spells.TestInkPort = {id = "TestInkPort", name = "Test Ink Port", kind = "teleport", level = 1, mana = 0, xp = 10, cooldown = 3,
+		requiresWeapon = false, color = "F9CC77", costs = {GaleGlyph = 3}}
+	local mage = w.player("thrifty", Vector3.new(30, 1, 0), {stats = styleStats({intelligence = 100})})
+	local lo = {style = "melee", weapon = "BrassSword", levels = {Combat = 1, Ranged = 1, Magic = 1}, supplies = {GaleGlyph = 4, HubwardTablet = 1}}
+	w.stats[mage].loadout = lo
+	w.stats[mage].mastery = masteryOf(nil, nil, {manaThrift = 0, glyphSave = 100, xpBoost = 0})
+	w.inv[mage] = {GaleGlyph = 4, HubwardTablet = 1}
+	w.glyphSave = true
+	w.hub = false
+	eq(select(2, L.cast(mage, "cast", nil, "TestGlyphPort")), "teleport", "mock glyph teleport fails")
+	eq(w.count("refund", mage), 1, "the spent tablet is refunded")
+	local refund = w.calls[#w.calls]
+	eq(refund.op, "refund", "last bridge call is the refund")
+	eq(refund.payload.items.GaleGlyph, nil, "saved glyphs are not refunded")
+	eq(refund.payload.items.HubwardTablet, 1, "the spent tablet is refunded")
+	eq(w.inv[mage].GaleGlyph, 4, "glyphs not inflated by a refund (4 kept, not 6)")
+	eq(w.inv[mage].HubwardTablet, 1, "tablet back")
+	eq(lo.supplies.GaleGlyph, 4, "cached glyph supplies stay at 4")
+	eq(lo.supplies.HubwardTablet, 1, "cached tablet supplies follow the refund")
+	-- Everything saved: nothing was spent, so no refund call at all.
+	w.clock += 5
+	eq(select(2, L.cast(mage, "cast", nil, "TestInkPort")), "teleport", "mock ink teleport fails")
+	eq(w.count("refund", mage), 1, "nothing spent: no refund call")
+	eq(w.inv[mage].GaleGlyph, 4, "glyph count unchanged")
+	eq(lo.supplies.GaleGlyph, 4, "cached glyphs unchanged")
+	-- Without thrift the full cost is refunded, as before.
+	w.glyphSave = false
+	w.clock += 5
+	eq(select(2, L.cast(mage, "cast", nil, "TestInkPort")), "teleport", "mock ink teleport fails without thrift")
+	eq(w.count("refund", mage), 2, "spent glyphs refunded")
+	eq(w.calls[#w.calls].payload.items.GaleGlyph, 3, "full spent cost refunded")
+	eq(w.inv[mage].GaleGlyph, 4, "glyphs restored exactly")
+	eq(lo.supplies.GaleGlyph, 4, "cache restored exactly")
+	Data.Spells.TestGlyphPort, Data.Spells.TestInkPort = nil, nil
+	print("PASS: " .. (checks - before) .. " thrift-aware refund assertions.")
 end
 -- Perk snapshot: defaults, sanitising, capstone active vs expired.
 do

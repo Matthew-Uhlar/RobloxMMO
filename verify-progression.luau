@@ -552,7 +552,7 @@ do
 	local s1, s2 = P.computeStats(plain, 0), P.computeStats(withEmpty, 0)
 	for key, v in pairs(s1) do if type(v) == "number" then eq(s2[key], v, "empty mastery leaves " .. key) end end
 	local fortuneBefore = P.computeStats(maxer, 0).miningFortune
-	eq(fortuneBefore - P.computeStats({xp = {Mining = X[40]}, items = {}, collection = {}}, 0).miningFortune, 30, "Steady Pick x10 = +30 Mining Fortune")
+	eq(fortuneBefore - P.computeStats({xp = {Mining = X[40]}, items = {}, collection = {}}, 0).miningFortune, 20, "Steady Pick x10 = +20 Mining Fortune")
 	local warrior = prof({Combat = X[70]})
 	for _, step in ipairs({"IronGrip","BattleRhythm","KeenBlade","Bulwark","OpeningBlow","Bloodthirst"}) do eq((P.masteryUnlock(warrior, "Melee", step)), true, "melee path " .. step) end
 	local ws = P.computeStats(warrior, 0)
@@ -582,6 +582,7 @@ do
 	eq(plainResult.xp, Data.ResourceTiers.Mining[1].xp, "plain harvest xp")
 	eq(calls1(), 1, "plain harvest rolls fortune only")
 	eq(plainResult.respawnSkip, nil, "no regrowth skip")
+	eq(plainResult.regrowth, nil, "no regrowth override")
 	eq(plainResult.bonus, nil, "no bonus ingot")
 	gatherer.mastery = {trees = {Mining = {}}}
 	local rng2, calls2 = counted({0.999})
@@ -594,18 +595,19 @@ do
 	eq(perks.doubleYield, 10, "Seam Reader 5 = 10% double")
 	eq(perks.xpBoost, 10, "Quarry Sense 5 = +10% XP")
 	eq(perks.autoSmelt, 15, "Ember Vein 5 = 15% smelt")
-	eq(perks.respawnSkip, 20, "Echoing Seam 5 = 20% regrowth")
+	eq(perks.respawnSkip, 20, "Echoing Seam 5 = 20% faster regrowth")
 	eq(perks.coinFind, 10, "Glint Eye 5 = 10% coins")
 	local _, lucky = P.harvest(gatherer, "Ore", P.computeStats(gatherer, 0), counted({0.999, 0, 0, 0, 0}), 0, 100)
 	eq(lucky.amount, 2 * A, "double yield proc")
 	eq(lucky.xp, math.floor(Data.ResourceTiers.Mining[1].xp * 1.1), "XP boost applied")
-	eq(lucky.respawnSkip, true, "regrowth skip proc")
+	eq(lucky.respawnSkip, true, "regrowth shortened")
+	eq(lucky.regrowth, Data.ResourceTiers.Mining[1].respawn * 0.8, "20% faster regrowth is deterministic (no roll)")
 	eq(lucky.bonus and lucky.bonus.AlloyIngot, 1, "copperstone smelts an alloy ingot")
 	eq(lucky.coins, Data.ResourceTiers.Mining[1].value * 5, "coin find proc")
 	local _, unlucky = P.harvest(gatherer, "Brassite", P.computeStats(gatherer, 0), counted({0.999}), 0, 100)
 	eq(unlucky, "Brassite Ore requires a tier 1 pickaxe.", "tool gate still applies")
 	gatherer.items.BrassPickaxe = 1
-	local _, brass = P.harvest(gatherer, "Brassite", P.computeStats(gatherer, 0), counted({0.999, 0.999, 0.999, 0.001, 0.999}), 0, 100)
+	local _, brass = P.harvest(gatherer, "Brassite", P.computeStats(gatherer, 0), counted({0.999, 0.999, 0.001, 0.999}), 0, 100)
 	eq(brass.bonus and brass.bonus.BrassIngot, 1, "brassite smelts a brass ingot")
 	eq(brass.amount, A, "no double without the proc")
 	eq(brass.coins, nil, "no coins without the proc")
@@ -771,6 +773,188 @@ do
 	eq(P.masteryCape(caped), nil, "mantle needs level 99")
 	eq(P.computeStats(caped, 0).miningFortune, capeBase.miningFortune, "unearned mantle grants nothing")
 	print("PASS: " .. (checks - before) .. " skill mastery assertions.")
+end
+
+-- Mastery balance (review fixes): capstone/proc yield joins the base before
+-- fortune and never stacks; realistic max single-click yield stays <= 2.5x the
+-- pre-mastery max; Quick regrowth has a floor; capped Keen Nose Magic Find.
+do
+	local before = checks
+	local MA = Data.Mastery
+	local GATHER = {"Mining","Woodcutting","Fishing","Farming"}
+	local function always(v) return function() return v end end
+	-- First call (the fortune remainder) misses, every later roll (procs) hits.
+	local function missThenHit() local first = true; return function() if first then first = false; return 0.9999 end return 0 end end
+	local function fullTree(treeId)
+		local out = {}
+		for _, n in ipairs(MA.TreeById[treeId].nodes) do out[n.id] = n.max end
+		return out
+	end
+	local function maxedXp()
+		local xp = {}
+		for skill in pairs(Data.Skills) do xp[skill] = Data.MAX_XP end
+		for skill in pairs(Data.ResourceTiers) do xp[skill] = Data.MAX_XP end
+		return xp
+	end
+	-- Pre-mastery "max fortune sources": level-99 sheet, the best tool of the kind
+	-- with max Fortune enchant, plus the best tool reforge and every accessory carrying the stat.
+	local function gearAllowance(skill)
+		local stat, kind = Data.FortuneStat[skill], Data.ToolKind[skill]
+		local reforge = 0
+		for _, rf in pairs(Data.Gear.Reforges) do
+			if rf.category == "tool" and rf.stats and rf.stats.fortune and (rf.toolKinds == nil or table.find(rf.toolKinds, kind)) then
+				reforge = math.max(reforge, rf.stats.fortune)
+			end
+		end
+		local accessories = 0
+		for _, def in pairs(Data.Items) do
+			if def.kind == "accessory" and def.stats and def.stats[stat] then accessories += def.stats[stat] end
+		end
+		return reforge + accessories
+	end
+	local function bestTool(skill)
+		local stat, kind = Data.FortuneStat[skill], Data.ToolKind[skill]
+		local bestId, best = nil, -1
+		for id, def in pairs(Data.Items) do
+			local f = def.kind == "tool" and def.toolKind == kind and def.stats and def.stats[stat] or -1
+			if f > best then bestId, best = id, f end
+		end
+		return bestId
+	end
+	local function maxEventFor(skill)
+		local bonus, mult = 0, 1
+		for _, ev in pairs(Data.Events) do
+			if ev.skill == skill then bonus = math.max(bonus, ev.gatherBonus or 0); mult = math.max(mult, ev.featuredMult or 1) end
+		end
+		return bonus, mult
+	end
+	local NOW = 5000
+	local function gatherer(skill, mastered)
+		local tool = bestTool(skill)
+		local p = {xp = maxedXp(), items = {[tool] = 1}, collection = {}, coins = 0, enchants = {[tool] = {Fortune = Data.Enchants.Fortune.maxLevel}}}
+		if mastered then
+			local treeId = MA.TreeOfSkill[skill]
+			p.mastery = {trees = {[treeId] = fullTree(treeId)}, active = {[treeId] = {started = NOW - 1, expires = NOW + 10}}, cape = skill}
+		end
+		return p
+	end
+	local function sheet(p, skill)
+		local stats = P.computeStats(p, NOW)
+		stats[Data.FortuneStat[skill]] += gearAllowance(skill)
+		return stats
+	end
+	-- Worst case per click: every roll succeeds (fortune remainder, proc), capstone
+	-- running, tier-1 node with every legacy/season/event base bonus, festival featured.
+	local function clickMax(skill, mastered, rng)
+		local p = gatherer(skill, mastered)
+		local r = Data.ResourceTiers[skill][1]
+		local evBonus, evMult = maxEventFor(skill)
+		local bonus = 1 + 1 + 1 + 1 + evBonus + (if r.id == "Ore" then 2 else 0) -- tier 1, Skyreach, featured, season, event, reinforced pick
+		local okH, res = P.harvest(p, r.id, sheet(p, skill), rng or always(0), bonus, NOW)
+		assert(okH, "max-yield harvest " .. skill .. ": " .. tostring(res))
+		return res.amount * evMult, res.fortune, res
+	end
+	print("Max single-click yield (all layers stacked; tier-1 node, festival featured):")
+	print("  skill        fortune pre->post   pre   post   ratio   (remainder-miss ratio)")
+	for _, skill in ipairs(GATHER) do
+		local pre, f0 = clickMax(skill, false)
+		local post, f1, res = clickMax(skill, true)
+		local ratio = post / pre
+		local missRatio = clickMax(skill, true, missThenHit()) / clickMax(skill, false, missThenHit())
+		print(string.format("  %-12s %4d -> %4d       %4d  %5d   %.2fx   (%.2fx)", skill, f0, f1, pre, post, ratio, missRatio))
+		ok(res.surge == true and res.multiplied == nil, skill .. ": capstone running, proc does not stack on top")
+		-- Under 100 mastery fortune crosses at most one fortune step, so with a x2
+		-- cap the ratio stays <= 2 x 6/5 = 2.4 whatever the gear (F0 >= 400 at 99).
+		ok(f1 - f0 < 100, skill .. " mastery fortune (tree + mantle) " .. (f1 - f0) .. " < 100")
+		ok(ratio <= 2.5, skill .. " max-yield ratio " .. string.format("%.2f", ratio) .. " <= 2.5")
+		ok(missRatio <= 2.5, skill .. " remainder-miss ratio " .. string.format("%.2f", missRatio) .. " <= 2.5")
+		-- Neither the capstone nor any proc exceeds x2 (they never stack).
+		local perks = P.masteryPerks(gatherer(skill, true), MA.TreeOfSkill[skill], NOW)
+		ok((perks.yieldMult or 1) <= 2, skill .. " capstone yieldMult <= 2")
+		ok((perks.tripleYield or 0) == 0, skill .. " no triple proc above a x2 capstone")
+	end
+
+	-- Capstone and proc do not multiply: a proc during a surge = the surge alone.
+	local farmer = gatherer("Farming", true)
+	local fs = P.computeStats(farmer, NOW)
+	local _, surgeOnly = P.harvest(farmer, "Herb", fs, always(0.9999), 0, NOW)
+	local _, surgeProc = P.harvest(farmer, "Herb", fs, missThenHit(), 0, NOW)
+	eq(surgeProc.amount, surgeOnly.amount, "double proc during a capstone adds nothing")
+	eq(surgeProc.surge, true, "surge flagged")
+	local _, plainProc = P.harvest(farmer, "Herb", fs, missThenHit(), 0, NOW + 100)
+	eq(plainProc.multiplied, 2, "proc doubles outside the capstone")
+	eq(plainProc.amount, surgeOnly.amount, "proc x2 equals surge x2")
+	-- The multiplier joins the base before fortune: (1 + bonus) x 2, then the fortune factor once.
+	local _, joined = P.harvest(farmer, "Herb", {farmingFortune = 0}, always(0.9999), 2, NOW)
+	eq(joined.amount, (1 + 2) * 2 * (1 + math.floor(joined.fortune / 100)), "capstone multiplies the base, fortune applies once")
+
+	-- Regrowth: shortened to a floor, never instant.
+	eq(P.regrowthTime(15, 0), 15, "no skip keeps the timer")
+	eq(P.regrowthTime(15, 20), 12, "20% faster")
+	eq(P.regrowthTime(15, 100), 3.75, "full skip floors at 25% of the base")
+	eq(P.regrowthTime(3, 100), 2, "full skip floors at 2 s on short nodes")
+	eq(P.regrowthTime(1.5, 100), 1.5, "the floor never lengthens a short node")
+	eq(P.regrowthTime(15, 500), 3.75, "over-100 skip clamps")
+	ok(MA.PASSIVE_CAPS.respawnSkip <= 50, "passive regrowth capped at <= 50%")
+	local swift = MA.TreeById.Woodcutting.NodeById.SwiftSaplings
+	local savedSwift = swift.perks.respawnSkip
+	swift.perks.respawnSkip = 40
+	eq(P.masteryPerks({xp = maxedXp(), items = {}, collection = {}, mastery = {trees = {Woodcutting = {SwiftSaplings = 5}}}}, "Woodcutting", 0).respawnSkip,
+		MA.PASSIVE_CAPS.respawnSkip, "passive regrowth total capped")
+	swift.perks.respawnSkip = savedSwift
+	-- Throughput: harvest the moment the node is ready (0.65 s click floor),
+	-- over the capstone window and a full cooldown cycle, vs no mastery. Items
+	-- per harvest = the mastery multiplier only (fortune is covered above):
+	-- capstone yieldMult, else 1 + the expected double proc.
+	local CLICK = 0.65
+	print("Gathering throughput vs no mastery (worst node per skill):")
+	for _, skill in ipairs(GATHER) do
+		local treeId = MA.TreeOfSkill[skill]
+		local tree = MA.TreeById[treeId]
+		local ability = tree.NodeById[tree.capstone].ability
+		local p = {xp = maxedXp(), items = {}, collection = {}, mastery = {trees = {[treeId] = fullTree(treeId)}, active = {[treeId] = {started = 0, expires = ability.duration}}}}
+		local worst, worstWindow = 0, 0
+		for _, r in ipairs(Data.ResourceTiers[skill]) do
+			local function run(span, mastered)
+				local t, items, harvests = 0, 0, 0
+				while t < span do
+					local perks = if mastered then P.masteryPerks(p, treeId, t) else {}
+					items += math.max(perks.yieldMult or 1, 1 + math.min(100, perks.doubleYield or 0) / 100)
+					harvests += 1
+					t += math.max(CLICK, P.regrowthTime(r.respawn, perks.respawnSkip or 0))
+				end
+				return items, harvests
+			end
+			local windowItems, windowHarvests = run(ability.duration, true)
+			local floor = math.min(r.respawn, math.max(MA.REGROWTH_FLOOR, r.respawn * MA.REGROWTH_FLOOR_SHARE))
+			ok(windowHarvests <= math.ceil(ability.duration / floor), skill .. " " .. r.id .. " window respects the regrowth floor")
+			local cycle = run(ability.cooldown, true) / run(ability.cooldown, false)
+			worst = math.max(worst, cycle)
+			worstWindow = math.max(worstWindow, windowItems / run(ability.duration, false))
+			ok(cycle <= 2.0, skill .. " " .. r.id .. " cooldown-cycle throughput " .. string.format("%.2f", cycle) .. "x <= 2x")
+		end
+		print(string.format("  %-12s capstone window <= %.2fx, full cooldown cycle <= %.2fx", skill, worstWindow, worst))
+	end
+	-- Timber Tempest regression: 30 s on a 15 s node is a handful of harvests, not ~46.
+	local feller = {xp = maxedXp(), items = {}, collection = {}, mastery = {trees = {Woodcutting = fullTree("Woodcutting")}, active = {Woodcutting = {started = 0, expires = 30}}}}
+	local regrow = P.regrowthTime(15, P.masteryPerks(feller, "Woodcutting", 10).respawnSkip)
+	ok(regrow >= 3.75, "Timber Tempest regrowth on a 15 s node >= 3.75 s (" .. regrow .. ")")
+	ok(math.ceil(30 / regrow) <= 8, "Timber Tempest: at most 8 harvests of a 15 s node in 30 s")
+	feller.items.CelestialHatchet = 1
+	local okLog, logs = P.harvest(feller, "AetherheartLog", P.computeStats(feller, 10), always(0.9999), 0, 10)
+	ok(okLog and logs.regrowth == regrow and logs.regrowth > 0, "capstone harvest still carries a regrowth timer")
+
+	-- Keen Nose / Packmaster: Magic Find on catches capped at 15.
+	local tracker = {xp = maxedXp(), items = {}, collection = {}, mastery = {trees = {Hunter = fullTree("Hunter")}}}
+	local hp = P.masteryPerks(tracker, "Hunter", 0)
+	ok(hp.rareFind > 0 and hp.rareFind <= 15, "full Hunter tree Magic Find <= 15 (" .. tostring(hp.rareFind) .. ")")
+	eq(MA.PERK_CAPS.rareFind, 15, "rareFind cap")
+	local nose = MA.TreeById.Hunter.NodeById.KeenNose
+	local savedNose = nose.perks.rareFind
+	nose.perks.rareFind = 40
+	eq(P.masteryPerks(tracker, "Hunter", 0).rareFind, 15, "rareFind folded into the capped perk set")
+	nose.perks.rareFind = savedNose
+	print("PASS: " .. (checks - before) .. " mastery balance assertions.")
 end
 
 -- Gear depth (Data.Gear): reforges, stars, tomes and their stat layers.

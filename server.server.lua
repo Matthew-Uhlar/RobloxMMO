@@ -1118,7 +1118,7 @@ do
 	function Skills.catch(p,creature)
 		local stats=Progression.computeStats(p,os.time())
 		local hunt=Progression.masteryPerks(p,"Hunter",os.time()) -- Skill Mastery: Keen Nose, Twin Snare, Trail Lore
-		local drops=Progression.rollDrops(creature.drops,stats.magicFind+(hunt.rareFind or 0),roll,stats.petLuck)
+		local drops=Progression.rollDrops(creature.drops,stats.magicFind+math.min(Data.Mastery.PERK_CAPS.rareFind,hunt.rareFind or 0),roll,stats.petLuck)
 		local primary=creature.drops[1].item
 		if drops[primary] then drops[primary]=Progression.fortuneRoll(drops[primary],stats.huntingFortune,roll) end
 		local xp,doubled=creature.xp,false
@@ -1721,7 +1721,7 @@ do
 		if result.coins then p.coins+=result.coins; table.insert(parts,"+"..result.coins.." coins") end
 		if result.multiplied then table.insert(parts,"x"..result.multiplied.." yield") end
 		if result.surge then table.insert(parts,"surge") end
-		if result.respawnSkip then table.insert(parts,"node regrew") end
+		if result.respawnSkip then table.insert(parts,"quick regrowth ("..(math.floor(result.regrowth*10+0.5)/10).."s)") end
 		return if #parts>0 then "   ·   "..table.concat(parts,", ") else ""
 	end
 	-- Arrow/glyph save: removes saved supplies from cost, returns {id=n} saved.
@@ -1859,7 +1859,8 @@ local function perform(player,verb,item,prompt)
 		if region then Journal.count(p,"gathers",region,1) end
 		p.started=true
 		if not regrowth then regrowth={}; nodeRegrowth[prompt]=regrowth; watchPrompt(prompt) end
-		regrowth[player]=os.clock()+(if result.respawnSkip then 0 else (tonumber(resource.respawn) or 3))
+		-- Skill Mastery: Quick regrowth shortens the timer down to a floor (Progression.regrowthTime), never to zero.
+		regrowth[player]=os.clock()+(tonumber(result.regrowth) or tonumber(resource.respawn) or 3)
 		local hooked=if skill=="Fishing" then Sea.cast(player,p,stats,result.tool,region,prompt) else ""
 		return "+"..result.amount.." "..resource.name.."   ·   +"..result.xp.." "..skill.." XP"..mastered..hooked
 	elseif verb=="explore" and prompt and item=="Skyreach" and region=="Skyreach" then
@@ -2395,7 +2396,9 @@ function CombatStyles.consume(p,payload)
 	return {ok=true,remaining=remaining,saved=if next(saved) then saved else nil}
 end
 -- "refund" returns supplies a cast paid for but could not use (a Hubward
--- tablet that failed to teleport). Same validation as "consume".
+-- tablet that failed to teleport). Same validation as "consume". The caller
+-- refunds only what was actually spent (costs minus "saved"); supplies go
+-- straight back to the satchel and never count toward collections/tokens.
 function CombatStyles.refund(p,payload)
 	local items=payload.items
 	if type(items)~="table" then return {ok=false,reason="invalid"} end
@@ -2408,7 +2411,7 @@ function CombatStyles.refund(p,payload)
 		if count>8 then return {ok=false,reason="invalid"} end
 	end
 	if count==0 then return {ok=false,reason="invalid"} end
-	for id,n in pairs(back) do collect(p,id,n) end
+	for id,n in pairs(back) do p.items[id]=(p.items[id] or 0)+n end
 	return {ok=true}
 end
 function CombatStyles.xpRate(monsterId,tier)

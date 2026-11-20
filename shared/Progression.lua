@@ -391,7 +391,8 @@ function Progression.fortuneRoll(base, fortune, rng)
 end
 -- Returns ok, reasonOrResult. result = {amount, xp, skill, tool}.
 -- now (optional, os.time) lets running mastery capstones apply; mastery perks
--- may add result.bonus {[item]=n}, result.coins, result.respawnSkip.
+-- may add result.bonus {[item]=n}, result.coins, result.regrowth (seconds,
+-- with result.respawnSkip when shortened), result.surge / result.multiplied.
 function Progression.harvest(p, resourceId, stats, rng, bonusBase, now)
 	local r = Progression.resource(resourceId)
 	if not r then return false, "Unknown resource." end
@@ -409,10 +410,19 @@ function Progression.harvest(p, resourceId, stats, rng, bonusBase, now)
 		local ench = Progression.enchantStats(p, toolId, "tool", r.skill)
 		fortune += ench[fortuneStat] or 0
 	end
-	local base = 1 + (bonusBase or 0)
-	local amount = Progression.fortuneRoll(base, fortune, rng)
-	local result = {amount=amount,xp=r.xp,skill=r.skill,tool=toolId,fortune=fortune,resource=r}
-	if type(p.mastery) == "table" then Progression.applyGatherMastery(p, result, rng, now) end
+	-- Fortune is linear in the base, so roll its factor first (fixed rng order),
+	-- then join the mastery yield multiplier (capstone surge OR a Twin/Bountiful
+	-- proc, never both) to the base before fortune applies. Festival multipliers
+	-- stay with the caller and apply once to the final amount.
+	local fortuneFactor = Progression.fortuneRoll(1, fortune, rng)
+	local mult, perks = 1, nil
+	local result = {xp=r.xp,skill=r.skill,tool=toolId,fortune=fortune,resource=r}
+	if type(p.mastery) == "table" then
+		mult, perks = Progression.gatherYieldMult(p, result, rng, now)
+	end
+	local base = math.floor((1 + (bonusBase or 0)) * mult)
+	result.amount = base * fortuneFactor
+	if perks then Progression.applyGatherMastery(p, result, rng, now, perks) end
 	return true, result
 end
 
@@ -756,7 +766,8 @@ function Progression.masteryActivate(p, treeId, now)
 	return true, node.ability
 end
 -- Summed perks of one tree (node perks x level, plus a running capstone's
--- perk fields). Chance perks cap at PERK_CAP.
+-- perk fields). Passive node totals cap at PASSIVE_CAPS first; every perk
+-- then caps at PERK_CAPS[k] or PERK_CAP (yieldMult/multishot are multipliers).
 local ABILITY_PERKS = {"yieldMult","respawnSkip","doubleYield","multishot","manaThrift","glyphSave","xpBoost"}
 function Progression.masteryPerks(p, treeId, now)
 	local out = {}
@@ -768,6 +779,10 @@ function Progression.masteryPerks(p, treeId, now)
 			for k, v in pairs(n.perks) do out[k] = (out[k] or 0) + v * math.min(lvl, n.max) end
 		end
 	end
+	-- Passive caps (before a capstone adds its own share).
+	for k, cap in pairs(MA().PASSIVE_CAPS) do
+		if out[k] then out[k] = math.min(cap, out[k]) end
+	end
 	local ability = Progression.masteryActive(p, treeId, now)
 	if ability then
 		for _, k in ipairs(ABILITY_PERKS) do
@@ -778,7 +793,7 @@ function Progression.masteryPerks(p, treeId, now)
 		end
 	end
 	for k, v in pairs(out) do
-		if k ~= "yieldMult" and k ~= "multishot" and k ~= "rareFind" then out[k] = math.min(MA().PERK_CAP, v) end
+		if k ~= "yieldMult" and k ~= "multishot" then out[k] = math.min(MA().PERK_CAPS[k] or MA().PERK_CAP, v) end
 	end
 	return out
 end
@@ -823,23 +838,48 @@ function Progression.masteryCombat(p, now)
 		active=active,
 	}
 end
--- Gathering perks on a harvest result (yield, XP, regrowth, ingots, coins).
--- Rolls happen only for perks the profile owns, in a fixed order.
-function Progression.applyGatherMastery(p, result, rng, now)
-	local r = result.resource
-	local treeId = MA().TreeOfSkill[r.skill]
-	if not treeId then return result end
+-- Node regrowth after a harvest: skip% shortens the base time, never below
+-- max(REGROWTH_FLOOR s, REGROWTH_FLOOR_SHARE x base) (and never lengthens it).
+function Progression.regrowthTime(base, skip)
+	base = tonumber(base) or 3
+	skip = math.clamp(tonumber(skip) or 0, 0, 100)
+	if skip <= 0 then return base end
+	local floor = math.min(base, math.max(MA().REGROWTH_FLOOR, base * MA().REGROWTH_FLOOR_SHARE))
+	return math.max(floor, base * (1 - skip / 100))
+end
+-- Mastery yield multiplier for one harvest (joins the base before fortune).
+-- A running capstone's yieldMult and a Twin/Bountiful proc do not stack: the
+-- larger wins. Rolls only for owned proc perks (triple, then double).
+-- Returns mult, perks (nil when the skill has no tree or no perks).
+function Progression.gatherYieldMult(p, result, rng, now)
+	local treeId = MA().TreeOfSkill[result.resource.skill]
+	if not treeId then return 1, nil end
 	local perks = Progression.masteryPerks(p, treeId, now)
-	if not next(perks) then return result end
-	if (perks.yieldMult or 1) > 1 then result.amount = math.floor(result.amount * perks.yieldMult); result.surge = true end
-	if (perks.tripleYield or 0) > 0 and rng() < perks.tripleYield / 100 then
-		result.amount *= 3; result.multiplied = 3
-	elseif (perks.doubleYield or 0) > 0 and rng() < perks.doubleYield / 100 then
-		result.amount *= 2; result.multiplied = 2
+	if not next(perks) then return 1, nil end
+	local surge = perks.yieldMult or 1
+	local proc = 1
+	if (perks.tripleYield or 0) > 0 and rng() < perks.tripleYield / 100 then proc = 3
+	elseif (perks.doubleYield or 0) > 0 and rng() < perks.doubleYield / 100 then proc = 2 end
+	if surge > 1 and surge >= proc then result.surge = true
+	elseif proc > 1 then result.multiplied = proc end
+	return math.max(surge, proc), perks
+end
+-- Non-yield gathering perks on a harvest result (XP, regrowth, ingots, coins).
+-- Rolls happen only for perks the profile owns, in a fixed order.
+function Progression.applyGatherMastery(p, result, rng, now, perks)
+	local r = result.resource
+	if not perks then
+		local treeId = MA().TreeOfSkill[r.skill]
+		if not treeId then return result end
+		perks = Progression.masteryPerks(p, treeId, now)
 	end
+	if not next(perks) then return result end
 	if (perks.xpBoost or 0) > 0 then result.xp = math.floor(result.xp * (1 + perks.xpBoost / 100)) end
-	local skip = perks.respawnSkip or 0
-	if skip >= 100 or (skip > 0 and rng() < skip / 100) then result.respawnSkip = true end
+	if (perks.respawnSkip or 0) > 0 then
+		local base = tonumber(r.respawn) or 3
+		result.regrowth = Progression.regrowthTime(base, perks.respawnSkip)
+		if result.regrowth < base then result.respawnSkip = true end
+	end
 	local ingot = MA().SmeltOf[r.id]
 	if ingot and Data.Items[ingot] and (perks.autoSmelt or 0) > 0 and rng() < perks.autoSmelt / 100 then
 		result.bonus = result.bonus or {}

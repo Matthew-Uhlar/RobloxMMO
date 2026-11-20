@@ -1028,8 +1028,9 @@ local function createLogic(env)
 		end
 		if r and not L.lineOfSight(pos, r) then return nil, "sight" end
 		-- Pay first (stale supplies must never buy a free teleport), then act.
+		local paid
 		if next(costs) then
-			local paid = env.bridge("consume", player, {items = costs})
+			paid = env.bridge("consume", player, {items = costs})
 			if type(paid) ~= "table" or paid.ok ~= true then
 				for id in pairs(costs) do supplies[id] = 0 end
 				return nil, "glyphs"
@@ -1040,10 +1041,16 @@ local function createLogic(env)
 			end
 		end
 		if spell.kind == "teleport" and not (env.teleport and env.teleport(player) == true) then
-			if next(costs) then
-				local back = env.bridge("refund", player, {items = costs})
+			-- Refund only what was spent: supplies kept by Ink/Quiver Thrift (paid.saved) never left the satchel.
+			local spent = {}
+			for id, n in pairs(costs) do
+				local kept = paid and type(paid.saved) == "table" and tonumber(paid.saved[id]) or 0
+				if n - kept > 0 then spent[id] = n - kept end
+			end
+			if next(spent) then
+				local back = env.bridge("refund", player, {items = spent})
 				if type(back) == "table" and back.ok == true then
-					for id, n in pairs(costs) do supplies[id] = (tonumber(supplies[id]) or 0) + n end
+					for id, n in pairs(spent) do supplies[id] = (tonumber(supplies[id]) or 0) + n end
 				end
 			end
 			return nil, "teleport"

@@ -3151,8 +3151,10 @@ end
 	eq(st(archer).items.CopperArrow,14,"a refused payment takes nothing")
 	eq(bridge.OnInvoke("consume",lateOpen,{items={CopperArrow=1}}),nil,"expired lease cannot pay")
 	-- refund: returns what a failed Hubward paid; same validation as consume.
+	local collectedBefore=st(archer).collection.CopperArrow or 0
 	eq(bridge.OnInvoke("refund",archer,{items={CopperArrow=1}}).ok,true,"refund accepted")
 	eq(st(archer).items.CopperArrow,15,"refund returns the item")
+	eq(st(archer).collection.CopperArrow or 0,collectedBefore,"a refund never counts toward collections (no token farming)")
 	eq(bridge.OnInvoke("refund",archer,{items={Timber=1}}).reason,"invalid","non-combat items cannot be refunded")
 	eq(bridge.OnInvoke("refund",archer,{items={CopperArrow=51}}).reason,"invalid","refund bounded like consume")
 	eq(bridge.OnInvoke("refund",archer,{}).reason,"invalid","missing refund items refused")
@@ -3317,22 +3319,24 @@ end)()
 	end
 	advance(30)
 	eq(gained(grab(miner,node("gather","Ore")).message),plainGain,"surge over: normal yield")
-	-- All rolls succeed: double yield, regrowth skip, ember ingot, coins.
+	-- All rolls succeed: double yield, ember ingot, coins; Quick regrowth
+	-- (Echoing Seam 1 = 4%) shortens the 3 s timer to 2.88 s, never to zero.
 	local ingotsBefore=st(miner).items.AlloyIngot or 0
 	local saved=defaultRoll
 	defaultRoll=0
 	local seam=node("gather","Ore")
 	local lucky=grab(miner,seam)
-	ok(has(lucky.message,"node regrew"),"regrowth skip noted")
+	ok(has(lucky.message,"quick regrowth (2.9s)"),"quick regrowth noted")
 	ok(has(lucky.message,"Alloy Ingot"),"ember ingot noted")
 	eq((lucky.items.AlloyIngot or 0)-ingotsBefore,1,"bonus ingot collected")
 	ok(has(lucky.message,"x2 yield"),"double yield noted")
 	local again=grab(miner,seam)
-	ok(has(again.message,"Copperstone Ore"),"skipped regrowth lets the node be gathered at once")
+	ok(has(again.message,"regrowing"),"quick regrowth never makes a node ready at once")
 	defaultRoll=saved
-	ok(has(grab(miner,seam).message,"Copperstone Ore"),"gathered again")
+	advance(0.9)
+	ok(has(grab(miner,seam).message,"Copperstone Ore"),"node ready after the shortened timer (2.9 s < 3 s)")
 	local slow=grab(miner,seam)
-	ok(has(slow.message,"regrowing"),"without the skip the node regrows")
+	ok(has(slow.message,"regrowing"),"the node regrows between harvests")
 	-- Persistence: nodes and the capstone cooldown survive a rejoin.
 	miner=rejoin(miner)
 	eq(data.p9401.profile.mastery.trees.Mining.SteadyPick,1,"node levels saved")

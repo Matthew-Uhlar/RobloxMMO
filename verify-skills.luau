@@ -957,6 +957,34 @@ eq(hop[1].Parent:GetAttribute("TrapState"), "caught", "sweep marks a caught trap
 eq(hunter.attrs.HunterTrapsCaught, 1, "HunterTrapsCaught attribute")
 ok(has(use(rival, hop[1]).message, "Another hunter"), "a rival cannot collect your catch")
 ok(has(use(hunter, hop[1]).message, "Caught"), "owner collects the swept catch")
+-- Skill Mastery Keen Nose / Packmaster: Magic Find on catches is capped at 15
+-- (even with an inflated node), on top of the sheet's own Magic Find.
+do
+	local nose = Data.Mastery.TreeById.Hunter.NodeById.KeenNose
+	local savedNose = nose.perks.rareFind
+	nose.perks.rareFind = 40
+	local seen = {}
+	local realRoll = P.rollDrops
+	P.rollDrops = function(drops, mf, ...) table.insert(seen, mf); return realRoll(drops, mf, ...) end
+	local function catchWith(id, mastery)
+		local h = seeded(id, function(prof) prof.items.SnareKit = 1; prof.xp.Hunter = X[99]; prof.mastery = mastery end)
+		ok(has(use(h, hop[3]).message, "Snare set"), "rare-find snare set " .. id)
+		advance(HU.TICK * 3 - 0.5)
+		queue(0.01)
+		ok(has(use(h, hop[3]).message, "Caught"), "rare-find catch " .. id)
+		leave(h)
+		return seen[#seen]
+	end
+	local plainMf = catchWith(5091, nil)
+	local trees = {Hunter = {QuietStep = 1, TrailLore = 1, SpringTension = 1, HairTrigger = 1, Fleetfoot = 1, Packmaster = 3, SnugKnots = 1, KeenNose = 5}}
+	local keenMf = catchWith(5092, {trees = trees})
+	ok(plainMf ~= nil and keenMf ~= nil, "catch rolled drops with Magic Find")
+	eq(keenMf - plainMf, 15, "perk Magic Find on catches capped at 15")
+	P.rollDrops = realRoll
+	nose.perks.rareFind = savedNose
+	local normal = P.masteryPerks({xp = {}, items = {}, collection = {}, mastery = {trees = trees}}, "Hunter", 0)
+	ok(normal.rareFind <= 15, "shipped Keen Nose + Packmaster stay within 15 (" .. normal.rareFind .. ")")
+end
 -- Collapse after MAX_TICKS misses.
 hunter = rejoin(hunter)
 use(hunter, hop[2])
