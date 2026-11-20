@@ -91,7 +91,7 @@ Adventure also sets player attribute `SlayerBossReady = "Line:tier"` (or `""`) w
 
 `ServerStorage.IsleRegionAccess` (existing BindableFunction) is generalised: `Invoke(player, regionId)` → `{allowed, message}` for every `Data.Regions` entry (`requires.quest` = completed contract count, `requires.skills` = levels).
 
-`ServerStorage.IsleExpeditionReward` (BindableEvent) fires `(player, {floor, grade, score, seconds, deaths, mistakes, partySize, damageShare})`; a bare `(player)` counts as Floor I grade B. Profile field `p.dungeons = {lastClear, clears={[floor]=n}, best={[floor]=grade}}`; credited clears are 90 s apart.
+`ServerStorage.IsleExpeditionReward` (BindableEvent) fires `(player, {floor, grade, score, seconds, deaths, mistakes, partySize, damageShare})`; a bare `(player)` counts as Floor I grade B. Profile field `p.dungeons = {lastClear, clears={[floor]=n}, best={[floor]=grade}}`; credited clears are 90 s apart. `ServerStorage.IsleExpeditionGrant` (BindableFunction, same payload) returns `{ok, reason}`; the expedition announces the chest only on ok. Credit needs ≥ 10% contribution (tuning counts for at most half of that) and, in parties, ≥ 5% of damage. Runs fail after 2× floor par; members idle > 90 s or > 120 studs away for > 10 s are removed.
 
 ## 5. Combat (`combat.server.lua`, `combat.client.lua`)
 
