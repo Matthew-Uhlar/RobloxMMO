@@ -39,7 +39,7 @@ local function ok(cond, case) assert(cond, case); checks += 1 end
 -- Doubles
 ------------------------------------------------------------------------------
 local function world()
-	local w = {clock = 100, rolls = {}, calls = {}, positions = {}, alive = {}, stats = {}, heals = {}, list = {},
+	local w = {clock = 100, wall = 5000, blocked = {}, rolls = {}, calls = {}, positions = {}, alive = {}, stats = {}, heals = {}, list = {},
 		replies = {slayerBoss = {ok = true}}, playerCalls = 0, inv = {}, teleports = {}, walls = false, moving = {}}
 	function w.rng()
 		if #w.rolls > 0 then return table.remove(w.rolls, 1) end
@@ -63,6 +63,7 @@ local function world()
 	w.logic = Combat.createLogic({
 		Data = Data, Progression = P,
 		now = function() return w.clock end,
+		time = function() return w.wall end, -- wall clock of mastery capstone expiries
 		rng = w.rng,
 		players = function() w.playerCalls += 1; return w.list end,
 		alive = function(p) return w.alive[p] == true end,
@@ -88,7 +89,7 @@ local function world()
 			if done then done(w.replies[op]) end
 			return nil
 		end,
-		lineOfSight = function(from, r) return not w.walls end,
+		lineOfSight = function(from, r) return not w.walls and not w.blocked[r] end,
 		teleport = function(player) table.insert(w.teleports, player); return w.hub ~= false end,
 		moving = function(player) return w.moving[player] == true end,
 	})
@@ -1668,13 +1669,14 @@ do
 	child(replicated, object("ModuleScript", {Name = "AetherData"}))
 	child(replicated, object("ModuleScript", {Name = "AetherProgression"}))
 	local serverStorage = object("ServerStorage")
+	local runtimeMastery = nil -- Skill Mastery snapshot the bridge reports (set by the multishot check)
 	local inv = {CopperArrow = 3, GaleGlyph = 5, SparkGlyph = 5, HubwardTablet = 1}
 	local loadout = {style = "ranged", weapon = "MeadowLongbow", ammo = "CopperArrow", ammoCount = 3,
 		levels = {Combat = 1, Ranged = 1, Magic = 1}, supplies = {GaleGlyph = 5, SparkGlyph = 5, HubwardTablet = 1}}
 	child(serverStorage, object("BindableFunction", {Name = "IsleBridge", Invoke = function(_, op, player, payload)
 		table.insert(calls, {op = op, player = player, payload = payload})
 		if op == "stats" then
-			return {stats = styleStats({intelligence = 150}), combatLevel = 3, ironman = false, loadout = loadout}
+			return {stats = styleStats({intelligence = 150}), combatLevel = 3, ironman = false, loadout = loadout, mastery = runtimeMastery}
 		elseif op == "refund" then
 			for id, n in pairs(payload.items) do inv[id] = (inv[id] or 0) + n end
 			return {ok = true}
@@ -1828,11 +1830,413 @@ do
 	-- Mana regenerates and replicates through the AI loop.
 	tick(10)
 	eq(hero:GetAttribute("Mana"), 150, "mana regenerates to full")
+	-- Skill Mastery multishot: a Volley arrow shows one projectile and one hit per target.
+	local thornMarker = object("Part", {Name = "ThornMarker", Position = boar.PrimaryPart.CFrame.Position})
+	thornMarker:SetAttribute("MonsterId", "Thornling")
+	thornMarker:SetAttribute("Count", 1)
+	child(spawnsFolder, thornMarker)
+	spawnsFolder.ChildAdded:Fire(thornMarker)
+	tick(0.6)
+	local thornModel
+	for _, o in ipairs(created) do if o.ClassName == "Model" and o.Parent == monsters and o ~= boar then thornModel = o end end
+	ok(thornModel ~= nil, "a second monster spawned beside the boar")
+	local here = boar.PrimaryPart.CFrame.Position
+	root.Position = here + Vector3.new(20, 0, 0)
+	loadout.style, loadout.weapon, loadout.ammo, loadout.ammoCount = "ranged", "MeadowLongbow", "CopperArrow", inv.CopperArrow
+	runtimeMastery = {melee = {firstStrike = 0, execute = 0, xpBoost = 0}, ranged = {firstStrike = 0, execute = 0, arrowSave = 0, multishot = 3, xpBoost = 0},
+		magic = {manaThrift = 0, glyphSave = 0, xpBoost = 0}, active = {Ranged = os.time() + 60}}
+	now += 2
+	local projectilesBefore, hitsBefore, arrowsBefore = #fires("projectile"), #fires("hit"), inv.CopperArrow
+	remotes.IsleCombat.OnServerEvent:Fire(hero, "ranged", boar)
+	eq(#fires("projectile") - projectilesBefore, 2, "Volley: one projectile per struck target")
+	eq(#fires("hit") - hitsBefore, 2, "Volley: one hit per struck target")
+	eq(fires("hit")[#fires("hit")].payload.model, thornModel, "the extra hit names the second monster")
+	eq(arrowsBefore - inv.CopperArrow, 1, "one arrow for the volley")
+	runtimeMastery = nil
 	players.PlayerRemoving:Fire(hero)
 	eq(#warnings, 0,"no runtime warnings: " .. table.concat(warnings, "; "))
 	print("PASS: " .. (checks - before) .. " combat style runtime assertions.")
 end
 print("PASS: " .. (checks - stylesBefore) .. " combat style assertions in total.")
+
+------------------------------------------------------------------------------
+-- Skill Mastery combat perks: firstStrike, execute, manaThrift, multishot
+-- (bridge "stats" mastery = Progression.masteryCombat; capstones via .active).
+------------------------------------------------------------------------------
+local masteryBefore = checks
+local function masteryOf(melee, ranged, magic, active)
+	return {melee = melee or {firstStrike = 0, execute = 0, xpBoost = 0},
+		ranged = ranged or {firstStrike = 0, execute = 0, arrowSave = 0, multishot = 1, xpBoost = 0},
+		magic = magic or {manaThrift = 0, glyphSave = 0, xpBoost = 0}, active = active or {}}
+end
+-- Perk snapshot: defaults, sanitising, capstone active vs expired.
+do
+	local w = world()
+	local L = w.logic
+	local none = L.perks(nil, "melee")
+	ok(none.firstStrike == 0 and none.execute == 0 and none.manaThrift == 0 and none.multishot == 1, "no stats: neutral perks")
+	local plain = L.perks({stats = {}}, "ranged")
+	ok(plain.firstStrike == 0 and plain.multishot == 1, "no mastery: neutral perks")
+	eq(L.perks({mastery = {ranged = "junk"}}, "ranged").multishot, 1, "malformed style perks ignored")
+	local wild = L.perks({mastery = masteryOf({firstStrike = 150, execute = -5}, {multishot = 10}, {manaThrift = 0 / 0})}, "melee")
+	eq(wild.firstStrike, 100, "firstStrike capped at 100%")
+	eq(wild.execute, 0, "negative execute clamps to 0")
+	eq(L.perks({mastery = masteryOf(nil, {multishot = 10})}, "ranged").multishot, C.MULTISHOT_MAX, "multishot never above the Volley cap")
+	eq(L.perks({mastery = masteryOf(nil, {multishot = 2.7})}, "ranged").multishot, 2, "multishot floors")
+	eq(L.perks({mastery = masteryOf(nil, nil, {manaThrift = 0 / 0})}, "magic").manaThrift, 0, "NaN thrift ignored")
+	eq(C.MULTISHOT_MAX, Data.Mastery.TreeById.Ranged.NodeById.Volley.ability.multishot, "cap matches the Volley capstone")
+	-- Real numbers through Progression.masteryCombat: Volley and Glyphstorm.
+	local p = {mastery = {trees = {Ranged = {PinningShot = 5, QuarryMark = 5, Volley = 1}, Magic = {ManaWeave = 5, LeanCasting = 5, Glyphstorm = 1},
+		Melee = {OpeningBlow = 5, Finisher = 5}}, active = {Ranged = {started = 4990, expires = 5000}, Magic = {started = 4990, expires = 5005}}}}
+	local live = {mastery = P.masteryCombat(p, 4995)}
+	eq(live.mastery.active.Ranged, 5000, "bridge reports the Volley expiry")
+	w.wall = 4995
+	local ranged = L.perks(live, "ranged")
+	eq(ranged.multishot, 3, "Volley running: shots strike 3 targets")
+	eq(ranged.firstStrike, 50, "Pinning Shot x5 = 50% opening blow")
+	eq(ranged.execute, 20, "Quarry Mark x5 = +20% execute")
+	eq(L.perks(live, "magic").manaThrift, 75, "Glyphstorm running: 25% + 50% thrift")
+	eq(L.perks(live, "melee").firstStrike, 50, "Opening Blow x5 = 50%")
+	eq(L.perks(live, "melee").execute, 20, "Finisher x5 = +20%")
+	w.wall = 5000
+	eq(L.perks(live, "ranged").multishot, 1, "an expired Volley in a cached snapshot no longer splits shots")
+	eq(L.perks(live, "ranged").firstStrike, 50, "node perks outlive the capstone")
+	eq(L.perks(live, "magic").manaThrift, 75, "Glyphstorm still running until its own expiry")
+	w.wall = 5005
+	eq(L.perks(live, "magic").manaThrift, 25, "an expired Glyphstorm gives its 50% back")
+	eq(P.masteryCombat(p, 5005).magic.manaThrift, L.perks(live, "magic").manaThrift, "matches a fresh bridge snapshot")
+	eq(P.masteryCombat(p, 5005).ranged.multishot, L.perks(live, "ranged").multishot, "multishot matches a fresh snapshot")
+	local noCap = {mastery = P.masteryCombat({mastery = {trees = {Ranged = {PinningShot = 1}}}}, 4995)}
+	eq(L.perks(noCap, "ranged").multishot, 1, "no Volley: one target")
+	print("PASS: " .. (checks - masteryBefore) .. " mastery perk snapshot assertions.")
+end
+-- manaThrift: rounding, floor at 0, mana gate, Glyphstorm.
+do
+	local before = checks
+	local w = world()
+	local L = w.logic
+	eq(Data.Spells.GaleDart.mana, 6, "gale dart costs 6 mana")
+	local dart = Data.Spells.GaleDart
+	eq(L.spellManaCost(dart, 0), 6, "no thrift: full cost")
+	eq(L.spellManaCost(dart, nil), 6, "missing thrift: full cost")
+	eq(L.spellManaCost(dart, -20), 6, "negative thrift never raises the cost")
+	eq(L.spellManaCost(dart, 25), 5, "4.5 rounds up to 5")
+	eq(L.spellManaCost(dart, 26), 4, "4.44 rounds down to 4")
+	eq(L.spellManaCost(dart, 50), 3, "half cost")
+	eq(L.spellManaCost(dart, 75), 2, "1.5 rounds up to 2")
+	eq(L.spellManaCost(dart, 92), 0, "0.48 rounds to 0")
+	eq(L.spellManaCost(dart, 100), 0, "100% thrift is free")
+	eq(L.spellManaCost(dart, 250), 0, "cost floors at 0")
+	eq(L.spellManaCost(Data.Spells.Hubward, 50), 0, "free spells stay free")
+	eq(L.spellManaCost(Data.Spells.Mend, 25), 30, "mend 40 x 0.75")
+	local marker = L.addMarker("boar", "BramblebackBoar", 1, origin)
+	L.dueSpawns()
+	local target = model("boar")
+	local r = L.register(marker, target, Vector3.new(0, 1, 0), {radius = 2})
+	r.maxHp, r.hp = 1e9, 1e9
+	local mage = w.player("mage", Vector3.new(20, 1, 0), {stats = styleStats({intelligence = 100})})
+	local lo = {style = "magic", weapon = "MeadowWand", levels = {Combat = 1, Ranged = 1, Magic = 1}, supplies = {GaleGlyph = 50, SparkGlyph = 50}}
+	w.stats[mage].loadout = lo
+	w.inv[mage] = {GaleGlyph = 50, SparkGlyph = 50}
+	local full = L.cast(mage, "cast", target, "GaleDart")
+	eq(full.manaCost, 6, "without perks a dart costs 6")
+	eq(full.mana, 94, "6 mana spent")
+	w.clock += 2
+	w.stats[mage].mastery = masteryOf(nil, nil, {manaThrift = 25, glyphSave = 0, xpBoost = 0})
+	L.manaOf(mage).current = 100
+	local lean = L.cast(mage, "cast", target, "GaleDart")
+	eq(lean.manaCost, 5, "25% thrift: 5 mana")
+	eq(lean.mana, 95, "5 mana spent")
+	-- Glyphstorm running (bridge folds +50 in), then expired in the cached snapshot.
+	w.clock += 2
+	w.stats[mage].mastery = masteryOf(nil, nil, {manaThrift = 75, glyphSave = 100, xpBoost = 0}, {Magic = w.wall + 15})
+	L.manaOf(mage).current = 100
+	eq(L.cast(mage, "cast", target, "GaleDart").manaCost, 2, "Glyphstorm: 75% thrift")
+	w.clock += 2
+	w.wall += 15
+	L.manaOf(mage).current = 100
+	eq(L.cast(mage, "cast", target, "GaleDart").manaCost, 5, "Glyphstorm expired: back to 25%")
+	-- The mana gate uses the reduced cost.
+	w.clock += 2
+	w.stats[mage].stats = styleStats({intelligence = 2})
+	L.statsFor(mage)
+	w.clock += 2
+	L.manaOf(mage, w.stats[mage].stats).current = 2
+	w.stats[mage].mastery = masteryOf(nil, nil, {manaThrift = 0})
+	eq(select(2, L.cast(mage, "cast", target, "GaleDart")), "mana", "2 mana cannot pay 6")
+	w.stats[mage].mastery = masteryOf(nil, nil, {manaThrift = 75})
+	local cheap = L.cast(mage, "cast", target, "GaleDart")
+	ok(cheap ~= nil and cheap.manaCost == 2 and cheap.mana == 0, "75% thrift casts on 2 mana and never goes negative")
+	w.clock += 2
+	w.stats[mage].mastery = masteryOf(nil, nil, {manaThrift = 100})
+	local free = L.cast(mage, "cast", target, "GaleDart")
+	ok(free ~= nil and free.manaCost == 0 and free.mana >= 0, "100% thrift casts at 0 mana cost")
+	print("PASS: " .. (checks - before) .. " manaThrift assertions.")
+end
+-- execute: strictly below 30% health, melee and ranged.
+do
+	local before = checks
+	local w = world()
+	local L = w.logic
+	local marker = L.addMarker("boar", "BramblebackBoar", 3, origin)
+	L.dueSpawns()
+	local target = model("boar")
+	local r = L.register(marker, target, Vector3.new(0, 1, 0), {radius = 2})
+	r.maxHp = 1000
+	local brute = w.player("brute", Vector3.new(4, 1, 0), {stats = styleStats({damage = 95})})
+	local base = P.damageTaken(100, r.defense) -- (5 + 95), no crit, neutral style
+	local function swing(hp)
+		r.hp = hp
+		w.clock += 1
+		w.rolls = {0.99}
+		return L.attack(brute, "attack", target)
+	end
+	eq(swing(300).damage, base, "no perks: no execute bonus")
+	w.stats[brute].mastery = masteryOf({firstStrike = 0, execute = 20, xpBoost = 0})
+	local edge = swing(300)
+	eq(edge.damage, base, "exactly 30% health: no execute")
+	eq(edge.execute, nil, "boundary not flagged")
+	local below = swing(299)
+	eq(below.damage, P.damageTaken(120, r.defense), "below 30%: +20% damage")
+	ok(below.execute == true, "execute flagged")
+	eq(swing(1000).damage, base, "healthy targets take normal damage")
+	w.stats[brute].mastery = masteryOf({firstStrike = 0, execute = 20, xpBoost = 0}, nil, nil, {Melee = w.wall + 5})
+	eq(swing(200).damage, P.damageTaken(120, r.defense), "execute is a node perk: unaffected by capstone timing")
+	-- XP accrual is capped by the hp actually removed.
+	r.contributors = {}
+	local finisher = swing(50)
+	ok(finisher.killed and r.contributors[brute].xp.melee == 50, "an execute kill accrues the remaining hp only")
+	-- Ranged execute uses the ranged tree only.
+	local m2 = model("boar2")
+	local r2 = L.register(marker, m2, Vector3.new(0, 1, 0), {radius = 2})
+	r2.maxHp, r2.hp = 1000, 200
+	local archer = w.player("archer", Vector3.new(20, 1, 0), {stats = styleStats({rangedAccuracy = 1000})})
+	w.stats[archer].loadout = {style = "ranged", weapon = "MeadowLongbow", ammo = "CopperArrow", ammoCount = 20, levels = {Ranged = 1}, supplies = {}}
+	w.inv[archer] = {CopperArrow = 20}
+	w.stats[archer].mastery = masteryOf({firstStrike = 0, execute = 50, xpBoost = 0})
+	local rawShot = P.rangedDamage(w.stats[archer].stats, Data.Items.MeadowLongbow, Data.Items.CopperArrow, 1, function() return 0.99 end)
+	w.rolls = {0, 0.99}
+	eq(L.ranged(archer, "ranged", m2).damage, P.damageTaken(math.floor(rawShot * 0.7), r2.defense), "melee execute does not boost arrows")
+	w.stats[archer].mastery = masteryOf(nil, {firstStrike = 0, execute = 50, arrowSave = 0, multishot = 1, xpBoost = 0})
+	w.clock += 2
+	r2.hp = 200
+	w.rolls = {0, 0.99}
+	local shot = L.ranged(archer, "ranged", m2)
+	eq(shot.damage, P.damageTaken(math.floor(rawShot * 1.5 * 0.7), r2.defense), "ranged execute +50% before the resist")
+	ok(shot.execute == true, "ranged execute flagged")
+	print("PASS: " .. (checks - before) .. " execute assertions.")
+end
+-- firstStrike: first landed hit on a full-health monster, once per monster per player.
+do
+	local before = checks
+	local w = world()
+	local L = w.logic
+	local marker = L.addMarker("boar", "BramblebackBoar", 3, origin)
+	L.dueSpawns()
+	local function boar(name)
+		local m = model(name)
+		local r = L.register(marker, m, Vector3.new(0, 1, 0), {radius = 2})
+		r.maxHp, r.hp = 1e6, 1e6
+		return m, r
+	end
+	local stats = styleStats({damage = 95, critDamage = 50})
+	local plainHit, critHit = 100, 150
+	local brute = w.player("brute", Vector3.new(4, 1, 0), {stats = stats})
+	local m1, r1 = boar("b1")
+	w.rolls = {0.99}
+	local hit = L.attack(brute, "attack", m1)
+	ok(hit.crit == false and hit.damage == plainHit and hit.firstStrike == nil, "no perks: no opening crit")
+	eq(#w.rolls, 0, "only the crit roll was used")
+	-- With the perk, but the monster is no longer at full health.
+	w.stats[brute].mastery = masteryOf({firstStrike = 100, execute = 0, xpBoost = 0})
+	w.clock += 1
+	w.rolls = {0.99, 0.99}
+	ok(not L.attack(brute, "attack", m1).crit, "a wounded monster gives no opening blow")
+	eq(#w.rolls, 1, "and spends no opening roll")
+	-- Fresh monster: forced crit.
+	local m2, r2 = boar("b2")
+	w.clock += 1
+	w.rolls = {0.99, 0.99}
+	local opening = L.attack(brute, "attack", m2)
+	ok(opening.crit and opening.firstStrike and opening.damage == critHit, "first hit on a full-health monster crits")
+	-- Healed back to full (leash): still only once per monster per player.
+	r2.hp = r2.maxHp
+	w.clock += 1
+	w.rolls = {0.99, 0.99}
+	local again = L.attack(brute, "attack", m2)
+	ok(not again.crit and again.firstStrike == nil, "the opening blow is once per monster per player")
+	-- A failed roll still uses up the opening blow.
+	w.stats[brute].mastery = masteryOf({firstStrike = 10, execute = 0, xpBoost = 0})
+	local m3, r3 = boar("b3")
+	w.clock += 1
+	w.rolls = {0.5, 0.99}
+	ok(not L.attack(brute, "attack", m3).crit, "50 >= 10%: no opening crit")
+	r3.hp = r3.maxHp
+	w.clock += 1
+	w.rolls = {0.01, 0.99}
+	ok(not L.attack(brute, "attack", m3).crit, "no second opening roll after a failed one")
+	local m4 = boar("b4")
+	w.clock += 1
+	w.rolls = {0.05, 0.99}
+	ok(L.attack(brute, "attack", m4).crit, "5 < 10%: opening crit")
+	-- Another player gets their own opening blow, only while the monster is at full health.
+	local m5, r5 = boar("b5")
+	local second = w.player("second", Vector3.new(-4, 1, 0), {stats = stats})
+	w.stats[second].mastery = masteryOf({firstStrike = 100, execute = 0, xpBoost = 0})
+	w.rolls = {0.99, 0.99}
+	ok(L.attack(second, "attack", m5).crit, "second player opens on a fresh monster")
+	w.clock += 1
+	w.rolls = {0.99, 0.99}
+	ok(not L.attack(brute, "attack", m5).crit, "the first player cannot open a wounded monster")
+	eq(r5.opened[brute], nil, "and spends nothing on it")
+	-- Capstone timing never touches the opening blow (a node perk).
+	w.stats[brute].mastery = masteryOf({firstStrike = 100, execute = 0, xpBoost = 0}, nil, nil, {Melee = w.wall - 1})
+	local m6 = boar("b6")
+	w.clock += 1
+	w.rolls = {0.99, 0.99}
+	ok(L.attack(brute, "attack", m6).crit, "an expired Warcry leaves Opening Blow intact")
+	-- Ranged: a miss is not a hit; the next landed arrow opens.
+	local archer = w.player("archer", Vector3.new(20, 1, 0), {stats = styleStats({rangedAccuracy = 0, critDamage = 50})})
+	w.stats[archer].loadout = {style = "ranged", weapon = "MeadowLongbow", ammo = "CopperArrow", ammoCount = 20, levels = {Ranged = 1}, supplies = {}}
+	w.inv[archer] = {CopperArrow = 20}
+	w.stats[archer].mastery = masteryOf({firstStrike = 100, execute = 0, xpBoost = 0}, {firstStrike = 10, execute = 0, arrowSave = 0, multishot = 1, xpBoost = 0})
+	local m7, r7 = boar("b7")
+	w.rolls = {0.999}
+	ok(L.ranged(archer, "ranged", m7).miss, "the opening arrow misses")
+	eq(r7.opened, nil, "a miss does not use the opening blow")
+	w.clock += 2
+	w.rolls = {0, 0.05, 0.99}
+	local arrowOpen = L.ranged(archer, "ranged", m7)
+	ok(arrowOpen.crit and arrowOpen.firstStrike, "ranged tree's 10% opens with the first landed arrow")
+	local forced = table.clone(w.stats[archer].stats); forced.critChance = 100
+	local rawCrit = P.rangedDamage(forced, Data.Items.MeadowLongbow, Data.Items.CopperArrow, 1, function() return 0.99 end)
+	eq(arrowOpen.damage, P.damageTaken(math.floor(rawCrit * 0.7), r7.defense), "opening arrow deals crit damage")
+	w.clock += 2
+	r7.hp = r7.maxHp
+	w.rolls = {0, 0.01, 0.99}
+	ok(not L.ranged(archer, "ranged", m7).crit, "one opening arrow per monster")
+	print("PASS: " .. (checks - before) .. " firstStrike assertions.")
+end
+-- multishot: Volley splits a shot over up to 3 valid nearby targets, one arrow.
+do
+	local before = checks
+	local w = world()
+	local L = w.logic
+	local marker = L.addMarker("pack", "Thornling", 3, origin)
+	L.dueSpawns()
+	local function thorn(name, pos, radius)
+		local m = model(name)
+		local r = L.register(marker, m, pos, {radius = radius or 0})
+		r.maxHp, r.hp = 1e6, 1e6
+		return m, r
+	end
+	local mp, rp = thorn("primary", Vector3.new(0, 1, 0), 2)
+	local ma, ra = thorn("a", Vector3.new(0, 1, 5))
+	local mb, rb = thorn("b", Vector3.new(0, 1, 8))
+	local mc, rc = thorn("c", Vector3.new(0, 1, -10))
+	local _, rd = thorn("far", Vector3.new(0, 1, 20))     -- 20 studs from the target
+	local _, re = thorn("outOfReach", Vector3.new(-12, 1, 0)) -- 42 studs from the archer
+	local archer = w.player("archer", Vector3.new(30, 1, 0), {stats = styleStats({rangedAccuracy = 1000})})
+	local lo = {style = "ranged", weapon = "MeadowLongbow", ammo = "CopperArrow", ammoCount = 50, levels = {Ranged = 1}, supplies = {}}
+	w.stats[archer].loadout = lo
+	w.inv[archer] = {CopperArrow = 50}
+	local function shoot(target)
+		w.clock += 2
+		w.rolls = {}
+		return L.ranged(archer, "ranged", target or mp)
+	end
+	local function struck(shot)
+		local set = {}
+		for _, h in ipairs(shot.extra or {}) do set[h.record] = true end
+		return set
+	end
+	-- No perks: one target.
+	local single = shoot()
+	ok(single ~= nil and single.extra == nil, "no multishot: one target")
+	eq(rp.hp, 1e6 - single.damage, "primary struck")
+	-- Volley running: the two nearest valid extras.
+	w.stats[archer].mastery = masteryOf(nil, {firstStrike = 0, execute = 0, arrowSave = 0, multishot = 3, xpBoost = 0}, nil, {Ranged = w.wall + 10})
+	local consumes = w.count("consume", archer)
+	local volley = shoot()
+	eq(#volley.extra, 2, "Volley: two extra targets")
+	local set = struck(volley)
+	ok(set[ra] and set[rb], "nearest extras chosen first")
+	eq(w.count("consume", archer) - consumes, 1, "one arrow paid per shot")
+	eq(w.inv[archer].CopperArrow, 48, "one arrow consumed for three targets")
+	eq(volley.ammoLeft, 48, "quiver count follows one arrow")
+	ok(volley.extra[1].damage > 0 and ra.hp < 1e6 and rb.hp < 1e6, "extras take damage")
+	eq(ra.contributors[archer].xp.ranged, 1e6 - ra.hp, "extra hits accrue ranged XP like a normal hit")
+	eq(ra.target, archer, "extras are provoked by the archer")
+	eq(rc.hp, 1e6, "the third extra is beyond the cap")
+	eq(rd.hp, 1e6, "monsters far from the target are never struck")
+	eq(re.hp, 1e6, "monsters beyond the bow's reach are never struck")
+	-- A bogus multishot never exceeds the cap.
+	w.stats[archer].mastery.ranged.multishot = 99
+	eq(#shoot().extra, 2, "multishot 99 still strikes at most 3 targets")
+	-- Leashing and line-of-sight-blocked monsters are skipped.
+	ra.leashing = true
+	w.blocked[rb] = true
+	local filtered = shoot()
+	set = struck(filtered)
+	ok(#filtered.extra == 1 and set[rc], "skips leashing and blocked targets, takes the next valid one")
+	ok(not set[ra] and not set[rb] and not set[rd] and not set[re], "never a leashing, blocked, far or out-of-reach monster")
+	ra.leashing = false
+	w.blocked[rb] = nil
+	-- Expired Volley in the cached snapshot: back to one target.
+	w.wall += 10
+	ok(shoot().extra == nil, "an expired Volley strikes one target")
+	w.wall -= 10
+	-- Dead extras and other players' slayer bosses are never struck.
+	rb.alive = false
+	local summoner = w.player("summoner", Vector3.new(60, 1, 60), {stats = styleStats()})
+	local _, spec = L.bossAttribute(summoner, "Gloom:1")
+	local bossModel = model("boss")
+	local boss = L.registerBoss(summoner, spec, bossModel, Vector3.new(3, 1, 0))
+	local bossHp = boss.hp
+	set = struck(shoot())
+	ok(set[ra] and set[rc] and not set[rb] and not set[boss], "dead monsters and others' bosses skipped")
+	eq(boss.hp, bossHp, "the boss is untouched")
+	rb.alive = true
+	L.unregister(boss)
+	-- Ironman rules: never splash onto another Ironman's fight; an Ironman never splashes onto anyone's.
+	local iron = w.player("iron", Vector3.new(0, 1, 30), {stats = styleStats(), ironman = true})
+	L.statsFor(iron)
+	ra.contributors[iron] = {damage = 5, xp = {melee = 5}}
+	set = struck(shoot())
+	ok(not set[ra] and set[rb] and set[rc], "another Ironman's monster is skipped")
+	ra.contributors[iron] = nil
+	w.stats[archer].ironman = true
+	L.statsFor(archer)
+	local helper = w.player("helper", Vector3.new(0, 1, 30), {stats = styleStats()})
+	rb.contributors[helper] = {damage = 5, xp = {melee = 5}}
+	set = struck(shoot())
+	ok(set[ra] and not set[rb] and set[rc], "an Ironman's arrows skip monsters others have fought")
+	w.stats[archer].ironman = false
+	rb.contributors[helper] = nil
+	-- Extras roll their own accuracy: a miss accrues nothing.
+	w.clock += 2
+	local hpA, hpB = ra.hp, rb.hp
+	w.rolls = {0, 0.99, 0.999, 0, 0.99}
+	local mixed = L.ranged(archer, "ranged", mp)
+	ok(mixed.extra[1].miss and mixed.extra[1].damage == 0, "an extra arrow can miss")
+	eq(ra.hp + rb.hp, hpA + hpB - mixed.extra[2].damage, "only the landed extra hit removes health")
+	-- An extra kill reports through the bridge and pays XP.
+	local mk, rk = thorn("weak", Vector3.new(4, 1, 0))
+	rk.hp = 1
+	local kills = w.count("kill", archer)
+	local killer = shoot()
+	local killed
+	for _, h in ipairs(killer.extra) do if h.record == rk then killed = h end end
+	ok(killed and killed.killed, "an extra arrow can kill")
+	eq(w.count("kill", archer) - kills, 1, "the extra kill is credited")
+	eq(L.resolve(mk), nil, "the killed extra is gone")
+	local paidRanged = 0
+	for _, c in ipairs(w.calls) do if c.op == "combatXp" and c.payload.monster == "Thornling" and c.payload.damage == 1 then paidRanged += 1 end end
+	eq(paidRanged, 1, "XP for the hp actually removed")
+	eq(#L.multishotTargets(archer, rp, Vector3.new(30, 1, 0), 40, 5), C.MULTISHOT_MAX - 1, "target search capped at MULTISHOT_MAX - 1")
+	print("PASS: " .. (checks - before) .. " multishot assertions.")
+end
+print("PASS: " .. (checks - masteryBefore) .. " mastery combat perk assertions in total.")
 
 print("Combat QA: " .. checks .. " checks passed.")
 

@@ -58,6 +58,28 @@
 --     max = Intelligence, regenerating Data.CombatStyles.manaRegenPercent of max
 --     per second, replicated as player attributes Mana / MaxMana. Refusals with a
 --     player-facing reason fire IsleCombatFx "denied" {action, reason}.
+--   * Skill Mastery perks (bridge "stats" -> mastery = Progression.masteryCombat;
+--     arrow/glyph save and XP boost are applied by the bridge itself):
+--       firstStrike (melee, ranged)  % chance that a player's first landed hit on a
+--                                    monster at full health crits. Rolled once per
+--                                    monster per player (r.opened), even if it fails.
+--       execute (melee, ranged)      +% raw damage while the target is strictly below
+--                                    C.EXECUTE_THRESHOLD % of max health (before the hit).
+--       manaThrift (magic)           mana cost = round(mana * (1 - thrift/100)), thrift
+--                                    clamped to 0..100 so the cost never drops below 0.
+--       multishot (ranged)           each shot also strikes up to multishot - 1 (capped at
+--                                    C.MULTISHOT_MAX - 1) more monsters within
+--                                    C.MULTISHOT_RADIUS of the target, nearest first. Each
+--                                    extra target passes the normal checks (alive, not
+--                                    leashing, boss owner, bow reach, line of sight from
+--                                    the shooter) and is never another Ironman's fight (nor,
+--                                    for an Ironman shooter, anyone else's). Each extra
+--                                    hit rolls accuracy/crit/perks and accrues damage XP
+--                                    like a normal hit; one arrow and one cooldown per shot;
+--                                    lifesteal heals on the first target only.
+--     Capstones (Volley, Glyphstorm) are folded into those numbers by the bridge;
+--     mastery.active[tree] = os.time expiry lets a cached snapshot drop a capstone
+--     the moment it ends (env.time, default os.time).
 
 local C = {
 	ATTACK_RANGE = 14,          -- player HRP to monster surface
@@ -93,6 +115,9 @@ local C = {
 	EYE_HEIGHT = 1.5,           -- line-of-sight rays start this far above the root
 	MANA_REFRESH = 10,          -- seconds before the mana tick re-reads a player's max mana
 	MANA_REFRESH_BUDGET = 4,    -- stats fetches the mana tick may make per tick
+	EXECUTE_THRESHOLD = 30,     -- Skill Mastery execute: target strictly below this % of max health
+	MULTISHOT_MAX = 3,          -- Skill Mastery multishot: never more targets per shot (Volley)
+	MULTISHOT_RADIUS = 12,      -- extra multishot targets lie within this many studs of the first
 }
 -- Refusal reasons worth telling the player about (cooldown/target spam stays silent).
 local DENY_REASONS = {style = true, weapon = true, ammo = true, ammoTier = true, sight = true, range = true,
@@ -737,6 +762,71 @@ local function createLogic(env)
 	local function loadoutOf(info)
 		return if type(info.loadout) == "table" then info.loadout else {style = "melee", levels = {}, supplies = {}}
 	end
+
+	-- Skill Mastery perks ----------------------------------------------------
+	local STYLE_TREE = {melee = "Melee", ranged = "Ranged", magic = "Magic"}
+	local function wallClock() return if env.time then env.time() else os.time() end
+	local function capstoneAbility(treeId)
+		local MA = Data.Mastery
+		local tree = MA and MA.TreeById and MA.TreeById[treeId]
+		local node = tree and tree.capstone and tree.NodeById[tree.capstone]
+		return node and node.ability
+	end
+	-- {firstStrike, execute, manaThrift, multishot} for a style from a stats snapshot.
+	-- A capstone the snapshot counted but that has since expired is taken back out.
+	function L.perks(info, style)
+		local out = {firstStrike = 0, execute = 0, manaThrift = 0, multishot = 1}
+		local m = type(info) == "table" and type(info.mastery) == "table" and info.mastery or nil
+		local src = m and type(m[style]) == "table" and m[style] or nil
+		if not src then return out end
+		for k in pairs(out) do
+			local v = tonumber(src[k])
+			if v and v == v then out[k] = v end
+		end
+		local treeId = STYLE_TREE[style]
+		local expires = treeId and type(m.active) == "table" and tonumber(m.active[treeId])
+		if expires and wallClock() >= expires then
+			local ability = capstoneAbility(treeId)
+			if ability then
+				for k in pairs(out) do
+					local v = tonumber(ability[k])
+					-- multishot comes only from the capstone (taken as a max), so it falls back to 1.
+					if v then out[k] = if k == "multishot" then 1 else out[k] - v end
+				end
+			end
+		end
+		local cap = (Data.Mastery and tonumber(Data.Mastery.PERK_CAP)) or 100
+		out.firstStrike = math.clamp(out.firstStrike, 0, cap)
+		out.execute = math.clamp(out.execute, 0, cap)
+		out.manaThrift = math.clamp(out.manaThrift, 0, 100)
+		out.multishot = math.clamp(math.floor(out.multishot), 1, C.MULTISHOT_MAX)
+		return out
+	end
+	-- Mana a spell costs after manaThrift: rounded to the nearest point, never below 0.
+	function L.spellManaCost(spell, thrift)
+		local base = math.max(0, tonumber(spell and spell.mana) or 0)
+		thrift = math.clamp(tonumber(thrift) or 0, 0, 100)
+		if thrift <= 0 then return base end
+		return math.max(0, math.floor(base * (100 - thrift) / 100 + 0.5))
+	end
+	-- First landed hit on a full-health monster: one roll per monster per player.
+	function L.firstStrike(player, r, perks)
+		if (perks.firstStrike or 0) <= 0 or r.hp < r.maxHp then return false end
+		r.opened = r.opened or {}
+		if r.opened[player] then return false end
+		r.opened[player] = true
+		return env.rng() * 100 < perks.firstStrike
+	end
+	-- Raw damage after execute (target health before this hit).
+	function L.executeBonus(r, raw, perks)
+		if (perks.execute or 0) <= 0 or r.hp * 100 >= C.EXECUTE_THRESHOLD * r.maxHp then return raw, false end
+		return raw * (1 + perks.execute / 100), true
+	end
+	local function critStats(stats)
+		local s = table.clone(stats)
+		s.critChance = 100
+		return s
+	end
 	function L.attack(player, verb, target)
 		local ok, r = L.validateAttack(player, verb, target)
 		if not ok then return nil, r end
@@ -745,13 +835,37 @@ local function createLogic(env)
 		if loadoutOf(info).style ~= "melee" then return nil, "style" end
 		local stats = info.stats
 		scheduleNext(player, L.attackCooldown(stats.attackSpeed))
-		local raw, crit = Progression.meleeDamage(stats, env.rng)
+		local perks = L.perks(info, "melee")
+		local opening = L.firstStrike(player, r, perks)
+		local raw, crit = Progression.meleeDamage(if opening then critStats(stats) else stats, env.rng)
+		local executed
+		raw, executed = L.executeBonus(r, raw, perks)
 		local dealt, tag = L.mitigate(r, raw, "melee")
 		L.landHit(player, r, dealt, "melee")
 		local lifesteal = tonumber(stats.lifesteal) or 0
 		if lifesteal > 0 then env.heal(player, lifesteal) end
 		local result = {record = r, damage = dealt, crit = crit == true, healed = lifesteal > 0, style = "melee", tag = tag}
+		if opening then result.firstStrike = true end
+		if executed then result.execute = true end
 		return finish(result, r)
+	end
+	-- One arrow striking r: accuracy roll, opening blow, damage, execute, accrual.
+	function L.rangedHit(player, r, hit, stats, bow, arrow, level, perks)
+		hit.chance = Progression.hitChance(stats.rangedAccuracy, level, r.level, r.defense)
+		if env.rng() < hit.chance then
+			local opening = L.firstStrike(player, r, perks)
+			local raw, crit = Progression.rangedDamage(if opening then critStats(stats) else stats, bow, arrow, level, env.rng)
+			local executed
+			raw, executed = L.executeBonus(r, raw, perks)
+			hit.damage, hit.tag = L.mitigate(r, raw, "ranged")
+			hit.crit = crit == true
+			if opening then hit.firstStrike = true end
+			if executed then hit.execute = true end
+		else
+			hit.damage, hit.miss, hit.crit = 0, true, false
+		end
+		L.landHit(player, r, hit.damage, "ranged")
+		return hit
 	end
 	-- Bow shot. Validation order: target/reach, cooldown, weapon, bow reach,
 	-- ammo and its tier, line of sight; only then is an arrow consumed.
@@ -780,19 +894,58 @@ local function createLogic(env)
 		local stats = info.stats
 		scheduleNext(player, Progression.weaponCooldown(bow.ranged.speed, stats.attackSpeed))
 		local level = loadout.levels and loadout.levels.Ranged or 1
+		local perks = L.perks(info, "ranged")
 		local result = {record = r, style = "ranged", ammo = loadout.ammo, ammoLeft = loadout.ammoCount, from = pos, color = arrow.color}
-		result.chance = Progression.hitChance(stats.rangedAccuracy, level, r.level, r.defense)
-		if env.rng() < result.chance then
-			local raw, crit = Progression.rangedDamage(stats, bow, arrow, level, env.rng)
-			result.damage, result.tag = L.mitigate(r, raw, "ranged")
-			result.crit = crit == true
-		else
-			result.damage, result.miss, result.crit = 0, true, false
-		end
-		L.landHit(player, r, result.damage, "ranged")
+		-- Multishot: extra targets are chosen before the first one may die.
+		local extras = if perks.multishot > 1
+			then L.multishotTargets(player, r, pos, math.min(maxRange, bow.ranged.range or maxRange), perks.multishot - 1)
+			else {}
+		L.rangedHit(player, r, result, stats, bow, arrow, level, perks)
 		local lifesteal = tonumber(stats.lifesteal) or 0
 		if lifesteal > 0 and result.damage > 0 then env.heal(player, lifesteal); result.healed = true end
-		return finish(result, r)
+		finish(result, r)
+		if #extras > 0 then
+			result.extra = {}
+			for _, other in ipairs(extras) do
+				local hit = {record = other, style = "ranged", from = pos, color = arrow.color}
+				L.rangedHit(player, other, hit, stats, bow, arrow, level, perks)
+				table.insert(result.extra, finish(hit, other))
+			end
+		end
+		return result
+	end
+	-- Monsters a multishot may also strike: nearest to the first target first,
+	-- each passing the same checks as an aimed shot (see the header).
+	local function splashAllowed(player, r)
+		local mine = L.peekStats(player)
+		local ironman = mine ~= nil and mine.ironman == true
+		for other, c in pairs(r.contributors) do
+			if other ~= player and c.damage > 0 then
+				if ironman then return false end
+				local info = L.peekStats(other)
+				if info and info.ironman == true then return false end
+			end
+		end
+		return true
+	end
+	function L.multishotTargets(player, primary, pos, reach, count)
+		local out = {}
+		count = math.clamp(math.floor(tonumber(count) or 0), 0, C.MULTISHOT_MAX - 1)
+		if count <= 0 then return out end
+		local candidates = {}
+		for r in pairs(records) do
+			if r ~= primary and r.alive and not r.leashing and not (r.boss and r.owner ~= player)
+				and (r.position - primary.position).Magnitude - r.radius <= C.MULTISHOT_RADIUS
+				and (pos - r.position).Magnitude - r.radius <= reach and splashAllowed(player, r) then
+				table.insert(candidates, {r = r, d = (r.position - primary.position).Magnitude})
+			end
+		end
+		table.sort(candidates, function(a, b) return a.d < b.d end)
+		for _, entry in ipairs(candidates) do
+			if #out >= count then break end
+			if L.lineOfSight(pos, entry.r) then table.insert(out, entry.r) end
+		end
+		return out
 	end
 
 	-- Mana (per session, never persisted; SkyBlock mana) ------------------------
@@ -866,7 +1019,8 @@ local function createLogic(env)
 		-- An agility move would carry the player on after the teleport: refuse mid-move.
 		if spell.kind == "teleport" and env.moving and env.moving(player) then return nil, "teleport" end
 		local m = L.manaOf(player, info.stats)
-		if m.current < (spell.mana or 0) then return nil, "mana" end
+		local manaCost = L.spellManaCost(spell, L.perks(info, "magic").manaThrift) -- Skill Mastery: manaThrift / Glyphstorm
+		if m.current < manaCost then return nil, "mana" end
 		local costs = Progression.glyphCost(spell, weapon)
 		local supplies = type(loadout.supplies) == "table" and loadout.supplies or {}
 		for id, n in pairs(costs) do
@@ -894,7 +1048,7 @@ local function createLogic(env)
 			end
 			return nil, "teleport"
 		end
-		m.current -= spell.mana or 0
+		m.current -= manaCost
 		if spell.kind == "damage" then
 			scheduleNext(player, Progression.weaponCooldown(weapon and weapon.magic and weapon.magic.speed or 1.2, info.stats.attackSpeed))
 		end
@@ -903,7 +1057,7 @@ local function createLogic(env)
 			spellReady[player][spell.id] = now + spell.cooldown
 		end
 		local result = {spell = spell.id, kind = spell.kind, style = "magic", mana = math.floor(m.current), maxMana = m.max,
-			record = r, from = pos, color = spell.color}
+			manaCost = manaCost, record = r, from = pos, color = spell.color}
 		if spell.kind == "damage" then
 			local raw = Progression.spellDamage(info.stats, spell, weapon, loadout.levels and loadout.levels.Magic or 1)
 			result.damage, result.tag = L.mitigate(r, raw, "magic")
@@ -1361,6 +1515,7 @@ local Logic = createLogic({
 		return type(move) == "string" and move ~= ""
 	end,
 	now = os.clock,
+	time = os.time, -- wall clock of mastery capstone expiries (bridge "stats" mastery.active)
 	rng = function() return random:NextNumber() end,
 	players = function() return Players:GetPlayers() end,
 	alive = function(player)
@@ -1761,6 +1916,17 @@ combatRemote.OnServerEvent:Connect(function(player, verb, target, spellId)
 		broadcast(r.position, "snare", {model = r.model, position = top, duration = result.duration, attacker = player.UserId})
 	elseif result.kind == "heal" or result.kind == "teleport" then
 		fxRemote:FireClient(player, result.kind, {spell = result.spell})
+	end
+	-- Skill Mastery multishot: one arrow FX and hit per extra target.
+	for _, hit in ipairs(result.extra or {}) do
+		local other = hit.record
+		local otherTop = other.position + Vector3.new(0, (view[other] and view[other].plan.hitbox.Y or 3) / 2, 0)
+		broadcast(other.position, "projectile", {from = hit.from + Vector3.new(0, C.EYE_HEIGHT, 0), to = otherTop, style = hit.style,
+			color = hit.color, attacker = player.UserId})
+		updateBar(other)
+		broadcast(other.position, "hit", {model = other.model, position = otherTop, amount = hit.damage, crit = hit.crit,
+			attacker = player.UserId, style = hit.style, miss = hit.miss == true, tag = hit.tag})
+		if hit.killed then destroyView(other, true) end
 	end
 end)
 
