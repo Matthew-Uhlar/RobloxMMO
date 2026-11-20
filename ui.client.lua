@@ -2426,8 +2426,167 @@ local function petSources()
 	for _,list in pairs(sources) do table.sort(list) end
 	return sources
 end
+-- Hero › Pets (Pets depth): roster grid with rarity frames and XP bars; the
+-- selected pet's abilities (locked/unlocked), held item, candy and Roost
+-- upgrade; the Roost job timer; adoption, the Roost keeper's stall and the
+-- compendium. Helpers live on UI.PT (the chunk is near Luau's local limit).
+UI.PT={sel=1}
+function UI.PT.rarity(r) return type(r)=="string" and r or "Common" end
+-- "+12.5 Strength, +3% Sea Creature Chance" (sorted, one decimal).
+function UI.PT.statLine(stats)
+	local parts={}
+	for key,v in pairs(tbl(stats)) do
+		local value=num(v,0)
+		if value~=0 then
+			local def=tbl(tbl(Data.Stats)[key])
+			local name=key=="damagePercent" and "Damage" or tostring(def.name or key)
+			local pct=def.percent==true or key=="damagePercent"
+			table.insert(parts,"+"..(math.floor(value*10+.5)/10)..(pct and "%" or "").." "..escape(name))
+		end
+	end
+	table.sort(parts)
+	return #parts>0 and table.concat(parts,", ") or "none yet"
+end
+function UI.PT.costLine(cost)
+	local parts={}
+	if num(tbl(cost).coins,0)>0 then table.insert(parts,paint(fmt(cost.coins).." coins","F3C66E")) end
+	local ids={}
+	for id in pairs(tbl(tbl(cost).items)) do table.insert(ids,id) end
+	table.sort(ids)
+	for _,id in ipairs(ids) do
+		local need=num(cost.items[id],0)
+		local have=count("items",id)
+		table.insert(parts,paint(fmt(have).."/"..fmt(need),have>=need and "9EE7D2" or "E8806A").." "..paint(escape(itemName(id)),itemHex(id)))
+	end
+	return table.concat(parts,"  ·  ")
+end
+function UI.PT.affordable(cost)
+	if num(state.coins,0)<num(tbl(cost).coins,0) then return false,"Not enough coins." end
+	for id,n in pairs(tbl(tbl(cost).items)) do
+		if count("items",id)<num(n,0) then return false,"Needs "..fmt(n).." "..itemName(id).."." end
+	end
+	return true
+end
+-- The Roost job: timer bar, Claim (once ready) and Cancel.
+function UI.PT.roost(info)
+	local job=info.upgrade
+	if type(job)~="table" then return end
+	local def=tbl(tbl(Data.PetById)[job.id])
+	local PD=tbl(Data.PetDepth)
+	local total=num(tbl(tbl(PD.Upgrade)[job.to]).seconds,1)
+	local remaining=num(job.remaining,0)
+	local ready=job.ready==true
+	heading("THE ROOST    /    "..escape(tostring(PD.KEEPER or "Roost Keeper")))
+	card({name="PetRoost",item=tostring(job.id).."Pet",title=escape(tostring(def.name or job.id)),titleColor=rgb(rarityHex(UI.PT.rarity(job.to))),
+		subtitle=escape(tostring(job.from or "?")).." → "..paint(escape(tostring(job.to or "?")),rarityHex(UI.PT.rarity(job.to))).."  ·  Lv "..num(job.level,1),
+		badge=ready and "READY" or clock(remaining),badgeColor=ready and mint or gold,
+		detail=ready and "Your companion is ready to come home at its new rarity." or "Growing into its new rarity. Its lifetime XP is kept; the level is recounted on the new curve.",
+		bar={fraction=ready and 1 or math.clamp(1-remaining/math.max(1,total),0,1),color=rgb(rarityHex(UI.PT.rarity(job.to))),caption=ready and "READY TO CLAIM" or (clock(remaining).." left")},
+		actions={{caption="Claim",primary=true,disabled=not ready,reason="The Roost needs "..clock(remaining).." more.",fn=function() send("petClaim") end},
+			{caption="Cancel",fn=function() send("petCancel") end}}})
+end
+-- One roster tile: rarity frame, icon, name, level, XP bar, summoned tag.
+function UI.PT.tile(grid,index,pet,selected)
+	local def=tbl(tbl(Data.PetById)[pet.id])
+	local rarity=UI.PT.rarity(pet.rarity or def.rarity)
+	local hex=rarityHex(rarity)
+	local b=tile(grid,"PetTile"..index,index,function()
+		UI.PT.sel=index
+		render()
+	end)
+	make("UIStroke",b,{Name="RarityFrame",Color=rgb(hex),Thickness=selected and 2.5 or 1.5,Transparency=selected and 0 or .25})
+	local icon=itemIcon(b,tostring(pet.id).."Pet",compactAtlas and 34 or 40)
+	icon.Position=UDim2.fromOffset(8,8)
+	local x=compactAtlas and 48 or 56
+	local name=label(b,escape(tostring(def.name or pet.id or "Pet")),x,6,UDim.new(1,-x-6),18,UI.heavy,compactAtlas and 12 or 13,rgb(hex))
+	name.RichText=true
+	name.TextTruncate=Enum.TextTruncate.AtEnd
+	label(b,"Lv "..num(pet.level,1).."  ·  "..rarity,x,24,UDim.new(1,-x-6),16,bold,11,muted)
+	local nextXp=num(pet.next,nil)
+	local maxed=num(pet.level,1)>=num(Data.PET_MAX_LEVEL,100)
+	local bar=progress(b,maxed and 1 or ((nextXp and nextXp>0) and math.clamp(num(pet.xp,0)/nextXp,0,1) or 0),rgb(hex),nil,8)
+	bar.Position=UDim2.new(0,8,1,-14)
+	bar.Size=UDim2.new(1,-16,0,8)
+	if pet.active==true then UI.tag(b,"S") end
+	if type(pet.item)=="string" then
+		local held=label(b,"◆",0,4,UDim.new(0,16),16,UI.heavy,12,gold)
+		held.Position=UDim2.new(1,-20,0,4)
+	end
+	return b
+end
+-- Selected pet: stats, abilities, held item, candy, upgrade and actions.
+function UI.PT.detail(index,pet)
+	local def=tbl(tbl(Data.PetById)[pet.id])
+	local PD=tbl(Data.PetDepth)
+	local rarity=UI.PT.rarity(pet.rarity or def.rarity)
+	local hex=rarityHex(rarity)
+	local level=num(pet.level,1)
+	local xp=num(pet.xp,0)
+	local nextXp=num(pet.next,nil)
+	local maxed=level>=num(Data.PET_MAX_LEVEL,100)
+	local lines={}
+	local stats=type(pet.stats)=="table" and pet.stats or nil
+	if not stats then
+		stats={}
+		for k,v in pairs(tbl(def.perLevel)) do stats[k]=num(v,0)*level end
+	end
+	table.insert(lines,paint("Stats  ","BECECA")..UI.PT.statLine(stats))
+	for _,a in ipairs(tbl(pet.abilities)) do
+		if type(a)=="table" then
+			local name=escape(tostring(a.name or "Ability"))
+			if a.unlocked==true then
+				table.insert(lines,paint("✦ "..name,"F9CC77").."  "..escape(tostring(a.text or "")))
+			else
+				table.insert(lines,paint("🔒 "..name,"8A9AA0").."  "..paint(escape(tostring(a.text or "")).."  ·  unlocks at "..escape(tostring(a.requires or "?")),"8A9AA0"))
+			end
+		end
+	end
+	local held=type(pet.item)=="string" and tbl(tbl(PD.HeldItems)[pet.item]) or nil
+	table.insert(lines,paint("Held item  ","BECECA")..(held and (paint(escape(tostring(held.name or pet.item)),itemHex(pet.item)).."  ·  "..escape(tostring(held.text or ""))) or "empty"))
+	local candy,candyMax=num(pet.candy,0),num(pet.candyMax,num(PD.CANDY_MAX,10))
+	local cost=type(pet.upgrade)=="table" and pet.upgrade or nil
+	if cost then table.insert(lines,paint("Roost → "..escape(tostring(cost.to)),rarityHex(UI.PT.rarity(cost.to))).."  "..clock(cost.seconds).."  ·  "..UI.PT.costLine(cost)) end
+	local actions={}
+	table.insert(actions,pet.active==true and {caption="Dismiss",fn=function() send("petSummon","0") end} or {caption="Summon",primary=true,fn=function() send("petSummon",tostring(index)) end})
+	local candyId=count("items","StarlitCandy")>0 and "StarlitCandy" or "PetCandy"
+	local candyBlocked=(candy>=candyMax and "This pet has eaten all its candy.") or (maxed and "Already level "..level..".") or (count("items",candyId)<1 and "Buy Pet Candy from the Roost keeper or cook it at the Hearth.") or nil
+	table.insert(actions,{caption="Candy",name="PetCandyButton",disabled=candyBlocked~=nil,reason=candyBlocked,fn=function() send("petCandy",index..":"..candyId) end})
+	if cost then
+		local okCost,why=UI.PT.affordable(cost)
+		local busy=type(tbl(dget("petDepth")).upgrade)=="table"
+		table.insert(actions,{caption="Upgrade",name="PetUpgradeButton",disabled=busy or not okCost,reason=busy and "The Roost is caring for another pet." or why,fn=function() send("petUpgrade",tostring(index)) end})
+	end
+	card({name="PetDetail",item=tostring(pet.id).."Pet",title=escape(tostring(def.name or pet.id or "Pet")),titleColor=rgb(hex),edge=rgb(hex),
+		subtitle="Lv "..level.."  ·  "..paint(rarity,hex).."  ·  "..escape(tostring(def.skill or "")).." pet",badge=pet.active==true and "SUMMONED" or nil,badgeColor=mint,
+		lines=lines,pips=candyMax>0 and candyMax<=16 and {total=candyMax,filled=math.clamp(candy,0,candyMax),color=rgb("F7A1C4")} or nil,
+		bar={fraction=maxed and 1 or ((nextXp and nextXp>0) and math.clamp(xp/nextXp,0,1) or 0),color=rgb(hex),caption=maxed and "MAX LEVEL" or (nextXp and (short(xp).." / "..short(nextXp).." XP") or (short(xp).." XP"))},
+		actions=actions})
+	if cost and count("items","AscendantPrism")>0 then
+		card({name="PetPrism",item="AscendantPrism",title="Ascendant Prism  ×"..count("items","AscendantPrism"),titleColor=rgb(itemHex("AscendantPrism")),
+			subtitle="Tier Boost  ·  "..paint(rarity,hex).." → "..paint(escape(tostring(cost.to)),rarityHex(UI.PT.rarity(cost.to))),
+			detail="Raises this pet one rarity tier at once, skipping the Roost. Lifetime XP is kept.",
+			actions={{caption="Use",primary=true,name="PetPrismButton",fn=function() send("petTierBoost",tostring(index)) end}}})
+	end
+	-- Held items: equip from the satchel, or take the current one off.
+	local owned={}
+	for _,id in ipairs(tbl(PD.HELD_ORDER)) do if count("items",id)>0 then table.insert(owned,id) end end
+	if held or #owned>0 then
+		heading("HELD ITEM    /    CANDY "..candy.."/"..candyMax)
+		if held then
+			card({name="PetHeldCurrent",item=pet.item,title=escape(tostring(held.name or pet.item)),titleColor=rgb(itemHex(pet.item)),subtitle="Held by "..escape(tostring(def.name or pet.id)),
+				detail=escape(tostring(held.text or "")),actions={{caption="Remove",fn=function() send("petItem",index..":none") end}}})
+		end
+		for _,id in ipairs(owned) do
+			local h=tbl(PD.HeldItems[id])
+			card({name="PetHeld"..id,item=id,title=escape(itemName(id)).."  ×"..count("items",id),titleColor=rgb(itemHex(id)),detail=escape(tostring(h.text or "")),
+				actions={{caption="Equip",primary=true,fn=function() send("petItem",index..":"..id) end}}})
+		end
+	end
+end
 local function drawPets()
 	if not Data then dataMissing() return end
+	local PT=UI.PT
+	local PD=tbl(Data.PetDepth)
 	local d=depth()
 	-- Pet items can be adopted even before the Depth record arrives.
 	local adoptable={}
@@ -2446,40 +2605,75 @@ local function drawPets()
 		end
 	end
 	if not d then syncing("pet roster") return end
-	local pets=tbl(d.pets)
-	local ownedKinds={}
-	heading("COMPANIONS    /    "..#pets.." OWNED")
-	if #pets==0 then card({motif="Co-op",title="No companions yet",detail="Rare creature drops and slayer bosses yield pet items. Adopt them here."}) end
-	for index,pet in ipairs(pets) do
-		if type(pet)=="table" then
-			local def=tbl(tbl(Data.PetById)[pet.id])
-			ownedKinds[pet.id]=true
-			local level=num(pet.level,1)
-			local xp=num(pet.xp,0)
-			local nextXp=num(pet.next,nil)
-			if not nextXp and type(Data.petXpToNext)=="function" then
-				local ok,value=pcall(Data.petXpToNext,level,def.rarity or "Common")
-				nextXp=ok and num(value,nil) or nil
+	local pets={}
+	for index,pet in ipairs(tbl(d.pets)) do if type(pet)=="table" and tbl(Data.PetById)[pet.id] then table.insert(pets,{index=index,pet=pet}) end end
+	local info=tbl(d.petDepth)
+	PT.roost(info)
+	local taming=tbl(info.taming)
+	heading("COMPANIONS    /    "..#pets.." OWNED"..(taming.level and ("  ·  TAMING "..num(taming.level,1)) or ""))
+	if taming.level then
+		card({motif="Co-op",name="PetTaming",title="Taming "..num(taming.level,1),subtitle="+"..num(taming.xpBonus,0).."% pet XP  ·  +"..num(taming.statBonus,0).."% pet stats",
+			detail="Pets share your skill XP: their own skill in full, the same kind of skill at half, the rest at a quarter. Their XP trains Taming."})
+	end
+	if #pets==0 then card({motif="Co-op",title="No companions yet",detail="Rare creature drops, slayer bosses and long hours at a skill yield pet items. Adopt them here."}) end
+	if #pets>0 then
+		local found=false
+		for _,e in ipairs(pets) do if e.index==PT.sel then found=true end end
+		if not found then PT.sel=pets[1].index end
+		local width=contentWidth()
+		local columns=width>=640 and 4 or (width>=420 and 3 or 2)
+		local grid=gridHolder(UDim2.new(1/columns,-6,0,compactAtlas and 72 or 80),6)
+		local chosen
+		for _,e in ipairs(pets) do
+			PT.tile(grid,e.index,e.pet,e.index==PT.sel)
+			if e.index==PT.sel then chosen=e end
+		end
+		if chosen then PT.detail(chosen.index,chosen.pet) end
+	end
+	-- The Roost keeper's stall: compact tiles (tap to buy).
+	local width=contentWidth()
+	local cols=width>=640 and 3 or 2
+	if #tbl(PD.Shop)>0 then
+		heading("ROOST STALL    /    "..escape(tostring(PD.KEEPER or "Roost Keeper")))
+		local grid=gridHolder(UDim2.new(1/cols,-6,0,compactAtlas and 46 or 50),6)
+		for i,entry in ipairs(tbl(PD.Shop)) do
+			if type(entry)=="table" and itemDef(entry.item) then
+				local price=num(entry.coins,0)
+				local b=tile(grid,"PetShop"..entry.item,i,function()
+					if num(state.coins,0)<price then notify("You need "..fmt(price).." coins.") return end
+					send("petShop",entry.item)
+				end)
+				make("UIStroke",b,{Color=rgb(itemHex(entry.item)),Thickness=1,Transparency=.35})
+				local n=label(b,escape(itemName(entry.item)),10,4,UDim.new(1,-16),20,UI.heavy,compactAtlas and 12 or 13,rgb(itemHex(entry.item)))
+				n.TextTruncate=Enum.TextTruncate.AtEnd
+				label(b,fmt(price).." coins",10,24,UDim.new(1,-16),18,bold,11,num(state.coins,0)>=price and gold or muted)
 			end
-			local maxed=level>=num(Data.PET_MAX_LEVEL,100)
-			local isActive=pet.active==true
-			local hex=rarityHex(def.rarity or "Common")
-			card({name="Pet"..index,item=tostring(pet.id).."Pet",title=escape(def.name or pet.id or "Pet"),titleColor=rgb(hex),edge=isActive and mint or nil,
-				subtitle="Lv "..level.."  ·  "..escape((def.rarity or "").." "..tostring(def.skill or "")).." pet",badge=isActive and "SUMMONED" or nil,badgeColor=mint,
-				detail=paint(escape(def.ability or ""),"F9CC77"),lines={statText(def.perLevel,level)},
-				bar={fraction=maxed and 1 or ((nextXp and nextXp>0) and xp/nextXp or 0),color=rgb(hex),caption=maxed and "MAX LEVEL" or (nextXp and (short(xp).." / "..short(nextXp).." XP") or (short(xp).." XP"))},
-				actions={isActive and {caption="Dismiss",fn=function() send("petSummon","0") end} or {caption="Summon",primary=true,fn=function() send("petSummon",tostring(index)) end}}})
 		end
 	end
-	local sources=petSources()
+	-- Compendium: species not yet owned, as compact locked tiles with their source.
+	local owned={}
+	for _,e in ipairs(pets) do owned[e.pet.id]=true end
 	local missing={}
-	for _,pet in ipairs(tbl(Data.Pets)) do if type(pet)=="table" and not ownedKinds[pet.id] then table.insert(missing,pet) end end
+	for _,pet in ipairs(tbl(Data.Pets)) do if type(pet)=="table" and not owned[pet.id] then table.insert(missing,pet) end end
 	if #missing>0 then
-		heading("PET COMPENDIUM")
-		for _,pet in ipairs(missing) do
-			local from=sources[pet.id.."Pet"]
-			card({name="Compendium"..pet.id,locked=true,title=escape(pet.name),titleColor=muted,subtitle=escape(tostring(pet.rarity).." "..tostring(pet.skill)).." pet",
-				detail=escape(pet.ability or ""),lines={from and ("Found from: "..escape(table.concat(from,", "))) or "Source unknown."}})
+		local sources=petSources()
+		for skill,id in pairs(tbl(PD.SkillPets)) do
+			sources[id]=sources[id] or {}
+			table.insert(sources[id],tostring(skill).." training")
+		end
+		heading("PET COMPENDIUM    /    "..#missing.." TO FIND")
+		local holder=gridHolder(UDim2.new(1/cols,-6,0,compactAtlas and 58 or 62),6)
+		for i,pet in ipairs(missing) do
+			local cell=make("Frame",holder,{Name="Compendium"..tostring(pet.id),BackgroundColor3=deep,BorderSizePixel=0,LayoutOrder=i})
+			make("UICorner",cell,{CornerRadius=UDim.new(0,10)})
+			make("UIStroke",cell,{Color=UI.line,Thickness=1})
+			local n=label(cell,escape(tostring(pet.name)).."  "..paint(escape(tostring(pet.rarity).." "..tostring(pet.skill)),"8A9AA0"),10,4,UDim.new(1,-16),18,UI.heavy,compactAtlas and 12 or 12,muted)
+			n.RichText=true
+			n.TextTruncate=Enum.TextTruncate.AtEnd
+			local from=sources[tostring(pet.id).."Pet"]
+			local f=label(cell,from and ("From: "..escape(table.concat(from,", "))) or "Source unknown.",10,22,UDim.new(1,-16),34,regular,11,muted)
+			f.TextWrapped=true
+			f.TextYAlignment=Enum.TextYAlignment.Top
 		end
 	end
 end

@@ -4707,5 +4707,451 @@ function W.buildCost(slot) return {Timber=5 * slot, Ore=3 * slot} end
 end
 -- End Workers depth section.
 
+------------------------------------------------------------------------------
+-- Pets depth
+-- Rarities per species (Common..Legendary, stats scaled from the species'
+-- base rarity), 2-3 abilities per species unlocking by rarity/level with real
+-- effects (stats, skill XP, slayer-family bonuses, garden growth, doubled
+-- harvests, extra crafts), held items, per-rarity XP curves, Pet Candy, the
+-- Roost (timed rarity upgrades for coins + materials), ten new species,
+-- OSRS-style skilling pet drops and companion body plans (pets.client.lua).
+-- Instance fields (all optional; older pets read as their species' rarity):
+--   pet = {id, level, xp, rarity, item = heldItemId, candy = uses}
+--   p.petUpgrade = {pet = <pet table>, from, to, ends}
+------------------------------------------------------------------------------
+do
+local PD = {}
+Data.PetDepth = PD
+PD.RARITIES = {"Common","Uncommon","Rare","Epic","Legendary"}
+PD.MAX_RARITY = "Legendary"
+-- Stats scale from the species' base rarity (a pet at its base rarity keeps its
+-- exact perLevel numbers); ability values use an absolute rarity multiplier.
+PD.STAT_MULT = {Common=0.55,Uncommon=0.7,Rare=0.85,Epic=1,Legendary=1.2}
+PD.ABILITY_MULT = {Common=0.6,Uncommon=0.7,Rare=0.8,Epic=0.9,Legendary=1}
+-- XP to next level = floor(100 * level^1.55 * XP_MULT[rarity]) (totals to 100:
+-- Common ~4.9M ... Legendary ~21.9M, the SkyBlock spread).
+PD.XP_MULT = {Common=1,Uncommon=1.5,Rare=2.2,Epic=3.2,Legendary=4.5}
+-- Pet XP share of a skill grant: its own skill, a skill of the same category, any other.
+PD.SHARE = {match=1,category=0.5,other=0.25}
+PD.TAMING_SHARE = 0.1 -- player Taming XP per pet XP point earned from skills
+PD.CANDY_MAX = 10 -- Pet Candy uses per pet, ever
+PD.SKILL_PET_XP = 400000 -- skilling pet: chance per XP point = 1 / SKILL_PET_XP (x Pet Luck)
+PD.SKILL_PET_STEP = 10000 -- XP banked per skill before one roll (rolls never touch small grants)
+PD.UPGRADE_SLOTS = 1
+
+function PD.rank(rarity)
+	local def = type(rarity) == "string" and Data.Rarity[rarity]
+	return def and def.rank or 0
+end
+function PD.validRarity(rarity)
+	return type(rarity) == "string" and PD.STAT_MULT[rarity] ~= nil
+end
+function PD.nextRarity(rarity)
+	local rank = PD.rank(rarity)
+	if rank < 1 or rank >= PD.rank(PD.MAX_RARITY) then return nil end
+	return PD.RARITIES[rank + 1]
+end
+local function clampLevel(level)
+	level = tonumber(level) or 1
+	if level ~= level then level = 1 end
+	return math.clamp(math.floor(level), 1, Data.PET_MAX_LEVEL)
+end
+PD.clampLevel = clampLevel
+
+-- XP curves --------------------------------------------------------------------
+function PD.xpToNext(level, rarity)
+	return math.floor(100 * math.max(1, tonumber(level) or 1) ^ 1.55 * (PD.XP_MULT[rarity] or 1))
+end
+Data.petXpToNext = PD.xpToNext -- every caller reads Data.petXpToNext at call time
+PD.cumulative = {}
+for rarity in pairs(PD.XP_MULT) do
+	local t = {0}
+	for level = 1, Data.PET_MAX_LEVEL - 1 do t[level + 1] = t[level] + PD.xpToNext(level, rarity) end
+	PD.cumulative[rarity] = t
+end
+function PD.totalXpToMax(rarity) return PD.cumulative[rarity][Data.PET_MAX_LEVEL] end
+-- Lifetime XP of a pet (level + progress inside the level).
+function PD.totalXp(level, xp, rarity)
+	local t = PD.cumulative[rarity] or PD.cumulative.Common
+	level = clampLevel(level)
+	local inLevel = math.max(0, tonumber(xp) or 0)
+	if level >= Data.PET_MAX_LEVEL then inLevel = 0 end
+	return t[level] + inLevel
+end
+-- Level and progress for a lifetime XP total (maxed pets keep xp = 0).
+function PD.fromTotal(total, rarity)
+	local t = PD.cumulative[rarity] or PD.cumulative.Common
+	total = math.max(0, tonumber(total) or 0)
+	local lo, hi = 1, Data.PET_MAX_LEVEL
+	while lo < hi do
+		local mid = (lo + hi + 1) // 2
+		if t[mid] <= total then lo = mid else hi = mid - 1 end
+	end
+	if lo >= Data.PET_MAX_LEVEL then return Data.PET_MAX_LEVEL, 0 end
+	return lo, total - t[lo]
+end
+-- Taming: +5% pet XP per 5 levels (max +75%), +2.5% pet stats per 10 levels.
+function PD.tamingXpBonus(tamingLevel) return math.min(0.75, math.floor((tonumber(tamingLevel) or 1) / 5) * 0.05) end
+function PD.tamingStatBonus(tamingLevel) return math.floor((tonumber(tamingLevel) or 1) / 10) * 0.025 end
+function PD.statScale(def, rarity, tamingLevel)
+	local base = PD.STAT_MULT[def and def.rarity] or 1
+	return (PD.STAT_MULT[rarity] or base) / base * (1 + PD.tamingStatBonus(tamingLevel))
+end
+
+-- Abilities -------------------------------------------------------------------
+-- kind: xp {skills, per} = +per*L % player XP in those skills
+--       stat {stat, per} = +per*L stat (computeStats)
+--       family {line, per} = +per*L % coins, slayer progress and Magic Find vs that slayer line
+--       garden {per} = +per*L % Verdant Garden growth rate
+--       gather {skill, per} = per*L % chance to double a harvest of that skill
+--       craft {skills, per} = per*L % chance of an extra output when crafting
+-- L = pet level x ABILITY_MULT[rarity]; unlock: rarity (min) and optional level.
+local function xp(name, skills, per, rarity, level) return {name=name,kind="xp",skills=skills,per=per,rarity=rarity or "Common",level=level} end
+local function stat(name, s, per, rarity, level) return {name=name,kind="stat",stat=s,per=per,rarity=rarity or "Common",level=level} end
+local function family(name, line, per, rarity, level) return {name=name,kind="family",line=line,per=per,rarity=rarity or "Common",level=level} end
+local function garden(name, per, rarity, level) return {name=name,kind="garden",per=per,rarity=rarity or "Common",level=level} end
+local function gather(name, skill, per, rarity, level) return {name=name,kind="gather",skill=skill,per=per,rarity=rarity or "Common",level=level} end
+local function craft(name, skills, per, rarity, level) return {name=name,kind="craft",skills=skills,per=per,rarity=rarity or "Common",level=level} end
+PD.Abilities = {
+	Tidewing={xp("Sky Diver",{"Fishing"},0.1),stat("Spray Sense","seaCreatureChance",0.03,"Rare"),gather("Undertow","Fishing",0.15,"Legendary")},
+	Burrowmole={xp("Deep Digger",{"Mining"},0.1),stat("Tunnel Sense","miningFortune",0.3,"Rare"),gather("Twin Seam","Mining",0.15,"Legendary")},
+	Mossback={xp("Rooted",{"Farming"},0.1),garden("Green Shell",0.15,"Rare"),stat("Old Growth","farmingFortune",0.3,"Epic",50)},
+	Sapling={xp("Grove Song",{"Woodcutting"},0.1),stat("Rootspeak","foragingFortune",0.3,"Rare"),gather("Twin Bough","Woodcutting",0.15,"Legendary")},
+	Emberfox={xp("Kindled Fury",{"Combat"},0.1),family("Bramble Bane","Bramble",0.3,"Rare"),stat("Ember Heart","damagePercent",0.1,"Legendary")},
+	Gloomwing={stat("Echo Hunt","magicFind",0.05),family("Gloom Stalker","Gloom",0.3,"Rare"),stat("Night Wings","critChance",0.1,"Legendary")},
+	Aurelion={xp("Starborn Pride",{"Combat"},0.2),stat("Radiance","damagePercent",0.08,"Rare"),family("Sovereign Roar","Tempest",0.3,"Legendary")},
+	Cindercrab={xp("Forge Heat",{"Smithing"},0.1),craft("Slag Sifter",{"Smithing"},0.1,"Rare"),stat("Molten Shell","defense",0.5,"Epic",30)},
+	Pearlwhisker={xp("Tide Sense",{"Fishing"},0.1),stat("Pearl Diver","fishingFortune",0.4,"Rare"),stat("Deepcall","seaCreatureChance",0.05,"Epic",25)},
+	Puffkin={xp("Burrow Sense",{"Hunter"},0.1),stat("Soft Step","trapLuck",0.1,"Rare")},
+	Glimmerfly={xp("Glint Trail",{"Hunter"},0.1),stat("Luminous Lure","huntingFortune",0.3,"Rare"),stat("Fae Fortune","petLuck",0.1,"Legendary")},
+	Stormkid={xp("Storm Hooves",{"Hunter"},0.15),stat("Thunder Snare","trapLuck",0.12,"Rare"),stat("Gale Charge","speed",0.2,"Epic",40)},
+	Gustling={xp("Tailwind",{"Agility"},0.1),stat("Sure Gust","surefoot",0.1,"Rare"),stat("Updraft","speed",0.3,"Legendary")},
+	Shardling={stat("Crownbound","magicFind",0.08),stat("Shard Edge","damagePercent",0.1,"Rare"),stat("Crown Ward","defense",0.6,"Legendary")},
+	Hearthpup={xp("Taste Tester",{"Cooking"},0.1),craft("Second Helping",{"Cooking"},0.15,"Rare"),stat("Warm Belly","health",1,"Epic",30)},
+	Vialtoad={xp("Brew Lore",{"Alchemy"},0.1),craft("Double Distill",{"Alchemy"},0.12,"Rare"),stat("Toxin Skin","abilityDamage",0.1,"Legendary")},
+	Timberkit={xp("Measure Twice",{"Carpentry"},0.1),craft("Spare Plank",{"Carpentry"},0.12,"Rare"),gather("Gnawing","Woodcutting",0.1,"Epic",40)},
+	Fletchwren={xp("Feather Sort",{"Fletching"},0.1),craft("Spare Shafts",{"Fletching"},0.15,"Rare"),stat("Keen Eye","rangedAccuracy",0.4,"Epic",30)},
+	Runemoth={xp("Dust Wings",{"Glyphcraft"},0.1),craft("Echo Glyph",{"Glyphcraft"},0.12,"Rare"),stat("Arcane Flutter","abilityDamage",0.15,"Legendary")},
+	Starquill={xp("Night Study",{"Magic"},0.12),stat("Mana Font","intelligence",1,"Rare"),family("Tempest Hex","Tempest",0.25,"Legendary")},
+	Thornquill={xp("Quill Volley",{"Ranged"},0.12),family("Bramble Kin","Bramble",0.25,"Rare"),stat("Barbed Shot","rangedStrength",0.4,"Legendary")},
+	Bloomsnail={garden("Slow and Steady",0.2),xp("Mulch Trail",{"Farming"},0.1,"Rare"),gather("Blossom Shell","Farming",0.15,"Epic",50)},
+	Bellwisp={stat("Lantern Bell","seaCreatureChance",0.04),stat("Brine Glow","fishingFortune",0.3,"Rare"),xp("Deep Chime",{"Fishing"},0.12,"Legendary")},
+	Skipperling={xp("Spring Step",{"Agility"},0.1),stat("Steady Feet","surefoot",0.1,"Rare")},
+}
+for _, list in pairs(PD.Abilities) do
+	for i, a in ipairs(list) do a.index = i; a.id = a.name:gsub("[^%w]", "") end
+end
+-- Generic fallback for species added later without abilities: +XP in their skill.
+function PD.abilitiesFor(def)
+	if not def then return {} end
+	local list = PD.Abilities[def.id]
+	if list then return list end
+	list = {xp("Kinship", {def.skill}, 0.1)}
+	list[1].index, list[1].id = 1, "Kinship"
+	PD.Abilities[def.id] = list
+	return list
+end
+function PD.abilityUnlocked(ability, level, rarity)
+	return PD.rank(rarity) >= PD.rank(ability.rarity or "Common") and clampLevel(level) >= (ability.level or 1)
+end
+function PD.abilityValue(ability, level, rarity)
+	local v = ability.per * clampLevel(level) * (PD.ABILITY_MULT[rarity] or 1)
+	return math.floor(v * 100 + 0.5) / 100
+end
+local function round1(v) return math.floor(v * 10 + 0.5) / 10 end
+function PD.familyName(line)
+	local def = Data.Slayers[line]
+	return def and def.line or tostring(line)
+end
+function PD.abilityText(ability, value)
+	local v = tostring(round1(value))
+	local k = ability.kind
+	if k == "xp" then return "+"..v.."% "..table.concat(ability.skills, "/").." XP" end
+	if k == "stat" then
+		local sdef = Data.Stats[ability.stat]
+		if ability.stat == "damagePercent" then return "+"..v.."% damage" end
+		return "+"..v..(if sdef and sdef.percent then "%" else "").." "..(sdef and sdef.name or ability.stat)
+	end
+	if k == "family" then return "+"..v.."% coins, slayer progress and Magic Find vs "..PD.familyName(ability.line).." foes" end
+	if k == "garden" then return "+"..v.."% garden growth" end
+	if k == "gather" then return v.."% chance to double "..ability.skill.." harvests" end
+	if k == "craft" then return v.."% chance of an extra "..table.concat(ability.skills, "/").." craft" end
+	return ""
+end
+function PD.unlockText(ability)
+	local parts = {ability.rarity or "Common"}
+	if ability.level then table.insert(parts, "Lv "..ability.level) end
+	return table.concat(parts, " · ")
+end
+-- Ability rows for one pet: {id, name, kind, unlocked, value, text, requires}.
+function PD.abilityView(def, level, rarity)
+	local out = {}
+	for _, a in ipairs(PD.abilitiesFor(def)) do
+		local value = PD.abilityValue(a, level, rarity)
+		table.insert(out, {id=a.id,name=a.name,kind=a.kind,unlocked=PD.abilityUnlocked(a, level, rarity),value=value,text=PD.abilityText(a, value),requires=PD.unlockText(a)})
+	end
+	return out
+end
+-- Aggregated unlocked effects of one pet:
+-- {stats={}, xp={[skill]=%}, family={[line]=%}, garden=%, gather={[skill]=%}, craft={[skill]=%}}
+function PD.effects(def, level, rarity)
+	local fx = {stats={},xp={},family={},garden=0,gather={},craft={}}
+	for _, a in ipairs(PD.abilitiesFor(def)) do
+		if PD.abilityUnlocked(a, level, rarity) then
+			local v = PD.abilityValue(a, level, rarity)
+			if a.kind == "xp" then for _, s in ipairs(a.skills) do fx.xp[s] = (fx.xp[s] or 0) + v end
+			elseif a.kind == "stat" then fx.stats[a.stat] = (fx.stats[a.stat] or 0) + v
+			elseif a.kind == "family" then fx.family[a.line] = (fx.family[a.line] or 0) + v
+			elseif a.kind == "garden" then fx.garden += v
+			elseif a.kind == "gather" then fx.gather[a.skill] = (fx.gather[a.skill] or 0) + v
+			elseif a.kind == "craft" then for _, s in ipairs(a.skills) do fx.craft[s] = (fx.craft[s] or 0) + v end end
+		end
+	end
+	return fx
+end
+
+-- New species -----------------------------------------------------------------
+for _, pet in ipairs({
+	{id="Hearthpup",name="Hearthpup",skill="Cooking",rarity="Uncommon",color="D9822B",perLevel={health=0.6,intelligence=0.1}},
+	{id="Vialtoad",name="Vialtoad",skill="Alchemy",rarity="Rare",color="8E5BB5",perLevel={intelligence=0.5,defense=0.1}},
+	{id="Timberkit",name="Timberkit",skill="Carpentry",rarity="Uncommon",color="A0784F",perLevel={health=0.4,foragingFortune=0.3}},
+	{id="Fletchwren",name="Fletchwren",skill="Fletching",rarity="Uncommon",color="A7B66B",perLevel={rangedStrength=0.3,speed=0.1}},
+	{id="Runemoth",name="Runemoth",skill="Glyphcraft",rarity="Rare",color="9A7FD1",perLevel={intelligence=0.6}},
+	{id="Starquill",name="Starquill Owl",skill="Magic",rarity="Epic",color="5C7AEA",perLevel={intelligence=1,abilityDamage=0.05}},
+	{id="Thornquill",name="Thornquill",skill="Ranged",rarity="Rare",color="6FA35A",perLevel={rangedStrength=0.5,defense=0.2}},
+	{id="Bloomsnail",name="Bloomsnail",skill="Farming",rarity="Epic",color="E9A3C9",perLevel={farmingFortune=0.6,health=0.4}},
+	{id="Bellwisp",name="Bellwisp",skill="Fishing",rarity="Rare",color="8EE3F0",perLevel={seaCreatureChance=0.06,intelligence=0.3}},
+	{id="Skipperling",name="Skipperling",skill="Agility",rarity="Common",color="9BD67E",perLevel={speed=0.2,surefoot=0.05}},
+}) do
+	table.insert(Data.Pets, pet)
+	Data.PetById[pet.id] = pet
+	item(pet.id.."Pet",{name=pet.name.." Pet",kind="pet",pet=pet.id,rarity=pet.rarity,color=pet.color,value=200*Data.Rarity[pet.rarity].rank^2,description="Summon from your pet menu."})
+end
+PD.NEW_SPECIES = {"Hearthpup","Vialtoad","Timberkit","Fletchwren","Runemoth","Starquill","Thornquill","Bloomsnail","Bellwisp","Skipperling"}
+-- Every species: a real ability summary replaces the old flavour text.
+for _, pet in ipairs(Data.Pets) do
+	local list = PD.abilitiesFor(pet)
+	local first = list[1]
+	local names = {}
+	for _, a in ipairs(list) do table.insert(names, a.name) end
+	pet.ability = first.name..": up to "..PD.abilityText(first, PD.abilityValue(first, Data.PET_MAX_LEVEL, PD.MAX_RARITY))
+	pet.abilityNames = names
+	local itemDef = Data.Items[pet.id.."Pet"]
+	if itemDef then itemDef.description = "Summon from your pet menu. Abilities: "..table.concat(names, ", ").."." end
+end
+
+-- Held items, candy and the Tier Boost --------------------------------------------
+-- held: xp = {category|"all" -> pet XP %}, stats, garden (% growth).
+PD.HeldItems = {
+	ForagersPouch={name="Forager's Pouch",rarity="Uncommon",color="8CB369",xp={gathering=20},text="+20% pet XP from gathering skills"},
+	ArtisansThimble={name="Artisan's Thimble",rarity="Uncommon",color="C9A227",xp={production=20},text="+20% pet XP from production skills"},
+	WarbandTag={name="Warband Tag",rarity="Uncommon",color="C8553D",xp={combat=20},text="+20% pet XP from combat skills"},
+	WayfarersBell={name="Wayfarer's Bell",rarity="Uncommon",color="62C2B0",xp={support=25},text="+25% pet XP from support skills"},
+	EverbloomRibbon={name="Everbloom Ribbon",rarity="Epic",color="E9A3C9",xp={all=12},text="+12% pet XP from every skill"},
+	IronbarkCollar={name="Ironbark Collar",rarity="Rare",color="7A6A53",stats={defense=25,health=20},text="+25 Defense, +20 Health"},
+	FangstoneCollar={name="Fangstone Collar",rarity="Rare",color="D4A84B",stats={strength=12,critDamage=10},text="+12 Strength, +10% Crit Damage"},
+	SwiftwindAnklet={name="Swiftwind Anklet",rarity="Uncommon",color="CFEFFF",stats={speed=12},text="+12 Speed"},
+	OwlglassLens={name="Owlglass Lens",rarity="Rare",color="5C7AEA",stats={intelligence=40},text="+40 Intelligence"},
+	GlimmerClover={name="Glimmer Clover",rarity="Epic",color="55FF55",stats={magicFind=6,petLuck=2},text="+6 Magic Find, +2 Pet Luck"},
+	TidepearlPendant={name="Tidepearl Pendant",rarity="Epic",color="8EE3F0",stats={seaCreatureChance=2,fishingFortune=15},text="+2% Sea Creature Chance, +15 Fishing Fortune"},
+	VerdantSprig={name="Verdant Sprig",rarity="Rare",color="6BBF59",stats={farmingFortune=20},garden=8,text="+20 Farming Fortune, +8% garden growth"},
+}
+PD.HELD_ORDER = {"ForagersPouch","ArtisansThimble","WarbandTag","WayfarersBell","EverbloomRibbon","IronbarkCollar","FangstoneCollar","SwiftwindAnklet","OwlglassLens","GlimmerClover","TidepearlPendant","VerdantSprig"}
+for id, h in pairs(PD.HeldItems) do
+	h.id = id
+	item(id,{name=h.name,kind="petitem",petItem="held",rarity=h.rarity,color=h.color,stats=h.stats,value=150*Data.Rarity[h.rarity].rank^2,
+		description="Pet held item: "..h.text..". Equip it on a pet from your pet menu."})
+end
+PD.Candies = {PetCandy={xp=20000},StarlitCandy={xp=250000}}
+item("PetCandy",{name="Pet Candy",kind="petitem",petItem="candy",rarity="Uncommon",color="F7A1C4",value=300,
+	description="Feed to a pet for +20,000 pet XP. Each pet can eat "..PD.CANDY_MAX.." candies in its life."})
+item("StarlitCandy",{name="Starlit Pet Candy",kind="petitem",petItem="candy",rarity="Epic",color="F2D27A",value=4000,
+	description="Feed to a pet for +250,000 pet XP. Counts toward the "..PD.CANDY_MAX.."-candy limit."})
+item("AscendantPrism",{name="Ascendant Prism",kind="petitem",petItem="tierBoost",rarity="Legendary",color="FFAA00",value=20000,
+	description="Tier Boost: raises a pet's rarity by one tier at once (up to Legendary). Consumed."})
+function PD.held(id) return type(id) == "string" and PD.HeldItems[id] or nil end
+-- Pet XP multiplier bonus (fraction) a held item gives for XP of `skill`.
+function PD.heldXpBonus(id, skill)
+	local h = PD.held(id)
+	if not h or not h.xp then return 0 end
+	local cat = Data.Skills[skill] and Data.Skills[skill].category
+	return ((h.xp.all or 0) + (cat and h.xp[cat] or 0)) / 100
+end
+
+-- Sources -----------------------------------------------------------------------
+-- Crafted pet gear trains Taming at the Workbench; candy is cooked at the Hearth.
+for id, r in pairs({
+	IronbarkCollar={level=10,costs={BeastHide=40,EmberoakLog=24,SunsteelIngot=4}},
+	VerdantSprig={level=15,costs={Glowcap=48,Herb=64,ArcaneDust=24}},
+	FangstoneCollar={level=20,costs={BeastHide=64,SpiderSilk=48,SunsteelIngot=8}},
+	OwlglassLens={level=25,costs={StormFeather=32,ArcaneDust=64,Glassfin=24}},
+	SwiftwindAnklet={level=12,costs={StormFeather=16,DownyPelt=24,WindpineLog=32}},
+	EverbloomRibbon={level=40,costs={Moonbloom=48,GlintEssence=32,StarFragment=2}},
+}) do
+	recipe(id,{skill="Taming",level=r.level,xp=60+r.level*6,costs=r.costs,repeatable=true,station="Workbench",category="Pet Gear"})
+end
+recipe("PetCandy",{skill="Cooking",level=20,xp=90,costs={Sunwheat=6,Duskberry=4,Starfruit=1},repeatable=true,station="Hearth",category="Pet Treats"})
+recipe("StarlitCandy",{skill="Cooking",level=60,xp=600,costs={PetCandy=4,StarFragment=2,AetherLotus=6},repeatable=true,station="Hearth",category="Pet Treats"})
+-- The Roost keeper sells starter gear and candy for coins.
+PD.Shop = {
+	{item="PetCandy",coins=8000},
+	{item="ForagersPouch",coins=20000},
+	{item="ArtisansThimble",coins=20000},
+	{item="WarbandTag",coins=20000},
+	{item="WayfarersBell",coins=20000},
+	{item="SwiftwindAnklet",coins=15000},
+}
+PD.ShopByItem = {}
+for _, e in ipairs(PD.Shop) do PD.ShopByItem[e.item] = e end
+-- Drops: rare held items, Starlit Candy, Ascendant Prisms and the Bellwisp.
+local function addDrop(list, row) if type(list) == "table" then table.insert(list, row) end end
+addDrop(Data.Monsters.GloomfangSpider and Data.Monsters.GloomfangSpider.drops, {item="GlimmerClover",chance=0.003,min=1,max=1})
+addDrop(Data.Monsters.BarkStalker and Data.Monsters.BarkStalker.drops, {item="FangstoneCollar",chance=0.004,min=1,max=1})
+addDrop(Data.SeaCreatures.DriftbellJelly and Data.SeaCreatures.DriftbellJelly.drops, {item="BellwispPet",chance=0.003,min=1,max=1})
+addDrop(Data.SeaCreatures.InkveilDrifter and Data.SeaCreatures.InkveilDrifter.drops, {item="TidepearlPendant",chance=0.01,min=1,max=1})
+for _, line in ipairs({"Bramble","Gloom","Tempest"}) do
+	local tiers = Data.Slayers[line] and Data.Slayers[line].tiers
+	if tiers then
+		addDrop(tiers[3] and tiers[3].drops, {item="StarlitCandy",chance=0.04,min=1,max=1})
+		addDrop(tiers[4] and tiers[4].drops, {item="StarlitCandy",chance=0.1,min=1,max=1})
+		addDrop(tiers[4] and tiers[4].drops, {item="AscendantPrism",chance=0.008,min=1,max=1})
+	end
+end
+-- Skilling pets (OSRS-style): every XP grant in the skill may roll its pet.
+PD.SkillPets = {Cooking="HearthpupPet",Alchemy="VialtoadPet",Carpentry="TimberkitPet",Fletching="FletchwrenPet",Glyphcraft="RunemothPet",
+	Magic="StarquillPet",Ranged="ThornquillPet",Farming="BloomsnailPet",Agility="SkipperlingPet"}
+function PD.skillPetChance(xpAmount, petLuck)
+	local x = math.max(0, tonumber(xpAmount) or 0)
+	return math.min(0.05, x / PD.SKILL_PET_XP * (1 + math.max(0, tonumber(petLuck) or 0) / 100))
+end
+
+-- The Roost: timed rarity upgrades -----------------------------------------------
+PD.KEEPER = "Wren Halloway, Roost Keeper"
+PD.Upgrade = {
+	Uncommon={coins=5000,seconds=3600,items={ArcaneDust=32},material=16},
+	Rare={coins=25000,seconds=6*3600,items={ArcaneDust=96},material=48},
+	Epic={coins=150000,seconds=24*3600,items={ArcaneDust=192,VoidEssence=24},material=128},
+	Legendary={coins=750000,seconds=72*3600,items={StarFragment=8,VoidEssence=96},material=256},
+}
+-- Species material by skill (the pet's own trade).
+PD.UpgradeMaterial = {Combat="BeastHide",Mining="SunsteelOre",Woodcutting="EmberoakLog",Fishing="Stormeel",Farming="Sunwheat",Smithing="SunsteelIngot",
+	Hunter="DownyPelt",Agility="Skymark",Cooking="Duskberry",Alchemy="Glowcap",Carpentry="WindpineLog",Fletching="StormFeather",Glyphcraft="GlintEssence",
+	Magic="ArcaneDust",Ranged="StormFeather"}
+-- Cost to raise a pet of species def from `rarity` one tier: {to, coins, seconds, items} or nil.
+function PD.upgradeCost(def, rarity)
+	local to = PD.nextRarity(rarity)
+	if not def or not to then return nil end
+	local u = PD.Upgrade[to]
+	local items = table.clone(u.items)
+	local mat = PD.UpgradeMaterial[def.skill] or "ArcaneDust"
+	items[mat] = (items[mat] or 0) + u.material
+	return {to=to,coins=u.coins,seconds=u.seconds,items=items}
+end
+
+-- Companion body plans (pets.client.lua) ------------------------------------------
+-- form: flyer (wings flap, hovers), quad (four legs, hops), shell (low and slow),
+-- float (orb and tendrils, bobs), hopper (round body, big feet).
+PD.Looks = {
+	Tidewing={form="flyer",accent="CFEFFF"},Burrowmole={form="quad",accent="E8C9A0"},Mossback={form="shell",accent="8CB369"},
+	Sapling={form="float",accent="B5E48C"},Emberfox={form="quad",accent="FFD6A5"},Gloomwing={form="flyer",accent="B8C0FF"},
+	Aurelion={form="quad",accent="FFF3B0"},Cindercrab={form="shell",accent="FFB703"},Pearlwhisker={form="quad",accent="F1E3D3"},
+	Puffkin={form="hopper",accent="FFFFFF"},Glimmerfly={form="flyer",accent="FFFFFF"},Stormkid={form="quad",accent="E0E6F0"},
+	Gustling={form="float",accent="FFFFFF"},Shardling={form="float",accent="FFF3B0"},Hearthpup={form="quad",accent="FFE5B4"},
+	Vialtoad={form="hopper",accent="C3F584"},Timberkit={form="quad",accent="E8C9A0"},Fletchwren={form="flyer",accent="F4F1DE"},
+	Runemoth={form="flyer",accent="E0C3FC"},Starquill={form="flyer",accent="FFF3B0"},Thornquill={form="shell",accent="3B5249"},
+	Bloomsnail={form="shell",accent="FFD6E8"},Bellwisp={form="float",accent="FFFFFF"},Skipperling={form="hopper",accent="E9FFDB"},
+}
+PD.MAX_PARTS = 15
+PD.FLOATING = {flyer=true,float=true}
+local function part(name, shape, size, offset, color, extra)
+	local p = {name=name,shape=shape,size=size,offset=offset,color=color}
+	if extra then for k, v in pairs(extra) do p[k] = v end end
+	return p
+end
+-- Parts in pet space (studs, +Z forward, origin at the body centre). shape:
+-- Ball | Block | Cylinder | Wedge. flap = "L"/"R" wing; neon = glowing trim.
+function PD.bodyPlan(speciesId, rarity)
+	local def = Data.PetById[speciesId]
+	local look = PD.Looks[speciesId] or {form="float",accent="FFFFFF"}
+	local c, a = def and def.color or "CCCCCC", look.accent
+	local form = look.form
+	local parts = {}
+	local function add(...) table.insert(parts, part(...)) end
+	if form == "flyer" then
+		add("Body","Ball",{1.1,1,1.3},{0,0,0},c)
+		add("Head","Ball",{0.8,0.8,0.8},{0,0.55,0.55},c)
+		add("Beak","Wedge",{0.2,0.2,0.3},{0,0.5,1},"F2C14E")
+		add("WingL","Block",{1.2,0.1,0.7},{-0.95,0.15,0},a,{flap="L"})
+		add("WingR","Block",{1.2,0.1,0.7},{0.95,0.15,0},a,{flap="R"})
+		add("Tail","Wedge",{0.5,0.12,0.5},{0,0,-0.8},a)
+		add("EyeL","Ball",{0.16,0.16,0.16},{-0.2,0.65,0.9},"10141A")
+		add("EyeR","Ball",{0.16,0.16,0.16},{0.2,0.65,0.9},"10141A")
+	elseif form == "quad" then
+		add("Body","Block",{0.9,0.8,1.5},{0,0,0},c)
+		add("Head","Ball",{0.85,0.8,0.8},{0,0.45,0.85},c)
+		add("Snout","Block",{0.35,0.3,0.35},{0,0.35,1.3},a)
+		add("EarL","Wedge",{0.2,0.4,0.2},{-0.25,0.95,0.8},c)
+		add("EarR","Wedge",{0.2,0.4,0.2},{0.25,0.95,0.8},c)
+		add("Tail","Cylinder",{0.7,0.22,0.22},{0,0.3,-0.95},a,{rot={0,90,30}})
+		add("LegFL","Block",{0.22,0.5,0.22},{-0.3,-0.55,0.5},c)
+		add("LegFR","Block",{0.22,0.5,0.22},{0.3,-0.55,0.5},c)
+		add("LegBL","Block",{0.22,0.5,0.22},{-0.3,-0.55,-0.5},c)
+		add("LegBR","Block",{0.22,0.5,0.22},{0.3,-0.55,-0.5},c)
+		add("EyeL","Ball",{0.14,0.14,0.14},{-0.2,0.6,1.2},"10141A")
+		add("EyeR","Ball",{0.14,0.14,0.14},{0.2,0.6,1.2},"10141A")
+	elseif form == "shell" then
+		add("Shell","Ball",{1.4,0.9,1.5},{0,0.1,-0.1},c)
+		add("Rim","Cylinder",{0.12,1.5,1.5},{0,-0.25,-0.1},a,{rot={0,0,90}})
+		add("Head","Ball",{0.6,0.55,0.6},{0,0,0.85},a)
+		add("FootL","Block",{0.3,0.25,0.4},{-0.5,-0.4,0.4},a)
+		add("FootR","Block",{0.3,0.25,0.4},{0.5,-0.4,0.4},a)
+		add("EyeL","Ball",{0.12,0.12,0.12},{-0.15,0.1,1.12},"10141A")
+		add("EyeR","Ball",{0.12,0.12,0.12},{0.15,0.1,1.12},"10141A")
+	elseif form == "hopper" then
+		add("Body","Ball",{1.1,1,1.1},{0,0,0},c)
+		add("Belly","Ball",{0.8,0.7,0.5},{0,-0.15,0.35},a)
+		add("FootL","Ball",{0.4,0.2,0.6},{-0.35,-0.5,0.2},c)
+		add("FootR","Ball",{0.4,0.2,0.6},{0.35,-0.5,0.2},c)
+		add("EyeL","Ball",{0.22,0.22,0.22},{-0.25,0.4,0.42},"10141A")
+		add("EyeR","Ball",{0.22,0.22,0.22},{0.25,0.4,0.42},"10141A")
+	else -- float
+		add("Orb","Ball",{1.1,1.1,1.1},{0,0,0},c,{transparency=0.25})
+		add("Core","Ball",{0.5,0.5,0.5},{0,0,0},a,{neon=true})
+		add("TendrilA","Cylinder",{0.7,0.12,0.12},{-0.25,-0.75,0},c,{rot={0,0,90}})
+		add("TendrilB","Cylinder",{0.7,0.12,0.12},{0.25,-0.75,0},c,{rot={0,0,90}})
+		add("TendrilC","Cylinder",{0.7,0.12,0.12},{0,-0.75,0.25},c,{rot={0,0,90}})
+		add("EyeL","Ball",{0.14,0.14,0.14},{-0.18,0.12,0.5},"10141A")
+		add("EyeR","Ball",{0.14,0.14,0.14},{0.18,0.12,0.5},"10141A")
+	end
+	local rank = PD.rank(rarity)
+	if rank >= 4 then add("Halo","Cylinder",{0.06,0.9,0.9},{0,1.25,0},Data.Rarity[rarity].color,{rot={0,0,90},neon=true}) end
+	if rank >= 5 then add("Gem","Ball",{0.22,0.22,0.22},{0,1.25,0},"FFFFFF",{neon=true}) end
+	-- Rarity grows the companion a little: Common 0.8 ... Legendary 1.12.
+	return {form=form,floating=PD.FLOATING[form] == true,scale=0.72 + 0.08 * math.max(1, rank),parts=parts}
+end
+-- Verdant Garden: ctx.petGrowth (fraction, from the summoned pet's growth
+-- abilities and held item; server Garden.ctx) adds to the plot rate, still
+-- within G.MAX_RATE so the garden balance invariants hold.
+do
+	local G = Data.Garden
+	local baseRate = G.rate
+	function G.rate(plot, ctx, watered)
+		local r = baseRate(plot, ctx, watered)
+		local boost = type(ctx) == "table" and tonumber(ctx.petGrowth) or 0
+		if boost ~= boost or boost <= 0 then return r end
+		return math.min(G.MAX_RATE, r + boost)
+	end
+end
+-- Player attribute ActivePet = "speciesId:rarity:level" ("" when none).
+function PD.attribute(speciesId, rarity, level) return speciesId..":"..rarity..":"..clampLevel(level) end
+function PD.parseAttribute(value)
+	if type(value) ~= "string" then return nil end
+	local id, rarity, level = value:match("^(%w+):(%a+):(%d+)$")
+	if not id or not Data.PetById[id] or not PD.validRarity(rarity) then return nil end
+	return id, rarity, clampLevel(tonumber(level))
+end
+end
+-- End Pets depth section.
+
 
 return Data

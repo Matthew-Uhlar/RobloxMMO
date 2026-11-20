@@ -171,22 +171,97 @@ function Progression.activePet(p)
 	if pet and Data.PetById[pet.id] then return pet, Data.PetById[pet.id] end
 	return nil
 end
--- Pets earn the full XP of their skill and 25% of other skills.
-function Progression.addPetXp(p, skill, amount)
-	local pet, def = Progression.activePet(p)
-	if not pet then return false end
-	local gained = if def.skill == skill then amount else amount * 0.25
-	pet.xp = (pet.xp or 0) + gained
-	local leveled = false
+-- Pets depth (Data.PetDepth): instance rarity, held item, candy uses. A pet
+-- without those fields reads as its species' rarity with no item.
+local function PD() return Data.PetDepth end
+function Progression.petRarity(pet)
+	local def = type(pet) == "table" and Data.PetById[pet.id]
+	local pd = PD()
+	if pd and type(pet) == "table" and pd.validRarity(pet.rarity) then return pet.rarity end
+	return def and def.rarity or "Common"
+end
+function Progression.tamingLevel(p)
+	return Progression.levelForXp(type(p) == "table" and p.xp and p.xp.Taming or 0)
+end
+-- Pet XP share of a grant in `skill`: own skill full, same category / other reduced.
+function Progression.petShare(def, skill)
+	if def.skill == skill then return 1 end
+	local pd = PD()
+	if not pd then return 0.25 end
+	local a, b = Data.Skills[def.skill], Data.Skills[skill]
+	if a and b and a.category == b.category then return pd.SHARE.category end
+	return pd.SHARE.other
+end
+-- Pet XP multiplier from Taming level and the held item.
+function Progression.petXpMult(p, pet, skill)
+	local pd = PD()
+	if not pd then return 1 end
+	return 1 + pd.tamingXpBonus(Progression.tamingLevel(p)) + pd.heldXpBonus(pet and pet.item, skill)
+end
+-- Raw XP onto one pet (candy, skills): levels up along its rarity curve. Returns levels gained.
+function Progression.addXpToPet(pet, amount)
+	local def = Data.PetById[pet.id]
+	if not def then return 0 end
+	local rarity = Progression.petRarity(pet)
+	local start = pet.level
+	pet.xp = (pet.xp or 0) + math.max(0, amount)
 	while pet.level < Data.PET_MAX_LEVEL do
-		local need = Data.petXpToNext(pet.level, def.rarity)
+		local need = Data.petXpToNext(pet.level, rarity)
 		if pet.xp < need then break end
 		pet.xp -= need
 		pet.level += 1
-		leveled = true
 	end
 	if pet.level >= Data.PET_MAX_LEVEL then pet.xp = 0 end
-	return leveled
+	return pet.level - start
+end
+-- Pets earn the full XP of their skill, a share of other skills (same category
+-- 50%, others 25%), boosted by Taming and an XP held item. Returns leveled, gained.
+function Progression.addPetXp(p, skill, amount)
+	local pet, def = Progression.activePet(p)
+	if not pet then return false, 0 end
+	if pet.level >= Data.PET_MAX_LEVEL then pet.xp = 0 return false, 0 end
+	local gained = amount * Progression.petShare(def, skill) * Progression.petXpMult(p, pet, skill)
+	local leveled = Progression.addXpToPet(pet, gained) > 0
+	return leveled, gained
+end
+-- Stats one pet gives while summoned: species perLevel scaled by rarity and
+-- Taming, unlocked stat abilities, held item stats.
+function Progression.petStats(p, pet, def)
+	local out = {}
+	local lvl = Progression.petLevel(pet)
+	local pd = PD()
+	if not pd then addStats(out, def.perLevel, lvl) return out end
+	local rarity = Progression.petRarity(pet)
+	addStats(out, def.perLevel, lvl * pd.statScale(def, rarity, Progression.tamingLevel(p)))
+	addStats(out, pd.effects(def, lvl, rarity).stats)
+	local held = pd.held(pet.item)
+	if held then addStats(out, held.stats) end
+	return out
+end
+-- Unlocked non-stat effects of the summoned pet (and its held item):
+-- {xp={[skill]=%}, family={[line]=%}, garden=%, gather={[skill]=%}, craft={[skill]=%}}.
+local NO_EFFECTS = table.freeze({stats={},xp={},family={},garden=0,gather={},craft={}})
+function Progression.petEffects(p)
+	local pet, def = Progression.activePet(p)
+	local pd = PD()
+	if not pet or not pd then return NO_EFFECTS end
+	local fx = pd.effects(def, Progression.petLevel(pet), Progression.petRarity(pet))
+	local held = pd.held(pet.item)
+	if held and held.garden then fx.garden += held.garden end
+	return fx
+end
+-- Player skill XP multiplier from the summoned pet's XP abilities.
+function Progression.petSkillXpMult(p, skill)
+	return 1 + (Progression.petEffects(p).xp[skill] or 0) / 100
+end
+-- Change a pet's rarity keeping its lifetime XP (the level is recomputed on the new curve).
+function Progression.petSetRarity(pet, rarity)
+	local pd = PD()
+	local old = Progression.petRarity(pet)
+	local total = pd.totalXp(pet.level, pet.xp, old)
+	pet.rarity = rarity
+	pet.level, pet.xp = pd.fromTotal(total, rarity)
+	return pet
 end
 -- Valid equipped item: owned, matching slot, requirements met.
 function Progression.equipped(p, slot)
@@ -288,7 +363,7 @@ function Progression.computeStats(p, now)
 	s.strength += math.floor(s.magicalPower / 4)
 	-- Pet
 	local pet, petDef = Progression.activePet(p)
-	if pet then addStats(s, petDef.perLevel, Progression.petLevel(pet)) end
+	if pet then addStats(s, Progression.petStats(p, pet, petDef)) end
 	-- Buffs
 	for _, buff in pairs(p.buffs or {}) do
 		if buff.expires and buff.expires > now then addStats(s, buff.stats) end

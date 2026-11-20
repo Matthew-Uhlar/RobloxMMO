@@ -153,14 +153,22 @@ end
 local Mastery={verbs={}}
 -- Verdant Garden (plots, composter, visitors); filled in by the Garden block before perform().
 local Garden={verbs={}}
+-- Pets depth (held items, candy, Roost upgrades, ability hooks); filled in by the Pets block before perform().
+local Pets={verbs={}}
 -- Every XP grant: OSRS curve with cap, active pet share, one-time level coins.
 local function grantXp(p,skill,amount)
 	if not Data.Skills[skill] or type(amount)~="number" or amount<=0 then return end
-	local _,newLevel=Progression.addXp(p,skill,amount)
+	-- Pets depth: the summoned pet's XP abilities raise the player's grant; the
+	-- pet itself shares the base amount, and its gain trains Taming.
+	local _,newLevel=Progression.addXp(p,skill,amount*Progression.petSkillXpMult(p,skill))
 	local pet,petDef=Progression.activePet(p)
 	local petLevel=pet and pet.level
-	Progression.addPetXp(p,skill,amount)
+	-- Taming is earned from pets, so it never feeds them back.
+	local petGain=0
+	if skill~="Taming" then _,petGain=Progression.addPetXp(p,skill,amount) end
 	if pet and pet.level>petLevel then note(p,petDef.name.." pet level "..pet.level.."!") end
+	if Pets.tamingShare and (petGain or 0)>0 then Pets.tamingShare(p,petGain) end
+	if Pets.skillRoll then Pets.skillRoll(p,skill,amount) end
 	p.levelRewards=p.levelRewards or {}
 	local rewarded=p.levelRewards[skill] or 1
 	if newLevel>rewarded then
@@ -1625,6 +1633,7 @@ local function applyStats(player,p,spawned)
 	end
 	local health=stats.health
 	player:SetAttribute("CompanionBond",p.companionBond or 0)
+	player:SetAttribute("ActivePet",Pets.attribute(p)) -- Pets depth: followers (pets.client.lua)
 	player:SetAttribute("CombatLevel",level(p.xp.Combat))
 	local quest=p.slayerQuest
 	player:SetAttribute("SlayerBossReady",if quest and quest.bossReady then quest.line..":"..quest.tier else "")
@@ -1695,11 +1704,7 @@ local function depthState(p,stats)
 	local tools={}
 	for skill in pairs(Data.ToolKind) do tools[skill]=(Progression.bestTool(p,skill)) end
 	local pets={}
-	for index,pet in ipairs(p.pets) do
-		local def=Data.PetById[pet.id]
-		local lvl=Progression.petLevel(pet)
-		table.insert(pets,{id=pet.id,level=lvl,xp=pet.xp or 0,next=if def and lvl<Data.PET_MAX_LEVEL then Data.petXpToNext(lvl,def.rarity) else nil,active=p.activePet==index})
-	end
+	for index,pet in ipairs(p.pets) do table.insert(pets,Pets.row(p,pet,index,now)) end -- Pets depth rows
 	local buffs={}
 	for id,buff in pairs(p.buffs) do
 		if buff.expires and buff.expires>now then buffs[id]={remaining=buff.expires-now,stats=buff.stats} end
@@ -1721,7 +1726,7 @@ local function depthState(p,stats)
 	end
 	return {skills=skills,totalLevel=total,skillAverage=average,stats=stats,equipment=equipment,tools=tools,
 		accessoryBag=table.clone(p.accessoryBag),activeAccessories=Progression.activeAccessories(p),accessorySlots=Progression.accessorySlots(p),
-		pets=pets,buffs=buffs,collections=collections,bestiary=p.bestiary,slayer={lines=lines,quest=p.slayerQuest},enchants=p.enchants,regions=regions,
+		pets=pets,petDepth=Pets.view(p,now),buffs=buffs,collections=collections,bestiary=p.bestiary,slayer={lines=lines,quest=p.slayerQuest},enchants=p.enchants,regions=regions,
 		gear=Gear.view(p), -- Gear depth: {reforges, stars, books} (Data.Gear helpers read it)
 		combat=Progression.combatLoadout(p), -- Combat styles: {style,weapon,ammo,ammoCount,supplies,levels,autocast}
 		mastery=Mastery.state and Mastery.state(p)} -- Skill Mastery: points, trees, capstones, milestones, mantles
@@ -1811,6 +1816,7 @@ local function migrate(profile)
 	end
 	profile.pets=pets
 	profile.activePet=active
+	Pets.migrate(profile) -- Pets depth: rarity, held item, candy, Roost job
 	-- Combat styles: autocast must name an autocast spell.
 	if profile.autocast~=nil and not (type(profile.autocast)=="string" and Data.Spells[profile.autocast] and Data.Spells[profile.autocast].autocast) then profile.autocast=nil end
 	local quest=profile.slayerQuest
@@ -2160,7 +2166,7 @@ do
 		end
 		return n>=4
 	end
-	function Garden.ctx(p) return {level=G.level(rec(p).xp),set=setActive(p)} end
+	function Garden.ctx(p) return {level=G.level(rec(p).xp),set=setActive(p),petGrowth=Progression.petEffects(p).garden/100} end -- Pets depth: growth abilities
 	function Garden.refreshPerk(p)
 		if type(p.perkStats)~="table" then p.perkStats={} end
 		p.perkStats["garden:milestones"]=(G.milestonePerk(rec(p).harvested))
@@ -2659,6 +2665,242 @@ do
 end
 -- End Verdant Garden block.
 
+------------------------------------------------------------------------------
+-- Pets depth (Data.PetDepth): held items, Pet Candy, Tier Boost, the Roost
+-- (timed rarity upgrades), its shop and the ability hooks other systems call.
+-- Verbs (item <= 64 chars; index = position in p.pets, 1-based):
+--   petItem "index:itemId" equip a held item (old one returns to the satchel);
+--     "index:" or "index:none" takes it off
+--   petCandy "index:PetCandy|StarlitCandy" (+XP, PD.CANDY_MAX uses per pet)
+--   petTierBoost "index" spends an Ascendant Prism: +1 rarity tier at once
+--   petUpgrade "index" hands the pet to the Roost: coins + materials, os.time timer
+--   petClaim collects it once the timer is done (exactly once); petCancel takes
+--     it back early (no refund)
+--   petShop "itemId" buys from the Roost keeper (PD.Shop)
+-- Profile: pet.rarity/item/candy, p.petUpgrade={pet,from,to,ends}, p.petTamingCarry.
+-- Player attribute ActivePet = "speciesId:rarity:level" or "" (pets.client.lua).
+------------------------------------------------------------------------------
+do
+	local PD=Data.PetDepth
+	Pets.verbs={petItem=true,petCandy=true,petTierBoost=true,petUpgrade=true,petClaim=true,petCancel=true,petShop=true}
+	local function petAt(p,raw)
+		local index=tonumber(raw)
+		if not index or index%1~=0 or tostring(index)~=raw then return nil end
+		local pet=p.pets[index]
+		if type(pet)~="table" or not Data.PetById[pet.id] then return nil end
+		return pet,Data.PetById[pet.id],index
+	end
+	local function petName(pet,def) return Progression.petRarity(pet).." "..def.name end
+	-- Remove p.pets[index], keeping the active pointer on the same pet.
+	local function takePet(p,index)
+		local pet=table.remove(p.pets,index)
+		if p.activePet==index then p.activePet=nil
+		elseif p.activePet and p.activePet>index then p.activePet-=1 end
+		return pet
+	end
+	local function costText(cost)
+		local parts={}
+		if cost.coins>0 then table.insert(parts,cost.coins.." coins") end
+		for id,n in pairs(cost.items) do table.insert(parts,n.." "..(Data.Items[id] and Data.Items[id].name or id)) end
+		table.sort(parts)
+		return table.concat(parts,", ")
+	end
+	local function span(seconds)
+		seconds=math.max(0,math.floor(seconds))
+		if seconds>=3600 then return math.floor(seconds/3600).."h "..math.floor(seconds%3600/60).."m" end
+		if seconds>=60 then return math.floor(seconds/60).."m "..(seconds%60).."s" end
+		return seconds.."s"
+	end
+	Pets.span=span
+	function Pets.action(player,p,verb,item)
+		if verb=="petShop" then
+			local entry=validId(item) and PD.ShopByItem[item]
+			if not entry then return "The Roost keeper does not sell that." end
+			if p.coins<entry.coins then return "You need "..entry.coins.." coins for "..Data.Items[item].name.."." end
+			p.coins-=entry.coins
+			collect(p,item,1)
+			return "Bought "..Data.Items[item].name.." for "..entry.coins.." coins."
+		elseif verb=="petClaim" then
+			local job=p.petUpgrade
+			if not job then return "No pet is waiting at the Roost." end
+			if os.time()<job.ends then return "The Roost needs "..span(job.ends-os.time()).." more." end
+			p.petUpgrade=nil
+			local def=Data.PetById[job.pet.id]
+			Progression.petSetRarity(job.pet,job.to)
+			table.insert(p.pets,job.pet)
+			grantXp(p,"Taming",200*PD.rank(job.to))
+			return "Your "..def.name.." returns "..job.to.."! (Lv "..job.pet.level..")"
+		elseif verb=="petCancel" then
+			local job=p.petUpgrade
+			if not job then return "No pet is waiting at the Roost." end
+			if #p.pets>=MAX_PETS then return "Your pet menu is full." end
+			p.petUpgrade=nil
+			table.insert(p.pets,job.pet)
+			return "You take your "..Data.PetById[job.pet.id].name.." home. The fee is not refunded."
+		end
+		local raw,rest=nil,nil
+		if validId(item) then raw,rest=string.match(item,"^(%d+):?(.*)$") end
+		local pet,def,index=nil,nil,nil
+		if raw then pet,def,index=petAt(p,raw) end
+		if not pet or ((verb=="petUpgrade" or verb=="petTierBoost") and rest~="") then return "Choose one of your pets." end
+		if verb=="petItem" then
+			if rest=="" or rest=="none" then
+				if not pet.item then return def.name.." holds nothing." end
+				local old=pet.item
+				pet.item=nil
+				p.items[old]=(p.items[old] or 0)+1
+				return def.name.." hands back the "..Data.Items[old].name.."."
+			end
+			local held=PD.held(rest)
+			if not held then return "Choose a pet held item." end
+			if pet.item==rest then return def.name.." already holds "..held.name.."." end
+			if (p.items[rest] or 0)<1 then return "You do not own "..held.name.."." end
+			p.items[rest]-=1
+			if pet.item then p.items[pet.item]=(p.items[pet.item] or 0)+1 end
+			pet.item=rest
+			return def.name.." now holds "..held.name..": "..held.text.."."
+		elseif verb=="petCandy" then
+			local candy=PD.Candies[rest]
+			if not candy then return "Choose a Pet Candy to feed." end
+			if (p.items[rest] or 0)<1 then return "You have no "..Data.Items[rest].name.."." end
+			if (pet.candy or 0)>=PD.CANDY_MAX then return def.name.." has eaten all "..PD.CANDY_MAX.." candies it ever will." end
+			if pet.level>=Data.PET_MAX_LEVEL then return def.name.." is already level "..Data.PET_MAX_LEVEL.."." end
+			p.items[rest]-=1
+			pet.candy=(pet.candy or 0)+1
+			local gained=Progression.addXpToPet(pet,candy.xp)
+			return def.name.." enjoys the "..Data.Items[rest].name.."! +"..candy.xp.." pet XP"..(if gained>0 then " · Lv "..pet.level else "").." ("..pet.candy.."/"..PD.CANDY_MAX.." candies)"
+		elseif verb=="petTierBoost" then
+			local to=PD.nextRarity(Progression.petRarity(pet))
+			if not to then return def.name.." is already "..PD.MAX_RARITY.."." end
+			if (p.items.AscendantPrism or 0)<1 then return "You need an Ascendant Prism." end
+			p.items.AscendantPrism-=1
+			Progression.petSetRarity(pet,to)
+			return "The prism flares: your "..def.name.." is now "..to.."! (Lv "..pet.level..")"
+		elseif verb=="petUpgrade" then
+			if p.petUpgrade then return "The Roost is already caring for your "..Data.PetById[p.petUpgrade.pet.id].name.."." end
+			local from=Progression.petRarity(pet)
+			local cost=PD.upgradeCost(def,from)
+			if not cost then return def.name.." is already "..PD.MAX_RARITY.."." end
+			if p.coins<cost.coins then return "The Roost asks "..costText(cost).."." end
+			for id,n in pairs(cost.items) do
+				if (p.items[id] or 0)<n then return "The Roost asks "..costText(cost)..". Missing "..(n-(p.items[id] or 0)).." "..Data.Items[id].name.."." end
+			end
+			spend(p,cost.items)
+			p.coins-=cost.coins
+			takePet(p,index)
+			p.petUpgrade={pet=pet,from=from,to=cost.to,ends=os.time()+cost.seconds}
+			return PD.KEEPER.." takes your "..petName(pet,def)..". It returns "..cost.to.." in "..span(cost.seconds).."."
+		end
+		return "Unknown pet action."
+	end
+	-- Ability hooks ---------------------------------------------------------------
+	-- % bonus vs a monster's slayer family (coins, slayer progress, Magic Find).
+	function Pets.familyBonus(p,monster)
+		local line=type(monster)=="table" and monster.slayer
+		return line and (Progression.petEffects(p).family[line] or 0) or 0
+	end
+	-- Doubled harvest roll (only when the summoned pet has the ability unlocked).
+	function Pets.gatherDouble(p,skill)
+		local chance=Progression.petEffects(p).gather[skill] or 0
+		return chance>0 and roll()*100<chance
+	end
+	function Pets.craftExtra(p,skill)
+		local chance=Progression.petEffects(p).craft[skill] or 0
+		return chance>0 and roll()*100<chance
+	end
+	-- Taming XP share of pet XP earned from skills (fractions carried).
+	function Pets.tamingShare(p,petGain)
+		local carry=(tonumber(p.petTamingCarry) or 0)+petGain*PD.TAMING_SHARE
+		local whole=math.floor(carry)
+		p.petTamingCarry=carry-whole
+		if whole>0 then grantXp(p,"Taming",whole) end
+	end
+	-- Skilling pets: one roll per SKILL_PET_STEP XP banked in a skill that has a pet.
+	function Pets.skillRoll(p,skill,amount)
+		local itemId=PD.SkillPets[skill]
+		if not itemId then return end
+		p.petSkillXp=type(p.petSkillXp)=="table" and p.petSkillXp or {}
+		local banked=(tonumber(p.petSkillXp[skill]) or 0)+amount
+		local step=PD.SKILL_PET_STEP
+		if banked<step then p.petSkillXp[skill]=banked return end
+		local rolls=math.min(10,math.floor(banked/step))
+		p.petSkillXp[skill]=banked-rolls*step
+		local luck=Progression.computeStats(p,os.time()).petLuck
+		for _=1,rolls do
+			if roll()<PD.skillPetChance(step,luck) then
+				p.items[itemId]=(p.items[itemId] or 0)+1
+				note(p,"A "..Data.Items[itemId].name.." follows you home from your "..skill.." work!")
+				return
+			end
+		end
+	end
+	-- Snapshot rows ---------------------------------------------------------------
+	function Pets.row(p,pet,index,now)
+		local def=Data.PetById[pet.id]
+		local lvl=Progression.petLevel(pet)
+		local rarity=Progression.petRarity(pet)
+		local cost=PD.upgradeCost(def,rarity)
+		return {id=pet.id,level=lvl,xp=pet.xp or 0,next=if lvl<Data.PET_MAX_LEVEL then Data.petXpToNext(lvl,rarity) else nil,active=index~=nil and p.activePet==index,
+			rarity=rarity,item=pet.item,candy=pet.candy or 0,candyMax=PD.CANDY_MAX,abilities=PD.abilityView(def,lvl,rarity),
+			stats=Progression.petStats(p,pet,def),totalXp=PD.totalXp(lvl,pet.xp,rarity),upgrade=cost}
+	end
+	function Pets.view(p,now)
+		local job=p.petUpgrade
+		local tl=Progression.tamingLevel(p)
+		return {upgrade=job and {id=job.pet.id,level=job.pet.level,from=job.from,to=job.to,ends=job.ends,remaining=math.max(0,job.ends-now),ready=now>=job.ends} or nil,
+			taming={level=tl,xpBonus=math.floor(PD.tamingXpBonus(tl)*100+0.5),statBonus=PD.tamingStatBonus(tl)*100}}
+	end
+	function Pets.attribute(p)
+		local pet,def=Progression.activePet(p)
+		return if pet then PD.attribute(def.id,Progression.petRarity(pet),pet.level) else ""
+	end
+	-- Migration: explicit rarity for older pets, integer level/xp/candy, valid held
+	-- items (unknown ones dropped), a sane Roost job (bad timer: pet returned).
+	local function cleanPet(pet)
+		local def=Data.PetById[pet.id]
+		if not PD.validRarity(pet.rarity) then pet.rarity=def.rarity end
+		pet.level=PD.clampLevel(pet.level)
+		local xp=tonumber(pet.xp) or 0
+		if xp~=xp or xp<0 then xp=0 end
+		local need=Data.petXpToNext(pet.level,pet.rarity)
+		pet.xp=if pet.level>=Data.PET_MAX_LEVEL then 0 else math.min(xp,need-1)
+		if pet.item~=nil and not PD.held(pet.item) then pet.item=nil end
+		local candy=tonumber(pet.candy)
+		pet.candy=if candy and candy==candy then math.clamp(math.floor(candy),0,PD.CANDY_MAX) else nil
+		if pet.candy==0 then pet.candy=nil end
+	end
+	function Pets.migrate(profile)
+		for _,pet in ipairs(profile.pets) do cleanPet(pet) end
+		local job=profile.petUpgrade
+		if job~=nil then
+			local valid=type(job)=="table" and type(job.pet)=="table" and type(job.pet.id)=="string" and Data.PetById[job.pet.id]~=nil
+			if not valid then profile.petUpgrade=nil
+			else
+				cleanPet(job.pet)
+				local ends=tonumber(job.ends)
+				if PD.validRarity(job.to) and PD.rank(job.to)==PD.rank(job.pet.rarity)+1 and ends and ends==ends then
+					job.from,job.ends=job.pet.rarity,math.floor(ends)
+				else
+					profile.petUpgrade=nil
+					if #profile.pets<MAX_PETS then table.insert(profile.pets,job.pet) end
+				end
+			end
+		end
+		local carry=tonumber(profile.petTamingCarry)
+		profile.petTamingCarry=if carry and carry==carry and carry>0 and carry<1 then carry else nil
+		if profile.petSkillXp~=nil then
+			local clean={}
+			if type(profile.petSkillXp)=="table" then
+				for skill,n in pairs(profile.petSkillXp) do
+					if PD.SkillPets[skill] and type(n)=="number" and n==n and n>0 then clean[skill]=math.min(n,PD.SKILL_PET_STEP) end
+				end
+			end
+			profile.petSkillXp=clean
+		end
+	end
+end
+-- End Pets depth block.
+
 local exchangeBusy={}
 ------------------------------------------------------------------------------
 -- Endgame (Endgame team): the Sovereign Altar verb and world boss rewards.
@@ -2838,6 +3080,8 @@ local function perform(player,verb,item,prompt)
 		return Garden.action(player,p,verb,item,prompt) -- Verdant Garden
 	elseif Workers.verbs[verb] then
 		return Workers.action(player,p,verb,item) -- Workers depth
+	elseif Pets.verbs[verb] then
+		return Pets.action(player,p,verb,item) -- Pets depth
 	elseif Endgame.verbs[verb] and prompt then
 		return Endgame.action(player,p,verb,item) -- Endgame: Sovereign Altar
 	elseif Econ.verbs and Econ.verbs[verb] then
@@ -2874,6 +3118,8 @@ local function perform(player,verb,item,prompt)
 		-- Events hook: festival yield/XP multipliers apply exactly once, after fortune; festival-only catches.
 		result.amount*=event.mult; result.xp=math.floor(result.xp*event.xpMult)
 		for id,n in pairs(event.extra) do collect(p,id,n); note(p,"Festival catch • +"..n.." "..Data.Items[id].name) end
+		local petDouble=Pets.gatherDouble(p,skill) -- Pets depth: doubled harvest ability
+		if petDouble then result.amount*=2 end
 		collect(p,item,result.amount)
 		grantXp(p,skill,result.xp)
 		if skill=="Farming" and Garden.fieldSeed then Garden.fieldSeed(p,item) end -- Verdant Garden seed pouch
@@ -2884,7 +3130,7 @@ local function perform(player,verb,item,prompt)
 		-- Skill Mastery: Quick regrowth shortens the timer down to a floor (Progression.regrowthTime), never to zero.
 		regrowth[player]=os.clock()+(tonumber(result.regrowth) or tonumber(resource.respawn) or 3)
 		local hooked=if skill=="Fishing" then Sea.cast(player,p,stats,result.tool,region,prompt) else ""
-		return "+"..result.amount.." "..resource.name.."   ·   +"..result.xp.." "..skill.." XP"..mastered..hooked
+		return "+"..result.amount.." "..resource.name..(if petDouble then " (pet ×2)" else "").."   ·   +"..result.xp.." "..skill.." XP"..mastered..hooked
 	elseif verb=="explore" and prompt and item=="Skyreach" and region=="Skyreach" then
 		if p.skyreachVisited then return "Skyreach is already charted. Gather rich Aetherite or continue your guild contracts." end
 		p.skyreachVisited=true
@@ -2973,7 +3219,10 @@ local function perform(player,verb,item,prompt)
 		Journal.count(p,"crafts",recipe.output,recipe.amount)
 		grantXp(p,recipe.skill,recipe.xp)
 		p.started=true
-		return Data.Items[recipe.output].name.." crafted   ·   +"..recipe.xp.." "..recipe.skill.." XP"
+		-- Pets depth: an extra-craft ability may add one more batch (no extra XP).
+		local bonus=if Pets.craftExtra(p,recipe.skill) then recipe.amount else 0
+		if bonus>0 then collect(p,recipe.output,bonus) end
+		return Data.Items[recipe.output].name.." crafted"..(if bonus>0 then " (+"..bonus.." from your pet)" else "").."   ·   +"..recipe.xp.." "..recipe.skill.." XP"
 	elseif verb=="equip" then
 		local def=validId(item) and Data.Items[item]
 		if not def or not gearSlots[def.slot] then return "Choose a weapon or armor piece to equip. Tools are used automatically." end
@@ -3480,23 +3729,26 @@ bridge.OnInvoke=function(op,player,payload)
 		if not monster or monster.seaCreature or monster.worldBoss then return nil end
 		local stats=Progression.computeStats(p,os.time())
 		p.started=true
+		-- Pets depth: family abilities add % coins, Magic Find and slayer progress vs that line.
+		local family=Pets.familyBonus(p,monster)
+		local coins=monster.coins+math.floor(monster.coins*family/100+0.5)
 		-- No flat Combat XP here: the damage XP accrued on the monster is paid
 		-- through "combatXp" when it dies (monster.xp in total for melee).
-		p.coins+=monster.coins
-		local drops=Progression.rollDrops(monster.drops,stats.magicFind,roll,stats.petLuck)
+		p.coins+=coins
+		local drops=Progression.rollDrops(monster.drops,stats.magicFind+family,roll,stats.petLuck)
 		for item,n in pairs(drops) do collect(p,item,n) end
 		-- Events hook: Hollow Night event-only drops (Data.eventKillDrops).
 		for item,n in pairs(Data.eventKillDrops(monsterId,Data.eventState(workspace,os.time()),roll)) do drops[item]=(drops[item] or 0)+n; collect(p,item,n) end
 		p.bestiary[monsterId]=(p.bestiary[monsterId] or 0)+1
 		local quest=p.slayerQuest
 		if quest and not quest.bossReady and monster.slayer==quest.line then
-			quest.progress=math.min(quest.needed,quest.progress+monster.xp)
+			quest.progress=math.min(quest.needed,quest.progress+math.floor(monster.xp*(1+family/100)))
 			if quest.progress>=quest.needed then
 				quest.bossReady=true
 				note(p,"The "..Data.Slayers[quest.line].name.." stirs! Defeat it to finish your slayer quest.")
 			end
 		end
-		notify(player,monster.name.." slain • +"..monster.coins.." coins"..dropText(drops))
+		notify(player,monster.name.." slain • +"..coins.." coins"..dropText(drops))
 		return {drops=drops,bossReady=quest~=nil and quest.bossReady==true}
 	elseif op=="worldBoss" then
 		local reply=Endgame.reward(player,p,payload)
