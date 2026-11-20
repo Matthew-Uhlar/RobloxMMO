@@ -152,3 +152,7 @@ Verbs `reforge "itemId"`, `reforgeStone "itemId:stoneId"`, `star "itemId"`, `tom
 ## 13. Endgame: The Shattered Crown and world bosses
 
 Region `ShatteredCrown` (Combat 60 + `requires.questsDone`). World bosses Aurelith (sigil-summoned, 4 Crown Sigils, ≤ 2 per player) and Nyxwyrm (Skyward Calendar, once per isle day) reachable as `Data.Monsters[id]` but not iterated. Prompt verb `bossSigil` → `ServerStorage.IsleWorldBoss:Invoke("sigil"|"status", ...)`. Bridge op `"worldBoss"` `{boss, tier, rank, share, damage, sigils, fight}` pays once per fight; `"kill"` refuses world-boss ids. Credit: ≥ 1% of max HP dealt, alive, within ~120 studs, hit in the last 60 s, Ironman ≥ 30%. `IsleCombatFx` kinds `worldBoss`, `telegraph`, `bossStrike`, `worldBossAnnounce`, `worldBossLoot`. Workspace attributes `WorldBossSigils_Aurelith`, `WorldBossActive_<id>`, `WorldBossNext_Nyxwyrm`.
+
+## 14. Workers depth
+
+`Data.Workers`: 35 worker types (type id = output resource id; 6 combat workers), Condensed/Radiant compacted items (160 → 1), 5 fuels, 5 upgrades, 3 chests. Slots 3 → 12 by unique crafts (`p.workerUniques` bitmasks). Verbs: `worker`, `workerBuild "slot[:Type]"`, `workerResource`, `workerAssign "slot:Type"`, `workerUpgrade`, `claim`, `workerClaim`, `workerClaimAll`, `workerFuel "slot:Fuel[:n]"`, `workerUnfuel`, `workerInstall "slot:Part"`, `workerRemove "slot:1|2|chest"`, `workerBlueprint "Type:tier"`. Snapshot `workers[i]` extended + `workerInfo`; player attributes `Worker1..12Tier/Resource`, `WorkerSlots`. Accrual is integer `os.time()` maths capped at 48 h.
