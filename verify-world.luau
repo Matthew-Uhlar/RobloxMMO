@@ -931,7 +931,8 @@ do
 			check(obj:GetAttribute("AnchorPurpose")==obj.Name:sub(8),obj.Name.." names its purpose")
 		end
 	end
-	for _,name in {"NPC_Guide","NPC_Slayer","NPC_Banker","NPC_Merchant","NPC_Forgemaster","NPC_Fisher"} do
+	for _,name in {"NPC_Guide","NPC_Slayer","NPC_Banker","NPC_Merchant","NPC_Forgemaster","NPC_Fisher",
+		"NPC_Auctioneer","NPC_Herald","NPC_Registrar","NPC_Joiner","NPC_Grovekeeper","NPC_Deepwarden","Spawn"} do
 		check(anchors["Anchor_"..name]~=nil,"Anchor_"..name.." exists")
 	end
 	check(anchors.Anchor_NPC_Guide.Parent.Name=="Compass Quay","guide stands on the hub")
@@ -942,7 +943,10 @@ do
 	check(c.landed~=nil and onRegion("Hub",c.landed,2),"home beacon lands on the hub")
 	local guideOffset=anchors.Anchor_NPC_Guide.CFrame.Position-c.landed
 	check(Vec(guideOffset.X,0,guideOffset.Z).Magnitude<=12,"guide anchor waits at the hub spawn")
-	check(anchors.Anchor_NPC_Slayer.Parent.Name=="Guild Terrace" and anchors.Anchor_NPC_Fisher.Parent.Name=="Mosswake Grove","slayer and fisher anchors sit by their posts")
+	check(anchors.Anchor_NPC_Slayer.Parent.Name=="Guild Terrace" and anchors.Anchor_NPC_Fisher.Parent.Name=="Compass Quay","slayer and harbour-angler anchors sit by their posts")
+	check(anchors.Anchor_NPC_Grovekeeper.Parent:GetAttribute("Region")=="Windpine" and anchors.Anchor_NPC_Deepwarden.Parent:GetAttribute("Region")=="Gloomhollow","regional townsfolk anchors sit in their regions")
+	local hubIsles=0
+	for _,isle in islandsRoot:GetChildren() do if isle:GetAttribute("Region")=="Hub" then hubIsles+=1; if hubIsles==1 then check(isle.Name=="Compass Quay","the first Region=Hub island is Compass Quay") end end end
 	check(cHome:FindFirstChild("Anchor_Waypoint_HomeLanding")~=nil and cHome:GetAttribute("Region")=="Home" and cHome:GetAttribute("IslandRadius")>=38,"homes carry Region=Home, a 2x footprint and a landing anchor")
 	local function nearWaypoint(pos,limit)
 		for name,a in anchors do

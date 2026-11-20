@@ -638,6 +638,8 @@ for i,offset in ipairs({{V(66,0,70),V(78,0,82)},{V(73,0,58),V(87,0,72)}}) do
 		end
 	end
 	if i==1 then lamp(harbor,b-dir*2+side*2.2) end
+	-- The Harbour Angler fishes off the second pier's end.
+	if i==2 then anchor(hub,"NPC_Fisher",b-dir*2.5+V(0,.3,0),b+dir*10) end
 end
 local ship=group("Moored skyship",harbor)
 local hull=part(ship,"Skyship hull",V(9,5,30),CFrame.new(V(98,-1.5,98))*CFrame.Angles(0,math.rad(-45),0),C("7A5A40"),WO,false)
@@ -647,6 +649,8 @@ part(ship,"Skyship mast",V(.8,16,.8),CFrame.new(V(98,9,98)),darken(timber,.3),WO
 part(ship,"Skyship sail",V(.3,9,12),CFrame.new(V(98,10,98))*CFrame.Angles(0,math.rad(45),0),cream,Enum.Material.Fabric,false)
 ball(ship,"Skyship balloon",V(98,20,98),11,rose,Enum.Material.Fabric)
 local HUB_GUIDE=anchor(hub,"NPC_Guide",V(56,0,50),HUB_ARRIVAL)
+anchor(hub,"Spawn",HUB_ARRIVAL-V(0,4,0),V(56,0,40))
+anchor(hub,"NPC_Herald",V(-8,0,-29),V(0,0,0))
 anchor(hub,"Waypoint_SkyHarbor",V(56,0,60),V(56,0,40))
 -- Market Row along the east avenue.
 local bank,bankCF=marketStall(hub,V(44,0,-17),V(44,0,0),"Quay Bank","Bank purse","bank",nil,mint,"MARKET ROW   /   BANK")
@@ -655,6 +659,7 @@ marketStall(hub,V(50,0,17),V(50,0,0),"Fruit Stall",nil,nil,nil,rose,"MARKET ROW 
 marketStall(hub,V(76,0,17),V(76,0,0),"Cloth Stall",nil,nil,nil,teal,"MARKET ROW   /   CLOTH")
 anchor(hub,"NPC_Banker",at(bankCF,0,0,2.4))
 anchor(hub,"NPC_Merchant",at(tradeCF,0,0,2.4))
+anchor(hub,"NPC_Auctioneer",V(86,0,-8),V(86,0,0))
 anchor(hub,"Waypoint_Bank",at(bankCF,0,0,-5)*CFrame.Angles(0,math.pi,0))
 anchor(hub,"Waypoint_Market",at(tradeCF,0,0,-5)*CFrame.Angles(0,math.pi,0))
 sculpture(hub,"Bank lockbox",at(bankCF,0,3.7,0).Position,"VaultChest",.65)
@@ -671,6 +676,7 @@ ramp(rise,V(-29,0,29),V(-37,riseTop,37),8)
 ramp(rise,V(-11,0,66),V(-30,riseTop,60),8)
 local forgeStall,forgeCF=marketStall(rise,V(-56,riseTop,42),V(-36,riseTop,30),"Starforge","Forge pickaxe","craft","Pickaxe",rose,"ARTISANS' RISE   /   SMITHING")
 anchor(hub,"NPC_Forgemaster",at(forgeCF,0,0,2.4))
+anchor(hub,"NPC_Joiner",V(-40,riseTop,50),V(-46,riseTop,58))
 anchor(hub,"Waypoint_Starforge",at(forgeCF,0,0,-5)*CFrame.Angles(0,math.pi,0))
 local rack=block(rise,"Bladesmith rack",V(-66,riseTop+1.5,52),V(2,3,2),navy,ST,true)
 prompt(rack,"Forge blade","Starforge","craft","Blade")
@@ -758,7 +764,7 @@ local jettyAt=MOONPOOL+V(9,0,7.2)
 local dock=part(grove,"Fishing jetty",V(3,1,9),CFrame.lookAt(jettyAt+V(0,.5,0),MOONPOOL+V(0,.5,0)),timber,WO,true)
 meshSlot(dock,"FishingPier",nil,1)
 prompt(dock,"Cast line","Moonpool","gather","Fish").HoldDuration=FISH_HOLD
-anchor(grove,"NPC_Fisher",jettyAt+(jettyAt-MOONPOOL).Unit*5.5,MOONPOOL)
+anchor(grove,"Waypoint_MoonpoolJetty",jettyAt+(jettyAt-MOONPOOL).Unit*5.5,MOONPOOL)
 anchor(grove,"Waypoint_Moonpool",jettyAt+(jettyAt-MOONPOOL).Unit*8,MOONPOOL)
 sign(grove,MOONPOOL+V(20,0,-4),"Moonpool","MOSSWAKE   /   ANGLING",mint,90,8)
 sign(grove,G+V(58,0,-12),"Mosswake Grove","TIMBER · HERBS · MOONPOOL",mint,90,10)
@@ -1070,6 +1076,7 @@ local sharedBeacon=block(harbor,"Crew beacon",V(44,2,68),V(2,4,2),teal,GL,false)
 meshSlot(sharedBeacon,"WarpBeacon",teal,1)
 sign(harbor,V(39,0,62),"Crew Haven","CO-OP / FORM A CREW IN THE ATLAS",mint,90,9)
 anchor(hub,"Waypoint_CrewHaven",V(48,0,64),V(44,0,68))
+anchor(hub,"NPC_Registrar",V(40,0,72),V(48,0,64))
 prompt(sharedBeacon,"Visit shared island","Crew Haven").Triggered:Connect(function(player)
 	local home=sharedHomes[sharedPlayers[player]]
 	if home then warp(player,sharedBeacon,home.center+V(0,4,6*K)) end
@@ -1772,6 +1779,7 @@ station(lodge,"Workbench",LP+V(0,.4,0),LP+V(0,0,-10),"Windpine Lodge","Workbench
 sign(grovewild,WP+V(-18,0,70),"Windpine Grove",requirementText(Data.RegionById.Windpine),REGION_ACCENT.Windpine,0,10)
 returnWarp(grovewild,WP+V(10,0,72),"Windpine Grove","Windpine")
 anchor(grovewild,"Waypoint_Entrance_Windpine",WP+V(0,0,58),WP)
+anchor(grovewild,"NPC_Grovekeeper",WP+V(-8,0,50),WP+V(0,0,58))
 for i,o in ipairs({V(-10,0,46),V(24,0,56),V(-60,0,30),V(60,0,20)}) do decorTree(grovewild,WP+o,1.2,"Pine",C("4E7A4A")) end
 for _,o in ipairs({V(-12,0,60),V(20,0,44)}) do lamp(grovewild,WP+o) end
 spawnMarker("BarkStalker",WP+V(-34,0,-40),3,8)
@@ -1838,6 +1846,7 @@ station(gloom,"Forge",GH+V(32,0,64),GH,"Delvers' Forge","Forge_Gloomhollow")
 sign(gloom,GH+V(-16,0,70),"Gloomhollow Caverns",requirementText(Data.RegionById.Gloomhollow),REGION_ACCENT.Gloomhollow,0,9)
 returnWarp(gloom,GH+V(8,0,72),"Gloomhollow Caverns","Gloomhollow")
 anchor(gloom,"Waypoint_Entrance_Gloomhollow",GH+V(0,0,62),GH)
+anchor(gloom,"NPC_Deepwarden",GH+V(-10,0,52),GH+V(0,0,62))
 for _,x in ipairs({-16,16}) do
 	local torch=block(gloom,"Cave torch",GH+V(x,1.8,54),V(.5,3.6,.5),timber,WO,false)
 	meshSlot(torch,"Torch",C("B59CFF"),1)

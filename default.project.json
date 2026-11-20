@@ -3,83 +3,42 @@
   "tree": {
     "$className": "DataModel",
     "ReplicatedStorage": {
-      "AetherArt": {
-        "$path": "art/PropCatalog.lua"
-      },
-      "MaterialArt": {
-        "$path": "art/MaterialArt.lua"
-      },
-      "AetherData": {
-        "$path": "shared/GameData.lua"
-      },
-      "AetherProgression": {
-        "$path": "shared/Progression.lua"
-      }
+      "AetherArt": { "$path": "art/PropCatalog.lua" },
+      "MaterialArt": { "$path": "art/MaterialArt.lua" },
+      "AetherData": { "$path": "shared/GameData.lua" },
+      "AetherProgression": { "$path": "shared/Progression.lua" }
     },
     "ServerScriptService": {
-      "Adventure": {
-        "$path": "server.server.lua"
-      },
-      "Observatory": {
-        "$path": "expedition.server.lua"
-      },
-      "Assembly": {
-        "$path": "festival.server.lua"
-      },
-      "Homesteads": {
-        "$path": "coop.server.lua"
-      },
-      "Archipelago": {
-        "$path": "world.server.lua"
-      },
-      "Combat": {
-        "$path": "combat.server.lua"
-      }
+      "Adventure": { "$path": "server.server.lua" },
+      "Observatory": { "$path": "expedition.server.lua" },
+      "Assembly": { "$path": "festival.server.lua" },
+      "Homesteads": { "$path": "coop.server.lua" },
+      "Archipelago": { "$path": "world.server.lua" },
+      "Combat": { "$path": "combat.server.lua" },
+      "GestureRelay": { "$path": "gesture.server.lua" },
+      "Townsfolk": { "$path": "npc.server.lua" }
     },
     "StarterPlayer": {
       "StarterPlayerScripts": {
-        "FieldGuide": {
-          "$path": "ui.client.lua"
-        },
-        "IslandArt": {
-          "$path": "mesh.client.lua"
-        },
-        "CombatInput": {
-          "$path": "combat.client.lua"
-        },
-        "IslandBuilder": {
-          "$path": "build.client.lua"
-        }
+        "FieldGuide": { "$path": "ui.client.lua" },
+        "IslandArt": { "$path": "mesh.client.lua" },
+        "CombatInput": { "$path": "combat.client.lua" },
+        "IslandBuilder": { "$path": "build.client.lua" },
+        "Gestures": { "$path": "animate.client.lua" },
+        "Dialogue": { "$path": "npc.client.lua" },
+        "Wayfinder": { "$path": "nav.client.lua" }
       }
     },
     "Lighting": {
       "$properties": {
-        "Technology": "Future",
-        "Brightness": 2.6,
-        "ClockTime": 14.5,
-        "GeographicLatitude": 38,
-        "Ambient": [
-          0.2275,
-          0.2549,
-          0.3137
-        ],
-        "OutdoorAmbient": [
-          0.4902,
-          0.5412,
-          0.6118
-        ],
-        "EnvironmentDiffuseScale": 0.5,
-        "EnvironmentSpecularScale": 0.3,
-        "ExposureCompensation": 0,
-        "ShadowSoftness": 0.3,
-        "GlobalShadows": true
+        "Technology": "Future", "Brightness": 2.6, "ClockTime": 14.5, "GeographicLatitude": 38,
+        "Ambient": [0.2275, 0.2549, 0.3137], "OutdoorAmbient": [0.4902, 0.5412, 0.6118],
+        "EnvironmentDiffuseScale": 0.5, "EnvironmentSpecularScale": 0.3, "ExposureCompensation": 0,
+        "ShadowSoftness": 0.3, "GlobalShadows": true
       }
     },
     "Workspace": {
-      "$properties": {
-        "StreamingEnabled": false,
-        "FallenPartsDestroyHeight": -220
-      }
+      "$properties": { "StreamingEnabled": false, "FallenPartsDestroyHeight": -220 }
     }
   }
 }

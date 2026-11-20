@@ -8,6 +8,8 @@ local bindings = {
 	Observatory = "expedition.server.lua", Assembly = "festival.server.lua",
 	Homesteads = "coop.server.lua", Combat = "combat.server.lua",
 	FieldGuide = "ui.client.lua", IslandArt = "mesh.client.lua", CombatInput = "combat.client.lua", IslandBuilder = "build.client.lua",
+	Townsfolk = "npc.server.lua", Dialogue = "npc.client.lua", Wayfinder = "nav.client.lua",
+	Gestures = "animate.client.lua", GestureRelay = "gesture.server.lua",
 	AetherArt = "art/PropCatalog.lua",
 	MaterialArt = "art/MaterialArt.lua",
 	AetherData = "shared/GameData.lua", AetherProgression = "shared/Progression.lua",
