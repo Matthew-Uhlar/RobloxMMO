@@ -8,6 +8,20 @@ Updated November 19, 2026. The full original goal remains in progress.
 - All eight cloud scripts matched the **Skyreach** source at `975be9c`. Deployment of later Observatory, bank and trade updates is **unknown** pending a publish receipt/version check.
 - Studio currently displays **Public, ages 16+**, according to the primary-agent observation. Audience settings are separate from code deployment and have not been independently join-tested.
 
+## Waves 7–9 (November 20–21, 2026)
+
+Each system below was built by its own team, independently reviewed, and fixed with regression tests before merging (see `docs/DEPTH-CONTRACT.md` §14–19).
+
+- **Workers depth:** 35 worker types (incl. 6 combat workers), up to 12 slots via unique crafts, fuels, upgrades (compactor, press, auto-sell, storage, dust), Condensed/Radiant compacted items; balanced so a maxed fleet earns ≤ ~16% of active XP/h, max 3 per type, 2 combat workers.
+- **Pets depth:** Common→Legendary rarities per species, 2–3 working abilities each, 12 held items, Pet Candy, Ascendant Prism, timed Roost upgrades, 24 species, following companions.
+- **Dungeon classes:** Aegis/Mender/Riftblade/Starshot/Arcanist with abilities, ultimates and levels 1–50; secrets and bonus scoring; Floors VI–VII; Master Mode I–V.
+- **Prayer & Thieving:** 21 prayers with time-based drain, remains and altars, quick-prayer HUD; 14 thieving targets (stalls, pickpockets, strongboxes) with persisted cooldowns.
+- **Treasure Trails:** six clue tiers, 161 steps (dig, riddle, emote, skill, puzzle box) with server-only answers, caskets with 35 uniques, clue log.
+- **Slayer tasks:** a 99-level Slayer skill (21 skills total), four masters, 14 families, points/streaks/skips/blocks, a points shop with the Hunter's Visor, owner-only superiors and four Slayer-gated monsters.
+- **Test infrastructure:** every suite must print a SUITE-END sentinel; the UI suite's memory fell from ~13 GB to ~160 MB.
+
+Verification: 20 headless suites pass and all 23 scripts compile. All of this awaits a live publish and playtest.
+
 ## Waves 4–6 (November 20, 2026) — after the first live publish
 
 Owner feedback from the live Depth build drove wave 4; waves 5–6 continued toward OSRS/SkyBlock depth. Every wave was built by parallel teams against `docs/DEPTH-CONTRACT.md` §10–13, independently reviewed, and fixed with regression tests.
