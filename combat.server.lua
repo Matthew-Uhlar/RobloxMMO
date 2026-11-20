@@ -22,6 +22,16 @@
 --     A summoner leaving the server despawns the boss WITHOUT a bridge call so
 --     the quest's boss stays ready for their next session; clearing the
 --     SlayerBossReady attribute (quest abandoned) also despawns silently.
+--   * Sea creatures (Data.SeaCreatures) are hooked by the Adventure script on a
+--     Fishing gather. It sets player attributes SeaCreatureAt (Vector3, the fishing
+--     node) and then SeaCreatureSpawn = "<id>:<seq>" (seq strictly increasing per
+--     player). Combat spawns the creature beside the node, owned by that player;
+--     at most Data.SeaCreatureCap per owner and C.SEA_MAX server-wide. Anyone may
+--     fight it, but only the owner is credited: alive, within C.CREDIT_RANGE, has
+--     dealt damage, and (Ironman) the sole contributor. A kill reports bridge
+--     "seaCreature" {seq, monster, result="kill"}; an uncredited kill, a refused
+--     spawn or C.SEA_DURATION (90 s) without a kill reports result="despawn".
+--     The owner leaving despawns silently (the server forgets their tickets).
 
 local C = {
 	ATTACK_RANGE = 14,          -- player HRP to monster surface
@@ -46,6 +56,10 @@ local C = {
 	MAX_RADIUS_BONUS = 6,
 	DEFAULT_COUNT = 2,
 	MAX_COUNT = 3,
+	SEA_DURATION = 90,          -- sea creatures submerge after this long
+	SEA_CAP = 3,                -- per owner (Data.SeaCreatureCap wins when present)
+	SEA_MAX = 36,               -- server-wide live sea creatures
+	SEA_OFFSET = 6,             -- studs from the fishing node
 }
 
 ------------------------------------------------------------------------------
@@ -63,6 +77,8 @@ local BOSS_BODY = {
 	Tempest = {kind = "wraith", speed = 16},
 }
 local ROMAN = {"I", "II", "III", "IV", "V"}
+-- Aquatic body plans used by Data.SeaCreatures[id].body.
+local SEA_BODIES = {serpent = true, crab = true, ray = true, jelly = true}
 
 local function hexColor(hex)
 	hex = tostring(hex or "AAAAAA")
@@ -307,6 +323,69 @@ local function blueprint(kind, colorHex, boss)
 		add("LegL", "Block", V(1.2, 2.6, 1.2), CF(-0.8, -2.5, 0), dark, "Marble", "legA")
 		add("LegR", "Block", V(1.2, 2.6, 1.2), CF(0.8, -2.5, 0), dark, "Marble", "legB")
 		light3 = hexColor("FFD166")
+	elseif kind == "serpent" then
+		hip, hitbox = 2.2, V(3, 4.4, 9.4)
+		add("Head", "Ball", V(2.1, 2.1, 2.1), CF(0, 1.1, -3.7), base)
+		add("Jaw", "Wedge", V(1.6, 0.6, 1.4), CF(0, 0.2, -4.3) * A(pi, 0, 0), dark)
+		eyes(0.6, 1.5, -4.45, 0.32, hexColor("F6FF8F"))
+		add("HornL", "Wedge", V(0.25, 0.9, 0.9), CF(-0.6, 2.2, -3.4) * A(math.rad(-30), 0, 0), light)
+		add("HornR", "Wedge", V(0.25, 0.9, 0.9), CF(0.6, 2.2, -3.4) * A(math.rad(-30), 0, 0), light)
+		add("WhiskerL", "Cylinder", V(1.4, 0.12, 0.12), CF(-0.9, 0.7, -4.5) * A(0, math.rad(30), math.rad(-20)), light, nil, "sway")
+		add("WhiskerR", "Cylinder", V(1.4, 0.12, 0.12), CF(0.9, 0.7, -4.5) * A(0, math.rad(-30), math.rad(-20)), light, nil, "sway")
+		for i = 1, 5 do
+			local s = 1.9 - i * 0.22
+			local z = -2.3 + i * 1.25
+			add("Coil" .. i, "Ball", V(s, s, s), CF(0, 0.6 * math.sin(i * 1.3), z), if i % 2 == 0 then light else base, nil, if i >= 3 then "tail" else nil, {pivot = V(0, 0, -z - 2.3), axis = "Y"})
+			if i <= 3 then add("Fin" .. i, "Wedge", V(0.2, 0.8, 0.9), CF(0, 0.6 * math.sin(i * 1.3) + s / 2 + 0.2, z), hexColor("9EE7D2"), "Glass") end
+		end
+		add("Fluke", "Wedge", V(0.2, 1.4, 1.3), CF(0, 0.2, 4.6) * A(0, pi, 0), light, nil, "tail", {pivot = V(0, 0, -6.9), axis = "Y"})
+	elseif kind == "crab" then
+		hip, hitbox = 1.4, V(6.2, 2.8, 4.4)
+		add("Shell", "Cylinder", V(1.0, 3.6, 3.6), CF(0, 0.1, 0) * upright, base, "Slate")
+		add("Dome", "Ball", V(2.6, 2.6, 2.6), CF(0, 0.45, 0.1), light)
+		add("StalkL", "Cylinder", V(0.8, 0.18, 0.18), CF(-0.45, 1.0, -1.55) * upright, dark)
+		add("StalkR", "Cylinder", V(0.8, 0.18, 0.18), CF(0.45, 1.0, -1.55) * upright, dark)
+		eyes(0.45, 1.5, -1.55, 0.34, hexColor("FFE680"))
+		for side, sx in ipairs({-1, 1}) do
+			local tag = if side == 1 then "L" else "R"
+			local swing = if side == 1 then "wingL" else "wingR"
+			add("Arm" .. tag, "Block", V(1.4, 0.45, 0.45), CF(sx * 2.2, 0, -1.4) * A(0, sx * math.rad(35), 0), dark)
+			add("Pincer" .. tag, "Wedge", V(0.6, 0.6, 1.3), CF(sx * 2.7, 0.25, -2.1), base, nil, swing, {pivot = V(0, -0.3, 0.6), axis = "X"})
+			add("Grip" .. tag, "Wedge", V(0.6, 0.4, 1.1), CF(sx * 2.7, -0.25, -2.05) * A(pi, 0, 0), light)
+			for i, z in ipairs({-0.5, 0.4, 1.3}) do
+				add("Leg" .. tag .. i, "Block", V(1.5, 0.22, 0.22), CF(sx * 2.0, -0.65, z) * A(0, 0, sx * math.rad(-30)), dark, nil, if (i + side) % 2 == 0 then "legA" else "legB", {pivot = V(-sx * 0.75, 0, 0), axis = "Y"})
+			end
+		end
+	elseif kind == "ray" then
+		hip, hitbox, flying = 2.8, V(7.4, 1.8, 5.4), true
+		add("Body", "Block", V(2.4, 0.7, 3.6), CF(0, 0, 0), base)
+		add("Belly", "Block", V(2.0, 0.3, 3.0), CF(0, -0.45, 0), hexColor("F1F7FB"))
+		add("WingL", "Wedge", V(0.3, 2.6, 3.2), CF(-2.4, 0, 0.1) * A(0, 0, math.rad(90)), base, nil, "wingL", {pivot = V(0, -1.3, 0), axis = "Z"})
+		add("WingR", "Wedge", V(0.3, 2.6, 3.2), CF(2.4, 0, 0.1) * A(0, 0, math.rad(-90)), base, nil, "wingR", {pivot = V(0, -1.3, 0), axis = "Z"})
+		add("TipL", "Wedge", V(0.25, 0.9, 1.0), CF(-3.6, 0.1, 1.2) * A(0, 0, math.rad(90)), dark, nil, "wingL", {pivot = V(0, -2.5, 0), axis = "Z"})
+		add("TipR", "Wedge", V(0.25, 0.9, 1.0), CF(3.6, 0.1, 1.2) * A(0, 0, math.rad(-90)), dark, nil, "wingR", {pivot = V(0, -2.5, 0), axis = "Z"})
+		add("HornL", "Wedge", V(0.25, 0.5, 0.8), CF(-0.75, 0.05, -2.1), dark)
+		add("HornR", "Wedge", V(0.25, 0.5, 0.8), CF(0.75, 0.05, -2.1), dark)
+		eyes(0.85, 0.4, -1.5, 0.3, hexColor("BFF7E6"))
+		add("SpotA", "Ball", V(0.4, 0.4, 0.4), CF(-0.5, 0.35, 0.6), hexColor("BFF7E6"), "Neon")
+		add("SpotB", "Ball", V(0.4, 0.4, 0.4), CF(0.5, 0.35, 0.9), hexColor("BFF7E6"), "Neon")
+		add("Tail", "Cylinder", V(3.2, 0.2, 0.2), CF(0, 0, 3.4) * alongZ, dark, nil, "tail", {pivot = V(-1.6, 0, 0)})
+		add("Barb", "Wedge", V(0.2, 0.4, 0.7), CF(0, 0.15, 4.9), light, nil, "tail", {pivot = V(0, 0, -3.1), axis = "Y"})
+		light3 = hexColor("BFF7E6")
+	elseif kind == "jelly" then
+		hip, hitbox, flying = 3.4, V(3.8, 5.6, 3.8), true
+		add("Bell", "Ball", V(3.2, 3.2, 3.2), CF(0, 1.2, 0), base, "Glass", nil, {transparency = 0.25})
+		add("Core", "Ball", V(1.4, 1.4, 1.4), CF(0, 1.1, 0), light, "Neon")
+		add("Rim", "Cylinder", V(0.3, 3.4, 3.4), CF(0, 0.05, 0) * upright, dark, "Glass", nil, {transparency = 0.2})
+		eyes(0.45, 1.4, -1.45, 0.26, hexColor("FFFFFF"))
+		for i = 1, 6 do
+			local a = (i - 1) * pi / 3
+			add("Tentacle" .. i, "Cylinder", V(2.4 + (i % 2) * 0.6, 0.2, 0.2), A(0, a, 0) * CF(1.0, -1.3, 0) * upright, light, "Neon", "sway", {transparency = 0.3, pivot = V(1.2, 0, 0)})
+		end
+		for i = 1, 4 do
+			add("Frill" .. i, "Wedge", V(0.2, 0.6, 0.8), A(0, (i - 1) * pi / 2 + pi / 4, 0) * CF(0, 0.1, -1.75), base, "Glass", "orbit", {transparency = 0.3})
+		end
+		light3 = light
 	else
 		hip, hitbox = 1.5, V(3, 3, 3)
 		add("Body", "Ball", V(3, 3, 3), CF(0, 0, 0), base)
@@ -351,6 +430,9 @@ local function createLogic(env)
 	local bosses = {}        -- [player] = record
 	local pendingBoss = {}   -- [player] = spec
 	local rearm = {}         -- [player] = time to re-read SlayerBossReady
+	local seaOwned = {}      -- [player] = {[record] = true}
+	local seaSeq = {}        -- [player] = last accepted SeaCreatureSpawn sequence
+	local seaLive = 0
 	local liveCount = 0
 	-- One snapshot of every player per AI tick, shared by all monsters.
 	local tick = nil         -- {list, alive = {[player] = bool}, pos = {[player] = Vector3?}}
@@ -421,7 +503,7 @@ local function createLogic(env)
 	function L.addMarker(key, monsterId, count, home, region)
 		if markers[key] then return markers[key] end
 		local def = type(monsterId) == "string" and Data.Monsters[monsterId]
-		if not def then return nil, "unknown monster" end
+		if not def or def.seaCreature then return nil, "unknown monster" end
 		count = math.clamp(math.floor(tonumber(count) or C.DEFAULT_COUNT), 1, C.MAX_COUNT)
 		local now = env.now()
 		local marker = {key = key, id = monsterId, def = def, count = count, home = home, region = region, live = {}, queue = {}}
@@ -479,6 +561,15 @@ local function createLogic(env)
 		if r.model ~= nil and byModel[r.model] == r then byModel[r.model] = nil end
 		if r.boss then
 			if bosses[r.owner] == r then bosses[r.owner] = nil end
+			return
+		end
+		if r.sea then
+			local owned = seaOwned[r.owner]
+			if owned and owned[r] then
+				owned[r] = nil
+				seaLive -= 1
+				if not next(owned) then seaOwned[r.owner] = nil end
+			end
 			return
 		end
 		liveCount -= 1
@@ -570,6 +661,10 @@ local function createLogic(env)
 			credited = {r.owner}
 			L.unregister(r)
 			L.reportBoss(r.owner, "win")
+		elseif r.sea then
+			credited = L.seaCredit(r)
+			L.unregister(r)
+			L.reportSea(r.owner, r.id, r.seq, if #credited > 0 then "kill" else "despawn")
 		else
 			credited = L.creditEligible(r)
 			L.unregister(r)
@@ -631,6 +726,10 @@ local function createLogic(env)
 			if r.target then
 				local pos = isAlive(r.target) and positionOf(r.target)
 				if not pos or flatDist(pos, r.home) > C.LEASH_RANGE + 8 then r.target = nil end
+			end
+			if not r.target and r.sea and isAlive(r.owner) then
+				local pos = positionOf(r.owner)
+				if pos and flatDist(pos, r.home) <= C.LEASH_RANGE then r.target = r.owner end
 			end
 			if not r.target then r.target = L.nearestAggro(r) end
 			if not r.target and not anyPlayerNear(r, C.ACTIVE_RANGE) then return {kind = "sleep"} end
@@ -761,12 +860,101 @@ local function createLogic(env)
 		return failed
 	end
 
+	-- Sea creatures ---------------------------------------------------------
+	local function seaCap() return tonumber(Data.SeaCreatureCap) or C.SEA_CAP end
+	function L.seaDuration() return tonumber(Data.SeaCreatureLifetime) or C.SEA_DURATION end
+	function L.parseSeaSpawn(value)
+		if type(value) ~= "string" or #value > 80 then return nil end
+		local id, seq = value:match("^(%a+):(%d+)$")
+		seq = tonumber(seq)
+		local def = id and type(Data.SeaCreatures) == "table" and rawget(Data.SeaCreatures, id)
+		if not def or not seq or seq < 1 then return nil end
+		return id, seq, def
+	end
+	function L.seaCount(player)
+		local n = 0
+		for _ in pairs(seaOwned[player] or {}) do n += 1 end
+		return n
+	end
+	function L.seaLive() return seaLive end
+	function L.reportSea(player, id, seq, result)
+		env.bridge("seaCreature", player, {monster = id, seq = seq, result = result})
+	end
+	-- SeaCreatureSpawn changed. Returns ("spawn", spec) | (nil, reason).
+	-- A refused fresh ticket is reported as a despawn so the server frees the slot.
+	function L.seaAttribute(player, value, at)
+		if value == nil or value == "" then return nil, "empty" end
+		local id, seq, def = L.parseSeaSpawn(value)
+		if not id then return nil, "invalid" end
+		if seq <= (seaSeq[player] or 0) then return nil, "stale" end
+		seaSeq[player] = seq
+		local reason
+		if L.seaCount(player) >= seaCap() then reason = "cap"
+		elseif seaLive >= C.SEA_MAX then reason = "full"
+		elseif not env.alive(player) then reason = "dead" end
+		local home = if typeof(at) == "Vector3" then at else env.position(player)
+		if not reason and not home then reason = "position" end
+		if not reason and env.position(player) and (env.position(player) - home).Magnitude > C.CREDIT_RANGE then reason = "far" end
+		if reason then
+			L.reportSea(player, id, seq, "despawn")
+			return nil, reason
+		end
+		return "spawn", {id = id, seq = seq, def = def, owner = player, at = home}
+	end
+	function L.registerSea(player, spec, model, position, opts)
+		if spec.owner ~= player or spec.registered or L.seaCount(player) >= seaCap() or seaLive >= C.SEA_MAX then return nil end
+		spec.registered = true
+		opts = opts or {}
+		local def = spec.def
+		local r = newRecord({
+			id = spec.id, def = def, sea = true, owner = player, seq = spec.seq, name = def.name, level = def.level,
+			maxHp = def.hp, hp = def.hp, damage = def.damage, defense = def.defense or 0, speed = def.speed or 12,
+			attackCooldown = L.monsterCooldown(def.speed), passive = false, provoked = true,
+			home = position, position = position, model = model, expires = env.now() + L.seaDuration(),
+			radius = math.clamp(opts.radius or 0, 0, C.MAX_RADIUS_BONUS), target = player,
+		})
+		seaOwned[player] = seaOwned[player] or {}
+		seaOwned[player][r] = true
+		seaLive += 1
+		return r
+	end
+	-- Runtime could not build the model: free the server ticket.
+	function L.seaFailed(spec) L.reportSea(spec.owner, spec.id, spec.seq, "despawn") end
+	function L.seaCredit(r)
+		local owner = r.owner
+		if (r.contributors[owner] or 0) <= 0 or not env.alive(owner) then return {} end
+		local pos = env.position(owner)
+		if not pos or (pos - r.position).Magnitude > C.CREDIT_RANGE then return {} end
+		local info = L.peekStats(owner)
+		if info and info.ironman == true then
+			for player, dealt in pairs(r.contributors) do
+				if player ~= owner and dealt > 0 then return {} end
+			end
+		end
+		return {owner}
+	end
+	-- Submerges sea creatures past their lifetime; returns the records removed.
+	function L.seaTick()
+		local now, gone = env.now(), {}
+		for _, owned in pairs(seaOwned) do
+			for r in pairs(owned) do if now >= r.expires then table.insert(gone, r) end end
+		end
+		for _, r in ipairs(gone) do
+			L.unregister(r)
+			L.reportSea(r.owner, r.id, r.seq, "despawn")
+		end
+		return gone
+	end
+
 	-- Players ----------------------------------------------------------------
 	function L.playerRemoving(player)
-		statsCache[player], nextAttack[player], pendingBoss[player], rearm[player] = nil, nil, nil, nil
+		statsCache[player], nextAttack[player], pendingBoss[player], rearm[player], seaSeq[player] = nil, nil, nil, nil, nil
 		local removed = {}
 		local boss = bosses[player]
 		if boss then L.unregister(boss); table.insert(removed, boss) end
+		local owned = {}
+		for r in pairs(seaOwned[player] or {}) do table.insert(owned, r) end
+		for _, r in ipairs(owned) do L.unregister(r); table.insert(removed, r) end
 		for r in pairs(records) do
 			r.contributors[player] = nil
 			if r.target == player then r.target = nil end
@@ -775,11 +963,12 @@ local function createLogic(env)
 	end
 	function L.hasPlayerState(player)
 		return statsCache[player] ~= nil or nextAttack[player] ~= nil or pendingBoss[player] ~= nil or bosses[player] ~= nil or rearm[player] ~= nil
+			or seaOwned[player] ~= nil or seaSeq[player] ~= nil
 	end
 	return L
 end
 
-local exports = {C = C, blueprint = blueprint, createLogic = createLogic, BODY_KIND = BODY_KIND, BOSS_BODY = BOSS_BODY}
+local exports = {C = C, blueprint = blueprint, createLogic = createLogic, BODY_KIND = BODY_KIND, BOSS_BODY = BOSS_BODY, SEA_BODIES = SEA_BODIES}
 if __CombatTestHarness then
 	__CombatTestHarness(exports)
 	return
@@ -1004,6 +1193,11 @@ local function buildModel(name, plan, opts)
 		model:SetAttribute("Boss", true)
 		model:SetAttribute("OwnerUserId", opts.owner.UserId)
 		model:SetAttribute("ExpiresAt", Workspace:GetServerTimeNow() + C.BOSS_DURATION)
+	elseif opts.sea then
+		model:SetAttribute("SeaCreature", true)
+		model:SetAttribute("OwnerUserId", opts.owner.UserId)
+		model:SetAttribute("ExpiresAt", Workspace:GetServerTimeNow() + Logic.seaDuration())
+		label.TextColor3 = Color3.fromRGB(158, 231, 210)
 	end
 	CollectionService:AddTag(model, "IsleMonster")
 	return model, root, {label = label, fill = fill, welds = welds}
@@ -1108,6 +1302,28 @@ local function spawnBoss(player, spec)
 	broadcast(position, "bossSpawn", {position = position, name = spec.name, owner = player.UserId, color = spec.color})
 end
 
+local function spawnSea(player, spec)
+	local def = spec.def
+	local plan = blueprint(SEA_BODIES[def.body] and def.body or "blob", def.color, false)
+	local angle = random:NextNumber(0, math.pi * 2)
+	local spot = spec.at + Vector3.new(math.cos(angle) * C.SEA_OFFSET, 0, math.sin(angle) * C.SEA_OFFSET)
+	local position = Vector3.new(spot.X, groundY(spot, spec.at.Y) + plan.hip, spot.Z)
+	local ok, model, root, parts = pcall(buildModel, def.name, plan, {id = spec.id, level = def.level, hp = def.hp, color = def.color, sea = true, owner = player})
+	if not ok then
+		warn("[Combat] could not build sea creature " .. spec.id .. ": " .. tostring(model))
+		Logic.seaFailed(spec)
+		return
+	end
+	local r = Logic.registerSea(player, spec, model, position, {radius = plan.radius})
+	if not r then model:Destroy(); Logic.seaFailed(spec) return end
+	local _, _, hrp = characterOf(player)
+	if hrp then r.yaw = math.atan2(-(hrp.Position.X - position.X), -(hrp.Position.Z - position.Z)) end
+	view[r] = {model = model, root = root, plan = plan, fill = parts.fill, label = parts.label, welds = parts.welds, phase = random:NextNumber(0, 10)}
+	place(r)
+	model.Parent = folder
+	broadcast(position, "death", {position = position, color = "9EE7D2", boss = false, scale = 1})
+end
+
 -- Spawn markers --------------------------------------------------------------
 local markerConnections = {} -- [marker part] = connection
 local function addMarker(part)
@@ -1157,9 +1373,14 @@ local function onBossAttribute(player)
 	local action, payload = Logic.bossAttribute(player, player:GetAttribute("SlayerBossReady"))
 	if action == "cancel" and payload then destroyView(payload, false) end
 end
+local function onSeaAttribute(player)
+	local action, spec = Logic.seaAttribute(player, player:GetAttribute("SeaCreatureSpawn"), player:GetAttribute("SeaCreatureAt"))
+	if action == "spawn" then spawnSea(player, spec) end
+end
 local function onPlayerAdded(player)
 	playerConnections[player] = {
 		player:GetAttributeChangedSignal("SlayerBossReady"):Connect(function() onBossAttribute(player) end),
+		player:GetAttributeChangedSignal("SeaCreatureSpawn"):Connect(function() onSeaAttribute(player) end),
 		player.CharacterAdded:Connect(function() task.defer(refreshRayFilter) end),
 	}
 	onBossAttribute(player)
@@ -1190,6 +1411,7 @@ RunService.Heartbeat:Connect(function(dt)
 		end
 		for _, pending in ipairs(Logic.pendingBosses()) do spawnBoss(pending.player, pending.spec) end
 	end
+	for _, r in ipairs(Logic.seaTick()) do destroyView(r, false) end
 	for _, failed in ipairs(Logic.bossTick()) do
 		if failed.player.Parent then fxRemote:FireClient(failed.player, "bossFail", {reason = failed.reason}) end
 		destroyView(failed.record, false)

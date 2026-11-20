@@ -2606,3 +2606,203 @@ do
 	eq(data.p3012.profile.perkWorkerHaste<=Data.MAX_WORKER_HASTE,true,"worker haste capped")
 	print("PASS: "..(checks-before).." quest/diary/construction assertions.")
 end
+
+-- Sea creatures: roll math, Fishing gather hook, owner tickets and bridge grants.
+do
+	local before=checks
+	local function ok(cond,case) assert(cond,case); checks+=1 end
+	local function has(text,part) return type(text)=="string" and string.find(text,part,1,true)~=nil end
+	local X=Data.XP_TABLE
+	local function st(p) return cmd(p,"state") end
+	local function seeded(id,mutate)
+		local p=player(id)
+		services.Players.PlayerRemoving:Fire(p)
+		mutate(data["p"..id].profile)
+		return player(id)
+	end
+	local function rejoin(p)
+		services.Players.PlayerRemoving:Fire(p)
+		return player(p.UserId)
+	end
+	local bridge
+	for _,o in ipairs(allObjects) do if o.Name=="IsleBridge" then bridge=o end end
+	local SC=Data.SeaCreatures
+	-- Table shape.
+	local count,names,pets,accessories,tideOnly=0,{},0,0,0
+	for _,id in ipairs(Data.SeaCreatureOrder) do
+		local sc=SC[id]
+		count+=1
+		ok(sc~=nil and sc.id==id and sc.seaCreature==true,id.." defined")
+		ok(not names[sc.name],id.." has a unique name")
+		names[sc.name]=true
+		ok(sc.hp>0 and sc.damage>0 and sc.defense>=0 and sc.xp>0 and sc.fishingXp>0 and sc.coins>0 and sc.weight>0,id.." has combat and reward numbers")
+		ok(Data.Monsters[id]==sc,id.." resolves through Data.Monsters")
+		for _,d in ipairs(sc.drops) do
+			ok(Data.Items[d.item]~=nil and d.chance>0 and d.min>=1 and d.max>=d.min,id.." drop "..d.item)
+			if Data.Items[d.item].kind=="pet" then pets+=1 end
+			if Data.Items[d.item].kind=="accessory" then accessories+=1 end
+		end
+		if sc.waters and #sc.waters==1 and sc.waters[1]=="Tidewater" then tideOnly+=1 end
+		for _,w in ipairs(sc.waters or {}) do ok(Data.RegionById[w]~=nil,id.." water "..w.." is a region") end
+	end
+	ok(count>=8 and count<=10,"eight to ten sea creatures")
+	ok(pets>=1 and accessories>=1,"rare pet and accessory drops exist")
+	ok(tideOnly>=2,"some creatures live only in Tidewater Shoals")
+	for i=2,#Data.SeaCreatureOrder do
+		ok(SC[Data.SeaCreatureOrder[i]].fishing>=SC[Data.SeaCreatureOrder[i-1]].fishing,"creatures ordered by Fishing level "..i)
+	end
+	for id in pairs(Data.Monsters) do ok(SC[id]==nil,"marker list excludes sea creature "..id) end
+	ok(Data.PetById.Pearlwhisker~=nil and Data.Items.PearlwhiskerPet.kind=="pet","Pearlwhisker pet item")
+	ok(Data.Items.TidecallerPearl.kind=="accessory" and Data.Items.TidecallerPearl.stats.seaCreatureChance>0,"Tidecaller Pearl accessory")
+	ok(Data.Recipes.BrineCharm~=nil and Data.Items.BrineShell.kind=="material","Brine Charm crafts from sea materials")
+
+	-- Chance: stats + rod + rod enchants, clamped to [0, 100].
+	eq(Data.seaCreatureChance({seaCreatureChance=5}),5,"base chance")
+	eq(Data.seaCreatureChance({seaCreatureChance=5},Data.Items.BrassRod.stats),6,"rod adds its chance")
+	eq(Data.seaCreatureChance({seaCreatureChance=5},Data.Items.CelestialRod.stats,{seaCreatureChance=2}),13,"rod enchants add too")
+	eq(Data.seaCreatureChance({seaCreatureChance=500}),100,"chance capped at 100")
+	eq(Data.seaCreatureChance({seaCreatureChance=-40}),0,"negative chance floors at 0")
+	eq(Data.seaCreatureChance({seaCreatureChance=0/0}),0,"NaN chance is 0")
+	eq(Data.seaCreatureChance(nil,"rod"),0,"garbage inputs are 0")
+	local brewer={xp={},items={},collection={},equipment={},buffs={AnglersInfusion={expires=utc+600,stats=Data.Items.AnglersInfusion.buff.stats}},pets={},bestiary={}}
+	for _,skill in ipairs(Data.SkillOrder) do brewer.xp[skill]=0 end
+	eq(Progression.computeStats(brewer,utc).seaCreatureChance,15,"Angler's Infusion raises computed chance")
+	brewer.pets={{id="Pearlwhisker",level=50,xp=0}}; brewer.activePet=1
+	ok(Progression.computeStats(brewer,utc).seaCreatureChance>15,"Pearlwhisker pet raises computed chance")
+
+	-- Pools: Fishing level and water gates.
+	local function inPool(list,id) return table.find(list,id)~=nil end
+	eq(#Data.seaCreaturePool(1,nil),0,"Fishing 1 hooks nothing")
+	eq(#Data.seaCreaturePool(4,"Tidewater"),0,"Fishing 4 hooks nothing anywhere")
+	local p5=Data.seaCreaturePool(5,nil)
+	eq(#p5,1,"Fishing 5 unlocks one creature")
+	eq(p5[1],"ShellsnapCrab","the first creature")
+	ok(not inPool(Data.seaCreaturePool(99,nil),"CoralbackBruiser"),"Tidewater-only creature absent from home waters")
+	ok(not inPool(Data.seaCreaturePool(99,"Gloomhollow"),"TidewyrmMatriarch"),"Tidewater-only creature absent from Gloomhollow")
+	ok(inPool(Data.seaCreaturePool(99,"Gloomhollow"),"DuskfinManta"),"cavern creature in Gloomhollow")
+	eq(#Data.seaCreaturePool(99,"Tidewater"),#Data.SeaCreatureOrder,"every creature swims in Tidewater")
+	ok(not inPool(Data.seaCreaturePool(74,"Tidewater"),"TidewyrmMatriarch"),"Matriarch needs Fishing 75")
+	ok(inPool(Data.seaCreaturePool(75,"Tidewater"),"TidewyrmMatriarch"),"Fishing 75 hooks the Matriarch")
+	ok(not inPool(Data.seaCreaturePool(99,"Atlantis"),"InkveilDrifter"),"unknown water only has any-water creatures")
+
+	-- Rolls: one chance roll, then a weighted pick.
+	local function seq(...) local q={...}; return function() return table.remove(q,1) or 0.999 end end
+	eq(Data.rollSeaCreature(99,nil,0,seq(0,0)),nil,"0% never hooks")
+	eq(Data.rollSeaCreature(99,nil,5,seq(0.0499,0)),"ShellsnapCrab","roll under the chance hooks")
+	eq(Data.rollSeaCreature(99,nil,5,seq(0.05,0)),nil,"roll at the chance misses")
+	eq(Data.rollSeaCreature(99,nil,100,seq(0.999,0)),"ShellsnapCrab","100% always hooks")
+	eq(Data.rollSeaCreature(1,"Tidewater",100,seq(0,0)),nil,"empty pool hooks nothing")
+	-- Fishing 15 home waters: weights crab 100, jelly 80, eel 70 (total 250).
+	eq(Data.rollSeaCreature(15,nil,100,seq(0,0.399)),"ShellsnapCrab","weight bucket 1 upper edge")
+	eq(Data.rollSeaCreature(15,nil,100,seq(0,0.4)),"DriftbellJelly","weight bucket 2 lower edge")
+	eq(Data.rollSeaCreature(15,nil,100,seq(0,0.719)),"DriftbellJelly","weight bucket 2 upper edge")
+	eq(Data.rollSeaCreature(15,nil,100,seq(0,0.72)),"ReedfinEel","weight bucket 3 lower edge")
+	eq(Data.rollSeaCreature(15,nil,100,seq(0,0.9999)),"ReedfinEel","weight bucket 3 upper edge")
+	eq(Data.rollSeaCreature(99,"Tidewater",100,seq(0,0.9999)),"TidewyrmMatriarch","rarest creature at the top of the roll")
+	local state=12345
+	local function lcg() state=(state*1103515245+12345)%2147483648; return state/2147483648 end
+	local hooks,tally,n=0,{},20000
+	for _=1,n do
+		local id=Data.rollSeaCreature(99,"Tidewater",20,lcg)
+		if id then hooks+=1; tally[id]=(tally[id] or 0)+1 end
+	end
+	ok(math.abs(hooks/n-0.2)<0.015,"hook rate tracks Sea Creature Chance ("..hooks..")")
+	ok((tally.ShellsnapCrab or 0)>(tally.CoralbackBruiser or 0) and (tally.CoralbackBruiser or 0)>(tally.TidewyrmMatriarch or 0),"common creatures outnumber rare ones")
+	ok((tally.TidewyrmMatriarch or 0)<hooks*0.03,"the Matriarch stays rare")
+
+	-- Server: a successful Fishing gather hooks a creature beside the node.
+	local function angler(id,fishing,mutate)
+		return seeded(id,function(p)
+			p.xp.Fishing=X[fishing]; p.xp.Combat=0
+			p.levelRewards.Fishing=99; p.levelRewards.Combat=99
+			if mutate then mutate(p) end
+		end)
+	end
+	local saved=defaultRoll
+	local novice=player(7700)
+	defaultRoll=0
+	local s0=use(novice,node("gather","Fish",3))
+	ok(has(s0.message,"Skylake Minnow") and not has(s0.message,"surfaces"),"Fishing 1 cannot hook a sea creature")
+	eq(novice.SeaCreatureSpawn,nil,"no spawn attribute for novices")
+	local fisher=angler(7701,10)
+	local pond=node("gather","Fish",4)
+	local s1=use(fisher,pond)
+	ok(has(s1.message,"Shellsnap Crab surfaces!"),"hook announced in the gather message")
+	eq(fisher.SeaCreatureSpawn,"ShellsnapCrab:1","spawn attribute names creature and ticket")
+	eq(fisher.SeaCreatureAt,Vector3.new(4,0,0),"spawn position is the fishing node")
+	eq(s1.items.Fish~=nil and s1.items.Fish>=1,true,"the fish is still caught")
+	local miner=angler(7702,10)
+	use(miner,node("gather","Ore"))
+	eq(miner.SeaCreatureSpawn,nil,"mining never hooks sea creatures")
+	defaultRoll=0.999
+	local miss=use(fisher,pond)
+	ok(not has(miss.message,"surfaces"),"a high roll hooks nothing")
+	eq(fisher.SeaCreatureSpawn,"ShellsnapCrab:1","attribute unchanged on a miss")
+	defaultRoll=0
+	use(fisher,pond); use(fisher,pond)
+	eq(fisher.SeaCreatureSpawn,"ShellsnapCrab:3","three live tickets")
+	local capped=use(fisher,pond)
+	ok(has(capped.message,"Skylake Minnow") and not has(capped.message,"surfaces"),"fourth creature refused at the cap")
+	eq(fisher.SeaCreatureSpawn,"ShellsnapCrab:3","cap holds the attribute")
+	defaultRoll=saved
+
+	-- Bridge grants: only the owner's live ticket pays, once.
+	local function seaOp(p,payload) return bridge.OnInvoke("seaCreature",p,payload) end
+	local snap=st(fisher)
+	local beforeState={xp={Fishing=snap.xp.Fishing,Combat=snap.xp.Combat},coins=snap.coins,items={BrineShell=snap.items.BrineShell}}
+	defaultRoll=0
+	local paid=seaOp(fisher,{seq=1,monster="ShellsnapCrab",result="kill"})
+	defaultRoll=saved
+	eq(paid.ok,true,"owner kill accepted")
+	ok(paid.drops.BrineShell~=nil and paid.drops.BrineShell>=1,"kill rolls the creature's drops")
+	ok(has(fisher.last.message,"Shellsnap Crab slain"),"kill pushes a snapshot message")
+	local after=st(fisher)
+	eq(after.xp.Fishing-beforeState.xp.Fishing,SC.ShellsnapCrab.fishingXp,"kill grants Fishing XP")
+	eq(after.xp.Combat-beforeState.xp.Combat,SC.ShellsnapCrab.xp,"kill grants Combat XP")
+	eq(after.coins-beforeState.coins,SC.ShellsnapCrab.coins,"kill grants coins")
+	eq(after.depth.bestiary.ShellsnapCrab,1,"kill records a bestiary entry")
+	local afterFishing=after.xp.Fishing
+	eq((after.items.BrineShell or 0)-(beforeState.items.BrineShell or 0),paid.drops.BrineShell,"drops land in the satchel")
+	eq(seaOp(fisher,{seq=1,monster="ShellsnapCrab",result="kill"}).ok,false,"a ticket pays once")
+	eq(st(fisher).xp.Fishing,afterFishing,"replayed kill grants nothing")
+	eq(seaOp(fisher,{seq=2,monster="TidewyrmMatriarch",result="kill"}).reason,"ticket","a ticket cannot be claimed as another creature")
+	local other=angler(7703,10)
+	eq(seaOp(other,{seq=2,monster="ShellsnapCrab",result="kill"}).ok,false,"other players cannot claim someone else's ticket")
+	eq(bridge.OnInvoke("kill",fisher,{monster="ShellsnapCrab"}),nil,"the marker kill op refuses sea creatures")
+	eq(st(fisher).xp.Fishing,afterFishing,"refused claims grant nothing")
+	for _,bad in ipairs({{seq="2",monster="ShellsnapCrab",result="kill"},{seq=2.5,monster="ShellsnapCrab",result="kill"},
+		{seq=2,monster="ShellsnapCrab",result="win"},{seq=2,result="kill"},{seq=2,monster=42,result="kill"}}) do
+		eq(seaOp(fisher,bad).reason,"invalid","malformed sea report rejected")
+	end
+	eq(seaOp(fisher,nil).ok,false,"missing payload rejected")
+	eq(seaOp(fisher,{seq=2,monster="ShellsnapCrab",result="despawn"}).ok,true,"despawn frees a ticket")
+	eq(seaOp(fisher,{seq=2,monster="ShellsnapCrab",result="kill"}).ok,false,"a despawned creature cannot be claimed")
+	eq(st(fisher).depth.bestiary.ShellsnapCrab,1,"despawn adds no bestiary kill")
+	-- Tickets expire with the creature's lifetime (plus grace) and free their slot.
+	advance(Data.SeaCreatureLifetime+20)
+	eq(seaOp(fisher,{seq=3,monster="ShellsnapCrab",result="kill"}).ok,false,"expired ticket pays nothing")
+	defaultRoll=0
+	use(fisher,pond)
+	eq(fisher.SeaCreatureSpawn,"ShellsnapCrab:4","expired slots free up and the sequence keeps rising")
+	defaultRoll=saved
+	-- Session rules.
+	local back=rejoin(fisher)
+	eq(seaOp(back,{seq=4,monster="ShellsnapCrab",result="kill"}).ok,false,"tickets do not survive a rejoin")
+	eq(seaOp({UserId=7799},{seq=1,monster="ShellsnapCrab",result="kill"}),nil,"no live journal, no grant")
+	-- Bestiary milestones count sea creature kills.
+	local hunter=seeded(7704,function(p) p.bestiary.ShellsnapCrab=10 end)
+	eq(st(hunter).depth.stats.bestiaryTiers,1,"sea creature kills reach bestiary milestones")
+	-- Water gating through the server: a 100% chance buff, pick roll at the top of the pool.
+	local surge={expires=utc+3600,stats={seaCreatureChance=100}}
+	local reef=angler(7705,40,function(p) p.buffs.Surge=surge end)
+	use(reef,node("gather","Fish",2,nil,"Tidewater"))
+	local pool=Data.seaCreaturePool(40,"Tidewater")
+	eq(reef.SeaCreatureSpawn,pool[#pool]..":1","Tidewater waters hook Tidewater-only creatures")
+	eq(pool[#pool],"CoralbackBruiser","Fishing 40 Tidewater pool tops out at the Bruiser")
+	local shore=angler(7706,40,function(p) p.buffs.Surge=surge end)
+	use(shore,node("gather","Fish",2))
+	local homePool=Data.seaCreaturePool(40,nil)
+	eq(shore.SeaCreatureSpawn,homePool[#homePool]..":1","home waters never hook Tidewater-only creatures")
+	ok(SC[homePool[#homePool]].waters==nil,"home catch is an any-water creature")
+	print("PASS: "..(checks-before).." sea creature roll/ticket/grant assertions.")
+end

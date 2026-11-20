@@ -1778,7 +1778,10 @@ end
 local function petSources()
 	local sources={}
 	if not Data then return sources end
-	for _,monster in pairs(tbl(Data.Monsters)) do
+	local list={}
+	for _,monster in pairs(tbl(Data.Monsters)) do table.insert(list,monster) end
+	for _,monster in pairs(tbl(Data.SeaCreatures)) do table.insert(list,monster) end
+	for _,monster in ipairs(list) do
 		for _,drop in ipairs(tbl(monster.drops)) do
 			if type(drop)=="table" then
 				sources[drop.item]=sources[drop.item] or {}
@@ -2456,6 +2459,10 @@ local function drawBestiary()
 	for id in pairs(Data.Monsters) do if not placed[id] then table.insert(rest,id) end end
 	table.sort(rest)
 	if #rest>0 then table.insert(groups,{name="Elsewhere",list=rest}) end
+	-- Sea creatures: hooked while fishing (Data.SeaCreatures, resolved through Data.Monsters).
+	local sea={}
+	for _,id in ipairs(tbl(Data.SeaCreatureOrder)) do if type(Data.Monsters[id])=="table" then table.insert(sea,id) end end
+	if #sea>0 then table.insert(groups,{name="Sea creatures",list=sea}) end
 	for _,group in ipairs(groups) do
 		heading(string.upper(tostring(group.name)))
 		table.sort(group.list,function(a,b) return num(Data.Monsters[a].level,0)<num(Data.Monsters[b].level,0) end)
@@ -2464,7 +2471,7 @@ local function drawBestiary()
 			local n=num(kills[id],0)
 			if n<=0 then
 				card({name="Beast"..id,locked=true,title="???",titleColor=muted,subtitle="Lv "..num(monster.level,1).."  ·  not yet encountered",
-					detail="Defeat this creature to record it."})
+					detail=monster.seaCreature and ("Hooked while fishing at Fishing "..num(monster.fishing,1)..".") or "Defeat this creature to record it."})
 			else
 				local tier=0
 				for i,need in ipairs(milestones) do if n>=need then tier=i end end
@@ -2475,7 +2482,8 @@ local function drawBestiary()
 					title=escape(monster.name),titleColor=rgb(lighten(hex,.35)),subtitle="Lv "..num(monster.level,1).."  ·  "..paint(fmt(monster.hp).." ❤","FF6B6B").."  ·  "..fmt(monster.xp).." Combat XP",
 					badge=fmt(n).." kills",badgeColor=ivory,pips={total=#milestones,filled=tier,color=rgb(hex),labels=labels},
 					bar={fraction=nextNeed and math.clamp((n-previous)/math.max(1,nextNeed-previous),0,1) or 1,color=gold,caption=nextNeed and (fmt(n).." / "..fmt(nextNeed).." to milestone "..numeral(tier+1)) or "BESTIARY COMPLETE"},
-					lines={"Drops: "..dropText(monster.drops)..(monster.slayer and ("  ·  "..paint(escape(tostring(monster.slayer)).." slayer target","E8806A")) or "")}})
+					lines={"Drops: "..dropText(monster.drops)..(monster.slayer and ("  ·  "..paint(escape(tostring(monster.slayer)).." slayer target","E8806A")) or ""),
+						monster.seaCreature and paint("Fishing "..num(monster.fishing,1).."  ·  +"..fmt(num(monster.fishingXp,0)).." Fishing XP  ·  "..(monster.waters and escape(table.concat(monster.waters,", ")).." waters" or "any water"),"9EE7D2") or nil}})
 			end
 		end
 	end

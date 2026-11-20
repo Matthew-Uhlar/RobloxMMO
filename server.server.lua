@@ -770,11 +770,65 @@ local function migrate(profile)
 	Journal.migrate(profile)
 end
 -- Clears every per-player table and ends this player's session slot.
+-- Sea creatures: a successful Fishing gather may hook one (Data.rollSeaCreature).
+-- The server issues a ticket {id, expires} under a per-player sequence number and
+-- sets SeaCreatureAt (node position) then SeaCreatureSpawn = "<id>:<seq>"; Combat
+-- spawns it and reports back through bridge op "seaCreature". Only the ticket's
+-- owner is ever credited, once; despawns free the slot without a reward.
+local Sea={tickets=setmetatable({},{__mode="k"}),GRACE=15}
+function Sea.book(player)
+	local book=Sea.tickets[player]
+	if not book then book={seq=0,live={}}; Sea.tickets[player]=book end
+	local now=os.clock()
+	for seq,ticket in pairs(book.live) do if now>ticket.expires then book.live[seq]=nil end end
+	return book
+end
+function Sea.count(book)
+	local n=0
+	for _ in pairs(book.live) do n+=1 end
+	return n
+end
+function Sea.cast(player,p,stats,toolId,region,prompt)
+	local book=Sea.book(player)
+	if Sea.count(book)>=Data.SeaCreatureCap then return "" end
+	local rod=toolId and Data.Items[toolId]
+	local chance=Data.seaCreatureChance(stats,rod and rod.stats,toolId and Progression.enchantStats(p,toolId,"tool","Fishing"))
+	local id=Data.rollSeaCreature(level(p.xp.Fishing),region,chance,roll)
+	if not id then return "" end
+	book.seq+=1
+	book.live[book.seq]={id=id,expires=os.clock()+Data.SeaCreatureLifetime+Sea.GRACE}
+	local base=prompt and prompt:FindFirstAncestorWhichIsA("BasePart")
+	if base then player:SetAttribute("SeaCreatureAt",base.Position) end
+	player:SetAttribute("SeaCreatureSpawn",id..":"..book.seq)
+	return "   ·   A "..Data.SeaCreatures[id].name.." surfaces!"
+end
+-- Bridge op "seaCreature" {seq, monster, result = "kill"|"despawn"} for the owner.
+function Sea.report(player,p,payload)
+	local seq,id,result=payload.seq,payload.monster,payload.result
+	if type(seq)~="number" or seq%1~=0 or not validId(id) or (result~="kill" and result~="despawn") then return {ok=false,reason="invalid"} end
+	local book=Sea.tickets[player]
+	local ticket=book and book.live[seq]
+	if not ticket or ticket.id~=id then return {ok=false,reason="ticket"} end
+	book.live[seq]=nil
+	if result=="despawn" then return {ok=true} end
+	if os.clock()>ticket.expires then return {ok=false,reason="expired"} end
+	local monster=Data.SeaCreatures[id]
+	local stats=Progression.computeStats(p,os.time())
+	p.started=true
+	grantXp(p,"Fishing",monster.fishingXp)
+	grantXp(p,"Combat",monster.xp)
+	p.coins+=monster.coins
+	local drops=Progression.rollDrops(monster.drops,stats.magicFind,roll,stats.petLuck)
+	for item,n in pairs(drops) do collect(p,item,n) end
+	p.bestiary[id]=(p.bestiary[id] or 0)+1
+	return {ok=true,drops=drops,message=monster.name.." slain • +"..monster.coins.." coins, +"..monster.fishingXp.." Fishing XP, +"..monster.xp.." Combat XP"}
+end
 local function forget(player)
 	profiles[player],cooldown[player],lastRead[player],preview[player],leaseEnd[player]=nil,nil,nil,nil,nil
 	marketViews[player],marketReads[player],stateRead[player],exchangeReady[player]=nil,nil,nil,nil
 	Econ.views[player],Econ.reads[player]=nil,nil
 	sessionOwner[player],opening[player]=nil,nil
+	Sea.tickets[player]=nil
 	local set=userSessions[player.UserId]
 	if set then
 		set[player]=nil
@@ -911,7 +965,8 @@ local function perform(player,verb,item,prompt)
 		if item=="Aetherite" and reinforced then bonus+=1 end
 		if region=="Skyreach" then bonus+=1 end
 		if workspace:GetAttribute("FestivalResource")==item then bonus+=1 end
-		local ok,result=Progression.harvest(p,item,Progression.computeStats(p,os.time()),roll,bonus)
+		local stats=Progression.computeStats(p,os.time())
+		local ok,result=Progression.harvest(p,item,stats,roll,bonus)
 		if not ok then
 			if item=="Aetherite" then return result.." Train on Ore in Quarry Cay." end
 			return result
@@ -922,7 +977,8 @@ local function perform(player,verb,item,prompt)
 		p.started=true
 		if not regrowth then regrowth=setmetatable({},{__mode="k"}); nodeRegrowth[prompt]=regrowth end
 		regrowth[player]=os.clock()+(tonumber(resource.respawn) or 3)
-		return "+"..result.amount.." "..resource.name.."   ·   +"..result.xp.." "..skill.." XP"
+		local hooked=if skill=="Fishing" then Sea.cast(player,p,stats,result.tool,region,prompt) else ""
+		return "+"..result.amount.." "..resource.name.."   ·   +"..result.xp.." "..skill.." XP"..hooked
 	elseif verb=="explore" and prompt and item=="Skyreach" and region=="Skyreach" then
 		if p.skyreachVisited then return "Skyreach is already charted. Gather rich Aetherite or continue your guild contracts." end
 		p.skyreachVisited=true
@@ -1433,7 +1489,8 @@ bridge.OnInvoke=function(op,player,payload)
 	elseif op=="kill" then
 		local monsterId=payload.monster
 		local monster=validId(monsterId) and Data.Monsters[monsterId]
-		if not monster then return nil end
+		-- Sea creatures pay only through their owner's ticket (op "seaCreature").
+		if not monster or monster.seaCreature then return nil end
 		local stats=Progression.computeStats(p,os.time())
 		p.started=true
 		grantXp(p,"Combat",monster.xp)
@@ -1451,6 +1508,10 @@ bridge.OnInvoke=function(op,player,payload)
 		end
 		notify(player,monster.name.." slain • +"..monster.coins.." coins, +"..monster.xp.." Combat XP"..dropText(drops))
 		return {drops=drops,bossReady=quest~=nil and quest.bossReady==true}
+	elseif op=="seaCreature" then
+		local reply=Sea.report(player,p,payload)
+		if reply.message then notify(player,reply.message..dropText(reply.drops)); reply.message=nil end
+		return reply
 	elseif op=="slayerBoss" then
 		local quest=p.slayerQuest
 		local result=payload.result

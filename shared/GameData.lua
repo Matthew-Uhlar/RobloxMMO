@@ -868,4 +868,94 @@ function Data.describeCheck(o)
 	return "Unknown task"
 end
 
+------------------------------------------------------------------------------
+-- Sea creatures (Sea Creatures team). Rolled on a successful Fishing gather
+-- with Sea Creature Chance (stats + best rod + rod enchants, capped at 100%).
+-- Defined in Data.SeaCreatures and reachable as Data.Monsters[id] through an
+-- __index fallback, so lookups (combat, bestiary, quests) see them while
+-- pairs(Data.Monsters) still lists only marker monsters with spawn markers.
+------------------------------------------------------------------------------
+Data.SeaCreatureCap = 3          -- live sea creatures per player
+Data.SeaCreatureLifetime = 90    -- seconds before an unfought creature submerges
+item("BrineShell",{name="Brine Shell",kind="material",rarity="Common",color="E8D5B7",value=6,description="A ridged shell shed by sea creatures."})
+item("GlowJelly",{name="Glow Jelly",kind="material",rarity="Uncommon",color="C3A6FF",value=14,description="Softly luminous jelly from drifting bells."})
+item("SeaScale",{name="Sea Scale",kind="material",rarity="Uncommon",color="5FA8A0",value=18,description="A slick scale from skylake eels and rays."})
+item("AbyssInk",{name="Abyss Ink",kind="material",rarity="Rare",color="2B2D42",value=40,description="Ink so dark it drinks the lantern light."})
+item("ShoalPearl",{name="Shoal Pearl",kind="material",rarity="Rare",color="F4F1DE",value=60,description="A pearl grown inside a coralback's shell."})
+item("StormScale",{name="Stormscale",kind="material",rarity="Epic",color="7B8CDE",value=120,description="A crackling scale from a Stormcoil Serpent."})
+item("TidewyrmFang",{name="Tidewyrm Fang",kind="material",rarity="Legendary",color="BFF7E6",value=400,description="The fang of a Tidewyrm Matriarch."})
+-- Rare accessories: one drop-only, one crafted from sea materials.
+item("TidecallerPearl",{name="Tidecaller Pearl",kind="accessory",rarity="Legendary",color=Data.Rarity.Legendary.color,stats={seaCreatureChance=2,fishingFortune=20,health=20},value=40*Data.Rarity.Legendary.rank^2,description="Accessory. Magical Power "..Data.Rarity.Legendary.power..". Drops from deep sea creatures."})
+item("BrineCharm",{name="Brine Charm",kind="accessory",rarity="Uncommon",color=Data.Rarity.Uncommon.color,stats={seaCreatureChance=1,fishingFortune=5},value=40*Data.Rarity.Uncommon.rank^2,description="Accessory. Magical Power "..Data.Rarity.Uncommon.power.."."})
+recipe("BrineCharm",{skill="Carpentry",level=1,xp=40*Data.Rarity.Uncommon.rank,costs={BrineShell=48,GlowJelly=8},station="Workbench",category="Accessories"})
+-- Rare pet drop.
+do
+	local pet = {id="Pearlwhisker",name="Pearlwhisker Otter",skill="Fishing",rarity="Epic",color="C9A27E",perLevel={seaCreatureChance=0.08,fishingFortune=0.5,defense=0.2},ability="Tide Sense: +10% Fishing XP"}
+	table.insert(Data.Pets, pet)
+	Data.PetById[pet.id] = pet
+	item(pet.id.."Pet",{name=pet.name.." Pet",kind="pet",pet=pet.id,rarity=pet.rarity,color=pet.color,value=200*Data.Rarity[pet.rarity].rank^2,description="Summon from your pet menu. "..pet.ability})
+end
+-- fishing = Fishing level to hook it; waters = regions it lives in (nil = any water);
+-- xp = Combat XP, fishingXp = Fishing XP; weight = relative roll weight; body = combat model plan.
+Data.SeaCreatureOrder = {"ShellsnapCrab","DriftbellJelly","ReedfinEel","MistwingRay","InkveilDrifter","CoralbackBruiser","StormcoilSerpent","DuskfinManta","TidewyrmMatriarch"}
+Data.SeaCreatures = {
+	ShellsnapCrab={name="Shellsnap Crab",fishing=5,level=6,hp=300,damage=24,defense=10,xp=20,fishingXp=40,coins=8,speed=11,weight=100,body="crab",color="D9774B",
+		drops={{item="BrineShell",chance=0.9,min=1,max=3},{item="Fish",chance=0.5,min=1,max=2}}},
+	DriftbellJelly={name="Driftbell Jelly",fishing=10,level=11,hp=450,damage=34,defense=5,xp=28,fishingXp=60,coins=10,speed=9,weight=80,body="jelly",color="B39DDB",
+		drops={{item="GlowJelly",chance=0.8,min=1,max=2},{item="BrineShell",chance=0.4,min=1,max=2}}},
+	ReedfinEel={name="Reedfin Eel",fishing=15,level=17,hp=800,damage=60,defense=20,xp=40,fishingXp=90,coins=14,speed=15,weight=70,body="serpent",color="7FA35A",
+		drops={{item="SeaScale",chance=0.7,min=1,max=2},{item="Glassfin",chance=0.5,min=1,max=2}}},
+	MistwingRay={name="Mistwing Ray",fishing=22,level=24,hp=1300,damage=85,defense=30,xp=60,fishingXp=140,coins=20,speed=17,weight=55,body="ray",color="8FB8D6",
+		drops={{item="SeaScale",chance=0.8,min=1,max=3},{item="GlowJelly",chance=0.3,min=1,max=2},{item="TidewingPet",chance=0.002,min=1,max=1}}},
+	InkveilDrifter={name="Inkveil Drifter",fishing=30,level=33,hp=2400,damage=140,defense=50,xp=95,fishingXp=220,coins=30,speed=12,weight=45,body="jelly",color="3D3D6B",waters={"Tidewater","Gloomhollow"},
+		drops={{item="AbyssInk",chance=0.7,min=1,max=2},{item="GlowJelly",chance=0.5,min=1,max=3}}},
+	CoralbackBruiser={name="Coralback Bruiser",fishing=40,level=44,hp=4200,damage=210,defense=140,xp=150,fishingXp=360,coins=45,speed=10,weight=35,body="crab",color="EF6F6C",waters={"Tidewater"},
+		drops={{item="BrineShell",chance=0.9,min=2,max=5},{item="ShoalPearl",chance=0.25,min=1,max=1},{item="PearlwhiskerPet",chance=0.002,min=1,max=1}}},
+	StormcoilSerpent={name="Stormcoil Serpent",fishing=50,level=55,hp=7000,damage=300,defense=120,xp=230,fishingXp=520,coins=65,speed=18,weight=25,body="serpent",color="4B6584",
+		drops={{item="StormScale",chance=0.35,min=1,max=1},{item="SeaScale",chance=0.8,min=2,max=4},{item="TidecallerPearl",chance=0.004,min=1,max=1}}},
+	DuskfinManta={name="Duskfin Manta",fishing=60,level=66,hp=11000,damage=400,defense=160,xp=330,fishingXp=760,coins=85,speed=19,weight=15,body="ray",color="5A3E8C",waters={"Gloomhollow","Tidewater"},
+		drops={{item="AbyssInk",chance=0.8,min=2,max=4},{item="ShoalPearl",chance=0.3,min=1,max=2},{item="PearlwhiskerPet",chance=0.003,min=1,max=1}}},
+	TidewyrmMatriarch={name="Tidewyrm Matriarch",fishing=75,level=82,hp=24000,damage=650,defense=300,xp=600,fishingXp=1500,coins=160,speed=14,weight=5,body="serpent",color="06D6A0",waters={"Tidewater"},
+		drops={{item="TidewyrmFang",chance=0.5,min=1,max=1},{item="StormScale",chance=0.5,min=1,max=2},{item="TidecallerPearl",chance=0.02,min=1,max=1},{item="PearlwhiskerPet",chance=0.01,min=1,max=1}}},
+}
+for id, sc in pairs(Data.SeaCreatures) do
+	sc.id, sc.seaCreature = id, true
+	sc.region = sc.waters and sc.waters[1] or nil -- display only; nil = any water
+	local kept = {}
+	for _, d in ipairs(sc.drops) do if d.chance > 0 and Data.Items[d.item] then table.insert(kept, d) end end
+	sc.drops = kept
+end
+setmetatable(Data.Monsters, {__index = Data.SeaCreatures})
+-- Sea Creature Chance in percent from computed stats plus the rod (tools are not in computeStats).
+function Data.seaCreatureChance(stats, rodStats, enchantStats)
+	local function get(t) return type(t) == "table" and tonumber(t.seaCreatureChance) or 0 end
+	local total = get(stats) + get(rodStats) + get(enchantStats)
+	if total ~= total then return 0 end
+	return math.clamp(total, 0, Data.Stats.seaCreatureChance.cap or 100)
+end
+-- Creatures a cast can hook: Fishing level gate and water (region id, nil = home waters).
+function Data.seaCreaturePool(fishingLevel, region)
+	local pool = {}
+	for _, id in ipairs(Data.SeaCreatureOrder) do
+		local sc = Data.SeaCreatures[id]
+		if (tonumber(fishingLevel) or 0) >= sc.fishing and (sc.waters == nil or table.find(sc.waters, region) ~= nil) then table.insert(pool, id) end
+	end
+	return pool
+end
+-- One cast: roll() < chance% hooks a creature, then a weighted pick from the pool.
+function Data.rollSeaCreature(fishingLevel, region, chance, roll)
+	chance = math.clamp(tonumber(chance) or 0, 0, 100)
+	if chance <= 0 or roll() * 100 >= chance then return nil end
+	local pool, total = Data.seaCreaturePool(fishingLevel, region), 0
+	for _, id in ipairs(pool) do total += Data.SeaCreatures[id].weight end
+	if total <= 0 then return nil end
+	local pick = roll() * total
+	for _, id in ipairs(pool) do
+		pick -= Data.SeaCreatures[id].weight
+		if pick < 0 then return id end
+	end
+	return pool[#pool]
+end
+-- End of sea creatures
+
 return Data

@@ -858,6 +858,51 @@ do
 	ok(rearmed ~= nil and rearmed ~= unreported, "unapplied boss report re-arms the boss from SlayerBossReady")
 	bossReply = {ok = true}
 
+	-- Sea creatures: attribute protocol end to end.
+	local function seaModels()
+		local list = {}
+		for _, m in ipairs(live()) do if m:GetAttribute("SeaCreature") then table.insert(list, m) end end
+		return list
+	end
+	local function seaReports(result)
+		local n = 0
+		for _, c in ipairs(bridgeCalls) do if c.op == "seaCreature" and c.payload.result == result then n += 1 end end
+		return n
+	end
+	strong = false
+	root.Position = Vector3.new(200, 3, 200)
+	hero:SetAttribute("SeaCreatureAt", Vector3.new(204, 1, 200))
+	hero:SetAttribute("SeaCreatureSpawn", "CoralbackBruiser:1")
+	local sea = seaModels()
+	eq(#sea, 1, "SeaCreatureSpawn spawns the creature")
+	eq(sea[1]:GetAttribute("OwnerUserId"), 7, "sea creature records its angler")
+	eq(sea[1]:GetAttribute("MonsterId"), "CoralbackBruiser", "sea creature carries its id")
+	ok((sea[1].PrimaryPart.CFrame.Position - Vector3.new(204, 1, 200)).Magnitude <= C.SEA_OFFSET + 3, "it surfaces beside the fishing node")
+	local seaParts = 0
+	for _, o in ipairs(created) do if (o.ClassName == "Part" or o.ClassName == "WedgePart") and o.Parent == sea[1] then seaParts += 1 end end
+	ok(seaParts > 10 and seaParts <= 25, "sea creature model stays within the part budget")
+	hero:SetAttribute("SeaCreatureSpawn", "CoralbackBruiser:1")
+	eq(#seaModels(), 1, "re-setting the same ticket spawns nothing")
+	tick(C.SEA_DURATION + 0.5)
+	ok(sea[1].destroyed, "sea creature submerges after its lifetime")
+	eq(seaReports("despawn"), 1, "submerge reported once")
+	hero:SetAttribute("SeaCreatureAt", Vector3.new(204, 1, 200))
+	hero:SetAttribute("SeaCreatureSpawn", "ShellsnapCrab:2")
+	local crab = seaModels()[1]
+	strong = true
+	now += 2
+	root.Position = crab.PrimaryPart.CFrame.Position + Vector3.new(3, 0, 0)
+	remotes.IsleCombat.OnServerEvent:Fire(hero, "attack", crab)
+	ok(crab.destroyed, "angler kills their sea creature")
+	eq(seaReports("kill"), 1, "kill reported through the seaCreature op")
+	local killReport
+	for _, c in ipairs(bridgeCalls) do if c.op == "seaCreature" and c.payload.result == "kill" then killReport = c end end
+	ok(killReport.player == hero and killReport.payload.seq == 2 and killReport.payload.monster == "ShellsnapCrab", "kill report names the owner's ticket")
+	hero:SetAttribute("SeaCreatureSpawn", "ShellsnapCrab:3")
+	eq(#seaModels(), 1, "a third ticket spawns")
+	local seaSignal = hero:GetAttributeChangedSignal("SeaCreatureSpawn")
+	eq(seaSignal:Live(), 1, "one sea watcher per player")
+
 	-- Marker removal and leaving.
 	spawnsFolder.ChildRemoved:Fire(late)
 	local crawlers = 0
@@ -867,9 +912,205 @@ do
 	eq(attrSignal:Live(), 1, "one boss watcher per player")
 	players.PlayerRemoving:Fire(hero)
 	eq(attrSignal:Live(), 0, "watchers disconnected on leave")
+	eq(seaSignal:Live(), 0, "sea watcher disconnected on leave")
+	eq(#seaModels(), 0, "leaving despawns the angler's sea creatures")
 	eq(hero.CharacterAdded:Live(), 0, "character watcher disconnected on leave")
 	eq(heartbeat:Live(), 1, "still exactly one AI loop")
 	eq(#warnings, 0, "no runtime warnings: " .. table.concat(warnings, "; "))
+end
+
+------------------------------------------------------------------------------
+-- Sea creatures: aquatic body plans, spawn protocol, owner-only credit, despawn
+------------------------------------------------------------------------------
+do
+	local seaChecks = checks
+	-- Body plans
+	local shapes = {Block = true, Ball = true, Cylinder = true, Wedge = true}
+	local seen = {}
+	for _, kind in pairs(Combat.BODY_KIND) do
+		local plan = Combat.blueprint(kind, "AAAAAA", false)
+		seen[#plan.parts .. ":" .. tostring(plan.hitbox)] = kind
+	end
+	local bodyCount = 0
+	for _, kind in ipairs({"serpent", "crab", "ray", "jelly"}) do
+		ok(Combat.SEA_BODIES[kind], kind .. " is an aquatic body plan")
+		bodyCount += 1
+		local plan = Combat.blueprint(kind, "D9774B", false)
+		local base = Color3.fromRGB(0xD9, 0x77, 0x4B)
+		ok(#plan.parts + 1 <= 25, kind .. " stays within 25 parts including the root")
+		ok(#plan.parts >= 12, kind .. " has a detailed silhouette")
+		local names, neon, tinted = {}, 0, false
+		for _, part in ipairs(plan.parts) do
+			assert(shapes[part.shape], kind .. " part shape " .. tostring(part.shape))
+			assert(Enum.Material[part.material] ~= nil, kind .. " material " .. part.material)
+			assert(not names[part.name], kind .. " duplicate part name " .. part.name)
+			assert(part.shape ~= "Ball" or (part.size.X == part.size.Y and part.size.Y == part.size.Z), kind .. " balls are uniform")
+			names[part.name] = true
+			if part.material == "Neon" then neon += 1 end
+			if math.abs(part.color.R - base.R) < 1e-3 and math.abs(part.color.G - base.G) < 1e-3 and math.abs(part.color.B - base.B) < 1e-3 then tinted = true end
+		end
+		ok(neon >= 2, kind .. " has glowing eyes")
+		ok(tinted, kind .. " takes the creature colour")
+		ok(plan.hip > 0 and plan.radius > 0 and plan.radius <= C.MAX_RADIUS_BONUS, kind .. " sane hip/radius")
+		local signature = #plan.parts .. ":" .. tostring(plan.hitbox)
+		ok(seen[signature] == nil, kind .. " silhouette differs from every other creature")
+		seen[signature] = kind
+	end
+	eq(bodyCount, 4, "four aquatic body plans")
+	ok(Combat.blueprint("ray", "8FB8D6", false).flying and Combat.blueprint("jelly", "B39DDB", false).flying, "rays and jellies hover")
+	ok(not Combat.blueprint("crab", "D9774B", false).flying and not Combat.blueprint("serpent", "7FA35A", false).flying, "crabs and serpents crawl")
+	for _, id in ipairs(Data.SeaCreatureOrder) do
+		ok(Combat.SEA_BODIES[Data.SeaCreatures[id].body], id .. " uses an aquatic body plan")
+	end
+
+	-- Attribute parsing
+	local w = world()
+	local L = w.logic
+	local owner = w.player("angler", Vector3.new(0, 3, 0))
+	local helper = w.player("helper", Vector3.new(4, 3, 0))
+	local node = Vector3.new(6, 0, 0)
+	local id, seq, def = L.parseSeaSpawn("ShellsnapCrab:4")
+	ok(id == "ShellsnapCrab" and seq == 4 and def == Data.SeaCreatures.ShellsnapCrab, "spawn attribute parses id and sequence")
+	ok(L.parseSeaSpawn("Thornling:1") == nil, "marker monsters are not sea creatures")
+	ok(L.parseSeaSpawn("ShellsnapCrab:0") == nil, "sequence starts at 1")
+	ok(L.parseSeaSpawn("ShellsnapCrab") == nil and L.parseSeaSpawn("ShellsnapCrab:-1") == nil, "malformed sequence rejected")
+	ok(L.parseSeaSpawn(42) == nil and L.parseSeaSpawn(nil) == nil, "non-string attribute rejected")
+	ok(L.parseSeaSpawn(string.rep("A", 90) .. ":1") == nil, "overlong attribute rejected")
+	ok(L.parseSeaSpawn("__index:1") == nil, "metatable keys are not creatures")
+	ok(L.addMarker("sea", "ShellsnapCrab", 2, origin) == nil, "sea creatures never spawn from world markers")
+	ok(Data.Monsters.ShellsnapCrab ~= nil, "sea creatures resolve through Data.Monsters")
+
+	-- Spawn requests
+	local action, spec = L.seaAttribute(owner, "ShellsnapCrab:1", node)
+	eq(action, "spawn", "fresh ticket spawns")
+	eq(spec.owner, owner, "spawn is owned by the angler")
+	eq(spec.at, node, "spawn sits at the fishing node")
+	eq(w.count("seaCreature"), 0, "accepted spawn reports nothing yet")
+	eq(select(2, L.seaAttribute(owner, "ShellsnapCrab:1", node)), "stale", "a replayed sequence is ignored")
+	eq(select(2, L.seaAttribute(owner, "", node)), "empty", "cleared attribute is ignored")
+	eq(select(2, L.seaAttribute(owner, "Dragon:9", node)), "invalid", "unknown creature ignored")
+	eq(w.count("seaCreature"), 0, "invalid requests never reach the bridge")
+	local r1 = L.registerSea(owner, spec, model("sea1"), node + Vector3.new(6, 1, 0), {radius = 2})
+	ok(r1 ~= nil and r1.sea and r1.owner == owner and r1.seq == 1, "sea creature registered for its owner")
+	eq(r1.hp, Data.SeaCreatures.ShellsnapCrab.hp, "spawns at full health")
+	eq(r1.target, owner, "it turns on the angler")
+	eq(L.seaCount(owner), 1, "owner count tracked")
+	eq(L.liveCount(), 0, "sea creatures do not use marker slots")
+	eq(L.registerSea(owner, spec, model("dup"), node), nil, "a spec registers once per cap check")
+	-- Two more tickets fill the per-owner cap.
+	local _, s2 = L.seaAttribute(owner, "DriftbellJelly:2", node)
+	local _, s3 = L.seaAttribute(owner, "ReedfinEel:3", node)
+	ok(s2 ~= nil and s3 ~= nil, "second and third tickets accepted")
+	L.registerSea(owner, s2, model("sea2"), node)
+	L.registerSea(owner, s3, model("sea3"), node)
+	eq(L.seaCount(owner), Data.SeaCreatureCap, "owner reaches the cap")
+	local capped, capReason = L.seaAttribute(owner, "ShellsnapCrab:4", node)
+	ok(capped == nil and capReason == "cap", "a fourth creature is refused")
+	local last = w.calls[#w.calls]
+	ok(last.op == "seaCreature" and last.payload.result == "despawn" and last.payload.seq == 4, "refused ticket is released on the server")
+	eq(select(2, L.seaAttribute(helper, "ShellsnapCrab:1", Vector3.new(500, 0, 0))), "far", "nodes far from the angler are refused")
+	w.alive[helper] = false
+	eq(select(2, L.seaAttribute(helper, "ShellsnapCrab:2", node)), "dead", "dead anglers hook nothing")
+	w.alive[helper] = true
+	local fallbackAction, fallback = L.seaAttribute(helper, "ShellsnapCrab:3", nil)
+	ok(fallbackAction == "spawn" and fallback.at == w.positions[helper], "missing node position falls back to the angler")
+
+	-- AI: hunts its owner first even with a closer helper.
+	r1.target = nil
+	L.beginTick()
+	local thought = L.think(r1)
+	L.endTick()
+	eq(r1.target, owner, "sea creature chases its owner")
+	ok(thought.kind == "chase" or thought.kind == "strike" or thought.kind == "hold", "sea creature engages")
+
+	-- Credit: helpers may fight, only the owner is credited.
+	local before = w.count("kill")
+	w.stats[helper].stats.damage = 1000000
+	w.positions[helper] = r1.position + Vector3.new(3, 0, 0)
+	local helped = L.attack(helper, "attack", r1.model)
+	ok(helped ~= nil and helped.killed, "helpers can damage and kill sea creatures")
+	eq(#helped.credited, 0, "a kill the owner never touched credits nobody")
+	last = w.calls[#w.calls]
+	ok(last.op == "seaCreature" and last.payload.result == "despawn" and last.payload.seq == 1, "uncredited kill frees the ticket")
+	eq(w.count("kill"), before, "sea creatures never use the marker kill op")
+	eq(L.seaCount(owner), 2, "dead creature frees its slot")
+
+	local r2 = L.resolve(model("sea2")) or nil
+	for _, r in ipairs(L.records()) do if r.seq == 2 and r.owner == owner then r2 = r end end
+	w.positions[owner] = r2.position + Vector3.new(3, 0, 0)
+	w.stats[owner].stats.damage = 1000000
+	w.clock += 5
+	local own = L.attack(owner, "attack", r2.model)
+	ok(own.killed and #own.credited == 1 and own.credited[1] == owner, "owner kill credits the owner")
+	last = w.calls[#w.calls]
+	ok(last.op == "seaCreature" and last.player == owner and last.payload.result == "kill" and last.payload.seq == 2 and last.payload.monster == "DriftbellJelly", "owner kill reports the ticket")
+
+	-- Owner contributed but walked away: no credit.
+	local r3
+	for _, r in ipairs(L.records()) do if r.seq == 3 and r.owner == owner then r3 = r end end
+	w.stats[owner].stats.damage = 20
+	w.clock += 5
+	L.attack(owner, "attack", r3.model)
+	ok((r3.contributors[owner] or 0) > 0, "owner dealt damage")
+	w.positions[owner] = r3.position + Vector3.new(C.CREDIT_RANGE + 5, 0, 0)
+	L.kill(r3)
+	last = w.calls[#w.calls]
+	ok(last.payload.result == "despawn", "owner out of range forfeits the kill")
+	eq(L.seaCount(owner), 0, "all slots free")
+
+	-- Ironman owners need a solo kill.
+	local iw = world()
+	local iron = iw.player("iron", Vector3.new(0, 3, 0), {ironman = true, stats = {damage = 20, strength = 0, critChance = 0, critDamage = 50, attackSpeed = 0}})
+	local friend = iw.player("friend", Vector3.new(2, 3, 0))
+	local _, ispec = iw.logic.seaAttribute(iron, "ShellsnapCrab:1", origin)
+	local ir = iw.logic.registerSea(iron, ispec, model("iron1"), Vector3.new(3, 1, 0))
+	iw.logic.statsFor(iron)
+	iw.logic.attack(iron, "attack", ir.model)
+	iw.clock += 1
+	iw.logic.attack(friend, "attack", ir.model)
+	eq(#iw.logic.seaCredit(ir), 0, "Ironman owner with help is not credited")
+	ir.contributors[friend] = nil
+	eq(#iw.logic.seaCredit(ir), 1, "Ironman owner solo kill is credited")
+	w.alive[owner] = true
+
+	-- Despawn after the lifetime.
+	local dw = world()
+	local diver = dw.player("diver", Vector3.new(0, 3, 0))
+	local _, dspec = dw.logic.seaAttribute(diver, "MistwingRay:7", origin)
+	dw.logic.registerSea(diver, dspec, model("ray"), origin)
+	eq(#dw.logic.seaTick(), 0, "fresh creature stays")
+	dw.clock += C.SEA_DURATION - 1
+	eq(#dw.logic.seaTick(), 0, "still there just before the limit")
+	dw.clock += 1.01
+	local gone = dw.logic.seaTick()
+	eq(#gone, 1, "submerges after " .. C.SEA_DURATION .. " s")
+	ok(not gone[1].alive and dw.logic.resolve(gone[1].model) == nil, "submerged creature is unregistered")
+	local dlast = dw.calls[#dw.calls]
+	ok(dlast.op == "seaCreature" and dlast.payload.result == "despawn" and dlast.payload.seq == 7, "despawn reported")
+	eq(dw.logic.seaCount(diver), 0, "despawn frees the slot")
+	eq(#dw.logic.seaTick(), 0, "despawn happens once")
+	eq(Data.SeaCreatureLifetime, C.SEA_DURATION, "data and combat agree on the lifetime")
+
+	-- Owner leaving despawns silently and forgets state.
+	local _, lspec = dw.logic.seaAttribute(diver, "ShellsnapCrab:8", origin)
+	dw.logic.registerSea(diver, lspec, model("crab"), origin)
+	local calls = #dw.calls
+	local removed = dw.logic.playerRemoving(diver)
+	eq(#removed, 1, "leaving removes owned sea creatures")
+	eq(#dw.calls, calls, "leaving reports nothing (server drops tickets)")
+	eq(dw.logic.seaLive(), 0, "server-wide count released")
+	ok(not dw.logic.hasPlayerState(diver), "no per-player sea state survives leaving")
+
+	-- Server-wide cap.
+	local gw = world()
+	for i = 1, C.SEA_MAX + 2 do
+		local pl = gw.player("p" .. i, Vector3.new(i, 3, 0))
+		local act, sp = gw.logic.seaAttribute(pl, "ShellsnapCrab:1", Vector3.new(i, 0, 0))
+		if act then gw.logic.registerSea(pl, sp, model("g" .. i), Vector3.new(i, 1, 0)) end
+	end
+	eq(gw.logic.seaLive(), C.SEA_MAX, "server-wide sea creature cap holds")
+	eq(gw.count("seaCreature"), 2, "creatures over the global cap release their tickets")
+	print("PASS: " .. (checks - seaChecks) .. " sea creature combat assertions.")
 end
 
 print("Combat QA: " .. checks .. " checks passed.")
