@@ -1,90 +1,265 @@
 # Original Aether Isles Fish
 mtllib AetherPalette.mtl
-v 0 0.65 0
-v 1.3 0 0
-v 0 0 0.4
+v 1.1 0.12 0
+v 1.1 0.06 0.052
+v 1.1 -0.06 0.052
+v 1.1 -0.12 0
+v 1.1 -0.06 -0.052
+v 1.1 0.06 -0.052
+v 0.7 0.42 0
+v 0.7 0.21 0.1819
+v 0.7 -0.21 0.1819
+v 0.7 -0.42 0
+v 0.7 -0.21 -0.1819
+v 0.7 0.21 -0.1819
+v 0.05 0.62 0
+v 0.05 0.31 0.2685
+v 0.05 -0.31 0.2685
+v 0.05 -0.62 0
+v 0.05 -0.31 -0.2685
+v 0.05 0.31 -0.2685
+v -0.6 0.55 0
+v -0.6 0.275 0.2382
+v -0.6 -0.275 0.2382
+v -0.6 -0.55 0
+v -0.6 -0.275 -0.2382
+v -0.6 0.275 -0.2382
+v -1.1 0.28 0
+v -1.1 0.14 0.1212
+v -1.1 -0.14 0.1212
+v -1.1 -0.28 0
+v -1.1 -0.14 -0.1212
+v -1.1 0.14 -0.1212
 v -1.3 0 0
-v 0 0 -0.4
-v 0 -0.65 0
-v 1.4 0.8 0
-v 1.9 0 0
-v 1.4 0 0.15
-v 0.9 0 0
-v 1.4 0 -0.15
-v 1.4 -0.8 0
-v -0.8 0.29 -0.35
-v -0.66 0.15 -0.35
-v -0.8 0.15 -0.25
-v -0.94 0.15 -0.35
-v -0.8 0.15 -0.45
-v -0.8 0.01 -0.35
-v 0 1.05 0
-v 0.4 0.6 0
-v 0 0.6 0.12
-v -0.4 0.6 0
-v 0 0.6 -0.12
-v 0 0.15 0
+v 1 0.08 -0.04
+v 1.9 0.8 -0.04
+v 1.65 0 -0.04
+v 1.9 -0.8 -0.04
+v 1 -0.08 -0.04
+v 1 0.08 0.04
+v 1.9 0.8 0.04
+v 1.65 0 0.04
+v 1.9 -0.8 0.04
+v 1 -0.08 0.04
+v 1.49 0 -0.04
+v 1.49 0 0.04
+v -0.35 0.5 -0.03
+v 0.45 0.5 -0.03
+v 0.15 1.05 -0.03
+v -0.25 0.95 -0.03
+v -0.35 0.5 0.03
+v 0.45 0.5 0.03
+v 0.15 1.05 0.03
+v -0.25 0.95 0.03
+v 0 0.75 -0.03
+v 0 0.75 0.03
+v -0.82 0.26 -0.21
+v -0.72 0.16 -0.21
+v -0.82 0.16 -0.16
+v -0.92 0.16 -0.21
+v -0.82 0.16 -0.26
+v -0.82 0.06 -0.21
+usemtl Shade4
+f 1 8 2
+usemtl Shade4
+f 1 7 8
+usemtl Shade4
+f 2 9 3
+usemtl Shade4
+f 2 8 9
+usemtl Shade13
+f 3 10 4
+usemtl Shade13
+f 3 9 10
+usemtl Shade13
+f 4 11 5
+usemtl Shade13
+f 4 10 11
+usemtl Shade4
+f 5 12 6
+usemtl Shade4
+f 5 11 12
+usemtl Shade4
+f 6 7 1
+usemtl Shade4
+f 6 12 7
+usemtl Shade4
+f 7 14 8
+usemtl Shade4
+f 7 13 14
+usemtl Shade4
+f 8 15 9
+usemtl Shade4
+f 8 14 15
+usemtl Shade13
+f 9 16 10
+usemtl Shade13
+f 9 15 16
+usemtl Shade13
+f 10 17 11
+usemtl Shade13
+f 10 16 17
+usemtl Shade4
+f 11 18 12
+usemtl Shade4
+f 11 17 18
+usemtl Shade4
+f 12 13 7
+usemtl Shade4
+f 12 18 13
+usemtl Shade4
+f 13 20 14
+usemtl Shade4
+f 13 19 20
+usemtl Shade4
+f 14 21 15
+usemtl Shade4
+f 14 20 21
+usemtl Shade13
+f 15 22 16
+usemtl Shade13
+f 15 21 22
+usemtl Shade13
+f 16 23 17
+usemtl Shade13
+f 16 22 23
+usemtl Shade4
+f 17 24 18
+usemtl Shade4
+f 17 23 24
+usemtl Shade4
+f 18 19 13
+usemtl Shade4
+f 18 24 19
+usemtl Shade4
+f 19 26 20
+usemtl Shade4
+f 19 25 26
+usemtl Shade4
+f 20 27 21
+usemtl Shade4
+f 20 26 27
+usemtl Shade13
+f 21 28 22
+usemtl Shade13
+f 21 27 28
+usemtl Shade13
+f 22 29 23
+usemtl Shade13
+f 22 28 29
+usemtl Shade4
+f 23 30 24
+usemtl Shade4
+f 23 29 30
+usemtl Shade4
+f 24 25 19
+usemtl Shade4
+f 24 30 25
+usemtl Shade4
+f 25 31 26
+usemtl Shade4
+f 26 31 27
+usemtl Shade13
+f 27 31 28
+usemtl Shade13
+f 28 31 29
+usemtl Shade4
+f 29 31 30
+usemtl Shade4
+f 30 31 25
 usemtl Shade4
 f 1 2 3
-usemtl Shade4
-f 6 3 2
-usemtl Shade4
+usemtl Shade13
 f 1 3 4
-usemtl Shade4
-f 6 4 3
-usemtl Shade4
+usemtl Shade13
 f 1 4 5
 usemtl Shade4
-f 6 5 4
-usemtl Shade4
-f 1 5 2
-usemtl Shade4
-f 6 2 5
+f 1 5 6
 usemtl Shade2
-f 7 8 9
+f 42 32 33
 usemtl Shade2
-f 12 9 8
+f 43 38 37
 usemtl Shade2
-f 7 9 10
+f 32 38 33
 usemtl Shade2
-f 12 10 9
+f 32 37 38
 usemtl Shade2
-f 7 10 11
+f 42 33 34
 usemtl Shade2
-f 12 11 10
+f 43 39 38
 usemtl Shade2
-f 7 11 8
+f 33 39 34
 usemtl Shade2
-f 12 8 11
-usemtl Shade6
-f 13 14 15
-usemtl Shade6
-f 18 15 14
-usemtl Shade6
-f 13 15 16
-usemtl Shade6
-f 18 16 15
-usemtl Shade6
-f 13 16 17
-usemtl Shade6
-f 18 17 16
-usemtl Shade6
-f 13 17 14
-usemtl Shade6
-f 18 14 17
+f 33 38 39
+usemtl Shade2
+f 42 34 35
+usemtl Shade2
+f 43 40 39
+usemtl Shade2
+f 34 40 35
+usemtl Shade2
+f 34 39 40
+usemtl Shade2
+f 42 35 36
+usemtl Shade2
+f 43 41 40
+usemtl Shade2
+f 35 41 36
+usemtl Shade2
+f 35 40 41
+usemtl Shade2
+f 42 36 32
+usemtl Shade2
+f 43 37 41
+usemtl Shade2
+f 36 37 32
+usemtl Shade2
+f 36 41 37
 usemtl Shade5
-f 19 20 21
+f 52 45 44
 usemtl Shade5
-f 24 21 20
+f 53 48 49
 usemtl Shade5
-f 19 21 22
+f 44 45 49
 usemtl Shade5
-f 24 22 21
+f 44 49 48
 usemtl Shade5
-f 19 22 23
+f 52 46 45
 usemtl Shade5
-f 24 23 22
+f 53 49 50
 usemtl Shade5
-f 19 23 20
+f 45 46 50
 usemtl Shade5
-f 24 20 23
+f 45 50 49
+usemtl Shade5
+f 52 47 46
+usemtl Shade5
+f 53 50 51
+usemtl Shade5
+f 46 47 51
+usemtl Shade5
+f 46 51 50
+usemtl Shade5
+f 52 44 47
+usemtl Shade5
+f 53 51 48
+usemtl Shade5
+f 47 44 48
+usemtl Shade5
+f 47 48 51
+usemtl Shade6
+f 54 56 55
+usemtl Shade6
+f 59 55 56
+usemtl Shade6
+f 54 57 56
+usemtl Shade6
+f 59 56 57
+usemtl Shade6
+f 54 58 57
+usemtl Shade6
+f 59 57 58
+usemtl Shade6
+f 54 55 58
+usemtl Shade6
+f 59 58 55

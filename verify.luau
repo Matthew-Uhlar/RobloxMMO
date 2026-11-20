@@ -6,10 +6,10 @@ local place = roblox.deserializePlace(fs.readFile("Aether-Isles.rbxl"))
 local bindings = {
 	Adventure = "server.server.lua", Archipelago = "world.server.lua",
 	Observatory = "expedition.server.lua", Assembly = "festival.server.lua",
-	Homesteads = "coop.server.lua", Combat = "combat.server.lua",
+	Homesteads = "coop.server.lua", Combat = "combat.server.lua", MeshForge = "mesh.server.lua",
 	FieldGuide = "ui.client.lua", IslandArt = "mesh.client.lua", CombatInput = "combat.client.lua", IslandBuilder = "build.client.lua",
 	AetherArt = "art/PropCatalog.lua",
-	MaterialArt = "art/MaterialArt.lua",
+	MaterialArt = "art/MaterialArt.lua", AetherWorldArt = "art/WorldCatalog.lua",
 	AetherData = "shared/GameData.lua", AetherProgression = "shared/Progression.lua",
 }
 local count = 0

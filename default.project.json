@@ -14,7 +14,11 @@
       "Assembly": { "$path": "festival.server.lua" },
       "Homesteads": { "$path": "coop.server.lua" },
       "Archipelago": { "$path": "world.server.lua" },
-      "Combat": { "$path": "combat.server.lua" }
+      "Combat": { "$path": "combat.server.lua" },
+      "MeshForge": { "$path": "mesh.server.lua" }
+    },
+    "ServerStorage": {
+      "AetherWorldArt": { "$path": "art/WorldCatalog.lua" }
     },
     "StarterPlayer": {
       "StarterPlayerScripts": {

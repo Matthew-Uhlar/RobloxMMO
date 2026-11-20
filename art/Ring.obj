@@ -249,34 +249,34 @@ f 46 47 51
 usemtl Shade2
 f 46 51 50
 usemtl Shade11
-f 53 54 55
+f 53 55 54
 usemtl Shade11
-f 58 55 54
+f 58 54 55
 usemtl Shade11
-f 53 55 56
+f 53 56 55
 usemtl Shade11
-f 58 56 55
+f 58 55 56
 usemtl Shade11
-f 53 56 57
+f 53 57 56
 usemtl Shade11
-f 58 57 56
+f 58 56 57
 usemtl Shade11
-f 53 57 54
+f 53 54 57
 usemtl Shade11
-f 58 54 57
+f 58 57 54
 usemtl Shade13
-f 59 60 61
+f 59 61 60
 usemtl Shade13
-f 64 61 60
+f 64 60 61
 usemtl Shade13
-f 59 61 62
+f 59 62 61
 usemtl Shade13
-f 64 62 61
+f 64 61 62
 usemtl Shade13
-f 59 62 63
+f 59 63 62
 usemtl Shade13
-f 64 63 62
+f 64 62 63
 usemtl Shade13
-f 59 63 60
+f 59 60 63
 usemtl Shade13
-f 64 60 63
+f 64 63 60
