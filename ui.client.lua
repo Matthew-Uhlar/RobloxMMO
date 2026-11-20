@@ -5324,6 +5324,377 @@ Pages.drawMastery=MS.draw
 end
 
 ------------------------------------------------------------------------------
+-- Workshop › Garden (Farming Depth team): the Verdant Garden. A summary card
+-- (garden level, plots, Marks, Dust, bulk harvest/water) and five views:
+-- Plots (a 12-tile grid with stage, timer, water/compost/blight/pest chips; the
+-- selected plot opens a detail card with its actions and the seed picker),
+-- Visitors (requests with have/need checklists, rewards, accept/decline),
+-- Composter (matter, output, upgrade, feed cards), Milestones (per-crop tiers)
+-- and Shop (seeds, hoes, Rootwarden set, charm, plot skins). Server state:
+-- snapshot.garden (server Garden.state); static data: Data.Garden. Verbs:
+-- plant "i:seed", harvestPlot/waterPlot "i"|"all", fertilise/treatPlot/clearPest/
+-- clearPlot "i", compost "item:n", compostClaim, composterUpgrade,
+-- visitorAccept/visitorDecline "id", gardenBuy "shopId", gardenSkin "skin".
+-- Countdown labels tick in place every second while the page is open.
+------------------------------------------------------------------------------
+do
+local GD={view="Plots",selected=nil,timers={},drawnAt=0,VIEWS={"Plots","Visitors","Composter","Milestones","Shop"},hex="5FBF77"}
+Pages.GD=GD
+function GD.ready() return Data and type(Data.Garden)=="table" and type(Data.Garden.Crops)=="table" end
+function GD.state() return tbl(state.garden) end
+function GD.span(seconds)
+	seconds=math.max(0,math.floor(num(seconds,0)))
+	if seconds>=3600 then return (seconds//3600).."h "..string.format("%02d",(seconds%3600)//60).."m" end
+	if seconds>=60 then return (seconds//60).."m "..string.format("%02d",seconds%60).."s" end
+	return seconds.."s"
+end
+-- A countdown label: fn(elapsed) → text; elapsed counts from the last draw.
+function GD.timer(label,fn)
+	table.insert(GD.timers,{label=label,fn=fn})
+	label.Text=fn(0)
+	return label
+end
+function GD.farming() local info=skillsOf(state).Farming return info and num(info.level,1) or 1 end
+function GD.costText(cost,haveCheck)
+	local parts={}
+	for id,n in pairs(tbl(cost)) do
+		n=num(n,0)
+		local text=if id=="coins" then fmt(n).." coins" else fmt(n).." "..escape(itemName(id))
+		if haveCheck then
+			local have=if id=="coins" then num(state.coins,0) else count("items",id)
+			text=(if have>=n then check else cross).." "..text
+		end
+		table.insert(parts,text)
+	end
+	table.sort(parts)
+	return table.concat(parts,"   ")
+end
+function GD.afford(cost)
+	for id,n in pairs(tbl(cost)) do
+		local have=if id=="coins" then num(state.coins,0) else count("items",id)
+		if have<num(n,0) then return false end
+	end
+	return true
+end
+-- Plot record from the snapshot (tolerates partial / malformed data).
+function GD.plot(g,i)
+	local raw=tbl(tbl(g.plots)[i])
+	local G=Data.Garden
+	local crop=type(raw.crop)=="string" and G.CropById[raw.crop] or nil
+	return {index=i,unlocked=raw.unlocked==true,crop=crop,stage=math.clamp(math.floor(num(raw.stage,0)),0,G.STAGES),ripe=raw.ripe==true,
+		remaining=num(raw.remaining,nil),fraction=math.clamp(num(raw.fraction,0),0,1),watered=num(raw.watered,0),compost=raw.compost==true,
+		treated=raw.treated==true,sick=raw.sick==true,dead=raw.dead==true,pest=type(raw.pest)=="string" and raw.pest or nil,deathIn=num(raw.deathIn,nil)}
+end
+function GD.status(p)
+	if not p.unlocked then return "Locked","8A9BA3" end
+	if not p.crop then return "Empty","A9BDC1" end
+	if p.dead then return "Withered","9A948A" end
+	if p.sick then return "Blighted","E8806A" end
+	if p.ripe then return "Ripe!","F3C66E" end
+	return Data.Garden.STAGE_NAMES[math.max(1,p.stage)] or "Growing","9EE7D2"
+end
+function GD.chips(p)
+	local chips={}
+	if p.watered>0 then table.insert(chips,paint("💧","8FD3FF")) end
+	if p.compost then table.insert(chips,paint("❖","C9A26B")) end
+	if p.treated then table.insert(chips,paint("✚","9FD8A6")) end
+	if p.pest then table.insert(chips,paint("✸ pest","E8806A")) end
+	return table.concat(chips," ")
+end
+function GD.select(i)
+	GD.selected=if GD.selected==i then nil else i
+	render()
+end
+function GD.summary(g)
+	local G=Data.Garden
+	local level=math.clamp(math.floor(num(g.level,1)),1,G.MAX_LEVEL)
+	local xp,floor,nextAt=num(g.xp,0),num(g.floor,0),num(g.nextAt,nil)
+	local unlocked=math.clamp(math.floor(num(g.unlocked,G.BASE_PLOTS)),0,G.MAX_PLOTS)
+	local ripe,waiting=0,#tbl(g.visitors)
+	for i=1,G.MAX_PLOTS do if GD.plot(g,i).ripe then ripe+=1 end end
+	local rate=num(g.rate,1)
+	card({name="GardenSummary",item=G.CropById.Herb and "Herb" or nil,accent=rgb(GD.hex),title="Verdant Garden",titleColor=gold,
+		subtitle="Garden level "..level.."   ·   "..unlocked.."/"..G.MAX_PLOTS.." plots   ·   "..paint("✦ "..fmt(count("items",G.MARK)).." Marks","5FBF77").."   ·   "..fmt(count("items",G.DUST)).." Bloom Dust",
+		badge="Lv "..level,badgeColor=rgb(lighten(GD.hex,.3)),
+		detail="Plant seeds in your garden islet beside home. Crops grow while you are away; water and compost speed them up, Blightward Salve stops blight, and visitors trade Verdant Marks for your harvest.",
+		lines={(if type(g.nextPlot)=="string" then "Next plot: "..escape(g.nextPlot).."." else "Every plot is open.").."   ·   Growth "..math.floor(rate*100+.5).."%"..(if g.setActive==true then "  ("..paint("Rootwarden set","9BD77E")..")" else ""),
+			ripe.." ripe   ·   "..waiting.." visitor"..(if waiting==1 then "" else "s").." waiting   ·   "..fmt(num(g.served,0)).." served"},
+		bar={fraction=if nextAt then math.clamp((xp-floor)/math.max(1,nextAt-floor),0,1) else 1,color=rgb(GD.hex),
+			caption=if nextAt then fmt(xp-floor).." / "..fmt(nextAt-floor).." garden XP" else "Garden level maxed"},
+		actions={{caption="Harvest all",primary=ripe>0,disabled=ripe==0,reason="Nothing is ripe yet.",name="GardenHarvestAll",fn=function() send("harvestPlot","all") end},
+			{caption="Water all",name="GardenWaterAll",fn=function() send("waterPlot","all") end}}})
+end
+function GD.drawPlots(g)
+	local G=Data.Garden
+	if GD.selected then GD.drawDetail(g,GD.plot(g,GD.selected)) end
+	heading("PLOTS    /    TAP A PLOT TO TEND IT")
+	local width=contentWidth()
+	local columns=width>=690 and 4 or (width>=400 and 3 or 2)
+	local cellHeight=compactAtlas and 104 or 118
+	local grid=gridHolder(UDim2.new(1/columns,-6,0,cellHeight),6)
+	for i=1,G.MAX_PLOTS do
+		local p=GD.plot(g,i)
+		local status,statusHex=GD.status(p)
+		local b=tile(grid,"Plot"..i,i,function() GD.select(i) end)
+		local on=GD.selected==i
+		make("UIStroke",b,{Color=on and gold or rgb(statusHex),Transparency=on and 0 or .55,Thickness=on and 2 or 1})
+		if not p.unlocked then b.BackgroundTransparency=.45 end
+		label(b,"#"..i,10,8,UDim.new(0,30),18,UI.heavy,12,muted)
+		local name=label(b,p.crop and escape(itemName(p.crop.id)) or (p.unlocked and "Empty plot" or "Locked"),36,8,UDim.new(1,-46),18,UI.heavy,compactAtlas and 13 or 14,
+			p.crop and rgb(p.crop.tint) or muted)
+		name.RichText=true
+		local stat=label(b,paint(status,statusHex).."  "..GD.chips(p),10,compactAtlas and 30 or 32,UDim.new(1,-20),18,bold,12,ivory)
+		stat.RichText=true
+		if p.crop and not p.dead then
+			local bar=progress(b,p.fraction,rgb(p.crop.tint),nil,compactAtlas and 8 or 10)
+			bar.Position=UDim2.new(0,10,0,compactAtlas and 56 or 60)
+			bar.Size=UDim2.new(1,-20,0,compactAtlas and 8 or 10)
+		end
+		local timer=label(b,"",10,compactAtlas and 72 or 80,UDim.new(1,-20),18,bold,12,muted)
+		timer.Name="PlotTimer"
+		if p.crop and p.remaining and not p.ripe then
+			local remaining=p.remaining
+			GD.timer(timer,function(elapsed) return "Ripe in "..GD.span(remaining-elapsed) end)
+		elseif p.sick and p.deathIn then
+			local left=p.deathIn
+			GD.timer(timer,function(elapsed) return "Withers in "..GD.span(left-elapsed) end)
+		else
+			timer.Text=if p.ripe then "Ready to harvest" elseif p.dead then "Clear to replant" elseif p.unlocked then "Plant a seed" else "Unlock with garden level"
+		end
+	end
+end
+function GD.seedCards(i)
+	local G=Data.Garden
+	local farming=GD.farming()
+	heading("SEEDS    /    CHOOSE WHAT TO PLANT IN PLOT "..i)
+	for _,c in ipairs(G.Crops) do
+		local have=count("items",c.seed)
+		local locked=farming<c.level
+		local reason=(locked and ("Needs Farming "..c.level..".")) or (have<1 and "No seeds. Buy them in the Shop view.") or nil
+		card({name="Seed"..c.seed,item=c.seed,title=escape(itemName(c.seed)),titleColor=rgb(c.tint),locked=locked,
+			subtitle="×"..fmt(have).."   ·   Farming "..c.level.."   ·   ripens in "..GD.span(c.grow).."   ·   base yield "..c.yield,
+			lines={"+"..fmt(c.xp).." Farming XP, +"..c.gxp.." garden XP per harvest   ·   blight risk "..math.floor(c.disease*100).."%"},
+			actions={{caption="Plant",primary=reason==nil,disabled=reason~=nil,reason=reason,name="Plant"..c.seed,fn=function() send("plant",i..":"..c.seed) end}}})
+	end
+end
+function GD.drawDetail(g,p)
+	local G=Data.Garden
+	local i=p.index
+	local status,statusHex=GD.status(p)
+	local compost,salve=count("items",G.COMPOST),count("items",G.SALVE)
+	local acts={}
+	local function act(caption,name,verb,primary,disabled,reason)
+		table.insert(acts,{caption=caption,name=name,primary=primary,disabled=disabled,reason=reason,fn=function() send(verb,tostring(i)) end})
+	end
+	local lines={}
+	if not p.unlocked then
+		card({name="PlotDetail",motif="Workshop",title="Plot "..i.."  ·  Locked",titleColor=muted,detail="Unlock more plots with garden levels and Farming levels. "..(if type(g.nextPlot)=="string" then "Next: "..escape(g.nextPlot).."." else "")})
+		return
+	end
+	if p.pest then act("Swat pest","PlotSwat","clearPest",true) end
+	if p.dead then act("Clear","PlotClear","clearPlot",true)
+	elseif p.sick then act("Treat","PlotTreat","treatPlot",true,salve<1,"You need a Blightward Salve (Cauldron, Alchemy 12, or the Shop).")
+	elseif p.ripe then act("Harvest","PlotHarvest","harvestPlot",true)
+	elseif p.crop then
+		act("Water","PlotWater","waterPlot",p.watered<=0,p.watered>0,"Still damp.")
+		if not p.compost then act("Fertilise","PlotFertilise","fertilise",false,compost<1,"You need Rich Compost from the composter.") end
+		if not p.treated and #acts<3 then act("Treat","PlotTreat","treatPlot",false,salve<1,"You need a Blightward Salve.") end
+	else
+		if not p.compost then act("Fertilise","PlotFertilise","fertilise",false,compost<1,"You need Rich Compost from the composter.") end
+		if not p.treated then act("Treat","PlotTreat","treatPlot",false,salve<1,"You need a Blightward Salve.") end
+	end
+	while #acts>3 do table.remove(acts) end
+	if p.crop then
+		table.insert(lines,"Stage "..p.stage.."/"..G.STAGES.."   ·   "..math.floor(p.fraction*100).."% grown"..(if p.watered>0 then "   ·   watered for "..GD.span(p.watered) else ""))
+		if p.pest then table.insert(lines,paint("A "..escape(p.pest).." is nibbling this crop: −"..math.floor(G.PEST_PENALTY*100).."% yield until you swat it.","E8806A")) end
+		if p.sick then table.insert(lines,paint("Blight halts growth. Treat it before it withers.","E8806A")) end
+	end
+	table.insert(lines,(if p.compost then "Fertilised (+"..math.floor(G.COMPOST_BOOST*100).."% growth)" else "Not fertilised").."   ·   "..(if p.treated then "Treated (blight-proof)" else "Untreated"))
+	card({name="PlotDetail",item=p.crop and p.crop.id or nil,motif=(not p.crop) and "Workshop" or nil,accent=rgb(statusHex),
+		title="Plot "..i.."  ·  "..(if p.crop then escape(itemName(p.crop.id)) else "Empty"),titleColor=p.crop and rgb(p.crop.tint) or ivory,
+		subtitle=paint(status,statusHex).."   ·   "..fmt(compost).." compost   ·   "..fmt(salve).." salve",lines=lines,
+		bar=p.crop and not p.dead and {fraction=p.fraction,color=rgb(p.crop.tint),caption=if p.ripe then "Ripe" elseif p.remaining then "Ripe in "..GD.span(p.remaining) else status} or nil,
+		actions=acts})
+	if p.crop and not p.dead then
+		card({name="PlotUprootCard",motif="Workshop",title="Uproot plot "..i,titleColor=muted,detail="Pull the crop to free the plot. The seed is lost.",
+			actions={{caption="Uproot",name="PlotUproot",fn=function() send("clearPlot",tostring(i)) end}}})
+	end
+	if not p.crop then GD.seedCards(i) end
+end
+function GD.drawVisitors(g)
+	local G=Data.Garden
+	local visitors=tbl(g.visitors)
+	local cap=num(g.visitorCap,G.visitorCap(num(g.level,1)))
+	local summary=card({name="VisitorQueue",motif="Journal",title="Visitors  ·  "..#visitors.."/"..cap,titleColor=gold,
+		detail="Islanders stop by every "..(G.VISITOR_INTERVAL//60).." minutes (while you are away too, until the bench is full) and trade for your crops."})
+	if num(g.nextVisitorIn,nil) then
+		local nextIn=num(g.nextVisitorIn,0)
+		local copy=para(summary:FindFirstChild("Body"),"",99,muted,12)
+		copy.Name="VisitorCountdown"
+		GD.timer(copy,function(elapsed) return "Next visitor in "..GD.span(nextIn-elapsed) end)
+	end
+	for _,raw in ipairs(visitors) do
+		local v=tbl(raw)
+		local def=type(v.npc)=="string" and G.VisitorById[v.npc] or nil
+		local id=math.floor(num(v.id,0))
+		if def and id>0 then
+			local rarity=G.VisitorRarity[def.rarity] or G.VisitorRarity.Common
+			local rarityHexes={Common="FFFFFF",Uncommon="55FF55",Rare="5555FF",Legendary="FFAA00"}
+			local checks,ready={},true
+			for crop,n in pairs(tbl(v.wants)) do
+				n=num(n,0)
+				if type(crop)=="string" and itemDef(crop) then
+					local have=count("items",crop)
+					if have<n then ready=false end
+					table.insert(checks,{text=fmt(n).." "..escape(itemName(crop)),met=have>=n,amount=fmt(have).."/"..fmt(n)})
+				end
+			end
+			if #checks==0 then ready=false end
+			local rewards={fmt(num(v.coins,0)).." coins",fmt(num(v.marks,0)).." Verdant Marks",fmt(num(v.gxp,0)).." garden XP",fmt(num(v.xp,0)).." Farming XP"}
+			for item,n in pairs(tbl(v.items)) do if itemDef(item) then table.insert(rewards,paint(fmt(num(n,1)).." "..escape(itemName(item)),"F7B2D9")) end end
+			card({name="Visitor"..id,motif="Journal",accent=rgb(def.color),title=escape(def.name),titleColor=rgb(def.color),
+				subtitle=paint(def.rarity,rarityHexes[def.rarity] or "FFFFFF").."   ·   ×"..rarity.mult.." rewards",detail="“"..escape(def.line).."”",
+				before=function(body,nextOrder) UI.checklist(body,nextOrder,"REQUEST",checks) end,
+				lines={"Rewards: "..table.concat(rewards,"   ·   ")},
+				actions={{caption="Accept",primary=ready,disabled=not ready,reason="You need every requested crop.",name="Accept"..id,fn=function() send("visitorAccept",tostring(id)) end},
+					{caption="Decline",name="Decline"..id,fn=function() send("visitorDecline",tostring(id)) end}}})
+		end
+	end
+	if #visitors==0 then row("No visitors yet","Visitors arrive at your garden islet over time. Keep crops in your satchel to fill their requests.") end
+end
+function GD.drawComposter(g)
+	local G=Data.Garden
+	local c=tbl(g.composter)
+	if c.unlocked~=true then
+		card({name="Composter",motif="Workshop",title="Composter  ·  locked",titleColor=muted,detail="The composter opens at garden level "..G.COMPOSTER_LEVEL..". Harvest crops and serve visitors to earn garden XP."})
+		return
+	end
+	local upgrade=math.clamp(math.floor(num(c.upgrade,0)),0,#G.ComposterUpgrades)
+	local nextUp=G.ComposterUpgrades[upgrade+1]
+	local matter,cap,out,dust=num(c.matter,0),math.max(1,num(c.cap,G.matterCap(upgrade))),num(c.out,0),num(c.dust,0)
+	local card_=card({name="Composter",item=G.COMPOST,title="Composter  ·  tier "..upgrade,titleColor=gold,
+		subtitle=fmt(out).." "..escape(itemName(G.COMPOST)).." and "..fmt(dust).." "..escape(itemName(G.DUST)).." ready",
+		detail="Feed crops and organic drops. Every "..GD.span(num(c.interval,G.COMPOST_SECONDS)).." the composter turns "..G.COMPOST_MATTER.." matter into one Rich Compost; every "..G.DUST_EVERY.."th compost leaves Bloom Dust.",
+		bar={fraction=math.clamp(matter/cap,0,1),color=rgb("8C6A4A"),caption=fmt(matter).." / "..fmt(cap).." matter"},
+		lines={if nextUp then "Next upgrade: "..GD.costText({BloomDust=nextUp.dust,VerdantMark=nextUp.marks},true).."   (−12% time, +1,500 matter)" else "Fully upgraded."},
+		actions={{caption="Collect",primary=out>0 or dust>0,disabled=out<1 and dust<1,reason="Nothing has finished composting yet.",name="CompostCollect",fn=function() send("compostClaim") end},
+			{caption="Upgrade",disabled=nextUp==nil or not GD.afford({BloomDust=nextUp.dust,VerdantMark=nextUp.marks}),reason=if nextUp then "You need more Bloom Dust or Verdant Marks." else "Fully upgraded.",
+				name="CompostUpgrade",fn=function() send("composterUpgrade") end}}})
+	if num(c.nextIn,nil) then
+		local nextIn=num(c.nextIn,0)
+		local copy=para(card_:FindFirstChild("Body"),"",99,muted,12)
+		copy.Name="CompostCountdown"
+		GD.timer(copy,function(elapsed) return "Next compost in "..GD.span(nextIn-elapsed) end)
+	end
+	heading("FEED    /    MATTER PER ITEM")
+	local any=false
+	local feedable={}
+	for _,crop in ipairs(G.Crops) do table.insert(feedable,crop.id) end
+	for id in pairs(G.ORGANIC_EXTRA) do table.insert(feedable,id) end
+	table.sort(feedable)
+	for _,id in ipairs(feedable) do
+		local have=count("items",id)
+		if have>0 and itemDef(id) then
+			any=true
+			local value=G.organic(id)
+			card({name="Feed"..id,item=id,title=escape(itemName(id)),titleColor=rgb(itemHex(id)),subtitle="×"..fmt(have).."   ·   "..value.." matter each",
+				actions={{caption="Feed 10",disabled=have<10,reason="You have fewer than 10.",name="Feed10"..id,fn=function() send("compost",id..":10") end},
+					{caption="Feed all",primary=true,name="FeedAll"..id,fn=function() send("compost",id..":"..math.min(have,9999)) end}}})
+		end
+	end
+	if not any then row("Nothing to compost","Crops, Beast Hide, Pest Chitin and logs make good matter.") end
+end
+function GD.drawMilestones(g)
+	local G=Data.Garden
+	local ms=tbl(g.milestones)
+	card({name="MilestoneSummary",motif="Hero",title="Crop milestones",titleColor=gold,
+		detail="Every garden harvest counts toward its crop's milestones. Each tier pays coins and garden XP, adds +"..G.MILESTONE_CROP_FORTUNE.." fortune for that crop in the garden and +"..G.MILESTONE_FORTUNE.." Farming Fortune everywhere.",
+		lines={"Milestone tiers: "..fmt(num(g.milestoneTiers,0)).."   ·   +"..fmt(num(g.milestoneTiers,0)*G.MILESTONE_FORTUNE).." Farming Fortune"}})
+	for _,c in ipairs(G.Crops) do
+		local m=tbl(ms[c.id])
+		local n=num(m.count,0)
+		local tier=G.milestoneTier(c.id,n)
+		local nextAt=G.milestoneThreshold(c.id,tier+1)
+		local prev=G.milestoneThreshold(c.id,tier) or 0
+		local labels={}
+		for t=1,#G.MILESTONES do labels[t]=short(G.milestoneThreshold(c.id,t)) end
+		local reward=nextAt and G.milestoneReward(c.id,tier+1)
+		card({name="Milestone"..c.id,item=c.id,title=escape(itemName(c.id)),titleColor=rgb(c.tint),
+			subtitle="Tier "..tier.."/"..#G.MILESTONES.."   ·   "..fmt(n).." harvested   ·   +"..(tier*G.MILESTONE_CROP_FORTUNE).." crop fortune",
+			pips={total=#G.MILESTONES,filled=tier,color=rgb(c.tint),labels=if compactAtlas then nil else labels},
+			bar={fraction=if nextAt then math.clamp((n-prev)/math.max(1,nextAt-prev),0,1) else 1,color=rgb(c.tint),caption=if nextAt then fmt(n).." / "..fmt(nextAt) else "All milestones reached"},
+			lines={if reward then "Next tier: +"..fmt(reward.coins).." coins, +"..reward.gxp.." garden XP" else nil}})
+	end
+end
+function GD.drawShop(g)
+	local G=Data.Garden
+	local level=num(g.level,1)
+	local skins=tbl(g.skins)
+	card({name="GardenShopIntro",motif="Ledger",title="Verdant Garden shop",titleColor=gold,subtitle=paint("✦ "..fmt(count("items",G.MARK)).." Verdant Marks","5FBF77").."   ·   "..fmt(count("items",G.DUST)).." Bloom Dust   ·   "..fmt(num(state.coins,0)).." coins",
+		detail="Visitors pay in Verdant Marks; the composter leaves Bloom Dust. Hoes upgrade in place: buying the next one consumes the last."})
+	for _,e in ipairs(G.Shop) do
+		local reason
+		if level<e.level then reason="Reach garden level "..e.level.."." end
+		if e.kind=="skin" then
+			local s=G.SkinById[e.skin]
+			local owned=skins[e.skin]==true
+			local applied=g.skin==e.skin
+			if not owned and not reason and not GD.afford(e.cost) then reason="You need "..GD.costText(e.cost).."." end
+			card({name="Shop"..e.id,motif="Workshop",accent=rgb(s.frame),title=escape(s.name).." plot skin",titleColor=rgb(lighten(s.frame,.35)),
+				subtitle=if owned then (if applied then paint("APPLIED","9EE7D2") else paint("OWNED","9EE7D2")) else "Garden level "..e.level,
+				lines={if owned then nil else "Cost: "..GD.costText(e.cost,true)},
+				actions={if owned then {caption="Apply",primary=not applied,disabled=applied,reason="Already applied.",name="Apply"..e.skin,fn=function() send("gardenSkin",e.skin) end}
+					else {caption="Buy",primary=reason==nil,disabled=reason~=nil,reason=reason,name="Buy"..e.id,fn=function() send("gardenBuy",e.id) end}}})
+		else
+			local def=itemDef(e.item)
+			local owned=e.unique and count("items",e.item)>0
+			if owned then reason="You already own one." end
+			if not reason and e.upgrade and count("items",e.upgrade)<1 then reason="Upgrades your "..itemName(e.upgrade)..": buy that first." end
+			if not reason and not GD.afford(e.cost) then reason="You need "..GD.costText(e.cost).."." end
+			card({name="Shop"..e.id,item=e.item,title=(if e.amount>1 then e.amount.."× " else "")..escape(itemName(e.item)),titleColor=rgb(itemHex(e.item)),
+				subtitle=(def and escape(def.rarity or "Common") or "").."   ·   garden level "..e.level..(if owned then "   ·   "..paint("OWNED","9EE7D2") else ""),
+				detail=def and escape(def.description or "") or nil,lines={"Cost: "..GD.costText(e.cost,true)..(if e.upgrade then "   ·   consumes your "..escape(itemName(e.upgrade)) else "")},
+				actions={{caption="Buy",primary=reason==nil,disabled=reason~=nil,reason=reason,name="Buy"..e.id,fn=function() send("gardenBuy",e.id) end}}})
+		end
+	end
+	-- Owned skins without a shop entry (the free default) can be re-applied.
+	if g.skin~="Loam" then
+		card({name="ShopLoam",motif="Workshop",title="Tilled Loam plot skin",titleColor=muted,subtitle=paint("OWNED","9EE7D2"),
+			actions={{caption="Apply",name="ApplyLoam",fn=function() send("gardenSkin","Loam") end}}})
+	end
+end
+function GD.draw()
+	table.clear(GD.timers)
+	GD.drawnAt=os.clock()
+	heading("VERDANT GARDEN    /    PLOTS · VISITORS · COMPOSTER")
+	if not GD.ready() then dataMissing() return end
+	local g=GD.state()
+	if next(g)==nil then syncing("garden") return end
+	GD.summary(g)
+	sectionBar(GD.VIEWS,GD.view,function(name)
+		GD.view=name
+		GD.selected=nil
+		scroll.CanvasPosition=Vector2.zero
+		render()
+	end,{small=true,prefix="Garden"})
+	if GD.view=="Visitors" then GD.drawVisitors(g)
+	elseif GD.view=="Composter" then GD.drawComposter(g)
+	elseif GD.view=="Milestones" then GD.drawMilestones(g)
+	elseif GD.view=="Shop" then GD.drawShop(g)
+	else GD.drawPlots(g) end
+end
+Pages.drawGarden=GD.draw
+task.spawn(function()
+	while task.wait(1) do
+		if #GD.timers>0 and atlas.Visible and current=="Workshop" and sectionOf and sectionOf.Workshop=="Garden" then
+			local elapsed=os.clock()-GD.drawnAt
+			for _,t in ipairs(GD.timers) do pcall(function() t.label.Text=t.fn(elapsed) end) end
+		end
+	end
+end)
+end
+
+------------------------------------------------------------------------------
 -- Navigation: six primary tabs, each with a section switcher.
 ------------------------------------------------------------------------------
 local tabOrder={"Journal","Hero","Satchel","Workshop","Hunt","Ledger"}
@@ -5331,7 +5702,7 @@ local sectionLists={
 	Journal={"Bearing","Quests","Diaries","Construction","Regions","Crew","Calendar","Agility"},
 	Hero={"Skills","Mastery","Gear","Combat","Spellbook","Enchant","Reforge","Accessories","Pets"},
 	Satchel={"Items","Collections"},
-	Workshop={"Forge","Hearth","Cauldron","Workbench","Workers","Home"},
+	Workshop={"Forge","Hearth","Cauldron","Workbench","Workers","Home","Garden"},
 	Hunt={"Slayer","Bestiary","Dungeon","Hunter"},
 	Ledger={"Bank","Market","Orders","Auctions","Merchant","Vendors"},
 }
@@ -5341,7 +5712,7 @@ local drawers={
 	Hero={Skills=Pages.drawSkills,Mastery=Pages.drawMastery,Gear=Pages.drawGear,Combat=Pages.drawCombat,Spellbook=Pages.drawSpellbook,Enchant=Pages.drawEnchant,Reforge=function() Pages.drawReforge() end,Accessories=Pages.drawAccessories,Pets=Pages.drawPets},
 	Satchel={Items=Pages.drawItems,Collections=Pages.drawCollections},
 	Workshop={Forge=function() Pages.drawStation("Forge") end,Hearth=function() Pages.drawStation("Hearth") end,Cauldron=function() Pages.drawStation("Cauldron") end,
-		Workbench=function() Pages.drawStation("Workbench") end,Workers=Pages.drawWorkers,Home=Pages.drawHome},
+		Workbench=function() Pages.drawStation("Workbench") end,Workers=Pages.drawWorkers,Home=Pages.drawHome,Garden=Pages.drawGarden},
 	Hunt={Slayer=Pages.drawSlayer,Bestiary=Pages.drawBestiary,Dungeon=Pages.drawDungeon,Hunter=Pages.drawHunter},
 	Ledger={Bank=Pages.drawBank,Market=Pages.drawMarket,Orders=Pages.drawOrders,Auctions=Pages.drawAuctions,Merchant=Pages.drawMerchant,Vendors=Pages.drawVendors},
 }
@@ -5829,7 +6200,7 @@ end
 -- Crafting stations and the slayer board set IsleStation on the player; open
 -- the matching page. Values may carry a suffix ("Forge:3") so repeats fire.
 local stationTabs={Forge="Workshop",Hearth="Workshop",Cauldron="Workshop",Workbench="Workshop",Slayer="Hunt",Construction="Journal",Calendar="Journal",
-	SkymarkExchange="Ledger",TrackersLodge="Ledger"}
+	SkymarkExchange="Ledger",TrackersLodge="Ledger",Garden="Workshop"}
 local function openStation()
 	local value=player:GetAttribute("IsleStation")
 	if type(value)~="string" then return end

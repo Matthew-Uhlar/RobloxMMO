@@ -251,6 +251,8 @@ local function profile()
 			Skymark = 37, WindrunnerHood = 1, SnareKit = 1, SkyNet = 1, DownyPelt = 14, SunwingDust = 6,
 			-- Gear depth: reforge stones, essence and tomes.
 			EmberheartCinder = 1, WardstoneSeal = 2, WildheartEssence = 60, TemperingTome = 2, MasterworkTome = 1,
+			-- Verdant Garden: seeds, compost, salve, Marks, Dust and crops for a visitor.
+			MeadowSeeds = 5, SunwheatSeeds = 2, Compost = 3, BlightwardSalve = 1, VerdantMark = 40, BloomDust = 6, Sunwheat = 30,
 		},
 		collection = { Ore = 320, Timber = 60, Herb = 70, Fish = 30, Brassite = 40, Shard = 2, StormFeather = 3, BeastHide = 0 },
 		equipment = { weapon = "BrassSword", helmet = "BrassHelm", chest = "BrassChestplate", legs = "BrassGreaves", boots = "BrassBoots", ammo = "BrassArrow" },
@@ -382,7 +384,30 @@ local function snapshot(options)
 			traps = { { creature = "PuffcapHopper", state = "caught", ticks = 6, spot = "PuffcapHopper#1" }, { creature = "PuffcapHopper", state = "set", ticks = 2, spot = "PuffcapHopper#3" } } },
 		vendor = { skill = if options.vendorClosed then "" else "Agility", openUntil = if options.vendorClosed then 0 else os.time() + 252 },
 	}
+	-- Verdant Garden (server Garden.state): plot 1 ripe, 2 growing + watered + pest, 3 blighted, 4 empty, 5+ locked.
+	do
+		local plots = {}
+		for i = 1, 12 do plots[i] = { index = i, unlocked = i <= 4, stage = 0, ripe = false, fraction = 0, watered = 0, compost = false, treated = false, sick = false, dead = false } end
+		plots[1] = { index = 1, unlocked = true, crop = "Herb", stage = 4, ripe = true, remaining = 0, fraction = 1, watered = 0, compost = true, treated = false, sick = false, dead = false }
+		plots[2] = { index = 2, unlocked = true, crop = "Sunwheat", stage = 2, ripe = false, remaining = 340, fraction = .45, watered = 900, compost = false, treated = false, sick = false, dead = false, pest = "Rootgrub" }
+		plots[3] = { index = 3, unlocked = true, crop = "Herb", stage = 2, ripe = false, fraction = .4, watered = 0, compost = false, treated = false, sick = true, dead = false, deathIn = 5000 }
+		local milestones = {}
+		for _, c in ipairs(Data.Garden.Crops) do milestones[c.id] = { count = if c.id == "Herb" then 130 else 0, tier = if c.id == "Herb" then 1 else 0, fortune = 0 } end
+		result.garden = {
+			level = 3, xp = 260, floor = 180, nextAt = 400, plots = plots, unlocked = 4, maxPlots = 12, nextPlot = "Garden level 5 or Farming 15",
+			milestones = milestones, milestoneTiers = 1,
+			composter = { unlocked = true, matter = 240, cap = 4000, out = 2, dust = 1, upgrade = 0, interval = 600, nextIn = 120 },
+			visitors = {
+				{ id = 7, npc = "Pell", wants = { Herb = 12 }, order = { "Herb" }, coins = 48, marks = 2, gxp = 9, xp = 25, items = {} },
+				{ id = 8, npc = "Corvel", wants = { Sunwheat = 40, Herb = 10 }, order = { "Herb", "Sunwheat" }, coins = 900, marks = 4, gxp = 20, xp = 300, items = { BloomDust = 1 } },
+			},
+			visitorCap = 2, nextVisitorIn = nil, served = 3, skin = "Mossbed", skins = { Loam = true, Mossbed = true }, rate = 1.02, setActive = false, serverTime = os.time(),
+		}
+	end
 	if options.malformed then
+		result.garden = { level = "three", plots = { 5, { crop = "Ghost", stage = "x" }, { crop = "Herb", remaining = "soon", fraction = 9 } }, milestones = { Herb = 3 },
+			composter = { unlocked = true, matter = "lots", upgrade = 99 }, visitors = { 3, { id = "x", npc = "Nobody" }, { id = 4, npc = "Pell", wants = { Ghost = 2, Herb = "many" } } },
+			skins = 5, nextPlot = 7 }
 		result.agilityHunter = { agility = { laps = { QuayRigging = "many", Nope = 3 }, best = 7, run = "x" }, hunter = { log = 5, traps = { 3, { creature = "Ghost" } }, maxTraps = "two" }, vendor = { skill = 4 } }
 		result.journal ={ questPoints = "many", quests = { 3, { id = 7 }, { id = "SurveyorsOath", requires = "x", objectives = { 5 } } },
 			diaries = { "Meadow", { region = "Meadow", claimed = "two", tiers = { 4, { tier = 9 } } } }, construction = { furniture = { Bench = 3, Portal = "Ghost" }, portalRegions = { 5, "Atlantis" }, carpentry = "x", island = { counts = 5, count = "many", value = "x", cap = {} } } }
@@ -521,7 +546,7 @@ end
 local checks = 0
 local pages = {
 	Journal = { "Bearing", "Quests", "Diaries", "Construction", "Regions", "Crew", "Agility" }, Hero = { "Skills", "Mastery", "Gear", "Combat", "Spellbook", "Enchant", "Reforge", "Accessories", "Pets" }, Satchel = { "Items", "Collections" },
-	Workshop = { "Forge", "Hearth", "Cauldron", "Workbench", "Workers", "Home" }, Hunt = { "Slayer", "Bestiary", "Hunter" }, Ledger = { "Bank", "Market", "Orders", "Auctions", "Merchant", "Vendors" },
+	Workshop = { "Forge", "Hearth", "Cauldron", "Workbench", "Workers", "Home", "Garden" }, Hunt = { "Slayer", "Bestiary", "Hunter" }, Ledger = { "Bank", "Market", "Orders", "Auctions", "Merchant", "Vendors" },
 }
 local tabOrder = { "Journal", "Hero", "Satchel", "Workshop", "Hunt", "Ledger" }
 local verbs = {
@@ -597,6 +622,24 @@ local verbs = {
 		local kind, skill = tostring(item):match("^(%a+):(%a*)$")
 		return (kind == "cape" or kind == "aura" or kind == "title") and (skill == "" or Data.Skills[skill] ~= nil)
 	end,
+	-- Verdant Garden verbs.
+	plant = function(item)
+		local i, seed = tostring(item):match("^(%d+):(%w+)$")
+		return i ~= nil and tonumber(i) >= 1 and tonumber(i) <= 12 and Data.Garden.CropBySeed[seed] ~= nil
+	end,
+	harvestPlot = function(item) return item == "all" or (tonumber(item) ~= nil and tonumber(item) >= 1 and tonumber(item) <= 12) end,
+	waterPlot = function(item) return item == "all" or (tonumber(item) ~= nil and tonumber(item) >= 1 and tonumber(item) <= 12) end,
+	fertilise = function(item) return tostring(item):match("^%d+$") ~= nil and tonumber(item) <= 12 end,
+	treatPlot = function(item) return tostring(item):match("^%d+$") ~= nil and tonumber(item) <= 12 end,
+	clearPest = function(item) return tostring(item):match("^%d+$") ~= nil and tonumber(item) <= 12 end,
+	clearPlot = function(item) return tostring(item):match("^%d+$") ~= nil and tonumber(item) <= 12 end,
+	compost = function(item) local id, n = tostring(item):match("^(%w+):(%d+)$") return id ~= nil and Data.Garden.organic(id) > 0 and tonumber(n) >= 1 end,
+	compostClaim = function(item) return item == nil end,
+	composterUpgrade = function(item) return item == nil end,
+	visitorAccept = function(item) return tostring(item):match("^%d+$") ~= nil end,
+	visitorDecline = function(item) return tostring(item):match("^%d+$") ~= nil end,
+	gardenBuy = function(item) return Data.Garden.ShopById[item] ~= nil end,
+	gardenSkin = function(item) return Data.Garden.SkinById[item] ~= nil end,
 	skillBuy = function(item)
 		local skill, id = tostring(item):match("^(%a+):(%w+)$")
 		local vendor = skill and Data.SkillVendors[skill]
@@ -2282,6 +2325,117 @@ do
 	noFailures(legacy, "mastery without server data")
 	check(find(legacy.scroll, "MasteryCanvas") ~= nil, "tree still drawn while syncing")
 	print("Skill Mastery client: " .. (checks - masteryChecks) .. " checks.")
+end
+-- Verdant Garden client: Workshop › Garden views, plot grid and detail
+-- actions, seed picker, visitors, composter, milestones, shop and the ledger
+-- station visit; phone layout, a loading garden and malformed data.
+do
+	local gardenChecks = checks
+	local function check(cond, case) assert(cond, case); checks += 1 end
+	local ui = run()
+	local player = ui.player
+	player:SetAttribute("IsleStation", "Garden")
+	player:SetAttribute("IsleStationVisit", 1)
+	check(ui.atlas.Visible and find(ui.scroll, "GardenSummary") ~= nil, "garden ledger visit opens Workshop › Garden")
+	for i = 1, 12 do check(find(ui.scroll, "Plot" .. i) ~= nil, "plot tile " .. i) end
+	check(find(find(ui.scroll, "Plot2"), "PlotTimer").Text:find("Ripe in", 1, true) ~= nil, "growing plot counts down")
+	check(find(find(ui.scroll, "Plot3"), "PlotTimer").Text:find("Withers in", 1, true) ~= nil, "blighted plot warns")
+	table.clear(ui.sent)
+	press(find(ui.scroll, "GardenHarvestAll"))
+	check(ui.sent[1] and ui.sent[1][1] == "harvestPlot" and ui.sent[1][2] == "all", "Harvest all")
+	press(find(ui.scroll, "GardenWaterAll"))
+	check(ui.sent[2] and ui.sent[2][1] == "waterPlot" and ui.sent[2][2] == "all", "Water all")
+	-- Ripe plot → Harvest.
+	press(find(ui.scroll, "Plot1"))
+	check(find(ui.scroll, "PlotDetail") ~= nil, "plot detail opens")
+	table.clear(ui.sent)
+	press(find(ui.scroll, "PlotHarvest"))
+	check(ui.sent[1] and ui.sent[1][1] == "harvestPlot" and ui.sent[1][2] == "1", "harvest one plot")
+	-- Growing plot with a pest: swat, water disabled (still damp), uproot.
+	press(find(ui.scroll, "Plot2"))
+	table.clear(ui.sent)
+	press(find(ui.scroll, "PlotSwat"))
+	check(ui.sent[1] and ui.sent[1][1] == "clearPest" and ui.sent[1][2] == "2", "swat pest")
+	press(find(ui.scroll, "PlotWater"))
+	check(#ui.sent == 1, "damp plot cannot be watered")
+	press(find(ui.scroll, "PlotUproot"))
+	check(ui.sent[2] and ui.sent[2][1] == "clearPlot" and ui.sent[2][2] == "2", "uproot")
+	-- Blighted plot → Treat.
+	press(find(ui.scroll, "Plot3"))
+	table.clear(ui.sent)
+	press(find(ui.scroll, "PlotTreat"))
+	check(ui.sent[1] and ui.sent[1][1] == "treatPlot" and ui.sent[1][2] == "3", "treat blight")
+	-- Empty plot → seed picker; locked seeds and missing seeds do not send.
+	press(find(ui.scroll, "Plot4"))
+	check(find(ui.scroll, "SeedMeadowSeeds") ~= nil and find(ui.scroll, "SeedLotusBud") ~= nil, "seed picker lists every crop")
+	table.clear(ui.sent)
+	press(find(ui.scroll, "PlantMeadowSeeds"))
+	check(ui.sent[1] and ui.sent[1][1] == "plant" and ui.sent[1][2] == "4:MeadowSeeds", "plant sends plot:seed")
+	press(find(ui.scroll, "PlantSunwheatSeeds"))
+	press(find(ui.scroll, "PlantLotusBud"))
+	check(#ui.sent == 1, "seeds above the Farming level do not plant")
+	press(find(ui.scroll, "PlotFertilise"))
+	check(ui.sent[2] and ui.sent[2][1] == "fertilise" and ui.sent[2][2] == "4", "pre-fertilise an empty plot")
+	-- Locked plot.
+	press(find(ui.scroll, "Plot9"))
+	check(find(ui.scroll, "PlotDetail") ~= nil and find(ui.scroll, "PlantMeadowSeeds") == nil, "locked plot has no seed picker")
+	noFailures(ui, "garden plots")
+	-- Visitors.
+	press(find(ui.scroll, "GardenVisitors"))
+	check(find(ui.scroll, "Visitor7") ~= nil and find(ui.scroll, "Visitor8") ~= nil, "visitor queue")
+	check(find(find(ui.scroll, "Visitor7"), "Checklist") ~= nil, "request checklist")
+	table.clear(ui.sent)
+	press(find(ui.scroll, "Accept7"))
+	check(ui.sent[1] and ui.sent[1][1] == "visitorAccept" and ui.sent[1][2] == "7", "accept a filled request")
+	press(find(ui.scroll, "Accept8"))
+	check(#ui.sent == 1, "unfilled request cannot be accepted")
+	press(find(ui.scroll, "Decline8"))
+	check(ui.sent[2] and ui.sent[2][1] == "visitorDecline" and ui.sent[2][2] == "8", "decline")
+	-- Composter.
+	press(find(ui.scroll, "GardenComposter"))
+	check(find(ui.scroll, "Composter") ~= nil and find(ui.scroll, "CompostCountdown") ~= nil, "composter card and countdown")
+	table.clear(ui.sent)
+	press(find(ui.scroll, "CompostCollect"))
+	check(ui.sent[1] and ui.sent[1][1] == "compostClaim", "collect compost")
+	press(find(ui.scroll, "FeedAllHerb"))
+	check(ui.sent[2] and ui.sent[2][1] == "compost" and ui.sent[2][2] == "Herb:70", "feed all herbs")
+	press(find(ui.scroll, "CompostUpgrade"))
+	check(ui.sent[3] and ui.sent[3][1] == "composterUpgrade", "upgrade the composter")
+	-- Milestones.
+	press(find(ui.scroll, "GardenMilestones"))
+	for _, c in ipairs(Data.Garden.Crops) do check(find(ui.scroll, "Milestone" .. c.id) ~= nil, "milestone card " .. c.id) end
+	-- Shop.
+	press(find(ui.scroll, "GardenShop"))
+	table.clear(ui.sent)
+	press(find(ui.scroll, "BuySunwheatSeeds"))
+	check(ui.sent[1] and ui.sent[1][1] == "gardenBuy" and ui.sent[1][2] == "SunwheatSeeds", "buy seeds")
+	press(find(ui.scroll, "BuyLotusBud"))
+	press(find(ui.scroll, "BuyGreenwardHoe"))
+	check(#ui.sent == 1, "gated shop entries do not send")
+	press(find(ui.scroll, "ApplyLoam"))
+	check(ui.sent[2] and ui.sent[2][1] == "gardenSkin" and ui.sent[2][2] == "Loam", "re-apply the free skin")
+	check(find(ui.scroll, "ShopSkinMossbed") ~= nil, "owned skin listed")
+	noFailures(ui, "garden views")
+	checkSent(ui)
+	-- Phone layout, no garden yet (syncing) and malformed data.
+	local phone = run({ size = roblox.Vector2.new(420, 600) })
+	visit(phone, "Workshop", "Garden")
+	noFailures(phone, "phone garden")
+	check(find(phone.scroll, "Plot12") ~= nil, "phone grid")
+	local empty = snapshot()
+	empty.garden = nil
+	local legacy = run({ snapshot = empty })
+	visit(legacy, "Workshop", "Garden")
+	noFailures(legacy, "garden without server data")
+	check(find(legacy.scroll, "GardenSummary") == nil, "syncing card while the garden loads")
+	local broken = run({ snapshot = snapshot({ malformed = true }) })
+	visit(broken, "Workshop", "Garden")
+	for _, view in ipairs({ "Visitors", "Composter", "Milestones", "Shop", "Plots" }) do
+		press(find(broken.scroll, "Garden" .. view))
+		noFailures(broken, "malformed garden " .. view)
+		checks += 1
+	end
+	print("Verdant Garden client: " .. (checks - gardenChecks) .. " checks.")
 end
 print("UI QA passed " .. checks .. " checks (" .. created .. " mock instances).")
 
