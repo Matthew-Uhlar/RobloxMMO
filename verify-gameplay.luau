@@ -2788,7 +2788,8 @@ do
 	-- Session rules.
 	local back=rejoin(fisher)
 	eq(seaOp(back,{seq=4,monster="ShellsnapCrab",result="kill"}).ok,false,"tickets do not survive a rejoin")
-	eq(seaOp({UserId=7799},{seq=1,monster="ShellsnapCrab",result="kill"}),nil,"no live journal, no grant")
+	local unsynced=seaOp({UserId=7799},{seq=1,monster="ShellsnapCrab",result="kill"})
+	ok(unsynced.ok==false and unsynced.reason=="sync","no live journal, no grant (combat resends while the ticket lasts)")
 	-- Bestiary milestones count sea creature kills.
 	local hunter=seeded(7704,function(p) p.bestiary.ShellsnapCrab=10 end)
 	eq(st(hunter).depth.stats.bestiaryTiers,1,"sea creature kills reach bestiary milestones")

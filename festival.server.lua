@@ -11,110 +11,6 @@
 local Players = game:GetService("Players")
 local ballots = {}
 local choices = {"Timber", "Ore", "Herb", "Fish"}
-local gate = workspace:FindFirstChild("ExpeditionGate", true)
-while not gate do
-	local obj = workspace.DescendantAdded:Wait()
-	if obj.Name == "ExpeditionGate" and obj:IsA("BasePart") then gate = obj end
-end
-local ink, gold, ivory, mint = Color3.fromRGB(26, 51, 60), Color3.fromRGB(255, 220, 150), Color3.fromRGB(255, 244, 217), Color3.fromRGB(158, 231, 210)
-local board = Instance.new("Part")
-board.Name = "Island Assembly"
-board.Size = Vector3.new(9, 5.5, 1)
-board.Anchored = true
-board.Material = Enum.Material.Slate
-board.Color = ink
-board.CFrame = gate.CFrame + Vector3.new(16, 2.25, 8)
-board.Parent = workspace
-local post = Instance.new("Part")
-post.Name = "Notice Post"
-post.Size = Vector3.new(0.6, 2, 0.6)
-post.Anchored = true
-post.Material = Enum.Material.Wood
-post.Color = Color3.fromRGB(110, 78, 48)
-post.CFrame = board.CFrame - Vector3.new(0, 3.6, 0)
-post.Parent = workspace
--- A fixed physical face cannot follow the camera across the expedition arch.
-local sign = Instance.new("SurfaceGui")
-sign.Face = Enum.NormalId.Back
-sign.CanvasSize = Vector2.new(720, 440)
-sign.AlwaysOnTop = false
-sign.LightInfluence = 0
-sign.Parent = board
-local function line(name, y, height, size, color, font)
-	local text = Instance.new("TextLabel")
-	text.Name = name
-	text.BackgroundTransparency = 1
-	text.TextColor3 = color
-	text.Font = font or Enum.Font.GothamBold
-	text.TextSize = size
-	text.TextWrapped = true
-	text.RichText = true
-	text.Position = UDim2.fromOffset(16, y)
-	text.Size = UDim2.new(1, -32, 0, height)
-	text.Parent = sign
-	return text
-end
-local backdrop = Instance.new("Frame")
-backdrop.Name = "Backdrop"
-backdrop.BackgroundColor3 = ink
-backdrop.BorderSizePixel = 0
-backdrop.Size = UDim2.fromScale(1, 1)
-backdrop.ZIndex = 0
-backdrop.Parent = sign
-local header = line("Header", 8, 40, 30, gold)
-local date = line("Date", 50, 64, 22, ivory, Enum.Font.Gotham)
-local eventLine = line("Event", 118, 150, 26, mint)
-local title = line("Ballot", 276, 156, 26, gold)
-header.Text = "ISLAND ASSEMBLY  •  SKYWARD CALENDAR"
-local buttons = {}
-for i, name in {"A", "B"} do
-	local anchor = Instance.new("Attachment")
-	anchor.Position = Vector3.new((i-1.5)*3, -1.5, 0)
-	anchor.Parent = board
-	local p = Instance.new("ProximityPrompt")
-	p.Name = "Vote" .. name
-	p.RequiresLineOfSight = false
-	p.ObjectText = "Island Assembly"
-	p.KeyboardKeyCode = if i == 1 then Enum.KeyCode.E else Enum.KeyCode.F
-	p.UIOffset = Vector2.new(0, (i-1.5)*78)
-	p.Parent = anchor
-	buttons[i] = p
-	p.Triggered:Connect(function(player)
-		local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-		if p.Enabled and root and (root.Position-board.CFrame.Position).Magnitude <= 13 then
-			ballots[player] = i
-		end
-	end)
-end
-Players.PlayerRemoving:Connect(function(player) ballots[player] = nil end)
--- Festival Vendor stall beside the board (server.server.lua answers the prompt).
-local stall = Instance.new("Part")
-stall.Name = "Festival Vendor"
-stall.Size = Vector3.new(4, 3, 2.5)
-stall.Anchored = true
-stall.Material = Enum.Material.WoodPlanks
-stall.Color = Color3.fromRGB(150, 92, 60)
-stall.CFrame = board.CFrame + Vector3.new(8, -2.4, 0)
-stall.Parent = workspace
-local awning = Instance.new("Part")
-awning.Name = "Vendor Awning"
-awning.Size = Vector3.new(4.6, 0.3, 3)
-awning.Anchored = true
-awning.CanCollide = false
-awning.Material = Enum.Material.Fabric
-awning.Color = Color3.fromRGB(199, 125, 255)
-awning.CFrame = stall.CFrame + Vector3.new(0, 3.2, 0)
-awning.Parent = workspace
-local vendor = Instance.new("ProximityPrompt")
-vendor.Name = "VendorPrompt"
-vendor.ActionText = "Trade"
-vendor.ObjectText = "Festival Vendor"
-vendor.RequiresLineOfSight = false
-vendor.MaxActivationDistance = 10
-vendor:SetAttribute("IsleAction", "eventVendor")
-vendor:SetAttribute("IsleItem", "Vendor")
-vendor.Parent = stall
-
 -- Shared calendar rules. Without them (e.g. a stripped test place) the board
 -- still runs the classic ballot.
 local okData, Data = pcall(function()
@@ -123,6 +19,118 @@ end)
 if not okData or type(Data) ~= "table" or type(Data.calendarAt) ~= "function" then Data = nil end
 local crops = {}
 if Data then for _, r in ipairs(Data.ResourceTiers.Farming) do table.insert(crops, r.id) end end
+
+-- Board pieces (nil until the ExpeditionGate exists). The calendar itself is
+-- published every second from the start, board or not, so a missing or late
+-- gate never switches the Skyward Calendar (and its events) off.
+local board, date, eventLine, title
+local buttons = {}
+local function placeBoard(gate)
+	if board then return end
+	local ink, gold, ivory, mint = Color3.fromRGB(26, 51, 60), Color3.fromRGB(255, 220, 150), Color3.fromRGB(255, 244, 217), Color3.fromRGB(158, 231, 210)
+	board = Instance.new("Part")
+	board.Name = "Island Assembly"
+	board.Size = Vector3.new(9, 5.5, 1)
+	board.Anchored = true
+	board.Material = Enum.Material.Slate
+	board.Color = ink
+	board.CFrame = gate.CFrame + Vector3.new(16, 2.25, 8)
+	board.Parent = workspace
+	local post = Instance.new("Part")
+	post.Name = "Notice Post"
+	post.Size = Vector3.new(0.6, 2, 0.6)
+	post.Anchored = true
+	post.Material = Enum.Material.Wood
+	post.Color = Color3.fromRGB(110, 78, 48)
+	post.CFrame = board.CFrame - Vector3.new(0, 3.6, 0)
+	post.Parent = workspace
+	-- A fixed physical face cannot follow the camera across the expedition arch.
+	local sign = Instance.new("SurfaceGui")
+	sign.Face = Enum.NormalId.Back
+	sign.CanvasSize = Vector2.new(720, 440)
+	sign.AlwaysOnTop = false
+	sign.LightInfluence = 0
+	sign.Parent = board
+	local function line(name, y, height, size, color, font)
+		local text = Instance.new("TextLabel")
+		text.Name = name
+		text.BackgroundTransparency = 1
+		text.TextColor3 = color
+		text.Font = font or Enum.Font.GothamBold
+		text.TextSize = size
+		text.TextWrapped = true
+		text.RichText = true
+		text.Position = UDim2.fromOffset(16, y)
+		text.Size = UDim2.new(1, -32, 0, height)
+		text.Parent = sign
+		return text
+	end
+	local backdrop = Instance.new("Frame")
+	backdrop.Name = "Backdrop"
+	backdrop.BackgroundColor3 = ink
+	backdrop.BorderSizePixel = 0
+	backdrop.Size = UDim2.fromScale(1, 1)
+	backdrop.ZIndex = 0
+	backdrop.Parent = sign
+	local header = line("Header", 8, 40, 30, gold)
+	date = line("Date", 50, 64, 22, ivory, Enum.Font.Gotham)
+	eventLine = line("Event", 118, 150, 26, mint)
+	title = line("Ballot", 276, 156, 26, gold)
+	header.Text = "ISLAND ASSEMBLY  •  SKYWARD CALENDAR"
+	for i, name in {"A", "B"} do
+		local anchor = Instance.new("Attachment")
+		anchor.Position = Vector3.new((i-1.5)*3, -1.5, 0)
+		anchor.Parent = board
+		local p = Instance.new("ProximityPrompt")
+		p.Name = "Vote" .. name
+		p.RequiresLineOfSight = false
+		p.ObjectText = "Island Assembly"
+		p.KeyboardKeyCode = if i == 1 then Enum.KeyCode.E else Enum.KeyCode.F
+		p.UIOffset = Vector2.new(0, (i-1.5)*78)
+		p.Parent = anchor
+		buttons[i] = p
+		p.Triggered:Connect(function(player)
+			local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+			if p.Enabled and root and (root.Position-board.CFrame.Position).Magnitude <= 13 then
+				ballots[player] = i
+			end
+		end)
+	end
+	Players.PlayerRemoving:Connect(function(player) ballots[player] = nil end)
+	-- Festival Vendor stall beside the board (server.server.lua answers the prompt).
+	local stall = Instance.new("Part")
+	stall.Name = "Festival Vendor"
+	stall.Size = Vector3.new(4, 3, 2.5)
+	stall.Anchored = true
+	stall.Material = Enum.Material.WoodPlanks
+	stall.Color = Color3.fromRGB(150, 92, 60)
+	stall.CFrame = board.CFrame + Vector3.new(8, -2.4, 0)
+	stall.Parent = workspace
+	local awning = Instance.new("Part")
+	awning.Name = "Vendor Awning"
+	awning.Size = Vector3.new(4.6, 0.3, 3)
+	awning.Anchored = true
+	awning.CanCollide = false
+	awning.Material = Enum.Material.Fabric
+	awning.Color = Color3.fromRGB(199, 125, 255)
+	awning.CFrame = stall.CFrame + Vector3.new(0, 3.2, 0)
+	awning.Parent = workspace
+	local vendor = Instance.new("ProximityPrompt")
+	vendor.Name = "VendorPrompt"
+	vendor.ActionText = "Trade"
+	vendor.ObjectText = "Festival Vendor"
+	vendor.RequiresLineOfSight = false
+	vendor.MaxActivationDistance = 10
+	vendor:SetAttribute("IsleAction", "eventVendor")
+	vendor:SetAttribute("IsleItem", "Vendor")
+	vendor.Parent = stall
+end
+local gate = workspace:FindFirstChild("ExpeditionGate", true)
+if gate and gate:IsA("BasePart") then placeBoard(gate) else
+	workspace.DescendantAdded:Connect(function(obj)
+		if not board and obj.Name == "ExpeditionGate" and obj:IsA("BasePart") then placeBoard(obj) end
+	end)
+end
 
 local function span(seconds)
 	seconds = math.max(0, math.floor(seconds))
@@ -145,6 +153,7 @@ local function publish(now)
 	workspace:SetAttribute("AetherEventKey", cal.eventKey)
 	workspace:SetAttribute("AetherNextEvent", upcoming.id)
 	workspace:SetAttribute("AetherNextEventStarts", upcoming.starts)
+	if not date then return cal end
 	local season = Data.SeasonById[cal.season]
 	date.Text = string.format("Year %d  •  <b>%s %d</b> of %d  •  dusk in %s\n%s", cal.year, season.name, cal.day,
 		Data.Calendar.daysPerSeason, span(cal.dayEnds - now), season.text)
@@ -164,6 +173,11 @@ end
 
 local round = 0
 local now = os.time()
+-- Until the board exists only the calendar runs (the ballot needs the board).
+while not board do
+	publish(os.time())
+	task.wait(1)
+end
 while true do
 	table.clear(ballots)
 	workspace:SetAttribute("FestivalResource", nil)

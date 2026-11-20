@@ -31,7 +31,34 @@
 -- the journal (sequence numbers; the crew ledger remembers the last applied
 -- sequence), withdrawals use a crew outbox keyed by token (the journal
 -- remembers delivered tokens). Either side can crash at any point and the
--- next action from that player settles the transfer exactly once.
+-- next action from that player settles the transfer exactly once. A delivered
+-- withdrawal token is pruned from the crew outbox lazily (by the next write to
+-- that crew, or the 30 s flush), so a withdrawal costs one crew write; the
+-- journal's delivered-token list keeps a replay in between idempotent.
+--
+-- Shared supply prompts (the crew-haven Timber/Ore/Herb nodes) are building
+-- material, not loot:
+--   * each (node, member) regrows after PROMPT_REGROW seconds, like personal
+--     nodes, and each member may add at most PROMPT_HOURLY units per UTC hour
+--     (checked durably in the ledger when the batch is flushed);
+--   * prompt units are "bound": they fund builds and worker upgrades (which
+--     spend bound units first) and earn Homestead XP, but can never be
+--     withdrawn to a satchel (withdrawable stock = supplies - bound);
+--   * gathers are batched in server memory and flushed every FLUSH_EVERY
+--     seconds (or merged into the next write to that crew). A server crash
+--     loses at most one unflushed batch of free prompt units; that is accepted.
+-- Withdrawal rule: a member may withdraw at most
+--   (own deposits - own withdrawals) + floor(credit)
+-- where credit is an equal share (1 / crew size at the time) of every unit of
+-- shared-worker output claimed and of every other member's deposit. Combined
+-- with the bound rule, items only leave the stores as real goods that entered
+-- them (deposits) or worker output, so prompts cannot mint satchel items.
+--
+-- DataStore budget: mutating verbs are gated to one per MUTATE_GATE seconds
+-- per player; state requests, prompt checks and the refresh loop read through
+-- a per-key cache (CACHE_TTL); when GetRequestBudgetForRequestType reports a
+-- low GetAsync budget, optional reads serve stale cache and the refresh loop
+-- skips its pass.
 local Players=game:GetService("Players")
 local ReplicatedStorage=game:GetService("ReplicatedStorage")
 local ServerStorage=game:GetService("ServerStorage")
@@ -48,6 +75,12 @@ local changed=Instance.new("RemoteEvent")
 changed.Name="IsleCoopUpdate"
 changed.Parent=ReplicatedStorage
 local busy,lastRequest,invitations,cachedGroup,perkSig={},{},{},{},{}
+local MUTATE_GATE,READ_GATE,CACHE_TTL,FLUSH_EVERY=6,0.6,8,30
+local PROMPT_REGROW,PROMPT_HOURLY,DEPARTED_KEEP,BUDGET_FLOOR=5,120,4,20
+local lastMutate,lastPrompt,regrow,hourly,retryAt={},{},{},{},{}
+-- cache[ck] = {value, at}; pending[ck] = prompt gather batch; acked[ck] =
+-- delivered withdrawal tokens awaiting removal from that crew's outbox.
+local cache,pending,acked,meta={},{},{},{}
 -- clean[player]: index healed and crew outboxes replayed this session. Cleared
 -- by any failed action, failed delivery or a stale index seen on refresh, so
 -- the extra recovery reads happen only when something may be half-done.
@@ -71,10 +104,26 @@ local function invoke(player,seal,request)
 	return profile
 end
 local function eligibility(player,seal) return invoke(player,seal,nil) end
+local function cacheKey(key,preview) return (preview and "p|" or "")..key end
+local function remember(key,preview,value) cache[cacheKey(key,preview)]={value=clone(value),at=os.clock()} end
+-- True unless the engine reports a low GetAsync budget (absent API = fine).
+local function budget()
+	local ok,n=pcall(function() return DataStoreService:GetRequestBudgetForRequestType(Enum.DataStoreRequestType.GetAsync) end)
+	return not ok or type(n)~="number" or n>=BUDGET_FLOOR
+end
 local function readRaw(key,preview)
 	if preview then return clone(previewData[key]) end
 	if not store then error("Co-op saving unavailable") end
-	return store:GetAsync(key)
+	local value=store:GetAsync(key)
+	remember(key,preview,value)
+	return value
+end
+-- Optional reads (state, refresh, prompts): cached, stale when budget is low.
+local function readCached(key,preview)
+	if preview then return readRaw(key,true) end
+	local hit=cache[cacheKey(key,preview)]
+	if hit and (os.clock()-hit.at<CACHE_TTL or not budget()) then return clone(hit.value) end
+	return readRaw(key,preview)
 end
 local function read(key,preview)
 	local value=readRaw(key,preview)
@@ -87,7 +136,25 @@ local function write(key,preview,transform)
 		return clone(value)
 	end
 	if not store then error("Co-op saving unavailable") end
-	return store:UpdateAsync(key,transform)
+	local ok,value=pcall(function() return store:UpdateAsync(key,transform) end)
+	if not ok or value==nil then cache[cacheKey(key,preview)]=nil end
+	if not ok then error(value,0) end
+	if value~=nil then remember(key,preview,value) end
+	return value
+end
+-- Departed-crew history kept on the member index (newest first, <= DEPARTED_KEEP)
+-- so undelivered withdrawals from any recent crew are still recovered.
+local function history(old,add)
+	local out={}
+	local function push(groupId)
+		if type(groupId)=="string" and not table.find(out,groupId) and #out<DEPARTED_KEEP then table.insert(out,groupId) end
+	end
+	push(add)
+	if old then
+		for _,groupId in ipairs(type(old.gone)=="table" and old.gone or {}) do push(groupId) end
+		push(old.left)
+	end
+	return out
 end
 -- Group ids: the founder's user id, or "<userId>-<n>" for that founder's later crews.
 local function id(value)
@@ -115,7 +182,8 @@ local function count(map) local n=0; for _ in pairs(map) do n+=1 end; return n e
 local function normalize(g)
 	g.members=g.members or {}; g.invites=g.invites or {}; g.supplies=g.supplies or {}; g.decorations=g.decorations or {}
 	g.joined=g.joined or {}; g.ledger=g.ledger or {}; g.workers=g.workers or {}; g.departed=g.departed or {}
-	g.outbox=g.outbox or {}; g.log=g.log or {}; g.xp=tonumber(g.xp) or 0
+	g.outbox=g.outbox or {}; g.log=g.log or {}; g.xp=tonumber(g.xp) or 0; g.bound=g.bound or {}
+	for resource,n in pairs(g.bound) do g.bound[resource]=math.clamp(n,0,g.supplies[resource] or 0) end
 	local t=os.time()
 	for userId in pairs(g.members) do g.joined[userId]=g.joined[userId] or 0 end
 	for userId,invite in pairs(g.invites) do if type(invite)~="table" or invite.expires<=t then g.invites[userId]=nil end end
@@ -125,7 +193,26 @@ end
 local function ledgerOf(g,userId)
 	local l=g.ledger[userId]
 	if not l then l={gathered=0,deposited=0,withdrawn=0,built=0,worker=0,peak=0,seq=0,points=0}; g.ledger[userId]=l end
+	l.credit=l.credit or 0
 	return l
+end
+-- Gives every current member except `except` an equal share of `amount`.
+local function share(g,amount,except)
+	local n=0
+	for _ in pairs(g.members) do n+=1 end
+	if n==0 or amount<=0 then return end
+	for memberId in pairs(g.members) do
+		if memberId~=except then local l=ledgerOf(g,memberId); l.credit+=amount/n end
+	end
+end
+local function allowance(g,userId)
+	local l=ledgerOf(g,userId)
+	return math.max(0,l.deposited+math.floor(l.credit+1e-9)-l.withdrawn)
+end
+-- Spends shared supplies, bound (prompt) units first.
+local function spend(g,resource,amount)
+	g.supplies[resource]=(g.supplies[resource] or 0)-amount
+	g.bound[resource]=math.clamp((g.bound[resource] or 0)-amount,0,g.supplies[resource])
 end
 local function addXp(g,userId,amount)
 	if amount<=0 then return end
@@ -161,7 +248,7 @@ local function depart(g,userId,kicked,reason,by)
 	end
 	if not next(g.members) then
 		g.disbanded=true; g.disbandedAt=t
-		g.invites={}; g.workers={}; g.supplies={}
+		g.invites={}; g.workers={}; g.supplies={}; g.bound={}
 		note(g,"The crew disbanded.")
 	end
 end
@@ -181,8 +268,93 @@ local function claimWorker(g,w,userId)
 	if amount>0 then
 		g.supplies[w.resource]=(g.supplies[w.resource] or 0)+amount
 		if userId then local l=ledgerOf(g,userId); l.worker+=amount end
+		share(g,amount,nil)
 	end
 	return amount
+end
+-- Applies one prompt gather batch (pure in g). Members only, same mode,
+-- capped by the member's hourly prompt allowance and the storage cap.
+local function applyGathers(g,batch,t)
+	if not g or g.disbanded then return false end
+	normalize(g)
+	local _,def=levelOf(g)
+	local hour=math.floor(t/3600)
+	local any=false
+	for userId,entry in pairs(batch.users) do
+		if g.members[userId] and g.ironman==entry.ironman then
+			local l=ledgerOf(g,userId)
+			if l.promptHour~=hour then l.promptHour=hour; l.promptCount=0 end
+			for resource,n in pairs(entry.res) do
+				local take=math.min(n,PROMPT_HOURLY-l.promptCount,def.storage-(g.supplies[resource] or 0))
+				if take>0 then
+					g.supplies[resource]=(g.supplies[resource] or 0)+take
+					g.bound[resource]=(g.bound[resource] or 0)+take
+					l.promptCount+=take; l.gathered+=take
+					addXp(g,userId,take)
+					any=true
+				end
+			end
+		end
+	end
+	return any
+end
+-- Every crew write goes through here: it folds in this server's pending
+-- prompt batch and prunes delivered withdrawal tokens in the same UpdateAsync.
+-- The caller's transform keeps its own nil = "denied" meaning; housekeeping is
+-- still committed in that case. On failure the batch and acks are restored.
+local function writeGroup(groupId,preview,transform)
+	local ck=cacheKey("group_"..groupId,preview)
+	local batch,acks=pending[ck],acked[ck]
+	pending[ck],acked[ck]=nil,nil
+	local t=os.time()
+	local result
+	local ok,err=pcall(write,"group_"..groupId,preview,function(old)
+		result=nil
+		local house=false
+		if old and acks and old.outbox then
+			for token in pairs(acks) do if old.outbox[token] then old.outbox[token]=nil; house=true end end
+		end
+		if old and batch and applyGathers(old,batch,t) then house=true end
+		local saved=house and clone(old) or nil
+		result=transform(old)
+		if result~=nil then return result end
+		return saved
+	end)
+	if not ok then
+		if batch then
+			local now=pending[ck]
+			if now then
+				for userId,entry in pairs(batch.users) do
+					local into=now.users[userId] or {ironman=entry.ironman,res={}}
+					now.users[userId]=into
+					for resource,n in pairs(entry.res) do into.res[resource]=(into.res[resource] or 0)+n end
+				end
+				now.since=math.min(now.since,batch.since)
+			else pending[ck]=batch end
+		end
+		if acks then
+			acked[ck]=acked[ck] or {}
+			for token in pairs(acks) do acked[ck][token]=true end
+		end
+		error(err,0)
+	end
+	return clone(result)
+end
+-- Commits this server's pending housekeeping for one crew (1 write).
+local function flush(ck)
+	local m=meta[ck]
+	if not m or not (pending[ck] or acked[ck]) then return true end
+	return (pcall(writeGroup,m.groupId,m.preview,function() return nil end))
+end
+local function flushDue(force)
+	local now=os.clock()
+	local keys={}
+	for ck in pairs(meta) do table.insert(keys,ck) end
+	for _,ck in ipairs(keys) do
+		local batch=pending[ck]
+		if force or acked[ck] or (batch and now-batch.since>=FLUSH_EVERY) then flush(ck) end
+		if not pending[ck] and not acked[ck] then meta[ck]=nil end
+	end
 end
 local function perkFor(g)
 	local _,def=levelOf(g)
@@ -220,9 +392,10 @@ local function publish(player,group,groupId,profile)
 end
 local function snapshot(player,profile,message)
 	local userId=tostring(player.UserId)
-	local raw=readRaw("member_"..userId,profile.preview)
+	local raw=readCached("member_"..userId,profile.preview)
 	local index=raw and not raw.empty and raw or nil
-	local group=index and read("group_"..index.groupId,profile.preview)
+	local group=index and readCached("group_"..index.groupId,profile.preview)
+	group=group and not group.empty and group or nil
 	if group then normalize(group) end
 	local member=group and group.members[userId]
 	publish(player,member and group or nil,member and index.groupId or nil,profile)
@@ -270,6 +443,14 @@ local function snapshot(player,profile,message)
 		end
 		for _,entry in ipairs(group.log) do table.insert(state.log,entry.text) end
 	end
+	-- Prompt gathers still waiting in this server's batch (flushed <= 30 s).
+	local batch=member and pending[cacheKey("group_"..index.groupId,profile.preview)]
+	if batch then
+		for _,entry in pairs(batch.users) do
+			for resource,n in pairs(entry.res) do state.supplies[resource]=(state.supplies[resource] or 0)+n end
+		end
+	end
+	if member then state.withdrawable=allowance(group,userId) end
 	for groupId,invite in pairs(invitations[player] or {}) do
 		if invite.expires>t then table.insert(state.invites,{groupId=groupId,owner=invite.owner,name=invite.name,ironman=invite.ironman}) end
 	end
@@ -295,7 +476,7 @@ end
 local function settleDeposit(player,profile,entry)
 	local userId=tostring(player.UserId)
 	local outcome="refund"
-	write("group_"..entry.groupId,profile.preview,function(old)
+	writeGroup(entry.groupId,profile.preview,function(old)
 		outcome="refund"
 		if not old then return nil end
 		normalize(old)
@@ -306,6 +487,7 @@ local function settleDeposit(player,profile,entry)
 		l.seq=entry.seq
 		old.supplies[entry.resource]=(old.supplies[entry.resource] or 0)+entry.amount
 		l.deposited+=entry.amount
+		share(old,entry.amount,userId)
 		-- Only net-new deposits earn homestead XP, so cycling earns nothing.
 		local net=l.deposited-l.withdrawn
 		if net>l.peak then addXp(old,userId,net-l.peak); l.peak=net end
@@ -318,21 +500,28 @@ end
 local function deliver(player,profile,groupId,token,entry)
 	local delivered=invoke(player,false,{credit={token=token,resource=entry.resource,amount=entry.amount}})
 	if not delivered or not delivered.result or not delivered.result.ok then clean[player]=nil; return false end
-	write("group_"..groupId,profile.preview,function(old)
-		if not old or not old.outbox or not old.outbox[token] then return nil end
-		old.outbox[token]=nil
-		return old
-	end)
+	-- Removed from the crew outbox by the next write to the crew (or the flush).
+	local ck=cacheKey("group_"..groupId,profile.preview)
+	acked[ck]=acked[ck] or {}
+	acked[ck][token]=true
+	meta[ck]={groupId=groupId,preview=profile.preview}
 	return true
 end
 local function replayWithdrawals(player,profile,groupId)
 	local userId=tostring(player.UserId)
 	local group=read("group_"..groupId,profile.preview)
-	if not group or not group.outbox then return end
+	if not group or not group.outbox then return true end
 	local tokens={}
-	for token,entry in pairs(group.outbox) do if entry.userId==userId then table.insert(tokens,token) end end
+	local ck=cacheKey("group_"..groupId,profile.preview)
+	for token,entry in pairs(group.outbox) do
+		if entry.userId==userId and not (acked[ck] and acked[ck][token]) then table.insert(tokens,token) end
+	end
 	table.sort(tokens)
-	for _,token in ipairs(tokens) do deliver(player,profile,groupId,token,group.outbox[token]) end
+	local all=true
+	for _,token in ipairs(tokens) do
+		if not deliver(player,profile,groupId,token,group.outbox[token]) then all=false end
+	end
+	return all
 end
 -- Heals a stale index (removed on another server or before a crash), then
 -- settles any satchel transfers left half-way by a crash.
@@ -340,7 +529,7 @@ local function recover(player,profile)
 	local pending=type(profile.coopOutbox)=="table" and profile.coopOutbox or {}
 	table.sort(pending,function(a,b) return a.seq<b.seq end)
 	for _,entry in ipairs(pending) do settleDeposit(player,profile,entry) end
-	if clean[player] then return end
+	if clean[player] or os.clock()<(retryAt[player] or 0) then return end
 	local userId=tostring(player.UserId)
 	local indexKey="member_"..userId
 	local raw=readRaw(indexKey,profile.preview)
@@ -349,7 +538,7 @@ local function recover(player,profile)
 		local group=read("group_"..raw.groupId,profile.preview)
 		if group and not group.disbanded and (group.members or {})[userId] then
 			raw=write(indexKey,profile.preview,function(old)
-				if old and old.groupId==raw.groupId and not old.empty then return {groupId=old.groupId,kind="joined",token=old.token} end
+				if old and old.groupId==raw.groupId and not old.empty then return {groupId=old.groupId,kind="joined",token=old.token,gone=history(old)} end
 				return old
 			end)
 		end
@@ -360,14 +549,21 @@ local function recover(player,profile)
 			local gone=group and group.departed and group.departed[userId]
 			local healed={empty=true,left=raw.groupId,cooldownUntil=gone and gone.at+Coop.RejoinCooldown or 0,kicked=gone and gone.kicked or nil,reason=gone and gone.reason or nil}
 			raw=write(indexKey,profile.preview,function(old)
-				if old and old.groupId==raw.groupId and old.kind=="joined" then return healed end
+				if old and old.groupId==raw.groupId and old.kind=="joined" then healed.gone=history(old,raw.groupId); return healed end
 				return old
 			end)
 		end
 	end
-	if raw and raw.groupId then replayWithdrawals(player,profile,raw.groupId) end
-	if raw and raw.left then replayWithdrawals(player,profile,raw.left) end
-	clean[player]=true
+	-- Stays unclean while any delivery fails, so the next action retries it.
+	local settled=true
+	if raw and raw.groupId then settled=replayWithdrawals(player,profile,raw.groupId) end
+	for _,groupId in ipairs(history(raw)) do
+		if groupId~=(raw and raw.groupId) and not replayWithdrawals(player,profile,groupId) then settled=false end
+	end
+	clean[player]=settled or nil
+	-- A delivery that keeps failing (journal cannot save) is retried at most
+	-- once per MUTATE_GATE, not on every state request.
+	retryAt[player]=not settled and os.clock()+MUTATE_GATE or nil
 end
 ------------------------------------------------------------------------------
 -- Membership.
@@ -382,19 +578,20 @@ local function join(player,profile,groupId,creating,inviteToken)
 	local reservation=write(indexKey,profile.preview,function(old)
 		if old and not old.empty then return old end
 		if old and (old.cooldownUntil or 0)>t then return nil end
-		return {groupId=groupId,kind=creating and "create" or "accept",token=inviteToken or "founder"}
+		return {groupId=groupId,kind=creating and "create" or "accept",token=inviteToken or "founder",gone=history(old)}
 	end)
 	if not reservation then return "Your rejoin cooldown is still running." end
 	if reservation.groupId~=groupId then return "You already belong to, or are joining, another homestead." end
-	local group=write("group_"..groupId,profile.preview,function(old)
+	local group=writeGroup(groupId,profile.preview,function(old)
 		if not old or old.disbanded then
 			if not creating or not founded(groupId,userId) then return nil end
 			-- A reused key starts fresh but keeps each user's applied deposit
 			-- sequence, so a late journal outbox replay is never applied twice.
 			local ledger={}
 			for ledgerId,l in pairs(old and old.ledger or {}) do ledger[ledgerId]={gathered=0,deposited=0,withdrawn=0,built=0,worker=0,peak=0,points=0,seq=l.seq or 0} end
+			-- Undelivered withdrawals of the disbanded crew stay deliverable.
 			old={owner=player.UserId,ironman=profile.ironman==true,members={},invites={},supplies={},decorations={},
-				ledger=ledger,generation=old and (old.generation or 1)+1 or 1}
+				ledger=ledger,generation=old and (old.generation or 1)+1 or 1,outbox=old and old.outbox or {}}
 		end
 		normalize(old)
 		if old.ironman~=(profile.ironman==true) then return nil end
@@ -415,21 +612,21 @@ local function join(player,profile,groupId,creating,inviteToken)
 	if not group then
 		-- Revoke this exact invitation atomically before clearing the index.
 		-- A delayed join using its old token can no longer add an orphan member.
-		local cancelled=write("group_"..groupId,profile.preview,function(old)
+		local cancelled=writeGroup(groupId,profile.preview,function(old)
 			if not old then return nil end
 			if not (old.members or {})[userId] and old.invites and old.invites[userId] and old.invites[userId].token==reservation.token then old.invites[userId]=nil end
 			return old
 		end)
 		if not (cancelled and (cancelled.members or {})[userId]) then
 			write(indexKey,profile.preview,function(old)
-				if old and old.groupId==groupId and old.token==reservation.token and old.kind~="joined" then return {empty=true} end
+				if old and old.groupId==groupId and old.token==reservation.token and old.kind~="joined" then return {empty=true,gone=history(old)} end
 				return old
 			end)
 		end
 		return "Invitation unavailable, homestead full or modes differ. Ask for a new invitation or choose another homestead."
 	end
 	write(indexKey,profile.preview,function(old)
-		if old and old.groupId==groupId then return {groupId=groupId,kind="joined",token=old.token} end
+		if old and old.groupId==groupId then return {groupId=groupId,kind="joined",token=old.token,gone=history(old)} end
 		return old
 	end)
 	if invitations[player] then invitations[player][groupId]=nil end
@@ -442,7 +639,7 @@ local function release(userId,profile,groupId,group)
 	local gone=group.departed[userId]
 	write("member_"..userId,profile.preview,function(old)
 		if old and not old.empty and old.groupId==groupId and old.kind=="joined" then
-			return {empty=true,left=groupId,cooldownUntil=(gone and gone.at or os.time())+Coop.RejoinCooldown,kicked=gone and gone.kicked or nil,reason=gone and gone.reason or nil}
+			return {empty=true,left=groupId,gone=history(old,groupId),cooldownUntil=(gone and gone.at or os.time())+Coop.RejoinCooldown,kicked=gone and gone.kicked or nil,reason=gone and gone.reason or nil}
 		end
 		return old
 	end)
@@ -514,7 +711,7 @@ local function perform(player,profile,verb,arg,extra)
 		if targetIndex and targetIndex.empty and (targetIndex.cooldownUntil or 0)>os.time() then return "That voyager left a crew recently and can join again in "..span(targetIndex.cooldownUntil-os.time()).."." end
 		local expires=os.time()+Coop.InviteSeconds
 		local token=HttpService:GenerateGUID(false)
-		local group=write(key,profile.preview,function(old)
+		local group=writeGroup(groupId,profile.preview,function(old)
 			old=leader(old)
 			if not old then return nil end
 			if count(old.members)>=Coop.MaxMembers or old.members[targetId] then return nil end
@@ -529,7 +726,7 @@ local function perform(player,profile,verb,arg,extra)
 	elseif verb=="revoke" then
 		local targetId=id(arg)
 		if not targetId then return "Choose an invitation to revoke." end
-		local group=write(key,profile.preview,function(old)
+		local group=writeGroup(groupId,profile.preview,function(old)
 			old=leader(old)
 			if not old then return nil end
 			old.invites[targetId]=nil
@@ -541,7 +738,7 @@ local function perform(player,profile,verb,arg,extra)
 		return "Invitation revoked."
 	elseif verb=="leave" then
 		if arg~="confirm" then return "Confirm before leaving the crew." end
-		local group=write(key,profile.preview,function(old)
+		local group=writeGroup(groupId,profile.preview,function(old)
 			if not old then return nil end
 			normalize(old)
 			if old.members[userId] then
@@ -563,7 +760,7 @@ local function perform(player,profile,verb,arg,extra)
 		if not targetId or targetId==userId then return "Choose another crew member." end
 		if not text then return "Choose a reason before removing a crew member." end
 		local name
-		local group=write(key,profile.preview,function(old)
+		local group=writeGroup(groupId,profile.preview,function(old)
 			reason=nil
 			old=leader(old)
 			if not old then return nil end
@@ -587,7 +784,7 @@ local function perform(player,profile,verb,arg,extra)
 		local targetId=id(arg)
 		if extra~="confirm" then return "Confirm before passing leadership." end
 		if not targetId then return "Choose a crew member." end
-		local group=write(key,profile.preview,function(old)
+		local group=writeGroup(groupId,profile.preview,function(old)
 			reason=nil
 			old=member(old)
 			if not old then return nil end
@@ -602,13 +799,13 @@ local function perform(player,profile,verb,arg,extra)
 		refreshGroup(groupId,profile.preview,player)
 		return group.members[targetId].." now leads the crew."
 	elseif verb=="build" and costs[arg] then
-		local group=write(key,profile.preview,function(old)
+		local group=writeGroup(groupId,profile.preview,function(old)
 			old=member(old)
 			if not old then return nil end
 			if old.decorations[arg] then return old end
 			for resource,amount in pairs(costs[arg]) do if (old.supplies[resource] or 0)<amount then return nil end end
 			local spent=0
-			for resource,amount in pairs(costs[arg]) do old.supplies[resource]-=amount; spent+=amount end
+			for resource,amount in pairs(costs[arg]) do spend(old,resource,amount); spent+=amount end
 			old.decorations[arg]=true
 			ledgerOf(old,userId).built+=spent
 			addXp(old,userId,spent*Coop.ConstructionXp)
@@ -638,15 +835,25 @@ local function perform(player,profile,verb,arg,extra)
 		end
 		local token=HttpService:GenerateGUID(false)
 		local entry={userId=userId,resource=resource,amount=amount,at=os.time()}
-		local committed=write(key,profile.preview,function(old)
+		local committed=writeGroup(groupId,profile.preview,function(old)
+			reason=nil
 			old=member(old)
-			if not old or (old.supplies[resource] or 0)<amount then return nil end
+			if not old then return nil end
+			local free=(old.supplies[resource] or 0)-(old.bound[resource] or 0)
+			if free<amount then
+				reason="The shared stores hold "..math.max(0,free).." withdrawable "..resource..". Supply-node gathers are for building only."
+				return nil
+			end
+			if allowance(old,userId)<amount then
+				reason="You can withdraw "..allowance(old,userId).." more: your own deposits plus your share of crew deposits and worker output."
+				return nil
+			end
 			old.supplies[resource]-=amount
 			local l=ledgerOf(old,userId); l.withdrawn+=amount
 			old.outbox[token]=entry
 			return old
 		end)
-		if not committed then return "The shared stores do not hold "..amount.." "..resource.."." end
+		if not committed then return reason or "The shared stores do not hold "..amount.." "..resource.."." end
 		refreshGroup(groupId,profile.preview,player)
 		if not deliver(player,profile,groupId,token,entry) then return "Withdrawal recorded; it arrives in your satchel once your journal saves." end
 		return "Withdrew "..amount.." "..resource.." to your satchel."
@@ -655,7 +862,7 @@ local function perform(player,profile,verb,arg,extra)
 		local resource=supplyKinds[extra] and extra
 		if not resource then return "Choose Timber, Ore, Herb or Fish." end
 		local claimed=0
-		local group=write(key,profile.preview,function(old)
+		local group=writeGroup(groupId,profile.preview,function(old)
 			reason=nil
 			old=member(old)
 			if not old then return nil end
@@ -675,7 +882,7 @@ local function perform(player,profile,verb,arg,extra)
 		return "Shared worker "..slot.." now gathers "..resource.."."..(claimed>0 and " Collected "..claimed.." first." or "")
 	elseif verb=="upgrade" then
 		local slot=tonumber(arg)
-		local group=write(key,profile.preview,function(old)
+		local group=writeGroup(groupId,profile.preview,function(old)
 			reason=nil
 			old=member(old)
 			if not old then return nil end
@@ -688,7 +895,7 @@ local function perform(player,profile,verb,arg,extra)
 			end
 			claimWorker(old,w,userId)
 			local spent=0
-			for resource,amount in pairs(Coop.WorkerUpgradeCost) do old.supplies[resource]-=amount*w.tier; spent+=amount*w.tier end
+			for resource,amount in pairs(Coop.WorkerUpgradeCost) do spend(old,resource,amount*w.tier); spent+=amount*w.tier end
 			ledgerOf(old,userId).built+=spent
 			addXp(old,userId,spent*Coop.ConstructionXp)
 			w.tier+=1
@@ -700,7 +907,7 @@ local function perform(player,profile,verb,arg,extra)
 		return "Shared worker "..slot.." is now tier "..group.workers[slot].tier.."."
 	elseif verb=="claim" then
 		local total=0
-		local group=write(key,profile.preview,function(old)
+		local group=writeGroup(groupId,profile.preview,function(old)
 			old=member(old)
 			if not old then return nil end
 			total=0
@@ -717,10 +924,23 @@ local function perform(player,profile,verb,arg,extra)
 	end
 	return "Unknown homestead action."
 end
+-- A player whose co-op state cannot be confirmed (store missing, reads
+-- failing) must not keep a crew perk from an old session or a removal made
+-- elsewhere: clear it until a snapshot confirms membership again.
+local function dropPerk(player)
+	if perkSig[player]=="" then return end
+	if invoke(player,false,{perk=false}) then perkSig[player]="" end
+end
 action.OnServerInvoke=function(player,verb,arg,extra)
 	if type(verb)~="string" or (arg~=nil and type(arg)~="string") or (extra~=nil and (type(extra)~="string" or #extra>40)) then return nil end
-	if busy[player] or os.clock()<(lastRequest[player] or 0) then return nil end
-	lastRequest[player]=os.clock()+0.6
+	local now=os.clock()
+	if busy[player] or now<(lastRequest[player] or 0) then return nil end
+	if verb~="state" then
+		local wait=(lastMutate[player] or 0)-now
+		if wait>0 then return {busy=true,message="One homestead change every "..MUTATE_GATE.." seconds. Try again in "..math.ceil(wait).."s."} end
+		lastMutate[player]=now+MUTATE_GATE
+	end
+	lastRequest[player]=now+READ_GATE
 	local profile=eligibility(player,false)
 	if not profile then return {loading=true,message="Waiting for your journal."} end
 	busy[player]=true
@@ -735,14 +955,20 @@ action.OnServerInvoke=function(player,verb,arg,extra)
 		return snapshot(player,profile,message)
 	end)
 	busy[player]=nil
-	if not ok then clean[player]=nil; return {unavailable=true,message="Homestead save delayed. Retry the same action to recover safely."} end
+	if not ok then
+		clean[player]=nil
+		dropPerk(player)
+		return {unavailable=true,message="Homestead save delayed. Retry the same action to recover safely."}
+	end
 	return state
 end
 action.Parent=ReplicatedStorage
+-- Shared supply prompts: validated here, batched in memory, no DataStore write.
 ProximityPromptService.PromptTriggered:Connect(function(prompt,player)
 	local resource=prompt:GetAttribute("IsleCoopResource")
 	if not resources[resource] or not prompt.Enabled or not prompt:IsDescendantOf(workspace) then return end
-	if busy[player] or os.clock()<(lastRequest[player] or 0) then return end
+	local now=os.clock()
+	if busy[player] or now<(lastPrompt[player] or 0) then return end
 	local character=player.Character
 	local humanoid=character and character:FindFirstChildOfClass("Humanoid")
 	local root=character and character:FindFirstChild("HumanoidRootPart")
@@ -751,45 +977,70 @@ ProximityPromptService.PromptTriggered:Connect(function(prompt,player)
 	local profile=eligibility(player,false)
 	if not profile then return end
 	if (prompt:GetAttribute("CoopPreview")==true)~=(profile.preview==true) then return end
-	lastRequest[player]=os.clock()+1
+	lastPrompt[player]=now+1
 	busy[player]=true
 	local ok,state=pcall(function()
-		local groupId=prompt:GetAttribute("CoopId")
-		local index=read("member_"..player.UserId,profile.preview)
-		if not index or index.groupId~=groupId then return snapshot(player,profile,"This is another group's homestead.") end
+		local groupId=id(prompt:GetAttribute("CoopId"))
 		local userId=tostring(player.UserId)
-		local full=false
-		local group=write("group_"..groupId,profile.preview,function(old)
-			if not old or old.disbanded or not (old.members or {})[userId] or old.ironman~=(profile.ironman==true) then return nil end
-			normalize(old)
-			local _,def=levelOf(old)
-			full=(old.supplies[resource] or 0)>=def.storage
-			if full then return nil end
-			old.supplies[resource]=(old.supplies[resource] or 0)+1
-			ledgerOf(old,userId).gathered+=1
-			addXp(old,userId,1)
-			return old
-		end)
-		if full then return snapshot(player,profile,"Shared "..resource.." storage is full. Level the homestead for more room.") end
-		if not group then return snapshot(player,profile,"Homestead membership unavailable.") end
-		return snapshot(player,profile,"+1 shared "..resource.." • homestead supply")
+		local index=groupId and readCached("member_"..userId,profile.preview)
+		if not index or index.empty or index.groupId~=groupId or index.kind~="joined" then return snapshot(player,profile,"This is another group's homestead.") end
+		local node=groupId..":"..resource
+		regrow[player]=regrow[player] or {}
+		local readyAt=regrow[player][node]
+		if readyAt and now<readyAt then return snapshot(player,profile,"This supply is regrowing ("..math.ceil(readyAt-now).."s).") end
+		local group=readCached("group_"..groupId,profile.preview)
+		if not group or group.disbanded or not (group.members or {})[userId] or group.ironman~=(profile.ironman==true) then return snapshot(player,profile,"Homestead membership unavailable.") end
+		normalize(group)
+		local hour=math.floor(os.time()/3600)
+		local mine=hourly[player]
+		if not mine or mine.hour~=hour then
+			-- Seed from the durable ledger so hopping servers cannot reset the cap.
+			local l=group.ledger[userId]
+			mine={hour=hour,n=l and l.promptHour==hour and l.promptCount or 0}
+			hourly[player]=mine
+		end
+		if mine.n>=PROMPT_HOURLY then return snapshot(player,profile,"You have gathered "..PROMPT_HOURLY.." shared supplies this hour. The nodes recover next hour.") end
+		local ck=cacheKey("group_"..groupId,profile.preview)
+		local batch=pending[ck]
+		local queued=0
+		if batch then for _,entry in pairs(batch.users) do queued+=entry.res[resource] or 0 end end
+		local _,def=levelOf(group)
+		if (group.supplies[resource] or 0)+queued>=def.storage then return snapshot(player,profile,"Shared "..resource.." storage is full. Level the homestead for more room.") end
+		if not batch then batch={since=now,users={}}; pending[ck]=batch end
+		meta[ck]={groupId=groupId,preview=profile.preview}
+		local entry=batch.users[userId] or {ironman=profile.ironman==true,res={}}
+		batch.users[userId]=entry
+		entry.res[resource]=(entry.res[resource] or 0)+1
+		mine.n+=1
+		regrow[player][node]=now+PROMPT_REGROW
+		if now-batch.since>=FLUSH_EVERY then flush(ck) end
+		return snapshot(player,profile,"+1 shared "..resource.." • for building and Homestead XP")
 	end)
 	busy[player]=nil
-	if ok then changed:FireClient(player,state) end
+	if ok then changed:FireClient(player,state) else dropPerk(player) end
 end)
 Players.PlayerRemoving:Connect(function(player)
 	busy[player],lastRequest[player],invitations[player],cachedGroup[player],perkSig[player],clean[player]=nil,nil,nil,nil,nil,nil
+	lastMutate[player],lastPrompt[player],regrow[player],hourly[player],retryAt[player]=nil,nil,nil,nil,nil
 end)
+-- Shutdown: commit every pending prompt batch and outbox prune.
+pcall(function() game:BindToClose(function() flushDue(true) end) end)
 -- Bounded refresh also loads group attributes after the main journal has opened,
--- and picks up leave/kick/transfer changes written by other servers.
+-- and picks up leave/kick/transfer changes written by other servers. Every
+-- second pass (30 s) flushes all prompt batches; acks are pruned every pass.
 task.spawn(function()
+	local pass=0
 	while task.wait(15) do
-		for _,player in ipairs(Players:GetPlayers()) do
-			if not busy[player] then
-				local profile=eligibility(player,false)
-				if profile then
-					local ok,state=pcall(snapshot,player,profile)
-					if ok then changed:FireClient(player,state) end
+		pass+=1
+		flushDue(pass%2==0)
+		if budget() then
+			for _,player in ipairs(Players:GetPlayers()) do
+				if not busy[player] then
+					local profile=eligibility(player,false)
+					if profile then
+						local ok,state=pcall(snapshot,player,profile)
+						if ok then changed:FireClient(player,state) else dropPerk(player) end
+					end
 				end
 			end
 		end

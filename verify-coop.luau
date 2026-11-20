@@ -23,8 +23,9 @@ local data={}
 local loseAck,failBefore,race,failHook,failPersist=nil,nil,nil,false,false
 local faults={} -- {key=,kind="before"|"lose",skip=n}: nth matching write fails
 local writes,reads=0,0
+local failReads,persistBroken,budgetLeft=false,false,1000
 local db={}
-function db:GetAsync(key) reads+=1; return copy(data[key]) end
+function db:GetAsync(key) reads+=1; if failReads then error("read throttled") end; return copy(data[key]) end
 function db:UpdateAsync(key,transform)
 	if failBefore==key then failBefore=nil; error("precommit storage failure") end
 	local fault
@@ -48,6 +49,7 @@ local workspace={}
 -- Journal persistence double: a successful save snapshots the journal; crash()
 -- restores the last save (what a new server session would load).
 local function persist(p)
+	if persistBroken then return false end
 	if failPersist then failPersist=false; return false end
 	p.saved=copy({items=p.items,coopBox=p.coopBox,perkStats=p.perkStats})
 	return true
@@ -105,12 +107,15 @@ local function server()
 			GetPlayerByUserId=function(_,id) for _,p in ipairs(srv.online) do if p.UserId==id then return p end end end},
 		ReplicatedStorage={WaitForChild=function() return "AetherData" end},
 		ServerStorage={FindFirstChild=function(_,name) return name=="IsleCoopProfile" and hook or nil end},
-		DataStoreService={GetDataStore=function() return db end},ProximityPromptService={PromptTriggered=signal()},
+		DataStoreService={GetDataStore=function() return db end,GetRequestBudgetForRequestType=function(_,kind)
+			assert(kind=="GetAsync"); return budgetLeft
+		end},ProximityPromptService={PromptTriggered=signal()},
 		HttpService={GenerateGUID=function() guid+=1; return "invite-"..guid end},
 	}
 	srv.services=services
 	luau.load(source,{injectGlobals=true,environment={
 		game={GetService=function(_,name) return services[name] end},workspace=workspace,
+		Enum={DataStoreRequestType={GetAsync="GetAsync"}},
 		require=function() return Data end,
 		Instance={new=function(class)
 			local object={FireClient=function(_,p,state) p.last=state end}; srv.objects[class]=object; return object
@@ -134,7 +139,7 @@ local function player(id,ironman,preview,srv)
 	table.insert(srv.online,p); return p
 end
 local function cmd(p,verb,arg,extra)
-	clock+=2; utc+=2
+	clock+=6; utc+=2
 	return p.server.objects.RemoteFunction.OnServerInvoke(p,verb,arg,extra)
 end
 local function prompt(groupId,resource,distance)
@@ -143,7 +148,7 @@ local function prompt(groupId,resource,distance)
 		FindFirstAncestorWhichIsA=function() return {Position=Vector3.new(distance or 0,0,0)} end}
 end
 local function gather(p,groupId,resource,distance)
-	clock+=2; utc+=2
+	clock+=6; utc+=2
 	p.server.services.ProximityPromptService.PromptTriggered:Fire(prompt(groupId,resource,distance),p)
 	return p.last
 end
@@ -262,12 +267,15 @@ eq(s.level.level,1,"crew starts at homestead level 1")
 eq(L.perkStats.coop,nil,"no perk at level 1")
 eq(L.CoopLevel,1,"level attribute published")
 for _=1,59 do gather(L,"100","Herb") end
+eq(cmd(L,"state").supplies.Herb,59,"batched gathers shown before the flush")
+main.refresh(); main.refresh() -- 30 s flush
 s=cmd(L,"state")
 eq(s.level.xp,59,"each shared gather earns homestead xp")
 eq(s.members[1].gathered,59,"ledger counts gathers")
 eq(s.members[1].points,59,"ledger counts contribution points")
 eq(s.level.level,1,"below level 2 threshold")
 gather(L,"100","Herb")
+main.refresh(); main.refresh()
 s=cmd(L,"state")
 eq(s.level.level,2,"level 2 reached from contributions")
 eq(L.perkStats.coop.health,5,"group perk written into journal perkStats.coop")
@@ -292,7 +300,9 @@ s=cmd(L,"withdraw","Timber","10")
 eq(s.supplies.Timber,10,"withdraw takes from shared stores")
 eq(L.items.Timber,50,"withdraw credits the satchel")
 eq(s.members[1].withdrawn,10,"ledger counts withdrawals")
-eq(next(data.group_100.outbox),nil,"withdraw outbox settled")
+check(next(data.group_100.outbox)~=nil,"delivered token is pruned lazily (one crew write per withdrawal)")
+main.refresh()
+eq(next(data.group_100.outbox),nil,"withdraw outbox pruned by the flush pass")
 s=cmd(L,"deposit","Timber","10")
 eq(s.level.xp,80,"deposit/withdraw cycling earns no xp")
 eq(cmd(L,"deposit","Timber","0").supplies.Timber,20,"zero deposit rejected")
@@ -336,17 +346,28 @@ eq(L.items.Timber,30,"undelivered withdrawal not yet in satchel")
 check(next(data.group_100.outbox)~=nil,"undelivered withdrawal kept in crew outbox")
 cmd(L,"state")
 eq(L.items.Timber,34,"withdrawal delivered on the next action")
+main.refresh()
 eq(next(data.group_100.outbox),nil,"crew outbox cleared after delivery")
 cmd(L,"state")
 eq(L.items.Timber,34,"withdrawal delivered exactly once")
 -- Crash after the satchel save but before the crew outbox is cleared.
-faults={{key="group_100",kind="before",skip=1}}
-eq(cmd(L,"withdraw","Timber","3").unavailable,true,"outbox clear failure reports delay")
+eq(cmd(L,"withdraw","Timber","3").message,"Withdrew 3 Timber to your satchel.","withdraw delivers")
 eq(L.items.Timber,37,"satchel credited once")
 check(next(data.group_100.outbox)~=nil,"crew outbox still lists the delivery")
-cmd(L,"state")
-eq(L.items.Timber,37,"token prevents a second credit")
-eq(next(data.group_100.outbox),nil,"replay clears the crew outbox")
+-- The prune write fails: the ack is kept and retried on the next pass.
+faults={{key="group_100",kind="before"}}
+main.refresh()
+check(next(data.group_100.outbox)~=nil,"failed prune keeps the token")
+-- This server then dies before pruning; a fresh server replays the token.
+do
+	local fresh=server()
+	table.remove(main.online,table.find(main.online,L)); L.server=fresh; table.insert(fresh.online,L)
+	cmd(L,"state")
+	eq(L.items.Timber,37,"token prevents a second credit")
+	fresh.refresh()
+	eq(next(data.group_100.outbox),nil,"replay clears the crew outbox")
+	table.remove(fresh.online,table.find(fresh.online,L)); L.server=main; table.insert(main.online,L)
+end
 eq(cmd(L,"state").supplies.Timber,23,"shared stores debited exactly once")
 ------------------------------------------------------------------------------
 -- Shared workers: assignment, offline accrual, claim once across servers.
@@ -547,8 +568,11 @@ eq(data.group_100.ledger["100"].seq,L.coopBox.seq,"applied deposit sequence surv
 cmd(L,"state")
 reads,writes=0,0
 cmd(L,"state")
-eq(reads,2,"settled member refresh costs two reads")
+eq(reads,2,"settled member refresh past the cache window costs two reads")
 eq(writes,0,"settled member refresh writes nothing")
+reads=0
+cmd(L,"state")
+eq(reads,0,"state inside the cache window costs no reads")
 -- A founder whose original crew lives on gets a generation id.
 local S1,S2=player(110),player(111)
 cmd(S1,"create"); cmd(S1,"invite","111"); cmd(S2,"accept","110")
@@ -570,8 +594,13 @@ cmd(I1,"create"); cmd(I1,"invite","201"); cmd(I2,"accept","200")
 eq(cmd(I2,"state").ironman,true,"Ironman crew marked")
 cmd(I1,"deposit","Ore","10")
 s=cmd(I2,"withdraw","Ore","6")
-eq(I2.items.Ore,6,"Ironman member receives from own crew")
+check(string.find(s.message,"You can withdraw 5 more",1,true)~=nil,"withdrawals capped at a fair share of other members' deposits")
+eq(s.withdrawable,5,"snapshot shows the withdrawable allowance")
+s=cmd(I2,"withdraw","Ore","5")
+eq(I2.items.Ore,5,"Ironman member receives from own crew")
 eq(I1.items.Ore,20,"Ironman deposit debited")
+eq(cmd(I1,"withdraw","Ore","5").message,"Withdrew 5 Ore to your satchel.","depositor may take back their own net deposit")
+eq(cmd(I1,"withdraw","Ore","1").message,"The shared stores hold 0 withdrawable Ore. Supply-node gathers are for building only.","stores cannot pay out more than real goods")
 eq(cmd(I3,"withdraw","Ore","1").message,"Create a homestead or accept an invitation first.","outside Ironman cannot withdraw")
 local std=player(203)
 eq(cmd(I1,"invite","203").message,"Homestead members must use the same game mode and save environment.","standard player cannot join Ironman crew")
@@ -587,6 +616,138 @@ cmd(I3,"state")
 eq(I3.items.Herb,4,"orphaned deposit refunded to the satchel")
 eq(next(I3.coopBox.pending),nil,"orphaned deposit cleared")
 eq(objects.RemoteFunction.OnServerInvoke(I1,"kick","201",string.rep("x",41)),nil,"oversized extra payload denied")
+------------------------------------------------------------------------------
+-- Review fixes: prompt economics, DataStore budget, outbox history, perk.
+------------------------------------------------------------------------------
+local function move(p,to)
+	table.remove(p.server.online,table.find(p.server.online,p)); p.server=to; table.insert(to.online,p)
+end
+local function fire(p,groupId,resource,dt)
+	clock+=dt; utc+=dt
+	p.last=nil
+	p.server.services.ProximityPromptService.PromptTriggered:Fire(prompt(groupId,resource),p)
+	return p.last
+end
+local G1,G2=player(300),player(301)
+cmd(G1,"create"); cmd(G1,"invite","301"); cmd(G2,"accept","300")
+main.refresh(); main.refresh()
+-- Node regrowth, like personal nodes.
+eq(fire(G1,"300","Timber",6).message,"+1 shared Timber • for building and Homestead XP","shared node gather")
+check(fire(G1,"300","Timber",1.5).message:find("regrowing",1,true)~=nil,"shared node regrows per member")
+-- Prompt spam: 100 triggers in 20 s, no DataStore write until the flush.
+main.refresh(); main.refresh()
+reads,writes=0,0
+local got=0
+for _=1,100 do
+	local st=fire(G1,"300","Ore",0.2)
+	if st and st.message:find("+1 shared",1,true) then got+=1 end
+end
+check(got>=3 and got<=5,"regrowth bounds prompt spam ("..got..")")
+eq(writes,0,"prompt gathers are batched in memory")
+check(reads<=6,"prompt checks read through the cache ("..reads..")")
+main.refresh(); main.refresh()
+eq(writes,1,"one crew write flushes the whole batch")
+eq(data.group_300.supplies.Ore,got,"flushed batch reaches the crew")
+eq(data.group_300.bound.Ore,got,"prompt units are bound to building")
+-- Hourly cap (durable in the ledger, shared across servers).
+utc=math.floor(utc/3600)*3600+3600
+local names,capped={"Timber","Ore","Herb"},nil
+for i=1,130 do
+	local st=fire(G1,"300",names[i%3+1],2)
+	if st and st.message:find("this hour",1,true) then capped=capped or i end
+end
+eq(capped,121,"121st prompt unit in an hour is refused")
+main.refresh(); main.refresh()
+eq(data.group_300.ledger["300"].promptCount,120,"ledger records the hourly prompt count")
+local hop=server()
+move(G1,hop)
+check(fire(G1,"300","Herb",6).message:find("this hour",1,true)~=nil,"hourly cap survives a server hop")
+move(G1,main)
+s=cmd(G1,"state")
+eq(s.level.xp,120+got+1,"prompt gathers still earn Homestead XP")
+-- Bound units cannot be withdrawn; deposits can.
+eq(cmd(G1,"withdraw","Timber","1").message,"The shared stores hold 0 withdrawable Timber. Supply-node gathers are for building only.","prompt units never reach a satchel")
+G1.items={Timber=10}
+cmd(G1,"deposit","Timber","10")
+eq(cmd(G1,"withdraw","Timber","10").message,"Withdrew 10 Timber to your satchel.","own deposit withdrawable beside bound units")
+eq(G1.items.Timber,10,"deposit round trip is neutral")
+local bound=data.group_300.bound.Timber
+cmd(G1,"build","Lanterns")
+eq(data.group_300.bound.Timber,bound-5,"builds spend bound units first")
+G1.items={Timber=10}
+cmd(G1,"deposit","Timber","10")
+s=cmd(G2,"withdraw","Timber","6")
+eq(s.message,"Withdrew 6 Timber to your satchel.","crewmate draws a share of crew deposits")
+eq(s.withdrawable,4,"crewmate's share is half of each crewmate deposit")
+-- Mutating verb spam: one change per 6 s per player.
+reads,writes=0,0
+G1.items={Timber=10}
+local done,refused=0,0
+for _=1,10 do
+	clock+=1; utc+=1
+	local st=G1.server.objects.RemoteFunction.OnServerInvoke(G1,"deposit","Timber","1")
+	if st and st.busy then refused+=1 elseif st then done+=1 end
+end
+eq(done,2,"mutating verbs gated to one per 6 s")
+eq(refused,8,"gated requests explain the wait")
+eq(writes,2,"gated spam costs one crew write per accepted change")
+-- State spam reads through the per-key cache.
+clock+=10
+reads=0
+for _=1,20 do clock+=0.7; G2.server.objects.RemoteFunction.OnServerInvoke(G2,"state") end
+check(reads<=4,"state spam costs at most two reads per cache window ("..reads..")")
+-- Low request budget: optional reads serve stale cache, refresh pass skipped.
+budgetLeft=0
+clock+=20
+reads=0
+eq(cmd(G2,"state").groupId,"300","stale cache serves state on a low budget")
+main.refresh()
+eq(reads,0,"low budget skips the refresh pass")
+budgetLeft=1000
+-- Re-founding a disbanded crew keeps undelivered withdrawals.
+local F=player(310)
+F.items={Ore=10}
+cmd(F,"create"); cmd(F,"deposit","Ore","10")
+persistBroken=true
+eq(cmd(F,"withdraw","Ore","4").message,"Withdrawal recorded; it arrives in your satchel once your journal saves.","undelivered withdrawal")
+cmd(F,"leave","confirm")
+eq(data.group_310.disbanded,true,"sole member disbands")
+utc+=86401
+eq(cmd(F,"create").groupId,"310","founder re-founds on the same key")
+check(next(data.group_310.outbox)~=nil,"re-founded crew keeps the old outbox")
+persistBroken=false
+cmd(F,"state")
+eq(F.items.Ore,4,"withdrawal from the disbanded crew still arrives")
+-- Departed-crew history: recovery after joining another crew.
+local X,A=player(320),player(321)
+X.items={Ore=5}
+cmd(A,"create"); cmd(A,"invite","320"); cmd(X,"accept","321")
+cmd(X,"deposit","Ore","5")
+persistBroken=true
+cmd(X,"withdraw","Ore","3")
+cmd(X,"leave","confirm")
+utc+=86401
+eq(cmd(X,"create").groupId,"320","member founds a new crew")
+eq(data.member_320.gone[1],"321","joined index remembers the departed crew")
+persistBroken=false
+cmd(X,"state")
+eq(X.items.Ore,3,"withdrawal from an earlier crew recovered after joining another")
+for _=1,5 do
+	cmd(X,"leave","confirm"); utc+=86401; cmd(X,"create")
+end
+check(#data.member_320.gone<=4,"departed-crew history is bounded")
+-- Crew perk cleared while co-op state cannot be confirmed.
+local K=player(330)
+cmd(K,"create")
+data.group_330.xp=C.Levels[2].xp
+main.refresh()
+eq(K.perkStats.coop.health,5,"perk confirmed")
+failReads=true
+main.refresh()
+eq(K.perkStats.coop,nil,"failed co-op reads clear the crew perk")
+failReads=false
+main.refresh()
+eq(K.perkStats.coop.health,5,"perk restored once state is confirmed")
 ------------------------------------------------------------------------------
 -- Crew page (ui.client.lua) renders roster, level, stores, workers and every
 -- confirmation against the snapshot shape this service produces.
@@ -651,6 +812,7 @@ end
 -- And with a real snapshot from this service (user 1 leads crew "1").
 do
 	data.group_1.xp=C.Levels[2].xp
+	clock+=10 -- past the snapshot cache window
 	local real=cmd(a,"state")
 	eq(real.owner,1,"real snapshot belongs to the crew leader")
 	local ui=H.runAtlas(roblox.Vector2.new(1366,768),{coop=real})

@@ -312,6 +312,37 @@ tick(45)
 eq(attr("FestivalResource"), "Sunwheat", "the ballot chooses the fair's featured crop")
 ok(has(surface:FindFirstChild("Ballot").Text, "double yield"), "board announces the featured crop")
 eq(votes[1].Enabled, false, "ballot closed during the festival")
+-- A place whose ExpeditionGate appears late (or never) still runs the calendar.
+do
+	local added = {}
+	roblox.implementProperty("Workspace", "DescendantAdded", function(w)
+		if not added[w] then added[w] = signal() end
+		return added[w]
+	end)
+	local late = roblox.Instance.new("Workspace")
+	local lateFestival = coroutine.create(luau.load(fs.readFile("festival.server.lua"), { debugName = "festival.server.lua", environment = {
+		game = { GetService = function(_, name)
+			if name == "Players" then return festivalPlayers end
+			return { WaitForChild = function(_, child) return if child == "AetherData" then dataMarker else nil end }
+		end },
+		require = function() return Data end,
+		workspace = late, Instance = roblox.Instance, Vector3 = Vector3, Vector2 = roblox.Vector2, CFrame = roblox.CFrame, Color3 = roblox.Color3,
+		UDim2 = roblox.UDim2, Enum = roblox.Enum, os = { time = function() return utc end },
+		task = { wait = function() coroutine.yield() end },
+	}, injectGlobals = true }))
+	assert(coroutine.resume(lateFestival))
+	eq(late:GetAttribute("AetherSeason"), Data.calendarAt(utc).season, "calendar published before the gate exists")
+	eq(late:GetAttribute("AetherEventKey"), Data.calendarAt(utc).eventKey, "event key published without a board")
+	eq(late:FindFirstChild("Island Assembly"), nil, "no board without a gate")
+	assert(coroutine.resume(lateFestival))
+	local lateGate = roblox.Instance.new("Part")
+	lateGate.Name = "ExpeditionGate"
+	lateGate.Parent = late
+	added[late]:Fire(lateGate)
+	ok(late:FindFirstChild("Island Assembly") ~= nil, "board placed once the gate appears")
+	assert(coroutine.resume(lateFestival))
+	ok(has(late:FindFirstChild("Island Assembly"):FindFirstChildOfClass("SurfaceGui"):FindFirstChild("Ballot").Text, "VOTE"), "ballot starts after the late board")
+end
 
 -- Production server on the same workspace.
 local data = {}

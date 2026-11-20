@@ -1044,6 +1044,31 @@ do
 	ok(own.killed and #own.credited == 1 and own.credited[1] == owner, "owner kill credits the owner")
 	last = w.calls[#w.calls]
 	ok(last.op == "seaCreature" and last.player == owner and last.payload.result == "kill" and last.payload.seq == 2 and last.payload.monster == "DriftbellJelly", "owner kill reports the ticket")
+	-- Unapplied kill (journal not live): resent every few seconds while the ticket lasts.
+	eq(#L.dueSeaRetries(), 0, "kill resend waits a moment")
+	w.clock += C.SEA_RETRY_DELAY
+	local resend = L.dueSeaRetries()
+	ok(#resend == 1 and resend[1].player == owner and resend[1].seq == 2 and resend[1].id == "DriftbellJelly", "unapplied kill report is resent")
+	eq(#L.dueSeaRetries(), 0, "each resend fires once")
+	w.replies.seaCreature = {ok = false, reason = "sync"}
+	L.reportSea(owner, resend[1].id, resend[1].seq, "kill", resend[1].deadline)
+	w.clock += C.SEA_RETRY_DELAY
+	eq(#L.dueSeaRetries(), 1, "a sync reply keeps resending")
+	w.replies.seaCreature = {ok = true}
+	L.reportSea(owner, resend[1].id, resend[1].seq, "kill", resend[1].deadline)
+	w.clock += C.SEA_RETRY_DELAY
+	eq(#L.dueSeaRetries(), 0, "an applied report ends the resends")
+	w.replies.seaCreature = {ok = false, reason = "ticket"}
+	L.reportSea(owner, "DriftbellJelly", 2, "kill", w.clock + 60)
+	w.clock += C.SEA_RETRY_DELAY
+	eq(#L.dueSeaRetries(), 0, "a settled ticket is never resent")
+	w.replies.seaCreature = nil
+	L.reportSea(owner, "DriftbellJelly", 2, "kill", w.clock + 2)
+	w.clock += C.SEA_RETRY_DELAY
+	eq(#L.dueSeaRetries(), 0, "no resend past the ticket's expiry")
+	L.reportSea(owner, "DriftbellJelly", 2, "despawn", w.clock + 60)
+	w.clock += C.SEA_RETRY_DELAY
+	eq(#L.dueSeaRetries(), 0, "despawns are never resent")
 
 	-- Owner contributed but walked away: no credit.
 	local r3

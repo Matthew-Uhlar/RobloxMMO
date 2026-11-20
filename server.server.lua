@@ -1625,8 +1625,9 @@ bridge.OnInvoke=function(op,player,payload)
 	end
 	local p=live(player)
 	if not p then
-		-- Combat re-arms the boss when its report could not be applied.
-		return if op=="slayerBoss" then {ok=false,reason="sync"} else nil
+		-- Combat re-arms the boss / resends the sea creature kill (ticket kept)
+		-- when its report could not be applied.
+		return if op=="slayerBoss" or op=="seaCreature" then {ok=false,reason="sync"} else nil
 	end
 	if op=="stats" then
 		return {stats=Progression.computeStats(p,os.time()),combatLevel=level(p.xp.Combat),ironman=p.ironman==true}

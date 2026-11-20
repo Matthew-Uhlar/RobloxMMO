@@ -52,6 +52,8 @@ local C = {
 	ANIMATE_RANGE = 80,         -- limb welds animate only with a player this close
 	ANIMATE_STEP = 1 / 5,       -- limb animation rate (movement stays at the AI rate)
 	BOSS_REARM_DELAY = 5,       -- re-read SlayerBossReady after an unapplied boss report
+	SEA_RETRY_DELAY = 5,        -- resend an unapplied sea creature kill report
+	SEA_REPORT_GRACE = 15,      -- ...until this long after the creature's lifetime (server ticket grace)
 	FX_RANGE = 110,
 	MAX_RADIUS_BONUS = 6,
 	DEFAULT_COUNT = 2,
@@ -430,6 +432,7 @@ local function createLogic(env)
 	local bosses = {}        -- [player] = record
 	local pendingBoss = {}   -- [player] = spec
 	local rearm = {}         -- [player] = time to re-read SlayerBossReady
+	local seaRetry = {}      -- [player] = {[seq] = {id, seq, at, deadline}} unapplied kill reports
 	local seaOwned = {}      -- [player] = {[record] = true}
 	local seaSeq = {}        -- [player] = last accepted SeaCreatureSpawn sequence
 	local seaLive = 0
@@ -664,7 +667,7 @@ local function createLogic(env)
 		elseif r.sea then
 			credited = L.seaCredit(r)
 			L.unregister(r)
-			L.reportSea(r.owner, r.id, r.seq, if #credited > 0 then "kill" else "despawn")
+			L.reportSea(r.owner, r.id, r.seq, if #credited > 0 then "kill" else "despawn", r.expires + C.SEA_REPORT_GRACE)
 		else
 			credited = L.creditEligible(r)
 			L.unregister(r)
@@ -877,8 +880,33 @@ local function createLogic(env)
 		return n
 	end
 	function L.seaLive() return seaLive end
-	function L.reportSea(player, id, seq, result)
-		env.bridge("seaCreature", player, {monster = id, seq = seq, result = result})
+	-- A kill whose report was not applied (journal not live: nil or reason
+	-- "sync") is resent every C.SEA_RETRY_DELAY until `deadline`, like slayer
+	-- boss re-arms. The server settles each ticket once, so resends are safe;
+	-- any definitive answer (ok, "ticket", "expired") ends the retries.
+	function L.reportSea(player, id, seq, result, deadline)
+		env.bridge("seaCreature", player, {monster = id, seq = seq, result = result}, function(reply)
+			if result ~= "kill" or not deadline then return end
+			if reply == nil or (type(reply) == "table" and reply.reason == "sync") then
+				if env.now() + C.SEA_RETRY_DELAY > deadline then return end
+				seaRetry[player] = seaRetry[player] or {}
+				seaRetry[player][seq] = {id = id, seq = seq, at = env.now() + C.SEA_RETRY_DELAY, deadline = deadline}
+			end
+		end)
+	end
+	-- Kill reports due for a resend: {player, id, seq, deadline}; each fires once.
+	function L.dueSeaRetries()
+		local now, due = env.now(), {}
+		for player, list in pairs(seaRetry) do
+			for seq, job in pairs(list) do
+				if now >= job.at then
+					list[seq] = nil
+					if now <= job.deadline then table.insert(due, {player = player, id = job.id, seq = seq, deadline = job.deadline}) end
+				end
+			end
+			if not next(list) then seaRetry[player] = nil end
+		end
+		return due
 	end
 	-- SeaCreatureSpawn changed. Returns ("spawn", spec) | (nil, reason).
 	-- A refused fresh ticket is reported as a despawn so the server frees the slot.
@@ -949,6 +977,7 @@ local function createLogic(env)
 	-- Players ----------------------------------------------------------------
 	function L.playerRemoving(player)
 		statsCache[player], nextAttack[player], pendingBoss[player], rearm[player], seaSeq[player] = nil, nil, nil, nil, nil
+		seaRetry[player] = nil
 		local removed = {}
 		local boss = bosses[player]
 		if boss then L.unregister(boss); table.insert(removed, boss) end
@@ -963,7 +992,7 @@ local function createLogic(env)
 	end
 	function L.hasPlayerState(player)
 		return statsCache[player] ~= nil or nextAttack[player] ~= nil or pendingBoss[player] ~= nil or bosses[player] ~= nil or rearm[player] ~= nil
-			or seaOwned[player] ~= nil or seaSeq[player] ~= nil
+			or seaOwned[player] ~= nil or seaSeq[player] ~= nil or seaRetry[player] ~= nil
 	end
 	return L
 end
@@ -1410,6 +1439,9 @@ RunService.Heartbeat:Connect(function(dt)
 			if player.Parent and playerConnections[player] then onBossAttribute(player) end
 		end
 		for _, pending in ipairs(Logic.pendingBosses()) do spawnBoss(pending.player, pending.spec) end
+		for _, job in ipairs(Logic.dueSeaRetries()) do
+			if job.player.Parent then Logic.reportSea(job.player, job.id, job.seq, "kill", job.deadline) end
+		end
 	end
 	for _, r in ipairs(Logic.seaTick()) do destroyView(r, false) end
 	for _, failed in ipairs(Logic.bossTick()) do
