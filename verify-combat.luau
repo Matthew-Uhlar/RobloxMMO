@@ -40,7 +40,7 @@ local function ok(cond, case) assert(cond, case); checks += 1 end
 ------------------------------------------------------------------------------
 local function world()
 	local w = {clock = 100, rolls = {}, calls = {}, positions = {}, alive = {}, stats = {}, heals = {}, list = {},
-		replies = {slayerBoss = {ok = true}}, playerCalls = 0}
+		replies = {slayerBoss = {ok = true}}, playerCalls = 0, inv = {}, teleports = {}, walls = false}
 	function w.rng()
 		if #w.rolls > 0 then return table.remove(w.rolls, 1) end
 		return 0.5
@@ -71,9 +71,19 @@ local function world()
 		bridge = function(op, player, payload, done)
 			table.insert(w.calls, {op = op, player = player, payload = payload})
 			if op == "stats" then return w.stats[player] end
+			if op == "consume" then
+				-- Synchronous, atomic payment from w.inv[player] (combat styles).
+				local inv = w.inv[player] or {}
+				for id, n in pairs(payload.items) do if (inv[id] or 0) < n then return {ok = false, reason = "missing"} end end
+				local remaining = {}
+				for id, n in pairs(payload.items) do inv[id] -= n; remaining[id] = inv[id] end
+				return {ok = true, remaining = remaining}
+			end
 			if done then done(w.replies[op]) end
 			return nil
 		end,
+		lineOfSight = function(from, r) return not w.walls end,
+		teleport = function(player) table.insert(w.teleports, player); return w.hub ~= false end,
 	})
 	return w
 end
@@ -1137,5 +1147,496 @@ do
 	eq(gw.count("seaCreature"), 2, "creatures over the global cap release their tickets")
 	print("PASS: " .. (checks - seaChecks) .. " sea creature combat assertions.")
 end
+
+------------------------------------------------------------------------------
+-- Combat styles: ranged shots, spells, mana, triangle, XP routing.
+------------------------------------------------------------------------------
+local stylesBefore = checks
+local function styleStats(extra)
+	local s = {damage = 20, strength = 0, critChance = 0, critDamage = 50, attackSpeed = 0, rangedStrength = 0, rangedAccuracy = 0, intelligence = 100, abilityDamage = 0}
+	for k, v in pairs(extra or {}) do s[k] = v end
+	return s
+end
+local function xpCalls(w, style)
+	local list = {}
+	for _, c in ipairs(w.calls) do if c.op == "combatXp" and (style == nil or c.payload.style == style) then table.insert(list, c.payload) end end
+	return list
+end
+-- Ranged validation and damage.
+do
+	local w = world()
+	local L = w.logic
+	eq(L.maxRange, 40, "ranged reach capped at 40 studs")
+	local marker = L.addMarker("boar", "BramblebackBoar", 1, origin)
+	L.dueSpawns()
+	local target = model("boar")
+	local r = L.register(marker, target, Vector3.new(0, 1, 0), {radius = 2})
+	eq(r.weakness, "magic", "records carry the monster weakness")
+	eq(r.defenceStyle, "ranged", "records carry the resisted style")
+	local archer = w.player("archer", Vector3.new(35, 1, 0), {stats = styleStats()})
+	local lo = {style = "melee", weapon = "BrassSword", levels = {Combat = 1, Ranged = 1, Magic = 1}, supplies = {}, ammoCount = 0}
+	w.stats[archer].loadout = lo
+	eq(select(2, L.ranged(archer, "attack", target)), "verb", "ranged verb required")
+	eq(select(2, L.ranged(archer, "ranged", model("fake"))), "target", "unspawned model rejected")
+	eq(select(2, L.ranged(archer, "ranged", target)), "weapon", "a sword cannot shoot")
+	lo.style, lo.weapon = "ranged", "MeadowShortbow"
+	eq(select(2, L.ranged(archer, "ranged", target)), "range", "shortbows reach 30 studs (radius counted)")
+	lo.weapon = "MeadowLongbow"
+	eq(select(2, L.ranged(archer, "ranged", target)), "ammo", "an empty quiver cannot shoot")
+	lo.ammo, lo.ammoCount = "CelestialArrow", 10
+	eq(select(2, L.ranged(archer, "ranged", target)), "ammoTier", "meadow bows refuse celestial arrows")
+	lo.ammo, lo.ammoCount = "CopperArrow", 3
+	w.inv[archer] = {CopperArrow = 3}
+	w.walls = true
+	eq(select(2, L.ranged(archer, "ranged", target)), "sight", "no line of sight, no shot")
+	eq(w.count("consume", archer), 0, "blocked shots spend no arrows")
+	w.walls = false
+	w.positions[archer] = Vector3.new(42.5, 1, 0)
+	eq(select(2, L.ranged(archer, "ranged", target)), "range", "beyond 40 studs rejected")
+	w.positions[archer] = Vector3.new(35, 1, 0)
+	w.alive[archer] = false
+	eq(select(2, L.ranged(archer, "ranged", target)), "dead", "dead archers cannot shoot")
+	w.alive[archer] = true
+	eq(select(2, L.attack(archer, "attack", target)), "range", "melee reach stays 14 studs")
+	w.positions[archer] = Vector3.new(10, 1, 0)
+	eq(select(2, L.attack(archer, "attack", target)), "style", "melee refused while a bow is wielded")
+	w.positions[archer] = Vector3.new(35, 1, 0)
+	-- A hit: roll 0 hits, 0.99 does not crit.
+	w.rolls = {0, 0.99}
+	local shot = L.ranged(archer, "ranged", target)
+	ok(shot ~= nil, "longbow shot lands at 33 studs")
+	local stats = w.stats[archer].stats
+	local raw = P.rangedDamage(stats, Data.Items.MeadowLongbow, Data.Items.CopperArrow, 1, function() return 0.99 end)
+	eq(shot.damage, P.damageTaken(math.floor(raw * 0.7), Data.Monsters.BramblebackBoar.defense), "ranged damage with the -30% resist")
+	eq(shot.tag, "resist", "boars resist arrows")
+	eq(shot.style, "ranged", "shot style")
+	eq(w.inv[archer].CopperArrow, 2, "one arrow consumed per shot")
+	eq(shot.ammoLeft, 2, "quiver count returned")
+	eq(r.hp, Data.Monsters.BramblebackBoar.hp - shot.damage, "boar loses health")
+	eq(r.target, archer, "the archer draws aggro")
+	local xp = xpCalls(w, "ranged")
+	eq(#xp, 1, "ranged hit reports style XP")
+	eq(xp[1].damage, shot.damage, "xp report carries damage")
+	eq(xp[1].monster, "BramblebackBoar", "xp report names the monster")
+	ok(math.abs(shot.chance - P.hitChance(0, 1, Data.Monsters.BramblebackBoar.level, 0)) < 1e-9, "hit chance from Progression")
+	eq(select(2, L.ranged(archer, "ranged", target)), "cooldown", "second shot inside the bow cooldown")
+	w.clock += 1.05 - C.COOLDOWN_GRACE + 0.001
+	w.rolls = {0.999}
+	local miss = L.ranged(archer, "ranged", target)
+	ok(miss and miss.miss and miss.damage == 0, "a failed accuracy roll misses")
+	eq(w.inv[archer].CopperArrow, 1, "misses still spend the arrow")
+	eq(#xpCalls(w, "ranged"), 1, "misses grant no XP")
+	w.clock += 1.2
+	ok(L.ranged(archer, "ranged", target) ~= nil, "last arrow fired")
+	eq(lo.ammoCount, 0, "cached quiver count follows the bridge")
+	w.clock += 1.2
+	eq(select(2, L.ranged(archer, "ranged", target)), "ammo", "empty quiver after the last arrow")
+	lo.ammoCount = 5 -- stale cache: the bridge still refuses
+	eq(select(2, L.ranged(archer, "ranged", target)), "ammo", "the bridge payment is authoritative")
+	eq(lo.ammoCount, 0, "a refused payment empties the cached quiver")
+	-- Attack speed shortens the bow cooldown; a killing shot reports the kill.
+	w.inv[archer].CopperArrow, lo.ammoCount = 10, 10
+	w.stats[archer].stats = styleStats({attackSpeed = 100, rangedStrength = 100000})
+	w.clock += 2
+	w.rolls = {0, 0.99}
+	local kill = L.ranged(archer, "ranged", target)
+	ok(kill.killed, "a killing shot kills")
+	eq(w.count("kill", archer), 1, "ranged kills report through the bridge")
+	-- Weakness bonus: thornlings (magic) are weak to arrows.
+	local thornMarker = L.addMarker("thorn", "Thornling", 1, origin)
+	L.dueSpawns()
+	local thorn = model("thorn")
+	local tr = L.register(thornMarker, thorn, Vector3.new(0, 1, 0), {radius = 2})
+	w.stats[archer].stats = styleStats({attackSpeed = 100})
+	w.clock += 0.53
+	w.rolls = {0, 0.99}
+	local weak = L.ranged(archer, "ranged", thorn)
+	local rawWeak = P.rangedDamage(w.stats[archer].stats, Data.Items.MeadowLongbow, Data.Items.CopperArrow, 1, function() return 0.99 end)
+	eq(weak.damage, P.damageTaken(math.floor(rawWeak * 1.3), Data.Monsters.Thornling.defense), "+30% against the weakness")
+	eq(weak.tag, "weak", "weakness tagged")
+	eq(tr.weakness, "ranged", "thornlings are weak to ranged")
+	-- Melee keeps working and now reports Combat XP for its damage.
+	local brute = w.player("brute", Vector3.new(4, 1, 0))
+	ok(L.attack(brute, "attack", thorn) ~= nil, "melee without a loadout still swings")
+	local meleeXp = xpCalls(w, "melee")
+	eq(#meleeXp, 1, "melee damage reports XP")
+	eq(meleeXp[1].monster, "Thornling", "melee xp names the monster")
+	print("PASS: " .. (checks - stylesBefore) .. " ranged combat assertions.")
+end
+-- Spells, mana, cooldowns, utility spells.
+do
+	local before = checks
+	local w = world()
+	local L = w.logic
+	local marker = L.addMarker("boar", "BramblebackBoar", 1, origin)
+	L.dueSpawns()
+	local target = model("boar")
+	local r = L.register(marker, target, Vector3.new(0, 1, 0), {radius = 2})
+	r.maxHp, r.hp = 1e9, 1e9
+	local mage = w.player("mage", Vector3.new(30, 1, 0), {stats = styleStats({intelligence = 100})})
+	local lo = {style = "melee", weapon = nil, levels = {Combat = 1, Ranged = 1, Magic = 1}, supplies = {}, ammoCount = 0}
+	w.stats[mage].loadout = lo
+	eq(select(2, L.cast(mage, "zap", target, "GaleDart")), "verb", "cast verb required")
+	eq(select(2, L.cast(mage, "cast", target, "Fireball")), "spell", "unknown spell rejected")
+	eq(select(2, L.cast(mage, "cast", target, nil)), "spell", "no spell and no autocast")
+	eq(select(2, L.cast(mage, "cast", target, 42)), "spell", "non-string spell rejected")
+	eq(select(2, L.cast(mage, "cast", target, "GaleDart")), "weapon", "combat spells need a staff or wand")
+	lo.style, lo.weapon = "magic", "MeadowWand"
+	eq(select(2, L.cast(mage, "cast", target, "GaleLance")), "level", "lance needs Magic 30")
+	eq(select(2, L.cast(mage, "cast", target, "GaleDart")), "glyphs", "no glyphs, no spell")
+	eq(select(2, L.cast(mage, "cast", nil, "GaleDart")), "target", "damage spells need a target")
+	lo.supplies = {GaleGlyph = 2, SparkGlyph = 3}
+	w.inv[mage] = {GaleGlyph = 2, SparkGlyph = 3}
+	w.walls = true
+	eq(select(2, L.cast(mage, "cast", target, "GaleDart")), "sight", "spells need line of sight")
+	w.walls = false
+	eq(w.count("consume", mage), 0, "blocked casts spend nothing")
+	w.positions[mage] = Vector3.new(43, 1, 0)
+	eq(select(2, L.cast(mage, "cast", target, "GaleDart")), "range", "spells reach 40 studs")
+	w.positions[mage] = Vector3.new(30, 1, 0)
+	local cast = L.cast(mage, "cast", target, "GaleDart")
+	ok(cast ~= nil, "gale dart cast")
+	local raw = P.spellDamage(w.stats[mage].stats, Data.Spells.GaleDart, Data.Items.MeadowWand, 1)
+	eq(cast.damage, P.damageTaken(math.floor(raw * 1.3), Data.Monsters.BramblebackBoar.defense), "spell damage with the +30% weakness")
+	eq(cast.tag, "weak", "boars are weak to magic")
+	eq(cast.mana, 100 - Data.Spells.GaleDart.mana, "mana spent")
+	eq(cast.maxMana, 100, "max mana is intelligence")
+	eq(w.inv[mage].GaleGlyph, 1, "element glyph spent"); eq(w.inv[mage].SparkGlyph, 2, "catalyst spent")
+	eq(lo.supplies.GaleGlyph, 1, "cached supplies follow the bridge")
+	local mx = xpCalls(w, "magic")
+	eq(#mx, 1, "spell reports XP once")
+	eq(mx[1].spell, "GaleDart", "xp report names the spell (cast XP)")
+	eq(mx[1].damage, cast.damage, "and carries the damage")
+	eq(select(2, L.cast(mage, "cast", target, "GaleDart")), "cooldown", "wand cooldown")
+	w.clock += 0.8 - C.COOLDOWN_GRACE + 0.001
+	ok(L.cast(mage, "cast", target, "GaleDart") ~= nil, "wand recast after 0.8s")
+	w.clock += 1
+	eq(select(2, L.cast(mage, "cast", target, "GaleDart")), "glyphs", "out of gale glyphs")
+	-- Elemental staff: gale glyphs are free, the catalyst is not.
+	lo.weapon = "MeadowStaff"
+	ok(L.cast(mage, "cast", target, "GaleDart") ~= nil, "staff supplies the element")
+	eq(w.inv[mage].GaleGlyph, 0, "no gale glyph needed with the gale staff")
+	eq(w.inv[mage].SparkGlyph, 0, "catalyst paid")
+	w.clock += 0.9
+	eq(select(2, L.cast(mage, "cast", target, "GaleDart")), "cooldown", "staves cast slower than wands")
+	w.clock += 0.4
+	eq(select(2, L.cast(mage, "cast", target, "GaleDart")), "glyphs", "out of catalysts")
+	-- Stale cache refused by the bridge.
+	lo.supplies.SparkGlyph = 9
+	eq(select(2, L.cast(mage, "cast", target, "GaleDart")), "glyphs", "bridge payment is authoritative")
+	eq(lo.supplies.SparkGlyph, 0, "refused payment clears the cached glyphs")
+	-- Mana: low intelligence runs dry, then regenerates.
+	w.inv[mage].SparkGlyph, lo.supplies.SparkGlyph = 50, 50
+	w.stats[mage].stats = styleStats({intelligence = 10})
+	w.clock += 5
+	ok(L.cast(mage, "cast", target, "GaleDart") ~= nil, "cast with 10 mana")
+	w.clock += 1.3
+	eq(select(2, L.cast(mage, "cast", target, "GaleDart")), "mana", "not enough mana")
+	local m = L.manaOf(mage, w.stats[mage].stats)
+	ok(m.current < Data.Spells.GaleDart.mana and m.max == 10, "mana capped by the new max")
+	w.clock += 20
+	eq(math.floor(L.manaOf(mage).current), 10, "mana regenerates to max")
+	-- Autocast.
+	lo.autocast = "GaleDart"
+	local auto = L.cast(mage, "cast", target, nil)
+	ok(auto ~= nil and auto.spell == "GaleDart", "nil spell uses the autocast")
+	w.clock += 1.3
+	ok(L.cast(mage, "cast", target, "") == nil, "empty spell id uses the autocast too (mana gated)")
+	w.stats[mage].stats = styleStats({intelligence = 500})
+	eq(L.manaOf(mage, w.stats[mage].stats).max, 500, "raising intelligence raises max mana")
+	ok(L.manaOf(mage).current < 20, "but does not refill the pool")
+	-- Rootbind snares regular monsters, not bosses.
+	lo.levels.Magic = 30
+	lo.supplies.BindGlyph, lo.supplies.StoneGlyph = 2, 4
+	w.inv[mage].BindGlyph, w.inv[mage].StoneGlyph = 2, 4
+	w.clock += 30
+	r.target = mage
+	w.positions[mage] = Vector3.new(30, 1, 0)
+	eq(L.think(r).kind, "chase", "a provoked boar chases")
+	local bind = L.cast(mage, "cast", target, "Rootbind")
+	ok(bind ~= nil and bind.kind == "snare" and bind.duration == 5, "rootbind lands")
+	eq(L.think(r).kind, "hold", "snared monsters cannot move")
+	eq(select(2, L.cast(mage, "cast", target, "Rootbind")), "cooldown", "rootbind has its own cooldown")
+	w.clock += 5.1
+	eq(L.think(r).kind, "chase", "the snare wears off")
+	w.positions[mage] = Vector3.new(0, 1, 3)
+	r.snaredUntil = w.clock + 5
+	eq(L.think(r).kind, "strike", "snared monsters still strike in reach")
+	local bossHolder = w.player("summoner", Vector3.new(60, 1, 60), {stats = styleStats()})
+	local action, spec = L.bossAttribute(bossHolder, "Gloom:1")
+	eq(action, "spawn", "boss queued")
+	local bossModel = model("boss")
+	local boss = L.registerBoss(bossHolder, spec, bossModel, Vector3.new(60, 1, 70))
+	eq(boss.weakness, Data.Slayers.Gloom.weakness, "bosses carry their line's weakness")
+	eq(boss.weakness, "melee", "the broodmother is weak to melee")
+	w.stats[bossHolder].loadout = {style = "magic", weapon = "MeadowStaff", levels = {Magic = 30}, supplies = {BindGlyph = 2, StoneGlyph = 4}}
+	eq(select(2, L.cast(bossHolder, "cast", bossModel, "Rootbind")), "immune", "slayer bosses cannot be snared")
+	eq(select(2, L.cast(mage, "cast", bossModel, "GaleDart")), "owner", "other players' bosses stay untouchable")
+	-- Mend heals without a weapon.
+	lo.style, lo.weapon = "melee", "BrassSword"
+	lo.supplies.VitaGlyph, lo.supplies.TideGlyph = 1, 2
+	w.inv[mage].VitaGlyph, w.inv[mage].TideGlyph = 1, 2
+	local mend = L.cast(mage, "cast", nil, "Mend")
+	ok(mend ~= nil and mend.kind == "heal", "mend cast without a staff")
+	eq(w.heals[#w.heals].percent, Data.Spells.Mend.heal, "mend heals its percentage")
+	eq(xpCalls(w, "magic")[#xpCalls(w, "magic")].spell, "Mend", "mend grants cast XP")
+	eq(xpCalls(w, "magic")[#xpCalls(w, "magic")].damage, nil, "mend reports no damage")
+	eq(select(2, L.cast(mage, "cast", nil, "Mend")), "cooldown", "mend cooldown")
+	-- Hubward tablet: combat lock, teleport, consumption.
+	lo.supplies.HubwardTablet = 1
+	w.inv[mage].HubwardTablet = 1
+	L.strike(r, mage)
+	eq(select(2, L.cast(mage, "cast", nil, "Hubward")), "combat", "no tablets within 5s of being struck")
+	eq(#w.teleports, 0, "nobody teleported")
+	w.clock += 5.1
+	w.hub = false
+	eq(select(2, L.cast(mage, "cast", nil, "Hubward")), "teleport", "uncharted hub refuses")
+	eq(w.inv[mage].HubwardTablet, 1, "a failed teleport keeps the tablet")
+	w.hub = true
+	local port = L.cast(mage, "cast", nil, "Hubward")
+	ok(port ~= nil and port.kind == "teleport", "hubward teleports")
+	eq(#w.teleports, 2, "teleport invoked")
+	eq(w.inv[mage].HubwardTablet, 0, "tablet consumed")
+	w.clock += 3.1
+	eq(select(2, L.cast(mage, "cast", nil, "Hubward")), "glyphs", "no tablet left")
+	-- Mana replication.
+	local fresh = w.player("fresh", Vector3.new(100, 1, 100), {stats = styleStats({intelligence = 240})})
+	local updates = L.manaTick()
+	local mine
+	for _, u in ipairs(updates) do if u.player == fresh then mine = u end end
+	ok(mine ~= nil and mine.mana == 240 and mine.max == 240, "new players start with full mana")
+	local again = 0
+	for _, u in ipairs(L.manaTick()) do if u.player == fresh then again += 1 end end
+	eq(again, 0, "unchanged mana is not re-sent")
+	w.stats[fresh].stats.intelligence = 300
+	w.clock += 2
+	local grown
+	for _, u in ipairs(L.manaTick()) do if u.player == fresh then grown = u end end
+	ok(grown ~= nil and grown.max == 300, "max mana follows intelligence")
+	w.stats[fresh] = nil
+	-- Cleanup.
+	ok(L.hasPlayerState(mage), "mage has combat state")
+	L.playerRemoving(mage)
+	ok(not L.hasPlayerState(mage), "mana, spell cooldowns and combat lock cleared on leave")
+	print("PASS: " .. (checks - before) .. " magic combat assertions.")
+end
+
+------------------------------------------------------------------------------
+-- Combat styles runtime: remote verbs, projectiles, denials, mana attributes,
+-- Hubward teleport, under the same generic doubles as the smoke test.
+------------------------------------------------------------------------------
+do
+	local before = checks
+	local function signal()
+		local listeners = {}
+		local s = {}
+		function s:Connect(f)
+			local entry = {f = f, live = true}
+			table.insert(listeners, entry)
+			return {Disconnect = function() entry.live = false end}
+		end
+		function s:Fire(...) for _, e in ipairs(table.clone(listeners)) do if e.live then e.f(...) end end end
+		return s
+	end
+	local defaults = {CFrame = CFrame.new(), Position = Vector3.zero, Size = Vector3.one}
+	local Object = {}
+	Object.__index = function(self, key)
+		local method = Object[key]
+		if method ~= nil then return method end
+		return defaults[key]
+	end
+	Object.__newindex = function(self, key, value)
+		if key == "Parent" and type(value) == "table" and rawget(value, "_children") then value._children[self.Name] = self end
+		rawset(self, key, value)
+	end
+	local function object(class, props)
+		local o = setmetatable({ClassName = class, Name = class, _attrs = {}, _attrSignals = {}, _children = {}}, Object)
+		for k, v in pairs(props or {}) do o[k] = v end
+		return o
+	end
+	function Object:SetAttribute(k, v) self._attrs[k] = v; if self._attrSignals[k] then self._attrSignals[k]:Fire() end end
+	function Object:GetAttribute(k) return self._attrs[k] end
+	function Object:GetAttributeChangedSignal(k) self._attrSignals[k] = self._attrSignals[k] or signal(); return self._attrSignals[k] end
+	function Object:IsA(class) return self.ClassName == class or (class == "BasePart" and (self.ClassName == "Part" or self.ClassName == "WedgePart")) end
+	function Object:Destroy() self.destroyed = true; self.Parent = nil end
+	function Object:Clone() local c = object(self.ClassName); for k, v in pairs(self) do if k:sub(1, 1) ~= "_" then c[k] = v end end; return c end
+	function Object:FindFirstChild(name) return self._children[name] end
+	function Object:FindFirstChildOfClass(class) for _, c in pairs(self._children) do if c.ClassName == class then return c end end return nil end
+	function Object:WaitForChild(name) return self._children[name] end
+	function Object:GetChildren() local list = {} for _, c in pairs(self._children) do table.insert(list, c) end return list end
+	function Object:PivotTo(cf) self.pivotedTo = cf end
+	local function child(parent, o) parent._children[o.Name] = o; o.Parent = parent; return o end
+
+	local now = 1000
+	local created, fired, calls, warnings = {}, {}, {}, {}
+	local heartbeat = signal()
+	local players = {PlayerAdded = signal(), PlayerRemoving = signal(), list = {}}
+	function players:GetPlayers() return self.list end
+	local replicated = object("ReplicatedStorage")
+	child(replicated, object("ModuleScript", {Name = "AetherData"}))
+	child(replicated, object("ModuleScript", {Name = "AetherProgression"}))
+	local serverStorage = object("ServerStorage")
+	local inv = {CopperArrow = 3, GaleGlyph = 5, SparkGlyph = 5, HubwardTablet = 1}
+	local loadout = {style = "ranged", weapon = "MeadowLongbow", ammo = "CopperArrow", ammoCount = 3,
+		levels = {Combat = 1, Ranged = 1, Magic = 1}, supplies = {GaleGlyph = 5, SparkGlyph = 5, HubwardTablet = 1}}
+	child(serverStorage, object("BindableFunction", {Name = "IsleBridge", Invoke = function(_, op, player, payload)
+		table.insert(calls, {op = op, player = player, payload = payload})
+		if op == "stats" then
+			return {stats = styleStats({intelligence = 150}), combatLevel = 3, ironman = false, loadout = loadout}
+		elseif op == "consume" then
+			for id, n in pairs(payload.items) do if (inv[id] or 0) < n then return {ok = false} end end
+			local remaining = {}
+			for id, n in pairs(payload.items) do inv[id] -= n; remaining[id] = inv[id] end
+			return {ok = true, remaining = remaining}
+		end
+		return {}
+	end}))
+	local spawnsFolder = object("Folder", {Name = "MonsterSpawns", ChildAdded = signal(), ChildRemoved = signal()})
+	local workspaceDouble = object("Workspace")
+	child(workspaceDouble, spawnsFolder)
+	local wall = false
+	-- Ground probes are vertical; line-of-sight rays are mostly horizontal.
+	function workspaceDouble:Raycast(origin, direction)
+		if math.abs(direction.Y) > math.abs(direction.X) + math.abs(direction.Z) then return {Position = Vector3.new(origin.X, 0, origin.Z)} end
+		return if wall then {Position = origin + direction / 2} else nil
+	end
+	function workspaceDouble:GetServerTimeNow() return now end
+	local islands = child(workspaceDouble, object("Folder", {Name = "Islands"}))
+	local services = {
+		Players = players, ReplicatedStorage = replicated, ServerStorage = serverStorage,
+		RunService = {Heartbeat = heartbeat},
+		CollectionService = {AddTag = function() end},
+		Workspace = workspaceDouble,
+	}
+	local env = {
+		game = {GetService = function(_, name) return assert(services[name], name) end},
+		require = function(module) return if module.Name == "AetherData" then Data else P end,
+		typeof = function(v) if type(v) == "table" and v.ClassName then return "Instance" end return typeof(v) end,
+		Instance = {new = function(class)
+			local o = object(class)
+			if class == "RemoteEvent" then
+				o.OnServerEvent = signal()
+				o.FireClient = function(_, player, kind, payload) table.insert(fired, {player = player, kind = kind, payload = payload}) end
+			end
+			table.insert(created, o)
+			return o
+		end},
+		RaycastParams = {new = function() return {} end},
+		Random = {new = function() return {NextNumber = function(_, a, b) a, b = a or 0, b or 1; return a + (b - a) * 0.01 end} end},
+		Vector3 = Vector3, CFrame = CFrame, Color3 = Color3, Enum = Enum, UDim2 = roblox.UDim2, UDim = roblox.UDim,
+		task = {
+			spawn = function(f, ...) local co = coroutine.create(f); assert(coroutine.resume(co, ...)) end,
+			defer = function(f, ...) f(...) end,
+			delay = function(_, f, ...) f(...) end,
+		},
+		os = {clock = function() return now end, time = os.time},
+		warn = function(...) table.insert(warnings, table.concat({...}, " ")) end,
+	}
+	local source = fs.readFile("combat.server.lua"):gsub("^\239\187\191", "")
+	luau.load(source, {debugName = "combat.server.lua", environment = env, injectGlobals = true})()
+	local remotes = {}
+	for _, o in ipairs(created) do if o.ClassName == "RemoteEvent" then remotes[o.Name] = o end end
+	local monsters = workspaceDouble._children.IsleMonsters
+	local function fires(kind) local list = {} for _, f in ipairs(fired) do if f.kind == kind then table.insert(list, f) end end return list end
+	local function opCount(op) local n = 0 for _, c in ipairs(calls) do if c.op == op then n += 1 end end return n end
+	local function tick(seconds) for _ = 1, math.ceil(seconds / 0.1) do now += 0.1; heartbeat:Fire(0.1) end end
+
+	local humanoid = object("Humanoid", {Health = 100, MaxHealth = 100})
+	local root = object("Part", {Name = "HumanoidRootPart", Position = Vector3.new(30, 3, 0), CFrame = CFrame.new(30, 3, 0)})
+	local character = object("Model")
+	child(character, humanoid); child(character, root)
+	local hero = object("Player", {Name = "Ranger", UserId = 9, Character = character, CharacterAdded = signal()})
+	hero.Parent = players
+	table.insert(players.list, hero)
+	players.PlayerAdded:Fire(hero)
+	local marker = object("Part", {Name = "BoarMarker", Position = Vector3.new(0, 1, 0)})
+	marker:SetAttribute("MonsterId", "BramblebackBoar")
+	marker:SetAttribute("Count", 1)
+	child(spawnsFolder, marker)
+	spawnsFolder.ChildAdded:Fire(marker)
+	tick(0.6)
+	eq(hero:GetAttribute("MaxMana"), 150, "MaxMana attribute replicated")
+	eq(hero:GetAttribute("Mana"), 150, "Mana attribute starts full")
+	local boar
+	for _, o in ipairs(created) do if o.ClassName == "Model" and o.Parent == monsters then boar = o end end
+	ok(boar ~= nil, "boar spawned")
+	local boarPos = boar.PrimaryPart.CFrame.Position
+	root.Position = boarPos + Vector3.new(30, 0, 0)
+	local hpBefore = boar:GetAttribute("Health")
+	-- Melee spam with a bow is denied with a reason.
+	remotes.IsleCombat.OnServerEvent:Fire(hero, "attack", boar)
+	local denied = fires("denied")
+	eq(#denied, 1, "melee with a bow is refused out loud")
+	eq(denied[1].payload.reason, "range", "out of melee reach first")
+	now += 1
+	root.Position = boarPos + Vector3.new(4, 0, 0)
+	remotes.IsleCombat.OnServerEvent:Fire(hero, "attack", boar)
+	eq(fires("denied")[2].payload.reason, "style", "then the style refusal")
+	root.Position = boarPos + Vector3.new(30, 0, 0)
+	-- A bow shot.
+	remotes.IsleCombat.OnServerEvent:Fire(hero, "ranged", boar)
+	ok(boar:GetAttribute("Health") < hpBefore, "arrow lowers model health")
+	eq(inv.CopperArrow, 2, "arrow consumed through the bridge")
+	eq(hero:GetAttribute("QuiverCount"), 2, "QuiverCount attribute replicated")
+	local projectiles = fires("projectile")
+	eq(#projectiles, 1, "projectile broadcast")
+	eq(projectiles[1].payload.style, "ranged", "projectile style")
+	eq(projectiles[1].payload.color, Data.Items.CopperArrow.color, "projectile coloured by the arrow")
+	local hits = fires("hit")
+	eq(#hits, 1, "hit broadcast")
+	eq(hits[1].payload.style, "ranged", "hit carries the style")
+	eq(hits[1].payload.tag, "resist", "hit carries the triangle tag")
+	eq(opCount("combatXp"), 1, "XP reported for the hit")
+	-- Line of sight blocked: denied, no arrow spent.
+	now += 2
+	wall = true
+	remotes.IsleCombat.OnServerEvent:Fire(hero, "ranged", boar)
+	eq(fires("denied")[#fires("denied")].payload.reason, "sight", "walls block arrows")
+	eq(inv.CopperArrow, 2, "blocked shot keeps the arrow")
+	wall = false
+	-- Malformed casts are ignored silently.
+	local deniedBefore = #fires("denied")
+	remotes.IsleCombat.OnServerEvent:Fire(hero, "cast", "nope", "GaleDart")
+	remotes.IsleCombat.OnServerEvent:Fire(hero, "cast", boar, {})
+	remotes.IsleCombat.OnServerEvent:Fire(hero, "cast", boar, string.rep("x", 60))
+	remotes.IsleCombat.OnServerEvent:Fire(hero, "dance", boar)
+	eq(#fires("denied"), deniedBefore, "malformed requests are dropped without a notice")
+	-- Swap to a wand: a dart.
+	loadout.style, loadout.weapon = "magic", "MeadowWand"
+	now += 2
+	remotes.IsleCombat.OnServerEvent:Fire(hero, "cast", boar, "GaleDart")
+	eq(#fires("projectile"), 2, "spell projectile broadcast")
+	eq(fires("projectile")[2].payload.spell, "GaleDart", "projectile names the spell")
+	eq(fires("hit")[#fires("hit")].payload.tag, "weak", "magic hits the boar's weakness")
+	eq(hero:GetAttribute("Mana"), 150 - Data.Spells.GaleDart.mana, "Mana attribute updated on cast")
+	eq(inv.GaleGlyph, 4, "glyph consumed"); eq(inv.SparkGlyph, 4, "catalyst consumed")
+	-- Denials are throttled.
+	now += 0.05
+	local count = #fires("denied")
+	remotes.IsleCombat.OnServerEvent:Fire(hero, "cast", boar, "GaleLance")
+	remotes.IsleCombat.OnServerEvent:Fire(hero, "cast", boar, "GaleLance")
+	eq(#fires("denied"), count + 1, "denied notices are rate limited")
+	eq(fires("denied")[#fires("denied")].payload.reason, "level", "level refusal reported")
+	-- Hubward: no hub island yet, then a charted hub.
+	now += 6
+	remotes.IsleCombat.OnServerEvent:Fire(hero, "cast", nil, "Hubward")
+	eq(fires("denied")[#fires("denied")].payload.reason, "teleport", "uncharted hub refuses the tablet")
+	eq(inv.HubwardTablet, 1, "tablet kept")
+	local hub = child(islands, object("Model", {Name = "HubIsland"}))
+	hub:SetAttribute("Region", "Hub")
+	child(hub, object("Part", {Name = "Anchor_Landing", Position = Vector3.new(500, 10, 500), Size = Vector3.new(4, 2, 4)}))
+	now += 4
+	remotes.IsleCombat.OnServerEvent:Fire(hero, "cast", nil, "Hubward")
+	ok(character.pivotedTo ~= nil and (character.pivotedTo.Position - Vector3.new(500, 14.5, 500)).Magnitude < 1e-3, "hubward lands on the hub anchor")
+	eq(inv.HubwardTablet, 0, "tablet consumed")
+	eq(#fires("teleport"), 1, "teleport confirmed to the caster")
+	-- Mana regenerates and replicates through the AI loop.
+	tick(10)
+	eq(hero:GetAttribute("Mana"), 150, "mana regenerates to full")
+	players.PlayerRemoving:Fire(hero)
+	eq(#warnings, 0,"no runtime warnings: " .. table.concat(warnings, "; "))
+	print("PASS: " .. (checks - before) .. " combat style runtime assertions.")
+end
+print("PASS: " .. (checks - stylesBefore) .. " combat style assertions in total.")
 
 print("Combat QA: " .. checks .. " checks passed.")
