@@ -506,6 +506,63 @@ do
 end
 
 ------------------------------------------------------------------------------
+-- 6b. Combat styles: bow / staff / wand / heal gestures, tier tints, left-hand bow
+------------------------------------------------------------------------------
+do
+	for _, name in ipairs({"shoot", "cast", "flick", "heal"}) do
+		ok(Core.GESTURES[name] ~= nil and Relay.NAMES[name] == true, name .. " gesture exists and is relayed")
+	end
+	eq(Core.GESTURES.shoot.tool, "Bow", "bow shot holds a bow")
+	eq(Core.GESTURES.cast.tool, "Staff", "staff cast holds a staff")
+	eq(Core.GESTURES.flick.tool, "Wand", "wand flick holds a wand")
+	eq(Core.GESTURES.heal.tool, nil, "Mend is bare-handed")
+	eq(Core.handFor(Core.GESTURES.shoot, "R15"), "LeftHand", "the bow sits in the left hand (R15)")
+	eq(Core.handFor(Core.GESTURES.shoot, "R6"), "Left Arm", "the bow sits in the left hand (R6)")
+	eq(Core.handFor(Core.GESTURES.cast, "R15"), "RightHand", "staves stay in the right hand")
+	-- The bow draw pulls the string hand back past the bow hand (elbow folded), then looses.
+	local loop = Core.GESTURES.shoot.loop
+	local draw = Core.samplePose(loop, 0.3)
+	ok(draw.rightElbow[1] > 100 and draw.leftElbow[1] < 10, "draw: string elbow folded, bow arm straight")
+	local marks = {}
+	for _, k in ipairs(loop) do if k.mark then table.insert(marks, k.mark) end end
+	eq(marks[1], "release", "the shot marks its release")
+	local raise = Core.samplePose(Core.GESTURES.cast.loop, 0.18)
+	ok(raise.rightArm[1] > 130 and raise.leftArm[1] > 130, "staff cast raises both arms")
+	local heal = Core.samplePose(Core.GESTURES.heal.loop, 0.4)
+	ok(heal.rightArm[1] > 150 and heal.leftArm[1] > 150, "Mend raises both hands")
+	-- Every bow / staff / wand tier tints its own gesture model (and only its style's).
+	local styled = 0
+	for id, def in pairs(Data.Items) do
+		if def.kind == "weapon" and (def.style == "ranged" or def.style == "magic") then
+			local gesture = if def.style == "ranged" then "shoot" elseif #(def.magic.elements or {}) == 0 then "flick" else "cast"
+			local other = if def.style == "ranged" then "cast" else "shoot"
+			eq(rgbOf(Core.toolColor(Data, gesture, id)), rgbOf(Core.hex(def.color)), id .. " tints " .. gesture)
+			eq(rgbOf(Core.toolColor(Data, other, id)), rgbOf(Core.hex(Core.BARE_METAL)), id .. " cannot tint " .. other)
+			ok(Relay.itemOk(Data, gesture, id) and not Relay.itemOk(Data, other, id), id .. " server item check agrees")
+			ok(Relay.itemOk(Data, "attack", id), id .. " still tints a plain attack")
+			styled += 1
+		end
+	end
+	eq(styled, 24, "six wood tiers × (shortbow, longbow, staff, wand)")
+	ok(not Relay.itemOk(Data, "shoot", "BrassSword") and not Relay.itemOk(Data, "cast", "BrassSword"), "swords tint no bow or staff")
+	ok(Relay.itemOk(Data, "heal", nil) and not Relay.itemOk(Data, "heal", "WindpineStaff"), "Mend carries no item")
+	for _, kind in ipairs({"Bow", "Staff", "Wand"}) do
+		local spec = Core.toolSpec(kind)
+		local heads = 0
+		for _, part in ipairs(spec) do if part.colour == "head" then heads += 1 end end
+		ok(heads >= 1, kind .. " has a tier-tinted part")
+	end
+	-- The engine hands the gesture's hand to attachTool.
+	local seen
+	local engine = Core.createEngine({now = function() return 0 end, alive = function() return true end,
+		bindRig = function() return {{motor = {Transform = CFrame.new()}, parts = {{"leftArm", 1}, {"rightArm", 1}, {"rightElbow", 1}}, basis = CFrame.new()}} end,
+		attachTool = function(_, kind, _, side) seen = {kind, side}; return {Destroy = function() end} end,
+		watch = function() return {} end, mark = function() end})
+	engine.play({}, "shoot", {})
+	ok(seen and seen[1] == "Bow" and seen[2] == "left", "bow attached to the left hand")
+end
+
+------------------------------------------------------------------------------
 -- 7. Packaging
 ------------------------------------------------------------------------------
 local project = fs.readFile("default.project.json")

@@ -7,7 +7,11 @@
 
 local Relay = {}
 Relay.NAMES = {mine = true, chop = true, fish = true, harvest = true, hammer = true, stir = true, flip = true, saw = true,
-	interact = true, attack = true, eat = true, drink = true}
+	interact = true, attack = true, eat = true, drink = true,
+	-- Combat styles: bow shot, staff cast, wand flick, Mend.
+	shoot = true, cast = true, flick = true, heal = true}
+-- Combat gestures tint their held bow / staff / wand by the weapon of that style.
+Relay.STYLE_GESTURE = {shoot = "ranged", cast = "magic", flick = "magic"}
 Relay.TARGET_RANGE = 20
 Relay.BROADCAST_RANGE = 120
 Relay.RATE = 4 -- tokens per second
@@ -23,6 +27,7 @@ function Relay.itemOk(Data, name, itemId)
 	local kind = Relay.TOOL_KIND[name]
 	if kind then return def.kind == "tool" and def.toolKind == kind end
 	if name == "attack" then return def.kind == "weapon" end
+	if Relay.STYLE_GESTURE[name] then return def.kind == "weapon" and def.style == Relay.STYLE_GESTURE[name] end
 	if name == "eat" or name == "drink" then return def.kind == "consumable" end
 	return false
 end

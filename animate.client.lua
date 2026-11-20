@@ -71,6 +71,7 @@ Core.RIGS = {
 	},
 }
 Core.HAND = {R15 = "RightHand", R6 = "Right Arm"}
+Core.LEFT_HAND = {R15 = "LeftHand", R6 = "Left Arm"}
 
 local ZERO = {0, 0, 0, 0, 0, 0}
 
@@ -177,6 +178,19 @@ local EAT_BITE = {rightArm = {74, 32, 0}, rightElbow = {118}, neck = {-12}}
 local DRINK_UP = {rightArm = {76, 25, 0}, rightElbow = {116}, neck = {18}}
 local DRINK_TIP = {rightArm = {86, 25, 0}, rightElbow = {122}, neck = {26}}
 
+-- Combat styles. Bow (left hand): raise, draw the string to the cheek, loose.
+local BOW_RAISE = {leftArm = {88, 12, 0}, leftElbow = {4}, rightArm = {80, 30, 0}, rightElbow = {50}, waist = {0, -18, 0}, neck = {0, 14, 0}}
+local BOW_DRAW = {leftArm = {90, 14, 0}, leftElbow = {0}, rightArm = {92, 52, 0}, rightElbow = {128}, waist = {0, -26, 0}, neck = {-4, 20, 0}}
+local BOW_LOOSE = {leftArm = {90, 14, 0}, leftElbow = {0}, rightArm = {96, 20, 30}, rightElbow = {30}, waist = {0, -22, 0}, neck = {-4, 18, 0}}
+-- Staff (two hands): raise overhead, then thrust it forward to release.
+local STAFF_RAISE = {rightArm = {150, 0, 12}, rightElbow = {30}, leftArm = {140, -20, -10}, leftElbow = {40}, waist = {8, 0, 0}, neck = {10}}
+local STAFF_THRUST = {rightArm = {98, 0, 6}, rightElbow = {6}, leftArm = {92, -25, -6}, leftElbow = {22}, waist = {-12, 0, 0}, neck = {-6}}
+-- Wand: a quick wrist flick from the shoulder.
+local WAND_UP = {rightArm = {120, -15, 10}, rightElbow = {60}, rightWrist = {-30}}
+local WAND_FLICK = {rightArm = {84, 10, 4}, rightElbow = {8}, rightWrist = {35}, waist = {-6, 0, 0}}
+-- Heal: both hands raised to the sky, chin up.
+local HEAL_UP = {rightArm = {165, 0, 22}, rightElbow = {12}, leftArm = {165, 0, -22}, leftElbow = {12}, waist = {10, 0, 0}, neck = {22}}
+
 -- Gesture table. intro/loop/outro are keyframe lists; the loop repeats while
 -- the prompt is held (and at least minCycles times). marks fire impact FX.
 -- tool = held model kind; skill = which snapshot tool colours it.
@@ -229,6 +243,16 @@ Core.GESTURES = {
 			key(0.66, EAT_BITE, "quadIn", "impact"), key(1.0, REST, "quadInOut")}},
 	drink = {tool = "Flask",
 		loop = {key(0, REST), key(0.3, DRINK_UP, "quadOut"), key(0.75, DRINK_TIP, "sineInOut", "impact"), key(1.0, REST, "quadInOut")}},
+	-- Combat styles (combat.client.lua): bow shot, staff cast, wand flick, Mend.
+	shoot = {tool = "Bow", hand = "left",
+		loop = {key(0, REST), key(0.12, BOW_RAISE, "quadOut"), key(0.3, BOW_DRAW, "quadInOut"), key(0.36, BOW_LOOSE, "quadOut", "release"),
+			key(0.6, REST, "quadInOut")}},
+	cast = {tool = "Staff", fx = "ring",
+		loop = {key(0, REST), key(0.18, STAFF_RAISE, "quadOut"), key(0.32, STAFF_THRUST, "backOut", "impact"), key(0.62, REST, "quadInOut")}},
+	flick = {tool = "Wand", fx = "ring",
+		loop = {key(0, REST), key(0.1, WAND_UP, "quadOut"), key(0.18, WAND_FLICK, "quadIn", "impact"), key(0.4, REST, "quadInOut")}},
+	heal = {fx = "mend",
+		loop = {key(0, REST), key(0.25, HEAL_UP, "backOut", "impact"), key(0.7, HEAL_UP), key(0.95, REST, "quadInOut")}},
 }
 Core.NAMES = {}
 for name in pairs(Core.GESTURES) do Core.NAMES[name] = true end
@@ -307,10 +331,13 @@ function Core.toolColor(Data, gesture, itemId)
 	if def and Core.itemFits(gesture, def) then return hex(def.color) end
 	return hex(Core.BARE_METAL)
 end
+-- Weapon style a combat gesture's held model shows (bows / staves and wands).
+Core.STYLE_GESTURE = {shoot = "ranged", cast = "magic", flick = "magic"}
 function Core.itemFits(gesture, def)
 	local kind = Core.TOOL_ITEM_KIND[gesture]
 	if kind then return def.kind == "tool" and def.toolKind == kind end
 	if gesture == "attack" then return def.kind == "weapon" end
+	if Core.STYLE_GESTURE[gesture] then return def.kind == "weapon" and def.style == Core.STYLE_GESTURE[gesture] end
 	if gesture == "eat" or gesture == "drink" then return def.kind == "consumable" end
 	return false
 end
@@ -338,6 +365,14 @@ function Core.toolSpec(kind)
 			p("Blade", V(0.12, 0.32, 3.2), V(0, 0, -2.2), H)},
 		Food = {p("Food", V(0.6, 0.5, 0.6), V(0, 0, -0.35), H, "SmoothPlastic", "Ball")},
 		Flask = {p("Flask", V(0.45, 0.7, 0.45), V(0, 0.15, -0.3), H, "Glass"), p("Cork", V(0.2, 0.2, 0.2), V(0, 0.6, -0.3), W, "Wood")},
+		-- Held in the left hand: limbs run along the grip axis (vertical with the
+		-- arm raised), tinted by the bow's wood tier; a pale string behind them.
+		Bow = {p("Grip", V(0.26, 0.26, 0.6), V(0, 0, 0), W, "Wood"), p("UpperLimb", V(0.18, 0.2, 2.1), V(0, 0.18, -1.3), H, "Wood"),
+			p("LowerLimb", V(0.18, 0.2, 2.1), V(0, 0.18, 1.3), H, "Wood"), p("String", V(0.04, 0.04, 4.6), V(0, 0.55, 0), "string", "SmoothPlastic")},
+		-- Two-handed staff: a long shaft through the grip, a tier-tinted orb and cradle.
+		Staff = {p("Shaft", V(0.22, 0.22, 5.2), V(0, 0, -0.9), W, "Wood"), p("Cradle", V(0.5, 0.5, 0.3), V(0, 0, -3.5), W, "Wood"),
+			p("Orb", V(0.62, 0.62, 0.62), V(0, 0, -3.85), H, "Neon", "Ball")},
+		Wand = {p("Rod", V(0.12, 0.12, 1.5), V(0, 0, -0.6), W, "Wood"), p("Tip", V(0.26, 0.26, 0.26), V(0, 0, -1.4), H, "Neon", "Ball")},
 	}
 	return specs[kind]
 end
@@ -425,6 +460,11 @@ end
 -- deps: now(), alive(character), attachTool(character, kind, colour) -> handle
 -- with :Destroy(), watch(character, onEnd) -> {connections}, mark(state, mark),
 -- cycle(state) (a new loop strike while held).
+-- Which hand a gesture's model is held in ("left" for the bow).
+function Core.handFor(def, rigKind)
+	local map = if def and def.hand == "left" then Core.LEFT_HAND else Core.HAND
+	return map[rigKind]
+end
 function Core.createEngine(deps)
 	local E = {active = {}, count = 0}
 	local function remove(character, abrupt)
@@ -461,7 +501,7 @@ function Core.createEngine(deps)
 			phase = if def.intro then "intro" else "loop", isLocal = opts.isLocal == true, info = opts.info}
 		E.active[character] = s
 		E.count += 1
-		if def.tool then s.tool = deps.attachTool(character, def.tool, opts.color) end
+		if def.tool then s.tool = deps.attachTool(character, def.tool, opts.color, def.hand) end
 		s.conns = deps.watch(character, function() E.stop(character) end) or {}
 		return s
 	end
@@ -574,12 +614,12 @@ local function alive(character)
 end
 
 -- Held tool: parts welded to the hand for the gesture's lifetime.
-local function attachTool(character, kind, colour)
+local function attachTool(character, kind, colour, side)
 	local rigKind = Core.rigType(character)
-	local hand = rigKind and character:FindFirstChild(Core.HAND[rigKind])
+	local hand = rigKind and character:FindFirstChild(Core.handFor({hand = side}, rigKind))
 	local specs = Core.toolSpec(kind)
 	if not hand or not specs then return nil end
-	local grip = hand:FindFirstChild("RightGripAttachment")
+	local grip = hand:FindFirstChild(if side == "left" then "LeftGripAttachment" else "RightGripAttachment")
 	local gripC0 = if grip then CFrame.new(grip.Position) else CFrame.new(0, -hand.Size.Y / 2, 0)
 	local model = Instance.new("Model")
 	model.Name = "IsleGestureTool"
@@ -589,7 +629,8 @@ local function attachTool(character, kind, colour)
 		part.Size = spec.size
 		part.Shape = if spec.shape == "Ball" then Enum.PartType.Ball else Enum.PartType.Block
 		part.Material = Enum.Material[spec.material] or Enum.Material.Metal
-		part.Color = if spec.colour == "head" then (colour or Core.hex(Core.BARE_METAL)) else Core.hex(Core.WOOD)
+		part.Color = if spec.colour == "head" then (colour or Core.hex(Core.BARE_METAL))
+			elseif spec.colour == "string" then Core.hex("EDE6D2") else Core.hex(Core.WOOD)
 		part.CanCollide, part.CanQuery, part.CanTouch, part.Massless, part.CastShadow = false, false, false, true, false
 		if spec.material == "Glass" then part.Transparency = 0.25 end
 		part.CFrame = hand.CFrame * gripC0 * CFrame.new(spec.offset)
@@ -630,6 +671,7 @@ local FX_STYLE = {
 	sawdust = {count = 1, speed = 6, size = 0.2, material = Enum.Material.Sand, colour = "D9B77E"},
 	ring = {count = 0.6, speed = 4, size = 0.25, material = Enum.Material.Neon, colour = "F9CC77", float = true},
 	crumbs = {count = 0.6, speed = 5, size = 0.18, material = Enum.Material.SmoothPlastic},
+	mend = {count = 1, speed = 4, size = 0.3, material = Enum.Material.Neon, colour = "8EE07F", up = true, float = true},
 }
 local function burst(style, position, colour, reduced)
 	local spec = FX_STYLE[style]
@@ -715,7 +757,7 @@ local function mark(state, markName)
 	local position
 	if def.fx == "splash" then
 		position = (root.CFrame * CFrame.new(0, -2.5, -8)).Position
-	elseif def.fx == "crumbs" then
+	elseif def.fx == "crumbs" or def.fx == "mend" or (def.fx == "ring" and state.target == nil) then
 		position = handPos
 	else
 		local part = partOf(state.target)
@@ -744,7 +786,7 @@ end
 local function itemFor(name)
 	local def = Core.GESTURES[name]
 	if def and def.skill then return bestTools[def.skill] end
-	if name == "attack" then return weaponId end
+	if name == "attack" or Core.STYLE_GESTURE[name] then return weaponId end
 	return nil
 end
 

@@ -610,6 +610,15 @@ do
 	ok(order and order < 8, "combat HUD sits below the atlas")
 	ok(client:find("ButtonR2", 1, true) and client:find("TouchTapInWorld", 1, true) and client:find("AttackButton", 1, true), "mouse, touch and gamepad inputs")
 	ok(client:find("✧", 1, true) ~= nil, "crit numbers marked")
+	-- Combat styles client: every verb the server accepts, and every fx kind it sends.
+	ok(client:find('"ranged"', 1, true) and client:find('FireServer("cast", model, id)', 1, true), "client sends ranged and cast verbs")
+	for _, kind in ipairs({"projectile", "snare", "heal", "teleport", "denied"}) do
+		ok(client:find('kind == "' .. kind .. '"', 1, true) ~= nil, "client renders fx " .. kind)
+	end
+	for reason in pairs({style = 1, ammo = 1, ammoTier = 1, sight = 1, range = 1, mana = 1, glyphs = 1, level = 1, spell = 1, immune = 1, combat = 1, teleport = 1}) do
+		ok(client:find(reason .. " = ", 1, true) ~= nil or reason == "weapon", "denied reason " .. reason .. " has a toast")
+	end
+	ok(client:find("QuiverCount", 1, true) and client:find('"Mana"', 1, true), "quiver and mana attributes read")
 	ok(#luau.compile(server) > 0 and #luau.compile(client) > 0, "both scripts compile")
 end
 

@@ -38,7 +38,7 @@ filter = positional[2]
 
 local pages = {
 	{ "Journal", { "Bearing", "Quests", "Diaries", "Construction", "Regions", "Crew", "Calendar" } },
-	{ "Hero", { "Skills", "Gear", "Enchant", "Accessories", "Pets" } },
+	{ "Hero", { "Skills", "Gear", "Combat", "Spellbook", "Enchant", "Accessories", "Pets" } },
 	{ "Satchel", { "Items", "Collections" } },
 	{ "Workshop", { "Forge", "Hearth", "Cauldron", "Workbench", "Workers", "Home" } },
 	{ "Hunt", { "Slayer", "Bestiary", "Dungeon" } },
@@ -105,7 +105,9 @@ for _, spec in ipairs(sizes) do
 	-- HUD: atlas closed, level-up banner + XP popup + toast, combat boss panel.
 	if wanted("hud") then
 		local hudUi = H.runAtlas(size, { touch = true })
-		local combat = H.runCombat(size, hudUi.player)
+		hudUi.player:SetAttribute("Mana", 118)
+		hudUi.player:SetAttribute("MaxMana", 160)
+		local combat = H.runCombat(size, hudUi.player, hudUi.replicated)
 		local Data = H.Data
 		local before = H.snapshot()
 		local nextLevel = H.Progression.levelForXp(before.xp.Mining) + 1

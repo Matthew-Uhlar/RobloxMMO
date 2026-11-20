@@ -36,7 +36,7 @@ local events = {
 	MouseButton1Down = true, MouseButton1Up = true, MouseLeave = true, SelectionGained = true, Activated = true,
 	FocusLost = true, OnClientEvent = true, HealthChanged = true, CharacterAdded = true, InputBegan = true,
 	TextBoxFocusReleased = true, InputEnded = true, TouchTapInWorld = true, RenderStepped = true, AncestryChanged = true, InputChanged = true, CharacterRemoving = true,
-	MouseEnter = true, SelectionLost = true,
+	MouseEnter = true, SelectionLost = true, Event = true,
 }
 local guiClasses = { Frame = true, TextLabel = true, TextButton = true, ImageLabel = true, ScrollingFrame = true, ViewportFrame = true, TextBox = true }
 local absoluteSize = roblox.Vector2.new(730, 303)
@@ -207,6 +207,14 @@ function methods:GetAttributeChangedSignal(name)
 	d.attrSignals[name] = d.attrSignals[name] or newSignal()
 	return d.attrSignals[name]
 end
+function methods:Fire(...)
+	self.Event:Fire(...)
+end
+function methods:FireServer(...)
+	local d = data[self]
+	d.fired = d.fired or {}
+	table.insert(d.fired, table.pack(...))
+end
 function methods:InvokeServer(...)
 	return data[self].props.OnInvoke(...)
 end
@@ -229,15 +237,19 @@ end
 ------------------------------------------------------------------------------
 local function profile()
 	return {
-		xp = { Combat = 9000, Mining = 22000, Woodcutting = 400, Fishing = 0, Farming = 60, Smithing = 4500, Cooking = 100, Alchemy = 0, Enchanting = 1200, Taming = 0, Dungeoneering = 0, Carpentry = 50 },
+		xp = { Combat = 9000, Mining = 22000, Woodcutting = 400, Fishing = 0, Farming = 60, Smithing = 4500, Cooking = 100, Alchemy = 0, Enchanting = 1200, Taming = 0, Dungeoneering = 0, Carpentry = 50,
+			Ranged = 4470, Magic = 13363, Fletching = 1200, Glyphcraft = 800 },
 		items = {
 			Ore = 140, Timber = 40, Herb = 70, Fish = 30, Brassite = 12, Pickaxe = 1, Blade = 1, Tonic = 2, ExpeditionRation = 1,
 			BrassSword = 1, BrassHelm = 1, BrassChestplate = 1, BrassGreaves = 1, BrassBoots = 1, SunsteelSword = 1, BrassPickaxe = 1,
 			CopperHatchet = 1, ArcaneDust = 60, MeadowCharm = 1, QuarryTalisman = 1, EmberfoxPet = 1, CookedFish = 3, MightDraught = 2,
 			StormFeather = 3, BrassIngot = 9, LegacyMystery = 2,
+			-- Combat styles: bows, staves, arrows (one too heavy for the longbow), glyphs, a tablet.
+			WindpineStaff = 1, MeadowWand = 1, MeadowLongbow = 1, CopperArrow = 60, BrassArrow = 143, SunsteelArrow = 15,
+			GaleGlyph = 40, StoneGlyph = 12, SparkGlyph = 25, SurgeGlyph = 6, VitaGlyph = 3, BindGlyph = 2, HubwardTablet = 2,
 		},
 		collection = { Ore = 320, Timber = 60, Herb = 70, Fish = 30, Brassite = 40, Shard = 2, StormFeather = 3, BeastHide = 0 },
-		equipment = { weapon = "BrassSword", helmet = "BrassHelm", chest = "BrassChestplate", legs = "BrassGreaves", boots = "BrassBoots" },
+		equipment = { weapon = "BrassSword", helmet = "BrassHelm", chest = "BrassChestplate", legs = "BrassGreaves", boots = "BrassBoots", ammo = "BrassArrow" },
 		enchants = { BrassSword = { Sharpness = 2, Critical = 5 } },
 		accessoryBag = { "MeadowCharm", "QuarryTalisman" },
 		pets = { { id = "Tidewing", level = 5, xp = 100 }, { id = "Emberfox", level = 1, xp = 0 } },
@@ -245,11 +257,15 @@ local function profile()
 		buffs = { MightDraught = { expires = 120, stats = { strength = 15 } } },
 		bestiary = { BramblebackBoar = 30, Thornling = 1, ShaleCrawler = 1000 },
 		slayerXp = { Bramble = 20, Gloom = 0, Tempest = 0 },
+		autocast = "GaleLance",
 	}
 end
 local function snapshot(options)
 	options = options or {}
 	local p = profile()
+	if options.weapon ~= nil then
+		p.equipment.weapon = options.weapon or nil
+	end
 	if options.xp then
 		for skill, xp in pairs(options.xp) do
 			p.xp[skill] = xp
@@ -314,7 +330,7 @@ local function snapshot(options)
 		accessoryBag = p.accessoryBag, activeAccessories = Progression.activeAccessories(p), accessorySlots = Progression.accessorySlots(p),
 		pets = pets, buffs = { MightDraught = { remaining = 95, stats = { strength = 15 } } }, collections = collections, bestiary = p.bestiary,
 		slayer = { lines = lines, quest = if options.noQuest then nil else { line = "Bramble", tier = 1, progress = 40, needed = 150, bossReady = options.bossReady == true } },
-		enchants = p.enchants,
+		enchants = p.enchants, combat = Progression.combatLoadout(p),
 		regions = { { id = "Hub", name = "Aether Hub", unlocked = true, requirement = "" }, { id = "Gloomhollow", name = "Gloomhollow Caverns", unlocked = false, requirement = "Mining 30, Combat 15" } },
 	}
 	-- Quest journal: every status (done, ready with and without a lamp, active, locked).
@@ -483,13 +499,14 @@ end
 ------------------------------------------------------------------------------
 local checks = 0
 local pages = {
-	Journal = { "Bearing", "Quests", "Diaries", "Construction", "Regions", "Crew" }, Hero = { "Skills", "Gear", "Enchant", "Accessories", "Pets" }, Satchel = { "Items", "Collections" },
+	Journal = { "Bearing", "Quests", "Diaries", "Construction", "Regions", "Crew" }, Hero = { "Skills", "Gear", "Combat", "Spellbook", "Enchant", "Accessories", "Pets" }, Satchel = { "Items", "Collections" },
 	Workshop = { "Forge", "Hearth", "Cauldron", "Workbench", "Workers", "Home" }, Hunt = { "Slayer", "Bestiary" }, Ledger = { "Bank", "Market", "Orders", "Auctions", "Merchant" },
 }
 local tabOrder = { "Journal", "Hero", "Satchel", "Workshop", "Hunt", "Ledger" }
 local verbs = {
 	equip = function(item) return Data.Items[item] ~= nil and Data.Items[item].slot ~= nil end,
-	unequip = function(item) return item == "weapon" or item == "helmet" or item == "chest" or item == "legs" or item == "boots" end,
+	unequip = function(item) return item == "weapon" or item == "helmet" or item == "chest" or item == "legs" or item == "boots" or item == "ammo" end,
+	autocast = function(item) return item == "none" or (Data.Spells[item] ~= nil and Data.Spells[item].autocast == true) end,
 	consume = function(item) return Data.Items[item] ~= nil and Data.Items[item].kind == "consumable" end,
 	accessory = function(item) return Data.Items[item] ~= nil and Data.Items[item].kind == "accessory" end,
 	petSummon = function(item) return type(item) == "string" and item:match("^%d+$") ~= nil end,
@@ -894,7 +911,7 @@ do
 	end
 	assert(xpLabel and xpLabel.Text:find("+", 1, true), "XP popup shows")
 	assert(not xpLabel.Text:find("Woodcutting", 1, true), "compact XP popup shows one entry")
-	assert(xpLabel.Position.X.Scale >= 0.3 and xpLabel.Position.X.Scale + xpLabel.Size.X.Scale <= 0.7001, "XP popup stays between health and defense")
+	assert(xpLabel.Position.X.Scale >= 0.46 and xpLabel.Position.X.Scale + xpLabel.Size.X.Scale <= 0.7601, "XP popup stays between mana and defense")
 	local toast
 	for _, object in ipairs(ui.gui:GetChildren()) do
 		if object.ClassName == "TextLabel" and object.Text:find("Mined ore", 1, true) then toast = object end
@@ -931,12 +948,15 @@ local function combatHud(size)
 	local delayed = {}
 	local env = {
 		game = game, Enum = roblox.Enum, UDim = roblox.UDim, UDim2 = roblox.UDim2, Vector2 = roblox.Vector2, Vector3 = roblox.Vector3,
-		CFrame = roblox.CFrame, Color3 = roblox.Color3, ColorSequence = roblox.ColorSequence, NumberSequence = roblox.NumberSequence, TweenInfo = { new = function() return {} end },
+		CFrame = roblox.CFrame, Color3 = roblox.Color3, ColorSequence = roblox.ColorSequence, NumberSequence = roblox.NumberSequence, NumberRange = roblox.NumberRange,
+		TweenInfo = { new = function() return {} end },
 		Instance = { new = function(class) return new(class) end }, RaycastParams = { new = function() return {} end },
 		typeof = function(value) return if data[value] then "Instance" else typeof(value) end,
+		require = function(target) assert(target.Name == "AetherData", "unexpected require"); return Data end,
 		task = { spawn = function(fn, ...) local co = coroutine.create(fn); assert(coroutine.resume(co, ...)) end,
 			delay = function(_, fn) table.insert(delayed, fn) end },
 	}
+	new("ModuleScript", { Name = "AetherData" }).Parent = replicated
 	local chunk = luau.load(fs.readFile("combat.client.lua"), { debugName = "combat.client.lua", environment = env, injectGlobals = true })
 	chunk()
 	local hud = playerGui:FindFirstChild("IsleCombatHud")
@@ -1492,7 +1512,7 @@ do
 		local tag = { size = size, name = size.X .. "x" .. size.Y }
 		local ui = H.runAtlas(size)
 		local player, playerGui = ui.player, ui.playerGui
-		local combat = H.runCombat(size, player)
+		local combat = H.runCombat(size, player, ui.replicated)
 		runClient("nav.client.lua", size, player)
 		local prompts = signal()
 		runClient("npc.client.lua", size, player, { promptTriggered = prompts })
@@ -1517,6 +1537,14 @@ do
 		local tracker = townsfolk:FindFirstChild("TutorialTracker")
 		tracker.Visible = true -- measured whether or not this snapshot's tutorial is finished
 		local attack = hud:FindFirstChild("AttackButton")
+		-- Spell bar (style chip + six slots for this magic snapshot) above the action bar.
+		local spellBar = hud:FindFirstChild("SpellBar")
+		local shownSlots = 0
+		for i = 1, 6 do if spellBar:FindFirstChild("Spell" .. i).Visible then shownSlots += 1 end end
+		assert(spellBar.Visible and shownSlots == 6, "spell bar shows six slots at " .. tag.name .. " (" .. shownSlots .. ")")
+		local spellRect = rect(spellBar)
+		assert(spellRect.w >= 40 * 7, "spell bar width holds the chip and slots at " .. tag.name)
+		assert(player:GetAttribute("IsleHudLift") == spellRect.h + 6, "toasts lift above the spell bar at " .. tag.name)
 		local persistent = {
 			{ "atlas badge", rect(atlas:FindFirstChild("GuildBadge")) },
 			{ "minimap", rect(wayfinder:FindFirstChild("Minimap")) },
@@ -1524,7 +1552,7 @@ do
 		}
 		local explore = table.clone(persistent)
 		for _, item in ipairs({ { "event banner", rect(banner) }, { "tutorial tracker", rect(tracker) },
-			{ "wayfinder toast", rect(wayfinder:FindFirstChild("WayfinderToast")) }, { "attack button", rect(attack) } }) do
+			{ "wayfinder toast", rect(wayfinder:FindFirstChild("WayfinderToast")) }, { "attack button", rect(attack) }, { "spell bar", spellRect } }) do
 			table.insert(explore, item)
 		end
 		noOverlap(table.move({ { "target panel", targetRect } }, 1, 1, #explore + 1, table.clone(explore)), tag)
@@ -1534,13 +1562,14 @@ do
 		builder.enter("place", "StonePath")
 		local bar = playerGui:FindFirstChild("IslandBuilder")
 		assert(bar.Enabled and not attack.Visible, "Attack hides while the island builder runs at " .. tag.name)
+		assert(not spellBar.Visible and player:GetAttribute("IsleHudLift") == 0, "spell bar hides while building at " .. tag.name)
 		local building = {}
-		for _, item in ipairs(explore) do if item[1] ~= "attack button" then table.insert(building, item) end end
+		for _, item in ipairs(explore) do if item[1] ~= "attack button" and item[1] ~= "spell bar" then table.insert(building, item) end end
 		table.insert(building, { "builder controls", rect(bar:FindFirstChild("BuildBar")) })
 		table.insert(building, { "boss panel", bossRect })
 		noOverlap(building, tag)
 		player:SetAttribute("IslandBuilding", nil)
-		assert(attack.Visible, "Attack returns after building at " .. tag.name)
+		assert(attack.Visible and spellBar.Visible, "Attack and the spell bar return after building at " .. tag.name)
 		-- Talking: Pell's opening node has 4+ options.
 		local promptDouble = { GetAttribute = function(_, key) return if key == "TownsfolkRole" then "Guide" else nil end,
 			FindFirstAncestorOfClass = function() return nil end }
@@ -1551,6 +1580,9 @@ do
 		for _, child in ipairs(options:GetChildren()) do if child.ClassName == "TextButton" then buttons += 1 end end
 		assert(dialogue.Visible and buttons >= 3, "dialogue open with " .. buttons .. " options at " .. tag.name)
 		assert(not tracker.Visible, "tutorial tracker tucks away while talking at " .. tag.name)
+		-- The dialogue owns the bottom: the spell bar steps aside on the next HUD scan.
+		combat.run.RenderStepped:Fire()
+		assert(not spellBar.Visible, "spell bar hides while talking at " .. tag.name)
 		local boxRect = rect(dialogue)
 		local talking = table.clone(persistent)
 		table.insert(talking, { "attack button", rect(attack) })
@@ -1580,4 +1612,233 @@ do
 	end
 end
 print("HUD overlap: " .. (checks - hudChecks) .. " checks.")
+
+-- 13. Combat styles client (combat.client.lua + atlas channels): the verb for the
+-- wielded style, reach, spell bar slots / keys / greying, denied toasts, autocast
+-- through the atlas, triangle damage tags, projectile / snare / heal / teleport FX,
+-- gestures, and the Hero › Combat / Spellbook pages and item / bestiary details.
+local styleChecks = checks
+do
+	local H = require("./tools/ui-harness")
+	local size = roblox.Vector2.new(1366, 768)
+	local function texts(root)
+		local out = {}
+		for _, d in ipairs(root:GetDescendants()) do
+			if d.ClassName == "TextLabel" or d.ClassName == "TextButton" then table.insert(out, tostring(d.Text)) end
+		end
+		return table.concat(out, "\n")
+	end
+	-- Atlas + combat with a character 0 studs from the origin and a monster `distance` away.
+	local function setup(weapon, distance)
+		local ui = H.runAtlas(size, { snapshot = H.snapshot({ weapon = weapon }) })
+		local player = ui.player
+		local gestures = {}
+		local gesture = H.new("BindableEvent", { Name = "IsleGestureLocal" })
+		gesture.Event:Connect(function(name, target, item) table.insert(gestures, { name, target, item }) end)
+		gesture.Parent = ui.replicated
+		local character = H.new("Model", { Name = "Voyager" })
+		H.new("Part", { Name = "HumanoidRootPart", Position = roblox.Vector3.new(0, 3, 0), CFrame = roblox.CFrame.new(0, 3, 0), Size = roblox.Vector3.new(2, 2, 1) }).Parent = character
+		H.new("Humanoid", { Name = "Humanoid", Health = 100, MaxHealth = 100 }).Parent = character
+		player.Character = character
+		player:SetAttribute("Mana", 100)
+		player:SetAttribute("MaxMana", 160)
+		local c = H.runCombat(size, player, ui.replicated)
+		local body = H.new("Part", { Name = "Body", Position = roblox.Vector3.new(0, 3, -(distance + 2)), Size = roblox.Vector3.new(4, 4, 4) })
+		body.Parent = c.monster
+		c.monster.PrimaryPart = body
+		c.monster:SetAttribute("Health", 80)
+		c.monster:SetAttribute("MaxHealth", 100)
+		table.insert(c.tagged, c.monster)
+		c.run.RenderStepped:Fire()
+		c.ui, c.player, c.gestures = ui, player, gestures
+		c.bar = c.hud:FindFirstChild("SpellBar")
+		c.attack = c.hud:FindFirstChild("AttackButton")
+		c.press = function() c.attack.InputBegan:Fire({ UserInputType = roblox.Enum.UserInputType.Touch }) end
+		c.key = function(code) c.input.InputBegan:Fire({ KeyCode = code, UserInputType = roblox.Enum.UserInputType.Keyboard }, false) end
+		c.toast = function()
+			local t = ui.gui:FindFirstChild("Toast")
+			return t and t.Visible and t.Text or ""
+		end
+		return c
+	end
+	local function lastFired(c) local f = H.fired(c.remote); return f[#f] end
+	local function slotIds(c)
+		local ids = {}
+		for i = 1, 6 do
+			local b = c.bar:FindFirstChild("Spell" .. i)
+			if b.Visible then table.insert(ids, b:FindFirstChild("Glyph").Text) end
+		end
+		return ids
+	end
+
+	-- Magic (Windpine Staff, Magic 30, autocast Gale Lance): cast at 30 studs.
+	local m = setup("WindpineStaff", 30)
+	assert(m.attack:FindFirstChild("Caption").Text == "CAST", "staff turns Attack into CAST")
+	assert(#slotIds(m) == 6, "magic bar: autocast, two more damage spells, Rootbind, Mend, Hubward")
+	assert(m.bar:FindFirstChild("Spell1"):FindFirstChild("Auto").Visible, "slot 1 marks the autocast")
+	assert(m.bar:FindFirstChild("Spell1"):FindFirstChild("Key").Text == "1", "slot key hints")
+	m.press()
+	local f = lastFired(m)
+	assert(f and f[1] == "cast" and f[2] == m.monster and f[3] == "GaleLance", "attack casts the autocast spell at the target")
+	assert(m.gestures[#m.gestures][1] == "cast" and m.gestures[#m.gestures][3] == "WindpineStaff", "staff casts play the staff gesture tinted by the staff")
+	-- Mend (slot 5) needs no target and casts with nil.
+	m.key(roblox.Enum.KeyCode.Five)
+	f = lastFired(m)
+	assert(f[1] == "cast" and f[2] == nil and f[3] == "Mend", "key 5 casts Mend on yourself")
+	assert(m.gestures[#m.gestures][1] == "heal", "Mend plays the heal gesture")
+	-- Utility cooldown: an immediate second Mend is held back locally.
+	local before = #H.fired(m.remote)
+	m.key(roblox.Enum.KeyCode.Five)
+	assert(#H.fired(m.remote) == before, "Mend's cooldown blocks a repeat")
+	m.run.RenderStepped:Fire()
+	assert(m.bar:FindFirstChild("Spell5"):FindFirstChild("Sweep").Size.Y.Scale > 0.9, "cooldown sweep covers a fresh Mend")
+	-- Out of mana: greyed slot and a toast instead of a send.
+	m.fx.OnClientEvent:Fire("denied", { action = "cast", reason = "mana" })
+	assert(m.toast():find("Not enough mana", 1, true), "denied mana toasts: " .. m.toast())
+	m.player:SetAttribute("Mana", 0)
+	m.run.RenderStepped:Fire()
+	assert(m.bar:FindFirstChild("Spell2"):FindFirstChild("Veil").Visible, "unaffordable slots grey out")
+	before = #H.fired(m.remote)
+	m.key(roblox.Enum.KeyCode.Two)
+	assert(#H.fired(m.remote) == before, "no cast without mana")
+	-- Right-click a damage slot: autocast through the atlas verb.
+	m.bar:FindFirstChild("Spell2").InputBegan:Fire({ UserInputType = roblox.Enum.UserInputType.MouseButton2 })
+	local sent = m.ui.sent[#m.ui.sent]
+	assert(sent[1] == "autocast" and Data.Spells[sent[2]] and Data.Spells[sent[2]].kind == "damage", "right-click sets autocast via IsleAction")
+	-- Denied reasons map to short toasts.
+	for reason, text in pairs({ ammo = "Out of arrows", sight = "No line of sight", glyphs = "Out of glyphs", combat = "in combat", range = "Out of range" }) do
+		m.fx.OnClientEvent:Fire("denied", { action = "ranged", reason = reason })
+		assert(m.toast():find(text, 1, true), reason .. " toast: " .. m.toast())
+		checks += 1
+	end
+	-- Atlas toasts float above the spell bar.
+	local toast = m.ui.gui:FindFirstChild("Toast")
+	assert(toast.Position.Y.Offset <= -50 - m.bar.Size.Y.Offset, "toast lifted above the spell bar")
+	-- Hit numbers: WEAK!, resist and miss.
+	m.fx.OnClientEvent:Fire("hit", { model = m.monster, position = roblox.Vector3.new(0, 5, -30), amount = 130, tag = "weak", style = "magic", spell = "GaleLance" })
+	m.fx.OnClientEvent:Fire("hit", { model = m.monster, position = roblox.Vector3.new(0, 5, -30), amount = 70, tag = "resist", style = "ranged" })
+	m.fx.OnClientEvent:Fire("hit", { model = m.monster, position = roblox.Vector3.new(0, 5, -30), amount = 0, miss = true, style = "ranged" })
+	local terrainText = texts(m.workspace:FindFirstChild("Terrain"))
+	assert(terrainText:find("WEAK!", 1, true) and terrainText:find("resist", 1, true) and terrainText:find("miss", 1, true), "weak / resist / miss numbers: " .. terrainText)
+	-- Projectiles, snare, heal and teleport build their effects under the camera.
+	local camera = m.workspace.CurrentCamera
+	local beforeParts = #camera:GetChildren()
+	m.fx.OnClientEvent:Fire("projectile", { from = roblox.Vector3.new(0, 4, 0), to = roblox.Vector3.new(0, 4, -30), style = "magic", spell = "GaleLance", color = "C9F2FF", attacker = 1 })
+	m.fx.OnClientEvent:Fire("projectile", { from = roblox.Vector3.new(0, 4, 0), to = roblox.Vector3.new(0, 4, -30), style = "ranged", color = "B87333", attacker = 1 })
+	m.fx.OnClientEvent:Fire("snare", { model = m.monster, position = roblox.Vector3.new(0, 5, -30), duration = 5, attacker = 1 })
+	m.fx.OnClientEvent:Fire("heal", { spell = "Mend" })
+	m.fx.OnClientEvent:Fire("teleport", { spell = "Hubward" })
+	local kinds = {}
+	for _, object in ipairs(camera:GetDescendants()) do kinds[object.ClassName] = true end
+	assert(#camera:GetChildren() > beforeParts + 10, "style FX spawn parts")
+	assert(kinds.Trail and kinds.ParticleEmitter and kinds.PointLight, "trails, sparkles and lights on bolts")
+	checks += 16
+
+	-- Ranged (Meadow Longbow, 40 stud reach): SHOOT, quiver count, "ranged" verb.
+	local r = setup("MeadowLongbow", 30)
+	assert(r.attack:FindFirstChild("Caption").Text == "SHOOT", "bow turns Attack into SHOOT")
+	r.run.RenderStepped:Fire()
+	assert(r.attack:FindFirstChild("Quiver").Visible and r.attack:FindFirstChild("Quiver").Text == "×143", "quiver count on the button")
+	assert(r.bar:FindFirstChild("StyleChip"):FindFirstChild("Caption").Text == "×143", "quiver count on the style chip")
+	r.press()
+	f = lastFired(r)
+	assert(f[1] == "ranged" and f[2] == r.monster, "bow fires ranged at 30 studs")
+	assert(r.gestures[#r.gestures][1] == "shoot" and r.gestures[#r.gestures][3] == "MeadowLongbow", "bow shot plays the draw-and-release gesture")
+	-- Empty quiver (QuiverCount push): a toast, no shot.
+	r.player:SetAttribute("QuiverCount", 0)
+	r.fx.OnClientEvent:Fire("denied", { action = "ranged", reason = "range" }) -- frees the swing
+	before = #H.fired(r.remote)
+	r.press()
+	assert(#H.fired(r.remote) == before and r.toast():find("Out of arrows", 1, true), "no arrows: toast, no shot")
+	-- Ranged bar: utility spells only (no staff).
+	for i = 1, 6 do
+		local b = r.bar:FindFirstChild("Spell" .. i)
+		if b.Visible then assert(b:FindFirstChild("Glyph").Text == "✚" or b:FindFirstChild("Glyph").Text == "⌂", "only Mend / Hubward without a staff") end
+	end
+	checks += 6
+
+	-- Melee (Brass Sword): 30 studs is out of reach; 10 studs swings "attack".
+	local s = setup("BrassSword", 30)
+	assert(s.attack:FindFirstChild("Caption").Text == "ATTACK", "sword keeps ATTACK")
+	s.press()
+	assert(#H.fired(s.remote) == 0, "sword cannot reach 30 studs")
+	s.monster.PrimaryPart.Position = roblox.Vector3.new(0, 3, -10)
+	s.press()
+	f = lastFired(s)
+	assert(f and f[1] == "attack" and f[2] == s.monster, "sword swings attack within reach")
+	checks += 3
+
+	-- Atlas pages: Combat, Spellbook, item details, bestiary, skills, stations.
+	local ui = H.runAtlas(size)
+	H.press(H.find(ui.gui, "AtlasButton"))
+	H.press(ui.tabs:FindFirstChild("HeroButton"))
+	H.press(H.find(ui.scroll, "SectionCombat"))
+	local page = texts(ui.scroll)
+	assert(page:find("Magic style", 1, true) and page:find("QUIVER", 1, true) and page:find("Brass Arrow", 1, true), "Combat page: style and quiver")
+	assert(page:find("COMBAT TRIANGLE", 1, true) and page:find("beats", 1, true) and page:find("RANGED", 1, true), "Combat page: triangle and levels")
+	assert(H.find(ui.scroll, "QuiverUnequip"), "quiver unequip button")
+	H.press(H.find(ui.scroll, "QuiverUnequip"))
+	assert(ui.sent[#ui.sent][1] == "unequip" and ui.sent[#ui.sent][2] == "ammo", "quiver unequips the ammo slot")
+	H.press(ui.tabs:FindFirstChild("HeroButton"))
+	H.press(H.find(ui.scroll, "SectionCombat"))
+	H.press(H.find(ui.scroll, "AmmoCopperArrowEquip"))
+	assert(ui.sent[#ui.sent][1] == "equip" and ui.sent[#ui.sent][2] == "CopperArrow", "owned arrows equip into the quiver")
+	H.press(H.find(ui.scroll, "SectionSpellbook"))
+	page = texts(ui.scroll)
+	for _, id in ipairs(Data.SpellOrder) do
+		assert(H.find(ui.scroll, "Spell" .. id), "spellbook lists " .. id)
+		checks += 1
+	end
+	assert(page:find("free from staff", 1, true), "staff elements shown as free glyphs")
+	assert(page:find("AUTOCAST", 1, true) and page:find("now ≈", 1, true), "autocast badge and damage estimate")
+	H.press(H.find(ui.scroll, "SpellGaleDartAutocast"))
+	assert(ui.sent[#ui.sent][1] == "autocast" and ui.sent[#ui.sent][2] == "GaleDart", "Autocast button sends the verb")
+	H.press(ui.tabs:FindFirstChild("HeroButton"))
+	H.press(H.find(ui.scroll, "SectionSpellbook"))
+	local locked = H.find(ui.scroll, "SpellEmberCascadeAutocast")
+	assert(locked ~= nil, "locked spells keep a disabled Autocast button")
+	local sentBefore = #ui.sent
+	H.press(locked)
+	assert(#ui.sent == sentBefore, "a locked spell sends nothing")
+	H.press(ui.tabs:FindFirstChild("HeroButton"))
+	H.press(H.find(ui.scroll, "SectionSpellbook"))
+	H.press(H.find(ui.scroll, "SpellGaleLanceClear"))
+	assert(ui.sent[#ui.sent][1] == "autocast" and ui.sent[#ui.sent][2] == "none", "Clear autocast")
+	-- Item details: bow tier/arrows, staff elements, arrow compatibility.
+	for id, needle in pairs({ MeadowLongbow = "arrows up to tier 2", WindpineStaff = "Tide", BrassArrow = "Fits Meadow bows" }) do
+		H.press(ui.tabs:FindFirstChild("SatchelButton"))
+		H.press(H.find(ui.scroll, "SectionItems"))
+		H.press(H.find(ui.scroll, "Item" .. id))
+		local detail = texts(H.find(ui.scroll, "ItemDetail"))
+		assert(detail:find(needle, 1, true), id .. " detail mentions " .. needle .. ": " .. detail)
+		checks += 1
+	end
+	-- Bestiary: weakness / resistance on every creature.
+	H.press(ui.tabs:FindFirstChild("HuntButton"))
+	H.press(H.find(ui.scroll, "SectionBestiary"))
+	page = texts(ui.scroll)
+	assert(page:find("Weak to", 1, true) and page:find("Resists", 1, true), "bestiary shows the triangle")
+	-- Skills: the four new skills are listed.
+	H.press(ui.tabs:FindFirstChild("HeroButton"))
+	H.press(H.find(ui.scroll, "SectionSkills"))
+	for _, skill in ipairs({ "Ranged", "Magic", "Fletching", "Glyphcraft" }) do
+		assert(H.find(ui.scroll, "Skill" .. skill), "skills page lists " .. skill)
+		checks += 1
+	end
+	-- Stations: the new recipe categories render as filters.
+	for station, categories in pairs({ Workbench = { "Bows", "Arrows", "Fletching", "Staves" }, Cauldron = { "Glyphs", "Tablets" }, Forge = { "Arrowheads" } }) do
+		H.press(ui.tabs:FindFirstChild("WorkshopButton"))
+		H.press(H.find(ui.scroll, "Section" .. station))
+		for _, category in ipairs(categories) do
+			local filter = H.find(ui.scroll, "Category" .. category)
+			assert(filter, station .. " shows " .. category)
+			H.press(filter)
+			assert(#ui.warnings == 0 and H.find(ui.scroll, "Category" .. category), station .. " › " .. category .. " draws")
+			checks += 1
+		end
+	end
+	assert(#ui.warnings == 0, "combat pages draw without warnings: " .. table.concat(ui.warnings, "; "))
+	checks += 12
+end
+print("Combat styles client: " .. (checks - styleChecks) .. " checks.")
 print("UI QA passed " .. checks .. " checks (" .. created .. " mock instances).")
