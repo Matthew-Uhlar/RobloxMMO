@@ -155,6 +155,8 @@ local Mastery={verbs={}}
 local Garden={verbs={}}
 -- Pets depth (held items, candy, Roost upgrades, ability hooks); filled in by the Pets block before perform().
 local Pets={verbs={}}
+-- Dungeon classes (class choice, Master Mode, class XP); filled in by the Classes block beside the expedition grant.
+local Classes={verbs={}}
 -- One-time coins for each newly reached skill level.
 local function levelCoins(p,skill,newLevel)
 	p.levelRewards=p.levelRewards or {}
@@ -1812,6 +1814,7 @@ local function snapshot(player,message)
 		companionBond=p.companionBond or 0,market=marketViews[player],economy=Econ.view and Econ.view(player,p),recipes=recipeState(p),regions=regionState(p),stats=legacyStats,quest=questState(p),slayer=slayerState(p),started=p.started,decorations=p.decorations,preview=preview[player]==true,
 		depth=depthState(p,stats),journal=Journal.state(p),agilityHunter=Skills.state(player,p), -- Agility & Hunter page state
 		events={claims=p.eventClaims or {},vendorUntil=player:GetAttribute("EventVendorUntil") or 0,serverTime=os.time()}, -- Events hook: Calendar page state
+		dungeonClasses=Classes.state and Classes.state(p), -- Dungeon classes: Hunt > Dungeon page state
 		garden=Garden.state and Garden.state(player,p)} -- Verdant Garden page state
 end
 local function persist(player,release)
@@ -1888,6 +1891,7 @@ local function migrate(profile)
 	Gear.migrate(profile) -- Gear depth: reforges, stars, books
 	Progression.masteryMigrate(profile) -- Skill Mastery: drop unknown/invalid nodes, reset overspent trees
 	if Garden.migrate then Garden.migrate(profile) end -- Verdant Garden: sanitise and bound p.garden
+	if Classes.migrate then Classes.migrate(profile) end -- Dungeon classes: sanitise p.dungeonClasses
 end
 -- Clears every per-player table and ends this player's session slot.
 -- Sea creatures: a successful Fishing gather may hook one (Data.rollSeaCreature).
@@ -2007,6 +2011,7 @@ local function open(player)
 		return
 	end
 	profiles[player]=profile
+	if Classes.publish then Classes.publish(player,profile) end -- Dungeon classes: DungeonClass / DungeonMasterOn attributes
 	for name in pairs(decorations) do player:SetAttribute("Home"..name,profile.decorations[name]==true) end
 	leaseEnd[player]=if preview[player] then os.time()+180 else committed.expires
 	opening[player]=nil
@@ -3181,6 +3186,8 @@ local function perform(player,verb,item,prompt)
 		return Workers.action(player,p,verb,item) -- Workers depth
 	elseif Pets.verbs[verb] then
 		return Pets.action(player,p,verb,item) -- Pets depth
+	elseif Classes.verbs[verb] then
+		return Classes.action(player,p,verb,item) -- Dungeon classes
 	elseif Endgame.verbs[verb] and prompt then
 		return Endgame.action(player,p,verb,item) -- Endgame: Sovereign Altar
 	elseif Econ.verbs and Econ.verbs[verb] then
@@ -3617,29 +3624,118 @@ game:BindToClose(function()
 	end
 	while pending>0 do task.wait(0.1) end
 end)
+-- Dungeon classes (Dungeon Classes team): p.dungeonClasses (Data.DungeonClasses.migrate),
+-- verbs dungeonClass "<classId>|none" and dungeonMaster "on|off" (refused while
+-- the player is inside a run: attribute DungeonInRun), snapshot field dungeonClasses,
+-- attributes DungeonClass / DungeonMasterOn / DungeonClassLevel. grantExpedition
+-- below pays class XP, secrets and Master Mode rolls and records best scores.
+do
+	local DC=Data.DungeonClasses
+	for _,verb in ipairs({"dungeonClass","dungeonMaster"}) do Classes.verbs[verb]=true end
+	function Classes.migrate(p) p.dungeonClasses=DC.migrate(p.dungeonClasses) end
+	function Classes.of(p)
+		if type(p.dungeonClasses)~="table" or type(p.dungeonClasses.xp)~="table" or type(p.dungeonClasses.secrets)~="table" then Classes.migrate(p) end
+		return p.dungeonClasses
+	end
+	function Classes.publish(player,p)
+		local c=Classes.of(p)
+		player:SetAttribute("DungeonClass",c.selected or "")
+		player:SetAttribute("DungeonMasterOn",c.master==true)
+		player:SetAttribute("DungeonClassLevel",if c.selected then DC.levelForXp(c.xp[c.selected]) else 0)
+	end
+	-- Normal-mode best score per floor index (p.dungeons.best is keyed by "floor").
+	function Classes.best(p)
+		local out={}
+		local best=type(p.dungeons)=="table" and type(p.dungeons.best)=="table" and p.dungeons.best or {}
+		for i=1,#Data.DungeonFloors do out[i]=tonumber(best[tostring(i)]) or 0 end
+		return out
+	end
+	function Classes.state(p)
+		local c=Classes.of(p)
+		local best=Classes.best(p)
+		local clears=type(p.dungeons)=="table" and type(p.dungeons.clears)=="table" and p.dungeons.clears or {}
+		local classes={}
+		for _,id in ipairs(DC.order) do
+			local row=DC.progress(c.xp[id])
+			row.milestones=DC.milestoneState(row.level)
+			row.bonus=DC.levelBonus(id,row.level)
+			row.cooldown=DC.cooldown(id,row.level)
+			classes[id]=row
+		end
+		local floors={}
+		for i=1,#Data.DungeonFloors do
+			local key=tostring(i)
+			floors[i]={secrets=c.secrets[key] or 0,secretsTotal=DC.secretCount(i),best=best[i],clears=tonumber(clears[key]) or 0,
+				master=i<=DC.MASTER_FLOORS,masterUnlocked=DC.masterUnlocked(i,best[i]),masterBest=c.masterBest[key] or 0,masterClears=c.masterClears[key] or 0}
+		end
+		return {selected=c.selected,master=c.master==true,classes=classes,floors=floors}
+	end
+	-- Returns nil on success or a refusal message.
+	function Classes.choose(player,p,class)
+		local c=Classes.of(p)
+		if player:GetAttribute("DungeonInRun")==true then return "Your class is locked until this Observatory run ends." end
+		if class=="none" then c.selected=nil
+		elseif DC.valid(class) then c.selected=class
+		else return "Choose Aegis, Mender, Riftblade, Starshot or Arcanist." end
+		Classes.publish(player,p)
+		return nil
+	end
+	function Classes.action(player,p,verb,item)
+		local c=Classes.of(p)
+		if verb=="dungeonClass" then
+			local refused=Classes.choose(player,p,item)
+			if refused then return refused end
+			if not c.selected then return "Class cleared • you delve unclassed." end
+			local def=DC.defs[c.selected]
+			return def.name.." ("..def.role..") chosen • class level "..DC.levelForXp(c.xp[c.selected]).."."
+		elseif verb=="dungeonMaster" then
+			if player:GetAttribute("DungeonInRun")==true then return "Master Mode is locked until this Observatory run ends." end
+			if item~="on" and item~="off" then return "Choose on or off." end
+			if item=="on" then
+				local any=false
+				for i,score in ipairs(Classes.best(p)) do if DC.masterUnlocked(i,score) then any=true end end
+				if not any then return "Master Mode unlocks after an S+ clear of an Observatory floor (I-V)." end
+			end
+			c.master=item=="on"
+			Classes.publish(player,p)
+			return "Master Mode "..item.." for the runs you open."
+		end
+		return "Unknown dungeon class action."
+	end
+end
 local expedition = Instance.new("BindableEvent")
 expedition.Name = "IsleExpeditionReward"
 -- Dungeons: result {floor, grade, score, partySize, damageShare} from expedition.server.lua
--- (a bare Fire(player) is a legacy Floor I, grade B clear). The profile re-checks
--- the floor's Dungeoneering gate, the 90 s clear cooldown and the Ironman rule.
+-- (+ Dungeon classes: class, master, secrets, teamMult; a bare Fire(player) is a
+-- legacy Floor I, grade B clear). The profile re-checks the floor's Dungeoneering
+-- gate, the Master Mode unlock, the 90 s clear cooldown and the Ironman rule.
 -- grantExpedition returns {ok=true} or {ok=false,reason}; the IsleExpeditionGrant
 -- BindableFunction exposes it so the Observatory only announces accepted chests.
 local function grantExpedition(player,result)
 	local p=profiles[player]
 	if not p or (not preview[player] and os.time()>=(leaseEnd[player] or 0)) then return {ok=false,reason="Your journal is syncing, so the Observatory chest could not be credited."} end
 	result=if type(result)=="table" then result else {}
+	local DC=Data.DungeonClasses
 	local floorIndex=if type(result.floor)=="number" and Data.DungeonFloors[result.floor] then result.floor else 1
 	local floor=Data.DungeonFloors[floorIndex]
 	local grade=if type(result.grade)=="string" and Data.DungeonGradeById[result.grade] then result.grade else "B"
 	local score=if type(result.score)=="number" and result.score==result.score then math.clamp(math.floor(result.score),0,300) else 0
 	local partySize=if type(result.partySize)=="number" then result.partySize else 1
 	local share=if type(result.damageShare)=="number" and result.damageShare==result.damageShare then result.damageShare else 1
+	local master=result.master==true and floorIndex<=DC.MASTER_FLOORS
+	local class=if DC.valid(result.class) then result.class else nil
+	local secrets=if type(result.secrets)=="number" and result.secrets==result.secrets then math.clamp(math.floor(result.secrets),0,DC.secretCount(floorIndex)) else 0
+	local teamMult=if type(result.teamMult)=="number" and result.teamMult==result.teamMult then result.teamMult else 1
 	local now=os.time()
 	local dungeons=type(p.dungeons)=="table" and p.dungeons or {lastClear=0,clears={},best={}}
 	p.dungeons=dungeons
 	dungeons.clears=dungeons.clears or {}
 	dungeons.best=dungeons.best or {}
+	local c=Classes.of(p)
 	if level(p.xp.Dungeoneering)<floor.level then return {ok=false,reason=floor.name.." requires Dungeoneering "..floor.level.."."} end
+	if master and not DC.masterUnlocked(floorIndex,Classes.best(p)[floorIndex]) then
+		return {ok=false,reason="Master Mode "..floor.name.." needs an S+ clear of the floor first."}
+	end
 	if not Data.dungeonCooldownReady(dungeons.lastClear,now) then
 		local message="Observatory chest cooling down • wait "..(Data.Dungeons.clearCooldown-(now-dungeons.lastClear)).."s between credited clears."
 		update:FireClient(player,snapshot(player,message))
@@ -3652,19 +3748,37 @@ local function grantExpedition(player,result)
 	end
 	dungeons.lastClear=now
 	local key=tostring(floorIndex)
-	dungeons.clears[key]=(dungeons.clears[key] or 0)+1
-	if score>(dungeons.best[key] or 0) then dungeons.best[key]=score end
-	local reward=Data.dungeonRewards(floorIndex,grade)
+	if master then
+		c.masterClears[key]=(c.masterClears[key] or 0)+1
+		if score>(c.masterBest[key] or 0) then c.masterBest[key]=score end
+	else
+		dungeons.clears[key]=(dungeons.clears[key] or 0)+1
+		if score>(dungeons.best[key] or 0) then dungeons.best[key]=score end
+	end
+	if secrets>(c.secrets[key] or 0) then c.secrets[key]=secrets end
+	local reward=DC.runRewards(floorIndex,grade,{master=master,secrets=secrets,class=class,teamMult=teamMult})
 	p.started=true
 	grantXp(p,"Combat",reward.combatXp)
 	grantXp(p,"Dungeoneering",reward.dungeoneeringXp)
 	p.coins+=reward.coins
 	for item,n in pairs(reward.items) do collect(p,item,n) end
+	local classText=""
+	if class and reward.classXp>0 then
+		local before=DC.levelForXp(c.xp[class])
+		c.xp[class]=math.min(DC.MAX_XP,(c.xp[class] or 0)+reward.classXp)
+		local after=DC.levelForXp(c.xp[class])
+		classText=", +"..reward.classXp.." "..DC.defs[class].name.." XP"
+		if after>before then note(p,DC.defs[class].name.." class level "..after.."!") end
+		Classes.publish(player,p)
+	end
 	local stats=Progression.computeStats(p,now)
-	local drops=Progression.rollDrops(reward.chest,stats.magicFind,roll,stats.petLuck)
+	local drops={}
+	for _=1,reward.rolls do
+		for item,n in pairs(Progression.rollDrops(reward.chest,stats.magicFind,roll,stats.petLuck)) do drops[item]=(drops[item] or 0)+n end
+	end
 	for item,n in pairs(drops) do collect(p,item,n) end
-	update:FireClient(player,snapshot(player,floor.name.." cleared • Grade "..grade.." • +"..reward.coins.." coins, +"..reward.combatXp.." Combat and +"
-		..reward.dungeoneeringXp.." Dungeoneering XP, "..reward.items.Stormglass.." Stormglass"..dropText(drops)))
+	update:FireClient(player,snapshot(player,(if master then "Master " else "")..floor.name.." cleared • Grade "..grade.." • +"..reward.coins.." coins, +"..reward.combatXp.." Combat and +"
+		..reward.dungeoneeringXp.." Dungeoneering XP"..classText..", "..reward.items.Stormglass.." Stormglass"..(if secrets>0 then " • "..secrets.." secrets found" else "")..dropText(drops)))
 	return {ok=true}
 end
 expedition.Event:Connect(function(player,result) grantExpedition(player,result) end)
@@ -3823,8 +3937,13 @@ bridge.OnInvoke=function(op,player,payload)
 		if reply.levelled then notify(player,"") end
 		return reply
 	elseif op=="dungeon" then
-		-- Dungeons: floor gate + Ironman flag for expedition.server.lua.
-		return {level=level(p.xp.Dungeoneering),ironman=p.ironman==true}
+		-- Dungeons: floor gate + Ironman flag for expedition.server.lua;
+		-- Dungeon classes: selected class, class XP, normal-mode best scores, Master Mode preference.
+		local c=Classes.of(p)
+		return {level=level(p.xp.Dungeoneering),ironman=p.ironman==true,class=c.selected,classXp=table.clone(c.xp),best=Classes.best(p),master=c.master==true}
+	elseif op=="dungeonClass" then
+		-- Dungeon classes: the pad pedestals persist the chosen class.
+		return {ok=Classes.choose(player,p,payload.class)==nil}
 	elseif op=="kill" then
 		local monsterId=payload.monster
 		local monster=validId(monsterId) and Data.Monsters[monsterId]

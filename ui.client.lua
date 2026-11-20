@@ -3971,11 +3971,15 @@ Pages.drawSlayer,Pages.drawBestiary=drawSlayer,drawBestiary
 end
 
 ------------------------------------------------------------------------------
--- Hunt › Dungeon: Observatory floors, grading and credit rules (Dungeons team).
--- Read-only: floors are chosen at the in-world daises by the Vault Gate.
+-- Hunt › Dungeon: Observatory classes, class levels, floors I–VII, Master Mode,
+-- secrets, grading and credit rules (Dungeons / Dungeon Classes teams).
+-- Floors are chosen at the in-world daises by the Vault Gate; the class and
+-- Master Mode can be set here (verbs dungeonClass, dungeonMaster) or at the pad.
+-- The party HUD (top right) lists each delver's class while a run is underway.
 ------------------------------------------------------------------------------
 do
 local dungeonUi={violet="8E7CC3"}
+local DC=Data and type(Data.DungeonClasses)=="table" and Data.DungeonClasses or nil
 function dungeonUi.drops(list)
 	local parts={}
 	for _,drop in ipairs(tbl(list)) do
@@ -3989,9 +3993,22 @@ function dungeonUi.mechanics(m)
 	if m.orderedPrisms then table.insert(out,"Tune prisms in the order shown") end
 	if type(m.shieldPhases)=="table" then table.insert(out,"Core shields at "..#m.shieldPhases.." HP thresholds; retune to break") end
 	if type(m.addWaves)=="table" then table.insert(out,num(m.addWaves.count,0).." umbral wisps every "..num(m.addWaves.every,0).."s ward the boss") end
+	if type(m.regen)=="table" then table.insert(out,"Boss regenerates "..math.floor(num(m.regen.fraction,0)*100+.5).."% every "..num(m.regen.every,0).."s while wisps live") end
 	if type(m.enrage)=="table" then table.insert(out,"Enrages after "..num(m.enrage.after,0).."s ("..num(m.enrage.damageMult,1).."× damage)") end
+	if type(m.overload)=="table" then table.insert(out,"Strikes faster below "..math.floor(num(m.overload.below,0)*100+.5).."% HP") end
 	return #out>0 and table.concat(out,"  ·  ") or "The original three-prism encounter"
 end
+-- Class rows from the snapshot (server Classes.state), or level 1 defaults.
+function dungeonUi.view()
+	local view=tbl(tbl(state).dungeonClasses)
+	return view,tbl(view.classes),tbl(view.floors)
+end
+function dungeonUi.classRow(rows,id)
+	local row=rows[id]
+	if type(row)=="table" then return row end
+	return {level=1,xp=0,floor=0,ceiling=DC and DC.xpForLevel(2) or 1,fraction=0,maxed=false}
+end
+function dungeonUi.pct(x) return math.floor(num(x,0)*1000+.5)/10 .."%" end
 local function drawDungeon()
 	if not Data or type(Data.DungeonFloors)~="table" or type(Data.Dungeons)~="table" then dataMissing() return end
 	local levels=skillsOf(state)
@@ -4000,11 +4017,64 @@ local function drawDungeon()
 	local result=player:GetAttribute("DungeonResult")
 	local notice=player:GetAttribute("ExpeditionNotice")
 	local chosen=num(player:GetAttribute("ExpeditionFloor"),1)
+	local view,rows,floorRows=dungeonUi.view()
+	local selectedClass=view.selected
+	if type(selectedClass)~="string" or not (DC and DC.valid(selectedClass)) then selectedClass=nil end
+	local inRun=player:GetAttribute("DungeonInRun")==true
+	local classText=selectedClass and (DC.defs[selectedClass].glyph.." "..DC.defs[selectedClass].name.." "..num(dungeonUi.classRow(rows,selectedClass).level,1)) or "Unclassed"
 	card({name="DungeonSummary",motif="Hunt",accent=rgb(dungeonUi.violet),title="The Hollow Observatory",titleColor=rgb(lighten(dungeonUi.violet,.35)),
-		subtitle="Dungeoneering "..level.."  ·  Selected: Floor "..numeral(chosen),badge="Party ≤ "..num(rules.maxParty,5),badgeColor=ivory,
-		detail="Choose a floor at the daises beside the Vault Gate, open the run at the gate, then stand on the matchmaking pad within "..num(rules.padSeconds,10).."s to join.",
+		subtitle="Dungeoneering "..level.."  ·  Selected: Floor "..numeral(chosen).."  ·  "..classText..(view.master==true and "  ·  "..paint("Master Mode","E8806A") or ""),badge="Party ≤ "..num(rules.maxParty,5),badgeColor=ivory,
+		detail="Choose a class at the oath pedestals or below, a floor at the daises beside the Vault Gate, open the run at the gate, then stand on the matchmaking pad within "..num(rules.padSeconds,10).."s to join.",
 		lines={type(result)=="string" and result~="" and ("Last clear: "..escape(result)) or nil,
-			type(notice)=="string" and notice~="" and paint(escape(notice),"F9CC77") or nil}})
+			type(notice)=="string" and notice~="" and paint(escape(notice),"F9CC77") or nil,
+			inRun and paint("In a run: class and Master Mode are locked until it ends. Class ability: Q at the core · Ultimate: R.","9EE7D2") or nil}})
+	if DC then
+		heading("CLASSES")
+		for _,id in ipairs(DC.order) do
+			local def=DC.defs[id]
+			local row=dungeonUi.classRow(rows,id)
+			local lvl=num(row.level,1)
+			local ms=DC.milestoneState(lvl)
+			local bonus=DC.levelBonus(id,lvl)
+			local nextMilestone
+			for _,m in ipairs(DC.milestones) do if lvl<m.level then nextMilestone=m break end end
+			local isSelected=selectedClass==id
+			local boosts={"+"..dungeonUi.pct(bonus.damage).." damage"}
+			if bonus.mitigation>0 or def.attack.mitigation then table.insert(boosts,dungeonUi.pct((def.attack.mitigation or 0)+bonus.mitigation).." damage reduction") end
+			if bonus.healing>0 then table.insert(boosts,"+"..dungeonUi.pct(bonus.healing).." healing") end
+			local actions
+			if isSelected then
+				actions={{caption="Go unclassed",name="DungeonClassNone",disabled=inRun,reason="Locked during a run.",fn=function() send("dungeonClass","none") end}}
+			else
+				actions={{caption="Choose",primary=not inRun,name="DungeonClass"..id,disabled=inRun,reason="Locked during a run.",fn=function() send("dungeonClass",id) end}}
+			end
+			card({name="DungeonClass_"..id,motif="Hunt",accent=rgb(def.color),edge=isSelected and rgb(def.color) or nil,
+				title=def.glyph.."  "..escape(def.name).."  ·  "..escape(def.role),titleColor=rgb(lighten(def.color,.3)),
+				subtitle="Class level "..lvl.." / "..DC.MAX_LEVEL..(ms.title and "  ·  "..paint("Paragon","F9CC77") or ""),
+				badge=isSelected and (check.." Selected") or ("Lv "..lvl),badgeColor=ivory,
+				detail=escape(def.passive),
+				bar={fraction=num(row.fraction,0),color=rgb(def.color),caption=row.maxed and "CLASS MAXED" or (fmt(num(row.xp,0)).." / "..fmt(num(row.ceiling,0)).." XP to level "..(lvl+1))},
+				lines={paint("Q · "..escape(def.ability.name),"F9CC77").."  ("..math.floor(DC.cooldown(id,lvl)+.5).."s"..(ms.empowered and ", empowered" or "")..")  "..escape(def.ability.text),
+					paint("R · "..escape(def.ultimate.name),"E8806A").."  ("..ms.charges.."× per run)  "..escape(def.ultimate.text),
+					"Dungeon-only boosts: "..table.concat(boosts,"  ·  "),
+					"Bonus feat: "..escape(def.feat.text).."  ·  Class weapon: "..paint(escape(itemName(def.weapon)),itemHex(def.weapon)),
+					nextMilestone and ("Next at level "..nextMilestone.level..": "..escape(nextMilestone.text)) or paint("Every milestone unlocked","9EE7D2")},
+				actions=actions})
+		end
+		card({name="DungeonTeam",motif="Hunt",title="Team composition",titleColor=gold,subtitle="Duplicates allowed · unique classes pay more",
+			lines={"Class XP ×(1 + "..math.floor(DC.TEAM_STEP*100+.5).."% per unique class beyond the first), up to ×"..(1+DC.TEAM_STEP*(#DC.order-1))..".",
+				"A balanced party (3+ delvers, every class different) adds +5 to the Bonus score.",
+				"Class XP = floor Dungeoneering XP × 0.75 × grade × team (× "..DC.MASTER_XP.." in Master Mode), paid to your selected class only."}})
+		-- Master Mode toggle (unlocked per floor by an S+).
+		local anyMaster=false
+		for i=1,DC.MASTER_FLOORS do if tbl(floorRows[i]).masterUnlocked==true then anyMaster=true end end
+		local masterOn=view.master==true
+		card({name="DungeonMaster",motif="Hunt",accent=rgb("E8806A"),title="Master Mode",titleColor=rgb("F2A48F"),
+			subtitle="Floors I–V · ×"..DC.MASTER_MULT.." HP and damage · +"..DC.MASTER_ROLLS.." chest roll · ×"..DC.MASTER_XP.." XP",badge=masterOn and "ON" or "OFF",badgeColor=ivory,
+			detail="Unlocks per floor after an S+ clear. Runs you open use your setting; every delver must have the floor's Master Mode unlocked.",
+			actions={{caption=masterOn and "Turn off" or "Turn on",primary=not masterOn and anyMaster,name="DungeonMasterToggle",disabled=(not masterOn and not anyMaster) or inRun,
+				reason=inRun and "Locked during a run." or "Clear a floor at grade S+ first.",fn=function() send("dungeonMaster",masterOn and "off" or "on") end}}})
+	end
 	heading("FLOORS")
 	for index,f in ipairs(Data.DungeonFloors) do
 		if type(f)=="table" then
@@ -4012,13 +4082,24 @@ local function drawDungeon()
 			local open=level>=need
 			local boss=tbl(f.boss)
 			local rw=tbl(f.rewards)
+			local fr=tbl(floorRows[index])
+			local total=DC and DC.secretCount(index) or 0
+			local found=num(fr.secrets,0)
+			local masterLine=nil
+			if DC and index<=DC.MASTER_FLOORS then
+				masterLine=fr.masterUnlocked==true and paint("Master Mode unlocked","E8806A")..(num(fr.masterBest,0)>0 and ("  ·  best "..num(fr.masterBest,0)) or "")
+					or "Master Mode: clear at grade S+ to unlock"
+			end
 			card({name="DungeonFloor"..index,motif="Hunt",locked=not open,accent=open and rgb(dungeonUi.violet) or nil,
 				title=escape(f.name or ("Floor "..index)).."  ·  "..escape(f.subtitle or ""),titleColor=open and ivory or muted,
 				subtitle="Boss: "..escape(boss.name or "?").."  ·  "..paint(escape(boss.attack or ""),"E8806A"),
 				badge=(open and check or cross).." Dungeoneering "..need,badgeColor=ivory,
 				detail=dungeonUi.mechanics(f.mechanics),
+				pips=total>0 and {total=total,filled=math.clamp(found,0,total),color=gold} or nil,
 				lines={"Grade B reward: "..fmt(rw.dungeoneeringXp).." Dungeoneering XP  ·  "..fmt(rw.combatXp).." Combat XP  ·  "..fmt(rw.coins).." coins  ·  "..num(rw.stormglass,0).." Stormglass",
-					"Chest: "..dungeonUi.drops(f.chest)}})
+					"Chest: "..dungeonUi.drops(f.chest),
+					total>0 and ("Secrets: best "..found.." / "..total.."  ·  clears "..num(fr.clears,0)..(num(fr.best,0)>0 and ("  ·  best score "..num(fr.best,0)) or "")) or nil,
+					masterLine}})
 		end
 	end
 	heading("SCORE & GRADE")
@@ -4026,15 +4107,54 @@ local function drawDungeon()
 	for _,g in ipairs(tbl(Data.DungeonGrades)) do
 		if type(g)=="table" then table.insert(grades,paint(escape(g.grade),"F9CC77").." ≥"..num(g.min,0).." ×"..num(g.mult,1)) end
 	end
-	card({name="DungeonGrades",motif="Hunt",title="Score = speed + survival + puzzle",titleColor=gold,subtitle="Each part 0–100 · total 300",
-		detail="Speed is full until the floor's par time and reaches 0 at twice par. Each death costs 20 survival; each wrong prism costs 15 puzzle.",
-		lines={table.concat(grades,"   "),"Higher grades multiply XP, coins and essence, add Stormglass at S/S+, and boost the chest's rare roll (Magic Find applies too)."}})
+	card({name="DungeonGrades",motif="Hunt",title="Score = (speed + survival + puzzle + secrets) × 0.75 + bonus",titleColor=gold,subtitle="Each part 0–100 · bonus ≤ "..(DC and DC.BONUS_CAP or 20).." · total 300",
+		detail="Speed is full until the floor's par time and reaches 0 at twice par. Each death costs 20 survival; each wrong prism costs 15 puzzle. Secrets: hidden caches and levers (2–5 per floor). Bonus: 3 per class feat, +5 for a balanced party.",
+		lines={table.concat(grades,"   "),"Higher grades multiply XP, coins and essence, add Stormglass at S/S+, and boost the chest's rare roll (Magic Find applies too). Each secret adds 1 essence and 5% coins."}})
 	card({name="DungeonRules",motif="Hunt",title="Fair credit",titleColor=ivory,
 		lines={"Contribute at least "..math.floor(num(rules.contributionShare,0.1)*100).."% of the party's damage and tuning to open the chest.",
 			"Chest cooldown: "..num(rules.clearCooldown,90).."s between credited clears.",
 			"Ironman journals are credited on solo clears or with "..math.floor(num(rules.ironmanDamageShare,0.3)*100).."% of the party's damage."}})
 end
 Pages.drawDungeon=drawDungeon
+-- Party HUD: DungeonParty = "Name|Class|Level;..." plus this delver's ability timers.
+do
+	local hudFrame=make("TextButton",gui,{Name="DungeonPartyHud",Text="",AutoButtonColor=false,BackgroundColor3=deep,BackgroundTransparency=.06,BorderSizePixel=0,
+		AnchorPoint=Vector2.new(1,0),Position=UDim2.new(1,-10,0,100),Size=UDim2.fromOffset(220,46),Visible=false,Selectable=false})
+	rounded(hudFrame,12,UI.brass)
+	local title=label(hudFrame,"OBSERVATORY PARTY",12,4,UDim.new(1,-24),16,UI.heavy,11,rgb(lighten(dungeonUi.violet,.35)))
+	title.Name="Title"
+	local list=label(hudFrame,"",12,20,UDim.new(1,-24),18,bold,12,ivory)
+	list.Name="Members"
+	list.RichText=true
+	list.TextWrapped=true
+	list.TextYAlignment=Enum.TextYAlignment.Top
+	list.TextTruncate=Enum.TextTruncate.None
+	hudFrame.Activated:Connect(function() if Pages.openTo then Pages.openTo("Hunt","Dungeon") end end)
+	dungeonUi.hud,dungeonUi.hudList=hudFrame,list
+	function dungeonUi.refreshHud()
+		local rows=DC and DC.parseParty(player:GetAttribute("DungeonParty")) or {}
+		hudFrame.Visible=#rows>0
+		if #rows==0 then return end
+		local text={}
+		for _,r in ipairs(rows) do
+			local def=r.class and DC.defs[r.class]
+			table.insert(text,def and (paint(def.glyph.." "..escape(r.name),def.color).."  "..escape(def.name).." "..num(r.level,1)) or (escape(r.name).."  "..paint("unclassed","A9BDC1")))
+		end
+		local mine=DC.defs[player:GetAttribute("DungeonClass") or ""]
+		if mine then
+			local ready=num(player:GetAttribute("DungeonAbilityReady"),0)
+			table.insert(text,paint("Q "..escape(mine.ability.name)..(ready>0 and (" "..ready.."s") or " ready"),"F9CC77").."  ·  "
+				..paint("R ×"..num(player:GetAttribute("DungeonUltimates"),0),"E8806A"))
+		end
+		list.Text=table.concat(text,"\n")
+		list.Size=UDim2.new(1,-24,0,18*#text)
+		hudFrame.Size=UDim2.fromOffset(220,26+18*#text)
+	end
+	for _,name in ipairs({"DungeonParty","DungeonAbilityReady","DungeonUltimates","DungeonClass"}) do
+		player:GetAttributeChangedSignal(name):Connect(function() dungeonUi.refreshHud() end)
+	end
+	dungeonUi.refreshHud()
+end
 end
 
 ------------------------------------------------------------------------------

@@ -1,13 +1,21 @@
 -- The Hollow Observatory: one shared, server-authoritative dungeon run per server.
--- Floors I-V (Data.DungeonFloors) are chosen at the entry daises; a party of up
+-- Floors I-VII (Data.DungeonFloors) are chosen at the entry daises; a party of up
 -- to five forms on the matchmaking pad (stand on it within 10 s). Each run is
 -- prisms -> two sentinels -> floor boss, with per-floor mechanics:
 --   II+  prisms must be tuned in the order shown on each prism (wrong = mistake, reset)
 --   III+ the boss raises a shield at HP thresholds until the prisms are retuned
 --   IV+  waves of umbral wisps ward the boss while alive
 --   V    enrage timer: boss damage and tempo rise after Data floor.enrage.after s
+--   VI+  the boss regenerates while wisps live; Converging Lances mark every delver
+--   VII  overload below 50% HP (faster strikes); Eventide Collapse cycles pulse/ring/lances
 -- Every boss telegraphs its attack (warning disc + heart VisualState "Warning").
--- Clear score = speed + survival + puzzle (Data.dungeonScore) -> grade S+..D.
+-- Dungeon classes (Data.DungeonClasses): one class per delver, chosen at the
+-- class pedestals by the pad (or the Dungeon page); duplicates allowed, unique
+-- compositions earn a team bonus. Passives shape strikes and damage taken; the
+-- heart carries "Class ability" (Q) and "Ultimate" (R) prompts, validated here
+-- with cooldowns/charges (DC.abilityCheck). Hidden secrets (caches and levers)
+-- spawn each run. Master Mode (floors I-V, after an S+) doubles HP and damage.
+-- Clear score = DC.score: speed + survival + puzzle + secrets (x0.75) + bonus -> grade S+..D.
 -- Credit rules (documented in GameData Dungeons section):
 --   * contributed: damage + 5%-of-floor-HP per tuning >= 10% of the party total;
 --     tuning counts for at most half of that threshold, and in a party the delver
@@ -16,15 +24,19 @@
 --   * cooldown: 90 s between reward credits per player (also enforced in profile)
 -- Rewards are paid by ServerStorage.IsleExpeditionGrant (BindableFunction, returns
 -- {ok, reason}) in server.server.lua; the IsleExpeditionReward BindableEvent is the
--- fallback. Payload {floor, grade, score, seconds, deaths, mistakes, partySize, damageShare}.
+-- fallback. Payload {floor, grade, score, seconds, deaths, mistakes, partySize, damageShare,
+-- class, master, secrets, secretsTotal, bonus, teamMult, feat}.
 -- A run that is not cleared ends (no reward) after twice the floor's par time, and
 -- delvers idle for 90 s (no damage, tuning or movement) or away from the arena are removed.
+-- Player attributes: DungeonClass, DungeonInRun, DungeonParty ("Name|Class|Level;..."),
+-- DungeonAbilityReady (seconds), DungeonUltimates (charges left), DungeonMasterPick.
 local Players = game:GetService("Players")
 local Storage = game:GetService("ServerStorage")
 local RunService = game:GetService("RunService")
 local CollectionService=game:GetService("CollectionService")
 local Data = require(game:GetService("ReplicatedStorage"):WaitForChild("AetherData"))
 local Rules = Data.Dungeons
+local DC = Data.DungeonClasses
 local origin = Vector3.new(0, 42, 1800)
 -- Run limits (M4/M5): see the header.
 local IDLE_LIMIT, AWAY_RADIUS, AWAY_GRACE, RUN_CAP_PARS = 90, 120, 10, 2
@@ -103,21 +115,23 @@ caption.TextColor3 = Color3.new(1, 1, 1)
 caption.TextSize = 17
 caption.Parent = label
 
--- Run state. members[player] = {last, damage, tunes, mistakes, ironman, down}
-local members, pylons, charged, roles, selected = {}, {}, {}, {}, {}
+-- Run state. members[player] = {last, damage, tunes, mistakes, ironman, down, class, level,
+-- carry, readyAt, ultimatesUsed, ultimateAt, healed, wispKills, feat}
+local members, pylons, charged, classOf, selected, masterPick = {}, {}, {}, {}, {}, {}
 local lastCredit = setmetatable({}, {__mode = "k"})
 local known = {}
-local guardians, adds = {}, {}
+local guardians, adds, secretParts, lanceMarks = {}, {}, {}, {}
 local lobby = nil
 local run = {}
 local function floorDef() return Data.DungeonFloors[run.floor or 1] end
 local function totalHp(stats) return stats.guardianHp * 2 + stats.coreHp end
-local function newRun(floorIndex)
-	local stats = Data.dungeonFloorStats(floorIndex)
-	run = {floor = floorIndex, stats = stats, active = false, stage = "prisms", remaining = 3, nextPrism = 1, seed = (run.seed or 0),
+local function newRun(floorIndex, master)
+	local stats = DC.floorStats(floorIndex, master)
+	run = {floor = floorIndex, master = master == true, stats = stats, active = false, stage = "prisms", remaining = 3, nextPrism = 1, seed = (run.seed or 0),
 		health = stats.coreHp, guardianHealth = {stats.guardianHp, stats.guardianHp}, pulse = 0, telegraph = nil,
-		attacks = 0, shieldIndex = 1, shielded = false, waveTimer = 0, enraged = false, startedAt = 0,
-		deaths = 0, mistakes = 0, totalDamage = 0, totalTunes = 0, partySize = 0}
+		attacks = 0, shieldIndex = 1, shielded = false, waveTimer = 0, regenTimer = 0, enraged = false, startedAt = 0,
+		deaths = 0, mistakes = 0, totalDamage = 0, totalTunes = 0, partySize = 0,
+		secretsFound = 0, secretsTotal = 0, bastion = 0, bulwark = nil, forgive = 0, team = DC.teamBonus({})}
 end
 newRun(1)
 local function guardsAlive()
@@ -126,6 +140,11 @@ end
 local function warded()
 	for _, add in adds do if add.hp > 0 then return true end end
 	return false
+end
+local function liveWisps()
+	local n = 0
+	for _, add in adds do if add.hp > 0 then n += 1 end end
+	return n
 end
 local function tunePoints(record)
 	return record.tunes * Rules.tuneWeight * totalHp(run.stats)
@@ -139,6 +158,23 @@ local function touch(record) record.active = os.clock() end
 local function orderOf(i)
 	-- Ordered floors rotate which prism comes first each run.
 	return ((i - 1 + run.seed) % 3) + 1
+end
+-- Class hit for a strike kind (melee/guardian/wisp/ranged); unclassed delvers hit for 1.
+local function classHit(record, kind)
+	local def = record and DC.defs[record.class]
+	if not def then return 1 end
+	local base = if kind == "ranged" then (def.attack.ranged and def.attack.ranged.damage or 0) else (def.attack[kind] or 1)
+	local hit, carry = DC.hit(base, record.class, record.level, record.carry)
+	record.carry = carry
+	return hit
+end
+local function takenMult(player)
+	local record = members[player]
+	return if record then DC.damageTakenMult(record.class, record.level) else 1
+end
+local function earnFeat(record, featId)
+	local def = record and DC.defs[record.class]
+	if def and def.feat.id == featId and not record.feat then record.feat = true end
 end
 
 block("Sentinel hall floor", Vector3.new(0, 0, -110), Vector3.new(60, 3, 60), dark, Enum.Material.Slate)
@@ -167,25 +203,31 @@ local function display()
 	heart:SetAttribute("BossHealth", run.health)
 	heart:SetAttribute("BossMaxHealth", run.stats.coreHp)
 	heart:SetAttribute("Enraged", run.enraged)
+	heart:SetAttribute("MasterMode", run.master)
+	heart:SetAttribute("SecretsFound", run.secretsFound)
+	heart:SetAttribute("SecretsTotal", run.secretsTotal)
 	local locked = run.stage ~= "core" or run.shielded or warded()
 	heart:SetAttribute("VisualState", if locked then "Shielded" elseif run.telegraph then "Warning" else "Active")
 	local title = string.upper(boss.name) .. (if run.enraged then " ENRAGED" else "")
 	local tuned = (3 - run.remaining) .. " / 3"
 	local order = if f.mechanics.orderedPrisms then " in order" else ""
+	local mode = if run.master then "MASTER " else ""
 	if not run.active and lobby then
 		local wait = math.max(0, math.ceil(lobby.deadline - os.clock()))
-		caption.Text = "MATCHMAKING  •  " .. string.upper(Data.DungeonFloors[lobby.floor].name) .. "\nStand on the pad  •  launching in " .. wait .. "s"
+		caption.Text = "MATCHMAKING  •  " .. (if lobby.master then "MASTER " else "") .. string.upper(Data.DungeonFloors[lobby.floor].name) .. "\nStand on the pad  •  launching in " .. wait .. "s"
 	elseif run.stage == "prisms" then
-		caption.Text = "HOLLOW OBSERVATORY  •  FLOOR " .. f.numeral .. "\nTune the prisms" .. order .. "  •  " .. tuned
+		caption.Text = "HOLLOW OBSERVATORY  •  " .. mode .. "FLOOR " .. f.numeral .. "\nTune the prisms" .. order .. "  •  " .. tuned
 	elseif run.stage == "guardians" then
 		caption.Text = "SENTINEL HALL\nEnter the northern passage • defeat both guardians"
 	elseif run.shielded then
 		caption.Text = title .. " SHIELDED  •  " .. run.health .. " / " .. run.stats.coreHp .. "\nRetune the prisms" .. order .. "  •  " .. tuned
 	elseif warded() then
 		caption.Text = title .. " WARDED  •  " .. run.health .. " / " .. run.stats.coreHp .. "\nDestroy the umbral wisps"
+			.. (if f.mechanics.regen then " before it regenerates" else "")
 	else
 		local hint = if run.telegraph == "ring" then "Close in: the ring strikes the outer floor"
 			elseif run.telegraph == "meteor" then "Starfall marked: scatter from the target"
+			elseif run.telegraph == "lances" then "Lances marked: step off your own mark"
 			else "Step outside the amber pulse"
 		caption.Text = title .. "  •  " .. run.health .. " / " .. run.stats.coreHp .. "\n" .. hint
 	end
@@ -207,9 +249,31 @@ local function clearAdds()
 	for _, add in adds do if add.part.Parent then add.part:Destroy() end end
 	table.clear(adds)
 end
+local function clearSecrets()
+	for _, part in secretParts do if part.Parent then part:Destroy() end end
+	table.clear(secretParts)
+end
+local function clearLances()
+	for _, part in lanceMarks do if part.Parent then part:Destroy() end end
+	table.clear(lanceMarks)
+end
+local function partyRows()
+	local rows = {}
+	for _, player in ipairs(known) do
+		local record = members[player]
+		if record then table.insert(rows, {name = player.Name, class = record.class, level = record.level}) end
+	end
+	return rows
+end
+local function publishParty()
+	local text = DC.partyString(partyRows())
+	for player in members do player:SetAttribute("DungeonParty", text) end
+end
 local function reset()
 	table.clear(charged)
 	clearAdds()
+	clearSecrets()
+	clearLances()
 	newRun(run.floor or 1)
 	for _, guardian in guardians do guardian.Color = gold;guardian:SetAttribute("VisualState","Active") end
 	warning.Transparency = 1
@@ -229,13 +293,12 @@ for index, x in ipairs({-13,13}) do
 		local member = members[player]
 		if not member or run.stage ~= "guardians" or run.guardianHealth[index] <= 0 or os.clock()-member.last < 0.8 then return end
 		member.last = os.clock()
-		local hit = math.min(run.guardianHealth[index], if roles[player]=="Berserk" then 2 else 1)
+		local hit = math.min(run.guardianHealth[index], classHit(member, "guardian"))
 		run.guardianHealth[index] -= hit
 		credit(member, hit)
 		if run.guardianHealth[index] == 0 then guardian.Color = dark;guardian:SetAttribute("VisualState","Defeated") else
 			local humanoid = character:FindFirstChildOfClass("Humanoid")
-			local counter = run.stats.guardianHit
-			humanoid:TakeDamage(if roles[player]=="Tank" then math.floor(counter / 2) else counter)
+			humanoid:TakeDamage(math.floor(run.stats.guardianHit * takenMult(player)))
 		end
 		if not guardsAlive() then
 			run.stage = "core"
@@ -244,6 +307,43 @@ for index, x in ipairs({-13,13}) do
 		display()
 	end)
 end
+-- Tune prism i for a member (by hand or by Attune / Eclipse Rift). Returns true when tuned.
+local function tunePrism(i, member, player, spell)
+	local tuning = run.stage == "prisms" or (run.stage == "core" and run.shielded)
+	if not member or not tuning or charged[i] then return false end
+	if floorDef().mechanics.orderedPrisms and orderOf(i) ~= run.nextPrism then
+		-- Wrong resonance: the whole sequence collapses and counts as a puzzle mistake.
+		run.mistakes += 1
+		member.mistakes += 1
+		table.clear(charged)
+		run.remaining, run.nextPrism = 3, 1
+		notice(player, "Wrong resonance! Tune the prisms in the order shown.")
+		paintPrisms()
+		display()
+		return false
+	end
+	charged[i] = true
+	touch(member)
+	member.tunes += 1
+	run.totalTunes += 1
+	run.nextPrism += 1
+	run.remaining -= 1
+	if spell then earnFeat(member, "Attune") end
+	if run.remaining == 0 then
+		if run.stage == "prisms" then run.stage = "guardians" else run.shielded = false end
+	end
+	paintPrisms()
+	display()
+	return true
+end
+-- The prism that should be tuned next (correct order on ordered floors).
+local function nextPrismIndex()
+	local ordered = floorDef().mechanics.orderedPrisms
+	for i in pylons do
+		if not charged[i] and (not ordered or orderOf(i) == run.nextPrism) then return i end
+	end
+	return nil
+end
 for i = 1, 3 do
 	local a = i * math.pi * 2 / 3
 	local p = block("Resonance prism", Vector3.new(math.cos(a)*22, 5, math.sin(a)*22), Vector3.new(3, 7, 3), teal, Enum.Material.Neon)
@@ -251,36 +351,20 @@ for i = 1, 3 do
 	artwork(p,"AetherCrystal",1.3)
 	table.insert(pylons, p)
 	prompt(p, "Resonance prism", "Tune prism", function(player)
-		local member = members[player]
-		local tuning = run.stage == "prisms" or (run.stage == "core" and run.shielded)
-		if not member or not tuning or charged[i] then return end
-		if floorDef().mechanics.orderedPrisms and orderOf(i) ~= run.nextPrism then
-			-- Wrong resonance: the whole sequence collapses and counts as a puzzle mistake.
-			run.mistakes += 1
-			member.mistakes += 1
-			table.clear(charged)
-			run.remaining, run.nextPrism = 3, 1
-			notice(player, "Wrong resonance! Tune the prisms in the order shown.")
-			paintPrisms()
-			display()
-			return
-		end
-		charged[i] = true
-		touch(member)
-		member.tunes += 1
-		run.totalTunes += 1
-		run.nextPrism += 1
-		run.remaining -= 1
-		if run.remaining == 0 then
-			if run.stage == "prisms" then run.stage = "guardians" else run.shielded = false end
-		end
-		paintPrisms()
-		display()
+		tunePrism(i, members[player], player, false)
 	end)
 end
 local gate, pad
 local function leave(player, character)
+	local was = members[player] ~= nil
 	members[player] = nil
+	if was then
+		player:SetAttribute("DungeonInRun", false)
+		player:SetAttribute("DungeonParty", "")
+		player:SetAttribute("DungeonAbilityReady", 0)
+		player:SetAttribute("DungeonUltimates", 0)
+		publishParty()
+	end
 	if character and gate and gate.Parent then
 		character:PivotTo(gate.CFrame + Vector3.new(0, 5, 0))
 	end
@@ -289,12 +373,15 @@ end
 local function finish()
 	local f = floorDef()
 	local seconds = os.clock() - run.startedAt
-	local score, parts = Data.dungeonScore(f.index, seconds, run.deaths, run.mistakes)
+	local feats = 0
+	for _, record in members do if record.feat then feats += 1 end end
+	local bonus = DC.bonusScore(feats, run.team.balanced)
+	local score, parts = DC.score(f.index, seconds, run.deaths, run.mistakes, run.secretsFound, run.secretsTotal, bonus)
 	local grade = Data.dungeonGrade(score)
 	local totalPoints = run.totalDamage + run.totalTunes * Rules.tuneWeight * totalHp(run.stats)
 	local reward = Storage:FindFirstChild("IsleExpeditionReward")
-	local summary = f.name .. " • " .. grade .. " • score " .. score .. " (speed " .. math.floor(parts.speed) .. ", survival "
-		.. parts.survival .. ", puzzle " .. parts.skill .. ")"
+	local summary = (if run.master then "Master " else "") .. f.name .. " • " .. grade .. " • score " .. score .. " (speed " .. math.floor(parts.speed) .. ", survival "
+		.. parts.survival .. ", puzzle " .. parts.skill .. ", secrets " .. run.secretsFound .. "/" .. run.secretsTotal .. ", bonus " .. parts.bonus .. ")"
 	for participant, record in table.clone(members) do
 		local character = participant.Character
 		local root = character and character:FindFirstChild("HumanoidRootPart")
@@ -317,7 +404,9 @@ local function finish()
 			notice(participant, reason)
 		else
 			local payload = {floor = f.index, grade = grade, score = score, seconds = math.floor(seconds), deaths = run.deaths,
-				mistakes = run.mistakes, partySize = run.partySize, damageShare = share}
+				mistakes = run.mistakes, partySize = run.partySize, damageShare = share,
+				class = record.class, master = run.master, secrets = run.secretsFound, secretsTotal = run.secretsTotal,
+				bonus = parts.bonus, teamMult = run.team.xpMult, feat = record.feat == true}
 			-- The profile may still refuse (lease lapsed, floor gate, cooldown): only an
 			-- accepted grant opens the chest and starts this script's cooldown.
 			local grant = Storage:FindFirstChild("IsleExpeditionGrant")
@@ -341,27 +430,13 @@ local function finish()
 	end
 	if run.active then reset() end
 end
-local function strike(player, ranged)
-	local member = members[player]
-	local role = roles[player]
-	if ranged and role ~= "Mage" and role ~= "Archer" then return end
-	local recovery = if role == "Mage" then 2.4 elseif role == "Archer" then 1.2 else 0.8
-	if not member or run.stage ~= "core" or run.shielded or warded() or os.clock() - member.last < recovery then return end
-	member.last = os.clock()
-	local hit = math.min(run.health, if role == "Mage" then 3 elseif role == "Berserk" then 2 else 1)
+-- Damage the core (strikes, abilities). Returns false when the run just finished.
+local function damageCore(member, amount)
+	local hit = math.min(run.health, math.max(0, math.floor(amount)))
+	if hit <= 0 then return true end
 	run.health -= hit
 	credit(member, hit)
-	if roles[player] == "Healer" then
-		for ally in members do
-			local character = ally.Character
-			local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-			local root = character and character:FindFirstChild("HumanoidRootPart")
-			if humanoid and root and humanoid.Health > 0 and (root.Position-heart.Position).Magnitude <= 20 then
-				humanoid.Health = math.min(humanoid.MaxHealth, humanoid.Health + 3)
-			end
-		end
-	end
-	if run.health <= 0 then finish() return end
+	if run.health <= 0 then finish() return false end
 	local phases = floorDef().mechanics.shieldPhases
 	local threshold = phases and phases[run.shieldIndex]
 	if threshold and run.health <= run.stats.coreHp * threshold then
@@ -372,15 +447,61 @@ local function strike(player, ranged)
 		run.seed += 1
 		paintPrisms()
 	end
-	display()
+	return true
+end
+local function healPlayer(player, amount, healer)
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if not humanoid or humanoid.Health <= 0 then return 0 end
+	local before = humanoid.Health
+	humanoid.Health = math.min(humanoid.MaxHealth, humanoid.Health + amount)
+	local restored = humanoid.Health - before
+	if healer and player ~= healer.player then
+		healer.record.healed += restored
+		if healer.record.healed >= (DC.defs.Mender.feat.need or 50) then earnFeat(healer.record, "Heal") end
+	end
+	return restored
+end
+local function strike(player, ranged)
+	local member = members[player]
+	local def = member and DC.defs[member.class]
+	local style = def and def.attack.ranged
+	if ranged and not style then return end
+	local recovery = if ranged then style.recovery else 0.8
+	if not member or run.stage ~= "core" or run.shielded or warded() or os.clock() - member.last < recovery then return end
+	member.last = os.clock()
+	local hit = classHit(member, if ranged then "ranged" else "melee")
+	if def and def.attack.heal then
+		local amount = DC.healAmount(def.attack.heal, member.level)
+		for ally in members do
+			local character = ally.Character
+			local root = character and character:FindFirstChild("HumanoidRootPart")
+			if root and (root.Position-heart.Position).Magnitude <= 20 then
+				healPlayer(ally, amount, {player = player, record = member})
+			end
+		end
+	end
+	if damageCore(member, hit) then display() end
 end
 prompt(heart, "Eclipse Heart", "Strike core", function(player) strike(player, false) end)
-local rangedPrompt = prompt(heart, "Mage / Archer", "Ranged attack", function(player) strike(player, true) end, 32)
+local rangedPrompt = prompt(heart, "Starshot / Arcanist", "Ranged attack", function(player) strike(player, true) end, 32)
 rangedPrompt.KeyboardKeyCode = Enum.KeyCode.F
 rangedPrompt.UIOffset = Vector2.new(0, 80)
 local exit = block("Return arch", Vector3.new(0, 4, 29), Vector3.new(5, 5, 3), teal, Enum.Material.Glass)
 prompt(exit, "Return arch", "Leave expedition", leave)
 
+local function hitWisp(add, member, amount)
+	if add.hp <= 0 then return end
+	local hit = math.min(add.hp, amount)
+	add.hp -= hit
+	credit(member, hit)
+	add.part:SetAttribute("AddHealth", add.hp)
+	if add.hp <= 0 then
+		add.part:Destroy()
+		member.wispKills += 1
+		if member.wispKills >= (DC.defs.Riftblade.feat.need or 3) then earnFeat(member, "Wisps") end
+	end
+end
 local function spawnWave()
 	local wave = floorDef().mechanics.addWaves
 	for n = 1, wave.count do
@@ -394,19 +515,20 @@ local function spawnWave()
 			local member = members[player]
 			if not member or add.hp <= 0 or os.clock() - member.last < 0.8 then return end
 			member.last = os.clock()
-			local hit = math.min(add.hp, if roles[player] == "Berserk" or roles[player] == "Mage" then 2 else 1)
-			add.hp -= hit
-			credit(member, hit)
-			part:SetAttribute("AddHealth", add.hp)
-			if add.hp <= 0 then part:Destroy() end
+			hitWisp(add, member, classHit(member, "wisp"))
 			display()
 		end)
 	end
 end
 local function attackKind()
-	local kind = floorDef().boss.kind
-	if kind == "eclipse" then return if run.attacks % 2 == 0 then "pulse" else "ring" end
-	return kind
+	return DC.attackKind(floorDef().boss.kind, run.attacks)
+end
+local function hideTelegraph()
+	run.telegraph, run.target, run.targets = nil, nil, nil
+	warning.Transparency = 1
+	warning.Position = origin + Vector3.new(0, 1.6, 0)
+	heart:SetAttribute("Telegraph", "")
+	clearLances()
 end
 local function beginTelegraph()
 	local boss = floorDef().boss
@@ -414,6 +536,7 @@ local function beginTelegraph()
 	run.telegraph = kind
 	local center = heart.Position
 	local size = boss.radius * 2
+	run.targets = nil
 	if kind == "meteor" then
 		-- Starfall marks the delver holding the most threat (highest damage).
 		local best, bestDamage = nil, -1
@@ -422,13 +545,29 @@ local function beginTelegraph()
 			if root and record.damage > bestDamage then best, bestDamage = root, record.damage end
 		end
 		center = if best then best.Position else center
-	elseif kind == "ring" then
-		size = boss.radius * 2
+	elseif kind == "lances" then
+		-- Converging Lances mark where every delver stands.
+		run.targets = {}
+		for player in members do
+			local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+			if root then table.insert(run.targets, root.Position) end
+		end
+		center = run.targets[1] or center
+		size = (boss.lanceRadius or 8) * 2
+		for index = 2, #run.targets do
+			local mark = block("Lance mark", Vector3.zero, Vector3.new(0.12, size, size), violet, Enum.Material.Neon)
+			mark.Shape = Enum.PartType.Cylinder
+			mark.Orientation = Vector3.new(0, 0, 90)
+			mark.CanCollide = false
+			mark.Transparency = 0.25
+			mark.Position = Vector3.new(run.targets[index].X, origin.Y + 1.6, run.targets[index].Z)
+			table.insert(lanceMarks, mark)
+		end
 	end
 	run.target = center
 	warning.Size = Vector3.new(0.12, size, size)
 	warning.Position = Vector3.new(center.X, origin.Y + 1.6, center.Z)
-	warning.Color = if kind == "ring" then teal elseif kind == "meteor" then violet else gold
+	warning.Color = if kind == "ring" then teal elseif kind == "meteor" or kind == "lances" then violet else gold
 	warning:SetAttribute("SafeRadius", if kind == "ring" then boss.inner else 0)
 	warning.Transparency = 0.25
 	heart:SetAttribute("Telegraph", boss.attack)
@@ -438,28 +577,165 @@ local function resolveAttack()
 	local boss = f.boss
 	local kind = run.telegraph or attackKind()
 	local enrage = f.mechanics.enrage
-	local base = boss.damage * (if run.enraged and enrage then enrage.damageMult else 1)
+	local base = boss.damage * run.stats.bossDamageMult * (if run.enraged and enrage then enrage.damageMult else 1)
 	local center = run.target or heart.Position
+	local targets = run.targets
+	local lanceRadius = boss.lanceRadius or 8
+	run.attacks += 1
+	if run.bastion > 0 then
+		-- Bastion of the Isles: the whole party ignores this strike.
+		run.bastion -= 1
+		hideTelegraph()
+		return
+	end
+	local guard = run.bulwark
+	local guardRecord = guard and members[guard.player]
+	local guardHum = guard and guard.player.Character and guard.player.Character:FindFirstChildOfClass("Humanoid")
+	if guard and guardRecord and guardHum and guardHum.Health > 0 then
+		-- Starwall Bulwark: only the Aegis is struck, at its reduced damage.
+		guard.strikes -= 1
+		if guard.strikes <= 0 then run.bulwark = nil end
+		local defense = math.clamp(guard.player:GetAttribute("SkillDefense") or 0, 0, 5)
+		guardHum:TakeDamage(math.max(1, math.floor(base * takenMult(guard.player)) - defense))
+		earnFeat(guardRecord, "Absorb")
+		hideTelegraph()
+		return
+	end
+	run.bulwark = nil
 	for player in members do
 		local c = player.Character
 		local root = c and c:FindFirstChild("HumanoidRootPart")
 		local hum = c and c:FindFirstChildOfClass("Humanoid")
 		if hum and root then
 			local distance = (root.Position - center).Magnitude
-			local hit = if kind == "ring" then distance > boss.inner and distance <= boss.radius else distance <= boss.radius
+			local hit
+			if kind == "ring" then
+				hit = distance > boss.inner and distance <= boss.radius
+			elseif kind == "lances" then
+				hit = false
+				for _, at in targets or {} do
+					local flat = Vector3.new(root.Position.X - at.X, 0, root.Position.Z - at.Z)
+					if flat.Magnitude <= lanceRadius then hit = true end
+				end
+			else
+				hit = distance <= boss.radius
+			end
 			if hit then
-				local damage = if roles[player] == "Tank" then math.floor(base / 2) else math.floor(base)
+				local damage = math.floor(base * takenMult(player))
 				local defense = math.clamp(player:GetAttribute("SkillDefense") or 0, 0, 5)
 				hum:TakeDamage(math.max(1, damage - defense))
 			end
 		end
 	end
-	run.attacks += 1
-	run.telegraph, run.target = nil, nil
-	warning.Transparency = 1
-	warning.Position = origin + Vector3.new(0, 1.6, 0)
-	heart:SetAttribute("Telegraph", "")
+	hideTelegraph()
 end
+
+-- Class abilities (Q) and ultimates (R): validated by DC.abilityCheck, effects here.
+local function abilityState(player, record)
+	return {inRun = run.active and record ~= nil, classId = record and record.class, level = record and record.level or 1,
+		now = os.clock(), readyAt = record and record.readyAt or 0, ultimatesUsed = record and record.ultimatesUsed or 0,
+		ultimateAt = record and record.ultimateAt, stage = run.stage, shielded = run.shielded, warded = warded(),
+		telegraph = run.telegraph, wisps = liveWisps()}
+end
+local function useAbility(player, kind)
+	local record = members[player]
+	local ok, why = DC.abilityCheck(kind, abilityState(player, record))
+	if not ok then notice(player, why) return false end
+	local def = DC.defs[record.class]
+	local id = if kind == "ability" then def.ability.id else def.ultimate.id
+	local power = DC.abilityPower(record.class, record.level)
+	touch(record)
+	if kind == "ability" then
+		record.readyAt = os.clock() + DC.cooldown(record.class, record.level)
+	else
+		record.ultimatesUsed += 1
+		record.ultimateAt = os.clock()
+	end
+	local helper = {player = player, record = record}
+	if id == "Bulwark" then
+		run.bulwark = {player = player, strikes = power}
+	elseif id == "Bastion" then
+		run.bastion = def.ultimate.power
+		earnFeat(record, "Absorb")
+	elseif id == "MendingLight" then
+		for ally in members do
+			local hum = ally.Character and ally.Character:FindFirstChildOfClass("Humanoid")
+			if hum then healPlayer(ally, DC.healAmount(hum.MaxHealth * power, record.level), helper) end
+		end
+	elseif id == "SecondDawn" then
+		for ally in members do
+			local hum = ally.Character and ally.Character:FindFirstChildOfClass("Humanoid")
+			if hum then healPlayer(ally, hum.MaxHealth, helper) end
+		end
+		run.forgive += 1
+	elseif id == "Cleave" then
+		for _, add in table.clone(adds) do hitWisp(add, record, power) end
+		if not run.shielded and not warded() and not damageCore(record, power) then return true end
+	elseif id == "RendingStorm" then
+		for _, add in table.clone(adds) do hitWisp(add, record, 5) end
+		if not damageCore(record, math.ceil(run.stats.coreHp * def.ultimate.power)) then return true end
+	elseif id == "DisruptingShot" then
+		hideTelegraph()
+		run.pulse = 0
+		run.attacks += 1
+		earnFeat(record, "Disrupt")
+		if not run.shielded and not warded() and not damageCore(record, power) then return true end
+	elseif id == "CometVolley" then
+		local any = false
+		for _, add in table.clone(adds) do
+			if add.hp > 0 then any = true; hitWisp(add, record, add.hp) end
+		end
+		if not any and not run.shielded and not damageCore(record, math.ceil(run.stats.coreHp * def.ultimate.power)) then return true end
+	elseif id == "Attune" then
+		for _ = 1, power do
+			local i = nextPrismIndex()
+			if not i or not tunePrism(i, record, player, true) then break end
+		end
+	elseif id == "EclipseRift" then
+		for _ = 1, 3 do
+			local i = nextPrismIndex()
+			if not i or not tunePrism(i, record, player, true) then break end
+		end
+	end
+	notice(player, (if kind == "ability" then def.ability.name else def.ultimate.name) .. "!")
+	display()
+	return true
+end
+local abilityPrompt = prompt(heart, "Class ability", "Class ability", function(player) useAbility(player, "ability") end, 40)
+abilityPrompt.KeyboardKeyCode = Enum.KeyCode.Q
+abilityPrompt.UIOffset = Vector2.new(0, 160)
+local ultimatePrompt = prompt(heart, "Class ultimate", "Ultimate", function(player) useAbility(player, "ultimate") end, 40)
+ultimatePrompt.KeyboardKeyCode = Enum.KeyCode.R
+ultimatePrompt.UIOffset = Vector2.new(0, 240)
+
+-- Secrets: hidden caches and levers placed per run (DC.secretsFor).
+local function placeSecrets()
+	clearSecrets()
+	local list = DC.secretsFor(run.floor, run.seed)
+	run.secretsTotal, run.secretsFound = #list, 0
+	for _, spot in list do
+		local lever = spot.kind == "lever"
+		local part = block(if lever then "Secret lever" else "Secret cache", Vector3.new(spot.x, 2.5, spot.z),
+			if lever then Vector3.new(0.6, 2, 0.6) else Vector3.new(1.6, 1, 1.2), if lever then violet else gold, Enum.Material.Slate)
+		part.CanCollide = false
+		part.Transparency = 0.55
+		part:SetAttribute("SecretSpot", spot.spot)
+		table.insert(secretParts, part)
+		local found = false
+		local p = prompt(part, if lever then "Rusted lever" else "Loose flagstone", if lever then "Pull lever" else "Search", function(player)
+			local member = members[player]
+			if found or not member or not run.active then return end
+			found = true
+			touch(member)
+			run.secretsFound += 1
+			part:Destroy()
+			for ally in members do notice(ally, "Secret found by " .. player.Name .. " • " .. run.secretsFound .. " / " .. run.secretsTotal .. ".") end
+			display()
+		end, 6)
+		p.HoldDuration = 0.8
+	end
+end
+
 local function onPad(player)
 	if not pad then return false end
 	local c = player.Character
@@ -474,25 +750,40 @@ local function profileInfo(player)
 	if bridge then
 		local ok, result = pcall(bridge.Invoke, bridge, "dungeon", player)
 		if ok and type(result) == "table" then
-			return {level = tonumber(result.level) or 1, ironman = result.ironman == true}
+			return {level = tonumber(result.level) or 1, ironman = result.ironman == true,
+				class = if DC.valid(result.class) then result.class else nil,
+				classXp = if type(result.classXp) == "table" then result.classXp else {},
+				best = if type(result.best) == "table" then result.best else {}, master = result.master == true}
 		end
 	end
-	return {level = 1, ironman = false}
+	return {level = 1, ironman = false, classXp = {}, best = {}, master = false}
+end
+local function classFor(player, info)
+	local chosen = classOf[player]
+	if DC.valid(chosen) then return chosen end
+	local attr = player:GetAttribute("DungeonClass")
+	if DC.valid(attr) then return attr end
+	return info.class
+end
+local function masterOpen(info, floorIndex)
+	return DC.masterUnlocked(floorIndex, tonumber(info.best[floorIndex]) or 0)
 end
 local function launch()
-	local floorIndex = lobby.floor
+	local floorIndex, master = lobby.floor, lobby.master
 	lobby = nil
-	if pad then pad:SetAttribute("LobbyFloor", 0) end
+	if pad then pad:SetAttribute("LobbyFloor", 0); pad:SetAttribute("LobbyMaster", false) end
 	local joined = {}
 	for _, player in ipairs(table.clone(known)) do
 		if #joined >= Rules.maxParty then
 			if onPad(player) then notice(player, "The party is full (" .. Rules.maxParty .. " delvers).") end
 		elseif onPad(player) and not members[player] then
 			local info = profileInfo(player)
-			if Data.dungeonFloorUnlocked(floorIndex, info.level) then
-				table.insert(joined, {player = player, info = info})
-			else
+			if not Data.dungeonFloorUnlocked(floorIndex, info.level) then
 				notice(player, "Requires Dungeoneering " .. Data.DungeonFloors[floorIndex].level .. " for " .. Data.DungeonFloors[floorIndex].name .. ".")
+			elseif master and not masterOpen(info, floorIndex) then
+				notice(player, "Master Mode " .. Data.DungeonFloors[floorIndex].name .. " needs an S+ clear of the floor first.")
+			else
+				table.insert(joined, {player = player, info = info})
 			end
 		end
 	end
@@ -500,18 +791,31 @@ local function launch()
 	local seed = (run.seed or 0) + 1
 	table.clear(charged)
 	clearAdds()
-	newRun(floorIndex)
+	newRun(floorIndex, master)
 	run.seed = seed
 	run.active = true
 	run.startedAt = os.clock()
 	run.partySize = #joined
 	for _, guardian in guardians do guardian.Color = gold;guardian:SetAttribute("VisualState","Active") end
+	local classes = {}
 	for _, entry in joined do
-		members[entry.player] = {last = 0, damage = 0, tunes = 0, mistakes = 0, ironman = entry.info.ironman, down = false, active = os.clock()}
+		local class = classFor(entry.player, entry.info)
+		local level = if class then DC.levelForXp(tonumber(entry.info.classXp[class]) or 0) else 1
+		table.insert(classes, class or false)
+		members[entry.player] = {last = 0, damage = 0, tunes = 0, mistakes = 0, ironman = entry.info.ironman, down = false, active = os.clock(),
+			class = class, level = level, carry = 0, readyAt = 0, ultimatesUsed = 0, ultimateAt = nil, healed = 0, wispKills = 0, feat = false}
 		entry.player:SetAttribute("ExpeditionFloor", floorIndex)
-		notice(entry.player, Data.DungeonFloors[floorIndex].name .. " begins • party of " .. #joined .. ".")
+		entry.player:SetAttribute("DungeonInRun", true)
+		entry.player:SetAttribute("DungeonUltimates", if class then DC.ultimateCharges(level) else 0)
+		entry.player:SetAttribute("DungeonAbilityReady", 0)
+		notice(entry.player, (if master then "Master " else "") .. Data.DungeonFloors[floorIndex].name .. " begins • party of " .. #joined .. ".")
 		entry.player.Character:PivotTo(CFrame.new(origin + Vector3.new(0, 5, 24)))
 	end
+	run.team = DC.teamBonus(classes)
+	heart:SetAttribute("TeamUnique", run.team.unique)
+	heart:SetAttribute("TeamBalanced", run.team.balanced)
+	placeSecrets()
+	publishParty()
 	paintPrisms()
 	display()
 end
@@ -561,14 +865,21 @@ RunService.Heartbeat:Connect(function(dt)
 		end
 	end
 	if not next(members) then return end
-	-- Deaths count once per fall; a fallen delver respawns into the run.
+	-- Deaths count once per fall (Second Dawn forgives one); a fallen delver respawns into the run.
 	for player, record in members do
 		local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
 		if hum and hum.Health <= 0 and not record.down then
 			record.down = true
-			run.deaths += 1
+			if run.forgive > 0 then run.forgive -= 1 else run.deaths += 1 end
 		elseif hum and hum.Health > 0 then
 			record.down = false
+		end
+		-- Ability HUD: whole seconds until the class ability is ready, ultimates left.
+		if record.class then
+			local ready = math.max(0, math.ceil(record.readyAt - now))
+			if ready ~= record.shownReady then record.shownReady = ready; player:SetAttribute("DungeonAbilityReady", ready) end
+			local left = math.max(0, DC.ultimateCharges(record.level) - record.ultimatesUsed)
+			if left ~= record.shownUlt then record.shownUlt = left; player:SetAttribute("DungeonUltimates", left) end
 		end
 	end
 	if run.stage ~= "core" then return end
@@ -587,8 +898,22 @@ RunService.Heartbeat:Connect(function(dt)
 			display()
 		end
 	end
+	-- VI+: the boss regenerates while any umbral wisp lives.
+	local regen = f.mechanics.regen
+	if regen and warded() then
+		run.regenTimer += dt
+		if run.regenTimer >= regen.every then
+			run.regenTimer = 0
+			run.health = math.min(run.stats.coreHp, run.health + math.ceil(run.stats.coreHp * regen.fraction))
+			display()
+		end
+	elseif regen then
+		run.regenTimer = 0
+	end
 	local boss = f.boss
 	local tempo = if run.enraged and enrage then enrage.intervalMult else 1
+	local overload = f.mechanics.overload
+	if overload and run.health <= run.stats.coreHp * overload.below then tempo *= overload.intervalMult end
 	local interval = boss.interval * tempo
 	local telegraph = math.min(boss.telegraph, interval * 0.6)
 	run.pulse += dt
@@ -609,7 +934,10 @@ local function watch(player)
 		local hum = character and character:FindFirstChildOfClass("Humanoid")
 		if record and run.active and (record.down or (hum and hum.Health <= 0)) then
 			-- Fallen delvers stay in the party and respawn at the Observatory entry.
-			if not record.down then record.down = true; run.deaths += 1 end
+			if not record.down then
+				record.down = true
+				if run.forgive > 0 then run.forgive -= 1 else run.deaths += 1 end
+			end
 			return
 		end
 		leave(player)
@@ -627,7 +955,7 @@ Players.PlayerAdded:Connect(watch)
 for _, player in Players:GetPlayers() do watch(player) end
 Players.PlayerRemoving:Connect(function(player)
 	leave(player)
-	roles[player], selected[player] = nil, nil
+	classOf[player], selected[player], masterPick[player] = nil, nil, nil
 	local index = table.find(known, player)
 	if index then table.remove(known, index) end
 end)
@@ -640,10 +968,27 @@ local function openLobby(player)
 		notice(player, "Requires Dungeoneering " .. Data.DungeonFloors[floorIndex].level .. ".")
 		return
 	end
-	lobby = {floor = floorIndex, deadline = os.clock() + Rules.padSeconds}
-	if pad then pad:SetAttribute("LobbyFloor", floorIndex) end
-	notice(player, Data.DungeonFloors[floorIndex].name .. " forming • stand on the pad for " .. Rules.padSeconds .. "s (max " .. Rules.maxParty .. ").")
+	local wantMaster = masterPick[player]
+	if wantMaster == nil then wantMaster = player:GetAttribute("DungeonMasterOn") == true end
+	local master = wantMaster and floorIndex <= DC.MASTER_FLOORS
+	if master and not masterOpen(info, floorIndex) then
+		notice(player, "Master Mode unlocks on " .. Data.DungeonFloors[floorIndex].name .. " after an S+ clear. Switch it off at the Master lever.")
+		return
+	end
+	lobby = {floor = floorIndex, master = master, deadline = os.clock() + Rules.padSeconds}
+	if pad then pad:SetAttribute("LobbyFloor", floorIndex); pad:SetAttribute("LobbyMaster", master) end
+	notice(player, (if master then "Master " else "") .. Data.DungeonFloors[floorIndex].name .. " forming • stand on the pad for " .. Rules.padSeconds .. "s (max " .. Rules.maxParty .. ").")
 	display()
+end
+-- Class choice: pedestal by the pad, persisted through the IsleBridge "dungeonClass" op.
+local function chooseClass(player, class)
+	if members[player] then notice(player, "Your class is locked until this run ends.") return end
+	classOf[player] = class
+	player:SetAttribute("DungeonClass", class)
+	local bridge = Storage:FindFirstChild("IsleBridge")
+	if bridge then pcall(bridge.Invoke, bridge, "dungeonClass", player, {class = class}) end
+	local def = DC.defs[class]
+	notice(player, def.name .. " (" .. def.role .. ") chosen • " .. def.ability.name .. " (Q), " .. def.ultimate.name .. " (R).")
 end
 local function attach(part)
 	if gate or part.Name ~= "ExpeditionGate" or not part:IsA("BasePart") then return end
@@ -660,21 +1005,30 @@ local function attach(part)
 	pad.Material = Enum.Material.Neon
 	pad.Transparency = 0.6
 	pad:SetAttribute("LobbyFloor", 0)
+	pad:SetAttribute("LobbyMaster", false)
 	pad.Parent = arena
-	for index, role in ipairs({"Berserk", "Healer", "Tank", "Mage", "Archer"}) do
-		local pedestal = block(role .. " oath", Vector3.zero, Vector3.new(2, 3, 2), teal, Enum.Material.Slate)
+	for index, class in ipairs(DC.order) do
+		local def = DC.defs[class]
+		local pedestal = block(class .. " oath", Vector3.zero, Vector3.new(2, 3, 2), teal, Enum.Material.Slate)
 		pedestal.Position = part.Position + Vector3.new((index-3)*4, 0, 7)
-		local description = ({Berserk="Double core damage", Healer="Strikes heal nearby allies", Tank="Half pulse damage",
-			Mage="Slow ranged burst", Archer="Quick ranged shots"})[role]
-		prompt(pedestal, role .. " • " .. description, "Choose role", function(player)
-			if members[player] then return end
-			roles[player] = role
-			player:SetAttribute("ExpeditionRole", role)
+		pedestal:SetAttribute("DungeonClass", class)
+		prompt(pedestal, def.name .. " • " .. def.role .. " • " .. def.passive, "Choose class", function(player)
+			chooseClass(player, class)
 		end)
 	end
+	local lever = block("Master lever", Vector3.zero, Vector3.new(1, 4, 1), violet, Enum.Material.Slate)
+	lever.Position = part.Position + Vector3.new(14, 0, 0)
+	prompt(lever, "Master Mode • floors I-V after an S+ • ×2 HP and damage, extra chest roll", "Toggle Master Mode", function(player)
+		if members[player] then return end
+		local current = masterPick[player]
+		if current == nil then current = player:GetAttribute("DungeonMasterOn") == true end
+		masterPick[player] = not current
+		player:SetAttribute("DungeonMasterPick", not current)
+		notice(player, "Master Mode " .. (if not current then "on" else "off") .. " for the next run you open.")
+	end)
 	for index, def in ipairs(Data.DungeonFloors) do
 		local dais = block(def.name, Vector3.zero, Vector3.new(2, 2 + index * 0.4, 2), if index == 1 then teal else violet, Enum.Material.Slate)
-		dais.Position = part.Position + Vector3.new((index-3)*4, 0, -8)
+		dais.Position = part.Position + Vector3.new((index-4)*4, 0, -8)
 		dais:SetAttribute("FloorIndex", index)
 		dais:SetAttribute("RequiredLevel", def.level)
 		prompt(dais, def.name .. " • " .. def.subtitle .. " • Dungeoneering " .. def.level, "Select floor", function(player)

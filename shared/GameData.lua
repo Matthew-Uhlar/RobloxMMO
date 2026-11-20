@@ -5238,5 +5238,424 @@ end
 end
 -- End Pets depth section.
 
+------------------------------------------------------------------------------
+-- Dungeon classes (Dungeon Classes team; append-only section).
+-- Five Observatory classes (Aegis tank, Mender healer, Riftblade melee,
+-- Starshot ranged, Arcanist magic) with dungeon-only passives, one active
+-- ability (cooldown) and an ultimate (charges per run); class levels 1-50 with
+-- separate XP per class; a team bonus for unique compositions; Secrets and
+-- Bonus score components; Floors VI-VII; Master Mode for floors I-V.
+-- Pure data + pure rules: expedition.server.lua runs abilities/secrets,
+-- server.server.lua (Classes block) persists p.dungeonClasses and pays class XP,
+-- verify-dungeon-classes.luau checks every formula here.
+--   p.dungeonClasses = {selected=classId|nil, master=bool, xp={[classId]=n},
+--     secrets={["floor"]=best found}, masterBest={["floor"]=score}, masterClears={["floor"]=n}}
+------------------------------------------------------------------------------
+do
+local DC = {}
+Data.DungeonClasses = DC
+DC.MAX_LEVEL = 50
+DC.order = {"Aegis","Mender","Riftblade","Starshot","Arcanist"}
+-- attack: encounter hit values at class level 1 (the Observatory counts hits,
+-- not stat damage). melee/guardian/wisp = prompt strikes; ranged = {damage, recovery}.
+-- perLevel: dungeon-only boosts per class level above 1 (damage = extra hit
+-- fraction carried between strikes, mitigation = boss/sentinel damage reduction,
+-- healing = heal power). See DC.abilityCheck for when each ability is usable.
+DC.defs = {
+	Aegis={id="Aegis",name="Aegis",role="Tank",color="6C9BD2",glyph="⛨",
+		passive="Takes half damage from boss strikes and sentinel counters.",
+		attack={melee=1,guardian=1,wisp=1,mitigation=0.5},
+		perLevel={damage=0.004,mitigation=0.004,healing=0},
+		ability={id="Bulwark",name="Starwall Bulwark",cooldown=30,power=1,empowered=2,
+			text="Brace: the next boss strike (two when empowered) hits only you, at your reduced damage, and spares the party."},
+		ultimate={id="Bastion",name="Bastion of the Isles",power=2,
+			text="The whole party ignores the next 2 boss strikes."},
+		feat={id="Absorb",text="Absorb a boss strike for the party"},
+		weapon="BastionMaul"},
+	Mender={id="Mender",name="Mender",role="Healer",color="7FE3B0",glyph="✚",
+		passive="Every strike heals allies within 20 studs of the core.",
+		attack={melee=1,guardian=1,wisp=1,heal=3},
+		perLevel={damage=0.004,mitigation=0.002,healing=0.02},
+		ability={id="MendingLight",name="Mending Light",cooldown=25,power=0.35,empowered=0.5,
+			text="Heal every living delver for 35% of their max health (50% empowered)."},
+		ultimate={id="SecondDawn",name="Second Dawn",power=1,
+			text="Heal the party to full; the next fall this run does not count against survival."},
+		feat={id="Heal",text="Restore 50 health to allies in one run",need=50},
+		weapon="DawnmenderWand"},
+	Riftblade={id="Riftblade",name="Riftblade",role="Melee",color="E8806A",glyph="⚔",
+		passive="Strikes the core, sentinels and wisps for double damage.",
+		attack={melee=2,guardian=2,wisp=2},
+		perLevel={damage=0.01,mitigation=0.001,healing=0},
+		ability={id="Cleave",name="Rift Cleave",cooldown=15,power=2,empowered=3,
+			text="Sweep the arena: 2 damage (3 empowered) to every umbral wisp and to the exposed core."},
+		ultimate={id="RendingStorm",name="Rending Storm",power=0.1,
+			text="Tear 10% of the boss's max HP from an exposed core and 5 HP from every wisp."},
+		feat={id="Wisps",text="Destroy 3 umbral wisps in one run",need=3},
+		weapon="Riftcleaver"},
+	Starshot={id="Starshot",name="Starshot",role="Ranged",color="9BD67E",glyph="➶",
+		passive="Quick ranged shots at the core from 32 studs.",
+		attack={melee=1,guardian=1,wisp=1,ranged={damage=1,recovery=1.2}},
+		perLevel={damage=0.01,mitigation=0.001,healing=0},
+		ability={id="DisruptingShot",name="Disrupting Shot",cooldown=30,power=1,empowered=2,
+			text="Fire into a telegraphing boss: the marked strike is cancelled and the core takes 1 damage (2 empowered)."},
+		ultimate={id="CometVolley",name="Comet Volley",power=0.06,
+			text="Destroy every umbral wisp; with none alive, strike the core for 6% of its max HP."},
+		feat={id="Disrupt",text="Cancel a telegraphed boss strike"},
+		weapon="StarpiercerLongbow"},
+	Arcanist={id="Arcanist",name="Arcanist",role="Magic",color="8FA8FF",glyph="✦",
+		passive="Slow ranged bursts at the core; spells hit wisps twice as hard.",
+		attack={melee=1,guardian=1,wisp=2,ranged={damage=3,recovery=2.4}},
+		perLevel={damage=0.01,mitigation=0.001,healing=0},
+		ability={id="Attune",name="Attune",cooldown=20,power=1,empowered=2,
+			text="Tune the next resonance prism (two when empowered) in the correct order from the core."},
+		ultimate={id="EclipseRift",name="Eclipse Rift",power=1,
+			text="Complete the prism sequence at once (opens the hall or breaks the core shield)."},
+		feat={id="Attune",text="Attune a prism or break a shield with a spell"},
+		weapon="OrreryStaff"},
+}
+DC.byAbility = {}
+for _, id in ipairs(DC.order) do
+	local d = DC.defs[id]
+	DC.byAbility[d.ability.id] = {class=id,kind="ability"}
+	DC.byAbility[d.ultimate.id] = {class=id,kind="ultimate"}
+end
+function DC.valid(classId) return type(classId) == "string" and DC.defs[classId] ~= nil end
+
+-- Class XP curve (1-50): total XP to reach level L = floor(30 * (L-1)^2.5).
+function DC.xpForLevel(level)
+	level = math.clamp(math.floor(tonumber(level) or 1), 1, DC.MAX_LEVEL)
+	return math.floor(30 * (level - 1) ^ 2.5)
+end
+DC.MAX_XP = DC.xpForLevel(DC.MAX_LEVEL)
+function DC.levelForXp(xp)
+	xp = tonumber(xp) or 0
+	if xp ~= xp or xp <= 0 then return 1 end
+	local level = 1
+	while level < DC.MAX_LEVEL and xp >= DC.xpForLevel(level + 1) do level += 1 end
+	return level
+end
+-- {level, xp, floor, ceiling, fraction, maxed} for a progress bar.
+function DC.progress(xp)
+	xp = math.max(0, tonumber(xp) or 0)
+	if xp ~= xp then xp = 0 end
+	local level = DC.levelForXp(xp)
+	local lo, hi = DC.xpForLevel(level), DC.xpForLevel(math.min(DC.MAX_LEVEL, level + 1))
+	local maxed = level >= DC.MAX_LEVEL
+	return {level=level,xp=math.floor(xp),floor=lo,ceiling=hi,fraction=if maxed then 1 else math.clamp((xp - lo) / math.max(1, hi - lo), 0, 1),maxed=maxed}
+end
+
+-- Milestones (every class): ability cooldown cuts, an empowered ability, a
+-- second ultimate charge and the Paragon title.
+DC.milestones = {
+	{level=5,cooldown=0.1,text="Ability cooldown −10%"},
+	{level=15,empowered=true,text="Empowered ability"},
+	{level=20,cooldown=0.2,text="Ability cooldown −20%"},
+	{level=30,charges=2,text="Second ultimate charge per run"},
+	{level=40,cooldown=0.3,text="Ability cooldown −30%"},
+	{level=50,title=true,text="Paragon title"},
+}
+function DC.milestoneState(level)
+	level = math.clamp(math.floor(tonumber(level) or 1), 1, DC.MAX_LEVEL)
+	local out = {cooldown=0,empowered=false,charges=1,title=false}
+	for _, m in ipairs(DC.milestones) do
+		if level >= m.level then
+			if m.cooldown then out.cooldown = math.max(out.cooldown, m.cooldown) end
+			if m.empowered then out.empowered = true end
+			if m.charges then out.charges = math.max(out.charges, m.charges) end
+			if m.title then out.title = true end
+		end
+	end
+	return out
+end
+-- Dungeon-only boosts at a class level: {damage, mitigation, healing} fractions.
+function DC.levelBonus(classId, level)
+	local d = DC.defs[classId]
+	if not d then return {damage=0,mitigation=0,healing=0} end
+	local n = math.clamp(math.floor(tonumber(level) or 1), 1, DC.MAX_LEVEL) - 1
+	return {damage=n * d.perLevel.damage,mitigation=n * d.perLevel.mitigation,healing=n * d.perLevel.healing}
+end
+-- Fraction of boss/sentinel damage taken (Aegis base 0.5; reduction capped at 75%).
+function DC.damageTakenMult(classId, level)
+	local d = DC.defs[classId]
+	if not d then return 1 end
+	local reduction = (d.attack.mitigation or 0) + DC.levelBonus(classId, level).mitigation
+	return 1 - math.clamp(reduction, 0, 0.75)
+end
+-- Integer hit with a carried fraction: base * (1 + damage bonus). Returns hit, newCarry.
+function DC.hit(base, classId, level, carry)
+	base = math.max(0, math.floor(tonumber(base) or 0))
+	local extra = base * DC.levelBonus(classId, level).damage + (tonumber(carry) or 0)
+	local whole = math.floor(extra + 1e-9)
+	return base + whole, math.max(0, extra - whole)
+end
+-- Mender heal per strike / Mending Light share, scaled by healing power.
+function DC.healAmount(base, level)
+	return math.floor((tonumber(base) or 0) * (1 + DC.levelBonus("Mender", level).healing) + 0.5)
+end
+function DC.cooldown(classId, level)
+	local d = DC.defs[classId]
+	if not d then return math.huge end
+	return d.ability.cooldown * (1 - DC.milestoneState(level).cooldown)
+end
+function DC.abilityPower(classId, level)
+	local d = DC.defs[classId]
+	if not d then return 0 end
+	return if DC.milestoneState(level).empowered then d.ability.empowered else d.ability.power
+end
+DC.ULTIMATE_GAP = 45 -- seconds between two ultimates of one delver
+function DC.ultimateCharges(level) return DC.milestoneState(level).charges end
+
+-- Server-side validation of an ability or ultimate use.
+-- s = {inRun, classId, level, now, readyAt, ultimatesUsed, ultimateAt, stage,
+--      shielded, warded, telegraph, wisps}. Returns ok, reason.
+function DC.abilityCheck(kind, s)
+	if type(s) ~= "table" or not s.inRun then return false, "Only delvers inside an Observatory run can use class abilities." end
+	local d = DC.defs[s.classId]
+	if not d then return false, "Choose a class at the matchmaking pad first." end
+	local now = tonumber(s.now) or 0
+	local core = s.stage == "core"
+	local tuning = s.stage == "prisms" or (core and s.shielded == true)
+	if kind == "ability" then
+		local readyAt = tonumber(s.readyAt) or 0
+		if now < readyAt then return false, d.ability.name .. " recharging • " .. math.ceil(readyAt - now) .. "s." end
+		local id = d.ability.id
+		if id == "Bulwark" and not core then return false, d.ability.name .. " needs the boss phase." end
+		if id == "Cleave" and not (core and ((tonumber(s.wisps) or 0) > 0 or (not s.shielded and not s.warded))) then return false, "Nothing in reach of " .. d.ability.name .. "." end
+		if id == "DisruptingShot" and not (core and s.telegraph) then return false, d.ability.name .. " needs a telegraphing boss." end
+		if id == "Attune" and not tuning then return false, "No prism to attune right now." end
+		return true
+	elseif kind == "ultimate" then
+		if (tonumber(s.ultimatesUsed) or 0) >= DC.ultimateCharges(s.level) then return false, d.ultimate.name .. " is spent for this run." end
+		local last = tonumber(s.ultimateAt)
+		if last and now - last < DC.ULTIMATE_GAP then return false, d.ultimate.name .. " recharging • " .. math.ceil(DC.ULTIMATE_GAP - (now - last)) .. "s." end
+		local id = d.ultimate.id
+		if id == "Bastion" and not core then return false, d.ultimate.name .. " needs the boss phase." end
+		if id == "CometVolley" and not (core and ((tonumber(s.wisps) or 0) > 0 or not s.shielded)) then return false, d.ultimate.name .. " needs wisps or an unshielded core." end
+		if id == "RendingStorm" and not (core and not s.shielded and not s.warded) then return false, d.ultimate.name .. " needs an exposed core." end
+		if id == "EclipseRift" and not tuning then return false, "No prism sequence to complete." end
+		return true
+	end
+	return false, "Unknown ability."
+end
+
+-- Team composition: unique classes among classed delvers.
+-- xpMult = 1 + 6% per unique class beyond the first; balanced (>= 3 delvers,
+-- every one a different class) adds 5 to the Bonus score component.
+DC.TEAM_STEP = 0.06
+function DC.teamBonus(classes)
+	local list = type(classes) == "table" and classes or {}
+	local seen, unique, classed = {}, 0, 0
+	for _, c in ipairs(list) do
+		if DC.valid(c) then
+			classed += 1
+			if not seen[c] then seen[c] = true; unique += 1 end
+		end
+	end
+	local balanced = #list >= 3 and classed == #list and unique == #list
+	return {unique=unique,xpMult=1 + DC.TEAM_STEP * math.max(0, unique - 1),balanced=balanced,bonus=if balanced then 5 else 0}
+end
+
+-- Secrets: hidden caches and levers. Counts per floor; spots are offsets from
+-- the Observatory origin (core floor and sentinel hall).
+DC.secretCounts = {2,2,3,3,4,5,5}
+DC.secretSpots = {
+	{x=31,z=14,kind="cache"},{x=-31,z=-14,kind="lever"},{x=12,z=33,kind="cache"},{x=-14,z=32,kind="lever"},
+	{x=24,z=-112,kind="cache"},{x=-24,z=-128,kind="lever"},{x=-24,z=-92,kind="cache"},{x=24,z=-95,kind="lever"},
+	{x=33,z=-2,kind="cache"},{x=-33,z=3,kind="lever"},
+}
+function DC.secretCount(floorIndex) return DC.secretCounts[floorIndex] or 0 end
+-- Deterministic distinct spots for a run: start rotates with floor and seed, step 3 (coprime with 10).
+function DC.secretsFor(floorIndex, seed)
+	local n = DC.secretCount(floorIndex)
+	local spots = DC.secretSpots
+	local start = (math.floor(tonumber(seed) or 0) * 3 + (tonumber(floorIndex) or 0)) % #spots
+	local out = {}
+	for i = 0, n - 1 do
+		local index = ((start + i * 3) % #spots) + 1
+		table.insert(out, {spot=index,kind=spots[index].kind,x=spots[index].x,z=spots[index].z})
+	end
+	return out
+end
+
+-- Score: speed + survival + puzzle + secrets (each 0-100) scaled to 300 (x0.75),
+-- plus Bonus (3 per class feat + 5 for a balanced team, cap 20), clamped to 300.
+DC.FEAT_BONUS, DC.BONUS_CAP = 3, 20
+function DC.bonusScore(feats, balanced)
+	feats = math.max(0, math.floor(tonumber(feats) or 0))
+	return math.min(DC.BONUS_CAP, feats * DC.FEAT_BONUS + (if balanced then 5 else 0))
+end
+function DC.score(floorIndex, seconds, deaths, mistakes, found, total, bonus)
+	local _, parts = Data.dungeonScore(floorIndex, seconds, deaths, mistakes)
+	total = math.max(0, math.floor(tonumber(total) or 0))
+	found = math.clamp(math.floor(tonumber(found) or 0), 0, total)
+	local secrets = if total > 0 then found * 100 / total else 100
+	bonus = math.clamp(math.floor(tonumber(bonus) or 0), 0, DC.BONUS_CAP)
+	local base = (parts.speed + parts.survival + parts.skill + secrets) * 0.75
+	local score = math.clamp(math.floor(base + bonus + 0.5), 0, 300)
+	return score, {speed=parts.speed,survival=parts.survival,skill=parts.skill,secrets=secrets,bonus=bonus}
+end
+
+-- Master Mode (floors I-V): x2 HP and damage, one extra chest roll, x1.25 XP.
+-- Unlocked per floor by an S+ normal-mode clear (best score >= the S+ minimum).
+DC.MASTER_FLOORS = 5
+DC.MASTER_MULT, DC.MASTER_XP, DC.MASTER_ROLLS = 2, 1.25, 1
+function DC.masterUnlocked(floorIndex, bestScore)
+	return type(floorIndex) == "number" and floorIndex >= 1 and floorIndex <= DC.MASTER_FLOORS
+		and (tonumber(bestScore) or 0) >= Data.DungeonGradeById["S+"].min
+end
+function DC.floorStats(floorIndex, master)
+	local s = Data.dungeonFloorStats(floorIndex)
+	s.bossDamageMult = 1
+	if master and floorIndex <= DC.MASTER_FLOORS then
+		local m = DC.MASTER_MULT
+		s.guardianHp, s.coreHp, s.guardianHit, s.addHp = s.guardianHp * m, s.coreHp * m, s.guardianHit * m, s.addHp * m
+		s.bossDamageMult = m
+	end
+	return s
+end
+
+-- Class XP for one credited clear (the selected class only).
+function DC.classXp(floorIndex, grade, master, teamMult)
+	local f = Data.DungeonFloors[floorIndex] or Data.DungeonFloors[1]
+	local g = Data.DungeonGradeById[grade] or Data.DungeonGradeById.B
+	local team = math.clamp(tonumber(teamMult) or 1, 1, 1 + DC.TEAM_STEP * (#DC.order - 1))
+	return math.floor(f.rewards.dungeoneeringXp * 0.75 * g.mult * (if master then DC.MASTER_XP else 1) * team)
+end
+-- A class's own dungeon weapon rolls at twice the chance when that class clears.
+function DC.classChest(chest, classId)
+	local out = {}
+	for _, d in ipairs(chest) do
+		local def = Data.Items[d.item]
+		local boost = def ~= nil and def.dungeonClass ~= nil and def.dungeonClass == classId
+		table.insert(out, {item=d.item,chance=math.min(1, d.chance * (if boost then 2 else 1)),min=d.min,max=d.max})
+	end
+	return out
+end
+-- Full rewards: Data.dungeonRewards + Master Mode (x1.25 XP, +1 chest roll) +
+-- secrets (+1 essence and +5% coins each) + class XP and the class-weighted chest.
+function DC.runRewards(floorIndex, grade, opts)
+	opts = type(opts) == "table" and opts or {}
+	local r = Data.dungeonRewards(floorIndex, grade)
+	local master = opts.master == true and floorIndex <= DC.MASTER_FLOORS
+	local found = math.clamp(math.floor(tonumber(opts.secrets) or 0), 0, DC.secretCount(floorIndex))
+	if master then
+		r.dungeoneeringXp = math.floor(r.dungeoneeringXp * DC.MASTER_XP)
+		r.combatXp = math.floor(r.combatXp * DC.MASTER_XP)
+	end
+	r.coins += math.floor(r.coins * 0.05 * found)
+	r.items.ObservatoryEssence += found
+	r.rolls = 1 + (if master then DC.MASTER_ROLLS else 0)
+	r.classXp = if DC.valid(opts.class) then DC.classXp(floorIndex, grade, master, opts.teamMult) else 0
+	r.chest = DC.classChest(r.chest, opts.class)
+	r.master, r.secrets = master, found
+	return r
+end
+
+-- Profile migration: always returns a clean p.dungeonClasses table.
+function DC.migrate(raw)
+	local t = type(raw) == "table" and raw or {}
+	local out = {selected=if DC.valid(t.selected) then t.selected else nil,master=t.master == true,xp={},secrets={},masterBest={},masterClears={}}
+	local xp = type(t.xp) == "table" and t.xp or {}
+	for _, id in ipairs(DC.order) do
+		local v = tonumber(xp[id]) or 0
+		if v ~= v or v < 0 then v = 0 end
+		out.xp[id] = math.min(math.floor(v), DC.MAX_XP)
+	end
+	local function count(map, key)
+		local v = type(map) == "table" and tonumber(map[key]) or nil
+		if v == nil or v ~= v or v <= 0 then return nil end
+		return math.floor(v)
+	end
+	for i = 1, #Data.DungeonFloors do
+		local key = tostring(i)
+		local s = count(t.secrets, key)
+		if s then out.secrets[key] = math.min(s, DC.secretCount(i)) end
+		if i <= DC.MASTER_FLOORS then
+			local b = count(t.masterBest, key)
+			if b then out.masterBest[key] = math.min(b, 300) end
+			out.masterClears[key] = count(t.masterClears, key)
+		end
+	end
+	return out
+end
+-- Party HUD attribute: "Name|Class|Level;..." (class "" = unclassed).
+function DC.partyString(rows)
+	local parts = {}
+	for _, r in ipairs(rows) do
+		local name = string.gsub(tostring(r.name or "?"), "[|;]", "")
+		table.insert(parts, name .. "|" .. (if DC.valid(r.class) then r.class else "") .. "|" .. math.clamp(math.floor(tonumber(r.level) or 1), 1, DC.MAX_LEVEL))
+	end
+	return table.concat(parts, ";")
+end
+function DC.parseParty(value)
+	local rows = {}
+	if type(value) ~= "string" then return rows end
+	for entry in string.gmatch(value, "[^;]+") do
+		local name, class, level = string.match(entry, "^([^|]*)|(%w*)|(%d+)$")
+		if name then table.insert(rows, {name=name,class=if DC.valid(class) then class else nil,level=tonumber(level)}) end
+	end
+	return rows
+end
+
+-- Class weapons (dungeon-only: Floors VI-VII chests) and the Hollow Keystone.
+local weaponText = " Dungeon-only: Observatory Floors VI-VII (twice as likely when you clear as its class). Requires Dungeoneering 40."
+item("BastionMaul",{name="Bastion Maul",kind="weapon",slot="weapon",rarity="Legendary",color="6C9BD2",dungeon=true,dungeonClass="Aegis",
+	stats={damage=200,strength=60,defense=80,health=150},requires={Combat=35,Dungeoneering=40},value=12000,
+	description="Aegis class weapon. A starwall hammer that turns blows aside."..weaponText})
+item("DawnmenderWand",{name="Dawnmender Wand",kind="weapon",slot="weapon",style="magic",rarity="Legendary",color="7FE3B0",dungeon=true,dungeonClass="Mender",
+	stats={intelligence=100,abilityDamage=3,health=120},magic={power=60,speed=0.8,elements={}},requires={Magic=35,Dungeoneering=40},value=12000,
+	description="Mender class weapon. Quick casts that hum with dawnlight."..weaponText})
+item("Riftcleaver",{name="Riftcleaver",kind="weapon",slot="weapon",rarity="Legendary",color="E8806A",dungeon=true,dungeonClass="Riftblade",
+	stats={damage=260,strength=110,critChance=10,critDamage=80},requires={Combat=40,Dungeoneering=40},value=14000,
+	description="Riftblade class weapon. Cuts the seam between stars."..weaponText})
+item("StarpiercerLongbow",{name="Starpiercer Longbow",kind="weapon",slot="weapon",style="ranged",rarity="Legendary",color="9BD67E",dungeon=true,dungeonClass="Starshot",
+	stats={critChance=6,critDamage=30,rangedAccuracy=50},ranged={power=190,speed=1.05,range=Data.CombatStyles.maxRange,maxAmmoTier=7},
+	requires={Ranged=40,Dungeoneering=40},value=14000,
+	description="Starshot class weapon. Heavy shots that never lose their line."..weaponText})
+item("OrreryStaff",{name="Orrery Staff",kind="weapon",slot="weapon",style="magic",rarity="Legendary",color="8FA8FF",dungeon=true,dungeonClass="Arcanist",
+	stats={intelligence=160,abilityDamage=2},magic={power=110,speed=1.2,elements={"Gale","Tide","Stone","Ember"}},requires={Magic=40,Dungeoneering=40},value=14000,
+	description="Arcanist class weapon. Supplies unlimited Gale, Tide, Stone and Ember glyphs."..weaponText})
+DC.weapons = {}
+for _, id in ipairs(DC.order) do DC.weapons[id] = DC.defs[id].weapon end
+local Gear = Data.Gear
+Gear.Reforges.Eventide = {id="Eventide",name="Eventide",category="armor",stone="HollowKeystone",stats={defense=4,health=6,intelligence=4,critDamage=2}}
+Gear.StoneFor.Eventide = "HollowKeystone"
+table.insert(Gear.ReforgeOrder.armor, "Eventide")
+item("HollowKeystone",{name="Hollow Keystone",kind="material",rarity="Legendary",color="5B4A8C",reforgeStone="Eventide",value=150*Data.Rarity.Legendary.rank^2,
+	description="Reforge stone. Applies the Eventide reforge to armor at the Reforge Anvil. Dropped by Observatory chests (Floor VI+)."})
+
+-- Floors VI and VII. New mechanics:
+--   regen    {every, fraction}: while any umbral wisp lives, the boss heals that fraction of max HP every N s
+--   overload {below, intervalMult}: below that HP fraction the boss strikes faster
+-- New boss kinds: lances (every delver is marked at once; step off your own mark),
+-- collapse (cycles pulse -> ring -> lances).
+local floors = Data.DungeonFloors
+table.insert(floors, {index=6,numeral="VI",name="Observatory Floor VI",subtitle="Lumen Reliquary",level=40,hpMult=7.5,damageMult=4.5,par=480,
+	mechanics={orderedPrisms=true,shieldPhases={0.5},addWaves={every=16,count=3,hp=6},regen={every=12,fraction=0.04}},
+	boss={name="Lumen Colossus",attack="Converging Lances",kind="lances",radius=8,damage=46,interval=6,telegraph=2.2},
+	rewards={dungeoneeringXp=1600,combatXp=1600,coins=1200,stormglass=5,essence=13},
+	chest={{item="ObservatoryEssence",chance=0.75,min=5,max=10},{item="HollowKeystone",chance=0.02,min=1,max=1},{item="StarFragment",chance=0.06,min=1,max=2},
+		{item="BastionMaul",chance=0.004,min=1,max=1},{item="DawnmenderWand",chance=0.004,min=1,max=1},{item="Riftcleaver",chance=0.004,min=1,max=1},
+		{item="StarpiercerLongbow",chance=0.004,min=1,max=1},{item="OrreryStaff",chance=0.004,min=1,max=1},
+		{item="UmbralOrrery",chance=0.006,min=1,max=1},{item="MasterworkTome",chance=0.03,min=1,max=1},{item="TemperingTome",chance=0.25,min=1,max=1}}})
+table.insert(floors, {index=7,numeral="VII",name="Observatory Floor VII",subtitle="Sovereign's Eclipse",level=50,hpMult=10,damageMult=5.6,par=540,
+	mechanics={orderedPrisms=true,shieldPhases={0.75,0.5,0.25},addWaves={every=15,count=4,hp=7},regen={every=10,fraction=0.03},
+		enrage={after=360,damageMult=2,intervalMult=0.6},overload={below=0.5,intervalMult=0.75}},
+	boss={name="Hollow Sovereign",attack="Eventide Collapse",kind="collapse",inner=10,radius=14,damage=54,interval=5,telegraph=2},
+	rewards={dungeoneeringXp=2400,combatXp=2300,coins=1800,stormglass=6,essence=18},
+	chest={{item="ObservatoryEssence",chance=0.85,min=7,max=14},{item="HollowKeystone",chance=0.04,min=1,max=1},{item="StarFragment",chance=0.1,min=1,max=3},
+		{item="BastionMaul",chance=0.008,min=1,max=1},{item="DawnmenderWand",chance=0.008,min=1,max=1},{item="Riftcleaver",chance=0.008,min=1,max=1},
+		{item="StarpiercerLongbow",chance=0.008,min=1,max=1},{item="OrreryStaff",chance=0.008,min=1,max=1},
+		{item="UmbralOrrery",chance=0.01,min=1,max=1},{item="MasterworkTome",chance=0.05,min=1,max=1},{item="PrismlitLens",chance=0.02,min=1,max=1}}})
+-- Boss attack for the n-th strike (0-based) of a floor's boss kind.
+function DC.attackKind(kind, n)
+	n = math.floor(tonumber(n) or 0)
+	if kind == "eclipse" then return if n % 2 == 0 then "pulse" else "ring" end
+	if kind == "collapse" then return ({"pulse","ring","lances"})[(n % 3) + 1] end
+	return kind
+end
+end
+-- End Dungeon classes section.
+
 
 return Data

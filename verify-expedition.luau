@@ -108,11 +108,11 @@ local b,br,bh=player()
 local c,cr,ch=player()
 use(a,"Eclipse Heart","Strike core")
 check(caption.Text:find("0 / 3",1,true)~=nil,"non-member cannot skip prisms")
-use(a,"Mage oath","Choose role")
-check(a:GetAttribute("ExpeditionRole")=="Mage","role selection")
+use(a,"Arcanist oath","Choose class")
+check(a:GetAttribute("DungeonClass")=="Arcanist","class selection")
 use(a,"ExpeditionGate","Enter expedition")
 check(caption.Text:find("MATCHMAKING",1,true)~=nil,"entry opens the matchmaking pad")
-use(b,"Tank oath","Choose role")
+use(b,"Aegis oath","Choose class")
 use(b,"ExpeditionGate","Enter expedition")
 use(c,"ExpeditionGate","Enter expedition")
 launch()
@@ -178,7 +178,7 @@ for _,p in pylons do check(p.Parent:GetAttribute("VisualState")=="Active","prism
 use(a,"Eclipse Heart","Strike core")
 check(rewards[a]==1,"post-victory replay has no reward")
 cr.Position=r.Vector3.new(0,0,500) -- c steps off the pad and sits out the next run
-use(a,"Healer oath","Choose role")
+use(a,"Mender oath","Choose class")
 use(a,"ExpeditionGate","Enter expedition")
 use(b,"ExpeditionGate","Enter expedition")
 launch()
@@ -205,8 +205,8 @@ local baseChecks=checks
 -- Part 2: Dungeons rules (shared/GameData.lua).
 ------------------------------------------------------------------------------
 local floors=Data.DungeonFloors
-check(#floors==5,"five Observatory floors")
-local expectedLevels={1,5,12,20,30}
+check(#floors==7,"seven Observatory floors")
+local expectedLevels={1,5,12,20,30,40,50}
 for i,f in ipairs(floors) do
 	check(f.index==i and f.level==expectedLevels[i],"floor "..i.." Dungeoneering requirement")
 	check(f.name=="Observatory Floor "..f.numeral,"floor "..i.." name")
@@ -239,7 +239,7 @@ for i,f in ipairs(floors) do
 	check(Data.dungeonFloorUnlocked(i,Progression.levelForXp(need)),"floor "..i.." opens at Dungeoneering "..f.level)
 	if f.level>1 then check(not Data.dungeonFloorUnlocked(i,Progression.levelForXp(need-1)),"floor "..i.." closed one XP short") end
 end
-check(not Data.dungeonFloorUnlocked(6,99),"no floor VI")
+check(not Data.dungeonFloorUnlocked(8,99),"no floor VIII")
 -- Score and grade.
 local score,parts=Data.dungeonScore(1,100,0,0)
 check(score==300 and parts.speed==100 and parts.survival==100 and parts.skill==100,"flawless fast clear scores 300")
@@ -424,9 +424,9 @@ at(g,r.Vector3.new(20,0,0))
 check(rewards[d]==1 and rewards[g]==nil,"Floor II: striker credited, tuning-only member is not")
 check(noticeOf(g):find("tuning counts for at most half",1,true)~=nil,"tuning-only member told why")
 check(payloads[d].floor==2 and payloads[d].mistakes==2 and payloads[d].deaths==0 and payloads[d].partySize==2,"payload reports floor, mistakes, deaths and party")
-check(payloads[d].score==270 and payloads[d].grade=="S","two mistakes grade S on a fast clear")
+check(payloads[d].score==203 and payloads[d].grade=="B","two mistakes and no secrets grade B on a fast clear")
 check(payloads[d].damageShare==1,"payload damage share")
-check(d:GetAttribute("DungeonResult"):find("Floor II • S",1,true)~=nil,"result summary for the UI")
+check(d:GetAttribute("DungeonResult"):find("Floor II • B",1,true)~=nil and d:GetAttribute("DungeonResult"):find("secrets 0/2",1,true)~=nil,"result summary for the UI")
 
 -- Floor III: core shield phases + Starfall (meteor) telegraph, solo.
 local h=player()
@@ -464,7 +464,7 @@ check(rewards[h]==1 and payloads[h].floor==3 and payloads[h].partySize==1,"solo 
 -- Floor IV: wisp waves ward the boss.
 local i4=player()
 levels[i4]=20
-use(i4,"Berserk oath","Choose role")
+use(i4,"Riftblade oath","Choose class")
 use(i4,"Observatory Floor IV","Select floor")
 use(i4,"ExpeditionGate","Enter expedition")
 launch()
@@ -525,7 +525,7 @@ check(caption.Text:find("0 / 3",1,true)~=nil and #wisps()==0,"leaving resets Flo
 local iron=player()
 local ally=player()
 irons[iron]=true
-use(ally,"Berserk oath","Choose role")
+use(ally,"Riftblade oath","Choose class")
 clearPad() onPad(iron) onPad(ally,2)
 signals[promptFor("ExpeditionGate","Enter expedition")]:Fire(iron)
 launch()
