@@ -1974,6 +1974,31 @@ do
 		end
 		noOverlap(table.move({ { "target panel", targetRect } }, 1, 1, #explore + 1, table.clone(explore)), tag)
 		noOverlap(table.move({ { "boss panel", bossRect } }, 1, 1, #explore + 1, table.clone(explore)), tag)
+		-- Minigames HUD (Skybreach Siege, Tempest Haul) takes the party HUD's slot
+		-- (a player is never in both): it clears every exploring HUD element.
+		local partyText = player:GetAttribute("DungeonParty")
+		player:SetAttribute("DungeonParty", "")
+		local mgHud = atlas:FindFirstChild("MinigameHud")
+		for _, hudText in ipairs({
+			"game=Siege;points=34;min=50;time=412;players=10;tier=Veteran;keeper=1800/2400;portals=Cinder:0:900:0,Gale:450:900:0,Rime:900:900:1,Gloam:900:900:1;barricades=400/400,100/400,0/400,400/400;wave=7;creatures=12",
+			"game=Haul;points=260;min=150;time=300;players=4;phase=energy;energy=64;essence=100;hull=71;fires=3;masts=1,0;raw=2;cooked=3",
+		}) do
+			local gameName = hudText:match("^game=(%a+)")
+			player:SetAttribute("MinigameHud", hudText)
+			player:SetAttribute("MinigameGame", gameName)
+			assert(mgHud and mgHud.Visible and not partyHud.Visible, gameName .. " HUD shows in the party slot at " .. tag.name)
+			local mgList = {}
+			for _, item in ipairs(explore) do if item[1] ~= "party HUD" then table.insert(mgList, item) end end
+			table.insert(mgList, { gameName .. " HUD", rect(mgHud) })
+			noOverlap(table.move({ { "target panel", targetRect } }, 1, 1, #mgList + 1, table.clone(mgList)), tag)
+			noOverlap(table.move({ { "boss panel", bossRect } }, 1, 1, #mgList + 1, table.clone(mgList)), tag)
+			checks += 1
+		end
+		player:SetAttribute("MinigameGame", "")
+		assert(not mgHud.Visible, "minigame HUD hides after the match at " .. tag.name)
+		player:SetAttribute("DungeonParty", partyText)
+		assert(partyHud.Visible, "party HUD returns at " .. tag.name)
+		checks += 2
 		-- Building: the builder owns the bottom; Attack steps aside.
 		assert(attack.Visible, "Attack shows outside the builder at " .. tag.name)
 		builder.enter("place", "StonePath")

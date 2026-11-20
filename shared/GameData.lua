@@ -7124,4 +7124,446 @@ end
 end
 -- End Slayer tasks section.
 
+------------------------------------------------------------------------------
+-- Minigames (Minigames team; self-contained section). Group minigames on the
+-- Skybreach Bastion (minigames.server.lua builds the arena; a ferry beacon on
+-- the Guild Terrace is gated through ServerStorage.IsleMinigameAccess):
+--   * Skybreach Siege (wave defence): 3-10 players defend the Lumen Keeper
+--     against creatures from four rift portals. Portal shields drop one at a
+--     time (a random order each match; the next drops early when a portal
+--     falls); destroy all four before the Keeper falls. Novice / Veteran /
+--     Elite landings by Combat level scale creatures, portals and the Keeper.
+--     Contribution points come from strikes on creatures and portals and from
+--     barricade repairs (1 Timber, Carpentry XP); MIN_POINTS earns the tier's
+--     Commendations on a win. Commendations buy the Lumenward outfit (shared
+--     hauberk / greaves / treads and one helm per combat style; the 4-piece set
+--     adds the worn helm's style stats, MG.applyLumenward), XP lamps for the
+--     combat skills and cosmetic titles.
+--   * Tempest Haul (skilling boss): 1-10 players catch and cook stormfish,
+--     load them into the deck cannons, repair cracked masts (Carpentry) and
+--     douse lightning fires while the Squall Leviathan's energy drains; at zero
+--     energy it surfaces and harpoons drain its essence. Fishing, Cooking and
+--     Carpentry XP per action; points past MIN_POINTS buy Squall Cache rolls
+--     (solo hauls pay SOLO_REWARD of the points). The cache holds the
+--     Squallpup pet, the Stormcaller fishing outfit and the Tidebreaker Rod.
+-- Balance (verify-minigames.luau): XP/h and currency/h of each game against
+-- its solo equivalent sit within 0.8-1.2x (SOCIAL_BONUS included), shop
+-- prices are checked in hours, and an idle player earns nothing.
+------------------------------------------------------------------------------
+do
+local MG = {}
+Data.Minigames = MG
+MG.ISLAND = "Skybreach Bastion"
+MG.Order = {"Siege","Haul"}
+MG.REJOIN_SECONDS = 90   -- a player who drops mid-match may rejoin with their points
+MG.IDLE_SECONDS = 60     -- no credited action and no movement: removed (AFK)
+MG.AWAY_RADIUS = 120     -- this far from the arena centre for AWAY_GRACE seconds: removed
+MG.AWAY_GRACE = 10
+MG.ACTION_COOLDOWN = 1.1 -- seconds between credited actions (strike, repair, catch...)
+MG.SOCIAL_BONUS = 1.1    -- group content may pay a little more than its solo twin
+MG.LOG_LIMIT = 1e9
+MG.MAX_POINTS_PER_SECOND = 12 -- server sanity cap on credited points per match second
+
+local function round(x) return math.floor(x + 0.5) end
+MG.round = round
+-- Party scale: health pools grow with the party (3 players = x1).
+function MG.partyScale(n)
+	n = math.clamp(math.floor(tonumber(n) or 1), 1, 10)
+	return 0.55 + 0.15 * n
+end
+
+------------------------------------------------------------------------------
+-- Solo references (the "equivalent solo activity" each game is balanced on).
+------------------------------------------------------------------------------
+MG.SOLO = {killsPerHour = 300, gatherOverhead = 1.5, cookSeconds = 1.5}
+function MG.bestFish(level)
+	local best = Data.ResourceTiers.Fishing[1]
+	for _, r in ipairs(Data.ResourceTiers.Fishing) do if r.level <= (tonumber(level) or 1) then best = r end end
+	return best
+end
+-- Solo combat: level-appropriate kills of the best ordinary monster at or below the level.
+function MG.bestMonster(level)
+	local bestId, bestXp = nil, -1
+	for id, m in pairs(Data.Monsters) do
+		if type(m) == "table" and not m.worldBoss and not m.superior and not m.seaCreature and (m.level or 999) <= math.max(2, level)
+			and ((m.xp or 0) > bestXp or ((m.xp or 0) == bestXp and id < bestId)) then
+			bestId, bestXp = id, m.xp or 0
+		end
+	end
+	return bestId and Data.Monsters[bestId] or nil
+end
+function MG.soloCombatXpPerHour(level)
+	local m = MG.bestMonster(level)
+	return if m then MG.SOLO.killsPerHour * m.xp else 0
+end
+-- Solo fishing, then cooking the catch at a Hearth.
+function MG.soloFishCookXpPerHour(level)
+	local f = MG.bestFish(level)
+	return 3600 * (f.xp + f.xp + 8) / (f.respawn + MG.SOLO.gatherOverhead + MG.SOLO.cookSeconds)
+end
+function MG.soloFishCoinsPerHour(level)
+	local f = MG.bestFish(level)
+	return 3600 * f.value / (f.respawn + MG.SOLO.gatherOverhead)
+end
+
+------------------------------------------------------------------------------
+-- Skybreach Siege.
+------------------------------------------------------------------------------
+local S = {id="Siege", name="Skybreach Siege", keeper="Lumen Keeper", color="7FE3CC",
+	MIN_PLAYERS=3, MAX_PLAYERS=10, PAD_SECONDS=25, PAD_RADIUS=9,
+	TIME_LIMIT=720, FIRST_DROP=30, DROP_INTERVAL=40, WAVE_INTERVAL=14, CREATURE_CAP=24,
+	KEEPER_HP=2400, PORTAL_HP=900, BARRICADE_HP=400, REPAIR_HP=120, REPAIR_TIMBER=1,
+	MIN_POINTS=50, LANE=60, BARRICADE_AT=0.45, HIT_RANGE=4, FLYER_RANGE=14,
+	Points={strike=1, kill=2, portal=2, repair=5},
+	-- Balance model: one match plus its lobby, and how often a public party wins.
+	Model={gameSeconds={Novice=300,Veteran=360,Elite=420}, lobbySeconds=45, winRate=0.85},
+	rules="Defend the Lumen Keeper while the four rift shields drop one by one. Strike creatures and open portals, repair barricades with Timber. Destroy every portal before the Keeper falls. Earn at least 50 points to be paid.",
+}
+MG.Siege = S
+S.Tiers = {
+	{id="Novice",name="Novice Landing",combat=20,hpMult=1,damageMult=1,commendations=4,color="7FE3CC"},
+	{id="Veteran",name="Veteran Landing",combat=50,hpMult=2.6,damageMult=2.2,commendations=5,color="F3C66E"},
+	{id="Elite",name="Elite Landing",combat=75,hpMult=5,damageMult=3.6,commendations=6,color="EF7D67"},
+}
+S.TierById = {}
+for i, t in ipairs(S.Tiers) do t.index = i; S.TierById[t.id] = t end
+S.Portals = {
+	{id="Cinder",name="Cinder Rift",color="E8743B",angle=0},
+	{id="Gale",name="Gale Rift",color="9BD1E8",angle=90},
+	{id="Rime",name="Rime Rift",color="BFE3FF",angle=180},
+	{id="Gloam",name="Gloam Rift",color="8E6BD8",angle=270},
+}
+S.PortalById = {}
+for i, p in ipairs(S.Portals) do p.index = i; S.PortalById[p.id] = p end
+-- Rift creatures (minigame-only: never in Data.Monsters, never drop loot).
+-- "lane": walks its lane, stops at an intact barricade, then the Keeper;
+-- "flyer": crosses barricades and strikes players near its path.
+S.Creatures = {
+	{id="Riftling",name="Riftling",hp=60,damage=6,speed=9,weight=5,target="lane",color="E8A33B"},
+	{id="Shardback",name="Shardback Brute",hp=200,damage=16,speed=5,weight=2,target="lane",breaker=2,color="8C7A6B"},
+	{id="Hexwing",name="Hexwing",hp=80,damage=10,speed=8,weight=2,target="flyer",color="8E6BD8"},
+	{id="Voidleech",name="Voidleech",hp=70,damage=5,speed=8,weight=1,target="lane",keeperMult=3,color="3D3D5C"},
+}
+S.CreatureById = {}
+for i, c in ipairs(S.Creatures) do c.index = i; S.CreatureById[c.id] = c end
+function S.tierFor(combatLevel)
+	local best = nil
+	for _, t in ipairs(S.Tiers) do if (tonumber(combatLevel) or 0) >= t.combat then best = t end end
+	return best
+end
+function S.canEnter(tierId, combatLevel)
+	local t = S.TierById[tierId]
+	if not t then return false, "Choose a landing." end
+	if (tonumber(combatLevel) or 0) < t.combat then return false, t.name.." needs Combat "..t.combat.."." end
+	return true
+end
+-- Health pools for a match (tier x party).
+function S.scaled(tierId, n)
+	local t = S.TierById[tierId] or S.Tiers[1]
+	local k = MG.partyScale(n)
+	return {keeper=round(S.KEEPER_HP * t.hpMult * k), portal=round(S.PORTAL_HP * t.hpMult * k),
+		barricade=round(S.BARRICADE_HP * t.hpMult), repair=round(S.REPAIR_HP * t.hpMult), hpMult=t.hpMult, damageMult=t.damageMult, party=k}
+end
+-- Carpentry XP for one barricade repair.
+function S.repairXp(level) return 10 + 2 * math.clamp(math.floor(tonumber(level) or 1), 1, 99) end
+function S.creatureHp(id, tierId) local c = S.CreatureById[id]; local t = S.TierById[tierId] or S.Tiers[1]; return round(c.hp * t.hpMult) end
+function S.creatureDamage(id, tierId) local c = S.CreatureById[id]; local t = S.TierById[tierId] or S.Tiers[1]; return round(c.damage * t.damageMult) end
+-- Strike damage from Combat level (Lumenward adds 15% inside the bastion).
+function S.strikeDamage(combatLevel, tierId, lumenward)
+	local t = S.TierById[tierId] or S.Tiers[1]
+	local base = 18 + 2 * math.clamp(tonumber(combatLevel) or 1, 1, 99)
+	return round(base * (0.6 + 0.4 * t.hpMult) * (if lumenward then 1.15 else 1))
+end
+-- Creatures per wave (per living portal).
+function S.waveSize(tierId, n)
+	local t = S.TierById[tierId] or S.Tiers[1]
+	return math.clamp(1 + math.floor(((tonumber(n) or 1) - 1) / 4) + (t.index - 1), 1, 4)
+end
+-- Shield order: a permutation of the four portals from a [0,1) roll source.
+function S.shieldOrder(rng)
+	local ids = {}
+	for _, p in ipairs(S.Portals) do table.insert(ids, p.id) end
+	for i = #ids, 2, -1 do
+		local j = math.clamp(math.floor((rng() or 0) * i) + 1, 1, i)
+		ids[i], ids[j] = ids[j], ids[i]
+	end
+	return ids
+end
+-- Weighted creature pick from a [0,1) roll.
+function S.pickCreature(roll)
+	local total = 0
+	for _, c in ipairs(S.Creatures) do total += c.weight end
+	local x = math.clamp(tonumber(roll) or 0, 0, 0.999999) * total
+	for _, c in ipairs(S.Creatures) do
+		x -= c.weight
+		if x < 0 then return c.id end
+	end
+	return S.Creatures[1].id
+end
+-- Reward for one player: Commendations only on a win with MIN_POINTS.
+function S.reward(tierId, points, won)
+	local t = S.TierById[tierId]
+	if not t or not won or (tonumber(points) or 0) < S.MIN_POINTS then return 0 end
+	return t.commendations
+end
+function S.commendationsPerHour(tierId)
+	local t = S.TierById[tierId]
+	return 3600 / (S.Model.gameSeconds[tierId] + S.Model.lobbySeconds) * S.Model.winRate * t.commendations
+end
+
+------------------------------------------------------------------------------
+-- Tempest Haul.
+------------------------------------------------------------------------------
+local H = {id="Haul", name="Tempest Haul", boss="Squall Leviathan", color="5EC8D8",
+	MIN_PLAYERS=1, MAX_PLAYERS=10, PAD_SECONDS=20, PAD_RADIUS=9, SOLO_REWARD=0.75,
+	FISHING_LEVEL=20, TIME_LIMIT=900,
+	ENERGY=100, ESSENCE=100, RAW_HIT=2.5, COOKED_HIT=5, HARPOON_HIT=8, VULNERABLE_SECONDS=30, RECHARGE=35,
+	MASTS=2, CANNONS=2, HULL=100, CARRY=6,
+	SURGE_INTERVAL=35, FIRE_INTERVAL=18, FIRE_CAP=5, FIRE_BURN=0.6, -- hull lost per burning fire per second
+	MIN_POINTS=150, ROLL_POINTS=400, MAX_ROLLS=12, ROLL_SECONDS=78,
+	Points={catch=10, cook=10, loadRaw=10, loadCooked=20, repair=25, douse=15, harpoon=20},
+	XP_RATIO=1.1,
+	-- Balance model: seconds per action, the share of a match spent on the fish
+	-- loop / chores / harpooning, the match length and its lobby.
+	Model={catch=3, cook=2, load=2, repair=3, douse=2, loop=0.68, chores=0.17, essence=0.07, gameSeconds=420, lobbySeconds=40, winRate=0.95},
+	rules="Catch stormfish, cook them at the brazier and load the cannons. Repair cracked masts and douse lightning fires. When the Squall Leviathan's energy runs out, harpoon it. Earn 150 points for a Squall Cache roll; solo hauls pay 75%.",
+}
+MG.Haul = H
+-- XP per action: each second spent on an action earns XP_RATIO x the solo
+-- fish-and-cook XP rate at the player's level, in the action's skill.
+H.ActionSkill = {catch="Fishing", cook="Cooking", load="Fishing", repair="Carpentry", douse="Fishing", harpoon="Fishing"}
+function H.actionXp(action, levels)
+	levels = type(levels) == "table" and levels or {}
+	local skill = H.ActionSkill[action]
+	if not skill then return {} end
+	local level = math.clamp(tonumber(levels[skill]) or tonumber(levels.Fishing) or 1, 1, 99)
+	return {[skill] = math.max(1, round(H.XP_RATIO * MG.soloFishCookXpPerHour(level) / 3600 * H.Model[if action == "harpoon" then "load" else action]))}
+end
+function H.energyHit(cooked, n)
+	return (if cooked then H.COOKED_HIT else H.RAW_HIT) / MG.partyScale(n)
+end
+function H.essenceHit(n) return H.HARPOON_HIT / MG.partyScale(n) end
+-- Reward rolls from points (solo pays SOLO_REWARD of the points).
+function H.rolls(points, won, partySize)
+	points = tonumber(points) or 0
+	if not won or points < H.MIN_POINTS then return 0 end
+	local effective = points * (if (tonumber(partySize) or 1) <= 1 then H.SOLO_REWARD else 1)
+	return math.clamp(math.floor(effective / H.ROLL_POINTS), 1, H.MAX_ROLLS)
+end
+-- Modelled points/h and XP/h (all three skills) for a typical player.
+function H.modelPointsPerHour()
+	local m, P = H.Model, H.Points
+	local loop = 3600 * m.loop / (m.catch + m.cook + m.load) * (P.catch + P.cook + P.loadCooked)
+	local chores = 3600 * m.chores / ((m.repair + m.douse) / 2) * ((P.repair + P.douse) / 2)
+	local essence = 3600 * m.essence / 2 * P.harpoon
+	return loop + chores + essence
+end
+function H.modelXpPerHour(level)
+	local m = H.Model
+	local levels = {Fishing = level, Cooking = level, Carpentry = level}
+	local function total(action) local s = 0; for _, v in pairs(H.actionXp(action, levels)) do s += v end; return s end
+	local loop = 3600 * m.loop / (m.catch + m.cook + m.load) * (total("catch") + total("cook") + total("load"))
+	local chores = 3600 * m.chores / ((m.repair + m.douse) / 2) * ((total("repair") + total("douse")) / 2)
+	local essence = 3600 * m.essence / 2 * total("harpoon")
+	return loop + chores + essence
+end
+function H.rollsPerHour(solo)
+	local m = H.Model
+	local points = H.modelPointsPerHour() * m.gameSeconds / 3600
+	local perGame = H.rolls(points, true, if solo then 1 else 4)
+	return perGame * m.winRate * 3600 / (m.gameSeconds + m.lobbySeconds)
+end
+
+------------------------------------------------------------------------------
+-- Squall Cache (the Haul reward pool). Each roll: coins plus one weighted
+-- entry (fish are the best the roller can catch); uniques roll separately.
+------------------------------------------------------------------------------
+H.Cache = {
+	coins = {0.5, 1.0},              -- coins = roll value x [min, max]
+	fish = {weight=50, share=0.35},  -- a fish stack worth about share of the roll value
+	entries = {
+		{item="Timber",weight=10,min=4,max=10},
+		{item="WindpineLog",weight=8,min=2,max=6,level=15},
+		{item="ArcaneDust",weight=12,min=2,max=6},
+		{item="StormFeather",weight=8,min=1,max=3,level=30},
+		{item="Lanternray",weight=6,min=2,max=4,level=45},
+		{item="SquallPearl",weight=6,min=1,max=1},
+	},
+	uniques = {
+		{item="SquallpupPet",chance=1/400},
+		{item="TidebreakerRod",chance=1/250},
+		{item="StormcallerHood",chance=1/150},{item="StormcallerSlicker",chance=1/150},
+		{item="StormcallerWaders",chance=1/150},{item="StormcallerBoots",chance=1/150},
+	},
+}
+-- One roll is worth ROLL_SECONDS of solo fishing income at the roller's level.
+function H.rollValue(fishingLevel) return H.ROLL_SECONDS * MG.soloFishCoinsPerHour(fishingLevel) / 3600 end
+item("SquallPearl",{name="Squall Pearl",kind="material",rarity="Rare",color="BFE9F2",value=120,description="A storm-polished pearl from a Squall Cache. Merchants pay well for it."})
+item("TidebreakerRod",{name="Tidebreaker Rod",kind="tool",toolKind="Rod",slot="rod",toolTier=5,tier=5,rarity="Epic",color="2F8FA8",stats={fishingFortune=60,seaCreatureChance=4},requires={Fishing=50},value=4000,
+	description="Tier 5 fishing rod. Requires Fishing 50. Only a Squall Cache holds one."})
+Data.Sets.Stormcaller = {id="Stormcaller",name="Stormcaller",pieces={},bonus={fishingFortune=30,seaCreatureChance=3},text="+30 Fishing Fortune, +3 Sea Creature Chance",color="3F9FB5"}
+for _, s in ipairs({{"StormcallerHood","helmet","Stormcaller Hood",{fishingFortune=8}},{"StormcallerSlicker","chest","Stormcaller Slicker",{fishingFortune=12,health=20}},
+	{"StormcallerWaders","legs","Stormcaller Waders",{fishingFortune=10,health=10}},{"StormcallerBoots","boots","Stormcaller Boots",{fishingFortune=6,speed=3}}}) do
+	item(s[1],{name=s[3],kind="armor",slot=s[2],set="Stormcaller",tier=4,rarity="Epic",color="3F9FB5",stats=s[4],value=1500,
+		description="Fishing outfit (Tempest Haul). Four pieces: "..Data.Sets.Stormcaller.text.."."})
+	table.insert(Data.Sets.Stormcaller.pieces, s[1])
+end
+-- The Squallpup: a Fishing pet species with its own abilities and look.
+do
+	local pup = {id="Squallpup",name="Squallpup",skill="Fishing",rarity="Epic",color="5EC8D8",perLevel={fishingFortune=0.5,seaCreatureChance=0.04,health=0.4}}
+	table.insert(Data.Pets, pup)
+	Data.PetById.Squallpup = pup
+	local PD = Data.PetDepth
+	local list = {
+		{name="Squall Sense",kind="xp",skills={"Fishing"},per=0.1,rarity="Common"},
+		{name="Briny Luck",kind="stat",stat="fishingFortune",per=0.3,rarity="Rare"},
+		{name="Stormcall",kind="stat",stat="seaCreatureChance",per=0.04,rarity="Legendary",level=40},
+	}
+	for i, a in ipairs(list) do a.index = i; a.id = a.name:gsub("[^%w]", "") end
+	PD.Abilities.Squallpup = list
+	PD.Looks.Squallpup = {form="hopper",accent="E0F7FF"}
+	pup.ability = list[1].name..": up to "..PD.abilityText(list[1], PD.abilityValue(list[1], Data.PET_MAX_LEVEL, PD.MAX_RARITY))
+	pup.abilityNames = {list[1].name, list[2].name, list[3].name}
+	item("SquallpupPet",{name="Squallpup Pet",kind="pet",pet="Squallpup",rarity="Epic",color="5EC8D8",value=200*Data.Rarity.Epic.rank^2,
+		description="Summon from your pet menu. Abilities: "..table.concat(pup.abilityNames, ", ")..". Found in Squall Caches."})
+	-- A Stormcoil Serpent sometimes carries a stray Squallpup (a second, very rare source).
+	local serpent = Data.SeaCreatures.StormcoilSerpent
+	if serpent and type(serpent.drops) == "table" then table.insert(serpent.drops, {item="SquallpupPet",chance=0.0005,min=1,max=1}) end
+end
+local function cachePool(fishingLevel)
+	local f = MG.bestFish(fishingLevel)
+	local c = H.Cache
+	local n = math.max(1, round(c.fish.share * H.rollValue(fishingLevel) / f.value))
+	local pool = {{item=f.id,weight=c.fish.weight,min=math.max(1, n - 1),max=n + 1}}
+	for _, e in ipairs(c.entries) do if (e.level or 1) <= fishingLevel then table.insert(pool, e) end end
+	local total = 0
+	for _, e in ipairs(pool) do total += e.weight end
+	return pool, total, f
+end
+H.cachePool = cachePool
+-- Pure roll: rng() in [0,1). Returns {coins, items={[id]=n}}.
+function H.rollCache(fishingLevel, rng)
+	fishingLevel = math.clamp(tonumber(fishingLevel) or 1, 1, 99)
+	local pool, total = cachePool(fishingLevel)
+	local c = H.Cache
+	local function between(a, b) return a + math.min(b - a, math.floor(rng() * (b - a + 1))) end
+	local value = H.rollValue(fishingLevel)
+	local out = {coins = between(math.floor(c.coins[1] * value), math.floor(c.coins[2] * value)), items = {}}
+	local x = rng() * total
+	for _, e in ipairs(pool) do
+		x -= e.weight
+		if x < 0 then out.items[e.item] = (out.items[e.item] or 0) + between(e.min, e.max); break end
+	end
+	for _, u in ipairs(c.uniques) do
+		if rng() < u.chance then out.items[u.item] = (out.items[u.item] or 0) + 1 end
+	end
+	return out
+end
+-- Expected merchant value of one roll (uniques excluded: they are the bonus).
+function H.expectedRoll(fishingLevel)
+	fishingLevel = math.clamp(tonumber(fishingLevel) or 1, 1, 99)
+	local pool, total = cachePool(fishingLevel)
+	local c = H.Cache
+	local v = H.rollValue(fishingLevel)
+	local value = (math.floor(c.coins[1] * v) + math.floor(c.coins[2] * v)) / 2
+	for _, e in ipairs(pool) do value += e.weight / total * (e.min + e.max) / 2 * Data.Items[e.item].value end
+	return value
+end
+
+------------------------------------------------------------------------------
+-- Commendation shop: the Lumenward outfit, combat XP lamps and cosmetics.
+------------------------------------------------------------------------------
+Data.Sets.Lumenward = {id="Lumenward",name="Lumenward",pieces={},helms={},bonus={defense=40,health=60},
+	text="+40 Defense, +60 Health, plus the worn helm's style bonus",color="9FE6F2"}
+MG.LumenwardStyle = {
+	LumenwardWarhelm={style="melee",name="Melee",stats={strength=25,critDamage=20}},
+	LumenwardSightcowl={style="ranged",name="Ranged",stats={rangedStrength=20,rangedAccuracy=30}},
+	LumenwardStarhood={style="magic",name="Magic",stats={intelligence=80,abilityDamage=10}},
+}
+MG.Shop = {}
+for _, a in ipairs({
+	{"LumenwardWarhelm","helmet","Lumenward Warhelm",{defense=18,strength=6},200},
+	{"LumenwardSightcowl","helmet","Lumenward Sightcowl",{defense=14,rangedAccuracy=8},200},
+	{"LumenwardStarhood","helmet","Lumenward Starhood",{defense=12,intelligence=20},200},
+	{"LumenwardHauberk","chest","Lumenward Hauberk",{defense=40,health=30},250},
+	{"LumenwardGreaves","legs","Lumenward Greaves",{defense=30,health=20},250},
+	{"LumenwardTreads","boots","Lumenward Treads",{defense=14,speed=3},150},
+}) do
+	local style = MG.LumenwardStyle[a[1]]
+	item(a[1],{name=a[3],kind="armor",slot=a[2],set="Lumenward",tier=5,rarity="Epic",color="9FE6F2",stats=a[4],requires={Combat=30},value=a[5]*10,
+		description="Lumenward outfit (Commendation shop). Requires Combat 30. Four pieces: "..Data.Sets.Lumenward.text..(if style then ". "..style.name.." helm." else ".")})
+	-- Sets list four pieces: any of the three helms fills the helm slot (Data.Sets.Lumenward.helms).
+	if style then table.insert(Data.Sets.Lumenward.helms, a[1]) end
+	if not style or #Data.Sets.Lumenward.helms == 1 then table.insert(Data.Sets.Lumenward.pieces, a[1]) end
+	table.insert(MG.Shop, {id=a[1],kind="armor",item=a[1],cost=a[5]})
+end
+MG.LAMP_COST = 30
+MG.LAMP_HOURS = 0.82 -- one lamp = this many hours of level-appropriate solo combat XP
+MG.LampSkills = {Combat=1, Ranged=1, Magic=1, Prayer=0.4, Slayer=0.5}
+for _, skill in ipairs({"Combat","Ranged","Magic","Prayer","Slayer"}) do
+	table.insert(MG.Shop, {id="Lamp"..skill,kind="lamp",skill=skill,cost=MG.LAMP_COST})
+end
+table.insert(MG.Shop, {id="TitleKeeperward",kind="cosmetic",title="Keeperward",cost=400})
+table.insert(MG.Shop, {id="MantleLumen",kind="cosmetic",title="Lumen-Mantled",cost=600})
+table.insert(MG.Shop, {id="TitleRiftsealer",kind="cosmetic",title="Riftsealer",cost=800})
+MG.ShopById = {}
+for i, e in ipairs(MG.Shop) do e.index = i; MG.ShopById[e.id] = e end
+-- XP from one lamp at a skill level (level-appropriate solo combat time).
+function MG.lampXp(skill, level)
+	local f = MG.LampSkills[skill]
+	if not f then return 0 end
+	return round(f * MG.LAMP_HOURS * MG.soloCombatXpPerHour(math.clamp(tonumber(level) or 1, 1, 99)))
+end
+-- Lumenward: with all four pieces worn (and owned), the helm's style stats join the sheet.
+function MG.lumenwardStyle(p)
+	local eq = type(p) == "table" and type(p.equipment) == "table" and p.equipment or nil
+	if not eq then return nil end
+	for _, slot in ipairs(Data.ArmorSlots) do
+		local id = eq[slot]
+		local def = id and Data.Items[id]
+		if not def or def.set ~= "Lumenward" or (type(p.items) == "table" and (p.items[id] or 0) < 1) then return nil end
+	end
+	return MG.LumenwardStyle[eq.helmet]
+end
+function MG.applyLumenward(p, s)
+	local style = MG.lumenwardStyle(p)
+	if not style or type(s) ~= "table" then return s end
+	for stat, v in pairs(style.stats) do s[stat] = (s[stat] or 0) + v end
+	for stat, def in pairs(Data.Stats) do if def.cap and s[stat] then s[stat] = math.min(def.cap, s[stat]) end end
+	s.effectiveHealth = math.floor((s.health or 0) * (1 + (s.defense or 0) / 100))
+	s.lumenwardStyle = style.style
+	return s
+end
+-- Shop purchase check (pure): returns the entry or nil, reason.
+function MG.canBuy(id, ledger, levels)
+	local e = MG.ShopById[id]
+	if not e then return nil, "Choose a Commendation reward." end
+	ledger = type(ledger) == "table" and ledger or {}
+	if e.kind == "cosmetic" and type(ledger.unlocks) == "table" and ledger.unlocks[id] then return nil, "You already own this." end
+	if e.kind == "armor" then
+		for skill, lvl in pairs(Data.Items[e.item].requires or {}) do
+			if (tonumber((levels or {})[skill]) or 1) < lvl then return nil, Data.Items[e.item].name.." needs "..skill.." "..lvl.."." end
+		end
+	end
+	if (tonumber(ledger.commendations) or 0) < e.cost then return nil, "Needs "..e.cost.." Commendations." end
+	return e
+end
+-- Fresh / sanitised profile ledger p.minigames.
+function MG.migrate(r)
+	r = type(r) == "table" and r or {}
+	local function n(v) v = tonumber(v); if not v or v ~= v or v < 0 then return 0 end return math.floor(math.min(v, MG.LOG_LIMIT)) end
+	local out = {commendations=n(r.commendations), rolls=math.min(n(r.rolls), 500), unlocks={}, title="", log={}}
+	if type(r.unlocks) == "table" then
+		for id, v in pairs(r.unlocks) do local e = MG.ShopById[id]; if v == true and e and e.kind == "cosmetic" then out.unlocks[id] = true end end
+	end
+	if type(r.title) == "string" and out.unlocks[r.title] then out.title = r.title end
+	for _, g in ipairs(MG.Order) do
+		local l = type(r.log) == "table" and type(r.log[g]) == "table" and r.log[g] or {}
+		out.log[g] = {played=n(l.played), won=n(l.won), points=n(l.points), best=n(l.best), paid=n(l.paid)}
+	end
+	return out
+end
+end
+-- End Minigames section.
+
 return Data

@@ -20,7 +20,8 @@
       "Archipelago": { "$path": "world.server.lua" },
       "Combat": { "$path": "combat.server.lua" },
       "GestureRelay": { "$path": "gesture.server.lua" },
-      "Townsfolk": { "$path": "npc.server.lua" }
+      "Townsfolk": { "$path": "npc.server.lua" },
+      "Minigames": { "$path": "minigames.server.lua" }
     },
     "StarterPlayer": {
       "StarterPlayerScripts": {

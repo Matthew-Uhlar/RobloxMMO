@@ -2843,6 +2843,190 @@ do
 	end
 end
 -- End Slayer tasks block.
+------------------------------------------------------------------------------
+-- Minigames (Minigames team; self-contained block). Skybreach Siege and
+-- Tempest Haul run in minigames.server.lua; this block owns the journal side:
+--   bridge op "minigame" {action = "info"}   -> {combat, levels, ironman, lumenward}
+--                        {action = "spend", item = "Timber", amount}  -> {ok} (barricade repairs)
+--                        {action = "settle", game, tier, points, won, partySize, seconds, xp, forfeit}
+--       validates and clamps everything (points <= MAX_POINTS_PER_SECOND x seconds,
+--       XP only in the game's skills and <= the action rate allows), pays XP,
+--       Commendations (Siege: Data.Minigames.Siege.reward) or Squall Cache rolls
+--       (Haul: Data.Minigames.Haul.rolls), and writes the minigame log.
+--   verbs  mgBuy "<shop id>"     Commendation shop (Lumenward armour, XP lamps, cosmetics)
+--          mgRoll "1"|"all"      open banked Squall Cache rolls (up to 20 at once)
+--          mgTitle "<id>|none"   wear an owned cosmetic title (player attribute MinigameTitle)
+-- Lumenward: Progression.computeStats is wrapped once (server only) so the
+-- four-piece outfit adds the worn helm's style stats (MG.applyLumenward).
+-- Profile p.minigames = {commendations, rolls, unlocks = {[id] = true}, title,
+-- log = {[game] = {played, won, points, best, paid}}}; snapshot key minigames.
+------------------------------------------------------------------------------
+local Minigames={verbs={mgBuy=true,mgRoll=true,mgTitle=true}}
+do
+	local MG=Data.Minigames
+	if not Progression.minigamesStatsHook then
+		local computeStats=Progression.computeStats
+		Progression.computeStats=function(p,now)
+			local s,breakdown=computeStats(p,now)
+			MG.applyLumenward(p,s)
+			return s,breakdown
+		end
+		Progression.minigamesStatsHook=true
+	end
+	function Minigames.migrate(p) p.minigames=MG.migrate(p.minigames) end
+	local function ledger(p)
+		if type(p.minigames)~="table" then Minigames.migrate(p) end
+		return p.minigames
+	end
+	local function levels(p)
+		local out={}
+		for _,skill in ipairs(Data.SkillOrder) do out[skill]=level(p.xp[skill]) end
+		return out
+	end
+	local function int(v,lo,hi)
+		v=tonumber(v)
+		if not v or v~=v then return lo end
+		return math.clamp(math.floor(v),lo,hi)
+	end
+	function Minigames.publish(player,p)
+		local m=ledger(p)
+		local e=m.title~="" and MG.ShopById[m.title]
+		player:SetAttribute("MinigameTitle",if e then e.title else "")
+	end
+	function Minigames.state(player,p)
+		local m=ledger(p)
+		Minigames.publish(player,p)
+		local lv=levels(p)
+		local lamps={}
+		for skill in pairs(MG.LampSkills) do lamps[skill]=MG.lampXp(skill,lv[skill]) end
+		local unlocks={}
+		for id in pairs(m.unlocks) do table.insert(unlocks,id) end
+		table.sort(unlocks)
+		local log={}
+		for game,l in pairs(m.log) do log[game]=table.clone(l) end
+		local style=MG.lumenwardStyle(p)
+		return {commendations=m.commendations,rolls=m.rolls,unlocks=unlocks,title=m.title,log=log,lamps=lamps,lumenward=style and style.style or nil}
+	end
+	-- XP a game may pay per skill: the most XP one action can give, once per cooldown.
+	local function xpCap(game,skill,lv,seconds)
+		local per=0
+		if game=="Siege" then
+			if skill=="Carpentry" then per=MG.Siege.repairXp(lv.Carpentry) end
+		else
+			for action,s in pairs(MG.Haul.ActionSkill) do
+				if s==skill then per=math.max(per,(MG.Haul.actionXp(action,lv)[skill] or 0)) end
+			end
+		end
+		return math.floor(per*(seconds/MG.ACTION_COOLDOWN+1))
+	end
+	function Minigames.settle(player,p,payload)
+		local game=payload.game
+		local rules=(game=="Siege" or game=="Haul") and MG[game]
+		if not rules then return {ok=false,reason="invalid"} end
+		if game=="Siege" and not MG.Siege.TierById[payload.tier] then return {ok=false,reason="invalid"} end
+		local m=ledger(p)
+		local lv=levels(p)
+		local seconds=int(payload.seconds,1,rules.TIME_LIMIT+120)
+		local points=int(payload.points,0,MG.MAX_POINTS_PER_SECOND*seconds)
+		local won=payload.won==true and payload.forfeit~=true
+		local gained={}
+		if type(payload.xp)=="table" then
+			for skill,n in pairs(payload.xp) do
+				if type(skill)=="string" and Data.Skills[skill] then
+					local amount=int(n,0,xpCap(game,skill,lv,seconds))
+					if amount>0 then grantXp(p,skill,amount); table.insert(gained,"+"..amount.." "..skill.." XP") end
+				end
+			end
+		end
+		table.sort(gained)
+		local log=m.log[game]
+		log.played+=1
+		log.points+=points
+		log.best=math.max(log.best,points)
+		if won and points>=rules.MIN_POINTS then log.won+=1 end -- a win counts only for members who earned it
+		p.started=true
+		local parts={}
+		local paid=0
+		if game=="Siege" then
+			paid=MG.Siege.reward(payload.tier,points,won)
+			m.commendations+=paid
+			if paid>0 then table.insert(parts,"+"..paid.." Commendations ("..m.commendations.." banked)")
+			elseif won then table.insert(parts,"No Commendations: "..points.." / "..MG.Siege.MIN_POINTS.." points") end
+		else
+			paid=MG.Haul.rolls(points,won,payload.partySize)
+			m.rolls=math.min(500,m.rolls+paid)
+			if paid>0 then table.insert(parts,"+"..paid.." Squall Cache roll"..(if paid==1 then "" else "s").." (open them in Hunt › Minigames)")
+			elseif won then table.insert(parts,"No reward: "..points.." / "..MG.Haul.MIN_POINTS.." points") end
+		end
+		log.paid+=paid
+		for _,g in ipairs(gained) do table.insert(parts,g) end
+		return {ok=true,paid=paid,points=points,message=table.concat(parts," • ")}
+	end
+	function Minigames.bridge(player,p,payload)
+		local action=payload.action
+		if action=="info" then
+			local lv=levels(p)
+			return {combat=lv.Combat,levels=lv,ironman=p.ironman==true,lumenward=MG.lumenwardStyle(p)~=nil}
+		elseif action=="spend" then
+			local n=int(payload.amount,1,5)
+			if payload.item~="Timber" or (p.items.Timber or 0)<n then return {ok=false} end
+			p.items.Timber-=n
+			return {ok=true}
+		elseif action=="settle" then
+			return Minigames.settle(player,p,payload)
+		end
+		return nil
+	end
+	function Minigames.action(player,p,verb,item)
+		local m=ledger(p)
+		local reply
+		if verb=="mgBuy" then
+			local lv=levels(p)
+			local e,why=MG.canBuy(validId(item) and item or "",m,lv)
+			if not e then return why end
+			m.commendations-=e.cost
+			if e.kind=="armor" then
+				collect(p,e.item,1)
+				reply="Bought "..Data.Items[e.item].name.." for "..e.cost.." Commendations."
+			elseif e.kind=="lamp" then
+				local xp=MG.lampXp(e.skill,lv[e.skill])
+				grantXp(p,e.skill,xp)
+				reply="The Lumen lamp flares: +"..xp.." "..e.skill.." XP (-"..e.cost.." Commendations)."
+			else
+				m.unlocks[e.id]=true
+				m.title=e.id
+				reply="Unlocked the "..e.title.." title (-"..e.cost.." Commendations). Wearing it now."
+			end
+		elseif verb=="mgRoll" then
+			if m.rolls<1 then return "You have no Squall Cache rolls. Win a Tempest Haul with "..MG.Haul.MIN_POINTS.."+ points." end
+			local n=if item=="all" then math.min(m.rolls,20) else 1
+			local coins,items=0,{}
+			for _=1,n do
+				local loot=MG.Haul.rollCache(level(p.xp.Fishing),roll)
+				coins+=loot.coins
+				for id,k in pairs(loot.items) do items[id]=(items[id] or 0)+k end
+			end
+			m.rolls-=n
+			p.coins+=coins
+			local names={}
+			for id,k in pairs(items) do
+				collect(p,id,k)
+				local def=Data.Items[id]
+				table.insert(names,"+"..k.." "..(def and def.name or id))
+			end
+			table.sort(names)
+			reply="Opened "..n.." Squall Cache"..(if n==1 then "" else "s")..": +"..coins.." coins"..(if #names>0 then ", "..table.concat(names,", ") else "").."."
+		elseif verb=="mgTitle" then
+			if item=="none" then m.title=""; reply="Title hidden."
+			elseif validId(item) and m.unlocks[item] then m.title=item; reply="Now wearing "..MG.ShopById[item].title.."."
+			else return "You do not own that title." end
+		end
+		p.started=true
+		Minigames.publish(player,p)
+		return reply
+	end
+end
+-- End Minigames block.
 local function applyStats(player,p,spawned)
 	local stats=Progression.computeStats(p,os.time())
 	player:SetAttribute("SkyreachUnlocked",(p.questCompleted or 0)>=6)
@@ -2980,7 +3164,8 @@ local function snapshot(player,message)
 		garden=Garden.state and Garden.state(player,p), -- Verdant Garden page state
 		prayer=Prayer.state(player,p,stats),thieving=Prayer.thievingState(player,p,stats), -- Prayer & Thieving page state
 		trails=Trails.state(player,p), -- Treasure Trails: Satchel > Trails page state
-		slayerTasks=SlayerTasks.state(player,p)} -- Slayer tasks: Hunt > Slayer page state
+		slayerTasks=SlayerTasks.state(player,p), -- Slayer tasks: Hunt > Slayer page state
+		minigames=Minigames.state(player,p)} -- Minigames: Hunt > Minigames page state
 end
 -- Prayer & Thieving: drain-loop notices (prayer points ran out).
 Prayer.push=function(player,message) if player.Parent then update:FireClient(player,snapshot(player,message)) end end
@@ -3062,6 +3247,7 @@ local function migrate(profile)
 	if Garden.migrate then Garden.migrate(profile) end -- Verdant Garden: sanitise and bound p.garden
 	if Classes.migrate then Classes.migrate(profile) end -- Dungeon classes: sanitise p.dungeonClasses
 	Trails.migrate(profile) -- Treasure Trails: sanitise p.trails (re-draws trails whose steps left the pool)
+	Minigames.migrate(profile) -- Minigames: Commendations, cache rolls, titles, minigame log
 end
 -- Clears every per-player table and ends this player's session slot.
 -- Sea creatures: a successful Fishing gather may hook one (Data.rollSeaCreature).
@@ -4355,6 +4541,8 @@ local function perform(player,verb,item,prompt)
 		return Prayer.action(player,p,verb,item,prompt,humanoid) -- Prayer & Thieving
 	elseif SlayerTasks.verbs[verb] then
 		return SlayerTasks.action(player,p,verb,item) -- Slayer tasks
+	elseif Minigames.verbs[verb] then
+		return Minigames.action(player,p,verb,item) -- Minigames: Commendation shop, cache rolls, titles
 	elseif Mastery.verbs[verb] then
 		return Mastery.action(player,p,verb,item) -- Skill Mastery
 	elseif Garden.verbs[verb] then
@@ -5172,6 +5360,11 @@ bridge.OnInvoke=function(op,player,payload)
 		if op=="slayerDenied" then local text=SlayerTasks.denied(player,p,payload); if text then notify(player,text) end return nil end
 		local reply=SlayerTasks.superiorReport(player,p,payload)
 		if reply.message then notify(player,reply.message); reply.message=nil end
+		return reply
+	elseif op=="minigame" then
+		-- Minigames: lobby info, barricade Timber, match settlement (see the Minigames block).
+		local reply=Minigames.bridge(player,p,payload)
+		if type(reply)=="table" and reply.message then notify(player,reply.message); reply.message=nil end
 		return reply
 	elseif op=="slayerBoss" then
 		local quest=p.slayerQuest

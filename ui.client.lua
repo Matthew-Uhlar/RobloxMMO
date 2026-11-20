@@ -6913,6 +6913,253 @@ Pages.drawTrails=TT.draw
 end
 
 ------------------------------------------------------------------------------
+-- Minigames (Minigames team). Page: Hunt › Minigames — views Lobbies (the
+-- Skybreach Siege landings and the Tempest Haul gangway: live pad state from
+-- workspace attribute MinigameLobbies, rules, your eligibility), Shop
+-- (Commendation rewards: Lumenward outfit, XP lamps, titles), Caches (Squall
+-- Cache rolls and the Haul uniques) and Log (games played / won / points).
+-- In-game HUD "MinigameHud": the right column under the minimap (the
+-- Observatory party HUD's slot: one cannot be in both) reading player
+-- attributes MinigameGame / MinigameHud ("k=v;..."): Siege wave, portal
+-- shields, Keeper HP, your points; Haul energy/essence, hull, fires, masts,
+-- carried fish, your points. Toasts: MinigameNotice / MinigameNoticeCount.
+-- Verbs: mgBuy "<shop id>", mgRoll "1"|"all", mgTitle "<id>|none".
+------------------------------------------------------------------------------
+do
+local MGU={view="Lobbies",views={"Lobbies","Shop","Caches","Log"}}
+Pages.MGU=MGU
+local function rules() return Data and type(Data.Minigames)=="table" and Data.Minigames or nil end
+-- "k=v;k=v" -> table (strings).
+function MGU.parse(text)
+	local out={}
+	if type(text)~="string" then return out end
+	for pair in text:gmatch("[^;]+") do
+		local k,v=pair:match("^([%w_]+)=(.*)$")
+		if k then out[k]=v end
+	end
+	return out
+end
+function MGU.lobbies()
+	local ok,value=pcall(function() return workspace:GetAttribute("MinigameLobbies") end)
+	local out={}
+	for id,v in pairs(MGU.parse(ok and value or nil)) do
+		local st,n,secs=v:match("^(%a+),(%d+),(%d+)$")
+		if st then out[id]={state=st,count=tonumber(n),seconds=tonumber(secs)} end
+	end
+	return out
+end
+local function ledger() return type(state.minigames)=="table" and state.minigames or nil end
+local function lobbyLine(l,label,ok,why)
+	local s=l or {state="idle",count=0,seconds=0}
+	local status=s.state=="running" and paint("MATCH IN PROGRESS","EF7D67") or s.state=="counting" and paint("LAUNCHING IN "..num(s.seconds,0).."s","F3C66E")
+		or paint(num(s.count,0).." ON THE PAD","7FE3CC")
+	return (ok and check or cross).." "..escape(label).."   ·   "..status..(ok and "" or "   "..paint(escape(why or ""),"E8806A"))
+end
+function MGU.drawLobbies(MG,m)
+	local skills=skillsOf(state)
+	local combat,fishing=skills.Combat and skills.Combat.level or 1,skills.Fishing and skills.Fishing.level or 1
+	local lob=MGU.lobbies()
+	card({name="MinigamesSummary",motif="Hunt",accent=gold,title=escape(MG.ISLAND),titleColor=gold,
+		subtitle=fmt(m and m.commendations or 0).." Commendations   ·   "..fmt(m and m.rolls or 0).." Squall Cache rolls",badge=m and nil or "SYNCING",
+		detail="Board the Skybreach ferry on the Guild Terrace (Combat "..MG.Siege.Tiers[1].combat.." or Fishing "..MG.Haul.FISHING_LEVEL.."). Stand on a lobby pad: the match launches when enough players wait through the countdown.",
+		lines={paint("Points come only from what you do: strikes, repairs, catches, cooking, loading, dousing. Idle players are removed after "..MG.IDLE_SECONDS.."s and earn nothing. Disconnected? Rejoin within "..MG.REJOIN_SECONDS.."s to keep your points.","A9BDC1")}})
+	local S,H=MG.Siege,MG.Haul
+	local lines={}
+	for _,t in ipairs(S.Tiers) do
+		local ok=combat>=t.combat
+		table.insert(lines,lobbyLine(lob["Siege"..t.id],t.name.." (Combat "..t.combat..", "..t.commendations.." Commendations)",ok,ok and nil or "Combat "..t.combat))
+	end
+	card({name="MinigameSiege",motif="Hunt",accent=rgb(S.color),title=escape(S.name),titleColor=rgb(S.color),
+		subtitle=S.MIN_PLAYERS.."-"..S.MAX_PLAYERS.." players   ·   defend the "..escape(S.keeper),detail=escape(S.rules),lines=lines})
+	local fishOk=fishing>=H.FISHING_LEVEL
+	card({name="MinigameHaul",motif="Hunt",accent=rgb(H.color),title=escape(H.name),titleColor=rgb(H.color),
+		subtitle="1-"..H.MAX_PLAYERS.." players   ·   the "..escape(H.boss),detail=escape(H.rules),
+		lines={lobbyLine(lob.Haul,"Haul gangway (Fishing "..H.FISHING_LEVEL..")",fishOk,fishOk and nil or "Fishing "..H.FISHING_LEVEL),
+			paint("Fishing, Cooking and Carpentry XP for every action. Solo hauls pay "..math.floor(H.SOLO_REWARD*100).."% of the cache rolls.","A9BDC1")}})
+end
+function MGU.drawShop(MG,m)
+	heading("COMMENDATION SHOP    /    "..fmt(m.commendations).." BANKED")
+	local skills=skillsOf(state)
+	local unlocks={}
+	for _,id in ipairs(type(m.unlocks)=="table" and m.unlocks or {}) do unlocks[id]=true end
+	for _,e in ipairs(MG.Shop) do
+		local afford=num(m.commendations,0)>=e.cost
+		local o={name="MinigameShop"..e.id,accent=afford and mint or UI.line,badge=fmt(e.cost).." C",badgeColor=afford and gold or muted}
+		local actions={}
+		if e.kind=="armor" then
+			local def=itemDef(e.item) or {}
+			local style=MG.LumenwardStyle[e.item]
+			local need=type(def.requires)=="table" and num(def.requires.Combat,0) or 0
+			local met=(skills.Combat and skills.Combat.level or 1)>=need
+			o.item=e.item
+			o.title=paint(escape(def.name or e.item),itemHex(e.item))
+			o.subtitle=(slotNames[def.slot] or "Armor").."   ·   owned "..fmt(count("items",e.item))
+			o.lines={statText(def.stats),style and paint("Full Lumenward with this helm: ","A9BDC1")..statText(style.stats) or nil,
+				not met and paint("Requires Combat "..need,"E8806A") or nil}
+			table.insert(actions,{caption="Buy",primary=true,name="MinigameBuy"..e.id,disabled=not afford or not met,
+				reason=not met and ("Requires Combat "..need..".") or ("Needs "..e.cost.." Commendations."),fn=function() send("mgBuy",e.id) end})
+		elseif e.kind=="lamp" then
+			local xp=num(tbl(m.lamps)[e.skill],0)
+			o.motif="Hero"
+			o.title="Lumen Lamp: "..escape(e.skill)
+			o.subtitle="+"..fmt(xp).." "..escape(e.skill).." XP at your level"
+			table.insert(actions,{caption="Buy",primary=true,name="MinigameBuy"..e.id,disabled=not afford,reason="Needs "..e.cost.." Commendations.",fn=function() send("mgBuy",e.id) end})
+		else
+			local owned=unlocks[e.id]==true
+			o.motif="Journal"
+			o.title="Title: "..escape(e.title)
+			o.subtitle=owned and (m.title==e.id and "Wearing" or "Owned") or "Cosmetic title shown over your head"
+			if owned then
+				table.insert(actions,{caption=m.title==e.id and "Hide" or "Wear",name="MinigameWear"..e.id,fn=function() send("mgTitle",m.title==e.id and "none" or e.id) end})
+			else
+				table.insert(actions,{caption="Buy",primary=true,name="MinigameBuy"..e.id,disabled=not afford,reason="Needs "..e.cost.." Commendations.",fn=function() send("mgBuy",e.id) end})
+			end
+		end
+		o.actions=actions
+		card(o)
+	end
+end
+function MGU.drawCaches(MG,m)
+	local H=MG.Haul
+	local rolls=num(m.rolls,0)
+	card({name="MinigameCache",motif="Satchel",accent=rgb(H.color),title="Squall Caches",titleColor=rgb(H.color),badge=fmt(rolls).." ROLLS",
+		subtitle="Coins, stormfish, timber, dust and storm-gifts",detail="Each Tempest Haul win with "..H.MIN_POINTS.."+ points banks a roll per "..H.ROLL_POINTS.." points (up to "..H.MAX_ROLLS.." per haul).",
+		actions={{caption="Open 1",primary=true,name="MinigameRollOne",disabled=rolls<1,reason="No Squall Cache rolls banked.",fn=function() send("mgRoll","1") end},
+			{caption="Open all",name="MinigameRollAll",disabled=rolls<1,reason="No Squall Cache rolls banked.",fn=function() send("mgRoll","all") end}}})
+	heading("HAUL UNIQUES    /    RARE CACHE FINDS")
+	for _,u in ipairs(H.Cache.uniques) do
+		local have=count("items",u.item)+count("collection",u.item)
+		card({name="MinigameUnique"..u.item,item=u.item,title=paint(escape(itemName(u.item)),itemHex(u.item)),subtitle="1 in "..math.floor(1/u.chance+.5).." per roll",
+			badge=have>0 and "FOUND" or nil,badgeColor=mint})
+	end
+end
+function MGU.drawLog(MG,m)
+	heading("MINIGAME LOG    /    YOUR RECORD")
+	for _,g in ipairs(MG.Order) do
+		local def=MG[g]
+		local l=tbl(tbl(m.log)[g])
+		local played,won=num(l.played,0),num(l.won,0)
+		card({name="MinigameLog"..g,motif="Journal",accent=rgb(def.color),title=escape(def.name),titleColor=rgb(def.color),
+			subtitle=fmt(played).." played   ·   "..fmt(won).." won"..(played>0 and ("   ·   "..math.floor(won/played*100+.5).."%") or ""),
+			lines={"Points earned: "..fmt(l.points).."   ·   best match: "..fmt(l.best),
+				(g=="Siege" and "Commendations earned: " or "Cache rolls earned: ")..fmt(l.paid)}})
+	end
+end
+function MGU.draw()
+	local MG=rules()
+	if not MG then syncing("minigames") return end
+	sectionBar(MGU.views,MGU.view,function(name) MGU.view=name render() end,{small=true,prefix="MinigameView",maxPer=4})
+	local m=ledger()
+	if MGU.view=="Lobbies" then return MGU.drawLobbies(MG,m) end
+	if not m then syncing("minigames") return end
+	if MGU.view=="Shop" then MGU.drawShop(MG,m)
+	elseif MGU.view=="Caches" then MGU.drawCaches(MG,m)
+	else MGU.drawLog(MG,m) end
+end
+Pages.drawMinigames=MGU.draw
+
+-- In-game HUD.
+local hudFrame=make("TextButton",gui,{Name="MinigameHud",Text="",AutoButtonColor=false,BackgroundColor3=deep,BackgroundTransparency=.06,BorderSizePixel=0,
+	AnchorPoint=Vector2.new(1,0),Position=UDim2.new(1,-10,0,204),Size=UDim2.fromOffset(220,46),Visible=false,Selectable=false})
+rounded(hudFrame,12,UI.brass)
+local title=label(hudFrame,"",12,4,UDim.new(1,-24),16,UI.heavy,11,gold)
+title.Name="Title"
+local body=label(hudFrame,"",12,20,UDim.new(1,-24),18,bold,12,ivory)
+body.Name="Lines"
+body.RichText=true
+body.TextWrapped=true
+body.TextYAlignment=Enum.TextYAlignment.Top
+body.TextTruncate=Enum.TextTruncate.None
+hudFrame.Activated:Connect(function() if Pages.openTo then Pages.openTo("Hunt","Minigames") end end)
+MGU.hud=hudFrame
+local function pct(text)
+	local a,b=tostring(text or ""):match("^(%d+)/(%d+)$")
+	a,b=tonumber(a),tonumber(b)
+	if not a or not b or b<=0 then return 0 end
+	return math.clamp(a/b,0,1)
+end
+local function bar(fraction,width)
+	local n=math.floor(fraction*width+.5)
+	return string.rep("█",n)..string.rep("░",width-n)
+end
+-- Lines for the HUD (short = phone column).
+function MGU.hudLines(h,short)
+	local lines={}
+	local points=num(tonumber(h.points),0)
+	local min=num(tonumber(h.min),0)
+	local mine=paint((short and "★ " or "Your points ")..fmt(points),points>=min and "7FE3CC" or "F3C66E")..(points<min and paint(" / "..min,"A9BDC1") or "")
+	if h.game=="Siege" then
+		local keeper=pct(h.keeper)
+		table.insert(lines,(short and "♥ " or "Keeper ")..paint(short and (math.floor(keeper*100).."%") or (bar(keeper,10).." "..math.floor(keeper*100).."%"),keeper>.35 and "7FE3CC" or "EF7D67"))
+		local open,sealed,shield={},0,0
+		for entry in tostring(h.portals or ""):gmatch("[^,]+") do
+			local id,hp,max,sh=entry:match("^(%a+):(%d+):(%d+):(%d)$")
+			if id then
+				if tonumber(hp)==0 then sealed+=1 elseif sh=="1" then shield+=1 else table.insert(open,id.." "..math.floor(tonumber(hp)/math.max(1,tonumber(max))*100).."%") end
+			end
+		end
+		if short then
+			table.insert(lines,"◇ "..#open.." open  ✓"..sealed)
+		else
+			table.insert(lines,"Rifts: "..(#open>0 and paint(escape(table.concat(open,", ")),"F3C66E") or paint("all shielded","A9BDC1"))..paint("   ⛨"..shield.." ✓"..sealed,"A9BDC1"))
+			table.insert(lines,"Wave "..escape(h.wave or "0").."   ·   "..escape(h.creatures or "0").." creatures")
+		end
+	else
+		local vulnerable=h.phase=="vulnerable"
+		local value=num(tonumber(vulnerable and h.essence or h.energy),0)
+		table.insert(lines,(vulnerable and (short and "⚓ " or "Essence ") or (short and "⚡ " or "Energy "))..paint(short and (value.."%") or (bar(value/100,10).." "..value.."%"),vulnerable and "EF7D67" or "5EC8D8"))
+		local hull=num(tonumber(h.hull),0)
+		local masts=0
+		for v in tostring(h.masts or ""):gmatch("[^,]+") do if v=="0" then masts+=1 end end
+		if short then
+			table.insert(lines,"⛵ "..hull.."%  🔥"..escape(h.fires or "0"))
+		else
+			table.insert(lines,"Hull "..paint(hull.."%",hull>40 and "7FE3CC" or "EF7D67").."   ·   fires "..escape(h.fires or "0").."   ·   cracked masts "..masts)
+			table.insert(lines,"Carrying "..escape(h.raw or "0").." raw, "..escape(h.cooked or "0").." cooked")
+		end
+	end
+	table.insert(lines,mine..(short and "" or paint("   ·   "..clock(tonumber(h.time)).." left","A9BDC1")))
+	return lines
+end
+function MGU.refreshHud()
+	local game=player:GetAttribute("MinigameGame")
+	local h=MGU.parse(player:GetAttribute("MinigameHud"))
+	local MG=rules()
+	hudFrame.Visible=MG~=nil and (game=="Siege" or game=="Haul") and h.game==game
+	if not hudFrame.Visible then return end
+	local view=gui.AbsoluteSize
+	local height=(view and view.Y>0) and view.Y or 720
+	local short=height<520
+	local width=short and 96 or 220
+	local top=8+(short and 118 or 156)+34+6
+	local pad=short and 6 or 12
+	local lines=MGU.hudLines(h,short)
+	local def=MG[game]
+	title.Text=short and string.upper(game) or string.upper(def.name)..(h.tier and ("  ·  "..string.upper(h.tier)) or "")
+	title.TextColor3=rgb(def.color)
+	title.TextSize=short and 10 or 11
+	local titleHeight=short and 14 or 16
+	local rowHeight=short and 14 or 18
+	title.Position,title.Size=UDim2.fromOffset(pad,4),UDim2.new(1,-2*pad,0,titleHeight)
+	body.Text=table.concat(lines,"\n")
+	body.TextSize=short and 11 or 12
+	body.Position=UDim2.fromOffset(pad,4+titleHeight)
+	body.Size=UDim2.new(1,-2*pad,0,rowHeight*#lines)
+	hudFrame.Position=UDim2.new(1,-10,0,top)
+	hudFrame.Size=UDim2.fromOffset(width,4+titleHeight+rowHeight*#lines+8)
+end
+for _,name in ipairs({"MinigameGame","MinigameHud"}) do
+	player:GetAttributeChangedSignal(name):Connect(function() MGU.refreshHud() end)
+end
+player:GetAttributeChangedSignal("MinigameNoticeCount"):Connect(function()
+	local message=player:GetAttribute("MinigameNotice")
+	if type(message)=="string" and message~="" then notify(message) end
+end)
+MGU.refreshHud()
+end
+-- End Minigames section.
+
+------------------------------------------------------------------------------
 -- Navigation: six primary tabs, each with a section switcher.
 ------------------------------------------------------------------------------
 local tabOrder={"Journal","Hero","Satchel","Workshop","Hunt","Ledger"}
@@ -6921,7 +7168,7 @@ local sectionLists={
 	Hero={"Skills","Mastery","Gear","Combat","Spellbook","Prayer","Enchant","Reforge","Accessories","Pets"},
 	Satchel={"Items","Collections","Trails"},
 	Workshop={"Forge","Hearth","Cauldron","Workbench","Workers","Home","Garden"},
-	Hunt={"Slayer","Bestiary","Dungeon","Hunter","Thieving"},
+	Hunt={"Slayer","Bestiary","Dungeon","Hunter","Thieving","Minigames"},
 	Ledger={"Bank","Market","Orders","Auctions","Merchant","Vendors"},
 }
 sectionOf={Journal="Bearing",Hero="Skills",Satchel="Items",Workshop="Forge",Hunt="Slayer",Ledger="Bank"}
@@ -6931,7 +7178,7 @@ local drawers={
 	Satchel={Items=Pages.drawItems,Collections=Pages.drawCollections,Trails=Pages.drawTrails},
 	Workshop={Forge=function() Pages.drawStation("Forge") end,Hearth=function() Pages.drawStation("Hearth") end,Cauldron=function() Pages.drawStation("Cauldron") end,
 		Workbench=function() Pages.drawStation("Workbench") end,Workers=Pages.drawWorkers,Home=Pages.drawHome,Garden=Pages.drawGarden},
-	Hunt={Slayer=Pages.drawSlayer,Bestiary=Pages.drawBestiary,Dungeon=Pages.drawDungeon,Hunter=Pages.drawHunter,Thieving=Pages.drawThieving},
+	Hunt={Slayer=Pages.drawSlayer,Bestiary=Pages.drawBestiary,Dungeon=Pages.drawDungeon,Hunter=Pages.drawHunter,Thieving=Pages.drawThieving,Minigames=Pages.drawMinigames},
 	Ledger={Bank=Pages.drawBank,Market=Pages.drawMarket,Orders=Pages.drawOrders,Auctions=Pages.drawAuctions,Merchant=Pages.drawMerchant,Vendors=Pages.drawVendors},
 }
 local function resetTransient()

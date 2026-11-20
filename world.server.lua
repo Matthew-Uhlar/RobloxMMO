@@ -3512,3 +3512,35 @@ do
 	end
 end
 -- End Slayer tasks section.
+
+-------------------------------------------------------------------------------
+-- Minigames (Minigames team; self-contained section). The Skybreach ferry: a
+-- beacon on the Guild Terrace (south-west lawn) to the Skybreach Bastion,
+-- whose arena minigames.server.lua builds. The warp is gated like the region
+-- beacons: ServerStorage.IsleMinigameAccess:Invoke(player) -> {allowed,
+-- message, landing}; a denial sets IsleRegionNotice and bumps
+-- IsleRegionNoticeCount (the client toast). Anchor_Waypoint_SkybreachFerry is
+-- the bastion's return point. Unlit (terrace light budget) and ~10 parts.
+-------------------------------------------------------------------------------
+do
+	local FERRY=GT+V(-28,0,-42)
+	local accent=C("7FE3CC")
+	local post=beaconProp(terrace,FERRY,accent,false)
+	sign(terrace,FERRY+V(-7,0,6),"Skybreach Ferry","SIEGE · HAUL   /   COMBAT 20 OR FISHING 20",accent,-30,9)
+	anchor(terrace,"Waypoint_SkybreachFerry",FERRY+V(4,0,5),FERRY)
+	local q=prompt(post,"Board the Skybreach ferry","Skybreach Bastion")
+	q:SetAttribute("IsleMinigameFerry",true)
+	q.Triggered:Connect(function(player)
+		local access=ServerStorage:FindFirstChild("IsleMinigameAccess")
+		local ok,result=false,nil
+		if access then ok,result=pcall(access.Invoke,access,player) end
+		if ok and type(result)=="table" and result.allowed and typeof(result.landing)=="Vector3" then
+			warp(player,post,result.landing)
+		else
+			local message=if ok and type(result)=="table" and type(result.message)=="string" then result.message else "The Skybreach ferry is not sailing right now."
+			player:SetAttribute("IsleRegionNotice",message)
+			player:SetAttribute("IsleRegionNoticeCount",(tonumber(player:GetAttribute("IsleRegionNoticeCount")) or 0)+1)
+		end
+	end)
+end
+-- End Minigames section.
