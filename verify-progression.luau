@@ -385,3 +385,390 @@ do
 	eq((P.canCraft({xp = {}, collection = {}, items = {Aetherite = 1}}, "GaleGlyph")), true, "gale glyphs at Glyphcraft 1")
 	print("PASS: " .. (checks - before) .. " combat style data/formula assertions.")
 end
+
+-- Skill Mastery: tree integrity, point accounting, perks in stats/harvest,
+-- capstones, respec costs, migration and milestones.
+do
+	local before = checks
+	local MA = Data.Mastery
+	local X = Data.XP_TABLE
+	ok(type(MA) == "table", "mastery data present")
+	eq(#MA.Trees, 8, "eight mastery trees")
+	eq(#MA.TreeOrder, 8, "tree order lists every tree")
+	local skillsSeen = {}
+	for _, id in ipairs(MA.TreeOrder) do
+		local tree = MA.TreeById[id]
+		ok(tree ~= nil, "tree " .. id .. " registered")
+		ok(Data.Skills[tree.skill] ~= nil, id .. " draws on a real skill")
+		ok(not skillsSeen[tree.skill], id .. " skill unique")
+		skillsSeen[tree.skill] = true
+		eq(MA.TreeOfSkill[tree.skill], id, id .. " reverse lookup")
+		ok(#tree.nodes >= 10 and #tree.nodes <= 14, id .. " has 10-14 nodes")
+		ok(type(tree.name) == "string" and type(tree.blurb) == "string", id .. " named")
+		ok(type(tree.color) == "string" and #tree.color == 6, id .. " colour")
+		local ids, cells, capstones, roots, totalCost = {}, {}, 0, 0, 0
+		for _, n in ipairs(tree.nodes) do
+			ok(not ids[n.id], id .. " node id unique " .. n.id)
+			ids[n.id] = true
+			local cell = n.x .. ":" .. n.y
+			ok(not cells[cell], id .. " node cell unique " .. cell)
+			cells[cell] = true
+			ok(n.x >= 1 and n.x <= 5 and n.y >= 1 and n.y <= 6, id .. " node on the lattice " .. n.id)
+			ok(n.max >= 1 and n.cost >= 1 and n.level >= 1 and n.level <= Data.MAX_LEVEL, id .. " node numbers " .. n.id)
+			for stat in pairs(n.stats or {}) do ok(Data.Stats[stat] ~= nil or stat == "lifesteal", id .. " stat " .. stat) end
+			for perk in pairs(n.perks or {}) do ok(MA.Perks[perk] ~= nil, id .. " perk " .. perk) end
+			ok(n.stats ~= nil or n.perks ~= nil or n.ability ~= nil, id .. " node has an effect " .. n.id)
+			if n.ability then
+				capstones += 1
+				eq(n.max, 1, id .. " capstone single level")
+				ok(n.ability.duration > 0 and n.ability.cooldown > n.ability.duration, id .. " capstone cooldown longer than its effect")
+				ok(type(n.ability.text) == "string", id .. " capstone text")
+			end
+			if #n.requires == 0 then roots += 1 end
+			totalCost += n.max * n.cost
+		end
+		eq(capstones, 1, id .. " exactly one capstone")
+		eq(tree.capstone ~= nil, true, id .. " capstone recorded")
+		eq(roots, 1, id .. " single root")
+		ok(totalCost <= 89 + math.floor((Data.MAX_XP - X[99]) / MA.POST_MAX_STEP), id .. " maxable with post-99 points")
+		ok(totalCost > 60, id .. " deep enough (" .. totalCost .. " points)")
+		-- Prerequisites point upward (strictly smaller row): acyclic by construction.
+		for _, n in ipairs(tree.nodes) do
+			for _, req in ipairs(n.requires) do
+				local r = tree.NodeById[req]
+				ok(r ~= nil, id .. " prerequisite exists " .. n.id .. "<-" .. req)
+				ok(r ~= nil and r.y < n.y, id .. " prerequisite above " .. n.id)
+			end
+		end
+		-- DFS cycle check over the prerequisite graph.
+		local color = {}
+		local function visit(nodeId)
+			if color[nodeId] == 1 then return false end
+			if color[nodeId] == 2 then return true end
+			color[nodeId] = 1
+			for _, req in ipairs(tree.NodeById[nodeId].requires) do if not visit(req) then return false end end
+			color[nodeId] = 2
+			return true
+		end
+		local acyclic = true
+		for _, n in ipairs(tree.nodes) do acyclic = acyclic and visit(n.id) end
+		ok(acyclic, id .. " prerequisites acyclic")
+		-- Reachability: every node (and the capstone) is reachable from the root.
+		local reached, changed = {}, true
+		while changed do
+			changed = false
+			for _, n in ipairs(tree.nodes) do
+				if not reached[n.id] then
+					local linked = #n.requires == 0
+					for _, req in ipairs(n.requires) do if reached[req] then linked = true end end
+					if linked then reached[n.id] = true; changed = true end
+				end
+			end
+		end
+		for _, n in ipairs(tree.nodes) do ok(reached[n.id], id .. " node reachable " .. n.id) end
+		ok(reached[tree.capstone], id .. " capstone reachable")
+	end
+	for _, skill in ipairs({"Mining","Woodcutting","Fishing","Farming","Hunter","Combat","Ranged","Magic"}) do ok(skillsSeen[skill], "tree for " .. skill) end
+
+	-- Points: 1 per level above 10, +1 per 1M XP beyond 99.
+	local function prof(xp) return {xp = xp or {}, items = {}, collection = {}, coins = 0} end
+	eq(P.masteryEarned(prof(), "Mining"), 0, "fresh skill earns nothing")
+	eq(P.masteryEarned(prof({Mining = X[10]}), "Mining"), 0, "level 10 earns nothing")
+	eq(P.masteryEarned(prof({Mining = X[11]}), "Mining"), 1, "level 11 earns one point")
+	eq(P.masteryEarned(prof({Mining = X[50]}), "Mining"), 40, "level 50 earns 40")
+	eq(P.masteryEarned(prof({Mining = X[99]}), "Mining"), 89, "level 99 earns 89")
+	eq(P.masteryEarned(prof({Mining = X[99] + 999999}), "Mining"), 89, "just short of the first post-99 point")
+	eq(P.masteryEarned(prof({Mining = X[99] + 1000000}), "Mining"), 90, "1M XP beyond 99 earns a point")
+	eq(P.masteryEarned(prof({Mining = Data.MAX_XP}), "Mining"), 89 + math.floor((Data.MAX_XP - X[99]) / 1000000), "200M XP points")
+	-- Tokens from collection tiers 5 and 9.
+	local collector = prof()
+	eq(P.masteryTokens(collector), 0, "no tokens without collections")
+	collector.collection.Ore = P.collectionThreshold("Ore", 5)
+	eq(P.masteryTokens(collector), 1, "tier 5 collection token")
+	collector.collection.Ore = P.collectionThreshold("Ore", 9)
+	eq(P.masteryTokens(collector), 2, "tier 9 collection token")
+	collector.collection.Timber = P.collectionThreshold("Timber", 6)
+	eq(P.masteryTokens(collector), 3, "tokens add up across collections")
+
+	-- Unlocking: root, prerequisites, level gates, max level, costs, tokens.
+	local miner = prof({Mining = X[12]})
+	local pts = P.masteryPoints(miner)
+	eq(pts.trees.Mining.earned, 2, "two Mining points at 12")
+	eq(pts.trees.Mining.available, 2, "both available")
+	eq(pts.trees.Woodcutting.available, 0, "other trees untouched")
+	local okReq, whyReq = P.masteryUnlock(miner, "Mining", "QuarrySense")
+	ok(not okReq and whyReq:find("Steady Pick") ~= nil, "prerequisite enforced")
+	eq(P.masteryNodeState(miner, "Mining", "SteadyPick"), "available", "root available")
+	eq(P.masteryNodeState(miner, "Mining", "QuarrySense"), "locked", "child locked")
+	eq((P.masteryUnlock(miner, "Mining", "SteadyPick")), true, "root unlocked")
+	eq(P.masteryNodeLevel(miner, "Mining", "SteadyPick"), 1, "root level 1")
+	eq(P.masteryNodeState(miner, "Mining", "QuarrySense"), "available", "child opened")
+	eq((P.masteryUnlock(miner, "Mining", "QuarrySense")), true, "child unlocked")
+	local okPts, whyPts = P.masteryUnlock(miner, "Mining", "SteadyPick")
+	ok(not okPts and whyPts:find("0 available") ~= nil, "points enforced")
+	eq(P.masteryNodeState(miner, "Mining", "SteadyPick"), "partial", "root partially learned")
+	eq(P.masteryPoints(miner).trees.Mining.spent, 2, "two points spent")
+	local okLvl, whyLvl = P.masteryCanUnlock(prof({Mining = X[20]}), "Mining", "EmberVein")
+	ok(not okLvl, "deeper node locked without its link")
+	local deep = prof({Mining = X[20]})
+	P.masteryUnlock(deep, "Mining", "SteadyPick"); P.masteryUnlock(deep, "Mining", "QuarrySense")
+	okLvl, whyLvl = P.masteryCanUnlock(deep, "Mining", "EmberVein")
+	ok(not okLvl and whyLvl:find("Mining 25") ~= nil, "skill gate enforced")
+	eq(P.masteryNodeState(deep, "Mining", "EmberVein"), "open", "linked but gated node is open")
+	local okBad = P.masteryUnlock(deep, "Mining", "Nope")
+	eq(okBad, false, "unknown node refused")
+	eq((P.masteryUnlock(deep, "Nowhere", "SteadyPick")), false, "unknown tree refused")
+	-- Max level.
+	local maxer = prof({Mining = X[40]})
+	for _ = 1, 10 do P.masteryUnlock(maxer, "Mining", "SteadyPick") end
+	eq(P.masteryNodeLevel(maxer, "Mining", "SteadyPick"), 10, "root maxed at 10")
+	local okMax, whyMax = P.masteryUnlock(maxer, "Mining", "SteadyPick")
+	ok(not okMax and whyMax:find("maximum") ~= nil, "max level enforced")
+	eq(P.masteryNodeState(maxer, "Mining", "SteadyPick"), "owned", "maxed node owned")
+	-- Tokens cover a tree's deficit; token use is derived from spending.
+	local tokenUser = prof({Mining = X[11]})
+	tokenUser.collection.Ore = P.collectionThreshold("Ore", 9)
+	eq(P.masteryPoints(tokenUser).trees.Mining.available, 3, "own point + two tokens")
+	eq(P.masteryPoints(tokenUser).trees.Fishing.available, 2, "tokens usable in any tree")
+	P.masteryUnlock(tokenUser, "Mining", "SteadyPick")
+	P.masteryUnlock(tokenUser, "Mining", "SteadyPick")
+	local tp = P.masteryPoints(tokenUser)
+	eq(tp.tokens.used, 1, "one token used")
+	eq(tp.tokens.free, 1, "one token left")
+	eq(tp.trees.Fishing.available, 1, "shared pool shrank")
+	P.masteryUnlock(tokenUser, "Fishing", "PatientLine")
+	eq(P.masteryPoints(tokenUser).tokens.free, 0, "tokens exhausted")
+	eq((P.masteryUnlock(tokenUser, "Farming", "TilledRows")), false, "no points left anywhere")
+	-- Cost-2 nodes.
+	local mason = prof({Mining = X[60]})
+	for _, step in ipairs({"SteadyPick","QuarrySense","EmberVein","EchoingSeam"}) do P.masteryUnlock(mason, "Mining", step) end
+	local spentBefore = P.masterySpent(mason, "Mining")
+	eq((P.masteryUnlock(mason, "Mining", "FaultLine")), true, "fault line bought")
+	eq(P.masterySpent(mason, "Mining") - spentBefore, 2, "cost-2 node spends two points")
+
+	-- Stats: no mastery = unchanged sheet; nodes add stats.
+	local plain = {xp = {Mining = X[40]}, items = {}, collection = {}}
+	local withEmpty = {xp = {Mining = X[40]}, items = {}, collection = {}, mastery = {}}
+	local s1, s2 = P.computeStats(plain, 0), P.computeStats(withEmpty, 0)
+	for key, v in pairs(s1) do if type(v) == "number" then eq(s2[key], v, "empty mastery leaves " .. key) end end
+	local fortuneBefore = P.computeStats(maxer, 0).miningFortune
+	eq(fortuneBefore - P.computeStats({xp = {Mining = X[40]}, items = {}, collection = {}}, 0).miningFortune, 30, "Steady Pick x10 = +30 Mining Fortune")
+	local warrior = prof({Combat = X[70]})
+	for _, step in ipairs({"IronGrip","BattleRhythm","KeenBlade","Bulwark","OpeningBlow","Bloodthirst"}) do eq((P.masteryUnlock(warrior, "Melee", step)), true, "melee path " .. step) end
+	local ws = P.computeStats(warrior, 0)
+	local wbase = P.computeStats(prof({Combat = X[70]}), 0)
+	eq(ws.strength - wbase.strength, 2, "Iron Grip strength")
+	eq(ws.attackSpeed - wbase.attackSpeed, 1, "Battle Rhythm attack speed")
+	eq(ws.critChance - wbase.critChance, 1, "Keen Blade crit chance")
+	eq(ws.defense - wbase.defense, 3, "Bulwark defense")
+	eq(ws.lifesteal - wbase.lifesteal, 1, "Bloodthirst lifesteal")
+	local wc = P.masteryCombat(warrior, 0)
+	eq(wc.melee.firstStrike, 10, "Opening Blow first-strike chance")
+	eq(wc.ranged.multishot, 1, "no volley")
+	eq(wc.magic.manaThrift, 0, "no mana thrift")
+	eq(next(wc.active), nil, "no running combat capstone")
+
+	-- Harvest: no perks → identical result and no extra rolls.
+	local function counted(values)
+		local n, i = 0, 0
+		return function() n += 1; i += 1; return values[(i - 1) % #values + 1] end, function() return n end
+	end
+	local gatherer = {xp = {Mining = X[60]}, items = {}, collection = {}}
+	local rng1, calls1 = counted({0.999})
+	local okH, plainResult = P.harvest(gatherer, "Ore", P.computeStats(gatherer, 0), rng1, 0, 100)
+	eq(okH, true, "plain harvest ok")
+	local A = plainResult.amount
+	eq(A, 3, "plain harvest amount (236 fortune = two guaranteed extras)")
+	eq(plainResult.xp, Data.ResourceTiers.Mining[1].xp, "plain harvest xp")
+	eq(calls1(), 1, "plain harvest rolls fortune only")
+	eq(plainResult.respawnSkip, nil, "no regrowth skip")
+	eq(plainResult.bonus, nil, "no bonus ingot")
+	gatherer.mastery = {trees = {Mining = {}}}
+	local rng2, calls2 = counted({0.999})
+	local _, emptyResult = P.harvest(gatherer, "Ore", P.computeStats(gatherer, 0), rng2, 0, 100)
+	eq(emptyResult.amount, A, "empty tree harvest amount")
+	eq(calls2(), 1, "empty tree adds no rolls")
+	-- Perks: double yield, XP boost, regrowth skip, ember smelt, coin find.
+	gatherer.mastery.trees.Mining = {SteadyPick = 1, QuarrySense = 5, SeamReader = 5, EmberVein = 5, EchoingSeam = 5, GlintEye = 5}
+	local perks = P.masteryPerks(gatherer, "Mining", 0)
+	eq(perks.doubleYield, 10, "Seam Reader 5 = 10% double")
+	eq(perks.xpBoost, 10, "Quarry Sense 5 = +10% XP")
+	eq(perks.autoSmelt, 15, "Ember Vein 5 = 15% smelt")
+	eq(perks.respawnSkip, 20, "Echoing Seam 5 = 20% regrowth")
+	eq(perks.coinFind, 10, "Glint Eye 5 = 10% coins")
+	local _, lucky = P.harvest(gatherer, "Ore", P.computeStats(gatherer, 0), counted({0.999, 0, 0, 0, 0}), 0, 100)
+	eq(lucky.amount, 2 * A, "double yield proc")
+	eq(lucky.xp, math.floor(Data.ResourceTiers.Mining[1].xp * 1.1), "XP boost applied")
+	eq(lucky.respawnSkip, true, "regrowth skip proc")
+	eq(lucky.bonus and lucky.bonus.AlloyIngot, 1, "copperstone smelts an alloy ingot")
+	eq(lucky.coins, Data.ResourceTiers.Mining[1].value * 5, "coin find proc")
+	local _, unlucky = P.harvest(gatherer, "Brassite", P.computeStats(gatherer, 0), counted({0.999}), 0, 100)
+	eq(unlucky, "Brassite Ore requires a tier 1 pickaxe.", "tool gate still applies")
+	gatherer.items.BrassPickaxe = 1
+	local _, brass = P.harvest(gatherer, "Brassite", P.computeStats(gatherer, 0), counted({0.999, 0.999, 0.999, 0.001, 0.999}), 0, 100)
+	eq(brass.bonus and brass.bonus.BrassIngot, 1, "brassite smelts a brass ingot")
+	eq(brass.amount, A, "no double without the proc")
+	eq(brass.coins, nil, "no coins without the proc")
+	local _, wood = P.harvest({xp = {}, items = {}, collection = {}, mastery = {trees = {Mining = {SteadyPick = 1}}}}, "Timber", {}, counted({0.999}), 0, 100)
+	eq(wood.amount, 1, "mining perks never touch woodcutting")
+
+	-- Capstones: activation, cooldown, effect window.
+	local surge = {xp = {Mining = X[70]}, items = {}, collection = {}, coins = 0}
+	local okNo, whyNo = P.masteryActivate(surge, "Mining", 1000)
+	ok(not okNo and whyNo:find("Vein Surge") ~= nil, "capstone must be unlocked")
+	for _, step in ipairs({"SteadyPick","QuarrySense","EmberVein","EchoingSeam","FaultLine","VeinSurge"}) do eq((P.masteryUnlock(surge, "Mining", step)), true, "surge path " .. step) end
+	eq(P.masteryCooldown(surge, "Mining", 1000), 0, "capstone ready")
+	local okA, ability = P.masteryActivate(surge, "Mining", 1000)
+	eq(okA, true, "capstone fires")
+	eq(ability.duration, 20, "vein surge lasts 20 s")
+	eq(P.masteryCooldown(surge, "Mining", 1000), 300, "cooldown started")
+	local okAgain, whyAgain = P.masteryActivate(surge, "Mining", 1100)
+	ok(not okAgain and whyAgain:find("recharging") ~= nil, "cooldown enforced")
+	eq(P.masteryCooldown(surge, "Mining", 1100), 200, "cooldown counts down")
+	ok(P.masteryActive(surge, "Mining", 1010) ~= nil, "surge active inside window")
+	eq(P.masteryActive(surge, "Mining", 1020), nil, "surge ends after 20 s")
+	eq(P.masteryActive(surge, "Mining", 999), nil, "not active before it started")
+	eq(P.masteryActive(surge, "Mining", 0), nil, "now=0 never counts as active")
+	local _, surged = P.harvest(surge, "Ore", P.computeStats(surge, 1010), counted({0.999}), 0, 1010)
+	eq(surged.amount % 2, 0, "vein surge yield even")
+	eq(surged.surge, true, "surge flagged")
+	local _, after = P.harvest(surge, "Ore", P.computeStats(surge, 1030), counted({0.999}), 0, 1030)
+	eq(after.amount * 2, surged.amount, "vein surge doubled the yield; normal afterwards")
+	eq((P.masteryActivate(surge, "Mining", 1300)), true, "capstone fires again after cooldown")
+	-- Combat capstones raise stats while active.
+	local berserk = prof({Combat = X[80]})
+	for _, step in ipairs({"IronGrip","KeenBlade","OpeningBlow","Finisher","WeaponLore","WarcryCrescendo"}) do eq((P.masteryUnlock(berserk, "Melee", step)), true, "warcry path " .. step) end
+	local calm = P.computeStats(berserk, 500)
+	P.masteryActivate(berserk, "Melee", 500)
+	local roaring = P.computeStats(berserk, 505)
+	eq(roaring.strength - calm.strength, 60, "warcry strength")
+	eq(roaring.critChance - calm.critChance, 20, "warcry crit chance")
+	eq(P.computeStats(berserk, 600).strength, calm.strength, "warcry fades")
+	eq(P.masteryCombat(berserk, 505).active.Melee, 515, "combat sees the warcry window")
+	local archer = prof({Ranged = X[80]})
+	for _, step in ipairs({"SteadyDraw","QuiverThrift","PinningShot","FletchersEye","Deadeye","Volley"}) do eq((P.masteryUnlock(archer, "Ranged", step)), true, "volley path " .. step) end
+	eq(P.masteryCombat(archer, 0).ranged.arrowSave, 7, "quiver thrift 1 + fletcher's eye 1")
+	P.masteryActivate(archer, "Ranged", 50)
+	eq(P.masteryCombat(archer, 55).ranged.multishot, 3, "volley hits three targets")
+	eq(P.masteryCombat(archer, 61).ranged.multishot, 1, "volley ends")
+	local mage = prof({Magic = X[80]})
+	for _, step in ipairs({"FocusedMind","InkThrift","ManaWeave","ArcaneSurge","ScribesPatience","Spellweaver","Glyphstorm"}) do eq((P.masteryUnlock(mage, "Magic", step)), true, "glyphstorm path " .. step) end
+	P.masteryActivate(mage, "Magic", 10)
+	local mc = P.masteryCombat(mage, 12)
+	eq(mc.magic.glyphSave, 100, "glyphstorm saves every glyph (capped)")
+	eq(mc.magic.manaThrift, 52, "glyphstorm halves mana on top of Mana Weave")
+	-- Hunter perks on catches.
+	local hunter = prof({Hunter = X[70]})
+	for _, step in ipairs({"QuietStep","TrailLore","TwinSnare"}) do eq((P.masteryUnlock(hunter, "Hunter", step)), true, "hunter path " .. step) end
+	local drops, xp, doubled = P.applyHuntMastery(hunter, {DownyPelt = 2}, 100, counted({0}), 0)
+	eq(drops.DownyPelt, 4, "twin snare doubles drops")
+	eq(xp, 102, "trail lore XP")
+	eq(doubled, true, "twin catch flagged")
+	local drops2, xp2, doubled2 = P.applyHuntMastery(prof(), {DownyPelt = 2}, 100, counted({0}), 0)
+	eq(drops2.DownyPelt, 2, "no perks no doubling")
+	eq(xp2, 100, "no perks no XP boost")
+	eq(doubled2, false, "no perks not flagged")
+
+	-- Respec: refunds, scaling cost, coins.
+	local resetter = prof({Mining = X[40]})
+	for _ = 1, 5 do P.masteryUnlock(resetter, "Mining", "SteadyPick") end
+	local cost1 = P.masteryRespecCost(resetter, "Mining")
+	eq(cost1, MA.respecCost(5, 0), "first respec price")
+	eq(cost1, 1300, "1000 + 60 x 5")
+	local okPoor, whyPoor = P.masteryRespec(resetter, "Mining")
+	ok(not okPoor and whyPoor:find("1300") ~= nil, "respec needs coins")
+	resetter.coins = 5000
+	local okR, paid = P.masteryRespec(resetter, "Mining")
+	eq(okR, true, "respec succeeds")
+	eq(paid, 1300, "respec paid")
+	eq(resetter.coins, 3700, "coins deducted")
+	eq(P.masterySpent(resetter, "Mining"), 0, "points refunded")
+	eq(P.masteryPoints(resetter).trees.Mining.available, 30, "all points available again")
+	eq((P.masteryRespec(resetter, "Mining")), false, "empty tree cannot respec")
+	for _ = 1, 5 do P.masteryUnlock(resetter, "Mining", "SteadyPick") end
+	eq(P.masteryRespecCost(resetter, "Mining"), math.floor(1300 * 1.5), "second respec costs 1.5x")
+	resetter.coins = 1e6
+	P.masteryRespec(resetter, "Mining")
+	for _ = 1, 5 do P.masteryUnlock(resetter, "Mining", "SteadyPick") end
+	eq(P.masteryRespecCost(resetter, "Mining"), math.floor(1300 * 2.25), "third respec costs 2.25x")
+	eq(MA.respecCost(10000, 30), MA.RESPEC_CAP, "respec cost capped")
+	local reArmed = prof({Mining = X[70]})
+	for _, step in ipairs({"SteadyPick","QuarrySense","EmberVein","EchoingSeam","FaultLine","VeinSurge"}) do P.masteryUnlock(reArmed, "Mining", step) end
+	P.masteryActivate(reArmed, "Mining", 100)
+	reArmed.coins = 1e6
+	P.masteryRespec(reArmed, "Mining")
+	eq(P.masteryActive(reArmed, "Mining", 105), nil, "respec ends a running capstone")
+	eq(P.masteryCooldown(reArmed, "Mining", 105), 295, "respec keeps the cooldown")
+
+	-- Migration: unknown trees/nodes, clamping, orphans, level gates, overspend.
+	local legacy = prof({Mining = X[30], Fishing = X[5]})
+	legacy.mastery = {trees = {Mining = {SteadyPick = 99, QuarrySense = 2.7, Ghost = 3, EchoingSeam = 1, EmberVein = 1}, Atlantis = {X = 1}, Fishing = {PatientLine = 3}},
+		respecs = {Mining = "x", Fishing = 2}, cooldowns = {Mining = 50, Nowhere = 3}, active = {Mining = 5}, cape = "Nope"}
+	local reset = P.masteryMigrate(legacy)
+	eq(legacy.mastery.trees.Atlantis, nil, "unknown tree dropped")
+	eq(legacy.mastery.trees.Mining.Ghost, nil, "unknown node dropped")
+	eq(legacy.mastery.trees.Mining.EchoingSeam, nil, "node above the skill gate dropped")
+	eq(legacy.mastery.respecs.Mining, nil, "bad respec count dropped")
+	eq(legacy.mastery.respecs.Fishing, 2, "respec count kept")
+	eq(legacy.mastery.cooldowns.Nowhere, nil, "unknown cooldown dropped")
+	eq(legacy.mastery.cooldowns.Mining, 50, "cooldown kept")
+	eq(legacy.mastery.active.Mining, nil, "malformed ability record dropped")
+	eq(legacy.mastery.cape, nil, "invalid mantle dropped")
+	eq(legacy.mastery.trees.Fishing.PatientLine, nil, "fishing overspent with no points: reset")
+	ok(table.find(reset, "Fishing") ~= nil, "reset reported")
+	eq(legacy.mastery.trees.Mining.SteadyPick, 10, "level clamped to max")
+	eq(legacy.mastery.trees.Mining.QuarrySense, 2, "fractional level floored")
+	eq(legacy.mastery.trees.Mining.EmberVein, 1, "linked node within its gate kept")
+	ok(table.find(reset, "Mining") == nil, "mining within its 20 points kept")
+	local greedy = prof({Mining = X[15]})
+	greedy.mastery = {trees = {Mining = {SteadyPick = 10}}}
+	P.masteryMigrate(greedy)
+	eq(greedy.mastery.trees.Mining.SteadyPick, nil, "overspent tree reset (10 > 5 points)")
+	local orphan = prof({Mining = X[60]})
+	orphan.mastery = {trees = {Mining = {QuarrySense = 1}}}
+	P.masteryMigrate(orphan)
+	eq(orphan.mastery.trees.Mining.QuarrySense, nil, "orphaned node dropped")
+	local clean = prof({Mining = X[60]})
+	clean.mastery = {trees = {Mining = {SteadyPick = 3, SeamReader = 2}}}
+	eq(#P.masteryMigrate(clean), 0, "valid tree untouched")
+	eq(clean.mastery.trees.Mining.SteadyPick, 3, "valid levels kept")
+	eq(#P.masteryMigrate(prof()), 0, "no mastery table: nothing to migrate")
+
+	-- View (snapshot) states.
+	local view = P.masteryView(maxer, 0)
+	eq(view.trees.Mining.states.SteadyPick, "owned", "view owned")
+	eq(view.trees.Mining.states.QuarrySense, "available", "view available")
+	eq(view.trees.Mining.states.Stoneskin, "locked", "view locked")
+	eq(view.trees.Mining.nodes.SteadyPick, 10, "view levels")
+	eq(view.trees.Mining.available, 20, "view points")
+	eq(view.trees.Mining.respecCost, MA.respecCost(10, 0), "view respec cost")
+	eq(view.trees.Mining.capstone, false, "view capstone flag")
+	eq(view.trees.Fishing.states.PatientLine, "open", "view open without points")
+
+	-- Milestones, titles and mantles.
+	for _, skill in ipairs(Data.SkillOrder) do
+		local list = MA.milestones(skill)
+		eq(#list, 5, skill .. " has five milestones")
+		eq(list[5].kind, "cape", skill .. " mantle at 99")
+		ok(next(list[5].stats) ~= nil, skill .. " mantle perk")
+		for stat in pairs(list[5].stats) do ok(Data.Stats[stat] ~= nil, skill .. " mantle stat " .. stat) end
+		eq(list[1].coins, Data.levelCoinReward(10), skill .. " milestone coins")
+	end
+	eq(MA.title("Mining", 9), nil, "no title before 10")
+	eq(MA.title("Mining", 10), "Fledgling Prospector", "first title")
+	eq(MA.title("Mining", 99), "Grand Prospector", "99 title")
+	local ms = P.milestones(prof({Mining = X[50]}), "Mining")
+	eq(ms[3].reached, true, "level 50 milestone reached")
+	eq(ms[4].reached, false, "level 75 milestone pending")
+	eq(ms[3].kind, "aura", "level 50 aura")
+	local caped = prof({Mining = X[99]})
+	caped.mastery = {cape = "Mining"}
+	local capeBase = P.computeStats(prof({Mining = X[99]}), 0)
+	local capeStats = P.computeStats(caped, 0)
+	eq(capeStats.miningFortune - capeBase.miningFortune, 25, "mantle perk while worn")
+	eq(P.masteryCape(caped), "Mining", "mantle worn")
+	caped.mastery.cape = "Fishing"
+	eq(P.masteryCape(caped), nil, "mantle needs level 99")
+	eq(P.computeStats(caped, 0).miningFortune, capeBase.miningFortune, "unearned mantle grants nothing")
+	print("PASS: " .. (checks - before) .. " skill mastery assertions.")
+end

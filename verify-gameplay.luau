@@ -3236,3 +3236,221 @@ end
 	eq(st(scribe).xp.Glyphcraft,Data.Recipes.GaleGlyph.xp+Data.Recipes.SparkGlyph.xp,"Glyphcraft XP")
 	print("PASS: "..(checks-before).." combat style server assertions.")
 end)()
+
+-- Skill Mastery (server): verbs, validation, gather/combat hooks, capstone
+-- cooldowns, respec coins, mantles, tokens, persistence and migration.
+;(function()
+	local before=checks
+	local X=Data.XP_TABLE
+	local function hook(name) for _,o in ipairs(allObjects) do if o.Name==name then return o end end return nil end
+	local bridge=hook("IsleBridge")
+	local function cmd(p,verb,item) advance(1); return objects.RemoteFunction.OnServerInvoke(p,verb,item) end
+	local function st(p) return cmd(p,"state") end
+	local function ok(cond,case) assert(cond,case); checks+=1 end
+	local function has(text,part) return type(text)=="string" and string.find(text,part,1,true)~=nil end
+	local function seeded(id,mutate)
+		local p=player(id)
+		services.Players.PlayerRemoving:Fire(p)
+		mutate(data["p"..id].profile)
+		return player(id)
+	end
+	local function rejoin(p) services.Players.PlayerRemoving:Fire(p); return player(p.UserId) end
+	local function grab(p,n) advance(1); return rawUse(p,n) end
+	local function gained(message) return tonumber(string.match(message or "","^%+(%d+) ")) end
+	-- Fresh journals: the snapshot carries every tree, nothing spent.
+	local fresh=player(9300)
+	local view=st(fresh).depth.mastery
+	ok(type(view)=="table","snapshot depth.mastery")
+	local count=0
+	for _,id in ipairs(Data.Mastery.TreeOrder) do
+		local tv=view.trees[id]
+		ok(tv~=nil,"tree in snapshot "..id)
+		eq(tv.available,0,"fresh "..id.." has no points")
+		eq(tv.spent,0,"fresh "..id.." spent nothing")
+		eq(tv.capstone,false,"fresh "..id.." capstone locked")
+		count+=1
+	end
+	eq(count,8,"eight trees in the snapshot")
+	eq(view.tokens.earned,0,"fresh tokens")
+	eq(data.p9300.profile.mastery,nil,"no mastery record until one is needed")
+	ok(has(cmd(fresh,"masteryUnlock","Mining:SteadyPick").message,"0 available"),"fresh journals have no points")
+	-- Validation of payloads.
+	local miner=seeded(9301,function(p) p.xp.Mining=X[70]; p.coins=100000 end)
+	for _,bad in ipairs({"Mining","Mining:","x:y","Nowhere:SteadyPick","Mining:Nope",string.rep("a",80),"Mining:Steady Pick"}) do
+		local reply=cmd(miner,"masteryUnlock",bad)
+		ok(not has(reply.message,"unlocked") and not has(reply.message," / "),"bad unlock refused: "..bad)
+	end
+	ok(has(cmd(miner,"masteryUnlock",nil).message,"Choose"),"nil unlock refused")
+	eq(cmd(miner,"masteryUnlock",5),nil,"numeric unlock ignored")
+	ok(has(cmd(miner,"masteryUnlock","Mining:QuarrySense").message,"Steady Pick"),"prerequisite enforced by the server")
+	eq(st(miner).depth.mastery.trees.Mining.spent,0,"refusals spend nothing")
+	local first=cmd(miner,"masteryUnlock","Mining:SteadyPick")
+	ok(has(first.message,"Steady Pick 1 / 10"),"node levelled")
+	eq(first.depth.mastery.trees.Mining.nodes.SteadyPick,1,"snapshot shows the level")
+	eq(first.depth.mastery.trees.Mining.available,59,"points left after one")
+	eq(first.depth.mastery.trees.Mining.states.QuarrySense,"available","child available")
+	local fortuneBefore=st(fresh).depth.stats.miningFortune
+	for _,step in ipairs({"QuarrySense","EmberVein","EchoingSeam","FaultLine","VeinSurge"}) do
+		ok(not has(cmd(miner,"masteryUnlock","Mining:"..step).message,"needs"),"surge path "..step)
+	end
+	local path=st(miner)
+	eq(path.depth.mastery.trees.Mining.capstone,true,"capstone owned")
+	eq(path.depth.mastery.trees.Mining.spent,1+1+1+1+2+5,"points spent on the path")
+	ok(path.depth.stats.miningFortune>fortuneBefore,"tree stats reach the stat sheet")
+	ok(has(cmd(miner,"masteryUnlock","Mining:VeinSurge").message,"maximum"),"capstone single level")
+	-- Gathering: plain journal vs a running Vein Surge.
+	local plain=seeded(9302,function(p) p.xp.Mining=X[70] end)
+	local plainGain=gained(grab(plain,node("gather","Ore")).message)
+	ok(plainGain~=nil and plainGain>0,"plain ore gathered")
+	local surge=cmd(miner,"ability","Mining")
+	ok(has(surge.message,"Vein Surge!"),"capstone fired")
+	ok(has(miner.MasteryAbility,"Mining:"),"ability attribute set")
+	ok(has(cmd(miner,"ability","Mining").message,"recharging"),"server cooldown enforced")
+	ok(st(miner).depth.mastery.trees.Mining.active>0,"snapshot shows the surge")
+	ok(st(miner).depth.mastery.trees.Mining.cooldown>200,"snapshot shows the cooldown")
+	local surged=grab(miner,node("gather","Ore"))
+	eq(gained(surged.message),plainGain*2,"vein surge doubles the harvest")
+	ok(has(surged.message,"surge"),"surge noted")
+	for _,bad in ipairs({"Nowhere","Woodcutting",nil}) do
+		local reply=cmd(miner,"ability",bad)
+		ok(not has(reply.message,"!"),"bad ability refused: "..tostring(bad))
+	end
+	advance(30)
+	eq(gained(grab(miner,node("gather","Ore")).message),plainGain,"surge over: normal yield")
+	-- All rolls succeed: double yield, regrowth skip, ember ingot, coins.
+	local ingotsBefore=st(miner).items.AlloyIngot or 0
+	local saved=defaultRoll
+	defaultRoll=0
+	local seam=node("gather","Ore")
+	local lucky=grab(miner,seam)
+	ok(has(lucky.message,"node regrew"),"regrowth skip noted")
+	ok(has(lucky.message,"Alloy Ingot"),"ember ingot noted")
+	eq((lucky.items.AlloyIngot or 0)-ingotsBefore,1,"bonus ingot collected")
+	ok(has(lucky.message,"x2 yield"),"double yield noted")
+	local again=grab(miner,seam)
+	ok(has(again.message,"Copperstone Ore"),"skipped regrowth lets the node be gathered at once")
+	defaultRoll=saved
+	ok(has(grab(miner,seam).message,"Copperstone Ore"),"gathered again")
+	local slow=grab(miner,seam)
+	ok(has(slow.message,"regrowing"),"without the skip the node regrows")
+	-- Persistence: nodes and the capstone cooldown survive a rejoin.
+	miner=rejoin(miner)
+	eq(data.p9301.profile.mastery.trees.Mining.SteadyPick,1,"node levels saved")
+	ok(data.p9301.profile.mastery.cooldowns.Mining~=nil,"cooldown saved")
+	ok(has(cmd(miner,"ability","Mining").message,"recharging"),"cooldown survives a rejoin")
+	eq(st(miner).depth.mastery.trees.Mining.nodes.FaultLine,1,"levels restored")
+	services.Players.PlayerRemoving:Fire(miner)
+	data.p9301.profile.mastery.cooldowns.Mining=math.floor(utc)-1 -- the cooldown has run out
+	miner=player(9301)
+	ok(has(cmd(miner,"ability","Mining").message,"Vein Surge!"),"capstone ready after its cooldown")
+	-- Respec: price from the snapshot, coins paid, points back, price grows.
+	local pre=st(miner)
+	local price=pre.depth.mastery.trees.Mining.respecCost
+	eq(price,Data.Mastery.respecCost(11,0),"respec price shown")
+	ok(has(cmd(miner,"masteryRespec","Nowhere").message,"Choose"),"unknown tree respec refused")
+	ok(has(cmd(miner,"masteryRespec","Fishing").message,"Nothing to reset"),"empty tree respec refused")
+	local reset=cmd(miner,"masteryRespec","Mining")
+	ok(has(reset.message,"reset for "..price),"respec message")
+	eq(reset.coins,pre.coins-price,"respec coins taken")
+	eq(reset.depth.mastery.trees.Mining.spent,0,"respec refunds every point")
+	eq(reset.depth.mastery.trees.Mining.available,60,"points back")
+	eq(reset.depth.mastery.trees.Mining.capstone,false,"capstone gone")
+	eq(reset.depth.mastery.trees.Mining.active,0,"running surge ended")
+	cmd(miner,"masteryUnlock","Mining:SteadyPick")
+	eq(st(miner).depth.mastery.trees.Mining.respecCost,Data.Mastery.respecCost(1,1),"second respec costs more")
+	local broke=seeded(9303,function(p) p.xp.Mining=X[30]; p.coins=0; p.mastery={trees={Mining={SteadyPick=2}}} end)
+	ok(has(cmd(broke,"masteryRespec","Mining").message,"costs"),"respec needs coins")
+	eq(st(broke).depth.mastery.trees.Mining.spent,2,"failed respec keeps nodes")
+	-- Migration on load: tampered saves are cleaned.
+	local tampered=seeded(9304,function(p)
+		p.xp.Mining=X[20]
+		p.mastery={trees={Mining={SteadyPick=50,EmberVein=3,Ghost=1},Atlantis={}},cooldowns={Mining="soon"},cape="Mining",active={Mining={started=1,expires=1e12}}}
+	end)
+	local cleaned=st(tampered).depth.mastery
+	eq(cleaned.trees.Mining.nodes.SteadyPick,10,"level clamped on load")
+	eq(cleaned.trees.Mining.nodes.EmberVein,nil,"gated node dropped on load")
+	eq(cleaned.trees.Mining.nodes.Ghost,nil,"unknown node dropped on load")
+	tampered=rejoin(tampered)
+	eq(data.p9304.profile.mastery.trees.Atlantis,nil,"unknown tree dropped on load")
+	eq(data.p9304.profile.mastery.trees.Mining.SteadyPick,10,"cleaned save persisted")
+	eq(cleaned.cape,nil,"unearned mantle not worn")
+	eq(tampered.MasteryCape,"","no mantle attribute")
+	local overspent=seeded(9305,function(p) p.xp.Mining=X[12]; p.mastery={trees={Mining={SteadyPick=10}}} end)
+	eq(st(overspent).depth.mastery.trees.Mining.spent,0,"overspent tree reset on load")
+	-- Mantles, titles and auras.
+	local grand=seeded(9306,function(p) p.xp.Mining=X[99]; p.xp.Fishing=X[60] end)
+	local base=st(grand).depth.stats
+	ok(has(cmd(grand,"masteryWear","cape:Fishing").message,"Reach Fishing 99"),"mantle needs 99")
+	ok(has(cmd(grand,"masteryWear","cape:Mining").message,"Mantle of the Prospector"),"mantle worn")
+	eq(grand.MasteryCape,"Mining","mantle attribute")
+	local caped=st(grand)
+	eq(caped.depth.stats.miningFortune-base.miningFortune,25,"mantle perk on the stat sheet")
+	eq(caped.depth.mastery.cape,"Mining","snapshot mantle")
+	ok(table.find(caped.depth.mastery.capes,"Mining")~=nil,"mantle listed as earned")
+	ok(has(cmd(grand,"masteryWear","title:Mining").message,"Grand Prospector"),"title set")
+	eq(grand.MasteryTitle,"Grand Prospector","title attribute")
+	ok(has(cmd(grand,"masteryWear","aura:Fishing").message,"aura"),"aura at 50+")
+	eq(grand.MasteryAura,"Fishing","aura attribute")
+	ok(has(cmd(grand,"masteryWear","aura:Farming").message,"Reach Farming 50"),"aura needs 50")
+	ok(has(cmd(grand,"masteryWear","cape:").message,"Removed"),"mantle removed")
+	eq(grand.MasteryCape,"","mantle attribute cleared")
+	eq(st(grand).depth.stats.miningFortune,base.miningFortune,"perk gone with the mantle")
+	ok(has(cmd(grand,"masteryWear","hat:Mining").message,"Choose"),"unknown cosmetic refused")
+	ok(has(cmd(grand,"masteryWear","cape:Nope").message,"Choose a skill"),"unknown skill refused")
+	-- Tokens from collection tiers.
+	local hoarder=seeded(9307,function(p) p.collection.Herb=Progression.collectionThreshold("Herb",5)-1; p.collectionRewards={Herb=4} end)
+	local tokenGather=grab(hoarder,node("gather","Herb"))
+	ok(has(tokenGather.message,"Mastery Token"),"token announced at collection tier 5")
+	eq(tokenGather.depth.mastery.tokens.earned,1,"token counted")
+	eq(tokenGather.depth.mastery.trees.Fishing.available,1,"token spendable in any tree")
+	ok(has(cmd(hoarder,"masteryUnlock","Fishing:PatientLine").message,"Patient Line 1"),"token buys a node")
+	eq(st(hoarder).depth.mastery.tokens.free,0,"token used")
+	-- Combat bridge: perks for combat.server.lua, arrow save, style XP boost.
+	local archer=seeded(9308,function(p)
+		p.xp.Ranged=X[60]
+		p.items.CopperArrow=10
+		p.mastery={trees={Ranged={SteadyDraw=2,QuiverThrift=5}}}
+	end)
+	local info=bridge.OnInvoke("stats",archer,{})
+	ok(type(info.mastery)=="table","bridge stats carry mastery perks")
+	eq(info.mastery.ranged.arrowSave,15,"arrow save exposed")
+	eq(info.mastery.ranged.multishot,1,"no volley running")
+	eq(info.mastery.melee.firstStrike,0,"no melee perks")
+	eq(info.stats.rangedStrength-bridge.OnInvoke("stats",fresh,{}).stats.rangedStrength,4+59,"Steady Draw strength in bridge stats")
+	defaultRoll=0
+	local keep=bridge.OnInvoke("consume",archer,{items={CopperArrow=1}})
+	defaultRoll=saved
+	eq(keep.ok,true,"saved shot still ok")
+	eq(keep.remaining.CopperArrow,10,"arrow kept")
+	eq(keep.saved.CopperArrow,1,"arrow save reported")
+	local spendShot=bridge.OnInvoke("consume",archer,{items={CopperArrow=1}})
+	eq(spendShot.remaining.CopperArrow,9,"arrow spent without the proc")
+	eq(bridge.OnInvoke("consume",archer,{items={CopperArrow=50}}).ok,false,"save never pays for missing arrows")
+	local fighter=seeded(9309,function(p)
+		p.xp.Combat=X[60]
+		p.mastery={trees={Melee={IronGrip=1,BattleRhythm=1,Bulwark=1,OpeningBlow=1,Bloodthirst=1,WeaponLore=5}}}
+	end)
+	local brawler=seeded(9310,function(p) p.xp.Combat=X[60] end)
+	local hp=Data.Monsters.BramblebackBoar.hp
+	local boosted=bridge.OnInvoke("combatXp",fighter,{style="melee",monster="BramblebackBoar",damage=hp})
+	local normal=bridge.OnInvoke("combatXp",brawler,{style="melee",monster="BramblebackBoar",damage=hp})
+	eq(normal.xp.Combat,Data.Monsters.BramblebackBoar.xp,"plain melee XP")
+	eq(boosted.xp.Combat,math.floor(Data.Monsters.BramblebackBoar.xp*1.15),"Weapon Lore boosts melee XP")
+	local fi=bridge.OnInvoke("stats",fighter,{})
+	eq(fi.mastery.melee.firstStrike,10,"opening blow exposed")
+	eq(fi.mastery.melee.xpBoost,15,"weapon lore exposed")
+	eq(fi.stats.lifesteal,1,"bloodthirst lifesteal in stats")
+	-- Melee capstone (Warcry) shows in stats while it runs.
+	local champion=seeded(9311,function(p)
+		p.xp.Combat=X[80]
+		p.mastery={trees={Melee={IronGrip=1,KeenBlade=1,OpeningBlow=1,Finisher=1,WeaponLore=1,WarcryCrescendo=1}}}
+	end)
+	local calm=bridge.OnInvoke("stats",champion,{}).stats.strength
+	ok(has(cmd(champion,"ability","Melee").message,"Warcry Crescendo!"),"warcry fired")
+	local roaring=bridge.OnInvoke("stats",champion,{})
+	eq(roaring.stats.strength-calm,60,"warcry strength in bridge stats")
+	ok(roaring.mastery.active.Melee~=nil,"combat sees the running warcry")
+	advance(20)
+	eq(bridge.OnInvoke("stats",champion,{}).stats.strength,calm,"warcry fades")
+	print("PASS: "..(checks-before).." skill mastery server assertions.")
+end)()

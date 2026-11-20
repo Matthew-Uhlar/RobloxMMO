@@ -1988,6 +1988,7 @@ local function drawSkillDetail(skill,info)
 		detail=type(def.description)=="string" and escape(def.description) or nil,lines=lines,
 		bar={fraction=info.fraction,color=rgb(hex),caption=info.maxed and "MAX LEVEL" or (fmt(math.max(0,info.ceiling-info.xp)).." XP to level "..(info.level+1))},
 		actions={{caption="Close",fn=function() selectedSkill=nil;render() end}}})
+	if Pages.mastery then Pages.mastery.milestones(skill,info) end -- Skill Mastery: milestones, titles, mantle
 	heading(string.upper(skill).."    /    NEXT UNLOCKS")
 	local unlocks=skillUnlocks(skill,info.level)
 	if #unlocks==0 then
@@ -2012,7 +2013,8 @@ local function drawSkills()
 	card({name="SkillSummary",motif="Hero",title="Total level "..fmt(total),titleColor=gold,
 		subtitle="Skill average "..string.format("%.1f",average).."   ·   "..#skills.." skills",
 		badge=if d then nil else "SYNCING",badgeColor=muted,
-		detail="Every level grants permanent stats and coins. Tap a skill to see what unlocks next."})
+		detail="Every level grants permanent stats and coins. Tap a skill to see what unlocks next.",
+		lines={Pages.mastery and Pages.mastery.summary() or nil}})
 	if selectedSkill and levels[selectedSkill] then drawSkillDetail(selectedSkill,levels[selectedSkill]) heading("ALL SKILLS") end
 	local width=contentWidth()
 	local columns=width>=690 and 3 or (width>=400 and 2 or 1)
@@ -2041,7 +2043,8 @@ local function drawSkills()
 		medalText.TextStrokeColor3=deep
 		local textX=compactAtlas and 52 or 60
 		label(tileButton,skill,textX,compactAtlas and 9 or 10,UDim.new(1,-textX-60),20,UI.heavy,compactAtlas and 14 or 16,ivory)
-		local levelText=label(tileButton,info.maxed and "MAX" or ("/ "..maxLevel()),0,compactAtlas and 9 or 11,UDim.new(0,50),20,bold,compactAtlas and 12 or 12,muted)
+		local mantle=info.maxed and Pages.mastery and Pages.mastery.wornCape()==skill -- Skill Mastery: worn skillcape
+		local levelText=label(tileButton,mantle and "MANTLE" or (info.maxed and "MAX" or ("/ "..maxLevel())),0,compactAtlas and 9 or 11,UDim.new(0,50),20,bold,compactAtlas and 12 or 12,mantle and gold or muted)
 		levelText.Position=UDim2.new(1,-58,0,compactAtlas and 9 or 11)
 		levelText.TextXAlignment=Enum.TextXAlignment.Right
 		local reward=label(tileButton,statText(skillDef(skill).perLevel,1,"  "),12,compactAtlas and 50 or 58,UDim.new(1,-20),compactAtlas and 18 or 20,regular,compactAtlas and 12 or 12,muted)
@@ -4836,12 +4839,257 @@ Pages.drawAgility,Pages.drawHunter,Pages.drawVendors=AH.drawAgility,AH.drawHunte
 end
 
 ------------------------------------------------------------------------------
+-- Hero › Mastery: one perk tree per gathering skill and combat style (nodes
+-- joined by their prerequisite lines; owned / available / open / locked),
+-- the selected node's effects with a next-level preview, points and tokens,
+-- respec and the capstone ability. Skills page milestones (titles, auras,
+-- mantles) are drawn from here too. State lives in one table (local limit).
+------------------------------------------------------------------------------
+do
+local MS={tree="Mining",node=nil,confirm=nil}
+Pages.mastery=MS
+function MS.data() return Data and type(Data.Mastery)=="table" and Data.Mastery or nil end
+function MS.view() return tbl(tbl(depth()).mastery) end
+function MS.treeView(id) return tbl(tbl(MS.view().trees)[id]) end
+function MS.treeOfSkill(skill) local ma=MS.data() return ma and tbl(ma.TreeOfSkill)[skill] or nil end
+MS.glyphs={xpBoost="✎",doubleYield="×2",tripleYield="×3",respawnSkip="↻",autoSmelt="♨",coinFind="¤",trapTick="⏱",rareFind="✧",
+	firstStrike="⚡",execute="✖",arrowSave="➶",glyphSave="✐",manaThrift="✦",multishot="⇶",yieldMult="⇈"}
+function MS.glyph(node)
+	if node.ability then return "★" end
+	for key in pairs(tbl(node.perks)) do return MS.glyphs[key] or "◆" end
+	for key in pairs(tbl(node.stats)) do local def=tbl(tbl(Data.Stats)[key]) return type(def.symbol)=="string" and def.symbol or "◆" end
+	return "◆"
+end
+-- Effect copy for a node at a level (stats + perks + capstone).
+function MS.effects(node,level)
+	local parts={}
+	if level<=0 then return "" end
+	if type(node.stats)=="table" then
+		local text=statText(node.stats,level)
+		if text~="" then table.insert(parts,text) end
+	end
+	for key,value in pairs(tbl(node.perks)) do
+		local perk=tbl(tbl(MS.data().Perks)[key])
+		local amount=num(value,0)*level
+		local ok,text=pcall(string.format,tostring(perk.text or (key.." %s")),fmt(amount))
+		table.insert(parts,paint(escape(ok and text or key),"9EE7D2"))
+	end
+	if type(node.ability)=="table" then
+		table.insert(parts,paint(escape(tostring(node.ability.text or "")),"F9CC77"))
+		table.insert(parts,"Lasts "..num(node.ability.duration,0).."s  ·  recharges "..num(node.ability.cooldown,0).."s")
+	end
+	return table.concat(parts,"  ·  ")
+end
+local stateLook={owned={"OWNED","7FE3CC"},partial={"LEARNING","F3C66E"},available={"AVAILABLE","F3C66E"},open={"NEED POINTS","A9BDC1"},locked={"LOCKED","E8806A"}}
+-- Tree canvas: lines first, then node buttons on a 5 x 6 lattice.
+function MS.canvas(tree,view)
+	local width=contentWidth()
+	local rows=0
+	for _,n in ipairs(tree.nodes) do rows=math.max(rows,num(n.y,1)) end
+	local rowH=compactAtlas and 62 or 74
+	local size=compactAtlas and 42 or 50
+	local height=rows*rowH+16
+	local holder=container(height)
+	holder.Name="MasteryCanvas"
+	holder.BackgroundColor3=track
+	holder.BackgroundTransparency=.35
+	make("UICorner",holder,{CornerRadius=UDim.new(0,12)})
+	make("UIStroke",holder,{Color=UI.line,Thickness=1})
+	local colW=(width-16)/5
+	local function center(n) return 8+(num(n.x,3)-.5)*colW,8+(num(n.y,1)-.5)*rowH end
+	local levels,states=tbl(view.nodes),tbl(view.states)
+	local hex=type(tree.color)=="string" and #tree.color==6 and tree.color or "F3C66E"
+	for _,n in ipairs(tree.nodes) do
+		for _,reqId in ipairs(tbl(n.requires)) do
+			local req=tree.NodeById[reqId]
+			if req then
+				local x1,y1=center(req)
+				local x2,y2=center(n)
+				local dx,dy=x2-x1,y2-y1
+				local lit=num(levels[n.id],0)>0 and num(levels[reqId],0)>0
+				local ready=num(levels[reqId],0)>0
+				make("Frame",holder,{Name="Link",AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromOffset((x1+x2)/2,(y1+y2)/2),
+					Size=UDim2.fromOffset(math.sqrt(dx*dx+dy*dy),lit and 3 or 2),Rotation=math.deg(math.atan2(dy,dx)),BorderSizePixel=0,
+					BackgroundColor3=lit and rgb(hex) or (ready and UI.brass or UI.line),BackgroundTransparency=lit and 0 or .25})
+			end
+		end
+	end
+	for _,n in ipairs(tree.nodes) do
+		local cx,cy=center(n)
+		local st=type(states[n.id])=="string" and states[n.id] or (num(levels[n.id],0)>0 and "partial" or "locked")
+		local have=math.floor(num(levels[n.id],0))
+		local on=MS.node==n.id
+		local b=make("TextButton",holder,{Name="MasteryNode"..n.id,Text="",AutoButtonColor=false,Selectable=true,BorderSizePixel=0,
+			Position=UDim2.fromOffset(cx-size/2,cy-size/2),Size=UDim2.fromOffset(size,size),ZIndex=2,
+			BackgroundColor3=(st=="owned" or st=="partial") and rgb(hex) or (st=="available" and slate or (st=="open" and deep or track))})
+		make("UICorner",b,{CornerRadius=UDim.new(0,n.ability and size//2 or 10)})
+		UI.sheen(b,1,.7)
+		make("UIStroke",b,{Color=on and ivory or (st=="available" and gold or (n.ability and gold or UI.line)),Thickness=on and 2.5 or (st=="available" and 2 or 1),Transparency=st=="locked" and .4 or 0})
+		local glyph=label(b,MS.glyph(n),0,0,full,size-14,UI.heavy,compactAtlas and 15 or 18,st=="locked" and muted or UI.white)
+		glyph.Size=UDim2.new(1,0,1,-12)
+		glyph.TextXAlignment=Enum.TextXAlignment.Center
+		glyph.TextStrokeTransparency=.4
+		glyph.TextStrokeColor3=deep
+		glyph.ZIndex=3
+		local pip=label(b,have.."/"..num(n.max,1),0,0,full,12,UI.heavy,10,st=="locked" and muted or ivory)
+		pip.Position=UDim2.new(0,0,1,-14)
+		pip.TextXAlignment=Enum.TextXAlignment.Center
+		pip.TextStrokeTransparency=.3
+		pip.TextStrokeColor3=deep
+		pip.ZIndex=3
+		pressable(b)
+		b.Activated:Connect(function()
+			MS.node=if MS.node==n.id then nil else n.id
+			render()
+		end)
+	end
+	return holder
+end
+-- Selected node: effects now and at the next level, gates, unlock.
+function MS.nodeCard(tree,view,node)
+	local levels,states=tbl(view.nodes),tbl(view.states)
+	local have=math.floor(num(levels[node.id],0))
+	local st=type(states[node.id])=="string" and states[node.id] or "locked"
+	local look=stateLook[st] or stateLook.locked
+	local lines={}
+	if have>0 then table.insert(lines,"Now: "..MS.effects(node,have)) end
+	if have<num(node.max,1) then table.insert(lines,(have>0 and "Next: " or "Unlocks: ")..MS.effects(node,have+1)) end
+	local reqs={}
+	for _,id in ipairs(tbl(node.requires)) do
+		local req=tree.NodeById[id]
+		if req then table.insert(reqs,(num(levels[id],0)>0 and check or cross).." "..escape(req.name)) end
+	end
+	if #reqs>0 then table.insert(lines,"Requires any: "..table.concat(reqs,"  ")) end
+	local skillLevel=num(tbl(tbl(dget("skills"))[tree.skill]).level,1)
+	table.insert(lines,(skillLevel>=num(node.level,1) and check or cross).." "..escape(tree.skill).." "..num(node.level,1).."   ·   "..num(node.cost,1).." point"..(num(node.cost,1)==1 and "" or "s").." per level")
+	local reason=nil
+	if st=="owned" then reason=node.name.." is complete."
+	elseif st~="available" then reason=if st=="locked" then "Unlock a linked node first." elseif skillLevel<num(node.level,1) then "Requires "..tree.skill.." "..num(node.level,1).."." else "Not enough mastery points." end
+	card({name="MasteryNodeDetail",accent=safeColor(tree.color,gold),motif="Hero",title=escape(node.name),titleColor=node.ability and gold or ivory,
+		subtitle=(node.ability and "Capstone ability" or "Level "..have.." / "..num(node.max,1)).."   ·   "..escape(tree.name),
+		badge=paint(look[1],look[2]),badgeColor=rgb(look[2]),lines=lines,
+		actions={{caption=have>0 and "Level up" or "Unlock",primary=reason==nil,disabled=reason~=nil,reason=reason,name="MasteryUnlock",
+			fn=function() send("masteryUnlock",tree.id..":"..node.id) end}}})
+end
+function MS.draw()
+	local ma=MS.data()
+	if not ma or type(ma.TreeById)~="table" then dataMissing() return end
+	if not ma.TreeById[MS.tree] then MS.tree=ma.TreeOrder[1] end
+	local tree=ma.TreeById[MS.tree]
+	local view=MS.view()
+	local tv=MS.treeView(tree.id)
+	local tokens=tbl(view.tokens)
+	local synced=next(view)~=nil
+	card({name="MasterySummary",motif="Hero",title="Skill Mastery",titleColor=gold,badge=synced and nil or "SYNCING",badgeColor=muted,
+		subtitle=fmt(num(tokens.free,0)).." Mastery Token"..(num(tokens.free,0)==1 and "" or "s").." free   ·   "..fmt(num(tokens.earned,0)).." earned",
+		detail="Each tree draws on its skill: 1 point per level above "..num(ma.POINT_START_LEVEL,10)..", +1 per "..fmt(num(ma.POST_MAX_STEP,1000000))
+			.." XP beyond 99. Tokens from collection tiers "..table.concat(ma.TOKEN_TIERS or {},"/").." fill any tree."})
+	local names={}
+	for _,id in ipairs(ma.TreeOrder) do table.insert(names,id) end
+	sectionBar(names,MS.tree,function(name) MS.tree=name;MS.node=nil;MS.confirm=nil;render() end,{small=true,prefix="MasteryTree",maxPer=compactAtlas and 4 or 8})
+	local hex=type(tree.color)=="string" and #tree.color==6 and tree.color or "F3C66E"
+	local available,spent,earned=num(tv.available,0),num(tv.spent,0),num(tv.earned,0)
+	local cost=num(tv.respecCost,0)
+	local actions={}
+	if MS.confirm==tree.id then
+		table.insert(actions,{caption="Keep",name="MasteryRespecCancel",fn=function() MS.confirm=nil;render() end})
+		table.insert(actions,{caption="Reset "..fmt(cost),name="MasteryRespecConfirm",primary=true,disabled=num(state.coins,0)<cost,reason="Resetting costs "..fmt(cost).." coins.",
+			fn=function() MS.confirm=nil;send("masteryRespec",tree.id) end})
+	else
+		table.insert(actions,{caption="Respec",name="MasteryRespec",disabled=spent<=0,reason="Nothing to reset yet.",fn=function() MS.confirm=tree.id;render() end})
+	end
+	card({name="MasteryTree",accent=rgb(hex),icon=function(parent,size) return titleArt(parent,tree.skill,size,"Hero") end,
+		title=escape(tree.name),titleColor=rgb(lighten(hex,.25)),subtitle=escape(tree.skill).." mastery   ·   "..fmt(spent).." spent / "..fmt(earned).." earned",
+		badge=fmt(available).." pts",badgeColor=available>0 and gold or muted,detail=escape(tree.blurb or ""),
+		lines={MS.confirm==tree.id and paint("Reset refunds every point for "..fmt(cost).." coins (the price grows with each reset).","F9CC77") or ("Respec: "..fmt(cost).." coins")},
+		actions=actions})
+	heading(string.upper(tree.name).."    /    TAP A NODE")
+	MS.canvas(tree,tv)
+	local node=MS.node and tree.NodeById[MS.node]
+	if node then MS.nodeCard(tree,tv,node) end
+	-- Capstone ability.
+	local capstone=tree.capstone and tree.NodeById[tree.capstone]
+	if capstone then
+		local owned=tv.capstone==true
+		local cooldown,active=num(tv.cooldown,0),num(tv.active,0)
+		local ability=tbl(capstone.ability)
+		local reason=if not owned then "Unlock "..capstone.name.." first." elseif cooldown>0 then capstone.name.." recharges in "..math.ceil(cooldown).."s." else nil
+		heading("CAPSTONE    /    "..string.upper(capstone.name))
+		card({name="MasteryAbility",motif="Hero",accent=gold,title=escape(capstone.name),titleColor=gold,
+			subtitle=active>0 and paint("ACTIVE · "..math.ceil(active).."s left","7FE3CC") or (owned and (cooldown>0 and ("Recharging · "..math.ceil(cooldown).."s") or "Ready") or "Locked"),
+			badge=owned and (cooldown>0 and (math.ceil(cooldown).."s") or "READY") or "LOCKED",badgeColor=owned and (cooldown>0 and muted or mint) or ember,
+			detail=escape(tostring(ability.text or "")),
+			bar=owned and cooldown>0 and {fraction=1-math.clamp(cooldown/math.max(1,num(ability.cooldown,1)),0,1),color=gold,caption="Recharging"} or nil,
+			actions={{caption="Activate",primary=reason==nil,disabled=reason~=nil,reason=reason,name="MasteryActivate",fn=function() send("ability",tree.id) end}}})
+	end
+	-- Worn mantle (skillcape) summary.
+	local cape=type(view.cape)=="string" and view.cape or nil
+	local capes=tbl(view.capes)
+	if cape or #capes>0 then
+		local perk=cape and type(ma.capePerk)=="function" and ma.capePerk(cape) or nil
+		card({name="MasteryMantle",motif="Hero",title=cape and ("Mantle of the "..escape(tostring(skillDef(cape).title or cape))) or "Mantles",titleColor=gold,
+			subtitle=#capes.." mantle"..(#capes==1 and "" or "s").." earned",badge=cape and "WORN" or nil,badgeColor=mint,
+			detail=cape and ("Worn mantle perk: "..statText(perk,1)) or "Wear a mantle from a level 99 skill on the Skills page."})
+	end
+end
+-- Skills page: milestone list (titles, auras, mantle) with wear actions.
+function MS.milestones(skill,info)
+	local ma=MS.data()
+	if not ma or type(ma.milestones)~="function" then return end
+	local ok,list=pcall(ma.milestones,skill)
+	if not ok or type(list)~="table" then return end
+	local level=num(tbl(info).level,1)
+	local view=MS.view()
+	local items={}
+	for _,m in ipairs(list) do
+		local extra=m.stats and ("  "..statText(m.stats,1)) or ""
+		table.insert(items,{text="Lv "..m.level.."  ·  "..escape(m.text)..extra,met=level>=m.level,amount="+"..fmt(num(m.coins,0)).." c"})
+	end
+	local tree=MS.treeOfSkill(skill)
+	local actions={}
+	if tree then
+		table.insert(actions,{caption="Mastery",name="SkillMastery"..skill,fn=function()
+			MS.tree=tree;MS.node=nil;sectionOf.Hero="Mastery";scroll.CanvasPosition=Vector2.zero;render() end})
+	end
+	if level>=num(ma.MilestoneLevels and ma.MilestoneLevels[1],10) then
+		local worn=view.title==skill
+		table.insert(actions,{caption=worn and "Untitle" or "Title",name="SkillTitle"..skill,fn=function() send("masteryWear","title:"..(worn and "" or skill)) end})
+	end
+	if level>=maxLevel() then
+		local worn=view.cape==skill
+		table.insert(actions,{caption=worn and "Unwear" or "Mantle",name="SkillCape"..skill,primary=not worn,fn=function() send("masteryWear","cape:"..(worn and "" or skill)) end})
+	elseif level>=50 then
+		local worn=view.aura==skill
+		table.insert(actions,{caption=worn and "No aura" or "Aura",name="SkillAura"..skill,fn=function() send("masteryWear","aura:"..(worn and "" or skill)) end})
+	end
+	local tv=tree and MS.treeView(tree) or EMPTY
+	local title=tbl(view.titles)[skill]
+	heading(string.upper(skill).."    /    MILESTONES")
+	card({name="SkillMilestones",motif="Hero",title=type(title)=="string" and escape(title) or "No title yet",titleColor=gold,
+		subtitle=tree and (fmt(num(tv.available,0)).." mastery points to spend in the "..escape(tostring(tbl(ma.TreeById[tree]).name or tree))) or "Titles, auras and a mantle at 99",
+		after=function(body,nextOrder) UI.checklist(body,nextOrder,nil,items) end,actions=actions})
+end
+-- Skills summary line and tile marker.
+function MS.summary()
+	local view=MS.view()
+	if next(view)==nil then return nil end
+	local free=0
+	for _,tv in pairs(tbl(view.trees)) do free=math.max(free,num(tbl(tv).available,0)) end
+	local cape=type(view.cape)=="string" and view.cape or nil
+	return "Mastery: "..fmt(num(tbl(view.tokens).free,0)).." tokens free"..(free>0 and ("  ·  up to "..fmt(free).." points to spend") or "")
+		..(cape and ("  ·  wearing the "..escape(cape).." mantle") or "")
+end
+function MS.wornCape() local cape=MS.view().cape return type(cape)=="string" and cape or nil end
+Pages.drawMastery=MS.draw
+end
+
+------------------------------------------------------------------------------
 -- Navigation: six primary tabs, each with a section switcher.
 ------------------------------------------------------------------------------
 local tabOrder={"Journal","Hero","Satchel","Workshop","Hunt","Ledger"}
 local sectionLists={
 	Journal={"Bearing","Quests","Diaries","Construction","Regions","Crew","Calendar","Agility"},
-	Hero={"Skills","Gear","Combat","Spellbook","Enchant","Accessories","Pets"},
+	Hero={"Skills","Mastery","Gear","Combat","Spellbook","Enchant","Accessories","Pets"},
 	Satchel={"Items","Collections"},
 	Workshop={"Forge","Hearth","Cauldron","Workbench","Workers","Home"},
 	Hunt={"Slayer","Bestiary","Dungeon","Hunter"},
@@ -4850,7 +5098,7 @@ local sectionLists={
 sectionOf={Journal="Bearing",Hero="Skills",Satchel="Items",Workshop="Forge",Hunt="Slayer",Ledger="Bank"}
 local drawers={
 	Journal={Bearing=Pages.drawBearing,Quests=Pages.drawQuests,Diaries=Pages.drawDiaries,Construction=Pages.drawConstruction,Regions=Pages.drawRegions,Crew=Pages.drawCoop,Calendar=Pages.drawCalendar,Agility=Pages.drawAgility},
-	Hero={Skills=Pages.drawSkills,Gear=Pages.drawGear,Combat=Pages.drawCombat,Spellbook=Pages.drawSpellbook,Enchant=Pages.drawEnchant,Accessories=Pages.drawAccessories,Pets=Pages.drawPets},
+	Hero={Skills=Pages.drawSkills,Mastery=Pages.drawMastery,Gear=Pages.drawGear,Combat=Pages.drawCombat,Spellbook=Pages.drawSpellbook,Enchant=Pages.drawEnchant,Accessories=Pages.drawAccessories,Pets=Pages.drawPets},
 	Satchel={Items=Pages.drawItems,Collections=Pages.drawCollections},
 	Workshop={Forge=function() Pages.drawStation("Forge") end,Hearth=function() Pages.drawStation("Hearth") end,Cauldron=function() Pages.drawStation("Cauldron") end,
 		Workbench=function() Pages.drawStation("Workbench") end,Workers=Pages.drawWorkers,Home=Pages.drawHome},

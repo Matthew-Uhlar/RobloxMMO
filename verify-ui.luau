@@ -260,6 +260,8 @@ local function profile()
 		bestiary = { BramblebackBoar = 30, Thornling = 1, ShaleCrawler = 1000 },
 		slayerXp = { Bramble = 20, Gloom = 0, Tempest = 0 },
 		autocast = "GaleLance",
+		-- Skill Mastery: a few Mining and Melee nodes, a worn mantle request (Mining < 99: ignored).
+		mastery = { trees = { Mining = { SteadyPick = 3, QuarrySense = 1 }, Melee = { IronGrip = 2 } }, respecs = { Mining = 1 }, cooldowns = {}, active = {}, title = "Mining" },
 	}
 end
 local function snapshot(options)
@@ -334,6 +336,7 @@ local function snapshot(options)
 		slayer = { lines = lines, quest = if options.noQuest then nil else { line = "Bramble", tier = 1, progress = 40, needed = 150, bossReady = options.bossReady == true } },
 		enchants = p.enchants, combat = Progression.combatLoadout(p),
 		regions = { { id = "Hub", name = "Aether Hub", unlocked = true, requirement = "" }, { id = "Gloomhollow", name = "Gloomhollow Caverns", unlocked = false, requirement = "Mining 30, Combat 15" } },
+		mastery = Progression.masteryView(p, options.masteryNow or 0),
 	}
 	-- Quest journal: every status (done, ready with and without a lamp, active, locked).
 	local quests = {}
@@ -383,6 +386,7 @@ local function snapshot(options)
 			accessoryBag = { 1, "MeadowCharm" }, activeAccessories = 7, accessorySlots = "four", pets = { 1, { id = "Nope" }, { id = "Tidewing", level = "x" } },
 			buffs = { MightDraught = { remaining = "soon" }, Broken = 3 }, collections = { Ore = 5, Timber = { count = "many" } }, bestiary = { BramblebackBoar = "lots", Ghost = 3 },
 			slayer = { lines = { Bramble = 3 }, quest = { line = "Unknown", tier = "II" } }, enchants = { BrassSword = { Mystery = 2 }, Blade = 4 }, regions = { 3, { id = 7 } },
+			mastery = { trees = { Mining = 5, Fishing = { nodes = "x", states = { PatientLine = 3, Nope = "owned" }, available = "lots", cooldown = {} } }, tokens = 7, capes = "x", cape = 5, titles = { Mining = 4 } },
 		}
 		result.economy = { bazaar = 5, auction = { category = "weapon", listings = { 7, { id = "x" }, { id = 3, item = 4 } }, pages = "two" },
 			orders = { 1, "x", { id = "no" }, { id = 3, item = "Nope", side = "bid" } }, listings = { { cat = 3 }, { id = 2, item = "BrassSword", cat = "weapon", expires = "soon" } }, serverTime = "now" }
@@ -510,7 +514,7 @@ end
 ------------------------------------------------------------------------------
 local checks = 0
 local pages = {
-	Journal = { "Bearing", "Quests", "Diaries", "Construction", "Regions", "Crew", "Agility" }, Hero = { "Skills", "Gear", "Combat", "Spellbook", "Enchant", "Accessories", "Pets" }, Satchel = { "Items", "Collections" },
+	Journal = { "Bearing", "Quests", "Diaries", "Construction", "Regions", "Crew", "Agility" }, Hero = { "Skills", "Mastery", "Gear", "Combat", "Spellbook", "Enchant", "Accessories", "Pets" }, Satchel = { "Items", "Collections" },
 	Workshop = { "Forge", "Hearth", "Cauldron", "Workbench", "Workers", "Home" }, Hunt = { "Slayer", "Bestiary", "Hunter" }, Ledger = { "Bank", "Market", "Orders", "Auctions", "Merchant", "Vendors" },
 }
 local tabOrder = { "Journal", "Hero", "Satchel", "Workshop", "Hunt", "Ledger" }
@@ -566,6 +570,16 @@ local verbs = {
 		return propId ~= nil and Data.Island.Props[propId] ~= nil and rot <= 3 and math.abs(x) <= Data.Island.RANGE and math.abs(z) <= Data.Island.RANGE
 	end,
 	pickup = function(item) return type(item) == "string" and item:match("^%d+$") ~= nil and tonumber(item) <= Data.Island.MAX_PLACEMENTS end,
+	masteryUnlock = function(item)
+		local tree, node = tostring(item):match("^(%a+):(%w+)$")
+		return tree ~= nil and Data.Mastery.TreeById[tree] ~= nil and Data.Mastery.TreeById[tree].NodeById[node] ~= nil
+	end,
+	masteryRespec = function(item) return Data.Mastery.TreeById[item] ~= nil end,
+	ability = function(item) return Data.Mastery.TreeById[item] ~= nil and Data.Mastery.TreeById[item].capstone ~= nil end,
+	masteryWear = function(item)
+		local kind, skill = tostring(item):match("^(%a+):(%a*)$")
+		return (kind == "cape" or kind == "aura" or kind == "title") and (skill == "" or Data.Skills[skill] ~= nil)
+	end,
 	skillBuy = function(item)
 		local skill, id = tostring(item):match("^(%a+):(%w+)$")
 		local vendor = skill and Data.SkillVendors[skill]
@@ -2072,4 +2086,110 @@ do
 	checks += 3
 end
 print("Agility & Hunter client: " .. (checks - ahChecks) .. " checks.")
+-- Skill Mastery client: tree canvas, node detail and unlock, tree switching,
+-- respec confirm, capstone button, Skills page milestones and wear actions.
+do
+	local masteryChecks = checks
+	local X = Data.XP_TABLE
+	local function check(cond, case) assert(cond, case); checks += 1 end
+	local snap = snapshot({ xp = { Mining = X[70], Fishing = X[99] }, masteryNow = 1000 })
+	-- Rebuild the mastery view with a capstone path and a running cooldown.
+	local p = { xp = { Mining = X[70], Fishing = X[99] }, items = {}, collection = {}, coins = 52000,
+		mastery = { trees = { Mining = { SteadyPick = 1, QuarrySense = 1, EmberVein = 1, EchoingSeam = 1, FaultLine = 1, VeinSurge = 1 } }, cape = "Fishing" } }
+	snap.depth.mastery = Progression.masteryView(p, 1000)
+	local ui = run({ snapshot = snap })
+	press(find(ui.gui, "AtlasButton"))
+	press(ui.tabs:FindFirstChild("HeroButton"))
+	press(find(ui.scroll, "SectionMastery"))
+	noFailures(ui, "mastery page")
+	check(find(ui.scroll, "MasterySummary") ~= nil, "mastery summary card")
+	check(find(ui.scroll, "MasteryCanvas") ~= nil, "tree canvas drawn")
+	local nodes, links = 0, 0
+	for _, object in ipairs(find(ui.scroll, "MasteryCanvas"):GetChildren()) do
+		if object.Name:match("^MasteryNode") then nodes += 1 end
+		if object.Name == "Link" then links += 1 end
+	end
+	check(nodes == #Data.Mastery.TreeById.Mining.nodes, "every Mining node drawn")
+	local expectedLinks = 0
+	for _, n in ipairs(Data.Mastery.TreeById.Mining.nodes) do expectedLinks += #n.requires end
+	check(links == expectedLinks, "every prerequisite line drawn")
+	for _, id in ipairs(Data.Mastery.TreeOrder) do check(find(ui.scroll, "MasteryTree" .. id) ~= nil, "tree tab " .. id) end
+	-- Node detail with next-level preview, then unlock.
+	press(find(ui.scroll, "MasteryNodeSteadyPick"))
+	check(find(ui.scroll, "MasteryNodeDetail") ~= nil, "node detail shown")
+	table.clear(ui.sent)
+	press(find(ui.scroll, "MasteryUnlock"))
+	check(#ui.sent == 1 and ui.sent[1][1] == "masteryUnlock" and ui.sent[1][2] == "Mining:SteadyPick", "unlock sends the node")
+	-- A locked node: unlock disabled, nothing sent.
+	press(find(ui.scroll, "MasteryNodeGeomancer"))
+	table.clear(ui.sent)
+	press(find(ui.scroll, "MasteryUnlock"))
+	check(#ui.sent == 0, "locked node cannot be bought")
+	-- Capstone: owned and ready (cooldown 0 in this view).
+	table.clear(ui.sent)
+	press(find(ui.scroll, "MasteryActivate"))
+	check(#ui.sent == 1 and ui.sent[1][1] == "ability" and ui.sent[1][2] == "Mining", "capstone button fires the ability")
+	-- Respec needs a confirm.
+	table.clear(ui.sent)
+	press(find(ui.scroll, "MasteryRespec"))
+	check(#ui.sent == 0 and find(ui.scroll, "MasteryRespecConfirm") ~= nil, "respec asks first")
+	press(find(ui.scroll, "MasteryRespecConfirm"))
+	check(#ui.sent == 1 and ui.sent[1][1] == "masteryRespec" and ui.sent[1][2] == "Mining", "respec confirmed")
+	check(find(ui.scroll, "MasteryMantle") ~= nil, "worn mantle card")
+	-- Switch trees: every tree draws its own canvas.
+	for _, id in ipairs(Data.Mastery.TreeOrder) do
+		press(find(ui.scroll, "MasteryTree" .. id))
+		noFailures(ui, "mastery tree " .. id)
+		local count = 0
+		for _, object in ipairs(find(ui.scroll, "MasteryCanvas"):GetChildren()) do
+			if object.Name:match("^MasteryNode") then count += 1 end
+		end
+		check(count == #Data.Mastery.TreeById[id].nodes, id .. " canvas nodes")
+		check(find(ui.scroll, "MasteryAbility") ~= nil, id .. " capstone card")
+	end
+	-- Cooldown view: Activate disabled.
+	local cooling = table.clone(snap)
+	p.mastery.cooldowns = { Mining = 1200 }
+	cooling.depth = table.clone(snap.depth)
+	cooling.depth.mastery = Progression.masteryView(p, 1000)
+	ui.setSnapshot(cooling)
+	ui.update.OnClientEvent:Fire(cooling)
+	press(find(ui.scroll, "MasteryTreeMining"))
+	table.clear(ui.sent)
+	press(find(ui.scroll, "MasteryActivate"))
+	check(#ui.sent == 0 or ui.sent[1][1] ~= "ability", "cooling capstone cannot fire")
+	-- Skills page: summary line, milestones, mantle marker and wear actions.
+	press(find(ui.scroll, "SectionSkills"))
+	press(find(ui.scroll, "SkillFishing"))
+	check(find(ui.scroll, "SkillMilestones") ~= nil, "milestones card")
+	local checklist = find(find(ui.scroll, "SkillMilestones"), "Checklist")
+	local rows = 0
+	for _, object in ipairs(checklist:GetChildren()) do if object.Name == "Check" then rows += 1 end end
+	check(rows == 5, "five milestones listed")
+	table.clear(ui.sent)
+	press(find(ui.scroll, "SkillCapeFishing"))
+	check(#ui.sent == 1 and ui.sent[1][1] == "masteryWear" and ui.sent[1][2] == "cape:", "worn mantle can be removed")
+	press(find(ui.scroll, "SkillTitleFishing"))
+	check(ui.sent[#ui.sent][1] == "masteryWear" and ui.sent[#ui.sent][2] == "title:Fishing", "title action")
+	press(find(ui.scroll, "SkillMasteryFishing"))
+	check(find(ui.scroll, "MasteryCanvas") ~= nil and find(ui.scroll, "MasteryNodePatientLine") ~= nil, "skill page links to its tree")
+	noFailures(ui, "mastery skills page")
+	checkSent(ui)
+	-- Phone layout and an older server without mastery data.
+	local phone = run({ size = roblox.Vector2.new(420, 600), snapshot = snap })
+	press(find(phone.gui, "AtlasButton"))
+	press(phone.tabs:FindFirstChild("HeroButton"))
+	press(find(phone.scroll, "SectionMastery"))
+	noFailures(phone, "phone mastery")
+	check(find(phone.scroll, "MasteryCanvas") ~= nil, "phone canvas")
+	local old = snapshot()
+	old.depth.mastery = nil
+	local legacy = run({ snapshot = old })
+	press(find(legacy.gui, "AtlasButton"))
+	press(legacy.tabs:FindFirstChild("HeroButton"))
+	press(find(legacy.scroll, "SectionMastery"))
+	noFailures(legacy, "mastery without server data")
+	check(find(legacy.scroll, "MasteryCanvas") ~= nil, "tree still drawn while syncing")
+	print("Skill Mastery client: " .. (checks - masteryChecks) .. " checks.")
+end
 print("UI QA passed " .. checks .. " checks (" .. created .. " mock instances).")

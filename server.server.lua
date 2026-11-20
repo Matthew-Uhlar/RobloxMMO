@@ -148,6 +148,8 @@ local function note(p,text)
 	notes[p]=list
 	table.insert(list,text)
 end
+-- Skill Mastery (perk trees, capstones, mantles); filled in by the Mastery block before perform().
+local Mastery={verbs={}}
 -- Every XP grant: OSRS curve with cap, active pet share, one-time level coins.
 local function grantXp(p,skill,amount)
 	if not Data.Skills[skill] or type(amount)~="number" or amount<=0 then return end
@@ -179,6 +181,7 @@ local function collect(p,item,count)
 		p.collectionRewards[item]=tier
 		p.coins+=coins
 		note(p,Data.Items[item].name.." collection tier "..tier.."! +"..coins.." coins")
+		if Mastery.tokenNote then Mastery.tokenNote(p,claimed,tier) end
 	end
 end
 local function spend(p,cost)
@@ -964,7 +967,7 @@ do
 	function Skills.advance(trap,now)
 		while trap.state=="set" and now>=trap.nextTick do
 			trap.ticks+=1
-			trap.nextTick+=HU.TICK
+			trap.nextTick+=trap.tick or HU.TICK
 			if roll()<trap.chance then trap.state="caught"
 			elseif trap.ticks>=HU.MAX_TICKS then trap.state="collapsed" end
 		end
@@ -990,17 +993,20 @@ do
 	end
 	function Skills.catch(p,creature)
 		local stats=Progression.computeStats(p,os.time())
-		local drops=Progression.rollDrops(creature.drops,stats.magicFind,roll,stats.petLuck)
+		local hunt=Progression.masteryPerks(p,"Hunter",os.time()) -- Skill Mastery: Keen Nose, Twin Snare, Trail Lore
+		local drops=Progression.rollDrops(creature.drops,stats.magicFind+(hunt.rareFind or 0),roll,stats.petLuck)
 		local primary=creature.drops[1].item
 		if drops[primary] then drops[primary]=Progression.fortuneRoll(drops[primary],stats.huntingFortune,roll) end
+		local xp,doubled=creature.xp,false
+		drops,xp,doubled=Progression.applyHuntMastery(p,drops,xp,roll,os.time())
 		for id,n in pairs(drops) do collect(p,id,n) end
-		grantXp(p,"Hunter",creature.xp)
+		grantXp(p,"Hunter",xp)
 		local _,before=HU.logPerk(p.hunterLog)
 		p.hunterLog[creature.id]=(p.hunterLog[creature.id] or 0)+1
 		Skills.refreshPerks(p)
 		local _,after=HU.logPerk(p.hunterLog)
 		p.started=true
-		local text="Caught a "..creature.name.." • +"..creature.xp.." Hunter XP"..itemsText(drops)
+		local text="Caught a "..creature.name.." • +"..xp.." Hunter XP"..itemsText(drops)..(if doubled then " (twin catch)" else "")
 		if after>before then text..="   ·   Hunter log milestone: permanent Trap Luck and Hunting Fortune." end
 		return text
 	end
@@ -1042,7 +1048,9 @@ do
 		local placed=Skills.count(player)
 		if placed>=cap then return "You can tend "..cap.." trap"..(if cap==1 then "" else "s").." at Hunter "..lvl..". Collect one first." end
 		local stats=Progression.computeStats(p,os.time())
-		Skills.traps[prompt]={owner=player,creature=creature.id,state="set",placed=now,nextTick=now+HU.TICK,ticks=0,touched=-math.huge,
+		-- Skill Mastery: Spring Tension / Hair Trigger shorten the trap check interval (at most 60%).
+		local tick=HU.TICK*(1-math.min(60,Progression.masteryPerks(p,"Hunter",os.time()).trapTick or 0)/100)
+		Skills.traps[prompt]={owner=player,creature=creature.id,state="set",placed=now,nextTick=now+tick,tick=tick,ticks=0,touched=-math.huge,
 			chance=HU.catchChance(creature,lvl,stats.trapLuck)}
 		Skills.owned[player]=Skills.owned[player] or {}
 		Skills.owned[player][prompt]=true
@@ -1175,6 +1183,7 @@ local function applyStats(player,p,spawned)
 	local quest=p.slayerQuest
 	player:SetAttribute("SlayerBossReady",if quest and quest.bossReady then quest.line..":"..quest.tier else "")
 	Journal.apply(player,p)
+	if Mastery.apply then Mastery.apply(player,p) end
 	local humanoid=player.Character and player.Character:FindFirstChildOfClass("Humanoid")
 	if humanoid and humanoid.MaxHealth~=health then
 		local oldMax,current=humanoid.MaxHealth,humanoid.Health
@@ -1266,7 +1275,8 @@ local function depthState(p,stats)
 	return {skills=skills,totalLevel=total,skillAverage=average,stats=stats,equipment=equipment,tools=tools,
 		accessoryBag=table.clone(p.accessoryBag),activeAccessories=Progression.activeAccessories(p),accessorySlots=Progression.accessorySlots(p),
 		pets=pets,buffs=buffs,collections=collections,bestiary=p.bestiary,slayer={lines=lines,quest=p.slayerQuest},enchants=p.enchants,regions=regions,
-		combat=Progression.combatLoadout(p)} -- Combat styles: {style,weapon,ammo,ammoCount,supplies,levels,autocast}
+		combat=Progression.combatLoadout(p), -- Combat styles: {style,weapon,ammo,ammoCount,supplies,levels,autocast}
+		mastery=Mastery.state and Mastery.state(p)} -- Skill Mastery: points, trees, capstones, milestones, mantles
 end
 local function snapshot(player,message)
 	local p=profiles[player]
@@ -1377,6 +1387,7 @@ local function migrate(profile)
 	workerFleet(profile)
 	Journal.migrate(profile)
 	Skills.migrate(profile) -- Agility & Hunter records + milestone perks
+	Progression.masteryMigrate(profile) -- Skill Mastery: drop unknown/invalid nodes, reset overspent trees
 end
 -- Clears every per-player table and ends this player's session slot.
 -- Sea creatures: a successful Fishing gather may hook one (Data.rollSeaCreature).
@@ -1547,6 +1558,126 @@ local function dropText(drops)
 	return if #names>0 then " • "..table.concat(names,", ") else ""
 end
 
+------------------------------------------------------------------------------
+-- Skill Mastery (Data.Mastery; rules in Progression.mastery*).
+-- Verbs: masteryUnlock "Tree:Node" (one level), masteryRespec "Tree" (coins,
+-- scaling cost), ability "Tree" (capstone, server cooldown, persisted),
+-- masteryWear "cape:Skill" | "aura:Skill" | "title:Skill" | "cape:" (clear).
+-- Hooks: gather (Mastery.gather), Hunter catches/traps (Skills.catch/trap),
+-- bridge "consume" (Mastery.thrift: arrow/glyph save), "combatXp" (style XP
+-- boost), "stats" → result.mastery = Progression.masteryCombat(p, now):
+--   melee  = {firstStrike %, execute %, xpBoost %}
+--   ranged = {firstStrike %, execute %, arrowSave %, multishot n (1 = off), xpBoost %}
+--   magic  = {manaThrift %, glyphSave %, xpBoost %}
+--   active = {[tree] = expires (os.time)} while a combat capstone runs.
+-- Combat applies firstStrike (force a crit on the first hit against a monster
+-- at full health), execute (+% damage below 30% health), manaThrift (spell
+-- mana x (1 - %/100)) and multishot (extra targets per shot); stat effects
+-- (Warcry, Volley strength, Glyphstorm ability damage) already arrive in stats.
+-- Player attributes: MasteryCape, MasteryAura (skill or ""), MasteryTitle
+-- (title text), MasteryAbility ("Tree:expires" of the last capstone fired).
+------------------------------------------------------------------------------
+do
+	local MA=Data.Mastery
+	Mastery.verbs={masteryUnlock=true,masteryRespec=true,ability=true,masteryWear=true}
+	function Mastery.tokenNote(p,claimed,tier)
+		for _,t in ipairs(MA.TOKEN_TIERS) do
+			if claimed<t and tier>=t then note(p,"+1 Mastery Token (spend it in any mastery tree)") end
+		end
+	end
+	-- Bonus ingots and coins from a harvest; returns the message suffix.
+	function Mastery.gather(p,result)
+		local parts={}
+		for id,n in pairs(result.bonus or {}) do
+			collect(p,id,n)
+			table.insert(parts,"+"..n.." "..Data.Items[id].name)
+		end
+		if result.coins then p.coins+=result.coins; table.insert(parts,"+"..result.coins.." coins") end
+		if result.multiplied then table.insert(parts,"x"..result.multiplied.." yield") end
+		if result.surge then table.insert(parts,"surge") end
+		if result.respawnSkip then table.insert(parts,"node regrew") end
+		return if #parts>0 then "   ·   "..table.concat(parts,", ") else ""
+	end
+	-- Arrow/glyph save: removes saved supplies from cost, returns {id=n} saved.
+	function Mastery.thrift(p,cost)
+		local saved={}
+		if type(p.mastery)~="table" then return saved end
+		local perks=Progression.masteryCombat(p,os.time())
+		for id,n in pairs(table.clone(cost)) do
+			local def=Data.Items[id]
+			local chance=if def.category=="ammo" then perks.ranged.arrowSave elseif def.category=="glyph" then perks.magic.glyphSave else 0
+			if chance>=100 or (chance>0 and roll()<chance/100) then
+				saved[id]=n
+				cost[id]=nil
+			end
+		end
+		return saved
+	end
+	function Mastery.apply(player,p)
+		local m=type(p.mastery)=="table" and p.mastery or {}
+		player:SetAttribute("MasteryCape",Progression.masteryCape(p) or "")
+		local aura=m.aura
+		player:SetAttribute("MasteryAura",if type(aura)=="string" and level(p.xp[aura])>=50 then aura else "")
+		local title=type(m.title)=="string" and MA.title(m.title,level(p.xp[m.title]))
+		player:SetAttribute("MasteryTitle",title or "")
+	end
+	-- Snapshot depth.mastery (Progression.masteryView): points, node levels/states, capstones, mantles.
+	function Mastery.state(p) return Progression.masteryView(p,os.time()) end
+	local function unlock(p,item)
+		local treeId,nodeId
+		if validId(item) then treeId,nodeId=string.match(item,"^(%a+):(%w+)$") end
+		local tree=treeId and MA.TreeById[treeId]
+		if not tree then return "Choose a mastery node." end
+		local ok,why=Progression.masteryUnlock(p,treeId,nodeId)
+		if not ok then return why end
+		local node=tree.NodeById[nodeId]
+		p.started=true
+		local left=Progression.masteryPoints(p).trees[treeId].available
+		return node.name.." "..(if node.max>1 then why.." / "..node.max else "unlocked").."   ·   "..left.." "..tree.name.." point"..(if left==1 then "" else "s").." left"
+	end
+	local function respec(p,item)
+		local tree=validId(item) and MA.TreeById[item]
+		if not tree then return "Choose a mastery tree to reset." end
+		local ok,why=Progression.masteryRespec(p,tree.id)
+		if not ok then return why end
+		p.bankRevision=(p.bankRevision or 0)+1
+		return tree.name.." reset for "..why.." coins. Every point is yours to spend again."
+	end
+	local function ability(player,p,item)
+		local tree=validId(item) and MA.TreeById[item]
+		if not tree then return "Choose a mastery capstone." end
+		local now=os.time()
+		local ok,result=Progression.masteryActivate(p,tree.id,now)
+		if not ok then return result end
+		local node=tree.NodeById[tree.capstone]
+		player:SetAttribute("MasteryAbility",tree.id..":"..(now+result.duration))
+		return node.name.."! "..result.text.." Recharges in "..result.cooldown.."s."
+	end
+	local function wear(p,item)
+		local kind,skill
+		if type(item)=="string" and #item<=64 then kind,skill=string.match(item,"^(%a+):(%a*)$") end
+		if kind~="cape" and kind~="aura" and kind~="title" then return "Choose a mantle, aura or title." end
+		local m=Progression.ensureMastery(p)
+		if skill=="" then m[kind]=nil return "Removed your "..kind.."." end
+		if not Data.Skills[skill] then return "Choose a skill." end
+		local need=if kind=="cape" then Data.MAX_LEVEL elseif kind=="aura" then 50 else MA.MilestoneLevels[1]
+		if level(p.xp[skill])<need then return "Reach "..skill.." "..need.." first." end
+		m[kind]=skill
+		if kind=="cape" then
+			local def=Data.Skills[skill]
+			return "You don the Mantle of the "..(def.title or skill).."."
+		elseif kind=="aura" then return "Your "..skill.." aura shimmers." end
+		return "Title set: "..MA.title(skill,level(p.xp[skill]))
+	end
+	function Mastery.action(player,p,verb,item)
+		if verb=="masteryUnlock" then return unlock(p,item)
+		elseif verb=="masteryRespec" then return respec(p,item)
+		elseif verb=="ability" then return ability(player,p,item)
+		elseif verb=="masteryWear" then return wear(p,item) end
+		return "Unknown action."
+	end
+end
+
 local exchangeBusy={}
 local function perform(player,verb,item,prompt)
 	local p=profiles[player]
@@ -1560,6 +1691,8 @@ local function perform(player,verb,item,prompt)
 	if region and not regionAllowed(p,region) then return regionDenied(region) end
 	if Skills.verbs[verb] then
 		return Skills.action(player,p,verb,item,prompt,humanoid) -- Agility & Hunter
+	elseif Mastery.verbs[verb] then
+		return Mastery.action(player,p,verb,item) -- Skill Mastery
 	elseif Econ.verbs and Econ.verbs[verb] then
 		return Econ.action(player,verb,item or "")
 	elseif verb=="market" or verb=="list" or verb=="buy" or verb=="proceeds" or verb=="cancel" then
@@ -1586,7 +1719,7 @@ local function perform(player,verb,item,prompt)
 		local event=Data.eventGather(item,Data.eventState(workspace,os.time()),roll)
 		bonus+=event.bonus
 		local stats=Progression.computeStats(p,os.time())
-		local ok,result=Progression.harvest(p,item,stats,roll,bonus)
+		local ok,result=Progression.harvest(p,item,stats,roll,bonus,os.time())
 		if not ok then
 			if item=="Aetherite" then return result.." Train on Ore in Quarry Cay." end
 			return result
@@ -1596,12 +1729,13 @@ local function perform(player,verb,item,prompt)
 		for id,n in pairs(event.extra) do collect(p,id,n); note(p,"Festival catch • +"..n.." "..Data.Items[id].name) end
 		collect(p,item,result.amount)
 		grantXp(p,skill,result.xp)
+		local mastered=Mastery.gather(p,result) -- Skill Mastery: bonus ingots, coins, regrowth skip
 		if region then Journal.count(p,"gathers",region,1) end
 		p.started=true
 		if not regrowth then regrowth={}; nodeRegrowth[prompt]=regrowth; watchPrompt(prompt) end
-		regrowth[player]=os.clock()+(tonumber(resource.respawn) or 3)
+		regrowth[player]=os.clock()+(if result.respawnSkip then 0 else (tonumber(resource.respawn) or 3))
 		local hooked=if skill=="Fishing" then Sea.cast(player,p,stats,result.tool,region,prompt) else ""
-		return "+"..result.amount.." "..resource.name.."   ·   +"..result.xp.." "..skill.." XP"..hooked
+		return "+"..result.amount.." "..resource.name.."   ·   +"..result.xp.." "..skill.." XP"..mastered..hooked
 	elseif verb=="explore" and prompt and item=="Skyreach" and region=="Skyreach" then
 		if p.skyreachVisited then return "Skyreach is already charted. Gather rich Aetherite or continue your guild contracts." end
 		p.skyreachVisited=true
@@ -2124,10 +2258,13 @@ function CombatStyles.consume(p,payload)
 		if count>8 then return {ok=false,reason="invalid"} end
 	end
 	if count==0 then return {ok=false,reason="invalid"} end
+	for id,n in pairs(cost) do if (p.items[id] or 0)<n then return {ok=false,reason="missing"} end end
+	local saved=Mastery.thrift(p,cost) -- Skill Mastery: Quiver/Ink Thrift keep some supplies
 	if not spend(p,cost) then return {ok=false,reason="missing"} end
 	local remaining={}
 	for id in pairs(cost) do remaining[id]=p.items[id] end
-	return {ok=true,remaining=remaining}
+	for id in pairs(saved) do remaining[id]=p.items[id] end
+	return {ok=true,remaining=remaining,saved=if next(saved) then saved else nil}
 end
 -- "refund" returns supplies a cast paid for but could not use (a Hubward
 -- tablet that failed to teleport). Same validation as "consume".
@@ -2169,6 +2306,9 @@ function CombatStyles.xp(p,payload)
 	end
 	local spell=style=="magic" and validId(payload.spell) and Data.Spells[payload.spell]
 	if spell and spell.xp then gains.Magic=(gains.Magic or 0)+spell.xp end
+	-- Skill Mastery: Weapon Lore / Longwatch / Studious raise that style's XP.
+	local lore=type(p.mastery)=="table" and Progression.masteryCombat(p,os.time())[style].xpBoost or 0
+	if lore>0 then for skill,amount in pairs(gains) do gains[skill]=amount*(1+lore/100) end end
 	local carry=CombatStyles.carry[p] or {}
 	CombatStyles.carry[p]=carry
 	local granted,levelled={},false
@@ -2215,7 +2355,8 @@ bridge.OnInvoke=function(op,player,payload)
 	end
 	if op=="stats" then
 		return {stats=Progression.computeStats(p,os.time()),combatLevel=level(p.xp.Combat),ironman=p.ironman==true,
-			loadout=Progression.combatLoadout(p)} -- Combat styles: weapon style, quiver, supplies, autocast
+			loadout=Progression.combatLoadout(p), -- Combat styles: weapon style, quiver, supplies, autocast
+			mastery=Progression.masteryCombat(p,os.time())} -- Skill Mastery perks combat applies (see Mastery block)
 	elseif op=="consume" then
 		return CombatStyles.consume(p,payload)
 	elseif op=="refund" then

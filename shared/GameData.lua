@@ -2627,4 +2627,279 @@ end
 end
 -- End Agility & Hunter section.
 
+------------------------------------------------------------------------------
+-- Mastery (Skill Mastery team; append-only section).
+-- Per-activity perk trees (SkyBlock "mountain heart" style) for the five
+-- gathering skills and the three combat styles, plus OSRS-style skill
+-- milestones (titles, auras, 99 mantles with a stat perk).
+--   * Points: each tree draws on its skill: 1 point per level above
+--     POINT_START_LEVEL, plus 1 per POST_MAX_STEP XP beyond level 99. Mastery
+--     Tokens (1 per collection reaching a TOKEN_TIERS tier) are a shared pool
+--     that pays for whatever a tree's own points cannot.
+--   * Nodes: {id, name, x (1-5), y (row 1-6), max, cost (points per level),
+--     level (skill gate), requires (ANY listed node owned; roots have none),
+--     stats (per level, added to computeStats), perks (per level, read by
+--     harvest / the Hunter path / the combat bridge), ability (capstone)}.
+--   * Capstone abilities: verb `ability "<tree>"`, server cooldown, timed effect.
+--   * Respec: verb `masteryRespec "<tree>"`, coins = respecCost(spent, count).
+-- Rules live in shared/Progression.lua (mastery*), server verbs in
+-- server.server.lua (Mastery block), UI in Hero › Mastery.
+-- Profile (optional; migrated): p.mastery = {trees={[tree]={[node]=level}},
+--   respecs={[tree]=n}, cooldowns={[tree]=os.time}, active={[tree]={started,expires}},
+--   cape=skill|nil, aura=skill|nil, title=skill|nil}.
+------------------------------------------------------------------------------
+do
+local MA = {
+	POINT_START_LEVEL = 10,       -- 1 point per level above this (89 at 99)
+	POST_MAX_STEP = 1000000,      -- +1 point per 1M XP beyond level 99 (up to 186 more)
+	TOKEN_TIERS = {5, 9},         -- collection tiers that each award one Mastery Token
+	RESPEC_BASE = 1000, RESPEC_PER_POINT = 60, RESPEC_GROWTH = 1.5, RESPEC_CAP = 2000000,
+	PERK_CAP = 100,               -- every chance perk is capped at 100%
+	TreeOrder = {"Mining","Woodcutting","Fishing","Farming","Hunter","Melee","Ranged","Magic"},
+	Trees = {}, TreeById = {}, TreeOfSkill = {},
+}
+Data.Mastery = MA
+
+-- Perk vocabulary: how each perk key reads (value is a total, after levels).
+MA.Perks = {
+	xpBoost     = {name="Lore",          text="+%s%% skill XP from this activity"},
+	doubleYield = {name="Twin yield",    text="%s%% chance to double a harvest"},
+	tripleYield = {name="Bountiful",     text="%s%% chance to triple a harvest"},
+	respawnSkip = {name="Quick regrowth",text="%s%% chance a node regrows instantly"},
+	autoSmelt   = {name="Ember touch",   text="%s%% chance to smelt a bonus ingot from the ore"},
+	coinFind    = {name="Glint",         text="%s%% chance to find coins (5x the resource value)"},
+	trapTick    = {name="Hair trigger",  text="Traps check %s%% faster"},
+	rareFind    = {name="Keen nose",     text="+%s Magic Find on catches"},
+	firstStrike = {name="Opening blow",  text="%s%% chance your first hit on a fresh foe crits"},
+	execute     = {name="Finisher",      text="+%s%% damage to foes below 30%% health"},
+	arrowSave   = {name="Quiver thrift", text="%s%% chance a shot keeps its arrow"},
+	glyphSave   = {name="Ink thrift",    text="%s%% chance a cast keeps its glyphs"},
+	manaThrift  = {name="Lean casting",  text="-%s%% spell mana cost"},
+	multishot   = {name="Volley",        text="Shots strike %s targets"},
+	yieldMult   = {name="Surge",         text="Harvests yield x%s"},
+}
+
+-- Shared shape: a five-column, six-row lattice that branches from one root,
+-- merges in the middle and narrows to the capstone (x=3, y=6). Keystones at
+-- (1,6)/(5,6) are late-game side nodes. requires lists ANY-of prerequisites.
+local function tree(def)
+	def.nodes = def.nodes or {}
+	def.NodeById = {}
+	for index, n in ipairs(def.nodes) do
+		n.index = index
+		n.max = n.max or 1
+		n.cost = n.cost or 1
+		n.level = n.level or 1
+		n.requires = n.requires or {}
+		def.NodeById[n.id] = n
+		if n.ability then def.capstone = n.id end
+	end
+	table.insert(MA.Trees, def)
+	MA.TreeById[def.id] = def
+	MA.TreeOfSkill[def.skill] = def.id
+	return def
+end
+
+tree({id="Mining",skill="Mining",name="Deepvein Lattice",color="8C7A6B",activity="gather",
+	blurb="Read the stone: richer seams, ember-smelted ingots and veins that regrow under your pick.",nodes={
+	{id="SteadyPick",name="Steady Pick",x=3,y=1,max=10,stats={miningFortune=3}},
+	{id="QuarrySense",name="Quarry Sense",x=2,y=2,max=5,requires={"SteadyPick"},perks={xpBoost=2}},
+	{id="SeamReader",name="Seam Reader",x=4,y=2,max=5,requires={"SteadyPick"},perks={doubleYield=2}},
+	{id="Stoneskin",name="Stoneskin",x=1,y=3,max=10,level=15,requires={"QuarrySense"},stats={defense=2}},
+	{id="EmberVein",name="Ember Vein",x=3,y=3,max=5,level=25,requires={"QuarrySense","SeamReader"},perks={autoSmelt=3}},
+	{id="RichStrata",name="Rich Strata",x=5,y=3,max=10,level=15,requires={"SeamReader"},stats={miningFortune=5}},
+	{id="EchoingSeam",name="Echoing Seam",x=2,y=4,max=5,level=35,requires={"Stoneskin","EmberVein"},perks={respawnSkip=4}},
+	{id="GlintEye",name="Glint Eye",x=4,y=4,max=5,level=35,requires={"EmberVein","RichStrata"},perks={coinFind=2}},
+	{id="DelversLungs",name="Delver's Lungs",x=1,y=5,max=5,level=40,requires={"EchoingSeam"},stats={health=8}},
+	{id="FaultLine",name="Fault Line",x=3,y=5,max=3,cost=2,level=50,requires={"EchoingSeam","GlintEye"},perks={doubleYield=5}},
+	{id="MoltenCore",name="Molten Core",x=5,y=5,max=5,level=50,requires={"GlintEye"},perks={autoSmelt=3}},
+	{id="VeinSurge",name="Vein Surge",x=3,y=6,cost=5,level=60,requires={"FaultLine"},
+		ability={duration=20,cooldown=300,yieldMult=2,text="For 20 s every mining harvest yields x2."}},
+	{id="BedrockInstinct",name="Bedrock Instinct",x=1,y=6,max=3,cost=3,level=75,requires={"DelversLungs"},stats={miningFortune=15}},
+	{id="Geomancer",name="Geomancer",x=5,y=6,max=3,cost=3,level=85,requires={"MoltenCore"},perks={xpBoost=4}},
+}})
+
+tree({id="Woodcutting",skill="Woodcutting",name="Canopy Codex",color="5E8C4A",activity="gather",
+	blurb="Fell with the grain: twin logs, amber sap and saplings that spring back as you watch.",nodes={
+	{id="KeenEdge",name="Keen Edge",x=3,y=1,max=10,stats={foragingFortune=3}},
+	{id="GrainReader",name="Grain Reader",x=2,y=2,max=5,requires={"KeenEdge"},perks={xpBoost=2}},
+	{id="TwinFell",name="Twin Fell",x=4,y=2,max=5,requires={"KeenEdge"},perks={doubleYield=2}},
+	{id="LumberShoulders",name="Lumber Shoulders",x=1,y=3,max=10,level=15,requires={"GrainReader"},stats={strength=1}},
+	{id="AmberSap",name="Amber Sap",x=3,y=3,max=5,level=25,requires={"GrainReader","TwinFell"},perks={coinFind=2}},
+	{id="Heartwood",name="Heartwood",x=5,y=3,max=10,level=15,requires={"TwinFell"},stats={foragingFortune=5}},
+	{id="SwiftSaplings",name="Swift Saplings",x=2,y=4,max=5,level=35,requires={"LumberShoulders","AmberSap"},perks={respawnSkip=5}},
+	{id="WoodlandStride",name="Woodland Stride",x=4,y=4,max=5,level=35,requires={"AmberSap","Heartwood"},stats={speed=2}},
+	{id="BarkHide",name="Bark Hide",x=1,y=5,max=5,level=40,requires={"SwiftSaplings"},stats={defense=3}},
+	{id="SplittingMaul",name="Splitting Maul",x=3,y=5,max=3,cost=2,level=50,requires={"SwiftSaplings","WoodlandStride"},perks={doubleYield=5}},
+	{id="GroveWisdom",name="Grove Wisdom",x=5,y=5,max=5,level=50,requires={"WoodlandStride"},perks={xpBoost=3}},
+	{id="TimberTempest",name="Timber Tempest",x=3,y=6,cost=5,level=60,requires={"SplittingMaul"},
+		ability={duration=30,cooldown=360,yieldMult=2,respawnSkip=100,text="For 30 s logs yield x2 and every tree regrows at once."}},
+	{id="Elderbark",name="Elderbark",x=1,y=6,max=3,cost=3,level=75,requires={"BarkHide"},stats={foragingFortune=15}},
+}})
+
+tree({id="Fishing",skill="Fishing",name="Tidewright Chart",color="3F7CAC",activity="gather",
+	blurb="Read the currents: doubled catches, salvaged trinkets and the deep things that rise to your line.",nodes={
+	{id="PatientLine",name="Patient Line",x=3,y=1,max=10,stats={fishingFortune=3}},
+	{id="LureCraft",name="Lure Craft",x=2,y=2,max=5,requires={"PatientLine"},perks={xpBoost=2}},
+	{id="DoubleHook",name="Double Hook",x=4,y=2,max=5,requires={"PatientLine"},perks={doubleYield=2}},
+	{id="DeepCurrent",name="Deep Current",x=1,y=3,max=5,level=20,requires={"LureCraft"},stats={seaCreatureChance=1}},
+	{id="Salvager",name="Salvager",x=3,y=3,max=5,level=25,requires={"LureCraft","DoubleHook"},perks={coinFind=3}},
+	{id="BrineBlood",name="Brine Blood",x=5,y=3,max=10,level=15,requires={"DoubleHook"},stats={health=6}},
+	{id="AbyssalCall",name="Abyssal Call",x=1,y=4,max=5,level=40,requires={"DeepCurrent"},stats={seaCreatureChance=1}},
+	{id="ShoalSense",name="Shoal Sense",x=3,y=4,max=5,level=35,requires={"DeepCurrent","Salvager","BrineBlood"},perks={respawnSkip=4}},
+	{id="KrakenGrip",name="Kraken Grip",x=5,y=4,max=10,level=35,requires={"BrineBlood"},stats={fishingFortune=5}},
+	{id="LeviathanLore",name="Leviathan Lore",x=2,y=5,max=5,level=50,requires={"AbyssalCall","ShoalSense"},stats={strength=2,critDamage=2}},
+	{id="CastNet",name="Cast Net",x=4,y=5,max=3,cost=2,level=50,requires={"ShoalSense","KrakenGrip"},perks={doubleYield=5}},
+	{id="Tidecall",name="Tidecall",x=3,y=6,cost=5,level=60,requires={"LeviathanLore","CastNet"},
+		ability={duration=30,cooldown=360,yieldMult=2,stats={seaCreatureChance=20},text="For 30 s catches yield x2 and +20 Sea Creature Chance."}},
+	{id="Stormsailor",name="Stormsailor",x=1,y=6,max=3,cost=3,level=75,requires={"LeviathanLore"},stats={seaCreatureChance=2}},
+	{id="Brinewise",name="Brinewise",x=5,y=6,max=3,cost=3,level=85,requires={"CastNet"},stats={fishingFortune=15}},
+}})
+
+tree({id="Farming",skill="Farming",name="Greenward Almanac",color="C9A227",activity="gather",
+	blurb="Tend the rows: bumper crops, triple furrows and fields that sprout again before you turn.",nodes={
+	{id="TilledRows",name="Tilled Rows",x=3,y=1,max=10,stats={farmingFortune=3}},
+	{id="AlmanacStudy",name="Almanac Study",x=2,y=2,max=5,requires={"TilledRows"},perks={xpBoost=2}},
+	{id="BumperCrop",name="Bumper Crop",x=4,y=2,max=5,requires={"TilledRows"},perks={doubleYield=2}},
+	{id="HeartyHarvest",name="Hearty Harvest",x=1,y=3,max=10,level=15,requires={"AlmanacStudy"},stats={health=6}},
+	{id="MarketEye",name="Market Eye",x=3,y=3,max=5,level=25,requires={"AlmanacStudy","BumperCrop"},perks={coinFind=3}},
+	{id="RichLoam",name="Rich Loam",x=5,y=3,max=10,level=15,requires={"BumperCrop"},stats={farmingFortune=5}},
+	{id="QuickSprout",name="Quick Sprout",x=2,y=4,max=5,level=35,requires={"HeartyHarvest","MarketEye"},perks={respawnSkip=6}},
+	{id="SeedSaver",name="Seed Saver",x=4,y=4,max=5,level=35,requires={"MarketEye","RichLoam"},perks={doubleYield=2}},
+	{id="SunlitRows",name="Sunlit Rows",x=1,y=5,max=5,level=45,requires={"QuickSprout"},stats={farmingFortune=4}},
+	{id="TripleFurrow",name="Triple Furrow",x=3,y=5,max=3,cost=2,level=50,requires={"QuickSprout","SeedSaver"},perks={tripleYield=3}},
+	{id="Pollinator",name="Pollinator",x=5,y=5,max=5,level=50,requires={"SeedSaver"},stats={petLuck=1}},
+	{id="VerdantBloom",name="Verdant Bloom",x=3,y=6,cost=5,level=60,requires={"TripleFurrow"},
+		ability={duration=20,cooldown=300,yieldMult=3,text="For 20 s every crop harvest yields x3."}},
+	{id="Harvestlord",name="Harvestlord",x=5,y=6,max=3,cost=3,level=75,requires={"Pollinator"},stats={farmingFortune=15}},
+}})
+
+tree({id="Hunter",skill="Hunter",name="Trackways Map",color="A8763E",activity="hunt",
+	blurb="Know the trail: faster traps, twin catches and a nose for the rare pelt.",nodes={
+	{id="QuietStep",name="Quiet Step",x=3,y=1,max=10,stats={huntingFortune=2}},
+	{id="TrailLore",name="Trail Lore",x=2,y=2,max=5,requires={"QuietStep"},perks={xpBoost=2}},
+	{id="SnugKnots",name="Snug Knots",x=4,y=2,max=5,requires={"QuietStep"},stats={trapLuck=1}},
+	{id="SpringTension",name="Spring Tension",x=1,y=3,max=5,level=20,requires={"TrailLore"},perks={trapTick=3}},
+	{id="TwinSnare",name="Twin Snare",x=3,y=3,max=5,level=25,requires={"TrailLore","SnugKnots"},perks={doubleYield=3}},
+	{id="KeenNose",name="Keen Nose",x=5,y=3,max=5,level=25,requires={"SnugKnots"},perks={rareFind=4}},
+	{id="HairTrigger",name="Hair Trigger",x=2,y=4,max=5,level=40,requires={"SpringTension","TwinSnare"},perks={trapTick=3}},
+	{id="PeltGrader",name="Pelt Grader",x=4,y=4,max=10,level=35,requires={"TwinSnare","KeenNose"},stats={huntingFortune=4}},
+	{id="Fleetfoot",name="Fleetfoot",x=1,y=5,max=5,level=45,requires={"HairTrigger"},stats={speed=2}},
+	{id="MasterTrapper",name="Master Trapper",x=3,y=5,max=3,cost=2,level=50,requires={"HairTrigger","PeltGrader"},stats={trapLuck=2}},
+	{id="WildBond",name="Wild Bond",x=5,y=5,max=5,level=50,requires={"PeltGrader"},stats={petLuck=2}},
+	{id="LureSong",name="Lure Song",x=3,y=6,cost=5,level=60,requires={"MasterTrapper"},
+		ability={duration=60,cooldown=420,doubleYield=100,stats={trapLuck=25},text="For 60 s every catch pays double and +25 Trap Luck."}},
+	{id="Packmaster",name="Packmaster",x=1,y=6,max=3,cost=3,level=75,requires={"Fleetfoot"},perks={rareFind=10}},
+}})
+
+tree({id="Melee",skill="Combat",style="melee",name="Warpath Codex",color="C8553D",activity="combat",
+	blurb="Steel and nerve: opening blows that crit, finishing strikes and a warcry that shakes the isles.",nodes={
+	{id="IronGrip",name="Iron Grip",x=3,y=1,max=10,stats={strength=2}},
+	{id="BattleRhythm",name="Battle Rhythm",x=2,y=2,max=5,requires={"IronGrip"},stats={attackSpeed=1}},
+	{id="KeenBlade",name="Keen Blade",x=4,y=2,max=5,requires={"IronGrip"},stats={critChance=1}},
+	{id="Bulwark",name="Bulwark",x=1,y=3,max=10,level=15,requires={"BattleRhythm"},stats={defense=3}},
+	{id="OpeningBlow",name="Opening Blow",x=3,y=3,max=5,level=25,requires={"BattleRhythm","KeenBlade"},perks={firstStrike=10}},
+	{id="CruelEdge",name="Cruel Edge",x=5,y=3,max=10,level=15,requires={"KeenBlade"},stats={critDamage=3}},
+	{id="Bloodthirst",name="Bloodthirst",x=2,y=4,max=5,level=35,requires={"Bulwark","OpeningBlow"},stats={lifesteal=1}},
+	{id="Finisher",name="Finisher",x=4,y=4,max=5,level=35,requires={"OpeningBlow","CruelEdge"},perks={execute=4}},
+	{id="Warhide",name="Warhide",x=1,y=5,max=10,level=40,requires={"Bloodthirst"},stats={health=10}},
+	{id="WeaponLore",name="Weapon Lore",x=3,y=5,max=5,level=45,requires={"Bloodthirst","Finisher"},perks={xpBoost=3}},
+	{id="RendingStrikes",name="Rending Strikes",x=5,y=5,max=5,cost=2,level=50,requires={"Finisher"},stats={strength=4}},
+	{id="WarcryCrescendo",name="Warcry Crescendo",x=3,y=6,cost=5,level=60,requires={"WeaponLore","RendingStrikes"},
+		ability={duration=15,cooldown=240,stats={strength=60,critChance=20},text="For 15 s +60 Strength and +20 Crit Chance."}},
+	{id="Unbroken",name="Unbroken",x=1,y=6,max=3,cost=3,level=75,requires={"Warhide"},stats={defense=15}},
+	{id="Bladesong",name="Bladesong",x=5,y=6,max=3,cost=3,level=85,requires={"RendingStrikes"},stats={critDamage=10}},
+}})
+
+tree({id="Ranged",skill="Ranged",style="ranged",name="Fletchline Doctrine",color="6FA35A",activity="combat",
+	blurb="Draw, breathe, loose: arrows that come back to the quiver, pinning shots and the Volley.",nodes={
+	{id="SteadyDraw",name="Steady Draw",x=3,y=1,max=10,stats={rangedStrength=2}},
+	{id="EagleSight",name="Eagle Sight",x=2,y=2,max=5,requires={"SteadyDraw"},stats={rangedAccuracy=3}},
+	{id="QuiverThrift",name="Quiver Thrift",x=4,y=2,max=5,requires={"SteadyDraw"},perks={arrowSave=3}},
+	{id="LightFeet",name="Light Feet",x=1,y=3,max=5,level=15,requires={"EagleSight"},stats={speed=2}},
+	{id="PinningShot",name="Pinning Shot",x=3,y=3,max=5,level=25,requires={"EagleSight","QuiverThrift"},perks={firstStrike=10}},
+	{id="BarbedHeads",name="Barbed Heads",x=5,y=3,max=10,level=15,requires={"QuiverThrift"},stats={critDamage=3}},
+	{id="WindReader",name="Wind Reader",x=2,y=4,max=5,level=35,requires={"LightFeet","PinningShot"},stats={rangedAccuracy=4}},
+	{id="FletchersEye",name="Fletcher's Eye",x=4,y=4,max=5,level=35,requires={"PinningShot","BarbedHeads"},perks={arrowSave=4}},
+	{id="Skirmisher",name="Skirmisher",x=1,y=5,max=5,level=40,requires={"WindReader"},stats={critChance=1}},
+	{id="Deadeye",name="Deadeye",x=3,y=5,max=5,cost=2,level=50,requires={"WindReader","FletchersEye"},stats={rangedStrength=5}},
+	{id="QuarryMark",name="Quarry Mark",x=5,y=5,max=5,level=50,requires={"FletchersEye"},perks={execute=4}},
+	{id="Volley",name="Volley",x=3,y=6,cost=5,level=60,requires={"Deadeye"},
+		ability={duration=10,cooldown=180,multishot=3,stats={rangedStrength=20},text="For 10 s each shot strikes 3 targets, +20 Ranged Strength."}},
+	{id="Longwatch",name="Longwatch",x=5,y=6,max=3,cost=3,level=75,requires={"QuarryMark"},perks={xpBoost=4}},
+}})
+
+tree({id="Magic",skill="Magic",style="magic",name="Glyphbound Grimoire",color="5C7AEA",activity="combat",
+	blurb="Ink and will: glyphs that are not spent, leaner casting and the Glyphstorm.",nodes={
+	{id="FocusedMind",name="Focused Mind",x=3,y=1,max=10,stats={intelligence=5}},
+	{id="InkThrift",name="Ink Thrift",x=2,y=2,max=5,requires={"FocusedMind"},perks={glyphSave=3}},
+	{id="ManaWeave",name="Mana Weave",x=4,y=2,max=5,requires={"FocusedMind"},perks={manaThrift=2}},
+	{id="WardedRobes",name="Warded Robes",x=1,y=3,max=10,level=15,requires={"InkThrift"},stats={defense=2}},
+	{id="ArcaneSurge",name="Arcane Surge",x=3,y=3,max=5,level=25,requires={"InkThrift","ManaWeave"},stats={abilityDamage=1}},
+	{id="DeepWell",name="Deep Well",x=5,y=3,max=10,level=15,requires={"ManaWeave"},stats={intelligence=8}},
+	{id="ScribesPatience",name="Scribe's Patience",x=2,y=4,max=5,level=35,requires={"WardedRobes","ArcaneSurge"},perks={glyphSave=4}},
+	{id="LeanCasting",name="Lean Casting",x=4,y=4,max=5,level=35,requires={"ArcaneSurge","DeepWell"},perks={manaThrift=3}},
+	{id="RunicSkin",name="Runic Skin",x=1,y=5,max=5,level=40,requires={"ScribesPatience"},stats={health=8}},
+	{id="Spellweaver",name="Spellweaver",x=3,y=5,max=5,cost=2,level=50,requires={"ScribesPatience","LeanCasting"},stats={abilityDamage=2}},
+	{id="Studious",name="Studious",x=5,y=5,max=5,level=45,requires={"LeanCasting"},perks={xpBoost=3}},
+	{id="Glyphstorm",name="Glyphstorm",x=3,y=6,cost=5,level=60,requires={"Spellweaver"},
+		ability={duration=15,cooldown=240,manaThrift=50,glyphSave=100,stats={abilityDamage=25},text="For 15 s spells cost half mana, spend no glyphs, +25% Ability Damage."}},
+	{id="Archmage",name="Archmage",x=1,y=6,max=3,cost=3,level=75,requires={"RunicSkin"},stats={intelligence=40}},
+}})
+
+-- Ore -> ingot for Ember touch (auto-smelt).
+MA.SmeltOf = {Ore="AlloyIngot"}
+for _, tier in ipairs(Data.MetalTiers) do MA.SmeltOf[tier.ore] = tier.ingot end
+
+-- Respec price: grows with points spent and with every earlier respec of that tree.
+function MA.respecCost(spent, count)
+	local cost = (MA.RESPEC_BASE + MA.RESPEC_PER_POINT * math.max(0, spent or 0)) * MA.RESPEC_GROWTH ^ math.max(0, count or 0)
+	return math.min(MA.RESPEC_CAP, math.floor(cost))
+end
+
+------------------------------------------------------------------------------
+-- Skill milestones (OSRS-style unlock list): titles at 10/25/50/75/99, auras
+-- at 50 and 75, a mantle (skillcape) at 99 whose stat perk applies while worn.
+-- Coin rewards stay Data.levelCoinReward (paid by the server on level-up).
+------------------------------------------------------------------------------
+MA.MilestoneLevels = {10, 25, 50, 75, 99}
+MA.TitlePrefix = {[10]="Fledgling",[25]="Adept",[50]="Seasoned",[75]="Master",[99]="Grand"}
+MA.AuraLevels = {[50]="Ember",[75]="Radiant"}
+MA.CapePerk = {
+	Combat={strength=10,critDamage=10}, Mining={miningFortune=25,defense=10}, Woodcutting={foragingFortune=25,strength=5},
+	Fishing={fishingFortune=20,seaCreatureChance=2}, Farming={farmingFortune=25,health=20}, Smithing={defense=20},
+	Cooking={health=50}, Alchemy={intelligence=30,health=10}, Enchanting={intelligence=30,magicFind=2}, Taming={petLuck=10},
+	Dungeoneering={health=50,defense=10}, Carpentry={health=30,defense=5}, Ranged={rangedStrength=10,rangedAccuracy=10},
+	Magic={intelligence=50,abilityDamage=5}, Fletching={rangedStrength=8,speed=3}, Glyphcraft={intelligence=25,abilityDamage=3},
+	Agility={speed=10,surefoot=10}, Hunter={trapLuck=5,huntingFortune=10},
+}
+MA.DefaultCapePerk = {health=25}
+function MA.capePerk(skill) return MA.CapePerk[skill] or MA.DefaultCapePerk end
+function MA.title(skill, level)
+	local def = Data.Skills[skill]
+	local best = nil
+	for _, at in ipairs(MA.MilestoneLevels) do if (level or 1) >= at then best = at end end
+	if not best or not def then return nil end
+	return MA.TitlePrefix[best].." "..(def.title or skill), best
+end
+-- Ordered milestone list for a skill: {level, kind ("title"|"aura"|"cape"), name, text, coins, stats?}.
+function MA.milestones(skill)
+	local def = Data.Skills[skill]
+	if not def then return {} end
+	local out = {}
+	for _, at in ipairs(MA.MilestoneLevels) do
+		local entry = {level=at,kind="title",name=MA.TitlePrefix[at].." "..(def.title or skill),coins=Data.levelCoinReward(at)}
+		entry.text = "Title: "..entry.name
+		if MA.AuraLevels[at] then entry.kind = "aura"; entry.aura = MA.AuraLevels[at]; entry.text ..= " · "..MA.AuraLevels[at].." "..skill.." aura" end
+		if at == Data.MAX_LEVEL then
+			entry.kind = "cape"; entry.cape = "Mantle of the "..(def.title or skill); entry.stats = MA.capePerk(skill)
+			entry.text ..= " · "..entry.cape.." (skillcape)"
+		end
+		table.insert(out, entry)
+	end
+	return out
+end
+end
+-- End Mastery section.
+
 return Data
