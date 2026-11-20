@@ -143,6 +143,86 @@ local ROMAN = {"I", "II", "III", "IV", "V"}
 -- Aquatic body plans used by Data.SeaCreatures[id].body.
 local SEA_BODIES = {serpent = true, crab = true, ray = true, jelly = true}
 
+-- Slayer tasks section (Slayer team): bodies of the slayer-only monsters
+-- (Data.SlayerTasks.SlayerOnlyOrder). blueprint() calls SLAYER_BODY[kind](kit)
+-- with its part helpers; each returns hip, hitbox, flying, light.
+BODY_KIND.HollowcapShrieker, BODY_KIND.MirrorscaleBasilisk = "shrieker", "basilisk"
+BODY_KIND.ThundercragGargant, BODY_KIND.UmbralDreadmaw = "gargant", "dreadmaw"
+local SLAYER_BODY = {}
+function SLAYER_BODY.shrieker(k)
+	local V, CF, A, add = Vector3.new, CFrame.new, CFrame.Angles, k.add
+	local spore = k.hex("E9F5B0")
+	add("Stalk", "Cylinder", V(3.0, 1.5, 1.5), CF(0, -0.4, 0) * k.upright, k.light, "SmoothPlastic", "sway")
+	add("Cap", "Cylinder", V(0.9, 4.4, 4.4), CF(0, 1.5, 0) * k.upright, k.base)
+	add("Dome", "Ball", V(3.0, 3.0, 3.0), CF(0, 1.9, 0), k.base)
+	add("Gills", "Cylinder", V(0.3, 3.6, 3.6), CF(0, 0.95, 0) * k.upright, k.dark, "Fabric")
+	k.eyes(0.45, 0.2, -0.78, 0.32)
+	add("Mouth", "Block", V(0.9, 0.35, 0.2), CF(0, -0.45, -0.72), k.dark, "Neon")
+	for i = 1, 5 do
+		add("Spot" .. i, "Ball", V(0.6, 0.6, 0.6), A(0, (i - 1) * 2 * math.pi / 5, 0) * CF(1.6, 2.4, 0), spore, "Neon")
+	end
+	for i = 1, 3 do
+		add("Root" .. i, "Wedge", V(0.5, 1.0, 1.4), A(0, (i - 1) * 2 * math.pi / 3, 0) * CF(0, -1.7, -0.9), k.dark, "Wood")
+	end
+	return 2.2, V(4.4, 5, 4.4), false, spore
+end
+function SLAYER_BODY.basilisk(k)
+	local V, CF, add = Vector3.new, CFrame.new, k.add
+	local mirror = k.hex("E9FBFF")
+	add("Body", "Cylinder", V(5.0, 1.8, 1.8), CF(0, 0, 0.2) * k.alongZ, k.base)
+	add("Head", "Block", V(1.4, 1.1, 1.8), CF(0, 0.3, -3.1), k.base)
+	add("Jaw", "Wedge", V(1.2, 0.4, 1.4), CF(0, -0.25, -3.3) * CFrame.Angles(math.pi, 0, 0), k.dark)
+	k.eyes(0.45, 0.55, -4.02, 0.3)
+	for i, z in ipairs({-1.6, 1.6}) do
+		add("LegL" .. i, "Block", V(0.5, 1.2, 0.5), CF(-1.0, -0.8, z), k.dark, nil, if i == 1 then "legA" else "legB")
+		add("LegR" .. i, "Block", V(0.5, 1.2, 0.5), CF(1.0, -0.8, z), k.dark, nil, if i == 1 then "legB" else "legA")
+	end
+	add("Tail", "Cylinder", V(3.2, 0.6, 0.6), CF(0, 0, 3.9) * k.alongZ, k.base, nil, "tail", {pivot = V(-1.6, 0, 0)})
+	for i = 1, 4 do
+		add("Mirror" .. i, "Cylinder", V(0.12, 1.0, 1.0), CF(0, 1.0, -1.8 + i * 0.9) * CFrame.Angles(0, math.pi / 2, 0), mirror, "Glass", nil, {transparency = 0.15})
+	end
+	add("Crest", "Wedge", V(0.25, 0.8, 1.2), CF(0, 1.05, -2.9), k.light, "Glass")
+	return 1.4, V(3, 2.8, 8.4), false, mirror
+end
+function SLAYER_BODY.gargant(k)
+	local V, CF, add = Vector3.new, CFrame.new, k.add
+	local bolt = k.hex("BFE4FF")
+	add("Torso", "Block", V(4.6, 4.0, 3.0), CF(0, 1.0, 0), k.base, "Slate")
+	add("Head", "Block", V(2.0, 1.6, 1.8), CF(0, 3.8, -0.3), k.dark, "Slate")
+	k.eyes(0.45, 3.9, -1.22, 0.32, bolt)
+	add("ArmL", "Block", V(1.5, 4.0, 1.5), CF(-3.0, 0.6, 0), k.base, "Slate", "legB", {pivot = V(0, 2.0, 0)})
+	add("ArmR", "Block", V(1.5, 4.0, 1.5), CF(3.0, 0.6, 0), k.base, "Slate", "legA", {pivot = V(0, 2.0, 0)})
+	add("FistL", "Ball", V(2.0, 2.0, 2.0), CF(-3.0, -1.9, 0), k.dark, "Slate", "legB", {pivot = V(0, 4.5, 0)})
+	add("FistR", "Ball", V(2.0, 2.0, 2.0), CF(3.0, -1.9, 0), k.dark, "Slate", "legA", {pivot = V(0, 4.5, 0)})
+	add("LegL", "Block", V(1.7, 2.6, 1.8), CF(-1.1, -2.3, 0), k.base, "Slate", "legA")
+	add("LegR", "Block", V(1.7, 2.6, 1.8), CF(1.1, -2.3, 0), k.base, "Slate", "legB")
+	for i = 1, 3 do
+		add("Bolt" .. i, "Wedge", V(0.4, 1.4, 0.7), CF((i - 2) * 1.3, 3.4 + (i % 2) * 0.3, 1.0), bolt, "Neon")
+	end
+	add("Thunderhead", "Ball", V(2.6, 2.6, 2.6), CF(0, 5.4, 0.4), k.light, "Glass", "orbit", {transparency = 0.35})
+	return 4.0, V(6.4, 9, 4), false, bolt
+end
+function SLAYER_BODY.dreadmaw(k)
+	local V, CF, A, add = Vector3.new, CFrame.new, CFrame.Angles, k.add
+	local glow = k.hex("C77DFF")
+	add("Body", "Cylinder", V(4.4, 2.4, 2.4), CF(0, 0.2, 0.4) * k.alongZ, k.base)
+	add("Chest", "Ball", V(2.8, 2.8, 2.8), CF(0, 0.5, -1.7), k.base)
+	add("Head", "Block", V(1.8, 1.5, 2.2), CF(0, 1.0, -3.3), k.dark)
+	add("Maw", "Wedge", V(1.6, 0.6, 1.8), CF(0, 0.1, -3.6) * A(math.pi, 0, 0), k.dark)
+	k.eyes(0.5, 1.3, -4.42, 0.3, glow)
+	for i, z in ipairs({-1.5, 1.6}) do
+		add("LegL" .. i, "Block", V(0.7, 1.9, 0.8), CF(-1.0, -1.2, z), k.dark, nil, if i == 1 then "legA" else "legB")
+		add("LegR" .. i, "Block", V(0.7, 1.9, 0.8), CF(1.0, -1.2, z), k.dark, nil, if i == 1 then "legB" else "legA")
+	end
+	add("Tail", "Cylinder", V(2.4, 0.5, 0.5), CF(0, 0.7, 3.2) * A(0, math.pi / 2, math.rad(-20)), k.dark, nil, "tail")
+	for i = 1, 4 do
+		add("Shade" .. i, "Wedge", V(0.3, 1.4 - i * 0.15, 1.0), CF(0, 1.6, -2.2 + i * 0.9), k.light, "Glass", "sway", {transparency = 0.3})
+	end
+	add("Void", "Ball", V(1.0, 1.0, 1.0), CF(0, 0.5, -3.1), glow, "Neon")
+	return 2.2, V(3.6, 4.2, 7.8), false, glow
+end
+-- End Slayer tasks section (bodies).
+
 local function hexColor(hex)
 	hex = tostring(hex or "AAAAAA")
 	return Color3.fromRGB(tonumber(hex:sub(1, 2), 16) or 170, tonumber(hex:sub(3, 4), 16) or 170, tonumber(hex:sub(5, 6), 16) or 170)
@@ -544,6 +624,8 @@ local function blueprint(kind, colorHex, boss)
 		add("LegL", "Block", V(1.2, 2.4, 1.2), CF(-0.8, -3.2, 0), base, "Marble", "legA")
 		add("LegR", "Block", V(1.2, 2.4, 1.2), CF(0.8, -3.2, 0), base, "Marble", "legB")
 		light3 = gold
+	elseif SLAYER_BODY[kind] then -- Slayer tasks section: slayer-only monster bodies
+		hip, hitbox, flying, light3 = SLAYER_BODY[kind]({add = add, eyes = eyes, base = base, dark = dark, light = light, hex = hexColor, upright = upright, alongZ = alongZ})
 	else
 		hip, hitbox = 1.5, V(3, 3, 3)
 		add("Body", "Ball", V(3, 3, 3), CF(0, 0, 0), base)
@@ -1231,7 +1313,8 @@ local function createLogic(env)
 			credited = L.creditEligible(r)
 			L.unregister(r)
 			L.payXp(r, credited)
-			for _, player in ipairs(credited) do env.bridge("kill", player, {monster = r.id}) end
+			-- Slayer tasks section: the reply may raise a superior (L.onKillReply).
+			for _, player in ipairs(credited) do env.bridge("kill", player, {monster = r.id}, function(reply) L.onKillReply(player, r, reply) end) end
 		end
 		return credited
 	end
@@ -2049,6 +2132,202 @@ local function createLogic(env)
 		return applied
 	end
 	-- End Prayer section.
+
+	------------------------------------------------------------------------
+	-- Slayer tasks section (Slayer team). Data.SlayerTasks. Bridge "stats"
+	-- carries info.slayer = {level, family, visor = {damage, accuracy} | nil}.
+	--   * Slayer-only monsters (def.slayerLevel, superiors inherit it): a player
+	--     below that Slayer level cannot target them (reason "slayer"; the
+	--     Adventure script explains it through bridge "slayerDenied", rate-limited),
+	--     a multishot never splashes them and mitigate() deals them 0.
+	--   * Hunter's Visor: against monsters of the player's task family
+	--     (a superior counts as its base): raw damage x (1 + damage%) and ranged
+	--     accuracy x (1 + accuracy%) within the style's hit ceiling.
+	--   * Superiors: the bridge "kill" reply may carry superior = {id, seq}
+	--     (Data.SlayerTasks.Superiors[id].base must be the monster just killed).
+	--     It is queued (L.pendingSuperiors) and spawned at that monster's position,
+	--     owned by the killer: only the owner may hit it; credit like a sea
+	--     creature (dealt damage, alive, within C.CREDIT_RANGE); it never respawns
+	--     and withdraws after Data.SlayerTasks.SUPERIOR_LIFETIME. Kill or withdrawal
+	--     reports bridge "slayerSuperior" {seq, monster, result = "kill"|"despawn"};
+	--     the owner leaving removes it silently (the server forgets the ticket).
+	------------------------------------------------------------------------
+	local ST = Data.SlayerTasks
+	local superiorOwned = {} -- [player] = {[record] = true}
+	local superiorQueue = {} -- {{player, id, seq, def, at}}
+	local function pct(v, cap)
+		v = tonumber(v)
+		if not v or v ~= v or v <= 0 then return 0 end
+		return math.min(v, cap)
+	end
+	local function slayerInfo(player, fetch)
+		local info = if fetch then L.statsFor(player) else L.peekStats(player)
+		return type(info) == "table" and type(info.slayer) == "table" and info.slayer or nil
+	end
+	function L.slayerLevelOf(player, fetch)
+		local s = slayerInfo(player, fetch)
+		return math.max(1, math.floor(tonumber(s and s.level) or 1))
+	end
+	-- May this player harm r (Slayer level gate)?
+	function L.slayerGate(player, r, fetch)
+		local need = tonumber(r and r.def and r.def.slayerLevel) or 0
+		if need <= 0 then return true end
+		return L.slayerLevelOf(player, fetch) >= need
+	end
+	-- The visor bonus that applies to this hit, or nil.
+	function L.visorFor(player, r)
+		local s = slayerInfo(player)
+		if not s or type(s.visor) ~= "table" or not ST or not r then return nil end
+		local id = if r.superior and r.def then r.def.base else r.id
+		if not ST.inFamily(s.family, id) then return nil end
+		return s.visor
+	end
+	local slayerValidate = L.validateTarget
+	function L.validateTarget(player, target, range)
+		local ok, r, pos = slayerValidate(player, target, range)
+		if not ok then return ok, r end
+		if r.superior and r.owner ~= player then return false, "owner" end
+		if not L.slayerGate(player, r, true) then
+			env.bridge("slayerDenied", player, {monster = r.id})
+			return false, "slayer"
+		end
+		return ok, r, pos
+	end
+	local slayerSplash = L.multishotTargets
+	function L.multishotTargets(player, primary, pos, reach, count)
+		local out = {}
+		for _, r in ipairs(slayerSplash(player, primary, pos, reach, count)) do
+			if L.slayerGate(player, r) and not (r.superior and r.owner ~= player) then table.insert(out, r) end
+		end
+		return out
+	end
+	local slayerMitigate = L.mitigate
+	function L.mitigate(r, raw, style, player)
+		if player ~= nil then
+			if not L.slayerGate(player, r) then return 0, nil end
+			local v = L.visorFor(player, r)
+			if v then raw = raw * (1 + pct(v.damage, 100) / 100) end
+		end
+		return slayerMitigate(r, raw, style, player)
+	end
+	local aimedAt = nil -- the record a ranged hit is being rolled against
+	local slayerRangedHit = L.rangedHit
+	function L.rangedHit(player, r, ...)
+		aimedAt = r
+		local hit = slayerRangedHit(player, r, ...)
+		aimedAt = nil
+		return hit
+	end
+	local slayerAccuracy = L.prayerAccuracy
+	function L.prayerAccuracy(player, chance)
+		chance = slayerAccuracy(player, chance)
+		local v = aimedAt and L.visorFor(player, aimedAt)
+		local bonus = v and pct(v.accuracy, 100) or 0
+		if bonus <= 0 then return chance end
+		return math.min(math.max(chance, tonumber(CS.hitCeiling) or 0.98), chance * (1 + bonus / 100))
+	end
+	-- Superiors ------------------------------------------------------------------
+	function L.superiorLifetime() return (ST and tonumber(ST.SUPERIOR_LIFETIME)) or 240 end
+	function L.onKillReply(player, r, reply)
+		local sup = type(reply) == "table" and type(reply.superior) == "table" and reply.superior or nil
+		if not sup or not ST then return nil end
+		local id, seq = sup.id, tonumber(sup.seq)
+		local def = type(id) == "string" and ST.Superiors[id]
+		if not def or not seq or seq < 1 or seq % 1 ~= 0 or def.base ~= r.id then return nil end
+		local spec = {player = player, id = id, seq = seq, def = def, at = r.position}
+		table.insert(superiorQueue, spec)
+		return spec
+	end
+	function L.pendingSuperiors()
+		local due = superiorQueue
+		superiorQueue = {}
+		return due
+	end
+	function L.reportSuperior(player, id, seq, result)
+		env.bridge("slayerSuperior", player, {monster = id, seq = seq, result = result})
+	end
+	-- Runtime could not build (or the owner left before the spawn): free the ticket.
+	function L.superiorFailed(spec) L.reportSuperior(spec.player, spec.id, spec.seq, "despawn") end
+	function L.registerSuperior(spec, model, position, opts)
+		if spec.registered then return nil end
+		spec.registered = true
+		opts = opts or {}
+		local def, player = spec.def, spec.player
+		local r = newRecord({
+			id = spec.id, def = def, superior = true, add = true, owner = player, seq = spec.seq, name = def.name, level = def.level,
+			maxHp = def.hp, hp = def.hp, damage = def.damage, defense = def.defense or 0, speed = def.speed or 12,
+			attackCooldown = L.monsterCooldown(def.speed), passive = false, provoked = true,
+			home = position, position = position, model = model, expires = env.now() + L.superiorLifetime(),
+			radius = math.clamp(opts.radius or 0, 0, C.MAX_RADIUS_BONUS), target = player,
+			weakness = def.weakness, defenceStyle = def.defenceStyle, attackStyle = def.attackStyle,
+		})
+		superiorOwned[player] = superiorOwned[player] or {}
+		superiorOwned[player][r] = true
+		return r
+	end
+	function L.superiorCount(player)
+		local n = 0
+		for _ in pairs(superiorOwned[player] or {}) do n += 1 end
+		return n
+	end
+	function L.superiorCredit(r)
+		local owner = r.owner
+		if L.contribution(r, owner) <= 0 or not env.alive(owner) then return {} end
+		local pos = env.position(owner)
+		if not pos or (pos - r.position).Magnitude > C.CREDIT_RANGE then return {} end
+		return {owner}
+	end
+	local slayerUnregister = L.unregister
+	function L.unregister(r, noRespawn)
+		if r.superior then
+			local owned = superiorOwned[r.owner]
+			if owned then
+				owned[r] = nil
+				if not next(owned) then superiorOwned[r.owner] = nil end
+			end
+		end
+		return slayerUnregister(r, noRespawn)
+	end
+	local slayerKill = L.kill
+	function L.kill(r)
+		if not r.superior then return slayerKill(r) end
+		r.hp = 0
+		local credited = L.superiorCredit(r)
+		L.unregister(r)
+		L.payXp(r, credited)
+		L.reportSuperior(r.owner, r.id, r.seq, if #credited > 0 then "kill" else "despawn")
+		return credited
+	end
+	-- Withdraws superiors past their lifetime; returns the records removed.
+	function L.superiorTick()
+		local now, gone = env.now(), {}
+		for _, owned in pairs(superiorOwned) do
+			for r in pairs(owned) do if now >= r.expires then table.insert(gone, r) end end
+		end
+		for _, r in ipairs(gone) do
+			L.unregister(r)
+			L.reportSuperior(r.owner, r.id, r.seq, "despawn")
+		end
+		return gone
+	end
+	local slayerRemoving = L.playerRemoving
+	function L.playerRemoving(player)
+		local owned = {}
+		for r in pairs(superiorOwned[player] or {}) do table.insert(owned, r) end
+		for _, r in ipairs(owned) do L.unregister(r) end
+		local i = 1
+		while i <= #superiorQueue do
+			if superiorQueue[i].player == player then table.remove(superiorQueue, i) else i += 1 end
+		end
+		local removed = slayerRemoving(player)
+		for _, r in ipairs(owned) do table.insert(removed, r) end
+		return removed
+	end
+	local slayerHasState = L.hasPlayerState
+	function L.hasPlayerState(player)
+		return slayerHasState(player) or superiorOwned[player] ~= nil
+	end
+	-- End Slayer tasks section.
 	return L
 end
 
@@ -2786,6 +3065,36 @@ Players.PlayerRemoving:Connect(function(player)
 	task.defer(refreshRayFilter)
 end)
 
+-- Slayer tasks section (Slayer team): superior spawns. A queued superior
+-- (Logic.pendingSuperiors) is built with its base monster's body at boss scale
+-- (crown and aura), owned by the task holder (OwnerUserId, Superior = true).
+local function spawnSuperior(spec)
+	local player = spec.player
+	if not player or not player.Parent or not playerConnections[player] then return end
+	local def = spec.def
+	local plan = blueprint(BODY_KIND[def.base] or "blob", def.color, true)
+	local position = Vector3.new(spec.at.X, groundY(spec.at, spec.at.Y - plan.hip) + plan.hip, spec.at.Z)
+	local ok, model, root, parts = pcall(buildModel, def.name, plan, {id = spec.id, level = def.level, hp = def.hp, color = def.color, boss = true, owner = player})
+	if not ok then
+		warn("[Combat] could not build superior " .. spec.id .. ": " .. tostring(model))
+		Logic.superiorFailed(spec)
+		return
+	end
+	local r = Logic.registerSuperior(spec, model, position, {radius = plan.radius})
+	if not r then model:Destroy() return end
+	model:SetAttribute("Superior", true)
+	model:SetAttribute("ExpiresAt", Workspace:GetServerTimeNow() + Logic.superiorLifetime())
+	view[r] = {model = model, root = root, plan = plan, fill = parts.fill, label = parts.label, welds = parts.welds, phase = random:NextNumber(0, 10)}
+	place(r)
+	model.Parent = folder
+	broadcast(position, "bossSpawn", {position = position, name = def.name, owner = player.UserId, color = def.color})
+end
+local function slayerStep()
+	for _, spec in ipairs(Logic.pendingSuperiors()) do spawnSuperior(spec) end
+	for _, r in ipairs(Logic.superiorTick()) do destroyView(r, false) end
+end
+-- End Slayer tasks section (runtime).
+
 -- One loop for all AI --------------------------------------------------------
 local AI_STEP = 1 / 15
 local accumulator, housekeeping, animClock = 0, 0, 0
@@ -2802,6 +3111,7 @@ RunService.Heartbeat:Connect(function(dt)
 			if player.Parent and playerConnections[player] then onBossAttribute(player) end
 		end
 		for _, pending in ipairs(Logic.pendingBosses()) do spawnBoss(pending.player, pending.spec) end
+		slayerStep() -- Slayer tasks section: superior spawns and withdrawals
 		for _, job in ipairs(Logic.dueSeaRetries()) do
 			if job.player.Parent then Logic.reportSea(job.player, job.id, job.seq, "kill", job.deadline) end
 		end

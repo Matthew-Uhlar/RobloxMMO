@@ -33,7 +33,7 @@ ok(T ~= nil, "Townsfolk section present")
 -- 1. Roster and dialogue graph integrity.
 ------------------------------------------------------------------------------
 local ACTIONS = {"to", "atlas", "waypoint", "tip", "verb", "close"}
-ok(#T.Order >= 8 and #T.Order <= 12, "8-12 townsfolk")
+ok(#T.Order >= 8 and #T.Order <= 16, "8-16 townsfolk (three regional Slayer masters)")
 local names, roles = {}, {}
 for _, role in ipairs(T.Order) do
 	ok(not roles[role], "unique role " .. role)

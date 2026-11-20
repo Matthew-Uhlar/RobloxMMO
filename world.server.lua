@@ -3489,3 +3489,26 @@ do
 	workspace:SetAttribute("PrayerThievingSites",placed)
 end
 -- End Prayer & Thieving section.
+
+-------------------------------------------------------------------------------
+-- Slayer tasks (Slayer team; self-contained section). Spawn markers for the
+-- slayer-only monsters (Data.SlayerTasks.SlayerOnlyOrder: damage needs a Slayer
+-- level, enforced by combat.server.lua) on their region islands, each >= 40
+-- studs from every warp landing and on open ground, and NPC anchors for the
+-- three regional Slayer masters (Data.Townsfolk roles SlayerCorvane,
+-- SlayerMaelis, SlayerVesper; Ysolde keeps Anchor_NPC_Slayer on the terrace).
+-------------------------------------------------------------------------------
+do
+	-- Positions are offsets from each island's IslandCenter attribute.
+	local function isle(name) return islandsFolder:FindFirstChild(name) end
+	local function centre(name) return isle(name):GetAttribute("IslandCenter") end
+	for _,m in ipairs({{"HollowcapShrieker","Gloomhollow Caverns",V(-40,0,-10),2,6},{"MirrorscaleBasilisk","Tidewater Shoals",V(-6,0,28),2,6},
+		{"ThundercragGargant","Tempest Spire",V(2,0,-52),1,5},{"UmbralDreadmaw","The Shattered Crown",V(0,0,-72),2,6}}) do
+		spawnMarker(m[1],centre(m[2])+m[3],m[4],m[5])
+	end
+	for _,a in ipairs({{"SlayerCorvane","Windpine Grove",V(12,0,50)},{"SlayerMaelis","Gloomhollow Caverns",V(10,0,52)},{"SlayerVesper","Tempest Spire",V(-14,0,40)}}) do
+		local c=centre(a[2])
+		anchor(isle(a[2]),"NPC_"..a[1],c+a[3],c+V(0,0,a[3].Z+10))
+	end
+end
+-- End Slayer tasks section.

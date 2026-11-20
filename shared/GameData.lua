@@ -6186,4 +6186,455 @@ end
 -- End Prayer & Thieving section.
 
 
+------------------------------------------------------------------------------
+-- Slayer tasks (Slayer team; append-only section). OSRS-style Slayer.
+--
+-- Two Slayer progressions coexist:
+--   * The Slayer SKILL (Data.Skills.Slayer, levels 1-99 on the shared OSRS curve,
+--     p.xp.Slayer) is trained by killing the monsters of an assigned TASK
+--     (ST.killXp: one Slayer XP per ST.HP_PER_XP max health, so a task kill pays
+--     about its Combat XP again) and by slaying boss-line bosses
+--     (ST.bossXp: half the boss's health in the same unit).
+--   * The three SkyBlock-style boss lines (Data.Slayers: Bramble/Gloom/Tempest,
+--     p.slayerXp, levels 1-9) are unchanged and are shown as LINE RANKS.
+-- Masters (ST.Masters, Combat / Slayer gates) assign weighted tasks: a monster
+-- FAMILY (ST.Families) and an amount. Only families the player can reach are
+-- offered: Slayer level, region access (Data.Regions requirements) and, for the
+-- sea creature family, the Fishing level to hook one in reachable water.
+-- Completing a task pays Slayer points (master points x the streak multiplier
+-- of that task number: every 10th x5, 50th x15, 100th x25, 250th x35, 1000th
+-- x50) and the master's coin bounty. Points buy: a task skip (streak kept), a
+-- block slot entry (up to ST.blockSlots families), unlocks (superiors, the
+-- Hunter's Visor, extended tasks, gilded bounties, wider ledger), consumables
+-- and titles. Cancelling a task is free but resets the streak.
+-- Superiors (unlock "SuperiorCalling"): each task kill of a land family rolls
+-- ST.SUPERIOR_CHANCE (1/150) to raise that monster's superior variant
+-- (Data.Monsters[id] via __index, not iterated): 8x health, harder hits, owned
+-- by the task holder, unique loot (ST.SuperiorLoot). Slayer-only monsters
+-- (def.slayerLevel) cannot be harmed below that Slayer level.
+-- server.server.lua (Slayer tasks block) runs tasks, points and tickets;
+-- combat.server.lua (Slayer tasks section) gates damage, applies the visor and
+-- spawns superiors; world.server.lua places the slayer-only monsters and the
+-- masters' anchors; ui.client.lua draws Hunt > Slayer. Tests: verify-slayer-tasks.luau.
+------------------------------------------------------------------------------
+do
+local ST = {}
+Data.SlayerTasks = ST
+local CS, PR = Data.CombatStyles, Data.Prayer
+ST.HP_PER_XP = 25            -- task kill Slayer XP = max health / HP_PER_XP
+ST.BOSS_XP_SHARE = 0.5       -- boss-line bosses: half of that
+ST.SKIP_COST = 30            -- points to skip the current task (streak kept)
+ST.BLOCK_COST = 100          -- points to block a family
+ST.BLOCK_SLOTS = 3           -- base block slots (+2 with Wider Ledger)
+ST.EXTEND_MULT = 1.5         -- extended task amounts
+ST.SUPERIOR_CHANCE = 1 / 150 -- per task kill, once Call of the Superior is unlocked
+ST.SUPERIOR_LIFETIME = 240   -- seconds before an unfought superior withdraws
+ST.SUPERIOR_LIVE = 2         -- live superior tickets per player
+ST.SUPERIOR_HP = 8           -- multipliers over the base monster
+ST.SUPERIOR_DAMAGE = 1.5
+ST.SUPERIOR_DEFENSE = 1.25
+ST.SUPERIOR_COINS = 10
+ST.MAX_AMOUNT = 400          -- sanity bound on any saved task amount
+-- Streak multipliers, highest milestone first (task number divisible by `every`).
+ST.Streak = {{every=1000,mult=50},{every=250,mult=35},{every=100,mult=25},{every=50,mult=15},{every=10,mult=5}}
+
+-- The skill ------------------------------------------------------------------
+table.insert(Data.SkillOrder, "Slayer")
+Data.Skills.Slayer = {category="combat",color="B23A48",title="Grimhunter",perLevel={critDamage=0.3,strength=0.2},
+	description="Hunt the monsters a Slayer master assigns. Raises Crit Damage and Strength. Boss-line ranks are kept separately."}
+
+-- Items ---------------------------------------------------------------------
+item("HushcapSpore",{name="Hushcap Spore",kind="material",rarity="Uncommon",color="A3B86C",value=60,description="A spore that swallows sound. Dropped by Hollowcap Shriekers."})
+item("MirrorscaleShard",{name="Mirrorscale Shard",kind="material",rarity="Rare",color="7FC8C0",value=180,description="A scale that reflects a stare. Dropped by Mirrorscale Basilisks."})
+item("ThunderhidePlate",{name="Thunderhide Plate",kind="material",rarity="Rare",color="6E7A8A",value=400,description="Storm-hardened hide. Dropped by Thundercrag Gargants."})
+item("DreadmawFang",{name="Dreadmaw Fang",kind="material",rarity="Epic",color="5B3E7A",value=1200,description="A fang that drinks the light. Dropped by Umbral Dreadmaws."})
+item("EclipsedIchor",{name="Eclipsed Ichor",kind="material",rarity="Epic",color="7A1F3D",value=800,description="Ichor of a superior monster. Imbues slayer headgear."})
+local function charm(id, name, rarity, stats, text)
+	item(id,{name=name,kind="accessory",rarity=rarity,color=Data.Rarity[rarity].color,stats=stats,value=600*Data.Rarity[rarity].rank^2,slayerUnique=true,
+		description="Accessory. Magical Power "..Data.Rarity[rarity].power..". "..text})
+end
+charm("HushbellCharm","Hushbell Charm","Rare",{critChance=2,intelligence=10},"A rare Hollowcap Shrieker drop.")
+charm("MirrorgazeAmulet","Mirrorgaze Amulet","Epic",{defense=25,critDamage=8},"A rare Mirrorscale Basilisk drop.")
+charm("StormcragGauntlet","Stormcrag Gauntlet","Epic",{strength=20,critDamage=10},"A rare Thundercrag Gargant drop.")
+charm("DreadmawMantle","Dreadmaw Mantle","Legendary",{strength=25,critDamage=25},"A rare Umbral Dreadmaw drop.")
+charm("DuskhunterSigil","Duskhunter Sigil","Legendary",{strength=15,critChance=3,critDamage=15,magicFind=3},"Carried off a superior monster.")
+item("HuntersVisor",{name="Hunter's Visor",kind="armor",slot="helmet",rarity="Epic",color="B23A48",stats={defense=40,health=30,strength=10},requires={Slayer=40},
+	slayerBonus={damage=15,accuracy=15},value=6000,description="Slayer headgear: +15% damage and accuracy against your task's monsters. Requires Slayer 40."})
+item("RadiantHuntersVisor",{name="Radiant Hunter's Visor",kind="armor",slot="helmet",rarity="Legendary",color="E8556B",stats={defense=90,health=70,strength=25,critDamage=10},requires={Slayer=75},
+	slayerBonus={damage=22,accuracy=22},value=40000,description="Imbued slayer headgear: +22% damage and accuracy against your task's monsters. Requires Slayer 75."})
+item("SlayersBrew",{name="Slayer's Brew",kind="consumable",category="buff",rarity="Rare",color="B23A48",buff={stats={strength=25,critDamage=20},duration=600},value=120,
+	description="+25 Strength, +20 Crit Damage for 10 minutes. Bought with Slayer points."})
+
+-- Slayer-only monsters (marker monsters: damage needs def.slayerLevel) -------
+local slayerOnly = {
+	HollowcapShrieker={name="Hollowcap Shrieker",level=46,region="Gloomhollow",hp=5200,damage=240,defense=110,xp=190,coins=48,speed=13,color="A3B86C",style="magic",slayerLevel=40,
+		drops={{item="HushcapSpore",chance=0.7,min=1,max=3},{item="ArcaneDust",chance=0.5,min=2,max=5},{item="VoidEssence",chance=0.15,min=1,max=1},{item="HushbellCharm",chance=0.0025,min=1,max=1}}},
+	MirrorscaleBasilisk={name="Mirrorscale Basilisk",level=60,region="Tidewater",hp=9500,damage=350,defense=220,xp=290,coins=70,speed=12,color="7FC8C0",style="ranged",slayerLevel=60,
+		drops={{item="MirrorscaleShard",chance=0.6,min=1,max=2},{item="ShoalPearl",chance=0.1,min=1,max=1},{item="ArcaneDust",chance=0.6,min=3,max=6},{item="MirrorgazeAmulet",chance=0.002,min=1,max=1}}},
+	ThundercragGargant={name="Thundercrag Gargant",level=78,region="Tempest",hp=18000,damage=540,defense=320,xp=470,coins=110,speed=10,color="6E7A8A",style="melee",slayerLevel=75,
+		drops={{item="ThunderhidePlate",chance=0.5,min=1,max=2},{item="StormFeather",chance=0.6,min=2,max=4},{item="StarFragment",chance=0.008,min=1,max=1},{item="StormcragGauntlet",chance=0.0016,min=1,max=1}}},
+	UmbralDreadmaw={name="Umbral Dreadmaw",level=96,region="ShatteredCrown",hp=52000,damage=1000,defense=420,xp=1050,coins=210,speed=17,color="2E1F3D",style="magic",slayerLevel=85,
+		drops={{item="DreadmawFang",chance=0.45,min=1,max=1},{item="CrownShard",chance=0.6,min=2,max=4},{item="VoidEssence",chance=0.6,min=2,max=4},{item="StarFragment",chance=0.02,min=1,max=1},{item="DreadmawMantle",chance=0.00125,min=1,max=1}}},
+}
+ST.SlayerOnlyOrder = {"HollowcapShrieker","MirrorscaleBasilisk","ThundercragGargant","UmbralDreadmaw"}
+for _, id in ipairs(ST.SlayerOnlyOrder) do
+	local def = slayerOnly[id]
+	def.id = id
+	CS.monsterStyle[id] = def.style
+	def.attackStyle, def.weakness, def.defenceStyle = def.style, CS.beatenBy[def.style], CS.beats[def.style]
+	def.style = nil
+	table.insert(def.drops, {item=PR.remainsFor(def.level, def.region, false),chance=1,min=1,max=1})
+	Data.Monsters[id] = def
+	local region = Data.RegionById[def.region]
+	region.monsters = region.monsters or {}
+	table.insert(region.monsters, id)
+end
+-- Slayer level needed to harm a monster (0 = anyone).
+function ST.slayerLevelFor(monsterId)
+	local def = type(monsterId) == "string" and Data.Monsters[monsterId]
+	return type(def) == "table" and tonumber(def.slayerLevel) or 0
+end
+function ST.canHarm(monsterId, slayerLevel)
+	local need = ST.slayerLevelFor(monsterId)
+	return (tonumber(slayerLevel) or 1) >= need, need
+end
+
+-- Families -------------------------------------------------------------------
+-- monsters: marker monsters (or sea creatures when sea = true); slayer = level
+-- needed to be assigned the family; epithet names its superiors.
+ST.Families = {
+	{id="Thicketkin",name="Thicketkin",slayer=1,color="5E8C4A",epithet="Thornsworn",monsters={"BramblebackBoar","Thornling","BarkStalker"}},
+	{id="Burrowers",name="Burrowers",slayer=1,color="8C7A6B",epithet="Magmaborn",monsters={"ShaleCrawler","CinderMite"}},
+	{id="Galeborn",name="Galeborn",slayer=10,color="A8DADC",epithet="Squallheart",monsters={"GaleSprite","StormHarrier"}},
+	{id="Reefstalkers",name="Reefstalkers",slayer=15,color="06D6A0",epithet="Brinegorged",monsters={"ReefLurker"}},
+	{id="Automatons",name="Automatons",slayer=20,color="D4A84B",epithet="Overwound",monsters={"BrassGolem","StarbornSentinel"}},
+	{id="Gloomweavers",name="Gloomweavers",slayer=25,color="3D3D5C",epithet="Gravesilk",monsters={"GloomfangSpider"}},
+	{id="Voidspawn",name="Voidspawn",slayer=30,color="6A4C93",epithet="Hollowed",monsters={"VoidWisp"}},
+	{id="Shriekcaps",name="Shriekcaps",slayer=40,color="A3B86C",epithet="Deafening",monsters={"HollowcapShrieker"}},
+	{id="Stormwraiths",name="Stormwraiths",slayer=45,color="4B6584",epithet="Thunderwrought",monsters={"TempestWraith"}},
+	{id="Deepwater",name="Deepwater Horrors",slayer=50,color="2F6F8F",sea=true,monsters={"CoralbackBruiser","StormcoilSerpent","DuskfinManta","TidewyrmMatriarch"}},
+	{id="Mirrorscales",name="Mirrorscales",slayer=60,color="7FC8C0",epithet="Petrifying",monsters={"MirrorscaleBasilisk"}},
+	{id="Crownbound",name="Crownbound",slayer=70,color="C9A24D",epithet="Crownwrought",monsters={"RiftmawStalker","ShardglassSeer","CrownforgedColossus","VoidcrownDrake"}},
+	{id="Thundercrags",name="Thundercrags",slayer=75,color="6E7A8A",epithet="Skybreaker",monsters={"ThundercragGargant"}},
+	{id="Dreadmaws",name="Dreadmaws",slayer=85,color="5B3E7A",epithet="Nightmare",monsters={"UmbralDreadmaw"}},
+}
+ST.FamilyById, ST.FamilyOf = {}, {}
+for i, f in ipairs(ST.Families) do
+	f.index = i
+	ST.FamilyById[f.id] = f
+	for _, id in ipairs(f.monsters) do
+		assert(Data.Monsters[id], "slayer family "..f.id.." names unknown monster "..id)
+		ST.FamilyOf[id] = f.id
+	end
+end
+function ST.inFamily(familyId, monsterId)
+	return familyId ~= nil and ST.FamilyOf[monsterId] == familyId
+end
+
+-- Superiors --------------------------------------------------------------------
+ST.Superiors, ST.SuperiorOf, ST.SuperiorOrder = {}, {}, {}
+for _, f in ipairs(ST.Families) do
+	if not f.sea then
+		for _, baseId in ipairs(f.monsters) do
+			local base = Data.Monsters[baseId]
+			local id = "Superior"..baseId
+			local drops = {{item="EclipsedIchor",chance=1,min=1,max=3},{item="SlayerToken",chance=1,min=1,max=2},{item="DuskhunterSigil",chance=1/40,min=1,max=1}}
+			for _, d in ipairs(base.drops) do
+				if not (PR.RemainsById and PR.RemainsById[d.item]) then
+					table.insert(drops, {item=d.item,chance=math.min(1, d.chance*3),min=d.min*2,max=d.max*3})
+				end
+			end
+			local def = {id=id,name=f.epithet.." "..base.name,level=base.level+10,region=base.region,hp=base.hp*ST.SUPERIOR_HP,
+				damage=math.floor(base.damage*ST.SUPERIOR_DAMAGE),defense=math.floor((base.defense or 0)*ST.SUPERIOR_DEFENSE),
+				xp=base.xp*ST.SUPERIOR_HP,coins=base.coins*ST.SUPERIOR_COINS,speed=base.speed,color=base.color,superior=true,base=baseId,family=f.id,
+				slayerLevel=base.slayerLevel,attackStyle=base.attackStyle,weakness=base.weakness,defenceStyle=base.defenceStyle,drops=drops}
+			ST.Superiors[id] = def
+			ST.SuperiorOf[baseId] = id
+			table.insert(ST.SuperiorOrder, id)
+		end
+	end
+end
+-- Lookups by id reach superiors too; pairs(Data.Monsters) still lists marker monsters only.
+do
+	local previous = getmetatable(Data.Monsters)
+	local fallback = previous and previous.__index
+	setmetatable(Data.Monsters, {__index = function(t, id)
+		local found = if type(fallback) == "function" then fallback(t, id) elseif type(fallback) == "table" then fallback[id] else nil
+		return found or rawget(ST.Superiors, id)
+	end})
+end
+-- One task kill: the superior variant's id when the roll hits, else nil.
+function ST.rollSuperior(unlocked, monsterId, roll)
+	if not unlocked then return nil end
+	local id = ST.SuperiorOf[monsterId]
+	if not id or type(roll) ~= "function" then return nil end
+	if roll() >= ST.SUPERIOR_CHANCE then return nil end
+	return id
+end
+
+-- Masters ----------------------------------------------------------------------
+-- tasks: {family, weight, min, max}. points: Slayer points per completed task
+-- (before the streak multiplier); bounty: coins per completed task.
+ST.Masters = {
+	{id="Ysolde",npc="Slayer",name="Captain Ysolde Thornmantle",region="Hub",combat=3,slayer=1,points=2,bounty=150,color="B23A48",
+		blurb="The guild's first master: short tasks close to home.",
+		tasks={{family="Thicketkin",weight=8,min=15,max=40},{family="Burrowers",weight=8,min=15,max=40},{family="Galeborn",weight=6,min=15,max=35},
+			{family="Reefstalkers",weight=4,min=10,max=30},{family="Automatons",weight=3,min=10,max=25},{family="Gloomweavers",weight=3,min=10,max=25}}},
+	{id="Corvane",npc="SlayerCorvane",name="Warden Corvane Mossgrave",region="Windpine",combat=20,slayer=1,points=6,bounty=600,color="5E8C4A",
+		blurb="A grove warden who sends hunters into the caves and the storm.",
+		tasks={{family="Thicketkin",weight=3,min=50,max=90},{family="Galeborn",weight=6,min=40,max=80},{family="Reefstalkers",weight=6,min=30,max=70},
+			{family="Automatons",weight=7,min=30,max=70},{family="Gloomweavers",weight=8,min=30,max=70},{family="Voidspawn",weight=6,min=30,max=60},
+			{family="Shriekcaps",weight=6,min=30,max=60},{family="Stormwraiths",weight=4,min=25,max=50}}},
+	{id="Maelis",npc="SlayerMaelis",name="Sister Maelis Duskward",region="Gloomhollow",combat=45,slayer=20,points=10,bounty=2000,color="6A4C93",
+		blurb="A lantern-nun of the deep who keeps the dark in check.",
+		tasks={{family="Automatons",weight=6,min=60,max=100},{family="Gloomweavers",weight=6,min=60,max=110},{family="Voidspawn",weight=8,min=60,max=110},
+			{family="Shriekcaps",weight=8,min=60,max=110},{family="Stormwraiths",weight=8,min=50,max=100},{family="Deepwater",weight=5,min=20,max=40},
+			{family="Mirrorscales",weight=7,min=50,max=100},{family="Thundercrags",weight=5,min=40,max=80}}},
+	{id="Vesper",npc="SlayerVesper",name="Vesper Harrowgale",region="Tempest",combat=75,slayer=50,points=15,bounty=5000,color="4B6584",
+		blurb="The storm's own huntress. Only the hardest prey.",
+		tasks={{family="Automatons",weight=5,min=100,max=150},{family="Voidspawn",weight=5,min=110,max=170},{family="Stormwraiths",weight=8,min=110,max=170},
+			{family="Deepwater",weight=6,min=40,max=70},{family="Mirrorscales",weight=8,min=110,max=170},{family="Crownbound",weight=9,min=100,max=160},
+			{family="Thundercrags",weight=8,min=100,max=160},{family="Dreadmaws",weight=7,min=90,max=150}}},
+}
+ST.MasterById = {}
+for i, m in ipairs(ST.Masters) do
+	m.index = i
+	ST.MasterById[m.id] = m
+	for _, t in ipairs(m.tasks) do assert(ST.FamilyById[t.family], m.id.." assigns unknown family "..t.family) end
+end
+
+-- Points shop --------------------------------------------------------------------
+-- kind: unlock (one-time, p.slayerTasks.unlocks[id]), extend (unlock that makes
+-- that family's tasks ST.EXTEND_MULT longer), consumable (repeatable, gives
+-- items), title (one-time cosmetic), craft (assemble gear from drops; needs `unlock`).
+ST.Shop = {
+	{id="SuperiorCalling",kind="unlock",name="Call of the Superior",cost=150,text="Task kills may raise superior monsters (1 in 150) with unique loot."},
+	{id="VisorCrafting",kind="unlock",name="Visorwright's Lore",cost=80,text="Learn to assemble the Hunter's Visor from slayer drops."},
+	{id="GildedBounty",kind="unlock",name="Gilded Bounties",cost=120,text="Masters pay double coin bounties on completed tasks."},
+	{id="WiderLedger",kind="unlock",name="Wider Ledger",cost=200,text="Two more block slots."},
+	{id="ExtendGloomweavers",kind="extend",family="Gloomweavers",name="Endless Silk",cost=60,text="Gloomweaver tasks are 50% longer."},
+	{id="ExtendVoidspawn",kind="extend",family="Voidspawn",name="Void Without End",cost=70,text="Voidspawn tasks are 50% longer."},
+	{id="ExtendStormwraiths",kind="extend",family="Stormwraiths",name="Ceaseless Storm",cost=80,text="Stormwraith tasks are 50% longer."},
+	{id="ExtendMirrorscales",kind="extend",family="Mirrorscales",name="Hall of Mirrors",cost=90,text="Mirrorscale tasks are 50% longer."},
+	{id="ExtendCrownbound",kind="extend",family="Crownbound",name="Crown Unbroken",cost=100,text="Crownbound tasks are 50% longer."},
+	{id="ExtendThundercrags",kind="extend",family="Thundercrags",name="Rolling Thunder",cost=100,text="Thundercrag tasks are 50% longer."},
+	{id="ExtendDreadmaws",kind="extend",family="Dreadmaws",name="Long Night",cost=120,text="Dreadmaw tasks are 50% longer."},
+	{id="BuySlayersBrew",kind="consumable",name="Slayer's Brew",cost=35,gives={SlayersBrew=1},text="+25 Strength, +20 Crit Damage for 10 minutes."},
+	{id="BuySlayerSeals",kind="consumable",name="Bundle of Slayer Seals",cost=40,gives={SlayerToken=2},text="Two Slayer Seals for slayer gear."},
+	{id="TitleGravewarden",kind="title",name="Title: Gravewarden",title="Gravewarden",cost=250,text="Wear the title Gravewarden."},
+	{id="TitleNightstalker",kind="title",name="Title: Nightstalker",title="Nightstalker",cost=500,requires={Slayer=60},text="Wear the title Nightstalker."},
+	{id="CraftHuntersVisor",kind="craft",name="Assemble Hunter's Visor",cost=0,unlock="VisorCrafting",requires={Slayer=40},gives={HuntersVisor=1},
+		costs={SlayerToken=10,HushcapSpore=20,BeastHide=40},text="+15% damage and accuracy against task monsters."},
+	{id="CraftRadiantVisor",kind="craft",name="Imbue Radiant Hunter's Visor",cost=0,unlock="VisorCrafting",requires={Slayer=75},gives={RadiantHuntersVisor=1},
+		costs={HuntersVisor=1,EclipsedIchor=12,ThunderhidePlate=10,SlayerToken=30},text="+22% damage and accuracy against task monsters."},
+}
+ST.ShopById = {}
+for i, e in ipairs(ST.Shop) do
+	e.index = i
+	ST.ShopById[e.id] = e
+	if e.kind == "extend" then assert(ST.FamilyById[e.family], e.id.." extends an unknown family") end
+end
+-- Shop verdict: ok, reason. st = {points, unlocks = {[id] = true}, levels = {[skill] = lvl}, items = {[id] = n}}.
+function ST.canBuy(entryId, st)
+	local e = type(entryId) == "string" and ST.ShopById[entryId]
+	if not e then return false, "Choose something from the Slayer shop." end
+	local unlocks = type(st.unlocks) == "table" and st.unlocks or {}
+	if (e.kind == "unlock" or e.kind == "extend" or e.kind == "title") and unlocks[e.id] then return false, e.name.." is already yours." end
+	if e.unlock and not unlocks[e.unlock] then return false, e.name.." needs "..ST.ShopById[e.unlock].name.." first." end
+	for skill, lvl in pairs(e.requires or {}) do
+		if (tonumber(type(st.levels) == "table" and st.levels[skill]) or 1) < lvl then return false, e.name.." requires "..skill.." "..lvl.."." end
+	end
+	if (tonumber(st.points) or 0) < e.cost then return false, e.name.." costs "..e.cost.." Slayer points." end
+	for id, n in pairs(e.costs or {}) do
+		if (tonumber(type(st.items) == "table" and st.items[id]) or 0) < n then
+			return false, e.name.." needs "..n.." "..(Data.Items[id] and Data.Items[id].name or id).."."
+		end
+	end
+	return true
+end
+function ST.blockSlots(unlocks)
+	return ST.BLOCK_SLOTS + (if type(unlocks) == "table" and unlocks.WiderLedger then 2 else 0)
+end
+
+-- Pure rules -------------------------------------------------------------------
+-- ctx = {combat = Combat level, slayer = Slayer level, levels = {[skill] = level},
+--        regions = {[regionId] = true when the player may enter}}.
+function ST.familyReachable(familyId, ctx)
+	local f = ST.FamilyById[familyId]
+	if not f then return false, "unknown" end
+	ctx = type(ctx) == "table" and ctx or {}
+	local slayer = tonumber(ctx.slayer) or 1
+	if slayer < f.slayer then return false, "Requires Slayer "..f.slayer end
+	local regions = type(ctx.regions) == "table" and ctx.regions or {}
+	if f.sea then
+		local fishing = tonumber(type(ctx.levels) == "table" and ctx.levels.Fishing) or 1
+		for _, id in ipairs(f.monsters) do
+			local sc = Data.SeaCreatures[id]
+			if fishing >= sc.fishing then
+				if sc.waters == nil then return true end
+				for _, w in ipairs(sc.waters) do if regions[w] then return true end end
+			end
+		end
+		local need = math.huge
+		for _, id in ipairs(f.monsters) do need = math.min(need, Data.SeaCreatures[id].fishing) end
+		return false, if fishing < need then "Requires Fishing "..need else "No reachable water"
+	end
+	for _, id in ipairs(f.monsters) do
+		if regions[Data.Monsters[id].region] then return true end
+	end
+	local names = {}
+	for _, id in ipairs(f.monsters) do
+		local r = Data.RegionById[Data.Monsters[id].region]
+		local name = r and r.name or Data.Monsters[id].region
+		if not table.find(names, name) then table.insert(names, name) end
+	end
+	return false, "Needs access to "..table.concat(names, " or ")
+end
+function ST.masterAvailable(masterId, ctx)
+	local m = ST.MasterById[masterId]
+	if not m then return false, "unknown" end
+	ctx = type(ctx) == "table" and ctx or {}
+	if (tonumber(ctx.combat) or 1) < m.combat then return false, "Requires Combat "..m.combat end
+	if (tonumber(ctx.slayer) or 1) < m.slayer then return false, "Requires Slayer "..m.slayer end
+	return true
+end
+-- Weighted candidates a master may assign: {{entry, weight}...} and their total.
+-- blocked = {familyId...}; avoid = a family to skip when anything else is left.
+function ST.candidates(masterId, ctx, blocked, avoid)
+	local m = ST.MasterById[masterId]
+	local out, total = {}, 0
+	if not m then return out, 0 end
+	local isBlocked = {}
+	for _, id in ipairs(type(blocked) == "table" and blocked or {}) do isBlocked[id] = true end
+	for _, entry in ipairs(m.tasks) do
+		if not isBlocked[entry.family] and ST.familyReachable(entry.family, ctx) then
+			table.insert(out, {entry=entry,weight=entry.weight})
+			total += entry.weight
+		end
+	end
+	if avoid and #out > 1 then
+		for i, c in ipairs(out) do
+			if c.entry.family == avoid then table.remove(out, i); total -= c.weight; break end
+		end
+	end
+	return out, total
+end
+-- Amount range for an entry, extended when the family's extension is unlocked.
+function ST.amountRange(entry, unlocks)
+	local extended = type(unlocks) == "table" and unlocks["Extend"..entry.family] == true and ST.ShopById["Extend"..entry.family] ~= nil
+	if not extended then return entry.min, entry.max, false end
+	return math.floor(entry.min * ST.EXTEND_MULT), math.floor(entry.max * ST.EXTEND_MULT), true
+end
+-- A new task {master, family, amount, killed = 0, extended} or nil, reason.
+-- rollA picks the family by weight, rollB the amount (both in [0, 1)).
+function ST.assign(masterId, ctx, blocked, unlocks, rollA, rollB, avoid)
+	local ok, reason = ST.masterAvailable(masterId, ctx)
+	if not ok then return nil, reason end
+	local list, total = ST.candidates(masterId, ctx, blocked, avoid)
+	if #list == 0 or total <= 0 then return nil, "No task you can reach right now" end
+	local pick = math.clamp(tonumber(rollA) or 0, 0, 0.999999) * total
+	local chosen = list[#list].entry
+	for _, c in ipairs(list) do
+		pick -= c.weight
+		if pick < 0 then chosen = c.entry break end
+	end
+	local lo, hi, extended = ST.amountRange(chosen, unlocks)
+	local amount = lo + math.floor(math.clamp(tonumber(rollB) or 0, 0, 0.999999) * (hi - lo + 1))
+	return {master=masterId,family=chosen.family,amount=amount,killed=0,extended=extended}
+end
+-- Streak multiplier for the nth completed task of a streak (n >= 1).
+function ST.streakMult(n)
+	n = math.floor(tonumber(n) or 0)
+	if n <= 0 then return 1 end
+	for _, s in ipairs(ST.Streak) do if n % s.every == 0 then return s.mult end end
+	return 1
+end
+function ST.pointsFor(masterId, streak)
+	local m = ST.MasterById[masterId]
+	return if m then m.points * ST.streakMult(streak) else 0
+end
+function ST.bountyFor(masterId, unlocks)
+	local m = ST.MasterById[masterId]
+	if not m then return 0 end
+	return m.bounty * (if type(unlocks) == "table" and unlocks.GildedBounty then 2 else 1)
+end
+-- Slayer XP for one task kill of a monster (or superior) definition.
+function ST.killXp(def)
+	local hp = type(def) == "table" and tonumber(def.hp) or 0
+	if hp <= 0 then return 0 end
+	return math.max(1, math.floor(hp / ST.HP_PER_XP + 0.5))
+end
+-- Slayer skill XP for defeating a boss-line boss.
+function ST.bossXp(line, tier)
+	local def = Data.Slayers[line]
+	local t = def and def.tiers[tonumber(tier) or 0]
+	if not t then return 0 end
+	return math.floor(t.hp / ST.HP_PER_XP * ST.BOSS_XP_SHARE)
+end
+-- Visor bonus {damage, accuracy} (percent) of an equipped helmet id, or nil.
+function ST.visorBonus(helmetId)
+	local def = type(helmetId) == "string" and Data.Items[helmetId]
+	local b = type(def) == "table" and def.slayerBonus
+	if type(b) ~= "table" then return nil end
+	return {damage=b.damage or 0,accuracy=b.accuracy or 0}
+end
+-- Human text for a task.
+function ST.describe(task)
+	if type(task) ~= "table" then return "No task" end
+	local f = ST.FamilyById[task.family]
+	return (f and f.name or tostring(task.family)).." "..tostring(task.killed or 0).." / "..tostring(task.amount or 0)
+end
+
+-- Townsfolk: three more masters (Ysolde stays the Hub's "Slayer"). ------------
+local T = Data.Townsfolk
+if T then
+	T.Verbs.slayerTask = {item={}}
+	for _, m in ipairs(ST.Masters) do T.Verbs.slayerTask.item[m.id] = true end
+	local function taskTip(s)
+		local st = type(s) == "table" and type(s.slayerTasks) == "table" and s.slayerTasks or nil
+		if not st then return "Speak to a Slayer master for a task: they hand out a monster family and an amount." end
+		local t = type(st.task) == "table" and st.task or nil
+		if t then
+			local f = ST.FamilyById[t.family]
+			local where = {}
+			for _, id in ipairs(f and f.monsters or {}) do
+				local m = Data.Monsters[id]
+				if m and not table.find(where, m.name) then table.insert(where, m.name) end
+			end
+			return "Your task: "..ST.describe(t)..". Hunt "..table.concat(where, ", ")..". Streak "..tostring(st.streak or 0)..", "..tostring(st.points or 0).." points."
+		end
+		return "No task right now. Ask a master for one; every 10th task in a row pays bonus points."
+	end
+	T.Tips.slayerTask = taskTip
+	T.Conditions.taskIdle = function(s)
+		local st = type(s) == "table" and type(s.slayerTasks) == "table" and s.slayerTasks or nil
+		return st ~= nil and type(st.task) ~= "table"
+	end
+	local ysolde = T.NPCs.Slayer
+	if ysolde then
+		table.insert(ysolde.nodes.hello.options, 2, {label="Assign me a slayer task",verb="slayerTask",item="Ysolde",when="taskIdle"})
+		table.insert(ysolde.nodes.hello.options, 3, {label="How is my slayer task going?",tip="slayerTask"})
+	end
+	local farewell = {label="Farewell", close=true}
+	local function master(role, id, look, intro, hunt)
+		local m = ST.MasterById[id]
+		T.NPCs[role] = {name=m.name,title="Slayer Master",region=m.region,portrait="⚔",look=look,start="hello",nodes={
+			hello={text=intro,options={
+				{label="Assign me a slayer task",verb="slayerTask",item=id,when="taskIdle"},
+				{label="How is my slayer task going?",tip="slayerTask"},
+				{label="Show me the Slayer ledger",atlas="Slayer"},
+				{label="Where should I hunt?",waypoint=hunt},
+				farewell}}}}
+		table.insert(T.Order, role)
+	end
+	master("SlayerCorvane","Corvane",{skin="C68642",shirt="3E5B3A",pants="2E2A26",shoes="2B1E14",accent="9BD77E",hair="4A3B2A",hat="hood",held="sword",cape="2F5233",beard=true},
+		"The grove is quiet because someone keeps it so. Take a task and bring the count home.",{"monster:HollowcapShrieker","monster:GloomfangSpider","region:Gloomhollow"})
+	master("SlayerMaelis","Maelis",{skin="F1C27D",shirt="2A2433",pants="1B1B22",shoes="141418",accent="C77DFF",hair="E0E0E0",hat="hood",held="lantern",cape="4B2C7A"},
+		"The dark is patient. So am I. Your task, and mind your lantern.",{"monster:MirrorscaleBasilisk","monster:VoidWisp","region:Tidewater"})
+	master("SlayerVesper","Vesper",{skin="8D5524",shirt="37474F",pants="263238",shoes="1C1C1C",accent="8FB8D6",hair="1B1B1B",hat="feather",held="staff",cape="4B6584"},
+		"Only the storm's worst. If you flinch at thunder, come back later.",{"monster:ThundercragGargant","monster:TempestWraith","region:Tempest"})
+end
+end
+-- End Slayer tasks section.
+
 return Data
