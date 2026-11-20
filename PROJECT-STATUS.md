@@ -8,6 +8,14 @@ Updated November 19, 2026. The full original goal remains in progress.
 - All eight cloud scripts matched the **Skyreach** source at `975be9c`. Deployment of later Observatory, bank and trade updates is **unknown** pending a publish receipt/version check.
 - Studio currently displays **Public, ages 16+**, according to the primary-agent observation. Audience settings are separate from code deployment and have not been independently join-tested.
 
+## Wave 2 (November 20, 2026)
+
+- **Economy:** Bazaar standing buy orders for every resource/material (escrow, price-then-FIFO matching, claim/cancel, instant sell into bids, spread) and a gear Auction House (buy-it-now, 1% listing-fee coin sink, 24h expiry and return, claimable proceeds). Shared keys stay bounded (< 512 KB worst case after receipt pruning), each player has a DataStore request budget, browse reads are cached per server, and orders carry nonces for exactly-once replay.
+- **Dungeons:** Observatory Floors I–V gated by Dungeoneering, cumulative mechanics (ordered prisms, shield phases, add waves, enrage) and telegraphed boss attacks; S+–D grading from time/deaths/mistakes scaling XP, coins, essence and a Magic-Find chest; Starwright Regalia set, three weapons and two accessories. Matchmaking pad, 90 s credit cooldown, contribution/damage-share credit, run cap and AFK removal.
+- **Quests & construction:** 13 new main/side quests with Quest Points, choose-a-skill XP lamps and unlocks; achievement diaries for seven regions (Easy–Elite, 112 tasks) with permanent perks; Carpentry construction on a per-home Builder's Terrace (7 hotspots, 15 furniture pieces: home stations, accessory slots, worker speed, stat perks, region portals).
+- **Visual QA:** a layout emulator (`tools/render-ui.luau` + `tools/rasterize-ui.py`) renders every atlas page at desktop and phone sizes. Three render–inspect–fix passes fixed invisible rarity/selection rims (UIStroke mode), sub-12px phone text, HUD/banner overlaps, cramped badges and tool tiles, and inconsistent cards. Curated renders: [docs/screenshots](docs/screenshots/README.md) — approximations, not Roblox captures.
+- **QC:** an independent wave-2 review found no item/coin minting; its 8 findings (key growth and lockout, request budget, AFK/leech dungeon credit, chest messaging, rollback replay, lamp gates) were fixed with regression tests.
+
 ## Depth update (November 19, 2026)
 
 Built by five parallel teams (Server, Combat, World, UI, Art) against the shared contract in [docs/DEPTH-CONTRACT.md](docs/DEPTH-CONTRACT.md), then integrated and reviewed by the lead.
@@ -55,10 +63,10 @@ Physical touch keyboard/controller navigation, device performance, full two-clie
 
 ## Required remaining work
 
-- Standing buy orders, gear auctions and live cross-server economy validation.
+- Live cross-server economy validation (standing orders and auctions are implemented and headless-tested).
 - Co-op skills/workers, leave/kick lifecycle and broader shared progression.
-- Deeper regions, activities, build choices, Slayer target variety, dungeon content and seasonal events.
-- Wider island construction/placement and persistent utility layouts.
+- Seasonal events and further regions/activities beyond the current eight regions, five dungeon floors and three slayer lines.
+- Free-form island placement beyond the Builder's Terrace hotspots.
 - Permanent mesh import/integration, texture delivery, complete sign/menu art review and device performance measurement.
 - Real multiplayer/rejoin/failure tests and requirement-by-requirement acceptance of the full original goal.
 - Confirm each intended cloud update with a receipt/version check and an actual join, independently of CI and audience settings.
