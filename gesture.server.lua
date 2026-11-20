@@ -9,7 +9,10 @@ local Relay = {}
 Relay.NAMES = {mine = true, chop = true, fish = true, harvest = true, hammer = true, stir = true, flip = true, saw = true,
 	interact = true, attack = true, eat = true, drink = true,
 	-- Combat styles: bow shot, staff cast, wand flick, Mend.
-	shoot = true, cast = true, flick = true, heal = true}
+	shoot = true, cast = true, flick = true, heal = true,
+	-- Hunter: set / collect a trap, sweep a net. (Agility moves are not relayed:
+	-- every client animates runners from their AgilityMove attribute.)
+	settrap = true, netswing = true}
 -- Combat gestures tint their held bow / staff / wand by the weapon of that style.
 Relay.STYLE_GESTURE = {shoot = "ranged", cast = "magic", flick = "magic"}
 Relay.TARGET_RANGE = 20

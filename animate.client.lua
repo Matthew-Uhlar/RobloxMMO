@@ -191,6 +191,45 @@ local WAND_FLICK = {rightArm = {84, 10, 4}, rightElbow = {8}, rightWrist = {35},
 -- Heal: both hands raised to the sky, chin up.
 local HEAL_UP = {rightArm = {165, 0, 22}, rightElbow = {12}, leftArm = {165, 0, -22}, leftElbow = {12}, waist = {10, 0, 0}, neck = {22}}
 
+-- Agility (AgilityMove player attribute; the server moves the anchored root,
+-- these only pose the limbs). Legs are driven too: the root is anchored, so the
+-- Animator's fall/idle pose underneath is replaced while the move runs.
+local CLIMB_A = {rightArm = {168, 0, 12}, rightElbow = {18}, leftArm = {118, 0, -12}, leftElbow = {70}, waist = {8, 0, 0}, neck = {12},
+	rightHip = {58}, rightKnee = {-78}, leftHip = {12}, leftKnee = {-24}}
+local CLIMB_B = {rightArm = {118, 0, 12}, rightElbow = {70}, leftArm = {168, 0, -12}, leftElbow = {18}, waist = {8, 0, 0}, neck = {12},
+	rightHip = {12}, rightKnee = {-24}, leftHip = {58}, leftKnee = {-78}}
+local BALANCE_A = {rightArm = {6, 0, 84}, rightElbow = {6}, leftArm = {6, 0, -78}, leftElbow = {6}, waist = {0, 0, -6}, neck = {-10},
+	rightHip = {24}, rightKnee = {-12}, leftHip = {-14}, leftKnee = {-6}}
+local BALANCE_B = {rightArm = {6, 0, 78}, rightElbow = {6}, leftArm = {6, 0, -84}, leftElbow = {6}, waist = {0, 0, 6}, neck = {-10},
+	rightHip = {-14}, rightKnee = {-6}, leftHip = {24}, leftKnee = {-12}}
+local SWING_GRIP = {rightArm = {176, 0, 6}, rightElbow = {12}, leftArm = {176, 0, -6}, leftElbow = {12}, neck = {10}}
+local SWING_BACK = merge(SWING_GRIP, {rightHip = {-28}, leftHip = {-22}, rightKnee = {-40}, leftKnee = {-46}, waist = {12, 0, 0}})
+local SWING_FORE = merge(SWING_GRIP, {rightHip = {62}, leftHip = {56}, rightKnee = {-12}, leftKnee = {-8}, waist = {-8, 0, 0}})
+local LEDGE_A = {rightArm = {42, 0, 72}, rightElbow = {28}, leftArm = {38, 0, -64}, leftElbow = {32}, waist = {-6, 0, 0}, neck = {0, -30, 0},
+	rightHip = {0, 0, 18}, leftHip = {0, 0, -4}}
+local LEDGE_B = {rightArm = {38, 0, 64}, rightElbow = {32}, leftArm = {42, 0, -72}, leftElbow = {28}, waist = {-6, 0, 0}, neck = {0, -30, 0},
+	rightHip = {0, 0, 4}, leftHip = {0, 0, -18}}
+local LEAP_LOAD = {rightArm = {-40, 0, 12}, leftArm = {-40, 0, -12}, waist = {-24, 0, 0}, rightHip = {54}, leftHip = {54}, rightKnee = {-80}, leftKnee = {-80}}
+local LEAP_AIR = {rightArm = {150, 0, 20}, rightElbow = {20}, leftArm = {150, 0, -20}, leftElbow = {20}, waist = {-6, 0, 0},
+	rightHip = {70}, leftHip = {24}, rightKnee = {-30}, leftKnee = {-96}}
+local LEAP_TUCK = merge(LEAP_AIR, {rightHip = {78}, leftHip = {36}, rightKnee = {-48}, leftKnee = {-100}})
+local VAULT_PLANT = {rightArm = {58, 0, 12}, rightElbow = {4}, leftArm = {58, 0, -12}, leftElbow = {4}, waist = {-28, 0, 0},
+	rightHip = {70, 0, 30}, leftHip = {66, 0, 26}, rightKnee = {-30}, leftKnee = {-40}}
+local VAULT_OVER = merge(VAULT_PLANT, {rightArm = {28, 0, 14}, leftArm = {28, 0, -14}, waist = {-10, 0, 0}, rightHip = {80, 0, 40}, leftHip = {78, 0, 36}})
+local ZIP_A = {rightArm = {178, 0, 4}, rightElbow = {8}, leftArm = {176, 0, -4}, leftElbow = {10}, neck = {14},
+	rightHip = {18}, leftHip = {12}, rightKnee = {-14}, leftKnee = {-10}}
+local ZIP_B = merge(ZIP_A, {rightHip = {8}, leftHip = {20}, rightKnee = {-8}, leftKnee = {-18}, waist = {4, 0, 0}})
+local DROP_SIT = {rightArm = {-24, 0, 26}, rightElbow = {10}, leftArm = {-24, 0, -26}, leftElbow = {10}, waist = {16, 0, 0}, neck = {-12},
+	rightHip = {84}, leftHip = {80}, rightKnee = {-14}, leftKnee = {-10}}
+local DROP_RIDE = merge(DROP_SIT, {waist = {22, 0, 0}, rightArm = {-30, 0, 30}, leftArm = {-30, 0, -30}})
+local FALL_A = {rightArm = {150, 0, 50}, rightElbow = {30}, leftArm = {100, 0, -70}, leftElbow = {20}, waist = {16, 0, 8}, neck = {20},
+	rightHip = {40}, rightKnee = {-60}, leftHip = {-20}, leftKnee = {-20}}
+local FALL_B = {rightArm = {100, 0, 70}, rightElbow = {20}, leftArm = {150, 0, -50}, leftElbow = {30}, waist = {16, 0, -8}, neck = {20},
+	rightHip = {-20}, rightKnee = {-20}, leftHip = {40}, leftKnee = {-60}}
+-- Hunter: set a trap (crouch, hands to the ground) and swing a net.
+local NET_BACK = {rightArm = {150, -40, 10}, rightElbow = {30}, leftArm = {40, -20, -10}, leftElbow = {40}, waist = {4, -26, 0}, neck = {0, 10, 0}}
+local NET_SWEEP = {rightArm = {96, 46, 0}, rightElbow = {8}, leftArm = {30, 10, -10}, leftElbow = {30}, waist = {-10, 24, 0}}
+
 -- Gesture table. intro/loop/outro are keyframe lists; the loop repeats while
 -- the prompt is held (and at least minCycles times). marks fire impact FX.
 -- tool = held model kind; skill = which snapshot tool colours it.
@@ -253,9 +292,77 @@ Core.GESTURES = {
 		loop = {key(0, REST), key(0.1, WAND_UP, "quadOut"), key(0.18, WAND_FLICK, "quadIn", "impact"), key(0.4, REST, "quadInOut")}},
 	heal = {fx = "mend",
 		loop = {key(0, REST), key(0.25, HEAL_UP, "backOut", "impact"), key(0.7, HEAL_UP), key(0.95, REST, "quadInOut")}},
+	-- Agility moves (attribute-driven, see Core.agilityGesture): durations
+	-- stretch to AgilityMoveDuration through Core.timing (whole loops, scaled).
+	climb = {agility = true,
+		intro = {key(0, REST), key(0.16, CLIMB_A, "quadOut")},
+		loop = {key(0, CLIMB_A), key(0.34, CLIMB_B, "sineInOut"), key(0.68, CLIMB_A, "sineInOut")},
+		outro = {key(0, CLIMB_A), key(0.2, REST, "quadInOut")}},
+	balance = {agility = true,
+		intro = {key(0, REST), key(0.2, BALANCE_A, "quadOut")},
+		loop = {key(0, BALANCE_A), key(0.4, BALANCE_B, "sineInOut"), key(0.8, BALANCE_A, "sineInOut")},
+		outro = {key(0, BALANCE_A), key(0.2, REST, "quadInOut")}},
+	swing = {agility = true,
+		intro = {key(0, REST), key(0.2, SWING_GRIP, "quadOut")},
+		loop = {key(0, SWING_GRIP), key(0.3, SWING_BACK, "sineInOut"), key(0.75, SWING_FORE, "sineInOut"), key(1.0, SWING_GRIP, "sineInOut")},
+		outro = {key(0, SWING_GRIP), key(0.22, REST, "quadInOut")}},
+	ledge = {agility = true,
+		intro = {key(0, REST), key(0.18, LEDGE_A, "quadOut")},
+		loop = {key(0, LEDGE_A), key(0.35, LEDGE_B, "sineInOut"), key(0.7, LEDGE_A, "sineInOut")},
+		outro = {key(0, LEDGE_A), key(0.2, REST, "quadInOut")}},
+	leap = {agility = true,
+		intro = {key(0, REST), key(0.16, LEAP_LOAD, "quadOut"), key(0.3, LEAP_AIR, "backOut")},
+		loop = {key(0, LEAP_AIR), key(0.25, LEAP_TUCK, "sineInOut"), key(0.5, LEAP_AIR, "sineInOut")},
+		outro = {key(0, LEAP_AIR), key(0.14, LEAP_LOAD, "quadIn"), key(0.34, REST, "quadOut")}},
+	vault = {agility = true,
+		intro = {key(0, REST), key(0.16, VAULT_PLANT, "quadOut")},
+		loop = {key(0, VAULT_PLANT), key(0.3, VAULT_OVER, "sineInOut"), key(0.6, VAULT_PLANT, "sineInOut")},
+		outro = {key(0, VAULT_PLANT), key(0.24, REST, "quadInOut")}},
+	zip = {agility = true,
+		intro = {key(0, REST), key(0.2, ZIP_A, "quadOut")},
+		loop = {key(0, ZIP_A), key(0.45, ZIP_B, "sineInOut"), key(0.9, ZIP_A, "sineInOut")},
+		outro = {key(0, ZIP_A), key(0.22, REST, "quadInOut")}},
+	drop = {agility = true,
+		intro = {key(0, REST), key(0.2, DROP_SIT, "quadOut")},
+		loop = {key(0, DROP_SIT), key(0.3, DROP_RIDE, "sineInOut"), key(0.6, DROP_SIT, "sineInOut")},
+		outro = {key(0, DROP_SIT), key(0.24, REST, "quadInOut")}},
+	fall = {agility = true,
+		intro = {key(0, REST), key(0.1, FALL_A, "quadOut")},
+		loop = {key(0, FALL_A), key(0.15, FALL_B, "sineInOut"), key(0.3, FALL_A, "sineInOut")},
+		outro = {key(0, FALL_A), key(0.16, REST, "quadInOut")}},
+	-- Hunter: crouch to set or collect a trap; sweep a net through a swarm.
+	settrap = {fx = "dust",
+		intro = {key(0, REST), key(0.2, HARVEST_REACH, "quadOut")},
+		loop = {key(0, HARVEST_REACH), key(0.3, HARVEST_GRAB, "quadIn", "impact"), key(0.6, HARVEST_REACH, "sineInOut")},
+		outro = {key(0, HARVEST_REACH), key(0.25, REST, "quadInOut")}},
+	netswing = {tool = "Net", fx = "ring",
+		loop = {key(0, REST), key(0.16, NET_BACK, "quadOut"), key(0.32, NET_SWEEP, "quadIn", "impact"), key(0.62, REST, "quadInOut")}},
 }
 Core.NAMES = {}
 for name in pairs(Core.GESTURES) do Core.NAMES[name] = true end
+
+-- AgilityMove "<anim>:<seq>" -> gesture name, seq ("" or unknown -> nil).
+Core.AGILITY = {climb = "climb", balance = "balance", swing = "swing", ledge = "ledge", leap = "leap", vault = "vault",
+	zip = "zip", drop = "drop", fall = "fall"}
+function Core.agilityGesture(value)
+	if type(value) ~= "string" then return nil end
+	local anim, seq = string.match(value, "^(%a+):(%d+)$")
+	local name = anim and Core.AGILITY[anim]
+	if not name then return nil end
+	return name, tonumber(seq)
+end
+-- Fit a gesture to `duration` seconds: whole loops between intro and outro,
+-- played at `rate` (virtual seconds per real second) so it ends on time.
+function Core.timing(def, duration)
+	local intro = if def.intro then Core.duration(def.intro) else 0
+	local outro = if def.outro then Core.duration(def.outro) else 0
+	local loop = Core.duration(Core.keysFor(def, "loop", 1))
+	duration = math.max(0.2, tonumber(duration) or 0)
+	local loops = math.max(1, math.floor((duration - intro - outro) / loop + 0.5))
+	local natural = intro + loops * loop + outro
+	return loops, natural / duration
+end
+
 
 function Core.keysFor(def, phase, variant)
 	if phase == "loop" and def.variants then
@@ -269,11 +376,14 @@ function Core.duration(keys) return keys[#keys].t end
 Core.SKILL_GESTURE = {Mining = "mine", Woodcutting = "chop", Fishing = "fish", Farming = "harvest"}
 Core.COOP_GESTURE = {Timber = "chop", Ore = "mine", Herb = "harvest"}
 Core.STATION_GESTURE = {Forge = {"hammer"}, Cauldron = {"stir"}, Hearth = {"flip", "stir"}, Workbench = {"hammer", "saw"}, Slayer = {"interact"}}
-Core.ACTION_GESTURE = {fight = "attack", worker = "hammer", workerBuild = "hammer", decorate = "hammer"}
+Core.ACTION_GESTURE = {fight = "attack", worker = "hammer", workerBuild = "hammer", decorate = "hammer", trap = "settrap", net = "netswing"}
+-- Agility prompts animate from the AgilityMove attribute the server sets instead.
+Core.SILENT_ACTION = {agility = true, shortcut = true}
 
 -- info = {action, item, coopResource}; counter alternates station variants.
 function Core.selectGesture(info, Data, counter)
 	local action, item = info.action, info.item
+	if Core.SILENT_ACTION[action] then return nil end
 	if info.coopResource and Core.COOP_GESTURE[info.coopResource] then return Core.COOP_GESTURE[info.coopResource] end
 	if action == "gather" and type(item) == "string" then
 		local skill = Data.ResourceSkill[item]
@@ -373,6 +483,9 @@ function Core.toolSpec(kind)
 		Staff = {p("Shaft", V(0.22, 0.22, 5.2), V(0, 0, -0.9), W, "Wood"), p("Cradle", V(0.5, 0.5, 0.3), V(0, 0, -3.5), W, "Wood"),
 			p("Orb", V(0.62, 0.62, 0.62), V(0, 0, -3.85), H, "Neon", "Ball")},
 		Wand = {p("Rod", V(0.12, 0.12, 1.5), V(0, 0, -0.6), W, "Wood"), p("Tip", V(0.26, 0.26, 0.26), V(0, 0, -1.4), H, "Neon", "Ball")},
+		-- Hunter's net: a long pole, a hoop and a pale mesh.
+		Net = {p("Pole", V(0.18, 0.18, 3.2), V(0, 0, -1.3), W, "Wood"), p("Hoop", V(1.5, 0.12, 0.12), V(0, 0, -2.95), H),
+			p("Mesh", V(1.3, 1.1, 0.06), V(0, -0.55, -3.0), "string", "Fabric")},
 	}
 	return specs[kind]
 end
@@ -498,7 +611,9 @@ function Core.createEngine(deps)
 		local now = deps.now()
 		local s = {character = character, name = name, def = def, rig = rig, holding = opts.hold == true, extra = 0, cycles = 0,
 			target = opts.target, variant = opts.variant or 1, start = now, phaseStart = now, lastT = -1, weight = 0,
-			phase = if def.intro then "intro" else "loop", isLocal = opts.isLocal == true, info = opts.info}
+			phase = if def.intro then "intro" else "loop", isLocal = opts.isLocal == true, info = opts.info, rate = 1}
+		-- Timed (agility moves): a fixed number of loops, scaled to end on time.
+		if opts.duration then s.loops, s.rate = Core.timing(def, opts.duration) end
 		E.active[character] = s
 		E.count += 1
 		if def.tool then s.tool = deps.attachTool(character, def.tool, opts.color, def.hand) end
@@ -510,6 +625,7 @@ function Core.createEngine(deps)
 		if s then s.holding = false end
 	end
 	local function wantsLoop(s)
+		if s.loops then return s.cycles < s.loops end
 		local minCycles = s.def.minCycles or 1
 		return s.holding or s.extra > 0 or s.cycles < minCycles
 	end
@@ -534,8 +650,10 @@ function Core.createEngine(deps)
 	end
 	function E.step()
 		if E.count == 0 then return end
-		local now = deps.now()
+		local real = deps.now()
 		for character, s in pairs(E.active) do
+			-- Per-gesture clock: timed gestures run at s.rate from their start.
+			local now = s.start + (real - s.start) * s.rate
 			if not deps.alive(character) then
 				remove(character, true)
 				continue
@@ -898,6 +1016,38 @@ Players.PlayerRemoving:Connect(function(who)
 	end
 end)
 player.CharacterRemoving:Connect(function(character) engine.stop(character) end)
+
+-- Agility moves: the server sets AgilityMove "<anim>:<seq>" (plus
+-- AgilityMoveDuration) on any runner and moves the anchored root itself, so
+-- every client watches every player's attribute: no relay is needed. The local
+-- runner always animates; others follow the remote cap and range.
+local function playAgility(who)
+	local character = who.Character
+	local name = Core.agilityGesture(who:GetAttribute("AgilityMove"))
+	if not name or not alive(character) then return end
+	local duration = tonumber(who:GetAttribute("AgilityMoveDuration")) or 1
+	if who == player then
+		engine.play(character, name, {duration = duration, isLocal = true})
+		return
+	end
+	local mine = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	local theirs = character:FindFirstChild("HumanoidRootPart")
+	if not mine or not theirs then return end
+	local distance = (mine.Position - theirs.Position).Magnitude
+	local admit, evict = Core.admitRemote(remoteDistance, character, distance)
+	if not admit then return end
+	if evict then
+		engine.stop(evict)
+		remoteDistance[evict] = nil
+	end
+	if engine.play(character, name, {duration = duration}) then remoteDistance[character] = distance end
+end
+local function watchRunner(who)
+	who:GetAttributeChangedSignal("AgilityMove"):Connect(function() playAgility(who) end)
+	if who:GetAttribute("AgilityMove") then task.defer(playAgility, who) end
+end
+Players.PlayerAdded:Connect(watchRunner)
+for _, who in ipairs(Players:GetPlayers()) do watchRunner(who) end
 
 RunService.Stepped:Connect(function(_, dt)
 	engine.step()

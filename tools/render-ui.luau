@@ -37,12 +37,12 @@ outDir = positional[1] or outDir
 filter = positional[2]
 
 local pages = {
-	{ "Journal", { "Bearing", "Quests", "Diaries", "Construction", "Regions", "Crew", "Calendar" } },
+	{ "Journal", { "Bearing", "Quests", "Diaries", "Construction", "Regions", "Crew", "Calendar", "Agility" } },
 	{ "Hero", { "Skills", "Gear", "Combat", "Spellbook", "Enchant", "Accessories", "Pets" } },
 	{ "Satchel", { "Items", "Collections" } },
 	{ "Workshop", { "Forge", "Hearth", "Cauldron", "Workbench", "Workers", "Home" } },
-	{ "Hunt", { "Slayer", "Bestiary", "Dungeon" } },
-	{ "Ledger", { "Bank", "Market", "Orders", "Auctions", "Merchant" } },
+	{ "Hunt", { "Slayer", "Bestiary", "Dungeon", "Hunter" } },
+	{ "Ledger", { "Bank", "Market", "Orders", "Auctions", "Merchant", "Vendors" } },
 }
 local function wanted(id)
 	return filter == nil or id:lower():find(filter:lower(), 1, true) ~= nil
@@ -123,6 +123,16 @@ for _, spec in ipairs(sizes) do
 		combat.fx.OnClientEvent:Fire("bossSpawn", { owner = 1, name = "Brassfall Golem" })
 		combat.run.RenderStepped:Fire()
 		table.insert(shots, { id = "HUD", guis = screenTree(hudUi.playerGui) })
+	end
+	-- Agility & Hunter HUD: a lap underway (lap tracker) and a caught trap (trap counter).
+	if wanted("hud-agility") then
+		local hudUi = H.runAtlas(size, { touch = true })
+		hudUi.player:SetAttribute("Mana", 118)
+		hudUi.player:SetAttribute("MaxMana", 160)
+		H.runCombat(size, hudUi.player, hudUi.replicated)
+		H.agilityHud(hudUi.player)
+		hudUi.update.OnClientEvent:Fire(H.snapshot({ message = "Mooring spar • +6 Agility XP" }))
+		table.insert(shots, { id = "HUD-Agility", guis = screenTree(hudUi.playerGui) })
 	end
 	-- Island builder controls (build.client.lua) in place mode over the HUD.
 	if wanted("builder") then

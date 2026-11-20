@@ -1953,6 +1953,18 @@ local function skillUnlocks(skill,level)
 	if skill=="Enchanting" then
 		for _,enchant in pairs(tbl(Data.Enchants)) do add(enchant.level,"Learn "..escape(enchant.name).." I",nil) end
 	end
+	-- Agility courses and shortcuts; Hunter creatures and extra trap slots.
+	if skill=="Agility" and type(Data.Agility)=="table" then
+		for _,course in ipairs(tbl(Data.Agility.Courses)) do add(course.level,"Run the "..escape(course.name),nil) end
+		for _,sc in ipairs(tbl(Data.Agility.Shortcuts)) do add(sc.level,"Use the "..escape(sc.name).." shortcut",nil) end
+	end
+	if skill=="Hunter" and type(Data.Hunter)=="table" then
+		for _,creature in ipairs(tbl(Data.Hunter.Creatures)) do
+			local method=tbl(tbl(Data.Hunter.Methods)[creature.method])
+			add(creature.level,(method.trap and "Trap " or "Net ")..escape(creature.name).." ("..escape(string.lower(method.name or "")).."), +"..fmt(creature.xp).." XP",tbl(creature.drops[1]).item)
+		end
+		for need=20,80,20 do add(need,"Tend "..(1+need//20).." traps at once",nil) end
+	end
 	local bag=tbl(Data.AccessoryBag)
 	if skill==tbl(bag.slotsPerLevel).skill and num(tbl(bag.slotsPerLevel).every,0)>0 then
 		local every=bag.slotsPerLevel.every
@@ -2050,7 +2062,8 @@ local selectedSlot="weapon"
 -- glyph chip, name and right-aligned value with zebra rows.
 local function drawStatSheet(stats)
 	local groups={{title="COMBAT",keys={}},{title="GATHERING & LUCK",keys={}}}
-	local gathering={miningSpeed=true,miningFortune=true,foragingFortune=true,farmingFortune=true,fishingFortune=true,seaCreatureChance=true,magicFind=true,petLuck=true}
+	local gathering={miningSpeed=true,miningFortune=true,foragingFortune=true,farmingFortune=true,fishingFortune=true,seaCreatureChance=true,magicFind=true,petLuck=true,
+		surefoot=true,trapLuck=true,huntingFortune=true}
 	local keys={}
 	for _,key in ipairs(Data and Data.StatOrder or {}) do table.insert(keys,key) end
 	for _,key in ipairs({"effectiveHealth","damage","magicalPower","combatBonus"}) do table.insert(keys,key) end
@@ -4192,26 +4205,657 @@ end)
 end
 
 ------------------------------------------------------------------------------
+-- Agility & Hunter (Agility/Hunter client team). HUD: a lap tracker (course,
+-- obstacle n/total, step countdown, lap clock and best lap, an arrow to the
+-- next obstacle) and a trap counter (placed/max, caught, collapsed) in the
+-- left column under the tutorial tracker. Pages: Journal › Agility (courses,
+-- lap milestones, shortcuts), Hunt › Hunter (hunter log, traps, companions)
+-- and Ledger › Vendors (Skymark Exchange, Trackers' Lodge; verb skillBuy).
+-- Server state: snapshot.agilityHunter = {agility={laps,best,lapTiers,run},
+-- hunter={log,logTiers,traps,maxTraps}, vendor={skill,openUntil}}; player
+-- attributes AgilityRun ("<course>:<next>:<total>"), AgilityRunExpires,
+-- HunterTraps ("n/max"), HunterTrapsCaught, SkillVendor(+Until). Wayfinder
+-- (nav.client.lua) adds AgilityNextAt (next obstacle position, local) and
+-- HunterTrapsCollapsed (own collapsed traps, local).
+------------------------------------------------------------------------------
+do
+local AH={timers={},vendor="Agility",hex={Agility="62C2B0",Hunter="A8763E"}}
+Pages.AH=AH
+function AH.ready() return Data and type(Data.Agility)=="table" and type(Data.Hunter)=="table" and type(Data.SkillVendors)=="table" end
+function AH.now()
+	local ok,t=pcall(function() return workspace:GetServerTimeNow() end)
+	return math.floor(if ok and type(t)=="number" and t==t and t>1577836800 then t else os.time())
+end
+function AH.state() return tbl(state.agilityHunter) end
+function AH.level(skill) local info=skillsOf(state)[skill] return info and info.level or 1 end
+-- 41.2 → "41.2s", 75.3 → "1:15.3".
+function AH.lapTime(seconds)
+	seconds=num(seconds,nil)
+	if not seconds then return "—" end
+	local tenths=math.floor(seconds*10+.5)
+	if tenths>=600 then return string.format("%d:%04.1f",tenths//600,(tenths%600)/10) end
+	return string.format("%.1fs",tenths/10)
+end
+function AH.mmss(seconds)
+	seconds=math.max(0,math.floor(num(seconds,0)))
+	return string.format("%d:%02d",seconds//60,seconds%60)
+end
+function AH.guide(specs,label)
+	local request=player:FindFirstChild("WayfinderRequest")
+	if request then
+		request:Fire(specs,label)
+		if atlas.Visible then closeAtlas() end
+	else
+		notify("The Wayfinder is still charting the isles. Try again in a moment.")
+	end
+end
+-- Run attribute → course def, next index, total ("" or malformed → nil).
+function AH.run()
+	if not AH.ready() then return nil end
+	local value=player:GetAttribute("AgilityRun")
+	local id,nextIndex,total
+	if type(value)=="string" then id,nextIndex,total=value:match("^(%w+):(%d+):(%d+)$") end
+	local course=id and Data.Agility.CourseById[id]
+	if not course then return nil end
+	return course,tonumber(nextIndex),tonumber(total)
+end
+
+------------------------------------------------------------------------------
+-- HUD
+------------------------------------------------------------------------------
+do
+	local tracker=make("TextButton",gui,{Name="CourseTracker",Text="",AutoButtonColor=false,BackgroundColor3=deep,BackgroundTransparency=.06,BorderSizePixel=0,
+		Position=UDim2.fromOffset(10,174),Size=UDim2.fromOffset(250,70),Visible=false,Selectable=false})
+	rounded(tracker,12,UI.brass)
+	UI.sheen(tracker,1,.74)
+	local accent=make("Frame",tracker,{Name="Accent",Position=UDim2.fromOffset(0,10),Size=UDim2.new(0,3,1,-20),BackgroundColor3=rgb(AH.hex.Agility),BorderSizePixel=0})
+	make("UICorner",accent,{CornerRadius=UDim.new(1,0)})
+	AH.courseName=label(tracker,"",12,4,UDim.new(1,-74),16,UI.heavy,11,rgb(lighten(AH.hex.Agility,.3)))
+	AH.courseName.Name="Course"
+	AH.courseStep=label(tracker,"",0,4,UDim.new(0,58),16,UI.heavy,12,ivory)
+	AH.courseStep.Name="Step"
+	AH.courseStep.Position=UDim2.new(1,-66,0,4)
+	AH.courseStep.TextXAlignment=Enum.TextXAlignment.Right
+	AH.arrow=make("TextLabel",tracker,{Name="Arrow",Position=UDim2.fromOffset(11,21),Size=UDim2.fromOffset(18,18),BackgroundColor3=rgb("1B3542"),
+		Text="▲",Font=UI.heavy,TextSize=11,TextColor3=gold,BorderSizePixel=0})
+	make("UICorner",AH.arrow,{CornerRadius=UDim.new(1,0)})
+	make("UIStroke",AH.arrow,{Color=UI.brass,Thickness=1,Transparency=.3})
+	AH.nextName=label(tracker,"",34,20,UDim.new(1,-100),20,bold,13,ivory)
+	AH.nextName.Name="Next"
+	AH.nextName.RichText=true
+	AH.countdown=label(tracker,"",0,20,UDim.new(0,60),20,UI.heavy,14,gold)
+	AH.countdown.Name="Countdown"
+	AH.countdown.Position=UDim2.new(1,-68,0,20)
+	AH.countdown.TextXAlignment=Enum.TextXAlignment.Right
+	AH.steps=make("Frame",tracker,{Name="Steps",Position=UDim2.fromOffset(12,44),Size=UDim2.new(1,-24,0,5),BackgroundTransparency=1})
+	AH.lapLine=label(tracker,"",12,51,UDim.new(1,-24),15,bold,11,muted)
+	AH.lapLine.Name="Lap"
+	AH.lapLine.RichText=true
+	tracker.Activated:Connect(function() if Pages.openTo then Pages.openTo("Journal","Agility") end end)
+	AH.tracker=tracker
+
+	local traps=make("TextButton",gui,{Name="TrapTracker",Text="",AutoButtonColor=false,BackgroundColor3=deep,BackgroundTransparency=.06,BorderSizePixel=0,
+		Position=UDim2.fromOffset(10,250),Size=UDim2.fromOffset(250,30),Visible=false,Selectable=false})
+	rounded(traps,12,UI.brass)
+	UI.sheen(traps,1,.74)
+	UI.chip(traps,"◉",rgb(AH.hex.Hunter),22,5)
+	AH.trapText=label(traps,"",33,0,UDim.new(1,-120),30,UI.heavy,13,ivory)
+	AH.trapText.Name="Count"
+	AH.trapState=label(traps,"",0,0,UDim.new(0,100),30,UI.heavy,12,mint)
+	AH.trapState.Name="State"
+	AH.trapState.RichText=true
+	AH.trapState.Position=UDim2.new(1,-108,0,0)
+	AH.trapState.TextXAlignment=Enum.TextXAlignment.Right
+	traps.Activated:Connect(function() if Pages.openTo then Pages.openTo("Hunt","Hunter") end end)
+	AH.traps=traps
+end
+-- Left column under the tutorial tracker (npc.client.lua, y 100-166), or from
+-- y 100 once the tutorial is done; 184 px wide on short screens so it clears
+-- the centred toast. When both panels would reach the action bar (phone
+-- landscape with the tutorial up) the lap tracker drops its best-lap line and
+-- the trap counter slims down.
+-- The island builder and townsfolk dialogue own the bottom and left: step aside.
+function AH.suppressed()
+	if player:GetAttribute("IslandBuilding") then return true end
+	local playerGui=player:FindFirstChild("PlayerGui")
+	local folk=playerGui and playerGui:FindFirstChild("TownsfolkDialogue")
+	local box=folk and folk:FindFirstChild("Dialogue")
+	return box~=nil and box.Visible==true
+end
+function AH.layout()
+	local view=gui.AbsoluteSize
+	local height=720
+	if view and view.Y>0 then height=view.Y end
+	local short=height<520
+	local top=100
+	local playerGui=player:FindFirstChild("PlayerGui")
+	local folk=playerGui and playerGui:FindFirstChild("TownsfolkDialogue")
+	local tutorial=folk and folk:FindFirstChild("TutorialTracker")
+	if tutorial and tutorial.Visible then top=174 end
+	local width=short and 184 or 250
+	local trackerHeight=short and 64 or 70
+	local tight=AH.tracker.Visible and AH.traps.Visible and top+trackerHeight+6+30>height-48
+	if tight then trackerHeight=50 end
+	AH.tracker.Size=UDim2.fromOffset(width,trackerHeight)
+	AH.tracker.Position=UDim2.fromOffset(10,top)
+	AH.lapLine.Visible=not tight
+	AH.lapLine.Position=UDim2.fromOffset(12,short and 47 or 51)
+	AH.steps.Position=UDim2.fromOffset(12,short and 42 or 44)
+	local trapHeight=tight and 26 or 30
+	AH.traps.Position=UDim2.fromOffset(10,AH.tracker.Visible and top+trackerHeight+(tight and 4 or 6) or top)
+	AH.traps.Size=UDim2.fromOffset(width,trapHeight)
+	AH.trapText.Size=UDim2.new(1,width<200 and -40 or -120,0,trapHeight)
+	AH.trapState.Size=UDim2.new(0,100,0,trapHeight)
+	AH.trapState.Visible=width>=200
+	AH.paintTraps()
+end
+-- Course tracker text and pips from the attributes + the latest snapshot.
+AH.lap={}
+function AH.refreshCourse()
+	local course,nextIndex,total=AH.run()
+	local was=AH.lap
+	if course and nextIndex and total then
+		if was.course~=course.id or (was.next or 0)>nextIndex then
+			AH.lap={course=course.id,started=os.clock(),next=nextIndex}
+		end
+		AH.lap.next=nextIndex
+		AH.lap.total=total
+		AH.lap.done=nil
+	elseif was.course and was.next==was.total and not was.done then
+		-- The final obstacle landed: the server clears the run. Show the lap for a moment.
+		local move=player:GetAttribute("AgilityMove")
+		if not (type(move)=="string" and move:match("^fall")) then
+			was.done=os.clock()
+			was.time=os.clock()-num(was.started,os.clock())
+		else
+			AH.lap={}
+		end
+	elseif not was.done then
+		AH.lap={}
+	end
+	local lap=AH.lap
+	local def=lap.course and AH.ready() and Data.Agility.CourseById[lap.course]
+	local expires=num(player:GetAttribute("AgilityRunExpires"),0)
+	local stale=lap.done==nil and expires>0 and AH.now()-expires>4
+	AH.tracker.Visible=def~=nil and not stale and not AH.suppressed() and (lap.done==nil or os.clock()-lap.done<4)
+	AH.layout()
+	if not AH.tracker.Visible then return end
+	local hex=type(def.color)=="string" and def.color or AH.hex.Agility
+	AH.tracker:FindFirstChild("Accent").BackgroundColor3=rgb(hex)
+	AH.courseName.Text=string.upper(def.name)
+	AH.courseName.TextColor3=rgb(lighten(hex,.35))
+	local best=num(tbl(tbl(AH.state().agility).best)[def.id],nil)
+	local totalSteps=#def.obstacles
+	if lap.done then
+		AH.courseStep.Text=totalSteps.." / "..totalSteps
+		AH.nextName.Text=paint("LAP COMPLETE","7FE3CC")
+		AH.countdown.Text=AH.lapTime(lap.time)
+		AH.countdown.TextColor3=mint
+		AH.arrow.Text="✓"
+		AH.arrow.Rotation=0
+	else
+		local obstacle=def.obstacles[lap.next] or def.obstacles[1]
+		local kind=Data.Agility.Kinds[obstacle.kind]
+		AH.courseStep.Text=lap.next.." / "..totalSteps
+		-- Narrow (phones): the obstacle name alone; the verb shows on wider screens.
+		local verb=AH.tracker.Size.X.Offset>=220 and (paint(escape(kind and kind.verb or "Next"),"A9BDC1").." ") or ""
+		AH.nextName.Text=verb..escape(obstacle.name)
+		AH.arrow.Text="▲"
+	end
+	local laps=num(tbl(tbl(AH.state().agility).laps)[def.id],0)
+	AH.lapLine.Text="Best "..paint(best and AH.lapTime(best) or "—","F3C66E").."   ·   "..fmt(laps).." laps"
+	-- Obstacle pips: landed (course colour), next (gold), still ahead (track).
+	if AH.steps:GetAttribute("Count")~=totalSteps then
+		for _,child in ipairs(AH.steps:GetChildren()) do child:Destroy() end
+		for i=1,totalSteps do
+			local pip=make("Frame",AH.steps,{Name="Step"..i,Position=UDim2.new((i-1)/totalSteps,1,0,0),Size=UDim2.new(1/totalSteps,-3,1,0),BackgroundColor3=track,BorderSizePixel=0})
+			make("UICorner",pip,{CornerRadius=UDim.new(1,0)})
+		end
+		AH.steps:SetAttribute("Count",totalSteps)
+	end
+	for i=1,totalSteps do
+		local pip=AH.steps:FindFirstChild("Step"..i)
+		if pip then pip.BackgroundColor3=(lap.done or i<lap.next) and rgb(hex) or (i==lap.next and gold or track) end
+	end
+	AH.layout()
+	AH.tick()
+end
+-- Trap counter from HunterTraps / HunterTrapsCaught / HunterTrapsCollapsed.
+function AH.refreshTraps()
+	local value=player:GetAttribute("HunterTraps")
+	local placed,max
+	if type(value)=="string" then placed,max=value:match("^(%d+)/(%d+)$") end
+	placed,max=tonumber(placed),tonumber(max)
+	local caught=math.max(0,num(player:GetAttribute("HunterTrapsCaught"),0))
+	local collapsed=math.max(0,num(player:GetAttribute("HunterTrapsCollapsed"),0))
+	AH.traps.Visible=placed~=nil and (placed>0 or caught>0 or collapsed>0) and not AH.suppressed()
+	AH.trapInfo={placed=placed or 0,max=max,caught=caught,collapsed=collapsed}
+	AH.layout()
+end
+-- Counter copy for the current width (beside the lap tracker it is a slim chip).
+function AH.paintTraps()
+	local info=AH.trapInfo
+	if not info then return end
+	local wide=AH.trapState.Visible
+	local parts={}
+	if info.caught>0 then table.insert(parts,paint("✦ "..info.caught..(wide and " caught" or ""),"7FE3CC")) end
+	if info.collapsed>0 then table.insert(parts,paint("✕ "..info.collapsed..((wide and info.caught==0) and " collapsed" or ""),"EF7D67")) end
+	AH.trapText.RichText=true
+	AH.trapText.Text=(wide and "Traps " or "")..info.placed.." / "..(info.max or "?")..(wide and "" or ("  "..table.concat(parts," ")))
+	AH.trapState.Text=table.concat(parts,"  ")
+end
+-- Every 0.1 s while a lap runs: countdown, lap clock and the arrow's bearing
+-- to AgilityNextAt relative to the camera (up = straight ahead).
+function AH.tick()
+	if not AH.tracker.Visible then return end
+	local lap=AH.lap
+	if lap.done then
+		if os.clock()-lap.done>=4 then AH.lap={} AH.refreshCourse() end
+		return
+	end
+	local expires=num(player:GetAttribute("AgilityRunExpires"),0)
+	local left=expires-AH.now()
+	if expires<=0 then
+		AH.countdown.Text=""
+	elseif left<0 then
+		-- The step window passed: the server breaks the lap on the next attempt.
+		AH.countdown.Text="Too slow"
+		AH.countdown.TextColor3=ember
+		if left<-4 then
+			AH.tracker.Visible=false
+			AH.layout()
+		end
+	else
+		AH.countdown.Text=AH.mmss(left)
+		AH.countdown.TextColor3=left<=8 and ember or gold
+	end
+	local at=player:GetAttribute("AgilityNextAt")
+	local character=player.Character
+	local root=character and character:FindFirstChild("HumanoidRootPart")
+	if typeof(at)=="Vector3" and root then
+		local camera=workspace.CurrentCamera
+		local look=camera and camera.CFrame.LookVector or root.CFrame.LookVector
+		local to=at-root.Position
+		local angle=math.deg(math.atan2(look.X*to.Z-look.Z*to.X,look.X*to.X+look.Z*to.Z))
+		AH.arrow.Rotation=math.floor(angle+.5)
+		AH.arrow.TextTransparency=0
+	else
+		AH.arrow.TextTransparency=.6
+	end
+end
+for _,name in ipairs({"AgilityRun","AgilityRunExpires"}) do
+	player:GetAttributeChangedSignal(name):Connect(function() AH.refreshCourse() end)
+end
+player:GetAttributeChangedSignal("IslandBuilding"):Connect(function() AH.refreshCourse() AH.refreshTraps() end)
+for _,name in ipairs({"HunterTraps","HunterTrapsCaught","HunterTrapsCollapsed"}) do
+	player:GetAttributeChangedSignal(name):Connect(function() AH.refreshTraps() end)
+end
+gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(function() AH.layout() end)
+function AH.onSnapshot()
+	AH.refreshCourse()
+	AH.refreshTraps()
+end
+task.spawn(function()
+	while task.wait(.1) do
+		if AH.tracker.Visible then pcall(AH.tick) end
+	end
+end)
+task.spawn(function()
+	-- Vendor countdowns on the open Vendors page; layout follows the tutorial tracker.
+	while task.wait(1) do
+		pcall(AH.refreshCourse)
+		pcall(AH.refreshTraps)
+		if #AH.timers>0 and atlas.Visible and current=="Ledger" and sectionOf and sectionOf.Ledger=="Vendors" then
+			local now=AH.now()
+			for _,t in ipairs(AH.timers) do pcall(function() t.label.Text=t.fn(now) end) end
+			if AH.closesAt and now>=AH.closesAt then render() end
+		end
+	end
+end)
+
+------------------------------------------------------------------------------
+-- Journal › Agility
+------------------------------------------------------------------------------
+-- Milestone pips + bar towards the next of `tiers` for `n` completions.
+function AH.milestones(n,tiers)
+	local reached=0
+	for i,need in ipairs(tiers) do if n>=need then reached=i end end
+	local nextNeed=tiers[reached+1]
+	local previous=tiers[reached] or 0
+	local labels={}
+	for i,need in ipairs(tiers) do labels[i]=short(need) end
+	return reached,nextNeed,previous,labels
+end
+function AH.locked(region)
+	return type(region)=="string" and player:GetAttribute(region.."Unlocked")==false
+end
+function AH.drawAgility()
+	if not AH.ready() then dataMissing() return end
+	local AG=Data.Agility
+	local ag=tbl(AH.state().agility)
+	local laps,best=tbl(ag.laps),tbl(ag.best)
+	local level=AH.level("Agility")
+	local stats=tbl(dget("stats"))
+	local surefoot=num(stats.surefoot,0)
+	local total,tiers=0,0
+	for _,course in ipairs(AG.Courses) do
+		local n=num(laps[course.id],0)
+		total+=n
+		for _,need in ipairs(AG.LapTiers) do if n>=need then tiers+=1 end end
+	end
+	tiers=num(ag.lapTiers,tiers)
+	local hex=skillHex("Agility")
+	local marks=count("items",AG.MARK_ITEM)
+	card({name="AgilitySummary",icon=function(parent,size) return titleArt(parent,"Agility",size,"Hero") end,accent=rgb(hex),
+		title="Skyrunner's log",titleColor=gold,subtitle="Agility "..level.."   ·   "..fmt(total).." laps   ·   "..fmt(marks).." Skymarks",
+		badge="Lv "..level,badgeColor=rgb(lighten(hex,.3)),
+		detail="Run each course's obstacles in order: start at the first, then reach the next within "..AG.STEP_WINDOW.."s of landing. Every lap pays bonus XP and may leave a Skymark for the Skymark Exchange.",
+		lines={"Lap milestones ("..table.concat(AG.LapTiers," / ").." laps of any course): "..statText(AG.LapBonus).." each, permanently."..
+			(tiers>0 and ("  Earned: "..statText(AG.LapBonus,tiers).." from "..tiers.." milestone"..(tiers==1 and "" or "s")..".") or ""),
+			paint("❦ Surefoot "..fmt(surefoot).."%","62C2B0").." cuts every slip chance. Slips fade away "..AG.FAIL_FADE.." levels above a course."}})
+	local course,nextIndex,runTotal=AH.run()
+	if course and nextIndex then
+		local obstacle=course.obstacles[nextIndex]
+		card({name="AgilityRun",motif="Journal",accent=gold,title=paint("LAP UNDERWAY  ·  "..escape(course.name),"F3C66E"),
+			subtitle="Next: "..escape(obstacle and obstacle.name or "?").."  ·  "..nextIndex.." of "..num(runTotal,#course.obstacles),
+			pips={total=#course.obstacles,filled=nextIndex-1,color=safeColor(course.color,mint)},
+			actions={{caption="Guide",primary=true,name="GuideNextObstacle",fn=function() AH.guide({"anchor:AgilityNext","anchor:Waypoint_Agility_"..course.id},"Next obstacle") end}}})
+	end
+	heading("COURSES    /    "..#AG.Courses.." SKY CIRCUITS")
+	for _,c in ipairs(AG.Courses) do
+		local open=level>=c.level
+		local n=num(laps[c.id],0)
+		local b=num(best[c.id],nil)
+		local reached,nextNeed,previous,labels=AH.milestones(n,AG.LapTiers)
+		local risk=0
+		for _,o in ipairs(c.obstacles) do risk=math.max(risk,AG.failChance(c,o,level,surefoot)) end
+		local chain={}
+		for _,o in ipairs(c.obstacles) do
+			local verb=tbl(AG.Kinds[o.kind]).verb or o.kind
+			table.insert(chain,(num(o.risk,0)>0 and paint(escape(verb.." "..o.name),"F2A08E") or escape(verb.." "..o.name)))
+		end
+		local regionLocked=AH.locked(c.region)
+		local lines={
+			table.concat(chain,paint("  ›  ","6E8790")),
+			"Lap: "..paint("+"..fmt(AG.lapTotal(c)).." XP","F3C66E").."   ·   Skymark "..chance(AG.markChance(c,level)).."   ·   Best "..paint(b and AH.lapTime(b) or "—","F7EFDC"),
+			open and (risk>0 and paint("Slip chance up to "..chance(risk).." at your level","EF7D67") or paint("No slips at your level","7FE3CC")) or nil,
+			regionLocked and paint("Unlock "..escape(AH.regionName(c.region)).." to reach this course.","EF7D67") or nil,
+		}
+		card({name="Course"..c.id,icon=function(parent,size) return itemGlyph(parent,{name=c.name,color=c.color},size,not open) end,iconSize=compactAtlas and 36 or 44,
+			title=escape(c.name),titleColor=open and rgb(lighten(c.color,.35)) or muted,
+			subtitle="Agility "..c.level.."   ·   "..escape(AH.regionName(c.region)).."   ·   "..#c.obstacles.." obstacles",
+			badge=open and (fmt(n).." laps") or ("Lv "..c.level),badgeColor=open and ivory or ember,
+			pips={total=#AG.LapTiers,filled=reached,color=safeColor(c.color,mint),labels=labels},
+			bar=open and {fraction=nextNeed and math.clamp((n-previous)/math.max(1,nextNeed-previous),0,1) or 1,color=gold,
+				caption=nextNeed and (fmt(n).." / "..fmt(nextNeed).." laps to milestone "..numeral(reached+1)) or "EVERY MILESTONE REACHED"} or nil,
+			lines=lines,
+			actions={{caption="Guide",name="Guide"..c.id,fn=function() AH.guide({"anchor:Waypoint_Agility_"..c.id,"region:"..c.region},c.name) end}}})
+	end
+	heading("SHORTCUTS    /    AGILITY ROUTES")
+	for _,sc in ipairs(AG.Shortcuts) do
+		local open=level>=sc.level
+		local regionLocked=AH.locked(sc.region)
+		local kind=tbl(AG.Kinds[sc.kind])
+		card({name="Shortcut"..sc.id,motif="Journal",title=escape(sc.name),titleColor=open and ivory or muted,
+			subtitle=escape(kind.verb or "Cross").."   ·   Agility "..sc.level.."   ·   +"..fmt(sc.xp).." XP   ·   "..sc.duration.."s",
+			badge=open and paint("UNLOCKED","7FE3CC") or ("Lv "..sc.level),badgeColor=open and mint or ember,
+			detail=escape(sc.description),
+			lines={regionLocked and paint("Needs access to "..escape(AH.regionName(sc.region))..".","EF7D67") or nil},
+			actions={{caption="Guide",name="Guide"..sc.id,fn=function() AH.guide({"anchor:Waypoint_Shortcut_"..sc.id.."_A","anchor:Waypoint_Shortcut_"..sc.id.."_B"},sc.name) end}}})
+	end
+	AH.companions("Agility")
+end
+function AH.regionName(id)
+	local region=Data and type(Data.RegionById)=="table" and Data.RegionById[id]
+	return type(region)=="table" and region.name or tostring(id or "the wilds")
+end
+-- Skill pets (Agility: Gustling from laps; Hunter: three trapped companions).
+function AH.companions(skill)
+	local pets={}
+	for _,pet in ipairs(tbl(Data.Pets)) do if pet.skill==skill then table.insert(pets,pet) end end
+	if #pets==0 then return end
+	heading("RARE COMPANIONS")
+	local owned={}
+	for _,entry in ipairs(tbl(dget("pets"))) do if type(entry)=="table" and entry.id then owned[entry.id]=true end end
+	for _,pet in ipairs(pets) do
+		local itemId=pet.id.."Pet"
+		local have=owned[pet.id] or count("items",itemId)>0
+		local sources={}
+		if skill=="Agility" then
+			for _,drop in ipairs(tbl(Data.Agility.LapDrops)) do if drop.item==itemId then table.insert(sources,"any lap ("..chance(drop.chance)..")") end end
+		else
+			for _,creature in ipairs(Data.Hunter.Creatures) do
+				for _,drop in ipairs(creature.drops) do if drop.item==itemId then table.insert(sources,escape(creature.name).." ("..chance(drop.chance)..")") end end
+			end
+		end
+		card({name="Companion"..pet.id,item=itemId,locked=not have,iconSize=compactAtlas and 36 or 44,title=escape(pet.name),
+			titleColor=have and safeColor(rarityHex(pet.rarity),ivory) or muted,subtitle=escape(pet.rarity).."   ·   "..escape(pet.ability or ""),
+			badge=have and paint("OWNED","7FE3CC") or nil,badgeColor=mint,
+			lines={"From: "..(#sources>0 and table.concat(sources,", ") or "—"),"Per level: "..statText(pet.perLevel)}})
+	end
+end
+
+------------------------------------------------------------------------------
+-- Hunt › Hunter
+------------------------------------------------------------------------------
+function AH.drawHunter()
+	if not AH.ready() then dataMissing() return end
+	local HU=Data.Hunter
+	local hu=tbl(AH.state().hunter)
+	local log=tbl(hu.log)
+	local level=AH.level("Hunter")
+	local stats=tbl(dget("stats"))
+	local trapLuck=num(stats.trapLuck,0)
+	local tiers,caughtTotal,known=0,0,0
+	for _,c in ipairs(HU.Creatures) do
+		local n=num(log[c.id],0)
+		caughtTotal+=n
+		if n>0 then known+=1 end
+		for _,need in ipairs(HU.LogTiers) do if n>=need then tiers+=1 end end
+	end
+	tiers=num(hu.logTiers,tiers)
+	local maxTraps=num(hu.maxTraps,HU.maxTraps(level))
+	local traps=tbl(hu.traps)
+	local hex=skillHex("Hunter")
+	card({name="HunterSummary",icon=function(parent,size) return titleArt(parent,"Hunter",size,"Hunt") end,accent=rgb(hex),
+		title="Tracker's log",titleColor=gold,subtitle="Hunter "..level.."   ·   "..fmt(caughtTotal).." catches   ·   "..known.." / "..#HU.Creatures.." creatures",
+		badge="Lv "..level,badgeColor=rgb(lighten(hex,.3)),
+		detail="Set snares, bird snares and box traps at hunting grounds (you can tend "..maxTraps.." at once; one more every 20 levels) and swing a net through swarms. Traps check every "..HU.TICK.."s and collapse after "..HU.MAX_TICKS.." empty checks.",
+		lines={"Log milestones ("..table.concat(HU.LogTiers," / ").." catches of a creature): "..statText(HU.LogBonus).." each, permanently."..
+			(tiers>0 and ("  Earned: "..statText(HU.LogBonus,tiers)..".") or ""),
+			paint("⌖ Trap Luck "..fmt(trapLuck).."%","D9A35E").." raises every catch chance.   "..paint("☘ Hunting Fortune "..fmt(num(stats.huntingFortune,0)),"FFAA00").." adds primary drops."}})
+	-- Traps in the field (snapshot; the HUD counter is live).
+	if #traps>0 then
+		local lines={}
+		for _,trap in ipairs(traps) do
+			if type(trap)=="table" then
+				local c=HU.CreatureById[trap.creature]
+				local method=c and HU.Methods[c.method]
+				local stateText=trap.state=="caught" and paint("✦ caught!","7FE3CC") or trap.state=="collapsed" and paint("✕ collapsed","EF7D67")
+					or paint("set  ("..num(trap.ticks,0).."/"..HU.MAX_TICKS.." checks)","A9BDC1")
+				table.insert(lines,escape(method and method.name or "Trap").." · "..escape(c and c.name or tostring(trap.creature)).."   "..stateText)
+			end
+		end
+		card({name="HunterTraps",motif="Hunt",title="Traps in the field",titleColor=gold,badge=#traps.." / "..maxTraps,badgeColor=ivory,lines=lines})
+	end
+	heading("HUNTER LOG    /    "..known.." OF "..#HU.Creatures.." RECORDED")
+	for _,c in ipairs(HU.Creatures) do
+		local n=num(log[c.id],0)
+		local open=level>=c.level
+		local method=HU.Methods[c.method]
+		local kit
+		for _,id in ipairs(tbl(HU.Kits[c.method])) do if count("items",id)>0 then kit=id break end end
+		local reached,nextNeed,previous,labels=AH.milestones(n,HU.LogTiers)
+		local drops={}
+		for _,drop in ipairs(c.drops) do
+			local def=itemDef(drop.item)
+			local amount=drop.min==drop.max and tostring(drop.min) or (drop.min.."–"..drop.max)
+			local text=paint(escape(itemName(drop.item)),itemHex(drop.item)).." "..amount.." ("..chance(drop.chance)..")"
+			if def and def.kind=="pet" then text=paint("★ ","F3C66E")..text end
+			table.insert(drops,text)
+		end
+		local kitLine=(kit and check or cross).." "..escape(itemName(kit or method.kit))..(kit and "" or paint("  (Trackers' Lodge)","A9BDC1"))
+		card({name="Creature"..c.id,icon=function(parent,size) return itemGlyph(parent,{name=c.name,color=c.color},size,n==0) end,iconSize=compactAtlas and 36 or 44,
+			title=escape(c.name),titleColor=n>0 and rgb(lighten(c.color,.35)) or (open and ivory or muted),
+			subtitle="Hunter "..c.level.."   ·   "..escape(method.name).."   ·   "..escape(AH.regionName(c.region)).."   ·   +"..fmt(c.xp).." XP",
+			badge=open and (fmt(n).." caught") or ("Lv "..c.level),badgeColor=open and ivory or ember,
+			pips={total=#HU.LogTiers,filled=reached,color=safeColor(c.color,mint),labels=labels},
+			bar=n>0 and {fraction=nextNeed and math.clamp((n-previous)/math.max(1,nextNeed-previous),0,1) or 1,color=gold,
+				caption=nextNeed and (fmt(n).." / "..fmt(nextNeed).." to log tier "..numeral(reached+1)) or "HUNTER LOG COMPLETE"} or nil,
+			lines={"Kit: "..kitLine..(open and ("   ·   "..chance(HU.catchChance(c,level,trapLuck))..(method.trap and " per check" or " per swing")) or ""),
+				"Drops: "..table.concat(drops,", ")},
+			actions={{caption="Guide",name="Guide"..c.id,fn=function() AH.guide({"anchor:Waypoint_Hunting_"..c.id,"region:"..c.region},c.name) end}}})
+	end
+	AH.companions("Hunter")
+end
+
+------------------------------------------------------------------------------
+-- Ledger › Vendors: Skymark Exchange (Skymarks) and Trackers' Lodge (coins).
+------------------------------------------------------------------------------
+AH.vendorInfo={
+	Agility={label="Skymark Exchange",where="Compass Quay, beside the Quay Rigging Run",anchor="Waypoint_SkymarkExchange",set="Windrunner"},
+	Hunter={label="Trackers' Lodge",where="Meadow Reach, by the Hopper Warren",anchor="Waypoint_TrackersLodge",set="Thicketstalker"},
+}
+function AH.costText(cost)
+	local parts={}
+	for id,n in pairs(tbl(cost)) do
+		local have=id=="coins" and num(state.coins,0) or count("items",id)
+		local text=id=="coins" and (fmt(n).." coins") or (fmt(n).." "..escape(itemName(id)))
+		table.insert(parts,{id=id,text=paint(text,have>=n and "F3C66E" or "EF7D67").."  "..paint("("..short(have)..")","8FA5AB")})
+	end
+	table.sort(parts,function(a,b) return (a.id=="coins" and 0 or 1)<(b.id=="coins" and 0 or 1) end)
+	local out={}
+	for _,p in ipairs(parts) do table.insert(out,p.text) end
+	return table.concat(out,"  +  ")
+end
+function AH.vendorOpen(skill)
+	local vendor=tbl(AH.state().vendor)
+	local open=player:GetAttribute("SkillVendor") or vendor.skill
+	local untilTime=num(player:GetAttribute("SkillVendorUntil"),nil) or num(vendor.openUntil,0)
+	return open==skill and untilTime>AH.now(),untilTime
+end
+function AH.drawVendors()
+	table.clear(AH.timers)
+	AH.closesAt=nil
+	if not AH.ready() then dataMissing() return end
+	local order={"Agility","Hunter"}
+	local names={}
+	for i,skill in ipairs(order) do names[i]=AH.vendorInfo[skill].label end
+	sectionBar(names,AH.vendorInfo[AH.vendor].label,function(name)
+		for _,skill in ipairs(order) do if AH.vendorInfo[skill].label==name then AH.vendor=skill end end
+		render()
+	end,{small=true,prefix="Vendor"})
+	local skill=AH.vendor
+	local info=AH.vendorInfo[skill]
+	local vendor=Data.SkillVendors[skill]
+	local open,untilTime=AH.vendorOpen(skill)
+	local hex=skillHex(skill)
+	local purse=skill=="Agility" and (paint("✦ "..fmt(count("items",Data.Agility.MARK_ITEM)).." Skymarks","7FE3D0").."   ·   ") or ""
+	purse..=paint("◆ "..fmt(num(state.coins,0)).." coins","F3C66E")
+	if open then
+		AH.closesAt=untilTime
+		card({name="VendorStatus",motif="Ledger",accent=rgb(hex),title=escape(vendor.name),titleColor=gold,subtitle=info.where,
+			badge=paint("OPEN","7FE3CC"),badgeColor=mint,lines={purse},
+			after=function(body,nextOrder)
+				local copy=para(body,"",nextOrder(),muted,compactAtlas and 13 or 14)
+				copy.Name="Countdown"
+				local fn=function(t) return "Counter closes in "..paint(AH.mmss(untilTime-t),"F3C66E").."   ·   step away and it stays open" end
+				copy.Text=fn(AH.now())
+				table.insert(AH.timers,{label=copy,fn=fn})
+			end})
+	else
+		card({name="VendorStatus",motif="Ledger",accent=rgb(hex),title=escape(vendor.name),titleColor=gold,subtitle=info.where,
+			badge=paint("CLOSED","EF7D67"),badgeColor=ember,
+			detail="Visit the counter to trade: it stays open for "..math.floor(num(Data.SKILL_VENDOR_SECONDS,300)/60).." minutes after each visit. You can browse the stock here any time.",
+			lines={purse},
+			actions={{caption="Guide",primary=true,name="GuideVendor",fn=function() AH.guide({"anchor:"..info.anchor},vendor.name) end}}})
+	end
+	heading("STOCK    /    "..#vendor.shop.." WARES")
+	for _,entry in ipairs(vendor.shop) do
+		local def=itemDef(entry.item)
+		if def then
+			local have=count("items",entry.item)
+			local unique=def.kind=="armor" or def.kind=="accessory" or def.category=="trap"
+			local afford=true
+			for id,n in pairs(tbl(entry.cost)) do
+				if (id=="coins" and num(state.coins,0) or count("items",id))<n then afford=false end
+			end
+			local reason=nil
+			if not open then reason="Visit the "..vendor.name.." to trade."
+			elseif unique and have>0 then reason="You already own "..def.name.."."
+			elseif not afford then reason="You can't afford the "..def.name.." yet." end
+			local lines={"Cost: "..AH.costText(entry.cost)}
+			if type(def.stats)=="table" then table.insert(lines,statText(def.stats)) end
+			if type(def.buff)=="table" then table.insert(lines,"Buff: "..statText(def.buff.stats).."  for "..clock(def.buff.duration)) end
+			if type(def.requires)=="table" then
+				local levels=skillsOf(state)
+				for need_skill,need in pairs(def.requires) do
+					local lvl=levels[need_skill] and levels[need_skill].level or 1
+					table.insert(lines,(lvl>=need and check or cross).." Requires "..escape(need_skill).." "..need)
+				end
+			end
+			if def.hunterMethod then
+				local method=Data.Hunter.Methods[def.hunterMethod]
+				local prey={}
+				for _,c in ipairs(Data.Hunter.Creatures) do if c.method==def.hunterMethod then table.insert(prey,escape(c.name).." ("..c.level..")") end end
+				table.insert(lines,"Works on: "..table.concat(prey,", "))
+				if method and not method.trap then table.insert(lines,"Nets catch on the spot; no trap slot used.") end
+			end
+			card({name="Ware"..entry.item,item=entry.item,iconSize=compactAtlas and 38 or 48,title=escape(def.name),titleColor=safeColor(rarityHex(def.rarity),ivory),
+				subtitle=escape(def.rarity or "Common").."   ·   "..escape(kindLabel(def))..(def.set and ("   ·   "..escape(def.set).." set") or ""),
+				badge=have>0 and (unique and paint("OWNED","7FE3CC") or ("×"..fmt(have))) or nil,badgeColor=unique and mint or ivory,
+				detail=escape(def.description or ""),lines=lines,
+				actions={{caption="Buy",primary=reason==nil,disabled=reason~=nil,reason=reason,name="Buy"..entry.item,
+					fn=function() send("skillBuy",skill..":"..entry.item) end}}})
+		end
+	end
+	-- Set bonus: Windrunner (Exchange stock) or Thicketstalker (Workbench, from pelts).
+	local set=Data.Sets and Data.Sets[info.set]
+	if type(set)=="table" then
+		local equipment=tbl(dget("equipment"))
+		local worn,owned=0,0
+		local lines={}
+		for _,piece in ipairs(set.pieces) do
+			local def=itemDef(piece)
+			local has=count("items",piece)>0
+			local on=false
+			for _,slot in ipairs(gearSlots) do if equipment[slot]==piece then on=true end end
+			if has then owned+=1 end
+			if on then worn+=1 end
+			local recipe=Data.Recipes and Data.Recipes[piece]
+			local source=recipe and paint("  Workbench · Hunter "..num(recipe.level,1),"A9BDC1") or ""
+			table.insert(lines,(has and check or cross).." "..escape(def and def.name or piece)..(on and paint("  worn","7FE3CC") or "")..source)
+		end
+		heading("SET BONUS    /    "..string.upper(set.name))
+		card({name="SetBonus"..set.id,motif="Hero",accent=safeColor(set.color,gold),title=escape(set.name).." outfit",titleColor=safeColor(set.color,gold),
+			subtitle=owned.." / "..#set.pieces.." owned   ·   "..worn.." worn",badge=worn>=#set.pieces and paint("ACTIVE","7FE3CC") or (worn.." / "..#set.pieces),
+			badgeColor=worn>=#set.pieces and mint or muted,detail="Wear all four pieces: "..escape(set.text or "")..".",lines=lines})
+	end
+end
+Pages.drawAgility,Pages.drawHunter,Pages.drawVendors=AH.drawAgility,AH.drawHunter,AH.drawVendors
+end
+
+------------------------------------------------------------------------------
 -- Navigation: six primary tabs, each with a section switcher.
 ------------------------------------------------------------------------------
 local tabOrder={"Journal","Hero","Satchel","Workshop","Hunt","Ledger"}
 local sectionLists={
-	Journal={"Bearing","Quests","Diaries","Construction","Regions","Crew","Calendar"},
+	Journal={"Bearing","Quests","Diaries","Construction","Regions","Crew","Calendar","Agility"},
 	Hero={"Skills","Gear","Combat","Spellbook","Enchant","Accessories","Pets"},
 	Satchel={"Items","Collections"},
 	Workshop={"Forge","Hearth","Cauldron","Workbench","Workers","Home"},
-	Hunt={"Slayer","Bestiary","Dungeon"},
-	Ledger={"Bank","Market","Orders","Auctions","Merchant"},
+	Hunt={"Slayer","Bestiary","Dungeon","Hunter"},
+	Ledger={"Bank","Market","Orders","Auctions","Merchant","Vendors"},
 }
 sectionOf={Journal="Bearing",Hero="Skills",Satchel="Items",Workshop="Forge",Hunt="Slayer",Ledger="Bank"}
 local drawers={
-	Journal={Bearing=Pages.drawBearing,Quests=Pages.drawQuests,Diaries=Pages.drawDiaries,Construction=Pages.drawConstruction,Regions=Pages.drawRegions,Crew=Pages.drawCoop,Calendar=Pages.drawCalendar},
+	Journal={Bearing=Pages.drawBearing,Quests=Pages.drawQuests,Diaries=Pages.drawDiaries,Construction=Pages.drawConstruction,Regions=Pages.drawRegions,Crew=Pages.drawCoop,Calendar=Pages.drawCalendar,Agility=Pages.drawAgility},
 	Hero={Skills=Pages.drawSkills,Gear=Pages.drawGear,Combat=Pages.drawCombat,Spellbook=Pages.drawSpellbook,Enchant=Pages.drawEnchant,Accessories=Pages.drawAccessories,Pets=Pages.drawPets},
 	Satchel={Items=Pages.drawItems,Collections=Pages.drawCollections},
 	Workshop={Forge=function() Pages.drawStation("Forge") end,Hearth=function() Pages.drawStation("Hearth") end,Cauldron=function() Pages.drawStation("Cauldron") end,
 		Workbench=function() Pages.drawStation("Workbench") end,Workers=Pages.drawWorkers,Home=Pages.drawHome},
-	Hunt={Slayer=Pages.drawSlayer,Bestiary=Pages.drawBestiary,Dungeon=Pages.drawDungeon},
-	Ledger={Bank=Pages.drawBank,Market=Pages.drawMarket,Orders=Pages.drawOrders,Auctions=Pages.drawAuctions,Merchant=Pages.drawMerchant},
+	Hunt={Slayer=Pages.drawSlayer,Bestiary=Pages.drawBestiary,Dungeon=Pages.drawDungeon,Hunter=Pages.drawHunter},
+	Ledger={Bank=Pages.drawBank,Market=Pages.drawMarket,Orders=Pages.drawOrders,Auctions=Pages.drawAuctions,Merchant=Pages.drawMerchant,Vendors=Pages.drawVendors},
 }
 local function resetTransient()
 	confirmIron=false
@@ -4431,6 +5075,7 @@ local function openTo(tab,section)
 	scroll.CanvasPosition=Vector2.zero
 	openAtlas()
 end
+Pages.openTo=openTo
 Input.InputBegan:Connect(function(input, used)
 	if used then
 		return
@@ -4609,6 +5254,7 @@ local function accept(data,quiet)
 	render(true)
 	-- Share every accepted snapshot with the combat HUD (combat.client.lua).
 	pcall(function() UI.snapshotChannel:Fire(data) end)
+	pcall(Pages.AH.onSnapshot) -- lap tracker best times, trap counter
 	local message=data.message
 	if before then
 		local ok,bannered=pcall(celebrate,before,skillsOf(state))
@@ -4694,13 +5340,16 @@ do
 end
 -- Crafting stations and the slayer board set IsleStation on the player; open
 -- the matching page. Values may carry a suffix ("Forge:3") so repeats fire.
-local stationTabs={Forge="Workshop",Hearth="Workshop",Cauldron="Workshop",Workbench="Workshop",Slayer="Hunt",Construction="Journal",Calendar="Journal"}
+local stationTabs={Forge="Workshop",Hearth="Workshop",Cauldron="Workshop",Workbench="Workshop",Slayer="Hunt",Construction="Journal",Calendar="Journal",
+	SkymarkExchange="Ledger",TrackersLodge="Ledger"}
 local function openStation()
 	local value=player:GetAttribute("IsleStation")
 	if type(value)~="string" then return end
 	local station=value:match("^(%a+)")
 	local tab=station and stationTabs[station]
 	if not tab then return end
+	-- Skill vendors (Agility & Hunter): Ledger › Vendors on that vendor's stock.
+	if tab=="Ledger" then Pages.AH.vendor=station=="SkymarkExchange" and "Agility" or "Hunter";openTo("Ledger","Vendors") return end
 	if tab=="Workshop" then openTo("Workshop",station) elseif tab=="Journal" then openTo("Journal",if station=="Calendar" then "Calendar" else "Construction") else openTo("Hunt","Slayer") end
 end
 -- World sets IsleStation and then bumps IsleStationVisit on every trigger; only the

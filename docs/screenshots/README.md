@@ -127,3 +127,12 @@ Combat styles (bows, staves, spells):
 | `desktop-Hero-Combat-full.png` | 1366x768 | Hero › Combat: style card with mana meter, quiver and arrows, combat levels, triangle explainer, switch-style weapons |
 | `desktop-Hero-Spellbook.png` | 1366x768 | Hero › Spellbook: autocast summary, spell costs (staff-supplied glyphs free), damage estimate |
 | `desktop-Hunt-Bestiary.png` | 1366x768 | Bestiary entries with attack style, weakness and resistance |
+
+Agility & Hunter:
+
+| File | Size | Shows |
+| --- | --- | --- |
+| `compact-HUD-Agility.png` | 730x303 | Lap tracker (course, obstacle 3/6, next obstacle, step countdown, obstacle pips, best lap) and trap counter in the left column, narrow so the toast clears them |
+| `desktop-Journal-Agility.png` | 1366x768 | Journal › Agility: Skyrunner's log (lap milestones, Surefoot), course cards with obstacle chains, slip chance, lap-milestone pips, Guide |
+| `desktop-Hunt-Hunter.png` | 1366x768 | Hunt › Hunter: Tracker's log, traps in the field, hunter log entries with log-tier pips, kit, catch chance and drops |
+| `phone-Ledger-Vendors.png` | 844x390 | Ledger › Vendors: Skymark Exchange open with countdown, Skymark purse, stock with owned badges |

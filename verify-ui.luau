@@ -238,7 +238,7 @@ end
 local function profile()
 	return {
 		xp = { Combat = 9000, Mining = 22000, Woodcutting = 400, Fishing = 0, Farming = 60, Smithing = 4500, Cooking = 100, Alchemy = 0, Enchanting = 1200, Taming = 0, Dungeoneering = 0, Carpentry = 50,
-			Ranged = 4470, Magic = 13363, Fletching = 1200, Glyphcraft = 800 },
+			Ranged = 4470, Magic = 13363, Fletching = 1200, Glyphcraft = 800, Agility = 3400, Hunter = 2600 },
 		items = {
 			Ore = 140, Timber = 40, Herb = 70, Fish = 30, Brassite = 12, Pickaxe = 1, Blade = 1, Tonic = 2, ExpeditionRation = 1,
 			BrassSword = 1, BrassHelm = 1, BrassChestplate = 1, BrassGreaves = 1, BrassBoots = 1, SunsteelSword = 1, BrassPickaxe = 1,
@@ -247,6 +247,8 @@ local function profile()
 			-- Combat styles: bows, staves, arrows (one too heavy for the longbow), glyphs, a tablet.
 			WindpineStaff = 1, MeadowWand = 1, MeadowLongbow = 1, CopperArrow = 60, BrassArrow = 143, SunsteelArrow = 15,
 			GaleGlyph = 40, StoneGlyph = 12, SparkGlyph = 25, SurgeGlyph = 6, VitaGlyph = 3, BindGlyph = 2, HubwardTablet = 2,
+			-- Agility & Hunter: Skymarks, a Windrunner piece, kits and pelts.
+			Skymark = 37, WindrunnerHood = 1, SnareKit = 1, SkyNet = 1, DownyPelt = 14, SunwingDust = 6,
 		},
 		collection = { Ore = 320, Timber = 60, Herb = 70, Fish = 30, Brassite = 40, Shard = 2, StormFeather = 3, BeastHide = 0 },
 		equipment = { weapon = "BrassSword", helmet = "BrassHelm", chest = "BrassChestplate", legs = "BrassGreaves", boots = "BrassBoots", ammo = "BrassArrow" },
@@ -364,8 +366,17 @@ local function snapshot(options)
 			carpentry = 32, accessorySlots = 1, workerHaste = 0.05,
 			island = { count = 3, cap = 120, counts = { TimberFence = 2, StonePath = 1 }, value = 3, tier = 1, tierName = "Bare Rock" } },
 	}
+	-- Agility & Hunter (server Skills.state): records, a lap underway, traps, an open vendor.
+	result.agilityHunter = {
+		agility = { laps = { QuayRigging = 31, MosswakeHedgerow = 4 }, best = { QuayRigging = 41.2, MosswakeHedgerow = 63.8 }, lapTiers = 1,
+			run = { course = "QuayRigging", next = 3, expiresIn = 22 } },
+		hunter = { log = { PuffcapHopper = 27, SunwingMoth = 9 }, logTiers = 2, maxTraps = 2,
+			traps = { { creature = "PuffcapHopper", state = "caught", ticks = 6, spot = "PuffcapHopper#1" }, { creature = "PuffcapHopper", state = "set", ticks = 2, spot = "PuffcapHopper#3" } } },
+		vendor = { skill = if options.vendorClosed then "" else "Agility", openUntil = if options.vendorClosed then 0 else os.time() + 252 },
+	}
 	if options.malformed then
-		result.journal = { questPoints = "many", quests = { 3, { id = 7 }, { id = "SurveyorsOath", requires = "x", objectives = { 5 } } },
+		result.agilityHunter = { agility = { laps = { QuayRigging = "many", Nope = 3 }, best = 7, run = "x" }, hunter = { log = 5, traps = { 3, { creature = "Ghost" } }, maxTraps = "two" }, vendor = { skill = 4 } }
+		result.journal ={ questPoints = "many", quests = { 3, { id = 7 }, { id = "SurveyorsOath", requires = "x", objectives = { 5 } } },
 			diaries = { "Meadow", { region = "Meadow", claimed = "two", tiers = { 4, { tier = 9 } } } }, construction = { furniture = { Bench = 3, Portal = "Ghost" }, portalRegions = { 5, "Atlantis" }, carpentry = "x", island = { counts = 5, count = "many", value = "x", cap = {} } } }
 		result.depth = {
 			skills = "oops", totalLevel = "x", stats = 5, equipment = { weapon = 5, helmet = "NotAnItem" }, tools = { Mining = {} },
@@ -499,8 +510,8 @@ end
 ------------------------------------------------------------------------------
 local checks = 0
 local pages = {
-	Journal = { "Bearing", "Quests", "Diaries", "Construction", "Regions", "Crew" }, Hero = { "Skills", "Gear", "Combat", "Spellbook", "Enchant", "Accessories", "Pets" }, Satchel = { "Items", "Collections" },
-	Workshop = { "Forge", "Hearth", "Cauldron", "Workbench", "Workers", "Home" }, Hunt = { "Slayer", "Bestiary" }, Ledger = { "Bank", "Market", "Orders", "Auctions", "Merchant" },
+	Journal = { "Bearing", "Quests", "Diaries", "Construction", "Regions", "Crew", "Agility" }, Hero = { "Skills", "Gear", "Combat", "Spellbook", "Enchant", "Accessories", "Pets" }, Satchel = { "Items", "Collections" },
+	Workshop = { "Forge", "Hearth", "Cauldron", "Workbench", "Workers", "Home" }, Hunt = { "Slayer", "Bestiary", "Hunter" }, Ledger = { "Bank", "Market", "Orders", "Auctions", "Merchant", "Vendors" },
 }
 local tabOrder = { "Journal", "Hero", "Satchel", "Workshop", "Hunt", "Ledger" }
 local verbs = {
@@ -555,6 +566,13 @@ local verbs = {
 		return propId ~= nil and Data.Island.Props[propId] ~= nil and rot <= 3 and math.abs(x) <= Data.Island.RANGE and math.abs(z) <= Data.Island.RANGE
 	end,
 	pickup = function(item) return type(item) == "string" and item:match("^%d+$") ~= nil and tonumber(item) <= Data.Island.MAX_PLACEMENTS end,
+	skillBuy = function(item)
+		local skill, id = tostring(item):match("^(%a+):(%w+)$")
+		local vendor = skill and Data.SkillVendors[skill]
+		if not vendor then return false end
+		for _, entry in ipairs(vendor.shop) do if entry.item == id then return true end end
+		return false
+	end,
 }
 local function checkSent(ui)
 	for _, entry in ipairs(ui.sent) do
@@ -1443,7 +1461,7 @@ do
 		local camera = H.new("Camera", { ViewportSize = size })
 		local workspace = {
 			CurrentCamera = camera, DescendantAdded = signal(), DescendantRemoving = signal(), ChildAdded = signal(), ChildRemoved = signal(),
-			GetDescendants = function() return {} end, FindFirstChild = function() return nil end,
+			GetDescendants = function() return (extra and extra.descendants) or {} end, FindFirstChild = function() return nil end,
 			GetAttribute = function() return nil end, GetAttributeChangedSignal = function() return signal() end,
 			WaitForChild = function(_, name)
 				if name == "Townsfolk" then return { ChildAdded = signal(), ChildRemoved = signal(), GetChildren = function() return {} end } end
@@ -1536,6 +1554,10 @@ do
 		local bossRect = rect(panel)
 		local tracker = townsfolk:FindFirstChild("TutorialTracker")
 		tracker.Visible = true -- measured whether or not this snapshot's tutorial is finished
+		-- Agility & Hunter HUD: a lap underway and two traps (one caught) under the tutorial tracker.
+		H.agilityHud(player)
+		local lapTracker, trapCounter = atlas:FindFirstChild("CourseTracker"), atlas:FindFirstChild("TrapTracker")
+		assert(lapTracker.Visible and trapCounter.Visible, "lap tracker and trap counter show at " .. tag.name)
 		local attack = hud:FindFirstChild("AttackButton")
 		-- Spell bar (style chip + six slots for this magic snapshot) above the action bar.
 		local spellBar = hud:FindFirstChild("SpellBar")
@@ -1552,7 +1574,8 @@ do
 		}
 		local explore = table.clone(persistent)
 		for _, item in ipairs({ { "event banner", rect(banner) }, { "tutorial tracker", rect(tracker) },
-			{ "wayfinder toast", rect(wayfinder:FindFirstChild("WayfinderToast")) }, { "attack button", rect(attack) }, { "spell bar", spellRect } }) do
+			{ "wayfinder toast", rect(wayfinder:FindFirstChild("WayfinderToast")) }, { "attack button", rect(attack) }, { "spell bar", spellRect },
+			{ "lap tracker", rect(lapTracker) }, { "trap counter", rect(trapCounter) } }) do
 			table.insert(explore, item)
 		end
 		noOverlap(table.move({ { "target panel", targetRect } }, 1, 1, #explore + 1, table.clone(explore)), tag)
@@ -1564,12 +1587,14 @@ do
 		assert(bar.Enabled and not attack.Visible, "Attack hides while the island builder runs at " .. tag.name)
 		assert(not spellBar.Visible and player:GetAttribute("IsleHudLift") == 0, "spell bar hides while building at " .. tag.name)
 		local building = {}
-		for _, item in ipairs(explore) do if item[1] ~= "attack button" and item[1] ~= "spell bar" then table.insert(building, item) end end
+		for _, item in ipairs(explore) do if item[1] ~= "attack button" and item[1] ~= "spell bar" and item[1] ~= "lap tracker" and item[1] ~= "trap counter" then table.insert(building, item) end end
+		assert(not lapTracker.Visible and not trapCounter.Visible, "lap tracker and trap counter step aside for the builder at " .. tag.name)
 		table.insert(building, { "builder controls", rect(bar:FindFirstChild("BuildBar")) })
 		table.insert(building, { "boss panel", bossRect })
 		noOverlap(building, tag)
 		player:SetAttribute("IslandBuilding", nil)
 		assert(attack.Visible and spellBar.Visible, "Attack and the spell bar return after building at " .. tag.name)
+		assert(lapTracker.Visible and trapCounter.Visible, "lap tracker and trap counter return after building at " .. tag.name)
 		-- Talking: Pell's opening node has 4+ options.
 		local promptDouble = { GetAttribute = function(_, key) return if key == "TownsfolkRole" then "Guide" else nil end,
 			FindFirstAncestorOfClass = function() return nil end }
@@ -1609,6 +1634,72 @@ do
 			"navigate list fits above the action bar at " .. tag.name .. " " .. show(listRect))
 		assert(not overlaps(listRect, rect(wayfinder:FindFirstChild("Minimap"))), "navigate list clears the minimap at " .. tag.name)
 		checks += 12
+	end
+	-- Wayfinder (nav.client.lua) for Agility & Hunter: the running lap's next
+	-- obstacle gets a Highlight + billboard and AgilityNextAt; own traps get
+	-- caught / collapsed billboards, a toast and HunterTrapsCollapsed.
+	do
+		local size = roblox.Vector2.new(1366, 768)
+		local ui = H.runAtlas(size)
+		local player = ui.player
+		local function promptAt(attrs, position)
+			local host = H.new("BasePart", { Name = "Host", Position = position })
+			host.Parent = H.new("Model", { Name = "Ground" })
+			local prompt = H.new("ProximityPrompt")
+			for k, v in pairs(attrs) do prompt:SetAttribute(k, v) end
+			prompt.Parent = host
+			return prompt, host
+		end
+		local obstacle3, host3 = promptAt({ IsleAction = "agility", IsleItem = "QuayRigging:3", AgilityCourse = "QuayRigging", AgilityIndex = 3 }, roblox.Vector3.new(30, 12, 4))
+		local obstacle4 = promptAt({ IsleAction = "agility", IsleItem = "QuayRigging:4", AgilityCourse = "QuayRigging", AgilityIndex = 4 }, roblox.Vector3.new(40, 12, 9))
+		local snare, snareHost = promptAt({ IsleAction = "trap", IsleItem = "PuffcapHopper", HunterMethod = "snare" }, roblox.Vector3.new(5, 0, 5))
+		local other, otherHost = promptAt({ IsleAction = "trap", IsleItem = "PuffcapHopper", HunterMethod = "snare" }, roblox.Vector3.new(8, 0, 5))
+		runClient("nav.client.lua", size, player, { descendants = { obstacle3, obstacle4, snare, other } })
+		local wayfinder = ui.playerGui:FindFirstChild("Wayfinder")
+		local toast = wayfinder:FindFirstChild("WayfinderToast")
+		player:SetAttribute("AgilityRunExpires", os.time() + 20)
+		player:SetAttribute("AgilityRun", "QuayRigging:3:6")
+		local highlight = host3:FindFirstChild("AgilityNext")
+		assert(highlight and highlight.ClassName == "Highlight" and highlight.Adornee == host3, "next obstacle highlighted")
+		local board = host3:FindFirstChild("AgilityNextBoard")
+		assert(board and H.find(board, "Obstacle").Text == "Swing Rigging rope", "next obstacle billboard names the move")
+		assert(player:GetAttribute("AgilityNextAt") == host3.Position, "AgilityNextAt feeds the HUD arrow")
+		player:SetAttribute("AgilityRun", "QuayRigging:4:6")
+		assert(host3:FindFirstChild("AgilityNext") == nil and obstacle4.Parent:FindFirstChild("AgilityNext") ~= nil, "highlight moves on to obstacle 4")
+		player:SetAttribute("AgilityRun", "")
+		assert(obstacle4.Parent:FindFirstChild("AgilityNext") == nil and player:GetAttribute("AgilityNextAt") == nil, "highlight clears with the lap")
+		-- Own trap: set (quiet), caught (ping + toast), collapsed (notice + counter); others' traps ignored.
+		snareHost:SetAttribute("TrapState", "set")
+		snareHost:SetAttribute("TrapOwner", player.UserId)
+		assert(H.find(snareHost:FindFirstChild("TrapPing"), "State").Text == "SET", "set trap marker")
+		snareHost:SetAttribute("TrapState", "caught")
+		local ping = snareHost:FindFirstChild("TrapPing")
+		assert(ping and ping.AlwaysOnTop and H.find(ping, "State").Text == "CAUGHT!", "caught ping shows through the world")
+		assert(toast.Visible and toast.Text:find("caught a Puffcap Hopper", 1, true), "caught toast")
+		otherHost:SetAttribute("TrapState", "caught")
+		otherHost:SetAttribute("TrapOwner", 99)
+		assert(otherHost:FindFirstChild("TrapPing") == nil, "another hunter's trap shows no ping")
+		snareHost:SetAttribute("TrapState", "collapsed")
+		assert(H.find(snareHost:FindFirstChild("TrapPing"), "State").Text == "COLLAPSED" and toast.Text:find("collapsed", 1, true), "collapsed notice")
+		assert(player:GetAttribute("HunterTrapsCollapsed") == 1, "collapsed count published for the atlas")
+		player:SetAttribute("HunterTraps", "1/2")
+		player:SetAttribute("HunterTrapsCaught", 0)
+		local counter = ui.gui:FindFirstChild("TrapTracker")
+		assert(counter.Visible and H.find(counter, "State").Text:find("collapsed", 1, true), "trap counter shows the collapsed trap")
+		snareHost:SetAttribute("TrapState", "")
+		snareHost:SetAttribute("TrapOwner", 0)
+		assert(snareHost:FindFirstChild("TrapPing") == nil and player:GetAttribute("HunterTrapsCollapsed") == 0, "picked-up trap clears")
+		-- Navigate list: the next obstacle is a target while a lap runs.
+		player:SetAttribute("AgilityRun", "QuayRigging:3:6")
+		local go
+		for _, child in ipairs(wayfinder:FindFirstChild("Minimap"):FindFirstChild("Controls"):GetChildren()) do if child.Text == "Go" then go = child end end
+		go.Activated:Fire()
+		local found = false
+		for _, object in ipairs(wayfinder:FindFirstChild("Navigate"):GetDescendants()) do
+			if object.ClassName == "TextButton" and tostring(object.Text):find("Next obstacle", 1, true) then found = true end
+		end
+		assert(found, "Navigate lists the next obstacle")
+		checks += 16
 	end
 end
 print("HUD overlap: " .. (checks - hudChecks) .. " checks.")
@@ -1841,4 +1932,120 @@ do
 	checks += 12
 end
 print("Combat styles client: " .. (checks - styleChecks) .. " checks.")
+
+-- 14. Agility & Hunter client: lap tracker and trap counter, vendor pages
+-- (station visits, skillBuy, closed state), Journal › Agility and Hunt ›
+-- Hunter (guide requests), new stats on the sheet, skill unlocks.
+local ahChecks = checks
+do
+	local ui = run({ size = roblox.Vector2.new(1366, 768) })
+	local player = ui.player
+	local tracker, traps = find(ui.gui, "CourseTracker"), find(ui.gui, "TrapTracker")
+	assert(not tracker.Visible and not traps.Visible, "no lap, no traps: HUD panels hidden")
+	player:SetAttribute("AgilityRunExpires", os.time() + 22)
+	player:SetAttribute("AgilityRun", "QuayRigging:3:6")
+	assert(tracker.Visible, "lap tracker shows with a run")
+	assert(find(tracker, "Step").Text == "3 / 6", "obstacle n/total")
+	assert(find(tracker, "Next").Text:find("Rigging rope", 1, true), "next obstacle named")
+	assert(find(tracker, "Countdown").Text:match("^0:2%d$"), "step countdown: " .. find(tracker, "Countdown").Text)
+	assert(find(tracker, "Lap").Text:find("41.2s", 1, true), "best lap from the snapshot")
+	assert(find(tracker, "Step3").BackgroundColor3 == roblox.Color3.fromHex("F3C66E"), "next obstacle pip is gold")
+	player:SetAttribute("AgilityRun", "QuayRigging:6:6")
+	player:SetAttribute("AgilityRun", "")
+	assert(tracker.Visible and find(tracker, "Next").Text:find("LAP COMPLETE", 1, true), "final landing shows the finished lap")
+	player:SetAttribute("AgilityRun", "QuayRigging:2:6")
+	player:SetAttribute("AgilityMove", "fall:4")
+	player:SetAttribute("AgilityRun", "")
+	assert(not tracker.Visible, "a fall clears the tracker")
+	player:SetAttribute("AgilityRunExpires", os.time() - 30)
+	player:SetAttribute("AgilityRun", "QuayRigging:2:6")
+	assert(not tracker.Visible, "an expired step window hides a stale lap")
+	player:SetAttribute("AgilityRun", "Nowhere:2:6")
+	assert(not tracker.Visible, "unknown course ignored")
+	player:SetAttribute("HunterTraps", "2/2")
+	player:SetAttribute("HunterTrapsCaught", 1)
+	assert(traps.Visible and find(traps, "Count").Text:find("2 / 2", 1, true) and find(traps, "State").Text:find("1 caught", 1, true), "trap counter")
+	player:SetAttribute("HunterTraps", "0/2")
+	player:SetAttribute("HunterTrapsCaught", 0)
+	assert(not traps.Visible, "no traps placed: counter hidden")
+	-- Skymark Exchange visit → Ledger › Vendors; Buy sends skillBuy.
+	local visits = 0
+	local function visit(station)
+		visits += 1
+		player:SetAttribute("IsleStation", station)
+		player:SetAttribute("IsleStationVisit", visits)
+	end
+	player:SetAttribute("SkillVendor", "Agility")
+	player:SetAttribute("SkillVendorUntil", os.time() + 200)
+	visit("SkymarkExchange")
+	assert(ui.atlas.Visible and find(ui.scroll, "WareGaleDraught") and find(ui.scroll, "SetBonusWindrunner"), "Exchange stock and set bonus")
+	assert(find(ui.scroll, "VendorStatus") and find(find(ui.scroll, "VendorStatus"), "Countdown"), "open counter counts down")
+	table.clear(ui.sent)
+	press(find(ui.scroll, "BuyGaleDraught"))
+	assert(ui.sent[1] and ui.sent[1][1] == "skillBuy" and ui.sent[1][2] == "Agility:GaleDraught", "Buy sends skillBuy")
+	table.clear(ui.sent)
+	press(find(ui.scroll, "BuyWindrunnerHood"))
+	press(find(ui.scroll, "BuyFeatherstepCharm"))
+	assert(#ui.sent == 0, "owned outfit pieces and unaffordable wares do not send")
+	-- Trackers' Lodge: the Exchange's window does not open it.
+	visit("TrackersLodge")
+	assert(find(ui.scroll, "WareBoxTrap") and find(ui.scroll, "SetBonusThicketstalker"), "Lodge stock")
+	table.clear(ui.sent)
+	press(find(ui.scroll, "BuySkyNet"))
+	press(find(ui.scroll, "BuyBirdSnare"))
+	assert(#ui.sent == 0, "a closed counter sells nothing")
+	player:SetAttribute("SkillVendor", "Hunter")
+	player:SetAttribute("SkillVendorUntil", os.time() + 200)
+	visit("TrackersLodge")
+	press(find(ui.scroll, "BuyBirdSnare"))
+	assert(ui.sent[#ui.sent][2] == "Hunter:BirdSnare", "Lodge buy")
+	-- Journal › Agility and Hunt › Hunter guide through the Wayfinder.
+	local request = new("BindableEvent", { Name = "WayfinderRequest" })
+	request.Parent = player
+	local guided
+	request.Event:Connect(function(specs, label) guided = { specs, label } end)
+	visit("SkymarkExchange")
+	press(ui.tabs:FindFirstChild("JournalButton"))
+	press(find(ui.scroll, "SectionAgility"))
+	assert(find(ui.scroll, "CourseTempestStormrun") and find(ui.scroll, "ShortcutTempestGaleLine") and find(ui.scroll, "CompanionGustling"), "courses, shortcuts, lap pet")
+	press(find(ui.scroll, "GuideQuayRigging"))
+	assert(guided and guided[1][1] == "anchor:Waypoint_Agility_QuayRigging" and not ui.atlas.Visible, "course guide closes the atlas and sets a waypoint")
+	press(find(ui.gui, "AtlasButton"))
+	press(ui.tabs:FindFirstChild("HuntButton"))
+	press(find(ui.scroll, "SectionHunter"))
+	assert(find(ui.scroll, "CreatureStormmaneIbex") and find(ui.scroll, "HunterTraps") and find(ui.scroll, "CompanionStormkid"), "hunter log, traps, companions")
+	press(find(ui.scroll, "GuidePuffcapHopper"))
+	assert(guided[1][1] == "anchor:Waypoint_Hunting_PuffcapHopper", "hunting ground guide")
+	-- Stat sheet: the new stats sit with gathering & luck.
+	press(find(ui.gui, "AtlasButton"))
+	press(ui.tabs:FindFirstChild("HeroButton"))
+	press(find(ui.scroll, "SectionGear"))
+	local luck = find(ui.scroll, "Stats2")
+	assert(luck and find(luck, "Statsurefoot") and find(luck, "StattrapLuck") and find(luck, "StathuntingFortune"), "new stats on the sheet")
+	-- Skill detail lists courses and creatures as unlocks.
+	press(find(ui.scroll, "SectionSkills"))
+	press(find(ui.scroll, "SkillHunter"))
+	local unlocks = 0
+	for _, object in ipairs(ui.scroll:GetDescendants()) do
+		if object.Name:match("^Unlock%d") then unlocks += 1 end
+	end
+	assert(unlocks >= 3, "Hunter unlocks listed")
+	noFailures(ui, "agility & hunter")
+	checks += 30
+	-- Lap tracker HUD while the dialogue is closed but the tutorial is done: moves up to y 100.
+	local view = run({ size = roblox.Vector2.new(730, 303), snapshot = snapshot({ vendorClosed = true }) })
+	view.player:SetAttribute("AgilityRun", "QuayRigging:2:6")
+	local t = find(view.gui, "CourseTracker")
+	assert(t.Visible and t.Position.Y.Offset == 100 and t.Size.X.Offset <= 184, "phone lap tracker: top of the column, narrow")
+	press(find(view.gui, "AtlasButton"))
+	press(view.tabs:FindFirstChild("LedgerButton"))
+	press(find(view.scroll, "SectionVendors"))
+	assert(find(view.scroll, "GuideVendor"), "closed vendor offers a guide")
+	table.clear(view.sent)
+	press(find(view.scroll, "BuyGaleDraught"))
+	assert(#view.sent == 0, "closed vendor: Buy disabled")
+	noFailures(view, "vendor closed")
+	checks += 3
+end
+print("Agility & Hunter client: " .. (checks - ahChecks) .. " checks.")
 print("UI QA passed " .. checks .. " checks (" .. created .. " mock instances).")

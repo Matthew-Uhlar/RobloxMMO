@@ -270,7 +270,7 @@ end
 local function profile()
 	return {
 		xp = { Combat = 9000, Mining = 22000, Woodcutting = 400, Fishing = 0, Farming = 60, Smithing = 4500, Cooking = 100, Alchemy = 0, Enchanting = 1200, Taming = 0, Dungeoneering = 0, Carpentry = 50,
-			Ranged = 5200, Magic = 14100, Fletching = 1200, Glyphcraft = 800 },
+			Ranged = 5200, Magic = 14100, Fletching = 1200, Glyphcraft = 800, Agility = 3400, Hunter = 2600 },
 		items = {
 			Ore = 140, Timber = 40, Herb = 70, Fish = 30, Brassite = 12, Pickaxe = 1, Blade = 1, Tonic = 2, ExpeditionRation = 1,
 			BrassSword = 1, BrassHelm = 1, BrassChestplate = 1, BrassGreaves = 1, BrassBoots = 1, SunsteelSword = 1, BrassPickaxe = 1,
@@ -280,6 +280,8 @@ local function profile()
 			WindpineStaff = 1, MeadowWand = 1, MeadowLongbow = 1, WindpineShortbow = 1, CopperArrow = 60, BrassArrow = 143,
 			GaleGlyph = 40, TideGlyph = 8, StoneGlyph = 12, SparkGlyph = 25, SurgeGlyph = 6, VitaGlyph = 3, BindGlyph = 2, HubwardTablet = 2,
 			ArrowShaft = 30, DriftPlume = 20,
+			-- Agility & Hunter: Skymarks, a Windrunner piece, kits and pelts.
+			Skymark = 37, WindrunnerHood = 1, SnareKit = 1, SkyNet = 1, DownyPelt = 14, SunwingDust = 6,
 		},
 		collection = { Ore = 320, Timber = 60, Herb = 70, Fish = 30, Brassite = 40, Shard = 2, StormFeather = 3, BeastHide = 0 },
 		equipment = { weapon = "WindpineStaff", helmet = "BrassHelm", chest = "BrassChestplate", legs = "BrassGreaves", boots = "BrassBoots", ammo = "BrassArrow" },
@@ -389,7 +391,24 @@ function H.snapshot(options)
 		construction = { furniture = { Bench = "SturdyWorkbench", Portal = "PortalFrame" }, portal = "Skyreach", portalRegions = { "Skyreach", "Windpine" },
 			carpentry = 32, accessorySlots = 1, workerHaste = 0.05 },
 	}
+	-- Agility & Hunter (server Skills.state): records, traps and the Skymark Exchange open.
+	result.agilityHunter = {
+		agility = { laps = { QuayRigging = 31, MosswakeHedgerow = 4 }, best = { QuayRigging = 41.2, MosswakeHedgerow = 63.8 }, lapTiers = 1,
+			run = { course = "QuayRigging", next = 3, expiresIn = 22 } },
+		hunter = { log = { PuffcapHopper = 27, SunwingMoth = 9 }, logTiers = 2, maxTraps = 2,
+			traps = { { creature = "PuffcapHopper", state = "caught", ticks = 6, spot = "PuffcapHopper#1" }, { creature = "PuffcapHopper", state = "set", ticks = 2, spot = "PuffcapHopper#3" } } },
+		vendor = { skill = "Agility", openUntil = os.time() + 252 },
+	}
 	return result
+end
+-- Live attributes for a lap underway (obstacle 3 of 6) and two traps, one caught.
+function H.agilityHud(player)
+	player:SetAttribute("AgilityRun", "QuayRigging:3:6")
+	player:SetAttribute("AgilityRunExpires", os.time() + 22)
+	player:SetAttribute("HunterTraps", "2/2")
+	player:SetAttribute("HunterTrapsCaught", 1)
+	player:SetAttribute("SkillVendor", "Agility")
+	player:SetAttribute("SkillVendorUntil", os.time() + 252)
 end
 
 ------------------------------------------------------------------------------

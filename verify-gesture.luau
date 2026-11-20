@@ -89,7 +89,11 @@ for name, def in pairs(Core.GESTURES) do
 		eq(next(loop[#loop].pose), nil, name .. " one-shot returns to rest")
 	end
 	if def.tool then ok(Core.toolSpec(def.tool) ~= nil, name .. " tool spec " .. def.tool) end
-	eq(Relay.NAMES[name], true, name .. " is whitelisted on the server")
+	if def.agility then
+		eq(Relay.NAMES[name], nil, name .. " is attribute-driven, never relayed")
+	else
+		eq(Relay.NAMES[name], true, name .. " is whitelisted on the server")
+	end
 end
 for name in pairs(Relay.NAMES) do ok(Core.GESTURES[name] ~= nil, "server whitelist " .. name .. " has a client gesture") end
 eq(#Core.GESTURES.attack.variants, 3, "three slash variants")
@@ -560,6 +564,76 @@ do
 		watch = function() return {} end, mark = function() end})
 	engine.play({}, "shoot", {})
 	ok(seen and seen[1] == "Bow" and seen[2] == "left", "bow attached to the left hand")
+end
+
+------------------------------------------------------------------------------
+-- 6c. Agility moves (AgilityMove attribute) and Hunter gestures
+------------------------------------------------------------------------------
+do
+	-- Every server move kind has a gesture; values parse to name + sequence.
+	local kinds = {}
+	for _, kind in pairs(Data.Agility.Kinds) do kinds[kind.anim] = true end
+	kinds.fall = true
+	for anim in pairs(kinds) do
+		local name, seq = Core.agilityGesture(anim .. ":7")
+		eq(name, anim, anim .. " move has a gesture")
+		eq(seq, 7, anim .. " sequence parsed")
+		ok(Core.GESTURES[name].agility == true and Core.GESTURES[name].intro and Core.GESTURES[name].outro, anim .. " has intro/loop/outro")
+	end
+	eq(Core.agilityGesture(""), nil, "empty move: nothing")
+	eq(Core.agilityGesture("teleport:3"), nil, "unknown move: nothing")
+	eq(Core.agilityGesture(nil), nil, "missing attribute: nothing")
+	eq(Core.agilityGesture("climb"), nil, "malformed move: nothing")
+	-- Climbing alternates hands; balancing holds both arms out; ledge shimmies sideways.
+	local a = Core.samplePose(Core.GESTURES.climb.loop, 0)
+	local b = Core.samplePose(Core.GESTURES.climb.loop, 0.34)
+	ok(a.rightArm[1] > a.leftArm[1] and b.leftArm[1] > b.rightArm[1], "climb: hand over hand")
+	local bal = Core.samplePose(Core.GESTURES.balance.loop, 0)
+	ok(bal.rightArm[3] > 60 and bal.leftArm[3] < -60, "balance: arms out to the sides")
+	local zip = Core.samplePose(Core.GESTURES.zip.loop, 0.2)
+	ok(zip.rightArm[1] > 160 and zip.leftArm[1] > 160, "zipline: both hands on the line")
+	local swing = Core.samplePose(Core.GESTURES.swing.loop, 0.75)
+	ok(swing.rightArm[1] > 160 and swing.rightHip[1] > 40, "swing: grip overhead, legs kick forward")
+	-- Timing: whole loops, scaled so the move ends exactly with the server's move.
+	for anim in pairs(kinds) do
+		local def = Core.GESTURES[anim]
+		for _, duration in ipairs({0.8, 1.3, 2.6, 7}) do
+			local loops, rate = Core.timing(def, duration)
+			ok(loops >= 1, anim .. " plays at least one loop")
+			local natural = Core.duration(def.intro) + loops * Core.duration(def.loop) + Core.duration(def.outro)
+			near(natural / rate, duration, anim .. " ends on time for " .. duration .. "s", 1e-6)
+			ok(rate > 0.25 and rate < 4, anim .. " plays at a sane speed for " .. duration .. "s (" .. rate .. ")")
+		end
+	end
+	-- Engine: a 3 s climb finishes (fade included) shortly after 3 s, legs driven.
+	local engine, clock, _, run = rig()
+	local c = fakeCharacter("R15")
+	local s = engine.play(c, "climb", {duration = 3, isLocal = true})
+	ok(s ~= nil and s.loops ~= nil, "timed climb starts")
+	run(2.9)
+	eq(engine.count, 1, "still climbing before the move ends")
+	ok(c.children.RightHip.Transform ~= CFrame.new(), "climb drives the legs")
+	run(0.1 + Core.FADE_OUT + 0.05)
+	eq(engine.count, 0, "climb ends with the move")
+	-- A newer move replaces the running one (fall interrupts a balance).
+	engine.play(c, "balance", {duration = 3})
+	run(0.5)
+	engine.play(c, "fall", {duration = 0.8})
+	eq(engine.get(c).name, "fall", "fall replaces the balance")
+	run(1)
+	eq(engine.count, 0, "fall ends on time")
+	ok(clock.t > 0, "clock advanced")
+	-- Prompts: agility/shortcut prompts stay silent (the attribute animates), Hunter gestures relay.
+	eq(sel("agility", "QuayRigging:1"), nil, "obstacle prompts wait for AgilityMove")
+	eq(sel("shortcut", "CinderSlide:A"), nil, "shortcut prompts wait for AgilityMove")
+	eq(sel("trap", "PuffcapHopper"), "settrap", "traps crouch to set")
+	eq(sel("net", "SunwingMoth"), "netswing", "nets swing")
+	eq(Core.GESTURES.netswing.tool, "Net", "the net swing holds a net")
+	ok(Core.toolSpec("Net") ~= nil, "net model")
+	ok(Relay.NAMES.settrap and Relay.NAMES.netswing, "hunter gestures relay")
+	ok(Relay.itemOk(Data, "netswing", nil) and not Relay.itemOk(Data, "netswing", "SkyNet"), "net swing carries no item")
+	local client = fs.readFile("animate.client.lua")
+	ok(client:find('GetAttributeChangedSignal("AgilityMove")', 1, true) and client:find("PlayerAdded", 1, true), "every runner's AgilityMove is watched")
 end
 
 ------------------------------------------------------------------------------

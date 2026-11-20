@@ -34,6 +34,11 @@ end
 ------------------------------------------------------------------------------
 local scan = T.scanIslands(nil)
 local prompts = {station = {}, gather = {}, warp = {}, warpReturn = {}} -- [kind][prompt] = key
+-- Agility & Hunter prompts (world.server.lua): course obstacles keyed
+-- "<course>:<index>" and hunting spots whose host part carries TrapState /
+-- TrapOwner (written by the server). Only the local player's traps are shown.
+-- Spots seen before the trap watcher below is defined wait in `pending`.
+local Skill = {obstacles = {}, traps = {}, levels = {}, next = {}, pending = {}}
 local function promptPosition(prompt)
 	local parent = prompt.Parent
 	if parent and parent:IsA("BasePart") then return parent.Position end
@@ -49,9 +54,22 @@ local function classify(prompt)
 	local region = prompt:GetAttribute("IsleWarpRegion")
 	if type(region) == "string" then prompts.warp[prompt] = region end
 	if prompt:GetAttribute("IsleWarpReturn") ~= nil or prompt.ActionText == "Travel home" then prompts.warpReturn[prompt] = "Homeward" end
+	if verb == "agility" then
+		local course, index = prompt:GetAttribute("AgilityCourse"), prompt:GetAttribute("AgilityIndex")
+		if type(course) == "string" and type(index) == "number" then Skill.obstacles[prompt] = course .. ":" .. index end
+	elseif (verb == "trap" or verb == "net") and type(item) == "string" then
+		if Skill.watchTrap then Skill.watchTrap(prompt, item) else table.insert(Skill.pending, {prompt, item}) end
+	end
 end
 local function unclassify(prompt)
 	for _, set in pairs(prompts) do set[prompt] = nil end
+	Skill.obstacles[prompt] = nil
+	for host, entry in pairs(Skill.traps) do
+		if entry.prompt == prompt then
+			if entry.board then entry.board:Destroy() end
+			Skill.traps[host] = nil
+		end
+	end
 end
 workspace.DescendantAdded:Connect(function(d) if d:IsA("ProximityPrompt") then classify(d) end end)
 workspace.DescendantRemoving:Connect(function(d) if d:IsA("ProximityPrompt") then unclassify(d) end end)
@@ -121,6 +139,8 @@ local function buildIndex()
 	end
 	local home = player:GetAttribute("IslandCenter")
 	if typeof(home) == "Vector3" then index.home = home end
+	-- The next obstacle of the running lap ("anchor:AgilityNext").
+	if Skill.next.host and Skill.next.host.Parent then index.anchors.Anchor_AgilityNext = {Skill.next.host.Position} end
 	return index
 end
 
@@ -282,6 +302,206 @@ player.CharacterAdded:Connect(function(character)
 end)
 
 ------------------------------------------------------------------------------
+-- Agility & Hunter: the running lap's next obstacle (Highlight + billboard +
+-- minimap diamond + "anchor:AgilityNext" waypoint; its position goes to the
+-- atlas HUD arrow as the local attribute AgilityNextAt), billboards and toasts
+-- for the local player's traps (caught / collapsed; HunterTrapsCollapsed is
+-- published for the atlas trap counter), minimap glyphs and Navigate entries
+-- for course starts, shortcuts and hunting grounds. Levels for the Navigate
+-- list come from snapshots (IsleUpdate and the atlas's IsleSnapshotLocal).
+------------------------------------------------------------------------------
+local AG, HU = Data.Agility or {}, Data.Hunter or {}
+Skill.markerColor = {agility = rgb("62C2B0"), shortcut = rgb("9EE7D2"), hunting = rgb("D9A35E"), trap = mint, next = gold}
+Skill.stateColor = {set = rgb("D9C9A0"), caught = mint, collapsed = rgb("EF7D67")}
+function Skill.anchorKind(name)
+	if string.sub(name, 1, 24) == "Anchor_Waypoint_Agility_" then return "agility" end
+	if string.sub(name, 1, 25) == "Anchor_Waypoint_Shortcut_" then return "shortcut" end
+	if string.sub(name, 1, 24) == "Anchor_Waypoint_Hunting_" then return "hunting" end
+	return nil
+end
+function Skill.acceptSnapshot(snapshot)
+	if type(snapshot) ~= "table" then return end
+	local levels = snapshot.levels
+	local skills = type(snapshot.depth) == "table" and snapshot.depth.skills
+	for _, skill in ipairs({"Agility", "Hunter"}) do
+		local entry = type(skills) == "table" and skills[skill]
+		local level = (type(entry) == "table" and entry.level) or (type(levels) == "table" and levels[skill])
+		if type(level) == "number" then Skill.levels[skill] = level end
+	end
+end
+task.spawn(function()
+	local updates = ReplicatedStorage:WaitForChild("IsleUpdate", 30)
+	if updates then updates.OnClientEvent:Connect(Skill.acceptSnapshot) end
+	local channel = ReplicatedStorage:WaitForChild("IsleSnapshotLocal", 30)
+	if channel then
+		channel.Event:Connect(Skill.acceptSnapshot)
+		local ask = ReplicatedStorage:FindFirstChild("IsleActionLocal")
+		if ask then ask:Fire("snapshot") end
+	end
+end)
+
+-- Own traps ------------------------------------------------------------------
+local function creatureOf(id) return HU.CreatureById and HU.CreatureById[id] end
+function Skill.board(host, entry)
+	if entry.board then entry.board:Destroy(); entry.board = nil end
+	local state = entry.shown
+	if not state then return end
+	local creature = creatureOf(entry.creature)
+	local loud = state == "caught" or state == "collapsed"
+	local color = Skill.stateColor[state]
+	local board = make("BillboardGui", host, {Name = "TrapPing", Size = UDim2.fromOffset(if loud then 132 else 104, 34), StudsOffset = Vector3.new(0, 3.2, 0),
+		AlwaysOnTop = loud, LightInfluence = 0, MaxDistance = if loud then 240 else 60})
+	local plate = make("Frame", board, {Name = "Plate", Size = UDim2.fromScale(1, 1), BackgroundColor3 = deep, BackgroundTransparency = 0.12})
+	round(plate, 10, color)
+	local icon = make("TextLabel", plate, {Name = "Icon", Position = UDim2.fromOffset(4, 4), Size = UDim2.fromOffset(26, 26),
+		BackgroundColor3 = if creature then rgb(creature.color) else slate, Text = if state == "caught" then "✦" elseif state == "collapsed" then "✕" else "⌖",
+		Font = bold, TextSize = 15, TextColor3 = ivory, TextStrokeTransparency = 0.35, TextStrokeColor3 = deep})
+	round(icon, "circle", color)
+	make("TextLabel", plate, {Name = "State", Position = UDim2.fromOffset(34, 3), Size = UDim2.new(1, -38, 0, 15), BackgroundTransparency = 1, Font = bold,
+		TextSize = 13, TextColor3 = color, TextXAlignment = Enum.TextXAlignment.Left,
+		Text = if state == "caught" then "CAUGHT!" elseif state == "collapsed" then "COLLAPSED" else "SET"})
+	make("TextLabel", plate, {Name = "Creature", Position = UDim2.fromOffset(34, 18), Size = UDim2.new(1, -38, 0, 13), BackgroundTransparency = 1, Font = regular,
+		TextSize = 11, TextColor3 = muted, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+		Text = if creature then creature.name else ""})
+	entry.board = board
+end
+function Skill.publishTraps()
+	local collapsed = 0
+	for _, entry in pairs(Skill.traps) do if entry.shown == "collapsed" then collapsed += 1 end end
+	if player:GetAttribute("HunterTrapsCollapsed") ~= collapsed then player:SetAttribute("HunterTrapsCollapsed", collapsed) end
+end
+function Skill.updateTrap(host)
+	local entry = Skill.traps[host]
+	if not entry then return end
+	local state = host:GetAttribute("TrapState")
+	local mine = host:GetAttribute("TrapOwner") == player.UserId
+	local shown = if mine and (state == "set" or state == "caught" or state == "collapsed") then state else nil
+	if shown == entry.shown then return end
+	entry.shown = shown
+	Skill.board(host, entry)
+	local creature = creatureOf(entry.creature)
+	local method = creature and HU.Methods[creature.method]
+	local what = if method then string.lower(method.name) else "trap"
+	local name = if creature then creature.name else "creature"
+	if shown == "caught" then notify("✦ Your " .. what .. " caught a " .. name .. "! Collect it.")
+	elseif shown == "collapsed" then notify("Your " .. what .. " for the " .. name .. " collapsed empty. Set it again.") end
+	Skill.publishTraps()
+end
+function Skill.watchTrap(prompt, creature)
+	local host = prompt.Parent
+	if not host or not host:IsA("BasePart") or Skill.traps[host] then return end
+	Skill.traps[host] = {prompt = prompt, creature = creature}
+	host:GetAttributeChangedSignal("TrapState"):Connect(function() Skill.updateTrap(host) end)
+	host:GetAttributeChangedSignal("TrapOwner"):Connect(function() Skill.updateTrap(host) end)
+	Skill.updateTrap(host)
+end
+for _, pair in ipairs(Skill.pending) do Skill.watchTrap(pair[1], pair[2]) end
+Skill.pending = {}
+
+-- Next obstacle ----------------------------------------------------------------
+function Skill.clearNext()
+	if Skill.next.highlight then Skill.next.highlight:Destroy() end
+	if Skill.next.board then Skill.next.board:Destroy() end
+	Skill.next = {}
+	if player:GetAttribute("AgilityNextAt") ~= nil then player:SetAttribute("AgilityNextAt", nil) end
+end
+function Skill.refreshNext()
+	local run = player:GetAttribute("AgilityRun")
+	local course, index, total
+	if type(run) == "string" then course, index, total = string.match(run, "^(%w+):(%d+):(%d+)$") end
+	local key = if course then course .. ":" .. index else nil
+	-- A lap the server has not cleared yet but whose step window has passed.
+	local expires = player:GetAttribute("AgilityRunExpires")
+	if key and type(expires) == "number" and expires > 0 and os.time() > expires + 1 then key = nil end
+	if key == Skill.next.key and (key == nil or (Skill.next.host and Skill.next.host.Parent)) then return end
+	Skill.clearNext()
+	if not key then return end
+	local prompt
+	for p, k in pairs(Skill.obstacles) do if k == key and p.Parent then prompt = p; break end end
+	local host = prompt and prompt.Parent
+	if not host or not host:IsA("BasePart") then return end -- not streamed in yet: retried every tick
+	local def = AG.CourseById and AG.CourseById[course]
+	local obstacle = def and def.obstacles[tonumber(index)]
+	local kind = obstacle and AG.Kinds[obstacle.kind]
+	local color = if def then rgb(def.color) else gold
+	Skill.next = {key = key, host = host}
+	Skill.next.highlight = make("Highlight", host, {Name = "AgilityNext", Adornee = host, FillColor = color, FillTransparency = 0.45, OutlineColor = gold,
+		OutlineTransparency = 0, DepthMode = Enum.HighlightDepthMode.AlwaysOnTop})
+	local board = make("BillboardGui", host, {Name = "AgilityNextBoard", Size = UDim2.fromOffset(176, 40), StudsOffset = Vector3.new(0, 4.6, 0),
+		AlwaysOnTop = true, LightInfluence = 0, MaxDistance = 400})
+	local plate = make("Frame", board, {Name = "Plate", Size = UDim2.fromScale(1, 1), BackgroundColor3 = deep, BackgroundTransparency = 0.12})
+	round(plate, 10, gold)
+	make("TextLabel", plate, {Name = "Step", Position = UDim2.fromOffset(8, 3), Size = UDim2.new(1, -16, 0, 14), BackgroundTransparency = 1, Font = bold,
+		TextSize = 11, TextColor3 = gold, TextXAlignment = Enum.TextXAlignment.Left, Text = "NEXT  ·  " .. index .. " / " .. total})
+	make("TextLabel", plate, {Name = "Obstacle", Position = UDim2.fromOffset(8, 18), Size = UDim2.new(1, -16, 0, 18), BackgroundTransparency = 1, Font = bold,
+		TextSize = 14, TextColor3 = ivory, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+		Text = (if kind then kind.verb .. " " else "") .. (if obstacle then obstacle.name else "obstacle")})
+	Skill.next.board = board
+	player:SetAttribute("AgilityNextAt", host.Position)
+end
+player:GetAttributeChangedSignal("AgilityRun"):Connect(Skill.refreshNext)
+-- Gentle pulse on caught pings and the next-obstacle board (≤ 10 Hz, from the map loop).
+function Skill.pulse(now)
+	local s = 1 + 0.07 * math.sin(now * 6)
+	for _, entry in pairs(Skill.traps) do
+		if entry.board and entry.shown == "caught" then entry.board.Size = UDim2.fromOffset(math.floor(132 * s), math.floor(34 * s)) end
+	end
+	if Skill.next.board then Skill.next.board.StudsOffset = Vector3.new(0, 4.6 + 0.3 * math.sin(now * 3), 0) end
+end
+
+-- Navigate entries ---------------------------------------------------------------
+function Skill.navigate(index, heading, entry, nextOrder)
+	local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	local from = root and root.Position
+	local function level(skill) return Skill.levels[skill] or 1 end
+	-- Nearest end first, so the waypoint picks the closer side of a shortcut.
+	local function nearestFirst(specs)
+		local scored = {}
+		for _, spec in ipairs(specs) do
+			local pos = T.resolveTarget(spec, index, from)
+			if pos then table.insert(scored, {spec, if from then (pos - from).Magnitude else 0}) end
+		end
+		table.sort(scored, function(a, b) return a[2] < b[2] end)
+		local out = {}
+		for _, s in ipairs(scored) do table.insert(out, s[1]) end
+		return out
+	end
+	if Skill.next.host and Skill.next.host.Parent then
+		heading("AGILITY LAP", nextOrder())
+		entry("› Next obstacle", nextOrder(), function() setWaypoint({"anchor:AgilityNext"}, "Next obstacle") end)
+	end
+	local function section(title, list)
+		if #list == 0 then return end
+		heading(title, nextOrder())
+		for _, item in ipairs(list) do
+			entry(item.text .. (if item.locked then "  🔒" else ""), nextOrder(), function() setWaypoint(item.specs, item.label) end, item.locked)
+		end
+	end
+	local courses, shortcuts, grounds = {}, {}, {}
+	for _, course in ipairs(AG.Courses or {}) do
+		local specs = {"anchor:Waypoint_Agility_" .. course.id}
+		if T.resolveFirst(specs, index) then
+			table.insert(courses, {text = course.name .. " · Lv " .. course.level, label = course.name, specs = specs, locked = level("Agility") < course.level})
+		end
+	end
+	for _, sc in ipairs(AG.Shortcuts or {}) do
+		local specs = nearestFirst({"anchor:Waypoint_Shortcut_" .. sc.id .. "_A", "anchor:Waypoint_Shortcut_" .. sc.id .. "_B"})
+		if #specs > 0 then
+			table.insert(shortcuts, {text = sc.name .. " · Lv " .. sc.level, label = sc.name, specs = specs, locked = level("Agility") < sc.level})
+		end
+	end
+	for _, creature in ipairs(HU.Creatures or {}) do
+		local specs = {"anchor:Waypoint_Hunting_" .. creature.id}
+		if T.resolveFirst(specs, index) then
+			table.insert(grounds, {text = creature.name .. " · Lv " .. creature.level, label = creature.name, specs = specs, locked = level("Hunter") < creature.level})
+		end
+	end
+	section("AGILITY COURSES", courses)
+	section("SHORTCUTS", shortcuts)
+	section("HUNTING GROUNDS", grounds)
+end
+
+------------------------------------------------------------------------------
 -- Navigate list (stations, regions, townsfolk, recall).
 ------------------------------------------------------------------------------
 local list = make("Frame", gui, {Name = "Navigate", AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -10, 0, SIZE + 46),
@@ -354,6 +574,11 @@ navigatePanel = function()
 		local specs = {"station:" .. station, "anchor:Waypoint_" .. station}
 		if T.resolveFirst(specs, index) then entry(station, nextOrder(), function() setWaypoint(specs, station) end) end
 	end
+	for _, vendor in ipairs({{"SkymarkExchange", "Skymark Exchange"}, {"TrackersLodge", "Trackers' Lodge"}}) do
+		local specs = {"anchor:Waypoint_" .. vendor[1]}
+		if T.resolveFirst(specs, index) then entry(vendor[2], nextOrder(), function() setWaypoint(specs, vendor[2]) end) end
+	end
+	Skill.navigate(index, heading, entry, nextOrder)
 	heading("REGIONS", nextOrder())
 	for _, region in ipairs(Data.Regions) do
 		local specs = {"warp:" .. region.id, "region:" .. region.id}
@@ -378,6 +603,13 @@ local function marker(key, kind)
 		round(f, "circle", rgb("2E5E6E"))
 		make("TextLabel", f, {Name = "Label", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(110, 14),
 			BackgroundTransparency = 1, Font = bold, TextSize = 10, TextColor3 = ivory, TextStrokeTransparency = 0.4, ZIndex = 4})
+	elseif kind == "agility" or kind == "shortcut" or kind == "hunting" or kind == "trap" or kind == "next" then
+		-- Skill sites: a small glyph (course start, shortcut, hunting ground, own trap, next obstacle).
+		local glyph = ({agility = "◆", shortcut = "»", hunting = "⌖", trap = "●", next = "◆"})[kind]
+		local size = if kind == "next" then 14 else 12
+		f = make("TextLabel", layer, {AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(size, size), BackgroundTransparency = 1, Text = glyph,
+			Font = bold, TextSize = size, TextColor3 = Skill.markerColor[kind] or mint, TextStrokeTransparency = 0.3, TextStrokeColor3 = deep,
+			ZIndex = if kind == "next" then 8 else 5})
 	elseif kind == "waypoint" then
 		f = make("Frame", layer, {AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(11, 11), Rotation = 45, BackgroundColor3 = gold, BorderSizePixel = 0, ZIndex = 8})
 		make("UIStroke", f, {Color = deep, Thickness = 1.5})
@@ -432,6 +664,36 @@ local function drawMap(me, facing)
 			end
 		end
 	end
+	-- Skill sites from the island anchors (course starts, shortcut ends, hunting grounds).
+	for name, parts in pairs(scan.anchors) do
+		local kind = Skill.anchorKind(name)
+		if kind then
+			for i, part in ipairs(parts) do
+				if part.Parent then
+					local x, y = project(part.Position)
+					if visible(x, y, 0) then marker(name .. "#" .. i, kind).Position = UDim2.fromOffset(half + x, half + y) end
+				end
+			end
+		end
+	end
+	for host, entry in pairs(Skill.traps) do
+		if entry.shown and host.Parent then
+			local x, y = project(host.Position)
+			if visible(x, y, 0) then
+				local f = marker(host, "trap")
+				f.Position = UDim2.fromOffset(half + x, half + y)
+				f.TextColor3 = Skill.stateColor[entry.shown] or mint
+			end
+		end
+	end
+	local nextAt = Skill.next.host and Skill.next.host.Parent and Skill.next.host.Position
+	if nextAt then
+		local x, y = project(nextAt)
+		local edge = half - 7
+		local m = math.max(math.abs(x), math.abs(y))
+		if m > edge then x, y = x / m * edge, y / m * edge end
+		marker("agilityNext", "next").Position = UDim2.fromOffset(half + x, half + y)
+	end
 	if waypoint and waypoint.target then
 		local x, y = project(waypoint.target)
 		local edge = half - 7
@@ -471,6 +733,8 @@ RunService.Heartbeat:Connect(function(dt)
 			if visuals.beam and not visuals.beam.Attachment0 then attachPlayer() end
 		end
 	end
+	Skill.refreshNext()
+	Skill.pulse(now)
 	if mapOpen and root then
 		local look = root.CFrame.LookVector
 		drawMap(root.Position, look)
