@@ -31,6 +31,14 @@
         "Wayfinder": { "$path": "nav.client.lua" }
       }
     },
+    "Lighting": {
+      "$properties": {
+        "Technology": "Future", "Brightness": 2.6, "ClockTime": 14.5, "GeographicLatitude": 38,
+        "Ambient": [0.2275, 0.2549, 0.3137], "OutdoorAmbient": [0.4902, 0.5412, 0.6118],
+        "EnvironmentDiffuseScale": 0.5, "EnvironmentSpecularScale": 0.3, "ExposureCompensation": 0,
+        "ShadowSoftness": 0.3, "GlobalShadows": true
+      }
+    },
     "Workspace": {
       "$properties": { "StreamingEnabled": false, "FallenPartsDestroyHeight": -220 }
     }

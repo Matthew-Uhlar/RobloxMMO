@@ -45,11 +45,23 @@ local services={
 	ServerStorage={FindFirstChild=function(_,name) return if name=="IsleRegionAccess" then regionAccess else nil end},
 }
 local world=roblox.Instance.new("Workspace")
+local spawned={}
 local environment={
 	game={GetService=function(_,name) return services[name] end},
 	workspace=world,Instance=roblox.Instance,Vector3=roblox.Vector3,
 	Vector2=roblox.Vector2,CFrame=roblox.CFrame,Color3=roblox.Color3,
-	UDim2=roblox.UDim2,Enum=roblox.Enum,task={spawn=function(fn,...) fn(...) end},
+	UDim2=roblox.UDim2,Enum=roblox.Enum,task={
+		-- Coroutine-backed so the day/night loop parks on task.wait and the
+		-- test can step it deterministically (resume with a delta time).
+		spawn=function(fn,...)
+			local co=coroutine.create(fn)
+			local ok,err=coroutine.resume(co,...)
+			assert(ok,err)
+			table.insert(spawned,co)
+			return co
+		end,
+		wait=function() return coroutine.yield() end,
+	},
 	NumberRange=roblox.NumberRange,NumberSequence=roblox.NumberSequence,ColorSequence=roblox.ColorSequence,
 	require=function(module) assert(module==dataModule,"world requires only AetherData") return Data end,
 }
@@ -83,6 +95,14 @@ local function check(condition,label)
 end
 local archipelago=world:FindFirstChild("AetherIsles")
 check(archipelago~=nil,"world created")
+local islandsRoot=world:FindFirstChild("Islands")
+check(islandsRoot~=nil and islandsRoot:IsA("Folder"),"Workspace.Islands folder exists")
+local function allIsles()
+	local list={}
+	for _,m in islandsRoot:GetChildren() do table.insert(list,m) end
+	for _,m in archipelago:GetChildren() do table.insert(list,m) end
+	return list
+end
 local a=player(11)
 local b=player(22,{HomeGarden=true,HomeDeck=true,Worker1Tier=1,Worker1Resource="Fish",Worker2Tier=3,Worker2Resource="Herb"})
 local homeA=archipelago:FindFirstChild("WayfarersRest_11")
@@ -267,7 +287,7 @@ local Vec=roblox.Vector3.new
 local VERB={Mining="Mine",Woodcutting="Chop",Fishing="Fish",Farming="Harvest"}
 local function islandOf(obj)
 	local node=obj
-	while node and node.Parent~=archipelago do node=node.Parent end
+	while node and node.Parent~=archipelago and node.Parent~=islandsRoot do node=node.Parent end
 	return node
 end
 local function onIsland(isle,pos,margin)
@@ -278,18 +298,18 @@ local function onIsland(isle,pos,margin)
 	return Vec(pos.X-c.X,0,pos.Z-c.Z).Magnitude<=radius-(margin or 0) and pos.Y>=c.Y-1 and pos.Y<=c.Y+12
 end
 local function onRegion(regionId,pos,margin)
-	for _,isle in archipelago:GetChildren() do
+	for _,isle in allIsles() do
 		if isle:GetAttribute("RegionId")==regionId and onIsland(isle,pos,margin) then return true end
 	end
 	return false
 end
-check(staticParts<2500,"static world stays under the 2500 part budget ("..staticParts..")")
+check(staticParts<4000,"static world stays under the 4000 part budget ("..staticParts..")")
 for _,obj in world:GetDescendants() do
 	if obj:IsA("BasePart") then check(obj.Anchored,"every world part is anchored") end
 end
 for _,region in Data.Regions do
 	local found=false
-	for _,isle in archipelago:GetChildren() do if isle:GetAttribute("RegionId")==region.id then found=true end end
+	for _,isle in islandsRoot:GetChildren() do if isle:GetAttribute("RegionId")==region.id then found=true end end
 	check(found,region.id.." has a built island")
 end
 -- Every resource tier: at least one correctly attributed gather node.
@@ -335,7 +355,8 @@ end
 local spawnFolder=world:FindFirstChild("MonsterSpawns")
 check(spawnFolder~=nil and spawnFolder:IsA("Folder"),"Workspace.MonsterSpawns folder exists")
 local markerCount,markers={},0
-local floors={Meadow=true,["Floating foundation"]=true,["Grassy hillock"]=true,["Edge guard"]=true,["Hall floor"]=true,["Guild court"]=true,["Cavern roof"]=true}
+local floors={Meadow=true,["Floating foundation"]=true,["Grassy hillock"]=true,["Edge guard"]=true,["Hall floor"]=true,["Guild court"]=true,["Cavern roof"]=true,
+	["Upper meadow"]=true,["Tier cliff"]=true}
 for _,marker in spawnFolder:GetChildren() do
 	markers+=1
 	check(marker:IsA("BasePart") and marker.Anchored and not marker.CanCollide and not marker.CanTouch and marker.Transparency==1,"spawn marker is invisible, anchored and non-colliding")
@@ -348,7 +369,7 @@ for _,marker in spawnFolder:GetChildren() do
 	local pos=marker.CFrame.Position
 	check(onRegion(def.region,pos,marker:GetAttribute("Radius") or 0),id.." marker and its roam radius sit inside "..def.region)
 	local isle
-	for _,candidate in archipelago:GetChildren() do
+	for _,candidate in islandsRoot:GetChildren() do
 		if candidate:GetAttribute("RegionId")==def.region and onIsland(candidate,pos) then isle=candidate end
 	end
 	for _,obj in isle:GetDescendants() do
@@ -444,8 +465,7 @@ for _,deck in world:GetDescendants() do
 		table.insert(bridgeEnds,deck.CFrame.Position-half)
 	end
 end
-local legacyIsles={["Compass Quay"]=true,["Mosswake Grove"]=true,["Brassfall Quarry"]=true,Skyreach=true}
-for _,isle in archipelago:GetChildren() do
+for _,isle in islandsRoot:GetChildren() do
 	local id=isle:GetAttribute("RegionId")
 	if not id then continue end
 	local bridged=0
@@ -453,7 +473,7 @@ for _,isle in archipelago:GetChildren() do
 	local guards=0
 	for _,obj in isle:GetDescendants() do if obj.Name=="Edge guard" then guards+=1 end end
 	check(bridged>0 or warpedTo[id],isle.Name.." is reached by bridge or warp")
-	if not legacyIsles[isle.Name] then check(guards>=8,isle.Name.." has an invisible edge guard ring") end
+	check(guards>=8,isle.Name.." has an invisible edge guard ring")
 end
 -- Crafting stations and the Guild Hall.
 local stationSpots,stationCount={},0
@@ -762,6 +782,341 @@ do
 	owner:SetAttribute("IslandPlacements",rec(1,"StonePath",px,pz))
 	check(folder.Parent==nil,"updates after leaving are ignored")
 	print("Island placement: "..(checks-beforeChecks).." checks.")
+end
+-- Wave 4: island scale + terrain, Workspace.Islands anchors, mesh slots,
+-- lighting look, light caps, day/night, prompt hold durations.
+do
+	local beforeChecks=checks
+	local serde=require("@lune/serde")
+	local L=services.Lighting
+	-- Lighting: project properties (Technology is not scriptable) match the script.
+	local project=serde.decode("json",fs.readFile("default.project.json"))
+	local lp=project.tree.Lighting and project.tree.Lighting["$properties"]
+	check(lp~=nil and lp.Technology=="Future","Lighting.Technology = Future in default.project.json")
+	check(project.tree.Workspace["$properties"].StreamingEnabled==false,"StreamingEnabled stays false")
+	for _,key in {"Brightness","ClockTime","GeographicLatitude","EnvironmentDiffuseScale","EnvironmentSpecularScale","ExposureCompensation","ShadowSoftness"} do
+		check(math.abs(L[key]-lp[key])<1e-3,key.." in the project matches the runtime look")
+	end
+	for _,key in {"Ambient","OutdoorAmbient"} do
+		local c=L[key]
+		check(math.abs(c.R-lp[key][1])<.003 and math.abs(c.G-lp[key][2])<.003 and math.abs(c.B-lp[key][3])<.003,key.." in the project matches the runtime look")
+	end
+	check(lp.GlobalShadows==true and L.GlobalShadows,"global shadows on")
+	check(L.Brightness<=3 and L.ExposureCompensation<=.25,"sun and exposure are not blown out")
+	local function lum(c) return .2126*c.R+.7152*c.G+.0722*c.B end
+	check(lum(L.Ambient)<.35 and lum(L.OutdoorAmbient)<.6,"ambient light leaves shade and caves readable")
+	local kinds={}
+	for _,child in L:GetChildren() do kinds[child.ClassName]=(kinds[child.ClassName] or 0)+1 end
+	for _,class in {"Atmosphere","BloomEffect","ColorCorrectionEffect","SunRaysEffect","Sky"} do
+		check(kinds[class]==1,"exactly one "..class.." (no stacked post effects)")
+	end
+	local air,bloomFx,gradeFx,raysFx=L:FindFirstChildOfClass("Atmosphere"),L:FindFirstChildOfClass("BloomEffect"),L:FindFirstChildOfClass("ColorCorrectionEffect"),L:FindFirstChildOfClass("SunRaysEffect")
+	check(air.Density>=.15 and air.Density<=.32 and air.Haze<=1.5,"atmosphere lets distant islands read")
+	check(bloomFx.Intensity<=.5 and bloomFx.Threshold>=1.2,"bloom is subtle")
+	check(math.abs(gradeFx.Brightness)<=.05 and gradeFx.Contrast<=.2 and raysFx.Intensity<=.1,"grade and sun rays are subtle")
+
+	-- Workspace.Islands: one Model per static island with the contract attributes.
+	local oldRadius={["Compass Quay"]=43,["Mosswake Grove"]=30,["Brassfall Quarry"]=31,["Warden Reach"]=32,Skyreach=30,
+		["Guild Terrace"]=32,["Meadow Reach"]=30,["Cinder Shelf"]=24,["Windpine Grove"]=36,["Gloomhollow Caverns"]=38,
+		["Tidewater Shoals"]=40,["Tempest Spire"]=30}
+	local seen,tiers,trees,staticCounts=0,0,0,{}
+	for _,isle in islandsRoot:GetChildren() do
+		seen+=1
+		check(isle:IsA("Model"),isle.Name.." is a Model")
+		local center,radius,region=isle:GetAttribute("IslandCenter"),isle:GetAttribute("IslandRadius"),isle:GetAttribute("Region")
+		check(typeof(center)=="Vector3" and type(radius)=="number" and radius>0,isle.Name.." has IslandCenter and IslandRadius")
+		check(type(region)=="string" and (Data.RegionById[region]~=nil or region=="Home"),isle.Name.." has a valid Region")
+		local meadow=isle:FindFirstChild("Meadow")
+		check(meadow~=nil and (meadow.CFrame.Position+Vec(0,.25,0)-center).Magnitude<.01,isle.Name.." IslandCenter is its meadow top")
+		local old=oldRadius[isle.Name]
+		check(old~=nil,isle.Name.." is a known static island")
+		local factor=if isle.Name=="Compass Quay" then 2.5 else 2
+		check(radius>=old*factor,isle.Name.." grew "..factor.."x or more ("..old.." -> "..radius..")")
+		-- Layer stack: the foundation top sits inside the meadow (no shared plane).
+		local foundation=isle:FindFirstChild("Floating foundation")
+		local fTop=foundation.CFrame.Position.Y+foundation.Size.X/2
+		check(fTop<center.Y-.1 and fTop>center.Y-.5,isle.Name.." foundation does not z-fight the meadow")
+		local parts,shore=0,0
+		for _,obj in isle:GetDescendants() do
+			if obj:IsA("BasePart") then parts+=1 end
+			if obj.Name=="Tier cliff" then tiers+=1 end
+			if obj.Name=="Shore boulder" or obj.Name=="Shore ledge" then shore+=1 end
+			local shape=obj:IsA("BasePart") and obj:GetAttribute("Shape")
+			if shape and string.find(shape,"Tree",1,true) then trees+=1 end
+		end
+		check(shore>=3,isle.Name.." has shoreline detail")
+		staticCounts[isle.Name]=parts
+	end
+	check(seen==12,"twelve static islands under Workspace.Islands")
+	check(tiers>=14,"elevation tiers across the archipelago ("..tiers..")")
+	check(trees>=80,"trees and flora are mesh slots ("..trees..")")
+	local hubTiers=0
+	for _,obj in islandsRoot:FindFirstChild("Compass Quay"):GetDescendants() do if obj.Name=="Tier cliff" then hubTiers+=1 end end
+	check(hubTiers>=3,"hub has raised districts")
+	for _,name in {"Compass Plaza","Sky Harbor","Artisans' Rise","Quay Bank","Trade Counter","Mooncrest pond","Orchard terrace","Lookout knoll"} do
+		check(islandsRoot:FindFirstChild("Compass Quay"):FindFirstChild(name,true)~=nil,"hub district "..name)
+	end
+	-- Coplanar upward faces: overlapping flat tops in one island must differ in height.
+	local function flatTop(p)
+		if p.Transparency>=1 then return nil end
+		local cf=p.CFrame
+		if p.Shape==roblox.Enum.PartType.Cylinder and math.abs(cf.RightVector.Y)>.999 then
+			return cf.Position.Y+p.Size.X/2,"circle",p.Size.Y/2
+		elseif p.Shape==roblox.Enum.PartType.Block and math.abs(cf.UpVector.Y)>.999 then
+			return cf.Position.Y+p.Size.Y/2,"rect",nil
+		end
+		return nil
+	end
+	local function footprint(p,kind,r)
+		local c=p.CFrame.Position
+		if kind=="circle" then return {c.X-r,c.X+r,c.Z-r,c.Z+r,true,c,r} end
+		local cf,s=p.CFrame,p.Size/2
+		local ex=math.abs(cf.RightVector.X)*s.X+math.abs(cf.LookVector.X)*s.Z
+		local ez=math.abs(cf.RightVector.Z)*s.X+math.abs(cf.LookVector.Z)*s.Z
+		local corners={}
+		for _,a in {-1,1} do for _,b in {-1,1} do
+			local q=c+cf.RightVector*a*s.X+cf.LookVector*b*s.Z
+			table.insert(corners,{q.X,q.Z})
+		end end
+		local axes={{cf.RightVector.X,cf.RightVector.Z},{cf.LookVector.X,cf.LookVector.Z}}
+		return {c.X-ex,c.X+ex,c.Z-ez,c.Z+ez,false,c,nil,corners,axes}
+	end
+	local coplanar=0
+	for _,isle in islandsRoot:GetChildren() do
+		local flats={}
+		for _,obj in isle:GetDescendants() do
+			if obj:IsA("BasePart") and not obj.Name:find("^Anchor_") then
+				local y,kind,r=flatTop(obj)
+				if y then table.insert(flats,{obj,y,footprint(obj,kind,r)}) end
+			end
+		end
+		for i=1,#flats do
+			for j=i+1,#flats do
+				local a,b=flats[i],flats[j]
+				if math.abs(a[2]-b[2])<.004 then
+					local fa,fb=a[3],b[3]
+					local overlap=fa[1]<fb[2]-.05 and fb[1]<fa[2]-.05 and fa[3]<fb[4]-.05 and fb[3]<fa[4]-.05
+					if overlap and fa[5] and fb[5] then overlap=(fa[6]-fb[6]).Magnitude<fa[7]+fb[7]-.05 end
+					if overlap and not fa[5] and not fb[5] then
+						-- Oriented rectangles: separating-axis test in the XZ plane.
+						for _,axis in {fa[9][1],fa[9][2],fb[9][1],fb[9][2]} do
+							local function span(corners)
+								local lo,hi=math.huge,-math.huge
+								for _,q in corners do local d=q[1]*axis[1]+q[2]*axis[2]; lo=math.min(lo,d); hi=math.max(hi,d) end
+								return lo,hi
+							end
+							local alo,ahi=span(fa[8])
+							local blo,bhi=span(fb[8])
+							if ahi<=blo+.05 or bhi<=alo+.05 then overlap=false break end
+						end
+					end
+					if overlap then
+						coplanar+=1
+						print("coplanar: "..a[1]:GetFullName().." / "..b[1].Name)
+					end
+				end
+			end
+		end
+	end
+	check(coplanar==0,"no overlapping coplanar top faces (z-fighting)")
+
+	-- Anchors (contract section 10).
+	local anchors={}
+	for _,obj in islandsRoot:GetDescendants() do
+		if obj:IsA("BasePart") and obj.Name:sub(1,7)=="Anchor_" then
+			check(anchors[obj.Name]==nil,obj.Name.." is unique")
+			anchors[obj.Name]=obj
+			check(obj.Anchored and obj.Transparency==1 and not obj.CanCollide and not obj.CanTouch and not obj.CanQuery,obj.Name.." is invisible and inert")
+			check(obj.Parent.Parent==islandsRoot,obj.Name.." is a direct child of its island model")
+			check(obj:GetAttribute("AnchorPurpose")==obj.Name:sub(8),obj.Name.." names its purpose")
+		end
+	end
+	for _,name in {"NPC_Guide","NPC_Slayer","NPC_Banker","NPC_Merchant","NPC_Forgemaster","NPC_Fisher",
+		"NPC_Auctioneer","NPC_Herald","NPC_Registrar","NPC_Joiner","NPC_Grovekeeper","NPC_Deepwarden","Spawn"} do
+		check(anchors["Anchor_"..name]~=nil,"Anchor_"..name.." exists")
+	end
+	check(anchors.Anchor_NPC_Guide.Parent.Name=="Compass Quay","guide stands on the hub")
+	local cHome=archipelago:FindFirstChild("WayfarersRest_33")
+	local hubPrompt=cHome:FindFirstChild("Quay beacon"):FindFirstChildOfClass("ProximityPrompt")
+	standAt(c,hubPrompt.Parent)
+	hubPrompt.Triggered:Fire(c)
+	check(c.landed~=nil and onRegion("Hub",c.landed,2),"home beacon lands on the hub")
+	local guideOffset=anchors.Anchor_NPC_Guide.CFrame.Position-c.landed
+	check(Vec(guideOffset.X,0,guideOffset.Z).Magnitude<=12,"guide anchor waits at the hub spawn")
+	check(anchors.Anchor_NPC_Slayer.Parent.Name=="Guild Terrace" and anchors.Anchor_NPC_Fisher.Parent.Name=="Compass Quay","slayer and harbour-angler anchors sit by their posts")
+	check(anchors.Anchor_NPC_Grovekeeper.Parent:GetAttribute("Region")=="Windpine" and anchors.Anchor_NPC_Deepwarden.Parent:GetAttribute("Region")=="Gloomhollow","regional townsfolk anchors sit in their regions")
+	local hubIsles=0
+	for _,isle in islandsRoot:GetChildren() do if isle:GetAttribute("Region")=="Hub" then hubIsles+=1; if hubIsles==1 then check(isle.Name=="Compass Quay","the first Region=Hub island is Compass Quay") end end end
+	check(cHome:FindFirstChild("Anchor_Waypoint_HomeLanding")~=nil and cHome:GetAttribute("Region")=="Home" and cHome:GetAttribute("IslandRadius")>=38,"homes carry Region=Home, a 2x footprint and a landing anchor")
+	local function nearWaypoint(pos,limit)
+		for name,a in anchors do
+			if name:find("^Anchor_Waypoint_") then
+				local d=a.CFrame.Position-pos
+				if Vec(d.X,0,d.Z).Magnitude<=limit then return true end
+			end
+		end
+		return false
+	end
+	local waypointTargets=0
+	for _,q in islandsRoot:GetDescendants() do
+		if q:IsA("ProximityPrompt") and (q:GetAttribute("IsleAction")=="station" or q:GetAttribute("IsleWarpRegion") or q:GetAttribute("IsleWarpReturn")
+			or q:GetAttribute("IsleAction")=="bank" or q:GetAttribute("IsleAction")=="sell" or q:GetAttribute("IsleAction")=="fight") then
+			waypointTargets+=1
+			check(nearWaypoint(q.Parent.CFrame.Position,16),q.ObjectText.." has a waypoint anchor")
+		end
+	end
+	check(waypointTargets>=20,"stations, warps and services are waypointed ("..waypointTargets..")")
+	for _,id in {"Skyreach","Windpine","Gloomhollow","Tidewater","Tempest"} do
+		check(anchors["Anchor_Waypoint_Entrance_"..id]~=nil,id.." entrance waypoint")
+	end
+	for _,name in {"MosswakeGrove","BrassfallQuarry","WardenReach","GuildTerrace","MeadowReach","CinderShelf"} do
+		check(anchors["Anchor_Waypoint_Bridge_"..name]~=nil,name.." bridge waypoint")
+	end
+
+	-- Mesh slots (contract section 10).
+	local shapes,shapeCount={},0
+	for _,obj in world:GetDescendants() do
+		if obj:IsA("BasePart") and obj:GetAttribute("Shape")~=nil and not obj:GetAttribute("SculptureScale") then
+			local shape,scale,tint=obj:GetAttribute("Shape"),obj:GetAttribute("ShapeScale"),obj:GetAttribute("Tint")
+			check(type(shape)=="string" and #shape>0,"Shape is a name")
+			check(scale==nil or (type(scale)=="number" and scale>0),obj.Name.." ShapeScale is positive")
+			check(tint==nil or typeof(tint)=="Color3",obj.Name.." Tint is a Color3")
+			shapes[shape]=(shapes[shape] or 0)+1
+			shapeCount+=1
+		end
+	end
+	local signShapes={Signboard=true,SignPost=true,Banner=true}
+	local signBoards=0
+	for _,gui in world:GetDescendants() do
+		if gui:IsA("SurfaceGui") and gui.Parent:IsA("BasePart") and gui:FindFirstAncestor("Islands") then
+			signBoards+=1
+			check(signShapes[gui.Parent:GetAttribute("Shape")]==true,gui.Parent.Name.." sign carries a sign mesh slot")
+		end
+	end
+	check(signBoards>=40,"signs on the static islands ("..signBoards..")")
+	for _,need in {"Lamp","OreVein","CropBed","Rock","CliffRock","RockOutcrop","MeadowTree","PineTree","Forge","Hearth","Cauldron","Workbench","BridgePost","Statue","Signboard","Banner","MarketStall","FishingPier","WarpBeacon"} do
+		check((shapes[need] or 0)>=1,need.." mesh slots exist")
+	end
+	for _,model in islandsRoot:GetDescendants() do
+		if model:IsA("Model") and model.Name=="Lamp post" then
+			check(model:FindFirstChild("Bronze mast"):GetAttribute("Shape")=="Lamp","lamp posts are mesh slots")
+		end
+	end
+	for _,q in islandsRoot:GetDescendants() do
+		if q:IsA("ProximityPrompt") and q:GetAttribute("IsleAction")=="gather" then
+			local host=q.Parent
+			local tagged=host:GetAttribute("Shape")~=nil
+			if not tagged then
+				for _,sib in host.Parent:GetDescendants() do
+					if sib:IsA("BasePart") and sib:GetAttribute("Shape") and (sib.CFrame.Position-host.CFrame.Position).Magnitude<30 then tagged=true break end
+				end
+			end
+			check(tagged,q.ObjectText.." node has a mesh slot")
+		end
+	end
+
+	-- Lights: hero shadows only, per-island and per-area caps, never buried.
+	local function lightPos(l)
+		local host=l.Parent
+		if host:IsA("Attachment") then return (host.Parent.CFrame*host.CFrame).Position end
+		return host.CFrame.Position
+	end
+	local lights,shadowed={},0
+	for _,isle in islandsRoot:GetChildren() do
+		local count=0
+		for _,l in isle:GetDescendants() do
+			if l:IsA("Light") then
+				count+=1
+				table.insert(lights,{l,lightPos(l)})
+				if l.Shadows then shadowed+=1 end
+				check(l.Brightness<=1.5,"light brightness stays modest")
+				if l:IsA("PointLight") and l.Parent:IsA("BasePart") then
+					check(l.Parent.Material==roblox.Enum.Material.Neon or l.Parent.Transparency>0,l.Parent.Name.." light is not buried in an opaque part")
+				end
+			end
+		end
+		check(count<=26,isle.Name.." stays within 26 lights ("..count..")")
+	end
+	check(shadowed>=3 and shadowed<=6,"shadows only on a few hero lights ("..shadowed..")")
+	local worst=0
+	for _,a in lights do
+		local near=0
+		for _,b in lights do if (a[2]-b[2]).Magnitude<=30 then near+=1 end end
+		worst=math.max(worst,near)
+		check(near<=6,"at most 6 lights within 30 studs (near "..a[1].Parent.Name..")")
+	end
+	local neon=0
+	for _,obj in islandsRoot:GetDescendants() do
+		if obj:IsA("BasePart") and obj.Material==roblox.Enum.Material.Neon then
+			neon+=1
+			check(math.max(obj.Size.X,obj.Size.Y,obj.Size.Z)<=10,obj.Name.." neon stays an accent")
+		end
+	end
+	check(neon<=90,"neon is reserved for glowing accents ("..neon..")")
+	-- Day/night: one loop, parked on task.wait; lamps follow the clock.
+	local loop=spawned[1]
+	check(loop~=nil and coroutine.status(loop)=="suspended","day/night loop waits on task.wait")
+	local lamps={}
+	for _,l in world:GetDescendants() do if l:IsA("SpotLight") then table.insert(lamps,l) end end
+	check(#lamps>=40,"lamps are downward spot lights ("..#lamps..")")
+	local function allLamps(on) for _,l in lamps do if l.Enabled~=on then return false end end return true end
+	check(allLamps(false),"lamps are dark by day")
+	local startClock=L.ClockTime
+	check(coroutine.resume(loop,300),"day/night step runs")
+	check(L.ClockTime>18 and L.ClockTime<19 and allLamps(true),"dusk lights the lamps ("..L.ClockTime..")")
+	check(lum(L.OutdoorAmbient)<lum(roblox.Color3.fromHex("7D8A9C")),"night dims outdoor ambient")
+	check(coroutine.resume(loop,200),"day/night step runs")
+	check(L.ClockTime<6 and allLamps(true),"lamps stay lit through the night")
+	check(coroutine.resume(loop,150),"day/night step runs")
+	check(L.ClockTime>6 and L.ClockTime<12 and allLamps(false),"dawn puts the lamps out")
+	check(startClock==14.5,"day starts mid-afternoon")
+
+	-- Prompt holds: gathers read as swings, fishing as cast-bob-reel, interacts stay snappy.
+	local fishing={}
+	for _,def in Data.ResourceTiers.Fishing do fishing[def.id]=true end
+	local holds={gather=0,fish=0,interact=0}
+	for _,isle in allIsles() do for _,q in isle:GetDescendants() do
+		if q:IsA("ProximityPrompt") then
+			if q:GetAttribute("IsleAction")=="gather" then
+				if fishing[q:GetAttribute("IsleItem")] then
+					holds.fish+=1
+					check(math.abs(q.HoldDuration-1.5)<1e-6,q.ObjectText.." fishing hold is 1.5 s")
+				else
+					holds.gather+=1
+					check(math.abs(q.HoldDuration-1)<1e-6,q.ObjectText.." gather hold is 1.0 s")
+				end
+			elseif q:GetAttribute("IsleCoopResource") then
+				check(math.abs(q.HoldDuration-1)<1e-6,"shared gather hold is 1.0 s")
+			else
+				holds.interact+=1
+				check(math.abs(q.HoldDuration-.36)<1e-6,q.ObjectText.." interact hold stays 0.36 s")
+			end
+		end
+	end end
+	check(holds.gather>=30 and holds.fish>=8 and holds.interact>=20,"hold durations cover every prompt kind")
+
+	-- Placement glow cap: a full island of lantern posts lights at most 10, spaced.
+	local I=Data.Island
+	local lit=player(54)
+	local full={}
+	for z=-I.RANGE,I.RANGE do for x=-I.RANGE,I.RANGE do
+		if #full<60 and I.cellBlocked(x,z)==nil then table.insert(full,I.record({id=#full+1,prop="LanternPost",x=x,z=z,rot=0})) end
+	end end
+	lit:SetAttribute("IslandPlacements",table.concat(full,";"))
+	local glows={}
+	for _,l in archipelago:FindFirstChild("WayfarersRest_54"):FindFirstChild("Placements"):GetDescendants() do
+		if l:IsA("PointLight") and l.Enabled then table.insert(glows,lightPos(l)) end
+	end
+	check(#glows>=4 and #glows<=10,"placed lanterns cap their glow ("..#glows.." lit of "..#full..")")
+	for i=1,#glows do for j=i+1,#glows do check((glows[i]-glows[j]).Magnitude>=9,"lit lanterns never stack") end end
+
+	local total=0
+	local names={}
+	for name,n in staticCounts do total+=n table.insert(names,name..": "..n) end
+	table.sort(names)
+	print("Static parts by island: "..table.concat(names,", ").." (total "..total..")")
+	print("Mesh slots: "..shapeCount.." parts; lights "..#lights.." (worst cluster "..worst..", shadowed "..shadowed.."), neon "..neon..".")
+	print("Wave 4: "..(checks-beforeChecks).." checks.")
 end
 print("Depth world: "..tierCount.." resource tiers / "..nodeCount.." gather nodes, "..markers.." spawn markers, "..warps.." gated warps, "..stationCount.." stations, "..staticParts.." static parts, "..staticLights.." lights.")
 print("World QA passed "..checks.." checks with "..parts.." parts, "..prompts.." prompts and "..signs.." sign surfaces.")
