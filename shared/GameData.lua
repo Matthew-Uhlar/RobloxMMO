@@ -5657,5 +5657,449 @@ end
 end
 -- End Dungeon classes section.
 
+------------------------------------------------------------------------------
+-- Prayer & Thieving (Prayer & Thieving team; append-only section).
+-- Prayer (OSRS Prayer): every monster drops remains (8 tiers by monster
+-- level, sea creatures and slayer bosses too). Offering them at an altar pays
+-- remains.prayerXp x altar.mult, one rite every PR.RITE_SECONDS (batches of
+-- PR.BATCH). Prayer points: pool PR.maxPoints(level), persisted; active
+-- prayers drain PR.drainPerSecond (cut by Devotion), restored at altars
+-- ("pray") or by draughts. 21 prayers (PR.Prayers): wards (Defense +5/10/15%),
+-- edges / sights / sparks (melee / ranged / magic damage and accuracy
+-- +5/10/15%), protection from each style (PR.PROTECT of that style's
+-- damage vs monsters, PR.PROTECT_WORLD_BOSS vs world bosses), Mending Hymn
+-- (heal), Hearthsong (mana regeneration), Amber Vigil (buffs last longer),
+-- Sapping Rite (hits sap a monster's defence) and two high hymns. Prayers that
+-- share a group are exclusive.
+-- Thieving (OSRS Thieving): market stalls, pickpocket marks and strongboxes
+-- (TH.Targets). Success = TH.chance(target, level, glove bonus, Deftness);
+-- a success pays coins + rolled loot, XP and a per-player per-target
+-- cooldown (respawn); a failure stuns (no thieving or walking) and hurts.
+-- Gloves (owned, never consumed) add success chance.
+-- server.server.lua (Prayer & Thieving block) runs both; combat.server.lua
+-- (Prayer section) applies offence, sap and mana; world.server.lua builds
+-- altars, stalls, marks and strongboxes; verify-prayer.luau checks them.
+-- Profile (optional; migrated): p.prayer = {points, quick={id,id}, offered=
+-- {[remains]=n}, active={[id]=true} (cleared on load)}, p.thieving =
+-- {thefts={[target]=n}}.
+------------------------------------------------------------------------------
+do
+local PR, TH = {}, {}
+Data.Prayer, Data.Thieving = PR, TH
+for _, id in ipairs({"Prayer","Thieving"}) do table.insert(Data.SkillOrder, id) end
+Data.Skills.Prayer = {category="combat",color="E8D9A0",title="Devout",perLevel={defense=0.5,devotion=0.2},description="Offer remains at the isles' altars and call on prayers in battle. Raises Defense and Devotion."}
+Data.Skills.Thieving = {category="support",color="8C7BC4",title="Nightglove",perLevel={deftness=0.5,speed=0.1},description="Lift from market stalls, pick pockets and crack strongboxes. Raises Deftness and Speed."}
+-- Devotion slows prayer drain (OSRS prayer bonus); Deftness adds theft chance.
+Data.Stats.devotion = {name="Devotion",symbol="✧",color="E8D9A0",base=0,cap=60}
+Data.Stats.deftness = {name="Deftness",symbol="✋",color="8C7BC4",base=0,cap=50}
+for _, id in ipairs({"devotion","deftness"}) do table.insert(Data.StatOrder, id) end
+
+------------------------------------------------------------------------------
+-- Prayer
+------------------------------------------------------------------------------
+PR.TICK = 3                  -- seconds between server drain / heal ticks
+PR.POINTS_BASE = 10          -- max points = POINTS_BASE + Prayer level
+PR.DEVOTION_SCALE = 30       -- drain / (1 + devotion / 30)
+PR.PROTECT = 0.4             -- protection: share of that style's damage removed (monsters)
+PR.PROTECT_WORLD_BOSS = 0.25 -- ... against world bosses
+PR.SAP_PER_HIT = 0.03        -- Sapping Rite: share of base defence sapped per landed hit
+PR.SAP_MAX = 0.3             -- ... never more than this share in total
+PR.RITE_SECONDS = 1.8        -- one offering per this many seconds
+PR.BATCH = 10                -- remains offered per altar use
+PR.ALTAR_SECONDS = 60        -- the atlas may offer chosen remains this long after an altar visit
+PR.QUICK_SLOTS = 2
+PR.Groups = {defence="Wards",melee="Melee",ranged="Ranged",magic="Magic",protect="Protection"}
+-- drain = points per minute. defence = % Defense; offence = {style = %} (damage
+-- and, for ranged, accuracy); protect = style; heal = % max health per tick;
+-- mana = mana regeneration multiplier bonus; preserve = buffs last (1+x) as long.
+local function prayer(id, def) def.id = id; def.groups = def.groups or {}; return def end
+PR.Prayers = {
+	prayer("BarkhideWard",{name="Barkhide Ward",level=1,drain=3,groups={"defence"},defence=5,glyph="❖",color="A0825A",text="+5% Defense."}),
+	prayer("KindledEdge",{name="Kindled Edge",level=4,drain=3,groups={"melee"},offence={melee=5},glyph="⚔",color="F3A64E",text="+5% melee damage."}),
+	prayer("KeenSight",{name="Keen Sight",level=7,drain=3,groups={"ranged"},offence={ranged=5},glyph="➶",color="9BD67E",text="+5% ranged damage and accuracy."}),
+	prayer("QuietSpark",{name="Quiet Spark",level=9,drain=3,groups={"magic"},offence={magic=5},glyph="✦",color="8FA8FF",text="+5% spell damage."}),
+	prayer("StonehideWard",{name="Stonehide Ward",level=10,drain=6,groups={"defence"},defence=10,glyph="❖",color="B5A68C",text="+10% Defense."}),
+	prayer("BlazingEdge",{name="Blazing Edge",level=13,drain=6,groups={"melee"},offence={melee=10},glyph="⚔",color="F28C3A",text="+10% melee damage."}),
+	prayer("HawkSight",{name="Hawk Sight",level=16,drain=6,groups={"ranged"},offence={ranged=10},glyph="➶",color="7FC860",text="+10% ranged damage and accuracy."}),
+	prayer("RisingSpark",{name="Rising Spark",level=19,drain=6,groups={"magic"},offence={magic=10},glyph="✦",color="7590FF",text="+10% spell damage."}),
+	prayer("MendingHymn",{name="Mending Hymn",level=22,drain=5,heal=1.5,glyph="✚",color="7FE3CC",text="Heal 1.5% of max health every "..PR.TICK.." seconds."}),
+	prayer("IronbarkWard",{name="Ironbark Ward",level=25,drain=12,groups={"defence"},defence=15,glyph="❖",color="C9C2B0",text="+15% Defense."}),
+	prayer("WildfireEdge",{name="Wildfire Edge",level=28,drain=12,groups={"melee"},offence={melee=15},glyph="⚔",color="EF6A2E",text="+15% melee damage."}),
+	prayer("FalconSight",{name="Falcon Sight",level=31,drain=12,groups={"ranged"},offence={ranged=15},glyph="➶",color="5FB447",text="+15% ranged damage and accuracy."}),
+	prayer("StormSpark",{name="Storm Spark",level=34,drain=12,groups={"magic"},offence={magic=15},glyph="✦",color="5C7AEA",text="+15% spell damage."}),
+	prayer("WardOfFangs",{name="Ward of Fangs",level=37,drain=12,groups={"protect"},protect="melee",glyph="⛨",color="F3C66E",text="Melee attacks deal 40% less (25% from world bosses)."}),
+	prayer("WardOfQuills",{name="Ward of Quills",level=40,drain=12,groups={"protect"},protect="ranged",glyph="⛨",color="9BD67E",text="Ranged attacks deal 40% less (25% from world bosses)."}),
+	prayer("WardOfGlyphs",{name="Ward of Glyphs",level=43,drain=12,groups={"protect"},protect="magic",glyph="⛨",color="8FA8FF",text="Magic attacks deal 40% less (25% from world bosses)."}),
+	prayer("Hearthsong",{name="Hearthsong",level=46,drain=4,mana=0.5,glyph="♨",color="9FC3FF",text="+50% mana regeneration."}),
+	prayer("AmberVigil",{name="Amber Vigil",level=52,drain=4,preserve=0.5,glyph="⌛",color="F2C14E",text="Potion and meal buffs last 50% longer."}),
+	prayer("SappingRite",{name="Sapping Rite",level=58,drain=18,sap=PR.SAP_PER_HIT,glyph="☄",color="C58BE8",text="Each landed hit saps 3% of a monster's defence (up to 30%)."}),
+	prayer("ValorHymn",{name="Valor Hymn",level=70,drain=24,groups={"defence","melee"},defence=25,offence={melee=20},glyph="♛",color="FFD27A",text="+20% melee damage and +25% Defense."}),
+	prayer("StarwardLitany",{name="Starward Litany",level=74,drain=24,groups={"defence","ranged","magic"},defence=25,offence={ranged=20,magic=20},glyph="✴",color="C9D6FF",text="+20% ranged and spell damage (and ranged accuracy), +25% Defense."}),
+}
+PR.PrayerById = {}
+for i, def in ipairs(PR.Prayers) do def.index = i; PR.PrayerById[def.id] = def end
+PR.ProtectFor = {melee="WardOfFangs",ranged="WardOfQuills",magic="WardOfGlyphs"}
+
+function PR.maxPoints(level) return PR.POINTS_BASE + math.clamp(math.floor(tonumber(level) or 1), 1, Data.MAX_LEVEL) end
+function PR.conflicts(a, b)
+	if a == b then return false end
+	for _, g in ipairs(a.groups) do if table.find(b.groups, g) then return true end end
+	return false
+end
+-- Sorted list of active prayer ids from a set or list (unknown ids dropped).
+function PR.list(active)
+	local out = {}
+	if type(active) == "table" then
+		for k, v in pairs(active) do
+			local id = if type(k) == "string" and v == true then k elseif type(v) == "string" then v else nil
+			if id and PR.PrayerById[id] and not table.find(out, id) then table.insert(out, id) end
+		end
+	end
+	table.sort(out, function(a, b) return PR.PrayerById[a].index < PR.PrayerById[b].index end)
+	return out
+end
+-- Pure toggle. Returns verdict, new active set ({[id]=true}), switched-off ids.
+-- verdict: "on" | "off" | "unknown" | "level" | "points".
+function PR.toggle(active, id, level, points)
+	local def = type(id) == "string" and PR.PrayerById[id]
+	local out = {}
+	for _, k in ipairs(PR.list(active)) do out[k] = true end
+	if not def then return "unknown", out, {} end
+	if out[id] then out[id] = nil; return "off", out, {} end
+	if (tonumber(level) or 1) < def.level then return "level", out, {} end
+	if (tonumber(points) or 0) <= 0 then return "points", out, {} end
+	local dropped = {}
+	for k in pairs(out) do
+		if PR.conflicts(def, PR.PrayerById[k]) then out[k] = nil; table.insert(dropped, k) end
+	end
+	table.sort(dropped)
+	out[id] = true
+	return "on", out, dropped
+end
+function PR.drainPerMinute(active)
+	local total = 0
+	for _, id in ipairs(PR.list(active)) do total += PR.PrayerById[id].drain end
+	return total
+end
+function PR.drainPerSecond(active, devotion)
+	local dev = math.clamp(tonumber(devotion) or 0, 0, Data.Stats.devotion.cap)
+	return PR.drainPerMinute(active) / 60 / (1 + dev / PR.DEVOTION_SCALE)
+end
+-- Points after `seconds` of drain (never below 0) and whether they ran out.
+function PR.drain(points, active, devotion, seconds)
+	local left = math.max(0, (tonumber(points) or 0) - PR.drainPerSecond(active, devotion) * math.max(0, tonumber(seconds) or 0))
+	left = math.floor(left * 1000 + 0.5) / 1000
+	return left, left <= 0 and PR.drainPerMinute(active) > 0
+end
+function PR.secondsLeft(points, active, devotion)
+	local rate = PR.drainPerSecond(active, devotion)
+	if rate <= 0 then return math.huge end
+	return math.max(0, tonumber(points) or 0) / rate
+end
+-- Combined effects of an active set.
+function PR.effects(active)
+	local e = {defence=0, offence={melee=0,ranged=0,magic=0}, protect=nil, heal=0, mana=0, preserve=0, sap=0}
+	for _, id in ipairs(PR.list(active)) do
+		local def = PR.PrayerById[id]
+		e.defence = math.max(e.defence, def.defence or 0)
+		for style, v in pairs(def.offence or {}) do e.offence[style] = math.max(e.offence[style], v) end
+		if def.protect then e.protect = def.protect end
+		e.heal = math.max(e.heal, def.heal or 0)
+		e.mana = math.max(e.mana, def.mana or 0)
+		e.preserve = math.max(e.preserve, def.preserve or 0)
+		e.sap = math.max(e.sap, def.sap or 0)
+	end
+	return e
+end
+-- Incoming damage multiplier from protection (1 = none).
+function PR.protectMult(protect, style, worldBoss)
+	if not protect or protect ~= style then return 1 end
+	return 1 - (if worldBoss then PR.PROTECT_WORLD_BOSS else PR.PROTECT)
+end
+-- Raw incoming damage after protection (never below 0) and the defence multiplier.
+function PR.incoming(raw, style, effects, worldBoss)
+	local e = type(effects) == "table" and effects or {}
+	local amount = math.max(0, (tonumber(raw) or 0) * PR.protectMult(e.protect, style, worldBoss))
+	return amount, 1 + math.max(0, tonumber(e.defence) or 0) / 100
+end
+-- Monster defence after one more sapped hit (base = the monster's own defence).
+function PR.sapped(current, base, sap)
+	base = math.max(0, tonumber(base) or 0)
+	local floorDef = math.floor(base * (1 - PR.SAP_MAX))
+	if (tonumber(sap) or 0) <= 0 or base <= 0 then return current end
+	return math.max(floorDef, (tonumber(current) or base) - math.max(1, math.ceil(base * sap)))
+end
+-- Buff seconds added per `seconds` of real time with Amber Vigil (lasting 1+x as long).
+function PR.preserveExtend(seconds, preserve)
+	preserve = math.max(0, tonumber(preserve) or 0)
+	return (tonumber(seconds) or 0) * preserve / (1 + preserve)
+end
+-- Points a draught restores: flat + share of max points (never above max).
+function PR.restore(points, maxPoints, def)
+	local r = type(def) == "table" and def.prayerRestore
+	if type(r) ~= "table" then return points end
+	return math.min(maxPoints, (tonumber(points) or 0) + (r.flat or 0) + math.floor((r.percent or 0) * maxPoints))
+end
+
+-- Remains: dropped by every monster (tier by level); offered at altars.
+PR.Remains = {
+	{id="BrittleRemains",name="Brittle Remains",xp=3,value=2,rarity="Common",color="D8CFBF",upTo=9},
+	{id="WeatheredRemains",name="Weathered Remains",xp=6,value=4,rarity="Common",color="C9BC9F",upTo=19},
+	{id="HeavyRemains",name="Heavy Remains",xp=10,value=7,rarity="Uncommon",color="B8A88A",upTo=34},
+	{id="EmberscorchedRemains",name="Emberscorched Remains",xp=15,value=11,rarity="Uncommon",color="C9774B",upTo=49},
+	{id="VoidmarkedRemains",name="Voidmarked Remains",xp=21,value=16,rarity="Rare",color="7A5AA8",upTo=64},
+	{id="StormboundRemains",name="Stormbound Remains",xp=28,value=22,rarity="Rare",color="8FA3C8",upTo=84},
+	{id="WyrmRemains",name="Wyrm Remains",xp=34,value=30,rarity="Epic",color="5EC8D8"},
+	{id="CrownRemains",name="Crown Remains",xp=40,value=40,rarity="Epic",color="F2D27A"},
+}
+PR.RemainsById = {}
+for i, r in ipairs(PR.Remains) do
+	r.tier = i
+	PR.RemainsById[r.id] = r
+	item(r.id,{name=r.name,kind="material",category="remains",rarity=r.rarity,color=r.color,value=r.value,prayerXp=r.xp,remainsTier=i,
+		description="Offer at an altar for "..r.xp.." Prayer XP (more at greater altars)."})
+end
+-- Remains tier for a monster level (sea creatures 40+ leave Wyrm Remains,
+-- the Shattered Crown leaves Crown Remains).
+function PR.remainsFor(level, region, sea)
+	if region == "ShatteredCrown" then return "CrownRemains" end
+	level = tonumber(level) or 1
+	if sea and level >= 40 then return "WyrmRemains" end
+	for _, r in ipairs(PR.Remains) do if r.upTo and level <= r.upTo then return r.id end end
+	return "WyrmRemains"
+end
+local function addDrop(list, id, chance, min, max) table.insert(list, {item=id,chance=chance,min=min,max=max or min}) end
+for _, def in pairs(Data.Monsters) do
+	if type(def.drops) == "table" then addDrop(def.drops, PR.remainsFor(def.level, def.region, false), 1, 1) end
+end
+for _, def in pairs(Data.SeaCreatures) do
+	if type(def.drops) == "table" then addDrop(def.drops, PR.remainsFor(def.level, nil, true), 1, 1) end
+end
+local slayerRemains = {{"WeatheredRemains",3,5},{"EmberscorchedRemains",4,6},{"StormboundRemains",5,8},{"WyrmRemains",6,10}}
+for _, line in pairs(Data.Slayers) do
+	for t, tier in ipairs(line.tiers) do
+		local r = slayerRemains[t]
+		if r then addDrop(tier.drops, r[1], 1, r[2], r[3]) end
+	end
+end
+
+-- Altars: XP multiplier and where they stand (region gates apply).
+PR.Altars = {
+	{id="QuayChapel",name="Chapel of the Skyward Choir",region="Hub",mult=1,color="E8D9A0",text="The Quay's open-air chapel. Restores prayer points."},
+	{id="MossrootShrine",name="Mossroot Shrine",region="Windpine",mult=1.25,color="9BD18B",text="A shrine grown from a living pine. Offerings are worth 25% more."},
+	{id="ThunderChoirAltar",name="Altar of the Thunder Choir",region="Tempest",mult=1.5,color="C6DCFF",text="Storm-struck stone on the Spire. Offerings are worth 50% more."},
+	{id="CrownReliquary",name="Crown Reliquary",region="ShatteredCrown",mult=1.75,color="F2D27A",text="A reliquary in the broken crown. Offerings are worth 75% more."},
+}
+PR.AltarById = {}
+for i, a in ipairs(PR.Altars) do a.index = i; PR.AltarById[a.id] = a end
+-- Prayer XP for offering `count` remains at an altar.
+function PR.offerXp(remainsId, altarId, count)
+	local r, a = PR.RemainsById[remainsId], PR.AltarById[altarId]
+	if not r or not a then return 0 end
+	return math.floor(r.xp * a.mult * math.max(0, math.floor(tonumber(count) or 1)) + 0.5)
+end
+-- Best (highest tier) remains held, or nil.
+function PR.bestRemains(items)
+	if type(items) ~= "table" then return nil end
+	for i = #PR.Remains, 1, -1 do
+		local id = PR.Remains[i].id
+		if (tonumber(items[id]) or 0) > 0 then return id end
+	end
+	return nil
+end
+
+-- Draughts (Alchemy): restore prayer points.
+item("DevotionDraught",{name="Devotion Draught",kind="consumable",category="potion",rarity="Rare",color="E8D9A0",value=45,requires={Alchemy=38},
+	prayerRestore={flat=8,percent=0.25},description="Restore 8 + 25% of your prayer points."})
+recipe("DevotionDraught",{skill="Alchemy",level=38,xp=110,costs={HeavyRemains=2,Moonbloom=1},repeatable=true,station="Cauldron",category="Potions"})
+item("ChoirTonic",{name="Choir Tonic",kind="consumable",category="potion",rarity="Epic",color="F2E6B8",value=120,requires={Alchemy=63},
+	prayerRestore={flat=12,percent=0.35},description="Restore 12 + 35% of your prayer points."})
+recipe("ChoirTonic",{skill="Alchemy",level=63,xp=240,costs={StormboundRemains=2,Starfruit=1,GlintEssence=1},repeatable=true,station="Cauldron",category="Potions"})
+-- Devotion accessories (Workbench, trained with Prayer).
+item("ChoirbellCharm",{name="Choirbell Charm",kind="accessory",rarity="Rare",color=Data.Rarity.Rare.color,stats={devotion=8,defense=5},value=40*Data.Rarity.Rare.rank^2,description="Accessory. Magical Power "..Data.Rarity.Rare.power.."."})
+recipe("ChoirbellCharm",{skill="Prayer",level=30,xp=300,costs={EmberscorchedRemains=20,Mistpearl=2},station="Workbench",category="Accessories"})
+item("SeraphCenser",{name="Seraph's Censer",kind="accessory",rarity="Epic",color=Data.Rarity.Epic.color,stats={devotion=15,health=30},value=40*Data.Rarity.Epic.rank^2,description="Accessory. Magical Power "..Data.Rarity.Epic.power.."."})
+recipe("SeraphCenser",{skill="Prayer",level=65,xp=900,costs={StormboundRemains=40,Voidgarnet=2},collectionTier={StormboundRemains=1},station="Workbench",category="Accessories"})
+
+------------------------------------------------------------------------------
+-- Thieving
+------------------------------------------------------------------------------
+TH.LEVEL_STEP = 0.008   -- success chance per Thieving level above the target
+TH.MAX_CHANCE = 0.95
+TH.DEFT_EFFECT = 0.002  -- per Deftness point (stat cap 50 -> +10%)
+TH.ACTION = 0.36 + 0.65 -- interact hold + prompt cooldown (pacing model)
+TH.Kinds = {
+	stall={name="Stall",verb="Steal from",past="Stole from",fail="A stall guard catches you",wait="restocking"},
+	pocket={name="Mark",verb="Pickpocket",past="Picked the pocket of",fail="caught you red-handed",wait="wary"},
+	safe={name="Strongbox",verb="Crack",past="Cracked",fail="A spring trap snaps shut",wait="relocking"},
+}
+TH.KindOrder = {"stall","pocket","safe"}
+-- Gems: thieving loot (and the Choirbell / Censer accessories).
+for _, g in ipairs({
+	{id="SunstoneChip",name="Sunstone Chip",rarity="Uncommon",color="F7C85C",value=15},
+	{id="Mistpearl",name="Mistpearl",rarity="Rare",color="DCE8F2",value=45},
+	{id="Emberglass",name="Emberglass Gem",rarity="Rare",color="E8643A",value=90},
+	{id="Voidgarnet",name="Voidgarnet",rarity="Epic",color="7A2E6B",value=220},
+	{id="StarheartGem",name="Starheart Gem",rarity="Legendary",color="FFF3B0",value=900},
+}) do
+	item(g.id,{name=g.name,kind="material",category="gem",rarity=g.rarity,color=g.color,value=g.value,description="A cut gem. Sell to a merchant, or set into charms."})
+end
+-- Gloves: owned (never consumed); the best pair adds its bonus to every attempt.
+item("LightfingerGloves",{name="Lightfinger Gloves",kind="material",category="gloves",rarity="Uncommon",color="A08A6A",value=60,thievingBonus=0.05,description="Thieving gloves: +5% success chance. Never used up."})
+item("SilkshadowGloves",{name="Silkshadow Gloves",kind="material",category="gloves",rarity="Rare",color="5A5470",value=400,thievingBonus=0.1,description="Thieving gloves: +10% success chance. Never used up."})
+item("NightveilGloves",{name="Nightveil Gloves",kind="material",category="gloves",rarity="Epic",color="2E2A44",value=1500,thievingBonus=0.15,description="Thieving gloves: +15% success chance. Never used up."})
+TH.GloveOrder = {"NightveilGloves","SilkshadowGloves","LightfingerGloves"}
+recipe("LightfingerGloves",{skill="Thieving",level=1,xp=20,costs={BeastHide=8},station="Workbench",category="Thieving"})
+recipe("SilkshadowGloves",{skill="Thieving",level=35,xp=220,costs={SpiderSilk=24,Mistpearl=2},station="Workbench",category="Thieving"})
+recipe("NightveilGloves",{skill="Thieving",level=70,xp=900,costs={ShadowPelt=10,Voidgarnet=3,VoidEssence=10},collectionTier={Voidgarnet=1},station="Workbench",category="Thieving"})
+function TH.gloves(items)
+	if type(items) == "table" then
+		for _, id in ipairs(TH.GloveOrder) do
+			if (tonumber(items[id]) or 0) > 0 then return id, Data.Items[id].thievingBonus end
+		end
+	end
+	return nil, 0
+end
+-- Targets. base = success chance at the target's own level; respawn = per
+-- player cooldown after a success; stun = seconds caught; damage = health lost
+-- when caught (never lethal); coins = {min, max}; drops roll like monster drops.
+local function d(id, chance, min, max) return {item=id,chance=chance,min=min,max=max or min} end
+TH.Targets = {
+	{id="Farmhand",name="Meadow Farmhand",kind="pocket",level=1,region="Meadow",xp=25,base=0.6,respawn=3,stun=4,damage=5,coins={2,4},color="B5895A",
+		drops={d("SunwheatSeeds",0.3,1),d("Herb",0.2,1)}},
+	{id="SweetbunStall",name="Sweetbun Stall",kind="stall",level=5,region="Hub",xp=35,base=0.62,respawn=5,stun=5,damage=8,coins={3,7},color="E9C46A",
+		drops={d("Sunwheat",0.2,1)}},
+	{id="Dockhand",name="Quay Dockhand",kind="pocket",level=15,region="Hub",xp=40,base=0.58,respawn=3.2,stun=4,damage=12,coins={3,6},color="3F7CAC",
+		drops={d("Fish",0.3,1),d("SunstoneChip",0.005,1)}},
+	{id="HerbalistStall",name="Herbalist's Stall",kind="stall",level=20,region="Meadow",xp=58,base=0.6,respawn=6,stun=5,damage=20,coins={5,10},color="6BBF59",
+		drops={d("Herb",0.6,1,3),d("DuskberrySeeds",0.3,1),d("GlowcapSpores",0.2,1),d("MoonbloomBulb",0.05,1),d("Moonbloom",0.05,1)}},
+	{id="Watchman",name="Brassfall Watchman",kind="pocket",level=30,region="Quarry",xp=64,base=0.56,respawn=3.5,stun=4.5,damage=30,coins={6,10},color="D4A84B",
+		drops={d("ArcaneDust",0.15,1),d("SunstoneChip",0.02,1)}},
+	{id="SilkStall",name="Silkweaver's Stall",kind="stall",level=38,region="Windpine",xp=100,base=0.58,respawn=8,stun=5,damage=50,coins={8,14},color="C9B7E0",
+		drops={d("SpiderSilk",0.6,1,2),d("BeastHide",0.4,1),d("Mistpearl",0.01,1)}},
+	{id="Merchant",name="Tidewater Merchant",kind="pocket",level=45,region="Tidewater",xp=83,base=0.55,respawn=3.8,stun=5,damage=45,coins={9,15},color="5EC8D8",
+		drops={d("SunstoneChip",0.08,1),d("Mistpearl",0.02,1)}},
+	{id="Strongbox",name="Ironbound Strongbox",kind="safe",level=50,region="Skyreach",xp=447,base=0.5,respawn=40,stun=6,damage=60,coins={100,180},color="8C8C96",
+		drops={d("SunstoneChip",0.5,1,2),d("Mistpearl",0.3,1),d("Emberglass",0.1,1),d("StarFragment",0.02,1)}},
+	{id="GemStall",name="Gemcutter's Stall",kind="stall",level=55,region="Quarry",xp=142,base=0.55,respawn=10,stun=5,damage=90,coins={10,20},color="E8643A",
+		drops={d("SunstoneChip",0.6,1),d("Mistpearl",0.3,1),d("Emberglass",0.05,1)}},
+	{id="Scholar",name="Gloomhollow Glyph Scholar",kind="pocket",level=62,region="Gloomhollow",xp=116,base=0.54,respawn=4.8,stun=5,damage=80,coins={12,20},color="A58CE0",
+		drops={d("ArcaneDust",0.4,1,2),d("GaleGlyph",0.15,3,6),d("TideGlyph",0.15,3,6)}},
+	{id="VaultChest",name="Gilded Vault Chest",kind="safe",level=70,region="Gloomhollow",xp=964,base=0.48,respawn=75,stun=6,damage=140,coins={220,380},color="C9A24D",
+		drops={d("Mistpearl",0.5,1,2),d("Emberglass",0.35,1),d("Voidgarnet",0.15,1),d("StarFragment",0.05,1),d("NightveilGloves",0.004,1)}},
+	{id="Noble",name="Skyborn Noble",kind="pocket",level=78,region="Hub",xp=153,base=0.52,respawn=5.5,stun=5.5,damage=140,coins={18,30},color="FFD27A",
+		drops={d("Emberglass",0.03,1),d("Mistpearl",0.05,1),d("StarheartGem",0.0005,1)}},
+	{id="CuriosStall",name="Tidewater Curio Stall",kind="stall",level=82,region="Tidewater",xp=273,base=0.52,respawn=14,stun=6,damage=160,coins={30,50},color="06D6A0",
+		drops={d("VoidEssence",0.4,1),d("Emberglass",0.2,1),d("Voidgarnet",0.04,1)}},
+	{id="SovereignCoffer",name="Sovereign Coffer",kind="safe",level=88,region="ShatteredCrown",xp=1947,base=0.45,respawn=120,stun=7,damage=260,coins={450,750},color="F2D27A",
+		drops={d("Voidgarnet",0.4,1,2),d("StarFragment",0.2,1),d("StarheartGem",0.02,1),d("NightveilGloves",0.01,1)}},
+}
+TH.TargetById = {}
+for i, t in ipairs(TH.Targets) do t.index = i; TH.TargetById[t.id] = t end
+-- Success chance in 0..MAX_CHANCE (0 below the target's level).
+function TH.chance(target, level, gloveBonus, deftness)
+	if type(target) ~= "table" then return 0 end
+	level = tonumber(level) or 1
+	if level < target.level then return 0 end
+	local dex = math.clamp(tonumber(deftness) or 0, 0, Data.Stats.deftness.cap)
+	local c = target.base + (level - target.level) * TH.LEVEL_STEP + math.max(0, tonumber(gloveBonus) or 0) + dex * TH.DEFT_EFFECT
+	return math.clamp(c, 0, TH.MAX_CHANCE)
+end
+-- Coins for one success (roll: function returning [0,1)).
+function TH.coins(target, roll)
+	local lo, hi = target.coins[1], target.coins[2]
+	return lo + math.floor(roll() * (hi - lo + 1))
+end
+-- Expected value (coins + item sell values) of one success.
+function TH.expected(target)
+	local v = (target.coins[1] + target.coins[2]) / 2
+	for _, drop in ipairs(target.drops) do
+		local def = Data.Items[drop.item]
+		v += drop.chance * (drop.min + drop.max) / 2 * (def and def.value or 0)
+	end
+	return v
+end
+-- Pacing model: seconds per attempt (success waits the respawn, failure the stun).
+function TH.cycle(target, chance)
+	return chance * math.max(target.respawn, TH.ACTION) + (1 - chance) * (TH.ACTION + target.stun)
+end
+function TH.xpPerHour(target, chance)
+	if chance <= 0 then return 0 end
+	return 3600 * chance * target.xp / TH.cycle(target, chance)
+end
+function TH.coinsPerHour(target, chance)
+	if chance <= 0 then return 0 end
+	return 3600 * chance * TH.expected(target) / TH.cycle(target, chance)
+end
+
+-- Collections: remains and gems (drop-like, reach tiers sooner).
+for id, scale in pairs({BrittleRemains=0.5,WeatheredRemains=0.5,HeavyRemains=0.5,EmberscorchedRemains=0.4,VoidmarkedRemains=0.3,StormboundRemains=0.3,WyrmRemains=0.2,CrownRemains=0.2,
+	SunstoneChip=0.3,Mistpearl=0.2,Emberglass=0.1,Voidgarnet=0.05,StarheartGem=0.01}) do
+	table.insert(Data.CollectionItems, id)
+	Data.CollectionScale[id] = scale
+end
+
+------------------------------------------------------------------------------
+-- Quest checks: offerings {count, remains?} and thefts {target, count}.
+------------------------------------------------------------------------------
+local describe = Data.describeCheck
+function Data.describeCheck(o)
+	local kind = type(o) == "table" and o.kind
+	if kind == "offerings" then
+		local r = o.remains and PR.RemainsById[o.remains]
+		return "Offer "..o.count.." "..(if r then r.name else "remains").." at an altar"
+	elseif kind == "thefts" then
+		local t = TH.TargetById[o.target]
+		local verb = t and TH.Kinds[t.kind].verb or "Rob"
+		return verb.." the "..(t and t.name or tostring(o.target)).." "..o.count.." "..(if o.count == 1 then "time" else "times")
+	end
+	return describe(o)
+end
+local function offerings(count, remains) return {kind="offerings",count=count,remains=remains} end
+local function thefts(target, count) return {kind="thefts",target=target,count=count} end
+PR.offeringsCheck, TH.theftsCheck = offerings, thefts
+for _, q in ipairs({
+	{id="EmbersOfDevotion",title="Embers of Devotion",line="side",region="Hub",
+		story="Chorister Amsel keeps the chapel lamps on the Quay lit with the remains of slain beasts. Bring offerings to the altar and learn the first wards.",
+		requires={{kind="contracts",count=2}},
+		objectives={offerings(25),{kind="level",skill="Prayer",level=10}},
+		rewards={coins=500,points=1,items={DevotionDraught=2},xp={Prayer=600}}},
+	{id="NimbleFingers",title="Nimble Fingers",line="side",region="Meadow",
+		story="A cheerful rogue named Pip bets you cannot lift a purse in Meadow Reach and a bun from the Quay before the bells. Prove her wrong.",
+		requires={{kind="contracts",count=2}},
+		objectives={thefts("Farmhand",15),thefts("SweetbunStall",10),{kind="level",skill="Thieving",level=10}},
+		rewards={coins=700,points=1,items={LightfingerGloves=1},xp={Thieving=800}}},
+	{id="ChoirOfTheStorm",title="Choir of the Storm",line="side",region="Tempest",
+		story="The Thunder Choir sings only to those who have offered storm-bound remains on its altar. Earn a verse of their hymn.",
+		requires={{kind="quest",quest="EmbersOfDevotion"},{kind="level",skill="Prayer",level=50}},
+		objectives={offerings(50,"StormboundRemains"),{kind="level",skill="Prayer",level=60}},
+		rewards={coins=12000,points=2,perk={devotion=5},lamp={xp=5000,skills={"Prayer"}}}},
+	{id="SkybornVault",title="The Skyborn Vault",line="side",region="Gloomhollow",
+		story="Pip has heard of a vault chest in Gloomhollow guarded by a scholar who never sleeps. Lift his key and crack the chest, ten times over.",
+		requires={{kind="quest",quest="NimbleFingers"},{kind="level",skill="Thieving",level=62}},
+		objectives={thefts("Scholar",30),thefts("VaultChest",10)},
+		rewards={coins=15000,points=2,perk={deftness=5},items={SilkshadowGloves=1}}},
+}) do
+	table.insert(Data.Quests, q)
+	q.index = #Data.Quests
+	Data.QuestById[q.id] = q
+end
+-- Diary tasks in existing regional diaries (tiers stay within 3-5 tasks).
+for _, add in ipairs({
+	{"Meadow","Hard",thefts("HerbalistStall",40)},
+	{"Quarry","Medium",thefts("Watchman",30)},
+	{"Skyreach","Hard",thefts("Strongbox",20)},
+	{"Windpine","Hard",offerings(150)},
+	{"Tidewater","Medium",thefts("Merchant",50)},
+	{"Gloomhollow","Elite",thefts("VaultChest",50)},
+	{"Tempest","Hard",{kind="level",skill="Prayer",level=70}},
+	{"ShatteredCrown","Elite",thefts("SovereignCoffer",10)},
+}) do
+	local diary = Data.DiaryByRegion[add[1]]
+	if diary and diary.tiers[add[2]] then table.insert(diary.tiers[add[2]].tasks, add[3]) end
+end
+end
+-- End Prayer & Thieving section.
+
 
 return Data

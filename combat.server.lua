@@ -952,7 +952,7 @@ local function createLogic(env)
 		local raw, crit = Progression.meleeDamage(if opening then critStats(stats) else stats, env.rng)
 		local executed
 		raw, executed = L.executeBonus(r, raw, perks)
-		local dealt, tag = L.mitigate(r, raw, "melee")
+		local dealt, tag = L.mitigate(r, raw, "melee", player)
 		L.landHit(player, r, dealt, "melee")
 		local lifesteal = tonumber(stats.lifesteal) or 0
 		if lifesteal > 0 then env.heal(player, lifesteal) end
@@ -963,13 +963,13 @@ local function createLogic(env)
 	end
 	-- One arrow striking r: accuracy roll, opening blow, damage, execute, accrual.
 	function L.rangedHit(player, r, hit, stats, bow, arrow, level, perks)
-		hit.chance = Progression.hitChance(stats.rangedAccuracy, level, r.level, r.defense)
+		hit.chance = L.prayerAccuracy(player, Progression.hitChance(stats.rangedAccuracy, level, r.level, r.defense))
 		if env.rng() < hit.chance then
 			local opening = L.firstStrike(player, r, perks)
 			local raw, crit = Progression.rangedDamage(if opening then critStats(stats) else stats, bow, arrow, level, env.rng)
 			local executed
 			raw, executed = L.executeBonus(r, raw, perks)
-			hit.damage, hit.tag = L.mitigate(r, raw, "ranged")
+			hit.damage, hit.tag = L.mitigate(r, raw, "ranged", player)
 			hit.crit = crit == true
 			if opening then hit.firstStrike = true end
 			if executed then hit.execute = true end
@@ -1069,7 +1069,7 @@ local function createLogic(env)
 			m = {current = max, max = max, at = now}
 			mana[player] = m
 		end
-		m.current = math.min(m.max, m.current + Progression.manaRegen(m.max) * math.max(0, now - m.at))
+		m.current = math.min(m.max, m.current + Progression.manaRegen(m.max) * L.prayerMana(player) * math.max(0, now - m.at))
 		m.at = now
 		if max ~= m.max then m.max = max; m.current = math.min(m.current, max) end
 		return m
@@ -1179,7 +1179,7 @@ local function createLogic(env)
 			manaCost = manaCost, record = r, from = pos, color = spell.color}
 		if spell.kind == "damage" then
 			local raw = Progression.spellDamage(info.stats, spell, weapon, loadout.levels and loadout.levels.Magic or 1)
-			result.damage, result.tag = L.mitigate(r, raw, "magic")
+			result.damage, result.tag = L.mitigate(r, raw, "magic", player)
 			result.crit = false
 			L.landHit(player, r, result.damage, "magic", spell.id)
 			return finish(result, r)
@@ -1259,7 +1259,7 @@ local function createLogic(env)
 		r.nextHit = env.now() + r.attackCooldown
 		lastHurt[player] = env.now()
 		r.lungeUntil = env.now() + 0.25
-		env.bridge("damage", player, {amount = r.damage})
+		env.bridge("damage", player, {amount = r.damage, style = r.attackStyle}) -- Prayer: protection reads the style
 	end
 	-- Returns an action: {kind = sleep|idle|wander|chase|hold|strike|leash, goal?, speed?, face?, stop?, healed?}
 	function L.think(r)
@@ -1847,7 +1847,7 @@ local function createLogic(env)
 						if E.struck(tg.attack, tg.center, pos) then
 							local amount = math.floor(r.damage * tg.attack.mult)
 							lastHurt[player] = now
-							env.bridge("damage", player, {amount = amount})
+							env.bridge("damage", player, {amount = amount, style = r.attackStyle, worldBoss = true}) -- Prayer: world-boss protection
 							table.insert(hits, {player = player, amount = amount})
 						end
 					end
@@ -1985,6 +1985,67 @@ local function createLogic(env)
 		end
 	end
 	-- End World Boss section.
+
+	------------------------------------------------------------------------
+	-- Prayer section (Prayer & Thieving team). Bridge "stats" carries
+	-- info.prayer = {protect, offence = {melee, ranged, magic} (fractions),
+	-- sap (fraction of base defence per landed hit), mana (regen multiplier),
+	-- defence %} or nil. Protection and wards are applied by the Adventure
+	-- script on bridge "damage" (payload.style = r.attackStyle, worldBoss).
+	--   offence: raw damage x (1 + offence[style]) before the triangle/defence;
+	--            ranged accuracy: hit chance x (1 + offence.ranged), within
+	--            the style's hit ceiling.
+	--   sap:     every landed hit (> 0) lowers r.defense by ceil(base x sap),
+	--            never below base x (1 - Data.Prayer.SAP_MAX) (base = r.baseDefense,
+	--            the defence before the first sap); a hit on a monster at full
+	--            health (fresh or leash-healed) starts from base again.
+	--   mana:    mana regeneration multiplier (Hearthsong).
+	-- Uses only the cached stats snapshot (C.STATS_TTL); no extra bridge calls.
+	------------------------------------------------------------------------
+	local function prayerOf(player)
+		local info = player ~= nil and L.peekStats(player)
+		local pr = type(info) == "table" and type(info.prayer) == "table" and info.prayer or nil
+		return pr
+	end
+	local function fraction(v, cap)
+		v = tonumber(v)
+		if not v or v ~= v or v <= 0 then return 0 end
+		return math.min(v, cap)
+	end
+	function L.prayerOffence(player, style)
+		local pr = prayerOf(player)
+		return 1 + fraction(pr and type(pr.offence) == "table" and pr.offence[style], 1)
+	end
+	function L.prayerAccuracy(player, chance)
+		local bonus = L.prayerOffence(player, "ranged")
+		if bonus <= 1 then return chance end
+		return math.min(math.max(chance, tonumber(CS.hitCeiling) or 0.98), chance * bonus)
+	end
+	function L.prayerMana(player)
+		local pr = prayerOf(player)
+		return 1 + fraction(pr and (tonumber(pr.mana) or 1) - 1, 2)
+	end
+	local baseMitigate = L.mitigate
+	function L.mitigate(r, raw, style, player)
+		if player ~= nil then raw = raw * L.prayerOffence(player, style) end
+		return baseMitigate(r, raw, style)
+	end
+	local baseLandHit = L.landHit
+	function L.landHit(player, r, dealt, style, spellId)
+		local fresh = r.hp >= r.maxHp
+		local applied = baseLandHit(player, r, dealt, style, spellId)
+		local pr = applied > 0 and prayerOf(player)
+		local sap = pr and fraction(pr.sap, 1) or 0
+		local PR = Data.Prayer
+		if sap > 0 and PR and r.alive and r.hp > 0 then
+			r.baseDefense = r.baseDefense or r.defense or 0
+			-- A monster back at full health (fresh or leash-healed) has shaken off old saps.
+			if fresh then r.defense = r.baseDefense end
+			r.defense = PR.sapped(r.defense, r.baseDefense, sap)
+		end
+		return applied
+	end
+	-- End Prayer section.
 	return L
 end
 

@@ -1682,6 +1682,366 @@ do
 		while task.wait(HU.TICK) do Skills.sweep(os.clock()) end
 	end)
 end
+------------------------------------------------------------------------------
+-- Prayer & Thieving (Prayer & Thieving team). Rules and data: Data.Prayer,
+-- Data.Thieving (shared/GameData.lua); world prompts: world.server.lua.
+-- Verbs (item <= 64 chars):
+--   prayer "<id>"            toggle a prayer (Prayer level, points > 0); prayers
+--                            sharing a group with it switch off
+--   prayerOff                every prayer off
+--   prayerQuick "<slot>:<id>" | "<slot>:"  HUD favourite slot 1-2 (empty clears)
+--   offerRemains "<remains>" offer a batch of that remains at the altar visited in
+--                            the last PR.ALTAR_SECONDS (atlas Prayer page)
+--   consume "<draught>"      Devotion Draught / Choir Tonic restore prayer points
+--                            (claimed before the generic consume)
+-- Prompts (server-validated, IsleItem + matching prompt attribute):
+--   altarOffer  IsleItem altar id (PrayerAltar): offers PR.BATCH of the best remains
+--               held (one rite per PR.RITE_SECONDS each); holding none, it prays
+--   altarPray   IsleItem altar id (PrayerAltar): restores prayer points to max
+--   thieve      IsleItem target id (ThievingTarget): stall, mark or strongbox
+-- Drain: every PR.TICK s each profile with active prayers drains (PR.drain, cut
+-- by Devotion), Mending Hymn heals, Amber Vigil pushes buff expiries back; at 0
+-- points every prayer switches off (snapshot notice). Active prayers are cleared
+-- on load; points persist (p.prayer.points).
+-- Bridge: "stats" adds prayer = Prayer.combat(p) = {protect, offence={style=fraction},
+-- sap, mana (regen multiplier), defence %} | nil; "damage" applies protection
+-- (payload.style, payload.worldBoss) before defence and wards (defence x (1+%)).
+-- Thieving: success pays coins + loot + XP and starts that target's per-player
+-- cooldown (respawn); failure stuns (no thieving, WalkSpeed 0) for target.stun
+-- seconds and deals target.damage (never lethal).
+-- Player attributes: PrayerLevel, PrayerPoints (rounded up), PrayerMax, PrayerDrain
+-- (points/min), PrayerActive / PrayerQuick ("Id,Id"), PrayerAltar + PrayerAltarUntil
+-- (os.time), ThievingStunUntil (os.time). Snapshot keys: prayer, thieving.
+-- All tables strong and player-keyed; Prayer.forget clears them.
+------------------------------------------------------------------------------
+local Prayer={verbs={prayer=true,prayerOff=true,prayerQuick=true,offerRemains=true,altarOffer=true,altarPray=true,thieve=true},
+	riteUntil={},altarSeen={},stunUntil={},stunSeq={},cooldowns={}}
+do
+	local PR,TH=Data.Prayer,Data.Thieving
+	local function whole(v,limit)
+		local n=tonumber(v)
+		if not n or n~=n or n<=0 then return nil end
+		return math.floor(math.min(n,limit or 1e9))
+	end
+	local function prayerLevel(p) return level(p.xp.Prayer) end
+	local function nameOf(id) return Data.Items[id] and Data.Items[id].name or tostring(id) end
+	local function lootText(drops)
+		local names={}
+		for id,n in pairs(drops) do table.insert(names,"+"..n.." "..nameOf(id)) end
+		table.sort(names)
+		return if #names>0 then ", "..table.concat(names,", ") else ""
+	end
+	function Prayer.max(p) return PR.maxPoints(prayerLevel(p)) end
+	-- Older saves gain empty records; tampered entries are dropped or clamped.
+	function Prayer.migrate(p)
+		local r=type(p.prayer)=="table" and p.prayer or {}
+		local maxPoints=Prayer.max(p)
+		local points=tonumber(r.points)
+		if not points or points~=points then points=maxPoints end
+		local quick={}
+		for i=1,PR.QUICK_SLOTS do
+			local id=type(r.quick)=="table" and r.quick[i]
+			quick[i]=if type(id)=="string" and PR.PrayerById[id] then id else ""
+		end
+		local offered={}
+		if type(r.offered)=="table" then
+			for id,n in pairs(r.offered) do if PR.RemainsById[id] then offered[id]=whole(n) end end
+		end
+		p.prayer={points=math.clamp(points,0,maxPoints),quick=quick,offered=offered,active={},carry=0}
+		local thefts={}
+		if type(p.thieving)=="table" and type(p.thieving.thefts)=="table" then
+			for id,n in pairs(p.thieving.thefts) do if TH.TargetById[id] then thefts[id]=whole(n) end end
+		end
+		p.thieving={thefts=thefts}
+	end
+	-- Quest and diary checks: offerings {count, remains?}, thefts {target, count}.
+	local measure=Journal.measure
+	function Journal.measure(p,o)
+		if type(o)=="table" and o.kind=="offerings" then
+			local offered=p.prayer and p.prayer.offered or {}
+			if o.remains then return offered[o.remains] or 0,o.count end
+			local total=0
+			for _,n in pairs(offered) do total+=n end
+			return total,o.count
+		elseif type(o)=="table" and o.kind=="thefts" then
+			return (p.thieving and p.thieving.thefts[o.target]) or 0,o.count
+		end
+		return measure(p,o)
+	end
+	-- Favourites for the HUD: configured ids, else the best unlocked ward and the
+	-- best unlocked offence prayer for the wielded style.
+	function Prayer.quick(p)
+		local lvl=prayerLevel(p)
+		local style=Progression.weaponStyle(Data.Items[p.equipment and p.equipment.weapon or ""])
+		local defaults={"",""}
+		for _,def in ipairs(PR.Prayers) do
+			if def.level<=lvl then
+				if def.defence and not def.offence then defaults[1]=def.id end
+				if def.offence and def.offence[style] and not def.defence then defaults[2]=def.id end
+			end
+		end
+		local out={}
+		for i=1,PR.QUICK_SLOTS do
+			local id=p.prayer.quick[i]
+			out[i]=if type(id)=="string" and id~="" then id else defaults[i]
+		end
+		return out
+	end
+	local function drainPerMinute(p,stats)
+		return PR.drainPerSecond(p.prayer.active,(stats or Progression.computeStats(p,os.time())).devotion)*60
+	end
+	function Prayer.publish(player,p,stats)
+		local r=p.prayer
+		player:SetAttribute("PrayerLevel",prayerLevel(p))
+		player:SetAttribute("PrayerMax",Prayer.max(p))
+		player:SetAttribute("PrayerPoints",math.ceil(r.points-1e-6))
+		player:SetAttribute("PrayerActive",table.concat(PR.list(r.active),","))
+		player:SetAttribute("PrayerQuick",table.concat(Prayer.quick(p),","))
+		player:SetAttribute("PrayerDrain",math.floor(drainPerMinute(p,stats)*10+.5)/10)
+	end
+	function Prayer.toggle(player,p,id)
+		local r=p.prayer
+		local verdict,active,dropped=PR.toggle(r.active,id,prayerLevel(p),r.points)
+		local def=PR.PrayerById[id]
+		if verdict=="unknown" then return "Choose a prayer from your prayer book." end
+		if verdict=="level" then return def.name.." requires Prayer "..def.level.."." end
+		if verdict=="points" then return "You have no prayer points left. Pray at an altar or drink a Devotion Draught." end
+		r.active=active
+		Prayer.publish(player,p)
+		if verdict=="off" then return def.name.." off." end
+		p.started=true
+		local names={}
+		for _,k in ipairs(dropped) do table.insert(names,PR.PrayerById[k].name) end
+		return def.name.." on • draining "..(player:GetAttribute("PrayerDrain") or 0).." points/min"..(if #names>0 then " (replaces "..table.concat(names,", ")..")" else "")
+	end
+	function Prayer.quickSet(player,p,item)
+		local slot,id
+		if type(item)=="string" then slot,id=string.match(item,"^(%d):(%w*)$") end
+		slot=tonumber(slot)
+		if not slot or slot<1 or slot>PR.QUICK_SLOTS or (id~="" and not PR.PrayerById[id]) then return "Choose a quick prayer slot." end
+		p.prayer.quick[slot]=id
+		Prayer.publish(player,p)
+		return if id=="" then "Quick prayer "..slot.." reset." else PR.PrayerById[id].name.." set as quick prayer "..slot.."."
+	end
+	-- One drain step of `seconds` for a live profile.
+	function Prayer.step(player,p,seconds)
+		local r=p.prayer
+		if not r or not next(r.active) then return end
+		local stats=Progression.computeStats(p,os.time())
+		local effects=PR.effects(r.active)
+		local left,empty=PR.drain(r.points,r.active,stats.devotion,seconds)
+		r.points=left
+		local humanoid=player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+		if effects.heal>0 and humanoid and humanoid.Health>0 then
+			humanoid.Health=math.min(humanoid.MaxHealth,humanoid.Health+humanoid.MaxHealth*effects.heal/100)
+		end
+		if effects.preserve>0 then
+			r.carry=(r.carry or 0)+PR.preserveExtend(seconds,effects.preserve)
+			local add=math.floor(r.carry)
+			if add>=1 then
+				r.carry-=add
+				local now=os.time()
+				for _,buff in pairs(p.buffs or {}) do
+					if type(buff)=="table" and buff.expires and buff.expires>now then buff.expires+=add end
+				end
+			end
+		end
+		if empty then
+			r.active={}
+			Prayer.publish(player,p,stats)
+			if Prayer.push then Prayer.push(player,"You have run out of prayer points. Your prayers fade.") end
+			return
+		end
+		Prayer.publish(player,p,stats)
+	end
+	function Prayer.isRestore(item)
+		local def=validId(item) and Data.Items[item]
+		return def~=nil and def~=false and def.prayerRestore~=nil
+	end
+	function Prayer.drink(player,p,item)
+		local def=Data.Items[item]
+		if (p.items[item] or 0)<1 then return "You have no "..def.name.."." end
+		local r=p.prayer
+		local maxPoints=Prayer.max(p)
+		if r.points>=maxPoints then return "Your prayer points are already full." end
+		spend(p,{[item]=1})
+		local before=r.points
+		r.points=PR.restore(r.points,maxPoints,def)
+		Prayer.publish(player,p)
+		return def.name.." restored "..math.floor(r.points-before+.5).." prayer points."
+	end
+	-- Altars ------------------------------------------------------------------
+	local function altarAt(item,prompt)
+		local altar=validId(item) and PR.AltarById[item]
+		if not altar or prompt:GetAttribute("PrayerAltar")~=item then return nil end
+		return altar
+	end
+	local function visit(player,altar)
+		local untilAt=os.time()+PR.ALTAR_SECONDS
+		Prayer.altarSeen[player]={id=altar.id,untilAt=untilAt}
+		player:SetAttribute("PrayerAltar",altar.id)
+		player:SetAttribute("PrayerAltarUntil",untilAt)
+	end
+	function Prayer.pray(player,p,altar)
+		local r=p.prayer
+		local maxPoints=Prayer.max(p)
+		if r.points>=maxPoints then return "You pray at the "..altar.name..". Your prayer points are full." end
+		r.points=maxPoints
+		Prayer.publish(player,p)
+		p.started=true
+		return "You pray at the "..altar.name..". Prayer points restored ("..maxPoints..")."
+	end
+	function Prayer.offer(player,p,altar,remainsId)
+		local remains=PR.RemainsById[remainsId]
+		if not remains then return "Offer remains at an altar." end
+		local now=os.clock()
+		local busy=Prayer.riteUntil[player]
+		if busy and now<busy then return "The rite is still underway ("..math.ceil(busy-now).."s)." end
+		local have=p.items[remainsId] or 0
+		if have<1 then return "You have no "..remains.name.."." end
+		local n=math.min(have,PR.BATCH)
+		local xp=PR.offerXp(remainsId,altar.id,n)
+		spend(p,{[remainsId]=n})
+		grantXp(p,"Prayer",xp)
+		p.prayer.offered[remainsId]=(p.prayer.offered[remainsId] or 0)+n
+		Prayer.riteUntil[player]=now+n*PR.RITE_SECONDS
+		p.started=true
+		Prayer.publish(player,p)
+		return "Offered "..n.." "..remains.name.." at the "..altar.name.." • +"..xp.." Prayer XP"
+	end
+	-- Thieving ----------------------------------------------------------------
+	function Prayer.stunned(player) return os.clock()<(Prayer.stunUntil[player] or 0) end
+	function Prayer.thieve(player,p,item,prompt,humanoid)
+		if not prompt then return "Thieve at market stalls, marks and strongboxes around the isles." end
+		local target=validId(item) and TH.TargetById[item]
+		if not target or prompt:GetAttribute("ThievingTarget")~=item then return "There is nothing to take here." end
+		local kind=TH.Kinds[target.kind]
+		local lvl=level(p.xp.Thieving)
+		if lvl<target.level then return target.name.." requires Thieving "..target.level.."." end
+		if not regionAllowed(p,target.region) then return regionDenied(target.region) end
+		local now=os.clock()
+		if Prayer.stunned(player) then return "You are stunned ("..math.ceil(Prayer.stunUntil[player]-now).."s)." end
+		local cds=Prayer.cooldowns[player]
+		if not cds then cds={}; Prayer.cooldowns[player]=cds end
+		if cds[target.id] and now<cds[target.id] then return "The "..target.name.." is "..kind.wait.." ("..math.ceil(cds[target.id]-now).."s)." end
+		local stats=Progression.computeStats(p,os.time())
+		local _,bonus=TH.gloves(p.items)
+		local chance=TH.chance(target,lvl,bonus,stats.deftness)
+		p.started=true
+		if roll()<chance then
+			local coins=TH.coins(target,roll)
+			local drops=Progression.rollDrops(target.drops,stats.magicFind,roll,stats.petLuck)
+			p.coins+=coins
+			for id,n in pairs(drops) do collect(p,id,n) end
+			grantXp(p,"Thieving",target.xp)
+			p.thieving.thefts[target.id]=(p.thieving.thefts[target.id] or 0)+1
+			cds[target.id]=now+target.respawn
+			return kind.past.." the "..target.name.." • +"..coins.." coins, +"..target.xp.." Thieving XP"..lootText(drops)
+		end
+		-- Caught: stunned in place (applyStats keeps WalkSpeed 0) and hurt, never killed.
+		local seq=(Prayer.stunSeq[player] or 0)+1
+		Prayer.stunSeq[player]=seq
+		Prayer.stunUntil[player]=now+target.stun
+		player:SetAttribute("ThievingStunUntil",os.time()+math.ceil(target.stun))
+		local damage=math.min(target.damage,math.max(0,math.floor(humanoid.Health-1)))
+		if damage>0 then humanoid:TakeDamage(damage) end
+		humanoid.WalkSpeed=0
+		task.delay(target.stun,function()
+			if Prayer.stunSeq[player]~=seq then return end
+			Prayer.stunUntil[player]=nil
+			local live=profiles[player]
+			local current=player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+			if live and current==humanoid then humanoid.WalkSpeed=Progression.walkSpeed(Progression.computeStats(live,os.time()).speed) end
+		end)
+		local who=if target.kind=="pocket" then "The "..target.name.." "..kind.fail else kind.fail
+		return who.."! Stunned for "..target.stun.."s"..(if damage>0 then ", -"..damage.." health" else "").."."
+	end
+	-- Verbs -------------------------------------------------------------------
+	function Prayer.claims(verb,item) return Prayer.verbs[verb]==true or (verb=="consume" and Prayer.isRestore(item)) end
+	function Prayer.action(player,p,verb,item,prompt,humanoid)
+		if verb=="prayer" then return Prayer.toggle(player,p,item)
+		elseif verb=="prayerOff" then
+			if not next(p.prayer.active) then return "No prayers are active." end
+			p.prayer.active={}
+			Prayer.publish(player,p)
+			return "Every prayer off."
+		elseif verb=="prayerQuick" then return Prayer.quickSet(player,p,item)
+		elseif verb=="consume" then return Prayer.drink(player,p,item)
+		elseif verb=="thieve" then return Prayer.thieve(player,p,item,prompt,humanoid)
+		elseif verb=="altarOffer" or verb=="altarPray" then
+			if not prompt then return "Visit an altar." end
+			local altar=altarAt(item,prompt)
+			if not altar then return "This altar is cold." end
+			if not regionAllowed(p,altar.region) then return regionDenied(altar.region) end
+			visit(player,altar)
+			local best=verb=="altarOffer" and PR.bestRemains(p.items)
+			if best then return Prayer.offer(player,p,altar,best) end
+			return Prayer.pray(player,p,altar)
+		elseif verb=="offerRemains" then
+			local seen=Prayer.altarSeen[player]
+			local altar=seen and os.time()<=seen.untilAt and PR.AltarById[seen.id]
+			if not altar then return "Visit an altar to make offerings." end
+			if not regionAllowed(p,altar.region) then return regionDenied(altar.region) end
+			return Prayer.offer(player,p,altar,validId(item) and item or "")
+		end
+		return "Unknown action."
+	end
+	-- Combat view (bridge "stats") and incoming damage (bridge "damage").
+	function Prayer.combat(p)
+		local r=p.prayer
+		if not r or r.points<=0 or not next(r.active) then return nil end
+		local e=PR.effects(r.active)
+		return {protect=e.protect,offence={melee=e.offence.melee/100,ranged=e.offence.ranged/100,magic=e.offence.magic/100},
+			sap=e.sap,mana=1+e.mana,defence=e.defence}
+	end
+	function Prayer.incoming(p,raw,defense,payload)
+		local r=p.prayer
+		if not r or r.points<=0 or not next(r.active) then return raw,defense end
+		local style=payload.style
+		if not Data.CombatStyles.names[style] then style=nil end
+		local amount,mult=PR.incoming(raw,style,PR.effects(r.active),payload.worldBoss==true)
+		return amount,defense*mult
+	end
+	-- Snapshot keys.
+	function Prayer.state(player,p,stats)
+		Prayer.publish(player,p,stats)
+		local r=p.prayer
+		local seen=Prayer.altarSeen[player]
+		local open=seen and os.time()<=seen.untilAt
+		local perMinute=drainPerMinute(p,stats)
+		local busy=Prayer.riteUntil[player]
+		return {points=math.floor(r.points*10+.5)/10,max=Prayer.max(p),active=PR.list(r.active),quick=Prayer.quick(p),
+			drain=math.floor(perMinute*10+.5)/10,secondsLeft=if perMinute>0 then math.floor(r.points/perMinute*60) else nil,
+			offered=r.offered,altar=if open then seen.id else nil,altarUntil=if open then seen.untilAt else 0,
+			riteIn=if busy and busy>os.clock() then math.ceil(busy-os.clock()) else 0}
+	end
+	function Prayer.thievingState(player,p,stats)
+		stats=stats or Progression.computeStats(p,os.time())
+		local lvl=level(p.xp.Thieving)
+		local gloves,bonus=TH.gloves(p.items)
+		local now=os.clock()
+		local cds=Prayer.cooldowns[player] or {}
+		local chances,cooldowns={},{}
+		for _,t in ipairs(TH.Targets) do
+			chances[t.id]=math.floor(TH.chance(t,lvl,bonus,stats.deftness)*1000+.5)/1000
+			if cds[t.id] and cds[t.id]>now then cooldowns[t.id]=math.ceil(cds[t.id]-now) end
+		end
+		local stun=Prayer.stunUntil[player]
+		return {thefts=p.thieving.thefts,gloves=gloves,gloveBonus=bonus,deftness=stats.deftness,chances=chances,cooldowns=cooldowns,
+			stunIn=if stun and stun>now then math.ceil(stun-now) else 0}
+	end
+	function Prayer.forget(player)
+		Prayer.riteUntil[player],Prayer.altarSeen[player],Prayer.stunUntil[player],Prayer.stunSeq[player],Prayer.cooldowns[player]=nil,nil,nil,nil,nil
+	end
+	task.spawn(function()
+		while task.wait(PR.TICK) do
+			for player,p in pairs(profiles) do
+				if type(p.prayer)=="table" and next(p.prayer.active) then Prayer.step(player,p,PR.TICK) end
+			end
+		end
+	end)
+end
+-- End Prayer & Thieving block.
 local function applyStats(player,p,spawned)
 	local stats=Progression.computeStats(p,os.time())
 	player:SetAttribute("SkyreachUnlocked",(p.questCompleted or 0)>=6)
@@ -1714,6 +2074,7 @@ local function applyStats(player,p,spawned)
 		end
 	end
 	local walk=Progression.walkSpeed(stats.speed)
+	if Prayer.stunned(player) then walk=0 end -- Thieving: caught and stunned
 	if humanoid and humanoid.WalkSpeed~=walk then humanoid.WalkSpeed=walk end
 	-- Legacy small-number defense (0-7) used by the Warden and the Observatory.
 	local armorDefense=if (p.items.Skyplate or 0)>0 then 2 else 0
@@ -1815,8 +2176,11 @@ local function snapshot(player,message)
 		depth=depthState(p,stats),journal=Journal.state(p),agilityHunter=Skills.state(player,p), -- Agility & Hunter page state
 		events={claims=p.eventClaims or {},vendorUntil=player:GetAttribute("EventVendorUntil") or 0,serverTime=os.time()}, -- Events hook: Calendar page state
 		dungeonClasses=Classes.state and Classes.state(p), -- Dungeon classes: Hunt > Dungeon page state
-		garden=Garden.state and Garden.state(player,p)} -- Verdant Garden page state
+		garden=Garden.state and Garden.state(player,p), -- Verdant Garden page state
+		prayer=Prayer.state(player,p,stats),thieving=Prayer.thievingState(player,p,stats)} -- Prayer & Thieving page state
 end
+-- Prayer & Thieving: drain-loop notices (prayer points ran out).
+Prayer.push=function(player,message) if player.Parent then update:FireClient(player,snapshot(player,message)) end end
 local function persist(player,release)
 	if preview[player] or not profiles[player] then return true end
 	while saving[player] do task.wait(0.1) end
@@ -1888,6 +2252,7 @@ local function migrate(profile)
 	Workers.migrate(profile) -- Workers depth: sanitise fleet, seed unique crafts
 	Journal.migrate(profile)
 	Skills.migrate(profile) -- Agility & Hunter records + milestone perks
+	Prayer.migrate(profile) -- Prayer & Thieving: points, favourites, offerings, thefts
 	Gear.migrate(profile) -- Gear depth: reforges, stars, books
 	Progression.masteryMigrate(profile) -- Skill Mastery: drop unknown/invalid nodes, reset overspent trees
 	if Garden.migrate then Garden.migrate(profile) end -- Verdant Garden: sanitise and bound p.garden
@@ -1959,6 +2324,7 @@ local function forget(player)
 		if not next(regrowth) then nodeRegrowth[prompt]=nil end
 	end
 	Skills.forget(player) -- Agility runs, Hunter traps (session-only)
+	Prayer.forget(player) -- Prayer rites/altar window, Thieving stuns and cooldowns
 	local set=userSessions[player.UserId]
 	if set then
 		set[player]=nil
@@ -3178,6 +3544,8 @@ local function perform(player,verb,item,prompt)
 	if region and not regionAllowed(p,region) then return regionDenied(region) end
 	if Skills.verbs[verb] then
 		return Skills.action(player,p,verb,item,prompt,humanoid) -- Agility & Hunter
+	elseif Prayer.claims(verb,item) then
+		return Prayer.action(player,p,verb,item,prompt,humanoid) -- Prayer & Thieving
 	elseif Mastery.verbs[verb] then
 		return Mastery.action(player,p,verb,item) -- Skill Mastery
 	elseif Garden.verbs[verb] then
@@ -3914,6 +4282,7 @@ bridge.OnInvoke=function(op,player,payload)
 		if not humanoid or humanoid.Health<=0 then return 0 end
 		local p=profiles[player]
 		local defense=if p then Progression.computeStats(p,os.time()).defense else 0
+		if p and type(p.prayer)=="table" then raw,defense=Prayer.incoming(p,raw,defense,payload) end -- Prayer: protection + wards
 		local amount=Progression.damageTaken(math.min(raw,1e9),defense)
 		humanoid:TakeDamage(amount)
 		return amount
@@ -3927,7 +4296,8 @@ bridge.OnInvoke=function(op,player,payload)
 	if op=="stats" then
 		return {stats=Progression.computeStats(p,os.time()),combatLevel=level(p.xp.Combat),ironman=p.ironman==true,
 			loadout=Progression.combatLoadout(p), -- Combat styles: weapon style, quiver, supplies, autocast
-			mastery=Progression.masteryCombat(p,os.time())} -- Skill Mastery perks combat applies (see Mastery block)
+			mastery=Progression.masteryCombat(p,os.time()), -- Skill Mastery perks combat applies (see Mastery block)
+			prayer=Prayer.combat(p)} -- Prayer: protection / offence / sap / mana (see Prayer & Thieving block)
 	elseif op=="consume" then
 		return CombatStyles.consume(p,payload)
 	elseif op=="refund" then

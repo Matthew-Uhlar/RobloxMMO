@@ -339,12 +339,14 @@ end
 local function profile()
 	return {
 		xp = { Combat = 9000, Mining = 22000, Woodcutting = 400, Fishing = 0, Farming = 60, Smithing = 4500, Cooking = 100, Alchemy = 0, Enchanting = 1200, Taming = 0, Dungeoneering = 0, Carpentry = 50,
-			Ranged = 4470, Magic = 13363, Fletching = 1200, Glyphcraft = 800, Agility = 3400, Hunter = 2600 },
+			Ranged = 4470, Magic = 13363, Fletching = 1200, Glyphcraft = 800, Agility = 3400, Hunter = 2600, Prayer = 47000, Thieving = 13400 },
 		items = {
 			Ore = 140, Timber = 40, Herb = 70, Fish = 30, Brassite = 12, Pickaxe = 1, Blade = 1, Tonic = 2, ExpeditionRation = 1,
 			BrassSword = 1, BrassHelm = 1, BrassChestplate = 1, BrassGreaves = 1, BrassBoots = 1, SunsteelSword = 1, BrassPickaxe = 1,
 			CopperHatchet = 1, ArcaneDust = 60, MeadowCharm = 1, QuarryTalisman = 1, EmberfoxPet = 1, CookedFish = 3, MightDraught = 2,
 			StormFeather = 3, BrassIngot = 9, LegacyMystery = 2,
+			-- Prayer & Thieving: remains, a draught, gloves and a gem.
+			BrittleRemains = 24, HeavyRemains = 6, DevotionDraught = 1, LightfingerGloves = 1, SunstoneChip = 2,
 			-- Combat styles: bows, staves, arrows (one too heavy for the longbow), glyphs, a tablet.
 			WindpineStaff = 1, MeadowWand = 1, MeadowLongbow = 1, CopperArrow = 60, BrassArrow = 143, SunsteelArrow = 15,
 			GaleGlyph = 40, StoneGlyph = 12, SparkGlyph = 25, SurgeGlyph = 6, VitaGlyph = 3, BindGlyph = 2, HubwardTablet = 2,
@@ -509,6 +511,11 @@ local function snapshot(options)
 			traps = { { creature = "PuffcapHopper", state = "caught", ticks = 6, spot = "PuffcapHopper#1" }, { creature = "PuffcapHopper", state = "set", ticks = 2, spot = "PuffcapHopper#3" } } },
 		vendor = { skill = if options.vendorClosed then "" else "Agility", openUntil = if options.vendorClosed then 0 else os.time() + 252 },
 	}
+	-- Prayer & Thieving (server Prayer.state / Prayer.thievingState): two prayers on, an altar visit open.
+	result.prayer = { points = 31.4, max = 50, active = { "StonehideWard", "WardOfFangs" }, quick = { "StonehideWard", "BlazingEdge" }, drain = 18, secondsLeft = 104,
+		offered = { BrittleRemains = 40 }, altar = "QuayChapel", altarUntil = os.time() + 40, riteIn = 0 }
+	result.thieving = { thefts = { Farmhand = 42, SweetbunStall = 9 }, gloves = "LightfingerGloves", gloveBonus = 0.05, deftness = 12,
+		chances = { Farmhand = 0.83, SweetbunStall = 0.79 }, cooldowns = { Farmhand = 2 }, stunIn = 0 }
 	-- Verdant Garden (server Garden.state): plot 1 ripe, 2 growing + watered + pest, 3 blighted, 4 empty, 5+ locked.
 	do
 		local plots = {}
@@ -535,6 +542,8 @@ local function snapshot(options)
 			composter = { unlocked = true, matter = "lots", upgrade = 99 }, visitors = { 3, { id = "x", npc = "Nobody" }, { id = 4, npc = "Pell", wants = { Ghost = 2, Herb = "many" } } },
 			skins = 5, nextPlot = 7 }
 		result.agilityHunter = { agility = { laps = { QuayRigging = "many", Nope = 3 }, best = 7, run = "x" }, hunter = { log = 5, traps = { 3, { creature = "Ghost" } }, maxTraps = "two" }, vendor = { skill = 4 } }
+		result.prayer = { points = "x", max = {}, active = { 5, "Ghost" }, quick = 3, offered = 7, altar = 4, altarUntil = "soon", drain = "fast", secondsLeft = {} }
+		result.thieving = { thefts = 5, chances = { Farmhand = "x" }, cooldowns = 3, gloves = 7, stunIn = "now", deftness = {} }
 		result.journal ={ questPoints = "many", quests = { 3, { id = 7 }, { id = "SurveyorsOath", requires = "x", objectives = { 5 } } },
 			diaries = { "Meadow", { region = "Meadow", claimed = "two", tiers = { 4, { tier = 9 } } } }, construction = { furniture = { Bench = 3, Portal = "Ghost" }, portalRegions = { 5, "Atlantis" }, carpentry = "x", island = { counts = 5, count = "many", value = "x", cap = {} } } }
 		result.depth = {
@@ -676,8 +685,8 @@ end
 ------------------------------------------------------------------------------
 local checks = 0
 local pages = {
-	Journal = { "Bearing", "Quests", "Diaries", "Construction", "Regions", "Crew", "Agility" }, Hero = { "Skills", "Mastery", "Gear", "Combat", "Spellbook", "Enchant", "Reforge", "Accessories", "Pets" }, Satchel = { "Items", "Collections" },
-	Workshop = { "Forge", "Hearth", "Cauldron", "Workbench", "Workers", "Home", "Garden" }, Hunt = { "Slayer", "Bestiary", "Hunter" }, Ledger = { "Bank", "Market", "Orders", "Auctions", "Merchant", "Vendors" },
+	Journal = { "Bearing", "Quests", "Diaries", "Construction", "Regions", "Crew", "Agility" }, Hero = { "Skills", "Mastery", "Gear", "Combat", "Spellbook", "Prayer", "Enchant", "Reforge", "Accessories", "Pets" }, Satchel = { "Items", "Collections" },
+	Workshop = { "Forge", "Hearth", "Cauldron", "Workbench", "Workers", "Home", "Garden" }, Hunt = { "Slayer", "Bestiary", "Hunter", "Thieving" }, Ledger = { "Bank", "Market", "Orders", "Auctions", "Merchant", "Vendors" },
 }
 local tabOrder = { "Journal", "Hero", "Satchel", "Workshop", "Hunt", "Ledger" }
 local verbs = {
@@ -795,6 +804,11 @@ local verbs = {
 	workerRemove = function(item) return tostring(item):match("^%d+:[12]$") ~= nil or tostring(item):match("^%d+:chest$") ~= nil end,
 	workerAssign = function(item) local slot, id = tostring(item):match("^(%d+):(%w+)$") return slot ~= nil and Data.Workers.TypeById[id] ~= nil end,
 	workerBlueprint = function(item) local id, tier = tostring(item):match("^(%w+):(%d)$") return id ~= nil and Data.Workers.TypeById[id] ~= nil and tonumber(tier) >= 1 and tonumber(tier) <= 7 end,
+	-- Prayer & Thieving verbs.
+	prayer = function(item) return Data.Prayer.PrayerById[item] ~= nil end,
+	prayerOff = function(item) return item == nil end,
+	prayerQuick = function(item) local slot, id = tostring(item):match("^(%d):(%w*)$") return slot ~= nil and tonumber(slot) <= Data.Prayer.QUICK_SLOTS and (id == "" or Data.Prayer.PrayerById[id] ~= nil) end,
+	offerRemains = function(item) return Data.Prayer.RemainsById[item] ~= nil end,
 	skillBuy = function(item)
 		local skill, id = tostring(item):match("^(%a+):(%w+)$")
 		local vendor = skill and Data.SkillVendors[skill]
@@ -1916,7 +1930,22 @@ do
 		assert(spellBar.Visible and shownSlots == 6, "spell bar shows six slots at " .. tag.name .. " (" .. shownSlots .. ")")
 		local spellRect = rect(spellBar)
 		assert(spellRect.w >= 40 * 7, "spell bar width holds the chip and slots at " .. tag.name)
-		assert(player:GetAttribute("IsleHudLift") == spellRect.h + 6, "toasts lift above the spell bar at " .. tag.name)
+		-- Prayer quick bar (combat.client.lua): published points, a protection prayer on.
+		player:SetAttribute("PrayerLevel", 45)
+		player:SetAttribute("PrayerMax", 55)
+		player:SetAttribute("PrayerPoints", 30)
+		player:SetAttribute("PrayerQuick", "StonehideWard,BlazingEdge")
+		player:SetAttribute("PrayerActive", "WardOfFangs")
+		local prayerBar = hud:FindFirstChild("PrayerBar")
+		assert(prayerBar and prayerBar.Visible, "prayer quick bar shows at " .. tag.name)
+		local prayerRect = rect(prayerBar)
+		local shownPrayers = 0
+		for i = 1, 5 do if prayerBar:FindFirstChild("Prayer" .. i):FindFirstChild("Glyph").Text ~= "" then shownPrayers += 1 end end
+		assert(shownPrayers == 5 and prayerBar:FindFirstChild("Prayer1"):FindFirstChild("On").Visible, "three wards and two favourites, Ward of Fangs lit at " .. tag.name)
+		assert(prayerBar:FindFirstChild("Points"):FindFirstChild("Count").Text == "30", "prayer gauge shows the points at " .. tag.name)
+		assert(prayerRect.y + prayerRect.h <= spellRect.y and prayerRect.x + prayerRect.w <= spellRect.x + spellRect.w + 0.5, "prayer bar sits above the spell bar at " .. tag.name)
+		assert(player:GetAttribute("IsleHudLift") == spellRect.h + 6 + prayerRect.h + 6, "toasts lift above the spell and prayer bars at " .. tag.name)
+		checks += 4
 		local persistent = {
 			{ "atlas badge", rect(atlas:FindFirstChild("GuildBadge")) },
 			{ "minimap", rect(wayfinder:FindFirstChild("Minimap")) },
@@ -1925,7 +1954,7 @@ do
 		local explore = table.clone(persistent)
 		for _, item in ipairs({ { "event banner", rect(banner) }, { "tutorial tracker", rect(tracker) },
 			{ "wayfinder toast", rect(wayfinder:FindFirstChild("WayfinderToast")) }, { "attack button", rect(attack) }, { "spell bar", spellRect },
-			{ "lap tracker", rect(lapTracker) }, { "trap counter", rect(trapCounter) } }) do
+			{ "lap tracker", rect(lapTracker) }, { "trap counter", rect(trapCounter) }, { "prayer bar", prayerRect } }) do
 			table.insert(explore, item)
 		end
 		noOverlap(table.move({ { "target panel", targetRect } }, 1, 1, #explore + 1, table.clone(explore)), tag)
@@ -1937,13 +1966,14 @@ do
 		assert(bar.Enabled and not attack.Visible, "Attack hides while the island builder runs at " .. tag.name)
 		assert(not spellBar.Visible and player:GetAttribute("IsleHudLift") == 0, "spell bar hides while building at " .. tag.name)
 		local building = {}
-		for _, item in ipairs(explore) do if item[1] ~= "attack button" and item[1] ~= "spell bar" and item[1] ~= "lap tracker" and item[1] ~= "trap counter" then table.insert(building, item) end end
+		for _, item in ipairs(explore) do if item[1] ~= "attack button" and item[1] ~= "spell bar" and item[1] ~= "lap tracker" and item[1] ~= "trap counter" and item[1] ~= "prayer bar" then table.insert(building, item) end end
+		assert(not prayerBar.Visible, "prayer bar hides while building at " .. tag.name)
 		assert(not lapTracker.Visible and not trapCounter.Visible, "lap tracker and trap counter step aside for the builder at " .. tag.name)
 		table.insert(building, { "builder controls", rect(bar:FindFirstChild("BuildBar")) })
 		table.insert(building, { "boss panel", bossRect })
 		noOverlap(building, tag)
 		player:SetAttribute("IslandBuilding", nil)
-		assert(attack.Visible and spellBar.Visible, "Attack and the spell bar return after building at " .. tag.name)
+		assert(attack.Visible and spellBar.Visible and prayerBar.Visible, "Attack, the spell bar and the prayer bar return after building at " .. tag.name)
 		assert(lapTracker.Visible and trapCounter.Visible, "lap tracker and trap counter return after building at " .. tag.name)
 		-- Talking: Pell's opening node has 4+ options.
 		local promptDouble = { GetAttribute = function(_, key) return if key == "TownsfolkRole" then "Guide" else nil end,
@@ -1957,7 +1987,7 @@ do
 		assert(not tracker.Visible, "tutorial tracker tucks away while talking at " .. tag.name)
 		-- The dialogue owns the bottom: the spell bar steps aside on the next HUD scan.
 		combat.run.RenderStepped:Fire()
-		assert(not spellBar.Visible, "spell bar hides while talking at " .. tag.name)
+		assert(not spellBar.Visible and not prayerBar.Visible, "spell and prayer bars hide while talking at " .. tag.name)
 		local boxRect = rect(dialogue)
 		local talking = table.clone(persistent)
 		table.insert(talking, { "attack button", rect(attack) })

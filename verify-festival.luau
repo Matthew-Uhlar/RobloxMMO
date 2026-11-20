@@ -471,11 +471,12 @@ for _, o in ipairs(allObjects) do if o.Name == "IsleBridge" then bridge = o end 
 ok(bridge ~= nil, "combat bridge published")
 jump(hollow.starts + 5)
 a = rejoin(a)
-queue = { 0.999, 0.999, 0.1 }
+-- (two extra rolls: the remains drop, chance 1, and its amount)
+queue = { 0.999, 0.999, 0.5, 0.5, 0.1 }
 local kill = bridge.OnInvoke("kill", a, { monster = "BramblebackBoar" })
 eq(kill.drops.GloamCandyOrb, 1, "Hollow Night candy reported as a drop")
 eq(items(a, "GloamCandyOrb"), 1, "candy granted once")
-queue = { 0.999, 0.999, 0.999, 0.999, 0.1 }
+queue = { 0.999, 0.999, 0.999, 0.999, 0.5, 0.5, 0.1 }
 bridge.OnInvoke("kill", a, { monster = "StarbornSentinel" })
 eq(items(a, "GloamCandyOrb"), 5, "stronger foe drops 4 candy")
 queue = { 0.999, 0.999, 0.7 }

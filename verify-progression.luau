@@ -177,7 +177,7 @@ do
 		ok(Data.Skills[skill] ~= nil and Data.Skills[skill].perLevel ~= nil, skill .. " has perLevel rewards")
 		for stat in Data.Skills[skill].perLevel do ok(Data.Stats[stat] ~= nil, skill .. " reward stat " .. stat) end
 	end
-	eq(#Data.SkillOrder, 18, "eighteen skills (combat styles + Agility & Hunter)")
+	eq(#Data.SkillOrder, 20, "twenty skills (combat styles, Agility & Hunter, Prayer & Thieving)")
 	local seen = {}
 	for _, skill in ipairs(Data.SkillOrder) do ok(not seen[skill], "unique skill " .. skill); seen[skill] = true end
 	for _, stat in ipairs({"rangedStrength", "rangedAccuracy", "abilityDamage"}) do
