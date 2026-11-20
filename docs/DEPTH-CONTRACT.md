@@ -175,7 +175,7 @@ Classes Aegis/Mender/Riftblade/Starshot/Arcanist (`Data.DungeonClasses`), levels
 
 ## 18. Treasure Trails
 
-`Data.Trails`: tiers Beginner→Master (steps 1–3 … 6–9), 161 steps (dig, riddle, emote, skill, 3×3 puzzle box), caskets with 35 uniques, clue log. Verbs `trailBegin`, `trailAbandon`, `trailDig`, `trailSearch`, `trailEmote "<gesture>"`, `trailSlide "<tier>:<UDLR…>"` (≤ 48 moves), `trailCheck`, `trailOpen`, `trailTeleport`, `trailLearn`, `trailBanner`. Profile `p.trails`; snapshot `trails` (step text/hints only); attribute `TrailBanner`. Clue drops use a private per-player RNG stream.
+`Data.Trails`: tiers Beginner→Master (steps 1–3 … 6–9), 161 steps (dig, riddle, emote, skill, 3×3 puzzle box), caskets with 35 uniques, clue log. Verbs `trailBegin`, `trailAbandon`, `trailDig`, `trailSearch`, `trailEmote "<gesture>"`, `trailSlide "<tier>:<UDLR…>"` (≤ 48 moves), `trailCheck`, `trailOpen`, `trailTeleport`, `trailLearn`, `trailBanner`. Profile `p.trails`; snapshot `trails` (step text/hints only); attribute `TrailBanner`. Scroll drops, trail seeds and casket rolls use an unseeded, unsaved server `Random.new()`; the step pool and answers live server-only in `ServerStorage.AetherTrails` (`trails.lua`), with only UI data in `Data.Trails`. Location steps need `TR.MIN_STEP_SECONDS` (8–15 s) and a plausible travel time from the previous location step. `trailTeleport` uses `ServerStorage.IsleTravelGate` (dead / recently hurt / in expedition), a 30 s cooldown and zeroes velocity.
 
 ## 19. Slayer tasks
 
