@@ -1537,14 +1537,60 @@ bridge.Parent=ServerStorage
 -- Only server co-op code can seal mode selection; personal inventory stays private.
 local coopProfile=Instance.new("BindableFunction")
 coopProfile.Name="IsleCoopProfile"
-coopProfile.OnInvoke=function(player,seal)
+-- request (coop.server.lua only): perk = crew stat perk table or false (stored
+-- in p.perkStats.coop); deposit/settle = journal outbox of satchel->crew moves
+-- (sequence numbered, debited and saved before the crew is credited); credit =
+-- crew->satchel delivery, idempotent by token. See coop.server.lua header.
+coopProfile.OnInvoke=function(player,seal,request)
 	local p=profiles[player]
 	if not p or (not preview[player] and os.time()>=(leaseEnd[player] or 0)) then return {ready=false} end
 	if seal then
 		p.started=true
 		if not persist(player,false) then return {ready=false} end
 	end
-	return {ready=true,ironman=p.ironman==true,preview=preview[player]==true}
+	local box=if type(p.coopBox)=="table" then p.coopBox else {seq=0,pending={},delivered={}}
+	p.coopBox=box
+	local result
+	if type(request)=="table" then
+		if request.perk~=nil then
+			p.perkStats=if type(p.perkStats)=="table" then p.perkStats else {}
+			p.perkStats.coop=if type(request.perk)=="table" then table.clone(request.perk) else nil
+		end
+		local d,s,c=request.deposit,request.settle,request.credit
+		if type(d)=="table" and type(d.resource)=="string" and type(d.amount)=="number" and d.amount>=1 then
+			if (p.items[d.resource] or 0)<d.amount then result={ok=false} else
+				box.seq+=1
+				local key=tostring(box.seq)
+				p.items[d.resource]-=d.amount
+				box.pending[key]={seq=box.seq,resource=d.resource,amount=d.amount,groupId=d.groupId}
+				if persist(player,false) then result={ok=true,seq=box.seq} else
+					p.items[d.resource]=(p.items[d.resource] or 0)+d.amount
+					box.pending[key]=nil
+					result={ok=false}
+				end
+			end
+		elseif type(s)=="table" then
+			local entry=box.pending[tostring(s.seq)]
+			if entry and s.refund then p.items[entry.resource]=(p.items[entry.resource] or 0)+entry.amount end
+			box.pending[tostring(s.seq)]=nil
+			result={ok=true}
+		elseif type(c)=="table" and type(c.token)=="string" and type(c.resource)=="string" and type(c.amount)=="number" then
+			if table.find(box.delivered,c.token) then result={ok=true} else
+				p.items[c.resource]=(p.items[c.resource] or 0)+c.amount
+				table.insert(box.delivered,c.token)
+				if #box.delivered>32 then table.remove(box.delivered,1) end
+				if persist(player,false) then result={ok=true} else
+					p.items[c.resource]-=c.amount
+					table.remove(box.delivered,table.find(box.delivered,c.token))
+					result={ok=false}
+				end
+			end
+		end
+		if result and result.ok and (d or c or (s and s.refund)) and player.Parent then update:FireClient(player,snapshot(player,"")) end
+	end
+	local outbox={}
+	for _,entry in pairs(box.pending) do table.insert(outbox,table.clone(entry)) end
+	return {ready=true,ironman=p.ironman==true,preview=preview[player]==true,coopOutbox=outbox,result=result}
 end
 coopProfile.Parent=ServerStorage
 

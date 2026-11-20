@@ -2736,59 +2736,146 @@ local function drawCoop()
 		return
 	end
 	local group = coopState
+	-- coopConfirm holds the one pending confirmation: "create", a group id,
+	-- "leave", "kick:<id>" or "transfer:<id>" (keeps top-level locals flat).
+	local function confirmRow(key, title, detail, ask, fn)
+		local confirming = coopConfirm == key
+		row(title, confirming and ask or detail, confirming and "Confirm" or "Review", function()
+			if coopConfirm == key then coopConfirm=nil; fn() else coopConfirm=key; render() end
+		end)
+	end
 	if group.preview then row("Studio practice", "This co-op ledger is temporary and will not save.") end
 	if group.pendingGroup then
-		row("Membership needs recovery", "Retry the membership you already chose. This completes the same permanent crew membership.", "Retry", function()
+		row("Membership needs recovery", "Retry the membership you already chose. This completes the same crew membership.", "Retry", function()
 			if group.pendingGroup == tostring(player.UserId) then sendCoop("create") else sendCoop("accept",group.pendingGroup) end
 		end)
 		return
 	end
 	if not group.groupId then
-		row("A permanent crew", "Create or join a crew of up to four voyagers in the same mode. Membership is permanent in this version: there is no leave or kick option. Your personal island and inventory stay separate.")
-		local createConfirm = coopConfirm == "create"
-		row(createConfirm and "Confirm permanent membership" or "Found a shared homestead",
-			createConfirm and "Creating this crew permanently makes you its founder. There is no leave or kick option. Confirm only if you want this crew." or "Start a crew, then invite players from this server.",
-			createConfirm and "Confirm" or "Create", function()
-				if coopConfirm == "create" then coopConfirm=nil; sendCoop("create") else coopConfirm="create"; render() end
-			end)
+		if group.removal then row("Removed from your crew", "Reason: " .. tostring(group.removal.reason or "not given") .. ". Your own journal, satchel and island are unchanged.") end
+		if group.cooldownUntil then
+			row("Rejoin cooldown", "You can join or found a crew again in " .. tostring(group.cooldownText) .. ". The cooldown stops crew hopping.")
+		end
+		row("A shared crew", "Create or join a crew of up to four voyagers in the same mode. Leaving or being removed starts a 24 hour cooldown before any new crew. Your personal island and inventory stay separate.")
+		if not group.cooldownUntil then
+			confirmRow("create", "Found a shared homestead", "Start a crew, then invite players from this server.",
+				"You become the crew leader. If you leave later, supplies you gave stay with the crew and a 24 hour cooldown starts.", function() sendCoop("create") end)
+		end
 		heading("INVITATIONS")
-		if #(group.invites or {}) == 0 then row("No invitations", "Ask a crew founder in this server to invite you, then refresh.") end
+		if #(group.invites or {}) == 0 then row("No invitations", "Ask a crew leader in this server to invite you, then refresh.") end
 		for _, invite in ipairs(group.invites or {}) do
 			local groupId = invite.groupId
-			local confirming = coopConfirm == groupId
-			row("Join " .. invite.name .. "’s crew", confirming and "This membership is permanent. You cannot leave or be kicked in this version. Confirm to join this crew." or ((invite.ironman and "Ironman" or "Standard") .. " crew invitation. Review before joining."),
-				confirming and "Confirm" or "Review", function()
-					if coopConfirm == groupId then coopConfirm=nil; sendCoop("accept",groupId) else coopConfirm=groupId; render() end
-				end)
+			confirmRow(groupId, "Join " .. invite.name .. "’s crew", (invite.ironman and "Group Ironman" or "Standard") .. " crew invitation. Review before joining.",
+				"Supplies you give stay with this crew. Leaving or being removed starts a 24 hour cooldown. Confirm to join.", function() sendCoop("accept",groupId) end)
 		end
 	else
-		row((group.ironman and "Ironman" or "Standard") .. " crew · " .. #(group.members or {}) .. " / 4", "Travel to your shared homestead from Compass Quay. Membership is permanent; leaving and kicking are not available.")
+		local members = group.members or {}
+		local isLeader = group.owner == player.UserId
+		local level = group.level or {}
+		row((group.ironman and "Group Ironman" or "Standard") .. " crew · " .. #members .. " / " .. tostring(group.maxMembers or 4),
+			group.ironman and "Travel to your shared homestead from Compass Quay. Ironman crews trade only through their own shared stores." or "Travel to your shared homestead from Compass Quay.")
+		heading("HOMESTEAD LEVEL")
+		local width = (level.nextXp or level.xp or 0) - (level.floor or 0)
+		local perkText, nextText = {}, {}
+		for stat, value in pairs(level.stats or {}) do table.insert(perkText, "+" .. value .. " " .. stat) end
+		for stat, value in pairs(level.nextStats or {}) do table.insert(nextText, "+" .. value .. " " .. stat) end
+		table.sort(perkText)
+		table.sort(nextText)
+		card({title=escape("Homestead level " .. tostring(level.level or 1)), badge=tostring(level.xp or 0) .. " XP",
+			detail=escape("Contributions raise the level: shared gathers, net-new deposits and shared construction."),
+			lines={escape("Perks: " .. (#perkText > 0 and table.concat(perkText, ", ") or "none yet") .. " · storage " .. tostring(level.storage or 0) .. " each · " .. tostring(level.workerSlots or 0) .. " shared workers (tier " .. tostring(level.workerTier or 0) .. ")"),
+				level.nextXp and escape("Next level at " .. level.nextXp .. " XP: " .. table.concat(nextText, ", ") .. ", storage " .. tostring(level.nextStorage) .. ", " .. tostring(level.nextWorkers) .. " workers") or "Highest homestead level reached."},
+			bar={fraction=level.nextXp and width > 0 and ((level.xp or 0) - (level.floor or 0)) / width or 1, caption=level.nextXp and ((level.xp or 0) .. " / " .. level.nextXp) or "MAX"}})
 		heading("CREW ROSTER")
 		local memberIds = {}
-		for _, member in ipairs(group.members or {}) do
+		for _, member in ipairs(members) do
 			memberIds[member.userId] = true
-			row(member.name, member.userId == group.owner and "Founder" or "Crew member")
+			local mine = member.userId == player.UserId
+			local actions = {}
+			if isLeader and not mine then
+				table.insert(actions, {caption=coopConfirm == "transfer:" .. member.userId and "Confirm lead" or "Make leader", name="TransferButton", fn=function()
+					local key = "transfer:" .. member.userId
+					if coopConfirm == key then coopConfirm=nil; sendCoop("transfer", tostring(member.userId), "confirm") else coopConfirm=key; render() end
+				end})
+				table.insert(actions, {caption="Remove", name="KickButton", fn=function() coopConfirm="kick:" .. member.userId; render() end})
+			elseif mine then
+				table.insert(actions, {caption=coopConfirm == "leave" and "Confirm leave" or "Leave", name="LeaveButton", fn=function()
+					if coopConfirm == "leave" then coopConfirm=nil; sendCoop("leave","confirm") else coopConfirm="leave"; render() end
+				end})
+			end
+			card({title=escape(member.name), badge=member.role or "Member", subtitle=escape(tostring(member.points or 0) .. " contribution"),
+				lines={escape("Gathered " .. tostring(member.gathered or 0) .. " · deposited " .. tostring(member.deposited or 0) .. " · withdrew " .. tostring(member.withdrawn or 0) .. " · built " .. tostring(member.built or 0) .. " · workers " .. tostring(member.worker or 0))},
+				actions=#actions > 0 and actions or nil})
+			if coopConfirm == "leave" and mine then
+				row("Leave this crew?", (isLeader and #members > 1 and "Leadership passes to the longest-standing member. " or "") .. (#members == 1 and "You are the last member: the crew disbands. " or "") .. "Supplies you gave stay with the crew. A 24 hour cooldown starts before any new crew.")
+			end
+			if coopConfirm == "transfer:" .. member.userId then
+				row("Pass leadership to " .. member.name .. "?", "They can invite, remove members and pass leadership on. You stay as a member.")
+			end
+			if coopConfirm == "kick:" .. member.userId then
+				heading("REMOVE " .. string.upper(member.name) .. " · CHOOSE A REASON")
+				for _, reason in ipairs(group.kickReasons or {}) do
+					row(reason.text, "Removes " .. member.name .. " from the crew. Their own journal, satchel and island are untouched; they wait 24 hours before joining any crew.", "Remove", function()
+						coopConfirm=nil; sendCoop("kick", tostring(member.userId), reason.id)
+					end)
+				end
+			end
 		end
-		if group.owner == player.UserId and #(group.members or {}) < 4 then
+		if isLeader and #members < (group.maxMembers or 4) then
 			heading("INVITE FROM THIS SERVER")
+			for _, invite in ipairs(group.outgoing or {}) do
+				local userId = tostring(invite.userId)
+				row("Invitation to " .. tostring(invite.name or ("Voyager " .. userId)), "Expires in " .. math.max(1, math.ceil((invite.expiresIn or 0) / 60)) .. " min unless accepted.", "Revoke", function() sendCoop("revoke", userId) end)
+			end
 			local candidates = 0
 			for _, candidate in ipairs(Players:GetPlayers()) do
 				if not memberIds[candidate.UserId] then
 					candidates += 1
 					local userId = tostring(candidate.UserId)
-					row(candidate.DisplayName .. " (@" .. candidate.Name .. ")", "The server checks that this player has the same mode and can join.", "Invite", function() sendCoop("invite",userId) end)
+					row(candidate.DisplayName .. " (@" .. candidate.Name .. ")", "The server checks that this player has the same mode and no rejoin cooldown.", "Invite", function() sendCoop("invite",userId) end)
 				end
 			end
 			if candidates == 0 then row("No other voyagers here", "Invite friends after they join this server.") end
 		end
-		heading("SHARED SUPPLIES")
-		row("Crew stores", "Gather at shared-island prompts to fill these stores. Supplies stay with the crew; they are separate from your satchel and cannot be withdrawn.")
-		for _, resource in ipairs({"Timber","Ore","Herb"}) do row(resource, tostring((group.supplies or {})[resource] or 0) .. " in shared stores") end
+		heading("SHARED STORES")
+		row("Crew stores", "Gather at shared-island prompts, deposit from your satchel or let shared workers fill these stores. Any member may withdraw. Supplies stay with the crew when someone leaves.")
+		local resources = group.resources or {"Timber","Ore","Herb","Fish"}
+		for _, resource in ipairs(resources) do
+			local held = count("items", resource)
+			card({title=escape(resource), badge=tostring((group.supplies or {})[resource] or 0) .. " / " .. tostring(level.storage or 0),
+				subtitle=escape(tostring(held) .. " in your satchel"),
+				actions={{caption="Deposit 10", name="Deposit" .. resource, disabled=held < 10, reason="You need 10 " .. resource .. " in your satchel.", fn=function() sendCoop("deposit", resource, "10") end},
+					{caption="Withdraw 10", name="Withdraw" .. resource, fn=function() sendCoop("withdraw", resource, "10") end}}})
+		end
+		heading("SHARED WORKERS")
+		if #(group.workers or {}) == 0 then row("No shared workers yet", "Reach homestead level 2 to unlock the first shared worker, and level 4 for the second.") end
+		for _, w in ipairs(group.workers or {}) do
+			local slot = tostring(w.slot)
+			local actions = {}
+			if w.resource then
+				table.insert(actions, {caption="Collect", name="ClaimButton", fn=function() sendCoop("claim") end})
+				if w.upgradeCost then table.insert(actions, {caption="Upgrade", name="UpgradeButton", fn=function() sendCoop("upgrade", slot) end}) end
+			end
+			local nextResource = resources[(table.find(resources, w.resource or "") or 0) % #resources + 1]
+			table.insert(actions, {caption=(w.resource and "Set " or "Assign ") .. nextResource, name="AssignButton", fn=function() sendCoop("assign", slot, nextResource) end})
+			local costText = w.upgradeCost and (" · upgrade " .. tostring(w.upgradeCost.Timber or 0) .. " timber + " .. tostring(w.upgradeCost.Ore or 0) .. " ore") or ""
+			card({title=escape("Shared worker " .. slot), badge=w.resource and ("Tier " .. tostring(w.tier)) or "Idle",
+				subtitle=escape(w.resource and (w.resource .. " every " .. tostring(w.interval) .. " s") or "Any member can assign it"),
+				lines={w.resource and escape(tostring(w.ready) .. " / " .. tostring(w.capacity) .. " ready, collected once into the shared stores" .. costText) or ""},
+				bar=w.resource and {fraction=(w.capacity or 0) > 0 and (w.ready or 0) / w.capacity or 0, caption=tostring(w.ready or 0) .. " / " .. tostring(w.capacity or 0)} or nil,
+				actions=actions})
+		end
 		heading("SHARED IMPROVEMENTS")
 		for _, plan in ipairs({{"Garden","3 herb + 3 timber"},{"Lanterns","5 timber"},{"Deck","10 timber + 5 ore"}}) do
 			local name = plan[1]
 			local built = (group.decorations or {})[name]
 			row(name, built and "Built on the shared homestead" or (plan[2] .. " from shared stores"), if built then nil else "Build", function() sendCoop("build",name) end)
+		end
+		if #(group.log or {}) > 0 then
+			heading("CREW LOG")
+			local lines = {}
+			for i, text in ipairs(group.log) do lines[i] = escape(tostring(text)) end
+			card({title="Recent crew activity", lines=lines})
 		end
 	end
 	if coopConfirm then row("Keep deciding", "Cancel this confirmation without changing your membership.", "Cancel", function() coopConfirm=nil; render() end) end
@@ -3465,7 +3552,7 @@ local function acceptCoop(result)
 	notify(result.message)
 	return true
 end
-sendCoop = function(verb, item)
+sendCoop = function(verb, item, extra)
 	if coopPending then return end
 	local remoteCoop = ReplicatedStorage:FindFirstChild("IsleCoopAction")
 	if not remoteCoop then
@@ -3476,7 +3563,7 @@ sendCoop = function(verb, item)
 	coopPending = true
 	coopError = nil
 	render()
-	local ok, result = pcall(function() return remoteCoop:InvokeServer(verb,item) end)
+	local ok, result = pcall(function() return remoteCoop:InvokeServer(verb,item,extra) end)
 	coopPending = false
 	if not (ok and acceptCoop(result)) then
 		coopError = if ok and type(result) == "table" and type(result.message) == "string" then result.message else "The shared ledger could not be reached. Refresh before trying again."

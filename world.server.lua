@@ -505,6 +505,28 @@ local function sharedDecorate(home,player)
 			end
 		end
 	end
+	-- Homestead level pennants and shared worker posts (co-op progression).
+	-- Both only grow: crew XP never falls and slots never close.
+	local center=home.center
+	local level=player:GetAttribute("CoopLevel")
+	home.level=home.level or 1
+	while type(level)=="number" and home.level<math.min(level,6) do
+		home.level+=1
+		local x=-15+(home.level-2)*7.5
+		local pennant=group("Pennant"..home.level,home.model)
+		block(pennant,"Crew pennant pole",center+V(x,3,20),V(.4,6,.4),timber,WO,true)
+		block(pennant,"Crew pennant",center+V(x+.9,5.2,20),V(1.6,1,.12),mint,Enum.Material.Fabric,false)
+	end
+	local workers=player:GetAttribute("CoopWorkers")
+	home.workers=home.workers or 0
+	while type(workers)=="number" and home.workers<math.min(workers,2) do
+		home.workers+=1
+		local side=if home.workers==1 then -1 else 1
+		local post=group("SharedWorker"..home.workers,home.model)
+		block(post,"Shared worker hut",center+V(side*20,1.5,-14),V(4,3,4),timber,WO,true)
+		block(post,"Shared worker roof",center+V(side*20,3.4,-14),V(5,.6,5),shale,WO,true)
+		lamp(post,center+V(side*20,0,-11))
+	end
 end
 local function detachShared(player)
 	local old=sharedPlayers[player]
@@ -534,7 +556,7 @@ local function watchShared(player)
 	end
 	local connections={}
 	sharedConnections[player]=connections
-	for _,attribute in ipairs({"CoopId","CoopPreview","CoopGarden","CoopLanterns","CoopDeck"}) do
+	for _,attribute in ipairs({"CoopId","CoopPreview","CoopGarden","CoopLanterns","CoopDeck","CoopLevel","CoopWorkers"}) do
 		table.insert(connections,player:GetAttributeChangedSignal(attribute):Connect(sync))
 	end
 	sync()
