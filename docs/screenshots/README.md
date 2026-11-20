@@ -117,3 +117,13 @@ Before / after (four key pages):
 | `before-desktop-HUD.png` | `after-desktop-HUD.png` | Flat text action bar → health meter / XP pill (skill medallion + level meter) / defense pills; level-up banner with ribbon, medallion and ornaments; boss panel with level medallion, ember rim and corner gems; ribbon toast and event banner |
 | `before-phone-Ledger-Orders.png` | `after-phone-Ledger-Orders.png` | Order book lines → depth-bar order book; rarity plates; pill badges; rail with selected tab glow |
 | `before-desktop-Journal-Quests-full.png` | `after-desktop-Journal-Quests-full.png` | Inline ✓/✗ text → tick-box checklists with right-aligned counts, status pills, gold Claim |
+
+Combat styles (bows, staves, spells):
+
+| File | Size | Shows |
+| --- | --- | --- |
+| `combat-desktop-HUD.png` | 1366x768 | Mana pill beside health, spell bar (style chip with mana, autocast slot, greyed unaffordable slot, cost captions), CAST button |
+| `combat-compact-HUD.png` | 730x303 | The same HUD on a short phone: spell bar left of the Attack button, toasts lifted above it |
+| `desktop-Hero-Combat-full.png` | 1366x768 | Hero › Combat: style card with mana meter, quiver and arrows, combat levels, triangle explainer, switch-style weapons |
+| `desktop-Hero-Spellbook.png` | 1366x768 | Hero › Spellbook: autocast summary, spell costs (staff-supplied glyphs free), damage estimate |
+| `desktop-Hunt-Bestiary.png` | 1366x768 | Bestiary entries with attack style, weakness and resistance |

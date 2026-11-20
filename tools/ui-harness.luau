@@ -44,6 +44,7 @@ local events = {
 	FocusLost = true, OnClientEvent = true, HealthChanged = true, CharacterAdded = true, InputBegan = true,
 	TextBoxFocusReleased = true, InputEnded = true, TouchTapInWorld = true, RenderStepped = true, AncestryChanged = true,
 	MouseEnter = true, SelectionLost = true, Completed = true, Heartbeat = true, InputChanged = true, CharacterRemoving = true,
+	Event = true,
 }
 local guiClasses = { Frame = true, TextLabel = true, TextButton = true, ImageLabel = true, ImageButton = true, ScrollingFrame = true, ViewportFrame = true, TextBox = true, CanvasGroup = true }
 H.guiClasses = guiClasses
@@ -232,6 +233,15 @@ function methods:GetAttributeChangedSignal(name)
 	d.attrSignals[name] = d.attrSignals[name] or newSignal()
 	return d.attrSignals[name]
 end
+-- BindableEvent:Fire relays to .Event (local channels between client scripts).
+function methods:Fire(...)
+	self.Event:Fire(...)
+end
+function methods:FireServer(...)
+	local d = data[self]
+	d.fired = d.fired or {}
+	table.insert(d.fired, table.pack(...))
+end
 function methods:InvokeServer(...)
 	return data[self].props.OnInvoke(...)
 end
@@ -259,15 +269,21 @@ end
 ------------------------------------------------------------------------------
 local function profile()
 	return {
-		xp = { Combat = 9000, Mining = 22000, Woodcutting = 400, Fishing = 0, Farming = 60, Smithing = 4500, Cooking = 100, Alchemy = 0, Enchanting = 1200, Taming = 0, Dungeoneering = 0, Carpentry = 50 },
+		xp = { Combat = 9000, Mining = 22000, Woodcutting = 400, Fishing = 0, Farming = 60, Smithing = 4500, Cooking = 100, Alchemy = 0, Enchanting = 1200, Taming = 0, Dungeoneering = 0, Carpentry = 50,
+			Ranged = 5200, Magic = 14100, Fletching = 1200, Glyphcraft = 800 },
 		items = {
 			Ore = 140, Timber = 40, Herb = 70, Fish = 30, Brassite = 12, Pickaxe = 1, Blade = 1, Tonic = 2, ExpeditionRation = 1,
 			BrassSword = 1, BrassHelm = 1, BrassChestplate = 1, BrassGreaves = 1, BrassBoots = 1, SunsteelSword = 1, BrassPickaxe = 1,
 			CopperHatchet = 1, ArcaneDust = 60, MeadowCharm = 1, QuarryTalisman = 1, EmberfoxPet = 1, CookedFish = 3, MightDraught = 2,
 			StormFeather = 3, BrassIngot = 9,
+			-- Combat styles: a Tide staff wielded, arrows in the quiver, glyphs and a tablet.
+			WindpineStaff = 1, MeadowWand = 1, MeadowLongbow = 1, WindpineShortbow = 1, CopperArrow = 60, BrassArrow = 143,
+			GaleGlyph = 40, TideGlyph = 8, StoneGlyph = 12, SparkGlyph = 25, SurgeGlyph = 6, VitaGlyph = 3, BindGlyph = 2, HubwardTablet = 2,
+			ArrowShaft = 30, DriftPlume = 20,
 		},
 		collection = { Ore = 320, Timber = 60, Herb = 70, Fish = 30, Brassite = 40, Shard = 2, StormFeather = 3, BeastHide = 0 },
-		equipment = { weapon = "BrassSword", helmet = "BrassHelm", chest = "BrassChestplate", legs = "BrassGreaves", boots = "BrassBoots" },
+		equipment = { weapon = "WindpineStaff", helmet = "BrassHelm", chest = "BrassChestplate", legs = "BrassGreaves", boots = "BrassBoots", ammo = "BrassArrow" },
+		autocast = "GaleLance",
 		enchants = { BrassSword = { Sharpness = 2, Critical = 5 } },
 		accessoryBag = { "MeadowCharm", "QuarryTalisman" },
 		pets = { { id = "Tidewing", level = 5, xp = 100 }, { id = "Emberfox", level = 1, xp = 0 } },
@@ -280,6 +296,9 @@ end
 function H.snapshot(options)
 	options = options or {}
 	local p = profile()
+	if options.weapon ~= nil then
+		p.equipment.weapon = options.weapon or nil
+	end
 	if options.xp then
 		for skill, xp in pairs(options.xp) do
 			p.xp[skill] = xp
@@ -338,7 +357,7 @@ function H.snapshot(options)
 		accessoryBag = p.accessoryBag, activeAccessories = Progression.activeAccessories(p), accessorySlots = Progression.accessorySlots(p),
 		pets = pets, buffs = { MightDraught = { remaining = 95, stats = { strength = 15 } } }, collections = collections, bestiary = p.bestiary,
 		slayer = { lines = lines, quest = { line = "Bramble", tier = 1, progress = 40, needed = 150, bossReady = false } },
-		enchants = p.enchants,
+		enchants = p.enchants, combat = Progression.combatLoadout(p),
 		regions = { { id = "Hub", name = "Aether Hub", unlocked = true, requirement = "" }, { id = "Gloomhollow", name = "Gloomhollow Caverns", unlocked = false, requirement = "Mining 30, Combat 15" } },
 	}
 	local quests = {}
@@ -455,15 +474,18 @@ function H.runAtlas(size, options)
 	local atlas = gui:FindFirstChild("Atlas")
 	return {
 		gui = gui, atlas = atlas, scroll = atlas:FindFirstChildOfClass("ScrollingFrame"), tabs = atlas:FindFirstChild("Tabs"),
-		sent = sent, warnings = warnings, player = player, playerGui = playerGui, update = update,
+		sent = sent, warnings = warnings, player = player, playerGui = playerGui, update = update, replicated = replicated,
 		setSnapshot = function(value) current = value end,
 	}
 end
--- Loads combat.client.lua into an existing player's PlayerGui.
-function H.runCombat(size, player)
+-- Loads combat.client.lua into an existing player's PlayerGui. Pass the atlas
+-- handle's `replicated` to share its local channels (snapshots, toasts, verbs).
+function H.runCombat(size, player, shared)
 	screen = size
-	local replicated = new("ReplicatedStorage")
-	new("RemoteEvent", { Name = "IsleCombat" }).Parent = replicated
+	local replicated = shared or new("ReplicatedStorage")
+	if not replicated:FindFirstChild("AetherData") then new("ModuleScript", { Name = "AetherData" }).Parent = replicated end
+	local remote = new("RemoteEvent", { Name = "IsleCombat" })
+	remote.Parent = replicated
 	local fx = new("RemoteEvent", { Name = "IsleCombatFx" })
 	fx.Parent = replicated
 	local tagged = {}
@@ -476,20 +498,29 @@ function H.runCombat(size, player)
 	local camera = new("Camera")
 	camera.Parent = services.Workspace
 	services.Workspace.CurrentCamera = camera
+	local terrain = new("Terrain", { Name = "Terrain" })
+	terrain.Parent = services.Workspace
+	services.Workspace.Terrain = terrain
 	local game = new("DataModel")
 	function game.GetService(_, name) return assert(services[name], name) end
 	local env = {
 		game = game, Enum = roblox.Enum, UDim = roblox.UDim, UDim2 = roblox.UDim2, Vector2 = roblox.Vector2, Vector3 = roblox.Vector3,
-		CFrame = roblox.CFrame, Color3 = roblox.Color3, ColorSequence = roblox.ColorSequence, NumberSequence = roblox.NumberSequence, TweenInfo = { new = function() return {} end },
+		CFrame = roblox.CFrame, Color3 = roblox.Color3, ColorSequence = roblox.ColorSequence, NumberSequence = roblox.NumberSequence, NumberRange = roblox.NumberRange,
+		TweenInfo = { new = function() return {} end },
 		Instance = { new = function(class) return new(class) end }, RaycastParams = { new = function() return {} end },
 		typeof = function(value) return if data[value] then "Instance" else typeof(value) end,
+		require = function(target)
+			assert(target.Name == "AetherData", "unexpected require")
+			return Data
+		end,
 		task = baseTask(),
 	}
 	local chunk = luau.load(fs.readFile("combat.client.lua"), { debugName = "combat.client.lua", environment = env, injectGlobals = true })
 	chunk()
 	local monster = new("Model", { Name = "Golem" })
 	monster.Parent = services.Workspace
-	return { hud = player:FindFirstChild("PlayerGui"):FindFirstChild("IsleCombatHud"), fx = fx, monster = monster, tagged = tagged, run = services.RunService }
+	return { hud = player:FindFirstChild("PlayerGui"):FindFirstChild("IsleCombatHud"), fx = fx, remote = remote, monster = monster, tagged = tagged,
+		run = services.RunService, workspace = services.Workspace, input = services.UserInputService }
 end
 
 -- A founded crew (Journal > Crew) for renders.
@@ -545,6 +576,10 @@ function H.runBuilder(size, player)
 	}
 end
 
+-- Calls recorded by a RemoteEvent's FireServer.
+function H.fired(remote)
+	return data[remote].fired or {}
+end
 function H.find(root, name)
 	for _, object in ipairs(root:GetDescendants()) do
 		if object.Name == name then

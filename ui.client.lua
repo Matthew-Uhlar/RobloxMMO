@@ -390,13 +390,15 @@ local function statText(stats,mult,separator)
 	end
 	return table.concat(parts,separator or ", ")
 end
-local slotNames={weapon="Weapon",helmet="Helmet",chest="Chestplate",legs="Greaves",boots="Boots",pickaxe="Pickaxe",hatchet="Hatchet",rod="Rod",hoe="Hoe"}
+local slotNames={weapon="Weapon",helmet="Helmet",chest="Chestplate",legs="Greaves",boots="Boots",pickaxe="Pickaxe",hatchet="Hatchet",rod="Rod",hoe="Hoe",ammo="Quiver"}
 local gearSlots={"weapon","helmet","chest","legs","boots"}
-local gearSlotSet={weapon=true,helmet=true,chest=true,legs=true,boots=true}
+local gearSlotSet={weapon=true,helmet=true,chest=true,legs=true,boots=true,ammo=true}
 local function kindLabel(def)
 	if not def then return "Item" end
 	local kind=def.kind
-	if kind=="weapon" then return "Weapon" elseif kind=="armor" then return slotNames[def.slot] or "Armor"
+	if kind=="weapon" then return def.style=="ranged" and "Bow" or def.style=="magic" and (type(def.magic)=="table" and #(def.magic.elements or {})==0 and "Wand" or "Staff") or "Weapon"
+	elseif kind=="armor" then return slotNames[def.slot] or "Armor"
+	elseif def.category=="ammo" then return "Arrows" elseif def.category=="glyph" then return "Glyph" elseif def.category=="tablet" then return "Tablet"
 	elseif kind=="tool" then return def.toolKind or "Tool" elseif kind=="accessory" then return "Accessory" elseif kind=="pet" then return "Pet"
 	elseif kind=="consumable" then return def.category=="food" and "Food" or def.category=="potion" and "Potion" or def.category=="buff" and "Feast" or "Consumable"
 	elseif kind=="resource" then return (def.skill and (def.skill.." ") or "").."Resource" end
@@ -736,10 +738,10 @@ do
 		make("UIStroke", key, {Color=UI.brassDark, Thickness=1})
 	end
 end
--- Action bar: three pills. Health (left 30%) and defense (right 30%) stay up;
--- the XP pill (middle 40%) shows while an XP popup is live.
+-- Action bar: four pills. Health (0-24%), mana (24-46%) and defense (76-100%)
+-- stay up; the XP pill (46-76%) shows while an XP popup is live.
 local actionBar=make("Frame",gui,{Name="ActionBar",AnchorPoint=Vector2.new(.5,1),Position=UDim2.new(.5,0,1,-8),Size=UDim2.new(.94,0,0,32),BackgroundTransparency=1,BorderSizePixel=0})
-make("UISizeConstraint",actionBar,{MaxSize=Vector2.new(580,32)})
+make("UISizeConstraint",actionBar,{MaxSize=Vector2.new(680,32)})
 function UI.pill(parent,name,position,size)
 	local pill=make("Frame",parent,{Name=name,Position=position,Size=size,BackgroundColor3=deep,BackgroundTransparency=.1,BorderSizePixel=0})
 	rounded(pill,16,UI.rim)
@@ -778,7 +780,7 @@ function UI.setMeter(fill,fraction)
 	if cap then cap.Visible=fraction>.04 and fraction<.995 end
 end
 do
-	local health=UI.pill(actionBar,"HealthPill",UDim2.new(),UDim2.new(.3,-6,1,0))
+	local health=UI.pill(actionBar,"HealthPill",UDim2.new(),UDim2.new(.24,-6,1,0))
 	UI.chip(health,"❤",rgb("E2504A"),24)
 	local meter
 	meter,UI.healthFill=UI.meter(health,"HealthMeter",rgb("F05A4E"),16)
@@ -791,11 +793,25 @@ do
 	UI.healthText.TextStrokeTransparency=.35
 	UI.healthText.TextStrokeColor3=deep
 	UI.healthText.ZIndex=2
-	local defense=UI.pill(actionBar,"DefensePill",UDim2.new(.7,6,0,0),UDim2.new(.3,-6,1,0))
+	-- Mana (combat styles): Mana / MaxMana player attributes from the combat server.
+	local manaPill=UI.pill(actionBar,"ManaPill",UDim2.new(.24,6,0,0),UDim2.new(.22,-12,1,0))
+	UI.chip(manaPill,"✦",rgb("4F6FE0"),24)
+	local manaMeter
+	manaMeter,UI.manaFill=UI.meter(manaPill,"ManaMeter",rgb("5C8BFF"),16)
+	manaMeter.AnchorPoint=Vector2.new(0,.5)
+	manaMeter.Position=UDim2.new(0,34,.5,0)
+	manaMeter.Size=UDim2.new(1,-44,0,16)
+	UI.manaText=label(manaMeter,"—",0,0,full,16,UI.heavy,12,ivory)
+	UI.manaText.Size=UDim2.fromScale(1,1)
+	UI.manaText.TextXAlignment=Enum.TextXAlignment.Center
+	UI.manaText.TextStrokeTransparency=.35
+	UI.manaText.TextStrokeColor3=deep
+	UI.manaText.ZIndex=2
+	local defense=UI.pill(actionBar,"DefensePill",UDim2.new(.76,6,0,0),UDim2.new(.24,-6,1,0))
 	UI.chip(defense,"❈",rgb("3FBF6A"),24)
 	UI.defenseText=label(defense,"—",34,0,UDim.new(1,-44),32,UI.heavy,15,rgb("9BF5B4"))
 	UI.defenseText.RichText=true
-	UI.xpPill=UI.pill(actionBar,"XpPill",UDim2.new(.3,6,0,0),UDim2.new(.4,-12,1,0))
+	UI.xpPill=UI.pill(actionBar,"XpPill",UDim2.new(.46,6,0,0),UDim2.new(.3,-12,1,0))
 	UI.xpPill.Visible=false
 	UI.xpChip,UI.xpGlyph=UI.chip(UI.xpPill,"",gold,24)
 	local xpMeter
@@ -804,11 +820,11 @@ do
 	xpMeter.Size=UDim2.new(1,-50,0,3)
 	xpMeter:FindFirstChildOfClass("UIStroke").Enabled=false
 end
--- XP popup owns the middle 40% between the health (0-30%) and defense (70-100%)
--- pills and shrinks its text instead of spilling over them.
-UI.xp=label(actionBar,"",0,0,UDim.new(.4,-58),24,UI.heavy,13,gold)
+-- XP popup owns 46-76% between the mana (24-46%) and defense (76-100%) pills
+-- and shrinks its text instead of spilling over them.
+UI.xp=label(actionBar,"",0,0,UDim.new(.3,-58),24,UI.heavy,13,gold)
 UI.xp.Name="XpPopup"
-UI.xp.Position=UDim2.new(.3,44,0,1)
+UI.xp.Position=UDim2.new(.46,44,0,1)
 UI.xp.TextXAlignment=Enum.TextXAlignment.Left
 UI.xp.RichText=true
 UI.xp.TextWrapped=false
@@ -985,8 +1001,10 @@ local function notify(message)
 	notice.Text = message
 	notice.Visible = true
 	notice.TextTransparency = 0.35
-	notice.Position = UDim2.new(0.5, 0, 1, -42)
-	TweenService:Create(notice, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { TextTransparency = 0, Position = UDim2.new(0.5, 0, 1, -50) }):Play()
+	-- The combat spell bar (combat.client.lua) publishes its height as IsleHudLift.
+	local lift = math.clamp(num(player:GetAttribute("IsleHudLift"),0),0,120)
+	notice.Position = UDim2.new(0.5, 0, 1, -42 - lift)
+	TweenService:Create(notice, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { TextTransparency = 0, Position = UDim2.new(0.5, 0, 1, -50 - lift) }):Play()
 	task.delay(3.6, function()
 		if token == UI.noticeIndex then
 			notice.Visible = false
@@ -1340,6 +1358,114 @@ local function collectionInfo(id)
 	return amount,tier,nextAt
 end
 
+-- Combat styles helpers (Data.CombatStyles, Data.Spells) shared by the Hero ›
+-- Combat and Spellbook pages, item details and the bestiary. One table: the
+-- chunk is at Luau's top-level local limit.
+UI.CB={looks={melee={glyph="⚔",hex="F3C66E",name="Melee"},ranged={glyph="➶",hex="9BD67E",name="Ranged"},magic={glyph="✦",hex="8FA8FF",name="Magic"}}}
+do
+	local CB=UI.CB
+	function CB.cs() return Data and type(Data.CombatStyles)=="table" and Data.CombatStyles or nil end
+	function CB.styleOf(def)
+		if type(def)=="table" and CB.looks[def.style] then return def.style end
+		return "melee"
+	end
+	-- "✦ Magic" in the style's colour.
+	function CB.tag(style)
+		local look=CB.looks[style] or CB.looks.melee
+		return paint(look.glyph.." "..look.name,look.hex)
+	end
+	function CB.spell(id) return Data and type(Data.Spells)=="table" and type(id)=="string" and Data.Spells[id] or nil end
+	-- Wood tier names whose bows accept arrows of `tier` (bow maxAmmoTier = wood index + 1).
+	function CB.bowsFor(tier)
+		local cs=CB.cs()
+		for _,t in ipairs(cs and tbl(cs.woodTiers) or EMPTY) do
+			if num(t.index,0)+1>=tier then return t.prefix end
+		end
+		return nil
+	end
+	function CB.arrowName(tier)
+		local cs=CB.cs()
+		local t=cs and tbl(cs.arrowTiers)[tier]
+		return type(t)=="table" and t.arrow and itemName(t.arrow) or ("tier "..tier.." arrows")
+	end
+	-- Detail lines for weapons (style, power, speed, reach, ammo, elements) and arrows.
+	function CB.itemLines(def)
+		local lines={}
+		if type(def)~="table" then return lines end
+		local cs=CB.cs()
+		if def.kind=="weapon" then
+			local style=CB.styleOf(def)
+			if style=="ranged" and type(def.ranged)=="table" then
+				local r=def.ranged
+				table.insert(lines,CB.tag(style).." weapon  ·  Power "..fmt(num(r.power,0)).."  ·  "..string.format("%.2fs",num(r.speed,1)).." per shot  ·  Reach "..fmt(num(r.range,40)).." studs")
+				local maxTier=num(r.maxAmmoTier,1)
+				table.insert(lines,"Quiver: arrows up to tier "..maxTier.." ("..escape(CB.arrowName(1)).." … "..escape(CB.arrowName(maxTier))..")")
+			elseif style=="magic" and type(def.magic)=="table" then
+				local m=def.magic
+				local elements=tbl(m.elements)
+				table.insert(lines,CB.tag(style).." weapon  ·  Power +"..fmt(num(m.power,0)).." spell damage  ·  "..string.format("%.2fs",num(m.speed,1.2)).." per cast")
+				if #elements>0 then
+					local names={}
+					for _,element in ipairs(elements) do
+						local e=cs and tbl(cs.elements)[element]
+						table.insert(names,paint(escape(element),type(e)=="table" and e.color or "C9F2FF"))
+					end
+					table.insert(lines,"Elemental staff: supplies unlimited "..table.concat(names,", ").." glyphs")
+				else
+					table.insert(lines,"Wand: quick casts, no free glyphs")
+				end
+			else
+				table.insert(lines,CB.tag("melee").." weapon  ·  sword reach")
+			end
+		elseif type(def.ammo)=="table" then
+			local tier=num(def.ammo.tier,1)
+			local bows=CB.bowsFor(tier)
+			table.insert(lines,CB.tag("ranged").." ammunition  ·  Tier "..tier.."  ·  +"..fmt(num(def.ammo.power,0)).." arrow power")
+			table.insert(lines,bows and ("Fits "..escape(bows).." bows and stronger (bow arrow tier "..tier.."+)") or "No bow can fire these yet")
+		end
+		return lines
+	end
+	-- "Attacks ⚔ Melee · Weak to ✦ Magic (+30%) · Resists ➶ Ranged (−30%)"
+	function CB.triangle(monster)
+		if type(monster)~="table" or not monster.attackStyle then return nil end
+		local cs=CB.cs()
+		local bonus=cs and math.floor(num(cs.weaknessBonus,.3)*100+.5) or 30
+		local penalty=cs and math.floor(num(cs.resistPenalty,.3)*100+.5) or 30
+		local parts={"Attacks "..CB.tag(monster.attackStyle)}
+		if monster.weakness then table.insert(parts,"Weak to "..CB.tag(monster.weakness)..paint(" +"..bonus.."%","FFD24A")) end
+		if monster.defenceStyle then table.insert(parts,"Resists "..CB.tag(monster.defenceStyle)..paint(" −"..penalty.."%","A9BDC1")) end
+		return table.concat(parts,"  ·  ")
+	end
+	-- Glyph costs per cast given a wielded weapon: {id, n, free} sorted by name.
+	function CB.costs(spell,weapon)
+		local cs=CB.cs()
+		local free={}
+		if type(weapon)=="table" and type(weapon.magic)=="table" and cs then
+			for _,element in ipairs(tbl(weapon.magic.elements)) do
+				local e=tbl(cs.elements)[element]
+				if type(e)=="table" then free[e.glyph]=true end
+			end
+		end
+		local out={}
+		for id,n in pairs(tbl(spell.costs)) do table.insert(out,{id=id,n=num(n,1),free=free[id]==true}) end
+		table.sort(out,function(a,b) return itemName(a.id)<itemName(b.id) end)
+		return out
+	end
+	-- Expected spell damage (Progression.spellDamage): (damage + weapon power)
+	-- × (1 + Int/100 × scaling) × (1 + Ability Damage%) × (1 + 3% per Magic level above 1).
+	function CB.spellDamage(spell,stats,weapon,magic)
+		if not spell.damage then return nil end
+		local power=num(spell.damage,0)+(type(weapon)=="table" and type(weapon.magic)=="table" and num(weapon.magic.power,0) or 0)
+		local dmg=power*(1+math.max(0,num(stats.intelligence,0))/100*num(spell.scaling,0))*(1+num(stats.abilityDamage,0)/100)*(1+.03*(math.max(1,magic)-1))
+		return math.max(1,math.floor(dmg))
+	end
+	-- depth.combat with safe defaults.
+	function CB.loadout()
+		local c=tbl(dget("combat"))
+		return {style=CB.looks[c.style] and c.style or "melee",weapon=type(c.weapon)=="string" and c.weapon or nil,ammo=type(c.ammo)=="string" and c.ammo or nil,
+			ammoCount=num(c.ammoCount,0),supplies=tbl(c.supplies),levels=tbl(c.levels),autocast=type(c.autocast)=="string" and c.autocast or nil}
+	end
+end
 -- Page modules live in do-blocks (Luau caps a chunk at 200 locals) and export
 -- their draw functions through Pages; state shared across pages stays here.
 local Pages={}
@@ -1813,11 +1939,16 @@ local function skillUnlocks(skill,level)
 		local need=type(def.requires)=="table" and num(def.requires[skill],nil)
 		if need and (def.kind=="weapon" or def.kind=="armor" or def.kind=="tool") then
 			add(need,(def.kind=="tool" and "Wield " or "Equip ")..escape(def.name),id)
+		elseif need and def.slot=="ammo" then
+			add(need,"Loose "..escape(def.name).."s",id)
 		end
 	end
 	for _,region in ipairs(tbl(Data.Regions)) do
 		local need=num(tbl(tbl(region.requires).skills)[skill],nil)
 		if need then add(need,"Enter "..escape(region.name),nil) end
+	end
+	if skill=="Magic" then
+		for _,spell in pairs(tbl(Data.Spells)) do add(spell.level,"Cast "..escape(spell.name),nil) end
 	end
 	if skill=="Enchanting" then
 		for _,enchant in pairs(tbl(Data.Enchants)) do add(enchant.level,"Learn "..escape(enchant.name).." I",nil) end
@@ -2334,6 +2465,220 @@ local function drawPets()
 	end
 end
 
+-- Hero › Combat: the wielded style, quiver, combat levels, the triangle and
+-- owned weapons of every style (Combat Styles; snapshot depth.combat).
+function Pages.drawCombat()
+	local CB=UI.CB
+	local cs=CB.cs()
+	if not Data or not cs then dataMissing() return end
+	local d=depth()
+	if not d then syncing("combat loadout") return end
+	local lo=CB.loadout()
+	local stats=tbl(d.stats)
+	local equipment=tbl(d.equipment)
+	local levels=skillsOf(state)
+	local weaponId=lo.weapon or (type(equipment.weapon)=="string" and equipment.weapon or nil)
+	local weapon=itemDef(weaponId)
+	local style=lo.style
+	local look=CB.looks[style]
+	heading("COMBAT STYLE")
+	local lines=weapon and CB.itemLines(weapon) or {"Unarmed: a melee swing. Equip a sword, bow, staff or wand to change style."}
+	local beats,beatenBy=tbl(cs.beats)[style],tbl(cs.beatenBy)[style]
+	if beats then table.insert(lines,"Strong against "..CB.tag(beats).." fighters (+"..math.floor(num(cs.weaknessBonus,.3)*100+.5).."%)  ·  resisted by "..CB.tag(beatenBy).." fighters (−"..math.floor(num(cs.resistPenalty,.3)*100+.5).."%)") end
+	if style=="magic" then
+		local auto=CB.spell(lo.autocast)
+		table.insert(lines,"Autocast: "..(auto and paint(escape(auto.name),auto.color) or paint("strongest unlocked spell","A9BDC1")).."  ·  set it in the Spellbook")
+	end
+	local maxMana=num(player:GetAttribute("MaxMana"),nil) or num(stats.intelligence,0)
+	local mana=num(player:GetAttribute("Mana"),nil) or maxMana
+	card({name="CombatStyle",item=weapon and weaponId or nil,motif=not weapon and "Hero" or nil,accent=rgb(look.hex),
+		title=look.name.." style",titleColor=rgb(look.hex),subtitle=weapon and escape(weapon.name) or "Bare hands",badge=look.glyph.." "..string.upper(look.name),badgeColor=rgb(look.hex),
+		lines=lines,bar={fraction=maxMana>0 and mana/maxMana or 0,color=rgb("5C8BFF"),caption="✦ Mana "..fmt(math.floor(mana)).." / "..fmt(math.floor(maxMana)).."  ·  +"..num(cs.manaRegenPercent,4).."% per second  ·  max = Intelligence"},
+		actions={{caption="Spellbook",fn=function() sectionOf.Hero="Spellbook";scroll.CanvasPosition=Vector2.zero;render() end},
+			{caption="Gear",fn=function() sectionOf.Hero="Gear";scroll.CanvasPosition=Vector2.zero;render() end}}})
+	-- Quiver (ammo slot).
+	heading("QUIVER    /    "..fmt(lo.ammoCount).." ARROWS")
+	local ammoId=lo.ammo or (type(equipment.ammo)=="string" and equipment.ammo or nil)
+	local ammo=itemDef(ammoId)
+	local bowTier=weapon and type(weapon.ranged)=="table" and num(weapon.ranged.maxAmmoTier,nil) or nil
+	if ammo then
+		local ammoLines=CB.itemLines(ammo)
+		if bowTier then
+			local fits=num(tbl(ammo.ammo).tier,1)<=bowTier
+			table.insert(ammoLines,fits and paint("✓ Fits your "..escape(weapon.name),"9EE7D2") or paint("✗ Too heavy for your "..escape(weapon.name).." (arrows up to tier "..bowTier..")","E8806A"))
+		elseif style~="ranged" then
+			table.insert(ammoLines,paint("Equip a bow to loose these arrows.","A9BDC1"))
+		end
+		card({name="Quiver",item=ammoId,title=escape(ammo.name).."  ×"..fmt(math.max(lo.ammoCount,count("items",ammoId))),titleColor=rgb(itemHex(ammoId)),
+			subtitle="Quiver  ·  one arrow per shot",badge="QUIVER",badgeColor=mint,lines=ammoLines,
+			actions={{caption="Unequip",fn=function() send("unequip","ammo") end}}})
+	else
+		card({name="Quiver",motif="Hunt",title="Empty quiver",titleColor=muted,detail="Fletch arrows at the Workbench (Fletching) from shafts, plumes and forged arrowheads, then equip them here. Every bow shot uses one arrow."})
+	end
+	local arrows={}
+	for itemId,n in pairs(tbl(state.items)) do
+		local def=itemDef(itemId)
+		if num(n,0)>0 and def and def.slot=="ammo" and itemId~=ammoId then table.insert(arrows,itemId) end
+	end
+	table.sort(arrows,function(a,b) return num(tbl(itemDef(a).ammo).tier,0)>num(tbl(itemDef(b).ammo).tier,0) end)
+	for _,arrowId in ipairs(arrows) do
+		local def=itemDef(arrowId)
+		local ok,requirements=meetsRequires(def.requires,levels)
+		local tier=num(tbl(def.ammo).tier,1)
+		local fits=not bowTier or tier<=bowTier
+		card({name="Ammo"..arrowId,item=arrowId,iconSize=compactAtlas and 30 or 36,title=escape(def.name).."  ×"..fmt(count("items",arrowId)),titleColor=rgb(itemHex(arrowId)),
+			subtitle="Tier "..tier.."  ·  +"..fmt(num(tbl(def.ammo).power,0)).." power"..(fits and "" or "  ·  too heavy for this bow"),
+			lines={requirements~="" and ("Requires "..requirements) or nil},
+			actions={{caption="Equip",primary=ok and fits,disabled=not ok,reason="Requires "..(requirements:gsub("<[^>]+>","")),fn=function() send("equip",arrowId) end}}})
+	end
+	-- Combat levels: melee trains Combat; ranged/magic train their own skill plus a Combat share.
+	heading("COMBAT LEVELS")
+	card({name="CombatLevels",motif="Hunt",title="Combat "..(levels.Combat and levels.Combat.level or 1),titleColor=gold,
+		subtitle="Ranged "..(levels.Ranged and levels.Ranged.level or 1).."  ·  Magic "..(levels.Magic and levels.Magic.level or 1),
+		detail="Melee hits train Combat. Bow and spell hits train Ranged or Magic, and a third of that XP also feeds Combat.",
+		after=function(body,nextOrder)
+			for _,skill in ipairs({"Combat","Ranged","Magic"}) do
+				local info=levels[skill]
+				if info then
+					local glyph=skill=="Combat" and "⚔" or skill=="Ranged" and "➶" or "✦"
+					progress(body,info.fraction,rgb(skillHex(skill)),glyph.." "..string.upper(skill).." "..info.level..(info.maxed and "  ·  MAX" or ("  ·  "..fmt(math.max(0,info.ceiling-info.xp)).." XP to "..(info.level+1)))).LayoutOrder=nextOrder()
+				end
+			end
+		end})
+	-- The triangle: three medallions in a ring of arrows.
+	heading("THE COMBAT TRIANGLE")
+	card({name="Triangle",motif="Hunt",title="Each style beats the next",titleColor=gold,
+		after=function(body,nextOrder)
+			local rowHeight=compactAtlas and 80 or 92
+			local strip=make("Frame",body,{Name="TriangleStrip",BackgroundTransparency=1,Size=UDim2.new(1,0,0,rowHeight),LayoutOrder=nextOrder()})
+			local order=tbl(cs.order)
+			for i,name in ipairs(order) do
+				local l=CB.looks[name]
+				local x=(i-1)/#order+.5/#order
+				local size=compactAtlas and 34 or 40
+				local chip=UI.chip(strip,l.glyph,rgb(l.hex),size,0)
+				chip.Name="Style"..name
+				chip.AnchorPoint=Vector2.new(.5,0)
+				chip.Position=UDim2.new(x,0,0,0)
+				if name==style then make("UIStroke",chip,{Color=gold,Thickness=2}) end
+				local caption=label(strip,l.name,0,size+2,UDim.new(0,90),16,UI.heavy,12,rgb(l.hex))
+				caption.AnchorPoint=Vector2.new(.5,0)
+				caption.Position=UDim2.new(x,0,0,size+3)
+				caption.TextXAlignment=Enum.TextXAlignment.Center
+				if i<#order then
+					local arrow=label(strip,"beats ▶",0,0,UDim.new(0,70),size,bold,11,muted)
+					arrow.AnchorPoint=Vector2.new(.5,0)
+					arrow.Position=UDim2.new(i/#order,0,0,0)
+					arrow.TextXAlignment=Enum.TextXAlignment.Center
+				end
+			end
+			local back=label(strip,"◀ "..CB.looks[order[#order]].name.." beats "..CB.looks[order[1]].name,0,0,full,14,bold,11,muted)
+			back.Position=UDim2.new(0,0,1,-15)
+			back.TextColor3=rgb(CB.looks[order[#order]].hex)
+			back.TextXAlignment=Enum.TextXAlignment.Center
+			para(body,"Hit a creature with the style that beats its own for "..paint("+"..math.floor(num(cs.weaknessBonus,.3)*100+.5).."% WEAK!","FFD24A")..
+				"; the style it beats is resisted ("..paint("−"..math.floor(num(cs.resistPenalty,.3)*100+.5).."%","A9BDC1").."). The Bestiary lists every creature's weakness.",nextOrder(),UI.copy,compactAtlas and 12 or 13)
+		end})
+	-- Owned weapons by style (the best two of each, strongest first).
+	local byStyle={melee={},ranged={},magic={}}
+	for itemId,n in pairs(tbl(state.items)) do
+		local def=itemDef(itemId)
+		if num(n,0)>0 and def and def.kind=="weapon" and itemId~=weaponId then table.insert(byStyle[CB.styleOf(def)],itemId) end
+	end
+	local any=false
+	for _,name in ipairs(tbl(cs.order)) do if #byStyle[name]>0 then any=true end end
+	if any then heading("SWITCH STYLE") end
+	for _,name in ipairs(tbl(cs.order)) do
+		local list=byStyle[name]
+		table.sort(list,function(a,b)
+			local da,db=itemDef(a),itemDef(b)
+			if num(da.tier,0)~=num(db.tier,0) then return num(da.tier,0)>num(db.tier,0) end
+			return da.name<db.name
+		end)
+		for i=1,math.min(2,#list) do
+			local itemId=list[i]
+			local def=itemDef(itemId)
+			local ok,requirements=meetsRequires(def.requires,levels)
+			local detail=CB.itemLines(def)
+			card({name="Weapon"..itemId,item=itemId,iconSize=compactAtlas and 30 or 36,title=escape(def.name),titleColor=rgb(itemHex(itemId)),subtitle=CB.tag(name).."  ·  "..escape(def.rarity or ""),
+				lines={detail[1],requirements~="" and ("Requires "..requirements) or nil},
+				actions={{caption="Equip",primary=ok,disabled=not ok,reason="Requires "..(requirements:gsub("<[^>]+>","")),fn=function() send("equip",itemId) end}}})
+		end
+	end
+end
+-- Hero › Spellbook: every spell with level, element, mana, glyph costs (minus
+-- the wielded staff's free elements), damage scaling and the autocast choice.
+function Pages.drawSpellbook()
+	local CB=UI.CB
+	local cs=CB.cs()
+	if not Data or not cs or type(Data.SpellOrder)~="table" then dataMissing() return end
+	local d=depth()
+	if not d then syncing("spellbook") return end
+	local lo=CB.loadout()
+	local stats=tbl(d.stats)
+	local levels=skillsOf(state)
+	local magic=num(lo.levels.Magic,nil) or (levels.Magic and levels.Magic.level) or 1
+	local weapon=itemDef(lo.weapon)
+	local wielding=lo.style=="magic"
+	local auto=CB.spell(lo.autocast)
+	local maxMana=num(player:GetAttribute("MaxMana"),nil) or num(stats.intelligence,0)
+	local mana=num(player:GetAttribute("Mana"),nil) or maxMana
+	card({name="SpellbookSummary",motif="Hero",accent=rgb("8FA8FF"),title="Spellbook",titleColor=gold,
+		subtitle="Magic "..magic.."  ·  ✦ "..fmt(math.floor(mana)).." / "..fmt(math.floor(maxMana)).." mana",badge=auto and "AUTOCAST" or nil,badgeColor=mint,
+		detail=(auto and ("Autocasting "..paint(escape(auto.name),auto.color)..". Attacks with a staff or wand cast it.") or "No autocast: staff and wand attacks cast your strongest unlocked spell.")..
+			" Spell bar: keys 1-6, tap, or DPad + L1; right-click a damage spell to autocast it.",
+		lines={wielding and weapon and (CB.itemLines(weapon)[2] or nil) or paint("Damage spells and Rootbind need a staff or wand; Mend and Hubward work with any weapon.","A9BDC1")},
+		actions=auto and {{caption="Clear",fn=function() send("autocast","none") end}} or nil})
+	local function spellCard(spell)
+		local locked=magic<num(spell.level,1)
+		local element=spell.element and tbl(cs.elements)[spell.element]
+		local kindText=spell.kind=="damage" and ((spell.element or "").." element  ·  "..(spell.tier or "").." tier") or ({snare="Snare",heal="Heal",teleport="Teleport"})[spell.kind] or spell.kind
+		local lines={}
+		local costs={}
+		for _,c in ipairs(CB.costs(spell,wielding and weapon or nil)) do
+			local have=num(lo.supplies[c.id],count("items",c.id))
+			table.insert(costs,c.free and paint(c.n.." "..escape(itemName(c.id)).." (free from staff)","9EE7D2")
+				or paint(c.n.." "..escape(itemName(c.id)),have>=c.n and itemHex(c.id) or "E8806A")..paint(" ("..fmt(have)..")","A9BDC1"))
+		end
+		table.insert(lines,paint("✦ "..num(spell.mana,0).." mana","9FC3FF").."  ·  "..(#costs>0 and table.concat(costs,"  +  ") or "no glyphs"))
+		if spell.kind=="damage" then
+			local now=CB.spellDamage(spell,stats,wielding and weapon or nil,magic)
+			table.insert(lines,"Damage "..fmt(num(spell.damage,0)).." + weapon power, × (1 + Intelligence/100 × "..num(spell.scaling,0)..")"..(now and ("  ·  now ≈ "..paint(fmt(now),"FFD24A")) or ""))
+		elseif spell.kind=="snare" then
+			table.insert(lines,"Roots a creature for "..num(spell.duration,5).."s (bosses are immune)  ·  "..num(spell.cooldown,0).."s cooldown")
+		elseif spell.kind=="heal" then
+			table.insert(lines,"Restores "..num(spell.heal,0).."% of your max health  ·  "..num(spell.cooldown,0).."s cooldown  ·  any weapon")
+		elseif spell.kind=="teleport" then
+			table.insert(lines,"Breaks a Hubward Tablet to return to the Aether Hub  ·  not within "..num(cs.combatLock,5).."s of being struck")
+		end
+		table.insert(lines,paint("+"..fmt(num(spell.xp,0)).." Magic XP per cast","F9CC77")..(spell.requiresWeapon and "  ·  needs a staff or wand" or ""))
+		local actions
+		if spell.autocast then
+			if auto and auto.id==spell.id then
+				actions={{caption="Clear",fn=function() send("autocast","none") end}}
+			else
+				actions={{caption="Autocast",primary=not locked,disabled=locked,reason="Requires Magic "..num(spell.level,1)..".",fn=function() send("autocast",spell.id) end}}
+			end
+		end
+		card({name="Spell"..spell.id,icon=function(parent,size) return itemGlyph(parent,{name=spell.name,color=spell.color},size,locked) end,iconSize=compactAtlas and 30 or 38,
+			title=escape(spell.name),titleColor=locked and muted or rgb(lighten(spell.color or "C9F2FF",.2)),
+			subtitle="Lv "..num(spell.level,1).."  ·  "..escape(kindText)..(element and "" or ""),
+			badge=(auto and auto.id==spell.id) and "AUTOCAST" or (locked and ("Magic "..num(spell.level,1)) or nil),badgeColor=(auto and auto.id==spell.id) and mint or ember,
+			lines=lines,actions=actions})
+	end
+	for _,tier in ipairs(tbl(cs.spellTiers)) do
+		heading(string.upper(tier.name).."S    /    "..string.upper(itemName(tier.catalyst)))
+		for _,id in ipairs(Data.SpellOrder) do
+			local spell=CB.spell(id)
+			if spell and spell.tier==tier.id then spellCard(spell) end
+		end
+	end
+	heading("UTILITY")
+	for _,id in ipairs(Data.SpellOrder) do
+		local spell=CB.spell(id)
+		if spell and spell.kind~="damage" then spellCard(spell) end
+	end
+end
 Pages.drawSkills,Pages.drawGear,Pages.drawEnchant,Pages.drawAccessories,Pages.drawPets=drawSkills,drawGear,drawEnchant,drawAccessories,drawPets
 end
 
@@ -2354,6 +2699,7 @@ local function itemDetail(id)
 	local legacy=type(state.consumables)=="table" and state.consumables[id]
 	if def then
 		if def.stats then table.insert(lines,statText(def.stats)) end
+		for _,line in ipairs(UI.CB.itemLines(def)) do table.insert(lines,line) end
 		local enchants={}
 		for enchantId,level in pairs(tbl(tbl(dget("enchants"))[id])) do
 			local enchant=Data and tbl(Data.Enchants)[enchantId]
@@ -2589,9 +2935,9 @@ end
 do
 local stationCategory={}
 local craftableOnly=false
-local categoryOrder={"Ingots","Tools","Weapons","Armor","Meals","Feasts","Potions","Accessories"}
+local categoryOrder={"Ingots","Tools","Weapons","Armor","Arrowheads","Meals","Feasts","Potions","Glyphs","Tablets","Bows","Fletching","Arrows","Staves","Accessories"}
 local stationSkills={Forge="Smithing",Hearth="Cooking",Cauldron="Alchemy",Workbench="Carpentry"}
-local stationNotes={Forge="Smelt ingots and forge tools, weapons and armor.",Hearth="Cook seared fish and buff feasts.",Cauldron="Brew timed potions.",Workbench="Craft accessories (talismans) for your bag."}
+local stationNotes={Forge="Smelt ingots and forge tools, weapons, armor and arrowheads.",Hearth="Cook seared fish and buff feasts.",Cauldron="Brew timed potions and inscribe spell glyphs and Hubward tablets (Glyphcraft).",Workbench="Craft accessories, fletch bows, shafts and arrows (Fletching) and carve staves and wands (Glyphcraft)."}
 local function recipeStatus(recipe,levels)
 	local gates={}
 	local ok,reason=true,nil
@@ -2654,6 +3000,9 @@ local function outputSummary(def)
 	if def.heal then table.insert(parts,"Restores "..paint(fmt(def.heal).." ❤","FF6B6B")) end
 	if type(def.buff)=="table" then table.insert(parts,statText(def.buff.stats).." for "..clock(def.buff.duration)) end
 	if def.kind=="accessory" then table.insert(parts,paint("✧ "..tostring(tbl(tbl(Data.Rarity)[def.rarity]).power or "?").." Magical Power","FFAA00")) end
+	-- Bows, staves, wands and arrows: their combat line (style, power, reach, tier).
+	local combatLine=UI.CB.itemLines(def)[1]
+	if combatLine and (def.kind=="weapon" and def.style or def.ammo) then table.insert(parts,combatLine) end
 	return table.concat(parts,"  ·  ")
 end
 local function drawForge()
@@ -2947,7 +3296,8 @@ local function drawBestiary()
 			local n=num(kills[id],0)
 			if n<=0 then
 				card({name="Beast"..id,locked=true,title="???",titleColor=muted,subtitle="Lv "..num(monster.level,1).."  ·  not yet encountered",
-					detail=monster.seaCreature and ("Hooked while fishing at Fishing "..num(monster.fishing,1)..".") or "Defeat this creature to record it."})
+					detail=monster.seaCreature and ("Hooked while fishing at Fishing "..num(monster.fishing,1)..".") or "Defeat this creature to record it.",
+					lines={UI.CB.triangle(monster)}})
 			else
 				local tier=0
 				for i,need in ipairs(milestones) do if n>=need then tier=i end end
@@ -2958,7 +3308,7 @@ local function drawBestiary()
 					title=escape(monster.name),titleColor=rgb(lighten(hex,.35)),subtitle="Lv "..num(monster.level,1).."  ·  "..paint(fmt(monster.hp).." ❤","FF6B6B").."  ·  "..fmt(monster.xp).." Combat XP",
 					badge=fmt(n).." kills",badgeColor=ivory,pips={total=#milestones,filled=tier,color=rgb(hex),labels=labels},
 					bar={fraction=nextNeed and math.clamp((n-previous)/math.max(1,nextNeed-previous),0,1) or 1,color=gold,caption=nextNeed and (fmt(n).." / "..fmt(nextNeed).." to milestone "..numeral(tier+1)) or "BESTIARY COMPLETE"},
-					lines={"Drops: "..dropText(monster.drops)..(monster.slayer and ("  ·  "..paint(escape(tostring(monster.slayer)).." slayer target","E8806A")) or ""),
+					lines={UI.CB.triangle(monster),"Drops: "..dropText(monster.drops)..(monster.slayer and ("  ·  "..paint(escape(tostring(monster.slayer)).." slayer target","E8806A")) or ""),
 						monster.seaCreature and paint("Fishing "..num(monster.fishing,1).."  ·  +"..fmt(num(monster.fishingXp,0)).." Fishing XP  ·  "..(monster.waters and escape(table.concat(monster.waters,", ")).." waters" or "any water"),"9EE7D2") or nil}})
 			end
 		end
@@ -3847,7 +4197,7 @@ end
 local tabOrder={"Journal","Hero","Satchel","Workshop","Hunt","Ledger"}
 local sectionLists={
 	Journal={"Bearing","Quests","Diaries","Construction","Regions","Crew","Calendar"},
-	Hero={"Skills","Gear","Enchant","Accessories","Pets"},
+	Hero={"Skills","Gear","Combat","Spellbook","Enchant","Accessories","Pets"},
 	Satchel={"Items","Collections"},
 	Workshop={"Forge","Hearth","Cauldron","Workbench","Workers","Home"},
 	Hunt={"Slayer","Bestiary","Dungeon"},
@@ -3856,7 +4206,7 @@ local sectionLists={
 sectionOf={Journal="Bearing",Hero="Skills",Satchel="Items",Workshop="Forge",Hunt="Slayer",Ledger="Bank"}
 local drawers={
 	Journal={Bearing=Pages.drawBearing,Quests=Pages.drawQuests,Diaries=Pages.drawDiaries,Construction=Pages.drawConstruction,Regions=Pages.drawRegions,Crew=Pages.drawCoop,Calendar=Pages.drawCalendar},
-	Hero={Skills=Pages.drawSkills,Gear=Pages.drawGear,Enchant=Pages.drawEnchant,Accessories=Pages.drawAccessories,Pets=Pages.drawPets},
+	Hero={Skills=Pages.drawSkills,Gear=Pages.drawGear,Combat=Pages.drawCombat,Spellbook=Pages.drawSpellbook,Enchant=Pages.drawEnchant,Accessories=Pages.drawAccessories,Pets=Pages.drawPets},
 	Satchel={Items=Pages.drawItems,Collections=Pages.drawCollections},
 	Workshop={Forge=function() Pages.drawStation("Forge") end,Hearth=function() Pages.drawStation("Hearth") end,Cauldron=function() Pages.drawStation("Cauldron") end,
 		Workbench=function() Pages.drawStation("Workbench") end,Workers=Pages.drawWorkers,Home=Pages.drawHome},
@@ -4114,7 +4464,20 @@ updateVitals=function()
 	end
 	local defense=num(stats.defense,nil) or num(legacy.defense,nil)
 	UI.defenseText.Text=defense and (fmt(defense)..'  <font size="10" color="#A9BDC1">DEFENSE</font>') or "—"
+	-- Mana: live attributes from the combat server; before the first push, max
+	-- mana is Intelligence (full).
+	local maxMana=num(player:GetAttribute("MaxMana"),nil) or num(stats.intelligence,nil)
+	local mana=num(player:GetAttribute("Mana"),nil) or maxMana
+	if maxMana then
+		UI.manaText.Text=fmt(math.max(0,math.floor(mana or 0))).." / "..fmt(math.floor(maxMana))
+		UI.setMeter(UI.manaFill,(mana or 0)/math.max(1,maxMana))
+	else
+		UI.manaText.Text="—"
+		UI.setMeter(UI.manaFill,0)
+	end
 end
+player:GetAttributeChangedSignal("Mana"):Connect(function() updateVitals() end)
+player:GetAttributeChangedSignal("MaxMana"):Connect(function() updateVitals() end)
 local function watchCharacter(character)
 	if not character then return end
 	local found=character:WaitForChild("Humanoid",10)
@@ -4244,6 +4607,8 @@ local function accept(data,quiet)
 	state = data
 	synced = true
 	render(true)
+	-- Share every accepted snapshot with the combat HUD (combat.client.lua).
+	pcall(function() UI.snapshotChannel:Fire(data) end)
 	local message=data.message
 	if before then
 		local ok,bannered=pcall(celebrate,before,skillsOf(state))
@@ -4304,6 +4669,28 @@ sendCoop = function(verb, item, extra)
 		coopError = if ok and type(result) == "table" and type(result.message) == "string" then result.message else "The shared ledger could not be reached. Refresh before trying again."
 	end
 	render()
+end
+-- Local channels with the combat HUD (combat.client.lua): snapshots out,
+-- verbs (spell bar autocast) and short toasts (denied attacks) in.
+do
+	local function channel(name)
+		local existing=ReplicatedStorage:FindFirstChild(name)
+		if existing then return existing end
+		local created=Instance.new("BindableEvent")
+		created.Name=name
+		created.Parent=ReplicatedStorage
+		return created
+	end
+	UI.snapshotChannel=channel("IsleSnapshotLocal")
+	local actions,toasts=channel("IsleActionLocal"),channel("IsleToastLocal")
+	if actions.Event then
+		actions.Event:Connect(function(verb,item)
+			if verb=="autocast" and (item==nil or type(item)=="string") then task.spawn(send,"autocast",item)
+			-- A late-starting combat HUD asks for the latest snapshot.
+			elseif verb=="snapshot" and synced then pcall(function() UI.snapshotChannel:Fire(state) end) end
+		end)
+	end
+	if toasts.Event then toasts.Event:Connect(function(text) notify(text) end) end
 end
 -- Crafting stations and the slayer board set IsleStation on the player; open
 -- the matching page. Values may carry a suffix ("Forge:3") so repeats fire.
