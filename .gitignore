@@ -7,3 +7,5 @@
 *.rbxlx.lock
 publish-receipt.json
 *.log
+.claude/worktrees/
+build/

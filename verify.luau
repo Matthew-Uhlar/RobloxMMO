@@ -6,10 +6,11 @@ local place = roblox.deserializePlace(fs.readFile("Aether-Isles.rbxl"))
 local bindings = {
 	Adventure = "server.server.lua", Archipelago = "world.server.lua",
 	Observatory = "expedition.server.lua", Assembly = "festival.server.lua",
-	Homesteads = "coop.server.lua",
-	FieldGuide = "ui.client.lua", IslandArt = "mesh.client.lua",
+	Homesteads = "coop.server.lua", Combat = "combat.server.lua",
+	FieldGuide = "ui.client.lua", IslandArt = "mesh.client.lua", CombatInput = "combat.client.lua", IslandBuilder = "build.client.lua",
 	AetherArt = "art/PropCatalog.lua",
 	MaterialArt = "art/MaterialArt.lua",
+	AetherData = "shared/GameData.lua", AetherProgression = "shared/Progression.lua",
 }
 local count = 0
 for _, obj in place:GetDescendants() do
@@ -17,7 +18,7 @@ for _, obj in place:GetDescendants() do
 	if not file then continue end
 	assert(obj.Source:gsub("\r\n","\n") == fs.readFile(file):gsub("\r\n","\n"), file .. " is stale")
 	local client = file:find(".client.", 1, true)
-	local shared = obj.Name=="AetherArt" or obj.Name=="MaterialArt"
+	local shared = obj.Name=="AetherArt" or obj.Name=="MaterialArt" or obj.Name=="AetherData" or obj.Name=="AetherProgression"
 	assert(obj.ClassName == (if shared then "ModuleScript" elseif client then "LocalScript" else "Script"))
 	assert(obj.Parent.Name == (if shared then "ReplicatedStorage" elseif client then "StarterPlayerScripts" else "ServerScriptService"))
 	assert(#luau.compile(obj.Source) > 0)

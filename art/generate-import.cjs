@@ -68,7 +68,8 @@ function faceNormal(a, b, c) {
   ];
   const length = Math.hypot(...normal);
   assert(length > 1e-10, 'Degenerate triangle');
-  return normal.map(value => value / length);
+  // "+ 0" folds IEEE negative zero, which JSON accessor bounds cannot represent.
+  return normal.map(value => value / length + 0);
 }
 
 function createDocument() {

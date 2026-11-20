@@ -26,6 +26,14 @@ roblox.implementProperty("ProximityPrompt", "Triggered", function(prompt)
 end)
 local players={PlayerAdded=signal(),PlayerRemoving=signal(),GetPlayers=function() return {} end}
 local tags={}
+-- Shared data is the real module; region access is a recording double.
+local Data=luau.load(fs.readFile("shared/GameData.lua"))()
+local dataModule={Name="AetherData"}
+local accessCalls,allowRegion={},{}
+local regionAccess={Invoke=function(_,who,regionId)
+	table.insert(accessCalls,{who,regionId})
+	return {allowed=allowRegion[regionId]==true,message="Locked: "..tostring(regionId)}
+end}
 local services={
 	Players=players,
 	Lighting=roblox.Instance.new("Lighting"),
@@ -33,6 +41,8 @@ local services={
 		tags[tag]=tags[tag] or {}
 		table.insert(tags[tag],obj)
 	end},
+	ReplicatedStorage={WaitForChild=function(_,name) return if name=="AetherData" then dataModule else nil end},
+	ServerStorage={FindFirstChild=function(_,name) return if name=="IsleRegionAccess" then regionAccess else nil end},
 }
 local world=roblox.Instance.new("Workspace")
 local environment={
@@ -40,11 +50,17 @@ local environment={
 	workspace=world,Instance=roblox.Instance,Vector3=roblox.Vector3,
 	Vector2=roblox.Vector2,CFrame=roblox.CFrame,Color3=roblox.Color3,
 	UDim2=roblox.UDim2,Enum=roblox.Enum,task={spawn=function(fn,...) fn(...) end},
+	NumberRange=roblox.NumberRange,NumberSequence=roblox.NumberSequence,ColorSequence=roblox.ColorSequence,
+	require=function(module) assert(module==dataModule,"world requires only AetherData") return Data end,
 }
 local source=fs.readFile("world.server.lua")
 -- Lune does not synthesize BasePart.Position from CFrame as the engine does.
 source=source:gsub("plans%.Position","plans.CFrame.Position")
 luau.load(source,{environment=environment,injectGlobals=true})()
+local staticParts,staticLights=0,0
+for _,obj in world:GetDescendants() do
+	if obj:IsA("BasePart") then staticParts+=1 elseif obj:IsA("Light") then staticLights+=1 end
+end
 local function player(id,attributes)
 	local changed={}
 	local p={UserId=id,CharacterAdded=signal(),attributes=attributes or {}}
@@ -185,7 +201,9 @@ check(proxySource~=nil,"bounded fallback source available")
 local makeProxy=luau.load("local palette=...\n"..proxySource.."\nreturn makeProxy",{
 	environment={Instance=roblox.Instance,Vector3=roblox.Vector3,CFrame=roblox.CFrame,Enum=roblox.Enum},injectGlobals=true,
 })(palette)
-local proxyLimits={ObservatoryArch=16,EclipseAstrolabe=18,ObservatorySentinel=18,AetherCrystal=4}
+local proxyLimits={ObservatoryArch=16,EclipseAstrolabe=18,ObservatorySentinel=18,AetherCrystal=4,
+	Lantern=8,WindpineCrown=4,Moonbloom=7,Pickaxe=3,Blade=4,Tonic=3,VaultChest=5,TimberBundle=5,
+	Surveyor=5,Shellwarden=8,Tidewing=7}
 for shape,limit in pairs(proxyLimits) do
 	local proxy=makeProxy(shape,1.4)
 	check(proxy:GetAttribute("BoundedProxy")==true,shape.." has bounded fallback")
@@ -196,7 +214,14 @@ for shape,limit in pairs(proxyLimits) do
 	end
 	proxy:Destroy()
 end
-check(makeProxy("Tidewing",1)==nil,"unrelated native/creature meshes remain unchanged")
+check(makeProxy("Sword",1)==nil,"inventory-only meshes get no world proxy")
+check(not meshSource:find('Instance.new%("WedgePart"%)'),"world props never fall back to per-triangle wedges")
+check(meshSource:find("if visual then visual.Name")~=nil,"no mesh and no proxy leaves only the anchor geometry")
+for _,anchor in ipairs(tags.AetherSculpture) do
+	local ok,shape=pcall(anchor.GetAttribute,anchor,"Shape")
+	if ok then check(proxyLimits[shape]~=nil,"world sculpture "..tostring(shape).." has a bounded proxy") end
+end
+check(proxyLimits.Tidewing~=nil,"companion Tidewing has a bounded proxy")
 local festival=luau.load(fs.readFile("festival.server.lua"),{environment={
 	game={GetService=function() return players end},workspace=world,Instance=roblox.Instance,
 	Vector3=roblox.Vector3,Vector2=roblox.Vector2,CFrame=roblox.CFrame,Color3=roblox.Color3,UDim2=roblox.UDim2,Enum=roblox.Enum,
@@ -236,4 +261,507 @@ for _,name in meshNames do
 	end
 	print(name..": "..#vertices.." vertices / "..#faces.." triangles")
 end
+
+-- Depth update: regions, tiered nodes, monster grounds, stations, transit.
+local Vec=roblox.Vector3.new
+local VERB={Mining="Mine",Woodcutting="Chop",Fishing="Fish",Farming="Harvest"}
+local function islandOf(obj)
+	local node=obj
+	while node and node.Parent~=archipelago do node=node.Parent end
+	return node
+end
+local function onIsland(isle,pos,margin)
+	local ground=isle and isle:FindFirstChild("Meadow")
+	local radius=isle and isle:GetAttribute("IslandRadius")
+	if not ground or not radius then return false end
+	local c=ground.CFrame.Position
+	return Vec(pos.X-c.X,0,pos.Z-c.Z).Magnitude<=radius-(margin or 0) and pos.Y>=c.Y-1 and pos.Y<=c.Y+12
+end
+local function onRegion(regionId,pos,margin)
+	for _,isle in archipelago:GetChildren() do
+		if isle:GetAttribute("RegionId")==regionId and onIsland(isle,pos,margin) then return true end
+	end
+	return false
+end
+check(staticParts<2500,"static world stays under the 2500 part budget ("..staticParts..")")
+for _,obj in world:GetDescendants() do
+	if obj:IsA("BasePart") then check(obj.Anchored,"every world part is anchored") end
+end
+for _,region in Data.Regions do
+	local found=false
+	for _,isle in archipelago:GetChildren() do if isle:GetAttribute("RegionId")==region.id then found=true end end
+	check(found,region.id.." has a built island")
+end
+-- Every resource tier: at least one correctly attributed gather node.
+local gatherNodes={}
+for _,obj in world:GetDescendants() do
+	if obj:IsA("ProximityPrompt") and obj:GetAttribute("IsleAction")=="gather" and not obj:GetAttribute("OwnerUserId") then
+		local id=obj:GetAttribute("IsleItem")
+		gatherNodes[id]=gatherNodes[id] or {}
+		table.insert(gatherNodes[id],obj)
+	end
+end
+local tierCount,nodeCount=0,0
+for skill,tiers in Data.ResourceTiers do
+	for _,def in tiers do
+		tierCount+=1
+		local nodes=gatherNodes[def.id]
+		check(nodes~=nil and #nodes>=1,def.id.." has a gather node")
+		local formatted,ungated=false,false
+		for _,q in nodes do
+			nodeCount+=1
+			local target=q.Parent:GetAttribute("ResourceId")
+			check(target==nil or target==def.id,def.id.." node target matches")
+			if q.ObjectText==def.name.." (Lv "..def.level..")" and q.ActionText==VERB[skill] then formatted=true end
+			local isle=islandOf(q)
+			local host=isle and isle:GetAttribute("RegionId")
+			check(host~=nil,def.id.." node sits on a region island")
+			local region=q:GetAttribute("IsleRegion")
+			if region then
+				check(Data.RegionById[region]~=nil,def.id.." node names a valid region")
+				check(region==host,def.id.." node region matches its island")
+			else
+				ungated=true
+			end
+			if next(Data.RegionById[host].requires) then check(region==host,def.id.." node on a gated island carries IsleRegion") end
+			check(onIsland(isle,q.Parent.CFrame.Position,1),def.id.." node stands on its island")
+		end
+		check(formatted,def.id.." has a '"..VERB[skill].."' prompt labelled with name and level")
+		if def.level<=3 then check(ungated,def.id.." is available near home without a gate") end
+		if def.level>=30 then check(not ungated,def.id.." lives in a gated region") end
+	end
+end
+-- Every monster: spawn markers in its region on open ground.
+local spawnFolder=world:FindFirstChild("MonsterSpawns")
+check(spawnFolder~=nil and spawnFolder:IsA("Folder"),"Workspace.MonsterSpawns folder exists")
+local markerCount,markers={},0
+local floors={Meadow=true,["Floating foundation"]=true,["Grassy hillock"]=true,["Edge guard"]=true,["Hall floor"]=true,["Guild court"]=true,["Cavern roof"]=true}
+for _,marker in spawnFolder:GetChildren() do
+	markers+=1
+	check(marker:IsA("BasePart") and marker.Anchored and not marker.CanCollide and not marker.CanTouch and marker.Transparency==1,"spawn marker is invisible, anchored and non-colliding")
+	local id=marker:GetAttribute("MonsterId")
+	local def=Data.Monsters[id]
+	check(def~=nil,"spawn marker names a known monster")
+	check(marker:GetAttribute("Region")==def.region,id.." marker region matches data")
+	local count=marker:GetAttribute("Count")
+	check(type(count)=="number" and count>=1 and count<=4,id.." marker has a sane count")
+	local pos=marker.CFrame.Position
+	check(onRegion(def.region,pos,marker:GetAttribute("Radius") or 0),id.." marker and its roam radius sit inside "..def.region)
+	local isle
+	for _,candidate in archipelago:GetChildren() do
+		if candidate:GetAttribute("RegionId")==def.region and onIsland(candidate,pos) then isle=candidate end
+	end
+	for _,obj in isle:GetDescendants() do
+		if obj:IsA("BasePart") and obj.CanCollide and not floors[obj.Name] then
+			local d=obj.CFrame.Position-pos
+			check(Vec(d.X,0,d.Z).Magnitude>=4.5,id.." spawns on open ground (clear of "..obj.Name..")")
+		end
+	end
+	markerCount[id]=(markerCount[id] or 0)+1
+end
+for id in Data.Monsters do check(markerCount[id]~=nil,id.." has a spawn marker") end
+-- Warps: every beacon asks the authoritative region check with a valid id.
+local function traveller()
+	local t={attributes={}}
+	function t:GetAttribute(key) return self.attributes[key] end
+	function t:SetAttribute(key,value) self.attributes[key]=value end
+	return t
+end
+local function standAt(t,trigger)
+	local root={Position=trigger.CFrame.Position}
+	local hum={Health=100}
+	t.landed=nil
+	t.Character={
+		FindFirstChild=function(_,name) return if name=="HumanoidRootPart" then root else nil end,
+		FindFirstChildOfClass=function(_,class) return if class=="Humanoid" then hum else nil end,
+		PivotTo=function(_,cf) t.landed=cf.Position end,
+	}
+end
+local warpedTo,returns,warps,landings={},0,0,{}
+for _,q in world:GetDescendants() do
+	if not q:IsA("ProximityPrompt") then continue end
+	local id=q:GetAttribute("IsleWarpRegion")
+	if id then
+		warps+=1
+		check(Data.RegionById[id]~=nil,"warp names a valid region id")
+		local t=traveller()
+		standAt(t,q.Parent)
+		allowRegion[id]=false
+		local before=#accessCalls
+		q.Triggered:Fire(t)
+		check(#accessCalls==before+1 and accessCalls[#accessCalls][1]==t and accessCalls[#accessCalls][2]==id,id.." warp calls IsleRegionAccess with its region id")
+		check(t.landed==nil,id.." locked warp does not move the player")
+		check(t.attributes.IsleRegionNotice=="Locked: "..id,id.." locked warp relays the server message")
+		check(t.attributes.IsleRegionNoticeCount==1,id.." locked warp bumps the notice counter")
+		q.Triggered:Fire(t)
+		check(t.attributes.IsleRegionNoticeCount==2 and t.landed==nil,id.." repeated identical denial is still observable")
+		allowRegion[id]=true
+		q.Triggered:Fire(t)
+		check(t.landed~=nil and onRegion(id,t.landed,2),id.." unlocked warp lands on its region island")
+		if t.landed then table.insert(landings,{id.." landing",t.landed}) end
+		local far=traveller()
+		standAt(far,{CFrame=q.Parent.CFrame+Vec(30,0,0)})
+		q.Triggered:Fire(far)
+		check(far.landed==nil,id.." warp requires standing at the beacon")
+		warpedTo[id]=true
+	elseif q:GetAttribute("IsleWarpReturn") then
+		returns+=1
+		local t=traveller()
+		standAt(t,q.Parent)
+		q.Triggered:Fire(t)
+		check(t.landed~=nil and onRegion("Hub",t.landed,2),"return beacon lands on the Guild Terrace")
+		if t.landed then table.insert(landings,{"Skyway return landing",t.landed}) end
+	elseif not q:GetAttribute("IsleAction") then
+		-- Any other prompt that moves the player (quarry descent, quay/crew beacons).
+		local t=traveller()
+		standAt(t,q.Parent)
+		pcall(function() q.Triggered:Fire(t) end)
+		if t.landed then table.insert(landings,{q.ObjectText.." landing",t.landed}) end
+	end
+end
+-- Warp landings must sit outside monster aggro (25): every marker >= 40 studs flat.
+for _,obj in world:GetDescendants() do
+	if obj:IsA("SpawnLocation") then table.insert(landings,{obj.Name,obj.Position}) end
+end
+check(#landings>=8,"warp landing points collected for the aggro rule")
+for _,marker in spawnFolder:GetChildren() do
+	local m=marker.CFrame.Position
+	for _,landing in landings do
+		local d=landing[2]-m
+		check(Vec(d.X,0,d.Z).Magnitude>=40,marker.Name.." is >= 40 studs from "..landing[1])
+	end
+end
+for _,region in Data.Regions do
+	if next(region.requires) then check(warpedTo[region.id],region.id.." is reachable by a gated warp") end
+end
+check(returns>=4,"every depth region has a return beacon")
+-- Void safety: every region island is bridged or a warp destination; depth isles are guarded.
+local bridgeEnds={}
+for _,deck in world:GetDescendants() do
+	if deck:IsA("BasePart") and deck.Name=="Continuous bridge deck" then
+		local half=deck.CFrame.LookVector*deck.Size.Z/2
+		table.insert(bridgeEnds,deck.CFrame.Position+half)
+		table.insert(bridgeEnds,deck.CFrame.Position-half)
+	end
+end
+local legacyIsles={["Compass Quay"]=true,["Mosswake Grove"]=true,["Brassfall Quarry"]=true,Skyreach=true}
+for _,isle in archipelago:GetChildren() do
+	local id=isle:GetAttribute("RegionId")
+	if not id then continue end
+	local bridged=0
+	for _,p in bridgeEnds do if onIsland(isle,p+Vec(0,.3,0)) then bridged+=1 end end
+	local guards=0
+	for _,obj in isle:GetDescendants() do if obj.Name=="Edge guard" then guards+=1 end end
+	check(bridged>0 or warpedTo[id],isle.Name.." is reached by bridge or warp")
+	if not legacyIsles[isle.Name] then check(guards>=8,isle.Name.." has an invisible edge guard ring") end
+end
+-- Crafting stations and the Guild Hall.
+local stationSpots,stationCount={},0
+for _,q in world:GetDescendants() do
+	if q:IsA("ProximityPrompt") and q:GetAttribute("IsleAction")=="station" then
+		stationCount+=1
+		local kind=q:GetAttribute("IsleItem")
+		local t=traveller()
+		q.Triggered:Fire(t)
+		check(t.attributes.IsleStation==kind,kind.." station sets the IsleStation attribute")
+		q.Triggered:Fire(t)
+		check(t.attributes.IsleStationVisit==2,kind.." repeat visits are observable")
+		local region=islandOf(q):GetAttribute("RegionId")
+		stationSpots[kind]=stationSpots[kind] or {}
+		table.insert(stationSpots[kind],region)
+	end
+end
+local regional=0
+for _,kind in {"Forge","Hearth","Cauldron","Workbench","Slayer"} do
+	local spots=stationSpots[kind]
+	check(spots~=nil,kind.." station exists")
+	check(table.find(spots,"Hub")~=nil,kind.." station stands in the hub")
+	for _,r in spots do if r~="Hub" then regional+=1 end end
+end
+check(regional>=2,"regions host extra crafting stations")
+local leaderboard=world:FindFirstChild("Skill Leaderboard",true)
+check(leaderboard~=nil and leaderboard:FindFirstChildOfClass("SurfaceGui")~=nil,"guild hall skill leaderboard")
+for _,skill in Data.SkillOrder do
+	check(leaderboard:FindFirstChild("Row_"..skill,true)~=nil,skill.." row on the leaderboard")
+end
+local bestiary=world:FindFirstChild("Bestiary",true)
+check(bestiary~=nil and bestiary:IsA("BasePart"),"guild hall bestiary board")
+for id,def in Data.Monsters do
+	local row=bestiary:FindFirstChild("Row_"..id,true)
+	check(row~=nil and row.Text:find(def.name,1,true)~=nil,def.name.." listed in the bestiary")
+end
+check(islandOf(leaderboard):GetAttribute("RegionId")=="Hub" and islandOf(bestiary):GetAttribute("RegionId")=="Hub","guild hall boards stand in the hub")
+-- Builder's Terrace: Carpentry hotspots render furniture from server attributes.
+do
+	local beforeChecks=checks
+	local builder=player(41,{FurnitureGarden="HerbPlanter",FurniturePortal="PortalFrame",HomePortal="Windpine"})
+	local home=archipelago:FindFirstChild("WayfarersRest_41")
+	local terrace=home:FindFirstChild("Builders Terrace")
+	check(terrace~=nil,"home gains a Builder's Terrace")
+	local homeCenter=home:FindFirstChild("Meadow").CFrame.Position
+	local terraceCenter=terrace:FindFirstChild("Meadow").CFrame.Position
+	check(math.abs(terraceCenter.X-homeCenter.X-Data.TERRACE_OFFSET.x)<.01,"terrace sits at the data offset")
+	local function flat(a,b) return math.sqrt((a.X-b.X)^2+(a.Z-b.Z)^2) end
+	check(flat(terraceCenter,homeCenter)-11>19,"terrace does not overlap the home island")
+	local hotspots=0
+	for _,h in ipairs(Data.Hotspots) do
+		local plinth=terrace:FindFirstChild(h.name.." hotspot")
+		check(plinth~=nil and plinth:GetAttribute("HotspotId")==h.id,h.id.." hotspot plinth exists")
+		local spot=plinth.CFrame.Position
+		check(math.abs(spot.X-homeCenter.X-h.x)<.01 and math.abs(spot.Z-homeCenter.Z-h.z)<.01,h.id.." hotspot at its data offset")
+		check(flat(spot,terraceCenter)+2.9<=11,h.id.." hotspot footprint stays on the terrace")
+		local q=plinth:FindFirstChildOfClass("ProximityPrompt")
+		check(q~=nil and q:GetAttribute("OwnerUserId")==41 and q:GetAttribute("IsleAction")==nil,h.id.." planner prompt is private and awards nothing")
+		hotspots+=1
+	end
+	check(hotspots==#Data.Hotspots,"every hotspot rendered")
+	for i,h in ipairs(Data.Hotspots) do
+		for j=i+1,#Data.Hotspots do
+			local o=Data.Hotspots[j]
+			check(math.sqrt((h.x-o.x)^2+(h.z-o.z)^2)>=5.8,h.id.." and "..o.id.." footprints never overlap")
+		end
+	end
+	-- Saved furniture restores on join.
+	local garden=terrace:FindFirstChild("Furniture_Garden")
+	check(garden~=nil and garden:GetAttribute("FurnitureId")=="HerbPlanter","saved furniture restored at join")
+	check(terrace:FindFirstChild("Garden Plot hotspot").Transparency==1,"occupied hotspot plinth hidden")
+	check(terrace:FindFirstChild("Furniture_Bench")==nil,"empty hotspot has no furniture")
+	-- Every furniture piece builds on its hotspot inside its footprint and budget.
+	local tester=player(42)
+	local testTerrace=archipelago:FindFirstChild("WayfarersRest_42"):FindFirstChild("Builders Terrace")
+	local testCenter=archipelago:FindFirstChild("WayfarersRest_42"):FindFirstChild("Meadow").CFrame.Position
+	for _,id in ipairs(Data.FurnitureOrder) do
+		local f=Data.Furniture[id]
+		local h=Data.HotspotById[f.hotspot]
+		tester:SetAttribute("Furniture"..h.id,id)
+		local model=testTerrace:FindFirstChild("Furniture_"..h.id)
+		check(model~=nil and model:GetAttribute("FurnitureId")==id,id.." renders")
+		local parts,maxReach,lowest=0,0,math.huge
+		local spot=testCenter+roblox.Vector3.new(h.x,0,h.z)
+		for _,obj in model:GetDescendants() do
+			if obj:IsA("BasePart") then
+				parts+=1
+				check(obj.Anchored and obj.Size.X>0 and obj.Size.Y>0 and obj.Size.Z>0,id.." part anchored with positive size")
+				local p=obj.CFrame.Position
+				maxReach=math.max(maxReach,flat(p,spot)+math.min(obj.Size.X,obj.Size.Z)/2)
+				lowest=math.min(lowest,p.Y-obj.Size.Y/2)
+			end
+		end
+		check(parts>=5 and parts<=20,id.." uses a bounded primitive count ("..parts..")")
+		check(maxReach<=2.95,id.." stays within its hotspot footprint ("..string.format("%.2f",maxReach)..")")
+		check(lowest>=testCenter.Y-.2,id.." sits on the terrace floor")
+		local stations=0
+		for _,obj in model:GetDescendants() do
+			if obj:IsA("ProximityPrompt") and obj:GetAttribute("IsleAction")=="station" then
+				stations+=1
+				check(obj:GetAttribute("OwnerUserId")==42,id.." station prompt is private")
+				check(table.find(f.effect.station,obj:GetAttribute("IsleItem"))~=nil,id.." station prompt matches its effect")
+			end
+		end
+		check(stations==#(f.effect.station or {}),id.." exposes one prompt per home station")
+		local size=#testTerrace:GetDescendants()
+		tester:SetAttribute("Furniture"..h.id,id)
+		check(#testTerrace:GetDescendants()==size,id.." repeat attribute cannot duplicate geometry")
+	end
+	-- Swapping, clearing and invalid values.
+	tester:SetAttribute("FurnitureBench","SturdyWorkbench")
+	check(testTerrace:FindFirstChild("Furniture_Bench"):GetAttribute("FurnitureId")=="SturdyWorkbench","replacement swaps the model")
+	local benchCount=0
+	for _,child in testTerrace:GetChildren() do if child.Name=="Furniture_Bench" then benchCount+=1 end end
+	check(benchCount==1,"one model per hotspot")
+	tester:SetAttribute("FurnitureBench","")
+	check(testTerrace:FindFirstChild("Furniture_Bench")==nil,"cleared hotspot removes the model")
+	check(testTerrace:FindFirstChild("Workshop Bench hotspot").Transparency==0,"cleared hotspot shows its plinth")
+	tester:SetAttribute("FurnitureBench","PortalFrame")
+	check(testTerrace:FindFirstChild("Furniture_Bench")==nil,"furniture for another hotspot is ignored")
+	tester:SetAttribute("FurnitureBench","Ghost")
+	check(testTerrace:FindFirstChild("Furniture_Bench")==nil,"unknown furniture is ignored")
+	tester:SetAttribute("FurnitureBench",7)
+	check(testTerrace:FindFirstChild("Furniture_Bench")==nil,"non-string furniture is ignored")
+	-- Planner prompt opens the Construction page for the owner only.
+	local plan=testTerrace:FindFirstChild("Workshop Bench hotspot"):FindFirstChildOfClass("ProximityPrompt")
+	plan.Triggered:Fire(tester)
+	check(tester:GetAttribute("IsleStation")=="Construction" and tester:GetAttribute("IsleStationVisit")==1,"planner opens the Construction page")
+	plan.Triggered:Fire(builder)
+	check(builder:GetAttribute("IsleStationVisit")==nil,"another player cannot use the planner")
+	-- Home station prompt opens the matching workshop tab for the owner.
+	tester:SetAttribute("FurnitureHearth","EmberoakRange")
+	local range=testTerrace:FindFirstChild("Furniture_Hearth")
+	for _,obj in range:GetDescendants() do
+		if obj:IsA("ProximityPrompt") and obj:GetAttribute("IsleItem")=="Cauldron" then obj.Triggered:Fire(tester) end
+	end
+	check(tester:GetAttribute("IsleStation")=="Cauldron","home Cauldron opens its station")
+	-- Home portal: travels through the authoritative region check.
+	local portal=terrace:FindFirstChild("Furniture_Portal")
+	local veilPrompt
+	for _,obj in portal:GetDescendants() do
+		if obj:IsA("ProximityPrompt") and obj:GetAttribute("IsleHomePortal") then veilPrompt=obj end
+	end
+	check(veilPrompt~=nil and veilPrompt:GetAttribute("OwnerUserId")==41,"portal prompt is private")
+	check(veilPrompt.ObjectText:find("Windpine",1,true)~=nil,"portal shows its attuned region")
+	standAt(builder,veilPrompt.Parent)
+	allowRegion.Windpine=false
+	local callsBefore=#accessCalls
+	veilPrompt.Triggered:Fire(builder)
+	check(#accessCalls==callsBefore+1 and accessCalls[#accessCalls][2]=="Windpine","portal asks IsleRegionAccess")
+	check(builder.landed==nil,"denied portal does not move the player")
+	allowRegion.Windpine=true
+	veilPrompt.Triggered:Fire(builder)
+	check(builder.landed~=nil and onRegion("Windpine",builder.landed,2),"attuned portal lands in its region")
+	local stranger=traveller()
+	standAt(stranger,veilPrompt.Parent)
+	veilPrompt.Triggered:Fire(stranger)
+	check(stranger.landed==nil and #accessCalls==callsBefore+2,"strangers cannot use a home portal")
+	builder:SetAttribute("HomePortal","")
+	check(veilPrompt.ObjectText:find("attune",1,true)~=nil,"unattuned portal explains itself")
+	standAt(builder,veilPrompt.Parent)
+	veilPrompt.Triggered:Fire(builder)
+	check(builder.landed==nil and type(builder:GetAttribute("IsleRegionNotice"))=="string","unattuned portal shows a notice")
+	builder:SetAttribute("HomePortal","Skyreach")
+	allowRegion.Skyreach=true
+	veilPrompt.Triggered:Fire(builder)
+	check(builder.landed~=nil and onRegion("Skyreach",builder.landed,2),"portal reaches Skyreach")
+	-- Leaving cleans the terrace with the home.
+	players.PlayerRemoving:Fire(builder)
+	check(archipelago:FindFirstChild("WayfarersRest_41")==nil,"leaving removes the terrace")
+	builder:SetAttribute("FurnitureBench","SturdyWorkbench")
+	print("Builder's Terrace: "..(checks-beforeChecks).." checks.")
+end
+-- Island placement: free-form props render from the IslandPlacements attribute.
+do
+	local beforeChecks=checks
+	local I=Data.Island
+	local V3=roblox.Vector3
+	local function rec(id,prop,x,z,rot) return I.record({id=id,prop=prop,x=x,z=z,rot=rot or 0}) end
+	local function spot(propId,rot,occupied)
+		for z=-I.RANGE,I.RANGE do for x=-I.RANGE,I.RANGE do
+			if I.check(occupied or {},propId,x,z,rot) then return x,z end
+		end end
+		error("no spot for "..propId)
+	end
+	-- Saved placements restore at join.
+	local fx,fz=spot("TimberFence",0)
+	local owner=player(51,{IslandPlacements=rec(1,"TimberFence",fx,fz).. ";"..rec(2,"LanternPost",fx+1,fz)})
+	local home=archipelago:FindFirstChild("WayfarersRest_51")
+	local folder=home:FindFirstChild("Placements")
+	check(folder~=nil and folder:IsA("Folder"),"home island has a Placements folder")
+	local center=home:FindFirstChild("Meadow").CFrame.Position+V3.new(0,.25,0)
+	check(owner:GetAttribute("IslandCenter")==center,"island centre published for client snapping")
+	check(#folder:GetChildren()==2,"saved placements restored at join")
+	local fence=folder:FindFirstChild("Placement_1")
+	check(fence~=nil and fence:GetAttribute("PropId")=="TimberFence" and fence:GetAttribute("PlacementId")==1,"placement model tagged with its id and prop")
+	check(folder:FindFirstChild("Placement_2"):FindFirstChildWhichIsA("PointLight",true)~=nil,"lantern post glows")
+	-- Every prop builds inside its footprint, on the meadow, within the part budget.
+	local tester=player(52)
+	local tFolder=archipelago:FindFirstChild("WayfarersRest_52"):FindFirstChild("Placements")
+	local tCenter=archipelago:FindFirstChild("WayfarersRest_52"):FindFirstChild("Meadow").CFrame.Position+V3.new(0,.25,0)
+	for index,id in ipairs(I.PropOrder) do
+		local def=I.Props[id]
+		local rot=index%4
+		local x,z=spot(id,rot)
+		tester:SetAttribute("IslandPlacements",rec(1,id,x,z,rot))
+		local model=tFolder:FindFirstChild("Placement_1")
+		check(model~=nil and model:GetAttribute("PropId")==id and #tFolder:GetChildren()==1,id.." renders alone")
+		local ox,oz,yaw=I.centerOffset(id,x,z,rot)
+		local frame=roblox.CFrame.new(tCenter+V3.new(ox,0,oz))*roblox.CFrame.Angles(0,yaw,0)
+		local w,d=I.footprint(def,0)
+		local halfW,halfD=w*I.CELL/2+.02,d*I.CELL/2+.02
+		local parts,inside,lowest,solid=0,true,math.huge,0
+		for _,obj in model:GetDescendants() do
+			if obj:IsA("BasePart") then
+				parts+=1
+				check(obj.Anchored and obj.Size.X>0 and obj.Size.Y>0 and obj.Size.Z>0 and not obj.CanTouch,id.." part anchored, positive and untouchable")
+				if obj.CanCollide then solid+=1 end
+				local s=obj.Size/2
+				for _,sx in ipairs({-1,1}) do for _,sy in ipairs({-1,1}) do for _,sz in ipairs({-1,1}) do
+					local corner=frame:PointToObjectSpace((obj.CFrame*roblox.CFrame.new(sx*s.X,sy*s.Y,sz*s.Z)).Position)
+					if math.abs(corner.X)>halfW or math.abs(corner.Z)>halfD then inside=false end
+					lowest=math.min(lowest,corner.Y)
+				end end end
+			end
+		end
+		check(parts>=3 and parts<=12,id.." uses 3-12 parts ("..parts..")")
+		check(inside,id.." stays inside its "..w.."x"..d.." footprint at rot "..rot)
+		check(lowest>=-.05,id.." sits on the meadow")
+		check(solid>=1,id.." has a solid part")
+		local stations=0
+		for _,obj in model:GetDescendants() do
+			if obj:IsA("ProximityPrompt") then
+				stations+=1
+				check(obj:GetAttribute("IsleAction")=="station" and obj:GetAttribute("IsleItem")==(def.effect and def.effect.station) and obj:GetAttribute("OwnerUserId")==52,id.." station prompt is private and matches its effect")
+			end
+		end
+		check(stations==(if def.effect and def.effect.station then 1 else 0),id.." exposes its station prompt only when it has one")
+		check((model:FindFirstChildWhichIsA("PointLight",true)~=nil)==(def.effect~=nil and def.effect.light~=nil),id.." glows only when it is a light")
+	end
+	-- Utility station prompt opens the matching workshop page for the owner only.
+	local sx,sz=spot("FieldAnvil",0)
+	tester:SetAttribute("IslandPlacements",rec(4,"FieldAnvil",sx,sz))
+	local anvilPrompt=tFolder:FindFirstChild("Placement_4"):FindFirstChildWhichIsA("ProximityPrompt",true)
+	anvilPrompt.Triggered:Fire(tester)
+	check(tester:GetAttribute("IsleStation")=="Forge","field anvil opens the Forge")
+	local visits=tester:GetAttribute("IsleStationVisit")
+	anvilPrompt.Triggered:Fire(owner)
+	check(owner:GetAttribute("IsleStation")==nil and tester:GetAttribute("IsleStationVisit")==visits,"another player cannot use a home station")
+	-- Incremental updates: unchanged records keep their models.
+	local list={rec(1,"TimberFence",fx,fz),rec(2,"LanternPost",fx+1,fz)}
+	local occupied=I.occupancy(I.decode(table.concat(list,";")))
+	local px,pz=spot("StonePath",0,occupied)
+	table.insert(list,rec(3,"StonePath",px,pz))
+	local fenceModel,lanternModel=folder:FindFirstChild("Placement_1"),folder:FindFirstChild("Placement_2")
+	owner:SetAttribute("IslandPlacements",table.concat(list,";"))
+	check(#folder:GetChildren()==3 and folder:FindFirstChild("Placement_1")==fenceModel and folder:FindFirstChild("Placement_2")==lanternModel,"placing adds one model and keeps the others")
+	local size=#folder:GetDescendants()
+	owner:SetAttribute("IslandPlacements",table.concat(list,";"))
+	check(#folder:GetDescendants()==size,"repeat value cannot duplicate geometry")
+	table.remove(list,2)
+	owner:SetAttribute("IslandPlacements",table.concat(list,";"))
+	check(folder:FindFirstChild("Placement_2")==nil and lanternModel.Parent==nil and folder:FindFirstChild("Placement_1")==fenceModel,"pickup removes only that model")
+	list[1]=rec(1,"TimberFence",fx,fz,1)
+	owner:SetAttribute("IslandPlacements",table.concat(list,";"))
+	local turned=folder:FindFirstChild("Placement_1")
+	check(turned~=fenceModel and fenceModel.Parent==nil and turned:GetAttribute("PlacementRecord")==list[1],"a changed record rebuilds its model")
+	check(#folder:GetChildren()==2,"one model per placement")
+	-- Invalid values never render or stack.
+	owner:SetAttribute("IslandPlacements",rec(1,"StonePath",px,pz)..";"..rec(2,"StonePath",px,pz)..";"..rec(3,"StonePath",0,2)..";9:Nope:0:0:0;junk")
+	check(#folder:GetChildren()==1 and folder:FindFirstChild("Placement_1")~=nil,"overlapping, protected and unknown records are ignored")
+	owner:SetAttribute("IslandPlacements",42)
+	check(#folder:GetChildren()==0,"non-string value clears placements")
+	owner:SetAttribute("IslandPlacements","")
+	check(#folder:GetChildren()==0,"empty value renders nothing")
+	check(#tFolder:GetChildren()==1,"another player's island is unaffected")
+	-- A full island renders within the part budget.
+	local full={}
+	for z=-I.RANGE,I.RANGE do for x=-I.RANGE,I.RANGE do
+		if #full<I.MAX_PLACEMENTS and I.cellBlocked(x,z)==nil then table.insert(full,rec(#full+1,if #full%2==0 then "StonePath" else "LanternPost",x,z)) end
+	end end
+	owner:SetAttribute("IslandPlacements",table.concat(full,";"))
+	local fullParts=0
+	for _,obj in folder:GetDescendants() do if obj:IsA("BasePart") then fullParts+=1 end end
+	check(#folder:GetChildren()==I.MAX_PLACEMENTS and fullParts<=I.MAX_PLACEMENTS*12,"full island renders "..I.MAX_PLACEMENTS.." props ("..fullParts.." parts)")
+	-- Protected zones cover every fixed object standing on the home island.
+	local deco=player(53,{HomeLanterns=true,HomeGarden=true,HomeDeck=true,Worker1Tier=1})
+	local dHome=archipelago:FindFirstChild("WayfarersRest_53")
+	local dCenter=dHome:FindFirstChild("Meadow").CFrame.Position+V3.new(0,.25,0)
+	local covered,standing=true,0
+	for _,obj in dHome:GetDescendants() do
+		if obj:IsA("BasePart") and obj.Name~="Meadow" and not obj:FindFirstAncestor("Builders Terrace") and not obj:FindFirstAncestor("Placements") then
+			local p=obj.CFrame.Position-dCenter
+			local top=p.Y+obj.Size.Y/2
+			if top>.3 and p.Y>-1 and math.sqrt(p.X^2+p.Z^2)<=I.RADIUS then
+				standing+=1
+				local cx,cz=math.floor(p.X/I.CELL+.5),math.floor(p.Z/I.CELL+.5)
+				if I.cellBlocked(cx,cz)==nil then covered=false; print("uncovered: "..obj.Name.." at "..tostring(p)) end
+			end
+		end
+	end
+	check(standing>=20 and covered,"every fixed home object stands in a protected cell ("..standing.." parts)")
+	-- Leaving removes the placements with the home.
+	players.PlayerRemoving:Fire(owner)
+	check(archipelago:FindFirstChild("WayfarersRest_51")==nil and folder.Parent==nil,"leaving removes placed props")
+	owner:SetAttribute("IslandPlacements",rec(1,"StonePath",px,pz))
+	check(folder.Parent==nil,"updates after leaving are ignored")
+	print("Island placement: "..(checks-beforeChecks).." checks.")
+end
+print("Depth world: "..tierCount.." resource tiers / "..nodeCount.." gather nodes, "..markers.." spawn markers, "..warps.." gated warps, "..stationCount.." stations, "..staticParts.." static parts, "..staticLights.." lights.")
 print("World QA passed "..checks.." checks with "..parts.." parts, "..prompts.." prompts and "..signs.." sign surfaces.")

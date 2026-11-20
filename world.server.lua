@@ -118,20 +118,22 @@ local function sign(parent,pos,title,kicker,accent,yaw,width)
 	end
 end
 
-local function island(name,pos,r,top)
+local function island(name,pos,r,top,stone,stratum,vein,ground)
 	local m = group(name)
-	disk(m,"Floating foundation",pos-V(0,2.9,0),r,5.8,rock,ST,true)
-	disk(m,"Mineral stratum",pos-V(0,6,0),r*.85,2.7,shale,ST,false)
-	disk(m,"Lower basalt",pos-V(0,8.8,0),r*.63,4.5,rock,ST,false)
-	disk(m,"Meadow",pos-V(0,.25,0),r+.1,.5,top or turf,Enum.Material.Grass,true)
+	stone, stratum = stone or rock, stratum or shale
+	disk(m,"Floating foundation",pos-V(0,2.9,0),r,5.8,stone,ST,true)
+	disk(m,"Mineral stratum",pos-V(0,6,0),r*.85,2.7,stratum,ST,false)
+	disk(m,"Lower basalt",pos-V(0,8.8,0),r*.63,4.5,stone,ST,false)
+	disk(m,"Meadow",pos-V(0,.25,0),r+.1,.5,top or turf,ground or Enum.Material.Grass,true)
 	local count = r>=30 and 12 or 7
 	for i=1,count do
 		local a=i*2*math.pi/count
 		local radial=V(math.cos(a),0,math.sin(a))
 		local offset=pos+radial*(r*.86)-V(0,5+i%3,0)
-		part(m,"Fractured cliff",V(r*.24,6+i%4,r*.28),CFrame.new(offset)*CFrame.Angles(.12,a,.18),i%2==0 and rock or shale,ST,false)
-		if i%3==0 then gem(m,"Aether vein",offset-V(0,4,0),V(1.3,5.4,1.3),mint,a) end
+		part(m,"Fractured cliff",V(r*.24,6+i%4,r*.28),CFrame.new(offset)*CFrame.Angles(.12,a,.18),i%2==0 and stone or stratum,ST,false)
+		if i%3==0 then gem(m,"Aether vein",offset-V(0,4,0),V(1.3,5.4,1.3),vein or mint,a) end
 	end
+	m:SetAttribute("IslandRadius",r)
 	return m
 end
 local function lamp(parent,pos)
@@ -157,6 +159,9 @@ local function bridge(parent,a,b)
 	end
 	for _,s in ipairs({-1,1}) do
 		beam(parent,"Guide rail",a+side*3.7*s+V(0,2.3,0),b+side*3.7*s+V(0,2.3,0),.27,brass,SM)
+		-- Invisible collider behind the rail: the void is only crossed on the deck.
+		local guard=part(parent,"Bridge guard",V(.4,5,(b-a).Magnitude),CFrame.lookAt((a+b)/2+side*3.9*s+V(0,2.5,0),b+side*3.9*s+V(0,2.5,0)),cream,SM,true)
+		guard.Transparency,guard.CastShadow=1,false
 	end
 end
 
@@ -198,6 +203,7 @@ local hub = island("Compass Quay",V(0,0,0),43,C("9DAA85"))
 local grove = island("Mosswake Grove",V(-97,0,0),30)
 local mine = island("Brassfall Quarry",V(98,0,0),31,C("9C9682"))
 local wild = island("Warden Reach",V(0,0,-103),32,C("7C8498"))
+hub:SetAttribute("RegionId","Hub") grove:SetAttribute("RegionId","Meadow") mine:SetAttribute("RegionId","Quarry")
 bridge(hub,V(-40,0,0),V(-69,0,0))
 bridge(hub,V(40,0,0),V(69,0,0))
 bridge(hub,V(0,0,-40),V(0,0,-73))
@@ -277,25 +283,34 @@ for i=1,8 do
 end
 
 local slots,homes={},{}
+-- Builder's Terrace furniture (attached at the end of this script, see homeTerrace.attach).
+local homeTerrace={}
+-- Free-form island placements (attached at the end of this script, see homePlacement.attach).
+local homePlacement={}
 local function warp(player,trigger,destination)
 	local character=player.Character
 	local root=character and character:FindFirstChild("HumanoidRootPart")
 	local hum=character and character:FindFirstChildOfClass("Humanoid")
-	if root and hum and hum.Health>0 and (trigger.Position-root.Position).Magnitude<=12 then
+	if root and hum and hum.Health>0 and (trigger.CFrame.Position-root.Position).Magnitude<=12 then
 		character:PivotTo(CFrame.new(destination))
 		root.AssemblyLinearVelocity=Vector3.zero
 	end
 end
-local skyreach = island("Skyreach", V(208,36,52), 23, C("96ACAB"))
+-- Skyreach is wide enough that its landing (west rim) sits >= 40 studs from both
+-- monster markers (east rim); combat aggro range is 25.
+local skyreach = island("Skyreach", V(208,36,52), 30, C("96ACAB"))
+local SKYREACH_LANDING = V(184,40,52)
+-- Assigned with the regional beacons below: pcall + table check + denial notice.
+local regionTravel
+skyreach:SetAttribute("RegionId","Skyreach")
 local launch = sculpture(mine,"Charter beacon",V(123,2,0),"Lantern",1.2)
 sign(mine,V(119,0,-4),"Skyreach passage","GUILD CHARTER REQUIRED",brass,0,9)
-prompt(launch,"Ascend to Skyreach","Guild charter required").Triggered:Connect(function(player)
-	local access = game:GetService("ServerStorage"):FindFirstChild("IsleRegionAccess")
-	if access and access:Invoke(player,"Skyreach").allowed then
-		warp(player,launch,V(199,40,52))
-	end
+local launchPrompt=prompt(launch,"Ascend to Skyreach","Guild charter required")
+launchPrompt:SetAttribute("IsleWarpRegion","Skyreach")
+launchPrompt.Triggered:Connect(function(player)
+	regionTravel(player,launch,"Skyreach",SKYREACH_LANDING)
 end)
-local descent = sculpture(skyreach,"Quarry beacon",V(193,38,52),"Lantern",1.1)
+local descent = sculpture(skyreach,"Quarry beacon",V(190,38,46),"Lantern",1.1)
 prompt(descent,"Return to quarry","Brassfall").Triggered:Connect(function(player)
 	warp(player,descent,V(118,4,1))
 end)
@@ -322,7 +337,7 @@ local function settle(player)
 	spawn.Size,spawn.Position,spawn.Transparency=V(4,.45,4),center+V(0,.25,5),1
 	spawn.Duration,spawn.Parent=0,m
 	player.RespawnLocation=spawn
-	homes[player]={model=m,spawn=spawn,slot=slot,decorationConnections={}}
+	homes[player]={model=m,spawn=spawn,slot=slot,center=center,decorationConnections={}}
 	local function land(character)
 		local root=character:WaitForChild("HumanoidRootPart",10)
 		if root and homes[player] and player.Character==character then character:PivotTo(CFrame.new(spawn.Position+V(0,3.4,0))) end
@@ -422,6 +437,8 @@ local function settle(player)
 		end))
 		decorate(choice.key)
 	end
+	if homeTerrace.attach then homeTerrace.attach(player,homes[player]) end
+	if homePlacement.attach then homePlacement.attach(player,homes[player]) end
 end
 Players.PlayerAdded:Connect(settle)
 Players.PlayerRemoving:Connect(function(player)
@@ -491,6 +508,28 @@ local function sharedDecorate(home,player)
 			end
 		end
 	end
+	-- Homestead level pennants and shared worker posts (co-op progression).
+	-- Both only grow: crew XP never falls and slots never close.
+	local center=home.center
+	local level=player:GetAttribute("CoopLevel")
+	home.level=home.level or 1
+	while type(level)=="number" and home.level<math.min(level,6) do
+		home.level+=1
+		local x=-15+(home.level-2)*7.5
+		local pennant=group("Pennant"..home.level,home.model)
+		block(pennant,"Crew pennant pole",center+V(x,3,20),V(.4,6,.4),timber,WO,true)
+		block(pennant,"Crew pennant",center+V(x+.9,5.2,20),V(1.6,1,.12),mint,Enum.Material.Fabric,false)
+	end
+	local workers=player:GetAttribute("CoopWorkers")
+	home.workers=home.workers or 0
+	while type(workers)=="number" and home.workers<math.min(workers,2) do
+		home.workers+=1
+		local side=if home.workers==1 then -1 else 1
+		local post=group("SharedWorker"..home.workers,home.model)
+		block(post,"Shared worker hut",center+V(side*20,1.5,-14),V(4,3,4),timber,WO,true)
+		block(post,"Shared worker roof",center+V(side*20,3.4,-14),V(5,.6,5),shale,WO,true)
+		lamp(post,center+V(side*20,0,-11))
+	end
 end
 local function detachShared(player)
 	local old=sharedPlayers[player]
@@ -520,7 +559,7 @@ local function watchShared(player)
 	end
 	local connections={}
 	sharedConnections[player]=connections
-	for _,attribute in ipairs({"CoopId","CoopPreview","CoopGarden","CoopLanterns","CoopDeck"}) do
+	for _,attribute in ipairs({"CoopId","CoopPreview","CoopGarden","CoopLanterns","CoopDeck","CoopLevel","CoopWorkers"}) do
 		table.insert(connections,player:GetAttributeChangedSignal(attribute):Connect(sync))
 	end
 	sync()
@@ -532,3 +571,1280 @@ Players.PlayerRemoving:Connect(function(player)
 	detachShared(player)
 end)
 for _,player in ipairs(Players:GetPlayers()) do watchShared(player) end
+
+-------------------------------------------------------------------------------
+-- Depth update: the Guild Terrace, Meadow Reach, Cinder Shelf and four gated
+-- regions. Every resource tier, monster ground and crafting station has a
+-- place. All geometry is static and anchored; no per-frame work.
+-------------------------------------------------------------------------------
+local ReplicatedStorage=game:GetService("ReplicatedStorage")
+local ServerStorage=game:GetService("ServerStorage")
+local dataModule=ReplicatedStorage:WaitForChild("AetherData",30)
+if not dataModule then
+	warn("Archipelago: AetherData unavailable; depth regions were not built.")
+	return
+end
+local Data=require(dataModule)
+local Resource={}
+for skill,tiers in pairs(Data.ResourceTiers) do
+	for index,def in ipairs(tiers) do Resource[def.id]={def=def,skill=skill,index=index,color=C(def.color)} end
+end
+local VERB={Mining="Mine",Woodcutting="Chop",Fishing="Fish",Farming="Harvest"}
+local GL,MT,SA,GR,LEAF=Enum.Material.Glass,Enum.Material.Metal,Enum.Material.Sand,Enum.Material.Ground,Enum.Material.LeafyGrass
+local BALL=Enum.PartType.Ball
+local function lighten(c,f) return c:Lerp(cream,f) end
+local function darken(c,f) return c:Lerp(ink,f) end
+local function light(parent,color,brightness,range)
+	local l=Instance.new("PointLight")
+	l.Color,l.Brightness,l.Range,l.Shadows=color,brightness,range,false
+	l.Parent=parent
+	return l
+end
+local function ball(parent,name,pos,d,color,mat)
+	return part(parent,name,V(d,d,d),CFrame.new(pos),color,mat,false,BALL)
+end
+local function ghost(p)
+	p.Transparency,p.CastShadow=1,false
+	if not p.CanCollide then p.CanQuery=false end
+	return p
+end
+local function motes(parent,color,rate,speed,size)
+	local e=Instance.new("ParticleEmitter")
+	e.Name="Ambient motes"
+	e.Rate,e.LightEmission=rate,.9
+	e.Lifetime,e.Speed=NumberRange.new(3,6),NumberRange.new(speed*.5,speed)
+	e.SpreadAngle=Vector2.new(180,180)
+	e.Size=NumberSequence.new(size)
+	e.Color=ColorSequence.new(color)
+	e.Parent=parent
+	return e
+end
+-- Invisible edge guard ring keeps players on an island; gaps open at bridges.
+local function rim(parent,pos,r,gaps)
+	local n=math.ceil(2*math.pi*r/12)
+	for i=0,n-1 do
+		local a=(i+.5)*2*math.pi/n
+		local open=false
+		for _,g in ipairs(gaps or {}) do
+			if math.abs(math.atan2(math.sin(a-g),math.cos(a-g)))<5/r+math.pi/n then open=true end
+		end
+		if not open then
+			local radial=V(math.cos(a),0,math.sin(a))
+			local spot=pos+radial*(r-.4)+V(0,3.5,0)
+			ghost(part(parent,"Edge guard",V(2*r*math.sin(math.pi/n)+.8,7,1),CFrame.lookAt(spot,spot+radial),cream,SM,true))
+		end
+	end
+end
+local function regionIsle(id,name,pos,r,top,stone,stratum,vein,ground,gaps)
+	local m=island(name,pos,r,top,stone,stratum,vein,ground)
+	m:SetAttribute("RegionId",id)
+	rim(m,pos,r,gaps)
+	return m
+end
+local function nodeLabel(id) return Resource[id].def.name.." (Lv "..Resource[id].def.level..")" end
+-- The original public nodes adopt the tiered "<Name> (Lv N)" labels.
+for _,q in ipairs(world:GetDescendants()) do
+	local id=q:IsA("ProximityPrompt") and q:GetAttribute("IsleAction")=="gather" and q:GetAttribute("IsleItem")
+	if id and Resource[id] and not q:GetAttribute("OwnerUserId") then
+		q.ActionText=VERB[Resource[id].skill]
+		q.ObjectText=nodeLabel(id)..(if q:GetAttribute("IsleRegion") then " · rich seam" else "")
+	end
+end
+local function gatherPrompt(target,id,region)
+	local r=Resource[id]
+	assert(r,"unknown resource "..tostring(id))
+	local q=prompt(target,VERB[r.skill],nodeLabel(id),"gather",id)
+	q.MaxActivationDistance=if r.skill=="Fishing" then 12 else 10
+	if region then q:SetAttribute("IsleRegion",region) end
+	target:SetAttribute("ResourceId",id)
+	return q
+end
+
+-- Ore: a slate boulder split by a metal vein, crowned by a crystal cluster.
+local function oreNode(parent,pos,id,region,scale)
+	local r,s=Resource[id],scale or 1
+	local m=group(r.def.name.." vein",parent)
+	local base=part(m,"Ore boulder",V(4.4,2.3,3.8)*s,CFrame.new(pos+V(0,1.05*s,0))*CFrame.Angles(0,r.index,.08),darken(shale,.3),ST,false)
+	part(m,"Ore vein",V(4.6,.35,.55)*s,CFrame.new(pos+V(0,1.4*s,0))*CFrame.Angles(.35,r.index,.4),r.color,MT,false)
+	local glowing=r.index>=5
+	for i=1,3 do
+		local a=r.index+i*2.1
+		local h=(2+i*.8)*s
+		local shard=gem(m,"Crystal shard",pos+V(math.cos(a)*1.1*s,1.9*s+h*.3,math.sin(a)*1.1*s),V(.9+i*.2,h,.9+i*.2)*s,i==1 and lighten(r.color,.25) or r.color,a)
+		if glowing and i==3 then shard.Material=NE end
+	end
+	if glowing then light(base,r.color,.9,14) end
+	gatherPrompt(base,id,region)
+	return m
+end
+
+-- Trees: one silhouette per log tier. The prompt sits on the root collar.
+local function pagodaPine(parent,pos,color,scale,name)
+	local m=group(name or "Towering windpine",parent)
+	local s=scale or 1
+	disk(m,"Pine trunk",pos+V(0,10*s,0),.9*s,20*s,darken(timber,.25),WO,true)
+	local tiers={{9,2.2,8},{7.4,2,11.5},{5.6,1.8,14.8},{3.6,1.6,17.8},{1.6,2,20.2}}
+	for i,t in ipairs(tiers) do
+		part(m,"Needle tier",V(t[1],t[2],t[1])*s,CFrame.new(pos+V(0,t[3]*s,0))*CFrame.Angles(0,i%2*math.pi/4,0),i%2==0 and lighten(color,.12) or darken(color,.15),LEAF,false)
+	end
+	return m
+end
+local function treeNode(parent,pos,id,region)
+	local r=Resource[id]
+	local col=r.color
+	local m,collar
+	if id=="WindpineLog" then
+		m=pagodaPine(parent,pos,col,1.15,r.def.name.." tree")
+		collar=disk(m,"Root collar",pos+V(0,.6,0),1.6,1.2,timber,WO,false)
+	elseif id=="EmberoakLog" then
+		m=group(r.def.name.." tree",parent)
+		collar=disk(m,"Root collar",pos+V(0,.6,0),2.2,1.2,darken(timber,.2),WO,false)
+		disk(m,"Emberoak trunk",pos+V(0,5,0),1.4,10,darken(col,.45),WO,true)
+		beam(m,"Bough",pos+V(0,7,0),pos+V(3.5,10,1),.8,darken(col,.45),WO)
+		beam(m,"Bough",pos+V(0,6.5,0),pos+V(-3,9.5,-1.5),.8,darken(col,.45),WO)
+		ball(m,"Ember canopy",pos+V(0,12,0),9,col,LEAF)
+		ball(m,"Ember canopy",pos+V(3.4,10.6,1.2),6.5,lighten(col,.15),LEAF)
+		ball(m,"Ember canopy",pos+V(-3,10.3,-1.4),6,darken(col,.1),LEAF)
+		local ember=ball(m,"Glowing ember",pos+V(1.5,8.4,-2.6),.8,C("FFB25C"),NE)
+		ball(m,"Glowing ember",pos+V(-2.2,9,2.4),.6,C("FFB25C"),NE)
+		light(ember,C("FF9A52"),.8,12)
+	elseif id=="GlimmerbarkLog" then
+		m=group(r.def.name.." tree",parent)
+		for i=1,3 do
+			local a=i*2*math.pi/3
+			beam(m,"Stilt root",pos+V(math.cos(a)*3,0,math.sin(a)*3),pos+V(0,3.5,0),.55,lighten(col,.35),WO)
+		end
+		collar=disk(m,"Root collar",pos+V(0,.3,0),1.4,.6,lighten(col,.3),WO,false)
+		disk(m,"Glimmer trunk",pos+V(0,7.3,0),.75,8,lighten(col,.45),GL,true)
+		local crown=disk(m,"Glimmer crown",pos+V(0,11.6,0),4.8,1.3,col,GL,false)
+		disk(m,"Glimmer underglow",pos+V(0,10.9,0),3.6,.25,lighten(col,.2),NE,false)
+		disk(m,"Glimmer crest",pos+V(0,12.8,0),3,1,lighten(col,.25),GL,false)
+		light(crown,col,1,16)
+	elseif id=="StarwoodLog" then
+		m=group(r.def.name.." tree",parent)
+		collar=disk(m,"Root collar",pos+V(0,.6,0),1.6,1.2,darken(col,.3),WO,false)
+		disk(m,"Starwood trunk",pos+V(0,6.5,0),1,13,darken(col,.2),WO,true)
+		ball(m,"Night canopy",pos+V(0,13,0),7,col,LEAF)
+		ball(m,"Night canopy",pos+V(0,16.5,0),5,lighten(col,.12),LEAF)
+		for i=1,4 do
+			local a=i*math.pi/2+.4
+			part(m,"Star bud",V(.8,.8,.8),CFrame.new(pos+V(math.cos(a)*3.3,13.5+i%2*2,math.sin(a)*3.3))*CFrame.Angles(math.pi/4,a,math.pi/4),i%2==0 and cream or C("CFE3FF"),NE,false)
+		end
+		light(collar,C("BFD7FF"),.7,12)
+	elseif id=="AetherheartLog" then
+		m=group(r.def.name.." tree",parent)
+		collar=disk(m,"Root collar",pos+V(0,.7,0),4.4,1.4,darken(col,.55),WO,false)
+		disk(m,"Aetherheart trunk",pos+V(0,12,0),3,24,darken(col,.5),WO,true)
+		for i=1,4 do
+			local a=i*math.pi/2+.3
+			part(m,"Root flare",V(1.6,3,6),CFrame.new(pos+V(math.cos(a)*3.6,1,math.sin(a)*3.6))*CFrame.Angles(0,-a+math.pi/2,0)*CFrame.Angles(.35,0,0),darken(col,.5),WO,false)
+		end
+		ball(m,"Golden canopy",pos+V(0,27,0),16,col,LEAF)
+		ball(m,"Golden canopy",pos+V(6,24,3),11,lighten(col,.2),LEAF)
+		ball(m,"Golden canopy",pos+V(-6,24.5,-2),12,darken(col,.08),LEAF)
+		ball(m,"Golden canopy",pos+V(1,23.5,-6.5),10,lighten(col,.1),LEAF)
+		local core=ball(m,"Aetherheart core",pos+V(0,19.5,0),2.2,C("FFF6C8"),NE)
+		light(core,C("FFE9A8"),1.2,34)
+	else
+		m=group(r.def.name.." tree",parent)
+		collar=disk(m,"Root collar",pos+V(0,.5,0),1.5,1,timber,WO,false)
+		local trunk=block(m,"Heartwood",pos+V(0,3.4,0),V(1.6,6.8,1.6),timber,WO,true)
+		trunk.Transparency=1
+		sculpture(m,"Sculpted windpine",pos+V(0,3.4,0),"WindpineCrown",1.3,r.index*40)
+	end
+	gatherPrompt(collar,id,region)
+	return m
+end
+
+-- Fishing: a pool with ripples and a bobber, reached by a short plank pier.
+local function fishSpot(parent,pos,id,region,dir,pierLen,poolRadius)
+	local r=Resource[id]
+	local m=group(r.def.name.." fishing spot",parent)
+	if poolRadius then
+		local water=disk(m,"Fishing water",pos+V(0,.12,0),poolRadius,.24,teal:Lerp(r.color,.3),GL,false)
+		water.Transparency=.08
+	end
+	for i=1,3 do
+		disk(m,"Ripple",pos+V(math.cos(i*2.1)*.9,.27+i*.01,math.sin(i*2.1)*.9),.35+i*.3,.04,lighten(r.color,.35+i*.12),SM,false)
+	end
+	ball(m,"Bobber",pos+V(.4,.5,.2),.75,r.color,NE)
+	ball(m,"Bobber cap",pos+V(.4,.95,.2),.42,cream,SM)
+	dir=(dir or V(0,0,1)).Unit
+	pierLen=pierLen or 6
+	local near,far=pos+dir*1.6,pos+dir*(1.6+pierLen)
+	local pier=part(m,"Fishing pier",V(3,.4,pierLen),CFrame.lookAt((near+far)/2+V(0,.55,0),far+V(0,.55,0)),timber,WO,true)
+	for _,s in ipairs({-1,1}) do
+		local side=V(-dir.Z,0,dir.X)*1.4*s
+		block(m,"Pier post",near+side+V(0,.9,0),V(.35,1.8,.35),ink,WO,false)
+	end
+	gatherPrompt(pier,id,region)
+	return m
+end
+
+-- Crops: a soil bed with plants shaped for each tier.
+local function cropPatch(parent,pos,id,region)
+	local r=Resource[id]
+	local col=r.color
+	local m=group(r.def.name.." patch",parent)
+	local wet=id=="AetherLotus"
+	local bed=block(m,wet and "Lotus pool" or "Soil bed",pos+V(0,.2,0),V(6.4,.4,5),wet and teal or darken(timber,.55),wet and GL or GR,true)
+	block(m,"Bed border",pos+V(0,.25,2.65),V(6.8,.5,.35),timber,WO,false)
+	for i=1,6 do
+		local x,z=((i-1)%3-1)*1.9,(math.floor((i-1)/3)-.5)*2
+		local p=pos+V(x,.4,z)
+		if id=="Sunwheat" then
+			part(m,"Wheat stalk",V(.45,2.6,.45),CFrame.new(p+V(0,1.3,0))*CFrame.Angles(.08*x,0,.06*z),i%2==0 and lighten(col,.15) or col,Enum.Material.Fabric,false)
+		elseif id=="Glowcap" then
+			disk(m,"Cap stalk",p+V(0,.45,0),.18,.9,cream,SM,false)
+			disk(m,"Glowing cap",p+V(0,1,0),.65,.35,col,NE,false)
+		elseif id=="Moonbloom" then
+			gem(m,"Moonbloom",p+V(0,.8,0),V(.8,1.2,.8),i%2==0 and lighten(col,.2) or col,i*.6).Material=NE
+		elseif id=="Starfruit" then
+			ball(m,"Starfruit bush",p+V(0,.7,0),1.5,C("4F7A4A"),LEAF)
+			part(m,"Starfruit",V(.55,.55,.55),CFrame.new(p+V(.2,1.45,0))*CFrame.Angles(math.pi/4,i,math.pi/4),col,NE,false)
+		elseif wet then
+			disk(m,"Lily pad",p+V(0,.05,0),.8,.08,C("5E9C62"),SM,false)
+			gem(m,"Lotus bloom",p+V(0,.45,0),V(.6,.7,.6),i%2==0 and lighten(col,.25) or col,i).Material=NE
+		else
+			ball(m,"Herb tuft",p+V(0,.45,0),.9,i%2==0 and lighten(col,.15) or col,LEAF)
+		end
+	end
+	if r.index>=4 then light(bed,col,.6,10) end
+	gatherPrompt(bed,id,region)
+	return m
+end
+
+-- Monster grounds. Combat owns models, AI and respawn; World only marks ground.
+local spawnFolder=workspace:FindFirstChild("MonsterSpawns")
+if not spawnFolder then
+	spawnFolder=Instance.new("Folder")
+	spawnFolder.Name="MonsterSpawns"
+	spawnFolder.Parent=workspace
+end
+local function spawnMarker(monsterId,pos,count,radius)
+	local def=Data.Monsters[monsterId]
+	assert(def,"unknown monster "..tostring(monsterId))
+	local p=ghost(part(spawnFolder,monsterId.." spawn",V(4,1,4),CFrame.new(pos+V(0,3,0)),C(def.color),SM,false))
+	p:SetAttribute("MonsterId",monsterId)
+	p:SetAttribute("Region",def.region)
+	p:SetAttribute("Count",count or 2)
+	p:SetAttribute("Radius",radius or 10)
+	return p
+end
+
+-- Crafting stations: the server answers the prompt with a snapshot, and the
+-- player attribute tells the client which crafting tab to open.
+local STATION={Forge={"Smith","Smithing"},Hearth={"Cook","Cooking"},Cauldron={"Brew","Alchemy"},Workbench={"Craft","Carpentry"},Slayer={"Speak","Slayer contracts"}}
+local function stationPrompt(target,kind,place)
+	local spec=STATION[kind]
+	local q=prompt(target,spec[1],kind.." · "..spec[2]..(if place then " · "..place else ""),"station",kind)
+	q.Triggered:Connect(function(player)
+		player:SetAttribute("IsleStation",kind)
+		-- A visit counter lets the client reopen the same tab on a repeat visit.
+		player:SetAttribute("IsleStationVisit",(player:GetAttribute("IsleStationVisit") or 0)+1)
+	end)
+	return q
+end
+local function facing(pos,toward)
+	return CFrame.lookAt(pos,V(toward.X,pos.Y,toward.Z))
+end
+local function at(cf,x,y,z) return cf*CFrame.new(x,y,z) end
+local function station(parent,kind,pos,toward,place)
+	local m=group(kind,parent)
+	local cf=facing(pos,toward)
+	local target
+	if kind=="Forge" then
+		target=part(m,"Forge hearthstone",V(6,3,4),at(cf,0,1.5,0),C("6E4B3A"),Enum.Material.Brick,true)
+		local coals=part(m,"Forge coals",V(4.6,.3,2.8),at(cf,0,3.15,0),C("FF8A3D"),NE,false)
+		part(m,"Forge hood",V(5.2,1.1,3.6),at(cf,0,6.6,.3),rock,ST,false)
+		part(m,"Chimney",V(1.7,6,1.7),at(cf,0,10.1,.6),darken(rock,.2),ST,false)
+		for _,s in ipairs({-1,1}) do part(m,"Hood stay",V(.4,3.3,.4),at(cf,s*2.3,4.7,1.4),brass,MT,false) end
+		part(m,"Anvil",V(1.8,.9,.9),at(cf,4.3,1.9,-1.2),ink,MT,false)
+		part(m,"Anvil foot",V(.9,1.45,.7),at(cf,4.3,.72,-1.2),darken(rock,.3),MT,false)
+		light(coals,C("FF9A52"),1.1,14)
+	elseif kind=="Hearth" then
+		target=disk(m,"Hearth ring",pos+V(0,.4,0),2.7,.8,rock,ST,true)
+		local embers=disk(m,"Hearth embers",pos+V(0,.86,0),1.8,.12,C("FF8A3D"),NE,false)
+		disk(m,"Stew pot",pos+V(0,2,0),1.15,1.4,ink,MT,false)
+		disk(m,"Stew",pos+V(0,2.72,0),.95,.06,C("D9A15B"),SM,false)
+		for _,s in ipairs({-1,1}) do part(m,"Spit post",V(.3,3.6,.3),at(cf,s*2.4,1.8,0),timber,WO,false) end
+		part(m,"Spit bar",V(5,.25,.25),at(cf,0,3.5,0),brass,MT,false)
+		part(m,"Prep table",V(3,1.2,1.6),at(cf,0,.6,-3.6),timber,WO,true)
+		light(embers,C("FFB066"),.9,12)
+	elseif kind=="Cauldron" then
+		for i=1,3 do
+			local a=i*2*math.pi/3
+			block(m,"Cauldron leg",pos+V(math.cos(a)*1.4,.5,math.sin(a)*1.4),V(.4,1,.4),ink,MT,false)
+		end
+		target=ball(m,"Cauldron bowl",pos+V(0,2,0),4,darken(navy,.3),MT)
+		target.CanCollide=true
+		local brew=disk(m,"Bubbling brew",pos+V(0,3.55,0),1.55,.12,mint,NE,false)
+		ball(m,"Brew bubble",pos+V(.6,3.75,.3),.5,lighten(mint,.3),NE)
+		part(m,"Reagent shelf",V(4,.3,1.2),at(cf,0,2.6,3.2),timber,WO,false)
+		for i,colr in ipairs({rose,brass,teal}) do
+			disk(m,"Reagent bottle",at(cf,(i-2)*1.2,3.25,3.2).Position,.3,1,colr,GL,false)
+		end
+		light(brew,mint,.9,12)
+	else
+		target=part(m,"Workbench top",V(6,.45,3),at(cf,0,2.6,0),timber,WO,true)
+		for _,x in ipairs({-2.6,2.6}) do for _,z in ipairs({-1.1,1.1}) do
+			part(m,"Bench leg",V(.4,2.4,.4),at(cf,x,1.2,z),darken(timber,.3),WO,false)
+		end end
+		part(m,"Bench vice",V(.9,.8,.9),at(cf,-2.3,3.2,-.6),ink,MT,false)
+		part(m,"Plank stack",V(4,.5,1.2),at(cf,.6,3.1,.4),lighten(timber,.2),WO,false)
+		part(m,"Saw",V(1.8,.08,.6),at(cf,1.6,2.9,-.8),shale,MT,false)
+		part(m,"Tool board",V(5,2.4,.25),at(cf,0,4.6,1.45),navy,WO,false)
+	end
+	stationPrompt(target,kind,place)
+	return m
+end
+
+-- Gated transit: every beacon asks the server's authoritative region check.
+local REGION_ACCENT={Windpine=C("9BD18B"),Gloomhollow=C("A58CE0"),Tidewater=C("5EC8D8"),Tempest=C("C6DCFF")}
+local function requirementText(region)
+	local req=region.requires or {}
+	local out={}
+	if req.quest then table.insert(out,req.quest.." GUILD CONTRACTS") end
+	if req.skills then
+		local names={}
+		for skill in pairs(req.skills) do table.insert(names,skill) end
+		table.sort(names)
+		for _,skill in ipairs(names) do table.insert(out,string.upper(skill).." "..req.skills[skill]) end
+	end
+	return if #out>0 then "REQUIRES "..table.concat(out," · ") else "OPEN TO ALL WAYFARERS"
+end
+local function beaconProp(parent,pos,accent)
+	block(parent,"Beacon plinth",pos+V(0,.4,0),V(3.4,.8,3.4),ink,ST,true)
+	local post=block(parent,"Warp beacon",pos+V(0,2.8,0),V(1.6,4,1.6),accent,GL,false)
+	for _,x in ipairs({-1.3,1.3}) do gem(parent,"Beacon fin",pos+V(x,2.6,0),V(.5,3.6,.5),brass,0) end
+	local cap=part(parent,"Beacon flame",V(.9,.9,.9),CFrame.new(pos+V(0,5.3,0))*CFrame.Angles(math.pi/4,0,math.pi/4),accent,NE,false)
+	light(cap,accent,.8,12)
+	return post
+end
+local SKYWAY_LANDING=V(0,4,107)
+-- Every gated warp (Skyreach charter beacon included) asks the authoritative
+-- region check safely and tells the player why travel was refused.
+regionTravel=function(player,post,regionId,destination)
+	local region=Data.RegionById[regionId]
+	local access=ServerStorage:FindFirstChild("IsleRegionAccess")
+	if not region or not access then return end
+	local ok,result=pcall(access.Invoke,access,player,regionId)
+	if ok and type(result)=="table" and result.allowed then
+		warp(player,post,destination)
+	else
+		local message=if ok and type(result)=="table" and type(result.message)=="string" then result.message else region.name..": "..requirementText(region)
+		player:SetAttribute("IsleRegionNotice",message)
+		-- The counter lets the client re-show a repeated identical notice.
+		player:SetAttribute("IsleRegionNoticeCount",(tonumber(player:GetAttribute("IsleRegionNoticeCount")) or 0)+1)
+	end
+end
+local function regionWarp(parent,pos,regionId,destination)
+	local region=Data.RegionById[regionId]
+	assert(region,"unknown region "..tostring(regionId))
+	local post=beaconProp(parent,pos,REGION_ACCENT[regionId] or mint)
+	local q=prompt(post,"Travel to "..region.name,requirementText(region))
+	q:SetAttribute("IsleWarpRegion",regionId)
+	q.Triggered:Connect(function(player) regionTravel(player,post,regionId,destination) end)
+	return post
+end
+local function returnWarp(parent,pos,label)
+	local post=beaconProp(parent,pos,mint)
+	local q=prompt(post,"Return to the Skyway",label)
+	q:SetAttribute("IsleWarpReturn","Hub")
+	q.Triggered:Connect(function(player) warp(player,post,SKYWAY_LANDING) end)
+	return post
+end
+
+-- Static ledger boards; rows are named so live data can be written later.
+local function ledger(parent,name,pos,toward,title,kicker,rows,accent,width,height)
+	local cf=facing(pos+V(0,height/2+1.6,0),toward)
+	for _,s in ipairs({-1,1}) do part(parent,"Ledger post",V(.35,height+1.6,.35),cf*CFrame.new(s*(width/2+.1),-.8,0),brass,MT,false) end
+	local board=part(parent,name,V(width,height,.35),cf,ink,SM,false)
+	local canvasH=math.floor(600*height/width)
+	local gui=Instance.new("SurfaceGui")
+	gui.Face,gui.CanvasSize,gui.LightInfluence,gui.MaxDistance=Enum.NormalId.Front,Vector2.new(600,canvasH),0,70
+	gui.Parent=board
+	local function text(t,x,y,w,h,font,color,align,label)
+		local l=Instance.new("TextLabel")
+		l.Name=label or "Text"
+		l.BackgroundTransparency,l.TextXAlignment=1,align or Enum.TextXAlignment.Left
+		l.Position,l.Size=UDim2.fromOffset(x,y),UDim2.fromOffset(w,h)
+		l.Font,l.TextColor3,l.Text,l.TextScaled=font,color,t,true
+		l.Parent=gui
+		return l
+	end
+	local bar=Instance.new("Frame")
+	bar.BorderSizePixel,bar.BackgroundColor3=0,accent
+	bar.Position,bar.Size=UDim2.fromOffset(18,16),UDim2.fromOffset(6,canvasH-32)
+	bar.Parent=gui
+	text(kicker,40,14,540,26,Enum.Font.GothamBold,accent)
+	text(title,40,40,540,46,Enum.Font.GothamBold,cream)
+	local rowH=math.min(30,math.floor((canvasH-104)/math.max(1,#rows)))
+	for i,row in ipairs(rows) do
+		local y=96+(i-1)*rowH
+		text(row[1],40,y,300,rowH-4,Enum.Font.GothamMedium,cream,nil,"Row_"..row.key)
+		text(row[2],330,y,240,rowH-4,Enum.Font.Gotham,lighten(accent,.3),Enum.TextXAlignment.Right,"Value_"..row.key)
+	end
+	return board
+end
+
+-------------------------------------------------------------------------------
+-- Guild Terrace (Hub): crafting stations, the Guild Hall and the Skyway.
+-------------------------------------------------------------------------------
+local GT=V(0,0,98)
+local terrace=regionIsle("Hub","Guild Terrace",GT,32,C("A7B08A"),nil,nil,brass,nil,{-math.pi/2})
+bridge(terrace,V(0,0,40),V(0,0,69))
+sign(hub,V(-8,0,35),"Guild Terrace","SOUTH   /   CRAFT · SLAYER · SKYWAY",brass,0,9)
+disk(terrace,"Guild court",GT+V(0,.05,0),10,.15,navy,ST,true)
+disk(terrace,"Guild seal",GT+V(0,.18,0),2.4,.3,brass,SM,false)
+for i=1,6 do
+	local a=i*math.pi/3
+	local d=V(math.cos(a),0,math.sin(a))
+	beam(terrace,"Seal inlay",GT+d*3+V(0,.18,0),GT+d*9+V(0,.18,0),.2,brass,SM)
+end
+sign(terrace,V(10,0,74),"Guild Terrace","COMPASS QUAY   /   GUILDS + SKYWAY",brass,0,11)
+for i,deg in ipairs({230,205,180,155}) do
+	local a=math.rad(deg)
+	station(terrace,({"Forge","Hearth","Cauldron","Workbench"})[i],GT+V(math.cos(a)*21,0,math.sin(a)*21),GT,"Guild Terrace")
+end
+sign(terrace,V(-14,0,75),"Artisans' Row","SMITH · COOK · BREW · CRAFT",rose,0,8)
+-- Guild Hall pavilion (east side).
+local hall=group("Guild Hall",terrace)
+block(hall,"Hall floor",V(19,.25,98),V(13,.5,24),darken(navy,.1),WO,true)
+for _,x in ipairs({13,25}) do for _,z in ipairs({87,109}) do
+	block(hall,"Hall column",V(x,6,z),V(1.3,12,1.3),cream,ST,false)
+	block(hall,"Column capital",V(x,12.2,z),V(2,.6,2),brass,MT,false)
+end end
+part(hall,"Hall roof",V(8,.6,26),CFrame.new(V(15.6,14,98))*CFrame.Angles(0,0,math.rad(20)),navy,SM,false)
+part(hall,"Hall roof",V(8,.6,26),CFrame.new(V(22.4,14,98))*CFrame.Angles(0,0,math.rad(-20)),navy,SM,false)
+block(hall,"Ridge beam",V(19,15.4,98),V(.8,.8,26),brass,MT,false)
+local skillRows={}
+for _,skill in ipairs(Data.SkillOrder) do table.insert(skillRows,{skill,"Unclaimed  ·  Lv 99",key=skill}) end
+ledger(hall,"Skill Leaderboard",V(23,.5,91.5),GT,"Hall of Mastery","GUILD LEDGER   /   FIRST TO LEVEL 99",skillRows,brass,9,8.5)
+local monsterIds={}
+for id in pairs(Data.Monsters) do table.insert(monsterIds,id) end
+table.sort(monsterIds,function(x,y)
+	local a,b=Data.Monsters[x],Data.Monsters[y]
+	return if a.level==b.level then x<y else a.level<b.level
+end)
+local beastRows={}
+for _,id in ipairs(monsterIds) do
+	local m=Data.Monsters[id]
+	local where=Data.RegionById[m.region]
+	table.insert(beastRows,{"Lv "..m.level.."  "..m.name,where and where.name or m.region,key=id})
+end
+ledger(hall,"Bestiary",V(23,.5,104.5),GT,"Bestiary","KNOWN CREATURES   /   BY LEVEL",beastRows,rose,9,8.5)
+-- Slayer master: a sentinel statue that takes contracts for the three hunts.
+local pedestal=block(hall,"Slayer master pedestal",V(16,1.5,98),V(4,2.5,4),rock,ST,true)
+block(hall,"Pedestal trim",V(16,2.85,98),V(4.4,.3,4.4),brass,MT,false)
+local master=sculpture(hall,"Huntmaster Oriel",V(16,6,98),"ObservatorySentinel",1.5,-90)
+light(master,C("FFD9A0"),.6,10)
+stationPrompt(pedestal,"Slayer","Huntmaster Oriel")
+for i,line in ipairs(Data.SlayerOrder) do
+	local def=Data.Slayers[line]
+	-- Pennants on the ridge give the hall a silhouette from across the quay.
+	local z=90+(i-1)*8
+	block(hall,"Pennant pole",V(19,17.4,z),V(.25,3.6,.25),brass,MT,false)
+	block(hall,def.name.." pennant",V(19,18.3,z+1.3),V(.15,1.6,2.4),C(def.color),Enum.Material.Fabric,false)
+end
+sign(hall,V(10,0,91),"Huntmaster Oriel","SLAYER   /   BRAMBLE · GLOOM · TEMPEST",rose,90,8)
+-- The Skyway: gated beacons to the four depth regions (built below).
+block(terrace,"Skyway dais",V(0,.15,117),V(36,.3,7),navy,ST,true)
+for _,p in ipairs({V(-8,0,82),V(8,0,82),V(-11,0,108),V(-2,0,110)}) do lamp(terrace,p) end
+
+-------------------------------------------------------------------------------
+-- Meadow Reach (Meadow): open hills south of Mosswake Grove.
+-------------------------------------------------------------------------------
+local MR=V(-97,0,102)
+local meadow=regionIsle("Meadow","Meadow Reach",MR,30,C("8DB86E"),nil,nil,nil,nil,{-math.pi/2})
+bridge(meadow,V(-97,0,27),V(-97,0,75))
+for _,h in ipairs({{V(-80,-7.6,88),18},{V(-116,-7.2,113),17}}) do
+	part(meadow,"Grassy hillock",V(h[2],h[2],h[2]),CFrame.new(h[1]),C("86AE69"),Enum.Material.Grass,true,BALL)
+end
+sign(meadow,V(-86,0,80),"Meadow Reach","MEADOW   /   BOARS · SUNWHEAT · GLASSFIN",mint,0,11)
+cropPatch(meadow,V(-110,0,90),"Sunwheat")
+cropPatch(meadow,V(-110,0,98),"Sunwheat")
+cropPatch(meadow,V(-118,0,94),"Herb")
+treeNode(meadow,V(-78,0,114),"Timber")
+fishSpot(meadow,V(-90,0,100),"Fish",nil,V(1,0,.4),5,6)
+fishSpot(meadow,V(-93,0,95),"Glassfin",nil,V(-.6,0,-1),5)
+for _,p in ipairs({V(-104,0,79),V(-84,0,122)}) do lamp(meadow,p) end
+for i=1,5 do
+	local a=1.75+i*.3
+	local p=MR+V(math.cos(a)*25,1,math.sin(a)*25)
+	part(meadow,"Fence rail",V(.3,.3,7.6),CFrame.lookAt(p,p+V(-math.sin(a),0,math.cos(a))),timber,WO,false)
+	block(meadow,"Fence post",p-V(0,.4,0),V(.4,2,.4),darken(timber,.3),WO,false)
+end
+spawnMarker("BramblebackBoar",V(-98,0,117),3,9)
+spawnMarker("Thornling",V(-101,0,84),3,7)
+
+-------------------------------------------------------------------------------
+-- Cinder Shelf (Quarry): a lower terrace below Brassfall Quarry.
+-------------------------------------------------------------------------------
+local CS=V(98,-4,-82)
+local shelf=regionIsle("Quarry","Cinder Shelf",CS,24,C("8F8676"),darken(rock,.15),nil,C("FF9A52"),GR,{math.pi/2})
+bridge(shelf,V(98,0,-28),V(98,-4,-61))
+for i=1,4 do
+	local a=i*1.6
+	local p=CS+V(math.cos(a)*12,.06,math.sin(a)*12)
+	local vent=part(shelf,"Cinder vent",V(.5,.12,5),CFrame.new(p)*CFrame.Angles(0,a,0),C("FF7A3D"),NE,false)
+	if i==2 then light(vent,C("FF8A3D"),.8,14) motes(vent,C("FFB066"),4,2,.25) end
+end
+sign(shelf,V(89,-4,-64),"Cinder Shelf","QUARRY   /   BRASSITE · CRAWLERS",brass,0,10)
+oreNode(shelf,V(86,-4,-90),"Brassite")
+oreNode(shelf,V(110,-4,-88),"Brassite")
+oreNode(shelf,V(111,-4,-74),"Ore")
+spawnMarker("ShaleCrawler",V(91,-4,-77),3,7)
+spawnMarker("CinderMite",V(102,-4,-90),3,6)
+-- Brassfall Quarry gains a second copper seam by the old crane.
+oreNode(mine,V(84,0,-20),"Ore")
+-- Skyreach: a sunsteel outcrop and the summit's guardians.
+oreNode(skyreach,V(214,36,64),"SunsteelOre","Skyreach")
+-- Markers keep >= 40 studs (flat) from every warp landing; see verify-world.
+spawnMarker("BrassGolem",V(228,36,60),2,6)
+spawnMarker("StormHarrier",V(226,36,40),2,6)
+
+-------------------------------------------------------------------------------
+-- Windpine Grove: towering pines, an emberoak hollow and the Aetherheart.
+-------------------------------------------------------------------------------
+local WP=V(-270,18,-60)
+local grovewild=regionIsle("Windpine","Windpine Grove",WP,36,C("5F8A57"),C("3F4B44"),C("5E6B5C"),C("9BD18B"))
+for _,deg in ipairs({150,200,228,270,335,20}) do
+	local a=math.rad(deg)
+	pagodaPine(grovewild,WP+V(math.cos(a)*30,0,math.sin(a)*30),C("4E7A4A"),1.7+(deg%3)*.15)
+end
+treeNode(grovewild,WP+V(0,0,-6),"AetherheartLog","Windpine")
+treeNode(grovewild,WP+V(-21,0,-13),"WindpineLog","Windpine")
+treeNode(grovewild,WP+V(-9,0,-25),"WindpineLog","Windpine")
+treeNode(grovewild,WP+V(-25,0,2),"WindpineLog","Windpine")
+treeNode(grovewild,WP+V(16,0,-18),"EmberoakLog","Windpine")
+treeNode(grovewild,WP+V(25,0,-6),"EmberoakLog","Windpine")
+local emberGlow=hidden(grovewild,"Ember hollow glow",WP+V(20,4,-12))
+emberGlow.CanQuery,emberGlow.CastShadow=false,false
+motes(emberGlow,C("FFB25C"),5,1.5,.2)
+cropPatch(grovewild,WP+V(-14,0,23),"Glowcap","Windpine")
+for _,b in ipairs({{V(-6,0,8),3},{V(10,0,8),2.4},{V(-28,0,-20),2.8}}) do
+	part(grovewild,"Mossy boulder",V(b[2]*1.4,b[2],b[2]*1.2),CFrame.new(WP+b[1]+V(0,b[2]*.35,0))*CFrame.Angles(0,b[2],.1),C("6E7B68"),ST,false)
+end
+part(grovewild,"Fallen windpine",V(12,1.6,1.6),CFrame.new(WP+V(2,.8,15))*CFrame.Angles(0,.6,0),darken(timber,.3),WO,false).Shape=Enum.PartType.Cylinder
+-- Woodcutters' lodge sheltering a workbench.
+local lodge=group("Woodcutters' Lodge",grovewild)
+local LP=WP+V(18,0,17)
+block(lodge,"Lodge floor",LP+V(0,.2,0),V(11,.4,8),timber,WO,true)
+block(lodge,"Lodge back wall",LP+V(0,3.5,3.8),V(11,6.6,.5),darken(timber,.2),WO,true)
+for _,x in ipairs({-5.3,5.3}) do block(lodge,"Lodge post",LP+V(x,3.3,-3.6),V(.6,6.2,.6),darken(timber,.35),WO,false) end
+part(lodge,"Lodge roof",V(12.5,.5,9.4),CFrame.new(LP+V(0,7.2,0))*CFrame.Angles(math.rad(-14),0,0),C("4E6B47"),WO,false)
+station(lodge,"Workbench",LP+V(0,.4,0),LP+V(0,0,-10),"Windpine Lodge")
+sign(grovewild,WP+V(-8,0,30),"Windpine Grove",requirementText(Data.RegionById.Windpine),REGION_ACCENT.Windpine,0,10)
+returnWarp(grovewild,WP+V(5,0,31),"Windpine Grove")
+spawnMarker("BarkStalker",WP+V(-15,0,-17),3,8)
+spawnMarker("GaleSprite",WP+V(9,0,-24),3,7)
+
+-------------------------------------------------------------------------------
+-- Gloomhollow Caverns: a roofed grotto lit only by voidstone and moonbloom.
+-------------------------------------------------------------------------------
+local GH=V(200,-14,-210)
+local void=C("7B5CC4")
+local gloom=regionIsle("Gloomhollow","Gloomhollow Caverns",GH,38,C("3A3F52"),C("2B2F3D"),C("424659"),void,ST)
+local CAVE_R,CAVE_H=27,22
+local cave=group("Grotto",gloom)
+local segments=16
+for i=0,segments-1 do
+	local a=(i+.5)*2*math.pi/segments
+	if math.abs(math.atan2(math.sin(a-math.pi/2),math.cos(a-math.pi/2)))>math.rad(25) then
+		local radial=V(math.cos(a),0,math.sin(a))
+		local h=CAVE_H+(i%3)*1.5
+		local p=GH+radial*CAVE_R+V(0,h/2,0)
+		part(cave,"Cavern wall",V(2*CAVE_R*math.sin(math.pi/segments)+1,h,3.4),CFrame.lookAt(p,p+radial),i%2==0 and C("2F3342") or C("383D4E"),ST,true)
+	end
+end
+disk(cave,"Cavern roof",GH+V(0,CAVE_H+1.6,0),CAVE_R+2.4,3.2,C("2B2F3D"),ST,true)
+for i=1,7 do
+	local a=i*.9
+	local p=GH+V(math.cos(a)*(8+i*2.2),CAVE_H+4+i%3*2,math.sin(a)*(8+i*2.2))
+	part(cave,"Roof crag",V(5+i%3,7+i%4*2.5,5),CFrame.new(p)*CFrame.Angles(.25*(i%2*2-1),a,.2),i%2==0 and C("2F3342") or C("424659"),ST,false)
+end
+for i=1,4 do
+	local a=i*1.57+.5
+	part(cave,"Stalactite",V(1.4,5,1.4),CFrame.new(GH+V(math.cos(a)*14,CAVE_H-2.5,math.sin(a)*14)),C("424659"),ST,false)
+	if i%2==0 then ball(cave,"Stalactite glow",GH+V(math.cos(a)*14,CAVE_H-5.2,math.sin(a)*14),.9,void,NE) end
+end
+local heartCrystal=gem(cave,"Grotto heart crystal",GH+V(0,4,-6),V(3,8,3),void,.3)
+heartCrystal.Material=NE
+light(heartCrystal,void,1.4,26)
+gem(cave,"Grotto heart shard",GH+V(2,2.5,-4.5),V(1.6,4.5,1.6),lighten(void,.3),1.2)
+motes(heartCrystal,lighten(void,.3),4,.8,.3)
+oreNode(cave,GH+V(-15,0,-12),"Voidstone","Gloomhollow")
+oreNode(cave,GH+V(13,0,-15),"Voidstone","Gloomhollow")
+oreNode(cave,GH+V(0,0,-21),"Voidstone","Gloomhollow")
+oreNode(cave,GH+V(19,0,1),"Prismite","Gloomhollow",1.2)
+fishSpot(cave,GH+V(-15,0,9),"AbyssKoi","Gloomhollow",V(1,0,.3),4,5.5)
+cropPatch(cave,GH+V(13,0,13),"Moonbloom","Gloomhollow")
+spawnMarker("GloomfangSpider",GH+V(-8,0,-14),3,7)
+spawnMarker("VoidWisp",GH+V(10,0,-12),2,7)
+oreNode(gloom,GH+V(-22,0,24),"SunsteelOre","Gloomhollow")
+station(gloom,"Forge",GH+V(15,0,31),GH,"Delvers' Forge")
+sign(gloom,GH+V(-9,0,33),"Gloomhollow Caverns",requirementText(Data.RegionById.Gloomhollow),REGION_ACCENT.Gloomhollow,0,9)
+returnWarp(gloom,GH+V(3,0,34),"Gloomhollow Caverns")
+for _,x in ipairs({-8,8}) do
+	block(gloom,"Cave torch",GH+V(x,1.8,27.5),V(.5,3.6,.5),timber,WO,false)
+	light(ball(gloom,"Torch flame",GH+V(x,3.9,27.5),.7,C("B59CFF"),NE),C("B59CFF"),.8,12)
+end
+
+-------------------------------------------------------------------------------
+-- Tidewater Shoals: sandbars, two lagoons, piers and a lighthouse.
+-------------------------------------------------------------------------------
+local TW=V(-250,2,210)
+local tide=regionIsle("Tidewater","Tidewater Shoals",TW,40,C("D9C9A0"),C("6F7C86"),C("8D99A2"),C("5EC8D8"),SA)
+for _,l in ipairs({{V(-12,0,-6),11},{V(14,0,10),9}}) do
+	local w=disk(tide,"Lagoon",TW+l[1]+V(0,.06,0),l[2],.22,C("4FB3BF"),GL,false)
+	w.Transparency=.05
+	disk(tide,"Lagoon deep",TW+l[1]+V(0,.1,0),l[2]*.55,.2,C("2E7F95"),GL,false)
+end
+fishSpot(tide,TW+V(-12,0,-9),"Stormeel","Tidewater",V(0,0,-1),9)
+fishSpot(tide,TW+V(-17,0,-4),"Lanternray","Tidewater",V(-1,0,0),8)
+fishSpot(tide,TW+V(16,0,10),"LeviathanScale","Tidewater",V(1,0,0),9)
+fishSpot(tide,TW+V(13,0,15),"Stormeel","Tidewater",V(0,0,1),8)
+treeNode(tide,TW+V(-21,0,8),"GlimmerbarkLog","Tidewater")
+treeNode(tide,TW+V(1,0,-16),"GlimmerbarkLog","Tidewater")
+cropPatch(tide,TW+V(29,0,-4),"AetherLotus","Tidewater")
+local galley=group("Shoals Galley",tide)
+block(galley,"Galley boardwalk",TW+V(20,.2,-20),V(12,.4,9),timber,WO,true)
+for _,x in ipairs({-5.5,5.5}) do for _,z in ipairs({-4,4}) do
+	block(galley,"Boardwalk piling",TW+V(20+x,.9,-20+z),V(.6,1.8,.6),darken(timber,.4),WO,false)
+end end
+station(galley,"Hearth",TW+V(20,.4,-20),TW,"Shoals Galley")
+local LH=TW+V(-27,0,22)
+local tower=group("Shoals lighthouse",tide)
+disk(tower,"Lighthouse footing",LH+V(0,1,0),3.4,2,rock,ST,true)
+disk(tower,"Lighthouse tower",LH+V(0,10,0),2.1,16,cream,SM,true)
+for _,y in ipairs({6,12}) do disk(tower,"Tower stripe",LH+V(0,y,0),2.15,1.6,rose,SM,false) end
+local lantern=disk(tower,"Lantern room",LH+V(0,19.3,0),2.4,2.6,mint,GL,false)
+ball(tower,"Lighthouse flame",LH+V(0,19.3,0),1.4,C("FFF1B8"),NE)
+disk(tower,"Lantern cap",LH+V(0,21,0),2.7,.7,brass,MT,false)
+light(lantern,C("FFF1B8"),1.4,40)
+for _,r in ipairs({{V(31,0,14),2.6},{V(-2,0,31),2},{V(-32,0,-10),2.4}}) do
+	part(tide,"Reef rock",V(r[2]*1.5,r[2],r[2]*1.2),CFrame.new(TW+r[1]+V(0,r[2]*.3,0))*CFrame.Angles(0,r[2],.12),C("7D8B92"),ST,false)
+end
+local spray=hidden(tide,"Lagoon spray",TW+V(14,1,10))
+spray.CanQuery,spray.CastShadow=false,false
+motes(spray,C("CFEFFF"),3,1,.18)
+sign(tide,TW+V(-9,0,-34),"Tidewater Shoals",requirementText(Data.RegionById.Tidewater),REGION_ACCENT.Tidewater,0,10)
+returnWarp(tide,TW+V(4,0,-35),"Tidewater Shoals")
+spawnMarker("ReefLurker",TW+V(-4,0,25),3,9)
+spawnMarker("ReefLurker",TW+V(24,0,22),2,5)
+
+-------------------------------------------------------------------------------
+-- Tempest Spire: a storm-wracked summit ringed by arcing crystal pylons.
+-------------------------------------------------------------------------------
+local TS=V(300,70,-120)
+local storm=C("BFD7FF")
+local tempest=regionIsle("Tempest","Tempest Spire",TS,30,C("4A5266"),C("2E3445"),C("3B4256"),storm,ST)
+local spire=group("Storm spire",tempest)
+local SP=TS+V(-5,0,-21)
+local spireTiers={{V(9,12,8),6,.1},{V(7,12,6.5),17,-.15},{V(5.2,11,5),28,.2},{V(3.8,10,3.6),38,-.1},{V(2.4,9,2.4),47,.18}}
+for i,t in ipairs(spireTiers) do
+	part(spire,"Spire stone",t[1],CFrame.new(SP+V(i%2*.6,t[2],0))*CFrame.Angles(t[3]*.4,i*.5,t[3]),i%2==0 and C("2E3445") or C("3B4256"),ST,true)
+end
+local crown=gem(spire,"Storm crown",SP+V(0,54.5,0),V(2,6,2),storm,.4)
+crown.Material=NE
+light(crown,storm,1.6,40)
+motes(crown,storm,6,4,.3)
+local arcAnchors={}
+for i=1,4 do
+	local a=math.rad(45+90*(i-1))
+	local p=TS+V(math.cos(a)*17,0,math.sin(a)*17)
+	block(tempest,"Pylon footing",p+V(0,.5,0),V(3,1,3),ink,ST,true)
+	block(tempest,"Pylon shaft",p+V(0,4.5,0),V(1.2,7,1.2),C("3B4256"),MT,true)
+	for _,s in ipairs({-1,1}) do gem(tempest,"Pylon brace",p+V(s*.9,3,0),V(.4,4,.4),brass,0) end
+	local top=gem(tempest,"Pylon crystal",p+V(0,9.4,0),V(1.6,3.6,1.6),storm,a)
+	top.Material=NE
+	light(top,storm,.9,16)
+	local att=Instance.new("Attachment")
+	att.Name="Arc anchor"
+	att.CFrame=CFrame.new(0,.8,0)
+	att.Parent=top
+	arcAnchors[i]=att
+end
+for i=1,4 do
+	local arc=Instance.new("Beam")
+	arc.Name="Crystal arc"
+	arc.Attachment0,arc.Attachment1=arcAnchors[i],arcAnchors[i%4+1]
+	arc.Color=ColorSequence.new(C("E8F2FF"),C("7B8CDE"))
+	arc.Width0,arc.Width1,arc.LightEmission,arc.FaceCamera,arc.Segments=.35,.35,1,true,16
+	arc.CurveSize0,arc.CurveSize1=7,-7
+	arc.Parent=arcAnchors[i].Parent
+end
+for i=1,6 do
+	local a=i*1.05
+	local cloud=ball(tempest,"Storm cloud",TS+V(math.cos(a)*24,34+(i%3)*5,math.sin(a)*24),16+(i%3)*5,C("596274"),SM)
+	cloud.Transparency=.3
+end
+oreNode(tempest,TS+V(-24,0,-6),"StarmetalOre","Tempest")
+oreNode(tempest,TS+V(24,0,-4),"StarmetalOre","Tempest")
+oreNode(tempest,SP+V(12,0,-1),"Celestium","Tempest",1.25)
+treeNode(tempest,TS+V(-22,0,10),"StarwoodLog","Tempest")
+cropPatch(tempest,TS+V(19,0,14),"Starfruit","Tempest")
+sign(tempest,TS+V(-8,0,25),"Tempest Spire",requirementText(Data.RegionById.Tempest),REGION_ACCENT.Tempest,0,10)
+returnWarp(tempest,TS+V(5,0,25),"Tempest Spire")
+spawnMarker("TempestWraith",TS+V(15,0,-17),2,6)
+spawnMarker("StarbornSentinel",TS+V(-16,0,-16),1,5)
+
+-- Skyway beacons on the Guild Terrace, plus a deep descent from Cinder Shelf.
+local destinations={
+	Windpine=WP+V(0,4,23),Gloomhollow=GH+V(0,4,29),Tidewater=TW+V(0,4,-28),Tempest=TS+V(0,4,22),
+}
+for i,id in ipairs({"Windpine","Gloomhollow","Tidewater","Tempest"}) do
+	local x=-13.5+(i-1)*9
+	regionWarp(terrace,V(x,.3,116),id,destinations[id])
+	sign(terrace,V(x,0,120.5),Data.RegionById[id].name,requirementText(Data.RegionById[id]),REGION_ACCENT[id],0,8)
+end
+regionWarp(shelf,CS+V(0,0,-18),"Gloomhollow",destinations.Gloomhollow)
+sign(shelf,CS+V(9,0,-17),"Deep descent","GLOOMHOLLOW   /   "..requirementText(Data.RegionById.Gloomhollow),REGION_ACCENT.Gloomhollow,0,9)
+
+-------------------------------------------------------------------------------
+-- Builder's Terrace (Carpentry construction). Each home gains a small terrace
+-- islet west of the landing with fixed hotspots (Data.Hotspots). The server
+-- publishes Furniture<Hotspot> = furnitureId ("" when empty) and HomePortal =
+-- regionId as player attributes; geometry rebuilds only when a value changes.
+-- Furniture is primitive-built (<= 16 parts each) inside a 2.9-stud footprint.
+-------------------------------------------------------------------------------
+do
+	local T=Data.TERRACE_OFFSET
+	local PORTAL_LANDING={Skyreach=SKYREACH_LANDING}
+	for id,pos in pairs(destinations) do PORTAL_LANDING[id]=pos end
+	local function openPlanner(player)
+		player:SetAttribute("IsleStation","Construction")
+		player:SetAttribute("IsleStationVisit",(player:GetAttribute("IsleStationVisit") or 0)+1)
+	end
+	-- Builders receive a local frame (facing the terrace centre) and a part helper.
+	local builders={}
+	local function legs(P,w,d,h,color)
+		for _,x in ipairs({-w/2+.2,w/2-.2}) do for _,z in ipairs({-d/2+.2,d/2-.2}) do P("Leg",V(.3,h,.3),x,h/2,z,color,WO) end end
+	end
+	builders.SturdyWorkbench=function(P,col)
+		local top=P("Bench top",V(4,.4,2),0,1.6,0,col,WO,true)
+		legs(P,4,2,1.4,darken(col,.3))
+		P("Lower shelf",V(3.6,.2,1.6),0,.5,0,darken(col,.15),WO)
+		P("Tool rack",V(3.6,1.6,.2),0,2.6,.9,darken(col,.25),WO)
+		P("Bench vise",V(.6,.5,.6),1.5,2.05,-.6,shale,MT)
+		P("Mallet",V(.9,.25,.25),-.9,1.95,-.2,timber,WO)
+		return top
+	end
+	builders.BrassWorkbench=function(P,col)
+		local top=builders.SturdyWorkbench(P,timber)
+		P("Brass edging",V(4.1,.15,.15),0,1.85,-1,col,MT)
+		P("Brass edging",V(4.1,.15,.15),0,1.85,1,col,MT)
+		P("Anvil",V(1,.6,.6),-1.2,2.1,-.4,ink,MT)
+		P("Hanging tongs",V(.15,.9,.15),1,2.7,.75,col,MT)
+		return top
+	end
+	builders.StarforgedBench=function(P,col)
+		local top=P("Starforged top",V(4,.45,2),0,1.6,0,darken(col,.55),MT,true)
+		legs(P,4,2,1.4,ink)
+		P("Star inlay",V(3.2,.05,.25),0,1.85,0,col,NE)
+		P("Anvil",V(1,.6,.6),-1.2,2.1,-.4,col,MT)
+		P("Forge crystal",V(.6,1.1,.6),1.2,2.4,-.3,mint,GL)
+		P("Rune panel",V(3.6,1.6,.2),0,2.6,.9,navy,SM)
+		P("Rune glow",V(2.8,.12,.05),0,3,.78,col,NE)
+		return top
+	end
+	builders.ClayHearth=function(P,col)
+		local base=P("Hearth body",V(3,2,2.2),0,1,0,col,Enum.Material.Brick,true)
+		P("Firebox",V(1.8,.9,.2),0,.8,-1.05,C("FF8A3D"),NE)
+		P("Mantel",V(3.4,.3,2.4),0,2.15,0,darken(col,.3),ST)
+		P("Chimney",V(1.1,2.6,1.1),0,3.6,.4,darken(col,.15),Enum.Material.Brick)
+		P("Cookpot",V(1,1,1),.9,2.75,-.4,ink,MT,false,BALL)
+		light(base,C("FFB36B"),.7,10)
+		return base
+	end
+	builders.EmberoakRange=function(P,col)
+		local base=P("Range body",V(4,1.8,2.2),0,.9,0,darken(col,.35),Enum.Material.Brick,true)
+		P("Range top",V(4.2,.25,2.4),0,1.9,0,ink,MT)
+		for _,x in ipairs({-1.1,1.1}) do P("Burner",V(.9,.08,.9),x,2.06,-.3,col,NE) end
+		P("Oven door",V(1.6,.9,.15),-.9,.9,-1.12,brass,MT)
+		P("Chimney",V(1,2.4,1),1.3,3.2,.6,darken(col,.2),Enum.Material.Brick)
+		P("Cauldron",V(1.2,1.2,1.2),-1.1,2.6,.3,ink,MT,false,BALL)
+		P("Brew glow",V(.9,.1,.9),-1.1,3.1,.3,C("C77DFF"),NE)
+		light(base,col,.8,11)
+		return base
+	end
+	builders.TrinketCabinet=function(P,col)
+		local body=P("Cabinet body",V(2.8,3.4,1.4),0,1.7,0,col,WO,true)
+		for _,x in ipairs({-.68,.68}) do
+			P("Cabinet door",V(1.25,2.8,.1),x,1.8,-.72,darken(col,.2),WO)
+			P("Brass pull",V(.12,.4,.12),x*.35,1.8,-.8,brass,MT)
+		end
+		P("Crown moulding",V(3.1,.3,1.6),0,3.55,0,darken(col,.35),WO)
+		P("Display glass",V(2.2,.6,.1),0,2.95,-.73,mint,GL)
+		return body
+	end
+	builders.GildedReliquary=function(P,col)
+		local chest=P("Reliquary chest",V(2.8,1.4,1.8),0,.7,0,navy,WO,true)
+		for _,x in ipairs({-.9,.9}) do P("Gilded band",V(.25,1.5,1.9),x,.75,0,col,MT) end
+		P("Lid",V(2.9,.35,1.9),0,1.55,0,darken(navy,.2),WO)
+		P("Glass dome",V(1.6,1.6,1.6),0,2.4,0,cream,GL,false,BALL).Transparency=.45
+		gem(P.model,"Reliquary gem",P.at(0,2.4,0),V(.5,.9,.5),C("FF55FF"),.4)
+		P("Clasp",V(.5,.5,.12),0,1.1,-.95,col,MT)
+		return chest
+	end
+	builders.TrophyStand=function(P,col)
+		local plinth=P("Trophy plinth",V(2.4,.6,1.6),0,.3,0,darken(col,.3),WO,true)
+		P("Post",V(.35,2.6,.35),0,1.9,.3,timber,WO)
+		P("Shield board",V(2,1.6,.2),0,2.8,.1,col,WO)
+		P("Hide trophy",V(1.4,1,.25),0,2.8,-.05,C("8D6346"),Enum.Material.Fabric)
+		for _,x in ipairs({-.75,.75}) do gem(P.model,"Tusk",P.at(x,3.5,-.15),V(.25,.9,.25),cream,x) end
+		return plinth
+	end
+	builders.GrandTrophyWall=function(P,col)
+		local wall=P("Trophy wall",V(4.6,3.6,.4),0,1.8,.8,darken(col,.3),WO,true)
+		P("Wall cap",V(4.9,.3,.6),0,3.75,.8,brass,MT)
+		for i,x in ipairs({-1.5,0,1.5}) do
+			P("Plaque",V(1.1,1.1,.15),x,2.3,.55,navy,WO)
+			gem(P.model,"Trophy crystal",P.at(x,2.3,.4),V(.4,.7,.4),({C("D8D8E8"),C("6A4C93"),C("4B6584")})[i],x)
+		end
+		P("Banner",V(1.2,1.6,.08),0,.95,.55,rose,Enum.Material.Fabric)
+		P("Brazier",V(.6,.8,.6),-2,.4,-.2,brass,MT)
+		P("Brazier flame",V(.4,.3,.4),-2,.95,-.2,C("FF8A3D"),NE)
+		return wall
+	end
+	builders.HerbPlanter=function(P,col)
+		local box=P("Planter box",V(3.6,.8,2.2),0,.4,0,timber,WO,true)
+		P("Planter soil",V(3.3,.1,1.9),0,.82,0,ink,GR)
+		for i=0,5 do
+			local x,z=-1.2+(i%3)*1.2,if i<3 then -.45 else .45
+			gem(P.model,"Herb sprout",P.at(x,1.2,z),V(.35,.7,.35),if i%2==0 then col else turf,i)
+		end
+		return box
+	end
+	builders.MoonbloomTerrace=function(P,col)
+		local lower=P("Lower bed",V(4,.7,2.4),0,.35,0,darken(navy,.2),ST,true)
+		P("Upper bed",V(2.6,.7,1.4),0,1.05,.4,navy,ST)
+		P("Bed soil",V(3.7,.08,.9),0,.73,-.6,ink,GR)
+		P("Upper soil",V(2.3,.08,1.1),0,1.43,.4,ink,GR)
+		for i=0,3 do gem(P.model,"Moonbloom",P.at(-1.4+i*.93,1.05,-.6),V(.6,.5,.6),col,i) end
+		for i=0,1 do gem(P.model,"Moonbloom",P.at(-.6+i*1.2,1.75,.4),V(.6,.5,.6),cream,i) end
+		for _,x in ipairs({-1.9,1.9}) do P("Arch post",V(.2,2.8,.2),x,1.4,.9,brass,MT) end
+		P("Arch beam",V(4,.2,.2),0,2.85,.9,brass,MT)
+		P("Arch lantern",V(.4,.4,.4),0,2.55,.9,mint,NE)
+		return lower
+	end
+	builders.SurveyorDock=function(P,col)
+		local pad=P("Dock platform",V(3.8,.4,3.2),0,.2,0,timber,WO,true)
+		P("Crane mast",V(.35,3.6,.35),-1.4,2.2,1,col,MT)
+		P("Crane jib",V(2.6,.25,.25),-.2,3.9,1,col,MT)
+		P("Crane line",V(.06,1.4,.06),1,3.1,1,ink,SM)
+		P("Supply crate",V(1,.9,1),1,1.9,1,timber,WO)
+		P("Mooring cleat",V(.6,.3,.3),1.2,.55,-1.2,brass,MT)
+		return pad
+	end
+	builders.ClockworkDock=function(P,col)
+		local pad=P("Dock platform",V(3.8,.4,3.2),0,.2,0,navy,MT,true)
+		for _,x in ipairs({-1.5,1.5}) do P("Brass pillar",V(.4,2.6,.4),x,1.5,1.2,brass,MT) end
+		P("Pillar lintel",V(3.4,.3,.4),0,2.9,1.2,brass,MT)
+		local gear=P("Great gear",V(.3,2,2),0,1.7,1,col,MT,false,Enum.PartType.Cylinder)
+		gear.CFrame=gear.CFrame*CFrame.Angles(0,math.pi/2,0)
+		P("Gear hub",V(.4,.6,.6),0,1.7,.8,ink,MT)
+		P("Clockwork core",V(.7,.7,.7),0,.75,-.6,mint,NE,false,BALL)
+		P("Core cage",V(1.1,.1,1.1),0,1.15,-.6,brass,MT)
+		return pad
+	end
+	builders.PortalFrame=function(P,col)
+		local base=P("Portal dais",V(4.2,.3,2),0,.15,0,ink,ST,true)
+		for _,x in ipairs({-1.7,1.7}) do P("Portal pillar",V(.6,4.2,.6),x,2.4,0,timber,WO) end
+		P("Portal lintel",V(4.2,.6,.8),0,4.7,0,timber,WO)
+		P("Lintel crystal",V(.5,.5,.5),0,5.15,0,col,NE)
+		local veil=P("Portal veil",V(2.8,3.9,.12),0,2.3,0,col,NE)
+		veil.Transparency=.4
+		light(veil,col,.8,10)
+		return base,veil
+	end
+	builders.StormglassGate=function(P,col)
+		local base=P("Gate dais",V(4.6,.3,2.2),0,.15,0,navy,ST,true)
+		local veil=P("Gate veil",V(.12,3.6,3.6),0,2.4,0,col,NE,false,Enum.PartType.Cylinder)
+		veil.CFrame=veil.CFrame*CFrame.Angles(0,math.pi/2,0)
+		veil.Transparency=.35
+		for i=1,8 do
+			local a=i*math.pi/4
+			gem(P.model,"Stormglass shard",P.at(math.cos(a)*2.05,2.4+math.sin(a)*2.05,0),V(.4,1.1,.4),if i%2==0 then col else mint,a)
+		end
+		light(veil,col,.9,12)
+		return base,veil
+	end
+	local function buildFurniture(parent,id,cf)
+		local f=Data.Furniture[id]
+		local model=group("Furniture_"..f.hotspot,parent)
+		model:SetAttribute("FurnitureId",id)
+		local P={model=model}
+		P.at=function(x,y,z) return (cf*CFrame.new(x,y,z)).Position end
+		setmetatable(P,{__call=function(_,name,size,x,y,z,color,mat,solid,shape)
+			return part(model,name,size,cf*CFrame.new(x,y,z),color,mat,solid,shape)
+		end})
+		local main,veil=builders[id](P,C(f.color))
+		return model,main,veil
+	end
+	local function hotspotFrame(center,h)
+		local pos=center+V(h.x,0,h.z)
+		local focus=center+V(T.x,0,T.z)
+		if (pos-focus).Magnitude<.5 then return CFrame.lookAt(pos,pos+V(1,0,0)) end
+		return CFrame.lookAt(pos,V(focus.X,pos.Y,focus.Z))
+	end
+	homeTerrace.builders=builders
+	homeTerrace.attach=function(player,home)
+		if not home or home.terrace then return end
+		local m,center=home.model,home.center
+		local tc=center+V(T.x,0,T.z)
+		local terrace=island("Builders Terrace",tc,11,C("A7B08A"))
+		terrace.Parent=m
+		home.terrace=terrace
+		bridge(terrace,center+V(-18.6,0,0),center+V(-22.4,0,0))
+		disk(terrace,"Terrace court",tc+V(0,.05,0),4.2,.12,navy,ST,true)
+		disk(terrace,"Court seal",tc+V(0,.13,0),1.4,.1,brass,MT,false)
+		sign(terrace,center+V(-15,0,-6),"Builder's Terrace","CARPENTRY   /   PLAN IN YOUR JOURNAL",brass,90,8)
+		local built,plinths,portalPrompt={},{},nil
+		local function refreshPortal()
+			if not portalPrompt then return end
+			local region=player:GetAttribute("HomePortal")
+			local def=type(region)=="string" and Data.RegionById[region]
+			portalPrompt.ObjectText=if def then "Home portal · "..def.name else "Home portal · attune in Journal"
+		end
+		local function refresh(h)
+			local value=player:GetAttribute("Furniture"..h.id)
+			local f=type(value)=="string" and Data.Furniture[value]
+			if f and f.hotspot~=h.id then f=nil end
+			local id=f and value or nil
+			if built[h.id] and built[h.id].id==id then return end
+			if built[h.id] then built[h.id].model:Destroy() end
+			built[h.id]=nil
+			if h.id=="Portal" then portalPrompt=nil end
+			plinths[h.id].Transparency=if id then 1 else 0
+			if not id or not m.Parent then return end
+			local model,main,veil=buildFurniture(terrace,id,hotspotFrame(center,h))
+			built[h.id]={id=id,model=model}
+			for _,kind in ipairs(f.effect.station or {}) do
+				local q=prompt(main,STATION[kind][1],kind.." · Home "..STATION[kind][2],"station",kind,player.UserId)
+				q.Triggered:Connect(function(user)
+					if user~=player then return end
+					user:SetAttribute("IsleStation",kind)
+					user:SetAttribute("IsleStationVisit",(user:GetAttribute("IsleStationVisit") or 0)+1)
+				end)
+			end
+			if f.effect.portal and veil then
+				portalPrompt=prompt(veil,"Step through","Home portal")
+				portalPrompt:SetAttribute("OwnerUserId",player.UserId)
+				portalPrompt:SetAttribute("IsleHomePortal",true)
+				portalPrompt.Triggered:Connect(function(user)
+					if user~=player then return end
+					local region=user:GetAttribute("HomePortal")
+					if type(region)=="string" and PORTAL_LANDING[region] then
+						regionTravel(user,veil,region,PORTAL_LANDING[region])
+					else
+						user:SetAttribute("IsleRegionNotice","Attune your home portal from the Construction page of your Journal.")
+						user:SetAttribute("IsleRegionNoticeCount",(tonumber(user:GetAttribute("IsleRegionNoticeCount")) or 0)+1)
+					end
+				end)
+				refreshPortal()
+			end
+		end
+		for _,h in ipairs(Data.Hotspots) do
+			local cf=hotspotFrame(center,h)
+			local plinth=part(terrace,h.name.." hotspot",V(4.4,.14,3.2),cf*CFrame.new(0,.07,0),cream,ST,false)
+			plinth.Transparency=0
+			plinth:SetAttribute("HotspotId",h.id)
+			plinths[h.id]=plinth
+			local q=prompt(plinth,"Plan",h.name)
+			q:SetAttribute("OwnerUserId",player.UserId)
+			q.Triggered:Connect(function(user) if user==player then openPlanner(user) end end)
+			table.insert(home.decorationConnections,player:GetAttributeChangedSignal("Furniture"..h.id):Connect(function() refresh(h) end))
+			refresh(h)
+		end
+		table.insert(home.decorationConnections,player:GetAttributeChangedSignal("HomePortal"):Connect(refreshPortal))
+	end
+	for player,home in pairs(homes) do homeTerrace.attach(player,home) end
+end
+
+-------------------------------------------------------------------------------
+-- Island placement (Island Builder team). The server publishes the owner's
+-- free-form placements as player attribute IslandPlacements ("id:prop:x:z:rot"
+-- records joined by ";", Data.Island grid). Each record becomes an anchored
+-- primitive model (<= 12 parts) named Placement_<id> in the home's Placements
+-- folder; a change rebuilds only the records that differ. The folder goes with
+-- the home model when the player leaves. Player attribute IslandCenter lets the
+-- client snap its build-mode ghost to the same grid.
+-------------------------------------------------------------------------------
+do
+	local I=Data.Island
+	local CYL=Enum.PartType.Cylinder
+	local UPRIGHT=CFrame.Angles(0,0,math.pi/2)
+	local FAB,BR,LG=Enum.Material.Fabric,Enum.Material.Brick,Enum.Material.LeafyGrass
+	local B={}
+	homePlacement.builders=B
+	-- P(name,size,x,y,z,color,material,solid,shape,rotation) builds in the prop's
+	-- local frame: origin at the footprint centre on the meadow, x along width.
+	B.TimberFence=function(P,col)
+		for _,x in ipairs({-.75,.75}) do P("Fence post",V(.28,1.7,.28),x,.85,0,darken(col,.2),WO) end
+		P("Upper rail",V(1.9,.2,.16),0,1.3,0,col,WO,true)
+		return P("Lower rail",V(1.9,.2,.16),0,.6,0,col,WO,true)
+	end
+	B.PicketFence=function(P,col)
+		local rail=P("Picket rail",V(1.9,.16,.1),0,.5,.08,darken(col,.15),WO,true)
+		P("Picket rail",V(1.9,.16,.1),0,1,.08,darken(col,.15),WO,true)
+		for _,x in ipairs({-.72,-.24,.24,.72}) do P("Picket",V(.3,1.4,.1),x,.7,-.02,col,WO) end
+		return rail
+	end
+	B.BrassRailing=function(P,col)
+		for _,x in ipairs({-.8,.8}) do
+			P("Windpine post",V(.3,1.5,.3),x,.75,0,C("6B8E5A"),WO)
+			P("Brass finial",V(.36,.36,.36),x,1.65,0,col,MT,false,BALL)
+		end
+		P("Mid rail",V(1.9,.12,.12),0,.75,0,col,MT,true)
+		return P("Top rail",V(1.9,.16,.16),0,1.35,0,col,MT,true)
+	end
+	B.StonePath=function(P,col)
+		local base=P("Path bed",V(1.9,.1,1.9),0,.05,0,darken(col,.25),ST,true)
+		P("Flagstone",V(.85,.06,.8),-.45,.13,-.4,col,ST)
+		P("Flagstone",V(.8,.06,.85),.45,.13,.42,lighten(col,.1),ST)
+		return base
+	end
+	B.Boardwalk=function(P,col)
+		local first
+		for i,z in ipairs({-.71,-.24,.24,.71}) do
+			local plank=P("Plank",V(1.9,.12,.42),0,.18,z,if i%2==0 then col else darken(col,.12),WO,true)
+			first=first or plank
+		end
+		for _,x in ipairs({-.7,.7}) do P("Sleeper",V(.3,.12,1.9),x,.06,0,darken(col,.4),WO) end
+		return first
+	end
+	B.AetherMosaic=function(P,col)
+		local base=P("Mosaic bed",V(1.9,.1,1.9),0,.05,0,navy,ST,true)
+		for _,o in ipairs({{-.45,-.45},{.45,.45},{-.45,.45},{.45,-.45}}) do
+			P("Aether tile",V(.78,.05,.78),o[1],.12,o[2],if o[1]==o[2] then col else cream,if o[1]==o[2] then NE else ST)
+		end
+		return base
+	end
+	B.LanternPost=function(P,col)
+		P("Lantern foot",V(.7,.4,.7),0,.2,0,ink,ST,true)
+		P("Lantern mast",V(.2,2.8,.2),0,1.8,0,brass,MT)
+		P("Lantern arm",V(.6,.12,.12),.25,3.1,0,brass,MT)
+		P("Lantern cap",V(.5,.12,.5),.5,3.15,0,ink,MT)
+		return P("Lantern glass",V(.45,.45,.45),.5,2.85,0,col,NE,false,BALL)
+	end
+	B.BrassStreetlamp=function(P,col)
+		P("Lamp base",V(.9,.5,.9),0,.25,0,ink,ST,true)
+		P("Lamp column",V(.28,4,.28),0,2.5,0,brass,MT)
+		P("Lamp crossbar",V(1.6,.14,.14),0,4.4,0,brass,MT)
+		for _,x in ipairs({-.65,.65}) do P("Lamp globe",V(.5,.5,.5),x,4.1,0,col,NE,false,BALL) end
+		return P("Lamp crown",V(.36,.36,.36),0,4.65,0,brass,MT,false,BALL)
+	end
+	B.CrystalBrazier=function(P,col)
+		P("Brazier foot",V(1,.3,1),0,.15,0,ink,ST,true)
+		P("Brazier stem",V(.35,1,.35),0,.8,0,darken(brass,.2),MT)
+		local bowl=P("Brazier bowl",V(.5,1.4,1.4),0,1.45,0,C("B5482A"),MT,false,CYL,UPRIGHT)
+		for i,x in ipairs({-.3,0,.3}) do P("Aether flame",V(.3,.7+(i%2)*.3,.3),x,1.95+(i%2)*.15,(i-2)*.1,col,NE) end
+		return bowl
+	end
+	B.FlowerPlanter=function(P,col)
+		local box=P("Planter box",V(1.6,.6,1.6),0,.3,0,timber,WO,true)
+		P("Planter soil",V(1.4,.08,1.4),0,.62,0,ink,GR)
+		for i,o in ipairs({{-.4,-.4},{.4,.4},{-.4,.4},{.4,-.4}}) do
+			P("Bloom",V(.42,.42,.42),o[1],.9,o[2],if i%2==0 then col else cream,SM,false,BALL)
+		end
+		return box
+	end
+	B.HedgeRow=function(P,col)
+		P("Hedge planter",V(3.8,.4,1.4),0,.2,0,timber,WO,true)
+		local hedge=P("Hedge",V(3.6,1.3,1.2),0,1.05,0,col,LG,true)
+		for _,x in ipairs({-1.1,1.1}) do P("Hedge crown",V(1,1,1),x,1.7,0,lighten(col,.08),LG,false,BALL) end
+		return hedge
+	end
+	B.YoungWindpine=function(P,col)
+		local trunk=P("Sapling trunk",V(.3,2.2,.3),0,1.1,0,timber,WO,true)
+		P("Lower boughs",V(1.6,.8,1.6),0,1.6,0,darken(col,.1),LG)
+		P("Middle boughs",V(1.1,.8,1.1),0,2.3,0,col,LG)
+		P("Crown",V(.6,.7,.6),0,2.95,0,lighten(col,.1),LG)
+		return trunk
+	end
+	B.MoonbloomBed=function(P,col)
+		local bed=P("Moonbloom bed",V(3.7,.7,3.7),0,.35,0,darken(navy,.2),ST,true)
+		P("Bed soil",V(3.4,.08,3.4),0,.72,0,ink,GR)
+		for i=0,5 do
+			local x,z=-1.1+(i%3)*1.1,if i<3 then -.8 else .8
+			P("Moonbloom",V(.55,.55,.55),x,1.05,z,if i%2==0 then col else cream,NE,false,BALL)
+		end
+		return bed
+	end
+	B.GuildBanner=function(P,col)
+		P("Banner foot",V(.6,.3,.6),0,.15,0,ink,ST,true)
+		local pole=P("Banner pole",V(.18,3.8,.18),0,2.2,0,timber,WO)
+		P("Banner crossbar",V(1.4,.12,.12),0,3.9,0,brass,MT)
+		P("Banner cloth",V(1.2,1.9,.08),0,2.85,.1,col,FAB)
+		P("Banner crest",V(.4,.4,.06),0,2.95,.16,brass,MT)
+		return pole
+	end
+	B.VoyagerPennant=function(P,col)
+		P("Pennant foot",V(.6,.3,.6),0,.15,0,ink,ST,true)
+		local pole=P("Pennant pole",V(.16,3.6,.16),-.6,2,0,timber,WO)
+		P("Pennant upper",V(1.2,.5,.06),0,3.4,0,col,FAB)
+		P("Pennant lower",V(.7,.4,.06),-.2,2.95,0,darken(col,.15),FAB)
+		P("Pennant finial",V(.26,.26,.26),-.6,3.9,0,brass,MT,false,BALL)
+		return pole
+	end
+	B.StormStandard=function(P,col)
+		P("Standard foot",V(.8,.3,.8),0,.15,0,navy,ST,true)
+		local pole=P("Starwood pole",V(.2,4.4,.2),0,2.5,0,C("3B4C7A"),WO)
+		P("Storm ring",V(.12,1.1,1.1),0,4.2,0,brass,MT,false,CYL)
+		P("Stormglass",V(.4,.7,.4),0,4.2,0,col,NE)
+		P("Storm banner",V(1.1,1.6,.08),0,2.9,.12,col,FAB)
+		return pole
+	end
+	B.SurveyorStatue=function(P,col)
+		local plinth=P("Statue plinth",V(3,.9,3),0,.45,0,darken(col,.2),ST,true)
+		P("Plinth step",V(3.6,.25,3.6),0,.12,0,darken(col,.35),ST)
+		P("Surveyor body",V(1.1,2,.9),0,1.9,0,col,ST,true)
+		P("Surveyor head",V(.8,.8,.8),0,3.3,0,col,ST,false,BALL)
+		P("Surveyor hat",V(1.2,.18,1.2),0,3.7,0,darken(col,.15),ST)
+		P("Spyglass",V(.2,.2,1.2),.55,2.6,-.5,brass,MT)
+		return plinth
+	end
+	B.SkywhaleStatue=function(P,col)
+		local plinth=P("Whale plinth",V(3,.6,3),0,.3,0,navy,ST,true)
+		P("Cloud",V(1.4,1.4,1.4),-.7,1,.6,cream,SM,false,BALL)
+		P("Cloud",V(1.2,1.2,1.2),.7,.9,-.6,cream,SM,false,BALL)
+		P("Whale body",V(1.3,1.2,2.6),0,2.1,0,col,GL,true)
+		P("Whale head",V(1.2,1.2,1.2),0,2.2,-1.2,col,GL,false,BALL)
+		for _,x in ipairs({-.8,.8}) do P("Whale fin",V(.6,.12,.8),x,1.8,-.2,lighten(col,.2),GL) end
+		P("Whale tail",V(1.6,.16,.6),0,2.5,1.4,lighten(col,.2),GL)
+		return plinth
+	end
+	B.AetherObelisk=function(P,col)
+		P("Obelisk base",V(1.8,.4,1.8),0,.2,0,ink,ST,true)
+		local shaft=P("Obelisk shaft",V(.9,4.6,.9),0,2.7,0,col,MT,true)
+		P("Obelisk band",V(1.05,.2,1.05),0,1.5,0,brass,MT)
+		P("Obelisk band",V(1.05,.2,1.05),0,3.9,0,brass,MT)
+		P("Aether tip",V(.55,.55,.55),0,5.25,0,mint,NE,false,BALL)
+		return shaft
+	end
+	B.PicnicBench=function(P,col)
+		local top=P("Table top",V(3.4,.18,1),0,1.1,0,col,WO,true)
+		for _,x in ipairs({-1.3,1.3}) do P("Table leg",V(.2,1,.8),x,.5,0,darken(col,.3),WO) end
+		for _,z in ipairs({-.75,.75}) do P("Bench seat",V(3.4,.14,.36),0,.6,z,darken(col,.12),WO,true) end
+		return top
+	end
+	B.StoneWell=function(P,col)
+		for _,o in ipairs({{0,-1.35,3.2,.5},{0,1.35,3.2,.5},{-1.35,0,.5,2.2},{1.35,0,.5,2.2}}) do
+			P("Well wall",V(o[3],1,o[4]),o[1],.5,o[2],col,ST,true)
+		end
+		local water=P("Well water",V(2.2,.1,2.2),0,.7,0,teal,GL)
+		for _,x in ipairs({-1.35,1.35}) do P("Well post",V(.25,2.2,.25),x,2.1,0,timber,WO) end
+		P("Well roof",V(3.4,.25,2.2),0,3.3,0,darken(timber,.25),WO)
+		P("Well bucket",V(.4,.4,.4),0,1.9,0,brass,MT)
+		return water
+	end
+	B.SupplyShed=function(P,col)
+		local body=P("Shed walls",V(3.2,2.4,3.2),0,1.2,0,col,WO,true)
+		P("Shed door",V(1,1.8,.08),0,.9,-1.62,darken(col,.35),WO)
+		for _,s in ipairs({-1,1}) do
+			P("Shed roof",V(1.95,.2,3.5),s*.82,2.8,0,darken(navy,.1),ST,false,nil,CFrame.Angles(0,0,-s*math.rad(25)))
+		end
+		P("Roof ridge",V(.3,.25,3.5),0,3.25,0,brass,MT)
+		P("Supply crate",V(.8,.7,.7),1.1,.35,-1.5,timber,WO)
+		return body
+	end
+	B.GardenGazebo=function(P,col)
+		local floor=P("Gazebo floor",V(5.6,.3,5.6),0,.15,0,darken(col,.25),WO,true)
+		for _,o in ipairs({{-2.4,-2.4},{2.4,-2.4},{-2.4,2.4},{2.4,2.4}}) do P("Gazebo pillar",V(.35,3.2,.35),o[1],1.9,o[2],col,WO,true) end
+		P("Gazebo roof",V(5.8,.3,5.8),0,3.65,0,teal,ST)
+		P("Gazebo crown",V(3.2,.5,3.2),0,4.05,0,darken(teal,.2),ST)
+		P("Brass finial",V(.6,.6,.6),0,4.6,0,brass,MT,false,BALL)
+		P("Gazebo bench",V(2.6,.3,.6),0,.6,1.9,timber,WO,true)
+		return floor
+	end
+	B.CarpenterStump=function(P,col)
+		local stump=P("Carpenter's stump",V(1,1.5,1.5),0,.5,0,col,WO,true,CYL,UPRIGHT)
+		P("Growth ring",V(.04,1.2,1.2),0,1.01,0,timber,WO,false,CYL,UPRIGHT)
+		P("Axe handle",V(.12,.9,.12),.3,1.4,-.2,timber,WO)
+		P("Axe head",V(.35,.2,.08),.4,1.8,-.2,shale,MT)
+		return stump
+	end
+	B.CampStove=function(P,col)
+		local body=P("Stove body",V(1.4,1,1.2),0,.5,0,col,BR,true)
+		P("Stove top",V(1.5,.15,1.3),0,1.07,0,ink,MT)
+		P("Firebox",V(.8,.4,.06),0,.45,-.62,C("FF8A3D"),NE)
+		P("Stove pipe",V(.3,1.2,.3),.45,1.7,.35,ink,MT)
+		P("Cookpot",V(.55,.55,.55),-.25,1.42,-.1,ink,MT,false,BALL)
+		return body
+	end
+	B.FieldAnvil=function(P,col)
+		local block=P("Anvil block",V(.9,.7,.9),0,.35,0,timber,WO,true)
+		P("Anvil waist",V(.4,.3,.5),0,.85,0,col,MT)
+		P("Anvil face",V(1.3,.3,.6),0,1.15,0,col,MT,true)
+		P("Anvil horn",V(.4,.2,.3),.8,1.18,0,col,MT)
+		P("Hammer",V(.5,.14,.14),-.3,1.37,.1,brass,MT)
+		return block
+	end
+	B.BrewingStand=function(P,col)
+		local stand=P("Brewing table",V(1.6,.2,1.2),0,.9,0,timber,WO,true)
+		for _,x in ipairs({-.65,.65}) do P("Table leg",V(.16,.8,1),x,.4,0,darken(timber,.3),WO) end
+		P("Cauldron",V(.8,.8,.8),-.2,1.4,0,ink,MT,false,BALL)
+		P("Brew glow",V(.6,.06,.6),-.2,1.78,0,col,NE)
+		P("Potion flask",V(.25,.45,.25),.55,1.23,.2,mint,GL)
+		return stand
+	end
+	homePlacement.build=function(folder,center,e,player)
+		local def=I.Props[e.prop]
+		local ox,oz,yaw=I.centerOffset(e.prop,e.x,e.z,e.rot)
+		local cf=CFrame.new(center+V(ox,0,oz))*CFrame.Angles(0,yaw,0)
+		local model=group("Placement_"..e.id,folder)
+		model:SetAttribute("PlacementId",e.id)
+		model:SetAttribute("PropId",e.prop)
+		model:SetAttribute("PlacementRecord",I.record(e))
+		local function P(name,size,x,y,z,color,mat,solid,shape,rotation)
+			return part(model,name,size,cf*CFrame.new(x,y,z)*(rotation or CFrame.identity),color,mat,solid,shape)
+		end
+		local main=B[e.prop](P,C(def.color))
+		local effect=def.effect or {}
+		if effect.light then light(main,C(effect.light.color),.7,effect.light.range) end
+		if effect.station and STATION[effect.station] then
+			local kind=effect.station
+			local q=prompt(main,STATION[kind][1],kind.." · Home "..STATION[kind][2],"station",kind,player.UserId)
+			q.Triggered:Connect(function(user)
+				if user~=player then return end
+				user:SetAttribute("IsleStation",kind)
+				user:SetAttribute("IsleStationVisit",(user:GetAttribute("IsleStationVisit") or 0)+1)
+			end)
+		end
+		return model
+	end
+	homePlacement.attach=function(player,home)
+		if not home or home.placements then return end
+		local folder=Instance.new("Folder")
+		folder.Name="Placements"
+		folder.Parent=home.model
+		home.placements=folder
+		player:SetAttribute("IslandCenter",home.center)
+		local built={}
+		local function refresh()
+			if not folder.Parent then return end
+			-- Re-validate geometry so a bad value can never stack props.
+			local want,occupied={},{}
+			for _,e in ipairs(I.decode(player:GetAttribute("IslandPlacements"))) do
+				if not want[e.id] and I.check(occupied,e.prop,e.x,e.z,e.rot) then
+					want[e.id]=e
+					for _,c in ipairs(I.cells(e.prop,e.x,e.z,e.rot)) do occupied[I.key(c[1],c[2])]=e.id end
+				end
+			end
+			for id,b in pairs(built) do
+				if not want[id] or I.record(want[id])~=b.record then
+					b.model:Destroy()
+					built[id]=nil
+				end
+			end
+			for id,e in pairs(want) do
+				if not built[id] then built[id]={record=I.record(e),model=homePlacement.build(folder,home.center,e,player)} end
+			end
+		end
+		table.insert(home.decorationConnections,player:GetAttributeChangedSignal("IslandPlacements"):Connect(refresh))
+		refresh()
+	end
+	for player,home in pairs(homes) do homePlacement.attach(player,home) end
+end
