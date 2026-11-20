@@ -172,3 +172,7 @@ Classes Aegis/Mender/Riftblade/Starshot/Arcanist (`Data.DungeonClasses`), levels
 ## 17. Prayer & Thieving
 
 20 skills. `Data.Prayer`: 21 prayers (groups switch each other off), max points 10 + level, drain = Σ points/min ÷ 60 ÷ (1 + Devotion/30); protection −40% vs monsters, −25% vs world bosses, applied to the raw hit before Defense. 8 remains tiers, 4 altars (×1–×1.75). `Data.Thieving`: 14 targets (stalls, pickpockets, strongboxes); success = base + 0.008/level over + gloves + 0.002×Deftness (≤95%); failure stuns 4–7 s with non-lethal damage. Verbs `prayer "<id>"`, `prayerOff`, `prayerQuick "<1|2>:<id>"`, `offerRemains "<remains>"` (within 60 s of an altar visit); prompt actions `altarOffer`, `altarPray`, `thieve`. Bridge `"stats"` adds `prayer = {protect, offence, sap, mana, defence}`; `"damage"` reads `payload.style`/`payload.worldBoss`. Attributes PrayerLevel/Points/Max/Drain/Active/Quick/Altar/AltarUntil, ThievingStunUntil. Snapshot keys `prayer`, `thieving`.
+
+## 18. Treasure Trails
+
+`Data.Trails`: tiers Beginner→Master (steps 1–3 … 6–9), 161 steps (dig, riddle, emote, skill, 3×3 puzzle box), caskets with 35 uniques, clue log. Verbs `trailBegin`, `trailAbandon`, `trailDig`, `trailSearch`, `trailEmote "<gesture>"`, `trailSlide "<tier>:<UDLR…>"` (≤ 48 moves), `trailCheck`, `trailOpen`, `trailTeleport`, `trailLearn`, `trailBanner`. Profile `p.trails`; snapshot `trails` (step text/hints only); attribute `TrailBanner`. Clue drops use a private per-player RNG stream.
