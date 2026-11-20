@@ -1418,6 +1418,13 @@ local function perform(player,verb,item,prompt)
 		player:SetAttribute("EventVendorUntil",os.time()+Data.EVENT_VENDOR_SECONDS)
 		player:SetAttribute("IsleStation","Calendar"); player:SetAttribute("IsleStationVisit",(player:GetAttribute("IsleStationVisit") or 0)+1)
 		return "The Festival Vendor spreads out this season's wares."
+	elseif verb=="recall" then
+		-- Townsfolk hook (npc.server.lua): recall charm to "Hub"/"Home". IsleRecall validates the
+		-- target, enforces its cooldown and recent-damage gate, and picks the destination server-side.
+		local recall=ServerStorage:FindFirstChild("IsleRecall")
+		if not recall then return "The recall charm is still being charted. Use a beacon for now." end
+		local ok,message=pcall(recall.Invoke,recall,player,item)
+		return if ok and type(message)=="string" then message else "The recall charm flickers. Try again shortly."
 	elseif verb=="ironman" then
 		if p.started then return "Choose Ironman before starting progression, construction, hunts or trading." end
 		p.ironman=true

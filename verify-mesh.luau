@@ -1,4 +1,4 @@
--- Mesh team verification: catalog integrity and the server MeshForge (mesh.server.lua)
+-- Mesh team verification: catalog integrity and the client MeshForge (forge.client.lua)
 -- against a mocked AssetService. Run from the project root: lune run verify-mesh.luau
 local fs = require("@lune/fs")
 local luau = require("@lune/luau")
@@ -80,7 +80,7 @@ local required = {"WindpineTree", "EmberoakTree", "GlimmerbarkTree", "StarwoodTr
 	"Workbench", "BridgePost", "BridgeRail", "Statue", "WarpBeacon", "MarketStall", "Signboard", "SignPost", "Banner"}
 for _, name in ipairs(required) do check(World.shapes[name] ~= nil, name .. " is authored") end
 
-local MeshForgeSource = fs.readFile("mesh.server.lua")
+local MeshForgeSource = fs.readFile("forge.client.lua")
 -- A throwaway forge instance exposes the production normal smoother for the checks below.
 local function baseEnv(overrides)
 	local env = {
@@ -131,7 +131,7 @@ for _, name in ipairs({"AetherCrystal", "Fish", "Tonic", "Pickaxe", "Blade", "Al
 end
 
 ------------------------------------------------------------------------------
--- Forge harness: mocked AssetService, ReplicatedStorage/ServerStorage, workspace.
+-- Forge harness: mocked AssetService, ReplicatedStorage, Players (player focus), workspace.
 ------------------------------------------------------------------------------
 local function service(attrs, catalogToken)
 	return {
@@ -170,6 +170,7 @@ end
 local function loadForge(setup, asset, preset)
 	local root = Instance.new("Folder")
 	root.Name = "Workspace"
+	local focus = {CFrame = CFrame.new(0, 0, 0)}
 	if setup then setup(root) end
 	local calls = {meshes = 0, parts = 0, colors = {}, triangles = 0, normals = 0, faceNormals = 0, destroyed = 0}
 	local attrs, added, deferred = {}, nil, {}
@@ -177,7 +178,7 @@ local function loadForge(setup, asset, preset)
 	local services = {
 		AssetService = asset or editableAsset(calls),
 		ReplicatedStorage = service(attrs, tokens),
-		ServerStorage = service(attrs, tokens),
+		Players = {LocalPlayer = {Character = {FindFirstChild = function() return focus end}}},
 	}
 	local test = {}
 	local env = baseEnv({
@@ -200,7 +201,8 @@ local function loadForge(setup, asset, preset)
 		end
 	end
 	flush()
-	return {forge = test.forge, root = root, calls = calls, attrs = attrs, flush = flush,
+	return {forge = test.forge, root = root, calls = calls, attrs = attrs, flush = flush, focus = focus,
+		moveTo = function(position) focus.CFrame = CFrame.new(position); test.forge.step() end,
 		add = function(instance) instance.Parent = root; added(instance); flush() end}
 end
 local function part(parent, name, size, cf, attributes)
@@ -209,6 +211,10 @@ local function part(parent, name, size, cf, attributes)
 	for k, v in pairs(attributes or {}) do p:SetAttribute(k, v) end
 	p.Parent = parent
 	return p
+end
+local function ltm(p)
+	local ok, value = pcall(function() return p.LocalTransparencyModifier end)
+	return if ok then value else 0
 end
 local function meshOf(p)
 	local link = p:FindFirstChild("ShapeMesh")
@@ -241,20 +247,19 @@ local ok = loadForge(function(root)
 	creature = part(root, "Shellwarden", Vector3.new(1, 1, 1), CFrame.new(), {Shape = "Shellwarden"})
 end)
 local forge, calls = ok.forge, ok.calls
-check(forge.stats.templates == 4 and calls.meshes == 4, "one template per (shape, tint), shared by both meadow trees: " .. forge.stats.templates)
-check(forge.stats.instances == 5, "every known shape placed once")
+check(forge.stats.templates == 3 and calls.meshes == 3, "one template per (shape, tint), shared by both meadow trees: " .. forge.stats.templates)
+check(forge.stats.instances == 4, "every contract-tagged shape placed once")
 check(calls.faceNormals == calls.triangles and calls.normals > 0, "every triangle gets smoothed normals")
-local expectedTris = #World.shapes.MeadowTree.faces + #World.shapes.OreVein2.faces + #Props.shapes.Lantern.faces + #World.shapes.Signboard.faces
+local expectedTris = #World.shapes.MeadowTree.faces + #World.shapes.OreVein2.faces + #World.shapes.Signboard.faces
 check(forge.stats.templateTriangles == expectedTris, "template triangles counted")
 check(calls.destroyed == 0, "live templates keep their EditableMesh")
-for _, p in ipairs({tree1, tree2, ore, lantern, sign}) do
+for _, p in ipairs({tree1, tree2, ore, sign}) do
 	local mesh = meshOf(p)
 	check(p:GetAttribute("ShapeDone") == true and mesh ~= nil and mesh:IsA("MeshPart"), p.Name .. " meshed")
 	check(mesh.Parent == p.Parent, p.Name .. " mesh sits beside its collider")
 	check(mesh.Anchored and not mesh.CanCollide and not mesh.CanQuery and not mesh.CanTouch, p.Name .. " mesh is display-only")
-	check(p.Transparency == 1 and p.CanCollide, p.Name .. " original hidden but still collides")
+	check(ltm(p) == 1 and p.Transparency == 0 and p.CanCollide, p.Name .. " original hidden locally only and still collides")
 end
-check(tree1:GetAttribute("ShapeOriginalTransparency") == 0, "original transparency recorded")
 check(nearV(meshOf(tree1).Size, tree1.Size) and nearV(meshOf(tree1).CFrame.Position, tree1.CFrame.Position), "mesh fills the tagged part's bounds")
 check(nearV(meshOf(tree2).Size, tree2.Size * 1.5), "ShapeScale multiplies the bounding size")
 check(meshOf(tree2).CFrame.LookVector:FuzzyEq(tree2.CFrame.LookVector, 1e-4), "mesh keeps the part's rotation")
@@ -265,14 +270,8 @@ local function hasColor(target)
 end
 check(hasColor(Color3.fromRGB(255, 0, 0)) and hasColor(Color3.new(.62, 0, 0)) and hasColor(Color3.new(1, .4, .4)), "tint slots recoloured")
 check(hasColor(Color3.fromHex(World.shapes.MeadowTree.tint)), "untinted parts use the shape's default tint")
--- Legacy anchors keep authored size × SculptureScale with the authored origin at the anchor.
-do
-	local lo, hi = Vector3.new(math.huge, math.huge, math.huge), Vector3.new(-math.huge, -math.huge, -math.huge)
-	for _, xyz in ipairs(Props.shapes.Lantern.vertices) do local v = Vector3.new(xyz[1], xyz[2], xyz[3]); lo, hi = lo:Min(v), hi:Max(v) end
-	local mesh = meshOf(lantern)
-	check(nearV(mesh.Size, (hi - lo) * .7), "legacy sculpture size")
-	check(nearV(mesh.CFrame.Position, lantern.CFrame.Position + (lo + hi) / 2 * .7), "legacy sculpture origin")
-end
+-- Legacy AetherSculpture anchors stay with mesh.client.lua (no duplicate mesh).
+check(lantern:GetAttribute("ShapeSkipped") == "legacy sculpture" and meshOf(lantern) == nil and ltm(lantern) == 0, "legacy sculptures left to IslandArt")
 -- Signs: the board keeps its SurfaceGui and becomes the flush text surface; text restyled.
 check(gui.Parent == sign and kicker.Text == "EXPEDITION / ENTRY" and title.Text == "Vault Gate", "sign SurfaceGui and text preserved")
 check(gui:GetAttribute("SignStyled") == true, "sign styled once")
@@ -290,7 +289,7 @@ do
 	check(nearV(offset, (lo + hi) / 2 - fitCentre), "board fit box maps onto the sign part")
 end
 check(creature:GetAttribute("ShapeSkipped") == "unknown shape" and creature:GetAttribute("ShapeDone") == nil, "client-only creatures are left to the client")
-check(ok.attrs.MeshForgeStatus == "ready" and ok.attrs.MeshForgeInstances == 5, "forge status replicated")
+check(ok.forge.stopReason() == nil and next(ok.attrs) == nil, "forge is client-local: nothing written to replicated services")
 for _, d in ipairs(ok.root:GetDescendants()) do check(not d:IsA("WedgePart"), "no per-triangle wedge fallback") end
 
 -- Late-tagged parts: added later (deferred attribute) and tagged after creation.
@@ -298,7 +297,7 @@ local late = part(nil, "Late boulder", Vector3.new(3, 2, 3), CFrame.new(0, 1, -2
 ok.add(late)
 check(late:GetAttribute("ShapeDone") == nil, "untagged part ignored")
 late:SetAttribute("Shape", "Boulder")
-ok.forge.rescan()
+ok.forge.rescan(); ok.flush()
 check(late:GetAttribute("ShapeDone") == true and meshOf(late) ~= nil, "part tagged after creation is meshed by rescan")
 local lateTagged = part(nil, "Late lamp", Vector3.new(1, 7, 1), CFrame.new(3, 3.5, 3), {Shape = "StreetLamp"})
 ok.add(lateTagged)
@@ -307,8 +306,8 @@ local templatesBefore = ok.forge.stats.templates
 local again = part(nil, "Second lamp", Vector3.new(1, 7, 1), CFrame.new(6, 3.5, 3), {Shape = "StreetLamp"})
 ok.add(again)
 check(ok.forge.stats.templates == templatesBefore, "cached template reused for repeat shapes")
-ok.forge.rescan()
-check(#ok.root:GetChildren() == 6 + 5 + 2 * 3, "rescan never duplicates meshes")
+ok.forge.rescan(); ok.flush()
+check(#ok.root:GetChildren() == 6 + 4 + 2 * 3, "rescan never duplicates meshes")
 
 -- Failure paths ----------------------------------------------------------------
 do
@@ -318,7 +317,7 @@ do
 		for i = 1, 5 do parts[i] = part(root, "Rock " .. i, Vector3.new(3, 2, 3), CFrame.new(i * 5, 1, 0), {Shape = ({"Boulder", "RockCluster", "CliffPiece", "Boulder", "MeadowTree"})[i]}) end
 	end, editableAsset(failCalls, {meshError = "EditableMesh memory budget exceeded"}))
 	for _, p in ipairs(parts) do
-		check(p.Transparency == 0 and p:GetAttribute("ShapeDone") == nil and p:GetAttribute("ShapeSkipped") ~= nil, p.Name .. " primitive stays visible on failure")
+		check(ltm(p) == 0 and p:GetAttribute("ShapeDone") == nil and p:GetAttribute("ShapeSkipped") ~= nil, p.Name .. " primitive stays visible on failure")
 	end
 	check(failCalls.meshes == 1, "a memory-budget failure stops new allocations at once")
 	check(#failed.root:GetChildren() == 5, "no mesh or proxy parts created on failure")
@@ -330,14 +329,13 @@ do
 		for i, shape in ipairs({"Boulder", "RockCluster", "CliffPiece", "MeadowTree", "Forge"}) do parts[i] = part(root, shape, Vector3.new(3, 3, 3), CFrame.new(i * 5, 1, 0), {Shape = shape}) end
 	end, editableAsset(failCalls, {partError = "CreateMeshPartAsync failed"}))
 	check(failCalls.meshes == 3 and failCalls.destroyed == 3, "failed builds release their EditableMesh; forge stops after 3 failures")
-	check(failed.forge.stopReason() == "unavailable" and failed.attrs.MeshForgeStatus == "unavailable", "forge reports unavailable")
-	for _, p in ipairs(parts) do check(p.Transparency == 0 and p:GetAttribute("ShapeSkipped") ~= nil, p.Name .. " left as primitive") end
+	check(failed.forge.stopReason() == "unavailable", "forge stops as unavailable")
+	for _, p in ipairs(parts) do check(ltm(p) == 0 and p:GetAttribute("ShapeSkipped") ~= nil, p.Name .. " left as primitive") end
 end
 do
 	local missing = loadForge(function(root) part(root, "Tree", Vector3.new(4, 8, 4), CFrame.new(), {Shape = "MeadowTree"}) end, {})
 	local tree = missing.root:FindFirstChild("Tree")
-	check(tree:GetAttribute("ShapeSkipped") == "unavailable" and tree.Transparency == 0, "missing EditableMesh API leaves primitives")
-	check(missing.attrs.MeshForgeStatus == "unavailable", "clients learn the forge is unavailable")
+	check(tree:GetAttribute("ShapeSkipped") == "unavailable" and ltm(tree) == 0, "missing EditableMesh API leaves primitives")
 	local noContent = loadForge(function(root) part(root, "Tree", Vector3.new(4, 8, 4), CFrame.new(), {Shape = "MeadowTree"}) end, nil, function(env) env.Content = nil end)
 	check(noContent.root:FindFirstChild("Tree"):GetAttribute("ShapeSkipped") == "unavailable", "missing Content.fromObject leaves primitives")
 end
@@ -345,7 +343,7 @@ do
 	-- A sign still gets its text restyle when meshing is unavailable.
 	local board, signGui
 	loadForge(function(root) board, signGui = signBoard(root) end, {})
-	check(board.Transparency == 0 and signGui:GetAttribute("SignStyled") == true, "sign text restyled even without a mesh")
+	check(ltm(board) == 0 and signGui:GetAttribute("SignStyled") == true, "sign text restyled even without a mesh")
 end
 
 -- Budget caps -------------------------------------------------------------------
@@ -357,7 +355,7 @@ do
 	local b = part(nil, "B", Vector3.new(3, 3, 3), CFrame.new(5, 0, 0), {Shape = "Barrel"}); capped.add(b)
 	local c = part(nil, "C", Vector3.new(3, 3, 3), CFrame.new(10, 0, 0), {Shape = "Crate"}); capped.add(c)
 	check(a:GetAttribute("ShapeDone") and b:GetAttribute("ShapeDone"), "templates within the cap are built")
-	check(c:GetAttribute("ShapeSkipped") == "budget" and c.Transparency == 0, "template cap leaves the primitive")
+	check(c:GetAttribute("ShapeSkipped") == "budget" and ltm(c) == 0, "template cap leaves the primitive")
 	check(capped.forge.stats.templates == 2, "template cap respected")
 	local tinted = part(nil, "Tinted barrel", Vector3.new(3, 3, 3), CFrame.new(15, 0, 0), {Shape = "Barrel", Tint = Color3.new(0, 0, 1)}); capped.add(tinted)
 	check(tinted:GetAttribute("ShapeDone") == true and capped.forge.stats.templates == 2, "over-cap tint variant reuses the shape's default template")
@@ -382,9 +380,31 @@ do
 	check(size.X <= 20 + 1e-3 and size.Y <= 10 + 1e-3 and size.Z <= 20 + 1e-3 and (near(size.Y, 10) or near(size.X, 20) or near(size.Z, 20)), "uniform fit stays inside the part")
 end
 
--- Client: skips duplicate work for server-meshed parts and keeps local effects.
+-- Distance streaming: build near the player, release (and restore the primitive) far away.
+do
+	local streamed = loadForge()
+	local far = part(nil, "Far boulder", Vector3.new(3, 2, 3), CFrame.new(1000, 1, 0), {Shape = "Boulder"})
+	streamed.add(far)
+	check(meshOf(far) == nil and ltm(far) == 0 and streamed.forge.stats.instances == 0, "parts beyond the build radius stay primitive")
+	streamed.moveTo(Vector3.new(900, 0, 0))
+	local mesh = meshOf(far)
+	check(mesh ~= nil and ltm(far) == 1 and streamed.forge.stats.instances == 1, "approaching a part builds its mesh")
+	streamed.moveTo(Vector3.new(1000 - streamed.forge.radii.unload + 30, 0, 0))
+	check(meshOf(far) ~= nil, "hysteresis keeps meshes between the build and unload radii")
+	streamed.moveTo(Vector3.new(0, 0, 0))
+	check(meshOf(far) == nil and mesh.Parent == nil and ltm(far) == 0 and far:GetAttribute("ShapeDone") == nil, "leaving releases the mesh and restores the primitive")
+	check(streamed.forge.stats.instances == 0 and streamed.forge.stats.placedTriangles == 0 and streamed.forge.stats.templates == 1, "release frees the instance budget, template stays cached")
+	streamed.moveTo(Vector3.new(1000, 0, 0))
+	check(meshOf(far) ~= nil and streamed.calls.meshes == 1, "returning reuses the cached template")
+	far.Parent = nil
+	streamed.forge.step()
+	check(streamed.forge.stats.instances == 0, "removed parts release their mesh")
+end
+
+-- Client roles: IslandArt keeps legacy sculptures and creatures; nothing runs on the server.
 local client = fs.readFile("mesh.client.lua")
-check(client:find('GetAttribute("ShapeDone")', 1, true) ~= nil and client:find("ShapeMesh", 1, true) ~= nil, "client reuses server meshes")
-check(client:find("MeshForgeStatus", 1, true) ~= nil and client:find("ShapeSkipped", 1, true) ~= nil, "client builds only what the server skipped")
+check(client:find('GetAttribute("ShapeScale")', 1, true) ~= nil and client:find("CREATURES", 1, true) ~= nil, "IslandArt leaves contract-sized Shape parts to MeshForge")
+check(not fs.isFile("mesh.server.lua"), "no server-side forge: the server never hides parts")
+check(not MeshForgeSource:find("%.Transparency%s*=%s*1"), "forge only hides parts locally")
 
 print(string.format("Mesh QA passed %d checks: %d world shapes / %d triangles; forge success, failure, budget, late-tag and sign paths.", checks, worldCount, worldTriangles))

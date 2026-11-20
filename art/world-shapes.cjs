@@ -1,4 +1,4 @@
-// Wave-4 original world meshes for the server mesh forge (mesh.server.lua).
+// Wave-4 original world meshes for the client mesh forge (forge.client.lua).
 // Loaded by art/generate-props.cjs; every shape is authored here from primitives
 // (no imported or copied assets). Units are studs at scale 1, +Y up, fronts face -Z.
 //

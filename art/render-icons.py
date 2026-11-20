@@ -9,7 +9,7 @@ reviewed without Studio. Faces on the tint slot (Shade11) take a sample item col
 Each NAME[:HEX] renders one cell; HEX overrides the tint colour (default: the
 OBJ's "# tint" header, else silver). Shade15/Shade16 are the derived dark/light
 tint shades. OBJ masters with a "# smooth N" header are Gouraud-shaded with the
-same crease-angle smoothing as the server mesh forge (mesh.server.lua).
+same crease-angle smoothing as the server mesh forge (forge.client.lua).
 A strip of 48 px copies under the sheet checks legibility at real HUD size.
 Pass --cell N (and optionally --columns N, --no-strip) for larger world sheets.
 """

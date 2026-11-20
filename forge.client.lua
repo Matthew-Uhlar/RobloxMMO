@@ -1,43 +1,45 @@
--- MeshForge: server-side custom meshes for parts tagged with the Shape attribute
--- (docs/DEPTH-CONTRACT.md §10). For each (shape, tint) one EditableMesh-backed
--- MeshPart template is built and cached; every tagged part gets an anchored,
--- non-colliding clone sized to the part (× ShapeScale) and parented beside it.
--- The original part stays as the collider and is hidden only after its mesh is
--- in place. When the API is unavailable, fails, or a budget is reached, the
--- original primitive stays visible (no per-triangle fallback).
+-- MeshForge (client): custom meshes for parts tagged with the Shape attribute
+-- (docs/DEPTH-CONTRACT.md §10). EditableMesh data is local to the machine that
+-- creates it, so every client forges its own meshes: one EditableMesh-backed
+-- MeshPart template per (shape, tint), cloned for tagged parts within BUILD_RADIUS
+-- of the player and released beyond UNLOAD_RADIUS. The original part is hidden
+-- only locally (LocalTransparencyModifier) once its mesh exists, stays the
+-- collider/SurfaceGui surface, and is restored when the mesh is released. If the
+-- API is unavailable, fails, or a budget is reached, the primitive stays visible
+-- (no per-triangle fallback). The server never hides anything.
 --
 -- Attributes read on a tagged part:
 --   Shape (string)       catalog shape name (art/WorldCatalog.lua or art/PropCatalog.lua)
 --   Tint (Color3)        colour for the shape's tint slots (default: the shape's own tint)
 --   ShapeScale (number)  multiplies the part's size (default 1)
 --   ShapeFit (string)    "Uniform" keeps proportions (fits inside the part); default stretches
---   SculptureScale       legacy AetherSculpture anchors without ShapeScale: authored size × scale,
---                        authored origin at the anchor (matches mesh.client.lua)
--- Attributes written: ShapeDone=true (mesh placed) or ShapeSkipped=<reason>;
--- an ObjectValue "ShapeMesh" under the part points at its MeshPart.
+-- Legacy AetherSculpture anchors (SculptureScale without ShapeScale) and creatures
+-- stay with mesh.client.lua. Local-only markers: ShapeDone / ShapeSkipped attributes
+-- and an ObjectValue "ShapeMesh" under the part (never replicated).
 local AssetService = game:GetService("AssetService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local ServerStorage = game:GetService("ServerStorage")
+local Players = game:GetService("Players")
 
 local LIMITS = {
-	templates = 64, -- distinct (shape, tint) EditableMeshes kept alive
-	templateTriangles = 60000, -- triangles across all cached EditableMeshes
-	instances = 2500, -- placed MeshPart clones
-	placedTriangles = 1500000, -- triangles across all placed clones
+	templates = 48, -- distinct (shape, tint) EditableMeshes kept alive
+	templateTriangles = 45000, -- triangles across all cached EditableMeshes
+	instances = 900, -- placed MeshPart clones near the player
+	placedTriangles = 600000, -- triangles across all placed clones
 	failures = 3, -- template build failures before the forge stops trying
 }
-local RESCAN_SECONDS = 20
+local BUILD_RADIUS, UNLOAD_RADIUS = 400, 480
+local STEP_SECONDS = 1
 
-local function loadCatalog(container, name)
-	local module = container:WaitForChild(name, 15)
+local function loadCatalog(name)
+	local module = ReplicatedStorage:WaitForChild(name, 15)
 	if not module then return nil end
 	local ok, catalog = pcall(require, module)
 	if ok and type(catalog) == "table" and type(catalog.shapes) == "table" then return catalog end
 	return nil
 end
 local catalogs = {}
-for _, source in ipairs({{ServerStorage, "AetherWorldArt"}, {ReplicatedStorage, "AetherArt"}}) do
-	local catalog = loadCatalog(source[1], source[2])
+for _, name in ipairs({"AetherWorldArt", "AetherArt"}) do
+	local catalog = loadCatalog(name)
 	if catalog then table.insert(catalogs, catalog) end
 end
 local function lookup(shapeName)
@@ -57,15 +59,6 @@ end)
 local stopReason = if available then nil else "unavailable"
 local newTemplatesBlocked = false
 local templates = {} -- key -> {part, mesh, extent, center, triangles} | false (failed)
-
-local function setStatus()
-	pcall(function()
-		ReplicatedStorage:SetAttribute("MeshForgeStatus", if stopReason == "unavailable" and stats.instances == 0 then "unavailable" else "ready")
-		ReplicatedStorage:SetAttribute("MeshForgeTemplates", stats.templates)
-		ReplicatedStorage:SetAttribute("MeshForgeInstances", stats.instances)
-		ReplicatedStorage:SetAttribute("MeshForgeTriangles", stats.placedTriangles)
-	end)
-end
 
 -- Colours ------------------------------------------------------------------
 local function paletteColor(catalog, index, tint)
@@ -257,19 +250,18 @@ local function styleSign(part)
 end
 
 -- Placement ----------------------------------------------------------------
-local handled = setmetatable({}, {__mode = "k"})
-local function skip(part, reason)
-	handled[part] = true
-	stats.skipped += 1
-	pcall(part.SetAttribute, part, "ShapeSkipped", reason)
+local registry = setmetatable({}, {__mode = "k"}) -- tagged parts this client knows
+local placed = setmetatable({}, {__mode = "k"}) -- part -> {visual, triangles, connections, decals}
+local final = setmetatable({}, {__mode = "k"}) -- permanently skipped parts
+local function skip(part, reason, permanent)
+	if permanent then final[part] = true end
+	if part:GetAttribute("ShapeSkipped") ~= reason then
+		stats.skipped += 1
+		pcall(part.SetAttribute, part, "ShapeSkipped", reason)
+	end
 end
 local function placement(part, data, entry)
-	local legacyScale = part:GetAttribute("SculptureScale")
 	local shapeScale = part:GetAttribute("ShapeScale")
-	if type(shapeScale) ~= "number" and type(legacyScale) == "number" then
-		if legacyScale <= 0 or legacyScale > 100 or legacyScale ~= legacyScale then return nil end
-		return entry.extent * legacyScale, CFrame.new(entry.center * legacyScale)
-	end
 	shapeScale = if type(shapeScale) == "number" and shapeScale > 0 and shapeScale <= 100 then shapeScale else 1
 	local lo, hi
 	if type(data.fit) == "table" and type(data.fit[1]) == "table" and type(data.fit[2]) == "table" then
@@ -287,15 +279,30 @@ local function placement(part, data, entry)
 	return entry.extent * k, CFrame.new((entry.center - (lo + hi) / 2) * k)
 end
 
+-- Release a placed mesh and give the primitive back (removal, distance, shutdown).
+local function release(part)
+	local record = placed[part]
+	if not record then return end
+	placed[part] = nil
+	stats.instances -= 1
+	stats.placedTriangles -= record.triangles
+	for _, connection in ipairs(record.connections) do connection:Disconnect() end
+	pcall(function() part.LocalTransparencyModifier = 0 end)
+	for _, decal in ipairs(record.decals) do pcall(function() decal.LocalTransparencyModifier = 0 end) end
+	local link = part:FindFirstChild("ShapeMesh")
+	if link then link:Destroy() end
+	pcall(part.SetAttribute, part, "ShapeDone", nil)
+	pcall(record.visual.Destroy, record.visual)
+end
+
 local function forge(part)
-	if handled[part] or not part.Parent then return end
+	if placed[part] or final[part] or not part.Parent then return end
 	local shapeName = part:GetAttribute("Shape")
 	if type(shapeName) ~= "string" then return end
-	if part:GetAttribute("ShapeDone") then handled[part] = true; return end
+	if part:GetAttribute("SculptureScale") ~= nil and part:GetAttribute("ShapeScale") == nil then skip(part, "legacy sculpture", true); return end
 	local data, catalog = lookup(shapeName)
-	if not data then skip(part, "unknown shape"); return end
-	if SIGN_KINDS[data.kind] then styleSign(part) end
-	if stopReason then skip(part, stopReason); return end
+	if not data then skip(part, "unknown shape", true); return end
+	if stopReason then skip(part, stopReason, true); return end
 	if stats.instances >= LIMITS.instances or stats.placedTriangles + #data.faces > LIMITS.placedTriangles then skip(part, "budget"); return end
 	local tint = part:GetAttribute("Tint")
 	if typeof(tint) ~= "Color3" then tint = defaultTint(data) end
@@ -306,10 +313,9 @@ local function forge(part)
 		local cached = templates[shapeName .. "#" .. (if fallback then fallback:ToHex() else "")]
 		if cached then entry = cached end
 	end
-	if not entry then skip(part, problem or stopReason or "failed"); setStatus(); return end
+	if not entry then skip(part, problem or stopReason or "failed", problem ~= "budget"); return end
 	if not part.Parent then return end
 	local size, offset = placement(part, data, entry)
-	if not size then skip(part, "invalid scale"); return end
 	local ok, visual = pcall(function()
 		local clone = entry.part:Clone()
 		clone.Name = part.Name .. " Mesh"
@@ -319,51 +325,78 @@ local function forge(part)
 		clone.Parent = part.Parent
 		return clone
 	end)
-	if not ok or not visual then skip(part, "clone failed"); return end
-	handled[part] = true
+	if not ok or not visual then skip(part, "clone failed", true); return end
+	local record = {visual = visual, triangles = entry.triangles, connections = {}, decals = {}}
+	placed[part] = record
 	stats.instances += 1
 	stats.placedTriangles += entry.triangles
-	-- Hide the primitive only now that its mesh exists; it stays as the collider.
-	part:SetAttribute("ShapeOriginalTransparency", part.Transparency)
-	part.Transparency = 1
+	-- Hide the primitive for this client only, now that its mesh exists.
+	pcall(function() part.LocalTransparencyModifier = 1 end)
 	for _, child in ipairs(part:GetChildren()) do
-		if child:IsA("Decal") then child.Transparency = 1 end
+		if child:IsA("Decal") then
+			table.insert(record.decals, child)
+			pcall(function() child.LocalTransparencyModifier = 1 end)
+		end
 	end
 	local link = Instance.new("ObjectValue")
 	link.Name = "ShapeMesh"
 	link.Value = visual
 	link.Parent = part
+	part:SetAttribute("ShapeSkipped", nil)
 	part:SetAttribute("ShapeDone", true)
 	pcall(function()
-		part:GetPropertyChangedSignal("CFrame"):Connect(function() visual.CFrame = part.CFrame * offset end)
-		part.Destroying:Once(function() visual:Destroy() end)
+		table.insert(record.connections, part:GetPropertyChangedSignal("CFrame"):Connect(function() visual.CFrame = part.CFrame * offset end))
+		table.insert(record.connections, part.AncestryChanged:Connect(function() if not part:IsDescendantOf(workspace) then release(part) end end))
 	end)
 end
 
--- Queue: one template build at a time keeps allocation spikes bounded.
-local queue, queued = {}, setmetatable({}, {__mode = "k"})
-local pumping = false
-local function pump()
-	if pumping then return end
-	pumping = true
-	while #queue > 0 do
-		local part = table.remove(queue, 1)
-		queued[part] = nil
-		local ok, problem = pcall(forge, part)
-		if not ok then warn("[MeshForge] " .. tostring(problem)); skip(part, "error") end
+-- Distance streaming --------------------------------------------------------
+local function focus()
+	local player = Players.LocalPlayer
+	local character = player and player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if root then return root.CFrame.Position end
+	local camera = workspace.CurrentCamera
+	return camera and camera.CFrame.Position or nil
+end
+local stepping = false
+local function step()
+	if stepping then return end
+	stepping = true
+	local origin = focus()
+	if origin then
+		local near = {}
+		for part in pairs(registry) do
+			if not part.Parent then
+				registry[part] = nil
+				release(part)
+			else
+				local distance = (part.CFrame.Position - origin).Magnitude
+				if placed[part] then
+					if distance > UNLOAD_RADIUS then release(part) end
+				elseif not final[part] and distance <= BUILD_RADIUS then
+					table.insert(near, {part, distance})
+				end
+			end
+		end
+		-- Nearest first, so budgets are spent on what the player sees.
+		table.sort(near, function(a, b) return a[2] < b[2] end)
+		for _, item in ipairs(near) do
+			local ok, problem = pcall(forge, item[1])
+			if not ok then warn("[MeshForge] " .. tostring(problem)); skip(item[1], "error", true) end
+		end
 	end
-	pumping = false
-	setStatus()
+	stepping = false
 end
 local function consider(part)
-	if handled[part] or queued[part] then return end
-	if typeof(part) ~= "Instance" or not part:IsA("BasePart") or type(part:GetAttribute("Shape")) ~= "string" then return end
-	queued[part] = true
-	table.insert(queue, part)
-	task.spawn(pump)
+	if registry[part] or typeof(part) ~= "Instance" or not part:IsA("BasePart") or type(part:GetAttribute("Shape")) ~= "string" then return end
+	registry[part] = true
+	local data = lookup(part:GetAttribute("Shape"))
+	if data and SIGN_KINDS[data.kind] then pcall(styleSign, part) end
+	task.defer(step)
 end
 local function watch(instance)
-	if not instance:IsA("BasePart") or handled[instance] then return end
+	if not instance:IsA("BasePart") or registry[instance] then return end
 	if instance:GetAttribute("Shape") ~= nil then consider(instance); return end
 	pcall(function()
 		instance:GetAttributeChangedSignal("Shape"):Once(function() consider(instance) end)
@@ -371,30 +404,32 @@ local function watch(instance)
 end
 local function rescan()
 	for _, instance in ipairs(workspace:GetDescendants()) do
-		if instance:IsA("BasePart") and not handled[instance] and instance:GetAttribute("Shape") ~= nil then consider(instance) end
+		if instance:IsA("BasePart") and not registry[instance] and instance:GetAttribute("Shape") ~= nil then consider(instance) end
 	end
 end
 
-setStatus()
 workspace.DescendantAdded:Connect(function(instance) task.defer(watch, instance) end)
 for _, instance in ipairs(workspace:GetDescendants()) do watch(instance) end
-task.defer(function()
-	print(string.format("[MeshForge] %s: %d templates (%d tris cached), %d meshes placed (%d tris), %d skipped",
-		if stopReason then stopReason else "ready", stats.templates, stats.templateTriangles, stats.instances, stats.placedTriangles, stats.skipped))
-end)
+step()
 if MeshForgeTest then
-	MeshForgeTest.forge = {stats = stats, limits = LIMITS, templates = templates, rescan = rescan, consider = consider,
-		cornerNormals = cornerNormals, styleSign = styleSign, stopReason = function() return stopReason end}
+	MeshForgeTest.forge = {stats = stats, limits = LIMITS, templates = templates, rescan = rescan, consider = consider, step = step,
+		cornerNormals = cornerNormals, styleSign = styleSign, stopReason = function() return stopReason end,
+		radii = {build = BUILD_RADIUS, unload = UNLOAD_RADIUS}}
 	return
 end
+print(string.format("[MeshForge] %s: %d templates (%d tris cached), %d meshes placed (%d tris), %d skipped",
+	if stopReason then stopReason else "ready", stats.templates, stats.templateTriangles, stats.instances, stats.placedTriangles, stats.skipped))
 task.spawn(function()
-	-- Safety net for attributes set in ways the per-part listeners missed.
+	local elapsed = 0
 	while true do
-		task.wait(RESCAN_SECONDS)
-		rescan()
+		task.wait(STEP_SECONDS)
+		elapsed += STEP_SECONDS
+		if elapsed >= 20 then elapsed = 0; rescan() end -- safety net for missed attribute changes
+		step()
 	end
 end)
 script.Destroying:Once(function()
+	for part in pairs(placed) do release(part) end
 	for _, entry in pairs(templates) do
 		if entry then
 			pcall(entry.part.Destroy, entry.part)

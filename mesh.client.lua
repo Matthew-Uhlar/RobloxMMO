@@ -255,50 +255,24 @@ local function prototype(shapeName,scale,tint)
 	entry.visual,entry.mesh,entry.building=visual,mesh,false
 	return visual,not retain
 end
--- The server MeshForge (mesh.server.lua) meshes Shape parts once for everyone and
--- marks them ShapeDone (MeshPart linked by the ShapeMesh ObjectValue) or
--- ShapeSkipped. Clients only build what the server could not, and keep their
--- local effects (VisualState tints, Tidewing motion) on whichever mesh is used.
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local FORGE_WAIT = 10
-local CLIENT_ONLY={Tidewing=true,Shellwarden=true} -- creature art is not in the forge catalogs
-local function serverMesh(anchor)
-	if CLIENT_ONLY[anchor:GetAttribute("Shape")] then return nil end
-	local deadline=os.clock()+FORGE_WAIT
-	while anchor.Parent do
-		if anchor:GetAttribute("ShapeDone") then
-			local link=anchor:WaitForChild("ShapeMesh",5)
-			local mesh=link and link:IsA("ObjectValue") and link.Value
-			return if mesh and mesh:IsA("BasePart") then mesh else nil
-		end
-		if anchor:GetAttribute("ShapeSkipped") or ReplicatedStorage:GetAttribute("MeshForgeStatus")=="unavailable" or os.clock()>deadline then return nil end
-		task.wait(.25)
-	end
-	return nil
-end
+-- Legacy AetherSculpture anchors (SculptureScale) render here; Shape parts sized by
+-- the §10 contract are meshed by the MeshForge client script (forge.client.lua).
+local CREATURES={Tidewing=true,Shellwarden=true}
 local function build(anchor)
 	local shapeName=anchor:GetAttribute("Shape")
 	if not shapes[shapeName] then return end
+	-- Contract-sized parts (ShapeScale, or no SculptureScale) belong to MeshForge.
+	if not CREATURES[shapeName] and (anchor:GetAttribute("ShapeScale")~=nil or anchor:GetAttribute("SculptureScale")==nil) then return end
 	local scale=anchor:GetAttribute("SculptureScale") or 1
 	if type(scale)~="number" or scale<=0 or scale>100 or scale~=scale then return end
 	local tint=anchor:GetAttribute("Tint")
 	if typeof(tint)~="Color3" then tint=nil end
-	local forged=serverMesh(anchor)
-	local visual
-	if forged then
-		visual=forged
-	else
-		local template,temporary=prototype(shapeName,scale,tint)
-		if not template then return end
-		visual=if temporary then template else template:Clone()
-		if not anchor.Parent then visual:Destroy();return end
-		visual:PivotTo(anchor.CFrame)
-		visual.Parent=anchor
-		-- A late server mesh replaces the client copy (effects move with it).
-		anchor:GetAttributeChangedSignal("ShapeDone"):Once(function()
-			if anchor:GetAttribute("ShapeDone") and visual.Parent then visual:Destroy();task.spawn(build,anchor) end
-		end)
-	end
+	local template,temporary=prototype(shapeName,scale,tint)
+	if not template then return end
+	local visual=if temporary then template else template:Clone()
+	if not anchor.Parent then visual:Destroy();return end
+	visual:PivotTo(anchor.CFrame)
+	visual.Parent=anchor
 	-- Gameplay anchors retain collision/prompts; replicated state only changes art.
 	local surfaceColors={}
 	local surfaces=visual:GetDescendants()
@@ -327,9 +301,7 @@ local function build(anchor)
 			visual:PivotTo(anchor.CFrame*CFrame.new(0,1.5*math.sin(t),0)*CFrame.Angles(0,math.rad(5)*math.cos(t),math.rad(5)*math.sin(t)))
 		end)
 	end
-	local function cleanup() if motion then motion:Disconnect() end;stateConnection:Disconnect() end
-	anchor.Destroying:Once(cleanup)
-	visual.Destroying:Once(cleanup)
+	anchor.Destroying:Once(function() if motion then motion:Disconnect() end;stateConnection:Disconnect() end)
 end
 script.Destroying:Once(function()
 	for _,entry in pairs(prototypes) do
@@ -351,7 +323,8 @@ for _, anchor in ipairs(CollectionService:GetTagged("AetherSculpture")) do attac
 -- Mining gather nodes (prompt IsleAction="gather", IsleItem=<AetherData resource>) gain a
 -- small crystal cluster tinted with the ore's colour. Bounded: at most POLISH_LIMIT nodes,
 -- one shared prototype per ore (scaled per clone), skipped where a sculpture already exists
--- (including server-forged Shape parts such as OreVein meshes).
+-- (including forged Shape parts such as OreVein meshes).
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local POLISH_LIMIT = 64
 local polished = setmetatable({}, {__mode="k"})
 local polishCount = 0

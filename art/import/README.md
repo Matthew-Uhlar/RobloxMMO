@@ -1,6 +1,6 @@
 # Permanent original mesh import
 
-`Aether-Isles-Originals.glb` contains all 86 original OBJ shapes, individually named, with 26,424 indexed triangles and 44 used source material definitions (the 20 world/creature props, 27 item icons and the `OreCluster` resource polish from the Depth update, plus the 38 Wave-4 world meshes from `art/world-shapes.cjs` that `mesh.server.lua` forges at runtime). No external textures, libraries, or runtime EditableMesh allocation is required by the file. This is an import-ready artifact, not an uploaded Roblox asset or an already integrated game template.
+`Aether-Isles-Originals.glb` contains all 86 original OBJ shapes, individually named, with 26,424 indexed triangles and 44 used source material definitions (the 20 world/creature props, 27 item icons and the `OreCluster` resource polish from the Depth update, plus the 38 Wave-4 world meshes from `art/world-shapes.cjs` that the `forge.client.lua` MeshForge builds on each client at runtime). No external textures, libraries, or runtime EditableMesh allocation is required by the file. This is an import-ready artifact, not an uploaded Roblox asset or an already integrated game template.
 
 Regenerate and verify from the repository root (the prop generator writes the OBJ masters, the import generator rebuilds this bundle; `verify-import.cjs` runs in every build and fails if any OBJ is missing from the GLB):
 

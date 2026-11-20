@@ -4,6 +4,7 @@
     "$className": "DataModel",
     "ReplicatedStorage": {
       "AetherArt": { "$path": "art/PropCatalog.lua" },
+      "AetherWorldArt": { "$path": "art/WorldCatalog.lua" },
       "MaterialArt": { "$path": "art/MaterialArt.lua" },
       "AetherData": { "$path": "shared/GameData.lua" },
       "AetherProgression": { "$path": "shared/Progression.lua" }
@@ -15,19 +16,19 @@
       "Homesteads": { "$path": "coop.server.lua" },
       "Archipelago": { "$path": "world.server.lua" },
       "Combat": { "$path": "combat.server.lua" },
-      "MeshForge": { "$path": "mesh.server.lua" },
-      "GestureRelay": { "$path": "gesture.server.lua" }
-    },
-    "ServerStorage": {
-      "AetherWorldArt": { "$path": "art/WorldCatalog.lua" }
+      "GestureRelay": { "$path": "gesture.server.lua" },
+      "Townsfolk": { "$path": "npc.server.lua" }
     },
     "StarterPlayer": {
       "StarterPlayerScripts": {
         "FieldGuide": { "$path": "ui.client.lua" },
         "IslandArt": { "$path": "mesh.client.lua" },
+        "MeshForge": { "$path": "forge.client.lua" },
         "CombatInput": { "$path": "combat.client.lua" },
         "IslandBuilder": { "$path": "build.client.lua" },
-        "Gestures": { "$path": "animate.client.lua" }
+        "Gestures": { "$path": "animate.client.lua" },
+        "Dialogue": { "$path": "npc.client.lua" },
+        "Wayfinder": { "$path": "nav.client.lua" }
       }
     },
     "Workspace": {
