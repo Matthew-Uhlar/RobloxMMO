@@ -142,3 +142,9 @@ Player feedback after the first live publish: islands too small, lighting buggy,
 ## 11. Gear depth
 
 Verbs `reforge "itemId"`, `reforgeStone "itemId:stoneId"`, `star "itemId"`, `tome "itemId:TemperingTome|MasterworkTome"`. Upgrades are per item id (like enchants): `p.reforges[id]`, `p.stars[id]`, `p.books[id] = {tempering, masterwork}`; snapshot `depth.gear`. `Progression.effectiveRarity/upgradeStats/upgradeBreakdown/isUpgraded`; upgraded ids cannot be auctioned.
+
+## 12. Skill mastery and Verdant Garden
+
+**Mastery:** verbs `masteryUnlock "Tree:Node"`, `masteryRespec "Tree"`, `ability "Tree"`, `masteryWear "cape|aura|title:Skill"`. Profile `p.mastery`; snapshot `depth.mastery`; bridge `"stats"` adds `mastery = {melee, ranged, magic, active}` read by combat (firstStrike, execute, manaThrift, multishot). Player attributes `MasteryCape`, `MasteryAura`, `MasteryTitle`, `MasteryAbility`. Gathering yield multipliers apply before fortune and never stack with procs (`Progression.gatherYieldMult`); regrowth reductions are floored (`Progression.regrowthTime`).
+
+**Garden:** verbs `plant "plot:seed"`, `harvestPlot "plot"|"all"`, `waterPlot`, `fertilise`, `treatPlot`, `clearPest`, `clearPlot`, `gardenPlot` (world prompt), `gardenOpen`, `compost "item:n"`, `compostClaim`, `composterUpgrade`, `visitorAccept/visitorDecline "id"`, `gardenBuy "id"`, `gardenSkin "id"`. Snapshot `garden`; player attributes `GardenLevel`, `GardenPlots`, `GardenSkin`, `GardenComposter`, `GardenVisitors`, `GardenPlot1..12 = "crop:stage:flags"`. Timers use server `os.time()` and advance on refresh (offline growth).
