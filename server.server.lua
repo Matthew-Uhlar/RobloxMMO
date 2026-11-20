@@ -150,6 +150,8 @@ local function note(p,text)
 end
 -- Skill Mastery (perk trees, capstones, mantles); filled in by the Mastery block before perform().
 local Mastery={verbs={}}
+-- Verdant Garden (plots, composter, visitors); filled in by the Garden block before perform().
+local Garden={verbs={}}
 -- Every XP grant: OSRS curve with cap, active pet share, one-time level coins.
 local function grantXp(p,skill,amount)
 	if not Data.Skills[skill] or type(amount)~="number" or amount<=0 then return end
@@ -1308,6 +1310,7 @@ local function applyStats(player,p,spawned)
 	player:SetAttribute("SlayerBossReady",if quest and quest.bossReady then quest.line..":"..quest.tier else "")
 	Journal.apply(player,p)
 	if Mastery.apply then Mastery.apply(player,p) end
+	if Garden.apply then Garden.apply(player,p) end -- Verdant Garden world attributes
 	local humanoid=player.Character and player.Character:FindFirstChildOfClass("Humanoid")
 	if humanoid and humanoid.MaxHealth~=health then
 		local oldMax,current=humanoid.MaxHealth,humanoid.Health
@@ -1423,7 +1426,8 @@ local function snapshot(player,message)
 		ironman=p.ironman,levels=levels,enchantRank=p.enchantRank or 0,workerResource=p.workerResource or "Ore",workerReady=ready(p),workers=workerState(p),message=message or "",kills=p.kills,
 		companionBond=p.companionBond or 0,market=marketViews[player],economy=Econ.view and Econ.view(player,p),recipes=recipeState(p),regions=regionState(p),stats=legacyStats,quest=questState(p),slayer=slayerState(p),started=p.started,decorations=p.decorations,preview=preview[player]==true,
 		depth=depthState(p,stats),journal=Journal.state(p),agilityHunter=Skills.state(player,p), -- Agility & Hunter page state
-		events={claims=p.eventClaims or {},vendorUntil=player:GetAttribute("EventVendorUntil") or 0,serverTime=os.time()}} -- Events hook: Calendar page state
+		events={claims=p.eventClaims or {},vendorUntil=player:GetAttribute("EventVendorUntil") or 0,serverTime=os.time()}, -- Events hook: Calendar page state
+		garden=Garden.state and Garden.state(player,p)} -- Verdant Garden page state
 end
 local function claimWorker(p,slot)
 	slot=slot or 1
@@ -1514,6 +1518,7 @@ local function migrate(profile)
 	Skills.migrate(profile) -- Agility & Hunter records + milestone perks
 	Gear.migrate(profile) -- Gear depth: reforges, stars, books
 	Progression.masteryMigrate(profile) -- Skill Mastery: drop unknown/invalid nodes, reset overspent trees
+	if Garden.migrate then Garden.migrate(profile) end -- Verdant Garden: sanitise and bound p.garden
 end
 -- Clears every per-player table and ends this player's session slot.
 -- Sea creatures: a successful Fishing gather may hook one (Data.rollSeaCreature).
@@ -1804,6 +1809,501 @@ do
 	end
 end
 
+------------------------------------------------------------------------------
+-- Verdant Garden (Farming Depth team). Rules: Data.Garden (shared/GameData.lua);
+-- world: the garden islet beside each home (world.server.lua, Garden section).
+-- Every timer is server os.time(); growth, composting and visitor arrivals are
+-- integrated lazily (Garden.refresh) on every garden verb, snapshot and the
+-- G.TICK loop, so they continue offline. The record is p.garden (G.sanitize
+-- on load bounds it). Verbs (item ≤ 64 chars):
+--   plant "plot:seed"  (seed id or crop id)       harvestPlot "plot"|"all"
+--   waterPlot "plot"|"all"   fertilise "plot" (Rich Compost)   treatPlot "plot" (Blightward Salve)
+--   clearPest "plot"   clearPlot "plot" (uproot)   gardenPlot "plot" (world prompt: contextual)
+--   compost "item[:count]"   compostClaim   composterUpgrade
+--   visitorAccept "id"   visitorDecline "id"   gardenBuy "shopId"   gardenSkin "skin"   gardenOpen
+-- Snapshot key `garden` (Garden.state). Player attributes for the world:
+--   GardenLevel, GardenPlots (unlocked count), GardenSkin, GardenComposter
+--   ("locked"|"idle"|"working"|"ready"), GardenVisitors ("npc,npc"), and
+--   GardenPlot1..12 = "" (empty) or "<crop>:<stage 0-4>:<flags>" with flags
+--   w watered, c composted, t treated, s sick, x dead, r ripe, p<n> pest n.
+-- Milestone fortune lives in p.perkStats["garden:milestones"].
+------------------------------------------------------------------------------
+do
+	local G=Data.Garden
+	for _,verb in ipairs({"plant","harvestPlot","waterPlot","fertilise","treatPlot","clearPest","clearPlot","gardenPlot","gardenOpen",
+		"compost","compostClaim","composterUpgrade","visitorAccept","visitorDecline","gardenBuy","gardenSkin"}) do Garden.verbs[verb]=true end
+	local function rec(p)
+		if type(p.garden)~="table" or type(p.garden.plots)~="table" then p.garden=G.sanitize(p.garden,os.time()) end
+		return p.garden
+	end
+	local function farming(p) return level(p.xp.Farming) end
+	local function name(id) return Data.Items[id] and Data.Items[id].name or tostring(id) end
+	local function span(seconds)
+		seconds=math.max(0,math.floor(seconds or 0))
+		if seconds>=3600 then return (seconds//3600).."h "..string.format("%02d",(seconds%3600)//60).."m" end
+		if seconds>=60 then return (seconds//60).."m "..string.format("%02d",seconds%60).."s" end
+		return seconds.."s"
+	end
+	local function setActive(p)
+		local n=0
+		for _,slot in ipairs(Data.ArmorSlots) do
+			local _,def=Progression.equipped(p,slot)
+			if def and def.set==G.SET then n+=1 end
+		end
+		return n>=4
+	end
+	function Garden.ctx(p) return {level=G.level(rec(p).xp),set=setActive(p)} end
+	function Garden.refreshPerk(p)
+		if type(p.perkStats)~="table" then p.perkStats={} end
+		p.perkStats["garden:milestones"]=(G.milestonePerk(rec(p).harvested))
+	end
+	function Garden.migrate(p)
+		p.garden=G.sanitize(p.garden,os.time())
+		-- Milestones baseline at the save's standing (no retroactive windfall).
+		for id,n in pairs(p.garden.harvested) do
+			p.garden.milestones[id]=math.max(p.garden.milestones[id] or 0,G.milestoneTier(id,n))
+		end
+		Garden.refreshPerk(p)
+	end
+	function Garden.addXp(p,g,amount)
+		local before=G.level(g.xp)
+		g.xp=math.min(1e9,g.xp+math.max(0,math.floor(amount)))
+		local after=G.level(g.xp)
+		if after>before then
+			local fl=farming(p)
+			local was,now=G.plotCount(before,fl),G.plotCount(after,fl)
+			note(p,"Garden level "..after.."!"..(if now>was then " New plot unlocked ("..now.."/"..G.MAX_PLOTS..")." else "")
+				..(if before<G.COMPOSTER_LEVEL and after>=G.COMPOSTER_LEVEL then " The composter is ready." else ""))
+		end
+	end
+	-- Advance every timer to now. Returns g, ctx, events {ripe, pests, visitors, dead}.
+	function Garden.refresh(p,now)
+		local g=rec(p)
+		local ctx=Garden.ctx(p)
+		local events={ripe=0,pests=0,visitors=0,dead=0}
+		for i=1,G.MAX_PLOTS do
+			local plot=g.plots[i]
+			if plot.crop then
+				local wasRipe,wasDead=G.ripe(plot),plot.dead
+				G.advance(plot,now,ctx)
+				if G.ripe(plot) and not wasRipe then events.ripe+=1 end
+				if plot.dead and not wasDead then events.dead+=1 end
+				if G.pestRoll(plot,now,roll) then events.pests+=1 end
+			end
+		end
+		if ctx.level>=G.COMPOSTER_LEVEL then G.composterAdvance(g.composter,now) else g.composter.at=now end
+		local n,nextAt=G.visitorsDue(g.nextVisitor,now,#g.visitors,G.visitorCap(ctx.level))
+		for _=1,n do
+			g.seq+=1
+			table.insert(g.visitors,G.makeVisitor(g.seq,ctx.level,farming(p),roll))
+		end
+		g.nextVisitor=nextAt
+		events.visitors=n
+		return g,ctx,events
+	end
+	function Garden.plotCode(plot,now)
+		local c=G.CropById[plot.crop]
+		local flags=(if c and (plot.water or 0)>now then "w" else "")..(if plot.compost then "c" else "")..(if plot.treated then "t" else "")
+			..(if plot.sick and not plot.dead then "s" else "")..(if plot.dead then "x" else "")..(if G.ripe(plot) then "r" else "")
+			..(if plot.pest then "p"..plot.pest else "")
+		if not c and flags=="" then return "" end
+		return (plot.crop or "")..":"..G.stage(plot)..":"..flags
+	end
+	-- World attributes (refreshes first). Returns the refresh events.
+	function Garden.apply(player,p)
+		local now=os.time()
+		local g,ctx,events=Garden.refresh(p,now)
+		player:SetAttribute("GardenLevel",ctx.level)
+		player:SetAttribute("GardenPlots",G.plotCount(ctx.level,farming(p)))
+		player:SetAttribute("GardenSkin",g.skin)
+		for i=1,G.MAX_PLOTS do player:SetAttribute("GardenPlot"..i,Garden.plotCode(g.plots[i],now)) end
+		local ids={}
+		for _,v in ipairs(g.visitors) do table.insert(ids,v.npc) end
+		player:SetAttribute("GardenVisitors",table.concat(ids,","))
+		local c=g.composter
+		player:SetAttribute("GardenComposter",if ctx.level<G.COMPOSTER_LEVEL then "locked" elseif c.out>0 or c.dust>0 then "ready"
+			elseif c.matter>=G.COMPOST_MATTER then "working" else "idle")
+		return events
+	end
+	function Garden.eventText(ev)
+		local parts={}
+		if ev.ripe>0 then table.insert(parts,ev.ripe.." garden crop"..(if ev.ripe==1 then " is" else "s are").." ripe") end
+		if ev.visitors>0 then table.insert(parts,(if ev.visitors==1 then "A visitor is" else ev.visitors.." visitors are").." waiting in your garden") end
+		if ev.pests>0 then table.insert(parts,"Pests are nibbling your crops") end
+		if ev.dead>0 then table.insert(parts,"A blighted crop withered") end
+		return table.concat(parts,"   ·   ")
+	end
+	-- Field Farming gathers: every FIELD_SEED_EVERY-th harvest of a crop bundles a seed.
+	function Garden.fieldSeed(p,item)
+		local c=G.CropById[item]
+		if not c then return end
+		local g=rec(p)
+		local n=(g.fieldSeeds[item] or 0)+1
+		g.fieldSeeds[item]=n
+		if n%G.FIELD_SEED_EVERY==0 then
+			collect(p,c.seed,1)
+			note(p,"Seed pouch • +1 "..name(c.seed))
+		end
+	end
+	local function plotOf(p,g,item)
+		local i=tonumber(item)
+		if not i or i~=math.floor(i) or i<1 or i>G.MAX_PLOTS then return nil,"Choose a garden plot." end
+		local unlocked=G.plotCount(G.level(g.xp),farming(p))
+		if i>unlocked then return nil,"Plot "..i.." is locked. Next plot: "..(G.nextPlotUnlock(G.level(g.xp),farming(p)) or "—").."." end
+		return i,g.plots[i]
+	end
+	local function milestones(p,g,cropId)
+		local tier=G.milestoneTier(cropId,g.harvested[cropId] or 0)
+		local paid=g.milestones[cropId] or 0
+		if tier<=paid then return end
+		local coins,gxp=0,0
+		for t=paid+1,tier do
+			local r=G.milestoneReward(cropId,t)
+			coins+=r.coins; gxp+=r.gxp
+		end
+		g.milestones[cropId]=tier
+		p.coins+=coins
+		note(p,name(cropId).." milestone "..tier.."! +"..coins.." coins, +"..(G.MILESTONE_CROP_FORTUNE*tier).." "..name(cropId).." fortune")
+		Garden.addXp(p,g,gxp)
+		Garden.refreshPerk(p)
+	end
+	local function fortuneFor(p,g,c,stats)
+		local fortune=stats.farmingFortune or 0
+		local toolId,tool=Progression.bestTool(p,"Farming")
+		if tool then
+			fortune+=(tool.stats and tool.stats.farmingFortune) or 0
+			fortune+=Progression.enchantStats(p,toolId,"tool","Farming").farmingFortune or 0
+		end
+		return fortune+G.milestoneTier(c.id,g.harvested[c.id] or 0)*G.MILESTONE_CROP_FORTUNE
+	end
+	local function harvest(p,g,i,stats,now)
+		local plot=g.plots[i]
+		local c=G.CropById[plot.crop]
+		local pest=plot.pest~=nil
+		local result={amount=G.yieldFor(c.id,fortuneFor(p,g,c,stats),pest,roll),xp=c.xp,skill="Farming",
+			resource={id=c.id,skill="Farming",value=Data.Items[c.id].value}}
+		if type(p.mastery)=="table" then Progression.applyGatherMastery(p,result,roll,now) end
+		result.respawnSkip=nil
+		collect(p,c.id,result.amount)
+		local mastered=Mastery.gather(p,result)
+		grantXp(p,"Farming",result.xp)
+		local seeds=1+(if roll()<G.SEED_BONUS_CHANCE then 1 else 0)
+		collect(p,c.seed,seeds)
+		g.harvested[c.id]=math.min(1e9,(g.harvested[c.id] or 0)+result.amount)
+		g.plots[i]={}
+		Garden.addXp(p,g,c.gxp)
+		milestones(p,g,c.id)
+		p.started=true
+		return result.amount,result.xp,seeds,mastered..(if pest then "   ·   pests cut the yield" else "")
+	end
+	local function plant(p,g,i,plot,id,now)
+		local c=G.CropBySeed[id] or G.CropById[id]
+		if not c then return "Choose a seed to plant." end
+		if plot.crop then return "Plot "..i.." is already planted." end
+		if farming(p)<c.level then return name(c.id).." needs Farming "..c.level.."." end
+		if (p.items[c.seed] or 0)<1 then return "You have no "..name(c.seed)..". Buy seeds in the garden ledger." end
+		p.items[c.seed]-=1
+		G.plant(plot,c.id,now,roll)
+		p.started=true
+		return "Planted "..name(c.id).." in plot "..i.."   ·   ripe in about "..span(G.timeLeft(plot,now,Garden.ctx(p)))
+	end
+	local function water(g,i,plot,now)
+		local c=G.CropById[plot.crop]
+		if not c then return "Plot "..i.." has nothing to water." end
+		if plot.dead then return "Plot "..i.."'s crop has withered." end
+		if G.ripe(plot) then return "Plot "..i.." is ripe — harvest it." end
+		if plot.sick then return "Plot "..i.." is blighted; treat it first." end
+		if (plot.water or 0)>now then return "Plot "..i.." is still damp ("..span(plot.water-now)..")." end
+		plot.water=now+G.WATER_SECONDS
+		return nil
+	end
+	local function bestSeed(p)
+		local best
+		for _,c in ipairs(G.Crops) do
+			if (p.items[c.seed] or 0)>0 and farming(p)>=c.level then best=c end
+		end
+		return best
+	end
+	local function harvestAll(p,g,now,list)
+		local stats=Progression.computeStats(p,now)
+		local xp,seeds,crops,extra=0,0,{},""
+		for _,i in ipairs(list) do
+			local id=g.plots[i].crop
+			local n,x,s,more=harvest(p,g,i,stats,now)
+			xp+=x; seeds+=s
+			crops[id]=(crops[id] or 0)+n
+			extra..=more
+		end
+		local parts={}
+		for id,n in pairs(crops) do table.insert(parts,"+"..n.." "..name(id)) end
+		table.sort(parts)
+		return table.concat(parts,", ").."   ·   +"..xp.." Farming XP   ·   +"..seeds.." seed"..(if seeds==1 then "" else "s")..extra
+	end
+	local function clearPest(p,g,i,plot)
+		local pest=plot.pest and G.Pests[plot.pest]
+		if not pest then return "Plot "..i.." has no pests." end
+		local c=G.CropById[plot.crop]
+		plot.pest=nil
+		local cxp,fxp=pest.combatXp+2*c.index,8*c.index
+		grantXp(p,"Combat",cxp)
+		grantXp(p,"Farming",fxp)
+		collect(p,G.CHITIN,1)
+		Garden.addXp(p,g,2)
+		local seed=""
+		if roll()<G.PEST_SEED_CHANCE then collect(p,c.seed,1); seed=", +1 "..name(c.seed) end
+		return "Swatted the "..pest.name.."!   ·   +"..cxp.." Combat XP, +"..fxp.." Farming XP, +1 "..name(G.CHITIN)..seed
+	end
+	local function treat(p,i,plot,now)
+		if plot.dead then return "Plot "..i.."'s crop is beyond saving. Clear it." end
+		if plot.treated then return "Plot "..i.." is already treated." end
+		if (p.items[G.SALVE] or 0)<1 then return "You need a "..name(G.SALVE).." (Alchemy 12 or the garden shop)." end
+		p.items[G.SALVE]-=1
+		local cured=plot.sick~=nil
+		plot.treated,plot.blight,plot.sick=true,nil,nil
+		if plot.crop then plot.at=now end
+		return if cured then "Plot "..i.." cured; it grows again and stays immune." elseif plot.crop then "Plot "..i.." treated: immune to blight until harvest."
+			else "Plot "..i.." treated: the next crop is immune to blight."
+	end
+	local function fertilise(p,i,plot)
+		if plot.compost then return "Plot "..i.." is already fertilised." end
+		if plot.dead then return "Plot "..i.."'s crop has withered." end
+		if G.ripe(plot) then return "Plot "..i.." is ripe — harvest it first." end
+		if (p.items[G.COMPOST] or 0)<1 then return "You need "..name(G.COMPOST).." from the composter." end
+		p.items[G.COMPOST]-=1
+		plot.compost=true
+		if plot.crop and plot.blight and not plot.sick and roll()<G.COMPOST_CLEANSE then plot.blight=nil end
+		return if plot.crop then "Plot "..i.." fertilised: +"..math.floor(G.COMPOST_BOOST*100).."% growth." else "Plot "..i.." fertilised for the next crop."
+	end
+	local function shopOwned(p,item)
+		if (p.items[item] or 0)>0 then return true end
+		for _,e in ipairs(G.Shop) do
+			if e.upgrade==item and shopOwned(p,e.item) then return true end
+		end
+		return false
+	end
+	local function costText(cost)
+		local parts={}
+		if cost.coins then table.insert(parts,cost.coins.." coins") end
+		for id,n in pairs(cost) do if id~="coins" then table.insert(parts,n.." "..name(id)) end end
+		table.sort(parts)
+		return table.concat(parts,", ")
+	end
+	local function buy(p,g,item)
+		local e=validId(item) and G.ShopById[item]
+		if not e then return "The garden shop does not stock that." end
+		local gl=G.level(g.xp)
+		if gl<e.level then return "Reach garden level "..e.level.." to buy that." end
+		if e.kind=="skin" then
+			if g.skins[e.skin] then return "You already own the "..G.SkinById[e.skin].name.." skin." end
+		else
+			if e.unique and shopOwned(p,e.item) then return "You already own "..name(e.item).."." end
+			if e.upgrade and (p.items[e.upgrade] or 0)<1 then return name(e.item).." upgrades your "..name(e.upgrade)..". Buy that first." end
+		end
+		if p.coins<(e.cost.coins or 0) then return "That costs "..costText(e.cost).."." end
+		for id,n in pairs(e.cost) do if id~="coins" and (p.items[id] or 0)<n then return "That costs "..costText(e.cost).."." end end
+		for id,n in pairs(e.cost) do if id~="coins" then p.items[id]-=n end end
+		p.coins-=e.cost.coins or 0
+		p.started=true
+		if e.kind=="skin" then
+			g.skins[e.skin]=true
+			g.skin=e.skin
+			return "Plot skin "..G.SkinById[e.skin].name.." unlocked and applied."
+		end
+		if e.upgrade then p.items[e.upgrade]-=1 end
+		collect(p,e.item,e.amount)
+		return "Bought "..(if e.amount>1 then e.amount.." " else "")..name(e.item).." for "..costText(e.cost).."."
+	end
+	local function visitorOf(g,item)
+		local id=tonumber(item)
+		for index,v in ipairs(g.visitors) do if v.id==id then return index,v end end
+		return nil
+	end
+	local function accept(p,g,item)
+		local index,v=visitorOf(g,item)
+		if not v then return "That visitor has already left." end
+		for id,n in pairs(v.wants) do
+			if (p.items[id] or 0)<n then return G.VisitorById[v.npc].name.." wants "..n.." "..name(id).." (you have "..(p.items[id] or 0)..")." end
+		end
+		for id,n in pairs(v.wants) do p.items[id]-=n end
+		table.remove(g.visitors,index)
+		p.coins+=v.coins
+		collect(p,G.MARK,v.marks)
+		for id,n in pairs(v.items) do collect(p,id,n) end
+		grantXp(p,"Farming",v.xp)
+		Garden.addXp(p,g,v.gxp)
+		g.served+=1
+		p.started=true
+		local extra={}
+		for id,n in pairs(v.items) do table.insert(extra,"+"..n.." "..name(id)) end
+		table.sort(extra)
+		return G.VisitorById[v.npc].name.." is delighted!   ·   +"..v.coins.." coins, +"..v.marks.." Verdant Marks, +"..v.gxp.." garden XP"
+			..(if #extra>0 then ", "..table.concat(extra,", ") else "")
+	end
+	local function feed(p,g,item)
+		if G.level(g.xp)<G.COMPOSTER_LEVEL then return "The composter opens at garden level "..G.COMPOSTER_LEVEL.."." end
+		local id,count
+		if validId(item) then id,count=string.match(item,"^(%w+):(%d+)$") end
+		if not id then id=item end
+		local value=validId(id) and G.organic(id) or 0
+		if value<=0 then return "The composter only takes crops and organic matter." end
+		local c=g.composter
+		local room=math.floor((G.matterCap(c.upgrade)-c.matter)/value)
+		local n=math.min(tonumber(count) or math.huge,p.items[id] or 0,room)
+		if (p.items[id] or 0)<1 then return "You have no "..name(id).."." end
+		if n<1 then return "The composter is full." end
+		if c.matter<G.COMPOST_MATTER then c.at=os.time() end
+		p.items[id]-=n
+		c.matter+=n*value
+		return "Composted "..n.." "..name(id).."   ·   +"..(n*value).." matter ("..c.matter.."/"..G.matterCap(c.upgrade)..")"
+	end
+	local function claim(p,g)
+		local c=g.composter
+		if c.out<1 and c.dust<1 then return "Nothing in the composter yet." end
+		local out,dust=c.out,c.dust
+		if out>0 then collect(p,G.COMPOST,out) end
+		if dust>0 then collect(p,G.DUST,dust) end
+		c.out,c.dust=0,0
+		return "Collected "..out.." "..name(G.COMPOST)..(if dust>0 then " and "..dust.." "..name(G.DUST) else "").."."
+	end
+	local function upgrade(p,g)
+		if G.level(g.xp)<G.COMPOSTER_LEVEL then return "The composter opens at garden level "..G.COMPOSTER_LEVEL.."." end
+		local c=g.composter
+		local up=G.ComposterUpgrades[c.upgrade+1]
+		if not up then return "The composter is fully upgraded." end
+		if (p.items[G.DUST] or 0)<up.dust or (p.items[G.MARK] or 0)<up.marks then
+			return "Upgrade "..(c.upgrade+1).." costs "..up.dust.." "..name(G.DUST).." and "..up.marks.." "..name(G.MARK).."."
+		end
+		p.items[G.DUST]-=up.dust
+		p.items[G.MARK]-=up.marks
+		c.upgrade+=1
+		return "Composter upgraded to tier "..c.upgrade.."   ·   a Compost every "..span(G.composterInterval(c.upgrade))
+	end
+	function Garden.action(player,p,verb,item,prompt)
+		local now=os.time()
+		local g=Garden.refresh(p,now)
+		if verb=="gardenOpen" then
+			local ripe=0
+			for _,plot in ipairs(g.plots) do if G.ripe(plot) then ripe+=1 end end
+			return "Verdant Garden   ·   level "..G.level(g.xp).."   ·   "..ripe.." ripe   ·   "..#g.visitors.." visitor"..(if #g.visitors==1 then "" else "s")
+		elseif verb=="compost" then return feed(p,g,item)
+		elseif verb=="compostClaim" then return claim(p,g)
+		elseif verb=="composterUpgrade" then return upgrade(p,g)
+		elseif verb=="visitorAccept" then return accept(p,g,item)
+		elseif verb=="visitorDecline" then
+			local index,v=visitorOf(g,item)
+			if not v then return "That visitor has already left." end
+			table.remove(g.visitors,index)
+			return G.VisitorById[v.npc].name.." wanders off."
+		elseif verb=="gardenBuy" then return buy(p,g,item)
+		elseif verb=="gardenSkin" then
+			if not (validId(item) and g.skins[item]) then return "Unlock that skin in the garden shop first." end
+			g.skin=item
+			return "Plot skin set to "..G.SkinById[item].name.."."
+		end
+		local unlocked=G.plotCount(G.level(g.xp),farming(p))
+		if (verb=="harvestPlot" or verb=="waterPlot") and item=="all" then
+			local list,count={},0
+			for i=1,unlocked do
+				local plot=g.plots[i]
+				if verb=="harvestPlot" and G.ripe(plot) then table.insert(list,i)
+				elseif verb=="waterPlot" and plot.crop and water(g,i,plot,now)==nil then count+=1 end
+			end
+			if verb=="waterPlot" then return if count>0 then "Watered "..count.." plot"..(if count==1 then "" else "s").."   ·   +"..math.floor(G.WATER_BOOST*100).."% growth for "..span(G.WATER_SECONDS) else "Nothing needs water right now." end
+			if #list==0 then return "Nothing is ripe yet." end
+			return harvestAll(p,g,now,list)
+		end
+		local id,seed
+		if verb=="plant" then
+			if validId(item) then id,seed=string.match(item,"^(%d+):(%w+)$") end
+			if not id then return "Choose a plot and a seed." end
+		else id=item end
+		local i,plot=plotOf(p,g,id)
+		if not i then return plot end
+		if verb=="plant" then return plant(p,g,i,plot,seed,now)
+		elseif verb=="harvestPlot" then
+			if plot.dead then return "Plot "..i.."'s crop withered. Clear it to replant." end
+			if not G.ripe(plot) then return if plot.crop then "Plot "..i.." is not ripe yet." else "Plot "..i.." is empty." end
+			return harvestAll(p,g,now,{i})
+		elseif verb=="waterPlot" then
+			return water(g,i,plot,now) or ("Watered plot "..i.."   ·   +"..math.floor(G.WATER_BOOST*100).."% growth for "..span(G.WATER_SECONDS))
+		elseif verb=="fertilise" then return fertilise(p,i,plot)
+		elseif verb=="treatPlot" then return treat(p,i,plot,now)
+		elseif verb=="clearPest" then return clearPest(p,g,i,plot)
+		elseif verb=="clearPlot" then
+			if not plot.crop then return "Plot "..i.." is already clear." end
+			local what=if plot.dead then "withered "..name(plot.crop) else name(plot.crop)
+			g.plots[i]={}
+			return "Cleared the "..what.." from plot "..i.."."
+		elseif verb=="gardenPlot" then
+			-- One world prompt per plot: the most useful action for its state.
+			if plot.pest then return clearPest(p,g,i,plot) end
+			if plot.dead then g.plots[i]={} return "Cleared the withered crop from plot "..i.."." end
+			if plot.sick then return treat(p,i,plot,now) end
+			if G.ripe(plot) then return harvestAll(p,g,now,{i}) end
+			if not plot.crop then
+				local c=bestSeed(p)
+				if not c then return "No seeds to plant. Open the garden ledger to buy some." end
+				return plant(p,g,i,plot,c.seed,now)
+			end
+			local wet=water(g,i,plot,now)
+			if wet==nil then return "Watered plot "..i.."   ·   +"..math.floor(G.WATER_BOOST*100).."% growth for "..span(G.WATER_SECONDS) end
+			return name(plot.crop).." · "..G.STAGE_NAMES[G.stage(plot)].."   ·   ripe in "..span(G.timeLeft(plot,now,Garden.ctx(p)))
+		end
+		return "Unknown action."
+	end
+	-- Snapshot key `garden`.
+	function Garden.state(player,p)
+		local now=os.time()
+		local g,ctx=Garden.refresh(p,now)
+		local fl=farming(p)
+		local unlocked=G.plotCount(ctx.level,fl)
+		local plots={}
+		for i=1,G.MAX_PLOTS do
+			local plot=g.plots[i]
+			local c=G.CropById[plot.crop]
+			plots[i]={index=i,unlocked=i<=unlocked,crop=plot.crop,stage=G.stage(plot),ripe=G.ripe(plot),remaining=G.timeLeft(plot,now,ctx),
+				fraction=if c then math.min(1,(plot.grown or 0)/c.grow) else 0,watered=math.max(0,(plot.water or 0)-now),
+				compost=plot.compost==true,treated=plot.treated==true,sick=plot.sick~=nil and not plot.dead,dead=plot.dead==true,
+				pest=if plot.pest then G.Pests[plot.pest].id else nil,
+				deathIn=if plot.sick and not plot.dead then math.max(0,plot.sick+G.DEATH_SECONDS-now) else nil}
+		end
+		local milestones={}
+		for _,c in ipairs(G.Crops) do
+			local n=g.harvested[c.id] or 0
+			local tier=G.milestoneTier(c.id,n)
+			milestones[c.id]={count=n,tier=tier,nextAt=G.milestoneThreshold(c.id,tier+1),fortune=tier*G.MILESTONE_CROP_FORTUNE}
+		end
+		local cmp=g.composter
+		local interval=G.composterInterval(cmp.upgrade)
+		local working=ctx.level>=G.COMPOSTER_LEVEL and cmp.matter>=G.COMPOST_MATTER and cmp.out<G.COMPOST_OUT_CAP
+		local visitors={}
+		for _,v in ipairs(g.visitors) do
+			table.insert(visitors,{id=v.id,npc=v.npc,wants=table.clone(v.wants),order=table.clone(v.order),coins=v.coins,marks=v.marks,gxp=v.gxp,xp=v.xp,items=table.clone(v.items)})
+		end
+		local lvl,floor,ceiling=G.progress(g.xp)
+		local _,tiers=G.milestonePerk(g.harvested)
+		return {level=lvl,xp=g.xp,floor=floor,nextAt=ceiling,plots=plots,unlocked=unlocked,maxPlots=G.MAX_PLOTS,nextPlot=G.nextPlotUnlock(lvl,fl),
+			milestones=milestones,milestoneTiers=tiers,
+			composter={unlocked=ctx.level>=G.COMPOSTER_LEVEL,matter=cmp.matter,cap=G.matterCap(cmp.upgrade),out=cmp.out,dust=cmp.dust,upgrade=cmp.upgrade,
+				interval=interval,nextIn=if working then math.max(0,cmp.at+interval-now) else nil},
+			visitors=visitors,visitorCap=G.visitorCap(lvl),nextVisitorIn=if #g.visitors<G.visitorCap(lvl) then math.max(0,g.nextVisitor-now) else nil,
+			served=g.served,skin=g.skin,skins=table.clone(g.skins),rate=G.rate({},ctx,false),setActive=ctx.set,serverTime=now}
+	end
+	task.spawn(function()
+		while task.wait(G.TICK) do
+			for player,p in pairs(profiles) do
+				if player.Parent then
+					local ok,events=pcall(Garden.apply,player,p)
+					if ok and events and (events.ripe>0 or events.visitors>0 or events.pests>0 or events.dead>0) then
+						update:FireClient(player,snapshot(player,Garden.eventText(events)))
+					end
+				end
+			end
+		end
+	end)
+end
+-- End Verdant Garden block.
+
 local exchangeBusy={}
 local function perform(player,verb,item,prompt)
 	local p=profiles[player]
@@ -1819,6 +2319,8 @@ local function perform(player,verb,item,prompt)
 		return Skills.action(player,p,verb,item,prompt,humanoid) -- Agility & Hunter
 	elseif Mastery.verbs[verb] then
 		return Mastery.action(player,p,verb,item) -- Skill Mastery
+	elseif Garden.verbs[verb] then
+		return Garden.action(player,p,verb,item,prompt) -- Verdant Garden
 	elseif Econ.verbs and Econ.verbs[verb] then
 		return Econ.action(player,verb,item or "")
 	elseif verb=="market" or verb=="list" or verb=="buy" or verb=="proceeds" or verb=="cancel" then
@@ -1855,6 +2357,7 @@ local function perform(player,verb,item,prompt)
 		for id,n in pairs(event.extra) do collect(p,id,n); note(p,"Festival catch • +"..n.." "..Data.Items[id].name) end
 		collect(p,item,result.amount)
 		grantXp(p,skill,result.xp)
+		if skill=="Farming" and Garden.fieldSeed then Garden.fieldSeed(p,item) end -- Verdant Garden seed pouch
 		local mastered=Mastery.gather(p,result) -- Skill Mastery: bonus ingots, coins, regrowth skip
 		if region then Journal.count(p,"gathers",region,1) end
 		p.started=true

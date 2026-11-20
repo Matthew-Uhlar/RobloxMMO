@@ -112,6 +112,20 @@ check((a.RespawnLocation.Position-b.RespawnLocation.Position).Magnitude>=60,"hom
 check(homeA:FindFirstChild("Garden")==nil,"unowned garden absent")
 check(homeB:FindFirstChild("Garden")~=nil,"saved garden restored")
 check(homeB:FindFirstChild("Deck")~=nil,"saved deck restored")
+-- Verdant Garden islet (Farming Depth; full coverage in verify-garden.luau).
+do
+	local gardenA=homeA:FindFirstChild("Verdant Garden")
+	check(gardenA~=nil and gardenA:GetAttribute("GardenOwner")==11,"every home gains a Verdant Garden islet")
+	local plotPrompts=0
+	for _,obj in gardenA:GetDescendants() do
+		if obj:IsA("ProximityPrompt") and obj:GetAttribute("IsleAction")=="gardenPlot" then
+			plotPrompts+=1
+			check(obj:GetAttribute("OwnerUserId")==11,"garden plot prompts belong to the home owner")
+		end
+	end
+	check(plotPrompts==Data.Garden.MAX_PLOTS,"twelve garden plot prompts")
+	check(homeA:FindFirstChild("Anchor_Waypoint_VerdantGarden",true)~=nil,"garden waypoint anchor")
+end
 a:SetAttribute("HomeLanterns",true)
 check(homeA:FindFirstChild("Lanterns")~=nil,"purchase changes world")
 local size=#homeA:GetDescendants()

@@ -3255,4 +3255,541 @@ end
 end
 -- End Gear depth section.
 
+------------------------------------------------------------------------------
+-- Garden (Farming Depth team; append-only section).
+-- The Verdant Garden: a personal islet beside each home with growing plots
+-- (OSRS farming patches + SkyBlock Garden). Pure data and pure rules; the
+-- server block "Garden" in server.server.lua runs them with os.time() and the
+-- server roll, world.server.lua renders the islet from player attributes and
+-- verify-garden.luau checks everything below.
+--   * Plots: G.BASE_PLOTS at the start, one more per G.PLOT_LEVELS garden level
+--     and per G.PLOT_FARMING Farming level (G.MAX_PLOTS = 12).
+--   * Crops grow over real time (works offline): progress seconds accrue at
+--     G.rate (1 + compost + watering + Rootwarden set + garden level, capped at
+--     G.MAX_RATE); 4 visible stages, ripe crops wait forever.
+--   * Disease: rolled when planted (G.diseaseChance, halved by compost); it
+--     strikes at a hidden growth fraction unless the crop is treated with a
+--     Blightward Salve, halts growth, and kills the crop G.DEATH_SECONDS later.
+--   * Pests: each G.PEST_INTERVAL a planted crop may gain a pest (G.PEST_CHANCE,
+--     at most G.PEST_MAX_ROLLS rolls per refresh, so offline time is capped);
+--     a pest cuts the harvest by G.PEST_PENALTY until cleared.
+--   * Harvest: base yield rolled with Farming Fortune (stats + hoe + crop
+--     milestone fortune) and Greenward mastery; returns seeds; Farming XP and
+--     garden XP; crop milestones (G.MILESTONES x crop scale) pay coins, crop
+--     fortune and +1 Farming Fortune each.
+--   * Composter (garden level G.COMPOSTER_LEVEL): organic matter becomes
+--     Compost every interval and Bloom Dust every G.DUST_EVERY composts.
+--   * Visitors arrive every G.VISITOR_INTERVAL up to G.visitorCap(level)
+--     (offline arrivals stop at the cap) and trade crops for coins, garden XP,
+--     Verdant Marks and rare items; Marks buy the garden shop.
+-- Profile: p.garden = {xp, plots = {12 plot tables ({} = empty)}, harvested =
+-- {[crop]=n}, milestones = {[crop]=tier paid}, composter = {matter, out, dust,
+-- cycles, at, upgrade}, visitors = {visitor...}, nextVisitor, seq, served,
+-- skin, skins = {[skin]=true}, fieldSeeds = {[crop]=n}}; bounded (~3 KB).
+------------------------------------------------------------------------------
+do
+local G = {}
+Data.Garden = G
+G.MARK, G.DUST, G.COMPOST, G.SALVE, G.CHITIN = "VerdantMark", "BloomDust", "Compost", "BlightwardSalve", "PestChitin"
+G.MAX_PLOTS, G.BASE_PLOTS = 12, 3
+G.PLOT_LEVELS = {2, 3, 5, 7, 9, 12}   -- garden levels that add a plot
+G.PLOT_FARMING = {15, 35, 55}          -- Farming levels that add a plot
+G.STAGES = 4
+G.STAGE_NAMES = {"Sprouting", "Growing", "Budding", "Ripe"}
+G.STAGE_SCALE = {0.35, 0.6, 0.85, 1}   -- world crop mesh ShapeScale per stage
+G.TICK = 20                            -- server refresh loop (seconds)
+G.WATER_SECONDS, G.WATER_BOOST = 1800, 0.20
+G.COMPOST_BOOST, G.SET_BOOST, G.LEVEL_BOOST, G.MAX_RATE = 0.25, 0.10, 0.01, 1.6
+G.DEATH_SECONDS = 7200
+G.COMPOST_CLEANSE = 0.5                -- chance that compost clears a hidden blight
+G.PEST_INTERVAL, G.PEST_CHANCE, G.PEST_MAX_ROLLS, G.PEST_PENALTY = 600, 0.06, 6, 0.4
+G.PEST_SEED_CHANCE = 0.2
+G.SEED_BONUS_CHANCE = 0.2
+G.FIELD_SEED_EVERY = 20                -- every Nth field harvest of a crop bundles one seed
+G.VISITOR_INTERVAL = 900
+G.COMPOSTER_LEVEL = 2
+G.COMPOST_MATTER, G.COMPOST_SECONDS, G.DUST_EVERY = 60, 600, 4
+G.COMPOST_OUT_CAP, G.MATTER_CAP = 64, 4000
+G.MILESTONES = {100, 300, 750, 1500, 3000, 6000, 12000, 25000, 50000}
+G.MILESTONE_CROP_FORTUNE = 4           -- garden fortune for that crop per tier
+G.MILESTONE_FORTUNE = 1                -- Farming Fortune everywhere per tier (perk)
+G.LEVEL_XP = {0, 60, 180, 400, 750, 1250, 2000, 3000, 4400, 6200, 8500, 11500, 15500, 20500, 27000}
+G.MAX_LEVEL = #G.LEVEL_XP
+G.SET = "Rootwarden"
+
+-- Crops: id = harvested item, seed = planted item, level = Farming level,
+-- grow = seconds at rate 1, yield = base harvest before fortune, xp = Farming
+-- XP per harvest, gxp = garden XP, disease = base blight chance,
+-- shape/tint = world crop mesh, scale = milestone threshold multiplier.
+G.Crops = {
+	{id="Herb",seed="MeadowSeeds",seedName="Meadow Herb Seeds",level=1,grow=300,yield=6,xp=50,gxp=4,disease=0.06,shape="CropBush",tint="6BBF59",scale=1},
+	{id="Sunwheat",seed="SunwheatSeeds",seedName="Sunwheat Seeds",level=15,grow=600,yield=6,xp=140,gxp=8,disease=0.08,shape="CropWheat",tint="E9C46A",scale=1},
+	{id="Duskberry",seed="DuskberrySeeds",seedName="Duskberry Seeds",level=22,grow=1200,yield=5,xp=230,gxp=13,disease=0.10,shape="CropBush",tint="7A4E9E",scale=0.8},
+	{id="Glowcap",seed="GlowcapSpores",seedName="Glowcap Spores",level=30,grow=1800,yield=5,xp=340,gxp=18,disease=0.11,shape="CropGlowcap",tint="F4A261",scale=0.7},
+	{id="Moonbloom",seed="MoonbloomBulb",seedName="Moonbloom Bulb",level=45,grow=3600,yield=4,xp=560,gxp=30,disease=0.13,shape="CropBloom",tint="B8C0FF",scale=0.5},
+	{id="Cloudgourd",seed="CloudgourdSeeds",seedName="Cloudgourd Seeds",level=52,grow=5400,yield=4,xp=760,gxp=40,disease=0.14,shape="CropGlowcap",tint="D9ECF7",scale=0.45},
+	{id="Starfruit",seed="StarfruitPit",seedName="Starfruit Pit",level=60,grow=7200,yield=3,xp=1000,gxp=55,disease=0.16,shape="CropBush",tint="FFE66D",scale=0.35},
+	{id="AetherLotus",seed="LotusBud",seedName="Aether Lotus Bud",level=75,grow=14400,yield=3,xp=1900,gxp=90,disease=0.18,shape="CropBloom",tint="FF9ECD",scale=0.25},
+}
+G.CropById, G.CropBySeed = {}, {}
+-- Garden-only crops (no field nodes): Duskberry and Cloudgourd.
+item("Duskberry",{name="Duskberry",kind="resource",skill="Farming",tier=3,rarity="Uncommon",color="7A4E9E",value=14,description="A dusk-dark berry grown only in the Verdant Garden."})
+item("Cloudgourd",{name="Cloudgourd",kind="resource",skill="Farming",tier=5,rarity="Rare",color="D9ECF7",value=40,description="A feather-light gourd grown only in the Verdant Garden."})
+for i, c in ipairs(G.Crops) do
+	c.index = i
+	G.CropById[c.id] = c
+	G.CropBySeed[c.seed] = c
+	local def = Data.Items[c.id]
+	item(c.seed,{name=c.seedName,kind="resource",skill="Farming",category="seed",crop=c.id,tier=i,rarity=def.rarity,color=c.tint,value=math.max(2,math.floor(def.value*1.5)),
+		description="Plant in a Verdant Garden plot (Farming "..c.level.."). Ripens in "..(if c.grow>=3600 then (c.grow//3600).." h" else (c.grow//60).." min").."."})
+end
+
+-- Garden materials, treatment and currency.
+item(G.MARK,{name="Verdant Mark",kind="material",rarity="Uncommon",color="5FBF77",value=20,description="Token of a satisfied garden visitor. Spent at the Verdant Garden shop."})
+item(G.DUST,{name="Bloom Dust",kind="material",rarity="Rare",color="F7B2D9",value=45,description="Glittering residue from the composter. Upgrades the composter and garden gear."})
+item(G.COMPOST,{name="Rich Compost",kind="material",category="fertiliser",rarity="Common",color="6B4F33",value=6,description="Fertilise a plot: +25% growth speed and a chance to purge blight."})
+item(G.SALVE,{name="Blightward Salve",kind="material",category="treatment",rarity="Uncommon",color="9FD8A6",value=18,description="Treat a plot: cures blight and keeps the crop immune until harvest."})
+item(G.CHITIN,{name="Pest Chitin",kind="material",rarity="Common",color="8C6A4A",value=5,description="Shell of a garden pest. Rich composter matter."})
+recipe(G.SALVE,{skill="Alchemy",level=12,xp=40,costs={Herb=4,Sunwheat=2},amount=2,repeatable=true,station="Cauldron",category="Garden"})
+-- Cooking and Alchemy use the garden-only crops.
+item("DuskberryTart",{name="Duskberry Tart",kind="consumable",category="food",rarity="Uncommon",color="7A4E9E",heal=220,recovery=4,value=40,requires={Cooking=25},description="Restore up to 220 health."})
+recipe("DuskberryTart",{skill="Cooking",level=25,xp=70,costs={Duskberry=3,Sunwheat=2},repeatable=true,station="Hearth",category="Meals"})
+item("CloudgourdBroth",{name="Cloudgourd Broth",kind="consumable",category="buff",rarity="Rare",color="D9ECF7",buff={stats={farmingFortune=40,health=40},duration=600},value=120,description="+40 Farming Fortune, +40 Health for 10 minutes."})
+recipe("CloudgourdBroth",{skill="Cooking",level=50,xp=180,costs={Cloudgourd=3,Moonbloom=1},repeatable=true,station="Hearth",category="Feasts"})
+item("VerdantElixir",{name="Verdant Elixir",kind="consumable",category="potion",rarity="Rare",color="5FBF77",buff={stats={farmingFortune=80},duration=600},value=140,requires={Alchemy=48},description="Potion: 10 minute buff. +80 Farming Fortune."})
+recipe("VerdantElixir",{skill="Alchemy",level=48,xp=150,costs={Duskberry=3,Cloudgourd=2},repeatable=true,station="Cauldron",category="Potions"})
+
+-- Garden gear (shop only): hoes upgrade in place, the Rootwarden set, a charm.
+item("SproutwoodHoe",{name="Sproutwood Hoe",kind="tool",toolKind="Hoe",slot="hoe",toolTier=2,tier=2,rarity="Uncommon",color="8DBF5A",stats={farmingFortune=45},requires={Farming=15},value=400,description="Tier 2 hoe from the Verdant Garden shop. Requires Farming 15."})
+item("GreenwardHoe",{name="Greenward Hoe",kind="tool",toolKind="Hoe",slot="hoe",toolTier=4,tier=4,rarity="Rare",color="4FA36B",stats={farmingFortune=100},requires={Farming=40},value=1600,description="Tier 4 hoe; upgrades the Sproutwood Hoe. Requires Farming 40."})
+item("EverbloomHoe",{name="Everbloom Hoe",kind="tool",toolKind="Hoe",slot="hoe",toolTier=6,tier=6,rarity="Epic",color="F7B2D9",stats={farmingFortune=170},requires={Farming=70},value=5200,description="Tier 6 hoe; upgrades the Greenward Hoe. Requires Farming 70."})
+Data.Sets[G.SET] = {id=G.SET,name="Rootwarden",pieces={},bonus={farmingFortune=40,health=30},text="+40 Farming Fortune, +30 Health; garden crops grow 10% faster",color="6F9E4B"}
+G.Armor = {
+	{id="RootwardenHat",slot="helmet",name="Rootwarden Hat",stats={farmingFortune=10,health=10},marks=25,level=4},
+	{id="RootwardenVest",slot="chest",name="Rootwarden Vest",stats={farmingFortune=15,health=20},marks=40,level=5},
+	{id="RootwardenTrousers",slot="legs",name="Rootwarden Trousers",stats={farmingFortune=12,health=15},marks=35,level=5},
+	{id="RootwardenClogs",slot="boots",name="Rootwarden Clogs",stats={farmingFortune=8,health=10},marks=25,level=4},
+}
+for _, a in ipairs(G.Armor) do
+	item(a.id,{name=a.name,kind="armor",slot=a.slot,set=G.SET,tier=2,rarity="Rare",color="6F9E4B",stats=a.stats,requires={Farming=10},value=a.marks*20,
+		description="Part of the Rootwarden set (Verdant Garden shop). Requires Farming 10."})
+	table.insert(Data.Sets[G.SET].pieces, a.id)
+end
+item("VerdantCharm",{name="Verdant Charm",kind="accessory",rarity="Rare",color=Data.Rarity.Rare.color,stats={farmingFortune=15,health=10},value=40*Data.Rarity.Rare.rank^2,description="Accessory. Magical Power "..Data.Rarity.Rare.power..". Verdant Garden shop."})
+
+-- Plot skins: frame and soil colours (cosmetic; "Loam" is free).
+G.Skins = {
+	{id="Loam",name="Tilled Loam",frame="966B4C",soil="4A3526"},
+	{id="Mossbed",name="Mossbed",frame="5E8C4A",soil="3E4A2C"},
+	{id="Terracotta",name="Terracotta",frame="C46A44",soil="5A3A28"},
+	{id="Emberbrick",name="Emberbrick",frame="8E3B2E",soil="3B2622"},
+	{id="Starlit",name="Starlit",frame="3B4C7A",soil="262B44"},
+}
+G.SkinById = {}
+for i, s in ipairs(G.Skins) do s.index = i; G.SkinById[s.id] = s end
+
+-- Garden shop: kind "item" (amount per purchase; unique = one owned at most;
+-- upgrade = item consumed) or "skin". level = garden level.
+G.Shop = {
+	{id="MeadowSeeds",kind="item",item="MeadowSeeds",amount=4,cost={coins=20},level=1},
+	{id="SunwheatSeeds",kind="item",item="SunwheatSeeds",amount=4,cost={coins=60},level=1},
+	{id="DuskberrySeeds",kind="item",item="DuskberrySeeds",amount=3,cost={coins=120},level=2},
+	{id="GlowcapSpores",kind="item",item="GlowcapSpores",amount=3,cost={coins=180},level=3},
+	{id="MoonbloomBulb",kind="item",item="MoonbloomBulb",amount=2,cost={coins=300,VerdantMark=1},level=4},
+	{id="CloudgourdSeeds",kind="item",item="CloudgourdSeeds",amount=2,cost={coins=450,VerdantMark=2},level=5},
+	{id="StarfruitPit",kind="item",item="StarfruitPit",amount=2,cost={coins=700,VerdantMark=3},level=6},
+	{id="LotusBud",kind="item",item="LotusBud",amount=1,cost={coins=900,VerdantMark=5},level=8},
+	{id="Compost",kind="item",item="Compost",amount=3,cost={VerdantMark=2},level=1},
+	{id="BlightwardSalve",kind="item",item="BlightwardSalve",amount=2,cost={VerdantMark=3},level=2},
+	{id="SproutwoodHoe",kind="item",item="SproutwoodHoe",amount=1,cost={VerdantMark=30,BloomDust=4},level=3,unique=true},
+	{id="GreenwardHoe",kind="item",item="GreenwardHoe",amount=1,cost={VerdantMark=90,BloomDust=16},level=7,unique=true,upgrade="SproutwoodHoe"},
+	{id="EverbloomHoe",kind="item",item="EverbloomHoe",amount=1,cost={VerdantMark=220,BloomDust=48},level=11,unique=true,upgrade="GreenwardHoe"},
+	{id="VerdantCharm",kind="item",item="VerdantCharm",amount=1,cost={VerdantMark=60,BloomDust=10},level=6,unique=true},
+	{id="SkinMossbed",kind="skin",skin="Mossbed",cost={VerdantMark=15},level=2},
+	{id="SkinTerracotta",kind="skin",skin="Terracotta",cost={VerdantMark=25},level=4},
+	{id="SkinEmberbrick",kind="skin",skin="Emberbrick",cost={VerdantMark=40,BloomDust=8},level=7},
+	{id="SkinStarlit",kind="skin",skin="Starlit",cost={VerdantMark=80,BloomDust=20},level=10},
+}
+for _, a in ipairs(G.Armor) do
+	table.insert(G.Shop, {id=a.id,kind="item",item=a.id,amount=1,cost={VerdantMark=a.marks},level=a.level,unique=true})
+end
+G.ShopById = {}
+for i, e in ipairs(G.Shop) do e.index = i; G.ShopById[e.id] = e end
+
+-- Composter: matter per fed item, upgrades (interval -12% and +1500 matter each).
+G.ORGANIC_EXTRA = {BeastHide=4, PestChitin=12, Timber=1, WindpineLog=2}
+function G.organic(itemId)
+	local c = G.CropById[itemId]
+	if c then return math.max(2, Data.Items[itemId].value) end
+	return G.ORGANIC_EXTRA[itemId] or 0
+end
+G.ComposterUpgrades = {
+	{dust=4,marks=8},{dust=10,marks=20},{dust=20,marks=40},{dust=36,marks=70},{dust=60,marks=120},
+}
+function G.composterInterval(upgrade) return math.floor(G.COMPOST_SECONDS * (1 - 0.12 * math.clamp(upgrade or 0, 0, #G.ComposterUpgrades))) end
+function G.matterCap(upgrade) return G.MATTER_CAP + 1500 * math.clamp(upgrade or 0, 0, #G.ComposterUpgrades) end
+
+-- Pests (a light combat link): clearing one pays Combat and Farming XP.
+G.Pests = {
+	{id="Leafnibbler",name="Leafnibbler",color="8BC34A",combatXp=12},
+	{id="Rootgrub",name="Rootgrub",color="8D6346",combatXp=16},
+	{id="Dustmoth",name="Dustmoth",color="B8A27A",combatXp=20},
+	{id="Thripling",name="Thripling",color="C8553D",combatXp=24},
+}
+
+-- Visitors: rarity sets the pick weight, reward multiplier and Verdant Marks.
+G.VisitorRarity = {
+	Common={weight=60,mult=1,marks=2,rank=1},Uncommon={weight=27,mult=1.4,marks=4,rank=2},
+	Rare={weight=11,mult=2,marks=7,rank=3},Legendary={weight=2,mult=3,marks=14,rank=4},
+}
+G.Visitors = {
+	{id="Pell",name="Pell the Thatcher",rarity="Common",level=1,color="C9A227",likes={"Herb","Sunwheat"},line="My roof wants patching and my belly wants bread."},
+	{id="Odessa",name="Odessa Brightloam",rarity="Common",level=1,color="9BD77E",likes={"Sunwheat","Duskberry"},line="I judge a garden by its rows. Yours will do."},
+	{id="Bramwick",name="Bramwick Furrowfoot",rarity="Common",level=1,color="8D6346",likes={"Herb","Glowcap"},line="Walked all the way from Meadow Reach for this."},
+	{id="Tamsin",name="Tamsin of the Quay Kitchens",rarity="Uncommon",level=2,color="D9822B",likes={"Glowcap","Moonbloom"},line="The quay stew needs something brighter."},
+	{id="Corvel",name="Corvel Ledgerleaf",rarity="Uncommon",level=3,color="4FB0C6",likes={"Duskberry","Cloudgourd"},line="I pay fairly, and I always pay in Marks."},
+	{id="Mirabel",name="Mirabel Skyhive",rarity="Uncommon",level=4,color="F2C14E",likes={"Moonbloom","Starfruit"},line="My bees adore a moonlit bloom."},
+	{id="Gideon",name="Gideon Tidewell",rarity="Rare",level=5,color="3F7CAC",likes={"Cloudgourd","Starfruit"},line="Sailors swear by gourd broth before a storm."},
+	{id="Sefa",name="Sefa the Lanternkeeper",rarity="Rare",level=6,color="FFD166",likes={"Glowcap","AetherLotus"},line="Glowcaps light the long watch."},
+	{id="Quillon",name="Archivist Quillon",rarity="Rare",level=8,color="8E5BB5",likes={"Moonbloom","AetherLotus"},line="For the herbarium. Pressed, catalogued, adored."},
+	{id="Auralie",name="Auralie Dawnpetal",rarity="Legendary",level=10,color="FF9ECD",likes={"AetherLotus","Starfruit"},line="The isles bloom where you walk, gardener."},
+}
+G.VisitorById = {}
+for i, v in ipairs(G.Visitors) do v.index = i; G.VisitorById[v.id] = v end
+G.MAX_VISITORS = 5
+function G.visitorCap(level) return math.min(G.MAX_VISITORS, 2 + math.floor((math.max(1, level or 1) - 1) / 4)) end
+
+------------------------------------------------------------------------------
+-- Pure rules.
+------------------------------------------------------------------------------
+function G.level(xp)
+	xp = tonumber(xp) or 0
+	local lvl = 1
+	for i, need in ipairs(G.LEVEL_XP) do if xp >= need then lvl = i end end
+	return lvl
+end
+-- level, xp at this level's start, xp for the next level (nil at max).
+function G.progress(xp)
+	local lvl = G.level(xp)
+	return lvl, G.LEVEL_XP[lvl], G.LEVEL_XP[lvl + 1]
+end
+function G.plotCount(gardenLevel, farmingLevel)
+	local n = G.BASE_PLOTS
+	for _, l in ipairs(G.PLOT_LEVELS) do if (gardenLevel or 1) >= l then n += 1 end end
+	for _, l in ipairs(G.PLOT_FARMING) do if (farmingLevel or 1) >= l then n += 1 end end
+	return math.min(G.MAX_PLOTS, n)
+end
+-- Text for the next plot unlock ("Garden level 5" / "Farming 35"), nil when all are open.
+function G.nextPlotUnlock(gardenLevel, farmingLevel)
+	local nextGarden, nextFarming
+	for _, l in ipairs(G.PLOT_LEVELS) do if (gardenLevel or 1) < l then nextGarden = l; break end end
+	for _, l in ipairs(G.PLOT_FARMING) do if (farmingLevel or 1) < l then nextFarming = l; break end end
+	local parts = {}
+	if nextGarden then table.insert(parts, "Garden level "..nextGarden) end
+	if nextFarming then table.insert(parts, "Farming "..nextFarming) end
+	return if #parts > 0 then table.concat(parts, " or ") else nil
+end
+function G.milestoneThreshold(cropId, tier)
+	local c = G.CropById[cropId]
+	local base = G.MILESTONES[tier]
+	if not c or not base then return nil end
+	return math.max(5, math.floor(base * c.scale / 5 + 0.5) * 5)
+end
+function G.milestoneTier(cropId, harvested)
+	local tier = 0
+	for t = 1, #G.MILESTONES do
+		local need = G.milestoneThreshold(cropId, t)
+		if need and (harvested or 0) >= need then tier = t end
+	end
+	return tier
+end
+function G.milestoneReward(cropId, tier)
+	local c = G.CropById[cropId]
+	if not c or tier < 1 then return {coins=0,gxp=0} end
+	return {coins=math.floor(150 * tier * tier * (1 + 0.2 * (c.index - 1))),gxp=15 * tier}
+end
+-- Total milestone tiers across crops (each grants G.MILESTONE_FORTUNE Farming Fortune).
+function G.milestonePerk(harvested)
+	local tiers = 0
+	for _, c in ipairs(G.Crops) do tiers += G.milestoneTier(c.id, type(harvested) == "table" and harvested[c.id] or 0) end
+	return if tiers > 0 then {farmingFortune=tiers * G.MILESTONE_FORTUNE} else nil, tiers
+end
+-- Growth rate: ctx = {level = garden level, set = Rootwarden set active}.
+function G.rate(plot, ctx, watered)
+	ctx = ctx or {}
+	local r = 1 + (plot.compost and G.COMPOST_BOOST or 0) + (ctx.set and G.SET_BOOST or 0)
+		+ G.LEVEL_BOOST * (math.clamp(ctx.level or 1, 1, G.MAX_LEVEL) - 1) + (watered and G.WATER_BOOST or 0)
+	return math.min(G.MAX_RATE, r)
+end
+function G.diseaseChance(crop, composted)
+	local c = type(crop) == "table" and crop or G.CropById[crop]
+	if not c then return 0 end
+	return c.disease * (if composted then 0.5 else 1)
+end
+-- A new crop in `plot` (mutated). Rolls disease unless pre-treated. Returns plot.
+function G.plant(plot, cropId, now, roll)
+	local c = G.CropById[cropId]
+	plot.crop, plot.planted, plot.at, plot.grown = cropId, now, now, 0
+	plot.sick, plot.dead, plot.pest, plot.blight, plot.water = nil, nil, nil, nil, nil
+	plot.pestCheck = now
+	if not plot.treated and roll() < G.diseaseChance(c, plot.compost) then
+		plot.blight = math.floor((0.2 + 0.6 * roll()) * 1000) / 1000
+	end
+	return plot
+end
+-- Advance growth to `now` (offline-safe). Watering boosts only until it
+-- expires; disease strikes at blight * grow seconds and halts growth; a sick
+-- crop dies DEATH_SECONDS after the strike.
+function G.advance(plot, now, ctx)
+	local c = plot and G.CropById[plot.crop]
+	if not c then return plot end
+	local t = plot.at or now
+	if now <= t then return plot end
+	if not plot.dead and not plot.sick then
+		local need = c.grow
+		local strike = if plot.blight and not plot.treated then plot.blight * need else nil
+		local function run(untilT, watered)
+			if untilT <= t then return end
+			if plot.sick or plot.grown >= need then t = untilT return end
+			local rate = G.rate(plot, ctx, watered)
+			local target = plot.grown + (untilT - t) * rate
+			if strike and plot.grown < strike and target >= strike then
+				plot.sick = math.ceil(t + (strike - plot.grown) / rate)
+				plot.grown = strike
+			else
+				plot.grown = math.min(need, target)
+			end
+			t = untilT
+		end
+		if (plot.water or 0) > t then run(math.min(now, plot.water), true) end
+		run(now, false)
+	end
+	if plot.sick and not plot.dead and now - plot.sick >= G.DEATH_SECONDS then plot.dead = true end
+	plot.at = now
+	return plot
+end
+function G.ripe(plot)
+	local c = plot and G.CropById[plot.crop]
+	return c ~= nil and not plot.dead and not plot.sick and (plot.grown or 0) >= c.grow
+end
+-- 0 empty, 1-3 growing, 4 ripe.
+function G.stage(plot)
+	local c = plot and G.CropById[plot.crop]
+	if not c then return 0 end
+	if (plot.grown or 0) >= c.grow then return G.STAGES end
+	return math.clamp(1 + math.floor(3 * (plot.grown or 0) / c.grow), 1, 3)
+end
+-- Seconds until ripe at the current rates (0 ripe; nil sick, dead or empty).
+function G.timeLeft(plot, now, ctx)
+	local c = plot and G.CropById[plot.crop]
+	if not c or plot.dead or plot.sick then return nil end
+	local remain = c.grow - (plot.grown or 0)
+	if remain <= 0 then return 0 end
+	local dry = G.rate(plot, ctx, false)
+	local wet = G.rate(plot, ctx, true)
+	local window = math.max(0, (plot.water or 0) - now)
+	if window * wet >= remain then return math.ceil(remain / wet) end
+	return math.ceil(window + (remain - window * wet) / dry)
+end
+-- Pest rolls for the time since plot.pestCheck (capped). Returns true when a pest arrived.
+function G.pestRoll(plot, now, roll)
+	if not (plot and G.CropById[plot.crop]) or plot.dead then return false end
+	plot.pestCheck = plot.pestCheck or now
+	local rolls = math.floor((now - plot.pestCheck) / G.PEST_INTERVAL)
+	if rolls <= 0 then return false end
+	plot.pestCheck += rolls * G.PEST_INTERVAL
+	if plot.pest then return false end
+	for _ = 1, math.min(rolls, G.PEST_MAX_ROLLS) do
+		if roll() < G.PEST_CHANCE then
+			plot.pest = math.clamp(math.floor(roll() * #G.Pests) + 1, 1, #G.Pests)
+			return true
+		end
+	end
+	return false
+end
+-- Harvest amount after fortune and pests: base yield rolled with fortune
+-- (every 100 = +1 guaranteed base, remainder a chance), then pest penalty.
+function G.yieldFor(cropId, fortune, pest, roll)
+	local c = G.CropById[cropId]
+	if not c then return 0 end
+	fortune = math.max(0, fortune or 0)
+	local amount = c.yield * (1 + math.floor(fortune / 100))
+	if roll() < (fortune % 100) / 100 then amount += c.yield end
+	if pest then amount = math.max(1, math.floor(amount * (1 - G.PEST_PENALTY))) end
+	return amount
+end
+-- Composter: run whole cycles up to now. Idle time (no matter, output full) is not banked.
+-- c = {matter, out, dust, cycles, at, upgrade}. Returns cycles run.
+function G.composterAdvance(c, now)
+	local interval = G.composterInterval(c.upgrade)
+	c.at = c.at or now
+	if now <= c.at then return 0 end
+	local byTime = math.floor((now - c.at) / interval)
+	local byMatter = math.floor((c.matter or 0) / G.COMPOST_MATTER)
+	local bySpace = math.max(0, G.COMPOST_OUT_CAP - (c.out or 0))
+	local n = math.min(byTime, byMatter, bySpace)
+	local before = c.cycles or 0
+	c.matter = (c.matter or 0) - n * G.COMPOST_MATTER
+	c.out = (c.out or 0) + n
+	c.cycles = before + n
+	c.dust = (c.dust or 0) + (math.floor(c.cycles / G.DUST_EVERY) - math.floor(before / G.DUST_EVERY))
+	if n < byTime then c.at = now else c.at += n * interval end
+	return n
+end
+-- Visitor arrivals: returns how many arrive and the next arrival time. A full
+-- queue never banks time (offline arrivals stop at the cap).
+function G.visitorsDue(nextAt, now, have, cap)
+	nextAt = nextAt or now
+	local n = 0
+	while nextAt <= now and have + n < cap do
+		n += 1
+		nextAt += G.VISITOR_INTERVAL
+	end
+	if have + n >= cap and nextAt <= now then nextAt = now + G.VISITOR_INTERVAL end
+	return n, nextAt
+end
+-- One visitor request (deterministic for a roll sequence). Roll order: pick,
+-- second want (Uncommon+), per want {liked?, crop, count}, dust (Uncommon+),
+-- seeds (Rare+), pet (Legendary).
+function G.makeVisitor(seq, gardenLevel, farmingLevel, roll)
+	local eligible, total = {}, 0
+	for _, v in ipairs(G.Visitors) do
+		if v.level <= (gardenLevel or 1) then table.insert(eligible, v); total += G.VisitorRarity[v.rarity].weight end
+	end
+	local pick, r = eligible[1], roll() * total
+	for _, v in ipairs(eligible) do
+		r -= G.VisitorRarity[v.rarity].weight
+		if r < 0 then pick = v; break end
+	end
+	local rar = G.VisitorRarity[pick.rarity]
+	local available = {}
+	for _, c in ipairs(G.Crops) do if c.level <= (farmingLevel or 1) then table.insert(available, c) end end
+	local wantsCount = if rar.rank >= 2 and roll() < 0.5 then 2 else 1
+	wantsCount = math.min(wantsCount, #available)
+	local wants, list, coins, gxp, xp, top = {}, {}, 0, 0, 0, 1
+	for _ = 1, wantsCount do
+		local pool = {}
+		local liked = roll() < 0.7
+		if liked then
+			for _, id in ipairs(pick.likes) do
+				local c = G.CropById[id]
+				if c.level <= (farmingLevel or 1) and not wants[id] then table.insert(pool, c) end
+			end
+		end
+		if #pool == 0 then
+			for _, c in ipairs(available) do if not wants[c.id] then table.insert(pool, c) end end
+		end
+		local c = pool[math.clamp(math.floor(roll() * #pool) + 1, 1, #pool)]
+		local n = math.max(2, math.floor(c.yield * (1.5 + 3 * roll()) * math.sqrt(rar.mult)))
+		wants[c.id] = n
+		table.insert(list, c.id)
+		coins += Data.Items[c.id].value * n
+		xp += c.xp * n / c.yield
+		gxp += 3 * c.index
+		top = math.max(top, c.index)
+	end
+	table.sort(list, function(a, b) return G.CropById[a].index < G.CropById[b].index end)
+	local items = {}
+	if rar.rank >= 2 and roll() < 0.35 then items[G.DUST] = rar.rank - 1 end
+	if rar.rank >= 3 and roll() < 0.4 then
+		local seedCrop = G.Crops[math.min(#G.Crops, top + 1)]
+		items[seedCrop.seed] = 2
+	end
+	if rar.rank >= 4 and roll() < 0.1 then items.MossbackPet = 1 end
+	return {id=seq,npc=pick.id,wants=wants,order=list,coins=math.floor(coins * 2 * rar.mult),marks=rar.marks + math.floor(top / 3),
+		gxp=math.floor((6 + gxp) * rar.mult),xp=math.floor(xp * 0.25),items=items}
+end
+-- Fresh, empty record.
+function G.fresh(now)
+	local plots = {}
+	for i = 1, G.MAX_PLOTS do plots[i] = {} end
+	return {xp=0,plots=plots,harvested={},milestones={},composter={matter=0,out=0,dust=0,cycles=0,at=now or 0,upgrade=0},
+		visitors={},nextVisitor=(now or 0) + 60,seq=0,served=0,skin="Loam",skins={Loam=true},fieldSeeds={}}
+end
+-- Sanitise a saved record (unknown ids dropped, numbers clamped, sizes bounded).
+function G.sanitize(g, now)
+	local out = G.fresh(now)
+	if type(g) ~= "table" then return out end
+	local function n(v, lo, hi) v = tonumber(v); if not v or v ~= v then return nil end return math.clamp(v, lo, hi) end
+	out.xp = math.floor(n(g.xp, 0, 1e9) or 0)
+	if type(g.plots) == "table" then
+		for i = 1, G.MAX_PLOTS do
+			local s = g.plots[i]
+			if type(s) == "table" then
+				local plot = {}
+				if type(s.crop) == "string" and G.CropById[s.crop] then
+					local c = G.CropById[s.crop]
+					plot.crop = s.crop
+					plot.planted = n(s.planted, 0, 4e9) or now
+					plot.at = math.min(n(s.at, 0, 4e9) or now, now)
+					plot.grown = n(s.grown, 0, c.grow) or 0
+					plot.water = n(s.water, 0, now + G.WATER_SECONDS)
+					plot.blight = n(s.blight, 0.05, 0.95)
+					plot.sick = n(s.sick, 0, now)
+					plot.dead = if s.dead == true then true else nil
+					plot.pest = n(s.pest, 1, #G.Pests)
+					if plot.pest then plot.pest = math.floor(plot.pest) end
+					plot.pestCheck = math.min(n(s.pestCheck, 0, 4e9) or now, now)
+				end
+				plot.compost = if s.compost == true then true else nil
+				plot.treated = if s.treated == true then true else nil
+				out.plots[i] = plot
+			end
+		end
+	end
+	for _, key in ipairs({"harvested","fieldSeeds"}) do
+		if type(g[key]) == "table" then
+			for id, v in pairs(g[key]) do
+				local x = n(v, 0, 1e9)
+				if type(id) == "string" and G.CropById[id] and x then out[key][id] = math.floor(x) end
+			end
+		end
+	end
+	if type(g.milestones) == "table" then
+		for id, v in pairs(g.milestones) do
+			local x = n(v, 0, #G.MILESTONES)
+			if type(id) == "string" and G.CropById[id] and x then out.milestones[id] = math.floor(x) end
+		end
+	end
+	local c = type(g.composter) == "table" and g.composter or {}
+	local up = math.floor(n(c.upgrade, 0, #G.ComposterUpgrades) or 0)
+	out.composter = {upgrade=up,matter=math.floor(n(c.matter, 0, G.matterCap(up)) or 0),out=math.floor(n(c.out, 0, G.COMPOST_OUT_CAP) or 0),
+		dust=math.floor(n(c.dust, 0, 1e6) or 0),cycles=math.floor(n(c.cycles, 0, 1e9) or 0),at=math.min(n(c.at, 0, 4e9) or now, now)}
+	if type(g.visitors) == "table" then
+		for _, v in ipairs(g.visitors) do
+			if #out.visitors >= G.MAX_VISITORS then break end
+			if type(v) == "table" and type(v.npc) == "string" and G.VisitorById[v.npc] and type(v.wants) == "table" and n(v.id, 1, 1e9) then
+				local wants, order = {}, {}
+				for id, x in pairs(v.wants) do
+					x = n(x, 1, 10000)
+					if type(id) == "string" and G.CropById[id] and x and #order < 2 then wants[id] = math.floor(x); table.insert(order, id) end
+				end
+				table.sort(order, function(a, b) return G.CropById[a].index < G.CropById[b].index end)
+				local items = {}
+				if type(v.items) == "table" then
+					for id, x in pairs(v.items) do
+						x = n(x, 1, 100)
+						if type(id) == "string" and Data.Items[id] and x then items[id] = math.floor(x) end
+					end
+				end
+				if #order > 0 then
+					table.insert(out.visitors, {id=math.floor(v.id),npc=v.npc,wants=wants,order=order,coins=math.floor(n(v.coins, 0, 1e7) or 0),
+						marks=math.floor(n(v.marks, 0, 100) or 0),gxp=math.floor(n(v.gxp, 0, 1e5) or 0),xp=math.floor(n(v.xp, 0, 1e6) or 0),items=items})
+				end
+			end
+		end
+	end
+	out.seq = math.floor(n(g.seq, 0, 1e9) or 0)
+	for _, v in ipairs(out.visitors) do out.seq = math.max(out.seq, v.id) end
+	out.nextVisitor = n(g.nextVisitor, 0, now + G.VISITOR_INTERVAL) or out.nextVisitor
+	out.served = math.floor(n(g.served, 0, 1e9) or 0)
+	if type(g.skins) == "table" then
+		for id, v in pairs(g.skins) do if v == true and type(id) == "string" and G.SkinById[id] then out.skins[id] = true end end
+	end
+	out.skin = if type(g.skin) == "string" and out.skins[g.skin] then g.skin else "Loam"
+	return out
+end
+end
+-- End Garden section.
+
 return Data

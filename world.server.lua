@@ -1067,6 +1067,7 @@ local function settle(player)
 	end
 	if homeTerrace.attach then homeTerrace.attach(player,homes[player]) end
 	if homePlacement.attach then homePlacement.attach(player,homes[player]) end
+	if homeTerrace.garden then homeTerrace.garden(player,homes[player]) end -- Verdant Garden islet (Garden section)
 end
 Players.PlayerAdded:Connect(settle)
 Players.PlayerRemoving:Connect(function(player)
@@ -2905,3 +2906,190 @@ local function buildSkillContent()
 	return courseCount
 end
 buildSkillContent()
+
+-------------------------------------------------------------------------------
+-- Verdant Garden (Farming Depth team; self-contained section). Every home gains
+-- a garden islet (r14) 40 studs south-west of its centre, joined by a short
+-- bridge: twelve plot beds in a 4 x 3 grid, a composter, the garden ledger sign
+-- and up to five visitor figures. Rules: Data.Garden; the server (Garden block)
+-- publishes player attributes and this section re-renders only what changed:
+--   GardenPlots (unlocked count), GardenSkin (frame/soil colours),
+--   GardenPlot<i> = "" | "<crop>:<stage>:<flags>" (w watered, c compost,
+--     t treated, s sick, x dead, r ripe, p<n> pest), GardenVisitors ("npc,npc"),
+--   GardenComposter ("locked"|"idle"|"working"|"ready").
+-- Crops are mesh slots (contract §10): Shape = the crop's catalog mesh
+-- (CropWheat / CropGlowcap / CropBloom / CropBush), Tint = crop colour (blight
+-- browns it, death greys it), ShapeScale = Data.Garden.STAGE_SCALE[stage]; the
+-- host primitive is sized to the stage so the fallback grows too.
+-- Prompts (owner only): plot soil IsleAction "gardenPlot" IsleItem "<i>"
+-- (contextual: plant best seed / water / harvest / treat / swat pest / clear);
+-- composter, ledger and visitors IsleAction "gardenOpen" and open Workshop ›
+-- Garden through IsleStation = "Garden". Anchors: Anchor_Waypoint_VerdantGarden,
+-- Anchor_Garden_Composter, Anchor_NPC_GardenVisitor.
+-------------------------------------------------------------------------------
+do
+	local G=Data.Garden
+	local GARDEN_OFFSET,GARDEN_R=V(-28.3,0,28.3),14
+	local PLOT_X,PLOT_Z={-6.6,-2.2,2.2,6.6},{.5,-3.9,-8.3}
+	local VISITOR_SPOTS={{-10,4.5},{-7.5,7.5},{-4.5,10},{-11.5,1},{-12,-3}}
+	local leaf=C("5FBF77")
+	local function hex(s,fallback) local ok,c=pcall(C,s) return if ok then c else fallback end
+	homeTerrace.garden=function(player,home)
+		if not G or not home or home.garden then return end
+		local m,center=home.model,home.center
+		local gc=center+GARDEN_OFFSET
+		local isle=island("Verdant Garden",gc,GARDEN_R,{top=C("7FA86A"),parent=m,rim=false,shore=false})
+		isle:SetAttribute("GardenOwner",player.UserId)
+		home.garden=isle
+		local dir=(center-gc).Unit
+		local frame=CFrame.lookAt(gc,gc+dir)
+		local function F(x,zf,y) return frame*CFrame.new(x,y or 0,-zf) end
+		local function L(x,zf,y) return F(x,zf,y).Position end
+		bridge(isle,center-dir*(HOME_CORE-.5),gc+dir*(GARDEN_R-.5))
+		local function openLedger(q)
+			q:SetAttribute("OwnerUserId",player.UserId)
+			q.Triggered:Connect(function(user)
+				if user~=player then return end
+				user:SetAttribute("IsleStation","Garden")
+				user:SetAttribute("IsleStationVisit",(user:GetAttribute("IsleStationVisit") or 0)+1)
+			end)
+			return q
+		end
+		-- Ledger sign and composter at the entrance.
+		local signPos=L(5.5,8.5)
+		local board=signAt(isle,CFrame.lookAt(signPos,signPos+dir),"Verdant Garden","GARDEN   /   PLOTS · VISITORS · SHOP",leaf,7)
+		openLedger(prompt(board,"Open ledger","Verdant Garden","gardenOpen","ledger"))
+		local bin=group("Composter",isle)
+		local barrel=part(bin,"Composter barrel",V(3,3.2,3),F(8.5,5,1.6),timber,WO,true)
+		meshSlot(barrel,"Barrel",C("6B4F33"),nil,"Uniform")
+		local lid=part(bin,"Composter lid",V(.3,3.2,3.2),F(8.5,5,3.35)*CFrame.Angles(0,0,math.pi/2),shale,SM,false,Enum.PartType.Cylinder)
+		local binPrompt=openLedger(prompt(barrel,"Open composter","Composter","gardenOpen","composter"))
+		anchor(isle,"Waypoint_VerdantGarden",L(0,10),gc)
+		anchor(isle,"Garden_Composter",L(8.5,8),L(8.5,5))
+		anchor(isle,"NPC_GardenVisitor",L(-7,6),gc)
+		-- Plot beds.
+		local plots={}
+		local function skin()
+			local s=G.SkinById[player:GetAttribute("GardenSkin")] or G.Skins[1]
+			return hex(s.frame,timber),hex(s.soil,ink)
+		end
+		local function parse(code)
+			if type(code)~="string" or code=="" then return nil end
+			local crop,stage,flags=string.match(code,"^(%w*):(%d):(%w*)$")
+			if not stage then return nil end
+			return {crop=G.CropById[crop],stage=tonumber(stage),flags=flags,pest=tonumber(string.match(flags,"p(%d)"))}
+		end
+		local function has(flags,f) return string.find(flags,f,1,true)~=nil end
+		local function refreshPlot(i)
+			local b=plots[i]
+			if not b or not isle.Parent then return end
+			local unlocked=i<=(tonumber(player:GetAttribute("GardenPlots")) or G.BASE_PLOTS)
+			local frameColor,soilColor=skin()
+			local s=if unlocked then parse(player:GetAttribute("GardenPlot"..i)) else nil
+			local flags=if s then s.flags else ""
+			local crop=s and s.crop
+			local ripe,sick,dead=has(flags,"r"),has(flags,"s"),has(flags,"x")
+			b.frame.Color=if unlocked then frameColor else shale
+			b.soil.Color=if has(flags,"w") then darken(soilColor,.35) else soilColor
+			b.soil.Material=if has(flags,"c") then Enum.Material.Mud else GR
+			b.soil.Transparency=if unlocked then 0 else .55
+			b.prompt.Enabled=unlocked
+			b.prompt.ActionText=if not unlocked then "Locked" elseif s and s.pest then "Swat pest" elseif dead then "Clear"
+				elseif sick then "Treat" elseif ripe then "Harvest" elseif crop then "Water" else "Plant"
+			b.prompt.ObjectText="Plot "..i..(if crop then " · "..(Data.Items[crop.id] and Data.Items[crop.id].name or crop.id).." · "..(G.STAGE_NAMES[s.stage] or "") else "")
+			-- Crop mesh slot: rebuilt when the crop or stage changes, re-tinted in place.
+			local key=if crop and s.stage>0 then crop.id..":"..s.stage else nil
+			if b.key~=key then
+				if b.crop then b.crop:Destroy() b.crop=nil end
+				b.key=key
+				if key then
+					local scale=G.STAGE_SCALE[s.stage] or 1
+					local h=2.6*scale
+					local w=2.8*math.max(scale,.5)
+					b.crop=part(b.model,"Crop",V(w,h,w),F(b.x,b.z,.46+h/2),hex(crop.tint,turf),LEAF,false)
+					meshSlot(b.crop,crop.shape,hex(crop.tint,turf),nil,"Uniform")
+					b.crop:SetAttribute("ShapeScale",scale)
+					b.crop:SetAttribute("GardenStage",s.stage)
+				end
+			end
+			if b.crop then
+				local tint=if dead then C("6E6A62") elseif sick then C("8A6B3A") else hex(crop.tint,turf)
+				b.crop.Color=tint
+				b.crop:SetAttribute("Tint",tint)
+				b.crop:SetAttribute("GardenStatus",if dead then "dead" elseif sick then "sick" elseif ripe then "ripe" else "growing")
+			end
+			local pest=s and s.pest and G.Pests[s.pest]
+			local pestId=if pest then pest.id else nil
+			if b.pestId~=pestId then
+				if b.pest then b.pest:Destroy() b.pest=nil end
+				b.pestId=pestId
+				if pest then
+					b.pest=ball(b.model,"Pest",L(b.x+1.1,b.z+1.1,1),.7,hex(pest.color,rose),SM)
+					b.pest:SetAttribute("PestId",pest.id)
+				end
+			end
+			local glint=ripe and not dead and b.crop~=nil
+			if glint and not b.glint then
+				b.glint=gem(b.model,"Ripe glint",L(b.x,b.z,3.5),V(.45,.7,.45),C("FFE9A6"),0)
+			elseif not glint and b.glint then
+				b.glint:Destroy() b.glint=nil
+			end
+		end
+		for i=1,G.MAX_PLOTS do
+			local row,col=(i-1)//4+1,(i-1)%4+1
+			local x,z=PLOT_X[col],PLOT_Z[row]
+			local model=group("Plot"..i,isle)
+			model:SetAttribute("GardenPlot",i)
+			local frameColor,soilColor=skin()
+			local bed=part(model,"Plot frame",V(4,.36,4),F(x,z,.18),frameColor,WO,false)
+			local soil=part(model,"Plot soil",V(3.4,.12,3.4),F(x,z,.4),soilColor,GR,false)
+			local q=prompt(soil,"Plant","Plot "..i,"gardenPlot",tostring(i),player.UserId)
+			plots[i]={model=model,frame=bed,soil=soil,prompt=q,x=x,z=z}
+			table.insert(home.decorationConnections,player:GetAttributeChangedSignal("GardenPlot"..i):Connect(function() refreshPlot(i) end))
+		end
+		local function refreshAll() for i=1,G.MAX_PLOTS do refreshPlot(i) end end
+		for _,key in ipairs({"GardenPlots","GardenSkin"}) do
+			table.insert(home.decorationConnections,player:GetAttributeChangedSignal(key):Connect(refreshAll))
+		end
+		refreshAll()
+		-- Composter lid shows its state.
+		local function refreshComposter()
+			local state=player:GetAttribute("GardenComposter")
+			lid.Color=if state=="ready" then C("F7B2D9") elseif state=="working" then leaf elseif state=="locked" then ink else shale
+			binPrompt.ActionText=if state=="locked" then "Composter (garden level "..G.COMPOSTER_LEVEL..")" elseif state=="ready" then "Collect compost" else "Open composter"
+		end
+		table.insert(home.decorationConnections,player:GetAttributeChangedSignal("GardenComposter"):Connect(refreshComposter))
+		refreshComposter()
+		-- Visitors waiting at the entrance (one figure per queued visitor).
+		local crowd={}
+		local function refreshVisitors()
+			if not isle.Parent then return end
+			local want={}
+			local value=player:GetAttribute("GardenVisitors")
+			if type(value)=="string" then
+				for id in string.gmatch(value,"[^,]+") do
+					if G.VisitorById[id] and #want<#VISITOR_SPOTS then table.insert(want,id) end
+				end
+			end
+			for slot=1,#VISITOR_SPOTS do
+				local id=want[slot]
+				local v=crowd[slot]
+				if v and v.id~=id then v.model:Destroy() crowd[slot]=nil v=nil end
+				if id and not v then
+					local def=G.VisitorById[id]
+					local spot=VISITOR_SPOTS[slot]
+					local fig=group("Visitor_"..id,isle)
+					fig:SetAttribute("GardenVisitor",id)
+					local coat=part(fig,"Visitor coat",V(1.4,2.4,1),F(spot[1],spot[2],1.2),hex(def.color,teal),Enum.Material.Fabric,true)
+					ball(fig,"Visitor head",L(spot[1],spot[2],2.95),1.1,C("F2D3B1"),SM)
+					openLedger(prompt(coat,"Talk",def.name,"gardenOpen","visitor"))
+					crowd[slot]={id=id,model=fig}
+				end
+			end
+		end
+		table.insert(home.decorationConnections,player:GetAttributeChangedSignal("GardenVisitors"):Connect(refreshVisitors))
+		refreshVisitors()
+	end
+	for player,home in pairs(homes) do homeTerrace.garden(player,home) end
+end
+-- End Verdant Garden section.
