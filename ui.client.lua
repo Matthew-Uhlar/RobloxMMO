@@ -1276,8 +1276,85 @@ local function costLine(costs)
 	end
 	return table.concat(parts,"   "),ok
 end
+-- Island placement (Island Builder team): free-form props on the home island.
+-- Place/Pick-up mode hands off to the IslandBuilder LocalScript through local
+-- player attributes: IslandBuildMode ("place"|"remove"), IslandBuildProp and a
+-- bumped IslandBuildRequest. The builder answers with IslandPlaceRequest
+-- ("propId:x:z:rot") / IslandPickupRequest (placement id) plus a bumped
+-- counter; this page sends the verbs so snapshots and toasts stay in one place.
+QJ.mode="Terrace"
+QJ.category="Fences"
+function QJ.startBuild(mode,propId)
+	player:SetAttribute("IslandBuildMode",mode)
+	player:SetAttribute("IslandBuildProp",propId or "")
+	player:SetAttribute("IslandBuildRequest",(num(player:GetAttribute("IslandBuildRequest"),0))+1)
+	closeAtlas()
+end
+player:GetAttributeChangedSignal("IslandPlaceCount"):Connect(function()
+	local value=player:GetAttribute("IslandPlaceRequest")
+	if type(value)=="string" and #value<=40 and send then send("place",value) end
+end)
+player:GetAttributeChangedSignal("IslandPickupCount"):Connect(function()
+	local value=player:GetAttribute("IslandPickupRequest")
+	if type(value)=="string" and value:match("^%d+$") and #value<=4 and send then send("pickup",value) end
+end)
+function QJ.drawIsland(con)
+	local I=Data.Island
+	local isle=tbl(con.island)
+	local carpentry=num(con.carpentry,1)
+	local counts=tbl(isle.counts)
+	local placedCount=math.max(0,math.floor(num(isle.count,0)))
+	local cap=num(isle.cap,I.MAX_PLACEMENTS)
+	local value=num(isle.value,0)
+	local tierIndex,tier=I.tier(value)
+	local nextTier=I.ValueTiers[tierIndex+1]
+	card({name="IslandSummary",motif="Workshop",title="Island value "..fmt(value),titleColor=gold,
+		subtitle=escape(type(isle.tierName)=="string" and isle.tierName or tier.name).."  ·  "..fmt(placedCount).." / "..fmt(cap).." props placed",
+		lines={"Place decor anywhere on your home island grid. Spawn, workers, signs and bridges stay clear.",
+			"Picking up returns 100% of materials. Carpentry XP is earned once per copy."},
+		bar={fraction=nextTier and (value-tier.at)/(nextTier.at-tier.at) or 1,color=gold,caption=nextTier and (fmt(value).." / "..fmt(nextTier.at).."  ·  next: "..nextTier.name) or "Highest island tier"},
+		actions={{caption="Pick up",name="IslandRemoveMode",disabled=placedCount==0,reason="Nothing is placed on your island yet.",fn=function() QJ.startBuild("remove") end}}})
+	if not I.CategoryOf[QJ.category] then QJ.category=I.Categories[1] end
+	sectionBar(I.Categories,QJ.category,function(name) QJ.category=name render() end,{small=true,prefix="PropCategory",maxPer=compactAtlas and 4 or 8})
+	-- Latest placement id per prop (for the quick pick-up action), from the
+	-- records the server replicates as the IslandPlacements attribute.
+	local latest={}
+	for _,e in ipairs(I.decode(player:GetAttribute("IslandPlacements"))) do
+		if (latest[e.prop] or 0)<e.id then latest[e.prop]=e.id end
+	end
+	for _,id in ipairs(I.PropOrder) do
+		local def=I.Props[id]
+		if def.category==QJ.category then
+			local have=math.max(0,math.floor(num(counts[id],0)))
+			local costs,funded=costLine(def.costs)
+			local levelOk=carpentry>=def.level
+			local reason=if not levelOk then "Requires Carpentry "..def.level.."."
+				elseif have>=def.max then "You have placed the most allowed ("..def.max..")."
+				elseif placedCount>=cap then "Your island is full. Pick something up first."
+				elseif not funded then "Gather the materials first." else nil
+			local w,d=def.size[1],def.size[2]
+			local extra={}
+			if def.effect and def.effect.station then table.insert(extra,"Home "..def.effect.station.." station") end
+			if def.effect and def.effect.light then table.insert(extra,"Glows at night") end
+			local actions={{caption="Place",primary=reason==nil,disabled=reason~=nil,reason=reason,fn=function() QJ.startBuild("place",id) end}}
+			if latest[id] then table.insert(actions,1,{caption="Pick up",fn=function() send("pickup",tostring(latest[id])) end}) end
+			card({name="Prop"..id,motif="Workshop",title=escape(def.name),titleColor=levelOk and ivory or muted,
+				subtitle=(levelOk and check or cross).." Carpentry "..def.level.."  ·  +"..fmt(def.xp).." XP  ·  "..w.."×"..d.." cells  ·  value "..def.value,
+				badge=fmt(have).." / "..fmt(def.max),badgeColor=have>0 and mint or muted,
+				detail=escape(def.text)..(#extra>0 and ("  "..paint(table.concat(extra,"  ·  "),"9EE7D2")) or ""),lines={costs},actions=actions})
+		end
+	end
+end
 local function drawConstruction()
-	heading("BUILDER'S TERRACE    /    CARPENTRY")
+	local island=Data and type(Data.Island)=="table"
+	heading(if island and QJ.mode=="Island" then "HOME ISLAND    /    FREE PLACEMENT" else "BUILDER'S TERRACE    /    CARPENTRY")
+	if island then sectionBar({"Terrace","Island"},QJ.mode,function(name) QJ.mode=name render() end,{small=true,prefix="BuildMode"}) end
+	if island and QJ.mode=="Island" then
+		local j=journal()
+		if not j then syncing("island plans") return end
+		QJ.drawIsland(tbl(j.construction))
+		return
+	end
 	if not journalData() then dataMissing() return end
 	local j=journal()
 	if not j then syncing("terrace plans") return end

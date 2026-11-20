@@ -2806,3 +2806,270 @@ do
 	ok(SC[homePool[#homePool]].waters==nil,"home catch is an any-water creature")
 	print("PASS: "..(checks-before).." sea creature roll/ticket/grant assertions.")
 end
+
+------------------------------------------------------------------------------
+-- Island placement (Island Builder team): grid rules, verbs, persistence.
+------------------------------------------------------------------------------
+do
+	local before=checks
+	local I=Data.Island
+	local serde=require("@lune/serde")
+	local function ok(cond,case) assert(cond,case); checks+=1 end
+	local function has(text,part) return type(text)=="string" and string.find(text,part,1,true)~=nil end
+	-- Requests move only os.clock (cooldowns, rate limit) so leases never lapse.
+	local function act(p,verb,item,step)
+		clock+=step or 1
+		return objects.RemoteFunction.OnServerInvoke(p,verb,item)
+	end
+	local function seeded(id,edit)
+		local pl=player(id)
+		act(pl,"state")
+		services.Players.PlayerRemoving:Fire(pl)
+		edit(data["p"..id].profile)
+		return player(id)
+	end
+	local function rejoin(pl,edit)
+		services.Players.PlayerRemoving:Fire(pl)
+		if edit then edit(data["p"..pl.UserId].profile) end
+		return player(pl.UserId)
+	end
+	local function setLevel(prof,lvl)
+		prof.xp.Carpentry=Progression.xpForLevel(lvl)
+		prof.levelRewards.Carpentry=lvl
+	end
+	local function isle(s) return s.journal.construction.island end
+	-- First free anchor (scan order z, x) for a prop given current records.
+	local function spot(propId,rot,list)
+		local occupied=I.occupancy(list or {})
+		for z=-I.RANGE,I.RANGE do
+			for x=-I.RANGE,I.RANGE do
+				if I.check(occupied,propId,x,z,rot or 0) then return x,z end
+			end
+		end
+		error("no free spot for "..propId)
+	end
+	local function req(propId,x,z,rot) return propId..":"..x..":"..z..":"..(rot or 0) end
+
+	-- Catalogue integrity.
+	ok(#I.PropOrder>=20,"20+ placeable props")
+	local perCategory={}
+	for _,id in ipairs(I.PropOrder) do
+		local def=I.Props[id]
+		local costsOk=next(def.costs)~=nil
+		for material,n in pairs(def.costs) do costsOk=costsOk and Data.Items[material]~=nil and n>=1 and n==math.floor(n) end
+		ok(type(def.name)=="string" and I.CategoryOf[def.category]~=nil and def.level>=1 and def.level<=99 and def.xp>0
+			and costsOk and #def.size==2 and def.size[1]>=1 and def.size[1]<=3 and def.size[2]>=1 and def.size[2]<=3
+			and def.max>=1 and def.value>=0 and #id<=16 and id:match("^%w+$")~=nil and type(def.text)=="string","prop "..id.." is well formed")
+		perCategory[def.category]=(perCategory[def.category] or 0)+1
+		if def.effect and def.effect.station then ok(table.find({"Forge","Hearth","Cauldron","Workbench"},def.effect.station)~=nil,id.." station is a known kind") end
+	end
+	for _,c in ipairs(I.Categories) do ok((perCategory[c] or 0)>=1,"category "..c.." has props") end
+	local utility=0
+	for _,id in ipairs(I.PropOrder) do if I.Props[id].effect then utility+=1 end end
+	ok(utility>=4,"utility props reuse light/station effects")
+	ok(I.Props[I.PropOrder[1]].category=="Fences" and I.Props[I.PropOrder[#I.PropOrder]].category=="Utility","catalogue ordered by category")
+
+	-- Grid rules.
+	local free=0
+	local cornersOk=true
+	for z=-I.RANGE,I.RANGE do
+		for x=-I.RANGE,I.RANGE do
+			if I.cellBlocked(x,z)==nil then
+				free+=1
+				local fx,fz=math.abs(x*I.CELL)+I.CELL/2,math.abs(z*I.CELL)+I.CELL/2
+				cornersOk=cornersOk and fx*fx+fz*fz<=I.RADIUS*I.RADIUS
+			end
+		end
+	end
+	ok(free>=I.MAX_PLACEMENTS,"grid holds the placement cap ("..free.." free cells)")
+	ok(cornersOk,"every free cell lies fully within the island radius")
+	ok(I.RADIUS<19,"buildable radius stays inside the 19-stud meadow")
+	ok(I.cellBlocked(0,2)=="home landing","spawn landing protected")
+	ok(I.cellBlocked(-3,0)=="windpine","windpine gather node protected")
+	ok(I.cellBlocked(4,2)=="worker station","worker station protected")
+	ok(I.cellBlocked(-5,0)=="garden plot","legacy garden plot protected")
+	ok(I.cellBlocked(-8,0)=="terrace bridge","terrace bridge approach protected")
+	ok(I.cellBlocked(0,8)=="lookout bridge","lookout bridge protected")
+	ok(I.cellBlocked(8,8)=="edge" and I.cellBlocked(9,0)=="edge" and I.cellBlocked(0,-9)=="edge","cells beyond the rim are out of bounds")
+	ok(I.cellBlocked(0.5,0)=="edge" and I.cellBlocked(0/0,0)=="edge" and I.cellBlocked(math.huge,0)=="edge","non-integer cells refused")
+	for _,r in ipairs(I.Protected) do ok(r.x1<r.x2 and r.z1<r.z2 and type(r.name)=="string","protected zone "..r.name.." is a valid rectangle") end
+	-- Footprints and rotation.
+	local h0=I.cells("HedgeRow",1,2,0)
+	ok(#h0==2 and h0[2][1]==2 and h0[2][2]==2,"2x1 footprint runs along x at rot 0")
+	local h1=I.cells("HedgeRow",1,2,1)
+	ok(#h1==2 and h1[2][1]==1 and h1[2][2]==3,"2x1 footprint runs along z at rot 1")
+	ok(#I.cells("GardenGazebo",0,0,3)==9,"3x3 footprint covers nine cells")
+	ok(I.cells("HedgeRow",0,0,4)==nil and I.cells("HedgeRow",0,0,-1)==nil and I.cells("Nope",0,0,0)==nil and I.cells("HedgeRow",0.5,0,0)==nil,"malformed footprints refused")
+	local snapOk=true
+	for _,id in ipairs(I.PropOrder) do
+		for rot=0,3 do
+			local ox,oz=I.centerOffset(id,3,-2,rot)
+			local sx,sz=I.snap(id,rot,ox+0.4,oz-0.4)
+			snapOk=snapOk and sx==3 and sz==-2
+		end
+	end
+	ok(snapOk,"snapping a prop centre returns its anchor cell for every prop and rotation")
+	local gx,gz,yaw=I.centerOffset("HedgeRow",1,2,1)
+	ok(gx==2 and gz==5 and math.abs(yaw-math.pi/2)<1e-9,"rotated prop centre and yaw")
+	-- Parsing and encoding.
+	ok(select(1,I.parseRequest("StonePath:-3:4:1"))=="StonePath","request parses")
+	for _,bad in ipairs({"StonePath:3:4","StonePath:a:4:0","StonePath:3:4:12","Stone Path:1:1:0","StonePath:1.5:1:0",("x"):rep(50),""}) do
+		ok(I.parseRequest(bad)==nil,"malformed request rejected: "..bad:sub(1,20))
+	end
+	local roundTrip=I.decode(I.encode({{id=3,prop="HedgeRow",x=-2,z=5,rot=1},{id=7,prop="StonePath",x=0,z=-8,rot=0}}))
+	ok(#roundTrip==2 and roundTrip[1].prop=="HedgeRow" and roundTrip[1].z==5 and roundTrip[2].id==7,"records round-trip")
+	ok(#I.decode("1:Nope:0:0:0;x;2:StonePath:0:-8:9;0:StonePath:0:-8:0;3:StonePath:0:-8:0")==1,"decode skips malformed records")
+	ok(#I.decode(7)==0,"decode tolerates non-strings")
+	local tierIndex,tierDef=I.tier(0)
+	ok(tierIndex==1 and tierDef.name=="Bare Rock" and select(1,I.tier(10000))==#I.ValueTiers,"value tiers")
+
+	-- Server: fresh island.
+	local builder=seeded(4101,function(prof) prof.items={} end)
+	local s0=act(builder,"state")
+	ok(isle(s0).count==0 and isle(s0).cap==I.MAX_PLACEMENTS and isle(s0).value==0 and isle(s0).tierName=="Bare Rock","fresh island state")
+	ok(builder.IslandPlacements=="","empty placement attribute published")
+	local fx,fz=spot("TimberFence")
+	local m0=act(builder,"place",req("TimberFence",fx,fz))
+	ok(has(m0.message,"needs") and isle(m0).count==0,"unfunded prop refused")
+	ok(has(act(builder,"place",req("BrassRailing",fx,fz)).message,"Carpentry 25"),"Carpentry level gate")
+	builder=rejoin(builder,function(prof)
+		prof.items={Timber=200,Ore=200,Herb=200,BrassIngot=10,WindpineLog=40,Aetherite=50,Brassite=20}
+		setLevel(prof,25)
+	end)
+	local xp0=act(builder,"state").xp.Carpentry
+	local m1=act(builder,"place",req("TimberFence",fx,fz))
+	ok(isle(m1).count==1,"fence placed")
+	ok(m1.items.Timber==196,"placement charges materials")
+	ok(m1.xp.Carpentry==xp0+I.Props.TimberFence.xp,"placement grants Carpentry XP")
+	ok(has(m1.message,"Carpentry XP"),"placement message names the XP")
+	ok(builder.IslandPlacements=="1:TimberFence:"..fx..":"..fz..":0","placement replicated as a record")
+	ok(isle(m1).value==I.Props.TimberFence.value and isle(m1).counts.TimberFence==1,"island value and counts")
+	-- Overlap, protected zones, bounds.
+	local m2=act(builder,"place",req("StonePath",fx,fz))
+	ok(has(m2.message,"already stands") and isle(m2).count==1 and m2.items.Ore==200,"overlap refused without charge")
+	local m3=act(builder,"place",req("StonePath",0,3))
+	ok(has(m3.message,"home landing") and isle(m3).count==1,"protected landing refused")
+	ok(has(act(builder,"place",req("StonePath",4,2)).message,"worker station"),"worker station zone refused")
+	ok(has(act(builder,"place",req("StonePath",8,8)).message,"fully on your island"),"rim cell refused")
+	ok(has(act(builder,"place",req("StonePath",40,0)).message,"fully on your island"),"far cell refused")
+	local ex,ez
+	for x=0,I.RANGE do if I.cellBlocked(x,0)==nil and I.cellBlocked(x+1,0)=="edge" then ex,ez=x,0 end end
+	ok(ex~=nil and has(act(builder,"place",req("HedgeRow",ex,ez,0)).message,"fully on your island"),"footprint hanging off the rim refused")
+	ok(I.check({},"HedgeRow",ex,ez,1)==(I.cellBlocked(ex,ez+1)==nil),"rotation changes the covered cells")
+	-- Overlap across a multi-cell footprint.
+	local hx,hz=spot("HedgeRow",0,I.decode(builder.IslandPlacements))
+	local m4=act(builder,"place",req("HedgeRow",hx,hz,0))
+	ok(isle(m4).count==2,"two-cell hedge placed")
+	ok(has(act(builder,"place",req("FlowerPlanter",hx+1,hz,0)).message,"already stands"),"second hedge cell is occupied")
+	ok(has(act(builder,"place",req("HedgeRow",hx-1,hz,0)).message,"already stands") or I.cellBlocked(hx-1,hz)~=nil,"overlapping footprint refused")
+	for _,bad in ipairs({"HedgeRow:1:1:4","HedgeRow:1:1","Nope:0:-8:0","StonePath:0:-8:-1","StonePath:x:y:0","StonePath:0:-8:0:0",""}) do
+		local r=act(builder,"place",bad)
+		ok(isle(r).count==2 and r.items.Ore==200,"malformed place request changes nothing: "..bad)
+	end
+	ok(isle(act(builder,"place")).count==2,"missing place payload changes nothing")
+	-- Max count per prop.
+	local sx,sz=spot("CarpenterStump",0,I.decode(builder.IslandPlacements))
+	local m5=act(builder,"place",req("CarpenterStump",sx,sz))
+	ok(isle(m5).counts.CarpenterStump==1,"utility stump placed")
+	local s2x,s2z=spot("CarpenterStump",0,I.decode(builder.IslandPlacements))
+	local m6=act(builder,"place",req("CarpenterStump",s2x,s2z))
+	ok(has(m6.message,"most") and isle(m6).counts.CarpenterStump==1 and m6.items.Timber==m5.items.Timber,"max count enforced")
+	-- Pickup: full refund, no XP farming, id reuse.
+	local timberBefore,xpBefore=m6.items.Timber,m6.xp.Carpentry
+	local p1=act(builder,"pickup","1")
+	ok(isle(p1).count==2 and p1.items.Timber==timberBefore+4,"pickup refunds the full material cost")
+	ok(not has(builder.IslandPlacements,"TimberFence"),"pickup updates the replicated records")
+	ok(p1.xp.Carpentry==xpBefore,"pickup does not touch XP")
+	local p2=act(builder,"place",req("TimberFence",fx,fz))
+	ok(p2.xp.Carpentry==xpBefore,"re-placing a picked-up copy pays no XP again")
+	ok(isle(p2).paid.TimberFence==1,"paid high-water mark kept")
+	ok(has(builder.IslandPlacements,"1:TimberFence:"),"smallest free id reused")
+	local f2x,f2z=spot("TimberFence",0,I.decode(builder.IslandPlacements))
+	local p3=act(builder,"place",req("TimberFence",f2x,f2z))
+	ok(p3.xp.Carpentry==xpBefore+I.Props.TimberFence.xp and isle(p3).paid.TimberFence==2,"a second copy pays XP")
+	ok(has(act(builder,"pickup","99").message,"no longer"),"unknown placement id refused")
+	for _,bad in ipairs({"x","-1","1.5","",("9"):rep(60)}) do
+		local r=act(builder,"pickup",bad)
+		ok(isle(r).count==isle(p3).count,"malformed pickup changes nothing: "..bad:sub(1,10))
+	end
+	ok(isle(act(builder,"pickup")).count==isle(p3).count,"missing pickup payload changes nothing")
+	-- Persistence.
+	local recordsBefore=builder.IslandPlacements
+	builder=rejoin(builder)
+	local r1=act(builder,"state")
+	ok(builder.IslandPlacements==recordsBefore,"placements restored on join")
+	ok(isle(r1).count==isle(p3).count and isle(r1).paid.TimberFence==2,"placements and XP marks persist")
+	ok(type(data.p4101.profile.island.placed[1])=="string","profile stores compact record strings")
+	-- Rate limit: a burst of rapid verbs is throttled.
+	local throttled,accepted=0,0
+	for _=1,30 do
+		local r=act(builder,"pickup","98",0.25)
+		if has(r.message,"too quickly") then throttled+=1 elseif has(r.message,"no longer") then accepted+=1 end
+	end
+	ok(throttled>0,"rapid placement verbs are rate limited")
+	ok(accepted<=I.BURST+math.ceil(30*0.25*I.RATE),"rate limit bounds accepted verbs")
+	clock+=10
+
+	-- Tampered saves are sanitized on open.
+	local tamper=seeded(4102,function(prof)
+		local x,z=spot("StonePath")
+		prof.island={placed={
+			"1:StonePath:"..x..":"..z..":0",
+			"2:StonePath:"..x..":"..z..":0",          -- overlaps record 1
+			"1:Boardwalk:0:-8:0",                      -- duplicate id
+			"3:StonePath:0:3:0",                       -- protected landing
+			"4:StonePath:8:8:0",                       -- off the rim
+			"5:Nope:0:-8:0",7,{},"6:CarpenterStump:-6:-3:0","7:CarpenterStump:-4:-3:0", -- second stump over max
+			"8:StonePath:0:-8:9",("1"):rep(80),
+		},paid={StonePath=999,Nope=3,Boardwalk="x",TimberFence=-2}}
+	end)
+	local t1=act(tamper,"state")
+	ok(isle(t1).count==2,"only valid, non-overlapping records survive ("..isle(t1).count..")")
+	ok(isle(t1).counts.CarpenterStump==1,"per-prop max enforced on load")
+	ok(isle(t1).paid.StonePath==I.Props.StonePath.max and isle(t1).paid.Nope==nil and isle(t1).paid.Boardwalk==nil and isle(t1).paid.TimberFence==nil,"paid marks clamped and cleaned")
+	local garbage=seeded(4103,function(prof) prof.island="lots" end)
+	ok(isle(act(garbage,"state")).count==0,"non-table island record reset")
+
+	-- Placement cap and worst-case save size.
+	local full=seeded(4104,function(prof)
+		local list={}
+		for z=-I.RANGE,I.RANGE do
+			for x=-I.RANGE,I.RANGE do
+				if #list<I.MAX_PLACEMENTS and I.cellBlocked(x,z)==nil then
+					local prop=if #list<60 then "StonePath" else "Boardwalk"
+					table.insert(list,{id=#list+1,prop=prop,x=x,z=z,rot=0})
+				end
+			end
+		end
+		local placed={}
+		for i,e in ipairs(list) do placed[i]=I.record(e) end
+		prof.island={placed=placed,paid={}}
+		prof.items={Timber=100,Ore=100}
+		setLevel(prof,10)
+	end)
+	local c1=act(full,"state")
+	ok(isle(c1).count==I.MAX_PLACEMENTS,"a full island loads")
+	local lastX,lastZ
+	local fullOccupied=I.occupancy(I.decode(full.IslandPlacements))
+	for z=-I.RANGE,I.RANGE do for x=-I.RANGE,I.RANGE do
+		if I.check(fullOccupied,"TimberFence",x,z,0) then lastX,lastZ=x,z end
+	end end
+	ok(lastX~=nil,"a free cell remains on the full island")
+	local c2=act(full,"place",req("TimberFence",lastX,lastZ))
+	ok(has(c2.message,"at most") and isle(c2).count==I.MAX_PLACEMENTS and c2.items.Timber==100,"total placement cap enforced")
+	ok(isle(c2).value==I.MAX_PLACEMENTS and isle(c2).tierName=="Charming Cottage","island value sums placed props")
+	local fullBytes=#serde.encode("json",data.p4104.profile.island)
+	-- Worst case: every record with the longest prop id, a 3-digit id and
+	-- two-character coordinates, plus every paid mark at its maximum.
+	local longest=""
+	for _,id in ipairs(I.PropOrder) do if #id>#longest then longest=id end end
+	local worst={placed={},paid={}}
+	for i=1,I.MAX_PLACEMENTS do worst.placed[i]=I.record({id=100+i%20,prop=longest,x=-8,z=-8,rot=3}) end
+	for _,id in ipairs(I.PropOrder) do worst.paid[id]=I.Props[id].max end
+	local worstBytes=#serde.encode("json",worst)
+	ok(worstBytes<=6000,"worst-case island save stays bounded ("..worstBytes.." bytes)")
+	ok(fullBytes<=worstBytes,"a real full island is below the worst case ("..fullBytes.." bytes)")
+	ok(#full.IslandPlacements<=I.MAX_PLACEMENTS*31,"replicated attribute stays bounded")
+	print("Island save sizes: full "..fullBytes.." / worst-case "..worstBytes.." JSON bytes.")
+	print("PASS: "..(checks-before).." island placement assertions.")
+end

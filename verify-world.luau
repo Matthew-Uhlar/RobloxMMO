@@ -627,5 +627,141 @@ do
 	builder:SetAttribute("FurnitureBench","SturdyWorkbench")
 	print("Builder's Terrace: "..(checks-beforeChecks).." checks.")
 end
+-- Island placement: free-form props render from the IslandPlacements attribute.
+do
+	local beforeChecks=checks
+	local I=Data.Island
+	local V3=roblox.Vector3
+	local function rec(id,prop,x,z,rot) return I.record({id=id,prop=prop,x=x,z=z,rot=rot or 0}) end
+	local function spot(propId,rot,occupied)
+		for z=-I.RANGE,I.RANGE do for x=-I.RANGE,I.RANGE do
+			if I.check(occupied or {},propId,x,z,rot) then return x,z end
+		end end
+		error("no spot for "..propId)
+	end
+	-- Saved placements restore at join.
+	local fx,fz=spot("TimberFence",0)
+	local owner=player(51,{IslandPlacements=rec(1,"TimberFence",fx,fz).. ";"..rec(2,"LanternPost",fx+1,fz)})
+	local home=archipelago:FindFirstChild("WayfarersRest_51")
+	local folder=home:FindFirstChild("Placements")
+	check(folder~=nil and folder:IsA("Folder"),"home island has a Placements folder")
+	local center=home:FindFirstChild("Meadow").CFrame.Position+V3.new(0,.25,0)
+	check(owner:GetAttribute("IslandCenter")==center,"island centre published for client snapping")
+	check(#folder:GetChildren()==2,"saved placements restored at join")
+	local fence=folder:FindFirstChild("Placement_1")
+	check(fence~=nil and fence:GetAttribute("PropId")=="TimberFence" and fence:GetAttribute("PlacementId")==1,"placement model tagged with its id and prop")
+	check(folder:FindFirstChild("Placement_2"):FindFirstChildWhichIsA("PointLight",true)~=nil,"lantern post glows")
+	-- Every prop builds inside its footprint, on the meadow, within the part budget.
+	local tester=player(52)
+	local tFolder=archipelago:FindFirstChild("WayfarersRest_52"):FindFirstChild("Placements")
+	local tCenter=archipelago:FindFirstChild("WayfarersRest_52"):FindFirstChild("Meadow").CFrame.Position+V3.new(0,.25,0)
+	for index,id in ipairs(I.PropOrder) do
+		local def=I.Props[id]
+		local rot=index%4
+		local x,z=spot(id,rot)
+		tester:SetAttribute("IslandPlacements",rec(1,id,x,z,rot))
+		local model=tFolder:FindFirstChild("Placement_1")
+		check(model~=nil and model:GetAttribute("PropId")==id and #tFolder:GetChildren()==1,id.." renders alone")
+		local ox,oz,yaw=I.centerOffset(id,x,z,rot)
+		local frame=roblox.CFrame.new(tCenter+V3.new(ox,0,oz))*roblox.CFrame.Angles(0,yaw,0)
+		local w,d=I.footprint(def,0)
+		local halfW,halfD=w*I.CELL/2+.02,d*I.CELL/2+.02
+		local parts,inside,lowest,solid=0,true,math.huge,0
+		for _,obj in model:GetDescendants() do
+			if obj:IsA("BasePart") then
+				parts+=1
+				check(obj.Anchored and obj.Size.X>0 and obj.Size.Y>0 and obj.Size.Z>0 and not obj.CanTouch,id.." part anchored, positive and untouchable")
+				if obj.CanCollide then solid+=1 end
+				local s=obj.Size/2
+				for _,sx in ipairs({-1,1}) do for _,sy in ipairs({-1,1}) do for _,sz in ipairs({-1,1}) do
+					local corner=frame:PointToObjectSpace((obj.CFrame*roblox.CFrame.new(sx*s.X,sy*s.Y,sz*s.Z)).Position)
+					if math.abs(corner.X)>halfW or math.abs(corner.Z)>halfD then inside=false end
+					lowest=math.min(lowest,corner.Y)
+				end end end
+			end
+		end
+		check(parts>=3 and parts<=12,id.." uses 3-12 parts ("..parts..")")
+		check(inside,id.." stays inside its "..w.."x"..d.." footprint at rot "..rot)
+		check(lowest>=-.05,id.." sits on the meadow")
+		check(solid>=1,id.." has a solid part")
+		local stations=0
+		for _,obj in model:GetDescendants() do
+			if obj:IsA("ProximityPrompt") then
+				stations+=1
+				check(obj:GetAttribute("IsleAction")=="station" and obj:GetAttribute("IsleItem")==(def.effect and def.effect.station) and obj:GetAttribute("OwnerUserId")==52,id.." station prompt is private and matches its effect")
+			end
+		end
+		check(stations==(if def.effect and def.effect.station then 1 else 0),id.." exposes its station prompt only when it has one")
+		check((model:FindFirstChildWhichIsA("PointLight",true)~=nil)==(def.effect~=nil and def.effect.light~=nil),id.." glows only when it is a light")
+	end
+	-- Utility station prompt opens the matching workshop page for the owner only.
+	local sx,sz=spot("FieldAnvil",0)
+	tester:SetAttribute("IslandPlacements",rec(4,"FieldAnvil",sx,sz))
+	local anvilPrompt=tFolder:FindFirstChild("Placement_4"):FindFirstChildWhichIsA("ProximityPrompt",true)
+	anvilPrompt.Triggered:Fire(tester)
+	check(tester:GetAttribute("IsleStation")=="Forge","field anvil opens the Forge")
+	local visits=tester:GetAttribute("IsleStationVisit")
+	anvilPrompt.Triggered:Fire(owner)
+	check(owner:GetAttribute("IsleStation")==nil and tester:GetAttribute("IsleStationVisit")==visits,"another player cannot use a home station")
+	-- Incremental updates: unchanged records keep their models.
+	local list={rec(1,"TimberFence",fx,fz),rec(2,"LanternPost",fx+1,fz)}
+	local occupied=I.occupancy(I.decode(table.concat(list,";")))
+	local px,pz=spot("StonePath",0,occupied)
+	table.insert(list,rec(3,"StonePath",px,pz))
+	local fenceModel,lanternModel=folder:FindFirstChild("Placement_1"),folder:FindFirstChild("Placement_2")
+	owner:SetAttribute("IslandPlacements",table.concat(list,";"))
+	check(#folder:GetChildren()==3 and folder:FindFirstChild("Placement_1")==fenceModel and folder:FindFirstChild("Placement_2")==lanternModel,"placing adds one model and keeps the others")
+	local size=#folder:GetDescendants()
+	owner:SetAttribute("IslandPlacements",table.concat(list,";"))
+	check(#folder:GetDescendants()==size,"repeat value cannot duplicate geometry")
+	table.remove(list,2)
+	owner:SetAttribute("IslandPlacements",table.concat(list,";"))
+	check(folder:FindFirstChild("Placement_2")==nil and lanternModel.Parent==nil and folder:FindFirstChild("Placement_1")==fenceModel,"pickup removes only that model")
+	list[1]=rec(1,"TimberFence",fx,fz,1)
+	owner:SetAttribute("IslandPlacements",table.concat(list,";"))
+	local turned=folder:FindFirstChild("Placement_1")
+	check(turned~=fenceModel and fenceModel.Parent==nil and turned:GetAttribute("PlacementRecord")==list[1],"a changed record rebuilds its model")
+	check(#folder:GetChildren()==2,"one model per placement")
+	-- Invalid values never render or stack.
+	owner:SetAttribute("IslandPlacements",rec(1,"StonePath",px,pz)..";"..rec(2,"StonePath",px,pz)..";"..rec(3,"StonePath",0,2)..";9:Nope:0:0:0;junk")
+	check(#folder:GetChildren()==1 and folder:FindFirstChild("Placement_1")~=nil,"overlapping, protected and unknown records are ignored")
+	owner:SetAttribute("IslandPlacements",42)
+	check(#folder:GetChildren()==0,"non-string value clears placements")
+	owner:SetAttribute("IslandPlacements","")
+	check(#folder:GetChildren()==0,"empty value renders nothing")
+	check(#tFolder:GetChildren()==1,"another player's island is unaffected")
+	-- A full island renders within the part budget.
+	local full={}
+	for z=-I.RANGE,I.RANGE do for x=-I.RANGE,I.RANGE do
+		if #full<I.MAX_PLACEMENTS and I.cellBlocked(x,z)==nil then table.insert(full,rec(#full+1,if #full%2==0 then "StonePath" else "LanternPost",x,z)) end
+	end end
+	owner:SetAttribute("IslandPlacements",table.concat(full,";"))
+	local fullParts=0
+	for _,obj in folder:GetDescendants() do if obj:IsA("BasePart") then fullParts+=1 end end
+	check(#folder:GetChildren()==I.MAX_PLACEMENTS and fullParts<=I.MAX_PLACEMENTS*12,"full island renders "..I.MAX_PLACEMENTS.." props ("..fullParts.." parts)")
+	-- Protected zones cover every fixed object standing on the home island.
+	local deco=player(53,{HomeLanterns=true,HomeGarden=true,HomeDeck=true,Worker1Tier=1})
+	local dHome=archipelago:FindFirstChild("WayfarersRest_53")
+	local dCenter=dHome:FindFirstChild("Meadow").CFrame.Position+V3.new(0,.25,0)
+	local covered,standing=true,0
+	for _,obj in dHome:GetDescendants() do
+		if obj:IsA("BasePart") and obj.Name~="Meadow" and not obj:FindFirstAncestor("Builders Terrace") and not obj:FindFirstAncestor("Placements") then
+			local p=obj.CFrame.Position-dCenter
+			local top=p.Y+obj.Size.Y/2
+			if top>.3 and p.Y>-1 and math.sqrt(p.X^2+p.Z^2)<=I.RADIUS then
+				standing+=1
+				local cx,cz=math.floor(p.X/I.CELL+.5),math.floor(p.Z/I.CELL+.5)
+				if I.cellBlocked(cx,cz)==nil then covered=false; print("uncovered: "..obj.Name.." at "..tostring(p)) end
+			end
+		end
+	end
+	check(standing>=20 and covered,"every fixed home object stands in a protected cell ("..standing.." parts)")
+	-- Leaving removes the placements with the home.
+	players.PlayerRemoving:Fire(owner)
+	check(archipelago:FindFirstChild("WayfarersRest_51")==nil and folder.Parent==nil,"leaving removes placed props")
+	owner:SetAttribute("IslandPlacements",rec(1,"StonePath",px,pz))
+	check(folder.Parent==nil,"updates after leaving are ignored")
+	print("Island placement: "..(checks-beforeChecks).." checks.")
+end
 print("Depth world: "..tierCount.." resource tiers / "..nodeCount.." gather nodes, "..markers.." spawn markers, "..warps.." gated warps, "..stationCount.." stations, "..staticParts.." static parts, "..staticLights.." lights.")
 print("World QA passed "..checks.." checks with "..parts.." parts, "..prompts.." prompts and "..signs.." sign surfaces.")

@@ -35,7 +35,7 @@ end
 local events = {
 	MouseButton1Down = true, MouseButton1Up = true, MouseLeave = true, SelectionGained = true, Activated = true,
 	FocusLost = true, OnClientEvent = true, HealthChanged = true, CharacterAdded = true, InputBegan = true,
-	TextBoxFocusReleased = true, InputEnded = true, TouchTapInWorld = true, RenderStepped = true, AncestryChanged = true,
+	TextBoxFocusReleased = true, InputEnded = true, TouchTapInWorld = true, RenderStepped = true, AncestryChanged = true, InputChanged = true, CharacterRemoving = true,
 }
 local guiClasses = { Frame = true, TextLabel = true, TextButton = true, ImageLabel = true, ScrollingFrame = true, ViewportFrame = true, TextBox = true }
 local absoluteSize = roblox.Vector2.new(730, 303)
@@ -344,11 +344,12 @@ local function snapshot(options)
 	result.journal = options.noJournal and nil or {
 		questPoints = 12, contracts = 8, quests = quests, diaries = diaries,
 		construction = { furniture = { Bench = "SturdyWorkbench", Portal = "PortalFrame" }, portal = "Skyreach", portalRegions = { "Skyreach", "Windpine" },
-			carpentry = 32, accessorySlots = 1, workerHaste = 0.05 },
+			carpentry = 32, accessorySlots = 1, workerHaste = 0.05,
+			island = { count = 3, cap = 120, counts = { TimberFence = 2, StonePath = 1 }, value = 3, tier = 1, tierName = "Bare Rock" } },
 	}
 	if options.malformed then
 		result.journal = { questPoints = "many", quests = { 3, { id = 7 }, { id = "SurveyorsOath", requires = "x", objectives = { 5 } } },
-			diaries = { "Meadow", { region = "Meadow", claimed = "two", tiers = { 4, { tier = 9 } } } }, construction = { furniture = { Bench = 3, Portal = "Ghost" }, portalRegions = { 5, "Atlantis" }, carpentry = "x" } }
+			diaries = { "Meadow", { region = "Meadow", claimed = "two", tiers = { 4, { tier = 9 } } } }, construction = { furniture = { Bench = 3, Portal = "Ghost" }, portalRegions = { 5, "Atlantis" }, carpentry = "x", island = { counts = 5, count = "many", value = "x", cap = {} } } }
 		result.depth = {
 			skills = "oops", totalLevel = "x", stats = 5, equipment = { weapon = 5, helmet = "NotAnItem" }, tools = { Mining = {} },
 			accessoryBag = { 1, "MeadowCharm" }, activeAccessories = 7, accessorySlots = "four", pets = { 1, { id = "Nope" }, { id = "Tidewing", level = "x" } },
@@ -530,6 +531,11 @@ local verbs = {
 	end,
 	remove = function(item) return Data.HotspotById[item] ~= nil end,
 	portal = function(item) return table.find(Data.PortalRegions, item) ~= nil end,
+	place = function(item)
+		local propId, x, z, rot = Data.Island.parseRequest(item)
+		return propId ~= nil and Data.Island.Props[propId] ~= nil and rot <= 3 and math.abs(x) <= Data.Island.RANGE and math.abs(z) <= Data.Island.RANGE
+	end,
+	pickup = function(item) return type(item) == "string" and item:match("^%d+$") ~= nil and tonumber(item) <= Data.Island.MAX_PLACEMENTS end,
 }
 local function checkSent(ui)
 	for _, entry in ipairs(ui.sent) do
@@ -545,6 +551,10 @@ local function checkSent(ui)
 	end
 end
 local function visit(ui, tab, section)
+	-- Entering island build mode closes the atlas; reopen it like a player would.
+	if not ui.atlas.Visible then
+		press(find(ui.gui, "AtlasButton"))
+	end
 	press(ui.tabs:FindFirstChild(tab .. "Button"))
 	if section then
 		press(find(ui.scroll, "Section" .. section))
@@ -1079,4 +1089,281 @@ do
 	checks += 2
 end
 
+-- 11. Island placement: Construction → Island catalogue, build-mode hand-off and verb relay.
+local islandChecks = checks
+for _, size in ipairs({ roblox.Vector2.new(730, 303), roblox.Vector2.new(420, 600) }) do
+	local ui = run({ size = size })
+	local tag = " @" .. size.X
+	local function expect(condition, label) assert(condition, label .. tag); checks += 1 end
+	local function lastSent() return ui.sent[#ui.sent] end
+	local function texts(object)
+		local out = {}
+		for _, child in ipairs(object:GetDescendants()) do
+			if child.ClassName == "TextLabel" or child.ClassName == "TextButton" then table.insert(out, tostring(child.Text)) end
+		end
+		return table.concat(out, "\n")
+	end
+	ui.player:SetAttribute("IslandPlacements", "1:TimberFence:0:-8:0;4:TimberFence:1:-8:0;2:StonePath:2:-8:0")
+	press(find(ui.gui, "AtlasButton"))
+	visit(ui, "Journal", "Construction")
+	expect(find(ui.scroll, "TerraceSummary") ~= nil and find(ui.scroll, "BuildModeIsland") ~= nil, "construction opens on the terrace with an Island switch")
+	press(find(ui.scroll, "BuildModeIsland"))
+	noFailures(ui, "island page" .. tag)
+	expect(find(ui.scroll, "IslandSummary") ~= nil and find(ui.scroll, "TerraceSummary") == nil, "island page replaces the terrace page")
+	expect(texts(find(ui.scroll, "IslandSummary")):find("3 / 120", 1, true) ~= nil, "placed count and cap shown")
+	expect(texts(find(ui.scroll, "IslandSummary")):find("Bare Rock", 1, true) ~= nil, "island tier shown")
+	expect(texts(find(ui.scroll, "IslandSummary")):find("100%", 1, true) ~= nil, "refund rule explained")
+	for _, category in ipairs(Data.Island.Categories) do expect(find(ui.scroll, "PropCategory" .. category) ~= nil, category .. " filter button") end
+	expect(find(ui.scroll, "PropTimberFence") ~= nil and find(ui.scroll, "PropBrassRailing") ~= nil, "fence catalogue")
+	expect(find(ui.scroll, "PropStonePath") == nil, "catalogue filtered by category")
+	expect(texts(find(ui.scroll, "PropTimberFence")):find("2 / 40", 1, true) ~= nil, "placed count per prop")
+	expect(texts(find(ui.scroll, "PropTimberFence")):find("1×1 cells", 1, true) ~= nil, "footprint shown")
+	-- Quick pick-up sends the newest placement of that prop.
+	press(find(ui.scroll, "PropTimberFencePickup"))
+	expect(lastSent()[1] == "pickup" and lastSent()[2] == "4", "pick up sends the newest placement id")
+	expect(find(ui.scroll, "PropPicketFencePickup") == nil, "no pick-up for unplaced props")
+	-- Gated plans do not start build mode.
+	press(find(ui.scroll, "PropCategoryStatues"))
+	expect(find(ui.scroll, "PropSkywhaleStatue") ~= nil and find(ui.scroll, "PropTimberFence") == nil, "category switch")
+	local before = #ui.sent
+	press(find(ui.scroll, "PropSkywhaleStatuePlace"))
+	expect(ui.player:GetAttribute("IslandBuildRequest") == nil and ui.atlas.Visible and #ui.sent == before, "Carpentry gate keeps build mode closed")
+	expect(texts(find(ui.scroll, "PropSkywhaleStatue")):find("✗", 1, true) ~= nil, "unmet level marked")
+	-- Place starts build mode and closes the atlas.
+	press(find(ui.scroll, "PropCategoryFences"))
+	press(find(ui.scroll, "PropTimberFencePlace"))
+	expect(not ui.atlas.Visible, "placing closes the atlas")
+	expect(ui.player:GetAttribute("IslandBuildMode") == "place" and ui.player:GetAttribute("IslandBuildProp") == "TimberFence" and ui.player:GetAttribute("IslandBuildRequest") == 1, "place mode handed to the builder")
+	expect(#ui.sent == before, "starting build mode sends nothing")
+	visit(ui, "Journal", "Construction")
+	expect(find(ui.scroll, "IslandSummary") ~= nil, "island mode remembered")
+	press(find(ui.scroll, "IslandRemoveMode"))
+	expect(ui.player:GetAttribute("IslandBuildMode") == "remove" and ui.player:GetAttribute("IslandBuildProp") == "" and ui.player:GetAttribute("IslandBuildRequest") == 2, "pick-up mode handed to the builder")
+	-- The builder's requests are relayed as verbs.
+	ui.player:SetAttribute("IslandPlaceRequest", "HedgeRow:-2:-3:1")
+	ui.player:SetAttribute("IslandPlaceCount", 1)
+	expect(lastSent()[1] == "place" and lastSent()[2] == "HedgeRow:-2:-3:1", "place request relayed")
+	ui.player:SetAttribute("IslandPickupRequest", "7")
+	ui.player:SetAttribute("IslandPickupCount", 1)
+	expect(lastSent()[1] == "pickup" and lastSent()[2] == "7", "pickup request relayed")
+	before = #ui.sent
+	ui.player:SetAttribute("IslandPlaceRequest", ("x"):rep(60))
+	ui.player:SetAttribute("IslandPlaceCount", 2)
+	ui.player:SetAttribute("IslandPickupRequest", "seven")
+	ui.player:SetAttribute("IslandPickupCount", 2)
+	ui.player:SetAttribute("IslandPickupRequest", 7)
+	ui.player:SetAttribute("IslandPickupCount", 3)
+	expect(#ui.sent == before, "malformed builder requests are dropped")
+	visit(ui, "Journal", "Construction")
+	press(find(ui.scroll, "BuildModeTerrace"))
+	expect(find(ui.scroll, "TerraceSummary") ~= nil, "switch back to the terrace")
+	checkSent(ui)
+	noFailures(ui, "island flow" .. tag)
+end
+do
+	-- Full island and maxed props disable Place; malformed island state still draws.
+	local snap = snapshot()
+	snap.journal.construction.island = { count = 120, cap = 120, counts = { TimberFence = 40 }, value = 600, tierName = "Legendary Isle" }
+	local ui = run({ snapshot = snap })
+	press(find(ui.gui, "AtlasButton"))
+	visit(ui, "Journal", "Construction")
+	press(find(ui.scroll, "BuildModeIsland"))
+	press(find(ui.scroll, "PropTimberFencePlace"))
+	press(find(ui.scroll, "PropPicketFencePlace"))
+	assert(ui.player:GetAttribute("IslandBuildRequest") == nil and ui.atlas.Visible, "maxed prop and full island keep build mode closed")
+	local summary = find(ui.scroll, "IslandSummary")
+	local joined = {}
+	for _, child in ipairs(summary:GetDescendants()) do if child.ClassName == "TextLabel" then table.insert(joined, tostring(child.Text)) end end
+	assert(table.concat(joined, " "):find("Highest island tier", 1, true), "top tier progress shown")
+	noFailures(ui, "full island")
+	local bad = run({ snapshot = snapshot({ malformed = true }) })
+	bad.player:SetAttribute("IslandPlacements", "junk;1:Nope:0:0:0;;3")
+	press(find(bad.gui, "AtlasButton"))
+	visit(bad, "Journal", "Construction")
+	press(find(bad.scroll, "BuildModeIsland"))
+	assert(find(bad.scroll, "IslandSummary") ~= nil, "malformed island state still draws")
+	for _, category in ipairs(Data.Island.Categories) do
+		press(find(bad.scroll, "PropCategory" .. category))
+		noFailures(bad, "malformed island " .. category)
+	end
+	local none = run({ snapshot = snapshot({ noJournal = true }) })
+	press(find(none.gui, "AtlasButton"))
+	visit(none, "Journal", "Construction")
+	press(find(none.scroll, "BuildModeIsland"))
+	noFailures(none, "island without journal")
+	checks += 4 + #Data.Island.Categories
+end
+
+-- 12. IslandBuilder (build.client.lua): ghost snapping, tint, rotate, confirm, cancel, gamepad, pick-up.
+do
+	local I = Data.Island
+	local V3 = roblox.Vector3
+	local playerGui = new("PlayerGui")
+	local player = new("Player", { Name = "Tester", UserId = 1 })
+	playerGui.Parent = player
+	local replicated = new("ReplicatedStorage")
+	local dataModule = new("ModuleScript", { Name = "AetherData" })
+	dataModule.Parent = replicated
+	local workspace = new("Workspace")
+	local camera = new("Camera", { ViewportSize = roblox.Vector2.new(800, 600) })
+	camera.Parent = workspace
+	workspace.CurrentCamera = camera
+	camera.ViewportPointToRay = function(_, x, y) return { Origin = V3.new(x, 50, y), Direction = V3.new(0, -1, 0) } end
+	local hit = nil
+	workspace.Raycast = function() return hit end
+	local bound = {}
+	local actions = { BindActionAtPriority = function(_, name, fn, _, _, ...) bound[name] = { fn = fn, keys = { ... } } end,
+		UnbindAction = function(_, name) bound[name] = nil end }
+	local input = new("UserInputService", { MouseEnabled = true, GamepadEnabled = false, TouchEnabled = false })
+	local runService = new("RunService")
+	local services = { Players = new("Players", { LocalPlayer = player }), ReplicatedStorage = replicated, UserInputService = input,
+		RunService = runService, ContextActionService = actions }
+	local game = new("DataModel")
+	function game.GetService(_, name) return assert(services[name], name) end
+	local env = {
+		game = game, workspace = workspace, Enum = roblox.Enum, UDim = roblox.UDim, UDim2 = roblox.UDim2, Vector2 = roblox.Vector2,
+		Vector3 = roblox.Vector3, CFrame = roblox.CFrame, Color3 = roblox.Color3, RaycastParams = { new = function() return {} end },
+		Instance = { new = function(class) return new(class) end },
+		typeof = function(value) return if data[value] then "Instance" else typeof(value) end,
+		require = function(target) assert(target == dataModule, "builder requires only AetherData") return Data end,
+	}
+	luau.load(fs.readFile("build.client.lua"), { debugName = "build.client.lua", environment = env, injectGlobals = true })()
+	local function expect(condition, label) assert(condition, label); checks += 1 end
+	local gui = playerGui:FindFirstChild("IslandBuilder")
+	expect(gui ~= nil and gui.Enabled == false, "builder HUD starts hidden")
+	local center = V3.new(-130, 0, 320)
+	player:SetAttribute("IslandCenter", center)
+	player:SetAttribute("IslandPlacements", "")
+	local function aimAt(x, z, prop, rot)
+		local ox, oz = I.centerOffset(prop or "StonePath", x, z, rot or 0)
+		hit = { Position = center + V3.new(ox + .3, 0, oz - .3), Instance = workspace }
+	end
+	local function request(mode, prop)
+		player:SetAttribute("IslandBuildMode", mode)
+		player:SetAttribute("IslandBuildProp", prop or "")
+		player:SetAttribute("IslandBuildRequest", (player:GetAttribute("IslandBuildRequest") or 0) + 1)
+	end
+	local function key(code, processed, inputType, position)
+		input.InputBegan:Fire({ KeyCode = code, UserInputType = inputType or roblox.Enum.UserInputType.Keyboard, Position = position or V3.new(0, 0, 0) }, processed == true)
+	end
+	local function button(name) return find(gui, name) end
+	local status = find(gui, "Status")
+	local good, bad = roblox.Color3.fromHex("6BE0A8"), roblox.Color3.fromHex("E8806A")
+	-- A free 2x1 spot that stays free when turned about the same pointer.
+	local fx, fz
+	for z = -I.RANGE, I.RANGE do for x = -I.RANGE, I.RANGE do
+		local ox, oz = I.centerOffset("HedgeRow", x, z, 0)
+		local tx, tz = I.snap("HedgeRow", 1, ox + .3, oz - .3)
+		if not fx and I.check({}, "HedgeRow", x, z, 0) and I.check({}, "HedgeRow", tx, tz, 1) then fx, fz = x, z end
+	end end
+	aimAt(fx, fz, "HedgeRow", 0)
+	request("place", "HedgeRow")
+	local ghost = workspace:FindFirstChild("IslandGhost")
+	expect(gui.Enabled and ghost ~= nil, "place request enters build mode with a ghost")
+	expect(find(gui, "PropName").Text:find("Hedge Row", 1, true) ~= nil, "HUD names the prop")
+	expect(button("RotateButton") and button("ConfirmButton") and button("CancelButton"), "touch buttons present")
+	expect(bound.AetherIslandBuild ~= nil and #bound.AetherIslandBuild.keys == 3, "gamepad A/B/RB bound while building")
+	local slab = ghost:FindFirstChild("Footprint")
+	expect(slab.Color == good and status.TextColor3 == good, "valid spot tints green")
+	for _, p in ipairs(ghost:GetChildren()) do expect(p.Anchored and not p.CanCollide and not p.CanQuery and not p.CanTouch, "ghost part is inert: " .. p.Name) end
+	local ox, oz = I.centerOffset("HedgeRow", fx, fz, 0)
+	expect((slab.CFrame.Position - (center + V3.new(ox, .08, oz))).Magnitude < 1e-3, "ghost snaps to the grid cell")
+	expect(slab.Size.X > 3.8 and slab.Size.Z < 2, "ghost matches the footprint")
+	press(button("ConfirmButton"))
+	expect(player:GetAttribute("IslandPlaceRequest") == "HedgeRow:" .. fx .. ":" .. fz .. ":0" and player:GetAttribute("IslandPlaceCount") == 1, "confirm hands back the placement")
+	key(roblox.Enum.KeyCode.R)
+	press(button("ConfirmButton"))
+	local rx, rz = I.snap("HedgeRow", 1, hit.Position.X - center.X, hit.Position.Z - center.Z)
+	expect(player:GetAttribute("IslandPlaceRequest") == "HedgeRow:" .. rx .. ":" .. rz .. ":1", "R rotates the prop around the pointer")
+	local rotated = slab.CFrame
+	expect(math.abs(rotated.LookVector.X) > .99, "ghost turns with the rotation")
+	press(button("RotateButton")); press(button("RotateButton")); press(button("RotateButton"))
+	press(button("ConfirmButton"))
+	expect(player:GetAttribute("IslandPlaceRequest"):sub(-2) == ":0" and player:GetAttribute("IslandPlaceCount") == 3, "rotation wraps 0-3")
+	key(roblox.Enum.KeyCode.R, true)
+	press(button("ConfirmButton"))
+	expect(player:GetAttribute("IslandPlaceRequest"):sub(-2) == ":0", "keys typed into a textbox are ignored")
+	-- Invalid spots tint red and never confirm.
+	aimAt(0, 2)
+	runService.RenderStepped:Fire()
+	expect(slab.Color == bad and status.Text:find("home landing", 1, true) ~= nil, "protected zone tints red with a reason")
+	press(button("ConfirmButton"))
+	expect(player:GetAttribute("IslandPlaceCount") == 4, "invalid confirm sends nothing")
+	aimAt(8, 8)
+	runService.RenderStepped:Fire()
+	expect(slab.Color == bad, "rim tints red")
+	aimAt(fx, fz, "HedgeRow", 0)
+	player:SetAttribute("IslandPlacements", "1:StonePath:" .. fx .. ":" .. fz .. ":0")
+	expect(slab.Color == bad and status.Text:find("already", 1, true) ~= nil, "occupied cell tints red after replication")
+	player:SetAttribute("IslandPlacements", "")
+	expect(slab.Color == good, "freed cell tints green again")
+	hit = nil
+	runService.RenderStepped:Fire()
+	expect(status.Text:find("Aim", 1, true) ~= nil and ghost.Parent == nil, "aiming off the island hides the ghost")
+	press(button("ConfirmButton"))
+	expect(player:GetAttribute("IslandPlaceCount") == 4, "no target, no placement")
+	-- Mouse click places at the pointer; clicks on GUI are ignored.
+	aimAt(fx, fz, "HedgeRow", 0)
+	key(nil, false, roblox.Enum.UserInputType.MouseButton1, V3.new(400, 300, 0))
+	expect(player:GetAttribute("IslandPlaceCount") == 5 and ghost.Parent == workspace, "mouse click places")
+	key(nil, true, roblox.Enum.UserInputType.MouseButton1, V3.new(400, 300, 0))
+	expect(player:GetAttribute("IslandPlaceCount") == 5, "click on the HUD does not place")
+	-- Gamepad: RB rotates, A confirms (sunk), B leaves.
+	local action = bound.AetherIslandBuild.fn
+	local begin = roblox.Enum.UserInputState.Begin
+	expect(action("x", begin, { KeyCode = roblox.Enum.KeyCode.ButtonR1 }) == roblox.Enum.ContextActionResult.Sink, "gamepad input is sunk")
+	action("x", begin, { KeyCode = roblox.Enum.KeyCode.ButtonA })
+	expect(player:GetAttribute("IslandPlaceRequest"):sub(-2) == ":1" and player:GetAttribute("IslandPlaceCount") == 6, "gamepad RB rotates and A places")
+	action("x", begin, { KeyCode = roblox.Enum.KeyCode.ButtonB })
+	expect(not gui.Enabled and workspace:FindFirstChild("IslandGhost") == nil and bound.AetherIslandBuild == nil, "gamepad B leaves build mode cleanly")
+	press(button("ConfirmButton"))
+	expect(player:GetAttribute("IslandPlaceCount") == 6, "inactive builder ignores confirm")
+	-- Max count from replicated placements.
+	local sx, sz
+	for z = -I.RANGE, I.RANGE do for x = -I.RANGE, I.RANGE do
+		if not sx and I.check({}, "CarpenterStump", x, z, 0) and (x ~= fx or z ~= fz) then sx, sz = x, z end
+	end end
+	player:SetAttribute("IslandPlacements", "1:CarpenterStump:" .. fx .. ":" .. fz .. ":0")
+	aimAt(sx, sz, "CarpenterStump", 0)
+	request("place", "CarpenterStump")
+	expect(status.Text:find("Most", 1, true) ~= nil and workspace:FindFirstChild("IslandGhost"):FindFirstChild("Footprint").Color == bad, "per-prop max shown before placing")
+	key(roblox.Enum.KeyCode.Escape)
+	expect(not gui.Enabled and workspace:FindFirstChild("IslandGhost") == nil, "Esc leaves build mode")
+	-- Starting a new session replaces the old ghost; unknown props are refused.
+	request("place", "Nope")
+	expect(not gui.Enabled and workspace:FindFirstChild("IslandGhost") == nil, "unknown prop does not enter build mode")
+	request("place", "StonePath")
+	request("place", "LanternPost")
+	local ghosts = 0
+	for _, child in ipairs(workspace:GetChildren()) do if child.Name == "IslandGhost" then ghosts += 1 end end
+	expect(ghosts == 1 and find(gui, "PropName").Text:find("Lantern", 1, true) ~= nil, "one ghost per session")
+	player.CharacterRemoving:Fire()
+	expect(not gui.Enabled and workspace:FindFirstChild("IslandGhost") == nil, "respawning leaves build mode")
+	-- Pick-up mode targets only this player's placed props.
+	local isles = new("Folder", { Name = "AetherIsles" }); isles.Parent = workspace
+	local home = new("Model", { Name = "WayfarersRest_1" }); home.Parent = isles
+	local folder = new("Folder", { Name = "Placements" }); folder.Parent = home
+	local placed = new("Model", { Name = "Placement_3" }); placed.Parent = folder
+	placed:SetAttribute("PlacementId", 3); placed:SetAttribute("PropId", "StonePath")
+	local stone = new("Part", { Name = "Flagstone" }); stone.Parent = placed
+	local other = new("Model", { Name = "Placement_9" }); other.Parent = new("Folder", { Name = "Placements" })
+	other:SetAttribute("PlacementId", 9)
+	local otherPart = new("Part"); otherPart.Parent = other
+	hit = { Position = center, Instance = stone }
+	request("remove")
+	expect(gui.Enabled and workspace:FindFirstChild("IslandGhost") == nil and find(gui, "ConfirmButton").Text == "Pick up", "pick-up mode has no ghost")
+	expect(placed:FindFirstChild("PickupHighlight") ~= nil and status.Text:find("Stone Path", 1, true) ~= nil, "targeted prop highlighted")
+	press(button("ConfirmButton"))
+	expect(player:GetAttribute("IslandPickupRequest") == "3" and player:GetAttribute("IslandPickupCount") == 1, "pick-up hands back the placement id")
+	hit = { Position = center, Instance = otherPart }
+	runService.RenderStepped:Fire()
+	expect(placed:FindFirstChild("PickupHighlight") == nil and other:FindFirstChild("PickupHighlight") == nil, "another island's prop cannot be targeted")
+	press(button("ConfirmButton"))
+	expect(player:GetAttribute("IslandPickupCount") == 1, "no target, no pick-up")
+	press(button("CancelButton"))
+	expect(not gui.Enabled, "Done leaves pick-up mode")
+	request("demolish")
+	expect(not gui.Enabled, "unknown mode ignored")
+end
+print("Island builder UI: " .. (checks - islandChecks) .. " checks.")
 print("UI QA passed " .. checks .. " checks (" .. created .. " mock instances).")
