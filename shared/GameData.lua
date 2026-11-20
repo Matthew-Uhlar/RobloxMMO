@@ -5680,8 +5680,9 @@ end
 -- (Prayer section) applies offence, sap and mana; world.server.lua builds
 -- altars, stalls, marks and strongboxes; verify-prayer.luau checks them.
 -- Profile (optional; migrated): p.prayer = {points, quick={id,id}, offered=
--- {[remains]=n}, active={[id]=true} (cleared on load)}, p.thieving =
--- {thefts={[target]=n}}.
+-- {[remains]=n}, active={[id]=true}, credit={[id]=prepaid s}, since (all
+-- three cleared on load)}, p.thieving = {thefts={[target]=n}, cooldowns=
+-- {[target]=os.time ready}, stunUntil=os.time (expired entries pruned)}.
 ------------------------------------------------------------------------------
 do
 local PR, TH = {}, {}
@@ -5759,15 +5760,17 @@ function PR.list(active)
 	return out
 end
 -- Pure toggle. Returns verdict, new active set ({[id]=true}), switched-off ids.
--- verdict: "on" | "off" | "unknown" | "level" | "points".
-function PR.toggle(active, id, level, points)
+-- verdict: "on" | "off" | "unknown" | "level" | "points" (fewer points than the
+-- activation cost at that Devotion).
+function PR.toggle(active, id, level, points, devotion)
 	local def = type(id) == "string" and PR.PrayerById[id]
 	local out = {}
 	for _, k in ipairs(PR.list(active)) do out[k] = true end
 	if not def then return "unknown", out, {} end
 	if out[id] then out[id] = nil; return "off", out, {} end
 	if (tonumber(level) or 1) < def.level then return "level", out, {} end
-	if (tonumber(points) or 0) <= 0 then return "points", out, {} end
+	-- Switching on pays one tick of that prayer's drain up front (PR.activationCost).
+	if (tonumber(points) or 0) <= 0 or (tonumber(points) or 0) < PR.activationCost(id, devotion) - 1e-9 then return "points", out, {} end
 	local dropped = {}
 	for k in pairs(out) do
 		if PR.conflicts(def, PR.PrayerById[k]) then out[k] = nil; table.insert(dropped, k) end
@@ -5790,6 +5793,33 @@ function PR.drain(points, active, devotion, seconds)
 	local left = math.max(0, (tonumber(points) or 0) - PR.drainPerSecond(active, devotion) * math.max(0, tonumber(seconds) or 0))
 	left = math.floor(left * 1000 + 0.5) / 1000
 	return left, left <= 0 and PR.drainPerMinute(active) > 0
+end
+-- Time-based drain. Toggling is never free: switching a prayer on pays
+-- PR.activationCost (one PR.TICK of its drain) up front and earns that many
+-- seconds of prepaid credit; every settle (tick, toggle, prayerOff, draught,
+-- altar) then charges each active prayer for the elapsed seconds beyond its
+-- remaining credit. A prayer kept on costs exactly its drain rate; a prayer
+-- flicked on and off costs at least one tick per activation.
+function PR.activationCost(id, devotion)
+	if type(id) ~= "string" or not PR.PrayerById[id] then return 0 end
+	return PR.drainPerSecond({[id] = true}, devotion) * PR.TICK
+end
+-- Points after charging `seconds` for every active prayer (credit = {[id] =
+-- prepaid seconds}, consumed in place) and whether they ran out.
+function PR.charge(points, active, credit, devotion, seconds)
+	seconds = math.max(0, tonumber(seconds) or 0)
+	local dev = math.clamp(tonumber(devotion) or 0, 0, Data.Stats.devotion.cap)
+	local cost, any = 0, false
+	for _, id in ipairs(PR.list(active)) do
+		any = true
+		local paid = type(credit) == "table" and math.max(0, tonumber(credit[id]) or 0) or 0
+		local used = math.min(paid, seconds)
+		if type(credit) == "table" then credit[id] = if paid - used > 0 then paid - used else nil end
+		cost += PR.PrayerById[id].drain / 60 / (1 + dev / PR.DEVOTION_SCALE) * (seconds - used)
+	end
+	local left = math.max(0, (tonumber(points) or 0) - cost)
+	left = math.floor(left * 1e6 + 0.5) / 1e6
+	return left, left <= 0 and any
 end
 function PR.secondsLeft(points, active, devotion)
 	local rate = PR.drainPerSecond(active, devotion)
@@ -5825,7 +5855,8 @@ end
 -- Monster defence after one more sapped hit (base = the monster's own defence).
 function PR.sapped(current, base, sap)
 	base = math.max(0, tonumber(base) or 0)
-	local floorDef = math.floor(base * (1 - PR.SAP_MAX))
+	-- Rounded up: sapping never removes more than PR.SAP_MAX of a small base.
+	local floorDef = math.ceil(base * (1 - PR.SAP_MAX) - 1e-9)
 	if (tonumber(sap) or 0) <= 0 or base <= 0 then return current end
 	return math.max(floorDef, (tonumber(current) or base) - math.max(1, math.ceil(base * sap)))
 end
@@ -5985,17 +6016,19 @@ TH.Targets = {
 		drops={d("SunstoneChip",0.6,1),d("Mistpearl",0.3,1),d("Emberglass",0.05,1)}},
 	{id="Scholar",name="Gloomhollow Glyph Scholar",kind="pocket",level=62,region="Gloomhollow",xp=116,base=0.54,respawn=4.8,stun=5,damage=80,coins={12,20},color="A58CE0",
 		drops={d("ArcaneDust",0.4,1,2),d("GaleGlyph",0.15,3,6),d("TideGlyph",0.15,3,6)}},
-	{id="VaultChest",name="Gilded Vault Chest",kind="safe",level=70,region="Gloomhollow",xp=964,base=0.48,respawn=75,stun=6,damage=140,coins={220,380},color="C9A24D",
+	{id="VaultChest",name="Gilded Vault Chest",kind="safe",level=70,region="Gloomhollow",xp=964,base=0.48,respawn=75,stun=6,damage=140,coins={120,210},color="C9A24D",
 		drops={d("Mistpearl",0.5,1,2),d("Emberglass",0.35,1),d("Voidgarnet",0.15,1),d("StarFragment",0.05,1),d("NightveilGloves",0.004,1)}},
 	{id="Noble",name="Skyborn Noble",kind="pocket",level=78,region="Hub",xp=153,base=0.52,respawn=5.5,stun=5.5,damage=140,coins={18,30},color="FFD27A",
 		drops={d("Emberglass",0.03,1),d("Mistpearl",0.05,1),d("StarheartGem",0.0005,1)}},
-	{id="CuriosStall",name="Tidewater Curio Stall",kind="stall",level=82,region="Tidewater",xp=273,base=0.52,respawn=14,stun=6,damage=160,coins={30,50},color="06D6A0",
+	{id="CuriosStall",name="Tidewater Curio Stall",kind="stall",level=82,region="Tidewater",xp=273,base=0.52,respawn=14,stun=6,damage=160,coins={20,35},color="06D6A0",
 		drops={d("VoidEssence",0.4,1),d("Emberglass",0.2,1),d("Voidgarnet",0.04,1)}},
 	{id="SovereignCoffer",name="Sovereign Coffer",kind="safe",level=88,region="ShatteredCrown",xp=1947,base=0.45,respawn=120,stun=7,damage=260,coins={450,750},color="F2D27A",
 		drops={d("Voidgarnet",0.4,1,2),d("StarFragment",0.2,1),d("StarheartGem",0.02,1),d("NightveilGloves",0.01,1)}},
 }
 TH.TargetById = {}
 for i, t in ipairs(TH.Targets) do t.index = i; TH.TargetById[t.id] = t end
+TH.MAX_STUN = 0 -- longest stun (bounds the persisted p.thieving.stunUntil)
+for _, t in ipairs(TH.Targets) do TH.MAX_STUN = math.max(TH.MAX_STUN, t.stun) end
 -- Success chance in 0..MAX_CHANCE (0 below the target's level).
 function TH.chance(target, level, gloveBonus, deftness)
 	if type(target) ~= "table" then return 0 end
@@ -6030,6 +6063,30 @@ end
 function TH.coinsPerHour(target, chance)
 	if chance <= 0 then return 0 end
 	return 3600 * chance * TH.expected(target) / TH.cycle(target, chance)
+end
+-- Best income from robbing a region's targets in parallel (coins/h upper
+-- bound): each target yields at most its own pace (c / TH.cycle: successes
+-- per second, its cooldown respected) and every success occupies the thief
+-- for (TH.ACTION + (1 - c) x stun) / c seconds (attempts incl. the expected
+-- stun, which blocks all thieving); the best coins-per-busy-second targets
+-- fill the hour first. chanceOf(target) -> success chance.
+function TH.regionCoinsPerHour(region, chanceOf)
+	local options = {}
+	for _, t in ipairs(TH.Targets) do
+		local c = if t.region == region then math.clamp(tonumber(chanceOf(t)) or 0, 0, 1) else 0
+		if c > 0 then
+			table.insert(options, {value = TH.expected(t), cap = c / TH.cycle(t, c), busy = (TH.ACTION + (1 - c) * t.stun) / c})
+		end
+	end
+	table.sort(options, function(a, b) return a.value / a.busy > b.value / b.busy end)
+	local budget, coins = 1, 0
+	for _, o in ipairs(options) do
+		local rate = math.min(o.cap, budget / o.busy)
+		coins += rate * o.value
+		budget -= rate * o.busy
+		if budget <= 1e-9 then break end
+	end
+	return coins * 3600
 end
 
 -- Collections: remains and gems (drop-like, reach tiers sooner).

@@ -658,6 +658,9 @@ local function createLogic(env)
 		if cached and now - cached.at < C.STATS_TTL then return cached.value end
 		local value = env.bridge("stats", player)
 		if type(value) ~= "table" or type(value.stats) ~= "table" then value = nil end
+		-- Accrue mana up to now under the old (cached) Hearthsong multiplier before
+		-- the fresh snapshot replaces it, so a new multiplier is never retroactive.
+		if mana[player] then L.manaOf(player) end
 		statsCache[player] = {value = value, at = now}
 		-- Every fresh stats fetch also refreshes the player's max mana.
 		if value then L.manaOf(player, value.stats) end

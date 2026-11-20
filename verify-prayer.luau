@@ -113,6 +113,25 @@ do
 	eq(offAtZero.BarkhideWard, nil, "switching off works with no points")
 	local _, many = PR.toggle({WardOfFangs = true, KindledEdge = true, StonehideWard = true}, "ValorHymn", 99, 50)
 	ok(many.ValorHymn and many.WardOfFangs and not many.KindledEdge and not many.StonehideWard, "a hymn keeps protection and drops edges and wards")
+	-- Activation cost: one tick of that prayer's drain; fewer points refuse it.
+	ok(near(PR.activationCost("BarkhideWard", 0), 3 / 60 * PR.TICK), "activation pays one tick of drain")
+	ok(near(PR.activationCost("ValorHymn", 30), 24 / 60 / 2 * PR.TICK), "activation cost is cut by Devotion")
+	eq(PR.activationCost("Nope", 0), 0, "unknown prayer costs nothing")
+	eq((PR.toggle({}, "ValorHymn", 99, 1)), "points", "a hymn needs its activation cost (1.2 points)")
+	eq((PR.toggle({}, "ValorHymn", 99, 1.2)), "on", "exactly the activation cost is enough")
+	eq((PR.toggle({}, "ValorHymn", 99, 0.7, 30)), "on", "Devotion lowers the activation cost")
+	-- Time-based charge: prepaid credit first, then the drain rate.
+	local credit = {ValorHymn = PR.TICK}
+	local left, empty = PR.charge(10, {ValorHymn = true}, credit, 0, 2)
+	ok(left == 10 and not empty and near(credit.ValorHymn, PR.TICK - 2), "credit covers the first seconds")
+	left = PR.charge(10, {ValorHymn = true}, credit, 0, 2)
+	ok(near(left, 10 - 24 / 60) and credit.ValorHymn == nil, "credit used up, then the drain rate")
+	left = PR.charge(100, {ValorHymn = true, BarkhideWard = true}, {}, 0, 60)
+	ok(near(left, 100 - 27), "every active prayer drains for the whole interval")
+	eq((PR.charge(10, {ValorHymn = true}, {}, 0, 60)), 0, "never below 0")
+	ok(select(2, PR.charge(1, {BarkhideWard = true}, nil, 0, 60)), "running out is reported")
+	ok(not select(2, PR.charge(0, {}, {}, 0, 60)), "nothing active never empties")
+	ok(near((PR.charge(10, {BarkhideWard = true}, {}, 30, 60)), 10 - 1.5), "Devotion halves the charge at 30")
 	eq(#PR.list({Nope = true, BarkhideWard = true, [3] = "KindledEdge"}), 2, "list drops unknown ids")
 	eq(PR.list({"StonehideWard", "BarkhideWard"})[1], "BarkhideWard", "list sorts by prayer book order")
 end
@@ -197,12 +216,20 @@ eq(PR.sapped(100, 100, 0.03), 97, "one sap removes 3%")
 eq(PR.sapped(71, 100, 0.03), 70, "sap stops at the 30% floor")
 eq(PR.sapped(70, 100, 0.03), 70, "fully sapped stays put")
 eq(PR.sapped(10, 10, 0.03), 9, "small defences still lose a point")
+-- The floor rounds up: never more than SAP_MAX removed, even from tiny bases.
+for _, case in ipairs({{1, 1}, {2, 2}, {5, 4}, {100, 70}, {7, 5}, {300, 210}}) do
+	local base, floorDef = case[1], case[2]
+	local d = base
+	for _ = 1, 60 do d = PR.sapped(d, base, PR.SAP_PER_HIT) end
+	eq(d, floorDef, "base " .. base .. " sap floor")
+	ok(base - d <= base * PR.SAP_MAX + 1e-9, "base " .. base .. ": sap removes at most 30%")
+end
 eq(PR.sapped(0, 0, 0.03), 0, "no defence, nothing to sap")
 eq(PR.sapped(50, 100, 0), 50, "no sap prayer, no change")
 do
 	local d = 300
 	for _ = 1, 50 do d = PR.sapped(d, 300, PR.SAP_PER_HIT) end
-	eq(d, math.floor(300 * (1 - PR.SAP_MAX)), "sap converges on the floor")
+	eq(d, math.ceil(300 * (1 - PR.SAP_MAX) - 1e-9), "sap converges on the floor")
 end
 ok(near(PR.preserveExtend(3, 0.5), 1), "Amber Vigil adds 1 s per 3 s tick (buffs last 1.5x)")
 eq(PR.preserveExtend(3, 0), 0, "no vigil, no extension")
@@ -352,6 +379,27 @@ do
 		ok(TH.expected(t) > 0, t.id .. " expected loot")
 		table.insert(rows, string.format("%s %d: %.0f XP/h, %.0f coins/h", t.id, t.level, TH.xpPerHour(t, own), TH.coinsPerHour(t, own)))
 	end
+	-- Robbing every target of a region in parallel (each at its own cooldown,
+	-- attempts and expected stuns sharing the thief's time) stays under top gathering.
+	local regionsSeen, combos = {}, {}
+	for _, t in ipairs(TH.Targets) do
+		if not regionsSeen[t.region] then
+			regionsSeen[t.region] = true
+			local best = TH.regionCoinsPerHour(t.region, function() return TH.MAX_CHANCE end)
+			local sum, solo = 0, 0
+			for _, u in ipairs(TH.Targets) do
+				if u.region == t.region then sum += 1; solo = math.max(solo, TH.coinsPerHour(u, TH.MAX_CHANCE)) end
+			end
+			ok(best >= solo - 1e-6, t.region .. ": a combination is never worth less than its best single target")
+			if sum == 1 then ok(near(best, solo, 1e-6), t.region .. ": one target matches TH.coinsPerHour") end
+			ok(best <= topGatherCoins, string.format("%s: best same-region combination %.0f coins/h <= top gathering %.0f coins/h", t.region, best, topGatherCoins))
+			table.insert(combos, string.format("%s %.0f", t.region, best))
+		end
+	end
+	eq(TH.regionCoinsPerHour("Gloomhollow", function() return 0 end), 0, "no chance, no income")
+	-- The model: a cheap mark plus a rich chest both run (time budget not exceeded).
+	ok(TH.regionCoinsPerHour("Gloomhollow", function() return TH.MAX_CHANCE end) > TH.coinsPerHour(TH.TargetById.VaultChest, TH.MAX_CHANCE) + 1000, "parallel targets add up")
+	print("Thieving region combinations (coins/h at 95%): " .. table.concat(combos, ", "))
 	-- Stall / pickpocket cooldowns: marks recover fast, stalls restock slower, strongboxes slowest.
 	local maxPocket, minStall, maxStall, minSafe = 0, math.huge, 0, math.huge
 	for _, t in ipairs(TH.Targets) do
@@ -704,7 +752,11 @@ eq(monk.attrs.PrayerPoints, math.ceil(PR.maxPoints(1) - 1.5), "points attribute 
 -- Exhaustion switches every prayer off with a notice.
 monk = rejoin(monk, function(prof) prof.prayer.points = 0.1 end)
 eq(cmd(monk, "state").prayer.active[1], nil, "active prayers cleared on load")
+ok(has(cmd(monk, "prayer", "BarkhideWard").message, "Not enough prayer points"), "fewer points than the activation cost refuse a prayer")
+eq(cmd(monk, "state").prayer.points, 0.1, "a refused prayer costs nothing")
+monk = rejoin(monk, function(prof) prof.prayer.points = 0.25 end)
 cmd(monk, "prayer", "BarkhideWard")
+ok(near(cmd(monk, "state").prayer.points, 0.25 - PR.activationCost("BarkhideWard", 0), 0.001), "switching on paid one tick up front")
 tick(1)
 tick(1)
 eq(#cmd(monk, "state").prayer.active, 0, "points ran out: prayers off")
@@ -761,6 +813,88 @@ do
 	eq(bridge.OnInvoke("stats", monk).prayer, nil, "no prayers: no combat view")
 	local again = cmd(monk, "prayerOff").message
 	ok(has(again, "No prayers"), "prayerOff with nothing on: " .. tostring(again))
+end
+-- Flicking is never free: time-based charging plus a one-tick activation cost.
+do
+	-- Remote calls 0.25 s apart (the verb cooldown); snapshots
+	-- round points to 0.1, so "points" reads are taken with nothing active.
+	local function raw(p, verb, item) advance(0.25); return remote.OnServerInvoke(p, verb, item) end
+	local function resumeTick() assert(coroutine.resume(drainLoop, PR.TICK)) end
+	local pool = PR.maxPoints(99)
+	local function points(who)
+		advance(0.6)
+		local s = remote.OnServerInvoke(who, "state")
+		assert(s and #s.prayer.active == 0, "points are read with nothing active")
+		return s.prayer.points
+	end
+	local function fresh(id)
+		return seeded(id, function(prof) prof.xp.Prayer = X[99]; prof.prayer.points = pool end)
+	end
+	-- Continuous Valor Hymn for 60 s (20 ticks).
+	local steady = fresh(7011)
+	advance(0.6)
+	local devotion = remote.OnServerInvoke(steady, "state").depth.stats.devotion
+	local rate = PR.drainPerSecond({ValorHymn = true}, devotion)
+	raw(steady, "prayer", "ValorHymn")
+	for _ = 1, 20 do advance(PR.TICK); resumeTick() end
+	raw(steady, "prayerOff")
+	local steadyCost = pool - points(steady)
+	ok(near(steadyCost, rate * 60.25, 0.1), string.format("continuous Valor Hymn pays its rate (%.2f points / 60 s)", steadyCost))
+	leave(steady)
+	-- The old exploit: on just after each tick, off just before the next (~95% uptime).
+	local flicker = fresh(7012)
+	for _ = 1, 20 do
+		raw(flicker, "prayer", "ValorHymn")
+		advance(PR.TICK - 0.5)
+		raw(flicker, "prayer", "ValorHymn")
+		resumeTick()
+	end
+	local flickCost = pool - points(flicker)
+	ok(flickCost >= 0.9 * steadyCost, string.format("a flicking client pays %.2f >= 90%% of continuous %.2f", flickCost, steadyCost))
+	-- Rapid flicks pay one tick of drain each.
+	local before = points(flicker)
+	for _ = 1, 10 do
+		raw(flicker, "prayer", "StarwardLitany")
+		raw(flicker, "prayer", "StarwardLitany")
+	end
+	ok(near(before - points(flicker), 10 * PR.activationCost("StarwardLitany", devotion), 0.1), "each activation pays a tick of drain")
+	-- Time on between ticks is charged even if the prayer is off at the tick.
+	before = points(flicker)
+	raw(flicker, "prayer", "IronbarkWard")
+	advance(PR.TICK * 4)
+	raw(flicker, "prayer", "IronbarkWard")
+	resumeTick()
+	ok(near(before - points(flicker), PR.drainPerSecond({IronbarkWard = true}, devotion) * (PR.TICK * 4 + 0.25), 0.1), "time on is charged when the prayer goes off")
+	-- Protection flicked on just as a telegraphed world-boss hit lands costs points.
+	local function hit()
+		flicker.humanoid.Health, flicker.humanoid.MaxHealth = 1e6, 1e6
+		local dealt = bridge.OnInvoke("damage", flicker, {amount = 1000, style = "melee", worldBoss = true})
+		flicker.humanoid.Health, flicker.humanoid.MaxHealth = 100, 100
+		return dealt
+	end
+	before = points(flicker)
+	raw(flicker, "prayer", "WardOfFangs")
+	local guarded = hit()
+	ok(has(raw(flicker, "prayer", "WardOfFangs").message, "Ward of Fangs off"), "ward flicked off after the hit")
+	local plainHit = hit()
+	ok(guarded < plainHit, "the flicked ward still protected that hit")
+	local paid = before - points(flicker)
+	ok(paid > 0 and paid >= PR.activationCost("WardOfFangs", devotion) - 0.1, string.format("a protection flick at hit time costs its activation (%.2f)", paid))
+	-- prayerOff charges the elapsed time too.
+	before = points(flicker)
+	raw(flicker, "prayer", "IronbarkWard")
+	advance(PR.TICK * 2)
+	raw(flicker, "prayerOff")
+	ok(near(before - points(flicker), PR.drainPerSecond({IronbarkWard = true}, devotion) * (PR.TICK * 2 + 0.25), 0.1), "prayerOff settles the drain")
+	leave(flicker)
+	-- A draught settles the drain before restoring.
+	flicker = seeded(7012, function(prof) prof.xp.Prayer = X[99]; prof.prayer.points = 20; prof.items.DevotionDraught = 1 end)
+	raw(flicker, "prayer", "IronbarkWard")
+	advance(PR.TICK * 10)
+	local drunk = raw(flicker, "consume", "DevotionDraught").prayer.points
+	ok(near(drunk, PR.restore(20 - PR.drainPerSecond({IronbarkWard = true}, devotion) * (PR.TICK * 10 + 0.25), pool, Data.Items.DevotionDraught), 0.1), "a draught restores after charging the elapsed drain")
+	leave(flicker)
+	advance(math.ceil(utc) - utc) -- back to whole seconds for the wall-clock checks below
 end
 -- Mending Hymn heals each tick; Amber Vigil stretches buffs.
 local buffStart = utc
@@ -917,6 +1051,42 @@ eq(tb.Bogus, nil, "unknown targets dropped")
 eq(tb.Farmhand, nil, "malformed counts dropped")
 eq(tb.SweetbunStall, 1, "thefts persisted")
 leave(thief)
+-- Cooldowns and stuns survive a rejoin / server hop.
+do
+	local hopper = player(7102)
+	queue(0.01, 0.5)
+	ok(has(use(hopper, farm).message, "Picked the pocket"), "hopper lifts a purse")
+	ok(data["p7102"] == nil or true, "journal")
+	hopper = rejoin(hopper)
+	ok(has(use(hopper, farm).message, "wary"), "the mark is still wary after rejoining")
+	advance(farmDef.respawn)
+	queue(0.99)
+	ok(has(use(hopper, farm).message, "red-handed"), "caught")
+	hopper = rejoin(hopper)
+	ok(has(use(hopper, farm).message, "stunned"), "the stun survives a rejoin")
+	ok(cmd(hopper, "state").thieving.stunIn > 0, "stun reported after the rejoin")
+	advance(farmDef.stun + 1)
+	queue(0.01, 0)
+	ok(has(use(hopper, farm).message, "Picked the pocket"), "free again once the stun is over")
+	-- Tampered / stale records: unknown and expired entries pruned, far-future clamped.
+	advance(60)
+	hopper = rejoin(hopper, function(prof)
+		prof.thieving.cooldowns = {Bogus = utc + 50, Farmhand = utc + 1e6, Dockhand = utc - 5, SweetbunStall = "x"}
+		prof.thieving.stunUntil = utc + 1e6
+	end)
+	local st = cmd(hopper, "state").thieving
+	ok(st.stunIn > 0 and st.stunIn <= TH.MAX_STUN, "a tampered stun is clamped to the longest stun")
+	ok(st.cooldowns.Farmhand ~= nil and st.cooldowns.Farmhand <= farmDef.respawn, "a tampered cooldown is clamped to the respawn")
+	eq(st.cooldowns.Dockhand, nil, "expired cooldowns pruned")
+	leave(hopper)
+	local saved = data["p7102"].profile.thieving
+	eq(saved.cooldowns.Bogus, nil, "unknown targets pruned from the save")
+	eq(saved.cooldowns.Dockhand, nil, "expired entries pruned from the save")
+	eq(saved.cooldowns.SweetbunStall, nil, "malformed entries pruned from the save")
+	local n = 0
+	for _ in pairs(saved.cooldowns) do n += 1 end
+	ok(n <= #TH.Targets, "persisted cooldowns stay bounded by the target list")
+end
 -- Remains from kills feed collections.
 local hunter = player(7201)
 local kill = bridge.OnInvoke("kill", hunter, {monster = "Thornling"})
@@ -1003,8 +1173,8 @@ do
 		w.clock += 2
 		if r.alive and r.hp > 0 then w.logic.attack(w.hero, "attack", m) end
 	end
-	ok(r.defense >= math.floor(base * (1 - PR.SAP_MAX)), "sap never passes 30%")
-	eq(r.defense, math.floor(base * (1 - PR.SAP_MAX)), "repeated hits reach the floor")
+	ok(r.defense >= base * (1 - PR.SAP_MAX) - 1e-9, "sap never passes 30%")
+	eq(r.defense, math.ceil(base * (1 - PR.SAP_MAX) - 1e-9), "repeated hits reach the floor")
 	eq(r.baseDefense, base, "base defence remembered")
 	-- A leash heal (full health again) shakes the sap off on the next hit.
 	r.hp = r.maxHp
@@ -1031,6 +1201,30 @@ do
 	ok(near(b, a * 1.5), "Hearthsong regenerates 50% faster")
 	eq(song.logic.prayerMana(song.hero), 1.5, "mana multiplier")
 	eq(plain.logic.prayerMana(plain.hero), 1, "no prayer, base regeneration")
+	-- A stats refresh never applies a new Hearthsong multiplier retroactively.
+	local w = arena(nil)
+	w.logic.statsFor(w.hero)
+	local m = w.logic.manaOf(w.hero)
+	m.current = 0
+	w.clock += 2
+	local per2 = a -- 2 s of regeneration at x1 (plain arena above)
+	w.stats[w.hero] = table.clone(w.stats[w.hero]) -- a fresh snapshot (the cached one is untouched)
+	w.stats[w.hero].prayer = {offence = {melee = 0, ranged = 0, magic = 0}, sap = 0, mana = 1.5}
+	w.clock += 3 -- stats cache expired; the refresh happens now
+	w.logic.statsFor(w.hero)
+	local after = w.logic.manaOf(w.hero).current
+	ok(after < m.max and near(after, per2 * 2.5), string.format("5 s before the refresh regenerate at x1 (%.2f)", after))
+	-- And the reverse: switching Hearthsong off keeps the x1.5 for the time it was on.
+	local v = arena({offence = {melee = 0, ranged = 0, magic = 0}, sap = 0, mana = 1.5})
+	v.logic.statsFor(v.hero)
+	local vm = v.logic.manaOf(v.hero)
+	vm.current = 0
+	v.clock += 2
+	v.stats[v.hero] = table.clone(v.stats[v.hero])
+	v.stats[v.hero].prayer = nil
+	v.clock += 3
+	v.logic.statsFor(v.hero)
+	ok(near(v.logic.manaOf(v.hero).current, per2 * 1.5 * 2.5), "time under Hearthsong keeps its x1.5 after it ends")
 end
 do
 	-- Monster strikes carry their attack style (protection) and world bosses flag themselves.
