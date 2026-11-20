@@ -280,7 +280,74 @@ eq(G.yieldFor("Herb", 0, false, constant(0.5)), 6, "base yield")
 eq(G.yieldFor("Herb", 150, false, constant(0.4)), 18, "fortune 150: double plus a 50% extra")
 eq(G.yieldFor("Herb", 150, false, constant(0.6)), 12, "fortune 150 without the extra")
 eq(G.yieldFor("Herb", 0, true, constant(0.5)), 3, "a pest cuts 40%")
-eq(G.yieldFor("AetherLotus", 0, true, constant(0.5)), 1, "pest-cut yield floors")
+eq(G.yieldFor("AetherLotus", 0, true, constant(0.5)), math.floor(22 * 0.6), "pest cut on the top crop")
+-- L4: the mastery yield multiplier joins the base before fortune (field parity).
+eq(G.yieldFor("Herb", 0, false, constant(0.5), 2), 12, "a Twin yield proc doubles the base")
+eq(G.yieldFor("Herb", 150, false, constant(0.4), 2), 36, "mastery x2 then fortune 150 with the extra")
+eq(G.yieldFor("Herb", 150, false, constant(0.6), 3), 36, "Bountiful x3 then fortune 150 without the extra")
+eq(G.yieldFor("Herb", 0, true, constant(0.5), 2), 7, "pests cut the multiplied yield")
+eq(G.yieldFor("Herb", 0, false, constant(0.5), "junk"), 6, "a junk multiplier is ignored")
+-- M1: seeds are a consumable, never a loop. One seed on an 80% roll (plus a
+-- small second chance for garden-only crops); seeds sell for a sliver of the crop.
+eq(G.seedReturn("Herb", constant(0.79)), 1, "a seed saved under the return chance")
+eq(G.seedReturn("Herb", constant(0.81)), 0, "no seed over the return chance")
+eq(G.seedReturn("Herb", constant(0.0)), 1, "field crops never save two")
+eq(G.seedReturn("Duskberry", constant(0.05)), 2, "garden-only crops may save a second seed")
+eq(G.seedReturn("Ghost", constant(0)), 0, "unknown crop saves nothing")
+do
+	local state = 12345
+	local function lcg() state = (state * 1103515245 + 12345) % 2147483648; return state / 2147483648 end
+	for _, c in ipairs(G.Crops) do
+		ok(c.exclusive == (Data.ResourceSkill[c.id] == nil), c.id .. " exclusive flag")
+		local expected = G.expectedSeeds(c)
+		ok(expected < 1 and expected <= 0.9, c.id .. " expects under one seed back per planting (" .. expected .. ")")
+		-- Simulated balance: plant one seed per harvest, no pests or pouch.
+		local balance, harvests = 0, 20000
+		for _ = 1, harvests do balance += G.seedReturn(c, lcg) - 1 end
+		local net = 1 + balance / harvests
+		ok(net <= 0.92 and net >= 0.75, c.id .. " net seeds per planting " .. string.format("%.3f", net))
+		ok(balance < 0, c.id .. " seed stock drains without pests, pouch or shop")
+		local seedValue, cropValue = Data.Items[c.seed].value, Data.Items[c.id].value
+		ok(seedValue >= 0 and seedValue <= 0.25 * cropValue, c.seed .. " sells for at most a quarter of the crop (" .. seedValue .. " vs " .. cropValue .. ")")
+		ok(expected * seedValue < 0.25 * cropValue * c.yield, c.id .. " saved seeds are not a coin source")
+	end
+end
+-- M2: the crop ladder climbs. XP per grow-second and coins per plot-hour rise
+-- >= 1.1x per tier; every plot on the top crop at the rate cap stays under
+-- top field Farming XP/h (per-player regrowth-limited).
+do
+	local top = Data.ResourceTiers.Farming[#Data.ResourceTiers.Farming]
+	local fieldXpPerHour = top.xp * 3600 / top.respawn
+	for i = 2, #G.Crops do
+		local c, prev = G.Crops[i], G.Crops[i - 1]
+		ok(G.xpPerSecond(c) >= 1.1 * G.xpPerSecond(prev), c.id .. " XP per grow-second >= 1.1x " .. prev.id
+			.. string.format(" (%.4f vs %.4f)", G.xpPerSecond(c), G.xpPerSecond(prev)))
+		ok(G.coinsPerHour(c) >= 1.1 * G.coinsPerHour(prev), c.id .. " coins per plot-hour >= 1.1x " .. prev.id
+			.. string.format(" (%.1f vs %.1f)", G.coinsPerHour(c), G.coinsPerHour(prev)))
+	end
+	local last = G.Crops[#G.Crops]
+	local gardenXpPerHour = G.xpPerSecond(last) * 3600 * G.MAX_PLOTS * G.MAX_RATE
+	ok(gardenXpPerHour <= fieldXpPerHour, string.format("top garden XP/h %.0f (all plots, max rate) <= top field Farming XP/h %.0f", gardenXpPerHour, fieldXpPerHour))
+	ok(G.xpPerSecond(G.Crops[1]) * 3600 * G.MAX_PLOTS * G.MAX_RATE <= Data.ResourceTiers.Farming[1].xp * 3600 / Data.ResourceTiers.Farming[1].respawn,
+		"the first garden crop stays under first field crop XP/h")
+	-- Shop seeds are listed cheapest first (G.autoSeed relies on the order).
+	for i = 2, #G.Crops do
+		local a, b = G.ShopById[G.Crops[i - 1].seed], G.ShopById[G.Crops[i].seed]
+		ok(a.cost.coins / a.amount < b.cost.coins / b.amount, G.Crops[i].seed .. " costs more than " .. G.Crops[i - 1].seed)
+	end
+end
+-- L2: the contextual plant uses the last chosen seed, else the cheapest owned
+-- seed that is not bought with Verdant Marks.
+ok(G.MarkSeeds.MoonbloomBulb and G.MarkSeeds.LotusBud and not G.MarkSeeds.MeadowSeeds and not G.MarkSeeds.GlowcapSpores, "Mark-bought seeds flagged")
+eq(G.autoSeed({MeadowSeeds = 2, SunwheatSeeds = 3}, 99, nil).id, "Herb", "cheapest owned seed by default")
+eq(G.autoSeed({MeadowSeeds = 2, SunwheatSeeds = 3}, 99, "SunwheatSeeds").id, "Sunwheat", "last chosen seed first")
+eq(G.autoSeed({MeadowSeeds = 2, SunwheatSeeds = 0}, 99, "SunwheatSeeds").id, "Herb", "out of the last seed: cheapest owned")
+eq(G.autoSeed({SunwheatSeeds = 3}, 10, nil), nil, "level-gated seeds are skipped")
+eq(G.autoSeed({LotusBud = 1}, 99, nil), nil, "Mark seeds never auto-planted")
+eq(G.autoSeed({LotusBud = 1, MeadowSeeds = 1}, 99, nil).id, "Herb", "cheap seed over an unchosen Mark seed")
+eq(G.autoSeed({LotusBud = 1, MeadowSeeds = 1}, 99, "LotusBud").id, "AetherLotus", "a chosen Mark seed is replanted")
+eq(G.autoSeed({LotusBud = 1}, 60, "LotusBud"), nil, "chosen seed still level-gated")
+eq(G.autoSeed("junk", 99, 7), nil, "junk inputs")
 eq(G.yieldFor("Ghost", 500, false, constant(0)), 0, "unknown crop yields nothing")
 -- Composter.
 eq(G.composterInterval(0), 600, "base compost interval")
@@ -369,6 +436,9 @@ ok(dirty.visitors[1].npc == "Pell" and dirty.visitors[1].wants.Ghost == nil and 
 eq(dirty.seq, 5, "sequence never reuses a visitor id")
 eq(dirty.nextVisitor, 5000 + G.VISITOR_INTERVAL, "arrival clamped")
 ok(dirty.skin == "Loam" and dirty.skins.Starlit and dirty.skins.Gold == nil, "skins cleaned")
+eq(dirty.lastSeed, nil, "no last seed by default")
+eq(G.sanitize({lastSeed = "LotusBud"}, 5000).lastSeed, "LotusBud", "last chosen seed kept")
+eq(G.sanitize({lastSeed = "Ore"}, 5000).lastSeed, nil, "a non-seed last seed is dropped")
 -- Worst-case save size stays small (DataStore profile budget).
 do
 	local big = G.fresh(2e9)
@@ -383,6 +453,7 @@ do
 			coins = 9999999, marks = 99, gxp = 99999, xp = 999999, items = {BloomDust = 99, LotusBud = 99, MossbackPet = 1}})
 	end
 	for _, s in ipairs(G.Skins) do big.skins[s.id] = true end
+	big.lastSeed = "CloudgourdSeeds"
 	big.composter = {matter = 11500, out = 64, dust = 999999, cycles = 999999999, at = 1999999999, upgrade = 5}
 	local bytes = #serde.encode("json", big)
 	ok(bytes < 4500, "worst-case garden record is small (" .. bytes .. " bytes)")
@@ -826,8 +897,9 @@ s = cmd(g2, "state")
 ok(plotOf(s, 1).ripe and plotOf(s, 1).stage == 4 and plotOf(s, 1).remaining == 0, "ripe after five minutes")
 eq(g2.attrs.GardenPlot1, "Herb:4:r", "ripe flag")
 local herb0 = s.items.Herb or 0
+queue(0.5, 0.1) -- fortune roll, then the seed-return roll
 s = cmd(g2, "harvestPlot", "1")
-ok(has(s.message, "+6 Meadow Herb") and has(s.message, "+50 Farming XP"), "harvest message")
+ok(has(s.message, "+6 Meadow Herb") and has(s.message, "+50 Farming XP") and has(s.message, "+1 seed"), "harvest message")
 ok(s.items.Herb == herb0 + 6 and s.items.MeadowSeeds == 5 and s.xp.Farming == 50, "crops, seed back and XP")
 ok(s.garden.xp == 4 and plotOf(s, 1).crop == nil and s.garden.milestones.Herb.count == 6, "garden XP, empty plot, milestone count")
 ok(s.collection.Herb >= 6, "garden harvests count toward collections")
@@ -836,14 +908,16 @@ eq(cmd(g2, "harvestPlot", "all").message, "Nothing is ripe yet.", "nothing to ha
 cmd(g2, "plant", "1:Herb")
 cmd(g2, "plant", "2:MeadowSeeds")
 advance(301)
+queue(0.5, 0.1, 0.5, 0.1)
 s = cmd(g2, "harvestPlot", "all")
 ok(has(s.message, "+12 Meadow Herb") and has(s.message, "+2 seeds") and s.items.Herb == herb0 + 18, "harvest all")
 queue(0.1)
 cmd(g2, "plant", "3:MeadowSeeds")
 advance(301)
-queue(0.999, 0.1)
+local seedsBefore = cmd(g2, "state").items.MeadowSeeds
+queue(0.5, 0.9)
 s = cmd(g2, "harvestPlot", "3")
-ok(has(s.message, "+2 seeds"), "a lucky harvest returns two seeds")
+ok(has(s.message, "no seed saved") and s.items.MeadowSeeds == seedsBefore, "a missed seed roll saves nothing (M1: no seed loop)")
 
 -- C3: harvest fortune (Farming level + hoe + crop milestone).
 local g3 = seeded(7003, function(profile)
@@ -1052,6 +1126,9 @@ g10 = rejoin(g10, function(profile) profile.garden.xp = 3000 end)
 s = cmd(g10, "gardenBuy", "GreenwardHoe")
 ok(s.items.GreenwardHoe == 1 and (s.items.SproutwoodHoe or 0) == 0, "the upgrade consumes the old hoe")
 ok(has(cmd(g10, "gardenBuy", "SproutwoodHoe").message, "already own"), "an upgraded hoe counts as owned")
+local owned10 = cmd(g10, "state").garden.owned
+ok(type(owned10) == "table" and owned10.SproutwoodHoe == true and owned10.GreenwardHoe == true and owned10.EverbloomHoe == nil,
+	"L3: the snapshot lists shop entries owned through the upgrade chain")
 ok(has(cmd(g10, "gardenBuy", "EverbloomHoe").message, "garden level 11"), "top hoe gated")
 for _, a in ipairs(G.Armor) do cmd(g10, "gardenBuy", a.id) end
 s = cmd(g10, "state")
@@ -1077,7 +1154,7 @@ local function use(p, q)
 	return p.last
 end
 s = use(g11, prompt1)
-ok(s and has(s.message, "Planted Meadow Herb in plot 1"), "the plot prompt plants the best seed")
+ok(s and has(s.message, "Planted Meadow Herb in plot 1"), "the plot prompt plants the cheapest owned seed")
 s = use(g11, prompt1)
 ok(has(s.message, "Watered plot 1"), "then waters it")
 s = use(g11, prompt1)
@@ -1134,6 +1211,112 @@ g14.last = nil
 renew()
 assert(coroutine.resume(ticker, G.TICK))
 ok(g14.last and has(g14.last.message, "visitor is waiting"), "the loop announces a visitor")
+
+-- C14 (L1+L6): garden news is never swallowed by a refresh. Refresh runs once
+-- per second per garden; its events queue per garden and are told once: in
+-- the next garden verb's message, or by the loop, which fires only while news
+-- is pending. Non-garden snapshots leave the news pending.
+local n1 = seeded(7020, function(profile) profile.items.MeadowSeeds = 4 end)
+cmd(n1, "plant", "1:MeadowSeeds")
+advance(301)
+s = cmd(n1, "gardenOpen", "ledger")
+ok(has(s.message, "1 ripe") and has(s.message, "1 garden crop is ripe"), "ripe news joins the next garden verb's message")
+n1.last = nil
+renew()
+assert(coroutine.resume(ticker, G.TICK))
+eq(n1.last, nil, "the loop stays quiet once the news was told")
+ok(not has(cmd(n1, "gardenOpen", "ledger").message, "is ripe"), "news is told once")
+cmd(n1, "plant", "2:MeadowSeeds")
+advance(301)
+s = cmd(n1, "state")
+ok(not has(s.message, "ripe") and plotOf(s, 2).ripe, "a non-garden snapshot refreshes (plot 2 ripe) but keeps the news pending")
+n1.last = nil
+renew()
+assert(coroutine.resume(ticker, G.TICK))
+ok(n1.last and has(n1.last.message, "1 garden crop is ripe"), "the snapshot's refresh did not swallow it: the loop tells it")
+n1.last = nil
+renew()
+assert(coroutine.resume(ticker, G.TICK))
+eq(n1.last, nil, "nothing pending: the loop does not fire")
+cmd(n1, "plant", "3:MeadowSeeds")
+advance(301)
+s = cmd(n1, "waterPlot", "1")
+ok(has(s.message, "harvest it") and has(s.message, "1 garden crop is ripe"), "news found by a verb's refresh joins that verb's message")
+cmd(n1, "harvestPlot", "all")
+cmd(n1, "plant", "1:MeadowSeeds")
+advance(301)
+s = cmd(n1, "harvestPlot", "1")
+ok(has(s.message, "+6 Meadow Herb") and not has(s.message, "is ripe"), "a crop harvested in the same action is not announced")
+n1.last = nil
+renew()
+assert(coroutine.resume(ticker, G.TICK))
+eq(n1.last, nil, "harvested news is dropped, not announced later")
+local n2 = player(7021)
+advance(61)
+s = cmd(n2, "gardenOpen", "ledger")
+ok(has(s.message, "1 visitor") and has(s.message, "A visitor is waiting"), "a visitor arriving during a verb is announced")
+n2.last = nil
+renew()
+assert(coroutine.resume(ticker, G.TICK))
+eq(n2.last, nil, "the visitor is announced once")
+advance(G.VISITOR_INTERVAL)
+n2.last = nil
+renew()
+assert(coroutine.resume(ticker, G.TICK))
+ok(n2.last and has(n2.last.message, "A visitor is waiting"), "the loop announces a pending visitor")
+ok(not has(cmd(n2, "gardenOpen", "ledger").message, "waiting"), "and the next garden verb does not repeat it")
+
+-- C15 (L2): the plot prompt replants the last chosen seed, else the cheapest
+-- owned seed, and never spends Mark-bought seeds the player did not choose.
+local l2 = seeded(7022, function(profile) profile.xp.Farming = X[80]; profile.items.MeadowSeeds = 2; profile.items.LotusBud = 2 end)
+s = cmd(l2, "gardenPlot", "1")
+ok(has(s.message, "Planted Meadow Herb in plot 1") and s.items.LotusBud == 2, "cheapest seed, Lotus Buds untouched")
+s = cmd(l2, "plant", "2:LotusBud")
+ok(has(s.message, "Planted Aether Lotus") and s.garden.lastSeed == "LotusBud", "choosing a seed remembers it")
+s = cmd(l2, "gardenPlot", "3")
+ok(has(s.message, "Planted Aether Lotus in plot 3") and (s.items.LotusBud or 0) == 0, "the prompt replants the chosen seed")
+s = cmd(l2, "gardenPlot", "4")
+ok(has(s.message, "Planted Meadow Herb in plot 4"), "out of the chosen seed: the cheapest owned")
+leave(l2)
+eq(saved(l2).garden.lastSeed, "LotusBud", "last seed persisted")
+local l2b = seeded(7023, function(profile) profile.xp.Farming = X[80]; profile.items.LotusBud = 1; profile.items.StarfruitPit = 1 end)
+s = cmd(l2b, "gardenPlot", "1")
+ok(has(s.message, "Choose a seed in the garden ledger") and s.items.LotusBud == 1 and s.items.StarfruitPit == 1 and plotOf(s, 1).crop == nil,
+	"Mark-bought seeds are never auto-planted")
+
+-- C16 (L4): mastery Twin yield procs apply to garden harvests (base before fortune).
+local l4 = seeded(7024, function(profile)
+	profile.xp.Farming = X[30]
+	profile.items.MeadowSeeds = 5
+	profile.mastery = {trees = {Farming = {TilledRows = 1, BumperCrop = 5}}}
+end)
+s = cmd(l4, "state")
+eq(s.depth.mastery.trees.Farming.nodes.BumperCrop, 5, "Bumper Crop owned (10% Twin yield)")
+local fort = s.depth.stats.farmingFortune
+local mult4 = 1 + math.floor(fort / 100)
+cmd(l4, "plant", "1:MeadowSeeds")
+advance(301)
+local herb4 = cmd(l4, "state").items.Herb or 0
+queue(0.05, 0.999, 0.999) -- Twin yield proc, fortune remainder miss, seed miss
+s = cmd(l4, "harvestPlot", "1")
+eq(s.items.Herb, herb4 + 6 * 2 * mult4, "a Twin yield proc doubles the garden base before fortune")
+ok(has(s.message, "x2 yield"), "the proc is reported")
+cmd(l4, "plant", "1:MeadowSeeds")
+advance(301)
+herb4 = cmd(l4, "state").items.Herb or 0
+queue(0.5, 0.999, 0.999)
+s = cmd(l4, "harvestPlot", "1")
+eq(s.items.Herb, herb4 + 6 * mult4, "no proc: base yield with fortune")
+
+-- C17 (L5): compost counts below one are refused with a reason.
+local l5 = seeded(7025, function(profile) profile.garden.xp = 60; profile.items.Herb = 50 end)
+s = cmd(l5, "compost", "Herb:0")
+ok(has(s.message, "at least 1") and s.items.Herb == 50 and s.garden.composter.matter == 0, "a zero count is refused")
+ok(not has(s.message, "full"), "a zero count is not reported as a full composter")
+s = cmd(l5, "compost", "Herb:00")
+ok(has(s.message, "at least 1"), "zero in any spelling")
+s = cmd(l5, "compost", "Herb:3")
+ok(has(s.message, "Composted 3 Meadow Herb") and s.items.Herb == 47, "a real count still composts")
 
 -- C13: persistence, offline growth and tampering.
 local g15 = seeded(7016, function(profile) profile.items.MeadowSeeds = 2; profile.garden.xp = 60; profile.items.Herb = 600 end)

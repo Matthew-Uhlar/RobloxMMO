@@ -402,6 +402,7 @@ local function snapshot(options)
 				{ id = 8, npc = "Corvel", wants = { Sunwheat = 40, Herb = 10 }, order = { "Herb", "Sunwheat" }, coins = 900, marks = 4, gxp = 20, xp = 300, items = { BloomDust = 1 } },
 			},
 			visitorCap = 2, nextVisitorIn = nil, served = 3, skin = "Mossbed", skins = { Loam = true, Mossbed = true }, rate = 1.02, setActive = false, serverTime = os.time(),
+			owned = { SproutwoodHoe = true }, -- owned through the upgrade chain (no SproutwoodHoe in the satchel)
 		}
 	end
 	if options.malformed then
@@ -2411,7 +2412,15 @@ do
 	check(ui.sent[1] and ui.sent[1][1] == "gardenBuy" and ui.sent[1][2] == "SunwheatSeeds", "buy seeds")
 	press(find(ui.scroll, "BuyLotusBud"))
 	press(find(ui.scroll, "BuyGreenwardHoe"))
+	press(find(ui.scroll, "BuySproutwoodHoe")) -- affordable and unlocked, but owned through an upgrade
 	check(#ui.sent == 1, "gated shop entries do not send")
+	do
+		local card, words = find(ui.scroll, "ShopSproutwoodHoe"), {}
+		for _, d in ipairs(card and card:GetDescendants() or {}) do
+			if d.ClassName == "TextLabel" or d.ClassName == "TextButton" then table.insert(words, tostring(d.Text)) end
+		end
+		check(string.find(table.concat(words, "\n"), "OWNED", 1, true) ~= nil, "a hoe superseded by an owned upgrade shows OWNED, not Buy")
+	end
 	press(find(ui.scroll, "ApplyLoam"))
 	check(ui.sent[2] and ui.sent[2][1] == "gardenSkin" and ui.sent[2][2] == "Loam", "re-apply the free skin")
 	check(find(ui.scroll, "ShopSkinMossbed") ~= nil, "owned skin listed")

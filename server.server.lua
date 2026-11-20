@@ -1826,7 +1826,11 @@ end
 --   ("locked"|"idle"|"working"|"ready"), GardenVisitors ("npc,npc"), and
 --   GardenPlot1..12 = "" (empty) or "<crop>:<stage 0-4>:<flags>" with flags
 --   w watered, c composted, t treated, s sick, x dead, r ripe, p<n> pest n.
--- Milestone fortune lives in p.perkStats["garden:milestones"].
+-- Milestone fortune lives in p.perkStats["garden:milestones"]. Refresh runs at
+-- most once per second per garden (so a snapshot's applyStats + state pair
+-- refreshes once); its events (ripe, visitors, pests, withering) queue per
+-- garden and are told once: in the next garden verb's message, or by the
+-- G.TICK loop, which fires only while news is pending.
 ------------------------------------------------------------------------------
 do
 	local G=Data.Garden
@@ -1876,11 +1880,19 @@ do
 				..(if before<G.COMPOSTER_LEVEL and after>=G.COMPOSTER_LEVEL then " The composter is ready." else ""))
 		end
 	end
-	-- Advance every timer to now. Returns g, ctx, events {ripe, pests, visitors, dead}.
+	-- Events found by refresh wait here (per garden record) until a snapshot
+	-- or the G.TICK loop announces them, so no refresh can swallow them.
+	-- Strong tables keyed by the garden record; the G.TICK loop drops records
+	-- that no live profile holds (players who left, replaced records).
+	local pending,refreshedAt={},{}
+	-- Advance every timer to now (at most once per second per garden). Returns
+	-- g, ctx, events {ripe, pests, visitors, dead}; events also queue as pending.
 	function Garden.refresh(p,now)
 		local g=rec(p)
 		local ctx=Garden.ctx(p)
 		local events={ripe=0,pests=0,visitors=0,dead=0}
+		if refreshedAt[g]==now then return g,ctx,events end
+		refreshedAt[g]=now
 		for i=1,G.MAX_PLOTS do
 			local plot=g.plots[i]
 			if plot.crop then
@@ -1899,8 +1911,29 @@ do
 		end
 		g.nextVisitor=nextAt
 		events.visitors=n
+		if events.ripe+events.pests+events.visitors+events.dead>0 then
+			local q=pending[g] or {ripe=0,pests=0,visitors=0,dead=0}
+			for k,v in pairs(events) do q[k]+=v end
+			pending[g]=q
+		end
 		return g,ctx,events
 	end
+	-- Pending news as text (capped by what is still true now), then cleared.
+	function Garden.takeNews(p)
+		local g=rec(p)
+		local q=pending[g]
+		if not q then return "" end
+		pending[g]=nil
+		local ripe,pests,dead=0,0,0
+		for i=1,G.MAX_PLOTS do
+			local plot=g.plots[i]
+			if G.ripe(plot) then ripe+=1 end
+			if plot.pest then pests+=1 end
+			if plot.dead then dead+=1 end
+		end
+		return Garden.eventText({ripe=math.min(q.ripe,ripe),pests=math.min(q.pests,pests),visitors=math.min(q.visitors,#g.visitors),dead=math.min(q.dead,dead)})
+	end
+
 	function Garden.plotCode(plot,now)
 		local c=G.CropById[plot.crop]
 		local flags=(if c and (plot.water or 0)>now then "w" else "")..(if plot.compost then "c" else "")..(if plot.treated then "t" else "")
@@ -1980,15 +2013,18 @@ do
 		local plot=g.plots[i]
 		local c=G.CropById[plot.crop]
 		local pest=plot.pest~=nil
-		local result={amount=G.yieldFor(c.id,fortuneFor(p,g,c,stats),pest,roll),xp=c.xp,skill="Farming",
-			resource={id=c.id,skill="Farming",value=Data.Items[c.id].value}}
-		if type(p.mastery)=="table" then Progression.applyGatherMastery(p,result,roll,now) end
+		local result={xp=c.xp,skill="Farming",resource={id=c.id,skill="Farming",value=Data.Items[c.id].value}}
+		-- Mastery Twin/Bountiful procs and surges join the base before fortune (as field gathering).
+		local mult,perks=1,nil
+		if type(p.mastery)=="table" then mult,perks=Progression.gatherYieldMult(p,result,roll,now) end
+		result.amount=G.yieldFor(c.id,fortuneFor(p,g,c,stats),pest,roll,mult)
+		if perks then Progression.applyGatherMastery(p,result,roll,now,perks) end
 		result.respawnSkip=nil
 		collect(p,c.id,result.amount)
 		local mastered=Mastery.gather(p,result)
 		grantXp(p,"Farming",result.xp)
-		local seeds=1+(if roll()<G.SEED_BONUS_CHANCE then 1 else 0)
-		collect(p,c.seed,seeds)
+		local seeds=G.seedReturn(c,roll)
+		if seeds>0 then collect(p,c.seed,seeds) end
 		g.harvested[c.id]=math.min(1e9,(g.harvested[c.id] or 0)+result.amount)
 		g.plots[i]={}
 		Garden.addXp(p,g,c.gxp)
@@ -1996,13 +2032,14 @@ do
 		p.started=true
 		return result.amount,result.xp,seeds,mastered..(if pest then "   ·   pests cut the yield" else "")
 	end
-	local function plant(p,g,i,plot,id,now)
+	local function plant(p,g,i,plot,id,now,chosen)
 		local c=G.CropBySeed[id] or G.CropById[id]
 		if not c then return "Choose a seed to plant." end
 		if plot.crop then return "Plot "..i.." is already planted." end
 		if farming(p)<c.level then return name(c.id).." needs Farming "..c.level.."." end
 		if (p.items[c.seed] or 0)<1 then return "You have no "..name(c.seed)..". Buy seeds in the garden ledger." end
 		p.items[c.seed]-=1
+		if chosen then g.lastSeed=c.seed end -- the world prompt replants the player's own pick
 		G.plant(plot,c.id,now,roll)
 		p.started=true
 		return "Planted "..name(c.id).." in plot "..i.."   ·   ripe in about "..span(G.timeLeft(plot,now,Garden.ctx(p)))
@@ -2017,13 +2054,6 @@ do
 		plot.water=now+G.WATER_SECONDS
 		return nil
 	end
-	local function bestSeed(p)
-		local best
-		for _,c in ipairs(G.Crops) do
-			if (p.items[c.seed] or 0)>0 and farming(p)>=c.level then best=c end
-		end
-		return best
-	end
 	local function harvestAll(p,g,now,list)
 		local stats=Progression.computeStats(p,now)
 		local xp,seeds,crops,extra=0,0,{},""
@@ -2037,7 +2067,7 @@ do
 		local parts={}
 		for id,n in pairs(crops) do table.insert(parts,"+"..n.." "..name(id)) end
 		table.sort(parts)
-		return table.concat(parts,", ").."   ·   +"..xp.." Farming XP   ·   +"..seeds.." seed"..(if seeds==1 then "" else "s")..extra
+		return table.concat(parts,", ").."   ·   +"..xp.." Farming XP   ·   "..(if seeds>0 then "+"..seeds.." seed"..(if seeds==1 then "" else "s") else "no seed saved")..extra
 	end
 	local function clearPest(p,g,i,plot)
 		local pest=plot.pest and G.Pests[plot.pest]
@@ -2146,6 +2176,7 @@ do
 		if not id then id=item end
 		local value=validId(id) and G.organic(id) or 0
 		if value<=0 then return "The composter only takes crops and organic matter." end
+		if count and (tonumber(count) or 0)<1 then return "Choose at least 1 "..name(id).." to compost." end
 		local c=g.composter
 		local room=math.floor((G.matterCap(c.upgrade)-c.matter)/value)
 		local n=math.min(tonumber(count) or math.huge,p.items[id] or 0,room)
@@ -2178,7 +2209,16 @@ do
 		c.upgrade+=1
 		return "Composter upgraded to tier "..c.upgrade.."   ·   a Compost every "..span(G.composterInterval(c.upgrade))
 	end
+	local act
+	-- Garden verbs (and world prompts) carry any pending news in their message;
+	-- otherwise the G.TICK loop tells it. Other snapshots leave it pending.
 	function Garden.action(player,p,verb,item,prompt)
+		local message=act(player,p,verb,item,prompt)
+		local news=Garden.takeNews(p)
+		if news~="" then message=(if message and message~="" then message.."   ·   " else "")..news end
+		return message
+	end
+	function act(player,p,verb,item,prompt)
 		local now=os.time()
 		local g=Garden.refresh(p,now)
 		if verb=="gardenOpen" then
@@ -2219,7 +2259,7 @@ do
 		else id=item end
 		local i,plot=plotOf(p,g,id)
 		if not i then return plot end
-		if verb=="plant" then return plant(p,g,i,plot,seed,now)
+		if verb=="plant" then return plant(p,g,i,plot,seed,now,true)
 		elseif verb=="harvestPlot" then
 			if plot.dead then return "Plot "..i.."'s crop withered. Clear it to replant." end
 			if not G.ripe(plot) then return if plot.crop then "Plot "..i.." is not ripe yet." else "Plot "..i.." is empty." end
@@ -2241,8 +2281,13 @@ do
 			if plot.sick then return treat(p,i,plot,now) end
 			if G.ripe(plot) then return harvestAll(p,g,now,{i}) end
 			if not plot.crop then
-				local c=bestSeed(p)
-				if not c then return "No seeds to plant. Open the garden ledger to buy some." end
+				local c=G.autoSeed(p.items,farming(p),g.lastSeed)
+				if not c then
+					for seed in pairs(G.MarkSeeds) do
+						if (p.items[seed] or 0)>0 then return "Choose a seed in the garden ledger first: seeds bought with Verdant Marks are only planted when you pick them." end
+					end
+					return "No seeds to plant. Open the garden ledger to buy some."
+				end
 				return plant(p,g,i,plot,c.seed,now)
 			end
 			local wet=water(g,i,plot,now)
@@ -2280,6 +2325,10 @@ do
 		for _,v in ipairs(g.visitors) do
 			table.insert(visitors,{id=v.id,npc=v.npc,wants=table.clone(v.wants),order=table.clone(v.order),coins=v.coins,marks=v.marks,gxp=v.gxp,xp=v.xp,items=table.clone(v.items)})
 		end
+		local owned={}
+		for _,e in ipairs(G.Shop) do
+			if e.kind=="item" and e.unique and shopOwned(p,e.item) then owned[e.id]=true end
+		end
 		local lvl,floor,ceiling=G.progress(g.xp)
 		local _,tiers=G.milestonePerk(g.harvested)
 		return {level=lvl,xp=g.xp,floor=floor,nextAt=ceiling,plots=plots,unlocked=unlocked,maxPlots=G.MAX_PLOTS,nextPlot=G.nextPlotUnlock(lvl,fl),
@@ -2287,16 +2336,18 @@ do
 			composter={unlocked=ctx.level>=G.COMPOSTER_LEVEL,matter=cmp.matter,cap=G.matterCap(cmp.upgrade),out=cmp.out,dust=cmp.dust,upgrade=cmp.upgrade,
 				interval=interval,nextIn=if working then math.max(0,cmp.at+interval-now) else nil},
 			visitors=visitors,visitorCap=G.visitorCap(lvl),nextVisitorIn=if #g.visitors<G.visitorCap(lvl) then math.max(0,g.nextVisitor-now) else nil,
-			served=g.served,skin=g.skin,skins=table.clone(g.skins),rate=G.rate({},ctx,false),setActive=ctx.set,serverTime=now}
+			served=g.served,skin=g.skin,skins=table.clone(g.skins),owned=owned,lastSeed=g.lastSeed,rate=G.rate({},ctx,false),setActive=ctx.set,serverTime=now}
 	end
 	task.spawn(function()
 		while task.wait(G.TICK) do
+			local live={}
+			for _,p in pairs(profiles) do if type(p.garden)=="table" then live[p.garden]=true end end
+			for g in pairs(refreshedAt) do if not live[g] then refreshedAt[g]=nil; pending[g]=nil end end
+			for g in pairs(pending) do if not live[g] then pending[g]=nil end end
 			for player,p in pairs(profiles) do
 				if player.Parent then
-					local ok,events=pcall(Garden.apply,player,p)
-					if ok and events and (events.ripe>0 or events.visitors>0 or events.pests>0 or events.dead>0) then
-						update:FireClient(player,snapshot(player,Garden.eventText(events)))
-					end
+					local ok,news=pcall(function() Garden.apply(player,p) return Garden.takeNews(p) end)
+					if ok and news~="" then update:FireClient(player,snapshot(player,news)) end
 				end
 			end
 		end

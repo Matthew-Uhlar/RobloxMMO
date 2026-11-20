@@ -3289,7 +3289,7 @@ end
 -- Profile: p.garden = {xp, plots = {12 plot tables ({} = empty)}, harvested =
 -- {[crop]=n}, milestones = {[crop]=tier paid}, composter = {matter, out, dust,
 -- cycles, at, upgrade}, visitors = {visitor...}, nextVisitor, seq, served,
--- skin, skins = {[skin]=true}, fieldSeeds = {[crop]=n}}; bounded (~3 KB).
+-- skin, skins = {[skin]=true}, fieldSeeds = {[crop]=n}, lastSeed}; bounded (~3 KB).
 ------------------------------------------------------------------------------
 do
 local G = {}
@@ -3308,7 +3308,9 @@ G.DEATH_SECONDS = 7200
 G.COMPOST_CLEANSE = 0.5                -- chance that compost clears a hidden blight
 G.PEST_INTERVAL, G.PEST_CHANCE, G.PEST_MAX_ROLLS, G.PEST_PENALTY = 600, 0.06, 6, 0.4
 G.PEST_SEED_CHANCE = 0.2
-G.SEED_BONUS_CHANCE = 0.2
+G.SEED_RETURN_CHANCE = 0.8             -- a harvest saves one seed on this roll (net < 1 seed per planting)
+G.SEED_BONUS_CHANCE = 0.1              -- garden-only crops (no field seed pouch) may save a second
+G.SEED_VALUE_SHARE = 0.2               -- seeds sell for this share of the crop value (never a coin source)
 G.FIELD_SEED_EVERY = 20                -- every Nth field harvest of a crop bundles one seed
 G.VISITOR_INTERVAL = 900
 G.COMPOSTER_LEVEL = 2
@@ -3325,15 +3327,19 @@ G.SET = "Rootwarden"
 -- grow = seconds at rate 1, yield = base harvest before fortune, xp = Farming
 -- XP per harvest, gxp = garden XP, disease = base blight chance,
 -- shape/tint = world crop mesh, scale = milestone threshold multiplier.
+-- Ladder (base rate, no fortune): Farming XP per grow-second and coins per
+-- plot-hour (yield x value x 3600 / grow) both climb >= 1.1x per tier, and
+-- every plot at G.MAX_RATE on the top crop stays under top field Farming XP/h
+-- (G.xpPerSecond, G.coinsPerHour; verify-garden.luau checks both).
 G.Crops = {
 	{id="Herb",seed="MeadowSeeds",seedName="Meadow Herb Seeds",level=1,grow=300,yield=6,xp=50,gxp=4,disease=0.06,shape="CropBush",tint="6BBF59",scale=1},
-	{id="Sunwheat",seed="SunwheatSeeds",seedName="Sunwheat Seeds",level=15,grow=600,yield=6,xp=140,gxp=8,disease=0.08,shape="CropWheat",tint="E9C46A",scale=1},
-	{id="Duskberry",seed="DuskberrySeeds",seedName="Duskberry Seeds",level=22,grow=1200,yield=5,xp=230,gxp=13,disease=0.10,shape="CropBush",tint="7A4E9E",scale=0.8},
-	{id="Glowcap",seed="GlowcapSpores",seedName="Glowcap Spores",level=30,grow=1800,yield=5,xp=340,gxp=18,disease=0.11,shape="CropGlowcap",tint="F4A261",scale=0.7},
-	{id="Moonbloom",seed="MoonbloomBulb",seedName="Moonbloom Bulb",level=45,grow=3600,yield=4,xp=560,gxp=30,disease=0.13,shape="CropBloom",tint="B8C0FF",scale=0.5},
-	{id="Cloudgourd",seed="CloudgourdSeeds",seedName="Cloudgourd Seeds",level=52,grow=5400,yield=4,xp=760,gxp=40,disease=0.14,shape="CropGlowcap",tint="D9ECF7",scale=0.45},
-	{id="Starfruit",seed="StarfruitPit",seedName="Starfruit Pit",level=60,grow=7200,yield=3,xp=1000,gxp=55,disease=0.16,shape="CropBush",tint="FFE66D",scale=0.35},
-	{id="AetherLotus",seed="LotusBud",seedName="Aether Lotus Bud",level=75,grow=14400,yield=3,xp=1900,gxp=90,disease=0.18,shape="CropBloom",tint="FF9ECD",scale=0.25},
+	{id="Sunwheat",seed="SunwheatSeeds",seedName="Sunwheat Seeds",level=15,grow=600,yield=4,xp=115,gxp=8,disease=0.08,shape="CropWheat",tint="E9C46A",scale=1},
+	{id="Duskberry",seed="DuskberrySeeds",seedName="Duskberry Seeds",level=22,grow=1200,yield=6,xp=260,gxp=13,disease=0.10,shape="CropBush",tint="7A4E9E",scale=0.8},
+	{id="Glowcap",seed="GlowcapSpores",seedName="Glowcap Spores",level=30,grow=1800,yield=8,xp=440,gxp=18,disease=0.11,shape="CropGlowcap",tint="F4A261",scale=0.7},
+	{id="Moonbloom",seed="MoonbloomBulb",seedName="Moonbloom Bulb",level=45,grow=3600,yield=11,xp=1000,gxp=30,disease=0.13,shape="CropBloom",tint="B8C0FF",scale=0.5},
+	{id="Cloudgourd",seed="CloudgourdSeeds",seedName="Cloudgourd Seeds",level=52,grow=5400,yield=14,xp=1700,gxp=40,disease=0.14,shape="CropGlowcap",tint="D9ECF7",scale=0.45},
+	{id="Starfruit",seed="StarfruitPit",seedName="Starfruit Pit",level=60,grow=7200,yield=16,xp=2560,gxp=55,disease=0.16,shape="CropBush",tint="FFE66D",scale=0.35},
+	{id="AetherLotus",seed="LotusBud",seedName="Aether Lotus Bud",level=75,grow=14400,yield=22,xp=5800,gxp=90,disease=0.18,shape="CropBloom",tint="FF9ECD",scale=0.25},
 }
 G.CropById, G.CropBySeed = {}, {}
 -- Garden-only crops (no field nodes): Duskberry and Cloudgourd.
@@ -3341,10 +3347,11 @@ item("Duskberry",{name="Duskberry",kind="resource",skill="Farming",tier=3,rarity
 item("Cloudgourd",{name="Cloudgourd",kind="resource",skill="Farming",tier=5,rarity="Rare",color="D9ECF7",value=40,description="A feather-light gourd grown only in the Verdant Garden."})
 for i, c in ipairs(G.Crops) do
 	c.index = i
+	c.exclusive = Data.ResourceSkill[c.id] == nil   -- garden-only: no field nodes, no seed pouch
 	G.CropById[c.id] = c
 	G.CropBySeed[c.seed] = c
 	local def = Data.Items[c.id]
-	item(c.seed,{name=c.seedName,kind="resource",skill="Farming",category="seed",crop=c.id,tier=i,rarity=def.rarity,color=c.tint,value=math.max(2,math.floor(def.value*1.5)),
+	item(c.seed,{name=c.seedName,kind="resource",skill="Farming",category="seed",crop=c.id,tier=i,rarity=def.rarity,color=c.tint,value=math.floor(def.value*G.SEED_VALUE_SHARE),
 		description="Plant in a Verdant Garden plot (Farming "..c.level.."). Ripens in "..(if c.grow>=3600 then (c.grow//3600).." h" else (c.grow//60).." min").."."})
 end
 
@@ -3419,6 +3426,12 @@ for _, a in ipairs(G.Armor) do
 end
 G.ShopById = {}
 for i, e in ipairs(G.Shop) do e.index = i; G.ShopById[e.id] = e end
+-- Seeds whose shop entry costs Verdant Marks: never auto-planted unless chosen.
+G.MarkSeeds = {}
+for _, c in ipairs(G.Crops) do
+	local e = G.ShopById[c.seed]
+	if e and e.cost.VerdantMark then G.MarkSeeds[c.seed] = true end
+end
 
 -- Composter: matter per fed item, upgrades (interval -12% and +1500 matter each).
 G.ORGANIC_EXTRA = {BeastHide=4, PestChitin=12, Timber=1, WindpineLog=2}
@@ -3611,16 +3624,50 @@ function G.pestRoll(plot, now, roll)
 	end
 	return false
 end
--- Harvest amount after fortune and pests: base yield rolled with fortune
--- (every 100 = +1 guaranteed base, remainder a chance), then pest penalty.
-function G.yieldFor(cropId, fortune, pest, roll)
+-- Harvest amount after fortune and pests: base yield (x mult, the mastery
+-- Twin/Bountiful proc or surge, joined before fortune as in field gathering)
+-- rolled with fortune (every 100 = +1 guaranteed base, remainder a chance),
+-- then pest penalty.
+function G.yieldFor(cropId, fortune, pest, roll, mult)
 	local c = G.CropById[cropId]
 	if not c then return 0 end
 	fortune = math.max(0, fortune or 0)
-	local amount = c.yield * (1 + math.floor(fortune / 100))
-	if roll() < (fortune % 100) / 100 then amount += c.yield end
+	local base = math.floor(c.yield * math.max(1, tonumber(mult) or 1))
+	local amount = base * (1 + math.floor(fortune / 100))
+	if roll() < (fortune % 100) / 100 then amount += base end
 	if pest then amount = math.max(1, math.floor(amount * (1 - G.PEST_PENALTY))) end
 	return amount
+end
+-- Seeds saved by one harvest: 1 on a G.SEED_RETURN_CHANCE roll, plus (garden-
+-- only crops) a G.SEED_BONUS_CHANCE second. Expected < 1, so seeds are a
+-- consumable topped up by pests, visitors, the field seed pouch and the shop.
+function G.seedReturn(crop, roll)
+	local c = type(crop) == "table" and crop or G.CropById[crop]
+	if not c then return 0 end
+	local n = if roll() < G.SEED_RETURN_CHANCE then 1 else 0
+	if c.exclusive and roll() < G.SEED_BONUS_CHANCE then n += 1 end
+	return n
+end
+function G.expectedSeeds(crop)
+	local c = type(crop) == "table" and crop or G.CropById[crop]
+	if not c then return 0 end
+	return G.SEED_RETURN_CHANCE + (if c.exclusive then G.SEED_BONUS_CHANCE else 0)
+end
+-- Base-rate ladder metrics (rate 1, no fortune).
+function G.xpPerSecond(c) return c.xp / c.grow end
+function G.coinsPerHour(c) return c.yield * Data.Items[c.id].value * 3600 / c.grow end
+-- The seed a contextual "Plant" uses: the last seed the player chose (if
+-- owned and allowed), else the cheapest owned seed that is not bought with
+-- Verdant Marks. Returns the crop or nil.
+function G.autoSeed(items, farmingLevel, lastSeed)
+	items = type(items) == "table" and items or {}
+	local function usable(c) return c ~= nil and (tonumber(items[c.seed]) or 0) >= 1 and (farmingLevel or 1) >= c.level end
+	local last = type(lastSeed) == "string" and G.CropBySeed[lastSeed] or nil
+	if usable(last) then return last end
+	for _, c in ipairs(G.Crops) do   -- crops are listed cheapest seed first
+		if usable(c) and not G.MarkSeeds[c.seed] then return c end
+	end
+	return nil
 end
 -- Composter: run whole cycles up to now. Idle time (no matter, output full) is not banked.
 -- c = {matter, out, dust, cycles, at, upgrade}. Returns cycles run.
@@ -3791,6 +3838,7 @@ function G.sanitize(g, now)
 		for id, v in pairs(g.skins) do if v == true and type(id) == "string" and G.SkinById[id] then out.skins[id] = true end end
 	end
 	out.skin = if type(g.skin) == "string" and out.skins[g.skin] then g.skin else "Loam"
+	out.lastSeed = if type(g.lastSeed) == "string" and G.CropBySeed[g.lastSeed] then g.lastSeed else nil
 	return out
 end
 end

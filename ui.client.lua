@@ -5630,6 +5630,7 @@ function GD.drawShop(g)
 	local G=Data.Garden
 	local level=num(g.level,1)
 	local skins=tbl(g.skins)
+	local ownedEntries=tbl(g.owned) -- server: unique entries owned directly or through an upgrade (a Greenward Hoe owns the Sproutwood)
 	card({name="GardenShopIntro",motif="Ledger",title="Verdant Garden shop",titleColor=gold,subtitle=paint("✦ "..fmt(count("items",G.MARK)).." Verdant Marks","5FBF77").."   ·   "..fmt(count("items",G.DUST)).." Bloom Dust   ·   "..fmt(num(state.coins,0)).." coins",
 		detail="Visitors pay in Verdant Marks; the composter leaves Bloom Dust. Hoes upgrade in place: buying the next one consumes the last."})
 	for _,e in ipairs(G.Shop) do
@@ -5647,8 +5648,8 @@ function GD.drawShop(g)
 					else {caption="Buy",primary=reason==nil,disabled=reason~=nil,reason=reason,name="Buy"..e.id,fn=function() send("gardenBuy",e.id) end}}})
 		else
 			local def=itemDef(e.item)
-			local owned=e.unique and count("items",e.item)>0
-			if owned then reason="You already own one." end
+			local owned=e.unique and (ownedEntries[e.id]==true or count("items",e.item)>0)
+			if owned then reason=if count("items",e.item)>0 then "You already own one." else "Already owned through an upgrade." end
 			if not reason and e.upgrade and count("items",e.upgrade)<1 then reason="Upgrades your "..itemName(e.upgrade)..": buy that first." end
 			if not reason and not GD.afford(e.cost) then reason="You need "..GD.costText(e.cost).."." end
 			card({name="Shop"..e.id,item=e.item,title=(if e.amount>1 then e.amount.."× " else "")..escape(itemName(e.item)),titleColor=rgb(itemHex(e.item)),
