@@ -2222,4 +2222,402 @@ for line, def in pairs(Data.Slayers) do applyStyle(def, CS.monsterStyle[line] or
 end
 -- End Combat styles section.
 
+------------------------------------------------------------------------------
+-- Agility & Hunter (New Skills team; append-only section).
+-- Agility (OSRS rooftop courses on floating islets): each course is a loop of
+-- obstacles run in order; the server checks order, timing and position, moves
+-- the player along the obstacle, rolls failures at low level, pays XP per
+-- obstacle plus a lap bonus and rolls Skymarks (traded at the Skymark Exchange
+-- for the Windrunner outfit). Agility levels gate world shortcuts.
+-- Hunter (OSRS Hunter): snare / box / bird traps tick server-side (max traps
+-- 1 + level/20), nets catch swarming creatures on the spot. Catches give XP,
+-- pelts, plumes, essences, meat and rare pets; the hunter log is a bestiary.
+-- server.server.lua (Skills block) runs both; world.server.lua builds courses,
+-- shortcuts, hunting grounds and vendors; verify-skills.luau checks them.
+-- Profile (all optional; migrated): p.agility = {laps={[course]=n}, best={[course]=seconds}},
+-- p.hunterLog = {[creature]=catches}. Trap and run state is session-only.
+------------------------------------------------------------------------------
+do
+local AG, HU = {}, {}
+Data.Agility, Data.Hunter = AG, HU
+for _, id in ipairs({"Agility","Hunter"}) do table.insert(Data.SkillOrder, id) end
+Data.Skills.Agility = {category="support",color="62C2B0",title="Skyrunner",perLevel={speed=0.5},description="Run obstacle courses and shortcuts between the isles. Raises Speed."}
+Data.Skills.Hunter = {category="gathering",color="A8763E",title="Tracker",perLevel={petLuck=0.5,huntingFortune=1},description="Trap, snare and net the wild creatures of the isles. Raises Pet Luck and Hunting Fortune."}
+-- New stats: Surefoot cuts obstacle failure chance (a stamina-like perk),
+-- Trap Luck raises every catch chance, Hunting Fortune adds primary drops.
+Data.Stats.surefoot = {name="Surefoot",symbol="❦",color="62C2B0",base=0,cap=100,percent=true}
+Data.Stats.trapLuck = {name="Trap Luck",symbol="⌖",color="A8763E",base=0,cap=100,percent=true}
+Data.Stats.huntingFortune = {name="Hunting Fortune",symbol="☘",color="FFAA00",base=0}
+for _, id in ipairs({"surefoot","trapLuck","huntingFortune"}) do table.insert(Data.StatOrder, id) end
+
+local function rarityAt(level)
+	return if level >= 75 then "Epic" elseif level >= 45 then "Rare" elseif level >= 15 then "Uncommon" else "Common"
+end
+
+------------------------------------------------------------------------------
+-- Agility
+------------------------------------------------------------------------------
+-- Obstacle kinds: verb (prompt text), anim (client animation id, player
+-- attribute AgilityMove), duration (seconds the server moves the player),
+-- arc (studs of lift at the middle of the move).
+AG.Kinds = {
+	climb={verb="Climb",anim="climb",duration=2.6,arc=0},
+	beam={verb="Cross",anim="balance",duration=3.0,arc=0},
+	swing={verb="Swing",anim="swing",duration=2.2,arc=-3},
+	ledge={verb="Shimmy",anim="ledge",duration=2.8,arc=0},
+	gap={verb="Leap",anim="leap",duration=1.3,arc=3},
+	vault={verb="Vault",anim="vault",duration=1.4,arc=1.5},
+	zip={verb="Ride",anim="zip",duration=2.4,arc=-1},
+	drop={verb="Slide",anim="drop",duration=1.6,arc=0},
+}
+AG.KindOrder = {"climb","beam","swing","ledge","gap","vault","zip","drop"}
+AG.STEP_WINDOW = 30      -- seconds to start the next obstacle after landing
+AG.FAIL_FADE = 20        -- failures fade out this many levels above the course
+AG.OVERLEVEL = 20        -- Skymark chance halves this many levels above the course
+AG.MARK_ITEM = "Skymark"
+AG.LapTiers = {25,100,250}          -- per course: each milestone grants LapBonus
+AG.LapBonus = {speed=1}
+AG.MAX_LAP_SECONDS = 3600
+
+item("Skymark",{name="Skymark",kind="material",rarity="Rare",color="7FE3D0",value=25,description="A glinting token left on the courses for nimble runners. Spend at the Skymark Exchange."})
+
+-- risk = failure chance at the course's own level (fades to 0 by +FAIL_FADE).
+-- The first obstacle always climbs from the island; the last returns to it.
+local function ob(kind, name, risk) return {kind=kind,name=name,risk=risk} end
+AG.Courses = {
+	{id="QuayRigging",name="Quay Rigging Run",region="Hub",level=1,markChance=0.25,color="DBAD65",obstacles={
+		ob("climb","Harbor net"),ob("beam","Mooring spar"),ob("swing","Rigging rope",0.08),ob("ledge","Hull ledge",0.1),ob("gap","Bollard gap"),ob("drop","Sailcloth slide")}},
+	{id="MosswakeHedgerow",name="Mosswake Hedgerow Hop",region="Meadow",level=10,markChance=0.25,color="8DB86E",obstacles={
+		ob("climb","Ivy trellis"),ob("gap","Hedge gap",0.1),ob("beam","Fallen bough",0.12),ob("vault","Stile fence"),ob("swing","Willow vine",0.12),ob("drop","Haystack drop")}},
+	{id="BrassfallScaffold",name="Brassfall Scaffold Circuit",region="Quarry",level=20,markChance=0.26,color="D4A84B",obstacles={
+		ob("climb","Mine ladder"),ob("ledge","Scaffold ledge",0.14),ob("beam","Rail girder",0.12),ob("gap","Cart gap",0.12),ob("vault","Ore crates"),ob("zip","Ore-cart cable")}},
+	{id="WindpineCanopy",name="Windpine Canopy Loop",region="Windpine",level=30,markChance=0.28,color="9BD18B",obstacles={
+		ob("climb","Bark wall"),ob("beam","Pine limb",0.14),ob("swing","Canopy vine",0.14),ob("gap","Branch gap",0.12),ob("ledge","Hollow ledge",0.15),ob("vault","Root arch"),ob("zip","Needle zipline")}},
+	{id="SkyreachUpdraft",name="Skyreach Updraft Course",region="Skyreach",level=40,markChance=0.3,color="96ACAB",obstacles={
+		ob("climb","Cliff pitons"),ob("gap","Updraft gap",0.15),ob("beam","Brass girder",0.14),ob("ledge","Wind ledge",0.16),ob("swing","Golem chain",0.15),ob("vault","Beacon rail"),ob("drop","Gale chute")}},
+	{id="TidewaterMastwalk",name="Tidewater Mastwalk",region="Tidewater",level=50,markChance=0.32,color="5EC8D8",obstacles={
+		ob("climb","Mast rigging"),ob("beam","Boom spar",0.15),ob("swing","Halyard swing",0.16),ob("gap","Buoy hop",0.15),ob("ledge","Lighthouse rail",0.16),ob("vault","Net barrels"),ob("zip","Sailcloth zipline")}},
+	{id="GloomhollowChasm",name="Gloomhollow Chasm Run",region="Gloomhollow",level=60,markChance=0.34,color="A58CE0",obstacles={
+		ob("climb","Crystal wall"),ob("ledge","Silk ledge",0.17),ob("gap","Chasm gap",0.16),ob("beam","Voidstone spine",0.17),ob("swing","Web strand",0.17),ob("vault","Fungal cap"),ob("gap","Wisp stones",0.15),ob("drop","Rappel drop")}},
+	{id="TempestStormrun",name="Tempest Stormrun",region="Tempest",level=75,markChance=0.36,color="C6DCFF",obstacles={
+		ob("climb","Pylon ladder"),ob("beam","Arc girder",0.18),ob("gap","Thunder gap",0.18),ob("swing","Storm chain",0.18),ob("ledge","Spire ledge",0.2),ob("vault","Crystal rail"),ob("gap","Cloud stones",0.18),ob("zip","Lightning line")}},
+}
+AG.CourseById = {}
+for ci, course in ipairs(AG.Courses) do
+	course.index = ci
+	course.lapXp = math.floor(30 + course.level * 4)
+	course.lapMarks = 1
+	AG.CourseById[course.id] = course
+	for i, o in ipairs(course.obstacles) do
+		local kind = AG.Kinds[o.kind]
+		o.index = i
+		o.risk = o.risk or 0
+		o.duration = kind.duration
+		o.xp = math.floor(5 + course.level * 0.9 + (if o.risk > 0 then 2 else 0))
+	end
+end
+-- XP for one full lap (every obstacle + the lap bonus).
+function AG.lapTotal(course)
+	local total = course.lapXp
+	for _, o in ipairs(course.obstacles) do total += o.xp end
+	return total
+end
+-- Chance (0..1) of failing an obstacle: risk at the course level, fading to 0
+-- FAIL_FADE levels above it, reduced by Surefoot percent.
+function AG.failChance(course, obstacle, level, surefoot)
+	local risk = obstacle.risk or 0
+	if risk <= 0 then return 0 end
+	local fade = math.clamp(1 - ((level or 1) - course.level) / AG.FAIL_FADE, 0, 1)
+	return risk * fade * (1 - math.clamp(surefoot or 0, 0, 100) / 100)
+end
+function AG.markChance(course, level)
+	local chance = course.markChance
+	if (level or 1) >= course.level + AG.OVERLEVEL then chance *= 0.5 end
+	return chance
+end
+-- Pure run state machine. run = {course, next, readyAt, deadline, startedAt} | nil.
+-- Returns verdict, newRun: "start" (obstacle 1 begins a lap), "next" (in order),
+-- "lap" (final obstacle), "busy" (still moving), "order" (out of order or a
+-- different course), "expired" (too long since the last landing).
+function AG.step(run, courseId, index, now)
+	local course = AG.CourseById[courseId]
+	if not course or type(index) ~= "number" or index < 1 or index > #course.obstacles or index % 1 ~= 0 then return "order", run end
+	if run and now < (run.readyAt or 0) then return "busy", run end
+	local o = course.obstacles[index]
+	local landing = now + o.duration
+	if index == 1 then
+		return "start", {course=courseId,next=2,readyAt=landing,deadline=landing+AG.STEP_WINDOW,startedAt=now}
+	end
+	if not run or run.course ~= courseId or run.next ~= index then return "order", run end
+	if now > run.deadline then return "expired", nil end
+	local verdict = if index == #course.obstacles then "lap" else "next"
+	return verdict, {course=courseId,next=if verdict == "lap" then 1 else index + 1,readyAt=landing,deadline=landing+AG.STEP_WINDOW,startedAt=run.startedAt}
+end
+-- Permanent lap milestone perk across every course (stored in p.perkStats["agility:laps"]).
+function AG.lapPerk(laps)
+	local tiers = 0
+	for id, n in pairs(type(laps) == "table" and laps or {}) do
+		if AG.CourseById[id] and type(n) == "number" then
+			for _, need in ipairs(AG.LapTiers) do if n >= need then tiers += 1 end end
+		end
+	end
+	if tiers == 0 then return nil, 0 end
+	local out = {}
+	for stat, v in pairs(AG.LapBonus) do out[stat] = v * tiers end
+	return out, tiers
+end
+
+-- Shortcuts: two ends (A, B) the world builds; the server moves the player to
+-- the other end. region = destination region the traveller must have unlocked.
+AG.Shortcuts = {
+	{id="CinderSlide",name="Cinder Shelf Slide",level=8,kind="drop",duration=3,xp=8,description="Slide from Brassfall Quarry down to the Cinder Shelf."},
+	{id="MosswakeRopeBridge",name="Windpine Rope Bridge",level=20,kind="beam",duration=7,xp=20,region="Windpine",description="A swaying rope bridge from Mosswake Grove to Windpine Grove."},
+	{id="SkyreachUpdraft",name="Skyreach Updraft Climb",level=35,kind="climb",duration=6,xp=35,region="Skyreach",description="Climb the updraft holds from Brassfall Quarry to Skyreach."},
+	{id="TidewaterSteps",name="Tidewater Stepping Stones",level=45,kind="gap",duration=7,xp=45,region="Tidewater",description="Leap the drifting stones from Meadow Reach to Tidewater Shoals."},
+	{id="GloomRappel",name="Gloomhollow Rappel",level=55,kind="drop",duration=7,xp=60,region="Gloomhollow",description="Rappel from the Cinder Shelf into the mouth of Gloomhollow."},
+	{id="TempestGaleLine",name="Tempest Gale Line",level=70,kind="zip",duration=7,xp=80,region="Tempest",description="Ride the gale line from Skyreach up to Tempest Spire."},
+}
+AG.ShortcutById = {}
+for i, sc in ipairs(AG.Shortcuts) do sc.index = i; AG.ShortcutById[sc.id] = sc end
+
+-- Windrunner outfit (Skymark Exchange): speed and Surefoot, set bonus.
+Data.Sets.Windrunner = {id="Windrunner",name="Windrunner",pieces={},bonus={speed=15,surefoot=15},text="+15 Speed, +15 Surefoot",color="62C2B0"}
+local windrunner = {
+	{id="WindrunnerHood",slot="helmet",name="Windrunner Hood",stats={speed=4,surefoot=5},marks=20},
+	{id="WindrunnerJerkin",slot="chest",name="Windrunner Jerkin",stats={speed=6,surefoot=8,health=10},marks=30},
+	{id="WindrunnerLeggings",slot="legs",name="Windrunner Leggings",stats={speed=5,surefoot=6},marks=25},
+	{id="WindrunnerBoots",slot="boots",name="Windrunner Boots",stats={speed=8,surefoot=4},marks=20},
+}
+AG.Shop = {}
+for _, w in ipairs(windrunner) do
+	item(w.id,{name=w.name,kind="armor",slot=w.slot,set="Windrunner",tier=2,rarity="Rare",color="62C2B0",stats=w.stats,requires={Agility=5},value=w.marks*20,
+		description="Part of the Windrunner outfit (Skymark Exchange). Requires Agility 5."})
+	table.insert(Data.Sets.Windrunner.pieces, w.id)
+	table.insert(AG.Shop, {item=w.id,cost={Skymark=w.marks}})
+end
+item("FeatherstepCharm",{name="Featherstep Charm",kind="accessory",rarity="Rare",color=Data.Rarity.Rare.color,stats={speed=6,surefoot=6},value=40*Data.Rarity.Rare.rank^2,description="Accessory. Magical Power "..Data.Rarity.Rare.power..". Skymark Exchange."})
+item("GaleDraught",{name="Gale Draught",kind="consumable",category="potion",rarity="Uncommon",color="A8F0E0",buff={stats={speed=30,surefoot=20},duration=300},value=30,description="Potion: 5 minute buff. +30 Speed, +20 Surefoot."})
+item("SkymarkSatchel",{name="Skymark Satchel",kind="material",rarity="Uncommon",color="7FE3D0",value=60,description="Sell to a merchant for coins (Skymark Exchange)."})
+table.insert(AG.Shop, {item="FeatherstepCharm",cost={Skymark=40}})
+table.insert(AG.Shop, {item="GaleDraught",cost={Skymark=3}})
+table.insert(AG.Shop, {item="SkymarkSatchel",cost={Skymark=2}})
+
+------------------------------------------------------------------------------
+-- Hunter
+------------------------------------------------------------------------------
+-- Methods: traps (snare, box, bird) tick server-side; nets roll on the spot.
+-- kit = item that must be owned (never consumed).
+HU.Methods = {
+	snare={name="Snare",kit="SnareKit",verb="Set snare",trap=true},
+	box={name="Box trap",kit="BoxTrap",verb="Set box trap",trap=true},
+	bird={name="Bird snare",kit="BirdSnare",verb="Set bird snare",trap=true},
+	net={name="Net",kit="SkyNet",verb="Swing net",trap=false},
+}
+HU.MethodOrder = {"snare","bird","box","net"}
+HU.TICK = 3               -- seconds between trap rolls
+HU.MAX_TICKS = 40         -- an unsprung trap collapses after this many rolls
+HU.DISMANTLE_WINDOW = 4   -- trigger a set trap twice within this many seconds to pick it up
+HU.MAX_TRAPS = 5
+HU.NET_MISS_COOLDOWN = 2  -- seconds before the same swarm can be netted again after a miss
+HU.LogTiers = {10,25,50,100,250,500,1000}
+HU.LogBonus = {trapLuck=0.5,huntingFortune=1}
+function HU.maxTraps(level) return math.min(HU.MAX_TRAPS, 1 + (level or 1) // 20) end
+-- Per-roll (traps) or per-swing (nets) catch chance in 0..1.
+function HU.catchChance(creature, level, trapLuck)
+	local c = creature.base + ((level or 1) - creature.level) * 0.012
+	c = math.clamp(c, creature.base * 0.5, 0.85)
+	c *= 1 + math.clamp(trapLuck or 0, 0, 100) / 100
+	return math.min(0.95, c)
+end
+function HU.logPerk(log)
+	local tiers = 0
+	for id, n in pairs(type(log) == "table" and log or {}) do
+		if HU.CreatureById[id] and type(n) == "number" then
+			for _, need in ipairs(HU.LogTiers) do if n >= need then tiers += 1 end end
+		end
+	end
+	if tiers == 0 then return nil, 0 end
+	local out = {}
+	for stat, v in pairs(HU.LogBonus) do out[stat] = v * tiers end
+	return out, tiers
+end
+
+-- Materials (furs, feathers, essences, meat). Feathers feed Fletching, meat
+-- Cooking, essences Alchemy, pelts the Thicketstalker outfit.
+local materials = {
+	{id="DownyPelt",name="Downy Pelt",color="E8DCC8",value=6,rarity="Common",text="Soft fur of a Puffcap Hopper."},
+	{id="HopperHaunch",name="Raw Hopper Haunch",color="C97B63",value=4,rarity="Common",text="Raw meat. Roast it at a Hearth."},
+	{id="SunwingDust",name="Sunwing Dust",color="F7D774",value=9,rarity="Common",text="Glittering scales of the Sunwing Moth. Brewed at a Cauldron."},
+	{id="GrouseQuill",name="Grouse Quill",color="B08A5A",value=10,rarity="Uncommon",text="Stiff quills. Fletch into arrow plumes."},
+	{id="RawGrouse",name="Raw Grouse",color="B5654A",value=8,rarity="Uncommon",text="Raw fowl. Bake it into a pie at a Hearth."},
+	{id="EmberPelt",name="Ember Pelt",color="D9642B",value=22,rarity="Uncommon",text="Warm fur of a Cinder Ferret."},
+	{id="GlintEssence",name="Glint Essence",color="8EF0F8",value=30,rarity="Rare",text="Wing-light of the Glintwing Dragonfly. Brewed at a Cauldron."},
+	{id="GalePlume",name="Gale Plume",color="DDEBFF",value=34,rarity="Rare",text="Wind-stiff plume of a Gale Kestrel. Fletch into plumes."},
+	{id="ShadowPelt",name="Shadow Pelt",color="3D3654",value=60,rarity="Rare",text="Light-drinking fur of a Gloom Lynx."},
+	{id="StormmaneHide",name="Stormmane Hide",color="8FA3C8",value=90,rarity="Epic",text="Crackling hide of a Stormmane Ibex."},
+	{id="IbexShank",name="Raw Ibex Shank",color="A85E4E",value=40,rarity="Rare",text="Raw meat. Slow-roast it at a Hearth."},
+	{id="StormmaneHorn",name="Stormmane Horn",color="F2F0D8",value=400,rarity="Epic",text="A rare spiral horn, humming with stored lightning."},
+}
+for _, m in ipairs(materials) do
+	item(m.id,{name=m.name,kind="material",rarity=m.rarity,color=m.color,value=m.value,description=m.text})
+end
+
+-- Kits (owned, never consumed). kind=material keeps them out of tool slots.
+item("SnareKit",{name="Snare Kit",kind="material",category="trap",rarity="Common",color="B08A5A",value=20,hunterMethod="snare",description="Hunter kit: set snares at warren and trail spots. Never used up."})
+item("BirdSnare",{name="Bird Snare",kind="material",category="trap",rarity="Common",color="C9B994",value=40,hunterMethod="bird",description="Hunter kit: set bird snares on perches. Never used up."})
+item("BoxTrap",{name="Box Trap",kind="material",category="trap",rarity="Uncommon",color="8C6A4A",value=140,hunterMethod="box",description="Hunter kit: bait box traps at dens. Never used up."})
+item("SkyNet",{name="Sky Net",kind="material",category="trap",rarity="Common",color="E9F1F7",value=30,hunterMethod="net",description="Hunter kit: swing at swarms of moths and dragonflies. Never used up."})
+item("GossamerNet",{name="Gossamer Net",kind="material",category="trap",rarity="Rare",color="D8D8E8",value=300,hunterMethod="net",netBonus=0.1,description="Hunter kit: a silk net. +10% net catch chance. Never used up."})
+HU.Kits = {snare={"SnareKit"},bird={"BirdSnare"},box={"BoxTrap"},net={"GossamerNet","SkyNet"}}
+recipe("GossamerNet",{skill="Hunter",level=35,xp=180,costs={SpiderSilk=12,SkyNet=1},collectionTier={GlintEssence=1},station="Workbench",category="Hunter"})
+
+-- Creatures: method, Hunter level, region, XP per catch, base catch chance;
+-- drops[1] is the primary drop (Hunting Fortune applies to it). respawn = net
+-- swarm cooldown per player.
+HU.Creatures = {
+	{id="PuffcapHopper",name="Puffcap Hopper",method="snare",level=1,region="Meadow",xp=24,base=0.3,color="E8DCC8",
+		drops={{item="DownyPelt",chance=1,min=1,max=1},{item="HopperHaunch",chance=0.8,min=1,max=1},{item="PuffkinPet",chance=0.002,min=1,max=1}}},
+	{id="SunwingMoth",name="Sunwing Moth",method="net",level=9,region="Meadow",xp=36,base=0.55,respawn=5,color="F7D774",
+		drops={{item="SunwingDust",chance=1,min=1,max=2},{item="DriftPlume",chance=0.3,min=1,max=3}}},
+	{id="PinecrestGrouse",name="Pinecrest Grouse",method="bird",level=18,region="Windpine",xp=70,base=0.26,color="B08A5A",
+		drops={{item="GrouseQuill",chance=1,min=2,max=4},{item="RawGrouse",chance=0.7,min=1,max=1}}},
+	{id="CinderFerret",name="Cinder Ferret",method="box",level=27,region="Quarry",xp=110,base=0.24,color="D9642B",
+		drops={{item="EmberPelt",chance=1,min=1,max=1},{item="ArcaneDust",chance=0.3,min=1,max=2},{item="PuffkinPet",chance=0.001,min=1,max=1}}},
+	{id="GlintwingDragonfly",name="Glintwing Dragonfly",method="net",level=36,region="Tidewater",xp=140,base=0.45,respawn=6,color="8EF0F8",
+		drops={{item="GlintEssence",chance=1,min=1,max=2},{item="GlimmerflyPet",chance=0.0015,min=1,max=1}}},
+	{id="GaleKestrel",name="Gale Kestrel",method="bird",level=48,region="Skyreach",xp=200,base=0.2,color="DDEBFF",
+		drops={{item="GalePlume",chance=1,min=2,max=3},{item="StormFeather",chance=0.3,min=1,max=1}}},
+	{id="GloomLynx",name="Gloom Lynx",method="box",level=62,region="Gloomhollow",xp=280,base=0.17,color="3D3654",
+		drops={{item="ShadowPelt",chance=1,min=1,max=1},{item="VoidEssence",chance=0.15,min=1,max=1},{item="GlimmerflyPet",chance=0.001,min=1,max=1}}},
+	{id="StormmaneIbex",name="Stormmane Ibex",method="snare",level=80,region="Tempest",xp=380,base=0.14,color="8FA3C8",
+		drops={{item="StormmaneHide",chance=1,min=1,max=1},{item="IbexShank",chance=0.8,min=1,max=2},{item="StormmaneHorn",chance=0.04,min=1,max=1},{item="StormkidPet",chance=0.001,min=1,max=1}}},
+}
+HU.CreatureById = {}
+for i, c in ipairs(HU.Creatures) do c.index = i; HU.CreatureById[c.id] = c end
+
+-- Pets: three Hunter companions and an Agility lap pet.
+for _, pet in ipairs({
+	{id="Puffkin",name="Puffkin",skill="Hunter",rarity="Uncommon",color="E8DCC8",perLevel={petLuck=0.1,trapLuck=0.05,health=0.4},ability="Burrow Sense: +10% Hunter XP"},
+	{id="Glimmerfly",name="Glimmerfly",skill="Hunter",rarity="Rare",color="8EF0F8",perLevel={huntingFortune=0.6,intelligence=0.3},ability="Glint Trail: +10% Hunter XP"},
+	{id="Stormkid",name="Stormkid",skill="Hunter",rarity="Epic",color="8FA3C8",perLevel={trapLuck=0.1,speed=0.2,strength=0.3},ability="Storm Hooves: +15% Hunter XP"},
+	{id="Gustling",name="Gustling",skill="Agility",rarity="Rare",color="7FE3D0",perLevel={speed=0.25,surefoot=0.1},ability="Tailwind: +10% Agility XP"},
+}) do
+	table.insert(Data.Pets, pet)
+	Data.PetById[pet.id] = pet
+	item(pet.id.."Pet",{name=pet.name.." Pet",kind="pet",pet=pet.id,rarity=pet.rarity,color=pet.color,value=200*Data.Rarity[pet.rarity].rank^2,description="Summon from your pet menu. "..pet.ability})
+end
+AG.LapDrops = {{item="GustlingPet",chance=0.0008,min=1,max=1}}
+
+-- Thicketstalker outfit (Hunter, crafted at a Workbench from pelts).
+Data.Sets.Thicketstalker = {id="Thicketstalker",name="Thicketstalker",pieces={},bonus={trapLuck=10,huntingFortune=20},text="+10 Trap Luck, +20 Hunting Fortune",color="7A8B4E"}
+for _, t in ipairs({
+	{id="ThicketstalkerCap",slot="helmet",name="Thicketstalker Cap",stats={trapLuck=3,huntingFortune=5},level=15,costs={DownyPelt=12,BeastHide=6}},
+	{id="ThicketstalkerVest",slot="chest",name="Thicketstalker Vest",stats={trapLuck=4,huntingFortune=8,health=15},level=25,costs={EmberPelt=10,DownyPelt=10}},
+	{id="ThicketstalkerTrousers",slot="legs",name="Thicketstalker Trousers",stats={trapLuck=3,huntingFortune=7},level=22,costs={EmberPelt=8,BeastHide=10}},
+	{id="ThicketstalkerBoots",slot="boots",name="Thicketstalker Boots",stats={trapLuck=2,speed=4,huntingFortune=5},level=18,costs={DownyPelt=8,GrouseQuill=6}},
+}) do
+	item(t.id,{name=t.name,kind="armor",slot=t.slot,set="Thicketstalker",tier=2,rarity="Uncommon",color="7A8B4E",stats=t.stats,requires={Hunter=t.level},value=120+t.level*6,
+		description="Part of the Thicketstalker outfit. Requires Hunter "..t.level.."."})
+	recipe(t.id,{skill="Hunter",level=t.level,xp=t.level*8,costs=t.costs,station="Workbench",category="Hunter"})
+	table.insert(Data.Sets.Thicketstalker.pieces, t.id)
+end
+item("LynxfangTalisman",{name="Lynxfang Talisman",kind="accessory",rarity="Epic",color=Data.Rarity.Epic.color,stats={trapLuck=5,huntingFortune=10,critChance=1},value=40*Data.Rarity.Epic.rank^2,description="Accessory. Magical Power "..Data.Rarity.Epic.power.."."})
+recipe("LynxfangTalisman",{skill="Hunter",level=60,xp=600,costs={ShadowPelt=16,StormFeather=8},collectionTier={ShadowPelt=1},station="Workbench",category="Accessories"})
+
+-- Links into other skills.
+-- Fletching: quills and plumes become arrow plumes in bulk.
+recipe("QuillPlumes",{output="DriftPlume",skill="Fletching",level=10,xp=10,costs={GrouseQuill=1},amount=10,repeatable=true,station="Workbench",category="Fletching"})
+recipe("GalePlumes",{output="DriftPlume",skill="Fletching",level=40,xp=30,costs={GalePlume=1},amount=30,repeatable=true,station="Workbench",category="Fletching"})
+-- Cooking: hunted meat.
+item("RoastHopper",{name="Roast Hopper",kind="consumable",category="food",rarity="Common",color="C97B63",heal=60,recovery=4,value=10,requires={Cooking=5},description="Restore up to 60 health."})
+recipe("RoastHopper",{skill="Cooking",level=5,xp=18,costs={HopperHaunch=1,Herb=1},repeatable=true,station="Hearth",category="Meals"})
+item("GrousePie",{name="Grouse Pie",kind="consumable",category="food",rarity="Uncommon",color="D9A066",heal=150,recovery=4,value=30,requires={Cooking=25},description="Restore up to 150 health."})
+recipe("GrousePie",{skill="Cooking",level=25,xp=60,costs={RawGrouse=1,Sunwheat=2},repeatable=true,station="Hearth",category="Meals"})
+item("StormmaneRoast",{name="Stormmane Roast",kind="consumable",category="buff",rarity="Epic",color="A85E4E",buff={stats={strength=40,speed=20,health=100},duration=600},value=220,description="+40 Strength, +20 Speed, +100 Health for 10 minutes."})
+recipe("StormmaneRoast",{skill="Cooking",level=70,xp=280,costs={IbexShank=2,Starfruit=2},repeatable=true,station="Hearth",category="Feasts"})
+-- Alchemy: hunted essences.
+item("FeatherlightDraught",{name="Featherlight Draught",kind="consumable",category="potion",rarity="Uncommon",color="F7D774",buff={stats={speed=25,surefoot=15},duration=300},value=40,requires={Alchemy=15},description="Potion: 5 minute buff. +25 Speed, +15 Surefoot."})
+recipe("FeatherlightDraught",{skill="Alchemy",level=15,xp=55,costs={SunwingDust=3,Herb=2},repeatable=true,station="Cauldron",category="Potions"})
+item("TrackersFocus",{name="Tracker's Focus",kind="consumable",category="potion",rarity="Rare",color="8EF0F8",buff={stats={trapLuck=15,huntingFortune=30},duration=600},value=120,requires={Alchemy=40},description="Potion: 10 minute buff. +15 Trap Luck, +30 Hunting Fortune."})
+recipe("TrackersFocus",{skill="Alchemy",level=40,xp=125,costs={GlintEssence=2,Moonbloom=1},repeatable=true,station="Cauldron",category="Potions"})
+
+-- Trackers' Lodge (Hunter vendor): kits for coins (+ timber for the box trap).
+HU.Shop = {
+	{item="SnareKit",cost={coins=50}},
+	{item="SkyNet",cost={coins=80}},
+	{item="BirdSnare",cost={coins=150}},
+	{item="BoxTrap",cost={coins=500,Timber=20}},
+}
+-- Vendors stay open this long after visiting their prompt.
+Data.SKILL_VENDOR_SECONDS = 300
+Data.SkillVendors = {
+	Agility={name="Skymark Exchange",shop=AG.Shop},
+	Hunter={name="Trackers' Lodge",shop=HU.Shop},
+}
+
+-- Collections for the new materials (drop-like items reach tiers sooner).
+for id, scale in pairs({Skymark=0.05,DownyPelt=0.5,SunwingDust=0.5,GrouseQuill=0.5,EmberPelt=0.3,GlintEssence=0.3,GalePlume=0.3,ShadowPelt=0.2,StormmaneHide=0.2}) do
+	table.insert(Data.CollectionItems, id)
+	Data.CollectionScale[id] = scale
+end
+
+------------------------------------------------------------------------------
+-- Quest checks: laps {course,count} and catches {creature,count}.
+------------------------------------------------------------------------------
+local describe = Data.describeCheck
+function Data.describeCheck(o)
+	local kind = type(o) == "table" and o.kind
+	if kind == "laps" then
+		local course = AG.CourseById[o.course]
+		return "Run "..o.count.." "..(if o.count == 1 then "lap" else "laps").." of the "..(course and course.name or tostring(o.course))
+	elseif kind == "catches" then
+		local creature = HU.CreatureById[o.creature]
+		return "Catch "..o.count.." "..(creature and creature.name or tostring(o.creature))
+	end
+	return describe(o)
+end
+local function laps(course, count) return {kind="laps",course=course,count=count} end
+local function catches(creature, count) return {kind="catches",creature=creature,count=count} end
+for _, q in ipairs({
+	{id="FirstFootfalls",title="First Footfalls",line="side",region="Hub",
+		story="Harbourmaster Wren swears the quay rigging is the best teacher in the isles. Run her course until your feet stop arguing with you.",
+		requires={{kind="contracts",count=2}},
+		objectives={laps("QuayRigging",5),{kind="level",skill="Agility",level=5}},
+		rewards={coins=400,points=1,items={Skymark=3},xp={Agility=500}}},
+	{id="TrappersApprentice",title="The Trapper's Apprentice",line="side",region="Meadow",
+		story="Old Marrow of the Trackers' Lodge needs a steady hand at the warrens. Snare the hoppers and bring their pelts in.",
+		requires={{kind="contracts",count=3}},
+		objectives={catches("PuffcapHopper",10),{kind="have",item="DownyPelt",count=5,consume=true},{kind="level",skill="Hunter",level=10}},
+		rewards={coins=600,points=1,items={BirdSnare=1},xp={Hunter=800}}},
+	{id="WindsOverWindpine",title="Winds over Windpine",line="side",region="Windpine",
+		story="The canopy runners and the grouse trappers of Windpine share one secret: read the wind. Run the canopy and trap its birds.",
+		requires={{kind="quest",quest="FirstFootfalls"},{kind="level",skill="Agility",level=30},{kind="level",skill="Hunter",level=18}},
+		objectives={laps("WindpineCanopy",10),catches("PinecrestGrouse",15)},
+		rewards={coins=3000,points=2,perk={speed=3},lamp={xp=3000,skills={"Agility","Hunter"}}}},
+	{id="StormmaneTrail",title="The Stormmane Trail",line="side",region="Tempest",
+		story="Something with a lightning-white mane grazes the top of the Spire. Outrun the storm and trap the beast, then bring back its horn.",
+		requires={{kind="quest",quest="TrappersApprentice"},{kind="level",skill="Hunter",level=80},{kind="level",skill="Agility",level=60}},
+		objectives={catches("StormmaneIbex",10),laps("TempestStormrun",5),{kind="have",item="StormmaneHorn",count=1,consume=true}},
+		rewards={coins=25000,points=3,perk={trapLuck=5,huntingFortune=10}}},
+}) do
+	table.insert(Data.Quests, q)
+	q.index = #Data.Quests
+	Data.QuestById[q.id] = q
+end
+-- Diary tasks in existing regional diaries (tiers stay within 3-5 tasks).
+for _, add in ipairs({
+	{"Meadow","Medium",catches("PuffcapHopper",25)},
+	{"Quarry","Hard",laps("BrassfallScaffold",25)},
+	{"Skyreach","Medium",laps("SkyreachUpdraft",10)},
+	{"Windpine","Medium",catches("PinecrestGrouse",25)},
+	{"Gloomhollow","Hard",catches("GloomLynx",50)},
+	{"Tidewater","Hard",catches("GlintwingDragonfly",50)},
+	{"Tempest","Elite",laps("TempestStormrun",100)},
+}) do
+	local diary = Data.DiaryByRegion[add[1]]
+	table.insert(diary.tiers[add[2]].tasks, add[3])
+end
+end
+-- End Agility & Hunter section.
+
 return Data

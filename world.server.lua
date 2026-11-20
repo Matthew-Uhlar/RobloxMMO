@@ -2573,3 +2573,331 @@ do
 	end
 	for player,home in pairs(homes) do homePlacement.attach(player,home) end
 end
+
+
+-------------------------------------------------------------------------------
+-- Agility & Hunter (New Skills team; self-contained section). Agility courses
+-- (a loop of floating perches beside a region island), shortcuts between
+-- islands, hunting grounds and the two skill vendors. Data lives in
+-- Data.Agility / Data.Hunter; server.server.lua (Skills block) validates every
+-- prompt. Each built Model carries attribute SkillContent ("Agility"|"Hunter")
+-- and sits inside its island Model (Workspace.Islands keeps twelve islands).
+-- Prompt attributes (all interact holds, server-validated):
+--   agility     IsleItem "<course>:<index>", AgilityCourse, AgilityIndex, AgilityKind,
+--               AgilityEnd (landing Vector3), AgilityFall (fall landing Vector3), IsleRegion
+--   shortcut    IsleItem "<id>:A|B", ShortcutTo (landing Vector3), AgilityKind, IsleRegion
+--   trap / net  IsleItem creature id, HunterMethod, HunterSpot "<creature>#<n>", IsleRegion;
+--               the server writes TrapState / TrapOwner on the prompt's host part
+--   skillVendor IsleItem "Agility" | "Hunter"
+-- Obstacle, shortcut and trap props are mesh slots: new shape names
+-- (ClimbNet, BalanceBeam, RopeSwing, LedgeWalk, ZipLine, SlideChute,
+-- SnareTrap, BirdPerch, SwarmBloom, AgilityPerch) render as primitives until the Mesh team adds them.
+-------------------------------------------------------------------------------
+local function buildSkillContent()
+	local AG,HU=Data.Agility,Data.Hunter
+	if not AG or not HU then return end
+	local GATED={}
+	for _,r in ipairs(Data.Regions) do if next(r.requires) then GATED[r.id]=true end end
+	local function isle(name)
+		local m=islandsFolder:FindFirstChild(name)
+		assert(m,"skills: unknown island "..name)
+		return m,m:GetAttribute("IslandCenter"),m:GetAttribute("IslandRadius")
+	end
+	local function flat(v) return V(v.X,0,v.Z) end
+	local function content(parent,name,skill)
+		local m=group(name,parent)
+		m:SetAttribute("SkillContent",skill)
+		return m
+	end
+	local function region(q,id) if id and GATED[id] then q:SetAttribute("IsleRegion",id) end end
+	-- A connector from a to b (top surface centre line), width w, thickness t.
+	-- First candidate spot (ground level) with no existing prop within `radius`
+	-- studs (XZ) and 7 studs above; island floors and our own content are ignored.
+	local FLOOR={Meadow=true,["Floating foundation"]=true,["Mineral stratum"]=true,["Lower basalt"]=true,["Fractured cliff"]=true,
+		["Keel rock"]=true,["Edge guard"]=true,["Aether vein"]=true,["Shore ledge"]=true,Path=true,Wildflowers=true}
+	local function freeSpot(host,candidates,radius)
+		for _,pos in ipairs(candidates) do
+			local clear=true
+			for _,obj in ipairs(host:GetDescendants()) do
+				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
+					local node,ours=obj.Parent,false
+					while node and node~=host do if node:GetAttribute("SkillContent") then ours=true break end node=node.Parent end
+					if not ours then
+						local cf,sz=obj.CFrame,obj.Size
+						local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
+						local c=cf.Position
+						local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
+						local dz=math.max(0,math.abs(pos.Z-c.Z)-ext("Z"))
+						local ey=ext("Y")
+						if dx*dx+dz*dz<radius*radius and c.Y+ey>pos.Y+.3 and c.Y-ey<pos.Y+7 then clear=false break end
+					end
+				end
+			end
+			if clear then return pos,true end
+		end
+		return candidates[1],false
+	end
+	local function span(m,name,a,b,w,t,color,mat,solid)
+		return part(m,name,V(w,t,(b-a).Magnitude),CFrame.lookAt((a+b)/2-V(0,t/2,0),b-V(0,t/2,0)),color,mat,solid==true)
+	end
+
+	-- Course sites: island, outward angle (degrees), ring radius, palette.
+	local SITES={
+		QuayRigging={isle="Compass Quay",angle=245,ring=26,perch=C("C9B994"),rock=rock,wood=timber,mat=WO},
+		MosswakeHedgerow={isle="Mosswake Grove",angle=270,ring=26,perch=C("86AE69"),rock=C("6E7B68"),wood=C("7A5A40"),mat=Enum.Material.Grass},
+		BrassfallScaffold={isle="Brassfall Quarry",angle=90,ring=26,perch=C("9C9682"),rock=shale,wood=C("7A5A40"),mat=GR},
+		WindpineCanopy={isle="Windpine Grove",angle=290,ring=30,perch=C("5F8A57"),rock=C("3F4B44"),wood=darken(timber,.25),mat=LEAF},
+		SkyreachUpdraft={isle="Skyreach",angle=80,ring=30,perch=C("A3B8B4"),rock=C("5F6F74"),wood=brass,mat=ST},
+		TidewaterMastwalk={isle="Tidewater Shoals",angle=80,ring=30,perch=C("D9C9A0"),rock=C("7D8B92"),wood=C("A57C55"),mat=SA},
+		GloomhollowChasm={isle="Gloomhollow Caverns",angle=270,ring=32,perch=C("3A3F52"),rock=C("2B2F3D"),wood=C("5A4E7A"),mat=ST},
+		TempestStormrun={isle="Tempest Spire",angle=270,ring=32,perch=C("4A5266"),rock=C("2E3445"),wood=C("3B4256"),mat=ST},
+	}
+	local PERCH_R=4.5
+	-- Height change across an obstacle (studs); jitter keeps every top distinct.
+	local RISE={climb=3,beam=.6,swing=-1.2,ledge=1.4,gap=-.8,vault=.9,zip=-2.5,drop=-2}
+	local function perch(m,top,style,k)
+		local p=disk(m,"Agility perch",top-V(0,.6,0),PERCH_R,1.2,style.perch,style.mat,true)
+		meshSlot(p,"AgilityPerch",style.perch)
+		local keel=part(m,"Perch keel",V(5.4,6,5),CFrame.new(top-V(0,4.4,0))*CFrame.Angles(.12,k*1.7,.1),style.rock,ST,false)
+		meshSlot(keel,"CliffRock")
+		for i=0,3 do
+			local d=V(math.cos(i*HALF),0,math.sin(i*HALF))
+			local c=top+d*(PERCH_R+.4)+V(0,4.5,0)
+			local guard=part(m,"Perch guard",V(.6,9,2*PERCH_R+1.6),CFrame.lookAt(c,c+V(-d.Z,0,d.X)),cream,SM,true)
+			guard.Transparency,guard.CastShadow=1,false
+		end
+		return p
+	end
+	-- Obstacle props between perch tops a and b (both perches PERCH_R wide).
+	local function obstacleProps(m,kind,a,b,style)
+		local dir=flat(b-a).Unit
+		local side=V(-dir.Z,0,dir.X)
+		local aE,bE=a+dir*(PERCH_R-.6),b-dir*(PERCH_R-.6)
+		if kind=="climb" then
+			meshSlot(span(m,"Climbing net",aE+V(0,.3,0),bE+V(0,.3,0),3,.3,C("C9B994"),Enum.Material.Fabric),"ClimbNet",style.wood)
+			for _,s in ipairs({-1.6,1.6}) do span(m,"Net rail",aE+side*s+V(0,.5,0),bE+side*s+V(0,.5,0),.3,.3,style.wood,WO) end
+		elseif kind=="beam" then
+			meshSlot(span(m,"Balance beam",aE+V(0,.35,0),bE+V(0,.35,0),.9,.55,style.wood,WO),"BalanceBeam",style.wood)
+		elseif kind=="swing" then
+			local mid=(aE+bE)/2
+			span(m,"Swing cable",aE+V(0,12.2,0),bE+V(0,12.2,0),.22,.22,ink,MT)
+			for _,e in ipairs({aE,bE}) do block(m,"Swing mast",e+V(0,6.1,0),V(.5,12.2,.5),style.wood,WO,false) end
+			meshSlot(block(m,"Swing rope",mid+V(0,7.6,0),V(.3,9.2,.3),C("C9B994"),Enum.Material.Fabric,false),"RopeSwing",style.wood)
+		elseif kind=="ledge" then
+			meshSlot(span(m,"Ledge walk",aE+side*1.4+V(0,.25,0),bE+side*1.4+V(0,.25,0),1.3,.5,style.rock,ST),"LedgeWalk",style.rock)
+			local wall=span(m,"Ledge wall",aE+side*2.6+V(0,5.2,0),bE+side*2.6+V(0,5.2,0),.9,5.6,style.rock,ST)
+			meshSlot(wall,"CliffRock")
+		elseif kind=="gap" then
+			for i,t in ipairs({.36,.66}) do
+				local p=aE:Lerp(bE,t)-V(0,.4+i*.21,0)
+				meshSlot(part(m,"Stepping stone",V(2.6,1.2,2.4),CFrame.new(p)*CFrame.Angles(0,i*1.3,.06),style.rock,ST,false),"Rock",style.rock)
+			end
+		elseif kind=="vault" then
+			span(m,"Vault plank",aE+V(0,.2,0),bE+V(0,.2,0),2.2,.4,style.wood,WO)
+			local mid=(aE+bE)/2
+			meshSlot(part(m,"Vault crate",V(2.6,1.8,1.6),CFrame.lookAt(mid+V(0,1.3,0),mid+V(0,1.3,0)+side),C("8C6A4A"),WO,false),"Crate")
+		elseif kind=="zip" then
+			block(m,"Zip tower",aE+V(0,4.2,0),V(.6,8.4,.6),style.wood,WO,false)
+			meshSlot(span(m,"Zip cable",aE+V(0,8.1,0),bE+V(0,3.1,0),.18,.18,ink,MT),"ZipLine",ink)
+		elseif kind=="drop" then
+			meshSlot(span(m,"Slide chute",aE+V(0,.25,0),bE+V(0,.25,0),2.6,.4,style.wood,WO),"SlideChute",style.wood)
+			for _,s in ipairs({-1.4,1.4}) do span(m,"Chute rail",aE+side*s+V(0,.6,0),bE+side*s+V(0,.6,0),.25,.4,brass,MT) end
+		end
+	end
+
+	local courseCount=0
+	for _,course in ipairs(AG.Courses) do
+		local site=SITES[course.id]
+		local host,IC,R=isle(site.isle)
+		local m=content(host,"Agility course "..course.name,"Agility")
+		m:SetAttribute("AgilityCourse",course.id)
+		local a=math.rad(site.angle)
+		local dir=V(math.cos(a),0,math.sin(a))
+		local tangent=V(-dir.Z,0,dir.X)
+		local startDist=R-9
+		local n=#course.obstacles
+		local O=IC+dir*(startDist+site.ring)
+		-- Perch tops: k=1 is the start plinth on the island, the rest float.
+		local tops={}
+		local h=10
+		for k=1,n do
+			if k==1 then
+				tops[1]=IC+dir*startDist+V(0,.55,0)
+			else
+				local phi=a+math.pi+(k-1)*2*math.pi/n
+				tops[k]=O+V(math.cos(phi),0,math.sin(phi))*site.ring+V(0,h+.13*k,0)
+				h=math.clamp(h+RISE[course.obstacles[k].kind],7,16)
+			end
+		end
+		local plinth=disk(m,"Course start",tops[1]-V(0,.3,0),5,.6,site.perch,site.mat,true)
+		meshSlot(plinth,"AgilityPerch",site.perch)
+		for k=2,n do perch(m,tops[k],site,k) end
+		local fall=IC+dir*(startDist-9)+V(0,3.5,0)
+		for i,o in ipairs(course.obstacles) do
+			local from,to=tops[i],tops[i%n+1]
+			obstacleProps(m,o.kind,from,to,site)
+			local d=flat(to-from).Unit
+			local marker=block(m,"Obstacle marker",from+d*(PERCH_R-1.2)+V(0,1.6,0),V(.7,3.2,.7),C(course.color),MT,false)
+			meshSlot(marker,"BridgePost",C(course.color))
+			marker:SetAttribute("AgilityIndex",i)
+			local kind=AG.Kinds[o.kind]
+			local q=prompt(marker,kind.verb,o.name.." · "..course.name.." (Lv "..course.level..")","agility",course.id..":"..i)
+			q:SetAttribute("AgilityCourse",course.id)
+			q:SetAttribute("AgilityIndex",i)
+			q:SetAttribute("AgilityKind",o.kind)
+			q:SetAttribute("AgilityEnd",to+V(0,3,0))
+			q:SetAttribute("AgilityFall",fall)
+			region(q,course.region)
+		end
+		local ground=tops[1]-V(0,.55,0)
+		local signPos=freeSpot(host,{ground-dir*7+tangent*8,ground-dir*7-tangent*8,ground-dir*13+tangent*5,ground-dir*13-tangent*5,ground-dir*16},5)
+		signAt(m,CFrame.lookAt(signPos,signPos-dir),course.name,"AGILITY "..course.level.."   /   "..n.." OBSTACLES",C(course.color),9)
+		local pole=block(m,"Course banner pole",tops[1]+tangent*4.2+V(0,3,0),V(.3,6,.3),brass,MT,false)
+		local cloth=part(m,"Course banner",V(1.6,2.2,.12),CFrame.new(pole.CFrame.Position+V(.9,1.6,0)),C(course.color),Enum.Material.Fabric,false)
+		meshSlot(cloth,"Banner",C(course.color))
+		anchor(m,"Waypoint_Agility_"..course.id,tops[1]-dir*7-V(0,.55,0),tops[1])
+		courseCount+=1
+	end
+
+	-- Shortcuts: two islands, end plinths on the facing rims, a path of props.
+	local SHORTCUT_SITES={
+		CinderSlide={a="Brassfall Quarry",b="Cinder Shelf",shiftA=V(28,0,0),shiftB=V(28,0,0)},
+		MosswakeRopeBridge={a="Mosswake Grove",b="Windpine Grove"},
+		SkyreachUpdraft={a="Brassfall Quarry",b="Skyreach"},
+		TidewaterSteps={a="Meadow Reach",b="Tidewater Shoals",shiftA=V(7,0,8)},
+		GloomRappel={a="Cinder Shelf",b="Gloomhollow Caverns",shiftA=V(-4,0,14)},
+		TempestGaleLine={a="Skyreach",b="Tempest Spire"},
+	}
+	for _,sc in ipairs(AG.Shortcuts) do
+		local site=SHORTCUT_SITES[sc.id]
+		local hostA,CA,RA=isle(site.a)
+		local hostB,CB,RB=isle(site.b)
+		local dir=flat(CB-CA).Unit
+		local side=V(-dir.Z,0,dir.X)
+		local function endSpot(host,pos,inward)
+			return (freeSpot(host,{pos,pos+side*6,pos-side*6,pos+inward*6,pos+side*12,pos-side*12,pos+inward*6+side*8,pos+inward*6-side*8,pos+inward*12},4.2))
+		end
+		local endA=endSpot(hostA,CA+dir*(RA-10)+(site.shiftA or V(0,0,0)),-dir)
+		local endB=endSpot(hostB,CB-dir*(RB-10)+(site.shiftB or V(0,0,0)),dir)
+		local landA,landB=endA-dir*5+V(0,3.5,0),endB+dir*5+V(0,3.5,0)
+		for _,e in ipairs({{"A",hostA,endA,landB,endB},{"B",hostB,endB,landA,endA}}) do
+			local tag,host,pos,landing,other=e[1],e[2],e[3],e[4],e[5]
+			local m=content(host,"Shortcut "..sc.name.." "..tag,"Agility")
+			m:SetAttribute("AgilityShortcut",sc.id)
+			local toward=flat(other-pos).Unit
+			disk(m,"Shortcut plinth",pos+V(0,.2,0),3,.5,C("8B8574"),ST,true)
+			local post=block(m,"Shortcut post",pos+toward*1.6+V(0,2.45,0),V(.8,4,.8),C(Data.Skills.Agility.color),MT,false)
+			meshSlot(post,"BridgePost",C(Data.Skills.Agility.color))
+			local kind=AG.Kinds[sc.kind]
+			local q=prompt(post,kind.verb.." shortcut",sc.name.." (Agility "..sc.level..")","shortcut",sc.id..":"..tag)
+			q:SetAttribute("ShortcutTo",landing)
+			q:SetAttribute("AgilityKind",sc.kind)
+			region(q,sc.region)
+			local side=V(-toward.Z,0,toward.X)
+			local signPos=freeSpot(host,{pos-toward*3+side*5,pos-toward*3-side*5,pos+side*6,pos-side*6,pos-toward*8,pos-toward*6+side*7,pos-toward*6-side*7},4.5)
+			signAt(m,CFrame.lookAt(signPos,signPos-toward),sc.name,"AGILITY "..sc.level.." SHORTCUT",C(Data.Skills.Agility.color),8)
+			anchor(m,"Waypoint_Shortcut_"..sc.id.."_"..tag,pos-toward*5,pos)
+		end
+		-- Path props hang from island A's model (non-colliding: only the shortcut moves you).
+		local path=content(hostA,"Shortcut path "..sc.name,"Agility")
+		local from,to=endA+dir*3+V(0,.6,0),endB-dir*3+V(0,.6,0)
+		local segments=if (to-from).Magnitude<60 then 2 else 7
+		local function along(t,sag)
+			return from:Lerp(to,t)-V(0,(sag or 0)*4*t*(1-t),0)
+		end
+		for i=1,segments do
+			local p0,p1=along((i-1)/segments,if sc.kind=="beam" then 6 else 0),along(i/segments,if sc.kind=="beam" then 6 else 0)
+			if sc.kind=="beam" then
+				span(path,"Rope bridge deck",p0,p1,3,.3,timber,WO)
+				span(path,"Rope bridge rope",p0+V(0,2.2,0)+V(-dir.Z,0,dir.X)*1.6,p1+V(0,2.2,0)+V(-dir.Z,0,dir.X)*1.6,.15,.15,C("C9B994"),Enum.Material.Fabric)
+			elseif sc.kind=="zip" or (sc.kind=="drop" and segments>2) then
+				meshSlot(span(path,if sc.kind=="zip" then "Gale line" else "Rappel line",p0+V(0,6,0),p1+V(0,6,0),.2,.2,ink,MT),if sc.kind=="zip" then "ZipLine" else "RopeSwing",ink)
+			elseif sc.kind=="drop" then
+				meshSlot(span(path,"Slide chute",p0,p1,3,.4,C("7A5A40"),WO),"SlideChute",C("7A5A40"))
+			else
+				local p=along((i-.5)/segments,0)-V(0,.5,0)
+				meshSlot(part(path,if sc.kind=="climb" then "Updraft hold" else "Drifting stone",V(3.2,1.4,2.8),CFrame.new(p)*CFrame.Angles(.1,i*.9,.08),C("7D8B92"),ST,false),"Rock",C("7D8B92"))
+			end
+		end
+	end
+
+	-- Hunting grounds: spots ringed around a centre (offset from the island centre).
+	local GROUNDS={
+		PuffcapHopper={isle="Meadow Reach",at=V(-14,0,4),name="Hopper Warren"},
+		SunwingMoth={isle="Mosswake Grove",at=V(-6,0,-51),name="Sunwing Glade"},
+		PinecrestGrouse={isle="Windpine Grove",at=V(-25,0,5),name="Grouse Perches"},
+		CinderFerret={isle="Cinder Shelf",at=V(-40,0,-6),name="Ferret Dens"},
+		GlintwingDragonfly={isle="Tidewater Shoals",at=V(22,0,-26),name="Glintwing Shallows"},
+		GaleKestrel={isle="Skyreach",at=V(-18,0,-18),name="Kestrel Roost"},
+		GloomLynx={isle="Gloomhollow Caverns",at=V(-10,0,20),name="Lynx Dens"},
+		StormmaneIbex={isle="Tempest Spire",at=V(-16,0,4),name="Ibex Trail"},
+	}
+	for _,creature in ipairs(HU.Creatures) do
+		local g=GROUNDS[creature.id]
+		local host,IC=isle(g.isle)
+		local m=content(host,"Hunting ground "..g.name,"Hunter")
+		m:SetAttribute("HunterCreature",creature.id)
+		local center=IC+g.at
+		local method=HU.Methods[creature.method]
+		local spots=if method.trap then 4 else 3
+		local tint=C(creature.color)
+		for i=1,spots do
+			local ang=i*2*math.pi/spots+.4
+			local p=center+V(math.cos(ang),0,math.sin(ang))*5
+			local hostPart
+			if creature.method=="snare" then
+				hostPart=disk(m,"Snare patch",p+V(0,.09,0),1.4,.12,darken(turf,.25),GR,false)
+				meshSlot(block(m,"Snare stake",p+V(0,.7,0),V(.25,1.2,.25),timber,WO,false),"SnareTrap",timber)
+			elseif creature.method=="box" then
+				hostPart=block(m,"Box trap",p+V(0,.6,0),V(1.8,1.2,1.4),C("8C6A4A"),WO,false)
+				meshSlot(hostPart,"Crate")
+			elseif creature.method=="bird" then
+				hostPart=block(m,"Bird perch",p+V(0,1.5,0),V(.3,3,.3),timber,WO,false)
+				meshSlot(hostPart,"BirdPerch",timber)
+				block(m,"Perch crossbar",p+V(0,2.62,0),V(1.6,.2,.2),darken(timber,.2),WO,false)
+			else
+				flowers(m,p,2,tint,.07+i*.013)
+				hostPart=ghost(block(m,"Swarm",p+V(0,1.8,0),V(1.5,1.5,1.5),tint,SM,false))
+				meshSlot(hostPart,"SwarmBloom",tint)
+				motes(hostPart,tint,3,1.2,.18)
+			end
+			hostPart:SetAttribute("HunterSpot",creature.id.."#"..i)
+			hostPart:SetAttribute("TrapState","")
+			local q=prompt(hostPart,method.verb,creature.name.." (Hunter "..creature.level..")",if method.trap then "trap" else "net",creature.id)
+			q:SetAttribute("HunterMethod",creature.method)
+			q:SetAttribute("HunterSpot",creature.id.."#"..i)
+			region(q,creature.region)
+		end
+		local toCenter=flat(IC-center)
+		local face=if toCenter.Magnitude>1 then toCenter.Unit else V(0,0,1)
+		local side=V(-face.Z,0,face.X)
+		local signPos=freeSpot(host,{center+face*9,center+face*9+side*6,center+face*9-side*6,center-face*9,center+side*9,center-side*9},5)
+		signAt(m,CFrame.lookAt(signPos,signPos+face),g.name,"HUNTER "..creature.level.."   /   "..string.upper(method.name).." · "..string.upper(creature.name),C(Data.Skills.Hunter.color),9)
+		anchor(m,"Waypoint_Hunting_"..creature.id,center+face*6,center)
+	end
+
+	-- Skill vendors: the Skymark Exchange beside the Quay Rigging Run and the
+	-- Trackers' Lodge by the Hopper Warren.
+	local function vendor(isleName,offset,towardOffset,skill,npc,waypoint)
+		local host,IC=isle(isleName)
+		local m=content(host,Data.SkillVendors[skill].name,skill)
+		local pos,toward=IC+offset,IC+towardOffset
+		local stall,cf=marketStall(m,pos,toward,Data.SkillVendors[skill].name,nil,nil,nil,C(Data.Skills[skill].color),string.upper(skill).."   /   "..(if skill=="Agility" then "SKYMARKS" else "KITS · OUTFITS"))
+		local counter=stall:FindFirstChild("Counter")
+		prompt(counter,"Trade",Data.SkillVendors[skill].name,"skillVendor",skill)
+		anchor(m,"NPC_"..npc,at(cf,0,0,2.4))
+		anchor(m,"Waypoint_"..waypoint,at(cf,0,0,-5)*CFrame.Angles(0,math.pi,0))
+		return m
+	end
+	do
+		local _,_,R=isle("Compass Quay")
+		local a=math.rad(SITES.QuayRigging.angle)
+		local dir=V(math.cos(a),0,math.sin(a))
+		local tangent=V(-dir.Z,0,dir.X)
+		local spot=dir*(R-12)+tangent*14
+		vendor("Compass Quay",spot,spot-dir*10,"Agility","Skymaster","SkymarkExchange")
+	end
+	vendor("Meadow Reach",V(23,0,40),V(23,0,30),"Hunter","Trapper","TrackersLodge")
+	return courseCount
+end
+buildSkillContent()

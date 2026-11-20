@@ -683,6 +683,437 @@ do
 			paid=table.clone(p.island.paid),value=value,tier=tier,tierName=def.name}
 	end
 end
+------------------------------------------------------------------------------
+-- Agility & Hunter (New Skills team). Rules and data: Data.Agility,
+-- Data.Hunter (shared/GameData.lua); world prompts: world.server.lua.
+-- Agility: obstacle prompts (IsleAction "agility", IsleItem "<course>:<index>")
+-- run in order (Data.Agility.step: order, a STEP_WINDOW after each landing,
+-- no new obstacle while moving), the player must stand at the obstacle, and a
+-- failure roll (risk fading with level, cut by Surefoot) drops them back to
+-- the course start with damage. Success moves the character to AgilityEnd
+-- (stepped PivotTo, root anchored) and pays obstacle XP; the last obstacle
+-- pays the lap bonus, counts the lap, rolls a Skymark and the Gustling pet.
+-- Shortcuts (IsleAction "shortcut", IsleItem "<id>:A|B") check Agility level
+-- and the destination region, then move the player to ShortcutTo.
+-- Hunter: trap prompts (IsleAction "trap") place one of the player's traps
+-- (Data.Hunter.maxTraps by level, kit owned); traps roll every TICK seconds
+-- (sweep loop, and lazily on use) and collapse after MAX_TICKS. Using your trap
+-- collects a catch, reports progress, or (twice within DISMANTLE_WINDOW) picks
+-- it up. Nets (IsleAction "net") roll immediately. Trap state is session-only.
+-- Player attributes for clients: AgilityMove "<anim>:<seq>" ("" when done),
+-- AgilityMoveTo (Vector3), AgilityMoveDuration (s), AgilityRun
+-- "<course>:<next>:<total>" or "", AgilityRunExpires (os.time), HunterTraps
+-- "<placed>/<max>", HunterTrapsCaught (n), SkillVendor + SkillVendorUntil.
+-- Trap host parts get TrapState ("" | set | caught | collapsed) and TrapOwner (UserId, 0 = none).
+------------------------------------------------------------------------------
+local Skills={
+	runs=setmetatable({},{__mode="k"}),busyUntil=setmetatable({},{__mode="k"}),moveSeq=setmetatable({},{__mode="k"}),
+	traps=setmetatable({},{__mode="k"}),owned=setmetatable({},{__mode="k"}),netReady=setmetatable({},{__mode="k"}),
+	verbs={agility=true,shortcut=true,trap=true,net=true,skillVendor=true,skillBuy=true},
+}
+do
+	local AG,HU=Data.Agility,Data.Hunter
+	local function clean(map,valid,limit)
+		local out={}
+		if type(map)=="table" then
+			for id,v in pairs(map) do
+				local n=tonumber(v)
+				if type(id)=="string" and valid[id] and n and n==n and n>0 then out[id]=math.min(n,limit) end
+			end
+		end
+		return out
+	end
+	function Skills.refreshPerks(p)
+		if type(p.perkStats)~="table" then p.perkStats={} end
+		p.perkStats["agility:laps"]=(AG.lapPerk(p.agility and p.agility.laps))
+		p.perkStats["hunter:log"]=(HU.logPerk(p.hunterLog))
+	end
+	-- Older saves gain empty records; tampered entries are dropped or clamped.
+	function Skills.migrate(p)
+		local ag=type(p.agility)=="table" and p.agility or {}
+		local laps=clean(ag.laps,AG.CourseById,1e9)
+		for id,n in pairs(laps) do laps[id]=math.floor(n) end
+		local best=clean(ag.best,AG.CourseById,AG.MAX_LAP_SECONDS)
+		for id,t in pairs(best) do if t>=AG.MAX_LAP_SECONDS then best[id]=nil end end
+		p.agility={laps=laps,best=best}
+		local log=clean(p.hunterLog,HU.CreatureById,1e9)
+		for id,n in pairs(log) do log[id]=math.floor(n) end
+		p.hunterLog=log
+		Skills.refreshPerks(p)
+	end
+	-- Quest and diary checks: laps {course,count}, catches {creature,count}.
+	local measure=Journal.measure
+	function Journal.measure(p,o)
+		if type(o)=="table" and o.kind=="laps" then return (p.agility and p.agility.laps[o.course]) or 0,o.count
+		elseif type(o)=="table" and o.kind=="catches" then return (p.hunterLog and p.hunterLog[o.creature]) or 0,o.count end
+		return measure(p,o)
+	end
+	local function itemsText(drops)
+		local names={}
+		for id,n in pairs(drops) do table.insert(names,"+"..n.." "..(Data.Items[id] and Data.Items[id].name or id)) end
+		table.sort(names)
+		return if #names>0 then " • "..table.concat(names,", ") else ""
+	end
+	local function costText(cost)
+		local parts={}
+		for id,n in pairs(cost) do table.insert(parts,if id=="coins" then n.." coins" else n.." "..Data.Items[id].name) end
+		table.sort(parts)
+		return table.concat(parts," + ")
+	end
+	local function rootOf(player)
+		local character=player.Character
+		return character and character:FindFirstChild("HumanoidRootPart"),character
+	end
+
+	-- Server-driven movement: stepped PivotTo from the current root to `to`
+	-- (arc from Data.Agility.Kinds). A newer move cancels an older one.
+	function Skills.move(player,to,duration,kind)
+		local root,character=rootOf(player)
+		if not root or typeof(to)~="Vector3" then return end
+		local seq=(Skills.moveSeq[player] or 0)+1
+		Skills.moveSeq[player]=seq
+		local spec=AG.Kinds[kind]
+		player:SetAttribute("AgilityMoveTo",to)
+		player:SetAttribute("AgilityMoveDuration",duration)
+		player:SetAttribute("AgilityMove",(if spec then spec.anim else kind)..":"..seq)
+		local from=root.Position
+		task.spawn(function()
+			local steps=math.max(4,math.floor(duration/.1))
+			local heading=Vector3.new(to.X-from.X,0,to.Z-from.Z)
+			local look=if heading.Magnitude>.01 then heading.Unit else Vector3.new(0,0,-1)
+			pcall(function() root.Anchored=true end)
+			for i=1,steps do
+				task.wait(duration/steps)
+				if Skills.moveSeq[player]~=seq or not character.Parent then return end
+				local t=i/steps
+				local pos=from:Lerp(to,t)+Vector3.new(0,(spec and spec.arc or 0)*4*t*(1-t),0)
+				character:PivotTo(CFrame.lookAt(pos,pos+look))
+			end
+			pcall(function() root.Anchored=false; root.AssemblyLinearVelocity=Vector3.zero end)
+			player:SetAttribute("AgilityMove","")
+		end)
+	end
+	function Skills.publishRun(player,run)
+		local course=run and run.next>1 and AG.CourseById[run.course]
+		if course then
+			player:SetAttribute("AgilityRun",run.course..":"..run.next..":"..#course.obstacles)
+			player:SetAttribute("AgilityRunExpires",os.time()+math.max(0,math.ceil(run.deadline-os.clock())))
+		else
+			player:SetAttribute("AgilityRun","")
+			player:SetAttribute("AgilityRunExpires",0)
+		end
+	end
+	function Skills.lap(p,course,lvl,seconds)
+		grantXp(p,"Agility",course.lapXp)
+		local laps=p.agility.laps
+		laps[course.id]=(laps[course.id] or 0)+1
+		local parts={"Lap "..laps[course.id].." of the "..course.name.." • +"..course.lapXp.." bonus XP"}
+		local secs=math.floor(seconds*10+.5)/10
+		local best=p.agility.best[course.id]
+		if secs>0 and secs<AG.MAX_LAP_SECONDS and (not best or secs<best) then
+			p.agility.best[course.id]=secs
+			parts[1]..=" (best lap "..secs.."s)"
+		end
+		if roll()<AG.markChance(course,lvl) then
+			collect(p,AG.MARK_ITEM,course.lapMarks)
+			table.insert(parts,"+"..course.lapMarks.." Skymark")
+		end
+		local stats=Progression.computeStats(p,os.time())
+		local drops=Progression.rollDrops(AG.LapDrops,stats.magicFind,roll,stats.petLuck)
+		for id,n in pairs(drops) do collect(p,id,n); table.insert(parts,"+"..n.." "..Data.Items[id].name.."!") end
+		Skills.refreshPerks(p)
+		return table.concat(parts,"   ·   ")
+	end
+	function Skills.agility(player,p,item,prompt,humanoid)
+		if not prompt then return "Run agility courses at their obstacles." end
+		local courseId,raw
+		if validId(item) then courseId,raw=string.match(item,"^(%w+):(%d+)$") end
+		local course=courseId and AG.CourseById[courseId]
+		local index=raw and tonumber(raw)
+		local obstacle=course and index and course.obstacles[index]
+		if not obstacle or prompt:GetAttribute("AgilityCourse")~=courseId or prompt:GetAttribute("AgilityIndex")~=index then return "That obstacle is not part of a course." end
+		local lvl=level(p.xp.Agility)
+		if lvl<course.level then return course.name.." requires Agility "..course.level.."." end
+		if not regionAllowed(p,course.region) then return regionDenied(course.region) end
+		local now=os.clock()
+		if now<(Skills.busyUntil[player] or 0) then return "Still moving…" end
+		-- Position: the runner must stand at this obstacle (it starts where the previous one landed).
+		local root=rootOf(player)
+		local base=prompt:FindFirstAncestorWhichIsA("BasePart")
+		if not root or not base or (root.Position-base.Position).Magnitude>12 then return "Stand at the "..obstacle.name.." to attempt it." end
+		local verdict,run=AG.step(Skills.runs[player],courseId,index,now)
+		if verdict=="busy" then return "Still moving…" end
+		if verdict=="expired" then
+			Skills.runs[player]=nil
+			Skills.publishRun(player,nil)
+			return "Too slow: the lap is broken. Start again at the "..course.obstacles[1].name.."."
+		end
+		if verdict=="order" then
+			local current=Skills.runs[player]
+			local nextIndex=if current and current.course==courseId and current.next>1 then current.next else 1
+			return "Obstacles run in order: "..(if nextIndex==1 then "start at the " else "next is the ")..course.obstacles[nextIndex].name.."."
+		end
+		local landing=prompt:GetAttribute("AgilityEnd")
+		if typeof(landing)~="Vector3" then return "This obstacle is being repaired." end
+		p.started=true
+		local stats=Progression.computeStats(p,os.time())
+		local fail=AG.failChance(course,obstacle,lvl,stats.surefoot)
+		if fail>0 and roll()<fail then
+			Skills.runs[player]=nil
+			Skills.publishRun(player,nil)
+			local damage=math.max(1,math.floor((humanoid.MaxHealth or 100)*.06)+course.level)
+			damage=math.min(damage,math.max(0,math.floor(humanoid.Health-1)))
+			if damage>0 then humanoid:TakeDamage(damage) end
+			local fall=prompt:GetAttribute("AgilityFall")
+			Skills.busyUntil[player]=now+.8
+			if typeof(fall)=="Vector3" then Skills.move(player,fall,.8,"fall") end
+			return "You slip on the "..obstacle.name.." and fall! -"..damage.." health. Start the lap again."
+		end
+		Skills.runs[player]=run
+		Skills.busyUntil[player]=run.readyAt
+		Skills.move(player,landing,obstacle.duration,obstacle.kind)
+		grantXp(p,"Agility",obstacle.xp)
+		local message=obstacle.name.." • +"..obstacle.xp.." Agility XP"
+		if verdict=="lap" then message..="   ·   "..Skills.lap(p,course,lvl,run.readyAt-run.startedAt) end
+		Skills.publishRun(player,run)
+		return message
+	end
+	function Skills.shortcut(player,p,item,prompt)
+		if not prompt then return "Use shortcuts at their posts." end
+		local id
+		if validId(item) then id=string.match(item,"^(%w+):[AB]$") end
+		local sc=id and AG.ShortcutById[id]
+		if not sc then return "That shortcut is not charted." end
+		if level(p.xp.Agility)<sc.level then return sc.name.." requires Agility "..sc.level.."." end
+		if sc.region and not regionAllowed(p,sc.region) then return regionDenied(sc.region) end
+		local now=os.clock()
+		if now<(Skills.busyUntil[player] or 0) then return "Still moving…" end
+		local to=prompt:GetAttribute("ShortcutTo")
+		if typeof(to)~="Vector3" then return "This shortcut is being repaired." end
+		Skills.runs[player]=nil
+		Skills.publishRun(player,nil)
+		Skills.busyUntil[player]=now+sc.duration
+		Skills.move(player,to,sc.duration,sc.kind)
+		grantXp(p,"Agility",sc.xp)
+		p.started=true
+		return sc.name.." • +"..sc.xp.." Agility XP"
+	end
+
+	-- Hunter ------------------------------------------------------------------
+	local function kitFor(p,method)
+		for _,id in ipairs(HU.Kits[method] or {}) do if (p.items[id] or 0)>0 then return id end end
+		return nil
+	end
+	function Skills.count(player)
+		local n=0
+		for _ in pairs(Skills.owned[player] or {}) do n+=1 end
+		return n
+	end
+	function Skills.mark(prompt)
+		local trap=Skills.traps[prompt]
+		local host=prompt and prompt.Parent
+		if type(host)~="table" and typeof(host)~="Instance" then return end
+		pcall(function()
+			host:SetAttribute("TrapState",if trap then trap.state else "")
+			host:SetAttribute("TrapOwner",if trap then trap.owner.UserId else 0)
+		end)
+	end
+	function Skills.publishTraps(player)
+		local p=profiles[player]
+		local caught=0
+		for prompt in pairs(Skills.owned[player] or {}) do
+			local trap=Skills.traps[prompt]
+			if trap and trap.state=="caught" then caught+=1 end
+		end
+		player:SetAttribute("HunterTraps",Skills.count(player).."/"..HU.maxTraps(if p then level(p.xp.Hunter) else 1))
+		player:SetAttribute("HunterTrapsCaught",caught)
+	end
+	-- Rolls every whole tick that has elapsed (deterministic for a given roll stream).
+	function Skills.advance(trap,now)
+		while trap.state=="set" and now>=trap.nextTick do
+			trap.ticks+=1
+			trap.nextTick+=HU.TICK
+			if roll()<trap.chance then trap.state="caught"
+			elseif trap.ticks>=HU.MAX_TICKS then trap.state="collapsed" end
+		end
+	end
+	function Skills.release(prompt)
+		local trap=Skills.traps[prompt]
+		if not trap then return end
+		Skills.traps[prompt]=nil
+		local owned=Skills.owned[trap.owner]
+		if owned then owned[prompt]=nil end
+		Skills.mark(prompt)
+		Skills.publishTraps(trap.owner)
+	end
+	function Skills.sweep(now)
+		for prompt,trap in pairs(Skills.traps) do
+			local before=trap.state
+			Skills.advance(trap,now)
+			if trap.state~=before then
+				Skills.mark(prompt)
+				Skills.publishTraps(trap.owner)
+			end
+		end
+	end
+	function Skills.catch(p,creature)
+		local stats=Progression.computeStats(p,os.time())
+		local drops=Progression.rollDrops(creature.drops,stats.magicFind,roll,stats.petLuck)
+		local primary=creature.drops[1].item
+		if drops[primary] then drops[primary]=Progression.fortuneRoll(drops[primary],stats.huntingFortune,roll) end
+		for id,n in pairs(drops) do collect(p,id,n) end
+		grantXp(p,"Hunter",creature.xp)
+		local _,before=HU.logPerk(p.hunterLog)
+		p.hunterLog[creature.id]=(p.hunterLog[creature.id] or 0)+1
+		Skills.refreshPerks(p)
+		local _,after=HU.logPerk(p.hunterLog)
+		p.started=true
+		local text="Caught a "..creature.name.." • +"..creature.xp.." Hunter XP"..itemsText(drops)
+		if after>before then text..="   ·   Hunter log milestone: permanent Trap Luck and Hunting Fortune." end
+		return text
+	end
+	local function creatureAt(item,prompt,trap)
+		local creature=validId(item) and HU.CreatureById[item]
+		local method=creature and HU.Methods[creature.method]
+		if not method or method.trap~=trap or prompt:GetAttribute("HunterMethod")~=creature.method then return nil end
+		return creature,method
+	end
+	function Skills.trap(player,p,item,prompt)
+		if not prompt then return "Set traps at a hunting ground." end
+		local creature,method=creatureAt(item,prompt,true)
+		if not creature then return "Nothing to trap here." end
+		local what=string.lower(method.name)
+		local now=os.clock()
+		local trap=Skills.traps[prompt]
+		if trap then
+			if trap.owner~=player then return "Another hunter's "..what.." is set here." end
+			Skills.advance(trap,now)
+			if trap.state=="caught" then
+				Skills.release(prompt)
+				return Skills.catch(p,creature)
+			elseif trap.state=="collapsed" then
+				Skills.release(prompt)
+				return "Your "..what.." collapsed empty. Set it again."
+			end
+			if now-trap.touched<=HU.DISMANTLE_WINDOW then
+				Skills.release(prompt)
+				return "You pick up your "..what.."."
+			end
+			trap.touched=now
+			Skills.mark(prompt)
+			return "Your "..what.." is set ("..trap.ticks.."/"..HU.MAX_TICKS.." checks). Use it again within "..HU.DISMANTLE_WINDOW.."s to pick it up."
+		end
+		local lvl=level(p.xp.Hunter)
+		if lvl<creature.level then return creature.name.." requires Hunter "..creature.level.."." end
+		if not kitFor(p,creature.method) then return "You need a "..Data.Items[method.kit].name.." (Trackers' Lodge)." end
+		local cap=HU.maxTraps(lvl)
+		local placed=Skills.count(player)
+		if placed>=cap then return "You can tend "..cap.." trap"..(if cap==1 then "" else "s").." at Hunter "..lvl..". Collect one first." end
+		local stats=Progression.computeStats(p,os.time())
+		Skills.traps[prompt]={owner=player,creature=creature.id,state="set",placed=now,nextTick=now+HU.TICK,ticks=0,touched=-math.huge,
+			chance=HU.catchChance(creature,lvl,stats.trapLuck)}
+		Skills.owned[player]=Skills.owned[player] or setmetatable({},{__mode="k"})
+		Skills.owned[player][prompt]=true
+		Skills.mark(prompt)
+		Skills.publishTraps(player)
+		p.started=true
+		return method.name.." set for a "..creature.name..". Traps "..(placed+1).."/"..cap.."."
+	end
+	function Skills.net(player,p,item,prompt)
+		if not prompt then return "Swing your net at a swarm." end
+		local creature=creatureAt(item,prompt,false)
+		if not creature then return "Nothing to net here." end
+		local lvl=level(p.xp.Hunter)
+		if lvl<creature.level then return creature.name.." requires Hunter "..creature.level.."." end
+		local kit=kitFor(p,"net")
+		if not kit then return "You need a "..Data.Items[HU.Methods.net.kit].name.." (Trackers' Lodge)." end
+		local now=os.clock()
+		local ready=Skills.netReady[prompt]
+		if not ready then ready=setmetatable({},{__mode="k"}); Skills.netReady[prompt]=ready end
+		if ready[player] and now<ready[player] then return "The swarm has scattered ("..math.ceil(ready[player]-now).."s)." end
+		local stats=Progression.computeStats(p,os.time())
+		local chance=math.min(.95,HU.catchChance(creature,lvl,stats.trapLuck)+(Data.Items[kit].netBonus or 0))
+		p.started=true
+		if roll()<chance then
+			ready[player]=now+(creature.respawn or 5)
+			return Skills.catch(p,creature)
+		end
+		ready[player]=now+HU.NET_MISS_COOLDOWN
+		return "The "..creature.name.." slips through your net."
+	end
+
+	-- Skill vendors ------------------------------------------------------------
+	function Skills.vendor(player,item,prompt)
+		local vendor=prompt and type(item)=="string" and Data.SkillVendors[item]
+		if not vendor then return "Nobody is trading here." end
+		player:SetAttribute("SkillVendor",item)
+		player:SetAttribute("SkillVendorUntil",os.time()+Data.SKILL_VENDOR_SECONDS)
+		player:SetAttribute("IsleStation",if item=="Agility" then "SkymarkExchange" else "TrackersLodge")
+		player:SetAttribute("IsleStationVisit",(player:GetAttribute("IsleStationVisit") or 0)+1)
+		return vendor.name.." • browse the stock in your atlas."
+	end
+	function Skills.buy(player,p,item)
+		local skill,id
+		if validId(item) then skill,id=string.match(item,"^(%a+):(%w+)$") end
+		local vendor=skill and Data.SkillVendors[skill]
+		if not vendor then return "Choose an item from a skill vendor." end
+		if player:GetAttribute("SkillVendor")~=skill or (player:GetAttribute("SkillVendorUntil") or 0)<os.time() then return "Visit the "..vendor.name.." to trade." end
+		local entry
+		for _,e in ipairs(vendor.shop) do if e.item==id then entry=e end end
+		if not entry then return vendor.name.." does not stock that." end
+		local def=Data.Items[id]
+		if (def.kind=="armor" or def.kind=="accessory" or def.category=="trap") and (p.items[id] or 0)>0 then return "You already own "..def.name.."." end
+		local coins=entry.cost.coins or 0
+		local materials={}
+		for k,n in pairs(entry.cost) do if k~="coins" then materials[k]=n end end
+		if p.coins<coins then return def.name.." costs "..costText(entry.cost).."." end
+		for k,n in pairs(materials) do if (p.items[k] or 0)<n then return def.name.." costs "..costText(entry.cost).."." end end
+		spend(p,materials)
+		p.coins-=coins
+		collect(p,id,1)
+		p.started=true
+		return "Bought "..def.name.." for "..costText(entry.cost).."."
+	end
+	function Skills.action(player,p,verb,item,prompt,humanoid)
+		if verb=="agility" then return Skills.agility(player,p,item,prompt,humanoid)
+		elseif verb=="shortcut" then return Skills.shortcut(player,p,item,prompt)
+		elseif verb=="trap" then return Skills.trap(player,p,item,prompt)
+		elseif verb=="net" then return Skills.net(player,p,item,prompt)
+		elseif verb=="skillVendor" then return Skills.vendor(player,item,prompt)
+		elseif verb=="skillBuy" then return Skills.buy(player,p,item) end
+		return "Unknown action."
+	end
+	-- Snapshot key `agilityHunter` (see docs in the report for the client team).
+	function Skills.state(player,p)
+		local run=Skills.runs[player]
+		local traps={}
+		for prompt in pairs(Skills.owned[player] or {}) do
+			local trap=Skills.traps[prompt]
+			if trap then table.insert(traps,{creature=trap.creature,state=trap.state,ticks=trap.ticks,spot=prompt:GetAttribute("HunterSpot")}) end
+		end
+		table.sort(traps,function(a,b) return tostring(a.spot)<tostring(b.spot) end)
+		local hunterLevel=level(p.xp.Hunter)
+		local _,lapTiers=AG.lapPerk(p.agility.laps)
+		local _,logTiers=HU.logPerk(p.hunterLog)
+		return {
+			agility={laps=p.agility.laps,best=p.agility.best,lapTiers=lapTiers,
+				run=if run and run.next>1 then {course=run.course,next=run.next,expiresIn=math.max(0,math.ceil(run.deadline-os.clock()))} else nil},
+			hunter={log=p.hunterLog,logTiers=logTiers,traps=traps,maxTraps=HU.maxTraps(hunterLevel)},
+			vendor={skill=player:GetAttribute("SkillVendor") or "",openUntil=player:GetAttribute("SkillVendorUntil") or 0},
+		}
+	end
+	function Skills.forget(player)
+		for prompt in pairs(Skills.owned[player] or {}) do
+			Skills.traps[prompt]=nil
+			Skills.mark(prompt)
+		end
+		Skills.owned[player],Skills.runs[player],Skills.busyUntil[player],Skills.moveSeq[player]=nil,nil,nil,nil
+		for _,ready in pairs(Skills.netReady) do ready[player]=nil end
+	end
+	task.spawn(function()
+		while task.wait(HU.TICK) do Skills.sweep(os.clock()) end
+	end)
+end
 local function applyStats(player,p,spawned)
 	local stats=Progression.computeStats(p,os.time())
 	player:SetAttribute("SkyreachUnlocked",(p.questCompleted or 0)>=6)
@@ -811,7 +1242,7 @@ local function snapshot(player,message)
 	return {xp=p.xp,items=p.items,consumables=provisions,collection=p.collection,coins=p.coins,bank=p.bank,bankRevision=p.bankRevision or 0,worker=p.worker,
 		ironman=p.ironman,levels=levels,enchantRank=p.enchantRank or 0,workerResource=p.workerResource or "Ore",workerReady=ready(p),workers=workerState(p),message=message or "",kills=p.kills,
 		companionBond=p.companionBond or 0,market=marketViews[player],economy=Econ.view and Econ.view(player,p),recipes=recipeState(p),regions=regionState(p),stats=legacyStats,quest=questState(p),slayer=slayerState(p),started=p.started,decorations=p.decorations,preview=preview[player]==true,
-		depth=depthState(p,stats),journal=Journal.state(p),
+		depth=depthState(p,stats),journal=Journal.state(p),agilityHunter=Skills.state(player,p), -- Agility & Hunter page state
 		events={claims=p.eventClaims or {},vendorUntil=player:GetAttribute("EventVendorUntil") or 0,serverTime=os.time()}} -- Events hook: Calendar page state
 end
 local function claimWorker(p,slot)
@@ -900,6 +1331,7 @@ local function migrate(profile)
 	profile.version=math.max(tonumber(profile.version) or 1,2)
 	workerFleet(profile)
 	Journal.migrate(profile)
+	Skills.migrate(profile) -- Agility & Hunter records + milestone perks
 end
 -- Clears every per-player table and ends this player's session slot.
 -- Sea creatures: a successful Fishing gather may hook one (Data.rollSeaCreature).
@@ -961,6 +1393,7 @@ local function forget(player)
 	Econ.views[player],Econ.reads[player]=nil,nil
 	sessionOwner[player],opening[player]=nil,nil
 	Sea.tickets[player]=nil
+	Skills.forget(player) -- Agility runs, Hunter traps (session-only)
 	local set=userSessions[player.UserId]
 	if set then
 		set[player]=nil
@@ -1075,7 +1508,9 @@ local function perform(player,verb,item,prompt)
 	cooldown[player]=os.clock()+(if prompt then 0.65 else 0.24)
 	local region=prompt and prompt:GetAttribute("IsleRegion")
 	if region and not regionAllowed(p,region) then return regionDenied(region) end
-	if Econ.verbs and Econ.verbs[verb] then
+	if Skills.verbs[verb] then
+		return Skills.action(player,p,verb,item,prompt,humanoid) -- Agility & Hunter
+	elseif Econ.verbs and Econ.verbs[verb] then
 		return Econ.action(player,verb,item or "")
 	elseif verb=="market" or verb=="list" or verb=="buy" or verb=="proceeds" or verb=="cancel" then
 		return exchangeAction(player,verb,item or "Ore")
