@@ -120,3 +120,11 @@ Exports in addition to `shapes`/`palette`:
 | UI | `ui.client.lua` |
 | Art | `art/**`, `mesh.client.lua` |
 | Lead | `shared/**`, `default.project.json`, `verify.luau`, `verify-progression.luau`, build scripts, docs |
+
+## 9. Wave 3 interfaces
+
+**Skyward Calendar / events** (`festival.server.lua`, `Data.calendar*`/`Data.event*` in GameData): the date is a pure function of UTC `os.time()`. Workspace attributes `AetherYear`, `AetherSeason`, `AetherDay`, `AetherEvent`, `AetherEventEnds`, `AetherNextEvent`, `AetherNextEventStarts`, `AetherEventKey` (`"<eventId>:<start>"`, the authoritative match key). Server verbs `eventGift`, `eventTrade`; prompt action `eventVendor` sets `EventVendorUntil` and opens Journal → Calendar. Profile `p.eventClaims[key] = ends` (pruned after the event). Snapshot `events = {claims, vendorUntil, serverTime}`.
+
+**Sea creatures** (`Data.SeaCreatures`, reachable through `Data.Monsters[id]` via `__index` but not by iterating `Data.Monsters`): a successful Fishing gather rolls Sea Creature Chance (stats + best rod + rod enchants, cap 100%). On a hit the server issues a ticket and sets player attributes `SeaCreatureAt` (node position) then `SeaCreatureSpawn = "<id>:<seq>"`; max 3 live tickets per player, 36 creatures per server. Bridge op `"seaCreature"` `{seq, monster, result="kill"|"despawn"}` settles a ticket once; only the owner is credited (`"kill"` refuses sea creature ids).
+
+**Co-op** (`coop.server.lua`, `Data.Coop`): leave/kick (leader, fixed reason list)/transfer/disband, 10-minute invitations, 24 h rejoin cooldown; Homestead level 1–6 from contributions; up to 2 shared workers; crew stat perk in `p.perkStats.coop`. `IsleCoopProfile(player, seal, request)` gains an optional request argument; profile field `p.coopBox`. Player attributes `CoopLevel`, `CoopWorkers` drive the shared homestead visuals.
