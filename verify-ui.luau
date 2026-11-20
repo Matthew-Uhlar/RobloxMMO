@@ -249,6 +249,8 @@ local function profile()
 			GaleGlyph = 40, StoneGlyph = 12, SparkGlyph = 25, SurgeGlyph = 6, VitaGlyph = 3, BindGlyph = 2, HubwardTablet = 2,
 			-- Agility & Hunter: Skymarks, a Windrunner piece, kits and pelts.
 			Skymark = 37, WindrunnerHood = 1, SnareKit = 1, SkyNet = 1, DownyPelt = 14, SunwingDust = 6,
+			-- Gear depth: reforge stones, essence and tomes.
+			EmberheartCinder = 1, WardstoneSeal = 2, WildheartEssence = 60, TemperingTome = 2, MasterworkTome = 1,
 		},
 		collection = { Ore = 320, Timber = 60, Herb = 70, Fish = 30, Brassite = 40, Shard = 2, StormFeather = 3, BeastHide = 0 },
 		equipment = { weapon = "BrassSword", helmet = "BrassHelm", chest = "BrassChestplate", legs = "BrassGreaves", boots = "BrassBoots", ammo = "BrassArrow" },
@@ -260,6 +262,9 @@ local function profile()
 		bestiary = { BramblebackBoar = 30, Thornling = 1, ShaleCrawler = 1000 },
 		slayerXp = { Bramble = 20, Gloom = 0, Tempest = 0 },
 		autocast = "GaleLance",
+		-- Gear depth: a reforged, starred, tempered sword and a masterwork charm.
+		reforges = { BrassSword = "Honed", MeadowCharm = "Gleaming" }, stars = { BrassSword = 2 },
+		books = { BrassSword = { tempering = 3 }, MeadowCharm = { masterwork = true } },
 	}
 end
 local function snapshot(options)
@@ -332,7 +337,7 @@ local function snapshot(options)
 		accessoryBag = p.accessoryBag, activeAccessories = Progression.activeAccessories(p), accessorySlots = Progression.accessorySlots(p),
 		pets = pets, buffs = { MightDraught = { remaining = 95, stats = { strength = 15 } } }, collections = collections, bestiary = p.bestiary,
 		slayer = { lines = lines, quest = if options.noQuest then nil else { line = "Bramble", tier = 1, progress = 40, needed = 150, bossReady = options.bossReady == true } },
-		enchants = p.enchants, combat = Progression.combatLoadout(p),
+		enchants = p.enchants, combat = Progression.combatLoadout(p), gear = { reforges = p.reforges, stars = p.stars, books = p.books },
 		regions = { { id = "Hub", name = "Aether Hub", unlocked = true, requirement = "" }, { id = "Gloomhollow", name = "Gloomhollow Caverns", unlocked = false, requirement = "Mining 30, Combat 15" } },
 	}
 	-- Quest journal: every status (done, ready with and without a lamp, active, locked).
@@ -383,6 +388,7 @@ local function snapshot(options)
 			accessoryBag = { 1, "MeadowCharm" }, activeAccessories = 7, accessorySlots = "four", pets = { 1, { id = "Nope" }, { id = "Tidewing", level = "x" } },
 			buffs = { MightDraught = { remaining = "soon" }, Broken = 3 }, collections = { Ore = 5, Timber = { count = "many" } }, bestiary = { BramblebackBoar = "lots", Ghost = 3 },
 			slayer = { lines = { Bramble = 3 }, quest = { line = "Unknown", tier = "II" } }, enchants = { BrassSword = { Mystery = 2 }, Blade = 4 }, regions = { 3, { id = 7 } },
+			gear = { reforges = { BrassSword = 5, Blade = "Nope", BrassHelm = "Honed" }, stars = { BrassSword = "many", BrassHelm = 99 }, books = { BrassSword = 3, BrassHelm = { tempering = "x", masterwork = "yes" } } },
 		}
 		result.economy = { bazaar = 5, auction = { category = "weapon", listings = { 7, { id = "x" }, { id = 3, item = 4 } }, pages = "two" },
 			orders = { 1, "x", { id = "no" }, { id = 3, item = "Nope", side = "bid" } }, listings = { { cat = 3 }, { id = 2, item = "BrassSword", cat = "weapon", expires = "soon" } }, serverTime = "now" }
@@ -510,7 +516,7 @@ end
 ------------------------------------------------------------------------------
 local checks = 0
 local pages = {
-	Journal = { "Bearing", "Quests", "Diaries", "Construction", "Regions", "Crew", "Agility" }, Hero = { "Skills", "Gear", "Combat", "Spellbook", "Enchant", "Accessories", "Pets" }, Satchel = { "Items", "Collections" },
+	Journal = { "Bearing", "Quests", "Diaries", "Construction", "Regions", "Crew", "Agility" }, Hero = { "Skills", "Gear", "Combat", "Spellbook", "Enchant", "Reforge", "Accessories", "Pets" }, Satchel = { "Items", "Collections" },
 	Workshop = { "Forge", "Hearth", "Cauldron", "Workbench", "Workers", "Home" }, Hunt = { "Slayer", "Bestiary", "Hunter" }, Ledger = { "Bank", "Market", "Orders", "Auctions", "Merchant", "Vendors" },
 }
 local tabOrder = { "Journal", "Hero", "Satchel", "Workshop", "Hunt", "Ledger" }
@@ -532,6 +538,17 @@ local verbs = {
 		return line ~= nil and Data.Slayers[line] ~= nil and Data.Slayers[line].tiers[tonumber(tier)] ~= nil
 	end,
 	slayerAbandon = function(item) return item == nil end,
+	-- Gear depth verbs.
+	reforge = function(item) return Data.Gear.category(Data.Items[item]) ~= nil end,
+	reforgeStone = function(item)
+		local id, stone = tostring(item):match("^(%w+):(%w+)$")
+		return id ~= nil and Data.Items[stone] ~= nil and Data.Items[stone].reforgeStone ~= nil and Data.Gear.reforgeFits(Data.Items[stone].reforgeStone, Data.Items[id])
+	end,
+	star = function(item) return Data.Gear.canStar(Data.Gear.category(Data.Items[item])) end,
+	tome = function(item)
+		local id, tome = tostring(item):match("^(%w+):(%w+)$")
+		return id ~= nil and Data.Gear.category(Data.Items[id]) ~= nil and Data.Gear.Tomes[tome] == true
+	end,
 	craft = function(item) return type(item) == "string" and #item <= 64 end,
 	bazaar = function(item) return Data.Economy.isCommodity(item) end,
 	bid = function(item) local id, q, pr = tostring(item):match("^(%w+):(%d+):(%d+)$") return id ~= nil and Data.Economy.isCommodity(id) and tonumber(q) >= 1 and tonumber(pr) >= 1 end,
@@ -802,6 +819,80 @@ do
 		checks += 1
 	end
 	checkSent(ui)
+end
+-- 5a. Gear depth: Hero › Reforge, Gear and Satchel item detail.
+do
+	local ui = run()
+	press(find(ui.gui, "AtlasButton"))
+	local function textOf(root)
+		local out = {}
+		for _, object in ipairs(root:GetDescendants()) do
+			if object.ClassName == "TextLabel" or object.ClassName == "TextButton" then table.insert(out, tostring(object.Text)) end
+		end
+		return table.concat(out, " | ")
+	end
+	local function expect(cond, case) assert(cond, case); checks += 1 end
+	visit(ui, "Hero", "Reforge")
+	noFailures(ui, "reforge page")
+	expect(find(ui.scroll, "ReforgeSummary") ~= nil, "anvil summary drawn")
+	press(find(ui.scroll, "ReforgeBrassSword"))
+	local item = find(ui.scroll, "ReforgeItem")
+	expect(item ~= nil, "selected item card")
+	local itemText = textOf(item)
+	expect(itemText:find("Honed Brass Sword ★★", 1, true) ~= nil, "reforge + stars in the title: " .. itemText)
+	expect(itemText:find("Tempered 3/10", 1, true) ~= nil, "tempering layer listed")
+	expect(itemText:find("Upgrade total", 1, true) ~= nil, "upgrade total listed")
+	local roll = textOf(find(ui.scroll, "ReforgeRoll"))
+	expect(roll:find("500 coins", 1, true) ~= nil, "uncommon anvil cost preview: " .. roll)
+	expect(roll:find("Vicious", 1, true) ~= nil and roll:find("Emberwrought", 1, true) == nil, "pool lists anvil reforges only")
+	expect(find(ui.scroll, "StoneEmberwrought") ~= nil and find(ui.scroll, "StoneStarbitten") ~= nil, "melee stones listed")
+	expect(find(ui.scroll, "StoneGalestrung") == nil, "bow stones hidden for a sword")
+	expect(textOf(find(ui.scroll, "StoneEmberwrought")):find("Change:", 1, true) ~= nil, "stone stat diff")
+	expect(textOf(find(ui.scroll, "ReforgeStars")):find("Gain:", 1, true) ~= nil, "star gain preview")
+	expect(textOf(find(ui.scroll, "TomeMasterwork")):find("Uncommon", 1, true) ~= nil, "masterwork rarity preview")
+	press(find(ui.scroll, "ReforgeRollReforge"))
+	press(find(ui.scroll, "StoneEmberwroughtApply"))
+	press(find(ui.scroll, "ReforgeStarsStar"))
+	press(find(ui.scroll, "TomeTemperingTemper"))
+	press(find(ui.scroll, "TomeMasterworkBind"))
+	-- Stones without a copy are disabled (no verb).
+	press(find(ui.scroll, "StoneStarbittenApply"))
+	-- Masterwork accessory: rarity colour and Magical Power preview.
+	press(find(ui.scroll, "ReforgeMeadowCharm"))
+	local charm = textOf(find(ui.scroll, "ReforgeItem"))
+	expect(charm:find("Gleaming Meadow Charm", 1, true) ~= nil and charm:find("Uncommon", 1, true) ~= nil, "masterwork charm shows its bumped rarity: " .. charm)
+	expect(find(ui.scroll, "ReforgeStars") == nil and find(ui.scroll, "TomeTempering") == nil, "accessories cannot be starred or tempered")
+	expect(find(ui.scroll, "StoneResonant") ~= nil, "accessory stones listed")
+	-- Gear page: equipped card shows the layered name and opens the anvil.
+	visit(ui, "Hero", "Gear")
+	press(find(ui.scroll, "Slotweapon"))
+	expect(textOf(find(ui.scroll, "Equippedweapon")):find("Honed Brass Sword ★★", 1, true) ~= nil, "equipped card shows reforge and stars")
+	press(find(ui.scroll, "EquippedweaponReforge"))
+	expect(find(ui.scroll, "ReforgeSummary") ~= nil, "Reforge action opens Hero › Reforge")
+	-- Satchel item detail.
+	visit(ui, "Satchel", "Items")
+	press(find(ui.scroll, "ItemBrassSword"))
+	expect(textOf(find(ui.scroll, "ItemDetail")):find("Honed Brass Sword ★★", 1, true) ~= nil, "item detail title")
+	expect(textOf(find(ui.scroll, "ItemUpgrades")):find("Tempered", 1, true) ~= nil, "item detail upgrade breakdown")
+	press(find(ui.scroll, "ItemUpgradesReforge"))
+	expect(find(ui.scroll, "ReforgeItem") ~= nil, "item detail opens the anvil")
+	noFailures(ui, "gear flows")
+	local log = {}
+	for _, entry in ipairs(ui.sent) do table.insert(log, entry[1] .. "=" .. tostring(entry[2])) end
+	local joined = table.concat(log, " ")
+	for _, expected in ipairs({ "reforge=BrassSword", "reforgeStone=BrassSword:EmberheartCinder", "star=BrassSword", "tome=BrassSword:TemperingTome", "tome=BrassSword:MasterworkTome" }) do
+		expect(joined:find(expected, 1, true) ~= nil, "expected " .. expected .. " in " .. joined)
+	end
+	expect(joined:find("StarbiteShard", 1, true) == nil, "disabled stone sends nothing")
+	checkSent(ui)
+	-- Malformed gear state still draws the anvil.
+	local bad = run({ snapshot = snapshot({ malformed = true }) })
+	press(find(bad.gui, "AtlasButton"))
+	visit(bad, "Hero", "Reforge")
+	press(find(bad.scroll, "ReforgeBrassHelm"))
+	noFailures(bad, "malformed gear")
+	expect(find(bad.scroll, "ReforgeItem") ~= nil, "malformed gear still draws")
+	print("Gear depth UI: checks passed.")
 end
 -- 5b. Ledger → Orders and Auctions: review/confirm flows send validated verbs.
 do

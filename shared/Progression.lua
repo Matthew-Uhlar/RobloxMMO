@@ -6,6 +6,8 @@
 --   enchants[itemId][enchantId]=level, accessoryBag={itemId,...},
 --   pets={{id,level,xp}}, activePet=index, buffs[id]={expires,stats},
 --   bestiary[monsterId]=kills, slayerXp[line]=xp, companionBond, enchantRank
+--   reforges[itemId]=reforgeId, stars[itemId]=0..5, books[itemId]={tempering,masterwork}
+--   (Gear depth: upgrades bound to the item id, like enchants; see Data.Gear)
 local Progression = {}
 local Data
 do
@@ -104,6 +106,33 @@ function Progression.meetsRequirements(p, requires)
 	end
 	return true
 end
+-- Gear depth (Data.Gear): reforges, stars and tomes bound to an item id.
+-- Items without upgrades contribute nothing here (existing behaviour unchanged).
+function Progression.effectiveRarity(p, itemId)
+	local def = Data.Items[itemId]
+	if not def then return "Common" end
+	if not Data.Gear then return def.rarity end
+	return Data.Gear.effectiveRarity(p, itemId)
+end
+local NO_STATS = table.freeze({})
+function Progression.upgradeStats(p, itemId)
+	if not Data.Gear or not Data.Items[itemId] then return NO_STATS end
+	return Data.Gear.upgradeStats(p, itemId)
+end
+function Progression.upgradeBreakdown(p, itemId)
+	return Data.Gear and Data.Gear.breakdown(p, itemId) or nil
+end
+function Progression.isUpgraded(p, itemId)
+	return Data.Gear ~= nil and Data.Gear.isUpgraded(p, itemId)
+end
+-- Upgrade stats without the accessory-only magicalPower key (counted in magicalPower()).
+local function gearStats(p, itemId)
+	local stats = Progression.upgradeStats(p, itemId)
+	if stats.magicalPower == nil then return stats end
+	local out = table.clone(stats)
+	out.magicalPower = nil
+	return out
+end
 -- Active accessories: owned, unique by id, within bag capacity, highest
 -- rarity first (SkyBlock: duplicates do not stack).
 function Progression.activeAccessories(p)
@@ -116,7 +145,7 @@ function Progression.activeAccessories(p)
 		end
 	end
 	table.sort(list, function(a, b)
-		local ra, rb = Data.Rarity[Data.Items[a].rarity].rank, Data.Rarity[Data.Items[b].rarity].rank
+		local ra, rb = Data.Rarity[Progression.effectiveRarity(p, a)].rank, Data.Rarity[Progression.effectiveRarity(p, b)].rank
 		if ra ~= rb then return ra > rb end
 		return a < b
 	end)
@@ -124,9 +153,14 @@ function Progression.activeAccessories(p)
 	while #list > slots do table.remove(list) end
 	return list
 end
+-- Rarity power uses the effective rarity (Masterwork Tome); accessory reforges add
+-- their magicalPower bonus on top.
 function Progression.magicalPower(p)
 	local power = 0
-	for _, id in ipairs(Progression.activeAccessories(p)) do power += Data.Rarity[Data.Items[id].rarity].power end
+	for _, id in ipairs(Progression.activeAccessories(p)) do
+		power += Data.Rarity[Progression.effectiveRarity(p, id)].power
+		power += Progression.upgradeStats(p, id).magicalPower or 0
+	end
 	return power
 end
 function Progression.petLevel(pet)
@@ -211,6 +245,7 @@ function Progression.computeStats(p, now)
 	if weapon then
 		addStats(s, weapon.stats)
 		addStats(s, Progression.enchantStats(p, weaponId, "weapon"))
+		addStats(s, gearStats(p, weaponId))
 	end
 	s.weapon = weaponId
 	-- Armor + set bonus
@@ -223,6 +258,7 @@ function Progression.computeStats(p, now)
 		if def then
 			addStats(s, def.stats)
 			addStats(s, Progression.enchantStats(p, id, "armor"))
+			addStats(s, gearStats(p, id))
 			if def.set then setCount[def.set] = (setCount[def.set] or 0) + 1 end
 		end
 	end
@@ -231,7 +267,21 @@ function Progression.computeStats(p, now)
 		if n >= 4 then addStats(s, Data.Sets[setId].bonus); s.activeSet = setId end
 	end
 	-- Accessories
-	for _, id in ipairs(Progression.activeAccessories(p)) do addStats(s, Data.Items[id].stats) end
+	for _, id in ipairs(Progression.activeAccessories(p)) do
+		addStats(s, Data.Items[id].stats)
+		addStats(s, gearStats(p, id))
+	end
+	-- Gear depth: upgrades on the best tool of each gathering skill (base tool
+	-- stats stay in Progression.harvest). Tools only carry reforges and stars.
+	local toolSeen = {}
+	local toolUpgrades = (type(p.reforges) == "table" and next(p.reforges) ~= nil) or (type(p.stars) == "table" and next(p.stars) ~= nil)
+	for skill in pairs(if toolUpgrades then Data.ToolKind else NO_STATS) do
+		local toolId = Progression.bestTool(p, skill)
+		if toolId and not toolSeen[toolId] then
+			toolSeen[toolId] = true
+			addStats(s, gearStats(p, toolId))
+		end
+	end
 	s.magicalPower = Progression.magicalPower(p)
 	-- Magical power grants scaling stats (SkyBlock accessory power).
 	s.health += s.magicalPower * 1

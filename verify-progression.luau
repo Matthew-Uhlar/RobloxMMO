@@ -385,3 +385,247 @@ do
 	eq((P.canCraft({xp = {}, collection = {}, items = {Aetherite = 1}}, "GaleGlyph")), true, "gale glyphs at Glyphcraft 1")
 	print("PASS: " .. (checks - before) .. " combat style data/formula assertions.")
 end
+
+-- Gear depth (Data.Gear): reforges, stars, tomes and their stat layers.
+do
+	local before = checks
+	local G = Data.Gear
+	local near = function(a, b, case) ok(math.abs((a or 0) - (b or 0)) < 1e-6, case .. " expected " .. tostring(b) .. ", got " .. tostring(a)) end
+	-- Data integrity.
+	local borrowed = {Sharp=true,Spicy=true,Legendary=true,Fabled=true,Heroic=true,Fierce=true,Wise=true,Pure=true,Godly=true,Itchy=true,
+		Bizarre=true,Ominous=true,Pleasant=true,Shiny=true,Strange=true,Zealous=true,Silky=true,Bloody=true,Keen=true,Lucky=true,Unreal=true,
+		Precise=true,Rapid=true,Deadly=true,Fine=true,Grand=true,Hasty=true,Neat=true,Awkward=true,Fleet=true,Blessed=true,Fruitful=true,
+		Magnetic=true,Refined=true,Stellar=true,Auspicious=true,Bountiful=true,Ancient=true,Necrotic=true,Renowned=true,Titanic=true,Smart=true,
+		Clean=true,Fast=true,Heavy=true,Light=true,Gentle=true,Odd=true,Rich=true,Epic=true,Fair=true,Strong=true,Giant=true,Hurtful=true,
+		Withered=true,Spiritual=true,Mossy=true,Rooted=true,Blooming=true,Salty=true,Treacherous=true,Submerged=true,Reinforced=true,Perfect=true,
+		Empowered=true,Jaded=true,Fortunate=true,Lush=true,Robust=true,Zooming=true,Headstrong=true,Glistening=true,Stiff=true,Hefty=true,Mythic=true}
+	local extraKeys = {damage=true,fortune=true,magicalPower=true}
+	local names, pools, stones = {}, {}, {}
+	for id, r in Data.Gear.Reforges do
+		eq(r.id, id, "reforge id " .. id)
+		ok(table.find(G.Categories, r.category) ~= nil, "reforge category " .. id)
+		ok(not names[r.name] and not borrowed[r.name], "reforge name original and unique " .. r.name)
+		ok(Data.Sets[r.name] == nil and Data.Items[id] == nil, "reforge name does not collide " .. id)
+		names[r.name] = true
+		ok(next(r.stats) ~= nil, "reforge has stats " .. id)
+		for stat, v in r.stats do ok((Data.Stats[stat] ~= nil or extraKeys[stat]) and v > 0, "reforge stat " .. id .. ":" .. stat) end
+		if r.stone then
+			stones[id] = r.stone
+			local s = Data.Items[r.stone]
+			ok(s ~= nil and s.kind == "material" and s.reforgeStone == id, "stone item " .. r.stone)
+			eq(G.StoneFor[id], r.stone, "stone lookup " .. id)
+			ok(Data.Economy.isCommodity(r.stone), "stones trade on the Bazaar " .. r.stone)
+		else
+			pools[r.category] = (pools[r.category] or 0) + 1
+		end
+		if r.toolKinds then for _, kind in r.toolKinds do ok(r.category == "tool" and table.find({"Pickaxe","Hatchet","Rod","Hoe"}, kind) ~= nil, "tool kinds " .. id) end end
+	end
+	for _, category in G.Categories do
+		ok(pools[category] >= 6 and pools[category] <= 8, category .. " has 6-8 anvil reforges")
+		local hasStone = false
+		for _, id in G.ReforgeOrder[category] do if G.Reforges[id].stone then hasStone = true end end
+		ok(hasStone, category .. " has a stone reforge")
+		eq(G.CategoryNames[category] ~= nil, true, "category name " .. category)
+	end
+	ok(#Data.RarityOrder == 6, "six rarities")
+	for i, rarity in Data.RarityOrder do
+		ok(G.RarityScale[rarity] ~= nil and G.ReforgeCost[rarity] ~= nil, "rarity tables " .. rarity)
+		if i > 1 then
+			ok(G.RarityScale[rarity] > G.RarityScale[Data.RarityOrder[i - 1]], "reforge scale rises " .. rarity)
+			ok(G.ReforgeCost[rarity] > G.ReforgeCost[Data.RarityOrder[i - 1]], "anvil cost rises " .. rarity)
+		end
+	end
+	-- Every stone, essence and tome drops somewhere (monsters, sea creatures, slayers, dungeon chests).
+	local sources = {}
+	local function scan(list, where)
+		for _, d in list do
+			ok(d.chance > 0 and d.chance <= 1 and d.min >= 1 and d.max >= d.min and Data.Items[d.item] ~= nil, "drop row " .. where .. ":" .. d.item)
+			sources[d.item] = (sources[d.item] or 0) + 1
+		end
+	end
+	for id, m in Data.Monsters do scan(m.drops, id) end
+	for id, sc in Data.SeaCreatures do scan(sc.drops, id) end
+	for line, s in Data.Slayers do for t, tier in s.tiers do scan(tier.drops, line .. t) end end
+	for _, f in Data.DungeonFloors do scan(f.chest, f.name) end
+	for _, stone in stones do ok((sources[stone] or 0) >= 1, "stone drops " .. stone) end
+	for _, id in {"WildheartEssence","BrinelightEssence","ObservatoryEssence","TemperingTome","MasterworkTome"} do
+		ok((sources[id] or 0) >= 1 and Data.Items[id].kind == "material", "upgrade material drops " .. id)
+	end
+	for _, line in Data.SlayerOrder do
+		for t, tier in Data.Slayers[line].tiers do
+			local found = false
+			for _, d in tier.drops do if d.item == "WildheartEssence" then found = d.chance < 1 end end
+			ok(found, "slayer essence " .. line .. t)
+		end
+	end
+	for _, id in Data.SeaCreatureOrder do
+		local found = false
+		for _, d in Data.SeaCreatures[id].drops do if d.item == "BrinelightEssence" then found = d.chance < 1 end end
+		ok(found, "sea creature essence " .. id)
+	end
+	ok(Data.Recipes.TemperingTome ~= nil and Data.Recipes.TemperingTome.repeatable, "Tempering Tome recipe")
+	-- Categories.
+	eq(G.category(Data.Items.BrassSword), "melee", "sword is melee")
+	eq(G.category(Data.Items.Stormblade), "melee", "legacy blade is melee")
+	eq(G.category(Data.Items.MeadowLongbow), "ranged", "bow category")
+	eq(G.category(Data.Items.WindpineStaff), "magic", "staff category")
+	eq(G.category(Data.Items.BrassHelm), "armor", "armor category")
+	eq(G.category(Data.Items.BrassPickaxe), "tool", "tool category")
+	eq(G.category(Data.Items.MeadowCharm), "accessory", "accessory category")
+	eq(G.category(Data.Items.Ore), nil, "resources are not gear")
+	eq(G.category(Data.Items.TemperingTome), nil, "tomes are not gear")
+	eq(G.category(nil), nil, "missing item")
+	-- Reforge stat scaling by rarity (Common x1 ... Mythic x5).
+	near(G.reforgeStats("Honed", "Common").critChance, 1, "Honed common")
+	near(G.reforgeStats("Honed", "Uncommon").critDamage, 4.5, "Honed uncommon")
+	near(G.reforgeStats("Honed", "Legendary").critChance, 4, "Honed legendary")
+	near(G.reforgeStats("Honed", "Mythic").critDamage, 15, "Honed mythic")
+	near(G.reforgeStats("Gleaming", "Epic").magicalPower, 3, "accessory reforge Magical Power")
+	near(G.reforgeStats("Thrifty", "Rare", "Mining").miningFortune, 8, "tool fortune maps to the skill")
+	eq(G.reforgeStats("Thrifty", "Rare", "Mining").fortune, nil, "no raw fortune key with a skill")
+	near(G.reforgeStats("Thrifty", "Rare").fortune, 8, "raw fortune without a skill")
+	eq(next(G.reforgeStats("Nope", "Rare")), nil, "unknown reforge has no stats")
+	-- Anvil pools and rolls.
+	local swordPool = G.reforgePool(Data.Items.BrassSword)
+	eq(#swordPool, pools.melee, "melee pool size")
+	for _, id in swordPool do ok(not G.Reforges[id].stone, "pool excludes stones " .. id) end
+	local pickPool, rodPool = G.reforgePool(Data.Items.BrassPickaxe), G.reforgePool(Data.Items.BrassRod)
+	ok(table.find(pickPool, "Brined") == nil and table.find(pickPool, "Verdant") == nil, "pickaxe pool skips rod/hoe reforges")
+	ok(table.find(rodPool, "Brined") ~= nil and table.find(rodPool, "Verdant") == nil, "rod pool includes Brined")
+	ok(table.find(G.reforgePool(Data.Items.BrassHoe), "Verdant") ~= nil, "hoe pool includes Verdant")
+	eq(G.rollReforge(Data.Items.BrassSword, nil, 0), swordPool[1], "roll 0 picks the first")
+	eq(G.rollReforge(Data.Items.BrassSword, nil, 0.9999), swordPool[#swordPool], "roll ~1 picks the last")
+	for i = 0, 40 do
+		local r = i / 41
+		local picked = G.rollReforge(Data.Items.BrassSword, swordPool[1], r)
+		ok(picked ~= swordPool[1] and table.find(swordPool, picked) ~= nil, "reroll never repeats " .. i)
+	end
+	eq(G.rollReforge(Data.Items.Ore, nil, 0.5), nil, "non-gear cannot roll")
+	ok(G.reforgeFits("Emberwrought", Data.Items.BrassSword), "melee stone fits a sword")
+	ok(not G.reforgeFits("Emberwrought", Data.Items.MeadowLongbow), "melee stone does not fit a bow")
+	ok(not G.reforgeFits("Tidebound", Data.Items.BrassPickaxe), "rod stone does not fit a pickaxe")
+	ok(G.reforgeFits("Tidebound", Data.Items.BrassRod), "rod stone fits a rod")
+	ok(G.reforgeFits("Deepvein", Data.Items.BrassHoe), "unrestricted tool stone fits any tool")
+	-- Costs.
+	local empty = {reforges = {}, stars = {}, books = {}}
+	eq(G.reforgeCost(empty, "Blade"), 250, "common anvil cost")
+	eq(G.reforgeCost(empty, "SunsteelSword"), 1000, "rare anvil cost")
+	eq(G.reforgeCost({books = {SunsteelSword = {masterwork = true}}}, "SunsteelSword"), 2500, "masterwork raises anvil cost")
+	local sc1 = G.starCost(Data.Items.BrassSword, 1)
+	eq(sc1.essence, "WildheartEssence", "weapons star with Wildheart Essence")
+	eq(sc1.amount, 12, "star 1 essence (uncommon)")
+	eq(sc1.coins, 400, "star 1 coins (uncommon)")
+	eq(G.starCost(Data.Items.BrassSword, 5).amount, 100, "star 5 essence (uncommon)")
+	eq(G.starCost(Data.Items.BrassSword, 5).coins, 10000, "star 5 coins (uncommon)")
+	eq(G.starCost(Data.Items.EclipseGlaive, 1).essence, "ObservatoryEssence", "dungeon gear stars with Observatory Essence")
+	eq(G.starCost(Data.Items.EclipseGlaive, 1).amount, 17, "dungeon epic star 1 essence")
+	eq(G.starCost(Data.Items.BrassRod, 1).essence, "BrinelightEssence", "tools star with Brinelight Essence")
+	eq(G.starCost(Data.Items.Blade, 6), nil, "no sixth star")
+	local total = 0
+	for k = 1, 5 do total += G.starCost(Data.Items.Blade, k).amount end
+	eq(total, 200, "common 5-star essence total")
+	-- Stars and tomes.
+	local s3 = G.starStats(Data.Items.BrassSword, 3)
+	near(s3.damage, 2.4, "3 stars: +6% damage")
+	near(s3.strength, 0.6, "3 stars: +6% strength")
+	near(G.starStats(Data.Items.LenswrightSaber, 2).damage, 6.8, "dungeon stars: +4% each")
+	eq(G.starPercent(Data.Items.LenswrightSaber), 4, "dungeon star percent")
+	eq(G.starPercent(Data.Items.BrassSword), 2, "normal star percent")
+	eq(next(G.starStats(Data.Items.BrassSword, 0)), nil, "no stars, no bonus")
+	local t10 = G.tomeStats(Data.Items.BrassSword, 10)
+	eq(t10.damage, 20, "10 tomes: +20 damage")
+	eq(t10.strength, 20, "10 tomes: +20 strength")
+	eq(G.tomeStats(Data.Items.BrassHelm, 3).health, 12, "armor tome health")
+	eq(G.tomeStats(Data.Items.BrassHelm, 3).defense, 6, "armor tome defense")
+	eq(G.tomeStats(Data.Items.MeadowLongbow, 2).rangedStrength, 4, "bow tome ranged strength")
+	eq(G.tomeStats(Data.Items.WindpineStaff, 2).intelligence, 8, "staff tome intelligence")
+	eq(next(G.tomeStats(Data.Items.BrassPickaxe, 5)), nil, "tools cannot be tempered")
+	ok(not G.canTemper("accessory") and not G.canStar("accessory") and G.canStar("tool") and G.canTemper("magic"), "layer rules per category")
+	-- Caps and malformed state.
+	eq(G.starsOf({stars = {BrassSword = 99}}, "BrassSword"), 5, "stars capped at 5")
+	eq(G.starsOf({stars = {BrassSword = -3}}, "BrassSword"), 0, "negative stars")
+	eq(G.starsOf({stars = {BrassSword = "x"}}, "BrassSword"), 0, "malformed stars")
+	eq(G.starsOf(nil, "BrassSword"), 0, "no gear state")
+	eq(G.bookOf({books = {BrassSword = {tempering = 50}}}, "BrassSword").tempering, 10, "tempering capped at 10")
+	eq(G.bookOf({books = {BrassSword = 4}}, "BrassSword").tempering, 0, "malformed book")
+	eq(G.bookOf({books = {BrassSword = {masterwork = "yes"}}}, "BrassSword").masterwork, false, "masterwork must be true")
+	eq(G.reforgeOf({reforges = {BrassSword = "Nope"}}, "BrassSword"), nil, "unknown reforge ignored")
+	eq(G.breakdown({reforges = {BrassSword = "Lucid"}}, "BrassSword").reforge, nil, "mismatched reforge ignored")
+	-- Masterwork rarity bump.
+	eq(G.bumpRarity("Common"), "Uncommon", "bump common")
+	eq(G.bumpRarity("Legendary"), "Mythic", "bump legendary")
+	eq(G.bumpRarity("Mythic"), "Mythic", "mythic is the cap")
+	local mw = {reforges = {SunsteelSword = "Honed"}, stars = {}, books = {SunsteelSword = {masterwork = true}}}
+	eq(G.effectiveRarity(mw, "SunsteelSword"), "Epic", "masterwork Rare -> Epic")
+	eq(P.effectiveRarity(mw, "SunsteelSword"), "Epic", "Progression.effectiveRarity")
+	eq(P.effectiveRarity(empty, "SunsteelSword"), "Rare", "base rarity without a tome")
+	eq(P.effectiveRarity(empty, "Nope"), "Common", "unknown item rarity")
+	near(G.breakdown(mw, "SunsteelSword").reforgeStats.critChance, 3, "masterwork scales the reforge (Epic x3)")
+	-- Breakdown, totals, names.
+	local layered = {reforges = {BrassSword = "Vicious"}, stars = {BrassSword = 3}, books = {BrassSword = {tempering = 4}}}
+	local b = G.breakdown(layered, "BrassSword")
+	eq(b.reforge, "Vicious", "breakdown reforge")
+	eq(b.stars, 3, "breakdown stars")
+	eq(b.tempering, 4, "breakdown tempering")
+	near(b.total.strength, 4.5 + 0.6 + 8, "strength = reforge + stars + tomes")
+	near(b.total.damage, 2.4 + 8, "damage = stars + tomes")
+	near(b.total.critDamage, 1.5, "crit damage from the reforge")
+	eq(G.displayName(layered, "BrassSword"), "Vicious Brass Sword ★★★", "display name")
+	eq(G.displayName(empty, "BrassSword"), "Brass Sword", "plain display name")
+	ok(G.isUpgraded(layered, "BrassSword") and not G.isUpgraded(empty, "BrassSword"), "isUpgraded")
+	ok(G.isUpgraded({books = {Blade = {masterwork = true}}}, "Blade") and P.isUpgraded({stars = {Blade = 1}}, "Blade"), "any layer counts as upgraded")
+	-- computeStats folds the layers in only for equipped / active / best gear.
+	local function hero(extra)
+		local p = {xp = {Combat = Data.XP_TABLE[60], Mining = Data.XP_TABLE[20], Fishing = Data.XP_TABLE[20]}, collection = {}, items = {BrassSword = 1, BrassHelm = 1, BrassPickaxe = 1, BrassRod = 1, MeadowCharm = 1, QuarryTalisman = 1, SunsteelSword = 1},
+			equipment = {weapon = "BrassSword", helmet = "BrassHelm"}, accessoryBag = {"MeadowCharm", "QuarryTalisman"}, reforges = {}, stars = {}, books = {}}
+		for k, v in extra or {} do p[k] = v end
+		return p
+	end
+	local base = P.computeStats(hero(), 0)
+	local plain = P.computeStats({xp = hero().xp, collection = {}, items = hero().items, equipment = hero().equipment, accessoryBag = hero().accessoryBag}, 0)
+	for _, stat in {"health","defense","strength","critChance","critDamage","damage","magicalPower","miningFortune","seaCreatureChance"} do
+		eq(base[stat], plain[stat], "no upgrades = unchanged stats (" .. stat .. ")")
+	end
+	local up = P.computeStats(hero(layered), 0)
+	near(up.strength - base.strength, b.total.strength, "weapon layers reach computeStats (strength)")
+	near(up.damage - base.damage, b.total.damage, "weapon layers reach computeStats (damage)")
+	local unequipped = P.computeStats(hero({reforges = {SunsteelSword = "Vicious"}, stars = {SunsteelSword = 5}, books = {SunsteelSword = {tempering = 10}}}), 0)
+	eq(unequipped.strength, base.strength, "unequipped upgrades do nothing")
+	local armored = P.computeStats(hero({reforges = {BrassHelm = "Bulwark"}, books = {BrassHelm = {tempering = 2}}}), 0)
+	eq(armored.defense - base.defense, 6 + 4, "armor reforge + tomes defense")
+	eq(armored.health - base.health, 8, "armor tome health")
+	local tooled = P.computeStats(hero({reforges = {BrassPickaxe = "Thrifty", BrassRod = "Brined"}, stars = {BrassPickaxe = 5}}), 0)
+	near(tooled.miningFortune - base.miningFortune, 6 + 3, "best pickaxe reforge + stars fortune")
+	near(tooled.seaCreatureChance - base.seaCreatureChance, 0.5, "rod reforge sea creature chance (rounded)")
+	near(tooled.fishingFortune - base.fishingFortune, 3, "rod reforge fishing fortune")
+	-- Harvest picks the upgraded fortune up through the stat sheet.
+	local miner = hero({reforges = {BrassPickaxe = "Thrifty"}})
+	miner.xp.Mining = Data.XP_TABLE[20]
+	local plainMiner = hero()
+	plainMiner.xp.Mining = Data.XP_TABLE[20]
+	local okH, res = P.harvest(miner, "Ore", P.computeStats(miner, 0), seq({0.999}))
+	local okB, resBase = P.harvest(plainMiner, "Ore", P.computeStats(plainMiner, 0), seq({0.999}))
+	ok(okH and okB, "harvests succeed")
+	near(res.fortune - resBase.fortune, 6, "harvest fortune includes the tool reforge")
+	-- Accessories: masterwork rarity bump and reforge Magical Power.
+	local charmed = P.computeStats(hero({books = {MeadowCharm = {masterwork = true}}}), 0)
+	eq(charmed.magicalPower - base.magicalPower, Data.Rarity.Uncommon.power - Data.Rarity.Common.power, "masterwork accessory power")
+	eq(P.magicalPower(hero({books = {MeadowCharm = {masterwork = true}}})), Data.Rarity.Uncommon.power + Data.Rarity.Common.power, "magicalPower uses effective rarity")
+	local gleam = hero({reforges = {MeadowCharm = "Gleaming"}, books = {MeadowCharm = {masterwork = true}}})
+	near(P.magicalPower(gleam), Data.Rarity.Uncommon.power + Data.Rarity.Common.power + 1.5, "accessory reforge Magical Power")
+	local gs = P.computeStats(gleam, 0)
+	eq(gs.health, base.health + math.floor(gs.magicalPower - base.magicalPower), "Magical Power feeds health")
+	near(P.upgradeStats(gleam, "MeadowCharm").magicalPower, 1.5, "upgradeStats keeps magicalPower")
+	-- Active accessory order follows the effective rarity: a 3-slot bag keeps the
+	-- masterwork talisman over the plain common charm.
+	local tight = hero({books = {QuarryTalisman = {masterwork = true}}, xp = {}})
+	tight.accessoryBag = {"MeadowCharm", "QuarryTalisman", "BrassBand", "HideBracer"}
+	tight.items.BrassBand, tight.items.HideBracer = 1, 1
+	eq(P.accessorySlots(tight), 3, "fresh bag has 3 slots")
+	local active = P.activeAccessories(tight)
+	ok(table.find(active, "QuarryTalisman") ~= nil and table.find(active, "MeadowCharm") == nil, "masterwork talisman outranks a common charm")
+	-- Mythic items cannot be bumped further; a bumped Legendary reaches Mythic scaling.
+	eq(G.effectiveRarity({books = {AetherHeartstone = {masterwork = true}}}, "AetherHeartstone"), "Mythic", "mythic stays mythic")
+	near(G.breakdown({reforges = {CelestialSword = "Honed"}, books = {CelestialSword = {masterwork = true}}}, "CelestialSword").reforgeStats.critChance, 5, "legendary masterwork reaches mythic scaling")
+	print("PASS: " .. (checks - before) .. " gear depth data/formula assertions.")
+end
