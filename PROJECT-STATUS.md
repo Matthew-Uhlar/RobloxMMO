@@ -74,7 +74,7 @@ Physical touch keyboard/controller navigation, device performance, full two-clie
 - Live cross-server economy validation (standing orders and auctions are implemented and headless-tested).
 - Further regions/activities beyond the current eight regions, five dungeon floors, three slayer lines, nine sea creatures and five recurring festivals; cross-server co-op invitations.
 - Permanent mesh import/integration, texture delivery, complete sign/menu art review and device performance measurement.
-- Real multiplayer/rejoin/failure tests and requirement-by-requirement acceptance of the full original goal.
+- Real multiplayer/rejoin/failure tests in Studio (requirement-by-requirement acceptance: [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md)).
 - Confirm each intended cloud update with a receipt/version check and an actual join, independently of CI and audience settings.
 
 Automatic deployment after relevant main gameplay changes is configured in the workflow; manual publication on main remains available. Both require the credential and verification steps in [PUBLISHING.md](PUBLISHING.md). No source or CI milestone alone completes the game or proves deployment.
