@@ -20,60 +20,100 @@ lune run tools/render-ui.luau [outDir] [filter] [--full] [--issues] [--sizes=136
 - `outDir` — where PNGs go (default `build/screenshots`, untracked; do not commit
   bulk output — curate into this folder). One subfolder per size:
   `desktop` (1366x768), `phone` (844x390), `compact` (730x303).
-- `filter` — substring of `<Tab>-<Section>` (e.g. `Ledger`, `Hero-Gear`) or `HUD`.
+- `filter` — substring of `<Tab>-<Section>` (e.g. `Ledger`, `Hero-Gear`), `HUD` or `Builder`
+  (the island builder controls, `build.client.lua`).
 - `--full` — also write `<page>-full.png`, the atlas ScrollingFrame unrolled to
   its whole canvas height (the normal PNG shows only what fits on screen).
 - `--issues` — print automated findings: text under 11 px, truncated
   (`TextTruncate`) labels, and wrapped text overflowing its box.
 
 Screen size is treated as the ScreenGui's AbsoluteSize (no top-bar inset). A full
-render of all 30 shots × 3 sizes takes about a minute.
+render of all 34 shots × 3 sizes (Calendar and a sample crew included) takes
+about half a minute.
 
 ## Emulator fidelity
 
 Implemented: UDim2 Position/Size + AnchorPoint; UIListLayout (direction, padding,
 LayoutOrder/Name sort, alignments); UIGridLayout (CellSize/CellPadding,
-FillDirectionMaxCells); UIPadding; UISizeConstraint; UIAspectRatioConstraint;
-UITextSizeConstraint; AutomaticSize X/Y (frames and text); ScrollingFrame canvas,
-AutomaticCanvasSize, scroll bar and clipping; ClipsDescendants; Visible; ZIndex
-with Sibling ordering and ScreenGui DisplayOrder; BackgroundTransparency;
-UICorner; UIStroke including Contextual-vs-Border semantics; UIGradient
-(approximate); Rotation (drawn, not laid out); TextLabel/TextButton/TextBox with
-RichText (`font color/size`, `b`, `br`), TextWrapped, TextScaled, TextTruncate,
+FillDirectionMaxCells); UIPadding (content and children); UISizeConstraint;
+UIAspectRatioConstraint; UITextSizeConstraint; AutomaticSize X/Y (frames and
+text); ScrollingFrame canvas, AutomaticCanvasSize, scroll bar and clipping;
+ClipsDescendants; Visible; ZIndex with Sibling ordering and ScreenGui
+DisplayOrder; BackgroundTransparency; UICorner; UIStroke including
+Contextual-vs-Border semantics; UIGradient colour + transparency with Rotation on
+fills, on **strokes** (gradient rims) and on **text** (per-pixel across the text
+box); Rotation (drawn, not laid out); TextLabel/TextButton/TextBox with RichText
+(`font color/size`, `b`, `br`), TextWrapped, TextScaled, TextTruncate,
 TextStroke, placeholders; ViewportFrame thumbnails as a flat perspective
 projection of the `art/PropCatalog.lua` shape (tint applied).
 
-Not modelled: Roblox fonts (DejaVu Sans / Sans Bold / Serif Bold stand in for
-Gotham / GothamBold / Antique, so widths differ by a few percent), glyph
-fallback (e.g. `⸕` Mining Speed shows as a box), UIScale, tweens, CanvasGroup,
-images/textures, UIListLayout wrapping/flex, rotated children, top-bar inset.
+Fonts: Builder Sans (Medium/Bold/ExtraBold) is drawn with Inter at the matching
+weight, FredokaOne with the vendored OFL `tools/fonts/FredokaOne-Regular.ttf`,
+legacy Gotham/Antique with DejaVu. Glyphs a face lacks (✓ ✗ ❤ ❈ ☘ ⚔ …) fall back to
+DejaVu per character, as Roblox falls back to its symbol fonts. Metrics still
+differ from Roblox by a few percent.
+
+Tweens: the harness applies every `TweenService:Create(...):Play()` goal at
+once, so renders show the settled state of open/slide/pop-in transitions.
+
+Not modelled: UIScale (renders at rest scale 1), CanvasGroup, images/textures,
+UIListLayout wrapping/flex, rotated children, top-bar inset, gamepad selection
+rings.
+
+## Design system ("Aether Brass")
+
+- **Surfaces** (dark → light): track `060E14` (wells, bar tracks) · deep `0C1820`
+  (cards, tiles) · ink `12222C` (window) · slate `1E3946` (controls) · raised
+  `2A4D5E` (selected/hover). Every plate gets a vertical sheen (UIGradient), a
+  1px inner bevel highlight that fades downwards, and a rim stroke whose
+  gradient lights the top edge.
+- **Accents**: brass `C9974A` rims and ornaments, gold `F3C66E` headings and
+  primary actions, mint `7FE3CC` state/selection, ember `EF7D67` danger/locked.
+- **Ornament**: corner gems with L-bracket arms (rotated frames) on the atlas
+  window, level-up banner, bank plate and boss panel; double rim on the window;
+  ribbon tab on the level-up banner; fading brass hairline dividers.
+- **Type scale**: display FredokaOne 22–28 (titles, banner) · heading Builder
+  Sans ExtraBold 13–17 (card titles, section headings in gold caps) · label
+  Builder Sans Bold 11–14 · body Builder Sans Medium 12–14. Floor 11px (12px on
+  phones).
+- **Spacing**: 4px grid; cards pad 14 (10 on phones), lists gap 8.
+- **Components**: segmented section bars in a sunken well (gold = page section,
+  mint = in-page filter); buttons with primary (gold) / secondary / danger /
+  disabled tones, leading action glyphs, hover wash, press scale and a brass
+  gamepad selection ring; pill status badges; rarity item plates with glow from
+  Rare up and an "E" tag for equipped gear; gradient meters with gloss and a
+  glowing end cap; tick-box checklists; depth-bar order book; two-card stat sheet.
+- **Motion**: atlas opens with a slide + Back-eased scale and a shade fade; page
+  and section switches slide content up 10px; toasts rise in; the level-up
+  banner pops in.
 
 ## Index
 
-Current renders:
+All renders come from the redesigned UI unless prefixed `before-`.
 
 | File | Size | What |
 | --- | --- | --- |
-| `desktop-Journal-Bearing.png` | 1366x768 | Journal → Bearing: next goal, route chart, contract |
-| `desktop-Journal-Quests.png` | 1366x768 | Quest log (grouped Requires / Tasks / Rewards) |
-| `desktop-Hero-Skills.png` | 1366x768 | Skill grid with skill-coloured rims |
-| `desktop-Hero-Gear.png` | 1366x768 | Stat sheet, set bonus, equipment |
-| `desktop-Satchel-Items.png` | 1366x768 | Item grid with rarity rims |
-| `desktop-Workshop-Forge.png` | 1366x768 | Forge recipes |
-| `desktop-Hunt-Slayer.png` | 1366x768 | Active slayer contract and lines |
-| `desktop-Ledger-Orders.png` | 1366x768 | Bazaar order book and order placement |
-| `desktop-HUD.png` | 1366x768 | HUD: boss panel, combat banner, level-up banner, toast, action bar |
-| `phone-Hero-Skills.png` | 844x390 | Rail layout, skills |
-| `phone-Ledger-Auctions.png` | 844x390 | Auction House |
-| `phone-HUD.png` | 844x390 | HUD with touch attack button |
-| `compact-Journal-Diaries.png` | 730x303 | Achievement diary |
-| `compact-Hero-Gear-full.png` | 730x303 | Whole Gear page unrolled |
-| `compact-Ledger-Bank.png` | 730x303 | Bank (formatted balances) |
+| `desktop-Journal-Bearing.png` | 1366x768 | Numbered heading, next goal, route chart, guild contract with primary Claim |
+| `desktop-Journal-Diaries.png` | 1366x768 | Diary tiers: tier pips, tick-box task checklists, progress meters |
+| `desktop-Journal-Calendar.png` | 1366x768 | Skyward Calendar: season pips, day meter, countdowns, festivals |
+| `desktop-Journal-Crew.png` | 1366x768 | Crew page: homestead level meter, roster, stores |
+| `desktop-Hero-Skills.png` | 1366x768 | Skill tiles with level medallions, perks and gradient meters |
+| `desktop-Satchel-Items.png` | 1366x768 | Rarity item plates with glow, stack counts, equipped tags |
+| `desktop-Satchel-ItemDetail.png` | 1366x768 | Item detail card: Equip (primary), Enchant, Sell |
+| `desktop-Workshop-Forge.png` | 1366x768 | Station card with skill meter, category filter, recipe cards |
+| `desktop-Hunt-Slayer.png` | 1366x768 | Active contract (danger-toned Abandon), slayer lines, tier filter |
+| `desktop-Ledger-Bank.png` | 1366x768 | Ornamented balance plate, amount well, presets, gold Transfer |
+| `phone-Hero-Skills.png` | 844x390 | Side tab rail, skills grid |
+| `phone-HUD.png` | 844x390 | HUD: guild badge, boss panel, banners, toast, action bar pills, attack button |
+| `phone-Builder.png` | 844x390 | Island builder controls above the action bar |
+| `compact-HUD.png` | 730x303 | Short-screen HUD: slim level-up banner clears the toast |
+| `compact-Satchel-Items.png` | 730x303 | Rail layout, item grid |
 
-Before / after (the three most improved pages):
+Before / after (four key pages):
 
 | Before | After | Change |
 | --- | --- | --- |
-| `before-compact-HUD.png` | `after-compact-HUD.png` | Level-up banner covered the HUD badge and boss panel; toast sat under the attack button; bar track invisible |
-| `before-desktop-Journal-Quests-full.png` | `after-desktop-Journal-Quests-full.png` | Inline "Requires/Tasks/Rewards" prefixes replaced by gold group captions + indented checklists; button text no longer outlined |
-| `before-compact-Satchel-Collections-full.png` | `after-compact-Satchel-Collections-full.png` | Column of identical "???" cards replaced by one grid of sealed tiles |
+| `before-desktop-Hero-Gear.png` | `after-desktop-Hero-Gear.png` | 3-column stat chips → two titled stat cards (Combat, Gathering & luck) with glyph chips and zebra rows; layered window, ornamental corners, crisp tab plates, segmented section well |
+| `before-desktop-HUD.png` | `after-desktop-HUD.png` | Flat text action bar → health meter / XP pill (skill medallion + level meter) / defense pills; level-up banner with ribbon, medallion and ornaments; boss panel with level medallion, ember rim and corner gems; ribbon toast and event banner |
+| `before-phone-Ledger-Orders.png` | `after-phone-Ledger-Orders.png` | Order book lines → depth-bar order book; rarity plates; pill badges; rail with selected tab glow |
+| `before-desktop-Journal-Quests-full.png` | `after-desktop-Journal-Quests-full.png` | Inline ✓/✗ text → tick-box checklists with right-aligned counts, status pills, gold Claim |

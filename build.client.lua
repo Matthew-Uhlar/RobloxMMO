@@ -31,24 +31,51 @@ local function make(class, parent, props)
 	object.Parent = parent
 	return object
 end
+-- Styled with the atlas "Aether Brass" tokens (ui.client.lua): a brass-rimmed
+-- plate with a prop medallion, live status with a coloured dot and three
+-- controls (Place is the gold primary action; key hints in the captions).
+local DEEP, SLATE, RIM = C("0C1820"), C("1E3946"), C("557886")
+local IVORY, MUTED, GOLD, BRASS, ON_GOLD = C("F7EFDC"), C("A9BDC1"), C("F3C66E"), C("C9974A"), C("2B1B05")
+local WHITE = Color3.new(1, 1, 1)
+local function shade(object, bottom)
+	make("UIGradient", object, {Name="Sheen", Rotation=90, Color=ColorSequence.new(WHITE, Color3.new(bottom, bottom, bottom))})
+end
 local gui = make("ScreenGui", player:WaitForChild("PlayerGui"), {Name="IslandBuilder", ResetOnSpawn=false, Enabled=false, DisplayOrder=4})
-local bar = make("Frame", gui, {Name="BuildBar", AnchorPoint=Vector2.new(.5, 1), Position=UDim2.new(.5, 0, 1, -14),
-	Size=UDim2.new(.94, 0, 0, 112), BackgroundColor3=C("102733"), BackgroundTransparency=.04, BorderSizePixel=0})
-make("UISizeConstraint", bar, {MaxSize=Vector2.new(460, 112)})
-make("UICorner", bar, {CornerRadius=UDim.new(0, 12)})
-make("UIStroke", bar, {Color=C("F9CC77"), Transparency=.35, Thickness=1})
-local title = make("TextLabel", bar, {Name="PropName", BackgroundTransparency=1, Position=UDim2.fromOffset(14, 8), Size=UDim2.new(1, -28, 0, 22),
-	Font=Enum.Font.GothamBold, TextSize=16, TextColor3=C("FFF4D9"), TextXAlignment=Enum.TextXAlignment.Left, Text=""})
-local status = make("TextLabel", bar, {Name="Status", BackgroundTransparency=1, Position=UDim2.fromOffset(14, 30), Size=UDim2.new(1, -28, 0, 20),
-	Font=Enum.Font.Gotham, TextSize=13, TextColor3=C("BECECA"), TextXAlignment=Enum.TextXAlignment.Left, TextTruncate=Enum.TextTruncate.AtEnd, Text=""})
+-- Sits above the atlas action bar (bottom 40px) so health stays readable.
+local bar = make("Frame", gui, {Name="BuildBar", AnchorPoint=Vector2.new(.5, 1), Position=UDim2.new(.5, 0, 1, -48),
+	Size=UDim2.new(.94, 0, 0, 112), BackgroundColor3=DEEP, BackgroundTransparency=.04, BorderSizePixel=0})
+make("UISizeConstraint", bar, {MaxSize=Vector2.new(480, 112)})
+make("UICorner", bar, {CornerRadius=UDim.new(0, 14)})
+local rim = make("UIStroke", bar, {Color=BRASS, Transparency=.05, Thickness=1.5})
+make("UIGradient", rim, {Rotation=90, Color=ColorSequence.new(WHITE, Color3.new(.5, .5, .5))})
+shade(bar, .72)
+local medal = make("Frame", bar, {Name="Medal", Position=UDim2.fromOffset(12, 10), Size=UDim2.fromOffset(38, 38), BackgroundColor3=C("2A4D5E"), BorderSizePixel=0})
+make("UICorner", medal, {CornerRadius=UDim.new(1, 0)})
+make("UIStroke", medal, {Color=GOLD, Thickness=1.5})
+shade(medal, .5)
+for _, angle in ipairs({0, 90}) do
+	make("Frame", medal, {AnchorPoint=Vector2.new(.5, .5), Position=UDim2.fromScale(.5, .5), Size=UDim2.fromScale(.12, .56), Rotation=angle, BackgroundColor3=GOLD, BorderSizePixel=0})
+end
+local title = make("TextLabel", bar, {Name="PropName", BackgroundTransparency=1, Position=UDim2.fromOffset(60, 9), Size=UDim2.new(1, -74, 0, 22),
+	Font=Enum.Font.BuilderSansExtraBold, TextSize=17, TextColor3=IVORY, TextXAlignment=Enum.TextXAlignment.Left, TextTruncate=Enum.TextTruncate.AtEnd, Text=""})
+local dot = make("Frame", bar, {Name="StatusDot", Position=UDim2.fromOffset(60, 36), Size=UDim2.fromOffset(8, 8), BackgroundColor3=GOOD, BorderSizePixel=0})
+make("UICorner", dot, {CornerRadius=UDim.new(1, 0)})
+local status = make("TextLabel", bar, {Name="Status", BackgroundTransparency=1, Position=UDim2.fromOffset(74, 30), Size=UDim2.new(1, -88, 0, 20),
+	Font=Enum.Font.BuilderSansMedium, TextSize=13, TextColor3=MUTED, TextXAlignment=Enum.TextXAlignment.Left, TextTruncate=Enum.TextTruncate.AtEnd, Text=""})
+status:GetPropertyChangedSignal("TextColor3"):Connect(function() dot.BackgroundColor3 = status.TextColor3 end)
 local buttons = {}
 for i, spec in ipairs({{"RotateButton", "Rotate  (R)"}, {"ConfirmButton", "Place"}, {"CancelButton", "Done  (Esc)"}}) do
-	local b = make("TextButton", bar, {Name=spec[1], Text=spec[2], AutoButtonColor=true, Font=Enum.Font.GothamBold, TextSize=14,
-		TextColor3=C("FFF4D9"), BackgroundColor3=i == 2 and C("2F6D63") or C("244857"), BorderSizePixel=0, Selectable=true,
-		Position=UDim2.new((i - 1) / 3, if i == 1 then 10 else 4, 1, -54), Size=UDim2.new(1 / 3, -14, 0, 44)})
-	make("UICorner", b, {CornerRadius=UDim.new(0, 9)})
+	local primary = i == 2
+	local b = make("TextButton", bar, {Name=spec[1], Text=spec[2], AutoButtonColor=true, Font=Enum.Font.BuilderSansExtraBold, TextSize=14,
+		TextColor3=primary and ON_GOLD or IVORY, BackgroundColor3=primary and GOLD or SLATE, BorderSizePixel=0, Selectable=true,
+		Position=UDim2.new((i - 1) / 3, if i == 1 then 12 else 4, 1, -52), Size=UDim2.new(1 / 3, -14, 0, 40)})
+	make("UICorner", b, {CornerRadius=UDim.new(0, 10)})
+	local edge = make("UIStroke", b, {Color=primary and C("FFE7A8") or RIM, Thickness=1})
+	make("UIGradient", edge, {Rotation=90, Color=ColorSequence.new(WHITE, Color3.new(.42, .42, .42))})
+	shade(b, .8)
 	buttons[spec[1]] = b
 end
+make("Frame", bar, {Name="Rule", Position=UDim2.new(0, 12, 1, -60), Size=UDim2.new(1, -24, 0, 1), BackgroundColor3=BRASS, BackgroundTransparency=.55, BorderSizePixel=0})
 
 ------------------------------------------------------------------------------
 -- Grid state from replicated attributes.
