@@ -49,12 +49,24 @@ local events = {
 local guiClasses = { Frame = true, TextLabel = true, TextButton = true, ImageLabel = true, ImageButton = true, ScrollingFrame = true, ViewportFrame = true, TextBox = true, CanvasGroup = true }
 H.guiClasses = guiClasses
 local screen = roblox.Vector2.new(1366, 768)
-local data = setmetatable({}, { __mode = "k" })
+-- Per-instance state lives inside the instance table itself, under a private
+-- key. A weak-keyed side table would leak every instance: Luau has no
+-- ephemerons, so a value that references its own key (a child's `parent`, a
+-- signal handler closing over its button) keeps the key alive forever.
+local STATE = newproxy(false)
+local data = setmetatable({}, {
+	__index = function(_, object)
+		return if type(object) == "table" then rawget(object, STATE) else nil
+	end,
+	__newindex = function(_, object, value)
+		rawset(object, STATE, value)
+	end,
+})
 local methods = {}
 local meta = {}
 local function new(class, props)
 	local object = setmetatable({}, meta)
-	data[object] = { props = { ClassName = class, Name = class }, children = {}, propSignals = {}, attrs = {}, attrSignals = {} }
+	rawset(object, STATE, { props = { ClassName = class, Name = class }, children = {}, propSignals = {}, attrs = {}, attrSignals = {} })
 	for key, value in pairs(props or {}) do
 		object[key] = value
 	end
@@ -62,7 +74,7 @@ local function new(class, props)
 end
 H.new = new
 local function absoluteSizeOf(object)
-	local d = data[object]
+	local d = rawget(object, STATE)
 	local class = d.props.ClassName
 	if not guiClasses[class] or not d.parent then
 		return screen
@@ -84,7 +96,7 @@ meta.__index = function(self, key)
 	if methods[key] then
 		return methods[key]
 	end
-	local d = data[self]
+	local d = rawget(self, STATE)
 	if key == "Parent" then
 		return d.parent
 	end
@@ -107,11 +119,11 @@ meta.__index = function(self, key)
 	return nil
 end
 meta.__newindex = function(self, key, value)
-	local d = data[self]
+	local d = rawget(self, STATE)
 	if key == "Parent" then
 		assert(not d.destroyed, "The Parent property of a destroyed instance is locked")
 		if d.parent then
-			local siblings = data[d.parent].children
+			local siblings = rawget(d.parent, STATE).children
 			local index = table.find(siblings, self)
 			if index then
 				table.remove(siblings, index)
@@ -119,7 +131,7 @@ meta.__newindex = function(self, key, value)
 		end
 		d.parent = value
 		if value then
-			table.insert(data[value].children, self)
+			table.insert(rawget(value, STATE).children, self)
 		end
 		return
 	end
@@ -130,10 +142,10 @@ meta.__newindex = function(self, key, value)
 	end
 end
 meta.__tostring = function(self)
-	return tostring(data[self].props.Name)
+	return tostring(rawget(self, STATE).props.Name)
 end
 function methods:FindFirstChild(name)
-	for _, child in ipairs(data[self].children) do
+	for _, child in ipairs(rawget(self, STATE).children) do
 		if child.Name == name then
 			return child
 		end
@@ -144,7 +156,7 @@ function methods:WaitForChild(name)
 	return self:FindFirstChild(name)
 end
 function methods:FindFirstChildOfClass(class)
-	for _, child in ipairs(data[self].children) do
+	for _, child in ipairs(rawget(self, STATE).children) do
 		if child.ClassName == class then
 			return child
 		end
@@ -152,12 +164,12 @@ function methods:FindFirstChildOfClass(class)
 	return nil
 end
 function methods:GetChildren()
-	return table.clone(data[self].children)
+	return table.clone(rawget(self, STATE).children)
 end
 function methods:GetDescendants()
 	local out = {}
 	local function walk(object)
-		for _, child in ipairs(data[object].children) do
+		for _, child in ipairs(rawget(object, STATE).children) do
 			table.insert(out, child)
 			walk(child)
 		end
@@ -166,46 +178,67 @@ function methods:GetDescendants()
 	return out
 end
 function methods:IsA(class)
-	local own = data[self].props.ClassName
+	local own = rawget(self, STATE).props.ClassName
 	return own == class or class == "Instance" or (class == "GuiObject" and guiClasses[own] == true)
 end
 function methods:IsDescendantOf(other)
-	local parent = data[self].parent
+	local parent = rawget(self, STATE).parent
 	while parent do
 		if parent == other then
 			return true
 		end
-		parent = data[parent].parent
+		parent = rawget(parent, STATE).parent
 	end
 	return false
 end
 function methods:FindFirstAncestorWhichIsA(class)
-	local parent = data[self].parent
+	local parent = rawget(self, STATE).parent
 	while parent do
 		if parent:IsA(class) then
 			return parent
 		end
-		parent = data[parent].parent
+		parent = rawget(parent, STATE).parent
 	end
 	return nil
 end
+-- Destroy releases what Roblox releases: descendants are destroyed, the
+-- instance leaves its parent and every connection on it is dropped, so the
+-- closures (and the trees they capture) can be collected.
+local function isSignal(value)
+	return type(value) == "table" and getmetatable(value) == nil and type(rawget(value, "handlers")) == "table" and rawget(value, "Connect") ~= nil
+end
 function methods:Destroy()
-	for _, child in ipairs(table.clone(data[self].children)) do
+	local d = rawget(self, STATE)
+	local children = d.children
+	d.children = {}
+	for _, child in ipairs(children) do
+		rawget(child, STATE).parent = nil -- already detached: skip the O(n) sibling search
 		child:Destroy()
 	end
 	self.Parent = nil
-	data[self].destroyed = true
+	d.destroyed = true
+	for _, value in pairs(d.props) do
+		if isSignal(value) then
+			table.clear(value.handlers)
+		end
+	end
+	for _, signal in pairs(d.propSignals) do
+		table.clear(signal.handlers)
+	end
+	for _, signal in pairs(d.attrSignals) do
+		table.clear(signal.handlers)
+	end
 end
 function methods:Clone()
 	local copy = new(self.ClassName)
-	for key, value in pairs(data[self].props) do
+	for key, value in pairs(rawget(self, STATE).props) do
 		if type(value) ~= "table" or getmetatable(value) ~= nil then
 			if key ~= "ClassName" then
 				copy[key] = value
 			end
 		end
 	end
-	for _, child in ipairs(data[self].children) do
+	for _, child in ipairs(rawget(self, STATE).children) do
 		child:Clone().Parent = copy
 	end
 	return copy
@@ -214,22 +247,22 @@ function methods:GetBoundingBox()
 	return roblox.CFrame.new(), roblox.Vector3.new(1, 2, 1)
 end
 function methods:GetPropertyChangedSignal(name)
-	local d = data[self]
+	local d = rawget(self, STATE)
 	d.propSignals[name] = d.propSignals[name] or newSignal()
 	return d.propSignals[name]
 end
 function methods:GetAttribute(name)
-	return data[self].attrs[name]
+	return rawget(self, STATE).attrs[name]
 end
 function methods:SetAttribute(name, value)
-	local d = data[self]
+	local d = rawget(self, STATE)
 	d.attrs[name] = value
 	if d.attrSignals[name] then
 		d.attrSignals[name]:Fire()
 	end
 end
 function methods:GetAttributeChangedSignal(name)
-	local d = data[self]
+	local d = rawget(self, STATE)
 	d.attrSignals[name] = d.attrSignals[name] or newSignal()
 	return d.attrSignals[name]
 end
@@ -238,12 +271,12 @@ function methods:Fire(...)
 	self.Event:Fire(...)
 end
 function methods:FireServer(...)
-	local d = data[self]
+	local d = rawget(self, STATE)
 	d.fired = d.fired or {}
 	table.insert(d.fired, table.pack(...))
 end
 function methods:InvokeServer(...)
-	return data[self].props.OnInvoke(...)
+	return rawget(self, STATE).props.OnInvoke(...)
 end
 function methods:GetPlayers()
 	return { self.LocalPlayer }
