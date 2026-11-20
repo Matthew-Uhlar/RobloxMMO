@@ -388,6 +388,10 @@ local function regionAllowed(p,region)
 	for skill,lvl in pairs(requires.skills or {}) do
 		if level(p.xp[skill])<lvl then return false end
 	end
+	-- Endgame: quest-gated regions (the Shattered Crown needs Crown of the Tempest).
+	for _,id in ipairs(requires.questsDone or {}) do
+		if not (type(p.questsDone)=="table" and p.questsDone[id]) then return false end
+	end
 	return true
 end
 local function regionRequirement(def)
@@ -398,6 +402,10 @@ local function regionRequirement(def)
 	for skill in pairs(requires.skills or {}) do table.insert(skills,skill) end
 	table.sort(skills)
 	for _,skill in ipairs(skills) do table.insert(parts,skill.." "..requires.skills[skill]) end
+	for _,id in ipairs(requires.questsDone or {}) do
+		local q=Data.QuestById[id]
+		table.insert(parts,"the quest "..(q and q.title or id))
+	end
 	return table.concat(parts,", ")
 end
 local function regionDenied(region)
@@ -2305,6 +2313,65 @@ end
 -- End Verdant Garden block.
 
 local exchangeBusy={}
+------------------------------------------------------------------------------
+-- Endgame (Endgame team): the Sovereign Altar verb and world boss rewards.
+--   bossSigil (prompt IsleAction, IsleItem = boss id, IsleRegion gate): needs a
+--     Crown Sigil; combat.server.lua's ServerStorage.IsleWorldBoss accepts the
+--     placement first ({ok, reason, count, needed}), then the sigil is spent.
+--   bridge "worldBoss" {boss, tier, rank, share, damage, sigils, fight}: pays a
+--     credited contributor once per fight: guaranteed tier coins + Sovereign
+--     Essence, then Data.Endgame.bossRewards drops rolled with Magic Find / Pet
+--     Luck (Progression.rollDrops), bestiary +1 (quest/diary kills).
+------------------------------------------------------------------------------
+local Endgame={verbs={bossSigil=true},paid={},paidCount=0} -- paid["boss:fight:userId"]=os.time()
+do
+	local E=Data.Endgame
+	local SIGIL_TEXT={full="The altar already holds every sigil.",mine="You have placed all the sigils one wayfarer may.",
+		active="The Sovereign is already awake.",boss="This altar is silent."}
+	function Endgame.action(player,p,verb,item)
+		if verb~="bossSigil" then return "Unknown action." end
+		local def=E.boss(item)
+		if not def or def.summon~="altar" then return "This altar is silent." end
+		local sigil="CrownSigil"
+		if (p.items[sigil] or 0)<1 then return "You need a Crown Sigil (Glyphcraft 85) to place in the altar." end
+		local fn=ServerStorage:FindFirstChild("IsleWorldBoss")
+		if not fn then return "The altar stirs, but nothing answers yet." end
+		local ok,reply=pcall(fn.Invoke,fn,"sigil",player,item)
+		if not ok or type(reply)~="table" then return "The altar flickers. Try again shortly." end
+		if not reply.ok then return SIGIL_TEXT[reply.reason] or "The altar refuses the sigil." end
+		spend(p,{[sigil]=1})
+		p.started=true
+		if reply.reason=="ready" then return "The last sigil blazes! "..def.name.." awakens!" end
+		return "Sigil placed ("..tostring(reply.count).."/"..tostring(reply.needed)..")."
+	end
+	function Endgame.reward(player,p,payload)
+		local def=E.boss(payload.boss)
+		local tier=type(payload.tier)=="string" and E.TierById[payload.tier]
+		local rank=tonumber(payload.rank)
+		if not def or not tier or not rank or rank<1 or rank%1~=0 then return {ok=false,reason="invalid"} end
+		-- Once per fight per journal (keys pruned after an hour).
+		local key=payload.boss..":"..tostring(payload.fight)..":"..tostring(player.UserId)
+		if Endgame.paid[key] then return {ok=false,reason="paid"} end
+		local now=os.time()
+		if Endgame.paidCount>=500 then
+			Endgame.paidCount=0
+			for k,at in pairs(Endgame.paid) do if now-at>3600 then Endgame.paid[k]=nil else Endgame.paidCount+=1 end end
+		end
+		Endgame.paid[key]=now
+		Endgame.paidCount+=1
+		local plan=E.bossRewards(payload.boss,tier.id,rank,math.clamp(math.floor(tonumber(payload.sigils) or 0),0,E.ALTAR_PER_PLAYER))
+		local stats=Progression.computeStats(p,os.time())
+		local drops=Progression.rollDrops(plan.drops,stats.magicFind,roll,stats.petLuck)
+		for id,n in pairs(plan.items) do drops[id]=(drops[id] or 0)+n end
+		for id,n in pairs(drops) do collect(p,id,n) end
+		p.coins+=plan.coins
+		p.bestiary[payload.boss]=(p.bestiary[payload.boss] or 0)+1
+		p.started=true
+		local share=math.floor((tonumber(payload.share) or 0)*1000+0.5)/10
+		return {ok=true,drops=drops,coins=plan.coins,tier=tier.id,
+			message=def.short.." felled • #"..rank.." · "..share.."% · "..tier.name.." • +"..plan.coins.." coins"..dropText(drops)}
+	end
+end
 local function perform(player,verb,item,prompt)
 	local p=profiles[player]
 	if not p or (not preview[player] and os.time()>=(leaseEnd[player] or 0)) then return "Waiting for journal sync." end
@@ -2321,6 +2388,8 @@ local function perform(player,verb,item,prompt)
 		return Mastery.action(player,p,verb,item) -- Skill Mastery
 	elseif Garden.verbs[verb] then
 		return Garden.action(player,p,verb,item,prompt) -- Verdant Garden
+	elseif Endgame.verbs[verb] and prompt then
+		return Endgame.action(player,p,verb,item) -- Endgame: Sovereign Altar
 	elseif Econ.verbs and Econ.verbs[verb] then
 		return Econ.action(player,verb,item or "")
 	elseif verb=="market" or verb=="list" or verb=="buy" or verb=="proceeds" or verb=="cancel" then
@@ -3006,7 +3075,7 @@ bridge.OnInvoke=function(op,player,payload)
 		local monsterId=payload.monster
 		local monster=validId(monsterId) and Data.Monsters[monsterId]
 		-- Sea creatures pay only through their owner's ticket (op "seaCreature").
-		if not monster or monster.seaCreature then return nil end
+		if not monster or monster.seaCreature or monster.worldBoss then return nil end
 		local stats=Progression.computeStats(p,os.time())
 		p.started=true
 		-- No flat Combat XP here: the damage XP accrued on the monster is paid
@@ -3027,6 +3096,10 @@ bridge.OnInvoke=function(op,player,payload)
 		end
 		notify(player,monster.name.." slain • +"..monster.coins.." coins"..dropText(drops))
 		return {drops=drops,bossReady=quest~=nil and quest.bossReady==true}
+	elseif op=="worldBoss" then
+		local reply=Endgame.reward(player,p,payload)
+		if reply.message then notify(player,reply.message); reply.message=nil end
+		return reply
 	elseif op=="seaCreature" then
 		local reply=Sea.report(player,p,payload)
 		if reply.message then notify(player,reply.message..dropText(reply.drops)); reply.message=nil end

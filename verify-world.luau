@@ -832,7 +832,7 @@ do
 	-- Workspace.Islands: one Model per static island with the contract attributes.
 	local oldRadius={["Compass Quay"]=43,["Mosswake Grove"]=30,["Brassfall Quarry"]=31,["Warden Reach"]=32,Skyreach=30,
 		["Guild Terrace"]=32,["Meadow Reach"]=30,["Cinder Shelf"]=24,["Windpine Grove"]=36,["Gloomhollow Caverns"]=38,
-		["Tidewater Shoals"]=40,["Tempest Spire"]=30}
+		["Tidewater Shoals"]=40,["Tempest Spire"]=30,["The Shattered Crown"]=48} -- Endgame region (new in its 2x form)
 	local seen,tiers,trees,staticCounts=0,0,0,{}
 	for _,isle in islandsRoot:GetChildren() do
 		seen+=1
@@ -861,7 +861,7 @@ do
 		check(shore>=3,isle.Name.." has shoreline detail")
 		staticCounts[isle.Name]=parts
 	end
-	check(seen==12,"twelve static islands under Workspace.Islands")
+	check(seen==13,"thirteen static islands under Workspace.Islands (Endgame: the Shattered Crown)")
 	check(tiers>=14,"elevation tiers across the archipelago ("..tiers..")")
 	check(trees>=80,"trees and flora are mesh slots ("..trees..")")
 	local hubTiers=0
@@ -1221,6 +1221,110 @@ do
 	print("Static parts by island: "..table.concat(names,", ").." (total "..total..")")
 	print("Mesh slots: "..shapeCount.." parts; lights "..#lights.." (worst cluster "..worst..", shadowed "..shadowed.."), neon "..neon..".")
 	print("Wave 4: "..(checks-beforeChecks).." checks.")
+end
+-- Endgame: the Shattered Crown (region gating, warp, arenas, altar, nodes).
+do
+	local before=checks
+	local E=Data.Endgame
+	local crown=islandsRoot:FindFirstChild("The Shattered Crown")
+	check(crown~=nil and crown:GetAttribute("Region")=="ShatteredCrown" and crown:GetAttribute("RegionId")=="ShatteredCrown","Shattered Crown island carries its region")
+	check(crown:GetAttribute("IslandRadius")>=90,"Shattered Crown is a large island")
+	local center=crown:GetAttribute("IslandCenter")
+	local tempest=islandsRoot:FindFirstChild("Tempest Spire"):GetAttribute("IslandCenter")
+	check(center.Y>tempest.Y+20,"the Crown floats above the Tempest Spire")
+	for _,isle in islandsRoot:GetChildren() do
+		if isle~=crown then
+			local c,r=isle:GetAttribute("IslandCenter"),isle:GetAttribute("IslandRadius")
+			check(Vec(c.X-center.X,0,c.Z-center.Z).Magnitude>r+96+150,"Shattered Crown and its arenas keep clear of "..isle.Name)
+		end
+	end
+	local function flatDist(a,b) return Vec(a.X-b.X,0,a.Z-b.Z).Magnitude end
+	-- Gated warp: one beacon on the Tempest Spire, lands on the Crown.
+	local beacons=0
+	for _,q in world:GetDescendants() do
+		if q:IsA("ProximityPrompt") and q:GetAttribute("IsleWarpRegion")=="ShatteredCrown" then
+			beacons+=1
+			check(islandOf(q).Name=="Tempest Spire","Crown beacon stands on the Tempest Spire")
+			check(q.ObjectText:find("COMBAT 60",1,true)~=nil and q.ObjectText:find("CROWN OF THE TEMPEST",1,true)~=nil,"beacon lists Combat 60 and the quest")
+		end
+	end
+	check(beacons==1,"exactly one gated beacon reaches the Crown")
+	local landing
+	for _,l in landings do if l[1]=="ShatteredCrown landing" then landing=l[2] end end
+	check(landing~=nil and onIsland(crown,landing,2),"Crown landing is on the island")
+	-- Arenas: nested islets with anchors combat spawns world bosses on.
+	local arenas=0
+	for _,m in crown:GetChildren() do if m:IsA("Model") and m:GetAttribute("WorldBossArena") then arenas+=1 end end
+	check(arenas==2,"two world boss arenas")
+	for _,id in E.BossOrder do
+		local a=crown:FindFirstChild("Anchor_WorldBoss_"..id)
+		check(a~=nil and a.Parent==crown,id.." arena anchor is a direct child of the Crown")
+		local pos=a.CFrame.Position
+		check(flatDist(pos,landing)>=100,id.." arena is well away from the landing")
+		for _,marker in spawnFolder:GetChildren() do
+			check(flatDist(marker.CFrame.Position,pos)>=Data.WorldBosses[id].arenaRange+10,marker.Name.." stays outside the "..id.." arena")
+		end
+		local arena
+		for _,m in crown:GetChildren() do
+			if m:IsA("Model") and m:GetAttribute("WorldBossArena") and flatDist(m:GetAttribute("IslandCenter"),pos)<1 then arena=m end
+		end
+		check(arena~=nil,id.." anchor marks an arena centre")
+		check(arena:GetAttribute("IslandRadius")>=36,id.." arena is roomy")
+		check(math.abs(arena:GetAttribute("IslandCenter").Y-center.Y)<1,id.." arena is level with the Crown")
+		local guards=0
+		for _,obj in arena:GetDescendants() do if obj.Name=="Edge guard" then guards+=1 end end
+		check(guards>=8,id.." arena is guarded")
+		-- Every telegraph radius fits inside the arena islet.
+		for attackId,attack in Data.WorldBosses[id].attacks do
+			check((attack.radius or 0)<=arena:GetAttribute("IslandRadius"),id.." "..attackId.." fits the arena")
+		end
+	end
+	-- Bridges join both arenas to the Crown.
+	local decks=0
+	for _,obj in crown:GetDescendants() do if obj.Name=="Continuous bridge deck" then decks+=1 end end
+	check(decks==2,"two bridges to the arenas")
+	-- The Sovereign Altar.
+	local altarPrompt
+	for _,q in crown:GetDescendants() do if q:IsA("ProximityPrompt") and q:GetAttribute("IsleAction")=="bossSigil" then altarPrompt=q end end
+	check(altarPrompt~=nil,"Sovereign Altar prompt exists")
+	check(altarPrompt:GetAttribute("IsleItem")=="Aurelith" and altarPrompt:GetAttribute("IsleRegion")=="ShatteredCrown","altar names its boss and region gate")
+	local aurelith=crown:FindFirstChild("Anchor_WorldBoss_Aurelith").CFrame.Position
+	check(flatDist(altarPrompt.Parent.CFrame.Position,aurelith)<=40,"altar stands in the Sovereign's arena")
+	local sockets=0
+	for _,obj in crown:GetDescendants() do if obj.Name=="Sigil socket" then sockets+=1 end end
+	check(sockets==Data.WorldBosses.Aurelith.sigils,"one socket per sigil")
+	check(crown:FindFirstChild("Anchor_Waypoint_SovereignAltar")~=nil,"altar waypoint")
+	-- Nodes and stations for the new tiers.
+	for _,r in E.Resources do
+		local found=0
+		for _,q in crown:GetDescendants() do
+			if q:IsA("ProximityPrompt") and q:GetAttribute("IsleItem")==r.id then
+				found+=1
+				check(q:GetAttribute("IsleRegion")=="ShatteredCrown",r.id.." node is region-gated")
+				check(onIsland(crown,q.Parent.CFrame.Position,1),r.id.." node stands on the Crown")
+			end
+		end
+		check(found>=1,r.id.." has a node on the Crown")
+	end
+	local stations={}
+	for _,q in crown:GetDescendants() do if q:IsA("ProximityPrompt") and q:GetAttribute("IsleAction")=="station" then stations[q:GetAttribute("IsleItem")]=true end end
+	check(stations.Forge and stations.Cauldron,"Crownforge and sigil cauldron")
+	-- Monster grounds: every Crown monster spawns on the Crown.
+	for _,id in E.MonsterOrder do
+		local found=false
+		for _,marker in spawnFolder:GetChildren() do
+			if marker:GetAttribute("MonsterId")==id then
+				found=true
+				check(onIsland(crown,marker.CFrame.Position,marker:GetAttribute("Radius") or 0),id.." ground inside the Crown")
+				check(flatDist(marker.CFrame.Position,landing)>=40,id.." ground is >= 40 studs from the landing")
+			end
+		end
+		check(found,id.." has a spawn marker")
+	end
+	local crownParts=0
+	for _,obj in crown:GetDescendants() do if obj:IsA("BasePart") then crownParts+=1 end end
+	check(crownParts<=450,"Shattered Crown stays within 450 parts ("..crownParts..")")
+	print("Endgame world: "..(checks-before).." checks; Shattered Crown "..crownParts.." parts.")
 end
 print("Depth world: "..tierCount.." resource tiers / "..nodeCount.." gather nodes, "..markers.." spawn markers, "..warps.." gated warps, "..stationCount.." stations, "..staticParts.." static parts, "..staticLights.." lights.")
 print("World QA passed "..checks.." checks with "..parts.." parts, "..prompts.." prompts and "..signs.." sign surfaces.")

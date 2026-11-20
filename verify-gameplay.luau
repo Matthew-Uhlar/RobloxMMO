@@ -2272,7 +2272,7 @@ do
 	local lines={main=0,side=0}
 	for _,q in ipairs(Data.Quests) do lines[q.line]+=1 end
 	eq(lines.main>=4 and lines.side>=4,true,"main and side quests both exist")
-	eq(#Data.Diaries,7,"seven regional diaries")
+	eq(#Data.Diaries,8,"eight regional diaries (Endgame: the Shattered Crown)")
 	for _,d in ipairs(Data.Diaries) do
 		for _,tier in ipairs(Data.DiaryTiers) do
 			local n=#d.tiers[tier].tasks
@@ -3684,6 +3684,122 @@ for _,id in ipairs({"BrassSword","Blade","SunsteelSword"}) do
 	eq(listed.coins,5000,"refused listing charges no fee ("..id..")")
 end
 print("PASS: "..(checks-before).." gear depth server assertions.")
+end)()
+
+-- Endgame (server): the Shattered Crown gate, the Sovereign Altar verb and
+-- world boss rewards through bridge "worldBoss" (contribution tiers, Magic
+-- Find rolls, once per fight), plus kill/XP routing for boss ids.
+;(function()
+	local before=checks
+	local X=Data.XP_TABLE
+	local E=Data.Endgame
+	local function hook(name) for _,o in ipairs(allObjects) do if o.Name==name then return o end end return nil end
+	local function ok(cond,case) assert(cond,case); checks+=1 end
+	local function has(text,part) return type(text)=="string" and string.find(text,part,1,true)~=nil end
+	local function seeded(id,mutate)
+		local p=player(id)
+		services.Players.PlayerRemoving:Fire(p)
+		mutate(data["p"..id].profile)
+		return player(id)
+	end
+	local function st(p) return cmd(p,"state") end
+	local bridge,access=hook("IsleBridge"),hook("IsleRegionAccess")
+	-- Region gate: Combat 60 AND the quest Crown of the Tempest.
+	local rookie=seeded(9501,function(p) p.xp.Combat=X[59] end)
+	local gate=access.OnInvoke(rookie,"ShatteredCrown")
+	eq(gate.allowed,false,"Shattered Crown locked below Combat 60")
+	ok(has(gate.message,"Combat 60") and has(gate.message,"Crown of the Tempest"),"denial names both requirements")
+	local veteran=seeded(9502,function(p) p.xp.Combat=X[70] end)
+	eq(access.OnInvoke(veteran,"ShatteredCrown").allowed,false,"Combat alone is not enough")
+	local crowned=seeded(9503,function(p) p.xp.Combat=X[70]; p.questsDone={CrownOfTempest=true} end)
+	eq(access.OnInvoke(crowned,"ShatteredCrown").allowed,true,"Combat 60 + Crown of the Tempest opens the region")
+	eq(access.OnInvoke(crowned,"ShatteredCrown").message,"Welcome to The Shattered Crown.","welcome message")
+	local questOnly=seeded(9504,function(p) p.xp.Combat=X[40]; p.questsDone={CrownOfTempest=true} end)
+	eq(access.OnInvoke(questOnly,"ShatteredCrown").allowed,false,"the quest alone is not enough")
+	ok(has(rawUse(veteran,node("gather","Crownstone",0,nil,"ShatteredCrown")).message,"requires"),"region nodes refuse locked journals")
+	-- Sovereign Altar.
+	local altar=node("bossSigil","Aurelith",0,nil,"ShatteredCrown")
+	local holder=seeded(9505,function(p) p.xp.Combat=X[80]; p.questsDone={CrownOfTempest=true}; p.items.CrownSigil=3 end)
+	advance(2)
+	ok(has(rawUse(rookie,altar).message,"requires"),"locked journals cannot reach the altar")
+	local empty=seeded(9506,function(p) p.xp.Combat=X[80]; p.questsDone={CrownOfTempest=true} end)
+	advance(2)
+	ok(has(rawUse(empty,altar).message,"need a Crown Sigil"),"altar needs a sigil")
+	services.ServerStorage.FindFirstChild=function() return nil end
+	advance(2)
+	ok(has(rawUse(holder,altar).message,"nothing answers"),"no combat service: nothing spent")
+	eq(st(holder).items.CrownSigil,3,"unanswered altar keeps the sigil")
+	local calls,answer={},{ok=true,count=1,needed=4}
+	local fn={Name="IsleWorldBoss",Invoke=function(_,op,who,boss) table.insert(calls,{op,who,boss}); return answer end}
+	services.ServerStorage.FindFirstChild=function(_,name) return if name=="IsleWorldBoss" then fn else nil end
+	advance(2)
+	local placed=rawUse(holder,altar)
+	ok(has(placed.message,"Sigil placed (1/4)"),"sigil placed message")
+	eq(st(holder).items.CrownSigil,2,"accepted sigil spent")
+	eq(calls[1][1],"sigil","combat asked to place")
+	eq(calls[1][2],holder,"combat told who placed")
+	eq(calls[1][3],"Aurelith","combat told which boss")
+	answer={ok=false,reason="mine",count=2,needed=4}
+	advance(2)
+	ok(has(rawUse(holder,altar).message,"all the sigils one wayfarer may"),"per-player cap relayed")
+	eq(st(holder).items.CrownSigil,2,"refused sigil kept")
+	answer={ok=false,reason="active",count=0,needed=4}
+	advance(2)
+	ok(has(rawUse(holder,altar).message,"already awake"),"active boss relayed")
+	answer={ok=true,reason="ready",count=4,needed=4}
+	advance(2)
+	ok(has(rawUse(holder,altar).message,"awakens"),"last sigil wakes the Sovereign")
+	eq(st(holder).items.CrownSigil,1,"last sigil spent")
+	advance(2)
+	ok(has(rawUse(holder,node("bossSigil","Nyxwyrm",0,nil,"ShatteredCrown")).message,"silent"),"scheduled boss has no altar")
+	services.ServerStorage.FindFirstChild=nil
+	-- Bridge "worldBoss": validation.
+	local fighter=seeded(9507,function(p) p.xp.Combat=X[80]; p.coins=0 end)
+	local startCoins=st(fighter).coins
+	for _,bad in ipairs({{boss="Nope",tier="Champion",rank=1,fight=1},{boss="Aurelith",tier="Nope",rank=1,fight=1},{boss="Aurelith",tier="Champion",rank=0,fight=1},
+		{boss="Aurelith",tier="Champion",rank=1.5,fight=1},{boss="BramblebackBoar",tier="Champion",rank=1,fight=1}}) do
+		eq(bridge.OnInvoke("worldBoss",fighter,bad).ok,false,"invalid world boss payload refused ("..tostring(bad.boss).."/"..tostring(bad.tier)..")")
+	end
+	eq(st(fighter).coins,startCoins,"refusals pay nothing")
+	-- A Participant at the default (high) roll: only guaranteed rewards.
+	local coinsBefore=st(fighter).coins
+	local paid=bridge.OnInvoke("worldBoss",fighter,{boss="Aurelith",tier="Participant",rank=7,share=0.012,damage=36000,sigils=0,fight=11})
+	eq(paid.ok,true,"credited contributor paid")
+	eq(paid.coins,E.TierById.Participant.coins,"participant coins")
+	ok(st(fighter).coins-coinsBefore>=E.TierById.Participant.coins,"coins credited (plus any collection tier rewards)")
+	ok((paid.drops.SovereignEssence or 0)>=E.TierById.Participant.essence,"guaranteed Sovereign Essence")
+	ok((paid.drops.CrownShard or 0)>=8,"guaranteed crown shards")
+	eq(paid.drops.SovereignCrest,nil,"no rare drop on a high roll")
+	eq(st(fighter).depth.bestiary.Aurelith,1,"bestiary records the world boss")
+	ok(has(fighter.last.message,"Aurelith felled") and has(fighter.last.message,"Participant"),"notification names the boss and tier")
+	eq(bridge.OnInvoke("worldBoss",fighter,{boss="Aurelith",tier="Participant",rank=7,share=0.012,fight=11}).reason,"paid","each fight pays once")
+	eq(st(fighter).depth.bestiary.Aurelith,1,"duplicate report changes nothing")
+	-- A Champion on rolls of 0: every capped chance hits, amounts scale with weight.
+	local champ=seeded(9508,function(p) p.xp.Combat=X[90]; p.coins=0 end)
+	defaultRoll=0
+	local big=bridge.OnInvoke("worldBoss",champ,{boss="Nyxwyrm",tier="Champion",rank=1,share=0.4,damage=1800000,sigils=0,fight=12})
+	defaultRoll=0.999
+	eq(big.ok,true,"champion paid")
+	eq(big.coins,E.TierById.Champion.coins,"champion coins")
+	for _,id in ipairs({"SovereignCrest","NyxwingCharm","ShardlingPet","Duskpiercer"}) do ok((big.drops[id] or 0)>=1,"zero roll drops "..id) end
+	local weight=E.lootWeight("Champion",1,0)
+	eq(big.drops.CrownShard,math.floor(10*weight+0.5),"guaranteed rows scale by loot weight (min at roll 0)")
+	eq(st(champ).items.Duskpiercer,1,"unique weapon collected")
+	eq(st(champ).depth.bestiary.Nyxwyrm,1,"Nyxwyrm in the bestiary")
+	-- Kill / XP routing for boss ids.
+	eq(bridge.OnInvoke("kill",champ,{monster="Aurelith"}),nil,"world bosses never pay through kill")
+	eq(bridge.OnInvoke("kill",champ,{monster="Nyxwyrm"}),nil,"world bosses never pay through kill (Nyxwyrm)")
+	local xpBefore=st(champ).depth.skills.Combat.xp
+	local xp=bridge.OnInvoke("combatXp",champ,{style="melee",monster="Aurelith",damage=300000})
+	eq(xp.ok,true,"boss damage XP accepted")
+	ok(st(champ).depth.skills.Combat.xp>xpBefore,"boss damage XP granted from def.xp / def.hp")
+	local riftKill=bridge.OnInvoke("kill",champ,{monster="RiftmawStalker"})
+	ok(type(riftKill)=="table" and st(champ).depth.bestiary.RiftmawStalker==1,"regional monsters pay through kill")
+	-- Quest and diary checks see world boss kills (bestiary).
+	local questKill=Data.QuestById.TheSovereignsFall.objectives[1]
+	eq(questKill.monster,"Aurelith","final quest asks for the Sovereign")
+	ok(has(Data.describeCheck(questKill),"Aurelith, the Shattered Sovereign"),"quest text names the world boss")
+	print("PASS: "..(checks-before).." endgame server assertions.")
 end)()
 
 -- Completion sentinel: scripts/build.sh fails if a suite stops early without erroring.

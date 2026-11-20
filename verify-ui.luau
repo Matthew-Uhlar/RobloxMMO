@@ -1805,6 +1805,38 @@ do
 		assert(navigate.Visible and listRect.y >= 0 and listRect.y + listRect.h <= size.Y - 40 and listRect.h >= 120,
 			"navigate list fits above the action bar at " .. tag.name .. " " .. show(listRect))
 		assert(not overlaps(listRect, rect(wayfinder:FindFirstChild("Minimap"))), "navigate list clears the minimap at " .. tag.name)
+		-- Endgame World Boss HUD: the boss bar takes the target panel's top-lane
+		-- slot and the damage board sits under the minimap (tall screens only);
+		-- both clear every exploring HUD element, and the loot card stays on screen.
+		combat.fx.OnClientEvent:Fire("worldBoss", { id = "Aurelith", name = "Aurelith, the Shattered Sovereign", level = 120, hp = 1500000, maxHp = 3000000,
+			phase = 2, phases = 3, phaseName = "Fractured", enraged = false, enrageIn = 200, departIn = 400, warded = true, fighters = 6,
+			top = { { name = "Ysolde", damage = 900000, share = 0.3 }, { name = "Tester", damage = 300000, share = 0.1, you = true },
+				{ name = "Wren", damage = 60000, share = 0.02 }, { name = "Orrin", damage = 30000, share = 0.01 }, { name = "Pell", damage = 20000, share = 0.0067 } },
+			you = { rank = 2, damage = 300000, share = 0.1, tier = "Vanguard" } })
+		combat.run.RenderStepped:Fire()
+		local wbBar, wbBoard = hud:FindFirstChild("WorldBossBar"), hud:FindFirstChild("WorldBossBoard")
+		assert(wbBar and wbBar.Visible and not panel.Visible, "world boss bar replaces the target panel at " .. tag.name)
+		assert(H.find(wbBar, "Title").Text:find("Phase 2/3", 1, true) and H.find(wbBar, "Rank").Text:find("#2", 1, true), "boss bar shows phase and your rank at " .. tag.name)
+		assert(H.find(wbBar, "Enrage").Text:find("Enrage", 1, true) and H.find(wbBar, "Health").Text:find("WARDED", 1, true), "boss bar shows enrage timer and ward at " .. tag.name)
+		local fighting = { { "world boss bar", rect(wbBar) } }
+		for _, item in ipairs(explore) do table.insert(fighting, item) end
+		if size.Y >= 520 then
+			assert(wbBoard.Visible and H.find(wbBoard, "Row1").Text:find("Ysolde", 1, true), "damage board lists the leader at " .. tag.name)
+			table.insert(fighting, { "damage board", rect(wbBoard) })
+		else
+			assert(not wbBoard.Visible and H.find(wbBar, "Rank").Text:find("Ysolde", 1, true), "compact screens fold the leader into the bar at " .. tag.name)
+		end
+		noOverlap(fighting, tag)
+		combat.fx.OnClientEvent:Fire("worldBossLoot", { id = "Aurelith", name = "Aurelith", eligible = true, rank = 2, share = 0.1, tier = "Vanguard",
+			coins = 25000, drops = { SovereignEssence = 8, CrownShard = 22, SovereignCrest = 1 } })
+		local lootCard = hud:FindFirstChild("WorldBossLoot")
+		local lootRect = rect(lootCard)
+		assert(lootCard.Visible and lootRect.x >= 0 and lootRect.y >= 0 and lootRect.x + lootRect.w <= size.X and lootRect.y + lootRect.h <= size.Y,
+			"loot summary fits the screen at " .. tag.name .. " " .. show(lootRect))
+		assert(H.find(lootCard, "Items").Text:find("Sovereign Crest", 1, true) and H.find(lootCard, "Standing").Text:find("Vanguard", 1, true), "loot summary lists drops and tier at " .. tag.name)
+		combat.fx.OnClientEvent:Fire("worldBossAnnounce", { kind = "win", name = "Aurelith" })
+		assert(not wbBar.Visible and not wbBoard.Visible, "boss HUD clears when the boss falls at " .. tag.name)
+		checks += 8
 		checks += 12
 	end
 	-- Wayfinder (nav.client.lua) for Agility & Hunter: the running lap's next

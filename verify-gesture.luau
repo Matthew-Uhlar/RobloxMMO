@@ -547,7 +547,7 @@ do
 			styled += 1
 		end
 	end
-	eq(styled, 24, "six wood tiers × (shortbow, longbow, staff, wand)")
+	eq(styled, 27, "six wood tiers × (shortbow, longbow, staff, wand) + Endgame Eclipse Longbow, Duskpiercer, Riftcrown Staff")
 	ok(not Relay.itemOk(Data, "shoot", "BrassSword") and not Relay.itemOk(Data, "cast", "BrassSword"), "swords tint no bow or staff")
 	ok(Relay.itemOk(Data, "heal", nil) and not Relay.itemOk(Data, "heal", "WindpineStaff"), "Mend carries no item")
 	for _, kind in ipairs({"Bow", "Staff", "Wand"}) do

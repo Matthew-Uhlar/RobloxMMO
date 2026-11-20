@@ -1510,12 +1510,19 @@ local function requirementText(region)
 	local req=region.requires or {}
 	local out={}
 	if req.quest then table.insert(out,req.quest.." GUILD CONTRACTS") end
+	-- Endgame: quest-gated regions list the quest after the skills.
+	local quests={}
+	for _,id in ipairs(req.questsDone or {}) do
+		local q=Data.QuestById[id]
+		table.insert(quests,"QUEST: "..string.upper(q and q.title or id))
+	end
 	if req.skills then
 		local names={}
 		for skill in pairs(req.skills) do table.insert(names,skill) end
 		table.sort(names)
 		for _,skill in ipairs(names) do table.insert(out,string.upper(skill).." "..req.skills[skill]) end
 	end
+	for _,text in ipairs(quests) do table.insert(out,text) end
 	return if #out>0 then "REQUIRES "..table.concat(out," · ") else "OPEN TO ALL WAYFARERS"
 end
 local function beaconProp(parent,pos,accent,withLight)
@@ -2000,6 +2007,174 @@ end
 anchor(terrace,"Waypoint_Skyway",SKYWAY_LANDING-V(0,4,0),GT+V(0,0,50))
 regionWarp(shelf,CS+V(0,0,-40),"Gloomhollow",destinations.Gloomhollow,"Waypoint_DeepDescent")
 sign(shelf,CS+V(12,0,-38),"Deep descent","GLOOMHOLLOW   /   "..requirementText(Data.RegionById.Gloomhollow),REGION_ACCENT.Gloomhollow,0,9)
+
+-------------------------------------------------------------------------------
+-- Endgame (Endgame team; self-contained section): the Shattered Crown.
+-- A gated archipelago high above the Tempest Spire (Combat 60 + the quest
+-- Crown of the Tempest; region "ShatteredCrown"): the main isle (r 96) with the
+-- broken crown on its dais, level 90+ gather nodes, two crafting stations and
+-- four monster grounds, plus two bridged arena islets nested in its Model:
+--   Sovereign's Dais (east): the Sovereign Altar (prompt IsleAction "bossSigil",
+--     IsleItem "Aurelith", IsleRegion gate) and Anchor_WorldBoss_Aurelith.
+--   Eclipse Roost (west): Anchor_WorldBoss_Nyxwyrm (calendar-scheduled boss).
+-- combat.server.lua spawns world bosses on those anchors. The altar's four
+-- sockets glow from workspace attribute WorldBossSigils_Aurelith ("n/4").
+-- Reached by a gated beacon on the Tempest Spire; every marker sits >= 40 studs
+-- from the landing.
+-------------------------------------------------------------------------------
+do
+local E=Data.Endgame
+local SC,SC_R=V(820,120,-600),96
+local ARENA_R=40
+local EAST,WEST=SC+V(160,0,0),SC+V(-160,0,0)
+local gold,violet,glass=C("F2D27A"),C("8E6BD8"),C("BFF4FF")
+local crownStone,crownStrata=C("3C3352"),C("54496E")
+REGION_ACCENT.ShatteredCrown=gold
+local crown=regionIsle("ShatteredCrown","The Shattered Crown",SC,SC_R,{top=C("6E6A8C"),stone=crownStone,stratum=crownStrata,vein=gold,ground=ST,gaps={0,math.pi}})
+crown:SetAttribute("Endgame",true)
+-- The broken crown: a raised dais ringed by eight leaning gold spires, with
+-- fragments of the crown circlet hanging in the air above.
+local DAIS=SC+V(0,0,-14)
+local dais,daisTop=tier(crown,"Crown dais",DAIS,22,4,{cliff=crownStone,top=C("7C7698"),ground=ST,open={math.pi/2}})
+ramp(crown,DAIS+V(0,0,26),DAIS+V(0,daisTop-DAIS.Y,20),7,crownStrata,ST)
+local spires=group("Shattered crown",dais)
+for i=1,8 do
+	local a=i*2*math.pi/8+.2
+	local h=14+(i%3)*6
+	local base=DAIS+V(math.cos(a)*15,daisTop-DAIS.Y,math.sin(a)*15)
+	local spire=part(spires,"Crown spire",V(2.6,h,2.6),CFrame.new(base+V(0,h/2-1,0))*CFrame.Angles(0,-a,0)*CFrame.Angles(0,0,math.rad(if i%2==0 then 14 else -9)),
+		if i%2==0 then gold else lighten(gold,.25),GL,false)
+	if i%4==1 then meshSlot(spire,"Obelisk",gold) end
+	if i%2==1 then
+		local tip=part(spires,"Spire gem",V(1.2,2.4,1.2),CFrame.new(base+V(0,h+.6,0))*CFrame.Angles(0,a,math.pi/4),violet,NE,false)
+		if i%4==1 then light(tip,violet,.8,18) end
+	end
+end
+local heart=ball(spires,"Crown heart",DAIS+V(0,daisTop-DAIS.Y+9,0),3.4,gold,NE)
+light(heart,gold,1.1,40,{lift=0})
+motes(heart,gold,5,3,.35)
+for i=1,6 do
+	local a=i*2*math.pi/6
+	local frag=part(spires,"Circlet fragment",V(9,1.6,2.2),CFrame.new(DAIS+V(math.cos(a)*19,34+(i%2)*5,math.sin(a)*19))*CFrame.Angles(0,-a+math.pi/2,math.rad((i%3-1)*18)),gold,MT,false)
+	frag.CastShadow=false
+end
+-- Drifting shards and broken islets around the rim (pure scenery).
+for i=1,8 do
+	local a=(i+.3)*2*math.pi/8
+	local d=SC_R+18+(i%3)*10
+	local s=4+(i%4)*2
+	local isle=part(crown,"Drifting shard",V(s*2,s*1.4,s*1.6),CFrame.new(SC+V(math.cos(a)*d,-6+(i%3)*7,math.sin(a)*d))*CFrame.Angles(.3,a,.2),i%2==0 and crownStone or crownStrata,ST,false)
+	if i%2==0 then meshSlot(isle,"CliffRock") end
+	gem(crown,"Shard crystal",isle.CFrame.Position+V(0,s*.9,0),V(1.2,s*.9,1.2),i%2==0 and gold or violet,a)
+end
+for i,o in ipairs({V(-82,0,-34),V(82,0,-38),V(-34,0,-78),V(36,0,-80)}) do outcrop(crown,SC+o,1.4,i+20) end
+-- Landing, return beacon and sign (south rim).
+local LANDING=SC+V(0,4,74)
+returnWarp(crown,SC+V(14,0,80),"The Shattered Crown","ShatteredCrown")
+sign(crown,SC+V(-16,0,82),"The Shattered Crown",requirementText(Data.RegionById.ShatteredCrown),gold,0,12)
+anchor(crown,"Waypoint_Entrance_ShatteredCrown",SC+V(0,0,66),SC)
+for _,x in ipairs({-9,9}) do lamp(crown,SC+V(x,0,60)) end
+-- Crafting: the Crownforge (Sovereign plate, Crownsteel) and a glyph cauldron (Crown Sigils).
+station(crown,"Forge",SC+V(-30,0,46),SC+V(0,0,64),"Crownforge","CrownForge")
+station(crown,"Cauldron",SC+V(30,0,46),SC+V(0,0,64),"Sigil cauldron","CrownCauldron")
+-- Level 90+ gather nodes.
+oreNode(crown,SC+V(-72,0,-12),"Crownstone","ShatteredCrown",1.3)
+oreNode(crown,SC+V(70,0,-14),"Crownstone","ShatteredCrown",1.3)
+local function shatterbark(pos)
+	local r=Resource.ShatterbarkLog
+	local m=group(r.def.name.." tree",crown)
+	local collar=disk(m,"Root collar",pos+V(0,.6,0),2,1.2,darken(r.color,.5),WO,false)
+	local trunk=disk(m,"Shatterbark trunk",pos+V(0,8,0),1.3,16,darken(r.color,.35),WO,true)
+	meshSlot(trunk,"StarwoodTree",r.color,true,"Uniform")
+	for i=1,3 do
+		local a=i*2*math.pi/3
+		gem(m,"Bark shard",pos+V(math.cos(a)*1.6,5+i*2.5,math.sin(a)*1.6),V(.8,3.2,.8),lighten(r.color,.2),a)
+	end
+	ball(m,"Crystal canopy",pos+V(0,17,0),9,r.color,GL).Transparency=.15
+	ball(m,"Crystal canopy",pos+V(2.6,19.5,1),5.5,lighten(r.color,.2),GL).Transparency=.15
+	gatherPrompt(collar,"ShatterbarkLog","ShatteredCrown")
+	return m
+end
+shatterbark(SC+V(-58,0,40))
+shatterbark(SC+V(60,0,38))
+local _,riftPool=pond(crown,SC+V(-4,0,40),7,{name="Riftfin pool",water=C("6E5BD8"),bank=crownStrata})
+riftPool.Material=GL
+fishSpot(crown,SC+V(-4,0,40),"Riftfin","ShatteredCrown",V(1,0,0),5)
+-- Monster grounds (each >= 40 studs from the landing; open ground).
+spawnMarker("RiftmawStalker",SC+V(-52,0,6),3,8)
+spawnMarker("ShardglassSeer",SC+V(50,0,8),2,8)
+spawnMarker("CrownforgedColossus",SC+V(-42,0,-56),2,8)
+spawnMarker("VoidcrownDrake",SC+V(42,0,-58),2,8)
+
+-- Arena islets (nested island Models: the crown Model is the region island).
+local function arena(name,center,gapAngle,top,accent)
+	local m=island(name,center,ARENA_R,{parent=crown,region="ShatteredCrown",top=top,stone=crownStone,stratum=crownStrata,vein=accent,ground=ST,gaps={gapAngle},shore=false})
+	m:SetAttribute("WorldBossArena",true)
+	disk(m,"Arena floor",center+V(0,.04,0),ARENA_R-8,.08,darken(top,.15),Enum.Material.Slate,false)
+	disk(m,"Arena sigil ring",center+V(0,.1,0),ARENA_R-9.5,.04,accent,Enum.Material.Fabric,false).Transparency=.4
+	for i=1,6 do
+		local a=i*2*math.pi/6+math.pi/6
+		local col=block(m,"Arena column",center+V(math.cos(a)*(ARENA_R-4),5,math.sin(a)*(ARENA_R-4)),V(2.4,10,2.4),lighten(crownStrata,.2),Enum.Material.Marble,true)
+		if i%2==1 then meshSlot(col,"RuinColumn") end
+		local cap=part(m,"Column flame",V(1,1,1),CFrame.new(col.CFrame.Position+V(0,5.8,0))*CFrame.Angles(math.pi/4,a,math.pi/4),accent,NE,false)
+		if i%3==1 then light(cap,accent,.7,16) end
+	end
+	return m
+end
+local east=arena("Sovereign's Dais",EAST,math.pi,C("8A7E58"),gold)
+local west=arena("Eclipse Roost",WEST,0,C("4C4166"),violet)
+bridge(crown,SC+V(SC_R,0,0),EAST-V(ARENA_R,0,0))
+bridge(crown,SC-V(SC_R,0,0),WEST+V(ARENA_R,0,0))
+anchor(crown,"WorldBoss_Aurelith",EAST,SC)
+anchor(crown,"WorldBoss_Nyxwyrm",WEST,SC)
+anchor(crown,"Waypoint_Bridge_SovereignsDais",SC+V(SC_R-6,0,0),EAST)
+anchor(crown,"Waypoint_Bridge_EclipseRoost",SC-V(SC_R-6,0,0),WEST)
+sign(east,EAST+V(-ARENA_R+10,0,14),"Sovereign's Dais","WORLD BOSS   /   AURELITH · PLACE 4 CROWN SIGILS",gold,90,11)
+sign(west,WEST+V(ARENA_R-10,0,14),"Eclipse Roost","WORLD BOSS   /   NYXWYRM RIDES AT EVERY ISLE DUSK",violet,-90,11)
+-- The Sovereign Altar: four sigil sockets on a plinth at the dais edge.
+do
+	local ALTAR=EAST+V(-ARENA_R+12,0,-10)
+	local altar=group("Sovereign Altar",east)
+	block(altar,"Altar step",ALTAR+V(0,.3,0),V(7,.6,7),crownStrata,ST,true)
+	local plinth=block(altar,"Altar plinth",ALTAR+V(0,1.9,0),V(4,2.6,4),lighten(crownStrata,.25),Enum.Material.Marble,true)
+	meshSlot(plinth,"Waystone",gold)
+	local sockets={}
+	for i=1,E and Data.WorldBosses.Aurelith.sigils or 4 do
+		local a=i*math.pi/2+math.pi/4
+		sockets[i]=ball(altar,"Sigil socket",ALTAR+V(math.cos(a)*1.4,3.45,math.sin(a)*1.4),.8,ink,GL)
+	end
+	local flame=part(altar,"Altar flame",V(1.2,1.2,1.2),CFrame.new(ALTAR+V(0,4.4,0))*CFrame.Angles(math.pi/4,0,math.pi/4),gold,NE,false)
+	light(flame,gold,.9,16)
+	local q=prompt(plinth,"Place Crown Sigil","Sovereign Altar · Aurelith","bossSigil","Aurelith")
+	q:SetAttribute("IsleRegion","ShatteredCrown")
+	q.MaxActivationDistance=10
+	anchor(crown,"Waypoint_SovereignAltar",ALTAR+V(6,0,0),ALTAR)
+	local function refresh()
+		local value=workspace:GetAttribute("WorldBossSigils_Aurelith")
+		local placed=tonumber(type(value)=="string" and value:match("^(%d+)/") or 0) or 0
+		for i,socket in ipairs(sockets) do
+			socket.Color=if i<=placed then gold else ink
+			socket.Material=if i<=placed then NE else GL
+		end
+	end
+	pcall(function() workspace:GetAttributeChangedSignal("WorldBossSigils_Aurelith"):Connect(refresh) end)
+	refresh()
+end
+-- The Eclipse Roost perch: a dark obelisk the Tyrant lands beside.
+do
+	local perch=block(west,"Roost obelisk",WEST+V(0,7,-ARENA_R+10),V(3,14,3),C("2B2440"),ST,true)
+	meshSlot(perch,"Obelisk",violet)
+	local eye=part(west,"Roost eye",V(1.4,1.4,1.4),CFrame.new(perch.CFrame.Position+V(0,8,0))*CFrame.Angles(math.pi/4,0,math.pi/4),violet,NE,false)
+	light(eye,violet,.8,18)
+end
+-- Gated beacon on the Tempest Spire (the storm's heart opens the way up).
+local tempestIsle=islandsFolder:FindFirstChild("Tempest Spire")
+if tempestIsle then
+	regionWarp(tempestIsle,TS+V(-34,0,34),"ShatteredCrown",LANDING,"Waypoint_Skyway_ShatteredCrown")
+	sign(tempestIsle,TS+V(-34,0,44),"The Shattered Crown",requirementText(Data.RegionById.ShatteredCrown),gold,0,10)
+end
+end
+-- End Endgame section.
 
 -------------------------------------------------------------------------------
 -- Builder's Terrace (Carpentry construction). Each home gains a small terrace

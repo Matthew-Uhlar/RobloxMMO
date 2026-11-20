@@ -3796,4 +3796,469 @@ end
 end
 -- End Garden section.
 
+------------------------------------------------------------------------------
+-- Endgame (Endgame team; append-only section).
+-- The Shattered Crown: a gated archipelago of crown-shard islets above the
+-- Tempest Spire (OSRS wilderness bosses / SkyBlock dragons and Kuudra).
+--   * Region "ShatteredCrown": Combat 60 and the main quest Crown of the Tempest
+--     (requires.questsDone, checked by server regionAllowed). Four monsters
+--     (levels 85-110), a ninth mining tier and a seventh woodcutting and fishing
+--     tier (level 90+, tool tier 7), and Crownforged tools (tool tier 8).
+--   * World bosses (Data.WorldBosses, resolved through Data.Monsters[id] like
+--     sea creatures, never iterated by pairs(Data.Monsters)):
+--       Aurelith  summoned at the Sovereign Altar by SIGILS Crown Sigils (any
+--                 players, at most ALTAR_PER_PLAYER each; SkyBlock eyes).
+--       Nyxwyrm   scheduled once per isle day (Skyward Calendar, 2 h 32.5 min),
+--                 SCHEDULE.offset seconds after dawn, announced WARNING s early.
+--     Phases by health fraction; each phase cycles its telegraphed attacks:
+--       disc  (warning disc on a participant: leave it)
+--       ring  (nova around the boss: get out of radius)
+--       safe  (eclipse: everyone OUTSIDE radius of the boss is struck: get in)
+--       adds  (a wave of region monsters; while any lives the boss is warded and
+--              takes WARD x damage)
+--     Enrage after def.enrage seconds: damage x ENRAGE_DAMAGE, attacks faster.
+--     The boss departs after def.duration seconds (no loot).
+--   * Contribution loot: share = damage dealt / boss max health. Credit needs
+--     share >= MIN_SHARE, alive and within def.creditRange of the arena at the
+--     kill, a hit in the last ACTIVE_WINDOW seconds, and (Ironman) share >=
+--     IRONMAN_SHARE. Tier by share (ContributionTiers) sets guaranteed rewards;
+--     loot weight = tier weight + rank bonus + summoner bonus scales the chance
+--     of every roll (capped at 1); Magic Find then applies (Progression.rollDrops).
+--     Damage XP is the normal on-kill accrual (def.xp over def.hp).
+-- combat.server.lua (World Boss section) runs fights; server.server.lua pays
+-- through bridge "worldBoss"; world.server.lua builds the region; tests in
+-- verify-endgame.luau.
+------------------------------------------------------------------------------
+do
+local E = {}
+Data.Endgame = E
+E.REGION = "ShatteredCrown"
+E.MIN_SHARE = 0.01          -- of the boss's max health
+E.IRONMAN_SHARE = 0.3       -- Ironman journals carry their own weight
+E.ACTIVE_WINDOW = 60        -- seconds: last hit this recently before the kill
+E.WARD = 0.5                -- damage taken while an add wave lives
+E.ENRAGE_DAMAGE = 2         -- damage multiplier once enraged
+E.ENRAGE_TEMPO = 0.6        -- attack interval multiplier once enraged
+E.ALTAR_PER_PLAYER = 2      -- sigils one player may place per summoning
+E.SUMMONER_BONUS = 0.25     -- loot weight per own sigil in the summoning
+E.SUMMONER_CAP = 0.5
+E.RANK_BONUS = {0.5, 0.3, 0.15}
+E.HUD_RANGE = 200           -- studs from the arena centre for the boss HUD
+E.TOP = 5                   -- leaderboard rows
+-- Highest tier first. coins/essence are the guaranteed participation reward.
+E.ContributionTiers = {
+	{id="Champion",name="Champion",minShare=0.25,weight=3,essence=12,coins=40000,color="FFAA00"},
+	{id="Vanguard",name="Vanguard",minShare=0.10,weight=2,essence=8,coins=25000,color="AA00AA"},
+	{id="Valiant",name="Valiant",minShare=0.03,weight=1.4,essence=5,coins=15000,color="5555FF"},
+	{id="Participant",name="Participant",minShare=0.01,weight=1,essence=3,coins=8000,color="55FF55"},
+}
+E.TierById = {}
+for i, t in ipairs(E.ContributionTiers) do t.index = i; E.TierById[t.id] = t end
+
+------------------------------------------------------------------------------
+-- Region
+------------------------------------------------------------------------------
+local region = {id="ShatteredCrown",name="The Shattered Crown",requires={skills={Combat=60},questsDone={"CrownOfTempest"}},
+	description="Islets of a sky-crown shattered above the storm. Riftmaws, glass seers, crownforged colossi and voidcrown drakes guard the Sovereign Altar.",
+	monsters={"RiftmawStalker","ShardglassSeer","CrownforgedColossus","VoidcrownDrake","Aurelith","Nyxwyrm"}}
+table.insert(Data.Regions, region)
+Data.RegionById[region.id] = region
+-- Human-readable region requirement (server notices, world signs, UI).
+function E.requirementParts(def)
+	local parts = {}
+	local requires = type(def) == "table" and def.requires or {}
+	if requires.quest then table.insert(parts, "Complete "..requires.quest.." guild contracts") end
+	local skills = {}
+	for skill in pairs(requires.skills or {}) do table.insert(skills, skill) end
+	table.sort(skills)
+	for _, skill in ipairs(skills) do table.insert(parts, skill.." "..requires.skills[skill]) end
+	for _, id in ipairs(requires.questsDone or {}) do
+		local q = Data.QuestById[id]
+		table.insert(parts, "Quest: "..(q and q.title or id))
+	end
+	return parts
+end
+-- Pure gate: levels = {[skill]=level}, done = {[questId]=true}, contracts = n.
+function E.regionOpen(def, levels, done, contracts)
+	local requires = type(def) == "table" and def.requires or {}
+	if requires.quest and (tonumber(contracts) or 0) < requires.quest then return false end
+	for skill, lvl in pairs(requires.skills or {}) do if (tonumber(levels and levels[skill]) or 1) < lvl then return false end end
+	for _, id in ipairs(requires.questsDone or {}) do if not (done and done[id]) then return false end end
+	return true
+end
+
+------------------------------------------------------------------------------
+-- Materials
+------------------------------------------------------------------------------
+item("CrownShard",{name="Crown Shard",kind="material",rarity="Rare",color="E9D58A",value=40,description="A splinter of the shattered sky-crown. Dropped across the Shattered Crown."})
+item("RiftHide",{name="Riftmaw Hide",kind="material",rarity="Rare",color="7A3FA0",value=60,description="Rift-stitched hide of a Riftmaw Stalker. Leather for the Eclipse Stalker set."})
+item("SeerGlass",{name="Seerglass Lens",kind="material",rarity="Epic",color="9FE6F2",value=90,description="A singing lens shed by a Shardglass Seer. Inscribed into Riftweave."})
+item("ColossusCore",{name="Colossus Heartstone",kind="material",rarity="Epic",color="C9A24D",value=120,description="The furnace heart of a Crownforged Colossus. Tempers Sovereign plate."})
+item("DrakeScale",{name="Voidcrown Scale",kind="material",rarity="Epic",color="3A2466",value=120,description="A night-black scale of a Voidcrown Drake."})
+item("SovereignEssence",{name="Sovereign Essence",kind="material",rarity="Legendary",color="FFD86B",value=250,description="Crown-light poured from a felled world boss. Every endgame recipe needs it."})
+item("SovereignCrest",{name="Sovereign Crest",kind="material",rarity="Legendary",color="FFAA00",value=2500,description="A rare crest from a world boss's hoard. Crowns every endgame weapon and chestpiece."})
+item("CrownSigil",{name="Crown Sigil",kind="material",rarity="Epic",color="F2D27A",value=600,description="Placed in the Sovereign Altar. Four sigils wake Aurelith, the Shattered Sovereign."})
+for id, scale in pairs({CrownShard=0.2,RiftHide=0.3,SeerGlass=0.2,ColossusCore=0.1,DrakeScale=0.1,SovereignEssence=0.05}) do
+	table.insert(Data.CollectionItems, id)
+	Data.CollectionScale[id] = scale
+end
+
+------------------------------------------------------------------------------
+-- Resource tiers (level 90+, tool tier 7) and the Crownsteel ingot
+------------------------------------------------------------------------------
+E.Resources = {
+	{skill="Mining",id="Crownstone",name="Crownstone Ore",level=92,xp=420,tool=7,respawn=25,value=220,color="D8B4FF"},
+	{skill="Woodcutting",id="ShatterbarkLog",name="Shatterbark Log",level=90,xp=320,tool=7,respawn=20,value=140,color="B9A6E8"},
+	{skill="Fishing",id="Riftfin",name="Riftfin",level=90,xp=320,tool=7,respawn=20,value=150,color="8E7CF0"},
+}
+for _, r in ipairs(E.Resources) do
+	local tiers = Data.ResourceTiers[r.skill]
+	local def = {id=r.id,name=r.name,level=r.level,xp=r.xp,tool=r.tool,respawn=r.respawn,value=r.value,color=r.color}
+	table.insert(tiers, def)
+	def.skill, def.index = r.skill, #tiers
+	Data.ResourceSkill[r.id] = r.skill
+	item(r.id,{name=r.name,kind="resource",skill=r.skill,tier=def.index,color=r.color,value=r.value,rarity="Legendary",
+		description="Gathered with "..r.skill.." "..r.level.." (tool tier "..r.tool.."). +"..r.xp.." XP per harvest. Only in the Shattered Crown."})
+	table.insert(Data.CollectionItems, r.id)
+end
+item("CookedRiftfin",{name="Seared Riftfin",kind="consumable",category="food",rarity="Epic",color="8E7CF0",heal=300,recovery=4,value=310,requires={Cooking=90},description="Restore up to 300 health."})
+recipe("CookedRiftfin",{skill="Cooking",level=90,xp=330,costs={Riftfin=1,AetherLotus=1},repeatable=true,station="Hearth",category="Meals"})
+item("CrownsteelIngot",{name="Crownsteel Ingot",kind="material",rarity="Legendary",color="E3C9FF",value=700,description="Smelted from Crownstone with Shatterbark fuel."})
+recipe("CrownsteelIngot",{skill="Smithing",level=90,xp=200,costs={Crownstone=3,ShatterbarkLog=1},repeatable=true,station="Forge",category="Ingots"})
+
+-- Crownforged tools: tool tier 8 (above Celestial).
+local toolDefs = {
+	{kind="Pickaxe",slot="pickaxe",skill="Mining",stats={miningSpeed=340,miningFortune=135},extra={ShatterbarkLog=2}},
+	{kind="Hatchet",slot="hatchet",skill="Woodcutting",stats={foragingFortune=135,strength=24},extra={ShatterbarkLog=4}},
+	{kind="Rod",slot="rod",skill="Fishing",stats={fishingFortune=135,seaCreatureChance=8},extra={ShatterbarkLog=3,Riftfin=4}},
+	{kind="Hoe",slot="hoe",skill="Farming",stats={farmingFortune=135},extra={ShatterbarkLog=2,AetherLotus=8}},
+}
+E.ToolOrder = {}
+for _, t in ipairs(toolDefs) do
+	local id = "Crownforged"..t.kind
+	local costs = {CrownsteelIngot=3,CrownShard=12}
+	for k, v in pairs(t.extra) do costs[k] = v end
+	item(id,{name="Crownforged "..t.kind,kind="tool",toolKind=t.kind,slot=t.slot,toolTier=8,tier=8,rarity="Legendary",color="E3C9FF",stats=t.stats,
+		requires={[t.skill]=90},value=2800,description="Tier 8 "..string.lower(t.kind)..". Requires "..t.skill.." 90."})
+	recipe(id,{skill="Smithing",level=90,xp=600,costs=costs,collectionTier={Crownstone=1},station="Forge",category="Tools"})
+	table.insert(E.ToolOrder, id)
+end
+
+------------------------------------------------------------------------------
+-- Monsters (levels 85-110)
+------------------------------------------------------------------------------
+E.MonsterOrder = {"RiftmawStalker","ShardglassSeer","CrownforgedColossus","VoidcrownDrake"}
+local monsters = {
+	RiftmawStalker={name="Riftmaw Stalker",level=85,region="ShatteredCrown",hp=32000,damage=760,defense=360,xp=700,coins=150,speed=16,color="7A3FA0",style="melee",
+		drops={{item="CrownShard",chance=0.7,min=1,max=3},{item="RiftHide",chance=0.45,min=1,max=2},{item="Crownstone",chance=0.3,min=1,max=2},{item="ArcaneDust",chance=0.8,min=6,max=12}}},
+	ShardglassSeer={name="Shardglass Seer",level=92,region="ShatteredCrown",hp=42000,damage=900,defense=300,xp=880,coins=180,speed=13,color="9FE6F2",style="magic",
+		drops={{item="CrownShard",chance=0.8,min=2,max=4},{item="SeerGlass",chance=0.35,min=1,max=1},{item="VoidEssence",chance=0.6,min=2,max=4},{item="StarFragment",chance=0.02,min=1,max=1}}},
+	CrownforgedColossus={name="Crownforged Colossus",level=100,region="ShatteredCrown",hp=70000,damage=1150,defense=650,xp=1250,coins=240,speed=9,color="C9A24D",style="melee",
+		drops={{item="CrownShard",chance=0.9,min=3,max=6},{item="ColossusCore",chance=0.25,min=1,max=1},{item="Crownstone",chance=0.6,min=2,max=4},{item="StarFragment",chance=0.03,min=1,max=1}}},
+	VoidcrownDrake={name="Voidcrown Drake",level=110,region="ShatteredCrown",hp=95000,damage=1400,defense=480,xp=1600,coins=320,speed=18,color="3A2466",style="ranged",
+		drops={{item="CrownShard",chance=0.9,min=3,max=6},{item="DrakeScale",chance=0.3,min=1,max=1},{item="SovereignEssence",chance=0.05,min=1,max=1},{item="ShardlingPet",chance=0.0008,min=1,max=1}}},
+}
+local CS = Data.CombatStyles
+local function applyStyle(def, style)
+	def.attackStyle = style
+	def.weakness = CS.beatenBy[style]
+	def.defenceStyle = CS.beats[style]
+end
+
+------------------------------------------------------------------------------
+-- Pet and drop-only uniques
+------------------------------------------------------------------------------
+local shardling = {id="Shardling",name="Shardling",skill="Combat",rarity="Legendary",color="F2D27A",perLevel={strength=0.7,critDamage=0.7,health=1.2,magicFind=0.05},ability="Crownbound: +5% Magic Find on world bosses"}
+table.insert(Data.Pets, shardling)
+Data.PetById.Shardling = shardling
+item("ShardlingPet",{name="Shardling Pet",kind="pet",pet="Shardling",rarity="Legendary",color="F2D27A",value=200*Data.Rarity.Legendary.rank^2,description="Summon from your pet menu. "..shardling.ability})
+item("SovereignSignet",{name="Sovereign Signet",kind="accessory",rarity="Mythic",color=Data.Rarity.Mythic.color,stats={strength=40,critDamage=30,health=80},value=40*Data.Rarity.Mythic.rank^2,
+	description="Accessory. Magical Power "..Data.Rarity.Mythic.power..". Only Aurelith's hoard holds one."})
+item("NyxwingCharm",{name="Nyxwing Charm",kind="accessory",rarity="Mythic",color=Data.Rarity.Mythic.color,stats={intelligence=60,rangedStrength=20,magicFind=6},value=40*Data.Rarity.Mythic.rank^2,
+	description="Accessory. Magical Power "..Data.Rarity.Mythic.power..". Only Nyxwyrm's hoard holds one."})
+item("Crownbreaker",{name="Crownbreaker",kind="weapon",slot="weapon",tier=9,rarity="Mythic",color="FFD86B",stats={damage=420,strength=200,critChance=20,critDamage=150},requires={Combat=70},value=60000,
+	description="Melee. Aurelith's own sceptre-blade. Requires Combat 70."})
+item("Duskpiercer",{name="Duskpiercer",kind="weapon",slot="weapon",style="ranged",tier=9,rarity="Mythic",color="6B4AB8",stats={critDamage=90,rangedAccuracy=130,rangedStrength=30},
+	ranged={power=370,speed=0.95,range=CS.maxRange,maxAmmoTier=7},requires={Ranged=70},value=60000,
+	description="Ranged weapon. Strung with Nyxwyrm's sinew. "..CS.maxRange.." stud reach. Arrows up to tier 7. Requires Ranged 70."})
+
+------------------------------------------------------------------------------
+-- Endgame gear: one set per combat style, stats above Celestial.
+------------------------------------------------------------------------------
+local slotShare = {helmet=0.6,chest=1,legs=0.85,boots=0.5}
+local slotNames = {helmet="Helm",chest="Chestplate",legs="Greaves",boots="Boots"}
+local slotUnits = {helmet=5,chest=8,legs=7,boots=4}
+E.Sets = {
+	{id="Sovereign",name="Sovereign's Mandate",style="melee",skill="Smithing",station="Forge",level=92,combat={Combat=60},color="FFD86B",rarity="Legendary",
+		piece="Sovereign",names={helmet="Crown",chest="Cuirass",legs="Tassets",boots="Sabatons"},
+		armor={defense=360,health=320,strength=30,critDamage=20},bonus={strength=150,critDamage=150,health=400,defense=200},
+		text="+150 Strength, +150 Crit Damage, +400 Health, +200 Defense",
+		unit={CrownsteelIngot=1},extra={ColossusCore=1,SovereignEssence=1},
+		weapon={id="SovereignGreatblade",name="Sovereign Greatblade",stats={damage=380,strength=170,critChance=18,critDamage=120},
+			costs={CrownsteelIngot=10,ColossusCore=4,SovereignEssence=8,SovereignCrest=1},level=94}},
+	{id="EclipseStalker",name="Umbral Volley",style="ranged",skill="Fletching",station="Workbench",level=92,combat={Ranged=60},color="6B4AB8",rarity="Legendary",
+		piece="Eclipse",names={helmet="Cowl",chest="Jerkin",legs="Chaps",boots="Treads"},
+		armor={defense=300,health=270,rangedStrength=40,rangedAccuracy=30},bonus={rangedStrength=120,rangedAccuracy=120,critChance=15,critDamage=120,health=250},
+		text="+120 Ranged Strength, +120 Ranged Accuracy, +15 Crit Chance, +120 Crit Damage, +250 Health",
+		unit={RiftHide=2},extra={DrakeScale=1,SovereignEssence=1},
+		weapon={id="EclipseLongbow",name="Eclipse Longbow",stats={critDamage=70,rangedAccuracy=110,rangedStrength=40},
+			ranged={power=340,speed=1.0,range=CS.maxRange,maxAmmoTier=7},
+			costs={ShatterbarkLog=12,SilkString=2,DrakeScale=4,SovereignEssence=8,SovereignCrest=1},level=94}},
+	{id="Riftweave",name="Rift Attunement",style="magic",skill="Glyphcraft",station="Workbench",level=92,combat={Magic=60},color="9FE6F2",rarity="Legendary",
+		piece="Riftweave",names={helmet="Circlet",chest="Robe",legs="Leggings",boots="Slippers"},
+		armor={defense=290,health=260,intelligence=150,abilityDamage=3},bonus={intelligence=500,abilityDamage=20,health=300,defense=100},
+		text="+500 Intelligence, +20% Ability Damage, +300 Health, +100 Defense",
+		unit={SpiderSilk=3},extra={SeerGlass=1,SovereignEssence=1},
+		weapon={id="RiftcrownStaff",name="Riftcrown Staff",stats={intelligence=320,abilityDamage=6},
+			magic={power=190,speed=1.15,elements={"Gale","Tide","Stone","Ember"}},
+			costs={ShatterbarkLog=10,SeerGlass=6,SovereignEssence=8,SovereignCrest=1},level=94}},
+}
+E.SetById = {}
+E.GearOrder = {}
+for _, set in ipairs(E.Sets) do
+	E.SetById[set.id] = set
+	Data.Sets[set.id] = {id=set.id,name=set.name,pieces={},bonus=set.bonus,text=set.text,color=set.color}
+	for _, slot in ipairs(Data.ArmorSlots) do
+		local id = set.piece..slotNames[slot]
+		local n = slotUnits[slot]
+		local costs = {}
+		for k, v in pairs(set.unit) do costs[k] = v * n end
+		for k, v in pairs(set.extra) do costs[k] = math.max(1, v * n // 2) end
+		costs.CrownShard = 6 * n
+		if slot == "chest" then costs.SovereignCrest = 1 end
+		item(id,{name=set.piece.." "..set.names[slot],kind="armor",slot=slot,set=set.id,tier=9,rarity=set.rarity,color=set.color,
+			stats=(function() local out = {} for k, v in pairs(set.armor) do out[k] = math.max(1, math.floor(v * slotShare[slot] + 0.5)) end return out end)(),
+			requires=table.clone(set.combat),value=5000*n,description="Part of the "..set.name.." set ("..Data.CombatStyles.names[set.style].."). "..set.text.." with all four."})
+		recipe(id,{skill=set.skill,level=set.level,xp=90*n,costs=costs,collectionTier={CrownShard=2},station=set.station,category="Armor"})
+		table.insert(Data.Sets[set.id].pieces, id)
+		table.insert(E.GearOrder, id)
+	end
+	local w = set.weapon
+	local def = {name=w.name,kind="weapon",slot="weapon",tier=9,rarity=set.rarity,color=set.color,stats=table.clone(w.stats),requires=table.clone(set.combat),value=50000}
+	if set.style ~= "melee" then def.style = set.style end
+	if w.ranged then def.ranged = table.clone(w.ranged) end
+	if w.magic then def.magic = {power=w.magic.power,speed=w.magic.speed,elements=table.clone(w.magic.elements)} end
+	def.description = if set.style == "ranged" then "Ranged weapon. "..CS.maxRange.." stud reach. Arrows up to tier 7."
+		elseif set.style == "magic" then "Magic weapon. Supplies unlimited Gale, Tide, Stone and Ember glyphs."
+		else "Melee. Forged from Crownsteel and a Sovereign Crest."
+	item(w.id, def)
+	recipe(w.id,{skill=set.skill,level=w.level,xp=1500,costs=w.costs,collectionTier={CrownShard=3},station=set.station,category=if set.style=="melee" then "Weapons" elseif set.style=="ranged" then "Bows" else "Staves"})
+	table.insert(E.GearOrder, w.id)
+end
+-- Summoning: a Crown Sigil needs every regional drop.
+recipe("CrownSigil",{skill="Glyphcraft",level=85,xp=450,costs={CrownShard=24,RiftHide=2,SeerGlass=2,ColossusCore=1,DrakeScale=1},repeatable=true,
+	collectionTier={CrownShard=1},station="Cauldron",category="Glyphs"})
+
+------------------------------------------------------------------------------
+-- World bosses
+------------------------------------------------------------------------------
+-- attacks: kind disc|ring|safe|adds; radius studs; windup seconds from the
+-- warning to the strike; mult x boss damage per player struck.
+Data.WorldBosses = {
+	Aurelith={name="Aurelith, the Shattered Sovereign",short="Aurelith",level=120,hp=3000000,damage=1500,defense=500,xp=40000,coins=0,speed=9,color="F2D27A",
+		style="melee",body="sovereign",summon="altar",sigils=4,duration=600,enrage=420,arenaRange=70,creditRange=120,leash=26,
+		phases={
+			{at=1,name="Crowned",attacks={"slam","nova"},interval=7},
+			{at=0.66,name="Fractured",attacks={"slam","adds","nova"},interval=6},
+			{at=0.33,name="Shattered",attacks={"eclipse","slam","adds","nova"},interval=5},
+		},
+		attacks={
+			slam={kind="disc",name="Crown Slam",radius=9,windup=2.0,mult=1.2},
+			nova={kind="ring",name="Shard Nova",radius=18,windup=2.6,mult=1.5},
+			eclipse={kind="safe",name="Sovereign Eclipse",radius=14,windup=3.2,mult=2.0},
+			adds={kind="adds",name="Riftmaw Pack",monster="RiftmawStalker",count=3,radius=14},
+		},
+		loot={
+			{item="CrownShard",chance=1,min=8,max=16},
+			{item="SovereignEssence",chance=1,min=2,max=4},
+			{item="StarFragment",chance=0.3,min=1,max=3},
+			{item="SovereignCrest",chance=0.06,min=1,max=1},
+			{item="SovereignSignet",chance=0.01,min=1,max=1},
+			{item="ShardlingPet",chance=0.004,min=1,max=1},
+			{item="Crownbreaker",chance=0.004,min=1,max=1},
+		}},
+	Nyxwyrm={name="Nyxwyrm, the Eclipse Tyrant",short="Nyxwyrm",level=130,hp=4500000,damage=1800,defense=450,xp=55000,coins=0,speed=12,color="4B2C7A",
+		style="magic",body="wyrm",summon="schedule",duration=720,enrage=540,arenaRange=75,creditRange=125,leash=28,
+		phases={
+			{at=1,name="Dusk",attacks={"breath","sweep"},interval=7},
+			{at=0.66,name="Gloaming",attacks={"breath","brood","sweep"},interval=6},
+			{at=0.33,name="Eclipse",attacks={"nightfall","breath","brood","sweep"},interval=4.5},
+		},
+		attacks={
+			breath={kind="disc",name="Umbral Breath",radius=12,windup=2.2,mult=1.3},
+			sweep={kind="ring",name="Tail Sweep",radius=16,windup=2.4,mult=1.4},
+			nightfall={kind="safe",name="Nightfall",radius=12,windup=3.4,mult=2.2},
+			brood={kind="adds",name="Glass Brood",monster="ShardglassSeer",count=2,radius=16},
+		},
+		loot={
+			{item="CrownShard",chance=1,min=10,max=18},
+			{item="SovereignEssence",chance=1,min=3,max=5},
+			{item="DrakeScale",chance=0.5,min=1,max=3},
+			{item="SovereignCrest",chance=0.06,min=1,max=1},
+			{item="NyxwingCharm",chance=0.01,min=1,max=1},
+			{item="ShardlingPet",chance=0.004,min=1,max=1},
+			{item="Duskpiercer",chance=0.004,min=1,max=1},
+		}},
+}
+E.BossOrder = {"Aurelith","Nyxwyrm"}
+-- Skyward Calendar schedule: once per isle day, `offset` seconds after dawn.
+E.SCHEDULE = {boss="Nyxwyrm",offset=6600,window=180,warning=300}
+for id, def in pairs(Data.WorldBosses) do
+	def.id, def.worldBoss, def.region = id, true, E.REGION
+	def.drops = def.loot -- bestiary display
+	applyStyle(def, def.style)
+end
+for id, def in pairs(monsters) do
+	def.id = id
+	applyStyle(def, def.style)
+	def.style = nil
+	Data.Monsters[id] = def
+end
+-- Lookups by id reach sea creatures and world bosses; pairs() sees marker monsters only.
+setmetatable(Data.Monsters, {__index = function(_, id)
+	return rawget(Data.SeaCreatures, id) or rawget(Data.WorldBosses, id)
+end})
+-- Drift plume from drakes (fletching supply).
+table.insert(Data.Monsters.VoidcrownDrake.drops, {item="DriftPlume",chance=0.8,min=4,max=8})
+
+------------------------------------------------------------------------------
+-- Pure rules
+------------------------------------------------------------------------------
+function E.boss(id) return type(id) == "string" and rawget(Data.WorldBosses, id) or nil end
+-- Phase index for a health fraction (1 = full health).
+function E.phaseFor(def, fraction)
+	local index = 1
+	for i, phase in ipairs(def.phases) do if fraction <= phase.at + 1e-9 then index = i end end
+	return index
+end
+-- Seconds between telegraphed attacks in a phase (faster once enraged).
+function E.attackInterval(def, phase, enraged)
+	local p = def.phases[phase] or def.phases[1]
+	return p.interval * (if enraged then E.ENRAGE_TEMPO else 1)
+end
+-- The attack id at rotation step n (1-based) of a phase.
+function E.attackAt(def, phase, n)
+	local list = (def.phases[phase] or def.phases[1]).attacks
+	return list[((math.max(1, math.floor(n)) - 1) % #list) + 1]
+end
+-- Whether a point is struck by a resolving telegraph. Flat distance.
+function E.struck(attack, center, pos)
+	local dx, dz = pos.X - center.X, pos.Z - center.Z
+	local d = math.sqrt(dx * dx + dz * dz)
+	if attack.kind == "disc" or attack.kind == "ring" then return d <= attack.radius end
+	if attack.kind == "safe" then return d > attack.radius end
+	return false
+end
+-- Contribution tier for a share of the boss's max health (nil below MIN_SHARE).
+function E.contributionTier(share)
+	share = tonumber(share) or 0
+	if share ~= share then return nil end
+	for _, t in ipairs(E.ContributionTiers) do if share >= t.minShare then return t end end
+	return nil
+end
+-- Credit check at the kill. c = {share, alive, distance, ironman, lastHit, now}.
+function E.eligible(def, c)
+	if type(c) ~= "table" then return false, "invalid" end
+	local share = tonumber(c.share) or 0
+	if share < E.MIN_SHARE then return false, "share" end
+	if c.alive ~= true then return false, "dead" end
+	if not c.distance or c.distance > (def.creditRange or 120) then return false, "range" end
+	if not c.lastHit or not c.now or c.now - c.lastHit > E.ACTIVE_WINDOW then return false, "idle" end
+	if c.ironman and share < E.IRONMAN_SHARE then return false, "ironman" end
+	return true
+end
+-- Loot weight: tier weight + rank bonus + summoner bonus (own sigils).
+function E.lootWeight(tierId, rank, sigils)
+	local t = E.TierById[tierId]
+	if not t then return 0 end
+	local bonus = E.RANK_BONUS[tonumber(rank) or 0] or 0
+	local summon = math.min(E.SUMMONER_CAP, E.SUMMONER_BONUS * math.max(0, math.floor(tonumber(sigils) or 0)))
+	return t.weight + bonus + summon
+end
+-- Reward plan for one credited player: guaranteed items/coins and a drop table
+-- for Progression.rollDrops (chances x weight, capped at 1; Magic Find applies
+-- to the rolls afterwards). Guaranteed rows (chance 1) scale their amounts.
+function E.bossRewards(bossId, tierId, rank, sigils)
+	local def, t = E.boss(bossId), E.TierById[tierId]
+	if not def or not t then return nil end
+	local weight = E.lootWeight(tierId, rank, sigils)
+	local out = {coins=t.coins,items={SovereignEssence=t.essence},drops={},weight=weight}
+	for _, d in ipairs(def.loot) do
+		if d.chance >= 1 then
+			table.insert(out.drops, {item=d.item,chance=1,min=math.max(1, math.floor(d.min * weight + 0.5)),max=math.max(1, math.floor(d.max * weight + 0.5))})
+		else
+			table.insert(out.drops, {item=d.item,chance=math.min(1, d.chance * weight),min=d.min,max=d.max})
+		end
+	end
+	return out
+end
+-- Ranking: list of {player, damage, lastHit} -> sorted by damage (ties: earlier
+-- last hit first), each given rank and share of maxHp.
+function E.rank(list, maxHp)
+	local out = table.clone(list)
+	table.sort(out, function(a, b)
+		if a.damage ~= b.damage then return a.damage > b.damage end
+		return (a.lastHit or 0) < (b.lastHit or 0)
+	end)
+	for i, e in ipairs(out) do e.rank = i; e.share = if maxHp > 0 then e.damage / maxHp else 0 end
+	return out
+end
+-- Scheduled window around t: {boss, key, starts, ends, open, warnAt}.
+-- Each isle day's window starts SCHEDULE.offset seconds after its dawn.
+function E.scheduleAt(t)
+	local s = E.SCHEDULE
+	t = math.floor(tonumber(t) or 0)
+	local cal = Data.calendarAt(t)
+	local starts = cal.dayStart + s.offset
+	if t >= starts + s.window then starts += Data.Calendar.dayLength end
+	return {boss=s.boss,key=s.boss..":"..starts,starts=starts,ends=starts+s.window,open=t>=starts and t<starts+s.window,warnAt=starts-s.warning}
+end
+-- Altar placement check (pure): state = {placed={{user, n}...} or count}, returns ok, reason.
+function E.canPlaceSigil(bossId, total, mine, active)
+	local def = E.boss(bossId)
+	if not def or def.summon ~= "altar" then return false, "boss" end
+	if active then return false, "active" end
+	if (tonumber(total) or 0) >= def.sigils then return false, "full" end
+	if (tonumber(mine) or 0) >= E.ALTAR_PER_PLAYER then return false, "mine" end
+	return true
+end
+
+------------------------------------------------------------------------------
+-- Quests (endgame line) and the Shattered Crown diary
+------------------------------------------------------------------------------
+local function kills(monster, count) return {kind="kills",monster=monster,count=count} end
+for _, q in ipairs({
+	{id="WhereTheCrownFell",title="Where the Crown Fell",line="main",region="ShatteredCrown",
+		story="Beyond the storm's heart, the sky itself is broken. Warden-captain Ysolde wants the riftmaws thinned and the shards counted.",
+		requires={{kind="quest",quest="CrownOfTempest"},{kind="level",skill="Combat",level=60}},
+		objectives={kills("RiftmawStalker",25),{kind="collect",item="CrownShard",count=60}},
+		rewards={coins=30000,points=2,lamp={xp=30000,exclude={"Dungeoneering","Carpentry"}}}},
+	{id="TheGlassChoir",title="The Glass Choir",line="main",region="ShatteredCrown",
+		story="The seers sing to the colossi, and the colossi keep the altar. Break the choir and inscribe a sigil from what they guard.",
+		requires={{kind="quest",quest="WhereTheCrownFell"}},
+		objectives={kills("ShardglassSeer",20),kills("CrownforgedColossus",10),{kind="craft",item="CrownSigil",count=1}},
+		rewards={coins=50000,points=3,perk={intelligence=20,strength=10},xp={Glyphcraft=20000}}},
+	{id="TheSovereignsFall",title="The Sovereign's Fall",line="main",region="ShatteredCrown",
+		story="Two powers rule the broken crown: the Sovereign who wakes at the altar and the Tyrant who rides each dusk. Fell them both.",
+		requires={{kind="quest",quest="TheGlassChoir"}},
+		objectives={kills("Aurelith",1),kills("Nyxwyrm",1),kills("VoidcrownDrake",15)},
+		rewards={coins=150000,points=5,perk={strength=15,critDamage=20,magicFind=3},unlock={accessorySlots=1}}},
+}) do
+	table.insert(Data.Quests, q)
+	q.index = #Data.Quests
+	Data.QuestById[q.id] = q
+end
+E.QuestLine = {"WhereTheCrownFell","TheGlassChoir","TheSovereignsFall"}
+local diary = {region="ShatteredCrown",name="Shattered Crown Diary",tiers={
+	Easy={tasks={{kind="gather",region="ShatteredCrown",count=10},kills("RiftmawStalker",10),{kind="collect",item="CrownShard",count=25}},perk={strength=5,health=20}},
+	Medium={tasks={kills("ShardglassSeer",50),{kind="quest",quest="WhereTheCrownFell"},{kind="craft",item="CrownsteelIngot",count=10},{kind="level",skill="Mining",level=90}},perk={critDamage=10,defense=10}},
+	Hard={tasks={kills("CrownforgedColossus",100),kills("Aurelith",1),kills("Nyxwyrm",1),{kind="collect",item="Crownstone",count=250}},perk={strength=10,defense=20,health=40}},
+	Elite={tasks={kills("Aurelith",25),kills("Nyxwyrm",25),kills("VoidcrownDrake",500),{kind="quest",quest="TheSovereignsFall"}},perk={strength=20,critDamage=25,magicFind=5}},
+}}
+table.insert(Data.Diaries, diary)
+Data.DiaryByRegion[diary.region] = diary
+end
+-- End Endgame section.
+
+
 return Data
