@@ -346,9 +346,11 @@ do
 	-- Loot weight: tier + rank + summoner (capped).
 	near(E.lootWeight("Champion", 1, 0), 3.5, "champion rank 1")
 	near(E.lootWeight("Champion", 4, 0), 3, "rank 4 has no bonus")
-	near(E.lootWeight("Participant", 2, 1), 1.55, "participant rank 2 with one sigil")
-	near(E.lootWeight("Participant", 9, 2), 1.5, "two sigils")
-	near(E.lootWeight("Participant", 9, 9), 1 + E.SUMMONER_CAP, "summoner bonus capped")
+	near(E.lootWeight("Participant", 2, 1), 0.75, "participant rank 2 with one sigil")
+	near(E.lootWeight("Participant", 9, 2), 0.7, "two sigils")
+	near(E.lootWeight("Participant", 9, 9), 0.2 + E.SUMMONER_CAP, "summoner bonus capped")
+	-- Rare-drop odds track damage share: per point of share, the lowest tier never beats Champion by more than 2x.
+	for _, t in E.ContributionTiers do ok(t.weight / t.minShare <= 2 * (E.TierById.Champion.weight / E.TierById.Champion.minShare), t.id .. " weight per share bounded") end
 	eq(E.lootWeight("Nope", 1, 0), 0, "unknown tier weight 0")
 	-- Eligibility (anti-leech).
 	local base = {share = 0.05, alive = true, distance = 10, ironman = false, lastHit = 100, now = 120}
@@ -463,7 +465,7 @@ do
 			eq(a.chance, 1, d.item .. " guaranteed")
 			ok(b.min > a.min and b.max > a.max, d.item .. " amounts scale with weight")
 		else
-			near(a.chance, d.chance, d.item .. " participant keeps the base chance")
+			near(a.chance, d.chance * E.TierById.Participant.weight, d.item .. " participant chance scales with its small weight")
 			near(b.chance, math.min(1, d.chance * 4), d.item .. " champion chance x weight")
 			ok(b.chance <= 1, d.item .. " capped at 1")
 		end
@@ -490,7 +492,7 @@ do
 	eq(P.rollDrops(signetPlan.drops, 0, roller({0.012, 0}, 0.999), 0).SovereignSignet, nil, "1% signet misses 0.012 without Magic Find")
 	eq(P.rollDrops(signetPlan.drops, 50, roller({0.012, 0}, 0.999), 0).SovereignSignet, 1, "50 Magic Find catches 0.012")
 	-- Pet Luck also lifts the pet row.
-	local petRow = row(low, "ShardlingPet")
+	local petRow = row({drops = WB.Aurelith.loot}, "ShardlingPet") -- base table row (tier weighting is tested above)
 	eq(P.rollDrops({petRow}, 0, roller({0.005, 0}, 0.999), 0).ShardlingPet, nil, "pet misses at 0.005")
 	eq(P.rollDrops({petRow}, 0, roller({0.005, 0}, 0.999), 50).ShardlingPet, 1, "Pet Luck catches 0.005")
 	-- Guaranteed rows always land; amounts follow the roll.

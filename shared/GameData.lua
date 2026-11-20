@@ -3902,9 +3902,9 @@ E.TOP = 5                   -- leaderboard rows
 -- clamped into its tier's band.
 E.ContributionTiers = {
 	{id="Champion",name="Champion",minShare=0.25,weight=3,color="FFAA00"},
-	{id="Vanguard",name="Vanguard",minShare=0.10,weight=2,color="AA00AA"},
-	{id="Valiant",name="Valiant",minShare=0.03,weight=1.4,color="5555FF"},
-	{id="Participant",name="Participant",minShare=0.01,weight=1,color="55FF55"},
+	{id="Vanguard",name="Vanguard",minShare=0.10,weight=1.25,color="AA00AA"},
+	{id="Valiant",name="Valiant",minShare=0.03,weight=0.5,color="5555FF"},
+	{id="Participant",name="Participant",minShare=0.01,weight=0.2,color="55FF55"},
 }
 E.TierById = {}
 for i, t in ipairs(E.ContributionTiers) do
