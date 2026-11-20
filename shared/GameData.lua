@@ -1995,4 +1995,231 @@ T.NPCs = {
 end
 -- End Townsfolk section.
 
+------------------------------------------------------------------------------
+-- Combat styles (Combat Styles team; append-only section).
+-- The combat triangle (OSRS melee / ranged / magic) with SkyBlock-style mana:
+--   * One weapon slot; the style comes from the weapon (def.style, default
+--     "melee"). Bows carry def.ranged = {power, speed, range, maxAmmoTier};
+--     staves and wands carry def.magic = {power, speed, elements}.
+--   * Arrows sit in the new "ammo" equipment slot (shown as the Quiver); every
+--     shot consumes one. Spells cost glyphs (items) and mana (Intelligence).
+--   * Monsters carry attackStyle, weakness and defenceStyle: +30% damage from
+--     their weakness, -30% from the style they resist (Data.CombatStyles).
+-- Skills: Ranged and Magic (trained by damage dealt), Fletching (bows, shafts,
+-- arrows) and Glyphcraft (glyphs, staves, tablets).
+-- Formulas live in shared/Progression.lua (rangedDamage, hitChance,
+-- spellDamage, styleModifier, maxMana, manaRegen, styleXp, glyphCost).
+------------------------------------------------------------------------------
+do
+local CS = {
+	order = {"melee","ranged","magic"},
+	names = {melee="Melee",ranged="Ranged",magic="Magic"},
+	skill = {melee="Combat",ranged="Ranged",magic="Magic"},
+	-- Triangle: each style beats the next. A monster of style S is weak to the
+	-- style that beats S and resists the style S beats.
+	beats = {melee="ranged",ranged="magic",magic="melee"},
+	beatenBy = {ranged="melee",magic="ranged",melee="magic"},
+	weaknessBonus = 0.3, resistPenalty = 0.3,
+	maxRange = 40,              -- studs, ranged and magic (player root to monster surface)
+	damageXpRate = 1,           -- style XP per point of damage = rate * monster xp / monster hp
+	combatShare = 1/3,          -- ranged/magic damage XP also feeds Combat (Hitpoints-like share)
+	bossXpShare = 0.5,          -- slayer bosses: rate uses tier.spawnXp * share / tier.hp
+	manaRegenPercent = 4,       -- % of max mana per second (before Ability Damage etc.; flat)
+	combatLock = 5,             -- seconds after being struck before Hubward works
+	accuracyParity = 0.85,      -- ranged hit chance when attack and defence rolls match
+	hitFloor = 0.25, hitCeiling = 0.98,
+	ammoSlot = "ammo",
+	slotNames = {ammo="Quiver"},
+	elements = {
+		Gale={name="Gale",color="C9F2FF",glyph="GaleGlyph"},
+		Tide={name="Tide",color="3F7CAC",glyph="TideGlyph"},
+		Stone={name="Stone",color="8C7A6B",glyph="StoneGlyph"},
+		Ember={name="Ember",color="FF7A3D",glyph="EmberGlyph"},
+	},
+	elementOrder = {"Gale","Tide","Stone","Ember"},
+}
+Data.CombatStyles = CS
+table.insert(Data.EquipSlots, "ammo")
+
+-- New skills (registered in SkillOrder so snapshots, totals and saves include them).
+for _, id in ipairs({"Ranged","Magic","Fletching","Glyphcraft"}) do table.insert(Data.SkillOrder, id) end
+Data.Skills.Ranged = {category="combat",color="6FA35A",title="Marksman",perLevel={rangedStrength=1,rangedAccuracy=1},description="Loose arrows from bows. Raises Ranged Strength and Ranged Accuracy."}
+Data.Skills.Magic = {category="combat",color="5C7AEA",title="Spellwright",perLevel={intelligence=2,abilityDamage=0.2},description="Cast glyph spells with staves and wands. Raises Intelligence and Ability Damage."}
+Data.Skills.Fletching = {category="production",color="A7B66B",title="Bowyer",perLevel={rangedStrength=0.5},description="Fletch bows, shafts and arrows. Raises Ranged Strength."}
+Data.Skills.Glyphcraft = {category="production",color="9A7FD1",title="Glyphwright",perLevel={intelligence=1},description="Inscribe glyphs, staves and tablets. Raises Intelligence."}
+
+-- New stats.
+Data.Stats.rangedStrength = {name="Ranged Strength",symbol="➶",color="6FA35A",base=0}
+Data.Stats.rangedAccuracy = {name="Ranged Accuracy",symbol="◎",color="6FA35A",base=0}
+Data.Stats.abilityDamage = {name="Ability Damage",symbol="๑",color="FF5555",base=0,percent=true}
+for _, id in ipairs({"rangedStrength","rangedAccuracy","abilityDamage"}) do table.insert(Data.StatOrder, id) end
+
+local function rarityFor(tier)
+	return if tier >= 7 then "Legendary" elseif tier >= 5 then "Epic" elseif tier >= 4 then "Rare" elseif tier >= 2 then "Uncommon" else "Common"
+end
+
+-- Fletching materials. combatUse marks items the combat bridge may consume.
+item("DriftPlume",{name="Drift Plume",kind="material",rarity="Common",color="E9F1F7",value=1,description="A light vane for arrows. Dropped by sky creatures or fletched from leaves."})
+item("ArrowShaft",{name="Arrow Shaft",kind="material",rarity="Common",color="C49A6C",value=1,description="Fletched from logs. Fifteen shafts per Meadow Timber."})
+item("Bowstring",{name="Sinew Bowstring",kind="material",rarity="Common",color="D8C3A5",value=6,description="Strings the first three bow tiers."})
+item("SilkString",{name="Gloomsilk Bowstring",kind="material",rarity="Rare",color="D8D8E8",value=30,description="Strings Glimmerbark, Starwood and Aetherheart bows."})
+recipe("DriftPlume",{skill="Fletching",level=1,xp=4,costs={Herb=2},amount=6,repeatable=true,station="Workbench",category="Fletching"})
+recipe("ArrowShaft",{skill="Fletching",level=1,xp=5,costs={Timber=1},amount=15,repeatable=true,station="Workbench",category="Fletching"})
+recipe("WindpineShafts",{output="ArrowShaft",skill="Fletching",level=15,xp=12,costs={WindpineLog=1},amount=30,repeatable=true,station="Workbench",category="Fletching"})
+recipe("Bowstring",{skill="Fletching",level=1,xp=8,costs={BeastHide=1},amount=2,repeatable=true,station="Workbench",category="Fletching"})
+recipe("SilkString",{skill="Fletching",level=40,xp=40,costs={SpiderSilk=2},amount=3,repeatable=true,collectionTier={SpiderSilk=1},station="Workbench",category="Fletching"})
+for id, d in pairs({Thornling={0.5,1,3},GaleSprite={0.6,2,5},StormHarrier={0.8,3,6},MistwingRay={0.5,2,4}}) do
+	local m = Data.Monsters[id]
+	table.insert(m.drops, {item="DriftPlume",chance=d[1],min=d[2],max=d[3]})
+end
+table.insert(Data.CollectionItems, "DriftPlume")
+Data.CollectionScale.DriftPlume = 0.5
+
+-- Arrows: one per metal tier (Copper uses Alloy Ingots). Smithing forges
+-- arrowheads; Fletching assembles 15 arrows from 15 shafts, plumes and heads.
+-- ammo = {tier, power}; bows accept arrows up to their maxAmmoTier.
+CS.arrowTiers = {
+	{id="Copper",ingot="AlloyIngot",level=1,color="B87333"},
+}
+for _, t in ipairs(Data.MetalTiers) do
+	table.insert(CS.arrowTiers, {id=t.id,ingot=t.ingot,level=t.level,ore=t.ore,color=t.color})
+end
+local arrowPower = {5,12,22,35,50,68,90}
+local arrowRanged = {1,5,12,20,30,40,50}
+CS.arrowOrder = {}
+for index, t in ipairs(CS.arrowTiers) do
+	t.index, t.power, t.ranged = index, arrowPower[index], arrowRanged[index]
+	local heads, arrow = t.id.."Heads", t.id.."Arrow"
+	t.heads, t.arrow = heads, arrow
+	table.insert(CS.arrowOrder, arrow)
+	item(heads,{name=t.id.." Arrowheads",kind="material",rarity=rarityFor(index),color=t.color,value=math.max(1,math.floor(Data.Items[t.ingot].value/12)),description="Forged at the Forge. Fletch into "..t.id.." Arrows."})
+	recipe(heads,{skill="Smithing",level=t.level,xp=math.floor(t.level*1.2+8),costs={[t.ingot]=1},amount=15,repeatable=true,collectionTier=if t.ore then {[t.ore]=1} else nil,station="Forge",category="Arrowheads"})
+	item(arrow,{name=t.id.." Arrow",kind="material",category="ammo",combatUse=true,slot="ammo",ammo={tier=index,power=t.power},tier=index,rarity=rarityFor(index),color=t.color,
+		requires={Ranged=t.ranged},value=math.max(1,math.floor(Data.Items[t.ingot].value/10)),description="Ammunition (Quiver). +"..t.power.." arrow power. Requires Ranged "..t.ranged.."."})
+	recipe(arrow,{skill="Fletching",level=t.level,xp=math.floor(t.level*1.5+10),costs={ArrowShaft=15,DriftPlume=15,[heads]=15},amount=15,repeatable=true,
+		collectionTier=if index >= 3 and t.ore then {[t.ore]=2} else nil,station="Workbench",category="Arrows"})
+end
+
+-- Bows: shortbow (fast, shorter reach) and longbow (slow, full reach) per wood tier.
+CS.woodTiers = {
+	{prefix="Meadow",log="Timber",level=1,ranged=1,string="Bowstring",staff={Aetherite=6},color="9C6B3E"},
+	{prefix="Windpine",log="WindpineLog",level=15,ranged=10,string="Bowstring",staff={Shard=4},color="6B8E5A"},
+	{prefix="Emberoak",log="EmberoakLog",level=30,ranged=20,string="Bowstring",staff={GolemCore=1,ArcaneDust=20},color="B5482A"},
+	{prefix="Glimmerbark",log="GlimmerbarkLog",level=45,ranged=30,string="SilkString",staff={VoidEssence=6},color="8FD3C7"},
+	{prefix="Starwood",log="StarwoodLog",level=60,ranged=40,string="SilkString",staff={StarFragment=1,VoidEssence=8},color="3B4C7A"},
+	{prefix="Aetherheart",log="AetherheartLog",level=75,ranged=50,string="SilkString",staff={StarFragment=3,Prismite=10},color="F0E6A8"},
+}
+local shortPower = {15,35,60,95,140,195}
+local staffPower = {10,25,45,70,100,140}
+local staffInt = {20,40,70,110,160,220}
+local staffElements = {{"Gale"},{"Tide"},{"Stone"},{"Ember"},{"Gale","Tide"},{"Gale","Tide","Stone","Ember"}}
+CS.bowOrder, CS.staffOrder = {}, {}
+for index, t in ipairs(CS.woodTiers) do
+	t.index = index
+	local rarity = rarityFor(index + 1)
+	local gate = if index >= 2 then {[t.log]=2} else nil
+	local short, long = t.prefix.."Shortbow", t.prefix.."Longbow"
+	item(short,{name=t.prefix.." Shortbow",kind="weapon",slot="weapon",style="ranged",tier=index+1,rarity=rarity,color=t.color,stats={critChance=2*index,rangedAccuracy=10*index},
+		ranged={power=shortPower[index],speed=0.7,range=30,maxAmmoTier=index+1},requires={Ranged=t.ranged},value=Data.Items[t.log].value*12,
+		description="Ranged weapon. Fast shots, 30 stud reach. Arrows up to tier "..(index+1)..". Requires Ranged "..t.ranged.."."})
+	recipe(short,{skill="Fletching",level=t.level,xp=t.level*3+15,costs={[t.log]=6,[t.string]=1},collectionTier=gate,station="Workbench",category="Bows"})
+	item(long,{name=t.prefix.." Longbow",kind="weapon",slot="weapon",style="ranged",tier=index+1,rarity=rarity,color=t.color,stats={critDamage=8*index,rangedAccuracy=14*index},
+		ranged={power=math.floor(shortPower[index]*1.45),speed=1.05,range=CS.maxRange,maxAmmoTier=index+1},requires={Ranged=t.ranged},value=Data.Items[t.log].value*18,
+		description="Ranged weapon. Heavy shots, "..CS.maxRange.." stud reach. Arrows up to tier "..(index+1)..". Requires Ranged "..t.ranged.."."})
+	recipe(long,{skill="Fletching",level=math.min(99,t.level+5),xp=t.level*4+20,costs={[t.log]=10,[t.string]=1},collectionTier=gate,station="Workbench",category="Bows"})
+	table.insert(CS.bowOrder, short); table.insert(CS.bowOrder, long)
+	-- Staves (slow, strong, elemental: free glyphs of their elements) and wands (fast, light).
+	local staff, wand = t.prefix.."Staff", t.prefix.."Wand"
+	local staffCost, wandCost = {[t.log]=4+index*2}, {[t.log]=2+index}
+	for id, n in pairs(t.staff) do staffCost[id] = n; wandCost[id] = math.max(1, n // 2) end
+	local elements = staffElements[index]
+	local elementText = table.concat(elements, ", ")
+	item(staff,{name=t.prefix.." Staff",kind="weapon",slot="weapon",style="magic",tier=index+1,rarity=rarity,color=t.color,stats={intelligence=staffInt[index]},
+		magic={power=staffPower[index],speed=1.2,elements=elements},requires={Magic=t.ranged},value=Data.Items[t.log].value*16,
+		description="Magic weapon. Supplies unlimited "..elementText.." glyphs. Requires Magic "..t.ranged.."."})
+	recipe(staff,{skill="Glyphcraft",level=t.level,xp=t.level*3+20,costs=staffCost,collectionTier=gate,station="Workbench",category="Staves"})
+	item(wand,{name=t.prefix.." Wand",kind="weapon",slot="weapon",style="magic",tier=index+1,rarity=rarity,color=t.color,stats={intelligence=staffInt[index]//2,abilityDamage=index},
+		magic={power=math.floor(staffPower[index]*0.6),speed=0.8,elements={}},requires={Magic=t.ranged},value=Data.Items[t.log].value*10,
+		description="Magic weapon. Quick casts. Requires Magic "..t.ranged.."."})
+	recipe(wand,{skill="Glyphcraft",level=t.level,xp=t.level*2+12,costs=wandCost,collectionTier=gate,station="Workbench",category="Staves"})
+	table.insert(CS.staffOrder, staff); table.insert(CS.staffOrder, wand)
+end
+
+-- Glyphs (Glyphcraft): elemental glyphs + one catalyst per spell tier + utility.
+CS.glyphOrder = {"GaleGlyph","TideGlyph","StoneGlyph","EmberGlyph","SparkGlyph","SurgeGlyph","TorrentGlyph","VitaGlyph","BindGlyph"}
+local glyphs = {
+	GaleGlyph={name="Gale Glyph",level=1,xp=6,costs={Aetherite=1},amount=5,color="C9F2FF"},
+	TideGlyph={name="Tide Glyph",level=5,xp=8,costs={Aetherite=1,Fish=1},amount=5,color="3F7CAC"},
+	StoneGlyph={name="Stone Glyph",level=9,xp=10,costs={Aetherite=1,Ore=1},amount=5,color="8C7A6B"},
+	EmberGlyph={name="Ember Glyph",level=14,xp=12,costs={Aetherite=1,Timber=1},amount=5,color="FF7A3D"},
+	SparkGlyph={name="Spark Glyph",level=1,xp=10,costs={Aetherite=1,ArcaneDust=1},amount=3,color="FFE680"},
+	VitaGlyph={name="Vita Glyph",level=20,xp=24,costs={Aetherite=2,Herb=2},amount=2,color="6BBF59"},
+	BindGlyph={name="Bind Glyph",level=25,xp=28,costs={Aetherite=2,BeastHide=1},amount=2,color="5E8C4A"},
+	SurgeGlyph={name="Surge Glyph",level=35,xp=40,costs={Voidstone=1,ArcaneDust=2},amount=3,color="8E5BB5",gate={Voidstone=1}},
+	TorrentGlyph={name="Torrent Glyph",level=65,xp=90,costs={Prismite=1,VoidEssence=1},amount=3,color="E86FB8",gate={Prismite=1}},
+}
+for id, g in pairs(glyphs) do
+	item(id,{name=g.name,kind="material",category="glyph",combatUse=true,rarity=if g.level>=60 then "Epic" elseif g.level>=30 then "Rare" elseif g.level>=10 then "Uncommon" else "Common",
+		color=g.color,value=math.max(2,g.level//2),description="Spell glyph. Inscribed with Glyphcraft "..g.level.."."})
+	recipe(id,{skill="Glyphcraft",level=g.level,xp=g.xp,costs=g.costs,amount=g.amount,repeatable=true,collectionTier=g.gate,station="Cauldron",category="Glyphs"})
+end
+item("HubwardTablet",{name="Hubward Tablet",kind="material",category="tablet",combatUse=true,rarity="Uncommon",color="F9CC77",value=20,description="Break to teleport to the Aether Hub (spell Hubward). Not while in combat."})
+recipe("HubwardTablet",{skill="Glyphcraft",level=15,xp=25,costs={Aetherite=2,GaleGlyph=3},repeatable=true,station="Cauldron",category="Tablets"})
+-- Style accessories.
+item("FletcherQuiver",{name="Fletcher's Quiver",kind="accessory",rarity="Uncommon",color=Data.Rarity.Uncommon.color,stats={rangedStrength=5,rangedAccuracy=5},value=40*Data.Rarity.Uncommon.rank^2,description="Accessory. Magical Power "..Data.Rarity.Uncommon.power.."."})
+recipe("FletcherQuiver",{skill="Fletching",level=10,xp=60,costs={BeastHide=32,Bowstring=4},collectionTier={BeastHide=2},station="Workbench",category="Accessories"})
+item("GlyphboundTome",{name="Glyphbound Tome",kind="accessory",rarity="Rare",color=Data.Rarity.Rare.color,stats={intelligence=30,abilityDamage=3},value=40*Data.Rarity.Rare.rank^2,description="Accessory. Magical Power "..Data.Rarity.Rare.power.."."})
+recipe("GlyphboundTome",{skill="Glyphcraft",level=40,xp=160,costs={VoidEssence=12,SparkGlyph=50,SpiderSilk=16},collectionTier={VoidEssence=1},station="Workbench",category="Accessories"})
+
+-- Spells. kind: damage | snare | heal | teleport. Damage tiers: Dart (light),
+-- Lance (heavy), Cascade (devastating). costs = glyph items per cast (a staff's
+-- elements are free); mana = mana per cast; cooldown = own cooldown (utility),
+-- damage spells follow the weapon speed. xp = Magic XP per cast.
+Data.Spells, Data.SpellOrder = {}, {}
+local function spell(id, def)
+	def.id = id
+	def.range = def.range or CS.maxRange
+	def.costs = def.costs or {}
+	if def.requiresWeapon == nil then def.requiresWeapon = true end
+	Data.Spells[id] = def
+	table.insert(Data.SpellOrder, id)
+	return def
+end
+CS.spellTiers = {
+	{id="Dart",name="Dart",catalyst="SparkGlyph",elementCost=1,mana=6,scaling=0.5,xp=6,levels={1,5,9,13},damage={20,24,28,32}},
+	{id="Lance",name="Lance",catalyst="SurgeGlyph",elementCost=2,mana=15,scaling=0.7,xp=14,levels={30,35,40,45},damage={70,78,86,94}},
+	{id="Cascade",name="Cascade",catalyst="TorrentGlyph",elementCost=3,mana=30,scaling=0.9,xp=25,levels={60,65,70,75},damage={150,165,180,195}},
+}
+for _, tier in ipairs(CS.spellTiers) do
+	for i, element in ipairs(CS.elementOrder) do
+		local e = CS.elements[element]
+		spell(element..tier.id,{name=e.name.." "..tier.name,kind="damage",tier=tier.id,element=element,level=tier.levels[i],damage=tier.damage[i],
+			scaling=tier.scaling,mana=tier.mana,xp=tier.xp,autocast=true,color=e.color,costs={[e.glyph]=tier.elementCost,[tier.catalyst]=1}})
+	end
+end
+spell("Rootbind",{name="Rootbind",kind="snare",level=25,mana=20,xp=25,duration=5,cooldown=8,color="5E8C4A",costs={BindGlyph=1,StoneGlyph=2}})
+spell("Mend",{name="Mend",kind="heal",level=20,mana=40,xp=30,heal=25,cooldown=12,requiresWeapon=false,color="6BBF59",costs={VitaGlyph=1,TideGlyph=2}})
+spell("Hubward",{name="Hubward",kind="teleport",level=1,mana=0,xp=10,cooldown=3,requiresWeapon=false,tablet=true,color="F9CC77",costs={HubwardTablet=1}})
+
+-- Triangle data: set fields on existing monsters, sea creatures and slayer lines.
+CS.monsterStyle = {
+	BramblebackBoar="melee",Thornling="magic",ShaleCrawler="melee",CinderMite="magic",BarkStalker="melee",GaleSprite="magic",
+	BrassGolem="melee",StormHarrier="ranged",GloomfangSpider="ranged",VoidWisp="magic",ReefLurker="melee",TempestWraith="magic",
+	StarbornSentinel="ranged",
+	ShellsnapCrab="melee",DriftbellJelly="magic",ReedfinEel="melee",MistwingRay="ranged",InkveilDrifter="magic",
+	CoralbackBruiser="melee",StormcoilSerpent="magic",DuskfinManta="ranged",TidewyrmMatriarch="magic",
+	-- Slayer lines (bosses)
+	Bramble="melee",Gloom="ranged",Tempest="magic",
+}
+local function applyStyle(def, style)
+	def.attackStyle = style
+	def.weakness = CS.beatenBy[style]
+	def.defenceStyle = CS.beats[style]
+end
+for id, def in pairs(Data.Monsters) do applyStyle(def, CS.monsterStyle[id] or "melee") end
+for id, def in pairs(Data.SeaCreatures) do applyStyle(def, CS.monsterStyle[id] or "melee") end
+for line, def in pairs(Data.Slayers) do applyStyle(def, CS.monsterStyle[line] or "melee") end
+end
+-- End Combat styles section.
+
 return Data

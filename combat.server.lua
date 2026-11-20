@@ -32,6 +32,26 @@
 --     "seaCreature" {seq, monster, result="kill"}; an uncredited kill, a refused
 --     spawn or C.SEA_DURATION (90 s) without a kill reports result="despawn".
 --     The owner leaving despawns silently (the server forgets their tickets).
+--   * Combat styles (melee / ranged / magic, Data.CombatStyles). One weapon slot;
+--     the style comes from the wielded weapon (Progression.weaponStyle), arrows
+--     sit in the "ammo" equipment slot. IsleCombat verbs:
+--       ("attack", model)              melee, unchanged; refused ("style") while a
+--                                      bow, staff or wand is wielded
+--       ("ranged", model)              bow shot: range = bow reach (<= 40 studs),
+--                                      line of sight, ammo tier <= bow maxAmmoTier,
+--                                      one arrow consumed via bridge "consume",
+--                                      cooldown = bow speed / (1 + Attack Speed%)
+--       ("cast", model|nil, spellId?)  spell (nil/"" = the profile's autocast):
+--                                      Magic level, magic weapon (damage/snare),
+--                                      range + line of sight, mana, glyphs (a staff
+--                                      supplies its elements), cooldowns
+--     Every landed hit reports bridge "combatXp" {style, monster, tier, damage, spell}
+--     (style XP: melee -> Combat, ranged -> Ranged, magic -> Magic, plus a Combat
+--     share). Monsters take +30% from their weakness and -30% from their
+--     defenceStyle (Progression.styleModifier). Mana lives here, per session:
+--     max = Intelligence, regenerating Data.CombatStyles.manaRegenPercent of max
+--     per second, replicated as player attributes Mana / MaxMana. Refusals with a
+--     player-facing reason fire IsleCombatFx "denied" {action, reason}.
 
 local C = {
 	ATTACK_RANGE = 14,          -- player HRP to monster surface
@@ -62,7 +82,13 @@ local C = {
 	SEA_CAP = 3,                -- per owner (Data.SeaCreatureCap wins when present)
 	SEA_MAX = 36,               -- server-wide live sea creatures
 	SEA_OFFSET = 6,             -- studs from the fishing node
+	MAX_RANGE = 40,             -- ranged / magic reach (Data.CombatStyles.maxRange wins when present)
+	DENY_INTERVAL = 0.3,        -- min seconds between "denied" notices per player
+	EYE_HEIGHT = 1.5,           -- line-of-sight rays start this far above the root
 }
+-- Refusal reasons worth telling the player about (cooldown/target spam stays silent).
+local DENY_REASONS = {style = true, weapon = true, ammo = true, ammoTier = true, sight = true, range = true,
+	mana = true, glyphs = true, level = true, spell = true, immune = true, combat = true, teleport = true}
 
 ------------------------------------------------------------------------------
 -- 2. Creature blueprints (pure). Forward is -Z, root sits `hip` above ground.
@@ -437,6 +463,12 @@ local function createLogic(env)
 	local seaSeq = {}        -- [player] = last accepted SeaCreatureSpawn sequence
 	local seaLive = 0
 	local liveCount = 0
+	local mana = {}          -- [player] = {current, max, at, sentMana, sentMax}
+	local spellReady = {}    -- [player] = {[spellId] = time}
+	local lastHurt = {}      -- [player] = time last struck by a monster
+	local CS = Data.CombatStyles or {}
+	local maxRange = math.min(C.MAX_RANGE, tonumber(CS.maxRange) or C.MAX_RANGE)
+	L.maxRange = maxRange
 	-- One snapshot of every player per AI tick, shared by all monsters.
 	local tick = nil         -- {list, alive = {[player] = bool}, pos = {[player] = Vector3?}}
 
@@ -552,6 +584,7 @@ local function createLogic(env)
 			attackCooldown = L.monsterCooldown(def.speed), passive = L.isPassive(def),
 			marker = marker, home = marker.home, position = position, model = model,
 			radius = math.clamp(opts.radius or 0, 0, C.MAX_RADIUS_BONUS),
+			weakness = def.weakness, defenceStyle = def.defenceStyle, attackStyle = def.attackStyle,
 		})
 		marker.live[r] = true
 		liveCount += 1
@@ -604,40 +637,227 @@ local function createLogic(env)
 	end
 
 	-- Player attacks ---------------------------------------------------------
-	function L.validateAttack(player, verb, target)
-		if type(verb) ~= "string" or verb ~= "attack" then return false, "verb" end
+	-- Shared target checks: live record, boss owner, attacker alive, reach.
+	function L.validateTarget(player, target, range)
 		local r = L.resolve(target)
 		if not r or not r.alive then return false, "target" end
 		if r.boss and r.owner ~= player then return false, "owner" end
 		if not env.alive(player) then return false, "dead" end
 		local pos = env.position(player)
 		if not pos then return false, "position" end
-		if (pos - r.position).Magnitude - r.radius > C.ATTACK_RANGE then return false, "range" end
+		if (pos - r.position).Magnitude - r.radius > range then return false, "range" end
+		return true, r, pos
+	end
+	function L.validateAttack(player, verb, target)
+		if type(verb) ~= "string" or verb ~= "attack" then return false, "verb" end
+		local ok, r = L.validateTarget(player, target, C.ATTACK_RANGE)
+		if not ok then return false, r end
 		if env.now() < (nextAttack[player] or 0) - C.COOLDOWN_GRACE then return false, "cooldown" end
 		return true, r
+	end
+	local function onCooldown(player)
+		return env.now() < (nextAttack[player] or 0) - C.COOLDOWN_GRACE
+	end
+	-- Measured from the scheduled time, not the (possibly early) swing, so the
+	-- latency grace never compounds into extra sustained DPS.
+	local function scheduleNext(player, seconds)
+		nextAttack[player] = math.max(env.now(), nextAttack[player] or 0) + seconds
+	end
+	function L.lineOfSight(from, r)
+		if not env.lineOfSight then return true end
+		return env.lineOfSight(from, r) ~= false
+	end
+	-- Triangle modifier, then the monster's defense.
+	function L.mitigate(r, raw, style)
+		local mult, tag = Progression.styleModifier(style, r)
+		return Progression.damageTaken(math.floor(raw * mult), r.defense), tag
+	end
+	-- Style XP for damage (and a spell's cast XP) through the bridge.
+	function L.reportXp(player, r, style, damage, spellId)
+		local payload = {style = style, spell = spellId}
+		if r and damage and damage > 0 then payload.monster, payload.tier, payload.damage = r.id, r.tier, damage end
+		if not payload.damage and not spellId then return end
+		env.bridge("combatXp", player, payload)
+	end
+	function L.landHit(player, r, dealt, style, spellId)
+		local applied = math.min(dealt, r.hp)
+		r.hp -= applied
+		r.contributors[player] = (r.contributors[player] or 0) + applied
+		if not r.boss and not r.target and not r.leashing then r.target = player end
+		r.provoked = true
+		L.reportXp(player, r, style, applied, spellId)
+		return applied
+	end
+	local function finish(result, r)
+		if r and r.hp <= 0 then
+			result.killed = true
+			result.credited = L.kill(r)
+		end
+		return result
+	end
+	local function loadoutOf(info)
+		return if type(info.loadout) == "table" then info.loadout else {style = "melee", levels = {}, supplies = {}}
 	end
 	function L.attack(player, verb, target)
 		local ok, r = L.validateAttack(player, verb, target)
 		if not ok then return nil, r end
 		local info = L.statsFor(player)
 		if not info then return nil, "stats" end
+		if loadoutOf(info).style ~= "melee" then return nil, "style" end
 		local stats = info.stats
-		-- Measured from the scheduled time, not the (possibly early) swing, so the
-		-- latency grace never compounds into extra sustained DPS.
-		nextAttack[player] = math.max(env.now(), nextAttack[player] or 0) + L.attackCooldown(stats.attackSpeed)
+		scheduleNext(player, L.attackCooldown(stats.attackSpeed))
 		local raw, crit = Progression.meleeDamage(stats, env.rng)
-		local dealt = Progression.damageTaken(raw, r.defense)
-		local applied = math.min(dealt, r.hp)
-		r.hp -= applied
-		r.contributors[player] = (r.contributors[player] or 0) + applied
-		if not r.boss and not r.target and not r.leashing then r.target = player end
-		r.provoked = true
+		local dealt, tag = L.mitigate(r, raw, "melee")
+		L.landHit(player, r, dealt, "melee")
 		local lifesteal = tonumber(stats.lifesteal) or 0
 		if lifesteal > 0 then env.heal(player, lifesteal) end
-		local result = {record = r, damage = dealt, crit = crit == true, healed = lifesteal > 0}
-		if r.hp <= 0 then
-			result.killed = true
-			result.credited = L.kill(r)
+		local result = {record = r, damage = dealt, crit = crit == true, healed = lifesteal > 0, style = "melee", tag = tag}
+		return finish(result, r)
+	end
+	-- Bow shot. Validation order: target/reach, cooldown, weapon, bow reach,
+	-- ammo and its tier, line of sight; only then is an arrow consumed.
+	function L.ranged(player, verb, target)
+		if verb ~= "ranged" then return nil, "verb" end
+		local ok, r, pos = L.validateTarget(player, target, maxRange)
+		if not ok then return nil, r end
+		if onCooldown(player) then return nil, "cooldown" end
+		local info = L.statsFor(player)
+		if not info then return nil, "stats" end
+		local loadout = loadoutOf(info)
+		local bow = loadout.style == "ranged" and Data.Items[loadout.weapon]
+		if not bow or type(bow.ranged) ~= "table" then return nil, "weapon" end
+		if (pos - r.position).Magnitude - r.radius > math.min(maxRange, bow.ranged.range or maxRange) then return nil, "range" end
+		local arrow = loadout.ammo and Data.Items[loadout.ammo]
+		if not arrow or type(arrow.ammo) ~= "table" or (tonumber(loadout.ammoCount) or 0) < 1 then return nil, "ammo" end
+		if arrow.ammo.tier > (bow.ranged.maxAmmoTier or 0) then return nil, "ammoTier" end
+		if not L.lineOfSight(pos, r) then return nil, "sight" end
+		local paid = env.bridge("consume", player, {items = {[loadout.ammo] = 1}})
+		if type(paid) ~= "table" or paid.ok ~= true then
+			loadout.ammoCount = 0
+			return nil, "ammo"
+		end
+		local left = type(paid.remaining) == "table" and tonumber(paid.remaining[loadout.ammo])
+		loadout.ammoCount = left or math.max(0, loadout.ammoCount - 1)
+		local stats = info.stats
+		scheduleNext(player, Progression.weaponCooldown(bow.ranged.speed, stats.attackSpeed))
+		local level = loadout.levels and loadout.levels.Ranged or 1
+		local result = {record = r, style = "ranged", ammo = loadout.ammo, ammoLeft = loadout.ammoCount, from = pos, color = arrow.color}
+		result.chance = Progression.hitChance(stats.rangedAccuracy, level, r.level, r.defense)
+		if env.rng() < result.chance then
+			local raw, crit = Progression.rangedDamage(stats, bow, arrow, level, env.rng)
+			result.damage, result.tag = L.mitigate(r, raw, "ranged")
+			result.crit = crit == true
+		else
+			result.damage, result.miss, result.crit = 0, true, false
+		end
+		L.landHit(player, r, result.damage, "ranged")
+		local lifesteal = tonumber(stats.lifesteal) or 0
+		if lifesteal > 0 and result.damage > 0 then env.heal(player, lifesteal); result.healed = true end
+		return finish(result, r)
+	end
+
+	-- Mana (per session, never persisted; SkyBlock mana) ------------------------
+	function L.manaOf(player, stats)
+		local now = env.now()
+		local m = mana[player]
+		local max = if stats then Progression.maxMana(stats) elseif m then m.max else 0
+		if not m then
+			m = {current = max, max = max, at = now}
+			mana[player] = m
+		end
+		m.current = math.min(m.max, m.current + Progression.manaRegen(m.max) * math.max(0, now - m.at))
+		m.at = now
+		if max ~= m.max then m.max = max; m.current = math.min(m.current, max) end
+		return m
+	end
+	-- Mana to replicate: {player, mana, max} for every player whose rounded value changed.
+	function L.manaTick()
+		local updates = {}
+		for _, player in ipairs(env.players()) do
+			local info = L.statsFor(player)
+			if info then
+				local m = L.manaOf(player, info.stats)
+				local current = math.floor(m.current)
+				if current ~= m.sentMana or m.max ~= m.sentMax then
+					m.sentMana, m.sentMax = current, m.max
+					table.insert(updates, {player = player, mana = current, max = m.max})
+				end
+			end
+		end
+		return updates
+	end
+	-- Spell cast. target may be nil for self spells (heal, teleport).
+	function L.cast(player, verb, target, spellId)
+		if verb ~= "cast" then return nil, "verb" end
+		if not env.alive(player) then return nil, "dead" end
+		local pos = env.position(player)
+		if not pos then return nil, "position" end
+		local info = L.statsFor(player)
+		if not info then return nil, "stats" end
+		local loadout = loadoutOf(info)
+		if spellId == nil or spellId == "" then spellId = loadout.autocast end
+		local spell = type(spellId) == "string" and Data.Spells[spellId]
+		if not spell then return nil, "spell" end
+		local allowed, why = Progression.spellAllowed(loadout, spell)
+		if not allowed then return nil, why end
+		local weapon = if loadout.style == "magic" then Data.Items[loadout.weapon] else nil
+		local now = env.now()
+		local r
+		if spell.kind == "damage" or spell.kind == "snare" then
+			local okTarget, record = L.validateTarget(player, target, math.min(maxRange, spell.range or maxRange))
+			if not okTarget then return nil, record end
+			r = record
+			if spell.kind == "snare" and r.boss then return nil, "immune" end
+		end
+		if spell.kind == "damage" and onCooldown(player) then return nil, "cooldown" end
+		local ready = spellReady[player] and spellReady[player][spell.id]
+		if ready and now < ready then return nil, "cooldown" end
+		if spell.kind == "teleport" and lastHurt[player] and now < lastHurt[player] + (tonumber(CS.combatLock) or 5) then return nil, "combat" end
+		local m = L.manaOf(player, info.stats)
+		if m.current < (spell.mana or 0) then return nil, "mana" end
+		local costs = Progression.glyphCost(spell, weapon)
+		local supplies = type(loadout.supplies) == "table" and loadout.supplies or {}
+		for id, n in pairs(costs) do
+			if (tonumber(supplies[id]) or 0) < n then return nil, "glyphs" end
+		end
+		if r and not L.lineOfSight(pos, r) then return nil, "sight" end
+		if spell.kind == "teleport" and not (env.teleport and env.teleport(player) == true) then return nil, "teleport" end
+		if next(costs) then
+			local paid = env.bridge("consume", player, {items = costs})
+			if type(paid) ~= "table" or paid.ok ~= true then
+				for id in pairs(costs) do supplies[id] = 0 end
+				-- The tablet already moved the player; never undo a teleport.
+				if spell.kind ~= "teleport" then return nil, "glyphs" end
+			else
+				for id, n in pairs(costs) do
+					local left = type(paid.remaining) == "table" and tonumber(paid.remaining[id])
+					supplies[id] = left or math.max(0, (tonumber(supplies[id]) or 0) - n)
+				end
+			end
+		end
+		m.current -= spell.mana or 0
+		if spell.kind == "damage" then
+			scheduleNext(player, Progression.weaponCooldown(weapon and weapon.magic and weapon.magic.speed or 1.2, info.stats.attackSpeed))
+		end
+		if spell.cooldown then
+			spellReady[player] = spellReady[player] or {}
+			spellReady[player][spell.id] = now + spell.cooldown
+		end
+		local result = {spell = spell.id, kind = spell.kind, style = "magic", mana = math.floor(m.current), maxMana = m.max,
+			record = r, from = pos, color = spell.color}
+		if spell.kind == "damage" then
+			local raw = Progression.spellDamage(info.stats, spell, weapon, loadout.levels and loadout.levels.Magic or 1)
+			result.damage, result.tag = L.mitigate(r, raw, "magic")
+			result.crit = false
+			L.landHit(player, r, result.damage, "magic", spell.id)
+			return finish(result, r)
+		elseif spell.kind == "snare" then
+			r.snaredUntil = now + (spell.duration or 0)
+			result.duration = spell.duration
+			L.landHit(player, r, 0, "magic", spell.id)
+		else
+			if spell.kind == "heal" then env.heal(player, spell.heal or 0) end
+			L.reportXp(player, nil, "magic", 0, spell.id)
 		end
 		return result
 	end
@@ -700,6 +920,7 @@ local function createLogic(env)
 	end
 	function L.strike(r, player)
 		r.nextHit = env.now() + r.attackCooldown
+		lastHurt[player] = env.now()
 		r.lungeUntil = env.now() + 0.25
 		env.bridge("damage", player, {amount = r.damage})
 	end
@@ -707,6 +928,7 @@ local function createLogic(env)
 	function L.think(r)
 		if not r.alive then return {kind = "dead"} end
 		local now = env.now()
+		local snared = r.snaredUntil ~= nil and now < r.snaredUntil
 		if r.boss then
 			local owner = r.owner
 			local pos = isAlive(owner) and positionOf(owner)
@@ -720,9 +942,10 @@ local function createLogic(env)
 					r.hp, r.contributors = r.maxHp, {}
 					return {kind = "idle", healed = true}
 				end
+				if snared then return {kind = "idle"} end
 				return {kind = "leash", goal = r.home, speed = r.speed * 1.25, stop = 0}
 			end
-			if fromHome > C.LEASH_RANGE then
+			if fromHome > C.LEASH_RANGE and not snared then
 				r.leashing, r.target = true, nil
 				return {kind = "leash", goal = r.home, speed = r.speed * 1.25, stop = 0}
 			end
@@ -748,8 +971,10 @@ local function createLogic(env)
 				end
 				return {kind = "hold", face = pos}
 			end
+			if snared then return {kind = "hold", face = pos, snared = true} end
 			return {kind = "chase", goal = pos, speed = r.speed, face = pos, stop = reach * 0.7}
 		end
+		if snared then return {kind = "idle"} end
 		if now >= r.nextWander then
 			local a, d = env.rng() * math.pi * 2, env.rng() * C.WANDER_RADIUS
 			r.wanderGoal = r.home + Vector3.new(math.cos(a) * d, 0, math.sin(a) * d)
@@ -786,7 +1011,8 @@ local function createLogic(env)
 		local body = BOSS_BODY[line] or {kind = "boar", speed = 13}
 		return {line = line, tier = tier, def = def, name = def.name .. " " .. (ROMAN[tier] or tostring(tier)),
 			level = t.combatLevel or tier * 10, hp = t.hp, damage = t.damage,
-			defense = (tier - 1) * C.BOSS_DEFENSE_PER_TIER, kind = body.kind, speed = body.speed, color = def.color}
+			defense = (tier - 1) * C.BOSS_DEFENSE_PER_TIER, kind = body.kind, speed = body.speed, color = def.color,
+			weakness = def.weakness, defenceStyle = def.defenceStyle, attackStyle = def.attackStyle}
 	end
 	-- Attribute changed. Returns ("spawn", spec) | ("cancel", record?) | (nil, reason)
 	function L.bossAttribute(player, value)
@@ -820,6 +1046,7 @@ local function createLogic(env)
 			defense = spec.defense, speed = spec.speed, attackCooldown = 1.8, passive = false,
 			home = position, position = position, model = model, expires = env.now() + C.BOSS_DURATION,
 			radius = math.clamp(opts.radius or 0, 0, C.MAX_RADIUS_BONUS), target = player,
+			weakness = spec.weakness, defenceStyle = spec.defenceStyle, attackStyle = spec.attackStyle,
 		})
 		bosses[player] = r
 		return r
@@ -940,6 +1167,7 @@ local function createLogic(env)
 			attackCooldown = L.monsterCooldown(def.speed), passive = false, provoked = true,
 			home = position, position = position, model = model, expires = env.now() + L.seaDuration(),
 			radius = math.clamp(opts.radius or 0, 0, C.MAX_RADIUS_BONUS), target = player,
+			weakness = def.weakness, defenceStyle = def.defenceStyle, attackStyle = def.attackStyle,
 		})
 		seaOwned[player] = seaOwned[player] or {}
 		seaOwned[player][r] = true
@@ -977,7 +1205,7 @@ local function createLogic(env)
 	-- Players ----------------------------------------------------------------
 	function L.playerRemoving(player)
 		statsCache[player], nextAttack[player], pendingBoss[player], rearm[player], seaSeq[player] = nil, nil, nil, nil, nil
-		seaRetry[player] = nil
+		seaRetry[player], mana[player], spellReady[player], lastHurt[player] = nil, nil, nil, nil
 		local removed = {}
 		local boss = bosses[player]
 		if boss then L.unregister(boss); table.insert(removed, boss) end
@@ -993,6 +1221,7 @@ local function createLogic(env)
 	function L.hasPlayerState(player)
 		return statsCache[player] ~= nil or nextAttack[player] ~= nil or pendingBoss[player] ~= nil or bosses[player] ~= nil or rearm[player] ~= nil
 			or seaOwned[player] ~= nil or seaSeq[player] ~= nil or seaRetry[player] ~= nil
+			or mana[player] ~= nil or spellReady[player] ~= nil or lastHurt[player] ~= nil
 	end
 	return L
 end
@@ -1059,8 +1288,11 @@ local function broadcast(position, kind, payload)
 	end
 end
 
+local lineOfSight, teleportToHub -- defined with ground probing below
 local Logic = createLogic({
 	Data = Data, Progression = Progression,
+	lineOfSight = function(from, r) return lineOfSight(from, r) end,
+	teleport = function(player) return teleportToHub(player) end,
 	now = os.clock,
 	rng = function() return random:NextNumber() end,
 	players = function() return Players:GetPlayers() end,
@@ -1079,7 +1311,8 @@ local Logic = createLogic({
 		end
 	end,
 	bridge = function(op, player, payload, done)
-		if op == "stats" then return invokeBridge(op, player, payload) end
+		-- "stats" and "consume" (ammo/glyph payment) answer synchronously and never yield.
+		if op == "stats" or op == "consume" then return invokeBridge(op, player, payload) end
 		-- Mutating ops may yield inside the Adventure script; never block the AI loop.
 		task.spawn(function()
 			local result = invokeBridge(op, player, payload)
@@ -1107,6 +1340,40 @@ refreshRayFilter()
 local function groundY(position, fallback)
 	local hit = Workspace:Raycast(position + Vector3.new(0, 8, 0), Vector3.new(0, -40, 0), rayParams)
 	return if hit then hit.Position.Y else fallback
+end
+-- Ranged/magic line of sight: from eye height to the monster's root. Monsters,
+-- spawn markers and characters never block; any other geometry does.
+lineOfSight = function(from, r)
+	local origin = from + Vector3.new(0, C.EYE_HEIGHT, 0)
+	local delta = r.position - origin
+	if delta.Magnitude < 1 then return true end
+	return Workspace:Raycast(origin, delta, rayParams) == nil
+end
+-- Hubward tablet destination: the Hub island's landing anchor, else its centre.
+local LANDING_ANCHORS = {"Anchor_Landing", "Anchor_Spawn", "Anchor_Waypoint_Landing", "Anchor_Recall"}
+local function hubDestination()
+	local islands = Workspace:FindFirstChild("Islands")
+	if not islands then return nil end
+	for _, island in ipairs(islands:GetChildren()) do
+		if island:GetAttribute("Region") == "Hub" then
+			for _, name in ipairs(LANDING_ANCHORS) do
+				local anchor = island:FindFirstChild(name, true)
+				if anchor and anchor:IsA("BasePart") then return anchor.Position + Vector3.new(0, anchor.Size.Y / 2, 0) end
+			end
+			local center = island:GetAttribute("IslandCenter")
+			if typeof(center) == "Vector3" then return Vector3.new(center.X, groundY(center, center.Y), center.Z) end
+		end
+	end
+	return nil
+end
+teleportToHub = function(player)
+	local character, humanoid, root = characterOf(player)
+	if not character or not root or not humanoid or humanoid.Health <= 0 then return false end
+	local destination = hubDestination()
+	if not destination then return false end
+	character:PivotTo(CFrame.new(destination + Vector3.new(0, 3.5, 0)) * root.CFrame.Rotation)
+	root.AssemblyLinearVelocity = Vector3.zero
+	return true
 end
 
 -- Models ---------------------------------------------------------------------
@@ -1385,15 +1652,49 @@ task.spawn(function()
 end)
 
 -- Player attacks -------------------------------------------------------------
-combatRemote.OnServerEvent:Connect(function(player, verb, target)
-	if typeof(target) ~= "Instance" then return end
-	local result = Logic.attack(player, verb, target)
-	if not result then return end
+local denyAt = {} -- [player] = os.clock() before which no further "denied" notice is sent
+local function deny(player, verb, reason)
+	if not DENY_REASONS[reason] or not player.Parent then return end
+	local now = os.clock()
+	if (denyAt[player] or 0) > now then return end
+	denyAt[player] = now + C.DENY_INTERVAL
+	fxRemote:FireClient(player, "denied", {action = verb, reason = reason})
+end
+combatRemote.OnServerEvent:Connect(function(player, verb, target, spellId)
+	local result, reason
+	if verb == "attack" or verb == "ranged" then
+		if typeof(target) ~= "Instance" then return end
+		if verb == "attack" then
+			result, reason = Logic.attack(player, verb, target)
+		else
+			result, reason = Logic.ranged(player, verb, target)
+		end
+	elseif verb == "cast" then
+		if target ~= nil and typeof(target) ~= "Instance" then return end
+		if spellId ~= nil and (type(spellId) ~= "string" or #spellId > 40) then return end
+		result, reason = Logic.cast(player, verb, target, spellId)
+	else
+		return
+	end
+	if not result then deny(player, verb, reason) return end
 	local r = result.record
-	updateBar(r)
-	broadcast(r.position, "hit", {model = r.model, position = r.position + Vector3.new(0, (view[r] and view[r].plan.hitbox.Y or 3) / 2, 0),
-		amount = result.damage, crit = result.crit, attacker = player.UserId})
-	if result.killed then destroyView(r, true) end
+	if result.ammoLeft ~= nil then player:SetAttribute("QuiverCount", result.ammoLeft) end
+	if result.mana ~= nil then player:SetAttribute("Mana", result.mana) end
+	local top = r and r.position + Vector3.new(0, (view[r] and view[r].plan.hitbox.Y or 3) / 2, 0)
+	if result.from and top then
+		broadcast(r.position, "projectile", {from = result.from + Vector3.new(0, C.EYE_HEIGHT, 0), to = top, style = result.style,
+			spell = result.spell, color = result.color, attacker = player.UserId})
+	end
+	if r and result.damage ~= nil then
+		updateBar(r)
+		broadcast(r.position, "hit", {model = r.model, position = top, amount = result.damage, crit = result.crit,
+			attacker = player.UserId, style = result.style, miss = result.miss == true, tag = result.tag, spell = result.spell})
+		if result.killed then destroyView(r, true) end
+	elseif result.kind == "snare" and r then
+		broadcast(r.position, "snare", {model = r.model, position = top, duration = result.duration, attacker = player.UserId})
+	elseif result.kind == "heal" or result.kind == "teleport" then
+		fxRemote:FireClient(player, result.kind, {spell = result.spell})
+	end
 end)
 
 -- Slayer bosses --------------------------------------------------------------
@@ -1419,6 +1720,7 @@ for _, player in ipairs(Players:GetPlayers()) do task.spawn(onPlayerAdded, playe
 Players.PlayerRemoving:Connect(function(player)
 	for _, connection in ipairs(playerConnections[player] or {}) do connection:Disconnect() end
 	playerConnections[player] = nil
+	denyAt[player] = nil
 	for _, r in ipairs(Logic.playerRemoving(player)) do destroyView(r, false) end
 	task.defer(refreshRayFilter)
 end)
@@ -1441,6 +1743,13 @@ RunService.Heartbeat:Connect(function(dt)
 		for _, pending in ipairs(Logic.pendingBosses()) do spawnBoss(pending.player, pending.spec) end
 		for _, job in ipairs(Logic.dueSeaRetries()) do
 			if job.player.Parent then Logic.reportSea(job.player, job.id, job.seq, "kill", job.deadline) end
+		end
+		-- Mana regeneration, replicated as player attributes.
+		for _, update in ipairs(Logic.manaTick()) do
+			if update.player.Parent then
+				update.player:SetAttribute("MaxMana", update.max)
+				update.player:SetAttribute("Mana", update.mana)
+			end
 		end
 	end
 	for _, r in ipairs(Logic.seaTick()) do destroyView(r, false) end

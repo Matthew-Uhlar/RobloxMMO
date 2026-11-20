@@ -59,7 +59,7 @@ local recipeDescriptions={Pickaxe="+1 Ore per harvest",Blade="+8 Warden strike d
 	Skyplate="Automatically equipped: +2 defense",ExpeditionRation="Restore up to 65 health; wait 12 seconds between rations"}
 local decorations={Lanterns={Timber=5},Garden={Herb=3,Timber=3},Deck={Timber=10,Ore=5}}
 -- Depth constants.
-local gearSlots={weapon=true,helmet=true,chest=true,legs=true,boots=true}
+local gearSlots={weapon=true,helmet=true,chest=true,legs=true,boots=true,ammo=true} -- ammo: the Quiver (Combat styles)
 local collectionSet={}
 for _,id in ipairs(Data.CollectionItems) do collectionSet[id]=true end
 local MAX_PETS=64
@@ -789,7 +789,8 @@ local function depthState(p,stats)
 	end
 	return {skills=skills,totalLevel=total,skillAverage=average,stats=stats,equipment=equipment,tools=tools,
 		accessoryBag=table.clone(p.accessoryBag),activeAccessories=Progression.activeAccessories(p),accessorySlots=Progression.accessorySlots(p),
-		pets=pets,buffs=buffs,collections=collections,bestiary=p.bestiary,slayer={lines=lines,quest=p.slayerQuest},enchants=p.enchants,regions=regions}
+		pets=pets,buffs=buffs,collections=collections,bestiary=p.bestiary,slayer={lines=lines,quest=p.slayerQuest},enchants=p.enchants,regions=regions,
+		combat=Progression.combatLoadout(p)} -- Combat styles: {style,weapon,ammo,ammoCount,supplies,levels,autocast}
 end
 local function snapshot(player,message)
 	local p=profiles[player]
@@ -892,6 +893,8 @@ local function migrate(profile)
 	end
 	profile.pets=pets
 	profile.activePet=active
+	-- Combat styles: autocast must name an autocast spell.
+	if profile.autocast~=nil and not (type(profile.autocast)=="string" and Data.Spells[profile.autocast] and Data.Spells[profile.autocast].autocast) then profile.autocast=nil end
 	local quest=profile.slayerQuest
 	if quest~=nil and (type(quest)~="table" or not Data.Slayers[quest.line] or not Data.Slayers[quest.line].tiers[quest.tier]) then profile.slayerQuest=nil end
 	profile.version=math.max(tonumber(profile.version) or 1,2)
@@ -1213,11 +1216,19 @@ local function perform(player,verb,item,prompt)
 		p.equipment[def.slot]=item
 		return "Equipped "..def.name.."."
 	elseif verb=="unequip" then
-		if type(item)~="string" or not gearSlots[item] then return "Choose weapon, helmet, chest, legs or boots." end
+		if type(item)~="string" or not gearSlots[item] then return "Choose weapon, helmet, chest, legs, boots or ammo." end
 		local id=p.equipment[item]
 		if not id then return "Nothing is equipped in that slot." end
 		p.equipment[item]=nil
 		return "Unequipped "..(Data.Items[id] and Data.Items[id].name or id).."."
+	elseif verb=="autocast" then
+		-- Combat styles: choose the spell ("cast" with no spell id) or clear it with "" / "none".
+		if item==nil or item=="" or item=="none" then p.autocast=nil; return "Autocast cleared." end
+		local spell=validId(item) and Data.Spells[item]
+		if not spell or not spell.autocast then return "Choose a combat spell to autocast." end
+		if level(p.xp.Magic)<spell.level then return spell.name.." requires Magic "..spell.level.."." end
+		p.autocast=item
+		return "Autocasting "..spell.name.."."
 	elseif verb=="consume" then
 		local def=validId(item) and Data.Items[item]
 		if not def or def.kind~="consumable" then return "Choose food, a potion or a feast." end
@@ -1610,6 +1621,70 @@ regionAccess.OnInvoke=function(player,region)
 end
 regionAccess.Parent=ServerStorage
 
+-- Combat styles bridge helpers (combat.server.lua). "consume" pays arrows,
+-- glyphs and tablets atomically: every listed id must be a combatUse item,
+-- 1..50 each, all owned, else nothing is taken. "combatXp" routes style XP:
+-- damage XP from Progression.styleXp (fractions carried per session) plus a
+-- spell's cast XP (Data.Spells[id].xp) for magic.
+local CombatStyles={carry=setmetatable({},{__mode="k"})}
+function CombatStyles.consume(p,payload)
+	local items=payload.items
+	if type(items)~="table" then return {ok=false,reason="invalid"} end
+	local cost,count={},0
+	for id,n in pairs(items) do
+		local def=validId(id) and Data.Items[id]
+		if not def or not def.combatUse or type(n)~="number" or n%1~=0 or n<1 or n>50 then return {ok=false,reason="invalid"} end
+		cost[id]=n
+		count+=1
+		if count>8 then return {ok=false,reason="invalid"} end
+	end
+	if count==0 then return {ok=false,reason="invalid"} end
+	if not spend(p,cost) then return {ok=false,reason="missing"} end
+	local remaining={}
+	for id in pairs(cost) do remaining[id]=p.items[id] end
+	return {ok=true,remaining=remaining}
+end
+function CombatStyles.xpRate(monsterId,tier)
+	if type(monsterId)~="string" then return nil end
+	local line=string.match(monsterId,"^Boss:(%a+)$")
+	if line then
+		local t=Data.Slayers[line] and Data.Slayers[line].tiers[tonumber(tier) or 0]
+		if not t then return nil end
+		return t.spawnXp*Data.CombatStyles.bossXpShare,t.hp
+	end
+	local monster=validId(monsterId) and Data.Monsters[monsterId]
+	if not monster then return nil end
+	return monster.xp,monster.hp
+end
+function CombatStyles.xp(p,payload)
+	local style=payload.style
+	if style~="melee" and style~="ranged" and style~="magic" then return {ok=false,reason="invalid"} end
+	local gains={}
+	local damage=payload.damage
+	if type(damage)=="number" and damage==damage and damage>0 then
+		local xp,hp=CombatStyles.xpRate(payload.monster,payload.tier)
+		if xp then gains=Progression.styleXp(style,damage,xp,hp) end
+	end
+	local spell=style=="magic" and validId(payload.spell) and Data.Spells[payload.spell]
+	if spell and spell.xp then gains.Magic=(gains.Magic or 0)+spell.xp end
+	local carry=CombatStyles.carry[p] or {}
+	CombatStyles.carry[p]=carry
+	local granted,levelled={},false
+	for skill,amount in pairs(gains) do
+		local total=amount+(carry[skill] or 0)
+		local whole=math.floor(total)
+		carry[skill]=total-whole
+		if whole>0 then
+			local before=level(p.xp[skill])
+			grantXp(p,skill,whole)
+			granted[skill]=whole
+			if level(p.xp[skill])>before then levelled=true end
+		end
+	end
+	if next(granted) then p.started=true end
+	return {ok=true,xp=granted,levelled=levelled}
+end
+
 -- Server-to-server bridge consumed by Combat (docs/DEPTH-CONTRACT.md §4).
 local bridge=Instance.new("BindableFunction")
 bridge.Name="IsleBridge"
@@ -1637,7 +1712,14 @@ bridge.OnInvoke=function(op,player,payload)
 		return if op=="slayerBoss" or op=="seaCreature" then {ok=false,reason="sync"} else nil
 	end
 	if op=="stats" then
-		return {stats=Progression.computeStats(p,os.time()),combatLevel=level(p.xp.Combat),ironman=p.ironman==true}
+		return {stats=Progression.computeStats(p,os.time()),combatLevel=level(p.xp.Combat),ironman=p.ironman==true,
+			loadout=Progression.combatLoadout(p)} -- Combat styles: weapon style, quiver, supplies, autocast
+	elseif op=="consume" then
+		return CombatStyles.consume(p,payload)
+	elseif op=="combatXp" then
+		local reply=CombatStyles.xp(p,payload)
+		if reply.levelled then notify(player,"") end
+		return reply
 	elseif op=="dungeon" then
 		-- Dungeons: floor gate + Ironman flag for expedition.server.lua.
 		return {level=level(p.xp.Dungeoneering),ironman=p.ironman==true}

@@ -402,4 +402,126 @@ function Progression.rollDrops(drops, magicFind, rng, petLuck)
 	return out
 end
 
+------------------------------------------------------------------------------
+-- Combat styles (melee / ranged / magic triangle, mana). New, additive rules;
+-- data in Data.CombatStyles, Data.Spells and the weapon/arrow item fields.
+------------------------------------------------------------------------------
+local STYLES = {melee=true,ranged=true,magic=true}
+local function styles() return Data.CombatStyles end
+-- Style of a weapon definition (nil/unarmed and swords are melee).
+function Progression.weaponStyle(def)
+	if type(def) == "table" and STYLES[def.style] then return def.style end
+	return "melee"
+end
+-- Seconds between attacks for a weapon speed, reduced by Attack Speed (capped at 100).
+function Progression.weaponCooldown(speed, attackSpeed)
+	local as = math.clamp(tonumber(attackSpeed) or 0, 0, 100)
+	return math.max(0.1, tonumber(speed) or 1) / (1 + as / 100)
+end
+-- Triangle modifier for a style against a monster/slayer definition.
+-- Returns multiplier, tag ("weak" | "resist" | nil).
+function Progression.styleModifier(style, def)
+	local cs = styles()
+	if type(def) ~= "table" or not STYLES[style] then return 1, nil end
+	if def.weakness == style then return 1 + cs.weaknessBonus, "weak" end
+	if def.defenceStyle == style then return 1 - cs.resistPenalty, "resist" end
+	return 1, nil
+end
+-- Ranged hit chance (OSRS-style attack/defence rolls, softened for real time).
+-- attack = (rangedLevel + 8) * (accuracy + 64); defence = (monsterLevel + 8) * (defense/4 + 64)
+-- chance = parity + 0.5 * (attack - defence) / max(attack, defence), clamped.
+function Progression.hitChance(accuracy, level, monsterLevel, monsterDefense)
+	local cs = styles()
+	local attack = (math.max(1, tonumber(level) or 1) + 8) * (math.max(0, tonumber(accuracy) or 0) + 64)
+	local defence = (math.max(1, tonumber(monsterLevel) or 1) + 8) * (math.max(0, tonumber(monsterDefense) or 0) / 4 + 64)
+	local chance = cs.accuracyParity + 0.5 * (attack - defence) / math.max(attack, defence)
+	return math.clamp(chance, cs.hitFloor, cs.hitCeiling)
+end
+-- Ranged damage (SkyBlock bow formula with OSRS ammo):
+-- (5 + bow power + arrow power) * (1 + rangedStrength/100)
+--   * (1 + (4 * (rangedLevel - 1) + damagePercent)/100), crits like melee.
+-- rng: function returning [0,1). Returns damage, crit.
+function Progression.rangedDamage(stats, bow, arrow, rangedLevel, rng)
+	stats = stats or {}
+	local power = 5 + (bow and bow.ranged and bow.ranged.power or 0) + (arrow and arrow.ammo and arrow.ammo.power or 0)
+	local base = power * (1 + (stats.rangedStrength or 0) / 100)
+	local mult = 1 + (4 * (math.max(1, rangedLevel or 1) - 1) + (stats.damagePercent or 0)) / 100
+	local crit = rng() * 100 < (stats.critChance or 0)
+	local dmg = base * mult
+	if crit then dmg *= 1 + (stats.critDamage or 0) / 100 end
+	return math.max(1, math.floor(dmg)), crit
+end
+-- Spell damage (SkyBlock ability formula, scaled by Magic level; never crits):
+-- (spell damage + weapon magic power) * (1 + intelligence/100 * scaling)
+--   * (1 + abilityDamage/100) * (1 + 0.03 * (magicLevel - 1))
+function Progression.spellDamage(stats, spell, weapon, magicLevel)
+	stats = stats or {}
+	if type(spell) ~= "table" or not spell.damage then return 0 end
+	local power = spell.damage + (weapon and weapon.magic and weapon.magic.power or 0)
+	local dmg = power * (1 + math.max(0, stats.intelligence or 0) / 100 * (spell.scaling or 0))
+		* (1 + (stats.abilityDamage or 0) / 100) * (1 + 0.03 * (math.max(1, magicLevel or 1) - 1))
+	return math.max(1, math.floor(dmg))
+end
+-- Mana (SkyBlock): max mana = Intelligence; regenerates a share of max per second.
+function Progression.maxMana(stats)
+	return math.max(0, math.floor(tonumber(stats and stats.intelligence) or 0))
+end
+function Progression.manaRegen(maxMana)
+	return math.max(0, tonumber(maxMana) or 0) * styles().manaRegenPercent / 100
+end
+-- Glyph items a cast consumes: the spell's costs minus elemental glyphs the
+-- wielded staff supplies (OSRS elemental staves).
+function Progression.glyphCost(spell, weapon)
+	local out = {}
+	if type(spell) ~= "table" then return out end
+	local free = {}
+	for _, element in ipairs(weapon and weapon.magic and weapon.magic.elements or {}) do
+		local e = styles().elements[element]
+		if e then free[e.glyph] = true end
+	end
+	for id, n in pairs(spell.costs or {}) do
+		if not free[id] then out[id] = n end
+	end
+	return out
+end
+-- XP for damage dealt with a style. monsterXp/monsterHp give the XP rate.
+-- Melee trains Combat; ranged/magic train their skill plus a Combat share.
+function Progression.styleXp(style, damage, monsterXp, monsterHp)
+	local cs = styles()
+	local out = {}
+	damage, monsterXp, monsterHp = tonumber(damage) or 0, tonumber(monsterXp) or 0, tonumber(monsterHp) or 0
+	if not STYLES[style] or damage <= 0 or monsterXp <= 0 or monsterHp <= 0 then return out end
+	local xp = math.min(damage, monsterHp) * monsterXp / monsterHp * cs.damageXpRate
+	out[cs.skill[style]] = xp
+	if style ~= "melee" then out.Combat = (out.Combat or 0) + xp * cs.combatShare end
+	return out
+end
+-- Can this profile cast the spell right now (level + weapon only; costs and
+-- mana are checked by the caller)? Returns ok, reason.
+function Progression.spellAllowed(loadout, spell)
+	if type(spell) ~= "table" then return false, "spell" end
+	local magic = loadout and loadout.levels and loadout.levels.Magic or 1
+	if magic < (spell.level or 1) then return false, "level" end
+	if spell.requiresWeapon and (not loadout or loadout.style ~= "magic") then return false, "weapon" end
+	return true
+end
+-- Combat loadout for the server bridge and the snapshot: style from the
+-- wielded weapon, quiver contents, combat supplies and style levels.
+function Progression.combatLoadout(p)
+	local weaponId, weapon = weaponFor(p)
+	local ammoId = Progression.equipped(p, styles().ammoSlot)
+	local supplies = {}
+	for id, n in pairs(p.items or {}) do
+		local def = Data.Items[id]
+		if def and def.combatUse and type(n) == "number" and n > 0 then supplies[id] = n end
+	end
+	local levels = {}
+	for _, skill in ipairs({"Combat","Ranged","Magic"}) do levels[skill] = Progression.levelForXp(p.xp and p.xp[skill] or 0) end
+	local autocast = p.autocast
+	local spell = type(autocast) == "string" and Data.Spells[autocast]
+	if not spell or not spell.autocast or levels.Magic < spell.level then autocast = nil end
+	return {style=Progression.weaponStyle(weapon),weapon=weaponId,ammo=ammoId,ammoCount=ammoId and (p.items[ammoId] or 0) or 0,
+		supplies=supplies,levels=levels,autocast=autocast}
+end
+
 return Progression
