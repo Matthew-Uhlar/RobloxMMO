@@ -3982,7 +3982,8 @@ end
 -- secrets, grading and credit rules (Dungeons / Dungeon Classes teams).
 -- Floors are chosen at the in-world daises by the Vault Gate; the class and
 -- Master Mode can be set here (verbs dungeonClass, dungeonMaster) or at the pad.
--- The party HUD (top right) lists each delver's class while a run is underway.
+-- The party HUD (right column, under the minimap) lists each delver's class and
+-- carries Q / R ability buttons while a run is underway.
 ------------------------------------------------------------------------------
 do
 local dungeonUi={violet="8E7CC3"}
@@ -4034,7 +4035,7 @@ local function drawDungeon()
 		detail="Choose a class at the oath pedestals or below, a floor at the daises beside the Vault Gate, open the run at the gate, then stand on the matchmaking pad within "..num(rules.padSeconds,10).."s to join.",
 		lines={type(result)=="string" and result~="" and ("Last clear: "..escape(result)) or nil,
 			type(notice)=="string" and notice~="" and paint(escape(notice),"F9CC77") or nil,
-			inRun and paint("In a run: class and Master Mode are locked until it ends. Class ability: Q at the core · Ultimate: R.","9EE7D2") or nil}})
+			inRun and paint("In a run: class and Master Mode are locked until it ends. Class ability: Q · Ultimate: R (keys at the core, or the party HUD buttons).","9EE7D2") or nil}})
 	if DC then
 		heading("CLASSES")
 		for _,id in ipairs(DC.order) do
@@ -4077,7 +4078,7 @@ local function drawDungeon()
 		for i=1,DC.MASTER_FLOORS do if tbl(floorRows[i]).masterUnlocked==true then anyMaster=true end end
 		local masterOn=view.master==true
 		card({name="DungeonMaster",motif="Hunt",accent=rgb("E8806A"),title="Master Mode",titleColor=rgb("F2A48F"),
-			subtitle="Floors I–V · ×"..DC.MASTER_MULT.." HP and damage · +"..DC.MASTER_ROLLS.." chest roll · ×"..DC.MASTER_XP.." XP",badge=masterOn and "ON" or "OFF",badgeColor=ivory,
+			subtitle="Floors I–V · ×"..DC.MASTER_MULT.." HP and damage · par ×"..DC.MASTER_PAR.." · +"..DC.MASTER_ROLLS.." chest roll · ×"..DC.MASTER_XP.." XP and coins",badge=masterOn and "ON" or "OFF",badgeColor=ivory,
 			detail="Unlocks per floor after an S+ clear. Runs you open use your setting; every delver must have the floor's Master Mode unlocked.",
 			actions={{caption=masterOn and "Turn off" or "Turn on",primary=not masterOn and anyMaster,name="DungeonMasterToggle",disabled=(not masterOn and not anyMaster) or inRun,
 				reason=inRun and "Locked during a run." or "Clear a floor at grade S+ first.",fn=function() send("dungeonMaster",masterOn and "off" or "on") end}}})
@@ -4094,7 +4095,9 @@ local function drawDungeon()
 			local found=num(fr.secrets,0)
 			local masterLine=nil
 			if DC and index<=DC.MASTER_FLOORS then
-				masterLine=fr.masterUnlocked==true and paint("Master Mode unlocked","E8806A")..(num(fr.masterBest,0)>0 and ("  ·  best "..num(fr.masterBest,0)) or "")
+				local mBest=num(fr.masterBest,0)
+				masterLine=fr.masterUnlocked==true and (paint("Master Mode unlocked","E8806A").."  ·  par "..math.floor(DC.par(index,true)+.5).."s"
+					..(mBest>0 and ("  ·  Master best "..mBest.." ("..Data.dungeonGrade(mBest)..")  ·  clears "..num(fr.masterClears,0)) or "  ·  no Master clear yet"))
 					or "Master Mode: clear at grade S+ to unlock"
 			end
 			card({name="DungeonFloor"..index,motif="Hunt",locked=not open,accent=open and rgb(dungeonUi.violet) or nil,
@@ -4123,10 +4126,15 @@ local function drawDungeon()
 			"Ironman journals are credited on solo clears or with "..math.floor(num(rules.ironmanDamageShare,0.3)*100).."% of the party's damage."}})
 end
 Pages.drawDungeon=drawDungeon
--- Party HUD: DungeonParty = "Name|Class|Level;..." plus this delver's ability timers.
+-- Party HUD: DungeonParty = "Name|Class|Level;..." plus this delver's Q / R
+-- ability buttons (touch and click; Q / R on the keyboard are the heart's own
+-- prompt keys, so the buttons never double-fire a keypress). Placed in the right
+-- column under the Wayfinder minimap (nav.client.lua: y 8, SIZE 118 on short
+-- screens / 156, + 34 controls), clear of the toast lane; short screens use a
+-- 96 px column right of the Attack button (glyph + level roster).
 do
 	local hudFrame=make("TextButton",gui,{Name="DungeonPartyHud",Text="",AutoButtonColor=false,BackgroundColor3=deep,BackgroundTransparency=.06,BorderSizePixel=0,
-		AnchorPoint=Vector2.new(1,0),Position=UDim2.new(1,-10,0,100),Size=UDim2.fromOffset(220,46),Visible=false,Selectable=false})
+		AnchorPoint=Vector2.new(1,0),Position=UDim2.new(1,-10,0,204),Size=UDim2.fromOffset(220,46),Visible=false,Selectable=false})
 	rounded(hudFrame,12,UI.brass)
 	local title=label(hudFrame,"OBSERVATORY PARTY",12,4,UDim.new(1,-24),16,UI.heavy,11,rgb(lighten(dungeonUi.violet,.35)))
 	title.Name="Title"
@@ -4137,25 +4145,95 @@ do
 	list.TextYAlignment=Enum.TextYAlignment.Top
 	list.TextTruncate=Enum.TextTruncate.None
 	hudFrame.Activated:Connect(function() if Pages.openTo then Pages.openTo("Hunt","Dungeon") end end)
-	dungeonUi.hud,dungeonUi.hudList=hudFrame,list
+	-- Q / R: fire the Eclipse Heart's ability prompts (the server validates both).
+	local function heartPrompt(action)
+		local ok,found=pcall(function()
+			local arena=workspace:FindFirstChild("The Hollow Observatory")
+			local heart=arena and arena:FindFirstChild("Eclipse Heart")
+			if not heart then return nil end
+			for _,child in ipairs(heart:GetChildren()) do
+				if child.ClassName=="ProximityPrompt" and child.ActionText==action then return child end
+			end
+			return nil
+		end)
+		return ok and found or nil
+	end
+	function dungeonUi.trigger(kind)
+		local prompt=heartPrompt(kind=="ultimate" and "Ultimate" or "Class ability")
+		if not prompt then notify("Stand by the Eclipse Heart to use your class abilities.") return false end
+		local ok=pcall(function()
+			prompt:InputHoldBegin()
+			task.delay(num(prompt.HoldDuration,0)+.05,function() pcall(function() prompt:InputHoldEnd() end) end)
+		end)
+		return ok
+	end
+	local function abilityButton(name,kind,color)
+		local b=make("TextButton",hudFrame,{Name=name,Text="",AutoButtonColor=true,BackgroundColor3=rgb("1B3542"),BorderSizePixel=0,
+			Size=UDim2.fromOffset(100,26),Font=UI.heavy,TextSize=12,TextColor3=rgb(color),RichText=true,TextTruncate=Enum.TextTruncate.AtEnd,Visible=false})
+		rounded(b,8,UI.brass)
+		b.Activated:Connect(function() dungeonUi.trigger(kind) end)
+		return b
+	end
+	local qButton=abilityButton("AbilityQ","ability","F9CC77")
+	local rButton=abilityButton("AbilityR","ultimate","E8806A")
+	dungeonUi.hud,dungeonUi.hudList,dungeonUi.qButton,dungeonUi.rButton=hudFrame,list,qButton,rButton
 	function dungeonUi.refreshHud()
 		local rows=DC and DC.parseParty(player:GetAttribute("DungeonParty")) or {}
 		hudFrame.Visible=#rows>0
 		if #rows==0 then return end
+		local view=gui.AbsoluteSize
+		local height=(view and view.Y>0) and view.Y or 720
+		-- Short screens: a 96 px column between the Attack button and the right edge
+		-- (glyph + level, three per line); tall screens: one row per delver.
+		local short=height<520
+		local width=short and 96 or 220
+		local top=8+(short and 118 or 156)+34+6
+		local pad=short and 6 or 12
 		local text={}
-		for _,r in ipairs(rows) do
+		for i,r in ipairs(rows) do
 			local def=r.class and DC.defs[r.class]
-			table.insert(text,def and (paint(def.glyph.." "..escape(r.name),def.color).."  "..escape(def.name).." "..num(r.level,1)) or (escape(r.name).."  "..paint("unclassed","A9BDC1")))
+			if short then
+				local entry=def and paint(def.glyph..num(r.level,1),def.color) or paint("·"..escape(string.sub(r.name,1,2)),"A9BDC1")
+				if i>1 then entry=((i-1)%3==0 and "\n" or " ")..entry end
+				table.insert(text,entry)
+			else
+				table.insert(text,def and (paint(def.glyph.." "..escape(r.name),def.color).."  "..escape(def.name).." "..num(r.level,1)) or (escape(r.name).."  "..paint("unclassed","A9BDC1")))
+			end
 		end
+		local rowsShown=short and math.min(2,math.ceil(#rows/3)) or #text
+		local rowHeight=short and 14 or 18
+		local titleHeight=short and 14 or 16
+		title.Text=short and "PARTY" or "OBSERVATORY PARTY"
+		title.TextSize=short and 10 or 11
+		title.Position,title.Size=UDim2.fromOffset(pad,4),UDim2.new(1,-2*pad,0,titleHeight)
+		list.Text=short and table.concat(text) or table.concat(text,"\n")
+		list.TextSize=short and 11 or 12
+		list.Position=UDim2.fromOffset(pad,4+titleHeight)
+		list.Size=UDim2.new(1,-2*pad,0,rowHeight*rowsShown)
 		local mine=DC.defs[player:GetAttribute("DungeonClass") or ""]
+		local y=4+titleHeight+rowHeight*rowsShown+4
+		qButton.Visible,rButton.Visible=mine~=nil,mine~=nil
 		if mine then
 			local ready=num(player:GetAttribute("DungeonAbilityReady"),0)
-			table.insert(text,paint("Q "..escape(mine.ability.name)..(ready>0 and (" "..ready.."s") or " ready"),"F9CC77").."  ·  "
-				..paint("R ×"..num(player:GetAttribute("DungeonUltimates"),0),"E8806A"))
+			local inner=width-2*pad
+			local gap=short and 4 or 6
+			local qWidth=short and math.floor((inner-gap)/2) or math.floor((inner-gap)*.62)
+			local bh=short and 24 or 26
+			qButton.Position,qButton.Size=UDim2.fromOffset(pad,y),UDim2.fromOffset(qWidth,bh)
+			rButton.Position,rButton.Size=UDim2.fromOffset(pad+qWidth+gap,y),UDim2.fromOffset(inner-qWidth-gap,bh)
+			qButton.TextSize,rButton.TextSize=short and 11 or 12,short and 11 or 12
+			if short then
+				qButton.Text="Q "..(ready>0 and (ready.."s") or "✓")
+			else
+				qButton.Text="Q · "..escape(mine.ability.name)..(ready>0 and (" "..ready.."s") or " ready")
+			end
+			rButton.Text="R ×"..num(player:GetAttribute("DungeonUltimates"),0)
+			y+=bh+6
+		else
+			y+=2
 		end
-		list.Text=table.concat(text,"\n")
-		list.Size=UDim2.new(1,-24,0,18*#text)
-		hudFrame.Size=UDim2.fromOffset(220,26+18*#text)
+		hudFrame.Position=UDim2.new(1,-10,0,top)
+		hudFrame.Size=UDim2.fromOffset(width,y)
 	end
 	for _,name in ipairs({"DungeonParty","DungeonAbilityReady","DungeonUltimates","DungeonClass"}) do
 		player:GetAttributeChangedSignal(name):Connect(function() dungeonUi.refreshHud() end)

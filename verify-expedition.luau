@@ -31,9 +31,16 @@ local players={PlayerAdded=signal(),PlayerRemoving=signal(),GetPlayers=function(
 local heartbeat=signal()
 local rewards,payloads={},{}
 local reward={Fire=function(_,p,payload) rewards[p]=(rewards[p] or 0)+1 payloads[p]=payload end}
-local levels,irons={},{}
-local bridge={Invoke=function(_,op,p)
-	if op=="dungeon" then return {level=levels[p] or 1,ironman=irons[p]==true} end
+local levels,irons,classes={},{},{}
+-- The profile owns the class: "dungeonClass" stores it and publishes the
+-- DungeonClass attribute (Classes.publish); "dungeon" reads it back.
+local bridge={Invoke=function(_,op,p,payload)
+	if op=="dungeon" then return {level=levels[p] or 1,ironman=irons[p]==true,class=classes[p]} end
+	if op=="dungeonClass" then
+		classes[p]=payload.class
+		p:SetAttribute("DungeonClass",payload.class)
+		return {ok=true}
+	end
 	return nil
 end}
 -- L6: when grantMode is set, ServerStorage also exposes the IsleExpeditionGrant
@@ -473,7 +480,7 @@ guardiansDown(i4)
 check(#wisps()==0,"no wisps before the boss phase ticks")
 at(i4) heal(i4)
 heartbeat:Fire(0.1)
-check(#wisps()==2 and wisps()[1]:GetAttribute("AddHealth")==16,"first wave: two 16 HP wisps")
+check(#wisps()==2 and wisps()[1]:GetAttribute("AddHealth")==8,"first wave: two 8 HP wisps (4 x sqrt(4))")
 check(caption.Text:find("WARDED",1,true)~=nil,"caption explains the ward")
 strike(i4,"Eclipse Heart","Strike core")
 check(artCore:GetAttribute("BossHealth")==48,"warded core ignores strikes")
@@ -492,6 +499,25 @@ at(i4) heal(i4)
 heartbeat:Fire(20)
 check(#wisps()==2,"next wave after 20 s")
 check(hums[i4].Health==66,"Eclipse Sweep hits within 20 studs for 34")
+-- Review H1: the wave timer pauses while a full wave lives, so wisps never pile up.
+for _=1,6 do heal(i4) heartbeat:Fire(20) end
+check(#wisps()==2,"no new wave while a full wave is alive")
+do
+	local list=wisps()
+	heal(i4)
+	rootOf(i4).Position=list[1].Position
+	for _=1,8 do
+		if list[1].Parent==nil then break end
+		now+=1
+		for _,obj in list[1]:GetChildren() do if obj:IsA("ProximityPrompt") then signals[obj]:Fire(i4) end end
+	end
+end
+check(#wisps()==1,"one wisp slain")
+at(i4) heal(i4)
+heartbeat:Fire(20)
+check(#wisps()==3,"timer resumes below a full wave: 1 + 2")
+for _=1,6 do heal(i4) heartbeat:Fire(20) end
+check(#wisps()==3 and #wisps()<=Data.DungeonClasses.WISP_CAP,"paused again at a full wave, under the cap")
 players.PlayerRemoving:Fire(i4)
 check(#wisps()==0 and caption.Text:find("0 / 3",1,true)~=nil,"abandoned run clears wisps and resets")
 
@@ -509,7 +535,7 @@ now+=240
 at(k) heal(k)
 heartbeat:Fire(0.1)
 check(artCore:GetAttribute("Enraged")==true and caption.Text:find("ENRAGED",1,true)~=nil,"enrage after 240 s")
-check(#wisps()==3 and wisps()[1]:GetAttribute("AddHealth")==28,"Floor V waves: three 28 HP wisps")
+check(#wisps()==3 and wisps()[1]:GetAttribute("AddHealth")==12,"Floor V waves: three 12 HP wisps (5 x sqrt(5.5))")
 heartbeat:Fire(1)
 check(artCore:GetAttribute("Telegraph")=="Total Eclipse" and warn:GetAttribute("SafeRadius")==0,"enraged tempo telegraphs the pulse half")
 heartbeat:Fire(1.4)

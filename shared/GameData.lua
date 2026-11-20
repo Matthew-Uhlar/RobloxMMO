@@ -5278,9 +5278,9 @@ DC.defs = {
 		perLevel={damage=0.004,mitigation=0.002,healing=0.02},
 		ability={id="MendingLight",name="Mending Light",cooldown=25,power=0.35,empowered=0.5,
 			text="Heal every living delver for 35% of their max health (50% empowered)."},
-		ultimate={id="SecondDawn",name="Second Dawn",power=1,
-			text="Heal the party to full; the next fall this run does not count against survival."},
-		feat={id="Heal",text="Restore 50 health to allies in one run",need=50},
+		ultimate={id="SecondDawn",name="Second Dawn",power=1,window=20,
+			text="Boss phase: heal the party to full; one fall within 20 s does not count against survival (never stacks)."},
+		feat={id="Heal",text="Restore 50 health (allies or yourself) in one run",need=50},
 		weapon="DawnmenderWand"},
 	Riftblade={id="Riftblade",name="Riftblade",role="Melee",color="E8806A",glyph="⚔",
 		passive="Strikes the core, sentinels and wisps for double damage.",
@@ -5290,7 +5290,7 @@ DC.defs = {
 			text="Sweep the arena: 2 damage (3 empowered) to every umbral wisp and to the exposed core."},
 		ultimate={id="RendingStorm",name="Rending Storm",power=0.1,
 			text="Tear 10% of the boss's max HP from an exposed core and 5 HP from every wisp."},
-		feat={id="Wisps",text="Destroy 3 umbral wisps in one run",need=3},
+		feat={id="Wisps",text="Destroy 3 umbral wisps in one run (floors without wisps: land a sentinel's final blow)",need=3},
 		weapon="Riftcleaver"},
 	Starshot={id="Starshot",name="Starshot",role="Ranged",color="9BD67E",glyph="➶",
 		passive="Quick ranged shots at the core from 32 studs.",
@@ -5321,10 +5321,13 @@ for _, id in ipairs(DC.order) do
 end
 function DC.valid(classId) return type(classId) == "string" and DC.defs[classId] ~= nil end
 
--- Class XP curve (1-50): total XP to reach level L = floor(30 * (L-1)^2.5).
+-- Class XP curve (1-50): total XP to reach level L = floor(8 * (L-1)^2.5).
+-- Tuned so maxing one class takes ~1.75x the clears of Dungeoneering 1-50
+-- (class XP per clear = 0.75 x the floor's Dungeoneering XP; see DC.classXp).
+DC.XP_COEF, DC.XP_EXP = 8, 2.5
 function DC.xpForLevel(level)
 	level = math.clamp(math.floor(tonumber(level) or 1), 1, DC.MAX_LEVEL)
-	return math.floor(30 * (level - 1) ^ 2.5)
+	return math.floor(DC.XP_COEF * (level - 1) ^ DC.XP_EXP)
 end
 DC.MAX_XP = DC.xpForLevel(DC.MAX_LEVEL)
 function DC.levelForXp(xp)
@@ -5429,7 +5432,7 @@ function DC.abilityCheck(kind, s)
 		local last = tonumber(s.ultimateAt)
 		if last and now - last < DC.ULTIMATE_GAP then return false, d.ultimate.name .. " recharging • " .. math.ceil(DC.ULTIMATE_GAP - (now - last)) .. "s." end
 		local id = d.ultimate.id
-		if id == "Bastion" and not core then return false, d.ultimate.name .. " needs the boss phase." end
+		if (id == "Bastion" or id == "SecondDawn") and not core then return false, d.ultimate.name .. " needs the boss phase." end
 		if id == "CometVolley" and not (core and ((tonumber(s.wisps) or 0) > 0 or not s.shielded)) then return false, d.ultimate.name .. " needs wisps or an unshielded core." end
 		if id == "RendingStorm" and not (core and not s.shielded and not s.warded) then return false, d.ultimate.name .. " needs an exposed core." end
 		if id == "EclipseRift" and not tuning then return false, "No prism sequence to complete." end
@@ -5484,8 +5487,10 @@ function DC.bonusScore(feats, balanced)
 	feats = math.max(0, math.floor(tonumber(feats) or 0))
 	return math.min(DC.BONUS_CAP, feats * DC.FEAT_BONUS + (if balanced then 5 else 0))
 end
-function DC.score(floorIndex, seconds, deaths, mistakes, found, total, bonus)
-	local _, parts = Data.dungeonScore(floorIndex, seconds, deaths, mistakes)
+-- master: Master Mode runs are timed against DC.par (par x DC.MASTER_PAR).
+function DC.score(floorIndex, seconds, deaths, mistakes, found, total, bonus, master)
+	local scale = if master == true and (tonumber(floorIndex) or 0) <= DC.MASTER_FLOORS then DC.MASTER_PAR else 1
+	local _, parts = Data.dungeonScore(floorIndex, (tonumber(seconds) or 0) / scale, deaths, mistakes)
 	total = math.max(0, math.floor(tonumber(total) or 0))
 	found = math.clamp(math.floor(tonumber(found) or 0), 0, total)
 	local secrets = if total > 0 then found * 100 / total else 100
@@ -5495,22 +5500,43 @@ function DC.score(floorIndex, seconds, deaths, mistakes, found, total, bonus)
 	return score, {speed=parts.speed,survival=parts.survival,skill=parts.skill,secrets=secrets,bonus=bonus}
 end
 
--- Master Mode (floors I-V): x2 HP and damage, one extra chest roll, x1.25 XP.
+-- Master Mode (floors I-V): x2 HP and damage, par x1.6, one extra chest roll,
+-- x2.2 XP and coins (a Master clear takes ~2x as long, so it must pay >= normal per hour).
 -- Unlocked per floor by an S+ normal-mode clear (best score >= the S+ minimum).
 DC.MASTER_FLOORS = 5
-DC.MASTER_MULT, DC.MASTER_XP, DC.MASTER_ROLLS = 2, 1.25, 1
+DC.MASTER_MULT, DC.MASTER_XP, DC.MASTER_ROLLS, DC.MASTER_PAR = 2, 2.2, 1, 1.6
+-- Par time (seconds) of a floor; Master Mode runs get x1.6.
+function DC.par(floorIndex, master)
+	local f = Data.DungeonFloors[floorIndex] or Data.DungeonFloors[1]
+	return f.par * (if master == true and f.index <= DC.MASTER_FLOORS then DC.MASTER_PAR else 1)
+end
 function DC.masterUnlocked(floorIndex, bestScore)
 	return type(floorIndex) == "number" and floorIndex >= 1 and floorIndex <= DC.MASTER_FLOORS
 		and (tonumber(bestScore) or 0) >= Data.DungeonGradeById["S+"].min
 end
+-- Umbral wisp HP grows with the square root of the floor's HP multiplier (x2 in
+-- Master Mode), so wave clearing keeps pace with party damage on deep floors.
+-- At most DC.WISP_CAP wisps live at once; the wave timer pauses while a full
+-- wave (count) is still alive (expedition.server.lua).
+DC.WISP_CAP = 8
+function DC.wispHp(floorIndex, master)
+	local f = Data.DungeonFloors[floorIndex] or Data.DungeonFloors[1]
+	local wave = f.mechanics.addWaves
+	if not wave then return 0 end
+	local mult = f.hpMult * (if master == true and f.index <= DC.MASTER_FLOORS then DC.MASTER_MULT else 1)
+	return math.ceil(wave.hp * math.sqrt(mult) - 1e-9)
+end
 function DC.floorStats(floorIndex, master)
 	local s = Data.dungeonFloorStats(floorIndex)
 	s.bossDamageMult = 1
-	if master and floorIndex <= DC.MASTER_FLOORS then
+	master = master == true and floorIndex <= DC.MASTER_FLOORS
+	if master then
 		local m = DC.MASTER_MULT
-		s.guardianHp, s.coreHp, s.guardianHit, s.addHp = s.guardianHp * m, s.coreHp * m, s.guardianHit * m, s.addHp * m
+		s.guardianHp, s.coreHp, s.guardianHit = s.guardianHp * m, s.coreHp * m, s.guardianHit * m
 		s.bossDamageMult = m
 	end
+	s.addHp = DC.wispHp(floorIndex, master)
+	s.par = DC.par(floorIndex, master)
 	return s
 end
 
@@ -5531,7 +5557,7 @@ function DC.classChest(chest, classId)
 	end
 	return out
 end
--- Full rewards: Data.dungeonRewards + Master Mode (x1.25 XP, +1 chest roll) +
+-- Full rewards: Data.dungeonRewards + Master Mode (x2.2 XP and coins, +1 chest roll) +
 -- secrets (+1 essence and +5% coins each) + class XP and the class-weighted chest.
 function DC.runRewards(floorIndex, grade, opts)
 	opts = type(opts) == "table" and opts or {}
@@ -5541,6 +5567,7 @@ function DC.runRewards(floorIndex, grade, opts)
 	if master then
 		r.dungeoneeringXp = math.floor(r.dungeoneeringXp * DC.MASTER_XP)
 		r.combatXp = math.floor(r.combatXp * DC.MASTER_XP)
+		r.coins = math.floor(r.coins * DC.MASTER_XP)
 	end
 	r.coins += math.floor(r.coins * 0.05 * found)
 	r.items.ObservatoryEssence += found
@@ -5631,7 +5658,7 @@ item("HollowKeystone",{name="Hollow Keystone",kind="material",rarity="Legendary"
 -- collapse (cycles pulse -> ring -> lances).
 local floors = Data.DungeonFloors
 table.insert(floors, {index=6,numeral="VI",name="Observatory Floor VI",subtitle="Lumen Reliquary",level=40,hpMult=7.5,damageMult=4.5,par=480,
-	mechanics={orderedPrisms=true,shieldPhases={0.5},addWaves={every=16,count=3,hp=6},regen={every=12,fraction=0.04}},
+	mechanics={orderedPrisms=true,shieldPhases={0.5},addWaves={every=16,count=3,hp=5},regen={every=12,fraction=0.04}},
 	boss={name="Lumen Colossus",attack="Converging Lances",kind="lances",radius=8,damage=46,interval=6,telegraph=2.2},
 	rewards={dungeoneeringXp=1600,combatXp=1600,coins=1200,stormglass=5,essence=13},
 	chest={{item="ObservatoryEssence",chance=0.75,min=5,max=10},{item="HollowKeystone",chance=0.02,min=1,max=1},{item="StarFragment",chance=0.06,min=1,max=2},
@@ -5639,7 +5666,7 @@ table.insert(floors, {index=6,numeral="VI",name="Observatory Floor VI",subtitle=
 		{item="StarpiercerLongbow",chance=0.004,min=1,max=1},{item="OrreryStaff",chance=0.004,min=1,max=1},
 		{item="UmbralOrrery",chance=0.006,min=1,max=1},{item="MasterworkTome",chance=0.03,min=1,max=1},{item="TemperingTome",chance=0.25,min=1,max=1}}})
 table.insert(floors, {index=7,numeral="VII",name="Observatory Floor VII",subtitle="Sovereign's Eclipse",level=50,hpMult=10,damageMult=5.6,par=540,
-	mechanics={orderedPrisms=true,shieldPhases={0.75,0.5,0.25},addWaves={every=15,count=4,hp=7},regen={every=10,fraction=0.03},
+	mechanics={orderedPrisms=true,shieldPhases={0.75,0.5,0.25},addWaves={every=15,count=4,hp=5},regen={every=10,fraction=0.03},
 		enrage={after=360,damageMult=2,intervalMult=0.6},overload={below=0.5,intervalMult=0.75}},
 	boss={name="Hollow Sovereign",attack="Eventide Collapse",kind="collapse",inner=10,radius=14,damage=54,interval=5,telegraph=2},
 	rewards={dungeoneeringXp=2400,combatXp=2300,coins=1800,stormglass=6,essence=18},

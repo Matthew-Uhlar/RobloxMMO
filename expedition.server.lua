@@ -4,17 +4,22 @@
 -- prisms -> two sentinels -> floor boss, with per-floor mechanics:
 --   II+  prisms must be tuned in the order shown on each prism (wrong = mistake, reset)
 --   III+ the boss raises a shield at HP thresholds until the prisms are retuned
---   IV+  waves of umbral wisps ward the boss while alive
+--   IV+  waves of umbral wisps ward the boss while alive (wisp HP ~ sqrt of the floor HP
+--        multiplier; the wave timer pauses while a full wave lives; at most DC.WISP_CAP alive)
 --   V    enrage timer: boss damage and tempo rise after Data floor.enrage.after s
 --   VI+  the boss regenerates while wisps live; Converging Lances mark every delver
 --   VII  overload below 50% HP (faster strikes); Eventide Collapse cycles pulse/ring/lances
 -- Every boss telegraphs its attack (warning disc + heart VisualState "Warning").
 -- Dungeon classes (Data.DungeonClasses): one class per delver, chosen at the
--- class pedestals by the pad (or the Dungeon page); duplicates allowed, unique
--- compositions earn a team bonus. Passives shape strikes and damage taken; the
--- heart carries "Class ability" (Q) and "Ultimate" (R) prompts, validated here
+-- class pedestals by the pad or on the Dungeon page (both write the profile
+-- through the IsleBridge "dungeonClass" op; runs read only the profile, or the
+-- DungeonClass attribute when no bridge exists); duplicates allowed, unique
+-- compositions of the delvers credited at the end earn a team bonus. Passives shape strikes and damage taken; the
+-- heart carries "Class ability" (Q) and "Ultimate" (R) prompts (also fired by the
+-- party HUD's Q / R buttons in ui.client.lua for touch screens), validated here
 -- with cooldowns/charges (DC.abilityCheck). Hidden secrets (caches and levers)
--- spawn each run. Master Mode (floors I-V, after an S+) doubles HP and damage.
+-- spawn each run. Master Mode (floors I-V, after an S+) doubles HP and damage; its par is x1.6.
+-- Second Dawn (boss phase only) arms one forgiven fall for 20 s; it never stacks.
 -- Clear score = DC.score: speed + survival + puzzle + secrets (x0.75) + bonus -> grade S+..D.
 -- Credit rules (documented in GameData Dungeons section):
 --   * contributed: damage + 5%-of-floor-HP per tuning >= 10% of the party total;
@@ -26,7 +31,7 @@
 -- {ok, reason}) in server.server.lua; the IsleExpeditionReward BindableEvent is the
 -- fallback. Payload {floor, grade, score, seconds, deaths, mistakes, partySize, damageShare,
 -- class, master, secrets, secretsTotal, bonus, teamMult, feat}.
--- A run that is not cleared ends (no reward) after twice the floor's par time, and
+-- A run that is not cleared ends (no reward) after twice the run's par time (DC.par), and
 -- delvers idle for 90 s (no damage, tuning or movement) or away from the arena are removed.
 -- Player attributes: DungeonClass, DungeonInRun, DungeonParty ("Name|Class|Level;..."),
 -- DungeonAbilityReady (seconds), DungeonUltimates (charges left), DungeonMasterPick.
@@ -117,7 +122,7 @@ caption.Parent = label
 
 -- Run state. members[player] = {last, damage, tunes, mistakes, ironman, down, class, level,
 -- carry, readyAt, ultimatesUsed, ultimateAt, healed, wispKills, feat}
-local members, pylons, charged, classOf, selected, masterPick = {}, {}, {}, {}, {}, {}
+local members, pylons, charged, selected, masterPick = {}, {}, {}, {}, {}
 local lastCredit = setmetatable({}, {__mode = "k"})
 local known = {}
 local guardians, adds, secretParts, lanceMarks = {}, {}, {}, {}
@@ -131,7 +136,7 @@ local function newRun(floorIndex, master)
 		health = stats.coreHp, guardianHealth = {stats.guardianHp, stats.guardianHp}, pulse = 0, telegraph = nil,
 		attacks = 0, shieldIndex = 1, shielded = false, waveTimer = 0, regenTimer = 0, enraged = false, startedAt = 0,
 		deaths = 0, mistakes = 0, totalDamage = 0, totalTunes = 0, partySize = 0,
-		secretsFound = 0, secretsTotal = 0, bastion = 0, bulwark = nil, forgive = 0, team = DC.teamBonus({})}
+		secretsFound = 0, secretsTotal = 0, bastion = 0, bastionBy = nil, bulwark = nil, forgive = nil, team = DC.teamBonus({})}
 end
 newRun(1)
 local function guardsAlive()
@@ -175,6 +180,13 @@ end
 local function earnFeat(record, featId)
 	local def = record and DC.defs[record.class]
 	if def and def.feat.id == featId and not record.feat then record.feat = true end
+end
+-- A fall: Second Dawn forgives one within its window (armed once, never stacked).
+local function countFall()
+	local grace = run.forgive
+	run.forgive = nil
+	if grace and os.clock() <= grace.expires then return end
+	run.deaths += 1
 end
 
 block("Sentinel hall floor", Vector3.new(0, 0, -110), Vector3.new(60, 3, 60), dark, Enum.Material.Slate)
@@ -296,7 +308,11 @@ for index, x in ipairs({-13,13}) do
 		local hit = math.min(run.guardianHealth[index], classHit(member, "guardian"))
 		run.guardianHealth[index] -= hit
 		credit(member, hit)
-		if run.guardianHealth[index] == 0 then guardian.Color = dark;guardian:SetAttribute("VisualState","Defeated") else
+		if run.guardianHealth[index] == 0 then
+			guardian.Color = dark;guardian:SetAttribute("VisualState","Defeated")
+			-- Riftblade feat on floors without wisps: a sentinel's final blow.
+			if not floorDef().mechanics.addWaves then earnFeat(member, "Wisps") end
+		else
 			local humanoid = character:FindFirstChildOfClass("Humanoid")
 			humanoid:TakeDamage(math.floor(run.stats.guardianHit * takenMult(player)))
 		end
@@ -373,16 +389,10 @@ end
 local function finish()
 	local f = floorDef()
 	local seconds = os.clock() - run.startedAt
-	local feats = 0
-	for _, record in members do if record.feat then feats += 1 end end
-	local bonus = DC.bonusScore(feats, run.team.balanced)
-	local score, parts = DC.score(f.index, seconds, run.deaths, run.mistakes, run.secretsFound, run.secretsTotal, bonus)
-	local grade = Data.dungeonGrade(score)
 	local totalPoints = run.totalDamage + run.totalTunes * Rules.tuneWeight * totalHp(run.stats)
-	local reward = Storage:FindFirstChild("IsleExpeditionReward")
-	local summary = (if run.master then "Master " else "") .. f.name .. " • " .. grade .. " • score " .. score .. " (speed " .. math.floor(parts.speed) .. ", survival "
-		.. parts.survival .. ", puzzle " .. parts.skill .. ", secrets " .. run.secretsFound .. "/" .. run.secretsTotal .. ", bonus " .. parts.bonus .. ")"
-	for participant, record in table.clone(members) do
+	-- Credit first: the team bonus and feats count only delvers still in the run and credited.
+	local reasons, classes, feats = {}, {}, 0
+	for participant, record in members do
 		local character = participant.Character
 		local root = character and character:FindFirstChild("HumanoidRootPart")
 		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
@@ -399,6 +409,22 @@ local function finish()
 		elseif not Data.dungeonCooldownReady(lastCredit[participant], os.clock()) then
 			reason = "Chest cooldown: wait " .. math.ceil(Rules.clearCooldown - (os.clock() - lastCredit[participant])) .. "s between credited clears."
 		end
+		reasons[participant] = reason or false
+		if not reason then
+			table.insert(classes, record.class or false)
+			if record.feat then feats += 1 end
+		end
+	end
+	run.team = DC.teamBonus(classes)
+	local bonus = DC.bonusScore(feats, run.team.balanced)
+	local score, parts = DC.score(f.index, seconds, run.deaths, run.mistakes, run.secretsFound, run.secretsTotal, bonus, run.master)
+	local grade = Data.dungeonGrade(score)
+	local reward = Storage:FindFirstChild("IsleExpeditionReward")
+	local summary = (if run.master then "Master " else "") .. f.name .. " • " .. grade .. " • score " .. score .. " (speed " .. math.floor(parts.speed) .. ", survival "
+		.. parts.survival .. ", puzzle " .. parts.skill .. ", secrets " .. run.secretsFound .. "/" .. run.secretsTotal .. ", bonus " .. parts.bonus .. ")"
+	for participant, record in table.clone(members) do
+		local share = if run.totalDamage > 0 then record.damage / run.totalDamage else 0
+		local reason = reasons[participant] or nil
 		participant:SetAttribute("DungeonResult", summary)
 		if reason then
 			notice(participant, reason)
@@ -456,7 +482,8 @@ local function healPlayer(player, amount, healer)
 	local before = humanoid.Health
 	humanoid.Health = math.min(humanoid.MaxHealth, humanoid.Health + amount)
 	local restored = humanoid.Health - before
-	if healer and player ~= healer.player then
+	if healer then
+		-- Self-heals count too, so a solo Mender can earn its feat.
 		healer.record.healed += restored
 		if healer.record.healed >= (DC.defs.Mender.feat.need or 50) then earnFeat(healer.record, "Heal") end
 	end
@@ -486,7 +513,7 @@ end
 prompt(heart, "Eclipse Heart", "Strike core", function(player) strike(player, false) end)
 local rangedPrompt = prompt(heart, "Starshot / Arcanist", "Ranged attack", function(player) strike(player, true) end, 32)
 rangedPrompt.KeyboardKeyCode = Enum.KeyCode.F
-rangedPrompt.UIOffset = Vector2.new(0, 80)
+rangedPrompt.UIOffset = Vector2.new(0, 36)
 local exit = block("Return arch", Vector3.new(0, 4, 29), Vector3.new(5, 5, 3), teal, Enum.Material.Glass)
 prompt(exit, "Return arch", "Leave expedition", leave)
 
@@ -504,7 +531,12 @@ local function hitWisp(add, member, amount)
 end
 local function spawnWave()
 	local wave = floorDef().mechanics.addWaves
-	for n = 1, wave.count do
+	-- Drop slain wisps from the list; never exceed DC.WISP_CAP live wisps.
+	for i = #adds, 1, -1 do
+		if adds[i].hp <= 0 then table.remove(adds, i) end
+	end
+	local room = math.max(0, DC.WISP_CAP - liveWisps())
+	for n = 1, math.min(wave.count, room) do
 		local a = (n / wave.count + #adds * 0.17) * math.pi * 2
 		local part = block("Umbral wisp", Vector3.new(math.cos(a) * 16, 4, math.sin(a) * 16), Vector3.new(3, 3, 3), violet, Enum.Material.Neon)
 		part.Shape = Enum.PartType.Ball
@@ -582,9 +614,32 @@ local function resolveAttack()
 	local targets = run.targets
 	local lanceRadius = boss.lanceRadius or 8
 	run.attacks += 1
+	local function struck(player)
+		local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+		if not root then return false end
+		local distance = (root.Position - center).Magnitude
+		if kind == "ring" then
+			return distance > boss.inner and distance <= boss.radius
+		elseif kind == "lances" then
+			for _, at in targets or {} do
+				local flat = Vector3.new(root.Position.X - at.X, 0, root.Position.Z - at.Z)
+				if flat.Magnitude <= lanceRadius then return true end
+			end
+			return false
+		end
+		return distance <= boss.radius
+	end
 	if run.bastion > 0 then
-		-- Bastion of the Isles: the whole party ignores this strike.
+		-- Bastion of the Isles: the whole party ignores this strike. The Aegis earns
+		-- its feat only when the strike would have landed on someone.
 		run.bastion -= 1
+		local caster = run.bastionBy
+		if caster and members[caster.player] == caster.record then
+			for player in members do
+				local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+				if hum and hum.Health > 0 and struck(player) then earnFeat(caster.record, "Absorb") break end
+			end
+		end
 		hideTelegraph()
 		return
 	end
@@ -607,20 +662,7 @@ local function resolveAttack()
 		local root = c and c:FindFirstChild("HumanoidRootPart")
 		local hum = c and c:FindFirstChildOfClass("Humanoid")
 		if hum and root then
-			local distance = (root.Position - center).Magnitude
-			local hit
-			if kind == "ring" then
-				hit = distance > boss.inner and distance <= boss.radius
-			elseif kind == "lances" then
-				hit = false
-				for _, at in targets or {} do
-					local flat = Vector3.new(root.Position.X - at.X, 0, root.Position.Z - at.Z)
-					if flat.Magnitude <= lanceRadius then hit = true end
-				end
-			else
-				hit = distance <= boss.radius
-			end
-			if hit then
+			if struck(player) then
 				local damage = math.floor(base * takenMult(player))
 				local defense = math.clamp(player:GetAttribute("SkillDefense") or 0, 0, 5)
 				hum:TakeDamage(math.max(1, damage - defense))
@@ -656,7 +698,7 @@ local function useAbility(player, kind)
 		run.bulwark = {player = player, strikes = power}
 	elseif id == "Bastion" then
 		run.bastion = def.ultimate.power
-		earnFeat(record, "Absorb")
+		run.bastionBy = helper
 	elseif id == "MendingLight" then
 		for ally in members do
 			local hum = ally.Character and ally.Character:FindFirstChildOfClass("Humanoid")
@@ -667,7 +709,8 @@ local function useAbility(player, kind)
 			local hum = ally.Character and ally.Character:FindFirstChildOfClass("Humanoid")
 			if hum then healPlayer(ally, hum.MaxHealth, helper) end
 		end
-		run.forgive += 1
+		-- One forgiven fall within the window; recasting refreshes it, never stacks.
+		run.forgive = {expires = os.clock() + (def.ultimate.window or 20)}
 	elseif id == "Cleave" then
 		for _, add in table.clone(adds) do hitWisp(add, record, power) end
 		if not run.shielded and not warded() and not damageCore(record, power) then return true end
@@ -703,10 +746,10 @@ local function useAbility(player, kind)
 end
 local abilityPrompt = prompt(heart, "Class ability", "Class ability", function(player) useAbility(player, "ability") end, 40)
 abilityPrompt.KeyboardKeyCode = Enum.KeyCode.Q
-abilityPrompt.UIOffset = Vector2.new(0, 160)
+abilityPrompt.UIOffset = Vector2.new(0, 72)
 local ultimatePrompt = prompt(heart, "Class ultimate", "Ultimate", function(player) useAbility(player, "ultimate") end, 40)
 ultimatePrompt.KeyboardKeyCode = Enum.KeyCode.R
-ultimatePrompt.UIOffset = Vector2.new(0, 240)
+ultimatePrompt.UIOffset = Vector2.new(0, 108)
 
 -- Secrets: hidden caches and levers placed per run (DC.secretsFor).
 local function placeSecrets()
@@ -750,7 +793,7 @@ local function profileInfo(player)
 	if bridge then
 		local ok, result = pcall(bridge.Invoke, bridge, "dungeon", player)
 		if ok and type(result) == "table" then
-			return {level = tonumber(result.level) or 1, ironman = result.ironman == true,
+			return {level = tonumber(result.level) or 1, ironman = result.ironman == true, profile = true,
 				class = if DC.valid(result.class) then result.class else nil,
 				classXp = if type(result.classXp) == "table" then result.classXp else {},
 				best = if type(result.best) == "table" then result.best else {}, master = result.master == true}
@@ -758,12 +801,12 @@ local function profileInfo(player)
 	end
 	return {level = 1, ironman = false, classXp = {}, best = {}, master = false}
 end
+-- The profile's class (pedestal and Dungeon page both write it); the attribute
+-- published from the profile is the fallback when no bridge answers.
 local function classFor(player, info)
-	local chosen = classOf[player]
-	if DC.valid(chosen) then return chosen end
+	if info.profile then return info.class end
 	local attr = player:GetAttribute("DungeonClass")
-	if DC.valid(attr) then return attr end
-	return info.class
+	return if DC.valid(attr) then attr else nil
 end
 local function masterOpen(info, floorIndex)
 	return DC.masterUnlocked(floorIndex, tonumber(info.best[floorIndex]) or 0)
@@ -811,7 +854,7 @@ local function launch()
 		notice(entry.player, (if master then "Master " else "") .. Data.DungeonFloors[floorIndex].name .. " begins • party of " .. #joined .. ".")
 		entry.player.Character:PivotTo(CFrame.new(origin + Vector3.new(0, 5, 24)))
 	end
-	run.team = DC.teamBonus(classes)
+	run.team = DC.teamBonus(classes) -- launch preview; finish() recomputes from credited delvers
 	heart:SetAttribute("TeamUnique", run.team.unique)
 	heart:SetAttribute("TeamBalanced", run.team.balanced)
 	placeSecrets()
@@ -828,7 +871,7 @@ RunService.Heartbeat:Connect(function(dt)
 	if not next(members) then return end
 	local now = os.clock()
 	-- M4: a run that is not cleared in twice the floor's par collapses with no reward.
-	if run.active and now - run.startedAt >= RUN_CAP_PARS * floorDef().par then
+	if run.active and now - run.startedAt >= RUN_CAP_PARS * run.stats.par then
 		for participant in table.clone(members) do
 			notice(participant, "The Observatory collapsed: " .. floorDef().name .. " was not cleared in time. No chest this run.")
 			leave(participant, participant.Character)
@@ -870,7 +913,7 @@ RunService.Heartbeat:Connect(function(dt)
 		local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
 		if hum and hum.Health <= 0 and not record.down then
 			record.down = true
-			if run.forgive > 0 then run.forgive -= 1 else run.deaths += 1 end
+			countFall()
 		elseif hum and hum.Health > 0 then
 			record.down = false
 		end
@@ -890,7 +933,8 @@ RunService.Heartbeat:Connect(function(dt)
 		display()
 	end
 	local wave = f.mechanics.addWaves
-	if wave and not run.shielded then
+	-- The wave timer pauses while a full wave still lives (and spawnWave caps live wisps).
+	if wave and not run.shielded and liveWisps() < wave.count then
 		run.waveTimer += dt
 		if run.waveTimer >= wave.every then
 			run.waveTimer = 0
@@ -936,7 +980,7 @@ local function watch(player)
 			-- Fallen delvers stay in the party and respawn at the Observatory entry.
 			if not record.down then
 				record.down = true
-				if run.forgive > 0 then run.forgive -= 1 else run.deaths += 1 end
+				countFall()
 			end
 			return
 		end
@@ -955,7 +999,7 @@ Players.PlayerAdded:Connect(watch)
 for _, player in Players:GetPlayers() do watch(player) end
 Players.PlayerRemoving:Connect(function(player)
 	leave(player)
-	classOf[player], selected[player], masterPick[player] = nil, nil, nil
+	selected[player], masterPick[player] = nil, nil
 	local index = table.find(known, player)
 	if index then table.remove(known, index) end
 end)
@@ -981,12 +1025,19 @@ local function openLobby(player)
 	display()
 end
 -- Class choice: pedestal by the pad, persisted through the IsleBridge "dungeonClass" op.
+-- The profile is the single source of truth: Classes.choose publishes DungeonClass.
 local function chooseClass(player, class)
 	if members[player] then notice(player, "Your class is locked until this run ends.") return end
-	classOf[player] = class
-	player:SetAttribute("DungeonClass", class)
 	local bridge = Storage:FindFirstChild("IsleBridge")
-	if bridge then pcall(bridge.Invoke, bridge, "dungeonClass", player, {class = class}) end
+	if bridge then
+		local ok, result = pcall(bridge.Invoke, bridge, "dungeonClass", player, {class = class})
+		if not (ok and type(result) == "table" and result.ok == true) then
+			notice(player, "Your journal could not record the class. Try again in a moment.")
+			return
+		end
+	else
+		player:SetAttribute("DungeonClass", class)
+	end
 	local def = DC.defs[class]
 	notice(player, def.name .. " (" .. def.role .. ") chosen • " .. def.ability.name .. " (Q), " .. def.ultimate.name .. " (R).")
 end
@@ -1018,7 +1069,7 @@ local function attach(part)
 	end
 	local lever = block("Master lever", Vector3.zero, Vector3.new(1, 4, 1), violet, Enum.Material.Slate)
 	lever.Position = part.Position + Vector3.new(14, 0, 0)
-	prompt(lever, "Master Mode • floors I-V after an S+ • ×2 HP and damage, extra chest roll", "Toggle Master Mode", function(player)
+	prompt(lever, "Master Mode • floors I-V after an S+ • ×2 HP and damage, par ×1.6, ×2.2 XP and coins, extra chest roll", "Toggle Master Mode", function(player)
 		if members[player] then return end
 		local current = masterPick[player]
 		if current == nil then current = player:GetAttribute("DungeonMasterOn") == true end

@@ -63,9 +63,20 @@ do
 
 	-- Class XP curve.
 	eq(DC.xpForLevel(1),0,"level 1 needs 0 XP")
-	eq(DC.xpForLevel(2),30,"level 2 needs 30 XP")
-	eq(DC.xpForLevel(10),math.floor(30*9^2.5),"level 10 threshold")
-	eq(DC.xpForLevel(50),math.floor(30*49^2.5),"level 50 threshold")
+	eq(DC.xpForLevel(2),8,"level 2 needs 8 XP")
+	eq(DC.xpForLevel(10),math.floor(8*9^2.5),"level 10 threshold")
+	eq(DC.xpForLevel(50),math.floor(8*49^2.5),"level 50 threshold")
+	-- Pace (review L9): maxing a class takes 1.5-2x the clears of Dungeoneering 1-50.
+	-- Class XP per clear = 0.75 x the floor's Dungeoneering XP (same grade, no team bonus).
+	local dung50=Progression.xpForLevel(50)
+	local paceRatio=DC.MAX_XP/(0.75*dung50)
+	check(paceRatio>=1.5 and paceRatio<=2,"class 50 takes 1.5-2x the Dungeoneering-50 grind ("..paceRatio..")")
+	for _,floor in ipairs({1,4,7}) do
+		local perClear=Data.dungeonRewards(floor,"A").dungeoneeringXp
+		local classPer=DC.classXp(floor,"A",false,1)
+		local r=(DC.MAX_XP/classPer)/(dung50/perClear)
+		check(r>=1.5 and r<=2.05,"floor "..floor.." clears-to-50 ratio "..r)
+	end
 	eq(DC.MAX_XP,DC.xpForLevel(50),"max class XP")
 	eq(DC.xpForLevel(99),DC.xpForLevel(50),"levels clamp at 50")
 	for level=2,DC.MAX_LEVEL do
@@ -78,8 +89,8 @@ do
 	eq(DC.levelForXp(0/0),1,"NaN XP is level 1")
 	eq(DC.levelForXp("x"),1,"non-number XP is level 1")
 	eq(DC.levelForXp(1e12),50,"huge XP caps at 50")
-	local pr=DC.progress(45)
-	check(pr.level==2 and pr.floor==30 and pr.ceiling==DC.xpForLevel(3) and pr.fraction>0 and pr.fraction<1 and not pr.maxed,"progress bar mid-level")
+	local pr=DC.progress(20)
+	check(pr.level==2 and pr.floor==8 and pr.ceiling==DC.xpForLevel(3) and pr.fraction>0 and pr.fraction<1 and not pr.maxed,"progress bar mid-level")
 	local maxed=DC.progress(DC.MAX_XP)
 	check(maxed.maxed and maxed.fraction==1 and maxed.level==50,"progress bar maxed")
 	eq(DC.progress(-3).xp,0,"progress clamps negative XP")
@@ -161,7 +172,11 @@ do
 	check(DC.abilityCheck("ultimate",st({ultimatesUsed=1,level=30,ultimateAt=50})),"second charge at level 30 after the gap")
 	ok,why=DC.abilityCheck("ultimate",st({ultimatesUsed=1,level=30,ultimateAt=80}))
 	check(not ok and has(why,"recharging • 25s"),"ultimates are 45 s apart")
-	check(DC.abilityCheck("ultimate",st({classId="Mender",stage="prisms"})),"Second Dawn any time")
+	ok,why=DC.abilityCheck("ultimate",st({classId="Mender",stage="prisms"}))
+	check(not ok and has(why,"boss phase"),"Second Dawn cannot be pre-banked before the boss (prisms)")
+	check(not DC.abilityCheck("ultimate",st({classId="Mender",stage="guardians"})),"Second Dawn refused in the sentinel hall")
+	check(DC.abilityCheck("ultimate",st({classId="Mender"})),"Second Dawn in the boss phase")
+	eq(DC.defs.Mender.ultimate.window,20,"Second Dawn forgives within 20 s")
 	check(DC.abilityCheck("ultimate",st({classId="Riftblade"})),"Rending Storm on an exposed core")
 	check(not DC.abilityCheck("ultimate",st({classId="Riftblade",warded=true,wisps=1})),"Rending Storm refused while warded")
 	check(DC.abilityCheck("ultimate",st({classId="Starshot",wisps=3,warded=true,shielded=true})),"Comet Volley with wisps")
@@ -231,17 +246,46 @@ do
 	check(not DC.masterUnlocked(2,nil),"no best score, no Master Mode")
 	for floor=1,5 do
 		local n,m=DC.floorStats(floor,false),DC.floorStats(floor,true)
-		check(m.coreHp==n.coreHp*2 and m.guardianHp==n.guardianHp*2 and m.guardianHit==n.guardianHit*2 and m.addHp==n.addHp*2,"floor "..floor.." Master Mode doubles HP and damage")
+		check(m.coreHp==n.coreHp*2 and m.guardianHp==n.guardianHp*2 and m.guardianHit==n.guardianHit*2,"floor "..floor.." Master Mode doubles HP and damage")
+		eq(m.addHp,DC.wispHp(floor,true),"floor "..floor.." Master wisps scale with sqrt(HP x2)")
+		check(m.addHp<=math.ceil(n.addHp*math.sqrt(2)+1e-9) and (n.addHp==0 or m.addHp>n.addHp),"floor "..floor.." Master wisps x~1.41")
+		eq(m.par,DC.par(floor,false)*1.6,"floor "..floor.." Master par x1.6")
+		eq(n.par,Data.DungeonFloors[floor].par,"floor "..floor.." normal par")
 		check(m.bossDamageMult==2 and n.bossDamageMult==1,"floor "..floor.." boss damage multiplier")
 	end
 	eq(DC.floorStats(6,true).bossDamageMult,1,"Floor VI ignores Master Mode")
+	eq(DC.floorStats(6,true).par,Data.DungeonFloors[6].par,"Floor VI par ignores Master Mode")
+	-- Wisp HP (review H1): proportional to sqrt(hpMult), never the full multiplier.
+	for floor=1,#Data.DungeonFloors do
+		local f=Data.DungeonFloors[floor]
+		local wave=f.mechanics.addWaves
+		if wave then
+			eq(DC.wispHp(floor,false),math.ceil(wave.hp*math.sqrt(f.hpMult)-1e-9),"floor "..floor.." wisp HP ~ sqrt(HP mult)")
+			eq(DC.floorStats(floor,false).addHp,DC.wispHp(floor,false),"floor "..floor.." encounter wisp HP")
+			check(DC.wispHp(floor,false)<Data.dungeonFloorStats(floor).addHp,"floor "..floor.." wisps lighter than the linear scaling")
+			-- Wave pressure: HP spawned per second stays well below 5 unclassed delvers (6.25 hits/s).
+			check(wave.count*DC.wispHp(floor,DC.MASTER_FLOORS>=floor)/wave.every<6.25*0.7,"floor "..floor.." wave HP/s leaves room for the boss")
+		else
+			eq(DC.wispHp(floor,false),0,"floor "..floor.." has no wisps")
+		end
+	end
+	check(DC.WISP_CAP>=2*4-1 and DC.WISP_CAP<=10,"wisp cap holds a wave plus a partial one")
+	-- Master par (review M5): a Master run at 1.6x the normal time grades like the normal run.
+	for floor=1,5 do
+		local par=Data.DungeonFloors[floor].par
+		for _,t in ipairs({par*0.8,par,par*1.3,par*1.7}) do
+			eq(DC.score(floor,t*1.6,0,0,2,2,0,true),DC.score(floor,t,0,0,2,2,0,false),"floor "..floor.." Master score at x1.6 time ("..t..")")
+		end
+		eq(DC.score(floor,par*1.6,0,0,DC.secretCount(floor),DC.secretCount(floor),0,true),300,"floor "..floor.." Master clear at its par can reach S+")
+	end
+	eq(DC.score(6,600,0,0,0,0,0,true),DC.score(6,600,0,0,0,0,0,false),"Master par ignored past Floor V")
 
 	-- Class XP and rewards.
 	eq(DC.classXp(1,"B",false,1),45,"Floor I grade B class XP")
 	eq(DC.classXp(1,"S+",false,1.24),math.floor(60*0.75*1.6*1.24),"team bonus scales class XP")
 	eq(DC.classXp(1,"S+",false,9),DC.classXp(1,"S+",false,1.24),"team multiplier clamped")
 	eq(DC.classXp(1,"B",false,0.2),45,"team multiplier floor")
-	eq(DC.classXp(3,"A",true,1),math.floor(320*0.75*1.15*1.25),"Master Mode class XP x1.25")
+	eq(DC.classXp(3,"A",true,1),math.floor(320*0.75*1.15*DC.MASTER_XP),"Master Mode class XP x"..DC.MASTER_XP)
 	eq(DC.classXp(7,"S+",false,1),math.floor(2400*0.75*1.6),"Floor VII class XP")
 	for floor=2,#Data.DungeonFloors do check(DC.classXp(floor,"B")>DC.classXp(floor-1,"B"),"class XP rises with floor "..floor) end
 	local g={"D","C","B","A","S","S+"}
@@ -253,7 +297,8 @@ do
 	check(rw.rolls==1 and rw.master==false and rw.secrets==3,"normal run rolls the chest once")
 	eq(rw.classXp,DC.classXp(3,"A",false,1.12),"run rewards include class XP")
 	local mrw=DC.runRewards(3,"A",{master=true})
-	check(mrw.rolls==2 and mrw.master and mrw.dungeoneeringXp==math.floor(plain.dungeoneeringXp*1.25) and mrw.combatXp==math.floor(plain.combatXp*1.25),"Master Mode: extra roll and x1.25 XP")
+	check(mrw.rolls==2 and mrw.master and mrw.dungeoneeringXp==math.floor(plain.dungeoneeringXp*DC.MASTER_XP) and mrw.combatXp==math.floor(plain.combatXp*DC.MASTER_XP),"Master Mode: extra roll and x"..DC.MASTER_XP.." XP")
+	eq(mrw.coins,math.floor(plain.coins*DC.MASTER_XP),"Master Mode coins x"..DC.MASTER_XP)
 	eq(mrw.classXp,0,"unclassed clear earns no class XP")
 	eq(DC.runRewards(6,"A",{master=true}).rolls,1,"no Master Mode on Floor VI")
 	eq(DC.runRewards(1,"B",{secrets=99}).secrets,2,"secret count clamps")
@@ -293,7 +338,8 @@ do
 	check(DC.attackKind("eclipse",0)=="pulse" and DC.attackKind("eclipse",1)=="ring","eclipse alternates")
 	eq(DC.attackKind("lances",4),"lances","lances every strike")
 	local s6,s7=Data.dungeonFloorStats(6),Data.dungeonFloorStats(7)
-	check(s6.coreHp==90 and s7.coreHp==120 and s7.addHp==70,"Floor VI-VII encounter numbers")
+	check(s6.coreHp==90 and s7.coreHp==120,"Floor VI-VII encounter numbers")
+	check(DC.floorStats(6).addHp==14 and DC.floorStats(7).addHp==16,"Floor VI-VII wisps: 14 and 16 HP (5 x sqrt(HP mult))")
 	-- Reforge stone.
 	local G=Data.Gear
 	local ev=G.Reforges.Eventide
@@ -352,7 +398,14 @@ do
 	local bridge={Invoke=function(_,op,p,payload)
 		local i=infos[p] or {}
 		if op=="dungeon" then return {level=i.level or 1,ironman=false,class=i.class,classXp=i.classXp or {},best=i.best or {},master=i.master==true} end
-		if op=="dungeonClass" then table.insert(classCalls,{p,payload.class}) return {ok=true} end
+		if op=="dungeonClass" then
+			-- Classes.choose: the profile stores the class and publishes the attribute.
+			table.insert(classCalls,{p,payload.class})
+			i.class=payload.class
+			infos[p]=i
+			p:SetAttribute("DungeonClass",payload.class)
+			return {ok=true}
+		end
 		return nil
 	end}
 	local grant={Invoke=function(_,p,payload) grants[p]=(grants[p] or 0)+1 payloads[p]=payload return {ok=true} end}
@@ -594,7 +647,7 @@ do
 	eq(payloads[aegis].deaths,0,"Second Dawn forgave the fall")
 	check(payloads[aegis].feat and payloads[star].feat and payloads[arc].feat,"Absorb, Disrupt and Attune feats earned")
 	check(payloads[mender].feat,"Mender healed 50+ and earned the feat")
-	eq(payloads[rift].feat,false,"Riftblade slew no wisps")
+	eq(payloads[rift].feat,false,"Riftblade slew no wisps and landed no sentinel's final blow")
 	eq(payloads[aegis].bonus,DC.bonusScore(4,true),"bonus = 4 feats + balanced team")
 	local expected=DC.score(1,payloads[aegis].seconds,0,0,2,2,DC.bonusScore(4,true))
 	check(math.abs(payloads[aegis].score-expected)<=1,"score uses the full formula")
@@ -737,6 +790,207 @@ do
 	eq(warn:GetAttribute("SafeRadius"),10,"collapse continues with the ring")
 	use(sovereign,"Return arch","Leave expedition")
 	check(has(caption.Text,"0 / 3") and #secrets()==0,"leaving resets and clears the secrets")
+	now+=200
+
+	-- Review M4: the profile is the only class source; a pedestal choice never
+	-- overrides a later Dungeon-page choice, and a stale attribute is ignored.
+	local chooser=player({level=1})
+	use(chooser,"Starshot oath","Choose class")
+	eq(infos[chooser].class,"Starshot","pedestal writes the profile through the bridge")
+	infos[chooser].class="Arcanist" -- Dungeon page: dungeonClass verb -> Classes.choose -> profile + attribute
+	chooser:SetAttribute("DungeonClass","Arcanist")
+	launch({chooser})
+	eq(DC.parseParty(chooser:GetAttribute("DungeonParty"))[1].class,"Arcanist","the Dungeon-page choice wins over an earlier pedestal choice")
+	use(chooser,"Return arch","Leave expedition")
+	infos[chooser].class=nil -- profile cleared; the attribute still says Arcanist
+	launch({chooser})
+	eq(DC.parseParty(chooser:GetAttribute("DungeonParty"))[1].class,nil,"runs read the profile, never a stale attribute")
+	use(chooser,"Return arch","Leave expedition")
+
+	-- Review H2: Second Dawn cannot be pre-banked, expires after 20 s and never stacks.
+	local dawn=player({level=1,class="Mender",classXp={Mender=DC.xpForLevel(30)}})
+	local mate=player({level=1})
+	launch({dawn,mate})
+	ability(dawn,"ultimate")
+	check(has(noticeOf(dawn),"boss phase"),"Second Dawn refused during the prisms (no pre-banking)")
+	tuneAll(dawn)
+	ability(dawn,"ultimate")
+	check(has(noticeOf(dawn),"boss phase"),"Second Dawn refused in the sentinel hall")
+	guardiansDown({dawn,mate})
+	local function fall(p) hums[p].Health=0 heartbeat:Fire(0) heal(p) heartbeat:Fire(0) end
+	ability(dawn,"ultimate")
+	check(has(noticeOf(dawn),"Second Dawn"),"Second Dawn cast in the boss phase")
+	now+=21
+	fall(mate) -- 21 s later: the grace has expired, the fall counts
+	now+=25
+	ability(dawn,"ultimate") -- second charge (level 30): refreshes, does not add a second forgive
+	check(has(noticeOf(dawn),"Second Dawn"),"second Second Dawn cast")
+	fall(mate) -- forgiven
+	fall(mate) -- counts: forgives never stack
+	for _=1,20 do
+		if not has(caption.Text,"ECLIPSE HEART") then break end
+		for _,p in {dawn,mate} do if has(caption.Text,"ECLIPSE HEART") then strike(p,"Eclipse Heart","Strike core") end end
+	end
+	check(payloads[dawn]~=nil,"Second Dawn run cleared")
+	eq(payloads[dawn].deaths,2,"one expired and one unstacked fall count; only one is forgiven")
+	now+=100
+
+	-- Review M3: the team bonus counts only delvers still in the run and credited.
+	local ta,tr,ts,ti=player({level=1,class="Aegis"}),player({level=1,class="Riftblade"}),player({level=1,class="Starshot"}),player({level=1,class="Arcanist"})
+	launch({ta,tr,ts,ti})
+	eq(core:GetAttribute("TeamUnique"),4,"four unique classes at launch")
+	tuneAll(ta)
+	guardiansDown({ta,tr,ts})
+	use(ts,"Return arch","Leave expedition") -- leaves before the boss falls
+	at(ti,r.Vector3.new(0,0,8)) -- stays, alive, but never contributes
+	for _=1,20 do
+		if not has(caption.Text,"ECLIPSE HEART") then break end
+		for _,p in {ta,tr} do if has(caption.Text,"ECLIPSE HEART") then strike(p,"Eclipse Heart","Strike core") at(ti,r.Vector3.new(0,0,8)) heal(ti) end end
+	end
+	check(payloads[ta] and payloads[tr] and payloads[ti]==nil and payloads[ts]==nil,"only the two contributors are credited")
+	check(math.abs(payloads[ta].teamMult-DC.teamBonus({"Aegis","Riftblade"}).xpMult)<1e-9,"team multiplier from the credited pair (x1.06), not the launch four")
+	local pairFeats=(if payloads[ta].feat then 1 else 0)+(if payloads[tr].feat then 1 else 0)
+	eq(payloads[ta].bonus,DC.bonusScore(pairFeats,false),"no balanced-team bonus once the party shrank")
+	now+=100
+
+	-- Review L8: feats. A solo Mender earns its heal feat from self-heals.
+	local soloMender=player({level=1,class="Mender"})
+	launch({soloMender})
+	tuneAll(soloMender)
+	guardiansDown({soloMender})
+	hums[soloMender].Health=40
+	ability(soloMender,"ability") -- Mending Light on itself: +35
+	local corePrompt=promptFor("Eclipse Heart","Strike core")
+	for _=1,20 do
+		if not has(caption.Text,"ECLIPSE HEART") then break end
+		hums[soloMender].Health=50
+		fire(soloMender,corePrompt)
+	end
+	check(payloads[soloMender] and payloads[soloMender].feat==true,"solo Mender earns the heal feat from self-heals")
+	-- A Riftblade on a floor without wisps earns its feat with a sentinel's final blow.
+	local soloRift=player({level=1,class="Riftblade"})
+	launch({soloRift})
+	tuneAll(soloRift)
+	guardiansDown({soloRift})
+	for _=1,20 do if not has(caption.Text,"ECLIPSE HEART") then break end strike(soloRift,"Eclipse Heart","Strike core") end
+	check(payloads[soloRift] and payloads[soloRift].feat==true,"Riftblade feat is reachable on Floor I")
+	-- Bastion earns Absorb only when a strike it blocked would have landed.
+	local idleWall=player({level=1,class="Aegis"})
+	launch({idleWall})
+	tuneAll(idleWall)
+	guardiansDown({idleWall})
+	ability(idleWall,"ultimate")
+	at(idleWall,r.Vector3.new(25,0,0)) heal(idleWall)
+	heartbeat:Fire(5) heartbeat:Fire(5) -- both strikes blocked, nobody was in the pulse
+	for _=1,20 do if not has(caption.Text,"ECLIPSE HEART") then break end strike(idleWall,"Eclipse Heart","Strike core") end
+	check(payloads[idleWall] and payloads[idleWall].feat==false,"Bastion on an empty pulse earns no feat")
+	local busyWall=player({level=1,class="Aegis"})
+	launch({busyWall})
+	tuneAll(busyWall)
+	guardiansDown({busyWall})
+	ability(busyWall,"ultimate")
+	at(busyWall) heal(busyWall)
+	heartbeat:Fire(5)
+	eq(hums[busyWall].Health,100,"Bastion blocks the pulse")
+	for _=1,20 do if not has(caption.Text,"ECLIPSE HEART") then break end strike(busyWall,"Eclipse Heart","Strike core") end
+	check(payloads[busyWall] and payloads[busyWall].feat==true,"Bastion that absorbs a strike earns the feat")
+	now+=100
+
+	-- Review H1: clearability simulation. A five-delver party (unclassed, or one
+	-- of each class at level 1) strikes on the 0.8 s melee rhythm (0.85 s ticks):
+	-- tune prisms in order, fell the sentinels, clear wisps first, then the core.
+	-- Every floor I-VII and Master I-V must be cleared inside the run cap, and
+	-- live wisps must never exceed DC.WISP_CAP.
+	local RUN_CAP_PARS_TEST=2 -- expedition.server.lua RUN_CAP_PARS
+	local arenaModel=world:FindFirstChild("The Hollow Observatory")
+	local sentinelPrompts={promptFor("Sentinel 1","Strike guardian"),promptFor("Sentinel 2","Strike guardian")}
+	local function liveWisps()
+		local list={}
+		for _,o in arenaModel:GetChildren() do if o.Name=="Umbral wisp" then table.insert(list,o) end end
+		return list
+	end
+	local function promptOf(part) for _,o in part:GetChildren() do if o:IsA("ProximityPrompt") then return o end end return nil end
+	local function simulate(classList,floorIndex,master)
+		local party={}
+		for _,cls in ipairs(classList) do
+			table.insert(party,player({level=50,class=if cls then cls else nil,best={295,295,295,295,295}}))
+		end
+		party[1]:SetAttribute("DungeonMasterOn",master)
+		use(party[1],"Observatory Floor "..Data.DungeonFloors[floorIndex].numeral,"Select floor")
+		launch(party)
+		check(party[1]:GetAttribute("DungeonInRun")==true and core:GetAttribute("MasterMode")==master,"sim launched floor "..floorIndex..(if master then " Master" else ""))
+		local dt,ticks,maxWisps=0.85,0,0
+		local limit=math.ceil(2*DC.par(floorIndex,master)/dt)+5
+		while party[1]:GetAttribute("DungeonInRun")==true and ticks<limit do
+			ticks+=1
+			now+=dt
+			for _,p in party do heal(p) end
+			for _,p in party do
+				if p:GetAttribute("DungeonInRun")~=true then break end
+				local text=caption.Text
+				if has(text,"Tune the prisms") or has(text,"Retune") then
+					local tuned=0
+					for _,pr in pylons do if pr.Parent:GetAttribute("VisualState")=="Tuned" then tuned+=1 end end
+					for _,pr in pylons do
+						local order=pr.Parent:GetAttribute("TuneOrder")
+						if pr.Parent:GetAttribute("VisualState")~="Tuned" and (order==0 or order==tuned+1) then
+							roots[p].Position=pr.Parent.Position
+							signals[pr]:Fire(p)
+							break
+						end
+					end
+				elseif has(text,"SENTINEL HALL") then
+					for _,sp in sentinelPrompts do
+						if sp.Parent:GetAttribute("VisualState")~="Defeated" then roots[p].Position=sp.Parent.Position signals[sp]:Fire(p) break end
+					end
+				else
+					local list=liveWisps()
+					if #list>0 then
+						roots[p].Position=list[1].Position
+						signals[promptOf(list[1])]:Fire(p)
+					else
+						roots[p].Position=core.Position
+						signals[corePrompt]:Fire(p)
+					end
+				end
+			end
+			if party[1]:GetAttribute("DungeonInRun")==true then heartbeat:Fire(dt) end
+			maxWisps=math.max(maxWisps,#liveWisps())
+		end
+		local pay=payloads[party[1]]
+		local label=(if classList[1] then "classed" else "unclassed").." floor "..floorIndex..(if master then " Master" else "")
+		check(pay~=nil and pay.floor==floorIndex and pay.master==master,label.." cleared and credited ("..ticks.." ticks)")
+		check(pay and pay.seconds<RUN_CAP_PARS_TEST*DC.par(floorIndex,master),label.." inside the run cap ("..(pay and pay.seconds or -1).."s)")
+		check(maxWisps<=DC.WISP_CAP,label.." live wisps "..maxWisps.." <= cap")
+		for _,p in party do if p:GetAttribute("DungeonInRun")==true then use(p,"Return arch","Leave expedition") end end
+		now+=100
+		return pay and pay.seconds or math.huge
+	end
+	local unclassed={false,false,false,false,false}
+	local timed={}
+	for floor=1,#Data.DungeonFloors do
+		timed[floor]={normal=simulate(unclassed,floor,false)}
+		simulate(DC.order,floor,false)
+		if floor<=DC.MASTER_FLOORS then
+			timed[floor].master=simulate(unclassed,floor,true)
+			simulate(DC.order,floor,true)
+		end
+	end
+	-- Review M5: at equal performance (same party, flawless, every secret) Master
+	-- Mode pays at least as much per hour as the normal floor.
+	for floor=1,DC.MASTER_FLOORS do
+		local total=DC.secretCount(floor)
+		local function perHour(master)
+			local t=timed[floor][if master then "master" else "normal"]
+			local grade=Data.dungeonGrade(DC.score(floor,t,0,0,total,total,0,master))
+			local rw=DC.runRewards(floor,grade,{master=master,secrets=total,class="Aegis"})
+			return rw.dungeoneeringXp*3600/t,rw.coins*3600/t,rw.classXp*3600/t,grade
+		end
+		local nx,nc,ncl,ng=perHour(false)
+		local mx,mc,mcl,mg=perHour(true)
+		check(mg==ng,"floor "..floor.." Master grades like normal at equal performance ("..ng.." / "..mg..")")
+		check(mx>=nx and mc>=nc and mcl>=ncl,"floor "..floor.." Master pays >= normal per hour (XP "..math.floor(mx).." vs "..math.floor(nx)..", time "..timed[floor].master.."/"..timed[floor].normal.."s)")
+	end
 end
 local runChecks=checks-ruleChecks
 
@@ -803,7 +1057,7 @@ do
 	check(view.floors[1].masterClears==1 and view.floors[1].masterBest==230,"Master Mode clears recorded separately")
 	check(view.floors[1].best==295 and view.floors[1].clears==1,"normal best untouched by Master Mode")
 	eq(view.floors[1].secrets,2,"secret best keeps the maximum")
-	eq(view.classes.Starshot.xp,DC.classXp(1,"S+",false,1.12)+DC.classXp(1,"A",true,1),"Master Mode class XP x1.25")
+	eq(view.classes.Starshot.xp,DC.classXp(1,"S+",false,1.12)+DC.classXp(1,"A",true,1),"Master Mode class XP x"..DC.MASTER_XP)
 	-- A fresh session lease (journals renew it on autosave; the harness rejoins).
 	h.services.Players.PlayerRemoving:Fire(p)
 	p=h.player(8101)
@@ -856,7 +1110,7 @@ do
 	local src=fs.readFile("verify-ui.luau")
 	local cut=src:find("------------------------------------------------------------------------------\n-- Checks",1,true)
 	assert(cut,"verify-ui harness marker")
-	local h=luau.load(src:sub(1,cut-1).."\nreturn {run=run,snapshot=snapshot,find=find,press=press,noFailures=noFailures}",{debugName="ui-harness",injectGlobals=true})()
+	local h=luau.load(src:sub(1,cut-1).."\nreturn {run=run,snapshot=snapshot,find=find,press=press,noFailures=noFailures,new=new}",{debugName="ui-harness",injectGlobals=true})()
 	local function openDungeon(ui)
 		if not ui.atlas.Visible then h.press(h.find(ui.gui,"AtlasButton")) end
 		h.press(ui.tabs:FindFirstChild("HuntButton"))
@@ -899,20 +1153,68 @@ do
 	last=ui.sent[#ui.sent]
 	check(last[1]=="dungeonMaster" and last[2]=="on","Master Mode toggle sends on")
 	h.noFailures(ui,"dungeon buttons")
-	-- Party HUD.
-	local hudFrame=h.find(ui.gui,"DungeonPartyHud")
+	-- Master best (review M5): grade and clears shown on the floor card.
+	local msnap=h.snapshot()
+	local mfloors=table.clone(floors)
+	mfloors[2]={secrets=0,secretsTotal=2,best=292,clears=3,masterUnlocked=true,masterBest=271,masterClears=2}
+	msnap.dungeonClasses={selected="Aegis",master=true,classes=classes,floors=mfloors}
+	local mui=h.run({snapshot=msnap})
+	openDungeon(mui)
+	local mpage=texts(h.find(mui.scroll,"DungeonFloor2"))
+	check(has(mpage,"Master best 271 (S)") and has(mpage,"clears 2"),"Master best shown with its grade")
+	check(has(mpage,"par "..math.floor(DC.par(2,true)+.5).."s"),"Master par shown")
+	check(has(texts(h.find(mui.scroll,"DungeonFloor1")),"no Master clear yet"),"unplayed Master floor says so")
+	check(has(texts(h.find(mui.scroll,"DungeonMaster")),"par ×1.6"),"Master card explains the par")
+	h.noFailures(mui,"master best")
+	-- Party HUD (desktop): one row per delver plus Q / R buttons.
+	local dui=h.run({snapshot=snap,size=r.Vector2.new(1366,768)})
+	local hudFrame=h.find(dui.gui,"DungeonPartyHud")
 	check(hudFrame~=nil and hudFrame.Visible==false,"party HUD hidden outside runs")
-	ui.player:SetAttribute("DungeonClass","Aegis")
-	ui.player:SetAttribute("DungeonParty","Tester|Aegis|31;Bo|Mender|4;Cy||1")
-	ui.player:SetAttribute("DungeonAbilityReady",12)
-	ui.player:SetAttribute("DungeonUltimates",2)
+	dui.player:SetAttribute("DungeonClass","Aegis")
+	dui.player:SetAttribute("DungeonParty","Tester|Aegis|31;Bo|Mender|4;Cy||1")
+	dui.player:SetAttribute("DungeonAbilityReady",12)
+	dui.player:SetAttribute("DungeonUltimates",2)
 	check(hudFrame.Visible==true,"party HUD shown in a run")
 	local hudText=h.find(hudFrame,"Members").Text
 	check(has(hudText,"Aegis 31") and has(hudText,"Mender 4") and has(hudText,"unclassed"),"party HUD lists classes and levels")
-	check(has(hudText,"Starwall Bulwark 12s") and has(hudText,"R ×2"),"party HUD shows ability timers")
-	ui.player:SetAttribute("DungeonParty","")
+	local qb,rb=h.find(hudFrame,"AbilityQ"),h.find(hudFrame,"AbilityR")
+	check(qb and rb and qb.Visible and rb.Visible,"party HUD carries Q and R buttons")
+	check(has(qb.Text,"Q · Starwall Bulwark 12s") and has(rb.Text,"R ×2"),"Q / R buttons show the timers")
+	eq(hudFrame.Position.Y.Offset,8+156+34+6,"party HUD sits under the desktop minimap")
+	-- Q / R fire the Eclipse Heart prompts (server-validated), or explain the range.
+	local held={}
+	h.press(qb)
+	check(#held==0,"no heart in reach: nothing fires")
+	h.noFailures(dui,"party HUD without a heart")
+	local model=h.new("Model",{Name="The Hollow Observatory"})
+	model.Parent=dui.workspace
+	local heartPart=h.new("Part",{Name="Eclipse Heart"})
+	heartPart.Parent=model
+	for _,spec in ipairs({{"Class ability","Q"},{"Ultimate","R"},{"Strike core","E"}}) do
+		local prompt=h.new("ProximityPrompt",{ActionText=spec[1],HoldDuration=0.35})
+		prompt.InputHoldBegin=function() table.insert(held,spec[2]) end
+		prompt.InputHoldEnd=function() end
+		prompt.Parent=heartPart
+	end
+	h.press(qb)
+	check(#held==1 and held[1]=="Q","Q button holds the heart's Class ability prompt")
+	h.press(rb)
+	check(#held==2 and held[2]=="R","R button holds the heart's Ultimate prompt")
+	h.noFailures(dui,"party HUD buttons")
+	dui.player:SetAttribute("DungeonClass","")
+	check(not qb.Visible and not rb.Visible,"unclassed delvers get no ability buttons")
+	dui.player:SetAttribute("DungeonParty","")
 	check(hudFrame.Visible==false,"party HUD hides after the run")
-	h.noFailures(ui,"party HUD")
+	h.noFailures(dui,"party HUD")
+	-- Phone (730x303): a one-line roster under the compact minimap.
+	local pui=h.run({snapshot=snap})
+	local phud=h.find(pui.gui,"DungeonPartyHud")
+	pui.player:SetAttribute("DungeonClass","Mender")
+	pui.player:SetAttribute("DungeonParty","Tester|Mender|4;Bo|Aegis|31;Cy||1;Di|Starshot|2;Ed|Arcanist|9")
+	check(phud.Visible and has(h.find(phud,"Members").Text,"✚4") and has(h.find(phud,"Members").Text,"⛨31"),"compact roster shows glyph and level")
+	eq(phud.Position.Y.Offset,8+118+34+6,"compact party HUD sits under the compact minimap")
+	check(phud.Size.Y.Offset<=80 and h.find(phud,"AbilityQ").Visible,"compact party HUD stays short with Q / R")
+	h.noFailures(pui,"compact party HUD")
 	-- Malformed or missing class data still renders.
 	for _,bad in ipairs({"oops",{classes="x",floors={1,"y"}},{selected="Mage",classes={Aegis={level="x",fraction="y"}}}}) do
 		local broken=h.snapshot()
