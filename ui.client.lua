@@ -6488,13 +6488,216 @@ Pages.drawPrayer,Pages.drawThieving=PT.drawPrayer,PT.drawThieving
 end
 
 ------------------------------------------------------------------------------
+-- Treasure Trails (Treasure Trails team). Page: Satchel › Trails — one card per
+-- tier (scroll / active step text, hint, step actions, caskets), the sliding
+-- puzzle box, the clue log grid (counts per tier, uniques obtained) and trail
+-- extras (emotes learned, waystone leaves, emote scrolls, banners).
+-- Server state: snapshot.trails = {active={[tier]={step,kind,style,text,hint,
+-- guide,gesture,wear,need,have,board,moves}}, log, uniques, emotes, banner, spade}.
+-- Verbs: trailBegin/trailAbandon/trailOpen "<tier>", trailDig/trailSearch
+-- "<tier>", trailEmote "<gesture>", trailSlide "<tier>:<UDLR...>", trailCheck,
+-- trailTeleport/trailLearn/trailBanner "<item>". Hints never carry answers.
+------------------------------------------------------------------------------
+do
+local TT={puzzle={}}
+Pages.TT=TT
+function TT.ready() return Data and type(Data.Trails)=="table" end
+function TT.guide(specs,label)
+	if Pages.AH and Pages.AH.guide then Pages.AH.guide(specs,label) end
+end
+function TT.gesture(name)
+	local api=ReplicatedStorage:FindFirstChild("IsleGestureLocal")
+	if api and api.Fire then pcall(function() api:Fire(name) end) end
+end
+-- Local puzzle buffer: {server=board the buffer starts from, board, moves}.
+function TT.slide(tier,row,index)
+	local TR=Data.Trails
+	local buf=TT.puzzle[tier]
+	if not buf or buf.server~=row.board then buf={server=row.board,board=row.board,moves=""} TT.puzzle[tier]=buf end
+	local gap=string.find(buf.board,"0",1,true)
+	if not gap then return end
+	local gx,gy=(gap-1)%3,(gap-1)//3
+	local tx,ty=(index-1)%3,(index-1)//3
+	local dir=if tx==gx and ty==gy-1 then "U" elseif tx==gx and ty==gy+1 then "D" elseif ty==gy and tx==gx-1 then "L" elseif ty==gy and tx==gx+1 then "R" else nil
+	if not dir then notify("Only a tile beside the gap can slide.") return end
+	local nextBoard=TR.slide(buf.board,dir)
+	if not nextBoard then return end
+	buf.board,buf.moves=nextBoard,buf.moves..dir
+	if nextBoard==TR.SOLVED or #buf.moves>=40 then
+		local moves=buf.moves
+		TT.puzzle[tier]=nil -- the server's board (in the reply) is the truth from here
+		send("trailSlide",tier..":"..moves)
+	end
+	render()
+end
+function TT.board(tier,row)
+	local buf=TT.puzzle[tier]
+	if buf and buf.server==row.board and buf.board then return buf.board,buf.moves end
+	return row.board,""
+end
+function TT.drawPuzzle(tier,row,body,nextOrder)
+	local board,pending=TT.board(tier,row)
+	if type(board)~="string" or #board~=9 then return end
+	local size=compactAtlas and 46 or 58
+	local holder=make("Frame",body,{Name="TrailPuzzle"..tier,BackgroundTransparency=1,Size=UDim2.fromOffset(size*3+12,size*3+12),LayoutOrder=nextOrder()})
+	make("UIGridLayout",holder,{CellSize=UDim2.fromOffset(size,size),CellPadding=UDim2.fromOffset(6,6),FillDirectionMaxCells=3,SortOrder=Enum.SortOrder.LayoutOrder})
+	for i=1,9 do
+		local c=board:sub(i,i)
+		local b=tile(holder,"TrailTile"..tier..i,i,function() TT.slide(tier,row,i) end)
+		if c=="0" then
+			b.BackgroundTransparency=.8
+		else
+			local right=tonumber(c)==i
+			make("UIStroke",b,{Color=right and mint or gold,Transparency=.2,Thickness=right and 2 or 1})
+			local t=label(b,c,0,0,full,size,UI.heavy,compactAtlas and 20 or 24,right and mint or ivory)
+			t.Size=UDim2.fromScale(1,1)
+			t.TextXAlignment=Enum.TextXAlignment.Center
+		end
+	end
+	para(body,"Moves made: "..fmt(num(row.moves,0)+#pending)..(#pending>0 and ("   ·   "..#pending.." not yet sent") or ""),nextOrder(),muted,12)
+end
+function TT.drawTier(tier,t)
+	local TR=Data.Trails
+	local def=TR.Tiers[tier]
+	local active=tbl(tbl(t.active)[tier])
+	local scrolls,caskets=count("items",def.scroll),count("items",def.casket)
+	local log=tbl(tbl(t.log)[tier])
+	local actions={}
+	local lines={}
+	local o={name="Trail"..tier,item=def.scroll,accent=rgb(def.color),title=escape(def.adj.." Trail   ·   "..tier),titleColor=rgb(def.color),
+		subtitle=fmt(num(log.completed,0)).." completed   ·   "..fmt(num(log.opened,0)).." caskets opened",lines=lines,actions=actions}
+	if active.kind then
+		o.badge="STEP "..num(active.step,1)
+		o.badgeColor=gold
+		o.detail=escape(tostring(active.text or ""))
+		table.insert(lines,paint("Hint: ","F3C66E")..escape(tostring(active.hint or "")))
+		local kind=active.kind
+		if kind=="dig" then
+			table.insert(actions,{caption="Dig",name="TrailDig"..tier,primary=true,disabled=t.spade~=true,reason="Forge a Wayfinder's Spade first.",fn=function() send("trailDig",tier) end})
+		elseif kind=="riddle" then
+			table.insert(actions,{caption="Search",name="TrailSearch"..tier,primary=true,fn=function() send("trailSearch",tier) end})
+		elseif kind=="emote" then
+			local wear={}
+			for _,id in ipairs(tbl(active.wear)) do
+				local on=false
+				for _,eq in pairs(tbl(dget("equipment"))) do if eq==id then on=true end end
+				table.insert(wear,(on and check or cross).." "..escape(itemName(id)))
+			end
+			if #wear>0 then table.insert(lines,"Wear: "..table.concat(wear,"  ")) end
+			local g=tostring(active.gesture)
+			table.insert(actions,{caption="Perform",name="TrailEmote"..tier,primary=true,fn=function() TT.gesture(g) send("trailEmote",g) end})
+		elseif kind=="skill" then
+			local need,have=num(active.need,1),num(active.have,0)
+			o.bar={fraction=math.clamp(have/math.max(1,need),0,1),color=rgb(def.color),caption=fmt(have).." / "..fmt(need)}
+			table.insert(actions,{caption="Check",name="TrailCheck"..tier,fn=function() send("trailCheck") end})
+		elseif kind=="puzzle" then
+			o.after=function(body,nextOrder) TT.drawPuzzle(tier,active,body,nextOrder) end
+		end
+		local specs=tbl(active.guide)
+		if #specs>0 then table.insert(actions,{caption="Guide",name="TrailGuide"..tier,fn=function() TT.guide(specs,tier.." trail") end}) end
+		table.insert(actions,{caption="Abandon",name="TrailAbandon"..tier,fn=function() send("trailAbandon",tier) end})
+	elseif scrolls>0 then
+		o.badge="SCROLL"
+		o.badgeColor=mint
+		o.detail="You carry a "..escape(itemName(def.scroll))..". Read it to begin: "..def.steps[1].."-"..def.steps[2].." steps."
+		table.insert(actions,{caption="Read",name="TrailBegin"..tier,primary=true,fn=function() send("trailBegin",tier) end})
+	else
+		o.badge="NONE"
+		o.badgeColor=muted
+		o.detail=tier=="Master" and "Master scrolls hide in Starlit (Elite) caskets and in the hoards of the mightiest foes." or
+			("Found while fighting, gathering, fishing, thieving and hunting content of "..tier.." difficulty.")
+	end
+	if caskets>0 then
+		table.insert(actions,1,{caption="Open",name="TrailOpen"..tier,primary=not active.kind,fn=function() send("trailOpen",tier) end})
+		table.insert(lines,fmt(caskets).." "..escape(itemName(def.casket))..(caskets>1 and "s" or "").." waiting.")
+	end
+	card(o)
+end
+function TT.drawLog(t)
+	local TR=Data.Trails
+	local uniques=tbl(t.uniques)
+	local total,found=0,0
+	for _,tier in ipairs(TR.TierOrder) do for _,id in ipairs(TR.Uniques[tier]) do total+=1 if num(uniques[id],0)>0 then found+=1 end end end
+	heading("CLUE LOG    /    "..found.." OF "..total.." UNIQUES")
+	local width=contentWidth()
+	local columns=width>=690 and 8 or (width>=520 and 7 or (width>=400 and 6 or 5))
+	local cell=compactAtlas and 62 or 72
+	for _,tier in ipairs(TR.TierOrder) do
+		local def=TR.Tiers[tier]
+		local log=tbl(tbl(t.log)[tier])
+		local row=container()
+		row.Name="TrailLog"..tier
+		local caption=label(row,paint(tier,def.color).."   ·   "..fmt(num(log.completed,0)).." completed   ·   "..fmt(num(log.opened,0)).." opened",4,0,UDim.new(1,-8),20,UI.heavy,12,ivory)
+		caption.RichText=true
+		row.Size=UDim2.new(1,-7,0,22)
+		row.AutomaticSize=Enum.AutomaticSize.None
+		local grid=gridHolder(UDim2.new(1/columns,-6,0,cell),6)
+		grid.Name="TrailLogGrid"..tier
+		for i,id in ipairs(TR.Uniques[tier]) do
+			local n=num(uniques[id],0)
+			local b=tile(grid,"TrailUnique"..id,i,function() notify(itemName(id)..(n>0 and (" x"..n) or " — not yet found")) end)
+			itemIcon(b,id,compactAtlas and 34 or 40,n<=0).Position=UDim2.new(.5,-(compactAtlas and 17 or 20),0,4)
+			local foot=label(b,n>0 and ("x"..n) or "?",2,cell-18,UDim.new(1,-4),16,UI.heavy,11,n>0 and mint or muted)
+			foot.TextXAlignment=Enum.TextXAlignment.Center
+		end
+	end
+end
+function TT.drawExtras(t)
+	local TR=Data.Trails
+	local items=tbl(state.items)
+	heading("TRAIL KIT    /    EMOTES, LEAVES AND BANNERS")
+	local known=tbl(t.emotes)
+	for _,e in ipairs(TR.EmoteOrder) do
+		local def=TR.Emotes[e]
+		if table.find(known,e) then
+			card({name="TrailEmoteKnown"..e,motif="Hero",title=escape(def.name),subtitle="Learned emote",
+				actions={{caption="Perform",name="TrailPerform"..e,fn=function() TT.gesture(def.gesture) end}}})
+		end
+	end
+	for id,n in pairs(items) do
+		local d=type(id)=="string" and num(n,0)>0 and itemDef(id)
+		if d and d.kind=="trail" then
+			if d.category=="emote" then
+				card({name="TrailItem"..id,item=id,title=escape(d.name),titleColor=rgb(rarityHex(d.rarity)),subtitle="Held "..fmt(n),detail=escape(d.description),
+					actions={{caption="Learn",name="TrailLearn"..id,primary=true,fn=function() send("trailLearn",id) end}}})
+			elseif d.category=="teleport" then
+				card({name="TrailItem"..id,item=id,title=escape(d.name),titleColor=rgb(rarityHex(d.rarity)),subtitle="Held "..fmt(n),detail=escape(d.description),
+					actions={{caption="Travel",name="TrailTeleport"..id,fn=function() send("trailTeleport",id) end}}})
+			elseif d.category=="banner" then
+				local raised=t.banner==id
+				card({name="TrailItem"..id,item=id,title=escape(d.name),titleColor=rgb(rarityHex(d.rarity)),subtitle=raised and "Raised" or "Held",detail=escape(d.description),
+					actions={{caption=raised and "Lower" or "Raise",name="TrailBanner"..id,fn=function() send("trailBanner",raised and "none" or id) end}}})
+			end
+		end
+	end
+end
+function TT.draw()
+	if not TT.ready() then dataMissing() return end
+	local TR=Data.Trails
+	local t=tbl(state.trails)
+	local done=0
+	for _,tier in ipairs(TR.TierOrder) do done+=num(tbl(tbl(t.log)[tier]).completed,0) end
+	card({name="TrailsSummary",item=TR.SPADE,accent=gold,title="Treasure Trails",titleColor=gold,
+		subtitle=fmt(done).." trails completed   ·   "..(t.spade==true and "spade packed" or "no spade"),
+		badge=state.trails and nil or "SYNCING",
+		detail="Scrolls lead from riddle to map to dig site. Dig with a Wayfinder's Spade, search where riddles point, perform emotes at landmarks, finish trail tasks and crack puzzle boxes. Each step is checked by the guild, so the only way through is to walk it.",
+		lines={t.spade==true and nil or paint("Forge a Wayfinder's Spade (1 Alloy Ingot, 2 Timber) at a Forge before your first dig.","F3C66E")}})
+	heading("TRAILS    /    ONE SCROLL PER TIER")
+	for _,tier in ipairs(TR.TierOrder) do TT.drawTier(tier,t) end
+	TT.drawLog(t)
+	TT.drawExtras(t)
+end
+Pages.drawTrails=TT.draw
+end
+
+------------------------------------------------------------------------------
 -- Navigation: six primary tabs, each with a section switcher.
 ------------------------------------------------------------------------------
 local tabOrder={"Journal","Hero","Satchel","Workshop","Hunt","Ledger"}
 local sectionLists={
 	Journal={"Bearing","Quests","Diaries","Construction","Regions","Crew","Calendar","Agility"},
 	Hero={"Skills","Mastery","Gear","Combat","Spellbook","Prayer","Enchant","Reforge","Accessories","Pets"},
-	Satchel={"Items","Collections"},
+	Satchel={"Items","Collections","Trails"},
 	Workshop={"Forge","Hearth","Cauldron","Workbench","Workers","Home","Garden"},
 	Hunt={"Slayer","Bestiary","Dungeon","Hunter","Thieving"},
 	Ledger={"Bank","Market","Orders","Auctions","Merchant","Vendors"},
@@ -6503,7 +6706,7 @@ sectionOf={Journal="Bearing",Hero="Skills",Satchel="Items",Workshop="Forge",Hunt
 local drawers={
 	Journal={Bearing=Pages.drawBearing,Quests=Pages.drawQuests,Diaries=Pages.drawDiaries,Construction=Pages.drawConstruction,Regions=Pages.drawRegions,Crew=Pages.drawCoop,Calendar=Pages.drawCalendar,Agility=Pages.drawAgility},
 	Hero={Skills=Pages.drawSkills,Mastery=Pages.drawMastery,Gear=Pages.drawGear,Combat=Pages.drawCombat,Spellbook=Pages.drawSpellbook,Prayer=Pages.drawPrayer,Enchant=Pages.drawEnchant,Reforge=function() Pages.drawReforge() end,Accessories=Pages.drawAccessories,Pets=Pages.drawPets},
-	Satchel={Items=Pages.drawItems,Collections=Pages.drawCollections},
+	Satchel={Items=Pages.drawItems,Collections=Pages.drawCollections,Trails=Pages.drawTrails},
 	Workshop={Forge=function() Pages.drawStation("Forge") end,Hearth=function() Pages.drawStation("Hearth") end,Cauldron=function() Pages.drawStation("Cauldron") end,
 		Workbench=function() Pages.drawStation("Workbench") end,Workers=Pages.drawWorkers,Home=Pages.drawHome,Garden=Pages.drawGarden},
 	Hunt={Slayer=Pages.drawSlayer,Bestiary=Pages.drawBestiary,Dungeon=Pages.drawDungeon,Hunter=Pages.drawHunter,Thieving=Pages.drawThieving},

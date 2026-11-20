@@ -157,6 +157,8 @@ local Garden={verbs={}}
 local Pets={verbs={}}
 -- Dungeon classes (class choice, Master Mode, class XP); filled in by the Classes block beside the expedition grant.
 local Classes={verbs={}}
+-- Treasure Trails (clue scrolls, steps, caskets); filled in by the Trails block after Prayer & Thieving.
+local Trails={verbs={trailBegin=true,trailAbandon=true,trailDig=true,trailSearch=true,trailEmote=true,trailSlide=true,trailCheck=true,trailOpen=true,trailTeleport=true,trailLearn=true,trailBanner=true}}
 -- One-time coins for each newly reached skill level.
 local function levelCoins(p,skill,newLevel)
 	p.levelRewards=p.levelRewards or {}
@@ -1518,6 +1520,7 @@ do
 		grantXp(p,"Hunter",xp)
 		local _,before=HU.logPerk(p.hunterLog)
 		p.hunterLog[creature.id]=(p.hunterLog[creature.id] or 0)+1
+		Trails.event(p,"catch",creature.id) -- Treasure Trails: scroll drops + trail tasks
 		Skills.refreshPerks(p)
 		local _,after=HU.logPerk(p.hunterLog)
 		p.started=true
@@ -2013,6 +2016,7 @@ do
 			for id,n in pairs(drops) do collect(p,id,n) end
 			grantXp(p,"Thieving",target.xp)
 			p.thieving.thefts[target.id]=(p.thieving.thefts[target.id] or 0)+1
+			Trails.event(p,"thieve",target.id) -- Treasure Trails: scroll drops + trail tasks
 			cds[target.id]=now+target.respawn
 			persist(p,target.id,target.respawn)
 			return kind.past.." the "..target.name.." • +"..coins.." coins, +"..target.xp.." Thieving XP"..lootText(drops)
@@ -2124,6 +2128,313 @@ do
 	end)
 end
 -- End Prayer & Thieving block.
+------------------------------------------------------------------------------
+-- Treasure Trails (Treasure Trails team; self-contained block). Rules and the
+-- step pool live in Data.Trails (shared/GameData.lua). Server-authoritative:
+-- the step list, step index, seed, puzzle board and progress are stored in
+-- p.trails and only ever advance by a validated action here; clients name a
+-- tier or a gesture, never a step. Scroll drops and casket rolls draw from a
+-- private per-profile stream (p.trails.r), so no shared roll() is consumed.
+-- Verbs: trailBegin "<tier>", trailAbandon "<tier>", trailDig ["<tier>"],
+-- trailSearch ["<tier>"], trailEmote "<gesture>", trailSlide "<tier>:<UDLR...>",
+-- trailCheck, trailOpen "<tier>", trailTeleport "<leaf id>", trailLearn
+-- "<emote scroll id>", trailBanner "<banner id>|none".
+-- Hooks: Trails.event(p, kind, id) from the kill bridge, gathering (fishing
+-- counts as "fish"), thieving and hunter catches; Trails.migrate in migrate();
+-- snapshot key `trails`. Player attribute TrailBanner = banner name or "".
+------------------------------------------------------------------------------
+do
+	local TR=Data.Trails
+	Trails.anchors={}
+	Trails.seq=0
+	local function rec(p)
+		if type(p.trails)~="table" then p.trails=TR.sanitize(nil) end
+		return p.trails
+	end
+	function Trails.migrate(p)
+		p.trails=TR.sanitize(p.trails)
+		if not p.trails.r then
+			Trails.seq+=1
+			p.trails.r=(os.time()*7919+Trails.seq*104729)%2147483646+1
+		end
+	end
+	-- Private stream (Park-Miller) persisted with the profile.
+	function Trails.rand(p)
+		local t=rec(p)
+		local s=((tonumber(t.r) or 1)*48271)%2147483647
+		if s==0 then s=1 end
+		t.r=s
+		return (s-1)/2147483646
+	end
+	local function tierOf(item) return type(item)=="string" and TR.Tiers[item] and item or nil end
+	local function nameOf(id) return Data.Items[id] and Data.Items[id].name or tostring(id) end
+	-- Reader context for step selection: levels and unlocked regions.
+	local function readerContext(p)
+		local levels,regions={},{}
+		for _,skill in ipairs(Data.SkillOrder) do levels[skill]=level(p.xp[skill] or 0) end
+		for _,def in ipairs(Data.Regions) do regions[def.id]=regionAllowed(p,def.id)==true end
+		return {levels=levels,regions=regions}
+	end
+	function Trails.holds(p,tier)
+		return (p.items[TR.Tiers[tier].scroll] or 0)>0 or rec(p).active[tier]~=nil
+	end
+	-- One scroll or active trail per tier: a second find is simply not made.
+	function Trails.grantScroll(p,tier)
+		if Trails.holds(p,tier) then return false end
+		local id=TR.Tiers[tier].scroll
+		p.items[id]=(p.items[id] or 0)+1
+		return true
+	end
+	-- Set up the step that just became current.
+	function Trails.prime(p,tier,a)
+		local step=TR.StepById[a.steps[a.step]]
+		a.base,a.moves,a.board,a.began=0,0,nil,os.time()
+		if step.kind=="skill" and step.action=="craft" then a.base=Journal.counters(p).crafts[step.target] or 0 end
+		if step.kind=="puzzle" then a.board=TR.scramble(TR.stepSeed(a.seed,a.step),TR.Tiers[tier].scramble) end
+	end
+	-- Completes the current step; returns the message.
+	function Trails.advance(p,tier,done)
+		local t=rec(p)
+		local a=t.active[tier]
+		if a.step>=#a.steps then
+			t.active[tier]=nil
+			t.log[tier].completed+=1
+			local casket=TR.Tiers[tier].casket
+			p.items[casket]=(p.items[casket] or 0)+1
+			p.started=true
+			return done.."   ·   The "..tier.." trail ends: a "..nameOf(casket).." is yours! Open it from Satchel › Trails."
+		end
+		a.step+=1
+		Trails.prime(p,tier,a)
+		return done.."   ·   Your "..tier.." trail continues (step "..a.step..")."
+	end
+	-- Progress for the current skill step.
+	local function skillHave(p,a,step)
+		if step.action=="craft" then return math.max(0,(Journal.counters(p).crafts[step.target] or 0)-a.base) end
+		return a.base
+	end
+	-- Craft steps read the craft counters (no craft hook needed).
+	function Trails.settle(p)
+		local t=rec(p)
+		local out={}
+		for _,tier in ipairs(TR.TierOrder) do
+			local a=t.active[tier]
+			local step=a and TR.StepById[a.steps[a.step]]
+			if step and step.kind=="skill" and step.action=="craft" and skillHave(p,a,step)>=step.count then
+				table.insert(out,Trails.advance(p,tier,"Crafted "..nameOf(step.target).."."))
+			end
+		end
+		return out
+	end
+	-- Content hook: kill / gather (fish) / thieve / catch. Rolls scroll drops
+	-- and counts skill steps.
+	function Trails.event(p,kind,id)
+		if type(p)~="table" or type(p.trails)~="table" or type(id)~="string" then return end
+		if kind=="gather" and Data.ResourceSkill[id]=="Fishing" then kind="fish" end
+		for _,d in ipairs(TR.dropsFor(kind,id)) do
+			if Trails.rand(p)<d.chance and Trails.grantScroll(p,d.tier) then
+				note(p,"You found a "..nameOf(TR.Tiers[d.tier].scroll).."! Read it in Satchel › Trails.")
+			end
+		end
+		for _,tier in ipairs(TR.TierOrder) do
+			local a=p.trails.active[tier]
+			local step=a and TR.StepById[a.steps[a.step]]
+			if step and step.kind=="skill" and step.action==kind and step.target==id then
+				a.base+=1
+				if a.base>=step.count then note(p,Trails.advance(p,tier,"Trail task done.")) end
+			end
+		end
+	end
+	-- Positions: anchors under Workspace.Islands (contract §10), found by name.
+	function Trails.anchor(name)
+		local cached=Trails.anchors[name]
+		if cached and cached.Parent then return cached end
+		local ok,found=pcall(function()
+			local islands=workspace:FindFirstChild("Islands")
+			return islands and islands:FindFirstChild("Anchor_"..name,true)
+		end)
+		found=if ok then found else nil
+		Trails.anchors[name]=found
+		return found
+	end
+	local function rootPosition(player)
+		local character=player.Character
+		local root=character and character:FindFirstChild("HumanoidRootPart")
+		return root and root.Position
+	end
+	function Trails.near(player,anchorName,east,north,radius)
+		local a=Trails.anchor(anchorName)
+		local pos=rootPosition(player)
+		if not a or not pos then return false end
+		local c=a.CFrame.Position
+		local dx,dz=pos.X-(c.X+(east or 0)),pos.Z-(c.Z-(north or 0))
+		return dx*dx+dz*dz<=radius*radius and math.abs(pos.Y-c.Y)<=TR.HEIGHT_TOLERANCE
+	end
+	-- Active trails (optionally one tier) whose current step is `kind`.
+	local function current(p,kind,tier)
+		local out={}
+		for _,id in ipairs(TR.TierOrder) do
+			local a=rec(p).active[id]
+			local step=a and TR.StepById[a.steps[a.step]]
+			if step and step.kind==kind and (tier==nil or tier==id) then table.insert(out,{tier=id,a=a,step=step}) end
+		end
+		return out
+	end
+	local function begin(p,tier)
+		if not tier then return "Choose a trail tier." end
+		local t=rec(p)
+		if t.active[tier] then return "You are already following a "..tier.." trail." end
+		local scroll=TR.Tiers[tier].scroll
+		if (p.items[scroll] or 0)<1 then return "You have no "..nameOf(scroll).."." end
+		local seed=math.floor(Trails.rand(p)*2147483645)+1
+		local steps=TR.generate(tier,seed,readerContext(p))
+		if #steps==0 then return "The scroll's ink has faded." end
+		p.items[scroll]-=1
+		local a={seed=seed,steps=steps,step=1}
+		t.active[tier]=a
+		Trails.prime(p,tier,a)
+		p.started=true
+		return "You unroll the "..nameOf(scroll)..": "..TR.describe(TR.StepById[steps[1]]).text
+	end
+	local function located(player,p,kind,tier,radius,fit,success,fail)
+		local list=current(p,kind,tier)
+		if #list==0 then return nil end
+		for _,c in ipairs(list) do
+			local s=c.step
+			if Trails.near(player,s.anchor,if kind=="dig" then s.east else 0,if kind=="dig" then s.north else 0,radius) and fit(c) then
+				if s.region and not regionAllowed(p,s.region) then return regionDenied(s.region) end
+				return Trails.advance(p,c.tier,success(c))
+			end
+		end
+		return fail
+	end
+	local function openCasket(p,tier)
+		if not tier then return "Choose a casket." end
+		local id=TR.Tiers[tier].casket
+		if (p.items[id] or 0)<1 then return "You have no "..nameOf(id).."." end
+		local stats=Progression.computeStats(p,os.time())
+		local t=rec(p)
+		local loot=TR.openCasket(tier,function() return Trails.rand(p) end,stats.magicFind,stats.petLuck,Progression.rollDrops)
+		p.items[id]-=1
+		t.log[tier].opened+=1
+		p.coins+=loot.coins
+		local names={}
+		for item,n in pairs(loot.items) do
+			p.items[item]=(p.items[item] or 0)+n
+			table.insert(names,"+"..n.." "..nameOf(item))
+		end
+		table.sort(names)
+		local text="Opened the "..nameOf(id)..": +"..loot.coins.." coins"..(if #names>0 then ", "..table.concat(names,", ") else "")
+		for item,n in pairs(loot.uniques) do
+			t.uniques[item]=(t.uniques[item] or 0)+n
+			text..="   ·   Clue log: "..nameOf(item).."!"
+		end
+		if loot.master then
+			text..=if Trails.grantScroll(p,"Master") then "   ·   An "..nameOf(TR.Tiers.Master.scroll).." was tucked inside!" else "   ·   A Master scroll crumbles: you already hold one."
+		end
+		return text
+	end
+	function Trails.action(player,p,verb,item)
+		local t=rec(p)
+		if verb=="trailBegin" then return begin(p,tierOf(item))
+		elseif verb=="trailAbandon" then
+			local tier=tierOf(item)
+			if not tier or not t.active[tier] then return "No such trail to abandon." end
+			t.active[tier]=nil
+			return "You let the "..tier.." trail go cold."
+		elseif verb=="trailDig" then
+			if (p.items[TR.SPADE] or 0)<1 then return "You need a "..nameOf(TR.SPADE).." to dig (forge one at a Forge)." end
+			return located(player,p,"dig",tierOf(item),TR.DIG_RADIUS,function() return true end,
+				function(c) return "Your spade strikes a buried tin! ("..c.tier.." trail)" end,"You dig, but find only soil and worms.")
+				or "None of your trails asks you to dig."
+		elseif verb=="trailSearch" then
+			return located(player,p,"riddle",tierOf(item),TR.SEARCH_RADIUS,function() return true end,
+				function(c)
+					local npc=c.step.npc and Data.Townsfolk.NPCs[c.step.npc]
+					return (if npc then npc.name.." slips you a folded note." else "Tucked out of sight, you find the next note.").." ("..c.tier.." trail)"
+				end,"You search, but find nothing here.") or "None of your trails is a riddle right now."
+		elseif verb=="trailEmote" then
+			local gesture=type(item)=="string" and TR.Gestures[item] and item
+			if not gesture then return "Choose an emote." end
+			local missing
+			local result=located(player,p,"emote",nil,TR.EMOTE_RADIUS,function(c)
+				if c.step.gesture~=gesture then return false end
+				for _,id in ipairs(c.step.wear) do
+					local def=Data.Items[id]
+					if not def or p.equipment[def.slot]~=id then missing=id return false end
+				end
+				return true
+			end,function(c) return "A hooded stranger nods at your "..TR.Gestures[gesture].." and hands you a note. ("..c.tier.." trail)" end,nil)
+			if result then return result end
+			if missing then return "The stranger frowns: you are not wearing "..nameOf(missing).."." end
+			return "You perform the "..TR.Gestures[gesture]..". Nobody seems to notice."
+		elseif verb=="trailSlide" then
+			local tierText,moves=string.match(type(item)=="string" and item or "","^(%a+):([UDLR]+)$")
+			local tier=tierOf(tierText)
+			local c=tier and current(p,"puzzle",tier)[1]
+			if not c then return "No puzzle box is open." end
+			local board,bad=TR.applyMoves(c.a.board,moves)
+			if not board then return if bad and bad>0 then "That tile cannot slide (move "..bad..")." else "Too many moves at once." end
+			c.a.board=board
+			c.a.moves+=#moves
+			if board==TR.SOLVED then return Trails.advance(p,tier,"The "..c.step.name.." clicks open after "..c.a.moves.." moves!") end
+			return "The tiles slide."
+		elseif verb=="trailCheck" then
+			local done=Trails.settle(p)
+			return if #done>0 then table.concat(done,"   ·   ") else "Your trails are as you left them."
+		elseif verb=="trailOpen" then return openCasket(p,tierOf(item))
+		elseif verb=="trailTeleport" then
+			local tp=type(item)=="string" and TR.TeleportById[item]
+			if not tp then return "Choose a waystone leaf." end
+			if (p.items[tp.id] or 0)<1 then return "You have no "..nameOf(tp.id).."." end
+			if not regionAllowed(p,tp.region) then return regionDenied(tp.region) end
+			local a=Trails.anchor(tp.anchor)
+			local character=player.Character
+			if not a or not character then return "The leaf will not carry you right now." end
+			p.items[tp.id]-=1
+			character:PivotTo(CFrame.new(a.CFrame.Position+Vector3.new(0,4,0)))
+			return "The leaf crumbles to light: you step out at "..tp.name.."."
+		elseif verb=="trailLearn" then
+			local def=type(item)=="string" and Data.Items[item]
+			if not def or def.category~="emote" or not TR.Emotes[def.emote] then return "Choose an emote scroll." end
+			if (p.items[item] or 0)<1 then return "You have no "..def.name.."." end
+			if table.find(t.emotes,def.emote) then return "You already know "..TR.Emotes[def.emote].name.."." end
+			p.items[item]-=1
+			table.insert(t.emotes,def.emote)
+			return "You learned the "..TR.Emotes[def.emote].name.." emote."
+		elseif verb=="trailBanner" then
+			if item=="none" then t.banner=nil; player:SetAttribute("TrailBanner","") return "Banner lowered." end
+			local def=type(item)=="string" and Data.Items[item]
+			if not def or def.category~="banner" or (p.items[item] or 0)<1 then return "Choose a banner you own." end
+			t.banner=item
+			player:SetAttribute("TrailBanner",def.name)
+			return "You raise the "..def.name.."."
+		end
+		return "Unknown action."
+	end
+	-- Snapshot key `trails` (step text and hints only; never the answers).
+	function Trails.state(player,p)
+		local t=rec(p)
+		for _,text in ipairs(Trails.settle(p)) do note(p,text) end
+		local active={}
+		for _,tier in ipairs(TR.TierOrder) do
+			local a=t.active[tier]
+			if a then
+				local step=TR.StepById[a.steps[a.step]]
+				local d=TR.describe(step)
+				local row={tier=tier,step=a.step,kind=step.kind,style=d.style,text=d.text,hint=d.hint,guide=d.guide}
+				if step.kind=="emote" then row.gesture=step.gesture; row.wear=table.clone(step.wear) end
+				if step.kind=="skill" then row.need=step.count; row.have=skillHave(p,a,step) end
+				if step.kind=="puzzle" then row.board=a.board; row.moves=a.moves end
+				active[tier]=row
+			end
+		end
+		local banner=t.banner and (p.items[t.banner] or 0)>0 and Data.Items[t.banner].name or ""
+		if player.GetAttribute and player:GetAttribute("TrailBanner")~=banner then player:SetAttribute("TrailBanner",banner) end
+		return {active=active,log=t.log,uniques=t.uniques,emotes=t.emotes,banner=t.banner,spade=(p.items[TR.SPADE] or 0)>0}
+	end
+end
+-- End Treasure Trails block.
 local function applyStats(player,p,spawned)
 	local stats=Progression.computeStats(p,os.time())
 	player:SetAttribute("SkyreachUnlocked",(p.questCompleted or 0)>=6)
@@ -2259,7 +2570,8 @@ local function snapshot(player,message)
 		events={claims=p.eventClaims or {},vendorUntil=player:GetAttribute("EventVendorUntil") or 0,serverTime=os.time()}, -- Events hook: Calendar page state
 		dungeonClasses=Classes.state and Classes.state(p), -- Dungeon classes: Hunt > Dungeon page state
 		garden=Garden.state and Garden.state(player,p), -- Verdant Garden page state
-		prayer=Prayer.state(player,p,stats),thieving=Prayer.thievingState(player,p,stats)} -- Prayer & Thieving page state
+		prayer=Prayer.state(player,p,stats),thieving=Prayer.thievingState(player,p,stats), -- Prayer & Thieving page state
+		trails=Trails.state(player,p)} -- Treasure Trails: Satchel > Trails page state
 end
 -- Prayer & Thieving: drain-loop notices (prayer points ran out).
 Prayer.push=function(player,message) if player.Parent then update:FireClient(player,snapshot(player,message)) end end
@@ -2339,6 +2651,7 @@ local function migrate(profile)
 	Progression.masteryMigrate(profile) -- Skill Mastery: drop unknown/invalid nodes, reset overspent trees
 	if Garden.migrate then Garden.migrate(profile) end -- Verdant Garden: sanitise and bound p.garden
 	if Classes.migrate then Classes.migrate(profile) end -- Dungeon classes: sanitise p.dungeonClasses
+	Trails.migrate(profile) -- Treasure Trails: sanitise p.trails (re-draws trails whose steps left the pool)
 end
 -- Clears every per-player table and ends this player's session slot.
 -- Sea creatures: a successful Fishing gather may hook one (Data.rollSeaCreature).
@@ -3638,6 +3951,8 @@ local function perform(player,verb,item,prompt)
 		return Pets.action(player,p,verb,item) -- Pets depth
 	elseif Classes.verbs[verb] then
 		return Classes.action(player,p,verb,item) -- Dungeon classes
+	elseif Trails.verbs[verb] then
+		return Trails.action(player,p,verb,item) -- Treasure Trails
 	elseif Endgame.verbs[verb] and prompt then
 		return Endgame.action(player,p,verb,item) -- Endgame: Sovereign Altar
 	elseif Econ.verbs and Econ.verbs[verb] then
@@ -3680,6 +3995,7 @@ local function perform(player,verb,item,prompt)
 		collect(p,item,result.amount)
 		grantXp(p,skill,result.xp)
 		if skill=="Farming" and Garden.fieldSeed then Garden.fieldSeed(p,item) end -- Verdant Garden seed pouch
+		Trails.event(p,"gather",item) -- Treasure Trails: scroll drops + trail tasks (Fishing counts as "fish")
 		local mastered=Mastery.gather(p,result) -- Skill Mastery: bonus ingots, coins, regrowth skip
 		if region then Journal.count(p,"gathers",region,1) end
 		p.started=true
@@ -4414,6 +4730,7 @@ bridge.OnInvoke=function(op,player,payload)
 		-- Events hook: Hollow Night event-only drops (Data.eventKillDrops).
 		for item,n in pairs(Data.eventKillDrops(monsterId,Data.eventState(workspace,os.time()),roll)) do drops[item]=(drops[item] or 0)+n; collect(p,item,n) end
 		p.bestiary[monsterId]=(p.bestiary[monsterId] or 0)+1
+		Trails.event(p,"kill",monsterId) -- Treasure Trails: scroll drops + trail tasks
 		local quest=p.slayerQuest
 		if quest and not quest.bossReady and monster.slayer==quest.line then
 			quest.progress=math.min(quest.needed,quest.progress+math.floor(monster.xp*(1+family/100)))

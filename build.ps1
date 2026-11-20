@@ -10,7 +10,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Original mesh import bundle is stale' }
     & node art/import/verify-import.cjs
     if ($LASTEXITCODE -ne 0) { throw 'Original mesh geometry verification failed' }
-    foreach ($test in @('verify-progression.luau', 'verify-gameplay.luau', 'verify-world.luau', 'verify-expedition.luau', 'verify-coop.luau', 'verify-combat.luau', 'verify-ui.luau', 'verify-festival.luau', 'verify-gesture.luau', 'verify-npc.luau', 'verify-mesh.luau', 'verify-skills.luau', 'verify-garden.luau', 'verify-endgame.luau', 'verify-workers.luau', 'verify-pets.luau', 'verify-dungeon-classes.luau', 'verify-prayer.luau')) {
+    foreach ($test in @('verify-progression.luau', 'verify-gameplay.luau', 'verify-world.luau', 'verify-expedition.luau', 'verify-coop.luau', 'verify-combat.luau', 'verify-ui.luau', 'verify-festival.luau', 'verify-gesture.luau', 'verify-npc.luau', 'verify-mesh.luau', 'verify-skills.luau', 'verify-garden.luau', 'verify-endgame.luau', 'verify-workers.luau', 'verify-pets.luau', 'verify-dungeon-classes.luau', 'verify-prayer.luau', 'verify-trails.luau')) {
         $out = & $lune run $test 2>&1
         $code = $LASTEXITCODE
         $out | ForEach-Object { Write-Output $_ }
