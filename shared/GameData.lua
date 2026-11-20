@@ -64,7 +64,7 @@ Data.Stats = {
 	speed={name="Speed",symbol="✦",color="FFFFFF",base=100,cap=400},
 	intelligence={name="Intelligence",symbol="✎",color="55FFFF",base=100},
 	attackSpeed={name="Attack Speed",symbol="⚔",color="FFFF55",base=0,cap=100,percent=true},
-	miningSpeed={name="Mining Speed",symbol="⸕",color="FFAA00",base=0},
+	miningSpeed={name="Mining Speed",symbol="❖",color="FFAA00",base=0},
 	miningFortune={name="Mining Fortune",symbol="☘",color="FFAA00",base=0},
 	foragingFortune={name="Foraging Fortune",symbol="☘",color="FFAA00",base=0},
 	farmingFortune={name="Farming Fortune",symbol="☘",color="FFAA00",base=0},

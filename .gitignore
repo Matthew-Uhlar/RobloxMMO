@@ -8,3 +8,4 @@
 publish-receipt.json
 *.log
 .claude/worktrees/
+build/
