@@ -658,7 +658,9 @@ end
 --   build {furniture}          furniture ever built (p.counters.built)
 --   slayer {line,level}        slayer level of a line
 --   flag {flag}                p[flag] == true (e.g. skyreachVisited)
--- Rewards: coins, items={id=n}, xp={Skill=n}, lamp={xp=n,skills={...}|nil},
+-- Rewards: coins, items={id=n}, xp={Skill=n}, lamp={xp=n,skills={...}|nil,exclude={...}|nil},
+-- (a lamp without a skills list never trains Dungeoneering or Carpentry: those
+-- skills have floor/hotspot gates, so `exclude` lists them and the server enforces it),
 -- points (Quest Points), perk={stat=v} (written to p.perkStats),
 -- unlock={accessorySlots=n, workerHaste=fraction, shortcut=regionId}.
 ------------------------------------------------------------------------------
@@ -670,7 +672,7 @@ Data.Quests = {
 		story="Warden-captain Ysolde asks you to prove the guild charter in the field: thin the boars trampling the meadow herb beds.",
 		requires=qlist({kind="contracts",count=8}),
 		objectives=qlist({kind="kills",monster="BramblebackBoar",count=10},{kind="collect",item="Herb",count=100}),
-		rewards={coins=400,points=1,lamp={xp=600}}},
+		rewards={coins=400,points=1,lamp={xp=600,exclude={"Dungeoneering","Carpentry"}}}},
 	{id="BrassfallEchoes",title="Echoes under Brassfall",line="main",region="Quarry",
 		story="Something knocks beneath Brassfall Quarry. Clear the crawlers and smelt brass for the shoring beams.",
 		requires=qlist({kind="quest",quest="SurveyorsOath"},{kind="level",skill="Mining",level=15}),
@@ -685,12 +687,12 @@ Data.Quests = {
 		story="A miner's lantern still burns deep in Gloomhollow. Follow its light past the Gloomfang nests and weave a silk lifeline home.",
 		requires=qlist({kind="quest",quest="WindpineVigil"},{kind="level",skill="Mining",level=30},{kind="level",skill="Combat",level=15}),
 		objectives=qlist({kind="kills",monster="GloomfangSpider",count=20},{kind="collect",item="Voidstone",count=40},{kind="have",item="SpiderSilk",count=16,consume=true}),
-		rewards={coins=4000,points=3,lamp={xp=6000},unlock={shortcut="Gloomhollow"}}},
+		rewards={coins=4000,points=3,lamp={xp=6000,exclude={"Dungeoneering","Carpentry"}},unlock={shortcut="Gloomhollow"}}},
 	{id="CrownOfTempest",title="Crown of the Tempest",line="main",region="Tempest",
 		story="The storm atop Tempest Spire has a heart. Break the wraith host and the starborn sentinels, then face the Revenant itself.",
 		requires=qlist({kind="quest",quest="HollowLantern"},{kind="level",skill="Combat",level=40},{kind="questPoints",count=14}),
 		objectives=qlist({kind="kills",monster="TempestWraith",count=25},{kind="kills",monster="StarbornSentinel",count=5},{kind="slayer",line="Tempest",level=1}),
-		rewards={coins=20000,points=4,lamp={xp=25000},perk={strength=10,critDamage=10},unlock={workerHaste=0.05}}},
+		rewards={coins=20000,points=4,lamp={xp=25000,exclude={"Dungeoneering","Carpentry"}},perk={strength=10,critDamage=10},unlock={workerHaste=0.05}}},
 	-- Side quests.
 	{id="TidewingLullaby",title="A Lullaby for the Tidewing",line="side",region="Hub",
 		story="The harbour Tidewings are restless. Bring fresh minnows and learn the angler's lullaby.",

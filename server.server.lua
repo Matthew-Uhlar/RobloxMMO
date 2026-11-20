@@ -70,6 +70,40 @@ local function deepCopy(value)
 	for k,v in pairs(value) do out[k]=deepCopy(v) end
 	return out
 end
+-- One DataStore request budget per player for every market/economy call (quotes,
+-- browses, claim checks and order writes, legacy exchange included): MARKET_RATE
+-- tokens per second (6 requests/min sustained) with a small burst. An order costs
+-- two requests (journal save + shared key), a read one. Keyed by UserId so a
+-- rejoin cannot refill it. Reads go through a per-server cache shared by every
+-- player (BROWSE_TTL seconds), refreshed by this server's own committed writes.
+local MARKET_RATE, MARKET_BURST, BROWSE_TTL = 0.1, 6, 10
+local marketBudget, browseCache = {}, {}
+local function spendMarketBudget(player, cost)
+	if preview[player] then return true end
+	local now = os.clock()
+	local bucket = marketBudget[player.UserId]
+	if not bucket then bucket = {tokens = MARKET_BURST, at = now}; marketBudget[player.UserId] = bucket end
+	bucket.tokens = math.min(MARKET_BURST, bucket.tokens + (now - bucket.at) * MARKET_RATE)
+	bucket.at = now
+	if bucket.tokens < cost then return false, math.max(1, math.ceil((cost - bucket.tokens) / MARKET_RATE)) end
+	bucket.tokens -= cost
+	return true
+end
+local function marketBusy(wait) return "Market busy — try again in "..wait.."s." end
+-- Returns ok, book | ok=false, message. Fresh cache entries cost nothing.
+local function cachedBook(player, key)
+	local entry = browseCache[key]
+	if entry and os.clock() - entry.at < BROWSE_TTL then return true, deepCopy(entry.book) end
+	local allowed, wait = spendMarketBudget(player, 1)
+	if not allowed then return false, marketBusy(wait) end
+	local ok, book = pcall(function() return store:GetAsync(key) end)
+	if not ok then return false, nil end
+	browseCache[key] = {book = deepCopy(book), at = os.clock()}
+	return true, book
+end
+local function rememberBook(key, book)
+	browseCache[key] = {book = deepCopy(book), at = os.clock()}
+end
 local function fresh()
 	local xp={}
 	for _,skill in ipairs(Data.SkillOrder) do xp[skill]=0 end
@@ -405,6 +439,11 @@ do
 		if lamp then
 			if not skill then return "Choose a skill for the "..lamp.xp.." XP lamp." end
 			if not Data.Skills[skill] or (lamp.skills and not table.find(lamp.skills,skill)) then return "This lamp cannot train "..skill.."." end
+			-- Gated skills (floor clears, hotspot builds) never take open-ended lamp XP,
+			-- whatever the data says, unless a lamp lists them explicitly.
+			if not lamp.skills and (skill=="Dungeoneering" or skill=="Carpentry" or (lamp.exclude and table.find(lamp.exclude,skill))) then
+				return "This lamp cannot train "..skill..": earn it through its own activity."
+			end
 		elseif skill then
 			return q.title.." has no XP lamp to rub."
 		end
@@ -1292,9 +1331,11 @@ expedition.Name = "IsleExpeditionReward"
 -- Dungeons: result {floor, grade, score, partySize, damageShare} from expedition.server.lua
 -- (a bare Fire(player) is a legacy Floor I, grade B clear). The profile re-checks
 -- the floor's Dungeoneering gate, the 90 s clear cooldown and the Ironman rule.
-expedition.Event:Connect(function(player,result)
+-- grantExpedition returns {ok=true} or {ok=false,reason}; the IsleExpeditionGrant
+-- BindableFunction exposes it so the Observatory only announces accepted chests.
+local function grantExpedition(player,result)
 	local p=profiles[player]
-	if not p or (not preview[player] and os.time()>=(leaseEnd[player] or 0)) then return end
+	if not p or (not preview[player] and os.time()>=(leaseEnd[player] or 0)) then return {ok=false,reason="Your journal is syncing, so the Observatory chest could not be credited."} end
 	result=if type(result)=="table" then result else {}
 	local floorIndex=if type(result.floor)=="number" and Data.DungeonFloors[result.floor] then result.floor else 1
 	local floor=Data.DungeonFloors[floorIndex]
@@ -1307,14 +1348,16 @@ expedition.Event:Connect(function(player,result)
 	p.dungeons=dungeons
 	dungeons.clears=dungeons.clears or {}
 	dungeons.best=dungeons.best or {}
-	if level(p.xp.Dungeoneering)<floor.level then return end
+	if level(p.xp.Dungeoneering)<floor.level then return {ok=false,reason=floor.name.." requires Dungeoneering "..floor.level.."."} end
 	if not Data.dungeonCooldownReady(dungeons.lastClear,now) then
-		update:FireClient(player,snapshot(player,"Observatory chest cooling down • wait "..(Data.Dungeons.clearCooldown-(now-dungeons.lastClear)).."s between credited clears."))
-		return
+		local message="Observatory chest cooling down • wait "..(Data.Dungeons.clearCooldown-(now-dungeons.lastClear)).."s between credited clears."
+		update:FireClient(player,snapshot(player,message))
+		return {ok=false,reason=message}
 	end
 	if not Data.dungeonIronmanCredit(p.ironman==true,partySize,share) then
-		update:FireClient(player,snapshot(player,"Ironman journals need a solo clear or 30% of the party's damage for Observatory credit."))
-		return
+		local message="Ironman journals need a solo clear or 30% of the party's damage for Observatory credit."
+		update:FireClient(player,snapshot(player,message))
+		return {ok=false,reason=message}
 	end
 	dungeons.lastClear=now
 	local key=tostring(floorIndex)
@@ -1331,8 +1374,14 @@ expedition.Event:Connect(function(player,result)
 	for item,n in pairs(drops) do collect(p,item,n) end
 	update:FireClient(player,snapshot(player,floor.name.." cleared • Grade "..grade.." • +"..reward.coins.." coins, +"..reward.combatXp.." Combat and +"
 		..reward.dungeoneeringXp.." Dungeoneering XP, "..reward.items.Stormglass.." Stormglass"..dropText(drops)))
-end)
+	return {ok=true}
+end
+expedition.Event:Connect(function(player,result) grantExpedition(player,result) end)
 expedition.Parent=ServerStorage
+local expeditionGrant=Instance.new("BindableFunction")
+expeditionGrant.Name="IsleExpeditionGrant"
+expeditionGrant.OnInvoke=grantExpedition
+expeditionGrant.Parent=ServerStorage
 
 -- World transit uses the same authoritative unlock as region resource prompts.
 local regionAccess=Instance.new("BindableFunction")
@@ -1551,7 +1600,10 @@ local function settle(player)
 	end)
 	if not ok then return "Order pending. The exchange will retry safely." end
 	result=committed and (if order.protocol==2 then committed.pricedReceipts[trader] else committed.receipts[trader]) or nil
-	if committed then marketViews[player]=quote(committed,order.item,trader) end
+	if committed then
+		marketViews[player]=quote(committed,order.item,trader)
+		if not preview[player] then rememberBook(key,committed) end
+	end
 	if not result then
 		result={units=if order.verb=="list" then 3 else 0,coins=if order.verb=="buy" then (order.price or marketPrices[order.item]) else 0,
 			text="This exchange is at capacity. Your reservation was returned."}
@@ -1578,8 +1630,9 @@ exchangeAction=function(player,verb,item,resume)
 	if verb=="market" then
 		if os.clock()<(marketReads[player] or 0) then return "Quote refreshed recently. Prices can change; purchases use your limit." end
 		marketReads[player]=os.clock()+3
-		local ok,book=pcall(function() return if preview[player] then previewBooks["market_v1_"..item] else store:GetAsync("market_v1_"..item) end)
-		if not ok then return "Market quote unavailable. Your previous quote may be stale." end
+		local ok,book
+		if preview[player] then ok,book=true,previewBooks["market_v1_"..item] else ok,book=cachedBook(player,"market_v1_"..item) end
+		if not ok then return book or "Market quote unavailable. Your previous quote may be stale." end
 		marketViews[player]=quote(book,item,tostring(player.UserId))
 		return "Market quote refreshed. Three units per lot; buy uses your maximum total price."
 	end
@@ -1594,12 +1647,15 @@ exchangeAction=function(player,verb,item,resume)
 	if not resume and os.clock()<(exchangeReady[player] or 0) then
 		return "The exchange is still recording your last order. Try again in "..math.ceil(exchangeReady[player]-os.clock()).."s."
 	end
+	if idle and verb=="list" and (p.items[item] or 0)<3 then return "A market lot needs 3 "..item.."." end
+	if idle and verb=="buy" and p.coins<price then return "You need "..price.." purse coins to reserve this buy limit." end
+	if not resume then
+		local allowed,wait=spendMarketBudget(player,2)
+		if not allowed then return marketBusy(wait) end
+	end
 	if idle then
 		if verb=="list" and not spend(p,{[item]=3}) then return "A market lot needs 3 "..item.."." end
-		if verb=="buy" then
-			if p.coins<price then return "You need "..price.." purse coins to reserve this buy limit." end
-			p.coins-=price
-		end
+		if verb=="buy" then p.coins-=price end
 		p.started=true
 		p.pricedSeq=(p.pricedSeq or 0)+1
 		p.pricedPending={seq=p.pricedSeq,verb=verb,item=item,price=price,protocol=2}
@@ -1625,19 +1681,39 @@ end
 ------------------------------------------------------------------------------
 -- Economy: Bazaar standing orders (commodities) and the Auction House (gear).
 -- Same durability pattern as the exchange above: escrow is taken into the
--- profile (p.econPending) and saved before the shared key is written; each
--- shared key keeps one receipt per trader, so a replayed order applies exactly
--- once and recovery on rejoin is idempotent. Keys: bazaar_v1_<item>, auction_v1_<kind>.
+-- profile (p.econPending, with a random nonce) and saved before the shared key
+-- is written. Keys: bazaar_v1_<item>, auction_v1_<kind>.
+--
+-- Receipts (one per trader, {seq, n=nonce, coins, items, at, text}) make a
+-- replayed order apply exactly once: an order applies only when its nonce differs
+-- from the trader's receipt, and settles only against the receipt with its nonce.
+-- Keys stay small and bounded:
+--   * zero-effect orders (nothing filled, rested, cancelled or collected) never
+--     write: the transform cancels and the server refunds the escrow locally;
+--     claims with nothing to collect are answered from a read, without any write;
+--   * only the newest receipt keeps its text; a trader's receipt is replaced by
+--     their next order (which proves the old one was applied);
+--   * receipts of traders with no open orders/listings and nothing to collect
+--     ("inert") expire after RECEIPT_TTL; at capacity the oldest inert receipt
+--     older than RECEIPT_EVICT_AGE gives up its slot to a newcomer;
+--   * capacity counts live receipts (traders with state), never lifetime traders.
 ------------------------------------------------------------------------------
 do
 local Rules=Data.Economy
 local previewEcon={}
 local READ_INTERVAL=2
+local RECEIPT_TTL=14*86400
+local RECEIPT_EVICT_AGE=3600
+-- Live trader slots per key, so the worst-case value stays far below the
+-- DataStore per-key throughput budget (see the size fixture in verify-gameplay).
+local LIVE_CAP={bazaar=1500,auction=600}
 local categorySet={}
 for _,kind in ipairs(Rules.auctionCategories) do categorySet[kind]=true end
 local bazaarVerbs={bid=true,offer=true,buyNow=true,sellToBid=true,bidCancel=true,bidClaim=true}
 Econ.verbs={bazaar=true,ahBrowse=true,ahList=true,ahBuy=true,ahCancel=true,ahClaim=true}
 for verb in pairs(bazaarVerbs) do Econ.verbs[verb]=true end
+Econ.limits={receiptTtl=RECEIPT_TTL,evictAge=RECEIPT_EVICT_AGE,liveCap=LIVE_CAP}
+local function liveCap(kind) return math.min(Rules.accountCap,LIVE_CAP[kind]) end
 local function whole(raw,digits,low,high)
 	if type(raw)~="string" or not string.match(raw,"^%d+$") or #raw>digits then return nil end
 	local n=tonumber(raw)
@@ -1674,6 +1750,61 @@ local function normalizeAuction(book)
 	book.version=1
 	return book
 end
+-- Traders that still hold state in a book (open orders/listings or something to collect).
+local function busyTraders(book,kind)
+	local busy={}
+	if kind=="bazaar" then
+		for _,side in ipairs({"bids","asks"}) do for _,o in ipairs(book[side]) do busy[o.owner]=true end end
+		for id,c in pairs(book.claims) do
+			if type(c)=="table" and ((c.units or 0)>0 or (c.coins or 0)>0) then busy[id]=true else book.claims[id]=nil end
+		end
+	else
+		for _,l in ipairs(book.listings) do busy[l.seller]=true end
+		for id,n in pairs(book.proceeds) do if (tonumber(n) or 0)>0 then busy[id]=true else book.proceeds[id]=nil end end
+		for id,back in pairs(book.returns) do if type(back)=="table" and next(back) then busy[id]=true else book.returns[id]=nil end end
+	end
+	return busy
+end
+-- The receipt proves this exact order was applied. Orders written before nonces
+-- existed fall back to the sequence number (legacy receipts have no nonce).
+local function receiptMatches(receipt,order)
+	if type(receipt)~="table" then return false end
+	if order.nonce then return receipt.n==order.nonce end
+	return receipt.n==nil and receipt.seq==order.seq
+end
+local function alreadyApplied(receipt,order)
+	if type(receipt)~="table" then return false end
+	if order.nonce then return receipt.n==order.nonce end
+	return receipt.n==nil and (tonumber(receipt.seq) or 0)>=order.seq
+end
+-- Can uid hold a receipt? Returns admitted, and the inert receipt to evict (if any).
+local function admission(book,kind,uid,now,busy)
+	if book.receipts[uid] then return true,nil end
+	local live=0
+	for _ in pairs(book.receipts) do live+=1 end
+	if live<liveCap(kind) then return true,nil end
+	local oldest,oldestAt
+	for id,r in pairs(book.receipts) do
+		local at=tonumber(type(r)=="table" and r.at) or now
+		if not busy[id] and now-at>=RECEIPT_EVICT_AGE and (not oldestAt or at<oldestAt) then oldest,oldestAt=id,at end
+	end
+	return oldest~=nil,oldest
+end
+-- Runs on every write: strips old receipt text, stamps legacy receipts and
+-- expires inert receipts past their TTL. Keeps book.accounts = live receipts.
+local function prune(book,kind,uid,now,busy)
+	local live=0
+	for id,r in pairs(book.receipts) do
+		if type(r)~="table" then
+			book.receipts[id]=nil
+		else
+			r.at=tonumber(r.at) or now
+			if id~=uid then r.text=nil;r.open=nil end
+			if id~=uid and not busy[id] and now-r.at>RECEIPT_TTL then book.receipts[id]=nil else live+=1 end
+		end
+	end
+	book.accounts=live
+end
 -- Bids are kept highest price first, asks lowest first; equal prices keep
 -- arrival order (FIFO), so the head of each list is always next to fill.
 local function insertOrder(list,order,descending)
@@ -1706,8 +1837,6 @@ local function take(book,uid,side,qty,limit)
 	end
 	return filled,value
 end
--- Receipts store open orders compactly ({id,price,qty,1=bid|2=ask}) to keep
--- the worst-case book (accountCap receipts) well inside the DataStore limit.
 local function ownOrders(book,uid,compact)
 	local open={}
 	for _,side in ipairs({"bids","asks"}) do
@@ -1720,26 +1849,22 @@ local function ownOrders(book,uid,compact)
 	return open
 end
 local function joined(text,more) return if text~="" then text.." "..more else more end
+-- Applies one order to a normalized book. Returns {coins, items, text, changed};
+-- changed=false means the book is untouched and the result is a pure refund.
 local function bazaarTrade(book,uid,order)
-	book=normalizeBazaar(book)
-	local receipt=book.receipts[uid]
-	if receipt and receipt.seq>=order.seq then return book end
-	if not receipt then
-		if book.accounts>=Rules.accountCap then return nil end
-		book.accounts+=1
-	end
 	local verb,qty,price,name=order.verb,order.qty or 0,order.price or 0,itemName(order.item)
-	local coins,units,text=0,0,""
+	local coins,units,text,changed=0,0,"",false
 	local room=#book.bids+#book.asks<Rules.bookCap
 	if verb=="bid" or verb=="buyNow" then
 		local filled,cost=take(book,uid,"buy",qty,price)
 		units=filled
 		coins=filled*price-cost
 		local rest=qty-filled
-		if filled>0 then text="Bought "..filled.." "..name.." for "..cost.." coins." end
+		if filled>0 then changed=true;text="Bought "..filled.." "..name.." for "..cost.." coins." end
 		if rest>0 and verb=="bid" and room then
 			book.nextId+=1
 			insertOrder(book.bids,{id=book.nextId,owner=uid,price=price,qty=rest},true)
+			changed=true
 			text=joined(text,"Buy order #"..book.nextId..": "..rest.." "..name.." at "..price.." each, coins escrowed.")
 		elseif rest>0 then
 			coins+=rest*price
@@ -1749,10 +1874,11 @@ local function bazaarTrade(book,uid,order)
 		local filled,value=take(book,uid,"sell",qty,price)
 		coins=value
 		local rest=qty-filled
-		if filled>0 then text="Sold "..filled.." "..name.." for "..value.." coins." end
+		if filled>0 then changed=true;text="Sold "..filled.." "..name.." for "..value.." coins." end
 		if rest>0 and verb=="offer" and room then
 			book.nextId+=1
 			insertOrder(book.asks,{id=book.nextId,owner=uid,price=price,qty=rest},false)
+			changed=true
 			text=joined(text,"Sell offer #"..book.nextId..": "..rest.." "..name.." at "..price.." each, goods escrowed.")
 		elseif rest>0 then
 			units+=rest
@@ -1766,6 +1892,7 @@ local function bazaarTrade(book,uid,order)
 			end
 			if found then break end
 		end
+		if found then changed=true end
 		if found and side=="bids" then
 			coins+=found.qty*found.price
 			text="Buy order #"..found.id.." cancelled; "..found.qty*found.price.." escrowed coins refunded."
@@ -1780,15 +1907,14 @@ local function bazaarTrade(book,uid,order)
 	local claim=book.claims[uid]
 	book.claims[uid]=nil
 	if claim and (claim.units>0 or claim.coins>0) then
+		changed=true
 		units+=claim.units
 		coins+=claim.coins
 		text=joined(text,"Collected "..claim.units.." "..name.." and "..claim.coins.." coins from filled orders.")
 	elseif verb=="bidClaim" then
 		text="Nothing to collect yet."
 	end
-	book.receipts[uid]={seq=order.seq,coins=coins,items=if units>0 then {[order.item]=units} else {},text=text,open=ownOrders(book,uid,true)}
-	book.revision+=1
-	return book
+	return {coins=coins,items=if units>0 then {[order.item]=units} else {},text=text,changed=changed}
 end
 -- Expired listings leave the board; the item waits for its seller's claim.
 local function purgeExpired(book,now)
@@ -1813,15 +1939,8 @@ local function ownListings(book,uid)
 	return open
 end
 local function auctionTrade(book,uid,order,now)
-	book=normalizeAuction(book)
-	local receipt=book.receipts[uid]
-	if receipt and receipt.seq>=order.seq then return book end
-	if not receipt then
-		if book.accounts>=Rules.accountCap then return nil end
-		book.accounts+=1
-	end
 	purgeExpired(book,now)
-	local coins,items,text=0,{},""
+	local coins,items,text,changed=0,{},"",false
 	local function give(id,n) items[id]=(items[id] or 0)+n end
 	local verb=order.verb
 	local index
@@ -1835,6 +1954,7 @@ local function auctionTrade(book,uid,order,now)
 		else
 			book.nextId+=1
 			table.insert(book.listings,{id=book.nextId,seller=uid,item=order.item,price=order.price,expires=now+Rules.auctionDuration})
+			changed=true
 			text="Listed "..itemName(order.item).." for "..order.price.." coins (listing #"..book.nextId..", fee "..order.fee.." coins). It expires in 24 hours."
 		end
 	elseif verb=="ahBuy" then
@@ -1852,12 +1972,14 @@ local function auctionTrade(book,uid,order,now)
 			book.proceeds[listing.seller]=(book.proceeds[listing.seller] or 0)+listing.price
 			give(listing.item,1)
 			coins+=order.price-listing.price
+			changed=true
 			text="Bought "..itemName(listing.item).." for "..listing.price.." coins."
 		end
 	elseif verb=="ahCancel" then
 		if listing and listing.seller==uid then
 			table.remove(book.listings,index)
 			give(listing.item,1)
+			changed=true
 			text="Listing #"..listing.id.." cancelled; "..itemName(listing.item).." returned. The listing fee is not refunded."
 		else
 			text="That listing is no longer open; it may have sold or expired."
@@ -1870,15 +1992,47 @@ local function auctionTrade(book,uid,order,now)
 	local returned=0
 	for id,n in pairs(back or {}) do give(id,n);returned+=n end
 	if proceeds>0 or returned>0 then
+		changed=true
 		coins+=proceeds
 		text=joined(text,"Collected "..proceeds.." coins of sales and "..returned.." expired item"..(if returned==1 then "" else "s")..".")
 	elseif verb=="ahClaim" then
 		text="Nothing to collect in this category yet."
 	end
-	book.receipts[uid]={seq=order.seq,coins=coins,items=items,text=text,open=ownListings(book,uid)}
-	book.revision+=1
-	return book
+	return {coins=coins,items=items,text=text,changed=changed}
 end
+-- Has uid anything to collect in this book right now?
+local function collectable(book,kind,uid,now)
+	if kind=="bazaar" then
+		local claim=book.claims[uid]
+		return claim~=nil and ((claim.units or 0)>0 or (claim.coins or 0)>0)
+	end
+	if (book.proceeds[uid] or 0)>0 then return true end
+	if type(book.returns[uid])=="table" and next(book.returns[uid]) then return true end
+	for _,l in ipairs(book.listings) do if l.seller==uid and l.expires<=now then return true end end
+	return false
+end
+-- One write transform for both books. outcome.kind: "applied" (receipt written),
+-- "replay" (this order's receipt already exists), "noop" (no effect: refund locally),
+-- "full" (no slot for a new trader) or "stale" (a legacy order superseded by its receipt).
+local function transact(old,kind,uid,order,now)
+	local book=if kind=="bazaar" then normalizeBazaar(old) else normalizeAuction(old)
+	local receipt=book.receipts[uid]
+	if alreadyApplied(receipt,order) then
+		return nil,{kind=if receiptMatches(receipt,order) then "replay" else "stale",book=book,receipt=receipt}
+	end
+	local busy=busyTraders(book,kind)
+	local admitted,evict=admission(book,kind,uid,now,busy)
+	local result=if kind=="bazaar" then bazaarTrade(book,uid,order) else auctionTrade(book,uid,order,now)
+	if not result.changed then return nil,{kind="noop",book=book,text=result.text} end
+	if not admitted then return nil,{kind="full",book=book} end
+	if evict then book.receipts[evict]=nil end
+	receipt={seq=order.seq,n=order.nonce,coins=result.coins,items=result.items,at=now,text=result.text}
+	book.receipts[uid]=receipt
+	prune(book,kind,uid,now,busyTraders(book,kind))
+	book.revision+=1
+	return book,{kind="applied",book=book,receipt=receipt}
+end
+Econ.transact=transact
 local function depthOf(list)
 	local levels={}
 	for _,o in ipairs(list) do
@@ -1992,14 +2146,28 @@ local function refund(p,order)
 	p.coins+=order.coins
 	if order.units>0 then p.items[order.item]=(p.items[order.item] or 0)+order.units end
 end
-local function remember(player,order,committed,uid,now)
+local function remember(player,order,book,uid,now)
 	local views=Econ.views[player] or {}
 	Econ.views[player]=views
 	if order.kind=="bazaar" then
-		views.bazaar=bazaarView(committed,order.item,uid,now)
+		views.bazaar=bazaarView(book,order.item,uid,now)
 	else
 		local page=if views.auction and views.auction.category==order.cat then views.auction.page else 1
-		views.auction=auctionView(committed,order.cat,uid,page,now)
+		views.auction=auctionView(book,order.cat,uid,page,now)
+	end
+end
+-- Rebuilds this journal's mirror of its open orders/listings in one book.
+local function remirror(p,order,book,uid)
+	local orders,listings=mirror(p)
+	local kept={}
+	if order.kind=="bazaar" then
+		for _,o in ipairs(orders) do if o.item~=order.item then table.insert(kept,o) end end
+		for _,o in ipairs(ownOrders(book,uid,true)) do table.insert(kept,{item=order.item,id=o[1],price=o[2],qty=o[3],side=if o[4]==1 then "bid" else "ask"}) end
+		p.econOrders=kept
+	else
+		for _,l in ipairs(listings) do if l.cat~=order.cat then table.insert(kept,l) end end
+		for _,l in ipairs(ownListings(book,uid)) do table.insert(kept,{cat=order.cat,id=l[1],item=l[2],price=l[3],expires=l[4]}) end
+		p.econListings=kept
 	end
 end
 local function settle(player)
@@ -2008,44 +2176,43 @@ local function settle(player)
 	if not persist(player,false) then return "Market waiting for a journal save. Try again." end
 	local uid=tostring(player.UserId)
 	local now=os.time()
+	local outcome
 	local function apply(old)
-		if order.kind=="bazaar" then return bazaarTrade(old,uid,order) end
-		return auctionTrade(old,uid,order,now)
+		outcome=nil
+		local book,result=transact(old,order.kind,uid,order,now)
+		outcome=result
+		return book
 	end
-	local committed
 	local ok=pcall(function()
 		if preview[player] then
-			committed=apply(deepCopy(previewEcon[order.key]))
+			local committed=apply(deepCopy(previewEcon[order.key]))
 			if committed then previewEcon[order.key]=deepCopy(committed) end
 		else
-			committed=store:UpdateAsync(order.key,apply)
+			store:UpdateAsync(order.key,apply)
 		end
 	end)
-	if not ok then return "Order pending. The exchange will retry safely." end
-	local receipt=type(committed)=="table" and type(committed.receipts)=="table" and committed.receipts[uid] or nil
-	if not receipt or receipt.seq~=order.seq then
+	if not ok or not outcome then return "Order pending. The exchange will retry safely." end
+	if not preview[player] then rememberBook(order.key,outcome.book) end
+	if outcome.kind=="noop" then
+		refund(p,order)
+		p.econPending=nil
+		remirror(p,order,outcome.book,uid)
+		remember(player,order,outcome.book,uid,now)
+		return outcome.text
+	elseif outcome.kind~="applied" and outcome.kind~="replay" then
 		refund(p,order)
 		p.econPending=nil
 		return "This market is at capacity. Your escrow was returned."
 	end
-	p.coins+=receipt.coins
+	local receipt=outcome.receipt
+	p.coins+=tonumber(receipt.coins) or 0
 	for id,n in pairs(receipt.items or {}) do
 		if Data.Items[id] and n>0 then p.items[id]=(p.items[id] or 0)+n end
 	end
-	local orders,listings=mirror(p)
-	local kept={}
-	if order.kind=="bazaar" then
-		for _,o in ipairs(orders) do if o.item~=order.item then table.insert(kept,o) end end
-		for _,o in ipairs(receipt.open or {}) do table.insert(kept,{item=order.item,id=o[1],price=o[2],qty=o[3],side=if o[4]==1 then "bid" else "ask"}) end
-		p.econOrders=kept
-	else
-		for _,l in ipairs(listings) do if l.cat~=order.cat then table.insert(kept,l) end end
-		for _,l in ipairs(receipt.open or {}) do table.insert(kept,{cat=order.cat,id=l[1],item=l[2],price=l[3],expires=l[4]}) end
-		p.econListings=kept
-	end
+	remirror(p,order,outcome.book,uid)
 	p.econPending=nil
-	remember(player,order,committed,uid,now)
-	return receipt.text
+	remember(player,order,outcome.book,uid,now)
+	return receipt.text or "Recovered order settled."
 end
 local function read(player,verb,item)
 	if os.clock()<(Econ.reads[player] or 0) then return "Prices were refreshed moments ago. Try again shortly." end
@@ -2062,12 +2229,10 @@ local function read(player,verb,item)
 		if not cat or not categorySet[cat] or not page then return "Choose an auction category and page." end
 		key="auction_v1_"..cat
 	end
+	local ok,book
+	if preview[player] then ok,book=true,deepCopy(previewEcon[key]) else ok,book=cachedBook(player,key) end
+	if not ok then return book or "The ledger could not be read. Your previous view may be stale." end
 	Econ.reads[player]=os.clock()+READ_INTERVAL
-	local ok,book=pcall(function()
-		if preview[player] then return deepCopy(previewEcon[key]) end
-		return store:GetAsync(key)
-	end)
-	if not ok then return "The ledger could not be read. Your previous view may be stale." end
 	local views=Econ.views[player] or {}
 	Econ.views[player]=views
 	local uid=tostring(player.UserId)
@@ -2077,6 +2242,12 @@ local function read(player,verb,item)
 	end
 	views.auction=auctionView(book,cat,uid,page,os.time())
 	return Rules.categoryNames[cat].." auctions refreshed (page "..views.auction.page.." of "..views.auction.pages..")."
+end
+-- Orders carry a random nonce so a rolled-back journal (whose econSeq restarts)
+-- can never settle against, or be skipped because of, an older receipt.
+local function newNonce()
+	local guid=string.gsub(HttpService:GenerateGUID(false),"[^%w]","")
+	return string.sub(guid,1,16)
 end
 Econ.action=function(player,verb,item,resume)
 	local p=profiles[player]
@@ -2095,20 +2266,47 @@ Econ.action=function(player,verb,item,resume)
 	if not resume and os.clock()<(exchangeReady[player] or 0) then
 		return "The exchange is still recording your last order. Try again in "..math.ceil(exchangeReady[player]-os.clock()).."s."
 	end
+	-- A claim with nothing to collect never writes: answer it from the shared
+	-- read cache (or one GetAsync), and refresh the trader's view.
+	if not pending and (verb=="bidClaim" or verb=="ahClaim") then
+		local ok,book
+		if preview[player] then ok,book=true,deepCopy(previewEcon[order.key]) else ok,book=cachedBook(player,order.key) end
+		if not ok then return book or "The ledger could not be read. Try again shortly." end
+		local now=os.time()
+		local kind=order.kind
+		book=if kind=="bazaar" then normalizeBazaar(book) else normalizeAuction(book)
+		if not collectable(book,kind,tostring(player.UserId),now) then
+			remember(player,order,book,tostring(player.UserId),now)
+			return if kind=="bazaar" then "Nothing to collect yet." else "Nothing to collect in this category yet."
+		end
+	end
+	if not resume then
+		local allowed,wait=spendMarketBudget(player,2)
+		if not allowed then return marketBusy(wait) end
+	end
 	if not pending then
 		p.coins-=order.coins
 		if order.units>0 then p.items[order.item]-=order.units end
 		p.started=true
 		p.econSeq=(tonumber(p.econSeq) or 0)+1
 		order.seq=p.econSeq
+		order.nonce=newNonce()
+		order.at=os.time()
 		p.econPending=order
 	end
 	exchangeReady[player]=os.clock()+EXCHANGE_COOLDOWN
 	exchangeBusy[player]=true
 	local ok,message=pcall(settle,player)
 	exchangeBusy[player]=nil
-	if not ok then return "Exchange delayed. Retry to recover your order." end
-	if pending and not resume and not p.econPending then message="Recovered your earlier order first: "..message end
+	if not ok then message="Exchange delayed. Retry to recover your order." end
+	if p.econPending and not preview[player] then
+		-- Retry an ambiguous order soon, so its receipt is consumed while it is fresh.
+		local stuck=p.econPending
+		task.delay(30,function()
+			if player.Parent and profiles[player]==p and p.econPending==stuck and Econ.resume then Econ.resume(player) end
+		end)
+	end
+	if ok and pending and not resume and not p.econPending then message="Recovered your earlier order first: "..message end
 	return message
 end
 Econ.resume=function(player)

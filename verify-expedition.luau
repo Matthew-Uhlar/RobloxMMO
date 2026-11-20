@@ -36,11 +36,20 @@ local bridge={Invoke=function(_,op,p)
 	if op=="dungeon" then return {level=levels[p] or 1,ironman=irons[p]==true} end
 	return nil
 end}
+-- L6: when grantMode is set, ServerStorage also exposes the IsleExpeditionGrant
+-- BindableFunction; grantMode.ok=false makes the profile refuse with grantMode.reason.
+local grantMode,grants=nil,{}
+local grant={Invoke=function(_,p,payload)
+	if not grantMode.ok then return {ok=false,reason=grantMode.reason} end
+	grants[p]=(grants[p] or 0)+1 payloads[p]=payload
+	return {ok=true}
+end}
 local services={Players=players,RunService={Heartbeat=heartbeat},
 	CollectionService={AddTag=function(part,anchor,tag) anchor:SetAttribute("TestArtTag",tag) end},
 	ReplicatedStorage={WaitForChild=function(_,name) return name end},
 	ServerStorage={FindFirstChild=function(_,name)
 		if name=="IsleExpeditionReward" then return reward elseif name=="IsleBridge" then return bridge end
+		if name=="IsleExpeditionGrant" and grantMode then return grant end
 		return nil
 	end}}
 local now=10
@@ -410,10 +419,13 @@ check(hums[d].Health==100 and hums[g].Health==76,"ring spares the inside and hit
 check(warn.Transparency==1,"telegraph clears after the strike")
 coreDown(d)
 at(g,r.Vector3.new(20,0,0))
-check(rewards[d]==1 and rewards[g]==1,"Floor II party both credited")
+-- M5: g only tuned prisms (no damage). Tuning counts for at most half the
+-- contribution threshold, so a tuning-only leech earns no chest.
+check(rewards[d]==1 and rewards[g]==nil,"Floor II: striker credited, tuning-only member is not")
+check(noticeOf(g):find("tuning counts for at most half",1,true)~=nil,"tuning-only member told why")
 check(payloads[d].floor==2 and payloads[d].mistakes==2 and payloads[d].deaths==0 and payloads[d].partySize==2,"payload reports floor, mistakes, deaths and party")
 check(payloads[d].score==270 and payloads[d].grade=="S","two mistakes grade S on a fast clear")
-check(payloads[g].damageShare==0 and payloads[d].damageShare==1,"payload damage shares")
+check(payloads[d].damageShare==1,"payload damage share")
 check(d:GetAttribute("DungeonResult"):find("Floor II • S",1,true)~=nil,"result summary for the UI")
 
 -- Floor III: core shield phases + Starfall (meteor) telegraph, solo.
@@ -567,5 +579,75 @@ check(inside==Data.Dungeons.maxParty,"pad admits five delvers")
 check(rootOf(crowd[6]).Position.Z~=1824 and noticeOf(crowd[6]):find("full",1,true)~=nil,"sixth delver told the party is full")
 for n=1,6 do players.PlayerRemoving:Fire(crowd[n]) end
 check(caption.Text:find("0 / 3",1,true)~=nil,"crowd leaving resets the run")
+
+-- L6: the chest opens (and the 90 s cooldown starts) only when the profile accepts.
+local lone=player()
+grantMode={ok=false,reason="Waiting for journal sync."}
+clearPad() use(lone,"ExpeditionGate","Enter expedition")
+launch()
+for _,prism in pylons do tune(lone,prism) end
+guardiansDown(lone)
+coreDown(lone)
+check(grants[lone]==nil and rewards[lone]==nil,"refused grant pays nothing")
+check(noticeOf(lone)=="Waiting for journal sync.","refusal reason shown instead of Chest opened")
+grantMode={ok=true}
+clearPad() use(lone,"ExpeditionGate","Enter expedition")
+launch()
+for _,prism in pylons do tune(lone,prism) end
+guardiansDown(lone)
+coreDown(lone)
+check(grants[lone]==1 and noticeOf(lone):find("Chest opened!",1,true)~=nil,"refused clear did not start the cooldown")
+check(rewards[lone]==nil,"grant function replaces the legacy event when present")
+clearPad() use(lone,"ExpeditionGate","Enter expedition")
+launch()
+for _,prism in pylons do tune(lone,prism) end
+guardiansDown(lone)
+coreDown(lone)
+check(grants[lone]==1 and noticeOf(lone):find("cooldown",1,true)~=nil,"accepted grant starts the cooldown")
+grantMode=nil
+
+-- M4: an idle solo delver no longer blocks the Observatory.
+local afk=player()
+clearPad() use(afk,"ExpeditionGate","Enter expedition")
+launch()
+check(rootOf(afk).Position.Z==1824,"afk delver launched")
+heartbeat:Fire(0)
+now+=60
+heartbeat:Fire(0)
+check(rootOf(afk).Position.Z==1824,"60 s still is not idle yet")
+now+=31
+heartbeat:Fire(0)
+check(rootOf(afk).Position.Z~=1824 and noticeOf(afk):find("without fighting",1,true)~=nil,"idle delver removed after 90 s")
+check(caption.Text:find("0 / 3",1,true)~=nil,"idle removal frees the Observatory")
+local other=player()
+clearPad() use(other,"ExpeditionGate","Enter expedition")
+check(noticeOf(other):find("party is inside",1,true)==nil,"next party can form")
+launch()
+-- Movement and tuning keep a delver active.
+heartbeat:Fire(0)
+for _=1,3 do now+=60 rootOf(other).Position+=r.Vector3.new(3,0,0) heartbeat:Fire(0) end
+check(rootOf(other).Position.Z==1824,"a moving delver stays in the run")
+-- Leaving the arena removes the delver after a short grace.
+rootOf(other).Position=r.Vector3.new(0,0,900)
+heartbeat:Fire(0)
+now+=5
+heartbeat:Fire(0)
+check(noticeOf(other):find("left the Observatory",1,true)==nil,"short absence (respawn) tolerated")
+now+=6
+heartbeat:Fire(0)
+check(noticeOf(other):find("left the Observatory",1,true)~=nil and caption.Text:find("0 / 3",1,true)~=nil,"delver far from the arena removed and run reset")
+-- Hard run cap: twice the floor's par, then the run fails with no reward.
+local slow=player()
+clearPad() use(slow,"ExpeditionGate","Enter expedition")
+launch()
+for _,prism in pylons do tune(slow,prism) end
+local par=Data.DungeonFloors[1].par
+for step=1,math.ceil(2*par/30) do
+	now+=30
+	rootOf(slow).Position=core.Position+r.Vector3.new((step%2)*4,0,0)
+	heartbeat:Fire(0)
+end
+check(noticeOf(slow):find("collapsed",1,true)~=nil,"run capped at twice par")
+check(rewards[slow]==nil and caption.Text:find("0 / 3",1,true)~=nil,"capped run pays nothing and resets")
 local runChecks=checks-baseChecks-dataChecks
 print("Expedition QA passed "..checks.." behavioral checks ("..baseChecks.." encounter, "..dataChecks.." dungeon rules, "..runChecks.." dungeon runs).")

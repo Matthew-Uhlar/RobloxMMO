@@ -27,6 +27,7 @@ local repeatMarketTransform=false
 local econFailure, repeatEcon, econReadFailure = nil, false, false
 local db = {}
 function db:GetAsync(key)
+	db.reads=(db.reads or 0)+1
 	if econReadFailure and (key:match("^bazaar") or key:match("^auction")) then econReadFailure=false; error("Injected read outage") end
 	return copy(data[key])
 end
@@ -39,6 +40,7 @@ function db:UpdateAsync(key, op)
 	if repeatEcon and econKey then op(copy(data[key])) end
 	local value = op(copy(data[key]))
 	if value then data[key] = copy(value) end
+	if econKey and value then db.econWrites=(db.econWrites or 0)+1 end
 	if econKey and econFailure=="after" then econFailure=nil; error("Injected lost acknowledgement after durable commit") end
 	if injectedFailure and key:match("^market") then
 		injectedFailure=false
@@ -69,12 +71,13 @@ local function nextRoll()
 	return defaultRoll
 end
 local seeds = {}
+local guidCount = 0
 local services = {
 	Players = {PlayerAdded=signal(),PlayerRemoving=signal(),GetPlayers=function() return {} end},
 	ProximityPromptService = {PromptTriggered=signal()},
 	ReplicatedStorage = {WaitForChild=function(_, name) return assert(markers[name], name) end},ServerStorage={},
 	DataStoreService = {GetDataStore=function() return db end},
-	HttpService = {GenerateGUID=function() return "test-instance" end},
+	HttpService = {GenerateGUID=function() guidCount+=1; return if guidCount==1 then "test-instance" else "test-guid-"..guidCount end},
 	RunService = {IsStudio=function() return false end},
 }
 local objects,allObjects = {},{}
@@ -115,9 +118,12 @@ local function cmd(p,verb,item)
 	advance(1)
 	return objects.RemoteFunction.OnServerInvoke(p,verb,item)
 end
--- Writing market verbs share a per-player exchange cooldown (6 s).
+-- Writing market verbs share a per-player exchange cooldown (6 s). Each order
+-- also spends two tokens of the per-player market DataStore budget (0.1/s), so
+-- the server clock moves on 20 s per trade (game time only 6 s).
 local function trade(p,verb,item)
 	advance(6)
+	clock+=14
 	return cmd(p,verb,item)
 end
 local function node(verb,item,distance,owner,region)
@@ -938,6 +944,21 @@ local bridge=hook("IsleBridge")
 ok(bridge~=nil,"IsleBridge BindableFunction exists")
 eq(bridge.Parent,services.ServerStorage,"IsleBridge parented to ServerStorage")
 eq(hook("IsleCoopProfile").Parent,services.ServerStorage,"co-op hook still parented")
+-- L6: the Observatory grant reports whether the profile accepted the chest.
+do
+	local grant=hook("IsleExpeditionGrant")
+	eq(grant~=nil and grant.Parent==services.ServerStorage,true,"expedition grant function published")
+	local delver=player(4400)
+	local gated=grant.OnInvoke(delver,{floor=2,grade="B",score=200,partySize=1,damageShare=1})
+	eq(gated.ok,false,"floor gate refuses the grant")
+	eq(gated.reason:find("Dungeoneering",1,true)~=nil,true,"floor gate reason returned")
+	eq(cmd(delver,"state").items.Stormglass,nil,"refused grant pays nothing")
+	eq(grant.OnInvoke(delver,{floor=1,grade="B",score=200,partySize=1,damageShare=1}).ok,true,"eligible clear accepted")
+	eq(cmd(delver,"state").items.Stormglass,1,"accepted grant pays the chest")
+	local cooling=grant.OnInvoke(delver,{floor=1,grade="B",score=200,partySize=1,damageShare=1})
+	eq(cooling.ok==false and cooling.reason:find("cooling down",1,true)~=nil,true,"profile cooldown refusal reported")
+	eq(grant.OnInvoke({UserId=4401},{floor=1}).ok,false,"no live journal refuses")
+end
 ok(#seeds>=1,"server creates a seeded Random")
 
 -- Fresh snapshot exposes the full depth block.
@@ -1676,8 +1697,9 @@ local function cmd(p,verb,item)
 	clock+=1
 	return objects.RemoteFunction.OnServerInvoke(p,verb,item)
 end
+-- Orders also spend two tokens of the per-player market budget (0.1/s): 20 s each.
 local function trade(p,verb,item)
-	clock+=6
+	clock+=20
 	return cmd(p,verb,item)
 end
 local function ok(cond,case) assert(cond,case); checks+=1 end
@@ -1791,7 +1813,9 @@ local claimed=trade(b1,"bidClaim","Brassite")
 eq(claimed.items.Brassite,5,"buyer claims filled goods")
 eq(claimed.coins,9800,"claim does not touch escrow")
 eq(claimed.economy.orders[1].qty,5,"mirror shows the remaining quantity")
+local claimWrites=db.writes
 eq(trade(b1,"bidClaim","Brassite").message,"Nothing to collect yet.","claim cannot repeat")
+eq(db.writes,claimWrites,"H1: a claim with nothing to collect performs no UpdateAsync")
 eq(trade(b1,"state").items.Brassite,5,"repeat claim pays nothing")
 local floor=trade(seller,"sellToBid","Brassite:10:21")
 eq(floor.items.Brassite,85,"instant sell respects a minimum price")
@@ -1930,9 +1954,9 @@ eq(st(hesitant).items.Moonbloom,8,"cancel replay returns goods once")
 eq(#bazaar("Moonbloom").asks,0,"cancel replay removes the offer once")
 hesitant=rejoin(hesitant)
 eq(st(hesitant).items.Moonbloom,8,"cancel replay cannot repeat")
--- Read failures keep the previous view.
+-- Read failures keep the previous view (once the shared 10 s read cache has aged out).
 econReadFailure=true
-clock+=3
+clock+=11
 eq(has(cmd(hesitant,"bazaar","Moonbloom").message,"could not be read"),true,"quote outage is reported")
 -- Shared cooldown with the legacy exchange.
 local busy=econPlayer(2023,100,{Fish=3})
@@ -1992,8 +2016,12 @@ advance(86401)
 merchant,collector=rejoin(merchant),rejoin(collector)
 clock+=3
 eq(cmd(collector,"ahBrowse","pet").economy.auction.total,0,"expired listings leave the board")
-eq(has(trade(collector,"ahBuy","pet:"..petId..":150").message,"listing is gone"),true,"expired listing cannot be bought")
-eq(auction("pet").returns["2101"].EmberfoxPet,1,"another trader's write moves expired items to returns")
+local writesBefore=db.econWrites
+local goneBuy=trade(collector,"ahBuy","pet:"..petId..":150")
+eq(has(goneBuy.message,"listing is gone"),true,"expired listing cannot be bought")
+eq(goneBuy.coins,4000,"failed purchase refunds the escrow locally")
+eq(db.econWrites,writesBefore,"H2: a purchase that changes nothing writes nothing (no receipt)")
+eq(auction("pet").receipts["2102"],nil,"no-op purchases never create a receipt")
 clock+=3
 eq(cmd(merchant,"ahBrowse","pet").economy.auction.returns,1,"seller sees the waiting return")
 local back=trade(merchant,"ahClaim","pet")
@@ -2071,33 +2099,120 @@ end
 eq(st(iron).coins,1000,"Ironman coins untouched")
 eq(st(iron).items.BrassSword,1,"Ironman gear untouched")
 eq(st(iron).economy.bazaar,nil,"Ironman receives no market view")
--- Worst-case shared keys stay well inside the 4 MB DataStore value limit.
+-- L7: a rolled-back journal (econSeq restarts) never settles against an older receipt.
+local roller=econPlayer(2200,0,{Glowcap=4})
+local rollBuyer=econPlayer(2201,1000,{})
+trade(rollBuyer,"bid","Glowcap:4:50")
+local sale=trade(roller,"sellToBid","Glowcap:4:50")
+eq(sale.coins,200,"sale before the rollback")
+eq(bazaar("Glowcap").receipts["2200"].n~=nil,true,"receipts carry the order nonce")
+roller=rejoin(roller)
+services.Players.PlayerRemoving:Fire(roller)
+data.p2200.profile.econSeq=0 -- rollback: the sequence restarts, coins/items as saved
+roller=player(2200)
+local fresh=trade(roller,"bid","Glowcap:1:5")
+eq(fresh.coins,195,"post-rollback order with a reused seq is applied, not matched to the old receipt")
+eq(has(fresh.message,"Buy order #"),true,"post-rollback bid rests in the book")
+eq(orderId(roller,"Glowcap","bid")~=nil,true,"post-rollback bid mirrored")
+trade(roller,"bidCancel","Glowcap:"..orderId(roller,"Glowcap","bid"))
+trade(rollBuyer,"bidClaim","Glowcap")
+
+-- M3: one per-player DataStore budget across every market call, and a shared read cache.
+local spam=econPlayer(2210,1000,{Brassite=50})
+clock+=60
+local reads=db.reads
+cmd(spam,"bazaar","Brassite")
+clock+=3
+local watcher=econPlayer(2211,0,{})
+cmd(watcher,"bazaar","Brassite")
+eq(db.reads,reads+1,"two players browsing one book within 10 s share one GetAsync")
+clock+=11
+local busyMsg
+local calls=db.reads+db.writes
+for i=1,12 do
+	clock+=6 -- a scripted client firing as soon as the 6 s exchange cooldown allows
+	local r=cmd(spam,"offer","Brassite:1:"..(100+i))
+	if has(r.message,"Market busy") then busyMsg=r.message break end
+end
+ok(busyMsg~=nil and string.match(busyMsg,"^Market busy — try again in %d+s%.$")~=nil,"budget exhausted answers Market busy: "..tostring(busyMsg))
+local spent=db.reads+db.writes-calls
+ok(spent<=12,"burst bounded before the budget refuses ("..spent.." DataStore calls)")
+local after,started=db.reads+db.writes,clock
+for _=1,30 do clock+=2 cmd(spam,"bazaar","Brassite") end
+local elapsed=clock-started
+ok(db.reads+db.writes-after<=math.ceil(elapsed/10)+1,"browse spam bounded by the shared 10 s cache ("..(db.reads+db.writes-after).." reads in "..elapsed.." s)")
+eq(st(spam).items.Brassite+#econ(spam).orders,50,"budget refusals escrow nothing")
+for _,o in ipairs(econ(spam).orders) do clock+=20 trade(spam,"bidCancel","Brassite:"..o.id) end
+
+-- H2: 5000 distinct sequential traders can each place and complete a trade.
+-- Inert receipts give their slot to newcomers, so a key never locks up.
+local maker=econPlayer(2300,0,{Moonbloom=640*9})
+trade(maker,"offer","Moonbloom:640:2")
+local done,peak=0,0
+local liveCap=math.min(Rules.accountCap,1500)
+for n=1,5000 do
+	utc+=3
+	if n%600==0 then
+		maker=rejoin(maker)
+		trade(maker,"offer","Moonbloom:640:2")
+	end
+	local buyer=econPlayer(100000+n,10,{})
+	local r=trade(buyer,"buyNow","Moonbloom:1:2")
+	if r.items.Moonbloom==1 and r.coins==8 then done+=1 end
+	peak=math.max(peak,bazaar("Moonbloom").accounts)
+	services.Players.PlayerRemoving:Fire(buyer)
+end
+eq(done,5000,"every one of 5000 sequential traders completed a trade")
+eq(peak,liveCap,"live receipts reach but never exceed the per-key cap (slots were recycled)")
+local live=0
+for _ in pairs(bazaar("Moonbloom").receipts) do live+=1 end
+eq(live,bazaar("Moonbloom").accounts,"accounts counts live receipts")
+local textCount=0
+for _,r in pairs(bazaar("Moonbloom").receipts) do if r.text then textCount+=1 end end
+eq(textCount,1,"only the newest receipt keeps its text")
+-- Inert receipts expire after the TTL; the maker (open offer + claims) keeps its receipt.
+utc+=15*86400
+maker=rejoin(maker)
+trade(maker,"bidClaim","Moonbloom")
+live=0
+for _ in pairs(bazaar("Moonbloom").receipts) do live+=1 end
+ok(live<=2,"inert receipts pruned after the TTL ("..live.." left)")
+eq(bazaar("Moonbloom").receipts["2300"]~=nil,true,"active trader keeps its receipt")
+
+-- H1: worst-case shared keys after pruning stay small (per-key throughput budget).
 local serde=require("@lune/serde")
+local longestCommodity,auctionIds="",{}
+for id,def in pairs(Data.Items) do
+	if Rules.isCommodity(id) and #id>#longestCommodity then longestCommodity=id end
+	if Rules.auctionCategory(id) then table.insert(auctionIds,id) end
+end
+table.sort(auctionIds,function(a,b) return #a>#b end)
+local function nonce(u) return string.format("%016x",u) end
 local text=string.rep("x",260)
-local worstBazaar={bids={},asks={},claims={},receipts={},accounts=Rules.accountCap,nextId=999999999,revision=999999999,version=1}
+local bazaarCap,auctionCap=math.min(Rules.accountCap,1500),math.min(Rules.accountCap,600)
+local worstBazaar={bids={},asks={},claims={},receipts={},accounts=bazaarCap,nextId=999999999,revision=999999999,version=1}
 for i=1,Rules.bookCap do table.insert(worstBazaar.bids,{id=999999000+i,owner=tostring(9000000000+i),price=Rules.maxPrice,qty=Rules.maxQuantity}) end
-for u=1,Rules.accountCap do
+for u=1,bazaarCap do
 	local uid=tostring(9000000000+u)
-	local open={}
-	for k=1,Rules.orderCap do table.insert(open,{999999000+k,Rules.maxPrice,Rules.maxQuantity,1}) end
-	worstBazaar.receipts[uid]={seq=9999999,coins=640000000,items={AetherheartLog=640},text=text,open=open}
-	worstBazaar.claims[uid]={units=640000,coins=640000000000}
+	worstBazaar.receipts[uid]={seq=9999999,n=nonce(u),coins=640000000,items={[longestCommodity]=6400},at=1999999999,text=if u==1 then text else nil}
+	worstBazaar.claims[uid]={units=6400,coins=6400000000}
 end
 local bazaarBytes=#serde.encode("json",worstBazaar)
-ok(bazaarBytes<3200000,"worst-case Bazaar book fits: "..bazaarBytes)
-local worstAuction={listings={},proceeds={},returns={},receipts={},accounts=Rules.accountCap,nextId=999999999,revision=999999999,version=1}
-for i=1,Rules.auctionCap do table.insert(worstAuction.listings,{id=999999000+i,seller=tostring(9000000000+i),item="CelestialChestplate",price=Rules.maxPrice,expires=1999999999}) end
-for u=1,Rules.accountCap do
+ok(bazaarBytes<512*1024,"worst-case Bazaar key after pruning < 512 KB: "..bazaarBytes)
+local worstAuction={listings={},proceeds={},returns={},receipts={},accounts=auctionCap,nextId=999999999,revision=999999999,version=1}
+for i=1,Rules.auctionCap do table.insert(worstAuction.listings,{id=999999000+i,seller=tostring(9000000000+i),item=auctionIds[1],price=Rules.maxPrice,expires=1999999999}) end
+for u=1,auctionCap do
 	local uid=tostring(9000000000+u)
-	local open={}
-	for k=1,Rules.listingCap do table.insert(open,{999999000+k,"CelestialChestplate",Rules.maxPrice,1999999999}) end
-	worstAuction.receipts[uid]={seq=9999999,coins=1000000,items={CelestialChestplate=10,CelestialGreaves=10},text=text,open=open}
-	worstAuction.proceeds[uid]=10000000
-	worstAuction.returns[uid]={CelestialChestplate=10}
+	local items,back={},{}
+	for k=1,Rules.listingCap+1 do items[auctionIds[k]]=10 end
+	for k=1,Rules.listingCap do back[auctionIds[k]]=10 end
+	worstAuction.receipts[uid]={seq=9999999,n=nonce(u),coins=1000000000,items=items,at=1999999999,text=if u==1 then text else nil}
+	worstAuction.proceeds[uid]=10000000000
+	worstAuction.returns[uid]=back
 end
 local auctionBytes=#serde.encode("json",worstAuction)
-ok(auctionBytes<3200000,"worst-case Auction House key fits: "..auctionBytes)
-print("Economy maximum-shape fixtures: Bazaar "..bazaarBytes.." / Auction "..auctionBytes.." JSON bytes.")
+ok(auctionBytes<512*1024,"worst-case Auction House key after pruning < 512 KB: "..auctionBytes)
+print("Economy maximum-shape fixtures after pruning: Bazaar "..bazaarBytes.." / Auction "..auctionBytes.." JSON bytes.")
 print("PASS: "..(checks-before).." economy (Bazaar / Auction House) assertions.")
 end)()
 print("PASS: "..checks.." production gameplay/market/depth assertions.")
@@ -2188,6 +2303,19 @@ do
 	eq(noSkill.coins,0,"lamp refusal pays nothing")
 	eq(cmd(hero,"quest","SurveyorsOath:Nope").coins,0,"unknown lamp skill rejected")
 	eq(cmd(hero,"quest","SurveyorsOath:mining").coins,0,"lamp skill is case-sensitive")
+	-- L8: open lamps never feed gated skills (data rule + server enforcement).
+	for _,q in ipairs(Data.Quests) do
+		local lamp=q.rewards.lamp
+		if lamp and not lamp.skills then
+			eq(lamp.exclude~=nil and table.find(lamp.exclude,"Dungeoneering")~=nil and table.find(lamp.exclude,"Carpentry")~=nil,true,q.id.." lamp excludes gated skills")
+		end
+	end
+	for _,gated in ipairs({"Dungeoneering","Carpentry"}) do
+		local refused=cmd(hero,"quest","SurveyorsOath:"..gated)
+		eq(refused.message:find("cannot train",1,true)~=nil,true,"open lamp refuses "..gated)
+		eq(refused.xp[gated],0,"open lamp grants no "..gated.." XP")
+		eq(questEntry(refused,"SurveyorsOath").done,false,"gated lamp refusal claims nothing")
+	end
 	local claimed=cmd(hero,"quest","SurveyorsOath:Mining")
 	eq(questEntry(claimed,"SurveyorsOath").done,true,"quest claimed")
 	eq(claimed.xp.Mining,600,"lamp XP to chosen skill")

@@ -9,11 +9,16 @@
 -- Every boss telegraphs its attack (warning disc + heart VisualState "Warning").
 -- Clear score = speed + survival + puzzle (Data.dungeonScore) -> grade S+..D.
 -- Credit rules (documented in GameData Dungeons section):
---   * contributed: damage + 5%-of-floor-HP per tuning >= 10% of the party total
+--   * contributed: damage + 5%-of-floor-HP per tuning >= 10% of the party total;
+--     tuning counts for at most half of that threshold, and in a party the delver
+--     must also deal >= 5% of the party's damage (tuning alone never earns a chest)
 --   * Ironman: credited only when solo or >= 30% of party damage
 --   * cooldown: 90 s between reward credits per player (also enforced in profile)
--- Rewards are paid by ServerStorage.IsleExpeditionReward (server.server.lua) with
--- payload {floor, grade, score, seconds, deaths, mistakes, partySize, damageShare}.
+-- Rewards are paid by ServerStorage.IsleExpeditionGrant (BindableFunction, returns
+-- {ok, reason}) in server.server.lua; the IsleExpeditionReward BindableEvent is the
+-- fallback. Payload {floor, grade, score, seconds, deaths, mistakes, partySize, damageShare}.
+-- A run that is not cleared ends (no reward) after twice the floor's par time, and
+-- delvers idle for 90 s (no damage, tuning or movement) or away from the arena are removed.
 local Players = game:GetService("Players")
 local Storage = game:GetService("ServerStorage")
 local RunService = game:GetService("RunService")
@@ -21,6 +26,10 @@ local CollectionService=game:GetService("CollectionService")
 local Data = require(game:GetService("ReplicatedStorage"):WaitForChild("AetherData"))
 local Rules = Data.Dungeons
 local origin = Vector3.new(0, 42, 1800)
+-- Run limits (M4/M5): see the header.
+local IDLE_LIMIT, AWAY_RADIUS, AWAY_GRACE, RUN_CAP_PARS = 90, 120, 10, 2
+local MIN_DAMAGE_SHARE, TUNE_CAP_OF_THRESHOLD = 0.05, 0.5
+local arenaAnchors = {origin, origin + Vector3.new(0, 0, -110)}
 local dark = Color3.fromRGB(37, 52, 71)
 local gold = Color3.fromRGB(255, 193, 94)
 local teal = Color3.fromRGB(66, 223, 205)
@@ -118,9 +127,15 @@ local function warded()
 	for _, add in adds do if add.hp > 0 then return true end end
 	return false
 end
-local function points(record)
-	return record.damage + record.tunes * Rules.tuneWeight * totalHp(run.stats)
+local function tunePoints(record)
+	return record.tunes * Rules.tuneWeight * totalHp(run.stats)
 end
+-- Credited points: tuning counts for at most half the contribution threshold.
+local function points(record, totalPoints)
+	local cap = TUNE_CAP_OF_THRESHOLD * Rules.contributionShare * totalPoints
+	return record.damage + math.min(tunePoints(record), cap)
+end
+local function touch(record) record.active = os.clock() end
 local function orderOf(i)
 	-- Ordered floors rotate which prism comes first each run.
 	return ((i - 1 + run.seed) % 3) + 1
@@ -202,6 +217,7 @@ local function reset()
 	display()
 end
 local function credit(record, amount)
+	touch(record)
 	record.damage += amount
 	run.totalDamage += amount
 end
@@ -250,6 +266,7 @@ for i = 1, 3 do
 			return
 		end
 		charged[i] = true
+		touch(member)
 		member.tunes += 1
 		run.totalTunes += 1
 		run.nextPrism += 1
@@ -286,8 +303,10 @@ local function finish()
 		local reason
 		if not (root and humanoid and humanoid.Health > 0 and (root.Position - origin).Magnitude <= 60) then
 			reason = "Stand in the Observatory, alive, when the boss falls to earn the chest."
-		elseif not Data.dungeonContributed(points(record), totalPoints) then
-			reason = "Contribute at least " .. math.floor(Rules.contributionShare * 100) .. "% of the party's damage and tuning to earn the chest."
+		elseif not Data.dungeonContributed(points(record, totalPoints), totalPoints) then
+			reason = "Contribute at least " .. math.floor(Rules.contributionShare * 100) .. "% of the party's damage and tuning to earn the chest (tuning counts for at most half)."
+		elseif run.partySize > 1 and share < MIN_DAMAGE_SHARE then
+			reason = "Deal at least " .. math.floor(MIN_DAMAGE_SHARE * 100) .. "% of the party's damage to earn the chest."
 		elseif not Data.dungeonIronmanCredit(record.ironman, run.partySize, share) then
 			reason = "Ironman credit needs a solo clear or " .. math.floor(Rules.ironmanDamageShare * 100) .. "% of the party's damage."
 		elseif not Data.dungeonCooldownReady(lastCredit[participant], os.clock()) then
@@ -296,11 +315,27 @@ local function finish()
 		participant:SetAttribute("DungeonResult", summary)
 		if reason then
 			notice(participant, reason)
-		elseif reward then
-			lastCredit[participant] = os.clock()
-			notice(participant, "Chest opened! " .. summary)
-			reward:Fire(participant, {floor = f.index, grade = grade, score = score, seconds = math.floor(seconds), deaths = run.deaths,
-				mistakes = run.mistakes, partySize = run.partySize, damageShare = share})
+		else
+			local payload = {floor = f.index, grade = grade, score = score, seconds = math.floor(seconds), deaths = run.deaths,
+				mistakes = run.mistakes, partySize = run.partySize, damageShare = share}
+			-- The profile may still refuse (lease lapsed, floor gate, cooldown): only an
+			-- accepted grant opens the chest and starts this script's cooldown.
+			local grant = Storage:FindFirstChild("IsleExpeditionGrant")
+			local granted, why
+			if grant then
+				local ok, result = pcall(grant.Invoke, grant, participant, payload)
+				granted = ok and type(result) == "table" and result.ok == true
+				why = if ok and type(result) == "table" and type(result.reason) == "string" then result.reason else nil
+			elseif reward then
+				reward:Fire(participant, payload)
+				granted = true
+			end
+			if granted then
+				lastCredit[participant] = os.clock()
+				notice(participant, "Chest opened! " .. summary)
+			else
+				notice(participant, why or "The Observatory chest could not be credited to your journal. Try another clear.")
+			end
 		end
 		leave(participant, participant.Character)
 	end
@@ -472,7 +507,7 @@ local function launch()
 	run.partySize = #joined
 	for _, guardian in guardians do guardian.Color = gold;guardian:SetAttribute("VisualState","Active") end
 	for _, entry in joined do
-		members[entry.player] = {last = 0, damage = 0, tunes = 0, mistakes = 0, ironman = entry.info.ironman, down = false}
+		members[entry.player] = {last = 0, damage = 0, tunes = 0, mistakes = 0, ironman = entry.info.ironman, down = false, active = os.clock()}
 		entry.player:SetAttribute("ExpeditionFloor", floorIndex)
 		notice(entry.player, Data.DungeonFloors[floorIndex].name .. " begins • party of " .. #joined .. ".")
 		entry.player.Character:PivotTo(CFrame.new(origin + Vector3.new(0, 5, 24)))
@@ -485,6 +520,45 @@ display()
 RunService.Heartbeat:Connect(function(dt)
 	if lobby then
 		if os.clock() >= lobby.deadline then launch() else display() end
+	end
+	if not next(members) then return end
+	local now = os.clock()
+	-- M4: a run that is not cleared in twice the floor's par collapses with no reward.
+	if run.active and now - run.startedAt >= RUN_CAP_PARS * floorDef().par then
+		for participant in table.clone(members) do
+			notice(participant, "The Observatory collapsed: " .. floorDef().name .. " was not cleared in time. No chest this run.")
+			leave(participant, participant.Character)
+		end
+		if run.active then reset() end
+		return
+	end
+	-- M4: idle delvers (no damage, tuning or movement for 90 s) or delvers away
+	-- from the arena for more than a few seconds are removed from the party.
+	for participant, record in table.clone(members) do
+		local root = participant.Character and participant.Character:FindFirstChild("HumanoidRootPart")
+		if root and not record.down then
+			local pos = root.Position
+			if not record.pos or (pos - record.pos).Magnitude > 1 then record.pos = pos; touch(record) end
+			local nearest = math.huge
+			for _, anchor in arenaAnchors do nearest = math.min(nearest, (pos - anchor).Magnitude) end
+			if nearest > AWAY_RADIUS then
+				record.awaySince = record.awaySince or now
+			else
+				record.awaySince = nil
+			end
+		else
+			record.awaySince = nil
+		end
+		local why
+		if record.awaySince and now - record.awaySince > AWAY_GRACE then
+			why = "You left the Observatory and were removed from the expedition."
+		elseif not record.down and now - (record.active or now) > IDLE_LIMIT then
+			why = "Removed from the expedition after " .. IDLE_LIMIT .. " s without fighting, tuning or moving."
+		end
+		if why then
+			notice(participant, why)
+			leave(participant, participant.Character)
+		end
 	end
 	if not next(members) then return end
 	-- Deaths count once per fall; a fallen delver respawns into the run.
