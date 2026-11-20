@@ -9,6 +9,9 @@
       "AetherData": { "$path": "shared/GameData.lua" },
       "AetherProgression": { "$path": "shared/Progression.lua" }
     },
+    "ServerStorage": {
+      "AetherTrails": { "$path": "trails.lua" }
+    },
     "ServerScriptService": {
       "Adventure": { "$path": "server.server.lua" },
       "Observatory": { "$path": "expedition.server.lua" },

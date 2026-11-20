@@ -1,6 +1,7 @@
 -- Treasure Trails: data, pool coverage, balance, world resolvability, server
 -- behaviour and the Satchel › Trails page.
--- Part A checks shared/GameData.lua (Data.Trails): tiers, items, uniques,
+-- Part A checks shared/GameData.lua (Data.Trails) and the server-only step
+-- module trails.lua: client-visible data holds no step answers; tiers, items, uniques,
 -- reward tables (simulated unique rates, Magic Find), coins/h balance against
 -- comparable Thieving income, scroll sources, the step pool (>= 120 steps,
 -- every kind, tier gates), trail generation, the sliding puzzle and the
@@ -22,7 +23,11 @@ end
 local Data = load("shared/GameData.lua")
 local P = load("shared/Progression.lua", {script = nil})
 P.useData(Data)
-local TR = Data.Trails
+-- Shared = what clients receive (replicated AetherData); TR = the server-only
+-- step module (trails.lua, ServerStorage.AetherTrails) over the shared rules.
+local Shared = Data.Trails
+local buildTrails = load("trails.lua")
+local TR = buildTrails(Data)
 local checks = 0
 local function eq(actual, expected, case)
 	assert(actual == expected, case .. " expected " .. tostring(expected) .. ", got " .. tostring(actual))
@@ -35,7 +40,57 @@ local function has(text, part) return type(text) == "string" and string.find(tex
 -- Part A: data, rules and balance.
 ------------------------------------------------------------------------------
 local partA = checks
-ok(type(TR) == "table", "Data.Trails exists")
+ok(type(Shared) == "table", "Data.Trails exists")
+ok(type(TR) == "table" and getmetatable(TR).__index == Shared, "the server step module reads through to the shared rules")
+-- Client-visible data (the replicated AetherData module and its source text)
+-- carries no step answers: no pool, anchors, offsets, riddle targets, emote
+-- places, puzzle seeds, generation or step text.
+do
+	for _, key in ipairs({"Steps", "StepById", "Landmarks", "generate", "describe", "sanitize", "pool", "eligible", "requires",
+		"skillTarget", "stream", "scramble", "stepSeed", "regionName"}) do
+		eq(rawget(Shared, key), nil, "client data has no Data.Trails." .. key)
+		ok(rawget(TR, key) ~= nil, "server module has TR." .. key)
+	end
+	local strings, seen = {}, {}
+	local function collect(v)
+		if type(v) == "string" then strings[v] = true
+		elseif type(v) == "table" and not seen[v] then
+			seen[v] = true
+			for k, x in pairs(v) do collect(k); collect(x) end
+		end
+	end
+	collect(Shared)
+	local blob = {}
+	for text in pairs(strings) do table.insert(blob, text) end
+	blob = table.concat(blob, "\n")
+	-- The replicated Trails section of GameData.lua (anchor names elsewhere are
+	-- world data; a step's answer is its anchor/offset/target, here or nowhere).
+	local whole = fs.readFile("shared/GameData.lua")
+	local from = assert(string.find(whole, "-- Treasure Trails (Treasure Trails team; append-only section).", 1, true))
+	local to = assert(string.find(whole, "-- End Treasure Trails section.", 1, true))
+	local source = whole:sub(from, to)
+	ok(#source > 1000, "Trails section found")
+	local secrets = 0
+	for _, step in ipairs(TR.Steps) do
+		local answers = {step.id, step.text, step.sketch, step.target}
+		if step.anchor and step.kind ~= "skill" then table.insert(answers, step.anchor) end
+		for _, answer in pairs(answers) do
+			if type(answer) == "string" and #answer >= 6 and not (step.kind == "skill" and answer == step.target) then
+				secrets += 1
+				local inData = strings[answer] == true or string.find(blob, answer, 1, true) ~= nil
+				-- Teleport leaves land on public entrance anchors; those are not clue answers.
+				local isLanding = false
+				for _, tp in ipairs(Shared.Teleports) do if tp.anchor == answer then isLanding = true end end
+				ok(not inData or isLanding, step.id .. " answer '" .. answer:sub(1, 24) .. "' is not in client data")
+				ok(isLanding or not string.find(source, answer, 1, true), step.id .. " answer '" .. answer:sub(1, 24) .. "' is not in the replicated source")
+			end
+		end
+	end
+	ok(secrets >= 300, "every step's answers were checked (" .. secrets .. ")")
+	ok(not string.find(source, "npc:", 1, true) and not string.find(source, "dig(", 1, true) and not string.find(source, "riddle(", 1, true), "no riddle targets or step builders in GameData.lua")
+	-- Puzzle boards are never derivable on the client: only the moves are shared.
+	ok(type(Shared.slide) == "function" and type(Shared.applyMoves) == "function" and Shared.SOLVED == "123456780", "clients keep the sliding rules")
+end
 eq(#TR.TierOrder, 6, "six tiers")
 for i, id in ipairs({"Beginner", "Easy", "Medium", "Hard", "Elite", "Master"}) do eq(TR.TierOrder[i], id, "tier order " .. i) end
 local prevMax = 0
@@ -125,15 +180,59 @@ end
 for i = 2, #TR.TierOrder do
 	ok(TR.expectedCasket(TR.TierOrder[i]) > TR.expectedCasket(TR.TierOrder[i - 1]), TR.TierOrder[i] .. " caskets are worth more than " .. TR.TierOrder[i - 1])
 end
--- Balance: coins/h from trails stay at or below comparable activities.
+-- Balance: coins/h from trails stay at or below comparable activities. The
+-- model takes each tier's FASTEST scroll source (kills, gathering, fishing,
+-- thieving or hunter catches) and Elite also carries the Master trails its
+-- caskets chain into (parallel tiers).
+do
+	-- The source paces are never slower than the systems allow.
+	local TH, HU = Data.Thieving, Data.Hunter
+	local ACTION, GATHER = 0.36 + 0.65, 1 + 0.65
+	local derived = {}
+	local function put(kind, tier, sec) derived[kind] = derived[kind] or {}; derived[kind][tier] = math.min(derived[kind][tier] or math.huge, sec) end
+	for _, t in ipairs(TH.Targets) do put("thieve", TR.tierForLevel(t.level), (TH.ACTION + (1 - TH.MAX_CHANCE) * t.stun) / TH.MAX_CHANCE) end
+	for _, c in ipairs(HU.Creatures) do
+		local p = HU.catchChance(c, 99, HU.TRAP_LUCK_CAP)
+		local perSec
+		if c.method == "net" then
+			perSec = math.min(3 / (c.respawn + (1 / p - 1) * math.max(HU.NET_MISS_COOLDOWN, ACTION)), p / ACTION)
+		else
+			local success = 1 - (1 - p) ^ HU.MAX_TICKS
+			perSec = HU.MAX_TRAPS * success / (HU.TICK * success / p + 2 * ACTION)
+		end
+		put("catch", TR.tierForLevel(c.level), 1 / perSec)
+	end
+	for skill, tiers in pairs(Data.ResourceTiers) do for _, r in ipairs(tiers) do put(if skill == "Fishing" then "fish" else "gather", TR.tierForLevel(r.level), GATHER) end end
+	for kind, list in pairs(derived) do
+		for tier, sec in pairs(list) do
+			local model = TR.SourceSeconds[kind] and TR.SourceSeconds[kind][tier]
+			ok(model ~= nil and model <= sec + 1e-9, string.format("%s %s pace model %.2fs is not slower than the system (%.2fs)", kind, tier, model or -1, sec))
+		end
+	end
+	for _, id in ipairs(TR.TierOrder) do
+		if id ~= "Master" then
+			local fastest, from = TR.scrollSeconds(id)
+			ok(from ~= nil and fastest <= TR.Tiers[id].killSeconds / TR.SourceChance.kill[id], id .. " scrolls come from the fastest source (" .. tostring(from) .. ")")
+			for kind, list in pairs(TR.SourceChance) do
+				if list[id] then ok(TR.SourceSeconds[kind][id] / list[id] >= fastest, id .. " " .. kind .. " is never faster than the modelled fastest source") end
+			end
+		end
+	end
+	ok(TR.coinsPerHour("Elite") > 3600 * TR.expectedCasket("Elite") / TR.clueSeconds("Elite"), "Elite income carries its chained Master trails")
+end
 for _, id in ipairs(TR.TierOrder) do
 	local cph, ref = TR.coinsPerHour(id), TR.referenceCoinsPerHour(id)
 	ok(ref > 0, id .. " reference income exists")
 	ok(cph <= ref, string.format("%s trails earn %.0f coins/h <= %.0f (Thieving at level %d)", id, cph, ref, TR.Tiers[id].level))
 	ok(cph <= ref * 0.6, id .. " trails are not a coin farm (<= 60% of thieving)")
 	ok(TR.coinsPerHour(id, 300) <= ref, id .. " stays below the reference even at 300 Magic Find")
+	local bot = TR.coinsPerHour(id, 0, true)
+	ok(bot <= ref, string.format("%s: a perfect bot (fastest source, every step at the %ds floor) earns %.0f <= %.0f", id, TR.MIN_STEP_SECONDS[id], bot, ref))
 	ok(TR.clueSeconds(id) > 0, id .. " pacing positive")
+	ok(TR.MIN_STEP_SECONDS[id] >= 8 and TR.MIN_STEP_SECONDS[id] <= 15, id .. " minimum step time 8-15 s")
 end
+for i = 2, #TR.TierOrder do ok(TR.MIN_STEP_SECONDS[TR.TierOrder[i]] >= TR.MIN_STEP_SECONDS[TR.TierOrder[i - 1]], TR.TierOrder[i] .. " steps take at least as long as lower tiers") end
+ok(TR.TRAVEL_SPEED >= 64 and TR.WARP_SECONDS >= TR.MIN_STEP_SECONDS.Master, "travel model allows the fastest walk (64 studs/s) and a warp")
 -- Simulated caskets: unique rates match their rows, Magic Find raises them.
 for _, id in ipairs(TR.TierOrder) do
 	local r = TR.Rewards[id]
@@ -312,6 +411,13 @@ do
 		for _, sid in ipairs(TR.generate("Medium", seed, novice)) do ok(TR.eligible(TR.StepById[sid], "Medium", novice), "novice Medium step " .. sid .. " fits the reader") end
 	end
 	eq(#TR.generate("Nope", 1), 0, "unknown tier generates nothing")
+	-- A reader who qualifies for nothing gets nothing (never steps they cannot do).
+	local nobody = {levels = {}, regions = {}}
+	for _, s in ipairs(Data.SkillOrder) do nobody.levels[s] = 0 end
+	for _, id in ipairs(TR.TierOrder) do
+		if #TR.pool(id, nobody) == 0 then eq(#TR.generate(id, 99, nobody), 0, id .. ": an empty filtered pool generates no steps") end
+	end
+	ok(#TR.pool("Beginner", nobody) == 0, "the empty-pool case is exercised")
 end
 -- Sliding puzzle rules.
 eq(TR.slide(TR.SOLVED, "D"), nil, "gap in the corner cannot move down")
@@ -380,7 +486,22 @@ do
 	eq(dirty.uniques.Ore, nil, "non-unique dropped from the log")
 	eq(#dirty.emotes, 1, "emotes deduplicated and validated")
 	eq(dirty.banner, nil, "non-banner refused")
-	eq(dirty.r, 1, "stream state clamped")
+	eq(dirty.r, nil, "no roll stream is persisted (legacy r dropped)")
+	-- Re-draws use the reader's context; a reader who qualifies for nothing loses the trail (tier listed for a refund).
+	local novice = {levels = {}, regions = {Hub = true, Meadow = true, Quarry = true}}
+	local redrawn, lost = TR.sanitize({active = {Medium = {seed = 31, steps = {"Nope"}, step = 1}}}, novice)
+	ok(redrawn.active.Medium ~= nil and #lost == 0, "a novice's lost trail is re-drawn")
+	for _, sid in ipairs(redrawn.active.Medium.steps) do ok(TR.eligible(TR.StepById[sid], "Medium", novice), "re-drawn step " .. sid .. " fits the reader") end
+	local nobody = {levels = {}, regions = {}}
+	for _, sk in ipairs(Data.SkillOrder) do nobody.levels[sk] = 0 end
+	local dropped, lostTiers = TR.sanitize({active = {Beginner = {seed = 31, steps = {"Nope"}, step = 1}, Easy = {seed = 5, steps = {"DigMoonpool"}, step = 1}}}, nobody)
+	eq(dropped.active.Beginner, nil, "an impossible re-draw drops the trail")
+	eq(#lostTiers, 1, "one tier lost")
+	eq(lostTiers[1], "Beginner", "the lost tier is reported for a refund")
+	ok(dropped.active.Easy ~= nil, "valid stored steps are kept as they are")
+	local paced = TR.sanitize({active = {Easy = {seed = 5, steps = {"DigMoonpool"}, step = 1, lt = 100, lx = 3, lz = -4}, Hard = {seed = 7, steps = {"DigMoonpool"}, step = 1, lt = 5, lx = "x"}}})
+	ok(paced.active.Easy.lt == 100 and paced.active.Easy.lx == 3 and paced.active.Easy.lz == -4, "last location kept")
+	eq(paced.active.Hard.lt, nil, "a malformed last location is dropped")
 	eq(TR.sanitize({active = {Easy = {seed = 4, steps = {"DigMoonpool", "DigVaultSteps"}, step = 7}}}).active.Easy.step, 2, "step index clamped to the trail")
 end
 print("PASS: " .. (checks - partA) .. " Treasure Trails data assertions.")
@@ -503,22 +624,51 @@ function db:UpdateAsync(key, op)
 	if value then data[key] = copy(value) end
 	return copy(data[key])
 end
-local markers = {AetherData = {Name = "AetherData"}, AetherProgression = {Name = "AetherProgression"}}
-local modules = {[markers.AetherData] = Data, [markers.AetherProgression] = P}
+local markers = {AetherData = {Name = "AetherData"}, AetherProgression = {Name = "AetherProgression"}, AetherTrails = {Name = "AetherTrails"}}
+local modules = {[markers.AetherData] = Data, [markers.AetherProgression] = P, [markers.AetherTrails] = buildTrails}
+-- npc.server.lua's travel gate double: true = open, a string = the refusal.
+local gateVerdict, gateCalls = true, 0
+local travelGate = {Invoke = function(_, who) gateCalls += 1; return gateVerdict end}
+local gatePresent = true
+-- Islands lookups (anchor cache misses must not re-scan every request).
+local islandLookups = 0
+-- Random.new() calls made by the server (seed argument recorded).
+local randomNews = {}
+-- Server entropy doubles for the trails stream: `entropy()` is unpredictable
+-- across runs (seeded from the wall clock); `scripted(seed)` is a test-chosen
+-- deterministic stream so drop-rate checks are exact. `counted` counts draws.
+math.randomseed(math.floor((os.clock() * 1e6) % 2147483647) + math.floor(os.time() % 100000))
+local function entropy()
+	return {NextNumber = function() return math.random() end, NextInteger = function(_, lo, hi) return math.random(lo, hi) end}
+end
+local function scripted(seed)
+	local rng = TR.stream(seed)
+	return {NextNumber = function() return rng() end, NextInteger = function(_, lo, hi) return lo + math.floor(rng() * (hi - lo + 1)) end}
+end
+local draws = 0
+local function counted(source)
+	return {NextNumber = function(self) draws += 1; return source:NextNumber() end, NextInteger = function(self, lo, hi) draws += 1; return source:NextInteger(lo, hi) end}
+end
+local trailsApi
 local rolls, defaultRoll = {}, 0.999
 local function nextRoll() if #rolls > 0 then return table.remove(rolls, 1) end return defaultRoll end
 local function queue(...) for _, v in ipairs({...}) do table.insert(rolls, v) end end
 local services = {
 	Players = {PlayerAdded = signal(), PlayerRemoving = signal(), GetPlayers = function() return {} end},
 	ProximityPromptService = {PromptTriggered = signal()},
-	ReplicatedStorage = {WaitForChild = function(_, name) return assert(markers[name], name) end}, ServerStorage = {},
+	ReplicatedStorage = {WaitForChild = function(_, name) return assert(markers[name], name) end},
+	ServerStorage = {FindFirstChild = function(_, name)
+		if name == "AetherTrails" then return markers.AetherTrails end
+		if name == "IsleTravelGate" and gatePresent then return travelGate end
+		return nil
+	end},
 	DataStoreService = {GetDataStore = function() return db end},
 	HttpService = {GenerateGUID = function() return "trails-test" end},
 	RunService = {IsStudio = function() return false end},
 }
 local serverObjects = {}
 local serverWorkspace = {GetAttribute = function(self, key) return rawget(self, key) end,
-	FindFirstChild = function(_, name) return if name == "Islands" then islands else nil end}
+	FindFirstChild = function(_, name) if name == "Islands" then islandLookups += 1; return islands end return nil end}
 local env = {
 	game = {GetService = function(_, name) return services[name] end, BindToClose = function() end},
 	workspace = serverWorkspace, Vector3 = Vector3, CFrame = CFrame,
@@ -529,7 +679,12 @@ local env = {
 	end},
 	os = {clock = function() return clock end, time = function() return math.floor(utc) end},
 	require = function(target) return assert(modules[target], "unexpected require") end,
-	Random = {new = function() return {NextNumber = function() return nextRoll() end} end},
+	Random = {new = function(seed)
+		local r = {NextNumber = function() return nextRoll() end, NextInteger = function(_, lo, hi) return lo + math.floor(nextRoll() * (hi - lo + 1)) end}
+		table.insert(randomNews, {seed = seed, object = r})
+		return r
+	end},
+	__TrailsHarness = function(api) trailsApi = api end,
 	task = {
 		spawn = function(f, ...)
 			local co = coroutine.create(f)
@@ -544,6 +699,14 @@ local env = {
 }
 local serverSource = fs.readFile("server.server.lua"):gsub("^\239\187\191", ""):gsub("base%.Position", "base.CFrame.Position")
 luau.load(serverSource, {environment = env, injectGlobals = true})()
+ok(trailsApi ~= nil and trailsApi.enabled == true, "the Trails block loaded its server-only step module")
+do
+	-- The trails stream is a Random.new() without a seed (server entropy).
+	local mine
+	for _, r in ipairs(randomNews) do if r.object == trailsApi.random then mine = r end end
+	ok(mine ~= nil and mine.seed == nil, "the trails stream is an unseeded Random.new() (server entropy)")
+	ok(trailsApi.random ~= nil and trailsApi.rand == nil and trailsApi.seq == nil, "no per-profile roll stream or per-server seed counter")
+end
 local function player(id)
 	local humanoid = {Health = 100, MaxHealth = 100, WalkSpeed = 16, Died = signal(), TakeDamage = function(self, n) self.Health -= n end}
 	local root = {Position = Vector3.zero, Anchored = false, AssemblyLinearVelocity = Vector3.zero}
@@ -617,7 +780,10 @@ ok(has(cmd(wanderer, "craft", TR.SPADE).message, "already own"), "one spade is e
 
 -- Scroll drops from the kill bridge: one per tier at most.
 do
-	local hunter = seeded(9102, function(prof) prof.trails.r = 12345 end)
+	trailsApi.random = scripted(12345)
+	local hunter = seeded(9102, function(prof) prof.trails.r = 12345 end) -- a legacy stream field is dropped on load
+	eq(stored(hunter).trails.r, nil, "legacy roll stream removed by migrate")
+	hunter = player(9102)
 	local scrolls = 0
 	for _ = 1, 400 do
 		bridge.OnInvoke("kill", hunter, {monster = "BramblebackBoar"})
@@ -626,6 +792,13 @@ do
 	scrolls = after.items.TrailScrollBeginner or 0
 	eq(scrolls, 1, "400 boar kills: a Beginner scroll, but only one")
 	eq(after.items.TrailScrollEasy, nil, "boars never drop Easy scrolls")
+	-- Holding the scroll, kills draw nothing from the stream (players cannot
+	-- burn draws to steer the next casket).
+	trailsApi.random = counted(scripted(4))
+	draws = 0
+	for _ = 1, 100 do bridge.OnInvoke("kill", hunter, {monster = "BramblebackBoar"}) end
+	eq(draws, 0, "no draws while the drop could not be granted")
+	trailsApi.random = scripted(12346)
 	-- Rate with the gate lifted: read and abandon each scroll as it drops.
 	cmd(hunter, "trailBegin", "Beginner")
 	cmd(hunter, "trailAbandon", "Beginner")
@@ -645,7 +818,8 @@ do
 end
 -- Mid-level kills drop the matching tier; an active trail blocks a second scroll.
 do
-	local fighter = seeded(9103, function(prof) prof.trails.r = 777 end)
+	trailsApi.random = scripted(777)
+	local fighter = seeded(9103, function() end)
 	for _ = 1, 600 do bridge.OnInvoke("kill", fighter, {monster = "GaleSprite"}) end
 	local st = cmd(fighter, "state")
 	eq(st.items.TrailScrollEasy, 1, "Gale Sprites (level 24) drop an Easy scroll")
@@ -674,7 +848,8 @@ for _, q in islands:GetDescendants() do
 end
 ok(gatherPrompts.Ore ~= nil and gatherPrompts.Fish ~= nil and gatherPrompts.Herb ~= nil, "gather prompts found")
 do
-	local miner = seeded(9104, function(prof) prof.trails.r = 4242 end)
+	trailsApi.random = scripted(4242)
+	local miner = seeded(9104, function() end)
 	local got
 	for i = 1, 1500 do
 		if i % 4 == 0 then miner = rejoin(miner) end -- renew the journal lease (no autosave loop here)
@@ -686,7 +861,8 @@ do
 	ok(got ~= nil, "mining Copperstone found a Beginner scroll (after " .. tostring(got) .. " swings)")
 	ok(has(miner.last.message, "You found a Tattered Trail Scroll"), "find notice")
 	leave(miner)
-	local angler = seeded(9105, function(prof) prof.trails.r = 99 end)
+	trailsApi.random = scripted(99)
+	local angler = seeded(9105, function() end)
 	got = nil
 	for i = 1, 1500 do
 		if i % 4 == 0 then angler = rejoin(angler) end
@@ -697,7 +873,8 @@ do
 	end
 	ok(got ~= nil, "fishing found a Beginner scroll (after " .. tostring(got) .. " casts)")
 	leave(angler)
-	local thief = seeded(9106, function(prof) prof.trails.r = 31337 end)
+	trailsApi.random = scripted(31337)
+	local thief = seeded(9106, function() end)
 	got = nil
 	for i = 1, 1200 do
 		if i % 20 == 0 then thief = rejoin(thief) end
@@ -725,19 +902,31 @@ eq(row.kind, "dig", "step 1 is a dig")
 eq(row.style, "map", "the Moonpool dig is a map")
 ok(not has(row.text, "Moonpool"), "map text keeps the landmark secret")
 eq(row.guide[1], "region:Meadow", "map guide only names the region")
+-- Too soon: a location step waits TR.MIN_STEP_SECONDS after it began, and the
+-- wait is the same answer anywhere (it never confirms a location).
+local digStep = TR.StepById.DigMoonpool
+standAt(walker, "Waypoint_Moonpool", digStep.east, digStep.north)
+local early = cmd(walker, "trailDig", "Master")
+ok(has(early.message, "still fresh"), "an instant dig at the right spot is refused: " .. tostring(early.message))
+eq(early.trails.active.Master.step, 1, "the early dig did not advance")
+standAt(walker, "Waypoint_Bank", 0, 0)
+local function unclocked(text) return (string.gsub(text, "%(%d+s%)", "")) end
+eq(unclocked(cmd(walker, "trailDig", "Master").message), unclocked(early.message), "the wait reads the same at a wrong spot")
+local function ripen() advance(TR.WARP_SECONDS) end
+ripen()
 -- Wrong place, wrong verb.
 standAt(walker, "Waypoint_Moonpool", 0, 0)
 ok(has(cmd(walker, "trailDig").message, "only soil"), "digging on the landmark itself finds nothing")
 ok(has(cmd(walker, "trailSearch").message, "None of your trails is a riddle"), "searching is not digging")
 ok(has(cmd(walker, "trailEmote", "flip").message, "Nobody seems to notice"), "an emote is not a dig")
 eq(cmd(walker, "state").trails.active.Master.step, 1, "anti-skip: still step 1")
-local digStep = TR.StepById.DigMoonpool
 standAt(walker, "Waypoint_Moonpool", digStep.east + 3, digStep.north - 2)
 local dug = cmd(walker, "trailDig", "Master")
 ok(has(dug.message, "buried tin"), "dig within the radius succeeds")
 eq(dug.trails.active.Master.step, 2, "advanced to step 2")
 eq(dug.trails.active.Master.kind, "riddle", "step 2 is a riddle")
 ok(not has(dug.trails.active.Master.text, "Odile"), "riddle never names the NPC")
+ripen()
 standAt(walker, "Waypoint_Moonpool", 0, 0)
 ok(has(cmd(walker, "trailSearch").message, "find nothing"), "searching far from the answer")
 standAt(walker, "NPC_Banker", 4, 4)
@@ -746,6 +935,7 @@ ok(has(found.message, "Odile Marrowcoin slips you a folded note"), "the banker h
 eq(found.trails.active.Master.kind, "emote", "step 3 is an emote")
 eq(found.trails.active.Master.gesture, "flip", "the step names its gesture")
 standAt(walker, "Waypoint_Market", 2, 2)
+ripen()
 ok(has(cmd(walker, "trailEmote", "heal").message, "Nobody"), "wrong gesture does nothing")
 local emoted = cmd(walker, "trailEmote", "flip")
 ok(has(emoted.message, "hooded stranger"), "right gesture at the landmark")
@@ -794,6 +984,7 @@ local em2 = cmd(walker, "state").trails.active.Master
 eq(em2.kind, "emote", "step 8 is a geared emote")
 eq(em2.wear[1], "Blade", "it lists the gear")
 standAt(walker, "Waypoint_Starforge", 1, 1)
+ripen()
 ok(has(cmd(walker, "trailEmote", "hammer").message, "not wearing Copper Blade"), "gear is checked")
 cmd(walker, "equip", "Blade")
 local salute = cmd(walker, "trailEmote", "hammer")
@@ -804,6 +995,7 @@ local resumed = cmd(walker, "state").trails.active.Master
 eq(resumed.step, 9, "step index survives a rejoin")
 eq(resumed.style, "map", "the vault dig is a map")
 standAt(walker, "Waypoint_Bank", TR.StepById.DigVaultSteps.east, TR.StepById.DigVaultSteps.north)
+ripen()
 local finish = cmd(walker, "trailDig")
 ok(has(finish.message, "The Master trail ends"), "the last step ends the trail")
 eq(finish.trails.active.Master, nil, "trail cleared")
@@ -819,7 +1011,8 @@ eq(opened.trails.log.Master.opened, 1, "clue log counts the opening")
 leave(walker)
 -- Uniques reach the clue log (many caskets, deterministic stream).
 do
-	local lucky = seeded(9111, function(prof) prof.items.TrailCasketBeginner = 400; prof.trails.r = 2024 end)
+	trailsApi.random = scripted(2024)
+	local lucky = seeded(9111, function(prof) prof.items.TrailCasketBeginner = 400 end)
 	local last
 	for i = 1, 400 do
 		if i % 100 == 0 then lucky = rejoin(lucky) end
@@ -853,7 +1046,8 @@ do
 end
 -- Elite caskets can hold a Master scroll (only when none is held).
 do
-	local elite = seeded(9112, function(prof) prof.items.TrailCasketElite = 60; prof.trails.r = 55 end)
+	trailsApi.random = scripted(55)
+	local elite = seeded(9112, function(prof) prof.items.TrailCasketElite = 60 end)
 	local masters = 0
 	local crumbled = 0
 	for _ = 1, 60 do
@@ -883,7 +1077,8 @@ end
 -- Reading a scroll draws a trail the reader can walk (fresh journal, Beginner).
 do
 	for k = 1, 12 do
-		local novice = seeded(9200 + k, function(prof) prof.items.TrailScrollBeginner = 1; prof.trails.r = 1000 + k * 37 end)
+		trailsApi.random = scripted(1000 + k * 37)
+		local novice = seeded(9200 + k, function(prof) prof.items.TrailScrollBeginner = 1 end)
 		local r = cmd(novice, "trailBegin", "Beginner")
 		local prof = stored(novice)
 		local a = prof.trails.active.Beginner
@@ -903,6 +1098,161 @@ do
 	eq(s.uniques.Ore, nil, "fake uniques dropped")
 	eq(s.log.Easy.completed, 0, "log rebuilt")
 	leave(cheat)
+end
+-- Casket rolls come from server entropy: two journals with identical history
+-- open identical caskets and get different loot; nothing about the stream is
+-- stored with either profile.
+do
+	trailsApi.random = entropy()
+	local function history(prof) prof.items.TrailCasketBeginner = 40; prof.items.TrailCasketHard = 40 end
+	local function openAll(id)
+		local twin = seeded(id, history)
+		local out = {}
+		for _ = 1, 40 do
+			local r = cmd(twin, "trailOpen", "Beginner")
+			table.insert(out, r.message)
+			r = cmd(twin, "trailOpen", "Hard")
+			table.insert(out, r.message)
+		end
+		local prof = stored(twin)
+		local keys = {}
+		for k in pairs(prof.trails) do table.insert(keys, k) end
+		table.sort(keys)
+		return table.concat(out, "|"), table.concat(keys, ","), prof
+	end
+	local a, keysA, profA = openAll(9401)
+	local b, keysB = openAll(9402)
+	ok(a ~= b, "identical histories open different caskets (server entropy)")
+	eq(profA.trails.r, nil, "no roll stream persisted")
+	eq(keysA, "active,emotes,log,uniques,version", "the stored trails record holds no stream state")
+	eq(keysA, keysB, "both journals store the same shape")
+	-- A fresh server stream (a new run) gives a different sequence again.
+	trailsApi.random = entropy()
+	local c = openAll(9403)
+	ok(c ~= a and c ~= b, "a new run's stream differs too")
+end
+-- Trail seeds are drawn from the server stream (never from profile state).
+do
+	local fixed = {NextNumber = function() return 0.5 end, NextInteger = function(_, lo, hi) assert(lo == 1 and hi == 2147483646, "seed range"); return 424242 end}
+	trailsApi.random = fixed
+	local reader = seeded(9404, function(prof) prof.items.TrailScrollEasy = 1 end)
+	cmd(reader, "trailBegin", "Easy")
+	eq(stored(reader).trails.active.Easy.seed, 424242, "the trail seed comes from the server stream")
+	local hidden = cmd(player(9404), "state").trails.active.Easy
+	eq(hidden.seed, nil, "the seed never reaches the client")
+	eq(hidden.steps, nil, "nor the step list")
+	trailsApi.random = entropy()
+end
+-- Re-drawn trails fit the reader (migrate passes the reader's context).
+do
+	local novice = {levels = {}, regions = {Hub = true, Meadow = true, Quarry = true}}
+	local redraw = seeded(9405, function(prof) prof.trails.active = {Hard = {seed = 99, steps = {"Nope"}, step = 1}} end)
+	local a = stored(redraw).trails.active.Hard
+	ok(a ~= nil and #a.steps >= 1, "lost Hard trail re-drawn on load")
+	for _, sid in ipairs(a.steps) do ok(TR.eligible(TR.StepById[sid], "Hard", novice), "re-drawn step " .. sid .. " fits the novice reader") end
+end
+-- Teleport bots: location steps keep a per-step floor and a travel check.
+local baseDigs = {}
+for _, st in ipairs(TR.Steps) do
+	if st.kind == "dig" and (st.region == "Hub" or st.region == "Meadow" or st.region == "Quarry") then table.insert(baseDigs, st) end
+end
+do
+	local route9 = {}
+	for i = 1, 9 do route9[i] = baseDigs[i].id end
+	local bot = seeded(9406, function(prof) prof.items[TR.SPADE] = 1; prof.trails.active.Master = {seed = 77, steps = route9, step = 1} end)
+	local started = utc
+	local attempts = 0
+	while true do
+		local row = cmd(bot, "state").trails.active.Master
+		if not row then break end
+		local st = TR.StepById[route9[row.step]]
+		standAt(bot, st.anchor, st.east, st.north) -- an instant teleport onto the answer
+		attempts += 1
+		cmd(bot, "trailDig", "Master")
+		assert(attempts < 2000, "bot loop runs away")
+	end
+	local elapsed = utc - started
+	ok(elapsed >= 9 * TR.MIN_STEP_SECONDS.Master, string.format("a teleporting bot needs %ds for a 9-step Master trail (floor %ds)", elapsed, 9 * TR.MIN_STEP_SECONDS.Master))
+	ok(attempts > 9, "the bot's early digs were refused (" .. attempts .. " attempts)")
+	eq(cmd(bot, "state").items.TrailCasketMaster, 1, "and it still finishes (the walk is only paced)")
+	leave(bot)
+end
+do
+	-- The farthest pair of base-region digs: arriving faster than the travel
+	-- model allows is refused even after the step's floor; a warp-length wait is enough.
+	local function point(st)
+		local c = anchorPart(st.anchor).CFrame.Position
+		return Vector3.new(c.X + st.east, c.Y, c.Z - st.north)
+	end
+	local digs = {}
+	for _, st in ipairs(TR.Steps) do if st.kind == "dig" and st.region ~= "ShatteredCrown" then table.insert(digs, st) end end
+	local fa, fb, far = nil, nil, 0
+	for i = 1, #digs do
+		for j = i + 1, #digs do
+			local d = (point(digs[i]) - point(digs[j])).Magnitude
+			if d > far then fa, fb, far = digs[i], digs[j], d end
+		end
+	end
+	ok(far / TR.TRAVEL_SPEED > TR.MIN_STEP_SECONDS.Easy + 2, string.format("a long dig pair exists (%.0f studs, %s to %s)", far, fa.id, fb.id))
+	local runner = seeded(9407, function(prof)
+		prof.items[TR.SPADE] = 1
+		for _, sk in ipairs(Data.SkillOrder) do prof.xp[sk] = X[99] end
+		prof.questCompleted = 20
+		prof.trails.active.Easy = {seed = 3, steps = {fa.id, fb.id}, step = 1}
+	end)
+	advance(TR.WARP_SECONDS)
+	standAt(runner, fa.anchor, fa.east, fa.north)
+	ok(has(cmd(runner, "trailDig", "Easy").message, "buried tin"), "first dig")
+	advance(TR.MIN_STEP_SECONDS.Easy)
+	standAt(runner, fb.anchor, fb.east, fb.north)
+	local fast = cmd(runner, "trailDig", "Easy")
+	ok(has(fast.message, "still fresh"), "arriving faster than " .. TR.TRAVEL_SPEED .. " studs/s is refused: " .. tostring(fast.message))
+	eq(fast.trails.active.Easy.step, 2, "the step did not complete")
+	advance(TR.WARP_SECONDS - TR.MIN_STEP_SECONDS.Easy)
+	ok(has(cmd(runner, "trailDig", "Easy").message, "The Easy trail ends"), "after a warp's allowance the dig counts")
+	leave(runner)
+end
+-- Waystone leaves: recall gates, cooldown, velocity.
+do
+	local hopper = seeded(9408, function(prof) prof.items.TeleScrollMeadow = 3; prof.items.TeleScrollQuarry = 1 end)
+	gateVerdict = "You can't travel mid-fight. Catch your breath first."
+	local before = hopper.root.Position
+	ok(has(cmd(hopper, "trailTeleport", "TeleScrollMeadow").message, "mid-fight"), "the travel gate's refusal is relayed")
+	eq(hopper.root.Position, before, "a refused traveller stays put")
+	eq(cmd(hopper, "state").items.TeleScrollMeadow, 3, "a refused leaf is kept")
+	gateVerdict = "The Observatory holds you. Finish or leave the expedition first."
+	ok(has(cmd(hopper, "trailTeleport", "TeleScrollMeadow").message, "Observatory"), "no leaf out of an expedition")
+	gateVerdict = 5
+	ok(has(cmd(hopper, "trailTeleport", "TeleScrollMeadow").message, "will not carry"), "a malformed gate answer refuses")
+	gatePresent = false
+	ok(has(cmd(hopper, "trailTeleport", "TeleScrollMeadow").message, "will not carry"), "a missing gate refuses")
+	gatePresent, gateVerdict = true, true
+	eq(cmd(hopper, "state").items.TeleScrollMeadow, 3, "no leaf spent on refusals")
+	hopper.root.AssemblyLinearVelocity = Vector3.new(120, 40, 0)
+	local calls = gateCalls
+	ok(has(cmd(hopper, "trailTeleport", "TeleScrollMeadow").message, "Meadow Reach"), "an open gate lets the leaf work")
+	ok(gateCalls > calls, "the gate was consulted")
+	eq(hopper.root.AssemblyLinearVelocity, Vector3.zero, "velocity zeroed on arrival")
+	local cool = cmd(hopper, "trailTeleport", "TeleScrollQuarry")
+	ok(has(cool.message, "still settling"), "leaves have a cooldown: " .. tostring(cool.message))
+	eq(cool.items.TeleScrollQuarry, 1, "the cooling leaf is kept")
+	advance(TR.TELEPORT_COOLDOWN)
+	ok(has(cmd(hopper, "trailTeleport", "TeleScrollQuarry").message, "Cinder Shelf"), "after the cooldown the next leaf works")
+	leave(hopper)
+end
+-- Anchor lookups: hits stay cached, misses are cached briefly.
+do
+	local before = islandLookups
+	for _ = 1, 50 do eq(trailsApi.anchor("NoSuchAnchor"), nil, "missing anchor") end
+	eq(islandLookups - before, 1, "50 lookups of a missing anchor search the world once")
+	advance(TR.ANCHOR_MISS_SECONDS + 1)
+	trailsApi.anchor("NoSuchAnchor")
+	eq(islandLookups - before, 2, "a cached miss expires and is searched again")
+	local hit = trailsApi.anchor("Waypoint_Bank")
+	ok(hit ~= nil, "a real anchor resolves")
+	local mid = islandLookups
+	for _ = 1, 20 do trailsApi.anchor("Waypoint_Bank") end
+	eq(islandLookups, mid, "a found anchor is never searched again while parented")
 end
 print("PASS: " .. (checks - partC) .. " Treasure Trails server assertions.")
 
@@ -993,6 +1343,48 @@ do
 	eq(ui.sent[#ui.sent][1], "trailSlide", "solving locally sends the moves")
 	eq(ui.sent[#ui.sent][2], "Medium:R", "the move string names the tier and moves")
 	for _, entry in ipairs(ui.sent) do ok(entry[2] == nil or (type(entry[2]) == "string" and #entry[2] <= 64), "payload short: " .. entry[1]) end
+end
+do
+	-- Buffered puzzle moves are never lost: they are sent after ~2 s idle, when
+	-- the atlas closes and when the page changes.
+	local ui = atlas(roblox.Vector2.new(1366, 768))
+	open(ui)
+	local function slides()
+		local n = 0
+		for _, entry in ipairs(ui.sent) do if entry[1] == "trailSlide" then n += 1 end end
+		return n
+	end
+	-- Board 123456708 (gap at 8): tile 5 sits above the gap -> "U" (not solved).
+	H.press(H.find(ui.scroll, "TrailTileMedium5"))
+	eq(slides(), 0, "an unsolved move is buffered")
+	ok(#ui.delays >= 1 and ui.delays[#ui.delays].seconds <= 2.5, "an idle flush is scheduled (~2 s)")
+	ui.runDelays(2.5)
+	eq(slides(), 1, "idle: the buffered move is sent")
+	eq(ui.sent[#ui.sent][2], "Medium:U", "idle flush payload")
+	-- Two quick moves then idle: one batch (the first timer is stale).
+	open(ui)
+	H.press(H.find(ui.scroll, "TrailTileMedium5"))
+	H.press(H.find(ui.scroll, "TrailTileMedium8"))
+	eq(slides(), 1, "quick moves stay buffered")
+	ui.runDelays(2.5)
+	eq(slides(), 2, "one batch after the last move goes idle")
+	eq(ui.sent[#ui.sent][2], "Medium:UD", "the batch holds both moves")
+	-- Closing the atlas sends what is buffered.
+	open(ui)
+	H.press(H.find(ui.scroll, "TrailTileMedium5"))
+	ui.atlas.Visible = false
+	eq(slides(), 3, "closing the atlas sends the buffered move")
+	eq(ui.sent[#ui.sent][2], "Medium:U", "close flush payload")
+	ui.runDelays(2.5)
+	eq(slides(), 3, "the stale idle timer sends nothing more")
+	-- Changing section sends what is buffered.
+	ui.atlas.Visible = true
+	open(ui)
+	H.press(H.find(ui.scroll, "TrailTileMedium5"))
+	H.press(H.find(ui.scroll, "SectionItems"))
+	eq(slides(), 4, "leaving the Trails page sends the buffered move")
+	ui.runDelays(2.5)
+	eq(slides(), 4, "nothing is sent twice")
 end
 do
 	-- No spade: the dig button stays local.
