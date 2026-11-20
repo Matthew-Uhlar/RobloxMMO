@@ -8,6 +8,7 @@ local bindings = {
 	Observatory = "expedition.server.lua", Assembly = "festival.server.lua",
 	Homesteads = "coop.server.lua", Combat = "combat.server.lua", MeshForge = "mesh.server.lua",
 	FieldGuide = "ui.client.lua", IslandArt = "mesh.client.lua", CombatInput = "combat.client.lua", IslandBuilder = "build.client.lua",
+	Gestures = "animate.client.lua", GestureRelay = "gesture.server.lua",
 	AetherArt = "art/PropCatalog.lua",
 	MaterialArt = "art/MaterialArt.lua", AetherWorldArt = "art/WorldCatalog.lua",
 	AetherData = "shared/GameData.lua", AetherProgression = "shared/Progression.lua",
@@ -19,8 +20,9 @@ for _, obj in place:GetDescendants() do
 	assert(obj.Source:gsub("\r\n","\n") == fs.readFile(file):gsub("\r\n","\n"), file .. " is stale")
 	local client = file:find(".client.", 1, true)
 	local shared = obj.Name=="AetherArt" or obj.Name=="MaterialArt" or obj.Name=="AetherData" or obj.Name=="AetherProgression"
-	assert(obj.ClassName == (if shared then "ModuleScript" elseif client then "LocalScript" else "Script"))
-	assert(obj.Parent.Name == (if shared then "ReplicatedStorage" elseif client then "StarterPlayerScripts" else "ServerScriptService"))
+	local serverModule=obj.Name=="AetherWorldArt"
+	assert(obj.ClassName == (if shared or serverModule then "ModuleScript" elseif client then "LocalScript" else "Script"))
+	assert(obj.Parent.Name == (if shared then "ReplicatedStorage" elseif serverModule then "ServerStorage" elseif client then "StarterPlayerScripts" else "ServerScriptService"))
 	assert(#luau.compile(obj.Source) > 0)
 	bindings[obj.Name] = nil
 	count += 1
