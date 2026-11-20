@@ -253,12 +253,14 @@ local function profile()
 			EmberheartCinder = 1, WardstoneSeal = 2, WildheartEssence = 60, TemperingTome = 2, MasterworkTome = 1,
 			-- Verdant Garden: seeds, compost, salve, Marks, Dust and crops for a visitor.
 			MeadowSeeds = 5, SunwheatSeeds = 2, Compost = 3, BlightwardSalve = 1, VerdantMark = 40, BloomDust = 6, Sunwheat = 30,
+			-- Pets depth: candy, held items and a Tier Boost.
+			PetCandy = 2, IronbarkCollar = 1, GlimmerClover = 1, AscendantPrism = 1, StarlitCandy = 1,
 		},
 		collection = { Ore = 320, Timber = 60, Herb = 70, Fish = 30, Brassite = 40, Shard = 2, StormFeather = 3, BeastHide = 0 },
 		equipment = { weapon = "BrassSword", helmet = "BrassHelm", chest = "BrassChestplate", legs = "BrassGreaves", boots = "BrassBoots", ammo = "BrassArrow" },
 		enchants = { BrassSword = { Sharpness = 2, Critical = 5 } },
 		accessoryBag = { "MeadowCharm", "QuarryTalisman" },
-		pets = { { id = "Tidewing", level = 5, xp = 100 }, { id = "Emberfox", level = 1, xp = 0 } },
+		pets = { { id = "Tidewing", level = 5, xp = 100, rarity = "Epic", item = "WarbandTag", candy = 3 }, { id = "Emberfox", level = 1, xp = 0 }, { id = "Bloomsnail", level = 60, xp = 10, rarity = "Legendary", candy = 10 } },
 		activePet = 1,
 		buffs = { MightDraught = { expires = 120, stats = { strength = 15 } } },
 		bestiary = { BramblebackBoar = 30, Thornling = 1, ShaleCrawler = 1000 },
@@ -324,8 +326,13 @@ local function snapshot(options)
 		collections[id] = { count = p.collection[id] or 0, tier = tier, nextAt = Progression.collectionThreshold(id, tier + 1) }
 	end
 	local pets = {}
+	local PD = Data.PetDepth
 	for index, pet in ipairs(p.pets) do
-		pets[index] = { id = pet.id, level = pet.level, xp = pet.xp, next = Data.petXpToNext(pet.level, Data.PetById[pet.id].rarity), active = p.activePet == index }
+		local def = Data.PetById[pet.id]
+		local rarity = Progression.petRarity(pet)
+		pets[index] = { id = pet.id, level = pet.level, xp = pet.xp, next = Data.petXpToNext(pet.level, rarity), active = p.activePet == index,
+			rarity = rarity, item = pet.item, candy = pet.candy or 0, candyMax = PD.CANDY_MAX, abilities = PD.abilityView(def, pet.level, rarity),
+			stats = Progression.petStats(p, pet, def), upgrade = PD.upgradeCost(def, rarity) }
 	end
 	local tools = {}
 	for _, skill in ipairs({ "Mining", "Woodcutting", "Fishing", "Farming" }) do
@@ -339,7 +346,8 @@ local function snapshot(options)
 	result.depth = {
 		skills = skills, totalLevel = total, skillAverage = total / #Data.SkillOrder, stats = stats, equipment = p.equipment, tools = tools,
 		accessoryBag = p.accessoryBag, activeAccessories = Progression.activeAccessories(p), accessorySlots = Progression.accessorySlots(p),
-		pets = pets, buffs = { MightDraught = { remaining = 95, stats = { strength = 15 } } }, collections = collections, bestiary = p.bestiary,
+		pets = pets, petDepth = { upgrade = { id = "Gustling", level = 12, from = "Rare", to = "Epic", ends = 900, remaining = 4000, ready = options.bossReady == true }, taming = { level = 12, xpBonus = 10, statBonus = 2.5 } },
+		buffs = { MightDraught = { remaining = 95, stats = { strength = 15 } } }, collections = collections, bestiary = p.bestiary,
 		slayer = { lines = lines, quest = if options.noQuest then nil else { line = "Bramble", tier = 1, progress = 40, needed = 150, bossReady = options.bossReady == true } },
 		enchants = p.enchants, combat = Progression.combatLoadout(p), gear = { reforges = p.reforges, stars = p.stars, books = p.books },
 		regions = { { id = "Hub", name = "Aether Hub", unlocked = true, requirement = "" }, { id = "Gloomhollow", name = "Gloomhollow Caverns", unlocked = false, requirement = "Mining 30, Combat 15" } },
@@ -414,7 +422,9 @@ local function snapshot(options)
 			diaries = { "Meadow", { region = "Meadow", claimed = "two", tiers = { 4, { tier = 9 } } } }, construction = { furniture = { Bench = 3, Portal = "Ghost" }, portalRegions = { 5, "Atlantis" }, carpentry = "x", island = { counts = 5, count = "many", value = "x", cap = {} } } }
 		result.depth = {
 			skills = "oops", totalLevel = "x", stats = 5, equipment = { weapon = 5, helmet = "NotAnItem" }, tools = { Mining = {} },
-			accessoryBag = { 1, "MeadowCharm" }, activeAccessories = 7, accessorySlots = "four", pets = { 1, { id = "Nope" }, { id = "Tidewing", level = "x" } },
+			accessoryBag = { 1, "MeadowCharm" }, activeAccessories = 7, accessorySlots = "four", pets = { 1, { id = "Nope" }, { id = "Tidewing", level = "x", rarity = 5, abilities = "x", stats = 4, upgrade = { items = 5, to = 3 }, candy = "many", item = 7 },
+				{ id = "Emberfox", abilities = { 3, { name = 4 } }, upgrade = { coins = "x", items = { Nope = "y" } }, candyMax = 900 } },
+			petDepth = { upgrade = { id = "Ghost", remaining = "soon", to = 4 }, taming = { level = "x" } },
 			buffs = { MightDraught = { remaining = "soon" }, Broken = 3 }, collections = { Ore = 5, Timber = { count = "many" } }, bestiary = { BramblebackBoar = "lots", Ghost = 3 },
 			slayer = { lines = { Bramble = 3 }, quest = { line = "Unknown", tier = "II" } }, enchants = { BrassSword = { Mystery = 2 }, Blade = 4 }, regions = { 3, { id = 7 } },
 			mastery = { trees = { Mining = 5, Fishing = { nodes = "x", states = { PatientLine = 3, Nope = "owned" }, available = "lots", cooldown = {} } }, tokens = 7, capes = "x", cape = 5, titles = { Mining = 4 } },
@@ -558,6 +568,20 @@ local verbs = {
 	accessory = function(item) return Data.Items[item] ~= nil and Data.Items[item].kind == "accessory" end,
 	petSummon = function(item) return type(item) == "string" and item:match("^%d+$") ~= nil end,
 	petAdopt = function(item) return Data.Items[item] ~= nil and Data.Items[item].kind == "pet" end,
+	-- Pets depth verbs.
+	petItem = function(item)
+		local index, id = tostring(item):match("^(%d+):(%w*)$")
+		return index ~= nil and (id == "" or id == "none" or Data.PetDepth.HeldItems[id] ~= nil)
+	end,
+	petCandy = function(item)
+		local index, id = tostring(item):match("^(%d+):(%w+)$")
+		return index ~= nil and Data.PetDepth.Candies[id] ~= nil
+	end,
+	petTierBoost = function(item) return tostring(item):match("^%d+$") ~= nil end,
+	petUpgrade = function(item) return tostring(item):match("^%d+$") ~= nil end,
+	petClaim = function(item) return item == nil end,
+	petCancel = function(item) return item == nil end,
+	petShop = function(item) return Data.PetDepth.ShopByItem[item] ~= nil end,
 	enchantItem = function(item)
 		local id, enchant = tostring(item):match("^(%w+):(%w+)$")
 		return id ~= nil and Data.Items[id] ~= nil and Data.Enchants[enchant] ~= nil

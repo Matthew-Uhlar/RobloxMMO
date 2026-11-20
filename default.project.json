@@ -28,7 +28,8 @@
         "IslandBuilder": { "$path": "build.client.lua" },
         "Gestures": { "$path": "animate.client.lua" },
         "Dialogue": { "$path": "npc.client.lua" },
-        "Wayfinder": { "$path": "nav.client.lua" }
+        "Wayfinder": { "$path": "nav.client.lua" },
+        "Companions": { "$path": "pets.client.lua" }
       }
     },
     "Lighting": {
