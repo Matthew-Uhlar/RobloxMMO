@@ -2902,4 +2902,357 @@ end
 end
 -- End Mastery section.
 
+-- Gear depth (Gear Depth team; append-only section).
+-- SkyBlock-style item upgrades layered on top of an item's base stats:
+--   reforges p.reforges[itemId] = reforgeId    rarity-scaled bonus; rolled at the
+--            Reforge Anvil for coins, or a specific (stronger) one applied with a
+--            reforge stone. Tool reforges' "fortune" becomes the tool skill's fortune.
+--   stars    p.stars[itemId] = 0..5            each star adds STAR_PERCENT% of the
+--            item's base stats (dungeon gear DUNGEON_STAR_PERCENT%); costs essence + coins.
+--   tomes    p.books[itemId] = {tempering=0..10, masterwork=true|nil}
+--            Tempering Tome: flat stats per tome (weapons and armor); Masterwork Tome:
+--            rarity +1 tier (cap Mythic), which raises reforge scaling, reforge cost
+--            and an accessory's Magical Power.
+-- Items are stackable counts per id (p.items[id]), so like enchants every upgrade
+-- is bound to the item id in the journal: all copies of an id share it and it
+-- survives selling the last copy. Upgraded ids cannot be auctioned.
+-- Every helper takes `g` = any table with {reforges, stars, books} (a profile or
+-- the snapshot's depth.gear), so the server, Progression and the UI share them.
+------------------------------------------------------------------------------
+do
+local Gear = {}
+Data.Gear = Gear
+Gear.Categories = {"melee","ranged","magic","armor","tool","accessory"}
+Gear.CategoryNames = {melee="Melee weapon",ranged="Bow",magic="Staff or wand",armor="Armor",tool="Tool",accessory="Accessory"}
+-- Reforge bonus multiplier by (effective) rarity.
+Gear.RarityScale = {Common=1,Uncommon=1.5,Rare=2,Epic=3,Legendary=4,Mythic=5}
+-- Reforge Anvil coins per roll (and per stone application) by effective rarity.
+Gear.ReforgeCost = {Common=250,Uncommon=500,Rare=1000,Epic=2500,Legendary=5000,Mythic=10000}
+Gear.STAR_MAX = 5
+Gear.STAR_PERCENT = 2
+Gear.DUNGEON_STAR_PERCENT = 4
+Gear.StarEssence = {10,20,35,55,80} -- essence for star k, x (1 + 0.25 * (rank - 1)) by base rarity
+Gear.StarCoins = 200                -- coins for star k: StarCoins * k^2 * rank
+Gear.TEMPERING_MAX = 10
+Gear.Tempering = {melee={damage=2,strength=2},ranged={rangedStrength=2,rangedAccuracy=2},magic={intelligence=4},armor={health=4,defense=2}}
+
+local function add(id, def) def.id = id; return def end
+-- stats are Common values; stone = the item that applies it (never rolled at the anvil).
+-- toolKinds limits a tool reforge to those tool kinds (nil = every tool).
+Gear.Reforges = {
+	-- Melee weapons
+	Honed=add("Honed",{name="Honed",category="melee",stats={critChance=1,critDamage=3}}),
+	Vicious=add("Vicious",{name="Vicious",category="melee",stats={strength=3,critDamage=1}}),
+	Brisk=add("Brisk",{name="Brisk",category="melee",stats={attackSpeed=1,strength=1}}),
+	Burnished=add("Burnished",{name="Burnished",category="melee",stats={damage=2,strength=1}}),
+	Stalwart=add("Stalwart",{name="Stalwart",category="melee",stats={defense=2,strength=2}}),
+	Savage=add("Savage",{name="Savage",category="melee",stats={strength=2,critDamage=3}}),
+	Runic=add("Runic",{name="Runic",category="melee",stats={intelligence=4,strength=1}}),
+	Emberwrought=add("Emberwrought",{name="Emberwrought",category="melee",stone="EmberheartCinder",stats={strength=4,critDamage=5,attackSpeed=1}}),
+	Starbitten=add("Starbitten",{name="Starbitten",category="melee",stone="StarbiteShard",stats={critChance=2,critDamage=6,strength=3,damage=2}}),
+	-- Bows
+	Steady=add("Steady",{name="Steady",category="ranged",stats={rangedAccuracy=3,critChance=1}}),
+	Piercing=add("Piercing",{name="Piercing",category="ranged",stats={rangedStrength=3}}),
+	Hawkeyed=add("Hawkeyed",{name="Hawkeyed",category="ranged",stats={critChance=2,rangedAccuracy=1}}),
+	Taut=add("Taut",{name="Taut",category="ranged",stats={rangedStrength=2,critDamage=2}}),
+	Featherlight=add("Featherlight",{name="Featherlight",category="ranged",stats={speed=1,rangedAccuracy=2}}),
+	Barbed=add("Barbed",{name="Barbed",category="ranged",stats={critDamage=4,rangedStrength=1}}),
+	Windborne=add("Windborne",{name="Windborne",category="ranged",stats={attackSpeed=1,rangedAccuracy=1}}),
+	Galestrung=add("Galestrung",{name="Galestrung",category="ranged",stone="GalestringCoil",stats={rangedStrength=4,rangedAccuracy=4,critDamage=4}}),
+	Undertow=add("Undertow",{name="Undertow",category="ranged",stone="UndertowBarb",stats={critChance=2,rangedStrength=3,critDamage=3}}),
+	-- Staves and wands
+	Lucid=add("Lucid",{name="Lucid",category="magic",stats={intelligence=6}}),
+	Runebound=add("Runebound",{name="Runebound",category="magic",stats={intelligence=4,abilityDamage=0.5}}),
+	Ethereal=add("Ethereal",{name="Ethereal",category="magic",stats={intelligence=5,speed=1}}),
+	Focused=add("Focused",{name="Focused",category="magic",stats={abilityDamage=1}}),
+	Glyphic=add("Glyphic",{name="Glyphic",category="magic",stats={intelligence=3,abilityDamage=0.5}}),
+	Serene=add("Serene",{name="Serene",category="magic",stats={intelligence=4,health=4}}),
+	Flickering=add("Flickering",{name="Flickering",category="magic",stats={intelligence=2,speed=2}}),
+	Voidsung=add("Voidsung",{name="Voidsung",category="magic",stone="VoidhymnShard",stats={intelligence=10,abilityDamage=1.5}}),
+	Astral=add("Astral",{name="Astral",category="magic",stone="AstralLens",stats={intelligence=8,abilityDamage=1,health=5}}),
+	-- Armor
+	Bulwark=add("Bulwark",{name="Bulwark",category="armor",stats={defense=4}}),
+	Vital=add("Vital",{name="Vital",category="armor",stats={health=6}}),
+	Hardy=add("Hardy",{name="Hardy",category="armor",stats={defense=2,health=3}}),
+	Nimble=add("Nimble",{name="Nimble",category="armor",stats={speed=1,defense=1}}),
+	Fervent=add("Fervent",{name="Fervent",category="armor",stats={strength=2,defense=1}}),
+	Scholarly=add("Scholarly",{name="Scholarly",category="armor",stats={intelligence=5,defense=1}}),
+	Gilded=add("Gilded",{name="Gilded",category="armor",stats={magicFind=0.5,health=2}}),
+	Coralclad=add("Coralclad",{name="Coralclad",category="armor",stone="CoralplateFragment",stats={defense=5,health=8}}),
+	Wardbound=add("Wardbound",{name="Wardbound",category="armor",stone="WardstoneSeal",stats={defense=4,health=6,strength=2}}),
+	Starwoven=add("Starwoven",{name="Starwoven",category="armor",stone="StarwovenThread",stats={defense=3,health=5,intelligence=6,critDamage=2}}),
+	-- Gathering tools
+	Diligent=add("Diligent",{name="Diligent",category="tool",stats={fortune=3,miningSpeed=6}}),
+	Thrifty=add("Thrifty",{name="Thrifty",category="tool",stats={fortune=4}}),
+	Hearty=add("Hearty",{name="Hearty",category="tool",stats={fortune=2,health=4}}),
+	Fortuitous=add("Fortuitous",{name="Fortuitous",category="tool",stats={fortune=2,magicFind=0.3}}),
+	Quickhand=add("Quickhand",{name="Quickhand",category="tool",stats={fortune=1,miningSpeed=10}}),
+	Brined=add("Brined",{name="Brined",category="tool",toolKinds={"Rod"},stats={fortune=2,seaCreatureChance=0.3}}),
+	Verdant=add("Verdant",{name="Verdant",category="tool",toolKinds={"Hoe","Hatchet"},stats={fortune=5}}),
+	Deepvein=add("Deepvein",{name="Deepvein",category="tool",stone="DeepveinGeode",stats={fortune=8,miningSpeed=10}}),
+	Tidebound=add("Tidebound",{name="Tidebound",category="tool",stone="TidepearlKnot",toolKinds={"Rod"},stats={fortune=6,seaCreatureChance=0.6}}),
+	-- Accessories (magicalPower adds to the Magical Power total)
+	Gleaming=add("Gleaming",{name="Gleaming",category="accessory",stats={magicalPower=1}}),
+	Hale=add("Hale",{name="Hale",category="accessory",stats={health=2}}),
+	Watchful=add("Watchful",{name="Watchful",category="accessory",stats={critChance=0.5}}),
+	Fiery=add("Fiery",{name="Fiery",category="accessory",stats={strength=1,critDamage=0.5}}),
+	Clever=add("Clever",{name="Clever",category="accessory",stats={intelligence=2}}),
+	Charmed=add("Charmed",{name="Charmed",category="accessory",stats={magicFind=0.2,petLuck=0.2}}),
+	Warded=add("Warded",{name="Warded",category="accessory",stats={defense=1,health=1}}),
+	Resonant=add("Resonant",{name="Resonant",category="accessory",stone="ResonanceCrystal",stats={magicalPower=3,strength=1}}),
+	Prismlit=add("Prismlit",{name="Prismlit",category="accessory",stone="PrismlitLens",stats={magicalPower=2,critDamage=1,intelligence=2}}),
+}
+-- Anvil pools and display order per category (stone reforges last).
+Gear.ReforgeOrder = {}
+Gear.StoneFor = {}
+for _, category in ipairs(Gear.Categories) do Gear.ReforgeOrder[category] = {} end
+for id, r in pairs(Gear.Reforges) do table.insert(Gear.ReforgeOrder[r.category], id) end
+for _, list in pairs(Gear.ReforgeOrder) do
+	table.sort(list, function(a, b)
+		local sa, sb = Gear.Reforges[a].stone ~= nil, Gear.Reforges[b].stone ~= nil
+		if sa ~= sb then return sb end
+		return a < b
+	end)
+end
+
+-- Materials: reforge stones, essences and tomes (all Bazaar commodities).
+local stoneInfo = {
+	EmberheartCinder={name="Emberheart Cinder",rarity="Rare",color="E0703A",where="Cinder Mites and Brambleback Matriarchs"},
+	StarbiteShard={name="Starbite Shard",rarity="Epic",color="FFE7A0",where="Tempest Wraiths and Tempest Revenants"},
+	GalestringCoil={name="Galestring Coil",rarity="Rare",color="A8DADC",where="Gale Sprites and Storm Harriers"},
+	UndertowBarb={name="Undertow Barb",rarity="Epic",color="2E6F8E",where="Stormcoil Serpents and Duskfin Mantas"},
+	VoidhymnShard={name="Voidhymn Shard",rarity="Epic",color="7D5BBE",where="Void Wisps and Gloomfang Broodmothers"},
+	AstralLens={name="Astral Lens",rarity="Epic",color="B9A8F0",where="Observatory chests (Floor III+)"},
+	CoralplateFragment={name="Coralplate Fragment",rarity="Rare",color="EF6F6C",where="Coralback Bruisers and Reef Lurkers"},
+	WardstoneSeal={name="Wardstone Seal",rarity="Rare",color="9C8A6E",where="slayer bosses"},
+	StarwovenThread={name="Starwoven Thread",rarity="Epic",color="8E7CC3",where="Observatory chests (Floor II+)"},
+	DeepveinGeode={name="Deepvein Geode",rarity="Rare",color="7A6A9E",where="Shale Crawlers and Brass Golems"},
+	TidepearlKnot={name="Tidepearl Knot",rarity="Epic",color="BFF7E6",where="Inkveil Drifters and Tidewyrm Matriarchs"},
+	ResonanceCrystal={name="Resonance Crystal",rarity="Legendary",color="FF9ECD",where="tier IV slayer bosses and Tempest Wraiths"},
+	PrismlitLens={name="Prismlit Lens",rarity="Legendary",color="E86FB8",where="Observatory chests (Floor IV+)"},
+}
+for reforgeId, r in pairs(Gear.Reforges) do
+	if r.stone then
+		local s = stoneInfo[r.stone]
+		Gear.StoneFor[reforgeId] = r.stone
+		item(r.stone,{name=s.name,kind="material",rarity=s.rarity,color=s.color,reforgeStone=reforgeId,value=150*Data.Rarity[s.rarity].rank^2,
+			description="Reforge stone. Applies the "..r.name.." reforge to a "..string.lower(Gear.CategoryNames[r.category]).." at the Reforge Anvil. Dropped by "..s.where.."."})
+	end
+end
+item("WildheartEssence",{name="Wildheart Essence",kind="material",rarity="Rare",color="C8553D",value=25,essence=true,description="Feral essence torn from slayer bosses. Stars weapons and armor."})
+item("BrinelightEssence",{name="Brinelight Essence",kind="material",rarity="Rare",color="4FB0C6",value=25,essence=true,description="Glowing brine from sea creatures. Stars gathering tools."})
+Data.Items.ObservatoryEssence.essence = true
+item("TemperingTome",{name="Tempering Tome",kind="material",rarity="Epic",color="D9822B",value=400,tome=true,
+	description="Up to 10 per weapon or armor piece: +2 Damage and +2 Strength (bows +2 Ranged Strength and Accuracy, staves +4 Intelligence), armor +4 Health and +2 Defense."})
+item("MasterworkTome",{name="Masterwork Tome",kind="material",rarity="Legendary",color="FFAA00",value=4000,tome=true,
+	description="Raises one item's rarity by a tier (once). Higher rarity scales its reforge and an accessory's Magical Power."})
+recipe("TemperingTome",{skill="Enchanting",level=20,xp=180,costs={ArcaneDust=96,BeastHide=16,Shard=2},repeatable=true,station="Workbench",category="Tomes"})
+Gear.Tomes = {TemperingTome=true,MasterworkTome=true}
+Gear.Essences = {"ObservatoryEssence","WildheartEssence","BrinelightEssence"}
+
+-- Drops (appended to existing tables; chances < 1 so guaranteed rolls are unchanged).
+-- Starborn Sentinel and Brambleback Boar tables are left untouched (event tests queue their rolls).
+local function drop(list, itemId, chance, min, max) table.insert(list, {item=itemId,chance=chance,min=min or 1,max=max or min or 1}) end
+local M, SC = Data.Monsters, Data.SeaCreatures
+drop(M.CinderMite.drops, "EmberheartCinder", 0.004)
+drop(M.TempestWraith.drops, "StarbiteShard", 0.006)
+drop(M.GaleSprite.drops, "GalestringCoil", 0.004)
+drop(M.StormHarrier.drops, "GalestringCoil", 0.004)
+drop(M.VoidWisp.drops, "VoidhymnShard", 0.005)
+drop(M.ReefLurker.drops, "CoralplateFragment", 0.004)
+drop(M.ShaleCrawler.drops, "DeepveinGeode", 0.003)
+drop(M.BrassGolem.drops, "DeepveinGeode", 0.006)
+drop(M.TempestWraith.drops, "ResonanceCrystal", 0.003)
+drop(M.VoidWisp.drops, "TemperingTome", 0.01)
+drop(M.TempestWraith.drops, "TemperingTome", 0.02)
+drop(M.TempestWraith.drops, "MasterworkTome", 0.002)
+drop(SC.StormcoilSerpent.drops, "UndertowBarb", 0.02)
+drop(SC.DuskfinManta.drops, "UndertowBarb", 0.02)
+drop(SC.CoralbackBruiser.drops, "CoralplateFragment", 0.03)
+drop(SC.InkveilDrifter.drops, "TidepearlKnot", 0.01)
+drop(SC.TidewyrmMatriarch.drops, "TidepearlKnot", 0.05)
+drop(SC.TidewyrmMatriarch.drops, "MasterworkTome", 0.01)
+for index, id in ipairs(Data.SeaCreatureOrder) do
+	drop(SC[id].drops, "BrinelightEssence", math.min(0.9, 0.25 + 0.08 * index), 1 + index // 3, 2 + index // 2)
+end
+local slayerEssence = {{2,4},{5,8},{10,16},{20,30}}
+for _, line in ipairs(Data.SlayerOrder) do
+	for t, tier in ipairs(Data.Slayers[line].tiers) do
+		drop(tier.drops, "WildheartEssence", 0.95, slayerEssence[t][1], slayerEssence[t][2])
+		if t >= 2 then drop(tier.drops, "TemperingTome", 0.1 * t) end
+		drop(tier.drops, "WardstoneSeal", 0.02 + 0.01 * t)
+	end
+end
+drop(Data.Slayers.Bramble.tiers[3].drops, "EmberheartCinder", 0.05)
+drop(Data.Slayers.Bramble.tiers[4].drops, "EmberheartCinder", 0.1)
+drop(Data.Slayers.Gloom.tiers[3].drops, "VoidhymnShard", 0.05)
+drop(Data.Slayers.Gloom.tiers[4].drops, "VoidhymnShard", 0.1)
+drop(Data.Slayers.Tempest.tiers[3].drops, "StarbiteShard", 0.04)
+drop(Data.Slayers.Tempest.tiers[4].drops, "StarbiteShard", 0.08)
+for _, line in ipairs(Data.SlayerOrder) do
+	drop(Data.Slayers[line].tiers[4].drops, "ResonanceCrystal", 0.06)
+	drop(Data.Slayers[line].tiers[4].drops, "MasterworkTome", 0.05)
+end
+local floors = Data.DungeonFloors
+drop(floors[2].chest, "StarwovenThread", 0.01)
+drop(floors[3].chest, "StarwovenThread", 0.015)
+drop(floors[3].chest, "AstralLens", 0.01)
+drop(floors[3].chest, "TemperingTome", 0.08)
+drop(floors[4].chest, "StarwovenThread", 0.02)
+drop(floors[4].chest, "AstralLens", 0.015)
+drop(floors[4].chest, "PrismlitLens", 0.01)
+drop(floors[4].chest, "TemperingTome", 0.12)
+drop(floors[4].chest, "MasterworkTome", 0.01)
+drop(floors[5].chest, "AstralLens", 0.02)
+drop(floors[5].chest, "PrismlitLens", 0.015)
+drop(floors[5].chest, "TemperingTome", 0.2)
+drop(floors[5].chest, "MasterworkTome", 0.02)
+
+-- Rules ---------------------------------------------------------------------
+local function round1(x) return math.floor(x * 10 + 0.5) / 10 end
+local function tab(v) return if type(v) == "table" then v else nil end
+local toolSkill = {}
+for skill, kind in pairs(Data.ToolKind) do toolSkill[kind] = skill end
+-- Upgrade category of an item definition: melee | ranged | magic | armor | tool | accessory | nil.
+function Gear.category(def)
+	if type(def) ~= "table" then return nil end
+	if def.kind == "weapon" then return if def.style == "ranged" or def.style == "magic" then def.style else "melee" end
+	if def.kind == "armor" or def.kind == "tool" or def.kind == "accessory" then return def.kind end
+	return nil
+end
+function Gear.categoryOf(itemId) return Gear.category(Data.Items[itemId]) end
+function Gear.isWeaponCategory(category) return category == "melee" or category == "ranged" or category == "magic" end
+function Gear.canStar(category) return category ~= nil and category ~= "accessory" end
+function Gear.canTemper(category) return Gear.Tempering[category] ~= nil end
+function Gear.toolSkill(def) return type(def) == "table" and toolSkill[def.toolKind] or nil end
+function Gear.reforgeOf(g, itemId)
+	local id = tab(g) and tab(g.reforges) and g.reforges[itemId]
+	return if type(id) == "string" and Gear.Reforges[id] then id else nil
+end
+function Gear.starsOf(g, itemId)
+	local n = tab(g) and tab(g.stars) and tonumber(g.stars[itemId]) or 0
+	if n ~= n then return 0 end
+	return math.clamp(math.floor(n), 0, Gear.STAR_MAX)
+end
+function Gear.bookOf(g, itemId)
+	local b = tab(g) and tab(g.books) and tab(g.books[itemId])
+	local n = b and tonumber(b.tempering) or 0
+	if n ~= n then n = 0 end
+	return {tempering=math.clamp(math.floor(n), 0, Gear.TEMPERING_MAX), masterwork=b ~= nil and b.masterwork == true}
+end
+-- Rarity after a Masterwork Tome (one tier up, capped at Mythic).
+function Gear.bumpRarity(rarity)
+	local rank = Data.Rarity[rarity] and Data.Rarity[rarity].rank or 1
+	return Data.RarityOrder[math.min(#Data.RarityOrder, rank + 1)]
+end
+function Gear.effectiveRarity(g, itemId)
+	local def = Data.Items[itemId]
+	if not def then return "Common" end
+	if Gear.bookOf(g, itemId).masterwork then return Gear.bumpRarity(def.rarity) end
+	return def.rarity
+end
+-- A reforge's stats at a rarity; tool "fortune" becomes the skill's fortune stat.
+function Gear.reforgeStats(reforgeId, rarity, skill)
+	local r = Gear.Reforges[reforgeId]
+	local out = {}
+	if not r then return out end
+	local scale = Gear.RarityScale[rarity] or 1
+	for stat, v in pairs(r.stats) do
+		local key = if stat == "fortune" and skill then Data.FortuneStat[skill] else stat
+		out[key] = (out[key] or 0) + round1(v * scale)
+	end
+	return out
+end
+function Gear.starPercent(def) return if type(def) == "table" and def.dungeon then Gear.DUNGEON_STAR_PERCENT else Gear.STAR_PERCENT end
+function Gear.starStats(def, stars)
+	local out = {}
+	if type(def) ~= "table" or not def.stats or (stars or 0) <= 0 then return out end
+	local pct = Gear.starPercent(def) * stars / 100
+	for stat, v in pairs(def.stats) do
+		local bonus = round1(v * pct)
+		if bonus ~= 0 then out[stat] = bonus end
+	end
+	return out
+end
+function Gear.tomeStats(def, count)
+	local out = {}
+	local per = Gear.Tempering[Gear.category(def)]
+	if not per or (count or 0) <= 0 then return out end
+	for stat, v in pairs(per) do out[stat] = v * count end
+	return out
+end
+-- Every upgrade layer of an item: {rarity, reforge, reforgeStats, stars, starStats,
+-- tempering, tomeStats, masterwork, total}. total is what computeStats adds.
+function Gear.breakdown(g, itemId)
+	local def = Data.Items[itemId]
+	local rarity = Gear.effectiveRarity(g, itemId)
+	local book = Gear.bookOf(g, itemId)
+	local category = Gear.category(def)
+	local reforge = category and Gear.reforgeOf(g, itemId)
+	if reforge and Gear.Reforges[reforge].category ~= category then reforge = nil end
+	local stars = if Gear.canStar(category) then Gear.starsOf(g, itemId) else 0
+	local tempering = if Gear.canTemper(category) then book.tempering else 0
+	local out = {rarity=rarity,reforge=reforge,stars=stars,tempering=tempering,masterwork=book.masterwork,
+		reforgeStats=if reforge then Gear.reforgeStats(reforge, rarity, Gear.toolSkill(def)) else {},
+		starStats=Gear.starStats(def, stars),tomeStats=Gear.tomeStats(def, tempering)}
+	local total = {}
+	for _, layer in ipairs({out.reforgeStats, out.starStats, out.tomeStats}) do
+		for stat, v in pairs(layer) do total[stat] = round1((total[stat] or 0) + v) end
+	end
+	out.total = total
+	return out
+end
+function Gear.upgradeStats(g, itemId) return Gear.breakdown(g, itemId).total end
+function Gear.isUpgraded(g, itemId)
+	local book = Gear.bookOf(g, itemId)
+	return Gear.reforgeOf(g, itemId) ~= nil or Gear.starsOf(g, itemId) > 0 or book.tempering > 0 or book.masterwork
+end
+-- "Honed Brass Sword ★★★"
+function Gear.displayName(g, itemId)
+	local def = Data.Items[itemId]
+	local name = def and def.name or tostring(itemId)
+	local reforge = Gear.reforgeOf(g, itemId)
+	if reforge then name = Gear.Reforges[reforge].name.." "..name end
+	local stars = Gear.starsOf(g, itemId)
+	if stars > 0 then name ..= " "..string.rep("★", stars) end
+	return name
+end
+function Gear.reforgeCost(g, itemId) return Gear.ReforgeCost[Gear.effectiveRarity(g, itemId)] or Gear.ReforgeCost.Common end
+-- Random-roll pool (stones excluded) for an item definition.
+function Gear.reforgePool(def)
+	local category = Gear.category(def)
+	local pool = {}
+	for _, id in ipairs(category and Gear.ReforgeOrder[category] or {}) do
+		local r = Gear.Reforges[id]
+		if not r.stone and (r.toolKinds == nil or table.find(r.toolKinds, def.toolKind) ~= nil) then table.insert(pool, id) end
+	end
+	return pool
+end
+function Gear.reforgeFits(reforgeId, def)
+	local r = Gear.Reforges[reforgeId]
+	return r ~= nil and r.category == Gear.category(def) and (r.toolKinds == nil or table.find(r.toolKinds, def.toolKind) ~= nil)
+end
+-- roll in [0,1) picks uniformly among the pool minus the current reforge.
+function Gear.rollReforge(def, current, roll)
+	local pool = {}
+	for _, id in ipairs(Gear.reforgePool(def)) do if id ~= current then table.insert(pool, id) end end
+	if #pool == 0 then return nil end
+	return pool[math.clamp(math.floor((tonumber(roll) or 0) * #pool) + 1, 1, #pool)]
+end
+-- Essence used to star an item: Observatory gear, rods/tools, everything else.
+function Gear.essenceFor(def)
+	if type(def) ~= "table" then return nil end
+	if def.dungeon then return "ObservatoryEssence" end
+	if def.kind == "tool" then return "BrinelightEssence" end
+	return "WildheartEssence"
+end
+-- Cost of star k (1..5): {essence=id, amount=n, coins=c}, by the base rarity.
+function Gear.starCost(def, k)
+	if type(def) ~= "table" or not Gear.StarEssence[k] then return nil end
+	local rank = Data.Rarity[def.rarity] and Data.Rarity[def.rarity].rank or 1
+	return {essence=Gear.essenceFor(def),amount=math.floor(Gear.StarEssence[k] * (1 + 0.25 * (rank - 1))),coins=Gear.StarCoins * k * k * rank}
+end
+end
+-- End Gear depth section.
+
 return Data

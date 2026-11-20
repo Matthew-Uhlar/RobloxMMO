@@ -2175,9 +2175,12 @@ local function drawGear()
 			table.insert(enchants,escape((type(enchant)=="table" and enchant.name or enchantId).." "..numeral(num(level,1))))
 		end
 		table.sort(enchants)
-		card({name="Equipped"..selectedSlot,item=id,title=escape(def.name),titleColor=rgb(itemHex(id)),subtitle=escape(def.rarity.." "..kindLabel(def)),badge="EQUIPPED",badgeColor=mint,
-			detail=statText(def.stats),lines={#enchants>0 and paint("Enchanted: "..table.concat(enchants,", "),"7FD3E3") or nil,def.set and Data.Sets[def.set] and ("Set: "..escape(Data.Sets[def.set].name).." — "..escape(Data.Sets[def.set].text)) or nil},
+		local equippedLines={#enchants>0 and paint("Enchanted: "..table.concat(enchants,", "),"7FD3E3") or nil,def.set and Data.Sets[def.set] and ("Set: "..escape(Data.Sets[def.set].name).." — "..escape(Data.Sets[def.set].text)) or nil}
+		for _,line in ipairs(UI.Gear.lines(id)) do table.insert(equippedLines,line) end -- Gear depth layers
+		card({name="Equipped"..selectedSlot,item=id,title=UI.Gear.title(id),titleColor=rgb(UI.Gear.hex(id)),subtitle=escape(UI.Gear.rarity(id).." "..kindLabel(def)),badge="EQUIPPED",badgeColor=mint,
+			detail=statText(def.stats),lines=equippedLines,
 			actions={{caption="Enchant",fn=function() enchantTarget=id;sectionOf.Hero="Enchant";scroll.CanvasPosition=Vector2.zero;render() end},
+				{caption="Reforge",fn=function() UI.Gear.open(id) end},
 				{caption="Unequip",fn=function() send("unequip",selectedSlot) end}}})
 	end
 	local candidates={}
@@ -2699,6 +2702,235 @@ Pages.drawSkills,Pages.drawGear,Pages.drawEnchant,Pages.drawAccessories,Pages.dr
 end
 
 ------------------------------------------------------------------------------
+-- Hero › Reforge (Gear depth): Reforge Anvil rolls, reforge stones, essence
+-- stars and tomes. Rules and numbers come from Data.Gear over the snapshot's
+-- depth.gear = {reforges, stars, books}; upgrades are bound to the item id.
+------------------------------------------------------------------------------
+do
+local GU={target=nil,last=nil}
+UI.Gear=GU
+local function rules() return Data and type(Data.Gear)=="table" and Data.Gear or nil end
+local function gear() return tbl(tbl(depth()).gear) end
+local function rank(rarity) return rarityRank(rarity) end
+function GU.rarity(id)
+	local G,def=rules(),itemDef(id)
+	if not def then return "Common" end
+	if not G then return def.rarity end
+	local ok,rarity=pcall(G.effectiveRarity,gear(),id)
+	return ok and type(rarity)=="string" and rarity or def.rarity
+end
+function GU.hex(id) return rarityHex(GU.rarity(id)) end
+function GU.title(id)
+	local G=rules()
+	if not G or not itemDef(id) then return escape(itemName(id)) end
+	local ok,name=pcall(G.displayName,gear(),id)
+	return escape(ok and type(name)=="string" and name or itemName(id))
+end
+function GU.breakdown(id)
+	local G=rules()
+	if not G or not itemDef(id) then return nil end
+	local ok,b=pcall(G.breakdown,gear(),id)
+	return ok and type(b)=="table" and b or nil
+end
+function GU.upgraded(id)
+	local G=rules()
+	if not G or not itemDef(id) then return false end
+	local ok,yes=pcall(G.isUpgraded,gear(),id)
+	return ok and yes==true
+end
+local function starText(n,max) return paint(string.rep("★",n),"F9CC77")..paint(string.rep("☆",math.max(0,max-n)),"5A6E78") end
+-- Rich breakdown lines for an item card (empty when nothing is applied).
+function GU.lines(id)
+	local G,b=rules(),GU.breakdown(id)
+	local lines={}
+	if not G or not b then return lines end
+	if b.masterwork then table.insert(lines,paint("Masterwork: "..escape(tostring(tbl(itemDef(id)).rarity)).." → "..escape(b.rarity),rarityHex(b.rarity))) end
+	if b.reforge then table.insert(lines,paint(escape(G.Reforges[b.reforge].name).." reforge: ","C9974A")..statText(b.reforgeStats)) end
+	if b.stars>0 then table.insert(lines,starText(b.stars,G.STAR_MAX).." "..statText(b.starStats)) end
+	if b.tempering>0 then table.insert(lines,paint("Tempered "..b.tempering.."/"..G.TEMPERING_MAX..": ","D9822B")..statText(b.tomeStats)) end
+	return lines
+end
+function GU.open(id)
+	GU.target=id
+	current="Hero"
+	sectionOf.Hero="Reforge"
+	scroll.CanvasPosition=Vector2.zero
+	render()
+end
+-- "+3 Strength, -1 Crit Chance": difference between two stat maps.
+local function diffText(from,to)
+	local delta,any={},false
+	for k,v in pairs(tbl(to)) do if type(v)=="number" then delta[k]=v end end
+	for k,v in pairs(tbl(from)) do if type(v)=="number" then delta[k]=(delta[k] or 0)-v end end
+	for k,v in pairs(delta) do
+		v=math.floor(v*10+.5)/10
+		if v==0 then delta[k]=nil else delta[k]=v;any=true end
+	end
+	return any and statText(delta) or paint("No change","A9BDC1")
+end
+local function costPart(have,need,text,hex)
+	return paint(fmt(have).."/"..fmt(need),have>=need and "9EE7D2" or "E8806A").." "..text
+end
+local function coinPart(need)
+	return paint(fmt(need).." coins",num(state.coins,0)>=need and "F9CC77" or "E8806A")
+end
+function Pages.drawReforge()
+	local G=rules()
+	if not G or type(Data.Items)~="table" then dataMissing() return end
+	local d=depth()
+	if not d then syncing("reforge anvil") return end
+	local candidates={}
+	for id,n in pairs(tbl(state.items)) do
+		if num(n,0)>0 and G.category(itemDef(id)) then table.insert(candidates,id) end
+	end
+	table.sort(candidates,function(a,b)
+		local ea,eb=equippedSlotOf(a)~=nil or table.find(tbl(d.accessoryBag),a)~=nil,equippedSlotOf(b)~=nil or table.find(tbl(d.accessoryBag),b)~=nil
+		if ea~=eb then return ea end
+		local ra,rb=rank(itemDef(a).rarity),rank(itemDef(b).rarity)
+		if ra~=rb then return ra>rb end
+		return itemDef(a).name<itemDef(b).name
+	end)
+	local essences={}
+	for _,essenceId in ipairs(G.Essences) do table.insert(essences,fmt(count("items",essenceId)).." "..escape(itemName(essenceId))) end
+	card({name="ReforgeSummary",motif="Workshop",title="Reforge Anvil",titleColor=gold,subtitle=fmt(state.coins).." coins  ·  "..table.concat(essences,"  ·  "),
+		detail="Reforge gear for coins or apply a reforge stone, star it with essence and bind Tempering or Masterwork Tomes. Upgrades stay with the item in your journal (every copy shares them) and upgraded gear cannot be auctioned."})
+	if #candidates==0 then
+		card({motif="Workshop",title="Nothing to upgrade",detail="Forge or find a weapon, armor piece, tool or accessory first."})
+		return
+	end
+	if not table.find(candidates,GU.target) then GU.target=candidates[1] end
+	heading("CHOOSE AN ITEM    /    "..#candidates.." PIECES")
+	local size=compactAtlas and 54 or 62
+	local grid=gridHolder(UDim2.fromOffset(size,size),6)
+	for i,id in ipairs(candidates) do
+		local on=id==GU.target
+		local pick=tile(grid,"Reforge"..id,i,function() GU.target=id;render() end)
+		make("UIStroke",pick,{Color=on and gold or slate,Transparency=on and 0 or .4,Thickness=on and 2 or 1})
+		local art=itemIcon(pick,id,size-12)
+		art.Position=UDim2.fromOffset(6,6)
+		if equippedSlotOf(id) then UI.tag(pick,"E") end
+		local stars=G.starsOf(gear(),id)
+		if stars>0 then
+			local mark=label(pick,string.rep("★",stars),0,size-16,full,14,UI.heavy,10,rgb("F9CC77"))
+			mark.TextXAlignment=Enum.TextXAlignment.Center
+		end
+	end
+	local id=GU.target
+	local def=itemDef(id)
+	local category=G.category(def)
+	local g=gear()
+	local b=G.breakdown(g,id)
+	-- Item overview: name with reforge and stars, rarity colour, every layer.
+	local lines={}
+	if def.stats then table.insert(lines,"Base: "..statText(def.stats)) end
+	for _,line in ipairs(GU.lines(id)) do table.insert(lines,line) end
+	if next(b.total) then table.insert(lines,paint("Upgrade total: ","F3C66E")..statText(b.total)) else table.insert(lines,paint("No upgrades applied yet.","A9BDC1")) end
+	card({name="ReforgeItem",item=id,title=GU.title(id),titleColor=rgb(rarityHex(b.rarity)),
+		subtitle=escape(b.rarity.." "..tostring(G.CategoryNames[category] or kindLabel(def)))..(b.masterwork and "  ·  Masterwork" or ""),
+		badge=equippedSlotOf(id) and "EQUIPPED" or nil,badgeColor=mint,lines=lines})
+	heading(string.upper(def.name).."    /    REFORGE")
+	-- Anvil roll: cost preview, pool, last result diff.
+	local cost=G.reforgeCost(g,id)
+	local pool=G.reforgePool(def)
+	local names={}
+	for _,reforgeId in ipairs(pool) do
+		local r=G.Reforges[reforgeId]
+		table.insert(names,reforgeId==b.reforge and paint(escape(r.name),"F3C66E") or escape(r.name))
+	end
+	local rollLines={"Cost: "..coinPart(cost).."  ·  scales with rarity ("..escape(b.rarity)..")",
+		"Possible: "..table.concat(names,", ")}
+	if b.reforge then table.insert(rollLines,"Current "..escape(G.Reforges[b.reforge].name)..": "..statText(b.reforgeStats)) end
+	local last=GU.last
+	if last and last.id==id and last.after==b.reforge and last.after~=last.before then
+		table.insert(rollLines,paint("Last roll ","A9BDC1")..escape(last.before and G.Reforges[last.before] and G.Reforges[last.before].name or "None").." → "..escape(G.Reforges[b.reforge].name)..": "
+			..diffText(last.before and G.reforgeStats(last.before,b.rarity,G.toolSkill(def)) or EMPTY,b.reforgeStats))
+	end
+	local affordable=num(state.coins,0)>=cost
+	card({name="ReforgeRoll",motif="Workshop",title=b.reforge and "Reroll reforge" or "Roll a reforge",titleColor=rgb("E0B04A"),
+		subtitle=#pool.." anvil reforges  ·  never repeats the current one",lines=rollLines,
+		actions={{caption="Reforge",primary=affordable,disabled=not affordable,reason="Reforging costs "..fmt(cost).." coins.",fn=function()
+			GU.last={id=id,before=b.reforge}
+			send("reforge",id)
+			GU.last.after=G.reforgeOf(gear(),id)
+			render()
+		end}}})
+	-- Reforge stones that fit this item (owned first).
+	local stones={}
+	for _,reforgeId in ipairs(G.ReforgeOrder[category] or EMPTY) do
+		if G.Reforges[reforgeId].stone and G.reforgeFits(reforgeId,def) then table.insert(stones,reforgeId) end
+	end
+	table.sort(stones,function(x,y)
+		local hx,hy=count("items",G.Reforges[x].stone)>0,count("items",G.Reforges[y].stone)>0
+		if hx~=hy then return hx end
+		return x<y
+	end)
+	for _,reforgeId in ipairs(stones) do
+		local r=G.Reforges[reforgeId]
+		local have=count("items",r.stone)
+		local stats=G.reforgeStats(reforgeId,b.rarity,G.toolSkill(def))
+		local applied=b.reforge==reforgeId
+		local reason=applied and ("Already "..r.name..".") or (have<1 and ("Find a "..itemName(r.stone).." first.")) or (num(state.coins,0)<cost and ("Applying it costs "..fmt(cost).." coins.")) or nil
+		card({name="Stone"..reforgeId,item=r.stone,title=escape(r.name).." reforge",titleColor=rgb(itemHex(r.stone)),subtitle=escape(itemName(r.stone)).."  ·  ×"..fmt(have),
+			badge=applied and "APPLIED" or nil,badgeColor=mint,
+			lines={statText(stats),"Change: "..diffText(b.reforgeStats,stats),"Cost: "..costPart(have,1,escape(itemName(r.stone))).."  ·  "..coinPart(cost)},
+			actions={{caption="Apply",primary=reason==nil,disabled=reason~=nil,reason=reason,fn=function() send("reforgeStone",id..":"..r.stone) end}}})
+	end
+	-- Stars.
+	if G.canStar(category) then
+		heading("ESSENCE STARS    /    +"..G.starPercent(def).."% BASE STATS EACH")
+		local labels={}
+		for i=1,G.STAR_MAX do labels[i]="★"..i end
+		if b.stars>=G.STAR_MAX then
+			card({name="ReforgeStars",motif="Journal",title=starText(b.stars,G.STAR_MAX),badge="MAXED",badgeColor=mint,lines={statText(b.starStats)},
+				pips={total=G.STAR_MAX,filled=b.stars,color=rgb("E0B04A"),labels=labels}})
+		else
+			local sc=G.starCost(def,b.stars+1)
+			local have=count("items",sc.essence)
+			local reason=(have<sc.amount and ("Star "..(b.stars+1).." needs "..sc.amount.." "..itemName(sc.essence)..".")) or (num(state.coins,0)<sc.coins and ("Star "..(b.stars+1).." costs "..fmt(sc.coins).." coins.")) or nil
+			card({name="ReforgeStars",motif="Journal",title=starText(b.stars,G.STAR_MAX),subtitle="Next: star "..(b.stars+1).." of "..G.STAR_MAX..(def.dungeon and "  ·  dungeon gear" or ""),
+				lines={"Gain: "..diffText(b.starStats,G.starStats(def,b.stars+1)),"Cost: "..costPart(have,sc.amount,escape(itemName(sc.essence))).."  ·  "..coinPart(sc.coins)},
+				pips={total=G.STAR_MAX,filled=b.stars,color=rgb("E0B04A"),labels=labels},
+				actions={{caption="Star",primary=reason==nil,disabled=reason~=nil,reason=reason,fn=function() send("star",id) end}}})
+		end
+	end
+	-- Tomes.
+	heading("TOMES")
+	if G.canTemper(category) then
+		local have=count("items","TemperingTome")
+		local full=b.tempering>=G.TEMPERING_MAX
+		local reason=(full and "This item holds the maximum Tempering Tomes.") or (have<1 and "Find or craft a Tempering Tome first.") or nil
+		local labels={}
+		for i=1,G.TEMPERING_MAX do labels[i]=tostring(i) end
+		card({name="TomeTempering",item="TemperingTome",title="Tempering Tome",titleColor=rgb(itemHex("TemperingTome")),subtitle=b.tempering.."/"..G.TEMPERING_MAX.." bound  ·  ×"..fmt(have).." held",
+			lines={"Each: "..statText(G.tomeStats(def,1)),b.tempering>0 and ("Bound: "..statText(b.tomeStats)) or nil},badge=full and "MAXED" or nil,badgeColor=mint,
+			pips={total=G.TEMPERING_MAX,filled=b.tempering,color=rgb("D9822B"),labels=labels},
+			actions=not full and {{caption="Temper",primary=reason==nil,disabled=reason~=nil,reason=reason,fn=function() send("tome",id..":TemperingTome") end}} or nil})
+	end
+	local base=tostring(def.rarity)
+	local bumped=G.bumpRarity(base)
+	local have=count("items","MasterworkTome")
+	local mythic=base==bumped
+	local reason=(b.masterwork and "Already a masterwork.") or (mythic and "Mythic is the highest rarity.") or (have<1 and "Find a Masterwork Tome first.") or nil
+	local preview={}
+	if not mythic then
+		table.insert(preview,"Rarity: "..paint(escape(base),rarityHex(base)).." → "..paint(escape(bumped),rarityHex(bumped)))
+		if b.reforge then
+			local skill=G.toolSkill(def)
+			table.insert(preview,"Reforge: "..diffText(G.reforgeStats(b.reforge,base,skill),G.reforgeStats(b.reforge,bumped,skill)))
+		end
+		table.insert(preview,"Anvil cost: "..fmt(G.ReforgeCost[base] or 0).." → "..fmt(G.ReforgeCost[bumped] or 0).." coins")
+		if category=="accessory" then
+			local before,after=tbl(tbl(Data.Rarity)[base]).power,tbl(tbl(Data.Rarity)[bumped]).power
+			table.insert(preview,paint("✧ Magical Power "..tostring(before).." → "..tostring(after),"FFAA00"))
+		end
+	end
+	card({name="TomeMasterwork",item="MasterworkTome",title="Masterwork Tome",titleColor=rgb(itemHex("MasterworkTome")),subtitle=(b.masterwork and "Bound" or "Once per item").."  ·  ×"..fmt(have).." held",
+		badge=b.masterwork and "APPLIED" or nil,badgeColor=mint,lines=preview,
+		actions=not b.masterwork and {{caption="Bind",primary=reason==nil,disabled=reason~=nil,reason=reason,fn=function() send("tome",id..":MasterworkTome") end}} or nil})
+end
+end
+
+------------------------------------------------------------------------------
 -- Satchel: rarity grid inventory with item detail, collections
 ------------------------------------------------------------------------------
 do
@@ -2774,9 +3006,17 @@ local function itemDetail(id)
 		end
 	end
 	local equipped=equippedSlotOf(id)
-	card({name="ItemDetail",item=id,iconSize=compactAtlas and 42 or 54,title=escape(def and def.name or id),titleColor=rgb(itemHex(id)),
-		subtitle=escape((def and def.rarity or "Common").." "..kindLabel(def)).."  ·  ×"..fmt(n),badge=equipped and "EQUIPPED" or nil,badgeColor=mint,
+	-- Gear depth: "<Reforge> <Item name> ★★★" in the effective rarity colour.
+	local upgradable=def and Data and type(Data.Gear)=="table" and Data.Gear.category(def)~=nil
+	card({name="ItemDetail",item=id,iconSize=compactAtlas and 42 or 54,title=if def then UI.Gear.title(id) else escape(id),titleColor=rgb(if def then UI.Gear.hex(id) else itemHex(id)),
+		subtitle=escape((def and UI.Gear.rarity(id) or "Common").." "..kindLabel(def)).."  ·  ×"..fmt(n),badge=equipped and "EQUIPPED" or nil,badgeColor=mint,
 		lines=lines,actions=actions})
+	if upgradable then
+		local upgrades=UI.Gear.lines(id)
+		card({name="ItemUpgrades",motif="Workshop",title="Upgrades",titleColor=gold,subtitle=UI.Gear.upgraded(id) and "Reforge, stars and tomes bound to this item" or "Not upgraded yet",
+			lines=#upgrades>0 and upgrades or {paint("Reforge it at the anvil, star it with essence or bind tomes in Hero › Reforge.","A9BDC1")},
+			actions={{caption="Reforge",fn=function() UI.Gear.open(id) end}}})
+	end
 end
 local function drawItems()
 	local keys={}
@@ -5089,7 +5329,7 @@ end
 local tabOrder={"Journal","Hero","Satchel","Workshop","Hunt","Ledger"}
 local sectionLists={
 	Journal={"Bearing","Quests","Diaries","Construction","Regions","Crew","Calendar","Agility"},
-	Hero={"Skills","Mastery","Gear","Combat","Spellbook","Enchant","Accessories","Pets"},
+	Hero={"Skills","Mastery","Gear","Combat","Spellbook","Enchant","Reforge","Accessories","Pets"},
 	Satchel={"Items","Collections"},
 	Workshop={"Forge","Hearth","Cauldron","Workbench","Workers","Home"},
 	Hunt={"Slayer","Bestiary","Dungeon","Hunter"},
@@ -5098,7 +5338,7 @@ local sectionLists={
 sectionOf={Journal="Bearing",Hero="Skills",Satchel="Items",Workshop="Forge",Hunt="Slayer",Ledger="Bank"}
 local drawers={
 	Journal={Bearing=Pages.drawBearing,Quests=Pages.drawQuests,Diaries=Pages.drawDiaries,Construction=Pages.drawConstruction,Regions=Pages.drawRegions,Crew=Pages.drawCoop,Calendar=Pages.drawCalendar,Agility=Pages.drawAgility},
-	Hero={Skills=Pages.drawSkills,Mastery=Pages.drawMastery,Gear=Pages.drawGear,Combat=Pages.drawCombat,Spellbook=Pages.drawSpellbook,Enchant=Pages.drawEnchant,Accessories=Pages.drawAccessories,Pets=Pages.drawPets},
+	Hero={Skills=Pages.drawSkills,Mastery=Pages.drawMastery,Gear=Pages.drawGear,Combat=Pages.drawCombat,Spellbook=Pages.drawSpellbook,Enchant=Pages.drawEnchant,Reforge=function() Pages.drawReforge() end,Accessories=Pages.drawAccessories,Pets=Pages.drawPets},
 	Satchel={Items=Pages.drawItems,Collections=Pages.drawCollections},
 	Workshop={Forge=function() Pages.drawStation("Forge") end,Hearth=function() Pages.drawStation("Hearth") end,Cauldron=function() Pages.drawStation("Cauldron") end,
 		Workbench=function() Pages.drawStation("Workbench") end,Workers=Pages.drawWorkers,Home=Pages.drawHome},

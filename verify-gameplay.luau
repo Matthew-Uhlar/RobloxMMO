@@ -3258,7 +3258,7 @@ end)()
 	local function grab(p,n) advance(1); return rawUse(p,n) end
 	local function gained(message) return tonumber(string.match(message or "","^%+(%d+) ")) end
 	-- Fresh journals: the snapshot carries every tree, nothing spent.
-	local fresh=player(9300)
+	local fresh=player(9400)
 	local view=st(fresh).depth.mastery
 	ok(type(view)=="table","snapshot depth.mastery")
 	local count=0
@@ -3272,10 +3272,10 @@ end)()
 	end
 	eq(count,8,"eight trees in the snapshot")
 	eq(view.tokens.earned,0,"fresh tokens")
-	eq(data.p9300.profile.mastery,nil,"no mastery record until one is needed")
+	eq(data.p9400.profile.mastery,nil,"no mastery record until one is needed")
 	ok(has(cmd(fresh,"masteryUnlock","Mining:SteadyPick").message,"0 available"),"fresh journals have no points")
 	-- Validation of payloads.
-	local miner=seeded(9301,function(p) p.xp.Mining=X[70]; p.coins=100000 end)
+	local miner=seeded(9401,function(p) p.xp.Mining=X[70]; p.coins=100000 end)
 	for _,bad in ipairs({"Mining","Mining:","x:y","Nowhere:SteadyPick","Mining:Nope",string.rep("a",80),"Mining:Steady Pick"}) do
 		local reply=cmd(miner,"masteryUnlock",bad)
 		ok(not has(reply.message,"unlocked") and not has(reply.message," / "),"bad unlock refused: "..bad)
@@ -3299,7 +3299,7 @@ end)()
 	ok(path.depth.stats.miningFortune>fortuneBefore,"tree stats reach the stat sheet")
 	ok(has(cmd(miner,"masteryUnlock","Mining:VeinSurge").message,"maximum"),"capstone single level")
 	-- Gathering: plain journal vs a running Vein Surge.
-	local plain=seeded(9302,function(p) p.xp.Mining=X[70] end)
+	local plain=seeded(9402,function(p) p.xp.Mining=X[70] end)
 	local plainGain=gained(grab(plain,node("gather","Ore")).message)
 	ok(plainGain~=nil and plainGain>0,"plain ore gathered")
 	local surge=cmd(miner,"ability","Mining")
@@ -3335,13 +3335,13 @@ end)()
 	ok(has(slow.message,"regrowing"),"without the skip the node regrows")
 	-- Persistence: nodes and the capstone cooldown survive a rejoin.
 	miner=rejoin(miner)
-	eq(data.p9301.profile.mastery.trees.Mining.SteadyPick,1,"node levels saved")
-	ok(data.p9301.profile.mastery.cooldowns.Mining~=nil,"cooldown saved")
+	eq(data.p9401.profile.mastery.trees.Mining.SteadyPick,1,"node levels saved")
+	ok(data.p9401.profile.mastery.cooldowns.Mining~=nil,"cooldown saved")
 	ok(has(cmd(miner,"ability","Mining").message,"recharging"),"cooldown survives a rejoin")
 	eq(st(miner).depth.mastery.trees.Mining.nodes.FaultLine,1,"levels restored")
 	services.Players.PlayerRemoving:Fire(miner)
-	data.p9301.profile.mastery.cooldowns.Mining=math.floor(utc)-1 -- the cooldown has run out
-	miner=player(9301)
+	data.p9401.profile.mastery.cooldowns.Mining=math.floor(utc)-1 -- the cooldown has run out
+	miner=player(9401)
 	ok(has(cmd(miner,"ability","Mining").message,"Vein Surge!"),"capstone ready after its cooldown")
 	-- Respec: price from the snapshot, coins paid, points back, price grows.
 	local pre=st(miner)
@@ -3358,11 +3358,11 @@ end)()
 	eq(reset.depth.mastery.trees.Mining.active,0,"running surge ended")
 	cmd(miner,"masteryUnlock","Mining:SteadyPick")
 	eq(st(miner).depth.mastery.trees.Mining.respecCost,Data.Mastery.respecCost(1,1),"second respec costs more")
-	local broke=seeded(9303,function(p) p.xp.Mining=X[30]; p.coins=0; p.mastery={trees={Mining={SteadyPick=2}}} end)
+	local broke=seeded(9403,function(p) p.xp.Mining=X[30]; p.coins=0; p.mastery={trees={Mining={SteadyPick=2}}} end)
 	ok(has(cmd(broke,"masteryRespec","Mining").message,"costs"),"respec needs coins")
 	eq(st(broke).depth.mastery.trees.Mining.spent,2,"failed respec keeps nodes")
 	-- Migration on load: tampered saves are cleaned.
-	local tampered=seeded(9304,function(p)
+	local tampered=seeded(9404,function(p)
 		p.xp.Mining=X[20]
 		p.mastery={trees={Mining={SteadyPick=50,EmberVein=3,Ghost=1},Atlantis={}},cooldowns={Mining="soon"},cape="Mining",active={Mining={started=1,expires=1e12}}}
 	end)
@@ -3371,14 +3371,14 @@ end)()
 	eq(cleaned.trees.Mining.nodes.EmberVein,nil,"gated node dropped on load")
 	eq(cleaned.trees.Mining.nodes.Ghost,nil,"unknown node dropped on load")
 	tampered=rejoin(tampered)
-	eq(data.p9304.profile.mastery.trees.Atlantis,nil,"unknown tree dropped on load")
-	eq(data.p9304.profile.mastery.trees.Mining.SteadyPick,10,"cleaned save persisted")
+	eq(data.p9404.profile.mastery.trees.Atlantis,nil,"unknown tree dropped on load")
+	eq(data.p9404.profile.mastery.trees.Mining.SteadyPick,10,"cleaned save persisted")
 	eq(cleaned.cape,nil,"unearned mantle not worn")
 	eq(tampered.MasteryCape,"","no mantle attribute")
-	local overspent=seeded(9305,function(p) p.xp.Mining=X[12]; p.mastery={trees={Mining={SteadyPick=10}}} end)
+	local overspent=seeded(9405,function(p) p.xp.Mining=X[12]; p.mastery={trees={Mining={SteadyPick=10}}} end)
 	eq(st(overspent).depth.mastery.trees.Mining.spent,0,"overspent tree reset on load")
 	-- Mantles, titles and auras.
-	local grand=seeded(9306,function(p) p.xp.Mining=X[99]; p.xp.Fishing=X[60] end)
+	local grand=seeded(9406,function(p) p.xp.Mining=X[99]; p.xp.Fishing=X[60] end)
 	local base=st(grand).depth.stats
 	ok(has(cmd(grand,"masteryWear","cape:Fishing").message,"Reach Fishing 99"),"mantle needs 99")
 	ok(has(cmd(grand,"masteryWear","cape:Mining").message,"Mantle of the Prospector"),"mantle worn")
@@ -3398,7 +3398,7 @@ end)()
 	ok(has(cmd(grand,"masteryWear","hat:Mining").message,"Choose"),"unknown cosmetic refused")
 	ok(has(cmd(grand,"masteryWear","cape:Nope").message,"Choose a skill"),"unknown skill refused")
 	-- Tokens from collection tiers.
-	local hoarder=seeded(9307,function(p) p.collection.Herb=Progression.collectionThreshold("Herb",5)-1; p.collectionRewards={Herb=4} end)
+	local hoarder=seeded(9407,function(p) p.collection.Herb=Progression.collectionThreshold("Herb",5)-1; p.collectionRewards={Herb=4} end)
 	local tokenGather=grab(hoarder,node("gather","Herb"))
 	ok(has(tokenGather.message,"Mastery Token"),"token announced at collection tier 5")
 	eq(tokenGather.depth.mastery.tokens.earned,1,"token counted")
@@ -3406,7 +3406,7 @@ end)()
 	ok(has(cmd(hoarder,"masteryUnlock","Fishing:PatientLine").message,"Patient Line 1"),"token buys a node")
 	eq(st(hoarder).depth.mastery.tokens.free,0,"token used")
 	-- Combat bridge: perks for combat.server.lua, arrow save, style XP boost.
-	local archer=seeded(9308,function(p)
+	local archer=seeded(9408,function(p)
 		p.xp.Ranged=X[60]
 		p.items.CopperArrow=10
 		p.mastery={trees={Ranged={SteadyDraw=2,QuiverThrift=5}}}
@@ -3426,11 +3426,11 @@ end)()
 	local spendShot=bridge.OnInvoke("consume",archer,{items={CopperArrow=1}})
 	eq(spendShot.remaining.CopperArrow,9,"arrow spent without the proc")
 	eq(bridge.OnInvoke("consume",archer,{items={CopperArrow=50}}).ok,false,"save never pays for missing arrows")
-	local fighter=seeded(9309,function(p)
+	local fighter=seeded(9409,function(p)
 		p.xp.Combat=X[60]
 		p.mastery={trees={Melee={IronGrip=1,BattleRhythm=1,Bulwark=1,OpeningBlow=1,Bloodthirst=1,WeaponLore=5}}}
 	end)
-	local brawler=seeded(9310,function(p) p.xp.Combat=X[60] end)
+	local brawler=seeded(9410,function(p) p.xp.Combat=X[60] end)
 	local hp=Data.Monsters.BramblebackBoar.hp
 	local boosted=bridge.OnInvoke("combatXp",fighter,{style="melee",monster="BramblebackBoar",damage=hp})
 	local normal=bridge.OnInvoke("combatXp",brawler,{style="melee",monster="BramblebackBoar",damage=hp})
@@ -3441,7 +3441,7 @@ end)()
 	eq(fi.mastery.melee.xpBoost,15,"weapon lore exposed")
 	eq(fi.stats.lifesteal,1,"bloodthirst lifesteal in stats")
 	-- Melee capstone (Warcry) shows in stats while it runs.
-	local champion=seeded(9311,function(p)
+	local champion=seeded(9411,function(p)
 		p.xp.Combat=X[80]
 		p.mastery={trees={Melee={IronGrip=1,KeenBlade=1,OpeningBlow=1,Finisher=1,WeaponLore=1,WarcryCrescendo=1}}}
 	end)
@@ -3453,4 +3453,231 @@ end)()
 	advance(20)
 	eq(bridge.OnInvoke("stats",champion,{}).stats.strength,calm,"warcry fades")
 	print("PASS: "..(checks-before).." skill mastery server assertions.")
+end)()
+;(function()
+------------------------------------------------------------------------------
+-- Gear depth (Data.Gear): reforge, reforgeStone, star and tome verbs,
+-- persistence, migration, drops and the Auction House refusal.
+------------------------------------------------------------------------------
+local before=checks
+local G=Data.Gear
+local X=Data.XP_TABLE
+local function ok(cond,case) assert(cond,case); checks+=1 end
+local function has(text,part) return type(text)=="string" and string.find(text,part,1,true)~=nil end
+local function st(p) return cmd(p,"state") end
+local function seeded(id,mutate)
+	local p=player(id)
+	services.Players.PlayerRemoving:Fire(p)
+	mutate(data["p"..id].profile)
+	return player(id)
+end
+local function rejoin(p,mutate)
+	services.Players.PlayerRemoving:Fire(p)
+	if mutate then mutate(data["p"..p.UserId].profile) end
+	return player(p.UserId)
+end
+local function gear(s) return s.depth.gear end
+local smith=seeded(9300,function(p)
+	p.items={BrassSword=1,BrassHelm=1,BrassRod=1,MeadowCharm=1,AetherHeartstone=1,Blade=1,Ore=5,
+		WildheartEssence=1000,BrinelightEssence=10,EmberheartCinder=2,GalestringCoil=1,TidepearlKnot=1,TemperingTome=12,MasterworkTome=3}
+	p.coins=200000
+	p.xp.Combat=X[10]; p.levelRewards.Combat=10
+	p.xp.Fishing=X[20]; p.levelRewards.Fishing=20
+	p.equipment={weapon="BrassSword",helmet="BrassHelm"}
+	p.accessoryBag={"MeadowCharm"}
+end)
+local fresh=st(smith)
+ok(type(gear(fresh))=="table" and type(gear(fresh).reforges)=="table" and type(gear(fresh).stars)=="table" and type(gear(fresh).books)=="table","snapshot depth.gear tables")
+eq(next(gear(fresh).reforges),nil,"no reforges yet")
+local baseStrength=fresh.depth.stats.strength
+-- Malformed payloads change nothing and cost nothing.
+for _,verb in ipairs({"reforge","reforgeStone","star","tome"}) do
+	for _,bad in ipairs({"","Nope","Ore","TemperingTome","BrassSword:","BrassSword:Nope","Nope:EmberheartCinder","BrassSword:Ore:1",string.rep("A",65),"Brass Sword"}) do
+		local s=cmd(smith,verb,bad)
+		eq(s.coins,200000,"malformed "..verb.." is free: "..tostring(bad))
+		eq(next(gear(s).reforges)==nil and next(gear(s).stars)==nil and next(gear(s).books)==nil,true,"malformed "..verb.." changes nothing: "..tostring(bad))
+	end
+end
+ok(has(cmd(smith,"reforge","StarmetalSword").message,"do not own"),"reforge needs ownership")
+ok(has(cmd(smith,"reforge","Ore").message,"Choose a weapon"),"reforge needs gear")
+-- Reforge Anvil: deterministic roll, cost by rarity, never repeats.
+local pool=G.reforgePool(Data.Items.BrassSword)
+table.insert(rolls,0)
+local r1=cmd(smith,"reforge","BrassSword")
+eq(gear(r1).reforges.BrassSword,pool[1],"roll 0 picks the first anvil reforge")
+eq(r1.coins,200000-G.ReforgeCost.Uncommon,"uncommon reforge costs 500")
+ok(has(r1.message,"Reforged Brass Sword"),"reforge message")
+local expected=G.reforgeStats(pool[1],"Uncommon")
+ok(math.abs(r1.depth.stats.strength-(baseStrength+(expected.strength or 0)))<0.05,"reforge reaches the stat sheet")
+table.insert(rolls,0)
+local r2=cmd(smith,"reforge","BrassSword")
+eq(gear(r2).reforges.BrassSword,pool[2],"reroll skips the current reforge")
+ok(has(r2.message,G.Reforges[pool[1]].name.." → "..G.Reforges[pool[2]].name),"reroll message shows the change")
+for i=1,12 do
+	local prior=gear(st(smith)).reforges.BrassSword
+	table.insert(rolls,(i%7)/7)
+	eq(gear(cmd(smith,"reforge","BrassSword")).reforges.BrassSword~=prior,true,"anvil never repeats "..i)
+end
+eq(st(smith).coins,200000-14*500,"every roll charged")
+-- Tool and accessory reforges respect their pools.
+table.insert(rolls,0.999)
+local rodRoll=cmd(smith,"reforge","BrassRod")
+ok(table.find(G.reforgePool(Data.Items.BrassRod),gear(rodRoll).reforges.BrassRod)~=nil,"rod reforge from the rod pool")
+table.insert(rolls,0)
+eq(G.Reforges[gear(cmd(smith,"reforge","MeadowCharm")).reforges.MeadowCharm].category,"accessory","bagged accessory reforged")
+-- Reforge stones.
+local wrong=cmd(smith,"reforgeStone","BrassSword:GalestringCoil")
+ok(has(wrong.message,"cannot be applied"),"bow stone refused on a sword")
+eq(wrong.items.GalestringCoil,1,"refused stone kept")
+ok(has(cmd(smith,"reforgeStone","BrassSword:TidepearlKnot").message,"cannot be applied"),"rod stone refused on a sword")
+ok(has(cmd(smith,"reforgeStone","BrassSword:StarbiteShard").message,"You have no"),"unowned stone refused")
+local coinsBefore=st(smith).coins
+local stoned=cmd(smith,"reforgeStone","BrassSword:EmberheartCinder")
+eq(gear(stoned).reforges.BrassSword,"Emberwrought","stone applies its reforge")
+eq(stoned.items.EmberheartCinder,1,"stone consumed")
+eq(stoned.coins,coinsBefore-500,"stone application pays the anvil fee")
+ok(has(cmd(smith,"reforgeStone","BrassSword:EmberheartCinder").message,"already Emberwrought"),"same stone twice refused")
+eq(st(smith).items.EmberheartCinder,1,"repeat refusal keeps the stone")
+local rodStone=cmd(smith,"reforgeStone","BrassRod:TidepearlKnot")
+eq(gear(rodStone).reforges.BrassRod,"Tidebound","rod stone on a rod")
+ok(rodStone.depth.stats.seaCreatureChance>fresh.depth.stats.seaCreatureChance,"rod reforge raises sea creature chance")
+-- Stars: essence + coins, five at most, accessories refused.
+local essence=st(smith).items.WildheartEssence
+local coins=st(smith).coins
+local spentEssence,spentCoins=0,0
+for k=1,5 do
+	local c=G.starCost(Data.Items.BrassSword,k)
+	spentEssence+=c.amount; spentCoins+=c.coins
+	local s=cmd(smith,"star","BrassSword")
+	eq(gear(s).stars.BrassSword,k,"star "..k)
+	eq(s.items.WildheartEssence,essence-spentEssence,"star "..k.." essence")
+	eq(s.coins,coins-spentCoins,"star "..k.." coins")
+end
+ok(has(cmd(smith,"star","BrassSword").message,"already has 5 stars"),"sixth star refused")
+eq(st(smith).items.WildheartEssence,essence-spentEssence,"refused star is free")
+ok(has(cmd(smith,"star","MeadowCharm").message,"cannot be starred"),"accessories cannot be starred")
+local poorRod=cmd(smith,"star","BrassRod")
+eq(gear(poorRod).stars.BrassRod,nil,"rod star needs Brinelight Essence")
+ok(has(poorRod.message,"Brinelight Essence"),"essence shortfall message")
+-- Tomes.
+for i=1,10 do eq(gear(cmd(smith,"tome","BrassSword:TemperingTome")).books.BrassSword.tempering,i,"tempering "..i) end
+ok(has(cmd(smith,"tome","BrassSword:TemperingTome").message,"already holds 10"),"eleventh tome refused")
+eq(st(smith).items.TemperingTome,2,"ten tomes consumed")
+ok(has(cmd(smith,"tome","BrassRod:TemperingTome").message,"weapons and armor"),"tools cannot be tempered")
+ok(has(cmd(smith,"tome","BrassSword:Ore").message,"Choose a Tempering"),"non-tome refused")
+local helm=cmd(smith,"tome","BrassHelm:TemperingTome")
+eq(gear(helm).books.BrassHelm.tempering,1,"armor tempered")
+eq(helm.depth.stats.defense,st(smith).depth.stats.defense,"stat sheet stable between snapshots")
+local mw=cmd(smith,"tome","BrassSword:MasterworkTome")
+eq(gear(mw).books.BrassSword.masterwork,true,"masterwork bound")
+eq(gear(mw).books.BrassSword.tempering,10,"masterwork keeps the tempering count")
+ok(has(mw.message,"Rare masterwork"),"masterwork message names the new rarity")
+ok(has(cmd(smith,"tome","BrassSword:MasterworkTome").message,"already a masterwork"),"second masterwork refused")
+ok(has(cmd(smith,"tome","AetherHeartstone:MasterworkTome").message,"already Mythic"),"mythic refused")
+eq(st(smith).items.MasterworkTome,2,"refusals keep the tome")
+local charm=cmd(smith,"tome","MeadowCharm:MasterworkTome")
+eq(gear(charm).books.MeadowCharm.masterwork,true,"bagged accessory masterwork")
+ok(charm.depth.stats.magicalPower>=Data.Rarity.Uncommon.power,"masterwork raises Magical Power")
+-- Masterwork raises the anvil fee (Rare now).
+local fee=st(smith).coins
+table.insert(rolls,0)
+eq(cmd(smith,"reforge","BrassSword").coins,fee-G.ReforgeCost.Rare,"masterwork sword pays the rare fee")
+-- Final stat sheet matches Progression on the live profile.
+local final=st(smith)
+local profileCopy={}
+for k,v in pairs(final.depth.gear) do profileCopy[k]=v end
+local layered=G.breakdown(profileCopy,"BrassSword").total
+ok(layered.damage>=20,"tempering + stars add damage")
+ok(final.depth.stats.strength>baseStrength+20,"layers stack on the equipped sword")
+-- Persistence.
+smith=rejoin(smith)
+local saved=data.p9300.profile
+eq(saved.stars.BrassSword,5,"stars persisted")
+eq(saved.books.BrassSword.tempering,10,"tomes persisted")
+eq(saved.books.BrassSword.masterwork,true,"masterwork persisted")
+eq(saved.reforges.BrassRod,"Tidebound","reforges persisted")
+eq(saved.books.MeadowCharm.masterwork,true,"accessory masterwork persisted")
+local reloaded=st(smith)
+eq(reloaded.depth.stats.strength,final.depth.stats.strength,"stat sheet survives a rejoin")
+eq(gear(reloaded).reforges.BrassSword,gear(final).reforges.BrassSword,"reforge survives a rejoin")
+-- Migration: older saves gain tables; malformed entries are dropped or clamped.
+local legacy=seeded(9301,function(p)
+	p.reforges=nil; p.stars=nil; p.books=nil
+end)
+local migrated=st(legacy)
+eq(type(gear(migrated).reforges)=="table" and type(gear(migrated).stars)=="table" and type(gear(migrated).books)=="table",true,"missing tables backfilled")
+local messy=seeded(9302,function(p)
+	p.reforges={BrassSword="Nope",Ore="Honed",BrassHelm="Honed",Blade="Vicious",BrassRod="Brined",BrassPickaxe="Brined"}
+	p.stars={BrassSword=99,MeadowCharm=2,Ghost=1,BrassHelm="x",Blade=2.7,BrassRod=-1}
+	p.books={BrassSword={tempering=40,masterwork=true},BrassRod={tempering=3},Ore=5,BrassHelm="x",Blade={tempering=0},Stormblade={masterwork="yes",tempering=2}}
+end)
+st(messy)
+messy=rejoin(messy)
+local m=data.p9302.profile
+eq(m.reforges.BrassSword,nil,"unknown reforge dropped")
+eq(m.reforges.Ore,nil,"non-gear reforge dropped")
+eq(m.reforges.BrassHelm,nil,"mismatched reforge dropped")
+eq(m.reforges.Blade,"Vicious","valid reforge kept")
+eq(m.reforges.BrassRod,"Brined","valid rod reforge kept")
+eq(m.reforges.BrassPickaxe,nil,"rod-only reforge dropped from a pickaxe")
+eq(m.stars.BrassSword,5,"stars clamped to 5")
+eq(m.stars.MeadowCharm,nil,"accessory stars dropped")
+eq(m.stars.Ghost,nil,"unknown item stars dropped")
+eq(m.stars.BrassHelm,nil,"malformed stars dropped")
+eq(m.stars.Blade,2,"fractional stars floored")
+eq(m.stars.BrassRod,nil,"negative stars dropped")
+eq(m.books.BrassSword.tempering,10,"tempering clamped to 10")
+eq(m.books.BrassSword.masterwork,true,"masterwork kept")
+eq(m.books.BrassRod,nil,"tool tempering dropped")
+eq(m.books.Ore,nil,"non-gear book dropped")
+eq(m.books.BrassHelm,nil,"malformed book dropped")
+eq(m.books.Blade,nil,"empty book dropped")
+eq(m.books.Stormblade.tempering,2,"stormblade tempering kept")
+eq(m.books.Stormblade.masterwork,nil,"non-boolean masterwork dropped")
+-- Ironman journals upgrade normally.
+local iron=seeded(9303,function(p)
+	p.ironman=true
+	p.items={Blade=1,WildheartEssence=20,TemperingTome=1}
+	p.coins=5000
+end)
+table.insert(rolls,0)
+local ironRoll=cmd(iron,"reforge","Blade")
+eq(gear(ironRoll).reforges.Blade,G.reforgePool(Data.Items.Blade)[1],"Ironman can reforge")
+eq(gear(cmd(iron,"star","Blade")).stars.Blade,1,"Ironman can star")
+eq(gear(cmd(iron,"tome","Blade:TemperingTome")).books.Blade.tempering,1,"Ironman can temper")
+local broke=seeded(9304,function(p) p.items={Blade=1,WildheartEssence=5}; p.coins=100 end)
+local brokeRoll=cmd(broke,"reforge","Blade")
+eq(gear(brokeRoll).reforges.Blade,nil,"reforge needs coins")
+ok(has(brokeRoll.message,"costs 250 coins"),"anvil fee message")
+eq(gear(cmd(broke,"star","Blade")).stars.Blade,nil,"star needs essence")
+eq(st(broke).items.WildheartEssence,5,"refused star spends nothing")
+-- Drops: monsters, slayer bosses.
+local hunter=seeded(9305,function(p) p.xp.Combat=X[20]; p.levelRewards.Combat=20 end)
+local bridge
+for _,o in ipairs(allObjects) do if o.Name=="IsleBridge" then bridge=o end end
+for _,v in ipairs({0.99,0.99,0.99,0.0001,0}) do table.insert(rolls,v) end
+local killed=bridge.OnInvoke("kill",hunter,{monster="CinderMite"})
+eq(killed.drops.EmberheartCinder,1,"Cinder Mites drop the Emberheart Cinder stone")
+eq(st(hunter).items.EmberheartCinder,1,"stone collected")
+hunter=rejoin(hunter,function(p) p.slayerQuest={line="Bramble",tier=1,progress=150,needed=150,bossReady=true} end)
+for _,v in ipairs({0.5,0,0.5,0,0.5,0}) do table.insert(rolls,v) end
+local boss=bridge.OnInvoke("slayerBoss",hunter,{result="win"})
+eq(boss.ok,true,"slayer boss win")
+eq(boss.drops.WildheartEssence,2,"slayer bosses drop Wildheart Essence")
+rolls={}
+-- Auction House refuses upgraded ids (upgrades stay bound to the journal).
+local seller=seeded(9306,function(p)
+	p.items={BrassSword=1,SunsteelSword=1,Blade=1}
+	p.coins=5000
+	p.stars={BrassSword=1}
+	p.books={Blade={masterwork=true}}
+	p.reforges={SunsteelSword="Honed"}
+end)
+for _,id in ipairs({"BrassSword","Blade","SunsteelSword"}) do
+	local listed=trade(seller,"ahList",id..":500")
+	ok(has(listed.message,"Upgraded gear cannot be auctioned"),"upgraded "..id.." refused")
+	eq(listed.items[id],1,"refused listing keeps "..id)
+	eq(listed.coins,5000,"refused listing charges no fee ("..id..")")
+end
+print("PASS: "..(checks-before).." gear depth server assertions.")
 end)()

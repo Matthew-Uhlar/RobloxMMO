@@ -191,6 +191,130 @@ local function spend(p,cost)
 	for item,n in pairs(cost) do p.items[item]-=n end
 	return true
 end
+-- Gear depth (Data.Gear): Reforge Anvil, reforge stones, essence stars and tomes.
+-- Items are stackable counts per id, so upgrades are bound to the item id like
+-- enchants: p.reforges[id]=reforgeId, p.stars[id]=1..5, p.books[id]={tempering,masterwork}.
+-- Equipped and bagged items may be upgraded; Ironman journals use every verb.
+local Gear={verbs={}}
+do
+	local G=Data.Gear
+	local function owned(p,item)
+		local def=validId(item) and Data.Items[item]
+		local category=def and G.category(def)
+		if not category then return nil,"Choose a weapon, armor piece, tool or accessory to upgrade." end
+		if (p.items[item] or 0)<1 then return nil,"You do not own "..def.name.."." end
+		return def,category
+	end
+	local function split(item)
+		if not validId(item) then return nil end
+		return string.match(item,"^(%w+):(%w+)$")
+	end
+	-- reforge "itemId": random reforge for coins (never the current one).
+	function Gear.verbs.reforge(p,item)
+		local def,category=owned(p,item)
+		if not def then return category end
+		local cost=G.reforgeCost(p,item)
+		if p.coins<cost then return "Reforging "..def.name.." costs "..cost.." coins." end
+		local before=G.reforgeOf(p,item)
+		local after=G.rollReforge(def,before,roll())
+		if not after then return def.name.." cannot be reforged." end
+		p.coins-=cost
+		p.reforges[item]=after
+		p.started=true
+		return "Reforged "..def.name..": "..(if before then G.Reforges[before].name.." → " else "")..G.Reforges[after].name.." • -"..cost.." coins."
+	end
+	-- reforgeStone "itemId:stoneId": a specific reforge, consuming the stone plus the anvil fee.
+	function Gear.verbs.reforgeStone(p,item)
+		local target,stoneId=split(item)
+		if not target then return "Choose an item and a reforge stone." end
+		local def,category=owned(p,target)
+		if not def then return category end
+		local stone=Data.Items[stoneId]
+		local reforgeId=stone and stone.reforgeStone
+		if not reforgeId then return "Choose a reforge stone." end
+		local reforge=G.Reforges[reforgeId]
+		if (p.items[stoneId] or 0)<1 then return "You have no "..stone.name.."." end
+		if not G.reforgeFits(reforgeId,def) then return reforge.name.." cannot be applied to "..def.name.."." end
+		if G.reforgeOf(p,target)==reforgeId then return def.name.." is already "..reforge.name.."." end
+		local cost=G.reforgeCost(p,target)
+		if p.coins<cost then return "Applying "..stone.name.." costs "..cost.." coins." end
+		spend(p,{[stoneId]=1})
+		p.coins-=cost
+		p.reforges[target]=reforgeId
+		p.started=true
+		return def.name.." reforged "..reforge.name.." with "..stone.name.." • -"..cost.." coins."
+	end
+	-- star "itemId": next star for essence + coins (weapons, armor and tools).
+	function Gear.verbs.star(p,item)
+		local def,category=owned(p,item)
+		if not def then return category end
+		if not G.canStar(category) then return "Accessories cannot be starred." end
+		local stars=G.starsOf(p,item)
+		if stars>=G.STAR_MAX then return def.name.." already has "..G.STAR_MAX.." stars." end
+		local cost=G.starCost(def,stars+1)
+		local essence=Data.Items[cost.essence]
+		if (p.items[cost.essence] or 0)<cost.amount then return "Star "..(stars+1).." needs "..cost.amount.." "..essence.name.."." end
+		if p.coins<cost.coins then return "Star "..(stars+1).." costs "..cost.coins.." coins." end
+		spend(p,{[cost.essence]=cost.amount})
+		p.coins-=cost.coins
+		p.stars[item]=stars+1
+		p.started=true
+		return def.name.." starred "..string.rep("★",stars+1).." • -"..cost.amount.." "..essence.name..", -"..cost.coins.." coins."
+	end
+	-- tome "itemId:tomeId": Tempering (stacking, weapons/armor) or Masterwork (rarity +1, once).
+	function Gear.verbs.tome(p,item)
+		local target,tomeId=split(item)
+		if not target then return "Choose an item and a tome." end
+		local def,category=owned(p,target)
+		if not def then return category end
+		if not G.Tomes[tomeId] then return "Choose a Tempering Tome or a Masterwork Tome." end
+		if (p.items[tomeId] or 0)<1 then return "You have no "..Data.Items[tomeId].name.."." end
+		local book=G.bookOf(p,target)
+		local message
+		if tomeId=="TemperingTome" then
+			if not G.canTemper(category) then return "Tempering Tomes apply to weapons and armor." end
+			if book.tempering>=G.TEMPERING_MAX then return def.name.." already holds "..G.TEMPERING_MAX.." Tempering Tomes." end
+			book.tempering+=1
+			message=def.name.." tempered ("..book.tempering.."/"..G.TEMPERING_MAX..")."
+		else
+			if book.masterwork then return def.name.." is already a masterwork." end
+			if def.rarity==Data.RarityOrder[#Data.RarityOrder] then return def.name.." is already "..def.rarity.."." end
+			book.masterwork=true
+			message=def.name.." is now a "..G.bumpRarity(def.rarity).." masterwork."
+		end
+		spend(p,{[tomeId]=1})
+		p.books[target]={tempering=book.tempering,masterwork=book.masterwork or nil}
+		p.started=true
+		return message
+	end
+	-- Older saves gain empty tables; unknown items, reforges that no longer fit,
+	-- and out-of-range counts are dropped or clamped.
+	function Gear.migrate(profile)
+		for _,key in ipairs({"reforges","stars","books"}) do
+			if type(profile[key])~="table" then profile[key]={} end
+		end
+		for id,r in pairs(profile.reforges) do
+			if not (type(id)=="string" and Data.Items[id] and type(r)=="string" and G.reforgeFits(r,Data.Items[id])) then profile.reforges[id]=nil end
+		end
+		for id,n in pairs(profile.stars) do
+			local def=type(id)=="string" and Data.Items[id]
+			local v=tonumber(n)
+			if not def or not G.canStar(G.category(def)) or not v or v~=v or v<1 then profile.stars[id]=nil
+			else profile.stars[id]=math.clamp(math.floor(v),1,G.STAR_MAX) end
+		end
+		for id,b in pairs(profile.books) do
+			local def=type(id)=="string" and Data.Items[id]
+			if not def or not G.category(def) or type(b)~="table" then profile.books[id]=nil
+			else
+				local book=G.bookOf(profile,id)
+				if not G.canTemper(G.category(def)) then book.tempering=0 end
+				if book.tempering==0 and not book.masterwork then profile.books[id]=nil
+				else profile.books[id]={tempering=book.tempering,masterwork=book.masterwork or nil} end
+			end
+		end
+	end
+	function Gear.view(p) return {reforges=p.reforges,stars=p.stars,books=p.books} end
+end
 -- Workers follow Data.WorkerTiers (SkyBlock minion tiers 1-7).
 local function workerFleet(p)
 	if not p.workers then
@@ -1275,6 +1399,7 @@ local function depthState(p,stats)
 	return {skills=skills,totalLevel=total,skillAverage=average,stats=stats,equipment=equipment,tools=tools,
 		accessoryBag=table.clone(p.accessoryBag),activeAccessories=Progression.activeAccessories(p),accessorySlots=Progression.accessorySlots(p),
 		pets=pets,buffs=buffs,collections=collections,bestiary=p.bestiary,slayer={lines=lines,quest=p.slayerQuest},enchants=p.enchants,regions=regions,
+		gear=Gear.view(p), -- Gear depth: {reforges, stars, books} (Data.Gear helpers read it)
 		combat=Progression.combatLoadout(p), -- Combat styles: {style,weapon,ammo,ammoCount,supplies,levels,autocast}
 		mastery=Mastery.state and Mastery.state(p)} -- Skill Mastery: points, trees, capstones, milestones, mantles
 end
@@ -1387,6 +1512,7 @@ local function migrate(profile)
 	workerFleet(profile)
 	Journal.migrate(profile)
 	Skills.migrate(profile) -- Agility & Hunter records + milestone perks
+	Gear.migrate(profile) -- Gear depth: reforges, stars, books
 	Progression.masteryMigrate(profile) -- Skill Mastery: drop unknown/invalid nodes, reset overspent trees
 end
 -- Clears every per-player table and ends this player's session slot.
@@ -1928,6 +2054,8 @@ local function perform(player,verb,item,prompt)
 		grantXp(p,"Enchanting",xp)
 		p.started=true
 		return def.name.." enchanted with "..enchant.name.." "..nextLevel.." • +"..xp.." Enchanting XP."
+	elseif Gear.verbs[verb] then
+		return Gear.verbs[verb](p,item) -- Gear depth: reforge, reforgeStone, star, tome
 	elseif verb=="slayerBegin" then
 		local lineId,raw
 		if validId(item) then lineId,raw=string.match(item,"^(%a+):(%d)$") end
@@ -3111,6 +3239,7 @@ local function prepare(p,verb,item)
 		if (p.items[id] or 0)<1 then return nil,"You do not have "..itemName(id).."." end
 		if isEquipped(p,id) then return nil,"Unequip "..itemName(id).." (or take it out of your accessory bag) before listing it." end
 		if type(p.enchants[id])=="table" and next(p.enchants[id]) then return nil,"Enchanted gear cannot be auctioned: enchants stay bound to your journal." end
+		if Progression.isUpgraded(p,id) then return nil,"Upgraded gear cannot be auctioned: reforges, stars and tomes stay bound to your journal." end
 		if #listings>=Rules.listingCap then return nil,"You already have "..Rules.listingCap.." auction listings. Claim or cancel one first." end
 		local fee=Rules.auctionFee(price)
 		if p.coins<fee then return nil,"The listing fee is "..fee.." purse coins." end
