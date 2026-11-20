@@ -1835,9 +1835,25 @@ do
 		assert(lootCard.Visible and lootRect.x >= 0 and lootRect.y >= 0 and lootRect.x + lootRect.w <= size.X and lootRect.y + lootRect.h <= size.Y,
 			"loot summary fits the screen at " .. tag.name .. " " .. show(lootRect))
 		assert(H.find(lootCard, "Items").Text:find("Sovereign Crest", 1, true) and H.find(lootCard, "Standing").Text:find("Vanguard", 1, true), "loot summary lists drops and tier at " .. tag.name)
-		combat.fx.OnClientEvent:Fire("worldBossAnnounce", { kind = "win", name = "Aurelith" })
+		-- Renders on each payload and a 1 Hz timer, not every frame.
+		local title = H.find(wbBar, "Title")
+		local function payload(phase)
+			combat.fx.OnClientEvent:Fire("worldBoss", { id = "Aurelith", name = "Aurelith, the Shattered Sovereign", level = 120, hp = 1400000, maxHp = 3000000,
+				phase = phase, phases = 3, phaseName = "Fractured", enraged = false, enrageIn = 199, departIn = 399, warded = false, fighters = 6, top = {}, you = nil })
+		end
+		payload(2)
+		assert(title.Text:find("Phase 2/3", 1, true), "a payload renders at once at " .. tag.name)
+		title.Text = "stale"
+		combat.run.RenderStepped:Fire()
+		assert(title.Text == "stale", "boss bar does not re-render every frame at " .. tag.name)
+		payload(3)
+		assert(title.Text:find("Phase 3/3", 1, true), "the next payload renders at once at " .. tag.name)
+		-- Another boss falling (both up) leaves this HUD alone; its own fall clears it.
+		combat.fx.OnClientEvent:Fire("worldBossAnnounce", { kind = "depart", id = "Nyxwyrm", name = "Nyxwyrm" })
+		assert(wbBar.Visible, "another boss's departure keeps the HUD at " .. tag.name)
+		combat.fx.OnClientEvent:Fire("worldBossAnnounce", { kind = "win", id = "Aurelith", name = "Aurelith" })
 		assert(not wbBar.Visible and not wbBoard.Visible, "boss HUD clears when the boss falls at " .. tag.name)
-		checks += 8
+		checks += 12
 		checks += 12
 	end
 	-- Wayfinder (nav.client.lua) for Agility & Hunter: the running lap's next

@@ -71,6 +71,7 @@ local function nextRoll()
 	return defaultRoll
 end
 local seeds = {}
+local closers = {} -- game:BindToClose callbacks (Endgame: the shutdown sigil drain test runs them last)
 local guidCount = 0
 local services = {
 	Players = {PlayerAdded=signal(),PlayerRemoving=signal(),GetPlayers=function() return {} end},
@@ -83,7 +84,7 @@ local services = {
 local objects,allObjects = {},{}
 local workspace = {GetAttribute=function(self,key) return self[key] end}
 local env = {
-	game={GetService=function(_,name) return services[name] end, BindToClose=function() end},
+	game={GetService=function(_,name) return services[name] end, BindToClose=function(_,f) table.insert(closers,f) end},
 	workspace=workspace,
 	Instance={new=function(class)
 		local instance={Event=signal(),FireClient=function(_,player,state) player.last=state end}
@@ -3754,7 +3755,7 @@ end)()
 	ok(has(rawUse(holder,node("bossSigil","Nyxwyrm",0,nil,"ShatteredCrown")).message,"silent"),"scheduled boss has no altar")
 	services.ServerStorage.FindFirstChild=nil
 	-- Bridge "worldBoss": validation.
-	local fighter=seeded(9507,function(p) p.xp.Combat=X[80]; p.coins=0 end)
+	local fighter=seeded(9507,function(p) p.xp.Combat=X[80]; p.questsDone={CrownOfTempest=true}; p.coins=0 end)
 	local startCoins=st(fighter).coins
 	for _,bad in ipairs({{boss="Nope",tier="Champion",rank=1,fight=1},{boss="Aurelith",tier="Nope",rank=1,fight=1},{boss="Aurelith",tier="Champion",rank=0,fight=1},
 		{boss="Aurelith",tier="Champion",rank=1.5,fight=1},{boss="BramblebackBoar",tier="Champion",rank=1,fight=1}}) do
@@ -3765,25 +3766,68 @@ end)()
 	local coinsBefore=st(fighter).coins
 	local paid=bridge.OnInvoke("worldBoss",fighter,{boss="Aurelith",tier="Participant",rank=7,share=0.012,damage=36000,sigils=0,fight=11})
 	eq(paid.ok,true,"credited contributor paid")
-	eq(paid.coins,E.TierById.Participant.coins,"participant coins")
-	ok(st(fighter).coins-coinsBefore>=E.TierById.Participant.coins,"coins credited (plus any collection tier rewards)")
-	ok((paid.drops.SovereignEssence or 0)>=E.TierById.Participant.essence,"guaranteed Sovereign Essence")
-	ok((paid.drops.CrownShard or 0)>=8,"guaranteed crown shards")
+	eq(paid.coins,E.bossCoins("Aurelith",0.012),"participant coins scale with the 1.2% share")
+	ok(paid.coins<5000,"a 1% contributor no longer collects a flat tier payout")
+	ok(st(fighter).coins-coinsBefore>=paid.coins,"coins credited (plus any collection tier rewards)")
+	ok((paid.drops.SovereignEssence or 0)>=1,"guaranteed Sovereign Essence (floor 1)")
+	ok((paid.drops.CrownShard or 0)>=1,"guaranteed crown shards (floor 1)")
 	eq(paid.drops.SovereignCrest,nil,"no rare drop on a high roll")
 	eq(st(fighter).depth.bestiary.Aurelith,1,"bestiary records the world boss")
 	ok(has(fighter.last.message,"Aurelith felled") and has(fighter.last.message,"Participant"),"notification names the boss and tier")
 	eq(bridge.OnInvoke("worldBoss",fighter,{boss="Aurelith",tier="Participant",rank=7,share=0.012,fight=11}).reason,"paid","each fight pays once")
 	eq(st(fighter).depth.bestiary.Aurelith,1,"duplicate report changes nothing")
 	-- A Champion on rolls of 0: every capped chance hits, amounts scale with weight.
-	local champ=seeded(9508,function(p) p.xp.Combat=X[90]; p.coins=0 end)
+	local champ=seeded(9508,function(p) p.xp.Combat=X[90]; p.questsDone={CrownOfTempest=true}; p.coins=0 end)
 	defaultRoll=0
 	local big=bridge.OnInvoke("worldBoss",champ,{boss="Nyxwyrm",tier="Champion",rank=1,share=0.4,damage=1800000,sigils=0,fight=12})
 	defaultRoll=0.999
 	eq(big.ok,true,"champion paid")
-	eq(big.coins,E.TierById.Champion.coins,"champion coins")
+	eq(big.coins,E.bossCoins("Nyxwyrm",0.4),"champion coins scale with the 40% share")
 	for _,id in ipairs({"SovereignCrest","NyxwingCharm","ShardlingPet","Duskpiercer"}) do ok((big.drops[id] or 0)>=1,"zero roll drops "..id) end
-	local weight=E.lootWeight("Champion",1,0)
-	eq(big.drops.CrownShard,math.floor(10*weight+0.5),"guaranteed rows scale by loot weight (min at roll 0)")
+	eq(big.drops.CrownShard,math.floor(10*0.4*E.GUARANTEED_POOL+0.5),"guaranteed rows scale by share (min at roll 0)")
+	ok(has(champ.last.message,"40%"),"notification shows the share")
+	-- Region gate at credit: a journal that may not enter the Shattered Crown
+	-- (noclip alt below the quest) is refused and keeps nothing.
+	local alt=seeded(9509,function(p) p.xp.Combat=X[80]; p.coins=0 end)
+	local altCoins=st(alt).coins
+	local refused=bridge.OnInvoke("worldBoss",alt,{boss="Aurelith",tier="Vanguard",rank=2,share=0.12,sigils=0,fight=13})
+	eq(refused.ok,false,"region-locked journal refused")
+	eq(refused.reason,"region","refusal names the region")
+	eq(st(alt).coins,altCoins,"region refusal pays nothing")
+	-- A journal that is not live answers "sync" (combat resends until it is).
+	local away=player(9510,true)
+	local syncing=bridge.OnInvoke("worldBoss",away,{boss="Aurelith",tier="Vanguard",rank=2,share=0.12,sigils=0,fight=14})
+	ok(type(syncing)=="table" and syncing.ok==false and syncing.reason=="sync","unsynced journal asks for a resend")
+	-- Sigil refunds (bridge "worldBossRefund"): a live journal at once ...
+	local placer=seeded(9511,function(p) p.items.CrownSigil=0 end)
+	local back=bridge.OnInvoke("worldBossRefund",placer,{boss="Aurelith",userId=9511,sigils=2,reason="failed"})
+	eq(back.ok,true,"refund accepted")
+	eq(back.mode,"items","live journal refunded at once")
+	eq(st(placer).items.CrownSigil,2,"sigils back in the bag")
+	ok(has(placer.last.message,"returns 2 unspent Crown Sigils"),"refund notice")
+	eq(bridge.OnInvoke("worldBossRefund",placer,{boss="Aurelith",userId=9511,sigils=0}).ok,false,"empty refund refused")
+	eq(bridge.OnInvoke("worldBossRefund",9511,{boss="Aurelith",userId="x",sigils=1}).ok,false,"invalid user refused")
+	-- ... an offline journal through its save (applied on the next join, capped).
+	local gone=player(9512)
+	services.Players.PlayerRemoving:Fire(gone)
+	local sigilsBefore=data.p9512.profile.items.CrownSigil or 0
+	local offline=bridge.OnInvoke("worldBossRefund",9512,{boss="Aurelith",userId=9512,sigils=9,reason="depart"})
+	eq(offline.mode,"pending","offline refund queued for the save")
+	eq(data.p9512.profile.sigilRefund,E.ALTAR_PER_PLAYER,"refund written into the saved journal (one summoning's worth at most)")
+	local returned=player(9512)
+	ok(has(returned.last.message,"returned "..E.ALTAR_PER_PLAYER.." unspent Crown Sigils"),"join notice names the refund")
+	eq(st(returned).items.CrownSigil,sigilsBefore+E.ALTAR_PER_PLAYER,"refund applied on join")
+	services.Players.PlayerRemoving:Fire(returned)
+	eq(data.p9512.profile.sigilRefund,nil,"applied refund cleared from the save")
+	data.p9512.profile.sigilRefund=500
+	local capped=player(9512)
+	eq(st(capped).items.CrownSigil,sigilsBefore+E.ALTAR_PER_PLAYER+E.REFUND_CAP,"pending refunds are bounded")
+	-- ... and a journal held by another server is not overwritten.
+	local elsewhere=player(9513)
+	services.Players.PlayerRemoving:Fire(elsewhere)
+	data.p9513.owner="other-server"; data.p9513.expires=utc+600
+	bridge.OnInvoke("worldBossRefund",9513,{boss="Aurelith",userId=9513,sigils=1,reason="depart"})
+	eq(data.p9513.profile.sigilRefund,nil,"a leased journal is left alone (retried later)")
 	eq(st(champ).items.Duskpiercer,1,"unique weapon collected")
 	eq(st(champ).depth.bestiary.Nyxwyrm,1,"Nyxwyrm in the bestiary")
 	-- Kill / XP routing for boss ids.
@@ -3799,6 +3843,25 @@ end)()
 	local questKill=Data.QuestById.TheSovereignsFall.objectives[1]
 	eq(questKill.monster,"Aurelith","final quest asks for the Sovereign")
 	ok(has(Data.describeCheck(questKill),"Aurelith, the Shattered Sovereign"),"quest text names the world boss")
+	-- Shutdown: BindToClose drains combat's altars and refunds every placer
+	-- (live journals before they save, offline ones through their save).
+	local leaver=player(9514)
+	services.Players.PlayerRemoving:Fire(leaver)
+	local drained=0
+	local drainFn={Name="IsleWorldBoss",Invoke=function(_,op)
+		if op~="drain" then return nil end
+		drained+=1
+		return {{userId=9511,boss="Aurelith",sigils=1,reason="shutdown"},{userId=9514,boss="Aurelith",sigils=2,reason="shutdown"},{userId=-1,boss="Aurelith",sigils=1}}
+	end}
+	services.ServerStorage.FindFirstChild=function(_,name) return if name=="IsleWorldBoss" then drainFn else nil end
+	ok(#closers>=1,"BindToClose registered")
+	local closed=false
+	coroutine.wrap(function() for _,f in ipairs(closers) do f() end; closed=true end)()
+	ok(closed,"shutdown completes")
+	eq(drained,1,"combat's altars drained once at shutdown")
+	eq(data.p9511.profile.items.CrownSigil,3,"live placer refunded before the final save")
+	eq(data.p9514.profile.sigilRefund,2,"offline placer refunded through the save")
+	services.ServerStorage.FindFirstChild=nil
 	print("PASS: "..(checks-before).." endgame server assertions.")
 end)()
 

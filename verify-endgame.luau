@@ -163,6 +163,62 @@ do
 		eq(s.activeSet, set.id, set.id .. " active set")
 		for stat, v in pairs(set.bonus) do ok((s[stat] or 0) >= v, set.id .. " bonus " .. stat .. " applied") end
 	end
+	-- Damage uplift per style (Progression's own melee / ranged / spell
+	-- formulas): the best crafted endgame weapon + full set over the best
+	-- earlier weapon + full set must land within 30-45% for every style, at
+	-- Combat/Ranged/Magic 60, 80 and 99; drop-only uniques stay within 65%.
+	do
+		local boss = WB.Aurelith
+		local endgameSets = {}
+		for _, set in ipairs(E.Sets) do endgameSets[set.id] = true end
+		local function statsFor(level, weapon, setId)
+			local X = Data.XP_TABLE[level]
+			local p = {xp = {Combat = X, Ranged = X, Magic = X, Dungeoneering = X}, items = {[weapon] = 1}, equipment = {weapon = weapon}, collection = {}}
+			for _, id in ipairs(Data.Sets[setId].pieces) do p.items[id] = 1; p.equipment[Data.Items[id].slot] = id end
+			return P.computeStats(p, 0)
+		end
+		-- Expected crit multiplier (crit chance capped at 100%); the rolls below never crit.
+		local function critMult(s) return 1 + math.min(100, s.critChance or 0) / 100 * (s.critDamage or 0) / 100 end
+		local never = function() return 1 end
+		local DPS = {
+			melee = function(w, s) return P.meleeDamage(s, never) * critMult(s) end,
+			ranged = function(w, s, level)
+				local hit = P.hitChance(s.rangedAccuracy, level, boss.level, boss.defense)
+				return P.rangedDamage(s, w, Data.Items.CelestialArrow, level, never) * critMult(s) * hit / w.ranged.speed
+			end,
+			magic = function(w, s, level) return P.spellDamage(s, Data.Spells.EmberCascade, w, level) / w.magic.speed end,
+		}
+		local function best(style, level, endgame, uniques)
+			local top, tag = 0, ""
+			for id, def in pairs(Data.Items) do
+				if def.kind == "weapon" and P.weaponStyle(def) == style and (style == "melee" or def.ranged or def.magic) then
+					local isEnd = def.tier == 9
+					local unique = isEnd and Data.Recipes[id] == nil
+					if (endgame or not isEnd) and (uniques or not unique) then
+						for setId, set in pairs(Data.Sets) do
+							if #set.pieces == 4 and (endgame or not endgameSets[setId]) then
+								local v = DPS[style](def, statsFor(level, id, setId), level)
+								if v > top then top, tag = v, id .. "+" .. setId end
+							end
+						end
+					end
+				end
+			end
+			return top, tag
+		end
+		for _, level in ipairs({60, 80, 99}) do
+			for _, style in ipairs({"melee", "ranged", "magic"}) do
+				local prev, prevTag = best(style, level, false, false)
+				local crafted, craftedTag = best(style, level, true, false)
+				local unique = best(style, level, true, true)
+				local uplift = crafted / prev - 1
+				print(string.format("  uplift %-6s L%d %s -> %s: %+.1f%% (uniques %+.1f%%)", style, level, prevTag, craftedTag, uplift * 100, (unique / prev - 1) * 100))
+				ok(prev > 0 and uplift >= 0.30 and uplift <= 0.45, style .. " endgame uplift at level " .. level .. " within 30-45% (" .. string.format("%.1f%%", uplift * 100) .. ")")
+				ok(unique / prev - 1 <= 0.65, style .. " drop-only uniques within 65% at level " .. level)
+				ok(craftedTag:find(({melee = "Sovereign", ranged = "Eclipse", magic = "Riftweave"})[style], 1, true) ~= nil, style .. " best crafted loadout is the endgame set at level " .. level)
+			end
+		end
+	end
 	-- Reforge / stars / masterwork on endgame gear.
 	local g = {reforges = {SovereignGreatblade = "Honed"}, stars = {SovereignGreatblade = 5}, books = {SovereignGreatblade = {masterwork = true}}}
 	eq(Data.Gear.effectiveRarity(g, "SovereignGreatblade"), "Mythic", "masterwork lifts Legendary to Mythic")
@@ -283,7 +339,9 @@ do
 	eq(E.contributionTier("x"), nil, "garbage no tier")
 	for i = 2, #E.ContributionTiers do
 		local a, b = E.ContributionTiers[i - 1], E.ContributionTiers[i]
-		ok(a.minShare > b.minShare and a.weight > b.weight and a.coins > b.coins and a.essence > b.essence, a.id .. " outranks " .. b.id)
+		ok(a.minShare > b.minShare and a.weight > b.weight, a.id .. " outranks " .. b.id)
+		eq(b.maxShare, a.minShare, b.id .. " band ends where " .. a.id .. " starts")
+		ok(a.coins == nil and a.essence == nil and b.coins == nil, a.id .. " carries no flat payout")
 	end
 	-- Loot weight: tier + rank + summoner (capped).
 	near(E.lootWeight("Champion", 1, 0), 3.5, "champion rank 1")
@@ -343,13 +401,60 @@ local lootChecks = checks
 do
 	eq(E.bossRewards("Nope", "Champion", 1, 0), nil, "unknown boss no rewards")
 	eq(E.bossRewards("Aurelith", "Nope", 1, 0), nil, "unknown tier no rewards")
-	local low = E.bossRewards("Aurelith", "Participant", 10, 0)
-	local high = E.bossRewards("Aurelith", "Champion", 1, 2)
-	eq(low.coins, E.TierById.Participant.coins, "participant coins")
-	eq(high.coins, E.TierById.Champion.coins, "champion coins")
-	eq(low.items.SovereignEssence, E.TierById.Participant.essence, "participant essence")
-	eq(high.items.SovereignEssence, E.TierById.Champion.essence, "champion essence")
+	local low = E.bossRewards("Aurelith", "Participant", 10, 0, 0.012)
+	local high = E.bossRewards("Aurelith", "Champion", 1, 2, 0.4)
+	local rate = E.regionalCoinRate()
+	near(rate, 150 / 32000, "reference rate: the Riftmaw Stalker's coins per damage")
+	eq(low.coins, math.floor(0.012 * WB.Aurelith.hp * rate * E.COIN_RATE), "participant coins = share x hp x rate")
+	eq(E.bossCoins("Aurelith", 0.01), E.COIN_FLOOR, "1% of Aurelith sits on the coin floor")
+	eq(high.coins, math.floor(0.4 * WB.Aurelith.hp * rate * E.COIN_RATE), "champion coins = share x hp x rate")
+	eq(low.items.SovereignEssence, 1, "participant essence floor")
+	eq(high.items.SovereignEssence, math.floor(0.4 * E.ESSENCE_POOL + 0.5), "champion essence scales with share")
 	near(high.weight, 3 + 0.5 + 0.5, "champion rank 1 summoner weight")
+	-- Share is clamped into the tier band; a missing share pays the tier minimum.
+	eq(E.bossRewards("Aurelith", "Participant", 10, 0, 0.9).share, E.TierById.Valiant.minShare, "participant share capped at its band")
+	eq(E.bossRewards("Aurelith", "Champion", 1, 0, 0.01).share, 0.25, "champion share raised to its band")
+	eq(E.bossRewards("Aurelith", "Valiant", 4, 0).share, 0.03, "missing share: tier minimum")
+	eq(E.bossRewards("Aurelith", "Valiant", 4, 0, 0 / 0).share, 0.03, "NaN share: tier minimum")
+	eq(E.bossCoins("Aurelith", 0), 0, "no share no coins")
+	eq(E.bossCoins("Nope", 0.5), 0, "unknown boss no coins")
+	-- Payout table: coins per damage by tier stay within 3x the best regional
+	-- monster's rate (and never favour small contributors), and the total paid
+	-- for one kill is bounded by boss hp x that rate however it is split.
+	for _, bossId in ipairs(E.BossOrder) do
+		local hp = WB[bossId].hp
+		local cap = hp * rate * E.COIN_RATE
+		local lastPerDamage = 0
+		for i = #E.ContributionTiers, 1, -1 do
+			local t = E.ContributionTiers[i]
+			local share = t.minShare
+			local plan = E.bossRewards(bossId, t.id, 4, 0, share)
+			local perDamage = plan.coins / (share * hp)
+			print(string.format("  %s %-11s at %4.1f%%: %6d coins, %.4f coins/damage (%.2fx regional), %d Essence", bossId, t.id, share * 100, plan.coins, perDamage, perDamage / rate, plan.items.SovereignEssence))
+			ok(perDamage <= 3 * rate, bossId .. " " .. t.id .. " coins per damage within 3x a regional monster")
+			ok(perDamage >= rate, bossId .. " " .. t.id .. " out-earns regional monsters per damage")
+			if i < #E.ContributionTiers then ok(perDamage <= lastPerDamage * 1.01, bossId .. " " .. t.id .. " earns no more per damage than smaller tiers") end
+			lastPerDamage = perDamage
+		end
+		for _, n in ipairs({1, 5, 30}) do
+			local coins, essence = 0, 0
+			for _ = 1, n do
+				local share = 1 / n
+				local tier = E.contributionTier(share)
+				local plan = E.bossRewards(bossId, tier.id, 4, 0, share)
+				coins += plan.coins
+				essence += plan.items.SovereignEssence
+			end
+			print(string.format("  %s %2d equal participants: %6d coins in total (%.2fx hp x rate), %d Essence", bossId, n, coins, coins / (hp * rate), essence))
+			ok(coins <= cap + 1e-6, bossId .. " " .. n .. " participants: total coins bounded by hp x rate")
+			ok(essence <= E.ESSENCE_POOL + n, bossId .. " " .. n .. " participants: Essence bounded")
+		end
+		-- A carry plus 70 one-percent leeches: floors add at most COIN_FLOOR each.
+		local carry = E.bossRewards(bossId, "Champion", 1, 0, 0.3).coins
+		local leech = E.bossRewards(bossId, "Participant", 9, 0, 0.01).coins
+		ok(carry + 70 * leech <= cap + 70 * E.COIN_FLOOR, bossId .. " leeches cannot multiply the payout")
+		ok(leech <= math.max(E.COIN_FLOOR, 0.01 * cap), bossId .. " a 1% leech earns its share (or the floor)")
+	end
 	local function row(plan, item) for _, d in ipairs(plan.drops) do if d.item == item then return d end end end
 	for _, d in ipairs(WB.Aurelith.loot) do
 		local a, b = row(low, d.item), row(high, d.item)
@@ -814,7 +919,7 @@ do
 	ok(not okD and whyD == "full", "full altar refuses more")
 	local due = L.wbDueSummons()
 	eq(#due, 1, "one due summon")
-	eq(due[1].summoners[a], 2, "summoners recorded")
+	eq(due[1].summoners[a.UserId], 2, "summoners recorded by UserId")
 	local r = L.wbRegister(L.wbSpec("Aurelith"), {}, ARENA, {radius = 6, summoners = due[1].summoners})
 	ok(r ~= nil, "summoned")
 	eq(L.altarCount("Aurelith"), 0, "altar resets when the boss wakes")
@@ -834,17 +939,167 @@ do
 	eq(sent[a].sigils, 2, "A's sigils sent")
 	eq(sent[b].sigils, 1, "B's sigil sent")
 	near(E.lootWeight(sent[a].tier, sent[a].rank, sent[a].sigils), E.TierById.Vanguard.weight + E.RANK_BONUS[2] + 0.5, "A's weight includes the summoner bonus")
-	-- A leaver's placements stay on the altar but lose their bonus.
+	-- Placements are keyed by UserId: a rejoin keeps the per-player cap (no bypass).
 	local w2 = world()
 	local L2 = w2.logic
 	local x, y = w2.player("X", ARENA), w2.player("Y", ARENA)
-	L2.placeSigil(x, "Aurelith")
+	ok(L2.placeSigil(x, "Aurelith") and L2.placeSigil(x, "Aurelith"), "X places two")
 	L2.playerRemoving(x)
-	eq(L2.altarCount("Aurelith"), 1, "placed sigil stays")
-	eq(L2.altarMine("Aurelith", x), 0, "leaver forgotten")
+	table.remove(w2.list, 1)
+	eq(L2.altarCount("Aurelith"), 2, "placed sigils stay")
+	eq(L2.altarMine("Aurelith", x.UserId), 2, "the leaver's placements are remembered by UserId")
+	local rejoined = {Name = "X", UserId = x.UserId}
+	table.insert(w2.list, rejoined)
+	local okR, whyR = L2.placeSigil(rejoined, "Aurelith")
+	ok(not okR and whyR == "mine", "a rejoin does not reset the per-player cap")
 	ok(L2.placeSigil(y, "Aurelith"), "others keep filling")
+	local okBad, whyBad = L2.placeSigil({Name = "ghost"}, "Aurelith")
+	ok(not okBad and whyBad == "player", "a placer without a UserId is refused")
 end
 print("PASS: " .. (checks - altarChecks) .. " altar assertions.")
+
+------------------------------------------------------------------------------
+-- 7b. Review fixes: sigil refunds, reward resends, HUD choice, telegraph height
+------------------------------------------------------------------------------
+local fixChecks = checks
+do
+	local function refunds(w)
+		local out = {}
+		for _, c in ipairs(w.payloads("worldBossRefund")) do out[c.payload.userId] = c end
+		return out
+	end
+	-- Failed spawns: the altar refunds every placer after WB_SUMMON_ATTEMPTS
+	-- failures; online placers get the Player, offline ones their UserId.
+	local w = world()
+	local L = w.logic
+	local a, b = w.player("A", ARENA), w.player("B", ARENA)
+	L.placeSigil(a, "Aurelith"); L.placeSigil(a, "Aurelith"); L.placeSigil(b, "Aurelith")
+	L.playerRemoving(b)
+	table.remove(w.list, 2) -- B went offline
+	for i = 1, L.WB_SUMMON_ATTEMPTS - 1 do eq(L.wbSummonFailed("Aurelith"), nil, "failure " .. i .. " keeps the altar") end
+	eq(w.count("worldBossRefund"), 0, "no refund while retrying")
+	local back = L.wbSummonFailed("Aurelith")
+	eq(#back, 2, "two placers refunded")
+	eq(L.altarCount("Aurelith"), 0, "the altar is empty after the refund")
+	local sent = refunds(w)
+	eq(sent[a.UserId].player, a, "online placer refunded through their Player")
+	eq(sent[a.UserId].payload.sigils, 2, "both of A's sigils")
+	eq(sent[a.UserId].payload.reason, "failed", "refund reason")
+	eq(sent[b.UserId].player, b.UserId, "offline placer refunded by UserId")
+	eq(sent[b.UserId].payload.sigils, 1, "B's sigil")
+	eq(L.wbSummonFailed("Aurelith"), nil, "an empty altar has nothing to refund")
+	-- Departure before anyone struck the boss refunds the summoners; after a hit it does not.
+	local w2 = world()
+	local L2 = w2.logic
+	local s1 = w2.player("S1", Vector3.new(500, 0, 0))
+	for _ = 1, 2 do L2.placeSigil(s1, "Aurelith") end
+	local r2 = L2.wbRegister(L2.wbSpec("Aurelith"), {}, ARENA, {radius = 6, summoners = {[s1.UserId] = 2}})
+	w2.clock += L2.WB_EMPTY_DEPART + 1
+	local gone
+	for _, e in ipairs(L2.wbTick()) do if e.kind == "depart" then gone = e end end
+	ok(gone and #gone.refunds == 1 and gone.refunds[1].sigils == 2, "unfought departure refunds the summoner")
+	eq(refunds(w2)[s1.UserId].payload.reason, "depart", "departure refund reason")
+	local w3 = world()
+	local L3 = w3.logic
+	local s3 = w3.player("S3", Vector3.new(5, 0, 0))
+	local r3 = L3.wbRegister(L3.wbSpec("Aurelith"), {}, ARENA, {radius = 6, summoners = {[s3.UserId] = 2}})
+	L3.landHit(s3, r3, 1000, "melee")
+	w3.clock = r3.expires
+	for _, e in ipairs(L3.wbTick()) do if e.kind == "depart" then gone = e end end
+	eq(#gone.refunds, 0, "a fought boss spent its sigils")
+	eq(w3.count("worldBossRefund"), 0, "no refund after the fight started")
+	-- Shutdown drain: altar placements and an unfought summoned boss, no bridge calls.
+	local w4 = world()
+	local L4 = w4.logic
+	local d1 = w4.player("D1", ARENA)
+	L4.placeSigil(d1, "Aurelith")
+	local drained = L4.wbDrain()
+	eq(#drained, 1, "drain returns the altar placement")
+	eq(drained[1].userId, d1.UserId, "drain names the placer")
+	eq(drained[1].reason, "shutdown", "drain reason")
+	eq(L4.altarCount("Aurelith"), 0, "drain empties the altar")
+	eq(w4.count("worldBossRefund"), 0, "drain leaves paying to the caller")
+	local r4 = L4.wbRegister(L4.wbSpec("Aurelith"), {}, ARENA, {radius = 6, summoners = {[d1.UserId] = 1}})
+	eq(#L4.wbDrain(), 1, "an unfought boss's summoners are drained")
+	eq(#L4.wbDrain(), 0, "drained once")
+	L4.landHit(d1, r4, 10, "melee")
+	r4.summoners = {[d1.UserId] = 1}
+	eq(#L4.wbDrain(), 0, "a fought boss keeps its sigils spent")
+	-- Reward resend: a journal syncing at the kill is paid when it comes back.
+	local w5 = world()
+	local L5 = w5.logic
+	local p5 = w5.player("P5", Vector3.new(4, 0, 0))
+	local r5 = L5.wbRegister(L5.wbSpec("Nyxwyrm"), {}, ARENA, {radius = 6})
+	w5.replies.worldBoss = {ok = false, reason = "sync"}
+	L5.landHit(p5, r5, r5.hp, "melee")
+	L5.kill(r5)
+	eq(w5.count("worldBoss", p5), 1, "first report sent")
+	eq(#w5.loot, 0, "an unapplied report waits for a resend")
+	eq(L5.wbPendingRewards(), 1, "resend queued")
+	eq(L5.wbRetryTick(), 0, "not due yet")
+	w5.clock += L5.WB_REWARD_RETRY
+	w5.replies.worldBoss = nil -- bridge unanswered (journal still missing)
+	eq(L5.wbRetryTick(), 1, "resent when due")
+	eq(L5.wbPendingRewards(), 1, "nil reply queues another resend")
+	w5.clock += L5.WB_REWARD_RETRY
+	w5.replies.worldBoss = {ok = true, drops = {CrownShard = 3}, coins = 900}
+	L5.wbRetryTick()
+	eq(w5.count("worldBoss", p5), 3, "three reports in all")
+	eq(#w5.loot, 1, "the applied report reaches the loot callback")
+	eq(w5.loot[1].reply.coins, 900, "with the server's reply")
+	eq(L5.wbPendingRewards(), 0, "queue drained")
+	local fights = {}
+	for _, c in ipairs(w5.payloads("worldBoss")) do fights[c.payload.fight] = true end
+	eq(next(fights, next(fights)), nil, "every resend carries the same fight id (server pays it once)")
+	-- The window closes: the player is told the journal stayed unsynced.
+	local w6 = world()
+	local L6 = w6.logic
+	local p6 = w6.player("P6", Vector3.new(4, 0, 0))
+	local r6 = L6.wbRegister(L6.wbSpec("Nyxwyrm"), {}, ARENA, {radius = 6})
+	w6.replies.worldBoss = {ok = false, reason = "sync"}
+	L6.landHit(p6, r6, r6.hp, "melee")
+	L6.kill(r6)
+	for _ = 1, 40 do w6.clock += L6.WB_REWARD_RETRY; L6.wbRetryTick() end
+	eq(L6.wbPendingRewards(), 0, "resends stop at the deadline")
+	eq(#w6.loot, 1, "the final answer is reported once")
+	eq(w6.loot[1].reply.reason, "sync", "reported as unsynced")
+	ok(w6.count("worldBoss", p6) <= L6.WB_REWARD_WINDOW / L6.WB_REWARD_RETRY + 1, "resends bounded by the window")
+	-- A leaver's queued resends are dropped.
+	local w7 = world()
+	local L7 = w7.logic
+	local p7 = w7.player("P7", Vector3.new(4, 0, 0))
+	local r7 = L7.wbRegister(L7.wbSpec("Nyxwyrm"), {}, ARENA, {radius = 6})
+	w7.replies.worldBoss = {ok = false, reason = "sync"}
+	L7.landHit(p7, r7, r7.hp, "melee")
+	L7.kill(r7)
+	L7.playerRemoving(p7)
+	eq(L7.wbPendingRewards(), 0, "leaving drops queued resends")
+	-- HUD: only the nearest live boss within range.
+	local w8 = world()
+	local L8 = w8.logic
+	local ra = L8.wbRegister(L8.wbSpec("Aurelith"), {}, Vector3.new(0, 0, 0), {radius = 6})
+	local rn = L8.wbRegister(L8.wbSpec("Nyxwyrm"), {}, Vector3.new(300, 0, 0), {radius = 6})
+	eq(L8.wbHudFor(Vector3.new(20, 0, 0)), ra, "near Aurelith: Aurelith's HUD")
+	eq(L8.wbHudFor(Vector3.new(170, 0, 0)), rn, "both in range: the nearer boss only")
+	eq(L8.wbHudFor(Vector3.new(130, 0, 0)), ra, "both in range: the nearer boss only (other side)")
+	eq(L8.wbHudFor(Vector3.new(-250, 0, 0)), nil, "out of range: no HUD")
+	eq(L8.wbHudFor(nil), nil, "no position: no HUD")
+	-- Telegraph discs lie on the arena floor, not at the boss's hip height.
+	local w9 = world()
+	local L9 = w9.logic
+	local q = w9.player("Q", Vector3.new(5, 12, 0))
+	local r9 = L9.wbRegister(L9.wbSpec("Aurelith"), {}, Vector3.new(0, 12, 0), {radius = 6, ground = 4})
+	eq(r9.ground, 4, "record keeps the floor height")
+	w9.clock = r9.nextTelegraph
+	w9.rolls = {0}
+	local tele
+	for _, e in ipairs(L9.wbTick()) do if e.kind == "telegraph" then tele = e.telegraph end end
+	eq(tele.center.Y, 4, "telegraph centre at ground Y")
+	eq(tele.victim, q, "on the victim")
+	local r10 = L8.wbList()[1]
+	eq(r10.ground, 0, "without a ground height the spawn position is used")
+end
+print("PASS: " .. (checks - fixChecks) .. " review-fix assertions (refunds, resends, HUD, telegraph height).")
 
 ------------------------------------------------------------------------------
 -- 8. Static runtime / client hooks
@@ -868,6 +1123,15 @@ do
 	ok(#luau.compile(server) > 0 and #luau.compile(client) > 0, "scripts compile")
 	local _, loops = server:gsub("Heartbeat:Connect", "")
 	eq(loops, 1, "world bosses ride the single AI loop")
+	-- The world boss step runs inside the per-tick player snapshot.
+	local begin, step, finish = server:find("Logic.beginTick()", 1, true), server:find("WB.step(step)", 1, true), server:find("Logic.endTick()", 1, true)
+	ok(begin and step and finish and begin < step and step < finish, "WB.step runs between Logic.beginTick and Logic.endTick")
+	ok(server:find("Logic.wbHudFor(", 1, true) ~= nil, "the HUD goes to the nearest boss only")
+	ok(server:find("Logic.wbRetryTick()", 1, true) ~= nil, "unapplied rewards are resent")
+	ok(server:find("Logic.wbSummonFailed(", 1, true) ~= nil and server:find('op == "drain"', 1, true) ~= nil, "failed summons and shutdown refund sigils")
+	ok(server:find("ground = position.Y - plan.hip", 1, true) ~= nil and server:find("groundY(c, c.Y)", 1, true) ~= nil, "telegraphs are sent at ground height")
+	ok(adventure:find('op=="worldBossRefund"', 1, true) ~= nil and adventure:find("Endgame.drain()", 1, true) ~= nil, "the Adventure script pays refunds and drains at shutdown")
+	ok(client:find("WBH.RENDER_INTERVAL", 1, true) ~= nil and client:find("payload.id == WBH.payload.id", 1, true) ~= nil, "client renders at 1 Hz and hides only its own boss")
 end
 print("PASS: " .. (checks - staticChecks) .. " endgame static assertions.")
 

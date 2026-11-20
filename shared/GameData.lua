@@ -3869,7 +3869,8 @@ end
 --   * Contribution loot: share = damage dealt / boss max health. Credit needs
 --     share >= MIN_SHARE, alive and within def.creditRange of the arena at the
 --     kill, a hit in the last ACTIVE_WINDOW seconds, and (Ironman) share >=
---     IRONMAN_SHARE. Tier by share (ContributionTiers) sets guaranteed rewards;
+--     IRONMAN_SHARE. Guaranteed rewards (coins, Essence, guaranteed rows) scale
+--     with the share; the tier (ContributionTiers) sets the loot weight:
 --     loot weight = tier weight + rank bonus + summoner bonus scales the chance
 --     of every roll (capped at 1); Magic Find then applies (Progression.rollDrops).
 --     Damage XP is the normal on-kill accrual (def.xp over def.hp).
@@ -3893,15 +3894,35 @@ E.SUMMONER_CAP = 0.5
 E.RANK_BONUS = {0.5, 0.3, 0.15}
 E.HUD_RANGE = 200           -- studs from the arena centre for the boss HUD
 E.TOP = 5                   -- leaderboard rows
--- Highest tier first. coins/essence are the guaranteed participation reward.
+-- Highest tier first. The tier sets the loot weight of chance rolls; the
+-- guaranteed rewards (coins, Sovereign Essence, guaranteed loot rows) scale
+-- with the contribution share itself, so splitting a kill across many small
+-- contributors (alts, leeches) never pays more than the damage dealt.
+-- maxShare (derived) is the next tier's threshold: a payload's share is
+-- clamped into its tier's band.
 E.ContributionTiers = {
-	{id="Champion",name="Champion",minShare=0.25,weight=3,essence=12,coins=40000,color="FFAA00"},
-	{id="Vanguard",name="Vanguard",minShare=0.10,weight=2,essence=8,coins=25000,color="AA00AA"},
-	{id="Valiant",name="Valiant",minShare=0.03,weight=1.4,essence=5,coins=15000,color="5555FF"},
-	{id="Participant",name="Participant",minShare=0.01,weight=1,essence=3,coins=8000,color="55FF55"},
+	{id="Champion",name="Champion",minShare=0.25,weight=3,color="FFAA00"},
+	{id="Vanguard",name="Vanguard",minShare=0.10,weight=2,color="AA00AA"},
+	{id="Valiant",name="Valiant",minShare=0.03,weight=1.4,color="5555FF"},
+	{id="Participant",name="Participant",minShare=0.01,weight=1,color="55FF55"},
 }
 E.TierById = {}
-for i, t in ipairs(E.ContributionTiers) do t.index = i; E.TierById[t.id] = t end
+for i, t in ipairs(E.ContributionTiers) do
+	t.index = i
+	t.maxShare = if i == 1 then 1 else E.ContributionTiers[i - 1].minShare
+	E.TierById[t.id] = t
+end
+-- Guaranteed payout per kill (the shares of one kill sum to at most 1):
+--   coins   = max(COIN_FLOOR, share x boss hp x COIN_RATE x the best regional
+--             monster's coins per damage): a flat 2x the regional coin rate
+--   essence = max(1, round(share x ESSENCE_POOL))
+--   guaranteed loot rows (chance 1): max(1, round(row amount x share x GUARANTEED_POOL))
+E.COIN_RATE = 2
+E.COIN_FLOOR = 300
+E.ESSENCE_POOL = 40
+E.GUARANTEED_POOL = 10
+-- Altar refunds owed to journals that were not on this server (applied on join).
+E.REFUND_CAP = 8
 
 ------------------------------------------------------------------------------
 -- Region
@@ -4024,10 +4045,10 @@ item("SovereignSignet",{name="Sovereign Signet",kind="accessory",rarity="Mythic"
 	description="Accessory. Magical Power "..Data.Rarity.Mythic.power..". Only Aurelith's hoard holds one."})
 item("NyxwingCharm",{name="Nyxwing Charm",kind="accessory",rarity="Mythic",color=Data.Rarity.Mythic.color,stats={intelligence=60,rangedStrength=20,magicFind=6},value=40*Data.Rarity.Mythic.rank^2,
 	description="Accessory. Magical Power "..Data.Rarity.Mythic.power..". Only Nyxwyrm's hoard holds one."})
-item("Crownbreaker",{name="Crownbreaker",kind="weapon",slot="weapon",tier=9,rarity="Mythic",color="FFD86B",stats={damage=420,strength=200,critChance=20,critDamage=150},requires={Combat=70},value=60000,
+item("Crownbreaker",{name="Crownbreaker",kind="weapon",slot="weapon",tier=9,rarity="Mythic",color="FFD86B",stats={damage=380,strength=175,critChance=18,critDamage=110},requires={Combat=70},value=60000,
 	description="Melee. Aurelith's own sceptre-blade. Requires Combat 70."})
-item("Duskpiercer",{name="Duskpiercer",kind="weapon",slot="weapon",style="ranged",tier=9,rarity="Mythic",color="6B4AB8",stats={critDamage=90,rangedAccuracy=130,rangedStrength=30},
-	ranged={power=370,speed=0.95,range=CS.maxRange,maxAmmoTier=7},requires={Ranged=70},value=60000,
+item("Duskpiercer",{name="Duskpiercer",kind="weapon",slot="weapon",style="ranged",tier=9,rarity="Mythic",color="6B4AB8",stats={critDamage=50,rangedAccuracy=90,rangedStrength=20},
+	ranged={power=300,speed=0.95,range=CS.maxRange,maxAmmoTier=7},requires={Ranged=70},value=60000,
 	description="Ranged weapon. Strung with Nyxwyrm's sinew. "..CS.maxRange.." stud reach. Arrows up to tier 7. Requires Ranged 70."})
 
 ------------------------------------------------------------------------------
@@ -4039,25 +4060,25 @@ local slotUnits = {helmet=5,chest=8,legs=7,boots=4}
 E.Sets = {
 	{id="Sovereign",name="Sovereign's Mandate",style="melee",skill="Smithing",station="Forge",level=92,combat={Combat=60},color="FFD86B",rarity="Legendary",
 		piece="Sovereign",names={helmet="Crown",chest="Cuirass",legs="Tassets",boots="Sabatons"},
-		armor={defense=360,health=320,strength=30,critDamage=20},bonus={strength=150,critDamage=150,health=400,defense=200},
-		text="+150 Strength, +150 Crit Damage, +400 Health, +200 Defense",
+		armor={defense=360,health=320,strength=15,critDamage=15},bonus={strength=70,critDamage=80,health=400,defense=200},
+		text="+70 Strength, +80 Crit Damage, +400 Health, +200 Defense",
 		unit={CrownsteelIngot=1},extra={ColossusCore=1,SovereignEssence=1},
-		weapon={id="SovereignGreatblade",name="Sovereign Greatblade",stats={damage=380,strength=170,critChance=18,critDamage=120},
+		weapon={id="SovereignGreatblade",name="Sovereign Greatblade",stats={damage=360,strength=160,critChance=16,critDamage=100},
 			costs={CrownsteelIngot=10,ColossusCore=4,SovereignEssence=8,SovereignCrest=1},level=94}},
 	{id="EclipseStalker",name="Umbral Volley",style="ranged",skill="Fletching",station="Workbench",level=92,combat={Ranged=60},color="6B4AB8",rarity="Legendary",
 		piece="Eclipse",names={helmet="Cowl",chest="Jerkin",legs="Chaps",boots="Treads"},
-		armor={defense=300,health=270,rangedStrength=40,rangedAccuracy=30},bonus={rangedStrength=120,rangedAccuracy=120,critChance=15,critDamage=120,health=250},
-		text="+120 Ranged Strength, +120 Ranged Accuracy, +15 Crit Chance, +120 Crit Damage, +250 Health",
+		armor={defense=300,health=270,rangedStrength=12,rangedAccuracy=8},bonus={rangedStrength=30,rangedAccuracy=30,critChance=8,critDamage=50,health=300,defense=150},
+		text="+30 Ranged Strength, +30 Ranged Accuracy, +8 Crit Chance, +50 Crit Damage, +300 Health, +150 Defense",
 		unit={RiftHide=2},extra={DrakeScale=1,SovereignEssence=1},
-		weapon={id="EclipseLongbow",name="Eclipse Longbow",stats={critDamage=70,rangedAccuracy=110,rangedStrength=40},
-			ranged={power=340,speed=1.0,range=CS.maxRange,maxAmmoTier=7},
+		weapon={id="EclipseLongbow",name="Eclipse Longbow",stats={critDamage=40,rangedAccuracy=80,rangedStrength=20},
+			ranged={power=300,speed=1.0,range=CS.maxRange,maxAmmoTier=7},
 			costs={ShatterbarkLog=12,SilkString=2,DrakeScale=4,SovereignEssence=8,SovereignCrest=1},level=94}},
 	{id="Riftweave",name="Rift Attunement",style="magic",skill="Glyphcraft",station="Workbench",level=92,combat={Magic=60},color="9FE6F2",rarity="Legendary",
 		piece="Riftweave",names={helmet="Circlet",chest="Robe",legs="Leggings",boots="Slippers"},
-		armor={defense=290,health=260,intelligence=150,abilityDamage=3},bonus={intelligence=500,abilityDamage=20,health=300,defense=100},
-		text="+500 Intelligence, +20% Ability Damage, +300 Health, +100 Defense",
+		armor={defense=290,health=260,intelligence=40,abilityDamage=2},bonus={intelligence=80,abilityDamage=8,health=350,defense=150},
+		text="+80 Intelligence, +8% Ability Damage, +350 Health, +150 Defense",
 		unit={SpiderSilk=3},extra={SeerGlass=1,SovereignEssence=1},
-		weapon={id="RiftcrownStaff",name="Riftcrown Staff",stats={intelligence=320,abilityDamage=6},
+		weapon={id="RiftcrownStaff",name="Riftcrown Staff",stats={intelligence=180,abilityDamage=6},
 			magic={power=190,speed=1.15,elements={"Gale","Tide","Stone","Ember"}},
 			costs={ShatterbarkLog=10,SeerGlass=6,SovereignEssence=8,SovereignCrest=1},level=94}},
 }
@@ -4223,17 +4244,39 @@ function E.lootWeight(tierId, rank, sigils)
 	local summon = math.min(E.SUMMONER_CAP, E.SUMMONER_BONUS * math.max(0, math.floor(tonumber(sigils) or 0)))
 	return t.weight + bonus + summon
 end
+-- Best coins per point of damage among the regional monsters (the reference
+-- rate world boss coins are tuned against).
+function E.regionalCoinRate()
+	local best = 0
+	for _, id in ipairs(E.MonsterOrder) do
+		local m = Data.Monsters[id]
+		best = math.max(best, m.coins / m.hp)
+	end
+	return best
+end
+-- Guaranteed coins for a share of a boss's max health (0 for no share).
+function E.bossCoins(bossId, share)
+	local def = E.boss(bossId)
+	share = tonumber(share) or 0
+	if not def or share ~= share or share <= 0 then return 0 end
+	return math.max(E.COIN_FLOOR, math.floor(math.min(1, share) * def.hp * E.regionalCoinRate() * E.COIN_RATE))
+end
 -- Reward plan for one credited player: guaranteed items/coins and a drop table
 -- for Progression.rollDrops (chances x weight, capped at 1; Magic Find applies
--- to the rolls afterwards). Guaranteed rows (chance 1) scale their amounts.
-function E.bossRewards(bossId, tierId, rank, sigils)
+-- to the rolls afterwards). Guaranteed rows (chance 1) scale with the share.
+-- share (of max health) is clamped into the tier's band; missing -> the tier minimum.
+function E.bossRewards(bossId, tierId, rank, sigils, share)
 	local def, t = E.boss(bossId), E.TierById[tierId]
 	if not def or not t then return nil end
+	share = tonumber(share)
+	if not share or share ~= share then share = t.minShare end
+	share = math.clamp(share, t.minShare, t.maxShare)
 	local weight = E.lootWeight(tierId, rank, sigils)
-	local out = {coins=t.coins,items={SovereignEssence=t.essence},drops={},weight=weight}
+	local function scaled(n, pool) return math.max(1, math.floor(n * share * pool + 0.5)) end
+	local out = {coins=E.bossCoins(bossId, share),items={SovereignEssence=scaled(1, E.ESSENCE_POOL)},drops={},weight=weight,share=share}
 	for _, d in ipairs(def.loot) do
 		if d.chance >= 1 then
-			table.insert(out.drops, {item=d.item,chance=1,min=math.max(1, math.floor(d.min * weight + 0.5)),max=math.max(1, math.floor(d.max * weight + 0.5))})
+			table.insert(out.drops, {item=d.item,chance=1,min=scaled(d.min, E.GUARANTEED_POOL),max=scaled(d.max, E.GUARANTEED_POOL)})
 		else
 			table.insert(out.drops, {item=d.item,chance=math.min(1, d.chance * weight),min=d.min,max=d.max})
 		end

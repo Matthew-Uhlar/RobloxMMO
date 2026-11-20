@@ -1110,7 +1110,7 @@ end)
 ------------------------------------------------------------------------------
 -- World Boss HUD (Endgame team). IsleCombatFx kinds (combat.server.lua World
 -- Boss section):
---   worldBoss          2 Hz while within the arena's HUD range: {id, name, level,
+--   worldBoss          2 Hz, the nearest boss in HUD range only: {id, name, level,
 --                      hp, maxHp, phase, phases, phaseName, enraged, enrageIn,
 --                      departIn, warded, top = {{name, damage, share, you}},
 --                      you = {rank, damage, share, tier}, fighters}
@@ -1118,15 +1118,18 @@ end)
 --   bossStrike         the impact of a warning
 --   worldBossAnnounce  {kind warn|spawn|phase|enrage|win|depart, name, ...}
 --   worldBossLoot      {name, eligible, reason, rank, share, tier, drops, coins}
+--   (win/depart announcements hide the HUD only for the boss it shows)
 -- Layout: the boss bar takes the target panel's top-lane slot (y 10-72, the
 -- target panel hides while it shows); the top-5 board sits under the minimap
 -- on screens at least 520 px tall, otherwise the bar's last line carries the
 -- leader and your rank. The loot summary is a centred card (auto-hides).
 ------------------------------------------------------------------------------
-local WBH = {payload = nil, seenAt = 0, visible = false, discs = {}, lootToken = 0}
+local WBH = {payload = nil, seenAt = 0, renderedAt = 0, visible = false, discs = {}, lootToken = 0}
+WBH.RENDER_INTERVAL = 1 -- the bar re-renders on each payload and on this timer (enrage countdown)
 WBH.TIER_COLOR = {Champion = rgb("FFAA00"), Vanguard = rgb("D36BFF"), Valiant = rgb("7C8CFF"), Participant = rgb("7FE3CC")}
 WBH.REASON = {share = "You dealt under 1% of its health.", dead = "You fell before it did.", range = "You were too far from the arena.",
-	idle = "You had not struck it in the last minute.", ironman = "Ironman journals need 30% of the damage.", sync = "Your journal was syncing; no reward."}
+	idle = "You had not struck it in the last minute.", ironman = "Ironman journals need 30% of the damage.", sync = "Your journal was syncing; no reward.",
+	region = "Your journal may not enter the Shattered Crown yet.", paid = "This fight's reward was already delivered."}
 WBH.BAR_HEIGHT = 62
 WBH.bar = make("Frame", gui, {Name = "WorldBossBar", AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 10),
 	Size = UDim2.fromOffset(380, WBH.BAR_HEIGHT), BackgroundColor3 = deep, BackgroundTransparency = 0.04, Visible = false})
@@ -1212,6 +1215,7 @@ end
 function WBH.render()
 	local p = WBH.payload
 	if not p then return end
+	WBH.renderedAt = os.clock()
 	local hp, maxHp = tonumber(p.hp) or 0, math.max(1, tonumber(p.maxHp) or 1)
 	local fraction = math.clamp(hp / maxHp, 0, 1)
 	WBH.title.Text = "☠ " .. tostring(p.name or "World boss") .. "  ·  Phase " .. tostring(p.phase or 1) .. "/" .. tostring(p.phases or 3)
@@ -1341,7 +1345,8 @@ fx.OnClientEvent:Connect(function(kind, payload)
 		burst(payload.center, if payload.kind == "safe" then "B48CFF" else "FF7B6E", 2)
 	elseif kind == "worldBossAnnounce" then
 		WBH.announce(payload)
-		if payload.kind == "win" or payload.kind == "depart" then WBH.hide() end
+		-- Only the boss this HUD shows (the server sends the nearest one) clears it.
+		if (payload.kind == "win" or payload.kind == "depart") and WBH.payload and payload.id == WBH.payload.id then WBH.hide() end
 	elseif kind == "worldBossLoot" then
 		WBH.lootCard(payload)
 	end
@@ -1349,9 +1354,11 @@ end)
 gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(function() if WBH.visible then WBH.layout() end end)
 RunService.RenderStepped:Connect(function()
 	if not WBH.visible then return end
+	local now = os.clock()
 	-- No update for 3 s: out of range or the fight ended unseen.
-	if os.clock() - WBH.seenAt > 3 then WBH.hide() return end
-	WBH.render()
+	if now - WBH.seenAt > 3 then WBH.hide() return end
+	-- Payloads render on arrival; between them only the 1 Hz countdown tick.
+	if now - WBH.renderedAt >= WBH.RENDER_INTERVAL then WBH.render() end
 end)
 -- End World Boss HUD.
 

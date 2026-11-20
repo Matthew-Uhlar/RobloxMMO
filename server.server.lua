@@ -17,6 +17,7 @@ update.Name = "IsleUpdate"
 update.Parent = ReplicatedStorage
 
 local exchangeAction, resumeExchange
+local applySigilRefund -- Endgame: unspent altar sigils owed to a journal (defined in the Endgame block)
 local marketViews,marketReads={},{}
 -- Economy (Bazaar orders + Auction House); defined with the market at the end of this file.
 local Econ={views={},reads={}}
@@ -1668,7 +1669,8 @@ local function open(player)
 	if profile.pending or profile.pricedPending or profile.econPending then task.defer(function() if resumeExchange then resumeExchange(player) end end) end
 	player.CharacterAdded:Connect(spawnCharacter)
 	if player.Character then task.spawn(spawnCharacter,player.Character) end
-	update:FireClient(player,snapshot(player,if preview[player] then "Studio practice session • saving unavailable" else "Journal opened"))
+	local refundNote=applySigilRefund and applySigilRefund(player,profile) -- Endgame: altar refunds owed while away
+	update:FireClient(player,snapshot(player,(if preview[player] then "Studio practice session • saving unavailable" else "Journal opened")..(if refundNote then " • "..refundNote else "")))
 end
 local function live(player)
 	local p=profiles[player]
@@ -2370,9 +2372,11 @@ local exchangeBusy={}
 --     Crown Sigil; combat.server.lua's ServerStorage.IsleWorldBoss accepts the
 --     placement first ({ok, reason, count, needed}), then the sigil is spent.
 --   bridge "worldBoss" {boss, tier, rank, share, damage, sigils, fight}: pays a
---     credited contributor once per fight: guaranteed tier coins + Sovereign
---     Essence, then Data.Endgame.bossRewards drops rolled with Magic Find / Pet
---     Luck (Progression.rollDrops), bestiary +1 (quest/diary kills).
+--     credited contributor once per fight (journal in the region's gate, else
+--     reason "region"; not live: reason "sync" and combat resends): coins and
+--     Sovereign Essence scaled by share, then Data.Endgame.bossRewards drops
+--     rolled with Magic Find / Pet Luck (Progression.rollDrops), bestiary +1.
+--   bridge "worldBossRefund" / shutdown drain: unspent altar sigils (below).
 ------------------------------------------------------------------------------
 local Endgame={verbs={bossSigil=true},paid={},paidCount=0} -- paid["boss:fight:userId"]=os.time()
 do
@@ -2400,6 +2404,8 @@ do
 		local tier=type(payload.tier)=="string" and E.TierById[payload.tier]
 		local rank=tonumber(payload.rank)
 		if not def or not tier or not rank or rank<1 or rank%1~=0 then return {ok=false,reason="invalid"} end
+		-- Credit needs the region gate too (no noclip alts below Combat 60 / the quest).
+		if not regionAllowed(p,def.region or E.REGION) then return {ok=false,reason="region"} end
 		-- Once per fight per journal (keys pruned after an hour).
 		local key=payload.boss..":"..tostring(payload.fight)..":"..tostring(player.UserId)
 		if Endgame.paid[key] then return {ok=false,reason="paid"} end
@@ -2410,7 +2416,7 @@ do
 		end
 		Endgame.paid[key]=now
 		Endgame.paidCount+=1
-		local plan=E.bossRewards(payload.boss,tier.id,rank,math.clamp(math.floor(tonumber(payload.sigils) or 0),0,E.ALTAR_PER_PLAYER))
+		local plan=E.bossRewards(payload.boss,tier.id,rank,math.clamp(math.floor(tonumber(payload.sigils) or 0),0,E.ALTAR_PER_PLAYER),payload.share)
 		local stats=Progression.computeStats(p,os.time())
 		local drops=Progression.rollDrops(plan.drops,stats.magicFind,roll,stats.petLuck)
 		for id,n in pairs(plan.items) do drops[id]=(drops[id] or 0)+n end
@@ -2418,9 +2424,106 @@ do
 		p.coins+=plan.coins
 		p.bestiary[payload.boss]=(p.bestiary[payload.boss] or 0)+1
 		p.started=true
-		local share=math.floor((tonumber(payload.share) or 0)*1000+0.5)/10
+		local share=math.floor(plan.share*1000+0.5)/10
 		return {ok=true,drops=drops,coins=plan.coins,tier=tier.id,
 			message=def.short.." felled • #"..rank.." · "..share.."% · "..tier.name.." • +"..plan.coins.." coins"..dropText(drops)}
+	end
+	-- Unspent altar sigils: combat bridge "worldBossRefund" {boss, userId,
+	-- sigils, reason} (failed summon, departure before anyone struck the boss)
+	-- and the shutdown drain. A live journal on this server gets them at once;
+	-- one still syncing keeps them as profile.sigilRefund; an offline journal
+	-- has sigilRefund written into its save once no server holds its lease
+	-- (retried for OFFLINE_WINDOW s). sigilRefund is applied on the next join,
+	-- bounded by Data.Endgame.REFUND_CAP.
+	local SIGIL="CrownSigil"
+	Endgame.offline={} -- [userId]={n, deadline} refunds still to write
+	Endgame.OFFLINE_RETRY,Endgame.OFFLINE_WINDOW=30,900
+	local function journalOf(uid)
+		for player,p in pairs(profiles) do if player.UserId==uid then return player,p end end
+		return nil,nil
+	end
+	local function plural(n) return n.." unspent Crown Sigil"..(if n==1 then "" else "s") end
+	function Endgame.credit(uid,n)
+		local player,p=journalOf(uid)
+		if not p then return nil end
+		if live(player) then
+			p.items[SIGIL]=(p.items[SIGIL] or 0)+n
+			if player.Parent then update:FireClient(player,snapshot(player,"The Sovereign Altar returns "..plural(n)..".")) end
+			return "items"
+		end
+		p.sigilRefund=math.min(E.REFUND_CAP,math.max(0,math.floor(tonumber(p.sigilRefund) or 0))+n)
+		return "profile"
+	end
+	-- One write into a saved journal nobody holds. true = settled (written, or no journal).
+	function Endgame.writeOffline(uid,n)
+		if not store then return true end
+		local done=false
+		local ok=pcall(function()
+			store:UpdateAsync("p"..uid,function(old)
+				done=false
+				if type(old)~="table" or type(old.profile)~="table" then done=true; return nil end
+				if old.owner~="" and (tonumber(old.expires) or 0)>os.time() then return nil end
+				old.profile.sigilRefund=math.min(E.REFUND_CAP,math.max(0,math.floor(tonumber(old.profile.sigilRefund) or 0))+n)
+				done=true
+				return old
+			end)
+		end)
+		return ok and done
+	end
+	function Endgame.queueOffline(uid,n)
+		local job=Endgame.offline[uid]
+		if job then job.n=math.min(E.REFUND_CAP,job.n+n); return end
+		job={n=n,deadline=os.time()+Endgame.OFFLINE_WINDOW}
+		Endgame.offline[uid]=job
+		task.spawn(function()
+			while Endgame.offline[uid]==job do
+				local n2=job.n
+				local settled=Endgame.credit(uid,n2)~=nil or Endgame.writeOffline(uid,n2)
+				if settled then
+					job.n-=n2
+					if job.n<=0 then Endgame.offline[uid]=nil; break end
+				elseif os.time()>job.deadline then
+					Endgame.offline[uid]=nil
+					break
+				end
+				task.wait(Endgame.OFFLINE_RETRY)
+			end
+		end)
+	end
+	function Endgame.refund(payload,shutdown)
+		local uid=tonumber(payload.userId)
+		local n=math.floor(tonumber(payload.sigils) or 0)
+		if not uid or uid%1~=0 or uid<=0 or n<1 then return {ok=false,reason="invalid"} end
+		n=math.min(n,E.ALTAR_PER_PLAYER)
+		local mode=Endgame.credit(uid,n)
+		if mode then return {ok=true,mode=mode} end
+		if shutdown then
+			for _=1,2 do if Endgame.writeOffline(uid,n) then return {ok=true,mode="saved"} end end
+			return {ok=false,reason="busy"}
+		end
+		Endgame.queueOffline(uid,n)
+		return {ok=true,mode="pending"}
+	end
+	-- Shutdown: combat empties its altars (IsleWorldBoss "drain") and every
+	-- placer is refunded before the journals save.
+	function Endgame.drain()
+		local fn=ServerStorage:FindFirstChild("IsleWorldBoss")
+		if not fn then return 0 end
+		local ok,list=pcall(fn.Invoke,fn,"drain")
+		if not ok or type(list)~="table" then return 0 end
+		local n=0
+		for _,e in ipairs(list) do
+			if type(e)=="table" and Endgame.refund(e,true).ok then n+=1 end
+		end
+		return n
+	end
+	applySigilRefund=function(_,p)
+		local n=math.floor(tonumber(p.sigilRefund) or 0)
+		p.sigilRefund=nil
+		if n<=0 then return nil end
+		n=math.min(n,E.REFUND_CAP)
+		p.items[SIGIL]=(p.items[SIGIL] or 0)+n
+		return "The Sovereign Altar returned "..plural(n).."."
 	end
 end
 local function perform(player,verb,item,prompt)
@@ -2911,6 +3014,7 @@ task.spawn(function()
 	end
 end)
 game:BindToClose(function()
+	Endgame.drain() -- Endgame: refund unspent altar sigils before the journals save
 	local pending=0
 	for player in pairs(profiles) do
 		pending+=1
@@ -3090,6 +3194,10 @@ end
 bridge.OnInvoke=function(op,player,payload)
 	if type(op)~="string" or player==nil then return nil end
 	if type(payload)~="table" then payload={} end
+	if op=="worldBossRefund" then
+		-- Endgame: unspent altar sigils; the placer may be offline (player = UserId).
+		return Endgame.refund(payload)
+	end
 	if op=="damage" then
 		local raw=payload.amount
 		if type(raw)~="number" or raw~=raw or raw<=0 then return 0 end
@@ -3104,8 +3212,8 @@ bridge.OnInvoke=function(op,player,payload)
 	local p=live(player)
 	if not p then
 		-- Combat re-arms the boss / resends the sea creature kill (ticket kept)
-		-- when its report could not be applied.
-		return if op=="slayerBoss" or op=="seaCreature" then {ok=false,reason="sync"} else nil
+		-- when its report could not be applied; Endgame: combat resends world boss rewards.
+		return if op=="slayerBoss" or op=="seaCreature" or op=="worldBoss" then {ok=false,reason="sync"} else nil
 	end
 	if op=="stats" then
 		return {stats=Progression.computeStats(p,os.time()),combatLevel=level(p.xp.Combat),ironman=p.ironman==true,

@@ -1582,14 +1582,52 @@ local function createLogic(env)
 	-- hit, Ironman share) decides credit; credited players get damage XP
 	-- (L.payXp) and a bridge "worldBoss" {boss, tier, rank, share, damage,
 	-- sigils, fight} whose reply reaches env.wbLoot(player, record, entry, reply).
+	-- A reply of nil / reason "sync" (journal not live) is resent every
+	-- WB_REWARD_RETRY s until WB_REWARD_WINDOW s after the kill (the server
+	-- pays each boss:fight:userId once, so resends are safe).
+	-- Altar placements are keyed by UserId (a rejoin keeps the per-player cap).
+	-- Unspent sigils are refunded through bridge "worldBossRefund" {boss,
+	-- userId, sigils, reason} (target: the online Player, else the UserId):
+	-- when a full altar's boss cannot be built WB_SUMMON_ATTEMPTS times, when a
+	-- summoned boss departs before anyone damaged it, and at shutdown
+	-- (L.wbDrain, through IsleWorldBoss "drain").
 	--------------------------------------------------------------------------
 	local E = Data.Endgame
 	local wb = worldBossLive -- [bossId] = live record
-	local altar = {}         -- [bossId] = {total = n, by = {[player] = n}}
+	local altar = {}         -- [bossId] = {total = n, by = {[userId] = n}, failures = n}
 	local scheduleSeen = {}  -- [window key] = true once spawned (or skipped while active)
 	local warnSeen = {}      -- [window key] = true once announced
+	local wbRetry = {}       -- unapplied reward reports {player, record, entry, payload, at, deadline}
 	local fightSeq = 0
 	L.WB_EMPTY_DEPART = 90
+	L.WB_REWARD_RETRY = 5
+	L.WB_REWARD_WINDOW = 120
+	L.WB_SUMMON_ATTEMPTS = 5
+	local function uidOf(player)
+		if type(player) == "number" then return player end
+		local uid = player and player.UserId
+		return if type(uid) == "number" then uid else nil
+	end
+	local function onlineByUserId(uid)
+		for _, player in ipairs(env.players()) do if player.UserId == uid then return player end end
+		return nil
+	end
+	-- Refunds a {[userId] = sigils} map through the bridge (unless silent);
+	-- returns {{userId, player?, boss, sigils, reason}} in UserId order.
+	local function refundSigils(id, by, reason, silent)
+		local out, uids = {}, {}
+		for uid, n in pairs(by or {}) do if n > 0 then table.insert(uids, uid) end end
+		table.sort(uids)
+		for _, uid in ipairs(uids) do
+			local player = onlineByUserId(uid)
+			local entry = {userId = uid, player = player, boss = id, sigils = by[uid], reason = reason}
+			table.insert(out, entry)
+			if not silent then
+				env.bridge("worldBossRefund", player or uid, {boss = id, userId = uid, sigils = by[uid], reason = reason})
+			end
+		end
+		return out
+	end
 	function L.wbSpec(id)
 		local def = E and E.boss(id)
 		if not def then return nil end
@@ -1606,23 +1644,59 @@ local function createLogic(env)
 		local a = altar[id]
 		return if a then a.total else 0
 	end
+	-- player: a Player (its UserId) or a UserId.
 	function L.altarMine(id, player)
-		local a = altar[id]
-		return if a then (a.by[player] or 0) else 0
+		local a, uid = altar[id], uidOf(player)
+		return if a and uid then (a.by[uid] or 0) else 0
 	end
 	-- Places one sigil. Returns ok, reason ("ready" when the altar is full), count, needed.
 	function L.placeSigil(player, id)
 		local def = E and E.boss(id)
 		if not def then return false, "boss", 0, 0 end
-		local a = altar[id] or {total = 0, by = {}}
-		local ok, reason = E.canPlaceSigil(id, a.total, a.by[player] or 0, wb[id] ~= nil)
+		local uid = uidOf(player)
+		if not uid then return false, "player", 0, def.sigils or 0 end
+		local a = altar[id] or {total = 0, by = {}, failures = 0}
+		local ok, reason = E.canPlaceSigil(id, a.total, a.by[uid] or 0, wb[id] ~= nil)
 		if not ok then return false, reason, a.total, def.sigils end
 		altar[id] = a
 		a.total += 1
-		a.by[player] = (a.by[player] or 0) + 1
+		a.by[uid] = (a.by[uid] or 0) + 1
 		return true, if a.total >= def.sigils then "ready" else nil, a.total, def.sigils
 	end
-	-- Full altars whose boss is not up: {id, summoners = {[player] = sigils}}.
+	-- Empties an altar and refunds every placement (reason "failed" | "shutdown").
+	function L.altarReset(id, reason, silent)
+		local a = altar[id]
+		if not a then return {} end
+		altar[id] = nil
+		return refundSigils(id, a.by, reason, silent)
+	end
+	-- The runtime could not build a due altar boss. After WB_SUMMON_ATTEMPTS
+	-- failures the altar resets and refunds; returns the refunds (or nil).
+	function L.wbSummonFailed(id)
+		local a = altar[id]
+		if not a then return nil end
+		a.failures = (a.failures or 0) + 1
+		if a.failures < L.WB_SUMMON_ATTEMPTS then return nil end
+		return L.altarReset(id, "failed")
+	end
+	-- Shutdown: every unspent sigil (placed on an altar, or summoned into a boss
+	-- nobody has damaged yet) as refunds, without bridge calls (the caller pays).
+	function L.wbDrain()
+		local out, ids = {}, {}
+		for id in pairs(altar) do table.insert(ids, id) end
+		table.sort(ids)
+		for _, id in ipairs(ids) do
+			for _, entry in ipairs(L.altarReset(id, "shutdown", true)) do table.insert(out, entry) end
+		end
+		for _, r in ipairs(L.wbList()) do
+			if r.hp >= r.maxHp and next(r.summoners) then
+				for _, entry in ipairs(refundSigils(r.id, r.summoners, "shutdown", true)) do table.insert(out, entry) end
+				r.summoners = {}
+			end
+		end
+		return out
+	end
+	-- Full altars whose boss is not up: {id, summoners = {[userId] = sigils}}.
 	function L.wbDueSummons()
 		local due = {}
 		for id, a in pairs(altar) do
@@ -1661,6 +1735,8 @@ local function createLogic(env)
 			weakness = def.weakness, defenceStyle = def.defenceStyle, attackStyle = def.attackStyle,
 			phase = 1, step = 0, spawnedAt = now, enrageAt = now + def.enrage, expires = now + def.duration,
 			nextTelegraph = now + 4, telegraphs = {}, adds = {}, summoners = opts.summoners or {}, fight = fightSeq, lastSeen = now,
+			-- Telegraphs sit on the ground (opts.ground: arena floor Y), not at the boss's hip.
+			ground = if type(opts.ground) == "number" then opts.ground else position.Y,
 		})
 		wb[spec.id] = r
 		if def.summon == "altar" then altar[spec.id] = nil end
@@ -1742,7 +1818,10 @@ local function createLogic(env)
 			if #arenaPlayers(r) > 0 then r.lastSeen = now end
 			if now >= r.expires or now - r.lastSeen > L.WB_EMPTY_DEPART then
 				local adds = L.wbDepart(r)
-				table.insert(events, {kind = "depart", record = r, reason = if now >= r.expires then "timeout" else "empty", adds = adds})
+				-- Nobody ever damaged it: the summoners' sigils were never spent.
+				local refunds = if r.hp >= r.maxHp then refundSigils(r.id, r.summoners, "depart") else {}
+				r.summoners = {}
+				table.insert(events, {kind = "depart", record = r, reason = if now >= r.expires then "timeout" else "empty", adds = adds, refunds = refunds})
 				continue
 			end
 			local phase = E.phaseFor(def, r.hp / r.maxHp)
@@ -1799,7 +1878,7 @@ local function createLogic(env)
 						end
 					end
 					if attack.kind ~= "disc" or victim then
-						local tg = {id = attackId, attack = attack, kind = attack.kind, name = attack.name, center = Vector3.new(center.X, r.home.Y, center.Z),
+						local tg = {id = attackId, attack = attack, kind = attack.kind, name = attack.name, center = Vector3.new(center.X, r.ground or r.home.Y, center.Z),
 							radius = attack.radius, windup = attack.windup, resolveAt = now + attack.windup, victim = victim}
 						table.insert(r.telegraphs, tg)
 						table.insert(events, {kind = "telegraph", record = r, telegraph = tg})
@@ -1834,6 +1913,42 @@ local function createLogic(env)
 			phaseName = phase and phase.name, enraged = r.enraged == true, enrageIn = math.max(0, math.ceil(r.enrageAt - now)),
 			departIn = math.max(0, math.ceil(r.expires - now)), warded = L.wbWarded(r), top = top, you = you, fighters = #board}
 	end
+	-- The one boss whose HUD a player at `position` sees: the nearest live boss
+	-- whose arena centre is within E.HUD_RANGE (flat), or nil.
+	function L.wbHudFor(position)
+		if not position then return nil end
+		local best, bestD
+		for _, r in ipairs(L.wbList()) do
+			local d = flatDist(position, r.home)
+			if d <= E.HUD_RANGE and (not bestD or d < bestD) then best, bestD = r, d end
+		end
+		return best
+	end
+	-- Sends one credited player's reward; an unapplied report (journal not
+	-- live) is queued for a resend until `deadline`, then reported as is.
+	local function sendReward(player, r, e, payload, deadline)
+		env.bridge("worldBoss", player, payload, function(reply)
+			if reply == nil or (type(reply) == "table" and reply.reason == "sync") then
+				if env.now() + L.WB_REWARD_RETRY <= deadline then
+					table.insert(wbRetry, {player = player, record = r, entry = e, payload = payload, at = env.now() + L.WB_REWARD_RETRY, deadline = deadline})
+					return
+				end
+			end
+			if env.wbLoot then env.wbLoot(player, r, e, reply) end
+		end)
+	end
+	-- Resends due reward reports; returns how many were sent.
+	function L.wbRetryTick()
+		local now, due = env.now(), {}
+		local i = 1
+		while i <= #wbRetry do
+			local job = wbRetry[i]
+			if now >= job.at then table.remove(wbRetry, i); table.insert(due, job) else i += 1 end
+		end
+		for _, job in ipairs(due) do sendReward(job.player, job.record, job.entry, job.payload, job.deadline) end
+		return #due
+	end
+	function L.wbPendingRewards() return #wbRetry end
 	function L.wbKill(r)
 		local now = env.now()
 		local ranked = L.wbBoard(r)
@@ -1851,23 +1966,23 @@ local function createLogic(env)
 		r.results = ranked
 		r.removedAdds = L.wbDepart(r)
 		L.payXp(r, credited)
+		local deadline = now + L.WB_REWARD_WINDOW
 		for _, e in ipairs(ranked) do
 			if e.eligible then
 				local payload = {boss = r.id, tier = e.tier, rank = e.rank, share = e.share, damage = math.floor(e.damage),
-					sigils = r.summoners[e.player] or 0, fight = r.fight}
-				env.bridge("worldBoss", e.player, payload, function(reply)
-					if env.wbLoot then env.wbLoot(e.player, r, e, reply) end
-				end)
+					sigils = r.summoners[uidOf(e.player)] or 0, fight = r.fight}
+				sendReward(e.player, r, e, payload, deadline)
 			end
 		end
 		return credited
 	end
 	function L.wbPlayerRemoving(player)
-		for _, a in pairs(altar) do
-			-- Placed sigils stay on the altar; the leaver's summoner bonus does not.
-			a.by[player] = nil
+		-- Placed sigils and summoner credit stay keyed by UserId (a rejoin does
+		-- not reset the per-player cap); only queued reward resends are dropped.
+		local i = 1
+		while i <= #wbRetry do
+			if wbRetry[i].player == player then table.remove(wbRetry, i) else i += 1 end
 		end
-		for _, r in pairs(wb) do r.summoners[player] = nil end
 	end
 	-- End World Boss section.
 	return L
@@ -2312,10 +2427,11 @@ end)
 -- arena centre) and the Sovereign Altar prompt (IsleAction "bossSigil",
 -- IsleItem "Aurelith"). The Adventure script validates and pays for a sigil,
 -- then asks ServerStorage.IsleWorldBoss:Invoke("sigil", player, bossId) ->
--- {ok, reason, count, needed}; "status" -> {[id] = {active, sigils, needed, next}}.
+-- {ok, reason, count, needed}; "status" -> {[id] = {active, sigils, needed, next}};
+-- "drain" (shutdown) -> {{userId, boss, sigils, reason}} unspent sigils to refund.
 -- Workspace attributes (read by world props and the client HUD):
 --   WorldBossSigils_<id> "n/needed" · WorldBossActive_<id> bool · WorldBossNext_<id> os.time
--- IsleCombatFx kinds: worldBoss (HUD, 2 Hz, players within Endgame.HUD_RANGE),
+-- IsleCombatFx kinds: worldBoss (HUD, 2 Hz, the nearest boss within Endgame.HUD_RANGE),
 -- telegraph / bossStrike (warning discs and their impact), worldBossAnnounce
 -- (server-wide: warn | spawn | phase | enrage | win | depart), worldBossLoot
 -- (per contributor at the kill: rank, share, tier, drops or the reason for none).
@@ -2358,7 +2474,7 @@ function WB.spawn(id, summoners)
 		warn("[Combat] could not build world boss " .. id .. ": " .. tostring(model))
 		return false
 	end
-	local r = Logic.wbRegister(spec, model, position, {radius = plan.radius, summoners = summoners})
+	local r = Logic.wbRegister(spec, model, position, {radius = plan.radius, summoners = summoners, ground = position.Y - plan.hip})
 	if not r then model:Destroy() return false end
 	model:SetAttribute("WorldBoss", true)
 	model:SetAttribute("Phase", 1)
@@ -2410,25 +2526,37 @@ end
 onWorldBossLoot = function(player, r, entry, reply)
 	if not player.Parent then return end
 	local paid = type(reply) == "table" and reply.ok == true
-	fxRemote:FireClient(player, "worldBossLoot", {id = r.id, name = r.name, eligible = paid, reason = if paid then nil else "sync",
+	-- Refusals: "region" (journal may not enter the Shattered Crown), "paid"
+	-- (an earlier report was applied), otherwise the journal stayed unsynced.
+	local reason = if paid then nil elseif type(reply) == "table" and (reply.reason == "region" or reply.reason == "paid") then reply.reason else "sync"
+	fxRemote:FireClient(player, "worldBossLoot", {id = r.id, name = r.name, eligible = paid, reason = reason,
 		rank = entry.rank, share = entry.share, tier = entry.tier, drops = paid and reply.drops or nil, coins = paid and reply.coins or nil})
 end
+-- Each player sees only the nearest live boss in HUD range (no flicker when
+-- both bosses are up).
 function WB.hud()
-	for _, r in ipairs(Logic.wbList()) do
-		for _, player in ipairs(Players:GetPlayers()) do
-			local _, _, hrp = characterOf(player)
-			if hrp and Logic.flatDist(hrp.Position, r.home) <= Endgame.HUD_RANGE then
-				fxRemote:FireClient(player, "worldBoss", Logic.wbHud(r, player, WB.nameOf))
-			end
-		end
+	if #Logic.wbList() == 0 then return end
+	for _, player in ipairs(Players:GetPlayers()) do
+		local _, _, hrp = characterOf(player)
+		local r = hrp and Logic.wbHudFor(hrp.Position)
+		if r then fxRemote:FireClient(player, "worldBoss", Logic.wbHud(r, player, WB.nameOf)) end
 	end
+end
+-- Summons a full altar's boss; a build that keeps failing resets and refunds the altar.
+function WB.summon(due)
+	if WB.spawn(due.id, due.summoners) then return true end
+	if Logic.wbSummonFailed(due.id) then WB.publish() end
+	return false
 end
 function WB.step(dt)
 	for _, event in ipairs(Logic.wbTick()) do
 		local r = event.record
 		if event.kind == "telegraph" then
 			local tg = event.telegraph
-			broadcast(r.home, "telegraph", {center = tg.center, radius = tg.radius, kind = tg.kind, windup = tg.windup, name = tg.name, boss = r.id})
+			-- The disc lies on the floor under its centre (the record's arena floor as fallback).
+			local c = tg.center
+			local center = Vector3.new(c.X, groundY(c, c.Y), c.Z)
+			broadcast(r.home, "telegraph", {center = center, radius = tg.radius, kind = tg.kind, windup = tg.windup, name = tg.name, boss = r.id})
 		elseif event.kind == "strike" then
 			local tg = event.telegraph
 			broadcast(r.home, "bossStrike", {center = tg.center, radius = tg.radius, kind = tg.kind, hits = #event.hits})
@@ -2462,7 +2590,8 @@ function WB.step(dt)
 				Logic.wbScheduleRetry(event.key)
 			end
 		end
-		for _, due in ipairs(Logic.wbDueSummons()) do WB.spawn(due.id, due.summoners) end
+		for _, due in ipairs(Logic.wbDueSummons()) do WB.summon(due) end
+		Logic.wbRetryTick() -- unapplied world boss rewards (journal syncing at the kill)
 		WB.publish()
 	end
 end
@@ -2478,7 +2607,7 @@ do
 			if ok then
 				Workspace:SetAttribute("WorldBossSigils_" .. bossId, count .. "/" .. needed)
 				if reason == "ready" then task.defer(function()
-					for _, due in ipairs(Logic.wbDueSummons()) do if due.id == bossId then WB.spawn(due.id, due.summoners) end end
+					for _, due in ipairs(Logic.wbDueSummons()) do if due.id == bossId then WB.summon(due) end end
 				end) end
 			end
 			return {ok = ok, reason = reason, count = count, needed = needed}
@@ -2488,6 +2617,14 @@ do
 				local def = Data.WorldBosses[id]
 				out[id] = {active = Logic.wbActive(id) ~= nil, sigils = Logic.altarCount(id), needed = def.sigils,
 					next = if def.summon == "schedule" then Endgame.scheduleAt(os.time()).starts else nil}
+			end
+			return out
+		elseif op == "drain" then
+			-- Shutdown (the Adventure script's BindToClose): every unspent sigil as
+			-- {userId, boss, sigils, reason}; the altars are emptied.
+			local out = {}
+			for _, entry in ipairs(Logic.wbDrain()) do
+				table.insert(out, {userId = entry.userId, boss = entry.boss, sigils = entry.sigils, reason = entry.reason})
 			end
 			return out
 		end
@@ -2617,11 +2754,11 @@ RunService.Heartbeat:Connect(function(dt)
 		if failed.player.Parent then fxRemote:FireClient(failed.player, "bossFail", {reason = failed.reason}) end
 		destroyView(failed.record, false)
 	end
-	WB.step(step) -- World Boss section: telegraphs, phases, schedule, HUD
 	animClock += step
 	local animTick = animClock >= C.ANIMATE_STEP
 	if animTick then animClock = 0 end
 	Logic.beginTick()
+	WB.step(step) -- World Boss section: telegraphs, phases, schedule, HUD (inside the tick snapshot)
 	for _, r in ipairs(Logic.records()) do
 		local v = view[r]
 		if v then
