@@ -156,3 +156,9 @@ Region `ShatteredCrown` (Combat 60 + `requires.questsDone`). World bosses Aureli
 ## 14. Workers depth
 
 `Data.Workers`: 35 worker types (type id = output resource id; 6 combat workers), Condensed/Radiant compacted items (160 → 1), 5 fuels, 5 upgrades, 3 chests. Slots 3 → 12 by unique crafts (`p.workerUniques` bitmasks). Verbs: `worker`, `workerBuild "slot[:Type]"`, `workerResource`, `workerAssign "slot:Type"`, `workerUpgrade`, `claim`, `workerClaim`, `workerClaimAll`, `workerFuel "slot:Fuel[:n]"`, `workerUnfuel`, `workerInstall "slot:Part"`, `workerRemove "slot:1|2|chest"`, `workerBlueprint "Type:tier"`. Snapshot `workers[i]` extended + `workerInfo`; player attributes `Worker1..12Tier/Resource`, `WorkerSlots`. Accrual is integer `os.time()` maths capped at 48 h.
+
+Balance rules (after review): worker pace = 0.4 × node respawn (starters ×1), worker XP = max(3, xp//10), fuels +5/8/12/15% (+10% permanent), max 3 workers per type, max 2 combat workers (collection credit 25%), level 60+/75+ types need collection tier 4/5, region-only types need the region unlocked; over-limit workers idle instead of being changed.
+
+## 15. Pets depth
+
+`Data.PetDepth`: species rarities Common→Legendary (stat multipliers 0.55/0.7/0.85/1/1.2 relative to base rarity), 2–3 wired abilities per species, 12 held items, Pet Candy / Starlit Candy (10 per pet), Ascendant Prism tier boost, Roost rarity upgrades on an `os.time` timer. Verbs `petItem "i:itemId|none"`, `petCandy "i:PetCandy|StarlitCandy"`, `petTierBoost "i"`, `petUpgrade "i"`, `petClaim`, `petCancel`, `petShop "itemId"`. Snapshot pet rows add rarity/item/candy/abilities/stats/totalXp/upgrade; `depth.petDepth = {upgrade, taming}`. Player attribute `ActivePet = "species:rarity:level"` drives `pets.client.lua` followers. Profile fields `rarity`, `item`, `candy` per pet; `p.petUpgrade`, `p.petTamingCarry`, `p.petSkillXp`.
