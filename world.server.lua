@@ -3544,3 +3544,112 @@ do
 	end)
 end
 -- End Minigames section.
+-- Commissions & Logs (Mining & Logs team; self-contained section). The
+-- Commission Board and Forgeheart anvil stand on Brassfall Quarry; the Aether
+-- Museum pavilion (display case + Collection Log lectern) stands on Compass
+-- Quay. Prompts use IsleAction "logsBoard" with IsleItem "Commissions" |
+-- "Museum" | "Log" (server: Logs block); triggering also sets the player's
+-- IsleStation ("Commissions" | "Museum" | "CollectionLog") and bumps
+-- IsleStationVisit so the client opens Journal on that page. Models carry
+-- LogsContent = true (not IsleContent, which the Prayer & Thieving QA reserves). Anchors: Waypoint_CommissionBoard, Waypoint_Museum.
+-- Spots are searched on rings around the island centre and keep clear of every
+-- existing prop (same rule as the Prayer & Thieving section). No extra lights.
+-------------------------------------------------------------------------------
+do
+	local FLOOR={Meadow=true,["Floating foundation"]=true,["Mineral stratum"]=true,["Lower basalt"]=true,["Fractured cliff"]=true,
+		["Keel rock"]=true,["Edge guard"]=true,["Aether vein"]=true,["Shore ledge"]=true,Path=true,Wildflowers=true}
+	local taken={}
+	local function blocked(host,pos,radius)
+		for _,q in ipairs(taken) do if V(pos.X-q.X,0,pos.Z-q.Z).Magnitude<radius+6 then return true end end
+		for _,obj in ipairs(host:GetDescendants()) do
+			if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
+				local cf,sz=obj.CFrame,obj.Size
+				local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
+				local c=cf.Position
+				local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
+				local dz=math.max(0,math.abs(pos.Z-c.Z)-ext("Z"))
+				local ey=ext("Y")
+				if dx*dx+dz*dz<radius*radius and c.Y+ey>pos.Y+.3 and c.Y-ey<pos.Y+9 then return true end
+			end
+		end
+		return false
+	end
+	local function spot(host,angle,radius)
+		local IC,R=host:GetAttribute("IslandCenter"),host:GetAttribute("IslandRadius")
+		local first
+		for _,f in ipairs({.55,.45,.65,.35,.72}) do
+			for k=0,23 do
+				local a=math.rad(angle+(if k%2==0 then 1 else -1)*math.ceil(k/2)*15)
+				local pos=IC+V(math.cos(a),0,math.sin(a))*R*f
+				first=first or pos
+				if not blocked(host,pos,radius) then table.insert(taken,pos) return pos end
+			end
+		end
+		table.insert(taken,first)
+		return first
+	end
+	local function frame(host,angle,radius)
+		local pos=spot(host,angle,radius)
+		local IC=host:GetAttribute("IslandCenter")
+		local toward=V(IC.X,pos.Y,IC.Z)
+		if (toward-pos).Magnitude<1 then toward=pos+V(0,0,1) end
+		return facing(pos,toward),pos
+	end
+	local OPEN={Commissions="Commissions",Museum="Museum",Log="CollectionLog"}
+	local function board(target,verb,label,item)
+		local q=prompt(target,verb,label,"logsBoard",item)
+		q.Triggered:Connect(function(player)
+			player:SetAttribute("IsleStation",OPEN[item])
+			player:SetAttribute("IsleStationVisit",(player:GetAttribute("IsleStationVisit") or 0)+1)
+		end)
+		return q
+	end
+	local dust=C("B9A7FF")
+	-- Commission Board: a posted ledger board, the Forgeheart anvil and an ore cluster.
+	local quarry=islandsFolder:FindFirstChild("Brassfall Quarry")
+	if quarry then
+		local cf,pos=frame(quarry,200,7)
+		local m=group("Commission Board",quarry)
+		m:SetAttribute("LogsContent",true)
+		for _,x in ipairs({-2.6,2.6}) do part(m,"Board post",V(.5,5.6,.5),at(cf,x,2.8,0),darken(timber,.3),WO,true) end
+		local ledger=part(m,"Commission ledger",V(6,3.4,.4),at(cf,0,3.6,0),timber,WO,false)
+		meshSlot(ledger,"Signboard",dust)
+		part(m,"Ledger notices",V(5,2.4,.12),at(cf,0,3.6,-.26),cream,SM,false)
+		board(ledger,"Read commissions","Commission Board","Commissions")
+		local anvil=part(m,"Forgeheart anvil",V(2.6,1.8,1.4),at(cf,5,.9,-1.5),C("4A4F5A"),MT,true)
+		meshSlot(anvil,"Anvil",dust)
+		part(m,"Forgeheart ember",V(1,.25,.6),at(cf,5,1.93,-1.5),dust,NE,false)
+		board(anvil,"Forgeheart","Glimmerdust perks","Commissions")
+		local cluster=hidden(m,"Glimmer cluster",at(cf,-5,1.2,-1.2).Position)
+		meshSlot(cluster,"OreCluster",dust)
+		signAt(m,at(cf,0,0,4.5)*CFrame.Angles(0,math.pi,0),"Commission Board","QUARRY GUILD   /   DAILY COMMISSIONS",dust,9)
+		anchor(m,"Waypoint_CommissionBoard",at(cf,0,0,-4),pos)
+	end
+	-- Aether Museum: a columned dais with a central statue, a display case and the log lectern.
+	local hub=islandsFolder:FindFirstChild("Compass Quay")
+	if hub then
+		local cf,pos=frame(hub,150,11)
+		local m=group("Aether Museum",hub)
+		m:SetAttribute("LogsContent",true)
+		part(m,"Museum dais",V(16,.57,12),at(cf,0,.285,0),C("C9CFD6"),ST,true)
+		for _,x in ipairs({-7,7}) do
+			for _,z in ipairs({-5,5}) do
+				local col=part(m,"Museum column",V(1.2,8,1.2),at(cf,x,4.57,z),cream,ST,true)
+				meshSlot(col,"Column")
+			end
+		end
+		part(m,"Museum lintel",V(16.4,.9,12.4),at(cf,0,9.02,0),C("C9CFD6"),ST,false)
+		local statue=hidden(m,"Curator's statue",at(cf,0,3.07,2).Position)
+		meshSlot(statue,"Statue",brass)
+		local case=part(m,"Display case",V(3.4,2.4,2.2),at(cf,-3.6,1.77,-2),C("4A4F5A"),MT,true)
+		meshSlot(case,"VaultChest",C("C77DFF"))
+		part(m,"Display glass",V(3.2,.18,2),at(cf,-3.6,3.06,-2),C("CFEFFF"),GL,false).Transparency=.4
+		board(case,"Browse museum","Aether Museum","Museum")
+		local lectern=part(m,"Log lectern",V(1.6,2.2,1.2),at(cf,3.6,1.67,-2),timber,WO,true)
+		meshSlot(lectern,"Workbench",brass)
+		board(lectern,"Read the log","Collection Log","Log")
+		signAt(m,at(cf,0,0,-8.5),"Aether Museum","COMPASS QUAY   /   MUSEUM · COLLECTION LOG",C("C77DFF"),11)
+		anchor(m,"Waypoint_Museum",at(cf,0,0,-10),pos)
+	end
+end
+-- End Commissions & Logs section.
