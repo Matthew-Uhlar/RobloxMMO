@@ -7,7 +7,7 @@ local bindings = {
 	Adventure = "server.server.lua", Archipelago = "world.server.lua",
 	Observatory = "expedition.server.lua", Assembly = "festival.server.lua",
 	Homesteads = "coop.server.lua", Combat = "combat.server.lua",
-	FieldGuide = "ui.client.lua", IslandArt = "mesh.client.lua", CombatInput = "combat.client.lua",
+	FieldGuide = "ui.client.lua", IslandArt = "mesh.client.lua", CombatInput = "combat.client.lua", IslandBuilder = "build.client.lua",
 	AetherArt = "art/PropCatalog.lua",
 	MaterialArt = "art/MaterialArt.lua",
 	AetherData = "shared/GameData.lua", AetherProgression = "shared/Progression.lua",

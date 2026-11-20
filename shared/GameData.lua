@@ -868,4 +868,221 @@ function Data.describeCheck(o)
 	return "Unknown task"
 end
 
+
+------------------------------------------------------------------------------
+-- Island placement (Island Builder team; append-only section).
+-- Free-form decor on the player's own home island, beside the terrace hotspots.
+-- Grid: CELL-stud cells addressed by integer (x, z) in [-RANGE, RANGE]; cell
+-- (x, z) is the square centred CELL*x, CELL*z studs from the home island centre.
+-- A prop of footprint w x d cells anchored at (x, z) covers x..x+w'-1 and
+-- z..z+d'-1 (w', d' swapped when rot is 1 or 3). A cell is buildable when every
+-- corner lies within RADIUS studs of the centre and it does not overlap a
+-- Protected rectangle (stud offsets: spawn landing, worker stations, signs,
+-- legacy decorations, bridges and the terrace approach) by more than BRUSH.
+-- Record "id:propId:x:z:rot" (id = smallest free integer 1..MAX_PLACEMENTS);
+-- the profile keeps p.island = {placed={record...}, paid={[propId]=n}} and the
+-- server replicates the records joined by ";" as player attribute IslandPlacements.
+-- Pickup refunds REFUND (100%) of materials; Carpentry XP is paid once per copy
+-- (paid[propId] is a high-water mark, never above prop.max), so moving decor
+-- around is free and cannot farm XP.
+-- effect: light={color,range} (lamp glow), station=kind (home crafting prompt).
+------------------------------------------------------------------------------
+do
+	local Island = {}
+	Data.Island = Island
+	Island.CELL = 2
+	Island.RANGE = 8
+	Island.RADIUS = 18.5
+	Island.BRUSH = 0.3       -- a cell may brush a protected rectangle by this many studs
+	Island.MAX_PLACEMENTS = 120   -- the grid holds 124 free cells
+	Island.RATE = 3          -- placement verbs per second (token bucket)
+	Island.BURST = 6
+	Island.REFUND = 1
+	Island.Categories = {"Fences","Paths","Lights","Garden","Banners","Statues","Structures","Utility"}
+	Island.Protected = {
+		{name="home landing",x1=-2.5,z1=2.5,x2=2.5,z2=7.5},
+		{name="windpine",x1=-8,z1=-2,x2=-4,z2=2},
+		{name="Wayfarer's sign",x1=1.5,z1=-5.5,x2=10.5,z2=-4.5},
+		{name="quay beacon",x1=-3,z1=-12,x2=3,z2=-10},
+		{name="worker station",x1=6.7,z1=1.7,x2=11.3,z2=6.3},
+		{name="worker station",x1=10.7,z1=-3.3,x2=15.3,z2=1.3},
+		{name="worker station",x1=-12.3,z1=-12.3,x2=-7.7,z2=-7.7},
+		{name="worker cache",x1=9.7,z1=7.9,x2=12.3,z2=10.1},
+		{name="lamp",x1=-5.7,z1=-9.7,x2=-4.3,z2=-8.3},
+		{name="homestead plans",x1=-8.5,z1=10,x2=-1.5,z2=12.5},
+		{name="homestead sign",x1=-10,z1=13.5,x2=0,z2=14.5},
+		{name="lantern spot",x1=-13,z1=-9,x2=-11,z2=-7},
+		{name="lantern spot",x1=11,z1=-8,x2=13,z2=-6},
+		{name="lantern spot",x1=-14,z1=5,x2=-12,z2=7},
+		{name="lantern spot",x1=5,z1=11,x2=7,z2=13},
+		{name="garden plot",x1=-14,z1=-2.5,x2=-8,z2=4.5},
+		{name="lookout bridge",x1=-4,z1=16,x2=4,z2=20},
+		{name="terrace bridge",x1=-20,z1=-4,x2=-16,z2=4},
+		{name="terrace sign",x1=-15.5,z1=-10,x2=-14.5,z2=-2},
+	}
+	Island.Props = {
+		-- Fences
+		TimberFence={name="Timber Fence",category="Fences",level=1,xp=12,costs={Timber=4},size={1,1},max=40,value=1,color="966B4C",text="A rail of meadow timber."},
+		PicketFence={name="Picket Fence",category="Fences",level=8,xp=24,costs={Timber=6,Ore=2},size={1,1},max=40,value=2,color="F9EDCD",text="Painted pickets with copper nails."},
+		BrassRailing={name="Brass Railing",category="Fences",level=25,xp=70,costs={WindpineLog=3,BrassIngot=1},size={1,1},max=30,value=4,color="DBAD65",text="Polished brass on windpine posts."},
+		-- Paths
+		StonePath={name="Stone Path",category="Paths",level=1,xp=8,costs={Ore=3},size={1,1},max=60,value=1,color="687481",text="Flagstones for a tidy walk."},
+		Boardwalk={name="Boardwalk",category="Paths",level=5,xp=12,costs={Timber=4},size={1,1},max=60,value=1,color="A0784F",text="Timber planks over the meadow."},
+		AetherMosaic={name="Aether Mosaic",category="Paths",level=30,xp=60,costs={Aetherite=6,Ore=4},size={1,1},max=40,value=3,color="7FD6E8",text="Glowing inlaid tiles."},
+		-- Lights (utility: lamp glow)
+		LanternPost={name="Lantern Post",category="Lights",level=3,xp=20,costs={Timber=3,Ore=2},size={1,1},max=20,value=3,color="8EE6CB",effect={light={color="8EE6CB",range=9}},text="Lights the island at dusk."},
+		BrassStreetlamp={name="Brass Streetlamp",category="Lights",level=20,xp=90,costs={WindpineLog=2,BrassIngot=2},size={1,1},max=16,value=6,color="F9CC77",effect={light={color="FFD58A",range=12}},text="A tall lamp with a warm glow."},
+		CrystalBrazier={name="Crystal Brazier",category="Lights",level=40,xp=260,costs={Aetherite=12,EmberoakLog=4},size={1,1},max=10,value=12,color="C77DFF",effect={light={color="C77DFF",range=14}},text="Aetherite flames in an ember bowl."},
+		-- Garden
+		FlowerPlanter={name="Flower Planter",category="Garden",level=2,xp=14,costs={Timber=3,Herb=5},size={1,1},max=30,value=2,color="D67D6A",text="A box of meadow blooms."},
+		HedgeRow={name="Hedge Row",category="Garden",level=10,xp=40,costs={Herb=10,Timber=2},size={2,1},max=30,value=3,color="5E8C55",text="A clipped hedge two cells long."},
+		YoungWindpine={name="Young Windpine",category="Garden",level=12,xp=50,costs={Timber=8,Herb=6},size={1,1},max=15,value=4,color="6B8E5A",text="A sapling for shade (not a gathering node)."},
+		MoonbloomBed={name="Moonbloom Bed",category="Garden",level=45,xp=420,costs={Moonbloom=12,GlimmerbarkLog=4},size={2,2},max=10,value=15,color="B8C0FF",text="A raised bed of night flowers."},
+		-- Banners
+		GuildBanner={name="Guild Banner",category="Banners",level=6,xp=20,costs={Timber=4,Herb=2},size={1,1},max=20,value=3,color="3C9291",text="The Cartographers' Guild colours."},
+		VoyagerPennant={name="Voyager Pennant",category="Banners",level=28,xp=110,costs={WindpineLog=3,BeastHide=4},size={1,1},max=12,value=6,color="D67D6A",text="A hide pennant for far voyages."},
+		StormStandard={name="Storm Standard",category="Banners",level=55,xp=900,costs={StarwoodLog=4,Stormglass=1},size={1,1},max=4,value=30,color="7B8CDE",text="Crackling stormglass on a starwood pole."},
+		-- Statues
+		SurveyorStatue={name="Surveyor Statue",category="Statues",level=15,xp=120,costs={Ore=30,Brassite=8},size={2,2},max=4,value=12,color="B8B2A6",text="A stone surveyor on a plinth."},
+		SkywhaleStatue={name="Skywhale Statue",category="Statues",level=50,xp=1100,costs={Aetherite=30,GolemCore=2},size={2,2},max=2,value=40,color="7FD6E8",text="A crystal whale breaching the clouds."},
+		AetherObelisk={name="Aether Obelisk",category="Statues",level=65,xp=2200,costs={StarmetalIngot=6,Aetherite=40},size={1,1},max=3,value=50,color="C9D6E3",effect={light={color="8EE6CB",range=16}},text="A starmetal spire humming with aether."},
+		-- Structures
+		PicnicBench={name="Picnic Bench",category="Structures",level=4,xp=24,costs={Timber=8},size={2,1},max=10,value=3,color="9C6B3E",text="Seats for visiting voyagers."},
+		StoneWell={name="Stone Well",category="Structures",level=12,xp=80,costs={Ore=25,Timber=5},size={2,2},max=2,value=8,color="6F7A86",text="A covered well with a brass bucket."},
+		SupplyShed={name="Supply Shed",category="Structures",level=18,xp=150,costs={Timber=40,Ore=10},size={2,2},max=3,value=10,color="8A5A3B",text="A small shed with a pitched roof."},
+		GardenGazebo={name="Garden Gazebo",category="Structures",level=22,xp=300,costs={WindpineLog=30,BrassIngot=4},size={3,3},max=2,value=25,color="F9EDCD",text="An open pavilion with a brass crown."},
+		-- Utility: home crafting prompts reuse the existing station effect.
+		CarpenterStump={name="Carpenter's Stump",category="Utility",level=8,xp=40,costs={Timber=20},size={1,1},max=1,value=4,color="7A5634",effect={station="Workbench"},text="Home Workbench station."},
+		CampStove={name="Camp Stove",category="Utility",level=10,xp=50,costs={Ore=15,Timber=10},size={1,1},max=1,value=5,color="B5651D",effect={station="Hearth",light={color="FFB36B",range=8}},text="Home Hearth station."},
+		FieldAnvil={name="Field Anvil",category="Utility",level=20,xp=120,costs={Ore=20,BrassIngot=3},size={1,1},max=1,value=6,color="485565",effect={station="Forge"},text="Home Forge station."},
+		BrewingStand={name="Brewing Stand",category="Utility",level=30,xp=240,costs={Herb=30,EmberoakLog=6},size={1,1},max=1,value=8,color="6A4C93",effect={station="Cauldron"},text="Home Cauldron station."},
+	}
+	Island.PropOrder = {}
+	Island.CategoryOf = {}
+	for i, c in ipairs(Island.Categories) do Island.CategoryOf[c] = i end
+	for id, def in pairs(Island.Props) do def.id = id; table.insert(Island.PropOrder, id) end
+	table.sort(Island.PropOrder, function(a, b)
+		local pa, pb = Island.Props[a], Island.Props[b]
+		if pa.category ~= pb.category then return Island.CategoryOf[pa.category] < Island.CategoryOf[pb.category] end
+		if pa.level ~= pb.level then return pa.level < pb.level end
+		return a < b
+	end)
+	-- Island value tiers (shown in the UI; cosmetic).
+	Island.ValueTiers = {
+		{at=0,name="Bare Rock"},{at=25,name="Homely Camp"},{at=100,name="Charming Cottage"},
+		{at=250,name="Grand Estate"},{at=500,name="Legendary Isle"},
+	}
+	function Island.tier(value)
+		local index = 1
+		for i, t in ipairs(Island.ValueTiers) do if value >= t.at then index = i end end
+		return index, Island.ValueTiers[index]
+	end
+	local function int(n) return type(n) == "number" and n == n and n == math.floor(n) and math.abs(n) < 1e6 end
+	-- Footprint in cells after rotation.
+	function Island.footprint(def, rot)
+		local w, d = def.size[1], def.size[2]
+		if rot % 2 == 1 then return d, w end
+		return w, d
+	end
+	-- Prop centre offset (studs) from the island centre, and its yaw (radians).
+	function Island.centerOffset(propId, x, z, rot)
+		local w, d = Island.footprint(Island.Props[propId], rot)
+		return (x + (w - 1) / 2) * Island.CELL, (z + (d - 1) / 2) * Island.CELL, rot * math.pi / 2
+	end
+	-- Anchor cell for a prop centred near stud offset (ox, oz) (client snapping).
+	function Island.snap(propId, rot, ox, oz)
+		local w, d = Island.footprint(Island.Props[propId], rot)
+		return math.floor(ox / Island.CELL - (w - 1) / 2 + 0.5), math.floor(oz / Island.CELL - (d - 1) / 2 + 0.5)
+	end
+	-- nil when buildable, else a short reason: "edge" or a protected zone name.
+	function Island.cellBlocked(x, z)
+		if not int(x) or not int(z) or math.abs(x) > Island.RANGE or math.abs(z) > Island.RANGE then return "edge" end
+		local half = Island.CELL / 2
+		local cx, cz = x * Island.CELL, z * Island.CELL
+		local fx, fz = math.abs(cx) + half, math.abs(cz) + half
+		if fx * fx + fz * fz > Island.RADIUS * Island.RADIUS then return "edge" end
+		for _, r in ipairs(Island.Protected) do
+			local e = half - Island.BRUSH
+			if cx + e > r.x1 and cx - e < r.x2 and cz + e > r.z1 and cz - e < r.z2 then return r.name end
+		end
+		return nil
+	end
+	function Island.key(x, z) return x .. "," .. z end
+	-- Cells covered by a placement, or nil for a malformed request.
+	function Island.cells(propId, x, z, rot)
+		local def = type(propId) == "string" and Island.Props[propId]
+		if not def or not int(x) or not int(z) or not int(rot) or rot < 0 or rot > 3 then return nil end
+		local w, d = Island.footprint(def, rot)
+		local out = {}
+		for i = 0, w - 1 do
+			for j = 0, d - 1 do table.insert(out, {x + i, z + j}) end
+		end
+		return out
+	end
+	-- Records: "id:propId:x:z:rot".
+	function Island.parseRecord(text)
+		if type(text) ~= "string" or #text > 40 then return nil end
+		local id, propId, x, z, rot = string.match(text, "^(%d+):(%w+):(%-?%d+):(%-?%d+):(%d)$")
+		id, x, z, rot = tonumber(id), tonumber(x), tonumber(z), tonumber(rot)
+		if not id or id < 1 or id > Island.MAX_PLACEMENTS or not Island.Props[propId] or rot > 3 then return nil end
+		if math.abs(x) > Island.RANGE or math.abs(z) > Island.RANGE then return nil end
+		return {id=id, prop=propId, x=x, z=z, rot=rot}
+	end
+	function Island.record(e) return e.id .. ":" .. e.prop .. ":" .. e.x .. ":" .. e.z .. ":" .. e.rot end
+	-- Payload of the place verb: "propId:x:z:rot" -> propId, x, z, rot (or nil).
+	function Island.parseRequest(text)
+		if type(text) ~= "string" or #text > 40 then return nil end
+		local propId, x, z, rot = string.match(text, "^(%w+):(%-?%d+):(%-?%d+):(%d)$")
+		x, z, rot = tonumber(x), tonumber(z), tonumber(rot)
+		if not propId or not x or not z or not rot then return nil end
+		return propId, x, z, rot
+	end
+	function Island.encode(list)
+		local parts = {}
+		for i, e in ipairs(list) do parts[i] = Island.record(e) end
+		return table.concat(parts, ";")
+	end
+	-- Lenient decode: unknown or malformed records are skipped.
+	function Island.decode(text)
+		local out = {}
+		if type(text) ~= "string" then return out end
+		for chunk in string.gmatch(text, "[^;]+") do
+			if #out >= Island.MAX_PLACEMENTS then break end
+			local e = Island.parseRecord(chunk)
+			if e then table.insert(out, e) end
+		end
+		return out
+	end
+	-- Cell key -> placement id for every listed placement.
+	function Island.occupancy(list)
+		local occupied = {}
+		for _, e in ipairs(list) do
+			for _, c in ipairs(Island.cells(e.prop, e.x, e.z, e.rot) or {}) do occupied[Island.key(c[1], c[2])] = e.id end
+		end
+		return occupied
+	end
+	-- Geometry check: true, or false + a player-facing reason.
+	function Island.check(occupied, propId, x, z, rot)
+		local def = type(propId) == "string" and Island.Props[propId]
+		if not def then return false, "Choose a prop from the island catalogue." end
+		local cells = Island.cells(propId, x, z, rot)
+		if not cells then return false, "That spot is not on the island grid." end
+		for _, c in ipairs(cells) do
+			local blocked = Island.cellBlocked(c[1], c[2])
+			if blocked == "edge" then return false, def.name .. " must sit fully on your island." end
+			if blocked then return false, "Keep the " .. blocked .. " clear." end
+			if occupied and occupied[Island.key(c[1], c[2])] then return false, "Something already stands there." end
+		end
+		return true
+	end
+	function Island.value(list)
+		local total = 0
+		for _, e in ipairs(list) do
+			local def = Island.Props[e.prop]
+			if def then total += def.value end
+		end
+		return total
+	end
+end
+
 return Data

@@ -20,7 +20,8 @@
       "StarterPlayerScripts": {
         "FieldGuide": { "$path": "ui.client.lua" },
         "IslandArt": { "$path": "mesh.client.lua" },
-        "CombatInput": { "$path": "combat.client.lua" }
+        "CombatInput": { "$path": "combat.client.lua" },
+        "IslandBuilder": { "$path": "build.client.lua" }
       }
     },
     "Workspace": {

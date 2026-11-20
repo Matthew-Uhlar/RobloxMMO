@@ -416,11 +416,13 @@ do
 		end
 		if p.homePortal~=nil and not table.find(Journal.portalRegions(p),p.homePortal) then p.homePortal=nil end
 		Journal.refresh(p)
+		Journal.isle.migrate(p)
 	end
 	-- World reads these attributes to render furniture and the home portal.
 	function Journal.apply(player,p)
 		for _,h in ipairs(Data.Hotspots) do player:SetAttribute("Furniture"..h.id,p.furniture[h.id] or "") end
 		player:SetAttribute("HomePortal",p.homePortal or "")
+		Journal.isle.apply(player,p)
 	end
 	local function addItems(p,items)
 		for id,n in pairs(items or {}) do p.items[id]=(p.items[id] or 0)+n end
@@ -552,7 +554,133 @@ do
 		end
 		return {questPoints=Journal.questPoints(p),contracts=p.questCompleted or 0,quests=quests,diaries=diaries,
 			construction={furniture=table.clone(p.furniture),portal=p.homePortal,portalRegions=Journal.portalRegions(p),
-				carpentry=level(p.xp.Carpentry),accessorySlots=p.perkAccessorySlots or 0,workerHaste=p.perkWorkerHaste or 0}}
+				carpentry=level(p.xp.Carpentry),accessorySlots=p.perkAccessorySlots or 0,workerHaste=p.perkWorkerHaste or 0,
+				island=Journal.isle.state(p)}}
+	end
+end
+------------------------------------------------------------------------------
+-- Island placement (Island Builder team): free-form decor on the caller's own
+-- home island (Data.Island grid rules). Every verb edits only the caller's
+-- profile, so ownership is implicit; the world renders the replicated records
+-- on that player's island only. p.island = {placed={"id:prop:x:z:rot"...},
+-- paid={[propId]=copies already paid Carpentry XP}}. Pickup refunds 100% of
+-- materials; XP is paid once per copy (paid is a high-water mark <= max).
+------------------------------------------------------------------------------
+do
+	local I=Data.Island
+	local Isle={budget=setmetatable({},{__mode="k"})}
+	Journal.isle=Isle
+	function Isle.list(p)
+		local out={}
+		for _,record in ipairs(p.island.placed) do
+			local e=I.parseRecord(record)
+			if e then table.insert(out,e) end
+		end
+		return out
+	end
+	-- Keeps only well-formed, in-bounds, non-overlapping records within the caps.
+	function Isle.migrate(p)
+		local raw=if type(p.island)=="table" then p.island else {}
+		local placed,paid,used,counts,occupied={},{},{},{},{}
+		if type(raw.placed)=="table" then
+			for _,record in ipairs(raw.placed) do
+				if #placed>=I.MAX_PLACEMENTS then break end
+				local e=I.parseRecord(record)
+				if e and not used[e.id] and (counts[e.prop] or 0)<I.Props[e.prop].max and I.check(occupied,e.prop,e.x,e.z,e.rot) then
+					used[e.id]=true
+					counts[e.prop]=(counts[e.prop] or 0)+1
+					for _,c in ipairs(I.cells(e.prop,e.x,e.z,e.rot)) do occupied[I.key(c[1],c[2])]=e.id end
+					table.insert(placed,I.record(e))
+				end
+			end
+		end
+		if type(raw.paid)=="table" then
+			for id,n in pairs(raw.paid) do
+				local def=type(id)=="string" and I.Props[id]
+				n=tonumber(n)
+				if def and n and n==n and n>=1 then paid[id]=math.min(math.floor(n),def.max) end
+			end
+		end
+		for id,n in pairs(counts) do paid[id]=math.max(paid[id] or 0,n) end
+		p.island={placed=placed,paid=paid}
+	end
+	function Isle.apply(player,p)
+		player:SetAttribute("IslandPlacements",table.concat(p.island.placed,";"))
+	end
+	-- Token bucket (Data.Island.RATE per second, BURST) on top of the verb cooldown.
+	function Isle.allow(player)
+		local now=os.clock()
+		local b=Isle.budget[player]
+		if not b then b={tokens=I.BURST,at=now}; Isle.budget[player]=b end
+		b.tokens=math.min(I.BURST,b.tokens+(now-b.at)*I.RATE)
+		b.at=now
+		if b.tokens<1 then return false end
+		b.tokens-=1
+		return true
+	end
+	function Isle.place(player,p,item)
+		if not Isle.allow(player) then return "Building too quickly. One moment…" end
+		local propId,x,z,rot=I.parseRequest(item)
+		local def=propId and I.Props[propId]
+		if not def then return "Choose a prop and a spot on your island." end
+		if level(p.xp.Carpentry)<def.level then return def.name.." requires Carpentry "..def.level.."." end
+		local list=Isle.list(p)
+		if #list>=I.MAX_PLACEMENTS then return "Your island holds at most "..I.MAX_PLACEMENTS.." placed props. Pick some up first." end
+		local count=0
+		local used={}
+		for _,e in ipairs(list) do
+			used[e.id]=true
+			if e.prop==propId then count+=1 end
+		end
+		if count>=def.max then return "You have placed the most "..def.name.." pieces allowed ("..def.max..")." end
+		local ok,why=I.check(I.occupancy(list),propId,x,z,rot)
+		if not ok then return why end
+		for material,n in pairs(def.costs) do
+			if (p.items[material] or 0)<n then return def.name.." needs "..n.." "..Data.Items[material].name.."." end
+		end
+		spend(p,def.costs)
+		local id=1
+		while used[id] do id+=1 end
+		table.insert(p.island.placed,I.record({id=id,prop=propId,x=x,z=z,rot=rot}))
+		count+=1
+		local text=def.name.." placed on your island"
+		if count>(p.island.paid[propId] or 0) then
+			p.island.paid[propId]=count
+			grantXp(p,"Carpentry",def.xp)
+			text..="   ·   +"..def.xp.." Carpentry XP"
+		end
+		p.started=true
+		Isle.apply(player,p)
+		return text
+	end
+	function Isle.pickup(player,p,item)
+		if not Isle.allow(player) then return "Building too quickly. One moment…" end
+		local id=type(item)=="string" and string.match(item,"^%d+$") and tonumber(item)
+		if not id then return "Choose a placed prop to pick up." end
+		for index,record in ipairs(p.island.placed) do
+			local e=I.parseRecord(record)
+			if e and e.id==id then
+				local def=I.Props[e.prop]
+				table.remove(p.island.placed,index)
+				for material,n in pairs(def.costs) do
+					local back=math.floor(n*I.REFUND)
+					if back>0 then p.items[material]=(p.items[material] or 0)+back end
+				end
+				Isle.apply(player,p)
+				return def.name.." picked up   ·   materials returned"
+			end
+		end
+		return "That prop is no longer on your island."
+	end
+	function Isle.state(p)
+		local list=Isle.list(p)
+		local counts={}
+		for _,e in ipairs(list) do counts[e.prop]=(counts[e.prop] or 0)+1 end
+		local value=I.value(list)
+		local tier,def=I.tier(value)
+		-- Records themselves replicate through the IslandPlacements attribute.
+		return {count=#list,cap=I.MAX_PLACEMENTS,counts=counts,
+			paid=table.clone(p.island.paid),value=value,tier=tier,tierName=def.name}
 	end
 end
 local function applyStats(player,p,spawned)
@@ -953,6 +1081,10 @@ local function perform(player,verb,item,prompt)
 		return Journal.remove(player,p,item)
 	elseif verb=="portal" then
 		return Journal.attune(player,p,item)
+	elseif verb=="place" then
+		return Journal.isle.place(player,p,item)
+	elseif verb=="pickup" then
+		return Journal.isle.pickup(player,p,item)
 	elseif verb=="quest" then
 		local state=questState(p)
 		if not state.ready then return "Complete the current guild contract first." end

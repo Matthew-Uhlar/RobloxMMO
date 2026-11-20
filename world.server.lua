@@ -285,6 +285,8 @@ end
 local slots,homes={},{}
 -- Builder's Terrace furniture (attached at the end of this script, see homeTerrace.attach).
 local homeTerrace={}
+-- Free-form island placements (attached at the end of this script, see homePlacement.attach).
+local homePlacement={}
 local function warp(player,trigger,destination)
 	local character=player.Character
 	local root=character and character:FindFirstChild("HumanoidRootPart")
@@ -436,6 +438,7 @@ local function settle(player)
 		decorate(choice.key)
 	end
 	if homeTerrace.attach then homeTerrace.attach(player,homes[player]) end
+	if homePlacement.attach then homePlacement.attach(player,homes[player]) end
 end
 Players.PlayerAdded:Connect(settle)
 Players.PlayerRemoving:Connect(function(player)
@@ -1536,4 +1539,290 @@ do
 		table.insert(home.decorationConnections,player:GetAttributeChangedSignal("HomePortal"):Connect(refreshPortal))
 	end
 	for player,home in pairs(homes) do homeTerrace.attach(player,home) end
+end
+
+-------------------------------------------------------------------------------
+-- Island placement (Island Builder team). The server publishes the owner's
+-- free-form placements as player attribute IslandPlacements ("id:prop:x:z:rot"
+-- records joined by ";", Data.Island grid). Each record becomes an anchored
+-- primitive model (<= 12 parts) named Placement_<id> in the home's Placements
+-- folder; a change rebuilds only the records that differ. The folder goes with
+-- the home model when the player leaves. Player attribute IslandCenter lets the
+-- client snap its build-mode ghost to the same grid.
+-------------------------------------------------------------------------------
+do
+	local I=Data.Island
+	local CYL=Enum.PartType.Cylinder
+	local UPRIGHT=CFrame.Angles(0,0,math.pi/2)
+	local FAB,BR,LG=Enum.Material.Fabric,Enum.Material.Brick,Enum.Material.LeafyGrass
+	local B={}
+	homePlacement.builders=B
+	-- P(name,size,x,y,z,color,material,solid,shape,rotation) builds in the prop's
+	-- local frame: origin at the footprint centre on the meadow, x along width.
+	B.TimberFence=function(P,col)
+		for _,x in ipairs({-.75,.75}) do P("Fence post",V(.28,1.7,.28),x,.85,0,darken(col,.2),WO) end
+		P("Upper rail",V(1.9,.2,.16),0,1.3,0,col,WO,true)
+		return P("Lower rail",V(1.9,.2,.16),0,.6,0,col,WO,true)
+	end
+	B.PicketFence=function(P,col)
+		local rail=P("Picket rail",V(1.9,.16,.1),0,.5,.08,darken(col,.15),WO,true)
+		P("Picket rail",V(1.9,.16,.1),0,1,.08,darken(col,.15),WO,true)
+		for _,x in ipairs({-.72,-.24,.24,.72}) do P("Picket",V(.3,1.4,.1),x,.7,-.02,col,WO) end
+		return rail
+	end
+	B.BrassRailing=function(P,col)
+		for _,x in ipairs({-.8,.8}) do
+			P("Windpine post",V(.3,1.5,.3),x,.75,0,C("6B8E5A"),WO)
+			P("Brass finial",V(.36,.36,.36),x,1.65,0,col,MT,false,BALL)
+		end
+		P("Mid rail",V(1.9,.12,.12),0,.75,0,col,MT,true)
+		return P("Top rail",V(1.9,.16,.16),0,1.35,0,col,MT,true)
+	end
+	B.StonePath=function(P,col)
+		local base=P("Path bed",V(1.9,.1,1.9),0,.05,0,darken(col,.25),ST,true)
+		P("Flagstone",V(.85,.06,.8),-.45,.13,-.4,col,ST)
+		P("Flagstone",V(.8,.06,.85),.45,.13,.42,lighten(col,.1),ST)
+		return base
+	end
+	B.Boardwalk=function(P,col)
+		local first
+		for i,z in ipairs({-.71,-.24,.24,.71}) do
+			local plank=P("Plank",V(1.9,.12,.42),0,.18,z,if i%2==0 then col else darken(col,.12),WO,true)
+			first=first or plank
+		end
+		for _,x in ipairs({-.7,.7}) do P("Sleeper",V(.3,.12,1.9),x,.06,0,darken(col,.4),WO) end
+		return first
+	end
+	B.AetherMosaic=function(P,col)
+		local base=P("Mosaic bed",V(1.9,.1,1.9),0,.05,0,navy,ST,true)
+		for _,o in ipairs({{-.45,-.45},{.45,.45},{-.45,.45},{.45,-.45}}) do
+			P("Aether tile",V(.78,.05,.78),o[1],.12,o[2],if o[1]==o[2] then col else cream,if o[1]==o[2] then NE else ST)
+		end
+		return base
+	end
+	B.LanternPost=function(P,col)
+		P("Lantern foot",V(.7,.4,.7),0,.2,0,ink,ST,true)
+		P("Lantern mast",V(.2,2.8,.2),0,1.8,0,brass,MT)
+		P("Lantern arm",V(.6,.12,.12),.25,3.1,0,brass,MT)
+		P("Lantern cap",V(.5,.12,.5),.5,3.15,0,ink,MT)
+		return P("Lantern glass",V(.45,.45,.45),.5,2.85,0,col,NE,false,BALL)
+	end
+	B.BrassStreetlamp=function(P,col)
+		P("Lamp base",V(.9,.5,.9),0,.25,0,ink,ST,true)
+		P("Lamp column",V(.28,4,.28),0,2.5,0,brass,MT)
+		P("Lamp crossbar",V(1.6,.14,.14),0,4.4,0,brass,MT)
+		for _,x in ipairs({-.65,.65}) do P("Lamp globe",V(.5,.5,.5),x,4.1,0,col,NE,false,BALL) end
+		return P("Lamp crown",V(.36,.36,.36),0,4.65,0,brass,MT,false,BALL)
+	end
+	B.CrystalBrazier=function(P,col)
+		P("Brazier foot",V(1,.3,1),0,.15,0,ink,ST,true)
+		P("Brazier stem",V(.35,1,.35),0,.8,0,darken(brass,.2),MT)
+		local bowl=P("Brazier bowl",V(.5,1.4,1.4),0,1.45,0,C("B5482A"),MT,false,CYL,UPRIGHT)
+		for i,x in ipairs({-.3,0,.3}) do P("Aether flame",V(.3,.7+(i%2)*.3,.3),x,1.95+(i%2)*.15,(i-2)*.1,col,NE) end
+		return bowl
+	end
+	B.FlowerPlanter=function(P,col)
+		local box=P("Planter box",V(1.6,.6,1.6),0,.3,0,timber,WO,true)
+		P("Planter soil",V(1.4,.08,1.4),0,.62,0,ink,GR)
+		for i,o in ipairs({{-.4,-.4},{.4,.4},{-.4,.4},{.4,-.4}}) do
+			P("Bloom",V(.42,.42,.42),o[1],.9,o[2],if i%2==0 then col else cream,SM,false,BALL)
+		end
+		return box
+	end
+	B.HedgeRow=function(P,col)
+		P("Hedge planter",V(3.8,.4,1.4),0,.2,0,timber,WO,true)
+		local hedge=P("Hedge",V(3.6,1.3,1.2),0,1.05,0,col,LG,true)
+		for _,x in ipairs({-1.1,1.1}) do P("Hedge crown",V(1,1,1),x,1.7,0,lighten(col,.08),LG,false,BALL) end
+		return hedge
+	end
+	B.YoungWindpine=function(P,col)
+		local trunk=P("Sapling trunk",V(.3,2.2,.3),0,1.1,0,timber,WO,true)
+		P("Lower boughs",V(1.6,.8,1.6),0,1.6,0,darken(col,.1),LG)
+		P("Middle boughs",V(1.1,.8,1.1),0,2.3,0,col,LG)
+		P("Crown",V(.6,.7,.6),0,2.95,0,lighten(col,.1),LG)
+		return trunk
+	end
+	B.MoonbloomBed=function(P,col)
+		local bed=P("Moonbloom bed",V(3.7,.7,3.7),0,.35,0,darken(navy,.2),ST,true)
+		P("Bed soil",V(3.4,.08,3.4),0,.72,0,ink,GR)
+		for i=0,5 do
+			local x,z=-1.1+(i%3)*1.1,if i<3 then -.8 else .8
+			P("Moonbloom",V(.55,.55,.55),x,1.05,z,if i%2==0 then col else cream,NE,false,BALL)
+		end
+		return bed
+	end
+	B.GuildBanner=function(P,col)
+		P("Banner foot",V(.6,.3,.6),0,.15,0,ink,ST,true)
+		local pole=P("Banner pole",V(.18,3.8,.18),0,2.2,0,timber,WO)
+		P("Banner crossbar",V(1.4,.12,.12),0,3.9,0,brass,MT)
+		P("Banner cloth",V(1.2,1.9,.08),0,2.85,.1,col,FAB)
+		P("Banner crest",V(.4,.4,.06),0,2.95,.16,brass,MT)
+		return pole
+	end
+	B.VoyagerPennant=function(P,col)
+		P("Pennant foot",V(.6,.3,.6),0,.15,0,ink,ST,true)
+		local pole=P("Pennant pole",V(.16,3.6,.16),-.6,2,0,timber,WO)
+		P("Pennant upper",V(1.2,.5,.06),0,3.4,0,col,FAB)
+		P("Pennant lower",V(.7,.4,.06),-.2,2.95,0,darken(col,.15),FAB)
+		P("Pennant finial",V(.26,.26,.26),-.6,3.9,0,brass,MT,false,BALL)
+		return pole
+	end
+	B.StormStandard=function(P,col)
+		P("Standard foot",V(.8,.3,.8),0,.15,0,navy,ST,true)
+		local pole=P("Starwood pole",V(.2,4.4,.2),0,2.5,0,C("3B4C7A"),WO)
+		P("Storm ring",V(.12,1.1,1.1),0,4.2,0,brass,MT,false,CYL)
+		P("Stormglass",V(.4,.7,.4),0,4.2,0,col,NE)
+		P("Storm banner",V(1.1,1.6,.08),0,2.9,.12,col,FAB)
+		return pole
+	end
+	B.SurveyorStatue=function(P,col)
+		local plinth=P("Statue plinth",V(3,.9,3),0,.45,0,darken(col,.2),ST,true)
+		P("Plinth step",V(3.6,.25,3.6),0,.12,0,darken(col,.35),ST)
+		P("Surveyor body",V(1.1,2,.9),0,1.9,0,col,ST,true)
+		P("Surveyor head",V(.8,.8,.8),0,3.3,0,col,ST,false,BALL)
+		P("Surveyor hat",V(1.2,.18,1.2),0,3.7,0,darken(col,.15),ST)
+		P("Spyglass",V(.2,.2,1.2),.55,2.6,-.5,brass,MT)
+		return plinth
+	end
+	B.SkywhaleStatue=function(P,col)
+		local plinth=P("Whale plinth",V(3,.6,3),0,.3,0,navy,ST,true)
+		P("Cloud",V(1.4,1.4,1.4),-.7,1,.6,cream,SM,false,BALL)
+		P("Cloud",V(1.2,1.2,1.2),.7,.9,-.6,cream,SM,false,BALL)
+		P("Whale body",V(1.3,1.2,2.6),0,2.1,0,col,GL,true)
+		P("Whale head",V(1.2,1.2,1.2),0,2.2,-1.2,col,GL,false,BALL)
+		for _,x in ipairs({-.8,.8}) do P("Whale fin",V(.6,.12,.8),x,1.8,-.2,lighten(col,.2),GL) end
+		P("Whale tail",V(1.6,.16,.6),0,2.5,1.4,lighten(col,.2),GL)
+		return plinth
+	end
+	B.AetherObelisk=function(P,col)
+		P("Obelisk base",V(1.8,.4,1.8),0,.2,0,ink,ST,true)
+		local shaft=P("Obelisk shaft",V(.9,4.6,.9),0,2.7,0,col,MT,true)
+		P("Obelisk band",V(1.05,.2,1.05),0,1.5,0,brass,MT)
+		P("Obelisk band",V(1.05,.2,1.05),0,3.9,0,brass,MT)
+		P("Aether tip",V(.55,.55,.55),0,5.25,0,mint,NE,false,BALL)
+		return shaft
+	end
+	B.PicnicBench=function(P,col)
+		local top=P("Table top",V(3.4,.18,1),0,1.1,0,col,WO,true)
+		for _,x in ipairs({-1.3,1.3}) do P("Table leg",V(.2,1,.8),x,.5,0,darken(col,.3),WO) end
+		for _,z in ipairs({-.75,.75}) do P("Bench seat",V(3.4,.14,.36),0,.6,z,darken(col,.12),WO,true) end
+		return top
+	end
+	B.StoneWell=function(P,col)
+		for _,o in ipairs({{0,-1.35,3.2,.5},{0,1.35,3.2,.5},{-1.35,0,.5,2.2},{1.35,0,.5,2.2}}) do
+			P("Well wall",V(o[3],1,o[4]),o[1],.5,o[2],col,ST,true)
+		end
+		local water=P("Well water",V(2.2,.1,2.2),0,.7,0,teal,GL)
+		for _,x in ipairs({-1.35,1.35}) do P("Well post",V(.25,2.2,.25),x,2.1,0,timber,WO) end
+		P("Well roof",V(3.4,.25,2.2),0,3.3,0,darken(timber,.25),WO)
+		P("Well bucket",V(.4,.4,.4),0,1.9,0,brass,MT)
+		return water
+	end
+	B.SupplyShed=function(P,col)
+		local body=P("Shed walls",V(3.2,2.4,3.2),0,1.2,0,col,WO,true)
+		P("Shed door",V(1,1.8,.08),0,.9,-1.62,darken(col,.35),WO)
+		for _,s in ipairs({-1,1}) do
+			P("Shed roof",V(1.95,.2,3.5),s*.82,2.8,0,darken(navy,.1),ST,false,nil,CFrame.Angles(0,0,-s*math.rad(25)))
+		end
+		P("Roof ridge",V(.3,.25,3.5),0,3.25,0,brass,MT)
+		P("Supply crate",V(.8,.7,.7),1.1,.35,-1.5,timber,WO)
+		return body
+	end
+	B.GardenGazebo=function(P,col)
+		local floor=P("Gazebo floor",V(5.6,.3,5.6),0,.15,0,darken(col,.25),WO,true)
+		for _,o in ipairs({{-2.4,-2.4},{2.4,-2.4},{-2.4,2.4},{2.4,2.4}}) do P("Gazebo pillar",V(.35,3.2,.35),o[1],1.9,o[2],col,WO,true) end
+		P("Gazebo roof",V(5.8,.3,5.8),0,3.65,0,teal,ST)
+		P("Gazebo crown",V(3.2,.5,3.2),0,4.05,0,darken(teal,.2),ST)
+		P("Brass finial",V(.6,.6,.6),0,4.6,0,brass,MT,false,BALL)
+		P("Gazebo bench",V(2.6,.3,.6),0,.6,1.9,timber,WO,true)
+		return floor
+	end
+	B.CarpenterStump=function(P,col)
+		local stump=P("Carpenter's stump",V(1,1.5,1.5),0,.5,0,col,WO,true,CYL,UPRIGHT)
+		P("Growth ring",V(.04,1.2,1.2),0,1.01,0,timber,WO,false,CYL,UPRIGHT)
+		P("Axe handle",V(.12,.9,.12),.3,1.4,-.2,timber,WO)
+		P("Axe head",V(.35,.2,.08),.4,1.8,-.2,shale,MT)
+		return stump
+	end
+	B.CampStove=function(P,col)
+		local body=P("Stove body",V(1.4,1,1.2),0,.5,0,col,BR,true)
+		P("Stove top",V(1.5,.15,1.3),0,1.07,0,ink,MT)
+		P("Firebox",V(.8,.4,.06),0,.45,-.62,C("FF8A3D"),NE)
+		P("Stove pipe",V(.3,1.2,.3),.45,1.7,.35,ink,MT)
+		P("Cookpot",V(.55,.55,.55),-.25,1.42,-.1,ink,MT,false,BALL)
+		return body
+	end
+	B.FieldAnvil=function(P,col)
+		local block=P("Anvil block",V(.9,.7,.9),0,.35,0,timber,WO,true)
+		P("Anvil waist",V(.4,.3,.5),0,.85,0,col,MT)
+		P("Anvil face",V(1.3,.3,.6),0,1.15,0,col,MT,true)
+		P("Anvil horn",V(.4,.2,.3),.8,1.18,0,col,MT)
+		P("Hammer",V(.5,.14,.14),-.3,1.37,.1,brass,MT)
+		return block
+	end
+	B.BrewingStand=function(P,col)
+		local stand=P("Brewing table",V(1.6,.2,1.2),0,.9,0,timber,WO,true)
+		for _,x in ipairs({-.65,.65}) do P("Table leg",V(.16,.8,1),x,.4,0,darken(timber,.3),WO) end
+		P("Cauldron",V(.8,.8,.8),-.2,1.4,0,ink,MT,false,BALL)
+		P("Brew glow",V(.6,.06,.6),-.2,1.78,0,col,NE)
+		P("Potion flask",V(.25,.45,.25),.55,1.23,.2,mint,GL)
+		return stand
+	end
+	homePlacement.build=function(folder,center,e,player)
+		local def=I.Props[e.prop]
+		local ox,oz,yaw=I.centerOffset(e.prop,e.x,e.z,e.rot)
+		local cf=CFrame.new(center+V(ox,0,oz))*CFrame.Angles(0,yaw,0)
+		local model=group("Placement_"..e.id,folder)
+		model:SetAttribute("PlacementId",e.id)
+		model:SetAttribute("PropId",e.prop)
+		model:SetAttribute("PlacementRecord",I.record(e))
+		local function P(name,size,x,y,z,color,mat,solid,shape,rotation)
+			return part(model,name,size,cf*CFrame.new(x,y,z)*(rotation or CFrame.identity),color,mat,solid,shape)
+		end
+		local main=B[e.prop](P,C(def.color))
+		local effect=def.effect or {}
+		if effect.light then light(main,C(effect.light.color),.7,effect.light.range) end
+		if effect.station and STATION[effect.station] then
+			local kind=effect.station
+			local q=prompt(main,STATION[kind][1],kind.." · Home "..STATION[kind][2],"station",kind,player.UserId)
+			q.Triggered:Connect(function(user)
+				if user~=player then return end
+				user:SetAttribute("IsleStation",kind)
+				user:SetAttribute("IsleStationVisit",(user:GetAttribute("IsleStationVisit") or 0)+1)
+			end)
+		end
+		return model
+	end
+	homePlacement.attach=function(player,home)
+		if not home or home.placements then return end
+		local folder=Instance.new("Folder")
+		folder.Name="Placements"
+		folder.Parent=home.model
+		home.placements=folder
+		player:SetAttribute("IslandCenter",home.center)
+		local built={}
+		local function refresh()
+			if not folder.Parent then return end
+			-- Re-validate geometry so a bad value can never stack props.
+			local want,occupied={},{}
+			for _,e in ipairs(I.decode(player:GetAttribute("IslandPlacements"))) do
+				if not want[e.id] and I.check(occupied,e.prop,e.x,e.z,e.rot) then
+					want[e.id]=e
+					for _,c in ipairs(I.cells(e.prop,e.x,e.z,e.rot)) do occupied[I.key(c[1],c[2])]=e.id end
+				end
+			end
+			for id,b in pairs(built) do
+				if not want[id] or I.record(want[id])~=b.record then
+					b.model:Destroy()
+					built[id]=nil
+				end
+			end
+			for id,e in pairs(want) do
+				if not built[id] then built[id]={record=I.record(e),model=homePlacement.build(folder,home.center,e,player)} end
+			end
+		end
+		table.insert(home.decorationConnections,player:GetAttributeChangedSignal("IslandPlacements"):Connect(refresh))
+		refresh()
+	end
+	for player,home in pairs(homes) do homePlacement.attach(player,home) end
 end
