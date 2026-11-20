@@ -3340,3 +3340,152 @@ do
 	for player,home in pairs(homes) do homeTerrace.garden(player,home) end
 end
 -- End Verdant Garden section.
+
+-------------------------------------------------------------------------------
+-- Prayer & Thieving (Prayer & Thieving team; self-contained section). Altars
+-- (Data.Prayer.Altars), market stalls, pickpocket marks and strongboxes
+-- (Data.Thieving.Targets) on their region islands; server.server.lua (Prayer &
+-- Thieving block) validates every prompt. Each built Model carries attribute
+-- IsleContent ("Prayer"|"Thieving") and sits directly inside its island Model.
+-- Prompts (interact holds):
+--   altarOffer / altarPray  IsleItem altar id, PrayerAltar = id, IsleRegion (gated)
+--   thieve                  IsleItem target id, ThievingTarget = id, ThievingKind, IsleRegion
+-- Anchors: Waypoint_Altar_<id>, Waypoint_Thieving_<id>, NPC_Thieving_<id> (marks).
+-- Spots are searched on rings around each island centre and keep clear of
+-- every existing prop; about 8 parts per object, no extra lights.
+-------------------------------------------------------------------------------
+do
+	local PR,TH=Data.Prayer,Data.Thieving
+	local ISLE={Hub="Compass Quay",Meadow="Meadow Reach",Quarry="Brassfall Quarry",Windpine="Windpine Grove",Skyreach="Skyreach",
+		Tidewater="Tidewater Shoals",Gloomhollow="Gloomhollow Caverns",Tempest="Tempest Spire",ShatteredCrown="The Shattered Crown"}
+	-- Per-object overrides (the Noble walks the Guild Terrace; preferred bearings in degrees).
+	local SITE={Noble={isle="Guild Terrace",angle=200},QuayChapel={angle=110},SweetbunStall={angle=20},Dockhand={angle=320},
+		Farmhand={angle=60},HerbalistStall={angle=120},Watchman={angle=210},GemStall={angle=150},SilkStall={angle=30},MossrootShrine={angle=220},
+		Merchant={angle=200},CuriosStall={angle=250},Strongbox={angle=200},Scholar={angle=40},VaultChest={angle=110},ThunderChoirAltar={angle=130},
+		CrownReliquary={angle=60},SovereignCoffer={angle=300}}
+	local GATED={}
+	for _,r in ipairs(Data.Regions) do if next(r.requires) then GATED[r.id]=true end end
+	local FLOOR={Meadow=true,["Floating foundation"]=true,["Mineral stratum"]=true,["Lower basalt"]=true,["Fractured cliff"]=true,
+		["Keel rock"]=true,["Edge guard"]=true,["Aether vein"]=true,["Shore ledge"]=true,Path=true,Wildflowers=true}
+	local taken={}
+	local function blocked(host,pos,radius)
+		for _,q in ipairs(taken) do if V(pos.X-q.X,0,pos.Z-q.Z).Magnitude<radius+5 then return true end end
+		for _,obj in ipairs(host:GetDescendants()) do
+			if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
+				local cf,sz=obj.CFrame,obj.Size
+				local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
+				local c=cf.Position
+				local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
+				local dz=math.max(0,math.abs(pos.Z-c.Z)-ext("Z"))
+				local ey=ext("Y")
+				if dx*dx+dz*dz<radius*radius and c.Y+ey>pos.Y+.3 and c.Y-ey<pos.Y+7 then return true end
+			end
+		end
+		return false
+	end
+	-- First clear ground spot on rings around the island centre, from `angle`.
+	local function spot(host,angle,radius)
+		local IC,R=host:GetAttribute("IslandCenter"),host:GetAttribute("IslandRadius")
+		local first
+		for _,f in ipairs({.5,.62,.38,.72,.28}) do
+			for k=0,23 do
+				local a=math.rad(angle+(if k%2==0 then 1 else -1)*math.ceil(k/2)*15)
+				local pos=IC+V(math.cos(a),0,math.sin(a))*R*f
+				first=first or pos
+				if not blocked(host,pos,radius) then table.insert(taken,pos) return pos,true end
+			end
+		end
+		table.insert(taken,first)
+		return first,false
+	end
+	local function content(host,name,kind)
+		local m=group(name,host)
+		m:SetAttribute("IsleContent",kind)
+		return m
+	end
+	local function hostFor(id,region)
+		local name=(SITE[id] and SITE[id].isle) or ISLE[region]
+		return name and islandsFolder:FindFirstChild(name)
+	end
+	local function frame(host,id,radius)
+		local pos=spot(host,(SITE[id] and SITE[id].angle) or 0,radius)
+		local IC=host:GetAttribute("IslandCenter")
+		local toward=V(IC.X,pos.Y,IC.Z)
+		if (toward-pos).Magnitude<1 then toward=pos+V(0,0,1) end
+		return facing(pos,toward),pos
+	end
+	local function gate(q,region) if GATED[region] then q:SetAttribute("IsleRegion",region) end end
+	local placed=0
+	-- Altars: stone plinth, glowing offering slab, two candles, a kneeler and a sign.
+	for _,altar in ipairs(PR.Altars) do
+		local host=hostFor(altar.id,altar.region)
+		if host then
+			local cf,pos=frame(host,altar.id,7)
+			local m=content(host,altar.name,"Prayer")
+			m:SetAttribute("PrayerAltar",altar.id)
+			local tint=C(altar.color)
+			part(m,"Altar plinth",V(5,2.4,3),at(cf,0,1.2,0),C("8B8574"),ST,true)
+			local slab=part(m,"Offering slab",V(5.6,.4,3.6),at(cf,0,2.6,0),lighten(C("8B8574"),.35),ST,false)
+			part(m,"Altar glow",V(3.2,.12,1.6),at(cf,0,2.86,0),tint,NE,false)
+			for _,s in ipairs({-2.2,2.2}) do part(m,"Altar candle",V(.35,1,.35),at(cf,s,3.3,.9),cream,SM,false) end
+			local kneeler=part(m,"Kneeler",V(3,.5,1.2),at(cf,0,.25,-3),darken(tint,.35),Enum.Material.Fabric,false)
+			local q=prompt(slab,"Offer remains",altar.name.." (x"..altar.mult.." XP)","altarOffer",altar.id)
+			q:SetAttribute("PrayerAltar",altar.id)
+			gate(q,altar.region)
+			local pray=prompt(kneeler,"Pray",altar.name,"altarPray",altar.id)
+			pray:SetAttribute("PrayerAltar",altar.id)
+			gate(pray,altar.region)
+			signAt(m,at(cf,5.6,0,0),altar.name,"PRAYER   /   OFFERINGS x"..altar.mult,tint,9)
+			anchor(m,"Waypoint_Altar_"..altar.id,at(cf,0,0,-6),pos)
+			placed+=1
+		end
+	end
+	-- Thieving targets: a guarded market stall, a figure with a purse, a strongbox.
+	local function stall(m,cf,tint)
+		local counter=part(m,"Counter",V(6.5,2.8,2),at(cf,0,1.4,0),navy,WO,true)
+		meshSlot(counter,"MarketStall",tint,true)
+		part(m,"Counter top",V(7,.25,2.5),at(cf,0,2.92,0),brass,WO,false)
+		for _,x in ipairs({-3.2,3.2}) do part(m,"Awning post",V(.3,5.8,.3),at(cf,x,2.9,-1.6),brass,MT,false) end
+		part(m,"Awning",V(7.2,.35,4.4),at(cf,0,5.8,-.4)*CFrame.Angles(.12,0,0),tint,Enum.Material.Fabric,false)
+		part(m,"Wares",V(4.6,.6,1.2),at(cf,0,3.35,.2),lighten(tint,.3),SM,false)
+		part(m,"Guard coat",V(1.3,2.6,.9),at(cf,4.6,1.3,-1.4),C("3B4A5C"),Enum.Material.Fabric,true)
+		ball(m,"Guard head",at(cf,4.6,3.1,-1.4).Position,1.05,C("E8C9A6"),SM)
+		return counter
+	end
+	local function figure(m,cf,tint)
+		part(m,"Legs",V(1.1,1.4,.7),at(cf,0,.7,0),darken(tint,.55),Enum.Material.Fabric,false)
+		local coat=part(m,"Coat",V(1.5,2.2,1),at(cf,0,2.5,0),tint,Enum.Material.Fabric,true)
+		ball(m,"Head",at(cf,0,4.15,0).Position,1.1,C("F2D3B1"),SM)
+		part(m,"Hat",V(1.4,.35,1.4),at(cf,0,4.75,0),darken(tint,.3),Enum.Material.Fabric,false)
+		part(m,"Purse",V(.5,.6,.3),at(cf,.85,2.1,.55),brass,Enum.Material.Fabric,false)
+		return coat
+	end
+	local function strongbox(m,cf,tint)
+		local box=part(m,"Strongbox",V(3.4,2.2,2.4),at(cf,0,1.1,0),C("4A4F5A"),MT,true)
+		meshSlot(box,"Crate",tint)
+		part(m,"Strongbox lid",V(3.6,.5,2.6),at(cf,0,2.45,0),darken(tint,.25),MT,false)
+		for _,x in ipairs({-1.1,1.1}) do part(m,"Iron band",V(.25,2.56,2.7),at(cf,x,1.3,0),brass,MT,false) end
+		part(m,"Lock plate",V(.8,.9,.2),at(cf,0,1.5,1.25),tint,NE,false)
+		return box
+	end
+	local BUILD={stall=stall,pocket=figure,safe=strongbox}
+	for _,t in ipairs(TH.Targets) do
+		local host=hostFor(t.id,t.region)
+		if host then
+			local cf,pos=frame(host,t.id,if t.kind=="stall" then 6 else 4)
+			local m=content(host,t.name,"Thieving")
+			m:SetAttribute("ThievingTarget",t.id)
+			local kind=TH.Kinds[t.kind]
+			local hostPart=BUILD[t.kind](m,cf,C(t.color))
+			local q=prompt(hostPart,kind.verb,t.name.." (Thieving "..t.level..")","thieve",t.id)
+			q:SetAttribute("ThievingTarget",t.id)
+			q:SetAttribute("ThievingKind",t.kind)
+			gate(q,t.region)
+			anchor(m,"Waypoint_Thieving_"..t.id,at(cf,0,0,if t.kind=="stall" then 4.5 else 3.5),pos)
+			if t.kind=="pocket" then anchor(m,"NPC_Thieving_"..t.id,cf) end
+			placed+=1
+		end
+	end
+	workspace:SetAttribute("PrayerThievingSites",placed)
+end
+-- End Prayer & Thieving section.

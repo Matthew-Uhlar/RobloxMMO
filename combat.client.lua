@@ -404,7 +404,10 @@ local function layoutSpellBar()
 	cursor.Size = UDim2.fromOffset(size + 6, size + 6)
 	local shown = player:GetAttribute("IslandBuilding") ~= true and not talking()
 	spellBar.Visible = shown
-	hudLift(if shown then size + 6 else 0)
+	-- Prayer quick bar (Prayer section below) stacks above the spell bar.
+	local lift = if shown then size + 6 else 0
+	if S.prayerLayout then lift += S.prayerLayout(size, shown) end
+	hudLift(lift)
 end
 -- Static slot faces (glyph, mana cost, autocast badge); dynamic state per frame.
 local function paintSlots()
@@ -1361,6 +1364,107 @@ RunService.RenderStepped:Connect(function()
 	if now - WBH.renderedAt >= WBH.RENDER_INTERVAL then WBH.render() end
 end)
 -- End World Boss HUD.
+
+------------------------------------------------------------------------------
+-- Prayer quick bar (Prayer & Thieving team). Above the spell bar, right-
+-- aligned with it: a prayer point gauge, the three protection prayers and the
+-- two favourites. Driven by player attributes the server publishes:
+-- PrayerLevel, PrayerPoints, PrayerMax, PrayerActive / PrayerQuick ("Id,Id").
+-- A tap fires IsleActionLocal("prayer", id); the atlas sends the verb and the
+-- server decides. Hidden while building or talking (like the spell bar) and
+-- until the server publishes PrayerMax. Its height joins IsleHudLift.
+------------------------------------------------------------------------------
+do
+	local PR = Data and type(Data.Prayer) == "table" and Data.Prayer or nil
+	local P = {buttons = {}, ids = {}}
+	S.prayer = P
+	local bar = make("Frame", gui, {Name = "PrayerBar", AnchorPoint = Vector2.new(1, 1), BackgroundTransparency = 1, Size = UDim2.fromOffset(200, 30), Visible = false})
+	local gauge = make("Frame", bar, {Name = "Points", BackgroundColor3 = deep, BackgroundTransparency = 0.06, BorderSizePixel = 0, ClipsDescendants = true})
+	round(gauge, 9, brass)
+	local fill = make("Frame", gauge, {Name = "Fill", AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = rgb("E8D9A0"), BackgroundTransparency = 0.55, BorderSizePixel = 0})
+	make("UICorner", fill, {CornerRadius = UDim.new(0, 9)})
+	local count = make("TextLabel", gauge, {Name = "Count", BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Font = heavy, TextSize = 13,
+		TextColor3 = ivory, Text = "", TextStrokeTransparency = 0.4, TextStrokeColor3 = deep, ZIndex = 2})
+	for i = 1, 5 do
+		local b = make("TextButton", bar, {Name = "Prayer" .. i, Text = "", AutoButtonColor = true, BackgroundColor3 = raised, BackgroundTransparency = 0.04,
+			BorderSizePixel = 0, Selectable = true})
+		local rim = round(b, 9, brass)
+		if rim then rim.Name = "Rim" end
+		make("TextLabel", b, {Name = "Glyph", BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Font = heavy, TextSize = 16, TextColor3 = white,
+			Text = "", TextStrokeTransparency = 0.35, TextStrokeColor3 = deep, ZIndex = 2})
+		make("Frame", b, {Name = "Veil", Size = UDim2.fromScale(1, 1), BackgroundColor3 = track, BackgroundTransparency = 0.45, BorderSizePixel = 0, ZIndex = 3, Visible = false})
+		local on = make("Frame", b, {Name = "On", AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -2), Size = UDim2.fromOffset(12, 3),
+			BackgroundColor3 = mint, BorderSizePixel = 0, ZIndex = 4, Visible = false})
+		make("UICorner", on, {CornerRadius = UDim.new(1, 0)})
+		P.buttons[i] = b
+		b.Activated:Connect(function()
+			local id = P.ids[i]
+			local channel = ReplicatedStorage:FindFirstChild("IsleActionLocal")
+			if id and channel and channel:IsA("BindableEvent") then channel:Fire("prayer", id) end
+		end)
+	end
+	local function split(value)
+		local out = {}
+		if type(value) == "string" then for id in value:gmatch("[^,]+") do table.insert(out, id) end end
+		return out
+	end
+	function P.ready() return PR ~= nil and (tonumber(player:GetAttribute("PrayerMax")) or 0) > 0 end
+	function P.paint()
+		if not PR then return end
+		local quick = split(player:GetAttribute("PrayerQuick"))
+		P.ids = {PR.ProtectFor.melee, PR.ProtectFor.ranged, PR.ProtectFor.magic, quick[1], quick[2]}
+		local active = {}
+		for _, id in ipairs(split(player:GetAttribute("PrayerActive"))) do active[id] = true end
+		local level = tonumber(player:GetAttribute("PrayerLevel")) or 1
+		local points, max = tonumber(player:GetAttribute("PrayerPoints")) or 0, math.max(1, tonumber(player:GetAttribute("PrayerMax")) or 1)
+		count.Text = tostring(math.floor(points))
+		count.TextColor3 = if points > 0 then ivory else ember
+		fill.Size = UDim2.fromScale(1, math.clamp(points / max, 0, 1))
+		for i, b in ipairs(P.buttons) do
+			local def = P.ids[i] and PR.PrayerById[P.ids[i]]
+			local glyph = b:FindFirstChild("Glyph")
+			glyph.Text = if def then def.glyph else ""
+			glyph.TextColor3 = if def then rgb(def.color) else white
+			local open = def ~= nil and level >= def.level
+			b:FindFirstChild("Veil").Visible = not open
+			glyph.TextTransparency = if open then 0 else 0.55
+			local lit = def ~= nil and active[def.id] == true
+			b:FindFirstChild("On").Visible = lit
+			b.BackgroundColor3 = if lit then rgb("24564F") else raised
+			local rim = b:FindFirstChild("Rim")
+			if rim then rim.Color = if lit then mint else brass end
+		end
+	end
+	-- Called by layoutSpellBar with the spell slot size; returns the extra lift.
+	function S.prayerLayout(size, shown)
+		local slot = if size < 48 then 30 else 34
+		local gap = 4
+		local gaugeWidth = slot + 12
+		local width = gaugeWidth + #P.buttons * (slot + gap)
+		bar.Size = UDim2.fromOffset(width, slot)
+		bar.Position = if attackButton then UDim2.new(1, -196, 1, -44 - size - 6) else UDim2.new(1, -10, 1, -44 - size - 6)
+		gauge.Size = UDim2.fromOffset(gaugeWidth, slot)
+		count.TextSize = if slot < 34 then 12 else 13
+		for i, b in ipairs(P.buttons) do
+			b.Position = UDim2.fromOffset(gaugeWidth + gap + (i - 1) * (slot + gap), 0)
+			b.Size = UDim2.fromOffset(slot, slot)
+			b:FindFirstChild("Glyph").TextSize = if slot < 34 then 15 else 17
+		end
+		local visible = shown and P.ready()
+		bar.Visible = visible
+		return if visible then slot + 6 else 0
+	end
+	for _, name in ipairs({"PrayerPoints", "PrayerMax", "PrayerActive", "PrayerQuick", "PrayerLevel"}) do
+		player:GetAttributeChangedSignal(name):Connect(function()
+			P.paint()
+			if bar.Visible ~= (spellBar.Visible and P.ready()) then layoutSpellBar() end
+		end)
+	end
+	P.paint()
+	layoutSpellBar()
+end
+-- End Prayer quick bar.
 
 ------------------------------------------------------------------------------
 -- Per-frame: held attacks, target panel

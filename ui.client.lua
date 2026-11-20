@@ -1965,6 +1965,13 @@ local function skillUnlocks(skill,level)
 		end
 		for need=20,80,20 do add(need,"Tend "..(1+need//20).." traps at once",nil) end
 	end
+	-- Prayer: the prayer book; Thieving: stalls, marks and strongboxes.
+	if skill=="Prayer" and type(Data.Prayer)=="table" then
+		for _,def in ipairs(tbl(Data.Prayer.Prayers)) do add(def.level,"Pray "..escape(def.name)..": "..escape(def.text),nil) end
+	end
+	if skill=="Thieving" and type(Data.Thieving)=="table" then
+		for _,t in ipairs(tbl(Data.Thieving.Targets)) do add(t.level,escape(tbl(Data.Thieving.Kinds[t.kind]).verb or "Rob").." the "..escape(t.name)..", +"..fmt(t.xp).." XP",nil) end
+	end
 	local bag=tbl(Data.AccessoryBag)
 	if skill==tbl(bag.slotsPerLevel).skill and num(tbl(bag.slotsPerLevel).every,0)>0 then
 		local every=bag.slotsPerLevel.every
@@ -6092,25 +6099,216 @@ end)
 end
 
 ------------------------------------------------------------------------------
+-- Prayer & Thieving (Prayer & Thieving team). Pages: Hero › Prayer (point
+-- gauge and drain, the prayer book grid with unlock levels and active
+-- toggles, a detail card that toggles and sets HUD favourites, altars, remains
+-- offerings and draughts) and Hunt › Thieving (targets by kind with success
+-- chance, pace, loot tables, cooldowns and stun state; gloves).
+-- Server state: snapshot.prayer = {points, max, active, quick, drain,
+-- secondsLeft, offered, altar, altarUntil, riteIn}; snapshot.thieving =
+-- {thefts, gloves, gloveBonus, deftness, chances, cooldowns, stunIn}.
+-- Verbs: prayer "<id>", prayerOff, prayerQuick "<slot>:<id>", offerRemains
+-- "<remains>" (while an altar visit is open), consume "<draught>". The combat
+-- HUD's quick prayer bar relays taps through IsleActionLocal("prayer", id).
+------------------------------------------------------------------------------
+do
+local PT={sel=nil}
+Pages.PT=PT
+function PT.ready() return Data and type(Data.Prayer)=="table" and type(Data.Thieving)=="table" end
+function PT.level(skill) local info=skillsOf(state)[skill] return info and info.level or 1 end
+function PT.guide(specs,label)
+	if Pages.AH and Pages.AH.guide then Pages.AH.guide(specs,label) end
+end
+function PT.groupText(def)
+	local names={}
+	for _,g in ipairs(tbl(def.groups)) do table.insert(names,tbl(Data.Prayer.Groups)[g] or g) end
+	return #names>0 and table.concat(names,", ") or "Stacks with every prayer"
+end
+function PT.drawPrayer()
+	if not PT.ready() then dataMissing() return end
+	local PR=Data.Prayer
+	local s=tbl(state.prayer)
+	local level=PT.level("Prayer")
+	local max=num(s.max,PR.maxPoints(level))
+	local points=math.clamp(num(s.points,max),0,math.max(1,max))
+	local active={}
+	for _,id in ipairs(tbl(s.active)) do if type(id)=="string" and PR.PrayerById[id] then active[id]=true end end
+	local stats=tbl(dget("stats"))
+	local devotion=num(stats.devotion,0)
+	local drain=num(s.drain,PR.drainPerSecond(active,devotion)*60)
+	local left=num(s.secondsLeft,nil)
+	local hex=skillHex("Prayer")
+	local summaryActions={{caption="Altar",name="PrayerGuideAltar",fn=function() PT.guide({"anchor:Waypoint_Altar_QuayChapel"},"Altar") end}}
+	if next(active)~=nil then table.insert(summaryActions,1,{caption="All off",name="PrayerAllOff",fn=function() send("prayerOff") end}) end
+	card({name="PrayerSummary",icon=function(parent,size) return titleArt(parent,"Prayer",size,"Hero") end,accent=rgb(hex),
+		title="Prayer book",titleColor=gold,subtitle="Prayer "..level.."   ·   "..fmt(math.floor(points)).." / "..fmt(max).." points   ·   ✧ Devotion "..fmt(devotion),
+		badge=state.prayer and ("Lv "..level) or "SYNCING",badgeColor=rgb(lighten(hex,.2)),
+		detail="Active prayers drain points every few seconds; Devotion slows the drain. Pray at an altar or drink a draught to refill. Protection prayers cut that style's damage by "..
+			math.floor(PR.PROTECT*100).."% ("..math.floor(PR.PROTECT_WORLD_BOSS*100).."% against world bosses).",
+		bar={fraction=points/math.max(1,max),color=rgb(hex),caption=fmt(math.floor(points)).." / "..fmt(max).." points"..(drain>0 and ("   ·   -"..fmt(drain).." / min"..(left and ("   ·   "..clock(left).." left") or "")) or "   ·   no drain")},
+		actions=summaryActions})
+	heading("PRAYER BOOK    /    "..#PR.Prayers.." PRAYERS")
+	local width=contentWidth()
+	local columns=width>=690 and 7 or (width>=520 and 6 or (width>=400 and 5 or 4))
+	local cellHeight=compactAtlas and 70 or 80
+	local grid=gridHolder(UDim2.new(1/columns,-6,0,cellHeight),6)
+	if not PT.sel or not PR.PrayerById[PT.sel] then
+		PT.sel=PR.Prayers[1].id
+		for _,def in ipairs(PR.Prayers) do if active[def.id] then PT.sel=def.id break end end
+	end
+	for i,def in ipairs(PR.Prayers) do
+		local open=level>=def.level
+		local on=active[def.id]==true
+		local b=tile(grid,"Prayer"..def.id,i,function() PT.sel=def.id;render() end)
+		local selected=PT.sel==def.id
+		make("UIStroke",b,{Color=on and mint or (selected and gold or rgb(def.color)),Transparency=(on or selected) and 0 or .55,Thickness=(on or selected) and 2 or 1})
+		if on then b.BackgroundColor3=rgb("1E4A44") end
+		local glyph=label(b,def.glyph,0,compactAtlas and 4 or 6,full,compactAtlas and 26 or 30,UI.heavy,compactAtlas and 20 or 24,open and rgb(def.color) or muted)
+		glyph.TextXAlignment=Enum.TextXAlignment.Center
+		glyph.TextTransparency=open and 0 or .45
+		local name=label(b,def.name,4,compactAtlas and 30 or 36,UDim.new(1,-8),compactAtlas and 18 or 20,bold,compactAtlas and 10 or 11,open and ivory or muted)
+		name.TextXAlignment=Enum.TextXAlignment.Center
+		name.TextScaled=true
+		local foot=label(b,open and (on and "ON" or ("-"..def.drain.."/min")) or ("Lv "..def.level),4,compactAtlas and 49 or 57,UDim.new(1,-8),16,UI.heavy,compactAtlas and 10 or 11,on and mint or (open and muted or ember))
+		foot.TextXAlignment=Enum.TextXAlignment.Center
+	end
+	local def=PR.PrayerById[PT.sel]
+	local open=level>=def.level
+	local on=active[def.id]==true
+	local quick=tbl(s.quick)
+	local hud={}
+	for _,id in ipairs({PR.ProtectFor.melee,PR.ProtectFor.ranged,PR.ProtectFor.magic,quick[1],quick[2]}) do
+		local d=type(id)=="string" and PR.PrayerById[id]
+		if d then table.insert(hud,escape(d.name)) end
+	end
+	card({name="PrayerDetail",icon=function(parent,size) return itemGlyph(parent,{name=def.name,color=def.color},size,not open) end,iconSize=compactAtlas and 36 or 44,
+		title=escape(def.name),titleColor=open and rgb(lighten(def.color,.3)) or muted,
+		subtitle="Prayer "..def.level.."   ·   drains "..def.drain.." / min   ·   "..escape(PT.groupText(def)),
+		badge=on and "ACTIVE" or (open and "READY" or ("Lv "..def.level)),badgeColor=on and mint or (open and ivory or ember),
+		detail=escape(def.text),
+		lines={"HUD quick bar: "..table.concat(hud,"  ·  ")},
+		actions={{caption=on and "Stop" or "Pray",primary=not on,name="PrayerToggle",disabled=not open,reason=def.name.." requires Prayer "..def.level..".",
+			fn=function() send("prayer",def.id) end},
+			{caption="Quick 1",name="PrayerQuick1",fn=function() send("prayerQuick","1:"..def.id) end},
+			{caption="Quick 2",name="PrayerQuick2",fn=function() send("prayerQuick","2:"..def.id) end}}})
+	heading("ALTARS    /    OFFERINGS")
+	local now=os.time()
+	local window=type(s.altar)=="string" and num(s.altarUntil,0)>=now and s.altar or nil
+	for _,altar in ipairs(PR.Altars) do
+		local locked=type(altar.region)=="string" and player:GetAttribute(altar.region.."Unlocked")==false
+		card({name="Altar"..altar.id,motif="Hero",title=escape(altar.name),titleColor=rgb(lighten(altar.color,.2)),
+			subtitle="x"..altar.mult.." Prayer XP   ·   "..escape((Pages.AH and Pages.AH.regionName and Pages.AH.regionName(altar.region)) or altar.region),
+			badge=window==altar.id and "OFFERING" or nil,badgeColor=mint,
+			detail=escape(altar.text),
+			lines={locked and paint("Unlock the region to reach this altar.","EF7D67") or nil},
+			actions={{caption="Guide",name="GuideAltar"..altar.id,fn=function() PT.guide({"anchor:Waypoint_Altar_"..altar.id,"region:"..altar.region},altar.name) end}}})
+	end
+	local altarDef=window and PR.AltarById[window]
+	local offered=tbl(s.offered)
+	local riteIn=num(s.riteIn,0)
+	for _,r in ipairs(PR.Remains) do
+		local have=count("items",r.id)
+		local each=r.xp*(altarDef and altarDef.mult or 1)
+		card({name="Remains"..r.id,item=r.id,title=escape(r.name),titleColor=rgb(rarityHex(r.rarity)),
+			subtitle="Held "..fmt(have).."   ·   "..fmt(each).." XP each"..(altarDef and (" at the "..escape(altarDef.name)) or ""),
+			badge=fmt(num(offered[r.id],0)).." offered",badgeColor=muted,
+			lines={altarDef and nil or "Visit an altar, then offer from here for "..PR.ALTAR_SECONDS.."s. Each altar use offers up to "..PR.BATCH.."."},
+			actions={{caption="Offer",name="Offer"..r.id,primary=altarDef~=nil and have>0,disabled=altarDef==nil or have<1 or riteIn>0,
+				reason=if altarDef==nil then "Visit an altar first." elseif have<1 then "You have no "..r.name.."." else "The rite is still underway.",
+				fn=function() send("offerRemains",r.id) end}}})
+	end
+	heading("DRAUGHTS")
+	for _,id in ipairs({"DevotionDraught","ChoirTonic"}) do
+		local d=itemDef(id)
+		if d then
+			local have=count("items",id)
+			local restore=PR.restore(0,max,d)
+			card({name="Draught"..id,item=id,title=escape(d.name),titleColor=rgb(rarityHex(d.rarity)),
+				subtitle="Held "..fmt(have).."   ·   restores "..fmt(restore).." points now",detail=escape(d.description),
+				actions={{caption="Drink",name="Drink"..id,disabled=have<1 or points>=max,reason=have<1 and ("Brew "..d.name.." at a Cauldron.") or "Your prayer points are full.",
+					fn=function() send("consume",id) end}}})
+		end
+	end
+end
+function PT.drawThieving()
+	if not PT.ready() then dataMissing() return end
+	local TH=Data.Thieving
+	local t=tbl(state.thieving)
+	local thefts,chances,cooldowns=tbl(t.thefts),tbl(t.chances),tbl(t.cooldowns)
+	local level=PT.level("Thieving")
+	local stats=tbl(dget("stats"))
+	local gloveId,gloveBonus=TH.gloves(tbl(state.items))
+	if type(t.gloves)=="string" then gloveId,gloveBonus=t.gloves,num(t.gloveBonus,gloveBonus) end
+	local deft=num(t.deftness,num(stats.deftness,0))
+	local stun=num(t.stunIn,0)
+	local total=0
+	for _,target in ipairs(TH.Targets) do total+=num(thefts[target.id],0) end
+	local hex=skillHex("Thieving")
+	card({name="ThievingSummary",icon=function(parent,size) return titleArt(parent,"Thieving",size,"Hunt") end,accent=rgb(hex),
+		title="Nightglove's ledger",titleColor=gold,subtitle="Thieving "..level.."   ·   "..fmt(total).." thefts   ·   ✋ Deftness "..fmt(deft),
+		badge=stun>0 and ("STUNNED "..stun.."s") or ("Lv "..level),badgeColor=stun>0 and ember or rgb(lighten(hex,.3)),
+		detail="Steal from stalls, pick pockets and crack strongboxes. Success rises with level, gloves and Deftness; a failure stuns you in place and hurts. Each target needs a moment to restock after a success.",
+		lines={gloveId and ("Gloves: "..escape(itemName(gloveId)).." (+"..chance(gloveBonus).." success)") or "No thieving gloves: craft Lightfinger Gloves at a Workbench."}})
+	for _,kindId in ipairs(TH.KindOrder) do
+		local kind=TH.Kinds[kindId]
+		heading(string.upper(kind.name).."S    /    "..string.upper(kind.verb))
+		for _,target in ipairs(TH.Targets) do
+			if target.kind==kindId then
+				local open=level>=target.level
+				local c=num(chances[target.id],TH.chance(target,level,gloveBonus,deft))
+				local loot={fmt(target.coins[1]).."-"..fmt(target.coins[2]).." coins"}
+				for _,drop in ipairs(target.drops) do
+					table.insert(loot,escape(itemName(drop.item))..(drop.max>1 and (" x"..drop.min.."-"..drop.max) or "").." ("..chance(drop.chance)..")")
+				end
+				local wait=num(cooldowns[target.id],0)
+				local locked=type(target.region)=="string" and player:GetAttribute(target.region.."Unlocked")==false
+				card({name="Thieving"..target.id,icon=function(parent,size) return itemGlyph(parent,{name=target.name,color=target.color},size,not open) end,iconSize=compactAtlas and 36 or 44,
+					title=escape(target.name),titleColor=open and rgb(lighten(target.color,.3)) or muted,
+					subtitle="Thieving "..target.level.."   ·   "..escape((Pages.AH and Pages.AH.regionName and Pages.AH.regionName(target.region)) or target.region).."   ·   +"..fmt(target.xp).." XP",
+					badge=open and (fmt(num(thefts[target.id],0)).." thefts") or ("Lv "..target.level),badgeColor=open and ivory or ember,
+					lines={
+						open and ("Success "..paint(chance(c),"7FE3CC").."   ·   restocks "..target.respawn.."s   ·   caught: "..target.stun.."s stun, -"..target.damage.." health") or nil,
+						"Loot: "..table.concat(loot,"  ·  "),
+						open and ("Pace: about "..short(TH.xpPerHour(target,c)).." XP and "..short(TH.coinsPerHour(target,c)).." coins an hour") or nil,
+						wait>0 and paint("The "..escape(target.name).." is "..kind.wait.." ("..wait.."s).","F3C66E") or nil,
+						locked and paint("Unlock the region to reach this target.","EF7D67") or nil,
+					},
+					actions={{caption="Guide",name="GuideThieving"..target.id,fn=function() PT.guide({"anchor:Waypoint_Thieving_"..target.id,"region:"..target.region},target.name) end}}})
+			end
+		end
+	end
+	heading("GLOVES")
+	for _,id in ipairs(TH.GloveOrder) do
+		local d=itemDef(id)
+		if d then
+			card({name="Gloves"..id,item=id,title=escape(d.name),titleColor=rgb(rarityHex(d.rarity)),
+				subtitle="+"..chance(d.thievingBonus).." success   ·   "..(count("items",id)>0 and "owned" or "not owned"),detail=escape(d.description)})
+		end
+	end
+end
+Pages.drawPrayer,Pages.drawThieving=PT.drawPrayer,PT.drawThieving
+end
+
+------------------------------------------------------------------------------
 -- Navigation: six primary tabs, each with a section switcher.
 ------------------------------------------------------------------------------
 local tabOrder={"Journal","Hero","Satchel","Workshop","Hunt","Ledger"}
 local sectionLists={
 	Journal={"Bearing","Quests","Diaries","Construction","Regions","Crew","Calendar","Agility"},
-	Hero={"Skills","Mastery","Gear","Combat","Spellbook","Enchant","Reforge","Accessories","Pets"},
+	Hero={"Skills","Mastery","Gear","Combat","Spellbook","Prayer","Enchant","Reforge","Accessories","Pets"},
 	Satchel={"Items","Collections"},
 	Workshop={"Forge","Hearth","Cauldron","Workbench","Workers","Home","Garden"},
-	Hunt={"Slayer","Bestiary","Dungeon","Hunter"},
+	Hunt={"Slayer","Bestiary","Dungeon","Hunter","Thieving"},
 	Ledger={"Bank","Market","Orders","Auctions","Merchant","Vendors"},
 }
 sectionOf={Journal="Bearing",Hero="Skills",Satchel="Items",Workshop="Forge",Hunt="Slayer",Ledger="Bank"}
 local drawers={
 	Journal={Bearing=Pages.drawBearing,Quests=Pages.drawQuests,Diaries=Pages.drawDiaries,Construction=Pages.drawConstruction,Regions=Pages.drawRegions,Crew=Pages.drawCoop,Calendar=Pages.drawCalendar,Agility=Pages.drawAgility},
-	Hero={Skills=Pages.drawSkills,Mastery=Pages.drawMastery,Gear=Pages.drawGear,Combat=Pages.drawCombat,Spellbook=Pages.drawSpellbook,Enchant=Pages.drawEnchant,Reforge=function() Pages.drawReforge() end,Accessories=Pages.drawAccessories,Pets=Pages.drawPets},
+	Hero={Skills=Pages.drawSkills,Mastery=Pages.drawMastery,Gear=Pages.drawGear,Combat=Pages.drawCombat,Spellbook=Pages.drawSpellbook,Prayer=Pages.drawPrayer,Enchant=Pages.drawEnchant,Reforge=function() Pages.drawReforge() end,Accessories=Pages.drawAccessories,Pets=Pages.drawPets},
 	Satchel={Items=Pages.drawItems,Collections=Pages.drawCollections},
 	Workshop={Forge=function() Pages.drawStation("Forge") end,Hearth=function() Pages.drawStation("Hearth") end,Cauldron=function() Pages.drawStation("Cauldron") end,
 		Workbench=function() Pages.drawStation("Workbench") end,Workers=Pages.drawWorkers,Home=Pages.drawHome,Garden=Pages.drawGarden},
-	Hunt={Slayer=Pages.drawSlayer,Bestiary=Pages.drawBestiary,Dungeon=Pages.drawDungeon,Hunter=Pages.drawHunter},
+	Hunt={Slayer=Pages.drawSlayer,Bestiary=Pages.drawBestiary,Dungeon=Pages.drawDungeon,Hunter=Pages.drawHunter,Thieving=Pages.drawThieving},
 	Ledger={Bank=Pages.drawBank,Market=Pages.drawMarket,Orders=Pages.drawOrders,Auctions=Pages.drawAuctions,Merchant=Pages.drawMerchant,Vendors=Pages.drawVendors},
 }
 local function resetTransient()
@@ -6588,6 +6786,8 @@ do
 	if actions.Event then
 		actions.Event:Connect(function(verb,item)
 			if verb=="autocast" and (item==nil or type(item)=="string") then task.spawn(send,"autocast",item)
+			-- Prayer quick bar taps (combat HUD): the server validates the prayer.
+			elseif verb=="prayer" and type(item)=="string" and #item<=64 then task.spawn(send,"prayer",item)
 			-- A late-starting combat HUD asks for the latest snapshot.
 			elseif verb=="snapshot" and synced then pcall(function() UI.snapshotChannel:Fire(state) end) end
 		end)

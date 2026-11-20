@@ -1023,7 +1023,11 @@ local paid=bridge.OnInvoke("combatXp",brawler,{style="melee",monster="StarbornSe
 eq(paid.xp.Combat,Data.Monsters.StarbornSentinel.xp,"a whole melee kill pays monster.xp Combat XP")
 ok(has(brawler.last.message,"Combat level 6! +500 coins"),"multi-level reward message")
 local killed=bridge.OnInvoke("kill",brawler,{monster="StarbornSentinel"})
-eq(next(killed.drops),nil,"high rolls drop nothing")
+-- Prayer & Thieving: every kill leaves its remains (chance 1); high rolls drop nothing else.
+local remainsId=Data.Prayer.remainsFor(Data.Monsters.StarbornSentinel.level,Data.Monsters.StarbornSentinel.region)
+eq(killed.drops[remainsId],1,"every kill leaves its remains")
+killed.drops[remainsId]=nil
+eq(next(killed.drops),nil,"high rolls drop nothing else")
 eq(killed.bossReady,false,"no quest means no boss")
 ok(has(brawler.last.message,"Starborn Sentinel slain"),"kill pushes a snapshot message")
 ok(not has(brawler.last.message,"Combat XP"),"the kill itself pays no flat Combat XP")
