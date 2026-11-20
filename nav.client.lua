@@ -38,7 +38,7 @@ local prompts = {station = {}, gather = {}, warp = {}, warpReturn = {}} -- [kind
 -- "<course>:<index>" and hunting spots whose host part carries TrapState /
 -- TrapOwner (written by the server). Only the local player's traps are shown.
 -- Spots seen before the trap watcher below is defined wait in `pending`.
-local Skill = {obstacles = {}, traps = {}, levels = {}, next = {}, pending = {}}
+local Skill = {obstacles = {}, shortcutEnds = {}, traps = {}, levels = {}, next = {}, pending = {}}
 local function promptPosition(prompt)
 	local parent = prompt.Parent
 	if parent and parent:IsA("BasePart") then return parent.Position end
@@ -57,6 +57,10 @@ local function classify(prompt)
 	if verb == "agility" then
 		local course, index = prompt:GetAttribute("AgilityCourse"), prompt:GetAttribute("AgilityIndex")
 		if type(course) == "string" and type(index) == "number" then Skill.obstacles[prompt] = course .. ":" .. index end
+	elseif verb == "shortcut" and type(item) == "string" then
+		-- Each end gates on where it lands (ShortcutRegion, "" = ungated).
+		local id, tag = string.match(item, "^(%w+):([AB])$")
+		if id then Skill.shortcutEnds[prompt] = {id = id, tag = tag} end
 	elseif (verb == "trap" or verb == "net") and type(item) == "string" then
 		if Skill.watchTrap then Skill.watchTrap(prompt, item) else table.insert(Skill.pending, {prompt, item}) end
 	end
@@ -64,6 +68,7 @@ end
 local function unclassify(prompt)
 	for _, set in pairs(prompts) do set[prompt] = nil end
 	Skill.obstacles[prompt] = nil
+	Skill.shortcutEnds[prompt] = nil
 	for host, entry in pairs(Skill.traps) do
 		if entry.prompt == prompt then
 			if entry.board then entry.board:Destroy() end
@@ -449,6 +454,19 @@ function Skill.pulse(now)
 	if Skill.next.board then Skill.next.board.StudsOffset = Vector3.new(0, 4.6 + 0.3 * math.sin(now * 3), 0) end
 end
 
+-- A shortcut end is locked when the region it lands in is (ShortcutRegion on
+-- its prompt; the nearest end's anchor spec "anchor:Waypoint_Shortcut_<id>_<A|B>").
+function Skill.shortcutLocked(id, spec)
+	local tag = type(spec) == "string" and string.match(spec, "_([AB])$")
+	for prompt, info in pairs(Skill.shortcutEnds) do
+		if info.id == id and (tag == nil or info.tag == tag) then
+			local region = prompt:GetAttribute("ShortcutRegion")
+			if type(region) == "string" and region ~= "" and player:GetAttribute(region .. "Unlocked") == false then return true end
+		end
+	end
+	return false
+end
+
 -- Navigate entries ---------------------------------------------------------------
 function Skill.navigate(index, heading, entry, nextOrder)
 	local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
@@ -487,7 +505,8 @@ function Skill.navigate(index, heading, entry, nextOrder)
 	for _, sc in ipairs(AG.Shortcuts or {}) do
 		local specs = nearestFirst({"anchor:Waypoint_Shortcut_" .. sc.id .. "_A", "anchor:Waypoint_Shortcut_" .. sc.id .. "_B"})
 		if #specs > 0 then
-			table.insert(shortcuts, {text = sc.name .. " · Lv " .. sc.level, label = sc.name, specs = specs, locked = level("Agility") < sc.level})
+			table.insert(shortcuts, {text = sc.name .. " · Lv " .. sc.level, label = sc.name, specs = specs,
+				locked = level("Agility") < sc.level or Skill.shortcutLocked(sc.id, specs[1])})
 		end
 	end
 	for _, creature in ipairs(HU.Creatures or {}) do

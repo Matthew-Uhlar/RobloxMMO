@@ -939,6 +939,30 @@ do
 	noFailures(ui, "level-up")
 	checks += 6
 end
+-- 6b. Combat XP paid on kill (server "combatXp"): a level-up snapshot with an
+-- empty message lands just before the kill toast (which no longer names XP).
+do
+	local ui = run()
+	local before = snapshot()
+	local nextLevel = Progression.levelForXp(before.xp.Combat) + 1
+	local xp = { Combat = Data.XP_TABLE[nextLevel] + 3 }
+	ui.update.OnClientEvent:Fire(snapshot({ xp = xp, message = "" }))
+	assert(ui.gui:FindFirstChild("LevelBanner").Visible, "combat level-up banner on the XP snapshot")
+	local popup = find(ui.gui:FindFirstChild("ActionBar"), "XpPopup")
+	assert(popup.Text:find("Combat", 1, true) and find(ui.gui:FindFirstChild("ActionBar"), "XpPill").Visible, "combat XP popup")
+	ui.update.OnClientEvent:Fire(snapshot({ xp = xp, message = "Thornling slain • +4 coins" }))
+	local toast
+	for _, object in ipairs(ui.gui:GetChildren()) do
+		if object.ClassName == "TextLabel" and object.Text:find("slain", 1, true) then toast = object end
+	end
+	assert(toast and toast.Visible and popup.Text:find("Combat", 1, true), "kill toast follows, popup kept")
+	-- Without a level-up the kill snapshot itself carries the XP gain.
+	local quiet = run()
+	quiet.update.OnClientEvent:Fire(snapshot({ xp = { Combat = before.xp.Combat + 40 }, message = "Thornling slain • +4 coins" }))
+	assert(find(quiet.gui:FindFirstChild("ActionBar"), "XpPopup").Text:find("+40 Combat", 1, true), "kill snapshot shows the XP popup")
+	noFailures(ui, "combat xp on kill")
+	checks += 4
+end
 
 -- 7. Combat HUD (combat.client.lua) never collides with the atlas HUD, which owns
 -- the top-left corner (x 10-315, y 8-96), at phone or desktop sizes.
@@ -1797,7 +1821,7 @@ do
 	local sent = m.ui.sent[#m.ui.sent]
 	assert(sent[1] == "autocast" and Data.Spells[sent[2]] and Data.Spells[sent[2]].kind == "damage", "right-click sets autocast via IsleAction")
 	-- Denied reasons map to short toasts.
-	for reason, text in pairs({ ammo = "Out of arrows", sight = "No line of sight", glyphs = "Out of glyphs", combat = "in combat", range = "Out of range" }) do
+	for reason, text in pairs({ ammo = "Out of arrows", sight = "No line of sight", glyphs = "Out of glyphs", combat = "in combat", range = "Out of range", leashing = "retreating" }) do
 		m.fx.OnClientEvent:Fire("denied", { action = "ranged", reason = reason })
 		assert(m.toast():find(text, 1, true), reason .. " toast: " .. m.toast())
 		checks += 1
