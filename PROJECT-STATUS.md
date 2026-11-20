@@ -8,6 +8,25 @@ Updated November 19, 2026. The full original goal remains in progress.
 - All eight cloud scripts matched the **Skyreach** source at `975be9c`. Deployment of later Observatory, bank and trade updates is **unknown** pending a publish receipt/version check.
 - Studio currently displays **Public, ages 16+**, according to the primary-agent observation. Audience settings are separate from code deployment and have not been independently join-tested.
 
+## Waves 4–6 (November 20, 2026) — after the first live publish
+
+Owner feedback from the live Depth build drove wave 4; waves 5–6 continued toward OSRS/SkyBlock depth. Every wave was built by parallel teams against `docs/DEPTH-CONTRACT.md` §10–13, independently reviewed, and fixed with regression tests.
+
+- **World & lighting:** islands ~2.5× larger with terrain tiers, cliffs, ponds and shorelines; hub districts; Future lighting, tuned atmosphere and a day/night cycle; fixed z-fighting island tops, doubled ambient, white haze, lights inside parts, unbounded lanterns and overused Neon.
+- **Custom meshes:** 65 original world shapes (trees, rocks, ore veins per tier, crops, lamps, stations, bridges, statues, beacons, stalls, signs, landmarks, Agility/Hunter props) built on each client with EditableMesh, with mobile budgets and primitive fallback.
+- **Menus:** full "Aether Brass" redesign of every atlas page, HUD, combat panels and builder controls; pairwise HUD overlap tests at three screen sizes; renders in `docs/screenshots/`.
+- **Animations:** procedural swing/interact gestures for every gather skill, stations, interact, attack, bow/staff/wand, eat/drink and all Agility moves, replicated to nearby players.
+- **Guidance:** 12 NPCs with dialogue, a six-step tutorial, minimap, Navigate list with waypoints, Hub/Home recall.
+- **Combat triangle:** Ranged, Magic, Fletching and Glyphcraft; bows/arrows/quiver, staves/wands, 15 spells and mana; monster weaknesses; damage XP paid on kill.
+- **New skills:** Agility (8 courses, Skymarks, shortcuts) and Hunter (8 creatures, traps/nets, log) — 18 skills total.
+- **Gear depth:** 55 reforges and stones, stars with essence, Tempering/Masterwork tomes.
+- **Skill mastery:** 8 perk trees (106 nodes) with capstone abilities, post-99 points, milestones and 99 mantles.
+- **Verdant Garden:** 12 offline-growing plots, milestones, garden levels, composter, visitors and shop.
+- **Endgame:** The Shattered Crown region (levels 85–110), tier-7/8 resources and tools, two world bosses with phases and telegraphs, share-scaled loot and anti-leech credit, one endgame set per combat style.
+- **QC:** reviews found and fixed, among others, a leash-reset XP loop, doubled melee XP, GC-lost traps, extreme Hunter XP, multiplicative gathering yields, instant regrowth, infinite garden seeds, flat boss payouts favouring alts and an overtuned magic set. The build now also fails if any suite stops before its end (SUITE-END sentinels).
+
+Verification: 14 headless suites (progression, gameplay, world, expedition, co-op, combat, UI, festival, gesture, NPC, mesh, skills, garden, endgame) all pass and all 21 scripts compile. In-engine look and performance (EditableMesh on phones, lighting, animation feel) still need a live playtest.
+
 ## Wave 3 (November 20, 2026)
 
 - **Skyward Calendar & events:** a global UTC calendar (4 seasons × 12 isle days, a year ≈ 5.08 real days so events drift across time zones) with seasonal gathering bonuses and 13 non-overlapping timed events per year — Bloomtide Fair (featured-crop ballot), Glimmertide Festival (festival-only fish), Deepvein Surge (double Mining XP), Hollow Night (event candy from monsters) and Starfall Vigil (once-per-vigil gifts) — plus a Festival Vendor, notice board and Journal → Calendar page.
