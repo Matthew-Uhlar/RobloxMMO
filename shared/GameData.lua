@@ -5031,9 +5031,11 @@ for id, h in pairs(PD.HeldItems) do
 		description="Pet held item: "..h.text..". Equip it on a pet from your pet menu."})
 end
 PD.Candies = {PetCandy={xp=20000},StarlitCandy={xp=250000}}
-item("PetCandy",{name="Pet Candy",kind="petitem",petItem="candy",rarity="Uncommon",color="F7A1C4",value=300,
+-- Sell values sit at or below their Hearth inputs (no craft-and-sell mint):
+-- Pet Candy 150 <= 162, Starlit 1400 <= 1470 (4 Pet Candy, 2 Star Fragments, 6 Aether Lotus).
+item("PetCandy",{name="Pet Candy",kind="petitem",petItem="candy",rarity="Uncommon",color="F7A1C4",value=150,
 	description="Feed to a pet for +20,000 pet XP. Each pet can eat "..PD.CANDY_MAX.." candies in its life."})
-item("StarlitCandy",{name="Starlit Pet Candy",kind="petitem",petItem="candy",rarity="Epic",color="F2D27A",value=4000,
+item("StarlitCandy",{name="Starlit Pet Candy",kind="petitem",petItem="candy",rarity="Epic",color="F2D27A",value=1400,
 	description="Feed to a pet for +250,000 pet XP. Counts toward the "..PD.CANDY_MAX.."-candy limit."})
 item("AscendantPrism",{name="Ascendant Prism",kind="petitem",petItem="tierBoost",rarity="Legendary",color="FFAA00",value=20000,
 	description="Tier Boost: raises a pet's rarity by one tier at once (up to Legendary). Consumed."})
@@ -5060,6 +5062,21 @@ for id, r in pairs({
 end
 recipe("PetCandy",{skill="Cooking",level=20,xp=90,costs={Sunwheat=6,Duskberry=4,Starfruit=1},repeatable=true,station="Hearth",category="Pet Treats"})
 recipe("StarlitCandy",{skill="Cooking",level=60,xp=600,costs={PetCandy=4,StarFragment=2,AetherLotus=6},repeatable=true,station="Hearth",category="Pet Treats"})
+-- No pet recipe mints coins: a crafted pet item sells for at most its inputs
+-- (held-item values come from a rarity formula, so clamp crafted ones here).
+PD.RECIPE_CATEGORIES = {["Pet Gear"]=true,["Pet Treats"]=true}
+function PD.recipeInputValue(rec)
+	local total = 0
+	for id, n in pairs(rec.costs) do total += (Data.Items[id] and Data.Items[id].value or 0) * n end
+	return total
+end
+for _, rec in pairs(Data.Recipes) do
+	if PD.RECIPE_CATEGORIES[rec.category] then
+		local out = Data.Items[rec.output]
+		local cap = math.floor(PD.recipeInputValue(rec) / (rec.amount or 1))
+		if out.value > cap then out.value = cap end
+	end
+end
 -- The Roost keeper sells starter gear and candy for coins.
 PD.Shop = {
 	{item="PetCandy",coins=8000},

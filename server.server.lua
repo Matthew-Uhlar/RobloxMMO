@@ -155,9 +155,28 @@ local Mastery={verbs={}}
 local Garden={verbs={}}
 -- Pets depth (held items, candy, Roost upgrades, ability hooks); filled in by the Pets block before perform().
 local Pets={verbs={}}
+-- One-time coins for each newly reached skill level.
+local function levelCoins(p,skill,newLevel)
+	p.levelRewards=p.levelRewards or {}
+	local rewarded=p.levelRewards[skill] or 1
+	if newLevel>rewarded then
+		local coins=0
+		for lvl=rewarded+1,newLevel do coins+=Data.levelCoinReward(lvl) end
+		p.levelRewards[skill]=newLevel
+		p.coins+=coins
+		note(p,skill.." level "..newLevel.."! +"..coins.." coins")
+	end
+end
 -- Every XP grant: OSRS curve with cap, active pet share, one-time level coins.
-local function grantXp(p,skill,amount)
+-- source (optional): "worker" for idle worker claims, which skip every pet
+-- hook (the pet's player-XP multiplier, its XP share and Taming, skilling-pet
+-- rolls); pets reward the player's own active play only.
+local function grantXp(p,skill,amount,source)
 	if not Data.Skills[skill] or type(amount)~="number" or amount<=0 then return end
+	if source=="worker" then
+		local _,newLevel=Progression.addXp(p,skill,amount)
+		return levelCoins(p,skill,newLevel)
+	end
 	-- Pets depth: the summoned pet's XP abilities raise the player's grant; the
 	-- pet itself shares the base amount, and its gain trains Taming.
 	local _,newLevel=Progression.addXp(p,skill,amount*Progression.petSkillXpMult(p,skill))
@@ -169,15 +188,7 @@ local function grantXp(p,skill,amount)
 	if pet and pet.level>petLevel then note(p,petDef.name.." pet level "..pet.level.."!") end
 	if Pets.tamingShare and (petGain or 0)>0 then Pets.tamingShare(p,petGain) end
 	if Pets.skillRoll then Pets.skillRoll(p,skill,amount) end
-	p.levelRewards=p.levelRewards or {}
-	local rewarded=p.levelRewards[skill] or 1
-	if newLevel>rewarded then
-		local coins=0
-		for lvl=rewarded+1,newLevel do coins+=Data.levelCoinReward(lvl) end
-		p.levelRewards[skill]=newLevel
-		p.coins+=coins
-		note(p,skill.." level "..newLevel.."! +"..coins.." coins")
-	end
+	levelCoins(p,skill,newLevel)
 end
 local function collect(p,item,count)
 	p.items[item]=(p.items[item] or 0)+count
@@ -543,7 +554,7 @@ do
 		end
 		local xp=(w.made or 0)*t.xp
 		w.made=0
-		if xp>0 then grantXp(p,t.skill,xp) end
+		if xp>0 then grantXp(p,t.skill,xp,"worker") end -- Pets depth: no pet hooks on idle XP
 		local coins=w.coins or 0
 		w.coins=0
 		w.sold=nil
@@ -2717,14 +2728,18 @@ end
 ------------------------------------------------------------------------------
 -- Pets depth (Data.PetDepth): held items, Pet Candy, Tier Boost, the Roost
 -- (timed rarity upgrades), its shop and the ability hooks other systems call.
--- Verbs (item <= 64 chars; index = position in p.pets, 1-based):
---   petItem "index:itemId" equip a held item (old one returns to the satchel);
---     "index:" or "index:none" takes it off
---   petCandy "index:PetCandy|StarlitCandy" (+XP, PD.CANDY_MAX uses per pet)
---   petTierBoost "index" spends an Ascendant Prism: +1 rarity tier at once
---   petUpgrade "index" hands the pet to the Roost: coins + materials, os.time timer
---   petClaim collects it once the timer is done (exactly once); petCancel takes
---     it back early (no refund)
+-- Verbs (item <= 64 chars). A pet is named "index:speciesId" (index = position
+-- in p.pets, 1-based); the server checks p.pets[index].id == speciesId so a
+-- roster that shifted (Roost, adoption) never hits the wrong pet. A bare index
+-- is refused.
+--   petItem "index:speciesId:itemId" equip a held item (old one returns to the
+--     satchel); "index:speciesId:" or "index:speciesId:none" takes it off
+--   petCandy "index:speciesId:PetCandy|StarlitCandy" (+XP, PD.CANDY_MAX uses per pet)
+--   petTierBoost "index:speciesId" spends an Ascendant Prism: +1 rarity tier at once
+--   petUpgrade "index:speciesId" hands the pet to the Roost: coins + materials, os.time timer
+--   petClaim collects it once the timer is done (exactly once; refused while the
+--     roster is full); petCancel takes it back early (no refund), and once the
+--     timer is done it claims instead (a finished upgrade is never thrown away)
 --   petShop "itemId" buys from the Roost keeper (PD.Shop)
 -- Profile: pet.rarity/item/candy, p.petUpgrade={pet,from,to,ends}, p.petTamingCarry.
 -- Player attribute ActivePet = "speciesId:rarity:level" or "" (pets.client.lua).
@@ -2732,12 +2747,17 @@ end
 do
 	local PD=Data.PetDepth
 	Pets.verbs={petItem=true,petCandy=true,petTierBoost=true,petUpgrade=true,petClaim=true,petCancel=true,petShop=true}
-	local function petAt(p,raw)
+	local function petAt(p,raw,species)
 		local index=tonumber(raw)
 		if not index or index%1~=0 or tostring(index)~=raw then return nil end
 		local pet=p.pets[index]
-		if type(pet)~="table" or not Data.PetById[pet.id] then return nil end
+		if type(pet)~="table" or not Data.PetById[pet.id] or pet.id~=species then return nil end
 		return pet,Data.PetById[pet.id],index
+	end
+	-- Garden growth reads the summoned pet: advance the garden to now before the
+	-- summoned pet (or its held item, level, rarity) changes.
+	function Pets.gardenSync(p)
+		if type(p.garden)=="table" and Garden.refresh then Garden.refresh(p,os.time()) end
 	end
 	local function petName(pet,def) return Progression.petRarity(pet).." "..def.name end
 	-- Remove p.pets[index], keeping the active pointer on the same pet.
@@ -2769,10 +2789,11 @@ do
 			p.coins-=entry.coins
 			collect(p,item,1)
 			return "Bought "..Data.Items[item].name.." for "..entry.coins.." coins."
-		elseif verb=="petClaim" then
+		elseif verb=="petClaim" or (verb=="petCancel" and p.petUpgrade and os.time()>=p.petUpgrade.ends) then
 			local job=p.petUpgrade
 			if not job then return "No pet is waiting at the Roost." end
 			if os.time()<job.ends then return "The Roost needs "..span(job.ends-os.time()).." more." end
+			if #p.pets>=MAX_PETS then return "Your pet menu is full ("..MAX_PETS.."). Release a pet, then claim." end
 			p.petUpgrade=nil
 			local def=Data.PetById[job.pet.id]
 			Progression.petSetRarity(job.pet,job.to)
@@ -2787,11 +2808,20 @@ do
 			table.insert(p.pets,job.pet)
 			return "You take your "..Data.PetById[job.pet.id].name.." home. The fee is not refunded."
 		end
-		local raw,rest=nil,nil
-		if validId(item) then raw,rest=string.match(item,"^(%d+):?(.*)$") end
+		local raw,species,rest=nil,nil,nil
+		if validId(item) then
+			raw,species,rest=string.match(item,"^(%d+):(%w+):(.*)$")
+			if not raw then raw,species=string.match(item,"^(%d+):(%w+)$"); rest=if raw then "" else nil end
+		end
 		local pet,def,index=nil,nil,nil
-		if raw then pet,def,index=petAt(p,raw) end
-		if not pet or ((verb=="petUpgrade" or verb=="petTierBoost") and rest~="") then return "Choose one of your pets." end
+		if raw then pet,def,index=petAt(p,raw,species) end
+		if not pet then
+			local moved=raw and Data.PetById[species] and type(p.pets[tonumber(raw)])=="table"
+			return if moved then "That pet moved in your roster. Choose it again." else "Choose one of your pets."
+		end
+		local takesArg=verb=="petItem" or verb=="petCandy"
+		if takesArg~=(string.find(item,"^%d+:%w+:")~=nil) then return "Choose one of your pets." end
+		if p.activePet==index then Pets.gardenSync(p) end
 		if verb=="petItem" then
 			if rest=="" or rest=="none" then
 				if not pet.item then return def.name.." holds nothing." end
@@ -2848,13 +2878,16 @@ do
 		local line=type(monster)=="table" and monster.slayer
 		return line and (Progression.petEffects(p).family[line] or 0) or 0
 	end
-	-- Doubled harvest roll (only when the summoned pet has the ability unlocked).
-	function Pets.gatherDouble(p,skill)
-		local chance=Progression.petEffects(p).gather[skill] or 0
-		return chance>0 and roll()*100<chance
+	-- Doubled harvests roll inside Progression.gatherYieldMult (max with mastery).
+	-- Extra craft: only stackable outputs (repeatable recipes, materials and
+	-- consumables); one-of-a-kind gear never duplicates.
+	function Pets.craftStackable(recipe)
+		local def=type(recipe)=="table" and Data.Items[recipe.output]
+		return def~=nil and def~=false and (recipe.repeatable==true or def.kind=="material" or def.kind=="consumable")
 	end
-	function Pets.craftExtra(p,skill)
-		local chance=Progression.petEffects(p).craft[skill] or 0
+	function Pets.craftExtra(p,recipe)
+		if not Pets.craftStackable(recipe) then return false end
+		local chance=Progression.petEffects(p).craft[recipe.skill] or 0
 		return chance>0 and roll()*100<chance
 	end
 	-- Taming XP share of pet XP earned from skills (fractions carried).
@@ -2864,7 +2897,20 @@ do
 		p.petTamingCarry=carry-whole
 		if whole>0 then grantXp(p,"Taming",whole) end
 	end
-	-- Skilling pets: one roll per SKILL_PET_STEP XP banked in a skill that has a pet.
+	-- True when the player already has the species anywhere: an unadopted pet
+	-- item, the roster, or the Roost.
+	function Pets.ownsSpecies(p,speciesId)
+		local def=Data.PetById[speciesId]
+		if def and (p.items[def.id.."Pet"] or 0)>0 then return true end
+		for _,pet in ipairs(p.pets or {}) do if type(pet)=="table" and pet.id==speciesId then return true end end
+		local job=p.petUpgrade
+		return type(job)=="table" and type(job.pet)=="table" and job.pet.id==speciesId
+	end
+	-- Skilling pets: one roll per SKILL_PET_STEP XP banked in a skill that has a pet
+	-- (~1 per PD.SKILL_PET_XP XP). Rule: a skilling pet drops only while the player
+	-- has none of that species (item, roster or Roost), so each species is one
+	-- drop per player unless it was sold or traded away; the banked XP is still
+	-- spent while a copy is owned, so owning one never stores up rolls.
 	function Pets.skillRoll(p,skill,amount)
 		local itemId=PD.SkillPets[skill]
 		if not itemId then return end
@@ -2874,6 +2920,7 @@ do
 		if banked<step then p.petSkillXp[skill]=banked return end
 		local rolls=math.min(10,math.floor(banked/step))
 		p.petSkillXp[skill]=banked-rolls*step
+		if Pets.ownsSpecies(p,Data.Items[itemId].pet) then return end
 		local luck=Progression.computeStats(p,os.time()).petLuck
 		for _=1,rolls do
 			if roll()<PD.skillPetChance(step,luck) then
@@ -2904,7 +2951,8 @@ do
 		return if pet then PD.attribute(def.id,Progression.petRarity(pet),pet.level) else ""
 	end
 	-- Migration: explicit rarity for older pets, integer level/xp/candy, valid held
-	-- items (unknown ones dropped), a sane Roost job (bad timer: pet returned).
+	-- items (unknown ones dropped), a sane Roost job (bad timer: pet returned,
+	-- even past MAX_PETS).
 	local function cleanPet(pet)
 		local def=Data.PetById[pet.id]
 		if not PD.validRarity(pet.rarity) then pet.rarity=def.rarity end
@@ -2930,8 +2978,10 @@ do
 				if PD.validRarity(job.to) and PD.rank(job.to)==PD.rank(job.pet.rarity)+1 and ends and ends==ends then
 					job.from,job.ends=job.pet.rarity,math.floor(ends)
 				else
+					-- Never delete a pet: it returns even past MAX_PETS (adoption and
+					-- claims stay refused until the roster is back under the cap).
 					profile.petUpgrade=nil
-					if #profile.pets<MAX_PETS then table.insert(profile.pets,job.pet) end
+					table.insert(profile.pets,job.pet)
 				end
 			end
 		end
@@ -3167,8 +3217,9 @@ local function perform(player,verb,item,prompt)
 		-- Events hook: festival yield/XP multipliers apply exactly once, after fortune; festival-only catches.
 		result.amount*=event.mult; result.xp=math.floor(result.xp*event.xpMult)
 		for id,n in pairs(event.extra) do collect(p,id,n); note(p,"Festival catch • +"..n.." "..Data.Items[id].name) end
-		local petDouble=Pets.gatherDouble(p,skill) -- Pets depth: doubled harvest ability
-		if petDouble then result.amount*=2 end
+		-- Pets depth: the doubled-harvest ability is one more yield candidate inside
+		-- Progression.gatherYieldMult (never stacks with mastery procs/surges).
+		local petDouble=result.petDouble==true
 		collect(p,item,result.amount)
 		grantXp(p,skill,result.xp)
 		if skill=="Farming" and Garden.fieldSeed then Garden.fieldSeed(p,item) end -- Verdant Garden seed pouch
@@ -3268,8 +3319,9 @@ local function perform(player,verb,item,prompt)
 		Journal.count(p,"crafts",recipe.output,recipe.amount)
 		grantXp(p,recipe.skill,recipe.xp)
 		p.started=true
-		-- Pets depth: an extra-craft ability may add one more batch (no extra XP).
-		local bonus=if Pets.craftExtra(p,recipe.skill) then recipe.amount else 0
+		-- Pets depth: an extra-craft ability may add one more batch of a stackable
+		-- output (no extra XP; gear and other one-of-a-kind outputs never roll).
+		local bonus=if Pets.craftExtra(p,recipe) then recipe.amount else 0
 		if bonus>0 then collect(p,recipe.output,bonus) end
 		return Data.Items[recipe.output].name.." crafted"..(if bonus>0 then " (+"..bonus.." from your pet)" else "").."   ·   +"..recipe.xp.." "..recipe.skill.." XP"
 	elseif verb=="equip" then
@@ -3330,6 +3382,7 @@ local function perform(player,verb,item,prompt)
 		if not index then return "Choose a pet to summon." end
 		if index==0 then
 			if not p.activePet then return "No pet is summoned." end
+			Pets.gardenSync(p) -- Pets depth: growth so far used the dismissed pet
 			p.activePet=nil
 			return "Pet dismissed."
 		end
@@ -3337,6 +3390,7 @@ local function perform(player,verb,item,prompt)
 		local petDef=type(pet)=="table" and Data.PetById[pet.id]
 		if not petDef then return "Choose a pet you have adopted." end
 		if p.activePet==index then return "That pet is already summoned." end
+		Pets.gardenSync(p) -- Pets depth: growth so far used the previous pet
 		p.activePet=index
 		return petDef.name.." summoned."
 	elseif verb=="petAdopt" then

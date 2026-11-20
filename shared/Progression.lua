@@ -467,7 +467,7 @@ end
 -- Returns ok, reasonOrResult. result = {amount, xp, skill, tool}.
 -- now (optional, os.time) lets running mastery capstones apply; mastery perks
 -- may add result.bonus {[item]=n}, result.coins, result.regrowth (seconds,
--- with result.respawnSkip when shortened), result.surge / result.multiplied.
+-- with result.respawnSkip when shortened), result.surge / result.multiplied / result.petDouble.
 function Progression.harvest(p, resourceId, stats, rng, bonusBase, now)
 	local r = Progression.resource(resourceId)
 	if not r then return false, "Unknown resource." end
@@ -486,15 +486,13 @@ function Progression.harvest(p, resourceId, stats, rng, bonusBase, now)
 		fortune += ench[fortuneStat] or 0
 	end
 	-- Fortune is linear in the base, so roll its factor first (fixed rng order),
-	-- then join the mastery yield multiplier (capstone surge OR a Twin/Bountiful
-	-- proc, never both) to the base before fortune applies. Festival multipliers
-	-- stay with the caller and apply once to the final amount.
+	-- then join the yield multiplier (capstone surge OR a Twin/Bountiful proc OR
+	-- the pet's doubled harvest, the largest only) to the base before fortune
+	-- applies. Festival multipliers stay with the caller and apply once to the
+	-- final amount.
 	local fortuneFactor = Progression.fortuneRoll(1, fortune, rng)
-	local mult, perks = 1, nil
 	local result = {xp=r.xp,skill=r.skill,tool=toolId,fortune=fortune,resource=r}
-	if type(p.mastery) == "table" then
-		mult, perks = Progression.gatherYieldMult(p, result, rng, now)
-	end
+	local mult, perks = Progression.gatherYieldMult(p, result, rng, now)
 	local base = math.floor((1 + (bonusBase or 0)) * mult)
 	result.amount = base * fortuneFactor
 	if perks then Progression.applyGatherMastery(p, result, rng, now, perks) end
@@ -922,22 +920,34 @@ function Progression.regrowthTime(base, skip)
 	local floor = math.min(base, math.max(MA().REGROWTH_FLOOR, base * MA().REGROWTH_FLOOR_SHARE))
 	return math.max(floor, base * (1 - skip / 100))
 end
--- Mastery yield multiplier for one harvest (joins the base before fortune).
--- A running capstone's yieldMult and a Twin/Bountiful proc do not stack: the
--- larger wins. Rolls only for owned proc perks (triple, then double).
--- Returns mult, perks (nil when the skill has no tree or no perks).
+-- Yield multiplier for one harvest (joins the base before fortune).
+-- Candidates: a running capstone's yieldMult, a Twin/Bountiful mastery proc
+-- and the summoned pet's doubled-harvest ability (Pets depth, a proc = 2).
+-- They never stack: the largest wins (design section 12). Rolls only for owned
+-- proc perks (triple, then double), then the pet's chance, in that order.
+-- Flags the winner: result.surge, result.multiplied or result.petDouble.
+-- Returns mult, perks (perks nil when the skill has no tree or no perks).
 function Progression.gatherYieldMult(p, result, rng, now)
-	local treeId = MA().TreeOfSkill[result.resource.skill]
-	if not treeId then return 1, nil end
-	local perks = Progression.masteryPerks(p, treeId, now)
-	if not next(perks) then return 1, nil end
-	local surge = perks.yieldMult or 1
-	local proc = 1
-	if (perks.tripleYield or 0) > 0 and rng() < perks.tripleYield / 100 then proc = 3
-	elseif (perks.doubleYield or 0) > 0 and rng() < perks.doubleYield / 100 then proc = 2 end
-	if surge > 1 and surge >= proc then result.surge = true
-	elseif proc > 1 then result.multiplied = proc end
-	return math.max(surge, proc), perks
+	local skill = result.resource.skill
+	local treeId = MA().TreeOfSkill[skill]
+	local perks = nil
+	if treeId and type(p.mastery) == "table" then
+		perks = Progression.masteryPerks(p, treeId, now)
+		if not next(perks) then perks = nil end
+	end
+	local surge, proc = 1, 1
+	if perks then
+		surge = perks.yieldMult or 1
+		if (perks.tripleYield or 0) > 0 and rng() < perks.tripleYield / 100 then proc = 3
+		elseif (perks.doubleYield or 0) > 0 and rng() < perks.doubleYield / 100 then proc = 2 end
+	end
+	local petProc = 1
+	local petChance = Progression.petEffects(p).gather[skill] or 0
+	if petChance > 0 and rng() * 100 < petChance then petProc = 2 end
+	if surge > 1 and surge >= proc and surge >= petProc then result.surge = true
+	elseif proc > 1 and proc >= petProc then result.multiplied = proc
+	elseif petProc > 1 then result.petDouble = true end
+	return math.max(surge, proc, petProc), perks
 end
 -- Non-yield gathering perks on a harvest result (XP, regrowth, ingots, coins).
 -- Rolls happen only for perks the profile owns, in a fixed order.
