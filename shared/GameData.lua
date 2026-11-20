@@ -868,4 +868,47 @@ function Data.describeCheck(o)
 	return "Unknown task"
 end
 
+------------------------------------------------------------------------------
+-- Co-op (owned by the Co-op team; append-only section).
+-- Shared homestead progression (SkyBlock co-op / OSRS Group Ironman style).
+-- coop.server.lua reads these; verify-coop.luau checks them. Homestead XP
+-- comes from member contributions: +1 per shared-prompt gather, +1 per unit of
+-- net-new satchel deposit (deposit/withdraw cycling earns nothing), and
+-- +ConstructionXp per supply spent on shared construction.
+------------------------------------------------------------------------------
+Data.Coop = {
+	MaxMembers = 4,
+	RejoinCooldown = 86400, -- after leaving or being removed, before any new crew
+	InviteSeconds = 600,
+	Resources = {"Timber","Ore","Herb","Fish"},
+	TransferMax = 100, -- per deposit / withdrawal request
+	LogSize = 8,
+	ConstructionXp = 2,
+	KickReasons = {
+		{id="Inactive",text="Inactive for a long time"},
+		{id="Stores",text="Misused the shared stores"},
+		{id="Conduct",text="Unkind to the crew"},
+		{id="Course",text="The crew is changing course"},
+	},
+	-- storage = per-resource shared supply cap; workers = shared worker slots;
+	-- workerTier = highest shared worker tier (Data.WorkerTiers); stats are
+	-- written to every member's p.perkStats.coop (Progression.computeStats).
+	Levels = {
+		{xp=0,storage=250,workers=0,workerTier=0,stats={}},
+		{xp=60,storage=400,workers=1,workerTier=2,stats={health=5}},
+		{xp=200,storage=600,workers=1,workerTier=3,stats={health=10,defense=3}},
+		{xp=450,storage=800,workers=2,workerTier=4,stats={health=15,defense=5,magicFind=1}},
+		{xp=900,storage=1000,workers=2,workerTier=5,stats={health=20,defense=8,magicFind=2}},
+		{xp=1600,storage=1500,workers=2,workerTier=6,stats={health=30,defense=10,magicFind=3}},
+	},
+	WorkerUpgradeCost = {Timber=8,Ore=5}, -- x current tier, from shared supplies
+}
+function Data.coopLevel(xp)
+	local levels = Data.Coop.Levels
+	local n = 1
+	for i, def in ipairs(levels) do if (tonumber(xp) or 0) >= def.xp then n = i end end
+	return n, levels[n]
+end
+-- End Co-op section.
+
 return Data
