@@ -32,7 +32,8 @@ local function make(class, parent, props)
 end
 local function round(parent, radius, stroke)
 	make("UICorner", parent, {CornerRadius = UDim.new(0, radius)})
-	if stroke then make("UIStroke", parent, {Color = stroke, Thickness = 1.5, Transparency = 0.15}) end
+	-- Border mode: on a TextLabel/TextButton the Contextual default would outline the text instead.
+	if stroke then make("UIStroke", parent, {Color = stroke, Thickness = 1.5, Transparency = 0.15, ApplyStrokeMode = Enum.ApplyStrokeMode.Border}) end
 end
 
 ------------------------------------------------------------------------------
@@ -56,9 +57,11 @@ local panelTimer = make("TextLabel", panel, {
 	Font = bold, TextSize = 14, TextColor3 = gold, TextXAlignment = Enum.TextXAlignment.Right, Text = "",
 })
 local barBack = make("Frame", panel, {
-	Position = UDim2.fromOffset(12, 30), Size = UDim2.new(1, -24, 0, 16), BackgroundColor3 = ink, BorderSizePixel = 0,
+	Position = UDim2.fromOffset(12, 30), Size = UDim2.new(1, -24, 0, 16), BackgroundColor3 = rgb("1F3B47"), BorderSizePixel = 0,
 })
 round(barBack, 8)
+-- A visible track: the ink fill alone disappeared against the deep panel.
+make("UIStroke", barBack, {Color = rgb("4C7680"), Thickness = 1, Transparency = 0.3, ApplyStrokeMode = Enum.ApplyStrokeMode.Border})
 local barFill = make("Frame", barBack, {Size = UDim2.fromScale(1, 1), BackgroundColor3 = mint, BorderSizePixel = 0})
 round(barFill, 8)
 local barText = make("TextLabel", barBack, {

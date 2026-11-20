@@ -7,6 +7,10 @@ local player = Players.LocalPlayer
 
 local function make(class, parent, properties)
 	local object = Instance.new(class)
+	-- Every stroke in the atlas is a rim. The Contextual default would outline the
+	-- TEXT of a TextButton/TextLabel instead (and draw nothing on blank tiles,
+	-- hiding selection rims), so strokes default to Border.
+	if class == "UIStroke" then object.ApplyStrokeMode = Enum.ApplyStrokeMode.Border end
 	for key, value in pairs(properties or {}) do
 		object[key] = value
 	end
@@ -64,7 +68,10 @@ local function rounded(object, radius, edge)
 		if not clothContent and not clothTexture then make("UIGradient",rim,{Color=ColorSequence.new(gold,slate),Rotation=35}) end
 	end
 end
+local compactAtlas = false
 local function label(parent, value, x, y, w, h, font, size, color)
+	-- Readability floor: 12px on phones (compact atlas), 10px elsewhere.
+	size = math.max(size, compactAtlas and 12 or 10)
 	return make("TextLabel", parent, {
 		Text = value,
 		Position = x and UDim2.fromOffset(x, y) or UDim2.new(),
@@ -599,12 +606,14 @@ xpText.TextWrapped=false
 xpText.TextScaled=true
 make("UITextSizeConstraint",xpText,{MinTextSize=8,MaxTextSize=13})
 xpText.TextTransparency=1
-local banner=panel(gui,UDim2.new(.5,0,0,14),UDim2.new(.9,0,0,74),deep)
+-- Level-up banner sits below the top HUD row: the combat target panel and its
+-- banner own y 10-138 (combat.client.lua), the atlas HUD the top-left corner.
+local banner=panel(gui,UDim2.new(.5,0,0,140),UDim2.new(.9,0,0,74),deep)
 banner.Name="LevelBanner"
 banner.AnchorPoint=Vector2.new(.5,0)
 banner.Visible=false
 banner.ZIndex=5
-make("UISizeConstraint",banner,{MaxSize=Vector2.new(420,74)})
+make("UISizeConstraint",banner,{Name="BannerLimit",MaxSize=Vector2.new(420,74)})
 rounded(banner,12,gold)
 local bannerScale=make("UIScale",banner,{Scale=1})
 local bannerKicker=label(banner,"L E V E L   U P",0,6,full,16,bold,11,gold)
@@ -614,6 +623,8 @@ bannerTitle.TextXAlignment=Enum.TextXAlignment.Center
 local bannerReward=label(banner,"",8,50,UDim.new(1,-16),20,bold,12,muted)
 bannerReward.TextXAlignment=Enum.TextXAlignment.Center
 bannerReward.RichText=true
+bannerReward.TextScaled=true
+make("UITextSizeConstraint",bannerReward,{MinTextSize=10,MaxTextSize=12})
 
 local shade = make("TextButton", gui, {
 	Text = "",
@@ -687,7 +698,7 @@ local function notify(message)
 	end
 	-- Phones (compact layout): one short strip that stays clear of touch controls.
 	local compactToast = THUMBS.compact
-	notice:FindFirstChild("NoticeLimit").MaxSize = compactToast and Vector2.new(560, 60) or Vector2.new(560, 180)
+	notice:FindFirstChild("NoticeLimit").MaxSize = compactToast and Vector2.new(340, 60) or Vector2.new(560, 180)
 	notice.TextSize = compactToast and 12 or 13
 	notice.TextTruncate = compactToast and Enum.TextTruncate.AtEnd or Enum.TextTruncate.None
 	noticeIndex += 1
@@ -723,7 +734,6 @@ local state = {
 }
 local synced = false
 local current = "Journal"
-local compactAtlas = false
 local railMode = false
 local render, send, sendCoop
 local coopState, coopError
@@ -746,37 +756,11 @@ local function heading(text)
 	marker.Rotation=45
 	label(strip,text,19,2,UDim.new(1,-25),25,bold,11,mint)
 end
--- Flexible card copy remains stacked beneath custom item art at phone widths.
+-- Simple title/detail/action rows share the card style (forward-declared card).
+local card
 local function row(title, detail, tag, callback)
-	local box = listItem(panel(scroll, UDim2.new(), UDim2.new(1, -7, 0, 0), deep))
-	box.AutomaticSize = Enum.AutomaticSize.Y
-	rounded(box, 10, slate)
-	make("UIGradient",box,{Color=ColorSequence.new(rgb("FFFFFF"),rgb("B2D0D6")),Rotation=22})
-	make("UIPadding", box, {PaddingTop=UDim.new(0,12),PaddingBottom=UDim.new(0,12),PaddingLeft=UDim.new(0,12),PaddingRight=UDim.new(0,12)})
-	make("UIListLayout", box, {SortOrder=Enum.SortOrder.LayoutOrder,Padding=UDim.new(0,9)})
-	local iconSize=compactAtlas and 40 or 52
-	local titleBand=panel(box,UDim2.new(),UDim2.new(1,0,0,iconSize+2),deep)
-	titleBand.BackgroundTransparency=1
-	titleBand.AutomaticSize=Enum.AutomaticSize.Y
-	titleBand.LayoutOrder=1
-	titleArt(titleBand,title,iconSize,current)
-	local titleLabel = label(titleBand, title, iconSize+12, 1, UDim.new(1,-iconSize-12), iconSize, bold, compactAtlas and 14 or 16, ivory)
-	titleLabel.AutomaticSize = Enum.AutomaticSize.Y
-	titleLabel.TextWrapped = true
-	titleLabel.TextTruncate = Enum.TextTruncate.None
-	titleLabel.TextYAlignment=Enum.TextYAlignment.Center
-	local sub = label(box, detail, 0, 0, full, 18, regular, compactAtlas and 12 or 13, muted)
-	sub.LayoutOrder = 2
-	sub.AutomaticSize = Enum.AutomaticSize.Y
-	sub.TextWrapped = true
-	sub.TextTruncate = Enum.TextTruncate.None
-	if tag then
-		local actions = panel(box, UDim2.new(), UDim2.new(1,0,0,44), deep)
-		actions.BackgroundTransparency=1
-		actions.LayoutOrder = 3
-		local line=panel(actions,UDim2.new(0,0,.5,0),UDim2.new(1,-120,0,1),slate)
-		button(actions, tag, UDim2.new(1,-108,0,0), UDim2.fromOffset(108,44), callback)
-	end
+	card({icon=function(parent,size) return titleArt(parent,title,size,current) end,title=escape(title),detail=escape(detail),
+		actions=tag and {{caption=tag,primary=tag~="Locked" and tag~="Cancel",name=tag:gsub("[^%w]","").."Button",fn=callback}} or nil})
 end
 local function count(map, key)
 	local source=state[map]
@@ -839,7 +823,7 @@ local function contentWidth()
 end
 -- Shared card: icon band (item art, motif or custom), rich title/subtitle,
 -- badge, copy lines, progress bar, pips and right-aligned actions.
-local function card(o)
+function card(o)
 	local box=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,0),o.fill or deep))
 	box.AutomaticSize=Enum.AutomaticSize.Y
 	if o.name then box.Name=o.name end
@@ -866,24 +850,29 @@ local function card(o)
 		else motif(band,o.motif,iconSize) end
 		textX=iconSize+10
 	end
-	local badgeWidth=o.badge and (compactAtlas and 84 or 104) or 0
+	-- Badge column grows with its copy (rich tags stripped) instead of truncating.
+	local badgeWidth=0
+	if o.badge then
+		local plain=tostring(o.badge):gsub("<[^>]+>","")
+		badgeWidth=math.clamp((utf8.len(plain) or #plain)*(compactAtlas and 9 or 10)+10,compactAtlas and 64 or 84,compactAtlas and 150 or 190)
+	end
 	local blockHeight=20+(o.subtitle and 18 or 0)
 	local top=math.max(0,(bandHeight-blockHeight)//2)
 	local title=label(band,o.title or "",textX,top,UDim.new(1,-textX-badgeWidth-4),20,bold,titleSize,o.titleColor or ivory)
 	title.RichText=true
 	if o.subtitle then
-		local sub=label(band,o.subtitle,textX,top+20,UDim.new(1,-textX-badgeWidth-4),17,regular,compactAtlas and 11 or 12,o.subtitleColor or muted)
+		local sub=label(band,o.subtitle,textX,top+20,UDim.new(1,-textX-badgeWidth-4),17,regular,12,o.subtitleColor or muted)
 		sub.RichText=true
 	end
 	if o.badge then
-		local badge=label(band,o.badge,0,0,UDim.new(0,badgeWidth),20,bold,compactAtlas and 11 or 13,o.badgeColor or gold)
+		local badge=label(band,o.badge,0,0,UDim.new(0,badgeWidth),20,bold,compactAtlas and 12 or 13,o.badgeColor or gold)
 		badge.Position=UDim2.new(1,-badgeWidth,0,top)
 		badge.TextXAlignment=Enum.TextXAlignment.Right
 		badge.RichText=true
 	end
 	if type(o.detail)=="string" and o.detail~="" then para(body,o.detail,nextOrder(),o.detailColor) end
 	local lines=o.lines or EMPTY
-	for i=1,12 do
+	for i=1,16 do
 		local line=lines[i]
 		if type(line)=="string" and line~="" then para(body,line,nextOrder(),o.linesColor or muted) end
 	end
@@ -901,9 +890,9 @@ local function card(o)
 				if action.disabled then notify(action.reason or "Not available yet.") return end
 				action.fn()
 			end)
-			b.Name=(o.name or "Card")..(action.caption:gsub("[^%w]",""))
+			b.Name=action.name or ((o.name or "Card")..(action.caption:gsub("[^%w]","")))
 			b.TextScaled=true
-			make("UITextSizeConstraint",b,{MinTextSize=9,MaxTextSize=14})
+			make("UITextSizeConstraint",b,{MinTextSize=11,MaxTextSize=14})
 			if action.disabled then b.BackgroundColor3=ink;b.TextColor3=muted end
 			if action.primary then b.BackgroundColor3=rgb("2F6D63") end
 		end
@@ -925,7 +914,7 @@ local function sectionBar(options,selected,onPick,opts)
 		local b=button(holder,name,UDim2.new(c/per,0,0,r*(height+4)),UDim2.new(1/per,-4,0,height),function() onPick(name) end)
 		b.Name=(opts.prefix or "Section")..(tostring(name):gsub("[^%w]",""))
 		b.TextScaled=true
-		make("UITextSizeConstraint",b,{MinTextSize=9,MaxTextSize=compactAtlas and 12 or 14})
+		make("UITextSizeConstraint",b,{MinTextSize=11,MaxTextSize=compactAtlas and 13 or 14})
 		if opts.small or per>3 then
 			local engraving=b:FindFirstChild("ControlEngraving")
 			if engraving then engraving:Destroy() end
@@ -1140,7 +1129,8 @@ local function rewardText(r)
 	if num(r.coins,0)>0 then table.insert(parts,fmt(r.coins).." coins") end
 	for skill,amount in pairs(tbl(r.xp)) do table.insert(parts,fmt(amount).." "..skill.." XP") end
 	if type(r.lamp)=="table" then
-		local skills=type(r.lamp.skills)=="table" and table.concat(r.lamp.skills,"/") or "any skill"
+		local skills=type(r.lamp.skills)=="table" and table.concat(r.lamp.skills,"/")
+			or (type(r.lamp.exclude)=="table" and #r.lamp.exclude>0 and ("any skill but "..table.concat(r.lamp.exclude,"/"))) or "any skill"
 		table.insert(parts,"XP lamp: "..fmt(r.lamp.xp).." ("..skills..")")
 	end
 	for id,n in pairs(tbl(r.items)) do
@@ -1174,11 +1164,16 @@ local function drawQuests()
 			local entry=entries[q.id] or EMPTY
 			local badge,color=questStatus(entry)
 			local lines={}
+			-- Grouped copy: a gold caption per group, indented checklist beneath it.
+			local function group(caption) table.insert(lines,"<b>"..paint(caption,"F9CC77").."</b>") end
 			if entry.done~=true then
-				for i,o in ipairs(q.requires) do table.insert(lines,(i==1 and "Requires  " or "")..(checkLine(o,tbl(entry.requires)[i]))) end
-				for i,o in ipairs(q.objectives) do table.insert(lines,(i==1 and "Tasks  " or "")..(checkLine(o,tbl(entry.objectives)[i]))) end
+				if #q.requires>0 then group("REQUIRES") end
+				for i,o in ipairs(q.requires) do table.insert(lines,"   "..(checkLine(o,tbl(entry.requires)[i]))) end
+				if #q.objectives>0 then group("TASKS") end
+				for i,o in ipairs(q.objectives) do table.insert(lines,"   "..(checkLine(o,tbl(entry.objectives)[i]))) end
 			end
-			table.insert(lines,"Rewards  "..rewardText(q.rewards))
+			group("REWARDS")
+			table.insert(lines,"   "..rewardText(q.rewards))
 			local actions={}
 			local lamp=type(q.rewards.lamp)=="table" and q.rewards.lamp
 			local picking=QJ.lampFor==q.id and entry.ready==true and lamp
@@ -1197,7 +1192,11 @@ local function drawQuests()
 				badge=badge,badgeColor=color,detail=entry.done~=true and escape(q.story or "") or nil,lines=lines,actions=actions,
 				after=picking and function(body,nextOrder)
 					para(body,"Choose a skill for your "..fmt(lamp.xp).." XP lamp:",nextOrder(),gold)
-					local skills=type(lamp.skills)=="table" and lamp.skills or Data.SkillOrder
+					-- lamp.exclude names skills the server refuses for this lamp (e.g. Dungeoneering, Carpentry).
+					local skills={}
+					for _,skill in ipairs(type(lamp.skills)=="table" and lamp.skills or Data.SkillOrder) do
+						if not (type(lamp.exclude)=="table" and table.find(lamp.exclude,skill)) then table.insert(skills,skill) end
+					end
 					local per=compactAtlas and 3 or 4
 					local height=compactAtlas and 34 or 38
 					local rows=math.ceil(#skills/per)
@@ -1210,7 +1209,7 @@ local function drawQuests()
 						end)
 						b.Name="Lamp"..skill
 						b.TextScaled=true
-						make("UITextSizeConstraint",b,{MinTextSize=9,MaxTextSize=13})
+						make("UITextSizeConstraint",b,{MinTextSize=11,MaxTextSize=13})
 					end
 				end or nil})
 			shown+=1
@@ -1239,7 +1238,7 @@ local function drawDiaries()
 	local claimed=num(entry.claimed,0)
 	card({name="DiarySummary",motif="Hunt",title=escape(diary.name),titleColor=gold,
 		subtitle=claimed.." / "..#Data.DiaryTiers.." tiers claimed  ·  "..total.." / "..(#Data.Diaries*#Data.DiaryTiers).." across the isles",
-		pips={total=#Data.DiaryTiers,filled=claimed,color=gold,labels={"E","M","H","El"}}})
+		pips={total=#Data.DiaryTiers,filled=claimed,color=gold,labels={"Easy","Medium","Hard","Elite"}}})
 	local tiers={}
 	for _,t in ipairs(tbl(entry.tiers)) do if type(t)=="table" and type(t.tier)=="string" then tiers[t.tier]=t end end
 	for index,tierName in ipairs(Data.DiaryTiers) do
@@ -1294,7 +1293,7 @@ local function drawConstruction()
 	local names={}
 	for _,h in ipairs(Data.Hotspots) do table.insert(names,h.id) end
 	if not Data.HotspotById[QJ.hotspot] then QJ.hotspot=names[1] end
-	sectionBar(names,QJ.hotspot,function(name) QJ.hotspot=name QJ.removeFor=nil render() end,{small=true,prefix="Hotspot",maxPer=compactAtlas and 4 or 7})
+	sectionBar(names,QJ.hotspot,function(name) QJ.hotspot=name QJ.removeFor=nil render() end,{small=true,prefix="Hotspot",maxPer=(compactAtlas and not railMode) and 4 or 7})
 	local h=Data.HotspotById[QJ.hotspot]
 	local currentId=type(furniture[h.id])=="string" and Data.Furniture[furniture[h.id]] and furniture[h.id] or nil
 	local current=currentId and Data.Furniture[currentId]
@@ -1324,7 +1323,7 @@ local function drawConstruction()
 					local b=button(grid,Data.RegionById[region].name,UDim2.new(c/per,0,0,r*(height+4)),UDim2.new(1/per,-4,0,height),function() send("portal",region) end)
 					b.Name="Portal"..region
 					b.TextScaled=true
-					make("UITextSizeConstraint",b,{MinTextSize=8,MaxTextSize=12})
+					make("UITextSizeConstraint",b,{MinTextSize=11,MaxTextSize=12})
 					if con.portal==region then b.BackgroundColor3=mint b.TextColor3=deep end
 				end
 			end
@@ -1428,7 +1427,7 @@ local function drawSkills()
 	if selectedSkill and levels[selectedSkill] then drawSkillDetail(selectedSkill,levels[selectedSkill]) heading("ALL SKILLS") end
 	local width=contentWidth()
 	local columns=width>=690 and 3 or (width>=400 and 2 or 1)
-	local cellHeight=compactAtlas and 82 or 94
+	local cellHeight=compactAtlas and 100 or 110
 	local grid=gridHolder(UDim2.new(1/columns,-6,0,cellHeight),6)
 	for i,skill in ipairs(skills) do
 		local info=levels[skill]
@@ -1440,18 +1439,21 @@ local function drawSkills()
 			render()
 		end)
 		make("UIStroke",tileButton,{Color=selectedSkill==skill and gold or color,Transparency=selectedSkill==skill and 0 or .55,Thickness=selectedSkill==skill and 2 or 1})
-		local accent=make("Frame",tileButton,{Position=UDim2.fromOffset(0,0),Size=UDim2.new(0,4,1,0),BackgroundColor3=color,BorderSizePixel=0})
+		local accent=make("Frame",tileButton,{Position=UDim2.fromOffset(0,10),Size=UDim2.new(0,4,1,-20),BackgroundColor3=color,BorderSizePixel=0})
+		make("UICorner",accent,{CornerRadius=UDim.new(0,2)})
 		local nameText=label(tileButton,skill,12,compactAtlas and 5 or 7,UDim.new(1,-80),20,bold,compactAtlas and 13 or 15,ivory)
 		local levelText=label(tileButton,info.maxed and "MAX" or (info.level.." / "..maxLevel()),0,compactAtlas and 5 or 7,UDim.new(0,70),20,bold,compactAtlas and 12 or 14,rgb(lighten(hex,.3)))
 		levelText.Position=UDim2.new(1,-78,0,compactAtlas and 5 or 7)
 		levelText.TextXAlignment=Enum.TextXAlignment.Right
-		local reward=label(tileButton,statText(skillDef(skill).perLevel,1).." "..paint("/ level","BECECA"),12,compactAtlas and 25 or 29,UDim.new(1,-20),16,regular,compactAtlas and 10 or 11,muted)
+		local reward=label(tileButton,statText(skillDef(skill).perLevel,1).." "..paint("/ level","BECECA"),12,compactAtlas and 25 or 29,UDim.new(1,-20),compactAtlas and 30 or 28,regular,compactAtlas and 10 or 11,muted)
 		reward.RichText=true
+		reward.TextWrapped=true
+		reward.TextYAlignment=Enum.TextYAlignment.Top
 		local bar=progress(tileButton,info.fraction,color,nil,compactAtlas and 10 or 12)
-		bar.Position=UDim2.new(0,12,0,compactAtlas and 45 or 51)
+		bar.Position=UDim2.new(0,12,0,compactAtlas and 60 or 63)
 		bar.Size=UDim2.new(1,-22,0,compactAtlas and 10 or 12)
 		local remaining=info.maxed and (fmt(info.xp).." XP  ·  mastered") or (fmt(math.max(0,info.ceiling-info.xp)).." XP to "..(info.level+1).."  ·  "..math.floor(info.fraction*1000+.5)/10 .."%")
-		label(tileButton,remaining,12,compactAtlas and 59 or 68,UDim.new(1,-20),16,regular,compactAtlas and 10 or 11,muted)
+		label(tileButton,remaining,12,compactAtlas and 76 or 82,UDim.new(1,-20),16,regular,compactAtlas and 10 or 11,muted)
 	end
 end
 
@@ -1579,7 +1581,7 @@ local function drawGear()
 	-- Gathering tools (auto-selected best tool per skill).
 	heading("GATHERING TOOLS")
 	local tools=tbl(d.tools)
-	local toolGrid=gridHolder(UDim2.new(width>=440 and .5 or 1,-6,0,compactAtlas and 50 or 58),6)
+	local toolGrid=gridHolder(UDim2.new(width>=440 and .5 or 1,-6,0,compactAtlas and 60 or 62),6)
 	for i,skill in ipairs({"Mining","Woodcutting","Fishing","Farming"}) do
 		local toolId=tools[skill]
 		local toolDef=itemDef(toolId)
@@ -1589,12 +1591,12 @@ local function drawGear()
 		make("UIStroke",toolTile,{Color=rgb(skillHex(skill)),Transparency=.5,Thickness=1})
 		local size=compactAtlas and 38 or 44
 		local art=toolDef and itemIcon(toolTile,toolId,size) or motif(toolTile,"Workshop",size)
-		art.Position=UDim2.fromOffset(6,(compactAtlas and 50 or 58)/2-size/2)
-		label(toolTile,skill,size+14,compactAtlas and 5 or 8,UDim.new(1,-size-20),16,bold,10,rgb(lighten(skillHex(skill),.3)))
-		local toolName=label(toolTile,toolDef and toolDef.name or "Bare hands",size+14,compactAtlas and 20 or 24,UDim.new(1,-size-20),18,bold,compactAtlas and 12 or 13,toolDef and rgb(itemHex(toolId)) or muted)
+		art.Position=UDim2.fromOffset(8,(compactAtlas and 60 or 62)/2-size/2)
+		label(toolTile,skill,size+16,compactAtlas and 5 or 7,UDim.new(1,-size-22),16,bold,11,rgb(lighten(skillHex(skill),.3)))
+		local toolName=label(toolTile,toolDef and toolDef.name or "Bare hands",size+16,compactAtlas and 22 or 23,UDim.new(1,-size-22),18,bold,compactAtlas and 12 or 13,toolDef and rgb(itemHex(toolId)) or muted)
 		local fortune=toolDef and tbl(toolDef.stats)[tbl(Data.FortuneStat)[skill]]
 		local tierText=toolDef and ("Tier "..num(toolDef.toolTier,1)..(fortune and ("  ·  +"..fmt(fortune).." ☘") or "")) or "Craft one at the Forge"
-		label(toolTile,tierText,size+14,compactAtlas and 34 or 40,UDim.new(1,-size-20),14,regular,10,muted)
+		label(toolTile,tierText,size+16,compactAtlas and 41 or 42,UDim.new(1,-size-22),14,regular,11,muted)
 	end
 	-- Active timed effects.
 	local buffs={}
@@ -1888,7 +1890,8 @@ local function itemDetail(id)
 		if def.kind=="accessory" then table.insert(lines,paint("✧ Magical Power "..tostring(tbl(tbl(Data.Rarity)[def.rarity]).power or "?"),"FFAA00")) end
 		local ok,requirements=meetsRequires(def.requires,levels)
 		if requirements~="" then table.insert(lines,"Requires "..requirements) end
-		if type(def.description)=="string" then table.insert(lines,escape(def.description)) end
+		-- Skip flavour copy that only repeats the requirement line above it.
+		if type(def.description)=="string" and not (requirements~="" and def.description:match("^Requires")) then table.insert(lines,escape(def.description)) end
 		table.insert(lines,paint("Sells for "..fmt(def.value).." coins each  ·  "..fmt(num(def.value,0)*n).." for the stack","F9CC77"))
 		-- Actions per kind.
 		local slot=def.slot
@@ -2035,10 +2038,11 @@ local function drawCollections()
 	end
 	heading(string.upper(collectionGroup).."    /    "..discovered.." OF "..#items.." DISCOVERED  ·  "..tiers.." TIERS")
 	local groupColor=collectionGroup=="Combat" and rgb("C8553D") or rgb(skillHex(collectionGroup))
+	local hidden={}
 	for _,id in ipairs(items) do
 		local amount,tier,nextAt=collectionInfo(id)
 		if amount<=0 then
-			card({name="Collection"..id,locked=true,title="???",titleColor=muted,subtitle="Undiscovered",detail="Collect this item once to reveal its collection."})
+			table.insert(hidden,id)
 		else
 			local def=itemDef(id)
 			local previous=tier>0 and (collectionThreshold(id,tier) or 0) or 0
@@ -2077,6 +2081,22 @@ local function drawCollections()
 				subtitle=fmt(amount).." collected",badge=tier>0 and ("Tier "..numeral(tier)) or "Tier 0",badgeColor=tier>0 and gold or muted,
 				pips={total=maxTier,filled=tier,color=groupColor,labels=labels},
 				bar={fraction=fraction,color=gold,caption=maxed and "COLLECTION MAXED" or (fmt(amount).." / "..fmt(nextAt))},lines=lines})
+		end
+	end
+	-- Undiscovered entries share one compact grid of sealed tiles instead of a
+	-- column of identical "???" cards.
+	if #hidden>0 then
+		heading("UNDISCOVERED    /    COLLECT ONCE TO REVEAL")
+		local size=compactAtlas and 40 or 46
+		local grid=gridHolder(UDim2.fromOffset(size+16,size+30),6)
+		for i,id in ipairs(hidden) do
+			local cell=make("Frame",grid,{Name="Collection"..id,BackgroundColor3=deep,BorderSizePixel=0,LayoutOrder=i})
+			make("UICorner",cell,{CornerRadius=UDim.new(0,10)})
+			make("UIStroke",cell,{Color=slate,Transparency=.35,Thickness=1})
+			local icon=itemIcon(cell,id,size,true)
+			icon.Position=UDim2.new(.5,-size/2,0,7)
+			local caption=label(cell,"???",0,size+9,full,16,bold,12,muted)
+			caption.TextXAlignment=Enum.TextXAlignment.Center
 		end
 	end
 end
@@ -2544,7 +2564,7 @@ local function drawBank()
 	local crest=motif(balance,"Ledger",42)
 	crest.Position=UDim2.fromOffset(10,12)
 	label(balance,"WAYFARER VAULT",64,8,UDim.new(1,-76),18,bold,10,gold)
-	label(balance,"Purse  "..num(state.coins,0).."     /     Vault  "..num(state.bank,0),64,29,UDim.new(1,-76),23,bold,compactAtlas and 13 or 16,ivory)
+	label(balance,"Purse  "..fmt(num(state.coins,0)).."     /     Vault  "..fmt(num(state.bank,0)),64,29,UDim.new(1,-76),23,bold,compactAtlas and 13 or 16,ivory)
 	label(balance,"Stored coins are protected from death loss.",12,61,UDim.new(1,-24),19,regular,11,muted)
 	local direction=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,44),ink))
 	for index,option in ipairs({{"deposit","Deposit"},{"withdraw","Withdraw"}}) do
@@ -2580,9 +2600,9 @@ local function drawBank()
 		if amount then
 			local purseAfter=num(state.coins,0)+(bankDirection=="deposit" and -amount or amount)
 			local vault=num(state.bank,0)+(bankDirection=="deposit" and amount or -amount)
-			projected.Text="After transfer: Purse "..purseAfter.."  /  Vault "..vault..". Your balance is checked again when you transfer."
+			projected.Text="After transfer: Purse "..fmt(purseAfter).."  /  Vault "..fmt(vault)..". Your balance is checked again when you transfer."
 			projected.TextColor3=mint
-			transfer.Text=(bankDirection=="deposit" and "Deposit " or "Withdraw ")..amount.." coins"
+			transfer.Text=(bankDirection=="deposit" and "Deposit " or "Withdraw ")..fmt(amount).." coins"
 		else
 			projected.Text=problem
 			projected.TextColor3=gold
@@ -3158,9 +3178,9 @@ render = function(fromPush)
 	closeButton.Size=railMode and UDim2.fromOffset(50,38) or UDim2.fromOffset(54,43)
 	if railMode then
 		tabs.Position=UDim2.fromOffset(8,headHeight+6)
-		tabs.Size=UDim2.new(0,88,1,-headHeight-12)
-		scroll.Position=UDim2.fromOffset(104,headHeight+6)
-		scroll.Size=UDim2.new(1,-112,1,-headHeight-12)
+		tabs.Size=UDim2.new(0,98,1,-headHeight-12)
+		scroll.Position=UDim2.fromOffset(114,headHeight+6)
+		scroll.Size=UDim2.new(1,-122,1,-headHeight-12)
 		footer.Visible=false
 	else
 		tabs.Position=UDim2.fromOffset(10,compactAtlas and 70 or 96)
@@ -3170,7 +3190,7 @@ render = function(fromPush)
 		scroll.Size=UDim2.new(1,-24,1,-contentTop-37)
 		footer.Visible=true
 	end
-	purse.Text = synced and ((state.ironman and "Ironman" or "Voyager") .. "   ·   " .. num(state.coins,0) .. " coins")
+	purse.Text = synced and ((state.ironman and "Ironman" or "Voyager") .. "   ·   " .. fmt(num(state.coins,0)) .. " coins")
 		or "Opening ledger…"
 	instruction.Text = synced and nextGoal() or "Charting the islands…"
 	updateVitals()
@@ -3239,7 +3259,7 @@ for _, name in ipairs(tabOrder) do
 	tabCaption.Name="TabCaption"
 	tabCaption.TextXAlignment=Enum.TextXAlignment.Center
 	tabCaption.TextScaled=true
-	make("UITextSizeConstraint",tabCaption,{MinTextSize=9,MaxTextSize=12})
+	make("UITextSizeConstraint",tabCaption,{MinTextSize=11,MaxTextSize=13})
 	b.TextSize = 13
 	b.TextScaled = true
 	make("UITextSizeConstraint", b, {MinTextSize=10,MaxTextSize=13})
@@ -3323,6 +3343,9 @@ local function showNextBanner()
 	local entry=table.remove(bannerQueue,1)
 	if not entry then bannerBusy=false;banner.Visible=false;return end
 	bannerBusy=true
+	-- Narrow screens: keep the banner clear of the touch attack button (bottom right).
+	local view=gui.AbsoluteSize
+	banner:FindFirstChild("BannerLimit").MaxSize=Vector2.new(view and view.X<900 and 340 or 420,74)
 	local hex=skillHex(entry.skill)
 	bannerTitle.Text=entry.skill.."  "..entry.from.."  →  "..entry.to
 	bannerTitle.TextColor3=rgb(lighten(hex,.35))

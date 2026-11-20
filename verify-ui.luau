@@ -1058,4 +1058,25 @@ for _, size in ipairs({ roblox.Vector2.new(730, 303), roblox.Vector2.new(420, 60
 	noFailures(ui, "journal flow" .. tag)
 end
 
+-- 10. XP lamps hide the skills their quest excludes (server refuses them too).
+do
+	local snap = snapshot()
+	for _, entry in ipairs(snap.journal.quests) do
+		if entry.id == "SurveyorsOath" then entry.done, entry.ready = false, true end
+	end
+	local ui = run({ snapshot = snap })
+	press(find(ui.gui, "AtlasButton"))
+	visit(ui, "Journal", "Quests")
+	press(find(ui.scroll, "QuestSurveyorsOathClaim"))
+	assert(find(ui.scroll, "LampPicker") and find(ui.scroll, "LampMining"), "lamp picker offers ordinary skills")
+	for _, skill in ipairs(Data.QuestById.SurveyorsOath.rewards.lamp.exclude or {}) do
+		assert(find(ui.scroll, "Lamp" .. skill) == nil, "excluded lamp skill hidden: " .. skill)
+		checks += 1
+	end
+	press(find(ui.scroll, "LampMining"))
+	assert(ui.sent[#ui.sent][2] == "SurveyorsOath:Mining", "lamp claim payload")
+	noFailures(ui, "lamp exclude")
+	checks += 2
+end
+
 print("UI QA passed " .. checks .. " checks (" .. created .. " mock instances).")
