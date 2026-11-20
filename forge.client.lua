@@ -42,7 +42,16 @@ for _, name in ipairs({"AetherWorldArt", "AetherArt"}) do
 	local catalog = loadCatalog(name)
 	if catalog then table.insert(catalogs, catalog) end
 end
+-- World tags use descriptive prop names; map them onto catalog shapes so every
+-- tagged prop gets a mesh. Names with no good match stay primitive by design.
+local ALIASES = {
+	Rock = "Boulder", CliffRock = "CliffPiece", RockOutcrop = "RockCluster", Stalactite = "RockCluster",
+	OreVein = "OreVein2", CropBed = "CropWheat", Bush = "CropBush",
+	Lamp = "StreetLamp", Torch = "LampPost",
+	Column = "Obelisk", RuinColumn = "Obelisk", Waystone = "Obelisk", StormPylon = "Obelisk", StormSpire = "Obelisk",
+}
 local function lookup(shapeName)
+	shapeName = ALIASES[shapeName] or shapeName
 	for _, catalog in ipairs(catalogs) do
 		local data = catalog.shapes[shapeName]
 		if type(data) == "table" and type(data.vertices) == "table" and type(data.faces) == "table" then return data, catalog end
@@ -300,6 +309,7 @@ local function forge(part)
 	local shapeName = part:GetAttribute("Shape")
 	if type(shapeName) ~= "string" then return end
 	if part:GetAttribute("SculptureScale") ~= nil and part:GetAttribute("ShapeScale") == nil then skip(part, "legacy sculpture", true); return end
+	shapeName = ALIASES[shapeName] or shapeName
 	local data, catalog = lookup(shapeName)
 	if not data then skip(part, "unknown shape", true); return end
 	if stopReason then skip(part, stopReason, true); return end
