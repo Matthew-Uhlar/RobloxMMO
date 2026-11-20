@@ -196,10 +196,19 @@ do
 			check(chassis:FindFirstChild("Worker status"):FindFirstChildOfClass("TextLabel").Text:find("Locked",1,true)~=nil,"locked station explains itself")
 		end
 	end
+	-- Tier rings (cylinders: Size.Y/Z = diameter) never overlap or z-fight.
+	local ringRadius={}
+	for slot=1,Data.Workers.MAX_SLOTS do
+		local ring=homeA:FindFirstChild("WorkerStation"..slot):FindFirstChild("Tier ring")
+		ringRadius[slot]=ring.Size.Z/2
+		check(ring.Size.Z/2>=2.3,"tier ring "..slot.." frames its pad")
+	end
 	for i=1,Data.Workers.MAX_SLOTS do
 		for j=i+1,Data.Workers.MAX_SLOTS do
 			local d=pads[i]-pads[j]
-			check(math.sqrt(d.X^2+d.Z^2)>=4.7,"stations "..i.." and "..j.." do not overlap")
+			local dist=math.sqrt(d.X^2+d.Z^2)
+			check(dist>=4.7,"stations "..i.." and "..j.." do not overlap")
+			check(dist>ringRadius[i]+ringRadius[j],"tier rings "..i.." and "..j.." do not overlap ("..string.format("%.2f",dist).." studs)")
 		end
 	end
 	-- Unlock slot 4 and build a Shardling Sentry there.
@@ -442,6 +451,25 @@ for skill,tiers in Data.ResourceTiers do
 		check(formatted,def.id.." has a '"..VERB[skill].."' prompt labelled with name and level")
 		if def.level<=3 then check(ungated,def.id.." is available near home without a gate") end
 		if def.level>=30 then check(not ungated,def.id.." lives in a gated region") end
+	end
+end
+-- Workers depth: Data.Workers.ResourceRegion names exactly the resources whose
+-- every public node sits in one gated region (those worker types need it unlocked).
+do
+	local derived={}
+	for id,nodes in gatherNodes do
+		local only=nil
+		for i,q in nodes do
+			local region=q:GetAttribute("IsleRegion")
+			if i==1 then only=region elseif region~=only then only=nil end
+			if region==nil then only=nil; break end
+		end
+		if only and Data.ResourceSkill[id] then derived[id]=only end
+	end
+	for id,region in derived do check(Data.Workers.ResourceRegion[id]==region,id.." is exclusive to "..region.." in the world and in Workers.ResourceRegion") end
+	for id,region in Data.Workers.ResourceRegion do check(derived[id]==region,id.." Workers.ResourceRegion "..region.." matches its world nodes") end
+	for _,t in Data.Workers.Types do
+		if t.kind=="gather" then check(t.region==derived[t.output],t.id.." worker region gate follows its nodes") end
 	end
 end
 -- Every monster: spawn markers in its region on open ground.

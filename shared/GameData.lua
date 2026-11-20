@@ -4381,6 +4381,39 @@ W.SELL_SHARE = 0.5          -- auto-seller pays this share of item value
 W.UPGRADE_SLOTS = 2
 W.FUEL_STACK = 64           -- a timed fuel may hold at most 64 burns of itself
 W.MAX_STORE = 100000        -- sanity bound on any stored count (migration)
+-- Passive-vs-active balance (verify-workers.luau section 10 holds the model):
+--   * at most MAX_PER_TYPE workers of one type and MAX_COMBAT combat workers;
+--   * gathering pace scales with the node's respawn (GATHER_PACE x respawn
+--     seconds per tier-1 interval unit; starter resources keep pace 1);
+--   * worker XP per item is a tenth of a manual harvest (starters: 3);
+--   * combat-worker output credits drop collections at 1/COMBAT_COLLECTION_DIV
+--     (25%), and combat workers need the drop's collection tier 3;
+--   * high gathering tiers need collection tier 4 (level 60+) or 5 (level 75+)
+--     and region-exclusive resources need that region unlocked (ResourceRegion).
+-- Over-cap or no-longer-allowed workers (legacy saves) idle: they keep their
+-- stored output for claiming but produce nothing until reassigned.
+W.MAX_PER_TYPE = 3
+W.MAX_COMBAT = 2
+W.GATHER_PACE = 0.4
+W.XP_DIVISOR = 10
+W.COMBAT_COLLECTION_DIV = 4
+W.COMBAT_COLLECTION_TIER = 3
+-- Resources whose every node lies in one gated region (verify-world.luau
+-- checks this map against the built world).
+W.ResourceRegion = {
+	WindpineLog="Windpine", EmberoakLog="Windpine", AetherheartLog="Windpine", Glowcap="Windpine",
+	Voidstone="Gloomhollow", Prismite="Gloomhollow", AbyssKoi="Gloomhollow", Moonbloom="Gloomhollow",
+	Stormeel="Tidewater", Lanternray="Tidewater", LeviathanScale="Tidewater", GlimmerbarkLog="Tidewater", AetherLotus="Tidewater",
+	StarmetalOre="Tempest", Celestium="Tempest", StarwoodLog="Tempest", Starfruit="Tempest",
+	Crownstone="ShatteredCrown", ShatterbarkLog="ShatteredCrown", Riftfin="ShatteredCrown",
+}
+function W.gatherCollectionTier(r)
+	if r.index == 1 then return 0 end
+	if r.level >= 75 then return 5 end
+	if r.level >= 60 then return 4 end
+	if r.level >= 30 then return 2 end
+	return 1
+end
 
 local function rarityStep(rarity, n)
 	local index = table.find(Data.RarityOrder, rarity) or 1
@@ -4403,21 +4436,24 @@ for _, skill in ipairs({"Mining", "Woodcutting", "Fishing", "Farming"}) do
 	for _, r in ipairs(Data.ResourceTiers[skill]) do
 		local short = string.gsub(string.gsub(r.name, " Ore$", ""), " Log$", "")
 		addType({id=r.id, kind="gather", name=short.." "..roles[skill], output=r.id, skill=skill,
-			level=if r.index == 1 then 1 else r.level, collectionTier=if r.index == 1 then 0 else 1,
-			speed=1, xp=if r.index == 1 then 3 else math.max(3, r.xp // 4), shape=typeShapes[skill], color=r.color, resourceTier=r.index})
+			level=if r.index == 1 then 1 else r.level, collectionTier=W.gatherCollectionTier(r), region=W.ResourceRegion[r.id],
+			speed=if r.index == 1 then 1 else math.floor(r.respawn * W.GATHER_PACE * 10 + 0.5) / 10, xp=if r.index == 1 then 3 else math.max(3, r.xp // W.XP_DIVISOR),
+			shape=typeShapes[skill], color=r.color, resourceTier=r.index})
 	end
 end
--- Combat workers: slower (speed = interval multiplier), gated by Combat level
--- and the drop's collection; they produce the drop and grant Combat XP.
+-- Combat workers: much slower (speed = interval multiplier), gated by Combat
+-- level and the drop's collection tier 3; they produce the drop and grant a
+-- little Combat XP. Paces keep two maxed combat workers under ~30% of active
+-- farming of the same drop (verify-workers.luau section 10).
 for _, c in ipairs({
-	{id="HidetanSnare", name="Hidetan Snare", output="BeastHide", level=3, speed=1.5, xp=3, shape="HideRoll"},
-	{id="DustsiftCrucible", name="Dustsift Crucible", output="ArcaneDust", level=8, speed=1.5, xp=3, shape="DustPile"},
-	{id="ShardlingSentry", name="Shardling Sentry", output="Shard", level=10, speed=3, xp=5, shape="AetherCrystal"},
-	{id="GloomsilkLoom", name="Gloomsilk Loom", output="SpiderSilk", level=15, speed=2, xp=5, shape="HideRoll"},
-	{id="GalecatchPerch", name="Galecatch Perch", output="StormFeather", level=20, speed=2.5, xp=6, shape="Feather"},
-	{id="WispglowLantern", name="Wispglow Lantern", output="VoidEssence", level=30, speed=4, xp=8, shape="EssenceOrb"},
+	{id="HidetanSnare", name="Hidetan Snare", output="BeastHide", level=3, speed=4, xp=3, shape="HideRoll"},
+	{id="DustsiftCrucible", name="Dustsift Crucible", output="ArcaneDust", level=8, speed=2.5, xp=3, shape="DustPile"},
+	{id="ShardlingSentry", name="Shardling Sentry", output="Shard", level=10, speed=5, xp=5, shape="AetherCrystal"},
+	{id="GloomsilkLoom", name="Gloomsilk Loom", output="SpiderSilk", level=15, speed=5, xp=5, shape="HideRoll"},
+	{id="GalecatchPerch", name="Galecatch Perch", output="StormFeather", level=20, speed=5, xp=6, shape="Feather"},
+	{id="WispglowLantern", name="Wispglow Lantern", output="VoidEssence", level=30, speed=7, xp=8, shape="EssenceOrb"},
 }) do
-	c.kind, c.skill, c.collectionTier, c.color = "combat", "Combat", 1, Data.Items[c.output].color
+	c.kind, c.skill, c.collectionTier, c.color = "combat", "Combat", W.COMBAT_COLLECTION_TIER, Data.Items[c.output].color
 	addType(c)
 end
 
@@ -4450,9 +4486,16 @@ end
 ------------------------------------------------------------------------------
 W.Fuels, W.Upgrades, W.Chests = {}, {}, {}
 W.FuelOrder, W.UpgradeOrder, W.ChestOrder = {}, {}, {}
+-- A part is never worth more than what it is made of (no merchant mints):
+-- value = min(declared, floor(input value / amount)).
+function W.inputValue(rec)
+	local total = 0
+	for id, n in pairs(rec.costs) do total += (Data.Items[id] and Data.Items[id].value or 0) * n end
+	return total // (rec.amount or 1)
+end
 local function part(id, def, rec, kind)
 	def.kind = "material"
-	def.value = def.value or 10
+	def.value = math.min(def.value or 10, W.inputValue(rec))
 	item(id, def)
 	recipe(id, rec)
 	rec.station, rec.category, rec.skill, rec.repeatable = "Workbench", "Worker Parts", "Carpentry", true
@@ -4460,15 +4503,15 @@ end
 -- Fuel: speed is a percentage added to the worker's base pace; duration in
 -- seconds (permanent fuels never burn out and are returned when removed).
 for _, f in ipairs({
-	{id="CharredBriquette", name="Charred Briquette", rarity="Common", color="4A3B33", speed=10, duration=1800, value=4,
+	{id="CharredBriquette", name="Charred Briquette", rarity="Common", color="4A3B33", speed=5, duration=1800, value=4,
 		rec={level=1, xp=6, costs={Timber=24}, amount=2}},
-	{id="EmberwoodBrick", name="Emberwood Brick", rarity="Uncommon", color="B5482A", speed=15, duration=21600, value=60,
+	{id="EmberwoodBrick", name="Emberwood Brick", rarity="Uncommon", color="B5482A", speed=8, duration=21600, value=60,
 		rec={level=15, xp=30, costs={EmberoakLog=16, Ore=8}}},
-	{id="StormcellCanister", name="Stormcell Canister", rarity="Rare", color="7B8CDE", speed=25, duration=43200, value=1800,
+	{id="StormcellCanister", name="Stormcell Canister", rarity="Rare", color="7B8CDE", speed=12, duration=43200, value=1800,
 		rec={level=25, xp=90, costs={CondensedWindpineLog=1, StormFeather=4}}},
-	{id="SunforgeCatalyst", name="Sunforge Catalyst", rarity="Epic", color="F2C14E", speed=40, duration=86400, value=7000,
+	{id="SunforgeCatalyst", name="Sunforge Catalyst", rarity="Epic", color="F2C14E", speed=15, duration=86400, value=7000,
 		rec={level=40, xp=220, costs={CondensedSunsteelOre=1, CondensedEmberoakLog=1, GolemCore=1}}},
-	{id="EverflameHeart", name="Everflame Heart", rarity="Legendary", color="FF7A3D", speed=25, permanent=true, value=25000,
+	{id="EverflameHeart", name="Everflame Heart", rarity="Legendary", color="FF7A3D", speed=10, permanent=true, value=25000,
 		rec={level=55, xp=600, costs={StarFragment=6, CondensedAetherite=3, GolemCore=4}}},
 }) do
 	local text = if f.permanent then "+"..f.speed.."% worker speed, permanently (returned when removed)."
@@ -4697,11 +4740,36 @@ function W.blueprintCost(typeId, tier)
 	if W.BlueprintRaw[tier] then return {[t.output]=W.BlueprintRaw[tier]} end
 	return {[W.Press[t.output].condensed]=W.BlueprintCondensed[tier]}
 end
--- Tier upgrade cost (unchanged from the original ladder).
-function W.upgradeCost(tier)
+-- Tier upgrade cost: the original ladder (tiers 1-3 stay cheap); from tier 4
+-- an upgrade also spends the worker type's own Condensed output, exactly the
+-- blueprint's Condensed cost, so an upgrade is never a cheaper unique craft.
+function W.upgradeCost(tier, typeId)
 	local cost = {Timber=5 * tier, Ore=3 * tier}
-	if tier >= 4 then cost.AlloyIngot = 4 * (tier - 3); cost.AetherIngot = 2 * (tier - 3) end
+	if tier >= 4 then
+		cost.AlloyIngot = 4 * (tier - 3); cost.AetherIngot = 2 * (tier - 3)
+		local blueprint = typeId and W.TypeById[typeId] and W.blueprintCost(typeId, tier)
+		for id, n in pairs(blueprint or {}) do cost[id] = (cost[id] or 0) + n end
+	end
 	return cost
+end
+-- Fleet caps (pure): reason a worker in `slot` may not run type `typeId`
+-- given the other workers in `fleet` (array of {resource=typeId}), or nil.
+-- With countAll=false only earlier slots count (used to idle excess legacy
+-- workers in slot order).
+function W.capReason(fleet, slot, typeId, countAll)
+	local t = W.TypeById[typeId]
+	if not t then return "Unknown worker type." end
+	local same, combat = 0, 0
+	for i, other in ipairs(fleet) do
+		if i ~= slot and (countAll or i < slot) and type(other) == "table" then
+			if other.resource == typeId then same += 1 end
+			local o = W.TypeById[other.resource]
+			if o and o.kind == "combat" then combat += 1 end
+		end
+	end
+	if same >= W.MAX_PER_TYPE then return "At most "..W.MAX_PER_TYPE.." "..t.name.." workers at once." end
+	if t.kind == "combat" and combat >= W.MAX_COMBAT then return "At most "..W.MAX_COMBAT.." combat workers at once." end
+	return nil
 end
 function W.buildCost(slot) return {Timber=5 * slot, Ore=3 * slot} end
 end

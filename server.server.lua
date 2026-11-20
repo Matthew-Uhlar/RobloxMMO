@@ -346,6 +346,7 @@ do
 		out.made=if int(w.made,0,W.MAX_STORE*W.RATIO) then w.made else 0
 		out.coins=if int(w.coins,0,1e12) then w.coins else 0
 		out.bonusCarry=if int(w.bonusCarry,0,1000) then w.bonusCarry else 0
+		out.collectCarry=if int(w.collectCarry,0,W.COMBAT_COLLECTION_DIV-1) then w.collectCarry else 0
 		out.store={}
 		local output=W.TypeById[out.resource].output
 		local press=W.Press[output]
@@ -407,13 +408,6 @@ do
 	end
 	function Workers.migrate(p) p.workersClean=nil; Workers.fleet(p) end
 	function Workers.slots(p) return W.slotsFor(W.uniqueCount(p.workerUniques)) end
-	local function settle(p,w) return W.settle(w,os.time(),haste(p)) end
-	function Workers.ready(p)
-		local w=Workers.fleet(p)[1]
-		if not w then return 0 end
-		settle(p,w)
-		return W.storeCount(w.store)
-	end
 	function Workers.allowed(p,typeId)
 		local t=type(typeId)=="string" and W.TypeById[typeId]
 		if not t then return false,"Choose a gathering resource such as Ore, Timber, Herb or Fish, or a combat worker." end
@@ -423,7 +417,42 @@ do
 		if Progression.collectionTier(p,t.output)<t.collectionTier then
 			return false,"Reach "..Data.Items[t.output].name.." collection tier "..t.collectionTier.." ("..Progression.collectionThreshold(t.output,t.collectionTier).." lifetime) to assign workers."
 		end
+		-- Region-exclusive resources: the region must be unlocked (Workers.regionAllowed
+		-- is bound to regionAllowed once that local is defined below).
+		if t.region and not (Workers.regionAllowed and Workers.regionAllowed(p,t.region)) then
+			local region=Data.RegionById[t.region]
+			return false,name.." workers require "..(region and region.name or t.region).." to be unlocked."
+		end
 		return true
+	end
+	-- Why the worker in `slot` cannot run right now (nil when it works): its type
+	-- is no longer allowed, or earlier slots already fill the type/combat cap.
+	-- Idle workers keep their stored output but produce nothing.
+	function Workers.idle(p,slot)
+		local fleet=Workers.fleet(p)
+		local w=fleet[slot]
+		if not w then return nil end
+		local allowed,why=Workers.allowed(p,w.resource)
+		if not allowed then return why end
+		return W.capReason(fleet,slot,w.resource,false)
+	end
+	local function settle(p,w)
+		local now=os.time()
+		local slot=table.find(Workers.fleet(p),w)
+		local idle=slot and Workers.idle(p,slot)
+		if idle then
+			w.store=w.store or {}
+			w.lastClaim=now; w.carry=0
+			if W.activeFuel(w,now)==nil then w.fuel=nil end
+			return 0
+		end
+		return W.settle(w,now,haste(p))
+	end
+	function Workers.ready(p)
+		local w=Workers.fleet(p)[1]
+		if not w then return 0 end
+		settle(p,w)
+		return W.storeCount(w.store)
 	end
 	local function costText(cost)
 		local parts={}
@@ -435,7 +464,8 @@ do
 		local now,h=os.time(),haste(p)
 		local result={}
 		for slot,w in ipairs(Workers.fleet(p)) do
-			W.settle(w,now,h)
+			settle(p,w)
+			local idle=Workers.idle(p,slot)
 			local t=W.TypeById[w.resource]
 			local fuel=W.activeFuel(w,now)
 			local press,sell,bonus=W.effects(w)
@@ -443,10 +473,10 @@ do
 			local stored=W.storeCount(w.store)
 			result[slot]={slot=slot,resource=w.resource,name=t.name,kind=t.kind,output=t.output,tier=w.tier,maxTier=#Data.WorkerTiers,
 				ready=stored,capacity=cap,interval=W.interval(w.resource,w.tier,h),speed=W.speedPercent(w,now),
-				perHour=math.floor(W.perHour(w,now,h)*10+0.5)/10,full=stored>=cap,store=table.clone(w.store),coins=w.coins or 0,
+				perHour=if idle then 0 else math.floor(W.perHour(w,now,h)*10+0.5)/10,full=stored>=cap,store=table.clone(w.store),coins=w.coins or 0,
 				fuel=fuel and {id=fuel.id,permanent=fuel.permanent,speed=fuel.speed,remaining=if fuel.permanent then nil else w.fuel.expires-now} or nil,
 				upgrades={w.upgrades[1] or false,w.upgrades[2] or false},chest=w.chest,press=press,autoSell=sell~=nil,bonus=bonus and bonus.item or nil,
-				upgradeCost=if w.tier<#Data.WorkerTiers then W.upgradeCost(w.tier+1) else nil}
+				upgradeCost=if w.tier<#Data.WorkerTiers then W.upgradeCost(w.tier+1,w.resource) else nil,idle=idle}
 		end
 		return result
 	end
@@ -482,7 +512,20 @@ do
 			local n=store[id]
 			count+=n
 			local source=W.PressSource[id]
-			if source then
+			if t.kind=="combat" then
+				-- Combat-worker output credits its collection at 1/COMBAT_COLLECTION_DIV
+				-- (25%); the remainder carries to the next claim.
+				local raw=if source then source.raw else id
+				local units=n*(if source then source.units else 1)
+				p.items[id]=(p.items[id] or 0)+n
+				if raw==t.output then
+					local total=(w.collectCarry or 0)+units
+					w.collectCarry=total%W.COMBAT_COLLECTION_DIV
+					units=total
+				end
+				p.collection[raw]=(p.collection[raw] or 0)+units//W.COMBAT_COLLECTION_DIV
+				collect(p,raw,0)
+			elseif source then
 				p.items[id]=(p.items[id] or 0)+n
 				p.collection[source.raw]=(p.collection[source.raw] or 0)+n*source.units
 				collect(p,source.raw,0)
@@ -526,8 +569,11 @@ do
 			local allowed,why=Workers.allowed(p,typeId)
 			if not allowed then return why end
 			if typeId==w.resource then return "Worker already gathering "..typeId.."." end
+			local capped=W.capReason(fleet,slot,typeId,true)
+			if capped then return capped end
 			local count,previous=Workers.claim(p,slot)
 			w.resource=typeId
+			w.collectCarry=0
 			restart(p,slot,w)
 			if slot==1 then p.workerResource=typeId end
 			return "Worker "..slot.." now "..W.TypeById[typeId].name.." • collected "..count.." "..previous.."."
@@ -545,6 +591,8 @@ do
 			typeId=typeId or "Ore"
 			local allowed,why=Workers.allowed(p,typeId)
 			if not allowed then return why end
+			local capped=W.capReason(fleet,slot,typeId,true)
+			if capped then return capped end
 			local cost=W.buildCost(slot)
 			if not spend(p,cost) then return "Worker needs "..cost.Timber.." Timber and "..cost.Ore.." Ore." end
 			fleet[slot]={resource=typeId,tier=1,lastClaim=os.time(),carry=0,store={},made=0,coins=0,bonusCarry=0,upgrades={false,false}}
@@ -558,7 +606,7 @@ do
 			if not w then return "Build this worker first." end
 			if w.tier>=#Data.WorkerTiers then return "Worker is at maximum tier." end
 			local tier=w.tier+1
-			local cost=W.upgradeCost(tier)
+			local cost=W.upgradeCost(tier,w.resource)
 			if not spend(p,cost) then return "Upgrade needs "..costText(cost).."." end
 			Workers.claim(p,slot)
 			w.tier=tier
@@ -705,6 +753,7 @@ local function regionAllowed(p,region)
 	end
 	return true
 end
+Workers.regionAllowed=regionAllowed -- Workers depth: region-exclusive worker types
 local function regionRequirement(def)
 	local parts={}
 	local requires=def.requires or {}

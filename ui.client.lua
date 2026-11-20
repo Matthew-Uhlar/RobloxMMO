@@ -3355,6 +3355,12 @@ function WK.allowed(t,levels)
 	if lvl<num(t.level,1) then return false,"Requires "..tostring(t.skill).." "..num(t.level,1).."." end
 	local _,tier=collectionInfo(t.output)
 	if tier<num(t.collectionTier,1) then return false,"Unlocks at "..itemName(t.output).." collection tier "..numeral(num(t.collectionTier,1)).."." end
+	-- Region-exclusive resources need their region unlocked (server Workers.allowed).
+	if type(t.region)=="string" then
+		for _,r in ipairs(tbl(state.regions)) do
+			if type(r)=="table" and r.id==t.region and not r.unlocked then return false,"Requires "..escape(tostring(r.name or t.region)).." unlocked." end
+		end
+	end
 	return true
 end
 function WK.duration(seconds)
@@ -3455,23 +3461,26 @@ local function drawWorkers()
 	table.sort(storeParts)
 	if #storeParts>0 then table.insert(lines,"Stored: "..table.concat(storeParts,"  ·  ")) end
 	if num(w.coins,0)>0 then table.insert(lines,paint(fmt(w.coins).." coins from the Coinchute","FFD166")) end
+	if type(w.idle)=="string" then table.insert(lines,paint("Idle: "..escape(w.idle).." Reassign it to resume work.","FF7A3D")) end
 	local detailActions={{caption="Collect",primary=num(w.ready,0)>0 or num(w.coins,0)>0,name="WorkerCollect",fn=function() send("workerClaim",slotId) end}}
 	if w.upgradeCost then
 		local ok,reason=WK.afford(w.upgradeCost)
 		table.insert(lines,"Tier "..numeral(num(w.tier,1)+1)..": "..WK.costText(w.upgradeCost))
 		table.insert(detailActions,{caption="Upgrade",primary=ok,disabled=not ok,reason=reason,name="WorkerUpgrade",fn=function() send("workerUpgrade",slotId) end})
 	end
-	-- Refuel with the strongest fuel held (or the one burning).
+	-- Refuel with the strongest timed fuel held (or the one burning); a permanent
+	-- fuel is never spent by quick-refuel (install it from its part card).
 	local bestFuel
 	for _,id in ipairs(W and W.FuelOrder or {}) do
-		if count("items",id)>0 and (not fuel or fuel.id==id) and not (fuel and fuel.permanent) then bestFuel=id end
+		local permanent=W.Fuels[id] and W.Fuels[id].permanent
+		if count("items",id)>0 and not permanent and (not fuel or fuel.id==id) and not (fuel and fuel.permanent) then bestFuel=id end
 	end
 	table.insert(detailActions,{caption="Refuel",primary=bestFuel~=nil,disabled=bestFuel==nil,
 		reason=fuel and fuel.permanent and "This worker holds a permanent fuel." or "Craft worker fuel at the Workbench (Worker Parts).",name="WorkerRefuel",
 		fn=function() send("workerFuel",slotId..":"..tostring(bestFuel)) end})
 	card({name="Worker"..WK.selected,item=w.output,title=escape(tostring(w.name or w.resource)),titleColor=rgb(itemHex(w.output)),
 		subtitle="Tier "..numeral(num(w.tier,1)).." / "..numeral(num(w.maxTier,7)).."  ·  "..(w.kind=="combat" and "Combat worker" or "Gatherer").."  ·  slot "..WK.selected,
-		badge=w.full and "FULL" or (num(w.ready,0)>0 and (fmt(w.ready).." READY") or "WORKING"),badgeColor=w.full and ember or mint,
+		badge=type(w.idle)=="string" and "IDLE" or (w.full and "FULL" or (num(w.ready,0)>0 and (fmt(w.ready).." READY") or "WORKING")),badgeColor=(w.full or type(w.idle)=="string") and ember or mint,
 		lines=lines,pips={total=num(w.maxTier,7),filled=num(w.tier,1),color=gold},
 		bar={fraction=math.clamp(num(w.ready,0)/math.max(1,num(w.capacity,1)),0,1),color=w.full and ember or mint,caption=fmt(num(w.ready,0)).." / "..fmt(num(w.capacity,0)).." storage"},
 		actions=detailActions})
