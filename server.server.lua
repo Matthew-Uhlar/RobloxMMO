@@ -2445,15 +2445,20 @@ end
 --                            master; the streak is kept
 --   slayerCancel             drop the task for free; the streak resets to 0
 --   slayerBlock "<family>"   pay ST.BLOCK_COST points to stop a family being
---                            assigned (ST.blockSlots); blocking the current task drops it
+--                            assigned (ST.blockSlots); blocking the current task drops it;
+--                            refused when an available master would be left with
+--                            fewer than ST.MIN_CANDIDATES families (ST.blockAllowed)
 --   slayerUnblock "<family>" free a block slot (no refund)
 --   slayerBuy "<shop id>"    ST.Shop: unlocks, extensions, consumables, titles, visor crafts
+--                            (a craft refuses while a cost item is worn: unequip it first)
 --   slayerTitle "<id>|none"  wear an owned title (player attribute SlayerTitle)
 -- Credit: bridge "kill" (combat's credit rules: damage dealt, alive, within
 -- range, Ironman solo; multishot extras and party members each report their own
--- kill) and "seaCreature" kills (owner only) call SlayerTasks.onKill. Only a kill
+-- kill) with task=true (combat: ST.taskEligible, >= ST.TASK_SHARE of max health
+-- or top damager) and "seaCreature" kills (owner only) call SlayerTasks.onKill. Only a kill
 -- of the assigned family counts; each pays ST.killXp Slayer XP. With Call of the
--- Superior unlocked a land task kill rolls ST.SUPERIOR_CHANCE: the server issues
+-- Superior unlocked a land task kill rolls ST.SUPERIOR_CHANCE (none when the
+-- monster's level < Combat x ST.SUPERIOR_LEVEL_RATIO): the server issues
 -- a ticket {id, expires} under a per-player sequence and returns
 -- superior = {id, seq} in the kill reply; Combat spawns it by the dead monster,
 -- owned by this player, and settles it once through bridge "slayerSuperior"
@@ -2462,7 +2467,8 @@ end
 -- Profile p.slayerTasks = {task = {master, family, amount, killed, extended} | nil,
 -- streak, completed, points, blocked = {family...}, unlocks = {[id] = true},
 -- superiors = {[superiorId] = kills}, title = shop id | "", last = family | nil}.
--- Player attributes: SlayerTask "<family>:<killed>:<amount>" | "", SlayerTitle, SlayerLevel.
+-- Player attributes: SlayerTask "<family>:<killed>:<amount>" | "", SlayerTitle, SlayerLevel,
+-- SlayerVisor (worn visor id | ""; combat drops its stats cache when it or SlayerTask changes).
 -- Snapshot key: slayerTasks. Tickets are session-only (SlayerTasks.forget).
 ------------------------------------------------------------------------------
 local SlayerTasks={verbs={slayerTask=true,slayerSkip=true,slayerCancel=true,slayerBlock=true,slayerUnblock=true,slayerBuy=true,slayerTitle=true},
@@ -2527,6 +2533,14 @@ do
 		local title=st.title~="" and ST.ShopById[st.title]
 		player:SetAttribute("SlayerTitle",if title then title.title else "")
 		player:SetAttribute("SlayerLevel",slayerLevel(p))
+		-- Combat drops its cached "stats" when this (or SlayerTask) changes, so the visor bonus is never stale.
+		local helmet=p.equipment and p.equipment.helmet
+		player:SetAttribute("SlayerVisor",if ST.visorBonus(helmet) then helmet else "")
+	end
+	-- Is a shop cost item worn (gear slot or accessory bag)? Crafting refuses rather than consume it.
+	local function worn(p,id)
+		for _,e in pairs(p.equipment or {}) do if e==id then return true end end
+		return type(p.accessoryBag)=="table" and table.find(p.accessoryBag,id)~=nil
 	end
 	-- Combat view (bridge "stats"): Slayer level, task family, equipped visor bonus.
 	function SlayerTasks.combat(p)
@@ -2553,9 +2567,17 @@ do
 		local book=SlayerTasks.tickets[player]
 		local live=0
 		if book then for _ in pairs(book.live) do live+=1 end end
+		-- Families a block would refuse (ST.blockAllowed): {[family] = reason}.
+		local blockRefusal={}
+		for _,f in ipairs(ST.Families) do
+			if not table.find(st.blocked,f.id) then
+				local ok,reason=ST.blockAllowed(f.id,ctx,st.blocked)
+				if not ok then blockRefusal[f.id]=reason end
+			end
+		end
 		return {task=st.task and table.clone(st.task) or nil,streak=st.streak,completed=st.completed,points=st.points,blocked=table.clone(st.blocked),
 			blockSlots=ST.blockSlots(st.unlocks),unlocks=unlocks,superiors=table.clone(st.superiors),title=st.title,level=ctx.slayer,
-			masters=masters,families=families,superiorsLive=live,nextMult=ST.streakMult(st.streak+1)}
+			masters=masters,families=families,superiorsLive=live,nextMult=ST.streakMult(st.streak+1),blockRefusal=blockRefusal}
 	end
 	local function assign(p,masterId)
 		local st=ledger(p)
@@ -2592,7 +2614,7 @@ do
 		grantXp(p,"Slayer",ST.killXp(monster))
 		local superior=nil
 		if not sea then
-			local id=ST.rollSuperior(st.unlocks.SuperiorCalling==true,monsterId,roll)
+			local id=ST.rollSuperior(st.unlocks.SuperiorCalling==true,monsterId,roll,level(p.xp.Combat))
 			if id then superior=SlayerTasks.issue(player,id) end
 			if superior then note(p,"A "..ST.Superiors[id].name.." emerges! Only you can claim it.") end
 		end
@@ -2693,6 +2715,8 @@ do
 			if table.find(st.blocked,f.id) then return f.name.." is already blocked." end
 			if #st.blocked>=ST.blockSlots(st.unlocks) then return "Every block slot is full. Unblock a family first." end
 			if st.points<ST.BLOCK_COST then return "Blocking costs "..ST.BLOCK_COST.." Slayer points." end
+			local allowed,why=ST.blockAllowed(f.id,SlayerTasks.context(p),st.blocked)
+			if not allowed then return "You cannot block "..f.name..": "..tostring(why).."." end
 			st.points-=ST.BLOCK_COST
 			table.insert(st.blocked,f.id)
 			reply=f.name.." blocked (-"..ST.BLOCK_COST.." points)."
@@ -2708,6 +2732,10 @@ do
 			for _,skill in ipairs(Data.SkillOrder) do levels[skill]=level(p.xp[skill]) end
 			local ok,reason=ST.canBuy(item,{points=st.points,unlocks=st.unlocks,levels=levels,items=p.items})
 			if not ok then return reason end
+			-- A worn cost item (e.g. the Hunter's Visor being imbued) is never consumed: unequip it first.
+			for id in pairs(e.costs or {}) do
+				if worn(p,id) then return "Unequip "..itemName(id).." before using it to craft." end
+			end
 			st.points-=e.cost
 			for id,n in pairs(e.costs or {}) do p.items[id]=(p.items[id] or 0)-n; if p.items[id]<=0 then p.items[id]=nil end end
 			if e.kind=="unlock" or e.kind=="extend" or e.kind=="title" then st.unlocks[e.id]=true end
@@ -5043,7 +5071,9 @@ bridge.OnInvoke=function(op,player,payload)
 				note(p,"The "..Data.Slayers[quest.line].name.." stirs! Defeat it to finish your slayer quest.")
 			end
 		end
-		local superior=SlayerTasks.onKill(player,p,monsterId,monster) -- Slayer tasks: task credit, Slayer XP, superior roll
+		-- Slayer tasks: task credit, Slayer XP, superior roll. Combat sets task=true only for a killer
+		-- with a real damage share (Data.SlayerTasks.taskEligible); tag-alongs keep normal kill rewards.
+		local superior=if payload.task==true then SlayerTasks.onKill(player,p,monsterId,monster) else nil
 		notify(player,monster.name.." slain • +"..coins.." coins"..dropText(drops))
 		return {drops=drops,bossReady=quest~=nil and quest.bossReady==true,superior=superior}
 	elseif op=="worldBoss" then

@@ -102,6 +102,7 @@ local C = {
 	BOSS_REARM_DELAY = 5,       -- re-read SlayerBossReady after an unapplied boss report
 	SEA_RETRY_DELAY = 5,        -- resend an unapplied sea creature kill report
 	SEA_REPORT_GRACE = 15,      -- ...until this long after the creature's lifetime (server ticket grace)
+	DENIED_NOTICE_GAP = 3,      -- Slayer tasks: at most one "slayerDenied" bridge call per player per gap
 	FX_RANGE = 110,
 	MAX_RADIUS_BONUS = 6,
 	DEFAULT_COUNT = 2,
@@ -1314,17 +1315,20 @@ local function createLogic(env)
 			L.unregister(r)
 			L.payXp(r, credited)
 			-- Slayer tasks section: the reply may raise a superior (L.onKillReply).
-			for _, player in ipairs(credited) do env.bridge("kill", player, {monster = r.id}, function(reply) L.onKillReply(player, r, reply) end) end
+			-- task = Slayer task credit (L.taskCredit: a real damage share), separate from kill credit.
+			for _, player in ipairs(credited) do env.bridge("kill", player, {monster = r.id, task = L.taskCredit(r, player)}, function(reply) L.onKillReply(player, r, reply) end) end
 		end
 		return credited
 	end
 
 	-- AI ---------------------------------------------------------------------
+	-- May r pick this player as a fresh target? (Slayer tasks section narrows it.)
+	function L.aggroAllowed(r, player) return true end
 	function L.nearestAggro(r)
 		if r.passive and not r.provoked then return nil end
 		local best, bestDist
 		for _, player in ipairs(playerList()) do
-			if isAlive(player) then
+			if isAlive(player) and L.aggroAllowed(r, player) then
 				local pos = positionOf(player)
 				if pos then
 					local d = flatDist(pos, r.position)
@@ -1377,7 +1381,9 @@ local function createLogic(env)
 				local pos = isAlive(r.target) and positionOf(r.target)
 				if not pos or flatDist(pos, r.home) > C.LEASH_RANGE + 8 then r.target = nil end
 			end
-			if not r.target and r.sea and isAlive(r.owner) then
+			-- Sea creatures and Slayer superiors only ever fight their owner.
+			if r.superior and r.target ~= nil and r.target ~= r.owner then r.target = nil end
+			if not r.target and (r.sea or r.superior) and isAlive(r.owner) then
 				local pos = positionOf(r.owner)
 				if pos and flatDist(pos, r.home) <= C.LEASH_RANGE then r.target = r.owner end
 			end
@@ -2138,18 +2144,23 @@ local function createLogic(env)
 	-- carries info.slayer = {level, family, visor = {damage, accuracy} | nil}.
 	--   * Slayer-only monsters (def.slayerLevel, superiors inherit it): a player
 	--     below that Slayer level cannot target them (reason "slayer"; the
-	--     Adventure script explains it through bridge "slayerDenied", rate-limited),
-	--     a multishot never splashes them and mitigate() deals them 0.
+	--     Adventure script explains it through bridge "slayerDenied", rate-limited
+	--     here to one call per C.DENIED_NOTICE_GAP), a multishot never splashes
+	--     them, mitigate() deals them 0 and they never aggro such a player.
+	--   * Task credit: bridge "kill" carries task = L.taskCredit (ST.taskEligible:
+	--     >= ST.TASK_SHARE of max health or the top damager); kill credit is unchanged.
 	--   * Hunter's Visor: against monsters of the player's task family
 	--     (a superior counts as its base): raw damage x (1 + damage%) and ranged
 	--     accuracy x (1 + accuracy%) within the style's hit ceiling.
 	--   * Superiors: the bridge "kill" reply may carry superior = {id, seq}
 	--     (Data.SlayerTasks.Superiors[id].base must be the monster just killed).
 	--     It is queued (L.pendingSuperiors) and spawned at that monster's position,
-	--     owned by the killer: only the owner may hit it; credit like a sea
+	--     owned by the killer: only the owner may hit it, it only ever targets
+	--     its owner (idle otherwise); credit like a sea
 	--     creature (dealt damage, alive, within C.CREDIT_RANGE); it never respawns
 	--     and withdraws after Data.SlayerTasks.SUPERIOR_LIFETIME. Kill or withdrawal
-	--     reports bridge "slayerSuperior" {seq, monster, result = "kill"|"despawn"};
+	--     reports bridge "slayerSuperior" {seq, monster, result = "kill"|"despawn"}
+	--     (an unapplied kill report is resent like a sea creature's);
 	--     the owner leaving removes it silently (the server forgets the ticket).
 	------------------------------------------------------------------------
 	local ST = Data.SlayerTasks
@@ -2182,13 +2193,38 @@ local function createLogic(env)
 		if not ST.inFamily(s.family, id) then return nil end
 		return s.visor
 	end
+	-- Drops a player's cached "stats" (runtime: SlayerTask / SlayerVisor attribute
+	-- changes) so the task family and visor bonus are re-read on the next use.
+	function L.invalidateStats(player) statsCache[player] = nil end
+	-- Aggro: superiors only ever pick their owner; slayer-only monsters never
+	-- pick a player below their Slayer level (cached stats; unknown = Slayer 1).
+	-- Normal kill credit rules are unchanged.
+	function L.aggroAllowed(r, player)
+		if r.superior then return player == r.owner end
+		return L.slayerGate(player, r)
+	end
+	-- Slayer task credit for one credited killer (ST.taskEligible): at least
+	-- ST.TASK_SHARE of max health, or the top damager. A 1-damage tag-along
+	-- keeps its kill credit but earns no task progress, Slayer XP or superior roll.
+	function L.taskCredit(r, player)
+		local top = 0
+		for _, c in pairs(r.contributors) do top = math.max(top, c.damage) end
+		if not ST then return top > 0 and L.contribution(r, player) >= top end
+		return ST.taskEligible(L.contribution(r, player), r.maxHp, top)
+	end
+	local deniedAt = {} -- [player] = time the next "slayerDenied" notice may be bridged
 	local slayerValidate = L.validateTarget
 	function L.validateTarget(player, target, range)
 		local ok, r, pos = slayerValidate(player, target, range)
 		if not ok then return ok, r end
 		if r.superior and r.owner ~= player then return false, "owner" end
 		if not L.slayerGate(player, r, true) then
-			env.bridge("slayerDenied", player, {monster = r.id})
+			-- Rate-limited here, before the bridge: spammed refused swings cost one call per window.
+			local now = env.now()
+			if now >= (deniedAt[player] or -math.huge) then
+				deniedAt[player] = now + C.DENIED_NOTICE_GAP
+				env.bridge("slayerDenied", player, {monster = r.id})
+			end
 			return false, "slayer"
 		end
 		return ok, r, pos
@@ -2243,8 +2279,33 @@ local function createLogic(env)
 		superiorQueue = {}
 		return due
 	end
-	function L.reportSuperior(player, id, seq, result)
-		env.bridge("slayerSuperior", player, {monster = id, seq = seq, result = result})
+	-- A kill report that was not applied (journal not live: nil or reason "sync")
+	-- is resent every C.SEA_RETRY_DELAY until `deadline` (the server ticket's
+	-- grace), exactly like sea creatures; tickets settle once, so resends are safe.
+	local superiorRetry = {} -- [player] = {[seq] = {id, seq, at, deadline}}
+	function L.reportSuperior(player, id, seq, result, deadline)
+		env.bridge("slayerSuperior", player, {monster = id, seq = seq, result = result}, function(reply)
+			if result ~= "kill" or not deadline then return end
+			if reply == nil or (type(reply) == "table" and reply.reason == "sync") then
+				if env.now() + C.SEA_RETRY_DELAY > deadline then return end
+				superiorRetry[player] = superiorRetry[player] or {}
+				superiorRetry[player][seq] = {id = id, seq = seq, at = env.now() + C.SEA_RETRY_DELAY, deadline = deadline}
+			end
+		end)
+	end
+	-- Superior kill reports due for a resend: {player, id, seq, deadline}; each fires once.
+	function L.dueSuperiorRetries()
+		local now, due = env.now(), {}
+		for player, list in pairs(superiorRetry) do
+			for seq, job in pairs(list) do
+				if now >= job.at then
+					list[seq] = nil
+					if now <= job.deadline then table.insert(due, {player = player, id = job.id, seq = seq, deadline = job.deadline}) end
+				end
+			end
+			if not next(list) then superiorRetry[player] = nil end
+		end
+		return due
 	end
 	-- Runtime could not build (or the owner left before the spawn): free the ticket.
 	function L.superiorFailed(spec) L.reportSuperior(spec.player, spec.id, spec.seq, "despawn") end
@@ -2295,7 +2356,7 @@ local function createLogic(env)
 		local credited = L.superiorCredit(r)
 		L.unregister(r)
 		L.payXp(r, credited)
-		L.reportSuperior(r.owner, r.id, r.seq, if #credited > 0 then "kill" else "despawn")
+		L.reportSuperior(r.owner, r.id, r.seq, if #credited > 0 then "kill" else "despawn", r.expires + C.SEA_REPORT_GRACE)
 		return credited
 	end
 	-- Withdraws superiors past their lifetime; returns the records removed.
@@ -2319,13 +2380,14 @@ local function createLogic(env)
 		while i <= #superiorQueue do
 			if superiorQueue[i].player == player then table.remove(superiorQueue, i) else i += 1 end
 		end
+		superiorRetry[player], deniedAt[player] = nil, nil
 		local removed = slayerRemoving(player)
 		for _, r in ipairs(owned) do table.insert(removed, r) end
 		return removed
 	end
 	local slayerHasState = L.hasPlayerState
 	function L.hasPlayerState(player)
-		return slayerHasState(player) or superiorOwned[player] ~= nil
+		return slayerHasState(player) or superiorOwned[player] ~= nil or superiorRetry[player] ~= nil or deniedAt[player] ~= nil
 	end
 	-- End Slayer tasks section.
 	return L
@@ -3051,6 +3113,9 @@ local function onPlayerAdded(player)
 	playerConnections[player] = {
 		player:GetAttributeChangedSignal("SlayerBossReady"):Connect(function() onBossAttribute(player) end),
 		player:GetAttributeChangedSignal("SeaCreatureSpawn"):Connect(function() onSeaAttribute(player) end),
+		-- Slayer tasks section: a new task family or a (un)equipped visor drops the cached stats.
+		player:GetAttributeChangedSignal("SlayerTask"):Connect(function() Logic.invalidateStats(player) end),
+		player:GetAttributeChangedSignal("SlayerVisor"):Connect(function() Logic.invalidateStats(player) end),
 		player.CharacterAdded:Connect(function() task.defer(refreshRayFilter) end),
 	}
 	onBossAttribute(player)
@@ -3092,6 +3157,9 @@ end
 local function slayerStep()
 	for _, spec in ipairs(Logic.pendingSuperiors()) do spawnSuperior(spec) end
 	for _, r in ipairs(Logic.superiorTick()) do destroyView(r, false) end
+	for _, job in ipairs(Logic.dueSuperiorRetries()) do
+		if job.player.Parent then Logic.reportSuperior(job.player, job.id, job.seq, "kill", job.deadline) end
+	end
 end
 -- End Slayer tasks section (runtime).
 

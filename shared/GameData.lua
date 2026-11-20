@@ -7058,6 +7058,10 @@ ST.SUPERIOR_DAMAGE = 1.5
 ST.SUPERIOR_DEFENSE = 1.25
 ST.SUPERIOR_COINS = 10
 ST.MAX_AMOUNT = 400          -- sanity bound on any saved task amount
+ST.TASK_SHARE = 0.2          -- task credit: a killer must deal this share of max health (or be the top damager)
+ST.SUPERIOR_LEVEL_RATIO = 1 / 3 -- no superior roll when the base monster's level < Combat level x this
+ST.SUPERIOR_RARE_LEVEL = 40  -- Eclipsed Ichor and the Duskhunter Sigil drop only from superiors of base level >= this
+ST.MIN_CANDIDATES = 2        -- a block may not leave any available master fewer families than this
 -- Streak multipliers, highest milestone first (task number divisible by `every`).
 ST.Streak = {{every=1000,mult=50},{every=250,mult=35},{every=100,mult=25},{every=50,mult=15},{every=10,mult=5}}
 
@@ -7155,13 +7159,26 @@ function ST.inFamily(familyId, monsterId)
 end
 
 -- Superiors --------------------------------------------------------------------
+-- Fixed superior drops scale with the base monster's level, so a weak family
+-- cannot be farmed for endgame materials: Slayer Seals (chance and amount grow
+-- with level), Eclipsed Ichor and the Duskhunter Sigil only from base level
+-- ST.SUPERIOR_RARE_LEVEL up (Ichor amount and Sigil chance grow to level 90+).
+function ST.superiorUniques(baseLevel)
+	local lvl = math.max(1, math.floor(tonumber(baseLevel) or 1))
+	local drops = {{item="SlayerToken",chance=math.min(1, 0.2 + lvl / 50),min=1,max=math.max(1, math.floor(lvl / 25))}}
+	if lvl >= ST.SUPERIOR_RARE_LEVEL then
+		table.insert(drops, 1, {item="EclipsedIchor",chance=1,min=math.max(1, math.floor(lvl / 50)),max=math.max(1, math.floor(lvl / 30))})
+		table.insert(drops, {item="DuskhunterSigil",chance=math.min(1 / 40, lvl / 3600),min=1,max=1})
+	end
+	return drops
+end
 ST.Superiors, ST.SuperiorOf, ST.SuperiorOrder = {}, {}, {}
 for _, f in ipairs(ST.Families) do
 	if not f.sea then
 		for _, baseId in ipairs(f.monsters) do
 			local base = Data.Monsters[baseId]
 			local id = "Superior"..baseId
-			local drops = {{item="EclipsedIchor",chance=1,min=1,max=3},{item="SlayerToken",chance=1,min=1,max=2},{item="DuskhunterSigil",chance=1/40,min=1,max=1}}
+			local drops = ST.superiorUniques(base.level)
 			for _, d in ipairs(base.drops) do
 				if not (PR.RemainsById and PR.RemainsById[d.item]) then
 					table.insert(drops, {item=d.item,chance=math.min(1, d.chance*3),min=d.min*2,max=d.max*3})
@@ -7187,10 +7204,14 @@ do
 	end})
 end
 -- One task kill: the superior variant's id when the roll hits, else nil.
-function ST.rollSuperior(unlocked, monsterId, roll)
+-- combatLevel (optional): no roll when the base monster is far below the killer
+-- (level < Combat x ST.SUPERIOR_LEVEL_RATIO), so trivial kills raise nothing.
+function ST.rollSuperior(unlocked, monsterId, roll, combatLevel)
 	if not unlocked then return nil end
 	local id = ST.SuperiorOf[monsterId]
 	if not id or type(roll) ~= "function" then return nil end
+	local base = Data.Monsters[monsterId]
+	if (tonumber(base and base.level) or 0) < (tonumber(combatLevel) or 0) * ST.SUPERIOR_LEVEL_RATIO then return nil end
 	if roll() >= ST.SUPERIOR_CHANCE then return nil end
 	return id
 end
@@ -7342,6 +7363,26 @@ function ST.candidates(masterId, ctx, blocked, avoid)
 	end
 	return out, total
 end
+-- May familyId be added to the block list? Refused when it would leave any
+-- master available under ctx with fewer than ST.MIN_CANDIDATES assignable
+-- families (and fewer than now), so blocks cannot narrow a master's pool to a
+-- single, trivially farmed family. Returns ok, reason.
+function ST.blockAllowed(familyId, ctx, blocked)
+	if not ST.FamilyById[familyId] then return false, "Choose a monster family to block" end
+	local list = {}
+	for _, id in ipairs(type(blocked) == "table" and blocked or {}) do table.insert(list, id) end
+	local after = table.clone(list)
+	table.insert(after, familyId)
+	for _, m in ipairs(ST.Masters) do
+		if ST.masterAvailable(m.id, ctx) then
+			local now, later = #(ST.candidates(m.id, ctx, list)), #(ST.candidates(m.id, ctx, after))
+			if later < now and later < ST.MIN_CANDIDATES then
+				return false, m.name.." would have fewer than "..ST.MIN_CANDIDATES.." families to assign"
+			end
+		end
+	end
+	return true
+end
 -- Amount range for an entry, extended when the family's extension is unlocked.
 function ST.amountRange(entry, unlocks)
 	local extended = type(unlocks) == "table" and unlocks["Extend"..entry.family] == true and ST.ShopById["Extend"..entry.family] ~= nil
@@ -7380,6 +7421,14 @@ function ST.bountyFor(masterId, unlocks)
 	local m = ST.MasterById[masterId]
 	if not m then return 0 end
 	return m.bounty * (if type(unlocks) == "table" and unlocks.GildedBounty then 2 else 1)
+end
+-- Task credit for one credited killer (normal kill credit is unchanged): it
+-- dealt at least ST.TASK_SHARE of max health, or is the (joint) top damager.
+-- damage = this killer's damage, top = the most any contributor dealt.
+function ST.taskEligible(damage, maxHp, top)
+	damage, maxHp, top = tonumber(damage) or 0, tonumber(maxHp) or 0, tonumber(top) or 0
+	if damage <= 0 then return false end
+	return damage >= top or (maxHp > 0 and damage >= maxHp * ST.TASK_SHARE)
 end
 -- Slayer XP for one task kill of a monster (or superior) definition.
 function ST.killXp(def)

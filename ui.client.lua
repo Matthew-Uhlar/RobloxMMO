@@ -4004,6 +4004,14 @@ local function monsterNames(f)
 	end
 	return table.concat(names,", ")
 end
+-- Every streak milestone, lowest first: "Every 10th task in a row pays x5 points, every 50th x15, ...".
+local function streakText()
+	local list={}
+	for _,s in ipairs(tbl(ST.Streak)) do table.insert(list,1,s) end
+	local parts={}
+	for i,s in ipairs(list) do table.insert(parts,(i==1 and "Every " or "every ")..s.every.."th"..(i==1 and " task in a row pays x" or " x")..s.mult..(i==1 and " points" or "")) end
+	return table.concat(parts,", ")
+end
 local function drawSummary(st)
 	local levels=skillsOf(state)
 	local sk=tbl(levels.Slayer)
@@ -4011,7 +4019,7 @@ local function drawSummary(st)
 	card({name="SlayerTaskSummary",motif="Hunt",accent=rgb("B23A48"),title="Slayer "..lvl,titleColor=rgb(lighten("B23A48",.4)),
 		subtitle=fmt(num(st.points,0)).." points  ·  streak "..fmt(num(st.streak,0)).."  ·  "..fmt(num(st.completed,0)).." tasks done",
 		badge=paint(fmt(num(st.points,0)).." pts","F3C66E"),
-		detail="Kill your task's monsters to train Slayer (Slayer XP ≈ the monster's health ÷ "..ST.HP_PER_XP.."). Every 10th task in a row pays x5 points, every 50th x15, every 100th x25.",
+		detail="Kill your task's monsters to train Slayer (Slayer XP ≈ the monster's health ÷ "..ST.HP_PER_XP.."). "..streakText()..".",
 		bar=sk.fraction and {fraction=num(sk.fraction,0),color=rgb("B23A48"),caption=sk.maxed and "MAX LEVEL" or (fmt(num(sk.xp,0)).." Slayer XP")} or nil})
 end
 local function drawTask(st)
@@ -4030,8 +4038,10 @@ local function drawTask(st)
 	local actions
 	if confirm=="cancel" then
 		actions={{name="SlayerCancelConfirm",caption="Confirm cancel",fn=function() confirm=nil send("slayerCancel") end},{name="SlayerCancelKeep",caption="Keep task",fn=function() confirm=nil render() end}}
+	elseif confirm=="skip" and not skipReason then
+		actions={{name="SlayerSkipConfirm",caption="Confirm skip (-"..ST.SKIP_COST.." pts)",fn=function() confirm=nil send("slayerSkip") end},{name="SlayerSkipKeep",caption="Keep task",fn=function() confirm=nil render() end}}
 	else
-		actions={{name="SlayerSkip",caption="Skip ("..ST.SKIP_COST.." pts)",disabled=skipReason~=nil,reason=skipReason,fn=function() send("slayerSkip") end},
+		actions={{name="SlayerSkip",caption="Skip ("..ST.SKIP_COST.." pts)",disabled=skipReason~=nil,reason=skipReason,fn=function() confirm="skip" render() end},
 			{name="SlayerCancel",caption="Cancel",fn=function() confirm="cancel" render() end}}
 	end
 	local hex=f and f.color or "B23A48"
@@ -4042,6 +4052,7 @@ local function drawTask(st)
 		lines={"Completion: "..fmt(ST.pointsFor(task.master,num(st.streak,0)+1)).." points (x"..num(st.nextMult,1)..") + "..fmt(ST.bountyFor(task.master,{GildedBounty=table.find(tbl(st.unlocks),"GildedBounty")~=nil})).." coins"},
 		actions=actions})
 	if confirm=="cancel" then para(container(),paint("Cancelling is free but breaks your streak of "..num(st.streak,0)..".","E8806A"),1,muted) end
+	if confirm=="skip" and not skipReason then para(container(),paint("Skipping costs "..ST.SKIP_COST.." points and keeps your streak; the master assigns a new task.","F3C66E"),1,muted) end
 end
 local function drawMasters(st)
 	heading("SLAYER    /    MASTERS")
@@ -4075,7 +4086,9 @@ local function drawFamilies(st)
 		local action
 		if isBlocked then action={name="SlayerUnblock"..f.id,caption="Unblock",fn=function() send("slayerUnblock",f.id) end}
 		else
-			local reason=(#blocked>=slots and "Every block slot is full.") or (num(st.points,0)<ST.BLOCK_COST and ("Needs "..ST.BLOCK_COST.." points.")) or nil
+			local refusal=tbl(st.blockRefusal)[f.id]
+			local reason=(#blocked>=slots and "Every block slot is full.") or (num(st.points,0)<ST.BLOCK_COST and ("Needs "..ST.BLOCK_COST.." points."))
+				or (refusal~=nil and (escape(tostring(refusal))..".")) or nil
 			action={name="SlayerBlock"..f.id,caption="Block ("..ST.BLOCK_COST.." pts)",disabled=reason~=nil,reason=reason,fn=function() send("slayerBlock",f.id) end}
 		end
 		card({name="SlayerFamily"..f.id,motif="Hunt",accent=rgb(f.color),title=escape(f.name),titleColor=rgb(lighten(f.color,.4)),
@@ -4091,8 +4104,18 @@ local function drawShop(st)
 	local lvls={}
 	for skill,info in pairs(levels) do lvls[skill]=num(tbl(info).level,1) end
 	heading("POINTS    /    SHOP  ·  "..fmt(num(st.points,0)).." points")
+	-- Worn gear (mirrors the server: a craft never consumes an equipped cost item).
+	local d=depth()
+	local worn={}
+	for _,id in pairs(tbl(d and d.equipment)) do worn[id]=true end
+	for _,id in ipairs(tbl(d and d.accessoryBag)) do worn[id]=true end
 	for _,e in ipairs(ST.Shop) do
 		local ok,reason=ST.canBuy(e.id,{points=num(st.points,0),unlocks=owned,levels=lvls,items=tbl(state.items)})
+		if ok then
+			for id in pairs(e.costs or {}) do
+				if worn[id] then ok,reason=false,"Unequip "..itemName(id).." before using it to craft." end
+			end
+		end
 		local have=owned[e.id]==true
 		local costs={}
 		for id,n in pairs(e.costs or {}) do table.insert(costs,fmt(n).." "..paint(escape(itemName(id)),itemHex(id))) end
@@ -4146,7 +4169,6 @@ local function drawSlayerTasks()
 	end
 	if not st then syncing("slayer tasks") return end
 	if view=="Masters" then drawMasters(st)
-	elseif view=="Masters" then drawMasters(st)
 	elseif view=="Families" then drawFamilies(st)
 	elseif view=="Shop" then drawShop(st)
 	else drawSuperiors(st) end

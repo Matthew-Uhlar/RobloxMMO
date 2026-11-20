@@ -330,13 +330,21 @@ do
 				ok(def.damage > baseDef.damage and def.level > baseDef.level, id .. " hits harder")
 				ok(has(def.name, baseDef.name) and has(def.name, f.epithet), id .. " name")
 				eq(def.slayerLevel, baseDef.slayerLevel, id .. " inherits the slayer gate")
-				local ichor, sigil = false, false
+				local ichor, sigil, seals = nil, nil, nil
 				for _, d in ipairs(def.drops) do
 					ok(Data.Items[d.item] ~= nil and d.chance > 0 and d.chance <= 1, id .. " drop " .. d.item)
-					if d.item == "EclipsedIchor" and d.chance == 1 then ichor = true end
-					if d.item == "DuskhunterSigil" then sigil = true end
+					if d.item == "EclipsedIchor" and d.chance == 1 then ichor = d end
+					if d.item == "DuskhunterSigil" then sigil = d end
+					if d.item == "SlayerToken" then seals = d end
 				end
-				ok(ichor and sigil, id .. " unique table")
+				-- Review fix: fixed superior loot scales with the base monster.
+				ok(seals ~= nil, id .. " drops Slayer Seals")
+				if baseDef.level >= ST.SUPERIOR_RARE_LEVEL then
+					ok(ichor ~= nil and sigil ~= nil, id .. " (base Lv " .. baseDef.level .. ") drops Ichor and the Sigil")
+				else
+					ok(ichor == nil and sigil == nil, id .. " (base Lv " .. baseDef.level .. ") drops no Ichor or Sigil")
+					ok(seals.chance < 1 and seals.max == 1, id .. " low-level Seals are scarce")
+				end
 				ok(ST.killXp(def) == ST.killXp(baseDef) * 8 or math.abs(ST.killXp(def) - ST.killXp(baseDef) * 8) <= 8, id .. " pays ~8x Slayer XP")
 			end
 		end
@@ -354,6 +362,49 @@ do
 	local rng, hits, trials = rand(5), 0, 300000
 	for _ = 1, trials do if ST.rollSuperior(true, "Thornling", function() return rng:NextNumber() end) then hits += 1 end end
 	ok(math.abs(hits / trials - 1 / 150) < 0.0012, string.format("superior rate %.5f ~ 1/150", hits / trials))
+	-- Review fix: superior loot scales with the base level.
+	local boar, dreadmaw = ST.Superiors.SuperiorBramblebackBoar, ST.Superiors.SuperiorUmbralDreadmaw
+	local function dropOf(def, item) for _, d in ipairs(def.drops) do if d.item == item then return d end end return nil end
+	eq(dropOf(boar, "EclipsedIchor"), nil, "a Lv 2 boar superior drops no Ichor")
+	eq(dropOf(boar, "DuskhunterSigil"), nil, "a Lv 2 boar superior drops no Legendary Sigil")
+	ok(dropOf(boar, "SlayerToken").chance < 0.3, "a Lv 2 boar superior rarely drops a Seal")
+	ok(dropOf(dreadmaw, "EclipsedIchor").max > dropOf(ST.Superiors.SuperiorGloomfangSpider, "EclipsedIchor").max, "Ichor amount grows with level")
+	ok(dropOf(dreadmaw, "DuskhunterSigil").chance > dropOf(ST.Superiors.SuperiorGloomfangSpider, "DuskhunterSigil").chance, "Sigil chance grows with level")
+	ok(dropOf(dreadmaw, "SlayerToken").max > dropOf(boar, "SlayerToken").max, "Seal amount grows with level")
+	ok(dropOf(dreadmaw, "DuskhunterSigil").chance <= 1 / 40, "Sigil never better than 1/40")
+	local expectedValue = function(def)
+		local v = 0
+		for _, d in ipairs(def.drops) do v += d.chance * (d.min + d.max) / 2 * (Data.Items[d.item].value or 0) end
+		return v
+	end
+	ok(expectedValue(boar) < expectedValue(dreadmaw) / 20, "a trivial superior is worth far less than an endgame one")
+	-- Review fix: no superior roll when the base monster is far below the killer.
+	eq(ST.rollSuperior(true, "BramblebackBoar", function() return 0 end, 99), nil, "Combat 99 raises no Lv 2 boar superior")
+	eq(ST.rollSuperior(true, "BramblebackBoar", function() return 0 end, 6), "SuperiorBramblebackBoar", "Combat 6 can still raise it")
+	eq(ST.rollSuperior(true, "BramblebackBoar", function() return 0 end, 7), nil, "Lv 2 < 7/3")
+	eq(ST.rollSuperior(true, "UmbralDreadmaw", function() return 0 end, 99), "SuperiorUmbralDreadmaw", "endgame bases still roll at Combat 99")
+	eq(ST.rollSuperior(true, "GloomfangSpider", function() return 0 end, 120), "SuperiorGloomfangSpider", "Lv 40 = 120/3 rolls")
+	eq(ST.rollSuperior(true, "GloomfangSpider", function() return 0 end, 121), nil, "Lv 40 < 121/3")
+end
+-- Review fix: task credit needs a real damage share.
+ok(ST.taskEligible(250, 1000, 750), "25% share earns task credit")
+ok(ST.taskEligible(200, 1000, 800), "20% share is the edge")
+ok(not ST.taskEligible(199, 1000, 801), "below 20% and not top: no task credit")
+ok(not ST.taskEligible(1, 1000, 999), "a 1-damage tag-along earns no task credit")
+ok(ST.taskEligible(100, 1000, 100), "the top damager always earns it")
+ok(not ST.taskEligible(0, 1000, 0), "no damage, no credit")
+ok(not ST.taskEligible("x", nil, nil), "garbage input")
+-- Review fix: blocks cannot narrow an available master to one family.
+do
+	local c = ctx(5, 1)
+	local okB, whyB = ST.blockAllowed("Burrowers", c, {})
+	ok(not okB and has(whyB, "Ysolde") and has(whyB, "fewer than 2"), "Ysolde with two families: a block is refused")
+	ok((ST.blockAllowed("Galeborn", c, {})), "blocking an unreachable family is harmless")
+	ok(not ST.blockAllowed("Nope", c, {}), "unknown family")
+	local wide = ctx(5, 10, nil, {Hub = true, Meadow = true, Quarry = true, Windpine = true})
+	ok((ST.blockAllowed("Burrowers", wide, {})), "three families: one block allowed")
+	ok(not ST.blockAllowed("Thicketkin", wide, {"Burrowers"}), "...but not a second down to one")
+	ok((ST.blockAllowed("Thicketkin", ctx(2, 1), {})), "no available master: nothing to protect")
 end
 
 -- Townsfolk.
@@ -478,7 +529,8 @@ local function cmd(p, verb, item)
 	advance(1)
 	return remote.OnServerInvoke(p, verb, item)
 end
-local function kill(p, id) advance(0.1) return bridge.OnInvoke("kill", p, {monster = id}) end
+-- Combat sets task=true for a killer with a real damage share (L.taskCredit).
+local function kill(p, id, task) advance(0.1) return bridge.OnInvoke("kill", p, {monster = id, task = task ~= false}) end
 
 -- Fresh journal.
 local rookie = player(9001)
@@ -518,6 +570,17 @@ ok(r1 ~= nil and r1.superior == nil, "off-task kill pays normally")
 local afterOff = cmd(hunter, "state")
 eq(afterOff.slayerTasks.task.killed, 0, "off-task kills do not count")
 eq(afterOff.xp.Slayer, before.xp.Slayer, "off-task kills pay no Slayer XP")
+-- Review fix: an alt tagging along (task=false from combat) keeps its kill rewards but no task credit.
+local coinsTag = cmd(hunter, "state").coins
+local tag = kill(hunter, "Thornling", false)
+ok(tag ~= nil and tag.superior == nil, "tag-along kill still pays normally")
+local afterTag = cmd(hunter, "state")
+eq(afterTag.slayerTasks.task.killed, 0, "tag-along kill gives no task progress")
+eq(afterTag.xp.Slayer, before.xp.Slayer, "tag-along kill gives no Slayer XP")
+ok(afterTag.coins > coinsTag, "tag-along kill coins unchanged by the rule")
+advance(0.1)
+bridge.OnInvoke("kill", hunter, {monster = "Thornling"})
+eq(cmd(hunter, "state").slayerTasks.task.killed, 0, "a kill report without task=true never credits the task")
 kill(hunter, "Thornling")
 local afterOn = cmd(hunter, "state")
 eq(afterOn.slayerTasks.task.killed, 1, "task kill counts")
@@ -581,8 +644,9 @@ local blocker = seeded(9004, function(p)
 	p.slayerTasks = {task = {master = "Ysolde", family = "Thicketkin", amount = 20, killed = 5}, streak = 7, points = 29}
 end)
 ok(has(cmd(blocker, "slayerSkip").message, "30 Slayer points"), "skip needs points")
-blocker = rejoin(blocker, function(p) p.slayerTasks.points = 380 end)
-queue(0.9, 0)
+-- Windpine access + Slayer 10: Ysolde can assign Thicketkin, Burrowers and Galeborn.
+blocker = rejoin(blocker, function(p) p.slayerTasks.points = 380; p.xp.Woodcutting = X[10]; p.xp.Slayer = X[10] end)
+queue(0.5, 0)
 local skipped = cmd(blocker, "slayerSkip")
 ok(has(skipped.message, "Task skipped"), "skip notice")
 eq(skipped.slayerTasks.points, 350, "skip costs 30")
@@ -599,30 +663,37 @@ ok(has(cmd(blocker, "slayerBlock", "Burrowers").message, "already blocked"), "no
 ok(has(cmd(blocker, "slayerBlock", "Nope").message, "Choose"), "unknown family")
 for _, roll in ipairs({0.01, 0.5, 0.99}) do
 	queue(roll, 0.5)
-	eq(cmd(blocker, "slayerTask", "Ysolde").slayerTasks.task.family, "Thicketkin", "blocked family never assigned (roll " .. roll .. ")")
+	local fam = cmd(blocker, "slayerTask", "Ysolde").slayerTasks.task.family
+	ok(fam == "Thicketkin" or fam == "Galeborn", "blocked family never assigned (roll " .. roll .. ")")
 	cmd(blocker, "slayerCancel")
 end
-cmd(blocker, "slayerBlock", "Galeborn")
-local three = cmd(blocker, "slayerBlock", "Reefstalkers")
+-- Review fix: a block may not leave Ysolde a single family to farm.
+local refusal = cmd(blocker, "slayerBlock", "Galeborn")
+ok(has(refusal.message, "cannot block Galeborn") and has(refusal.message, "fewer than 2"), "block narrowing a master to one family refused")
+eq(refusal.slayerTasks.points, 250, "a refused block costs nothing")
+eq(#refusal.slayerTasks.blocked, 1, "refused block not listed")
+ok(type(refusal.slayerTasks.blockRefusal) == "table" and has(refusal.slayerTasks.blockRefusal.Thicketkin, "Ysolde") and has(refusal.slayerTasks.blockRefusal.Galeborn, "Ysolde"), "snapshot lists refused blocks")
+eq(refusal.slayerTasks.blockRefusal.Reefstalkers, nil, "unreachable families stay blockable")
+cmd(blocker, "slayerBlock", "Reefstalkers")
+local three = cmd(blocker, "slayerBlock", "Automatons")
 eq(#three.slayerTasks.blocked, 3, "three blocks")
 eq(three.slayerTasks.points, 50, "three blocks paid")
 blocker = rejoin(blocker, function(p) p.slayerTasks.points = 500 end)
-ok(has(cmd(blocker, "slayerBlock", "Automatons").message, "block slot is full"), "slots full")
-local unb = cmd(blocker, "slayerUnblock", "Galeborn")
-ok(has(unb.message, "Galeborn unblocked"), "unblock")
+ok(has(cmd(blocker, "slayerBlock", "Gloomweavers").message, "block slot is full"), "slots full")
+local unb = cmd(blocker, "slayerUnblock", "Automatons")
+ok(has(unb.message, "Automatons unblocked"), "unblock")
 eq(#unb.slayerTasks.blocked, 2, "slot freed")
 eq(unb.slayerTasks.points, 500, "no refund, no cost")
-ok(has(cmd(blocker, "slayerUnblock", "Galeborn").message, "not blocked"), "unblock twice")
+ok(has(cmd(blocker, "slayerUnblock", "Automatons").message, "not blocked"), "unblock twice")
 ok(has(cmd(blocker, "slayerUnblock", nil).message, "not blocked"), "unblock nil")
+ok(has(cmd(blocker, "slayerBlock", "Thicketkin").message, "fewer than 2"), "the last two families stay")
 queue(0.01, 0.5)
-eq(cmd(blocker, "slayerTask", "Ysolde").slayerTasks.task.family, "Thicketkin", "Thicketkin left")
+ok(cmd(blocker, "slayerTask", "Ysolde").slayerTasks.task ~= nil, "a task is always available after blocks")
 cmd(blocker, "slayerCancel")
-cmd(blocker, "slayerBlock", "Thicketkin")
-ok(has(cmd(blocker, "slayerTask", "Ysolde").message, "No task you can reach"), "everything blocked: no task")
 cmd(blocker, "slayerBuy", "WiderLedger")
 local wide = cmd(blocker, "state").slayerTasks
 eq(wide.blockSlots, 5, "Wider Ledger: five slots")
-eq(wide.points, 200, "Wider Ledger costs 200 (500 - 100 block - 200)")
+eq(wide.points, 300, "Wider Ledger costs 200 (500 - 200)")
 
 -- Region reach on the server: Corvane at Combat 20 with nothing else unlocked.
 local wanderer = seeded(9005, function(p) p.xp.Combat = X[20]; p.xp.Slayer = X[50] end)
@@ -686,10 +757,30 @@ ok(has(cmd(shopper, "slayerTitle", "TitleNightstalker").message, "not earned"), 
 ok(has(cmd(shopper, "slayerBuy", "TitleNightstalker").message, "Slayer 60"), "title level gate")
 ok(has(cmd(shopper, "slayerBuy", "Nope").message, "Choose"), "unknown shop entry")
 ok(has(cmd(shopper, "slayerBuy", "SuperiorCalling").message, "150"), "too few points left")
+-- Review fix: imbuing never consumes the worn Hunter's Visor (refuse; unequip first).
+local imbuer = seeded(9017, function(p)
+	p.xp.Combat = X[80]; p.xp.Slayer = X[75]
+	p.slayerTasks = {points = 0, unlocks = {VisorCrafting = true}}
+	p.items.HuntersVisor, p.items.EclipsedIchor, p.items.ThunderhidePlate, p.items.SlayerToken = 1, 12, 10, 30
+end)
+eq(imbuer.attrs.SlayerVisor, "", "no visor worn")
+cmd(imbuer, "equip", "HuntersVisor")
+eq(imbuer.attrs.SlayerVisor, "HuntersVisor", "SlayerVisor attribute tracks the worn visor (combat cache invalidation)")
+local refusedCraft = cmd(imbuer, "slayerBuy", "CraftRadiantVisor")
+ok(has(refusedCraft.message, "Unequip Hunter's Visor"), "crafting with the worn visor refused")
+eq(refusedCraft.items.HuntersVisor, 1, "worn visor kept")
+eq(refusedCraft.items.EclipsedIchor, 12, "nothing consumed")
+eq(refusedCraft.items.RadiantHuntersVisor, nil, "nothing crafted")
+cmd(imbuer, "unequip", "helmet")
+eq(imbuer.attrs.SlayerVisor, "", "unequipping clears SlayerVisor")
+local imbued = cmd(imbuer, "slayerBuy", "CraftRadiantVisor")
+ok(has(imbued.message, "Radiant Hunter's Visor"), "imbued once unequipped")
+eq(imbued.items.HuntersVisor, nil, "visor consumed")
+eq(imbued.items.RadiantHuntersVisor, 1, "radiant visor made")
 
 -- Superiors.
 local caller = seeded(9007, function(p)
-	p.xp.Combat = X[30]; p.xp.Slayer = X[30]
+	p.xp.Combat = X[6]; p.xp.Slayer = X[30] -- Combat 6: Lv 2 boars (>= 6/3) still roll superiors
 	p.slayerTasks = {task = {master = "Ysolde", family = "Thicketkin", amount = 30, killed = 0}, points = 0}
 end)
 defaultRoll = 0
@@ -720,7 +811,8 @@ local other = seeded(9008, function(p) p.xp.Combat = X[30] end)
 eq(bridge.OnInvoke("slayerSuperior", other, {seq = 1, monster = "SuperiorBarkStalker", result = "kill"}).reason, "ticket", "only the owner's ticket settles")
 local paid = bridge.OnInvoke("slayerSuperior", caller, {seq = 1, monster = "SuperiorBarkStalker", result = "kill"})
 ok(paid.ok == true, "owner's superior kill settles")
-ok((paid.drops.EclipsedIchor or 0) >= 1 and (paid.drops.SlayerToken or 0) >= 1, "guaranteed unique loot")
+-- Review fix: a Lv 18 base pays no Ichor or Sigil (and Seals only on a roll).
+ok(paid.drops.EclipsedIchor == nil and paid.drops.DuskhunterSigil == nil, "low-level superior: no endgame uniques")
 ok(has(caller.last.message, "Thornsworn Bark Stalker slain"), "superior kill notice")
 local afterSup = cmd(caller, "state")
 eq(afterSup.xp.Slayer - beforeSup.xp.Slayer, ST.killXp(ST.Superiors.SuperiorBarkStalker), "superior Slayer XP")
@@ -749,8 +841,22 @@ local d = kill(caller, "Thornling")
 defaultRoll = 0.999
 caller = rejoin(caller)
 eq(bridge.OnInvoke("slayerSuperior", caller, {seq = d.superior.seq, monster = d.superior.id, result = "kill"}).reason, "ticket", "rejoining forgets tickets")
+-- Review fix: trivial task kills (base level < Combat / 3) raise no superior.
+local veteran = seeded(9018, function(p)
+	p.xp.Combat = X[90]; p.xp.Slayer = X[50]
+	p.slayerTasks = {task = {master = "Ysolde", family = "Thicketkin", amount = 30, killed = 0}, points = 0, unlocks = {SuperiorCalling = true}}
+end)
+defaultRoll = 0
+local trivial = kill(veteran, "BramblebackBoar")
+local alsoTrivial = kill(veteran, "BarkStalker")
+local noTask = kill(veteran, "Thornling", false)
+defaultRoll = 0.999
+eq(trivial.superior, nil, "Combat 90 raises no Lv 2 boar superior")
+eq(alsoTrivial.superior, nil, "Combat 90 raises no Lv 18 Bark Stalker superior")
+eq(noTask.superior, nil, "no task credit, no superior roll")
+eq(cmd(veteran, "state").slayerTasks.task.killed, 2, "trivial kills still count for the task")
 -- Slayer damage refusal notice.
-local weak = seeded(9009, function(p) p.xp.Combat = X[50] end)
+local weak =seeded(9009, function(p) p.xp.Combat = X[50] end)
 weak.last = nil
 eq(bridge.OnInvoke("slayerDenied", weak, {monster = "HollowcapShrieker"}), nil, "denied op returns nothing")
 ok(weak.last and has(weak.last.message, "Slayer 40"), "player told the Slayer level")
@@ -867,6 +973,7 @@ local function arena(slayer)
 			table.insert(w.calls, {op = op, player = player, payload = payload})
 			if op == "stats" then return w.stats[player] end
 			if op == "kill" and done then done(w.killReply) end
+			if op == "slayerSuperior" and done then done(w.superiorReply) end
 			return nil
 		end,
 	})
@@ -1065,10 +1172,164 @@ do
 	-- Superiors never respawn or count as marker monsters.
 	ok(L.liveCount() >= 0, "live count sane")
 end
+-- Review fix 3: slayer-only monsters never aggro players below their Slayer level.
+do
+	local w = arena({level = 39})
+	local L = w.logic
+	local r = spawn(L, "HollowcapShrieker")
+	L.statsFor(w.hero)
+	L.statsFor(w.rival)
+	eq(L.nearestAggro(r), w.rival, "the Slayer 99 rival is a fair target")
+	w.alive[w.rival] = false
+	eq(L.nearestAggro(r), nil, "a Slayer 39 player is never picked")
+	local act = L.think(r)
+	ok(act.kind ~= "strike" and act.kind ~= "chase" and r.target == nil, "the shrieker leaves the Slayer 39 player alone")
+	eq(#callsOf(w, "damage"), 0, "no hits on the ineligible player")
+	w.stats[w.hero] = table.clone(w.stats[w.hero])
+	w.stats[w.hero].slayer = {level = 40}
+	L.invalidateStats(w.hero)
+	L.statsFor(w.hero)
+	eq(L.nearestAggro(r), w.hero, "at Slayer 40 it aggroes")
+	local plain = spawn(L, "GloomfangSpider", "plainAggro")
+	eq(L.nearestAggro(plain), w.hero, "ordinary monsters unaffected")
+end
+-- Review fix 2: superiors only ever target their owner.
+do
+	local w = arena({level = 99, family = "Burrowers"})
+	local L = w.logic
+	local base = spawn(L, "ShaleCrawler")
+	L.statsFor(w.hero)
+	L.statsFor(w.rival)
+	local spec = L.onKillReply(w.hero, base, {superior = {id = "SuperiorShaleCrawler", seq = 1}})
+	L.pendingSuperiors()
+	local sr = L.registerSuperior(spec, {Name = "sup"}, Vector3.new(0, 1, 0), {radius = 1})
+	sr.target = w.rival -- however it got there, a bystander is dropped
+	local act = L.think(sr)
+	eq(sr.target, w.hero, "retargets its owner")
+	ok(act.kind == "strike" or act.kind == "hold" or act.kind == "chase", "fights its owner")
+	for _, c in ipairs(callsOf(w, "damage")) do eq(c.player, w.hero, "only the owner is struck") end
+	w.alive[w.hero] = false
+	w.clock += 5
+	act = L.think(sr)
+	eq(sr.target, nil, "owner down: no target")
+	ok(act.kind ~= "strike" and act.kind ~= "chase", "idles rather than hunting the bystander (" .. act.kind .. ")")
+	eq(L.nearestAggro(sr), nil, "never aggroes a bystander")
+	for _, c in ipairs(callsOf(w, "damage")) do ok(c.player ~= w.rival, "bystander never struck") end
+	w.alive[w.hero] = true
+	w.pos[w.hero] = Vector3.new(500, 0, 0)
+	L.think(sr)
+	eq(sr.target, nil, "owner far away: still no bystander")
+end
+-- Review fix 5: task credit needs a real damage share; kill credit unchanged.
+do
+	local w = arena({level = 99, family = "Thicketkin"})
+	local L = w.logic
+	local r = spawn(L, "BarkStalker")
+	L.landHit(w.hero, r, 1, "melee") -- the alt's tag
+	L.landHit(w.rival, r, r.hp, "melee")
+	local credited = L.kill(r)
+	eq(#credited, 2, "both keep normal kill credit")
+	local byPlayer = {}
+	for _, c in ipairs(callsOf(w, "kill")) do byPlayer[c.player] = c.payload end
+	eq(byPlayer[w.hero].task, false, "1-damage tag-along: no task credit")
+	eq(byPlayer[w.rival].task, true, "the real killer: task credit")
+	local r2 = spawn(L, "BarkStalker", "share")
+	L.landHit(w.hero, r2, math.ceil(r2.maxHp * 0.25), "melee")
+	L.landHit(w.rival, r2, r2.hp, "melee")
+	L.kill(r2)
+	local calls = callsOf(w, "kill")
+	local last = {}
+	for i = #calls - 1, #calls do last[calls[i].player] = calls[i].payload end
+	ok(last[w.hero].task == true and last[w.rival].task == true, "a 25% share earns task credit")
+	local r3 = spawn(L, "BarkStalker", "solo")
+	L.landHit(w.hero, r3, 1, "melee")
+	r3.hp = 0
+	L.kill(r3)
+	calls = callsOf(w, "kill")
+	eq(calls[#calls].payload.task, true, "a solo killer (top damager) always earns it")
+end
+-- Review fix 6: an unapplied superior kill report is retried like a sea creature's.
+do
+	local w = arena({level = 99, family = "Burrowers"})
+	local L = w.logic
+	local base = spawn(L, "ShaleCrawler")
+	local spec = L.onKillReply(w.hero, base, {superior = {id = "SuperiorShaleCrawler", seq = 3}})
+	L.pendingSuperiors()
+	local sr = L.registerSuperior(spec, {Name = "sync"}, Vector3.new(0, 1, 0), {})
+	L.landHit(w.hero, sr, 10, "melee")
+	w.superiorReply = {ok = false, reason = "sync"}
+	L.kill(sr)
+	eq(#callsOf(w, "slayerSuperior"), 1, "first report")
+	eq(#L.dueSuperiorRetries(), 0, "not due yet")
+	ok(L.hasPlayerState(w.hero), "a pending resend is player state")
+	w.clock += Combat.C.SEA_RETRY_DELAY
+	local due = L.dueSuperiorRetries()
+	ok(#due == 1 and due[1].seq == 3 and due[1].id == "SuperiorShaleCrawler" and due[1].player == w.hero, "resend due")
+	w.superiorReply = {ok = true}
+	L.reportSuperior(due[1].player, due[1].id, due[1].seq, "kill", due[1].deadline)
+	eq(#callsOf(w, "slayerSuperior"), 2, "resent")
+	w.clock += 10
+	eq(#L.dueSuperiorRetries(), 0, "a settled report stops retrying")
+	w.superiorReply = nil -- no journal: nil reply
+	L.reportSuperior(w.hero, "SuperiorShaleCrawler", 4, "kill", w.clock + 60)
+	w.clock += Combat.C.SEA_RETRY_DELAY
+	eq(#L.dueSuperiorRetries(), 1, "a nil reply is retried too")
+	w.superiorReply = {ok = false, reason = "sync"}
+	L.reportSuperior(w.hero, "SuperiorShaleCrawler", 5, "kill", w.clock + 2)
+	w.clock += Combat.C.SEA_RETRY_DELAY
+	eq(#L.dueSuperiorRetries(), 0, "never past the ticket deadline")
+	L.reportSuperior(w.hero, "SuperiorShaleCrawler", 6, "despawn", w.clock + 60)
+	w.clock += Combat.C.SEA_RETRY_DELAY
+	eq(#L.dueSuperiorRetries(), 0, "despawns are not retried")
+	L.reportSuperior(w.hero, "SuperiorShaleCrawler", 7, "kill", w.clock + 60)
+	L.playerRemoving(w.hero)
+	w.clock += Combat.C.SEA_RETRY_DELAY
+	eq(#L.dueSuperiorRetries(), 0, "leaving drops pending resends")
+	ok(not L.hasPlayerState(w.hero), "no player state left")
+end
+-- Review fix 7: the stats cache can be dropped (SlayerTask / SlayerVisor changes).
+do
+	local w = arena({level = 99, family = "Burrowers"})
+	local L = w.logic
+	L.statsFor(w.hero)
+	local n = #callsOf(w, "stats")
+	L.statsFor(w.hero)
+	eq(#callsOf(w, "stats"), n, "cached within the TTL")
+	w.stats[w.hero] = table.clone(w.stats[w.hero])
+	w.stats[w.hero].slayer = {level = 99, family = "Thicketkin", visor = {damage = 15, accuracy = 15}}
+	L.invalidateStats(w.hero)
+	eq(L.peekStats(w.hero), nil, "cache dropped")
+	L.statsFor(w.hero)
+	eq(#callsOf(w, "stats"), n + 1, "re-fetched after invalidation")
+	local r = spawn(L, "Thornling")
+	ok(L.visorFor(w.hero, r) ~= nil, "the new task family and visor apply at once")
+end
+-- Review fix 8: refused swings on gated monsters bridge one notice per window.
+do
+	local w = arena({level = 39})
+	local L = w.logic
+	local _, m = spawn(L, "HollowcapShrieker")
+	for _ = 1, 10 do
+		local hit, why = L.attack(w.hero, "attack", m)
+		ok(hit == nil and why == "slayer", "refused")
+		w.clock += 0.1
+	end
+	eq(#callsOf(w, "slayerDenied"), 1, "ten spammed swings: one bridge call")
+	w.clock += Combat.C.DENIED_NOTICE_GAP
+	L.attack(w.hero, "attack", m)
+	eq(#callsOf(w, "slayerDenied"), 2, "the next window reports again")
+	L.playerRemoving(w.hero)
+	ok(not L.hasPlayerState(w.hero), "rate-limit state dropped on leave")
+end
 do
 	local source = fs.readFile("combat.server.lua")
-	ok(has(source, 'env.bridge("kill", player, {monster = r.id}, function(reply) L.onKillReply(player, r, reply) end)'), "kill bridge carries the superior hook")
+	ok(has(source, 'env.bridge("kill", player, {monster = r.id, task = L.taskCredit(r, player)}, function(reply) L.onKillReply(player, r, reply) end)'), "kill bridge carries task credit and the superior hook")
 	ok(has(source, "slayerStep() -- Slayer tasks section"), "runtime spawns superiors")
+	ok(has(source, 'GetAttributeChangedSignal("SlayerTask"):Connect(function() Logic.invalidateStats(player) end)'), "task change drops cached stats")
+	ok(has(source, 'GetAttributeChangedSignal("SlayerVisor"):Connect(function() Logic.invalidateStats(player) end)'), "visor change drops cached stats")
+	ok(has(source, "Logic.dueSuperiorRetries()"), "runtime resends superior reports")
+	local server = fs.readFile("server.server.lua")
+	ok(has(server, "if payload.task==true then SlayerTasks.onKill(player,p,monsterId,monster)"), "server credits tasks only with task=true")
 end
 print("PASS: " .. (checks - partC) .. " Slayer combat assertions.")
 
@@ -1087,8 +1348,8 @@ local function ledger(extra)
 	for k, v in pairs(extra or {}) do st[k] = v end
 	return st
 end
-local function atlas(size, mutate)
-	local snap = H.snapshot({xp = {Slayer = X[45], Combat = X[50]}})
+local function atlas(size, mutate, xp)
+	local snap = H.snapshot({xp = xp or {Slayer = X[45], Combat = X[50]}})
 	snap.slayerTasks = ledger()
 	snap.items.SlayerToken, snap.items.HushcapSpore, snap.items.BeastHide = 10, 20, 40
 	if mutate then mutate(snap) end
@@ -1139,10 +1400,20 @@ do
 	ok(has(text, "260 pts"), "points shown")
 	ok(has(text, "Gloomfang Spider"), "task targets listed")
 	ok(has(text, "line ranks") or has(text, "LINE RANKS"), "boss lines labelled as line ranks")
-	H.press(H.find(ui.scroll, "SlayerSkip"))
-	eq(ui.sent[#ui.sent][1], "slayerSkip", "skip verb")
-	H.press(H.find(ui.scroll, "SlayerCancel"))
+	-- Review fix 9: every streak milestone listed; Skip asks to confirm.
+	for _, s in ipairs(ST.Streak) do ok(has(text, s.every .. "th") and has(text, "x" .. s.mult), "streak milestone " .. s.every .. " x" .. s.mult .. " listed") end
 	local sent = #ui.sent
+	H.press(H.find(ui.scroll, "SlayerSkip"))
+	eq(#ui.sent, sent, "first skip press sends nothing")
+	ok(H.find(ui.scroll, "SlayerSkipConfirm") ~= nil, "skip asks to confirm")
+	H.press(H.find(ui.scroll, "SlayerSkipKeep"))
+	eq(#ui.sent, sent, "keeping the task sends nothing")
+	ok(H.find(ui.scroll, "SlayerSkipConfirm") == nil and H.find(ui.scroll, "SlayerSkip") ~= nil, "back to the plain buttons")
+	H.press(H.find(ui.scroll, "SlayerSkip"))
+	H.press(H.find(ui.scroll, "SlayerSkipConfirm"))
+	eq(ui.sent[#ui.sent][1], "slayerSkip", "confirmed skip verb")
+	H.press(H.find(ui.scroll, "SlayerCancel"))
+	sent = #ui.sent
 	ok(H.find(ui.scroll, "SlayerCancelConfirm") ~= nil, "cancel asks to confirm")
 	eq(#ui.sent, sent, "first press sends nothing")
 	H.press(H.find(ui.scroll, "SlayerCancelConfirm"))
@@ -1201,6 +1472,41 @@ do
 	open(ui)
 	eq(#ui.warnings, 0, "malformed ledger tolerated")
 	for _, v in ipairs({"Masters", "Families", "Shop", "Superiors"}) do viewOf(ui, v); eq(#ui.warnings, 0, "malformed ledger on " .. v) end
+end
+do
+	-- Review fix 4 (UI mirror): the shop refuses an imbue while the visor is worn.
+	local function imbueUi(worn)
+		local ui = atlas(roblox.Vector2.new(1366, 768), function(snap)
+			snap.slayerTasks = ledger({unlocks = {"VisorCrafting"}, level = 80, blockRefusal = {Voidspawn = "Warden Corvane Mossgrave would have fewer than 2 families to assign"}})
+			snap.items.HuntersVisor, snap.items.EclipsedIchor, snap.items.ThunderhidePlate, snap.items.SlayerToken = 1, 12, 10, 30
+			snap.depth.equipment = table.clone(snap.depth.equipment or {})
+			snap.depth.equipment.helmet = if worn then "HuntersVisor" else nil
+		end, {Slayer = X[80], Combat = X[80]})
+		open(ui)
+		return ui
+	end
+	local ui = imbueUi(true)
+	viewOf(ui, "Shop")
+	eq(#ui.warnings, 0, "shop with a worn visor renders")
+	local sent = #ui.sent
+	H.press(H.find(ui.scroll, "SlayerBuyCraftRadiantVisor"))
+	eq(#ui.sent, sent, "worn visor: imbue stays local")
+	ok(has(texts(ui.gui), "Unequip Hunter's Visor"), "the shop explains why")
+	-- Review fix 1 (UI mirror): a refused block stays local and says why.
+	viewOf(ui, "Families")
+	H.press(H.find(ui.scroll, "SlayerBlockVoidspawn"))
+	eq(#ui.sent, sent, "refused block stays local")
+	ok(has(texts(ui.gui), "fewer than 2 families"), "the block refusal is explained")
+	H.press(H.find(ui.scroll, "SlayerBlockShriekcaps"))
+	eq(ui.sent[#ui.sent][1], "slayerBlock", "other families still blockable")
+	ui = imbueUi(false)
+	viewOf(ui, "Shop")
+	H.press(H.find(ui.scroll, "SlayerBuyCraftRadiantVisor"))
+	eq(ui.sent[#ui.sent][1], "slayerBuy", "unworn visor: imbue sends")
+	eq(ui.sent[#ui.sent][2], "CraftRadiantVisor", "imbue names the entry")
+	local src = fs.readFile("ui.client.lua")
+	local _, masters = string.gsub(src, 'view=="Masters" then drawMasters%(st%)', "")
+	eq(masters, 1, "one Masters branch")
 end
 print("PASS: " .. (checks - partD) .. " Slayer atlas assertions.")
 print("Slayer tasks QA passed " .. checks .. " checks.")
