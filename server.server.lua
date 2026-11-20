@@ -159,6 +159,8 @@ local Pets={verbs={}}
 local Classes={verbs={}}
 -- Treasure Trails (clue scrolls, steps, caskets); filled in by the Trails block after Prayer & Thieving.
 local Trails={verbs={trailBegin=true,trailAbandon=true,trailDig=true,trailSearch=true,trailEmote=true,trailSlide=true,trailCheck=true,trailOpen=true,trailTeleport=true,trailLearn=true,trailBanner=true}}
+-- Commissions & Logs (commissions, Forgeheart, Collection Log, Museum); filled in by the Logs block after Slayer tasks.
+local Logs={verbs={commissionClaim=true,commissionClaimAll=true,forgeBuy=true,logClaim=true,logTitle=true,museumDonate=true,logsBoard=true}}
 -- One-time coins for each newly reached skill level.
 local function levelCoins(p,skill,newLevel)
 	p.levelRewards=p.levelRewards or {}
@@ -197,6 +199,7 @@ end
 local function collect(p,item,count)
 	p.items[item]=(p.items[item] or 0)+count
 	p.collection[item]=(p.collection[item] or 0)+count
+	if Logs.collect then Logs.collect(p,item,count) end -- Commissions & Logs: Collection Log credit
 	if not collectionSet[item] then return end
 	p.collectionRewards=p.collectionRewards or {}
 	local tier=Progression.collectionTier(p,item)
@@ -1521,6 +1524,7 @@ do
 		local _,before=HU.logPerk(p.hunterLog)
 		p.hunterLog[creature.id]=(p.hunterLog[creature.id] or 0)+1
 		Trails.event(p,"catch",creature.id) -- Treasure Trails: scroll drops + trail tasks
+		Logs.event(p,"catch",creature.id) -- Commissions & Logs: Hunter commissions
 		Skills.refreshPerks(p)
 		local _,after=HU.logPerk(p.hunterLog)
 		p.started=true
@@ -2843,6 +2847,324 @@ do
 	end
 end
 -- End Slayer tasks block.
+-- Commissions & Logs (Mining & Logs team). Rules and data: Data.CommissionsLogs
+-- (shared/GameData.lua, "Commissions & Logs" section).
+-- Verbs (item <= 64 chars):
+--   commissionClaim "<slot 1-4>"  claim a finished commission (once): skill XP,
+--                                 coins and Glimmerdust (milestone boosts apply)
+--   commissionClaimAll            claim every finished commission
+--   forgeBuy "<perk id>"          buy the next Forgeheart level with Glimmerdust
+--   logClaim "<tab>"              claim a completed Collection Log tab (coins + title, once)
+--   logTitle "<tab>|Paragon|none" wear an unlocked title (attribute LogTitle)
+--   museumDonate "<item id>"      donate one owned copy (consumed): refused when
+--                                 already donated, not owned, equipped/bagged, or
+--                                 the last copy of an upgraded id
+--   logsBoard "<Commissions|Museum|Log>" (world prompt only) greeting text
+-- Hooks: Logs.prime before the gather stats (Forgeheart fortune budget),
+-- Logs.gather after a harvest (commission progress, gem roll, regrowth),
+-- Logs.event from the kill bridge and Hunter catches, Logs.collect from collect().
+-- Profile: p.commissions = {day, salt, slots = {{id, progress, claimed}}, total,
+--   dust, earned, forge = {[perk] = level}}; p.colLog = {counts = {[item] = n},
+--   claimed = {[tab] = true}, title = tab | "Paragon" | "", retro = n};
+--   p.museum = {donated = {[item] = true}, count, paid}. All sanitised by
+--   Logs.migrate (unknown ids dropped, numbers clamped).
+-- Perks: p.perkStats["commissions:milestones"], ["forgeheart"], ["museum"].
+-- A UTC day change auto-claims finished commissions, then draws a new board.
+-- Snapshot key: logs. Player attribute: LogTitle (title text or "").
+------------------------------------------------------------------------------
+do
+	local CL=Data.CommissionsLogs
+	local MAX_COUNT=1e9
+	if __LogsHarness then __LogsHarness(Logs) end -- headless tests only (nil in Roblox)
+	local function whole(v,limit)
+		local n=tonumber(v)
+		if not n or n~=n or n<0 then return 0 end
+		return math.floor(math.min(n,limit or MAX_COUNT))
+	end
+	local function itemName(id) return Data.Items[id] and Data.Items[id].name or tostring(id) end
+	function Logs.migrate(p)
+		local c=type(p.commissions)=="table" and p.commissions or {}
+		local out={day=whole(c.day),salt=whole(c.salt,1e6),slots={},total=whole(c.total,CL.MAX_TOTAL),dust=whole(c.dust,CL.MAX_DUST),earned=whole(c.earned,CL.MAX_DUST*10),forge={}}
+		if out.salt==0 then out.salt=1+math.floor(roll()*999999) end
+		if type(c.slots)=="table" then
+			for _,s in ipairs(c.slots) do
+				local t=type(s)=="table" and CL.TaskById[s.id]
+				if t and #out.slots<CL.SLOTS then table.insert(out.slots,{id=t.id,progress=whole(s.progress,t.amount),claimed=s.claimed==true}) end
+			end
+		end
+		if type(c.forge)=="table" then
+			for id,f in pairs(CL.Forge) do
+				local lvl=whole(c.forge[id],f.max)
+				if lvl>0 then out.forge[id]=lvl end
+			end
+		end
+		p.commissions=out
+		local L=CL.log()
+		local g=type(p.colLog)=="table" and p.colLog or nil
+		local log={counts={},claimed={},title="",retro=0}
+		if g then
+			if type(g.counts)=="table" then for id,n in pairs(g.counts) do if L.Of[id] and whole(n)>0 then log.counts[id]=whole(n) end end end
+			if type(g.claimed)=="table" then for tab,v in pairs(g.claimed) do if v==true and CL.LogTabs[tab] then log.claimed[tab]=true end end end
+			if type(g.title)=="string" and (log.claimed[g.title] or (g.title=="Paragon" and CL.milestonePerks(out.total).title)) then log.title=g.title end
+			log.retro=whole(g.retro,L.total)
+		end
+		p.colLog=log
+		local m=type(p.museum)=="table" and p.museum or {}
+		local museum={donated={},count=0,paid=0}
+		if type(m.donated)=="table" then
+			for id,v in pairs(m.donated) do if v==true and CL.museumCategory(id) then museum.donated[id]=true; museum.count+=1 end end
+		end
+		museum.paid=math.min(whole(m.paid,#CL.MuseumMilestones),select(2,CL.museumPerks(museum.count)))
+		p.museum=museum
+		-- First load of the log: retroactive credit from what the journal already holds.
+		if not g then log.retro=Logs.sweep(p) end
+		Logs.refresh(p)
+	end
+	-- Raises log counts to what the journal provably obtained (lifetime
+	-- collections, held items, worn gear, adopted pets, clue-log uniques,
+	-- museum donations). Returns how many entries were newly credited.
+	function Logs.sweep(p)
+		local L=CL.log()
+		local counts=p.colLog.counts
+		local owned={}
+		for _,pet in ipairs(type(p.pets)=="table" and p.pets or {}) do
+			local id=type(pet)=="table" and type(pet.id)=="string" and pet.id.."Pet"
+			if id then owned[id]=(owned[id] or 0)+1 end
+		end
+		for _,id in pairs(type(p.equipment)=="table" and p.equipment or {}) do if type(id)=="string" then owned[id]=math.max(owned[id] or 0,1) end end
+		for _,id in ipairs(type(p.accessoryBag)=="table" and p.accessoryBag or {}) do if type(id)=="string" then owned[id]=math.max(owned[id] or 0,1) end end
+		local trailUniques=type(p.trails)=="table" and type(p.trails.uniques)=="table" and p.trails.uniques or {}
+		local fresh=0
+		for id in pairs(L.Of) do
+			local n=math.max(whole(p.items and p.items[id]),whole(p.collection and p.collection[id]),owned[id] or 0,whole(trailUniques[id]),if p.museum and p.museum.donated[id] then 1 else 0)
+			local had=counts[id] or 0
+			if n>had then
+				counts[id]=n
+				if had==0 then fresh+=1 end
+			end
+		end
+		return fresh
+	end
+	local function board(p) return p.commissions end
+	local function context(p) return SlayerTasks.context(p) end
+	local function pay(p,t)
+		local c=board(p)
+		local r=CL.reward(t,c.total)
+		grantXp(p,r.skill,r.xp)
+		p.coins+=r.coins
+		c.dust=math.min(CL.MAX_DUST,c.dust+r.dust)
+		c.earned=math.min(CL.MAX_DUST*10,c.earned+r.dust)
+		local before=CL.milestonePerks(c.total).reached
+		c.total=math.min(CL.MAX_TOTAL,c.total+1)
+		local after=CL.milestonePerks(c.total).reached
+		if after>before then
+			for i=before+1,after do note(p,"Commission milestone: "..CL.Milestones[i].name.."! "..CL.Milestones[i].text) end
+		end
+		return r
+	end
+	-- Fortune budget: Forgeheart fills only what Mastery leaves under CL.FORTUNE_BUDGET.
+	function Logs.prime(p)
+		if type(p.perkStats)~="table" then p.perkStats={} end
+		local c=p.commissions
+		if not c then return end
+		local mastery=(type(p.mastery)=="table" and Progression.masteryStats(p,os.time()).miningFortune) or 0
+		local stats=CL.forgeStats(c.forge,mastery)
+		p.perkStats.forgeheart=if next(stats) then stats else nil
+	end
+	function Logs.refresh(p)
+		local c=board(p)
+		local today=CL.dayOf(os.time())
+		if c.day~=today or #c.slots==0 then
+			local paid=0
+			for _,s in ipairs(c.slots) do
+				local t=CL.TaskById[s.id]
+				if t and not s.claimed and s.progress>=t.amount then s.claimed=true; pay(p,t); paid+=1 end
+			end
+			if paid>0 then note(p,"Yesterday's finished commissions were claimed for you ("..paid..").") end
+			c.day=today
+			c.slots={}
+			for _,id in ipairs(CL.draw(today,c.salt,context(p))) do table.insert(c.slots,{id=id,progress=0,claimed=false}) end
+		end
+		if type(p.perkStats)~="table" then p.perkStats={} end
+		local perks=CL.milestonePerks(c.total)
+		p.perkStats["commissions:milestones"]=if next(perks.stats) then table.clone(perks.stats) else nil
+		local stats=CL.museumPerks(p.museum.count)
+		p.perkStats.museum=if next(stats) then stats else nil
+		Logs.prime(p)
+		Logs.sweep(p)
+	end
+	-- Commission progress: kind "gather" (resource id), "kill" (monster id), "catch" (Hunter creature id).
+	function Logs.event(p,kind,id)
+		local c=p.commissions
+		if not c or type(id)~="string" then return end
+		if c.day~=CL.dayOf(os.time()) then Logs.refresh(p) end
+		for _,s in ipairs(c.slots) do
+			local t=CL.TaskById[s.id]
+			if t and t.kind==kind and t.target==id and s.progress<t.amount then
+				s.progress+=1
+				if s.progress>=t.amount then note(p,"Commission complete: "..t.name.."! Claim it in Journal › Commissions.") end
+			end
+		end
+	end
+	function Logs.collect(p,item,count)
+		local log=p.colLog
+		if not log or not CL.log().Of[item] or type(count)~="number" or count<=0 then return end
+		local had=log.counts[item] or 0
+		log.counts[item]=math.min(MAX_COUNT,had+math.floor(count))
+		if had==0 then note(p,"New Collection Log entry: "..itemName(item).."!") end
+	end
+	-- After a harvest: commission progress, Gemseeker roll (Mining), Steadfast Pick regrowth.
+	function Logs.gather(p,item,result,resource)
+		Logs.event(p,"gather",item)
+		if not p.commissions or resource.skill~="Mining" then return "" end
+		local c=p.commissions
+		local text=""
+		local skip=CL.forgeSkip(c.forge)
+		if skip>0 then
+			local base=tonumber(resource.respawn) or 3
+			local mastery=Progression.masteryPerks(p,"Mining",os.time()).respawnSkip or 0
+			local total=math.max(mastery,math.min(Data.Mastery.PASSIVE_CAPS.respawnSkip,mastery+skip))
+			result.regrowth=Progression.regrowthTime(base,total)
+		end
+		local chance=CL.gemChance(c.forge,c.total)
+		if chance>0 and roll()*100<chance then
+			local gem=CL.gemFor(resource.index,roll())
+			collect(p,gem,1)
+			text="   ·   Gemseeker: +1 "..itemName(gem)
+		end
+		return text
+	end
+	function Logs.titleText(p)
+		local t=p.colLog and p.colLog.title or ""
+		if t=="Paragon" then return CL.milestonePerks(p.commissions.total).title or "" end
+		local tab=CL.LogTabs[t]
+		return tab and tab.title or ""
+	end
+	local function tabDone(p,tab)
+		local list=CL.log().Tabs[tab]
+		if not list or #list==0 then return false end
+		for _,id in ipairs(list) do if (p.colLog.counts[id] or 0)<=0 then return false end end
+		return true
+	end
+	Logs.tabDone=tabDone
+	-- Donation check without changing anything: nil = allowed, else the refusal.
+	function Logs.donateCheck(p,id)
+		local cat=CL.museumCategory(id)
+		if not cat then return "That item cannot be displayed in the Museum." end
+		if p.museum.donated[id] then return itemName(id).." is already on display." end
+		if (p.items[id] or 0)<1 then return "You do not own "..itemName(id).."." end
+		for _,eq in pairs(p.equipment or {}) do if eq==id then return "Unequip "..itemName(id).." before donating it." end end
+		if table.find(p.accessoryBag or {},id) then return "Take "..itemName(id).." out of your accessory bag first." end
+		local upgraded=(type(p.reforges)=="table" and p.reforges[id]~=nil) or (type(p.stars)=="table" and (tonumber(p.stars[id]) or 0)>0)
+			or (type(p.books)=="table" and p.books[id]~=nil) or (type(p.enchants)=="table" and type(p.enchants[id])=="table" and next(p.enchants[id])~=nil)
+		if upgraded and (p.items[id] or 0)<=1 then return itemName(id).." carries upgrades; donate a spare copy instead." end
+		return nil
+	end
+	function Logs.action(player,p,verb,item,prompt)
+		Logs.refresh(p)
+		local c=board(p)
+		local reply
+		if verb=="logsBoard" then
+			if not prompt then return "Visit the board in person." end
+			if item=="Museum" then return "The Museum curator welcomes you • "..p.museum.count.." items on display." end
+			if item=="Log" then local _,_,found=CL.logScore(p.colLog.counts); return "The Collection Log • "..found.." of "..CL.log().total.." entries." end
+			return "The Commission Board • "..#c.slots.." commissions today, resets in "..math.ceil(CL.resetIn(os.time())/3600).."h."
+		elseif verb=="commissionClaim" or verb=="commissionClaimAll" then
+			local slots={}
+			if verb=="commissionClaimAll" then
+				for i=1,#c.slots do table.insert(slots,i) end
+			else
+				local i=tonumber(item)
+				if not i or i~=math.floor(i) or not c.slots[i] then return "Unknown commission." end
+				slots={i}
+			end
+			local done,dust,coins=0,0,0
+			for _,i in ipairs(slots) do
+				local s=c.slots[i]
+				local t=CL.TaskById[s.id]
+				if t and not s.claimed and s.progress>=t.amount then
+					s.claimed=true
+					local r=pay(p,t)
+					done+=1; dust+=r.dust; coins+=r.coins
+				end
+			end
+			if done==0 then return if verb=="commissionClaimAll" then "No finished commissions to claim." else "That commission is not finished (or already claimed)." end
+			reply="Commission"..(if done>1 then "s" else "").." claimed • +"..coins.." coins, +"..dust.." Glimmerdust."
+		elseif verb=="forgeBuy" then
+			local f=CL.Forge[item]
+			if not f then return "Unknown Forgeheart perk." end
+			local lvl=c.forge[item] or 0
+			local cost=CL.forgeCost(item,lvl,CL.milestonePerks(c.total).forgeDiscount)
+			if not cost then return f.name.." is already mastered." end
+			if c.dust<cost then return f.name.." "..(lvl+1).." needs "..cost.." Glimmerdust (you have "..c.dust..")." end
+			c.dust-=cost
+			c.forge[item]=lvl+1
+			Logs.prime(p)
+			reply=f.name.." "..(lvl+1).."/"..f.max.." forged • -"..cost.." Glimmerdust."
+		elseif verb=="logClaim" then
+			local tab=CL.LogTabs[item]
+			if not tab then return "Unknown log tab." end
+			if p.colLog.claimed[item] then return "That tab's reward is already claimed." end
+			if not tabDone(p,item) then return "Complete every "..tab.name.." entry first." end
+			p.colLog.claimed[item]=true
+			p.coins+=tab.coins
+			reply=tab.name.." log complete • +"..tab.coins.." coins and the "..tab.title.." title."
+		elseif verb=="logTitle" then
+			if item=="none" then p.colLog.title=""
+			elseif item=="Paragon" and CL.milestonePerks(c.total).title then p.colLog.title="Paragon"
+			elseif CL.LogTabs[item] and p.colLog.claimed[item] then p.colLog.title=item
+			else return "Title not unlocked." end
+			reply=if p.colLog.title=="" then "Title removed." else "Now titled: "..Logs.titleText(p).."."
+		elseif verb=="museumDonate" then
+			local refusal=Logs.donateCheck(p,item)
+			if refusal then return refusal end
+			if not spend(p,{[item]=1}) then return "You do not own "..itemName(item).."." end
+			local m=p.museum
+			m.donated[item]=true
+			m.count+=1
+			local coins=0
+			local _,reached=CL.museumPerks(m.count)
+			for i=m.paid+1,reached do coins+=CL.MuseumMilestones[i].coins end
+			m.paid=math.max(m.paid,reached)
+			p.coins+=coins
+			Logs.refresh(p)
+			reply=itemName(item).." donated to the Museum ("..m.count.." on display)"..(if coins>0 then " • milestone! +"..coins.." coins" else "").."."
+		else
+			return "Unknown action."
+		end
+		p.started=true
+		player:SetAttribute("LogTitle",Logs.titleText(p))
+		return reply
+	end
+	function Logs.state(player,p)
+		if not p.commissions then return nil end
+		Logs.refresh(p)
+		player:SetAttribute("LogTitle",Logs.titleText(p))
+		local c=p.commissions
+		local now=os.time()
+		local slots={}
+		for i,s in ipairs(c.slots) do
+			local t=CL.TaskById[s.id]
+			slots[i]={id=s.id,progress=s.progress,claimed=s.claimed,done=s.progress>=t.amount,reward=CL.reward(t,c.total)}
+		end
+		local perks=CL.milestonePerks(c.total)
+		local costs={}
+		for id in pairs(CL.Forge) do costs[id]=CL.forgeCost(id,c.forge[id] or 0,perks.forgeDiscount) end
+		local score,max,found=CL.logScore(p.colLog.counts)
+		local rank=CL.logRank(score,max)
+		local complete={}
+		for _,tab in ipairs(CL.log().Order) do complete[tab]=tabDone(p,tab) end
+		local _,reached=CL.museumPerks(p.museum.count)
+		return {
+			commissions={day=c.day,resetIn=CL.resetIn(now),slots=slots,total=c.total,dust=c.dust,earned=c.earned,milestone=perks.reached,
+				forge=table.clone(c.forge),costs=costs,discount=perks.forgeDiscount,gemChance=CL.gemChance(c.forge,c.total),
+				fortune=(p.perkStats.forgeheart and p.perkStats.forgeheart.miningFortune) or 0},
+			log={counts=p.colLog.counts,claimed=p.colLog.claimed,complete=complete,title=p.colLog.title,titleText=Logs.titleText(p),score=score,max=max,found=found,rank=rank.name,retro=p.colLog.retro},
+			museum={donated=p.museum.donated,count=p.museum.count,milestone=reached,stats=p.perkStats.museum or {}},
+		}
+	end
+end
+-- End Commissions & Logs block.
 local function applyStats(player,p,spawned)
 	local stats=Progression.computeStats(p,os.time())
 	player:SetAttribute("SkyreachUnlocked",(p.questCompleted or 0)>=6)
@@ -2980,7 +3302,8 @@ local function snapshot(player,message)
 		garden=Garden.state and Garden.state(player,p), -- Verdant Garden page state
 		prayer=Prayer.state(player,p,stats),thieving=Prayer.thievingState(player,p,stats), -- Prayer & Thieving page state
 		trails=Trails.state(player,p), -- Treasure Trails: Satchel > Trails page state
-		slayerTasks=SlayerTasks.state(player,p)} -- Slayer tasks: Hunt > Slayer page state
+		slayerTasks=SlayerTasks.state(player,p), -- Slayer tasks: Hunt > Slayer page state
+		logs=Logs.state(player,p)} -- Commissions & Logs: Journal > Commissions / Collection Log / Museum
 end
 -- Prayer & Thieving: drain-loop notices (prayer points ran out).
 Prayer.push=function(player,message) if player.Parent then update:FireClient(player,snapshot(player,message)) end end
@@ -3062,6 +3385,7 @@ local function migrate(profile)
 	if Garden.migrate then Garden.migrate(profile) end -- Verdant Garden: sanitise and bound p.garden
 	if Classes.migrate then Classes.migrate(profile) end -- Dungeon classes: sanitise p.dungeonClasses
 	Trails.migrate(profile) -- Treasure Trails: sanitise p.trails (re-draws trails whose steps left the pool)
+	Logs.migrate(profile) -- Commissions & Logs: board, Glimmerdust, Forgeheart, log (retroactive on first load), museum
 end
 -- Clears every per-player table and ends this player's session slot.
 -- Sea creatures: a successful Fishing gather may hook one (Data.rollSeaCreature).
@@ -4355,6 +4679,8 @@ local function perform(player,verb,item,prompt)
 		return Prayer.action(player,p,verb,item,prompt,humanoid) -- Prayer & Thieving
 	elseif SlayerTasks.verbs[verb] then
 		return SlayerTasks.action(player,p,verb,item) -- Slayer tasks
+	elseif Logs.verbs[verb] then
+		return Logs.action(player,p,verb,item,prompt) -- Commissions & Logs
 	elseif Mastery.verbs[verb] then
 		return Mastery.action(player,p,verb,item) -- Skill Mastery
 	elseif Garden.verbs[verb] then
@@ -4394,6 +4720,7 @@ local function perform(player,verb,item,prompt)
 		-- Events hook: Skyward Calendar season/event effects (state published by festival.server.lua).
 		local event=Data.eventGather(item,Data.eventState(workspace,os.time()),roll)
 		bonus+=event.bonus
+		Logs.prime(p) -- Commissions & Logs: Forgeheart fortune within the budget Mastery leaves
 		local stats=Progression.computeStats(p,os.time())
 		local ok,result=Progression.harvest(p,item,stats,roll,bonus,os.time())
 		if not ok then
@@ -4411,6 +4738,7 @@ local function perform(player,verb,item,prompt)
 		if skill=="Farming" and Garden.fieldSeed then Garden.fieldSeed(p,item) end -- Verdant Garden seed pouch
 		Trails.event(p,"gather",item) -- Treasure Trails: scroll drops + trail tasks (Fishing counts as "fish")
 		local mastered=Mastery.gather(p,result) -- Skill Mastery: bonus ingots, coins, regrowth skip
+		mastered..=Logs.gather(p,item,result,resource) -- Commissions & Logs: commission progress, Gemseeker, Steadfast Pick
 		if region then Journal.count(p,"gathers",region,1) end
 		p.started=true
 		if not regrowth then regrowth={}; nodeRegrowth[prompt]=regrowth; watchPrompt(prompt) end
@@ -5146,6 +5474,7 @@ bridge.OnInvoke=function(op,player,payload)
 		for item,n in pairs(Data.eventKillDrops(monsterId,Data.eventState(workspace,os.time()),roll)) do drops[item]=(drops[item] or 0)+n; collect(p,item,n) end
 		p.bestiary[monsterId]=(p.bestiary[monsterId] or 0)+1
 		Trails.event(p,"kill",monsterId) -- Treasure Trails: scroll drops + trail tasks
+		Logs.event(p,"kill",monsterId) -- Commissions & Logs: kill commissions
 		local quest=p.slayerQuest
 		if quest and not quest.bossReady and monster.slayer==quest.line then
 			quest.progress=math.min(quest.needed,quest.progress+math.floor(monster.xp*(1+family/100)))

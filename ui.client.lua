@@ -6913,11 +6913,199 @@ Pages.drawTrails=TT.draw
 end
 
 ------------------------------------------------------------------------------
+-- Commissions & Logs (Mining & Logs team). Journal › Commissions (daily slots,
+-- progress, reset timer, milestones, Forgeheart shop), Journal › Collection Log
+-- (tab filter, icon grid, counts, tab rewards, score/rank, titles) and
+-- Journal › Museum (category filter, icon grid, donate, milestones).
+-- Server state: snapshot.logs = {commissions, log, museum} (server Logs block).
+-- Verbs: commissionClaim "<slot>", commissionClaimAll, forgeBuy "<perk>",
+-- logClaim "<tab>", logTitle "<tab>|Paragon|none", museumDonate "<item>".
+------------------------------------------------------------------------------
+do
+local CLP={tab=nil,cat="Weapons",pick=nil}
+Pages.CLP=CLP
+function CLP.ready() return Data and type(Data.CommissionsLogs)=="table" end
+function CLP.clock(seconds)
+	seconds=math.max(0,math.floor(num(seconds,0)))
+	return string.format("%dh %02dm",seconds//3600,(seconds%3600)//60)
+end
+function CLP.grid(name,ids,cell,each)
+	local width=contentWidth()
+	local columns=width>=690 and 8 or (width>=520 and 7 or (width>=400 and 6 or 5))
+	local grid=gridHolder(UDim2.new(1/columns,-6,0,cell),6)
+	grid.Name=name
+	for i,id in ipairs(ids) do each(grid,i,id) end
+	return grid
+end
+function CLP.drawCommissions()
+	if not CLP.ready() then dataMissing() return end
+	local CL=Data.CommissionsLogs
+	local c=tbl(tbl(state.logs).commissions)
+	local slots=tbl(c.slots)
+	local ready=0
+	for _,s in ipairs(slots) do if s.done and not s.claimed then ready+=1 end end
+	card({name="CommissionsSummary",motif="Journal",accent=rgb(CL.DUST.color),title="Commissions",titleColor=gold,
+		subtitle=paint(CL.DUST.symbol.." "..fmt(num(c.dust,0)).." "..CL.DUST.name,CL.DUST.color).."   ·   "..fmt(num(c.total,0)).." completed",
+		badge=state.logs and ("RESETS "..CLP.clock(c.resetIn)) or "SYNCING",badgeColor=mint,
+		detail="Four guild commissions a day, posted at the Commission Board in Brassfall Quarry. A new board is drawn at the UTC day change; finished commissions are claimed for you if you forget.",
+		actions=ready>0 and {{caption="Claim all",name="CommissionClaimAll",primary=true,fn=function() send("commissionClaimAll") end}} or nil})
+	heading("TODAY'S COMMISSIONS    /    "..#slots.." OF "..CL.SLOTS)
+	for i,s in ipairs(slots) do
+		local t=CL.TaskById[s.id]
+		if t then
+			local r=tbl(s.reward)
+			local amount=t.amount
+			local progress=math.min(num(s.progress,0),amount)
+			local verb=t.kind=="kill" and "Defeat" or (t.kind=="catch" and "Catch" or "Harvest")
+			local target=t.kind=="kill" and (Data.Monsters[t.target] and Data.Monsters[t.target].name or t.target)
+				or (t.kind=="catch" and Data.Hunter and Data.Hunter.CreatureById[t.target] and Data.Hunter.CreatureById[t.target].name) or itemName(t.target)
+			local actions={}
+			if s.claimed then
+			elseif s.done then table.insert(actions,{caption="Claim",name="CommissionClaim"..i,primary=true,fn=function() send("commissionClaim",tostring(i)) end})
+			end
+			card({name="Commission"..i,item=(t.kind=="gather" and t.target) or nil,motif=t.kind~="gather" and "Hunt" or nil,accent=rgb(CL.DUST.color),
+				title=escape(t.name),titleColor=ivory,subtitle=escape(t.group or t.skill).."   ·   "..verb.." "..amount.." "..escape(target),
+				badge=s.claimed and "CLAIMED" or (s.done and "READY" or "ACTIVE"),badgeColor=s.claimed and muted or (s.done and mint or gold),
+				lines={"Reward: +"..fmt(num(r.xp,0)).." "..escape(tostring(r.skill or t.skill)).." XP   ·   +"..fmt(num(r.coins,0)).." coins   ·   "..paint("+"..fmt(num(r.dust,0)).." "..CL.DUST.name,CL.DUST.color)},
+				bar={fraction=progress/math.max(1,amount),color=s.done and mint or rgb(CL.DUST.color),caption=fmt(progress).." / "..fmt(amount)},actions=actions})
+		end
+	end
+	if #slots==0 then card({name="CommissionsEmpty",motif="Journal",title="The board is being drawn…",detail="Open the atlas again in a moment."}) end
+	heading("COMMISSION MILESTONES    /    "..fmt(num(c.total,0)).." COMPLETED")
+	local lines={}
+	for i,m in ipairs(CL.Milestones) do
+		local met=num(c.milestone,0)>=i
+		table.insert(lines,(met and check or cross).." "..paint(m.at,met and "8EE6CB" or "F3C66E").."  "..escape(m.name).." — "..escape(m.text))
+	end
+	card({name="CommissionMilestones",motif="Hero",title="Milestones",titleColor=gold,subtitle="Permanent perks for completed commissions",
+		pips={total=#CL.Milestones,filled=num(c.milestone,0),color=mint},lines=lines})
+	heading("FORGEHEART    /    GLIMMERDUST PERKS")
+	local levels=tbl(c.forge)
+	local costs=tbl(c.costs)
+	for _,id in ipairs(CL.ForgeOrder) do
+		local f=CL.Forge[id]
+		local lvl=num(levels[id],0)
+		local cost=costs[id]
+		local value=CL.forgeValue(id,lvl)
+		local shown=f.stat=="gemChance" and (string.format("%.2f",value).."% gem chance") or ("+"..value.." "..(Data.Stats[f.stat] and Data.Stats[f.stat].name or f.stat))
+		local afford=type(cost)=="number" and num(c.dust,0)>=cost
+		card({name="Forge"..id,motif="Workshop",accent=rgb(f.color),title=escape(f.name),titleColor=rgb(f.color),
+			subtitle="Level "..lvl.." / "..f.max.."   ·   "..shown,detail=escape(f.text),
+			lines={id=="HearthglowFortune" and ("Active now: +"..fmt(num(c.fortune,0)).." Mining Fortune (Mastery and Forgeheart share 99).") or nil,
+				id=="Gemseeker" and ("Total gem chance per Mining harvest: "..string.format("%.2f",num(c.gemChance,0)).."%.") or nil},
+			pips={total=f.max,filled=lvl,color=rgb(f.color)},
+			actions={{caption=type(cost)=="number" and ("Forge "..fmt(cost)) or "Mastered",name="ForgeBuy"..id,primary=afford,disabled=not afford,
+				reason=type(cost)=="number" and ("Needs "..fmt(cost).." "..CL.DUST.name..".") or "Fully forged.",fn=function() send("forgeBuy",id) end}}})
+	end
+end
+function CLP.drawLog()
+	if not CLP.ready() then dataMissing() return end
+	local CL=Data.CommissionsLogs
+	local L=CL.log()
+	local g=tbl(tbl(state.logs).log)
+	local counts=tbl(g.counts)
+	local actions={}
+	if type(g.title)=="string" and g.title~="" then table.insert(actions,{caption="Remove title",name="LogTitleNone",fn=function() send("logTitle","none") end}) end
+	card({name="LogSummary",motif="Journal",accent=gold,title="Collection Log",titleColor=gold,
+		subtitle=fmt(num(g.found,0)).." of "..fmt(L.total).." entries   ·   score "..fmt(num(g.score,0)).." / "..fmt(num(g.max,0)),
+		badge=state.logs and string.upper(tostring(g.rank or "Driftling")) or "SYNCING",badgeColor=mint,
+		detail="Every pet, unique and rare drop in the isles, logged the first time it reaches your satchel. Complete a tab for coins and a title.",
+		lines={(type(g.titleText)=="string" and g.titleText~="") and ("Title worn: "..paint(escape(g.titleText),"F3C66E")) or nil,
+			num(g.retro,0)>0 and ("Credited from your satchel when the log opened: "..fmt(num(g.retro,0)).." entries.") or nil},
+		bar={fraction=num(g.found,0)/math.max(1,L.total),color=gold,caption=fmt(num(g.found,0)).." / "..fmt(L.total)},actions=actions})
+	if not CLP.tab or not L.Tabs[CLP.tab] or #L.Tabs[CLP.tab]==0 then CLP.tab=L.Order[1] end
+	local names={}
+	for _,tab in ipairs(L.Order) do table.insert(names,tab) end
+	sectionBar(names,CLP.tab,function(name) CLP.tab=name render() end,{small=true,prefix="LogTab"})
+	local tab=CLP.tab
+	if not tab then return end
+	local def=CL.LogTabs[tab]
+	local list=L.Tabs[tab]
+	local found=0
+	for _,id in ipairs(list) do if num(counts[id],0)>0 then found+=1 end end
+	local claimed=tbl(g.claimed)[tab]==true
+	local tabActions={}
+	if claimed then
+		if g.title~=tab then table.insert(tabActions,{caption="Wear title",name="LogTitle"..tab,fn=function() send("logTitle",tab) end}) end
+	else
+		table.insert(tabActions,{caption="Claim",name="LogClaim"..tab,primary=found==#list,disabled=found<#list,reason="Log every "..def.name.." entry first.",fn=function() send("logClaim",tab) end})
+	end
+	card({name="LogTab"..tab.."Card",motif="Journal",accent=rgb(def.color),title=escape(def.name),titleColor=rgb(def.color),
+		subtitle=found.." / "..#list.." logged",badge=claimed and "CLAIMED" or (found==#list and "COMPLETE" or nil),badgeColor=mint,
+		lines={"Completion reward: +"..fmt(def.coins).." coins and the "..paint(escape(def.title),"F3C66E").." title."},
+		bar={fraction=found/math.max(1,#list),color=rgb(def.color),caption=found.." / "..#list},actions=tabActions})
+	local cell=compactAtlas and 62 or 72
+	CLP.grid("LogGrid"..tab,list,cell,function(grid,i,id)
+		local n=num(counts[id],0)
+		local b=tile(grid,"LogEntry"..id,i,function() notify(itemName(id)..(n>0 and (" — logged x"..fmt(n)) or " — not yet logged")) end)
+		itemIcon(b,id,compactAtlas and 34 or 40,n<=0).Position=UDim2.new(.5,-(compactAtlas and 17 or 20),0,4)
+		local foot=label(b,n>0 and ("x"..fmt(n)) or "?",2,cell-18,UDim.new(1,-4),16,UI.heavy,11,n>0 and mint or muted)
+		foot.TextXAlignment=Enum.TextXAlignment.Center
+	end)
+end
+function CLP.donatable(id)
+	local items=tbl(state.items)
+	if num(items[id],0)<1 then return false,"You do not own one." end
+	for _,eq in pairs(tbl(dget("equipment"))) do if eq==id then return false,"Unequip it first." end end
+	if table.find(tbl(dget("accessoryBag")),id) then return false,"Take it out of your accessory bag first." end
+	return true
+end
+function CLP.drawMuseum()
+	if not CLP.ready() then dataMissing() return end
+	local CL=Data.CommissionsLogs
+	local M=CL.museum()
+	local mu=tbl(tbl(state.logs).museum)
+	local donated=tbl(mu.donated)
+	local reached=num(mu.milestone,0)
+	local nextM=CL.MuseumMilestones[reached+1]
+	local perkLines={}
+	for stat,v in pairs(tbl(mu.stats)) do table.insert(perkLines,"+"..fmt(v).." "..(Data.Stats[stat] and Data.Stats[stat].name or stat)) end
+	table.sort(perkLines)
+	card({name="MuseumSummary",motif="Journal",accent=rgb("C77DFF"),title="Aether Museum",titleColor=gold,
+		subtitle=fmt(num(mu.count,0)).." of "..fmt(M.total).." on display",badge=state.logs and (reached.." / "..#CL.MuseumMilestones) or "SYNCING",badgeColor=mint,
+		detail="Donate one of each weapon, armor piece, rarity, mineral and trophy. Donations are kept by the Museum for good (the item is consumed); equipped, bagged or upgraded last copies are refused.",
+		lines={nextM and ("Next milestone at "..nextM.at..": +"..fmt(nextM.coins).." coins and permanent stats.") or "Every milestone reached.",
+			#perkLines>0 and ("Museum perks: "..table.concat(perkLines,", ")) or nil},
+		pips={total=#CL.MuseumMilestones,filled=reached,color=rgb("C77DFF")}})
+	sectionBar(CL.MuseumOrder,CLP.cat,function(name) CLP.cat=name CLP.pick=nil render() end,{small=true,prefix="MuseumCat"})
+	local cat=CLP.cat
+	local list=M.Cats[cat] or {}
+	if CLP.pick and itemDef(CLP.pick) and not donated[CLP.pick] then
+		local id=CLP.pick
+		local okay,why=CLP.donatable(id)
+		card({name="MuseumPick",item=id,title=escape(itemName(id)),titleColor=rgb(rarityHex(itemDef(id).rarity)),subtitle="Donate to the "..CL.MuseumCategories[cat].name.." wing?",
+			detail=okay and "One copy is consumed and displayed forever." or why,
+			actions={{caption="Donate",name="MuseumDonate",primary=okay,disabled=not okay,reason=why,fn=function() CLP.pick=nil send("museumDonate",id) end},
+				{caption="Cancel",name="MuseumCancel",fn=function() CLP.pick=nil render() end}}})
+	end
+	local have=0
+	for _,id in ipairs(list) do if donated[id] then have+=1 end end
+	heading(string.upper(CL.MuseumCategories[cat].name).."    /    "..have.." OF "..#list.." DISPLAYED")
+	local cell=compactAtlas and 62 or 72
+	CLP.grid("MuseumGrid"..cat,list,cell,function(grid,i,id)
+		local shown=donated[id]==true
+		local owned=num(tbl(state.items)[id],0)>0
+		local b=tile(grid,"MuseumItem"..id,i,function()
+			if shown then notify(itemName(id).." is on display.") return end
+			if not owned then notify(itemName(id).." — not owned yet.") return end
+			CLP.pick=id
+			render()
+		end)
+		itemIcon(b,id,compactAtlas and 34 or 40,not shown and not owned).Position=UDim2.new(.5,-(compactAtlas and 17 or 20),0,4)
+		if owned and not shown then make("UIStroke",b,{Color=gold,Thickness=1.5,Transparency=.1}) end
+		local foot=label(b,shown and "✓" or (owned and "donate" or "?"),2,cell-18,UDim.new(1,-4),16,UI.heavy,11,shown and mint or (owned and gold or muted))
+		foot.TextXAlignment=Enum.TextXAlignment.Center
+	end)
+end
+Pages.drawCommissions,Pages.drawCollectionLog,Pages.drawMuseum=CLP.drawCommissions,CLP.drawLog,CLP.drawMuseum
+end
+
+------------------------------------------------------------------------------
 -- Navigation: six primary tabs, each with a section switcher.
 ------------------------------------------------------------------------------
 local tabOrder={"Journal","Hero","Satchel","Workshop","Hunt","Ledger"}
 local sectionLists={
-	Journal={"Bearing","Quests","Diaries","Construction","Regions","Crew","Calendar","Agility"},
+	Journal={"Bearing","Quests","Diaries","Construction","Regions","Crew","Calendar","Agility","Commissions","Collection Log","Museum"},
 	Hero={"Skills","Mastery","Gear","Combat","Spellbook","Prayer","Enchant","Reforge","Accessories","Pets"},
 	Satchel={"Items","Collections","Trails"},
 	Workshop={"Forge","Hearth","Cauldron","Workbench","Workers","Home","Garden"},
@@ -6926,7 +7114,8 @@ local sectionLists={
 }
 sectionOf={Journal="Bearing",Hero="Skills",Satchel="Items",Workshop="Forge",Hunt="Slayer",Ledger="Bank"}
 local drawers={
-	Journal={Bearing=Pages.drawBearing,Quests=Pages.drawQuests,Diaries=Pages.drawDiaries,Construction=Pages.drawConstruction,Regions=Pages.drawRegions,Crew=Pages.drawCoop,Calendar=Pages.drawCalendar,Agility=Pages.drawAgility},
+	Journal={Bearing=Pages.drawBearing,Quests=Pages.drawQuests,Diaries=Pages.drawDiaries,Construction=Pages.drawConstruction,Regions=Pages.drawRegions,Crew=Pages.drawCoop,Calendar=Pages.drawCalendar,Agility=Pages.drawAgility,
+		Commissions=Pages.drawCommissions,["Collection Log"]=Pages.drawCollectionLog,Museum=Pages.drawMuseum}, -- Commissions & Logs
 	Hero={Skills=Pages.drawSkills,Mastery=Pages.drawMastery,Gear=Pages.drawGear,Combat=Pages.drawCombat,Spellbook=Pages.drawSpellbook,Prayer=Pages.drawPrayer,Enchant=Pages.drawEnchant,Reforge=function() Pages.drawReforge() end,Accessories=Pages.drawAccessories,Pets=Pages.drawPets},
 	Satchel={Items=Pages.drawItems,Collections=Pages.drawCollections,Trails=Pages.drawTrails},
 	Workshop={Forge=function() Pages.drawStation("Forge") end,Hearth=function() Pages.drawStation("Hearth") end,Cauldron=function() Pages.drawStation("Cauldron") end,
@@ -7421,7 +7610,7 @@ end
 -- Crafting stations and the slayer board set IsleStation on the player; open
 -- the matching page. Values may carry a suffix ("Forge:3") so repeats fire.
 local stationTabs={Forge="Workshop",Hearth="Workshop",Cauldron="Workshop",Workbench="Workshop",Slayer="Hunt",Construction="Journal",Calendar="Journal",
-	SkymarkExchange="Ledger",TrackersLodge="Ledger",Garden="Workshop"}
+	SkymarkExchange="Ledger",TrackersLodge="Ledger",Garden="Workshop",Commissions="Journal",Museum="Journal",CollectionLog="Journal"} -- Commissions & Logs: board / museum prompts
 local function openStation()
 	local value=player:GetAttribute("IsleStation")
 	if type(value)~="string" then return end
@@ -7430,7 +7619,7 @@ local function openStation()
 	if not tab then return end
 	-- Skill vendors (Agility & Hunter): Ledger › Vendors on that vendor's stock.
 	if tab=="Ledger" then Pages.AH.vendor=station=="SkymarkExchange" and "Agility" or "Hunter";openTo("Ledger","Vendors") return end
-	if tab=="Workshop" then openTo("Workshop",station) elseif tab=="Journal" then openTo("Journal",if station=="Calendar" then "Calendar" else "Construction") else openTo("Hunt","Slayer") end
+	if tab=="Workshop" then openTo("Workshop",station) elseif tab=="Journal" then openTo("Journal",if station=="Calendar" then "Calendar" elseif station=="Commissions" or station=="Museum" then station elseif station=="CollectionLog" then "Collection Log" else "Construction") else openTo("Hunt","Slayer") end
 end
 -- World sets IsleStation and then bumps IsleStationVisit on every trigger; only the
 -- counter opens the atlas, so each visit opens it exactly once (repeats included).

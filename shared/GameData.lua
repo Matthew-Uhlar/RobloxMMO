@@ -7124,4 +7124,420 @@ end
 end
 -- End Slayer tasks section.
 
+------------------------------------------------------------------------------
+-- Commissions & Logs (Mining & Logs team; append-only section).
+-- Data.CommissionsLogs (CL): pure data + pure rules shared by server.server.lua
+-- (Logs block), world.server.lua (Commission Board / Museum section) and
+-- ui.client.lua (Journal › Commissions, Collection Log, Museum).
+--   Commissions: CL.SLOTS daily slots per UTC day (CL.dayOf), drawn
+--     deterministically from CL.Tasks by CL.draw(day, salt, ctx) among tasks the
+--     journal can reach (CL.eligible: skill levels + region access). Progress
+--     counts harvests ("gather"), kills ("kill") or Hunter catches ("catch").
+--     Claims pay skill XP, coins and Glimmerdust (CL.reward, milestone boosts).
+--   Commission Milestones (CL.Milestones, 1/5/15/50/150 completions): permanent
+--     perks (dust %, gem sense, stats via p.perkStats, Forgeheart discount, title).
+--   Forgeheart (CL.Forge): Glimmerdust perk shop. Costs rise per level while each
+--     level gives less (diminishing returns); the Paragon milestone cuts costs.
+--     Hearthglow Fortune shares the progression fortune budget with Skill
+--     Mastery (CL.FORTUNE_BUDGET, < 100 so Mastery + Forgeheart can never cross
+--     more than one fortune step: the <= 2.5x single-click yield rule holds).
+--     Steadfast Pick shortens Mining regrowth; its skip and Mastery's share the
+--     passive regrowth cap. Gemseeker adds a rare gem roll on Mining harvests (a
+--     separate item, never part of the ore yield).
+--   Collection Log (CL.log()): generated lazily from data — every pet, trail /
+--     slayer / minigame unique and every drop row with chance < CL.RARE_CHANCE
+--     anywhere in Data — each item exactly once, in the first matching tab of
+--     CL.LogTabOrder. Tab completion pays coins + a title; CL.logScore / logRank.
+--   Museum (CL.museumCategory): donate one of each curated item. Donations are
+--     CONSUMED (never lent back); milestones (CL.MuseumMilestones) give coins and
+--     stat perks (p.perkStats.museum). No gathering stats: yield-neutral.
+------------------------------------------------------------------------------
+do
+local CL = {}
+Data.CommissionsLogs = CL
+CL.SLOTS = 4
+CL.DAY = 86400
+CL.MAX_DUST = 1000000000
+CL.MAX_TOTAL = 10000000
+CL.RARE_CHANCE = 0.05
+CL.FORTUNE_BUDGET = 99
+CL.DUST = {name="Glimmerdust", color="B9A7FF", symbol="✧"}
+function CL.dayOf(t) return math.floor((tonumber(t) or 0) / CL.DAY) end
+function CL.resetIn(t) t = tonumber(t) or 0; return (CL.dayOf(t) + 1) * CL.DAY - math.floor(t) end
+
+-- Task pool. kind: gather (harvests of a resource), kill (monster), catch (Hunter creature).
+CL.Tasks = {}
+CL.TaskById = {}
+local function task(def)
+	def.amount = def.amount or 10
+	table.insert(CL.Tasks, def)
+	CL.TaskById[def.id] = def
+	return def
+end
+local function res(id)
+	local skill = Data.ResourceSkill[id]
+	for _, r in ipairs(Data.ResourceTiers[skill] or {}) do if r.id == id then return r, skill end end
+	return nil, skill
+end
+-- Mining commissions: one per ore tier (region = where the seam is found).
+local mineNames = {Ore="Copperstone Quota",Aetherite="Aetherite Survey",Brassite="Brassite Haul",SunsteelOre="Sunsteel Shift",
+	Voidstone="Voidstone Delve",StarmetalOre="Starmetal Bounty",Prismite="Prismite Prospect",Celestium="Celestium Charter",Crownstone="Crownstone Dig"}
+local mineRegion = {SunsteelOre="Skyreach",Voidstone="Gloomhollow",StarmetalOre="Tempest",Prismite="Gloomhollow",Celestium="Tempest",Crownstone="ShatteredCrown"}
+for i, id in ipairs({"Ore","Aetherite","Brassite","SunsteelOre","Voidstone","StarmetalOre","Prismite","Celestium","Crownstone"}) do
+	local r = res(id)
+	if r then
+		task({id="Mine"..id,name=mineNames[id],kind="gather",target=id,amount=math.max(8, 30 - i * 2),skill="Mining",
+			xp=r.xp * 6,coins=20 + r.level * 4,dust=20 + i * 6,levels={Mining=r.level},region=mineRegion[id],group="Mining"})
+	end
+end
+-- Second, larger mining quotas for the busiest seams.
+task({id="MineOreBulk",name="Deep Copperstone Contract",kind="gather",target="Ore",amount=45,skill="Mining",xp=200,coins=60,dust=30,levels={Mining=5},group="Mining"})
+task({id="MineBrassiteBulk",name="Brassite Freight",kind="gather",target="Brassite",amount=35,skill="Mining",xp=600,coins=140,dust=42,levels={Mining=20},group="Mining"})
+task({id="MineVoidstoneBulk",name="Hollow Seam Quota",kind="gather",target="Voidstone",amount=25,skill="Mining",xp=1300,coins=300,dust=60,levels={Mining=50},region="Gloomhollow",group="Mining"})
+-- Combat commissions (quarry and cavern monsters first, a few beyond).
+local hunts = {
+	{"ShaleCrawler","Crawler Cull",15,"Quarry"},{"CinderMite","Mite Sweep",15,"Quarry"},{"BrassGolem","Golem Breaking",8,"Skyreach"},
+	{"StormHarrier","Harrier Watch",8,"Skyreach"},{"GloomfangSpider","Nest Clearing",10,"Gloomhollow"},{"VoidWisp","Wisp Snuffing",8,"Gloomhollow"},
+	{"HollowcapShrieker","Shrieker Silence",6,"Gloomhollow"},{"BramblebackBoar","Boar Drive",15,"Meadow"},{"Thornling","Thornling Pruning",12,"Meadow"},
+	{"BarkStalker","Stalker Patrol",10,"Windpine"},{"ReefLurker","Lurker Lookout",8,"Tidewater"},{"TempestWraith","Wraith Warding",6,"Tempest"},
+}
+for _, h in ipairs(hunts) do
+	local m = rawget(Data.Monsters, h[1])
+	if m then
+		task({id="Slay"..h[1],name=h[2],kind="kill",target=h[1],amount=h[3],skill="Combat",xp=math.floor(m.xp * h[3] * 0.6),
+			coins=math.floor(m.coins * h[3] * 0.5),dust=18 + math.floor(m.level / 3),levels={Combat=math.max(1, m.level - 6)},region=h[4],group="Combat"})
+	end
+end
+-- Variety: woodcutting, fishing, farming and Hunter.
+local variety = {
+	{"Timber","Timber Tally",30,"Woodcutting"},{"WindpineLog","Windpine Order",22,"Woodcutting","Windpine"},{"EmberoakLog","Emberoak Order",18,"Woodcutting","Windpine"},
+	{"GlimmerbarkLog","Glimmerbark Order",14,"Woodcutting","Tidewater"},{"Fish","Minnow Catch",30,"Fishing"},{"Glassfin","Glassfin Netting",22,"Fishing"},
+	{"Stormeel","Stormeel Run",18,"Fishing","Tidewater"},{"Lanternray","Lanternray Lure",14,"Fishing","Tidewater"},{"Herb","Herb Picking",30,"Farming"},
+	{"Sunwheat","Sunwheat Reaping",22,"Farming"},{"Glowcap","Glowcap Gathering",18,"Farming","Windpine"},{"Moonbloom","Moonbloom Harvest",14,"Farming","Gloomhollow"},
+}
+for _, v in ipairs(variety) do
+	local r = res(v[1])
+	if r then
+		task({id="Gather"..v[1],name=v[2],kind="gather",target=v[1],amount=v[3],skill=v[4],xp=r.xp * 5,coins=15 + r.level * 3,dust=12 + math.floor(r.level / 4),
+			levels={[v[4]]=r.level},region=v[5],group=v[4]})
+	end
+end
+local HU = Data.Hunter
+for _, c in ipairs({{"PuffcapHopper","Hopper Count",6},{"SunwingMoth","Moth Netting",6},{"PinecrestGrouse","Grouse Season",5},{"CinderFerret","Ferret Boxing",4}}) do
+	local def = HU and HU.CreatureById and HU.CreatureById[c[1]]
+	if def then
+		task({id="Catch"..c[1],name=c[2],kind="catch",target=c[1],amount=c[3],skill="Hunter",xp=def.xp * c[3],coins=20 + def.level * 3,dust=14 + math.floor(def.level / 4),
+			levels={Hunter=def.level},region=def.region,group="Hunter"})
+	end
+end
+-- Region gates only matter for gated regions (others are open to everyone).
+function CL.eligible(t, ctx)
+	ctx = ctx or {}
+	local levels = ctx.levels or {}
+	for skill, lvl in pairs(t.levels or {}) do if (levels[skill] or 1) < lvl then return false end end
+	if t.region then
+		local r = Data.RegionById[t.region]
+		if r and r.requires and next(r.requires) and not (ctx.regions and ctx.regions[t.region]) then return false end
+	end
+	return true
+end
+-- Deterministic Park-Miller stream: the same day + salt + context always draws
+-- the same board, so a rejoin or another server never rerolls it.
+local function stream(seed)
+	local s = math.floor(math.abs(tonumber(seed) or 1)) % 2147483646 + 1
+	return function()
+		s = (s * 16807) % 2147483647
+		return (s - 1) / 2147483646
+	end
+end
+CL.stream = stream
+-- Returns CL.SLOTS distinct task ids (fewer only when the pool runs short). The
+-- first slot is always a Mining commission (every journal can mine Copperstone).
+function CL.draw(day, salt, ctx)
+	local rng = stream((tonumber(day) or 0) * 7919 + (tonumber(salt) or 0) * 104729 + 13)
+	local pool, mining = {}, {}
+	for _, t in ipairs(CL.Tasks) do
+		if CL.eligible(t, ctx) then
+			table.insert(pool, t.id)
+			if t.group == "Mining" then table.insert(mining, t.id) end
+		end
+	end
+	local out, used = {}, {}
+	if #mining > 0 then
+		local id = mining[1 + math.floor(rng() * #mining)]
+		table.insert(out, id); used[id] = true
+	end
+	local guard = 0
+	while #out < CL.SLOTS and guard < 400 do
+		guard += 1
+		local left = 0
+		for _, id in ipairs(pool) do if not used[id] then left += 1 end end
+		if left == 0 then break end
+		local id = pool[1 + math.floor(rng() * #pool)]
+		if not used[id] then table.insert(out, id); used[id] = true end
+	end
+	return out
+end
+
+-- Commission Milestones (total commissions claimed).
+CL.Milestones = {
+	{at=1,id="FirstShift",name="First Shift",dustPct=10,text="+10% Glimmerdust from commissions."},
+	{at=5,id="GemSense",name="Gem Sense",gemChance=0.25,text="Mining harvests may turn up a cut gem (0.25%)."},
+	{at=15,id="DelversGrit",name="Delver's Grit",stats={health=20,defense=5},text="+20 Health, +5 Defense."},
+	{at=50,id="DeepLedger",name="Deep Ledger",dustPct=25,coinPct=10,text="+25% Glimmerdust and +10% coins from commissions."},
+	{at=150,id="ForgeheartParagon",name="Forgeheart Paragon",forgeDiscount=20,title="Forgeheart Paragon",stats={strength=3},
+		text="Forgeheart perks cost 20% less; +3 Strength; the Forgeheart Paragon title."},
+}
+function CL.milestonePerks(total)
+	total = tonumber(total) or 0
+	local out = {dustPct=0,coinPct=0,gemChance=0,forgeDiscount=0,stats={},reached=0,title=nil}
+	for i, m in ipairs(CL.Milestones) do
+		if total >= m.at then
+			out.reached = i
+			out.dustPct += m.dustPct or 0
+			out.coinPct += m.coinPct or 0
+			out.gemChance += m.gemChance or 0
+			out.forgeDiscount += m.forgeDiscount or 0
+			for k, v in pairs(m.stats or {}) do out.stats[k] = (out.stats[k] or 0) + v end
+			if m.title then out.title = m.title end
+		end
+	end
+	return out
+end
+-- Claim reward for a task given the journal's total completions so far.
+function CL.reward(t, total)
+	local perks = CL.milestonePerks(total)
+	return {skill=t.skill,xp=t.xp,coins=math.floor(t.coins * (1 + perks.coinPct / 100)),dust=math.floor(t.dust * (1 + perks.dustPct / 100))}
+end
+
+-- Forgeheart perk shop (Glimmerdust).
+CL.ForgeOrder = {"SteadfastPick","HearthglowFortune","Gemseeker"}
+CL.Forge = {
+	SteadfastPick={name="Steadfast Pick",stat="miningSpeed",gains={8,7,6,5,5,4,4,3,3,3},skipPerLevel=2,base=40,color="FFAA00",
+		text="Mining Speed, and Mining nodes regrow 2% faster per level (shares Mastery's regrowth cap)."},
+	HearthglowFortune={name="Hearthglow Fortune",stat="miningFortune",gains={8,7,6,5,5,4,4,3,3,3},base=40,color="D4A84B",
+		text="Mining Fortune. Shares the progression fortune budget with Skill Mastery (99 combined)."},
+	Gemseeker={name="Gemseeker",stat="gemChance",gains={0.2,0.15,0.1,0.1,0.05},base=70,color="E86FB8",
+		text="Chance for a cut gem on each Mining harvest."},
+}
+for id, f in pairs(CL.Forge) do f.id = id; f.max = #f.gains end
+-- Glimmerdust for the next level (level = current level, 0-based) with a % discount.
+function CL.forgeCost(id, level, discount)
+	local f = CL.Forge[id]
+	level = math.floor(tonumber(level) or 0)
+	if not f or level < 0 or level >= f.max then return nil end
+	local raw = f.base * (level + 1) ^ 1.4
+	return math.max(1, math.floor(raw * (1 - math.clamp(tonumber(discount) or 0, 0, 90) / 100) + 0.5))
+end
+function CL.forgeValue(id, level)
+	local f = CL.Forge[id]
+	local v = 0
+	if not f then return 0 end
+	for i = 1, math.min(math.floor(tonumber(level) or 0), f.max) do v += f.gains[i] end
+	return v
+end
+-- Stats Forgeheart adds now: fortune trimmed to the budget Mastery leaves.
+function CL.forgeStats(levels, masteryFortune)
+	levels = levels or {}
+	local speed = CL.forgeValue("SteadfastPick", levels.SteadfastPick)
+	local fortune = CL.forgeValue("HearthglowFortune", levels.HearthglowFortune)
+	local room = math.max(0, CL.FORTUNE_BUDGET - math.max(0, tonumber(masteryFortune) or 0))
+	local out = {}
+	if speed > 0 then out.miningSpeed = speed end
+	if math.min(fortune, room) > 0 then out.miningFortune = math.min(fortune, room) end
+	return out
+end
+function CL.forgeSkip(levels) return math.min((levels and levels.SteadfastPick or 0), CL.Forge.SteadfastPick.max) * CL.Forge.SteadfastPick.skipPerLevel end
+-- Gem chance in percent per Mining harvest.
+function CL.gemChance(levels, total)
+	return CL.milestonePerks(total).gemChance + CL.forgeValue("Gemseeker", levels and levels.Gemseeker)
+end
+-- Gem for a Mining harvest of resource tier index (1 = Copperstone ...).
+CL.Gems = {{id="SunstoneChip",w=60,tier=1},{id="Mistpearl",w=25,tier=1},{id="Emberglass",w=10,tier=3},{id="Voidgarnet",w=4.5,tier=5},{id="StarheartGem",w=0.5,tier=7}}
+function CL.gemFor(tierIndex, r)
+	local total = 0
+	for _, g in ipairs(CL.Gems) do if (tierIndex or 1) >= g.tier and Data.Items[g.id] then total += g.w end end
+	local pick = (r or 0) * total
+	for _, g in ipairs(CL.Gems) do
+		if (tierIndex or 1) >= g.tier and Data.Items[g.id] then
+			pick -= g.w
+			if pick < 0 then return g.id end
+		end
+	end
+	return "SunstoneChip"
+end
+
+------------------------------------------------------------------------------
+-- Collection Log (generated from data).
+------------------------------------------------------------------------------
+CL.LogTabOrder = {"Pets","Trails","Minigames","Dungeons","Bosses","Slayer","Creatures","Skilling","Events","Curios"}
+CL.LogTabs = {
+	Pets={name="Pets",title="Beastbound",coins=25000,color="E07A5F"},
+	Trails={name="Treasure Trails",title="Pathfinder Laureate",coins=40000,color="F3C66E"},
+	Minigames={name="Minigames",title="Gamewright",coins=30000,color="7FC8C0"},
+	Dungeons={name="Dungeons",title="Vaultdelver",coins=35000,color="8FB8D6"},
+	Bosses={name="World Bosses",title="Crownbreaker",coins=50000,color="FFAA00"},
+	Slayer={name="Slayer",title="Grimward",coins=40000,color="C77DFF"},
+	Creatures={name="Creatures",title="Wildlorn",coins=30000,color="6BBF59"},
+	Skilling={name="Skilling",title="Artisan Savant",coins=25000,color="06D6A0"},
+	Events={name="Events",title="Festive Chronicler",coins=15000,color="FF9ECD"},
+	Curios={name="Curios",title="Curio Keeper",coins=15000,color="C9D6E3"},
+}
+-- Data roots and the tab their rare rows belong to.
+CL.LogRoots = {DungeonFloors="Dungeons",Dungeons="Dungeons",DungeonClasses="Dungeons",WorldBosses="Bosses",Endgame="Bosses",
+	Slayers="Slayer",SlayerTasks="Slayer",Monsters="Creatures",SeaCreatures="Creatures",Thieving="Skilling",Hunter="Skilling",
+	Agility="Skilling",Garden="Skilling",Prayer="Skilling",Workers="Skilling",Trails="Trails",Events="Events",EventVendor="Events"}
+local SKIP_CATEGORY = {scroll=true,casket=true,spade=true,teleport=true}
+local function loggable(def)
+	if not def then return false end
+	if def.kind == "resource" then return false end
+	if def.kind == "trail" and SKIP_CATEGORY[def.category] then return false end
+	return true
+end
+local function rootTab(root)
+	if CL.LogRoots[root] then return CL.LogRoots[root] end
+	if string.find(string.lower(root), "minigame", 1, true) then return "Minigames" end
+	return "Curios"
+end
+-- Every item the data marks as obtainable-and-unique, with its tab.
+-- Returns {Tabs = {[tab] = {itemIds sorted}}, Of = {[itemId] = tab}, Order, total}.
+local cached
+function CL.log(force)
+	if cached and not force then return cached end
+	local rank = {}
+	for i, t in ipairs(CL.LogTabOrder) do rank[t] = i end
+	local best = {}
+	local function offer(id, tab)
+		if type(id) ~= "string" or not loggable(Data.Items[id]) then return end
+		if not best[id] or rank[tab] < rank[best[id]] then best[id] = tab end
+	end
+	for id, def in pairs(Data.Items) do
+		if def.kind == "pet" then offer(id, "Pets") end
+		if def.trailUnique then offer(id, "Trails") end
+		if def.slayerUnique then offer(id, "Slayer") end
+		if def.minigameUnique or def.logUnique == "Minigames" then offer(id, "Minigames") end
+	end
+	local seen = {}
+	local function walk(t, tab, depth)
+		if seen[t] or depth > 10 then return end
+		seen[t] = true
+		local id, chance = rawget(t, "item"), rawget(t, "chance")
+		if type(id) == "string" and type(chance) == "number" and chance > 0 and chance < CL.RARE_CHANCE then offer(id, tab) end
+		for _, v in pairs(t) do if type(v) == "table" then walk(v, tab, depth + 1) end end
+	end
+	local roots = {}
+	for k, v in pairs(Data) do if type(k) == "string" and type(v) == "table" and k ~= "Items" and k ~= "CommissionsLogs" then table.insert(roots, k) end end
+	-- Fixed walk order: mapped roots by tab rank first, then the rest alphabetically,
+	-- so shared sub-tables always credit the same root.
+	table.sort(roots, function(a, b)
+		local ra, rb = rank[rootTab(a)], rank[rootTab(b)]
+		if ra ~= rb then return ra < rb end
+		return a < b
+	end)
+	for _, k in ipairs(roots) do walk(Data[k], rootTab(k), 0) end
+	-- Non-iterated monsters (sea creatures, world bosses, superiors) reached through __index.
+	local Tabs, Of, total = {}, {}, 0
+	for _, tab in ipairs(CL.LogTabOrder) do Tabs[tab] = {} end
+	for id, tab in pairs(best) do table.insert(Tabs[tab], id); Of[id] = tab; total += 1 end
+	local R = Data.Rarity
+	for _, list in pairs(Tabs) do
+		table.sort(list, function(a, b)
+			local ra, rb = R[Data.Items[a].rarity] and R[Data.Items[a].rarity].rank or 0, R[Data.Items[b].rarity] and R[Data.Items[b].rarity].rank or 0
+			if ra ~= rb then return ra < rb end
+			return a < b
+		end)
+	end
+	local order = {}
+	for _, tab in ipairs(CL.LogTabOrder) do if #Tabs[tab] > 0 then table.insert(order, tab) end end
+	cached = {Tabs=Tabs,Of=Of,Order=order,total=total}
+	return cached
+end
+-- Score: rarity rank per distinct entry obtained (Common 1 ... Mythic 6).
+function CL.entryPoints(id)
+	local def = Data.Items[id]
+	local r = def and Data.Rarity[def.rarity]
+	return r and r.rank or 1
+end
+function CL.logScore(counts)
+	local L = CL.log()
+	local score, max, found = 0, 0, 0
+	for id in pairs(L.Of) do
+		local pts = CL.entryPoints(id)
+		max += pts
+		if type(counts) == "table" and (tonumber(counts[id]) or 0) > 0 then score += pts; found += 1 end
+	end
+	return score, max, found
+end
+CL.LogRanks = {{share=0,name="Driftling"},{share=0.1,name="Wayseeker"},{share=0.25,name="Lorekeeper"},{share=0.5,name="Archivist"},
+	{share=0.75,name="Grand Chronicler"},{share=1,name="Aether Annalist"}}
+function CL.logRank(score, max)
+	local share = if (max or 0) > 0 then score / max else 0
+	local out = CL.LogRanks[1]
+	for _, r in ipairs(CL.LogRanks) do if share >= r.share - 1e-9 then out = r end end
+	return out, share
+end
+
+------------------------------------------------------------------------------
+-- Museum.
+------------------------------------------------------------------------------
+CL.MuseumOrder = {"Weapons","Armor","Rarities","Minerals","Trophies"}
+CL.MuseumCategories = {
+	Weapons={name="Weapons",color="E8643A",text="Blades, bows and staves."},
+	Armor={name="Armor",color="8FB8D6",text="Every helm, chestpiece, greave and boot."},
+	Rarities={name="Rarities",color="C77DFF",text="Charms, talismans and curios."},
+	Minerals={name="Minerals",color="D4A84B",text="Ores, ingots and cut gems."},
+	Trophies={name="Trophies",color="FFAA00",text="Rare drops and relics from the Collection Log."},
+}
+local function isMineral(id, def)
+	if Data.ResourceSkill[id] == "Mining" then return true end
+	if def.category == "gem" then return true end
+	return def.kind == "material" and string.sub(id, -5) == "Ingot"
+end
+-- Category for an item id, or nil when it cannot be donated.
+function CL.museumCategory(id)
+	local def = type(id) == "string" and Data.Items[id]
+	if not def then return nil end
+	if def.kind == "weapon" then return "Weapons" end
+	if def.kind == "armor" then return "Armor" end
+	if def.kind == "accessory" then return "Rarities" end
+	if isMineral(id, def) then return "Minerals" end
+	if CL.log().Of[id] and (def.kind == "material" or (def.kind == "trail" and def.category == "banner")) then return "Trophies" end
+	return nil
+end
+local museumCache
+function CL.museum()
+	if museumCache then return museumCache end
+	local Cats, total = {}, 0
+	for _, c in ipairs(CL.MuseumOrder) do Cats[c] = {} end
+	for id in pairs(Data.Items) do
+		local c = CL.museumCategory(id)
+		if c then table.insert(Cats[c], id); total += 1 end
+	end
+	for _, list in pairs(Cats) do table.sort(list) end
+	museumCache = {Cats=Cats,total=total}
+	return museumCache
+end
+CL.MuseumMilestones = {
+	{at=5,coins=2500,stats={health=10}},
+	{at=15,coins=7500,stats={defense=5}},
+	{at=30,coins=20000,stats={strength=3}},
+	{at=60,coins=50000,stats={critDamage=5}},
+	{at=100,coins=100000,stats={magicFind=2}},
+	{at=150,coins=200000,stats={health=25}},
+	{at=200,coins=400000,stats={strength=5}},
+}
+function CL.museumPerks(count)
+	count = tonumber(count) or 0
+	local stats, reached = {}, 0
+	for i, m in ipairs(CL.MuseumMilestones) do
+		if count >= m.at then
+			reached = i
+			for k, v in pairs(m.stats) do stats[k] = (stats[k] or 0) + v end
+		end
+	end
+	return stats, reached
+end
+end
+-- End Commissions & Logs section.
+
 return Data
