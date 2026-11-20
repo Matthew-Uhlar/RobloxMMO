@@ -1,0 +1,439 @@
+-- Wayfinder: compact minimap/compass (top-right, toggle with the Map button or M),
+-- island labels, NPC/station/beacon markers read from Workspace.Islands anchors
+-- and the world's own prompts, a Navigate list, recall charms, and waypoints: a
+-- glowing beam + beacon to the target that clears itself on arrival.
+-- Other scripts request a waypoint by firing the local BindableEvent
+-- LocalPlayer.WayfinderRequest(specs, label) with Data.Townsfolk target specs.
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local Input = game:GetService("UserInputService")
+local player = Players.LocalPlayer
+local Data = require(ReplicatedStorage:WaitForChild("AetherData"))
+local T = Data.Townsfolk
+
+local function rgb(h) return Color3.fromHex(h) end
+local ink, deep, slate = rgb("102733"), rgb("091923"), rgb("244857")
+local ivory, muted, mint, gold, violet = rgb("FFF4D9"), rgb("BECECA"), rgb("9EE7D2"), rgb("F9CC77"), rgb("B8A6FF")
+local bold, regular = Enum.Font.GothamBold, Enum.Font.Gotham
+local function make(class, parent, props)
+	local o = Instance.new(class)
+	if class == "UIStroke" then o.ApplyStrokeMode = Enum.ApplyStrokeMode.Border end
+	for k, v in pairs(props or {}) do o[k] = v end
+	o.Parent = parent
+	return o
+end
+local function round(o, r, edge)
+	make("UICorner", o, {CornerRadius = if r == "circle" then UDim.new(0.5, 0) else UDim.new(0, r)})
+	if edge then make("UIStroke", o, {Color = edge, Transparency = 0.35, Thickness = 1}) end
+	return o
+end
+
+------------------------------------------------------------------------------
+-- World index: islands + anchors (scan), NPCs, prompts, monster spawns.
+------------------------------------------------------------------------------
+local scan = T.scanIslands(nil)
+local prompts = {station = {}, gather = {}, warp = {}, warpReturn = {}} -- [kind][prompt] = key
+local function promptPosition(prompt)
+	local parent = prompt.Parent
+	if parent and parent:IsA("BasePart") then return parent.Position end
+	if parent and parent:IsA("Attachment") then return parent.WorldPosition end
+	return nil
+end
+local function classify(prompt)
+	local owner = prompt:GetAttribute("OwnerUserId")
+	if owner and owner ~= player.UserId then return end
+	local verb, item = prompt:GetAttribute("IsleAction"), prompt:GetAttribute("IsleItem")
+	if verb == "station" and type(item) == "string" then prompts.station[prompt] = item
+	elseif verb == "gather" and type(item) == "string" then prompts.gather[prompt] = item end
+	local region = prompt:GetAttribute("IsleWarpRegion")
+	if type(region) == "string" then prompts.warp[prompt] = region end
+	if prompt:GetAttribute("IsleWarpReturn") ~= nil or prompt.ActionText == "Travel home" then prompts.warpReturn[prompt] = "Homeward" end
+end
+local function unclassify(prompt)
+	for _, set in pairs(prompts) do set[prompt] = nil end
+end
+workspace.DescendantAdded:Connect(function(d) if d:IsA("ProximityPrompt") then classify(d) end end)
+workspace.DescendantRemoving:Connect(function(d) if d:IsA("ProximityPrompt") then unclassify(d) end end)
+task.spawn(function()
+	for _, d in ipairs(workspace:GetDescendants()) do if d:IsA("ProximityPrompt") then classify(d) end end
+end)
+-- Islands may be built (or rebuilt) after we start: rescan, debounced.
+local rescanQueued = false
+local function rescan()
+	if rescanQueued then return end
+	rescanQueued = true
+	task.delay(0.5, function()
+		rescanQueued = false
+		scan = T.scanIslands(workspace:FindFirstChild("Islands"))
+	end)
+end
+local function watchIslands(islands)
+	islands.DescendantAdded:Connect(function(d)
+		if d.Parent == islands then d.AttributeChanged:Connect(rescan); rescan()
+		elseif string.sub(d.Name, 1, 7) == "Anchor_" then rescan() end
+	end)
+	islands.DescendantRemoving:Connect(function(d) if d.Parent == islands or string.sub(d.Name, 1, 7) == "Anchor_" then rescan() end end)
+	for _, m in ipairs(islands:GetChildren()) do m.AttributeChanged:Connect(rescan) end
+	rescan()
+end
+workspace.ChildAdded:Connect(function(c) if c.Name == "Islands" then watchIslands(c) end end)
+workspace.ChildRemoved:Connect(function(c) if c.Name == "Islands" then rescan() end end)
+if workspace:FindFirstChild("Islands") then watchIslands(workspace.Islands) end
+
+local function npcPositions()
+	local out = {}
+	local folder = workspace:FindFirstChild("Townsfolk")
+	if not folder then return out end
+	for _, model in ipairs(folder:GetChildren()) do
+		local role, root = model:GetAttribute("TownsfolkRole"), model:FindFirstChild("HumanoidRootPart")
+		if type(role) == "string" and root then out[role] = root.Position end
+	end
+	return out
+end
+-- Builds the plain index Data.Townsfolk.resolveTarget reads.
+local function buildIndex()
+	local index = {anchors = {}, npcs = npcPositions(), islands = {}, station = {}, gather = {}, monster = {}, warp = {}, warpReturn = {}}
+	for name, parts in pairs(scan.anchors) do
+		local list = {}
+		for _, part in ipairs(parts) do if part.Parent then table.insert(list, part.Position) end end
+		index.anchors[name] = list
+	end
+	for region, entry in pairs(scan.regions) do index.islands[region] = entry.center end
+	for kind, set in pairs(prompts) do
+		for prompt, key in pairs(set) do
+			local pos = promptPosition(prompt)
+			if pos then
+				if kind == "warpReturn" then table.insert(index.warpReturn, pos)
+				else index[kind][key] = index[kind][key] or {}; table.insert(index[kind][key], pos) end
+			end
+		end
+	end
+	local spawns = workspace:FindFirstChild("MonsterSpawns")
+	if spawns then
+		for _, marker in ipairs(spawns:GetChildren()) do
+			local id = marker:GetAttribute("MonsterId")
+			if type(id) == "string" and marker:IsA("BasePart") then
+				index.monster[id] = index.monster[id] or {}
+				table.insert(index.monster[id], marker.Position)
+			end
+		end
+	end
+	local home = player:GetAttribute("IslandCenter")
+	if typeof(home) == "Vector3" then index.home = home end
+	return index
+end
+
+------------------------------------------------------------------------------
+-- HUD.
+------------------------------------------------------------------------------
+local gui = make("ScreenGui", player:WaitForChild("PlayerGui"), {Name = "Wayfinder", ResetOnSpawn = false, DisplayOrder = 6,
+	ZIndexBehavior = Enum.ZIndexBehavior.Sibling})
+local camera = workspace.CurrentCamera
+local compact = camera and camera.ViewportSize.Y < 520
+local SIZE = if compact then 118 else 156
+local holder = make("Frame", gui, {Name = "Minimap", AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -10, 0, 8),
+	Size = UDim2.fromOffset(SIZE, SIZE + 34), BackgroundTransparency = 1})
+local map = make("Frame", holder, {Name = "Map", Size = UDim2.fromOffset(SIZE, SIZE), BackgroundColor3 = deep, BackgroundTransparency = 0.08,
+	ClipsDescendants = true, BorderSizePixel = 0})
+round(map, 12, gold)
+local layer = make("Frame", map, {Name = "Layer", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1})
+-- Compass rose letters stay on the rim (north-up map).
+for _, mark in ipairs({{"N", 0.5, 0.06, gold}, {"S", 0.5, 0.94, muted}, {"E", 0.94, 0.5, muted}, {"W", 0.06, 0.5, muted}}) do
+	make("TextLabel", map, {AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(mark[2], mark[3]), Size = UDim2.fromOffset(14, 14),
+		BackgroundTransparency = 1, Text = mark[1], Font = bold, TextSize = 11, TextColor3 = mark[4], ZIndex = 6})
+end
+local arrow = make("TextLabel", map, {Name = "PlayerArrow", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+	Size = UDim2.fromOffset(18, 18), BackgroundTransparency = 1, Text = "▲", Font = bold, TextSize = 16, TextColor3 = mint, ZIndex = 7})
+make("UIStroke", arrow, {Color = deep, Thickness = 1.5, ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual})
+local bar = make("Frame", holder, {Name = "Controls", Position = UDim2.fromOffset(0, SIZE + 4), Size = UDim2.fromOffset(SIZE, 30), BackgroundTransparency = 1})
+make("UIListLayout", bar, {FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 4), HorizontalAlignment = Enum.HorizontalAlignment.Right})
+local function smallButton(text, width, onClick)
+	local b = make("TextButton", bar, {Size = UDim2.fromOffset(width, 30), BackgroundColor3 = ink, Text = text, Font = bold, TextSize = 13, TextColor3 = ivory, AutoButtonColor = true})
+	round(b, 8, slate)
+	b.Activated:Connect(onClick)
+	return b
+end
+local ZOOMS = {0.12, 0.2, 0.32, 0.5, 0.8, 1.3}
+local zoom = 3
+local mapOpen = true
+local navigatePanel
+local function setMapOpen(open)
+	mapOpen = open
+	map.Visible = open
+	bar.Position = UDim2.fromOffset(0, if open then SIZE + 4 else 0)
+end
+smallButton("−", 30, function() zoom = math.max(1, zoom - 1) end)
+smallButton("+", 30, function() zoom = math.min(#ZOOMS, zoom + 1) end)
+smallButton("Go", 34, function() navigatePanel() end)
+smallButton("Map", 40, function() setMapOpen(not mapOpen) end)
+Input.InputBegan:Connect(function(input, processed)
+	if processed then return end
+	if input.KeyCode == Enum.KeyCode.M then setMapOpen(not mapOpen) end
+end)
+
+local toast = make("TextLabel", gui, {AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 120), Size = UDim2.fromOffset(380, 34),
+	BackgroundColor3 = deep, BackgroundTransparency = 0.1, TextColor3 = gold, Font = bold, TextSize = 14, TextWrapped = true, Visible = false, Text = ""})
+round(toast, 9, gold)
+local toastSeq = 0
+local function notify(text)
+	toastSeq += 1
+	local mine = toastSeq
+	toast.Text, toast.Visible = text, true
+	task.delay(3.5, function() if toastSeq == mine then toast.Visible = false end end)
+end
+
+------------------------------------------------------------------------------
+-- Waypoint visuals: beam from the player to a glowing beacon at the target.
+------------------------------------------------------------------------------
+local waypoint = nil -- Data.Townsfolk waypoint + visuals
+local visuals = {}
+local function destroyVisuals()
+	for _, v in pairs(visuals) do if typeof(v) == "Instance" then v:Destroy() end end
+	visuals = {}
+end
+local function attachPlayer()
+	if not visuals.beam then return end
+	local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	if visuals.playerAttachment then visuals.playerAttachment:Destroy(); visuals.playerAttachment = nil end
+	if root then
+		visuals.playerAttachment = make("Attachment", root, {Name = "WayfinderAttachment", Position = Vector3.new(0, -1.5, 0)})
+		visuals.beam.Attachment0 = visuals.playerAttachment
+	end
+end
+local function buildVisuals(label)
+	destroyVisuals()
+	local beacon = make("Part", nil, {Name = "WayfinderBeacon", Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false, CastShadow = false,
+		Size = Vector3.new(1.2, 60, 1.2), Material = Enum.Material.Neon, Color = gold, Transparency = 0.55})
+	local ring = make("Part", beacon, {Name = "WayfinderRing", Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false, CastShadow = false,
+		Shape = Enum.PartType.Cylinder, Size = Vector3.new(0.2, T.ARRIVE_RADIUS * 2, T.ARRIVE_RADIUS * 2), Material = Enum.Material.Neon, Color = mint, Transparency = 0.7})
+	local targetAttachment = make("Attachment", beacon, {Name = "BeamTarget", Position = Vector3.new(0, -27, 0)})
+	make("PointLight", beacon, {Color = gold, Range = 16, Brightness = 1.2, Shadows = false})
+	local beam = make("Beam", beacon, {Attachment1 = targetAttachment, FaceCamera = true, LightEmission = 1, LightInfluence = 0, Segments = 24,
+		Width0 = 0.7, Width1 = 0.7, Color = ColorSequence.new(mint, gold), Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.85), NumberSequenceKeypoint.new(0.15, 0.35), NumberSequenceKeypoint.new(1, 0.15)})})
+	local board = make("BillboardGui", beacon, {Size = UDim2.fromOffset(200, 44), StudsOffset = Vector3.new(0, -22, 0), AlwaysOnTop = true, LightInfluence = 0})
+	local plate = make("Frame", board, {Size = UDim2.fromScale(1, 1), BackgroundColor3 = deep, BackgroundTransparency = 0.2})
+	round(plate, 8, gold)
+	local title = make("TextLabel", plate, {Size = UDim2.new(1, -8, 0, 22), Position = UDim2.fromOffset(4, 2), BackgroundTransparency = 1, Font = bold, TextSize = 14,
+		TextColor3 = gold, Text = label, TextTruncate = Enum.TextTruncate.AtEnd})
+	local distance = make("TextLabel", plate, {Size = UDim2.new(1, -8, 0, 18), Position = UDim2.fromOffset(4, 23), BackgroundTransparency = 1, Font = regular,
+		TextSize = 12, TextColor3 = mint, Text = ""})
+	beacon.Parent = workspace
+	visuals = {beacon = beacon, ring = ring, beam = beam, title = title, distance = distance}
+	attachPlayer()
+end
+local function clearWaypoint(message)
+	waypoint = nil
+	destroyVisuals()
+	if message then notify(message) end
+end
+local function placeVisuals(target)
+	if not visuals.beacon then return end
+	visuals.beacon.CFrame = CFrame.new(target + Vector3.new(0, 27, 0))
+	visuals.ring.CFrame = CFrame.new(target + Vector3.new(0, 0.2, 0)) * CFrame.Angles(0, 0, math.pi / 2)
+end
+local function setWaypoint(specs, label)
+	if type(specs) == "string" then specs = {specs} end
+	if type(specs) ~= "table" or #specs == 0 then return end
+	local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	local from = root and root.Position
+	local target, spec = T.resolveFirst(specs, buildIndex(), from)
+	if not target then
+		notify("I can't find that on the charts yet. Try again once the isle has loaded.")
+		return
+	end
+	label = if type(label) == "string" and label ~= "" then label else T.targetLabel(spec)
+	waypoint = T.newWaypoint(specs, label, os.clock())
+	waypoint.target = target
+	buildVisuals(label)
+	placeVisuals(target)
+	notify("Waypoint set: " .. label)
+end
+local request = make("BindableEvent", player, {Name = "WayfinderRequest"})
+request.Event:Connect(setWaypoint)
+player.CharacterAdded:Connect(function(character)
+	character:WaitForChild("HumanoidRootPart", 10)
+	attachPlayer()
+end)
+
+------------------------------------------------------------------------------
+-- Navigate list (stations, regions, townsfolk, recall).
+------------------------------------------------------------------------------
+local list = make("Frame", gui, {Name = "Navigate", AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -10, 0, SIZE + 46),
+	Size = UDim2.fromOffset(240, 300), BackgroundColor3 = ink, Visible = false, BorderSizePixel = 0})
+make("UISizeConstraint", list, {MaxSize = Vector2.new(260, 380)})
+round(list, 12, gold)
+make("TextLabel", list, {Position = UDim2.fromOffset(12, 6), Size = UDim2.new(1, -50, 0, 24), BackgroundTransparency = 1, Text = "NAVIGATE", Font = bold,
+	TextSize = 13, TextColor3 = mint, TextXAlignment = Enum.TextXAlignment.Left})
+local listClose = make("TextButton", list, {Position = UDim2.new(1, -34, 0, 6), Size = UDim2.fromOffset(26, 26), BackgroundTransparency = 1, Text = "✕",
+	Font = bold, TextSize = 15, TextColor3 = muted})
+local scroll = make("ScrollingFrame", list, {Position = UDim2.fromOffset(8, 34), Size = UDim2.new(1, -16, 1, -42), BackgroundTransparency = 1, BorderSizePixel = 0,
+	ScrollBarThickness = 4, ScrollBarImageColor3 = gold, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y})
+make("UIListLayout", scroll, {Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder})
+listClose.Activated:Connect(function() list.Visible = false end)
+local action = ReplicatedStorage:WaitForChild("IsleAction", 30)
+local function recall(target)
+	if not action then return end
+	local ok, result = pcall(action.InvokeServer, action, "recall", target)
+	if ok and type(result) == "table" and type(result.message) == "string" then
+		notify(result.message)
+		if string.sub(result.message, 1, 8) == "Recalled" then list.Visible = false end
+	elseif ok and result == nil then notify("One moment…")
+	end
+end
+local function heading(text, order)
+	make("TextLabel", scroll, {LayoutOrder = order, Size = UDim2.new(1, -6, 0, 18), BackgroundTransparency = 1, Text = text, Font = bold, TextSize = 11,
+		TextColor3 = gold, TextXAlignment = Enum.TextXAlignment.Left})
+end
+local function entry(text, order, onClick, dim)
+	local b = make("TextButton", scroll, {LayoutOrder = order, Size = UDim2.new(1, -6, 0, 32), BackgroundColor3 = deep, Text = "  " .. text, Font = bold,
+		TextSize = 13, TextColor3 = if dim then muted else ivory, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, AutoButtonColor = true})
+	round(b, 7, slate)
+	b.Activated:Connect(function() list.Visible = false; onClick() end)
+end
+navigatePanel = function()
+	if list.Visible then list.Visible = false; return end
+	for _, c in ipairs(scroll:GetChildren()) do if c:IsA("GuiObject") then c:Destroy() end end
+	local index = buildIndex()
+	local order = 0
+	local function nextOrder() order += 1; return order end
+	if waypoint then entry("✕ Clear waypoint (" .. waypoint.label .. ")", nextOrder(), function() clearWaypoint("Waypoint cleared.") end) end
+	heading("RECALL CHARM", nextOrder())
+	entry("Return Home", nextOrder(), function() recall("Home") end)
+	entry("Return to Hub", nextOrder(), function() recall("Hub") end)
+	if #index.warpReturn > 0 then entry("Nearest homeward beacon", nextOrder(), function() setWaypoint({"warpReturn"}) end) end
+	heading("TOWNSFOLK", nextOrder())
+	for _, role in ipairs(T.Order) do
+		if index.npcs[role] then
+			local def = T.NPCs[role]
+			entry(def.name .. " · " .. def.title, nextOrder(), function() setWaypoint({"npc:" .. role}) end)
+		end
+	end
+	heading("STATIONS", nextOrder())
+	for _, station in ipairs({"Forge", "Hearth", "Cauldron", "Workbench", "Slayer"}) do
+		local specs = {"station:" .. station, "anchor:Waypoint_" .. station}
+		if T.resolveFirst(specs, index) then entry(station, nextOrder(), function() setWaypoint(specs, station) end) end
+	end
+	heading("REGIONS", nextOrder())
+	for _, region in ipairs(Data.Regions) do
+		local specs = {"warp:" .. region.id, "region:" .. region.id}
+		if T.resolveFirst(specs, index) then
+			local locked = player:GetAttribute(region.id .. "Unlocked") == false
+			entry(region.name .. (if locked then "  🔒" else ""), nextOrder(), function() setWaypoint({"region:" .. region.id, "warp:" .. region.id}, region.name) end, locked)
+		end
+	end
+	list.Visible = true
+end
+
+------------------------------------------------------------------------------
+-- Minimap drawing (≤ 10 Hz) with pooled markers.
+------------------------------------------------------------------------------
+local pool = {} -- [key] = frame
+local seen = {}
+local function marker(key, kind)
+	local f = pool[key]
+	if f then seen[key] = true; return f end
+	if kind == "island" then
+		f = make("Frame", layer, {AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = slate, BackgroundTransparency = 0.25, BorderSizePixel = 0, ZIndex = 2})
+		round(f, "circle", rgb("2E5E6E"))
+		make("TextLabel", f, {Name = "Label", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(110, 14),
+			BackgroundTransparency = 1, Font = bold, TextSize = 10, TextColor3 = ivory, TextStrokeTransparency = 0.4, ZIndex = 4})
+	elseif kind == "waypoint" then
+		f = make("Frame", layer, {AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(11, 11), Rotation = 45, BackgroundColor3 = gold, BorderSizePixel = 0, ZIndex = 8})
+		make("UIStroke", f, {Color = deep, Thickness = 1.5})
+	else
+		local color = if kind == "npc" then gold elseif kind == "warp" then violet else mint
+		f = make("Frame", layer, {AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(7, 7), BackgroundColor3 = color, BorderSizePixel = 0, ZIndex = 5})
+		round(f, "circle", deep)
+	end
+	pool[key] = f
+	seen[key] = true
+	return f
+end
+local function drawMap(me, facing)
+	table.clear(seen)
+	local scale = ZOOMS[zoom]
+	local half = SIZE / 2
+	local function project(pos)
+		return (pos.X - me.X) * scale, (pos.Z - me.Z) * scale
+	end
+	local function visible(x, y, pad) return math.abs(x) <= half + pad and math.abs(y) <= half + pad end
+	for _, island in ipairs(scan.list) do
+		local x, y = project(island.center)
+		local r = island.radius * scale
+		if visible(x, y, r) then
+			local f = marker(island.model, "island")
+			f.Position = UDim2.fromOffset(half + x, half + y)
+			f.Size = UDim2.fromOffset(r * 2, r * 2)
+			local region = Data.RegionById[island.region or ""]
+			local label = f.Label
+			label.Text = if region then region.name elseif island.region == "Home" then "Home" else island.model.Name
+			label.Visible = r > 14
+		end
+	end
+	local folder = workspace:FindFirstChild("Townsfolk")
+	if folder then
+		for _, model in ipairs(folder:GetChildren()) do
+			local root = model:FindFirstChild("HumanoidRootPart")
+			if root then
+				local x, y = project(root.Position)
+				if visible(x, y, 0) then marker(model, "npc").Position = UDim2.fromOffset(half + x, half + y) end
+			end
+		end
+	end
+	for kind, set in pairs(prompts) do
+		if kind ~= "gather" then
+			for prompt in pairs(set) do
+				local pos = promptPosition(prompt)
+				if pos then
+					local x, y = project(pos)
+					if visible(x, y, 0) then marker(prompt, if kind == "station" then "station" else "warp").Position = UDim2.fromOffset(half + x, half + y) end
+				end
+			end
+		end
+	end
+	if waypoint and waypoint.target then
+		local x, y = project(waypoint.target)
+		local edge = half - 7
+		local m = math.max(math.abs(x), math.abs(y))
+		if m > edge then x, y = x / m * edge, y / m * edge end -- clamp to the rim
+		local f = marker("waypoint", "waypoint")
+		f.Position = UDim2.fromOffset(half + x, half + y)
+		f.BackgroundTransparency = if m > edge then 0.25 else 0
+	end
+	for key, f in pairs(pool) do
+		if not seen[key] then f:Destroy(); pool[key] = nil end
+	end
+	arrow.Rotation = math.deg(math.atan2(facing.X, -facing.Z))
+end
+
+local mapClock, resolveClock = 0, 0
+RunService.Heartbeat:Connect(function(dt)
+	mapClock += dt
+	if mapClock < T.MINIMAP_INTERVAL then return end
+	mapClock = 0
+	local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	local now = os.clock()
+	if waypoint then
+		-- Re-resolve once a second (NPCs can move when late anchors appear).
+		local target = waypoint.target
+		if now - resolveClock >= 1 then
+			resolveClock = now
+			target = T.resolveFirst(waypoint.specs, buildIndex(), root and root.Position)
+			if target then placeVisuals(target) end
+		end
+		local status = T.stepWaypoint(waypoint, root and root.Position, target, now)
+		if status == "arrived" then clearWaypoint("Arrived: " .. waypoint.label)
+		elseif status == "expired" then clearWaypoint("Waypoint expired.")
+		elseif status == "lost" then clearWaypoint("Lost the trail to " .. waypoint.label .. ".")
+		elseif visuals.distance and waypoint.distance then
+			visuals.distance.Text = math.floor(waypoint.distance) .. " studs"
+			if visuals.beam and not visuals.beam.Attachment0 then attachPlayer() end
+		end
+	end
+	if mapOpen and root then
+		local look = root.CFrame.LookVector
+		drawMap(root.Position, look)
+	end
+end)

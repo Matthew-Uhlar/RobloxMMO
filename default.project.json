@@ -15,7 +15,8 @@
       "Homesteads": { "$path": "coop.server.lua" },
       "Archipelago": { "$path": "world.server.lua" },
       "Combat": { "$path": "combat.server.lua" },
-      "GestureRelay": { "$path": "gesture.server.lua" }
+      "GestureRelay": { "$path": "gesture.server.lua" },
+      "Townsfolk": { "$path": "npc.server.lua" }
     },
     "StarterPlayer": {
       "StarterPlayerScripts": {
@@ -23,7 +24,9 @@
         "IslandArt": { "$path": "mesh.client.lua" },
         "CombatInput": { "$path": "combat.client.lua" },
         "IslandBuilder": { "$path": "build.client.lua" },
-        "Gestures": { "$path": "animate.client.lua" }
+        "Gestures": { "$path": "animate.client.lua" },
+        "Dialogue": { "$path": "npc.client.lua" },
+        "Wayfinder": { "$path": "nav.client.lua" }
       }
     },
     "Workspace": {

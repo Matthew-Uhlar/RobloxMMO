@@ -1420,4 +1420,579 @@ do
 	end
 end
 
+------------------------------------------------------------------------------
+-- Townsfolk (Guide team; append-only section). NPCs, dialogue graphs, the
+-- new-player tutorial, contextual tips and waypoint rules. Consumed by
+-- npc.server.lua (ServerScriptService.Townsfolk), npc.client.lua
+-- (StarterPlayerScripts.Dialogue) and nav.client.lua (StarterPlayerScripts.Wayfinder).
+--
+-- Placement (docs/DEPTH-CONTRACT.md §10): an NPC stands on the part named
+-- Anchor_NPC_<Role> anywhere under Workspace.Islands; until that anchor exists
+-- it stands on a ring around the IslandCenter of the island whose Region
+-- attribute matches its region (falling back to the Hub island). Never a
+-- hard-coded coordinate.
+--
+-- Dialogue: npc.start names the first node. A node is {text, options} or
+-- {tutorial=true, text, options} (the tutorial checklist is drawn above its
+-- options). An option has a label, an optional `when` condition id and exactly
+-- one action:
+--   to=<node id>             show another node of the same NPC
+--   atlas=<station>          open an atlas page (sets IsleStation/IsleStationVisit
+--                            like a world station); one of T.AtlasStations
+--   waypoint={spec...}|"tutorial"   guide the player there (first spec that
+--                            resolves wins); "tutorial" = the current step's targets
+--   tip=<kind>               contextual advice from the snapshot (T.Tips)
+--   verb=<verb>, item=<str>  call an existing IsleAction verb (T.Verbs)
+--   close=true               end the conversation
+-- Waypoint specs are "kind:arg" strings, kinds in T.TargetKinds.
+------------------------------------------------------------------------------
+do
+local T = {}
+Data.Townsfolk = T
+T.RECALL_COOLDOWN = 90        -- seconds between recalls (server enforced)
+T.RECALL_HURT_GRACE = 8       -- no recall within this many seconds of taking damage
+T.ARRIVE_RADIUS = 12          -- flat studs from the target that count as arrival
+T.ARRIVE_HEIGHT = 18          -- ...within this vertical band
+T.WAYPOINT_TIMEOUT = 900      -- an untouched waypoint clears itself after 15 minutes
+T.LOST_GRACE = 6              -- a target that cannot be resolved for this long is dropped
+T.MINIMAP_INTERVAL = 0.1      -- minimap redraw interval (10 Hz)
+T.IDLE_RANGE = 90             -- NPC idles animate only within this many studs
+T.GRADUATE_CONTRACTS = 3      -- veterans with this many contracts skip the tutorial
+-- Atlas pages the field guide (ui.client.lua stationTabs) opens from IsleStation.
+T.AtlasStations = {Forge="Workshop · Forge",Hearth="Workshop · Hearth",Cauldron="Workshop · Cauldron",Workbench="Workshop · Workbench",
+	Slayer="Hunt · Slayer",Construction="Journal · Construction",Calendar="Journal · Calendar"}
+-- Existing IsleAction verbs dialogue may call (item rules per verb).
+T.Verbs = {quest={item=false},claim={item=false},slayerStart={item=false},slayerClaim={item=false},sell={item=false},
+	recall={item={Hub=true,Home=true}}}
+T.RecallTargets = {Hub="the Aether Hub",Home="your Wayfarer's Rest"}
+T.TargetKinds = {anchor=true,npc=true,region=true,station=true,gather=true,monster=true,warp=true,warpReturn=true,home=true}
+
+------------------------------------------------------------------------------
+-- Snapshot helpers (tolerate partial / loading snapshots).
+------------------------------------------------------------------------------
+local function tab(v) return if type(v) == "table" then v else {} end
+local function num(v) return if type(v) == "number" and v == v then v else 0 end
+local function count(s, id) return num(tab(tab(s).items)[id]) end
+local function collected(s, id) return num(tab(tab(s).collection)[id]) end
+local function skillLevel(s, skill)
+	local depthSkill = tab(tab(tab(s).depth).skills)[skill]
+	if type(depthSkill) == "table" and type(depthSkill.level) == "number" then return depthSkill.level end
+	local legacy = tab(tab(s).levels)[skill]
+	return if type(legacy) == "number" then legacy else 1
+end
+local function contracts(s)
+	local journal = tab(tab(s).journal)
+	if type(journal.contracts) == "number" then return journal.contracts end
+	local quest = tab(tab(s).quest)
+	if quest.complete then return num(quest.total) end
+	return math.max(0, num(quest.stage) - 1)
+end
+local function itemName(id) local def = Data.Items[id]; return if def then def.name else tostring(id) end
+local function anyKills(s)
+	if num(tab(s).kills) > 0 then return true end
+	for _, n in pairs(tab(tab(tab(s).depth).bestiary)) do if num(n) > 0 then return true end end
+	return false
+end
+local function ownsWeapon(s)
+	if tab(tab(tab(s).depth).equipment).weapon then return true end
+	for id, n in pairs(tab(tab(s).items)) do
+		local def = Data.Items[id]
+		if def and def.kind == "weapon" and num(n) > 0 then return true end
+	end
+	return false
+end
+T.skillLevel, T.contracts = skillLevel, contracts
+
+------------------------------------------------------------------------------
+-- Tutorial: the first ten minutes (gather → craft → equip → fight → bank → contract).
+-- Every check reads only the server snapshot, so progress survives rejoins.
+------------------------------------------------------------------------------
+T.Tutorial = {
+	{id="gather",title="Gather supplies",
+		text="Mine 6 Copperstone Ore in Quarry Cay and cut 3 Meadow Timber. Walk up to a node and hold the prompt.",
+		progress=function(s) return math.min(6, collected(s, "Ore")) + math.min(3, collected(s, "Timber")), 9 end,
+		waypoint={"gather:Ore","region:Quarry"}},
+	{id="craft",title="Forge a Copper Blade",
+		text="At a Forge, craft a Copper Blade (4 Ore, 3 Timber). Brannoch the Forgemaster can open the forge for you.",
+		progress=function(s) return if ownsWeapon(s) then 1 else 0, 1 end,
+		waypoint={"station:Forge","anchor:Waypoint_Forge","npc:Forgemaster"},atlas="Forge"},
+	{id="equip",title="Equip your blade",
+		text="Open the Atlas → Hero → Gear and equip your new weapon.",
+		progress=function(s) return if tab(tab(tab(s).depth).equipment).weapon then 1 else 0, 1 end},
+	{id="fight",title="Win your first fight",
+		text="Defeat a creature: Brambleback Boars roam Meadow Reach. Tap or click a creature to strike.",
+		progress=function(s) return if anyKills(s) then 1 else 0, 1 end,
+		waypoint={"monster:BramblebackBoar","monster:Thornling","region:Meadow"}},
+	{id="bank",title="Bank your coins",
+		text="Coins in your purse are at risk. Deposit some with Odile at the vault (Atlas → Ledger → Bank).",
+		progress=function(s) return if num(tab(s).bank) > 0 then 1 else 0, 1 end,
+		waypoint={"npc:Banker","anchor:Waypoint_Bank","region:Hub"}},
+	{id="contract",title="Claim your first guild contract",
+		text="Return to Pell and claim your first guild contract for its reward.",
+		progress=function(s) return math.min(1, contracts(s)), 1 end,
+		waypoint={"npc:Guide","region:Hub"}},
+}
+T.TutorialById = {}
+for i, step in ipairs(T.Tutorial) do step.index = i; T.TutorialById[step.id] = step end
+-- {steps={{id,title,have,need,done}}, current=index|nil, done=n, total=n, complete=bool}
+function T.tutorialState(s)
+	local out = {steps={}, done=0, total=#T.Tutorial}
+	if type(s) ~= "table" or s.loading then out.complete = false; out.loading = true; return out end
+	for i, step in ipairs(T.Tutorial) do
+		local have, need = step.progress(s)
+		local done = have >= need
+		out.steps[i] = {id=step.id, title=step.title, have=have, need=need, done=done}
+		if done then out.done += 1 elseif not out.current then out.current = i end
+	end
+	out.graduated = contracts(s) >= T.GRADUATE_CONTRACTS
+	out.complete = out.current == nil or out.graduated
+	return out
+end
+
+------------------------------------------------------------------------------
+-- Conditions for `when` (snapshot s, context ctx = {event=id|nil, now=n}).
+------------------------------------------------------------------------------
+T.Conditions = {
+	tutorialActive=function(s) local t = T.tutorialState(s); return not t.loading and not t.complete end,
+	tutorialComplete=function(s) return T.tutorialState(s).complete end,
+	contractReady=function(s) local q = tab(tab(s).quest); return q.ready == true and not q.complete end,
+	workerReady=function(s) return num(tab(s).workerReady) > 0 end,
+	huntIdle=function(s) return tab(s).slayer ~= nil and not tab(tab(s).slayer).active end,
+	huntReady=function(s) return tab(tab(s).slayer).ready == true end,
+	eventActive=function(_, ctx) return type(tab(ctx).event) == "string" and Data.Events[ctx.event] ~= nil end,
+	hasBasics=function(s) for _, id in ipairs({"Timber","Ore","Herb","Fish"}) do if count(s, id) > 0 then return true end end return false end,
+}
+function T.visibleOptions(node, s, ctx)
+	local out = {}
+	for _, option in ipairs(node.options or {}) do
+		local test = option.when and T.Conditions[option.when]
+		if not option.when or (test and test(s, ctx)) then table.insert(out, option) end
+	end
+	return out
+end
+
+------------------------------------------------------------------------------
+-- Contextual tips: T.Tips[kind](s, ctx) → text (never errors on partial data).
+------------------------------------------------------------------------------
+local function contractTip(s)
+	local q = tab(tab(s).quest)
+	if q.complete then return "Every guild contract is signed. Your Journal quests carry the story onward." end
+	if not q.title then return "Your contract ledger is still syncing. Ask me again in a moment." end
+	local head = "Guild contract " .. num(q.stage) .. "/" .. num(q.total) .. " — " .. q.title .. ": " .. tostring(q.detail or "")
+	return if q.ready then head .. " It's ready: claim it with me or in the Journal." else head
+end
+local function questTip(s)
+	local journal = tab(tab(s).journal)
+	for i, def in ipairs(Data.Quests) do
+		local state = tab(tab(journal.quests)[i])
+		if state.available and not state.done then
+			local parts = {}
+			for j, o in ipairs(def.objectives) do
+				local pr = tab(tab(state.objectives)[j])
+				local have, need = num(pr[1]), num(pr[2])
+				if have < need then
+					local what = if o.kind == "kills" then "defeat " .. ((Data.Monsters[o.monster] or {}).name or o.monster)
+						elseif o.kind == "collect" or o.kind == "have" then "gather " .. itemName(o.item)
+						elseif o.kind == "craft" then "craft " .. itemName(o.item)
+						elseif o.kind == "gather" then "harvest in " .. ((Data.RegionById[o.region] or {}).name or o.region)
+						elseif o.kind == "level" then "reach " .. o.skill .. " " .. o.level
+						else o.kind
+					table.insert(parts, what .. " " .. have .. "/" .. need)
+				end
+			end
+			if state.ready then return "\"" .. def.title .. "\" is complete — claim it in Journal → Quests." end
+			return "\"" .. def.title .. "\": " .. table.concat(parts, ", ") .. "."
+		end
+	end
+	if contracts(s) < 8 then return "Quests open up as you sign guild contracts. " .. contractTip(s) end
+	return "No quest is open right now. Train your skills to meet the next quest's requirements."
+end
+local function unlockTip(s)
+	local options = {}
+	for skill, tiers in pairs(Data.ResourceTiers) do
+		local lvl = skillLevel(s, skill)
+		for _, r in ipairs(tiers) do
+			if r.level > lvl then
+				table.insert(options, {gap=r.level - lvl, text=skill .. " " .. lvl .. " → " .. r.name .. " at " .. r.level .. (if r.tool > 0 then " (tier " .. r.tool .. " tool)" else "")})
+				break
+			end
+		end
+	end
+	table.sort(options, function(a, b) if a.gap ~= b.gap then return a.gap < b.gap end return a.text < b.text end)
+	local lines = {}
+	for i = 1, math.min(3, #options) do table.insert(lines, options[i].text) end
+	for _, r in ipairs(tab(tab(tab(s).depth).regions)) do
+		if type(r) == "table" and r.unlocked == false then
+			table.insert(lines, "Next region: " .. tostring(r.name) .. " — " .. tostring(r.requirement or "keep training"))
+			break
+		end
+	end
+	if #lines == 0 then return "You have outgrown every unlock I know of. Impressive." end
+	return "Coming up: " .. table.concat(lines, " · ")
+end
+local function itemsTip(s)
+	local lines = {}
+	local equipment = tab(tab(tab(s).depth).equipment)
+	local equipped = {}
+	for _, id in pairs(equipment) do equipped[id] = true end
+	local bag = {}
+	for _, id in ipairs(tab(tab(tab(s).depth).accessoryBag)) do bag[id] = true end
+	local ids = {}
+	for id, n in pairs(tab(tab(s).items)) do if num(n) > 0 and Data.Items[id] then table.insert(ids, id) end end
+	table.sort(ids)
+	local seen = {}
+	local function add(key, text) if not seen[key] and #lines < 4 then seen[key] = true; table.insert(lines, text) end end
+	for _, id in ipairs(ids) do
+		local def = Data.Items[id]
+		if (def.kind == "weapon" or def.kind == "armor") and not equipped[id] and def.slot and not equipment[def.slot] then
+			add("equip", "Equip your " .. def.name .. " (Atlas → Hero → Gear).")
+		elseif def.kind == "pet" then add("pet", "Adopt your " .. def.name .. " (Atlas → Hero → Pets).")
+		elseif def.kind == "accessory" and not bag[id] then add("acc", "Slot your " .. def.name .. " into the Accessory Bag.")
+		elseif def.kind == "consumable" then add("food", "Keep your " .. def.name .. " for tough fights — use it from the Hero page.")
+		end
+	end
+	local surplus = {}
+	for _, id in ipairs({"Ore","Timber","Herb","Fish"}) do if count(s, id) >= 20 then table.insert(surplus, itemName(id)) end end
+	if #surplus > 0 then add("sell", "Surplus " .. table.concat(surplus, ", ") .. ": refine it at the Forge, or sell it to Tobin or on the Bazaar.") end
+	if #lines == 0 then return "Your satchel is tidy. Gather, craft and fight to fill it." end
+	return table.concat(lines, " ")
+end
+local function bankTip(s)
+	local coins, bank = num(tab(s).coins), num(tab(s).bank)
+	local text = "Purse: " .. coins .. " coins · Vault: " .. bank .. " coins."
+	if coins >= 100 and coins > bank then return text .. " Consider depositing — Atlas → Ledger → Bank." end
+	return text .. " The vault keeps savings apart from your spending purse."
+end
+local function slayerTip(s)
+	local quest = tab(tab(tab(tab(s).depth).slayer).quest)
+	if quest.line then
+		if quest.bossReady then return "Your " .. quest.line .. " boss is ready — it will rise near you. Steel yourself!" end
+		return quest.line .. " tier " .. num(quest.tier) .. ": " .. num(quest.progress) .. "/" .. num(quest.needed) .. " slayer XP. Hunt " .. quest.line .. " creatures."
+	end
+	local hunt = tab(tab(s).slayer)
+	if hunt.active then return "Warden hunt: " .. num(hunt.progress) .. "/" .. num(hunt.target) .. " Wardens defeated." end
+	local combat = skillLevel(s, "Combat")
+	for _, line in ipairs(Data.SlayerOrder) do
+		local def = Data.Slayers[line]
+		local tier = def and def.tiers and def.tiers[1]
+		local need = tier and tier.combatLevel
+		if type(need) == "number" and combat >= need then return "You can take a " .. line .. " slayer contract (Hunt → Slayer)." end
+	end
+	return "At Combat " .. combat .. ", start with a Warden hunt and the meadow beasts. Slayer contracts open with Combat levels."
+end
+local function eventTip(_, ctx)
+	ctx = tab(ctx)
+	local def = type(ctx.event) == "string" and Data.Events[ctx.event]
+	if def then return def.name .. " is on now! " .. def.text end
+	local nextDef = type(ctx.nextEvent) == "string" and Data.Events[ctx.nextEvent]
+	if nextDef then return "No festival right now. Next up: " .. nextDef.name .. " — " .. nextDef.text end
+	return "The calendar is quiet. Check the Skyward Calendar for the next festival."
+end
+local function nextTip(s, ctx)
+	local t = T.tutorialState(s)
+	if t.loading then return "Your journal is still opening. Ask me again in a moment." end
+	if not t.complete then
+		local step = T.Tutorial[t.current]
+		return "Step " .. t.current .. "/" .. t.total .. " — " .. step.title .. ": " .. step.text
+	end
+	if T.Conditions.contractReady(s) then return contractTip(s) end
+	local q = tab(tab(s).quest)
+	if not q.complete and q.title then return contractTip(s) end
+	return questTip(s)
+end
+T.Tips = {next=nextTip, contract=contractTip, quest=questTip, unlock=unlockTip, items=itemsTip, bank=bankTip, slayer=slayerTip, event=eventTip}
+
+------------------------------------------------------------------------------
+-- Waypoints: "kind:arg" target specs and a pure lifecycle.
+------------------------------------------------------------------------------
+function T.parseTarget(spec)
+	if type(spec) ~= "string" then return nil end
+	local kind, arg = string.match(spec, "^(%a+):?([%w_]*)$")
+	if not kind or not T.TargetKinds[kind] then return nil end
+	if arg == "" and kind ~= "warpReturn" and kind ~= "home" then return nil end
+	return kind, arg
+end
+-- index = {anchors={[name]={pos}}, npcs={[role]=pos}, islands={[region]=pos},
+--   station={[id]={pos}}, gather={[id]={pos}}, monster={[id]={pos}}, warp={[region]={pos}},
+--   warpReturn={pos}, home=pos}. Lists pick the entry nearest `from`.
+local function nearest(list, from)
+	if type(list) ~= "table" then return nil end
+	if list.X then return list end
+	local best, bestD
+	for _, p in ipairs(list) do
+		local d = if from then (p - from).Magnitude else 0
+		if not bestD or d < bestD then best, bestD = p, d end
+	end
+	return best
+end
+function T.resolveTarget(spec, index, from)
+	local kind, arg = T.parseTarget(spec)
+	if not kind or type(index) ~= "table" then return nil end
+	if kind == "anchor" then return nearest(tab(index.anchors)["Anchor_" .. arg], from)
+	elseif kind == "npc" then return tab(index.npcs)[arg]
+	elseif kind == "region" then return tab(index.islands)[arg]
+	elseif kind == "warpReturn" then return nearest(index.warpReturn, from)
+	elseif kind == "home" then return index.home
+	end
+	return nearest(tab(index[kind])[arg], from)
+end
+function T.resolveFirst(specs, index, from)
+	for _, spec in ipairs(tab(specs)) do
+		local pos = T.resolveTarget(spec, index, from)
+		if pos then return pos, spec end
+	end
+	return nil
+end
+-- Display name for a target spec ("npc:Banker" → "Odile Marrowcoin").
+function T.targetLabel(spec)
+	local kind, arg = T.parseTarget(spec)
+	if not kind then return "Waypoint" end
+	if kind == "npc" then return if T.NPCs[arg] then T.NPCs[arg].name else arg
+	elseif kind == "region" then return if Data.RegionById[arg] then Data.RegionById[arg].name else arg
+	elseif kind == "station" then return if T.AtlasStations[arg] then arg else arg .. " station"
+	elseif kind == "gather" or kind == "monster" then
+		local def = if kind == "gather" then Data.Items[arg] else Data.Monsters[arg]
+		return if def and def.name then def.name else arg
+	elseif kind == "warp" then return "Beacon to " .. (if Data.RegionById[arg] then Data.RegionById[arg].name else arg)
+	elseif kind == "warpReturn" then return "Homeward beacon"
+	elseif kind == "home" then return "Wayfarer's Rest"
+	end
+	return (string.gsub(string.gsub(arg, "^Waypoint_", ""), "_", " "))
+end
+function T.newWaypoint(specs, label, now)
+	return {specs=specs, label=label or "Waypoint", started=now, seen=now, status="active"}
+end
+-- Advances a waypoint: status "active" | "arrived" | "expired" | "lost".
+function T.stepWaypoint(wp, playerPos, targetPos, now)
+	if wp.status ~= "active" then return wp.status end
+	if now - wp.started > T.WAYPOINT_TIMEOUT then wp.status = "expired"; return wp.status end
+	if not targetPos then
+		if now - wp.seen > T.LOST_GRACE then wp.status = "lost" end
+		return wp.status
+	end
+	wp.seen, wp.target = now, targetPos
+	if playerPos then
+		local delta = targetPos - playerPos
+		wp.distance = math.sqrt(delta.X * delta.X + delta.Z * delta.Z)
+		if wp.distance <= T.ARRIVE_RADIUS and math.abs(delta.Y) <= T.ARRIVE_HEIGHT then wp.status = "arrived" end
+	end
+	return wp.status
+end
+
+------------------------------------------------------------------------------
+-- Recall (server hook "recall"): cooldown and recent-damage gate.
+------------------------------------------------------------------------------
+function T.recallCheck(target, now, lastRecall, lastHurt)
+	if type(target) ~= "string" or not T.RecallTargets[target] then return false, "Choose Hub or Home to recall to." end
+	if lastHurt and now - lastHurt < T.RECALL_HURT_GRACE then return false, "You can't recall mid-fight. Catch your breath first." end
+	if lastRecall and now - lastRecall < T.RECALL_COOLDOWN then
+		return false, "Your recall charm is recharging (" .. math.ceil(T.RECALL_COOLDOWN - (now - lastRecall)) .. "s)."
+	end
+	return true, "Recalled to " .. T.RecallTargets[target] .. "."
+end
+
+------------------------------------------------------------------------------
+-- Placement against Workspace.Islands (contract §10).
+------------------------------------------------------------------------------
+-- folder: Workspace.Islands. Returns {regions={[region]={center,radius,model}}, anchors={[name]={part...}}}.
+function T.scanIslands(folder)
+	local out = {regions={}, anchors={}, list={}}
+	if not folder then return out end
+	for _, model in ipairs(folder:GetChildren()) do
+		local center, radius = model:GetAttribute("IslandCenter"), model:GetAttribute("IslandRadius")
+		local region = model:GetAttribute("Region")
+		if typeof(center) == "Vector3" and type(radius) == "number" then
+			local entry = {center=center, radius=radius, model=model, region=region}
+			table.insert(out.list, entry)
+			if type(region) == "string" and not out.regions[region] then out.regions[region] = entry end
+		end
+		for _, d in ipairs(model:GetDescendants()) do
+			if d:IsA("BasePart") and string.sub(d.Name, 1, 7) == "Anchor_" then
+				out.anchors[d.Name] = out.anchors[d.Name] or {}
+				table.insert(out.anchors[d.Name], d)
+			end
+		end
+	end
+	return out
+end
+-- Fallback ring slot for an NPC on its island (distinct angle per NPC).
+function T.fallbackOffset(slot, slots, radius)
+	local angle = (slot - 1) * 2 * math.pi / math.max(1, slots) + 0.35
+	local distance = math.clamp(radius * 0.32, 7, 42)
+	return math.cos(angle) * distance, math.sin(angle) * distance
+end
+-- {source="anchor", part=} | {source="fallback", island=entry, x=, z=} | nil (no island yet).
+function T.placement(role, scan)
+	local def = T.NPCs[role]
+	if not def then return nil end
+	local anchors = scan.anchors["Anchor_NPC_" .. role]
+	if anchors and anchors[1] then return {source="anchor", part=anchors[1]} end
+	local island = scan.regions[def.region] or scan.regions.Hub
+	if not island then return nil end
+	local slot, slots = 0, 0
+	for _, other in ipairs(T.Order) do
+		local o = T.NPCs[other]
+		local home = if scan.regions[o.region] then o.region else "Hub"
+		if home == (island.region or "Hub") then
+			slots += 1
+			if other == role then slot = slots end
+		end
+	end
+	local x, z = T.fallbackOffset(math.max(1, slot), math.max(1, slots), island.radius)
+	return {source="fallback", island=island, x=x, z=z}
+end
+
+------------------------------------------------------------------------------
+-- The townsfolk. look: skin/shirt/pants/shoes/accent/hair hex, hat, held, extras.
+------------------------------------------------------------------------------
+T.Order = {"Guide","Banker","Merchant","Forgemaster","Slayer","Fisher","Auctioneer","Herald","Registrar","Joiner","Grovekeeper","Deepwarden"}
+local farewell = {label="Farewell", close=true}
+local function back(to) return {label="Back", to=to or "hello"} end
+T.NPCs = {
+	Guide={name="Pell Ashgrove",title="Wayfinder of the Skyway",region="Hub",portrait="🧭",
+		look={skin="E0AC69",shirt="2F6F6A",pants="33404A",shoes="5A3B26",accent="F9CC77",hair="7A4A2A",hat="wayfarer",held="lantern",cape="9EE7D2",beard=false},
+		start="hello",nodes={
+			hello={text="Well met, wayfarer! I'm Pell — I chart the Skyway for every new arrival. Where shall we begin?",options={
+				{label="Walk me through the basics",to="tutorial",when="tutorialActive"},
+				{label="Claim my guild contract",verb="quest",when="contractReady"},
+				{label="What should I do next?",tip="next"},
+				{label="Where is everything?",to="places"},
+				{label="How do I get around?",to="travel"},
+				farewell}},
+			tutorial={tutorial=true,text="Six steps and you'll be a proper islander. Here's where you stand:",options={
+				{label="Show me the way",waypoint="tutorial"},
+				{label="Check my progress again",to="tutorial"},
+				{label="Claim my guild contract",verb="quest",when="contractReady"},
+				back()}},
+			places={text="Everyone on the Skyway has a trade. Who are you looking for?",options={
+				{label="The Forge",waypoint={"station:Forge","anchor:Waypoint_Forge","npc:Forgemaster"}},
+				{label="Odile at the vault",waypoint={"npc:Banker","anchor:Waypoint_Bank"}},
+				{label="Tobin the merchant",waypoint={"npc:Merchant"}},
+				{label="Captain Ysolde, Slayer Master",waypoint={"npc:Slayer","station:Slayer"}},
+				{label="Sabine, the Calendar Herald",waypoint={"npc:Herald"}},
+				back()}},
+			travel={text="Beacons link the isles — step up and use one. Your map's Navigate list can point the way, and once every 90 seconds I can lend you a recall charm.",options={
+				{label="Recall me home",verb="recall",item="Home"},
+				{label="Recall me to the Hub",verb="recall",item="Hub"},
+				{label="Guide me to a homeward beacon",waypoint={"warpReturn","anchor:Waypoint_Homeward","region:Hub"}},
+				back()}},
+		}},
+	Banker={name="Odile Marrowcoin",title="Keeper of the Vault",region="Hub",portrait="🪙",
+		look={skin="C68642",shirt="1F2F4F",pants="1A1F2B",shoes="2B2B2B",accent="F9CC77",hair="D9D9D9",hat="tophat",held="ledger",spectacles=true},
+		start="hello",nodes={
+			hello={text="Coins in a purse are coins at risk, dear. The vault keeps them safe from every mishap on the isles.",options={
+				{label="How much do I hold?",tip="bank"},
+				{label="Why should I bank?",to="why"},
+				farewell}},
+			why={text="Your purse pays for crafting and trades. Your vault is savings — open the Atlas, choose Ledger → Bank, and move coins either way whenever you like.",options={
+				{label="How much do I hold?",tip="bank"},back()}},
+		}},
+	Merchant={name="Tobin Saltwhistle",title="Quay Merchant",region="Hub",portrait="📦",
+		look={skin="F1C27D",shirt="A0522D",pants="4A3B2A",shoes="3B2A1A",accent="E9C46A",hair="2B1B0E",hat="cap",held="crate",apron="D9C7A0",beard=true},
+		start="hello",nodes={
+			hello={text="Fresh off the skyships! I'll take timber, ore, herbs and fish off your hands at the quay rate.",options={
+				{label="Sell my basic supplies",to="sell",when="hasBasics"},
+				{label="What should I do with my items?",tip="items"},
+				farewell}},
+			sell={text="All your Meadow Timber, Copperstone Ore, Meadow Herb and Skylake Minnows, at the quay rate. Deal?",options={
+				{label="Deal — sell them",verb="sell"},
+				{label="On second thought…",to="hello"}}},
+		}},
+	Forgemaster={name="Brannoch Embervein",title="Forgemaster",region="Hub",portrait="⚒",
+		look={skin="8D5524",shirt="5C3A21",pants="2E2A26",shoes="1E1A16",accent="E8806A",hair="1B1B1B",hat="goggles",held="hammer",apron="3A2A1E",beard=true},
+		start="hello",nodes={
+			hello={text="Hah! Another pair of hands. Bring ore and timber and I'll teach you to make something worth swinging.",options={
+				{label="Open the forge",atlas="Forge"},
+				{label="Show me to a forge",waypoint={"station:Forge","anchor:Waypoint_Forge"}},
+				{label="What can I unlock next?",tip="unlock"},
+				{label="Other crafting stations",to="stations"},
+				farewell}},
+			stations={text="The Hearth cooks, the Cauldron brews, the Workbench shapes accessories. Which do you need?",options={
+				{label="Open the Hearth",atlas="Hearth"},
+				{label="Open the Cauldron",atlas="Cauldron"},
+				{label="Open the Workbench",atlas="Workbench"},
+				back()}},
+		}},
+	Slayer={name="Captain Ysolde Thornmantle",title="Slayer Master",region="Hub",portrait="⚔",
+		look={skin="E0AC69",shirt="3B2F4A",pants="2A2433",shoes="1B1B22",accent="B23A48",hair="C0392B",hat="helm",held="sword",cape="B23A48"},
+		start="hello",nodes={
+			hello={text="The wilds don't thin themselves. Take a contract, bring back proof, and you'll be paid in coin and renown.",options={
+				{label="Show me slayer contracts",atlas="Slayer"},
+				{label="How is my hunt going?",tip="slayer"},
+				{label="Begin a Warden hunt",verb="slayerStart",when="huntIdle"},
+				{label="Claim my Warden hunt",verb="slayerClaim",when="huntReady"},
+				{label="Where should I fight?",waypoint={"monster:BramblebackBoar","monster:Thornling","region:Meadow"}},
+				farewell}},
+		}},
+	Fisher={name="Nell Driftwhistle",title="Harbour Angler",region="Hub",portrait="🎣",
+		look={skin="FFDBAC",shirt="E9B949",pants="2F4F6F",shoes="2B3A4A",accent="8FB8D6",hair="B5651D",hat="souwester",held="rod"},
+		start="hello",nodes={
+			hello={text="Skylake minnows bite best at dawn, but they'll bite any time for a patient hand.",options={
+				{label="Where can I fish?",waypoint={"gather:Fish","region:Tidewater"}},
+				{label="Cook my catch",atlas="Hearth"},
+				{label="Tell me about sea creatures",to="sea"},
+				farewell}},
+			sea={text="Cast long enough and something big takes the line — sea creatures! Better rods and Sea Creature Chance call them up more often. Fight them where they surface.",options={
+				{label="What can I unlock next?",tip="unlock"},back()}},
+		}},
+	Auctioneer={name="Quill Varrow",title="Quartermaster & Auctioneer",region="Hub",portrait="📜",
+		look={skin="D1A27A",shirt="5B3F8C",pants="2A1F3D",shoes="1A1426",accent="C9A227",hair="F2E8D5",hat="tricorn",held="scroll"},
+		start="hello",nodes={
+			hello={text="Buy low, sell high, and never bid in a hurry. What brings you to my stall?",options={
+				{label="How do the Bazaar and Auctions work?",to="market"},
+				{label="What should I do with my items?",tip="items"},
+				farewell}},
+			market={text="The Bazaar trades raw goods by standing orders. The Auction House sells one piece of gear per listing for a 1% fee. Both live in your Atlas → Ledger.",options={
+				{label="What should I do with my items?",tip="items"},back()}},
+		}},
+	Herald={name="Sabine Larkspur",title="Calendar Herald",region="Hub",portrait="📯",
+		look={skin="FFDBAC",shirt="C2185B",pants="F2E8D5",shoes="6D4C41",accent="FFD166",hair="F4D03F",hat="feather",held="horn"},
+		start="hello",nodes={
+			hello={text="Hear ye! The Skyward Calendar turns, and every season brings its festival.",options={
+				{label="What's happening now?",tip="event"},
+				{label="Open the Skyward Calendar",atlas="Calendar"},
+				farewell}},
+		}},
+	Registrar={name="Hollis Brightknot",title="Crew Registrar",region="Hub",portrait="🤝",
+		look={skin="A0522D",shirt="2E7D32",pants="3E2723",shoes="212121",accent="9EE7D2",hair="111111",hat="none",held="ledger",spectacles=true},
+		start="hello",nodes={
+			hello={text="Crews share a homestead, its workers and its glory. Shall I tell you how it works?",options={
+				{label="How do crews work?",to="crews"},
+				{label="How are my contracts?",tip="contract"},
+				{label="Collect my worker's haul",verb="claim",when="workerReady"},
+				farewell}},
+			crews={text="Invite friends from the Atlas → Journal → Crew. Contributions raise your Homestead level, unlock shared workers and a crew stat perk for everyone.",options={back()}},
+		}},
+	Joiner={name="Master Orrin Pegwright",title="Master Joiner",region="Hub",portrait="🪚",
+		look={skin="C68642",shirt="8D6E63",pants="4E342E",shoes="3E2723",accent="F9CC77",hair="9E9E9E",hat="cap",held="saw",apron="BCAAA4",beard=true},
+		start="hello",nodes={
+			hello={text="A homestead is only as good as its joinery. Raise a workbench on your terrace and I'll register it.",options={
+				{label="Show me construction plans",atlas="Construction"},
+				{label="Open the workbench",atlas="Workbench"},
+				{label="Take me home",verb="recall",item="Home"},
+				farewell}},
+		}},
+	Grovekeeper={name="Old Tamsin",title="Grove-keeper of Windpine",region="Windpine",portrait="🌲",
+		look={skin="E0AC69",shirt="3E6B3A",pants="4B3A26",shoes="3A2A1A",accent="9BD77E",hair="E0E0E0",hat="hood",held="staff",cape="2F5233"},
+		start="hello",nodes={
+			hello={text="Hush… the windpines whisper. They tell me you are seeking something.",options={
+				{label="What should I do next?",tip="quest"},
+				{label="Where are the windpines?",waypoint={"gather:WindpineLog","region:Windpine"}},
+				{label="Lead me back to the Skyway",waypoint={"warpReturn","region:Hub"}},
+				farewell}},
+		}},
+	Deepwarden={name="Ferrin Lanternhand",title="Deepwarden of Gloomhollow",region="Gloomhollow",portrait="🏮",
+		look={skin="8D5524",shirt="37474F",pants="263238",shoes="1C1C1C",accent="FFD166",hair="3E2723",hat="minerhelm",held="pickaxe",beard=true},
+		start="hello",nodes={
+			hello={text="Keep your lantern lit down here. The Gloomfangs hate the light — and they hate visitors more.",options={
+				{label="Where's the voidstone?",waypoint={"gather:Voidstone","region:Gloomhollow"}},
+				{label="How is my hunt going?",tip="slayer"},
+				{label="What can I unlock next?",tip="unlock"},
+				{label="Lead me back to the Skyway",waypoint={"warpReturn","region:Hub"}},
+				farewell}},
+		}},
+}
+end
+-- End Townsfolk section.
+
 return Data
