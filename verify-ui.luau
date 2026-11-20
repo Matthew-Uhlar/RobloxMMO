@@ -708,7 +708,26 @@ do
 	for _, object in ipairs(ui.scroll:GetDescendants()) do
 		if object.ClassName == "ViewportFrame" then views += 1 end
 	end
-	assert(views > 0 and views <= 10, "compact layout draws at most 10 live thumbnails, drew " .. views)
+	assert(views > 0 and views <= 14 + 2, "compact layout draws at most 14 item + 2 decorative live thumbnails, drew " .. views)
+	-- Item icons have their own budget: decorative title art never pushes the
+	-- first item icons back to initials ("SM").
+	local function itemArt(root)
+		local drawn, initials = 0, 0
+		for _, object in ipairs(root:GetDescendants()) do
+			if object.Name == "ItemIcon" then
+				local hasView = false
+				for _, child in ipairs(object:GetChildren()) do if child.ClassName == "ViewportFrame" then hasView = true end end
+				if hasView then drawn += 1 elseif drawn < 14 then initials += 1 end
+			end
+		end
+		return drawn, initials
+	end
+	local drawn, early = itemArt(ui.scroll)
+	assert(drawn >= 14 and early == 0, "compact: the first 14 item icons all get art (drew " .. drawn .. ", initials before budget " .. early .. ")")
+	visit(ui, "Journal", "Quests")
+	visit(ui, "Satchel", "Items")
+	drawn, early = itemArt(ui.scroll)
+	assert(drawn >= 14 and early == 0, "budget resets per render: item art after revisiting (" .. drawn .. ")")
 	local wide = run({ size = roblox.Vector2.new(760, 690) })
 	press(find(wide.gui, "AtlasButton"))
 	visit(wide, "Satchel", "Items")
@@ -716,8 +735,8 @@ do
 	for _, object in ipairs(wide.scroll:GetDescendants()) do
 		if object.ClassName == "ViewportFrame" then wideViews += 1 end
 	end
-	assert(wideViews > views and wideViews <= 24, "desktop keeps the larger budget, drew " .. wideViews)
-	checks += 2
+	assert(wideViews > views and wideViews <= 24 + 6, "desktop keeps the larger budget, drew " .. wideViews)
+	checks += 4
 end
 -- 5. Targeted flows: equip, enchant, sell confirmation, slayer begin/abandon.
 do
@@ -1368,4 +1387,197 @@ do
 	expect(not gui.Enabled, "unknown mode ignored")
 end
 print("Island builder UI: " .. (checks - islandChecks) .. " checks.")
+
+-- 12. One HUD, no collisions: every HUD-producing client script (atlas, combat,
+-- Wayfinder, townsfolk dialogue/tracker, island builder) loaded together at
+-- phone-compact, phone and desktop sizes. Pairwise, nothing overlaps: atlas guild
+-- badge, minimap, combat target and boss panels, event banner, tutorial tracker,
+-- Wayfinder toast, action bar and Attack button; builder controls while building
+-- (Attack hides); the dialogue box while talking (with 3+ options, clamped on
+-- screen, the tracker tucked away).
+local hudChecks = checks
+do
+	local H = require("./tools/ui-harness")
+	local function signal()
+		local handlers = {}
+		return {
+			Connect = function(_, fn) table.insert(handlers, fn); return { Disconnect = function() end } end,
+			Once = function(self, fn) return self:Connect(fn) end,
+			Fire = function(_, ...) for _, fn in ipairs(table.clone(handlers)) do fn(...) end end,
+		}
+	end
+	local function baseTask()
+		return {
+			spawn = function(fn, ...) local co = coroutine.create(fn); local ok, problem = coroutine.resume(co, ...); assert(ok, problem); return co end,
+			delay = function() end, defer = function(fn, ...) fn(...) end, wait = function() return coroutine.yield() end,
+		}
+	end
+	-- nav.client.lua / npc.client.lua for an existing player (harness instances).
+	local function runClient(path, size, player, extra)
+		local replicated = H.new("ReplicatedStorage")
+		H.new("ModuleScript", { Name = "AetherData" }).Parent = replicated
+		local action = H.new("RemoteFunction", { Name = "IsleAction" })
+		action.OnInvoke = function() return H.snapshot() end
+		action.Parent = replicated
+		H.new("RemoteEvent", { Name = "IsleUpdate" }).Parent = replicated
+		local camera = H.new("Camera", { ViewportSize = size })
+		local workspace = {
+			CurrentCamera = camera, DescendantAdded = signal(), DescendantRemoving = signal(), ChildAdded = signal(), ChildRemoved = signal(),
+			GetDescendants = function() return {} end, FindFirstChild = function() return nil end,
+			GetAttribute = function() return nil end, GetAttributeChangedSignal = function() return signal() end,
+			WaitForChild = function(_, name)
+				if name == "Townsfolk" then return { ChildAdded = signal(), ChildRemoved = signal(), GetChildren = function() return {} end } end
+				return nil
+			end,
+		}
+		local services = {
+			Players = H.new("Players", { LocalPlayer = player }), ReplicatedStorage = replicated, RunService = H.new("RunService"),
+			UserInputService = H.new("UserInputService", { TouchEnabled = true }), TweenService = H.new("TweenService"),
+			ProximityPromptService = { PromptTriggered = (extra and extra.promptTriggered) or signal() },
+		}
+		local game = H.new("DataModel")
+		function game.GetService(_, name) return assert(services[name], name) end
+		local env = {
+			game = game, workspace = workspace, Enum = roblox.Enum, UDim = roblox.UDim, UDim2 = roblox.UDim2, Vector2 = roblox.Vector2,
+			Vector3 = roblox.Vector3, CFrame = roblox.CFrame, Color3 = roblox.Color3, ColorSequence = roblox.ColorSequence,
+			ColorSequenceKeypoint = roblox.ColorSequenceKeypoint, NumberSequence = roblox.NumberSequence, NumberSequenceKeypoint = roblox.NumberSequenceKeypoint,
+			TweenInfo = { new = function() return {} end },
+			Instance = { new = function(class)
+				local object = H.new(class)
+				if class == "BindableEvent" then object.Event = signal() end
+				return object
+			end },
+			require = function() return H.Data end, task = baseTask(),
+		}
+		local chunk = luau.load(fs.readFile(path), { debugName = path, environment = env, injectGlobals = true })
+		local co = coroutine.create(chunk)
+		local ok, problem = coroutine.resume(co)
+		assert(ok, problem)
+	end
+	-- Absolute rectangle of a GuiObject (ScreenGuis all keep the topbar inset, so
+	-- they share one coordinate space).
+	local function rectOf(object, size)
+		local chain = {}
+		local node = object
+		while node and node.ClassName ~= "ScreenGui" do table.insert(chain, 1, node); node = node.Parent end
+		local x, y, w, h = 0, 0, size.X, size.Y
+		for _, item in ipairs(chain) do
+			local s, p, a = item.Size, item.Position, item.AnchorPoint or roblox.Vector2.zero
+			local cw, ch = s.X.Scale * w + s.X.Offset, s.Y.Scale * h + s.Y.Offset
+			local limit = item:FindFirstChildOfClass("UISizeConstraint")
+			if limit then cw, ch = math.min(cw, limit.MaxSize.X), math.min(ch, limit.MaxSize.Y) end
+			x, y = x + p.X.Scale * w + p.X.Offset - a.X * cw, y + p.Y.Scale * h + p.Y.Offset - a.Y * ch
+			w, h = cw, ch
+		end
+		return { x = x, y = y, w = w, h = h }
+	end
+	local function overlaps(a, b)
+		return a.x < b.x + b.w and b.x < a.x + a.w and a.y < b.y + b.h and b.y < a.y + a.h
+	end
+	local function show(r) return string.format("(%d,%d %dx%d)", r.x, r.y, r.w, r.h) end
+	local function noOverlap(items, tag)
+		for i = 1, #items do
+			local a = items[i]
+			assert(a[2].x >= 0 and a[2].y >= 0 and a[2].x + a[2].w <= tag.size.X + 0.5 and a[2].y + a[2].h <= tag.size.Y + 0.5,
+				a[1] .. " stays on screen at " .. tag.name .. " " .. show(a[2]))
+			checks += 1
+			for j = i + 1, #items do
+				local b = items[j]
+				assert(not overlaps(a[2], b[2]), a[1] .. " " .. show(a[2]) .. " overlaps " .. b[1] .. " " .. show(b[2]) .. " at " .. tag.name)
+				checks += 1
+			end
+		end
+	end
+	for _, size in ipairs({ roblox.Vector2.new(730, 303), roblox.Vector2.new(844, 390), roblox.Vector2.new(1366, 768) }) do
+		local tag = { size = size, name = size.X .. "x" .. size.Y }
+		local ui = H.runAtlas(size)
+		local player, playerGui = ui.player, ui.playerGui
+		local combat = H.runCombat(size, player)
+		runClient("nav.client.lua", size, player)
+		local prompts = signal()
+		runClient("npc.client.lua", size, player, { promptTriggered = prompts })
+		local builder = H.runBuilder(size, player)
+		local atlas = playerGui:FindFirstChild("AetherAtlas")
+		local wayfinder = playerGui:FindFirstChild("Wayfinder")
+		local townsfolk = playerGui:FindFirstChild("TownsfolkDialogue")
+		local hud = combat.hud
+		local function rect(object) assert(object, "HUD element exists at " .. tag.name); return rectOf(object, size) end
+		local banner
+		for _, child in ipairs(hud:GetChildren()) do if child.ClassName == "TextLabel" then banner = child end end
+		local panel = hud:FindFirstChild("Target")
+		local targetRect = rect(panel)
+		-- The boss panel (wider) through the owner scan.
+		local monster = combat.monster
+		monster:SetAttribute("Health", 50); monster:SetAttribute("MaxHealth", 100)
+		monster:SetAttribute("Boss", true); monster:SetAttribute("OwnerUserId", player.UserId)
+		table.insert(combat.tagged, monster)
+		combat.run.RenderStepped:Fire()
+		assert(panel.Visible, "boss panel shows at " .. tag.name)
+		local bossRect = rect(panel)
+		local tracker = townsfolk:FindFirstChild("TutorialTracker")
+		tracker.Visible = true -- measured whether or not this snapshot's tutorial is finished
+		local attack = hud:FindFirstChild("AttackButton")
+		local persistent = {
+			{ "atlas badge", rect(atlas:FindFirstChild("GuildBadge")) },
+			{ "minimap", rect(wayfinder:FindFirstChild("Minimap")) },
+			{ "action bar", rect(atlas:FindFirstChild("ActionBar")) },
+		}
+		local explore = table.clone(persistent)
+		for _, item in ipairs({ { "event banner", rect(banner) }, { "tutorial tracker", rect(tracker) },
+			{ "wayfinder toast", rect(wayfinder:FindFirstChild("WayfinderToast")) }, { "attack button", rect(attack) } }) do
+			table.insert(explore, item)
+		end
+		noOverlap(table.move({ { "target panel", targetRect } }, 1, 1, #explore + 1, table.clone(explore)), tag)
+		noOverlap(table.move({ { "boss panel", bossRect } }, 1, 1, #explore + 1, table.clone(explore)), tag)
+		-- Building: the builder owns the bottom; Attack steps aside.
+		assert(attack.Visible, "Attack shows outside the builder at " .. tag.name)
+		builder.enter("place", "StonePath")
+		local bar = playerGui:FindFirstChild("IslandBuilder")
+		assert(bar.Enabled and not attack.Visible, "Attack hides while the island builder runs at " .. tag.name)
+		local building = {}
+		for _, item in ipairs(explore) do if item[1] ~= "attack button" then table.insert(building, item) end end
+		table.insert(building, { "builder controls", rect(bar:FindFirstChild("BuildBar")) })
+		table.insert(building, { "boss panel", bossRect })
+		noOverlap(building, tag)
+		player:SetAttribute("IslandBuilding", nil)
+		assert(attack.Visible, "Attack returns after building at " .. tag.name)
+		-- Talking: Pell's opening node has 4+ options.
+		local promptDouble = { GetAttribute = function(_, key) return if key == "TownsfolkRole" then "Guide" else nil end,
+			FindFirstAncestorOfClass = function() return nil end }
+		prompts:Fire(promptDouble, player)
+		local dialogue = townsfolk:FindFirstChild("Dialogue")
+		local options = dialogue:FindFirstChild("Options")
+		local buttons = 0
+		for _, child in ipairs(options:GetChildren()) do if child.ClassName == "TextButton" then buttons += 1 end end
+		assert(dialogue.Visible and buttons >= 3, "dialogue open with " .. buttons .. " options at " .. tag.name)
+		assert(not tracker.Visible, "tutorial tracker tucks away while talking at " .. tag.name)
+		local boxRect = rect(dialogue)
+		local talking = table.clone(persistent)
+		table.insert(talking, { "attack button", rect(attack) })
+		table.insert(talking, { "dialogue box", boxRect })
+		noOverlap(talking, tag)
+		-- Portrait, name and close button inside the box; options scroll in what is left.
+		for _, name in ipairs({ "Portrait" }) do
+			local r = rect(dialogue:FindFirstChild(name))
+			assert(r.y >= boxRect.y and r.y + r.h <= boxRect.y + boxRect.h, name .. " inside the dialogue at " .. tag.name)
+		end
+		local closeRect
+		for _, child in ipairs(dialogue:GetChildren()) do if child.ClassName == "TextButton" and child.Text == "✕" then closeRect = rect(child) end end
+		assert(closeRect and closeRect.y >= boxRect.y and closeRect.x + closeRect.w <= boxRect.x + boxRect.w and closeRect.y >= 0, "close button reachable at " .. tag.name)
+		local optionsRect = rect(options)
+		assert(optionsRect.h >= 36 and optionsRect.y + optionsRect.h <= boxRect.y + boxRect.h + 0.5, "options area holds a row and scrolls at " .. tag.name .. " " .. show(optionsRect))
+		assert(options.ClassName == "ScrollingFrame", "options scroll")
+		-- Navigate list: clamped above the action bar.
+		local navigate = wayfinder:FindFirstChild("Navigate")
+		local go
+		for _, child in ipairs(wayfinder:FindFirstChild("Minimap"):FindFirstChild("Controls"):GetChildren()) do if child.Text == "Go" then go = child end end
+		go.Activated:Fire()
+		local listRect = rect(navigate)
+		assert(navigate.Visible and listRect.y >= 0 and listRect.y + listRect.h <= size.Y - 40 and listRect.h >= 120,
+			"navigate list fits above the action bar at " .. tag.name .. " " .. show(listRect))
+		assert(not overlaps(listRect, rect(wayfinder:FindFirstChild("Minimap"))), "navigate list clears the minimap at " .. tag.name)
+		checks += 12
+	end
+end
+print("HUD overlap: " .. (checks - hudChecks) .. " checks.")
 print("UI QA passed " .. checks .. " checks (" .. created .. " mock instances).")

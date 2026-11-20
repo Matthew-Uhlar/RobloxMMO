@@ -41,26 +41,33 @@ local function shade(object, bottom)
 	make("UIGradient", object, {Name="Sheen", Rotation=90, Color=ColorSequence.new(WHITE, Color3.new(bottom, bottom, bottom))})
 end
 local gui = make("ScreenGui", player:WaitForChild("PlayerGui"), {Name="IslandBuilder", ResetOnSpawn=false, Enabled=false, DisplayOrder=4})
--- Sits above the atlas action bar (bottom 40px) so health stays readable.
+-- Sits above the atlas action bar (bottom 40px) so health stays readable. Short
+-- screens (phone landscape, under 360 px) get an 84 px bar so it stays below the
+-- tutorial tracker, the top lane and the minimap (see combat.client.lua's HUD map).
+local camera = workspace.CurrentCamera
+local short = camera ~= nil and camera.ViewportSize.Y > 0 and camera.ViewportSize.Y < 360
+local BAR_H = if short then 84 else 112
 local bar = make("Frame", gui, {Name="BuildBar", AnchorPoint=Vector2.new(.5, 1), Position=UDim2.new(.5, 0, 1, -48),
-	Size=UDim2.new(.94, 0, 0, 112), BackgroundColor3=DEEP, BackgroundTransparency=.04, BorderSizePixel=0})
-make("UISizeConstraint", bar, {MaxSize=Vector2.new(480, 112)})
+	Size=UDim2.new(.94, 0, 0, BAR_H), BackgroundColor3=DEEP, BackgroundTransparency=.04, BorderSizePixel=0})
+make("UISizeConstraint", bar, {MaxSize=Vector2.new(480, BAR_H)})
 make("UICorner", bar, {CornerRadius=UDim.new(0, 14)})
 local rim = make("UIStroke", bar, {Color=BRASS, Transparency=.05, Thickness=1.5})
 make("UIGradient", rim, {Rotation=90, Color=ColorSequence.new(WHITE, Color3.new(.5, .5, .5))})
 shade(bar, .72)
-local medal = make("Frame", bar, {Name="Medal", Position=UDim2.fromOffset(12, 10), Size=UDim2.fromOffset(38, 38), BackgroundColor3=C("2A4D5E"), BorderSizePixel=0})
+local medalSize = if short then 30 else 38
+local medal = make("Frame", bar, {Name="Medal", Position=UDim2.fromOffset(12, if short then 6 else 10), Size=UDim2.fromOffset(medalSize, medalSize), BackgroundColor3=C("2A4D5E"), BorderSizePixel=0})
 make("UICorner", medal, {CornerRadius=UDim.new(1, 0)})
 make("UIStroke", medal, {Color=GOLD, Thickness=1.5})
 shade(medal, .5)
 for _, angle in ipairs({0, 90}) do
 	make("Frame", medal, {AnchorPoint=Vector2.new(.5, .5), Position=UDim2.fromScale(.5, .5), Size=UDim2.fromScale(.12, .56), Rotation=angle, BackgroundColor3=GOLD, BorderSizePixel=0})
 end
-local title = make("TextLabel", bar, {Name="PropName", BackgroundTransparency=1, Position=UDim2.fromOffset(60, 9), Size=UDim2.new(1, -74, 0, 22),
+local textX = if short then 52 else 60
+local title = make("TextLabel", bar, {Name="PropName", BackgroundTransparency=1, Position=UDim2.fromOffset(textX, if short then 3 else 9), Size=UDim2.new(1, -textX - 14, 0, 22),
 	Font=Enum.Font.BuilderSansExtraBold, TextSize=17, TextColor3=IVORY, TextXAlignment=Enum.TextXAlignment.Left, TextTruncate=Enum.TextTruncate.AtEnd, Text=""})
-local dot = make("Frame", bar, {Name="StatusDot", Position=UDim2.fromOffset(60, 36), Size=UDim2.fromOffset(8, 8), BackgroundColor3=GOOD, BorderSizePixel=0})
+local dot = make("Frame", bar, {Name="StatusDot", Position=UDim2.fromOffset(textX, if short then 27 else 36), Size=UDim2.fromOffset(8, 8), BackgroundColor3=GOOD, BorderSizePixel=0})
 make("UICorner", dot, {CornerRadius=UDim.new(1, 0)})
-local status = make("TextLabel", bar, {Name="Status", BackgroundTransparency=1, Position=UDim2.fromOffset(74, 30), Size=UDim2.new(1, -88, 0, 20),
+local status = make("TextLabel", bar, {Name="Status", BackgroundTransparency=1, Position=UDim2.fromOffset(textX + 14, if short then 21 else 30), Size=UDim2.new(1, -textX - 28, 0, 20),
 	Font=Enum.Font.BuilderSansMedium, TextSize=13, TextColor3=MUTED, TextXAlignment=Enum.TextXAlignment.Left, TextTruncate=Enum.TextTruncate.AtEnd, Text=""})
 status:GetPropertyChangedSignal("TextColor3"):Connect(function() dot.BackgroundColor3 = status.TextColor3 end)
 local buttons = {}
@@ -68,14 +75,14 @@ for i, spec in ipairs({{"RotateButton", "Rotate  (R)"}, {"ConfirmButton", "Place
 	local primary = i == 2
 	local b = make("TextButton", bar, {Name=spec[1], Text=spec[2], AutoButtonColor=true, Font=Enum.Font.BuilderSansExtraBold, TextSize=14,
 		TextColor3=primary and ON_GOLD or IVORY, BackgroundColor3=primary and GOLD or SLATE, BorderSizePixel=0, Selectable=true,
-		Position=UDim2.new((i - 1) / 3, if i == 1 then 12 else 4, 1, -52), Size=UDim2.new(1 / 3, -14, 0, 40)})
+		Position=UDim2.new((i - 1) / 3, if i == 1 then 12 else 4, 1, if short then -44 else -52), Size=UDim2.new(1 / 3, -14, 0, if short then 36 else 40)})
 	make("UICorner", b, {CornerRadius=UDim.new(0, 10)})
 	local edge = make("UIStroke", b, {Color=primary and C("FFE7A8") or RIM, Thickness=1})
 	make("UIGradient", edge, {Rotation=90, Color=ColorSequence.new(WHITE, Color3.new(.42, .42, .42))})
 	shade(b, .8)
 	buttons[spec[1]] = b
 end
-make("Frame", bar, {Name="Rule", Position=UDim2.new(0, 12, 1, -60), Size=UDim2.new(1, -24, 0, 1), BackgroundColor3=BRASS, BackgroundTransparency=.55, BorderSizePixel=0})
+make("Frame", bar, {Name="Rule", Position=UDim2.new(0, 12, 1, if short then -49 else -60), Size=UDim2.new(1, -24, 0, 1), BackgroundColor3=BRASS, BackgroundTransparency=.55, BorderSizePixel=0})
 
 ------------------------------------------------------------------------------
 -- Grid state from replicated attributes.
@@ -212,6 +219,8 @@ function B.exit()
 	B.clearGhost()
 	B.targetModel = nil
 	gui.Enabled = false
+	-- Local-only flag other HUD scripts read (combat hides its Attack button).
+	player:SetAttribute("IslandBuilding", nil)
 end
 function B.enter(mode, propId)
 	B.exit()
@@ -224,6 +233,7 @@ function B.enter(mode, propId)
 	buttons.ConfirmButton.Text = if mode == "place" then "Place" else "Pick up"
 	buttons.RotateButton.Visible = mode == "place"
 	gui.Enabled = true
+	player:SetAttribute("IslandBuilding", true)
 	Actions:BindActionAtPriority(GAMEPAD_ACTION, B.gamepadAction, false, Enum.ContextActionPriority.High.Value + 1,
 		Enum.KeyCode.ButtonA, Enum.KeyCode.ButtonB, Enum.KeyCode.ButtonR1)
 	B.step = RunService.RenderStepped:Connect(B.update)

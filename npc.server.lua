@@ -383,6 +383,26 @@ local function homeDestination(player)
 	if typeof(center) == "Vector3" then return ground(center) end
 	return nil
 end
+-- Expedition runs (expedition.server.lua) keep their delvers in the Hollow
+-- Observatory: the core around the Eclipse Heart and the sentinel hall 110 studs
+-- behind it, with delvers dropped beyond 120 studs. A recall there would pull a
+-- delver out without leaving the run (and let them collect the clear from
+-- outside), so it is refused anywhere within reach of the heart. The heart is the
+-- arena part carrying the BossName attribute; it never moves.
+local EXPEDITION_ARENA, EXPEDITION_REACH = "The Hollow Observatory", 240
+local expeditionHeart
+local function inExpedition(root)
+	if not expeditionHeart or not expeditionHeart:IsDescendantOf(workspace) then
+		expeditionHeart = nil
+		local arena = workspace:FindFirstChild(EXPEDITION_ARENA)
+		if not arena then return false end
+		for _, part in ipairs(arena:GetDescendants()) do
+			if part:IsA("BasePart") and part:GetAttribute("BossName") ~= nil then expeditionHeart = part; break end
+		end
+		if not expeditionHeart then return false end
+	end
+	return (root.Position - expeditionHeart.Position).Magnitude <= EXPEDITION_REACH
+end
 local recall = Instance.new("BindableFunction")
 recall.Name = "IsleRecall"
 recall.OnInvoke = function(player, target)
@@ -393,6 +413,7 @@ recall.OnInvoke = function(player, target)
 	local root = character and character:FindFirstChild("HumanoidRootPart")
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 	if not root or not humanoid or humanoid.Health <= 0 then return "Return to your island first." end
+	if inExpedition(root) then return "The Observatory holds you. Finish or leave the expedition first." end
 	local destination = if target == "Hub" then hubDestination() else homeDestination(player)
 	if not destination then return "That isle isn't charted yet. Try a beacon instead." end
 	lastRecall[player] = now

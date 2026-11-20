@@ -997,6 +997,78 @@ do
 	for _,need in {"Lamp","OreVein","CropBed","Rock","CliffRock","RockOutcrop","MeadowTree","PineTree","Forge","Hearth","Cauldron","Workbench","BridgePost","Statue","Signboard","Banner","MarketStall","FishingPier","WarpBeacon"} do
 		check((shapes[need] or 0)>=1,need.." mesh slots exist")
 	end
+	-- Final mesh boxes: run MeshForge's own layout over every tagged part (no
+	-- EditableMesh needed) and check what players would see. ShapeScale is a
+	-- multiplier on an already-sized host (never an absolute size), cylinder hosts
+	-- stand their mesh up, and ShapeOwnsModel boxes cover only a small prop Model.
+	do
+		local WorldArt=luau.load(fs.readFile("art/WorldCatalog.lua"),{injectGlobals=true})()
+		local PropArt=luau.load(fs.readFile("art/PropCatalog.lua"),{injectGlobals=true})()
+		local probe={}
+		luau.load(fs.readFile("forge.client.lua"),{injectGlobals=true,environment={
+			game={GetService=function(_,name)
+				if name=="ReplicatedStorage" then return {WaitForChild=function(_,n) return n end} end
+				return {}
+			end},
+			require=function(n) return if n=="AetherWorldArt" then WorldArt elseif n=="AetherArt" then PropArt else error(n) end,
+			workspace={GetDescendants=function() return {} end,DescendantAdded={Connect=function() end}},
+			Vector3=roblox.Vector3,CFrame=roblox.CFrame,Color3=roblox.Color3,Instance=roblox.Instance,Enum=roblox.Enum,Font=roblox.Font,
+			task={spawn=function() end,defer=function() end,wait=function() end},warn=function() end,print=function() end,MeshForgeTest=probe,
+		}})()
+		local describe=probe.forge.describe
+		local UPRIGHT={tree=true,crop=true,ore=true,sign=true,lamp=true,warp=true,stall=true,station=true,statue=true}
+		local meshed,owners,upright=0,0,0
+		for _,obj in world:GetDescendants() do
+			if obj:IsA("BasePart") and obj:GetAttribute("Shape")~=nil and not obj:GetAttribute("SculptureScale") then
+				local scale=obj:GetAttribute("ShapeScale")
+				check(scale==nil or (scale>=.5 and scale<=1.5),obj.Name.." ShapeScale stays a modest multiplier ("..tostring(scale)..")")
+				if obj:GetAttribute("ShapeOwnsModel") then
+					owners+=1
+					local model=obj.Parent
+					check(model:IsA("Model") and #model:GetChildren()<=40,obj:GetFullName().." owns only its own small prop Model")
+				end
+				local d=describe(obj)
+				if d then
+					meshed+=1
+					local box,size=d.box,d.size
+					for _,axis in {"X","Y","Z"} do
+						check(size[axis]<=box[axis]*1.5+.6,obj:GetFullName().." mesh "..axis.." "..string.format("%.1f",size[axis]).." stays within 1.5x of its slot "..string.format("%.1f",box[axis]))
+					end
+					if #d.siblings==0 then
+						-- A lone host's slot is its own (upright) box.
+						local own=obj.Size
+						check(math.abs(box.X*box.Y*box.Z-own.X*own.Y*own.Z)<=1e-3*own.X*own.Y*own.Z+1e-6,obj.Name.." slot is the host's own box")
+					end
+					if UPRIGHT[d.kind] then
+						upright+=1
+						check(d.cframe.UpVector.Y>.95,obj:GetFullName().." "..d.shape.." mesh stands upright (up.Y "..string.format("%.2f",d.cframe.UpVector.Y)..")")
+						check(size.Y>=.9,obj:GetFullName().." "..d.shape.." mesh is not flattened ("..string.format("%.2f",size.Y)..")")
+						local hostTop=d.boxFrame.Position.Y+box.Y/2
+						local meshTop=d.cframe.Position.Y+size.Y/2
+						check(meshTop<=hostTop+box.Y*.5+.6,obj:GetFullName().." mesh top stays near its slot")
+					end
+					if d.kind=="tree" then
+						check(size.Y>=box.Y*.6 and size.Y>=6,obj:GetFullName().." tree mesh fills its slot height ("..string.format("%.1f/%.1f",size.Y,box.Y)..")")
+					end
+					if d.kind=="sign" and obj:FindFirstChildOfClass("SurfaceGui") then
+						-- The board frame wraps the text panel at its real size.
+						check(size.X>=obj.Size.X and size.Y>=obj.Size.Y and size.X<=obj.Size.X*1.2,obj:GetFullName().." sign frame wraps the board")
+					end
+					if obj.Name=="Keel rock" or obj.Name=="Fractured cliff" then
+						local isle=obj.Parent
+						while isle and isle:GetAttribute("IslandCenter")==nil do isle=isle.Parent end
+						if isle then
+							local cf=d.cframe
+							local meshTop=cf.Position.Y+math.abs(cf.RightVector.Y)*size.X/2+math.abs(cf.UpVector.Y)*size.Y/2+math.abs(cf.LookVector.Y)*size.Z/2
+							check(meshTop<isle:GetAttribute("IslandCenter").Y,obj:GetFullName().." cliff mesh stays under the meadow")
+						end
+					end
+				end
+			end
+		end
+		check(meshed>=300 and upright>=150 and owners>=60,"mesh boxes checked ("..meshed.." meshed, "..upright.." upright, "..owners.." model owners)")
+		print("Mesh boxes: "..meshed.." laid out, "..upright.." upright kinds, "..owners.." ShapeOwnsModel hosts.")
+	end
 	for _,model in islandsRoot:GetDescendants() do
 		if model:IsA("Model") and model.Name=="Lamp post" then
 			check(model:FindFirstChild("Bronze mast"):GetAttribute("Shape")=="Lamp","lamp posts are mesh slots")

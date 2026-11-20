@@ -582,6 +582,27 @@ traveller:SetAttribute("IslandCenter", nil)
 ok(has(recallFn.OnInvoke(traveller, "Home"), "isn't charted"), "no home, no travel")
 traveller:SetAttribute("IslandCenter", V(-500, 3, 900))
 ok(has(recallFn.OnInvoke(traveller, "Home"), "Recalled"), "home from the IslandCenter attribute (failed attempts cost no cooldown)")
+-- Expedition runs: no recall out of the Observatory (no leeching the clear from home).
+do
+	local arena = new("Model", {Name = "The Hollow Observatory"})
+	arena.Parent = workspaceDouble
+	local gatePad = new("Part", {Name = "Matchmaking pad", Position = V(0, 2, 40)}) -- arena-parented, but at the hub gate
+	gatePad.Parent = arena
+	local heart = new("Part", {Name = "Eclipse Heart", Position = V(0, 48, 1800)})
+	heart:SetAttribute("BossName", "Umbral Warden")
+	heart.Parent = arena
+	clock += T.RECALL_COOLDOWN + 1
+	local before = character:GetPivot().Position
+	root.Position = V(4, 47, 1790)
+	ok(has(recallFn.OnInvoke(traveller, "Hub"), "expedition"), "recall refused inside the Observatory core")
+	root.Position = V(10, 47, 1690)
+	ok(has(recallFn.OnInvoke(traveller, "Home"), "expedition"), "recall refused in the sentinel hall")
+	eq(character:GetPivot().Position, before, "a refused delver stays put")
+	root.Position = V(0, 5, 40)
+	ok(has(recallFn.OnInvoke(traveller, "Hub"), "Recalled"), "recall works at the gate (outside the run)")
+	arena.Parent = nil
+	root.Position = V(0, 0, 0)
+end
 -- Respawned characters are tracked again.
 local character2 = new("Model", {Name = "Wayfarer"})
 local humanoid2 = new("Humanoid", {Name = "Humanoid", Health = 100})

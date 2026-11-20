@@ -380,6 +380,85 @@ do
 	check(size.X <= 20 + 1e-3 and size.Y <= 10 + 1e-3 and size.Z <= 20 + 1e-3 and (near(size.Y, 10) or near(size.X, 20) or near(size.Z, 20)), "uniform fit stays inside the part")
 end
 
+-- Cylinder hosts (world disk(): rolled 90 degrees about Z) stand the mesh up along
+-- their axis; ShapeOwnsModel covers and hides the prop's primitive siblings.
+do
+	local owned = loadForge()
+	local model = Instance.new("Model")
+	model.Name = "Meadow tree"
+	local trunk = part(model, "Trunk", Vector3.new(6, 1.1, 1.1), CFrame.new(0, 3, 0) * CFrame.Angles(0, 0, math.pi / 2), {Shape = "MeadowTree", ShapeOwnsModel = true, ShapeFit = "Uniform"})
+	trunk.Shape = roblox.Enum.PartType.Cylinder
+	local canopy = part(model, "Canopy", Vector3.new(6.8, 6.8, 6.8), CFrame.new(0, 7.2, 0))
+	local flame = part(model, "Glow", Vector3.new(.5, .5, .5), CFrame.new(1, 5, 0))
+	flame.Material = roblox.Enum.Material.Neon
+	local lantern = part(model, "Lantern anchor", Vector3.new(1, 1, 1), CFrame.new(0, 4, 0), {Shape = "Lantern", SculptureScale = .7})
+	lantern.Transparency = 1
+	local decal = Instance.new("Decal"); decal.Parent = canopy
+	owned.add(model); owned.forge.rescan(); owned.flush()
+	local mesh = meshOf(trunk)
+	check(mesh ~= nil and mesh.CFrame.UpVector:FuzzyEq(Vector3.new(0, 1, 0), 1e-4), "cylinder host: tree mesh stands upright")
+	-- Slot box = trunk + canopy (0..10.6 tall, 6.8 wide); uniform keeps the tree's proportions on the floor.
+	local bottom = mesh.CFrame.Position.Y - mesh.Size.Y / 2
+	check(mesh.Size.Y > 8 and mesh.Size.Y <= 10.6 + 1e-3 and mesh.Size.X <= 6.8 + 1e-3, "owned slot covers trunk and canopy: " .. tostring(mesh.Size))
+	local data = World.shapes.MeadowTree
+	local lo = math.huge
+	for _, v in ipairs(data.vertices) do lo = math.min(lo, v[2]) end
+	check(near(bottom, 0, .05), "uniform fit stands on the slot floor (" .. bottom .. ")")
+	check(ltm(canopy) == 1 and ltm(decal) == 1, "owned sibling (and its decal) hidden locally")
+	check(ltm(flame) == 0, "neon accents stay visible over the mesh")
+	check(ltm(lantern) == 0 and lantern:GetAttribute("ShapeSkipped") == "legacy sculpture", "siblings with their own Shape are left alone")
+	check(canopy.Transparency == 0, "siblings hidden only locally")
+	owned.moveTo(Vector3.new(5000, 0, 0))
+	check(meshOf(trunk) == nil and ltm(canopy) == 0 and ltm(decal) == 0 and ltm(trunk) == 0, "release restores the owned siblings")
+	-- Without ShapeOwnsModel the mesh fills the host alone (and siblings stay).
+	local lone = loadForge()
+	local disk = part(nil, "Ore seam", Vector3.new(.8, 5, 5), CFrame.new(0, .4, 0) * CFrame.Angles(0, 0, math.pi / 2), {Shape = "OreVein2"})
+	disk.Shape = roblox.Enum.PartType.Cylinder
+	lone.add(disk)
+	check(nearV(meshOf(disk).Size, Vector3.new(5, .8, 5)) and meshOf(disk).CFrame.UpVector.Y > .999, "cylinder slot is (diameter, length, diameter), upright")
+	-- Owning a big model (an island) is refused: only small prop Models are covered.
+	local big = loadForge()
+	local isle = Instance.new("Model")
+	for i = 1, 45 do part(isle, "Filler " .. i, Vector3.new(1, 1, 1), CFrame.new(i, 0, 0)) end
+	local host = part(isle, "Host", Vector3.new(2, 2, 2), CFrame.new(), {Shape = "Boulder", ShapeOwnsModel = true})
+	big.add(isle); big.forge.rescan(); big.flush()
+	check(nearV(meshOf(host).Size, Vector3.new(2, 2, 2)) and ltm(isle:FindFirstChild("Filler 1")) == 0, "large Models are never hidden by an owner")
+end
+
+-- Budget skips back off exponentially; a release lets them retry at once.
+do
+	local clock = 0
+	local backed = loadForge(nil, nil, function(env)
+		env.os = {clock = function() return clock end}
+	end)
+	backed.forge.limits.instances = 1
+	local a = part(nil, "A", Vector3.new(3, 3, 3), CFrame.new(), {Shape = "Boulder"}); backed.add(a)
+	local b = part(nil, "B", Vector3.new(3, 3, 3), CFrame.new(5, 0, 0), {Shape = "Boulder"}); backed.add(b)
+	check(b:GetAttribute("ShapeSkipped") == "budget" and backed.forge.backoff[b].delay == 2, "first budget skip waits 2 s")
+	clock = 1; backed.forge.step()
+	check(backed.forge.backoff[b].delay == 2, "no retry while backing off")
+	clock = 3; backed.forge.step()
+	check(backed.forge.backoff[b].delay == 4, "retry doubles the wait")
+	clock = 8; backed.forge.step(); clock = 17; backed.forge.step()
+	check(backed.forge.backoff[b].delay == 16, "backoff keeps doubling: " .. backed.forge.backoff[b].delay)
+	a.Parent = nil; backed.forge.step()
+	check(b:GetAttribute("ShapeDone") == true and backed.forge.backoff[b] == nil, "freed budget retries backed-off parts at once")
+end
+
+-- Phones: smaller limits and radius; discovery is signal-driven (no periodic rescan).
+do
+	local phone = loadForge(nil, nil, function(env)
+		local services = env.game
+		env.game = {GetService = function(self, name)
+			if name == "UserInputService" then return {TouchEnabled = true, KeyboardEnabled = false} end
+			return services.GetService(self, name)
+		end}
+	end)
+	check(phone.forge.mobile and phone.forge.limits.placedTriangles <= 150000 and phone.forge.radii.build <= 250 and phone.forge.limits.templates <= 24, "touch devices get mobile forge limits")
+	check(not ok.forge.mobile and ok.forge.radii.build == 400, "desktop keeps full limits")
+	check(not MeshForgeSource:find("rescan%(%)%s*end") and not MeshForgeSource:find("elapsed >= 20", 1, true), "no periodic GetDescendants rescan")
+end
+
 -- Distance streaming: build near the player, release (and restore the primitive) far away.
 do
 	local streamed = loadForge()

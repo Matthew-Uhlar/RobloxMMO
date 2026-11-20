@@ -172,13 +172,37 @@ Input.InputBegan:Connect(function(input, processed)
 	if input.KeyCode == Enum.KeyCode.M then setMapOpen(not mapOpen) end
 end)
 
-local toast = make("TextLabel", gui, {AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 120), Size = UDim2.fromOffset(380, 34),
-	BackgroundColor3 = deep, BackgroundTransparency = 0.1, TextColor3 = gold, Font = bold, TextSize = 14, TextWrapped = true, Visible = false, Text = ""})
+-- The toast takes the third row of the top lane between the atlas badge and the
+-- minimap (shared HUD map in combat.client.lua): y 118-158, x 325..W-SIZE-20.
+local function screenSize()
+	local size = gui.AbsoluteSize
+	if size and size.X > 0 and size.Y > 0 then return size end
+	return if camera then camera.ViewportSize else Vector2.new(1280, 720)
+end
+local TOAST_WIDTH, TOAST_TOP, TOAST_HEIGHT = 380, 118, 40
+local toast = make("TextLabel", gui, {Name = "WayfinderToast", AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, TOAST_TOP),
+	Size = UDim2.fromOffset(TOAST_WIDTH, TOAST_HEIGHT), BackgroundColor3 = deep, BackgroundTransparency = 0.1, TextColor3 = gold, Font = bold, TextSize = 14,
+	TextWrapped = true, Visible = false, Text = ""})
 round(toast, 9, gold)
+make("UIPadding", toast, {PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8)})
+local function placeToast()
+	local width = screenSize().X
+	local left, right = 325, width - 10 - SIZE - 10
+	if width / 2 - TOAST_WIDTH / 2 >= left and width / 2 + TOAST_WIDTH / 2 <= right then
+		toast.AnchorPoint = Vector2.new(0.5, 0)
+		toast.Position, toast.Size = UDim2.new(0.5, 0, 0, TOAST_TOP), UDim2.fromOffset(TOAST_WIDTH, TOAST_HEIGHT)
+	else
+		local w = math.max(200, math.min(TOAST_WIDTH, right - left))
+		toast.AnchorPoint = Vector2.new(0, 0)
+		toast.Position, toast.Size = UDim2.new(0, left + math.floor((right - left - w) / 2), 0, TOAST_TOP), UDim2.fromOffset(w, TOAST_HEIGHT)
+	end
+end
+placeToast()
 local toastSeq = 0
 local function notify(text)
 	toastSeq += 1
 	local mine = toastSeq
+	placeToast()
 	toast.Text, toast.Visible = text, true
 	task.delay(3.5, function() if toastSeq == mine then toast.Visible = false end end)
 end
@@ -262,6 +286,20 @@ end)
 ------------------------------------------------------------------------------
 local list = make("Frame", gui, {Name = "Navigate", AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -10, 0, SIZE + 46),
 	Size = UDim2.fromOffset(240, 300), BackgroundColor3 = ink, Visible = false, BorderSizePixel = 0})
+-- Below the minimap when there is room; on short screens (phone landscape) it
+-- opens beside the minimap from the top instead. Never past the action bar.
+local LIST_FLOOR = 48 -- the atlas action bar (bottom 40) plus a gap
+local function placeList()
+	local height = screenSize().Y
+	local below = SIZE + 46
+	if height - below - LIST_FLOOR >= 200 then
+		list.Position = UDim2.new(1, -10, 0, below)
+		list.Size = UDim2.fromOffset(240, math.min(300, height - below - LIST_FLOOR))
+	else
+		list.Position = UDim2.new(1, -(10 + SIZE + 10), 0, 8)
+		list.Size = UDim2.fromOffset(240, math.max(120, math.min(300, height - 8 - LIST_FLOOR)))
+	end
+end
 make("UISizeConstraint", list, {MaxSize = Vector2.new(260, 380)})
 round(list, 12, gold)
 make("TextLabel", list, {Position = UDim2.fromOffset(12, 6), Size = UDim2.new(1, -50, 0, 24), BackgroundTransparency = 1, Text = "NAVIGATE", Font = bold,
@@ -294,6 +332,7 @@ local function entry(text, order, onClick, dim)
 end
 navigatePanel = function()
 	if list.Visible then list.Visible = false; return end
+	placeList()
 	for _, c in ipairs(scroll:GetChildren()) do if c:IsA("GuiObject") then c:Destroy() end end
 	local index = buildIndex()
 	local order = 0

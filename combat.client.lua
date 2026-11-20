@@ -116,35 +116,53 @@ for _, x in ipairs({0, 1}) do
 		Rotation = 45, BackgroundColor3 = gold, BorderSizePixel = 0})
 	make("UIStroke", gem, {Color = brassDark, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border})
 end
--- Layout: the atlas HUD (ui.client.lua, DisplayOrder 8) owns the top-left corner,
--- x 10-315 and y 8-96. On wide screens the target panel and banner sit top-centre
--- as before; on narrow ones (phone landscape 730x303) the panel moves top-right
--- and the banner below the HUD; on very narrow ones both stack below the HUD.
-local HUD_RIGHT, HUD_BOTTOM, EDGE = 325, 104, 10
+-- Layout (shared HUD map, kept in step with nav.client.lua and npc.client.lua):
+--   atlas guild badge (ui.client.lua)  top-left      x 10-315, y 8-92
+--   tutorial tracker (npc.client.lua)  left column   x 10-260, y 100-166
+--   Wayfinder minimap (nav.client.lua) top-right     SIZE 118 (viewport < 520 tall) or 156,
+--                                                    x W-10-SIZE..W-10, y 8..SIZE+42
+--   top lane between them (x 325..W-SIZE-20): target/boss panel y 10-68,
+--   event banner y 76-110, Wayfinder toast y 118-158.
+-- Items centre on the screen when they fit the lane, else centre in the lane
+-- (shrunk to it). Screens whose lane is under 220 px stack below the tracker.
+local HUD_RIGHT, EDGE, BELOW_HUD = 325, 10, 174
+local function laneFor(width)
+	local camera = Workspace.CurrentCamera
+	local viewport = camera and camera.ViewportSize
+	local height = if viewport and viewport.Y > 0 then viewport.Y else (gui.AbsoluteSize and gui.AbsoluteSize.Y or 720)
+	local mapSize = if height < 520 then 118 else 156
+	return HUD_RIGHT, width - EDGE - mapSize - EDGE
+end
+local function placeInLane(object, wanted, top, height, width)
+	local left, right = laneFor(width)
+	local w = wanted
+	if width / 2 - w / 2 >= left and width / 2 + w / 2 <= right then
+		object.AnchorPoint, object.Position = Vector2.new(0.5, 0), UDim2.new(0.5, 0, 0, top)
+	elseif right - left >= 220 then
+		w = math.min(w, right - left)
+		object.AnchorPoint, object.Position = Vector2.new(0, 0), UDim2.new(0, left + math.floor((right - left - w) / 2), 0, top)
+	else
+		return false
+	end
+	object.Size = UDim2.fromOffset(w, height)
+	return true
+end
 local layoutKey
 local function layoutHud(isBoss)
 	local view = gui.AbsoluteSize
 	local width = if view and view.X > 0 then view.X else 1280
-	local key = width .. (if isBoss then "b" else "n")
+	local key = width .. "x" .. (if view then view.Y else 0) .. (if isBoss then "b" else "n")
 	if key == layoutKey then return end
 	layoutKey = key
 	local panelWidth = if isBoss then 380 else 300
-	local panelTop
-	if width / 2 - panelWidth / 2 >= HUD_RIGHT then
-		panel.AnchorPoint, panel.Position, panelTop = Vector2.new(0.5, 0), UDim2.new(0.5, 0, 0, EDGE), EDGE
-	elseif width - EDGE - HUD_RIGHT >= 220 then
-		panelWidth = math.min(panelWidth, width - EDGE - HUD_RIGHT)
-		panel.AnchorPoint, panel.Position, panelTop = Vector2.new(1, 0), UDim2.new(1, -EDGE, 0, EDGE), EDGE
-	else
-		panelWidth = math.min(panelWidth, width - 2 * EDGE)
-		panel.AnchorPoint, panel.Position, panelTop = Vector2.new(0.5, 0), UDim2.new(0.5, 0, 0, HUD_BOTTOM), HUD_BOTTOM
+	if not placeInLane(panel, panelWidth, EDGE, PANEL_HEIGHT, width) or not placeInLane(banner, 460, 76, 34, width) then
+		-- Very narrow: stack in the left column under the tutorial tracker.
+		local _, right = laneFor(width)
+		local w = math.max(160, math.min(panelWidth, right - EDGE))
+		panel.AnchorPoint, panel.Position, panel.Size = Vector2.new(0, 0), UDim2.fromOffset(EDGE, BELOW_HUD), UDim2.fromOffset(w, PANEL_HEIGHT)
+		banner.AnchorPoint, banner.Position = Vector2.new(0, 0), UDim2.fromOffset(EDGE, BELOW_HUD + PANEL_HEIGHT + 8)
+		banner.Size = UDim2.fromOffset(math.max(160, math.min(460, right - EDGE)), 34)
 	end
-	panel.Size = UDim2.fromOffset(panelWidth, PANEL_HEIGHT)
-	local bannerWidth = math.min(460, width - 2 * EDGE)
-	local bannerTop = panelTop + PANEL_HEIGHT + 8
-	if width / 2 - bannerWidth / 2 < HUD_RIGHT then bannerTop = math.max(bannerTop, HUD_BOTTOM) end
-	banner.Size = UDim2.fromOffset(bannerWidth, 34)
-	banner.Position = UDim2.new(0.5, 0, 0, bannerTop)
 end
 layoutHud(false)
 gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
@@ -177,6 +195,13 @@ local function ensureAttackButton()
 		BackgroundTransparency = 1, Font = heavy, TextSize = 11, TextColor3 = ivory, Text = "ATTACK"})
 end
 ensureAttackButton()
+-- The island builder (build.client.lua) owns the bottom of the screen while it
+-- runs (local IslandBuilding attribute): hide Attack so it never covers Done.
+local function syncAttackButton()
+	if attackButton then attackButton.Visible = player:GetAttribute("IslandBuilding") ~= true end
+end
+player:GetAttributeChangedSignal("IslandBuilding"):Connect(syncAttackButton)
+syncAttackButton()
 
 ------------------------------------------------------------------------------
 -- Targeting

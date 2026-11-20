@@ -449,13 +449,15 @@ end
 -- team ships them), pooled ViewportFrames and a cheap glyph fallback.
 ------------------------------------------------------------------------------
 -- Each thumbnail is a per-triangle WedgePart model inside a ViewportFrame, so phone
--- (compact) layouts get a much smaller live/pooled budget.
+-- (compact) layouts get a smaller live/pooled budget. Item icons have their own
+-- budget; decorative art (card titles, charts) draws from a small separate share,
+-- so page art can never spend the budget item icons need and push them to initials.
 -- (Kept in one table: this chunk is close to Luau's 200 top-level local limit.)
 local TEMPLATE_LIMIT = 64
-local THUMBS = { budget = 24, pool = 48, compactBudget = 10, compactPool = 20, compact = false }
+local THUMBS = { budget = 24, pool = 48, decor = 6, compactBudget = 14, compactPool = 28, compactDecor = 2, compact = false, decorUsed = 0 }
 function THUMBS.limits()
-	if THUMBS.compact then return THUMBS.compactBudget, THUMBS.compactPool end
-	return THUMBS.budget, THUMBS.pool
+	if THUMBS.compact then return THUMBS.compactBudget, THUMBS.compactPool, THUMBS.compactDecor end
+	return THUMBS.budget, THUMBS.pool, THUMBS.decor
 end
 local artTemplates={}
 local templateCount=0
@@ -546,13 +548,15 @@ local function motif(parent,kind,size)
 end
 -- ViewportFrames are expensive: a per-render budget plus a pool keyed by
 -- template means rebuilding a page reuses the previous page's viewports.
-local function thumbnail(parent,name,size,tint,noFallback)
+local function thumbnail(parent,name,size,tint,noFallback,item)
 	local template,key=artTemplate(name,tint)
-	if not template or thumbnailCount>=(THUMBS.limits()) then
+	local itemBudget,_,decorBudget=THUMBS.limits()
+	local spent=if item then thumbnailCount>=itemBudget else THUMBS.decorUsed>=decorBudget
+	if not template or spent then
 		if noFallback then return nil end
 		return motif(parent,"Journal",size)
 	end
-	thumbnailCount+=1
+	if item then thumbnailCount+=1 else THUMBS.decorUsed+=1 end
 	local bucket=viewPool[key]
 	local view=bucket and table.remove(bucket)
 	if view then
@@ -671,7 +675,7 @@ local function itemIcon(parent,id,size,locked)
 	local tinted=tintIndex()~=nil and def~=nil and type(def.color)=="string"
 	if not locked and def then
 		local shape=shapeFor(id,def)
-		if shape then art=thumbnail(holder,shape,size,tinted and def.color or nil,true) end
+		if shape then art=thumbnail(holder,shape,size,tinted and def.color or nil,true,true) end
 	end
 	if not art then
 		itemGlyph(holder,def or {name=tostring(id)},size,locked)
@@ -3999,6 +4003,7 @@ render = function(fromPush)
 	end
 	order = 0
 	thumbnailCount = 0
+	THUMBS.decorUsed = 0
 	layoutTabs()
 	if synced then
 		local ok,problem=pcall(drawPage)

@@ -287,6 +287,35 @@ do
 	cfNear(shoulder.Transform, CFrame.new(), "faded back to the animator pose (rest here)")
 end
 
+-- Unlisted joints are never written: a swing must not freeze the walk cycle
+-- (hips, knees, root keep the Animator's Transform under an arm-only gesture).
+do
+	local engine, _, _, run = rig()
+	local c = fakeCharacter("R15")
+	local walk = CFrame.Angles(math.rad(25), 0, 0)
+	for _, name in ipairs({"RightHip", "LeftHip", "RightKnee", "LeftKnee", "Root"}) do c.children[name].Transform = walk end
+	engine.play(c, "mine", {hold = true})
+	for _ = 1, 10 do
+		run(0.1)
+		for _, name in ipairs({"RightHip", "LeftHip", "RightKnee", "LeftKnee", "Root"}) do
+			cfNear(c.children[name].Transform, walk, name .. " left to the walk cycle during a swing")
+		end
+	end
+	ok(c.children.RightShoulder.Transform ~= CFrame.new(), "listed joints still driven")
+	engine.stop(c)
+	cfNear(c.children.RightHip.Transform, walk, "an abrupt stop resets only the gesture's own joints")
+	local mineJoints = Core.drivenJoints(Core.GESTURES.mine)
+	ok(mineJoints.rightArm and mineJoints.waist and not mineJoints.rightHip and not mineJoints.root, "mine drives arms/waist/neck only")
+	local harvest = Core.drivenJoints(Core.GESTURES.harvest)
+	ok(harvest.rightHip and harvest.rightKnee and harvest.root, "the harvest crouch owns the legs it lists")
+	local engine2, _, _, run2 = rig()
+	local c2 = fakeCharacter("R15")
+	c2.children.RightHip.Transform = walk
+	engine2.play(c2, "harvest", {})
+	run2(0.3)
+	ok(not c2.children.RightHip.Transform:FuzzyEq(walk, 1e-3), "harvest drives the hips it lists")
+end
+
 -- Instant prompt: exactly one strike.
 do
 	local engine, _, log, run = rig()

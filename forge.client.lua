@@ -8,27 +8,44 @@
 -- API is unavailable, fails, or a budget is reached, the primitive stays visible
 -- (no per-triangle fallback). The server never hides anything.
 --
--- Attributes read on a tagged part:
---   Shape (string)       catalog shape name (art/WorldCatalog.lua or art/PropCatalog.lua)
---   Tint (Color3)        colour for the shape's tint slots (default: the shape's own tint)
---   ShapeScale (number)  multiplies the part's size (default 1)
---   ShapeFit (string)    "Uniform" keeps proportions (fits inside the part); default stretches
+-- Attributes read on a tagged part (the "host"):
+--   Shape (string)          catalog shape name (art/WorldCatalog.lua or art/PropCatalog.lua)
+--   Tint (Color3)           colour for the shape's tint slots (default: the shape's own tint)
+--   ShapeScale (number)     multiplier on the host's own slot box (default 1). Hosts the world
+--                           already sizes to the prop pass nil/1; it is never an absolute size.
+--   ShapeFit (string)       "Uniform" keeps proportions: the largest fit inside the slot box,
+--                           standing on its floor; default stretches the fit box over the slot box
+--   ShapeOwnsModel (bool)   the mesh stands for the whole Model: the slot box grows to cover
+--                           every visible sibling BasePart (no Shape, not Neon) of the host's
+--                           Model, and those siblings are hidden locally while the mesh exists
+-- Slot box: the host's own box, in an upright frame. Catalog meshes are Y-up; a
+-- cylinder's axis is its local X (disk() stands one up by rolling it 90 degrees),
+-- so a cylinder host carries the mesh's up axis along its cylinder axis.
 -- Legacy AetherSculpture anchors (SculptureScale without ShapeScale) and creatures
 -- stay with mesh.client.lua. Local-only markers: ShapeDone / ShapeSkipped attributes
 -- and an ObjectValue "ShapeMesh" under the part (never replicated).
 local AssetService = game:GetService("AssetService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
 
-local LIMITS = {
+-- Phones and tablets get a smaller forge: fewer templates, fewer placed
+-- triangles and a shorter build radius (touch-only devices).
+local mobile = false
+pcall(function() mobile = UserInputService.TouchEnabled == true and UserInputService.KeyboardEnabled ~= true end)
+local LIMITS = if mobile then {
+	templates = 24, templateTriangles = 24000, instances = 400, placedTriangles = 150000, failures = 3,
+} else {
 	templates = 48, -- distinct (shape, tint) EditableMeshes kept alive
 	templateTriangles = 45000, -- triangles across all cached EditableMeshes
 	instances = 900, -- placed MeshPart clones near the player
 	placedTriangles = 600000, -- triangles across all placed clones
 	failures = 3, -- template build failures before the forge stops trying
 }
-local BUILD_RADIUS, UNLOAD_RADIUS = 400, 480
+local BUILD_RADIUS, UNLOAD_RADIUS = if mobile then 250 else 400, if mobile then 310 else 480
 local STEP_SECONDS = 1
+local BACKOFF_FIRST, BACKOFF_MAX = 2, 64 -- seconds between retries of a budget-skipped part
+local OWN_LIMIT = 40 -- a ShapeOwnsModel host's Model must be this small (a prop, not an island)
 
 local function loadCatalog(name)
 	local module = ReplicatedStorage:WaitForChild(name, 15)
@@ -262,30 +279,98 @@ end
 local registry = setmetatable({}, {__mode = "k"}) -- tagged parts this client knows
 local placed = setmetatable({}, {__mode = "k"}) -- part -> {visual, triangles, connections, decals}
 local final = setmetatable({}, {__mode = "k"}) -- permanently skipped parts
+-- Budget skips back off exponentially (2 s, 4 s, ... 64 s) instead of retrying
+-- every step; any release frees budget and lets every backed-off part retry.
+local backoff = setmetatable({}, {__mode = "k"}) -- part -> {at, delay, epoch}
+local budgetEpoch = 0
+local function waiting(part)
+	local entry = backoff[part]
+	return entry ~= nil and entry.epoch == budgetEpoch and os.clock() < entry.at
+end
 local function skip(part, reason, permanent)
-	if permanent then final[part] = true end
+	if permanent then final[part] = true
+	else
+		local delay = math.min(BACKOFF_MAX, if backoff[part] then backoff[part].delay * 2 else BACKOFF_FIRST)
+		backoff[part] = {at = os.clock() + delay, delay = delay, epoch = budgetEpoch}
+	end
 	if part:GetAttribute("ShapeSkipped") ~= reason then
 		stats.skipped += 1
 		pcall(part.SetAttribute, part, "ShapeSkipped", reason)
 	end
 end
-local function placement(part, data, entry)
+-- Slot box: an upright frame and size for the host (see header).
+local function hostFrame(part)
+	if part:IsA("Part") and part.Shape == Enum.PartType.Cylinder then
+		local size = part.Size
+		return part.CFrame * CFrame.Angles(0, 0, -math.pi / 2), Vector3.new(size.Y, size.X, size.Z)
+	end
+	return part.CFrame, part.Size
+end
+-- Siblings a ShapeOwnsModel mesh stands for (nil when the host owns nothing).
+-- Neon accents (flames, glowing cores) stay visible over the mesh.
+local function ownedSiblings(part)
+	if part:GetAttribute("ShapeOwnsModel") ~= true then return nil end
+	local model = part.Parent
+	if not model or not model:IsA("Model") then return nil end
+	local children = model:GetChildren()
+	if #children > OWN_LIMIT then return nil end
+	local list = {}
+	for _, child in ipairs(children) do
+		if child ~= part and child:IsA("BasePart") and child:GetAttribute("Shape") == nil and child.Transparency < 1
+			and child.Material ~= Enum.Material.Neon then
+			table.insert(list, child)
+		end
+	end
+	return list
+end
+local function slotBox(part, siblings)
+	local frame, size = hostFrame(part)
+	if not siblings or #siblings == 0 then return frame, size end
+	local lo, hi = -size / 2, size / 2
+	for _, other in ipairs(siblings) do
+		local rel = frame:ToObjectSpace(other.CFrame)
+		local h = other.Size / 2
+		local r, u, l = rel.RightVector, rel.UpVector, rel.LookVector
+		local reach = Vector3.new(
+			math.abs(r.X) * h.X + math.abs(u.X) * h.Y + math.abs(l.X) * h.Z,
+			math.abs(r.Y) * h.X + math.abs(u.Y) * h.Y + math.abs(l.Y) * h.Z,
+			math.abs(r.Z) * h.X + math.abs(u.Z) * h.Y + math.abs(l.Z) * h.Z)
+		lo, hi = lo:Min(rel.Position - reach), hi:Max(rel.Position + reach)
+	end
+	return frame * CFrame.new((lo + hi) / 2), hi - lo
+end
+local boundsCache = setmetatable({}, {__mode = "k"})
+local function meshBounds(data)
+	local cached = boundsCache[data]
+	if not cached then
+		local lo, hi = bounds(data)
+		cached = {extent = (hi - lo):Max(Vector3.one * 0.01), center = (lo + hi) / 2}
+		boundsCache[data] = cached
+	end
+	return cached.extent, cached.center
+end
+-- Final mesh box for a host: size and world CFrame of the MeshPart.
+local function layout(part, data, siblings)
+	local extent, center = meshBounds(data)
 	local shapeScale = part:GetAttribute("ShapeScale")
 	shapeScale = if type(shapeScale) == "number" and shapeScale > 0 and shapeScale <= 100 then shapeScale else 1
 	local lo, hi
 	if type(data.fit) == "table" and type(data.fit[1]) == "table" and type(data.fit[2]) == "table" then
 		lo, hi = Vector3.new(table.unpack(data.fit[1])), Vector3.new(table.unpack(data.fit[2]))
 	else
-		lo, hi = entry.center - entry.extent / 2, entry.center + entry.extent / 2
+		lo, hi = center - extent / 2, center + extent / 2
 	end
 	local fitSize = (hi - lo):Max(Vector3.one * 0.01)
-	local target = (part.Size * shapeScale):Max(Vector3.one * 0.05)
+	local boxFrame, box = slotBox(part, siblings)
+	local target = (box * shapeScale):Max(Vector3.one * 0.05)
 	local k = target / fitSize
+	local lift = 0
 	if part:GetAttribute("ShapeFit") == "Uniform" then
 		local m = math.min(k.X, k.Y, k.Z)
 		k = Vector3.new(m, m, m)
+		lift = (fitSize.Y * m - target.Y) / 2 -- stand on the slot floor
 	end
-	return entry.extent * k, CFrame.new((entry.center - (lo + hi) / 2) * k)
+	return extent * k, boxFrame * CFrame.new((center - (lo + hi) / 2) * k + Vector3.new(0, lift, 0))
 end
 
 -- Release a placed mesh and give the primitive back (removal, distance, shutdown).
@@ -298,6 +383,8 @@ local function release(part)
 	for _, connection in ipairs(record.connections) do connection:Disconnect() end
 	pcall(function() part.LocalTransparencyModifier = 0 end)
 	for _, decal in ipairs(record.decals) do pcall(function() decal.LocalTransparencyModifier = 0 end) end
+	for _, sibling in ipairs(record.hidden) do pcall(function() sibling.LocalTransparencyModifier = 0 end) end
+	budgetEpoch += 1
 	local link = part:FindFirstChild("ShapeMesh")
 	if link then link:Destroy() end
 	pcall(part.SetAttribute, part, "ShapeDone", nil)
@@ -325,33 +412,45 @@ local function forge(part)
 	end
 	if not entry then skip(part, problem or stopReason or "failed", problem ~= "budget"); return end
 	if not part.Parent then return end
-	local size, offset = placement(part, data, entry)
+	local siblings = ownedSiblings(part)
+	local size, meshFrame = layout(part, data, siblings)
+	local offset = part.CFrame:ToObjectSpace(meshFrame)
 	local ok, visual = pcall(function()
 		local clone = entry.part:Clone()
 		clone.Name = part.Name .. " Mesh"
 		clone.Size = size
-		clone.CFrame = part.CFrame * offset
+		clone.CFrame = meshFrame
 		clone:SetAttribute("ShapeOf", shapeName)
 		clone.Parent = part.Parent
 		return clone
 	end)
 	if not ok or not visual then skip(part, "clone failed", true); return end
-	local record = {visual = visual, triangles = entry.triangles, connections = {}, decals = {}}
+	local record = {visual = visual, triangles = entry.triangles, connections = {}, decals = {}, hidden = {}}
 	placed[part] = record
 	stats.instances += 1
 	stats.placedTriangles += entry.triangles
 	-- Hide the primitive for this client only, now that its mesh exists.
 	pcall(function() part.LocalTransparencyModifier = 1 end)
-	for _, child in ipairs(part:GetChildren()) do
-		if child:IsA("Decal") then
-			table.insert(record.decals, child)
-			pcall(function() child.LocalTransparencyModifier = 1 end)
+	local function hideDecals(host)
+		for _, child in ipairs(host:GetChildren()) do
+			if child:IsA("Decal") then
+				table.insert(record.decals, child)
+				pcall(function() child.LocalTransparencyModifier = 1 end)
+			end
 		end
+	end
+	hideDecals(part)
+	-- ShapeOwnsModel: the mesh stands for the Model, so its primitive parts go too.
+	for _, sibling in ipairs(siblings or {}) do
+		table.insert(record.hidden, sibling)
+		pcall(function() sibling.LocalTransparencyModifier = 1 end)
+		hideDecals(sibling)
 	end
 	local link = Instance.new("ObjectValue")
 	link.Name = "ShapeMesh"
 	link.Value = visual
 	link.Parent = part
+	backoff[part] = nil
 	part:SetAttribute("ShapeSkipped", nil)
 	part:SetAttribute("ShapeDone", true)
 	pcall(function()
@@ -375,18 +474,20 @@ local function step()
 	stepping = true
 	local origin = focus()
 	if origin then
-		local near = {}
+		-- Releases first, so budget they free is available to this step's builds.
 		for part in pairs(registry) do
 			if not part.Parent then
 				registry[part] = nil
 				release(part)
-			else
+			elseif placed[part] and (part.CFrame.Position - origin).Magnitude > UNLOAD_RADIUS then
+				release(part)
+			end
+		end
+		local near = {}
+		for part in pairs(registry) do
+			if not placed[part] and not final[part] and not waiting(part) then
 				local distance = (part.CFrame.Position - origin).Magnitude
-				if placed[part] then
-					if distance > UNLOAD_RADIUS then release(part) end
-				elseif not final[part] and distance <= BUILD_RADIUS then
-					table.insert(near, {part, distance})
-				end
+				if distance <= BUILD_RADIUS then table.insert(near, {part, distance}) end
 			end
 		end
 		-- Nearest first, so budgets are spent on what the player sees.
@@ -403,15 +504,30 @@ local function consider(part)
 	registry[part] = true
 	local data = lookup(part:GetAttribute("Shape"))
 	if data and SIGN_KINDS[data.kind] then pcall(styleSign, part) end
+	-- Re-forge when the slot's attributes change (signals, not periodic rescans).
+	pcall(function()
+		part.AttributeChanged:Connect(function(name)
+			if name ~= "Shape" and name ~= "ShapeScale" and name ~= "ShapeFit" and name ~= "Tint" and name ~= "ShapeOwnsModel" then return end
+			release(part)
+			final[part], backoff[part] = nil, nil
+			if type(part:GetAttribute("Shape")) ~= "string" then registry[part] = nil end
+			task.defer(step)
+		end)
+	end)
 	task.defer(step)
 end
 local function watch(instance)
 	if not instance:IsA("BasePart") or registry[instance] then return end
 	if instance:GetAttribute("Shape") ~= nil then consider(instance); return end
 	pcall(function()
-		instance:GetAttributeChangedSignal("Shape"):Once(function() consider(instance) end)
+		local connection
+		connection = instance:GetAttributeChangedSignal("Shape"):Connect(function()
+			if type(instance:GetAttribute("Shape")) == "string" then connection:Disconnect(); consider(instance) end
+		end)
 	end)
 end
+-- Test hook / manual recovery only: discovery is signal-driven (DescendantAdded
+-- plus the Shape attribute signal), never a periodic full GetDescendants walk.
 local function rescan()
 	for _, instance in ipairs(workspace:GetDescendants()) do
 		if instance:IsA("BasePart") and not registry[instance] and instance:GetAttribute("Shape") ~= nil then consider(instance) end
@@ -424,17 +540,26 @@ step()
 if MeshForgeTest then
 	MeshForgeTest.forge = {stats = stats, limits = LIMITS, templates = templates, rescan = rescan, consider = consider, step = step,
 		cornerNormals = cornerNormals, styleSign = styleSign, stopReason = function() return stopReason end,
-		radii = {build = BUILD_RADIUS, unload = UNLOAD_RADIUS}}
+		radii = {build = BUILD_RADIUS, unload = UNLOAD_RADIUS}, mobile = mobile, backoff = backoff,
+		-- Final mesh box for a tagged part, without forging: size, CFrame, kind.
+		describe = function(part)
+			local shapeName = part:GetAttribute("Shape")
+			if type(shapeName) ~= "string" then return nil end
+			local data = lookup(shapeName)
+			if not data then return nil end
+			local siblings = ownedSiblings(part)
+			local size, frame = layout(part, data, siblings)
+			local boxFrame, box = slotBox(part, siblings)
+			return {size = size, cframe = frame, kind = data.kind, shape = ALIASES[shapeName] or shapeName,
+				box = box, boxFrame = boxFrame, siblings = siblings or {}}
+		end}
 	return
 end
 print(string.format("[MeshForge] %s: %d templates (%d tris cached), %d meshes placed (%d tris), %d skipped",
 	if stopReason then stopReason else "ready", stats.templates, stats.templateTriangles, stats.instances, stats.placedTriangles, stats.skipped))
 task.spawn(function()
-	local elapsed = 0
 	while true do
 		task.wait(STEP_SECONDS)
-		elapsed += STEP_SECONDS
-		if elapsed >= 20 then elapsed = 0; rescan() end -- safety net for missed attribute changes
 		step()
 	end
 end)

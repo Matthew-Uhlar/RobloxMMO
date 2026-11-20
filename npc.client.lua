@@ -170,15 +170,72 @@ end
 local function clearOptions()
 	for _, c in ipairs(optionsFrame:GetChildren()) do if c:IsA("GuiObject") then c:Destroy() end end
 end
+-- Placement (shared HUD map in combat.client.lua): the box sits above the atlas
+-- action bar (bottom at H-46), never above y 100 (the atlas guild badge), left of
+-- the minimap column when it reaches that high and, on touch screens, left of the
+-- Attack button. Its height is clamped to that space and the options scroll, so
+-- the portrait, name and close button are always on screen. Short screens (phone
+-- landscape) use a compact header and leave the checklist to the tracker.
+local DIALOGUE_TOP, DIALOGUE_FLOOR = 100, 46
+local function screenSize()
+	local size = gui.AbsoluteSize
+	if size and size.X > 0 and size.Y > 0 then return size end
+	local camera = workspace.CurrentCamera
+	return if camera then camera.ViewportSize else Vector2.new(1280, 720)
+end
+local function isCompact()
+	return screenSize().Y - DIALOGUE_FLOOR - DIALOGUE_TOP < 240
+end
+local function metrics(compact)
+	local textX = if compact then 58 else 86
+	local portraitSize = if compact then 40 else 64
+	portrait.Position, portrait.Size = UDim2.fromOffset(if compact then 10 else 12, if compact then 8 else 12), UDim2.fromOffset(portraitSize, portraitSize)
+	face.TextSize = if compact then 20 else 30
+	nameLabel.Position, nameLabel.Size = UDim2.fromOffset(textX, if compact then 6 else 12), UDim2.new(1, -textX - 54, 0, 24)
+	titleLabel.Position, titleLabel.Size = UDim2.fromOffset(textX, if compact then 28 else 36), UDim2.new(1, -textX - 54, 0, 18)
+	closeButton.Position = UDim2.new(1, if compact then -44 else -48, 0, if compact then 6 else 10)
+	closeButton.Size = UDim2.fromOffset(if compact then 34 else 38, if compact then 34 else 38)
+	if compact then
+		speech.Position, speech.Size, speech.TextSize = UDim2.fromOffset(12, 52), UDim2.new(1, -24, 0, 44), 13
+	else
+		speech.Position, speech.Size, speech.TextSize = UDim2.fromOffset(86, 58), UDim2.new(1, -98, 0, 64), 15
+	end
+	return if compact then 100 else 126
+end
+local function placeBox(desired)
+	local view = screenSize()
+	local width, height = view.X, view.Y
+	local camera = workspace.CurrentCamera
+	local viewportY = if camera and camera.ViewportSize.Y > 0 then camera.ViewportSize.Y else height
+	local mapSize = if viewportY < 520 then 118 else 156
+	local bottom = height - DIALOGUE_FLOOR
+	local top = math.max(DIALOGUE_TOP, bottom - desired)
+	local right = width - 10
+	if Input.TouchEnabled then right = width - 196 end -- Attack: x W-188..W-110, y H-118..H-40
+	if top < 8 + mapSize + 34 + 8 then right = math.min(right, width - 10 - mapSize - 10) end
+	local w = math.min(620, width - 20)
+	local x = math.floor(width / 2 - w / 2)
+	if x + w > right then
+		x = 10
+		w = math.min(620, right - 10)
+	end
+	box.AnchorPoint, box.Position, box.Size = Vector2.new(0, 1), UDim2.fromOffset(x, bottom), UDim2.fromOffset(w, bottom - top)
+	return bottom - top
+end
 local function layout(lines)
 	local rows = math.min(lines, 5)
+	local headTop = metrics(isCompact())
 	local listHeight = checklist.Visible and checklist.Size.Y.Offset + 6 or 0
-	checklist.Position = UDim2.fromOffset(12, 126)
-	optionsFrame.Position = UDim2.fromOffset(12, 130 + listHeight)
-	box.Size = UDim2.new(1, -20, 0, 142 + listHeight + rows * 42)
+	checklist.Position = UDim2.fromOffset(12, headTop)
+	local optionsTop = headTop + 4 + listHeight
+	local height = placeBox(optionsTop + 12 + rows * 42)
+	optionsFrame.Position = UDim2.fromOffset(12, optionsTop)
+	optionsFrame.Size = UDim2.new(1, -24, 0, math.max(0, height - optionsTop - 8))
 end
 local function drawChecklist(show)
 	for _, c in ipairs(checklist:GetChildren()) do if c:IsA("TextLabel") then c:Destroy() end end
+	-- Short screens: the tracker card carries the checklist; keep room for options.
+	if show and isCompact() then show = false end
 	checklist.Visible = show
 	if not show then checklist.Size = UDim2.new(1, -24, 0, 0); return end
 	local state = T.tutorialState(snapshot)
@@ -270,11 +327,13 @@ showNode = function(nodeId)
 	end
 	layout(#options)
 end
+local trackerSync -- the tutorial tracker hides while a dialogue is open
 closeDialogue = function()
 	talking = nil
 	typeToken += 1
 	box.Visible = false
 	clearOptions()
+	if trackerSync then trackerSync() end
 end
 closeButton.Activated:Connect(function() closeDialogue() end)
 local function openDialogue(role, model)
@@ -284,6 +343,7 @@ local function openDialogue(role, model)
 	nameLabel.Text, titleLabel.Text, face.Text = def.name, def.title, def.portrait or string.sub(def.name, 1, 1)
 	portraitGradient.Color = ColorSequence.new(rgb(def.look.shirt), rgb(def.look.accent))
 	box.Visible = true
+	if trackerSync then trackerSync() end
 	if not snapshot then
 		typeText("…")
 		clearOptions()
@@ -303,9 +363,9 @@ Input.InputBegan:Connect(function(input, processed)
 end)
 
 ------------------------------------------------------------------------------
--- Tutorial tracker (left, under the field-guide HUD).
+-- Tutorial tracker (left column under the atlas guild badge: x 10-260, y 100-166).
 ------------------------------------------------------------------------------
-local tracker = make("Frame", gui, {Name = "TutorialTracker", Position = UDim2.fromOffset(10, 104), Size = UDim2.fromOffset(250, 66),
+local tracker = make("Frame", gui, {Name = "TutorialTracker", Position = UDim2.fromOffset(10, 100), Size = UDim2.fromOffset(250, 66),
 	BackgroundColor3 = deep, BackgroundTransparency = 0.08, BorderSizePixel = 0, Visible = false})
 round(tracker, 10, gold)
 local trackerTitle = make("TextLabel", tracker, {Position = UDim2.fromOffset(10, 5), Size = UDim2.new(1, -40, 0, 16), BackgroundTransparency = 1, Font = bold,
@@ -324,7 +384,7 @@ local trackerHide = make("TextButton", tracker, {Position = UDim2.new(1, -28, 0,
 local trackerHidden, lastStep = false, nil
 local function updateTracker()
 	local state = T.tutorialState(snapshot)
-	local visible = not trackerHidden and not state.loading and not state.complete
+	local visible = not trackerHidden and not state.loading and not state.complete and not talking
 	tracker.Visible = visible
 	if state.loading then return end
 	if lastStep and state.current ~= lastStep and lastStep <= #T.Tutorial then
@@ -350,6 +410,7 @@ trackerGo.Activated:Connect(function()
 end)
 trackerHide.Activated:Connect(function() trackerHidden = true; tracker.Visible = false; notify("Tutorial hidden. Talk to Pell to see it again.") end)
 table.insert(listeners, updateTracker)
+trackerSync = updateTracker
 table.insert(listeners, function()
 	if talking and box.Visible then
 		local node = talking.def.nodes[talking.node or ""]

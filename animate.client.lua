@@ -388,6 +388,30 @@ function Core.bindRig(character)
 	end
 	return entries, kind
 end
+-- Joints a gesture ever poses (any key of intro, loop, variants, outro). Only
+-- motors driving one of them are touched: writing identity Transforms to the
+-- rest (hips, knees, root on a mining swing) at full weight would freeze the
+-- Animator's walk cycle underneath the gesture.
+function Core.drivenJoints(def)
+	local joints = {}
+	local function scan(keys)
+		for _, k in ipairs(keys or {}) do
+			for joint in pairs(k.pose or {}) do joints[joint] = true end
+		end
+	end
+	scan(def.intro); scan(def.loop); scan(def.outro)
+	for _, keys in ipairs(def.variants or {}) do scan(keys) end
+	return joints
+end
+function Core.drivenRig(rig, def)
+	local joints, out = Core.drivenJoints(def), {}
+	for _, entry in ipairs(rig) do
+		for _, part in ipairs(entry.parts) do
+			if joints[part[1]] then table.insert(out, entry); break end
+		end
+	end
+	return out
+end
 function Core.motorTarget(entry, pose)
 	local r = CFrame.new()
 	for _, part in ipairs(entry.parts) do
@@ -429,6 +453,7 @@ function Core.createEngine(deps)
 		end
 		if current then remove(character, false) end
 		local rig = deps.bindRig(character)
+		rig = rig and Core.drivenRig(rig, def)
 		if not rig or #rig == 0 then return nil end
 		local now = deps.now()
 		local s = {character = character, name = name, def = def, rig = rig, holding = opts.hold == true, extra = 0, cycles = 0,
