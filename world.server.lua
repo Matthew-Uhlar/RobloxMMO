@@ -979,18 +979,51 @@ local function settle(player)
 	prompt(gatePost,"Travel to hub","Compass Quay").Triggered:Connect(function(user)
 		if user==player then warp(user,gatePost,HUB_ARRIVAL) end
 	end)
+	-- Worker stations (Workers depth): slots 1-3 keep their legacy offsets inside
+	-- Data.Island's protected "worker station" rectangles; slots 4-12 stand in a
+	-- ring on the Worker Yard, a raised lobe north-east of the meadow and outside
+	-- the placement grid (RADIUS 18.5), so no placement cell is taken. Per slot:
+	-- pad + tier ring (colour by tier), invisible chassis collider with the
+	-- prompt, a Surveyor sculpture (scale grows with tier) and an emblem sculpture
+	-- of the worker type's catalog shape tinted with its colour (rebuilt only when
+	-- the type/tier changes). Attributes: Worker<n>Tier, Worker<n>Resource,
+	-- WorkerSlots (unlocked slots; locked stations show their unlock note).
+	local yardCenter=center+V(26,0,-25)
+	local YARD_R,YARD_H=12,1.5
+	do
+		local dir=V(-26,0,25).Unit
+		local yard=tier(m,"Worker Yard",yardCenter,YARD_R,YARD_H,{open={math.atan2(dir.Z,dir.X)},top=C("8FB27F")})
+		local out=V(26,0,-25).Unit
+		ramp(yard,center+out*(HOME_CORE-1.6),center+out*(HOME_CORE-1.6+YARD_H*2.4+2)+V(0,YARD_H,0),5)
+		sculpture(yard,"Worker Yard lockbox",yardCenter+V(0,YARD_H+.9,0),"VaultChest",.9)
+		anchor(m,"Waypoint_WorkerYard",yardCenter+V(-6,YARD_H,6),yardCenter+V(0,YARD_H,0))
+	end
 	local fleetOffsets={V(9,0,4),V(13,0,-1),V(-10,0,-10)}
+	do
+		-- Nine yard slots on a ring (radius 8), skipping the ramp side.
+		local entry=math.atan2(25,-26)
+		for i=1,9 do
+			local a=entry+(i)*2*math.pi/10
+			table.insert(fleetOffsets,V(26+math.cos(a)*8,YARD_H,-25+math.sin(a)*8))
+		end
+	end
+	local TIER_COLORS={C("9AA5B1"),C("6BBF59"),C("3F7CAC"),C("8E5CC4"),C("E0A040"),C("E86FB8"),C("FFF3B0")}
+	homes[player].workerRefresh={}
 	for workerSlot,offset in ipairs(fleetOffsets) do
 		local station=group("WorkerStation"..workerSlot,m)
 		local position=center+offset
+		local facing=if workerSlot>3 then CFrame.lookAt(position,V(yardCenter.X,position.Y,yardCenter.Z)) else CFrame.new(position)
+		local yaw=if workerSlot>3 then math.deg(math.atan2(-facing.LookVector.X,-facing.LookVector.Z)) else 0
 		disk(station,"Worker pad",position+V(0,.08,0),2.3,.16,navy,SM,false)
+		local ring=disk(station,"Tier ring",position+V(0,.05,0),2.6,.1,shale,SM,false)
 		local engine=block(station,"Surveyor chassis",position+V(0,1.35,0),V(2.8,2.7,2.5),navy,SM,true)
-		local lens=block(station,"Eye lens",position+V(0,1.7,-1.35),V(1.55,.38,.18),mint,SM,false)
+		local lensAt=position+V(0,1.7,0)+facing.LookVector*1.35
+		local lens=block(station,"Eye lens",lensAt,V(1.55,.38,.18),mint,SM,false)
+		lens.CFrame=CFrame.lookAt(lensAt,lensAt+facing.LookVector)
 		engine.Transparency,lens.Transparency=1,1
-		sculpture(station,"Sculpted surveyor",position+V(0,1.5,0),"Surveyor",1)
 		local interaction=prompt(engine,"Build worker","Surveyor chassis",workerSlot==1 and "worker" or "workerBuild",tostring(workerSlot),player.UserId)
 		local badge=Instance.new("BillboardGui")
-		badge.Name,badge.Size,badge.StudsOffset,badge.MaxDistance="Worker status",UDim2.fromOffset(160,44),V(0,3,0),12
+		badge.Name,badge.Size,badge.StudsOffset,badge.MaxDistance="Worker status",UDim2.fromOffset(170,44),V(0,3,0),12
 		badge.Parent=engine
 		local text=Instance.new("TextLabel")
 		text.Size,text.BackgroundColor3,text.BackgroundTransparency=UDim2.fromScale(1,1),ink,.12
@@ -1003,22 +1036,53 @@ local function settle(player)
 			sculpture(station,"Worker lockbox",center+V(11,1,9),"VaultChest",1)
 			cachePrompt=prompt(cache,"Claim output","Surveyor cache","claim",nil,player.UserId)
 		end
+		local shown,surveyor,emblem={},nil,nil
 		local function refreshWorker()
 			if not m.Parent then return end
-			local tier=player:GetAttribute("Worker"..workerSlot.."Tier") or 0
+			local tierNow=player:GetAttribute("Worker"..workerSlot.."Tier") or 0
 			local resource=player:GetAttribute("Worker"..workerSlot.."Resource") or "Ore"
-			local active=tier>0
-			lens.Color=active and mint or shale
+			local unlocked=player:GetAttribute("WorkerSlots")
+			unlocked=if type(unlocked)=="number" then unlocked else 3
+			local active=tierNow>0
+			local art=homeTerrace.workerArt and homeTerrace.workerArt(resource)
+			local name=art and art.name or resource
+			local locked=not active and workerSlot>unlocked
+			lens.Color=if active then (art and art.color or mint) else shale
 			engine.Color=active and teal or navy
+			ring.Color=if active then TIER_COLORS[math.clamp(tierNow,1,#TIER_COLORS)] else shale
+			interaction.Enabled=not locked
 			interaction.ActionText=active and "Claim output" or "Build worker"
-			interaction.ObjectText="Worker "..workerSlot..(active and (" · "..resource) or (" · "..(5*workerSlot).." timber + "..(3*workerSlot).." ore"))
+			interaction.ObjectText="Worker "..workerSlot..(if active then " · "..name else if locked then " · locked" else " · "..(5*workerSlot).." timber + "..(3*workerSlot).." ore")
 			interaction:SetAttribute("IsleAction",active and "workerClaim" or (workerSlot==1 and "worker" or "workerBuild"))
-			text.Text=active and ("WORKER "..workerSlot.." · TIER "..tier.."\n"..resource.." / manage in Atlas") or ("WORKER "..workerSlot.."\nUnbuilt surveyor chassis")
+			text.Text=if active then ("WORKER "..workerSlot.." · TIER "..tierNow.."\n"..name.." / manage in Atlas")
+				elseif locked then ("WORKER "..workerSlot.."\nLocked · craft unique workers")
+				else ("WORKER "..workerSlot.."\nUnbuilt surveyor chassis")
 			if cachePrompt then cachePrompt.Enabled=active end
+			-- Sculptures: rebuilt only when what they show changes.
+			local key=tostring(active and tierNow or 0)
+			if shown.surveyor~=key then
+				shown.surveyor=key
+				if surveyor then surveyor:Destroy() end
+				surveyor=sculpture(station,"Sculpted surveyor",position+V(0,1.5,0),"Surveyor",1+(active and (tierNow-1)*.05 or 0),yaw)
+			end
+			local emblemKey=active and resource or ""
+			if shown.emblem~=emblemKey then
+				shown.emblem=emblemKey
+				if emblem then emblem:Destroy(); emblem=nil end
+				if active then
+					emblem=block(station,"Worker emblem",position+V(0,3.5,0),V(1.1,1.1,1.1),art and art.color or brass,SM,false)
+					emblem.CFrame=CFrame.new(emblem.CFrame.Position)*CFrame.Angles(0,math.rad(yaw),0)
+					emblem.CastShadow=false
+					meshSlot(emblem,art and art.shape or "OreChunk",art and art.color or brass,false,"Uniform")
+					emblem:SetAttribute("WorkerType",resource)
+				end
+			end
 		end
 		for _,suffix in ipairs({"Tier","Resource"}) do
 			table.insert(homes[player].decorationConnections,player:GetAttributeChangedSignal("Worker"..workerSlot..suffix):Connect(refreshWorker))
 		end
+		table.insert(homes[player].decorationConnections,player:GetAttributeChangedSignal("WorkerSlots"):Connect(refreshWorker))
+		table.insert(homes[player].workerRefresh,refreshWorker)
 		refreshWorker()
 	end
 	lamp(m,center+V(-5,0,-9))
@@ -1225,6 +1289,14 @@ if not dataModule then
 	return
 end
 local Data=require(dataModule)
+-- Workers depth: worker type art for home stations (name, emblem shape, tint).
+homeTerrace.workerArt=function(typeId)
+	local t=Data.Workers and Data.Workers.TypeById[typeId]
+	if not t then return nil end
+	local ok,color=pcall(C,t.color)
+	return {name=t.name,shape=t.shape,color=if ok then color else brass}
+end
+for _,home in pairs(homes) do for _,refresh in ipairs(home.workerRefresh or {}) do refresh() end end
 local Resource={}
 for skill,tiers in pairs(Data.ResourceTiers) do
 	for index,def in ipairs(tiers) do Resource[def.id]={def=def,skill=skill,index=index,color=C(def.color)} end

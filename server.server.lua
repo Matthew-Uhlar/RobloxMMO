@@ -318,55 +318,365 @@ do
 	end
 	function Gear.view(p) return {reforges=p.reforges,stars=p.stars,books=p.books} end
 end
--- Workers follow Data.WorkerTiers (SkyBlock minion tiers 1-7).
-local function workerFleet(p)
-	if not p.workers then
-		p.workers={}
-		if p.worker then p.workers[1]={resource=p.workerResource or "Ore",tier=1,lastClaim=p.lastClaim} end
+-- Workers depth (Data.Workers): up to 12 slots unlocked by unique worker crafts,
+-- a type per gathering resource tier plus combat workers, fuel, two upgrade
+-- slots, a chest, Condensed/Radiant pressing and an auto-seller. Output is
+-- settled lazily from server os.time() (Data.Workers.settle), capped by storage
+-- and Data.Workers.MAX_ACCRUAL; claims empty the store exactly once.
+-- Worker record: {resource=typeId, tier, lastClaim, carry, store={id=n}, made,
+-- coins, bonusCarry, fuel={id,expires|permanent}, upgrades={id|false,id|false}, chest}.
+local Workers={verbs={}}
+do
+	local W=Data.Workers
+	for _,verb in ipairs({"worker","workerBuild","workerResource","workerAssign","workerUpgrade","claim","workerClaim","workerClaimAll",
+		"workerFuel","workerUnfuel","workerInstall","workerRemove","workerBlueprint"}) do Workers.verbs[verb]=true end
+	local function int(n,lo,hi)
+		n=tonumber(n)
+		return n~=nil and n==n and n%1==0 and n>=lo and n<=hi
 	end
-	return p.workers
-end
-local function workerConfig(w)
-	return Data.WorkerTiers[math.clamp(math.floor(tonumber(w.tier) or 1),1,#Data.WorkerTiers)]
-end
--- Construction and quest perks (p.perkWorkerHaste) shorten every worker cycle.
-local function workerInterval(p,w)
-	local haste=math.clamp(tonumber(p and p.perkWorkerHaste) or 0,0,Data.MAX_WORKER_HASTE)
-	return math.max(1,math.floor(workerConfig(w).interval*(1-haste)+0.5))
-end
-local function workerReady(w,p)
-	if not w then return 0 end
-	local config=workerConfig(w)
-	return math.clamp(math.floor((os.time()-w.lastClaim)/workerInterval(p,w)),0,config.capacity)
-end
-local function workerCost(tier)
-	local cost={Timber=5*tier,Ore=3*tier}
-	if tier>=4 then cost.AlloyIngot=4*(tier-3); cost.AetherIngot=2*(tier-3) end
-	return cost
-end
-local function workerXp(resource)
-	local r=Progression.resource(resource)
-	if not r then return nil,0 end
-	return r.skill,if r.index==1 then 3 else math.max(3,r.xp//4)
-end
-local function workerAllowed(p,resource)
-	local r=type(resource)=="string" and Progression.resource(resource)
-	if not r then return false,"Choose a gathering resource such as Ore, Timber, Herb or Fish." end
-	if r.index==1 then return true end
-	if level(p.xp[r.skill])<r.level then return false,r.name.." workers require "..r.skill.." "..r.level.."." end
-	if Progression.collectionTier(p,resource)<1 then
-		return false,"Reach "..r.name.." collection tier 1 ("..Progression.collectionThreshold(resource,1).." lifetime) to assign workers."
+	local function haste(p) return math.clamp(tonumber(p and p.perkWorkerHaste) or 0,0,Data.MAX_WORKER_HASTE) end
+	-- Sanitise one stored record; nil when unusable.
+	local function clean(w,now)
+		if type(w)~="table" then return nil end
+		local out={resource=if W.TypeById[w.resource] then w.resource else "Ore"}
+		out.tier=math.clamp(math.floor(tonumber(w.tier) or 1),1,#Data.WorkerTiers)
+		local last=tonumber(w.lastClaim)
+		out.lastClaim=if last and last==last then math.min(math.floor(last),now) else now
+		out.carry=if int(w.carry,0,1e9) then w.carry else 0
+		out.made=if int(w.made,0,W.MAX_STORE*W.RATIO) then w.made else 0
+		out.coins=if int(w.coins,0,1e12) then w.coins else 0
+		out.bonusCarry=if int(w.bonusCarry,0,1000) then w.bonusCarry else 0
+		out.store={}
+		local output=W.TypeById[out.resource].output
+		local press=W.Press[output]
+		local allowed={[output]=true,[press.condensed]=true,[press.radiant]=true}
+		for _,u in pairs(W.Upgrades) do if u.bonus then allowed[u.bonus.item]=true end end
+		if type(w.store)=="table" then
+			for id,n in pairs(w.store) do
+				if allowed[id] and int(n,1,W.MAX_STORE) then out.store[id]=n end
+			end
+		end
+		local fuel=type(w.fuel)=="table" and W.Fuels[w.fuel.id]
+		if fuel then
+			if fuel.permanent then out.fuel={id=fuel.id,permanent=true}
+			elseif int(w.fuel.expires,0,now+fuel.duration*W.FUEL_STACK) then out.fuel={id=fuel.id,expires=w.fuel.expires} end
+		end
+		out.upgrades={false,false}
+		local groups={}
+		if type(w.upgrades)=="table" then
+			for i=1,W.UPGRADE_SLOTS do
+				local u=W.Upgrades[w.upgrades[i]]
+				if u and not groups[u.group] then groups[u.group]=true; out.upgrades[i]=u.id end
+			end
+		end
+		out.chest=if W.Chests[w.chest] then w.chest else nil
+		return out
 	end
-	return true
-end
-local function ready(p) return workerReady(workerFleet(p)[1],p) end
-local function workerState(p)
-	local result={}
-	for slot,w in ipairs(workerFleet(p)) do
-		local config=workerConfig(w)
-		result[slot]={slot=slot,resource=w.resource,tier=w.tier,ready=workerReady(w,p),interval=workerInterval(p,w),capacity=config.capacity,maxTier=#Data.WorkerTiers}
+	-- Fleet with one-time migration of pre-fleet saves and bounded sanitising.
+	function Workers.fleet(p)
+		if not p.workers then
+			p.workers={}
+			if p.worker then p.workers[1]={resource=p.workerResource or "Ore",tier=1,lastClaim=p.lastClaim} end
+		end
+		if not p.workersClean then
+			local now=os.time()
+			local fleet={}
+			if type(p.workers)=="table" then
+				for slot=1,W.MAX_SLOTS do
+					local w=clean(p.workers[slot],now)
+					if not w then break end
+					fleet[slot]=w
+				end
+			end
+			p.workers=fleet
+			if type(p.workerUniques)~="table" then
+				-- First depth load: credit every tier the legacy workers already reached.
+				p.workerUniques={}
+				for _,w in ipairs(fleet) do for t=1,w.tier do W.addUnique(p.workerUniques,w.resource,t) end end
+			else
+				local uniques={}
+				for typeId,mask in pairs(p.workerUniques) do
+					if W.TypeById[typeId] and int(mask,1,2^#Data.WorkerTiers-1) then uniques[typeId]=mask end
+				end
+				p.workerUniques=uniques
+			end
+			-- Session-only flag (stripped before saving) so sanitising runs once per load.
+			p.workersClean=true
+		end
+		return p.workers
 	end
-	return result
+	function Workers.migrate(p) p.workersClean=nil; Workers.fleet(p) end
+	function Workers.slots(p) return W.slotsFor(W.uniqueCount(p.workerUniques)) end
+	local function settle(p,w) return W.settle(w,os.time(),haste(p)) end
+	function Workers.ready(p)
+		local w=Workers.fleet(p)[1]
+		if not w then return 0 end
+		settle(p,w)
+		return W.storeCount(w.store)
+	end
+	function Workers.allowed(p,typeId)
+		local t=type(typeId)=="string" and W.TypeById[typeId]
+		if not t then return false,"Choose a gathering resource such as Ore, Timber, Herb or Fish, or a combat worker." end
+		if t.collectionTier<=0 then return true end
+		local name=if t.kind=="gather" then Data.Items[t.output].name else t.name
+		if level(p.xp[t.skill])<t.level then return false,name.." workers require "..t.skill.." "..t.level.."." end
+		if Progression.collectionTier(p,t.output)<t.collectionTier then
+			return false,"Reach "..Data.Items[t.output].name.." collection tier "..t.collectionTier.." ("..Progression.collectionThreshold(t.output,t.collectionTier).." lifetime) to assign workers."
+		end
+		return true
+	end
+	local function costText(cost)
+		local parts={}
+		for id,n in pairs(cost) do table.insert(parts,n.." "..(Data.Items[id] and Data.Items[id].name or id)) end
+		table.sort(parts)
+		return table.concat(parts,", ")
+	end
+	function Workers.state(p)
+		local now,h=os.time(),haste(p)
+		local result={}
+		for slot,w in ipairs(Workers.fleet(p)) do
+			W.settle(w,now,h)
+			local t=W.TypeById[w.resource]
+			local fuel=W.activeFuel(w,now)
+			local press,sell,bonus=W.effects(w)
+			local cap=W.capacity(w)
+			local stored=W.storeCount(w.store)
+			result[slot]={slot=slot,resource=w.resource,name=t.name,kind=t.kind,output=t.output,tier=w.tier,maxTier=#Data.WorkerTiers,
+				ready=stored,capacity=cap,interval=W.interval(w.resource,w.tier,h),speed=W.speedPercent(w,now),
+				perHour=math.floor(W.perHour(w,now,h)*10+0.5)/10,full=stored>=cap,store=table.clone(w.store),coins=w.coins or 0,
+				fuel=fuel and {id=fuel.id,permanent=fuel.permanent,speed=fuel.speed,remaining=if fuel.permanent then nil else w.fuel.expires-now} or nil,
+				upgrades={w.upgrades[1] or false,w.upgrades[2] or false},chest=w.chest,press=press,autoSell=sell~=nil,bonus=bonus and bonus.item or nil,
+				upgradeCost=if w.tier<#Data.WorkerTiers then W.upgradeCost(w.tier+1) else nil}
+		end
+		return result
+	end
+	function Workers.info(p)
+		local count=W.uniqueCount(p.workerUniques)
+		return {slots=Workers.slots(p),maxSlots=W.MAX_SLOTS,uniques=count,nextAt=W.nextSlotAt(count),crafted=table.clone(p.workerUniques or {}),
+			built=#Workers.fleet(p),buildCost=if #p.workers<W.MAX_SLOTS then W.buildCost(#p.workers+1) else nil}
+	end
+	local function record(p,typeId,tier)
+		local before=Workers.slots(p)
+		if W.addUnique(p.workerUniques,typeId,tier) then
+			local after=Workers.slots(p)
+			if after>before then note(p,"Unique worker crafts "..W.uniqueCount(p.workerUniques).."! Worker slot "..after.." unlocked.") end
+			return true
+		end
+		return false
+	end
+	Workers.record=record
+	-- Credit stored output to the satchel; Condensed/Radiant forms count their
+	-- raw units toward the raw collection. Returns items, resource, xp, coins.
+	function Workers.claim(p,slot)
+		local w=Workers.fleet(p)[slot or 1]
+		if not w then return 0,"Ore",0,0 end
+		settle(p,w)
+		local t=W.TypeById[w.resource]
+		local count=0
+		local store=w.store
+		w.store={}
+		local ids={}
+		for id in pairs(store) do table.insert(ids,id) end
+		table.sort(ids)
+		for _,id in ipairs(ids) do
+			local n=store[id]
+			count+=n
+			local source=W.PressSource[id]
+			if source then
+				p.items[id]=(p.items[id] or 0)+n
+				p.collection[source.raw]=(p.collection[source.raw] or 0)+n*source.units
+				collect(p,source.raw,0)
+			else
+				collect(p,id,n)
+			end
+		end
+		local xp=(w.made or 0)*t.xp
+		w.made=0
+		if xp>0 then grantXp(p,t.skill,xp) end
+		local coins=w.coins or 0
+		w.coins=0
+		w.sold=nil
+		if coins>0 then p.coins+=coins end
+		if slot==1 or slot==nil then p.lastClaim=w.lastClaim; p.workerResource=w.resource end
+		return count,w.resource,xp,coins
+	end
+	local function slotOf(p,raw)
+		local slot=tonumber(raw)
+		if not int(slot,1,W.MAX_SLOTS) then return nil end
+		return slot,Workers.fleet(p)[slot]
+	end
+	local function split(item)
+		if not validId(item) then return nil end
+		return string.match(item,"^(%d+):(%w+)$")
+	end
+	local function restart(p,slot,w)
+		w.lastClaim=os.time(); w.carry=0
+		if slot==1 then p.lastClaim=w.lastClaim end
+	end
+	function Workers.action(player,p,verb,item)
+		local fleet=Workers.fleet(p)
+		if verb=="workerResource" or verb=="workerAssign" then
+			local slot,typeId=1,item
+			if verb=="workerAssign" then
+				local raw,name=split(item)
+				slot,typeId=tonumber(raw),name
+			end
+			local w=int(slot,1,W.MAX_SLOTS) and fleet[slot]
+			if not w then return "Build this worker first." end
+			local allowed,why=Workers.allowed(p,typeId)
+			if not allowed then return why end
+			if typeId==w.resource then return "Worker already gathering "..typeId.."." end
+			local count,previous=Workers.claim(p,slot)
+			w.resource=typeId
+			restart(p,slot,w)
+			if slot==1 then p.workerResource=typeId end
+			return "Worker "..slot.." now "..W.TypeById[typeId].name.." • collected "..count.." "..previous.."."
+		elseif verb=="worker" or verb=="workerBuild" then
+			local raw,typeId=if verb=="worker" then "1" else item,nil
+			if verb=="workerBuild" and validId(item) and string.find(item,":",1,true) then raw,typeId=split(item) end
+			local slot=tonumber(raw)
+			local unlocked=Workers.slots(p)
+			if not int(slot,1,W.MAX_SLOTS) then return "Choose a worker slot from 1 to "..W.MAX_SLOTS.."." end
+			if fleet[slot] then return "This worker is already active." end
+			if slot~=#fleet+1 then return "Build the previous worker first." end
+			if slot>unlocked then
+				return "Worker slot "..slot.." unlocks at "..W.SlotUniques[slot-W.BASE_SLOTS].." unique worker crafts (you have "..W.uniqueCount(p.workerUniques)..")."
+			end
+			typeId=typeId or "Ore"
+			local allowed,why=Workers.allowed(p,typeId)
+			if not allowed then return why end
+			local cost=W.buildCost(slot)
+			if not spend(p,cost) then return "Worker needs "..cost.Timber.." Timber and "..cost.Ore.." Ore." end
+			fleet[slot]={resource=typeId,tier=1,lastClaim=os.time(),carry=0,store={},made=0,coins=0,bonusCarry=0,upgrades={false,false}}
+			record(p,typeId,1)
+			p.worker=true
+			p.started=true
+			if slot==1 then p.lastClaim=os.time(); p.workerResource=typeId end
+			return "Worker "..slot.." built • "..W.TypeById[typeId].name.." gathers 1 every "..W.interval(typeId,1,haste(p)).." s, including offline."
+		elseif verb=="workerUpgrade" then
+			local slot,w=slotOf(p,item)
+			if not w then return "Build this worker first." end
+			if w.tier>=#Data.WorkerTiers then return "Worker is at maximum tier." end
+			local tier=w.tier+1
+			local cost=W.upgradeCost(tier)
+			if not spend(p,cost) then return "Upgrade needs "..costText(cost).."." end
+			Workers.claim(p,slot)
+			w.tier=tier
+			restart(p,slot,w)
+			record(p,w.resource,tier)
+			return "Worker "..slot.." upgraded to tier "..tier..". Completed output collected; new cycle started."
+		elseif verb=="claim" or verb=="workerClaim" then
+			local slot=if verb=="claim" then 1 else tonumber(item)
+			if not int(slot,1,W.MAX_SLOTS) or not fleet[slot] then return "Build this worker first." end
+			local n,typeId,xp,coins=Workers.claim(p,slot)
+			if n<1 and coins<1 then return "Next resource is still being gathered." end
+			local t=W.TypeById[typeId]
+			return "Collected "..n.." worker "..t.output..(coins>0 and (" and "..coins.." auto-sold coins") or "").." • +"..xp.." "..t.skill.." XP."
+		elseif verb=="workerClaimAll" then
+			local items,coins=0,0
+			for slot in ipairs(fleet) do
+				local n,_,_,c=Workers.claim(p,slot)
+				items+=n; coins+=c
+			end
+			if items<1 and coins<1 then return "Your workers are still gathering." end
+			return "Collected "..items.." items"..(coins>0 and (" and "..coins.." coins") or "").." from "..#fleet.." workers."
+		elseif verb=="workerFuel" then
+			-- "slot:FuelId" or "slot:FuelId:n" (n burns of the same fuel, 1..64).
+			local raw,fuelId,amount
+			if validId(item) then raw,fuelId,amount=string.match(item,"^(%d+):(%w+):?(%d*)$") end
+			local slot,w=slotOf(p,raw)
+			if not w then return "Build this worker first." end
+			local f=W.Fuels[fuelId]
+			if not f then return "Choose a worker fuel." end
+			local n=if amount and amount~="" then tonumber(amount) else 1
+			if not int(n,1,W.FUEL_STACK) or (f.permanent and n~=1) then return "Add between 1 and "..W.FUEL_STACK.." fuel at a time." end
+			if (p.items[fuelId] or 0)<n then return "You need "..n.." "..Data.Items[fuelId].name.."." end
+			settle(p,w)
+			local now=os.time()
+			local active=W.activeFuel(w,now)
+			if active and active.id~=fuelId then return "Worker "..slot.." is burning "..Data.Items[active.id].name..". Remove it or let it burn out first." end
+			if f.permanent then
+				if active then return "Worker "..slot.." already holds "..Data.Items[fuelId].name.."." end
+				p.items[fuelId]-=n
+				w.fuel={id=fuelId,permanent=true}
+				return "Worker "..slot.." fuelled with "..Data.Items[fuelId].name.." • +"..f.speed.."% speed, permanently."
+			end
+			local from=if active then w.fuel.expires else now
+			local expires=from+f.duration*n
+			if expires-now>f.duration*W.FUEL_STACK then return "Worker "..slot.." can hold at most "..W.FUEL_STACK.." "..Data.Items[fuelId].name.."." end
+			p.items[fuelId]-=n
+			w.fuel={id=fuelId,expires=expires}
+			return "Worker "..slot.." fuelled • +"..f.speed.."% speed for "..math.floor((expires-now)/60+0.5).." min."
+		elseif verb=="workerUnfuel" then
+			local slot,w=slotOf(p,item)
+			if not w then return "Build this worker first." end
+			settle(p,w)
+			local f=W.activeFuel(w,os.time())
+			if not f then w.fuel=nil; return "Worker "..slot.." has no fuel." end
+			w.fuel=nil
+			if f.permanent then
+				p.items[f.id]=(p.items[f.id] or 0)+1
+				return "Removed "..Data.Items[f.id].name.." from worker "..slot.." (returned to your satchel)."
+			end
+			return "Worker "..slot.." fuel removed. Burnt fuel is not returned."
+		elseif verb=="workerInstall" then
+			local raw,partId=split(item)
+			local slot,w=slotOf(p,raw)
+			if not w then return "Build this worker first." end
+			local u,chest=W.Upgrades[partId],W.Chests[partId]
+			if not u and not chest then return "Choose a worker upgrade or chest." end
+			if (p.items[partId] or 0)<1 then return "You need a "..Data.Items[partId].name.."." end
+			settle(p,w)
+			if chest then
+				if w.chest==partId then return "Worker "..slot.." already has a "..Data.Items[partId].name.."." end
+				p.items[partId]-=1
+				local old=w.chest
+				if old then p.items[old]=(p.items[old] or 0)+1 end
+				w.chest=partId
+				return "Installed "..Data.Items[partId].name.." on worker "..slot.." • storage "..W.capacity(w).."."..(old and (" "..Data.Items[old].name.." returned.") or "")
+			end
+			local free
+			for i=1,W.UPGRADE_SLOTS do
+				local current=W.Upgrades[w.upgrades[i]]
+				if current and current.group==u.group then return "Worker "..slot.." already has a "..Data.Items[current.id].name.." (one of each kind)." end
+				if not current and not free then free=i end
+			end
+			if not free then return "Worker "..slot.." has no free upgrade slot. Remove an upgrade first." end
+			p.items[partId]-=1
+			w.upgrades[free]=partId
+			return "Installed "..Data.Items[partId].name.." on worker "..slot.."."
+		elseif verb=="workerRemove" then
+			-- "slot:1" / "slot:2" (upgrade slot) or "slot:chest".
+			local raw,which=split(item)
+			local slot,w=slotOf(p,raw)
+			if not w then return "Build this worker first." end
+			settle(p,w)
+			local id
+			if which=="chest" then id=w.chest; w.chest=nil
+			elseif which=="1" or which=="2" then id=w.upgrades[tonumber(which)] or nil; w.upgrades[tonumber(which)]=false
+			else return "Choose upgrade slot 1, 2 or the chest." end
+			if not id then return "Nothing installed there." end
+			p.items[id]=(p.items[id] or 0)+1
+			return "Removed "..Data.Items[id].name.." from worker "..slot.." (returned to your satchel)."
+		elseif verb=="workerBlueprint" then
+			-- "TypeId:tier": draft a unique worker (counts toward slots) without building it.
+			local typeId,rawTier
+			if validId(item) then typeId,rawTier=string.match(item,"^(%w+):(%d)$") end
+			local tier=tonumber(rawTier)
+			local t=typeId and W.TypeById[typeId]
+			if not t or not int(tier,1,#Data.WorkerTiers) then return "Choose a worker type and tier 1-"..#Data.WorkerTiers.."." end
+			local allowed,why=Workers.allowed(p,typeId)
+			if not allowed then return why end
+			if W.hasUnique(p.workerUniques,typeId,tier) then return t.name.." tier "..tier.." is already crafted." end
+			if tier>1 and not W.hasUnique(p.workerUniques,typeId,tier-1) then return "Craft "..t.name.." tier "..(tier-1).." first." end
+			local cost=W.blueprintCost(typeId,tier)
+			if not spend(p,cost) then return "Blueprint needs "..costText(cost).."." end
+			record(p,typeId,tier)
+			p.started=true
+			return "Crafted unique "..t.name.." tier "..tier.." • "..W.uniqueCount(p.workerUniques).." unique worker crafts."
+		end
+		return "Unknown worker action."
+	end
 end
 local function recipeState(p)
 	local result={}
@@ -1306,8 +1616,9 @@ local function applyStats(player,p,spawned)
 	local stats=Progression.computeStats(p,os.time())
 	player:SetAttribute("SkyreachUnlocked",(p.questCompleted or 0)>=6)
 	for _,region in ipairs(Data.Regions) do player:SetAttribute(region.id.."Unlocked",regionAllowed(p,region.id)) end
-	local fleet=workerFleet(p)
-	for slot=1,3 do
+	local fleet=Workers.fleet(p)
+	player:SetAttribute("WorkerSlots",Workers.slots(p)) -- Workers depth: unlocked slots (world stations)
+	for slot=1,Data.Workers.MAX_SLOTS do
 		local worker=fleet[slot]
 		player:SetAttribute("Worker"..slot.."Tier",if worker then worker.tier else 0)
 		player:SetAttribute("Worker"..slot.."Resource",if worker then worker.resource else "Ore")
@@ -1432,29 +1743,11 @@ local function snapshot(player,message)
 	end
 	local legacyStats,stats=applyStats(player,p)
 	return {xp=p.xp,items=p.items,consumables=provisions,collection=p.collection,coins=p.coins,bank=p.bank,bankRevision=p.bankRevision or 0,worker=p.worker,
-		ironman=p.ironman,levels=levels,enchantRank=p.enchantRank or 0,workerResource=p.workerResource or "Ore",workerReady=ready(p),workers=workerState(p),message=message or "",kills=p.kills,
+		ironman=p.ironman,levels=levels,enchantRank=p.enchantRank or 0,workerResource=p.workerResource or "Ore",workerReady=Workers.ready(p),workers=Workers.state(p),workerInfo=Workers.info(p),message=message or "",kills=p.kills,
 		companionBond=p.companionBond or 0,market=marketViews[player],economy=Econ.view and Econ.view(player,p),recipes=recipeState(p),regions=regionState(p),stats=legacyStats,quest=questState(p),slayer=slayerState(p),started=p.started,decorations=p.decorations,preview=preview[player]==true,
 		depth=depthState(p,stats),journal=Journal.state(p),agilityHunter=Skills.state(player,p), -- Agility & Hunter page state
 		events={claims=p.eventClaims or {},vendorUntil=player:GetAttribute("EventVendorUntil") or 0,serverTime=os.time()}, -- Events hook: Calendar page state
 		garden=Garden.state and Garden.state(player,p)} -- Verdant Garden page state
-end
-local function claimWorker(p,slot)
-	slot=slot or 1
-	local w=workerFleet(p)[slot]
-	if not w then return 0,"Ore",0 end
-	local count=workerReady(w,p)
-	local resource=w.resource
-	local xp=0
-	if count>0 then
-		local interval=workerInterval(p,w)
-		w.lastClaim=os.time()-((os.time()-w.lastClaim)%interval)
-		collect(p,resource,count)
-		local skill,each=workerXp(resource)
-		xp=count*each
-		if skill then grantXp(p,skill,xp) end
-	end
-	if slot==1 then p.lastClaim=w.lastClaim; p.workerResource=resource end
-	return count,resource,xp
 end
 local function persist(player,release)
 	if preview[player] or not profiles[player] then return true end
@@ -1463,9 +1756,10 @@ local function persist(player,release)
 	if not p then return true end
 	saving[player]=true
 	local owner=sessionOwner[player]
-	workerFleet(p)
+	Workers.fleet(p)
 	-- Deep copy: every nested Depth table (pets, buffs, enchants...) is snapshotted.
 	local payload=deepCopy(p)
+	payload.workersClean=nil -- Workers depth: session-only sanitise marker
 	local owned=false
 	local committed
 	local ok=pcall(function()
@@ -1522,7 +1816,7 @@ local function migrate(profile)
 	local quest=profile.slayerQuest
 	if quest~=nil and (type(quest)~="table" or not Data.Slayers[quest.line] or not Data.Slayers[quest.line].tiers[quest.tier]) then profile.slayerQuest=nil end
 	profile.version=math.max(tonumber(profile.version) or 1,2)
-	workerFleet(profile)
+	Workers.migrate(profile) -- Workers depth: sanitise fleet, seed unique crafts
 	Journal.migrate(profile)
 	Skills.migrate(profile) -- Agility & Hunter records + milestone perks
 	Gear.migrate(profile) -- Gear depth: reforges, stars, books
@@ -2542,6 +2836,8 @@ local function perform(player,verb,item,prompt)
 		return Mastery.action(player,p,verb,item) -- Skill Mastery
 	elseif Garden.verbs[verb] then
 		return Garden.action(player,p,verb,item,prompt) -- Verdant Garden
+	elseif Workers.verbs[verb] then
+		return Workers.action(player,p,verb,item) -- Workers depth
 	elseif Endgame.verbs[verb] and prompt then
 		return Endgame.action(player,p,verb,item) -- Endgame: Sovereign Altar
 	elseif Econ.verbs and Econ.verbs[verb] then
@@ -2802,59 +3098,6 @@ local function perform(player,verb,item,prompt)
 		if not p.slayerQuest then return "You have no slayer quest." end
 		p.slayerQuest=nil
 		return "Slayer quest abandoned. The fee is not refunded."
-	elseif verb=="workerResource" or verb=="workerAssign" then
-		local slot,resource=1,item
-		if verb=="workerAssign" then
-			local raw,name=string.match(item or "","^([1-3]):(%a+)$")
-			slot,resource=tonumber(raw),name
-		end
-		local w=slot and workerFleet(p)[slot]
-		if not w then return "Build this worker first." end
-		local allowed,why=workerAllowed(p,resource)
-		if not allowed then return why end
-		if resource==w.resource then return "Worker already gathering "..resource.."." end
-		local count,previous=claimWorker(p,slot)
-		w.resource=resource
-		w.lastClaim=os.time()
-		if slot==1 then p.workerResource=resource; p.lastClaim=w.lastClaim end
-		return "Worker "..slot.." gathering "..resource.." • collected "..count.." "..previous.."."
-	elseif verb=="worker" or verb=="workerBuild" then
-		local slot=if verb=="worker" then 1 else tonumber(item)
-		local fleet=workerFleet(p)
-		if not slot or slot%1~=0 or slot<1 or slot>3 then return "Choose worker slot 1, 2 or 3." end
-		if fleet[slot] then return "This worker is already active." end
-		if slot~=#fleet+1 then return "Build the previous worker first." end
-		if not spend(p,{Timber=5*slot,Ore=3*slot}) then return "Worker needs "..(5*slot).." Timber and "..(3*slot).." Ore." end
-		fleet[slot]={resource="Ore",tier=1,lastClaim=os.time()}
-		p.worker=true
-		p.started=true
-		if slot==1 then p.lastClaim=os.time(); p.workerResource="Ore" end
-		return "Worker "..slot.." built • 1 resource per 2 minutes, including offline."
-	elseif verb=="workerUpgrade" then
-		local slot=tonumber(item)
-		local w=slot and workerFleet(p)[slot]
-		if not w then return "Build this worker first." end
-		if w.tier>=#Data.WorkerTiers then return "Worker is at maximum tier." end
-		local tier=w.tier+1
-		local cost=workerCost(tier)
-		if not spend(p,cost) then
-			local parts={}
-			for material,n in pairs(cost) do table.insert(parts,n.." "..material) end
-			table.sort(parts)
-			return "Upgrade needs "..table.concat(parts,", ").."."
-		end
-		claimWorker(p,slot)
-		w.tier=tier
-		w.lastClaim=os.time()
-		if slot==1 then p.lastClaim=w.lastClaim end
-		return "Worker "..slot.." upgraded to tier "..tier..". Completed output collected; new cycle started."
-	elseif verb=="claim" or verb=="workerClaim" then
-		local slot=if verb=="claim" then 1 else tonumber(item)
-		if not slot or not workerFleet(p)[slot] then return "Build this worker first." end
-		local n,resource,xp=claimWorker(p,slot)
-		if n<1 then return "Next resource is still being gathered." end
-		local skill=workerXp(resource)
-		return "Collected "..n.." worker "..resource.." • +"..xp.." "..(skill or "").." XP."
 	elseif verb=="sell" then
 		if item==nil or prices[item] then
 			local total=0

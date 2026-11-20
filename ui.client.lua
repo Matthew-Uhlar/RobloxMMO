@@ -3334,31 +3334,211 @@ local function drawStation(station)
 	end
 	if shown==0 then card({motif="Workshop",title="Nothing ready yet",detail="Gather the listed materials or level up to unlock more patterns.",actions={{caption="Show all",fn=function() craftableOnly=false;render() end}}}) end
 end
+-- Workers page (Workers depth): fleet summary with unique-craft progress, a
+-- slot grid (type icon, tier, fuel, storage fill), the selected worker's detail
+-- (collect / upgrade / refuel / install / remove) and a type browser (assign
+-- or draft unique blueprints). All state lives in WK (200-local limit).
+local WK={selected=1,group="Mining",groups={"Mining","Woodcutting","Fishing","Farming","Combat"}}
+function WK.costText(cost)
+	local parts={}
+	for id,n in pairs(tbl(cost)) do table.insert(parts,fmt(n).." "..itemName(id)) end
+	table.sort(parts)
+	return table.concat(parts," + ")
+end
+function WK.afford(cost)
+	for id,n in pairs(tbl(cost)) do if count("items",id)<num(n,0) then return false,"Needs "..fmt(n).." "..itemName(id).."." end end
+	return true
+end
+function WK.allowed(t,levels)
+	if num(t.collectionTier,0)<=0 then return true end
+	local lvl=levels[t.skill] and levels[t.skill].level or 1
+	if lvl<num(t.level,1) then return false,"Requires "..tostring(t.skill).." "..num(t.level,1).."." end
+	local _,tier=collectionInfo(t.output)
+	if tier<num(t.collectionTier,1) then return false,"Unlocks at "..itemName(t.output).." collection tier "..numeral(num(t.collectionTier,1)).."." end
+	return true
+end
+function WK.duration(seconds)
+	seconds=math.max(0,math.floor(num(seconds,0)))
+	if seconds>=3600 then return (seconds//3600).."h "..((seconds%3600)//60).."m" end
+	return (seconds//60).."m "..(seconds%60).."s"
+end
+function WK.hasUnique(crafted,typeId,tier)
+	local mask=num(tbl(crafted)[typeId],0)
+	return math.floor(mask/2^(tier-1))%2==1
+end
+function WK.tile(grid,slot,w,unlocked,size,W)
+	local on=WK.selected==slot
+	local cell=tile(grid,"WorkerSlot"..slot,slot,function() WK.selected=slot;render() end)
+	make("UIStroke",cell,{Color=on and gold or slate,Transparency=on and 0 or .3,Thickness=on and 2 or 1})
+	if type(w)=="table" then
+		local art=itemIcon(cell,w.output,size)
+		art.AnchorPoint=Vector2.new(.5,0)
+		art.Position=UDim2.new(.5,0,0,6)
+		local head=label(cell,"W"..slot.."  ·  T"..numeral(num(w.tier,1)),0,size+8,full,14,UI.heavy,11,gold)
+		head.TextXAlignment=Enum.TextXAlignment.Center
+		local fuel=type(w.fuel)=="table" and (w.fuel.permanent and "∞ fuel" or WK.duration(w.fuel.remaining)) or ""
+		local sub=label(cell,fmt(num(w.ready,0)).." / "..fmt(num(w.capacity,0))..(fuel~="" and ("  ·  "..fuel) or ""),2,size+22,UDim.new(1,-4),14,bold,10,w.full and ember or muted)
+		sub.TextXAlignment=Enum.TextXAlignment.Center
+		local bar,fill=UI.meter(cell,"Storage",w.full and ember or mint,6)
+		bar.AnchorPoint=Vector2.new(.5,1)
+		bar.Position=UDim2.new(.5,0,1,-6)
+		bar.Size=UDim2.new(1,-14,0,6)
+		UI.setMeter(fill,math.clamp(num(w.ready,0)/math.max(1,num(w.capacity,1)),0,1))
+	else
+		local locked=slot>unlocked
+		local art=motif(cell,"Workshop",size)
+		art.AnchorPoint=Vector2.new(.5,0)
+		art.Position=UDim2.new(.5,0,0,6)
+		art.BackgroundTransparency=.5
+		local need=W and W.SlotUniques[slot-W.BASE_SLOTS]
+		local head=label(cell,locked and ("SLOT "..slot) or ("BUILD "..slot),0,size+8,full,14,UI.heavy,11,locked and muted or gold)
+		head.TextXAlignment=Enum.TextXAlignment.Center
+		local sub=label(cell,locked and (need and (need.." uniques") or "Locked") or "Open slot",0,size+22,full,14,bold,10,muted)
+		sub.TextXAlignment=Enum.TextXAlignment.Center
+	end
+end
 local function drawWorkers()
-	heading("ISLAND INDUSTRY")
-	row("Worker fleet", "Up to three workers gather independently, including while away. Changing assignments collects completed output and restarts the current cycle.")
-	local workers = tbl(state.workers)
-	for slot = 1, 3 do
-		local worker = workers[slot]
-		if type(worker)=="table" then
-			local slotId = tostring(slot)
-			row("Worker " .. slot .. " · " .. tostring(worker.resource) .. " · Tier " .. tostring(worker.tier),
-				tostring(worker.ready) .. " ready at last check. One resource every " .. tostring(worker.interval) .. " seconds; stores " .. tostring(worker.capacity) .. ".",
-				"Collect", function() send("workerClaim", slotId) end)
-			if num(worker.tier,3) < 3 then
-				local nextTier = worker.tier + 1
-				row("Upgrade worker " .. slot, (nextTier*5) .. " timber + " .. (nextTier*3) .. " ore. Completed output collected; a faster cycle starts with more storage.",
-					"Upgrade", function() send("workerUpgrade", slotId) end)
+	local W=Data and type(Data.Workers)=="table" and Data.Workers or nil
+	local workers={}
+	for i,w in ipairs(tbl(state.workers)) do if type(w)=="table" then workers[i]=w else break end end
+	local info=tbl(state.workerInfo)
+	local maxSlots=num(info.maxSlots,W and W.MAX_SLOTS or 3)
+	local unlocked=math.clamp(num(info.slots,3),1,maxSlots)
+	local uniques=num(info.uniques,0)
+	local levels=skillsOf(state)
+	heading("ISLAND INDUSTRY    /    "..#workers.." BUILT  ·  "..unlocked.." OF "..maxSlots.." SLOTS")
+	-- Fleet summary: collect-all, next build, unique-craft progress.
+	local prevAt=0
+	if W then for _,need in ipairs(W.SlotUniques) do if need<=uniques then prevAt=need end end end
+	local nextAt=num(info.nextAt,nil)
+	local stored,coins=0,0
+	for _,w in ipairs(workers) do stored+=num(w.ready,0); coins+=num(w.coins,0) end
+	local actions={{caption="Collect all",primary=stored>0 or coins>0,name="WorkersCollectAll",fn=function() send("workerClaimAll") end}}
+	local nextSlot=#workers+1
+	if nextSlot<=maxSlots then
+		local cost=info.buildCost or {Timber=5*nextSlot,Ore=3*nextSlot}
+		local ok,reason=WK.afford(cost)
+		if nextSlot>unlocked then ok,reason=false,"Slot "..nextSlot.." unlocks at "..tostring(nextAt or "?").." unique worker crafts." end
+		table.insert(actions,{caption="Build "..nextSlot,primary=ok,disabled=not ok,reason=reason,name="WorkersBuild",fn=function() send("workerBuild",tostring(nextSlot)) end})
+	end
+	card({name="WorkerFleet",motif="Workshop",title="Worker fleet",titleColor=gold,
+		subtitle=fmt(stored).." items waiting"..(coins>0 and ("  ·  "..fmt(coins).." auto-sold coins") or ""),badge=uniques.." UNIQUE",badgeColor=gold,
+		detail="Workers gather while you are away (up to 48 hours, never past their storage). Craft unique workers — a new type or tier — to open up to "..maxSlots.." slots.",
+		lines={nextSlot<=maxSlots and ("Next worker: "..WK.costText(info.buildCost or {Timber=5*nextSlot,Ore=3*nextSlot})) or "Every slot is built."},
+		bar=nextAt and {fraction=math.clamp((uniques-prevAt)/math.max(1,nextAt-prevAt),0,1),color=gold,caption=uniques.." / "..nextAt.." unique crafts → slot "..(unlocked+1)}
+			or {fraction=1,color=gold,caption="ALL "..maxSlots.." SLOTS OPEN"},
+		actions=actions})
+	-- Slot grid.
+	local width=contentWidth()
+	local columns=width>=600 and 6 or (width>=400 and 4 or 3)
+	local size=compactAtlas and 34 or 40
+	local grid=gridHolder(UDim2.new(1/columns,-6,0,size+52),6)
+	for slot=1,maxSlots do WK.tile(grid,slot,workers[slot],unlocked,size,W) end
+	local w=workers[WK.selected]
+	if not w then
+		WK.selected=math.clamp(WK.selected,1,math.max(1,#workers))
+		w=workers[WK.selected]
+	end
+	if not w then
+		card({motif="Workshop",title="No workers yet",detail="Build your first worker for 5 timber and 3 ore. It gathers Copperstone Ore until you change its type."})
+		return
+	end
+	local slotId=tostring(WK.selected)
+	heading("WORKER "..WK.selected.."    /    "..string.upper(escape(tostring(w.name or w.resource))))
+	-- Detail card: output, pace, fuel, storage.
+	local lines={}
+	table.insert(lines,paint(string.format("%.1f",num(w.perHour,0)).." / hour","F9CC77").."  ·  one every "..num(w.interval,0).." s  ·  speed "..num(w.speed,100).."%")
+	local fuel=type(w.fuel)=="table" and w.fuel or nil
+	table.insert(lines,fuel and ("Fuel: "..paint(escape(itemName(fuel.id)),itemHex(fuel.id)).." +"..num(fuel.speed,0).."%  ·  "..(fuel.permanent and "permanent" or (WK.duration(fuel.remaining).." left"))) or "Fuel: none — craft briquettes or catalysts at the Workbench.")
+	local storeParts={}
+	for id,n in pairs(tbl(w.store)) do table.insert(storeParts,fmt(n).." "..escape(itemName(id))) end
+	table.sort(storeParts)
+	if #storeParts>0 then table.insert(lines,"Stored: "..table.concat(storeParts,"  ·  ")) end
+	if num(w.coins,0)>0 then table.insert(lines,paint(fmt(w.coins).." coins from the Coinchute","FFD166")) end
+	local detailActions={{caption="Collect",primary=num(w.ready,0)>0 or num(w.coins,0)>0,name="WorkerCollect",fn=function() send("workerClaim",slotId) end}}
+	if w.upgradeCost then
+		local ok,reason=WK.afford(w.upgradeCost)
+		table.insert(lines,"Tier "..numeral(num(w.tier,1)+1)..": "..WK.costText(w.upgradeCost))
+		table.insert(detailActions,{caption="Upgrade",primary=ok,disabled=not ok,reason=reason,name="WorkerUpgrade",fn=function() send("workerUpgrade",slotId) end})
+	end
+	-- Refuel with the strongest fuel held (or the one burning).
+	local bestFuel
+	for _,id in ipairs(W and W.FuelOrder or {}) do
+		if count("items",id)>0 and (not fuel or fuel.id==id) and not (fuel and fuel.permanent) then bestFuel=id end
+	end
+	table.insert(detailActions,{caption="Refuel",primary=bestFuel~=nil,disabled=bestFuel==nil,
+		reason=fuel and fuel.permanent and "This worker holds a permanent fuel." or "Craft worker fuel at the Workbench (Worker Parts).",name="WorkerRefuel",
+		fn=function() send("workerFuel",slotId..":"..tostring(bestFuel)) end})
+	card({name="Worker"..WK.selected,item=w.output,title=escape(tostring(w.name or w.resource)),titleColor=rgb(itemHex(w.output)),
+		subtitle="Tier "..numeral(num(w.tier,1)).." / "..numeral(num(w.maxTier,7)).."  ·  "..(w.kind=="combat" and "Combat worker" or "Gatherer").."  ·  slot "..WK.selected,
+		badge=w.full and "FULL" or (num(w.ready,0)>0 and (fmt(w.ready).." READY") or "WORKING"),badgeColor=w.full and ember or mint,
+		lines=lines,pips={total=num(w.maxTier,7),filled=num(w.tier,1),color=gold},
+		bar={fraction=math.clamp(num(w.ready,0)/math.max(1,num(w.capacity,1)),0,1),color=w.full and ember or mint,caption=fmt(num(w.ready,0)).." / "..fmt(num(w.capacity,0)).." storage"},
+		actions=detailActions})
+	-- Upgrade slots and chest.
+	local ups=tbl(w.upgrades)
+	local upLines={}
+	local removeActions={}
+	for i=1,(W and W.UPGRADE_SLOTS or 2) do
+		local id=ups[i]
+		local def=type(id)=="string" and itemDef(id)
+		table.insert(upLines,"Upgrade "..i..": "..(def and (paint(escape(def.name),itemHex(id)).." — "..escape(tostring(W and W.Upgrades[id] and W.Upgrades[id].text or ""))) or "empty"))
+		if def then table.insert(removeActions,{caption="Remove "..i,name="WorkerRemove"..i,fn=function() send("workerRemove",slotId..":"..i) end}) end
+	end
+	table.insert(upLines,"Chest: "..(type(w.chest)=="string" and (escape(itemName(w.chest)).." (+"..fmt(W and W.Chests[w.chest] and W.Chests[w.chest].capacity or 0).." storage)") or "none"))
+	if type(w.chest)=="string" then table.insert(removeActions,{caption="Remove chest",name="WorkerRemoveChest",fn=function() send("workerRemove",slotId..":chest") end}) end
+	card({name="WorkerUpgrades",motif="Workshop",title="Upgrades & storage",subtitle="Two upgrade slots (one of each kind) and one chest",lines=upLines,actions=#removeActions>0 and removeActions or nil})
+	-- Parts and fuel held: install / refuel.
+	if W then
+		local held={}
+		for _,list in ipairs({W.UpgradeOrder,W.ChestOrder,W.FuelOrder}) do
+			for _,id in ipairs(list) do if count("items",id)>0 then table.insert(held,id) end end
+		end
+		for _,id in ipairs(held) do
+			local def=itemDef(id)
+			local isFuel=W.Fuels[id]~=nil
+			local partActions={{caption=isFuel and "Refuel" or "Install",primary=true,name="Part"..id,
+				fn=function() send(isFuel and "workerFuel" or "workerInstall",slotId..":"..id) end}}
+			if isFuel and not W.Fuels[id].permanent and count("items",id)>=8 then
+				table.insert(partActions,{caption="Add 8",name="Part"..id.."Eight",fn=function() send("workerFuel",slotId..":"..id..":8") end})
 			end
-			for _, resource in ipairs({"Ore", "Timber", "Herb", "Fish"}) do
-				local selected = resource == worker.resource
-				row("Worker " .. slot .. " / " .. resource, selected and "Current assignment" or "Assign this worker to gather " .. resource .. ".",
-					if selected then nil else "Assign", function() send("workerAssign", slotId .. ":" .. resource) end)
+			card({name="WorkerPart"..id,item=id,title=escape(def and def.name or id),titleColor=rgb(itemHex(id)),subtitle=fmt(count("items",id)).." held",
+				detail=escape(def and def.description or ""),actions=partActions})
+		end
+		if #held==0 then
+			card({motif="Workshop",title="No worker parts held",detail="Craft fuel, upgrades and chests at the Workbench under Worker Parts. Condensed forms come from the Compacting patterns or a Bundling Frame."})
+		end
+	end
+	-- Type browser: change type or draft unique blueprints.
+	if not W then return end
+	heading("WORKER TYPES    /    ASSIGN OR DRAFT UNIQUE CRAFTS")
+	sectionBar(WK.groups,WK.group,function(name) WK.group=name;render() end,{small=true,prefix="WorkerGroup"})
+	local crafted=tbl(info.crafted)
+	for _,t in ipairs(W.Types) do
+		local group=if t.kind=="combat" then "Combat" else t.skill
+		if group==WK.group then
+			local ok,reason=WK.allowed(t,levels)
+			local filled=0
+			for tier=1,#Data.WorkerTiers do if WK.hasUnique(crafted,t.id,tier) then filled+=1 end end
+			local nextTier
+			for tier=1,#Data.WorkerTiers do if not WK.hasUnique(crafted,t.id,tier) then nextTier=tier break end end
+			local typeActions={}
+			if t.id~=w.resource then
+				table.insert(typeActions,{caption="Assign",primary=ok,disabled=not ok,reason=reason,name="Assign"..t.id,fn=function() send("workerAssign",slotId..":"..t.id) end})
 			end
-		elseif slot == #workers + 1 then
-			row("Build worker " .. slot, (5*slot) .. " timber + " .. (3*slot) .. " ore", "Build", function()
-				send("workerBuild", tostring(slot))
-			end)
+			local typeLines={(t.kind=="combat" and "Produces " or "Gathers ")..paint(escape(itemName(t.output)),itemHex(t.output)).."  ·  "..(t.speed~=1 and (t.speed.."× slower  ·  ") or "")..num(t.xp,0).." "..t.skill.." XP each"}
+			if nextTier then
+				local cost=W.blueprintCost(t.id,nextTier)
+				local can,why=WK.afford(cost)
+				if not ok then can,why=false,reason end
+				table.insert(typeLines,"Draft tier "..numeral(nextTier)..": "..WK.costText(cost))
+				table.insert(typeActions,{caption="Draft "..numeral(nextTier),primary=can,disabled=not can,reason=why,name="Draft"..t.id,
+					fn=function() send("workerBlueprint",t.id..":"..nextTier) end})
+			end
+			card({name="WorkerType"..t.id,item=t.output,title=escape(t.name),titleColor=rgb(itemHex(t.output)),
+				subtitle=t.id==w.resource and "Current type" or (ok and "Unlocked" or escape(reason or "Locked")),
+				badge=filled.." / "..#Data.WorkerTiers,badgeColor=filled>0 and gold or muted,lines=typeLines,
+				pips={total=#Data.WorkerTiers,filled=filled,color=gold},actions=#typeActions>0 and typeActions or nil})
 		end
 	end
 end

@@ -158,6 +158,85 @@ check(savedWorker:FindFirstChildOfClass("ProximityPrompt"):GetAttribute("IsleAct
 check(savedWorker:FindFirstChild("Worker status"):FindFirstChildOfClass("TextLabel").Text:find("TIER 3",1,true)~=nil,"saved tier restored")
 local cache=homeA:FindFirstChild("WorkerStation1"):FindFirstChild("Surveyor cache"):FindFirstChildOfClass("ProximityPrompt")
 check(cache.Enabled and cache:GetAttribute("IsleAction")=="claim","first worker cache keeps legacy claim action")
+-- Workers depth: twelve stations; 4-12 ring the Worker Yard outside the
+-- placement grid, 1-3 stay inside Data.Island's protected worker rectangles.
+do
+	local before=checks
+	local I=Data.Island
+	local meadow=homeA:FindFirstChild("Meadow").CFrame.Position
+	local yard=homeA:FindFirstChild("Worker Yard")
+	check(yard~=nil,"home gains a Worker Yard")
+	check(homeA:FindFirstChild("Anchor_Waypoint_WorkerYard",true)~=nil,"worker yard waypoint")
+	local pads={}
+	for slot=1,Data.Workers.MAX_SLOTS do
+		local station=homeA:FindFirstChild("WorkerStation"..slot)
+		check(station~=nil,"worker station "..slot.." exists")
+		local pad=station:FindFirstChild("Worker pad").CFrame.Position
+		local o=pad-meadow
+		pads[slot]=o
+		check(math.sqrt(o.X^2+o.Z^2)+2.3<=48,"station "..slot.." inside the home footprint")
+		local chassis=station:FindFirstChild("Surveyor chassis")
+		local interaction=chassis:FindFirstChildOfClass("ProximityPrompt")
+		check(interaction:GetAttribute("OwnerUserId")==11,"station "..slot.." owner")
+		check(interaction:GetAttribute("IsleItem")==tostring(slot),"station "..slot.." slot id")
+		check(station:FindFirstChild("Tier ring")~=nil,"station "..slot.." tier ring")
+		if slot<=3 then
+			local inside=false
+			for _,r in ipairs(I.Protected) do
+				if r.name=="worker station" and o.X>=r.x1 and o.X<=r.x2 and o.Z>=r.z1 and o.Z<=r.z2 then inside=true end
+			end
+			check(inside,"station "..slot.." sits in a protected worker rectangle")
+		else
+			check(math.sqrt(o.X^2+o.Z^2)-2.6>I.RADIUS,"yard station "..slot.." is outside the placement grid")
+			local y=yard:FindFirstChild("Upper meadow").CFrame.Position
+			check(math.sqrt((pad.X-y.X)^2+(pad.Z-y.Z)^2)+2.6<=11.55,"yard station "..slot.." on the yard")
+			check(math.abs(pad.Y-homeA:GetAttribute("IslandCenter").Y-1.58)<.05,"yard station "..slot.." stands on the yard top")
+			local locked=interaction.Enabled==false
+			check(locked,"station "..slot.." locked until unique crafts open it")
+			check(chassis:FindFirstChild("Worker status"):FindFirstChildOfClass("TextLabel").Text:find("Locked",1,true)~=nil,"locked station explains itself")
+		end
+	end
+	for i=1,Data.Workers.MAX_SLOTS do
+		for j=i+1,Data.Workers.MAX_SLOTS do
+			local d=pads[i]-pads[j]
+			check(math.sqrt(d.X^2+d.Z^2)>=4.7,"stations "..i.." and "..j.." do not overlap")
+		end
+	end
+	-- Unlock slot 4 and build a Shardling Sentry there.
+	local s4=homeA:FindFirstChild("WorkerStation4")
+	local p4=s4:FindFirstChild("Surveyor chassis"):FindFirstChildOfClass("ProximityPrompt")
+	a:SetAttribute("WorkerSlots",4)
+	check(p4.Enabled and p4:GetAttribute("IsleAction")=="workerBuild","unlocked slot 4 offers a build")
+	check(not homeA:FindFirstChild("WorkerStation5"):FindFirstChild("Surveyor chassis"):FindFirstChildOfClass("ProximityPrompt").Enabled,"slot 5 still locked")
+	a:SetAttribute("Worker4Resource","ShardlingSentry")
+	a:SetAttribute("Worker4Tier",3)
+	check(p4:GetAttribute("IsleAction")=="workerClaim","built yard worker claims")
+	check(p4.ObjectText:find("Shardling Sentry",1,true)~=nil,"type name on the prompt")
+	local emblem=s4:FindFirstChild("Worker emblem")
+	check(emblem~=nil and emblem:GetAttribute("Shape")=="AetherCrystal","combat emblem shape")
+	check(emblem:GetAttribute("WorkerType")=="ShardlingSentry","emblem tagged with the type")
+	local surveyors=0
+	for _,child in s4:GetChildren() do if child.Name=="Sculpted surveyor" then surveyors+=1 end end
+	check(surveyors==1,"one surveyor sculpture")
+	check(s4:FindFirstChild("Sculpted surveyor"):GetAttribute("SculptureScale")>1,"surveyor grows with tier")
+	local ring=s4:FindFirstChild("Tier ring")
+	local tier3=ring.Color
+	a:SetAttribute("Worker4Tier",7)
+	check(ring.Color~=tier3,"tier ring recolours by tier")
+	a:SetAttribute("Worker4Resource","Timber")
+	local timberEmblem=s4:FindFirstChild("Worker emblem")
+	check(timberEmblem:GetAttribute("Shape")=="Log","emblem follows the type")
+	local emblems,size=0,#s4:GetDescendants()
+	for _,child in s4:GetChildren() do if child.Name=="Worker emblem" then emblems+=1 end end
+	check(emblems==1,"old emblem removed")
+	a:SetAttribute("Worker4Resource","Timber")
+	check(#s4:GetDescendants()==size,"repeat attribute does not rebuild")
+	for _,id in ipairs({"Ore","Fish","Herb","WispglowLantern","Celestium"}) do
+		a:SetAttribute("Worker4Resource",id)
+		check(s4:FindFirstChild("Worker emblem"):GetAttribute("Shape")==Data.Workers.TypeById[id].shape,id.." emblem")
+	end
+	print("Workers depth world: "..(checks-before).." checks.")
+end
 local parts,prompts,signs=0,0,0
 a:SetAttribute("CoopId","11")
 b:SetAttribute("CoopId","11")

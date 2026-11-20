@@ -253,6 +253,8 @@ local function profile()
 			EmberheartCinder = 1, WardstoneSeal = 2, WildheartEssence = 60, TemperingTome = 2, MasterworkTome = 1,
 			-- Verdant Garden: seeds, compost, salve, Marks, Dust and crops for a visitor.
 			MeadowSeeds = 5, SunwheatSeeds = 2, Compost = 3, BlightwardSalve = 1, VerdantMark = 40, BloomDust = 6, Sunwheat = 30,
+			-- Workers depth: fuel, an upgrade and a chest to install.
+			CharredBriquette = 12, EverflameHeart = 1, WorkerGleamSprinkler = 1, WorkerBrassChest = 1, CondensedOre = 2,
 		},
 		collection = { Ore = 320, Timber = 60, Herb = 70, Fish = 30, Brassite = 40, Shard = 2, StormFeather = 3, BeastHide = 0 },
 		equipment = { weapon = "BrassSword", helmet = "BrassHelm", chest = "BrassChestplate", legs = "BrassGreaves", boots = "BrassBoots", ammo = "BrassArrow" },
@@ -293,7 +295,21 @@ local function snapshot(options)
 		regions = { { name = "Skyreach", unlocked = false, requirement = "Complete 6 contracts" } },
 		stats = { maxHealth = 120, defense = 5 }, quest = { title = "Contract", detail = "Do it", ready = true },
 		slayer = { tier = 1, active = true, progress = 1, target = 2, ready = false, completed = 0, coins = 20, xp = 30 },
-		workers = { { resource = "Ore", tier = 1, ready = 3, interval = 120, capacity = 60 } }, decorations = { Garden = true },
+		-- Workers depth (server Workers.state / Workers.info): a fuelled, upgraded tier 3 delver,
+		-- a full auto-selling feller, a permanent-fuel Shardling Sentry and a fresh tiller.
+		workers = {
+			{ slot = 1, resource = "Ore", name = "Copperstone Delver", kind = "gather", output = "Ore", tier = 3, maxTier = 7, ready = 82, capacity = 540, interval = 60, speed = 110, perHour = 66,
+				full = false, store = { Ore = 80, CondensedOre = 2 }, coins = 0, fuel = { id = "CharredBriquette", speed = 10, remaining = 1500 }, upgrades = { "WorkerBundler", "WorkerStoreAnnex" },
+				chest = "WorkerCoffer", press = 1, autoSell = false, upgradeCost = { Timber = 20, Ore = 12, AlloyIngot = 4, AetherIngot = 2 } },
+			{ slot = 2, resource = "Timber", name = "Meadow Timber Feller", kind = "gather", output = "Timber", tier = 1, maxTier = 7, ready = 120, capacity = 120, interval = 120, speed = 100, perHour = 30,
+				full = true, store = { Timber = 120 }, coins = 720, upgrades = { "WorkerCoinchute", false }, press = 0, autoSell = true, upgradeCost = { Timber = 10, Ore = 6 } },
+			{ slot = 3, resource = "ShardlingSentry", name = "Shardling Sentry", kind = "combat", output = "Shard", tier = 7, maxTier = 7, ready = 0, capacity = 1000, interval = 78, speed = 125, perHour = 57.7,
+				full = false, store = {}, coins = 0, fuel = { id = "EverflameHeart", speed = 25, permanent = true }, upgrades = { false, false }, press = 0, autoSell = false },
+			{ slot = 4, resource = "Herb", name = "Meadow Herb Tiller", kind = "gather", output = "Herb", tier = 1, maxTier = 7, ready = 0, capacity = 120, interval = 120, speed = 100, perHour = 30,
+				full = false, store = {}, coins = 0, upgrades = { false, false }, press = 0, autoSell = false, upgradeCost = { Timber = 10, Ore = 6 } },
+		},
+		workerInfo = { slots = 5, maxSlots = 12, uniques = 14, nextAt = 20, built = 4, buildCost = { Timber = 25, Ore = 15 }, crafted = { Ore = 7, Timber = 1, ShardlingSentry = 127, Herb = 1 } },
+		decorations = { Garden = true },
 		started = true, companionBond = 2, enchantRank = 1,
 		economy = {
 			bazaar = { item = "Ore", bids = { { price = 20, qty = 30, orders = 2 }, { price = 18, qty = 5, orders = 1 } }, asks = { { price = 25, qty = 10, orders = 1 } },
@@ -420,6 +436,9 @@ local function snapshot(options)
 			mastery = { trees = { Mining = 5, Fishing = { nodes = "x", states = { PatientLine = 3, Nope = "owned" }, available = "lots", cooldown = {} } }, tokens = 7, capes = "x", cape = 5, titles = { Mining = 4 } },
 			gear = { reforges = { BrassSword = 5, Blade = "Nope", BrassHelm = "Honed" }, stars = { BrassSword = "many", BrassHelm = 99 }, books = { BrassSword = 3, BrassHelm = { tempering = "x", masterwork = "yes" } } },
 		}
+		result.workers = { { resource = "Ghost", tier = "x", ready = "lots", capacity = 0, store = 7, fuel = "y", upgrades = 3, chest = 5, upgradeCost = "x", maxTier = "many", output = 4 },
+			{ resource = "Ore", fuel = { id = 5, remaining = "soon" }, upgrades = { "Nope", 7 }, store = { Ghost = "x" }, upgradeCost = { Ghost = 2 } }, 5 }
+		result.workerInfo = { slots = "many", maxSlots = 99, uniques = "x", nextAt = "soon", crafted = 5, buildCost = 3 }
 		result.economy = { bazaar = 5, auction = { category = "weapon", listings = { 7, { id = "x" }, { id = 3, item = 4 } }, pages = "two" },
 			orders = { 1, "x", { id = "no" }, { id = 3, item = "Nope", side = "bid" } }, listings = { { cat = 3 }, { id = 2, item = "BrassSword", cat = "weapon", expires = "soon" } }, serverTime = "now" }
 	end
@@ -641,6 +660,16 @@ local verbs = {
 	visitorDecline = function(item) return tostring(item):match("^%d+$") ~= nil end,
 	gardenBuy = function(item) return Data.Garden.ShopById[item] ~= nil end,
 	gardenSkin = function(item) return Data.Garden.SkinById[item] ~= nil end,
+	-- Workers depth verbs.
+	workerClaim = function(item) return tostring(item):match("^%d+$") ~= nil and tonumber(item) <= Data.Workers.MAX_SLOTS end,
+	workerClaimAll = function(item) return item == nil end,
+	workerBuild = function(item) return tostring(item):match("^%d+$") ~= nil and tonumber(item) <= Data.Workers.MAX_SLOTS end,
+	workerUpgrade = function(item) return tostring(item):match("^%d+$") ~= nil and tonumber(item) <= Data.Workers.MAX_SLOTS end,
+	workerFuel = function(item) local slot, id = tostring(item):match("^(%d+):(%w+):?%d*$") return slot ~= nil and Data.Workers.Fuels[id] ~= nil end,
+	workerInstall = function(item) local slot, id = tostring(item):match("^(%d+):(%w+)$") return slot ~= nil and (Data.Workers.Upgrades[id] ~= nil or Data.Workers.Chests[id] ~= nil) end,
+	workerRemove = function(item) return tostring(item):match("^%d+:[12]$") ~= nil or tostring(item):match("^%d+:chest$") ~= nil end,
+	workerAssign = function(item) local slot, id = tostring(item):match("^(%d+):(%w+)$") return slot ~= nil and Data.Workers.TypeById[id] ~= nil end,
+	workerBlueprint = function(item) local id, tier = tostring(item):match("^(%w+):(%d)$") return id ~= nil and Data.Workers.TypeById[id] ~= nil and tonumber(tier) >= 1 and tonumber(tier) <= 7 end,
 	skillBuy = function(item)
 		local skill, id = tostring(item):match("^(%a+):(%w+)$")
 		local vendor = skill and Data.SkillVendors[skill]
@@ -2493,6 +2522,85 @@ do
 		checks += 1
 	end
 	print("Verdant Garden client: " .. (checks - gardenChecks) .. " checks.")
+end
+-- Workers depth client: Workshop › Workers fleet card, 12-slot grid, the
+-- selected worker's actions, parts, the type browser; phone and malformed data.
+do
+	local workerChecks = checks
+	local function check(cond, case) assert(cond, case); checks += 1 end
+	local ui = run()
+	local function last() return ui.sent[#ui.sent] or {} end
+	visit(ui, "Workshop", "Workers")
+	noFailures(ui, "workers page")
+	check(find(ui.scroll, "WorkerFleet") ~= nil, "fleet summary card")
+	for slot = 1, 12 do check(find(ui.scroll, "WorkerSlot" .. slot) ~= nil, "slot tile " .. slot) end
+	check(find(find(ui.scroll, "WorkerSlot2"), "Storage") ~= nil, "built tile shows a storage bar")
+	check(find(find(ui.scroll, "WorkerSlot6"), "Storage") == nil, "unbuilt tile has no storage bar")
+	table.clear(ui.sent)
+	press(find(ui.scroll, "WorkersCollectAll"))
+	check(last()[1] == "workerClaimAll", "Collect all")
+	press(find(ui.scroll, "WorkersBuild"))
+	check(last()[1] == "workerBuild" and last()[2] == "5", "Build the next unlocked slot")
+	-- Slot 1 detail: collect / refuel with the burning fuel / parts.
+	check(find(ui.scroll, "Worker1") ~= nil, "slot 1 selected by default")
+	press(find(ui.scroll, "WorkerCollect"))
+	check(last()[1] == "workerClaim" and last()[2] == "1", "Collect slot 1")
+	press(find(ui.scroll, "WorkerRefuel"))
+	check(last()[1] == "workerFuel" and last()[2] == "1:CharredBriquette", "Refuel with the burning fuel")
+	press(find(ui.scroll, "WorkerRemove2"))
+	check(last()[1] == "workerRemove" and last()[2] == "1:2", "Remove upgrade 2")
+	press(find(ui.scroll, "WorkerRemoveChest"))
+	check(last()[1] == "workerRemove" and last()[2] == "1:chest", "Remove chest")
+	press(find(ui.scroll, "PartWorkerGleamSprinkler"))
+	check(last()[1] == "workerInstall" and last()[2] == "1:WorkerGleamSprinkler", "Install an upgrade")
+	press(find(ui.scroll, "PartWorkerBrassChest"))
+	check(last()[1] == "workerInstall" and last()[2] == "1:WorkerBrassChest", "Install a chest")
+	press(find(ui.scroll, "PartCharredBriquetteEight"))
+	check(last()[1] == "workerFuel" and last()[2] == "1:CharredBriquette:8", "Add eight briquettes")
+	-- Slot 2 (full, auto-selling): change its type to Herb from the Farming group.
+	press(find(ui.scroll, "WorkerSlot2"))
+	check(find(ui.scroll, "Worker2") ~= nil, "slot 2 detail")
+	check(find(ui.scroll, "WorkerTypeOre") ~= nil, "Mining types listed first")
+	press(find(ui.scroll, "WorkerGroupFarming"))
+	check(find(ui.scroll, "WorkerTypeHerb") ~= nil, "Farming types listed")
+	press(find(ui.scroll, "AssignHerb"))
+	check(last()[1] == "workerAssign" and last()[2] == "2:Herb", "Assign slot 2 to Herb")
+	press(find(ui.scroll, "DraftHerb"))
+	check(last()[1] == "workerBlueprint" and last()[2] == "Herb:2", "Draft the next Herb tier")
+	-- Combat group: a fully crafted Shardling Sentry offers no draft.
+	press(find(ui.scroll, "WorkerGroupCombat"))
+	check(find(ui.scroll, "WorkerTypeShardlingSentry") ~= nil, "combat workers listed")
+	check(find(ui.scroll, "DraftShardlingSentry") == nil, "fully crafted type offers no draft")
+	press(find(ui.scroll, "WorkerSlot3"))
+	check(find(ui.scroll, "Worker3") ~= nil, "combat worker detail")
+	local before = #ui.sent
+	press(find(ui.scroll, "WorkerRefuel"))
+	check(#ui.sent == before, "permanent fuel: refuel disabled")
+	press(find(ui.scroll, "WorkerSlot9"))
+	noFailures(ui, "locked slot tile")
+	checkSent(ui)
+	-- Phone layout, an older server (no worker depth fields) and malformed data.
+	local phone = run({ size = roblox.Vector2.new(420, 600) })
+	visit(phone, "Workshop", "Workers")
+	noFailures(phone, "phone workers")
+	check(find(phone.scroll, "WorkerSlot12") ~= nil, "phone grid")
+	local old = snapshot()
+	old.workers = { { resource = "Ore", tier = 1, ready = 3, interval = 120, capacity = 60 } }
+	old.workerInfo = nil
+	local legacy = run({ snapshot = old })
+	visit(legacy, "Workshop", "Workers")
+	noFailures(legacy, "legacy worker snapshot")
+	check(find(legacy.scroll, "WorkerSlot1") ~= nil and find(legacy.scroll, "WorkerSlot4") ~= nil, "legacy snapshot renders the grid")
+	local broken = run({ snapshot = snapshot({ malformed = true }) })
+	visit(broken, "Workshop", "Workers")
+	noFailures(broken, "malformed workers")
+	for _, name in ipairs({ "WorkerSlot1", "WorkerSlot2", "WorkerGroupCombat", "WorkerCollect", "WorkerRefuel", "WorkersBuild" }) do
+		local b = find(broken.scroll, name)
+		if b then press(b) end
+		noFailures(broken, "malformed workers " .. name)
+		checks += 1
+	end
+	print("Workers depth client: " .. (checks - workerChecks) .. " checks.")
 end
 print("UI QA passed " .. checks .. " checks (" .. created .. " mock instances).")
 

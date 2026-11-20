@@ -4352,4 +4352,360 @@ end
 -- End Endgame section.
 
 
+------------------------------------------------------------------------------
+-- Workers depth (Workers team; append-only section).
+-- SkyBlock-minion depth for island workers, all names original:
+--   * Worker types: one per gathering resource tier (Data.ResourceTiers) plus
+--     combat workers that produce monster drops. Type ids for gathering are the
+--     resource ids (legacy saves keep "Ore", "Timber", ...).
+--   * Slots: 3 base, up to 12, unlocked by unique worker crafts (a type at a
+--     tier, recorded when a worker is built/upgraded or a blueprint drafted).
+--   * Fuel (timed or permanent speed boost), two upgrade slots (press,
+--     auto-seller, storage annex, bonus sprinkler) and one chest slot.
+--   * Condensed / Radiant forms: 160 raw -> 1 Condensed, 160 Condensed -> 1
+--     Radiant; craftable at the Workbench, Bazaar commodities (kind material).
+-- Production is pure integer maths on server os.time(), so it is deterministic
+-- and capped: W.settle credits at most MAX_ACCRUAL seconds per settle and never
+-- beyond the worker's storage (an auto-seller empties full storage into coins).
+------------------------------------------------------------------------------
+do
+local W = {}
+Data.Workers = W
+W.BASE_SLOTS = 3
+W.MAX_SLOTS = 12
+-- Unique worker crafts needed for slot 4, 5, ... 12 (index i opens slot 3+i).
+W.SlotUniques = {5, 12, 20, 30, 42, 56, 72, 90, 110}
+W.MAX_ACCRUAL = 172800      -- seconds credited per settle (48 h offline cap)
+W.RATIO = 160               -- press ratio (raw -> Condensed -> Radiant)
+W.SELL_SHARE = 0.5          -- auto-seller pays this share of item value
+W.UPGRADE_SLOTS = 2
+W.FUEL_STACK = 64           -- a timed fuel may hold at most 64 burns of itself
+W.MAX_STORE = 100000        -- sanity bound on any stored count (migration)
+
+local function rarityStep(rarity, n)
+	local index = table.find(Data.RarityOrder, rarity) or 1
+	return Data.RarityOrder[math.min(#Data.RarityOrder, index + n)]
+end
+
+------------------------------------------------------------------------------
+-- Worker types
+------------------------------------------------------------------------------
+W.Types, W.TypeById = {}, {}
+local roles = {Mining="Delver", Woodcutting="Feller", Fishing="Netcaster", Farming="Tiller"}
+local typeShapes = {Mining="OreChunk", Woodcutting="Log", Fishing="Finfish", Farming="CropSheaf"}
+local function addType(def)
+	def.index = #W.Types + 1
+	table.insert(W.Types, def)
+	W.TypeById[def.id] = def
+	return def
+end
+for _, skill in ipairs({"Mining", "Woodcutting", "Fishing", "Farming"}) do
+	for _, r in ipairs(Data.ResourceTiers[skill]) do
+		local short = string.gsub(string.gsub(r.name, " Ore$", ""), " Log$", "")
+		addType({id=r.id, kind="gather", name=short.." "..roles[skill], output=r.id, skill=skill,
+			level=if r.index == 1 then 1 else r.level, collectionTier=if r.index == 1 then 0 else 1,
+			speed=1, xp=if r.index == 1 then 3 else math.max(3, r.xp // 4), shape=typeShapes[skill], color=r.color, resourceTier=r.index})
+	end
+end
+-- Combat workers: slower (speed = interval multiplier), gated by Combat level
+-- and the drop's collection; they produce the drop and grant Combat XP.
+for _, c in ipairs({
+	{id="HidetanSnare", name="Hidetan Snare", output="BeastHide", level=3, speed=1.5, xp=3, shape="HideRoll"},
+	{id="DustsiftCrucible", name="Dustsift Crucible", output="ArcaneDust", level=8, speed=1.5, xp=3, shape="DustPile"},
+	{id="ShardlingSentry", name="Shardling Sentry", output="Shard", level=10, speed=3, xp=5, shape="AetherCrystal"},
+	{id="GloomsilkLoom", name="Gloomsilk Loom", output="SpiderSilk", level=15, speed=2, xp=5, shape="HideRoll"},
+	{id="GalecatchPerch", name="Galecatch Perch", output="StormFeather", level=20, speed=2.5, xp=6, shape="Feather"},
+	{id="WispglowLantern", name="Wispglow Lantern", output="VoidEssence", level=30, speed=4, xp=8, shape="EssenceOrb"},
+}) do
+	c.kind, c.skill, c.collectionTier, c.color = "combat", "Combat", 1, Data.Items[c.output].color
+	addType(c)
+end
+
+------------------------------------------------------------------------------
+-- Condensed and Radiant forms (SkyBlock "enchanted" items: 160 -> 1).
+------------------------------------------------------------------------------
+W.Press = {}        -- raw id -> {condensed=id, radiant=id}
+W.PressSource = {}  -- condensed/radiant id -> {raw=id, level=1|2, units=raw per item}
+for _, t in ipairs(W.Types) do
+	local raw = t.output
+	if not W.Press[raw] then
+		local def = Data.Items[raw]
+		local cid, rid = "Condensed"..raw, "Radiant"..raw
+		W.Press[raw] = {condensed=cid, radiant=rid}
+		W.PressSource[cid] = {raw=raw, level=1, units=W.RATIO}
+		W.PressSource[rid] = {raw=raw, level=2, units=W.RATIO * W.RATIO}
+		item(cid, {name="Condensed "..def.name, kind="material", category="condensed", rarity=rarityStep(def.rarity, 1), color=def.color,
+			value=def.value * W.RATIO, condensed={from=raw, level=1},
+			description=W.RATIO.." "..def.name.." pressed into one. A Bazaar commodity used in worker blueprints, fuels and parts."})
+		item(rid, {name="Radiant "..def.name, kind="material", category="condensed", rarity=rarityStep(def.rarity, 2), color=def.color,
+			value=def.value * W.RATIO * W.RATIO, condensed={from=cid, level=2},
+			description=W.RATIO.." Condensed "..def.name.." fused into one radiant ingot-form. A Bazaar commodity."})
+		recipe(cid, {skill=t.skill, level=1, xp=8, costs={[raw]=W.RATIO}, collectionTier={[raw]=2}, repeatable=true, station="Workbench", category="Compacting"})
+		recipe(rid, {skill=t.skill, level=1, xp=60, costs={[cid]=W.RATIO}, collectionTier={[raw]=6}, repeatable=true, station="Workbench", category="Compacting"})
+	end
+end
+
+------------------------------------------------------------------------------
+-- Fuel, upgrades and chests (Workbench, Carpentry).
+------------------------------------------------------------------------------
+W.Fuels, W.Upgrades, W.Chests = {}, {}, {}
+W.FuelOrder, W.UpgradeOrder, W.ChestOrder = {}, {}, {}
+local function part(id, def, rec, kind)
+	def.kind = "material"
+	def.value = def.value or 10
+	item(id, def)
+	recipe(id, rec)
+	rec.station, rec.category, rec.skill, rec.repeatable = "Workbench", "Worker Parts", "Carpentry", true
+end
+-- Fuel: speed is a percentage added to the worker's base pace; duration in
+-- seconds (permanent fuels never burn out and are returned when removed).
+for _, f in ipairs({
+	{id="CharredBriquette", name="Charred Briquette", rarity="Common", color="4A3B33", speed=10, duration=1800, value=4,
+		rec={level=1, xp=6, costs={Timber=24}, amount=2}},
+	{id="EmberwoodBrick", name="Emberwood Brick", rarity="Uncommon", color="B5482A", speed=15, duration=21600, value=60,
+		rec={level=15, xp=30, costs={EmberoakLog=16, Ore=8}}},
+	{id="StormcellCanister", name="Stormcell Canister", rarity="Rare", color="7B8CDE", speed=25, duration=43200, value=1800,
+		rec={level=25, xp=90, costs={CondensedWindpineLog=1, StormFeather=4}}},
+	{id="SunforgeCatalyst", name="Sunforge Catalyst", rarity="Epic", color="F2C14E", speed=40, duration=86400, value=7000,
+		rec={level=40, xp=220, costs={CondensedSunsteelOre=1, CondensedEmberoakLog=1, GolemCore=1}}},
+	{id="EverflameHeart", name="Everflame Heart", rarity="Legendary", color="FF7A3D", speed=25, permanent=true, value=25000,
+		rec={level=55, xp=600, costs={StarFragment=6, CondensedAetherite=3, GolemCore=4}}},
+}) do
+	local text = if f.permanent then "+"..f.speed.."% worker speed, permanently (returned when removed)."
+		else "+"..f.speed.."% worker speed for "..(if f.duration >= 3600 then (f.duration // 3600).." h" else (f.duration // 60).." min").."."
+	part(f.id, {name=f.name, category="workerFuel", rarity=f.rarity, color=f.color, value=f.value,
+		workerFuel={speed=f.speed, duration=f.duration, permanent=f.permanent}, description="Worker fuel. "..text}, f.rec)
+	W.Fuels[f.id] = {id=f.id, speed=f.speed, duration=f.duration, permanent=f.permanent == true}
+	table.insert(W.FuelOrder, f.id)
+end
+-- Upgrades: two slots per worker; one of each group.
+--   press 1 = Condensed forms, press 2 = Condensed and Radiant forms
+--   sell = share of value paid when storage is full (storage is then emptied)
+--   storage = extra share of the tier's storage; bonus = 1 item every N produced
+for _, u in ipairs({
+	{id="WorkerBundler", name="Bundling Frame", rarity="Uncommon", color="B08D57", group="press", press=1, value=200,
+		text="Packs every 160 output into a Condensed form.", rec={level=10, xp=40, costs={AlloyIngot=8, Timber=96}}},
+	{id="WorkerAetherPress", name="Aether Press", rarity="Epic", color="7FD6E8", group="press", press=2, value=6000,
+		text="Packs output into Condensed forms and 160 Condensed into a Radiant form.", rec={level=35, xp=160, costs={WorkerBundler=1, CondensedAetherite=2, AetherIngot=8}}},
+	{id="WorkerCoinchute", name="Coinchute", rarity="Rare", color="FFD166", group="sell", sell=W.SELL_SHARE, value=400,
+		text="When storage fills, sells everything stored for 50% of its value.", rec={level=20, xp=70, costs={BrassIngot=6, AlloyIngot=10}}},
+	{id="WorkerStoreAnnex", name="Storehouse Annex", rarity="Uncommon", color="9C6B3E", group="storage", storage=0.5, value=150,
+		text="+50% of the worker's tier storage.", rec={level=8, xp=30, costs={Timber=128, Ore=48}}},
+	{id="WorkerGleamSprinkler", name="Gleam Sprinkler", rarity="Rare", color="C77DFF", group="bonus", bonus={item="ArcaneDust", every=10}, value=1000,
+		text="1 Arcane Dust for every 10 items produced.", rec={level=30, xp=110, costs={CondensedHerb=1, ArcaneDust=24, Aetherite=48}}},
+}) do
+	part(u.id, {name=u.name, category="workerUpgrade", rarity=u.rarity, color=u.color, value=u.value, workerUpgrade=u.group,
+		description="Worker upgrade. "..u.text}, u.rec)
+	W.Upgrades[u.id] = {id=u.id, group=u.group, press=u.press, sell=u.sell, storage=u.storage, bonus=u.bonus, text=u.text}
+	table.insert(W.UpgradeOrder, u.id)
+end
+for _, c in ipairs({
+	{id="WorkerCoffer", name="Timber Coffer", rarity="Common", color="9C6B3E", capacity=120, value=40, rec={level=5, xp=20, costs={Timber=64}}},
+	{id="WorkerBrassChest", name="Brassbound Chest", rarity="Uncommon", color="D4A84B", capacity=360, value=300, rec={level=25, xp=90, costs={WindpineLog=48, BrassIngot=4}}},
+	{id="WorkerVaultChest", name="Vaultwork Chest", rarity="Epic", color="C9D6E3", capacity=960, value=12000, rec={level=50, xp=400, costs={CondensedStarwoodLog=1, StarmetalIngot=4}}},
+}) do
+	part(c.id, {name=c.name, category="workerChest", rarity=c.rarity, color=c.color, value=c.value, workerChest=c.capacity,
+		description="Worker chest. +"..c.capacity.." storage."}, c.rec)
+	W.Chests[c.id] = {id=c.id, capacity=c.capacity}
+	table.insert(W.ChestOrder, c.id)
+end
+
+------------------------------------------------------------------------------
+-- Rules (pure; the server, UI and tests share them).
+------------------------------------------------------------------------------
+function W.tierConfig(tier)
+	return Data.WorkerTiers[math.clamp(math.floor(tonumber(tier) or 1), 1, #Data.WorkerTiers)]
+end
+-- Seconds per item: tier interval x type speed, shortened by worker haste.
+function W.interval(typeId, tier, haste)
+	local t = W.TypeById[typeId]
+	haste = math.clamp(tonumber(haste) or 0, 0, Data.MAX_WORKER_HASTE)
+	return math.max(1, math.floor(W.tierConfig(tier).interval * (t and t.speed or 1) * (1 - haste) + 0.5))
+end
+local function upgradeDefs(w)
+	local list = {}
+	for i = 1, W.UPGRADE_SLOTS do
+		local u = type(w.upgrades) == "table" and W.Upgrades[w.upgrades[i]]
+		if u then table.insert(list, u) end
+	end
+	return list
+end
+W.upgradeDefs = upgradeDefs
+-- Storage: tier storage, +annex share, +chest.
+function W.capacity(w)
+	local base = W.tierConfig(w.tier).capacity
+	local extra = 0
+	for _, u in ipairs(upgradeDefs(w)) do extra += u.storage or 0 end
+	local chest = W.Chests[w.chest]
+	return math.floor(base * (1 + extra)) + (chest and chest.capacity or 0)
+end
+function W.effects(w)
+	local press, sell, bonus = 0, nil, nil
+	for _, u in ipairs(upgradeDefs(w)) do
+		if u.press then press = math.max(press, u.press) end
+		if u.sell then sell = u.sell end
+		if u.bonus then bonus = u.bonus end
+	end
+	return press, sell, bonus
+end
+-- Active fuel definition (nil once a timed fuel has burnt out at `now`).
+function W.activeFuel(w, now)
+	local f = type(w.fuel) == "table" and W.Fuels[w.fuel.id]
+	if not f then return nil end
+	if not f.permanent and (tonumber(w.fuel.expires) or 0) <= now then return nil end
+	return f
+end
+function W.speedPercent(w, now)
+	local f = W.activeFuel(w, now)
+	return 100 + (f and f.speed or 0)
+end
+-- Output per hour at the current pace (display only).
+function W.perHour(w, now, haste)
+	return 3600 * W.speedPercent(w, now) / 100 / W.interval(w.resource, w.tier, haste)
+end
+function W.storeCount(store)
+	local n = 0
+	for _, v in pairs(store or {}) do n += v end
+	return n
+end
+-- Add up to n raw output to store under capacity `cap`; press 1/2 condense on
+-- the fly (an item needs a free slot before it is pressed). Returns made.
+function W.produce(store, n, cap, press, raw)
+	local ids = W.Press[raw]
+	local cid, rid = ids and ids.condensed, ids and ids.radiant
+	if not cid then press = 0 end
+	local r, c, s = store[raw] or 0, (cid and store[cid]) or 0, (rid and store[rid]) or 0
+	local other = W.storeCount(store) - r - c - s
+	local made, R = 0, W.RATIO
+	if press >= 1 and r >= R then c += r // R; r %= R end
+	if press >= 2 and c >= R then s += c // R; c %= R end
+	for _ = 1, 10000 do
+		if n <= 0 then break end
+		local free = cap - (other + s + c + r)
+		if free <= 0 then break end
+		local need = R - r
+		if press == 0 or need > free or n < need then
+			local take = math.min(n, free)
+			r += take; n -= take; made += take
+			break
+		end
+		r = 0; c += 1; n -= need; made += need
+		if press >= 2 and c >= R then c -= R; s += 1 end
+		-- Whole blocks from empty raw: block j needs other+s+c+j+(R-1) < cap.
+		local blocks = math.max(0, math.min(n // R, cap - (R - 1) - (other + s + c)))
+		if press >= 2 then blocks = math.min(blocks, R - c) end
+		c += blocks; n -= blocks * R; made += blocks * R
+		if press >= 2 and c >= R then c -= R; s += 1 end
+	end
+	store[raw] = if r > 0 then r else nil
+	if cid then store[cid] = if c > 0 then c else nil end
+	if rid then store[rid] = if s > 0 then s else nil end
+	return made
+end
+-- Value of everything stored; the auto-seller pays floor(value x share).
+function W.storeValue(store)
+	local v = 0
+	for id, n in pairs(store or {}) do v += (Data.Items[id] and Data.Items[id].value or 0) * n end
+	return v
+end
+-- Advance worker w to `now`. Returns made (raw items produced this settle).
+-- w fields: resource, tier, lastClaim, carry (work units), store {id=n},
+-- made (pending XP units), coins (auto-sold, pending), bonusCarry, fuel,
+-- upgrades {id|false, id|false}, chest.
+function W.settle(w, now, haste)
+	w.store = w.store or {}
+	local t0 = tonumber(w.lastClaim) or now
+	if now <= t0 then w.lastClaim = math.min(t0, now); return 0 end
+	local span = now - t0
+	local start = t0
+	if span > W.MAX_ACCRUAL then span = W.MAX_ACCRUAL; start = now - span end
+	local boosted, bonusPct = 0, 0
+	local f = type(w.fuel) == "table" and W.Fuels[w.fuel.id]
+	if f then
+		bonusPct = f.speed
+		boosted = if f.permanent then span else math.clamp((tonumber(w.fuel.expires) or 0) - start, 0, span)
+	end
+	local cost = W.interval(w.resource, w.tier, haste) * 100
+	local work = (w.carry or 0) + span * 100 + boosted * bonusPct
+	local n = work // cost
+	w.carry = work % cost
+	local t = W.TypeById[w.resource]
+	local raw = t and t.output or w.resource
+	local cap = W.capacity(w)
+	local press, sell, bonus = W.effects(w)
+	local made = 0
+	for _ = 1, 1000 do
+		local got = W.produce(w.store, n - made, cap, press, raw)
+		made += got
+		if bonus then
+			local total = (w.bonusCarry or 0) + got
+			local extra = total // bonus.every
+			w.bonusCarry = total % bonus.every
+			local room = math.max(0, cap - W.storeCount(w.store))
+			if math.min(extra, room) > 0 then w.store[bonus.item] = (w.store[bonus.item] or 0) + math.min(extra, room) end
+		end
+		if made >= n or not sell then break end
+		-- Storage is full: the auto-seller empties it into pending coins.
+		local value = W.storeValue(w.store)
+		if value <= 0 and got == 0 then break end
+		w.coins = (w.coins or 0) + math.floor(value * sell)
+		w.sold = (w.sold or 0) + W.storeCount(w.store)
+		w.store = {}
+	end
+	if made < n then w.carry = 0 end
+	w.made = (w.made or 0) + made
+	w.lastClaim = now
+	if f and not f.permanent and (tonumber(w.fuel.expires) or 0) <= now then w.fuel = nil end
+	return made
+end
+-- Unique crafts: p.workerUniques[typeId] = bitmask of tiers (bit t-1).
+function W.hasUnique(uniques, typeId, tier)
+	local mask = type(uniques) == "table" and tonumber(uniques[typeId]) or 0
+	return bit32.btest(mask, bit32.lshift(1, tier - 1))
+end
+function W.addUnique(uniques, typeId, tier)
+	if not W.TypeById[typeId] or tier < 1 or tier > #Data.WorkerTiers then return false end
+	if W.hasUnique(uniques, typeId, tier) then return false end
+	uniques[typeId] = bit32.bor(tonumber(uniques[typeId]) or 0, bit32.lshift(1, tier - 1))
+	return true
+end
+function W.uniqueCount(uniques)
+	local n = 0
+	for typeId, mask in pairs(uniques or {}) do
+		if W.TypeById[typeId] then
+			for t = 1, #Data.WorkerTiers do if W.hasUnique(uniques, typeId, t) then n += 1 end end
+		end
+	end
+	return n
+end
+function W.slotsFor(uniqueCount)
+	local slots = W.BASE_SLOTS
+	for _, need in ipairs(W.SlotUniques) do if uniqueCount >= need then slots += 1 end end
+	return math.min(slots, W.MAX_SLOTS)
+end
+function W.nextSlotAt(uniqueCount)
+	for _, need in ipairs(W.SlotUniques) do if uniqueCount < need then return need end end
+	return nil
+end
+-- Blueprint cost for drafting a unique worker (type, tier) without building it:
+-- raw output at tiers 1-3, Condensed output from tier 4.
+W.BlueprintRaw = {32, 64, 128}
+W.BlueprintCondensed = {[4]=1, [5]=2, [6]=4, [7]=8}
+function W.blueprintCost(typeId, tier)
+	local t = W.TypeById[typeId]
+	if not t or tier < 1 or tier > #Data.WorkerTiers then return nil end
+	if W.BlueprintRaw[tier] then return {[t.output]=W.BlueprintRaw[tier]} end
+	return {[W.Press[t.output].condensed]=W.BlueprintCondensed[tier]}
+end
+-- Tier upgrade cost (unchanged from the original ladder).
+function W.upgradeCost(tier)
+	local cost = {Timber=5 * tier, Ore=3 * tier}
+	if tier >= 4 then cost.AlloyIngot = 4 * (tier - 3); cost.AetherIngot = 2 * (tier - 3) end
+	return cost
+end
+function W.buildCost(slot) return {Timber=5 * slot, Ore=3 * slot} end
+end
+-- End Workers depth section.
+
+
 return Data
