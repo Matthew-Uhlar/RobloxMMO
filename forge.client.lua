@@ -18,6 +18,11 @@
 --   ShapeOwnsModel (bool)   the mesh stands for the whole Model: the slot box grows to cover
 --                           every visible sibling BasePart (no Shape, not Neon) of the host's
 --                           Model, and those siblings are hidden locally while the mesh exists
+-- Resource slots (CropBed, OreVein) whose host carries a gather prompt (IsleItem) use
+-- the catalog's shape for that resource (Catalog.resourceShape), so each crop patch
+-- and ore node shows its own crop or ore. Shapes with an `along` axis (ropes, lines)
+-- turn that axis onto the slot box's longest axis, so one rope mesh serves both a
+-- hanging rope and a span between two points.
 -- Slot box: the host's own box, in an upright frame. Catalog meshes are Y-up; a
 -- cylinder's axis is its local X (disk() stands one up by rolling it 90 degrees),
 -- so a cylinder host carries the mesh's up axis along its cylinder axis.
@@ -62,11 +67,9 @@ end
 -- World tags use descriptive prop names; map them onto catalog shapes so every
 -- tagged prop gets a mesh. Names with no good match stay primitive by design.
 local ALIASES = {
-	Rock = "Boulder", CliffRock = "CliffPiece", RockOutcrop = "RockCluster", Stalactite = "RockCluster",
-	OreVein = "OreVein2", CropBed = "CropWheat", Bush = "CropBush",
-	Lamp = "StreetLamp", Torch = "LampPost",
-	Column = "Obelisk", RuinColumn = "Obelisk", Waystone = "Obelisk", StormPylon = "Obelisk", StormSpire = "Obelisk",
+	Rock = "Boulder", CliffRock = "CliffPiece", OreVein = "OreVein2", Lamp = "StreetLamp", PineTree = "WindpineTree",
 }
+local RESOURCE_SLOTS = {CropBed = true, OreVein = true}
 local function lookup(shapeName)
 	shapeName = ALIASES[shapeName] or shapeName
 	for _, catalog in ipairs(catalogs) do
@@ -74,6 +77,23 @@ local function lookup(shapeName)
 		if type(data) == "table" and type(data.vertices) == "table" and type(data.faces) == "table" then return data, catalog end
 	end
 	return nil
+end
+
+-- Final catalog shape name for a tagged part (resource slot, then alias).
+local function shapeOf(part)
+	local shapeName = part:GetAttribute("Shape")
+	if type(shapeName) ~= "string" then return nil end
+	if RESOURCE_SLOTS[shapeName] then
+		local prompt = part:FindFirstChildOfClass("ProximityPrompt")
+		local item = prompt and prompt:GetAttribute("IsleItem")
+		if type(item) == "string" then
+			for _, catalog in ipairs(catalogs) do
+				local resolved = type(catalog.resourceShape) == "function" and catalog.resourceShape(item)
+				if type(resolved) == "string" and lookup(resolved) then return resolved end
+			end
+		end
+	end
+	return ALIASES[shapeName] or shapeName
 end
 
 local stats = {templates = 0, templateTriangles = 0, instances = 0, placedTriangles = 0, failures = 0, skipped = 0}
@@ -349,6 +369,17 @@ local function meshBounds(data)
 	end
 	return cached.extent, cached.center
 end
+-- `along` axis -> {slot's longest axis -> {rotation, size in the rotated frame}}.
+local ALONG = {
+	Y = {
+		Z = {CFrame.Angles(math.pi / 2, 0, 0), function(b) return Vector3.new(b.X, b.Z, b.Y) end},
+		X = {CFrame.Angles(0, 0, -math.pi / 2), function(b) return Vector3.new(b.Y, b.X, b.Z) end},
+	},
+	Z = {
+		Y = {CFrame.Angles(-math.pi / 2, 0, 0), function(b) return Vector3.new(b.X, b.Z, b.Y) end},
+		X = {CFrame.Angles(0, math.pi / 2, 0), function(b) return Vector3.new(b.Z, b.Y, b.X) end},
+	},
+}
 -- Final mesh box for a host: size and world CFrame of the MeshPart.
 local function layout(part, data, siblings)
 	local extent, center = meshBounds(data)
@@ -362,6 +393,12 @@ local function layout(part, data, siblings)
 	end
 	local fitSize = (hi - lo):Max(Vector3.one * 0.01)
 	local boxFrame, box = slotBox(part, siblings)
+	local turn = ALONG[data.along]
+	if turn then
+		local longest = if box.Y >= box.X and box.Y >= box.Z then "Y" elseif box.Z >= box.X then "Z" else "X"
+		local spin = turn[longest]
+		if spin then boxFrame, box = boxFrame * spin[1], spin[2](box) end
+	end
 	local target = (box * shapeScale):Max(Vector3.one * 0.05)
 	local k = target / fitSize
 	local lift = 0
@@ -370,7 +407,7 @@ local function layout(part, data, siblings)
 		k = Vector3.new(m, m, m)
 		lift = (fitSize.Y * m - target.Y) / 2 -- stand on the slot floor
 	end
-	return extent * k, boxFrame * CFrame.new((center - (lo + hi) / 2) * k + Vector3.new(0, lift, 0))
+	return extent * k, boxFrame * CFrame.new((center - (lo + hi) / 2) * k + Vector3.new(0, lift, 0)), boxFrame, box
 end
 
 -- Release a placed mesh and give the primitive back (removal, distance, shutdown).
@@ -393,10 +430,9 @@ end
 
 local function forge(part)
 	if placed[part] or final[part] or not part.Parent then return end
-	local shapeName = part:GetAttribute("Shape")
-	if type(shapeName) ~= "string" then return end
+	local shapeName = shapeOf(part)
+	if not shapeName then return end
 	if part:GetAttribute("SculptureScale") ~= nil and part:GetAttribute("ShapeScale") == nil then skip(part, "legacy sculpture", true); return end
-	shapeName = ALIASES[shapeName] or shapeName
 	local data, catalog = lookup(shapeName)
 	if not data then skip(part, "unknown shape", true); return end
 	if stopReason then skip(part, stopReason, true); return end
@@ -502,7 +538,7 @@ end
 local function consider(part)
 	if registry[part] or typeof(part) ~= "Instance" or not part:IsA("BasePart") or type(part:GetAttribute("Shape")) ~= "string" then return end
 	registry[part] = true
-	local data = lookup(part:GetAttribute("Shape"))
+	local data = lookup(shapeOf(part))
 	if data and SIGN_KINDS[data.kind] then pcall(styleSign, part) end
 	-- Re-forge when the slot's attributes change (signals, not periodic rescans).
 	pcall(function()
@@ -543,14 +579,13 @@ if MeshForgeTest then
 		radii = {build = BUILD_RADIUS, unload = UNLOAD_RADIUS}, mobile = mobile, backoff = backoff,
 		-- Final mesh box for a tagged part, without forging: size, CFrame, kind.
 		describe = function(part)
-			local shapeName = part:GetAttribute("Shape")
-			if type(shapeName) ~= "string" then return nil end
+			local shapeName = shapeOf(part)
+			if not shapeName then return nil end
 			local data = lookup(shapeName)
 			if not data then return nil end
 			local siblings = ownedSiblings(part)
-			local size, frame = layout(part, data, siblings)
-			local boxFrame, box = slotBox(part, siblings)
-			return {size = size, cframe = frame, kind = data.kind, shape = ALIASES[shapeName] or shapeName,
+			local size, frame, boxFrame, box = layout(part, data, siblings)
+			return {size = size, cframe = frame, kind = data.kind, shape = shapeName,
 				box = box, boxFrame = boxFrame, siblings = siblings or {}}
 		end}
 	return

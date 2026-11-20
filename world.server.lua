@@ -2585,7 +2585,8 @@ end
 -- Prompt attributes (all interact holds, server-validated):
 --   agility     IsleItem "<course>:<index>", AgilityCourse, AgilityIndex, AgilityKind,
 --               AgilityEnd (landing Vector3), AgilityFall (fall landing Vector3), IsleRegion
---   shortcut    IsleItem "<id>:A|B", ShortcutTo (landing Vector3), AgilityKind, IsleRegion
+--   shortcut    IsleItem "<id>:A|B", ShortcutTo (landing Vector3), AgilityKind, IsleRegion,
+--               ShortcutRegion (this end's destination region, "" = ungated)
 --   trap / net  IsleItem creature id, HunterMethod, HunterSpot "<creature>#<n>", IsleRegion;
 --               the server writes TrapState / TrapOwner on the prompt's host part
 --   skillVendor IsleItem "Agility" | "Hunter"
@@ -2780,8 +2781,8 @@ local function buildSkillContent()
 		local endA=endSpot(hostA,CA+dir*(RA-10)+(site.shiftA or V(0,0,0)),-dir)
 		local endB=endSpot(hostB,CB-dir*(RB-10)+(site.shiftB or V(0,0,0)),dir)
 		local landA,landB=endA-dir*5+V(0,3.5,0),endB+dir*5+V(0,3.5,0)
-		for _,e in ipairs({{"A",hostA,endA,landB,endB},{"B",hostB,endB,landA,endA}}) do
-			local tag,host,pos,landing,other=e[1],e[2],e[3],e[4],e[5]
+		for _,e in ipairs({{"A",hostA,endA,landB,endB,hostB},{"B",hostB,endB,landA,endA,hostA}}) do
+			local tag,host,pos,landing,other,destHost=e[1],e[2],e[3],e[4],e[5],e[6]
 			local m=content(host,"Shortcut "..sc.name.." "..tag,"Agility")
 			m:SetAttribute("AgilityShortcut",sc.id)
 			local toward=flat(other-pos).Unit
@@ -2791,6 +2792,9 @@ local function buildSkillContent()
 			local kind=AG.Kinds[sc.kind]
 			local q=prompt(post,kind.verb.." shortcut",sc.name.." (Agility "..sc.level..")","shortcut",sc.id..":"..tag)
 			q:SetAttribute("ShortcutTo",landing)
+			-- Per-end destination region ("" = ungated): the server gates on where this end lands.
+			local destRegion=destHost:GetAttribute("Region")
+			q:SetAttribute("ShortcutRegion",if destRegion and GATED[destRegion] then destRegion else "")
 			q:SetAttribute("AgilityKind",sc.kind)
 			region(q,sc.region)
 			local side=V(-toward.Z,0,toward.X)

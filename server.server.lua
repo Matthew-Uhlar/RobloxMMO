@@ -24,9 +24,34 @@ local profiles, cooldown, lastRead, saving, preview, leaseEnd = {}, {}, {}, {}, 
 local stateRead, exchangeReady, sessionOwner, opening = {}, {}, {}, {}
 -- Unfinished sessions per UserId on this server (opening, live or closing).
 local userSessions = {}
-local enemies = setmetatable({}, {__mode = "k"})
+-- Instance-keyed state tables are STRONG: Roblox may collect an Instance's Lua
+-- wrapper while the Instance lives, which silently empties weak-keyed entries
+-- (lost traps, skipped regrowth). Prompt-keyed entries are cleared by
+-- watchPrompt when the prompt is destroyed or leaves the DataModel; player-keyed
+-- entries are cleared by forget()/close() when the player leaves.
+local enemies = {}
 -- Per-player resource node depletion: [prompt] = {[player] = os.clock() ready time}.
-local nodeRegrowth = setmetatable({}, {__mode = "k"})
+local nodeRegrowth = {}
+local promptGoneHooks, watchedPrompts = {}, {}
+local function promptGone(prompt)
+	local conns=watchedPrompts[prompt]
+	if not conns then return end
+	watchedPrompts[prompt]=nil
+	for _,c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+	nodeRegrowth[prompt],enemies[prompt]=nil,nil
+	for _,hook in ipairs(promptGoneHooks) do hook(prompt) end
+end
+local function watchPrompt(prompt)
+	if watchedPrompts[prompt] or typeof(prompt)~="Instance" then return end
+	local conns={}
+	watchedPrompts[prompt]=conns
+	pcall(function()
+		table.insert(conns,prompt.Destroying:Connect(function() promptGone(prompt) end))
+		table.insert(conns,prompt.AncestryChanged:Connect(function()
+			if not prompt:IsDescendantOf(game) then promptGone(prompt) end
+		end))
+	end)
+end
 local uid = HttpService:GenerateGUID(false)
 local sessionSeq = 0
 local STATE_INTERVAL, EXCHANGE_COOLDOWN, REJOIN_WAIT = 0.5, 6, 15
@@ -568,7 +593,7 @@ end
 ------------------------------------------------------------------------------
 do
 	local I=Data.Island
-	local Isle={budget=setmetatable({},{__mode="k"})}
+	local Isle={budget={}} -- [player]; cleared in forget()
 	Journal.isle=Isle
 	function Isle.list(p)
 		local out={}
@@ -706,9 +731,12 @@ end
 -- "<placed>/<max>", HunterTrapsCaught (n), SkillVendor + SkillVendorUntil.
 -- Trap host parts get TrapState ("" | set | caught | collapsed) and TrapOwner (UserId, 0 = none).
 ------------------------------------------------------------------------------
+-- All tables strong (see watchPrompt): player keys cleared by Skills.forget,
+-- prompt keys by Skills.forgetPrompt. netReady = per-player miss cooldowns,
+-- swarmReady = the shared post-catch swarm cooldown of each net spot.
 local Skills={
-	runs=setmetatable({},{__mode="k"}),busyUntil=setmetatable({},{__mode="k"}),moveSeq=setmetatable({},{__mode="k"}),
-	traps=setmetatable({},{__mode="k"}),owned=setmetatable({},{__mode="k"}),netReady=setmetatable({},{__mode="k"}),
+	runs={},busyUntil={},moveSeq={},
+	traps={},owned={},netReady={},swarmReady={},
 	verbs={agility=true,shortcut=true,trap=true,net=true,skillVendor=true,skillBuy=true},
 }
 do
@@ -885,7 +913,11 @@ do
 		local sc=id and AG.ShortcutById[id]
 		if not sc then return "That shortcut is not charted." end
 		if level(p.xp.Agility)<sc.level then return sc.name.." requires Agility "..sc.level.."." end
-		if sc.region and not regionAllowed(p,sc.region) then return regionDenied(sc.region) end
+		-- Each end carries its own destination region (ShortcutRegion, "" = open),
+		-- so B->A checks where you land, not where you stand.
+		local dest=prompt:GetAttribute("ShortcutRegion")
+		if type(dest)~="string" then return "This shortcut is being repaired." end
+		if dest~="" and not regionAllowed(p,dest) then return regionDenied(dest) end
 		local now=os.clock()
 		if now<(Skills.busyUntil[player] or 0) then return "Still moving…" end
 		local to=prompt:GetAttribute("ShortcutTo")
@@ -1012,8 +1044,9 @@ do
 		local stats=Progression.computeStats(p,os.time())
 		Skills.traps[prompt]={owner=player,creature=creature.id,state="set",placed=now,nextTick=now+HU.TICK,ticks=0,touched=-math.huge,
 			chance=HU.catchChance(creature,lvl,stats.trapLuck)}
-		Skills.owned[player]=Skills.owned[player] or setmetatable({},{__mode="k"})
+		Skills.owned[player]=Skills.owned[player] or {}
 		Skills.owned[player][prompt]=true
+		watchPrompt(prompt)
 		Skills.mark(prompt)
 		Skills.publishTraps(player)
 		p.started=true
@@ -1028,14 +1061,17 @@ do
 		local kit=kitFor(p,"net")
 		if not kit then return "You need a "..Data.Items[HU.Methods.net.kit].name.." (Trackers' Lodge)." end
 		local now=os.clock()
+		local swarm=Skills.swarmReady[prompt]
+		if swarm and now<swarm then return "The swarm has scattered ("..math.ceil(swarm-now).."s)." end
 		local ready=Skills.netReady[prompt]
-		if not ready then ready=setmetatable({},{__mode="k"}); Skills.netReady[prompt]=ready end
+		if not ready then ready={}; Skills.netReady[prompt]=ready; watchPrompt(prompt) end
 		if ready[player] and now<ready[player] then return "The swarm has scattered ("..math.ceil(ready[player]-now).."s)." end
 		local stats=Progression.computeStats(p,os.time())
 		local chance=math.min(.95,HU.catchChance(creature,lvl,stats.trapLuck)+(Data.Items[kit].netBonus or 0))
 		p.started=true
 		if roll()<chance then
-			ready[player]=now+(creature.respawn or 5)
+			-- A catch scatters the swarm for everyone at this spot.
+			Skills.swarmReady[prompt]=now+(creature.respawn or 5)
 			return Skills.catch(p,creature)
 		end
 		ready[player]=now+HU.NET_MISS_COOLDOWN
@@ -1108,8 +1144,17 @@ do
 			Skills.mark(prompt)
 		end
 		Skills.owned[player],Skills.runs[player],Skills.busyUntil[player],Skills.moveSeq[player]=nil,nil,nil,nil
-		for _,ready in pairs(Skills.netReady) do ready[player]=nil end
+		for prompt,ready in pairs(Skills.netReady) do
+			ready[player]=nil
+			if not next(ready) then Skills.netReady[prompt]=nil end
+		end
 	end
+	-- A prompt left the world: drop its trap (freeing the owner's slot) and cooldowns.
+	function Skills.forgetPrompt(prompt)
+		if Skills.traps[prompt] then Skills.release(prompt) end
+		Skills.netReady[prompt],Skills.swarmReady[prompt]=nil,nil
+	end
+	table.insert(promptGoneHooks,Skills.forgetPrompt)
 	task.spawn(function()
 		while task.wait(HU.TICK) do Skills.sweep(os.clock()) end
 	end)
@@ -1339,7 +1384,7 @@ end
 -- sets SeaCreatureAt (node position) then SeaCreatureSpawn = "<id>:<seq>"; Combat
 -- spawns it and reports back through bridge op "seaCreature". Only the ticket's
 -- owner is ever credited, once; despawns free the slot without a reward.
-local Sea={tickets=setmetatable({},{__mode="k"}),GRACE=15}
+local Sea={tickets={},GRACE=15} -- tickets[player]; cleared in forget()
 function Sea.book(player)
 	local book=Sea.tickets[player]
 	if not book then book={seq=0,live={}}; Sea.tickets[player]=book end
@@ -1393,6 +1438,11 @@ local function forget(player)
 	Econ.views[player],Econ.reads[player]=nil,nil
 	sessionOwner[player],opening[player]=nil,nil
 	Sea.tickets[player]=nil
+	Journal.isle.budget[player]=nil
+	for prompt,regrowth in pairs(nodeRegrowth) do
+		regrowth[player]=nil
+		if not next(regrowth) then nodeRegrowth[prompt]=nil end
+	end
 	Skills.forget(player) -- Agility runs, Hunter traps (session-only)
 	local set=userSessions[player.UserId]
 	if set then
@@ -1548,7 +1598,7 @@ local function perform(player,verb,item,prompt)
 		grantXp(p,skill,result.xp)
 		if region then Journal.count(p,"gathers",region,1) end
 		p.started=true
-		if not regrowth then regrowth=setmetatable({},{__mode="k"}); nodeRegrowth[prompt]=regrowth end
+		if not regrowth then regrowth={}; nodeRegrowth[prompt]=regrowth; watchPrompt(prompt) end
 		regrowth[player]=os.clock()+(tonumber(resource.respawn) or 3)
 		local hooked=if skill=="Fishing" then Sea.cast(player,p,stats,result.tool,region,prompt) else ""
 		return "+"..result.amount.." "..resource.name.."   ·   +"..result.xp.." "..skill.." XP"..hooked
@@ -1881,7 +1931,7 @@ local function perform(player,verb,item,prompt)
 		p.started=true
 		local now=os.clock()
 		local arena=enemies[prompt] or {}
-		enemies[prompt]=arena
+		if not enemies[prompt] then enemies[prompt]=arena; watchPrompt(prompt) end
 		local key=if p.ironman then player.UserId else "party"
 		local boss=arena[key]
 		if not boss or now-boss.last>30 then boss={hp=50,hits={},last=now}; arena[key]=boss end
@@ -2079,6 +2129,23 @@ function CombatStyles.consume(p,payload)
 	for id in pairs(cost) do remaining[id]=p.items[id] end
 	return {ok=true,remaining=remaining}
 end
+-- "refund" returns supplies a cast paid for but could not use (a Hubward
+-- tablet that failed to teleport). Same validation as "consume".
+function CombatStyles.refund(p,payload)
+	local items=payload.items
+	if type(items)~="table" then return {ok=false,reason="invalid"} end
+	local back,count={},0
+	for id,n in pairs(items) do
+		local def=validId(id) and Data.Items[id]
+		if not def or not def.combatUse or type(n)~="number" or n%1~=0 or n<1 or n>50 then return {ok=false,reason="invalid"} end
+		back[id]=n
+		count+=1
+		if count>8 then return {ok=false,reason="invalid"} end
+	end
+	if count==0 then return {ok=false,reason="invalid"} end
+	for id,n in pairs(back) do collect(p,id,n) end
+	return {ok=true}
+end
 function CombatStyles.xpRate(monsterId,tier)
 	if type(monsterId)~="string" then return nil end
 	local line=string.match(monsterId,"^Boss:(%a+)$")
@@ -2151,6 +2218,8 @@ bridge.OnInvoke=function(op,player,payload)
 			loadout=Progression.combatLoadout(p)} -- Combat styles: weapon style, quiver, supplies, autocast
 	elseif op=="consume" then
 		return CombatStyles.consume(p,payload)
+	elseif op=="refund" then
+		return CombatStyles.refund(p,payload)
 	elseif op=="combatXp" then
 		local reply=CombatStyles.xp(p,payload)
 		if reply.levelled then notify(player,"") end
@@ -2165,7 +2234,8 @@ bridge.OnInvoke=function(op,player,payload)
 		if not monster or monster.seaCreature then return nil end
 		local stats=Progression.computeStats(p,os.time())
 		p.started=true
-		grantXp(p,"Combat",monster.xp)
+		-- No flat Combat XP here: the damage XP accrued on the monster is paid
+		-- through "combatXp" when it dies (monster.xp in total for melee).
 		p.coins+=monster.coins
 		local drops=Progression.rollDrops(monster.drops,stats.magicFind,roll,stats.petLuck)
 		for item,n in pairs(drops) do collect(p,item,n) end
@@ -2180,7 +2250,7 @@ bridge.OnInvoke=function(op,player,payload)
 				note(p,"The "..Data.Slayers[quest.line].name.." stirs! Defeat it to finish your slayer quest.")
 			end
 		end
-		notify(player,monster.name.." slain • +"..monster.coins.." coins, +"..monster.xp.." Combat XP"..dropText(drops))
+		notify(player,monster.name.." slain • +"..monster.coins.." coins"..dropText(drops))
 		return {drops=drops,bossReady=quest~=nil and quest.bossReady==true}
 	elseif op=="seaCreature" then
 		local reply=Sea.report(player,p,payload)

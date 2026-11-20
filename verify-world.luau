@@ -1016,8 +1016,10 @@ do
 			task={spawn=function() end,defer=function() end,wait=function() end},warn=function() end,print=function() end,MeshForgeTest=probe,
 		}})()
 		local describe=probe.forge.describe
-		local UPRIGHT={tree=true,crop=true,ore=true,sign=true,lamp=true,warp=true,stall=true,station=true,statue=true}
+		local UPRIGHT={tree=true,crop=true,ore=true,sign=true,lamp=true,warp=true,stall=true,station=true,statue=true,tower=true,ship=true,plant=true,trap=true}
 		local meshed,owners,upright=0,0,0
+		local CREATURE_TAGS={Shellwarden=true,Tidewing=true}
+		local resolved={}
 		for _,obj in world:GetDescendants() do
 			if obj:IsA("BasePart") and obj:GetAttribute("Shape")~=nil and not obj:GetAttribute("SculptureScale") then
 				local scale=obj:GetAttribute("ShapeScale")
@@ -1028,8 +1030,20 @@ do
 					check(model:IsA("Model") and #model:GetChildren()<=40,obj:GetFullName().." owns only its own small prop Model")
 				end
 				local d=describe(obj)
+				-- Every world prop tag has a catalog mesh; creatures stay with IslandArt.
+				check(d~=nil or CREATURE_TAGS[obj:GetAttribute("Shape")]==true,obj:GetFullName().." Shape "..tostring(obj:GetAttribute("Shape")).." resolves to a catalog mesh")
 				if d then
 					meshed+=1
+					resolved[d.shape]=(resolved[d.shape] or 0)+1
+					if d.shape=="RopeSwing" or d.shape=="ZipLine" then
+						-- Line meshes run along the host's longest axis.
+						local own=obj.Size
+						local long=math.max(own.X,own.Y,own.Z)
+						check(math.abs(math.max(d.size.X,d.size.Y,d.size.Z)-long)<=long*.05+.05,obj:GetFullName().." line mesh follows its span")
+					end
+					if obj:GetAttribute("Shape")=="CropBed" and obj:FindFirstChildOfClass("ProximityPrompt") then
+						check(d.shape==WorldArt.resourceShape(obj:FindFirstChildOfClass("ProximityPrompt"):GetAttribute("IsleItem")),obj:GetFullName().." crop patch shows its own crop")
+					end
 					local box,size=d.box,d.size
 					for _,axis in {"X","Y","Z"} do
 						check(size[axis]<=box[axis]*1.5+.6,obj:GetFullName().." mesh "..axis.." "..string.format("%.1f",size[axis]).." stays within 1.5x of its slot "..string.format("%.1f",box[axis]))
@@ -1065,6 +1079,10 @@ do
 					end
 				end
 			end
+		end
+		for _,shape in {"Skyship","Lighthouse","Crane","FishingPier","Spyglass","AgilityPerch","ClimbNet","BalanceBeam","RopeSwing","LedgeWalk","ZipLine","SlideChute",
+			"SnareTrap","BirdPerch","SwarmBloom","Waystone","StormPylon","StormSpire","Stalactite","RuinColumn","Column","Torch","CropBed","Bush","RockOutcrop","PalmTree","DeadTree","WindpineTree"} do
+			check((resolved[shape] or 0)>=1,shape.." mesh is placed in the generated world")
 		end
 		check(meshed>=300 and upright>=150 and owners>=60,"mesh boxes checked ("..meshed.." meshed, "..upright.." upright, "..owners.." model owners)")
 		print("Mesh boxes: "..meshed.." laid out, "..upright.." upright kinds, "..owners.." ShapeOwnsModel hosts.")

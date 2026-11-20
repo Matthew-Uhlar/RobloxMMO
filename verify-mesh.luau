@@ -77,8 +77,37 @@ local SIGNS = {Signboard = true, SignboardPosted = true, SignPost = true, Banner
 local required = {"WindpineTree", "EmberoakTree", "GlimmerbarkTree", "StarwoodTree", "AetherheartTree", "MeadowTree",
 	"Boulder", "RockCluster", "CliffPiece", "OreVein1", "OreVein2", "OreVein3", "OreVein4", "CropWheat", "CropGlowcap",
 	"CropBloom", "CropBush", "FishingBuoy", "StreetLamp", "LampPost", "HangingLantern", "Forge", "Hearth", "Cauldron",
-	"Workbench", "BridgePost", "BridgeRail", "Statue", "WarpBeacon", "MarketStall", "Signboard", "SignPost", "Banner"}
+	"Workbench", "BridgePost", "BridgeRail", "Statue", "WarpBeacon", "MarketStall", "Signboard", "SignPost", "Banner",
+	-- Landmarks, Agility/Hunter props and dedicated shapes that replaced aliases.
+	"Skyship", "Lighthouse", "Crane", "FishingPier", "Spyglass", "AgilityPerch", "ClimbNet", "BalanceBeam", "RopeSwing",
+	"LedgeWalk", "ZipLine", "SlideChute", "SnareTrap", "BirdPerch", "SwarmBloom", "Waystone", "StormPylon", "StormSpire",
+	"Stalactite", "RuinColumn", "Column", "Torch", "CropBed", "Bush", "RockOutcrop", "PalmTree", "DeadTree"}
 for _, name in ipairs(required) do check(World.shapes[name] ~= nil, name .. " is authored") end
+-- Every client downloads the world catalog: packed geometry keeps it small.
+local catalogBytes = #fs.readFile("art/WorldCatalog.lua")
+check(catalogBytes <= 900 * 1024, "world catalog download stays under 900 KB (" .. catalogBytes .. " bytes)")
+-- Packed geometry decodes to exactly the OBJ masters' vertices and faces.
+for _, name in ipairs({"Skyship", "ZipLine", "SnareTrap", "StormSpire", "WindpineTree"}) do
+	local data, vi, fi = World.shapes[name], 0, 0
+	for line in string.gmatch(fs.readFile("art/" .. name .. ".obj"), "[^\n]+") do
+		local x, y, z = string.match(line, "^v (%S+) (%S+) (%S+)")
+		if x then
+			vi += 1
+			local v = data.vertices[vi]
+			check(v ~= nil and v[1] == tonumber(x) and v[2] == tonumber(y) and v[3] == tonumber(z), name .. " vertex " .. vi .. " matches its OBJ")
+		end
+		local shade = string.match(line, "^usemtl Shade(%d+)")
+		if shade then fi += 1; check(data.faces[fi] and data.faces[fi][4] == tonumber(shade), name .. " face shade matches its OBJ") end
+		local a, b, c = string.match(line, "^f (%d+) (%d+) (%d+)")
+		if a then check(data.faces[fi][1] == tonumber(a) and data.faces[fi][2] == tonumber(b) and data.faces[fi][3] == tonumber(c), name .. " face matches its OBJ") end
+	end
+	check(vi == #data.vertices and fi == #data.faces, name .. " packed counts match its OBJ")
+end
+-- Fit boxes and line axes declared for slot-sized props.
+for _, name in ipairs({"Crane", "FishingPier", "RopeSwing", "LedgeWalk", "ZipLine", "SlideChute", "SnareTrap", "BirdPerch", "SwarmBloom", "Waystone", "StormPylon", "Torch"}) do
+	check(World.shapes[name].fit ~= nil, name .. " fits its host slot box")
+end
+check(World.shapes.RopeSwing.along == "Y", "rope swing declares its line axis")
 
 local MeshForgeSource = fs.readFile("forge.client.lua")
 -- A throwaway forge instance exposes the production normal smoother for the checks below.
@@ -378,6 +407,27 @@ do
 	local p = part(nil, "Wide tree", Vector3.new(20, 10, 20), CFrame.new(), {Shape = "WindpineTree", ShapeFit = "Uniform"}); uniform.add(p)
 	local size = meshOf(p).Size
 	check(size.X <= 20 + 1e-3 and size.Y <= 10 + 1e-3 and size.Z <= 20 + 1e-3 and (near(size.Y, 10) or near(size.X, 20) or near(size.Z, 20)), "uniform fit stays inside the part")
+end
+
+-- Line shapes turn onto the host's longest axis; resource slots follow their prompt.
+do
+	local lines = loadForge()
+	local hanging = part(nil, "Swing rope", Vector3.new(.3, 9.2, .3), CFrame.new(0, 5, 0), {Shape = "RopeSwing"}); lines.add(hanging)
+	local span = part(nil, "Rappel line", Vector3.new(.2, .2, 30), CFrame.new(5, 5, 0), {Shape = "RopeSwing"}); lines.add(span)
+	local hangMesh, spanMesh = meshOf(hanging), meshOf(span)
+	check(hangMesh.CFrame.UpVector:FuzzyEq(Vector3.new(0, 1, 0), 1e-4) and near(hangMesh.Size.Y, 9.2, .5), "hanging rope stays vertical")
+	check(math.abs(spanMesh.CFrame.UpVector.Z) > .99 and spanMesh.Size.Y > 25 and spanMesh.Size.X < .9 and spanMesh.Size.Z < .9, "rappel line rope lies along its span")
+	local resources = loadForge()
+	local bed = part(nil, "Soil bed", Vector3.new(6.4, .4, 5), CFrame.new(0, .2, 0), {Shape = "CropBed"})
+	local prompt = Instance.new("ProximityPrompt")
+	prompt:SetAttribute("IsleItem", "Glowcap")
+	prompt.Parent = bed
+	resources.add(bed)
+	local herbs = part(nil, "Herb bed mesh", Vector3.new(4.6, 1.6, 4.6), CFrame.new(20, .8, 0), {Shape = "CropBed"}); resources.add(herbs)
+	check(meshOf(bed):GetAttribute("ShapeOf") == "CropGlowcap", "crop patch uses its resource's crop mesh")
+	check(meshOf(herbs):GetAttribute("ShapeOf") == "CropBed", "a plain herb bed uses the dedicated bed mesh")
+	local pine = part(nil, "Pine", Vector3.new(4, 9, 4), CFrame.new(40, 4.5, 0), {Shape = "PineTree"}); resources.add(pine)
+	check(meshOf(pine):GetAttribute("ShapeOf") == "WindpineTree", "pine trees borrow the windpine mesh")
 end
 
 -- Cylinder hosts (world disk(): rolled 90 degrees about Z) stand the mesh up along

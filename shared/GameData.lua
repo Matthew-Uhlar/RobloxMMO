@@ -2414,19 +2414,26 @@ HU.Methods = {
 	net={name="Net",kit="SkyNet",verb="Swing net",trap=false},
 }
 HU.MethodOrder = {"snare","bird","box","net"}
-HU.TICK = 3               -- seconds between trap rolls
+-- Pacing (verify-skills.luau models XP/h from these and holds every creature
+-- within 0.5x..1.5x of the gathering tier open at the same level; the top
+-- creature lands near 1.3x Celestium mining).
+HU.TICK = 4               -- seconds between trap rolls
 HU.MAX_TICKS = 40         -- an unsprung trap collapses after this many rolls
 HU.DISMANTLE_WINDOW = 4   -- trigger a set trap twice within this many seconds to pick it up
 HU.MAX_TRAPS = 5
-HU.NET_MISS_COOLDOWN = 2  -- seconds before the same swarm can be netted again after a miss
+HU.NET_MISS_COOLDOWN = 2  -- seconds before the same swarm can be netted again after a miss (per player)
+HU.LEVEL_BONUS = 0.01     -- catch chance x(1 + this per Hunter level above the creature's)
+HU.MAX_CHANCE = 0.6       -- level-scaled chance ceiling, before Trap Luck
+HU.TRAP_LUCK_CAP = 50     -- Trap Luck above this does nothing for catch chance
+HU.TRAP_LUCK_EFFECT = 0.5 -- each capped point of Trap Luck adds this % (max +25%)
 HU.LogTiers = {10,25,50,100,250,500,1000}
 HU.LogBonus = {trapLuck=0.5,huntingFortune=1}
 function HU.maxTraps(level) return math.min(HU.MAX_TRAPS, 1 + (level or 1) // 20) end
 -- Per-roll (traps) or per-swing (nets) catch chance in 0..1.
 function HU.catchChance(creature, level, trapLuck)
-	local c = creature.base + ((level or 1) - creature.level) * 0.012
-	c = math.clamp(c, creature.base * 0.5, 0.85)
-	c *= 1 + math.clamp(trapLuck or 0, 0, 100) / 100
+	local c = creature.base * (1 + math.max(0, (level or 1) - creature.level) * HU.LEVEL_BONUS)
+	c = math.min(c, HU.MAX_CHANCE)
+	c *= 1 + math.clamp(tonumber(trapLuck) or 0, 0, HU.TRAP_LUCK_CAP) * HU.TRAP_LUCK_EFFECT / 100
 	return math.min(0.95, c)
 end
 function HU.logPerk(log)
@@ -2473,23 +2480,23 @@ recipe("GossamerNet",{skill="Hunter",level=35,xp=180,costs={SpiderSilk=12,SkyNet
 
 -- Creatures: method, Hunter level, region, XP per catch, base catch chance;
 -- drops[1] is the primary drop (Hunting Fortune applies to it). respawn = net
--- swarm cooldown per player.
+-- swarm cooldown after a catch, shared by every player at that spot.
 HU.Creatures = {
-	{id="PuffcapHopper",name="Puffcap Hopper",method="snare",level=1,region="Meadow",xp=24,base=0.3,color="E8DCC8",
+	{id="PuffcapHopper",name="Puffcap Hopper",method="snare",level=1,region="Meadow",xp=24,base=0.5,color="E8DCC8",
 		drops={{item="DownyPelt",chance=1,min=1,max=1},{item="HopperHaunch",chance=0.8,min=1,max=1},{item="PuffkinPet",chance=0.002,min=1,max=1}}},
-	{id="SunwingMoth",name="Sunwing Moth",method="net",level=9,region="Meadow",xp=36,base=0.55,respawn=5,color="F7D774",
+	{id="SunwingMoth",name="Sunwing Moth",method="net",level=9,region="Meadow",xp=30,base=0.5,respawn=22,color="F7D774",
 		drops={{item="SunwingDust",chance=1,min=1,max=2},{item="DriftPlume",chance=0.3,min=1,max=3}}},
-	{id="PinecrestGrouse",name="Pinecrest Grouse",method="bird",level=18,region="Windpine",xp=70,base=0.26,color="B08A5A",
+	{id="PinecrestGrouse",name="Pinecrest Grouse",method="bird",level=18,region="Windpine",xp=70,base=0.2,color="B08A5A",
 		drops={{item="GrouseQuill",chance=1,min=2,max=4},{item="RawGrouse",chance=0.7,min=1,max=1}}},
-	{id="CinderFerret",name="Cinder Ferret",method="box",level=27,region="Quarry",xp=110,base=0.24,color="D9642B",
+	{id="CinderFerret",name="Cinder Ferret",method="box",level=27,region="Quarry",xp=110,base=0.1,color="D9642B",
 		drops={{item="EmberPelt",chance=1,min=1,max=1},{item="ArcaneDust",chance=0.3,min=1,max=2},{item="PuffkinPet",chance=0.001,min=1,max=1}}},
-	{id="GlintwingDragonfly",name="Glintwing Dragonfly",method="net",level=36,region="Tidewater",xp=140,base=0.45,respawn=6,color="8EF0F8",
+	{id="GlintwingDragonfly",name="Glintwing Dragonfly",method="net",level=36,region="Tidewater",xp=120,base=0.45,respawn=40,color="8EF0F8",
 		drops={{item="GlintEssence",chance=1,min=1,max=2},{item="GlimmerflyPet",chance=0.0015,min=1,max=1}}},
-	{id="GaleKestrel",name="Gale Kestrel",method="bird",level=48,region="Skyreach",xp=200,base=0.2,color="DDEBFF",
+	{id="GaleKestrel",name="Gale Kestrel",method="bird",level=48,region="Skyreach",xp=200,base=0.06,color="DDEBFF",
 		drops={{item="GalePlume",chance=1,min=2,max=3},{item="StormFeather",chance=0.3,min=1,max=1}}},
-	{id="GloomLynx",name="Gloom Lynx",method="box",level=62,region="Gloomhollow",xp=280,base=0.17,color="3D3654",
+	{id="GloomLynx",name="Gloom Lynx",method="box",level=62,region="Gloomhollow",xp=280,base=0.04,color="3D3654",
 		drops={{item="ShadowPelt",chance=1,min=1,max=1},{item="VoidEssence",chance=0.15,min=1,max=1},{item="GlimmerflyPet",chance=0.001,min=1,max=1}}},
-	{id="StormmaneIbex",name="Stormmane Ibex",method="snare",level=80,region="Tempest",xp=380,base=0.14,color="8FA3C8",
+	{id="StormmaneIbex",name="Stormmane Ibex",method="snare",level=80,region="Tempest",xp=380,base=0.035,color="8FA3C8",
 		drops={{item="StormmaneHide",chance=1,min=1,max=1},{item="IbexShank",chance=0.8,min=1,max=2},{item="StormmaneHorn",chance=0.04,min=1,max=1},{item="StormkidPet",chance=0.001,min=1,max=1}}},
 }
 HU.CreatureById = {}

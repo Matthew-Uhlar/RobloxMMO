@@ -40,7 +40,7 @@ local function ok(cond, case) assert(cond, case); checks += 1 end
 ------------------------------------------------------------------------------
 local function world()
 	local w = {clock = 100, rolls = {}, calls = {}, positions = {}, alive = {}, stats = {}, heals = {}, list = {},
-		replies = {slayerBoss = {ok = true}}, playerCalls = 0, inv = {}, teleports = {}, walls = false}
+		replies = {slayerBoss = {ok = true}}, playerCalls = 0, inv = {}, teleports = {}, walls = false, moving = {}}
 	function w.rng()
 		if #w.rolls > 0 then return table.remove(w.rolls, 1) end
 		return 0.5
@@ -79,11 +79,18 @@ local function world()
 				for id, n in pairs(payload.items) do inv[id] -= n; remaining[id] = inv[id] end
 				return {ok = true, remaining = remaining}
 			end
+			if op == "refund" then
+				local inv = w.inv[player] or {}
+				w.inv[player] = inv
+				for id, n in pairs(payload.items) do inv[id] = (inv[id] or 0) + n end
+				return {ok = true}
+			end
 			if done then done(w.replies[op]) end
 			return nil
 		end,
 		lineOfSight = function(from, r) return not w.walls end,
 		teleport = function(player) table.insert(w.teleports, player); return w.hub ~= false end,
+		moving = function(player) return w.moving[player] == true end,
 	})
 	return w
 end
@@ -254,7 +261,9 @@ do
 	eq(result.damage, expected, "damage = meleeDamage reduced by monster defense")
 	eq(result.crit, false, "no crit at 0 crit chance")
 	eq(r.hp, Data.Monsters.ShaleCrawler.hp - expected, "monster loses health")
-	eq(r.contributors[hero], expected, "contribution recorded")
+	eq(r.contributors[hero].damage, expected, "contribution recorded")
+	eq(r.contributors[hero].xp.melee, expected, "melee damage XP accrued on the monster")
+	eq(w.count("combatXp", hero), 0, "no damage XP is paid before the kill")
 	eq(w.count("stats", hero), 1, "stats fetched through the bridge")
 	eq(select(2, L.attack(hero, "attack", target)), "cooldown", "second swing inside cooldown rejected")
 	w.clock += 0.45 - C.COOLDOWN_GRACE + 0.001
@@ -340,7 +349,7 @@ do
 	w.clock += 2
 	L.attack(b, "attack", deadModel)
 	w.alive[b] = false
-	r3.contributors[a] = 0
+	r3.contributors[a] = {damage = 0, xp = {}}
 	local list = L.creditEligible(r3)
 	eq(#list, 0, "dead contributors and zero-damage entries earn nothing")
 end
@@ -381,7 +390,7 @@ do
 	-- Leash
 	r.target = hero
 	r.hp = 10
-	r.contributors[hero] = 5
+	r.contributors[hero] = {damage = 5, xp = {melee = 5}}
 	r.position = Vector3.new(C.LEASH_RANGE + 5, 2, 0)
 	w.positions[hero] = Vector3.new(C.LEASH_RANGE + 8, 3, 0)
 	eq(L.think(r).kind, "leash", "beyond 60 studs from home the monster leashes")
@@ -499,7 +508,7 @@ do
 	local marker = L.addMarker("m", "Thornling", 1, origin)
 	L.dueSpawns()
 	local mob = L.register(marker, model("mob"), origin)
-	mob.contributors[owner], mob.target = 50, owner
+	mob.contributors[owner], mob.target = {damage = 50, xp = {melee = 50}}, owner
 	w.clock += 2
 	L.attack(owner, "attack", model("none"))
 	local removed = L.playerRemoving(owner)
@@ -1095,7 +1104,7 @@ do
 	w.stats[owner].stats.damage = 20
 	w.clock += 5
 	L.attack(owner, "attack", r3.model)
-	ok((r3.contributors[owner] or 0) > 0, "owner dealt damage")
+	ok(L.contribution(r3, owner) > 0, "owner dealt damage")
 	w.positions[owner] = r3.position + Vector3.new(C.CREDIT_RANGE + 5, 0, 0)
 	L.kill(r3)
 	last = w.calls[#w.calls]
@@ -1155,6 +1164,157 @@ do
 	eq(gw.logic.seaLive(), C.SEA_MAX, "server-wide sea creature cap holds")
 	eq(gw.count("seaCreature"), 2, "creatures over the global cap release their tickets")
 	print("PASS: " .. (checks - seaChecks) .. " sea creature combat assertions.")
+end
+
+------------------------------------------------------------------------------
+-- Damage XP is accrued on the monster and paid only on the kill (OSRS model).
+------------------------------------------------------------------------------
+do
+	local before = checks
+	local function paidXp(w, player, style)
+		local total, n = 0, 0
+		for _, c in ipairs(w.calls) do
+			if c.op == "combatXp" and c.player == player and c.payload.damage and (style == nil or c.payload.style == style) then
+				total += c.payload.damage; n += 1
+			end
+		end
+		return total, n
+	end
+	local weak = {damage = 20, strength = 0, critChance = 0, critDamage = 50, attackSpeed = 0}
+	local strong = {damage = 5000, strength = 0, critChance = 0, critDamage = 0, attackSpeed = 0}
+	-- Credited contributors are paid exactly the damage they removed; others nothing.
+	do
+		local w = world()
+		local L = w.logic
+		local marker = L.addMarker("m", "ShaleCrawler", 2, origin)
+		L.dueSpawns()
+		local m = model("crawler")
+		local r = L.register(marker, m, Vector3.new(0, 1, 0))
+		local a = w.player("a", Vector3.new(5, 1, 0), {stats = weak})
+		local b = w.player("b", Vector3.new(-5, 1, 0), {stats = weak})
+		local far = w.player("far", Vector3.new(0, 1, 5), {stats = weak})
+		L.attack(a, "attack", m); L.attack(b, "attack", m); L.attack(far, "attack", m)
+		local dealtB, dealtFar = r.contributors[b].damage, r.contributors[far].damage
+		eq(select(2, paidXp(w, a)), 0, "no XP while the monster lives")
+		w.positions[far] = Vector3.new(90, 1, 0)
+		w.stats[a].stats = strong
+		w.clock += 1.1
+		local hpBefore = r.hp
+		local kill = L.attack(a, "attack", m)
+		ok(kill.killed, "killing blow")
+		local dealtA = r.contributors[a].damage
+		eq(dealtA + dealtB + dealtFar, Data.Monsters.ShaleCrawler.hp, "contributions sum to the monster's hp (overkill capped)")
+		ok(kill.damage > hpBefore and dealtA < Data.Monsters.ShaleCrawler.hp, "the overkill blow only counts the hp it removed")
+		local paidA, callsA = paidXp(w, a, "melee")
+		eq(paidA, dealtA, "killer paid the damage it removed")
+		eq(callsA, 1, "one XP report per style per kill")
+		eq((paidXp(w, b, "melee")), dealtB, "helper paid its own damage")
+		eq((paidXp(w, far)), 0, "uncredited contributors get no XP")
+		-- Total Combat XP of a solo melee kill is monster.xp (server converts damage).
+		local combat = P.styleXp("melee", Data.Monsters.ShaleCrawler.hp, Data.Monsters.ShaleCrawler.xp, Data.Monsters.ShaleCrawler.hp)
+		near(combat.Combat, Data.Monsters.ShaleCrawler.xp, "a whole melee kill is worth exactly monster.xp Combat XP")
+	end
+	-- Leashing: untargetable, and the heal discards the accrued XP.
+	do
+		local w = world()
+		local L = w.logic
+		local marker = L.addMarker("t", "Thornling", 1, origin)
+		L.dueSpawns()
+		local m = model("thorn")
+		local r = L.register(marker, m, Vector3.new(0, 1, 0))
+		local hero = w.player("hero", Vector3.new(5, 1, 0), {stats = weak})
+		L.attack(hero, "attack", m)
+		ok(L.contribution(r, hero) > 0, "damage accrued")
+		r.position = Vector3.new(C.LEASH_RANGE + 2, 1, 0)
+		w.positions[hero] = Vector3.new(C.LEASH_RANGE + 6, 1, 0)
+		eq(L.think(r).kind, "leash", "monster leashes")
+		w.clock += 1.1
+		eq(select(2, L.attack(hero, "attack", m)), "leashing", "leashing monsters cannot be hit")
+		w.stats[hero].loadout = {style = "magic", weapon = "MeadowWand", levels = {Magic = 30}, supplies = {GaleGlyph = 5, SparkGlyph = 5, BindGlyph = 2, StoneGlyph = 4}}
+		w.inv[hero] = {GaleGlyph = 5, SparkGlyph = 5, BindGlyph = 2, StoneGlyph = 4}
+		w.positions[hero] = Vector3.new(C.LEASH_RANGE + 20, 1, 0)
+		eq(select(2, L.cast(hero, "cast", m, "GaleDart")), "leashing", "nor targeted by damage spells")
+		eq(select(2, L.cast(hero, "cast", m, "Rootbind")), "leashing", "nor snared")
+		eq(w.count("consume", hero), 0, "refused casts spend nothing")
+		eq(w.count("combatXp", hero), 0, "and grant no cast XP")
+		r.position = r.home
+		ok(L.think(r).healed, "monster heals at home")
+		eq(L.contribution(r, hero), 0, "accrued XP discarded with the heal")
+		-- Fight again and kill: only the new damage pays.
+		w.stats[hero].loadout = nil
+		w.positions[hero] = Vector3.new(5, 1, 0)
+		w.stats[hero].stats = strong
+		w.clock += 1.1
+		ok(L.attack(hero, "attack", m).killed, "kill after the leash")
+		eq((paidXp(w, hero, "melee")), Data.Monsters.Thornling.hp, "only one monster's worth of XP is paid")
+	end
+	-- Snared beyond the leash: hits accrue, the leash after the snare discards them.
+	do
+		local w = world()
+		local L = w.logic
+		local marker = L.addMarker("t", "Thornling", 1, origin)
+		L.dueSpawns()
+		local m = model("thorn")
+		local r = L.register(marker, m, Vector3.new(C.LEASH_RANGE + 10, 1, 0))
+		local hero = w.player("hero", Vector3.new(C.LEASH_RANGE + 15, 1, 0), {stats = weak})
+		r.snaredUntil = w.clock + 5
+		ok(L.think(r).kind ~= "leash", "a snared monster stays put past its leash")
+		for _ = 1, 3 do
+			w.clock += 1.1
+			L.attack(hero, "attack", m)
+		end
+		ok(L.contribution(r, hero) > 0 and r.hp > 0, "damage accrued on the snared monster")
+		w.clock += 5
+		eq(L.think(r).kind, "leash", "the snare ends and it leashes")
+		r.position = r.home
+		L.think(r)
+		eq(r.hp, r.maxHp, "healed")
+		eq(w.count("combatXp", hero), 0, "no XP from the snared hits")
+	end
+	-- Despawn without a kill pays nothing; bosses pay their owner on the win.
+	do
+		local w = world()
+		local L = w.logic
+		local marker = L.addMarker("t", "Thornling", 1, origin)
+		L.dueSpawns()
+		local m = model("thorn")
+		local r = L.register(marker, m, Vector3.new(0, 1, 0))
+		local hero = w.player("hero", Vector3.new(5, 1, 0), {stats = weak})
+		L.attack(hero, "attack", m)
+		L.removeMarker("t")
+		eq(r.alive, false, "despawned")
+		eq(w.count("combatXp", hero), 0, "despawns discard accrued XP")
+		local owner = w.player("owner", Vector3.new(0, 1, 30), {stats = strong})
+		local _, spec = L.bossAttribute(owner, "Bramble:1")
+		local bm = model("boss")
+		L.registerBoss(owner, spec, bm, Vector3.new(0, 1, 34))
+		ok(L.attack(owner, "attack", bm).killed, "boss slain")
+		local paid
+		for _, c in ipairs(w.calls) do if c.op == "combatXp" and c.player == owner then paid = c.payload end end
+		ok(paid ~= nil and paid.monster == "Boss:Bramble" and paid.tier == 1 and paid.damage == Data.Slayers.Bramble.tiers[1].hp, "boss win pays the owner its damage XP")
+	end
+	-- Mana tick cost is bounded: only a few stats reads per tick, none for idle full players.
+	do
+		local w = world()
+		local L = w.logic
+		local crowd = {}
+		for i = 1, 12 do table.insert(crowd, w.player("p" .. i, Vector3.new(i * 3, 1, 0))) end
+		local function reads() return w.count("stats") end
+		L.manaTick()
+		ok(reads() <= C.MANA_REFRESH_BUDGET, "first tick reads at most the budget")
+		local seen = reads()
+		for _ = 1, 3 do w.clock += 1; L.manaTick() end
+		eq(reads(), 12, "every player is read once within a few ticks")
+		w.clock += 1
+		L.manaTick()
+		eq(reads(), 12, "full-mana players are not re-read before MANA_REFRESH")
+		ok(seen > 0, "budget spent on first sight")
+		w.clock += C.MANA_REFRESH
+		local start = reads()
+		L.manaTick()
+		ok(reads() - start <= C.MANA_REFRESH_BUDGET, "refreshes stay within the budget")
+	end
+	print("PASS: " .. (checks - before) .. " kill-paid XP and mana tick assertions.")
 end
 
 ------------------------------------------------------------------------------
@@ -1223,10 +1383,8 @@ do
 	eq(shot.ammoLeft, 2, "quiver count returned")
 	eq(r.hp, Data.Monsters.BramblebackBoar.hp - shot.damage, "boar loses health")
 	eq(r.target, archer, "the archer draws aggro")
-	local xp = xpCalls(w, "ranged")
-	eq(#xp, 1, "ranged hit reports style XP")
-	eq(xp[1].damage, shot.damage, "xp report carries damage")
-	eq(xp[1].monster, "BramblebackBoar", "xp report names the monster")
+	eq(#xpCalls(w, "ranged"), 0, "ranged damage XP waits for the kill")
+	eq(r.contributors[archer].xp.ranged, shot.damage, "ranged damage accrued on the monster")
 	ok(math.abs(shot.chance - P.hitChance(0, 1, Data.Monsters.BramblebackBoar.level, 0)) < 1e-9, "hit chance from Progression")
 	eq(select(2, L.ranged(archer, "ranged", target)), "cooldown", "second shot inside the bow cooldown")
 	w.clock += 1.05 - C.COOLDOWN_GRACE + 0.001
@@ -1234,7 +1392,7 @@ do
 	local miss = L.ranged(archer, "ranged", target)
 	ok(miss and miss.miss and miss.damage == 0, "a failed accuracy roll misses")
 	eq(w.inv[archer].CopperArrow, 1, "misses still spend the arrow")
-	eq(#xpCalls(w, "ranged"), 1, "misses grant no XP")
+	eq(r.contributors[archer].xp.ranged, shot.damage, "misses accrue no XP")
 	w.clock += 1.2
 	ok(L.ranged(archer, "ranged", target) ~= nil, "last arrow fired")
 	eq(lo.ammoCount, 0, "cached quiver count follows the bridge")
@@ -1251,6 +1409,13 @@ do
 	local kill = L.ranged(archer, "ranged", target)
 	ok(kill.killed, "a killing shot kills")
 	eq(w.count("kill", archer), 1, "ranged kills report through the bridge")
+	local paid = xpCalls(w, "ranged")
+	eq(#paid, 1, "the kill pays the accrued ranged XP once")
+	eq(paid[1].damage, Data.Monsters.BramblebackBoar.hp, "paid damage = the hp actually removed (overkill capped)")
+	eq(paid[1].monster, "BramblebackBoar", "xp report names the monster")
+	local ranged = P.styleXp("ranged", paid[1].damage, Data.Monsters.BramblebackBoar.xp, Data.Monsters.BramblebackBoar.hp)
+	near(ranged.Ranged, Data.Monsters.BramblebackBoar.xp, "a ranged kill is worth monster.xp Ranged XP")
+	near(ranged.Combat, Data.Monsters.BramblebackBoar.xp / 3, "plus a third of it to Combat")
 	-- Weakness bonus: thornlings (magic) are weak to arrows.
 	local thornMarker = L.addMarker("thorn", "Thornling", 1, origin)
 	L.dueSpawns()
@@ -1267,9 +1432,8 @@ do
 	-- Melee keeps working and now reports Combat XP for its damage.
 	local brute = w.player("brute", Vector3.new(4, 1, 0))
 	ok(L.attack(brute, "attack", thorn) ~= nil, "melee without a loadout still swings")
-	local meleeXp = xpCalls(w, "melee")
-	eq(#meleeXp, 1, "melee damage reports XP")
-	eq(meleeXp[1].monster, "Thornling", "melee xp names the monster")
+	eq(#xpCalls(w, "melee"), 0, "melee damage XP waits for the kill")
+	ok(tr.contributors[brute].xp.melee > 0, "melee damage accrued on the monster")
 	print("PASS: " .. (checks - stylesBefore) .. " ranged combat assertions.")
 end
 -- Spells, mana, cooldowns, utility spells.
@@ -1313,9 +1477,10 @@ do
 	eq(w.inv[mage].GaleGlyph, 1, "element glyph spent"); eq(w.inv[mage].SparkGlyph, 2, "catalyst spent")
 	eq(lo.supplies.GaleGlyph, 1, "cached supplies follow the bridge")
 	local mx = xpCalls(w, "magic")
-	eq(#mx, 1, "spell reports XP once")
+	eq(#mx, 1, "spell reports cast XP once, immediately")
 	eq(mx[1].spell, "GaleDart", "xp report names the spell (cast XP)")
-	eq(mx[1].damage, cast.damage, "and carries the damage")
+	eq(mx[1].damage, nil, "damage XP waits for the kill")
+	eq(r.contributors[mage].xp.magic, cast.damage, "magic damage accrued on the monster")
 	eq(select(2, L.cast(mage, "cast", target, "GaleDart")), "cooldown", "wand cooldown")
 	w.clock += 0.8 - C.COOLDOWN_GRACE + 0.001
 	ok(L.cast(mage, "cast", target, "GaleDart") ~= nil, "wand recast after 0.8s")
@@ -1398,13 +1563,27 @@ do
 	eq(select(2, L.cast(mage, "cast", nil, "Hubward")), "combat", "no tablets within 5s of being struck")
 	eq(#w.teleports, 0, "nobody teleported")
 	w.clock += 5.1
+	w.moving[mage] = true
+	eq(select(2, L.cast(mage, "cast", nil, "Hubward")), "teleport", "no tablets during an agility move")
+	eq(#w.teleports, 0, "a moving player is not teleported")
+	eq(w.inv[mage].HubwardTablet, 1, "and keeps the tablet")
+	w.moving[mage] = nil
+	-- Stale cached supplies: the bridge refuses, so no free teleport.
+	w.inv[mage].HubwardTablet = 0
+	eq(select(2, L.cast(mage, "cast", nil, "Hubward")), "glyphs", "stale tablet cache refused")
+	eq(#w.teleports, 0, "an unpaid tablet never teleports")
+	w.inv[mage].HubwardTablet, lo.supplies.HubwardTablet = 1, 1
+	local magicBefore = #xpCalls(w, "magic")
 	w.hub = false
 	eq(select(2, L.cast(mage, "cast", nil, "Hubward")), "teleport", "uncharted hub refuses")
+	eq(w.count("refund", mage), 1, "a failed teleport refunds the tablet through the bridge")
 	eq(w.inv[mage].HubwardTablet, 1, "a failed teleport keeps the tablet")
+	eq(lo.supplies.HubwardTablet, 1, "cached supplies follow the refund")
+	eq(#xpCalls(w, "magic"), magicBefore, "a failed teleport grants no XP")
 	w.hub = true
 	local port = L.cast(mage, "cast", nil, "Hubward")
 	ok(port ~= nil and port.kind == "teleport", "hubward teleports")
-	eq(#w.teleports, 2, "teleport invoked")
+	eq(#w.teleports, 2, "teleport invoked (once failed, once landed)")
 	eq(w.inv[mage].HubwardTablet, 0, "tablet consumed")
 	w.clock += 3.1
 	eq(select(2, L.cast(mage, "cast", nil, "Hubward")), "glyphs", "no tablet left")
@@ -1419,6 +1598,10 @@ do
 	eq(again, 0, "unchanged mana is not re-sent")
 	w.stats[fresh].stats.intelligence = 300
 	w.clock += 2
+	local stale = 0
+	for _, u in ipairs(L.manaTick()) do if u.player == fresh then stale += 1 end end
+	eq(stale, 0, "full-mana players are not re-read every tick")
+	w.clock += C.MANA_REFRESH
 	local grown
 	for _, u in ipairs(L.manaTick()) do if u.player == fresh then grown = u end end
 	ok(grown ~= nil and grown.max == 300, "max mana follows intelligence")
@@ -1492,6 +1675,9 @@ do
 		table.insert(calls, {op = op, player = player, payload = payload})
 		if op == "stats" then
 			return {stats = styleStats({intelligence = 150}), combatLevel = 3, ironman = false, loadout = loadout}
+		elseif op == "refund" then
+			for id, n in pairs(payload.items) do inv[id] = (inv[id] or 0) + n end
+			return {ok = true}
 		elseif op == "consume" then
 			for id, n in pairs(payload.items) do if (inv[id] or 0) < n then return {ok = false} end end
 			local remaining = {}
@@ -1595,7 +1781,7 @@ do
 	eq(#hits, 1, "hit broadcast")
 	eq(hits[1].payload.style, "ranged", "hit carries the style")
 	eq(hits[1].payload.tag, "resist", "hit carries the triangle tag")
-	eq(opCount("combatXp"), 1, "XP reported for the hit")
+	eq(opCount("combatXp"), 0, "damage XP waits for the kill")
 	-- Line of sight blocked: denied, no arrow spent.
 	now += 2
 	wall = true
