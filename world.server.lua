@@ -1,35 +1,106 @@
 -- Aether Isles archipelago. Gameplay is attached to prompts by the server.
+-- Wave 4: islands are 2-3x larger with tiers, cliffs, paths, ponds and flora;
+-- every island is a Model under Workspace.Islands (IslandCenter / IslandRadius /
+-- Region attributes + Anchor_<Purpose> parts, docs/DEPTH-CONTRACT.md section 10);
+-- props that should become custom meshes carry Shape / Tint / ShapeScale.
 local Players = game:GetService("Players")
 local Lighting = game:GetService("Lighting")
 local Tags = game:GetService("CollectionService")
 local world = Instance.new("Folder")
 world.Name = "AetherIsles"
 world.Parent = workspace
+local islandsFolder = Instance.new("Folder")
+islandsFolder.Name = "Islands"
+islandsFolder.Parent = workspace
 local V = Vector3.new
 local C = Color3.fromHex
 local ink, navy, brass, cream = C("192D3B"), C("294853"), C("DBAD65"), C("F9EDCD")
 local teal, mint, rose = C("3C9291"), C("8EE6CB"), C("D67D6A")
 local rock, shale, turf, timber = C("485565"), C("687481"), C("80A67C"), C("966B4C")
 local SM, WO, ST, NE = Enum.Material.SmoothPlastic, Enum.Material.WoodPlanks, Enum.Material.Slate, Enum.Material.Neon
-Lighting.ClockTime, Lighting.Brightness = 15.5, 2.2
-Lighting.Ambient, Lighting.OutdoorAmbient = C("8B8E9E"), C("A8BECD")
-Lighting.EnvironmentDiffuseScale = 0.76
-Lighting.GlobalShadows = true
-Lighting.ExposureCompensation = 0.15
+local GL,MT,SA,GR,LEAF=Enum.Material.Glass,Enum.Material.Metal,Enum.Material.Sand,Enum.Material.Ground,Enum.Material.LeafyGrass
+local BALL=Enum.PartType.Ball
+local warm=C("FFD9A0")
+
+-------------------------------------------------------------------------------
+-- Lighting. Technology = Future is set in default.project.json (not scriptable);
+-- the same look is applied here so a place opened without the project matches.
+-- Bugs fixed (wave 4): over-bright OutdoorAmbient/Ambient flattened every
+-- island and lit caves; stacked post effects if the place already had some;
+-- 0.19 density haze with a near-white colour washed distant islands out.
+-------------------------------------------------------------------------------
+local LOOK = {
+	Brightness=2.6, ClockTime=14.5, GeographicLatitude=38,
+	Ambient=C("3A4150"), OutdoorAmbient=C("7D8A9C"),
+	EnvironmentDiffuseScale=.5, EnvironmentSpecularScale=.3,
+	ExposureCompensation=0, ShadowSoftness=.3, GlobalShadows=true,
+}
+for key,value in pairs(LOOK) do Lighting[key]=value end
+for _,child in ipairs(Lighting:GetChildren()) do
+	if child:IsA("PostEffect") or child:IsA("Atmosphere") or child:IsA("Sky") then child:Destroy() end
+end
 local grade=Instance.new("ColorCorrectionEffect")
-grade.Name,grade.Brightness,grade.Contrast,grade.Saturation="Aether cinematic grade",0.025,0.12,0.08
-grade.TintColor=C("F4F8F5")
+grade.Name,grade.Brightness,grade.Contrast,grade.Saturation="Aether grade",0,.1,.08
+grade.TintColor=C("FFF6EA")
 grade.Parent=Lighting
 local bloom=Instance.new("BloomEffect")
-bloom.Name,bloom.Intensity,bloom.Size,bloom.Threshold="Crystal glow",0.18,22,1.35
+bloom.Name,bloom.Intensity,bloom.Size,bloom.Threshold="Aether bloom",.3,20,1.5
 bloom.Parent=Lighting
 local rays=Instance.new("SunRaysEffect")
-rays.Intensity,rays.Spread=0.035,0.7
+rays.Name,rays.Intensity,rays.Spread="Aether sun rays",.045,.45
 rays.Parent=Lighting
 local air = Instance.new("Atmosphere")
-air.Density, air.Offset, air.Color, air.Decay = 0.19, 0.15, C("DCE6DF"), C("AABBD1")
+air.Name="Aether air"
+air.Density,air.Offset,air.Color,air.Decay,air.Glare,air.Haze=.24,.1,C("C9D8E6"),C("7186A6"),.3,.7
 air.Parent = Lighting
+local sky=Instance.new("Sky")
+sky.Name,sky.StarCount,sky.SunAngularSize,sky.MoonAngularSize="Aether sky",2600,12,9
+sky.Parent=Lighting
 
+-- Slow day/night: one server loop, one update every 2 s. Lamps (night lights)
+-- switch on at dusk; hero lights stay on. Daylight 15 min, night 5 min.
+local DAY_SECONDS,NIGHT_SECONDS=900,300
+local NIGHT_OUTDOOR,NIGHT_AIR=C("3E4A66"),C("4A5878")
+local nightLights={}
+local nightOn=false
+local function isNight(clock) return clock<6.2 or clock>17.8 end
+local function applyClock(clock)
+	Lighting.ClockTime=clock
+	local sun=math.clamp(math.min(clock-5.5,18.5-clock)/1.5,0,1)
+	Lighting.OutdoorAmbient=NIGHT_OUTDOOR:Lerp(LOOK.OutdoorAmbient,sun)
+	air.Color=NIGHT_AIR:Lerp(C("C9D8E6"),sun)
+	local night=isNight(clock)
+	if night~=nightOn then
+		nightOn=night
+		-- Lamps of departed homes drop out here, so the list never leaks.
+		local kept={}
+		for _,l in ipairs(nightLights) do
+			if l.Parent then
+				l.Enabled=night
+				table.insert(kept,l)
+			end
+		end
+		nightLights=kept
+	end
+end
+local function advanceClock(clock,dt)
+	local rate=if clock>=6 and clock<18 then 12/DAY_SECONDS else 12/NIGHT_SECONDS
+	return (clock+dt*rate)%24
+end
+if task.wait then
+	task.spawn(function()
+		local clock=LOOK.ClockTime
+		while true do
+			local dt=task.wait(2)
+			clock=advanceClock(clock,tonumber(dt) or 2)
+			applyClock(clock)
+		end
+	end)
+end
+
+-------------------------------------------------------------------------------
+-- Primitive helpers.
+-------------------------------------------------------------------------------
 local function group(name, parent)
 	local model = Instance.new("Model")
 	model.Name, model.Parent = name, parent or world
@@ -53,14 +124,27 @@ local function block(parent,name,pos,size,color,mat,solid)
 	return part(parent,name,size,CFrame.new(pos),color,mat,solid)
 end
 local function gem(parent,name,pos,size,color,angle)
-	return part(parent,name,size,CFrame.new(pos)*CFrame.Angles(0,angle or 0,math.rad(26)),color,Enum.Material.Glass,false)
+	return part(parent,name,size,CFrame.new(pos)*CFrame.Angles(0,angle or 0,math.rad(26)),color,GL,false)
 end
 local function beam(parent,name,a,b,width,color,mat)
 	return part(parent,name,V(width,width,(b-a).Magnitude),CFrame.lookAt((a+b)/2,b),color,mat,false)
 end
+local function ball(parent,name,pos,d,color,mat)
+	return part(parent,name,V(d,d,d),CFrame.new(pos),color,mat,false,BALL)
+end
+local function lighten(c,f) return c:Lerp(cream,f) end
+local function darken(c,f) return c:Lerp(ink,f) end
+local function ghost(p)
+	p.Transparency,p.CastShadow=1,false
+	if not p.CanCollide then p.CanQuery=false end
+	return p
+end
+local GATHER_HOLD,FISH_HOLD,INTERACT_HOLD=1,1.5,.36
 local function prompt(p, verb, item, action, id, owner)
 	local q = Instance.new("ProximityPrompt")
-	q.ActionText, q.ObjectText, q.HoldDuration = verb,item,0.36
+	-- Gather holds long enough for the swing gesture to read (Animation team);
+	-- fishing (cast, bob, reel) is set to FISH_HOLD by its spot; interacts stay snappy.
+	q.ActionText, q.ObjectText, q.HoldDuration = verb,item,if action=="gather" then GATHER_HOLD else INTERACT_HOLD
 	q.MaxActivationDistance, q.RequiresLineOfSight = 9,false
 	if action then q:SetAttribute("IsleAction",action) end
 	if id then q:SetAttribute("IsleItem",id) end
@@ -81,16 +165,96 @@ local function sculpture(parent,name,pos,shape,scale,yaw)
 	Tags:AddTag(anchor,"AetherSculpture")
 	return anchor
 end
-local function sign(parent,pos,title,kicker,accent,yaw,width)
-	width = width or 12
-	local cf = CFrame.new(pos)*CFrame.Angles(0,math.rad(yaw or 0),0)
-	for _, s in ipairs({-1,1}) do
-		part(parent,"Brass-capped post",V(.28,5,.32),cf*CFrame.new(s*(width/2-.7),2.5,0),brass,Enum.Material.Metal,false)
+-- Mesh slot (contract section 10): the Mesh team renders `Shape` as a custom
+-- mesh and keeps this primitive as the collider/fallback. ShapeOwnsModel marks
+-- a part whose mesh stands for every other part of its Model (except parts that
+-- carry their own Shape), so the fallback siblings can be hidden together.
+local function meshSlot(p,shape,tint,scale,ownsModel)
+	p:SetAttribute("Shape",shape)
+	if tint then p:SetAttribute("Tint",tint) end
+	p:SetAttribute("ShapeScale",scale or 1)
+	if ownsModel then p:SetAttribute("ShapeOwnsModel",true) end
+	return p
+end
+local function worldHalfY(p)
+	local cf,s=p.CFrame,p.Size/2
+	return math.abs(cf.RightVector.Y)*s.X+math.abs(cf.UpVector.Y)*s.Y+math.abs(cf.LookVector.Y)*s.Z
+end
+-- Lights. A PointLight inside an opaque part lights the ground in a hard disc
+-- but never its own glowing prop (inside faces), so point lights hang on an
+-- Attachment just above the host. Shadows only on a handful of hero lights;
+-- lamps are night lights; per-area counts are capped by verify-world.
+local function light(parent,color,brightness,range,opts)
+	opts=opts or {}
+	local kind=opts.kind or "PointLight"
+	local host=parent
+	if kind=="PointLight" and parent:IsA("BasePart") and opts.lift~=0 then
+		local att=Instance.new("Attachment")
+		att.Name="Light anchor"
+		local lift=opts.lift or (worldHalfY(parent)+.6)
+		att.CFrame=parent.CFrame:ToObjectSpace(CFrame.new(parent.CFrame.Position+V(0,lift,0)))
+		att.Parent=parent
+		host=att
 	end
-	local board = part(parent,title,V(width,3.1,.32),cf*CFrame.new(0,4,0),ink,SM,false)
+	local l=Instance.new(kind)
+	l.Color,l.Brightness,l.Range=color,brightness,range
+	l.Shadows=opts.shadows==true
+	if opts.face then l.Face=opts.face end
+	if opts.angle then l.Angle=opts.angle end
+	if opts.night then
+		l.Enabled=nightOn
+		table.insert(nightLights,l)
+	end
+	l.Parent=host
+	return l
+end
+local function motes(parent,color,rate,speed,size)
+	local e=Instance.new("ParticleEmitter")
+	e.Name="Ambient motes"
+	e.Rate,e.LightEmission=rate,.6
+	e.Lifetime,e.Speed=NumberRange.new(3,6),NumberRange.new(speed*.5,speed)
+	e.SpreadAngle=Vector2.new(180,180)
+	e.Size=NumberSequence.new(size)
+	e.Color=ColorSequence.new(color)
+	e.Parent=parent
+	return e
+end
+local function hash(i,k) return (math.sin(i*12.9898+k*78.233)*43758.5453)%1 end
+local function facing(pos,toward)
+	return CFrame.lookAt(pos,V(toward.X,pos.Y,toward.Z))
+end
+local function at(cf,x,y,z) return cf*CFrame.new(x,y,z) end
+
+-- Island anchors (contract section 10): invisible, non-colliding points at
+-- ground level; the LookVector faces the thing the anchor serves.
+local function islandModel(inst)
+	local node=inst
+	while node and node.Parent~=islandsFolder and node.Parent~=world do node=node.Parent end
+	return node or inst
+end
+local function anchor(parent,purpose,where,toward)
+	local host=islandModel(parent)
+	local cf=if typeof(where)=="CFrame" then where elseif toward then facing(where,toward) else CFrame.new(where)
+	local a=part(host,"Anchor_"..purpose,V(1,1,1),cf,mint,SM,false)
+	a.Transparency,a.CastShadow,a.CanQuery=1,false,false
+	a:SetAttribute("AnchorPurpose",purpose)
+	Tags:AddTag(a,"IslandAnchor")
+	return a
+end
+
+-- Signs: each is its own Model (board + posts); the board carries the mesh
+-- slot and the SurfaceGui text.
+local function signAt(parent,cf,title,kicker,accent,width)
+	width = width or 12
+	local holder=group("Sign "..title,parent)
+	for _, s in ipairs({-1,1}) do
+		part(holder,"Brass-capped post",V(.28,5,.32),cf*CFrame.new(s*(width/2-.7),2.5,0),brass,MT,false)
+	end
+	local board = part(holder,title,V(width,3.1,.32),cf*CFrame.new(0,4,0),ink,SM,false)
+	meshSlot(board,"Signboard",accent,width/12,true)
 	for _, face in ipairs({Enum.NormalId.Front,Enum.NormalId.Back}) do
 		local gui = Instance.new("SurfaceGui")
-		gui.Face,gui.CanvasSize,gui.LightInfluence,gui.MaxDistance = face,Vector2.new(640,170),0,85
+		gui.Face,gui.CanvasSize,gui.LightInfluence,gui.MaxDistance = face,Vector2.new(640,170),0,110
 		gui.Parent = board
 		local function rect(x,y,w,h,col)
 			local frame = Instance.new("Frame")
@@ -116,55 +280,259 @@ local function sign(parent,pos,title,kicker,accent,yaw,width)
 		line(kicker,22,35,Enum.Font.GothamBold,accent)
 		line(title,65,70,Enum.Font.GothamBold,cream)
 	end
+	return board
+end
+local function sign(parent,pos,title,kicker,accent,yaw,width)
+	return signAt(parent,CFrame.new(pos)*CFrame.Angles(0,math.rad(yaw or 0),0),title,kicker,accent,width)
 end
 
-local function island(name,pos,r,top,stone,stratum,vein,ground)
-	local m = group(name)
-	stone, stratum = stone or rock, stratum or shale
-	disk(m,"Floating foundation",pos-V(0,2.9,0),r,5.8,stone,ST,true)
-	disk(m,"Mineral stratum",pos-V(0,6,0),r*.85,2.7,stratum,ST,false)
-	disk(m,"Lower basalt",pos-V(0,8.8,0),r*.63,4.5,stone,ST,false)
-	disk(m,"Meadow",pos-V(0,.25,0),r+.1,.5,top or turf,ground or Enum.Material.Grass,true)
-	local count = r>=30 and 12 or 7
-	for i=1,count do
-		local a=i*2*math.pi/count
-		local radial=V(math.cos(a),0,math.sin(a))
-		local offset=pos+radial*(r*.86)-V(0,5+i%3,0)
-		part(m,"Fractured cliff",V(r*.24,6+i%4,r*.28),CFrame.new(offset)*CFrame.Angles(.12,a,.18),i%2==0 and stone or stratum,ST,false)
-		if i%3==0 then gem(m,"Aether vein",offset-V(0,4,0),V(1.3,5.4,1.3),vein or mint,a) end
+-------------------------------------------------------------------------------
+-- Terrain kit.
+-------------------------------------------------------------------------------
+-- Invisible edge guard ring hugging the rim; openings exactly as wide as the
+-- bridge decks they serve (bridge guards continue the wall along the deck).
+local GAP_HALF=4.3
+local function rim(parent,pos,r,gaps,height)
+	height=height or 12
+	local rr=r-.4
+	local half=math.asin(math.min(1,GAP_HALF/rr))
+	local cuts={}
+	for _,g in ipairs(gaps or {}) do table.insert(cuts,g%(2*math.pi)) end
+	table.sort(cuts)
+	local spans={}
+	if #cuts==0 then
+		spans={{0,2*math.pi}}
+	else
+		for i,g in ipairs(cuts) do
+			local nextCut=if i==#cuts then cuts[1]+2*math.pi else cuts[i+1]
+			table.insert(spans,{g+half,nextCut-half})
+		end
 	end
-	m:SetAttribute("IslandRadius",r)
+	for _,span in ipairs(spans) do
+		local width=span[2]-span[1]
+		if width>0 then
+			local n=math.max(1,math.ceil(width*rr/18))
+			for i=0,n-1 do
+				local a0,a1=span[1]+width*i/n,span[1]+width*(i+1)/n
+				local p0=pos+V(math.cos(a0)*rr,0,math.sin(a0)*rr)
+				local p1=pos+V(math.cos(a1)*rr,0,math.sin(a1)*rr)
+				local mid=(p0+p1)/2
+				local out=V(mid.X-pos.X,0,mid.Z-pos.Z).Unit
+				local centre=mid+V(0,height/2,0)
+				ghost(part(parent,"Edge guard",V((p1-p0).Magnitude+.9,height,1),CFrame.lookAt(centre,centre+out),cream,SM,true))
+			end
+		end
+	end
+end
+local function angleNear(a,list,half)
+	for _,g in ipairs(list or {}) do
+		local ga,gh=g,half
+		if type(g)=="table" then ga,gh=g[1],g[2] end
+		if math.abs(math.atan2(math.sin(a-ga),math.cos(a-ga)))<gh then return true end
+	end
+	return false
+end
+
+-- A floating island: a grass Meadow (top = pos.Y) over a slate foundation.
+-- The foundation top sits 0.3 studs inside the meadow, so no two upward faces
+-- share a plane (the old stack z-fought across every island top).
+local function island(name,pos,r,opts)
+	opts=opts or {}
+	local m=Instance.new("Model")
+	m.Name=name
+	m.Parent=opts.parent or islandsFolder
+	local stone,stratum=opts.stone or rock,opts.stratum or shale
+	disk(m,"Meadow",pos-V(0,.25,0),r+.1,.5,opts.top or turf,opts.ground or Enum.Material.Grass,true)
+	disk(m,"Floating foundation",pos-V(0,3.3,0),r-.4,6,stone,ST,true)
+	disk(m,"Mineral stratum",pos-V(0,7.4,0),r*.82,3,stratum,ST,false)
+	disk(m,"Lower basalt",pos-V(0,11,0),r*.58,5,stone,ST,false)
+	-- Fractured cliff skirt: irregular slabs under the rim break the disc outline.
+	local count=math.clamp(math.floor(r/5),8,18)
+	for i=1,count do
+		local a=(i+hash(i,r)*.6)*2*math.pi/count
+		local radial=V(math.cos(a),0,math.sin(a))
+		local h=7+hash(i,2)*5
+		local size=V(r*.16+5,h,r*.12+3)
+		-- Sink by the tilt's rise too, so no corner pokes through the meadow.
+		local spot=pos+radial*(r*.95)-V(0,h/2+1.4+size.X*.05+size.Z*.04,0)
+		local slab=part(m,"Fractured cliff",size,CFrame.new(spot)*CFrame.Angles(0,-a+math.pi/2,0)*CFrame.Angles(.08*(i%2*2-1),0,.1),i%2==0 and stone or stratum,ST,false)
+		if i%4==0 then meshSlot(slab,"CliffRock",nil,r/40) end
+		if i%5==0 then gem(m,"Aether vein",spot-V(0,h/2,0),V(1.6,6,1.6),opts.vein or mint,a) end
+	end
+	-- Keel: rock shards hanging under the island.
+	local keel=opts.keel or (if r>=60 then 5 elseif r>=25 then 4 else 3)
+	for i=1,keel do
+		local a=i*2*math.pi/keel+hash(i,7)
+		local d=r*(.15+.25*hash(i,3))
+		local h=r*.3+6
+		local shard=part(m,"Keel rock",V(r*.22,h,r*.2),CFrame.new(pos+V(math.cos(a)*d,-13.5-h*.35,math.sin(a)*d))*CFrame.Angles(.12,a,.14),i%2==0 and stone or darken(stone,.2),ST,false)
+		if i==1 then meshSlot(shard,"CliffRock",nil,r/40) end
+	end
+	-- Shoreline: weathered ledges beyond the rim (below the meadow top) and a
+	-- few boulders just inside it. Openings (bridges, docks) stay clear.
+	local clear={}
+	for _,g in ipairs(opts.gaps or {}) do table.insert(clear,{g,(GAP_HALF+5)/r}) end
+	for _,c in ipairs(opts.clear or {}) do table.insert(clear,c) end
+	if opts.shore~=false then
+		local ledges=math.clamp(math.floor(r/12),3,9)
+		for i=1,ledges do
+			local a=(i+hash(i,11)*.5)*2*math.pi/ledges
+			if not angleNear(a,clear,0) then
+				local radial=V(math.cos(a),0,math.sin(a))
+				local w=6+hash(i,5)*6
+				part(m,"Shore ledge",V(w,1.2,w*.7),CFrame.new(pos+radial*(r+w*.18)-V(0,.95,0))*CFrame.Angles(0,-a+hash(i,9),0),opts.ledge or lighten(stone,.15),ST,false)
+			end
+		end
+		local stones=math.clamp(math.floor(r/9),3,12)
+		for i=1,stones do
+			local a=(i+.5+hash(i,13)*.4)*2*math.pi/stones
+			if not angleNear(a,clear,0) then
+				local radial=V(math.cos(a),0,math.sin(a))
+				local s=1.6+hash(i,17)*1.6
+				local boulder=part(m,"Shore boulder",V(2*s,1.4*s,1.7*s),CFrame.new(pos+radial*(r-3.2)+V(0,.45*s,0))*CFrame.Angles(.1,a*3,.12),i%3==0 and stratum or lighten(stone,.08),ST,true)
+				meshSlot(boulder,"Rock",nil,s/2)
+			end
+		end
+	end
+	if opts.rim~=false then rim(m,pos,r,opts.gaps) end
+	m:SetAttribute("IslandRadius",opts.footprint or r)
+	m:SetAttribute("IslandCenter",pos)
+	m:SetAttribute("Region",opts.region or "Home")
+	if opts.region and opts.region~="Home" then m:SetAttribute("RegionId",opts.region) end
 	return m
 end
+
+-- Raised tier: a slate cliff drum under a grass cap (cap inset so a stone lip
+-- shows), dressed with leaning cliff rocks. Returns the model and top height.
+local function tier(parent,name,base,r,h,opts)
+	opts=opts or {}
+	local m=group(name,parent)
+	local bottom=base.Y-.6
+	local cliffTop=base.Y+h-.15
+	disk(m,"Tier cliff",V(base.X,(bottom+cliffTop)/2,base.Z),r,cliffTop-bottom,opts.cliff or rock,ST,true)
+	disk(m,"Upper meadow",base+V(0,h-.25,0),r-.45,.5,opts.top or turf,opts.ground or Enum.Material.Grass,true)
+	local n=math.max(4,math.floor(2*math.pi*r/13))
+	for i=1,n do
+		local a=(i+hash(i,r)*.5)*2*math.pi/n
+		if not angleNear(a,opts.open,(6+r*.1)/r) then
+			local radial=V(math.cos(a),0,math.sin(a))
+			local rh=h*.7+hash(i,h)*h*.35
+			local size=V(4+hash(i,3)*4,rh,3)
+			local spot=base+radial*(r+.4)+V(0,(h-.8)-rh/2,0)
+			local slab=part(m,"Cliff rock",size,CFrame.new(spot)*CFrame.Angles(0,-a+math.pi/2,0)*CFrame.Angles(-.14,0,.06*(i%2*2-1)),i%2==0 and (opts.cliff or rock) or lighten(opts.cliff or rock,.12),ST,false)
+			if i%3==1 then meshSlot(slab,"CliffRock",nil,rh/8) end
+		end
+	end
+	return m,base.Y+h
+end
+-- Ramp: walkable incline whose top surface runs from `low` to `high`.
+local function ramp(parent,low,high,width,color,mat)
+	local cf=CFrame.lookAt((low+high)/2,high)*CFrame.new(0,-.3,0)
+	return part(parent,"Ramp",V(width,.6,(high-low).Magnitude+1),cf,color or C("8B8574"),mat or ST,true)
+end
+-- Flat path strip: top at a.Y+lift (vary lift where strips cross).
+local function path(parent,a,b,width,color,lift)
+	lift=lift or .08
+	local flatB=V(b.X,a.Y,b.Z)
+	local mid=(a+flatB)/2+V(0,lift-.08,0)
+	return part(parent,"Path",V(width,.16,(flatB-a).Magnitude),CFrame.lookAt(mid,flatB+V(0,lift-.08,0)),color or C("B7A98A"),Enum.Material.Cobblestone,false)
+end
+local function pond(parent,c,r,opts)
+	opts=opts or {}
+	local m=group(opts.name or "Pond",parent)
+	disk(m,"Pond bank",c+V(0,.04,0),r+1.4,.08,opts.bank or C("A39F84"),SA,false)
+	disk(m,"Pond bed",c+V(0,.06,0),r,.12,darken(teal,.5),GR,false)
+	local water=disk(m,"Pond water",c+V(0,.17,0),r-.15,.1,opts.water or C("5AA9B5"),GL,false)
+	water.Transparency=.35
+	for i=1,opts.stones or 5 do
+		local a=i*2*math.pi/(opts.stones or 5)+hash(i,r)
+		local s=1+hash(i,4)*1.2
+		local stone=part(m,"Pond stone",V(1.8*s,1*s,1.5*s),CFrame.new(c+V(math.cos(a)*(r+1),.3*s,math.sin(a)*(r+1)))*CFrame.Angles(0,a,.1),lighten(rock,.2),ST,false)
+		if i==1 then meshSlot(stone,"Rock",nil,s/2) end
+	end
+	return m,water
+end
+local function outcrop(parent,c,s,seed)
+	local m=group("Rock outcrop",parent)
+	seed=seed or 0
+	local main=part(m,"Outcrop rock",V(4.5,3.6,4)*s,CFrame.new(c+V(0,1.2*s,0))*CFrame.Angles(.1,seed,.15),rock,ST,true)
+	part(m,"Outcrop rock",V(3,2.4,2.8)*s,CFrame.new(c+V(2.6*s,.7*s,1.4*s))*CFrame.Angles(-.12,seed+1.3,.1),shale,ST,true)
+	part(m,"Outcrop rock",V(2.2,1.6,2)*s,CFrame.new(c+V(-2.2*s,.5*s,1.8*s))*CFrame.Angles(.2,seed+2.1,-.1),darken(rock,.15),ST,false)
+	meshSlot(main,"RockOutcrop",nil,s,true)
+	return m
+end
+local CANOPY={C("6E9A5E"),C("7FAA62"),C("5E8B57"),C("8DB46C")}
+local function decorTree(parent,c,s,kind,tint)
+	kind=kind or "Meadow"
+	local m=group(kind.." tree",parent)
+	local trunk=disk(m,"Trunk",c+V(0,3*s,0),.55*s,6*s,darken(timber,.2),WO,true)
+	local shapeName="MeadowTree"
+	if kind=="Pine" then
+		shapeName="PineTree"
+		local col=tint or C("4E7A4A")
+		part(m,"Pine boughs",V(5.4,4.2,5.4)*s,CFrame.new(c+V(0,5.8*s,0))*CFrame.Angles(0,.4,0),darken(col,.1),LEAF,false)
+		part(m,"Pine crown",V(3.2,3.6,3.2)*s,CFrame.new(c+V(0,8.8*s,0))*CFrame.Angles(0,1.2,0),col,LEAF,false)
+	elseif kind=="Palm" then
+		shapeName="PalmTree"
+		trunk.CFrame=CFrame.new(c+V(.6*s,3*s,0))*CFrame.Angles(0,0,math.pi/2+.18)
+		disk(m,"Palm fronds",c+V(1.2*s,6.3*s,0),3.6*s,.5*s,tint or C("6FA05A"),LEAF,false)
+	elseif kind=="Dead" then
+		shapeName="DeadTree"
+		trunk.Color=C("5B5048")
+		beam(m,"Bare bough",c+V(0,4.5*s,0),c+V(2.4*s,7*s,.6*s),.45*s,C("5B5048"),WO)
+	else
+		ball(m,"Canopy",c+V(0,7.2*s,0),6.8*s,tint or CANOPY[math.floor(hash(c.X,c.Z)*#CANOPY)+1],LEAF)
+	end
+	meshSlot(trunk,shapeName,tint,s,true)
+	return m
+end
+local function bush(parent,c,s,color)
+	local b=ball(parent,"Shrub",c+V(0,.9*s,0),2.6*s,color or C("6C9A58"),LEAF)
+	meshSlot(b,"Bush",color,s)
+	return b
+end
+local function flowers(parent,c,r,color,lift)
+	return disk(parent,"Wildflowers",c+V(0,(lift or .07)-.03,0),r,.06,color or rose,Enum.Material.Fabric,false)
+end
 local function lamp(parent,pos)
-	block(parent,"Lamp foot",pos+V(0,.3,0),V(1.4,.6,1.4),ink,ST,false)
-	block(parent,"Bronze mast",pos+V(0,2.1,0),V(.25,3.7,.25),brass,SM,false)
-	local lightAnchor=sculpture(parent,"Aether lantern",pos+V(0,4,0),"Lantern",0.7)
-	local glow=Instance.new("PointLight")
-	glow.Color,glow.Brightness,glow.Range,glow.Shadows=mint,0.6,9,false
-	glow.Parent=lightAnchor
+	local m=group("Lamp post",parent)
+	block(m,"Lamp foot",pos+V(0,.3,0),V(1.4,.6,1.4),ink,ST,false)
+	local mast=block(m,"Bronze mast",pos+V(0,2.1,0),V(.25,3.7,.25),brass,MT,false)
+	meshSlot(mast,"Lamp",nil,1,true)
+	local lantern=sculpture(m,"Aether lantern",pos+V(0,4,0),"Lantern",0.7)
+	light(lantern,warm,1.2,18,{kind="SpotLight",face=Enum.NormalId.Bottom,angle=120,night=true})
+	return m
 end
 local function bridge(parent,a,b)
 	local dir=(b-a).Unit
+	-- Decks reach 1.5 studs onto each meadow (their top is above it).
+	a,b=a-dir*1.5,b+dir*1.5
 	local side=V(-dir.Z,0,dir.X)
-	local cf=CFrame.lookAt((a+b)/2-V(0,.25,0),b-V(0,.25,0))
+	-- Deck top 0.08 above both meadows so its ends never share a plane with them.
+	local cf=CFrame.lookAt((a+b)/2-V(0,.17,0),b-V(0,.17,0))
 	part(parent,"Continuous bridge deck",V(7,.5,(b-a).Magnitude),cf,timber,WO,true)
-	local count=math.ceil((b-a).Magnitude/3)
+	local count=math.ceil((b-a).Magnitude/4)
 	for i=0,count do
-		local p=a+(b-a)*i/count
-		part(parent,"Cross tie",V(7.3,.12,.4),CFrame.lookAt(p,p+dir),brass,WO,false)
-		if i%3==0 or i==count then
-			for _,s in ipairs({-1,1}) do block(parent,"Railing post",p+side*3.7*s+V(0,1.2,0),V(.38,3,.38),ink,WO,false) end
+		local p=a+(b-a)*i/count+V(0,.1,0)
+		part(parent,"Cross tie",V(7.3,.14,.5),CFrame.lookAt(p,p+dir),brass,WO,false)
+		if i%2==0 or i==count then
+			for _,s in ipairs({-1,1}) do
+				local post=block(parent,"Railing post",p+side*3.7*s+V(0,1.2,0),V(.38,3,.38),ink,WO,false)
+				if i%4==0 then meshSlot(post,"BridgePost") end
+			end
 		end
 	end
 	for _,s in ipairs({-1,1}) do
 		beam(parent,"Guide rail",a+side*3.7*s+V(0,2.3,0),b+side*3.7*s+V(0,2.3,0),.27,brass,SM)
 		-- Invisible collider behind the rail: the void is only crossed on the deck.
-		local guard=part(parent,"Bridge guard",V(.4,5,(b-a).Magnitude),CFrame.lookAt((a+b)/2+side*3.9*s+V(0,2.5,0),b+side*3.9*s+V(0,2.5,0)),cream,SM,true)
+		local guard=part(parent,"Bridge guard",V(.4,7,(b-a).Magnitude+1),CFrame.lookAt((a+b)/2+side*3.9*s+V(0,3.5,0),b+side*3.9*s+V(0,3.5,0)),cream,SM,true)
 		guard.Transparency,guard.CastShadow=1,false
 	end
 end
 
+-------------------------------------------------------------------------------
+-- Legacy gather props and stalls.
+-------------------------------------------------------------------------------
 local function windpine(parent,pos,scale,owner)
 	local m=group("Windpine",parent)
 	local trunk=block(m,"Heartwood",pos+V(0,2.6*scale,0),V(1.2,5.2,1.2)*scale,timber,WO,true)
@@ -174,11 +542,13 @@ local function windpine(parent,pos,scale,owner)
 end
 local function ore(parent,pos)
 	local base=disk(parent,"Ore seam",pos+V(0,.4,0),2.5,.8,shale,ST,false)
+	meshSlot(base,"OreVein",C("C98D4F"),1)
 	sculpture(parent,"Faceted copper cluster",pos+V(0,1.4,0),"AetherCrystal",1)
 	prompt(base,"Mine ore","Copper lode","gather","Ore")
 end
 local function herb(parent,pos)
 	local bed=disk(parent,"Herb bed",pos+V(0,.15,0),2.3,.3,navy,ST,false)
+	meshSlot(bed,"CropBed",mint,1)
 	for i=1,6 do
 		local a=i*1.8
 		local p=pos+V(math.cos(a)*1.5,.65,math.sin(a)*1.5)
@@ -186,100 +556,290 @@ local function herb(parent,pos)
 	end
 	prompt(bed,"Gather herbs","Moonleaf patch","gather","Herb")
 end
-local function marketStall(parent,pos,name,verb,action,item,accent)
+-- Stall facing `toward`: counter, awning (strips abut, never overlap) and a
+-- header sign over the customer side.
+local function marketStall(parent,pos,toward,name,verb,action,item,accent,kicker)
 	local m=group(name,parent)
+	local cf=facing(pos,toward)
 	for _, x in ipairs({-3.2,3.2}) do
-		for _, z in ipairs({-2,2}) do block(m,"Awning stay",pos+V(x,2.9,z),V(.3,5.8,.3),brass,SM,false) end
+		for _, z in ipairs({-2,2}) do part(m,"Awning stay",V(.3,5.8,.3),at(cf,x,2.9,z),brass,MT,false) end
 	end
 	for i=-2,2 do
-		part(m,"Striped canvas",V(1.55,.35,5.4),CFrame.new(pos+V(i*1.52,5.7,0))*CFrame.Angles(.09,0,0),i%2==0 and accent or cream,Enum.Material.Fabric,false)
+		part(m,"Striped canvas",V(1.5,.35,5.4),at(cf,i*1.5,5.7,0)*CFrame.Angles(.09,0,0),i%2==0 and accent or cream,Enum.Material.Fabric,false)
 	end
-	local counter=block(m,"Counter",pos+V(0,1.4,0),V(6.5,2.8,2),navy,WO,true)
-	block(m,"Counter top",pos+V(0,2.9,0),V(7,.25,2.5),brass,WO,false)
-	sign(m,pos+V(0,.6,-2.65),name,"COMPASS QUAY   /   SERVICES",accent,0,8)
-	prompt(counter,verb,name,action,item)
+	local counter=part(m,"Counter",V(6.5,2.8,2),at(cf,0,1.4,0),navy,WO,true)
+	part(m,"Counter top",V(7,.25,2.5),at(cf,0,2.92,0),brass,WO,false)
+	meshSlot(counter,"MarketStall",accent,1,true)
+	signAt(m,at(cf,0,.6,-2.65),name,kicker or "COMPASS QUAY   /   SERVICES",accent,8)
+	if verb then prompt(counter,verb,name,action,item) end
+	return m,cf
 end
-local hub = island("Compass Quay",V(0,0,0),43,C("9DAA85"))
-local grove = island("Mosswake Grove",V(-97,0,0),30)
-local mine = island("Brassfall Quarry",V(98,0,0),31,C("9C9682"))
-local wild = island("Warden Reach",V(0,0,-103),32,C("7C8498"))
-hub:SetAttribute("RegionId","Hub") grove:SetAttribute("RegionId","Meadow") mine:SetAttribute("RegionId","Quarry")
-bridge(hub,V(-40,0,0),V(-69,0,0))
-bridge(hub,V(40,0,0),V(69,0,0))
-bridge(hub,V(0,0,-40),V(0,0,-73))
-disk(hub,"Compass court",V(0,.05,0),13,.15,navy,ST,true)
+
+-------------------------------------------------------------------------------
+-- Layout. Centres and radii (wave 4):
+--   Compass Quay (hub)  (0,0,0)        r115   Guild Terrace (0,0,232)      r75
+--   Mosswake Grove      (-230,0,0)     r72    Meadow Reach  (-230,0,185)   r70
+--   Brassfall Quarry    (230,0,0)      r74    Cinder Shelf  (230,-6,-185)  r58
+--   Warden Reach        (0,0,-230)     r70    Skyreach      (430,40,110)   r66
+--   Windpine Grove      (-500,24,-160) r85    Gloomhollow   (440,-16,-440) r82
+--   Tidewater Shoals    (-520,2,440)   r92    Tempest Spire (600,80,-220)  r70
+--   Homes: core r21 + tiers (footprint r50), 6 per row from (-300,0,600), 120 apart.
+--   Crew havens: r46, 5 per row from (-260,0,-620), 130 apart.
+-------------------------------------------------------------------------------
+local HUB_R=115
+local G,GR_R=V(-230,0,0),72
+local Q,Q_R=V(230,0,0),74
+local W,W_R=V(0,0,-230),70
+local SR,SR_R=V(430,40,110),66
+local HUB_ARRIVAL=V(50,4,56)
+local HALF=math.pi/2
+
+-------------------------------------------------------------------------------
+-- Compass Quay: plaza, market row, Artisans' Rise, Sky Harbor, Mooncrest
+-- Gardens, Orchard terrace and four avenues to the bridges.
+-------------------------------------------------------------------------------
+local hub = island("Compass Quay",V(0,0,0),HUB_R,{top=C("9DAA85"),region="Hub",gaps={0,math.pi,-HALF,HALF},
+	clear={{math.rad(45),.2}},keel=6})
+local harbor=group("Sky Harbor",hub)
+do
+local plaza=group("Compass Plaza",hub)
+disk(plaza,"Plaza ring",V(0,0,0),26,.2,C("C9B994"),ST,true)
+disk(plaza,"Compass court",V(0,.02,0),23.5,.26,navy,ST,true)
 for i=1,8 do
 	local a=i*math.pi/4
 	local d=V(math.cos(a),0,math.sin(a))
-	beam(hub,"Compass inlay",d*3+V(0,.18,0),d*(i%2==0 and 12 or 8)+V(0,.18,0),.18,brass,SM)
+	beam(plaza,"Compass inlay",d*5+V(0,.2,0),d*(i%2==0 and 21 or 14)+V(0,.2,0),.3,brass,MT)
 end
-disk(hub,"Brass compass boss",V(0,.18,0),2.1,.3,brass,SM,false)
-sign(hub,V(7,0,15),"Compass Quay","01   /   SKY HARBOR",brass)
-sign(hub,V(-29,0,6),"Mosswake Grove","WEST   /   TIMBER + HERBS",mint,0,10)
-sign(hub,V(29,0,6),"Brassfall Quarry","EAST   /   COPPER ORE",brass,0,10)
-sign(hub,V(7,0,-29),"Warden Reach","NORTH   /   HUNTS",rose,0,9)
-marketStall(hub,V(-19,0,-12),"Quay Bank","Bank purse","bank",nil,mint)
-marketStall(hub,V(18,0,-12),"Trade Counter","Sell goods","sell",nil,brass)
-marketStall(hub,V(-19,0,16),"Starforge","Forge pickaxe","craft","Pickaxe",rose)
-local rack=block(hub,"Bladesmith rack",V(-26,1.5,16),V(2,3,2),navy,ST,true)
+local monument=group("Compass Monument",plaza)
+disk(monument,"Monument plinth",V(0,1.2,0),4.2,2.4,C("8F97A3"),ST,true)
+local obelisk=block(monument,"Wayfinder obelisk",V(0,8.9,0),V(2.2,13,2.2),C("C9CFD6"),ST,true)
+meshSlot(obelisk,"Statue",brass,1.5,true)
+disk(monument,"Beacon brazier",V(0,15.8,0),1.7,.8,brass,MT,false)
+local heroFlame=ball(monument,"Beacon flame",V(0,16.7,0),1.3,C("FFC77A"),NE)
+-- Hero light #1 (shadows): the plaza beacon.
+light(heroFlame,C("FFC98A"),1.1,46,{shadows=true,lift=1})
+for _,dir in ipairs({V(1,0,0),V(-1,0,0),V(0,0,1),V(0,0,-1)}) do
+	path(hub,dir*26,dir*112,10)
+end
+sign(plaza,V(0,0,-30),"Compass Quay","01   /   SKY HARBOR + GUILDS",brass,0,12)
+-- Hub spawn: every arrival from home lands on the Sky Harbor plaza.
+disk(harbor,"Harbor plaza",V(56,0,60),17,.24,C("C9B994"),ST,true)
+disk(harbor,"Harbor seal",V(56,.06,60),5,.3,navy,ST,false)
+sign(harbor,V(56,0,40),"Sky Harbor","ARRIVALS   /   HOMEWARD · CREW HAVEN",mint,0,12)
+for i,offset in ipairs({{V(66,0,70),V(78,0,82)},{V(73,0,58),V(87,0,72)}}) do
+	local a,b=offset[1],offset[2]
+	local dir=(b-a).Unit
+	local side=V(-dir.Z,0,dir.X)
+	part(harbor,"Pier deck",V(6,.3,(b-a).Magnitude),CFrame.lookAt((a+b)/2+V(0,.15,0),b+V(0,.15,0)),timber,WO,true)
+	for _,t in ipairs({.25,.9}) do
+		for _,s in ipairs({-1,1}) do
+			local post=block(harbor,"Mooring post",a+(b-a)*t+side*3.2*s+V(0,1.1,0),V(.6,2.2,.6),darken(timber,.4),WO,false)
+			if t==.9 then meshSlot(post,"BridgePost") end
+		end
+	end
+	if i==1 then lamp(harbor,b-dir*2+side*2.2) end
+end
+local ship=group("Moored skyship",harbor)
+local hull=part(ship,"Skyship hull",V(9,5,30),CFrame.new(V(98,-1.5,98))*CFrame.Angles(0,math.rad(-45),0),C("7A5A40"),WO,false)
+meshSlot(hull,"Skyship",nil,1,true)
+part(ship,"Skyship deck",V(8,.4,27),CFrame.new(V(98,1.2,98))*CFrame.Angles(0,math.rad(-45),0),C("A57C55"),WO,false)
+part(ship,"Skyship mast",V(.8,16,.8),CFrame.new(V(98,9,98)),darken(timber,.3),WO,false)
+part(ship,"Skyship sail",V(.3,9,12),CFrame.new(V(98,10,98))*CFrame.Angles(0,math.rad(45),0),cream,Enum.Material.Fabric,false)
+ball(ship,"Skyship balloon",V(98,20,98),11,rose,Enum.Material.Fabric)
+local HUB_GUIDE=anchor(hub,"NPC_Guide",V(56,0,50),HUB_ARRIVAL)
+anchor(hub,"Waypoint_SkyHarbor",V(56,0,60),V(56,0,40))
+-- Market Row along the east avenue.
+local bank,bankCF=marketStall(hub,V(44,0,-17),V(44,0,0),"Quay Bank","Bank purse","bank",nil,mint,"MARKET ROW   /   BANK")
+local trade,tradeCF=marketStall(hub,V(68,0,-17),V(68,0,0),"Trade Counter","Sell goods","sell",nil,brass,"MARKET ROW   /   TRADE")
+marketStall(hub,V(50,0,17),V(50,0,0),"Fruit Stall",nil,nil,nil,rose,"MARKET ROW   /   PRODUCE")
+marketStall(hub,V(76,0,17),V(76,0,0),"Cloth Stall",nil,nil,nil,teal,"MARKET ROW   /   CLOTH")
+anchor(hub,"NPC_Banker",at(bankCF,0,0,2.4))
+anchor(hub,"NPC_Merchant",at(tradeCF,0,0,2.4))
+anchor(hub,"Waypoint_Bank",at(bankCF,0,0,-5)*CFrame.Angles(0,math.pi,0))
+anchor(hub,"Waypoint_Market",at(tradeCF,0,0,-5)*CFrame.Angles(0,math.pi,0))
+sculpture(hub,"Bank lockbox",at(bankCF,0,3.7,0).Position,"VaultChest",.65)
+sculpture(hub,"Trader's timber",at(tradeCF,0,3.9,0).Position,"TimberBundle",.65,20)
+for i,p in ipairs({V(58,0,-23),V(82,0,-21),V(38,0,22),V(90,0,21)}) do
+	local crate=block(hub,"Market crate",p+V(0,.9,0),V(2.2,1.8,2.2),i%2==0 and timber or darken(timber,.2),WO,true)
+	if i==1 then meshSlot(crate,"Crate") end
+end
+sign(hub,V(30,0,-12),"Market Row","BANK · TRADE · PRODUCE",brass,90,10)
+-- Artisans' Rise: raised guild terrace with the Starforge.
+local RISE=V(-52,0,52)
+local rise,riseTop=tier(hub,"Artisans' Rise",RISE,26,4,{open={-math.pi/4,.34},top=C("A3AE86")})
+ramp(rise,V(-29,0,29),V(-37,riseTop,37),8)
+ramp(rise,V(-11,0,66),V(-30,riseTop,60),8)
+local forgeStall,forgeCF=marketStall(rise,V(-56,riseTop,42),V(-36,riseTop,30),"Starforge","Forge pickaxe","craft","Pickaxe",rose,"ARTISANS' RISE   /   SMITHING")
+anchor(hub,"NPC_Forgemaster",at(forgeCF,0,0,2.4))
+anchor(hub,"Waypoint_Starforge",at(forgeCF,0,0,-5)*CFrame.Angles(0,math.pi,0))
+local rack=block(rise,"Bladesmith rack",V(-66,riseTop+1.5,52),V(2,3,2),navy,ST,true)
 prompt(rack,"Forge blade","Starforge","craft","Blade")
-local apothecary=block(hub,"Apothecary vat",V(-12,1,16),V(2.5,2,2.5),teal,SM,true)
+local apothecary=block(rise,"Apothecary vat",V(-46,riseTop+1,58),V(2.5,2,2.5),teal,SM,true)
+meshSlot(apothecary,"Cauldron",teal,.7)
 prompt(apothecary,"Brew tonic","Starforge","craft","Tonic")
-for _,p in ipairs({V(12,0,12),V(-12,0,-6),V(12,0,-6),V(3,0,-39),V(39,0,3),V(-39,0,3)}) do lamp(hub,p) end
-for _,p in ipairs({V(-82,0,-10),V(-93,0,-14),V(-109,0,9),V(-114,0,-3),V(-99,0,18)}) do windpine(grove,p,1.4) end
-herb(grove,V(-83,0,6)) herb(grove,V(-98,0,1))
-local pool=disk(grove,"Fishing pool",V(-103,.15,-12),7,.3,teal,Enum.Material.Glass,false)
-for i=1,4 do
-	disk(grove,"Ripple",V(-103+(i%2)*3,.32,-12+i*.8),.65,.05,mint,SM,false)
+sculpture(rise,"Smith's pickaxe",at(forgeCF,-2,4,0).Position,"Pickaxe",.7,25)
+sculpture(rise,"Smith's blade",V(-66,riseTop+4,52),"Blade",.65,-20)
+sculpture(rise,"Alchemist tonic",V(-46,riseTop+3,58),"Tonic",.7)
+local furnace=block(rise,"Rise furnace",V(-64,riseTop+1.6,40),V(4,3.2,3.4),C("6E4B3A"),Enum.Material.Brick,true)
+meshSlot(furnace,"Forge",nil,.7)
+local furnaceMouth=block(rise,"Furnace mouth",V(-64,riseTop+1.2,38.25),V(1.8,1.2,.2),C("FF8A3D"),NE,false)
+light(furnaceMouth,C("FF9A52"),.8,14,{lift=1.2})
+local statue=block(rise,"Founder statue",V(-60,riseTop+4.2,64),V(2.2,5,1.6),C("BFC6CE"),ST,true)
+block(rise,"Statue plinth",V(-60,riseTop+.8,64),V(3.6,1.6,3.6),C("8F97A3"),ST,true)
+meshSlot(statue,"Statue",nil,1)
+for _,p in ipairs({V(-72,riseTop,36),V(-38,riseTop,70),V(-70,riseTop,66)}) do decorTree(rise,p,1.1) end
+lamp(rise,V(-44,riseTop,46))
+sign(hub,V(-22,0,42),"Artisans' Rise","STARFORGE · BLADES · TONICS",rose,45,10)
+-- Mooncrest Gardens (north-west): pond, lookout knoll, groves.
+local _,pondWater=pond(hub,V(-42,0,-40),13,{name="Mooncrest pond"})
+for i=1,4 do disk(hub,"Lily pad",V(-42,0,-40)+V(math.cos(i*1.7)*7,.25+i*.02,math.sin(i*1.7)*7),.9,.04,C("5E9C62"),SM,false) end
+local KNOLL=V(-64,0,-64)
+local knoll,knollTop=tier(hub,"Lookout knoll",KNOLL,14,6,{open={-.35}})
+ramp(knoll,V(-42,0,-72),V(-54,knollTop,-68),7)
+block(knoll,"Lookout bench",V(-66,knollTop+.6,-58),V(5,.4,1.6),navy,WO,true)
+local spyglass=block(knoll,"Brass spyglass",V(-60,knollTop+1.8,-72),V(.5,.5,3),brass,MT,false)
+meshSlot(spyglass,"Spyglass")
+decorTree(knoll,V(-70,knollTop,-68),1,"Pine")
+decorTree(knoll,V(-62,knollTop,-54),.9,"Pine")
+lamp(knoll,V(-58,knollTop,-62))
+sign(hub,V(-24,0,-30),"Mooncrest Gardens","POND · LOOKOUT KNOLL",mint,45,10)
+-- Orchard terrace (north-east).
+local orchard,orchardTop=tier(hub,"Orchard terrace",V(64,0,-64),16,3,{open={2.41}})
+ramp(orchard,V(44,0,-46),V(54,orchardTop,-55),7)
+for i,o in ipairs({V(58,0,-70),V(70,0,-60),V(72,0,-72),V(62,0,-56)}) do decorTree(orchard,o+V(0,orchardTop,0),.95,"Meadow",i%2==0 and C("8DB46C") or C("A0B860")) end
+-- Avenue lamps (night) and approach signs.
+for _,p in ipairs({V(34,0,8),V(64,0,-8),V(96,0,8),V(-34,0,-8),V(-64,0,8),V(-96,0,-8),
+	V(8,0,-34),V(-8,0,-64),V(8,0,-96),V(-8,0,34),V(8,0,64),V(-8,0,96),V(46,0,74)}) do lamp(hub,p) end
+sign(hub,V(-100,0,-12),"Mosswake Grove","WEST   /   TIMBER + HERBS",mint,90,10)
+sign(hub,V(100,0,12),"Brassfall Quarry","EAST   /   COPPER ORE",brass,90,10)
+sign(hub,V(12,0,-100),"Warden Reach","NORTH   /   HUNTS",rose,0,9)
+sign(hub,V(-12,0,100),"Guild Terrace","SOUTH   /   CRAFT · SLAYER · SKYWAY",brass,0,10)
+-- Flora and outcrops.
+for i,p in ipairs({V(-92,0,48),V(-30,0,96),V(-56,0,86),V(-20,0,-34),V(-66,0,-26),V(-24,0,-62),V(-84,0,-18),
+	V(-52,0,-16),V(30,0,-40),V(96,0,-30),V(36,0,-86),V(22,0,40),V(92,0,26),V(24,0,86),V(-88,0,-60)}) do
+	decorTree(hub,p,.9+hash(i,1)*.4,if i%4==0 then "Pine" else "Meadow")
 end
-local dock=block(grove,"Fishing jetty",V(-98,.5,-8),V(3,1,7),timber,WO,true)
-prompt(dock,"Cast line","Moonpool","gather","Fish")
-sign(grove,V(-75,0,-6),"Moonpool","MOSSWAKE   /   ANGLING",mint,0,8)
-for _,p in ipairs({V(78,0,5),V(88,0,-9),V(101,0,6),V(114,0,-7)}) do ore(mine,p) end
+for i,p in ipairs({V(-90,0,30),V(92,0,40),V(20,0,-92),V(-30,0,82),V(84,0,-48)}) do outcrop(hub,p,1+hash(i,8)*.5,i) end
+for i,p in ipairs({V(-30,0,-50),V(-56,0,-28),V(26,0,30),V(40,0,-34),V(-20,0,22)}) do
+	flowers(hub,p,2.5+hash(i,2)*2,({rose,cream,C("C9A0DC")})[i%3+1],.06+i*.012)
+end
+for _,p in ipairs({V(-34,0,-22),V(-60,0,-46),V(16,0,-22),V(-16,0,30)}) do bush(hub,p,1) end
+end
+local skyMarker=hidden(hub,"Tidewing",V(14,32,-12))
+skyMarker.CFrame *= CFrame.Angles(0,math.rad(33),0)
+skyMarker:SetAttribute("Shape","Tidewing")
+Tags:AddTag(skyMarker,"AetherSculpture")
+
+-------------------------------------------------------------------------------
+-- Mosswake Grove (west), Brassfall Quarry (east), Warden Reach (north).
+-------------------------------------------------------------------------------
+local grove = island("Mosswake Grove",G,GR_R,{region="Meadow",gaps={0,HALF}})
+local mine = island("Brassfall Quarry",Q,Q_R,{top=C("9C9682"),region="Quarry",gaps={math.pi,-HALF},ground=GR})
+local wild = island("Warden Reach",W,W_R,{top=C("7C8498"),region="Hub",gaps={HALF}})
+bridge(hub,V(-HUB_R,0,0),G+V(GR_R,0,0))
+bridge(hub,V(HUB_R,0,0),Q-V(Q_R,0,0))
+bridge(hub,V(0,0,-HUB_R),W+V(0,0,W_R))
+anchor(hub,"Waypoint_Bridge_MosswakeGrove",V(-HUB_R+6,0,0),G)
+anchor(hub,"Waypoint_Bridge_BrassfallQuarry",V(HUB_R-6,0,0),Q)
+anchor(hub,"Waypoint_Bridge_WardenReach",V(0,0,-HUB_R+6),W)
+do
+-- Grove.
+path(grove,G+V(GR_R-2,0,0),G,8)
+path(grove,G,G+V(0,0,GR_R-2),8,nil,.11)
+for _,o in ipairs({V(30,0,-30),V(10,0,-46),V(-48,0,6),V(-6,0,42),V(38,0,30)}) do windpine(grove,G+o,1.4) end
+herb(grove,G+V(26,0,10))
+local MOSS=G+V(-34,0,22)
+local moss,mossTop=tier(grove,"Moss terrace",MOSS,16,3,{open={-.46},top=C("74A06A")})
+ramp(moss,G+V(-14,0,12),G+V(-24,mossTop,18),7)
+herb(moss,MOSS+V(2,mossTop,2))
+local MOONPOOL=G+V(-24,0,-26)
+pond(grove,MOONPOOL,13,{name="Moonpool"})
+local jettyAt=MOONPOOL+V(9,0,7.2)
+local dock=part(grove,"Fishing jetty",V(3,1,9),CFrame.lookAt(jettyAt+V(0,.5,0),MOONPOOL+V(0,.5,0)),timber,WO,true)
+meshSlot(dock,"FishingPier",nil,1)
+prompt(dock,"Cast line","Moonpool","gather","Fish").HoldDuration=FISH_HOLD
+anchor(grove,"NPC_Fisher",jettyAt+(jettyAt-MOONPOOL).Unit*5.5,MOONPOOL)
+anchor(grove,"Waypoint_Moonpool",jettyAt+(jettyAt-MOONPOOL).Unit*8,MOONPOOL)
+sign(grove,MOONPOOL+V(20,0,-4),"Moonpool","MOSSWAKE   /   ANGLING",mint,90,8)
+sign(grove,G+V(58,0,-12),"Mosswake Grove","TIMBER · HERBS · MOONPOOL",mint,90,10)
+for _,o in ipairs({V(40,0,8),V(-8,0,40),V(-10,0,-8)}) do lamp(grove,G+o) end
+for i=1,11 do
+	local a=i*2*math.pi/11+.3
+	local d=52+hash(i,3)*8
+	local o=V(math.cos(a)*d,0,math.sin(a)*d)
+	if not angleNear(a,{0,HALF},.2) then decorTree(grove,G+o,1+hash(i,4)*.4,if i%3==0 then "Pine" else "Meadow") end
+end
+for i,o in ipairs({V(-50,0,-30),V(44,0,-50),V(-30,0,52)}) do outcrop(grove,G+o,1.2,i) end
+for i,o in ipairs({V(16,0,-14),V(-40,0,-6),V(20,0,52)}) do flowers(grove,G+o,3,({C("C9A0DC"),cream,rose})[i],.07+i*.012) end
+-- Quarry: a terraced pit face with a bench of ore, the old crane and the charter beacon.
+path(mine,Q-V(Q_R-2,0,0),Q,9)
+path(mine,Q,Q-V(0,0,Q_R-2),8,nil,.11)
+local BENCH=Q+V(26,0,-36)
+local bench,benchTop=tier(mine,"Quarry bench",BENCH,18,5,{open={2.356},cliff=C("6F6759"),top=C("9C9682"),ground=GR})
+tier(mine,"Quarry face",V(Q.X+32,benchTop,Q.Z-42),9,5,{cliff=C("5E574C"),top=C("8F897A"),ground=GR})
+ramp(bench,Q+V(8,0,-18),Q+V(16,benchTop,-27),7)
+for _,o in ipairs({V(-38,0,14),V(-18,0,-22),V(8,0,20)}) do ore(mine,Q+o) end
+ore(bench,Q+V(14,benchTop,-44))
 local advanced=group("Aetherite outcrop",mine)
-local vein=sculpture(advanced,"Aetherite seam",V(110,1.5,12),"AetherCrystal",1.45,30)
+local vein=sculpture(advanced,"Aetherite seam",Q+V(26,1.5,28),"AetherCrystal",1.45,30)
 prompt(vein,"Mine Aetherite","Mining 3 required","gather","Aetherite")
-sign(advanced,V(117,0,13),"Aetherite","MINING 3 / REFINE AT THE STARFORGE",mint,0,8)
-sculpture(hub,"Smith's pickaxe",V(-21,4,16),"Pickaxe",.7,25)
-sculpture(hub,"Smith's blade",V(-26,4,16),"Blade",.65,-20)
-sculpture(hub,"Alchemist tonic",V(-12,3,16),"Tonic",.7)
-sculpture(hub,"Bank lockbox",V(-19,3.7,-12),"VaultChest",.65)
-sculpture(hub,"Trader's timber",V(18,3.9,-12),"TimberBundle",.65,20)
+sign(advanced,Q+V(36,0,26),"Aetherite","MINING 3 / REFINE AT THE STARFORGE",mint,0,8)
 for i=1,5 do
-	local x=82+6*i
-	block(mine,"Hoist support",V(x,2.5,14),V(.7,5,.7),timber,WO,false)
+	local post=block(mine,"Hoist support",Q+V(-32+8*i,2.5,40),V(.7,5,.7),timber,WO,false)
+	if i==1 then meshSlot(post,"Crane") end
 end
-beam(mine,"Old crane",V(83,5,14),V(113,5,14),.6,timber,WO)
-for _,z in ipairs({-85,-99,-114}) do
-	for _,x in ipairs({-12,12}) do
-		block(wild,"Waystone",V(x,3,z),V(2.5,6,2.5),rock,ST,true)
-		gem(wild,"Signal prism",V(x,6.3,z),V(1,2.3,1),rose,.7)
+beam(mine,"Old crane",Q+V(-24,5,40),Q+V(8,5,40),.6,timber,WO)
+for i,o in ipairs({V(-50,0,-30),V(44,0,-6),V(-30,0,48),V(52,0,34)}) do outcrop(mine,Q+o,1.1+hash(i,2)*.6,i) end
+for i,o in ipairs({V(-56,0,24),V(-20,0,58),V(40,0,52)}) do decorTree(mine,Q+o,1,"Pine",C("5E7752")) end
+for _,o in ipairs({V(-30,0,6),V(4,0,-50),V(30,0,12)}) do lamp(mine,Q+o) end
+sign(mine,Q+V(-60,0,12),"Brassfall Quarry","COPPER · AETHERITE · SKYREACH",brass,90,10)
+anchor(mine,"Waypoint_AetheriteSeam",Q+V(20,0,22),Q+V(26,0,28))
+-- Warden Reach: waystone avenue, ruined ring around the Shellwarden, vault gate.
+path(wild,W+V(0,0,W_R-2),W+V(0,0,-46),10,C("9A9AA6"))
+for _,z in ipairs({48,28,-28}) do
+	for _,x in ipairs({-16,16}) do
+		local stone=block(wild,"Waystone",W+V(x,3,z),V(2.5,6,2.5),rock,ST,true)
+		meshSlot(stone,"Waystone",rose,1)
+		gem(wild,"Signal prism",W+V(x,6.3,z),V(1,2.3,1),rose,.7)
 	end
 end
-local boss=hidden(wild,"Shellwarden",V(0,2,-104))
+for i,deg in ipairs({0,60,120,180,240,300}) do
+	local a=math.rad(deg)
+	local h=4+hash(i,6)*6
+	local col=block(wild,"Ruined column",W+V(math.cos(a)*20,h/2,math.sin(a)*20),V(2.2,h,2.2),C("A3A6B2"),ST,true)
+	if i%2==0 then meshSlot(col,"RuinColumn",nil,h/8) end
+end
+local boss=hidden(wild,"Shellwarden",W+V(0,2,0))
 boss:SetAttribute("Shape","Shellwarden")
 Tags:AddTag(boss,"AetherSculpture")
 prompt(boss,"Strike","Shellwarden","fight","Warden")
-disk(wild,"Warden dais",V(0,.1,-104),7,.22,shale,ST,true)
-sign(wild,V(6,0,-83),"Shellwarden","WARDEN REACH   /   HUNT",rose,0,10)
-local gate=block(wild,"ExpeditionGate",V(0,2,-121),V(2,4,2),teal,Enum.Material.Glass,false)
+disk(wild,"Warden dais",W+V(0,.1,0),12,.22,shale,ST,true)
+anchor(wild,"Waypoint_Shellwarden",W+V(0,0,16),W)
+sign(wild,W+V(12,0,40),"Shellwarden","WARDEN REACH   /   HUNT",rose,0,10)
+local GATE=W+V(0,0,-50)
+local gate=block(wild,"ExpeditionGate",GATE+V(0,2,0),V(2,4,2),teal,GL,false)
 gate.Transparency=1
 gate:SetAttribute("Shape","ObservatoryArch")
 gate:SetAttribute("SculptureScale",1)
 Tags:AddTag(gate,"AetherSculpture")
-for _,x in ipairs({-3.2,3.2}) do block(wild,"Vault pier",V(x,3.5,-121),V(2,7,2.4),rock,ST,true) end
-block(wild,"Vault lintel",V(0,7.5,-121),V(9,1.4,2.4),brass,SM,false)
-sign(wild,V(-8,0,-119),"Vault Gate","EXPEDITION   /   ENTRY",brass,0,7)
-local sky=hidden(hub,"Tidewing",V(7,18,-8))
-sky.CFrame *= CFrame.Angles(0,math.rad(33),0)
-sky:SetAttribute("Shape","Tidewing")
-Tags:AddTag(sky,"AetherSculpture")
+for _,x in ipairs({-3.2,3.2}) do block(wild,"Vault pier",GATE+V(x,3.5,0),V(2,7,2.4),rock,ST,true) end
+block(wild,"Vault lintel",GATE+V(0,7.5,0),V(9,1.4,2.4),brass,SM,false)
+sign(wild,GATE+V(-10,0,2),"Vault Gate","EXPEDITION   /   ENTRY",brass,0,7)
+anchor(wild,"Waypoint_ExpeditionGate",GATE+V(0,0,8),GATE)
+for _,x in ipairs({-8,8}) do lamp(wild,GATE+V(x,0,8)) end
+tier(wild,"West crag",W+V(-40,0,-6),16,5,{cliff=C("545B6B"),top=C("7C8498")})
+tier(wild,"East crag",W+V(40,0,-6),16,7,{cliff=C("4B5262"),top=C("737B8F")})
+for i,o in ipairs({V(-30,0,40),V(34,0,36),V(-44,0,-40),V(46,0,-38)}) do decorTree(wild,W+o,1.1,"Dead") end
+for i,o in ipairs({V(-26,0,-44),V(28,0,52)}) do outcrop(wild,W+o,1.3,i) end
+sign(wild,W+V(-12,0,58),"Warden Reach","SHELLWARDEN · VAULT GATE",rose,0,10)
+end
+-- Distant drifting spires frame the horizon.
 for i=1,8 do
 	local a=i*math.pi/4+.3
-	local pos=V(math.cos(a)*215,-16+(i%3)*11,math.sin(a)*185)
+	local pos=V(math.cos(a)*760,-30+(i%3)*24,math.sin(a)*700)
 	local landmark=group("Drifting spire")
-	gem(landmark,"Distant basalt",pos,V(10+i%3*3,26,12),rock,a)
-	gem(landmark,"Distant shard",pos+V(4,8,2),V(5,20,5),teal,a+.7)
+	gem(landmark,"Distant basalt",pos,V(22+i%3*6,58,26),rock,a)
+	gem(landmark,"Distant shard",pos+V(8,18,4),V(10,44,10),teal,a+.7)
 end
 
 local slots,homes={},{}
@@ -298,46 +858,96 @@ local function warp(player,trigger,destination)
 end
 -- Skyreach is wide enough that its landing (west rim) sits >= 40 studs from both
 -- monster markers (east rim); combat aggro range is 25.
-local skyreach = island("Skyreach", V(208,36,52), 30, C("96ACAB"))
-local SKYREACH_LANDING = V(184,40,52)
+local skyreach = island("Skyreach",SR,SR_R,{top=C("96ACAB"),region="Skyreach"})
+local SKYREACH_LANDING = SR+V(-52,4,0)
+anchor(skyreach,"Waypoint_Entrance_Skyreach",SKYREACH_LANDING-V(0,4,0),SR)
 -- Assigned with the regional beacons below: pcall + table check + denial notice.
 local regionTravel
-skyreach:SetAttribute("RegionId","Skyreach")
-local launch = sculpture(mine,"Charter beacon",V(123,2,0),"Lantern",1.2)
-sign(mine,V(119,0,-4),"Skyreach passage","GUILD CHARTER REQUIRED",brass,0,9)
+local launch = sculpture(mine,"Charter beacon",Q+V(58,2,6),"Lantern",1.2)
+sign(mine,Q+V(54,0,-4),"Skyreach passage","GUILD CHARTER REQUIRED",brass,90,9)
+anchor(mine,"Waypoint_SkyreachCharter",Q+V(52,0,8),Q+V(58,0,6))
 local launchPrompt=prompt(launch,"Ascend to Skyreach","Guild charter required")
 launchPrompt:SetAttribute("IsleWarpRegion","Skyreach")
 launchPrompt.Triggered:Connect(function(player)
 	regionTravel(player,launch,"Skyreach",SKYREACH_LANDING)
 end)
-local descent = sculpture(skyreach,"Quarry beacon",V(190,38,46),"Lantern",1.1)
+local descent = sculpture(skyreach,"Quarry beacon",SR+V(-46,2,-10),"Lantern",1.1)
 prompt(descent,"Return to quarry","Brassfall").Triggered:Connect(function(player)
-	warp(player,descent,V(118,4,1))
+	warp(player,descent,Q+V(50,4,14))
 end)
-local survey = sculpture(skyreach,"Summit cartographer",V(209,38,40),"Surveyor",1.1,180)
+do
+local SUMMIT=SR+V(16,0,-4)
+local summit,summitTop=tier(skyreach,"Summit",SUMMIT,18,6,{open={2.747},cliff=C("5F6F74"),top=C("A3B8B4")})
+ramp(summit,SR+V(-8,0,6),V(SR.X+2,summitTop,SR.Z+2),7)
+local survey = sculpture(summit,"Summit cartographer",V(SUMMIT.X+2,summitTop+2,SUMMIT.Z-4),"Surveyor",1.1,180)
 prompt(survey,"Survey the summit","Skyreach","explore","Skyreach"):SetAttribute("IsleRegion","Skyreach")
-local rich = sculpture(skyreach,"Rich Aetherite seam",V(218,38,56),"AetherCrystal",1.8)
+local rich = sculpture(skyreach,"Rich Aetherite seam",SR+V(-14,2,28),"AetherCrystal",1.8)
 prompt(rich,"Mine rich seam","Skyreach Aetherite","gather","Aetherite"):SetAttribute("IsleRegion","Skyreach")
-sign(skyreach,V(201,36,44),"Skyreach","SURVEY THE SUMMIT / MINE RICH SEAMS",mint,0,10)
-local returnPost=block(hub,"Homeward beacon",V(0,2,30),V(2,4,2),mint,Enum.Material.Glass,false)
-sign(hub,V(7,0,30),"Homeward","WAYFARER TRANSIT   /   RETURN",mint,0,9)
+sign(skyreach,SR+V(-38,0,-16),"Skyreach","SURVEY THE SUMMIT / MINE RICH SEAMS",mint,90,10)
+for i,o in ipairs({V(-30,0,30),V(-20,0,-40),V(30,0,48),V(50,0,-2),V(-4,0,52)}) do decorTree(skyreach,SR+o,1,"Pine",C("5D8070")) end
+for i,o in ipairs({V(-40,0,24),V(24,0,-44)}) do outcrop(skyreach,SR+o,1.2,i) end
+for _,o in ipairs({V(-40,0,6),V(-10,0,20)}) do lamp(skyreach,SR+o) end
+end
+local returnPost=block(harbor,"Homeward beacon",V(66,2,64),V(2,4,2),mint,GL,false)
+meshSlot(returnPost,"WarpBeacon",mint,1)
+sign(harbor,V(71,0,58),"Homeward","WAYFARER TRANSIT   /   RETURN",mint,90,9)
+anchor(hub,"Waypoint_Homeward",V(62,0,60),V(66,0,64))
 prompt(returnPost,"Travel home","Homeward beacon").Triggered:Connect(function(player)
 	local home=homes[player]
 	if home then warp(player,returnPost,home.spawn.Position+V(0,4,0)) end
 end)
+
+-------------------------------------------------------------------------------
+-- Homes. The core meadow (r21) keeps every fixed object at its legacy offset so
+-- Data.Island's grid (RADIUS 18.5) and Protected rectangles stay valid; the
+-- extra area is natural terrain: raised lobes with ramps, a pond and groves,
+-- all outside the build grid. Footprint radius 50 (was 19).
+-------------------------------------------------------------------------------
+local HOME_CORE=21
+local function homeTerrain(m,center)
+	local lobes={
+		{name="Orchard rise",o=V(0,0,-33),r=14,h=2.5},
+		{name="East overlook",o=V(34,0,4),r=15,h=4},
+		{name="Pine dell",o=V(-24,0,-26),r=16,h=1.5},
+		{name="Pond garden",o=V(24,0,24),r=14,h=1.2},
+	}
+	for i,l in ipairs(lobes) do
+		local dir=V(l.o.X,0,l.o.Z).Unit
+		local a=math.atan2(-dir.Z,-dir.X)
+		local lm,top=tier(m,l.name,center+l.o,l.r,l.h,{open={a},top=C("86AD7A")})
+		local low=center+dir*(HOME_CORE-1.6)
+		local high=center+dir*(HOME_CORE-1.6+l.h*2.4+2)+V(0,l.h,0)
+		ramp(lm,low,high,5)
+		local c=center+l.o+V(0,l.h,0)
+		if i==1 then
+			for _,o in ipairs({V(-6,0,-4),V(5,0,-6),V(0,0,4)}) do decorTree(lm,c+o,.85,"Meadow",C("9DBA6A")) end
+		elseif i==2 then
+			block(lm,"Overlook bench",c+V(4,.6,0),V(1.6,.4,5),navy,WO,true)
+			outcrop(lm,c+V(-3,0,-7),.8,i)
+			lamp(lm,c+V(2,0,6))
+		elseif i==3 then
+			for _,o in ipairs({V(-5,0,-4),V(4,0,-7),V(-7,0,6)}) do decorTree(lm,c+o,.9,"Pine") end
+		else
+			pond(lm,c+V(2,0,2),5,{stones=3})
+			bush(lm,c+V(-6,0,-3),.9) bush(lm,c+V(-2,0,8),.8,C("8DB46C"))
+		end
+	end
+end
 local function settle(player)
 	if homes[player] then return end
 	local slot=1
 	while slots[slot] do slot+=1 end
 	slots[slot]=true
-	local center=V((slot-1)%5*65-130,0,320+math.floor((slot-1)/5)*65)
-	local m=island("WayfarersRest_"..player.UserId,center,19)
+	local center=V((slot-1)%6*120-300,0,600+math.floor((slot-1)/6)*120)
+	local m=island("WayfarersRest_"..player.UserId,center,HOME_CORE,{parent=world,rim=false,shore=false,footprint=50})
+	homeTerrain(m,center)
 	local spawn=Instance.new("SpawnLocation")
 	spawn.Name,spawn.Anchored,spawn.Neutral,spawn.AllowTeamChangeOnTouch="Home Landing",true,true,false
 	spawn.Size,spawn.Position,spawn.Transparency=V(4,.45,4),center+V(0,.25,5),1
 	spawn.Duration,spawn.Parent=0,m
 	player.RespawnLocation=spawn
 	homes[player]={model=m,spawn=spawn,slot=slot,center=center,decorationConnections={}}
+	anchor(m,"Waypoint_HomeLanding",center+V(0,0,5),center)
 	local function land(character)
 		local root=character:WaitForChild("HumanoidRootPart",10)
 		if root and homes[player] and player.Character==character then character:PivotTo(CFrame.new(spawn.Position+V(0,3.4,0))) end
@@ -346,10 +956,11 @@ local function settle(player)
 	if player.Character then task.spawn(land,player.Character) end
 	windpine(m,center+V(-6,0,0),1,player.UserId)
 	sign(m,center+V(6,0,-5),"Wayfarer's Rest","HOME   /   CUT WINDPINE TO BEGIN",mint,0,9)
-	local gatePost=block(m,"Quay beacon",center+V(0,2,-11),V(2,4,2),mint,Enum.Material.Glass,false)
+	local gatePost=block(m,"Quay beacon",center+V(0,2,-11),V(2,4,2),mint,GL,false)
+	meshSlot(gatePost,"WarpBeacon",mint,1)
 	for _,x in ipairs({-2.3,2.3}) do gem(m,"Transit fins",center+V(x,2,-11),V(.65,4,.65),brass,0) end
 	prompt(gatePost,"Travel to hub","Compass Quay").Triggered:Connect(function(user)
-		if user==player then warp(user,gatePost,V(0,4,19)) end
+		if user==player then warp(user,gatePost,HUB_ARRIVAL) end
 	end)
 	local fleetOffsets={V(9,0,4),V(13,0,-1),V(-10,0,-10)}
 	for workerSlot,offset in ipairs(fleetOffsets) do
@@ -357,7 +968,7 @@ local function settle(player)
 		local position=center+offset
 		disk(station,"Worker pad",position+V(0,.08,0),2.3,.16,navy,SM,false)
 		local engine=block(station,"Surveyor chassis",position+V(0,1.35,0),V(2.8,2.7,2.5),navy,SM,true)
-		local lens=block(station,"Eye lens",position+V(0,1.7,-1.35),V(1.55,.38,.18),mint,NE,false)
+		local lens=block(station,"Eye lens",position+V(0,1.7,-1.35),V(1.55,.38,.18),mint,SM,false)
 		engine.Transparency,lens.Transparency=1,1
 		sculpture(station,"Sculpted surveyor",position+V(0,1.5,0),"Surveyor",1)
 		local interaction=prompt(engine,"Build worker","Surveyor chassis",workerSlot==1 and "worker" or "workerBuild",tostring(workerSlot),player.UserId)
@@ -410,7 +1021,7 @@ local function settle(player)
 			for _,offset in ipairs({V(-12,0,-8),V(12,0,-7),V(-13,0,6),V(6,0,12)}) do lamp(addition,center+offset) end
 		elseif key=="Garden" then
 			block(addition,"Raised planter",center+V(-11,.3,1),V(6,.6,7),timber,WO,false)
-			block(addition,"Rich soil",center+V(-11,.63,1),V(5.4,.14,6.4),ink,Enum.Material.Ground,false)
+			block(addition,"Rich soil",center+V(-11,.67,1),V(5.4,.14,6.4),ink,GR,false)
 			for row=-1,1 do
 				for col=-1,1 do
 					local flower=center+V(-11+col*1.6,1.2,1+row*1.8)
@@ -419,10 +1030,10 @@ local function settle(player)
 				end
 			end
 		else
-			bridge(addition,center+V(0,0,17),center+V(0,0,25))
-			disk(addition,"Lookout deck",center+V(0,-.3,29),7,.6,timber,WO,true)
-			for i=1,9 do
-				local a=i*math.pi/6
+			bridge(addition,center+V(0,0,HOME_CORE-.5),center+V(0,0,25))
+			disk(addition,"Lookout deck",center+V(0,-.22,29),7,.6,timber,WO,true)
+			for i=1,5 do
+				local a=i*math.pi/3
 				lamp(addition,center+V(math.cos(a)*6,0,29+math.sin(a)*6))
 			end
 			block(addition,"Lookout bench",center+V(0,.9,31),V(5,.4,1.7),navy,WO,true)
@@ -452,40 +1063,49 @@ for _,player in ipairs(Players:GetPlayers()) do settle(player) end
 
 -- Group islands are instantiated once per local crew; their build flags come
 -- from the co-op service's persistent group record, never from client intent.
+local CREW_R=46
+local K=1.6 -- crew haven layout scale (wave 4)
 local sharedHomes,sharedPlayers,sharedSlots,sharedConnections={},{},{},{}
-local sharedBeacon=block(hub,"Crew beacon",V(22,2,26),V(2,4,2),teal,Enum.Material.Glass,false)
-sign(hub,V(29,0,23),"Crew Haven","CO-OP / FORM A CREW IN THE ATLAS",mint,0,9)
+local sharedBeacon=block(harbor,"Crew beacon",V(44,2,68),V(2,4,2),teal,GL,false)
+meshSlot(sharedBeacon,"WarpBeacon",teal,1)
+sign(harbor,V(39,0,62),"Crew Haven","CO-OP / FORM A CREW IN THE ATLAS",mint,90,9)
+anchor(hub,"Waypoint_CrewHaven",V(48,0,64),V(44,0,68))
 prompt(sharedBeacon,"Visit shared island","Crew Haven").Triggered:Connect(function(player)
 	local home=sharedHomes[sharedPlayers[player]]
-	if home then warp(player,sharedBeacon,home.center+V(0,4,6)) end
+	if home then warp(player,sharedBeacon,home.center+V(0,4,6*K)) end
 end)
 local function makeShared(groupKey,groupId,isPreview)
 	local slot=1
 	while sharedSlots[slot] do slot+=1 end
 	sharedSlots[slot]=true
-	local center=V(((slot-1)%5)*100-200,0,-420-math.floor((slot-1)/5)*100)
-	local model=island("CrewHaven_"..groupKey,center,28)
+	local center=V(((slot-1)%5)*130-260,0,-620-math.floor((slot-1)/5)*130)
+	local model=island("CrewHaven_"..groupKey,center,CREW_R,{parent=world,rim=false})
 	model:SetAttribute("CoopId",groupId)
 	local home={model=model,center=center,slot=slot,members={},built={}}
 	sharedHomes[groupKey]=home
-	sign(model,center+V(8,0,8),"Crew Haven","SHARED SUPPLIES / BUILD IN THE ATLAS",mint,0,12)
-	local exit=block(model,"Quay return",center+V(0,2,16),V(2,4,2),mint,Enum.Material.Glass,false)
+	anchor(model,"Waypoint_CrewLanding",center+V(0,0,6*K),center)
+	tier(model,"Crew knoll",center+V(-22,0,-24),9,2.5,{top=C("86AD7A")})
+	for i,o in ipairs({V(30,0,-20),V(-34,0,10),V(26,0,30),V(-10,0,36)}) do decorTree(model,center+o,1,if i%2==0 then "Pine" else "Meadow") end
+	sign(model,center+V(8,0,8)*K,"Crew Haven","SHARED SUPPLIES / BUILD IN THE ATLAS",mint,0,12)
+	local exit=block(model,"Quay return",center+V(0,2,16*K),V(2,4,2),mint,GL,false)
+	meshSlot(exit,"WarpBeacon",mint,1)
 	prompt(exit,"Return to hub","Compass Quay").Triggered:Connect(function(player)
-		if sharedPlayers[player]==groupKey then warp(player,exit,V(22,4,22)) end
+		if sharedPlayers[player]==groupKey then warp(player,exit,HUB_ARRIVAL+V(-6,0,4)) end
 	end)
 	local function supply(name,pos,color)
 		local base=block(model,"Shared "..name,center+pos,V(3,2,3),color,WO,true)
 		base.Transparency=1
 		sculpture(model,name.." supply marker",center+pos+V(0,.4,0),({Timber="TimberBundle",Ore="AetherCrystal",Herb="Moonbloom"})[name],1)
 		local interaction=prompt(base,"Gather shared "..name,"Crew stores")
+		interaction.HoldDuration=GATHER_HOLD
 		interaction:SetAttribute("CoopId",groupId)
 		interaction:SetAttribute("CoopPreview",isPreview)
 		interaction:SetAttribute("IsleCoopResource",name)
 	end
-	supply("Timber",V(-12,1,-5),timber)
-	supply("Ore",V(0,1,-14),shale)
-	supply("Herb",V(12,1,-5),teal)
-	for _,offset in ipairs({V(-6,0,12),V(6,0,12)}) do lamp(model,center+offset) end
+	supply("Timber",V(-12*K,1,-5*K),timber)
+	supply("Ore",V(0,1,-14*K),shale)
+	supply("Herb",V(12*K,1,-5*K),teal)
+	for _,offset in ipairs({V(-6,0,12),V(6,0,12)}) do lamp(model,center+offset*K) end
 	return home
 end
 local function sharedDecorate(home,player)
@@ -495,16 +1115,16 @@ local function sharedDecorate(home,player)
 			local addition=group(key,home.model)
 			local center=home.center
 			if key=="Garden" then
-				block(addition,"Crew planter",center+V(-14,.4,8),V(7,.8,7),timber,WO,true)
+				block(addition,"Crew planter",center+V(-14*K,.4,8*K),V(7,.8,7),timber,WO,true)
 				for row=-1,1 do for col=-1,1 do
-					gem(addition,"Shared moonbloom",center+V(-14+col*2,1.5,8+row*2),V(.8,1.6,.8),mint,row*.5)
+					gem(addition,"Shared moonbloom",center+V(-14*K+col*2,1.5,8*K+row*2),V(.8,1.6,.8),mint,row*.5)
 				end end
 			elseif key=="Lanterns" then
-				for _,offset in ipairs({V(-20,0,-8),V(20,0,-8),V(-18,0,16),V(18,0,16)}) do lamp(addition,center+offset) end
+				for _,offset in ipairs({V(-20,0,-8),V(20,0,-8),V(-18,0,16),V(18,0,16)}) do lamp(addition,center+offset*K) end
 			else
-				bridge(addition,center+V(0,0,-24),center+V(0,0,-32))
-				disk(addition,"Crew lookout",center+V(0,-.3,-37),7,.6,timber,WO,true)
-				lamp(addition,center+V(-5,0,-37)) lamp(addition,center+V(5,0,-37))
+				bridge(addition,center+V(0,0,-CREW_R+.5),center+V(0,0,-CREW_R-8))
+				disk(addition,"Crew lookout",center+V(0,-.22,-CREW_R-13),7,.6,timber,WO,true)
+				lamp(addition,center+V(-5,0,-CREW_R-13)) lamp(addition,center+V(5,0,-CREW_R-13))
 			end
 		end
 	end
@@ -515,10 +1135,11 @@ local function sharedDecorate(home,player)
 	home.level=home.level or 1
 	while type(level)=="number" and home.level<math.min(level,6) do
 		home.level+=1
-		local x=-15+(home.level-2)*7.5
+		local x=(-15+(home.level-2)*7.5)*K
 		local pennant=group("Pennant"..home.level,home.model)
-		block(pennant,"Crew pennant pole",center+V(x,3,20),V(.4,6,.4),timber,WO,true)
-		block(pennant,"Crew pennant",center+V(x+.9,5.2,20),V(1.6,1,.12),mint,Enum.Material.Fabric,false)
+		block(pennant,"Crew pennant pole",center+V(x,3,20*K),V(.4,6,.4),timber,WO,true)
+		local cloth=block(pennant,"Crew pennant",center+V(x+.9,5.2,20*K),V(1.6,1,.12),mint,Enum.Material.Fabric,false)
+		meshSlot(cloth,"Banner",mint,.6)
 	end
 	local workers=player:GetAttribute("CoopWorkers")
 	home.workers=home.workers or 0
@@ -526,9 +1147,9 @@ local function sharedDecorate(home,player)
 		home.workers+=1
 		local side=if home.workers==1 then -1 else 1
 		local post=group("SharedWorker"..home.workers,home.model)
-		block(post,"Shared worker hut",center+V(side*20,1.5,-14),V(4,3,4),timber,WO,true)
-		block(post,"Shared worker roof",center+V(side*20,3.4,-14),V(5,.6,5),shale,WO,true)
-		lamp(post,center+V(side*20,0,-11))
+		block(post,"Shared worker hut",center+V(side*20*K,1.5,-14*K),V(4,3,4),timber,WO,true)
+		block(post,"Shared worker roof",center+V(side*20*K,3.4,-14*K),V(5,.6,5),shale,WO,true)
+		lamp(post,center+V(side*20*K,0,-11*K))
 	end
 end
 local function detachShared(player)
@@ -590,60 +1211,14 @@ for skill,tiers in pairs(Data.ResourceTiers) do
 	for index,def in ipairs(tiers) do Resource[def.id]={def=def,skill=skill,index=index,color=C(def.color)} end
 end
 local VERB={Mining="Mine",Woodcutting="Chop",Fishing="Fish",Farming="Harvest"}
-local GL,MT,SA,GR,LEAF=Enum.Material.Glass,Enum.Material.Metal,Enum.Material.Sand,Enum.Material.Ground,Enum.Material.LeafyGrass
-local BALL=Enum.PartType.Ball
-local function lighten(c,f) return c:Lerp(cream,f) end
-local function darken(c,f) return c:Lerp(ink,f) end
-local function light(parent,color,brightness,range)
-	local l=Instance.new("PointLight")
-	l.Color,l.Brightness,l.Range,l.Shadows=color,brightness,range,false
-	l.Parent=parent
-	return l
-end
-local function ball(parent,name,pos,d,color,mat)
-	return part(parent,name,V(d,d,d),CFrame.new(pos),color,mat,false,BALL)
-end
-local function ghost(p)
-	p.Transparency,p.CastShadow=1,false
-	if not p.CanCollide then p.CanQuery=false end
-	return p
-end
-local function motes(parent,color,rate,speed,size)
-	local e=Instance.new("ParticleEmitter")
-	e.Name="Ambient motes"
-	e.Rate,e.LightEmission=rate,.9
-	e.Lifetime,e.Speed=NumberRange.new(3,6),NumberRange.new(speed*.5,speed)
-	e.SpreadAngle=Vector2.new(180,180)
-	e.Size=NumberSequence.new(size)
-	e.Color=ColorSequence.new(color)
-	e.Parent=parent
-	return e
-end
--- Invisible edge guard ring keeps players on an island; gaps open at bridges.
-local function rim(parent,pos,r,gaps)
-	local n=math.ceil(2*math.pi*r/12)
-	for i=0,n-1 do
-		local a=(i+.5)*2*math.pi/n
-		local open=false
-		for _,g in ipairs(gaps or {}) do
-			if math.abs(math.atan2(math.sin(a-g),math.cos(a-g)))<5/r+math.pi/n then open=true end
-		end
-		if not open then
-			local radial=V(math.cos(a),0,math.sin(a))
-			local spot=pos+radial*(r-.4)+V(0,3.5,0)
-			ghost(part(parent,"Edge guard",V(2*r*math.sin(math.pi/n)+.8,7,1),CFrame.lookAt(spot,spot+radial),cream,SM,true))
-		end
-	end
-end
-local function regionIsle(id,name,pos,r,top,stone,stratum,vein,ground,gaps)
-	local m=island(name,pos,r,top,stone,stratum,vein,ground)
-	m:SetAttribute("RegionId",id)
-	rim(m,pos,r,gaps)
-	return m
+local function regionIsle(id,name,pos,r,opts)
+	opts=opts or {}
+	opts.region=id
+	return island(name,pos,r,opts)
 end
 local function nodeLabel(id) return Resource[id].def.name.." (Lv "..Resource[id].def.level..")" end
 -- The original public nodes adopt the tiered "<Name> (Lv N)" labels.
-for _,q in ipairs(world:GetDescendants()) do
+for _,q in ipairs(islandsFolder:GetDescendants()) do
 	local id=q:IsA("ProximityPrompt") and q:GetAttribute("IsleAction")=="gather" and q:GetAttribute("IsleItem")
 	if id and Resource[id] and not q:GetAttribute("OwnerUserId") then
 		q.ActionText=VERB[Resource[id].skill]
@@ -655,6 +1230,7 @@ local function gatherPrompt(target,id,region)
 	assert(r,"unknown resource "..tostring(id))
 	local q=prompt(target,VERB[r.skill],nodeLabel(id),"gather",id)
 	q.MaxActivationDistance=if r.skill=="Fishing" then 12 else 10
+	if r.skill=="Fishing" then q.HoldDuration=FISH_HOLD end
 	if region then q:SetAttribute("IsleRegion",region) end
 	target:SetAttribute("ResourceId",id)
 	return q
@@ -665,15 +1241,17 @@ local function oreNode(parent,pos,id,region,scale)
 	local r,s=Resource[id],scale or 1
 	local m=group(r.def.name.." vein",parent)
 	local base=part(m,"Ore boulder",V(4.4,2.3,3.8)*s,CFrame.new(pos+V(0,1.05*s,0))*CFrame.Angles(0,r.index,.08),darken(shale,.3),ST,false)
+	meshSlot(base,"OreVein",r.color,s,true)
 	part(m,"Ore vein",V(4.6,.35,.55)*s,CFrame.new(pos+V(0,1.4*s,0))*CFrame.Angles(.35,r.index,.4),r.color,MT,false)
 	local glowing=r.index>=5
+	local top
 	for i=1,3 do
 		local a=r.index+i*2.1
 		local h=(2+i*.8)*s
 		local shard=gem(m,"Crystal shard",pos+V(math.cos(a)*1.1*s,1.9*s+h*.3,math.sin(a)*1.1*s),V(.9+i*.2,h,.9+i*.2)*s,i==1 and lighten(r.color,.25) or r.color,a)
-		if glowing and i==3 then shard.Material=NE end
+		top=shard
 	end
-	if glowing then light(base,r.color,.9,14) end
+	if glowing then light(top,r.color,.8,14) end
 	gatherPrompt(base,id,region)
 	return m
 end
@@ -682,32 +1260,34 @@ end
 local function pagodaPine(parent,pos,color,scale,name)
 	local m=group(name or "Towering windpine",parent)
 	local s=scale or 1
-	disk(m,"Pine trunk",pos+V(0,10*s,0),.9*s,20*s,darken(timber,.25),WO,true)
+	local trunk=disk(m,"Pine trunk",pos+V(0,10*s,0),.9*s,20*s,darken(timber,.25),WO,true)
+	meshSlot(trunk,"WindpineTree",color,s,true)
 	local tiers={{9,2.2,8},{7.4,2,11.5},{5.6,1.8,14.8},{3.6,1.6,17.8},{1.6,2,20.2}}
 	for i,t in ipairs(tiers) do
 		part(m,"Needle tier",V(t[1],t[2],t[1])*s,CFrame.new(pos+V(0,t[3]*s,0))*CFrame.Angles(0,i%2*math.pi/4,0),i%2==0 and lighten(color,.12) or darken(color,.15),LEAF,false)
 	end
-	return m
+	return m,trunk
 end
 local function treeNode(parent,pos,id,region)
 	local r=Resource[id]
 	local col=r.color
 	local m,collar
 	if id=="WindpineLog" then
-		m=pagodaPine(parent,pos,col,1.15,r.def.name.." tree")
+		local trunk
+		m,trunk=pagodaPine(parent,pos,col,1.15,r.def.name.." tree")
 		collar=disk(m,"Root collar",pos+V(0,.6,0),1.6,1.2,timber,WO,false)
 	elseif id=="EmberoakLog" then
 		m=group(r.def.name.." tree",parent)
 		collar=disk(m,"Root collar",pos+V(0,.6,0),2.2,1.2,darken(timber,.2),WO,false)
-		disk(m,"Emberoak trunk",pos+V(0,5,0),1.4,10,darken(col,.45),WO,true)
+		local trunk=disk(m,"Emberoak trunk",pos+V(0,5,0),1.4,10,darken(col,.45),WO,true)
+		meshSlot(trunk,"EmberoakTree",col,1,true)
 		beam(m,"Bough",pos+V(0,7,0),pos+V(3.5,10,1),.8,darken(col,.45),WO)
 		beam(m,"Bough",pos+V(0,6.5,0),pos+V(-3,9.5,-1.5),.8,darken(col,.45),WO)
 		ball(m,"Ember canopy",pos+V(0,12,0),9,col,LEAF)
 		ball(m,"Ember canopy",pos+V(3.4,10.6,1.2),6.5,lighten(col,.15),LEAF)
 		ball(m,"Ember canopy",pos+V(-3,10.3,-1.4),6,darken(col,.1),LEAF)
 		local ember=ball(m,"Glowing ember",pos+V(1.5,8.4,-2.6),.8,C("FFB25C"),NE)
-		ball(m,"Glowing ember",pos+V(-2.2,9,2.4),.6,C("FFB25C"),NE)
-		light(ember,C("FF9A52"),.8,12)
+		light(ember,C("FF9A52"),.7,12,{lift=1})
 	elseif id=="GlimmerbarkLog" then
 		m=group(r.def.name.." tree",parent)
 		for i=1,3 do
@@ -715,26 +1295,29 @@ local function treeNode(parent,pos,id,region)
 			beam(m,"Stilt root",pos+V(math.cos(a)*3,0,math.sin(a)*3),pos+V(0,3.5,0),.55,lighten(col,.35),WO)
 		end
 		collar=disk(m,"Root collar",pos+V(0,.3,0),1.4,.6,lighten(col,.3),WO,false)
-		disk(m,"Glimmer trunk",pos+V(0,7.3,0),.75,8,lighten(col,.45),GL,true)
+		local trunk=disk(m,"Glimmer trunk",pos+V(0,7.3,0),.75,8,lighten(col,.45),GL,true)
+		meshSlot(trunk,"GlimmerbarkTree",col,1,true)
 		local crown=disk(m,"Glimmer crown",pos+V(0,11.6,0),4.8,1.3,col,GL,false)
-		disk(m,"Glimmer underglow",pos+V(0,10.9,0),3.6,.25,lighten(col,.2),NE,false)
+		disk(m,"Glimmer underglow",pos+V(0,10.85,0),3.6,.25,lighten(col,.2),SM,false)
 		disk(m,"Glimmer crest",pos+V(0,12.8,0),3,1,lighten(col,.25),GL,false)
-		light(crown,col,1,16)
+		light(crown,col,.8,16,{lift=-2})
 	elseif id=="StarwoodLog" then
 		m=group(r.def.name.." tree",parent)
 		collar=disk(m,"Root collar",pos+V(0,.6,0),1.6,1.2,darken(col,.3),WO,false)
-		disk(m,"Starwood trunk",pos+V(0,6.5,0),1,13,darken(col,.2),WO,true)
+		local trunk=disk(m,"Starwood trunk",pos+V(0,6.5,0),1,13,darken(col,.2),WO,true)
+		meshSlot(trunk,"StarwoodTree",col,1,true)
 		ball(m,"Night canopy",pos+V(0,13,0),7,col,LEAF)
 		ball(m,"Night canopy",pos+V(0,16.5,0),5,lighten(col,.12),LEAF)
 		for i=1,4 do
 			local a=i*math.pi/2+.4
 			part(m,"Star bud",V(.8,.8,.8),CFrame.new(pos+V(math.cos(a)*3.3,13.5+i%2*2,math.sin(a)*3.3))*CFrame.Angles(math.pi/4,a,math.pi/4),i%2==0 and cream or C("CFE3FF"),NE,false)
 		end
-		light(collar,C("BFD7FF"),.7,12)
+		light(collar,C("BFD7FF"),.6,12,{lift=3})
 	elseif id=="AetherheartLog" then
 		m=group(r.def.name.." tree",parent)
 		collar=disk(m,"Root collar",pos+V(0,.7,0),4.4,1.4,darken(col,.55),WO,false)
-		disk(m,"Aetherheart trunk",pos+V(0,12,0),3,24,darken(col,.5),WO,true)
+		local trunk=disk(m,"Aetherheart trunk",pos+V(0,12,0),3,24,darken(col,.5),WO,true)
+		meshSlot(trunk,"AetherheartTree",col,1,true)
 		for i=1,4 do
 			local a=i*math.pi/2+.3
 			part(m,"Root flare",V(1.6,3,6),CFrame.new(pos+V(math.cos(a)*3.6,1,math.sin(a)*3.6))*CFrame.Angles(0,-a+math.pi/2,0)*CFrame.Angles(.35,0,0),darken(col,.5),WO,false)
@@ -743,8 +1326,9 @@ local function treeNode(parent,pos,id,region)
 		ball(m,"Golden canopy",pos+V(6,24,3),11,lighten(col,.2),LEAF)
 		ball(m,"Golden canopy",pos+V(-6,24.5,-2),12,darken(col,.08),LEAF)
 		ball(m,"Golden canopy",pos+V(1,23.5,-6.5),10,lighten(col,.1),LEAF)
-		local core=ball(m,"Aetherheart core",pos+V(0,19.5,0),2.2,C("FFF6C8"),NE)
-		light(core,C("FFE9A8"),1.2,34)
+		local core=ball(m,"Aetherheart core",pos+V(3.4,19.5,0),2.2,C("FFF6C8"),NE)
+		-- Hero light (shadows): the Aetherheart.
+		light(core,C("FFE9A8"),1,34,{shadows=true,lift=0})
 	else
 		m=group(r.def.name.." tree",parent)
 		collar=disk(m,"Root collar",pos+V(0,.5,0),1.5,1,timber,WO,false)
@@ -756,23 +1340,26 @@ local function treeNode(parent,pos,id,region)
 	return m
 end
 
--- Fishing: a pool with ripples and a bobber, reached by a short plank pier.
+-- Fishing: a pool and a bobber, reached by a short plank pier. Ripples are
+-- separated by 0.04 studs (the old 0.01 steps z-fought at range).
 local function fishSpot(parent,pos,id,region,dir,pierLen,poolRadius)
 	local r=Resource[id]
 	local m=group(r.def.name.." fishing spot",parent)
 	if poolRadius then
-		local water=disk(m,"Fishing water",pos+V(0,.12,0),poolRadius,.24,teal:Lerp(r.color,.3),GL,false)
-		water.Transparency=.08
+		disk(m,"Pool bed",pos+V(0,.06,0),poolRadius,.12,darken(teal,.5),GR,false)
+		local water=disk(m,"Fishing water",pos+V(0,.17,0),poolRadius-.15,.1,teal:Lerp(r.color,.3),GL,false)
+		water.Transparency=.3
 	end
-	for i=1,3 do
-		disk(m,"Ripple",pos+V(math.cos(i*2.1)*.9,.27+i*.01,math.sin(i*2.1)*.9),.35+i*.3,.04,lighten(r.color,.35+i*.12),SM,false)
+	for i=1,2 do
+		disk(m,"Ripple",pos+V(math.cos(i*2.1)*.9,.26+i*.04,math.sin(i*2.1)*.9),.4+i*.4,.03,lighten(r.color,.35+i*.12),SM,false)
 	end
-	ball(m,"Bobber",pos+V(.4,.5,.2),.75,r.color,NE)
+	ball(m,"Bobber",pos+V(.4,.5,.2),.75,r.color,SM)
 	ball(m,"Bobber cap",pos+V(.4,.95,.2),.42,cream,SM)
 	dir=(dir or V(0,0,1)).Unit
 	pierLen=pierLen or 6
 	local near,far=pos+dir*1.6,pos+dir*(1.6+pierLen)
 	local pier=part(m,"Fishing pier",V(3,.4,pierLen),CFrame.lookAt((near+far)/2+V(0,.55,0),far+V(0,.55,0)),timber,WO,true)
+	meshSlot(pier,"FishingPier",nil,pierLen/6,true)
 	for _,s in ipairs({-1,1}) do
 		local side=V(-dir.Z,0,dir.X)*1.4*s
 		block(m,"Pier post",near+side+V(0,.9,0),V(.35,1.8,.35),ink,WO,false)
@@ -788,6 +1375,7 @@ local function cropPatch(parent,pos,id,region)
 	local m=group(r.def.name.." patch",parent)
 	local wet=id=="AetherLotus"
 	local bed=block(m,wet and "Lotus pool" or "Soil bed",pos+V(0,.2,0),V(6.4,.4,5),wet and teal or darken(timber,.55),wet and GL or GR,true)
+	meshSlot(bed,"CropBed",col,1,true)
 	block(m,"Bed border",pos+V(0,.25,2.65),V(6.8,.5,.35),timber,WO,false)
 	for i=1,6 do
 		local x,z=((i-1)%3-1)*1.9,(math.floor((i-1)/3)-.5)*2
@@ -798,18 +1386,18 @@ local function cropPatch(parent,pos,id,region)
 			disk(m,"Cap stalk",p+V(0,.45,0),.18,.9,cream,SM,false)
 			disk(m,"Glowing cap",p+V(0,1,0),.65,.35,col,NE,false)
 		elseif id=="Moonbloom" then
-			gem(m,"Moonbloom",p+V(0,.8,0),V(.8,1.2,.8),i%2==0 and lighten(col,.2) or col,i*.6).Material=NE
+			gem(m,"Moonbloom",p+V(0,.8,0),V(.8,1.2,.8),i%2==0 and lighten(col,.2) or col,i*.6)
 		elseif id=="Starfruit" then
 			ball(m,"Starfruit bush",p+V(0,.7,0),1.5,C("4F7A4A"),LEAF)
-			part(m,"Starfruit",V(.55,.55,.55),CFrame.new(p+V(.2,1.45,0))*CFrame.Angles(math.pi/4,i,math.pi/4),col,NE,false)
+			part(m,"Starfruit",V(.55,.55,.55),CFrame.new(p+V(.2,1.45,0))*CFrame.Angles(math.pi/4,i,math.pi/4),col,SM,false)
 		elseif wet then
 			disk(m,"Lily pad",p+V(0,.05,0),.8,.08,C("5E9C62"),SM,false)
-			gem(m,"Lotus bloom",p+V(0,.45,0),V(.6,.7,.6),i%2==0 and lighten(col,.25) or col,i).Material=NE
+			gem(m,"Lotus bloom",p+V(0,.45,0),V(.6,.7,.6),i%2==0 and lighten(col,.25) or col,i)
 		else
 			ball(m,"Herb tuft",p+V(0,.45,0),.9,i%2==0 and lighten(col,.15) or col,LEAF)
 		end
 	end
-	if r.index>=4 then light(bed,col,.6,10) end
+	if r.index>=4 then light(bed,col,.5,10,{lift=2}) end
 	gatherPrompt(bed,id,region)
 	return m
 end
@@ -845,11 +1433,7 @@ local function stationPrompt(target,kind,place)
 	end)
 	return q
 end
-local function facing(pos,toward)
-	return CFrame.lookAt(pos,V(toward.X,pos.Y,toward.Z))
-end
-local function at(cf,x,y,z) return cf*CFrame.new(x,y,z) end
-local function station(parent,kind,pos,toward,place)
+local function station(parent,kind,pos,toward,place,waypoint,hero)
 	local m=group(kind,parent)
 	local cf=facing(pos,toward)
 	local target
@@ -861,7 +1445,7 @@ local function station(parent,kind,pos,toward,place)
 		for _,s in ipairs({-1,1}) do part(m,"Hood stay",V(.4,3.3,.4),at(cf,s*2.3,4.7,1.4),brass,MT,false) end
 		part(m,"Anvil",V(1.8,.9,.9),at(cf,4.3,1.9,-1.2),ink,MT,false)
 		part(m,"Anvil foot",V(.9,1.45,.7),at(cf,4.3,.72,-1.2),darken(rock,.3),MT,false)
-		light(coals,C("FF9A52"),1.1,14)
+		light(coals,C("FF9A52"),.9,16,{shadows=hero==true,lift=1})
 	elseif kind=="Hearth" then
 		target=disk(m,"Hearth ring",pos+V(0,.4,0),2.7,.8,rock,ST,true)
 		local embers=disk(m,"Hearth embers",pos+V(0,.86,0),1.8,.12,C("FF8A3D"),NE,false)
@@ -870,7 +1454,7 @@ local function station(parent,kind,pos,toward,place)
 		for _,s in ipairs({-1,1}) do part(m,"Spit post",V(.3,3.6,.3),at(cf,s*2.4,1.8,0),timber,WO,false) end
 		part(m,"Spit bar",V(5,.25,.25),at(cf,0,3.5,0),brass,MT,false)
 		part(m,"Prep table",V(3,1.2,1.6),at(cf,0,.6,-3.6),timber,WO,true)
-		light(embers,C("FFB066"),.9,12)
+		light(embers,C("FFB066"),.8,12,{lift=3.6})
 	elseif kind=="Cauldron" then
 		for i=1,3 do
 			local a=i*2*math.pi/3
@@ -879,12 +1463,12 @@ local function station(parent,kind,pos,toward,place)
 		target=ball(m,"Cauldron bowl",pos+V(0,2,0),4,darken(navy,.3),MT)
 		target.CanCollide=true
 		local brew=disk(m,"Bubbling brew",pos+V(0,3.55,0),1.55,.12,mint,NE,false)
-		ball(m,"Brew bubble",pos+V(.6,3.75,.3),.5,lighten(mint,.3),NE)
+		ball(m,"Brew bubble",pos+V(.6,3.75,.3),.5,lighten(mint,.3),SM)
 		part(m,"Reagent shelf",V(4,.3,1.2),at(cf,0,2.6,3.2),timber,WO,false)
 		for i,colr in ipairs({rose,brass,teal}) do
 			disk(m,"Reagent bottle",at(cf,(i-2)*1.2,3.25,3.2).Position,.3,1,colr,GL,false)
 		end
-		light(brew,mint,.9,12)
+		light(brew,mint,.7,12,{lift=1.5})
 	else
 		target=part(m,"Workbench top",V(6,.45,3),at(cf,0,2.6,0),timber,WO,true)
 		for _,x in ipairs({-2.6,2.6}) do for _,z in ipairs({-1.1,1.1}) do
@@ -895,7 +1479,9 @@ local function station(parent,kind,pos,toward,place)
 		part(m,"Saw",V(1.8,.08,.6),at(cf,1.6,2.9,-.8),shale,MT,false)
 		part(m,"Tool board",V(5,2.4,.25),at(cf,0,4.6,1.45),navy,WO,false)
 	end
+	meshSlot(target,kind,nil,1,true)
 	stationPrompt(target,kind,place)
+	anchor(parent,"Waypoint_"..(waypoint or kind),at(cf,0,0,-6)*CFrame.Angles(0,math.pi,0))
 	return m
 end
 
@@ -913,15 +1499,17 @@ local function requirementText(region)
 	end
 	return if #out>0 then "REQUIRES "..table.concat(out," · ") else "OPEN TO ALL WAYFARERS"
 end
-local function beaconProp(parent,pos,accent)
+local function beaconProp(parent,pos,accent,withLight)
 	block(parent,"Beacon plinth",pos+V(0,.4,0),V(3.4,.8,3.4),ink,ST,true)
 	local post=block(parent,"Warp beacon",pos+V(0,2.8,0),V(1.6,4,1.6),accent,GL,false)
+	meshSlot(post,"WarpBeacon",accent,1)
 	for _,x in ipairs({-1.3,1.3}) do gem(parent,"Beacon fin",pos+V(x,2.6,0),V(.5,3.6,.5),brass,0) end
 	local cap=part(parent,"Beacon flame",V(.9,.9,.9),CFrame.new(pos+V(0,5.3,0))*CFrame.Angles(math.pi/4,0,math.pi/4),accent,NE,false)
-	light(cap,accent,.8,12)
+	if withLight~=false then light(cap,accent,.7,12) end
 	return post
 end
-local SKYWAY_LANDING=V(0,4,107)
+local GT,GT_R=V(0,0,232),75
+local SKYWAY_LANDING=GT+V(0,4,30)
 -- Every gated warp (Skyreach charter beacon included) asks the authoritative
 -- region check safely and tells the player why travel was refused.
 regionTravel=function(player,post,regionId,destination)
@@ -938,28 +1526,31 @@ regionTravel=function(player,post,regionId,destination)
 		player:SetAttribute("IsleRegionNoticeCount",(tonumber(player:GetAttribute("IsleRegionNoticeCount")) or 0)+1)
 	end
 end
-local function regionWarp(parent,pos,regionId,destination)
+local function regionWarp(parent,pos,regionId,destination,waypoint,withLight)
 	local region=Data.RegionById[regionId]
 	assert(region,"unknown region "..tostring(regionId))
-	local post=beaconProp(parent,pos,REGION_ACCENT[regionId] or mint)
+	local post=beaconProp(parent,pos,REGION_ACCENT[regionId] or mint,withLight)
 	local q=prompt(post,"Travel to "..region.name,requirementText(region))
 	q:SetAttribute("IsleWarpRegion",regionId)
 	q.Triggered:Connect(function(player) regionTravel(player,post,regionId,destination) end)
+	anchor(parent,waypoint or ("Waypoint_Skyway_"..regionId),pos+V(0,0,-5),pos)
 	return post
 end
-local function returnWarp(parent,pos,label)
+local function returnWarp(parent,pos,label,regionId)
 	local post=beaconProp(parent,pos,mint)
 	local q=prompt(post,"Return to the Skyway",label)
 	q:SetAttribute("IsleWarpReturn","Hub")
 	q.Triggered:Connect(function(player) warp(player,post,SKYWAY_LANDING) end)
+	anchor(parent,"Waypoint_Return_"..regionId,pos+V(0,0,-5),pos)
 	return post
 end
 
 -- Static ledger boards; rows are named so live data can be written later.
 local function ledger(parent,name,pos,toward,title,kicker,rows,accent,width,height)
 	local cf=facing(pos+V(0,height/2+1.6,0),toward)
-	for _,s in ipairs({-1,1}) do part(parent,"Ledger post",V(.35,height+1.6,.35),cf*CFrame.new(s*(width/2+.1),-.8,0),brass,MT,false) end
+	for _,s in ipairs({-1,1}) do part(parent,"Ledger post",V(.35,height+1.8,.35),cf*CFrame.new(s*(width/2+.1),-.7,0),brass,MT,false) end
 	local board=part(parent,name,V(width,height,.35),cf,ink,SM,false)
+	meshSlot(board,"Signboard",accent,width/12)
 	local canvasH=math.floor(600*height/width)
 	local gui=Instance.new("SurfaceGui")
 	gui.Face,gui.CanvasSize,gui.LightInfluence,gui.MaxDistance=Enum.NormalId.Front,Vector2.new(600,canvasH),0,70
@@ -991,36 +1582,41 @@ end
 -------------------------------------------------------------------------------
 -- Guild Terrace (Hub): crafting stations, the Guild Hall and the Skyway.
 -------------------------------------------------------------------------------
-local GT=V(0,0,98)
-local terrace=regionIsle("Hub","Guild Terrace",GT,32,C("A7B08A"),nil,nil,brass,nil,{-math.pi/2})
-bridge(terrace,V(0,0,40),V(0,0,69))
-sign(hub,V(-8,0,35),"Guild Terrace","SOUTH   /   CRAFT · SLAYER · SKYWAY",brass,0,9)
-disk(terrace,"Guild court",GT+V(0,.05,0),10,.15,navy,ST,true)
-disk(terrace,"Guild seal",GT+V(0,.18,0),2.4,.3,brass,SM,false)
+local terrace=regionIsle("Hub","Guild Terrace",GT,GT_R,{top=C("A7B08A"),vein=brass,gaps={-HALF}})
+bridge(hub,V(0,0,HUB_R),GT-V(0,0,GT_R))
+anchor(hub,"Waypoint_Bridge_GuildTerrace",V(0,0,HUB_R-6),GT)
+do
+path(terrace,GT-V(0,0,GT_R-2),GT-V(0,0,20),10)
+disk(terrace,"Guild court",GT+V(0,.02,0),20,.26,navy,ST,true)
+disk(terrace,"Guild seal",GT+V(0,.2,0),3,.3,brass,MT,false)
 for i=1,6 do
 	local a=i*math.pi/3
 	local d=V(math.cos(a),0,math.sin(a))
-	beam(terrace,"Seal inlay",GT+d*3+V(0,.18,0),GT+d*9+V(0,.18,0),.2,brass,SM)
+	beam(terrace,"Seal inlay",GT+d*4+V(0,.2,0),GT+d*18+V(0,.2,0),.3,brass,MT)
 end
-sign(terrace,V(10,0,74),"Guild Terrace","COMPASS QUAY   /   GUILDS + SKYWAY",brass,0,11)
+sign(terrace,GT+V(12,0,-62),"Guild Terrace","COMPASS QUAY   /   GUILDS + SKYWAY",brass,0,11)
 for i,deg in ipairs({230,205,180,155}) do
 	local a=math.rad(deg)
-	station(terrace,({"Forge","Hearth","Cauldron","Workbench"})[i],GT+V(math.cos(a)*21,0,math.sin(a)*21),GT,"Guild Terrace")
+	local kind=({"Forge","Hearth","Cauldron","Workbench"})[i]
+	station(terrace,kind,GT+V(math.cos(a)*44,0,math.sin(a)*44),GT,"Guild Terrace",nil,kind=="Forge")
 end
-sign(terrace,V(-14,0,75),"Artisans' Row","SMITH · COOK · BREW · CRAFT",rose,0,8)
+sign(terrace,GT+V(-30,0,-48),"Artisans' Row","SMITH · COOK · BREW · CRAFT",rose,-40,8)
 -- Guild Hall pavilion (east side).
 local hall=group("Guild Hall",terrace)
-block(hall,"Hall floor",V(19,.25,98),V(13,.5,24),darken(navy,.1),WO,true)
-for _,x in ipairs({13,25}) do for _,z in ipairs({87,109}) do
-	block(hall,"Hall column",V(x,6,z),V(1.3,12,1.3),cream,ST,false)
-	block(hall,"Column capital",V(x,12.2,z),V(2,.6,2),brass,MT,false)
+local HALL=GT+V(40,0,0)
+block(hall,"Hall floor",HALL+V(0,.25,0),V(22,.5,50),darken(navy,.1),WO,true)
+for _,x in ipairs({-10,10}) do for _,z in ipairs({-22,0,22}) do
+	local col=block(hall,"Hall column",HALL+V(x,8,z),V(1.6,16,1.6),cream,ST,false)
+	if z==0 then meshSlot(col,"Column",nil,2) end
+	block(hall,"Column capital",HALL+V(x,16.3,z),V(2.4,.6,2.4),brass,MT,false)
 end end
-part(hall,"Hall roof",V(8,.6,26),CFrame.new(V(15.6,14,98))*CFrame.Angles(0,0,math.rad(20)),navy,SM,false)
-part(hall,"Hall roof",V(8,.6,26),CFrame.new(V(22.4,14,98))*CFrame.Angles(0,0,math.rad(-20)),navy,SM,false)
-block(hall,"Ridge beam",V(19,15.4,98),V(.8,.8,26),brass,MT,false)
+part(hall,"Hall roof",V(13,.6,52),CFrame.new(HALL+V(-5.6,18.3,0))*CFrame.Angles(0,0,math.rad(20)),navy,SM,false)
+part(hall,"Hall roof",V(13,.6,52),CFrame.new(HALL+V(5.6,18.3,0))*CFrame.Angles(0,0,math.rad(-20)),navy,SM,false)
+block(hall,"Ridge beam",HALL+V(0,20.5,0),V(.9,.9,52),brass,MT,false)
 local skillRows={}
 for _,skill in ipairs(Data.SkillOrder) do table.insert(skillRows,{skill,"Unclaimed  ·  Lv 99",key=skill}) end
-ledger(hall,"Skill Leaderboard",V(23,.5,91.5),GT,"Hall of Mastery","GUILD LEDGER   /   FIRST TO LEVEL 99",skillRows,brass,9,8.5)
+ledger(hall,"Skill Leaderboard",HALL+V(6,.5,-14),GT,"Hall of Mastery","GUILD LEDGER   /   FIRST TO LEVEL 99",skillRows,brass,9,8.5)
+anchor(hall,"Waypoint_HallOfMastery",HALL+V(-2,0,-14),HALL+V(6,0,-14))
 local monsterIds={}
 for id in pairs(Data.Monsters) do table.insert(monsterIds,id) end
 table.sort(monsterIds,function(x,y)
@@ -1033,233 +1629,306 @@ for _,id in ipairs(monsterIds) do
 	local where=Data.RegionById[m.region]
 	table.insert(beastRows,{"Lv "..m.level.."  "..m.name,where and where.name or m.region,key=id})
 end
-ledger(hall,"Bestiary",V(23,.5,104.5),GT,"Bestiary","KNOWN CREATURES   /   BY LEVEL",beastRows,rose,9,8.5)
+ledger(hall,"Bestiary",HALL+V(6,.5,14),GT,"Bestiary","KNOWN CREATURES   /   BY LEVEL",beastRows,rose,9,8.5)
 -- Slayer master: a sentinel statue that takes contracts for the three hunts.
-local pedestal=block(hall,"Slayer master pedestal",V(16,1.5,98),V(4,2.5,4),rock,ST,true)
-block(hall,"Pedestal trim",V(16,2.85,98),V(4.4,.3,4.4),brass,MT,false)
-local master=sculpture(hall,"Huntmaster Oriel",V(16,6,98),"ObservatorySentinel",1.5,-90)
-light(master,C("FFD9A0"),.6,10)
+local pedestal=block(hall,"Slayer master pedestal",HALL+V(-7,1.5,0),V(4,2.5,4),rock,ST,true)
+block(hall,"Pedestal trim",HALL+V(-7,2.85,0),V(4.4,.3,4.4),brass,MT,false)
+local master=sculpture(hall,"Huntmaster Oriel",HALL+V(-7,6,0),"ObservatorySentinel",1.5,-90)
+light(master,C("FFD9A0"),.5,10,{lift=4})
 stationPrompt(pedestal,"Slayer","Huntmaster Oriel")
+anchor(hall,"NPC_Slayer",HALL+V(-11,.5,-5),GT)
+anchor(hall,"Waypoint_SlayerMaster",HALL+V(-15,0,0),HALL+V(-7,0,0))
 for i,line in ipairs(Data.SlayerOrder) do
 	local def=Data.Slayers[line]
 	-- Pennants on the ridge give the hall a silhouette from across the quay.
-	local z=90+(i-1)*8
-	block(hall,"Pennant pole",V(19,17.4,z),V(.25,3.6,.25),brass,MT,false)
-	block(hall,def.name.." pennant",V(19,18.3,z+1.3),V(.15,1.6,2.4),C(def.color),Enum.Material.Fabric,false)
+	local z=-16+(i-1)*16
+	block(hall,"Pennant pole",HALL+V(0,23,z),V(.25,4,.25),brass,MT,false)
+	local pennant=block(hall,def.name.." pennant",HALL+V(0,23.6,z+1.4),V(.15,2,2.6),C(def.color),Enum.Material.Fabric,false)
+	meshSlot(pennant,"Banner",C(def.color),1)
 end
-sign(hall,V(10,0,91),"Huntmaster Oriel","SLAYER   /   BRAMBLE · GLOOM · TEMPEST",rose,90,8)
+sign(hall,HALL+V(-16,0,-10),"Huntmaster Oriel","SLAYER   /   BRAMBLE · GLOOM · TEMPEST",rose,90,8)
 -- The Skyway: gated beacons to the four depth regions (built below).
-block(terrace,"Skyway dais",V(0,.15,117),V(36,.3,7),navy,ST,true)
-for _,p in ipairs({V(-8,0,82),V(8,0,82),V(-11,0,108),V(-2,0,110)}) do lamp(terrace,p) end
+block(terrace,"Skyway dais",GT+V(0,.15,52),V(64,.3,10),navy,ST,true)
+for _,o in ipairs({V(-14,0,-56),V(14,0,-40),V(-22,0,30),V(22,0,30),V(56,0,-34),V(56,0,34)}) do lamp(terrace,GT+o) end
+for i,o in ipairs({V(-58,0,-20),V(-54,0,30),V(-34,0,58),V(34,0,58),V(60,0,46),V(62,0,-44),V(-40,0,-56),V(30,0,-60)}) do
+	decorTree(terrace,GT+o,1+hash(i,5)*.3,if i%3==0 then "Pine" else "Meadow")
+end
+local herbRise,herbTop=tier(terrace,"Herb garden rise",GT+V(-46,0,-30),8,2,{top=C("8DB86E")})
+flowers(herbRise,GT+V(-46,herbTop,-30),4,C("C9A0DC"),.08)
+for i,o in ipairs({V(-22,0,-24),V(22,0,-24),V(-10,0,40),V(14,0,-34)}) do flowers(terrace,GT+o,2.6,({rose,cream,C("C9A0DC")})[i%3+1],.06+i*.012) end
 
+end
 -------------------------------------------------------------------------------
 -- Meadow Reach (Meadow): open hills south of Mosswake Grove.
 -------------------------------------------------------------------------------
-local MR=V(-97,0,102)
-local meadow=regionIsle("Meadow","Meadow Reach",MR,30,C("8DB86E"),nil,nil,nil,nil,{-math.pi/2})
-bridge(meadow,V(-97,0,27),V(-97,0,75))
-for _,h in ipairs({{V(-80,-7.6,88),18},{V(-116,-7.2,113),17}}) do
-	part(meadow,"Grassy hillock",V(h[2],h[2],h[2]),CFrame.new(h[1]),C("86AE69"),Enum.Material.Grass,true,BALL)
+do
+local MR,MR_R=V(-230,0,185),70
+local meadow=regionIsle("Meadow","Meadow Reach",MR,MR_R,{top=C("8DB86E"),gaps={-HALF}})
+bridge(meadow,G+V(0,0,GR_R),MR-V(0,0,MR_R))
+anchor(grove,"Waypoint_Bridge_MeadowReach",G+V(0,0,GR_R-6),MR)
+anchor(meadow,"Waypoint_Entrance_Meadow",MR-V(0,0,MR_R-6),MR)
+path(meadow,MR-V(0,0,MR_R-2),MR+V(0,0,-10),8)
+for _,h in ipairs({{V(38,-12,-32),30},{V(-40,-11,30),28}}) do
+	part(meadow,"Grassy hillock",V(h[2],h[2],h[2]),CFrame.new(MR+h[1]),C("86AE69"),Enum.Material.Grass,true,BALL)
 end
-sign(meadow,V(-86,0,80),"Meadow Reach","MEADOW   /   BOARS · SUNWHEAT · GLASSFIN",mint,0,11)
-cropPatch(meadow,V(-110,0,90),"Sunwheat")
-cropPatch(meadow,V(-110,0,98),"Sunwheat")
-cropPatch(meadow,V(-118,0,94),"Herb")
-treeNode(meadow,V(-78,0,114),"Timber")
-fishSpot(meadow,V(-90,0,100),"Fish",nil,V(1,0,.4),5,6)
-fishSpot(meadow,V(-93,0,95),"Glassfin",nil,V(-.6,0,-1),5)
-for _,p in ipairs({V(-104,0,79),V(-84,0,122)}) do lamp(meadow,p) end
-for i=1,5 do
-	local a=1.75+i*.3
-	local p=MR+V(math.cos(a)*25,1,math.sin(a)*25)
-	part(meadow,"Fence rail",V(.3,.3,7.6),CFrame.lookAt(p,p+V(-math.sin(a),0,math.cos(a))),timber,WO,false)
+sign(meadow,MR+V(12,0,-58),"Meadow Reach","MEADOW   /   BOARS · SUNWHEAT · GLASSFIN",mint,0,11)
+cropPatch(meadow,MR+V(-30,0,-30),"Sunwheat")
+cropPatch(meadow,MR+V(-30,0,-18),"Sunwheat")
+cropPatch(meadow,MR+V(-44,0,-24),"Herb")
+treeNode(meadow,MR+V(36,0,28),"Timber")
+fishSpot(meadow,MR+V(16,0,-4),"Fish",nil,V(1,0,.4),5,10)
+fishSpot(meadow,MR+V(12,0,-10),"Glassfin",nil,V(-.6,0,-1),6)
+for _,o in ipairs({V(-14,0,-46),V(-16,0,20)}) do lamp(meadow,MR+o) end
+for i=1,6 do
+	local a=math.rad(150+i*14)
+	local p=MR+V(-30,1+i%2*.08,-24)+V(math.cos(a)*22,0,math.sin(a)*22)
+	part(meadow,"Fence rail",V(.3,.3,6),CFrame.lookAt(p,p+V(-math.sin(a),0,math.cos(a))),timber,WO,false)
 	block(meadow,"Fence post",p-V(0,.4,0),V(.4,2,.4),darken(timber,.3),WO,false)
 end
-spawnMarker("BramblebackBoar",V(-98,0,117),3,9)
-spawnMarker("Thornling",V(-101,0,84),3,7)
+tier(meadow,"Sunny rise",MR+V(52,0,6),10,3,{top=C("93BE72")})
+decorTree(meadow,MR+V(53,3,7),1.2,"Meadow",C("A0B860"))
+for i,o in ipairs({V(-56,0,-2),V(-12,0,58),V(26,0,54),V(54,0,30),V(-52,0,-40),V(30,0,-52),V(-30,0,48)}) do
+	decorTree(meadow,MR+o,1+hash(i,6)*.4)
+end
+for i,o in ipairs({V(-58,0,12),V(48,0,-50)}) do outcrop(meadow,MR+o,1.1,i) end
+for i,o in ipairs({V(-20,0,30),V(20,0,20),V(-50,0,-10),V(40,0,10)}) do flowers(meadow,MR+o,3.2,({rose,cream,C("E8C35A"),C("C9A0DC")})[i],.06+i*.012) end
+spawnMarker("BramblebackBoar",MR+V(0,0,36),3,9)
+spawnMarker("Thornling",MR+V(4,0,-36),3,7)
 
+end
 -------------------------------------------------------------------------------
 -- Cinder Shelf (Quarry): a lower terrace below Brassfall Quarry.
 -------------------------------------------------------------------------------
-local CS=V(98,-4,-82)
-local shelf=regionIsle("Quarry","Cinder Shelf",CS,24,C("8F8676"),darken(rock,.15),nil,C("FF9A52"),GR,{math.pi/2})
-bridge(shelf,V(98,0,-28),V(98,-4,-61))
+local CS,CS_R=V(230,-6,-185),58
+local shelf=regionIsle("Quarry","Cinder Shelf",CS,CS_R,{top=C("8F8676"),stone=darken(rock,.15),vein=C("FF9A52"),ground=GR,gaps={HALF}})
+bridge(shelf,Q-V(0,0,Q_R),CS+V(0,0,CS_R))
+anchor(mine,"Waypoint_Bridge_CinderShelf",Q-V(0,0,Q_R-6),CS)
+anchor(shelf,"Waypoint_Entrance_CinderShelf",CS+V(0,0,CS_R-6),CS)
 for i=1,4 do
 	local a=i*1.6
-	local p=CS+V(math.cos(a)*12,.06,math.sin(a)*12)
-	local vent=part(shelf,"Cinder vent",V(.5,.12,5),CFrame.new(p)*CFrame.Angles(0,a,0),C("FF7A3D"),NE,false)
-	if i==2 then light(vent,C("FF8A3D"),.8,14) motes(vent,C("FFB066"),4,2,.25) end
+	local p=CS+V(math.cos(a)*24,.06,math.sin(a)*24)
+	local vent=part(shelf,"Cinder vent",V(.5,.12,6),CFrame.new(p)*CFrame.Angles(0,a,0),C("FF7A3D"),NE,false)
+	if i==2 then light(vent,C("FF8A3D"),.7,14,{lift=1.5}) motes(vent,C("FFB066"),4,2,.25) end
 end
-sign(shelf,V(89,-4,-64),"Cinder Shelf","QUARRY   /   BRASSITE · CRAWLERS",brass,0,10)
-oreNode(shelf,V(86,-4,-90),"Brassite")
-oreNode(shelf,V(110,-4,-88),"Brassite")
-oreNode(shelf,V(111,-4,-74),"Ore")
-spawnMarker("ShaleCrawler",V(91,-4,-77),3,7)
-spawnMarker("CinderMite",V(102,-4,-90),3,6)
--- Brassfall Quarry gains a second copper seam by the old crane.
-oreNode(mine,V(84,0,-20),"Ore")
+tier(shelf,"Basalt shelf",CS+V(30,0,-34),10,4,{cliff=C("3E3A38"),top=C("7A6F62"),ground=GR})
+sign(shelf,CS+V(-14,0,44),"Cinder Shelf","QUARRY   /   BRASSITE · CRAWLERS",brass,0,10)
+oreNode(shelf,CS+V(-26,0,-18),"Brassite")
+oreNode(shelf,CS+V(26,0,-14),"Brassite")
+oreNode(shelf,CS+V(28,0,18),"Ore")
+for i,o in ipairs({V(-36,0,20),V(40,0,-2)}) do outcrop(shelf,CS+o,1,i) end
+lamp(shelf,CS+V(8,0,40))
+spawnMarker("ShaleCrawler",CS+V(-16,0,12),3,7)
+spawnMarker("CinderMite",CS+V(8,0,-22),3,6)
+-- Brassfall Quarry gains a second copper seam below the bench.
+oreNode(mine,Q+V(-34,0,-34),"Ore")
 -- Skyreach: a sunsteel outcrop and the summit's guardians.
-oreNode(skyreach,V(214,36,64),"SunsteelOre","Skyreach")
+oreNode(skyreach,SR+V(6,0,40),"SunsteelOre","Skyreach")
 -- Markers keep >= 40 studs (flat) from every warp landing; see verify-world.
-spawnMarker("BrassGolem",V(228,36,60),2,6)
-spawnMarker("StormHarrier",V(226,36,40),2,6)
+spawnMarker("BrassGolem",SR+V(38,0,30),2,6)
+spawnMarker("StormHarrier",SR+V(40,0,-26),2,6)
 
 -------------------------------------------------------------------------------
+local WP,WP_R=V(-500,24,-160),85
+local GH,GH_R=V(440,-16,-440),82
+local TW,TW_R=V(-520,2,440),92
+local TS,TS_R=V(600,80,-220),70
+do
 -- Windpine Grove: towering pines, an emberoak hollow and the Aetherheart.
 -------------------------------------------------------------------------------
-local WP=V(-270,18,-60)
-local grovewild=regionIsle("Windpine","Windpine Grove",WP,36,C("5F8A57"),C("3F4B44"),C("5E6B5C"),C("9BD18B"))
+local grovewild=regionIsle("Windpine","Windpine Grove",WP,WP_R,{top=C("5F8A57"),stone=C("3F4B44"),stratum=C("5E6B5C"),vein=C("9BD18B")})
 for _,deg in ipairs({150,200,228,270,335,20}) do
 	local a=math.rad(deg)
-	pagodaPine(grovewild,WP+V(math.cos(a)*30,0,math.sin(a)*30),C("4E7A4A"),1.7+(deg%3)*.15)
+	pagodaPine(grovewild,WP+V(math.cos(a)*66,0,math.sin(a)*66),C("4E7A4A"),1.7+(deg%3)*.15)
 end
-treeNode(grovewild,WP+V(0,0,-6),"AetherheartLog","Windpine")
-treeNode(grovewild,WP+V(-21,0,-13),"WindpineLog","Windpine")
-treeNode(grovewild,WP+V(-9,0,-25),"WindpineLog","Windpine")
-treeNode(grovewild,WP+V(-25,0,2),"WindpineLog","Windpine")
-treeNode(grovewild,WP+V(16,0,-18),"EmberoakLog","Windpine")
-treeNode(grovewild,WP+V(25,0,-6),"EmberoakLog","Windpine")
-local emberGlow=hidden(grovewild,"Ember hollow glow",WP+V(20,4,-12))
+treeNode(grovewild,WP+V(0,0,-12),"AetherheartLog","Windpine")
+treeNode(grovewild,WP+V(-46,0,-28),"WindpineLog","Windpine")
+treeNode(grovewild,WP+V(-20,0,-56),"WindpineLog","Windpine")
+treeNode(grovewild,WP+V(-56,0,4),"WindpineLog","Windpine")
+treeNode(grovewild,WP+V(36,0,-40),"EmberoakLog","Windpine")
+treeNode(grovewild,WP+V(56,0,-12),"EmberoakLog","Windpine")
+local emberGlow=hidden(grovewild,"Ember hollow glow",WP+V(46,4,-26))
 emberGlow.CanQuery,emberGlow.CastShadow=false,false
 motes(emberGlow,C("FFB25C"),5,1.5,.2)
-cropPatch(grovewild,WP+V(-14,0,23),"Glowcap","Windpine")
-for _,b in ipairs({{V(-6,0,8),3},{V(10,0,8),2.4},{V(-28,0,-20),2.8}}) do
-	part(grovewild,"Mossy boulder",V(b[2]*1.4,b[2],b[2]*1.2),CFrame.new(WP+b[1]+V(0,b[2]*.35,0))*CFrame.Angles(0,b[2],.1),C("6E7B68"),ST,false)
+cropPatch(grovewild,WP+V(-30,0,50),"Glowcap","Windpine")
+for _,b in ipairs({{V(-14,0,18),3},{V(22,0,18),2.4},{V(-62,0,-44),2.8}}) do
+	local boulder=part(grovewild,"Mossy boulder",V(b[2]*1.4,b[2],b[2]*1.2),CFrame.new(WP+b[1]+V(0,b[2]*.35,0))*CFrame.Angles(0,b[2],.1),C("6E7B68"),ST,false)
+	meshSlot(boulder,"Rock",C("6E7B68"),b[2]/2)
 end
-part(grovewild,"Fallen windpine",V(12,1.6,1.6),CFrame.new(WP+V(2,.8,15))*CFrame.Angles(0,.6,0),darken(timber,.3),WO,false).Shape=Enum.PartType.Cylinder
+part(grovewild,"Fallen windpine",V(16,1.8,1.8),CFrame.new(WP+V(4,.9,32))*CFrame.Angles(0,.6,0),darken(timber,.3),WO,false).Shape=Enum.PartType.Cylinder
+local mound,moundTop=tier(grovewild,"Root mound",WP+V(30,0,0),10,2.5,{cliff=C("4B4136"),top=C("5F8A57")})
+for i=1,4 do
+	local p=WP+V(30,0,0)+V(math.cos(i*1.6)*5,moundTop-WP.Y,math.sin(i*1.6)*5)
+	disk(mound,"Mushroom stalk",p+V(0,.5,0),.2,1,cream,SM,false)
+	disk(mound,"Mushroom cap",p+V(0,1.1,0),.8,.3,C("C9A0DC"),SM,false)
+end
 -- Woodcutters' lodge sheltering a workbench.
 local lodge=group("Woodcutters' Lodge",grovewild)
-local LP=WP+V(18,0,17)
+local LP=WP+V(40,0,38)
 block(lodge,"Lodge floor",LP+V(0,.2,0),V(11,.4,8),timber,WO,true)
 block(lodge,"Lodge back wall",LP+V(0,3.5,3.8),V(11,6.6,.5),darken(timber,.2),WO,true)
 for _,x in ipairs({-5.3,5.3}) do block(lodge,"Lodge post",LP+V(x,3.3,-3.6),V(.6,6.2,.6),darken(timber,.35),WO,false) end
 part(lodge,"Lodge roof",V(12.5,.5,9.4),CFrame.new(LP+V(0,7.2,0))*CFrame.Angles(math.rad(-14),0,0),C("4E6B47"),WO,false)
-station(lodge,"Workbench",LP+V(0,.4,0),LP+V(0,0,-10),"Windpine Lodge")
-sign(grovewild,WP+V(-8,0,30),"Windpine Grove",requirementText(Data.RegionById.Windpine),REGION_ACCENT.Windpine,0,10)
-returnWarp(grovewild,WP+V(5,0,31),"Windpine Grove")
-spawnMarker("BarkStalker",WP+V(-15,0,-17),3,8)
-spawnMarker("GaleSprite",WP+V(9,0,-24),3,7)
+station(lodge,"Workbench",LP+V(0,.4,0),LP+V(0,0,-10),"Windpine Lodge","Workbench_Windpine")
+sign(grovewild,WP+V(-18,0,70),"Windpine Grove",requirementText(Data.RegionById.Windpine),REGION_ACCENT.Windpine,0,10)
+returnWarp(grovewild,WP+V(10,0,72),"Windpine Grove","Windpine")
+anchor(grovewild,"Waypoint_Entrance_Windpine",WP+V(0,0,58),WP)
+for i,o in ipairs({V(-10,0,46),V(24,0,56),V(-60,0,30),V(60,0,20)}) do decorTree(grovewild,WP+o,1.2,"Pine",C("4E7A4A")) end
+for _,o in ipairs({V(-12,0,60),V(20,0,44)}) do lamp(grovewild,WP+o) end
+spawnMarker("BarkStalker",WP+V(-34,0,-40),3,8)
+spawnMarker("GaleSprite",WP+V(16,0,-56),3,7)
 
+end
+do
 -------------------------------------------------------------------------------
 -- Gloomhollow Caverns: a roofed grotto lit only by voidstone and moonbloom.
 -------------------------------------------------------------------------------
-local GH=V(200,-14,-210)
 local void=C("7B5CC4")
-local gloom=regionIsle("Gloomhollow","Gloomhollow Caverns",GH,38,C("3A3F52"),C("2B2F3D"),C("424659"),void,ST)
-local CAVE_R,CAVE_H=27,22
+local gloom=regionIsle("Gloomhollow","Gloomhollow Caverns",GH,GH_R,{top=C("3A3F52"),stone=C("2B2F3D"),stratum=C("424659"),vein=void,ground=ST})
+local CAVE_R,CAVE_H=56,28
 local cave=group("Grotto",gloom)
-local segments=16
+local segments=24
 for i=0,segments-1 do
 	local a=(i+.5)*2*math.pi/segments
-	if math.abs(math.atan2(math.sin(a-math.pi/2),math.cos(a-math.pi/2)))>math.rad(25) then
+	if math.abs(math.atan2(math.sin(a-HALF),math.cos(a-HALF)))>math.rad(25) then
 		local radial=V(math.cos(a),0,math.sin(a))
 		local h=CAVE_H+(i%3)*1.5
 		local p=GH+radial*CAVE_R+V(0,h/2,0)
-		part(cave,"Cavern wall",V(2*CAVE_R*math.sin(math.pi/segments)+1,h,3.4),CFrame.lookAt(p,p+radial),i%2==0 and C("2F3342") or C("383D4E"),ST,true)
+		local wall=part(cave,"Cavern wall",V(2*CAVE_R*math.sin(math.pi/segments)+1,h,4),CFrame.lookAt(p,p+radial),i%2==0 and C("2F3342") or C("383D4E"),ST,true)
+		if i%6==0 then meshSlot(wall,"CliffRock",nil,3) end
 	end
 end
 disk(cave,"Cavern roof",GH+V(0,CAVE_H+1.6,0),CAVE_R+2.4,3.2,C("2B2F3D"),ST,true)
-for i=1,7 do
-	local a=i*.9
-	local p=GH+V(math.cos(a)*(8+i*2.2),CAVE_H+4+i%3*2,math.sin(a)*(8+i*2.2))
-	part(cave,"Roof crag",V(5+i%3,7+i%4*2.5,5),CFrame.new(p)*CFrame.Angles(.25*(i%2*2-1),a,.2),i%2==0 and C("2F3342") or C("424659"),ST,false)
+for i=1,8 do
+	local a=i*.8
+	local p=GH+V(math.cos(a)*(12+i*4.5),CAVE_H+5+i%3*2.5,math.sin(a)*(12+i*4.5))
+	part(cave,"Roof crag",V(8+i%3*2,10+i%4*3,8),CFrame.new(p)*CFrame.Angles(.25*(i%2*2-1),a,.2),i%2==0 and C("2F3342") or C("424659"),ST,false)
 end
-for i=1,4 do
-	local a=i*1.57+.5
-	part(cave,"Stalactite",V(1.4,5,1.4),CFrame.new(GH+V(math.cos(a)*14,CAVE_H-2.5,math.sin(a)*14)),C("424659"),ST,false)
-	if i%2==0 then ball(cave,"Stalactite glow",GH+V(math.cos(a)*14,CAVE_H-5.2,math.sin(a)*14),.9,void,NE) end
+for i=1,6 do
+	local a=i*1.05+.5
+	local s=part(cave,"Stalactite",V(1.8,7,1.8),CFrame.new(GH+V(math.cos(a)*28,CAVE_H-3.5,math.sin(a)*28)),C("424659"),ST,false)
+	if i%3==0 then
+		ball(cave,"Stalactite glow",GH+V(math.cos(a)*28,CAVE_H-7.3,math.sin(a)*28),1,void,NE)
+		meshSlot(s,"Stalactite")
+	end
 end
-local heartCrystal=gem(cave,"Grotto heart crystal",GH+V(0,4,-6),V(3,8,3),void,.3)
+local heartCrystal=gem(cave,"Grotto heart crystal",GH+V(0,5,-14),V(4,10,4),void,.3)
 heartCrystal.Material=NE
-light(heartCrystal,void,1.4,26)
-gem(cave,"Grotto heart shard",GH+V(2,2.5,-4.5),V(1.6,4.5,1.6),lighten(void,.3),1.2)
+-- Hero light (shadows): the grotto heart.
+light(heartCrystal,void,1.3,40,{shadows=true,lift=6})
+meshSlot(heartCrystal,"AetherCrystal",void,2.5)
+gem(cave,"Grotto heart shard",GH+V(3,3,-11),V(2,5.5,2),lighten(void,.3),1.2)
 motes(heartCrystal,lighten(void,.3),4,.8,.3)
-oreNode(cave,GH+V(-15,0,-12),"Voidstone","Gloomhollow")
-oreNode(cave,GH+V(13,0,-15),"Voidstone","Gloomhollow")
-oreNode(cave,GH+V(0,0,-21),"Voidstone","Gloomhollow")
-oreNode(cave,GH+V(19,0,1),"Prismite","Gloomhollow",1.2)
-fishSpot(cave,GH+V(-15,0,9),"AbyssKoi","Gloomhollow",V(1,0,.3),4,5.5)
-cropPatch(cave,GH+V(13,0,13),"Moonbloom","Gloomhollow")
-spawnMarker("GloomfangSpider",GH+V(-8,0,-14),3,7)
-spawnMarker("VoidWisp",GH+V(10,0,-12),2,7)
-oreNode(gloom,GH+V(-22,0,24),"SunsteelOre","Gloomhollow")
-station(gloom,"Forge",GH+V(15,0,31),GH,"Delvers' Forge")
-sign(gloom,GH+V(-9,0,33),"Gloomhollow Caverns",requirementText(Data.RegionById.Gloomhollow),REGION_ACCENT.Gloomhollow,0,9)
-returnWarp(gloom,GH+V(3,0,34),"Gloomhollow Caverns")
-for _,x in ipairs({-8,8}) do
-	block(gloom,"Cave torch",GH+V(x,1.8,27.5),V(.5,3.6,.5),timber,WO,false)
-	light(ball(gloom,"Torch flame",GH+V(x,3.9,27.5),.7,C("B59CFF"),NE),C("B59CFF"),.8,12)
+oreNode(cave,GH+V(-32,0,-24),"Voidstone","Gloomhollow")
+oreNode(cave,GH+V(28,0,-30),"Voidstone","Gloomhollow")
+oreNode(cave,GH+V(0,0,-44),"Voidstone","Gloomhollow")
+oreNode(cave,GH+V(40,0,4),"Prismite","Gloomhollow",1.3)
+fishSpot(cave,GH+V(-32,0,18),"AbyssKoi","Gloomhollow",V(1,0,.3),6,9)
+cropPatch(cave,GH+V(28,0,28),"Moonbloom","Gloomhollow")
+for i=1,5 do
+	local p=GH+V(math.cos(i*1.25+.3)*44,0,math.sin(i*1.25+.3)*44)
+	if p.Z<GH.Z+30 then
+		disk(cave,"Glowshroom stalk",p+V(0,.6,0),.25,1.2,cream,SM,false)
+		disk(cave,"Glowshroom cap",p+V(0,1.3,0),1,.35,lighten(void,.4),NE,false)
+	end
 end
+spawnMarker("GloomfangSpider",GH+V(-16,0,-30),3,7)
+spawnMarker("VoidWisp",GH+V(16,0,-24),2,7)
+oreNode(gloom,GH+V(-40,0,62),"SunsteelOre","Gloomhollow")
+station(gloom,"Forge",GH+V(32,0,64),GH,"Delvers' Forge","Forge_Gloomhollow")
+sign(gloom,GH+V(-16,0,70),"Gloomhollow Caverns",requirementText(Data.RegionById.Gloomhollow),REGION_ACCENT.Gloomhollow,0,9)
+returnWarp(gloom,GH+V(8,0,72),"Gloomhollow Caverns","Gloomhollow")
+anchor(gloom,"Waypoint_Entrance_Gloomhollow",GH+V(0,0,62),GH)
+for _,x in ipairs({-16,16}) do
+	local torch=block(gloom,"Cave torch",GH+V(x,1.8,54),V(.5,3.6,.5),timber,WO,false)
+	meshSlot(torch,"Torch",C("B59CFF"),1)
+	light(ball(gloom,"Torch flame",GH+V(x,3.9,54),.7,C("B59CFF"),NE),C("B59CFF"),.7,14)
+end
+for i,o in ipairs({V(-56,0,58),V(-26,0,74)}) do outcrop(gloom,GH+o,1.2,i) end
+tier(gloom,"Fungal ledge",GH+V(50,0,40),8,3,{cliff=C("2B2F3D"),top=C("3A3F52"),ground=ST})
 
+end
+do
 -------------------------------------------------------------------------------
 -- Tidewater Shoals: sandbars, two lagoons, piers and a lighthouse.
 -------------------------------------------------------------------------------
-local TW=V(-250,2,210)
-local tide=regionIsle("Tidewater","Tidewater Shoals",TW,40,C("D9C9A0"),C("6F7C86"),C("8D99A2"),C("5EC8D8"),SA)
-for _,l in ipairs({{V(-12,0,-6),11},{V(14,0,10),9}}) do
-	local w=disk(tide,"Lagoon",TW+l[1]+V(0,.06,0),l[2],.22,C("4FB3BF"),GL,false)
-	w.Transparency=.05
-	disk(tide,"Lagoon deep",TW+l[1]+V(0,.1,0),l[2]*.55,.2,C("2E7F95"),GL,false)
+local tide=regionIsle("Tidewater","Tidewater Shoals",TW,TW_R,{top=C("D9C9A0"),stone=C("6F7C86"),stratum=C("8D99A2"),vein=C("5EC8D8"),ground=SA,ledge=C("C9BC94")})
+for _,l in ipairs({{V(-26,0,-13),24},{V(31,0,22),20}}) do
+	disk(tide,"Lagoon deep",TW+l[1]+V(0,.06,0),l[2]*.6,.12,C("2E7F95"),GL,false)
+	local w=disk(tide,"Lagoon",TW+l[1]+V(0,.11,0),l[2],.2,C("4FB3BF"),GL,false)
+	w.Transparency=.25
 end
-fishSpot(tide,TW+V(-12,0,-9),"Stormeel","Tidewater",V(0,0,-1),9)
-fishSpot(tide,TW+V(-17,0,-4),"Lanternray","Tidewater",V(-1,0,0),8)
-fishSpot(tide,TW+V(16,0,10),"LeviathanScale","Tidewater",V(1,0,0),9)
-fishSpot(tide,TW+V(13,0,15),"Stormeel","Tidewater",V(0,0,1),8)
-treeNode(tide,TW+V(-21,0,8),"GlimmerbarkLog","Tidewater")
-treeNode(tide,TW+V(1,0,-16),"GlimmerbarkLog","Tidewater")
-cropPatch(tide,TW+V(29,0,-4),"AetherLotus","Tidewater")
+fishSpot(tide,TW+V(-26,0,-24),"Stormeel","Tidewater",V(0,0,-1),12)
+fishSpot(tide,TW+V(-38,0,-10),"Lanternray","Tidewater",V(-1,0,0),12)
+fishSpot(tide,TW+V(36,0,22),"LeviathanScale","Tidewater",V(1,0,0),12)
+fishSpot(tide,TW+V(30,0,32),"Stormeel","Tidewater",V(0,0,1),10)
+treeNode(tide,TW+V(-50,0,18),"GlimmerbarkLog","Tidewater")
+treeNode(tide,TW+V(2,0,-40),"GlimmerbarkLog","Tidewater")
+cropPatch(tide,TW+V(64,0,-10),"AetherLotus","Tidewater")
 local galley=group("Shoals Galley",tide)
-block(galley,"Galley boardwalk",TW+V(20,.2,-20),V(12,.4,9),timber,WO,true)
+block(galley,"Galley boardwalk",TW+V(46,.2,-46),V(12,.4,9),timber,WO,true)
 for _,x in ipairs({-5.5,5.5}) do for _,z in ipairs({-4,4}) do
-	block(galley,"Boardwalk piling",TW+V(20+x,.9,-20+z),V(.6,1.8,.6),darken(timber,.4),WO,false)
+	block(galley,"Boardwalk piling",TW+V(46+x,.9,-46+z),V(.6,1.8,.6),darken(timber,.4),WO,false)
 end end
-station(galley,"Hearth",TW+V(20,.4,-20),TW,"Shoals Galley")
-local LH=TW+V(-27,0,22)
+station(galley,"Hearth",TW+V(46,.4,-46),TW,"Shoals Galley","Hearth_Tidewater")
+local LH=TW+V(-60,0,50)
 local tower=group("Shoals lighthouse",tide)
 disk(tower,"Lighthouse footing",LH+V(0,1,0),3.4,2,rock,ST,true)
-disk(tower,"Lighthouse tower",LH+V(0,10,0),2.1,16,cream,SM,true)
-for _,y in ipairs({6,12}) do disk(tower,"Tower stripe",LH+V(0,y,0),2.15,1.6,rose,SM,false) end
-local lantern=disk(tower,"Lantern room",LH+V(0,19.3,0),2.4,2.6,mint,GL,false)
-ball(tower,"Lighthouse flame",LH+V(0,19.3,0),1.4,C("FFF1B8"),NE)
+local shaft=disk(tower,"Lighthouse tower",LH+V(0,10,0),2.1,16,cream,SM,true)
+meshSlot(shaft,"Lighthouse",rose,1,true)
+for _,y in ipairs({6,12}) do disk(tower,"Tower stripe",LH+V(0,y,0),2.16,1.6,rose,SM,false) end
+disk(tower,"Lantern room",LH+V(0,19.3,0),2.4,2.6,mint,GL,false).Transparency=.4
+local lamphead=ball(tower,"Lighthouse flame",LH+V(0,19.3,0),1.4,C("FFF1B8"),NE)
 disk(tower,"Lantern cap",LH+V(0,21,0),2.7,.7,brass,MT,false)
-light(lantern,C("FFF1B8"),1.4,40)
-for _,r in ipairs({{V(31,0,14),2.6},{V(-2,0,31),2},{V(-32,0,-10),2.4}}) do
-	part(tide,"Reef rock",V(r[2]*1.5,r[2],r[2]*1.2),CFrame.new(TW+r[1]+V(0,r[2]*.3,0))*CFrame.Angles(0,r[2],.12),C("7D8B92"),ST,false)
+-- Hero light (shadows): the lighthouse lamp.
+light(lamphead,C("FFF1B8"),1.2,48,{shadows=true,lift=0})
+for _,r in ipairs({{V(70,0,30),3.4},{V(-4,0,74),2.6},{V(-72,0,-20),3},{V(14,0,-70),2.4}}) do
+	local reef=part(tide,"Reef rock",V(r[2]*1.5,r[2],r[2]*1.2),CFrame.new(TW+r[1]+V(0,r[2]*.3,0))*CFrame.Angles(0,r[2],.12),C("7D8B92"),ST,false)
+	meshSlot(reef,"Rock",C("7D8B92"),r[2]/2)
 end
-local spray=hidden(tide,"Lagoon spray",TW+V(14,1,10))
+tier(tide,"Dune",TW+V(-62,0,-40),16,2.5,{cliff=C("BFAE84"),top=C("E2D3AA"),ground=SA})
+for i,o in ipairs({V(-30,0,40),V(10,0,56),V(60,0,-34),V(-70,0,10),V(50,0,62),V(-40,0,-64),V(72,0,8)}) do
+	decorTree(tide,TW+o,1.1+hash(i,3)*.3,"Palm")
+end
+local spray=hidden(tide,"Lagoon spray",TW+V(31,1,22))
 spray.CanQuery,spray.CastShadow=false,false
 motes(spray,C("CFEFFF"),3,1,.18)
-sign(tide,TW+V(-9,0,-34),"Tidewater Shoals",requirementText(Data.RegionById.Tidewater),REGION_ACCENT.Tidewater,0,10)
-returnWarp(tide,TW+V(4,0,-35),"Tidewater Shoals")
-spawnMarker("ReefLurker",TW+V(-4,0,25),3,9)
-spawnMarker("ReefLurker",TW+V(24,0,22),2,5)
+sign(tide,TW+V(-20,0,-76),"Tidewater Shoals",requirementText(Data.RegionById.Tidewater),REGION_ACCENT.Tidewater,0,10)
+returnWarp(tide,TW+V(8,0,-78),"Tidewater Shoals","Tidewater")
+anchor(tide,"Waypoint_Entrance_Tidewater",TW+V(0,0,-64),TW)
+lamp(tide,TW+V(-12,0,-66))
+spawnMarker("ReefLurker",TW+V(-8,0,56),3,9)
+spawnMarker("ReefLurker",TW+V(52,0,50),2,5)
 
+end
+do
 -------------------------------------------------------------------------------
 -- Tempest Spire: a storm-wracked summit ringed by arcing crystal pylons.
 -------------------------------------------------------------------------------
-local TS=V(300,70,-120)
 local storm=C("BFD7FF")
-local tempest=regionIsle("Tempest","Tempest Spire",TS,30,C("4A5266"),C("2E3445"),C("3B4256"),storm,ST)
+local tempest=regionIsle("Tempest","Tempest Spire",TS,TS_R,{top=C("4A5266"),stone=C("2E3445"),stratum=C("3B4256"),vein=storm,ground=ST})
 local spire=group("Storm spire",tempest)
-local SP=TS+V(-5,0,-21)
-local spireTiers={{V(9,12,8),6,.1},{V(7,12,6.5),17,-.15},{V(5.2,11,5),28,.2},{V(3.8,10,3.6),38,-.1},{V(2.4,9,2.4),47,.18}}
+local SP=TS+V(-10,0,-44)
+local spireTiers={{V(13,18,12),9,.1},{V(10.5,18,9.75),25.5,-.15},{V(7.8,16.5,7.5),42,.2},{V(5.7,15,5.4),57,-.1},{V(3.6,13.5,3.6),70.5,.18}}
 for i,t in ipairs(spireTiers) do
-	part(spire,"Spire stone",t[1],CFrame.new(SP+V(i%2*.6,t[2],0))*CFrame.Angles(t[3]*.4,i*.5,t[3]),i%2==0 and C("2E3445") or C("3B4256"),ST,true)
+	local stone=part(spire,"Spire stone",t[1],CFrame.new(SP+V(i%2*.8,t[2],0))*CFrame.Angles(t[3]*.4,i*.5,t[3]),i%2==0 and C("2E3445") or C("3B4256"),ST,true)
+	if i==1 then meshSlot(stone,"StormSpire",storm,1.5,true) end
 end
-local crown=gem(spire,"Storm crown",SP+V(0,54.5,0),V(2,6,2),storm,.4)
+local crown=gem(spire,"Storm crown",SP+V(0,81,0),V(3,9,3),storm,.4)
 crown.Material=NE
-light(crown,storm,1.6,40)
+-- Hero light (shadows): the storm crown.
+light(crown,storm,1.3,48,{shadows=true,lift=6})
 motes(crown,storm,6,4,.3)
 local arcAnchors={}
 for i=1,4 do
 	local a=math.rad(45+90*(i-1))
-	local p=TS+V(math.cos(a)*17,0,math.sin(a)*17)
+	local p=TS+V(math.cos(a)*36,0,math.sin(a)*36)
 	block(tempest,"Pylon footing",p+V(0,.5,0),V(3,1,3),ink,ST,true)
-	block(tempest,"Pylon shaft",p+V(0,4.5,0),V(1.2,7,1.2),C("3B4256"),MT,true)
+	local shaft=block(tempest,"Pylon shaft",p+V(0,4.5,0),V(1.2,7,1.2),C("3B4256"),MT,true)
+	meshSlot(shaft,"StormPylon",storm,1)
 	for _,s in ipairs({-1,1}) do gem(tempest,"Pylon brace",p+V(s*.9,3,0),V(.4,4,.4),brass,0) end
 	local top=gem(tempest,"Pylon crystal",p+V(0,9.4,0),V(1.6,3.6,1.6),storm,a)
 	top.Material=NE
-	light(top,storm,.9,16)
+	if i%2==1 then light(top,storm,.7,16) end
 	local att=Instance.new("Attachment")
 	att.Name="Arc anchor"
 	att.CFrame=CFrame.new(0,.8,0)
@@ -1271,36 +1940,44 @@ for i=1,4 do
 	arc.Name="Crystal arc"
 	arc.Attachment0,arc.Attachment1=arcAnchors[i],arcAnchors[i%4+1]
 	arc.Color=ColorSequence.new(C("E8F2FF"),C("7B8CDE"))
-	arc.Width0,arc.Width1,arc.LightEmission,arc.FaceCamera,arc.Segments=.35,.35,1,true,16
-	arc.CurveSize0,arc.CurveSize1=7,-7
+	arc.Width0,arc.Width1,arc.LightEmission,arc.FaceCamera,arc.Segments=.35,.35,.8,true,16
+	arc.CurveSize0,arc.CurveSize1=12,-12
 	arc.Parent=arcAnchors[i].Parent
 end
+-- Storm clouds: spaced so the translucent shells never overlap (overlapping
+-- transparent spheres popped in sort order).
 for i=1,6 do
-	local a=i*1.05
-	local cloud=ball(tempest,"Storm cloud",TS+V(math.cos(a)*24,34+(i%3)*5,math.sin(a)*24),16+(i%3)*5,C("596274"),SM)
-	cloud.Transparency=.3
+	local a=i*2*math.pi/6
+	local cloud=ball(tempest,"Storm cloud",TS+V(math.cos(a)*52,48+(i%3)*6,math.sin(a)*52),24+(i%3)*4,C("596274"),SM)
+	cloud.Transparency,cloud.CastShadow=.2,false
 end
-oreNode(tempest,TS+V(-24,0,-6),"StarmetalOre","Tempest")
-oreNode(tempest,TS+V(24,0,-4),"StarmetalOre","Tempest")
-oreNode(tempest,SP+V(12,0,-1),"Celestium","Tempest",1.25)
-treeNode(tempest,TS+V(-22,0,10),"StarwoodLog","Tempest")
-cropPatch(tempest,TS+V(19,0,14),"Starfruit","Tempest")
-sign(tempest,TS+V(-8,0,25),"Tempest Spire",requirementText(Data.RegionById.Tempest),REGION_ACCENT.Tempest,0,10)
-returnWarp(tempest,TS+V(5,0,25),"Tempest Spire")
-spawnMarker("TempestWraith",TS+V(15,0,-17),2,6)
-spawnMarker("StarbornSentinel",TS+V(-16,0,-16),1,5)
+oreNode(tempest,TS+V(-52,0,-8),"StarmetalOre","Tempest")
+oreNode(tempest,TS+V(52,0,-4),"StarmetalOre","Tempest")
+oreNode(tempest,TS+V(14,0,-46),"Celestium","Tempest",1.25)
+treeNode(tempest,TS+V(-44,0,22),"StarwoodLog","Tempest")
+cropPatch(tempest,TS+V(40,0,28),"Starfruit","Tempest")
+for i,o in ipairs({V(-56,0,-36),V(56,0,-40),V(-24,0,52),V(30,0,54)}) do outcrop(tempest,TS+o,1.3,i) end
+tier(tempest,"Basalt ledge",TS+V(46,0,-28),8,3,{cliff=C("2E3445"),top=C("4A5266"),ground=ST})
+sign(tempest,TS+V(-16,0,54),"Tempest Spire",requirementText(Data.RegionById.Tempest),REGION_ACCENT.Tempest,0,10)
+returnWarp(tempest,TS+V(10,0,54),"Tempest Spire","Tempest")
+anchor(tempest,"Waypoint_Entrance_Tempest",TS+V(0,0,44),TS)
+spawnMarker("TempestWraith",TS+V(30,0,-36),2,6)
+spawnMarker("StarbornSentinel",TS+V(-32,0,-34),1,5)
 
+end
 -- Skyway beacons on the Guild Terrace, plus a deep descent from Cinder Shelf.
 local destinations={
-	Windpine=WP+V(0,4,23),Gloomhollow=GH+V(0,4,29),Tidewater=TW+V(0,4,-28),Tempest=TS+V(0,4,22),
+	Windpine=WP+V(0,4,58),Gloomhollow=GH+V(0,4,62),Tidewater=TW+V(0,4,-64),Tempest=TS+V(0,4,44),
 }
 for i,id in ipairs({"Windpine","Gloomhollow","Tidewater","Tempest"}) do
-	local x=-13.5+(i-1)*9
-	regionWarp(terrace,V(x,.3,116),id,destinations[id])
-	sign(terrace,V(x,0,120.5),Data.RegionById[id].name,requirementText(Data.RegionById[id]),REGION_ACCENT[id],0,8)
+	local x=-24+(i-1)*16
+	-- Only the outer pair carries a light: four glowing beacons in a row stacked.
+	regionWarp(terrace,GT+V(x,.3,50),id,destinations[id],nil,i==1 or i==4)
+	sign(terrace,GT+V(x,0,58),Data.RegionById[id].name,requirementText(Data.RegionById[id]),REGION_ACCENT[id],0,8)
 end
-regionWarp(shelf,CS+V(0,0,-18),"Gloomhollow",destinations.Gloomhollow)
-sign(shelf,CS+V(9,0,-17),"Deep descent","GLOOMHOLLOW   /   "..requirementText(Data.RegionById.Gloomhollow),REGION_ACCENT.Gloomhollow,0,9)
+anchor(terrace,"Waypoint_Skyway",SKYWAY_LANDING-V(0,4,0),GT+V(0,0,50))
+regionWarp(shelf,CS+V(0,0,-40),"Gloomhollow",destinations.Gloomhollow,"Waypoint_DeepDescent")
+sign(shelf,CS+V(12,0,-38),"Deep descent","GLOOMHOLLOW   /   "..requirementText(Data.RegionById.Gloomhollow),REGION_ACCENT.Gloomhollow,0,9)
 
 -------------------------------------------------------------------------------
 -- Builder's Terrace (Carpentry construction). Each home gains a small terrace
@@ -1494,10 +2171,9 @@ do
 		if not home or home.terrace then return end
 		local m,center=home.model,home.center
 		local tc=center+V(T.x,0,T.z)
-		local terrace=island("Builders Terrace",tc,11,C("A7B08A"))
-		terrace.Parent=m
+		local terrace=island("Builders Terrace",tc,11,{top=C("A7B08A"),parent=m,rim=false,shore=false})
 		home.terrace=terrace
-		bridge(terrace,center+V(-18.6,0,0),center+V(-22.4,0,0))
+		bridge(terrace,center+V(-HOME_CORE+.5,0,0),center+V(-22.4,0,0))
 		disk(terrace,"Terrace court",tc+V(0,.05,0),4.2,.12,navy,ST,true)
 		disk(terrace,"Court seal",tc+V(0,.13,0),1.4,.1,brass,MT,false)
 		sign(terrace,center+V(-15,0,-6),"Builder's Terrace","CARPENTRY   /   PLAN IN YOUR JOURNAL",brass,90,8)
@@ -1803,7 +2479,10 @@ do
 		end
 		local main=B[e.prop](P,C(def.color))
 		local effect=def.effect or {}
-		if effect.light then light(main,C(effect.light.color),.7,effect.light.range) end
+		if effect.light then
+			local glow=light(main,C(effect.light.color),.7,effect.light.range)
+			glow.Name="Placement glow"
+		end
 		if effect.station and STATION[effect.station] then
 			local kind=effect.station
 			local q=prompt(main,STATION[kind][1],kind.." · Home "..STATION[kind][2],"station",kind,player.UserId)
@@ -1814,6 +2493,30 @@ do
 			end)
 		end
 		return model
+	end
+	-- Brightness stacking fix: a full island of lantern posts lit 60+ point
+	-- lights at once. At most MAX_GLOWS placement lights shine per island and
+	-- no two within GLOW_SPACING studs; the rest stay dark (lowest ids win).
+	local MAX_GLOWS,GLOW_SPACING=10,9
+	homePlacement.MAX_GLOWS=MAX_GLOWS
+	homePlacement.relight=function(folder)
+		local glows={}
+		for _,model in ipairs(folder:GetChildren()) do
+			local glow=model:FindFirstChild("Placement glow",true)
+			if glow then
+				local host=glow.Parent
+				local pos=if host:IsA("Attachment") then (host.Parent.CFrame*host.CFrame).Position else host.CFrame.Position
+				table.insert(glows,{id=model:GetAttribute("PlacementId") or 0,light=glow,pos=pos})
+			end
+		end
+		table.sort(glows,function(a,b) return a.id<b.id end)
+		local lit={}
+		for _,g in ipairs(glows) do
+			local ok=#lit<MAX_GLOWS
+			for _,o in ipairs(lit) do if ok and (o.pos-g.pos).Magnitude<GLOW_SPACING then ok=false end end
+			g.light.Enabled=ok
+			if ok then table.insert(lit,g) end
+		end
 	end
 	homePlacement.attach=function(player,home)
 		if not home or home.placements then return end
@@ -1842,6 +2545,7 @@ do
 			for id,e in pairs(want) do
 				if not built[id] then built[id]={record=I.record(e),model=homePlacement.build(folder,home.center,e,player)} end
 			end
+			homePlacement.relight(folder)
 		end
 		table.insert(home.decorationConnections,player:GetAttributeChangedSignal("IslandPlacements"):Connect(refresh))
 		refresh()
