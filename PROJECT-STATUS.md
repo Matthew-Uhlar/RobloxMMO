@@ -8,6 +8,13 @@ Updated November 19, 2026. The full original goal remains in progress.
 - All eight cloud scripts matched the **Skyreach** source at `975be9c`. Deployment of later Observatory, bank and trade updates is **unknown** pending a publish receipt/version check.
 - Studio currently displays **Public, ages 16+**, according to the primary-agent observation. Audience settings are separate from code deployment and have not been independently join-tested.
 
+## Wave 3 (November 20, 2026)
+
+- **Skyward Calendar & events:** a global UTC calendar (4 seasons × 12 isle days, a year ≈ 5.08 real days so events drift across time zones) with seasonal gathering bonuses and 13 non-overlapping timed events per year — Bloomtide Fair (featured-crop ballot), Glimmertide Festival (festival-only fish), Deepvein Surge (double Mining XP), Hollow Night (event candy from monsters) and Starfall Vigil (once-per-vigil gifts) — plus a Festival Vendor, notice board and Journal → Calendar page.
+- **Sea creatures:** Fishing catches roll Sea Creature Chance (stats + rod + enchants) to hook one of 9 original creatures gated by Fishing level and waters, fought in real time with four aquatic body plans; owner-only ticketed credit, per-player/server caps, new materials, a rare pet and a legendary accessory, and a bestiary group.
+- **Co-op lifecycle & shared progression:** leave/kick/transfer/disband, expiring invitations, 24 h rejoin cooldown, Homestead levels 1–6 from contributions, up to two shared workers with offline accrual and claim-once semantics, satchel↔crew deposits with crash recovery, a crew stat perk, and a full Crew page. Group-Ironman crews trade only through their shared stores.
+- **Free-form island placement:** 27 decor/utility props in 8 categories placed on a 2-stud grid around protected zones (cap 120), with ghost preview, rotation, pick-up refunds, island value tiers and touch/gamepad controls.
+
 ## Wave 2 (November 20, 2026)
 
 - **Economy:** Bazaar standing buy orders for every resource/material (escrow, price-then-FIFO matching, claim/cancel, instant sell into bids, spread) and a gear Auction House (buy-it-now, 1% listing-fee coin sink, 24h expiry and return, claimable proceeds). Shared keys stay bounded (< 512 KB worst case after receipt pruning), each player has a DataStore request budget, browse reads are cached per server, and orders carry nonces for exactly-once replay.
@@ -64,9 +71,7 @@ Physical touch keyboard/controller navigation, device performance, full two-clie
 ## Required remaining work
 
 - Live cross-server economy validation (standing orders and auctions are implemented and headless-tested).
-- Co-op skills/workers, leave/kick lifecycle and broader shared progression.
-- Seasonal events and further regions/activities beyond the current eight regions, five dungeon floors and three slayer lines.
-- Free-form island placement beyond the Builder's Terrace hotspots.
+- Further regions/activities beyond the current eight regions, five dungeon floors, three slayer lines, nine sea creatures and five recurring festivals; cross-server co-op invitations.
 - Permanent mesh import/integration, texture delivery, complete sign/menu art review and device performance measurement.
 - Real multiplayer/rejoin/failure tests and requirement-by-requirement acceptance of the full original goal.
 - Confirm each intended cloud update with a receipt/version check and an actual join, independently of CI and audience settings.
