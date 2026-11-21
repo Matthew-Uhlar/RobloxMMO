@@ -7720,11 +7720,219 @@ end
 Pages.drawCrafting=CRP.draw
 end
 ------------------------------------------------------------------------------
+-- Exploration & Factions (Exploration & Factions team). Journal › Motes
+-- (found counter, milestones, Wayglass bearing, per-region progress) and
+-- Journal › Factions (pledge, reputation ranks, daily tasks, shop, titles).
+-- Server state: snapshot.exploration = {motes, factions} (Explore.state).
+-- Verbs: moteHint, factionPledge "<id>", factionClaim "<id>:<slot>|all",
+-- factionDeliver "<id>:<slot>", factionBuy "<shop>[:<skill>]",
+-- factionTitle "<shop>|none". The world motes are drawn by motes.client.lua,
+-- which asks this page's sender (IsleActionLocal "moteCollect") to pick up.
+------------------------------------------------------------------------------
+do
+local EXP={}
+Pages.EXP=EXP
+function EXP.ready() return Data and type(Data.Exploration)=="table" and type(Data.Factions)=="table" end
+function EXP.clock(seconds)
+	seconds=math.max(0,math.floor(num(seconds,0)))
+	if seconds>=86400 then return string.format("%dd %dh",seconds//86400,(seconds%86400)//3600) end
+	return string.format("%dh %02dm",seconds//3600,(seconds%3600)//60)
+end
+function EXP.statText(stats)
+	local parts={}
+	for stat,v in pairs(tbl(stats)) do table.insert(parts,"+"..fmt(v).." "..(Data.Stats[stat] and Data.Stats[stat].name or stat)) end
+	table.sort(parts)
+	return table.concat(parts,", ")
+end
+function EXP.drawMotes()
+	if not EXP.ready() then dataMissing() return end
+	local EX=Data.Exploration
+	local ex=tbl(state and state.exploration)
+	local m=tbl(ex.motes)
+	local synced=type(ex.motes)=="table"
+	local found=tostring(m.found or "")
+	local count=num(m.count,0)
+	local claimable=num(m.claimable,0)
+	local steps=num(m.steps,0)
+	local cost=num(m.hintCost,EX.hintCost(count))
+	local perks=EXP.statText(m.stats)
+	card({name="MotesSummary",motif="Journal",accent=rgb(EX.MOTE.color),title=EX.MOTE.plural,titleColor=gold,
+		subtitle=paint(EX.MOTE.symbol.." "..fmt(count).." / "..fmt(EX.TOTAL),EX.MOTE.color).." found   ·   "..steps.." / "..EX.STEPS.." milestones claimed",
+		badge=synced and (claimable>0 and (claimable.." READY") or "SEEKING") or "SYNCING",badgeColor=claimable>0 and mint or gold,
+		detail="Tiny drifting motes hide on every island: on rooftops and ledges, under trees, beside landmarks and high on the Agility course perches. Walk up to one and gather it. Every "
+			..EX.STEP.." found is a milestone you claim at any Mote Shrine for permanent stats.",
+		bar={fraction=count/math.max(1,EX.TOTAL),color=rgb(EX.MOTE.color),caption=fmt(count).." / "..fmt(EX.TOTAL)},
+		lines={perks~="" and ("Mote perks: "..perks) or "No mote perks yet.",
+			claimable>0 and paint(claimable.." milestone"..(claimable==1 and "" or "s").." ready: visit any Mote Shrine.","8EE6CB") or nil},
+		actions={{caption="Wayglass · "..fmt(cost).." coins",name="MoteHint",primary=num(state and state.coins,0)>=cost,disabled=num(state and state.coins,0)<cost or not synced,
+			reason="A Wayglass bearing costs "..fmt(cost).." coins.",fn=function() send("moteHint") end}}})
+	local hintId=type(m.hint)=="string" and m.hint or nil
+	local hinted=hintId and EX.MoteById[hintId]
+	if hinted then
+		card({name="MoteBearing",motif="Journal",accent=rgb(EX.MOTE.color),title="Wayglass bearing",titleColor=rgb(EX.MOTE.color),
+			subtitle=escape(hinted.hint),badge="ACTIVE",badgeColor=mint,
+			detail="A beacon marks the mote in the world until you gather it or the bearing fades."})
+	end
+	heading("MILESTONES    /    EVERY "..EX.STEP.." MOTES")
+	local nextAt=(steps+1)*EX.STEP
+	local nextStats=EXP.statText(EX.perkStats(steps+1,0))
+	card({name="MoteMilestones",motif="Hero",title="Shrine milestones",titleColor=gold,
+		subtitle=steps<EX.STEPS and ("Next at "..nextAt.." motes: +"..fmt(EX.stepCoins(steps+1)).." coins") or "Every milestone claimed",
+		detail="Each claimed milestone adds +2 Health; every second one also adds +1 Defense and +1 Speed. Completing a whole region pays a bonus at that region's own shrine (+"
+			..EX.REGION_HEALTH.." Health and coins).",
+		lines={steps<EX.STEPS and ("After the next milestone: "..nextStats) or nil},
+		pips={total=EX.STEPS,filled=steps,color=mint}})
+	heading("REGIONS")
+	local regions=tbl(m.regions)
+	for _,region in ipairs(EX.RegionOrder) do
+		local r=tbl(regions[region])
+		local def=Data.RegionById[region]
+		local total=EX.RegionTotal[region]
+		local here,gated=0,0
+		local lines={}
+		for _,id in ipairs(EX.MotesByRegion[region]) do
+			local mote=EX.MoteById[id]
+			local got=string.sub(found,mote.index,mote.index)=="1"
+			if got then here+=1; table.insert(lines,check.." "..escape(mote.hint))
+			elseif mote.agility>num(m.agility,1) then gated+=1 end
+		end
+		if gated>0 then table.insert(lines,paint(gated.." more drift over Agility courses you cannot run yet.","F3C66E")) end
+		local allowed=r.allowed~=false
+		card({name="MoteRegion"..region,motif="Journal",accent=rgb(EX.MOTE.color),title=escape(def and def.name or region),titleColor=ivory,
+			subtitle=here.." / "..total.." found",badge=r.claimed and "COMPLETE" or (not allowed and "LOCKED" or (here>=total and "CLAIM" or "SEEKING")),
+			badgeColor=r.claimed and mint or (not allowed and muted or gold),
+			bar={fraction=here/math.max(1,total),color=r.claimed and mint or rgb(EX.MOTE.color),caption=here.." / "..total},
+			lines=lines})
+	end
+end
+-- Factions --------------------------------------------------------------------
+function EXP.taskText(t)
+	if t.kind=="kill" then return "Defeat "..t.amount.." "..escape(Data.Monsters[t.target] and Data.Monsters[t.target].name or t.target) end
+	if t.kind=="gather" then return "Harvest "..t.amount.." "..escape(itemName(t.target)) end
+	return "Deliver "..t.amount.." "..escape(itemName(t.target))
+end
+function EXP.drawFactions()
+	if not EXP.ready() then dataMissing() return end
+	local FA=Data.Factions
+	local ex=tbl(state and state.exploration)
+	local fs=tbl(ex.factions)
+	local synced=type(ex.factions)=="table"
+	local list=tbl(fs.list)
+	local pledge=type(fs.pledge)=="string" and FA.Factions[fs.pledge] or nil
+	local ready=0
+	for _,id in ipairs(FA.Order) do
+		for _,s in ipairs(tbl(tbl(list[id]).board)) do
+			local t=FA.TaskById[s.id]
+			if t and t.kind~="deliver" and s.done and not s.claimed then ready+=1 end
+		end
+	end
+	card({name="FactionsSummary",motif="Journal",accent=pledge and rgb(pledge.color) or gold,title="Factions",titleColor=gold,
+		subtitle=pledge and ("Pledged to the "..paint(pledge.name,pledge.color)) or "Unpledged",
+		badge=synced and ("RESETS "..EXP.clock(fs.resetIn)) or "SYNCING",badgeColor=mint,
+		detail="Three orders vie for the isles. Each posts three tasks a day (UTC). Pledging to one earns full reputation and sigils with it, a quarter with its rival and 60% with the third; unpledged journals earn 60% everywhere. Rewards above Kindred need the pledge. Changing a pledge costs "
+			..fmt(FA.SWITCH_COST).." coins, a quarter of the old reputation and waits "..(FA.SWITCH_COOLDOWN//86400).." days after the last pledge.",
+		lines={fs.titleText and fs.titleText~="" and ("Title: "..escape(fs.titleText)) or nil,
+			pledge and num(fs.switchIn,0)>0 and ("Pledge can change in "..EXP.clock(fs.switchIn)..".") or nil},
+		actions=ready>0 and {{caption="Claim all",name="FactionClaimAll",primary=true,fn=function() send("factionClaim","all") end}} or nil})
+	for _,id in ipairs(FA.Order) do
+		local def=FA.Factions[id]
+		local f=tbl(list[id])
+		local rep=num(f.rep,0)
+		local index=num(f.rank,1)
+		local rank=FA.Ranks[index] or FA.Ranks[1]
+		local nextRank=FA.Ranks[index+1]
+		local floor=rank.at
+		local frac=nextRank and (rep-floor)/math.max(1,nextRank.at-floor) or 1
+		local actions={}
+		if synced and fs.pledge~=id then
+			local switching=pledge~=nil
+			local wait=switching and num(fs.switchIn,0) or 0
+			local afford=not switching or num(state and state.coins,0)>=FA.SWITCH_COST
+			table.insert(actions,{caption=switching and ("Switch · "..fmt(FA.SWITCH_COST)) or "Pledge",name="FactionPledge"..id,primary=not switching and true or false,
+				disabled=wait>0 or not afford,reason=wait>0 and ("Your pledge holds for "..EXP.clock(wait)..".") or ("Changing a pledge costs "..fmt(FA.SWITCH_COST).." coins."),
+				fn=function() send("factionPledge",id) end})
+		end
+		heading(string.upper(def.name).."    /    "..string.upper(rank.name))
+		card({name="Faction"..id,motif="Hero",accent=rgb(def.color),title=escape(def.name),titleColor=rgb(def.color),
+			subtitle=escape(rank.name).."   ·   "..fmt(rep).." reputation   ·   "..fmt(num(f.sigils,0)).." sigils",
+			badge=fs.pledge==id and "PLEDGED" or (pledge and pledge.rival==id and "RIVAL" or "x"..tostring(num(f.mult,0.6))),
+			badgeColor=fs.pledge==id and mint or (pledge and pledge.rival==id and rgb("E8806A") or gold),
+			detail="\""..escape(def.motto).."\" "..escape(def.text),
+			bar={fraction=math.clamp(frac,0,1),color=rgb(def.color),caption=nextRank and (fmt(rep).." / "..fmt(nextRank.at).." to "..nextRank.name) or "Highest rank"},
+			actions=#actions>0 and actions or nil})
+		for i,s in ipairs(tbl(f.board)) do
+			local t=FA.TaskById[s.id]
+			if t then
+				local r=tbl(s.reward)
+				local progress=math.min(num(s.progress,0),t.amount)
+				local acts={}
+				if t.kind=="deliver" and not s.claimed then
+					local have=num(s.have,0)
+					table.insert(acts,{caption="Deliver",name="FactionDeliver"..id..i,primary=have>=t.amount,disabled=have<t.amount,
+						reason="You have "..fmt(have).." of "..t.amount..".",fn=function() send("factionDeliver",id..":"..i) end})
+				elseif s.done and not s.claimed then
+					table.insert(acts,{caption="Claim",name="FactionClaim"..id..i,primary=true,fn=function() send("factionClaim",id..":"..i) end})
+				end
+				card({name="FactionTask"..id..i,item=(t.kind~="kill" and t.target) or nil,motif=t.kind=="kill" and "Hunt" or nil,accent=rgb(def.color),
+					title=EXP.taskText(t),titleColor=ivory,subtitle=def.short.."   ·   "..t.kind,
+					badge=s.claimed and "DONE" or (s.done and "READY" or "ACTIVE"),badgeColor=s.claimed and muted or (s.done and mint or gold),
+					lines={"+"..fmt(num(r.rep,0)).." reputation   ·   +"..fmt(num(r.sigils,0)).." sigils   ·   +"..fmt(num(r.coins,0)).." coins"
+						..(num(r.xp,0)>0 and ("   ·   +"..fmt(r.xp).." "..tostring(r.skill).." XP") or "")},
+					bar=t.kind~="deliver" and {fraction=progress/math.max(1,t.amount),color=s.done and mint or rgb(def.color),caption=fmt(progress).." / "..fmt(t.amount)} or nil,
+					actions=#acts>0 and acts or nil})
+			end
+		end
+	end
+	heading("FACTION REWARDS")
+	local unlocks={}
+	for _,id in ipairs(tbl(fs.unlocks)) do unlocks[id]=true end
+	for _,e in ipairs(FA.Shop) do
+		local def=FA.Factions[e.faction]
+		local f=tbl(list[e.faction])
+		local okRank=num(f.rank,1)>=e.rank
+		local okPledge=e.rank<=FA.OPEN_RANK or fs.pledge==e.faction
+		local okSigils=num(f.sigils,0)>=e.sigils
+		local okCoins=num(state and state.coins,0)>=(e.coins or 0)
+		local can=synced and okRank and okPledge and okSigils and okCoins
+		local why=not okRank and ("Needs "..FA.Ranks[e.rank].name.." standing.") or (not okPledge and ("Pledge to the "..def.name.." first.")) or (not okSigils and ("Needs "..e.sigils.." sigils.")) or ("Needs "..fmt(e.coins or 0).." coins.")
+		local title,subtitle,acts
+		if e.kind=="title" then
+			title="Title: "..e.title
+			if unlocks[e.id] then
+				acts={fs.title==e.id and {caption="Hide",name="FactionTitleOff"..e.id,fn=function() send("factionTitle","none") end}
+					or {caption="Wear",name="FactionTitle"..e.id,primary=true,fn=function() send("factionTitle",e.id) end}}
+			else
+				acts={{caption="Earn",name="FactionBuy"..e.id,primary=can,disabled=not can,reason=why,fn=function() send("factionBuy",e.id) end}}
+			end
+		elseif e.kind=="lamp" then
+			title=def.short.." lamp"
+			acts={}
+			for _,skill in ipairs(def.lampSkills) do
+				table.insert(acts,{caption=skill,name="FactionBuy"..e.id..skill,primary=can,disabled=not can,reason=why,fn=function() send("factionBuy",e.id..":"..skill) end})
+			end
+		else
+			title=itemName(e.item)
+			acts={{caption=e.kind=="crest" and "Reforge" or "Buy",name="FactionBuy"..e.id,primary=can,disabled=not can,reason=why,fn=function() send("factionBuy",e.id) end}}
+		end
+		subtitle=FA.Ranks[e.rank].name.."   ·   "..e.sigils.." sigils"..((e.coins or 0)>0 and ("   ·   "..fmt(e.coins).." coins") or "")
+		local detail
+		if e.kind=="lamp" then detail="XP in "..table.concat(def.lampSkills,", ").." (about "..math.floor(FA.LAMP_HOURS*60).." minutes of level-appropriate training). Repeatable."
+		elseif e.kind=="title" then detail="A cosmetic title shown in your journal."
+		else local item=itemDef(e.item); detail=item and escape(item.description) or nil end
+		card({name="FactionShop"..e.id,item=e.item,motif=e.item and nil or "Journal",accent=rgb(def.color),title=escape(title),titleColor=rgb(def.color),subtitle=subtitle,
+			badge=unlocks[e.id] and "OWNED" or (okRank and okPledge and "OPEN" or "LOCKED"),badgeColor=unlocks[e.id] and mint or (okRank and okPledge and gold or muted),
+			detail=detail,actions=acts})
+	end
+end
+Pages.drawMotes,Pages.drawFactions=EXP.drawMotes,EXP.drawFactions
+end
+
+------------------------------------------------------------------------------
 -- Navigation: six primary tabs, each with a section switcher.
 ------------------------------------------------------------------------------
 local tabOrder={"Journal","Hero","Satchel","Workshop","Hunt","Ledger"}
 local sectionLists={
-	Journal={"Bearing","Quests","Diaries","Construction","Regions","Crew","Calendar","Agility","Commissions","Collection Log","Museum"},
+	Journal={"Bearing","Quests","Diaries","Construction","Regions","Crew","Calendar","Agility","Commissions","Collection Log","Museum","Motes","Factions"},
 	Hero={"Skills","Mastery","Gear","Combat","Spellbook","Prayer","Enchant","Reforge","Accessories","Pets"},
 	Satchel={"Items","Collections","Trails"},
 	Workshop={"Forge","Hearth","Cauldron","Workbench","Crafting","Workers","Home","Garden"},
@@ -7734,7 +7942,8 @@ local sectionLists={
 sectionOf={Journal="Bearing",Hero="Skills",Satchel="Items",Workshop="Forge",Hunt="Slayer",Ledger="Bank"}
 local drawers={
 	Journal={Bearing=Pages.drawBearing,Quests=Pages.drawQuests,Diaries=Pages.drawDiaries,Construction=Pages.drawConstruction,Regions=Pages.drawRegions,Crew=Pages.drawCoop,Calendar=Pages.drawCalendar,Agility=Pages.drawAgility,
-		Commissions=Pages.drawCommissions,["Collection Log"]=Pages.drawCollectionLog,Museum=Pages.drawMuseum}, -- Commissions & Logs
+		Commissions=Pages.drawCommissions,["Collection Log"]=Pages.drawCollectionLog,Museum=Pages.drawMuseum, -- Commissions & Logs
+		Motes=Pages.drawMotes,Factions=Pages.drawFactions}, -- Exploration & Factions
 	Hero={Skills=Pages.drawSkills,Mastery=Pages.drawMastery,Gear=Pages.drawGear,Combat=Pages.drawCombat,Spellbook=Pages.drawSpellbook,Prayer=Pages.drawPrayer,Enchant=Pages.drawEnchant,Reforge=function() Pages.drawReforge() end,Accessories=Pages.drawAccessories,Pets=Pages.drawPets},
 	Satchel={Items=Pages.drawItems,Collections=Pages.drawCollections,Trails=Pages.drawTrails},
 	Workshop={Forge=function() Pages.drawStation("Forge") end,Hearth=function() Pages.drawStation("Hearth") end,Cauldron=function() Pages.drawStation("Cauldron") end,
@@ -8221,6 +8430,8 @@ do
 			if verb=="autocast" and (item==nil or type(item)=="string") then task.spawn(send,"autocast",item)
 			-- Prayer quick bar taps (combat HUD): the server validates the prayer.
 			elseif verb=="prayer" and type(item)=="string" and #item<=64 then task.spawn(send,"prayer",item)
+			-- Exploration & Factions: world mote prompts (motes.client.lua); the server picks the mote.
+			elseif verb=="moteCollect" or verb=="moteHint" then task.spawn(send,verb,nil)
 			-- A late-starting combat HUD asks for the latest snapshot.
 			elseif verb=="snapshot" and synced then pcall(function() UI.snapshotChannel:Fire(state) end) end
 		end)
@@ -8231,7 +8442,8 @@ end
 -- the matching page. Values may carry a suffix ("Forge:3") so repeats fire.
 local stationTabs={Forge="Workshop",Hearth="Workshop",Cauldron="Workshop",Workbench="Workshop",Slayer="Hunt",Construction="Journal",Calendar="Journal",
 	SkymarkExchange="Ledger",TrackersLodge="Ledger",Garden="Workshop",Commissions="Journal",Museum="Journal",CollectionLog="Journal", -- Commissions & Logs: board / museum prompts
-	Jeweller="Workshop",Tannery="Workshop",Glassworks="Workshop"} -- Crafting stations (Workshop › Crafting)
+	Jeweller="Workshop",Tannery="Workshop",Glassworks="Workshop", -- Crafting stations (Workshop › Crafting)
+	Motes="Journal",Factions="Journal"} -- Exploration & Factions: Mote Shrines, faction standards
 local function openStation()
 	local value=player:GetAttribute("IsleStation")
 	if type(value)~="string" then return end
@@ -8241,7 +8453,7 @@ local function openStation()
 	-- Skill vendors (Agility & Hunter): Ledger › Vendors on that vendor's stock.
 	if tab=="Ledger" then Pages.AH.vendor=station=="SkymarkExchange" and "Agility" or "Hunter";openTo("Ledger","Vendors") return end
 	if tab=="Workshop" and Pages.CR and Data and Data.Crafting and Data.Crafting.Stations[station] then Pages.CR.station=station;openTo("Workshop","Crafting") return end
-	if tab=="Workshop" then openTo("Workshop",station) elseif tab=="Journal" then openTo("Journal",if station=="Calendar" then "Calendar" elseif station=="Commissions" or station=="Museum" then station elseif station=="CollectionLog" then "Collection Log" else "Construction") else openTo("Hunt","Slayer") end
+	if tab=="Workshop" then openTo("Workshop",station) elseif tab=="Journal" then openTo("Journal",if station=="Calendar" then "Calendar" elseif station=="Commissions" or station=="Museum" or station=="Motes" or station=="Factions" then station elseif station=="CollectionLog" then "Collection Log" else "Construction") else openTo("Hunt","Slayer") end
 end
 -- World sets IsleStation and then bumps IsleStationVisit on every trigger; only the
 -- counter opens the atlas, so each visit opens it exactly once (repeats included).

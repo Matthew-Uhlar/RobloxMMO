@@ -8625,6 +8625,387 @@ end
 -- End Crafting section.
 
 ------------------------------------------------------------------------------
+-- >>> BEGIN Exploration & Factions (Exploration & Factions team; append-only section) >>>
+-- Two systems (docs/DEPTH-CONTRACT.md §24):
+--   * Aether Motes (Data.Exploration): 78 hidden collectibles across the 13
+--     world islands. Positions are island-relative (Workspace.Islands[isle]
+--     IslandCenter + at); the client renders them locally (no server parts),
+--     the server validates pickups by distance to the nearest unfound mote.
+--     Milestones are claimed at Mote Shrines and paid as p.perkStats.motes.
+--   * Factions (Data.Factions): three rival orders with daily tasks (UTC day,
+--     roll-forward only), reputation ranks, sigils and a rank-gated shop.
+-- Pure rules live here so the client previews match the server.
+------------------------------------------------------------------------------
+do
+local EX = {}
+Data.Exploration = EX
+EX.MOTE = {name="Aether Mote", plural="Aether Motes", color="9FE6F2", symbol="✧"}
+EX.PICKUP_RADIUS = 9     -- studs from the HumanoidRootPart to the mote (server check)
+EX.RENDER_RADIUS = 150   -- studs: the client draws unfound motes this close
+EX.PICKUP_COOLDOWN = 1   -- seconds between pickups (server, per player)
+EX.HINT_SECONDS = 120    -- a Wayglass bearing stays on screen this long
+-- Island -> region (matches each island's Region attribute; verified by tests).
+EX.IsleRegion = {
+	["Compass Quay"]="Hub", ["Warden Reach"]="Hub", ["Guild Terrace"]="Hub",
+	["Mosswake Grove"]="Meadow", ["Meadow Reach"]="Meadow",
+	["Brassfall Quarry"]="Quarry", ["Cinder Shelf"]="Quarry",
+	["Skyreach"]="Skyreach", ["Windpine Grove"]="Windpine", ["Gloomhollow Caverns"]="Gloomhollow",
+	["Tidewater Shoals"]="Tidewater", ["Tempest Spire"]="Tempest", ["The Shattered Crown"]="ShatteredCrown",
+}
+EX.RegionOrder = {"Hub","Meadow","Quarry","Skyreach","Windpine","Gloomhollow","Tidewater","Tempest","ShatteredCrown"}
+-- The island each region's Mote Shrine stands on.
+EX.ShrineIsle = {Hub="Compass Quay",Meadow="Mosswake Grove",Quarry="Brassfall Quarry",Skyreach="Skyreach",Windpine="Windpine Grove",
+	Gloomhollow="Gloomhollow Caverns",Tidewater="Tidewater Shoals",Tempest="Tempest Spire",ShatteredCrown="The Shattered Crown"}
+-- at = offset from the island's IslandCenter (studs, hovering ~2.4 above the
+-- standing surface). agility = Agility level of the course whose perches hold
+-- it (only reachable by running that course). Generated from the built world
+-- and re-validated by verify-exploration.luau (supported, not embedded).
+EX.Motes = {
+	{id="Quay01",isle="Compass Quay",at={-66.8,12.3,-143.2},hint="High on the Quay Rigging Run perches",agility=1},
+	{id="Quay02",isle="Compass Quay",at={-70.7,12.7,-98.3},hint="High on the Quay Rigging Run perches",agility=1},
+	{id="Quay03",isle="Compass Quay",at={-62.3,6.3,66.4},hint="Behind the founder's statue on the rise"},
+	{id="Quay04",isle="Compass Quay",at={-62.1,8.2,-74.5},hint="Beside the brass spyglass on the lookout"},
+	{id="Quay05",isle="Compass Quay",at={11.4,2.2,-70.5},hint="Between the Museum's columns"},
+	{id="Quay06",isle="Compass Quay",at={-67.9,6.4,42.4},hint="Warming by the furnace on the rise"},
+	{id="Quay07",isle="Compass Quay",at={-32.3,2.3,-36.7},hint="Among the stones of the quay pond"},
+	{id="Quay08",isle="Compass Quay",at={-41.2,6.4,62.8},hint="Up on the north terrace"},
+	{id="Ward01",isle="Warden Reach",at={23.1,2.3,0.0},hint="At the foot of a ruined column"},
+	{id="Ward02",isle="Warden Reach",at={-17.0,2.2,51.1},hint="Beneath a signal prism"},
+	{id="Ward03",isle="Warden Reach",at={0.0,2.3,-53.2},hint="Under the old vault's lintel"},
+	{id="Ward04",isle="Warden Reach",at={-24.5,2.2,2.3},hint="Tucked behind the west rocks"},
+	{id="Ward05",isle="Warden Reach",at={-49.2,7.4,-7.4},hint="On the west bluff"},
+	{id="Ward06",isle="Warden Reach",at={49.2,9.4,-7.4},hint="On the east bluff"},
+	{id="Guild01",isle="Guild Terrace",at={-31.0,2.3,-37.0},hint="Behind the forge chimney"},
+	{id="Guild02",isle="Guild Terrace",at={50.5,2.8,15.4},hint="Behind the Bestiary ledger"},
+	{id="Guild03",isle="Guild Terrace",at={-59.9,2.4,33.3},hint="Under a terrace tree"},
+	{id="Guild04",isle="Guild Terrace",at={-49.8,4.4,-32.5},hint="On the little terrace knoll"},
+	{id="Moss01",isle="Mosswake Grove",at={22.5,13.8,-102.0},hint="High on the Mosswake Hedgerow Hop perches",agility=10},
+	{id="Moss02",isle="Mosswake Grove",at={-22.5,12.7,-76.0},hint="High on the Mosswake Hedgerow Hop perches",agility=10},
+	{id="Moss03",isle="Mosswake Grove",at={-13.6,2.3,-23.1},hint="By the mossy pond stones"},
+	{id="Moss04",isle="Mosswake Grove",at={-17.2,2.2,30.3},hint="Behind the grove rocks"},
+	{id="Moss05",isle="Mosswake Grove",at={40.3,2.4,-45.1},hint="Under the old pine"},
+	{id="Moss06",isle="Mosswake Grove",at={-41.8,5.4,27.1},hint="On the grove's high meadow"},
+	{id="Moss07",isle="Mosswake Grove",at={-46.4,2.2,-49.4},hint="Near the rope-bridge sign"},
+	{id="Mead01",isle="Meadow Reach",at={62.9,2.2,2.4},hint="Behind the eastern rocks"},
+	{id="Mead02",isle="Meadow Reach",at={-62.7,2.2,-2.2},hint="Beneath the lone western tree"},
+	{id="Mead03",isle="Meadow Reach",at={29.5,2.4,-7.4},hint="At the edge of the fishing pool"},
+	{id="Mead04",isle="Meadow Reach",at={51.3,5.4,11.7},hint="On the east hill"},
+	{id="Brass01",isle="Brassfall Quarry",at={0.0,14.9,117.0},hint="High on the Brassfall Scaffold Circuit perches",agility=20},
+	{id="Brass02",isle="Brassfall Quarry",at={22.5,12.7,78.0},hint="High on the Brassfall Scaffold Circuit perches",agility=20},
+	{id="Brass03",isle="Brassfall Quarry",at={49.2,2.3,-36.6},hint="Wedged by the quarry rocks"},
+	{id="Brass04",isle="Brassfall Quarry",at={-62.1,2.3,26.6},hint="Under a quarry pine"},
+	{id="Brass05",isle="Brassfall Quarry",at={-22.1,2.3,64.1},hint="Under the southern pine"},
+	{id="Brass06",isle="Brassfall Quarry",at={17.5,7.4,-42.2},hint="On the quarry's upper shelf"},
+	{id="Brass07",isle="Brassfall Quarry",at={35.1,12.4,-46.1},hint="On the quarry's highest ledge"},
+	{id="Cinder01",isle="Cinder Shelf",at={44.9,2.2,-31.3},hint="Behind the cinder rocks"},
+	{id="Cinder02",isle="Cinder Shelf",at={-3.8,8.4,115.0},hint="Where the bridge meets the shelf"},
+	{id="Cinder03",isle="Cinder Shelf",at={33.8,6.4,-38.3},hint="On the scorched rise"},
+	{id="Sky01",isle="Skyreach",at={-12.5,13.2,97.3},hint="High on the Skyreach Updraft Course perches",agility=40},
+	{id="Sky02",isle="Skyreach",at={45.1,12.0,87.2},hint="High on the Skyreach Updraft Course perches",agility=40},
+	{id="Sky03",isle="Skyreach",at={38.7,2.2,-0.9},hint="Behind the windswept rocks"},
+	{id="Sky04",isle="Skyreach",at={-35.0,2.3,35.0},hint="Under a crag pine"},
+	{id="Sky05",isle="Skyreach",at={-23.0,2.3,-46.0},hint="Under the far crag pine"},
+	{id="Sky06",isle="Skyreach",at={26.2,8.4,-6.6},hint="On the summit plateau"},
+	{id="Wind01",isle="Windpine Grove",at={57.7,11.7,-120.6},hint="High on the Windpine Canopy Loop perches",agility=30},
+	{id="Wind02",isle="Windpine Grove",at={7.8,12.7,-90.1},hint="High on the Windpine Canopy Loop perches",agility=30},
+	{id="Wind03",isle="Windpine Grove",at={5.0,2.2,40.0},hint="Along the fallen windpine"},
+	{id="Wind04",isle="Windpine Grove",at={36.9,2.2,-46.3},hint="Under the emberoak boughs"},
+	{id="Wind05",isle="Windpine Grove",at={47.0,2.2,44.7},hint="Beside the woodcutters' lodge"},
+	{id="Wind06",isle="Windpine Grove",at={-11.5,2.4,52.9},hint="Beneath a windpine"},
+	{id="Wind07",isle="Windpine Grove",at={35.7,4.9,0.0},hint="On the grove's mossy rise"},
+	{id="Gloom01",isle="Gloomhollow Caverns",at={22.6,13.2,-127.6},hint="High on the Gloomhollow Chasm Run perches",agility=60},
+	{id="Gloom02",isle="Gloomhollow Caverns",at={-32.0,14.2,-105.0},hint="High on the Gloomhollow Chasm Run perches",agility=60},
+	{id="Gloom03",isle="Gloomhollow Caverns",at={0.0,2.3,-19.1},hint="Beside the grotto's heart crystal"},
+	{id="Gloom04",isle="Gloomhollow Caverns",at={33.8,2.3,67.7},hint="Behind the cavern forge"},
+	{id="Gloom05",isle="Gloomhollow Caverns",at={61.5,2.4,-8.1},hint="Against the eastern cavern wall"},
+	{id="Gloom06",isle="Gloomhollow Caverns",at={-44.2,2.4,24.9},hint="By the dark pool"},
+	{id="Gloom07",isle="Gloomhollow Caverns",at={53.5,5.4,42.8},hint="On the fungal ledge"},
+	{id="Tide01",isle="Tidewater Shoals",at={11.5,11.6,140.2},hint="High on the Tidewater Mastwalk perches",agility=50},
+	{id="Tide02",isle="Tidewater Shoals",at={39.5,12.7,88.8},hint="High on the Tidewater Mastwalk perches",agility=50},
+	{id="Tide03",isle="Tidewater Shoals",at={-63.8,2.4,53.2},hint="At the lighthouse door"},
+	{id="Tide04",isle="Tidewater Shoals",at={-52.8,2.2,19.0},hint="Under a glimmerbark tree"},
+	{id="Tide05",isle="Tidewater Shoals",at={-33.3,2.2,46.6},hint="Beneath the beach palms"},
+	{id="Tide06",isle="Tidewater Shoals",at={-42.7,2.2,-40.6},hint="Behind the tide rocks"},
+	{id="Tide07",isle="Tidewater Shoals",at={-69.8,4.9,-45.1},hint="On the dune top"},
+	{id="Storm01",isle="Tempest Spire",at={22.6,13.2,-115.6},hint="High on the Tempest Stormrun perches",agility=75},
+	{id="Storm02",isle="Tempest Spire",at={-22.6,12.7,-70.4},hint="High on the Tempest Stormrun perches",agility=75},
+	{id="Storm03",isle="Tempest Spire",at={27.5,2.4,27.5},hint="By a storm pylon"},
+	{id="Storm04",isle="Tempest Spire",at={-47.0,2.4,23.5},hint="Under the starwood tree"},
+	{id="Storm05",isle="Tempest Spire",at={58.9,2.2,-30.2},hint="Behind the stormbeaten rocks"},
+	{id="Storm06",isle="Tempest Spire",at={47.1,5.4,-32.4},hint="On the thunder ledge"},
+	{id="Crown01",isle="The Shattered Crown",at={-61.1,2.4,42.2},hint="Under a shatterbark tree"},
+	{id="Crown02",isle="The Shattered Crown",at={-78.2,2.4,-12.2},hint="Beside a jutting crystal shard"},
+	{id="Crown03",isle="The Shattered Crown",at={-163.7,2.4,-30.7},hint="At the roost obelisk"},
+	{id="Crown04",isle="The Shattered Crown",at={194.0,2.4,15.6},hint="By a column of the eastern arena"},
+	{id="Crown05",isle="The Shattered Crown",at={3.7,2.3,46.4},hint="By the crown's still pond"},
+	{id="Crown06",isle="The Shattered Crown",at={0.0,6.4,-26.9},hint="On the crown's broken dais"},
+}
+EX.MoteById, EX.MotesByRegion, EX.RegionTotal = {}, {}, {}
+for _, r in ipairs(EX.RegionOrder) do EX.MotesByRegion[r] = {}; EX.RegionTotal[r] = 0 end
+for i, m in ipairs(EX.Motes) do
+	m.index = i
+	m.region = EX.IsleRegion[m.isle]
+	m.agility = m.agility or 0
+	EX.MoteById[m.id] = m
+	table.insert(EX.MotesByRegion[m.region], m.id)
+	EX.RegionTotal[m.region] += 1
+end
+EX.TOTAL = #EX.Motes
+-- Milestones: every STEP motes found is one claimable step (claimed at any
+-- Mote Shrine). Each claimed step adds +2 Health; every second step adds +1
+-- Defense and +1 Speed. A region whose every mote is found pays a one-off
+-- bonus at that region's own shrine (+2 Health and coins).
+EX.STEP = 5
+EX.STEPS = math.floor(EX.TOTAL / EX.STEP)
+EX.REGION_HEALTH = 2
+function EX.stepCoins(step) return 500 + 100 * step end
+function EX.regionCoins(region) return 2500 + 250 * (EX.RegionTotal[region] or 0) end
+-- Permanent stats for `steps` claimed milestone steps and `regions` completed
+-- regions (stored by the server in p.perkStats.motes).
+function EX.perkStats(steps, regions)
+	steps = math.clamp(math.floor(tonumber(steps) or 0), 0, EX.STEPS)
+	regions = math.clamp(math.floor(tonumber(regions) or 0), 0, #EX.RegionOrder)
+	local out = {}
+	local health = 2 * steps + EX.REGION_HEALTH * regions
+	if health > 0 then out.health = health end
+	local half = math.floor(steps / 2)
+	if half > 0 then out.defense = half; out.speed = half end
+	return out
+end
+-- Wayglass bearing (points at the nearest unfound mote of the island region
+-- the player stands in): coins, rising gently with the motes already found.
+function EX.hintCost(found) return 150 + 15 * math.clamp(math.floor(tonumber(found) or 0), 0, EX.TOTAL) end
+-- The motes a journal may pick up: region access is checked by the server;
+-- this checks the Agility gate.
+function EX.canReach(mote, agilityLevel) return (tonumber(agilityLevel) or 1) >= (mote.agility or 0) end
+
+------------------------------------------------------------------------------
+-- Factions: three rival orders. Each faction distrusts the next (a cycle):
+-- the Concord's rival is the Circle, the Circle's the Corsairs, the Corsairs'
+-- the Concord. Pledging to one multiplies reputation and sigil gains:
+-- pledged x1, the pledge's rival x0.25, the third faction x0.6; with no
+-- pledge every faction earns x0.6. Shop rows above Kindred need the pledge.
+------------------------------------------------------------------------------
+local FA = {}
+Data.Factions = FA
+FA.Order = {"Concord","Circle","Corsairs"}
+FA.Factions = {
+	Concord={id="Concord",name="Emberwright Concord",short="Concord",color="D4A84B",rival="Circle",isle="Brassfall Quarry",
+		regions={"Quarry","Skyreach","Gloomhollow"},lampSkills={"Mining","Smithing"},
+		motto="Every seam a promise, every ingot a vow.",text="Smiths and delvers of Brassfall who would tunnel through every isle for its ore."},
+	Circle={id="Circle",name="Thornveil Circle",short="Circle",color="8DB86E",rival="Corsairs",isle="Mosswake Grove",
+		regions={"Meadow","Windpine"},lampSkills={"Woodcutting","Farming","Hunter"},
+		motto="Root, branch and the long patience of seeds.",text="Grove-keepers of Mosswake who tend the meadows and windpines against the Concord's picks."},
+	Corsairs={id="Corsairs",name="Galewake Corsairs",short="Corsairs",color="5EC8D8",rival="Concord",isle="Compass Quay",
+		regions={"Hub","Tidewater","Tempest"},lampSkills={"Fishing","Agility","Combat"},
+		motto="The wind owes no tariff.",text="Sky-sailors of the quay who run the trade lanes, and the Circle's skies, on their own terms."},
+}
+FA.Ranks = {
+	{id="Outsider",name="Outsider",at=0},
+	{id="Kindred",name="Kindred",at=500},
+	{id="Sworn",name="Sworn",at=2000},
+	{id="Vanguard",name="Vanguard",at=5000},
+	{id="Luminary",name="Luminary",at=10000},
+}
+FA.REP_CAP = 25000
+FA.SIGIL_CAP = 5000
+FA.MULT = {pledged=1, rival=0.25, neutral=0.6, none=0.6}
+FA.OPEN_RANK = 2 -- shop rows up to this rank need no pledge (Kindred)
+FA.SWITCH_COST = 25000 -- coins to change an existing pledge
+FA.SWITCH_COOLDOWN = 7 * 86400 -- seconds after a pledge before it may change
+FA.SWITCH_FORFEIT = 0.25 -- share of the old faction's reputation lost on a switch
+FA.TASKS = 3 -- daily tasks per faction (slot 1 kill, 2 gather, 3 deliver; a kind with no eligible task falls back to any)
+FA.DAY = 86400
+function FA.dayOf(t) return math.floor((tonumber(t) or 0) / FA.DAY) end
+function FA.resetIn(t) t = tonumber(t) or 0; return (FA.dayOf(t) + 1) * FA.DAY - math.floor(t) end
+function FA.rankOf(rep)
+	rep = tonumber(rep) or 0
+	local index = 1
+	for i, r in ipairs(FA.Ranks) do if rep >= r.at then index = i end end
+	return index, FA.Ranks[index], FA.Ranks[index + 1]
+end
+-- Gain multiplier for faction `id` under pledge `pledge` ("" = none).
+function FA.mult(id, pledge)
+	if type(pledge) ~= "string" or not FA.Factions[pledge] then return FA.MULT.none end
+	if pledge == id then return FA.MULT.pledged end
+	if FA.Factions[pledge].rival == id then return FA.MULT.rival end
+	return FA.MULT.neutral
+end
+-- Task pool (per faction). kind: kill (monster id), gather (resource id),
+-- deliver (hand in items from the satchel). levels/region gate eligibility.
+FA.Tasks, FA.TaskById = {}, {}
+local function ftask(faction, def)
+	def.faction = faction
+	def.id = faction .. def.kind:sub(1,1):upper() .. def.kind:sub(2) .. def.target
+	def.levels = def.levels or {}
+	if def.kind == "kill" then def.rep, def.sigils = 120, 12
+	elseif def.kind == "gather" then def.rep, def.sigils = 100, 10
+	else def.rep, def.sigils = 150, 15 end
+	table.insert(FA.Tasks, def)
+	FA.TaskById[def.id] = def
+end
+local function resourceDef(id)
+	for skill, list in pairs(Data.ResourceTiers) do
+		for _, r in ipairs(list) do if r.id == id then return r, skill end end
+	end
+	return nil
+end
+local function kill(faction, monster, amount)
+	local m = rawget(Data.Monsters, monster)
+	if not m then return end
+	-- Bonus pay on top of the kills themselves: 40% of their XP and coins
+	-- (commissions pay 60% / 50%; nine faction tasks a day versus four).
+	ftask(faction, {kind="kill",target=monster,amount=amount,skill="Combat",xp=math.floor(m.xp * amount * 0.4),coins=math.floor(m.coins * amount * 0.4),
+		levels={Combat=math.max(1, m.level - 6)},region=m.region})
+end
+local function gather(faction, id, amount, region)
+	local r, skill = resourceDef(id)
+	if not r then return end
+	ftask(faction, {kind="gather",target=id,amount=amount,skill=skill,xp=r.xp * 4,coins=10 + r.level * 2,levels={[skill]=r.level},region=region})
+end
+local function deliver(faction, id, amount, levels, region)
+	local def = Data.Items[id]
+	if not def then return end
+	-- Coins: 1.3x the merchant value of the items handed in (they are consumed).
+	ftask(faction, {kind="deliver",target=id,amount=amount,coins=math.ceil((def.value or 1) * amount * 1.3),levels=levels or {},region=region})
+end
+-- Emberwright Concord: the quarry, Skyreach and the caverns.
+kill("Concord","ShaleCrawler",12); kill("Concord","CinderMite",12); kill("Concord","BrassGolem",6); kill("Concord","StormHarrier",6)
+kill("Concord","GloomfangSpider",8); kill("Concord","VoidWisp",6); kill("Concord","HollowcapShrieker",6)
+gather("Concord","Ore",25); gather("Concord","Aetherite",22); gather("Concord","Brassite",18); gather("Concord","SunsteelOre",15,"Skyreach")
+gather("Concord","Voidstone",12,"Gloomhollow"); gather("Concord","StarmetalOre",10,"Tempest")
+deliver("Concord","Ore",30); deliver("Concord","AlloyIngot",4,{Smithing=1}); deliver("Concord","BrassIngot",4,{Smithing=15}); deliver("Concord","SunsteelIngot",3,{Smithing=30})
+deliver("Concord","GolemCore",1,{Combat=22},"Skyreach")
+-- Thornveil Circle: the meadows and Windpine.
+kill("Circle","BramblebackBoar",15); kill("Circle","Thornling",12); kill("Circle","BarkStalker",8); kill("Circle","GaleSprite",8)
+gather("Circle","Timber",25); gather("Circle","Herb",25); gather("Circle","WindpineLog",18); gather("Circle","Sunwheat",18)
+gather("Circle","EmberoakLog",14,"Windpine"); gather("Circle","Glowcap",14,"Windpine"); gather("Circle","Moonbloom",10,"Gloomhollow")
+deliver("Circle","Herb",30); deliver("Circle","Timber",30); deliver("Circle","BeastHide",8); deliver("Circle","WindpineLog",15,{Woodcutting=15})
+deliver("Circle","Tonic",3,{Alchemy=1})
+-- Galewake Corsairs: the quay, Tidewater and the Tempest.
+kill("Corsairs","StormHarrier",6); kill("Corsairs","ReefLurker",8); kill("Corsairs","MirrorscaleBasilisk",5); kill("Corsairs","TempestWraith",4)
+kill("Corsairs","ThundercragGargant",3); kill("Corsairs","StarbornSentinel",3)
+gather("Corsairs","Fish",25); gather("Corsairs","Glassfin",20); gather("Corsairs","Stormeel",14,"Tidewater"); gather("Corsairs","Lanternray",10,"Tidewater")
+gather("Corsairs","AbyssKoi",8,"Tidewater")
+deliver("Corsairs","Fish",30); deliver("Corsairs","CookedFish",8,{Cooking=1}); deliver("Corsairs","Glassfin",15,{Fishing=15}); deliver("Corsairs","StormFeather",6,{Combat=18},"Windpine")
+deliver("Corsairs","Stormeel",10,{Fishing=30},"Tidewater")
+-- ctx = {levels={[skill]=level}, regions={[regionId]=true}} (gated regions only matter).
+function FA.eligible(t, ctx)
+	ctx = ctx or {}
+	local levels = ctx.levels or {}
+	for skill, lvl in pairs(t.levels or {}) do if (levels[skill] or 1) < lvl then return false end end
+	if t.region then
+		local r = Data.RegionById[t.region]
+		if r and r.requires and next(r.requires) and not (ctx.regions and ctx.regions[t.region]) then return false end
+	end
+	return true
+end
+-- Deterministic board for one faction (day + salt + context): FA.TASKS ids.
+local function stream(seed)
+	local s = math.floor(math.abs(tonumber(seed) or 1)) % 2147483646 + 1
+	return function()
+		s = (s * 16807) % 2147483647
+		return (s - 1) / 2147483646
+	end
+end
+FA.KindOrder = {"kill","gather","deliver"}
+function FA.draw(faction, day, salt, ctx)
+	local fi = table.find(FA.Order, faction) or 1
+	local rng = stream((tonumber(day) or 0) * 6007 + (tonumber(salt) or 0) * 7727 + fi * 911 + 17)
+	local byKind, all = {kill={},gather={},deliver={}}, {}
+	for _, t in ipairs(FA.Tasks) do
+		if t.faction == faction and FA.eligible(t, ctx) then table.insert(byKind[t.kind], t.id); table.insert(all, t.id) end
+	end
+	local out, used = {}, {}
+	for _, kind in ipairs(FA.KindOrder) do
+		local pool = byKind[kind]
+		local left = {}
+		for _, id in ipairs(pool) do if not used[id] then table.insert(left, id) end end
+		if #left == 0 then
+			for _, id in ipairs(all) do if not used[id] then table.insert(left, id) end end
+		end
+		if #left > 0 then
+			local id = left[1 + math.floor(rng() * #left)]
+			table.insert(out, id); used[id] = true
+		end
+	end
+	return out
+end
+-- Reward for a task under the current pledge: rep and sigils scale with the
+-- pledge multiplier; coins and XP do not (the work is the same).
+function FA.reward(t, pledge)
+	local m = FA.mult(t.faction, pledge)
+	return {rep=math.floor(t.rep * m),sigils=math.max(1, math.floor(t.sigils * m)),coins=t.coins or 0,xp=t.xp or 0,skill=t.skill}
+end
+-- Shop: rank = index into FA.Ranks. kind: title (cosmetic), lamp (XP in one
+-- of the faction's lampSkills, repeatable), charm (accessory), crest (accessory
+-- upgrade: consumes the faction's charm).
+FA.LAMP_HOURS = 0.4 -- one lamp = this many hours of level-appropriate solo XP (Minigames model)
+FA.Shop, FA.ShopById = {}, {}
+local function shop(faction, def)
+	def.faction = faction
+	table.insert(FA.Shop, def)
+	FA.ShopById[def.id] = def
+end
+local function accessory(id, name, rarity, stats, text, faction)
+	local r = Data.Rarity[rarity]
+	Data.Items[id] = {id=id,name=name,kind="accessory",rarity=rarity,color=r.color,stats=stats,value=40 * r.rank ^ 2,faction=faction,
+		description="Accessory. Magical Power " .. r.power .. ". " .. text}
+end
+accessory("EmberwrightCharm","Emberwright Charm","Rare",{miningSpeed=20,defense=8},"Sworn of the Emberwright Concord.","Concord")
+accessory("EmberwrightCrest","Emberwright Crest","Epic",{miningSpeed=40,defense=15,strength=4},"Luminary of the Emberwright Concord (replaces the Charm).","Concord")
+accessory("ThornveilCharm","Thornveil Charm","Rare",{health=25,speed=3},"Sworn of the Thornveil Circle.","Circle")
+accessory("ThornveilCrest","Thornveil Crest","Epic",{health=50,speed=6,defense=6},"Luminary of the Thornveil Circle (replaces the Charm).","Circle")
+accessory("GalewakeCharm","Galewake Charm","Rare",{critDamage=8,speed=3},"Sworn of the Galewake Corsairs.","Corsairs")
+accessory("GalewakeCrest","Galewake Crest","Epic",{critDamage=15,speed=5,critChance=3},"Luminary of the Galewake Corsairs (replaces the Charm).","Corsairs")
+for _, f in ipairs({{"Concord","Emberwright","Concord Journeyman","Forgewarden"},{"Circle","Thornveil","Circle Seedkeeper","Grovewarden"},{"Corsairs","Galewake","Corsair Deckhand","Stormcaptain"}}) do
+	local id = f[1]
+	shop(id, {id=id.."Title1",kind="title",title=f[3],rank=2,sigils=40,coins=0})
+	shop(id, {id=id.."Lamp",kind="lamp",rank=3,sigils=100,coins=0})
+	shop(id, {id=id.."Charm",kind="charm",item=f[2].."Charm",rank=3,sigils=150,coins=10000})
+	shop(id, {id=id.."Title2",kind="title",title=f[4],rank=4,sigils=250,coins=0})
+	shop(id, {id=id.."Crest",kind="crest",item=f[2].."Crest",consumes=f[2].."Charm",rank=5,sigils=400,coins=50000})
+end
+function FA.lampXp(skill, level)
+	local MG = Data.Minigames
+	if not (MG and MG.soloCombatXpPerHour) then return 0 end
+	return math.floor(FA.LAMP_HOURS * MG.soloCombatXpPerHour(math.clamp(tonumber(level) or 1, 1, 99)) + 0.5)
+end
+-- Purchase check (pure). rec = p.factions; returns entry or nil, reason.
+function FA.canBuy(id, rec, coins, skill, levels)
+	local e = FA.ShopById[id]
+	if not e then return nil, "Choose a faction reward." end
+	rec = type(rec) == "table" and rec or {}
+	local f = FA.Factions[e.faction]
+	local rank = FA.rankOf((rec.rep or {})[e.faction])
+	if rank < e.rank then return nil, "Needs " .. FA.Ranks[e.rank].name .. " standing with the " .. f.name .. "." end
+	if e.rank > FA.OPEN_RANK and rec.pledge ~= e.faction then return nil, "Pledge to the " .. f.name .. " to buy " .. FA.Ranks[e.rank].name .. " rewards." end
+	if e.kind == "title" and type(rec.unlocks) == "table" and rec.unlocks[id] then return nil, "You already hold this title." end
+	if e.kind == "lamp" then
+		if not (type(skill) == "string" and table.find(f.lampSkills, skill)) then return nil, "Choose a skill this lamp can train: " .. table.concat(f.lampSkills, ", ") .. "." end
+	end
+	if ((rec.sigils or {})[e.faction] or 0) < e.sigils then return nil, "Needs " .. e.sigils .. " " .. f.short .. " sigils." end
+	if (tonumber(coins) or 0) < (e.coins or 0) then return nil, "Needs " .. e.coins .. " coins." end
+	return e
+end
+-- Balance model (verify-exploration.luau prints and bounds it). Minutes of
+-- play per task: kills at MG.SOLO.killsPerHour, harvests at respawn + the
+-- gather overhead, deliveries 1 minute; plus TRAVEL seconds per task.
+FA.MODEL_TRAVEL = 60
+function FA.taskSeconds(t)
+	local MG = Data.Minigames
+	local travel = FA.MODEL_TRAVEL
+	if t.kind == "kill" then return travel + t.amount * 3600 / MG.SOLO.killsPerHour end
+	if t.kind == "gather" then
+		local r = resourceDef(t.target)
+		return travel + t.amount * ((r and r.respawn or 3) + MG.SOLO.gatherOverhead)
+	end
+	return travel
+end
+end
+-- <<< END Exploration & Factions <<<
+
+------------------------------------------------------------------------------
 -- >>> BEGIN Dungeon endgame (Dungeon Depth team; append-only section) >>>
 -- Observatory endgame on top of Floors I-VII and the Dungeon classes section:
 --   * Floors VI-VII: cumulative room puzzles (VI Mirror Gallery; VII adds the

@@ -33,7 +33,8 @@
         "Gestures": { "$path": "animate.client.lua" },
         "Dialogue": { "$path": "npc.client.lua" },
         "Wayfinder": { "$path": "nav.client.lua" },
-        "Companions": { "$path": "pets.client.lua" }
+        "Companions": { "$path": "pets.client.lua" },
+        "AetherMotes": { "$path": "motes.client.lua" }
       }
     },
     "Lighting": {

@@ -3757,3 +3757,92 @@ do
 	end
 end
 -- End Crafting section.
+
+-------------------------------------------------------------------------------
+-- Exploration & Factions (Exploration & Factions team; self-contained section).
+-- Mote Shrines: one Waystone per region (Data.Exploration.ShrineIsle); prompt
+-- IsleAction "moteShrine", IsleItem <region>, IsleRegion <region> (the server
+-- claims milestone steps and the region bonus); triggering also sets the
+-- player's IsleStation "Motes" and bumps IsleStationVisit (Journal › Motes).
+-- Faction standards: one Banner per faction on its home island; prompt
+-- IsleAction "factionBoard", IsleItem <faction>, IsleStation "Factions".
+-- The 78 Aether Motes themselves are never built here: motes.client.lua draws
+-- them locally from Data.Exploration (no server parts). Parts: 9 shrine
+-- stones + 3 standards + 4 waypoint anchors (Waypoint_MoteShrine on Compass
+-- Quay, Waypoint_Faction_<id>) = 16. Models carry ExploreContent = true.
+-------------------------------------------------------------------------------
+do
+	local EX,FA=Data.Exploration,Data.Factions
+	if EX and FA then
+		local FLOOR={Meadow=true,["Floating foundation"]=true,["Mineral stratum"]=true,["Lower basalt"]=true,["Fractured cliff"]=true,
+			["Keel rock"]=true,["Edge guard"]=true,["Aether vein"]=true,["Shore ledge"]=true,Path=true,Wildflowers=true}
+		local taken={}
+		local function blocked(host,pos,radius)
+			for _,q in ipairs(taken) do if V(pos.X-q.X,0,pos.Z-q.Z).Magnitude<radius+6 then return true end end
+			for _,obj in ipairs(host:GetDescendants()) do
+				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
+					local cf,sz=obj.CFrame,obj.Size
+					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
+					local c=cf.Position
+					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
+					local dz=math.max(0,math.abs(pos.Z-c.Z)-ext("Z"))
+					local ey=ext("Y")
+					if dx*dx+dz*dz<radius*radius and c.Y+ey>pos.Y+.3 and c.Y-ey<pos.Y+9 then return true end
+				end
+			end
+			return false
+		end
+		local function spot(host,angle,radius)
+			local IC,R=host:GetAttribute("IslandCenter"),host:GetAttribute("IslandRadius")
+			local first
+			for _,f in ipairs({.5,.4,.6,.3,.68}) do
+				for k=0,23 do
+					local a=math.rad(angle+(if k%2==0 then 1 else -1)*math.ceil(k/2)*15)
+					local pos=IC+V(math.cos(a),0,math.sin(a))*R*f
+					first=first or pos
+					if not blocked(host,pos,radius) then table.insert(taken,pos) return pos end
+				end
+			end
+			table.insert(taken,first)
+			return first
+		end
+		local function opens(q,page)
+			q.Triggered:Connect(function(player)
+				player:SetAttribute("IsleStation",page)
+				player:SetAttribute("IsleStationVisit",(player:GetAttribute("IsleStationVisit") or 0)+1)
+			end)
+		end
+		local moteTint=C(EX.MOTE.color)
+		for i,region in ipairs(EX.RegionOrder) do
+			local host=islandsFolder:FindFirstChild(EX.ShrineIsle[region])
+			if host then
+				local pos=spot(host,35+i*40,4)
+				local m=group("Mote Shrine",host)
+				m:SetAttribute("ExploreContent",true)
+				m:SetAttribute("MoteShrine",region)
+				local stone=block(m,"Mote shrine stone",pos+V(0,2.5,0),V(2.4,5,2.4),lighten(rock,.2),ST,true)
+				meshSlot(stone,"Waystone",moteTint)
+				local q=prompt(stone,"Commune","Mote Shrine · "..(Data.RegionById[region] and Data.RegionById[region].name or region),"moteShrine",region)
+				q:SetAttribute("IsleRegion",region)
+				opens(q,"Motes")
+				if region=="Hub" then anchor(m,"Waypoint_MoteShrine",pos+V(0,0,-5),pos) end
+			end
+		end
+		for i,id in ipairs(FA.Order) do
+			local def=FA.Factions[id]
+			local host=islandsFolder:FindFirstChild(def.isle)
+			if host then
+				local pos=spot(host,300+i*25,4)
+				local m=group("Faction standard "..def.short,host)
+				m:SetAttribute("ExploreContent",true)
+				m:SetAttribute("Faction",id)
+				local standard=block(m,"Faction standard",pos+V(0,3,0),V(2.4,6,.4),C(def.color),Enum.Material.Fabric,true)
+				meshSlot(standard,"Banner",C(def.color))
+				local q=prompt(standard,"Hail",def.name,"factionBoard",id)
+				opens(q,"Factions")
+				anchor(m,"Waypoint_Faction_"..id,pos+V(0,0,-5),pos)
+			end
+		end
+	end
+end
+-- End Exploration & Factions section.
