@@ -1036,7 +1036,7 @@ local runChecks=checks-ruleChecks
 -- Part 3: server.server.lua Classes block (verify-gameplay.luau harness).
 ------------------------------------------------------------------------------
 do
-	local src=fs.readFile("verify-gameplay.luau")
+	local src=(fs.readFile("verify-gameplay.luau"):gsub("\r\n","\n"))
 	local cut=src:find("local checks=0\nlocal function eq",1,true)
 	assert(cut,"verify-gameplay harness marker")
 	local h=luau.load(src:sub(1,cut-1).."\nreturn {player=player,cmd=cmd,allObjects=allObjects,data=data,advance=advance,services=services}",{debugName="gameplay-harness",injectGlobals=true})()
@@ -1145,7 +1145,7 @@ local serverChecks=checks-ruleChecks-runChecks
 -- Part 4: ui.client.lua Hunt > Dungeon page and party HUD (verify-ui.luau harness).
 ------------------------------------------------------------------------------
 do
-	local src=fs.readFile("verify-ui.luau")
+	local src=(fs.readFile("verify-ui.luau"):gsub("\r\n","\n"))
 	local cut=src:find("------------------------------------------------------------------------------\n-- Checks",1,true)
 	assert(cut,"verify-ui harness marker")
 	local h=luau.load(src:sub(1,cut-1).."\nreturn {run=run,snapshot=snapshot,find=find,press=press,noFailures=noFailures,new=new}",{debugName="ui-harness",injectGlobals=true})()
