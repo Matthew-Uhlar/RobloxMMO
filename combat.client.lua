@@ -1378,6 +1378,8 @@ fx.OnClientEvent:Connect(function(kind, payload)
 	end
 end)
 gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(function() if WBH.visible then WBH.layout() end end)
+-- The damage board lives in the right column: step left of (or back from) a docked satchel.
+player:GetAttributeChangedSignal("IsleSatchelOpen"):Connect(function() if WBH.visible then WBH.layout() end end)
 RunService.RenderStepped:Connect(function()
 	if not WBH.visible then return end
 	local now = os.clock()
