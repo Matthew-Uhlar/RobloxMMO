@@ -3411,7 +3411,16 @@ do
 		after.depth.skills.Mining.xp += 10
 		ui.update.OnClientEvent:Fire(after)
 		assert(drop.Text == "", "XP drops can be switched off in Settings")
-		checks += 3
+		-- Area discovery card: not for the spawn region, once per new region.
+		ui.player:SetAttribute("IsleRegionHere", "Hub")
+		assert(not S.areaCard.Visible, "no discovery card where you spawn")
+		ui.player:SetAttribute("IsleRegionHere", "Quarry")
+		assert(S.areaCard.Visible and H.find(S.areaCard, "AreaTitle").Text == string.upper(Data.RegionById.Quarry.name) and H.find(S.areaCard, "AreaSubtitle").Text == "NEW AREA DISCOVERED!", "new area title card")
+		S.areaCard.Visible = false
+		ui.player:SetAttribute("IsleRegionHere", "Hub")
+		ui.player:SetAttribute("IsleRegionHere", "Quarry")
+		assert(not S.areaCard.Visible, "a region is discovered once")
+		checks += 6
 	end
 
 	-- Sidebar, action bar, menu grid.

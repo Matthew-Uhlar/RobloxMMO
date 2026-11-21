@@ -45,6 +45,12 @@ local gui = make("ScreenGui", player:WaitForChild("PlayerGui"), {Name = "IsleHud
 local S = {snap = nil, items = {}, order = {}, page = 1, search = "", sort = "rarity", view = "Items", open = false, pinned = false,
 	selected = nil, confirm = nil, drag = nil, menuFor = nil, slots = {}, doll = {}, menuButtons = {}}
 local PER_PAGE = 28
+S.prompts = 0
+pcall(function()
+	local prompts = game:GetService("ProximityPromptService")
+	prompts.PromptShown:Connect(function() S.prompts += 1 end)
+	prompts.PromptHidden:Connect(function() S.prompts = math.max(0, S.prompts - 1) end)
+end)
 local function tbl(v) return if type(v) == "table" then v else {} end
 local function screen()
 	local size = gui.AbsoluteSize
@@ -559,6 +565,44 @@ end
 xpEvents.Event:Connect(showGains)
 
 ------------------------------------------------------------------------------
+-- Area discovery title card: the first time this session the Wayfinder reports
+-- a new region (IsleRegionHere), a big centred title with "NEW AREA DISCOVERED!".
+------------------------------------------------------------------------------
+local areaCard = make("Frame", gui, {Name = "AreaCard", AnchorPoint = Vector2.new(0.5, 0), BackgroundTransparency = 1, Size = UDim2.fromOffset(520, 64), Visible = false})
+local areaTitle = T.label(areaCard, {Name = "AreaTitle", Size = UDim2.new(1, 0, 0, 34), Font = T.font.display, TextSize = 24, TextColor3 = C.gold,
+	TextXAlignment = Enum.TextXAlignment.Center, TextStrokeTransparency = 0, TextStrokeColor3 = C.void, TextTruncate = Enum.TextTruncate.None})
+local areaSub = T.label(areaCard, {Name = "AreaSubtitle", Text = "NEW AREA DISCOVERED!", Position = UDim2.fromOffset(0, 38), Size = UDim2.new(1, 0, 0, 18),
+	Font = T.font.display, TextSize = 11, TextColor3 = T.rgb("8EE05A"), TextXAlignment = Enum.TextXAlignment.Center, TextStrokeTransparency = 0.2, TextStrokeColor3 = C.void})
+S.discovered, S.areaToken = {}, 0
+local function discover()
+	local region = player:GetAttribute("IsleRegionHere")
+	if type(region) ~= "string" or region == "Skyways" or S.discovered[region] then return end
+	S.discovered[region] = true
+	if S.firstRegion == nil then S.firstRegion = region return end -- where you spawn is not a discovery
+	local def = Data.RegionById and Data.RegionById[region]
+	local L = layout()
+	areaTitle.Text = string.upper(if def then def.name elseif region == "Home" then "Your Isle" else region)
+	areaTitle.TextSize = if L.short then 16 else 24
+	areaSub.TextSize = if L.short then 9 else 11
+	-- Under the top lane (target panel + event banner), above the hotbar band.
+	areaCard.Position = UDim2.new(0.5, 0, 0, if L.short then 112 else 150)
+	areaCard.Size = UDim2.fromOffset(math.min(520, L.lane.right - L.lane.left), 64)
+	areaCard.Visible = true
+	areaTitle.TextTransparency, areaSub.TextTransparency = 0, 0
+	S.areaToken += 1
+	local token = S.areaToken
+	task.delay(3.2, function()
+		if token ~= S.areaToken then return end
+		TweenService:Create(areaTitle, TweenInfo.new(0.6), {TextTransparency = 1, TextStrokeTransparency = 1}):Play()
+		TweenService:Create(areaSub, TweenInfo.new(0.6), {TextTransparency = 1, TextStrokeTransparency = 1}):Play()
+		task.delay(0.65, function() if token == S.areaToken then areaCard.Visible = false; areaTitle.TextStrokeTransparency, areaSub.TextStrokeTransparency = 0, 0.2 end end)
+	end)
+end
+player:GetAttributeChangedSignal("IsleRegionHere"):Connect(discover)
+discover()
+S.areaCard = areaCard
+
+------------------------------------------------------------------------------
 -- Sky Chart: the floating islands as illustrated tiles with warp points.
 ------------------------------------------------------------------------------
 local chartShade = make("TextButton", gui, {Name = "ChartShade", Text = "", AutoButtonColor = false, BackgroundColor3 = C.void, BackgroundTransparency = 0.35,
@@ -752,7 +796,9 @@ end)
 Input.InputBegan:Connect(function(input, used)
 	if used then return end
 	local key = input.KeyCode
-	if key == Enum.KeyCode.E or key == Enum.KeyCode.Tab then setOpen(not S.open)
+	-- E is also the default ProximityPrompt key: while a prompt is on screen it
+	-- belongs to the prompt (Tab always works).
+	if (key == Enum.KeyCode.E and S.prompts <= 0) or key == Enum.KeyCode.Tab then setOpen(not S.open)
 	elseif key == Enum.KeyCode.Escape then hideMenu(); setChart(false)
 	elseif input.UserInputType == Enum.UserInputType.MouseButton1 and menu.Visible then
 		task.defer(function() if menu.Visible and S.menuFor and not S.confirm then hideMenu() end end)
