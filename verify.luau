@@ -14,6 +14,7 @@ local bindings = {
 	AetherArt = "art/PropCatalog.lua",
 	MaterialArt = "art/MaterialArt.lua", AetherWorldArt = "art/WorldCatalog.lua",
 	AetherData = "shared/GameData.lua", AetherProgression = "shared/Progression.lua",
+	AetherUiTheme = "shared/UiTheme.lua", AetherMapArt = "shared/MapArt.lua",
 	AetherTrails = "trails.lua",
 }
 local count = 0
@@ -22,7 +23,7 @@ for _, obj in place:GetDescendants() do
 	if not file then continue end
 	assert(obj.Source:gsub("\r\n","\n") == fs.readFile(file):gsub("\r\n","\n"), file .. " is stale")
 	local client = file:find(".client.", 1, true)
-	local shared = obj.Name=="AetherArt" or obj.Name=="AetherWorldArt" or obj.Name=="MaterialArt" or obj.Name=="AetherData" or obj.Name=="AetherProgression"
+	local shared = obj.Name=="AetherArt" or obj.Name=="AetherWorldArt" or obj.Name=="MaterialArt" or obj.Name=="AetherData" or obj.Name=="AetherProgression" or obj.Name=="AetherUiTheme" or obj.Name=="AetherMapArt"
 	-- Server-only modules (never replicated): the Treasure Trails step pool.
 	local serverModule = obj.Name=="AetherTrails"
 	assert(obj.ClassName == (if shared or serverModule then "ModuleScript" elseif client then "LocalScript" else "Script"), file .. " class")

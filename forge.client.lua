@@ -591,6 +591,7 @@ local function forge(part)
 		clone.Size = size
 		clone.CFrame = meshFrame
 		clone:SetAttribute("ShapeOf", shapeName)
+		clone:SetAttribute("ShapeTriangles", entry.triangles) -- Map Art (§32) triangle budget
 		clone.Parent = part.Parent
 		return clone
 	end)
@@ -764,6 +765,37 @@ if MeshForgeTest then
 				box = box, boxFrame = boxFrame, siblings = siblings or {}}
 		end}
 	return
+end
+-- Map Art (§32): the Sky Chart's miniature asks for a forged copy of a far
+-- island hull or landmark: ReplicatedStorage.MeshForgeLocal:Invoke("visual",
+-- host) -> an unparented MeshPart sized and placed like the world's, and its
+-- triangle count. The template is pinned once (users + 1) so LRU eviction never
+-- empties a mesh the cached chart still shows.
+local function chartVisual(part)
+	local shapeName = shapeOf(part)
+	if not shapeName or stopReason then return nil end
+	local data, catalog = lookup(shapeName)
+	if not data then return nil end
+	local tint = templateTint(shapeName, data, part:GetAttribute("Tint"))
+	local entry = template(shapeName, data, catalog, tint) or nearestVariant(shapeName, tint)
+	if not entry then return nil end
+	local size, meshFrame = layout(part, data, ownedSiblings(part))
+	local clone = entry.part:Clone()
+	clone.Name = part.Name .. " Mesh"
+	clone.Size, clone.CFrame = size, meshFrame
+	clone:SetAttribute("ShapeOf", shapeName)
+	clone:SetAttribute("ShapeTriangles", entry.triangles)
+	if not entry.chartPinned then entry.chartPinned = true; entry.users += 1 end
+	return clone, entry.triangles
+end
+do
+	local api = ReplicatedStorage:FindFirstChild("MeshForgeLocal") or Instance.new("BindableFunction")
+	api.Name = "MeshForgeLocal"
+	api.OnInvoke = function(method, part)
+		if method == "visual" and typeof(part) == "Instance" and part:IsA("BasePart") then return chartVisual(part) end
+		return nil
+	end
+	api.Parent = ReplicatedStorage
 end
 print(string.format("[MeshForge] %s: %d templates (%d tris cached), %d meshes placed (%d tris), %d skipped",
 	if stopReason then stopReason else "ready", stats.templates, stats.templateTriangles, stats.instances, stats.placedTriangles, stats.skipped))

@@ -137,3 +137,12 @@ Fonts are stand-ins (DejaVu Serif Bold for Merriweather/Fondamento, Inter Bold
 for BuilderSans) and wider than Roblox's, so a label may wrap here that fits in
 one line in Studio. `--night` darkens the scene and keeps the faces ~80% lit
 (LightInfluence 0.25). Confirm materials, fonts and night glow in Studio.
+
+## Map art (§32)
+
+`map-desktop-SkyChart.png` (a hovered isle: halo, raise, caption), `map-phone-SkyChart.png`,
+`desktop- / phone- / compact-WarpMap.png` (an info card open) and `map-desktop-Minimap-3x.png`
+(the minimap enlarged 3x). The world is the real `world.server.lua` build
+(`tools/world-harness.luau`); the Sky Chart's ViewportFrame is drawn by a small z-buffered
+renderer in `tools/rasterize-ui.py` (primitives only, flat light: forged meshes, materials and
+soft lighting exist only in Studio). Regenerate with `lune run tools/render-ui.luau build/screenshots WarpMap`.

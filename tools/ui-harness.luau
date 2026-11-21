@@ -23,6 +23,10 @@ local Catalog = loadModule("art/PropCatalog.lua")
 function H.loadTheme(env)
 	return luau.load(fs.readFile("shared/UiTheme.lua"), { debugName = "shared/UiTheme.lua", environment = env, injectGlobals = true })()
 end
+-- Map Art (shared/MapArt.lua, §32) in a script's environment (its Instance.new is the mock's).
+function H.loadMapArt(env)
+	return luau.load(fs.readFile("shared/MapArt.lua"), { debugName = "shared/MapArt.lua", environment = env, injectGlobals = true })()
+end
 H.Data, H.Progression, H.Catalog = Data, Progression, Catalog
 
 ------------------------------------------------------------------------------
@@ -614,23 +618,31 @@ function H.runHud(size, player, shared, options)
 	local game = new("DataModel")
 	function game.GetService(_, name) return assert(services[name], name) end
 	local camera = new("Camera")
+	-- options.workspace: a table standing in for Workspace (e.g. the real Islands /
+	-- AetherIsles folders built by world.server.lua, for the Sky Chart miniature).
+	local space = options.workspace or { CurrentCamera = camera }
 	local env = {
-		game = game, workspace = { CurrentCamera = camera }, Enum = roblox.Enum, UDim = roblox.UDim, UDim2 = roblox.UDim2, Vector2 = roblox.Vector2, Vector3 = roblox.Vector3,
-		CFrame = roblox.CFrame, Color3 = roblox.Color3, ColorSequence = roblox.ColorSequence, NumberSequence = roblox.NumberSequence,
-		NumberSequenceKeypoint = roblox.NumberSequenceKeypoint, TweenInfo = { new = function() return {} end },
+		game = game, workspace = space, Enum = roblox.Enum, UDim = roblox.UDim, UDim2 = roblox.UDim2, Vector2 = roblox.Vector2, Vector3 = roblox.Vector3,
+		CFrame = roblox.CFrame, Color3 = roblox.Color3, ColorSequence = roblox.ColorSequence, ColorSequenceKeypoint = roblox.ColorSequenceKeypoint,
+		NumberSequence = roblox.NumberSequence, NumberSequenceKeypoint = roblox.NumberSequenceKeypoint, TweenInfo = { new = function() return {} end },
 		Instance = { new = function(class) return new(class) end },
+		typeof = function(value) return if data[value] then "Instance" else typeof(value) end,
 		task = baseTask(options.delays),
 	}
 	local theme = H.loadTheme(env)
+	local mapArt = H.loadMapArt(env)
 	env.require = function(target)
 		if target.Name == "AetherUiTheme" then return theme end
+		if target.Name == "AetherMapArt" then return mapArt end
 		return Data
 	end
 	if not replicated:FindFirstChild("AetherUiTheme") then new("ModuleScript", { Name = "AetherUiTheme" }).Parent = replicated end
 	if not replicated:FindFirstChild("AetherData") then new("ModuleScript", { Name = "AetherData" }).Parent = replicated end
+	if options.mapArt ~= false and not replicated:FindFirstChild("AetherMapArt") then new("ModuleScript", { Name = "AetherMapArt" }).Parent = replicated end
 	luau.load(fs.readFile("hud.client.lua"), { debugName = "hud.client.lua", environment = env, injectGlobals = true })()
 	local api = player:FindFirstChild("IsleHudApi")
-	return { gui = player:FindFirstChild("PlayerGui"):FindFirstChild("IsleHud"), state = api.OnInvoke("state"), api = api, theme = theme, input = services.UserInputService }
+	return { gui = player:FindFirstChild("PlayerGui"):FindFirstChild("IsleHud"), state = api.OnInvoke("state"), api = api, theme = theme, input = services.UserInputService,
+		mapArt = mapArt }
 end
 
 -- Loads nav.client.lua (the Wayfinder minimap) with the world's island layout
@@ -642,6 +654,9 @@ function H.runNav(size, player, shared, options)
 	local replicated = shared or new("ReplicatedStorage")
 	local function signal() return newSignal() end
 	local islands = new("Folder", { Name = "Islands" })
+	-- options.islands: a real Workspace.Islands (tools/world-harness.luau) for
+	-- scans and the minimap plates; the mock folder still carries the signals.
+	local realIslands = options.islands
 	local env0 = { Instance = { new = function(class) return new(class) end }, Color3 = roblox.Color3, Enum = roblox.Enum, UDim2 = roblox.UDim2, UDim = roblox.UDim,
 		Vector2 = roblox.Vector2, ColorSequence = roblox.ColorSequence, NumberSequence = roblox.NumberSequence, NumberSequenceKeypoint = roblox.NumberSequenceKeypoint }
 	local theme = H.loadTheme(env0)
@@ -669,7 +684,7 @@ function H.runNav(size, player, shared, options)
 	local workspace = {
 		CurrentCamera = camera, DescendantAdded = signal(), DescendantRemoving = signal(), ChildAdded = signal(), ChildRemoved = signal(),
 		Islands = islands, GetDescendants = function() return {} end,
-		FindFirstChild = function(_, name) if name == "Islands" then return islands elseif name == "Townsfolk" then return folk end return nil end,
+		FindFirstChild = function(_, name) if name == "Islands" then return realIslands or islands elseif name == "Townsfolk" then return folk end return nil end,
 		GetAttribute = function() return nil end, GetAttributeChangedSignal = function() return signal() end,
 		WaitForChild = function(_, name) if name == "Townsfolk" then return folk end return nil end,
 	}
@@ -690,10 +705,13 @@ function H.runNav(size, player, shared, options)
 		task = baseTask(),
 	}
 	local navTheme = H.loadTheme(env)
+	local navArt = H.loadMapArt(env)
 	env.require = function(target)
 		if target and target.Name == "AetherUiTheme" then return navTheme end
+		if target and target.Name == "AetherMapArt" then return navArt end
 		return Data
 	end
+	if options.mapArt ~= false and not replicated:FindFirstChild("AetherMapArt") then new("ModuleScript", { Name = "AetherMapArt" }).Parent = replicated end
 	if not replicated:FindFirstChild("AetherUiTheme") then new("ModuleScript", { Name = "AetherUiTheme" }).Parent = replicated end
 	if not replicated:FindFirstChild("AetherData") then new("ModuleScript", { Name = "AetherData" }).Parent = replicated end
 	if not replicated:FindFirstChild("IsleAction") then
@@ -846,7 +864,28 @@ function H.dump(object)
 		end
 	end
 	local node = { class = d.props.ClassName, props = props, children = {} }
-	if d.props.ClassName == "ViewportFrame" then
+	if d.props.ClassName == "ViewportFrame" and d.attrs.MapArtScene and d.props.CurrentCamera and d.props.CurrentCamera.CFrame then
+		-- A 3D scene (the Sky Chart miniature, §32): camera, light and every part,
+		-- for the rasterizer's z-buffered approximation.
+		local camera = d.props.CurrentCamera
+		local scene = { camera = { camera.CFrame:GetComponents() }, fov = camera.FieldOfView or 70, parts = {},
+			ambient = encode(d.props.Ambient), light = encode(d.props.LightColor),
+			lightDirection = d.props.LightDirection and { d.props.LightDirection.X, d.props.LightDirection.Y, d.props.LightDirection.Z } or nil }
+		for _, child in ipairs(d.children) do
+			if child.ClassName == "Model" then
+				for _, part in ipairs(child:GetDescendants()) do
+					local props = data[part].props
+					if props.Size and props.CFrame and (props.Transparency or 0) < 0.95 then
+						table.insert(scene.parts, { class = props.ClassName, shape = props.Shape and props.Shape.Name or nil,
+							size = { props.Size.X, props.Size.Y, props.Size.Z }, cf = { props.CFrame:GetComponents() },
+							color = encode(props.Color or roblox.Color3.new(0.6, 0.6, 0.6)), alpha = props.Transparency or 0,
+							material = props.Material and props.Material.Name or nil })
+					end
+				end
+			end
+		end
+		node.scene = scene
+	elseif d.props.ClassName == "ViewportFrame" then
 		for _, child in ipairs(d.children) do
 			if child.ClassName == "Model" then
 				node.shape = child.Name

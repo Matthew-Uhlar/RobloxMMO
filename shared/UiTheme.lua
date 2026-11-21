@@ -14,7 +14,7 @@
 --              (context menu → server verbs), Theme.hudLayout(w, h, opts) (HUD
 --              lanes, incl. the bottom-centre hotbar gap), Theme.hotbarStyle()
 --              (STYLE table for hotbar.client.lua), Theme.isleClock(t, Data),
---              Theme.WorldMap (warp map tiles), Theme.sortItems
+--              Theme.WorldMap (warp map tiles), Theme.sortItems, Theme.MapArt (§32)
 -- Everything here builds from Frames, UIStroke, UIGradient and UICorner (no
 -- uploaded images), so it renders identically in Studio and in the headless
 -- emulator (tools/render-ui.luau). Builders never allocate per frame: callers
@@ -752,5 +752,29 @@ function Theme.mapPoint(island)
 	local b = Theme.WorldMap.bounds
 	return (island.x - b.minX) / (b.maxX - b.minX), (island.z - b.minZ) / (b.maxZ - b.minZ)
 end
+
+------------------------------------------------------------------------------
+-- Map art (§32, shared/MapArt.lua): tokens for the Sky Chart's 3D miniature
+-- archipelago and the minimap's island plates. Added only; nothing above is
+-- renamed. A bright day sky, cool stone, saturated foliage and a warm sun.
+------------------------------------------------------------------------------
+Theme.MapArt = {
+	-- Sky Chart backdrop (top → horizon) and its cloud layers.
+	skyTop = "4F8FD0", skyMid = "93C3EA", skyLow = "E3EFF7", cloud = "FFFFFF", cloudShade = "C9DBEA", haze = "F4F8FB",
+	-- Miniature lighting (ViewportFrame Ambient / LightColor / LightDirection).
+	ambient = "9AA4B8", sun = "FFF0D4", sunDirection = {-0.45, -1, -0.55},
+	-- Island names: the theme's pixel display face, white with a heavy dark outline.
+	labelFont = Theme.font.display, labelSize = 12, labelSizeCompact = 12, labelInk = "FFFFFF", labelOutline = "10151C",
+	-- Warp points: a violet aether gem with a soft glow, a light pillar and a ground pad.
+	warp = "7B4DFF", warpHi = "F0E6FF", warpGlow = "B48CFF", warpPad = "D9C8FF",
+	-- Hover halo, the player's marker, locked-island wash and the requirement chip.
+	halo = "FFE6A6", you = "6FE3C8", youInk = "05080C", lockWash = "7E8796", lockChip = "FF6B5A",
+	-- Insets for the instanced isles (home, crew haven).
+	insetFrame = "F0CE82", insetBack = "1A3550",
+	-- Minimap plates: sea, cliff shadow and rim, water, paths, foliage, roofs, icons.
+	sea = "173452", seaLow = "0D2238", shadow = "06101A", rim = "3E4856", water = "4FB6D8", waterDeep = "2D7FAE",
+	path = "E2D3AC", bridge = "8B6A4A", canopy = "3F7A45", roof = "B0533F", beacon = "B48CFF", landmark = "FFD86B",
+	npc = "F7C548", quest = "FFE14D", station = "6FE3C8",
+}
 
 return Theme

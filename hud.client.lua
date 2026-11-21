@@ -683,6 +683,18 @@ function S.pickWarp(island, frame)
 	end
 	infoGo:SetAttribute("Locked", not unlocked)
 end
+-- Map Art (§32, shared/MapArt.lua): the 3D miniature archipelago, clouds,
+-- glowing warp points, pan / zoom and insets; the tiles above stay the warp
+-- buttons (and the whole chart when the islands are not in the world yet).
+do
+	local module = ReplicatedStorage:FindFirstChild("AetherMapArt")
+	local ok, MapArt = pcall(function() return module and require(module) end)
+	if ok and type(MapArt) == "table" and MapArt.mountChart then
+		S.art = MapArt.mountChart({sky = sky, chart = chart, info = chartInfo, hint = chartHint, state = S, regionState = regionState, Theme = T, Data = Data,
+			touch = Input.TouchEnabled, Input = Input, TweenService = TweenService, workspace = workspace, player = player,
+			forge = function(host) local api = ReplicatedStorage:FindFirstChild("MeshForgeLocal") if api then return api:Invoke("visual", host) end return nil end})
+	end
+end
 infoGo.Activated:Connect(function()
 	local island = S.warpPick
 	if not island or infoGo:GetAttribute("Locked") then return end
@@ -726,6 +738,7 @@ local function refreshChart()
 		t.name.TextSize = if L.short then 10 else 12
 		t.name.Visible = not L.tiny or unlocked
 	end
+	if S.art then S.art.refresh() end -- Map Art (§32): miniature, overlay and locks
 end
 local function setChart(open)
 	chart.Visible = open

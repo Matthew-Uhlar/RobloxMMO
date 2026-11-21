@@ -173,6 +173,16 @@ round(map, 6)
 Theme.rim(map, 2)
 make("UIGradient", map, {Rotation = 90, Color = ColorSequence.new(rgb("C9D6E0"), rgb("8C99A6"))})
 local layer = make("Frame", map, {Name = "Layer", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1})
+-- Map Art (§32, shared/MapArt.lua): cached top-down island plates under the
+-- markers (region tint, tiers, water, paths, roofs, canopy, landmark, beacons).
+local mapArt = nil
+do
+	local module = ReplicatedStorage:FindFirstChild("AetherMapArt")
+	local ok, MapArt = pcall(function() return module and require(module) end)
+	if ok and type(MapArt) == "table" and MapArt.mountMinimap then
+		mapArt = MapArt.mountMinimap({layer = layer, Theme = Theme, Data = Data, touch = Input.TouchEnabled})
+	end
+end
 -- Region name + coordinates: under the map on desktop, inside its foot on phones.
 local info = make("Frame", holder, {Name = "Info", BackgroundColor3 = Theme.color.void, BackgroundTransparency = 0.25, BorderSizePixel = 0, ZIndex = 8})
 round(info, 4)
@@ -742,6 +752,7 @@ local function marker(key, kind)
 		f = make("Frame", layer, {AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(7, 7), BackgroundColor3 = color, BorderSizePixel = 0, ZIndex = 5})
 		round(f, "circle", deep)
 	end
+	if mapArt then mapArt.styleMarker(f, kind, key) end -- Map Art (§32)
 	pool[key] = f
 	seen[key] = true
 	return f
@@ -754,11 +765,13 @@ local function drawMap(me, facing)
 		return (pos.X - me.X) * scale, (pos.Z - me.Z) * scale
 	end
 	local function visible(x, y, pad) return math.abs(x) <= half + pad and math.abs(y) <= half + pad end
+	if mapArt then mapArt.draw(me, scale, half, scan.list) end -- Map Art (§32): island plates
 	for _, island in ipairs(scan.list) do
 		local x, y = project(island.center)
 		local r = island.radius * scale
 		if visible(x, y, r) then
 			local f = marker(island.model, "island")
+			if mapArt then mapArt.dress(f) end
 			f.Position = UDim2.fromOffset(half + x, half + y)
 			f.Size = UDim2.fromOffset(r * 2, r * 2)
 			local region = Data.RegionById[island.region or ""]

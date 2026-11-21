@@ -8,7 +8,8 @@
       "MaterialArt": { "$path": "art/MaterialArt.lua" },
       "AetherData": { "$path": "shared/GameData.lua" },
       "AetherProgression": { "$path": "shared/Progression.lua" },
-      "AetherUiTheme": { "$path": "shared/UiTheme.lua" }
+      "AetherUiTheme": { "$path": "shared/UiTheme.lua" },
+      "AetherMapArt": { "$path": "shared/MapArt.lua" }
     },
     "ServerStorage": {
       "AetherTrails": { "$path": "trails.lua" }

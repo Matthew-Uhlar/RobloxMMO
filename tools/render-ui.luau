@@ -20,6 +20,9 @@ local serde = require("@lune/serde")
 local stdio = require("@lune/stdio")
 local roblox = require("@lune/roblox")
 local H = require("./ui-harness")
+-- The production world (built once, lazily): the Sky Chart miniature and the
+-- minimap plates draw the real Workspace.Islands (Map Art §32).
+local WH = require("./world-harness")
 
 local outDir, filter, full, issues = "build/screenshots", nil, false, false
 local sizes = { { 1366, 768, "desktop" }, { 844, 390, "phone" }, { 730, 303, "compact" } }
@@ -94,8 +97,14 @@ local function hudScene(size, profile, message)
 	hudUi.player:SetAttribute("Mana", 118)
 	hudUi.player:SetAttribute("MaxMana", 160)
 	local combat = H.runCombat(size, hudUi.player, hudUi.replicated)
-	local layer = H.runHud(size, hudUi.player, hudUi.replicated, { touch = touch })
-	H.runNav(size, hudUi.player, hudUi.replicated, { touch = touch })
+	-- The player stands on Compass Quay (the chart's YOU marker, the minimap).
+	local character = H.new("Model", { Name = "Character" })
+	local root = H.new("Part", { Name = "HumanoidRootPart", CFrame = roblox.CFrame.new(12, 4, 20) })
+	root.Parent = character
+	hudUi.player.Character = character
+	hudUi.player:SetAttribute("CoopId", "crew-1")
+	local layer = H.runHud(size, hudUi.player, hudUi.replicated, { touch = touch, workspace = WH.workspace(H.new) })
+	H.runNav(size, hudUi.player, hudUi.replicated, { touch = touch, islands = WH.build().islands })
 	H.hotbarPreview(hudUi.playerGui, size, layer.theme, snapshotFor(profile))
 	hudUi.update.OnClientEvent:Fire(snapshotFor(profile, { message = message or "" }))
 	hudUi.hud = layer
@@ -186,12 +195,16 @@ for _, profile in ipairs(profiles) do
 			table.insert(shots, { id = "HUD", guis = screenTree(hudUi.playerGui) })
 		end
 		-- Satchel side panel, its context menu and lore tooltip, the paperdoll, the Sky Chart.
-		for _, extra in ipairs({ "HUD-Satchel", "HUD-ContextMenu", "HUD-Gear", "WarpMap" }) do
+		for _, extra in ipairs({ "HUD-Satchel", "HUD-ContextMenu", "HUD-Gear", "WarpMap", "WarpMap-Hover" }) do
 			if wanted(extra) then
 				local hudUi = hudScene(size, profile)
 				local layer = hudUi.hud
 				local S = layer.state
-				if extra == "WarpMap" then
+				if extra == "WarpMap-Hover" then
+					-- Map Art (§32): the miniature with a locked isle hovered (halo, raise, requirement).
+					layer.api.OnInvoke("chart")
+					if S.art then S.art.setHover("Gloomhollow") end
+				elseif extra == "WarpMap" then
 					layer.api.OnInvoke("chart")
 					for _, isle in ipairs(layer.theme.WorldMap.islands) do
 						if isle.id == "Skyreach" then S.pickWarp(isle, H.find(S.chart, "Isle_Skyreach")) end

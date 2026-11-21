@@ -114,7 +114,7 @@ def hex2rgb(value, default=(255, 255, 255)):
 
 
 class Node:
-    __slots__ = ("cls", "p", "kids", "comps", "shape", "tint", "uid")
+    __slots__ = ("cls", "p", "kids", "comps", "shape", "tint", "uid", "scene")
     counter = 0
 
     def __init__(self, raw):
@@ -122,6 +122,7 @@ class Node:
         self.p = raw.get("props") or {}
         self.shape = raw.get("shape")
         self.tint = raw.get("tint")
+        self.scene = raw.get("scene")
         self.kids = []
         self.comps = {}
         Node.counter += 1
@@ -731,6 +732,11 @@ class Painter:
             self.composite(patch, (x - margin) * S, (y - margin) * S, clip)
 
     def draw_viewport(self, node, x, y, w, h, clip):
+        if node.scene:
+            if w >= 4 and h >= 4:
+                patch = render_scene(node.scene, int(w * S), int(h * S))
+                self.composite(patch, x * S, y * S, clip)
+            return
         shape = self.art["shapes"].get(node.shape) if node.shape else None
         if not shape or w < 4 or h < 4:
             return
@@ -909,6 +915,132 @@ class Painter:
                 runs.append((ch, style))
         runs.append(("…", ell_style))
         return runs, width + ell
+
+
+# ---------------------------------------------------------------------------
+# 3D scenes (Map Art §32: the Sky Chart miniature). A small z-buffered
+# rasterizer over the dumped parts: blocks, wedges, cylinders (axis = local X),
+# balls; MeshParts as their boxes (forged meshes only exist in Studio). Flat
+# Lambert shading from the ViewportFrame's Ambient / LightColor / LightDirection.
+# ---------------------------------------------------------------------------
+def _part_faces(part):
+    """Local-space polygons [(verts, normal)] for a dumped part."""
+    sx, sy, sz = (c / 2 for c in part["size"])
+    shape = part.get("shape")
+    cls = part.get("class")
+    faces = []
+    if cls == "Part" and shape == "Cylinder":
+        r_y, r_z = sy, sz
+        n = 20 if max(sy, sz) > 6 else 10
+        ring = [(math.cos(2 * math.pi * i / n), math.sin(2 * math.pi * i / n)) for i in range(n)]
+        for i in range(n):
+            a, b = ring[i], ring[(i + 1) % n]
+            quad = [(-sx, a[0] * r_y, a[1] * r_z), (sx, a[0] * r_y, a[1] * r_z), (sx, b[0] * r_y, b[1] * r_z), (-sx, b[0] * r_y, b[1] * r_z)]
+            mid = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+            faces.append((quad, (0, mid[0], mid[1])))
+        faces.append(([(sx, c * r_y, s_ * r_z) for c, s_ in ring], (1, 0, 0)))
+        faces.append(([(-sx, c * r_y, s_ * r_z) for c, s_ in reversed(ring)], (-1, 0, 0)))
+        return faces
+    if cls == "Part" and shape == "Ball":
+        r = min(sx, sy, sz)
+        lat, lon = 6, 10
+        for i in range(lat):
+            t0, t1 = math.pi * i / lat - math.pi / 2, math.pi * (i + 1) / lat - math.pi / 2
+            for j in range(lon):
+                p0, p1 = 2 * math.pi * j / lon, 2 * math.pi * (j + 1) / lon
+                pts = [(math.cos(t) * math.cos(p) * r, math.sin(t) * r, math.cos(t) * math.sin(p) * r) for t, p in ((t0, p0), (t0, p1), (t1, p1), (t1, p0))]
+                tm, pm = (t0 + t1) / 2, (p0 + p1) / 2
+                faces.append((pts, (math.cos(tm) * math.cos(pm), math.sin(tm), math.cos(tm) * math.sin(pm))))
+        return faces
+    c = [(x, y, z) for x in (-sx, sx) for y in (-sy, sy) for z in (-sz, sz)]
+    if cls == "WedgePart":
+        # Vertical face at +Z, slope falling towards -Z.
+        b0, b1, b2, b3 = (-sx, -sy, -sz), (sx, -sy, -sz), (sx, -sy, sz), (-sx, -sy, sz)
+        t2, t3 = (sx, sy, sz), (-sx, sy, sz)
+        ln = math.hypot(2 * sy, 2 * sz) or 1
+        return [([b0, b1, b2, b3], (0, -1, 0)), ([b3, b2, t2, t3], (0, 0, 1)), ([b0, t3, t2, b1], (0, 2 * sz / ln, -2 * sy / ln)),
+                ([b0, b3, t3], (-1, 0, 0)), ([b1, t2, b2], (1, 0, 0))]
+    idx = {"x-": [0, 1, 3, 2], "x+": [4, 6, 7, 5], "y-": [0, 4, 5, 1], "y+": [2, 3, 7, 6], "z-": [0, 2, 6, 4], "z+": [1, 5, 7, 3]}
+    normals = {"x-": (-1, 0, 0), "x+": (1, 0, 0), "y-": (0, -1, 0), "y+": (0, 1, 0), "z-": (0, 0, -1), "z+": (0, 0, 1)}
+    return [([c[i] for i in idx[k]], normals[k]) for k in idx]
+
+
+def render_scene(scene, pw, ph):
+    import numpy as np
+    cam = scene["camera"]
+    cpos = np.array(cam[0:3], dtype=float)
+    crot = np.array(cam[3:12], dtype=float).reshape(3, 3)  # columns: right, up, back
+    fov = math.radians(scene.get("fov") or 70)
+    k = (ph / 2) / math.tan(fov / 2)
+    amb = np.array(hex2rgb(scene.get("ambient"), (150, 150, 150)), dtype=float) / 255
+    sun = np.array(hex2rgb(scene.get("light"), (255, 255, 255)), dtype=float) / 255
+    ld = np.array(scene.get("lightDirection") or (-1, -1, -1), dtype=float)
+    ld = ld / (np.linalg.norm(ld) or 1)
+    color = np.zeros((ph, pw, 3), dtype=float)
+    alpha = np.zeros((ph, pw), dtype=float)
+    zbuf = np.full((ph, pw), np.inf)
+    tris = []
+    for part in scene["parts"]:
+        pos = np.array(part["cf"][0:3], dtype=float)
+        rot = np.array(part["cf"][3:12], dtype=float).reshape(3, 3)
+        base = np.array(hex2rgb(part.get("color")), dtype=float) / 255
+        a = 1 - float(part.get("alpha") or 0)
+        neon = part.get("material") == "Neon"
+        for verts, normal in _part_faces(part):
+            wv = (rot @ np.array(verts, dtype=float).T).T + pos
+            n = rot @ np.array(normal, dtype=float)
+            centroid = wv.mean(axis=0)
+            if np.dot(n, centroid - cpos) >= 0:
+                continue  # back face
+            rel = (wv - cpos) @ crot  # camera space
+            depth = -rel[:, 2]
+            if (depth <= 0.5).any():
+                continue
+            sx = pw / 2 + rel[:, 0] / depth * k
+            sy = ph / 2 - rel[:, 1] / depth * k
+            if neon:
+                shade = np.minimum(1.0, base * 1.25 + 0.1)
+            else:
+                diffuse = max(0.0, -float(np.dot(n, ld)))
+                shade = np.minimum(1.0, base * (amb * 0.62 + sun * diffuse * 0.62) * 1.12)
+            for i in range(1, len(verts) - 1):
+                tris.append((sx[[0, i, i + 1]], sy[[0, i, i + 1]], depth[[0, i, i + 1]], shade, a))
+    # Opaque first (z-buffered), then translucent (blended, no z write).
+    for opaque_pass in (True, False):
+        for xs, ys, zs, shade, a in tris:
+            if (a >= 0.99) != opaque_pass:
+                continue
+            x0, x1 = max(0, int(math.floor(xs.min()))), min(pw - 1, int(math.ceil(xs.max())))
+            y0, y1 = max(0, int(math.floor(ys.min()))), min(ph - 1, int(math.ceil(ys.max())))
+            if x0 > x1 or y0 > y1:
+                continue
+            gx, gy = np.meshgrid(np.arange(x0, x1 + 1) + 0.5, np.arange(y0, y1 + 1) + 0.5)
+            (ax, bx, cx), (ay, by, cy) = xs, ys
+            den = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy)
+            if abs(den) < 1e-9:
+                continue
+            w0 = ((by - cy) * (gx - cx) + (cx - bx) * (gy - cy)) / den
+            w1 = ((cy - ay) * (gx - cx) + (ax - cx) * (gy - cy)) / den
+            w2 = 1 - w0 - w1
+            inside = (w0 >= -1e-6) & (w1 >= -1e-6) & (w2 >= -1e-6)
+            if not inside.any():
+                continue
+            z = w0 * zs[0] + w1 * zs[1] + w2 * zs[2]
+            zb = zbuf[y0:y1 + 1, x0:x1 + 1]
+            hit = inside & (z < zb)
+            if not hit.any():
+                continue
+            cb = color[y0:y1 + 1, x0:x1 + 1]
+            ab = alpha[y0:y1 + 1, x0:x1 + 1]
+            if opaque_pass:
+                cb[hit] = shade
+                ab[hit] = 1
+                zb[hit] = z[hit]
+            else:
+                cb[hit] = cb[hit] * (1 - a) + shade * a
+                ab[hit] = np.maximum(ab[hit], a)
+    rgba = np.dstack([np.clip(color * 255, 0, 255), np.clip(alpha * 255, 0, 255)]).astype(np.uint8)
+    return Image.fromarray(rgba, "RGBA")
 
 
 def intersect(a, b):
