@@ -3530,6 +3530,473 @@ do
 	end)
 end
 -- End Commissions & Logs block.
+------------------------------------------------------------------------------
+-- Exploration & Factions (Exploration & Factions team; self-contained block).
+-- Rules and data: Data.Exploration / Data.Factions (shared/GameData.lua,
+-- "Exploration & Factions" section); contract docs/DEPTH-CONTRACT.md §24.
+-- Verbs (item <= 64 chars):
+--   moteCollect                 pick up the nearest unfound Aether Mote within
+--                               EX.PICKUP_RADIUS of the character (the client's
+--                               item is ignored: no client-trusted ids); region
+--                               access and the mote's Agility gate are checked
+--   moteShrine "<region>"       (world prompt only) claim every pending
+--                               milestone step and that region's completion bonus
+--   moteHint                    buy a Wayglass bearing: the nearest reachable
+--                               unfound mote in the island region you stand in
+--   factionPledge "<faction>"   first pledge free; a change costs
+--                               FA.SWITCH_COST coins, needs FA.SWITCH_COOLDOWN
+--                               since the last pledge and forfeits 25% of the
+--                               old faction's reputation
+--   factionClaim "<faction>:<slot>|all"   claim finished kill/gather tasks
+--   factionDeliver "<faction>:<slot>"     hand in a delivery task's items
+--   factionBuy "<shop id>[:<skill>]"      rank/pledge-gated shop (lamps name a skill)
+--   factionTitle "<shop id>|none"         wear an owned faction title
+--   factionBoard "<faction>"    (world prompt only) greeting text
+-- Hooks: Logs.event is wrapped (kill/gather credits faction tasks too).
+-- Profile: p.motes = {found = {[id] = true}, count, steps, regions = {[region] = true}, hints};
+--   p.factions = {pledge, pledgedAt, switches, day, salt, rep, sigils, done,
+--   boards = {[faction] = {{id, progress, claimed}}}, unlocks = {[shopId] = true}, title}.
+--   Both sanitised by Explore.migrate (unknown ids dropped, numbers clamped).
+-- Perks: p.perkStats.motes (EX.perkStats). Snapshot key: exploration.
+-- Player attributes: MoteHint (mote id or ""), MoteHintUntil (os.time),
+--   FactionPledge (faction id or ""), FactionTitle (title text or "").
+------------------------------------------------------------------------------
+local Explore={verbs={moteCollect=true,moteShrine=true,moteHint=true,factionPledge=true,factionClaim=true,factionDeliver=true,
+	factionBuy=true,factionTitle=true,factionBoard=true}}
+do
+	local EX,FA=Data.Exploration,Data.Factions
+	if __ExploreHarness then __ExploreHarness(Explore) end -- headless tests only (nil in Roblox)
+	local function whole(v,limit)
+		local n=tonumber(v)
+		if not n or n~=n or n<0 then return 0 end
+		return math.floor(math.min(n,limit or 1e9))
+	end
+	-- Island centres from the world anchors (Workspace.Islands, contract §10).
+	local isles={} -- [isle name] = {center, radius, region}
+	local function isleInfo(name)
+		local info=isles[name]
+		if info then return info end
+		local root=workspace:FindFirstChild("Islands")
+		local model=root and root:FindFirstChild(name)
+		local center=model and model:GetAttribute("IslandCenter")
+		if typeof(center)~="Vector3" then return nil end
+		info={center=center,radius=tonumber(model:GetAttribute("IslandRadius")) or 0,region=EX.IsleRegion[name]}
+		isles[name]=info
+		return info
+	end
+	function Explore.motePosition(mote)
+		local info=isleInfo(mote.isle)
+		return info and info.center+Vector3.new(mote.at[1],mote.at[2],mote.at[3]) or nil
+	end
+	local function rootOf(player)
+		local character=player.Character
+		local root=character and character:FindFirstChild("HumanoidRootPart")
+		return root and root.Position or nil
+	end
+	-- The island region a position stands in (nearest island within its radius + 70 studs).
+	local function regionAt(pos)
+		local best,bestGap=nil,70
+		for name,region in pairs(EX.IsleRegion) do
+			local info=isleInfo(name)
+			if info then
+				local gap=Vector3.new(pos.X-info.center.X,0,pos.Z-info.center.Z).Magnitude-info.radius
+				if gap<bestGap then best,bestGap=region,gap end
+			end
+		end
+		return best
+	end
+	local function agility(p) return level(p.xp.Agility) end
+	------------------------------------------------------------------------
+	-- Migration.
+	------------------------------------------------------------------------
+	local function context(p)
+		local levels={}
+		for _,skill in ipairs(Data.SkillOrder) do levels[skill]=level(p.xp[skill]) end
+		local regions={}
+		for _,r in ipairs(Data.Regions) do if regionAllowed(p,r.id) then regions[r.id]=true end end
+		return {levels=levels,regions=regions}
+	end
+	local function motePerks(p)
+		if type(p.perkStats)~="table" then p.perkStats={} end
+		local m=p.motes
+		local regions=0
+		for _ in pairs(m.regions) do regions+=1 end
+		local stats=EX.perkStats(m.steps,regions)
+		p.perkStats.motes=if next(stats) then stats else nil
+	end
+	function Explore.migrate(p)
+		local m=type(p.motes)=="table" and p.motes or {}
+		local motes={found={},count=0,steps=0,regions={},hints=whole(m.hints,1e6)}
+		if type(m.found)=="table" then
+			for id,v in pairs(m.found) do if v==true and EX.MoteById[id] then motes.found[id]=true; motes.count+=1 end end
+		end
+		motes.steps=math.min(whole(m.steps,EX.STEPS),math.floor(motes.count/EX.STEP))
+		if type(m.regions)=="table" then
+			for region,v in pairs(m.regions) do
+				if v==true and EX.RegionTotal[region] then
+					local all=true
+					for _,id in ipairs(EX.MotesByRegion[region]) do if not motes.found[id] then all=false end end
+					if all then motes.regions[region]=true end
+				end
+			end
+		end
+		p.motes=motes
+		motePerks(p)
+		local f=type(p.factions)=="table" and p.factions or {}
+		local out={pledge="",pledgedAt=whole(f.pledgedAt,4e9),switches=whole(f.switches,1e6),day=whole(f.day),salt=whole(f.salt,1e6),
+			rep={},sigils={},done={},boards={},unlocks={},title="",total=whole(f.total,1e9)}
+		if type(f.pledge)=="string" and FA.Factions[f.pledge] then out.pledge=f.pledge end
+		if out.salt==0 then out.salt=1+math.floor(roll()*999999) end
+		for _,id in ipairs(FA.Order) do
+			out.rep[id]=whole(type(f.rep)=="table" and f.rep[id],FA.REP_CAP)
+			out.sigils[id]=whole(type(f.sigils)=="table" and f.sigils[id],FA.SIGIL_CAP)
+			out.done[id]=whole(type(f.done)=="table" and f.done[id],1e9)
+			local list={}
+			local saved=type(f.boards)=="table" and f.boards[id]
+			if type(saved)=="table" then
+				for _,s in ipairs(saved) do
+					local t=type(s)=="table" and FA.TaskById[s.id]
+					if t and t.faction==id and #list<FA.TASKS then table.insert(list,{id=t.id,progress=whole(s.progress,t.amount),claimed=s.claimed==true}) end
+				end
+			end
+			out.boards[id]=list
+		end
+		if type(f.unlocks)=="table" then
+			for id,v in pairs(f.unlocks) do
+				local e=v==true and FA.ShopById[id]
+				if e and e.kind=="title" then out.unlocks[id]=true end
+			end
+		end
+		if type(f.title)=="string" and out.unlocks[f.title] then out.title=f.title end
+		p.factions=out
+		Explore.refresh(p)
+	end
+	------------------------------------------------------------------------
+	-- Faction boards: UTC day roll (forward only), auto-claim on a new day.
+	------------------------------------------------------------------------
+	local function pay(p,t)
+		local f=p.factions
+		local r=FA.reward(t,f.pledge)
+		f.rep[t.faction]=math.min(FA.REP_CAP,f.rep[t.faction]+r.rep)
+		f.sigils[t.faction]=math.min(FA.SIGIL_CAP,f.sigils[t.faction]+r.sigils)
+		f.done[t.faction]+=1
+		f.total=math.min(1e9,f.total+1)
+		p.coins+=r.coins
+		if r.xp>0 and r.skill then grantXp(p,r.skill,r.xp) end
+		return r
+	end
+	local function stale(f,today) return today>f.day or #(f.boards[FA.Order[1]] or {})==0 end
+	function Explore.refresh(p)
+		local f=p.factions
+		if not f then return end
+		local today=FA.dayOf(os.time())
+		if not stale(f,today) then return end
+		if today>f.day then
+			local paid=0
+			for _,id in ipairs(FA.Order) do
+				for _,s in ipairs(f.boards[id]) do
+					local t=FA.TaskById[s.id]
+					if t and t.kind~="deliver" and not s.claimed and s.progress>=t.amount then s.claimed=true; pay(p,t); paid+=1 end
+				end
+			end
+			if paid>0 then note(p,"Yesterday's finished faction tasks were claimed for you ("..paid..").") end
+		end
+		f.day=math.max(today,f.day)
+		local ctx=context(p)
+		for _,id in ipairs(FA.Order) do
+			local list={}
+			for _,tid in ipairs(FA.draw(id,f.day,f.salt,ctx)) do table.insert(list,{id=tid,progress=0,claimed=false}) end
+			f.boards[id]=list
+		end
+	end
+	-- Task progress: kind "kill" (monster id) or "gather" (resource id).
+	function Explore.event(p,kind,id)
+		local f=p.factions
+		if not f or type(id)~="string" or (kind~="kill" and kind~="gather") then return end
+		if FA.dayOf(os.time())>f.day then Explore.refresh(p) end
+		for _,fid in ipairs(FA.Order) do
+			for _,s in ipairs(f.boards[fid]) do
+				local t=FA.TaskById[s.id]
+				if t and t.kind==kind and t.target==id and s.progress<t.amount then
+					s.progress+=1
+					if s.progress>=t.amount then note(p,FA.Factions[fid].short.." task complete: claim it in Journal › Factions.") end
+				end
+			end
+		end
+	end
+	-- Every Commissions & Logs progress event (kill bridge, harvests) also
+	-- feeds the faction boards: one hook, no new call sites.
+	local logsEvent=Logs.event
+	Logs.event=function(p,kind,id)
+		logsEvent(p,kind,id)
+		Explore.event(p,kind,id)
+	end
+	local function titleText(p)
+		local e=p.factions and p.factions.title~="" and FA.ShopById[p.factions.title]
+		return e and e.title or ""
+	end
+	local function publish(player,p)
+		local pledge=p.factions and p.factions.pledge or ""
+		if player:GetAttribute("FactionPledge")~=pledge then player:SetAttribute("FactionPledge",pledge) end
+		local title=titleText(p)
+		if player:GetAttribute("FactionTitle")~=title then player:SetAttribute("FactionTitle",title) end
+	end
+	------------------------------------------------------------------------
+	-- Motes.
+	------------------------------------------------------------------------
+	local lastPickup={} -- [player] = os.clock() of the last pickup attempt
+	local function nearestUnfound(p,pos,radius,filter)
+		local best,bestDist=nil,radius
+		for _,mote in ipairs(EX.Motes) do
+			if not p.motes.found[mote.id] and (not filter or filter(mote)) then
+				local at=Explore.motePosition(mote)
+				if at then
+					local d=(at-pos).Magnitude
+					if d<=bestDist then best,bestDist=mote,d end
+				end
+			end
+		end
+		return best,bestDist
+	end
+	local function claimable(p) return math.floor(p.motes.count/EX.STEP)-p.motes.steps end
+	local function regionDone(p,region)
+		for _,id in ipairs(EX.MotesByRegion[region] or {}) do if not p.motes.found[id] then return false end end
+		return (EX.RegionTotal[region] or 0)>0
+	end
+	local function collectMote(player,p)
+		local pos=rootOf(player)
+		if not pos then return "Return to your island first." end
+		local now=os.clock()
+		if now<(lastPickup[player] or 0) then return "One moment…" end
+		lastPickup[player]=now+EX.PICKUP_COOLDOWN
+		local mote=nearestUnfound(p,pos,EX.PICKUP_RADIUS)
+		if not mote then return "No unfound "..EX.MOTE.name.." within reach." end
+		if not regionAllowed(p,mote.region) then return regionDenied(mote.region) end
+		if not EX.canReach(mote,agility(p)) then return "This mote drifts over an Agility "..mote.agility.." course; train Agility to claim it." end
+		local m=p.motes
+		m.found[mote.id]=true
+		m.count+=1
+		local text=EX.MOTE.name.." found! ("..m.count.." / "..EX.TOTAL..")"
+		if p.motes.count%EX.STEP==0 then text..="   ·   A milestone awaits at any Mote Shrine." end
+		if regionDone(p,mote.region) and not m.regions[mote.region] then
+			text..="   ·   Every mote of "..((Data.RegionById[mote.region] or {}).name or mote.region).." found: visit its shrine."
+		end
+		if player:GetAttribute("MoteHint")==mote.id then player:SetAttribute("MoteHint",""); player:SetAttribute("MoteHintUntil",0) end
+		return text
+	end
+	local function shrine(player,p,region)
+		if not EX.ShrineIsle[region] then return "Unknown shrine." end
+		local m=p.motes
+		local parts={}
+		local steps=claimable(p)
+		if steps>0 then
+			local coins=0
+			for s=m.steps+1,m.steps+steps do coins+=EX.stepCoins(s) end
+			m.steps+=steps
+			p.coins+=coins
+			table.insert(parts,steps.." milestone"..(if steps==1 then "" else "s").." claimed (+"..coins.." coins)")
+		end
+		if regionDone(p,region) and not m.regions[region] then
+			m.regions[region]=true
+			local coins=EX.regionCoins(region)
+			p.coins+=coins
+			table.insert(parts,((Data.RegionById[region] or {}).name or region).." complete! +"..coins.." coins, +"..EX.REGION_HEALTH.." Health")
+		end
+		motePerks(p)
+		if #parts==0 then
+			local here=0
+			for _,id in ipairs(EX.MotesByRegion[region]) do if m.found[id] then here+=1 end end
+			return "The Mote Shrine hums • "..m.count.." / "..EX.TOTAL.." found ("..here.." / "..EX.RegionTotal[region].." here). Next milestone at "..((m.steps+1)*EX.STEP).."."
+		end
+		p.started=true
+		return table.concat(parts,"   ·   ").."."
+	end
+	local function hint(player,p)
+		local pos=rootOf(player)
+		if not pos then return "Return to your island first." end
+		local region=regionAt(pos)
+		if not region then return "Stand on an island to take a Wayglass bearing." end
+		local lvl=agility(p)
+		local mote,dist=nearestUnfound(p,pos,1e6,function(mote) return mote.region==region and EX.canReach(mote,lvl) end)
+		if not mote then
+			local gated=nearestUnfound(p,pos,1e6,function(mote) return mote.region==region end)
+			if gated then return "The motes left here drift over Agility "..gated.agility.." courses." end
+			return "Every mote of "..((Data.RegionById[region] or {}).name or region).." is already found."
+		end
+		local cost=EX.hintCost(p.motes.count)
+		if p.coins<cost then return "A Wayglass bearing costs "..cost.." coins." end
+		p.coins-=cost
+		p.motes.hints=math.min(1e6,p.motes.hints+1)
+		player:SetAttribute("MoteHint",mote.id)
+		player:SetAttribute("MoteHintUntil",os.time()+EX.HINT_SECONDS)
+		return "The Wayglass points "..math.floor(dist).." studs away: "..mote.hint..". (-"..cost.." coins)"
+	end
+	------------------------------------------------------------------------
+	-- Faction verbs.
+	------------------------------------------------------------------------
+	local function slotOf(f,item)
+		local fid,slot=string.match(tostring(item),"^(%a+):(%d+)$")
+		local board=fid and f.boards[fid]
+		local i=tonumber(slot)
+		if not board or not i or not board[i] then return nil end
+		return fid,i,board[i],FA.TaskById[board[i].id]
+	end
+	local function factionAction(player,p,verb,item,prompt)
+		Explore.refresh(p)
+		local f=p.factions
+		if verb=="factionBoard" then
+			if not prompt then return "Visit the faction's standard in person." end
+			local def=FA.Factions[item]
+			if not def then return "Unknown faction." end
+			local _,rank=FA.rankOf(f.rep[item])
+			return def.name.." • \""..def.motto.."\" • "..rank.name.." ("..f.rep[item].." reputation)."
+		elseif verb=="factionPledge" then
+			local def=FA.Factions[item]
+			if not def then return "Unknown faction." end
+			if f.pledge==item then return "You are already pledged to the "..def.name.."." end
+			local now=os.time()
+			if f.pledge~="" then
+				local wait=f.pledgedAt+FA.SWITCH_COOLDOWN-now
+				if wait>0 then return "Your pledge to the "..FA.Factions[f.pledge].name.." holds for another "..math.ceil(wait/3600).."h." end
+				if p.coins<FA.SWITCH_COST then return "Changing a pledge costs "..FA.SWITCH_COST.." coins." end
+				p.coins-=FA.SWITCH_COST
+				local old=f.pledge
+				local lost=math.floor(f.rep[old]*FA.SWITCH_FORFEIT)
+				f.rep[old]-=lost
+				f.switches+=1
+				f.pledge,f.pledgedAt=item,now
+				publish(player,p)
+				p.started=true
+				return "You renounce the "..FA.Factions[old].name.." (-"..lost.." reputation, -"..FA.SWITCH_COST.." coins) and pledge to the "..def.name.."."
+			end
+			f.pledge,f.pledgedAt=item,now
+			publish(player,p)
+			p.started=true
+			return "You pledge to the "..def.name..". Its rival, the "..FA.Factions[def.rival].name..", will trust you less."
+		elseif verb=="factionClaim" then
+			local list={}
+			if item=="all" then
+				for _,fid in ipairs(FA.Order) do for i=1,#f.boards[fid] do table.insert(list,fid..":"..i) end end
+			else
+				if not slotOf(f,item) then return "Unknown faction task." end
+				list={item}
+			end
+			local done,rep,coins=0,0,0
+			for _,key in ipairs(list) do
+				local _,_,s,t=slotOf(f,key)
+				if t and t.kind~="deliver" and not s.claimed and s.progress>=t.amount then
+					s.claimed=true
+					local r=pay(p,t)
+					done+=1; rep+=r.rep; coins+=r.coins
+				end
+			end
+			if done==0 then return if item=="all" then "No finished faction tasks to claim." else "That task is not finished (or already claimed)." end
+			p.started=true
+			return "Faction task"..(if done>1 then "s" else "").." claimed • +"..rep.." reputation, +"..coins.." coins."
+		elseif verb=="factionDeliver" then
+			local fid,_,s,t=slotOf(f,item)
+			if not t then return "Unknown faction task." end
+			if t.kind~="deliver" then return "That task is not a delivery." end
+			if s.claimed then return "Already delivered today." end
+			local name=Data.Items[t.target] and Data.Items[t.target].name or t.target
+			if not spend(p,{[t.target]=t.amount}) then return "Deliver "..t.amount.." "..name.." (you have "..(p.items[t.target] or 0)..")." end
+			s.progress=t.amount
+			s.claimed=true
+			local r=pay(p,t)
+			p.started=true
+			return "Delivered "..t.amount.." "..name.." to the "..FA.Factions[fid].name.." • +"..r.rep.." reputation, +"..r.sigils.." sigils, +"..r.coins.." coins."
+		elseif verb=="factionBuy" then
+			local id,skill=string.match(tostring(item),"^(%w+):?(%a*)$")
+			local e,why=FA.canBuy(id or "",f,p.coins,skill,nil)
+			if not e then return why end
+			local def=FA.Factions[e.faction]
+			if e.kind=="crest" then
+				-- Upgrade: needs a spare charm (not bagged, reforged or enchanted).
+				local charm=e.consumes
+				local held=p.items[charm] or 0
+				local bagged=table.find(p.accessoryBag or {},charm)~=nil
+				local upgraded=(type(p.reforges)=="table" and p.reforges[charm]~=nil) or (type(p.enchants)=="table" and type(p.enchants[charm])=="table" and next(p.enchants[charm])~=nil)
+				if held<1 then return "The "..Data.Items[e.item].name.." is forged from a "..Data.Items[charm].name.."." end
+				if held<2 and (bagged or upgraded) then return "Take your "..Data.Items[charm].name.." out of the accessory bag (and off the anvil) first." end
+			end
+			f.sigils[e.faction]-=e.sigils
+			p.coins-=e.coins or 0
+			p.started=true
+			if e.kind=="title" then
+				f.unlocks[e.id]=true
+				f.title=e.id
+				publish(player,p)
+				return "Earned the "..e.title.." title of the "..def.name..". Wearing it now."
+			elseif e.kind=="lamp" then
+				local xp=FA.lampXp(skill,level(p.xp[skill]))
+				grantXp(p,skill,xp)
+				return "The "..def.short.." lamp flares: +"..xp.." "..skill.." XP (-"..e.sigils.." sigils)."
+			elseif e.kind=="crest" then
+				spend(p,{[e.consumes]=1})
+				collect(p,e.item,1)
+				return "Your "..Data.Items[e.consumes].name.." is reforged into the "..Data.Items[e.item].name.."!"
+			end
+			collect(p,e.item,1)
+			return "Bought the "..Data.Items[e.item].name.." (-"..e.sigils.." sigils, -"..(e.coins or 0).." coins)."
+		elseif verb=="factionTitle" then
+			if item=="none" then f.title=""
+			elseif type(item)=="string" and f.unlocks[item] then f.title=item
+			else return "You do not hold that title." end
+			publish(player,p)
+			return if f.title=="" then "Faction title hidden." else "Now titled: "..titleText(p).."."
+		end
+		return "Unknown action."
+	end
+	function Explore.action(player,p,verb,item,prompt)
+		if not p.motes or not p.factions then Explore.migrate(p) end
+		local reply
+		if verb=="moteCollect" then reply=collectMote(player,p)
+		elseif verb=="moteShrine" then
+			if not prompt then return "Visit a Mote Shrine in person." end
+			reply=shrine(player,p,item)
+		elseif verb=="moteHint" then reply=hint(player,p)
+		else reply=factionAction(player,p,verb,item,prompt) end
+		return reply
+	end
+	function Explore.state(player,p)
+		if not p.motes or not p.factions then return nil end
+		Explore.refresh(p)
+		publish(player,p)
+		local m=p.motes
+		local bits=table.create(EX.TOTAL,"0")
+		for i,mote in ipairs(EX.Motes) do if m.found[mote.id] then bits[i]="1" end end
+		local regions={}
+		for _,region in ipairs(EX.RegionOrder) do
+			local here=0
+			for _,id in ipairs(EX.MotesByRegion[region]) do if m.found[id] then here+=1 end end
+			regions[region]={found=here,total=EX.RegionTotal[region],claimed=m.regions[region]==true,allowed=regionAllowed(p,region)}
+		end
+		local f=p.factions
+		local factions={}
+		for _,id in ipairs(FA.Order) do
+			local index,rank,nextRank=FA.rankOf(f.rep[id])
+			local board={}
+			for i,s in ipairs(f.boards[id]) do
+				local t=FA.TaskById[s.id]
+				board[i]={id=s.id,progress=s.progress,claimed=s.claimed,done=s.progress>=t.amount,have=if t.kind=="deliver" then (p.items[t.target] or 0) else nil,reward=FA.reward(t,f.pledge)}
+			end
+			factions[id]={rep=f.rep[id],sigils=f.sigils[id],done=f.done[id],rank=index,rankName=rank.name,nextAt=nextRank and nextRank.at or nil,mult=FA.mult(id,f.pledge),board=board}
+		end
+		local unlocks={}
+		for id in pairs(f.unlocks) do table.insert(unlocks,id) end
+		table.sort(unlocks)
+		local hintId=player:GetAttribute("MoteHint")
+		local hintUntil=player:GetAttribute("MoteHintUntil") or 0
+		return {
+			motes={found=table.concat(bits),count=m.count,total=EX.TOTAL,steps=m.steps,claimable=claimable(p),regions=regions,hintCost=EX.hintCost(m.count),
+				hint=if type(hintId)=="string" and hintId~="" and hintUntil>os.time() then hintId else nil,hintUntil=hintUntil,stats=table.clone(p.perkStats and p.perkStats.motes or {}),agility=agility(p)},
+			factions={pledge=f.pledge,pledgedAt=f.pledgedAt,switchIn=if f.pledge~="" then math.max(0,f.pledgedAt+FA.SWITCH_COOLDOWN-os.time()) else 0,
+				resetIn=FA.resetIn(os.time()),day=f.day,list=factions,unlocks=unlocks,title=f.title,titleText=titleText(p),total=f.total},
+		}
+	end
+	Players.PlayerRemoving:Connect(function(player) lastPickup[player]=nil end)
+end
+-- End Exploration & Factions block.
 local function applyStats(player,p,spawned)
 	local stats=Progression.computeStats(p,os.time())
 	player:SetAttribute("SkyreachUnlocked",(p.questCompleted or 0)>=6)
@@ -3671,6 +4138,7 @@ local function snapshot(player,message)
 		slayerTasks=SlayerTasks.state(player,p), -- Slayer tasks: Hunt > Slayer page state
 		minigames=Minigames.state(player,p), -- Minigames: Hunt > Minigames page state
 		crafting=Crafting.state and Crafting.state(player,p), -- Crafting: Workshop › Crafting page state
+		exploration=Explore.state(player,p), -- Exploration & Factions: Journal > Motes / Factions
 		logs=Logs.state(player,p)} -- Commissions & Logs: Journal > Commissions / Collection Log / Museum (full when changed, else {rev, resetIn, compact})
 end
 -- Prayer & Thieving: drain-loop notices (prayer points ran out).
@@ -3757,6 +4225,7 @@ local function migrate(profile)
 	Minigames.migrate(profile) -- Minigames: Commendations, cache rolls, titles, minigame log
 	Logs.migrate(profile) -- Commissions & Logs: board, Glimmerdust, Forgeheart, log (retroactive on first load), museum
 	if Crafting.migrate then Crafting.migrate(profile) end -- Crafting: p.crafting {made, shattered}
+	Explore.migrate(profile) -- Exploration & Factions: p.motes, p.factions, p.perkStats.motes
 end
 -- Clears every per-player table and ends this player's session slot.
 -- Sea creatures: a successful Fishing gather may hook one (Data.rollSeaCreature).
@@ -5273,6 +5742,8 @@ local function perform(player,verb,item,prompt)
 		return Minigames.action(player,p,verb,item) -- Minigames: Commendation shop, cache rolls, titles
 	elseif Logs.verbs[verb] then
 		return Logs.action(player,p,verb,item,prompt) -- Commissions & Logs
+	elseif Explore.verbs[verb] then
+		return Explore.action(player,p,verb,item,prompt) -- Exploration & Factions: motes, shrines, Wayglass, factions
 	elseif Crafting.verbs[verb] then
 		return Crafting.action(player,p,verb,item,prompt) -- Crafting: stations, batches
 	elseif Mastery.verbs[verb] then
