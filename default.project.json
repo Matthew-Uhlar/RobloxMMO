@@ -4,9 +4,15 @@
     "$className": "DataModel",
     "ReplicatedStorage": {
       "AetherArt": { "$path": "art/PropCatalog.lua" },
+      "AetherWorldArt": { "$path": "art/WorldCatalog.lua" },
       "MaterialArt": { "$path": "art/MaterialArt.lua" },
       "AetherData": { "$path": "shared/GameData.lua" },
-      "AetherProgression": { "$path": "shared/Progression.lua" }
+      "AetherProgression": { "$path": "shared/Progression.lua" },
+      "AetherUiTheme": { "$path": "shared/UiTheme.lua" },
+      "AetherMapArt": { "$path": "shared/MapArt.lua" }
+    },
+    "ServerStorage": {
+      "AetherTrails": { "$path": "trails.lua" }
     },
     "ServerScriptService": {
       "Adventure": { "$path": "server.server.lua" },
@@ -14,14 +20,37 @@
       "Assembly": { "$path": "festival.server.lua" },
       "Homesteads": { "$path": "coop.server.lua" },
       "Archipelago": { "$path": "world.server.lua" },
-      "Combat": { "$path": "combat.server.lua" }
+      "Combat": { "$path": "combat.server.lua" },
+      "GestureRelay": { "$path": "gesture.server.lua" },
+      "HeldItems": { "$path": "held.server.lua" },
+      "Townsfolk": { "$path": "npc.server.lua" },
+      "Minigames": { "$path": "minigames.server.lua" },
+      "Lairs": { "$path": "lairs.server.lua" }
     },
     "StarterPlayer": {
       "StarterPlayerScripts": {
         "FieldGuide": { "$path": "ui.client.lua" },
         "IslandArt": { "$path": "mesh.client.lua" },
+        "MeshForge": { "$path": "forge.client.lua" },
         "CombatInput": { "$path": "combat.client.lua" },
-        "IslandBuilder": { "$path": "build.client.lua" }
+        "IslandBuilder": { "$path": "build.client.lua" },
+        "Gestures": { "$path": "animate.client.lua" },
+        "Hotbar": { "$path": "hotbar.client.lua" },
+        "Dialogue": { "$path": "npc.client.lua" },
+        "Wayfinder": { "$path": "nav.client.lua" },
+        "Companions": { "$path": "pets.client.lua" },
+        "AetherMotes": { "$path": "motes.client.lua" },
+        "IsleHud": { "$path": "hud.client.lua" },
+        "RegionBanner": { "$path": "regions.client.lua" },
+        "IsleFeatures": { "$path": "features.client.lua" }
+      }
+    },
+    "Lighting": {
+      "$properties": {
+        "Technology": "Future", "Brightness": 2.6, "ClockTime": 14.5, "GeographicLatitude": 38,
+        "Ambient": [0.2275, 0.2549, 0.3137], "OutdoorAmbient": [0.4902, 0.5412, 0.6118],
+        "EnvironmentDiffuseScale": 0.5, "EnvironmentSpecularScale": 0.3, "ExposureCompensation": 0,
+        "ShadowSoftness": 0.3, "GlobalShadows": true
       }
     },
     "Workspace": {

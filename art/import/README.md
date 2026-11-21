@@ -1,6 +1,6 @@
 # Permanent original mesh import
 
-`Aether-Isles-Originals.glb` contains all 48 original OBJ shapes, individually named, with 4,918 indexed triangles and 23 used source material definitions (the 20 world/creature props plus 27 item icons and the `OreCluster` resource polish added in the Depth update). No external textures, libraries, or runtime EditableMesh allocation is required by the file. This is an import-ready artifact, not an uploaded Roblox asset or an already integrated game template.
+`Aether-Isles-Originals.glb` contains all 113 original OBJ shapes, individually named, with 42,957 indexed triangles and 44 used source material definitions (the 20 world/creature props, 27 item icons and the `OreCluster` resource polish from the Depth update, plus the 65 world meshes from `art/world-shapes.cjs` that the `forge.client.lua` MeshForge builds on each client at runtime). No external textures, libraries, or runtime EditableMesh allocation is required by the file. This is an import-ready artifact, not an uploaded Roblox asset or an already integrated game template.
 
 Regenerate and verify from the repository root (the prop generator writes the OBJ masters, the import generator rebuilds this bundle; `verify-import.cjs` runs in every build and fails if any OBJ is missing from the GLB):
 
@@ -24,10 +24,10 @@ Even with **Upload to Roblox** disabled, Studio serialized nonzero mesh referenc
 ## One-time authorized Studio import
 
 1. Open the intended published Aether Isles place in authenticated Studio. Use **File → Import** and select this GLB.
-2. Set **Scale Unit: Meter**, scale factor **1**, and retain imported pivots. Keep **Merge Meshes disabled** to preserve the 48 template names. Names of mesh definitions end in `Geometry` so they do not collide with node names.
+2. Set **Scale Unit: Meter**, scale factor **1**, and retain imported pivots. Keep **Merge Meshes disabled** to preserve the 113 template names. Names of mesh definitions end in `Geometry` so they do not collide with node names.
 3. Select the correct creator, enable **Upload to Roblox** and **Add to Workspace**, inspect the preview, and import. This step uploads assets and needs the creator's authorization. If any material or permission fails, resolve it before exporting templates.
 4. Compare each imported object's dimensions with `manifest.json` (`max - min`), especially Tidewing and ObservatoryArch. Confirm +Y up, intended forward direction, palette, thin fins/leaves, and hard edges. Multiple material primitives may become multiple child MeshParts: keep each shape's enclosing Model intact. Avoid manually scaling individual parts.
-5. Move the 48 shape templates into a Folder named `AetherMeshTemplates`. Preserve each original shape name and source pivot. Anchor parts; disable CanCollide, CanTouch and CanQuery for display-only templates. Keep functional collision in the game's existing collision geometry.
+5. Move the 113 shape templates into a Folder named `AetherMeshTemplates`. Preserve each original shape name and source pivot. Anchor parts; disable CanCollide, CanTouch and CanQuery for display-only templates. Keep functional collision in the game's existing collision geometry.
 6. Save that Folder as a local **Roblox Model** (`.rbxm`, or `.rbxmx`) after mesh uploads finish. Inspect every MeshPart for a persistent mesh asset reference and test after reopening Studio. Never export only transient EditableMesh-backed instances and assume they became permanent assets.
 
 ## Reproducible Rojo integration after import

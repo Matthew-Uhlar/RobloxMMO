@@ -30,12 +30,77 @@ from functools import lru_cache
 from PIL import Image, ImageDraw, ImageFont
 
 S = 2  # supersampling factor
-FONT_DIR = "/usr/share/fonts/truetype/dejavu/"
-FONTS = {
-    "regular": FONT_DIR + "DejaVuSans.ttf",
-    "bold": FONT_DIR + "DejaVuSans-Bold.ttf",
-    "serif": FONT_DIR + "DejaVuSerif-Bold.ttf",
+TOUCH_MIN = 44  # minimum touch target (px) on phone-sized screens (height < 500)
+HERE = os.path.dirname(os.path.abspath(__file__))
+DEJAVU = "/usr/share/fonts/truetype/dejavu/"
+INTER = "/usr/share/fonts/opentype/inter/"
+# Stand-ins for Roblox fonts: Inter for Builder Sans (same humanist-grotesque
+# proportions), the vendored OFL Fredoka One for FredokaOne, DejaVu for the
+# legacy Gotham/Antique faces. Each kind lists candidates; the first file that
+# exists is used, and glyphs it lacks fall back to DejaVu (as Roblox falls back
+# to its own symbol fonts).
+FONT_CANDIDATES = {
+    "regular": [DEJAVU + "DejaVuSans.ttf"],
+    "bold": [DEJAVU + "DejaVuSans-Bold.ttf"],
+    "serif": [DEJAVU + "DejaVuSerif-Bold.ttf"],
+    "b-regular": [INTER + "Inter-Regular.otf", DEJAVU + "DejaVuSans.ttf"],
+    "b-medium": [INTER + "Inter-Medium.otf", DEJAVU + "DejaVuSans.ttf"],
+    "b-bold": [INTER + "Inter-Bold.otf", DEJAVU + "DejaVuSans-Bold.ttf"],
+    "b-heavy": [INTER + "Inter-ExtraBold.otf", DEJAVU + "DejaVuSans-Bold.ttf"],
+    "display": [os.path.join(HERE, "fonts", "FredokaOne-Regular.ttf"), INTER + "Inter-Black.otf", DEJAVU + "DejaVuSans-Bold.ttf"],
+    # Roblox "Arcade" is Press Start 2P (vendored, OFL).
+    "pixel": [os.path.join(HERE, "fonts", "PressStart2P-Regular.ttf"), DEJAVU + "DejaVuSans-Bold.ttf"],
 }
+FALLBACK = {"regular": DEJAVU + "DejaVuSans.ttf", "bold": DEJAVU + "DejaVuSans-Bold.ttf"}
+LIGHT_KINDS = {"regular", "b-regular", "b-medium"}
+FONTS = {kind: next((path for path in paths if os.path.exists(path)), paths[-1]) for kind, paths in FONT_CANDIDATES.items()}
+
+
+def read_cmap(path):
+    """Set of code points a TrueType/OpenType font maps (cmap formats 4 and 12)."""
+    import struct
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read()
+    except OSError:
+        return None
+    try:
+        num_tables = struct.unpack(">H", data[4:6])[0]
+        cmap = None
+        for i in range(num_tables):
+            tag, _, offset, _ = struct.unpack(">4sIII", data[12 + 16 * i:28 + 16 * i])
+            if tag == b"cmap":
+                cmap = offset
+        if cmap is None:
+            return None
+        count = struct.unpack(">H", data[cmap + 2:cmap + 4])[0]
+        points = set()
+        for i in range(count):
+            _, _, sub = struct.unpack(">HHI", data[cmap + 4 + 8 * i:cmap + 12 + 8 * i])
+            base = cmap + sub
+            fmt = struct.unpack(">H", data[base:base + 2])[0]
+            if fmt == 4:
+                segx2 = struct.unpack(">H", data[base + 6:base + 8])[0]
+                ends = struct.unpack(">%dH" % (segx2 // 2), data[base + 14:base + 14 + segx2])
+                starts = struct.unpack(">%dH" % (segx2 // 2), data[base + 16 + segx2:base + 16 + 2 * segx2])
+                for a, b in zip(starts, ends):
+                    if a != 0xFFFF:
+                        points.update(range(a, b + 1))
+            elif fmt == 12:
+                groups = struct.unpack(">I", data[base + 12:base + 16])[0]
+                for g in range(groups):
+                    a, b, _ = struct.unpack(">III", data[base + 16 + 12 * g:base + 28 + 12 * g])
+                    points.update(range(a, min(b, a + 65536) + 1))
+        return points
+    except (struct.error, IndexError):
+        return None
+
+
+@lru_cache(maxsize=None)
+def coverage(path):
+    return read_cmap(path)
+
+
 GUI = {"Frame", "TextLabel", "TextButton", "TextBox", "ImageLabel", "ImageButton", "ScrollingFrame", "ViewportFrame", "CanvasGroup"}
 TEXT = {"TextLabel", "TextButton", "TextBox"}
 DEFAULT_BG = (163, 162, 165)
@@ -49,7 +114,7 @@ def hex2rgb(value, default=(255, 255, 255)):
 
 
 class Node:
-    __slots__ = ("cls", "p", "kids", "comps", "shape", "tint", "uid")
+    __slots__ = ("cls", "p", "kids", "comps", "shape", "tint", "uid", "scene")
     counter = 0
 
     def __init__(self, raw):
@@ -57,6 +122,7 @@ class Node:
         self.p = raw.get("props") or {}
         self.shape = raw.get("shape")
         self.tint = raw.get("tint")
+        self.scene = raw.get("scene")
         self.kids = []
         self.comps = {}
         Node.counter += 1
@@ -88,23 +154,55 @@ class Node:
 # ---------------------------------------------------------------------------
 # Text
 # ---------------------------------------------------------------------------
-@lru_cache(maxsize=512)
+@lru_cache(maxsize=1024)
+def font_file(path, px):
+    return ImageFont.truetype(path, max(1, int(round(px))))
+
+
 def font(kind, px):
-    return ImageFont.truetype(FONTS[kind], max(1, int(round(px))))
+    return font_file(FONTS[kind], px)
 
 
 def font_kind(name, bold=False):
     name = name or "Legacy"
     if name == "Antique":
         return "serif"
+    if name == "Arcade":
+        return "pixel"
+    if name == "FredokaOne":
+        return "display"
+    if name.startswith("BuilderSans"):
+        if "ExtraBold" in name:
+            return "b-heavy"
+        if bold or "Bold" in name:
+            return "b-bold"
+        return "b-medium" if "Medium" in name else "b-regular"
     if bold or any(k in name for k in ("Bold", "Black", "Heavy", "Semibold")):
         return "bold"
     return "regular"
 
 
 @lru_cache(maxsize=200000)
+def glyph_runs(kind, text):
+    """Split text into (font path, substring) runs, falling back for missing glyphs."""
+    primary = FONTS[kind]
+    have = coverage(primary)
+    if have is None:
+        return ((primary, text),)
+    backup = FALLBACK["regular" if kind in LIGHT_KINDS else "bold"]
+    runs = []
+    for ch in text:
+        path = primary if (ord(ch) in have or ch in " \n") else backup
+        if runs and runs[-1][0] == path:
+            runs[-1][1].append(ch)
+        else:
+            runs.append((path, [ch]))
+    return tuple((path, "".join(chars)) for path, chars in runs)
+
+
+@lru_cache(maxsize=200000)
 def advance(kind, size, text):
-    return font(kind, size * S).getlength(text) / S
+    return sum(font_file(path, size * S).getlength(part) for path, part in glyph_runs(kind, text)) / S
 
 
 ENTITIES = {"&lt;": "<", "&gt;": ">", "&amp;": "&", "&quot;": '"', "&apos;": "'"}
@@ -522,10 +620,11 @@ def stroke_of(node):
         return None
     color = hex2rgb(st.get("Color"), (0, 0, 0))
     grad = st.comp("UIGradient")
-    if grad:
-        color = mul(color, gradient_color(grad, 0.5))
+    if grad is not None and grad.get("Enabled", True) is False:
+        grad = None
+    flat = mul(color, gradient_color(grad, 0.5)) if grad else color
     mode = st.get("ApplyStrokeMode", "Contextual")
-    return {"color": color, "alpha": 1 - (st.get("Transparency", 0) or 0), "thickness": st.get("Thickness", 1) or 1,
+    return {"color": flat, "base": color, "grad": grad, "alpha": 1 - (st.get("Transparency", 0) or 0), "thickness": st.get("Thickness", 1) or 1,
             "border": mode == "Border" or node.cls not in TEXT}
 
 
@@ -568,7 +667,7 @@ class Painter:
 
     # -- element drawing ----------------------------------------------------
     def draw_box(self, node, x, y, w, h, clip):
-        if w <= 0 or h <= 0:
+        if w * S < 1 or h * S < 1:
             return
         bt = node.get("BackgroundTransparency", 0)
         alpha = 1 - (bt if isinstance(bt, (int, float)) else 0)
@@ -602,10 +701,25 @@ class Painter:
                 patch.alpha_composite(layer)
             else:
                 ImageDraw.Draw(patch).rounded_rectangle(box, radius=radius * S, fill=color + (int(255 * alpha),))
-        if border:
+        if border and w > 0 and h > 0:
             t = border["thickness"] * S
             outer = [m - t, m - t, m + w * S - 1 + t, m + h * S - 1 + t]
-            ImageDraw.Draw(patch).rounded_rectangle(outer, radius=(radius * S + t) if radius else 0, outline=border["color"] + (int(255 * border["alpha"]),), width=max(1, int(round(t))))
+            if border["grad"] is not None:
+                # Gradient rim: colour and transparency follow the UIGradient (with rotation).
+                from PIL import ImageChops
+                ring = Image.new("L", (pw, ph), 0)
+                ImageDraw.Draw(ring).rounded_rectangle(outer, radius=(radius * S + t) if radius else 0, outline=255, width=max(1, int(round(t))))
+                ox, oy = int(max(0, m - t)), int(max(0, m - t))
+                ow, oh = int(min(pw, m + w * S + t)) - ox, int(min(ph, m + h * S + t)) - oy
+                fill = gradient_image(border["grad"], max(1, ow), max(1, oh), border["base"], border["alpha"])
+                layer = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
+                layer.paste(fill, (ox, oy))
+                layer.putalpha(ImageChops.multiply(layer.getchannel("A"), ring))
+                patch.alpha_composite(layer)
+            else:
+                # Thick rims on tiny boxes: keep the corner radius within the box.
+                rr = min((radius * S + t) if radius else 0, max(0, (outer[2] - outer[0]) / 2 - 1), max(0, (outer[3] - outer[1]) / 2 - 1))
+                ImageDraw.Draw(patch).rounded_rectangle(outer, radius=rr, outline=border["color"] + (int(255 * border["alpha"]),), width=max(1, int(round(t))))
         elif not node.comp("UICorner") and (node.get("BorderSizePixel", 1) or 0) > 0 and alpha > 0.003:
             bc = hex2rgb(node.get("BorderColor3"), (27, 42, 53))
             bw = node.get("BorderSizePixel", 1) * S
@@ -618,6 +732,11 @@ class Painter:
             self.composite(patch, (x - margin) * S, (y - margin) * S, clip)
 
     def draw_viewport(self, node, x, y, w, h, clip):
+        if node.scene:
+            if w >= 4 and h >= 4:
+                patch = render_scene(node.scene, int(w * S), int(h * S))
+                self.composite(patch, x * S, y * S, clip)
+            return
         shape = self.art["shapes"].get(node.shape) if node.shape else None
         if not shape or w < 4 or h < 4:
             return
@@ -698,8 +817,8 @@ class Painter:
         if placeholder:
             base_color = hex2rgb(node.get("PlaceholderColor3"), (178, 178, 178))
         grad = node.comp("UIGradient")
-        if grad is not None and grad.get("Enabled", True) is not False:
-            base_color = mul(base_color, gradient_color(grad, 0.5))
+        if grad is not None and grad.get("Enabled", True) is False:
+            grad = None
         truncate = node.get("TextTruncate", "None") == "AtEnd"
         wrapped = node.get("TextWrapped", False) is True or node.get("TextScaled", False) is True
         if truncate:
@@ -743,16 +862,27 @@ class Painter:
             for piece, style in line:
                 psize = style.get("size") or size
                 kind = style_kind(style)
-                f = font(kind, psize * S)
                 col = style.get("color") or base_color
-                if style.get("color") and grad is not None:
-                    col = mul(col, gradient_color(grad, 0.5))
                 kw = {}
                 if text_stroke and piece.strip():
                     kw = {"stroke_width": max(1, int(round(text_stroke[2] * S * 0.75))), "stroke_fill": text_stroke[0] + (int(255 * text_stroke[1] * alpha),)}
-                d.text(((lx - px0) * S, (baseline - py0) * S), piece, font=f, fill=col + (int(255 * alpha),), anchor="ls", **kw)
+                gx = lx
+                for path, part in glyph_runs(kind, piece):
+                    f = font_file(path, psize * S)
+                    d.text(((gx - px0) * S, (baseline - py0) * S), part, font=f, fill=col + (int(255 * alpha),), anchor="ls", **kw)
+                    gx += f.getlength(part) / S
                 lx += advance(kind, psize, piece)
             yy += lh
+        if grad is not None:
+            # UIGradient on a text object tints (and fades) the glyphs across the box.
+            from PIL import ImageChops
+            gw, gh = max(1, int(w * S)), max(1, int(h * S))
+            shade = gradient_image(grad, gw, gh, (255, 255, 255), 1.0)
+            tint = Image.new("RGBA", patch.size, (255, 255, 255, 255))
+            tint.paste(shade, (int((x - px0) * S), int((y - py0) * S)))
+            r, g, b, a = patch.split()
+            tr, tg, tb, ta = tint.split()
+            patch = Image.merge("RGBA", (ImageChops.multiply(r, tr), ImageChops.multiply(g, tg), ImageChops.multiply(b, tb), ImageChops.multiply(a, ta)))
         self.composite(patch, px0 * S, py0 * S, clip)
         # record readability issues
         if size < 11 and text.strip():
@@ -787,6 +917,132 @@ class Painter:
         return runs, width + ell
 
 
+# ---------------------------------------------------------------------------
+# 3D scenes (Map Art §32: the Sky Chart miniature). A small z-buffered
+# rasterizer over the dumped parts: blocks, wedges, cylinders (axis = local X),
+# balls; MeshParts as their boxes (forged meshes only exist in Studio). Flat
+# Lambert shading from the ViewportFrame's Ambient / LightColor / LightDirection.
+# ---------------------------------------------------------------------------
+def _part_faces(part):
+    """Local-space polygons [(verts, normal)] for a dumped part."""
+    sx, sy, sz = (c / 2 for c in part["size"])
+    shape = part.get("shape")
+    cls = part.get("class")
+    faces = []
+    if cls == "Part" and shape == "Cylinder":
+        r_y, r_z = sy, sz
+        n = 20 if max(sy, sz) > 6 else 10
+        ring = [(math.cos(2 * math.pi * i / n), math.sin(2 * math.pi * i / n)) for i in range(n)]
+        for i in range(n):
+            a, b = ring[i], ring[(i + 1) % n]
+            quad = [(-sx, a[0] * r_y, a[1] * r_z), (sx, a[0] * r_y, a[1] * r_z), (sx, b[0] * r_y, b[1] * r_z), (-sx, b[0] * r_y, b[1] * r_z)]
+            mid = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+            faces.append((quad, (0, mid[0], mid[1])))
+        faces.append(([(sx, c * r_y, s_ * r_z) for c, s_ in ring], (1, 0, 0)))
+        faces.append(([(-sx, c * r_y, s_ * r_z) for c, s_ in reversed(ring)], (-1, 0, 0)))
+        return faces
+    if cls == "Part" and shape == "Ball":
+        r = min(sx, sy, sz)
+        lat, lon = 6, 10
+        for i in range(lat):
+            t0, t1 = math.pi * i / lat - math.pi / 2, math.pi * (i + 1) / lat - math.pi / 2
+            for j in range(lon):
+                p0, p1 = 2 * math.pi * j / lon, 2 * math.pi * (j + 1) / lon
+                pts = [(math.cos(t) * math.cos(p) * r, math.sin(t) * r, math.cos(t) * math.sin(p) * r) for t, p in ((t0, p0), (t0, p1), (t1, p1), (t1, p0))]
+                tm, pm = (t0 + t1) / 2, (p0 + p1) / 2
+                faces.append((pts, (math.cos(tm) * math.cos(pm), math.sin(tm), math.cos(tm) * math.sin(pm))))
+        return faces
+    c = [(x, y, z) for x in (-sx, sx) for y in (-sy, sy) for z in (-sz, sz)]
+    if cls == "WedgePart":
+        # Vertical face at +Z, slope falling towards -Z.
+        b0, b1, b2, b3 = (-sx, -sy, -sz), (sx, -sy, -sz), (sx, -sy, sz), (-sx, -sy, sz)
+        t2, t3 = (sx, sy, sz), (-sx, sy, sz)
+        ln = math.hypot(2 * sy, 2 * sz) or 1
+        return [([b0, b1, b2, b3], (0, -1, 0)), ([b3, b2, t2, t3], (0, 0, 1)), ([b0, t3, t2, b1], (0, 2 * sz / ln, -2 * sy / ln)),
+                ([b0, b3, t3], (-1, 0, 0)), ([b1, t2, b2], (1, 0, 0))]
+    idx = {"x-": [0, 1, 3, 2], "x+": [4, 6, 7, 5], "y-": [0, 4, 5, 1], "y+": [2, 3, 7, 6], "z-": [0, 2, 6, 4], "z+": [1, 5, 7, 3]}
+    normals = {"x-": (-1, 0, 0), "x+": (1, 0, 0), "y-": (0, -1, 0), "y+": (0, 1, 0), "z-": (0, 0, -1), "z+": (0, 0, 1)}
+    return [([c[i] for i in idx[k]], normals[k]) for k in idx]
+
+
+def render_scene(scene, pw, ph):
+    import numpy as np
+    cam = scene["camera"]
+    cpos = np.array(cam[0:3], dtype=float)
+    crot = np.array(cam[3:12], dtype=float).reshape(3, 3)  # columns: right, up, back
+    fov = math.radians(scene.get("fov") or 70)
+    k = (ph / 2) / math.tan(fov / 2)
+    amb = np.array(hex2rgb(scene.get("ambient"), (150, 150, 150)), dtype=float) / 255
+    sun = np.array(hex2rgb(scene.get("light"), (255, 255, 255)), dtype=float) / 255
+    ld = np.array(scene.get("lightDirection") or (-1, -1, -1), dtype=float)
+    ld = ld / (np.linalg.norm(ld) or 1)
+    color = np.zeros((ph, pw, 3), dtype=float)
+    alpha = np.zeros((ph, pw), dtype=float)
+    zbuf = np.full((ph, pw), np.inf)
+    tris = []
+    for part in scene["parts"]:
+        pos = np.array(part["cf"][0:3], dtype=float)
+        rot = np.array(part["cf"][3:12], dtype=float).reshape(3, 3)
+        base = np.array(hex2rgb(part.get("color")), dtype=float) / 255
+        a = 1 - float(part.get("alpha") or 0)
+        neon = part.get("material") == "Neon"
+        for verts, normal in _part_faces(part):
+            wv = (rot @ np.array(verts, dtype=float).T).T + pos
+            n = rot @ np.array(normal, dtype=float)
+            centroid = wv.mean(axis=0)
+            if np.dot(n, centroid - cpos) >= 0:
+                continue  # back face
+            rel = (wv - cpos) @ crot  # camera space
+            depth = -rel[:, 2]
+            if (depth <= 0.5).any():
+                continue
+            sx = pw / 2 + rel[:, 0] / depth * k
+            sy = ph / 2 - rel[:, 1] / depth * k
+            if neon:
+                shade = np.minimum(1.0, base * 1.25 + 0.1)
+            else:
+                diffuse = max(0.0, -float(np.dot(n, ld)))
+                shade = np.minimum(1.0, base * (amb * 0.62 + sun * diffuse * 0.62) * 1.12)
+            for i in range(1, len(verts) - 1):
+                tris.append((sx[[0, i, i + 1]], sy[[0, i, i + 1]], depth[[0, i, i + 1]], shade, a))
+    # Opaque first (z-buffered), then translucent (blended, no z write).
+    for opaque_pass in (True, False):
+        for xs, ys, zs, shade, a in tris:
+            if (a >= 0.99) != opaque_pass:
+                continue
+            x0, x1 = max(0, int(math.floor(xs.min()))), min(pw - 1, int(math.ceil(xs.max())))
+            y0, y1 = max(0, int(math.floor(ys.min()))), min(ph - 1, int(math.ceil(ys.max())))
+            if x0 > x1 or y0 > y1:
+                continue
+            gx, gy = np.meshgrid(np.arange(x0, x1 + 1) + 0.5, np.arange(y0, y1 + 1) + 0.5)
+            (ax, bx, cx), (ay, by, cy) = xs, ys
+            den = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy)
+            if abs(den) < 1e-9:
+                continue
+            w0 = ((by - cy) * (gx - cx) + (cx - bx) * (gy - cy)) / den
+            w1 = ((cy - ay) * (gx - cx) + (ax - cx) * (gy - cy)) / den
+            w2 = 1 - w0 - w1
+            inside = (w0 >= -1e-6) & (w1 >= -1e-6) & (w2 >= -1e-6)
+            if not inside.any():
+                continue
+            z = w0 * zs[0] + w1 * zs[1] + w2 * zs[2]
+            zb = zbuf[y0:y1 + 1, x0:x1 + 1]
+            hit = inside & (z < zb)
+            if not hit.any():
+                continue
+            cb = color[y0:y1 + 1, x0:x1 + 1]
+            ab = alpha[y0:y1 + 1, x0:x1 + 1]
+            if opaque_pass:
+                cb[hit] = shade
+                ab[hit] = 1
+                zb[hit] = z[hit]
+            else:
+                cb[hit] = cb[hit] * (1 - a) + shade * a
+                ab[hit] = np.maximum(ab[hit], a)
+    rgba = np.dstack([np.clip(color * 255, 0, 255), np.clip(alpha * 255, 0, 255)]).astype(np.uint8)
+    return Image.fromarray(rgba, "RGBA")
+
+
 def intersect(a, b):
     return (max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), min(a[3], b[3]))
 
@@ -812,6 +1068,14 @@ class Renderer:
         if not node.visible:
             return
         p = self.painter
+        # Touch targets: on phone-sized screens every tappable control is at
+        # least 44x44 (TOUCH_MIN); a control pushed past its clipping parent's
+        # right edge cannot be reached at all.
+        if node.cls in ("TextButton", "ImageButton", "TextBox") and node.get("Active", True) is not False:
+            if getattr(self, "touch", False) and (h < TOUCH_MIN - 0.5 or w < TOUCH_MIN - 0.5) and w > 0 and h > 0:
+                p.issues.append(("touch-target", node.name, "%dx%d" % (round(w), round(h)), (node.get("Text") or "")[:30]))
+            if x + w > clip[2] + 1 and x < clip[2] and clip[2] - clip[0] < p.w:
+                p.issues.append(("clipped-x", node.name, int(x + w - clip[2]), (node.get("Text") or "")[:30]))
         p.draw_box(node, x, y, w, h, clip)
         if node.cls == "ViewportFrame":
             p.draw_viewport(node, x, y, w, h, clip)
@@ -848,6 +1112,7 @@ def render_shot(guis, sw, sh, art, backdrop=True):
         painter.backdrop()
     layout = Layout()
     renderer = Renderer(painter, layout)
+    renderer.touch = sh < 500
     for gui in guis:
         renderer.render_gui(gui, sw, sh)
     return painter, renderer, layout
@@ -867,6 +1132,7 @@ def render_full(guis, sw, sh, art):
     tall = Painter(int(math.ceil(w)) + 16, int(math.ceil(canvas_h)) + 16, art)
     tall.img.paste((16, 39, 51, 255), (0, 0, tall.img.width, tall.img.height))
     sub = Renderer(tall, layout)
+    sub.touch = sh < 500
     sub.render_children(placements, 8 + pl, 8 + pt, (0, 0, tall.w, tall.h))
     return tall, tall.issues
 
@@ -908,7 +1174,7 @@ def main():
                 tall, tall_issues = render_full(to_nodes(shot["guis"]), sw, sh, art)
                 if tall:
                     finish(tall).save(os.path.join(folder, shot["id"] + "-full.png"), optimize=True)
-                    issues = tall_issues
+                    issues = issues + tall_issues
             if args.issues:
                 seen = set()
                 for issue in issues:

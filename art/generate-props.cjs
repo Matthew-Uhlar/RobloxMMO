@@ -8,11 +8,22 @@ const fs = require('fs');
 // 11 is the TINT slot: the UI (and tinted world props) recolour these faces with
 // the item's AetherData colour; its stored value is a neutral silver so untinted
 // renders still read as metal. 12 dark handle wood, 13 glint/porcelain, 14 leaf.
-const palette = ['C98D4F','F4CD7C','265860','39898E','9DF3D7','203748','C15557','FFD389','525570','9583B9','D9DFE6','6E4A30','F4F8F8','6BAF5A'];
+// 15/16 are derived TINT shades (the forge renders tint*0.62 and tint lightened
+// 40% toward white; stored values are neutral). 17+ are the Wave-4 world shades.
+const palette = ['C98D4F','F4CD7C','265860','39898E','9DF3D7','203748','C15557','FFD389','525570','9583B9','D9DFE6','6E4A30','F4F8F8','6BAF5A',
+  '878C93','F0F3F6',
+  '4A3426','7A5636','A9A79C','7E817C','545A5E','5E8A4A','C9A24E','3A4048','FF8A3D','FFE08A','E9DFC7','A8423C','2E3B4E','5A4030','8A6240','D9B65C','E6E1D6','3F6E3A','B8C6CF'];
 const TINT = 11, HANDLE = 12, GLINT = 13, LEAF = 14;
+const TINT_DARK = 15, TINT_LIGHT = 16;
+const C = {TINT, TINT_DARK, TINT_LIGHT, HANDLE, GLINT, LEAF, COPPER:1, GOLD:2, DEEP:3, TEAL:4, MINT:5, NAVY:6, ROSE:7, AMBER:8, SLATE:9, LAVENDER:10,
+  BARK_DARK:17, BARK:18, STONE_LIGHT:19, STONE:20, STONE_DARK:21, MOSS:22, BRASS:23, IRON:24, EMBER:25, FLAME:26, CLOTH:27, CRIMSON:28, INK:29, SOIL:30, PLANK:31, STRAW:32, MARBLE:33, LEAF_DARK:34, GLASS:35};
 const ICON_TRIANGLE_BUDGET = 120;
+const WORLD_TRIANGLE_RANGE = [200, 1500];
 const shapes = {};
+const worldShapes = {};
+const worldMeta = {};
 const iconBudget = {};
+const legacyNames = [];
 function rotation([rx,ry,rz]) {
   // Applied as roll (Z), then pitch (X), then yaw (Y).
   const [cx,sx,cy,sy,cz,sz]=[Math.cos(rx),Math.sin(rx),Math.cos(ry),Math.sin(ry),Math.cos(rz),Math.sin(rz)];
@@ -24,19 +35,49 @@ function rotation([rx,ry,rz]) {
     return [x,y,z];
   };
 }
-function shape(name, build) {
+// Every primitive is closed and wound outward (right-hand rule: (b-a)x(c-a)
+// points out of the solid). Convex primitives fix each face against their own
+// centre; the rest flip as a whole when their signed volume is negative.
+function shape(name, build, store = shapes, precision = 10000) {
   const vertices=[], faces=[];
   const stack=[];
   const v = p => {
     for(let i=stack.length-1;i>=0;i--)p=stack[i](p);
-    return (vertices.push(p.map(x=>Math.round(x*10000)/10000)),vertices.length);
+    return (vertices.push(p.map(x=>Math.round(x*precision)/precision+0)),vertices.length);
   };
   const tri=(a,b,c,color)=>faces.push([a,b,c,color]);
   const quad=(a,b,c,d,color)=>{tri(a,b,c,color);tri(a,c,d,color)};
-  // Local frame for nested parts: rotate (radians) then translate.
-  function group({pos=[0,0,0],rot=[0,0,0]},fn) {
-    const r=rotation(rot);
-    stack.push(p=>{const q=r(p);return [q[0]+pos[0],q[1]+pos[1],q[2]+pos[2]]});
+  const P=i=>vertices[i-1];
+  const sub3=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]];
+  const cross3=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
+  const dot3=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+  function centreOf(start){
+    const used=new Set();for(let f=start;f<faces.length;f++)for(let k=0;k<3;k++)used.add(faces[f][k]);
+    const c=[0,0,0];for(const i of used){const p=P(i);c[0]+=p[0];c[1]+=p[1];c[2]+=p[2]}
+    return c.map(x=>x/used.size);
+  }
+  const flip=f=>{const t=faces[f][1];faces[f][1]=faces[f][2];faces[f][2]=t};
+  function orientVolume(start){
+    if(faces.length===start)return;
+    const c=centreOf(start);let vol=0;
+    for(let f=start;f<faces.length;f++){const [a,b,d]=faces[f];vol+=dot3(sub3(P(a),c),cross3(sub3(P(b),c),sub3(P(d),c)))}
+    if(vol<0)for(let f=start;f<faces.length;f++)flip(f);
+  }
+  function orientConvex(start){
+    if(faces.length===start)return;
+    const c=centreOf(start);
+    for(let f=start;f<faces.length;f++){
+      const [a,b,d]=faces[f].map(P);
+      const n=cross3(sub3(b,a),sub3(d,a)),m=[(a[0]+b[0]+d[0])/3,(a[1]+b[1]+d[1])/3,(a[2]+b[2]+d[2])/3];
+      if(dot3(n,sub3(m,c))<0)flip(f);
+    }
+  }
+  const convex=fn=>(...args)=>{const s=faces.length;const r=fn(...args);orientConvex(s);return r};
+  const solid=fn=>(...args)=>{const s=faces.length;const r=fn(...args);orientVolume(s);return r};
+  // Local frame for nested parts: scale, rotate (radians) then translate.
+  function group({pos=[0,0,0],rot=[0,0,0],scale=1},fn) {
+    const r=rotation(rot),k=Array.isArray(scale)?scale:[scale,scale,scale];
+    stack.push(p=>{const q=r([p[0]*k[0],p[1]*k[1],p[2]*k[2]]);return [q[0]+pos[0],q[1]+pos[1],q[2]+pos[2]]});
     fn();stack.pop();
   }
   function box(x,y,z,w,h,d,color,angle=0) {
@@ -46,6 +87,31 @@ function shape(name, build) {
       ids.push(v([x+px*Math.cos(angle)-py*Math.sin(angle),y+px*Math.sin(angle)+py*Math.cos(angle),z+dz*d/2]));
     }
     for(const face of [[0,3,2,1],[4,5,6,7],[0,1,5,4],[3,7,6,2],[0,4,7,3],[1,2,6,5]])quad(...face.map(i=>ids[i]),color);
+  }
+  // Chamfered box (44 triangles). color may be {top,side,bevel,bottom}.
+  function bevelBox(x,y,z,w,h,d,b,color) {
+    const col=typeof color==='object'?color:{top:color,side:color,bevel:color,bottom:color};
+    b=Math.min(b,w/2.2,h/2.2,d/2.2);
+    const corner={};
+    for(const sx of [-1,1])for(const sy of [-1,1])for(const sz of [-1,1]){
+      corner[[sx,sy,sz]]={
+        x:v([x+sx*w/2,y+sy*(h/2-b),z+sz*(d/2-b)]),
+        y:v([x+sx*(w/2-b),y+sy*h/2,z+sz*(d/2-b)]),
+        z:v([x+sx*(w/2-b),y+sy*(h/2-b),z+sz*d/2]),
+      };
+    }
+    const k=(sx,sy,sz)=>corner[[sx,sy,sz]];
+    for(const s of [-1,1]){
+      quad(k(s,-1,-1).x,k(s,1,-1).x,k(s,1,1).x,k(s,-1,1).x,col.side);
+      quad(k(-1,s,-1).y,k(1,s,-1).y,k(1,s,1).y,k(-1,s,1).y,s>0?col.top:(col.bottom??col.side));
+      quad(k(-1,-1,s).z,k(1,-1,s).z,k(1,1,s).z,k(-1,1,s).z,col.front&&s<0?col.front:col.side);
+    }
+    for(const s of [-1,1])for(const t of [-1,1]){
+      quad(k(s,t,-1).x,k(s,t,1).x,k(s,t,1).y,k(s,t,-1).y,col.bevel);
+      quad(k(s,-1,t).x,k(s,1,t).x,k(s,1,t).z,k(s,-1,t).z,col.bevel);
+      quad(k(-1,s,t).y,k(1,s,t).y,k(1,s,t).z,k(-1,s,t).z,col.bevel);
+    }
+    for(const sx of [-1,1])for(const sy of [-1,1])for(const sz of [-1,1]){const c=k(sx,sy,sz);tri(c.x,c.y,c.z,col.bevel)}
   }
   function spindle(x,y,z,r,h,color,n=6,top=.2) {
     const bottom=[],upper=[];
@@ -73,11 +139,12 @@ function shape(name, build) {
   // Surface of revolution about local +Y. profile: [[radius,y],...] bottom to top;
   // radius 0 makes a pole. color may be a function (band, segment) -> shade.
   // jitter(level, segment) scales radii for hand-cut, irregular silhouettes.
-  function lathe(profile,{n=8,sx=1,sz=1,phase=0,color=TINT,capStart=false,capEnd=false,capColor,jitter}={}) {
+  // wobble(level, segment) -> [dx,dz] offsets a vertex sideways (droop, lean).
+  function lathe(profile,{n=8,sx=1,sz=1,phase=0,color=TINT,capStart=false,capEnd=false,capColor,jitter,wobble,lift}={}) {
     const shade=typeof color==='function'?color:()=>color;
     const rings=profile.map(([r,y],level)=>r===0?v([0,y,0]):Array.from({length:n},(_,i)=>{
-      const a=phase+i*2*Math.PI/n,k=jitter?jitter(level,i):1;
-      return v([Math.cos(a)*r*sx*k,y,Math.sin(a)*r*sz*k]);
+      const a=phase+i*2*Math.PI/n,k=jitter?jitter(level,i):1,[dx,dz]=wobble?wobble(level,i):[0,0],dy=lift?lift(level,i):0;
+      return v([Math.cos(a)*r*sx*k+dx,y+dy,Math.sin(a)*r*sz*k+dz]);
     }));
     for(let level=0;level<rings.length-1;level++){
       const lo=rings[level],hi=rings[level+1];
@@ -109,7 +176,58 @@ function shape(name, build) {
     const ids=[[-w,-h,-d],[w,-h,-d],[wt,h,-dt],[-wt,h,-dt],[-w,-h,d],[w,-h,d],[wt,h,dt],[-wt,h,dt]].map(([px,py,pz])=>v([x+px/2,y+py/2,z+pz/2]));
     for(const [face,c] of [[[0,3,2,1],color],[[4,5,6,7],color],[[0,1,5,4],color],[[3,7,6,2],topColor],[[0,4,7,3],color],[[1,2,6,5],color]])quad(...face.map(i=>ids[i]),c);
   }
-  build({box,spindle,jewel,ring,lathe,prism,slab,group});shapes[name]={vertices,faces};
+  // Jittered icosphere (20 * 4^sub triangles). color(normal, centre, faceIndex) -> shade.
+  function blob(x,y,z,rx,ry,rz,{sub=1,color=TINT,seed=0,amount=0,squash}={}) {
+    const t=(1+Math.sqrt(5))/2;
+    const pts=[[-1,t,0],[1,t,0],[-1,-t,0],[1,-t,0],[0,-1,t],[0,1,t],[0,-1,-t],[0,1,-t],[t,0,-1],[t,0,1],[-t,0,-1],[-t,0,1]].map(p=>{const l=Math.hypot(...p);return p.map(c=>c/l)});
+    let tris=[[0,11,5],[0,5,1],[0,1,7],[0,7,10],[0,10,11],[1,5,9],[5,11,4],[11,10,2],[10,7,6],[7,1,8],[3,9,4],[3,4,2],[3,2,6],[3,6,8],[3,8,9],[4,9,5],[2,4,11],[6,2,10],[8,6,7],[9,8,1]];
+    for(let s=0;s<sub;s++){
+      const cache=new Map(),next=[];
+      const mid=(a,b)=>{const key=a<b?a+','+b:b+','+a;if(cache.has(key))return cache.get(key);const p=pts[a].map((c,k)=>c+pts[b][k]),l=Math.hypot(...p);pts.push(p.map(c=>c/l));cache.set(key,pts.length-1);return pts.length-1};
+      for(const [a,b,c] of tris){const ab=mid(a,b),bc=mid(b,c),ca=mid(c,a);next.push([a,ab,ca],[b,bc,ab],[c,ca,bc],[ab,bc,ca])}
+      tris=next;
+    }
+    const local=pts.map((p,i)=>{const k=amount?1+(hash(i,sub,seed)-.5)*2*amount:1;let py=p[1]*ry*k;if(squash&&py<0)py*=squash;return [p[0]*rx*k,py,p[2]*rz*k]});
+    const ids=local.map(p=>v([x+p[0],y+p[1],z+p[2]]));
+    const shade=typeof color==='function'?color:()=>color;
+    tris.forEach(([a,b,c],index)=>{
+      const n=cross3(sub3(local[b],local[a]),sub3(local[c],local[a])),l=Math.hypot(...n)||1;
+      const m=[0,1,2].map(k=>(local[a][k]+local[b][k]+local[c][k])/3);
+      tri(ids[a],ids[b],ids[c],shade(n.map(q=>q/l*(dot3(n,m)<0?-1:1)),m,index));
+    });
+  }
+  // Swept tube along a polyline with parallel-transport frames.
+  function tube(points,radii,{n=6,color=TINT,capStart=true,capEnd=true,capColor,jitter}={}) {
+    const shade=typeof color==='function'?color:()=>color;
+    const norm=a=>{const l=Math.hypot(...a)||1;return a.map(c=>c/l)};
+    const tangents=points.map((p,i)=>norm(sub3(points[Math.min(i+1,points.length-1)],points[Math.max(i-1,0)])));
+    let nrm=Math.abs(tangents[0][1])<.9?[0,1,0]:[1,0,0];
+    const rings=points.map((p,i)=>{
+      const tt=tangents[i];
+      nrm=norm(sub3(nrm,tt.map(c=>c*dot3(nrm,tt))));
+      const bin=cross3(tt,nrm),r=typeof radii==='function'?radii(i):Array.isArray(radii)?radii[i]:radii;
+      return Array.from({length:n},(_,k)=>{const a=k*2*Math.PI/n,j=jitter?jitter(i,k):1;return v(p.map((c,q)=>c+(Math.cos(a)*nrm[q]+Math.sin(a)*bin[q])*r*j))});
+    });
+    for(let i=0;i<rings.length-1;i++)for(let k=0;k<n;k++){const j=(k+1)%n;quad(rings[i][k],rings[i][j],rings[i+1][j],rings[i+1][k],shade(i,k))}
+    const first=rings[0],last=rings[rings.length-1];
+    if(capStart)for(let k=1;k<n-1;k++)tri(first[0],first[k+1],first[k],capColor??shade(-1,k));
+    if(capEnd)for(let k=1;k<n-1;k++)tri(last[0],last[k],last[k+1],capColor??shade(rings.length,k));
+  }
+  // Lofted solid through closed cross-sections [{z, points:[[x,y],...]}] (equal
+  // point counts, local XY at each z). color(section, edge) -> shade. The end
+  // sections are fanned from their centroids, so keep them star-shaped.
+  function loft(sections,{color=TINT,capStart=true,capEnd=true,capColor}={}) {
+    const shade=typeof color==='function'?color:()=>color;
+    const rings=sections.map(({z,points})=>points.map(([x,y])=>v([x,y,z])));
+    const m=sections[0].points.length;
+    for(let s=0;s<rings.length-1;s++)for(let i=0;i<m;i++){const j=(i+1)%m;quad(rings[s][i],rings[s][j],rings[s+1][j],rings[s+1][i],shade(s,i))}
+    const centre=s=>{const pts=sections[s].points;return v([pts.reduce((t,p)=>t+p[0],0)/m,pts.reduce((t,p)=>t+p[1],0)/m,sections[s].z])};
+    if(capStart){const c=centre(0);for(let i=0;i<m;i++)tri(c,rings[0][(i+1)%m],rings[0][i],capColor??shade(-1,i))}
+    if(capEnd){const last=rings.length-1,c=centre(last);for(let i=0;i<m;i++)tri(c,rings[last][i],rings[last][(i+1)%m],capColor??shade(rings.length,i))}
+  }
+  build({loft:solid(loft),box:convex(box),bevelBox:convex(bevelBox),spindle:convex(spindle),jewel:convex(jewel),ring:solid(ring),lathe:solid(lathe),prism:solid(prism),
+    slab:convex(slab),blob:solid(blob),tube:solid(tube),group});
+  store[name]={vertices,faces};
 }
 // Deterministic pseudo-random jitter (no Math.random: output must be stable).
 const hash=(a,b,seed)=>{
@@ -120,24 +238,53 @@ const hash=(a,b,seed)=>{
 const jitterOf=(seed,amount)=>(level,i)=>Math.round((1+(hash(level,i,seed)-.5)*2*amount)*1000)/1000;
 // Item icons: the UI renders each triangle as two WedgeParts, so stay in budget.
 function icon(name,build){shape(name,build);iconBudget[name]=shapes[name].faces.length}
+const PI=Math.PI;
 
 // ---------------------------------------------------------------------------
 // Original world props and legacy item icons (geometry unchanged).
 // ---------------------------------------------------------------------------
-shape('AetherCrystal',({spindle,jewel})=>{spindle(0,-.8,0,1.6,.6,9,7,.8);jewel(0,.7,0,.65,1.8,.6,5);jewel(-.9,-.1,.2,.4,1,.45,4);jewel(.8,0,-.3,.4,1.15,.4,10)});
+shape('AetherCrystal',({lathe,group})=>{
+  lathe([[1.55,-1.15],[1.6,-.85],[1.2,-.5],[0,-.4]],{n:7,capStart:true,color:(l,i)=>l===1?6:9,jitter:jitterOf(31,.08)});
+  for(const [x,z,rx,rz,len,r,c] of [[0,0,0,.05,3.0,.5,5],[-.85,.25,.2,.5,1.7,.34,4],[.8,-.3,-.25,-.45,1.9,.34,10],[.2,.75,.55,-.15,1.3,.26,5]])
+    group({pos:[x,-.55,z],rot:[rx,0,rz]},()=>lathe([[r*.9,0],[r,len*.66],[0,len]],{n:5,phase:.3,capStart:true,color:(l,i)=>l===1&&i%2?GLINT:c}));
+});
 shape('WindpineCrown',({spindle})=>{spindle(0,-.5,0,.22,4.2,1,6,.75);for(let i=0;i<3;i++)spindle(0,.1+i*1.05,0,2.2-i*.5,2, i===1?4:3,7,.08)});
 shape('Surveyor',({box,spindle,jewel})=>{spindle(0,-1.25,0,1.2,.5,6,8,.8);box(0,-.35,0,1.9,1.5,1.3,3);spindle(0,.7,0,1.25,1.05,2,6,.65);box(0,.8,-1.05,1.25,.3,.2,5);box(-1.25,-.25,0,.4,1.3,.5,1,-.28);box(1.25,-.25,0,.4,1.3,.5,1,.28);jewel(0,1.65,0,.25,.5,.25,5)});
-shape('Pickaxe',({box,jewel})=>{box(0,-.2,0,.22,3.3,.25,1,-.18);box(0,1.1,0,2.3,.35,.32,2,.08);jewel(-1.2,.8,0,.3,.55,.2,4);jewel(1.2,.8,0,.3,.55,.2,4);box(.12,-1.25,0,.35,.55,.35,6,-.18)});
-shape('Blade',({box,jewel})=>{jewel(0,.75,0,.43,1.8,.16,5);box(0,-.85,0,1.35,.2,.35,2);box(0,-1.4,0,.24,.9,.28,6);jewel(0,-1.95,0,.25,.25,.2,2)});
+shape('Pickaxe',({box,lathe,jewel,group})=>group({rot:[0,0,-.18]},()=>{
+  box(0,-.2,0,.22,3.2,.24,12);
+  box(0,-1.35,0,.3,.5,.3,1);
+  box(0,1.15,0,.44,.44,.4,2);
+  for(const s of [-1,1])group({pos:[s*.18,1.15,0],rot:[0,0,-s*(PI/2+.25)]},()=>lathe([[.2,0],[.14,.6],[0,1.25]],{n:4,sz:.8,phase:PI/4,capStart:true,color:4}));
+  jewel(0,1.15,-.22,.12,.12,.05,5);
+}));
+shape('Blade',({lathe,box,jewel})=>{
+  lathe([[.4,-.65],[.36,1.6],[0,2.55]],{n:4,sz:.25,capStart:true,color:5});
+  box(0,.5,-.09,.07,2.0,.02,13);
+  box(0,-.8,0,1.35,.2,.35,2);
+  jewel(0,-.8,-.2,.13,.13,.06,7);
+  box(0,-1.4,0,.22,.9,.26,6);
+  jewel(0,-1.95,0,.25,.25,.2,2);
+});
 shape('Lantern',({box,spindle,jewel})=>{spindle(0,-.9,0,.75,.35,2,6,.85);spindle(0,.85,0,.85,.5,6,6,.4);jewel(0,0,0,.5,.8,.5,5);for(const x of [-.5,.5])for(const z of [-.4,.4])box(x,0,z,.1,1.6,.1,1);box(0,1.25,0,.18,.45,.18,2)});
 shape('TimberBundle',({spindle,box})=>{spindle(-.4,0,0,.45,2.2,1,7,1);spindle(.45,0,.1,.45,2.5,2,7,1);spindle(0,0,-.65,.4,2,1,7,1);box(0,-.5,-.15,1.8,.16,1.5,3);box(0,.5,-.15,1.8,.16,1.5,3)});
 shape('Moonbloom',({box,jewel,spindle})=>{spindle(0,-.8,0,.65,.35,1,6,.9);box(0,0,0,.12,1.8,.12,3);for(let i=0;i<5;i++){const a=i*Math.PI*2/5;jewel(Math.cos(a)*.5,.65,Math.sin(a)*.5,.4,.25,.4,i%2?10:5)}jewel(0,.85,0,.3,.3,.3,2);jewel(-.4,-.15,0,.6,.2,.25,4)});
-shape('Fish',({jewel})=>{jewel(0,0,0,1.3,.65,.4,4);jewel(1.4,0,0,.5,.8,.15,2);jewel(-.8,.15,-.35,.14,.14,.1,6);jewel(0,.6,0,.4,.45,.12,5)});
-shape('Tonic',({spindle,jewel})=>{spindle(0,-.15,0,.75,1.3,4,8,.8);spindle(0,.7,0,.35,.6,5,6,1);spindle(0,1.08,0,.4,.18,1,6,1);jewel(0,-.1,-.68,.3,.4,.06,2)});
+shape('Fish',({lathe,prism,jewel,group})=>{
+  group({rot:[0,0,PI/2]},()=>lathe([[.12,-1.1],[.42,-.7],[.62,-.05],[.55,.6],[.28,1.1],[0,1.3]],{n:6,sz:.5,capStart:true,color:(l,i)=>i===2||i===3?13:4}));
+  prism([[1.0,.08],[1.9,.8],[1.65,0],[1.9,-.8],[1.0,-.08]],.08,2);
+  prism([[-.35,.5],[.45,.5],[.15,1.05],[-.25,.95]],.06,5);
+  jewel(-.82,.16,-.21,.1,.1,.05,6);
+});
+shape('Tonic',({lathe,jewel})=>{
+  lathe([[0,-.8],[.55,-.75],[.75,-.35],[.72,.15],[.4,.45],[.22,.55]],{n:7,color:(l)=>l<=2?4:5});
+  lathe([[.22,.52],[.2,.85]],{n:6,color:13});
+  lathe([[.3,.83],[.3,.95]],{n:6,color:2,capStart:true});
+  lathe([[.17,.93],[.22,1.17]],{n:6,color:12,capEnd:true});
+  jewel(-.3,-.1,-.62,.08,.24,.05,13);
+});
 shape('VaultChest',({box,spindle})=>{box(0,-.2,0,2.5,1.3,1.5,6);box(0,.55,0,2.6,.35,1.6,3);for(const x of [-.9,.9])box(x,0,-.81,.18,1.4,.12,2);box(0,.1,-.85,.45,.5,.12,2);spindle(0,.85,0,.25,.3,5,6,.3)});
 shape('FloatingIslet',({spindle,box,jewel})=>{spindle(0,-.5,0,1.6,1.4,9,7,1.3);spindle(0,.3,0,2.1,.35,3,7,.95);jewel(0,-1.5,0,.8,1.2,.8,6);box(.55,.85,0,.8,.8,.8,2);spindle(-.7,1,0,.65,1.3,4,6,.05)});
-shape('AlloyIngot',({box})=>{box(0,-.25,0,2.2,.5,1.1,1);box(0,.1,0,1.9,.3,.9,2);box(0,.3,0,.7,.08,.55,6)});
-shape('AetherIngot',({box,jewel})=>{box(0,-.25,0,2.2,.5,1.1,3);box(0,.1,0,1.9,.3,.9,4);jewel(0,.35,0,.4,.2,.3,5)});
+shape('AlloyIngot',({slab,box})=>{slab(0,-.25,0,2.2,1.1,1.8,.8,.5,1,2);box(0,.02,-.2,1.2,.04,.1,13);slab(0,.17,0,1.0,.5,.8,.38,.34,2)});
+shape('AetherIngot',({slab,box,jewel})=>{slab(0,-.25,0,2.2,1.1,1.8,.8,.5,3,4);box(0,.02,-.2,1.2,.04,.1,13);jewel(0,.25,0,.42,.3,.32,5)});
 shape('Skyplate',({box,jewel})=>{box(0,.2,0,1.55,1.8,.65,3);box(-1.05,.65,0,.6,.7,.8,2,.2);box(1.05,.65,0,.6,.7,.8,2,-.2);box(0,-.8,0,1.6,.25,.8,1);jewel(0,.35,-.4,.45,.65,.18,5);box(0,1.2,0,.8,.2,.6,2)});
 shape('ObservatoryArch',({box,ring,jewel})=>{
   for(const x of [-3.2,3.2]){box(x,-.2,0,1.15,4.4,1.4,6);box(x,-2.2,0,1.6,.4,1.7,1);box(x,.2,-.76,.25,3.3,.12,5);box(x,1.8,0,1.5,.4,1.6,2)}
@@ -165,7 +312,6 @@ shape('ObservatorySentinel',({box,spindle,jewel})=>{
 // Depth item icons. Fronts face -Z (the UI camera looks from +X/+Y/-Z).
 // TINT faces take the item's colour; trims, handles and glints stay fixed.
 // ---------------------------------------------------------------------------
-const PI=Math.PI;
 icon('Sword',({lathe,box,jewel,group})=>group({rot:[0,-.3,-.62]},()=>{
   lathe([[.34,-.35],[.3,1.55],[0,2.45]],{n:4,sz:.22,capStart:true});
   box(0,.6,-.082,.07,1.7,.02,GLINT);
@@ -379,12 +525,51 @@ shape('OreCluster',({lathe,group})=>{
     group({pos:[x,0,z],rot:[rx,0,rz]},()=>lathe([[r,-.1],[r*1.12,len*.62],[0,len]],{n:5,phase:.3,capStart:true,color:(level,i)=>level===1&&i===0?GLINT:TINT}));
 });
 
+
+// ---------------------------------------------------------------------------
+// Wave-4 world meshes (art/world-shapes.cjs): client-forged by forge.client.lua, not used by the UI.
+// ---------------------------------------------------------------------------
+function world(name,meta,build){
+  if(shapes[name]||worldShapes[name])throw new Error(`Duplicate shape name ${name}`);
+  shape(name,build,worldShapes,1000);worldMeta[name]=meta;
+}
+require('./world-shapes.cjs')({world,C,PI,hash,jitterOf});
+require('./region-shapes.cjs')({world,C,PI,hash,jitterOf});
+
 // ---------------------------------------------------------------------------
 // Validation and output.
 // ---------------------------------------------------------------------------
+// Refreshed legacy shapes are also UI icons (Pickaxe, Blade, Tonic, ...).
+for(const name of ['AetherCrystal','Fish','Tonic','Pickaxe','Blade','AlloyIngot','AetherIngot'])iconBudget[name]=shapes[name].faces.length;
 for(const [name,count] of Object.entries(iconBudget))
   if(count>ICON_TRIANGLE_BUDGET)throw new Error(`${name} has ${count} triangles; icon budget is ${ICON_TRIANGLE_BUDGET}`);
-for(const [name,data] of Object.entries(shapes))for(const [a,b,c,shade] of data.faces){
+// Every closed component must be wound outward (positive signed volume) so the
+// forge can render single-sided; flat open pieces (|volume| ~ 0) are exempt.
+function componentVolumes(data){
+  const parent=data.vertices.map((_,i)=>i);
+  const find=i=>{while(parent[i]!==i){parent[i]=parent[parent[i]];i=parent[i]}return i};
+  for(const [a,b,c] of data.faces){parent[find(b-1)]=find(a-1);parent[find(c-1)]=find(a-1)}
+  const groups=new Map();
+  for(const f of data.faces){const r=find(f[0]-1);if(!groups.has(r))groups.set(r,[]);groups.get(r).push(f)}
+  return [...groups.values()].map(list=>{
+    const used=new Set(list.flatMap(f=>f.slice(0,3)));const c=[0,0,0];
+    for(const i of used)for(let k=0;k<3;k++)c[k]+=data.vertices[i-1][k]/used.size;
+    let vol=0;
+    for(const [a,b,d] of list){
+      const [p,q,r]=[a,b,d].map(i=>data.vertices[i-1].map((x,k)=>x-c[k]));
+      vol+=(p[0]*(q[1]*r[2]-q[2]*r[1])-p[1]*(q[0]*r[2]-q[2]*r[0])+p[2]*(q[0]*r[1]-q[1]*r[0]))/6;
+    }
+    return vol;
+  });
+}
+const rangeErrors=[];
+for(const [name,data] of Object.entries(worldShapes)){
+  const count=data.faces.length;
+  if(count<WORLD_TRIANGLE_RANGE[0]||count>WORLD_TRIANGLE_RANGE[1])rangeErrors.push(`${name} has ${count} triangles; world range is ${WORLD_TRIANGLE_RANGE.join('-')}`);
+  for(const vol of componentVolumes(data))if(vol<-1e-4)throw new Error(`${name} has an inward-wound component (volume ${vol})`);
+}
+if(rangeErrors.length){console.log(Object.entries(worldShapes).map(([n,d])=>n+' '+d.faces.length).join(', '));throw new Error(rangeErrors.join('\n'))}
+for(const [name,data] of [...Object.entries(shapes),...Object.entries(worldShapes)])for(const [a,b,c,shade] of data.faces){
   const [p,q,r]=[a,b,c].map(i=>data.vertices[i-1]);
   const u=q.map((x,k)=>x-p[k]),w=r.map((x,k)=>x-p[k]);
   const n=[u[1]*w[2]-u[2]*w[1],u[2]*w[0]-u[0]*w[2],u[0]*w[1]-u[1]*w[0]];
@@ -444,7 +629,70 @@ return Catalog
 `;
 const luaTable = x => Array.isArray(x)?'{'+x.map(luaTable).join(',')+'}':typeof x==='object'?'{'+Object.entries(x).map(([k,v])=>k+'='+luaTable(v)).join(',')+'}':JSON.stringify(x);
 const entries=Object.entries(shapes).map(([name,data])=>`shapes.${name}=${luaTable(data)}`).join('\n');
-for(const [name,data] of Object.entries(shapes))fs.writeFileSync(`art/${name}.obj`, `# Original Aether Isles ${name}\nmtllib AetherPalette.mtl\n`+data.vertices.map(p=>'v '+p.join(' ')).join('\n')+'\n'+data.faces.map(f=>`usemtl Shade${f[3]}\nf ${f.slice(0,3).join(' ')}`).join('\n')+'\n');
+const objHeader=name=>{const m=worldMeta[name];return m?`# smooth ${m.smooth||0}\n`+(m.tint?`# tint ${m.tint}\n`:''):''};
+for(const [name,data] of [...Object.entries(shapes),...Object.entries(worldShapes)])fs.writeFileSync(`art/${name}.obj`, `# Original Aether Isles ${name}\n`+objHeader(name)+`mtllib AetherPalette.mtl\n`+data.vertices.map(p=>'v '+p.join(' ')).join('\n')+'\n'+data.faces.map(f=>`usemtl Shade${f[3]}\nf ${f.slice(0,3).join(' ')}`).join('\n')+'\n');
+// The world catalog is downloaded by every client, so geometry is packed into
+// base-64 strings (decoded once by the module itself into the usual tables):
+// a vertex is three 3-digit millistud coordinates offset by PACK_OFFSET, a face
+// is three 2-digit vertex indices and a 1-digit palette index.
+const PACK_DIGITS='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+const PACK_OFFSET=131072;
+const packNumber=(value,width)=>{
+  if(!Number.isInteger(value)||value<0||value>=64**width)throw new Error(`cannot pack ${value} in ${width} digits`);
+  let out='';for(let k=0;k<width;k++){out=PACK_DIGITS[value%64]+out;value=Math.floor(value/64)}return out;
+};
+const worldEntries=Object.entries(worldShapes).map(([name,data])=>{
+  const m=worldMeta[name],extra={smooth:m.smooth||0,kind:m.kind};
+  if(m.tint)extra.tint=m.tint;
+  if(m.fit)extra.fit=m.fit;
+  if(m.along)extra.along=m.along;
+  if(m.range)extra.range=m.range;
+  const verts=data.vertices.map(p=>p.map(x=>packNumber(Math.round(x*1000)+PACK_OFFSET,3)).join('')).join('');
+  const faces=data.faces.map(([a,b,c,shade])=>packNumber(a,2)+packNumber(b,2)+packNumber(c,2)+packNumber(shade,1)).join('');
+  return `shapes.${name}=unpack("${verts}","${faces}",${luaTable(extra)})`;
+}).join('\n');
+const resourceShapes={Ore:'OreVein1',Aetherite:'OreVein1',Brassite:'OreVein2',SunsteelOre:'OreVein2',Voidstone:'OreVein3',StarmetalOre:'OreVein3',Prismite:'OreVein4',Celestium:'OreVein4',
+  Timber:'MeadowTree',WindpineLog:'WindpineTree',EmberoakLog:'EmberoakTree',GlimmerbarkLog:'GlimmerbarkTree',StarwoodLog:'StarwoodTree',AetherheartLog:'AetherheartTree',
+  Herb:'CropBush',Sunwheat:'CropWheat',Glowcap:'CropGlowcap',Moonbloom:'CropBloom',Starfruit:'CropBush',AetherLotus:'CropBloom'};
+for(const shapeName of Object.values(resourceShapes))if(!worldShapes[shapeName])throw new Error(`resource map names unknown ${shapeName}`);
+fs.writeFileSync('art/WorldCatalog.lua',`-- Generated by art/generate-props.cjs from art/world-shapes.cjs (original geometry).
+-- World meshes forged on each client by forge.client.lua (MeshForge). Geometry is packed
+-- (see unpack below); each shape decodes to vertices {x,y,z} and faces {a,b,c,paletteIndex}.
+-- tintIndex faces take the part's Tint (or the shape's default tint); tintDarkIndex
+-- and tintLightIndex faces take that colour darkened / lightened. smooth is the
+-- normal-smoothing crease angle (degrees); fit is the authored box mapped onto the
+-- tagged part's size (default: the mesh bounds).
+local palette=${luaTable(palette)}
+local DIGITS="${PACK_DIGITS}"
+local value={}
+for i=1,#DIGITS do value[string.byte(DIGITS,i)]=i-1 end
+local function digits(s,at,width)
+	local n=0
+	for k=at,at+width-1 do n=n*64+value[string.byte(s,k)] end
+	return n
+end
+-- Packed geometry -> {vertices={{x,y,z},...},faces={{a,b,c,paletteIndex},...}} plus meta.
+local function unpack(verts,faces,meta)
+	local vertices,list={},{}
+	for at=1,#verts,9 do
+		table.insert(vertices,{(digits(verts,at,3)-${PACK_OFFSET})/1000,(digits(verts,at+3,3)-${PACK_OFFSET})/1000,(digits(verts,at+6,3)-${PACK_OFFSET})/1000})
+	end
+	for at=1,#faces,7 do
+		table.insert(list,{digits(faces,at,2),digits(faces,at+2,2),digits(faces,at+4,2),digits(faces,at+6,1)})
+	end
+	meta.vertices,meta.faces=vertices,list
+	return meta
+end
+local shapes={}
+${worldEntries}
+local Catalog={palette=palette,shapes=shapes,tintIndex=${TINT},tintDarkIndex=${TINT_DARK},tintLightIndex=${TINT_LIGHT},tintDark=0.62,tintLight=0.4}
+-- Suggested shape per AetherData resource id (gather nodes).
+Catalog.resourceShapes=${luaTable(resourceShapes)}
+function Catalog.resourceShape(id)
+	return if type(id)=="string" then Catalog.resourceShapes[id] else nil
+end
+return Catalog
+`);
 fs.writeFileSync('art/AetherPalette.mtl',palette.map((hex,i)=>`newmtl Shade${i+1}\nKd ${[0,2,4].map(n=>parseInt(hex.slice(n,n+2),16)/255).join(' ')}`).join('\n'));
 fs.writeFileSync('art/PropCatalog.lua','-- Generated by art/generate-props.cjs; shared original geometry.\nlocal palette='+luaTable(palette)+'\nlocal shapes={}\n'+entries+'\n'+iconShapeLua);
 let source=fs.readFileSync('mesh.client.lua','utf8');
@@ -455,3 +703,5 @@ source=source.replace('local function wedgeFace','-- BEGIN GENERATED PROPS\n'+en
 fs.writeFileSync('mesh.client.lua',source);
 console.log('Generated '+Object.keys(shapes).length+' original prop meshes and shared UI catalog.');
 console.log('Icon triangles: '+Object.entries(iconBudget).map(([n,c])=>n+' '+c).join(', '));
+console.log('World triangles: '+Object.entries(worldShapes).map(([n,d])=>n+' '+d.faces.length).join(', '));
+console.log('World total: '+Object.keys(worldShapes).length+' shapes, '+Object.values(worldShapes).reduce((t,d)=>t+d.faces.length,0)+' triangles');

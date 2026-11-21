@@ -2,26 +2,26 @@
 mtllib AetherPalette.mtl
 v -1.1 -0.5 -0.55
 v 1.1 -0.5 -0.55
-v 1.1 0 -0.55
-v -1.1 0 -0.55
+v 0.9 0 -0.4
+v -0.9 0 -0.4
 v -1.1 -0.5 0.55
 v 1.1 -0.5 0.55
-v 1.1 0 0.55
-v -1.1 0 0.55
-v -0.95 -0.05 -0.45
-v 0.95 -0.05 -0.45
-v 0.95 0.25 -0.45
-v -0.95 0.25 -0.45
-v -0.95 -0.05 0.45
-v 0.95 -0.05 0.45
-v 0.95 0.25 0.45
-v -0.95 0.25 0.45
+v 0.9 0 0.4
+v -0.9 0 0.4
+v -0.6 0 -0.25
+v 0.6 0 -0.25
+v 0.6 0.04 -0.25
+v -0.6 0.04 -0.25
+v -0.6 0 -0.15
+v 0.6 0 -0.15
+v 0.6 0.04 -0.15
+v -0.6 0.04 -0.15
 v 0 0.55 0
-v 0.4 0.35 0
-v 0 0.35 0.3
-v -0.4 0.35 0
-v 0 0.35 -0.3
-v 0 0.15 0
+v 0.42 0.25 0
+v 0 0.25 0.32
+v -0.42 0.25 0
+v 0 0.25 -0.32
+v 0 -0.05 0
 usemtl Shade3
 f 1 4 3
 usemtl Shade3
@@ -34,9 +34,9 @@ usemtl Shade3
 f 1 2 6
 usemtl Shade3
 f 1 6 5
-usemtl Shade3
+usemtl Shade4
 f 4 8 7
-usemtl Shade3
+usemtl Shade4
 f 4 7 3
 usemtl Shade3
 f 1 5 8
@@ -46,43 +46,43 @@ usemtl Shade3
 f 2 3 7
 usemtl Shade3
 f 2 7 6
-usemtl Shade4
+usemtl Shade13
 f 9 12 11
-usemtl Shade4
+usemtl Shade13
 f 9 11 10
-usemtl Shade4
+usemtl Shade13
 f 13 14 15
-usemtl Shade4
+usemtl Shade13
 f 13 15 16
-usemtl Shade4
+usemtl Shade13
 f 9 10 14
-usemtl Shade4
+usemtl Shade13
 f 9 14 13
-usemtl Shade4
+usemtl Shade13
 f 12 16 15
-usemtl Shade4
+usemtl Shade13
 f 12 15 11
-usemtl Shade4
+usemtl Shade13
 f 9 13 16
-usemtl Shade4
+usemtl Shade13
 f 9 16 12
-usemtl Shade4
+usemtl Shade13
 f 10 11 15
-usemtl Shade4
+usemtl Shade13
 f 10 15 14
 usemtl Shade5
-f 17 18 19
+f 17 19 18
 usemtl Shade5
-f 22 19 18
+f 22 18 19
 usemtl Shade5
-f 17 19 20
+f 17 20 19
 usemtl Shade5
-f 22 20 19
+f 22 19 20
 usemtl Shade5
-f 17 20 21
+f 17 21 20
 usemtl Shade5
-f 22 21 20
+f 22 20 21
 usemtl Shade5
-f 17 21 18
+f 17 18 21
 usemtl Shade5
-f 22 18 21
+f 22 21 18

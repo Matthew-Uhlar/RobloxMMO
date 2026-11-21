@@ -143,21 +143,21 @@ f 26 27 31
 usemtl Shade1
 f 26 31 30
 usemtl Shade5
-f 33 34 35
+f 33 35 34
 usemtl Shade5
-f 38 35 34
+f 38 34 35
 usemtl Shade5
-f 33 35 36
+f 33 36 35
 usemtl Shade5
-f 38 36 35
+f 38 35 36
 usemtl Shade5
-f 33 36 37
+f 33 37 36
 usemtl Shade5
-f 38 37 36
+f 38 36 37
 usemtl Shade5
-f 33 37 34
+f 33 34 37
 usemtl Shade5
-f 38 34 37
+f 38 37 34
 usemtl Shade2
 f 39 42 41
 usemtl Shade2

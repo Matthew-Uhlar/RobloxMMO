@@ -2,3 +2,10 @@ art/*.obj text eol=lf
 art/*.mtl text eol=lf
 art/import/manifest.json text eol=lf
 *.glb binary
+# Keep source and test files LF on every OS: several suites slice other
+# scripts' source by "\n"-containing markers, which CRLF checkouts break.
+*.lua text eol=lf
+*.luau text eol=lf
+*.json text eol=lf
+*.sh text eol=lf
+*.md text eol=lf

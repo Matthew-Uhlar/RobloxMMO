@@ -22,6 +22,7 @@ Status key: **Met (headless)** — implemented and covered by automated headless
 | 14 | Good-looking meshes | 46 original low-poly shapes, tintable icons for all 175 items, creature/world builds, bounded proxies for low-end devices | Met (headless); in-engine look needs live check |
 | 15 | Multiple teams with QC that keeps the vision | Contract-driven teams (`docs/DEPTH-CONTRACT.md`), four independent reviews, 47 findings fixed with regression tests | Met |
 | 16 | Original IP | All names, places, creatures and art are original to Aether Isles | Met |
+| 18 | Owner feedback after first publish (bigger islands, lighting, custom meshes, menus, swing/interact animations, more functionality) | Waves 4–6 in `PROJECT-STATUS.md`; world/mesh/UI/gesture/NPC suites | Met (headless); needs live check after the next publish |
 | 17 | Playable on Roblox | Place builds and all 14 scripts compile (`verify.luau`) | **Needs live check:** Studio playtest, publish, version confirmation |
 
 ## Live acceptance checklist (owner)

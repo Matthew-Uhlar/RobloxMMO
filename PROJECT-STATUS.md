@@ -8,6 +8,41 @@ Updated November 19, 2026. The full original goal remains in progress.
 - All eight cloud scripts matched the **Skyreach** source at `975be9c`. Deployment of later Observatory, bank and trade updates is **unknown** pending a publish receipt/version check.
 - Studio currently displays **Public, ages 16+**, according to the primary-agent observation. Audience settings are separate from code deployment and have not been independently join-tested.
 
+## Waves 7–9 (November 20–21, 2026)
+
+Each system below was built by its own team, independently reviewed, and fixed with regression tests before merging (see `docs/DEPTH-CONTRACT.md` §14–19).
+
+- **Workers depth:** 35 worker types (incl. 6 combat workers), up to 12 slots via unique crafts, fuels, upgrades (compactor, press, auto-sell, storage, dust), Condensed/Radiant compacted items; balanced so a maxed fleet earns ≤ ~16% of active XP/h, max 3 per type, 2 combat workers.
+- **Pets depth:** Common→Legendary rarities per species, 2–3 working abilities each, 12 held items, Pet Candy, Ascendant Prism, timed Roost upgrades, 24 species, following companions.
+- **Dungeon classes:** Aegis/Mender/Riftblade/Starshot/Arcanist with abilities, ultimates and levels 1–50; secrets and bonus scoring; Floors VI–VII; Master Mode (now I–VII).
+- **Dungeon endgame (§23):** Floors VI–VII gained cumulative room puzzles (Mirror Gallery, Star Chart), multi-phase bosses with class-role mechanics (Reliquary Verdict tank check, Withering Lumen healer check, Eventide Nova damage/interrupt check, Constellation Lock puzzle) and gear-score gates; Master Mode I–VII unlocked by grade S with per-floor scaling, ×3 essence and Master-only drops; Duskwarden Regalia, Colossus Lumenbrand, Sovereign's Nightfall, Thronebreaker, Sovereign Halo; Master stars ✪ (essence + Eclipsed Starcores) via a documented `Gear.Layers` hook; pay-to-open bonus chests rolled once per credited clear (Lodestar Keys); run log, weekly bests/bounty and personal bests; Minigames-style credit (median share, recent action, 90 s rejoin) and run-id dedupe; Hunt › Essence page. Tests: `verify-dungeon-master.luau`.
+- **Prayer & Thieving:** 21 prayers with time-based drain, remains and altars, quick-prayer HUD; 14 thieving targets (stalls, pickpockets, strongboxes) with persisted cooldowns.
+- **Treasure Trails:** six clue tiers, 161 steps (dig, riddle, emote, skill, puzzle box) with server-only answers, caskets with 35 uniques, clue log.
+- **Slayer tasks:** a 99-level Slayer skill (21 skills total), four masters, 14 families, points/streaks/skips/blocks, a points shop with the Hunter's Visor, owner-only superiors and four Slayer-gated monsters.
+- **Lair bosses (§25):** four original instanced bosses for 1–3 crewmates — Bramblemaw (Combat 30, brood ward), Aerisca (50, melee/ranged stances + tile lattice), the Pyrewarden (70, ordered forge sigils + magic/ranged stances), Nihlvar (90, all three stances, shifting weakness, anchors and lattice) — summoned at four altars (20 static parts) into arenas built off-map on demand (≤ 6 instances, ≤ 30 lair creatures) and destroyed after; entry fees, prayer-checked stances, per-UserId credit kept across a 75 s rejoin, kill counts, personal bests, unique weapons/accessories below their crafted rivals, four boss pets (~40 h), a Collection Log **Lairs** tab, Hunt › Bosses and an in-fight HUD. Balanced at 0.9–1.05× solo Combat XP/h and 0.95–1.03× Slayer coins/h. Tests: `verify-bosses.luau`.
+- **Test infrastructure:** every suite must print a SUITE-END sentinel; the UI suite's memory fell from ~13 GB to ~160 MB.
+
+Verification: 20 headless suites pass and all 23 scripts compile. All of this awaits a live publish and playtest.
+
+## Waves 4–6 (November 20, 2026) — after the first live publish
+
+Owner feedback from the live Depth build drove wave 4; waves 5–6 continued toward OSRS/SkyBlock depth. Every wave was built by parallel teams against `docs/DEPTH-CONTRACT.md` §10–13, independently reviewed, and fixed with regression tests.
+
+- **World & lighting:** islands ~2.5× larger with terrain tiers, cliffs, ponds and shorelines; hub districts; Future lighting, tuned atmosphere and a day/night cycle; fixed z-fighting island tops, doubled ambient, white haze, lights inside parts, unbounded lanterns and overused Neon.
+- **Custom meshes:** 65 original world shapes (trees, rocks, ore veins per tier, crops, lamps, stations, bridges, statues, beacons, stalls, signs, landmarks, Agility/Hunter props) built on each client with EditableMesh, with mobile budgets and primitive fallback.
+- **Menus:** full "Aether Brass" redesign of every atlas page, HUD, combat panels and builder controls; pairwise HUD overlap tests at three screen sizes; renders in `docs/screenshots/`.
+- **Animations:** procedural swing/interact gestures for every gather skill, stations, interact, attack, bow/staff/wand, eat/drink and all Agility moves, replicated to nearby players.
+- **Guidance:** 12 NPCs with dialogue, a six-step tutorial, minimap, Navigate list with waypoints, Hub/Home recall.
+- **Combat triangle:** Ranged, Magic, Fletching and Glyphcraft; bows/arrows/quiver, staves/wands, 15 spells and mana; monster weaknesses; damage XP paid on kill.
+- **New skills:** Agility (8 courses, Skymarks, shortcuts) and Hunter (8 creatures, traps/nets, log) — 18 skills total.
+- **Gear depth:** 55 reforges and stones, stars with essence, Tempering/Masterwork tomes.
+- **Skill mastery:** 8 perk trees (106 nodes) with capstone abilities, post-99 points, milestones and 99 mantles.
+- **Verdant Garden:** 12 offline-growing plots, milestones, garden levels, composter, visitors and shop.
+- **Endgame:** The Shattered Crown region (levels 85–110), tier-7/8 resources and tools, two world bosses with phases and telegraphs, share-scaled loot and anti-leech credit, one endgame set per combat style.
+- **QC:** reviews found and fixed, among others, a leash-reset XP loop, doubled melee XP, GC-lost traps, extreme Hunter XP, multiplicative gathering yields, instant regrowth, infinite garden seeds, flat boss payouts favouring alts and an overtuned magic set. The build now also fails if any suite stops before its end (SUITE-END sentinels).
+
+Verification: 14 headless suites (progression, gameplay, world, expedition, co-op, combat, UI, festival, gesture, NPC, mesh, skills, garden, endgame) all pass and all 21 scripts compile. In-engine look and performance (EditableMesh on phones, lighting, animation feel) still need a live playtest.
+
 ## Wave 3 (November 20, 2026)
 
 - **Skyward Calendar & events:** a global UTC calendar (4 seasons × 12 isle days, a year ≈ 5.08 real days so events drift across time zones) with seasonal gathering bonuses and 13 non-overlapping timed events per year — Bloomtide Fair (featured-crop ballot), Glimmertide Festival (festival-only fish), Deepvein Surge (double Mining XP), Hollow Night (event candy from monsters) and Starfall Vigil (once-per-vigil gifts) — plus a Festival Vendor, notice board and Journal → Calendar page.
@@ -72,7 +107,7 @@ Physical touch keyboard/controller navigation, device performance, full two-clie
 ## Required remaining work
 
 - Live cross-server economy validation (standing orders and auctions are implemented and headless-tested).
-- Further regions/activities beyond the current eight regions, five dungeon floors, three slayer lines, nine sea creatures and five recurring festivals; cross-server co-op invitations.
+- Further regions/activities beyond the current eight regions, seven dungeon floors (plus Master Mode), three slayer lines, nine sea creatures and five recurring festivals; cross-server co-op invitations.
 - Permanent mesh import/integration, texture delivery, complete sign/menu art review and device performance measurement.
 - Real multiplayer/rejoin/failure tests in Studio (requirement-by-requirement acceptance: [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md)).
 - Confirm each intended cloud update with a receipt/version check and an actual join, independently of CI and audience settings.

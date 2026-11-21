@@ -31,9 +31,16 @@ local players={PlayerAdded=signal(),PlayerRemoving=signal(),GetPlayers=function(
 local heartbeat=signal()
 local rewards,payloads={},{}
 local reward={Fire=function(_,p,payload) rewards[p]=(rewards[p] or 0)+1 payloads[p]=payload end}
-local levels,irons={},{}
-local bridge={Invoke=function(_,op,p)
-	if op=="dungeon" then return {level=levels[p] or 1,ironman=irons[p]==true} end
+local levels,irons,classes={},{},{}
+-- The profile owns the class: "dungeonClass" stores it and publishes the
+-- DungeonClass attribute (Classes.publish); "dungeon" reads it back.
+local bridge={Invoke=function(_,op,p,payload)
+	if op=="dungeon" then return {level=levels[p] or 1,ironman=irons[p]==true,class=classes[p]} end
+	if op=="dungeonClass" then
+		classes[p]=payload.class
+		p:SetAttribute("DungeonClass",payload.class)
+		return {ok=true}
+	end
 	return nil
 end}
 -- L6: when grantMode is set, ServerStorage also exposes the IsleExpeditionGrant
@@ -108,11 +115,11 @@ local b,br,bh=player()
 local c,cr,ch=player()
 use(a,"Eclipse Heart","Strike core")
 check(caption.Text:find("0 / 3",1,true)~=nil,"non-member cannot skip prisms")
-use(a,"Mage oath","Choose role")
-check(a:GetAttribute("ExpeditionRole")=="Mage","role selection")
+use(a,"Arcanist oath","Choose class")
+check(a:GetAttribute("DungeonClass")=="Arcanist","class selection")
 use(a,"ExpeditionGate","Enter expedition")
 check(caption.Text:find("MATCHMAKING",1,true)~=nil,"entry opens the matchmaking pad")
-use(b,"Tank oath","Choose role")
+use(b,"Aegis oath","Choose class")
 use(b,"ExpeditionGate","Enter expedition")
 use(c,"ExpeditionGate","Enter expedition")
 launch()
@@ -178,7 +185,7 @@ for _,p in pylons do check(p.Parent:GetAttribute("VisualState")=="Active","prism
 use(a,"Eclipse Heart","Strike core")
 check(rewards[a]==1,"post-victory replay has no reward")
 cr.Position=r.Vector3.new(0,0,500) -- c steps off the pad and sits out the next run
-use(a,"Healer oath","Choose role")
+use(a,"Mender oath","Choose class")
 use(a,"ExpeditionGate","Enter expedition")
 use(b,"ExpeditionGate","Enter expedition")
 launch()
@@ -205,8 +212,8 @@ local baseChecks=checks
 -- Part 2: Dungeons rules (shared/GameData.lua).
 ------------------------------------------------------------------------------
 local floors=Data.DungeonFloors
-check(#floors==5,"five Observatory floors")
-local expectedLevels={1,5,12,20,30}
+check(#floors==7,"seven Observatory floors")
+local expectedLevels={1,5,12,20,30,40,50}
 for i,f in ipairs(floors) do
 	check(f.index==i and f.level==expectedLevels[i],"floor "..i.." Dungeoneering requirement")
 	check(f.name=="Observatory Floor "..f.numeral,"floor "..i.." name")
@@ -239,7 +246,7 @@ for i,f in ipairs(floors) do
 	check(Data.dungeonFloorUnlocked(i,Progression.levelForXp(need)),"floor "..i.." opens at Dungeoneering "..f.level)
 	if f.level>1 then check(not Data.dungeonFloorUnlocked(i,Progression.levelForXp(need-1)),"floor "..i.." closed one XP short") end
 end
-check(not Data.dungeonFloorUnlocked(6,99),"no floor VI")
+check(not Data.dungeonFloorUnlocked(8,99),"no floor VIII")
 -- Score and grade.
 local score,parts=Data.dungeonScore(1,100,0,0)
 check(score==300 and parts.speed==100 and parts.survival==100 and parts.skill==100,"flawless fast clear scores 300")
@@ -424,9 +431,9 @@ at(g,r.Vector3.new(20,0,0))
 check(rewards[d]==1 and rewards[g]==nil,"Floor II: striker credited, tuning-only member is not")
 check(noticeOf(g):find("tuning counts for at most half",1,true)~=nil,"tuning-only member told why")
 check(payloads[d].floor==2 and payloads[d].mistakes==2 and payloads[d].deaths==0 and payloads[d].partySize==2,"payload reports floor, mistakes, deaths and party")
-check(payloads[d].score==270 and payloads[d].grade=="S","two mistakes grade S on a fast clear")
+check(payloads[d].score==203 and payloads[d].grade=="B","two mistakes and no secrets grade B on a fast clear")
 check(payloads[d].damageShare==1,"payload damage share")
-check(d:GetAttribute("DungeonResult"):find("Floor II • S",1,true)~=nil,"result summary for the UI")
+check(d:GetAttribute("DungeonResult"):find("Floor II • B",1,true)~=nil and d:GetAttribute("DungeonResult"):find("secrets 0/2",1,true)~=nil,"result summary for the UI")
 
 -- Floor III: core shield phases + Starfall (meteor) telegraph, solo.
 local h=player()
@@ -464,7 +471,7 @@ check(rewards[h]==1 and payloads[h].floor==3 and payloads[h].partySize==1,"solo 
 -- Floor IV: wisp waves ward the boss.
 local i4=player()
 levels[i4]=20
-use(i4,"Berserk oath","Choose role")
+use(i4,"Riftblade oath","Choose class")
 use(i4,"Observatory Floor IV","Select floor")
 use(i4,"ExpeditionGate","Enter expedition")
 launch()
@@ -473,7 +480,7 @@ guardiansDown(i4)
 check(#wisps()==0,"no wisps before the boss phase ticks")
 at(i4) heal(i4)
 heartbeat:Fire(0.1)
-check(#wisps()==2 and wisps()[1]:GetAttribute("AddHealth")==16,"first wave: two 16 HP wisps")
+check(#wisps()==2 and wisps()[1]:GetAttribute("AddHealth")==8,"first wave: two 8 HP wisps (4 x sqrt(4))")
 check(caption.Text:find("WARDED",1,true)~=nil,"caption explains the ward")
 strike(i4,"Eclipse Heart","Strike core")
 check(artCore:GetAttribute("BossHealth")==48,"warded core ignores strikes")
@@ -492,6 +499,25 @@ at(i4) heal(i4)
 heartbeat:Fire(20)
 check(#wisps()==2,"next wave after 20 s")
 check(hums[i4].Health==66,"Eclipse Sweep hits within 20 studs for 34")
+-- Review H1: the wave timer pauses while a full wave lives, so wisps never pile up.
+for _=1,6 do heal(i4) heartbeat:Fire(20) end
+check(#wisps()==2,"no new wave while a full wave is alive")
+do
+	local list=wisps()
+	heal(i4)
+	rootOf(i4).Position=list[1].Position
+	for _=1,8 do
+		if list[1].Parent==nil then break end
+		now+=1
+		for _,obj in list[1]:GetChildren() do if obj:IsA("ProximityPrompt") then signals[obj]:Fire(i4) end end
+	end
+end
+check(#wisps()==1,"one wisp slain")
+at(i4) heal(i4)
+heartbeat:Fire(20)
+check(#wisps()==3,"timer resumes below a full wave: 1 + 2")
+for _=1,6 do heal(i4) heartbeat:Fire(20) end
+check(#wisps()==3 and #wisps()<=Data.DungeonClasses.WISP_CAP,"paused again at a full wave, under the cap")
 players.PlayerRemoving:Fire(i4)
 check(#wisps()==0 and caption.Text:find("0 / 3",1,true)~=nil,"abandoned run clears wisps and resets")
 
@@ -509,7 +535,7 @@ now+=240
 at(k) heal(k)
 heartbeat:Fire(0.1)
 check(artCore:GetAttribute("Enraged")==true and caption.Text:find("ENRAGED",1,true)~=nil,"enrage after 240 s")
-check(#wisps()==3 and wisps()[1]:GetAttribute("AddHealth")==28,"Floor V waves: three 28 HP wisps")
+check(#wisps()==3 and wisps()[1]:GetAttribute("AddHealth")==12,"Floor V waves: three 12 HP wisps (5 x sqrt(5.5))")
 heartbeat:Fire(1)
 check(artCore:GetAttribute("Telegraph")=="Total Eclipse" and warn:GetAttribute("SafeRadius")==0,"enraged tempo telegraphs the pulse half")
 heartbeat:Fire(1.4)
@@ -525,7 +551,7 @@ check(caption.Text:find("0 / 3",1,true)~=nil and #wisps()==0,"leaving resets Flo
 local iron=player()
 local ally=player()
 irons[iron]=true
-use(ally,"Berserk oath","Choose role")
+use(ally,"Riftblade oath","Choose class")
 clearPad() onPad(iron) onPad(ally,2)
 signals[promptFor("ExpeditionGate","Enter expedition")]:Fire(iron)
 launch()
@@ -651,3 +677,6 @@ check(noticeOf(slow):find("collapsed",1,true)~=nil,"run capped at twice par")
 check(rewards[slow]==nil and caption.Text:find("0 / 3",1,true)~=nil,"capped run pays nothing and resets")
 local runChecks=checks-baseChecks-dataChecks
 print("Expedition QA passed "..checks.." behavioral checks ("..baseChecks.." encounter, "..dataChecks.." dungeon rules, "..runChecks.." dungeon runs).")
+
+-- Completion sentinel: scripts/build.sh fails if a suite stops early without erroring.
+print("SUITE-END verify-expedition.luau")
