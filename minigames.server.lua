@@ -723,7 +723,7 @@ local function launch(lobby)
 	for _, e in ipairs(eligible) do
 		match.members[e.player] = newRecord(e.player, e.details)
 		memberOf[e.player] = match
-		e.player.Character:PivotTo(CFrame.new(spawnFor(lobby.game)))
+		e.player:SetAttribute("FastTravelAt", os.clock()); e.player.Character:PivotTo(CFrame.new(spawnFor(lobby.game)))
 		notice(e.player, rules.name .. " begins • " .. #eligible .. " player" .. (if #eligible == 1 then "" else "s") .. ". " .. rules.rules)
 	end
 	publish(match)
@@ -821,7 +821,7 @@ local function rejoin(player, character)
 	record.pos, record.awaySince = nil, nil
 	match.members[player] = record
 	memberOf[player] = match
-	character:PivotTo(CFrame.new(spawnFor(match.game)))
+	player:SetAttribute("FastTravelAt", os.clock()); character:PivotTo(CFrame.new(spawnFor(match.game)))
 	notice(player, "Welcome back to the " .. (if match.game == "Siege" then S.name else H.name) .. " • your " .. math.floor(record.points) .. " points were kept.")
 	publish(match)
 end
@@ -832,7 +832,7 @@ local function watch(player)
 			if match then
 				-- Fallen members respawn into their match.
 				local root = character:WaitForChild("HumanoidRootPart", 5)
-				if root and memberOf[player] == match then character:PivotTo(CFrame.new(spawnFor(match.game))) end
+				if root and memberOf[player] == match then player:SetAttribute("FastTravelAt", os.clock()); character:PivotTo(CFrame.new(spawnFor(match.game))) end
 			else
 				rejoin(player, character)
 			end

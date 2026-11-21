@@ -250,10 +250,10 @@ end
 local passage = block("Sentinel passage", Vector3.new(0, 3, -26), Vector3.new(5, 5, 3), teal, Enum.Material.Glass)
 local returnPassage = block("Core passage", Vector3.new(0, 3, -135), Vector3.new(5, 5, 3), gold, Enum.Material.Glass)
 prompt(passage, "Sentinel hall", "Enter guardian chamber", function(player, character)
-	if members[player] and run.stage ~= "prisms" then character:PivotTo(CFrame.new(origin + Vector3.new(0,5,-87))) end
+	if members[player] and run.stage ~= "prisms" then player:SetAttribute("FastTravelAt", os.clock()); character:PivotTo(CFrame.new(origin + Vector3.new(0,5,-87))) end
 end)
 prompt(returnPassage, "Observatory core", "Return to core", function(player, character)
-	if members[player] and run.stage == "core" then character:PivotTo(CFrame.new(origin + Vector3.new(0,5,-22))) end
+	if members[player] and run.stage == "core" then player:SetAttribute("FastTravelAt", os.clock()); character:PivotTo(CFrame.new(origin + Vector3.new(0,5,-22))) end
 end)
 local warning = block("Pulse radius", Vector3.new(0, 1.6, 0), Vector3.new(0.12, 27, 27), gold, Enum.Material.Neon)
 warning.Shape = Enum.PartType.Cylinder
@@ -619,7 +619,7 @@ local function leave(player, character)
 		publishParty()
 	end
 	if character and gate and gate.Parent then
-		character:PivotTo(gate.CFrame + Vector3.new(0, 5, 0))
+		player:SetAttribute("FastTravelAt", os.clock()); character:PivotTo(gate.CFrame + Vector3.new(0, 5, 0))
 	end
 	if not next(members) and run.active then reset() end
 end
@@ -1275,7 +1275,7 @@ local function launch()
 		entry.player:SetAttribute("DungeonUltimates", if class then DC.ultimateCharges(level) else 0)
 		entry.player:SetAttribute("DungeonAbilityReady", 0)
 		notice(entry.player, (if master then "Master " else "") .. Data.DungeonFloors[floorIndex].name .. " begins • party of " .. #joined .. ".")
-		entry.player.Character:PivotTo(CFrame.new(origin + Vector3.new(0, 5, 24)))
+		entry.player:SetAttribute("FastTravelAt", os.clock()); entry.player.Character:PivotTo(CFrame.new(origin + Vector3.new(0, 5, 24)))
 	end
 	run.team = DC.teamBonus(classes) -- launch preview; finish() recomputes from credited delvers
 	heart:SetAttribute("TeamUnique", run.team.unique)
@@ -1436,7 +1436,7 @@ local function rejoin(player)
 	publishParty()
 	notice(player, "You rejoined the expedition with your contribution intact.")
 	local character = player.Character
-	if character and character:FindFirstChild("HumanoidRootPart") then character:PivotTo(CFrame.new(origin + Vector3.new(0, 5, 24))) end
+	if character and character:FindFirstChild("HumanoidRootPart") then player:SetAttribute("FastTravelAt", os.clock()); character:PivotTo(CFrame.new(origin + Vector3.new(0, 5, 24))) end
 	display()
 	return true
 end
@@ -1461,7 +1461,7 @@ local function watch(player)
 			local record = members[player]
 			if not record or not run.active then return end
 			local root = character:WaitForChild("HumanoidRootPart", 5)
-			if root and members[player] then character:PivotTo(CFrame.new(origin + Vector3.new(0, 5, 24))) end
+			if root and members[player] then player:SetAttribute("FastTravelAt", os.clock()); character:PivotTo(CFrame.new(origin + Vector3.new(0, 5, 24))) end
 		end)
 	end
 	rejoin(player)
