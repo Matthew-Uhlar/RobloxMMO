@@ -7162,14 +7162,42 @@ end
 -- progress, reset timer, milestones, Forgeheart shop), Journal › Collection Log
 -- (tab filter, icon grid, counts, tab rewards, score/rank, titles) and
 -- Journal › Museum (category filter, icon grid, donate, milestones).
--- Server state: snapshot.logs = {commissions, log, museum} (server Logs block).
+-- Server state: snapshot.logs = {rev, commissions, log, museum} when it changed,
+-- else {rev, resetIn, compact = true}; CLP.logs() keeps the last full copy
+-- (fed from every accepted snapshot) and asks "logsSync" on a cache miss.
 -- Verbs: commissionClaim "<slot>", commissionClaimAll, forgeBuy "<perk>",
--- logClaim "<tab>", logTitle "<tab>|Paragon|none", museumDonate "<item>".
+-- logClaim "<tab>", logTitle "<tab>|Paragon|none", museumDonate "<item>", logsSync.
 ------------------------------------------------------------------------------
 do
-local CLP={tab=nil,cat="Weapons",pick=nil}
+local CLP={tab=nil,cat="Weapons",pick=nil,cache=nil,asked=nil,askedAt=0}
 Pages.CLP=CLP
 function CLP.ready() return Data and type(Data.CommissionsLogs)=="table" end
+-- Every accepted snapshot passes here: full logs replace the cache; a compact
+-- one refreshes the reset timer of the matching cached revision.
+function CLP.observe(data)
+	local logs=type(data)=="table" and data.logs
+	if type(logs)~="table" then return end
+	if logs.compact then
+		local cached=CLP.cache
+		if cached and cached.rev==logs.rev and type(cached.commissions)=="table" then cached.commissions.resetIn=logs.resetIn end
+	elseif type(logs.commissions)=="table" then
+		CLP.cache=logs
+	end
+end
+-- The logs to draw (nil = not synced). A compact snapshot whose revision is
+-- not cached asks the server once (retry after 3 s) for the full copy.
+function CLP.logs()
+	local logs=state and state.logs
+	if type(logs)~="table" then return nil end
+	if not logs.compact then CLP.observe(state) return logs end
+	local cached=CLP.cache
+	if cached and cached.rev==logs.rev then return cached end
+	if send and (CLP.asked~=logs.rev or os.clock()-CLP.askedAt>3) then
+		CLP.asked,CLP.askedAt=logs.rev,os.clock()
+		task.defer(function() send("logsSync",nil,true) end)
+	end
+	return cached -- an older copy while the fresh one is on its way
+end
 function CLP.clock(seconds)
 	seconds=math.max(0,math.floor(num(seconds,0)))
 	return string.format("%dh %02dm",seconds//3600,(seconds%3600)//60)
@@ -7185,13 +7213,15 @@ end
 function CLP.drawCommissions()
 	if not CLP.ready() then dataMissing() return end
 	local CL=Data.CommissionsLogs
-	local c=tbl(tbl(state.logs).commissions)
+	local logs=CLP.logs()
+	local c=tbl(tbl(logs).commissions)
+	local g=tbl(tbl(logs).log)
 	local slots=tbl(c.slots)
 	local ready=0
 	for _,s in ipairs(slots) do if s.done and not s.claimed then ready+=1 end end
 	card({name="CommissionsSummary",motif="Journal",accent=rgb(CL.DUST.color),title="Commissions",titleColor=gold,
 		subtitle=paint(CL.DUST.symbol.." "..fmt(num(c.dust,0)).." "..CL.DUST.name,CL.DUST.color).."   ·   "..fmt(num(c.total,0)).." completed",
-		badge=state.logs and ("RESETS "..CLP.clock(c.resetIn)) or "SYNCING",badgeColor=mint,
+		badge=logs and ("RESETS "..CLP.clock(c.resetIn)) or "SYNCING",badgeColor=mint,
 		detail="Four guild commissions a day, posted at the Commission Board in Brassfall Quarry. A new board is drawn at the UTC day change; finished commissions are claimed for you if you forget.",
 		actions=ready>0 and {{caption="Claim all",name="CommissionClaimAll",primary=true,fn=function() send("commissionClaimAll") end}} or nil})
 	heading("TODAY'S COMMISSIONS    /    "..#slots.." OF "..CL.SLOTS)
@@ -7222,8 +7252,15 @@ function CLP.drawCommissions()
 		local met=num(c.milestone,0)>=i
 		table.insert(lines,(met and check or cross).." "..paint(m.at,met and "8EE6CB" or "F3C66E").."  "..escape(m.name).." — "..escape(m.text))
 	end
+	-- The Paragon title (last milestone) is worn from here, like a log tab title.
+	local paragon=type(c.paragon)=="string" and c.paragon or CL.milestonePerks(num(c.total,0)).title
+	local titleActions=nil
+	if paragon and logs then
+		if g.title=="Paragon" then titleActions={{caption="Remove title",name="LogTitleParagonOff",fn=function() send("logTitle","none") end}}
+		else titleActions={{caption="Wear "..paragon,name="LogTitleParagon",primary=true,fn=function() send("logTitle","Paragon") end}} end
+	end
 	card({name="CommissionMilestones",motif="Hero",title="Milestones",titleColor=gold,subtitle="Permanent perks for completed commissions",
-		pips={total=#CL.Milestones,filled=num(c.milestone,0),color=mint},lines=lines})
+		pips={total=#CL.Milestones,filled=num(c.milestone,0),color=mint},lines=lines,actions=titleActions})
 	heading("FORGEHEART    /    GLIMMERDUST PERKS")
 	local levels=tbl(c.forge)
 	local costs=tbl(c.costs)
@@ -7247,13 +7284,14 @@ function CLP.drawLog()
 	if not CLP.ready() then dataMissing() return end
 	local CL=Data.CommissionsLogs
 	local L=CL.log()
-	local g=tbl(tbl(state.logs).log)
+	local logs=CLP.logs()
+	local g=tbl(tbl(logs).log)
 	local counts=tbl(g.counts)
 	local actions={}
 	if type(g.title)=="string" and g.title~="" then table.insert(actions,{caption="Remove title",name="LogTitleNone",fn=function() send("logTitle","none") end}) end
 	card({name="LogSummary",motif="Journal",accent=gold,title="Collection Log",titleColor=gold,
 		subtitle=fmt(num(g.found,0)).." of "..fmt(L.total).." entries   ·   score "..fmt(num(g.score,0)).." / "..fmt(num(g.max,0)),
-		badge=state.logs and string.upper(tostring(g.rank or "Driftling")) or "SYNCING",badgeColor=mint,
+		badge=logs and string.upper(tostring(g.rank or "Driftling")) or "SYNCING",badgeColor=mint,
 		detail="Every pet, unique and rare drop in the isles, logged the first time it reaches your satchel. Complete a tab for coins and a title.",
 		lines={(type(g.titleText)=="string" and g.titleText~="") and ("Title worn: "..paint(escape(g.titleText),"F3C66E")) or nil,
 			num(g.retro,0)>0 and ("Credited from your satchel when the log opened: "..fmt(num(g.retro,0)).." entries.") or nil},
@@ -7288,18 +7326,27 @@ function CLP.drawLog()
 		foot.TextXAlignment=Enum.TextXAlignment.Center
 	end)
 end
+-- Mirrors the server's Logs.donateCheck: worn, bagged and upgraded copies are
+-- held back; a donation is refused only when it would take one of them.
 function CLP.donatable(id)
-	local items=tbl(state.items)
-	if num(items[id],0)<1 then return false,"You do not own one." end
-	for _,eq in pairs(tbl(dget("equipment"))) do if eq==id then return false,"Unequip it first." end end
-	if table.find(tbl(dget("accessoryBag")),id) then return false,"Take it out of your accessory bag first." end
-	return true
+	local have=num(tbl(state.items)[id],0)
+	if have<1 then return false,"You do not own one." end
+	local worn,bagged=0,0
+	for _,eq in pairs(tbl(dget("equipment"))) do if eq==id then worn+=1 end end
+	for _,b in ipairs(tbl(dget("accessoryBag"))) do if b==id then bagged+=1 end end
+	local gear=tbl(dget("gear"))
+	local upgraded=tbl(gear.reforges)[id]~=nil or num(tbl(gear.stars)[id],0)>0 or tbl(gear.books)[id]~=nil or next(tbl(tbl(dget("enchants"))[id]))~=nil
+	if have>math.max(worn+bagged,upgraded and 1 or 0) then return true end
+	if worn>0 then return false,"Unequip it first (or donate a spare copy)." end
+	if bagged>0 then return false,"Take it out of your accessory bag first (or donate a spare copy)." end
+	return false,"It carries upgrades; donate a spare copy instead."
 end
 function CLP.drawMuseum()
 	if not CLP.ready() then dataMissing() return end
 	local CL=Data.CommissionsLogs
 	local M=CL.museum()
-	local mu=tbl(tbl(state.logs).museum)
+	local logs=CLP.logs()
+	local mu=tbl(tbl(logs).museum)
 	local donated=tbl(mu.donated)
 	local reached=num(mu.milestone,0)
 	local nextM=CL.MuseumMilestones[reached+1]
@@ -7307,7 +7354,7 @@ function CLP.drawMuseum()
 	for stat,v in pairs(tbl(mu.stats)) do table.insert(perkLines,"+"..fmt(v).." "..(Data.Stats[stat] and Data.Stats[stat].name or stat)) end
 	table.sort(perkLines)
 	card({name="MuseumSummary",motif="Journal",accent=rgb("C77DFF"),title="Aether Museum",titleColor=gold,
-		subtitle=fmt(num(mu.count,0)).." of "..fmt(M.total).." on display",badge=state.logs and (reached.." / "..#CL.MuseumMilestones) or "SYNCING",badgeColor=mint,
+		subtitle=fmt(num(mu.count,0)).." of "..fmt(M.total).." on display",badge=logs and (reached.." / "..#CL.MuseumMilestones) or "SYNCING",badgeColor=mint,
 		detail="Donate one of each weapon, armor piece, rarity, mineral and trophy. Donations are kept by the Museum for good (the item is consumed); equipped, bagged or upgraded last copies are refused.",
 		lines={nextM and ("Next milestone at "..nextM.at..": +"..fmt(nextM.coins).." coins and permanent stats.") or "Every milestone reached.",
 			#perkLines>0 and ("Museum perks: "..table.concat(perkLines,", ")) or nil},
@@ -7767,6 +7814,7 @@ local function accept(data,quiet)
 	-- Share every accepted snapshot with the combat HUD (combat.client.lua).
 	pcall(function() UI.snapshotChannel:Fire(data) end)
 	pcall(Pages.AH.onSnapshot) -- lap tracker best times, trap counter
+	pcall(Pages.CLP.observe,data) -- Commissions & Logs: cache full snapshot.logs (compact ones reuse it)
 	local message=data.message
 	if before then
 		local ok,bannered=pcall(celebrate,before,skillsOf(state))
