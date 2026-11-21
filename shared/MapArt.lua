@@ -775,7 +775,7 @@ function MapArt.mountChart(opts)
 		halo.Size = UDim2.fromOffset(link.sr * 2.1, link.sr * 1.3)
 		setVisible(halo, true)
 		local unlocked, requirement = opts.regionState(link.tile.region)
-		caption.Text = if unlocked then (if link.tile.travel == "recall" then "Click to travel" else "Click for a guided route")
+		caption.Text = if unlocked then (if opts.touch then "Tap" else "Click") .. (if link.tile.travel == "recall" then " to travel" else " for a guided route")
 			else "<font color=\"#" .. A.lockChip .. "\">🔒 Locked</font> · " .. Theme.escape(if requirement ~= "" then requirement else "Not charted yet")
 		caption.Position = UDim2.fromOffset(link.x or link.sx, (link.y or link.sy) + 44)
 		setVisible(caption, true)
@@ -1019,7 +1019,8 @@ function MapArt.mountMinimap(opts)
 	local A = Theme.MapArt
 	local budget = MapArt.budget(opts.touch)
 	local art = {plates = {}, budget = budget, built = 0}
-	local holder = make("Frame", opts.layer, {Name = "IslandArt", BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), ZIndex = 1})
+	-- Under the map frame, behind the marker layer (ZIndex 0), so the plates never mix with pooled markers.
+	local holder = make("Frame", opts.layer.Parent or opts.layer, {Name = "IslandArt", BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), ZIndex = 0})
 	local map = opts.layer.Parent
 	if map then
 		map.BackgroundColor3 = rgb(A.sea)
