@@ -190,6 +190,11 @@ do
 	eq(T.clickPrompt(Data.Items.SunsteelSword, { equipped = true }), "Click to unequip!  Right-click for options.", "equipped prompt")
 	eq(T.clickPrompt(Data.Items.SunsteelSword, { click = "Click to view recipes!" }), "Click to view recipes!", "custom prompt")
 	ok(T.clickPrompt(Data.Items.SunsteelSword, { click = false }) == nil, "prompt can be hidden")
+	-- §33 price check: a market line between the sell price and the click prompt.
+	local priced = T.lore(Data.Items.Ore, { Data = Data, price = "24h avg 5 coins" })
+	local pi, vi
+	for i, l in ipairs(priced) do if l.kind == "price" then pi = i elseif l.kind == "value" then vi = i end end
+	ok(pi and vi and pi == vi + 1 and priced[#priced].kind == "click" and has(priced[pi].text, "24h avg 5 coins"), "market price line in the footer")
 	local footerChecked = 0
 	for id, def in pairs(Data.Items) do
 		local l = T.lore(def, { Data = Data })
@@ -739,6 +744,23 @@ do
 	ok(spBlock and not spBlock:find("RenderStepped", 1, true) and not spBlock:find("Heartbeat", 1, true), "splats and bars are event-driven")
 	ok(not src:find("anchor:Destroy()", 1, true), "splats are pooled, never destroyed per hit")
 	print("Part E (hitsplats): " .. (checks - before) .. " checks.")
+end
+
+-- The satchel tooltip asks the atlas' price check (§33) for its footer line.
+do
+	local size = Vector2.new(1366, 768)
+	local ui = H.runAtlas(size, {})
+	local layer = H.runHud(size, ui.player, ui.replicated, {})
+	local fn = ui.replicated:FindFirstChild("IslePriceCheckLocal")
+	ok(fn ~= nil, "the atlas publishes IslePriceCheckLocal")
+	local calls = {}
+	-- (The mock BindableFunction's :Invoke is a property stand-in for OnInvoke.)
+	fn.Invoke = function(_, item, refresh) table.insert(calls, { item, refresh }); return { text = "24h avg 5 coins" } end
+	eq(layer.state.priceText("Ore"), "24h avg 5 coins", "tooltip price text")
+	layer.state.priceText("Ore")
+	local refreshes = 0
+	for _, c in ipairs(calls) do if c[2] == true then refreshes += 1 end end
+	eq(refreshes, 1, "one refresh a minute per item")
 end
 
 ------------------------------------------------------------------------------

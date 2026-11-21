@@ -885,6 +885,8 @@ gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(function() UI.layoutSidebar
 player:GetAttributeChangedSignal("IslandBuilding"):Connect(function() UI.layoutActionBar() end)
 -- The Wayfinder publishes the region under the player (sidebar region line).
 player:GetAttributeChangedSignal("IsleRegionHere"):Connect(function() if UI.refreshSidebar then UI.refreshSidebar() end end)
+-- §33: the pinned quest-helper step (server attribute) refreshes the Objective line at once.
+player:GetAttributeChangedSignal("IsleObjectivePin"):Connect(function() if UI.refreshSidebar then UI.refreshSidebar() end end)
 function UI.layoutActionBar()
 	local L=UI.lay()
 	actionBar.Position,actionBar.Size=UDim2.fromOffset(L.action.x,L.action.y),UDim2.fromOffset(L.action.w,L.action.h)
@@ -1137,6 +1139,12 @@ function UI.affordLots(cost)
 	return math.max(1, most)
 end
 function UI.objective()
+	-- §33: a pinned quest-helper step (server attribute IsleObjectivePin) comes first.
+	local pin = player:GetAttribute("IsleObjectivePin")
+	if type(pin) == "string" and pin ~= "" then
+		local sp = type(state.systems) == "table" and type(state.systems.pin) == "table" and state.systems.pin
+		return escape(pin) .. (sp and type(sp.step) == "number" and paint("  " .. sp.step .. "/" .. tostring(sp.total or sp.step), "A9B4C0") or "")
+	end
 	local g = type(state.guide) == "table" and state.guide
 	if g and not g.complete and type(g.title) == "string" then
 		return g.title .. paint("  " .. tostring(g.step or 1) .. "/" .. tostring(g.total or 10), "A9B4C0")
@@ -1715,6 +1723,7 @@ local function drawBearing()
 		row(tostring(state.quest.title or "Guild contract"), tostring(state.quest.detail or ""), state.quest.ready and "Claim" or nil, function()
 			send("quest")
 		end)
+		if Pages.SYS then Pages.SYS.helperCard("contract","Quest helper  ·  guild contract") end -- §33
 	end
 	heading("02    /    EXPEDITION RULES")
 	if state.ironman then
@@ -1866,6 +1875,7 @@ local function drawQuests()
 				end
 			end
 			local region=Data.RegionById and Data.RegionById[q.region]
+			local guideAfter=Pages.SYS and Pages.SYS.questExtras(q,entry,actions,lines) -- §33 quest helper: NEXT line, Guide / Pin / Waypoint
 			card({name="Quest"..q.id,motif="Journal",title=escape(q.title),titleColor=entry.done==true and muted or ivory,
 				subtitle=escape((region and region.name or q.region).."  ·  "..(q.line=="main" and "Main quest" or "Side quest")),
 				badge=badge,badgeColor=color,detail=entry.done~=true and escape(q.story or "") or nil,before=checklists,lines=lines,actions=actions,
@@ -1890,7 +1900,7 @@ local function drawQuests()
 						b.TextScaled=true
 						make("UITextSizeConstraint",b,{MinTextSize=11,MaxTextSize=13})
 					end
-				end or nil})
+				end or guideAfter})
 			shown+=1
 		end
 	end
@@ -1918,6 +1928,7 @@ local function drawDiaries()
 	card({name="DiarySummary",motif="Hunt",title=escape(diary.name),titleColor=gold,
 		subtitle=claimed.." / "..#Data.DiaryTiers.." tiers claimed  ·  "..total.." / "..(#Data.Diaries*#Data.DiaryTiers).." across the isles",
 		pips={total=#Data.DiaryTiers,filled=claimed,color=gold,labels={"Easy","Medium","Hard","Elite"}}})
+	if Pages.SYS then Pages.SYS.helperCard("diary:"..QJ.region,"Quest helper  ·  current tier") end -- §33
 	local tiers={}
 	for _,t in ipairs(tbl(entry.tiers)) do if type(t)=="table" and type(t.tier)=="string" then tiers[t.tier]=t end end
 	for index,tierName in ipairs(Data.DiaryTiers) do
@@ -2854,12 +2865,15 @@ local function drawPets()
 				end)
 				-- §31: right-click opens the quantity picker (features.client.lua).
 				b.MouseButton2Click:Connect(function()
-					UI.pickQuantity({verb="petShop",base=entry.item,name=itemName(entry.item),unit=price,amount=1,max=UI.affordLots({coins=price})})
+					local left=Pages.SYS and Data.Systems and Pages.SYS.stockLeft(Data.Systems.Stock.key("roost",entry.item)) -- §33 daily stock caps the picker
+					UI.pickQuantity({verb="petShop",base=entry.item,name=itemName(entry.item),unit=price,amount=1,max=math.min(UI.affordLots({coins=price}),math.max(1,left or 64))})
 				end)
 				make("UIStroke",b,{Color=rgb(itemHex(entry.item)),Thickness=1,Transparency=.35})
 				local n=label(b,escape(itemName(entry.item)),10,4,UDim.new(1,-16),20,UI.heavy,compactAtlas and 12 or 13,rgb(itemHex(entry.item)))
 				n.TextTruncate=Enum.TextTruncate.AtEnd
-				label(b,fmt(price).." coins",10,24,UDim.new(1,-16),18,bold,11,num(state.coins,0)>=price and gold or muted)
+				local stock=Pages.SYS and Data.Systems and Pages.SYS.stockText(Data.Systems.Stock.key("roost",entry.item)) -- §33 daily stock
+				local priceLabel=label(b,fmt(price).." coins"..(stock and ("  ·  "..stock) or ""),10,24,UDim.new(1,-16),18,bold,11,num(state.coins,0)>=price and gold or muted)
+				priceLabel.RichText=true
 			end
 		end
 	end
@@ -5324,12 +5338,14 @@ function U.drawOrders()
 	local view=tbl(econ.bazaar)
 	local fresh=view.item==item
 	local held=count("items",item)
+	U.history=fresh and type(view.history)=="table" and view.history or nil -- §33 drawn under the book card
 	card({name="Book",item=item,title=escape(itemName(item)),titleColor=rgb(itemHex(item)),
 		subtitle="Held ×"..fmt(held).."  ·  merchant "..fmt(num(def and def.value,0)).." each",
 		badge=fresh and view.bestBid and (fmt(view.bestBid).." bid") or nil,badgeColor=mint,
 		detail=fresh and ("Best ask "..(view.bestAsk and fmt(view.bestAsk) or "—").."  ·  best bid "..(view.bestBid and fmt(view.bestBid) or "—").."  ·  spread "..(view.spread and fmt(view.spread) or "—")..". Prices are per unit; your own orders are excluded from the best prices.") or "Refresh to read this order book.",
 		after=fresh and U.book(view) or nil,
 		actions={{caption="Refresh",fn=function() U.refresh("Orders") end}}})
+	if U.history and Pages.SYS then Pages.SYS.historyCard(item,U.history,"BookHistory") end -- §33 price history
 	heading("PLACE    /    QUANTITY AND UNIT PRICE")
 	U.field("QUANTITY (1–"..rules.maxQuantity..")","BazaarQuantity",U.qty,"Whole units",function(value) U.qty=value end)
 	U.field("UNIT PRICE (1–"..fmt(rules.maxPrice)..")","BazaarPrice",U.price,"Whole coins per unit",function(value) U.price=value end)
@@ -6226,6 +6242,11 @@ function AH.drawVendors()
 			elseif unique and have>0 then reason="You already own "..def.name.."."
 			elseif not afford then reason="You can't afford the "..def.name.." yet." end
 			local lines={"Cost: "..AH.costText(entry.cost)}
+			local stockKey=Data.Systems and Data.Systems.Stock.key("sv",skill,entry.item) -- §33 daily stock
+			local stock=Pages.SYS and stockKey and Pages.SYS.stockText(stockKey)
+			if stock then table.insert(lines,stock) end
+			local stockLeft=Pages.SYS and stockKey and Pages.SYS.stockLeft(stockKey)
+			if stockLeft==0 and not reason then reason="Sold out for today." end
 			if type(def.stats)=="table" then table.insert(lines,statText(def.stats)) end
 			if type(def.buff)=="table" then table.insert(lines,"Buff: "..statText(def.buff.stats).."  for "..clock(def.buff.duration)) end
 			if type(def.requires)=="table" then
@@ -6250,7 +6271,7 @@ function AH.drawVendors()
 					fn=function() send("skillBuy",skill..":"..entry.item) end},
 					-- §31: quantity picker (features.client.lua); stackable wares only.
 					not unique and {caption="Buy ×…",disabled=reason~=nil,reason=reason,name="BuyQty"..entry.item,
-					fn=function() UI.pickQuantity({verb="skillBuy",base=skill..":"..entry.item,name=def.name,unit=num(tbl(entry.cost).coins,0),amount=1,max=UI.affordLots(entry.cost)}) end} or nil}})
+					fn=function() UI.pickQuantity({verb="skillBuy",base=skill..":"..entry.item,name=def.name,unit=num(tbl(entry.cost).coins,0),amount=1,max=math.min(UI.affordLots(entry.cost),math.max(1,stockLeft or 64))}) end} or nil}})
 		end
 	end
 	-- Set bonus: Windrunner (Exchange stock) or Thicketstalker (Workbench, from pelts).
@@ -8364,6 +8385,467 @@ Pages.drawMotes,Pages.drawFactions=EXP.drawMotes,EXP.drawFactions
 end
 
 ------------------------------------------------------------------------------
+-- §33 Systems Depth (docs/DEPTH-CONTRACT.md §33): the quest helper (Journal ›
+-- Helper, plus Guide / Pin / Waypoint on quest, diary and contract cards), the
+-- goal board (Journal › Goals), market price history (Ledger › Prices and the
+-- Bazaar book card), the XP calculator (Hero › Calculator) and daily stock
+-- text on vendor / Roost offers. Server state: snapshot.systems = {pin, goals,
+-- goalMax, rates, window, prices, stock = {resetIn, left = {[key] = {left, limit}}}};
+-- verbs helperPin, goalSet, goalRemove, goalClear, priceCheck. Guides are
+-- derived on the client from the same pure functions the server uses
+-- (Data.Systems.Helper), so the Journal and the pinned sidebar step agree.
+------------------------------------------------------------------------------
+do
+local SYS={open={},goalKind="Level",goalSkill="Mining",calcSkill="Mining",calcTarget=nil,priceGroup="Mining",priceItem="Ore"}
+Pages.SYS=SYS
+function SYS.data() return Data and type(Data.Systems)=="table" and Data.Systems or nil end
+function SYS.state() return tbl(state.systems) end
+function SYS.pinned() return tbl(SYS.state().pin).id end
+function SYS.waypoint(specs,label)
+	if type(specs)~="table" or #specs==0 then notify("There is no waypoint for this step: follow the text.") return end
+	local request=player:FindFirstChild("WayfinderRequest")
+	if request then
+		request:Fire(specs,label)
+		if atlas.Visible then closeAtlas() end
+	else
+		notify("The Wayfinder is still charting the isles. Try again in a moment.")
+	end
+end
+-- Client-side guide for a pin id (same derivation as the server's pinned step).
+function SYS.guide(id)
+	local SY=SYS.data()
+	local j=tbl(state.journal)
+	if not SY or type(id)~="string" then return nil end
+	local HP=SY.Helper
+	if id=="contract" then return HP.contractGuide(state.quest) end
+	local kind,arg=string.match(id,"^(%a+):(%w+)$")
+	if kind=="quest" then
+		local q=Data.QuestById[arg]
+		if not q then return nil end
+		local entry
+		for _,e in ipairs(tbl(j.quests)) do if type(e)=="table" and e.id==arg then entry=e end end
+		local accepted=tbl(tbl(state.regionQuests).accepted)[arg]==true
+		return HP.questGuide(q,entry,{accepted=accepted})
+	elseif kind=="diary" then
+		local d=Data.DiaryByRegion[arg]
+		if not d then return nil end
+		local entry=EMPTY
+		for _,e in ipairs(tbl(j.diaries)) do if type(e)=="table" and e.region==arg then entry=e end end
+		local tierName=HP.diaryTier(num(entry.claimed,0))
+		local tier
+		for _,t in ipairs(tbl(entry.tiers)) do if type(t)=="table" and t.tier==tierName then tier=t end end
+		return HP.diaryGuide(d,tierName,tier)
+	end
+	return nil
+end
+-- Checklist rows: done ✓, the current step marked ➤ (gold), have/need counts.
+function SYS.steps(body,nextOrder,g)
+	local items={}
+	for i,s in ipairs(tbl(g.steps)) do
+		local text=escape(tostring(s.text))
+		if i==g.current and not s.met then text=paint("➤ ","F3C66E")..paint(text,"F3C66E") end
+		local npc=s.npc and Data.RegionArt and Data.RegionArt.FolkByRole[s.npc]
+		if npc and i==g.current then text..=paint("  ·  "..escape(npc.title or "NPC"),"A9B4C0") end
+		table.insert(items,{text=text,met=s.met==true,amount=num(s.need,1)>1 and (fmt(num(s.have,0)).." / "..fmt(num(s.need,1))) or nil})
+	end
+	UI.checklist(body,nextOrder,"STEP BY STEP",items)
+end
+-- Guide / Pin / Waypoint actions for a guide card (appended to `actions`).
+function SYS.actions(id,g,actions,expandable)
+	local pinned=SYS.pinned()==id
+	local s=g and g.steps[g.current]
+	if expandable then
+		local open=SYS.open[id]==true
+		table.insert(actions,{caption=open and "Hide guide" or "Guide",name="Guide"..id:gsub("[^%w]",""),fn=function() SYS.open[id]=not open render() end})
+	end
+	if g and g.status~="done" then
+		table.insert(actions,{caption=pinned and "Unpin" or "Pin",primary=not pinned,name="Pin"..id:gsub("[^%w]",""),
+			fn=function() send("helperPin",pinned and "" or id) end})
+		if s and type(s.specs)=="table" and #s.specs>0 then
+			table.insert(actions,{caption="Waypoint",name="Waypoint"..id:gsub("[^%w]",""),fn=function() SYS.waypoint(s.specs,escape(tostring(s.text))) end})
+		end
+	end
+	return actions
+end
+-- Quest cards (Journal › Quests): a NEXT line, Guide / Pin / Waypoint, and the
+-- step list when expanded. Returns the `after` drawer (or nil).
+function SYS.questExtras(q,entry,actions,lines)
+	if not SYS.data() or tbl(entry).done==true then return nil end
+	local id="quest:"..q.id
+	local g=SYS.guide(id)
+	if not g then return nil end
+	local s=g.steps[g.current]
+	if s then table.insert(lines,1,"<b>"..paint("NEXT  ","9EE7D2").."</b>"..escape(tostring(s.text))..(num(s.need,1)>1 and paint("  "..fmt(num(s.have,0)).."/"..fmt(num(s.need,1)),"A9B4C0") or "")) end
+	SYS.actions(id,g,actions,true)
+	if SYS.open[id] then return function(body,nextOrder) SYS.steps(body,nextOrder,g) end end
+	return nil
+end
+-- One compact helper card for a diary region or the guild contract.
+function SYS.helperCard(id,subtitle)
+	local g=SYS.guide(id)
+	if not g or g.status=="done" then return end
+	local s=g.steps[g.current] or EMPTY
+	local open=SYS.open[id]==true
+	card({name="Helper"..id:gsub("[^%w]",""),motif="Journal",title=paint("◆ ","9EE7D2")..escape(g.title),subtitle=subtitle,
+		badge=SYS.pinned()==id and paint("PINNED","F3C66E") or nil,badgeColor=gold,
+		lines={"<b>"..paint("NEXT  ","9EE7D2").."</b>"..escape(tostring(s.text or ""))},
+		pips={total=math.max(1,num(g.total,1)),filled=num(g.done,0),color=mint},
+		after=open and function(body,nextOrder) SYS.steps(body,nextOrder,g) end or nil,
+		actions=SYS.actions(id,g,{},true)})
+end
+-- Journal › Helper: the pinned guide in full, then everything that can be pinned.
+function SYS.drawHelper()
+	heading("QUEST HELPER    /    STEP BY STEP")
+	if not SYS.data() or type(Data.Quests)~="table" then dataMissing() return end
+	local j=state.journal
+	if type(j)~="table" then syncing("quest helper") return end
+	local pinId=SYS.pinned()
+	local pg=pinId and SYS.guide(pinId)
+	if pg then
+		local s=pg.steps[pg.current] or EMPTY
+		card({name="HelperPinned",motif="Journal",edge=gold,title=paint("PINNED  ","F3C66E")..escape(pg.title),
+			subtitle="Shown in your sidebar Objective  ·  step "..fmt(num(pg.current,1)).." of "..fmt(num(pg.total,1)),
+			detail=escape(tostring(s.text or "")),before=function(body,nextOrder) SYS.steps(body,nextOrder,pg) end,
+			actions=SYS.actions(pinId,pg,{},false)})
+	else
+		card({name="HelperIntro",motif="Journal",title="Pin a quest to your sidebar",
+			detail="Every quest, regional quest, diary and guild contract has a guide built from its own requirements: what to do next, what you have and need, and a Wayfinder waypoint to where it happens. Pin one and its current step replaces the Objective in your sidebar."})
+	end
+	heading("ACTIVE QUESTS")
+	local shown=0
+	local entries={}
+	for _,e in ipairs(tbl(j.quests)) do if type(e)=="table" and type(e.id)=="string" then entries[e.id]=e end end
+	local list={}
+	for _,q in ipairs(Data.Quests) do
+		local e=entries[q.id] or EMPTY
+		if e.done~=true and e.available==true then table.insert(list,q) end
+	end
+	table.sort(list,function(a,b)
+		local ra,rb=(entries[a.id] or EMPTY).ready==true,(entries[b.id] or EMPTY).ready==true
+		if ra~=rb then return ra end
+		return a.index<b.index
+	end)
+	for _,q in ipairs(list) do
+		if shown>=12 then break end
+		local id="quest:"..q.id
+		local g=SYS.guide(id)
+		if g and ("quest:"..q.id)~=pinId then
+			local s=g.steps[g.current] or EMPTY
+			local region=Data.RegionById and Data.RegionById[q.region]
+			card({name="HelperQuest"..q.id,motif="Journal",title=escape(q.title),
+				subtitle=escape((region and region.name or tostring(q.region)).."  ·  "..(q.line=="main" and "Main quest" or (q.regional and "Regional quest" or "Side quest"))),
+				badge=g.status=="ready" and "READY" or (g.status=="accept" and "ACCEPT" or nil),badgeColor=gold,
+				lines={"<b>"..paint("NEXT  ","9EE7D2").."</b>"..escape(tostring(s.text or ""))..(num(s.need,1)>1 and paint("  "..fmt(num(s.have,0)).."/"..fmt(num(s.need,1)),"A9B4C0") or "")},
+				pips={total=math.max(1,num(g.total,1)),filled=num(g.done,0),color=mint},
+				after=SYS.open[id] and function(body,nextOrder) SYS.steps(body,nextOrder,g) end or nil,
+				actions=SYS.actions(id,g,{},true)})
+			shown+=1
+		end
+	end
+	if shown==0 then row("Nothing open","Quests appear here once you meet their requirements. Locked quests list them in Journal › Quests.") end
+	heading("DIARIES & CONTRACTS")
+	if pinId~="contract" then SYS.helperCard("contract","Guild contract  ·  stage "..fmt(num(tbl(state.quest).stage,1)).." of "..fmt(num(tbl(state.quest).total,8))) end
+	for _,d in ipairs(Data.Diaries) do
+		local id="diary:"..d.region
+		if id~=pinId then SYS.helperCard(id,"Achievement diary") end
+	end
+end
+
+-- Goal board ------------------------------------------------------------------
+SYS.goalKinds={Level="level",XP="xp",Collection="tier",Items="item",Quest="quest",Boss="kills"}
+SYS.goalOrder={"Level","XP","Collection","Items","Quest","Boss"}
+function SYS.setGoal(kind,arg,n) send("goalSet",kind..":"..arg..":"..math.max(1,math.floor(n))) end
+function SYS.skills()
+	local out={}
+	for _,s in ipairs(tbl(Data and Data.SkillOrder)) do table.insert(out,s) end
+	return out
+end
+function SYS.drawGoals()
+	local sys=SYS.state()
+	local SY=SYS.data()
+	local goals=tbl(sys.goals)
+	local max=num(sys.goalMax,12)
+	heading("GOAL BOARD    /    "..#goals.." OF "..fmt(max))
+	if not SY then dataMissing() return end
+	if type(state.systems)~="table" then syncing("goal board") return end
+	local done=0
+	for _,g in ipairs(goals) do if type(g)=="table" and g.done then done+=1 end end
+	card({name="GoalSummary",motif="Journal",title="Personal goals",titleColor=gold,
+		subtitle=#goals.." set  ·  "..done.." finished  ·  ETAs from your last "..fmt(num(sys.window,1800)//60).." minutes",
+		detail="Set targets for skills, collections, items, quests and bosses. Progress is tracked by the server and a toast fires when a goal is reached.",
+		actions=done>0 and {{caption="Clear finished",name="GoalClear",fn=function() send("goalClear") end}} or nil})
+	for _,g in ipairs(goals) do
+		if type(g)=="table" then
+			local have,need=num(g.have,0),math.max(1,num(g.need,1))
+			local eta
+			if g.done then eta=paint("Complete","6FE3C8")
+			elseif g.k=="quest" then eta=paint("Follow it in Journal › Helper","A9B4C0")
+			else
+				local rate=num(g.rate,0)
+				eta="ETA "..SY.Goals.etaText(g.eta)..(rate>0 and ("  ·  "..fmt(rate).."/h") or "")
+			end
+			local caption=g.k=="level" and (fmt(have).." / "..fmt(need).." XP") or (fmt(math.min(have,need)).." / "..fmt(need))
+			local acts={{caption="Remove",name="GoalRemove"..tostring(g.id),fn=function() send("goalRemove",tostring(g.id)) end}}
+			if g.k=="quest" and not g.done then
+				table.insert(acts,1,{caption="Pin",name="GoalPin"..tostring(g.id),fn=function() send("helperPin","quest:"..tostring(g.a)) end})
+			end
+			card({name="Goal"..tostring(g.id),motif=g.k=="kills" and "Hunt" or (g.k=="tier" or g.k=="item") and "Satchel" or "Hero",
+				title=escape(tostring(g.label or "Goal")),titleColor=g.done and mint or ivory,subtitle=eta,
+				badge=g.done and paint("DONE","6FE3C8") or nil,badgeColor=mint,
+				bar={fraction=math.clamp(have/need,0,1),color=g.done and mint or gold,caption=caption},actions=acts})
+		end
+	end
+	if #goals>=max then row("Board full","Remove a goal to add another.") return end
+	heading("ADD A GOAL")
+	sectionBar(SYS.goalOrder,SYS.goalKind,function(name) SYS.goalKind=name render() end,{small=true,prefix="GoalKind",maxPer=6})
+	local kind=SYS.goalKinds[SYS.goalKind]
+	local skills=skillsOf(state)
+	if kind=="level" or kind=="xp" then
+		local list=SYS.skills()
+		if not table.find(list,SYS.goalSkill) then SYS.goalSkill=list[1] or "Mining" end
+		sectionBar(list,SYS.goalSkill,function(name) SYS.goalSkill=name render() end,{small=true,prefix="GoalSkill",maxPer=compactAtlas and 4 or 7})
+		local skill=SYS.goalSkill
+		local info=skills[skill] or EMPTY
+		local lvl,xp=num(info.level,1),num(info.xp,num(tbl(state.xp)[skill],0))
+		local acts={}
+		if kind=="level" then
+			for _,step in ipairs({1,5,10}) do
+				if lvl+step<=99 then table.insert(acts,{caption="Level "..(lvl+step),name="GoalAddLevel"..step,fn=function() SYS.setGoal("level",skill,lvl+step) end}) end
+			end
+			if lvl<99 then table.insert(acts,{caption="Level 99",primary=true,name="GoalAddLevel99",fn=function() SYS.setGoal("level",skill,99) end}) end
+		else
+			for _,step in ipairs({10000,100000,1000000}) do
+				local target=math.floor(xp/step+1)*step
+				table.insert(acts,{caption=fmt(target).." XP",name="GoalAddXp"..step,fn=function() SYS.setGoal("xp",skill,target) end})
+			end
+		end
+		card({name="GoalAddSkill",motif="Hero",title=escape(skill).."  ·  level "..fmt(lvl),subtitle=fmt(xp).." XP",actions=acts})
+	elseif kind=="tier" then
+		local list={}
+		for _,id in ipairs(tbl(Data.CollectionItems)) do if num(tbl(state.collection)[id],0)>0 then table.insert(list,id) end end
+		table.sort(list,function(a,b) return num(tbl(state.collection)[a],0)>num(tbl(state.collection)[b],0) end)
+		local function threshold(id,t) return math.max(1,math.floor(Data.CollectionTiers[t]*num(Data.CollectionScale[id],1))) end
+		for i=1,math.min(10,#list) do
+			local id=list[i]
+			local have=num(tbl(state.collection)[id],0)
+			local tier=0
+			for t=1,#Data.CollectionTiers do
+				if have>=threshold(id,t) then tier=t end
+			end
+			if tier<#Data.CollectionTiers then
+				card({name="GoalAddTier"..id,item=id,title=escape(itemName(id)),subtitle="Tier "..tier.."  ·  "..fmt(have).." collected",
+					actions={{caption="Tier "..(tier+1),name="GoalTierNext"..id,fn=function() SYS.setGoal("tier",id,tier+1) end},
+						{caption="Tier "..#Data.CollectionTiers,name="GoalTierMax"..id,fn=function() SYS.setGoal("tier",id,#Data.CollectionTiers) end}}})
+			end
+		end
+		if #list==0 then row("No collections yet","Gather, fish, farm or fight to start a collection.") end
+	elseif kind=="item" then
+		local list={}
+		for id,n in pairs(tbl(state.items)) do if num(n,0)>0 and itemDef(id) then table.insert(list,id) end end
+		table.sort(list,function(a,b) return num(tbl(state.items)[a],0)>num(tbl(state.items)[b],0) end)
+		for i=1,math.min(10,#list) do
+			local id=list[i]
+			local have=num(tbl(state.items)[id],0)
+			card({name="GoalAddItem"..id,item=id,title=escape(itemName(id)),subtitle="Holding ×"..fmt(have),
+				actions={{caption="+64",name="GoalItem64"..id,fn=function() SYS.setGoal("item",id,have+64) end},
+					{caption="+640",name="GoalItem640"..id,fn=function() SYS.setGoal("item",id,have+640) end},
+					{caption="×2",name="GoalItemDouble"..id,fn=function() SYS.setGoal("item",id,have*2) end}}})
+		end
+		if #list==0 then row("Empty satchel","Items you hold appear here.") end
+	elseif kind=="quest" then
+		local j=tbl(state.journal)
+		local shown=0
+		for _,e in ipairs(tbl(j.quests)) do
+			local q=type(e)=="table" and Data.QuestById[e.id]
+			if q and e.done~=true and shown<10 then
+				shown+=1
+				card({name="GoalAddQuest"..q.id,motif="Journal",title=escape(q.title),subtitle=e.available and "Available" or "Locked: requirements listed in Journal › Quests",
+					actions={{caption="Track",name="GoalQuest"..q.id,fn=function() SYS.setGoal("quest",q.id,1) end}}})
+			end
+		end
+		if shown==0 then row("Every quest done","There is no quest left to track.") end
+	elseif kind=="kills" then
+		local kc=tbl(tbl(state.lairs).kc)
+		local best=tbl(tbl(state.depth).bestiary)
+		for _,id in ipairs(SY.Goals.bosses()) do
+			local have=SY.Goals.killSource(id)=="lair" and num(kc[id],0) or num(best[id],0)
+			card({name="GoalAddBoss"..id,motif="Hunt",title=escape(SY.Goals.bossName(id)),subtitle=fmt(have).." kills",
+				actions={{caption="+1",name="GoalBoss1"..id,fn=function() SYS.setGoal("kills",id,have+1) end},
+					{caption="+10",name="GoalBoss10"..id,fn=function() SYS.setGoal("kills",id,have+10) end},
+					{caption="+100",name="GoalBoss100"..id,fn=function() SYS.setGoal("kills",id,have+100) end}}})
+		end
+	end
+end
+
+-- Price history -----------------------------------------------------------------
+-- Sparkline: PR.SPARK bars (6 hours each, oldest left), height by average price.
+function SYS.spark(body,nextOrder,s)
+	local spark=tbl(s.spark)
+	local hi=0
+	for _,v in ipairs(spark) do hi=math.max(hi,num(v,0)) end
+	local h=compactAtlas and 44 or 56
+	local well=make("Frame",body,{Name="Sparkline",BackgroundColor3=track,BackgroundTransparency=.35,Size=UDim2.new(1,0,0,h+8),LayoutOrder=nextOrder(),BorderSizePixel=0})
+	make("UICorner",well,{CornerRadius=UDim.new(0,8)})
+	make("UIStroke",well,{Color=UI.line,Thickness=1})
+	local n=math.max(1,#spark)
+	local lo=hi
+	for _,v in ipairs(spark) do if num(v,0)>0 then lo=math.min(lo,num(v,0)) end end
+	for i,v in ipairs(spark) do
+		v=num(v,0)
+		-- Scale between 35% (cheapest) and 100% (dearest) so small moves still show.
+		local f=if v<=0 or hi<=0 then .04 elseif hi==lo then .7 else .35+.65*(v-lo)/(hi-lo)
+		local bar=make("Frame",well,{Name="Bar"..i,AnchorPoint=Vector2.new(0,1),Position=UDim2.new((i-1)/n,2,1,-4),Size=UDim2.new(1/n,-3,0,math.max(2,math.floor((h-2)*f))),
+			BackgroundColor3=v>0 and (i==n and gold or mint) or UI.line,BackgroundTransparency=v>0 and .15 or .5,BorderSizePixel=0})
+		make("UICorner",bar,{CornerRadius=UDim.new(0,2)})
+	end
+	return well
+end
+function SYS.priceLines(s)
+	local lines={}
+	if s.avg7 then
+		table.insert(lines,"24h avg "..(s.avg24 and fmt(s.avg24) or "—").."  ·  24h volume "..fmt(num(s.vol24,0)).."  ·  last "..(s.last and fmt(s.last) or "—"))
+		table.insert(lines,"7d avg "..fmt(s.avg7).."  ·  7d range "..fmt(num(s.lo7,0)).."–"..fmt(num(s.hi7,0)).."  ·  7d volume "..fmt(num(s.vol7,0)))
+	else
+		table.insert(lines,"No player trades in the last 7 days.")
+	end
+	return lines
+end
+-- Price history card (Bazaar book view or a price check).
+function SYS.historyCard(item,s,name)
+	if type(s)~="table" or not SYS.data() then return end
+	card({name=name or "PriceHistory",item=item,title="Price history  ·  "..escape(itemName(item)),
+		subtitle="Hourly trades, last 7 days (each bar 6 hours, newest right)",
+		lines=SYS.priceLines(s),after=function(body,nextOrder) SYS.spark(body,nextOrder,s) end})
+end
+-- Latest known summary for an item (price checks first, then the open Bazaar view).
+function SYS.summaryFor(item)
+	for _,s in ipairs(tbl(SYS.state().prices)) do if type(s)=="table" and s.item==item then return s end end
+	local view=tbl(tbl(state.economy).bazaar)
+	if view.item==item and type(view.history)=="table" then return view.history end
+	return nil
+end
+function SYS.groups()
+	local out={}
+	for _,g in ipairs(tbl(Data.Economy and Data.Economy.bazaarGroups)) do table.insert(out,g) end
+	table.insert(out,"Gear")
+	return out
+end
+function SYS.gearItems()
+	local list={}
+	local E=Data.Economy
+	for id,def in pairs(tbl(Data.Items)) do
+		if type(def)=="table" and E and E.auctionCategory(id) and (num(tbl(state.items)[id],0)>0 or def.rarity=="Legendary" or def.rarity=="Mythic") then table.insert(list,id) end
+	end
+	table.sort(list,function(a,b) return itemName(a)<itemName(b) end)
+	return list
+end
+function SYS.drawPrices()
+	heading("PRICE HISTORY    /    7 DAYS, EVERY SERVER")
+	if not SYS.data() or not Pages.econ then dataMissing() return end
+	local latest=tbl(SYS.state().prices)[1]
+	if type(latest)=="table" then SYS.historyCard(latest.item,latest,"PriceLatest") end
+	sectionBar(SYS.groups(),SYS.priceGroup,function(name) SYS.priceGroup=name render() end,{small=true,prefix="PriceGroup",maxPer=6})
+	local list=SYS.priceGroup=="Gear" and SYS.gearItems() or Pages.econ.commodities(SYS.priceGroup)
+	if #list==0 then row("Nothing to check","Items in this group appear once you hold one (gear) or once the item list loads.") return end
+	local size=compactAtlas and 48 or 58
+	local grid=gridHolder(UDim2.fromOffset(size,size),6)
+	for i,id in ipairs(list) do
+		if i>48 then break end
+		local cell=tile(grid,"Price"..id,i,function()
+			SYS.priceItem=id
+			send("priceCheck",id)
+		end)
+		make("UIStroke",cell,{Color=id==SYS.priceItem and gold or slate,Transparency=id==SYS.priceItem and 0 or .5,Thickness=id==SYS.priceItem and 2 or 1})
+		local art=itemIcon(cell,id,size-10)
+		art.Position=UDim2.fromOffset(5,5)
+	end
+	heading("RECENT CHECKS")
+	local any=false
+	for i,s in ipairs(tbl(SYS.state().prices)) do
+		if type(s)=="table" and i>1 then
+			any=true
+			card({name="PriceCheck"..tostring(s.item),item=s.item,title=escape(itemName(s.item)),lines=SYS.priceLines(s),
+				actions={{caption="Refresh",name="PriceRefresh"..tostring(s.item),fn=function() send("priceCheck",s.item) end}}})
+		end
+	end
+	if not any then row("Tap an item","Its 7-day trade history, 24h average and volume appear here. Every trade on the Bazaar and the Auction House counts, on every server.") end
+end
+-- Item tooltips / satchel detail (any client script): ReplicatedStorage.IslePriceCheckLocal:Invoke(itemId, refresh)
+-- returns {text, summary} from the last known history (nil when unknown); refresh=true also asks the server.
+do
+	local fn=ReplicatedStorage:FindFirstChild("IslePriceCheckLocal")
+	if not fn then
+		fn=Instance.new("BindableFunction")
+		fn.Name="IslePriceCheckLocal"
+		fn.Parent=ReplicatedStorage
+	end
+	fn.OnInvoke=function(item,refresh)
+		if type(item)~="string" or #item>64 then return nil end
+		if refresh==true and send and Data and Data.Systems and Data.Systems.Prices.keyFor(item) then send("priceCheck",item,true) end
+		local s=SYS.summaryFor(item)
+		if not s or not SYS.data() then return nil end
+		return {text=SYS.data().Prices.text(s),summary=s}
+	end
+end
+
+-- XP calculator -----------------------------------------------------------------
+function SYS.drawCalculator()
+	heading("XP CALCULATOR")
+	local SY=SYS.data()
+	if not SY or type(Data.XP_TABLE)~="table" then dataMissing() return end
+	local CA=SY.Calc
+	local list=CA.skills()
+	if not table.find(list,SYS.calcSkill) then SYS.calcSkill=list[1] or "Mining" end
+	sectionBar(list,SYS.calcSkill,function(name) SYS.calcSkill=name SYS.calcTarget=nil render() end,{small=true,prefix="CalcSkill",maxPer=compactAtlas and 4 or 7})
+	local skill=SYS.calcSkill
+	local info=skillsOf(state)[skill] or EMPTY
+	local lvl=num(info.level,1)
+	local xp=num(info.xp,num(tbl(state.xp)[skill],0))
+	local target=math.clamp(num(SYS.calcTarget,math.min(99,lvl+1)),math.min(99,lvl+1),99)
+	SYS.calcTarget=target
+	local rate=num(tbl(SYS.state().rates)[skill],0)
+	local plan=CA.plan(xp,target,1)
+	local function step(d) return function() SYS.calcTarget=math.clamp(target+d,math.min(99,lvl+1),99) render() end end
+	card({name="CalcTarget",motif="Hero",title=escape(skill).."  "..fmt(lvl).."  →  "..fmt(target),
+		subtitle=fmt(xp).." XP now  ·  "..fmt(plan.goalXp).." XP at level "..fmt(target),
+		lines={"<b>"..fmt(plan.remaining).."</b> XP to go"..(rate>0 and ("  ·  at your "..fmt(rate).." XP/h: about "..SY.Goals.etaText(SY.Goals.eta(plan.remaining,rate))) or "  ·  train for a few minutes to see an ETA")},
+		bar={fraction=math.clamp(plan.goalXp>0 and xp/plan.goalXp or 0,0,1),color=gold,caption=fmt(xp).." / "..fmt(plan.goalXp)},
+		actions={{caption="−5",name="CalcMinus5",fn=step(-5)},{caption="−1",name="CalcMinus1",fn=step(-1)},{caption="+1",name="CalcPlus1",fn=step(1)},
+			{caption="+5",name="CalcPlus5",fn=step(5)},{caption="Set goal",primary=true,name="CalcGoal",fn=function() SYS.setGoal("level",skill,target) end}}})
+	heading("ACTIONS    /    BASE XP, NO BOOSTS")
+	local actions=CA.actions(skill)
+	-- Unlocked actions nearest the player's level first, then the next few locked ones.
+	local unlocked,locked={},{}
+	for _,a in ipairs(actions) do if a.level<=lvl then table.insert(unlocked,a) else table.insert(locked,a) end end
+	local shown={}
+	for i=#unlocked,math.max(1,#unlocked-9),-1 do table.insert(shown,unlocked[i]) end
+	for i=1,math.min(4,#locked) do table.insert(shown,locked[i]) end
+	for _,a in ipairs(shown) do
+		local p=CA.plan(xp,target,a.xp)
+		local open=a.level<=lvl
+		card({name="CalcAction"..a.id,item=itemDef(a.id) and a.id or nil,motif=not itemDef(a.id) and "Hunt" or nil,title=escape(a.name),titleColor=open and ivory or muted,
+			subtitle=(a.kind=="gather" and "Gather" or (a.kind=="catch" and "Catch" or "Craft")).."  ·  level "..a.level.."  ·  "..fmt(a.xp).." XP each",
+			badge=open and (fmt(num(p.actions,0)).." ×") or paint("LEVEL "..a.level,"E8806A"),badgeColor=open and gold or ember,
+			lines={open and (fmt(num(p.actions,0)).." actions to reach level "..fmt(target)) or ("Unlocks at "..escape(skill).." "..a.level)}})
+	end
+	if #shown==0 then row("No actions","This skill trains from other activities.") end
+end
+
+-- Daily stock ---------------------------------------------------------------------
+function SYS.stockLeft(key)
+	local entry=tbl(tbl(SYS.state().stock).left)[key]
+	if type(entry)~="table" then return nil,nil end
+	return num(entry[1],0),num(entry[2],0)
+end
+function SYS.stockText(key)
+	local left,lim=SYS.stockLeft(key)
+	if not lim then return nil end
+	return (left>0 and paint(fmt(left).."/"..fmt(lim).." left today","9EE7D2") or paint("Sold out today ("..fmt(lim)..")","E8806A"))
+end
+Pages.drawHelper,Pages.drawGoals,Pages.drawPrices,Pages.drawCalculator=SYS.drawHelper,SYS.drawGoals,SYS.drawPrices,SYS.drawCalculator
+end
+
+------------------------------------------------------------------------------
 -- Menu: the landing page (a SkyBlock-style grid of big icon tiles) and the
 -- Settings page (local HUD preferences published as player attributes that
 -- hud.client.lua / nav.client.lua read).
@@ -8524,25 +9006,26 @@ end
 local tabOrder={"Menu","Journal","Hero","Satchel","Workshop","Hunt","Ledger"}
 local sectionLists={
 	Menu={"Home","Renown","Resonance","Settings"}, -- §31: Renown, Resonance
-	Journal={"Bearing","Quests","Diaries","Construction","Regions","Crew","Calendar","Agility","Commissions","Collection Log","Museum","Motes","Factions"},
-	Hero={"Skills","Mastery","Gear","Combat","Spellbook","Prayer","Enchant","Reforge","Accessories","Pets"},
+	Journal={"Bearing","Quests","Helper","Goals","Diaries","Construction","Regions","Crew","Calendar","Agility","Commissions","Collection Log","Museum","Motes","Factions"}, -- §33: Helper, Goals
+	Hero={"Skills","Mastery","Gear","Combat","Spellbook","Prayer","Enchant","Reforge","Accessories","Pets","Calculator"}, -- §33: Calculator
 	Satchel={"Items","Collections","Trails"},
 	Workshop={"Forge","Hearth","Cauldron","Workbench","Crafting","Workers","Home","Garden"},
 	Hunt={"Slayer","Bestiary","Dungeon","Essence","Bosses","Hunter","Thieving","Minigames"},
-	Ledger={"Bank","Market","Orders","Auctions","Merchant","Vendors"},
+	Ledger={"Bank","Market","Orders","Auctions","Prices","Merchant","Vendors"}, -- §33: Prices
 }
 sectionOf={Menu="Home",Journal="Bearing",Hero="Skills",Satchel="Items",Workshop="Forge",Hunt="Slayer",Ledger="Bank"}
 local drawers={
 	Menu={Home=function() Pages.drawMenu() end,Renown=function() Pages.drawRenown() end,Resonance=function() Pages.drawResonance() end,Settings=function() Pages.drawSettings() end},
 	Journal={Bearing=Pages.drawBearing,Quests=Pages.drawQuests,Diaries=Pages.drawDiaries,Construction=Pages.drawConstruction,Regions=Pages.drawRegions,Crew=Pages.drawCoop,Calendar=Pages.drawCalendar,Agility=Pages.drawAgility,
 		Commissions=Pages.drawCommissions,["Collection Log"]=Pages.drawCollectionLog,Museum=Pages.drawMuseum, -- Commissions & Logs
-		Motes=Pages.drawMotes,Factions=Pages.drawFactions}, -- Exploration & Factions
-	Hero={Skills=Pages.drawSkills,Mastery=Pages.drawMastery,Gear=Pages.drawGear,Combat=Pages.drawCombat,Spellbook=Pages.drawSpellbook,Prayer=Pages.drawPrayer,Enchant=Pages.drawEnchant,Reforge=function() Pages.drawReforge() end,Accessories=Pages.drawAccessories,Pets=Pages.drawPets},
+		Motes=Pages.drawMotes,Factions=Pages.drawFactions, -- Exploration & Factions
+		Helper=Pages.drawHelper,Goals=Pages.drawGoals}, -- §33 quest helper, goal board
+	Hero={Skills=Pages.drawSkills,Mastery=Pages.drawMastery,Gear=Pages.drawGear,Combat=Pages.drawCombat,Spellbook=Pages.drawSpellbook,Prayer=Pages.drawPrayer,Enchant=Pages.drawEnchant,Reforge=function() Pages.drawReforge() end,Accessories=Pages.drawAccessories,Pets=Pages.drawPets,Calculator=Pages.drawCalculator},
 	Satchel={Items=Pages.drawItems,Collections=Pages.drawCollections,Trails=Pages.drawTrails},
 	Workshop={Forge=function() Pages.drawStation("Forge") end,Hearth=function() Pages.drawStation("Hearth") end,Cauldron=function() Pages.drawStation("Cauldron") end,
 		Workbench=function() Pages.drawStation("Workbench") end,Crafting=Pages.drawCrafting,Workers=Pages.drawWorkers,Home=Pages.drawHome,Garden=Pages.drawGarden},
 	Hunt={Slayer=Pages.drawSlayer,Bestiary=Pages.drawBestiary,Dungeon=Pages.drawDungeon,Essence=Pages.drawEssence,Hunter=Pages.drawHunter,Thieving=Pages.drawThieving,Minigames=Pages.drawMinigames,Bosses=Pages.drawBosses},
-	Ledger={Bank=Pages.drawBank,Market=Pages.drawMarket,Orders=Pages.drawOrders,Auctions=Pages.drawAuctions,Merchant=Pages.drawMerchant,Vendors=Pages.drawVendors},
+	Ledger={Bank=Pages.drawBank,Market=Pages.drawMarket,Orders=Pages.drawOrders,Auctions=Pages.drawAuctions,Merchant=Pages.drawMerchant,Vendors=Pages.drawVendors,Prices=Pages.drawPrices},
 }
 local function resetTransient()
 	if Pages.TT then Pages.TT.flush() end -- Treasure Trails: send buffered puzzle moves on page change
@@ -8930,7 +9413,8 @@ end
 -- Server wiring
 ------------------------------------------------------------------------------
 UI.relay={equip=true,unequip=true,consume=true,sell=true,accessory=true,petAdopt=true,drop=true,satchelMove=true,satchelSort=true,recall=true,
-	rqBuy=true,skillBuy=true,petShop=true,resonanceSet=true,guideClaim=true} -- §31: quantity picker (features.client.lua), Resonance, Path rewards
+	rqBuy=true,skillBuy=true,petShop=true,resonanceSet=true,guideClaim=true, -- §31
+	helperPin=true,goalSet=true,goalRemove=true,goalClear=true,priceCheck=true} -- §33: quantity picker (features.client.lua), Resonance, Path rewards
 local remote = ReplicatedStorage:WaitForChild("IsleAction")
 local updates = ReplicatedStorage:WaitForChild("IsleUpdate")
 local function accept(data,quiet)

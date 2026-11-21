@@ -548,6 +548,8 @@ function Theme.lore(def, ctx)
 	add("", nil, {blank = true})
 	add("<b>" .. string.upper(def.rarity or "Common") .. " " .. Theme.kindLabel(def) .. "</b>", rarity.hex, {kind = "rarity", bold = true})
 	if tonumber(def.value) then add("Sell price: <font color=\"#F7C548\">" .. Theme.commas(def.value) .. " coins</font>" .. (if (ctx.count or 0) > 1 then " each" else ""), Theme.hex.faint, {kind = "value"}) end
+	-- Market price (§33 IslePriceCheckLocal text, passed in by the caller).
+	if type(ctx.price) == "string" and ctx.price ~= "" then add("Market: <font color=\"#F7C548\">" .. escape(ctx.price) .. "</font>", Theme.hex.faint, {kind = "price"}) end
 	local click = Theme.clickPrompt(def, ctx)
 	if click then add(click, Theme.hex.prompt, {kind = "click", bold = true}) end
 	return lines

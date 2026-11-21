@@ -222,9 +222,26 @@ end
 ------------------------------------------------------------------------------
 -- Tooltip and context menu
 ------------------------------------------------------------------------------
+-- §34 tooltip footer price line: the atlas' price check (§33
+-- IslePriceCheckLocal: last known history, nil when unknown). A refresh is asked
+-- at most once a minute per item, off the hover path.
+S.priceAsked = {}
+local function priceText(id)
+	local fn = ReplicatedStorage:FindFirstChild("IslePriceCheckLocal")
+	if not fn or not fn:IsA("BindableFunction") then return nil end
+	local now = os.clock()
+	if not S.priceAsked[id] or now - S.priceAsked[id] > 60 then
+		S.priceAsked[id] = now
+		task.spawn(function() pcall(function() fn:Invoke(id, true) end) end)
+	end
+	local ok, result = pcall(function() return fn:Invoke(id, false) end)
+	return if ok and type(result) == "table" and type(result.text) == "string" then result.text else nil
+end
+S.priceText = priceText
 local function showTip(id, at)
 	local ctx, def = S.ctx(id)
 	if not def then tooltip.Visible = false; return end
+	ctx.price = priceText(id)
 	T.showTooltip(tooltip, T.lore(def, ctx), at, screen())
 end
 local function hideMenu() menu.Visible = false; S.menuFor = nil; S.confirm = nil end

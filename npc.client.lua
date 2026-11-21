@@ -172,6 +172,29 @@ local function optionButton(text, order, onClick, accent)
 	b.Activated:Connect(function() if not busy then onClick() end end)
 	return b
 end
+-- §33 per-player daily stock on a regional shop offer: "8/64 left today"
+-- (snapshot.systems.stock.left["rq:<role>:<item>"] = {left, limit}); nil when unlimited.
+local function stockOf(option)
+	local role, index = string.match(option.item or "", "^(%w+):(%d+)$")
+	local folk = role and Data.RegionArt and Data.RegionArt.FolkByRole[role]
+	local offer = folk and folk.shop and folk.shop[tonumber(index)]
+	local systems = snapshot and type(snapshot.systems) == "table" and snapshot.systems
+	local stock = systems and type(systems.stock) == "table" and type(systems.stock.left) == "table" and systems.stock.left
+	local entry = offer and stock and Data.Systems and stock[Data.Systems.Stock.key("rq", role, offer.item)]
+	if type(entry) ~= "table" or type(entry[1]) ~= "number" or type(entry[2]) ~= "number" then return nil end
+	return entry[1], entry[2], offer
+end
+local function stockLeft(option)
+	local left, limit = stockOf(option)
+	if not left then return nil end
+	return if left > 0 then left .. "/" .. limit .. " left today" else "sold out today"
+end
+-- Lots still allowed today for an offer (MAX_LOTS when unlimited); caps the picker.
+local function lotsLeft(option)
+	local left, _, offer = stockOf(option)
+	if not left then return Data.Features.Shop.MAX_LOTS end
+	return math.max(1, math.floor(left / math.max(1, offer.amount)))
+end
 -- §31 shop quantities: right-click or long-press a shop offer for the quantity
 -- picker (features.client.lua on IsleQuantityLocal; verb rqBuy "Role:i:qty").
 local quantitySuppress = setmetatable({}, {__mode = "k"}) -- a long-press must not also buy one
@@ -188,7 +211,7 @@ local function quantityHook(b, option)
 		if not event then return end
 		local coins = snapshot and tonumber(snapshot.coins) or 0
 		event:Fire({verb = "rqBuy", base = option.item, item = offer.item, name = item and item.name or offer.item, unit = offer.price, amount = offer.amount,
-			max = math.max(1, math.min(Data.Features.Shop.MAX_LOTS, math.floor(coins / math.max(1, offer.price))))})
+			max = math.max(1, math.min(Data.Features.Shop.MAX_LOTS, math.floor(coins / math.max(1, offer.price)), lotsLeft(option)))})
 	end
 	b.MouseButton2Click:Connect(open)
 	local pressedAt
@@ -374,7 +397,11 @@ showNode = function(nodeId)
 			if held and os.clock() - held < 1.5 then return end
 			runOption(option)
 		end, option.verb ~= nil or option.waypoint ~= nil)
-		if option.verb == "rqBuy" then quantityHook(b, option) end
+		if option.verb == "rqBuy" then
+			quantityHook(b, option)
+			local stock = stockLeft(option)
+			if stock then b.Text = option.label .. "   ·   " .. stock end -- §33 per-player daily stock
+		end
 	end
 	layout(#options)
 end
