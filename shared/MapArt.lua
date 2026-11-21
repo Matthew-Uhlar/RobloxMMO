@@ -1,4 +1,7 @@
 --!nocheck
+-- (--!nocheck stays: the module is loaded with injected globals by the UI
+-- harness and verify-map.luau, and the toolchain has no luau-analyze to keep a
+-- typed version honest; §32 notes this.)
 -- Map Art (ReplicatedStorage.AetherMapArt, docs/DEPTH-CONTRACT.md §32): the Sky
 -- Chart's 3D miniature archipelago and the minimap's island plates.
 --
@@ -51,6 +54,11 @@ MapArt.HULL = {IslandCliff = true, IslandCliffBare = true, IslandKeel = true, Is
 MapArt.CORE = {Meadow = true, ["Upper meadow"] = true, ["Tier cliff"] = true, ["Floating foundation"] = true, ["Island underside"] = true,
 	["Continuous bridge deck"] = true}
 MapArt.VIEW = {pitch = 38, fov = 24, minZoom = 0.36, maxZoom = 1, margin = 0.035, zoomStep = 0.88, phoneZoom = 0.62}
+-- First-open hitch: the miniature is pre-built PREBUILD_DELAY s after load, in
+-- idle chunks (a yield every CHUNK copied parts, every CHUNK * 4 classified).
+MapArt.PREBUILD_DELAY, MapArt.CHUNK = 8, 200
+-- Minimap plates built per ≤ 10 Hz tick (the rest follow on later ticks).
+MapArt.PLATES_PER_TICK = 2
 -- Instanced isles shown as insets (not at a place in the archipelago).
 MapArt.CREW = {id = "Crew", u = 0.3, v = 0.86, size = 80, name = "Crew Haven", region = "Hub", travel = "guide", specs = {"anchor:Waypoint_CrewHaven"}}
 
@@ -149,18 +157,21 @@ function MapArt.classify(part, budget, landmarkShapes)
 	if not part:IsA("BasePart") then return nil end
 	local name = part.Name
 	if string.sub(name, 1, 7) == "Anchor_" then return nil end
-	-- What the player sees: the forge hides a host locally once its mesh exists
-	-- (the mesh, a MeshPart with ShapeOf, is copied instead).
+	-- The forge's own world meshes (MeshParts with ShapeOf) are never copied:
+	-- their template can be LRU-evicted later, which would blank the cached copy.
+	if part:IsA("MeshPart") and part:GetAttribute("ShapeOf") ~= nil then return nil end
+	local shape = part:GetAttribute("Shape")
+	local major = type(shape) == "string" and (MapArt.HULL[shape] == true or (landmarkShapes ~= nil and landmarkShapes[shape] ~= nil))
+	-- The forge hides a host locally once its mesh exists. A hidden hull or
+	-- landmark host is copied anyway as a primitive stand-in and queued for a
+	-- pinned chart mesh; any other hidden part (a prop host, a ShapeOwnsModel
+	-- sibling) is dropped.
 	local hidden = false
 	pcall(function() hidden = part.LocalTransparencyModifier >= 0.99 end)
-	if hidden then return nil end
-	local shape = part:GetAttribute("Shape")
-	local shapeOf = part:GetAttribute("ShapeOf")
-	local major = (type(shape) == "string" and (MapArt.HULL[shape] or (landmarkShapes and landmarkShapes[shape] ~= nil)))
-		or (type(shapeOf) == "string" and (MapArt.HULL[shapeOf] or (landmarkShapes and landmarkShapes[shapeOf] ~= nil)))
+	if hidden and not major then return nil end
 	local size = part.Size
 	local extent = math.max(size.X, size.Y, size.Z)
-	local forge = major and type(shape) == "string" and not part:IsA("MeshPart")
+	local forge = major and not part:IsA("MeshPart")
 	if part.Transparency >= 0.9 then
 		-- An invisible slot box shows nothing unless its forged mesh is fetched.
 		if forge then return {part = part, priority = 0, extent = extent, tris = 0, forge = true, forgeOnly = true} end
@@ -264,26 +275,39 @@ end
 -- entries: island entries (MapArt.islands). Returns the scene: root Model,
 -- islands[i] = {entry, model, parts, base, colors, triangles, locked, lift},
 -- stats {parts, triangles, islands, builds}, forge queue.
+-- opts: name, landmarks, wash (Color3 for locked MeshParts), pause (called
+-- every opts.chunk copied parts and every 4 * chunk classified ones: the idle
+-- pre-build yields there), chunk (default MapArt.CHUNK).
 function MapArt.buildScene(entries, budget, opts)
 	opts = opts or {}
+	local chunk = opts.chunk or MapArt.CHUNK
+	local scene = {islands = {}, queue = {}, forged = {}, budget = budget, wash = opts.wash,
+		stats = {parts = 0, triangles = 0, islands = #entries, forged = 0, chunks = 0}}
+	local seen, copied = 0, 0
+	local function pause()
+		scene.stats.chunks += 1
+		if opts.pause then opts.pause() end
+	end
 	local root = Instance.new("Model")
 	root.Name = opts.name or "Miniature"
+	scene.root = root
 	local groups = {}
 	for i, entry in ipairs(entries) do
 		local records = {}
 		for _, d in ipairs(entry.model:GetDescendants()) do
 			local r = MapArt.classify(d, budget, opts.landmarks)
 			if r then table.insert(records, r) end
+			seen += 1
+			if seen % (chunk * 4) == 0 then pause() end
 		end
 		groups[i] = records
 	end
 	local chosen = MapArt.plan(groups, budget)
-	local scene = {root = root, islands = {}, queue = {}, budget = budget, stats = {parts = 0, triangles = 0, islands = #entries, forged = 0}}
 	for i, entry in ipairs(entries) do
 		local m = Instance.new("Model")
 		m.Name = entry.name
 		m.Parent = root
-		local isle = {entry = entry, model = m, parts = {}, base = {}, colors = {}, triangles = 0, locked = false, lift = 0, index = i}
+		local isle = {entry = entry, model = m, parts = {}, base = {}, colors = {}, triangles = 0, locked = false, lift = 0, index = i, wash = opts.wash}
 		for _, r in ipairs(chosen[i]) do
 			if r.forgeOnly then
 				table.insert(scene.queue, {isle = isle, host = r.part})
@@ -295,6 +319,8 @@ function MapArt.buildScene(entries, budget, opts)
 					scene.stats.parts += 1
 					scene.stats.triangles += r.tris
 					if r.forge then table.insert(scene.queue, {isle = isle, host = r.part, stand = c, standTris = r.tris}) end
+					copied += 1
+					if copied % chunk == 0 then pause() end
 				end
 			end
 		end
@@ -302,55 +328,143 @@ function MapArt.buildScene(entries, budget, opts)
 	end
 	return scene
 end
--- Swaps queued hosts for forged meshes. forge(host) -> MeshPart (unparented,
--- sized and placed like the world's) and its triangle count, or nil. Stops at
--- budget.forge requests or the triangle budget. Returns meshes added.
+-- Swaps queued hosts for forged meshes. forge(method, ...) is MeshForge's
+-- chart API: "visual" host -> MeshPart (unparented, sized and placed like the
+-- world's), its triangle count and a token; "accept" token pins the template
+-- (false: refused, the stand-in stays); "release" token unpins it. A mesh is
+-- accepted only within budget.forge meshes and the triangle budget; a rejected
+-- one is released at once. The forge may yield: one upgrade runs per scene at a
+-- time, each job leaves the queue before its request (concurrent calls never
+-- repeat a host), and a scene destroyed meanwhile releases what comes back.
+-- A primitive stand-in is kept (unparented) so a revoked mesh can swap back.
+-- Returns meshes added.
 function MapArt.upgrade(scene, forge)
+	if scene.upgrading or scene.destroyed then return 0 end
+	scene.upgrading = true
 	local added = 0
-	for _, job in ipairs(scene.queue) do
-		if added >= scene.budget.forge then break end
-		local ok, mesh, tris = pcall(forge, job.host)
-		if ok and mesh then
+	while #scene.queue > 0 and scene.stats.forged < scene.budget.forge and not scene.destroyed do
+		local job = table.remove(scene.queue, 1)
+		local ok, mesh, tris, token = pcall(forge, "visual", job.host)
+		if not ok or typeof(mesh) ~= "Instance" then mesh = nil end
+		local keep = false
+		if mesh and not scene.destroyed then
 			tris = tonumber(tris) or MapArt.TRIS.Mesh
-			local isle = job.isle
 			local net = tris - (job.standTris or 0)
 			if scene.stats.triangles + net <= scene.budget.triangles and (job.stand or scene.stats.parts < scene.budget.parts) then
-				mesh.Anchored, mesh.CanCollide, mesh.CanQuery, mesh.CanTouch, mesh.CastShadow = true, false, false, false, false
-				mesh:SetAttribute("ShapeTriangles", tris)
-				if job.stand then
-					local at = table.find(isle.parts, job.stand)
-					job.stand:Destroy()
-					if at then
-						isle.parts[at], isle.base[at], isle.colors[at] = mesh, mesh.CFrame, mesh.Color
-						isle.triangles += net
-					end
-				else
-					addPart(isle, mesh, tris)
-					scene.stats.parts += 1
+				local accepted = true
+				if token ~= nil then
+					local okAccept, answer = pcall(forge, "accept", token)
+					accepted = okAccept and answer ~= false
 				end
-				if isle.locked then mesh.Color = MapArt.lockTint(mesh.Color) end
-				if isle.lift ~= 0 then mesh.CFrame += Vector3.new(0, isle.lift, 0) end
-				mesh.Parent = isle.model
-				scene.stats.triangles += net
-				scene.stats.forged += 1
-				added += 1
-			else
-				pcall(mesh.Destroy, mesh)
+				if accepted and not scene.destroyed then
+					keep = true
+					MapArt.swapIn(scene, job, mesh, tris, net, token)
+					added += 1
+				end
 			end
 		end
+		if mesh and not keep then
+			if token ~= nil then pcall(forge, "release", token) end
+			pcall(mesh.Destroy, mesh)
+		end
 	end
-	table.clear(scene.queue)
+	-- The forge budget is spent once: what is left keeps its stand-ins.
+	if scene.stats.forged >= scene.budget.forge then table.clear(scene.queue) end
+	scene.upgrading = false
 	return added
+end
+function MapArt.swapIn(scene, job, mesh, tris, net, token)
+	local isle = job.isle
+	mesh.Anchored, mesh.CanCollide, mesh.CanQuery, mesh.CanTouch, mesh.CastShadow = true, false, false, false, false
+	mesh:SetAttribute("ShapeTriangles", tris)
+	local at = job.stand and table.find(isle.parts, job.stand)
+	if at then
+		job.standBase, job.standColor = isle.base[at], isle.colors[at]
+		isle.parts[at], isle.base[at], isle.colors[at] = mesh, mesh.CFrame, mesh.Color
+		isle.triangles += net
+		job.stand.Parent = nil
+	else
+		job.stand = nil
+		net = tris
+		addPart(isle, mesh, tris)
+		scene.stats.parts += 1
+	end
+	if isle.locked then mesh.Color = MapArt.lockColor(mesh, mesh.Color, isle.wash) end
+	if isle.lift ~= 0 then mesh.CFrame += Vector3.new(0, isle.lift, 0) end
+	mesh.Parent = isle.model
+	scene.stats.triangles += net
+	scene.stats.forged += 1
+	job.mesh, job.token, job.net = mesh, token, net
+	table.insert(scene.forged, job)
+	-- MeshForge marks a mesh ShapeRevoked when a starved world takes its template back.
+	pcall(function()
+		job.watch = mesh:GetAttributeChangedSignal("ShapeRevoked"):Connect(function() MapArt.revert(scene, job) end)
+	end)
+end
+-- A revoked (or released) mesh gives its slot back to the primitive stand-in.
+function MapArt.revert(scene, job)
+	local mesh = job.mesh
+	if not mesh then return false end
+	job.mesh = nil
+	if job.watch then pcall(function() job.watch:Disconnect() end) job.watch = nil end
+	local isle = job.isle
+	local at = table.find(isle.parts, mesh)
+	if at and job.stand then
+		local stand = job.stand
+		isle.parts[at], isle.base[at], isle.colors[at] = stand, job.standBase, job.standColor
+		stand.CFrame = job.standBase + Vector3.new(0, isle.lift, 0)
+		stand.Color = if isle.locked then MapArt.lockColor(stand, job.standColor, isle.wash) else job.standColor
+		stand.Parent = isle.model
+		isle.triangles -= job.net
+	elseif at then
+		table.remove(isle.parts, at)
+		table.remove(isle.base, at)
+		table.remove(isle.colors, at)
+		isle.triangles -= job.net
+		scene.stats.parts -= 1
+	end
+	scene.stats.triangles -= job.net
+	scene.stats.forged -= 1
+	local i = table.find(scene.forged, job)
+	if i then table.remove(scene.forged, i) end
+	pcall(mesh.Destroy, mesh)
+	return true
+end
+-- Swaps back every mesh MeshForge has revoked (also checked on each refresh,
+-- where attribute signals are unavailable). Returns how many.
+function MapArt.checkRevoked(scene)
+	local n = 0
+	for _, job in ipairs(table.clone(scene.forged)) do
+		if job.mesh and job.mesh:GetAttribute("ShapeRevoked") == true and MapArt.revert(scene, job) then n += 1 end
+	end
+	return n
+end
+-- The chart is destroyed or rebuilt: every accepted mesh releases its pin.
+function MapArt.releaseAll(scene, forge)
+	scene.destroyed = true
+	table.clear(scene.queue)
+	for _, job in ipairs(scene.forged) do
+		if job.watch then pcall(function() job.watch:Disconnect() end) job.watch = nil end
+		if job.token ~= nil and forge then pcall(forge, "release", job.token) end
+		job.token = nil
+	end
 end
 -- Locked wash: towards a cool grey of the same lightness, a touch darker.
 function MapArt.lockTint(color)
 	local l = 0.299 * color.R + 0.587 * color.G + 0.114 * color.B
 	return color:Lerp(Color3.new(l * 0.78 + 0.04, l * 0.8 + 0.05, l * 0.86 + 0.08), 0.82)
 end
+-- Locked colour of one part: forged MeshParts carry their palette in vertex
+-- colours (Color is a white multiplier), so they take Theme.MapArt.lockWash;
+-- primitives are tinted from their own colour.
+function MapArt.lockColor(part, color, wash)
+	if wash and part:IsA("MeshPart") then return wash end
+	return MapArt.lockTint(color)
+end
 function MapArt.setLocked(isle, locked)
 	if isle.locked == locked then return false end
 	isle.locked = locked
-	for i, p in ipairs(isle.parts) do p.Color = if locked then MapArt.lockTint(isle.colors[i]) else isle.colors[i] end
+	for i, p in ipairs(isle.parts) do p.Color = if locked then MapArt.lockColor(p, isle.colors[i], isle.wash) else isle.colors[i] end
 	return true
 end
 -- Hover raise: the whole island lifts (studs); only on a hover change.
@@ -468,19 +582,52 @@ local function cloud(parent, name, x, y, w, alpha, A)
 	return holder
 end
 
+-- Warp-tile names: the label's top for a tile placed at warp point y (tile
+-- frame 80 px tall centred at y - 8; the name at 0.36 of it + 28 px), height.
+MapArt.LABEL_H = 20
+function MapArt.labelTop(y) return y - 8 - 40 + 0.36 * 80 + 28 end
+-- Simple collision avoidance (pure): labels {x, y, w, h} sorted top-down; one
+-- that overlaps a label already placed slides down below it. Sets l.dy.
+function MapArt.declutter(labels)
+	table.sort(labels, function(a, b) return a.y < b.y end)
+	local placed = {}
+	for _, l in ipairs(labels) do
+		l.dy = 0
+		local moved = true
+		while moved do
+			moved = false
+			for _, o in ipairs(placed) do
+				local top = l.y + l.dy
+				if l.x < o.x + o.w and o.x < l.x + l.w and top < o.y + o.dy + o.h and o.y + o.dy < top + l.h then
+					l.dy = o.y + o.dy + o.h + 2 - l.y
+					moved = true
+				end
+			end
+		end
+		table.insert(placed, l)
+	end
+	return labels
+end
+
 function MapArt.mountChart(opts)
 	local Theme, Data = opts.Theme, opts.Data
 	local A = Theme.MapArt
 	local sky, S = opts.sky, opts.state
 	local budget = MapArt.budget(opts.touch)
 	local view = {pitch = MapArt.VIEW.pitch, fov = MapArt.VIEW.fov, margin = MapArt.VIEW.margin, zoom = 1, pan = Vector3.zero}
-	local ctl = {sky = sky, view = view, budget = budget, links = {}, builds = 0, hover = nil, scene = nil}
+	local ctl = {sky = sky, view = view, budget = budget, links = {}, builds = 0, hover = nil, scene = nil, tweens = {}, insetsDirty = true}
 	local tween = opts.TweenService
+	-- Looping drifts / pulses: played only while the chart is open (paused when closed).
 	local function loop(object, goal, seconds)
 		if not tween then return end
 		pcall(function()
-			tween:Create(object, TweenInfo.new(seconds, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), goal):Play()
+			local t = tween:Create(object, TweenInfo.new(seconds, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), goal)
+			table.insert(ctl.tweens, t)
+			if opts.chart.Visible then t:Play() end
 		end)
+	end
+	local function playTweens(on)
+		for _, t in ipairs(ctl.tweens) do pcall(function() if on then t:Play() else t:Pause() end end) end
 	end
 
 	-- Backdrop: a bright day sky (the old flat clouds are replaced).
@@ -517,6 +664,8 @@ function MapArt.mountChart(opts)
 		end
 	end
 	-- Hover halo (an ellipse ring under the hovered island's overlay).
+	-- ZIndex (siblings under the sky): scene / input 1 < halo, insets 2 < warp
+	-- tiles 3 < the Home tile on its inset 4 < YOU 8 < caption 9.
 	local halo = circle(make("Frame", sky, {Name = "Halo", AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = rgb(A.halo), BackgroundTransparency = 0.86,
 		BorderSizePixel = 0, Visible = false, ZIndex = 2}))
 	make("UIStroke", halo, {Color = rgb(A.halo), Thickness = 2, Transparency = 0.15})
@@ -553,6 +702,7 @@ function MapArt.mountChart(opts)
 		return {frame = f, viewport = vp, camera = cam, label = label, slot = slot}
 	end
 	local insets = {home = inset("HomeInset", "YOUR ISLE", 0), crew = inset("CrewInset", "CREW HAVEN", 1)}
+	ctl.insets = insets
 	local crewWarp = make("TextButton", insets.crew.frame, {Name = "Warp", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.42),
 		Size = UDim2.fromOffset(if opts.touch then 44 else 30, if opts.touch then 44 else 30), BackgroundColor3 = rgb(A.warp), Text = "✦", Font = Theme.font.heading,
 		TextSize = 15, TextColor3 = Color3.new(1, 1, 1), AutoButtonColor = true, ZIndex = 6})
@@ -571,6 +721,7 @@ function MapArt.mountChart(opts)
 		end
 		t.frame.AnchorPoint = Vector2.new(0.5, 0.5)
 		t.frame.BackgroundTransparency = 1
+		t.frame.ZIndex = 3
 		local glow = {}
 		for i, g in ipairs({{2.4, 0.82}, {1.6, 0.6}}) do
 			glow[i] = circle(make("Frame", t.frame, {Name = "Glow" .. i, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.36),
@@ -593,17 +744,15 @@ function MapArt.mountChart(opts)
 		t.name.TextColor3, t.name.TextStrokeColor3, t.name.TextStrokeTransparency = rgb(A.labelInk), rgb(A.labelOutline), 0
 		make("UIStroke", t.name, {Name = "Outline", ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual, Color = rgb(A.labelOutline), Thickness = 2})
 		t.here.Position = UDim2.new(0.5, 0, 0.36, -22)
-		-- The HUD's whole-tile button shrinks to the gem and its name, so the
-		-- island around it stays draggable / hoverable (clicks on it still pick).
+		-- The HUD's whole-tile button shrinks to the gem's own hit area (it still
+		-- picks a locked isle, whose padlock sits there); everything around it,
+		-- names included, belongs to the drag layer, so drag / zoom / hover work
+		-- and a click picks by the island hit test (no neighbour mispicks).
 		if t.button then
-			t.button.AnchorPoint, t.button.Position = Vector2.new(0.5, 0), UDim2.new(0.5, 0, 0.36, -24)
-			t.button.Size = UDim2.fromOffset(if opts.touch then 150 else 130, if opts.touch then 76 else 72)
+			local hit = if opts.touch then 44 else 34
+			t.button.AnchorPoint, t.button.Position = Vector2.new(0.5, 0.5), UDim2.fromScale(0.5, 0.36)
+			t.button.Size = UDim2.fromOffset(hit, hit)
 		end
-		-- Hover from the gem itself (desktop).
-		pcall(function()
-			t.warp.MouseEnter:Connect(function() ctl.setHover(t.island.id) end)
-			t.warp.MouseLeave:Connect(function() ctl.setHover(nil) end)
-		end)
 	end
 
 	-- Builds the miniature once (first refresh with islands in the world).
@@ -616,12 +765,28 @@ function MapArt.mountChart(opts)
 		return if ok then folder else nil
 	end
 	local landmarkShapes = MapArt.landmarks(Data)
-	function ctl.build()
+	-- Forged hull / landmark meshes: asked once the scene exists and MeshForge
+	-- runs (retried on each refresh until MeshForgeLocal appears).
+	function ctl.tryUpgrade()
+		local built = ctl.scene
+		if not opts.forge or not built or built.upgrading or #built.queue == 0 then return false end
+		local ok, ready = pcall(opts.forge, "ready")
+		if not ok or ready ~= true then return false end
+		task.spawn(MapArt.upgrade, built, opts.forge)
+		return true
+	end
+	-- pause: the idle pre-build yields every MapArt.CHUNK parts; the first open
+	-- builds at once (or, while a pre-build is mid-way, waits for it).
+	function ctl.build(pause)
 		if ctl.scene then return ctl.scene end
+		if ctl.building then return nil end
 		local entries = MapArt.islands(islandsFolder())
 		if #entries == 0 then return nil end
+		ctl.building = true
 		local matched = MapArt.matchTiles(Theme.WorldMap, entries)
-		local built = MapArt.buildScene(entries, budget, {landmarks = landmarkShapes})
+		local ok, built = pcall(MapArt.buildScene, entries, budget, {landmarks = landmarkShapes, wash = rgb(A.lockWash), pause = pause})
+		ctl.building = false
+		if not ok then return nil end
 		built.root.Parent = viewport
 		ctl.builds += 1
 		ctl.scene, ctl.entries, ctl.samples = built, entries, MapArt.samples(entries)
@@ -634,11 +799,23 @@ function MapArt.mountChart(opts)
 				ctl.links[tile.id] = {tile = tile, entry = e, isle = isleOf[e], warp = warp, source = source}
 			end
 		end
-		if opts.forge then
-			task.spawn(function() MapArt.upgrade(built, opts.forge) end)
-		end
+		ctl.tryUpgrade()
 		return built
 	end
+	function ctl.prebuild()
+		if ctl.scene or ctl.building then return end
+		ctl.build(function() task.wait() end)
+		if ctl.scene and opts.chart.Visible then ctl.refresh() end
+	end
+	task.delay(MapArt.PREBUILD_DELAY, function() ctl.prebuildThread = task.spawn(ctl.prebuild) end)
+	-- The chart is destroyed: release every pinned forge template.
+	function ctl.destroy()
+		if not ctl.scene then return end
+		MapArt.releaseAll(ctl.scene, opts.forge)
+		pcall(function() ctl.scene.root:Destroy() end)
+		ctl.scene = nil
+	end
+	pcall(function() sky.Destroying:Connect(ctl.destroy) end)
 	-- An inset's island: the home (WayfarersRest_<UserId>) or the crew haven
 	-- (CrewHaven_* with the player's CoopId). Built once per model.
 	local function insetModel(kind)
@@ -653,17 +830,28 @@ function MapArt.mountChart(opts)
 		return nil
 	end
 	local insetBudget = {parts = budget.insetParts, triangles = math.floor(budget.triangles / 6), minExtent = budget.minExtent, floor = budget.insetParts, forge = 0}
+	-- What an inset was built from: the model, its homestead level, radius and
+	-- live flag (an expanded or re-spawned home rebuilds on the next open).
+	local function insetKey(model)
+		if not model then return "" end
+		return tostring(model:GetAttribute("HomesteadLevel")) .. "|" .. tostring(model:GetAttribute("IslandRadius")) .. "|" .. tostring(model:GetAttribute("HomeLive"))
+	end
+	-- Lookups (a folder scan for the crew haven) and rebuilds run once per open
+	-- (ctl.insetsDirty), never on pan / zoom / hover relayouts.
 	local function buildInset(kind)
 		local box = insets[kind]
+		if not ctl.insetsDirty and box.checked then return box.scene ~= nil end
+		box.checked = true
 		local model = insetModel(kind)
-		if model == box.model then return box.scene ~= nil end
+		local key = insetKey(model)
+		if model == box.model and key == box.key then return box.scene ~= nil end
 		if box.scene then box.scene.root:Destroy() box.scene = nil end
-		box.model = model
+		box.model, box.key = model, key
 		if not model then return false end
 		local center = model:GetAttribute("IslandCenter")
 		local entry = {model = model, name = model.Name, center = if typeof(center) == "Vector3" then center else model:GetPivot().Position,
 			radius = tonumber(model:GetAttribute("IslandRadius")) or 60}
-		box.scene = MapArt.buildScene({entry}, insetBudget, {name = "Inset"})
+		box.scene = MapArt.buildScene({entry}, insetBudget, {name = "Inset", wash = rgb(A.lockWash)})
 		box.scene.root.Parent = box.viewport
 		box.samples = MapArt.samples({entry})
 		box.fitKey = nil
@@ -694,6 +882,7 @@ function MapArt.mountChart(opts)
 		camera.CFrame, camera.FieldOfView = cf, view.fov
 		ctl.cf, ctl.w, ctl.h = cf, w, h
 		local touch = opts.touch
+		local labels = {}
 		for id, t in pairs(S.tiles) do
 			local link = ctl.links[id]
 			if link then
@@ -714,6 +903,9 @@ function MapArt.mountChart(opts)
 					local half = #t.name.Text * t.name.TextSize / 2
 					local shift = math.clamp(0, 6 + half - x, math.max(6 + half - x, w - 6 - half - x))
 					t.name.Position = UDim2.new(0.5, math.floor(shift), 0.36, 28)
+					if t.frame.Visible and t.name.Visible then
+						table.insert(labels, {t = t, shift = math.floor(shift), x = x + math.floor(shift) - half, w = half * 2, y = MapArt.labelTop(y), h = MapArt.LABEL_H})
+					end
 					setVisible(t.here, false) -- the YOU marker replaces the text tag
 					local shown = t.warp.Visible
 					for _, g in ipairs(t.glow) do setVisible(g, shown) end
@@ -722,15 +914,21 @@ function MapArt.mountChart(opts)
 				end
 			end
 		end
-		-- Instanced isles: insets bottom-left, the HUD's Home tile over its inset.
+		-- Names that would overlap slide down below the one above them.
+		for _, l in ipairs(MapArt.declutter(labels)) do
+			l.t.name.Position = UDim2.new(0.5, l.shift, 0.36, 28 + l.dy)
+		end
+		-- Instanced isles: insets bottom-right in order (home, crew), no gaps,
+		-- the HUD's Home tile over its inset.
 		local insetH = math.floor(math.clamp(h * 0.22, 58, 118))
 		local insetW = math.floor(insetH * 1.42)
 		local slot = 0
-		for kind, box in pairs({home = insets.home, crew = insets.crew}) do
+		for _, kind in ipairs({"home", "crew"}) do
+			local box = insets[kind]
 			local has = buildInset(kind)
 			setVisible(box.frame, has)
 			if has then
-				local index = if kind == "home" then 0 else 1
+				local index = slot
 				slot += 1
 				box.frame.Size = UDim2.fromOffset(insetW, insetH)
 				box.label.Text = if insetW >= 130 then (if kind == "home" then "YOUR ISLE" else "CREW HAVEN") else (if kind == "home" then "HOME" else "CREW")
@@ -748,9 +946,11 @@ function MapArt.mountChart(opts)
 				style(home)
 				home.frame.Size = UDim2.fromOffset(insetW + 40, 80)
 				home.frame.Position = UDim2.new(1, -8 - insetW / 2, 1, -8 - insetH * 0.55)
+				home.frame.ZIndex = 4 -- above its inset
 				home.name.Visible = false
 			end
 		end
+		ctl.insetsDirty = false
 		ctl.placeYou()
 		ctl.placeHalo()
 	end
@@ -798,6 +998,8 @@ function MapArt.mountChart(opts)
 	-- Called at the end of the HUD's refreshChart (open, snapshot, resize).
 	function ctl.refresh()
 		if not ctl.build() then return false end
+		MapArt.checkRevoked(ctl.scene)
+		ctl.tryUpgrade()
 		if opts.hint then opts.hint.Text = if opts.touch then "Drag to pan · pinch to zoom · tap a warp point" else "Drag to pan · scroll to zoom · click a warp point to travel" end
 		ctl.applyLocks()
 		ctl.layout()
@@ -854,54 +1056,106 @@ function MapArt.mountChart(opts)
 		S.pickWarp(link.tile, t and t.frame)
 		return id
 	end
+	-- One press at a time, tracked by the InputObject that began it (a second
+	-- finger never pans it); a pinch zooms and turns the press into a non-click.
+	local pinching = false
+	local function isPress(kind) return kind == Enum.UserInputType.MouseButton1 or kind == Enum.UserInputType.Touch end
 	drag.InputBegan:Connect(function(input)
-		local kind = input.UserInputType
-		if kind == Enum.UserInputType.MouseButton1 or kind == Enum.UserInputType.Touch then
-			press = {x = input.Position.X, y = input.Position.Y, moved = 0}
-		end
+		if press or not isPress(input.UserInputType) then return end
+		press = {input = input, touch = input.UserInputType == Enum.UserInputType.Touch, x = input.Position.X, y = input.Position.Y,
+			moved = if pinching then math.huge else 0}
 	end)
 	drag.InputChanged:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseWheel then ctl.zoom(if input.Position.Z > 0 then MapArt.VIEW.zoomStep else 1 / MapArt.VIEW.zoomStep) end
 	end)
-	pcall(function()
-		drag.MouseMoved:Connect(function(x, y)
-			if press or not ctl.scene then return end
-			local origin = sky.AbsolutePosition
-			ctl.setHover(MapArt.hitTest(ctl.links, x - origin.X, y - origin.Y))
-		end)
-		drag.MouseLeave:Connect(function() if not press then ctl.setHover(nil) end end)
-	end)
+	-- Gamepad: left stick pans (hover follows the island at the centre), right
+	-- stick / bumpers zoom, A picks the hovered island.
+	local function padHover()
+		if ctl.w then ctl.setHover(MapArt.hitTest(ctl.links, ctl.w / 2, ctl.h / 2)) end
+	end
+	function ctl.gamepad(input)
+		if not opts.chart.Visible or not ctl.scene then return false end
+		local code = input.KeyCode
+		if code == Enum.KeyCode.Thumbstick1 then
+			local p = input.Position
+			if math.abs(p.X) < 0.2 and math.abs(p.Y) < 0.2 then return false end
+			pan(-p.X * 24, p.Y * 24)
+			padHover()
+			return true
+		elseif code == Enum.KeyCode.Thumbstick2 then
+			local p = input.Position
+			if math.abs(p.Y) < 0.5 then return false end
+			ctl.zoom(if p.Y > 0 then MapArt.VIEW.zoomStep else 1 / MapArt.VIEW.zoomStep)
+			padHover()
+			return true
+		elseif code == Enum.KeyCode.ButtonR1 or code == Enum.KeyCode.ButtonL1 then
+			ctl.zoom(if code == Enum.KeyCode.ButtonR1 then MapArt.VIEW.zoomStep else 1 / MapArt.VIEW.zoomStep)
+			padHover()
+			return true
+		elseif code == Enum.KeyCode.ButtonA then
+			local link = ctl.hover and ctl.links[ctl.hover]
+			if link and link.sx then return ctl.click(link.sx, link.sy) ~= nil end
+		end
+		return false
+	end
 	if Input then
 		Input.InputChanged:Connect(function(input)
-			if not press then return end
 			local kind = input.UserInputType
-			if kind == Enum.UserInputType.MouseMovement or kind == Enum.UserInputType.Touch then
-				local dx, dy = input.Position.X - press.x, input.Position.Y - press.y
-				press.x, press.y = input.Position.X, input.Position.Y
-				press.moved += math.abs(dx) + math.abs(dy)
-				if press.moved > 6 then pan(dx, dy) end
+			if kind == Enum.UserInputType.Gamepad1 then ctl.gamepad(input) return end
+			if not press then
+				-- Hover from the same InputObject positions as clicks (no GUI-inset mismatch).
+				if kind == Enum.UserInputType.MouseMovement and opts.chart.Visible and ctl.scene and ctl.w then
+					local origin = sky.AbsolutePosition
+					local x, y = input.Position.X - origin.X, input.Position.Y - origin.Y
+					ctl.setHover(if x >= 0 and y >= 0 and x <= ctl.w and y <= ctl.h then MapArt.hitTest(ctl.links, x, y) else nil)
+				end
+				return
+			end
+			if press.touch then
+				if input ~= press.input then return end
+			elseif kind ~= Enum.UserInputType.MouseMovement then return end
+			local dx, dy = input.Position.X - press.x, input.Position.Y - press.y
+			press.x, press.y = input.Position.X, input.Position.Y
+			if pinching then press.moved = math.huge return end
+			press.moved += math.abs(dx) + math.abs(dy)
+			if press.moved > 6 then pan(dx, dy) end
+		end)
+		Input.InputBegan:Connect(function(input, used)
+			if not used and input.UserInputType == Enum.UserInputType.Gamepad1 and input.KeyCode ~= Enum.KeyCode.Thumbstick1 and input.KeyCode ~= Enum.KeyCode.Thumbstick2 then
+				ctl.gamepad(input)
 			end
 		end)
 		Input.InputEnded:Connect(function(input)
-			local kind = input.UserInputType
-			if press and (kind == Enum.UserInputType.MouseButton1 or kind == Enum.UserInputType.Touch) then
-				local was = press
-				press = nil
-				if was.moved <= 6 then
-					local origin = sky.AbsolutePosition
-					ctl.click(input.Position.X - origin.X, input.Position.Y - origin.Y)
-				end
+			if not press then return end
+			if press.touch then
+				if input ~= press.input then return end
+			elseif input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+			local was = press
+			press = nil
+			if was.moved <= 6 then
+				local origin = sky.AbsolutePosition
+				ctl.click(input.Position.X - origin.X, input.Position.Y - origin.Y)
 			end
 		end)
 		pcall(function()
 			local start
 			Input.TouchPinch:Connect(function(_, scale, _, state)
 				if not opts.chart.Visible then return end
-				if state == Enum.UserInputState.Begin then start = view.zoom
+				if state == Enum.UserInputState.Begin then
+					start, pinching = view.zoom, true
+					if press then press.moved = math.huge end
+				elseif state == Enum.UserInputState.End or state == Enum.UserInputState.Cancel then
+					pinching = false
 				elseif start and scale > 0 then ctl.zoom((start / scale) / view.zoom) end
 			end)
 		end)
 	end
+	-- The sky resizes while the chart is open (window, rotation): lay out again.
+	pcall(function()
+		sky:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+			if opts.chart.Visible and ctl.scene then ctl.layout() end
+		end)
+	end)
 	-- While the chart is open the player marker follows at 2 Hz.
 	local ticking = false
 	local function tick()
@@ -911,8 +1165,11 @@ function MapArt.mountChart(opts)
 	end
 	pcall(function()
 		opts.chart:GetPropertyChangedSignal("Visible"):Connect(function()
-			if opts.chart.Visible and not ticking then ticking = true task.delay(0.5, tick) end
-			if not opts.chart.Visible then press = nil ctl.setHover(nil) end
+			local open = opts.chart.Visible
+			if open then ctl.insetsDirty = true end -- inset models re-checked on each open
+			playTweens(open)
+			if open and not ticking then ticking = true task.delay(0.5, tick) end
+			if not open then press = nil pinching = false ctl.setHover(nil) end
 		end)
 	end)
 	return ctl
@@ -1050,23 +1307,37 @@ function MapArt.mountMinimap(opts)
 			end
 		end
 		art.built += 1
-		return {frame = plate, entry = entry, shapes = #spec, gen = 0}
+		return {frame = plate, entry = entry, shapes = #spec, gen = 0, center = entry.center, radius = entry.radius}
 	end
 	local gen = 0
-	-- Each minimap tick (≤ 10 Hz): place the cached plates; build unseen ones.
+	-- Each minimap tick (≤ 10 Hz): place the cached plates; build at most
+	-- MapArt.PLATES_PER_TICK unseen ones (the rest follow on later ticks). A
+	-- plate is keyed on its model, centre and radius (an expanded or moved
+	-- island rebuilds).
 	function art.draw(me, scale, half, list)
 		gen += 1
+		local fresh = 0
 		for _, entry in ipairs(list) do
 			local plate = art.plates[entry.model]
-			if not plate then plate = build(entry) art.plates[entry.model] = plate end
-			plate.gen = gen
-			local x, y = (entry.center.X - me.X) * scale, (entry.center.Z - me.Z) * scale
-			local r = entry.radius * 1.3 * scale
-			local show = math.abs(x) <= half + r and math.abs(y) <= half + r
-			if plate.frame.Visible ~= show then plate.frame.Visible = show end
-			if show then
-				plate.frame.Position = UDim2.fromOffset(half + x, half + y)
-				plate.frame.Size = UDim2.fromOffset(r * 2, r * 2)
+			if plate and (plate.center ~= entry.center or plate.radius ~= entry.radius) then
+				plate.frame:Destroy()
+				art.plates[entry.model], plate = nil, nil
+			end
+			if not plate and fresh < MapArt.PLATES_PER_TICK then
+				fresh += 1
+				plate = build(entry)
+				art.plates[entry.model] = plate
+			end
+			if plate then
+				plate.gen = gen
+				local x, y = (entry.center.X - me.X) * scale, (entry.center.Z - me.Z) * scale
+				local r = entry.radius * 1.3 * scale
+				local show = math.abs(x) <= half + r and math.abs(y) <= half + r
+				if plate.frame.Visible ~= show then plate.frame.Visible = show end
+				if show then
+					plate.frame.Position = UDim2.fromOffset(half + x, half + y)
+					plate.frame.Size = UDim2.fromOffset(r * 2, r * 2)
+				end
 			end
 		end
 		for model, plate in pairs(art.plates) do

@@ -53,7 +53,7 @@ local events = {
 	FocusLost = true, OnClientEvent = true, HealthChanged = true, CharacterAdded = true, InputBegan = true,
 	TextBoxFocusReleased = true, InputEnded = true, TouchTapInWorld = true, RenderStepped = true, AncestryChanged = true,
 	MouseEnter = true, SelectionLost = true, Completed = true, Heartbeat = true, InputChanged = true, CharacterRemoving = true,
-	Event = true, MouseButton2Click = true, AttributeChanged = true,
+	Event = true, MouseButton2Click = true, AttributeChanged = true, TouchPinch = true, Destroying = true,
 }
 local guiClasses = { Frame = true, TextLabel = true, TextButton = true, ImageLabel = true, ImageButton = true, ScrollingFrame = true, ViewportFrame = true, TextBox = true, CanvasGroup = true }
 H.guiClasses = guiClasses
@@ -292,12 +292,18 @@ function methods:GetPlayers()
 end
 -- Tweens jump straight to their goals so renders show the settled state
 -- (open/close, slide-in and pop-in transitions end where they come to rest).
+-- Play / Pause / Cancel record `playing` so tests can see which loops run.
 function methods:Create(object, _, goals)
-	return { Play = function()
+	local tween = { Completed = newSignal(), playing = false }
+	function tween.Play()
+		tween.playing = true
 		if type(goals) == "table" and object ~= nil and data[object] then
 			for key, value in pairs(goals) do object[key] = value end
 		end
-	end, Completed = newSignal() }
+	end
+	function tween.Pause() tween.playing = false end
+	function tween.Cancel() tween.playing = false end
+	return tween
 end
 function methods:GetServerTimeNow()
 	return 100
@@ -813,6 +819,11 @@ function H.find(root, name)
 		end
 	end
 	return nil
+end
+-- Changes the emulated screen size (a resized window / rotated device); GUI
+-- AbsoluteSize reads follow it. Fire the size signals yourself.
+function H.setScreen(size)
+	screen = size
 end
 function H.press(object)
 	assert(object, "missing button")
