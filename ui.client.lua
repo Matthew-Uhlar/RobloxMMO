@@ -1143,7 +1143,8 @@ function UI.objective()
 	local pin = player:GetAttribute("IsleObjectivePin")
 	if type(pin) == "string" and pin ~= "" then
 		local sp = type(state.systems) == "table" and type(state.systems.pin) == "table" and state.systems.pin
-		return escape(pin) .. (sp and type(sp.step) == "number" and paint("  " .. sp.step .. "/" .. tostring(sp.total or sp.step), "A9B4C0") or "")
+		-- §33 QC L8: the guide's position is labelled ("step 2/4") so it never reads as a second count.
+		return escape(pin) .. (sp and type(sp.step) == "number" and paint("  · step " .. sp.step .. "/" .. tostring(sp.total or sp.step), "A9B4C0") or "")
 	end
 	local g = type(state.guide) == "table" and state.guide
 	if g and not g.complete and type(g.title) == "string" then
@@ -8396,7 +8397,8 @@ end
 -- (Data.Systems.Helper), so the Journal and the pinned sidebar step agree.
 ------------------------------------------------------------------------------
 do
-local SYS={open={},goalKind="Level",goalSkill="Mining",calcSkill="Mining",calcTarget=nil,priceGroup="Mining",priceItem="Ore"}
+local SYS={open={},goalKind="Level",goalSkill="Mining",calcSkill="Mining",calcTarget=nil,priceGroup="Mining",priceItem="Ore",pricePage=1,
+	PRICE_PAGE=48,REFRESH_GAP=10,refreshAt={}}
 Pages.SYS=SYS
 function SYS.data() return Data and type(Data.Systems)=="table" and Data.Systems or nil end
 function SYS.state() return tbl(state.systems) end
@@ -8410,6 +8412,14 @@ function SYS.waypoint(specs,label)
 	else
 		notify("The Wayfinder is still charting the isles. Try again in a moment.")
 	end
+end
+-- Region access from the snapshot (depth.regions), for waypoints (§33 QC L4).
+function SYS.access()
+	local d=depth()
+	if not d or type(d.regions)~="table" then return nil end
+	local access={}
+	for _,r in ipairs(d.regions) do if type(r)=="table" and type(r.id)=="string" then access[r.id]=r.unlocked==true end end
+	return access
 end
 -- Client-side guide for a pin id (same derivation as the server's pinned step).
 function SYS.guide(id)
@@ -8425,7 +8435,7 @@ function SYS.guide(id)
 		local entry
 		for _,e in ipairs(tbl(j.quests)) do if type(e)=="table" and e.id==arg then entry=e end end
 		local accepted=tbl(tbl(state.regionQuests).accepted)[arg]==true
-		return HP.questGuide(q,entry,{accepted=accepted})
+		return HP.questGuide(q,entry,{accepted=accepted,access=SYS.access()})
 	elseif kind=="diary" then
 		local d=Data.DiaryByRegion[arg]
 		if not d then return nil end
@@ -8434,9 +8444,13 @@ function SYS.guide(id)
 		local tierName=HP.diaryTier(num(entry.claimed,0))
 		local tier
 		for _,t in ipairs(tbl(entry.tiers)) do if type(t)=="table" and t.tier==tierName then tier=t end end
-		return HP.diaryGuide(d,tierName,tier)
+		return HP.diaryGuide(d,tierName,tier,{access=SYS.access()})
 	end
 	return nil
+end
+-- " · Unlocks with <region>: …" after a step in a locked region (empty otherwise).
+function SYS.blockedText(s)
+	return type(tbl(s).blocked)=="string" and paint("  ·  "..escape(s.blocked),"E8806A") or ""
 end
 -- Checklist rows: done ✓, the current step marked ➤ (gold), have/need counts.
 function SYS.steps(body,nextOrder,g)
@@ -8446,6 +8460,7 @@ function SYS.steps(body,nextOrder,g)
 		if i==g.current and not s.met then text=paint("➤ ","F3C66E")..paint(text,"F3C66E") end
 		local npc=s.npc and Data.RegionArt and Data.RegionArt.FolkByRole[s.npc]
 		if npc and i==g.current then text..=paint("  ·  "..escape(npc.title or "NPC"),"A9B4C0") end
+		if i==g.current and not s.met then text..=SYS.blockedText(s) end
 		table.insert(items,{text=text,met=s.met==true,amount=num(s.need,1)>1 and (fmt(num(s.have,0)).." / "..fmt(num(s.need,1))) or nil})
 	end
 	UI.checklist(body,nextOrder,"STEP BY STEP",items)
@@ -8463,6 +8478,9 @@ function SYS.actions(id,g,actions,expandable)
 			fn=function() send("helperPin",pinned and "" or id) end})
 		if s and type(s.specs)=="table" and #s.specs>0 then
 			table.insert(actions,{caption="Waypoint",name="Waypoint"..id:gsub("[^%w]",""),fn=function() SYS.waypoint(s.specs,escape(tostring(s.text))) end})
+		elseif s and type(s.blocked)=="string" then
+			-- §33 QC L4: the step lies in a locked region: its requirement, not a waypoint.
+			table.insert(actions,{caption="Locked",disabled=true,reason=s.blocked,name="Waypoint"..id:gsub("[^%w]",""),fn=function() notify(s.blocked) end})
 		end
 	end
 	return actions
@@ -8475,7 +8493,7 @@ function SYS.questExtras(q,entry,actions,lines)
 	local g=SYS.guide(id)
 	if not g then return nil end
 	local s=g.steps[g.current]
-	if s then table.insert(lines,1,"<b>"..paint("NEXT  ","9EE7D2").."</b>"..escape(tostring(s.text))..(num(s.need,1)>1 and paint("  "..fmt(num(s.have,0)).."/"..fmt(num(s.need,1)),"A9B4C0") or "")) end
+	if s then table.insert(lines,1,"<b>"..paint("NEXT  ","9EE7D2").."</b>"..escape(tostring(s.text))..(num(s.need,1)>1 and paint("  "..fmt(num(s.have,0)).."/"..fmt(num(s.need,1)),"A9B4C0") or "")..SYS.blockedText(s)) end
 	SYS.actions(id,g,actions,true)
 	if SYS.open[id] then return function(body,nextOrder) SYS.steps(body,nextOrder,g) end end
 	return nil
@@ -8488,7 +8506,7 @@ function SYS.helperCard(id,subtitle)
 	local open=SYS.open[id]==true
 	card({name="Helper"..id:gsub("[^%w]",""),motif="Journal",title=paint("◆ ","9EE7D2")..escape(g.title),subtitle=subtitle,
 		badge=SYS.pinned()==id and paint("PINNED","F3C66E") or nil,badgeColor=gold,
-		lines={"<b>"..paint("NEXT  ","9EE7D2").."</b>"..escape(tostring(s.text or ""))},
+		lines={"<b>"..paint("NEXT  ","9EE7D2").."</b>"..escape(tostring(s.text or ""))..SYS.blockedText(s)},
 		pips={total=math.max(1,num(g.total,1)),filled=num(g.done,0),color=mint},
 		after=open and function(body,nextOrder) SYS.steps(body,nextOrder,g) end or nil,
 		actions=SYS.actions(id,g,{},true)})
@@ -8535,7 +8553,7 @@ function SYS.drawHelper()
 			card({name="HelperQuest"..q.id,motif="Journal",title=escape(q.title),
 				subtitle=escape((region and region.name or tostring(q.region)).."  ·  "..(q.line=="main" and "Main quest" or (q.regional and "Regional quest" or "Side quest"))),
 				badge=g.status=="ready" and "READY" or (g.status=="accept" and "ACCEPT" or nil),badgeColor=gold,
-				lines={"<b>"..paint("NEXT  ","9EE7D2").."</b>"..escape(tostring(s.text or ""))..(num(s.need,1)>1 and paint("  "..fmt(num(s.have,0)).."/"..fmt(num(s.need,1)),"A9B4C0") or "")},
+				lines={"<b>"..paint("NEXT  ","9EE7D2").."</b>"..escape(tostring(s.text or ""))..(num(s.need,1)>1 and paint("  "..fmt(num(s.have,0)).."/"..fmt(num(s.need,1)),"A9B4C0") or "")..SYS.blockedText(s)},
 				pips={total=math.max(1,num(g.total,1)),filled=num(g.done,0),color=mint},
 				after=SYS.open[id] and function(body,nextOrder) SYS.steps(body,nextOrder,g) end or nil,
 				actions=SYS.actions(id,g,{},true)})
@@ -8705,6 +8723,8 @@ function SYS.priceLines(s)
 	if s.avg7 then
 		table.insert(lines,"24h avg "..(s.avg24 and fmt(s.avg24) or "—").."  ·  24h volume "..fmt(num(s.vol24,0)).."  ·  last "..(s.last and fmt(s.last) or "—"))
 		table.insert(lines,"7d avg "..fmt(s.avg7).."  ·  7d range "..fmt(num(s.lo7,0)).."–"..fmt(num(s.hi7,0)).."  ·  7d volume "..fmt(num(s.vol7,0)))
+		-- §33 QC M1: few distinct traders: the figures may not reflect a real market.
+		if s.thin then table.insert(lines,paint("Thin market: fewer than "..fmt(num(SYS.data() and SYS.data().Prices.THIN,3)).." traders in any hour of this window","E8806A")) end
 	else
 		table.insert(lines,"No player trades in the last 7 days.")
 	end
@@ -8714,7 +8734,7 @@ end
 function SYS.historyCard(item,s,name)
 	if type(s)~="table" or not SYS.data() then return end
 	card({name=name or "PriceHistory",item=item,title="Price history  ·  "..escape(itemName(item)),
-		subtitle="Hourly trades, last 7 days (each bar 6 hours, newest right)",
+		subtitle="Hourly median prices, last 7 days (each bar 6 hours, newest right)",
 		lines=SYS.priceLines(s),after=function(body,nextOrder) SYS.spark(body,nextOrder,s) end})
 end
 -- Latest known summary for an item (price checks first, then the open Bazaar view).
@@ -8744,14 +8764,25 @@ function SYS.drawPrices()
 	if not SYS.data() or not Pages.econ then dataMissing() return end
 	local latest=tbl(SYS.state().prices)[1]
 	if type(latest)=="table" then SYS.historyCard(latest.item,latest,"PriceLatest") end
-	sectionBar(SYS.groups(),SYS.priceGroup,function(name) SYS.priceGroup=name render() end,{small=true,prefix="PriceGroup",maxPer=6})
+	sectionBar(SYS.groups(),SYS.priceGroup,function(name) SYS.priceGroup=name SYS.pricePage=1 render() end,{small=true,prefix="PriceGroup",maxPer=6})
 	local list=SYS.priceGroup=="Gear" and SYS.gearItems() or Pages.econ.commodities(SYS.priceGroup)
 	if #list==0 then row("Nothing to check","Items in this group appear once you hold one (gear) or once the item list loads.") return end
+	-- §33 QC L5: pages of SYS.PRICE_PAGE items, so every item in a big group is reachable.
+	local pages=math.max(1,math.ceil(#list/SYS.PRICE_PAGE))
+	SYS.pricePage=math.clamp(num(SYS.pricePage,1),1,pages)
+	local first=(SYS.pricePage-1)*SYS.PRICE_PAGE
+	if pages>1 then
+		local page=SYS.pricePage
+		card({name="PricePager",motif="Ledger",title=escape(SYS.priceGroup).."  ·  page "..page.." of "..pages,
+			subtitle=fmt(first+1).."–"..fmt(math.min(#list,first+SYS.PRICE_PAGE)).." of "..fmt(#list).." items",
+			actions={{caption="Previous",name="PricePrev",disabled=page<=1,reason=page<=1 and "First page." or nil,fn=function() SYS.pricePage=page-1 render() end},
+				{caption="Next",name="PriceNext",disabled=page>=pages,reason=page>=pages and "Last page." or nil,fn=function() SYS.pricePage=page+1 render() end}}})
+	end
 	local size=compactAtlas and 48 or 58
 	local grid=gridHolder(UDim2.fromOffset(size,size),6)
-	for i,id in ipairs(list) do
-		if i>48 then break end
-		local cell=tile(grid,"Price"..id,i,function()
+	for i=first+1,math.min(#list,first+SYS.PRICE_PAGE) do
+		local id=list[i]
+		local cell=tile(grid,"Price"..id,i-first,function()
 			SYS.priceItem=id
 			send("priceCheck",id)
 		end)
@@ -8781,7 +8812,14 @@ do
 	end
 	fn.OnInvoke=function(item,refresh)
 		if type(item)~="string" or #item>64 then return nil end
-		if refresh==true and send and Data and Data.Systems and Data.Systems.Prices.keyFor(item) then send("priceCheck",item,true) end
+		-- §33 QC M3: a tooltip refresh asks the server at most once per item every SYS.REFRESH_GAP seconds.
+		if refresh==true and send and Data and Data.Systems and Data.Systems.Prices.keyFor(item) then
+			local now=os.clock()
+			if now>=(SYS.refreshAt[item] or 0) then
+				SYS.refreshAt[item]=now+SYS.REFRESH_GAP
+				send("priceCheck",item,true)
+			end
+		end
 		local s=SYS.summaryFor(item)
 		if not s or not SYS.data() then return nil end
 		return {text=SYS.data().Prices.text(s),summary=s}

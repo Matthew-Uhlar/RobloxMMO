@@ -116,11 +116,27 @@ local function spendMarketBudget(player, cost)
 	return true
 end
 local function marketBusy(wait) return "Market busy — try again in "..wait.."s." end
+-- §33 QC M3: price checks (Ledger › Prices, tooltips) read through the same
+-- cache but spend their own budget, so browsing prices never starves trading.
+local PRICE_RATE, PRICE_BURST = 0.2, 8
+local priceBudget = {}
+local function spendPriceBudget(player, cost)
+	if preview[player] then return true end
+	local now = os.clock()
+	local bucket = priceBudget[player.UserId]
+	if not bucket then bucket = {tokens = PRICE_BURST, at = now}; priceBudget[player.UserId] = bucket end
+	bucket.tokens = math.min(PRICE_BURST, bucket.tokens + (now - bucket.at) * PRICE_RATE)
+	bucket.at = now
+	if bucket.tokens < cost then return false, math.max(1, math.ceil((cost - bucket.tokens) / PRICE_RATE)) end
+	bucket.tokens -= cost
+	return true
+end
 -- Returns ok, book | ok=false, message. Fresh cache entries cost nothing.
-local function cachedBook(player, key)
+-- budget "price" spends the price-check budget instead of the market budget.
+local function cachedBook(player, key, budget)
 	local entry = browseCache[key]
 	if entry and os.clock() - entry.at < BROWSE_TTL then return true, deepCopy(entry.book) end
-	local allowed, wait = spendMarketBudget(player, 1)
+	local allowed, wait = (if budget == "price" then spendPriceBudget else spendMarketBudget)(player, 1)
 	if not allowed then return false, marketBusy(wait) end
 	local ok, book = pcall(function() return store:GetAsync(key) end)
 	if not ok then return false, nil end
@@ -6628,7 +6644,8 @@ do
 		table.insert(list,entry)
 		F.trimAnnouncements(list,RING_MAX)
 		-- Skill / collection levels and path steps change renown inputs.
-		if entry.kind~="renown" and entry.kind~="objective" then dirty[p]=true end
+		-- Renown inputs only: §33 objective and goal toasts never change renown (QC L6).
+		if entry.kind~="renown" and entry.kind~="objective" and entry.kind~="goal" then dirty[p]=true end
 	end
 	-- Called by forget() after the final save (never before: close() may still announce).
 	function Features.forget(player,p)
@@ -6936,18 +6953,17 @@ do
 	local samples={}  -- player -> {p, at, xp = {{t, {[skill] = xp}}}, goals = {[id] = {{t, v}}}} (cleared in forget)
 	local pinStep={}  -- player -> {id, step} last published pinned step (cleared in forget)
 	local checks={}   -- player -> {summary...} newest first, ≤ PR.CHECKS (cleared in forget)
-	local checkAt={}  -- player -> os.clock() of the last price check (cleared in forget)
+	local checkAt={}  -- player -> true while a price check read is in flight (cleared in forget)
 	local stockKeys={} -- every limited key, for the snapshot
+	-- Keys are per item across every shop (§33 QC M2), so each limited ware is listed once.
+	local function addKey(key) if ST.limit(key) and not table.find(stockKeys,key) then table.insert(stockKeys,key) end end
 	for _,f in ipairs(Data.RegionArt.Folk) do
-		for _,o in ipairs(f.shop or {}) do
-			local key=ST.key("rq",f.role,o.item)
-			if ST.limit(key) and not table.find(stockKeys,key) then table.insert(stockKeys,key) end
-		end
+		for _,o in ipairs(f.shop or {}) do addKey(ST.key("rq",f.role,o.item)) end
 	end
 	for skill,v in pairs(Data.SkillVendors) do
-		for _,e in ipairs(v.shop) do local key=ST.key("sv",skill,e.item); if ST.limit(key) then table.insert(stockKeys,key) end end
+		for _,e in ipairs(v.shop) do addKey(ST.key("sv",skill,e.item)) end
 	end
-	for _,e in ipairs(Data.PetDepth.Shop) do local key=ST.key("roost",e.item); if ST.limit(key) then table.insert(stockKeys,key) end end
+	for _,e in ipairs(Data.PetDepth.Shop) do addKey(ST.key("roost",e.item)) end
 	table.sort(stockKeys)
 	Systems.stockKeys=stockKeys
 	function Systems.forget(player)
@@ -7005,10 +7021,11 @@ do
 		if kind=="bazaar" then
 			if type(result.fills)~="table" or #result.fills==0 then return end
 			if type(book.history)~="table" then book.history={} end
-			for _,fill in ipairs(result.fills) do PR.record(book.history,hour,fill[1],fill[2]) end
+			-- fill = {maker's price, units, maker uid, taker uid}: pair caps and distinct traders (QC M1).
+			for _,fill in ipairs(result.fills) do PR.record(book.history,hour,fill[1],fill[2],fill[3],fill[4],PR.BazaarCaps) end
 		elseif type(result.sale)=="table" then
 			if type(book.history)~="table" then book.history={} end
-			PR.recordAuction(book.history,result.sale.item,hour,result.sale.price)
+			PR.recordAuction(book.history,result.sale.item,hour,result.sale.price,result.sale.seller,result.sale.buyer)
 		end
 	end
 	-- Samples (rolling window for XP/hour and goal ETAs) ----------------------
@@ -7033,18 +7050,34 @@ do
 			end
 		end
 		for id in pairs(rec.goals) do if not live[id] then rec.goals[id]=nil end end
+		-- §33 QC L3: XP and goal rates are computed here, once per sample (at most
+		-- once a minute), and served from this cache by every snapshot.
+		local rates={}
+		for _,skill in ipairs(Data.SkillOrder) do
+			local list={}
+			for _,s in ipairs(rec.xp) do table.insert(list,{s[1],s[2][skill] or 0}) end
+			local r=GL.rate(list,now)
+			if r>0 then rates[skill]=r end
+		end
+		local goalRates={}
+		for id,list in pairs(rec.goals) do goalRates[id]=GL.rate(list,now) end
+		rec.rates,rec.goalRates=rates,goalRates
 		return rec
 	end
-	local function xpRate(rec,skill,now)
-		local list={}
-		for _,s in ipairs(rec and rec.xp or {}) do table.insert(list,{s[1],s[2][skill] or 0}) end
-		return GL.rate(list,now)
-	end
-	local function goalRate(rec,g,now)
-		if g.k=="level" or g.k=="xp" then return xpRate(rec,g.a,now) end
-		return GL.rate(rec and rec.goals[g.id],now)
+	Systems.sample=sample
+	local function goalRate(rec,g)
+		if not rec then return 0 end
+		if g.k=="level" or g.k=="xp" then return (rec.rates and rec.rates[g.a]) or 0 end
+		return (rec.goalRates and rec.goalRates[g.id]) or 0
 	end
 	-- Pinned guide ------------------------------------------------------------
+	-- Region access for waypoints (§33 QC L4): locked places show their requirement.
+	local function accessOf(p)
+		local access={}
+		for _,def in ipairs(Data.Regions) do access[def.id]=regionAllowed(p,def.id) end
+		return access
+	end
+	Systems.accessOf=accessOf
 	local function pinGuide(p)
 		local id=p.helperPin
 		if not id then return nil end
@@ -7053,7 +7086,7 @@ do
 		if kind=="quest" then
 			local q=Data.QuestById[arg]
 			local accepted=type(p.regionQuests)=="table" and type(p.regionQuests.accepted)=="table" and p.regionQuests.accepted[q.id]==true
-			return HP.questGuide(q,{done=p.questsDone[q.id]==true,requires=Journal.progress(p,q.requires),objectives=Journal.progress(p,q.objectives)},{accepted=accepted})
+			return HP.questGuide(q,{done=p.questsDone[q.id]==true,requires=Journal.progress(p,q.requires),objectives=Journal.progress(p,q.objectives)},{accepted=accepted,access=accessOf(p)})
 		end
 		local d=Data.DiaryByRegion[arg]
 		local claimed=math.clamp(whole(p.diaries[arg]),0,#Data.DiaryTiers)
@@ -7061,7 +7094,7 @@ do
 		local index=table.find(Data.DiaryTiers,tierName)
 		local tasks=d.tiers[tierName].tasks
 		local complete=Journal.met(p,tasks)==true
-		return HP.diaryGuide(d,tierName,{tasks=Journal.progress(p,tasks),claimed=index<=claimed,claimable=complete and index==claimed+1})
+		return HP.diaryGuide(d,tierName,{tasks=Journal.progress(p,tasks),claimed=index<=claimed,claimable=complete and index==claimed+1},{access=accessOf(p)})
 	end
 	local function setAttr(player,key,value)
 		if player:GetAttribute(key)~=value then player:SetAttribute(key,value) end
@@ -7100,17 +7133,14 @@ do
 		pinStep[player]=if g then {id=g.id,step=g.current} else nil
 	end
 	function Systems.state(player,p)
-		local now=os.time()
 		local rec=samples[player]
+		if rec and rec.p~=p then rec=nil end
 		local rates={}
-		for _,skill in ipairs(Data.SkillOrder) do
-			local r=xpRate(rec,skill,now)
-			if r>0 then rates[skill]=math.floor(r+0.5) end
-		end
+		for skill,r in pairs(rec and rec.rates or {}) do rates[skill]=math.floor(r+0.5) end
 		local goals={}
 		for _,g in ipairs(goalsOf(p)) do
 			local have,need=GL.measure(p,g,Progression)
-			local rate=if g.done then 0 else goalRate(rec,g,now)
+			local rate=if g.done then 0 else goalRate(rec,g)
 			table.insert(goals,{id=g.id,k=g.k,a=g.a,n=g.n,done=g.done==true,have=have,need=need,label=GL.label(g),
 				rate=math.floor(rate+0.5),eta=if g.done then 0 else GL.eta(need-have,rate)})
 		end
@@ -7122,7 +7152,7 @@ do
 			left[key]={n,lim}
 		end
 		return {pin=if g then {id=g.id,title=g.title,status=g.status,step=g.current,total=g.total,text=HP.objective(g),
-				specs=g.steps[g.current] and g.steps[g.current].specs or nil} else nil,
+				specs=g.steps[g.current] and g.steps[g.current].specs or nil,blocked=g.steps[g.current] and g.steps[g.current].blocked or nil} else nil,
 			goals=goals,goalMax=GL.MAX,rates=rates,window=GL.WINDOW,prices=checks[player] or {},
 			stock={resetIn=resetIn(),left=left}}
 	end
@@ -7175,9 +7205,16 @@ do
 			return if n>0 then "Cleared "..n.." finished goal"..(if n==1 then "" else "s").."." else "No finished goals to clear."
 		elseif verb=="priceCheck" then
 			if not validId(item) or not Data.Items[item] then return "Choose an item to price-check." end
-			if os.clock()<(checkAt[player] or 0) then return "Checking prices… try again in a moment." end
-			checkAt[player]=os.clock()+1
-			local summary,problem=Econ.priceCheck(player,item)
+			-- §33 QC M3: price checks skip the 0.24 s action cooldown (only the read
+			-- throttle applies); uncached reads spend their own read budget, and one
+			-- check per player is in flight at a time.
+			if checkAt[player] then return "Checking prices… try again in a moment." end
+			checkAt[player]=true
+			local okCheck,summary,problem=pcall(Econ.priceCheck,player,item)
+			checkAt[player]=nil
+			if not okCheck then summary,problem=nil,"The ledger could not be read. Try again shortly." end
+			-- §33 QC L1: the read may yield; drop the result if the player left or the journal changed.
+			if not player.Parent or profiles[player]~=p then return "Price check cancelled." end
 			if not summary then return problem end
 			local list=checks[player] or {}
 			checks[player]=list
@@ -7199,7 +7236,8 @@ local function perform(player,verb,item,prompt)
 	-- §29: satchelMove / satchelSort only reorder the display list, so the 0.08 s
 	-- read throttle bounds them, not the 0.24 s action cooldown (a drag queued
 	-- behind a sell must not be refused, nor push the next action back).
-	if prompt or (verb~="satchelMove" and verb~="satchelSort") then
+	-- §33 QC M3: priceCheck is a read with its own budget, so it skips the cooldown too.
+	if prompt or (verb~="satchelMove" and verb~="satchelSort" and verb~="priceCheck") then
 		if os.clock()<(cooldown[player] or 0) then return "One moment…" end
 		cooldown[player]=os.clock()+(if prompt then 0.65 else 0.24)
 	end
@@ -8693,7 +8731,7 @@ local function take(book,uid,side,qty,limit,fills)
 			qty-=n
 			filled+=n
 			value+=n*o.price
-			if fills then table.insert(fills,{o.price,n}) end -- §33 price history (maker's price)
+			if fills then table.insert(fills,{o.price,n,o.owner,uid}) end -- §33 price history (maker's price; maker / taker for pair caps)
 			local claim=book.claims[o.owner] or {units=0,coins=0}
 			book.claims[o.owner]=claim
 			if side=="buy" then claim.coins+=n*o.price else claim.units+=n end
@@ -8839,7 +8877,7 @@ local function auctionTrade(book,uid,order,now)
 			book.proceeds[listing.seller]=(book.proceeds[listing.seller] or 0)+listing.price
 			give(listing.item,1)
 			coins+=order.price-listing.price
-			sale={item=listing.item,price=listing.price}
+			sale={item=listing.item,price=listing.price,seller=listing.seller,buyer=uid}
 			changed=true
 			text="Bought "..itemName(listing.item).." for "..listing.price.." coins."
 		end
@@ -9196,7 +9234,7 @@ Econ.priceCheck=function(player,id)
 	local key,kind=PR.keyFor(id)
 	if not key then return nil,"That item is not traded on the Bazaar or the Auction House." end
 	local ok,book
-	if preview[player] then ok,book=true,deepCopy(previewEcon[key]) else ok,book=cachedBook(player,key) end
+	if preview[player] then ok,book=true,deepCopy(previewEcon[key]) else ok,book=cachedBook(player,key,"price") end
 	if not ok then return nil,book or "The ledger could not be read. Try again shortly." end
 	local hist=type(book)=="table" and book.history or nil
 	local list=if kind=="bazaar" then hist else (type(hist)=="table" and hist[id] or nil)

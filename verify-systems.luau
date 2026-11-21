@@ -10,6 +10,9 @@
 -- Part C: clients — atlas pages (Journal › Helper / Goals, Hero › Calculator,
 --   Ledger › Prices), quest-card guide/pin, the sidebar Objective, stock text,
 --   IslePriceCheckLocal, dialogue stock labels.
+-- QC regression tests are marked "QC <id>": M1 wash trading (medians, outliers,
+-- pair caps, thin market), M2 per-item stock across shops, M3 priceCheck
+-- cooldown / own budget / tooltip debounce, L1-L8 and the regional collect text.
 local fs = require("@lune/fs")
 local luau = require("@lune/luau")
 local roblox = require("@lune/roblox")
@@ -129,6 +132,32 @@ local anyStation = false
 for id, d in pairs(Data.Recipes) do if d.station and HP.itemSource(d.output) and string.match(HP.itemSource(d.output)[1], "^station:") then anyStation = true end end
 ok(anyStation, "crafted items guide to a station")
 
+-- QC L4: waypoints prefer the lowest-level source the player can reach and
+-- skip locked regions; with nowhere reachable the step carries its requirement.
+eq(HP.itemSource("ArcaneDust")[1], "monster:BramblebackBoar", "lowest-level source first")
+eq(HP.itemSource("ArcaneDust", {access = {Meadow = false}})[1], "monster:ShaleCrawler", "a locked region's source is skipped")
+local noSpecs, why = HP.itemSource("Voidstone", {access = {Gloomhollow = false}})
+ok(noSpecs == nil and has(why, "Unlocks with") and has(why, "Gloomhollow"), "no reachable source: the requirement instead: " .. tostring(why))
+eq(HP.specsFor({kind = "level", skill = "Mining", level = 60}, {level = 50})[1], "gather:Voidstone", "level step: best usable node")
+eq(HP.specsFor({kind = "level", skill = "Mining", level = 60}, {level = 50, access = {Gloomhollow = false}})[1], "gather:SunsteelOre", "level step: locked region's node skipped")
+local spider = Data.QuestById.SilkAndShadow
+local locked = HP.questGuide(spider, {requires = {}, objectives = {}}, {accepted = true, access = {Gloomhollow = false}})
+local blockedStep
+for _, st in ipairs(locked.steps) do if st.phase == "task" and st.blocked then blockedStep = st end end
+ok(blockedStep and blockedStep.specs == nil and has(blockedStep.blocked, "Unlocks with"), "a kill step in a locked region shows its requirement, not a waypoint")
+local open = HP.questGuide(spider, {requires = {}, objectives = {}}, {accepted = true, access = {Gloomhollow = true}})
+local anyBlocked = false
+for _, st in ipairs(open.steps) do if st.blocked then anyBlocked = true end end
+ok(not anyBlocked, "an open region has waypoints again")
+-- Quirk: regional "collect" steps count since acceptance, not lifetime.
+local crane = HP.questGuide(Data.QuestById.CraneRepairs, {requires = {}, objectives = {}}, {accepted = true})
+local collectText
+for i, o in ipairs(Data.QuestById.CraneRepairs.objectives) do
+	if o.kind == "collect" then collectText = crane.steps[#Data.QuestById.CraneRepairs.requires + 1 + i].text end
+end
+ok(has(collectText, "since accepting") and not has(collectText, "lifetime"), "regional collect step says since accepting: " .. tostring(collectText))
+ok(has(Data.describeCheck({kind = "collect", item = "Ore", count = 5}), "(lifetime)"), "Journal quests keep lifetime totals")
+
 -- A3. Goals.
 local goodSpecs = {"level:Mining:50", "xp:Fishing:100000", "tier:Ore:3", "item:Ore:500", "quest:SurveyorsOath:1", "kills:BramblebackBoar:100"}
 for _, spec in ipairs(goodSpecs) do ok(GL.parse(spec) ~= nil, "goal parses: " .. spec) end
@@ -176,7 +205,8 @@ eq(#list, 2, "new hour, new bucket")
 PR.record(list, h0, 0, 5); PR.record(list, h0, 5, 0); PR.record(list, h0, -3, 2)
 eq(#list, 2, "zero / negative fills ignored")
 local s = PR.summary(list, (h0 + 1) * 3600 + 100, "Ore")
-ok(s.vol24 == 11 and s.avg24 == math.floor(290 / 11 + 0.5) and s.last == 40 and s.lo7 == 20 and s.hi7 == 40, "summary: 24h volume / average / last / range")
+-- QC M1: averages weight each hour's median (20, from 5 @ 20 + 5 @ 30) by its units.
+ok(s.vol24 == 11 and s.avg24 == math.floor((20 * 10 + 40) / 11 + 0.5) and s.last == 40 and s.lo7 == 20 and s.hi7 == 40, "summary: 24h volume / average / last / range")
 eq(#s.spark, PR.SPARK, "sparkline length")
 ok(s.spark[PR.SPARK] > 0, "newest sparkline slot filled")
 local late = PR.summary(list, (h0 + 30) * 3600, "Ore")
@@ -204,23 +234,101 @@ for h = 1, 160 do for k = 1, math.min(#ids, 40) do PR.recordAuction(flood, ids[k
 total = 0
 for _, l in pairs(flood) do total += #l end
 eq(total, PR.AUCTION_BUCKETS, "auction flood keeps exactly the bucket cap")
--- Worst-case added key size.
+-- Worst-case added key size (QC M1 fields: medians, trader counts, excluded
+-- units; the open hour also carries its ladder, trader ids and pair rows).
+local function closedBucket(h, big)
+	return {h = h, n = big, v = big * 1000000, lo = 1000000, hi = 999999, m = 1000000, c = 999999, t = 8, x = big}
+end
+local function openBucket(h, caps, big)
+	local b = closedBucket(h, big)
+	b.m, b.c, b.t = nil, nil, nil
+	b.q, b.u, b.pr = {}, {}, {}
+	for k = 1, caps.levels do table.insert(b.q, {1000000 - k, big, big}) end
+	for k = 1, caps.ids do table.insert(b.u, tostring(9000000000 + k)) end
+	for k = 1, caps.pairs do b.pr[tostring(9000000000 + k) .. "|" .. tostring(9100000000 + k)] = caps.pair end
+	b.pr["*"] = caps.pair
+	return b
+end
 local worstBazaar = {}
-for h = 1, PR.HOURS do table.insert(worstBazaar, {h = 999999 + h, n = 640000000, v = 640000000000000, lo = 1000000, hi = 1000000}) end
+for h = 1, PR.HOURS - 1 do table.insert(worstBazaar, closedBucket(999999 + h, 640000000)) end
+table.insert(worstBazaar, openBucket(999999 + PR.HOURS, PR.BazaarCaps, 640000000))
 local bazaarBytes = #serde.encode("json", worstBazaar)
 local worstAuction = {}
 local longest = ids[1]
 for _, id in ipairs(ids) do if #id > #longest then longest = id end end
 for k = 1, PR.AUCTION_ITEMS do
 	local l = {}
-	for h = 1, math.floor(PR.AUCTION_BUCKETS / PR.AUCTION_ITEMS) do table.insert(l, {h = 999999 + h, n = 600, v = 600000000, lo = 1000000, hi = 1000000}) end
+	local per = math.floor(PR.AUCTION_BUCKETS / PR.AUCTION_ITEMS)
+	for h = 1, per - 1 do table.insert(l, closedBucket(999999 + h, 600)) end
+	table.insert(l, openBucket(999999 + per, PR.AuctionCaps, 600))
 	worstAuction[longest .. k] = l
 end
 local auctionBytes = #serde.encode("json", worstAuction)
-ok(bazaarBytes < 16 * 1024, "worst-case Bazaar history < 16 KB: " .. bazaarBytes)
-ok(auctionBytes < 96 * 1024, "worst-case auction history < 96 KB: " .. auctionBytes)
-print("Price history worst case: Bazaar " .. bazaarBytes .. " / Auction category " .. auctionBytes .. " JSON bytes (economy keys stay < 512 KB).")
+ok(bazaarBytes < 32 * 1024, "worst-case Bazaar history < 32 KB: " .. bazaarBytes)
+ok(auctionBytes < 192 * 1024, "worst-case auction history < 192 KB: " .. auctionBytes)
+print("Price history worst case: Bazaar " .. bazaarBytes .. " / Auction category " .. auctionBytes .. " JSON bytes.")
 
+-- A4b. QC M1: wash trading cannot fake the price history.
+do
+	local H = 500000
+	local m = {}
+	-- Hour H-1: three real traders at 100.
+	PR.record(m, H - 1, 100, 50, "1", "2")
+	PR.record(m, H - 1, 100, 50, "3", "1")
+	-- Hour H: two alts wash 640 units at 2.5x (pair-capped) and 640 at 10x (outliers).
+	PR.record(m, H, 250, 640, "9", "8")
+	PR.record(m, H, 1000, 640, "8", "9")
+	PR.record(m, H, 100, 20, "1", "3")
+	local b = m[#m]
+	eq(b.n, PR.BazaarCaps.pair + 20, "outliers and the pair's excess are left out of the averages")
+	eq(b.x, 640 + 640 - PR.BazaarCaps.pair, "excluded units counted apart")
+	eq(m[1].t, 3, "a closed bucket keeps its distinct-trader count")
+	ok(m[1].q == nil and m[1].u == nil and m[1].pr == nil and m[1].m == 100, "a closed bucket folds its ladders into a median")
+	local sm = PR.summary(m, H * 3600 + 60, "Ore")
+	eq(sm.last, 250, "per-bucket median of the counted fills (160 at 250 vs 20 at 100)")
+	ok(sm.hi7 == 250 and sm.lo7 == 100, "range ignores the 10x outlier")
+	ok(sm.avg24 < 300, "the 24h average stays far below the wash price: " .. tostring(sm.avg24))
+	-- A median, not a mean: one fill at 2.9x barely moves the price.
+	local med = {}
+	PR.record(med, H, 100, 10, "1", "2")
+	PR.record(med, H, 290, 1, "3", "4")
+	eq(PR.summary(med, H * 3600, "Ore").last, 100, "volume-weighted median per bucket")
+	-- Thin market: fewer than 3 distinct traders in the window.
+	local thin = {}
+	PR.record(thin, H, 50, 5, "8", "9")
+	local ts = PR.summary(thin, H * 3600, "Ore")
+	ok(ts.thin and ts.traders24 == 2 and has(PR.text(ts), "thin market"), "two traders: thin market")
+	PR.record(thin, H, 50, 5, "7", "9")
+	ok(not PR.summary(thin, H * 3600, "Ore").thin, "three traders: not thin")
+	-- Legacy buckets (no medians or trader counts) still read.
+	local legacy = PR.summary({{h = H, n = 10, v = 200, lo = 20, hi = 20}}, H * 3600, "Ore")
+	ok(legacy.avg24 == 20 and not legacy.thin, "legacy buckets keep working")
+end
+-- A4c. QC L2: prune keeps a bucket an hour ahead and merges by matching hour.
+do
+	local H = 600000
+	local skew = {{h = H + 1, n = 2, v = 20, lo = 10, hi = 10}}
+	PR.prune(skew, H)
+	eq(#skew, 1, "a bucket one hour ahead (clock skew) is kept")
+	PR.record(skew, H, 30, 3, "1", "2")
+	ok(#skew == 2 and skew[1].h == H and skew[2].h == H + 1 and skew[2].n == 2, "the behind server's fill merges into its own hour, in order")
+	PR.record(skew, H, 30, 1, "1", "3")
+	ok(#skew == 2 and skew[1].n == 4, "a second fill finds its hour by h, not by position")
+	local dup = {{h = H, n = 2, v = 20, lo = 10, hi = 10}, {h = H, n = 3, v = 30, lo = 10, hi = 10}, {h = H + 5, n = 1, v = 1, lo = 1, hi = 1}}
+	PR.prune(dup, H)
+	ok(#dup == 1 and dup[1].n == 5, "buckets sharing an hour merge; more than an hour ahead is dropped")
+end
+-- A4d. QC L7: auction eviction never drops the item just recorded while others can give way.
+do
+	local full = {}
+	for k = 1, PR.AUCTION_ITEMS do full[string.format("b%03d", k)] = {{h = 700000, n = 1, v = 10, lo = 10, hi = 10, m = 10, t = 2}} end
+	PR.recordAuction(full, "a000", 700000, 50, "1", "2")
+	ok(full.a000 ~= nil and full.a000[1].n == 1, "the newly recorded item survives the item cap")
+	eq(full.b001, nil, "the oldest other item gave way")
+	local solo = {}
+	PR.recordAuction(solo, "a000", 700000, 50, "1", "2")
+	ok(#solo.a000 == 1, "a lone item keeps its only bucket")
+end
 -- A5. Daily stock.
 local limited = 0
 for _, f in ipairs(RA.Folk) do
@@ -233,23 +341,29 @@ for _, f in ipairs(RA.Folk) do
 	end
 end
 ok(limited >= 12, "selected regional wares carry a daily limit (" .. limited .. ")")
-eq(ST.limit(ST.key("sv", "Agility", "GaleDraught")), ST.Vendor.GaleDraught, "skill vendor limit")
-eq(ST.limit(ST.key("roost", "PetCandy")), ST.Roost.PetCandy, "Roost limit")
-eq(ST.limit(ST.key("rq", "SeedSeller", "Shard")), nil, "not sold there: no limit")
+eq(ST.limit(ST.key("sv", "Agility", "GaleDraught")), ST.Limits.GaleDraught, "skill vendor limit")
+eq(ST.limit(ST.key("roost", "PetCandy")), ST.Limits.PetCandy, "Roost limit")
 eq(ST.limit(ST.key("sv", "Agility", "WindrunnerHood")), nil, "one-of-a-kind wares are not stock-limited")
-for _, bad in ipairs({"rq:Nobody:Tonic", "roost:Ore", "x", 5, "rq:SeedSeller:Tonic:1"}) do eq(ST.limit(bad), nil, "unknown key: " .. tostring(bad)) end
+for _, bad in ipairs({"rq:SeedSeller:Tonic", "it:Ore", "it:Nope", "x", 5, "it:Tonic:1"}) do eq(ST.limit(bad), nil, "unknown key: " .. tostring(bad)) end
+-- QC M2: one key per item, whichever shop sells it.
+eq(ST.key("rq", "SeedSeller", "Tonic"), ST.key("rq", "Anyone", "Tonic"), "regional shops share an item's key")
+eq(ST.key("sv", "Agility", "GaleDraught"), "it:GaleDraught", "skill vendor key is the item")
+eq(ST.key("roost", "PetCandy"), "it:PetCandy", "Roost key is the item")
+local tonicKey = ST.key("rq", "SeedSeller", "Tonic")
 local day = 20000
-local rec = ST.roll({day = day, n = {["rq:SeedSeller:Tonic"] = 10, junk = 4, ["roost:PetCandy"] = 999}}, day * 86400 + 5)
-ok(rec.n["rq:SeedSeller:Tonic"] == 10 and rec.n.junk == nil and rec.n["roost:PetCandy"] == ST.Roost.PetCandy, "same day: counts kept, junk dropped, capped")
-eq(ST.roll(rec, (day + 1) * 86400).n["rq:SeedSeller:Tonic"], nil, "next UTC day restocks")
+local rec = ST.roll({day = day, n = {[tonicKey] = 10, junk = 4, ["it:PetCandy"] = 999}}, day * 86400 + 5)
+ok(rec.n[tonicKey] == 10 and rec.n.junk == nil and rec.n["it:PetCandy"] == ST.Limits.PetCandy, "same day: counts kept, junk dropped, capped")
+-- Legacy per-shop keys (saved before M2) fold into the item's key, summed and capped.
+local legacy = ST.roll({day = day, n = {["rq:SeedSeller:Tonic"] = 30, ["rq:Brewer:Tonic"] = 50, ["roost:PetCandy"] = 3}}, day * 86400 + 5)
+ok(legacy.n[tonicKey] == ST.Limits.Tonic and legacy.n["it:PetCandy"] == 3 and legacy.n["rq:SeedSeller:Tonic"] == nil, "legacy per-shop counts fold into the item key")
+eq(ST.roll(rec, (day + 1) * 86400).n[tonicKey], nil, "next UTC day restocks")
 local behind = ST.roll(rec, (day - 1) * 86400 + 10)
-ok(behind.day == day and behind.n["rq:SeedSeller:Tonic"] == 10, "a clock running behind never restocks early (roll forward only)")
-local future = ST.roll({day = day + 50, n = {["rq:SeedSeller:Tonic"] = 64}}, day * 86400)
-ok(future.day == day + 1 and future.n["rq:SeedSeller:Tonic"] == 64, "a tampered far-future day is pulled back to tomorrow")
-eq(ST.roll(future, (day + 2) * 86400).n["rq:SeedSeller:Tonic"], nil, "and restocks the day after")
-eq(select(1, ST.left(rec, "rq:SeedSeller:Tonic")), 54, "left today")
+ok(behind.day == day and behind.n[tonicKey] == 10, "a clock running behind never restocks early (roll forward only)")
+local future = ST.roll({day = day + 50, n = {[tonicKey] = 64}}, day * 86400)
+ok(future.day == day + 1 and future.n[tonicKey] == 64, "a tampered far-future day is pulled back to tomorrow")
+eq(ST.roll(future, (day + 2) * 86400).n[tonicKey], nil, "and restocks the day after")
+eq(select(1, ST.left(rec, tonicKey)), 54, "left today")
 eq(ST.text(8, 64), "8/64 left today", "offer text")
-
 -- A6. Calculator.
 local mining = CA.actions("Mining")
 ok(#mining >= #Data.ResourceTiers.Mining, "Mining actions include every node")
@@ -286,7 +400,8 @@ local data = {}
 local db = {}
 local econFailure = nil -- "after": commit, then lose the acknowledgement
 local repeatEcon = false -- run economy transforms twice (UpdateAsync retries)
-function db:GetAsync(key) return copy(data[key]) end
+local onGet = nil -- a hook run during a read (QC L1: the player leaves mid-read)
+function db:GetAsync(key) if onGet then local f = onGet; onGet = nil; f(key) end return copy(data[key]) end
 function db:UpdateAsync(key, op)
 	local econ = key:match("^bazaar") or key:match("^auction")
 	if econ and repeatEcon then op(copy(data[key])) end
@@ -521,6 +636,34 @@ local boss = seeded(9103, function(pr) pr.lairs = pr.lairs or {}; pr.lairs.kc = 
 s = cmd(boss, "goalSet", "kills:" .. LR.Order[1] .. ":5")
 ok(has(s.message, "Goal set"), "lair boss goal: " .. s.message)
 eq(s.systems.goals[1].have, 2, "lair kills counted")
+-- QC L3: XP / goal rates are computed when a sample is taken (once a minute)
+-- and served from that cache by every snapshot in between.
+do
+	local rate = GL.rate
+	local calls = 0
+	GL.rate = function(...) calls += 1; return rate(...) end
+	advance(61)
+	cmd(boss, "state") -- takes a sample
+	ok(calls > 0, "a sample computes the rates")
+	calls = 0
+	for _ = 1, 5 do cmd(boss, "state") end
+	GL.rate = rate
+	eq(calls, 0, "snapshots between samples reuse the cached rates")
+end
+-- QC L6: a GOAL COMPLETE toast does not mark the renown breakdown dirty.
+do
+	local RN = Data.Renown
+	local breakdown = RN.breakdown
+	local shopper = seeded(9109, function(pr) pr.coins = 100000 end)
+	at(shopper, "SeedSeller")
+	ok(has(cmd(shopper, "goalSet", "item:Tonic:2").message, "Goal set"), "Tonic goal set")
+	local calls = 0
+	RN.breakdown = function(...) calls += 1; return breakdown(...) end
+	local r = cmd(shopper, "rqBuy", "SeedSeller:1:2")
+	RN.breakdown = breakdown
+	ok(announced(r, "goal"), "the purchase completes the goal")
+	eq(calls, 0, "the goal toast leaves the cached renown breakdown in place")
+end
 
 -- B3. Daily stock.
 local buyer = seeded(9104, function(pr) pr.coins = 1000000 end)
@@ -541,6 +684,13 @@ b = cmd(buyer, "rqBuy", "SeedSeller:1:4")
 ok(has(b.message, "Bought 4"), "the last 4 bought")
 local out = cmd(buyer, "rqBuy", "SeedSeller:1")
 ok(has(out.message, "today's 64") and out.coins == b.coins, "sold out: " .. out.message)
+-- QC M2: the cap is per item across every shop: Tonic bought from Tilly also
+-- counts at the Fishmonger (a second shop selling it).
+eq(RA.FolkByRole.Fishmonger.shop[2].item, "Tonic", "the Fishmonger sells Tonic too")
+at(buyer, "Fishmonger")
+local elsewhere = cmd(buyer, "rqBuy", "Fishmonger:2")
+ok(has(elsewhere.message, "today's 64") and elsewhere.coins == out.coins, "a second shop shares the item's daily cap: " .. elsewhere.message)
+at(buyer, "SeedSeller")
 -- Unlimited offers still sell.
 local scrollOffer = cmd(buyer, "rqBuy", "SeedSeller:3")
 ok(not has(scrollOffer.message, "today"), "warp scrolls are not stock-limited: " .. scrollOffer.message)
@@ -565,7 +715,7 @@ buyer.attrs.SkillVendor, buyer.attrs.SkillVendorUntil = "Agility", utc + 1000
 local sv = cmd(buyer, "skillBuy", "Agility:GaleDraught:32")
 ok(has(sv.message, "Bought 32"), "32 Gale Draughts: " .. sv.message)
 ok(has(cmd(buyer, "skillBuy", "Agility:GaleDraught").message, "today's 32"), "skill vendor stock enforced")
-local roost = cmd(buyer, "petShop", "PetCandy:" .. ST.Roost.PetCandy)
+local roost = cmd(buyer, "petShop", "PetCandy:" .. ST.Limits.PetCandy)
 ok(has(roost.message, "Bought"), "Roost candy: " .. roost.message)
 local refused = cmd(buyer, "petShop", "PetCandy")
 ok(has(refused.message, "today's") and refused.coins == roost.coins, "Roost stock enforced")
@@ -610,14 +760,49 @@ taker = player(9106)
 advance(60)
 ok(has(cmd(taker, "buyNow", "Ore:3:25").message, "Bought 3"), "an hour later: 3 more filled")
 eq(#data["bazaar_v1_Ore"].history, 2, "a new hourly bucket")
+-- QC M1: fills carry maker and taker; a closed hour keeps only its counts.
+local closedHour, openHour = data["bazaar_v1_Ore"].history[1], data["bazaar_v1_Ore"].history[2]
+ok(closedHour.t == 2 and closedHour.q == nil and closedHour.pr == nil and closedHour.m == 20, "the closed hour folds into a median and 2 distinct traders")
+ok(table.find(openHour.u, "9105") and table.find(openHour.u, "9106") and openHour.pr["9105|9106"] == 3, "the open hour tracks its traders and the pair's units")
 advance(20)
 local pc = cmd(taker, "priceCheck", "Ore")
-ok(has(pc.message, "price check") and has(pc.message, "24h avg 20") and has(pc.message, "(10 sold)"), "priceCheck: " .. pc.message)
+ok(has(pc.message, "price check") and has(pc.message, "24h avg 20") and has(pc.message, "(10 sold)") and has(pc.message, "thin market"), "priceCheck (2 traders: thin market): " .. pc.message)
 ok(pc.systems.prices[1].item == "Ore" and pc.systems.prices[1].vol7 == 10, "price check kept for the client")
 ok(has(cmd(taker, "priceCheck", "Nope").message, "Choose an item"), "unknown item refused")
 ok(has(cmd(taker, "priceCheck", "Tonic").message, "not traded"), "untraded item refused")
 for i = 1, 12 do advance(2); cmd(taker, "priceCheck", ({"Ore", "Herb", "Timber", "Fish", "Aetherite", "Sunwheat", "Glowcap", "Brassite", "Voidstone", "Glassfin", "Stormeel", "Moonbloom"})[i]) end
 ok(#cmd(taker, "state").systems.prices <= PR.CHECKS, "price checks bounded per player")
+-- QC M3: priceCheck skips the 0.24 s action cooldown (read throttle only) and
+-- spends its own read budget, never the Bazaar / Auction House trading budget.
+advance(60)
+remote.OnServerInvoke(taker, "goalClear") -- an action starts the cooldown
+advance(0.1)
+local quick = remote.OnServerInvoke(taker, "priceCheck", "Ore")
+ok(quick and not has(quick.message, "One moment"), "priceCheck is not held by the action cooldown: " .. tostring(quick and quick.message))
+local commodities = {}
+for cid in pairs(Data.Items) do if Data.Economy.isCommodity(cid) and cid ~= "Ore" then table.insert(commodities, cid) end end
+table.sort(commodities)
+local busy = 0
+for i = 1, 14 do
+	advance(0.1)
+	local r = remote.OnServerInvoke(taker, "priceCheck", commodities[i])
+	if r and has(r.message, "busy") then busy += 1 end
+end
+ok(busy > 0, "uncached price checks are bounded by their own budget (" .. busy .. " refused)")
+local trade = cmd(taker, "buyNow", "Ore:1:25")
+ok(not has(trade.message, "busy"), "trading still has its full budget after a burst of price checks: " .. trade.message)
+-- QC L1: a player who leaves while the read is in flight gets no stored result.
+advance(60)
+local gone = taker
+onGet = function() leave(gone) end
+remote.OnServerInvoke(gone, "priceCheck", commodities[20])
+liveById[gone.UserId] = gone
+services.Players.PlayerAdded:Fire(gone) -- the same Player object joins again
+local back = cmd(gone, "state")
+local leaked = false
+for _, row in ipairs(back.systems and back.systems.prices or {}) do if row.item == commodities[20] then leaked = true end end
+ok(back.systems and not leaked, "a price check finished after leaving is dropped")
+taker = player(9106)
 -- Auctions: a completed sale records its price under the item.
 local weapon
 for _, wid in ipairs(ids) do
@@ -662,7 +847,7 @@ do
 	ui.update.OnClientEvent:Fire(snap)
 	local sidebar = H.find(ui.gui, "Sidebar")
 	local goalLine = H.find(sidebar, "Goal")
-	ok(goalLine and has(goalLine.Text, "Shale Crawler") and has(goalLine.Text, "3/6"), "sidebar Objective shows the pinned step: " .. tostring(goalLine and goalLine.Text))
+	ok(goalLine and has(goalLine.Text, "Shale Crawler") and has(goalLine.Text, "step 3/6"), "sidebar Objective shows the pinned step, its position labelled (QC L8): " .. tostring(goalLine and goalLine.Text))
 	H.press(H.find(sidebar, "AtlasButton"))
 	H.press(ui.tabs:FindFirstChild("JournalButton"))
 	-- Journal › Quests: NEXT line, Guide / Pin / Waypoint on an active quest.
@@ -739,6 +924,36 @@ do
 	H.press(ui.tabs:FindFirstChild("LedgerButton"))
 	H.press(H.find(ui.scroll, "SectionPrices"))
 	ok(H.find(ui.scroll, "PriceLatest") and H.find(H.find(ui.scroll, "PriceLatest"), "Sparkline"), "price page: latest check with a sparkline")
+	-- QC L5: big groups page through every item.
+	do
+		local materials = {}
+		for mid, def in pairs(Data.Items) do
+			if (def.kind == "resource" or def.kind == "material") and (if def.kind == "resource" then Data.ResourceSkill[mid] or "Materials" else "Materials") == "Materials" then table.insert(materials, mid) end
+	end
+	ok(#materials > 48, "Materials has more items than one page (" .. #materials .. ")")
+	H.press(H.find(ui.scroll, "PriceGroupMaterials"))
+	local seen = {}
+	local function countTiles()
+		for _, mid in ipairs(materials) do if H.find(ui.scroll, "Price" .. mid) then seen[mid] = true end end
+	end
+	countTiles()
+	local pagesWalked = 1
+	while H.find(ui.scroll, "PriceNext") and pagesWalked < 10 do
+		local nextButton = H.find(ui.scroll, "PriceNext")
+		local before = 0
+		for _ in pairs(seen) do before += 1 end
+		H.press(nextButton)
+		countTiles()
+		local after = 0
+		for _ in pairs(seen) do after += 1 end
+		pagesWalked += 1
+		if after == before then break end
+	end
+	local reached = 0
+	for _ in pairs(seen) do reached += 1 end
+	eq(reached, #materials, "every Materials item is reachable across " .. pagesWalked .. " pages")
+	H.press(H.find(ui.scroll, "PriceGroupMining"))
+	end
 	table.clear(ui.sent)
 	H.press(H.find(ui.scroll, "PriceOre"))
 	ok(ui.sent[1] and ui.sent[1][1] == "priceCheck" and ui.sent[1][2] == "Ore", "tapping an item sends priceCheck")
@@ -753,6 +968,16 @@ do
 	local answer = api and api.OnInvoke("Ore")
 	ok(answer and has(answer.text, "24h avg"), "IslePriceCheckLocal answers from known history: " .. tostring(answer and answer.text))
 	eq(api.OnInvoke(5), nil, "IslePriceCheckLocal ignores junk")
+	-- QC M3: tooltip refreshes reach the server at most once per item every 10 s.
+	do
+		table.clear(ui.sent)
+		api.OnInvoke("Ore", true); api.OnInvoke("Ore", true); api.OnInvoke("Herb", true); api.OnInvoke("Ore", true)
+		local sentOre, sentHerb = 0, 0
+		for _, m in ipairs(ui.sent) do
+			if m[1] == "priceCheck" and m[2] == "Ore" then sentOre += 1 elseif m[1] == "priceCheck" and m[2] == "Herb" then sentHerb += 1 end
+	end
+	ok(sentOre == 1 and sentHerb == 1, "refresh debounced per item (Ore " .. sentOre .. ", Herb " .. sentHerb .. ")")
+	end
 	-- Phone layout renders every new page without warnings.
 	local phone = H.runAtlas(roblox.Vector2.new(844, 390), {snapshot = snap, touch = true})
 	H.press(H.find(phone.gui, "AtlasButton"))

@@ -173,7 +173,8 @@ local function optionButton(text, order, onClick, accent)
 	return b
 end
 -- §33 per-player daily stock on a regional shop offer: "8/64 left today"
--- (snapshot.systems.stock.left["rq:<role>:<item>"] = {left, limit}); nil when unlimited.
+-- (snapshot.systems.stock.left[Stock.key("rq", role, item)] = {left, limit}; the key is per item
+-- across every shop, §33 QC M2); nil when unlimited.
 local function stockOf(option)
 	local role, index = string.match(option.item or "", "^(%w+):(%d+)$")
 	local folk = role and Data.RegionArt and Data.RegionArt.FolkByRole[role]
