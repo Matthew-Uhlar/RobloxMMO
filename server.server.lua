@@ -169,6 +169,8 @@ local Crafting={verbs={craftStation=true,craftBatch=true,craftStop=true},jobs={}
 local Lairs={verbs={lairEnter=true,lairLeave=true}}
 -- World Art & Regions (regional quests, shops, warp scrolls); filled in by the Regions block before perform().
 local Regions={verbs={rqAccept=true,rqTalk=true,rqClaim=true,rqBuy=true,warpBuy=true,warpLearn=true,warpTo=true,landmark=true},warpAt={}}
+-- MMO Features (§31: Isle Renown, Wayfarer's Path, announcements, Resonance); filled in by the Features block before perform().
+local Features={verbs={guideTalk=true,guideClaim=true,resonanceVisit=true,resonanceSet=true}}
 -- One-time coins for each newly reached skill level.
 local function levelCoins(p,skill,newLevel)
 	p.levelRewards=p.levelRewards or {}
@@ -179,6 +181,7 @@ local function levelCoins(p,skill,newLevel)
 		p.levelRewards[skill]=newLevel
 		p.coins+=coins
 		note(p,skill.." level "..newLevel.."! +"..coins.." coins")
+		if Features.announce then Features.announce(p,{kind="skill",skill=skill,level=newLevel,coins=coins}) end -- §31 SKILL LEVEL UP
 	end
 end
 -- Every XP grant: OSRS curve with cap, active pet share, one-time level coins.
@@ -205,10 +208,13 @@ local function grantXp(p,skill,amount,source)
 	levelCoins(p,skill,newLevel)
 end
 local function collect(p,item,count)
+	local before=p.collection[item] or 0
 	p.items[item]=(p.items[item] or 0)+count
-	p.collection[item]=(p.collection[item] or 0)+count
+	p.collection[item]=before+count
 	if Logs.collect then Logs.collect(p,item,count) end -- Commissions & Logs: Collection Log credit
 	if not collectionSet[item] then return end
+	-- §31: COLLECTION UNLOCKED on the first lifetime unit of a collection item.
+	if before<=0 and count>0 and Features.announce then Features.announce(p,{kind="collection",item=item}) end
 	p.collectionRewards=p.collectionRewards or {}
 	local tier=Progression.collectionTier(p,item)
 	local claimed=p.collectionRewards[item] or 0
@@ -218,6 +224,7 @@ local function collect(p,item,count)
 		p.collectionRewards[item]=tier
 		p.coins+=coins
 		note(p,Data.Items[item].name.." collection tier "..tier.."! +"..coins.." coins")
+		if Features.announce then Features.announce(p,{kind="collectionTier",item=item,tier=tier}) end -- §31
 		if Mastery.tokenNote then Mastery.tokenNote(p,claimed,tier) end
 	end
 end
@@ -1666,7 +1673,9 @@ do
 	end
 	function Skills.buy(player,p,item)
 		local skill,id
-		if validId(item) then skill,id=string.match(item,"^(%a+):(%w+)$") end
+		-- §31 shop quantities: "Skill:Item[:qty]" (1..Data.Features.Shop.MAX_LOTS, same unit price).
+		local base,qty=Data.Features.splitQty(item,2)
+		if base and validId(base) then skill,id=string.match(base,"^(%a+):(%w+)$") end
 		local vendor=skill and Data.SkillVendors[skill]
 		if not vendor then return "Choose an item from a skill vendor." end
 		if player:GetAttribute("SkillVendor")~=skill or (player:GetAttribute("SkillVendorUntil") or 0)<os.time() then return "Visit the "..vendor.name.." to trade." end
@@ -1674,17 +1683,19 @@ do
 		for _,e in ipairs(vendor.shop) do if e.item==id then entry=e end end
 		if not entry then return vendor.name.." does not stock that." end
 		local def=Data.Items[id]
-		if (def.kind=="armor" or def.kind=="accessory" or def.category=="trap") and (p.items[id] or 0)>0 then return "You already own "..def.name.."." end
-		local coins=entry.cost.coins or 0
-		local materials={}
-		for k,n in pairs(entry.cost) do if k~="coins" then materials[k]=n end end
-		if p.coins<coins then return def.name.." costs "..costText(entry.cost).."." end
-		for k,n in pairs(materials) do if (p.items[k] or 0)<n then return def.name.." costs "..costText(entry.cost).."." end end
+		local unique=def.kind=="armor" or def.kind=="accessory" or def.category=="trap"
+		if unique and (p.items[id] or 0)>0 then return "You already own "..def.name.."." end
+		if unique and qty>1 then return def.name.." is one of a kind: buy one." end
+		local coins=(entry.cost.coins or 0)*qty
+		local materials,total={},{}
+		for k,n in pairs(entry.cost) do total[k]=n*qty; if k~="coins" then materials[k]=n*qty end end
+		if p.coins<coins then return (if qty>1 then qty.."× " else "")..def.name.." costs "..costText(total).."." end
+		for k,n in pairs(materials) do if (p.items[k] or 0)<n then return (if qty>1 then qty.."× " else "")..def.name.." costs "..costText(total).."." end end
 		spend(p,materials)
 		p.coins-=coins
-		p.items[id]=(p.items[id] or 0)+1 -- bought, not collected (no collection / log / museum credit)
+		p.items[id]=(p.items[id] or 0)+qty -- bought, not collected (no collection / log / museum credit)
 		p.started=true
-		return "Bought "..def.name.." for "..costText(entry.cost).."."
+		return "Bought "..(if qty>1 then qty.."× " else "")..def.name.." for "..costText(total).."."
 	end
 	function Skills.action(player,p,verb,item,prompt,humanoid)
 		if verb=="agility" then return Skills.agility(player,p,item,prompt,humanoid)
@@ -4463,6 +4474,7 @@ local function snapshot(player,message)
 	-- and the paid rewards land in this same snapshot (notes, applyStats below).
 	if p.factions then Explore.refresh(p) end
 	Held.tick(os.clock()) -- Held items: settle any due auto-return before HeldItem is published
+	if Features.refresh then Features.refresh(player,p) end -- §31: renown, onboarding, resonance (before notes and stats)
 	local levels={}
 	local provisions={}
 	for item,config in pairs(consumables) do
@@ -4493,7 +4505,11 @@ local function snapshot(player,message)
 		lairs=Lairs.state and Lairs.state(player,p), -- Lairs: Hunt › Bosses (kill counts, personal bests, uniques)
 		exploration=Explore.state(player,p), -- Exploration & Factions: Journal > Motes / Factions (full when changed, else {rev, resetIn, switchIn, compact})
 		regionQuests=Regions.state(p), -- World Art & Regions: accepted/talked/visited/warps
-		logs=Logs.state(player,p)} -- Commissions & Logs: Journal > Commissions / Collection Log / Museum (full when changed, else {rev, resetIn, compact})
+		logs=Logs.state(player,p), -- Commissions & Logs: Journal > Commissions / Collection Log / Museum (full when changed, else {rev, resetIn, compact})
+		renown=Features.renownState and Features.renownState(player,p), -- §31 Isle Renown page + sidebar
+		guide=Features.guideState and Features.guideState(p), -- §31 Wayfarer's Path (sidebar Objective)
+		resonance=Features.resonanceState and Features.resonanceState(player,p), -- §31 Resonance page
+		announce=Features.announceState and Features.announceState(player)} -- §31 toasts: {seq, list} (recent ring)
 end
 -- Prayer & Thieving: drain-loop notices (prayer points ran out).
 Prayer.push=function(player,message) if player.Parent then update:FireClient(player,snapshot(player,message)) end end
@@ -4582,6 +4598,7 @@ local function migrate(profile)
 	Explore.migrate(profile) -- Exploration & Factions: p.motes, p.factions, p.perkStats.motes
 	if Lairs.migrate then Lairs.migrate(profile) end -- Lairs: kill counts, personal bests, uniques
 	if Regions.migrate then Regions.migrate(profile) end -- World Art & Regions: p.regionQuests
+	if Features.migrate then Features.migrate(profile) end -- §31: p.renown (retroactive once), p.guide, p.resonance
 end
 -- Clears every per-player table and ends this player's session slot.
 -- Sea creatures: a successful Fishing gather may hook one (Data.rollSeaCreature).
@@ -5484,12 +5501,16 @@ do
 	Pets.span=span
 	function Pets.action(player,p,verb,item)
 		if verb=="petShop" then
-			local entry=validId(item) and PD.ShopByItem[item]
+			-- §31 shop quantities: "Item[:qty]" (1..Data.Features.Shop.MAX_LOTS, same unit price).
+			local id,qty=Data.Features.splitQty(item,1)
+			local entry=id and validId(id) and PD.ShopByItem[id]
 			if not entry then return "The Roost keeper does not sell that." end
-			if p.coins<entry.coins then return "You need "..entry.coins.." coins for "..Data.Items[item].name.."." end
-			p.coins-=entry.coins
-			p.items[item]=(p.items[item] or 0)+1 -- bought, not collected (no collection / log / museum credit)
-			return "Bought "..Data.Items[item].name.." for "..entry.coins.." coins."
+			local price=entry.coins*qty
+			local name=(if qty>1 then qty.."× " else "")..Data.Items[id].name
+			if p.coins<price then return "You need "..price.." coins for "..name.."." end
+			p.coins-=price
+			p.items[id]=(p.items[id] or 0)+qty -- bought, not collected (no collection / log / museum credit)
+			return "Bought "..name.." for "..price.." coins."
 		elseif verb=="petClaim" or (verb=="petCancel" and p.petUpgrade and os.time()>=p.petUpgrade.ends) then
 			local job=p.petUpgrade
 			if not job then return "No pet is waiting at the Roost." end
@@ -6455,18 +6476,22 @@ do
 			if not npcNear(player,q.giver) then return away(q.giver) end
 			return Journal.claimQuest(p,item)
 		elseif verb=="rqBuy" then
-			local role,index=string.match(type(item)=="string" and item or "","^(%w+):(%d+)$")
+			-- §31 shop quantities: "Role:i[:qty]" buys qty lots at the same per-lot price.
+			local base,qty=Data.Features.splitQty(item,2)
+			local role,index=string.match(base or "","^(%w+):(%d+)$")
 			local f=role and RA.FolkByRole[role]
 			local offer=f and f.shop and f.shop[tonumber(index)]
 			if not offer then return "That isn't for sale." end
 			if not npcNear(player,f.role) then return away(f.role) end
 			local warp=scrollRegion[offer.item]
 			if warp and Regions.warps(p)[warp] then return "You already know the warp to "..Data.RegionById[warp].name.."." end
-			if (p.coins or 0)<offer.price then return "You need "..offer.price.." coins for that." end
-			p.coins-=offer.price
-			addItems(p,offer.item,offer.amount)
+			if warp and qty>1 then return "One scroll is all you need." end
+			local price=offer.price*qty
+			if (p.coins or 0)<price then return "You need "..price.." coins for that." end
+			p.coins-=price
+			addItems(p,offer.item,offer.amount*qty)
 			p.started=true
-			return "Bought "..offer.amount.."× "..itemName(offer.item).." for "..offer.price.." coins."
+			return "Bought "..(offer.amount*qty).."× "..itemName(offer.item).." for "..price.." coins."
 		end
 		-- Warps: always at the Warp Keeper.
 		local w=type(item)=="string" and RA.WarpByRegion[item]
@@ -6517,6 +6542,304 @@ do
 		for id,ready in pairs(Regions.warpAt) do if ready<=now then Regions.warpAt[id]=nil end end
 	end)
 end
+------------------------------------------------------------------------------
+-- MMO Features (Feature Gap team; docs/DEPTH-CONTRACT.md §31). Data in the
+-- "MMO Features" section of shared/GameData.lua.
+-- * Isle Renown: an account level DERIVED from the journal (Data.Renown.breakdown)
+--   every snapshot. p.renown = {xp = highest total ever, level, species = {[petId]
+--   = true} (ever adopted), retro = true}. The first load after the update credits
+--   all existing progress once (silently, one summary note); because renown is a
+--   pure function of progress it can never count anything twice, and the stored
+--   maximum means a level never drops (released pets, emptied museum...).
+--   Rewards: bag slots (Progression.accessorySlots reads p.renown.level) and
+--   p.perkStats.renown (Health ≤ 20, Defense ≤ 5: Data.PerkBudget). Player
+--   attributes RenownLevel / RenownTitle / RenownColor drive nameplates.
+-- * Wayfarer's Path: p.guide = {done = {[step] = true}, flags = {visit, talk,
+--   sell}, complete, skipped}. Steps are paid once when completed live; the
+--   first load marks satisfied steps done unpaid, and veterans skip the path.
+--   Verb guideTalk at Pell (the Guide) raises the talk flag.
+-- * Announcements: Features.announce(p, entry) queues COLLECTION UNLOCKED,
+--   collection / skill / renown level-ups and path steps; every snapshot carries
+--   the player's recent ring (announce = {seq, list}, ≤ 12 entries, 30 s) so a
+--   toast survives a snapshot another script consumed; clients dedupe by seq.
+-- * Resonance: p.resonance = {id, at}. resonanceVisit (at the Resonance Keeper)
+--   opens the atlas page for R.VISIT_SECONDS; resonanceSet <template> there:
+--   first tuning free, a change costs R.SWITCH_FEE coins after R.SWITCH_COOLDOWN.
+--   Stats = Data.Resonance.stats(id, Magical Power) in p.perkStats.resonance.
+------------------------------------------------------------------------------
+do
+	local F,RN,G,R=Data.Features,Data.Renown,Data.Features.Guide,Data.Resonance
+	local whole=F.whole
+	local pending={} -- p -> queued announcements (flushed every snapshot; dropped on leave)
+	local cache={}   -- player -> last renown breakdown (cleared on leave)
+	local rings={}                               -- player -> {seq, list}; cleared on leave
+	local RING_SECONDS,RING_MAX=30,F.ANNOUNCE_MAX
+	function Features.announce(p,entry)
+		local list=pending[p]
+		if not list then list={}; pending[p]=list end
+		if #list<RING_MAX then table.insert(list,entry) end
+	end
+	local function renownOf(p)
+		local r=p.renown
+		if type(r)~="table" then r={}; p.renown=r end
+		r.xp=whole(r.xp); r.level=whole(r.level)
+		if type(r.species)~="table" then r.species={} end
+		return r
+	end
+	local function guideOf(p)
+		local g=p.guide
+		if type(g)~="table" then g={}; p.guide=g end
+		for _,key in ipairs({"done","flags"}) do if type(g[key])~="table" then g[key]={} end end
+		return g
+	end
+	local function resonanceOf(p)
+		local r=p.resonance
+		if type(r)~="table" then r={}; p.resonance=r end
+		if r.id~=nil and not (type(r.id)=="string" and R.ById[r.id]) then r.id=nil end
+		r.at=whole(r.at)
+		return r
+	end
+	local function stepsDone(p)
+		local n=0
+		for _,s in ipairs(G.Steps) do if guideOf(p).done[s.id] then n+=1 end end
+		return n
+	end
+	local function breakdown(p)
+		local r=renownOf(p)
+		for _,pet in ipairs(type(p.pets)=="table" and p.pets or {}) do
+			if type(pet)=="table" and type(pet.id)=="string" and Data.PetById[pet.id] then r.species[pet.id]=true end
+		end
+		local b=RN.breakdown(p,Progression,{species=r.species,guideSteps=stepsDone(p)})
+		return b
+	end
+	local function guideCtx(p) return {warps=Regions.warps(p)} end
+	local function totalLevel(p)
+		local total=0
+		for _,skill in ipairs(Data.SkillOrder) do total+=level(p.xp[skill]) end
+		return total
+	end
+	-- Load: sanitise, credit existing progress once (renown), seed the path.
+	function Features.migrate(p)
+		local first=type(p.renown)~="table"
+		local r=renownOf(p)
+		for id,v in pairs(r.species) do if v~=true or not Data.PetById[id] then r.species[id]=nil end end
+		local guideFirst=type(p.guide)~="table"
+		local g=guideOf(p)
+		for id,v in pairs(g.done) do if v~=true or not G.StepById[id] then g.done[id]=nil end end
+		for id,v in pairs(g.flags) do if v~=true or not G.Flags[id] then g.flags[id]=nil end end
+		g.complete=g.complete==true or nil
+		g.skipped=g.skipped==true or nil
+		g.owed=math.min(whole(g.owed),G.MAX_OWED)
+		if guideFirst then
+			local veteran=totalLevel(p)>=G.VETERAN_TOTAL_LEVEL or (tonumber(p.questCompleted) or 0)>=G.VETERAN_CONTRACTS
+			local ctx=guideCtx(p)
+			for _,s in ipairs(G.Steps) do
+				if veteran then g.done[s.id]=true; if s.flag then g.flags[s.flag]=true end
+				elseif not s.flag and G.satisfied(p,s,ctx) then g.done[s.id]=true end
+			end
+			if veteran then g.complete=true; g.skipped=true end
+		end
+		resonanceOf(p)
+		if first then
+			-- Retroactive credit, exactly once: the derived total of everything already earned.
+			local b=breakdown(p)
+			r.xp=b.total
+			r.level=RN.levelFor(r.xp)
+			r.retro=true
+			if r.level>0 then note(p,RN.NAME.." awakened: level "..r.level.." from your past deeds ("..r.xp.." renown).") end
+		else
+			r.retro=r.retro==true or nil
+			-- A tampered save can never lift the level past its own XP.
+			r.level=math.min(r.level,RN.levelFor(r.xp))
+		end
+	end
+	-- Sidebar step "Visit Compass Quay": the rider stands on the Compass Quay isle.
+	local function onHub(player)
+		local ok,inside=pcall(function()
+			local root=player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+			local folder=workspace:FindFirstChild("Islands")
+			local isle=folder and folder:FindFirstChild("Compass Quay")
+			if not root or not isle then return false end
+			local centre,radius=isle:GetAttribute("IslandCenter"),isle:GetAttribute("IslandRadius")
+			if typeof(centre)~="Vector3" or type(radius)~="number" then return false end
+			local d=root.Position-centre
+			return Vector3.new(d.X,0,d.Z).Magnitude<=radius+12 and math.abs(d.Y)<=60
+		end)
+		return ok and inside==true
+	end
+	function Features.flag(p,flag)
+		if not G.Flags[flag] then return end
+		guideOf(p).flags[flag]=true
+	end
+	local function setAttr(player,key,value)
+		if player:GetAttribute(key)~=value then player:SetAttribute(key,value) end
+	end
+	-- Every snapshot: onboarding steps, renown (level-ups, perks, nameplate) and resonance.
+	function Features.refresh(player,p)
+		local g=guideOf(p)
+		if not g.complete then
+			if not g.flags.visit and onHub(player) then g.flags.visit=true end
+			local ctx=guideCtx(p)
+			local progressed=false
+			for _,s in ipairs(G.Steps) do
+				if not g.done[s.id] and G.satisfied(p,s,ctx) then
+					-- Completed live: its coins wait in g.owed until guideClaim (never paid twice).
+					g.done[s.id]=true
+					g.owed=whole(g.owed)+s.coins
+					Features.announce(p,{kind="guide",title=s.title,coins=s.coins})
+					progressed=true
+				end
+			end
+			if progressed and stepsDone(p)<#G.Steps then Features.announce(p,{kind="objective",title=G.view(g).title}) end
+			if stepsDone(p)>=#G.Steps then
+				g.complete=true
+				g.owed=whole(g.owed)+G.COMPLETE_COINS
+				Features.announce(p,{kind="guide",title="Path complete",coins=G.COMPLETE_COINS})
+				note(p,G.NAME.." complete! Claim your rewards from Pell or Menu › Renown.")
+			end
+		end
+		local r=renownOf(p)
+		local b=breakdown(p)
+		cache[player]=b
+		if b.total>r.xp then r.xp=b.total end
+		local reached=RN.levelFor(r.xp)
+		if reached>r.level then
+			-- Announce at most the last three levels of a big jump.
+			for lvl=math.max(r.level+1,reached-2),reached do
+				Features.announce(p,{kind="renown",level=lvl,reward=RN.rewardText(lvl)})
+			end
+			note(p,RN.NAME.." "..reached.."!")
+			r.level=reached
+		end
+		p.perkStats=type(p.perkStats)=="table" and p.perkStats or {}
+		local perk=RN.stats(r.level)
+		p.perkStats.renown=if next(perk) then perk else nil
+		local res=resonanceOf(p)
+		local tuned=if res.id then R.stats(res.id,Progression.magicalPower(p)) else {}
+		p.perkStats.resonance=if next(tuned) then tuned else nil
+		local tier=RN.tier(r.level)
+		setAttr(player,"RenownLevel",r.level)
+		setAttr(player,"RenownTitle",tier.title)
+		setAttr(player,"RenownColor",tier.color)
+		-- Move this profile's queue into the player's recent ring.
+		local list=pending[p]
+		if list then
+			pending[p]=nil
+			local ring=rings[player]
+			if not ring then ring={seq=0,list={}}; rings[player]=ring end
+			for _,entry in ipairs(list) do
+				ring.seq+=1
+				local copy=table.clone(entry)
+				copy.seq,copy.at=ring.seq,os.clock()
+				table.insert(ring.list,copy)
+			end
+			while #ring.list>RING_MAX do table.remove(ring.list,1) end
+		end
+	end
+	function Features.announceState(player)
+		local ring=rings[player]
+		if not ring then return {seq=0,list={}} end
+		local now=os.clock()
+		while ring.list[1] and now-ring.list[1].at>RING_SECONDS do table.remove(ring.list,1) end
+		local out={}
+		for i,entry in ipairs(ring.list) do
+			local e=table.clone(entry)
+			e.at=nil
+			out[i]=e
+		end
+		return {seq=ring.seq,list=out}
+	end
+	function Features.renownState(player,p)
+		local r=renownOf(p)
+		local b=(player and cache[player]) or breakdown(p)
+		local sources={}
+		for _,s in ipairs(RN.Sources) do
+			local row=b.sources[s.id]
+			table.insert(sources,{id=s.id,name=s.name,hint=s.hint,xp=row.xp,count=row.count})
+		end
+		local tier=RN.tier(r.level)
+		return {level=r.level,xp=r.xp,into=r.xp-r.level*RN.XP_PER_LEVEL,need=RN.XP_PER_LEVEL,title=tier.title,color=tier.color,
+			slots=RN.slots(r.level),stats=RN.stats(r.level),sources=sources,next=RN.nextUnlocks(r.level,6)}
+	end
+	function Features.guideState(p)
+		local g=guideOf(p)
+		local view=G.view(g)
+		view.owed=whole(g.owed)
+		return view
+	end
+	function Features.resonanceState(player,p)
+		local res=resonanceOf(p)
+		local power=Progression.magicalPower(p)
+		local now=os.time()
+		return {id=res.id,power=power,stats=if res.id then R.stats(res.id,power) else {},
+			fee=if res.id then R.SWITCH_FEE else 0,readyIn=if res.id then math.max(0,res.at+R.SWITCH_COOLDOWN-now) else 0,
+			visitIn=math.max(0,(tonumber(player:GetAttribute("ResonanceUntil")) or 0)-now)}
+	end
+	-- Live NPC check by role (Workspace.Townsfolk, placed by npc.server.lua).
+	local TALK_RADIUS=Data.RegionArt.TALK_RADIUS or 14
+	local function npcNear(player,role)
+		local root=player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+		local folder=workspace:FindFirstChild("Townsfolk")
+		if not root or not folder then return false end
+		for _,model in ipairs(folder:GetChildren()) do
+			if model:GetAttribute("TownsfolkRole")==role then
+				local npcRoot=model:FindFirstChild("HumanoidRootPart")
+				if npcRoot and (npcRoot.Position-root.Position).Magnitude<=TALK_RADIUS then return true end
+			end
+		end
+		return false
+	end
+	function Features.action(player,p,verb,item,prompt)
+		if verb=="guideTalk" then
+			if not npcNear(player,"Guide") then return "Find Pell Ashgrove in Compass Quay." end
+			local g=guideOf(p)
+			if g.complete then return "Pell: \"You've walked the whole Wayfarer's Path. The isles are yours!\"" end
+			if g.flags.talk then return "Pell: \"Keep following the Objective in your sidebar.\"" end
+			g.flags.talk=true
+			g.flags.visit=true -- Pell stands in Compass Quay
+			p.started=true
+			return "Pell: \"Glad you found me! Your sidebar Objective shows each step of the Wayfarer's Path.\""
+		elseif verb=="guideClaim" then
+			local g=guideOf(p)
+			local owed=whole(g.owed)
+			if owed<=0 then return "No Wayfarer's Path rewards to claim yet." end
+			g.owed=0
+			p.coins+=owed
+			return G.NAME.." rewards claimed • +"..owed.." coins."
+		elseif verb=="resonanceVisit" then
+			if not npcNear(player,"Resonator") then return "Find the Resonance Keeper in Compass Quay." end
+			player:SetAttribute("ResonanceUntil",os.time()+R.VISIT_SECONDS)
+			player:SetAttribute("IsleStation","Resonance")
+			player:SetAttribute("IsleStationVisit",(player:GetAttribute("IsleStationVisit") or 0)+1)
+			return "The Resonance Keeper listens to your accessory bag • choose a resonance in your atlas."
+		elseif verb=="resonanceSet" then
+			local t=type(item)=="string" and R.ById[item]
+			if not t then return "Choose a resonance." end
+			if (tonumber(player:GetAttribute("ResonanceUntil")) or 0)<os.time() then return "Visit the Resonance Keeper in Compass Quay to tune your Magical Power." end
+			local res=resonanceOf(p)
+			if res.id==t.id then return t.name.." is already your resonance." end
+			local power=Progression.magicalPower(p)
+			if power<t.minPower then return t.name.." needs "..t.minPower.." Magical Power (you have "..power..")." end
+			local now=os.time()
+			if res.id then
+				local wait=res.at+R.SWITCH_COOLDOWN-now
+				if wait>0 then return "Your resonance is still settling ("..wait.."s)." end
+				if p.coins<R.SWITCH_FEE then return "Changing resonance costs "..R.SWITCH_FEE.." coins." end
+				p.coins-=R.SWITCH_FEE
+			end
+			local paid=res.id~=nil
+			res.id,res.at=t.id,now
+			p.started=true
+			return "Resonance tuned: "..t.name..(if paid then " • -"..R.SWITCH_FEE.." coins" else " • first tuning free").."."
+		end
+		return "Unknown action."
+	end
+	Players.PlayerRemoving:Connect(function(player)
+		rings[player],cache[player]=nil,nil
+		local p=profiles[player]
+		if p then pending[p]=nil end
+	end)
+end
 local function perform(player,verb,item,prompt)
 	local p=profiles[player]
 	if not p or (not preview[player] and os.time()>=(leaseEnd[player] or 0)) then return "Waiting for journal sync." end
@@ -6528,7 +6851,9 @@ local function perform(player,verb,item,prompt)
 	cooldown[player]=os.clock()+(if prompt then 0.65 else 0.24)
 	local region=prompt and prompt:GetAttribute("IsleRegion")
 	if region and not regionAllowed(p,region) then return regionDenied(region) end
-	if Regions.verbs[verb] then
+	if Features.verbs[verb] then
+		return Features.action(player,p,verb,item,prompt) -- §31: Wayfarer's Path talk, Resonance
+	elseif Regions.verbs[verb] then
 		return Regions.action(player,p,verb,item,prompt) -- World Art & Regions: regional quests, shops, warps
 	elseif Skills.verbs[verb] then
 		return Skills.action(player,p,verb,item,prompt,humanoid) -- Agility & Hunter
@@ -6863,6 +7188,7 @@ local function perform(player,verb,item,prompt)
 				if not item or raw==item then total+=(p.items[raw] or 0)*price; p.items[raw]=0 end
 			end
 			p.coins+=total
+			if total>0 and Features.flag then Features.flag(p,"sell") end -- §31 Wayfarer's Path
 			return "Merchant paid "..total.." coins."
 		end
 		local def=validId(item) and Data.Items[item]
@@ -6873,6 +7199,7 @@ local function perform(player,verb,item,prompt)
 		local total=count*(def.value or 1)
 		p.items[item]=0
 		p.coins+=total
+		if Features.flag then Features.flag(p,"sell") end -- §31 Wayfarer's Path
 		return "Merchant paid "..total.." coins for "..count.." "..def.name.."."
 	elseif verb=="deposit" or verb=="bank" or verb=="withdraw" then
 		local source=if verb=="withdraw" then "bank" else "coins"

@@ -1106,6 +1106,44 @@ local enchantTarget -- item chosen on the Enchant section
 local function depth() local d=state.depth if type(d)=="table" then return d end return nil end
 local function dget(key) local d=depth() if d and type(d[key])=="table" then return d[key] end return nil end
 -- Sidebar text (snapshot + 1 Hz clock). Strings only; no instances made.
+-- §31 MMO Features: the Isle Renown level on the sidebar and the server-driven
+-- Wayfarer's Path step in the Objective slot (legacy nextGoal() once it is done).
+function UI.renownTag(gap)
+	local r = type(state) == "table" and type(state.renown) == "table" and state.renown
+	if not r or type(r.level) ~= "number" then return "" end
+	local hex = type(r.color) == "string" and #r.color == 6 and r.color or "FFFFFF"
+	return gap .. paint("✪ " .. fmt(r.level), hex)
+end
+-- Shop quantity picker (features.client.lua listens on IsleQuantityLocal).
+function UI.pickQuantity(spec)
+	local event = ReplicatedStorage:FindFirstChild("IsleQuantityLocal")
+	if not event then
+		event = Instance.new("BindableEvent")
+		event.Name = "IsleQuantityLocal"
+		event.Parent = ReplicatedStorage
+	end
+	UI.lastQuantity = spec
+	event:Fire(spec)
+end
+-- Lots of a cost {coins=, item=n} the purse and satchel cover (1..64).
+function UI.affordLots(cost)
+	local most = Data and Data.Features and Data.Features.Shop.MAX_LOTS or 64
+	for id, n in pairs(tbl(cost)) do
+		if type(n) == "number" and n > 0 then
+			local have = if id == "coins" then num(state.coins, 0) else num(tbl(state.items)[id], 0)
+			most = math.min(most, math.floor(have / n))
+		end
+	end
+	return math.max(1, most)
+end
+function UI.objective()
+	local g = type(state.guide) == "table" and state.guide
+	if g and not g.complete and type(g.title) == "string" then
+		return g.title .. paint("  " .. tostring(g.step or 1) .. "/" .. tostring(g.total or 10), "A9B4C0")
+	end
+	if g and type(g.owed) == "number" and g.owed > 0 then return "Claim your Path rewards (Menu › Renown)" end
+	return UI.nextGoal()
+end
 function UI.refreshSidebar()
 	local s = UI.side
 	local L = UI.lay()
@@ -1130,10 +1168,10 @@ function UI.refreshSidebar()
 	local coins = fmt(num(state.coins, 0))
 	local marks = fmt(num(tbl(state.items).Skymark, 0))
 	if L.short then
-		UI.purse.Text = synced and (paint("◆ " .. coins, "F7C548") .. paint("   ✦ " .. marks, "55FFFF")) or "Opening ledger…"
+		UI.purse.Text = synced and (paint("◆ " .. coins, "F7C548") .. paint("   ✦ " .. marks, "55FFFF") .. UI.renownTag("   ")) or "Opening ledger…"
 	else
 		UI.purse.Text = synced and ("Purse: " .. paint(coins, "F7C548")) or "Opening ledger…"
-		s.marks.Text = "Skymarks: " .. paint(marks, "55FFFF")
+		s.marks.Text = "Skymarks: " .. paint(marks, "55FFFF") .. UI.renownTag("   ")
 	end
 	local crew = coopState and type(coopState.members) == "table" and #coopState.members or 0
 	s.crew.Text = crew > 0 and ("Crew: " .. paint(crew .. " member" .. (crew == 1 and "" or "s"), "6FE3C8")) or ("Crew: " .. paint("solo", "6E7A88") .. (state.ironman and paint("  ·  Ironman", "A9B4C0") or ""))
@@ -1645,6 +1683,7 @@ local function nextGoal()
 	end
 	return "Explore the islands", "Train a skill, discover materials or challenge a foe."
 end
+UI.nextGoal = nextGoal -- §31: UI.objective() falls back to it
 do
 local function routeChart()
 	local chart=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,144),slate))
@@ -2812,6 +2851,10 @@ local function drawPets()
 				local b=tile(grid,"PetShop"..entry.item,i,function()
 					if num(state.coins,0)<price then notify("You need "..fmt(price).." coins.") return end
 					send("petShop",entry.item)
+				end)
+				-- §31: right-click opens the quantity picker (features.client.lua).
+				b.MouseButton2Click:Connect(function()
+					UI.pickQuantity({verb="petShop",base=entry.item,name=itemName(entry.item),unit=price,amount=1,max=UI.affordLots({coins=price})})
 				end)
 				make("UIStroke",b,{Color=rgb(itemHex(entry.item)),Thickness=1,Transparency=.35})
 				local n=label(b,escape(itemName(entry.item)),10,4,UDim.new(1,-16),20,UI.heavy,compactAtlas and 12 or 13,rgb(itemHex(entry.item)))
@@ -6199,7 +6242,10 @@ function AH.drawVendors()
 				badge=have>0 and (unique and paint("OWNED","7FE3CC") or ("×"..fmt(have))) or nil,badgeColor=unique and mint or ivory,
 				detail=escape(def.description or ""),lines=lines,
 				actions={{caption="Buy",primary=reason==nil,disabled=reason~=nil,reason=reason,name="Buy"..entry.item,
-					fn=function() send("skillBuy",skill..":"..entry.item) end}}})
+					fn=function() send("skillBuy",skill..":"..entry.item) end},
+					-- §31: quantity picker (features.client.lua); stackable wares only.
+					not unique and {caption="Buy ×…",disabled=reason~=nil,reason=reason,name="BuyQty"..entry.item,
+					fn=function() UI.pickQuantity({verb="skillBuy",base=skill..":"..entry.item,name=def.name,unit=num(tbl(entry.cost).coins,0),amount=1,max=UI.affordLots(entry.cost)}) end} or nil}})
 		end
 	end
 	-- Set bonus: Windrunner (Exchange stock) or Thicketstalker (Workbench, from pelts).
@@ -8325,6 +8371,7 @@ local MENU={
 	{id="Wardrobe",title="Wardrobe & Gear",motif="Hero",tab="Hero",section="Gear"},{id="Bank",motif="Ledger",tab="Ledger",section="Bank"},
 	{id="Market",motif="Ledger",tab="Ledger",section="Orders"},{id="Satchel",motif="Satchel",hud="satchel"},
 	{id="Chart",title="Sky Chart",motif="Map",hud="warpmap"},{id="Settings",motif="Settings",tab="Menu",section="Settings"},
+	{id="Renown",title="Isle Renown",motif="Journal",tab="Menu",section="Renown"}, -- §31 MMO Features
 }
 local function caption(id)
 	local d=depth() or EMPTY
@@ -8339,6 +8386,7 @@ local function caption(id)
 	elseif id=="Market" then return "Bazaar & auctions"
 	elseif id=="Satchel" then return "Inventory · E"
 	elseif id=="Chart" then return "Warp map · M"
+	elseif id=="Renown" then local r=tbl(state.renown) return "Level "..fmt(num(r.level,0)).."  ·  "..tostring(r.title or "Driftling")
 	end
 	return "Preferences"
 end
@@ -8376,6 +8424,60 @@ function Pages.drawMenu()
 		title.Name,sub.Name="Title","Caption"
 	end
 end
+-- §31 MMO Features: Menu › Renown (Isle Renown level, sources, next unlocks and
+-- the Wayfarer's Path) and Menu › Resonance (Magical Power tuning; the server
+-- requires a recent visit to the Resonance Keeper and charges the switch fee).
+function Pages.drawRenown()
+	local r=tbl(state.renown)
+	local level=num(r.level,0)
+	heading("ISLE RENOWN / LEVEL "..fmt(level))
+	local hex=type(r.color)=="string" and #r.color==6 and r.color or "FFFFFF"
+	local perks={}
+	for stat,v in pairs(tbl(r.stats)) do perks[stat]=v end
+	card({name="RenownLevel",motif="Journal",title=paint("✦ "..fmt(level).."  "..escape(tostring(r.title or "Driftling")),hex),
+		subtitle=fmt(num(r.xp,0)).." renown  ·  "..fmt(num(r.slots,0)).." bonus accessory slots",
+		detail="One account level for everything you do. Renown is counted from your whole journal, so nothing is ever lost or counted twice.",
+		lines={next(perks) and ("Renown perks: "..statText(perks)) or "Renown perks unlock at level 10."},
+		bar={fraction=num(r.into,0)/math.max(1,num(r.need,100)),color=rgb(hex),caption=fmt(num(r.into,0)).." / "..fmt(num(r.need,100)).." to level "..fmt(level+1)}})
+	local upcoming={}
+	for _,u in ipairs(tbl(r.next)) do if type(u)=="table" then table.insert(upcoming,"Level "..fmt(num(u.level,0)).."  ·  "..escape(tostring(u.text))) end end
+	if #upcoming>0 then card({name="RenownNext",motif="Journal",title="Next unlocks",lines=upcoming}) end
+	local g=tbl(state.guide)
+	if g.title then
+		local owed=num(g.owed,0)
+		card({name="RenownPath",motif="Journal",title="Wayfarer's Path",subtitle=g.complete and paint("Complete","6FE3C8") or ("Step "..fmt(num(g.step,1)).." of "..fmt(num(g.total,10))),
+			detail=escape(tostring(g.title))..(g.detail and (" — "..escape(tostring(g.detail))) or ""),
+			pips={total=num(g.total,10),filled=num(g.done,0),color=mint},
+			actions=owed>0 and {{caption="Claim "..fmt(owed).." coins",primary=true,name="GuideClaim",fn=function() send("guideClaim") end}} or nil})
+	end
+	heading("RENOWN SOURCES")
+	for _,s in ipairs(tbl(r.sources)) do
+		if type(s)=="table" then
+			card({name="RenownSource"..tostring(s.id),title=escape(tostring(s.name)),badge=fmt(num(s.xp,0)),badgeColor=gold,
+				subtitle=fmt(num(s.count,0)).." counted",detail=escape(tostring(s.hint or ""))})
+		end
+	end
+end
+function Pages.drawResonance()
+	local res=tbl(state.resonance)
+	local R=Data and Data.Resonance
+	local power=num(res.power,0)
+	heading("RESONANCE / "..fmt(power).." MAGICAL POWER")
+	local visiting=num(res.visitIn,0)>0
+	card({name="ResonanceInfo",motif="Hero",title=res.id and ("Tuned: "..escape(tostring(res.id))) or "No resonance yet",
+		subtitle=visiting and paint("The Resonance Keeper is listening","6FE3C8") or "Visit the Resonance Keeper in Compass Quay to tune",
+		detail="Your accessory bag's Magical Power becomes stats in the resonance you pick. The first tuning is free; a change costs "..fmt(num(res.fee,0)).." coins"..(num(res.readyIn,0)>0 and (" (settling "..fmt(num(res.readyIn,0)).."s)") or "")..".",
+		lines={res.id and ("Now: "..statText(res.stats)) or nil}})
+	if not R then return end
+	for _,t in ipairs(R.Templates) do
+		local preview=R.stats(t.id,power)
+		local current=res.id==t.id
+		local reason=(current and "Already tuned.") or (power<t.minPower and ("Needs "..t.minPower.." Magical Power.")) or (not visiting and "Visit the Resonance Keeper first.") or nil
+		card({name="Resonance"..t.id,motif="Hero",title=paint(escape(t.name),t.color),subtitle=escape(t.text),badge=current and paint("ACTIVE","6FE3C8") or nil,
+			lines={next(preview) and ("At your power: "..statText(preview)) or ("Unlocks at "..t.minPower.." Magical Power")},
+			actions={{caption=current and "Active" or "Tune",primary=reason==nil,disabled=reason~=nil,reason=reason,name="Tune"..t.id,fn=function() send("resonanceSet",t.id) end}}})
+	end
+end
 local SETTINGS={
 	{attr="IsleSettingPinSatchel",title="Pin the satchel",detail="Keep the satchel open beside the sidebar while you play (desktop).",default=false},
 	{attr="IsleSettingXpDrops",title="XP drops",detail="Floating +XP counters and the skill progress toast when you gain experience.",default=true},
@@ -8401,7 +8503,7 @@ end
 ------------------------------------------------------------------------------
 local tabOrder={"Menu","Journal","Hero","Satchel","Workshop","Hunt","Ledger"}
 local sectionLists={
-	Menu={"Home","Settings"},
+	Menu={"Home","Renown","Resonance","Settings"}, -- §31: Renown, Resonance
 	Journal={"Bearing","Quests","Diaries","Construction","Regions","Crew","Calendar","Agility","Commissions","Collection Log","Museum","Motes","Factions"},
 	Hero={"Skills","Mastery","Gear","Combat","Spellbook","Prayer","Enchant","Reforge","Accessories","Pets"},
 	Satchel={"Items","Collections","Trails"},
@@ -8411,7 +8513,7 @@ local sectionLists={
 }
 sectionOf={Menu="Home",Journal="Bearing",Hero="Skills",Satchel="Items",Workshop="Forge",Hunt="Slayer",Ledger="Bank"}
 local drawers={
-	Menu={Home=function() Pages.drawMenu() end,Settings=function() Pages.drawSettings() end},
+	Menu={Home=function() Pages.drawMenu() end,Renown=function() Pages.drawRenown() end,Resonance=function() Pages.drawResonance() end,Settings=function() Pages.drawSettings() end},
 	Journal={Bearing=Pages.drawBearing,Quests=Pages.drawQuests,Diaries=Pages.drawDiaries,Construction=Pages.drawConstruction,Regions=Pages.drawRegions,Crew=Pages.drawCoop,Calendar=Pages.drawCalendar,Agility=Pages.drawAgility,
 		Commissions=Pages.drawCommissions,["Collection Log"]=Pages.drawCollectionLog,Museum=Pages.drawMuseum, -- Commissions & Logs
 		Motes=Pages.drawMotes,Factions=Pages.drawFactions}, -- Exploration & Factions
@@ -8549,7 +8651,7 @@ render = function(fromPush)
 	UI.layoutSidebar()
 	UI.layoutActionBar()
 	UI.refreshSidebar()
-	UI.goal.Text = synced and nextGoal() or "Charting the islands…"
+	UI.goal.Text = synced and UI.objective() or "Charting the islands…"
 	updateVitals()
 	if not atlas.Visible then
 		return
@@ -8798,7 +8900,8 @@ end
 ------------------------------------------------------------------------------
 -- Server wiring
 ------------------------------------------------------------------------------
-UI.relay={equip=true,unequip=true,consume=true,sell=true,accessory=true,petAdopt=true,drop=true,satchelMove=true,satchelSort=true,recall=true}
+UI.relay={equip=true,unequip=true,consume=true,sell=true,accessory=true,petAdopt=true,drop=true,satchelMove=true,satchelSort=true,recall=true,
+	rqBuy=true,skillBuy=true,petShop=true,resonanceSet=true,guideClaim=true} -- §31: quantity picker (features.client.lua), Resonance, Path rewards
 local remote = ReplicatedStorage:WaitForChild("IsleAction")
 local updates = ReplicatedStorage:WaitForChild("IsleUpdate")
 local function accept(data,quiet)
@@ -8939,7 +9042,8 @@ end
 local stationTabs={Forge="Workshop",Hearth="Workshop",Cauldron="Workshop",Workbench="Workshop",Slayer="Hunt",Construction="Journal",Calendar="Journal",
 	SkymarkExchange="Ledger",TrackersLodge="Ledger",Garden="Workshop",Commissions="Journal",Museum="Journal",CollectionLog="Journal", -- Commissions & Logs: board / museum prompts
 	Jeweller="Workshop",Tannery="Workshop",Glassworks="Workshop", -- Crafting stations (Workshop › Crafting)
-	Motes="Journal",Factions="Journal"} -- Exploration & Factions: Mote Shrines, faction standards
+	Motes="Journal",Factions="Journal", -- Exploration & Factions: Mote Shrines, faction standards
+	Resonance="Menu"} -- §31: the Resonance Keeper opens Menu › Resonance
 local function openStation()
 	local value=player:GetAttribute("IsleStation")
 	if type(value)~="string" then return end
@@ -8948,6 +9052,7 @@ local function openStation()
 	if not tab then return end
 	-- Skill vendors (Agility & Hunter): Ledger › Vendors on that vendor's stock.
 	if tab=="Ledger" then Pages.AH.vendor=station=="SkymarkExchange" and "Agility" or "Hunter";openTo("Ledger","Vendors") return end
+	if tab=="Menu" then openTo("Menu",station) return end -- §31: Resonance Keeper
 	if tab=="Workshop" and Pages.CR and Data and Data.Crafting and Data.Crafting.Stations[station] then Pages.CR.station=station;openTo("Workshop","Crafting") return end
 	if tab=="Workshop" then openTo("Workshop",station) elseif tab=="Journal" then openTo("Journal",if station=="Calendar" then "Calendar" elseif station=="Commissions" or station=="Museum" or station=="Motes" or station=="Factions" then station elseif station=="CollectionLog" then "Collection Log" else "Construction") else openTo("Hunt","Slayer") end
 end

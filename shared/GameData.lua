@@ -11171,4 +11171,414 @@ end
 -- <<< END World Art & Regions <<<
 ------------------------------------------------------------------------------
 
+------------------------------------------------------------------------------
+-- >>> BEGIN MMO Features (Feature Gap team; append-only section, §31) >>>
+-- Isle Renown (account level), the Wayfarer's Path (guided onboarding),
+-- announcements, shop quantities, Skyward Vents (launch pads) and Resonance
+-- (Magical Power stat tuning). Pure data + pure functions; the server block
+-- "MMO Features" in server.server.lua owns every grant. docs/DEPTH-CONTRACT.md §31.
+------------------------------------------------------------------------------
+do
+local F = {}
+Data.Features = F
+local function tab(v) return if type(v) == "table" then v else {} end
+local function whole(v) return if type(v) == "number" and v == v and v >= 0 and v < math.huge then math.floor(v) else 0 end
+F.whole = whole
+
+-- Isle Renown -----------------------------------------------------------------
+-- One account level fed by renown XP from nearly every activity. Renown is
+-- DERIVED from the journal (levels, tiers, quests, diaries...), so it is
+-- retroactive by construction and can never be counted twice; the server keeps
+-- the highest total ever reached (p.renown.xp) so a level never goes down.
+local RN = {}
+Data.Renown = RN
+RN.NAME = "Isle Renown"
+RN.XP_PER_LEVEL = 100
+-- Skill levels: XP for each level gained past 1, by band (levels 2..99).
+RN.SkillBands = {{to=10,xp=5},{to=25,xp=10},{to=50,xp=15},{to=75,xp=20},{to=99,xp=25}}
+RN.COLLECTION_TIER = 4
+RN.CONTRACT = 10
+RN.Quest = {main=50, side=20}
+RN.Diary = {Easy=20, Medium=40, Hard=70, Elite=100}
+RN.SlayerLevel = {15,25,35,50,75,100,125,150,150}
+RN.FLOOR = 20          -- × floor numeral, first normal clear
+RN.MASTER_FLOOR = 30   -- × floor numeral, first Master Mode clear
+RN.LAIR_FIRST = 75
+RN.LairKc = {{kc=25,xp=50},{kc=100,xp=75}}
+RN.MUSEUM = 3
+RN.MOTE = 2
+RN.BESTIARY_TIER = 3
+RN.PET_SPECIES = 10
+RN.GUIDE_STEP = 10
+RN.Sources = {
+	{id="skills",name="Skill levels",hint="Every skill level past 1: 5 XP (2-10), 10 (11-25), 15 (26-50), 20 (51-75), 25 (76-99)."},
+	{id="collections",name="Collection tiers",hint="4 XP per collection tier reached."},
+	{id="quests",name="Quests & contracts",hint="Main quests 50 XP, side quests 20 XP, guild contracts 10 XP."},
+	{id="diaries",name="Achievement diaries",hint="Easy 20, Medium 40, Hard 70, Elite 100 XP per region."},
+	{id="slayer",name="Slayer lines",hint="Each slayer line level: 15 / 25 / 35 / 50 / 75 / 100 / 125 / 150 / 150 XP."},
+	{id="dungeons",name="Observatory floors",hint="First clear of each floor: 20 XP × its numeral; Master Mode: 30 XP × numeral."},
+	{id="lairs",name="Lair bosses",hint="First kill 75 XP; 25 kills +50; 100 kills +75."},
+	{id="museum",name="Museum",hint="3 XP per item on display."},
+	{id="motes",name="Aether Motes",hint="2 XP per mote found."},
+	{id="bestiary",name="Bestiary",hint="3 XP per bestiary milestone."},
+	{id="pets",name="Companions",hint="10 XP per pet species ever adopted."},
+	{id="guide",name="Wayfarer's Path",hint="10 XP per onboarding step."},
+}
+RN.SourceById = {}
+for i, s in ipairs(RN.Sources) do s.index = i; RN.SourceById[s.id] = s end
+function RN.skillXp(level)
+	level = math.clamp(whole(level), 1, 99)
+	local xp, from = 0, 2
+	for _, band in ipairs(RN.SkillBands) do
+		local to = math.min(level, band.to)
+		if to >= from then xp += (to - from + 1) * band.xp end
+		from = band.to + 1
+	end
+	return xp
+end
+-- Profile -> {total, sources={[id]={xp, count}}}. P = AetherProgression (levels, tiers).
+-- `extra` = {guideSteps = n, species = {[petId]=true}} (server-held sets).
+function RN.breakdown(p, P, extra)
+	p, extra = tab(p), tab(extra)
+	local out = {}
+	for _, s in ipairs(RN.Sources) do out[s.id] = {xp=0, count=0} end
+	local function add(id, xp, n) out[id].xp += xp; out[id].count += n or 1 end
+	for _, skill in ipairs(Data.SkillOrder) do
+		local lvl = P.levelForXp(tab(p.xp)[skill] or 0)
+		if lvl > 1 then add("skills", RN.skillXp(lvl), lvl - 1) end
+	end
+	for _, id in ipairs(Data.CollectionItems) do
+		local t = P.collectionTier(p, id)
+		if t > 0 then add("collections", t * RN.COLLECTION_TIER, t) end
+	end
+	local contracts = math.min(whole(p.questCompleted), 8)
+	if contracts > 0 then add("quests", contracts * RN.CONTRACT, contracts) end
+	for id, done in pairs(tab(p.questsDone)) do
+		local q = done == true and Data.QuestById[id]
+		if q then add("quests", RN.Quest[q.line] or RN.Quest.side) end
+	end
+	for region, claimed in pairs(tab(p.diaries)) do
+		if Data.DiaryByRegion[region] then
+			for i = 1, math.min(whole(claimed), #Data.DiaryTiers) do add("diaries", RN.Diary[Data.DiaryTiers[i]] or 0) end
+		end
+	end
+	for _, line in ipairs(Data.SlayerOrder) do
+		local lvl = P.slayerLevel(tab(p.slayerXp)[line] or 0)
+		for i = 1, math.min(lvl, #RN.SlayerLevel) do add("slayer", RN.SlayerLevel[i]) end
+	end
+	local clears = tab(tab(p.dungeons).clears)
+	local master = tab(tab(p.dungeonClasses).masterClears)
+	for i in ipairs(Data.DungeonFloors) do
+		if whole(clears[tostring(i)]) > 0 or whole(clears[i]) > 0 then add("dungeons", RN.FLOOR * i) end
+		if whole(master[tostring(i)]) > 0 or whole(master[i]) > 0 then add("dungeons", RN.MASTER_FLOOR * i) end
+	end
+	local kc = tab(tab(p.lairs).kc)
+	for _, id in ipairs(Data.Lairs and Data.Lairs.Order or {}) do
+		local n = whole(kc[id])
+		if n > 0 then add("lairs", RN.LAIR_FIRST) end
+		for _, m in ipairs(RN.LairKc) do if n >= m.kc then add("lairs", m.xp, 0) end end
+	end
+	local museum = math.min(whole(tab(p.museum).count), 10000)
+	if museum > 0 then add("museum", museum * RN.MUSEUM, museum) end
+	local motes = math.min(whole(tab(p.motes).count), Data.Exploration and Data.Exploration.TOTAL or 0)
+	if motes > 0 then add("motes", motes * RN.MOTE, motes) end
+	for monster, kills in pairs(tab(p.bestiary)) do
+		if type(monster) == "string" and rawget(Data.Monsters, monster) then
+			for _, need in ipairs(Data.BestiaryTiers) do if whole(kills) >= need then add("bestiary", RN.BESTIARY_TIER) end end
+		end
+	end
+	local species = {}
+	for id in pairs(tab(extra.species)) do if Data.PetById[id] then species[id] = true end end
+	for _, pet in ipairs(tab(p.pets)) do if type(pet) == "table" and Data.PetById[pet.id] then species[pet.id] = true end end
+	for _ in pairs(species) do add("pets", RN.PET_SPECIES) end
+	local steps = math.min(whole(extra.guideSteps), 20)
+	if steps > 0 then add("guide", steps * RN.GUIDE_STEP, steps) end
+	local total = 0
+	for _, s in pairs(out) do total += s.xp end
+	return {total=total, sources=out}
+end
+function RN.levelFor(xp) return math.floor(whole(xp) / RN.XP_PER_LEVEL) end
+-- Title / nameplate colour bands.
+RN.Tiers = {
+	{level=0,title="Driftling",color="AAAAAA"},
+	{level=10,title="Islander",color="FFFFFF"},
+	{level=25,title="Skyfarer",color="FFFF55"},
+	{level=50,title="Windcaller",color="55FF55"},
+	{level=80,title="Isle Warden",color="2BC0B4"},
+	{level=120,title="Cloudmarshal",color="5599FF"},
+	{level=160,title="Stormherald",color="AA55FF"},
+	{level=200,title="Starbound",color="FF55FF"},
+	{level=260,title="Aetherlord",color="FFAA00"},
+	{level=330,title="Archon of the Isles",color="FF5555"},
+	{level=400,title="Living Legend",color="F7C548"},
+}
+function RN.tier(level)
+	local best = RN.Tiers[1]
+	for _, t in ipairs(RN.Tiers) do if whole(level) >= t.level then best = t end end
+	return best
+end
+-- Level-gated rewards: accessory bag slots and minor permanent stats
+-- (p.perkStats.renown; Health 20 / Defense 5 at most, inside Data.PerkBudget).
+RN.SlotLevels = {10,25,50,100,150}
+RN.MAX_SLOTS = #RN.SlotLevels
+RN.StatSteps = {
+	{stat="health",every=10,per=2,max=20},
+	{stat="strength",every=15,per=1,max=10},
+	{stat="defense",every=30,per=1,max=5},
+	{stat="intelligence",every=20,per=2,max=12},
+}
+function RN.slots(level)
+	local n = 0
+	for _, l in ipairs(RN.SlotLevels) do if whole(level) >= l then n += 1 end end
+	return n
+end
+function RN.stats(level)
+	local out = {}
+	for _, step in ipairs(RN.StatSteps) do
+		local v = math.min(step.max, math.floor(whole(level) / step.every) * step.per)
+		if v > 0 then out[step.stat] = v end
+	end
+	return out
+end
+-- The reward text for exactly reaching `level` (announcements), or nil.
+function RN.rewardText(level)
+	local parts = {}
+	if table.find(RN.SlotLevels, level) then table.insert(parts, "+1 accessory slot") end
+	local before, now = RN.stats(level - 1), RN.stats(level)
+	for _, step in ipairs(RN.StatSteps) do
+		local gain = (now[step.stat] or 0) - (before[step.stat] or 0)
+		if gain > 0 then table.insert(parts, "+" .. gain .. " " .. Data.Stats[step.stat].name) end
+	end
+	for _, t in ipairs(RN.Tiers) do if t.level == level and level > 0 then table.insert(parts, "title " .. t.title) end end
+	return if #parts > 0 then table.concat(parts, ", ") else nil
+end
+-- Upcoming rewards after `level` (at most n), for the Renown page.
+function RN.nextUnlocks(level, n)
+	level = whole(level)
+	local list = {}
+	for _, l in ipairs(RN.SlotLevels) do if l > level then table.insert(list, {level=l, text="+1 accessory bag slot"}) end end
+	for _, t in ipairs(RN.Tiers) do if t.level > level then table.insert(list, {level=t.level, text="Title: " .. t.title}) end end
+	for _, step in ipairs(RN.StatSteps) do
+		local at = (math.floor(level / step.every) + 1) * step.every
+		if math.floor(at / step.every) * step.per <= step.max then
+			table.insert(list, {level=at, text="+" .. step.per .. " " .. Data.Stats[step.stat].name})
+		end
+	end
+	table.sort(list, function(a, b) if a.level ~= b.level then return a.level < b.level end return a.text < b.text end)
+	local out = {}
+	for i = 1, math.min(n or 6, #list) do out[i] = list[i] end
+	return out
+end
+-- Bag slots from Renown, read by Progression.accessorySlots (p.renown.level is server-set).
+function RN.profileSlots(p)
+	local r = type(p) == "table" and p.renown
+	return if type(r) == "table" then RN.slots(whole(r.level)) else 0
+end
+
+-- Wayfarer's Path (guided onboarding) ------------------------------------------
+-- A server-driven chain. Each step is done when its check holds (veterans skip
+-- what they already did) or its flag was raised by the server (visit, talk,
+-- sell). Rewards are paid once per step reached live; steps already satisfied
+-- on the first load are marked done without pay (no retroactive windfall).
+local G = {}
+F.Guide = G
+G.NAME = "Wayfarer's Path"
+local function anyCollected(p, skill)
+	for id, n in pairs(tab(p.collection)) do if whole(n) > 0 and Data.ResourceSkill[id] == skill then return true end end
+	return false
+end
+local function anyCount(t) for _, n in pairs(tab(t)) do if whole(n) > 0 then return true end end return false end
+G.Steps = {
+	{id="chop",title="Chop a log",detail="Hold the prompt on a tree on your home isle or Mosswake Grove.",coins=25,
+		check=function(p) return anyCollected(p, "Woodcutting") end},
+	{id="craft",title="Craft at a workbench",detail="Craft anything at a Workbench, Forge, Hearth or Cauldron (Atlas › Workshop).",coins=40,
+		check=function(p) return anyCount(tab(p.counters).crafts) or anyCount(tab(p.crafting).made) end},
+	{id="visit",title="Visit Compass Quay",detail="Take the home portal to Compass Quay, the shared hub.",coins=25,flag="visit"},
+	{id="talk",title="Talk to Pell",detail="Find Pell Ashgrove, the Wayfinder, in Compass Quay and ask about the Wayfarer's Path.",coins=25,flag="talk"},
+	{id="ore",title="Gather ore",detail="Mine an ore node in Brassfall Cay.",coins=40,
+		check=function(p) return anyCollected(p, "Mining") end},
+	{id="sell",title="Sell an item",detail="Sell something from your satchel (right-click an item › Sell).",coins=30,flag="sell"},
+	{id="equip",title="Equip a weapon",detail="Craft or buy a weapon and wield it (Satchel or Hero › Gear).",coins=50,
+		check=function(p) return type(tab(p.equipment).weapon) == "string" end},
+	{id="kill",title="Defeat a creature",detail="Brambleback Boars roam Sunwheel Downs. Click a creature to strike.",coins=60,
+		check=function(p) return whole(p.kills) > 0 or anyCount(p.bestiary) end},
+	{id="quest",title="Accept a quest",detail="Accept a quest from a regional questgiver (gold ! above their head).",coins=75,
+		check=function(p) return next(tab(tab(p.regionQuests).accepted)) ~= nil or next(tab(p.questsDone)) ~= nil or whole(p.questCompleted) > 0 end},
+	{id="warp",title="Learn a warp",detail="Buy a warp scroll from Ilsabet the Warp Keeper and read it.",coins=100,
+		check=function(_, ctx) return next(tab(tab(ctx).warps)) ~= nil end},
+}
+G.COMPLETE_COINS = 250
+G.StepById = {}
+G.MAX_OWED = G.COMPLETE_COINS
+for i, s in ipairs(G.Steps) do s.index = i; G.StepById[s.id] = s; G.MAX_OWED += s.coins end
+G.Flags = {visit=true, talk=true, sell=true}
+-- A veteran's first load completes the whole path (no rewards).
+G.VETERAN_TOTAL_LEVEL = 60
+G.VETERAN_CONTRACTS = 2
+-- Is step `s` satisfied right now? (flags are p.guide.flags)
+function G.satisfied(p, s, ctx)
+	if s.flag then return tab(tab(tab(p).guide).flags)[s.flag] == true end
+	return s.check(tab(p), ctx) == true
+end
+-- Sidebar view: {step, total, done, id, title, detail, coins, complete}
+function G.view(guide)
+	guide = tab(guide)
+	local done = tab(guide.done)
+	local n = 0
+	for _, s in ipairs(G.Steps) do if done[s.id] then n += 1 end end
+	for _, s in ipairs(G.Steps) do
+		if not done[s.id] then
+			return {step=s.index, total=#G.Steps, done=n, id=s.id, title=s.title, detail=s.detail, coins=s.coins, complete=false}
+		end
+	end
+	return {step=#G.Steps, total=#G.Steps, done=n, complete=true, title="Path complete", detail="Explore the isles: train skills and raise your Isle Renown."}
+end
+
+-- Announcements ------------------------------------------------------------------
+-- Server queue entries {kind, ...} -> {head, body, color} for the toast and chat line.
+function F.announceText(e)
+	e = tab(e)
+	local item = type(e.item) == "string" and Data.Items[e.item]
+	if e.kind == "collection" then
+		return {head="COLLECTION UNLOCKED", body=item and item.name or tostring(e.item), color="F7C548"}
+	elseif e.kind == "collectionTier" then
+		return {head="COLLECTION LEVEL UP", body=(item and item.name or tostring(e.item)) .. " " .. whole(e.tier), color="FFAA00"}
+	elseif e.kind == "skill" then
+		return {head="SKILL LEVEL UP", body=tostring(e.skill) .. " " .. whole(e.level) .. (if whole(e.coins) > 0 then "  ·  +" .. whole(e.coins) .. " coins" else ""), color="55FFFF"}
+	elseif e.kind == "objective" then
+		return {head="NEW OBJECTIVE", body=tostring(e.title), color="FFFF55"}
+	elseif e.kind == "renown" then
+		local t = RN.tier(whole(e.level))
+		return {head=string.upper(RN.NAME) .. " " .. whole(e.level), body=t.title .. (if type(e.reward) == "string" then "  ·  " .. e.reward else ""), color=t.color}
+	elseif e.kind == "guide" then
+		return {head=string.upper(G.NAME), body=tostring(e.title) .. (if whole(e.coins) > 0 then "  ·  +" .. whole(e.coins) .. " coins" else ""), color="6FE3C8"}
+	end
+	return {head="NOTICE", body=tostring(e.text or ""), color="FFFFFF"}
+end
+F.ANNOUNCE_MAX = 12 -- queued per profile between flushes
+
+-- Shop quantities --------------------------------------------------------------
+-- rqBuy "Role:i[:qty]", skillBuy "Skill:Item[:qty]", petShop "Item[:qty]".
+-- qty counts lots (an offer of 5× buys 5 per lot), 1..MAX_LOTS per call, at the
+-- same per-unit price (the ≥ 1.3 × value rule holds per unit).
+F.Shop = {MAX_LOTS=64, Presets={1,8,16,32,64}}
+-- Splits a trailing ":qty" off a shop item string with `parts` base segments.
+-- Returns base, qty (1 when absent) or nil for a malformed quantity.
+function F.splitQty(item, parts)
+	if type(item) ~= "string" or #item == 0 or #item > 64 then return nil end
+	local segs = string.split(item, ":")
+	if #segs == parts then return item, 1 end
+	if #segs ~= parts + 1 then return nil end
+	local raw = segs[#segs]
+	if not string.match(raw, "^[1-9]%d?$") then return nil end
+	local qty = tonumber(raw)
+	if not qty or qty < 1 or qty > F.Shop.MAX_LOTS then return nil end
+	table.remove(segs)
+	return table.concat(segs, ":"), qty
+end
+
+-- Skyward Vents (launch pads) ----------------------------------------------------
+-- Gated by the destination region's access rules (IsleRegionAccess); the world
+-- sets FastTravelAt, plays a short arc and lands the rider server-side.
+local V = {}
+Data.Vents = V
+V.COOLDOWN = 10      -- seconds per rider
+V.FLIGHT = 1.6       -- seconds of arc before the server lands the rider
+V.ARC_HEIGHT = 70    -- studs above the higher end
+V.RANGE = 9          -- the rider must stand this close to the vent
+V.List = {
+	{id="MosswakeUpdraft",name="Mosswake Updraft",isle="Mosswake Grove",to="Windpine",land="Windpine Grove",color="9BD18B"},
+	{id="WindpineDowndraft",name="Windpine Downdraft",isle="Windpine Grove",to="Meadow",land="Mosswake Grove",color="9BD18B"},
+	{id="ShoalwardPlume",name="Shoalward Plume",isle="Meadow Reach",to="Tidewater",land="Tidewater Shoals",color="5EC8D8"},
+	{id="TidewaterSpout",name="Tidewater Spout",isle="Tidewater Shoals",to="Meadow",land="Mosswake Grove",color="5EC8D8"},
+	{id="CinderChimney",name="Cinder Chimney",isle="Cinder Shelf",to="Tempest",land="Tempest Spire",color="FF8A3D"},
+	{id="StormSluice",name="Storm Sluice",isle="Tempest Spire",to="Quarry",land="Cinder Shelf",color="C6DCFF"},
+}
+V.ById = {}
+for _, v in ipairs(V.List) do V.ById[v.id] = v end
+-- Arc height at t ∈ [0,1] from ya to yb peaking `height` above the higher end
+-- (a quadratic through both ends and the peak at t = 0.5).
+function V.arcY(ya, yb, t, height)
+	t = math.clamp(t, 0, 1)
+	local top = math.max(ya, yb) + (height or V.ARC_HEIGHT)
+	return (1 - t) * (1 - 2 * t) * ya + 4 * t * (1 - t) * top + t * (2 * t - 1) * yb
+end
+
+-- Resonance (Magical Power stat tuning) -------------------------------------------
+-- The Resonance Keeper in Compass Quay tunes your accessory bag's Magical Power
+-- into one stat template. Stats = weight × MP^0.75 (applied through
+-- p.perkStats.resonance; no Health / Defense, so Data.PerkBudget is unaffected).
+local R = {}
+Data.Resonance = R
+R.NAME = "Resonance"
+R.EXPONENT = 0.75
+R.SWITCH_FEE = 250
+R.SWITCH_COOLDOWN = 120
+R.VISIT_SECONDS = 300
+R.Templates = {
+	{id="Emberkeen",name="Emberkeen",minPower=0,color="FF6B5A",text="Raw striking power.",weights={strength=0.45,critDamage=0.75}},
+	{id="Galewise",name="Galewise",minPower=0,color="DDEEFF",text="Quick feet and a sure eye.",weights={speed=0.12,critChance=0.12,strength=0.2}},
+	{id="Starlore",name="Starlore",minPower=10,color="55FFFF",text="Mana for spellcasters.",weights={intelligence=1.6,critDamage=0.3}},
+	{id="Tidefortune",name="Tidefortune",minPower=25,color="FF55FF",text="Luck on every drop.",weights={magicFind=0.05,petLuck=0.05,strength=0.2}},
+	{id="Lodestone",name="Lodestone",minPower=25,color="FFAA00",text="For miners.",weights={miningFortune=0.5,miningSpeed=1.5}},
+	{id="Verdance",name="Verdance",minPower=25,color="8EE05A",text="For foragers and farmers.",weights={foragingFortune=0.45,farmingFortune=0.45}},
+	{id="Bladestorm",name="Bladestorm",minPower=60,color="F7C548",text="Balanced fury for veterans.",weights={strength=0.3,critChance=0.08,critDamage=0.45,attackSpeed=0.06}},
+}
+R.ById = {}
+for _, t in ipairs(R.Templates) do R.ById[t.id] = t end
+function R.scale(power) return whole(power) ^ R.EXPONENT end
+function R.stats(id, power)
+	local t = type(id) == "string" and R.ById[id]
+	if not t or whole(power) < t.minPower then return {} end
+	local s = R.scale(power)
+	local out = {}
+	for stat, w in pairs(t.weights) do
+		local v = math.floor(w * s * 10) / 10
+		if v > 0 then out[stat] = v end
+	end
+	return out
+end
+
+-- The Resonance Keeper (Compass Quay). A regional folk entry so the World Art
+-- section places Anchor_NPC_Resonator and npc.server.lua stands the rig on it.
+local T = Data.Townsfolk
+local RA = Data.RegionArt
+local keeper = {role="Resonator",region="Hub",name="Oriel Thrumwright",title="Resonance Keeper",portrait="🔮",kind="resonance",
+	look={skin="C68E62",shirt="35285A",pants="1E1B2E",shoes="15121F",accent="9FE6F2",hair="D9D2F2",hat="feather",held="staff",cape="5A3F8C",spectacles=true},
+	greet="Your trinkets hum, wayfarer. Let me tune that hum into something you can feel. One resonance at a time."}
+table.insert(RA.Folk, keeper)
+RA.FolkByRole[keeper.role] = keeper
+T.Verbs.resonanceVisit = {item=false}
+T.Verbs.guideTalk = {item=false}
+T.Verbs.guideClaim = {item=false}
+T.Conditions.guideTalkActive = function(s)
+	local g = tab(tab(s).guide)
+	return g.id == "talk"
+end
+T.Conditions.guideRewardReady = function(s)
+	return whole(tab(tab(s).guide).owed) > 0
+end
+T.NPCs.Resonator = {name=keeper.name,title=keeper.title,region="Hub",portrait=keeper.portrait,look=keeper.look,start="hello",anchorOnly=true,folk="resonance",
+	nodes={
+		hello={text=keeper.greet,options={
+			{label="Tune my Magical Power",verb="resonanceVisit"},
+			{label="How does resonance work?",to="explain"},
+			{label="Farewell",close=true}}},
+		explain={text="Every accessory in your bag adds Magical Power. Pick a resonance and I turn that power into stats; more power, stronger tuning. The first tuning is free; changing it costs "
+			.. R.SWITCH_FEE .. " coins and the hum needs " .. R.SWITCH_COOLDOWN // 60 .. " minutes to settle.",options={
+			{label="Tune my Magical Power",verb="resonanceVisit"},
+			{label="Back",to="hello"},
+			{label="Farewell",close=true}}},
+	}}
+table.insert(T.RegionFolkOrder, keeper.role)
+-- Pell offers the onboarding talk step.
+local pell = T.NPCs.Guide
+if pell and pell.nodes and pell.nodes.hello then
+	table.insert(pell.nodes.hello.options, 1, {label="I'm walking the Wayfarer's Path",verb="guideTalk",when="guideTalkActive"})
+	table.insert(pell.nodes.hello.options, 2, {label="Claim my Wayfarer's Path rewards",verb="guideClaim",when="guideRewardReady"})
+end
+end
+-- <<< END MMO Features <<<
+------------------------------------------------------------------------------
+
 return Data
