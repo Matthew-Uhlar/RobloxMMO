@@ -848,14 +848,16 @@ Data.MAX_PERK_SLOTS = 6
 Data.MAX_WORKER_HASTE = 0.3
 
 -- Human-readable text for one check (shared by server messages and the UI).
-function Data.describeCheck(o)
+-- regional = true: a regional quest objective (kills / collect / gather count
+-- since the quest was accepted, so "collect" is not a lifetime total there).
+function Data.describeCheck(o, regional)
 	local function nameOf(id) local def = Data.Items[id]; return def and def.name or tostring(id) end
 	local kind = type(o) == "table" and o.kind
 	if kind == "contracts" then return "Claim "..o.count.." guild contracts"
 	elseif kind == "quest" then local qd = Data.QuestById[o.quest]; return "Complete "..(qd and qd.title or tostring(o.quest))
 	elseif kind == "questPoints" then return o.count.." Quest Points"
 	elseif kind == "level" then return o.skill.." level "..o.level
-	elseif kind == "collect" then return "Collect "..o.count.." "..nameOf(o.item).." (lifetime)"
+	elseif kind == "collect" then return "Collect "..o.count.." "..nameOf(o.item)..(if regional then " (since accepting)" else " (lifetime)")
 	elseif kind == "collectionTier" then return nameOf(o.item).." collection tier "..o.tier
 	elseif kind == "have" then return (if o.consume then "Hand in " else "Hold ")..o.count.." "..nameOf(o.item)
 	elseif kind == "kills" then local m = Data.Monsters[o.monster]; return "Defeat "..o.count.." "..(m and m.name or tostring(o.monster))
@@ -2831,7 +2833,7 @@ end
 -- Quest checks: laps {course,count} and catches {creature,count}.
 ------------------------------------------------------------------------------
 local describe = Data.describeCheck
-function Data.describeCheck(o)
+function Data.describeCheck(o, ...) -- ... = regional flag (§33), passed through
 	local kind = type(o) == "table" and o.kind
 	if kind == "laps" then
 		local course = AG.CourseById[o.course]
@@ -2840,7 +2842,7 @@ function Data.describeCheck(o)
 		local creature = HU.CreatureById[o.creature]
 		return "Catch "..o.count.." "..(creature and creature.name or tostring(o.creature))
 	end
-	return describe(o)
+	return describe(o, ...)
 end
 local function laps(course, count) return {kind="laps",course=course,count=count} end
 local function catches(creature, count) return {kind="catches",creature=creature,count=count} end
@@ -6440,7 +6442,7 @@ end
 -- Quest checks: offerings {count, remains?} and thefts {target, count}.
 ------------------------------------------------------------------------------
 local describe = Data.describeCheck
-function Data.describeCheck(o)
+function Data.describeCheck(o, ...) -- ... = regional flag (§33), passed through
 	local kind = type(o) == "table" and o.kind
 	if kind == "offerings" then
 		local r = o.remains and PR.RemainsById[o.remains]
@@ -6450,7 +6452,7 @@ function Data.describeCheck(o)
 		local verb = t and TH.Kinds[t.kind].verb or "Rob"
 		return verb.." the "..(t and t.name or tostring(o.target)).." "..o.count.." "..(if o.count == 1 then "time" else "times")
 	end
-	return describe(o)
+	return describe(o, ...)
 end
 local function offerings(count, remains) return {kind="offerings",count=count,remains=remains} end
 local function thefts(target, count) return {kind="thefts",target=target,count=count} end
@@ -11000,7 +11002,7 @@ for _, q in ipairs(RA.Quests) do
 end
 -- Human-readable text for the new objective kinds.
 local describe = Data.describeCheck
-function Data.describeCheck(o)
+function Data.describeCheck(o, ...) -- ... = regional flag (§33), passed through
 	if type(o) == "table" and o.kind == "talk" then
 		local f = RA.FolkByRole[o.npc]
 		return "Speak with " .. (if f then f.name else tostring(o.npc))
@@ -11008,7 +11010,7 @@ function Data.describeCheck(o)
 		local l = RA.LandmarkById[o.landmark]
 		return "Survey " .. (if l then l.name else tostring(o.landmark))
 	end
-	return describe(o)
+	return describe(o, ...)
 end
 -- Claim items a giver's dialogue may send (quest id, or "id:Skill" for lamps;
 -- open lamps offer three common picks here, every skill from the Journal).
@@ -11081,7 +11083,7 @@ function RA.progressText(s, q)
 	for j, o in ipairs(q.objectives) do
 		local pr = tab(tab(entry.objectives)[j])
 		local have, need = tonumber(pr[1]) or 0, tonumber(pr[2]) or 1
-		table.insert(lines, (if have >= need then "✓ " else "• ") .. Data.describeCheck(o) .. (if need > 1 then " (" .. math.min(have, need) .. "/" .. need .. ")" else ""))
+		table.insert(lines, (if have >= need then "✓ " else "• ") .. Data.describeCheck(o, true) .. (if need > 1 then " (" .. math.min(have, need) .. "/" .. need .. ")" else ""))
 	end
 	local head = if st == "active" then "\"" .. q.title .. "\" so far:" else "If you take on \"" .. q.title .. "\", you'll need to:"
 	return head .. "\n" .. table.concat(lines, "\n")
@@ -11645,87 +11647,150 @@ HP.ContractSpecs = {
 	{"region:Skyreach"},
 	{"station:Forge", "anchor:Waypoint_Forge"},
 }
--- Where an item comes from: a gathering node, a recipe's station or a creature
--- that often drops it (built once, lazily).
+-- Region access for waypoints: ctx.access = {[regionId] = bool} (the server's
+-- regionAllowed / the snapshot's depth.regions). Unknown regions or no access
+-- map count as open (pure data callers, tests).
+local function regionOpen(ctx, region)
+	local access = tab(ctx).access
+	if type(region) ~= "string" or type(access) ~= "table" then return true end
+	return access[region] ~= false
+end
+-- "Unlocks with <region>: <requirements>" for a locked region.
+function HP.requirement(region)
+	local def = Data.RegionById[region]
+	local E = Data.Endgame
+	local parts = if def and E and E.requirementParts then E.requirementParts(def) else {}
+	return "Unlocks with " .. (if def then def.name else tostring(region)) .. (if #parts > 0 then ": " .. table.concat(parts, ", ") else "")
+end
+local function nodeRegion(id)
+	local W = Data.Workers
+	return W and W.ResourceRegion and W.ResourceRegion[id] or nil
+end
+-- Where an item comes from: candidates {specs, region, level, rank} sorted lowest
+-- level first (a gathering node, a recipe's station, every creature with a
+-- >= 10 % drop); built once, lazily.
 local sources
-local function itemSource(id)
-	if type(id) ~= "string" then return nil end
-	if Data.ResourceSkill[id] then return {"gather:" .. id} end
-	if not sources then
-		sources = {}
-		local rids = {}
-		for rid in pairs(Data.Recipes) do table.insert(rids, rid) end
-		table.sort(rids)
-		for _, rid in ipairs(rids) do
-			local d = Data.Recipes[rid]
-			if type(d) == "table" and type(d.output) == "string" and type(d.station) == "string" and not sources[d.output] then
-				sources[d.output] = {"station:" .. d.station}
-			end
+local function addSource(id, src)
+	local list = sources[id] or {}
+	sources[id] = list
+	table.insert(list, src)
+end
+local function buildSources()
+	sources = {}
+	local station = {}
+	for _, tiers in pairs(Data.ResourceTiers) do
+		for _, r in ipairs(tab(tiers)) do
+			local region = nodeRegion(r.id)
+			local specs = {"gather:" .. r.id}
+			if region then table.insert(specs, "region:" .. region) end
+			addSource(r.id, {specs = specs, region = region, level = whole(r.level), rank = 1})
 		end
-		local CR = Data.Crafting
-		for _, rid in ipairs(tab(CR and CR.RecipeOrder)) do
-			local d = CR.Recipes[rid]
-			if d and type(d.station) == "string" and not sources[d.output] then sources[d.output] = {"station:" .. d.station} end
+	end
+	local rids = {}
+	for rid in pairs(Data.Recipes) do table.insert(rids, rid) end
+	table.sort(rids)
+	for _, rid in ipairs(rids) do
+		local d = Data.Recipes[rid]
+		if type(d) == "table" and type(d.output) == "string" and type(d.station) == "string" and not station[d.output] then
+			addSource(d.output, {specs = {"station:" .. d.station}, level = whole(d.level), rank = 2})
+			station[d.output] = true
 		end
-		local ids = {}
-		for mid in pairs(Data.Monsters) do table.insert(ids, mid) end
-		table.sort(ids)
-		for _, mid in ipairs(ids) do
-			local m = Data.Monsters[mid]
-			for _, drop in ipairs(tab(m.drops)) do
-				if type(drop) == "table" and type(drop.item) == "string" and not sources[drop.item] and num(drop.chance) >= 0.1 then
-					local list = {"monster:" .. mid}
-					if type(m.region) == "string" then table.insert(list, "region:" .. m.region) end
-					sources[drop.item] = list
-				end
+	end
+	local CR = Data.Crafting
+	for _, rid in ipairs(tab(CR and CR.RecipeOrder)) do
+		local d = CR.Recipes[rid]
+		if d and type(d.station) == "string" and type(d.output) == "string" and not station[d.output] then
+			addSource(d.output, {specs = {"station:" .. d.station}, level = whole(d.level), rank = 2})
+			station[d.output] = true
+		end
+	end
+	local ids = {}
+	for mid in pairs(Data.Monsters) do table.insert(ids, mid) end
+	table.sort(ids)
+	for _, mid in ipairs(ids) do
+		local m = Data.Monsters[mid]
+		local seen = {}
+		for _, drop in ipairs(tab(m.drops)) do
+			if type(drop) == "table" and type(drop.item) == "string" and not seen[drop.item] and num(drop.chance) >= 0.1 then
+				seen[drop.item] = true
+				local list = {"monster:" .. mid}
+				local region = if type(m.region) == "string" then m.region else nil
+				if region then table.insert(list, "region:" .. region) end
+				addSource(drop.item, {specs = list, region = region, level = whole(m.level), rank = 3, id = mid})
 			end
 		end
 	end
-	return sources[id]
+	for _, list in pairs(sources) do
+		table.sort(list, function(a, b)
+			if a.level ~= b.level then return a.level < b.level end
+			if a.rank ~= b.rank then return a.rank < b.rank end
+			return tostring(a.id or a.specs[1]) < tostring(b.id or b.specs[1])
+		end)
+	end
+end
+-- specs of the lowest-level source the player can reach, or nil plus the
+-- requirement of the nearest locked one (nil, nil: no known source).
+local function itemSource(id, ctx)
+	if type(id) ~= "string" then return nil end
+	if not sources then buildSources() end
+	local locked
+	for _, src in ipairs(tab(sources[id])) do
+		if regionOpen(ctx, src.region) then return table.clone(src.specs) end
+		locked = locked or src.region
+	end
+	return nil, if locked then HP.requirement(locked) else nil
 end
 HP.itemSource = itemSource
--- The best gathering node a skill level reaches (for "reach level N" steps).
-local function bestNode(skill, lvl)
+-- The best gathering node a skill level reaches in an open region (for "reach level N" steps).
+local function bestNode(skill, lvl, ctx)
 	local best
-	for _, r in ipairs(tab(Data.ResourceTiers[skill])) do if r.level <= math.max(1, lvl) then best = r end end
+	for _, r in ipairs(tab(Data.ResourceTiers[skill])) do
+		if r.level <= math.max(1, lvl) and regionOpen(ctx, nodeRegion(r.id)) then best = r end
+	end
 	return best and best.id
 end
--- Waypoint specs for one check (nil when there is nowhere in particular to go).
+-- Waypoint specs for one check: specs, or nil plus a requirement text when the
+-- place lies in a locked region (nil, nil: nowhere in particular to go).
+-- ctx = {level = current level for "level" checks, access = {[region] = bool}}.
 function HP.specsFor(o, ctx)
 	o = tab(o)
 	local kind = o.kind
+	local function gate(region, list)
+		if regionOpen(ctx, region) then return list end
+		return nil, HP.requirement(region)
+	end
 	if kind == "kills" then
 		local m = type(o.monster) == "string" and Data.Monsters[o.monster]
 		if not m then return nil end
 		local list = {"monster:" .. o.monster}
 		if type(m.region) == "string" then table.insert(list, "region:" .. m.region) end
-		return list
+		return gate(m.region, list)
 	elseif kind == "collect" or kind == "have" or kind == "collectionTier" or kind == "craft" then
-		return itemSource(o.item)
-	elseif kind == "gather" then return {"region:" .. tostring(o.region)}
+		return itemSource(o.item, ctx)
+	elseif kind == "gather" then return gate(o.region, {"region:" .. tostring(o.region)})
 	elseif kind == "talk" then return {"npc:" .. tostring(o.npc)}
 	elseif kind == "visit" then
 		local l = Data.RegionArt and Data.RegionArt.LandmarkById[o.landmark]
 		local list = {"anchor:Waypoint_Landmark_" .. tostring(o.landmark)}
 		if l then table.insert(list, "region:" .. l.region) end
-		return list
+		return gate(l and l.region, list)
 	elseif kind == "level" then
 		if Data.ResourceTiers[o.skill] then
-			local node = bestNode(o.skill, whole(tab(ctx).level))
+			local node = bestNode(o.skill, whole(tab(ctx).level), ctx)
 			return if node then {"gather:" .. node} else nil
 		elseif o.skill == "Combat" then return {"monster:BramblebackBoar", "region:Meadow"} end
 		return nil
 	elseif kind == "build" then return {"home"}
 	elseif kind == "slayer" then return {"npc:Slayer", "anchor:Waypoint_SlayerMaster"}
 	elseif kind == "contracts" then return {"npc:Guide"}
-	elseif kind == "flag" and o.flag == "skyreachVisited" then return {"region:Skyreach"}
+	elseif kind == "flag" and o.flag == "skyreachVisited" then return gate("Skyreach", {"region:Skyreach"})
 	elseif kind == "laps" then return {"anchor:Waypoint_Agility_" .. tostring(o.course)}
 	elseif kind == "catches" then return {"anchor:Waypoint_Hunting_" .. tostring(o.creature)}
 	end
 	return nil
 end
-local function describe(o)
-	local ok, text = pcall(Data.describeCheck, o)
+local function describe(o, regional)
+	local ok, text = pcall(Data.describeCheck, o, regional)
 	return if ok and type(text) == "string" then text else "Task"
 end
 -- {have, need} from a Journal.state progress list (have capped at need).
@@ -11735,10 +11800,14 @@ local function pairOf(list, i, o)
 	if need <= 0 then need = math.max(1, num(tab(o).count) + num(tab(o).level) + num(tab(o).tier)) end
 	return math.min(num(pair[1]), need), need
 end
-local function checkStep(o, list, i, phase)
+-- ctx: {access, regional}; a step in a locked region carries `blocked` (the
+-- requirement text) instead of waypoint specs.
+local function checkStep(o, list, i, phase, ctx)
+	ctx = tab(ctx)
 	local have, need = pairOf(list, i, o)
-	return {text = describe(o), have = have, need = need, met = have >= need, phase = phase,
-		specs = HP.specsFor(o, {level = have}), npc = if tab(o).kind == "talk" then o.npc else nil}
+	local specs, blocked = HP.specsFor(o, {level = have, access = ctx.access})
+	return {text = describe(o, ctx.regional and phase == "task"), have = have, need = need, met = have >= need, phase = phase,
+		specs = specs, blocked = if specs then nil else blocked, npc = if tab(o).kind == "talk" then o.npc else nil}
 end
 local function finish(g)
 	g.total, g.done = #g.steps, 0
@@ -11749,7 +11818,7 @@ local function finish(g)
 	return g
 end
 -- entry: a Journal.state quest row {done, available, ready, requires = {{have, need}}, objectives = {...}};
--- ctx.accepted: a regional quest taken from its giver.
+-- ctx.accepted: a regional quest taken from its giver; ctx.access: region access.
 function HP.questGuide(q, entry, ctx)
 	entry, ctx = tab(entry), tab(ctx)
 	local RA = Data.RegionArt
@@ -11760,12 +11829,13 @@ function HP.questGuide(q, entry, ctx)
 		table.insert(g.steps, {text = "Quest complete", have = 1, need = 1, met = true, phase = "claim"})
 		return finish(g)
 	end
-	for i, o in ipairs(q.requires) do table.insert(g.steps, checkStep(o, entry.requires, i, "requires")) end
+	local sctx = {access = ctx.access, regional = q.giver ~= nil}
+	for i, o in ipairs(q.requires) do table.insert(g.steps, checkStep(o, entry.requires, i, "requires", sctx)) end
 	if giver then
 		table.insert(g.steps, {text = "Accept the quest from " .. giver.name, have = if ctx.accepted then 1 else 0, need = 1,
 			met = ctx.accepted == true, phase = "accept", specs = {"npc:" .. q.giver}, npc = q.giver})
 	end
-	for i, o in ipairs(q.objectives) do table.insert(g.steps, checkStep(o, entry.objectives, i, "task")) end
+	for i, o in ipairs(q.objectives) do table.insert(g.steps, checkStep(o, entry.objectives, i, "task", sctx)) end
 	if giver then
 		table.insert(g.steps, {text = "Return to " .. giver.name .. " to hand it in", have = 0, need = 1, met = false, phase = "claim",
 			specs = {"npc:" .. q.giver}, npc = q.giver})
@@ -11778,11 +11848,12 @@ function HP.questGuide(q, entry, ctx)
 	return g
 end
 -- tier: a Journal.state diary tier {tier, tasks = {{have, need}}, claimable, claimed}.
-function HP.diaryGuide(diary, tierName, tier)
+function HP.diaryGuide(diary, tierName, tier, ctx)
 	tier = tab(tier)
+	local sctx = {access = tab(ctx).access}
 	local def = diary.tiers[tierName]
 	local g = {id = "diary:" .. diary.region, kind = "diary", title = diary.name .. " (" .. tierName .. ")", steps = {}}
-	for i, o in ipairs(def.tasks) do table.insert(g.steps, checkStep(o, tier.tasks, i, "task")) end
+	for i, o in ipairs(def.tasks) do table.insert(g.steps, checkStep(o, tier.tasks, i, "task", sctx)) end
 	table.insert(g.steps, {text = "Claim the " .. tierName .. " tier in Journal › Diaries", have = if tier.claimed then 1 else 0, need = 1,
 		met = tier.claimed == true, phase = "claim"})
 	finish(g)
@@ -11953,10 +12024,26 @@ function GL.rate(samples, now)
 end
 
 -- Market price history -----------------------------------------------------
--- Hourly buckets {h, n (units), v (coins), lo, hi} (h = os.time() // 3600) kept
--- for PR.HOURS inside the shared economy keys (bazaar_v1_<item>.history and
--- auction_v1_<cat>.history[item]), written in the same atomic transform as the
--- trade: history is cross-server and a replayed order never counts twice.
+-- Hourly buckets kept for PR.HOURS inside the shared economy keys
+-- (bazaar_v1_<item>.history and auction_v1_<cat>.history[item]), written in the
+-- same atomic transform as the trade: history is cross-server and a replayed
+-- order never counts twice.
+-- A bucket is {h = os.time() // 3600, n, v, lo, hi, m, c, t, x}:
+--   n / v / lo / hi  counted units, their coins, low and high (averages only);
+--   x                units left out of the averages (outliers, pair-cap excess);
+--   m                volume-weighted median of every pair-capped fill (the next
+--                    hour's outlier reference);
+--   c                volume-weighted median of the counted fills (omitted when = m);
+--   t                distinct traders (makers and takers) in the hour.
+-- Only the newest (open) bucket also carries q = {{price, units, counted}}
+-- (a price ladder, <= caps.levels rows), u = {trader ids} (<= caps.ids) and
+-- pr = {["a|b"] = units} (<= caps.pairs, then one shared "*" row); they are
+-- folded into m / c / t and dropped once the hour is over.
+-- Wash-trade resistance (§33 QC M1): a fill more than PR.OUTLIER x (or under
+-- 1 / PR.OUTLIER x) the previous bucket's median, and any units one maker /
+-- taker pair trades beyond caps.pair in one hour, are left out of the averages;
+-- prices shown are per-bucket medians; fewer than PR.THIN distinct traders in
+-- the window reads "thin market". No tax is involved.
 local PR = {}
 SY.Prices = PR
 PR.HOURS = 168            -- 7 days of hourly buckets
@@ -11964,36 +12051,176 @@ PR.AUCTION_BUCKETS = 1200 -- total buckets per auction category key (oldest evic
 PR.AUCTION_ITEMS = 96     -- distinct items tracked per auction category key
 PR.SPARK = 28             -- sparkline points: 7 days at 6 hours each
 PR.CHECKS = 8             -- price checks remembered per player (session)
+PR.OUTLIER = 3            -- fills > 3x / < 1/3x the previous bucket's median skip the averages
+PR.THIN = 3               -- fewer distinct traders than this in the window: "thin market"
+PR.BazaarCaps = {pair = 160, levels = 24, ids = 8, pairs = 32} -- units per maker/taker pair per hour
+PR.AuctionCaps = {pair = 2, levels = 6, ids = 4, pairs = 6}    -- sales per seller/buyer pair per hour
 function PR.hour(t) return math.floor(num(t) / 3600) end
--- Drops malformed buckets and buckets older than 7 days (keeps hour order).
+-- Volume-weighted median of a price ladder (field 2 = every pair-capped unit, 3 = counted).
+local function median(q, field)
+	local rows, total = {}, 0
+	for _, e in ipairs(tab(q)) do
+		local price, w = whole(tab(e)[1]), whole(tab(e)[field])
+		if price > 0 and w > 0 then table.insert(rows, {price, w}); total += w end
+	end
+	if total <= 0 then return nil end
+	table.sort(rows, function(a, b) return a[1] < b[1] end)
+	local acc = 0
+	for _, r in ipairs(rows) do
+		acc += r[2]
+		if acc * 2 >= total then return r[1] end
+	end
+	return rows[#rows][1]
+end
+PR.median = median
+-- A bucket's reference median (every pair-capped fill), or nil.
+local function refOf(b)
+	if type(b.q) == "table" then local m = median(b.q, 2); if m then return m end end
+	if num(b.m) > 0 then return whole(b.m) end
+	if whole(b.n) > 0 then return math.floor(whole(b.v) / whole(b.n) + 0.5) end
+	return nil
+end
+-- A bucket's shown price: the median of its counted fills (nil when nothing counted).
+local function priceOf(b)
+	if whole(b.n) <= 0 then return nil end
+	if type(b.q) == "table" then local c = median(b.q, 3); if c then return c end end
+	if num(b.c) > 0 then return whole(b.c) end
+	if num(b.m) > 0 then return whole(b.m) end
+	return math.floor(whole(b.v) / whole(b.n) + 0.5) -- legacy bucket (no medians)
+end
+PR.priceOf = priceOf
+-- Distinct traders in a bucket (legacy buckets, which never counted, are not "thin").
+local function tradersOf(b)
+	if type(b.u) == "table" then return math.max(#b.u, whole(b.t)) end
+	if b.t == nil then return PR.THIN end
+	return whole(b.t)
+end
+-- Folds the open-hour ladders into m / c / t.
+local function close(b)
+	if type(b.q) ~= "table" and b.u == nil and b.pr == nil then return end
+	local m, c = refOf(b), priceOf(b)
+	b.t = tradersOf(b)
+	b.m = m
+	b.c = if c and c ~= m then c else nil
+	b.q, b.u, b.pr = nil, nil, nil
+end
+-- Drops malformed buckets and buckets older than 7 days; keeps a bucket up to
+-- one hour ahead (another server's clock may run slightly ahead), merges
+-- buckets sharing an hour, closes every bucket before `hour` and keeps hour order.
 function PR.prune(list, hour)
+	local byHour = {}
 	local i = 1
 	while i <= #list do
 		local b = list[i]
-		if type(b) ~= "table" or type(b.h) ~= "number" or b.h <= hour - PR.HOURS or b.h > hour then table.remove(list, i) else i += 1 end
+		if type(b) ~= "table" or type(b.h) ~= "number" or b.h ~= b.h or b.h <= hour - PR.HOURS or b.h > hour + 1 then
+			table.remove(list, i)
+		else
+			b.h = math.floor(b.h)
+			local same = byHour[b.h]
+			if same then
+				close(same); close(b)
+				local n = whole(same.n) + whole(b.n)
+				if n > 0 then
+					same.c = math.floor(((priceOf(same) or 0) * whole(same.n) + (priceOf(b) or 0) * whole(b.n)) / n + 0.5)
+				end
+				same.m = same.m or b.m
+				same.n, same.v = n, whole(same.v) + whole(b.v)
+				same.x = if whole(same.x) + whole(b.x) > 0 then whole(same.x) + whole(b.x) else nil
+				if whole(b.n) > 0 then
+					same.lo = math.min(if same.lo then whole(same.lo) else math.huge, whole(b.lo))
+					same.hi = math.max(whole(same.hi), whole(b.hi))
+				end
+				same.t = math.max(tradersOf(same), tradersOf(b))
+				table.remove(list, i)
+			else
+				byHour[b.h] = b
+				i += 1
+			end
+		end
 	end
+	table.sort(list, function(a, b) return a.h < b.h end)
+	for _, b in ipairs(list) do if b.h < hour then close(b) end end
 	while #list > PR.HOURS do table.remove(list, 1) end
 	return list
 end
--- Adds one fill (units at a unit price) to a bucket list.
-function PR.record(list, hour, price, units)
+-- Adds units to a price ladder (merged into the nearest price once full).
+local function addLevel(q, price, units, counted, levels)
+	local best, bestD
+	for _, e in ipairs(q) do
+		if e[1] == price then best, bestD = e, 0; break end
+		local d = math.abs(e[1] - price)
+		if not bestD or d < bestD then best, bestD = e, d end
+	end
+	if not best or (bestD > 0 and #q < levels) then
+		table.insert(q, {price, units, counted})
+	else
+		best[2] += units; best[3] += counted
+	end
+end
+-- Adds one fill (units at a unit price) between traders a (maker / seller) and
+-- b (taker / buyer) to a bucket list. caps defaults to PR.BazaarCaps.
+function PR.record(list, hour, price, units, a, b, caps)
 	price, units = whole(price), whole(units)
 	if price <= 0 or units <= 0 then return list end
+	caps = if type(caps) == "table" then caps else PR.BazaarCaps
 	PR.prune(list, hour)
-	local last = list[#list]
-	if last and last.h == hour then
-		last.n = whole(last.n) + units; last.v = whole(last.v) + price * units
-		last.lo, last.hi = math.min(whole(last.lo), price), math.max(whole(last.hi), price)
-	else
-		table.insert(list, {h = hour, n = units, v = price * units, lo = price, hi = price})
+	local bucket, prev
+	for _, x in ipairs(list) do
+		if x.h == hour then bucket = x elseif x.h < hour then prev = x end
 	end
+	if not bucket then
+		bucket = {h = hour, n = 0, v = 0}
+		local at = #list + 1
+		for k, x in ipairs(list) do if x.h > hour then at = k; break end end
+		table.insert(list, at, bucket)
+	end
+	if type(bucket.q) ~= "table" then
+		-- Open (or re-open, after a clock-skewed close) the hour's ladders.
+		local q = {}
+		local m, c = refOf(bucket), priceOf(bucket)
+		if c then table.insert(q, {c, whole(bucket.n), whole(bucket.n)}) end
+		if m and m ~= c then table.insert(q, {m, 1, 0}) end
+		bucket.q, bucket.u, bucket.pr = q, {}, {}
+	end
+	-- Distinct traders (a bounded list of ids).
+	for _, id in ipairs({a or false, b or false}) do
+		id = if type(id) == "string" or type(id) == "number" then tostring(id) else nil
+		if id and #id <= 24 and #bucket.u < caps.ids and not table.find(bucket.u, id) then table.insert(bucket.u, id) end
+	end
+	-- Pair cap: units one maker / taker pair adds to this hour's averages.
+	local within = units
+	if a ~= nil and b ~= nil then
+		local x, y = tostring(a), tostring(b)
+		local key = if x < y then x .. "|" .. y else y .. "|" .. x
+		if #key > 49 then key = "*" end
+		if bucket.pr[key] == nil then
+			local rows = 0
+			for _ in pairs(bucket.pr) do rows += 1 end
+			if rows >= caps.pairs then key = "*" end
+		end
+		local used = whole(bucket.pr[key])
+		within = math.clamp(caps.pair - used, 0, units)
+		bucket.pr[key] = math.min(caps.pair, used + units)
+	end
+	-- Outliers against the previous bucket's median.
+	local ref = prev and refOf(prev)
+	local outlier = ref ~= nil and (price > ref * PR.OUTLIER or price * PR.OUTLIER < ref)
+	local counted = if outlier then 0 else within
+	if counted > 0 then
+		bucket.n = whole(bucket.n) + counted; bucket.v = whole(bucket.v) + price * counted
+		bucket.lo = math.min(if bucket.lo then whole(bucket.lo) else math.huge, price)
+		bucket.hi = math.max(whole(bucket.hi), price)
+	end
+	if units > counted then bucket.x = whole(bucket.x) + units - counted end
+	if within > 0 then addLevel(bucket.q, price, within, counted, caps.levels) end
 	return list
 end
--- Auction keys: one list per item under one bounded total.
-function PR.recordAuction(hist, item, hour, price)
+-- Auction keys: one list per item under one bounded total. The item just
+-- recorded is never the one evicted while another item can give up a bucket.
+function PR.recordAuction(hist, item, hour, price, seller, buyer)
 	local list = type(hist[item]) == "table" and hist[item] or {}
 	hist[item] = list
-	PR.record(list, hour, price, 1)
+	PR.record(list, hour, price, 1, seller, buyer, PR.AuctionCaps)
 	local items, total = 0, 0
 	for id, l in pairs(hist) do
 		if type(l) == "table" then PR.prune(l, hour) end
@@ -12002,40 +12229,55 @@ function PR.recordAuction(hist, item, hour, price)
 	while total > PR.AUCTION_BUCKETS or items > PR.AUCTION_ITEMS do
 		local oldestId, oldestH
 		for id, l in pairs(hist) do
-			if not oldestH or l[1].h < oldestH or (l[1].h == oldestH and id < oldestId) then oldestId, oldestH = id, l[1].h end
+			if id ~= item and (not oldestH or l[1].h < oldestH or (l[1].h == oldestH and id < oldestId)) then oldestId, oldestH = id, l[1].h end
 		end
-		if not oldestId then break end
+		if not oldestId then
+			-- Only the recorded item is left: trim its own oldest bucket, never its last.
+			local own = hist[item]
+			if not own or #own <= 1 then break end
+			oldestId = item
+		end
 		table.remove(hist[oldestId], 1)
 		total -= 1
 		if #hist[oldestId] == 0 then hist[oldestId] = nil; items -= 1 end
 	end
 	return hist
 end
--- Snapshot summary {item, last, avg24, vol24, avg7, vol7, lo7, hi7, spark = {PR.SPARK averages; 0 = no trades}, at}.
+-- Snapshot summary {item, last, avg24, vol24, avg7, vol7, lo7, hi7, traders24,
+-- traders7, thin, spark = {PR.SPARK prices; 0 = no trades}, at}. Averages are
+-- volume-weighted means of the per-bucket medians over counted units; traders
+-- are the most distinct traders seen in one hour of the window.
 function PR.summary(list, now, item)
 	local hour = PR.hour(now)
-	local out = {item = item, vol24 = 0, vol7 = 0, spark = {}, at = whole(now)}
+	local out = {item = item, vol24 = 0, vol7 = 0, traders24 = 0, traders7 = 0, spark = {}, at = whole(now)}
 	local v24, v7 = 0, 0
 	local sn, sv = {}, {}
 	local lastH
 	for _, b in ipairs(tab(list)) do
-		if type(b) == "table" and whole(b.n) > 0 then
-			local age = hour - num(b.h)
-			if age >= 0 and age < PR.HOURS then
-				local n, v = whole(b.n), whole(b.v)
-				out.vol7 += n; v7 += v
-				out.lo7 = math.min(out.lo7 or math.huge, whole(b.lo))
-				out.hi7 = math.max(out.hi7 or 0, whole(b.hi))
-				if age < 24 then out.vol24 += n; v24 += v end
-				local slot = PR.SPARK - age // (PR.HOURS // PR.SPARK)
-				sn[slot] = (sn[slot] or 0) + n; sv[slot] = (sv[slot] or 0) + v
-				if not lastH or num(b.h) >= lastH then lastH = num(b.h); out.last = math.floor(v / n + 0.5) end
+		if type(b) == "table" and type(b.h) == "number" and b.h == b.h then
+			local age = math.max(0, hour - b.h) -- a bucket up to an hour ahead (clock skew) counts as now
+			if b.h <= hour + 1 and age < PR.HOURS and (whole(b.n) > 0 or whole(b.x) > 0) then
+				local t = tradersOf(b)
+				out.traders7 = math.max(out.traders7, t)
+				if age < 24 then out.traders24 = math.max(out.traders24, t) end
+				local price = priceOf(b)
+				if price then
+					local n = whole(b.n)
+					out.vol7 += n; v7 += price * n
+					out.lo7 = math.min(out.lo7 or math.huge, if b.lo then whole(b.lo) else price)
+					out.hi7 = math.max(out.hi7 or 0, if b.hi then whole(b.hi) else price)
+					if age < 24 then out.vol24 += n; v24 += price * n end
+					local slot = PR.SPARK - age // (PR.HOURS // PR.SPARK)
+					sn[slot] = (sn[slot] or 0) + n; sv[slot] = (sv[slot] or 0) + price * n
+					if not lastH or b.h >= lastH then lastH = b.h; out.last = price end
+				end
 			end
 		end
 	end
 	for i = 1, PR.SPARK do out.spark[i] = if (sn[i] or 0) > 0 then math.floor(sv[i] / sn[i] + 0.5) else 0 end
 	out.avg24 = if out.vol24 > 0 then math.floor(v24 / out.vol24 + 0.5) else nil
 	out.avg7 = if out.vol7 > 0 then math.floor(v7 / out.vol7 + 0.5) else nil
+	out.thin = out.traders7 < PR.THIN or (out.vol24 > 0 and out.traders24 < PR.THIN)
 	return out
 end
 -- "Price check" line for tooltips and market cards.
@@ -12046,6 +12288,7 @@ function PR.text(s)
 	if s.avg24 then table.insert(parts, "24h avg " .. s.avg24 .. " (" .. whole(s.vol24) .. " sold)") else table.insert(parts, "no trades in 24h") end
 	table.insert(parts, "7d avg " .. s.avg7)
 	if s.lo7 and s.hi7 then table.insert(parts, "range " .. s.lo7 .. "–" .. s.hi7) end
+	if s.thin then table.insert(parts, "thin market") end
 	return table.concat(parts, "  ·  ")
 end
 -- Which shared key holds an item's history: bazaar (commodities) or its auction category.
@@ -12060,37 +12303,51 @@ end
 -- Per-player daily shop stock --------------------------------------------------
 -- p.shopStock = {day = UTC day index, n = {[key] = units bought today}}. The day
 -- only rolls forward (a server whose clock runs behind keeps the newer day).
--- Keys: "rq:<role>:<item>" (regional shops), "sv:<Skill>:<item>" (skill
--- vendors), "roost:<item>" (the Roost keeper). Limits count units, not lots.
+-- Limits are per ITEM across every shop (§33 QC M2): a regional shop, a skill
+-- vendor and the Roost keeper selling the same ware share one daily count, so
+-- the key is "it:<item>" whichever shop is asked (ST.key keeps its old
+-- signature for callers). Limits count units, not lots.
 local ST = {}
 SY.Stock = ST
-ST.Regional = {Tonic=64, CookedFish=64, AlloyIngot=64, ArcaneDust=64, StormFeather=32, MightDraught=16, Shard=16, Stormglass=8}
-ST.Vendor = {GaleDraught=32, SkymarkSatchel=64}
-ST.Roost = {PetCandy=16}
+ST.Limits = {Tonic=64, CookedFish=64, AlloyIngot=64, ArcaneDust=64, StormFeather=32, MightDraught=16, Shard=16, Stormglass=8,
+	GaleDraught=32, SkymarkSatchel=64, PetCandy=16}
 function ST.day(t) return math.floor(num(t) / 86400) end
+-- key("rq", role, item) / key("sv", skill, item) / key("roost", item) -> "it:<item>".
 function ST.key(shop, owner, item)
-	if shop == "roost" then return "roost:" .. tostring(owner) end
-	return shop .. ":" .. tostring(owner) .. ":" .. tostring(item)
+	if shop == "roost" then item = owner end
+	return "it:" .. tostring(item)
+end
+-- Does any shop sell this item (so its limit applies)?
+local sold
+local function soldAnywhere(id)
+	if not sold then
+		sold = {}
+		for _, f in ipairs(tab(Data.RegionArt and Data.RegionArt.Folk)) do
+			for _, o in ipairs(tab(f.shop)) do if type(o.item) == "string" then sold[o.item] = true end end
+		end
+		for _, v in pairs(tab(Data.SkillVendors)) do
+			for _, e in ipairs(tab(v.shop)) do if type(e.item) == "string" then sold[e.item] = true end end
+		end
+		local PD = Data.PetDepth
+		for id in pairs(tab(PD and PD.ShopByItem)) do sold[id] = true end
+	end
+	return sold[id] == true
 end
 -- Daily unit limit for a key, or nil (unlimited).
 function ST.limit(key)
 	if type(key) ~= "string" or #key > 64 then return nil end
-	local shop, owner, item = string.match(key, "^(%a+):(%w+):(%w+)$")
-	if shop == "rq" then
-		local f = Data.RegionArt and Data.RegionArt.FolkByRole[owner]
-		for _, o in ipairs(tab(f and f.shop)) do if o.item == item then return ST.Regional[item] end end
-		return nil
-	elseif shop == "sv" then
-		local v = Data.SkillVendors and Data.SkillVendors[owner]
-		for _, e in ipairs(tab(v and v.shop)) do if e.item == item then return ST.Vendor[item] end end
-		return nil
-	end
-	local id = string.match(key, "^roost:(%w+)$")
-	local PD = Data.PetDepth
-	if id and PD and PD.ShopByItem and PD.ShopByItem[id] then return ST.Roost[id] end
+	local id = string.match(key, "^it:(%w+)$")
+	if id and ST.Limits[id] and soldAnywhere(id) then return ST.Limits[id] end
 	return nil
 end
--- Rolls the record to today's UTC day (forward only); keeps only limited keys.
+-- The item a key counts: "it:<item>", or a legacy per-shop key
+-- ("rq:<role>:<item>", "sv:<Skill>:<item>", "roost:<item>") saved before M2.
+local function itemOfKey(key)
+	if type(key) ~= "string" or #key > 64 then return nil end
+	return string.match(key, "^it:(%w+)$") or string.match(key, "^%a+:%w+:(%w+)$") or string.match(key, "^roost:(%w+)$")
+end
+-- Rolls the record to today's UTC day (forward only); keeps only limited keys
+-- (legacy per-shop keys fold into their item's key).
 function ST.roll(rec, now)
 	rec = tab(rec)
 	local today = ST.day(now)
@@ -12102,8 +12359,10 @@ function ST.roll(rec, now)
 	local counts = {}
 	if day >= today then
 		for key, v in pairs(tab(rec.n)) do
-			local lim = ST.limit(key)
-			if lim and whole(v) > 0 then counts[key] = math.min(whole(v), lim) end
+			local id = itemOfKey(key)
+			local k = if id then "it:" .. id else nil
+			local lim = k and ST.limit(k)
+			if lim and whole(v) > 0 then counts[k] = math.min(whole(counts[k]) + whole(v), lim) end
 		end
 	end
 	return {day = math.max(day, today), n = counts}
