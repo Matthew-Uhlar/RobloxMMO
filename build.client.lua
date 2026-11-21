@@ -31,24 +31,58 @@ local function make(class, parent, props)
 	object.Parent = parent
 	return object
 end
+-- Styled with the atlas "Aether Brass" tokens (ui.client.lua): a brass-rimmed
+-- plate with a prop medallion, live status with a coloured dot and three
+-- controls (Place is the gold primary action; key hints in the captions).
+local DEEP, SLATE, RIM = C("0C1820"), C("1E3946"), C("557886")
+local IVORY, MUTED, GOLD, BRASS, ON_GOLD = C("F7EFDC"), C("A9BDC1"), C("F3C66E"), C("C9974A"), C("2B1B05")
+local WHITE = Color3.new(1, 1, 1)
+local function shade(object, bottom)
+	make("UIGradient", object, {Name="Sheen", Rotation=90, Color=ColorSequence.new(WHITE, Color3.new(bottom, bottom, bottom))})
+end
 local gui = make("ScreenGui", player:WaitForChild("PlayerGui"), {Name="IslandBuilder", ResetOnSpawn=false, Enabled=false, DisplayOrder=4})
-local bar = make("Frame", gui, {Name="BuildBar", AnchorPoint=Vector2.new(.5, 1), Position=UDim2.new(.5, 0, 1, -14),
-	Size=UDim2.new(.94, 0, 0, 112), BackgroundColor3=C("102733"), BackgroundTransparency=.04, BorderSizePixel=0})
-make("UISizeConstraint", bar, {MaxSize=Vector2.new(460, 112)})
-make("UICorner", bar, {CornerRadius=UDim.new(0, 12)})
-make("UIStroke", bar, {Color=C("F9CC77"), Transparency=.35, Thickness=1})
-local title = make("TextLabel", bar, {Name="PropName", BackgroundTransparency=1, Position=UDim2.fromOffset(14, 8), Size=UDim2.new(1, -28, 0, 22),
-	Font=Enum.Font.GothamBold, TextSize=16, TextColor3=C("FFF4D9"), TextXAlignment=Enum.TextXAlignment.Left, Text=""})
-local status = make("TextLabel", bar, {Name="Status", BackgroundTransparency=1, Position=UDim2.fromOffset(14, 30), Size=UDim2.new(1, -28, 0, 20),
-	Font=Enum.Font.Gotham, TextSize=13, TextColor3=C("BECECA"), TextXAlignment=Enum.TextXAlignment.Left, TextTruncate=Enum.TextTruncate.AtEnd, Text=""})
+-- Sits above the atlas action bar (bottom 40px) so health stays readable. Short
+-- screens (phone landscape, under 360 px) get an 88 px bar so it stays below the
+-- tutorial tracker, the top lane and the minimap (see combat.client.lua's HUD map).
+local camera = workspace.CurrentCamera
+local short = camera ~= nil and camera.ViewportSize.Y > 0 and camera.ViewportSize.Y < 360
+local BAR_H = if short then 88 else 112 -- controls are 44 px touch targets
+local bar = make("Frame", gui, {Name="BuildBar", AnchorPoint=Vector2.new(.5, 1), Position=UDim2.new(.5, 0, 1, if short then -36 else -48),
+	Size=UDim2.new(.94, 0, 0, BAR_H), BackgroundColor3=DEEP, BackgroundTransparency=.04, BorderSizePixel=0})
+make("UISizeConstraint", bar, {MaxSize=Vector2.new(480, BAR_H)})
+make("UICorner", bar, {CornerRadius=UDim.new(0, 14)})
+local rim = make("UIStroke", bar, {Color=BRASS, Transparency=.05, Thickness=1.5})
+make("UIGradient", rim, {Rotation=90, Color=ColorSequence.new(WHITE, Color3.new(.5, .5, .5))})
+shade(bar, .72)
+local medalSize = if short then 30 else 38
+local medal = make("Frame", bar, {Name="Medal", Position=UDim2.fromOffset(12, if short then 6 else 10), Size=UDim2.fromOffset(medalSize, medalSize), BackgroundColor3=C("2A4D5E"), BorderSizePixel=0})
+make("UICorner", medal, {CornerRadius=UDim.new(1, 0)})
+make("UIStroke", medal, {Color=GOLD, Thickness=1.5})
+shade(medal, .5)
+for _, angle in ipairs({0, 90}) do
+	make("Frame", medal, {AnchorPoint=Vector2.new(.5, .5), Position=UDim2.fromScale(.5, .5), Size=UDim2.fromScale(.12, .56), Rotation=angle, BackgroundColor3=GOLD, BorderSizePixel=0})
+end
+local textX = if short then 52 else 60
+local title = make("TextLabel", bar, {Name="PropName", BackgroundTransparency=1, Position=UDim2.fromOffset(textX, if short then 1 else 9), Size=UDim2.new(1, -textX - 14, 0, 22),
+	Font=Enum.Font.BuilderSansExtraBold, TextSize=17, TextColor3=IVORY, TextXAlignment=Enum.TextXAlignment.Left, TextTruncate=Enum.TextTruncate.AtEnd, Text=""})
+local dot = make("Frame", bar, {Name="StatusDot", Position=UDim2.fromOffset(textX, if short then 25 else 36), Size=UDim2.fromOffset(8, 8), BackgroundColor3=GOOD, BorderSizePixel=0})
+make("UICorner", dot, {CornerRadius=UDim.new(1, 0)})
+local status = make("TextLabel", bar, {Name="Status", BackgroundTransparency=1, Position=UDim2.fromOffset(textX + 14, if short then 19 else 30), Size=UDim2.new(1, -textX - 28, 0, if short then 18 else 20),
+	Font=Enum.Font.BuilderSansMedium, TextSize=13, TextColor3=MUTED, TextXAlignment=Enum.TextXAlignment.Left, TextTruncate=Enum.TextTruncate.AtEnd, Text=""})
+status:GetPropertyChangedSignal("TextColor3"):Connect(function() dot.BackgroundColor3 = status.TextColor3 end)
 local buttons = {}
 for i, spec in ipairs({{"RotateButton", "Rotate  (R)"}, {"ConfirmButton", "Place"}, {"CancelButton", "Done  (Esc)"}}) do
-	local b = make("TextButton", bar, {Name=spec[1], Text=spec[2], AutoButtonColor=true, Font=Enum.Font.GothamBold, TextSize=14,
-		TextColor3=C("FFF4D9"), BackgroundColor3=i == 2 and C("2F6D63") or C("244857"), BorderSizePixel=0, Selectable=true,
-		Position=UDim2.new((i - 1) / 3, if i == 1 then 10 else 4, 1, -54), Size=UDim2.new(1 / 3, -14, 0, 44)})
-	make("UICorner", b, {CornerRadius=UDim.new(0, 9)})
+	local primary = i == 2
+	local b = make("TextButton", bar, {Name=spec[1], Text=spec[2], AutoButtonColor=true, Font=Enum.Font.BuilderSansExtraBold, TextSize=14,
+		TextColor3=primary and ON_GOLD or IVORY, BackgroundColor3=primary and GOLD or SLATE, BorderSizePixel=0, Selectable=true,
+		Position=UDim2.new((i - 1) / 3, if i == 1 then 12 else 4, 1, if short then -48 else -56), Size=UDim2.new(1 / 3, -14, 0, 44)})
+	make("UICorner", b, {CornerRadius=UDim.new(0, 10)})
+	local edge = make("UIStroke", b, {Color=primary and C("FFE7A8") or RIM, Thickness=1})
+	make("UIGradient", edge, {Rotation=90, Color=ColorSequence.new(WHITE, Color3.new(.42, .42, .42))})
+	shade(b, .8)
 	buttons[spec[1]] = b
 end
+make("Frame", bar, {Name="Rule", Position=UDim2.new(0, 12, 1, if short then -50 else -61), Size=UDim2.new(1, -24, 0, 1), BackgroundColor3=BRASS, BackgroundTransparency=.55, BorderSizePixel=0})
 
 ------------------------------------------------------------------------------
 -- Grid state from replicated attributes.
@@ -59,6 +93,25 @@ local function islandCenter()
 	return nil
 end
 local function placements() return I.decode(player:GetAttribute("IslandPlacements")) end
+-- Decoded grid, cached until IslandPlacements / HomesteadLevel / IslandCenter
+-- change (B.invalidate); B.update re-checks only when the snapped cell,
+-- rotation or prop changes (it runs every frame while building).
+local grid = nil
+local function gridState()
+	if not grid then
+		local list = placements()
+		local counts = {}
+		for _, e in ipairs(list) do counts[e.prop] = (counts[e.prop] or 0) + 1 end
+		grid = {list = list, occupied = I.occupancy(list), counts = counts, parts = I.parts(list)}
+	end
+	return grid
+end
+-- Home islands (§27): the grid radius and the placement cap grow with the
+-- Homestead level the server publishes (HomesteadLevel 1..5).
+local function stage()
+	if type(Data.Home) ~= "table" then return 0 end
+	return Data.Home.stage(player:GetAttribute("HomesteadLevel"))
+end
 local function placementFolder()
 	local isles = workspace:FindFirstChild("AetherIsles")
 	local home = isles and isles:FindFirstChild("WayfarersRest_" .. player.UserId)
@@ -71,6 +124,9 @@ end
 local function ghostPart(parent, name, size)
 	return make("Part", parent, {Name=name, Size=size, Anchored=true, CanCollide=false, CanQuery=false, CanTouch=false, CastShadow=false,
 		Material=Enum.Material.Neon, Transparency=.55, Color=GOOD, TopSurface=Enum.SurfaceType.Smooth, BottomSurface=Enum.SurfaceType.Smooth})
+end
+function B.invalidate()
+	grid, B.cell = nil, nil
 end
 function B.clearGhost()
 	if B.ghost then B.ghost:Destroy() end
@@ -109,7 +165,7 @@ function B.ray()
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
 	params.FilterDescendantsInstances = {B.ghost, player.Character}
-	return workspace:Raycast(ray.Origin, ray.Direction * 400, params)
+	return workspace:Raycast(ray.Origin, ray.Direction * 600, params) -- §27: islands reach r164
 end
 function B.update()
 	if not B.active then return end
@@ -139,15 +195,19 @@ function B.update()
 	end
 	local offset = hit.Position - center
 	local x, z = I.snap(B.prop, B.rot, offset.X, offset.Z)
+	local cell = B.prop .. ":" .. x .. ":" .. z .. ":" .. B.rot
+	if cell == B.cell and B.ghost and B.ghost.Parent then return end -- same cell: nothing to re-check
+	B.cell = cell
 	B.x, B.z = x, z
-	local list = placements()
-	local valid, reason = I.check(I.occupancy(list), B.prop, x, z, B.rot)
+	local state = gridState()
+	local valid, reason = I.check(state.occupied, B.prop, x, z, B.rot, stage())
 	if valid then
-		local count = 0
-		for _, e in ipairs(list) do if e.prop == B.prop then count += 1 end end
 		local def = I.Props[B.prop]
-		if #list >= I.MAX_PLACEMENTS then valid, reason = false, "Your island is full"
-		elseif count >= def.max then valid, reason = false, "Most " .. def.name .. " pieces placed (" .. def.max .. ")" end
+		if #state.list >= I.cap(stage()) then valid, reason = false, "Your island is full"
+		elseif (state.counts[B.prop] or 0) >= def.max then valid, reason = false, "Most " .. def.name .. " pieces placed (" .. def.max .. ")"
+		elseif state.parts + def.parts > I.PART_BUDGET then
+			valid, reason = false, "Detail budget reached (" .. state.parts .. "/" .. I.PART_BUDGET .. " parts)"
+		end
 	end
 	B.valid, B.reason = valid, reason or "Valid spot  ·  click, tap Place or press A"
 	status.Text, status.TextColor3 = B.reason, valid and GOOD or BAD
@@ -185,18 +245,22 @@ function B.exit()
 	B.clearGhost()
 	B.targetModel = nil
 	gui.Enabled = false
+	-- Local-only flag other HUD scripts read (combat hides its Attack button).
+	player:SetAttribute("IslandBuilding", nil)
 end
 function B.enter(mode, propId)
 	B.exit()
 	if mode == "place" and not I.Props[propId] then return end
 	if mode ~= "place" and mode ~= "remove" then return end
 	B.mode, B.prop, B.rot, B.active = mode, propId, 0, true
+	B.invalidate()
 	B.gamepad = Input.GamepadEnabled and not Input.MouseEnabled and not Input.TouchEnabled
 	B.makeGhost()
 	title.Text = if mode == "place" then "Placing  ·  " .. I.Props[propId].name else "Pick up mode"
 	buttons.ConfirmButton.Text = if mode == "place" then "Place" else "Pick up"
 	buttons.RotateButton.Visible = mode == "place"
 	gui.Enabled = true
+	player:SetAttribute("IslandBuilding", true)
 	Actions:BindActionAtPriority(GAMEPAD_ACTION, B.gamepadAction, false, Enum.ContextActionPriority.High.Value + 1,
 		Enum.KeyCode.ButtonA, Enum.KeyCode.ButtonB, Enum.KeyCode.ButtonR1)
 	B.step = RunService.RenderStepped:Connect(B.update)
@@ -227,7 +291,12 @@ player:GetAttributeChangedSignal("IslandBuildRequest"):Connect(function()
 	local mode, prop = player:GetAttribute("IslandBuildMode"), player:GetAttribute("IslandBuildProp")
 	B.enter(if type(mode) == "string" then mode else "", if type(prop) == "string" then prop else "")
 end)
-player:GetAttributeChangedSignal("IslandPlacements"):Connect(function() if B.active then B.update() end end)
+for _, name in ipairs({"IslandPlacements", "HomesteadLevel", "IslandCenter"}) do
+	player:GetAttributeChangedSignal(name):Connect(function()
+		B.invalidate()
+		if B.active then B.update() end
+	end)
+end
 player.CharacterRemoving:Connect(B.exit)
 
 Input.InputChanged:Connect(function(input)

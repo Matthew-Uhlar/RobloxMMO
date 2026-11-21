@@ -71,6 +71,7 @@ local function nextRoll()
 	return defaultRoll
 end
 local seeds = {}
+local closers = {} -- game:BindToClose callbacks (Endgame: the shutdown sigil drain test runs them last)
 local guidCount = 0
 local services = {
 	Players = {PlayerAdded=signal(),PlayerRemoving=signal(),GetPlayers=function() return {} end},
@@ -83,7 +84,7 @@ local services = {
 local objects,allObjects = {},{}
 local workspace = {GetAttribute=function(self,key) return self[key] end}
 local env = {
-	game={GetService=function(_,name) return services[name] end, BindToClose=function() end},
+	game={GetService=function(_,name) return services[name] end, BindToClose=function(_,f) table.insert(closers,f) end},
 	workspace=workspace,
 	Instance={new=function(class)
 		local instance={Event=signal(),FireClient=function(_,player,state) player.last=state end}
@@ -1017,11 +1018,19 @@ eq(maxed.depth.skills.Mining.level,99,"level 99")
 
 -- Monster kills: multi-level jump pays every level once.
 local brawler=player(203)
+-- Combat pays the kill's melee damage XP through "combatXp", then reports the kill.
+local paid=bridge.OnInvoke("combatXp",brawler,{style="melee",monster="StarbornSentinel",damage=Data.Monsters.StarbornSentinel.hp})
+eq(paid.xp.Combat,Data.Monsters.StarbornSentinel.xp,"a whole melee kill pays monster.xp Combat XP")
+ok(has(brawler.last.message,"Combat level 6! +500 coins"),"multi-level reward message")
 local killed=bridge.OnInvoke("kill",brawler,{monster="StarbornSentinel"})
-eq(next(killed.drops),nil,"high rolls drop nothing")
+-- Prayer & Thieving: every kill leaves its remains (chance 1); high rolls drop nothing else.
+local remainsId=Data.Prayer.remainsFor(Data.Monsters.StarbornSentinel.level,Data.Monsters.StarbornSentinel.region)
+eq(killed.drops[remainsId],1,"every kill leaves its remains")
+killed.drops[remainsId]=nil
+eq(next(killed.drops),nil,"high rolls drop nothing else")
 eq(killed.bossReady,false,"no quest means no boss")
 ok(has(brawler.last.message,"Starborn Sentinel slain"),"kill pushes a snapshot message")
-ok(has(brawler.last.message,"Combat level 6! +500 coins"),"multi-level reward message")
+ok(not has(brawler.last.message,"Combat XP"),"the kill itself pays no flat Combat XP")
 local fought=st(brawler)
 eq(fought.levels.Combat,6,"520 Combat XP is level 6")
 eq(fought.coins,120+500,"monster coins plus levels 2-6 rewards")
@@ -1201,6 +1210,73 @@ eq(soldSword.coins,Data.Items.BrassSword.value,"sold at Data value")
 knight=rejoin(knight)
 eq(data.p240.profile.equipment.helmet,"BrassHelm","equipment persisted")
 eq(st(knight).depth.equipment.chest,"BrassChestplate","equipment restored on rejoin")
+-- §29 satchel verbs (UI overhaul): satchelMove / satchelSort reorder p.satchel
+-- (display order only), drop destroys an unequipped, unbagged stack.
+do
+	local s0=st(knight)
+	ok(type(s0.satchel)=="table" and #s0.satchel>1,"snapshot carries the satchel order")
+	local seen={}
+	for _,id in ipairs(s0.satchel) do ok(not seen[id] and (s0.items[id] or 0)>0,"satchel lists each owned item once: "..id); seen[id]=true end
+	local last=s0.satchel[#s0.satchel]
+	local moved=cmd(knight,"satchelMove",last..":1")
+	eq(moved.satchel[1],last,"satchelMove puts the item in slot 1")
+	eq(moved.message,"","satchelMove is silent")
+	eq(#moved.satchel,#s0.satchel,"satchelMove keeps every item")
+	ok(has(cmd(knight,"satchelMove","NotAnItem:1").message,"Choose"),"unknown item rejected")
+	ok(has(cmd(knight,"satchelMove",last..":x").message,"Choose"),"bad slot rejected")
+	ok(has(cmd(knight,"satchelMove",last..":9999").message,"Choose"),"slot index capped at three digits")
+	local sorted=cmd(knight,"satchelSort","name")
+	for i=2,#sorted.satchel do ok(Data.Items[sorted.satchel[i-1]].name<=Data.Items[sorted.satchel[i]].name,"satchelSort name order") end
+	ok(has(cmd(knight,"satchelSort","bogus").message,"Sort by"),"unknown sort rejected")
+	local helm=st(knight).depth.equipment.helmet
+	ok(helm~=nil,"knight wears a helmet")
+	local kept=cmd(knight,"drop",helm)
+	ok(has(kept.message,"Unequip"),"equipped item cannot be dropped")
+	eq(kept.items[helm],1,"equipped item kept")
+	ok(has(cmd(knight,"drop","Celestium").message,"You have no"),"cannot drop what you lack")
+	ok(has(cmd(knight,"drop",nil).message,"Choose"),"drop needs an item")
+	local ore=st(knight).items.Ore or 0
+	if ore>0 then
+		local dropped=cmd(knight,"drop","Ore")
+		eq(dropped.items.Ore,0,"drop clears the stack")
+		ok(has(dropped.message,"Dropped "..ore),"drop names the count")
+		ok(table.find(dropped.satchel,"Ore")==nil,"dropped item leaves the satchel order")
+	end
+	knight=rejoin(knight)
+	ok(type(data.p240.profile.satchel)=="table","satchel order persisted")
+	-- L7: the last applied sort mode persists with the order (whitelisted on read).
+	eq(data.p240.profile.satchelSort,"name","sort mode persisted")
+	eq(st(knight).satchelSort,"name","snapshot carries the sort mode")
+	knight=rejoin(knight,function(p) p.satchelSort="bogus" end)
+	eq(st(knight).satchelSort,nil,"unknown saved sort mode ignored")
+	-- M12: sell / drop keep the last copy of an upgraded item (Gear.upgraded,
+	-- the Museum / faction crest rule); spare copies still go.
+	knight=rejoin(knight,function(p) p.items.SunsteelSword=1; p.stars=p.stars or {}; p.stars.SunsteelSword=2; p.items.CopperHatchet=3; p.enchants.CopperHatchet={Efficiency=1} end)
+	ok(has(cmd(knight,"sell","SunsteelSword").message,"carries upgrades"),"sell refuses the last upgraded copy")
+	ok(has(cmd(knight,"drop","SunsteelSword").message,"carries upgrades"),"drop refuses the last upgraded copy")
+	eq(st(knight).items.SunsteelSword,1,"upgraded copy kept")
+	local spare=cmd(knight,"drop","CopperHatchet")
+	eq(spare.items.CopperHatchet,1,"drop keeps the enchanted copy, spares go")
+	ok(has(spare.message,"Dropped 2"),"drop counts only the spares")
+	ok(has(cmd(knight,"sell","CopperHatchet").message,"carries upgrades"),"then the last enchanted copy is refused")
+	-- L9: an owned id outside the stored order (past Satchel.MAX) can still be moved.
+	local added,ids={},{}
+	for id in pairs(Data.Items) do table.insert(ids,id) end
+	table.sort(ids)
+	knight=rejoin(knight,function(p)
+		for _,id in ipairs(ids) do if (p.items[id] or 0)<1 and #added<450 then p.items[id]=1; table.insert(added,id) end end
+	end)
+	local full=st(knight)
+	eq(#full.satchel,400,"stored order capped at 400 ids")
+	local outside
+	for _,id in ipairs(added) do if not table.find(full.satchel,id) then outside=id end end
+	ok(outside~=nil,"some owned id sits past the stored order")
+	local placed=cmd(knight,"satchelMove",outside..":1")
+	eq(placed.message,"","satchelMove accepts an id past the stored order")
+	eq(placed.satchel[1],outside,"satchelMove places it in slot 1")
+	eq(#placed.satchel,400,"satchel order stays bounded")
+	knight=rejoin(knight,function(p) for _,id in ipairs(added) do p.items[id]=nil end end)
+end
 knight=rejoin(knight,function(p) p.xp.Combat=0 end)
 eq(st(knight).depth.stats.defense,0,"equipment ignored when requirements no longer met")
 
@@ -1288,18 +1364,21 @@ eq(summoned.depth.pets[1].next,Data.petXpToNext(1,"Epic"),"pet next-level XP")
 for _,bad in ipairs({"2","-1","1.5","x","0001",""}) do
 	eq(cmd(tamer,"petSummon",bad).depth.pets[1].active,true,"invalid summon ignored: "..bad)
 end
-bridge.OnInvoke("kill",tamer,{monster="BramblebackBoar"})
+bridge.OnInvoke("combatXp",tamer,{style="melee",monster="BramblebackBoar",damage=Data.Monsters.BramblebackBoar.hp}); bridge.OnInvoke("kill",tamer,{monster="BramblebackBoar"})
 eq(st(tamer).depth.pets[1].xp,12,"pet earns full XP of its skill")
 use(tamer,ore)
 eq(st(tamer).depth.pets[1].xp,15,"pet earns 25% of other skills")
+tamer.last=nil
+bridge.OnInvoke("combatXp",tamer,{style="melee",monster="StarbornSentinel",damage=Data.Monsters.StarbornSentinel.hp})
+local petMessage=tamer.last and tamer.last.message
 bridge.OnInvoke("kill",tamer,{monster="StarbornSentinel"})
-ok(has(tamer.last.message,"Emberfox pet level 2!"),"pet level message")
+ok(has(petMessage,"Emberfox pet level 2!") or has(tamer.last.message,"Emberfox pet level 2!"),"pet level message")
 local grown=st(tamer)
 eq(grown.depth.pets[1].level,2,"pet levels up")
 eq(grown.depth.pets[1].xp,535-Data.petXpToNext(1,"Epic"),"pet XP carries over")
 eq(cmd(tamer,"petSummon","0").depth.pets[1].active,false,"pet dismissed")
 ok(has(cmd(tamer,"petSummon","0").message,"No pet"),"double dismiss message")
-bridge.OnInvoke("kill",tamer,{monster="BramblebackBoar"})
+bridge.OnInvoke("combatXp",tamer,{style="melee",monster="BramblebackBoar",damage=Data.Monsters.BramblebackBoar.hp}); bridge.OnInvoke("kill",tamer,{monster="BramblebackBoar"})
 eq(st(tamer).depth.pets[1].xp,535-Data.petXpToNext(1,"Epic"),"dismissed pet earns nothing")
 cmd(tamer,"petSummon","1")
 tamer=rejoin(tamer)
@@ -1449,7 +1528,7 @@ local looted=st(fighter)
 eq(looted.items.BeastHide,2,"drops added to inventory")
 eq(looted.collection.ArcaneDust,1,"drops count toward collections")
 eq(looted.coins,4,"monster coins")
-eq(looted.xp.Combat,12,"monster XP")
+eq(looted.xp.Combat,0,"the kill op pays no flat Combat XP (damage XP arrives via combatXp)")
 eq(looted.depth.bestiary.BramblebackBoar,10,"bestiary incremented")
 eq(looted.depth.stats.bestiaryTiers,1,"bestiary milestone reached")
 eq(looted.depth.stats.health,101,"bestiary milestone health")
@@ -1479,7 +1558,7 @@ local scout=player(320)
 eq(regionHook2.OnInvoke(scout,"Windpine").allowed,false,"Windpine locked")
 eq(regionHook2.OnInvoke(scout,"Windpine").message,"Windpine Grove requires Woodcutting 10.","Windpine message")
 eq(regionHook2.OnInvoke(scout,"Hub").allowed,true,"Hub open")
-eq(regionHook2.OnInvoke(scout,"Meadow").message,"Welcome to Meadow Reach.","open region message")
+eq(regionHook2.OnInvoke(scout,"Meadow").message,"Welcome to "..Data.RegionById.Meadow.name..".","open region message")
 eq(regionHook2.OnInvoke(scout,"Quarry").allowed,true,"Quarry open")
 eq(regionHook2.OnInvoke(scout,"Skyreach").message,"Claim the Skyreach charter in your journal: Mining 3 and 3 lifetime Alloy Ingots.","Skyreach message compatible")
 eq(regionHook2.OnInvoke(scout,"Tempest").allowed,false,"Tempest locked")
@@ -1504,7 +1583,7 @@ eq(regionHook2.OnInvoke(scout,"Skyreach").allowed,true,"quest count unlocks Skyr
 
 -- Workers across Data.WorkerTiers and every gathering resource.
 local foreman=seeded(330,function(p)
-	p.items={Timber=200,Ore=200,AlloyIngot=40,AetherIngot=20}
+	p.items={Timber=200,Ore=200,AlloyIngot=40,AetherIngot=20,CondensedBrassite=15}
 	p.xp.Mining=X[15]; p.levelRewards.Mining=15
 	p.collection={Brassite=50}; p.collectionRewards={Brassite=1}
 end)
@@ -1512,21 +1591,23 @@ cmd(foreman,"worker")
 ok(has(cmd(foreman,"workerAssign","1:SunsteelOre").message,"Mining 30"),"worker resource level gate")
 eq(cmd(foreman,"workerAssign","1:Glassfin").workers[1].resource,"Ore","worker skill gate")
 eq(cmd(foreman,"workerAssign","1:Brassite").workers[1].resource,"Brassite","worker assigned unlocked resource")
-advance(241)
+advance(2*288+1) -- Workers depth: Brassite paces at 2.4x its respawn-scaled interval
 foreman=rejoin(foreman)
 local brassClaim=cmd(foreman,"claim")
 eq(brassClaim.items.Brassite,2,"worker gathers new resource")
-eq(brassClaim.xp.Mining,X[15]+16,"worker XP scales with resource")
+eq(brassClaim.xp.Mining,X[15]+6,"worker XP scales with resource (a tenth of a harvest)")
 for _=2,4 do cmd(foreman,"workerUpgrade","1") end
 local tier4=st(foreman)
 eq(tier4.workers[1].tier,4,"worker reaches tier 4")
-eq(tier4.workers[1].interval,48,"tier 4 interval")
+eq(tier4.workers[1].interval,115,"tier 4 interval (48 s x 2.4 Brassite pace)")
+eq(tier4.items.CondensedBrassite,14,"tier 4 spends Condensed Brassite")
 eq(tier4.workers[1].capacity,480,"tier 4 capacity")
 eq(tier4.items.AlloyIngot,36,"tier 4 consumes refined ingots")
 for _=5,7 do cmd(foreman,"workerUpgrade","1") end
 local tier7=st(foreman)
 eq(tier7.workers[1].tier,7,"worker reaches tier 7")
-eq(tier7.workers[1].interval,26,"tier 7 interval")
+eq(tier7.workers[1].interval,62,"tier 7 interval (26 s x 2.4)")
+eq(tier7.items.CondensedBrassite or 0,0,"tiers 4-7 spend 1+2+4+8 Condensed Brassite")
 eq(tier7.workers[1].maxTier,7,"max tier exposed")
 eq(tier7.items.AlloyIngot,0,"upgrade ladder cost")
 eq(cmd(foreman,"workerUpgrade","1").message,"Worker is at maximum tier.","tier cap")
@@ -2265,7 +2346,7 @@ do
 	local lines={main=0,side=0}
 	for _,q in ipairs(Data.Quests) do lines[q.line]+=1 end
 	eq(lines.main>=4 and lines.side>=4,true,"main and side quests both exist")
-	eq(#Data.Diaries,7,"seven regional diaries")
+	eq(#Data.Diaries,8,"eight regional diaries (Endgame: the Shattered Crown)")
 	for _,d in ipairs(Data.Diaries) do
 		for _,tier in ipairs(Data.DiaryTiers) do
 			local n=#d.tiers[tier].tasks
@@ -2884,14 +2965,15 @@ do
 	end
 	ok(free>=I.MAX_PLACEMENTS,"grid holds the placement cap ("..free.." free cells)")
 	ok(cornersOk,"every free cell lies fully within the island radius")
-	ok(I.RADIUS<19,"buildable radius stays inside the 19-stud meadow")
+	ok(I.RADIUS==Data.Home.radius(1) and I.RADIUS+Data.Home.MARGIN==Data.Home.meadow(1),"stage-0 build radius sits inside the home meadow (§27)")
 	ok(I.cellBlocked(0,2)=="home landing","spawn landing protected")
 	ok(I.cellBlocked(-3,0)=="windpine","windpine gather node protected")
 	ok(I.cellBlocked(4,2)=="worker station","worker station protected")
 	ok(I.cellBlocked(-5,0)=="garden plot","legacy garden plot protected")
 	ok(I.cellBlocked(-8,0)=="terrace bridge","terrace bridge approach protected")
 	ok(I.cellBlocked(0,8)=="lookout bridge","lookout bridge protected")
-	ok(I.cellBlocked(8,8)=="edge" and I.cellBlocked(9,0)=="edge" and I.cellBlocked(0,-9)=="edge","cells beyond the rim are out of bounds")
+	ok(I.cellBlocked(33,33)=="edge" and I.cellBlocked(46,0)=="edge" and I.cellBlocked(0,-46)=="edge","cells beyond the rim are out of bounds")
+	ok(I.cellBlocked(8,8)==nil and I.cellBlocked(33,33,4)==nil,"the grid grows with the expansion stage")
 	ok(I.cellBlocked(0.5,0)=="edge" and I.cellBlocked(0/0,0)=="edge" and I.cellBlocked(math.huge,0)=="edge","non-integer cells refused")
 	for _,r in ipairs(I.Protected) do ok(r.x1<r.x2 and r.z1<r.z2 and type(r.name)=="string","protected zone "..r.name.." is a valid rectangle") end
 	-- Footprints and rotation.
@@ -2927,7 +3009,7 @@ do
 	-- Server: fresh island.
 	local builder=seeded(4101,function(prof) prof.items={} end)
 	local s0=act(builder,"state")
-	ok(isle(s0).count==0 and isle(s0).cap==I.MAX_PLACEMENTS and isle(s0).value==0 and isle(s0).tierName=="Bare Rock","fresh island state")
+	ok(isle(s0).count==0 and isle(s0).cap==I.cap(0) and isle(s0).value==0 and isle(s0).tierName=="Bare Rock","fresh island state")
 	ok(builder.IslandPlacements=="","empty placement attribute published")
 	local fx,fz=spot("TimberFence")
 	local m0=act(builder,"place",req("TimberFence",fx,fz))
@@ -2951,8 +3033,8 @@ do
 	local m3=act(builder,"place",req("StonePath",0,3))
 	ok(has(m3.message,"home landing") and isle(m3).count==1,"protected landing refused")
 	ok(has(act(builder,"place",req("StonePath",4,2)).message,"worker station"),"worker station zone refused")
-	ok(has(act(builder,"place",req("StonePath",8,8)).message,"fully on your island"),"rim cell refused")
-	ok(has(act(builder,"place",req("StonePath",40,0)).message,"fully on your island"),"far cell refused")
+	ok(has(act(builder,"place",req("StonePath",33,33)).message,"fully on your island"),"rim cell refused")
+	ok(has(act(builder,"place",req("StonePath",46,0)).message,"fully on your island"),"far cell refused")
 	local ex,ez
 	for x=0,I.RANGE do if I.cellBlocked(x,0)==nil and I.cellBlocked(x+1,0)=="edge" then ex,ez=x,0 end end
 	ok(ex~=nil and has(act(builder,"place",req("HedgeRow",ex,ez,0)).message,"fully on your island"),"footprint hanging off the rim refused")
@@ -3025,9 +3107,21 @@ do
 		},paid={StonePath=999,Nope=3,Boardwalk="x",TimberFence=-2}}
 	end)
 	local t1=act(tamper,"state")
-	ok(isle(t1).count==2,"only valid, non-overlapping records survive ("..isle(t1).count..")")
-	ok(isle(t1).counts.CarpenterStump==1,"per-prop max enforced on load")
-	ok(isle(t1).paid.StonePath==I.Props.StonePath.max and isle(t1).paid.Nope==nil and isle(t1).paid.Boardwalk==nil and isle(t1).paid.TimberFence==nil,"paid marks clamped and cleaned")
+	-- §27: parseable decorations are never deleted; clashing ones move to the
+	-- nearest free cell (new id when the id is taken), extras are refunded.
+	ok(isle(t1).count==6,"every parseable record within the caps survives ("..isle(t1).count..")")
+	local survivors=I.decode(tamper.IslandPlacements)
+	local ids,occupiedOk={},true
+	local occ={}
+	for _,e in ipairs(survivors) do
+		ok(ids[e.id]==nil,"migrated ids are unique")
+		ids[e.id]=true
+		occupiedOk=occupiedOk and I.check(occ,e.prop,e.x,e.z,e.rot,0)
+		for _,c in ipairs(I.cells(e.prop,e.x,e.z,e.rot)) do occ[I.key(c[1],c[2])]=e.id end
+	end
+	ok(occupiedOk,"migrated records never overlap or sit in protected zones")
+	ok(isle(t1).counts.CarpenterStump==1 and (t1.items.Timber or 0)>=I.Props.CarpenterStump.costs.Timber,"per-prop max enforced on load; the extra copy is refunded")
+	ok(isle(t1).paid.StonePath==I.Props.StonePath.max and isle(t1).paid.Nope==nil and isle(t1).paid.Boardwalk==1 and isle(t1).paid.TimberFence==nil,"paid marks clamped and cleaned")
 	local garbage=seeded(4103,function(prof) prof.island="lots" end)
 	ok(isle(act(garbage,"state")).count==0,"non-table island record reset")
 
@@ -3036,7 +3130,7 @@ do
 		local list={}
 		for z=-I.RANGE,I.RANGE do
 			for x=-I.RANGE,I.RANGE do
-				if #list<I.MAX_PLACEMENTS and I.cellBlocked(x,z)==nil then
+				if #list<I.cap(0) and I.cellBlocked(x,z)==nil then
 					local prop=if #list<60 then "StonePath" else "Boardwalk"
 					table.insert(list,{id=#list+1,prop=prop,x=x,z=z,rot=0})
 				end
@@ -3049,7 +3143,7 @@ do
 		setLevel(prof,10)
 	end)
 	local c1=act(full,"state")
-	ok(isle(c1).count==I.MAX_PLACEMENTS,"a full island loads")
+	ok(isle(c1).count==I.cap(0),"a full island loads")
 	local lastX,lastZ
 	local fullOccupied=I.occupancy(I.decode(full.IslandPlacements))
 	for z=-I.RANGE,I.RANGE do for x=-I.RANGE,I.RANGE do
@@ -3057,20 +3151,805 @@ do
 	end end
 	ok(lastX~=nil,"a free cell remains on the full island")
 	local c2=act(full,"place",req("TimberFence",lastX,lastZ))
-	ok(has(c2.message,"at most") and isle(c2).count==I.MAX_PLACEMENTS and c2.items.Timber==100,"total placement cap enforced")
-	ok(isle(c2).value==I.MAX_PLACEMENTS and isle(c2).tierName=="Charming Cottage","island value sums placed props")
+	ok(has(c2.message,"at most") and isle(c2).count==I.cap(0) and c2.items.Timber==100,"total placement cap enforced")
+	ok(isle(c2).value==I.cap(0) and isle(c2).tierName=="Charming Cottage","island value sums placed props")
 	local fullBytes=#serde.encode("json",data.p4104.profile.island)
 	-- Worst case: every record with the longest prop id, a 3-digit id and
 	-- two-character coordinates, plus every paid mark at its maximum.
 	local longest=""
 	for _,id in ipairs(I.PropOrder) do if #id>#longest then longest=id end end
-	local worst={placed={},paid={}}
-	for i=1,I.MAX_PLACEMENTS do worst.placed[i]=I.record({id=100+i%20,prop=longest,x=-8,z=-8,rot=3}) end
+	local worst={placed={},paid={},v=I.VERSION}
+	for i=1,I.MAX_PLACEMENTS do worst.placed[i]=I.record({id=100+i%20,prop=longest,x=-I.RANGE,z=-I.RANGE,rot=3}) end
 	for _,id in ipairs(I.PropOrder) do worst.paid[id]=I.Props[id].max end
 	local worstBytes=#serde.encode("json",worst)
-	ok(worstBytes<=6000,"worst-case island save stays bounded ("..worstBytes.." bytes)")
+	ok(worstBytes<=8000,"worst-case island save stays bounded ("..worstBytes.." bytes)")
 	ok(fullBytes<=worstBytes,"a real full island is below the worst case ("..fullBytes.." bytes)")
 	ok(#full.IslandPlacements<=I.MAX_PLACEMENTS*31,"replicated attribute stays bounded")
 	print("Island save sizes: full "..fullBytes.." / worst-case "..worstBytes.." JSON bytes.")
 	print("PASS: "..(checks-before).." island placement assertions.")
 end
+
+-- Combat styles: new skills, Fletching/Glyphcraft crafting, the Quiver slot,
+-- autocast verb, bridge ops "consume" and "combatXp", stats loadout, persistence.
+;(function()
+	local before=checks
+	local function hook(name) for _,o in ipairs(allObjects) do if o.Name==name then return o end end return nil end
+	local bridge=hook("IsleBridge")
+	local function cmd(p,verb,item) advance(1); return objects.RemoteFunction.OnServerInvoke(p,verb,item) end
+	local function st(p) return cmd(p,"state") end
+	local function ok(cond,case) assert(cond,case); checks+=1 end
+	local function has(text,part) return type(text)=="string" and string.find(text,part,1,true)~=nil end
+	local function seeded(id,mutate)
+		local p=player(id)
+		services.Players.PlayerRemoving:Fire(p)
+		mutate(data["p"..id].profile)
+		return player(id)
+	end
+	local function rejoin(p) services.Players.PlayerRemoving:Fire(p); return player(p.UserId) end
+	local recruit=player(9100)
+	local s=st(recruit)
+	for _,skill in ipairs({"Ranged","Magic","Fletching","Glyphcraft"}) do
+		eq(s.depth.skills[skill].level,1,"fresh "..skill.." level")
+		eq(s.xp[skill],0,"fresh "..skill.." xp")
+	end
+	eq(s.depth.combat.style,"melee","fresh journals fight in melee")
+	eq(s.depth.combat.ammoCount,0,"fresh quiver empty")
+	eq(s.depth.combat.autocast,nil,"no autocast")
+	eq(s.depth.stats.rangedStrength,0,"ranged strength on the sheet")
+	-- Fletching from raw materials to a loaded quiver.
+	local archer=seeded(9101,function(p) p.items={Timber=20,BeastHide=3,Herb=40,AlloyIngot=2} end)
+	local shafts=cmd(archer,"craft","ArrowShaft")
+	ok(has(shafts.message,"Arrow Shaft crafted"),"shafts fletched")
+	eq(shafts.items.ArrowShaft,15,"fifteen shafts per timber")
+	eq(shafts.xp.Fletching,Data.Recipes.ArrowShaft.xp,"Fletching XP")
+	eq(cmd(archer,"craft","Bowstring").items.Bowstring,2,"two strings per hide")
+	local bow=cmd(archer,"craft","MeadowShortbow")
+	eq(bow.items.MeadowShortbow,1,"meadow shortbow fletched")
+	eq(cmd(archer,"craft","CopperHeads").items.CopperHeads,15,"copper arrowheads forged")
+	for _=1,3 do cmd(archer,"craft","DriftPlume") end
+	eq(st(archer).items.DriftPlume,18,"plumes fletched from leaves")
+	local arrows=cmd(archer,"craft","CopperArrow")
+	eq(arrows.items.CopperArrow,15,"fifteen arrows")
+	eq(arrows.items.ArrowShaft,0,"shafts consumed"); eq(arrows.items.CopperHeads,0,"heads consumed")
+	eq(cmd(archer,"craft","WindpineShortbow").message:find("Fletching 15",1,true)~=nil,true,"higher bows gated by Fletching")
+	ok(has(cmd(archer,"equip","MeadowShortbow").message,"Equipped"),"bow equipped in the weapon slot")
+	ok(has(cmd(archer,"equip","CopperArrow").message,"Equipped"),"arrows equipped in the quiver")
+	local loaded=st(archer)
+	eq(loaded.depth.equipment.ammo,"CopperArrow","ammo slot in the snapshot")
+	eq(loaded.depth.combat.style,"ranged","bow makes the style ranged")
+	eq(loaded.depth.combat.ammo,"CopperArrow","quivered arrow")
+	eq(loaded.depth.combat.ammoCount,15,"quiver count")
+	eq(loaded.depth.stats.critChance,Data.Stats.critChance.base+Data.Items.MeadowShortbow.stats.critChance,"bow stats on the sheet")
+	local sheet=bridge.OnInvoke("stats",archer)
+	eq(sheet.loadout.style,"ranged","bridge stats carry the loadout")
+	eq(sheet.loadout.weapon,"MeadowShortbow","loadout weapon")
+	eq(sheet.loadout.supplies.CopperArrow,15,"loadout supplies")
+	-- consume: atomic, combat items only.
+	local paid=bridge.OnInvoke("consume",archer,{items={CopperArrow=1}})
+	eq(paid.ok,true,"arrow paid"); eq(paid.remaining.CopperArrow,14,"remaining arrows")
+	eq(bridge.OnInvoke("consume",archer,{items={Timber=1}}).reason,"invalid","non-combat items cannot be consumed")
+	eq(bridge.OnInvoke("consume",archer,{items={CopperArrow=0}}).reason,"invalid","zero refused")
+	eq(bridge.OnInvoke("consume",archer,{items={CopperArrow=1.5}}).reason,"invalid","fractions refused")
+	eq(bridge.OnInvoke("consume",archer,{items={CopperArrow=51}}).reason,"invalid","more than 50 refused")
+	eq(bridge.OnInvoke("consume",archer,{items={}}).reason,"invalid","empty payment refused")
+	eq(bridge.OnInvoke("consume",archer,{}).reason,"invalid","missing items refused")
+	local short=bridge.OnInvoke("consume",archer,{items={CopperArrow=5,GaleGlyph=1}})
+	eq(short.ok,false,"partial payment refused"); eq(short.reason,"missing","missing reason")
+	eq(st(archer).items.CopperArrow,14,"a refused payment takes nothing")
+	eq(bridge.OnInvoke("consume",lateOpen,{items={CopperArrow=1}}),nil,"expired lease cannot pay")
+	-- refund: returns what a failed Hubward paid; same validation as consume.
+	local collectedBefore=st(archer).collection.CopperArrow or 0
+	eq(bridge.OnInvoke("refund",archer,{items={CopperArrow=1}}).ok,true,"refund accepted")
+	eq(st(archer).items.CopperArrow,15,"refund returns the item")
+	eq(st(archer).collection.CopperArrow or 0,collectedBefore,"a refund never counts toward collections (no token farming)")
+	eq(bridge.OnInvoke("refund",archer,{items={Timber=1}}).reason,"invalid","non-combat items cannot be refunded")
+	eq(bridge.OnInvoke("refund",archer,{items={CopperArrow=51}}).reason,"invalid","refund bounded like consume")
+	eq(bridge.OnInvoke("refund",archer,{}).reason,"invalid","missing refund items refused")
+	eq(bridge.OnInvoke("refund",lateOpen,{items={CopperArrow=1}}),nil,"expired lease cannot be refunded")
+	eq(bridge.OnInvoke("consume",archer,{items={CopperArrow=1}}).remaining.CopperArrow,14,"back to 14 arrows")
+	-- combatXp: style routing, Combat share, fractions carried.
+	local xp0=table.clone(st(archer).xp)
+	local reply=bridge.OnInvoke("combatXp",archer,{style="ranged",monster="BramblebackBoar",damage=60})
+	eq(reply.ok,true,"xp accepted")
+	eq(reply.xp.Ranged,6,"ranged damage trains Ranged"); eq(reply.xp.Combat,2,"a third into Combat")
+	local xp1=table.clone(st(archer).xp)
+	eq(xp1.Ranged-xp0.Ranged,6,"Ranged XP granted"); eq(xp1.Combat-xp0.Combat,2,"Combat share granted")
+	bridge.OnInvoke("combatXp",archer,{style="ranged",monster="BramblebackBoar",damage=5})
+	eq(st(archer).xp.Ranged,xp1.Ranged,"half an XP point carried")
+	bridge.OnInvoke("combatXp",archer,{style="ranged",monster="BramblebackBoar",damage=5})
+	eq(st(archer).xp.Ranged,xp1.Ranged+1,"carried fractions add up")
+	local melee=bridge.OnInvoke("combatXp",archer,{style="melee",monster="ShaleCrawler",damage=350})
+	eq(melee.xp.Combat,Data.Monsters.ShaleCrawler.xp,"melee damage trains Combat only")
+	eq(melee.xp.Ranged,nil,"melee trains no Ranged")
+	local spell=bridge.OnInvoke("combatXp",archer,{style="magic",spell="GaleDart"})
+	eq(spell.xp.Magic,Data.Spells.GaleDart.xp,"spell cast XP")
+	eq(next(bridge.OnInvoke("combatXp",archer,{style="ranged",spell="GaleDart"}).xp),nil,"cast XP only for magic")
+	eq(bridge.OnInvoke("combatXp",archer,{style="sneaky",monster="BramblebackBoar",damage=60}).ok,false,"unknown style refused")
+	eq(next(bridge.OnInvoke("combatXp",archer,{style="ranged",monster="Dragon",damage=60}).xp),nil,"unknown monster grants nothing")
+	eq(next(bridge.OnInvoke("combatXp",archer,{style="ranged",monster="BramblebackBoar",damage=0/0}).xp),nil,"NaN damage grants nothing")
+	local capped=bridge.OnInvoke("combatXp",archer,{style="magic",monster="BramblebackBoar",damage=1e9})
+	eq(capped.xp.Magic,Data.Monsters.BramblebackBoar.xp,"damage XP capped at the monster's health")
+	local boss=bridge.OnInvoke("combatXp",archer,{style="melee",monster="Boss:Bramble",tier=1,damage=Data.Slayers.Bramble.tiers[1].hp})
+	eq(boss.xp.Combat,math.floor(Data.Slayers.Bramble.tiers[1].spawnXp*Data.CombatStyles.bossXpShare),"slayer boss damage XP")
+	eq(next(bridge.OnInvoke("combatXp",archer,{style="melee",monster="Boss:Bramble",tier=9,damage=100}).xp),nil,"unknown boss tier")
+	local sea=bridge.OnInvoke("combatXp",archer,{style="ranged",monster="ShellsnapCrab",damage=Data.SeaCreatures.ShellsnapCrab.hp})
+	eq(sea.xp.Ranged,Data.SeaCreatures.ShellsnapCrab.xp,"sea creature damage XP")
+	local big=bridge.OnInvoke("combatXp",archer,{style="ranged",monster="StarbornSentinel",damage=20000})
+	eq(big.levelled,true,"a level-up is flagged")
+	ok(has(archer.last.message,"Ranged level"),"level-up pushes a snapshot message")
+	eq(bridge.OnInvoke("combatXp",lateOpen,{style="ranged",monster="BramblebackBoar",damage=60}),nil,"expired lease earns nothing")
+	-- autocast verb.
+	ok(has(cmd(archer,"autocast","GaleLance").message,"Magic 30"),"autocast respects the Magic level")
+	ok(has(cmd(archer,"autocast","Mend").message,"combat spell"),"utility spells cannot autocast")
+	ok(has(cmd(archer,"autocast","Fireball").message,"combat spell"),"unknown spells refused")
+	ok(has(cmd(archer,"autocast","GaleDart").message,"Autocasting Gale Dart"),"autocast set")
+	eq(st(archer).depth.combat.autocast,"GaleDart","autocast in the snapshot")
+	eq(bridge.OnInvoke("stats",archer).loadout.autocast,"GaleDart","autocast reaches Combat")
+	-- Persistence across a rejoin.
+	archer=rejoin(archer)
+	local saved=data.p9101.profile
+	eq(saved.autocast,"GaleDart","autocast persisted")
+	eq(saved.equipment.ammo,"CopperArrow","quiver persisted")
+	eq(saved.equipment.weapon,"MeadowShortbow","bow persisted")
+	ok(saved.xp.Ranged>0 and saved.xp.Fletching>0 and saved.xp.Magic>0,"new skill XP persisted")
+	local back=st(archer)
+	eq(back.depth.combat.ammoCount,14,"quiver count survives the rejoin")
+	ok(has(cmd(archer,"autocast","none").message,"cleared"),"autocast cleared")
+	eq(st(archer).depth.combat.autocast,nil,"no autocast after clearing")
+	ok(has(cmd(archer,"unequip","ammo").message,"Unequipped"),"quiver emptied")
+	eq(st(archer).depth.combat.ammo,nil,"no ammo after unequip")
+	-- Equip gates: arrows need their Ranged level.
+	local novice=seeded(9102,function(p) p.items={BrassArrow=15,MeadowStaff=1} end)
+	ok(has(cmd(novice,"equip","BrassArrow").message,"Ranged 5"),"brass arrows need Ranged 5")
+	ok(has(cmd(novice,"equip","MeadowStaff").message,"Equipped"),"staff equipped")
+	local mage=st(novice)
+	eq(mage.depth.combat.style,"magic","staff makes the style magic")
+	eq(mage.depth.stats.intelligence,100+Data.Items.MeadowStaff.stats.intelligence,"staff intelligence")
+	-- Migration drops invalid autocasts and backfills the new skills.
+	local legacy=seeded(9103,function(p) p.autocast="Fireball"; p.xp.Ranged=nil; p.xp.Glyphcraft="x" end)
+	local migrated=st(legacy)
+	eq(migrated.depth.combat.autocast,nil,"invalid autocast ignored")
+	legacy=rejoin(legacy)
+	eq(data.p9103.profile.autocast,nil,"invalid autocast dropped on load")
+	eq(migrated.xp.Ranged,0,"missing new skill backfilled")
+	eq(migrated.xp.Glyphcraft,0,"malformed new skill reset")
+	local utility=seeded(9104,function(p) p.autocast="Mend" end)
+	st(utility)
+	utility=rejoin(utility)
+	eq(data.p9104.profile.autocast,nil,"utility autocast dropped on load")
+	-- Glyphcraft: glyphs and the hub tablet.
+	local scribe=seeded(9105,function(p) p.items={Aetherite=10,ArcaneDust=4} end)
+	eq(cmd(scribe,"craft","GaleGlyph").items.GaleGlyph,5,"five gale glyphs per aetherite")
+	eq(cmd(scribe,"craft","SparkGlyph").items.SparkGlyph,3,"three spark glyphs")
+	ok(has(cmd(scribe,"craft","HubwardTablet").message,"Glyphcraft 15"),"tablets need Glyphcraft 15")
+	eq(st(scribe).xp.Glyphcraft,Data.Recipes.GaleGlyph.xp+Data.Recipes.SparkGlyph.xp,"Glyphcraft XP")
+	print("PASS: "..(checks-before).." combat style server assertions.")
+end)()
+
+-- Skill Mastery (server): verbs, validation, gather/combat hooks, capstone
+-- cooldowns, respec coins, mantles, tokens, persistence and migration.
+;(function()
+	local before=checks
+	local X=Data.XP_TABLE
+	local function hook(name) for _,o in ipairs(allObjects) do if o.Name==name then return o end end return nil end
+	local bridge=hook("IsleBridge")
+	local function cmd(p,verb,item) advance(1); return objects.RemoteFunction.OnServerInvoke(p,verb,item) end
+	local function st(p) return cmd(p,"state") end
+	local function ok(cond,case) assert(cond,case); checks+=1 end
+	local function has(text,part) return type(text)=="string" and string.find(text,part,1,true)~=nil end
+	local function seeded(id,mutate)
+		local p=player(id)
+		services.Players.PlayerRemoving:Fire(p)
+		mutate(data["p"..id].profile)
+		return player(id)
+	end
+	local function rejoin(p) services.Players.PlayerRemoving:Fire(p); return player(p.UserId) end
+	local function grab(p,n) advance(1); return rawUse(p,n) end
+	local function gained(message) return tonumber(string.match(message or "","^%+(%d+) ")) end
+	-- Fresh journals: the snapshot carries every tree, nothing spent.
+	local fresh=player(9400)
+	local view=st(fresh).depth.mastery
+	ok(type(view)=="table","snapshot depth.mastery")
+	local count=0
+	for _,id in ipairs(Data.Mastery.TreeOrder) do
+		local tv=view.trees[id]
+		ok(tv~=nil,"tree in snapshot "..id)
+		eq(tv.available,0,"fresh "..id.." has no points")
+		eq(tv.spent,0,"fresh "..id.." spent nothing")
+		eq(tv.capstone,false,"fresh "..id.." capstone locked")
+		count+=1
+	end
+	eq(count,8,"eight trees in the snapshot")
+	eq(view.tokens.earned,0,"fresh tokens")
+	eq(data.p9400.profile.mastery,nil,"no mastery record until one is needed")
+	ok(has(cmd(fresh,"masteryUnlock","Mining:SteadyPick").message,"0 available"),"fresh journals have no points")
+	-- Validation of payloads.
+	local miner=seeded(9401,function(p) p.xp.Mining=X[70]; p.coins=100000 end)
+	for _,bad in ipairs({"Mining","Mining:","x:y","Nowhere:SteadyPick","Mining:Nope",string.rep("a",80),"Mining:Steady Pick"}) do
+		local reply=cmd(miner,"masteryUnlock",bad)
+		ok(not has(reply.message,"unlocked") and not has(reply.message," / "),"bad unlock refused: "..bad)
+	end
+	ok(has(cmd(miner,"masteryUnlock",nil).message,"Choose"),"nil unlock refused")
+	eq(cmd(miner,"masteryUnlock",5),nil,"numeric unlock ignored")
+	ok(has(cmd(miner,"masteryUnlock","Mining:QuarrySense").message,"Steady Pick"),"prerequisite enforced by the server")
+	eq(st(miner).depth.mastery.trees.Mining.spent,0,"refusals spend nothing")
+	local first=cmd(miner,"masteryUnlock","Mining:SteadyPick")
+	ok(has(first.message,"Steady Pick 1 / 10"),"node levelled")
+	eq(first.depth.mastery.trees.Mining.nodes.SteadyPick,1,"snapshot shows the level")
+	eq(first.depth.mastery.trees.Mining.available,59,"points left after one")
+	eq(first.depth.mastery.trees.Mining.states.QuarrySense,"available","child available")
+	local fortuneBefore=st(fresh).depth.stats.miningFortune
+	for _,step in ipairs({"QuarrySense","EmberVein","EchoingSeam","FaultLine","VeinSurge"}) do
+		ok(not has(cmd(miner,"masteryUnlock","Mining:"..step).message,"needs"),"surge path "..step)
+	end
+	local path=st(miner)
+	eq(path.depth.mastery.trees.Mining.capstone,true,"capstone owned")
+	eq(path.depth.mastery.trees.Mining.spent,1+1+1+1+2+5,"points spent on the path")
+	ok(path.depth.stats.miningFortune>fortuneBefore,"tree stats reach the stat sheet")
+	ok(has(cmd(miner,"masteryUnlock","Mining:VeinSurge").message,"maximum"),"capstone single level")
+	-- Gathering: plain journal vs a running Vein Surge.
+	local plain=seeded(9402,function(p) p.xp.Mining=X[70] end)
+	local plainGain=gained(grab(plain,node("gather","Ore")).message)
+	ok(plainGain~=nil and plainGain>0,"plain ore gathered")
+	local surge=cmd(miner,"ability","Mining")
+	ok(has(surge.message,"Vein Surge!"),"capstone fired")
+	ok(has(miner.MasteryAbility,"Mining:"),"ability attribute set")
+	ok(has(cmd(miner,"ability","Mining").message,"recharging"),"server cooldown enforced")
+	ok(st(miner).depth.mastery.trees.Mining.active>0,"snapshot shows the surge")
+	ok(st(miner).depth.mastery.trees.Mining.cooldown>200,"snapshot shows the cooldown")
+	local surged=grab(miner,node("gather","Ore"))
+	eq(gained(surged.message),plainGain*2,"vein surge doubles the harvest")
+	ok(has(surged.message,"surge"),"surge noted")
+	for _,bad in ipairs({"Nowhere","Woodcutting",nil}) do
+		local reply=cmd(miner,"ability",bad)
+		ok(not has(reply.message,"!"),"bad ability refused: "..tostring(bad))
+	end
+	advance(30)
+	eq(gained(grab(miner,node("gather","Ore")).message),plainGain,"surge over: normal yield")
+	-- All rolls succeed: double yield, ember ingot, coins; Quick regrowth
+	-- (Echoing Seam 1 = 4%) shortens the 3 s timer to 2.88 s, never to zero.
+	local ingotsBefore=st(miner).items.AlloyIngot or 0
+	local saved=defaultRoll
+	defaultRoll=0
+	local seam=node("gather","Ore")
+	local lucky=grab(miner,seam)
+	ok(has(lucky.message,"quick regrowth (2.9s)"),"quick regrowth noted")
+	ok(has(lucky.message,"Alloy Ingot"),"ember ingot noted")
+	eq((lucky.items.AlloyIngot or 0)-ingotsBefore,1,"bonus ingot collected")
+	ok(has(lucky.message,"x2 yield"),"double yield noted")
+	local again=grab(miner,seam)
+	ok(has(again.message,"regrowing"),"quick regrowth never makes a node ready at once")
+	defaultRoll=saved
+	advance(0.9)
+	ok(has(grab(miner,seam).message,"Copperstone Ore"),"node ready after the shortened timer (2.9 s < 3 s)")
+	local slow=grab(miner,seam)
+	ok(has(slow.message,"regrowing"),"the node regrows between harvests")
+	-- Persistence: nodes and the capstone cooldown survive a rejoin.
+	miner=rejoin(miner)
+	eq(data.p9401.profile.mastery.trees.Mining.SteadyPick,1,"node levels saved")
+	ok(data.p9401.profile.mastery.cooldowns.Mining~=nil,"cooldown saved")
+	ok(has(cmd(miner,"ability","Mining").message,"recharging"),"cooldown survives a rejoin")
+	eq(st(miner).depth.mastery.trees.Mining.nodes.FaultLine,1,"levels restored")
+	services.Players.PlayerRemoving:Fire(miner)
+	data.p9401.profile.mastery.cooldowns.Mining=math.floor(utc)-1 -- the cooldown has run out
+	miner=player(9401)
+	ok(has(cmd(miner,"ability","Mining").message,"Vein Surge!"),"capstone ready after its cooldown")
+	-- Respec: price from the snapshot, coins paid, points back, price grows.
+	local pre=st(miner)
+	local price=pre.depth.mastery.trees.Mining.respecCost
+	eq(price,Data.Mastery.respecCost(11,0),"respec price shown")
+	ok(has(cmd(miner,"masteryRespec","Nowhere").message,"Choose"),"unknown tree respec refused")
+	ok(has(cmd(miner,"masteryRespec","Fishing").message,"Nothing to reset"),"empty tree respec refused")
+	local reset=cmd(miner,"masteryRespec","Mining")
+	ok(has(reset.message,"reset for "..price),"respec message")
+	eq(reset.coins,pre.coins-price,"respec coins taken")
+	eq(reset.depth.mastery.trees.Mining.spent,0,"respec refunds every point")
+	eq(reset.depth.mastery.trees.Mining.available,60,"points back")
+	eq(reset.depth.mastery.trees.Mining.capstone,false,"capstone gone")
+	eq(reset.depth.mastery.trees.Mining.active,0,"running surge ended")
+	cmd(miner,"masteryUnlock","Mining:SteadyPick")
+	eq(st(miner).depth.mastery.trees.Mining.respecCost,Data.Mastery.respecCost(1,1),"second respec costs more")
+	local broke=seeded(9403,function(p) p.xp.Mining=X[30]; p.coins=0; p.mastery={trees={Mining={SteadyPick=2}}} end)
+	ok(has(cmd(broke,"masteryRespec","Mining").message,"costs"),"respec needs coins")
+	eq(st(broke).depth.mastery.trees.Mining.spent,2,"failed respec keeps nodes")
+	-- Migration on load: tampered saves are cleaned.
+	local tampered=seeded(9404,function(p)
+		p.xp.Mining=X[20]
+		p.mastery={trees={Mining={SteadyPick=50,EmberVein=3,Ghost=1},Atlantis={}},cooldowns={Mining="soon"},cape="Mining",active={Mining={started=1,expires=1e12}}}
+	end)
+	local cleaned=st(tampered).depth.mastery
+	eq(cleaned.trees.Mining.nodes.SteadyPick,10,"level clamped on load")
+	eq(cleaned.trees.Mining.nodes.EmberVein,nil,"gated node dropped on load")
+	eq(cleaned.trees.Mining.nodes.Ghost,nil,"unknown node dropped on load")
+	tampered=rejoin(tampered)
+	eq(data.p9404.profile.mastery.trees.Atlantis,nil,"unknown tree dropped on load")
+	eq(data.p9404.profile.mastery.trees.Mining.SteadyPick,10,"cleaned save persisted")
+	eq(cleaned.cape,nil,"unearned mantle not worn")
+	eq(tampered.MasteryCape,"","no mantle attribute")
+	local overspent=seeded(9405,function(p) p.xp.Mining=X[12]; p.mastery={trees={Mining={SteadyPick=10}}} end)
+	eq(st(overspent).depth.mastery.trees.Mining.spent,0,"overspent tree reset on load")
+	-- Mantles, titles and auras.
+	local grand=seeded(9406,function(p) p.xp.Mining=X[99]; p.xp.Fishing=X[60] end)
+	local base=st(grand).depth.stats
+	ok(has(cmd(grand,"masteryWear","cape:Fishing").message,"Reach Fishing 99"),"mantle needs 99")
+	ok(has(cmd(grand,"masteryWear","cape:Mining").message,"Mantle of the Prospector"),"mantle worn")
+	eq(grand.MasteryCape,"Mining","mantle attribute")
+	local caped=st(grand)
+	eq(caped.depth.stats.miningFortune-base.miningFortune,25,"mantle perk on the stat sheet")
+	eq(caped.depth.mastery.cape,"Mining","snapshot mantle")
+	ok(table.find(caped.depth.mastery.capes,"Mining")~=nil,"mantle listed as earned")
+	ok(has(cmd(grand,"masteryWear","title:Mining").message,"Grand Prospector"),"title set")
+	eq(grand.MasteryTitle,"Grand Prospector","title attribute")
+	ok(has(cmd(grand,"masteryWear","aura:Fishing").message,"aura"),"aura at 50+")
+	eq(grand.MasteryAura,"Fishing","aura attribute")
+	ok(has(cmd(grand,"masteryWear","aura:Farming").message,"Reach Farming 50"),"aura needs 50")
+	ok(has(cmd(grand,"masteryWear","cape:").message,"Removed"),"mantle removed")
+	eq(grand.MasteryCape,"","mantle attribute cleared")
+	eq(st(grand).depth.stats.miningFortune,base.miningFortune,"perk gone with the mantle")
+	ok(has(cmd(grand,"masteryWear","hat:Mining").message,"Choose"),"unknown cosmetic refused")
+	ok(has(cmd(grand,"masteryWear","cape:Nope").message,"Choose a skill"),"unknown skill refused")
+	-- Tokens from collection tiers.
+	local hoarder=seeded(9407,function(p) p.collection.Herb=Progression.collectionThreshold("Herb",5)-1; p.collectionRewards={Herb=4} end)
+	local tokenGather=grab(hoarder,node("gather","Herb"))
+	ok(has(tokenGather.message,"Mastery Token"),"token announced at collection tier 5")
+	eq(tokenGather.depth.mastery.tokens.earned,1,"token counted")
+	eq(tokenGather.depth.mastery.trees.Fishing.available,1,"token spendable in any tree")
+	ok(has(cmd(hoarder,"masteryUnlock","Fishing:PatientLine").message,"Patient Line 1"),"token buys a node")
+	eq(st(hoarder).depth.mastery.tokens.free,0,"token used")
+	-- Combat bridge: perks for combat.server.lua, arrow save, style XP boost.
+	local archer=seeded(9408,function(p)
+		p.xp.Ranged=X[60]
+		p.items.CopperArrow=10
+		p.mastery={trees={Ranged={SteadyDraw=2,QuiverThrift=5}}}
+	end)
+	local info=bridge.OnInvoke("stats",archer,{})
+	ok(type(info.mastery)=="table","bridge stats carry mastery perks")
+	eq(info.mastery.ranged.arrowSave,15,"arrow save exposed")
+	eq(info.mastery.ranged.multishot,1,"no volley running")
+	eq(info.mastery.melee.firstStrike,0,"no melee perks")
+	eq(info.stats.rangedStrength-bridge.OnInvoke("stats",fresh,{}).stats.rangedStrength,4+59,"Steady Draw strength in bridge stats")
+	defaultRoll=0
+	local keep=bridge.OnInvoke("consume",archer,{items={CopperArrow=1}})
+	defaultRoll=saved
+	eq(keep.ok,true,"saved shot still ok")
+	eq(keep.remaining.CopperArrow,10,"arrow kept")
+	eq(keep.saved.CopperArrow,1,"arrow save reported")
+	local spendShot=bridge.OnInvoke("consume",archer,{items={CopperArrow=1}})
+	eq(spendShot.remaining.CopperArrow,9,"arrow spent without the proc")
+	eq(bridge.OnInvoke("consume",archer,{items={CopperArrow=50}}).ok,false,"save never pays for missing arrows")
+	local fighter=seeded(9409,function(p)
+		p.xp.Combat=X[60]
+		p.mastery={trees={Melee={IronGrip=1,BattleRhythm=1,Bulwark=1,OpeningBlow=1,Bloodthirst=1,WeaponLore=5}}}
+	end)
+	local brawler=seeded(9410,function(p) p.xp.Combat=X[60] end)
+	local hp=Data.Monsters.BramblebackBoar.hp
+	local boosted=bridge.OnInvoke("combatXp",fighter,{style="melee",monster="BramblebackBoar",damage=hp})
+	local normal=bridge.OnInvoke("combatXp",brawler,{style="melee",monster="BramblebackBoar",damage=hp})
+	eq(normal.xp.Combat,Data.Monsters.BramblebackBoar.xp,"plain melee XP")
+	eq(boosted.xp.Combat,math.floor(Data.Monsters.BramblebackBoar.xp*1.15),"Weapon Lore boosts melee XP")
+	local fi=bridge.OnInvoke("stats",fighter,{})
+	eq(fi.mastery.melee.firstStrike,10,"opening blow exposed")
+	eq(fi.mastery.melee.xpBoost,15,"weapon lore exposed")
+	eq(fi.stats.lifesteal,1,"bloodthirst lifesteal in stats")
+	-- Melee capstone (Warcry) shows in stats while it runs.
+	local champion=seeded(9411,function(p)
+		p.xp.Combat=X[80]
+		p.mastery={trees={Melee={IronGrip=1,KeenBlade=1,OpeningBlow=1,Finisher=1,WeaponLore=1,WarcryCrescendo=1}}}
+	end)
+	local calm=bridge.OnInvoke("stats",champion,{}).stats.strength
+	ok(has(cmd(champion,"ability","Melee").message,"Warcry Crescendo!"),"warcry fired")
+	local roaring=bridge.OnInvoke("stats",champion,{})
+	eq(roaring.stats.strength-calm,60,"warcry strength in bridge stats")
+	ok(roaring.mastery.active.Melee~=nil,"combat sees the running warcry")
+	advance(20)
+	eq(bridge.OnInvoke("stats",champion,{}).stats.strength,calm,"warcry fades")
+	print("PASS: "..(checks-before).." skill mastery server assertions.")
+end)()
+;(function()
+------------------------------------------------------------------------------
+-- Gear depth (Data.Gear): reforge, reforgeStone, star and tome verbs,
+-- persistence, migration, drops and the Auction House refusal.
+------------------------------------------------------------------------------
+local before=checks
+local G=Data.Gear
+local X=Data.XP_TABLE
+local function ok(cond,case) assert(cond,case); checks+=1 end
+local function has(text,part) return type(text)=="string" and string.find(text,part,1,true)~=nil end
+local function st(p) return cmd(p,"state") end
+local function seeded(id,mutate)
+	local p=player(id)
+	services.Players.PlayerRemoving:Fire(p)
+	mutate(data["p"..id].profile)
+	return player(id)
+end
+local function rejoin(p,mutate)
+	services.Players.PlayerRemoving:Fire(p)
+	if mutate then mutate(data["p"..p.UserId].profile) end
+	return player(p.UserId)
+end
+local function gear(s) return s.depth.gear end
+local smith=seeded(9300,function(p)
+	p.items={BrassSword=1,BrassHelm=1,BrassRod=1,MeadowCharm=1,AetherHeartstone=1,Blade=1,Ore=5,
+		WildheartEssence=1000,BrinelightEssence=10,EmberheartCinder=2,GalestringCoil=1,TidepearlKnot=1,TemperingTome=12,MasterworkTome=3}
+	p.coins=200000
+	p.xp.Combat=X[10]; p.levelRewards.Combat=10
+	p.xp.Fishing=X[20]; p.levelRewards.Fishing=20
+	p.equipment={weapon="BrassSword",helmet="BrassHelm"}
+	p.accessoryBag={"MeadowCharm"}
+end)
+local fresh=st(smith)
+ok(type(gear(fresh))=="table" and type(gear(fresh).reforges)=="table" and type(gear(fresh).stars)=="table" and type(gear(fresh).books)=="table","snapshot depth.gear tables")
+eq(next(gear(fresh).reforges),nil,"no reforges yet")
+local baseStrength=fresh.depth.stats.strength
+-- Malformed payloads change nothing and cost nothing.
+for _,verb in ipairs({"reforge","reforgeStone","star","tome"}) do
+	for _,bad in ipairs({"","Nope","Ore","TemperingTome","BrassSword:","BrassSword:Nope","Nope:EmberheartCinder","BrassSword:Ore:1",string.rep("A",65),"Brass Sword"}) do
+		local s=cmd(smith,verb,bad)
+		eq(s.coins,200000,"malformed "..verb.." is free: "..tostring(bad))
+		eq(next(gear(s).reforges)==nil and next(gear(s).stars)==nil and next(gear(s).books)==nil,true,"malformed "..verb.." changes nothing: "..tostring(bad))
+	end
+end
+ok(has(cmd(smith,"reforge","StarmetalSword").message,"do not own"),"reforge needs ownership")
+ok(has(cmd(smith,"reforge","Ore").message,"Choose a weapon"),"reforge needs gear")
+-- Reforge Anvil: deterministic roll, cost by rarity, never repeats.
+local pool=G.reforgePool(Data.Items.BrassSword)
+table.insert(rolls,0)
+local r1=cmd(smith,"reforge","BrassSword")
+eq(gear(r1).reforges.BrassSword,pool[1],"roll 0 picks the first anvil reforge")
+eq(r1.coins,200000-G.ReforgeCost.Uncommon,"uncommon reforge costs 500")
+ok(has(r1.message,"Reforged Brass Sword"),"reforge message")
+local expected=G.reforgeStats(pool[1],"Uncommon")
+ok(math.abs(r1.depth.stats.strength-(baseStrength+(expected.strength or 0)))<0.05,"reforge reaches the stat sheet")
+table.insert(rolls,0)
+local r2=cmd(smith,"reforge","BrassSword")
+eq(gear(r2).reforges.BrassSword,pool[2],"reroll skips the current reforge")
+ok(has(r2.message,G.Reforges[pool[1]].name.." → "..G.Reforges[pool[2]].name),"reroll message shows the change")
+for i=1,12 do
+	local prior=gear(st(smith)).reforges.BrassSword
+	table.insert(rolls,(i%7)/7)
+	eq(gear(cmd(smith,"reforge","BrassSword")).reforges.BrassSword~=prior,true,"anvil never repeats "..i)
+end
+eq(st(smith).coins,200000-14*500,"every roll charged")
+-- Tool and accessory reforges respect their pools.
+table.insert(rolls,0.999)
+local rodRoll=cmd(smith,"reforge","BrassRod")
+ok(table.find(G.reforgePool(Data.Items.BrassRod),gear(rodRoll).reforges.BrassRod)~=nil,"rod reforge from the rod pool")
+table.insert(rolls,0)
+eq(G.Reforges[gear(cmd(smith,"reforge","MeadowCharm")).reforges.MeadowCharm].category,"accessory","bagged accessory reforged")
+-- Reforge stones.
+local wrong=cmd(smith,"reforgeStone","BrassSword:GalestringCoil")
+ok(has(wrong.message,"cannot be applied"),"bow stone refused on a sword")
+eq(wrong.items.GalestringCoil,1,"refused stone kept")
+ok(has(cmd(smith,"reforgeStone","BrassSword:TidepearlKnot").message,"cannot be applied"),"rod stone refused on a sword")
+ok(has(cmd(smith,"reforgeStone","BrassSword:StarbiteShard").message,"You have no"),"unowned stone refused")
+local coinsBefore=st(smith).coins
+local stoned=cmd(smith,"reforgeStone","BrassSword:EmberheartCinder")
+eq(gear(stoned).reforges.BrassSword,"Emberwrought","stone applies its reforge")
+eq(stoned.items.EmberheartCinder,1,"stone consumed")
+eq(stoned.coins,coinsBefore-500,"stone application pays the anvil fee")
+ok(has(cmd(smith,"reforgeStone","BrassSword:EmberheartCinder").message,"already Emberwrought"),"same stone twice refused")
+eq(st(smith).items.EmberheartCinder,1,"repeat refusal keeps the stone")
+local rodStone=cmd(smith,"reforgeStone","BrassRod:TidepearlKnot")
+eq(gear(rodStone).reforges.BrassRod,"Tidebound","rod stone on a rod")
+ok(rodStone.depth.stats.seaCreatureChance>fresh.depth.stats.seaCreatureChance,"rod reforge raises sea creature chance")
+-- Stars: essence + coins, five at most, accessories refused.
+local essence=st(smith).items.WildheartEssence
+local coins=st(smith).coins
+local spentEssence,spentCoins=0,0
+for k=1,5 do
+	local c=G.starCost(Data.Items.BrassSword,k)
+	spentEssence+=c.amount; spentCoins+=c.coins
+	local s=cmd(smith,"star","BrassSword")
+	eq(gear(s).stars.BrassSword,k,"star "..k)
+	eq(s.items.WildheartEssence,essence-spentEssence,"star "..k.." essence")
+	eq(s.coins,coins-spentCoins,"star "..k.." coins")
+end
+ok(has(cmd(smith,"star","BrassSword").message,"already has 5 stars"),"sixth star refused")
+eq(st(smith).items.WildheartEssence,essence-spentEssence,"refused star is free")
+ok(has(cmd(smith,"star","MeadowCharm").message,"cannot be starred"),"accessories cannot be starred")
+local poorRod=cmd(smith,"star","BrassRod")
+eq(gear(poorRod).stars.BrassRod,nil,"rod star needs Brinelight Essence")
+ok(has(poorRod.message,"Brinelight Essence"),"essence shortfall message")
+-- Tomes.
+for i=1,10 do eq(gear(cmd(smith,"tome","BrassSword:TemperingTome")).books.BrassSword.tempering,i,"tempering "..i) end
+ok(has(cmd(smith,"tome","BrassSword:TemperingTome").message,"already holds 10"),"eleventh tome refused")
+eq(st(smith).items.TemperingTome,2,"ten tomes consumed")
+ok(has(cmd(smith,"tome","BrassRod:TemperingTome").message,"weapons and armor"),"tools cannot be tempered")
+ok(has(cmd(smith,"tome","BrassSword:Ore").message,"Choose a Tempering"),"non-tome refused")
+local helm=cmd(smith,"tome","BrassHelm:TemperingTome")
+eq(gear(helm).books.BrassHelm.tempering,1,"armor tempered")
+eq(helm.depth.stats.defense,st(smith).depth.stats.defense,"stat sheet stable between snapshots")
+local mw=cmd(smith,"tome","BrassSword:MasterworkTome")
+eq(gear(mw).books.BrassSword.masterwork,true,"masterwork bound")
+eq(gear(mw).books.BrassSword.tempering,10,"masterwork keeps the tempering count")
+ok(has(mw.message,"Rare masterwork"),"masterwork message names the new rarity")
+ok(has(cmd(smith,"tome","BrassSword:MasterworkTome").message,"already a masterwork"),"second masterwork refused")
+ok(has(cmd(smith,"tome","AetherHeartstone:MasterworkTome").message,"already Mythic"),"mythic refused")
+eq(st(smith).items.MasterworkTome,2,"refusals keep the tome")
+local charm=cmd(smith,"tome","MeadowCharm:MasterworkTome")
+eq(gear(charm).books.MeadowCharm.masterwork,true,"bagged accessory masterwork")
+ok(charm.depth.stats.magicalPower>=Data.Rarity.Uncommon.power,"masterwork raises Magical Power")
+-- Masterwork raises the anvil fee (Rare now).
+local fee=st(smith).coins
+table.insert(rolls,0)
+eq(cmd(smith,"reforge","BrassSword").coins,fee-G.ReforgeCost.Rare,"masterwork sword pays the rare fee")
+-- Final stat sheet matches Progression on the live profile.
+local final=st(smith)
+local profileCopy={}
+for k,v in pairs(final.depth.gear) do profileCopy[k]=v end
+local layered=G.breakdown(profileCopy,"BrassSword").total
+ok(layered.damage>=20,"tempering + stars add damage")
+ok(final.depth.stats.strength>baseStrength+20,"layers stack on the equipped sword")
+-- Persistence.
+smith=rejoin(smith)
+local saved=data.p9300.profile
+eq(saved.stars.BrassSword,5,"stars persisted")
+eq(saved.books.BrassSword.tempering,10,"tomes persisted")
+eq(saved.books.BrassSword.masterwork,true,"masterwork persisted")
+eq(saved.reforges.BrassRod,"Tidebound","reforges persisted")
+eq(saved.books.MeadowCharm.masterwork,true,"accessory masterwork persisted")
+local reloaded=st(smith)
+eq(reloaded.depth.stats.strength,final.depth.stats.strength,"stat sheet survives a rejoin")
+eq(gear(reloaded).reforges.BrassSword,gear(final).reforges.BrassSword,"reforge survives a rejoin")
+-- Migration: older saves gain tables; malformed entries are dropped or clamped.
+local legacy=seeded(9301,function(p)
+	p.reforges=nil; p.stars=nil; p.books=nil
+end)
+local migrated=st(legacy)
+eq(type(gear(migrated).reforges)=="table" and type(gear(migrated).stars)=="table" and type(gear(migrated).books)=="table",true,"missing tables backfilled")
+local messy=seeded(9302,function(p)
+	p.reforges={BrassSword="Nope",Ore="Honed",BrassHelm="Honed",Blade="Vicious",BrassRod="Brined",BrassPickaxe="Brined"}
+	p.stars={BrassSword=99,MeadowCharm=2,Ghost=1,BrassHelm="x",Blade=2.7,BrassRod=-1}
+	p.books={BrassSword={tempering=40,masterwork=true},BrassRod={tempering=3},Ore=5,BrassHelm="x",Blade={tempering=0},Stormblade={masterwork="yes",tempering=2}}
+end)
+st(messy)
+messy=rejoin(messy)
+local m=data.p9302.profile
+eq(m.reforges.BrassSword,nil,"unknown reforge dropped")
+eq(m.reforges.Ore,nil,"non-gear reforge dropped")
+eq(m.reforges.BrassHelm,nil,"mismatched reforge dropped")
+eq(m.reforges.Blade,"Vicious","valid reforge kept")
+eq(m.reforges.BrassRod,"Brined","valid rod reforge kept")
+eq(m.reforges.BrassPickaxe,nil,"rod-only reforge dropped from a pickaxe")
+eq(m.stars.BrassSword,5,"stars clamped to 5")
+eq(m.stars.MeadowCharm,nil,"accessory stars dropped")
+eq(m.stars.Ghost,nil,"unknown item stars dropped")
+eq(m.stars.BrassHelm,nil,"malformed stars dropped")
+eq(m.stars.Blade,2,"fractional stars floored")
+eq(m.stars.BrassRod,nil,"negative stars dropped")
+eq(m.books.BrassSword.tempering,10,"tempering clamped to 10")
+eq(m.books.BrassSword.masterwork,true,"masterwork kept")
+eq(m.books.BrassRod,nil,"tool tempering dropped")
+eq(m.books.Ore,nil,"non-gear book dropped")
+eq(m.books.BrassHelm,nil,"malformed book dropped")
+eq(m.books.Blade,nil,"empty book dropped")
+eq(m.books.Stormblade.tempering,2,"stormblade tempering kept")
+eq(m.books.Stormblade.masterwork,nil,"non-boolean masterwork dropped")
+-- Ironman journals upgrade normally.
+local iron=seeded(9303,function(p)
+	p.ironman=true
+	p.items={Blade=1,WildheartEssence=20,TemperingTome=1}
+	p.coins=5000
+end)
+table.insert(rolls,0)
+local ironRoll=cmd(iron,"reforge","Blade")
+eq(gear(ironRoll).reforges.Blade,G.reforgePool(Data.Items.Blade)[1],"Ironman can reforge")
+eq(gear(cmd(iron,"star","Blade")).stars.Blade,1,"Ironman can star")
+eq(gear(cmd(iron,"tome","Blade:TemperingTome")).books.Blade.tempering,1,"Ironman can temper")
+local broke=seeded(9304,function(p) p.items={Blade=1,WildheartEssence=5}; p.coins=100 end)
+local brokeRoll=cmd(broke,"reforge","Blade")
+eq(gear(brokeRoll).reforges.Blade,nil,"reforge needs coins")
+ok(has(brokeRoll.message,"costs 250 coins"),"anvil fee message")
+eq(gear(cmd(broke,"star","Blade")).stars.Blade,nil,"star needs essence")
+eq(st(broke).items.WildheartEssence,5,"refused star spends nothing")
+-- Drops: monsters, slayer bosses.
+local hunter=seeded(9305,function(p) p.xp.Combat=X[20]; p.levelRewards.Combat=20 end)
+local bridge
+for _,o in ipairs(allObjects) do if o.Name=="IsleBridge" then bridge=o end end
+for _,v in ipairs({0.99,0.99,0.99,0.0001,0}) do table.insert(rolls,v) end
+local killed=bridge.OnInvoke("kill",hunter,{monster="CinderMite"})
+eq(killed.drops.EmberheartCinder,1,"Cinder Mites drop the Emberheart Cinder stone")
+eq(st(hunter).items.EmberheartCinder,1,"stone collected")
+hunter=rejoin(hunter,function(p) p.slayerQuest={line="Bramble",tier=1,progress=150,needed=150,bossReady=true} end)
+for _,v in ipairs({0.5,0,0.5,0,0.5,0}) do table.insert(rolls,v) end
+local boss=bridge.OnInvoke("slayerBoss",hunter,{result="win"})
+eq(boss.ok,true,"slayer boss win")
+eq(boss.drops.WildheartEssence,2,"slayer bosses drop Wildheart Essence")
+rolls={}
+-- Auction House refuses upgraded ids (upgrades stay bound to the journal).
+local seller=seeded(9306,function(p)
+	p.items={BrassSword=1,SunsteelSword=1,Blade=1}
+	p.coins=5000
+	p.stars={BrassSword=1}
+	p.books={Blade={masterwork=true}}
+	p.reforges={SunsteelSword="Honed"}
+end)
+for _,id in ipairs({"BrassSword","Blade","SunsteelSword"}) do
+	local listed=trade(seller,"ahList",id..":500")
+	ok(has(listed.message,"Upgraded gear cannot be auctioned"),"upgraded "..id.." refused")
+	eq(listed.items[id],1,"refused listing keeps "..id)
+	eq(listed.coins,5000,"refused listing charges no fee ("..id..")")
+end
+print("PASS: "..(checks-before).." gear depth server assertions.")
+end)()
+
+-- Endgame (server): the Shattered Crown gate, the Sovereign Altar verb and
+-- world boss rewards through bridge "worldBoss" (contribution tiers, Magic
+-- Find rolls, once per fight), plus kill/XP routing for boss ids.
+;(function()
+	local before=checks
+	local X=Data.XP_TABLE
+	local E=Data.Endgame
+	local function hook(name) for _,o in ipairs(allObjects) do if o.Name==name then return o end end return nil end
+	local function ok(cond,case) assert(cond,case); checks+=1 end
+	local function has(text,part) return type(text)=="string" and string.find(text,part,1,true)~=nil end
+	local function seeded(id,mutate)
+		local p=player(id)
+		services.Players.PlayerRemoving:Fire(p)
+		mutate(data["p"..id].profile)
+		return player(id)
+	end
+	local function st(p) return cmd(p,"state") end
+	local bridge,access=hook("IsleBridge"),hook("IsleRegionAccess")
+	-- Region gate: Combat 60 AND the quest Crown of the Tempest.
+	local rookie=seeded(9501,function(p) p.xp.Combat=X[59] end)
+	local gate=access.OnInvoke(rookie,"ShatteredCrown")
+	eq(gate.allowed,false,"Shattered Crown locked below Combat 60")
+	ok(has(gate.message,"Combat 60") and has(gate.message,"Crown of the Tempest"),"denial names both requirements")
+	local veteran=seeded(9502,function(p) p.xp.Combat=X[70] end)
+	eq(access.OnInvoke(veteran,"ShatteredCrown").allowed,false,"Combat alone is not enough")
+	local crowned=seeded(9503,function(p) p.xp.Combat=X[70]; p.questsDone={CrownOfTempest=true} end)
+	eq(access.OnInvoke(crowned,"ShatteredCrown").allowed,true,"Combat 60 + Crown of the Tempest opens the region")
+	eq(access.OnInvoke(crowned,"ShatteredCrown").message,"Welcome to The Shattered Crown.","welcome message")
+	local questOnly=seeded(9504,function(p) p.xp.Combat=X[40]; p.questsDone={CrownOfTempest=true} end)
+	eq(access.OnInvoke(questOnly,"ShatteredCrown").allowed,false,"the quest alone is not enough")
+	ok(has(rawUse(veteran,node("gather","Crownstone",0,nil,"ShatteredCrown")).message,"requires"),"region nodes refuse locked journals")
+	-- Sovereign Altar.
+	local altar=node("bossSigil","Aurelith",0,nil,"ShatteredCrown")
+	local holder=seeded(9505,function(p) p.xp.Combat=X[80]; p.questsDone={CrownOfTempest=true}; p.items.CrownSigil=3 end)
+	advance(2)
+	ok(has(rawUse(rookie,altar).message,"requires"),"locked journals cannot reach the altar")
+	local empty=seeded(9506,function(p) p.xp.Combat=X[80]; p.questsDone={CrownOfTempest=true} end)
+	advance(2)
+	ok(has(rawUse(empty,altar).message,"need a Crown Sigil"),"altar needs a sigil")
+	services.ServerStorage.FindFirstChild=function() return nil end
+	advance(2)
+	ok(has(rawUse(holder,altar).message,"nothing answers"),"no combat service: nothing spent")
+	eq(st(holder).items.CrownSigil,3,"unanswered altar keeps the sigil")
+	local calls,answer={},{ok=true,count=1,needed=4}
+	local fn={Name="IsleWorldBoss",Invoke=function(_,op,who,boss) table.insert(calls,{op,who,boss}); return answer end}
+	services.ServerStorage.FindFirstChild=function(_,name) return if name=="IsleWorldBoss" then fn else nil end
+	advance(2)
+	local placed=rawUse(holder,altar)
+	ok(has(placed.message,"Sigil placed (1/4)"),"sigil placed message")
+	eq(st(holder).items.CrownSigil,2,"accepted sigil spent")
+	eq(calls[1][1],"sigil","combat asked to place")
+	eq(calls[1][2],holder,"combat told who placed")
+	eq(calls[1][3],"Aurelith","combat told which boss")
+	answer={ok=false,reason="mine",count=2,needed=4}
+	advance(2)
+	ok(has(rawUse(holder,altar).message,"all the sigils one wayfarer may"),"per-player cap relayed")
+	eq(st(holder).items.CrownSigil,2,"refused sigil kept")
+	answer={ok=false,reason="active",count=0,needed=4}
+	advance(2)
+	ok(has(rawUse(holder,altar).message,"already awake"),"active boss relayed")
+	answer={ok=true,reason="ready",count=4,needed=4}
+	advance(2)
+	ok(has(rawUse(holder,altar).message,"awakens"),"last sigil wakes the Sovereign")
+	eq(st(holder).items.CrownSigil,1,"last sigil spent")
+	advance(2)
+	ok(has(rawUse(holder,node("bossSigil","Nyxwyrm",0,nil,"ShatteredCrown")).message,"silent"),"scheduled boss has no altar")
+	services.ServerStorage.FindFirstChild=nil
+	-- Bridge "worldBoss": validation.
+	local fighter=seeded(9507,function(p) p.xp.Combat=X[80]; p.questsDone={CrownOfTempest=true}; p.coins=0 end)
+	local startCoins=st(fighter).coins
+	for _,bad in ipairs({{boss="Nope",tier="Champion",rank=1,fight=1},{boss="Aurelith",tier="Nope",rank=1,fight=1},{boss="Aurelith",tier="Champion",rank=0,fight=1},
+		{boss="Aurelith",tier="Champion",rank=1.5,fight=1},{boss="BramblebackBoar",tier="Champion",rank=1,fight=1}}) do
+		eq(bridge.OnInvoke("worldBoss",fighter,bad).ok,false,"invalid world boss payload refused ("..tostring(bad.boss).."/"..tostring(bad.tier)..")")
+	end
+	eq(st(fighter).coins,startCoins,"refusals pay nothing")
+	-- A Participant at the default (high) roll: only guaranteed rewards.
+	local coinsBefore=st(fighter).coins
+	local paid=bridge.OnInvoke("worldBoss",fighter,{boss="Aurelith",tier="Participant",rank=7,share=0.012,damage=36000,sigils=0,fight=11})
+	eq(paid.ok,true,"credited contributor paid")
+	eq(paid.coins,E.bossCoins("Aurelith",0.012),"participant coins scale with the 1.2% share")
+	ok(paid.coins<5000,"a 1% contributor no longer collects a flat tier payout")
+	ok(st(fighter).coins-coinsBefore>=paid.coins,"coins credited (plus any collection tier rewards)")
+	ok((paid.drops.SovereignEssence or 0)>=1,"guaranteed Sovereign Essence (floor 1)")
+	ok((paid.drops.CrownShard or 0)>=1,"guaranteed crown shards (floor 1)")
+	eq(paid.drops.SovereignCrest,nil,"no rare drop on a high roll")
+	eq(st(fighter).depth.bestiary.Aurelith,1,"bestiary records the world boss")
+	ok(has(fighter.last.message,"Aurelith felled") and has(fighter.last.message,"Participant"),"notification names the boss and tier")
+	eq(bridge.OnInvoke("worldBoss",fighter,{boss="Aurelith",tier="Participant",rank=7,share=0.012,fight=11}).reason,"paid","each fight pays once")
+	eq(st(fighter).depth.bestiary.Aurelith,1,"duplicate report changes nothing")
+	-- A Champion on rolls of 0: every capped chance hits, amounts scale with weight.
+	local champ=seeded(9508,function(p) p.xp.Combat=X[90]; p.questsDone={CrownOfTempest=true}; p.coins=0 end)
+	defaultRoll=0
+	local big=bridge.OnInvoke("worldBoss",champ,{boss="Nyxwyrm",tier="Champion",rank=1,share=0.4,damage=1800000,sigils=0,fight=12})
+	defaultRoll=0.999
+	eq(big.ok,true,"champion paid")
+	eq(big.coins,E.bossCoins("Nyxwyrm",0.4),"champion coins scale with the 40% share")
+	for _,id in ipairs({"SovereignCrest","NyxwingCharm","ShardlingPet","Duskpiercer"}) do ok((big.drops[id] or 0)>=1,"zero roll drops "..id) end
+	eq(big.drops.CrownShard,math.floor(10*0.4*E.GUARANTEED_POOL+0.5),"guaranteed rows scale by share (min at roll 0)")
+	ok(has(champ.last.message,"40%"),"notification shows the share")
+	-- Region gate at credit: a journal that may not enter the Shattered Crown
+	-- (noclip alt below the quest) is refused and keeps nothing.
+	local alt=seeded(9509,function(p) p.xp.Combat=X[80]; p.coins=0 end)
+	local altCoins=st(alt).coins
+	local refused=bridge.OnInvoke("worldBoss",alt,{boss="Aurelith",tier="Vanguard",rank=2,share=0.12,sigils=0,fight=13})
+	eq(refused.ok,false,"region-locked journal refused")
+	eq(refused.reason,"region","refusal names the region")
+	eq(st(alt).coins,altCoins,"region refusal pays nothing")
+	-- A journal that is not live answers "sync" (combat resends until it is).
+	local away=player(9510,true)
+	local syncing=bridge.OnInvoke("worldBoss",away,{boss="Aurelith",tier="Vanguard",rank=2,share=0.12,sigils=0,fight=14})
+	ok(type(syncing)=="table" and syncing.ok==false and syncing.reason=="sync","unsynced journal asks for a resend")
+	-- Sigil refunds (bridge "worldBossRefund"): a live journal at once ...
+	local placer=seeded(9511,function(p) p.items.CrownSigil=0 end)
+	local back=bridge.OnInvoke("worldBossRefund",placer,{boss="Aurelith",userId=9511,sigils=2,reason="failed"})
+	eq(back.ok,true,"refund accepted")
+	eq(back.mode,"items","live journal refunded at once")
+	eq(st(placer).items.CrownSigil,2,"sigils back in the bag")
+	ok(has(placer.last.message,"returns 2 unspent Crown Sigils"),"refund notice")
+	eq(bridge.OnInvoke("worldBossRefund",placer,{boss="Aurelith",userId=9511,sigils=0}).ok,false,"empty refund refused")
+	eq(bridge.OnInvoke("worldBossRefund",9511,{boss="Aurelith",userId="x",sigils=1}).ok,false,"invalid user refused")
+	-- ... an offline journal through its save (applied on the next join, capped).
+	local gone=player(9512)
+	services.Players.PlayerRemoving:Fire(gone)
+	local sigilsBefore=data.p9512.profile.items.CrownSigil or 0
+	local offline=bridge.OnInvoke("worldBossRefund",9512,{boss="Aurelith",userId=9512,sigils=9,reason="depart"})
+	eq(offline.mode,"pending","offline refund queued for the save")
+	eq(data.p9512.profile.sigilRefund,E.ALTAR_PER_PLAYER,"refund written into the saved journal (one summoning's worth at most)")
+	local returned=player(9512)
+	ok(has(returned.last.message,"returned "..E.ALTAR_PER_PLAYER.." unspent Crown Sigils"),"join notice names the refund")
+	eq(st(returned).items.CrownSigil,sigilsBefore+E.ALTAR_PER_PLAYER,"refund applied on join")
+	services.Players.PlayerRemoving:Fire(returned)
+	eq(data.p9512.profile.sigilRefund,nil,"applied refund cleared from the save")
+	data.p9512.profile.sigilRefund=500
+	local capped=player(9512)
+	eq(st(capped).items.CrownSigil,sigilsBefore+E.ALTAR_PER_PLAYER+E.REFUND_CAP,"pending refunds are bounded")
+	-- ... and a journal held by another server is not overwritten.
+	local elsewhere=player(9513)
+	services.Players.PlayerRemoving:Fire(elsewhere)
+	data.p9513.owner="other-server"; data.p9513.expires=utc+600
+	bridge.OnInvoke("worldBossRefund",9513,{boss="Aurelith",userId=9513,sigils=1,reason="depart"})
+	eq(data.p9513.profile.sigilRefund,nil,"a leased journal is left alone (retried later)")
+	eq(st(champ).items.Duskpiercer,1,"unique weapon collected")
+	eq(st(champ).depth.bestiary.Nyxwyrm,1,"Nyxwyrm in the bestiary")
+	-- Kill / XP routing for boss ids.
+	eq(bridge.OnInvoke("kill",champ,{monster="Aurelith"}),nil,"world bosses never pay through kill")
+	eq(bridge.OnInvoke("kill",champ,{monster="Nyxwyrm"}),nil,"world bosses never pay through kill (Nyxwyrm)")
+	local xpBefore=st(champ).depth.skills.Combat.xp
+	local xp=bridge.OnInvoke("combatXp",champ,{style="melee",monster="Aurelith",damage=300000})
+	eq(xp.ok,true,"boss damage XP accepted")
+	ok(st(champ).depth.skills.Combat.xp>xpBefore,"boss damage XP granted from def.xp / def.hp")
+	local riftKill=bridge.OnInvoke("kill",champ,{monster="RiftmawStalker"})
+	ok(type(riftKill)=="table" and st(champ).depth.bestiary.RiftmawStalker==1,"regional monsters pay through kill")
+	-- Quest and diary checks see world boss kills (bestiary).
+	local questKill=Data.QuestById.TheSovereignsFall.objectives[1]
+	eq(questKill.monster,"Aurelith","final quest asks for the Sovereign")
+	ok(has(Data.describeCheck(questKill),"Aurelith, the Shattered Sovereign"),"quest text names the world boss")
+	-- Shutdown: BindToClose drains combat's altars and refunds every placer
+	-- (live journals before they save, offline ones through their save).
+	local leaver=player(9514)
+	services.Players.PlayerRemoving:Fire(leaver)
+	local drained=0
+	local drainFn={Name="IsleWorldBoss",Invoke=function(_,op)
+		if op~="drain" then return nil end
+		drained+=1
+		return {{userId=9511,boss="Aurelith",sigils=1,reason="shutdown"},{userId=9514,boss="Aurelith",sigils=2,reason="shutdown"},{userId=-1,boss="Aurelith",sigils=1}}
+	end}
+	services.ServerStorage.FindFirstChild=function(_,name) return if name=="IsleWorldBoss" then drainFn else nil end
+	ok(#closers>=1,"BindToClose registered")
+	local closed=false
+	coroutine.wrap(function() for _,f in ipairs(closers) do f() end; closed=true end)()
+	ok(closed,"shutdown completes")
+	eq(drained,1,"combat's altars drained once at shutdown")
+	eq(data.p9511.profile.items.CrownSigil,3,"live placer refunded before the final save")
+	eq(data.p9514.profile.sigilRefund,2,"offline placer refunded through the save")
+	services.ServerStorage.FindFirstChild=nil
+	print("PASS: "..(checks-before).." endgame server assertions.")
+end)()
+
+-- Completion sentinel: scripts/build.sh fails if a suite stops early without erroring.
+print("SUITE-END verify-gameplay.luau")

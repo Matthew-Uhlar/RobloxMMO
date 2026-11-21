@@ -6,6 +6,8 @@
 --   enchants[itemId][enchantId]=level, accessoryBag={itemId,...},
 --   pets={{id,level,xp}}, activePet=index, buffs[id]={expires,stats},
 --   bestiary[monsterId]=kills, slayerXp[line]=xp, companionBond, enchantRank
+--   reforges[itemId]=reforgeId, stars[itemId]=0..5, books[itemId]={tempering,masterwork}
+--   (Gear depth: upgrades bound to the item id, like enchants; see Data.Gear)
 local Progression = {}
 local Data
 do
@@ -93,7 +95,9 @@ function Progression.accessorySlots(p)
 	local bag = Data.AccessoryBag
 	local combat = Progression.levelForXp(p.xp and p.xp.Combat or 0)
 	local perk = math.clamp(math.floor(tonumber(p.perkAccessorySlots) or 0), 0, Data.MAX_PERK_SLOTS or 0)
-	return math.min(bag.maxSlots, bag.baseSlots + combat // bag.slotsPerLevel.every) + perk
+	-- MMO Features (§31): Isle Renown bag slots (0..Data.Renown.MAX_SLOTS from the server-set level).
+	local renown = if Data.Renown then Data.Renown.profileSlots(p) else 0
+	return math.min(bag.maxSlots, bag.baseSlots + combat // bag.slotsPerLevel.every) + perk + renown
 end
 -- Quest/construction accessory-slot perks are counted above (server skips its wrapper).
 Progression.perkSlotsIntegrated = true
@@ -104,19 +108,78 @@ function Progression.meetsRequirements(p, requires)
 	end
 	return true
 end
--- Active accessories: owned, unique by id, within bag capacity, highest
--- rarity first (SkyBlock: duplicates do not stack).
+-- Gear depth (Data.Gear): reforges, stars and tomes bound to an item id.
+-- Items without upgrades contribute nothing here (existing behaviour unchanged).
+function Progression.effectiveRarity(p, itemId)
+	local def = Data.Items[itemId]
+	if not def then return "Common" end
+	if not Data.Gear then return def.rarity end
+	return Data.Gear.effectiveRarity(p, itemId)
+end
+local NO_STATS = table.freeze({})
+function Progression.upgradeStats(p, itemId)
+	if not Data.Gear or not Data.Items[itemId] then return NO_STATS end
+	return Data.Gear.upgradeStats(p, itemId)
+end
+function Progression.upgradeBreakdown(p, itemId)
+	return Data.Gear and Data.Gear.breakdown(p, itemId) or nil
+end
+function Progression.isUpgraded(p, itemId)
+	return Data.Gear ~= nil and Data.Gear.isUpgraded(p, itemId)
+end
+-- Upgrade stats without the accessory-only magicalPower key (counted in magicalPower()).
+local function gearStats(p, itemId)
+	local stats = Progression.upgradeStats(p, itemId)
+	if stats.magicalPower == nil then return stats end
+	local out = table.clone(stats)
+	out.magicalPower = nil
+	return out
+end
+-- Accessory family (SkyBlock-style upgrade lines): Crafting jewellery
+-- (category "jewellery") made from the same cut gem (`gem`) is one family —
+-- the ring, necklace, amulet and enchanted amulet of a gem. Returns the family
+-- key or nil (every other accessory is its own family). A faction's Charm and
+-- Crest (`faction`) are one family too ("faction:<id>").
+function Progression.accessoryFamily(id)
+	local def = Data.Items[id]
+	if def and def.category == "jewellery" and type(def.gem) == "string" then return "jewellery:" .. def.gem end
+	-- A faction's Charm and Crest are one family: only the better one counts.
+	if def and def.kind == "accessory" and type(def.faction) == "string" then return "faction:" .. def.faction end
+	return nil
+end
+-- Family order: highest effective rarity, then Magical Power (reforges), then
+-- total stats, then id (deterministic).
+local function familyBetter(p, a, b)
+	local ra, rb = Data.Rarity[Progression.effectiveRarity(p, a)].rank, Data.Rarity[Progression.effectiveRarity(p, b)].rank
+	if ra ~= rb then return ra > rb end
+	local ma, mb = Progression.upgradeStats(p, a).magicalPower or 0, Progression.upgradeStats(p, b).magicalPower or 0
+	if ma ~= mb then return ma > mb end
+	local sa, sb = 0, 0
+	for _, v in pairs(Data.Items[a].stats or {}) do sa += v end
+	for _, v in pairs(Data.Items[b].stats or {}) do sb += v end
+	if sa ~= sb then return sa > sb end
+	return a < b
+end
+-- Active accessories: owned, unique by id, one per accessory family (only the
+-- best member counts for Magical Power and stats), within bag capacity,
+-- highest rarity first (SkyBlock: duplicates do not stack).
 function Progression.activeAccessories(p)
-	local seen, list = {}, {}
+	local seen, list, best = {}, {}, {}
 	for _, id in ipairs(p.accessoryBag or {}) do
 		local def = Data.Items[id]
 		if def and def.kind == "accessory" and not seen[id] and (p.items[id] or 0) > 0 then
 			seen[id] = true
-			table.insert(list, id)
+			local family = Progression.accessoryFamily(id)
+			if not family then
+				table.insert(list, id)
+			elseif not best[family] or familyBetter(p, id, best[family]) then
+				best[family] = id
+			end
 		end
 	end
+	for _, id in pairs(best) do table.insert(list, id) end
 	table.sort(list, function(a, b)
-		local ra, rb = Data.Rarity[Data.Items[a].rarity].rank, Data.Rarity[Data.Items[b].rarity].rank
+		local ra, rb = Data.Rarity[Progression.effectiveRarity(p, a)].rank, Data.Rarity[Progression.effectiveRarity(p, b)].rank
 		if ra ~= rb then return ra > rb end
 		return a < b
 	end)
@@ -124,9 +187,14 @@ function Progression.activeAccessories(p)
 	while #list > slots do table.remove(list) end
 	return list
 end
+-- Rarity power uses the effective rarity (Masterwork Tome); accessory reforges add
+-- their magicalPower bonus on top.
 function Progression.magicalPower(p)
 	local power = 0
-	for _, id in ipairs(Progression.activeAccessories(p)) do power += Data.Rarity[Data.Items[id].rarity].power end
+	for _, id in ipairs(Progression.activeAccessories(p)) do
+		power += Data.Rarity[Progression.effectiveRarity(p, id)].power
+		power += Progression.upgradeStats(p, id).magicalPower or 0
+	end
 	return power
 end
 function Progression.petLevel(pet)
@@ -137,22 +205,97 @@ function Progression.activePet(p)
 	if pet and Data.PetById[pet.id] then return pet, Data.PetById[pet.id] end
 	return nil
 end
--- Pets earn the full XP of their skill and 25% of other skills.
-function Progression.addPetXp(p, skill, amount)
-	local pet, def = Progression.activePet(p)
-	if not pet then return false end
-	local gained = if def.skill == skill then amount else amount * 0.25
-	pet.xp = (pet.xp or 0) + gained
-	local leveled = false
+-- Pets depth (Data.PetDepth): instance rarity, held item, candy uses. A pet
+-- without those fields reads as its species' rarity with no item.
+local function PD() return Data.PetDepth end
+function Progression.petRarity(pet)
+	local def = type(pet) == "table" and Data.PetById[pet.id]
+	local pd = PD()
+	if pd and type(pet) == "table" and pd.validRarity(pet.rarity) then return pet.rarity end
+	return def and def.rarity or "Common"
+end
+function Progression.tamingLevel(p)
+	return Progression.levelForXp(type(p) == "table" and p.xp and p.xp.Taming or 0)
+end
+-- Pet XP share of a grant in `skill`: own skill full, same category / other reduced.
+function Progression.petShare(def, skill)
+	if def.skill == skill then return 1 end
+	local pd = PD()
+	if not pd then return 0.25 end
+	local a, b = Data.Skills[def.skill], Data.Skills[skill]
+	if a and b and a.category == b.category then return pd.SHARE.category end
+	return pd.SHARE.other
+end
+-- Pet XP multiplier from Taming level and the held item.
+function Progression.petXpMult(p, pet, skill)
+	local pd = PD()
+	if not pd then return 1 end
+	return 1 + pd.tamingXpBonus(Progression.tamingLevel(p)) + pd.heldXpBonus(pet and pet.item, skill)
+end
+-- Raw XP onto one pet (candy, skills): levels up along its rarity curve. Returns levels gained.
+function Progression.addXpToPet(pet, amount)
+	local def = Data.PetById[pet.id]
+	if not def then return 0 end
+	local rarity = Progression.petRarity(pet)
+	local start = pet.level
+	pet.xp = (pet.xp or 0) + math.max(0, amount)
 	while pet.level < Data.PET_MAX_LEVEL do
-		local need = Data.petXpToNext(pet.level, def.rarity)
+		local need = Data.petXpToNext(pet.level, rarity)
 		if pet.xp < need then break end
 		pet.xp -= need
 		pet.level += 1
-		leveled = true
 	end
 	if pet.level >= Data.PET_MAX_LEVEL then pet.xp = 0 end
-	return leveled
+	return pet.level - start
+end
+-- Pets earn the full XP of their skill, a share of other skills (same category
+-- 50%, others 25%), boosted by Taming and an XP held item. Returns leveled, gained.
+function Progression.addPetXp(p, skill, amount)
+	local pet, def = Progression.activePet(p)
+	if not pet then return false, 0 end
+	if pet.level >= Data.PET_MAX_LEVEL then pet.xp = 0 return false, 0 end
+	local gained = amount * Progression.petShare(def, skill) * Progression.petXpMult(p, pet, skill)
+	local leveled = Progression.addXpToPet(pet, gained) > 0
+	return leveled, gained
+end
+-- Stats one pet gives while summoned: species perLevel scaled by rarity and
+-- Taming, unlocked stat abilities, held item stats.
+function Progression.petStats(p, pet, def)
+	local out = {}
+	local lvl = Progression.petLevel(pet)
+	local pd = PD()
+	if not pd then addStats(out, def.perLevel, lvl) return out end
+	local rarity = Progression.petRarity(pet)
+	addStats(out, def.perLevel, lvl * pd.statScale(def, rarity, Progression.tamingLevel(p)))
+	addStats(out, pd.effects(def, lvl, rarity).stats)
+	local held = pd.held(pet.item)
+	if held then addStats(out, held.stats) end
+	return out
+end
+-- Unlocked non-stat effects of the summoned pet (and its held item):
+-- {xp={[skill]=%}, family={[line]=%}, garden=%, gather={[skill]=%}, craft={[skill]=%}}.
+local NO_EFFECTS = table.freeze({stats={},xp={},family={},garden=0,gather={},craft={}})
+function Progression.petEffects(p)
+	local pet, def = Progression.activePet(p)
+	local pd = PD()
+	if not pet or not pd then return NO_EFFECTS end
+	local fx = pd.effects(def, Progression.petLevel(pet), Progression.petRarity(pet))
+	local held = pd.held(pet.item)
+	if held and held.garden then fx.garden += held.garden end
+	return fx
+end
+-- Player skill XP multiplier from the summoned pet's XP abilities.
+function Progression.petSkillXpMult(p, skill)
+	return 1 + (Progression.petEffects(p).xp[skill] or 0) / 100
+end
+-- Change a pet's rarity keeping its lifetime XP (the level is recomputed on the new curve).
+function Progression.petSetRarity(pet, rarity)
+	local pd = PD()
+	local old = Progression.petRarity(pet)
+	local total = pd.totalXp(pet.level, pet.xp, old)
+	pet.rarity = rarity
+	pet.level, pet.xp = pd.fromTotal(total, rarity)
+	return pet
 end
 -- Valid equipped item: owned, matching slot, requirements met.
 function Progression.equipped(p, slot)
@@ -211,6 +354,7 @@ function Progression.computeStats(p, now)
 	if weapon then
 		addStats(s, weapon.stats)
 		addStats(s, Progression.enchantStats(p, weaponId, "weapon"))
+		addStats(s, gearStats(p, weaponId))
 	end
 	s.weapon = weaponId
 	-- Armor + set bonus
@@ -223,6 +367,7 @@ function Progression.computeStats(p, now)
 		if def then
 			addStats(s, def.stats)
 			addStats(s, Progression.enchantStats(p, id, "armor"))
+			addStats(s, gearStats(p, id))
 			if def.set then setCount[def.set] = (setCount[def.set] or 0) + 1 end
 		end
 	end
@@ -231,14 +376,28 @@ function Progression.computeStats(p, now)
 		if n >= 4 then addStats(s, Data.Sets[setId].bonus); s.activeSet = setId end
 	end
 	-- Accessories
-	for _, id in ipairs(Progression.activeAccessories(p)) do addStats(s, Data.Items[id].stats) end
+	for _, id in ipairs(Progression.activeAccessories(p)) do
+		addStats(s, Data.Items[id].stats)
+		addStats(s, gearStats(p, id))
+	end
+	-- Gear depth: upgrades on the best tool of each gathering skill (base tool
+	-- stats stay in Progression.harvest). Tools only carry reforges and stars.
+	local toolSeen = {}
+	local toolUpgrades = (type(p.reforges) == "table" and next(p.reforges) ~= nil) or (type(p.stars) == "table" and next(p.stars) ~= nil)
+	for skill in pairs(if toolUpgrades then Data.ToolKind else NO_STATS) do
+		local toolId = Progression.bestTool(p, skill)
+		if toolId and not toolSeen[toolId] then
+			toolSeen[toolId] = true
+			addStats(s, gearStats(p, toolId))
+		end
+	end
 	s.magicalPower = Progression.magicalPower(p)
 	-- Magical power grants scaling stats (SkyBlock accessory power).
 	s.health += s.magicalPower * 1
 	s.strength += math.floor(s.magicalPower / 4)
 	-- Pet
 	local pet, petDef = Progression.activePet(p)
-	if pet then addStats(s, petDef.perLevel, Progression.petLevel(pet)) end
+	if pet then addStats(s, Progression.petStats(p, pet, petDef)) end
 	-- Buffs
 	for _, buff in pairs(p.buffs or {}) do
 		if buff.expires and buff.expires > now then addStats(s, buff.stats) end
@@ -256,6 +415,10 @@ function Progression.computeStats(p, now)
 	for line, def in pairs(Data.Slayers) do
 		addStats(s, def.rewardStat, Progression.slayerLevel(p.slayerXp and p.slayerXp[line] or 0))
 	end
+	-- Mastery trees, running capstones and a worn mantle (no p.mastery: no change).
+	if type(p.mastery) == "table" and Progression.masteryStats then
+		for stat, v in pairs(Progression.masteryStats(p, now)) do s[stat] = (s[stat] or 0) + v end
+	end
 	-- Permanent perks from quests, achievement diaries and construction:
 	-- p.perkStats = {[source] = {stat = value}}.
 	if type(p.perkStats) == "table" then
@@ -265,6 +428,18 @@ function Progression.computeStats(p, now)
 					if type(v) == "number" and v == v and (Data.Stats[stat] or stat == "damage") then s[stat] = (s[stat] or 0) + v end
 				end
 			end
+		end
+	end
+	-- Set styles: a complete set may add stats chosen by one of its pieces
+	-- (Data.Sets[id].style(p, Progression.equipped) -> {style, stats}; e.g. the
+	-- Lumenward helm's combat style). Shared, so client previews match the server.
+	local setDef = s.activeSet and Data.Sets[s.activeSet]
+	s.setStyle = nil
+	if setDef and type(setDef.style) == "function" then
+		local style = setDef.style(p, Progression.equipped)
+		if type(style) == "table" and type(style.stats) == "table" then
+			addStats(s, style.stats)
+			s.setStyle = style.style
 		end
 	end
 	-- Legacy bonuses
@@ -336,7 +511,10 @@ function Progression.fortuneRoll(base, fortune, rng)
 	return amount
 end
 -- Returns ok, reasonOrResult. result = {amount, xp, skill, tool}.
-function Progression.harvest(p, resourceId, stats, rng, bonusBase)
+-- now (optional, os.time) lets running mastery capstones apply; mastery perks
+-- may add result.bonus {[item]=n}, result.coins, result.regrowth (seconds,
+-- with result.respawnSkip when shortened), result.surge / result.multiplied / result.petDouble.
+function Progression.harvest(p, resourceId, stats, rng, bonusBase, now)
 	local r = Progression.resource(resourceId)
 	if not r then return false, "Unknown resource." end
 	local lvl = Progression.levelForXp(p.xp and p.xp[r.skill] or 0)
@@ -353,9 +531,18 @@ function Progression.harvest(p, resourceId, stats, rng, bonusBase)
 		local ench = Progression.enchantStats(p, toolId, "tool", r.skill)
 		fortune += ench[fortuneStat] or 0
 	end
-	local base = 1 + (bonusBase or 0)
-	local amount = Progression.fortuneRoll(base, fortune, rng)
-	return true, {amount=amount,xp=r.xp,skill=r.skill,tool=toolId,fortune=fortune,resource=r}
+	-- Fortune is linear in the base, so roll its factor first (fixed rng order),
+	-- then join the yield multiplier (capstone surge OR a Twin/Bountiful proc OR
+	-- the pet's doubled harvest, the largest only) to the base before fortune
+	-- applies. Festival multipliers stay with the caller and apply once to the
+	-- final amount.
+	local fortuneFactor = Progression.fortuneRoll(1, fortune, rng)
+	local result = {xp=r.xp,skill=r.skill,tool=toolId,fortune=fortune,resource=r}
+	local mult, perks = Progression.gatherYieldMult(p, result, rng, now)
+	local base = math.floor((1 + (bonusBase or 0)) * mult)
+	result.amount = base * fortuneFactor
+	if perks then Progression.applyGatherMastery(p, result, rng, now, perks) end
+	return true, result
 end
 
 ------------------------------------------------------------------------------
@@ -400,6 +587,558 @@ function Progression.rollDrops(drops, magicFind, rng, petLuck)
 		end
 	end
 	return out
+end
+
+------------------------------------------------------------------------------
+-- Combat styles (melee / ranged / magic triangle, mana). New, additive rules;
+-- data in Data.CombatStyles, Data.Spells and the weapon/arrow item fields.
+------------------------------------------------------------------------------
+local STYLES = {melee=true,ranged=true,magic=true}
+local function styles() return Data.CombatStyles end
+-- Style of a weapon definition (nil/unarmed and swords are melee).
+function Progression.weaponStyle(def)
+	if type(def) == "table" and STYLES[def.style] then return def.style end
+	return "melee"
+end
+-- Seconds between attacks for a weapon speed, reduced by Attack Speed (capped at 100).
+function Progression.weaponCooldown(speed, attackSpeed)
+	local as = math.clamp(tonumber(attackSpeed) or 0, 0, 100)
+	return math.max(0.1, tonumber(speed) or 1) / (1 + as / 100)
+end
+-- Triangle modifier for a style against a monster/slayer definition.
+-- Returns multiplier, tag ("weak" | "resist" | nil).
+function Progression.styleModifier(style, def)
+	local cs = styles()
+	if type(def) ~= "table" or not STYLES[style] then return 1, nil end
+	if def.weakness == style then return 1 + cs.weaknessBonus, "weak" end
+	if def.defenceStyle == style then return 1 - cs.resistPenalty, "resist" end
+	return 1, nil
+end
+-- Ranged hit chance (OSRS-style attack/defence rolls, softened for real time).
+-- attack = (rangedLevel + 8) * (accuracy + 64); defence = (monsterLevel + 8) * (defense/4 + 64)
+-- chance = parity + 0.5 * (attack - defence) / max(attack, defence), clamped.
+function Progression.hitChance(accuracy, level, monsterLevel, monsterDefense)
+	local cs = styles()
+	local attack = (math.max(1, tonumber(level) or 1) + 8) * (math.max(0, tonumber(accuracy) or 0) + 64)
+	local defence = (math.max(1, tonumber(monsterLevel) or 1) + 8) * (math.max(0, tonumber(monsterDefense) or 0) / 4 + 64)
+	local chance = cs.accuracyParity + 0.5 * (attack - defence) / math.max(attack, defence)
+	return math.clamp(chance, cs.hitFloor, cs.hitCeiling)
+end
+-- Ranged damage (SkyBlock bow formula with OSRS ammo):
+-- (5 + bow power + arrow power) * (1 + rangedStrength/100)
+--   * (1 + (4 * (rangedLevel - 1) + damagePercent)/100), crits like melee.
+-- rng: function returning [0,1). Returns damage, crit.
+function Progression.rangedDamage(stats, bow, arrow, rangedLevel, rng)
+	stats = stats or {}
+	local power = 5 + (bow and bow.ranged and bow.ranged.power or 0) + (arrow and arrow.ammo and arrow.ammo.power or 0)
+	local base = power * (1 + (stats.rangedStrength or 0) / 100)
+	local mult = 1 + (4 * (math.max(1, rangedLevel or 1) - 1) + (stats.damagePercent or 0)) / 100
+	local crit = rng() * 100 < (stats.critChance or 0)
+	local dmg = base * mult
+	if crit then dmg *= 1 + (stats.critDamage or 0) / 100 end
+	return math.max(1, math.floor(dmg)), crit
+end
+-- Spell damage (SkyBlock ability formula, scaled by Magic level; never crits):
+-- (spell damage + weapon magic power) * (1 + intelligence/100 * scaling)
+--   * (1 + abilityDamage/100) * (1 + 0.03 * (magicLevel - 1))
+function Progression.spellDamage(stats, spell, weapon, magicLevel)
+	stats = stats or {}
+	if type(spell) ~= "table" or not spell.damage then return 0 end
+	local power = spell.damage + (weapon and weapon.magic and weapon.magic.power or 0)
+	local dmg = power * (1 + math.max(0, stats.intelligence or 0) / 100 * (spell.scaling or 0))
+		* (1 + (stats.abilityDamage or 0) / 100) * (1 + 0.03 * (math.max(1, magicLevel or 1) - 1))
+	return math.max(1, math.floor(dmg))
+end
+-- Mana (SkyBlock): max mana = Intelligence; regenerates a share of max per second.
+function Progression.maxMana(stats)
+	return math.max(0, math.floor(tonumber(stats and stats.intelligence) or 0))
+end
+function Progression.manaRegen(maxMana)
+	return math.max(0, tonumber(maxMana) or 0) * styles().manaRegenPercent / 100
+end
+-- Glyph items a cast consumes: the spell's costs minus elemental glyphs the
+-- wielded staff supplies (OSRS elemental staves).
+function Progression.glyphCost(spell, weapon)
+	local out = {}
+	if type(spell) ~= "table" then return out end
+	local free = {}
+	for _, element in ipairs(weapon and weapon.magic and weapon.magic.elements or {}) do
+		local e = styles().elements[element]
+		if e then free[e.glyph] = true end
+	end
+	for id, n in pairs(spell.costs or {}) do
+		if not free[id] then out[id] = n end
+	end
+	return out
+end
+-- XP for damage dealt with a style. monsterXp/monsterHp give the XP rate.
+-- Melee trains Combat; ranged/magic train their skill plus a Combat share.
+function Progression.styleXp(style, damage, monsterXp, monsterHp)
+	local cs = styles()
+	local out = {}
+	damage, monsterXp, monsterHp = tonumber(damage) or 0, tonumber(monsterXp) or 0, tonumber(monsterHp) or 0
+	if not STYLES[style] or damage <= 0 or monsterXp <= 0 or monsterHp <= 0 then return out end
+	local xp = math.min(damage, monsterHp) * monsterXp / monsterHp * cs.damageXpRate
+	out[cs.skill[style]] = xp
+	if style ~= "melee" then out.Combat = (out.Combat or 0) + xp * cs.combatShare end
+	return out
+end
+-- Can this profile cast the spell right now (level + weapon only; costs and
+-- mana are checked by the caller)? Returns ok, reason.
+function Progression.spellAllowed(loadout, spell)
+	if type(spell) ~= "table" then return false, "spell" end
+	local magic = loadout and loadout.levels and loadout.levels.Magic or 1
+	if magic < (spell.level or 1) then return false, "level" end
+	if spell.requiresWeapon and (not loadout or loadout.style ~= "magic") then return false, "weapon" end
+	return true
+end
+-- Combat loadout for the server bridge and the snapshot: style from the
+-- wielded weapon, quiver contents, combat supplies and style levels.
+function Progression.combatLoadout(p)
+	local weaponId, weapon = weaponFor(p)
+	local ammoId = Progression.equipped(p, styles().ammoSlot)
+	local supplies = {}
+	for id, n in pairs(p.items or {}) do
+		local def = Data.Items[id]
+		if def and def.combatUse and type(n) == "number" and n > 0 then supplies[id] = n end
+	end
+	local levels = {}
+	for _, skill in ipairs({"Combat","Ranged","Magic"}) do levels[skill] = Progression.levelForXp(p.xp and p.xp[skill] or 0) end
+	local autocast = p.autocast
+	local spell = type(autocast) == "string" and Data.Spells[autocast]
+	if not spell or not spell.autocast or levels.Magic < spell.level then autocast = nil end
+	return {style=Progression.weaponStyle(weapon),weapon=weaponId,ammo=ammoId,ammoCount=ammoId and (p.items[ammoId] or 0) or 0,
+		supplies=supplies,levels=levels,autocast=autocast}
+end
+
+------------------------------------------------------------------------------
+-- Mastery: perk trees, points, capstone abilities, milestones and mantles
+-- (Data.Mastery). Pure functions over p.mastery (all optional):
+--   p.mastery = {trees={[tree]={[node]=level}}, respecs={[tree]=n},
+--     cooldowns={[tree]=readyAt}, active={[tree]={started,expires}}, cape=skill}
+-- A profile without p.mastery gets exactly the pre-mastery numbers (and no
+-- extra rng draws).
+------------------------------------------------------------------------------
+local function MA() return Data.Mastery end
+local function masteryOf(p) return type(p) == "table" and type(p.mastery) == "table" and p.mastery or nil end
+local function treeNodes(p, treeId)
+	local m = masteryOf(p)
+	local trees = m and type(m.trees) == "table" and m.trees
+	local nodes = trees and trees[treeId]
+	return type(nodes) == "table" and nodes or nil
+end
+local function skillLevel(p, skill) return Progression.levelForXp(p.xp and p.xp[skill] or 0) end
+function Progression.masteryTree(treeId) return MA() and MA().TreeById[treeId] or nil end
+function Progression.masteryNodeLevel(p, treeId, nodeId)
+	local nodes = treeNodes(p, treeId)
+	local v = nodes and nodes[nodeId]
+	return type(v) == "number" and v == v and math.max(0, math.floor(v)) or 0
+end
+function Progression.masterySpent(p, treeId)
+	local tree = Progression.masteryTree(treeId)
+	if not tree then return 0 end
+	local spent = 0
+	for _, n in ipairs(tree.nodes) do spent += Progression.masteryNodeLevel(p, treeId, n.id) * n.cost end
+	return spent
+end
+-- Points a skill has earned: 1 per level above POINT_START_LEVEL plus 1 per
+-- POST_MAX_STEP XP beyond level 99 (OSRS-style post-99 progression).
+function Progression.masteryEarned(p, skill)
+	local ma = MA()
+	local xp = math.max(0, tonumber(p.xp and p.xp[skill]) or 0)
+	local points = math.max(0, Progression.levelForXp(xp) - ma.POINT_START_LEVEL)
+	local beyond = xp - Data.XP_TABLE[Data.MAX_LEVEL]
+	if beyond > 0 then points += math.floor(beyond / ma.POST_MAX_STEP) end
+	return points
+end
+-- Mastery Tokens: one per collection that reached each TOKEN_TIERS tier.
+function Progression.masteryTokens(p)
+	local tokens = 0
+	for _, id in ipairs(Data.CollectionItems) do
+		local tier = Progression.collectionTier(p, id)
+		for _, t in ipairs(MA().TOKEN_TIERS) do if tier >= t then tokens += 1 end end
+	end
+	return tokens
+end
+-- Full point accounting. Tokens pay for whatever a tree's own points cannot,
+-- so token use is derived (never stored): used = sum(max(0, spent - earned)).
+function Progression.masteryPoints(p)
+	local out = {trees={}, tokens={earned=Progression.masteryTokens(p), used=0, free=0}}
+	for _, tree in ipairs(MA().Trees) do
+		local earned, spent = Progression.masteryEarned(p, tree.skill), Progression.masterySpent(p, tree.id)
+		out.trees[tree.id] = {earned=earned, spent=spent, own=math.max(0, earned - spent)}
+		out.tokens.used += math.max(0, spent - earned)
+	end
+	out.tokens.free = math.max(0, out.tokens.earned - out.tokens.used)
+	for _, entry in pairs(out.trees) do entry.available = entry.own + out.tokens.free end
+	return out
+end
+-- Node availability: "owned" (max level), "available" (can buy the next level
+-- now), "open" (prerequisites met, short of points/level), "locked".
+-- Returns ok, reason, cost.
+function Progression.masteryCanUnlock(p, treeId, nodeId)
+	local tree = Progression.masteryTree(treeId)
+	if not tree then return false, "Unknown mastery tree." end
+	local node = tree.NodeById[nodeId]
+	if not node then return false, "Unknown mastery node." end
+	local have = Progression.masteryNodeLevel(p, treeId, nodeId)
+	if have >= node.max then return false, node.name.." is already at its maximum level." end
+	if #node.requires > 0 then
+		local linked = false
+		for _, req in ipairs(node.requires) do
+			if Progression.masteryNodeLevel(p, treeId, req) > 0 then linked = true break end
+		end
+		if not linked then
+			local names = {}
+			for _, req in ipairs(node.requires) do table.insert(names, tree.NodeById[req].name) end
+			return false, node.name.." needs "..table.concat(names, " or ").." first."
+		end
+	end
+	if skillLevel(p, tree.skill) < node.level then return false, node.name.." requires "..tree.skill.." "..node.level.."." end
+	local points = Progression.masteryPoints(p)
+	if points.trees[treeId].available < node.cost then
+		return false, node.name.." costs "..node.cost.." mastery point"..(if node.cost == 1 then "" else "s").." ("..points.trees[treeId].available.." available)."
+	end
+	return true, nil, node.cost
+end
+function Progression.masteryNodeState(p, treeId, nodeId)
+	local tree = Progression.masteryTree(treeId)
+	local node = tree and tree.NodeById[nodeId]
+	if not node then return "locked" end
+	local have = Progression.masteryNodeLevel(p, treeId, nodeId)
+	if have >= node.max then return "owned" end
+	if Progression.masteryCanUnlock(p, treeId, nodeId) then return "available" end
+	local linked = #node.requires == 0
+	for _, req in ipairs(node.requires) do if Progression.masteryNodeLevel(p, treeId, req) > 0 then linked = true end end
+	if linked then return if have > 0 then "partial" else "open" end
+	return "locked"
+end
+local function ensureMastery(p)
+	if type(p.mastery) ~= "table" then p.mastery = {} end
+	local m = p.mastery
+	for _, key in ipairs({"trees","respecs","cooldowns","active"}) do
+		if type(m[key]) ~= "table" then m[key] = {} end
+	end
+	return m
+end
+Progression.ensureMastery = ensureMastery
+-- Buys one level of a node. Returns ok, reasonOrNewLevel.
+function Progression.masteryUnlock(p, treeId, nodeId)
+	local ok, why = Progression.masteryCanUnlock(p, treeId, nodeId)
+	if not ok then return false, why end
+	local m = ensureMastery(p)
+	m.trees[treeId] = m.trees[treeId] or {}
+	local level = Progression.masteryNodeLevel(p, treeId, nodeId) + 1
+	m.trees[treeId][nodeId] = level
+	return true, level
+end
+-- Respec price for a tree right now.
+function Progression.masteryRespecCost(p, treeId)
+	local m = masteryOf(p)
+	local count = m and type(m.respecs) == "table" and tonumber(m.respecs[treeId]) or 0
+	return MA().respecCost(Progression.masterySpent(p, treeId), count)
+end
+-- Refunds every point in a tree for coins. Returns ok, reasonOrCost.
+function Progression.masteryRespec(p, treeId)
+	local tree = Progression.masteryTree(treeId)
+	if not tree then return false, "Unknown mastery tree." end
+	local spent = Progression.masterySpent(p, treeId)
+	if spent <= 0 then return false, "Nothing to reset in the "..tree.name.."." end
+	local cost = Progression.masteryRespecCost(p, treeId)
+	if (tonumber(p.coins) or 0) < cost then return false, "Resetting the "..tree.name.." costs "..cost.." coins." end
+	local m = ensureMastery(p)
+	p.coins -= cost
+	m.trees[treeId] = {}
+	m.respecs[treeId] = (tonumber(m.respecs[treeId]) or 0) + 1
+	m.active[treeId] = nil
+	return true, cost
+end
+-- Capstone ability record while it runs (started <= now < expires).
+function Progression.masteryActive(p, treeId, now)
+	local tree = Progression.masteryTree(treeId)
+	if not tree or not tree.capstone or Progression.masteryNodeLevel(p, treeId, tree.capstone) < 1 then return nil end
+	local m = masteryOf(p)
+	local a = m and type(m.active) == "table" and m.active[treeId]
+	now = tonumber(now) or 0
+	if type(a) == "table" and tonumber(a.started) and tonumber(a.expires) and now >= a.started and now < a.expires then
+		return tree.NodeById[tree.capstone].ability, a
+	end
+	return nil
+end
+-- Seconds until a capstone may fire again (0 = ready).
+function Progression.masteryCooldown(p, treeId, now)
+	local m = masteryOf(p)
+	local readyAt = m and type(m.cooldowns) == "table" and tonumber(m.cooldowns[treeId]) or 0
+	return math.max(0, readyAt - (tonumber(now) or 0))
+end
+-- Fires a capstone. Returns ok, reasonOrAbility.
+function Progression.masteryActivate(p, treeId, now)
+	local tree = Progression.masteryTree(treeId)
+	if not tree or not tree.capstone then return false, "Unknown mastery tree." end
+	local node = tree.NodeById[tree.capstone]
+	if Progression.masteryNodeLevel(p, treeId, node.id) < 1 then return false, "Unlock "..node.name.." in the "..tree.name.." first." end
+	local wait = Progression.masteryCooldown(p, treeId, now)
+	if wait > 0 then return false, node.name.." is recharging ("..math.ceil(wait).."s)." end
+	local m = ensureMastery(p)
+	m.active[treeId] = {started=now, expires=now + node.ability.duration}
+	m.cooldowns[treeId] = now + node.ability.cooldown
+	return true, node.ability
+end
+-- Summed perks of one tree (node perks x level, plus a running capstone's
+-- perk fields). Passive node totals cap at PASSIVE_CAPS first; every perk
+-- then caps at PERK_CAPS[k] or PERK_CAP (yieldMult/multishot are multipliers).
+local ABILITY_PERKS = {"yieldMult","respawnSkip","doubleYield","multishot","manaThrift","glyphSave","xpBoost"}
+function Progression.masteryPerks(p, treeId, now)
+	local out = {}
+	local tree = Progression.masteryTree(treeId)
+	if not tree or not treeNodes(p, treeId) then return out end
+	for _, n in ipairs(tree.nodes) do
+		local lvl = Progression.masteryNodeLevel(p, treeId, n.id)
+		if lvl > 0 and n.perks then
+			for k, v in pairs(n.perks) do out[k] = (out[k] or 0) + v * math.min(lvl, n.max) end
+		end
+	end
+	-- Passive caps (before a capstone adds its own share).
+	for k, cap in pairs(MA().PASSIVE_CAPS) do
+		if out[k] then out[k] = math.min(cap, out[k]) end
+	end
+	local ability = Progression.masteryActive(p, treeId, now)
+	if ability then
+		for _, k in ipairs(ABILITY_PERKS) do
+			if ability[k] then
+				if k == "yieldMult" or k == "multishot" then out[k] = math.max(out[k] or 1, ability[k])
+				else out[k] = (out[k] or 0) + ability[k] end
+			end
+		end
+	end
+	for k, v in pairs(out) do
+		if k ~= "yieldMult" and k ~= "multishot" then out[k] = math.min(MA().PERK_CAPS[k] or MA().PERK_CAP, v) end
+	end
+	return out
+end
+-- Worn mantle (skillcape): the skill must be at level 99.
+function Progression.masteryCape(p)
+	local m = masteryOf(p)
+	local skill = m and m.cape
+	if type(skill) == "string" and Data.Skills[skill] and skillLevel(p, skill) >= Data.MAX_LEVEL then return skill end
+	return nil
+end
+-- Stats from every tree, running capstones and the worn mantle.
+function Progression.masteryStats(p, now)
+	local out = {}
+	if not masteryOf(p) then return out end
+	for _, tree in ipairs(MA().Trees) do
+		if treeNodes(p, tree.id) then
+			for _, n in ipairs(tree.nodes) do
+				local lvl = Progression.masteryNodeLevel(p, tree.id, n.id)
+				if lvl > 0 and n.stats then addStats(out, n.stats, math.min(lvl, n.max)) end
+			end
+			local ability = Progression.masteryActive(p, tree.id, now)
+			if ability and ability.stats then addStats(out, ability.stats) end
+		end
+	end
+	local cape = Progression.masteryCape(p)
+	if cape then addStats(out, MA().capePerk(cape)) end
+	return out
+end
+-- Combat-side perks for combat.server.lua (bridge "stats" → result.mastery).
+function Progression.masteryCombat(p, now)
+	local melee, ranged, magic = Progression.masteryPerks(p, "Melee", now), Progression.masteryPerks(p, "Ranged", now), Progression.masteryPerks(p, "Magic", now)
+	local active = {}
+	for _, id in ipairs({"Melee","Ranged","Magic"}) do
+		local _, a = Progression.masteryActive(p, id, now)
+		if a then active[id] = a.expires end
+	end
+	return {
+		melee={firstStrike=melee.firstStrike or 0, execute=melee.execute or 0, xpBoost=melee.xpBoost or 0},
+		ranged={firstStrike=ranged.firstStrike or 0, execute=ranged.execute or 0, arrowSave=ranged.arrowSave or 0,
+			multishot=math.max(1, ranged.multishot or 1), xpBoost=ranged.xpBoost or 0},
+		magic={manaThrift=magic.manaThrift or 0, glyphSave=magic.glyphSave or 0, xpBoost=magic.xpBoost or 0},
+		active=active,
+	}
+end
+-- Node regrowth after a harvest: skip% shortens the base time, never below
+-- max(REGROWTH_FLOOR s, REGROWTH_FLOOR_SHARE x base) (and never lengthens it).
+function Progression.regrowthTime(base, skip)
+	base = tonumber(base) or 3
+	skip = math.clamp(tonumber(skip) or 0, 0, 100)
+	if skip <= 0 then return base end
+	local floor = math.min(base, math.max(MA().REGROWTH_FLOOR, base * MA().REGROWTH_FLOOR_SHARE))
+	return math.max(floor, base * (1 - skip / 100))
+end
+-- Yield multiplier for one harvest (joins the base before fortune).
+-- Candidates: a running capstone's yieldMult, a Twin/Bountiful mastery proc
+-- and the summoned pet's doubled-harvest ability (Pets depth, a proc = 2).
+-- They never stack: the largest wins (design section 12). Rolls only for owned
+-- proc perks (triple, then double), then the pet's chance, in that order.
+-- Flags the winner: result.surge, result.multiplied or result.petDouble.
+-- Returns mult, perks (perks nil when the skill has no tree or no perks).
+function Progression.gatherYieldMult(p, result, rng, now)
+	local skill = result.resource.skill
+	local treeId = MA().TreeOfSkill[skill]
+	local perks = nil
+	if treeId and type(p.mastery) == "table" then
+		perks = Progression.masteryPerks(p, treeId, now)
+		if not next(perks) then perks = nil end
+	end
+	local surge, proc = 1, 1
+	if perks then
+		surge = perks.yieldMult or 1
+		if (perks.tripleYield or 0) > 0 and rng() < perks.tripleYield / 100 then proc = 3
+		elseif (perks.doubleYield or 0) > 0 and rng() < perks.doubleYield / 100 then proc = 2 end
+	end
+	local petProc = 1
+	local petChance = Progression.petEffects(p).gather[skill] or 0
+	if petChance > 0 and rng() * 100 < petChance then petProc = 2 end
+	if surge > 1 and surge >= proc and surge >= petProc then result.surge = true
+	elseif proc > 1 and proc >= petProc then result.multiplied = proc
+	elseif petProc > 1 then result.petDouble = true end
+	return math.max(surge, proc, petProc), perks
+end
+-- Non-yield gathering perks on a harvest result (XP, regrowth, ingots, coins).
+-- Rolls happen only for perks the profile owns, in a fixed order.
+function Progression.applyGatherMastery(p, result, rng, now, perks)
+	local r = result.resource
+	if not perks then
+		local treeId = MA().TreeOfSkill[r.skill]
+		if not treeId then return result end
+		perks = Progression.masteryPerks(p, treeId, now)
+	end
+	if not next(perks) then return result end
+	if (perks.xpBoost or 0) > 0 then result.xp = math.floor(result.xp * (1 + perks.xpBoost / 100)) end
+	if (perks.respawnSkip or 0) > 0 then
+		local base = tonumber(r.respawn) or 3
+		result.regrowth = Progression.regrowthTime(base, perks.respawnSkip)
+		if result.regrowth < base then result.respawnSkip = true end
+	end
+	local ingot = MA().SmeltOf[r.id]
+	if ingot and Data.Items[ingot] and (perks.autoSmelt or 0) > 0 and rng() < perks.autoSmelt / 100 then
+		result.bonus = result.bonus or {}
+		result.bonus[ingot] = (result.bonus[ingot] or 0) + 1
+	end
+	if (perks.coinFind or 0) > 0 and rng() < perks.coinFind / 100 then result.coins = math.max(1, (r.value or 1) * 5) end
+	return result
+end
+-- Hunter catch perks: drops x2 on a Twin Snare proc (or always under Lure
+-- Song), XP boost. Returns drops, xp, doubled.
+function Progression.applyHuntMastery(p, drops, xp, rng, now)
+	local perks = Progression.masteryPerks(p, "Hunter", now)
+	local doubled = false
+	local chance = perks.doubleYield or 0
+	if chance >= 100 or (chance > 0 and rng() < chance / 100) then
+		for id, n in pairs(drops) do drops[id] = n * 2 end
+		doubled = true
+	end
+	if (perks.xpBoost or 0) > 0 then xp = math.floor(xp * (1 + perks.xpBoost / 100)) end
+	return drops, xp, doubled
+end
+-- Milestones for a skill with reached flags (OSRS-style unlock list).
+function Progression.milestones(p, skill)
+	local lvl = skillLevel(p, skill)
+	local out = {}
+	for _, m in ipairs(MA().milestones(skill)) do
+		local entry = table.clone(m)
+		entry.reached = lvl >= m.level
+		table.insert(out, entry)
+	end
+	return out
+end
+-- Snapshot view (server → client depth.mastery). Points are computed once.
+-- trees[id] = {nodes={[node]=level}, states={[node]=owned|available|partial|open|locked},
+--   earned, spent, available, respecCost, respecs, cooldown (s), active (s left), capstone (owned)}
+function Progression.masteryView(p, now)
+	local points = Progression.masteryPoints(p)
+	local m = masteryOf(p) or {}
+	local trees = {}
+	for _, tree in ipairs(MA().Trees) do
+		local nodes, states = {}, {}
+		local entry = points.trees[tree.id]
+		local lvl = skillLevel(p, tree.skill)
+		for _, n in ipairs(tree.nodes) do
+			local have = Progression.masteryNodeLevel(p, tree.id, n.id)
+			if have > 0 then nodes[n.id] = have end
+			local st
+			if have >= n.max then st = "owned"
+			else
+				local linked = #n.requires == 0
+				for _, req in ipairs(n.requires) do if Progression.masteryNodeLevel(p, tree.id, req) > 0 then linked = true end end
+				if not linked then st = "locked"
+				elseif lvl >= n.level and entry.available >= n.cost then st = "available"
+				else st = if have > 0 then "partial" else "open" end
+			end
+			states[n.id] = st
+		end
+		local _, active = Progression.masteryActive(p, tree.id, now)
+		trees[tree.id] = {nodes=nodes, states=states, earned=entry.earned, spent=entry.spent, available=entry.available,
+			respecCost=Progression.masteryRespecCost(p, tree.id), respecs=type(m.respecs) == "table" and tonumber(m.respecs[tree.id]) or 0,
+			cooldown=Progression.masteryCooldown(p, tree.id, now), active=if active then active.expires - (tonumber(now) or 0) else 0,
+			capstone=tree.capstone ~= nil and Progression.masteryNodeLevel(p, tree.id, tree.capstone) > 0}
+	end
+	local capes, titles = {}, {}
+	for _, skill in ipairs(Data.SkillOrder) do
+		local lvl = skillLevel(p, skill)
+		if lvl >= Data.MAX_LEVEL then table.insert(capes, skill) end
+		titles[skill] = MA().title(skill, lvl)
+	end
+	return {trees=trees, tokens=points.tokens, capes=capes, titles=titles, cape=Progression.masteryCape(p),
+		aura=type(m.aura) == "string" and m.aura or nil, title=type(m.title) == "string" and m.title or nil}
+end
+-- Sanitises a loaded p.mastery: unknown trees/nodes dropped, levels clamped,
+-- nodes whose prerequisites or skill gate fail removed (row order), and an
+-- overspent tree (beyond its points + tokens) reset. Returns trees reset.
+function Progression.masteryMigrate(p)
+	if p.mastery == nil then return {} end
+	local m = ensureMastery(p)
+	local reset = {}
+	local trees = {}
+	for _, tree in ipairs(MA().Trees) do
+		local raw = type(m.trees[tree.id]) == "table" and m.trees[tree.id] or {}
+		local clean = {}
+		local order = table.clone(tree.nodes)
+		table.sort(order, function(a, b) if a.y ~= b.y then return a.y < b.y end return a.index < b.index end)
+		local lvl = skillLevel(p, tree.skill)
+		for _, n in ipairs(order) do
+			local v = tonumber(raw[n.id])
+			if v and v == v and v >= 1 and lvl >= n.level then
+				local linked = #n.requires == 0
+				for _, req in ipairs(n.requires) do if (clean[req] or 0) > 0 then linked = true end end
+				if linked then clean[n.id] = math.clamp(math.floor(v), 1, n.max) end
+			end
+		end
+		trees[tree.id] = clean
+	end
+	m.trees = trees
+	-- Overspend: reset trees (last in TreeOrder first) until tokens cover the deficit.
+	local points = Progression.masteryPoints(p)
+	local i = #MA().TreeOrder
+	while points.tokens.used > points.tokens.earned and i >= 1 do
+		local id = MA().TreeOrder[i]
+		if points.trees[id].spent > points.trees[id].earned then
+			m.trees[id] = {}
+			table.insert(reset, id)
+			points = Progression.masteryPoints(p)
+		end
+		i -= 1
+	end
+	for _, key in ipairs({"respecs","cooldowns"}) do
+		local clean = {}
+		for id, v in pairs(m[key]) do
+			local n = tonumber(v)
+			if MA().TreeById[id] and n and n == n and n >= 0 then clean[id] = math.floor(n) end
+		end
+		m[key] = clean
+	end
+	local active = {}
+	for id, a in pairs(m.active) do
+		if MA().TreeById[id] and type(a) == "table" and tonumber(a.started) and tonumber(a.expires) then
+			active[id] = {started=tonumber(a.started), expires=tonumber(a.expires)}
+		end
+	end
+	m.active = active
+	for _, key in ipairs({"cape","aura","title"}) do
+		if m[key] ~= nil and not (type(m[key]) == "string" and Data.Skills[m[key]]) then m[key] = nil end
+	end
+	return reset
 end
 
 return Progression
