@@ -181,6 +181,12 @@ eq(sel("station", "Hearth", nil, 1), "stir", "Hearth alternates to stir")
 eq(sel("station", "Workbench", nil, 0), "hammer", "Workbench hammers")
 eq(sel("station", "Workbench", nil, 1), "saw", "Workbench alternates to saw")
 eq(sel("station", "Slayer"), "interact", "Slayer master is a conversation")
+-- Crafting stations (prompt action "craftStation") and the per-action batch gestures they publish.
+eq(sel("craftStation", "Jeweller", nil, 0), "hammer", "Jeweller's Bench hammers")
+eq(sel("craftStation", "Tannery", nil, 0), "saw", "Tanning Rack saws")
+eq(sel("craftStation", "Tannery", nil, 1), "hammer", "Tanning Rack alternates to hammer")
+eq(sel("craftStation", "Glassworks", nil, 0), "stir", "Glass Furnace stirs")
+for _, b in pairs(Data.Crafting.Branches) do eq(Core.NAMES[b.gesture], true, b.id .. " batch gesture is a known gesture") end
 eq(sel("craft", "Blade"), "hammer", "Starforge blade hammers")
 eq(sel("craft", "Pickaxe"), "hammer", "Starforge pickaxe hammers")
 eq(sel("craft", "Tonic"), "stir", "Apothecary tonic stirs")

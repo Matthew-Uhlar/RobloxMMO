@@ -375,7 +375,9 @@ function Core.duration(keys) return keys[#keys].t end
 -- Prompt → gesture -----------------------------------------------------------
 Core.SKILL_GESTURE = {Mining = "mine", Woodcutting = "chop", Fishing = "fish", Farming = "harvest"}
 Core.COOP_GESTURE = {Timber = "chop", Ore = "mine", Herb = "harvest"}
-Core.STATION_GESTURE = {Forge = {"hammer"}, Cauldron = {"stir"}, Hearth = {"flip", "stir"}, Workbench = {"hammer", "saw"}, Slayer = {"interact"}}
+Core.STATION_GESTURE = {Forge = {"hammer"}, Cauldron = {"stir"}, Hearth = {"flip", "stir"}, Workbench = {"hammer", "saw"}, Slayer = {"interact"},
+	-- Crafting stations (prompt action "craftStation"): Jeweller's Bench, Tanning Rack, Glass Furnace.
+	Jeweller = {"hammer"}, Tannery = {"saw", "hammer"}, Glassworks = {"stir"}}
 Core.ACTION_GESTURE = {fight = "attack", worker = "hammer", workerBuild = "hammer", decorate = "hammer", trap = "settrap", net = "netswing"}
 -- Agility prompts animate from the AgilityMove attribute the server sets instead.
 Core.SILENT_ACTION = {agility = true, shortcut = true}
@@ -389,7 +391,7 @@ function Core.selectGesture(info, Data, counter)
 		local skill = Data.ResourceSkill[item]
 		return Core.SKILL_GESTURE[skill] or "interact"
 	end
-	if action == "station" and Core.STATION_GESTURE[item] then
+	if (action == "station" or action == "craftStation") and Core.STATION_GESTURE[item] then
 		local list = Core.STATION_GESTURE[item]
 		return list[((counter or 0) % #list) + 1]
 	end
@@ -971,6 +973,14 @@ localApi.Parent = ReplicatedStorage
 localApi.Event:Connect(function(name, target, itemId)
 	if type(name) ~= "string" then return end
 	playLocal(name, target, {itemId = if type(itemId) == "string" then itemId else nil})
+end)
+
+-- Crafting batches: the server sets CraftingGesture "<gesture>:<seq>" after
+-- every action of a batch; play that gesture once per action (a new seq).
+player:GetAttributeChangedSignal("CraftingGesture"):Connect(function()
+	local value = player:GetAttribute("CraftingGesture")
+	local name = type(value) == "string" and string.match(value, "^(%a+):%d+$")
+	if name and Core.NAMES[name] then playLocal(name, nil, {}) end
 end)
 
 -- Snapshot: tool colours + eat/drink after a consume.

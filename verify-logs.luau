@@ -53,6 +53,10 @@ for _, t in ipairs(CL.Tasks) do
 	if t.kind == "gather" then ok(Data.ResourceSkill[t.target] ~= nil, t.id .. " gathers a resource")
 	elseif t.kind == "kill" then ok(rawget(Data.Monsters, t.target) ~= nil, t.id .. " targets an iterated monster")
 	elseif t.kind == "catch" then ok(Data.Hunter.CreatureById[t.target] ~= nil, t.id .. " targets a Hunter creature")
+	elseif t.kind == "craft" then -- Crafting team: one credit per batch action of the target output
+		local made = false
+		for _, r in pairs(Data.Crafting.Recipes) do if r.output == t.target and r.level <= (t.levels.Crafting or 0) then made = true end end
+		ok(made, t.id .. " targets a Crafting output open at its level")
 	else ok(false, t.id .. " unknown kind") end
 	-- The task's level gate is at least the resource / creature requirement.
 	if t.kind == "gather" then
@@ -1183,7 +1187,8 @@ do
 	for id in pairs(full.colLog.counts) do size += #id + 14 end
 	for id in pairs(full.museum.donated) do size += #id + 8 end
 	print("Worst-case Commissions & Logs save: ~" .. size .. " bytes")
-	ok(size < 9000, "worst-case log + museum save under 9 KB")
+	-- Crafting added ~56 museum pieces (jewellery, leathers, cut gems): 12 KB budget.
+	ok(size < 12000, "worst-case log + museum save under 12 KB")
 end
 print("PASS: " .. (checks - partD) .. " Commissions & Logs server assertions.")
 

@@ -7231,7 +7231,7 @@ function CLP.drawCommissions()
 			local r=tbl(s.reward)
 			local amount=t.amount
 			local progress=math.min(num(s.progress,0),amount)
-			local verb=t.kind=="kill" and "Defeat" or (t.kind=="catch" and "Catch" or "Harvest")
+			local verb=t.kind=="kill" and "Defeat" or (t.kind=="catch" and "Catch" or (t.kind=="craft" and "Craft" or "Harvest"))
 			local target=t.kind=="kill" and (Data.Monsters[t.target] and Data.Monsters[t.target].name or t.target)
 				or (t.kind=="catch" and Data.Hunter and Data.Hunter.CreatureById[t.target] and Data.Hunter.CreatureById[t.target].name) or itemName(t.target)
 			local actions={}
@@ -7393,6 +7393,125 @@ Pages.drawCommissions,Pages.drawCollectionLog,Pages.drawMuseum=CLP.drawCommissio
 end
 
 ------------------------------------------------------------------------------
+-- Workshop › Crafting (Crafting team): the Jeweller's Bench, Tanning Rack and
+-- Glass Furnace (Data.Crafting). A station switcher, a summary card (level,
+-- presence at the station, owned tools), the running batch (progress, Stop)
+-- and pattern cards per category with batch buttons (×1, ×5, ×all ≤ 28). The
+-- server (craftBatch "recipe:count") paces and validates every action; the
+-- client only previews gates. Snapshot key `crafting`. State lives in Pages.CR.
+------------------------------------------------------------------------------
+do
+local CRP={station="Jeweller",category={}}
+Pages.CR=CRP
+local function CRD() return Data and type(Data.Crafting)=="table" and Data.Crafting or nil end
+function CRP.snap() return tbl(state.crafting) end
+function CRP.levelOf(skill)
+	local info=skillsOf(state)[skill]
+	return info and info.level or 1
+end
+function CRP.tierOf(id) local _,tier=collectionInfo(id) return tier end
+-- How many actions the satchel can fund right now (capped at the batch size).
+function CRP.affordable(rec)
+	local CR=CRD()
+	local n=CR and CR.MAX_BATCH or 28
+	for id,need in pairs(tbl(rec.costs)) do n=math.min(n,math.floor(count("items",id)/math.max(1,num(need,1)))) end
+	return math.max(0,n)
+end
+function CRP.categories(list)
+	local cats,by={},{}
+	for _,rec in ipairs(list) do
+		local c=rec.category or "Patterns"
+		if not by[c] then by[c]={};table.insert(cats,c) end
+		table.insert(by[c],rec)
+	end
+	return cats,by
+end
+function CRP.outputLine(def)
+	if not def then return "" end
+	local parts={}
+	if def.stats then table.insert(parts,statText(def.stats)) end
+	if def.kind=="accessory" then table.insert(parts,paint("✧ "..tostring(tbl(tbl(Data.Rarity)[def.rarity]).power or "?").." Magical Power","FFAA00")) end
+	if def.kind=="armor" and def.set and Data.Sets and Data.Sets[def.set] then table.insert(parts,"Set: "..escape(tostring(Data.Sets[def.set].text))) end
+	if type(def.requires)=="table" then
+		for skill,lvl in pairs(def.requires) do table.insert(parts,"Wear: "..escape(skill).." "..fmt(lvl)) end
+	end
+	return table.concat(parts,"  ·  ")
+end
+function CRP.draw()
+	local CR=CRD()
+	if not CR then dataMissing() return end
+	local snap=CRP.snap()
+	local at=type(snap.station)=="string" and snap.station or ""
+	if CR.Stations[at] and CRP.lastVisit~=at then CRP.station=at end
+	CRP.lastVisit=at
+	if not CR.Stations[CRP.station] then CRP.station=CR.StationOrder[1] end
+	local names,ids={},{}
+	for _,id in ipairs(CR.StationOrder) do table.insert(names,CR.Stations[id].name);ids[CR.Stations[id].name]=id end
+	sectionBar(names,CR.Stations[CRP.station].name,function(name) CRP.station=ids[name];scroll.CanvasPosition=Vector2.zero;render() end,{small=true,prefix="Station"})
+	local st=CR.Stations[CRP.station]
+	local info=skillsOf(state).Crafting
+	local here=at==CRP.station
+	local presence=if here and snap.near~=false then paint("At the "..st.name.." · batches open for "..clock(num(snap.stationIn,0)),"9EE7D2")
+		else paint("Visit the "..st.name.." on the Guild Terrace (Artificers' Row) to craft here.","E8806A")
+	local tools={}
+	for _,id in ipairs(CR.ToolOrder) do
+		local used=false
+		for _,b in pairs(CR.Branches) do if b.station==CRP.station and b.tool==id then used=true end end
+		for _,rec in ipairs(CR.stationRecipes(CRP.station)) do if rec.tool==id then used=true end end
+		if used then table.insert(tools,(count("items",id)>0 and check or cross).." "..escape(itemName(id))) end
+	end
+	card({name="CraftingStation",motif="Workshop",accent=rgb(st.color),title=escape(st.name),titleColor=gold,
+		subtitle=info and ("Crafting "..info.level.." / "..maxLevel()) or nil,detail=st.text,
+		bar=info and {fraction=info.fraction,color=rgb(skillHex("Crafting")),caption=info.maxed and "MAX LEVEL" or (fmt(math.max(0,info.ceiling-info.xp)).." XP to Crafting "..(info.level+1))} or nil,
+		lines={presence,#tools>0 and ("Tools: "..table.concat(tools,"   ")) or "",num(snap.shattered,0)>0 and ("Gems shattered so far: "..fmt(snap.shattered)) or ""}})
+	local job=type(snap.job)=="table" and snap.job or nil
+	if job and CR.Recipes[job.recipe] then
+		local rec=CR.Recipes[job.recipe]
+		local total=math.max(1,num(job.total,1))
+		card({name="CraftingJob",item=rec.output,title="Crafting "..escape(itemName(rec.output)),titleColor=rgb(itemHex(rec.output)),
+			subtitle=fmt(num(job.done,0)).." / "..fmt(total).."  ·  "..rec.seconds.."s each",
+			lines={"+"..fmt(num(job.made,0)).." made"..(num(job.shattered,0)>0 and ("  ·  "..fmt(job.shattered).." shattered") or "").."  ·  +"..fmt(num(job.xp,0)).." "..escape(rec.skill).." XP"},
+			bar={fraction=math.clamp(num(job.done,0)/total,0,1),color=mint,caption="Next in "..string.format("%.1f",num(job.nextIn,0)).."s · stay at the station"},
+			actions={{caption="Stop",fn=function() send("craftStop") end}}})
+	end
+	local cats,by=CRP.categories(CR.stationRecipes(CRP.station))
+	local cat=CRP.category[CRP.station]
+	if not table.find(cats,cat) then cat=cats[1] end
+	CRP.category[CRP.station]=cat
+	if #cats>1 then sectionBar(cats,cat,function(name) CRP.category[CRP.station]=name;scroll.CanvasPosition=Vector2.zero;render() end,{small=true,prefix="Category"}) end
+	local craftLevel=CRP.levelOf("Crafting")
+	for _,rec in ipairs(by[cat] or {}) do
+		local out=itemDef(rec.output)
+		local ok,reason=CR.check({items=tbl(state.items)},rec.id,CRP.levelOf,CRP.tierOf)
+		local gates={(CRP.levelOf(rec.skill)>=rec.level and check or cross).." "..escape(rec.skill).." "..rec.level}
+		if rec.tool then table.insert(gates,(count("items",rec.tool)>0 and check or cross).." "..escape(itemName(rec.tool))) end
+		for id,tier in pairs(tbl(rec.collectionTier)) do table.insert(gates,(CRP.tierOf(id)>=tier and check or cross).." "..escape(itemName(id)).." collection "..numeral(tier)) end
+		local needs={}
+		for id,n in pairs(tbl(rec.costs)) do
+			local have=count("items",id)
+			table.insert(needs,paint(fmt(have).."/"..fmt(n),have>=n and "9EE7D2" or "E8806A").." "..paint(escape(itemName(id)),itemHex(id)))
+		end
+		table.sort(needs)
+		local lines={table.concat(gates,"   "),"Needs "..table.concat(needs,"  ·  ")}
+		local summary=CRP.outputLine(out)
+		if summary~="" then table.insert(lines,summary) end
+		local xpLine=paint("+"..fmt(rec.xp).." "..escape(rec.skill).." XP","F9CC77").."  ·  "..rec.seconds.."s per action"
+		local shatter=CR.cutFailChance(rec,craftLevel)
+		if shatter>0 then xpLine..="  ·  "..paint(string.format("%.0f%% shatter",shatter*100),"E8806A") end
+		table.insert(lines,xpLine)
+		local afford=CRP.affordable(rec)
+		local blocked=not ok or not here
+		local why=reason or (not here and ("Visit the "..st.name.." first.")) or nil
+		local actions={{caption="Craft ×1",primary=not blocked,disabled=blocked,reason=why,fn=function() send("craftBatch",rec.id..":1") end}}
+		if afford>=5 then table.insert(actions,{caption="×5",disabled=blocked,reason=why,fn=function() send("craftBatch",rec.id..":5") end}) end
+		if afford>1 then table.insert(actions,{caption="×"..afford,disabled=blocked,reason=why,fn=function() send("craftBatch",rec.id..":"..afford) end}) end
+		card({name="Craft"..rec.id,item=rec.output,title=escape(out and out.name or rec.output)..(rec.amount>1 and ("  ×"..rec.amount) or ""),titleColor=rgb(itemHex(rec.output)),
+			subtitle=escape((out and out.rarity or "").." "..kindLabel(out)).."  ·  Lv "..rec.level,badge=ok and "READY" or nil,badgeColor=mint,lines=lines,actions=actions})
+	end
+end
+Pages.drawCrafting=CRP.draw
+end
+------------------------------------------------------------------------------
 -- Navigation: six primary tabs, each with a section switcher.
 ------------------------------------------------------------------------------
 local tabOrder={"Journal","Hero","Satchel","Workshop","Hunt","Ledger"}
@@ -7400,7 +7519,7 @@ local sectionLists={
 	Journal={"Bearing","Quests","Diaries","Construction","Regions","Crew","Calendar","Agility","Commissions","Collection Log","Museum"},
 	Hero={"Skills","Mastery","Gear","Combat","Spellbook","Prayer","Enchant","Reforge","Accessories","Pets"},
 	Satchel={"Items","Collections","Trails"},
-	Workshop={"Forge","Hearth","Cauldron","Workbench","Workers","Home","Garden"},
+	Workshop={"Forge","Hearth","Cauldron","Workbench","Crafting","Workers","Home","Garden"},
 	Hunt={"Slayer","Bestiary","Dungeon","Hunter","Thieving","Minigames"},
 	Ledger={"Bank","Market","Orders","Auctions","Merchant","Vendors"},
 }
@@ -7411,7 +7530,7 @@ local drawers={
 	Hero={Skills=Pages.drawSkills,Mastery=Pages.drawMastery,Gear=Pages.drawGear,Combat=Pages.drawCombat,Spellbook=Pages.drawSpellbook,Prayer=Pages.drawPrayer,Enchant=Pages.drawEnchant,Reforge=function() Pages.drawReforge() end,Accessories=Pages.drawAccessories,Pets=Pages.drawPets},
 	Satchel={Items=Pages.drawItems,Collections=Pages.drawCollections,Trails=Pages.drawTrails},
 	Workshop={Forge=function() Pages.drawStation("Forge") end,Hearth=function() Pages.drawStation("Hearth") end,Cauldron=function() Pages.drawStation("Cauldron") end,
-		Workbench=function() Pages.drawStation("Workbench") end,Workers=Pages.drawWorkers,Home=Pages.drawHome,Garden=Pages.drawGarden},
+		Workbench=function() Pages.drawStation("Workbench") end,Crafting=Pages.drawCrafting,Workers=Pages.drawWorkers,Home=Pages.drawHome,Garden=Pages.drawGarden},
 	Hunt={Slayer=Pages.drawSlayer,Bestiary=Pages.drawBestiary,Dungeon=Pages.drawDungeon,Hunter=Pages.drawHunter,Thieving=Pages.drawThieving,Minigames=Pages.drawMinigames},
 	Ledger={Bank=Pages.drawBank,Market=Pages.drawMarket,Orders=Pages.drawOrders,Auctions=Pages.drawAuctions,Merchant=Pages.drawMerchant,Vendors=Pages.drawVendors},
 }
@@ -7903,7 +8022,8 @@ end
 -- Crafting stations and the slayer board set IsleStation on the player; open
 -- the matching page. Values may carry a suffix ("Forge:3") so repeats fire.
 local stationTabs={Forge="Workshop",Hearth="Workshop",Cauldron="Workshop",Workbench="Workshop",Slayer="Hunt",Construction="Journal",Calendar="Journal",
-	SkymarkExchange="Ledger",TrackersLodge="Ledger",Garden="Workshop",Commissions="Journal",Museum="Journal",CollectionLog="Journal"} -- Commissions & Logs: board / museum prompts
+	SkymarkExchange="Ledger",TrackersLodge="Ledger",Garden="Workshop",Commissions="Journal",Museum="Journal",CollectionLog="Journal", -- Commissions & Logs: board / museum prompts
+	Jeweller="Workshop",Tannery="Workshop",Glassworks="Workshop"} -- Crafting stations (Workshop › Crafting)
 local function openStation()
 	local value=player:GetAttribute("IsleStation")
 	if type(value)~="string" then return end
@@ -7912,6 +8032,7 @@ local function openStation()
 	if not tab then return end
 	-- Skill vendors (Agility & Hunter): Ledger › Vendors on that vendor's stock.
 	if tab=="Ledger" then Pages.AH.vendor=station=="SkymarkExchange" and "Agility" or "Hunter";openTo("Ledger","Vendors") return end
+	if tab=="Workshop" and Pages.CR and Data and Data.Crafting and Data.Crafting.Stations[station] then Pages.CR.station=station;openTo("Workshop","Crafting") return end
 	if tab=="Workshop" then openTo("Workshop",station) elseif tab=="Journal" then openTo("Journal",if station=="Calendar" then "Calendar" elseif station=="Commissions" or station=="Museum" then station elseif station=="CollectionLog" then "Collection Log" else "Construction") else openTo("Hunt","Slayer") end
 end
 -- World sets IsleStation and then bumps IsleStationVisit on every trigger; only the

@@ -3653,3 +3653,106 @@ do
 	end
 end
 -- End Commissions & Logs section.
+
+-------------------------------------------------------------------------------
+-- Crafting (Crafting team; self-contained section). Artificers' Row on the
+-- Guild Terrace: the Jeweller's Bench, the Tanning Rack and the Glass Furnace.
+-- Prompts use IsleAction "craftStation", IsleItem Jeweller | Tannery |
+-- Glassworks (server: Crafting block records the visit, sets IsleStation and
+-- bumps IsleStationVisit so the client opens Workshop › Crafting). Models carry
+-- CraftingContent = true; anchors Waypoint_Jeweller / _Tannery / _Glassworks.
+-- Built from mesh slots that already exist (Workbench, OreCluster, Barrel,
+-- Forge, Signboard): about 25 static parts, no extra lights (terrace budget).
+-------------------------------------------------------------------------------
+do
+	local host=islandsFolder:FindFirstChild("Guild Terrace")
+	local CR=Data.Crafting
+	if host and CR then
+		local FLOOR={Meadow=true,["Floating foundation"]=true,["Mineral stratum"]=true,["Lower basalt"]=true,["Fractured cliff"]=true,
+			["Keel rock"]=true,["Edge guard"]=true,["Aether vein"]=true,["Shore ledge"]=true,Path=true,Wildflowers=true}
+		local taken={}
+		local function blocked(pos,radius)
+			for _,q in ipairs(taken) do if V(pos.X-q.X,0,pos.Z-q.Z).Magnitude<radius+7 then return true end end
+			for _,obj in ipairs(host:GetDescendants()) do
+				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
+					local cf,sz=obj.CFrame,obj.Size
+					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
+					local c=cf.Position
+					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
+					local dz=math.max(0,math.abs(pos.Z-c.Z)-ext("Z"))
+					local ey=ext("Y")
+					if dx*dx+dz*dz<radius*radius and c.Y+ey>pos.Y+.3 and c.Y-ey<pos.Y+9 then return true end
+				end
+			end
+			return false
+		end
+		local IC,R=host:GetAttribute("IslandCenter"),host:GetAttribute("IslandRadius")
+		local function spot(angle,radius)
+			local first
+			for _,f in ipairs({.6,.5,.7,.42}) do
+				for k=0,23 do
+					local a=math.rad(angle+(if k%2==0 then 1 else -1)*math.ceil(k/2)*8)
+					local pos=IC+V(math.cos(a),0,math.sin(a))*R*f
+					first=first or pos
+					if not blocked(pos,radius) then table.insert(taken,pos) return pos end
+				end
+			end
+			table.insert(taken,first)
+			return first
+		end
+		local function frame(angle,radius)
+			local pos=spot(angle,radius)
+			return facing(pos,V(IC.X,pos.Y,IC.Z)),pos
+		end
+		local function stationPromptAt(target,id)
+			local st=CR.Stations[id]
+			return prompt(target,st.verb,st.name.." · Crafting","craftStation",id)
+		end
+		local gemTint,hideTint,glassTint=C("E86FB8"),C("9C6B46"),C("5EC8D8")
+		-- Jeweller's Bench: a bench (Workbench mesh), a gem tray, a loupe lamp and a gem cluster.
+		do
+			local cf,pos=frame(112,6)
+			local m=group("Jeweller's Bench",host)
+			m:SetAttribute("CraftingContent",true)
+			local top=part(m,"Jeweller's bench top",V(5,.4,2.6),at(cf,0,2.6,0),timber,WO,true)
+			for _,x in ipairs({-2.1,2.1}) do part(m,"Bench leg",V(.4,2.4,2.2),at(cf,x,1.2,0),darken(timber,.3),WO,false) end
+			part(m,"Gem tray",V(1.6,.15,1),at(cf,1.2,2.88,-.4),navy,SM,false)
+			part(m,"Loupe lamp",V(.3,1.4,.3),at(cf,-1.8,3.5,.6),brass,MT,false)
+			meshSlot(top,"Workbench",gemTint,true)
+			local cluster=hidden(m,"Rough gem cluster",at(cf,3.6,.6,.4).Position)
+			meshSlot(cluster,"OreCluster",gemTint)
+			stationPromptAt(top,"Jeweller")
+			anchor(m,"Waypoint_Jeweller",at(cf,0,0,-5),pos)
+		end
+		-- Tanning Rack: two posts and a bar with a stretched hide, plus an oil barrel.
+		do
+			local cf,pos=frame(132,6)
+			local m=group("Tanning Rack",host)
+			m:SetAttribute("CraftingContent",true)
+			for _,x in ipairs({-2.4,2.4}) do part(m,"Rack post",V(.45,5,.45),at(cf,x,2.5,0),darken(timber,.25),WO,true) end
+			part(m,"Rack bar",V(5.4,.35,.35),at(cf,0,4.85,0),timber,WO,false)
+			local hide=part(m,"Stretched hide",V(3.8,3.2,.15),at(cf,0,3,0),hideTint,Enum.Material.Fabric,false)
+			local barrel=part(m,"Tanning oil barrel",V(1.6,2,1.6),at(cf,3.8,1,-1),C("6B4A2E"),WO,true)
+			meshSlot(barrel,"Barrel",C("C9A25A"))
+			stationPromptAt(hide,"Tannery")
+			anchor(m,"Waypoint_Tannery",at(cf,0,0,-5),pos)
+		end
+		-- Glass Furnace: a kiln (Forge mesh, tinted glass-teal) with a cooling shelf.
+		do
+			local cf,pos=frame(152,7)
+			local m=group("Glass Furnace",host)
+			m:SetAttribute("CraftingContent",true)
+			local kiln=part(m,"Glass kiln",V(5,3.4,3.6),at(cf,0,1.7,0),C("5A5F6B"),Enum.Material.Brick,true)
+			part(m,"Kiln mouth",V(2,1,.2),at(cf,0,1.6,-1.85),C("FFB066"),SM,false)
+			part(m,"Kiln flue",V(1.2,3.6,1.2),at(cf,0,5.2,.6),darken(C("5A5F6B"),.2),ST,false)
+			meshSlot(kiln,"Forge",glassTint,true)
+			part(m,"Cooling shelf",V(3,.3,1.1),at(cf,4,2.2,0),timber,WO,true)
+			for i=-1,1 do part(m,"Cooling glass",V(.45,.8,.45),at(cf,4+i*.9,2.8,0),lighten(glassTint,.3),GL,false) end
+			stationPromptAt(kiln,"Glassworks")
+			anchor(m,"Waypoint_Glassworks",at(cf,0,0,-5.5),pos)
+		end
+		local cf=frame(132,4)
+		signAt(host,cf*CFrame.Angles(0,math.pi,0),"Artificers' Row","CRAFTING   /   GEMS · LEATHER · GLASS",gemTint,11)
+	end
+end
+-- End Crafting section.

@@ -161,6 +161,8 @@ local Classes={verbs={}}
 local Trails={verbs={trailBegin=true,trailAbandon=true,trailDig=true,trailSearch=true,trailEmote=true,trailSlide=true,trailCheck=true,trailOpen=true,trailTeleport=true,trailLearn=true,trailBanner=true}}
 -- Commissions & Logs (commissions, Forgeheart, Collection Log, Museum); filled in by the Logs block after Slayer tasks.
 local Logs={verbs={commissionClaim=true,commissionClaimAll=true,forgeBuy=true,logClaim=true,logTitle=true,museumDonate=true,logsBoard=true,logsSync=true}}
+-- Crafting (gem cutting, jewellery, leather, glass); filled in by the Crafting block before perform().
+local Crafting={verbs={craftStation=true,craftBatch=true,craftStop=true},jobs={},visits={},seq={}}
 -- One-time coins for each newly reached skill level.
 local function levelCoins(p,skill,newLevel)
 	p.levelRewards=p.levelRewards or {}
@@ -3665,6 +3667,7 @@ local function snapshot(player,message)
 		trails=Trails.state(player,p), -- Treasure Trails: Satchel > Trails page state
 		slayerTasks=SlayerTasks.state(player,p), -- Slayer tasks: Hunt > Slayer page state
 		minigames=Minigames.state(player,p), -- Minigames: Hunt > Minigames page state
+		crafting=Crafting.state and Crafting.state(player,p), -- Crafting: Workshop › Crafting page state
 		logs=Logs.state(player,p)} -- Commissions & Logs: Journal > Commissions / Collection Log / Museum (full when changed, else {rev, resetIn, compact})
 end
 -- Prayer & Thieving: drain-loop notices (prayer points ran out).
@@ -3749,6 +3752,7 @@ local function migrate(profile)
 	Trails.migrate(profile) -- Treasure Trails: sanitise p.trails (re-draws trails whose steps left the pool)
 	Minigames.migrate(profile) -- Minigames: Commendations, cache rolls, titles, minigame log
 	Logs.migrate(profile) -- Commissions & Logs: board, Glimmerdust, Forgeheart, log (retroactive on first load), museum
+	if Crafting.migrate then Crafting.migrate(profile) end -- Crafting: p.crafting {made, shattered}
 end
 -- Clears every per-player table and ends this player's session slot.
 -- Sea creatures: a successful Fishing gather may hook one (Data.rollSeaCreature).
@@ -3819,6 +3823,7 @@ local function forget(player)
 	Skills.forget(player) -- Agility runs, Hunter traps (session-only)
 	Prayer.forget(player) -- Prayer rites/altar window, Thieving stuns and cooldowns
 	SlayerTasks.forget(player) -- Slayer tasks: superior tickets
+	if Crafting.forget then Crafting.forget(player) end -- Crafting: batch job and station visit (session-only)
 	local set=userSessions[player.UserId]
 	if set then
 		set[player]=nil
@@ -5026,6 +5031,209 @@ do
 		return "The Sovereign Altar returned "..plural(n).."."
 	end
 end
+------------------------------------------------------------------------------
+-- Crafting (Crafting team). Rules and data: Data.Crafting (shared/GameData.lua);
+-- stations: world.server.lua (prompt IsleAction "craftStation", IsleItem
+-- Jeweller | Tannery | Glassworks on the Guild Terrace).
+--   craftStation (prompt only) records a station visit (CR.VISIT_SECONDS) at
+--     the prompt's part and opens Workshop › Crafting (IsleStation).
+--   craftBatch "recipe:count" (1..CR.MAX_BATCH) starts a batch at the visited
+--     station; a newer batch replaces the old one. The server performs ONE
+--     action every CR.Branches[b].seconds (the first after a full cadence, no
+--     catch-up bursts): it re-checks the station range, level, tool, collection
+--     gate and materials (CR.check), spends, rolls a shatter for gem cutting
+--     (Gem Grit, CR.SHATTER_XP of the XP), grants the output through collect()
+--     (collections, Collection Log), counts crafts (quests) and "craft"
+--     commissions, pays XP (recipe.skill: Crafting, or Enchanting for amulets)
+--     and pushes a snapshot. Quantities are never taken from the client.
+--   craftStop ends the batch.
+-- Mining harvests roll a rough gem (CR.gemChance / CR.roughFor) after every
+-- other harvest hook. Player attributes: CraftingGesture "<gesture>:<seq>"
+-- (animate.client.lua plays it each action), CraftingJob "<recipe>:<done>:<total>"
+-- or "". Profile p.crafting = {made={[recipe]=n}, shattered=n}; snapshot key
+-- `crafting`. Jobs and visits are session-only (strong tables, cleared by forget).
+------------------------------------------------------------------------------
+do
+	local CR=Data.Crafting
+	local function levelsOf(p) return function(skill) return level(p.xp[skill]) end end
+	local function tiersOf(p) return function(id) return Progression.collectionTier(p,id) end end
+	local function nameOf(id) return Data.Items[id] and Data.Items[id].name or id end
+	function Crafting.migrate(p)
+		local c=type(p.crafting)=="table" and p.crafting or {}
+		local made={}
+		if type(c.made)=="table" then
+			for id,n in pairs(c.made) do
+				n=tonumber(n)
+				if type(id)=="string" and CR.Recipes[id] and n and n==n and n>0 then made[id]=math.min(math.floor(n),CR.MAX_MADE) end
+			end
+		end
+		local shattered=tonumber(c.shattered)
+		if not shattered or shattered~=shattered then shattered=0 end
+		p.crafting={made=made,shattered=math.clamp(math.floor(shattered),0,CR.MAX_MADE)}
+	end
+	local function near(player,visit)
+		local root=player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+		return root~=nil and visit~=nil and (root.Position-visit.pos).Magnitude<=CR.STATION_RANGE
+	end
+	local function alive(player)
+		local humanoid=player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+		return humanoid~=nil and humanoid.Health>0
+	end
+	-- A cost item that is worn (gear slot) or bagged keeps those copies back:
+	-- a batch never consumes them (Slayer review rule).
+	local function keepsWorn(p,rec)
+		for id,n in pairs(rec.costs) do
+			local held=0
+			for _,e in pairs(p.equipment or {}) do if e==id then held+=1 end end
+			for _,b in ipairs(type(p.accessoryBag)=="table" and p.accessoryBag or {}) do if b==id then held+=1 end end
+			if held>0 and (p.items[id] or 0)-n<held then return "Unequip "..nameOf(id).." (or take it out of your accessory bag) first, or carry a spare." end
+		end
+		return nil
+	end
+	local function publish(player,job)
+		player:SetAttribute("CraftingJob",if job then job.recipe..":"..job.done..":"..job.total else "")
+	end
+	local function push(player,message)
+		if player.Parent then update:FireClient(player,snapshot(player,message)) end
+	end
+	function Crafting.visit(player,item,prompt)
+		local station=type(item)=="string" and CR.Stations[item]
+		local base=prompt and prompt:FindFirstAncestorWhichIsA("BasePart")
+		if not station or not base then return "This bench is not ready." end
+		Crafting.visits[player]={station=item,pos=base.Position,untilAt=os.clock()+CR.VISIT_SECONDS}
+		player:SetAttribute("IsleStation",item)
+		player:SetAttribute("IsleStationVisit",(player:GetAttribute("IsleStationVisit") or 0)+1)
+		return station.name.." • choose a pattern in Workshop › Crafting."
+	end
+	function Crafting.start(player,p,item)
+		local id,n=CR.parseBatch(item)
+		if not id then return "Choose a Crafting pattern (and how many, up to "..CR.MAX_BATCH..")." end
+		local rec=CR.Recipes[id]
+		local station=CR.Stations[rec.station]
+		local visit=Crafting.visits[player]
+		if not visit or visit.station~=rec.station or os.clock()>visit.untilAt then
+			return "Use the "..station.name.." on the Guild Terrace to craft "..nameOf(rec.output).."."
+		end
+		if not near(player,visit) then return "Stand at the "..station.name.." to craft." end
+		local ok,why=CR.check(p,id,levelsOf(p),tiersOf(p))
+		if not ok then return why end
+		local wornWhy=keepsWorn(p,rec)
+		if wornWhy then return wornWhy end
+		local replaced=Crafting.jobs[player]~=nil
+		Crafting.jobs[player]={recipe=id,total=n,done=0,made=0,shattered=0,xp=0,visit=visit,nextAt=os.clock()+rec.seconds}
+		publish(player,Crafting.jobs[player])
+		p.started=true
+		return (if replaced then "Switched to " else "Crafting ")..n.."× "..nameOf(rec.output).." • "..rec.seconds.."s each."
+	end
+	function Crafting.stop(player)
+		local job=Crafting.jobs[player]
+		if not job then return "You are not crafting anything." end
+		Crafting.jobs[player]=nil
+		publish(player,nil)
+		return "Crafting stopped after "..job.done.."/"..job.total.."."
+	end
+	local function summary(job)
+		local rec=CR.Recipes[job.recipe]
+		local text=nameOf(rec.output).." "..job.done.."/"..job.total.." • +"..job.made.." made"
+		if job.shattered>0 then text..=", "..job.shattered.." shattered" end
+		return text.." • +"..job.xp.." "..rec.skill.." XP"
+	end
+	-- One action of a live job. Returns nothing; pushes its own snapshot.
+	function Crafting.step(player,job)
+		local p=live(player)
+		if not p or not player.Parent then Crafting.jobs[player]=nil return end
+		local rec=CR.Recipes[job.recipe]
+		local station=CR.Stations[rec.station]
+		local function finish(text)
+			Crafting.jobs[player]=nil
+			publish(player,nil)
+			push(player,text)
+		end
+		if not alive(player) then return finish("Crafting stopped.") end
+		if not near(player,job.visit) then return finish("You stepped away from the "..station.name..". "..summary(job)) end
+		local ok,why=CR.check(p,job.recipe,levelsOf(p),tiersOf(p))
+		if not ok then return finish(summary(job).." • "..why) end
+		local wornWhy=keepsWorn(p,rec)
+		if wornWhy then return finish(summary(job).." • "..wornWhy) end
+		spend(p,rec.costs)
+		local xp=rec.xp
+		local shatter=CR.cutFailChance(rec,level(p.xp.Crafting))
+		local text
+		if shatter>0 and roll()<shatter then
+			xp=math.max(1,math.floor(rec.xp*CR.SHATTER_XP))
+			collect(p,"GemGrit",1)
+			job.shattered+=1
+			p.crafting.shattered=math.min(CR.MAX_MADE,p.crafting.shattered+1)
+			text="The "..nameOf(next(rec.costs)).." shattered into Gem Grit"
+		else
+			local amount=rec.amount
+			-- Pets depth: an extra-craft ability may add one more batch of a stackable output (no XP).
+			if Pets.craftExtra and Pets.craftExtra(p,rec) then amount+=rec.amount end
+			collect(p,rec.output,amount)
+			Journal.count(p,"crafts",rec.output,amount)
+			Logs.event(p,"craft",rec.output) -- Commissions & Logs: "craft" commissions
+			job.made+=amount
+			p.crafting.made[rec.id]=math.min(CR.MAX_MADE,(p.crafting.made[rec.id] or 0)+1)
+			text="+"..amount.." "..nameOf(rec.output)..(if amount>rec.amount then " (pet ×2)" else "")
+		end
+		grantXp(p,rec.skill,xp)
+		job.xp+=xp
+		job.done+=1
+		p.started=true
+		Crafting.seq[player]=(Crafting.seq[player] or 0)+1
+		player:SetAttribute("CraftingGesture",CR.Branches[rec.branch].gesture..":"..Crafting.seq[player])
+		if job.done>=job.total then return finish(text.."   ·   Batch done • "..summary(job)) end
+		job.nextAt=os.clock()+rec.seconds
+		publish(player,job)
+		push(player,text.."   ·   +"..xp.." "..rec.skill.." XP   ·   "..job.done.."/"..job.total)
+	end
+	-- Every live job whose cadence has elapsed takes exactly one action.
+	function Crafting.tick(now)
+		local due={}
+		for player,job in pairs(Crafting.jobs) do if now>=job.nextAt then table.insert(due,player) end end
+		for _,player in ipairs(due) do
+			local job=Crafting.jobs[player]
+			if job then
+				local ok,err=pcall(Crafting.step,player,job)
+				if not ok then Crafting.jobs[player]=nil; (warn or print)("Crafting step failed: "..tostring(err)) end
+			end
+		end
+	end
+	-- Mining harvests: a rare rough gem, gated by the ore tier.
+	function Crafting.gather(p,resource)
+		if resource.skill~="Mining" or roll()>=CR.gemChance(resource.index) then return "" end
+		local rough=CR.roughFor(resource.index,roll())
+		if not rough then return "" end
+		collect(p,rough,1)
+		return "   ·   Rough gem! +1 "..nameOf(rough)
+	end
+	function Crafting.action(player,p,verb,item,prompt)
+		if verb=="craftStation" then
+			if not prompt then return "Visit a Crafting station on the Guild Terrace." end
+			return Crafting.visit(player,item,prompt)
+		elseif verb=="craftBatch" then return Crafting.start(player,p,item)
+		elseif verb=="craftStop" then return Crafting.stop(player) end
+		return "Unknown action."
+	end
+	function Crafting.state(player,p)
+		local job=Crafting.jobs[player]
+		local visit=Crafting.visits[player]
+		local now=os.clock()
+		return {
+			job=job and {recipe=job.recipe,done=job.done,total=job.total,made=job.made,shattered=job.shattered,xp=job.xp,nextIn=math.max(0,job.nextAt-now)} or nil,
+			station=if visit and now<=visit.untilAt then visit.station else "",
+			stationIn=if visit then math.max(0,math.floor(visit.untilAt-now)) else 0,
+			near=visit~=nil and near(player,visit),
+			made=p.crafting and p.crafting.made or {},shattered=p.crafting and p.crafting.shattered or 0,
+		}
+	end
+	function Crafting.forget(player)
+		Crafting.jobs[player],Crafting.visits[player],Crafting.seq[player]=nil,nil,nil
+	end
+	task.spawn(function()
+		while task.wait(CR.TICK) do Crafting.tick(os.clock()) end
+	end)
+end
 local function perform(player,verb,item,prompt)
 	local p=profiles[player]
 	if not p or (not preview[player] and os.time()>=(leaseEnd[player] or 0)) then return "Waiting for journal sync." end
@@ -5046,6 +5254,8 @@ local function perform(player,verb,item,prompt)
 		return Minigames.action(player,p,verb,item) -- Minigames: Commendation shop, cache rolls, titles
 	elseif Logs.verbs[verb] then
 		return Logs.action(player,p,verb,item,prompt) -- Commissions & Logs
+	elseif Crafting.verbs[verb] then
+		return Crafting.action(player,p,verb,item,prompt) -- Crafting: stations, batches
 	elseif Mastery.verbs[verb] then
 		return Mastery.action(player,p,verb,item) -- Skill Mastery
 	elseif Garden.verbs[verb] then
@@ -5105,6 +5315,7 @@ local function perform(player,verb,item,prompt)
 		Logs.regrow(p,result,resource) -- Commissions & Logs: Steadfast Pick joins the Mastery regrowth text
 		local mastered=Mastery.gather(p,result) -- Skill Mastery: bonus ingots, coins, regrowth skip
 		mastered..=Logs.gather(p,item,result,resource) -- Commissions & Logs: commission progress, Gemseeker
+		mastered..=Crafting.gather(p,resource) -- Crafting: rare rough gem roll on Mining harvests
 		if region then Journal.count(p,"gathers",region,1) end
 		p.started=true
 		if not regrowth then regrowth={}; nodeRegrowth[prompt]=regrowth; watchPrompt(prompt) end

@@ -8054,4 +8054,447 @@ end
 end
 -- End Commissions & Logs section.
 
+------------------------------------------------------------------------------
+-- Crafting (Crafting team; append-only section). A 1-99 production skill with
+-- OSRS Crafting depth (original names): gem cutting, jewellery, leatherwork,
+-- spinning & weaving and glassblowing at three Guild Terrace stations — the
+-- Jeweller's Bench, the Tanning Rack and the Glass Furnace.
+--   * Recipes live in CR.Recipes (NOT Data.Recipes): they run only through the
+--     server's batch verb (craftBatch "recipe:count") at a station the player
+--     stands at, one action per branch cadence (CR.Branches[b].seconds), so a
+--     batch of 28 takes 28 x cadence seconds. Every action re-checks level,
+--     tool, collection gate and materials (CR.check).
+--   * Tools are owned, never consumed (Facet Chisel, Hide Needle, Drop Spindle,
+--     Blowing Pipe and three jewellery moulds); they are Forge recipes in
+--     Data.Recipes (Smithing 1-5), so Ironman journals make their own.
+--   * Gem cutting may shatter a rough gem at low level (CR.cutFailChance):
+--     the gem becomes Gem Grit and pays CR.SHATTER_XP of the XP.
+--   * Rough gems drop from Mining harvests (CR.gemChance / CR.roughFor,
+--     gated by the ore tier); cut gems, leathers and jewellery are collections.
+--   * Jewellery are accessories (Magical Power by rarity); the four best
+--     amulets can be enchanted (skill Enchanting) at the Jeweller's Bench.
+--   * Leatherwork makes five four-piece Ranged armour sets (Data.Sets).
+--   * Vials from glassblowing are proposed for Alchemy potions
+--     (CR.VIAL_POTIONS); the change is OFF until the lead approves it
+--     (CR.VIALS_IN_POTIONS). Vials already feed Tanning Oil.
+--   * Balance model: CR.chainRate (see docs/DEPTH-CONTRACT.md §22).
+------------------------------------------------------------------------------
+do
+local CR = {}
+Data.Crafting = CR
+table.insert(Data.SkillOrder, "Crafting")
+Data.Skills.Crafting = {category="production",color="C9708A",title="Artificer",perLevel={defense=0.5,rangedAccuracy=0.5},
+	description="Cut gems, set jewellery, work leather and blow glass. Raises Defense and Ranged Accuracy."}
+if Data.Mastery and Data.Mastery.CapePerk then Data.Mastery.CapePerk.Crafting = {defense=10,rangedAccuracy=10} end
+
+CR.MAX_BATCH = 28            -- actions per batch (one satchel load)
+CR.VISIT_SECONDS = 900       -- a station visit authorises batches this long
+CR.STATION_RANGE = 24        -- studs: stay this close to the station while crafting
+CR.TICK = 0.3                -- server loop period (s)
+CR.SHATTER_XP = 0.25         -- XP share paid for a shattered gem
+CR.CUT_FAIL = 0.3            -- shatter chance at the gem's own level
+CR.CUT_FADE = 25             -- ... fading to zero this many levels above it
+CR.GEM_CHANCE = 0.01         -- rough gem per Mining harvest at ore tier 1
+CR.GEM_TIER_BONUS = 0.1      -- +10% of that chance per ore tier above 1
+CR.MAX_MADE = 1e9
+
+CR.StationOrder = {"Jeweller","Tannery","Glassworks"}
+CR.Stations = {
+	Jeweller={id="Jeweller",name="Jeweller's Bench",verb="Cut & set",color="E86FB8",gesture={"hammer"},
+		text="Cut rough gems, set rings, necklaces and amulets, and enchant the finest amulets."},
+	Tannery={id="Tannery",name="Tanning Rack",verb="Tan & stitch",color="A8763E",gesture={"saw","hammer"},
+		text="Tan hides, spin thread, weave cloth and stitch Ranged leathers."},
+	Glassworks={id="Glassworks",name="Glass Furnace",verb="Melt & blow",color="5EC8D8",gesture={"stir"},
+		text="Sift sand, melt molten glass and blow baubles, vials, orbs and lenses."},
+}
+-- Branches: station, cadence (seconds per action), tool (owned item) and gesture.
+CR.BranchOrder = {"cut","jewel","enchant","tan","spin","weave","leather","sift","melt","blow"}
+CR.Branches = {
+	cut={name="Gem Cutting",station="Jeweller",seconds=1.8,tool="FacetChisel",gesture="hammer"},
+	jewel={name="Jewellery",station="Jeweller",seconds=2.4,gesture="hammer"},
+	enchant={name="Amulet Enchanting",station="Jeweller",seconds=3,gesture="stir"},
+	tan={name="Tanning",station="Tannery",seconds=1.2,gesture="saw"},
+	spin={name="Spinning",station="Tannery",seconds=1.2,tool="DropSpindle",gesture="saw"},
+	weave={name="Weaving",station="Tannery",seconds=1.8,tool="DropSpindle",gesture="saw"},
+	leather={name="Leatherwork",station="Tannery",seconds=2.4,tool="HideNeedle",gesture="hammer"},
+	sift={name="Sand Sifting",station="Glassworks",seconds=1.2,gesture="stir"},
+	melt={name="Glassmelting",station="Glassworks",seconds=1.8,gesture="stir"},
+	blow={name="Glassblowing",station="Glassworks",seconds=1.8,tool="BlowingPipe",gesture="stir"},
+}
+for id, b in pairs(CR.Branches) do b.id = id end
+
+------------------------------------------------------------------------------
+-- Tools (Forge, Smithing): owned, never used up.
+------------------------------------------------------------------------------
+CR.ToolOrder = {"FacetChisel","HideNeedle","DropSpindle","BlowingPipe","RingMould","NecklaceMould","AmuletMould"}
+for _, t in ipairs({
+	{id="FacetChisel",name="Facet Chisel",color="C9D6E3",costs={AlloyIngot=1},level=1,text="Crafting tool: cut rough gems."},
+	{id="HideNeedle",name="Hide Needle",color="D8C3A5",costs={AlloyIngot=1},level=1,text="Crafting tool: stitch leather."},
+	{id="DropSpindle",name="Drop Spindle",color="C49A6C",costs={Timber=2,AlloyIngot=1},level=1,text="Crafting tool: spin thread and weave cloth."},
+	{id="BlowingPipe",name="Blowing Pipe",color="7FD6E8",costs={AlloyIngot=2},level=1,text="Crafting tool: blow molten glass."},
+	{id="RingMould",name="Ring Mould",color="D4A84B",costs={AlloyIngot=2},level=1,text="Crafting tool: cast rings."},
+	{id="NecklaceMould",name="Necklace Mould",color="D4A84B",costs={AlloyIngot=2,BrassIngot=1},level=5,text="Crafting tool: cast necklaces."},
+	{id="AmuletMould",name="Amulet Mould",color="D4A84B",costs={AlloyIngot=2,BrassIngot=1},level=5,text="Crafting tool: cast amulets."},
+}) do
+	item(t.id,{name=t.name,kind="material",category="craftTool",rarity="Common",color=t.color,value=15,description=t.text.." Never used up."})
+	recipe(t.id,{skill="Smithing",level=t.level,xp=10,costs=t.costs,station="Forge",category="Tools"})
+end
+
+------------------------------------------------------------------------------
+-- Materials and recipes.
+------------------------------------------------------------------------------
+CR.Recipes, CR.RecipeOrder = {}, {}
+local function craft(id, def)
+	def.id = id
+	def.output = def.output or id
+	def.amount = def.amount or 1
+	def.skill = def.skill or "Crafting"
+	local b = CR.Branches[def.branch]
+	assert(b, "crafting branch "..tostring(def.branch))
+	def.station = b.station
+	def.tool = def.tool or b.tool
+	def.seconds = b.seconds
+	def.repeatable = true -- every Crafting pattern can be repeated (training, spares to sell)
+	CR.Recipes[id] = def
+	table.insert(CR.RecipeOrder, id)
+	return def
+end
+local function rarityStep(rarity, step)
+	local i = table.find(Data.RarityOrder, rarity) or 1
+	return Data.RarityOrder[math.clamp(i + step, 1, #Data.RarityOrder)]
+end
+
+-- Gems: rough (Mining drop) -> cut (Jeweller's Bench). Five cut gems already
+-- exist (Thieving loot, Gemseeker); three are new. minTier = lowest Mining ore
+-- tier (1 = Copperstone ... 8 = Celestium) that can turn the rough gem up.
+-- stat/stat2 theme the gem's jewellery; ingot casts it.
+item("Dewquartz",{name="Dewquartz",kind="material",category="gem",rarity="Common",color="BDE8E0",value=8,description="A cut gem. Set into jewellery or sell to a merchant."})
+item("Skyjade",{name="Skyjade",kind="material",category="gem",rarity="Rare",color="5FBF8F",value=65,description="A cut gem. Set into jewellery or sell to a merchant."})
+item("Stormopal",{name="Stormopal",kind="material",category="gem",rarity="Epic",color="9FB4FF",value=420,description="A cut gem. Set into jewellery or sell to a merchant."})
+item("GemGrit",{name="Gem Grit",kind="material",rarity="Common",color="C7C2B8",value=2,description="The glittering dust of a shattered gem. Fluxes molten glass."})
+CR.Gems = {
+	{cut="Dewquartz",rough="RoughDewquartz",roughName="Rough Dewquartz",level=1,xp=15,minTier=1,w=40,ingot="AlloyIngot",stat="health",m=8,stat2="defense",m2=3},
+	{cut="SunstoneChip",rough="RoughSunstone",roughName="Rough Sunstone",level=10,xp=24,minTier=1,w=30,ingot="BrassIngot",stat="strength",m=3,stat2="health",m2=10},
+	{cut="Mistpearl",rough="CloudedMistpearl",roughName="Clouded Mistpearl",level=20,xp=48,minTier=2,w=20,ingot="BrassIngot",stat="intelligence",m=10,stat2="health",m2=12},
+	{cut="Skyjade",rough="RoughSkyjade",roughName="Rough Skyjade",level=30,xp=64,minTier=3,w=15,ingot="SunsteelIngot",stat="defense",m=8,stat2="rangedAccuracy",m2=5},
+	{cut="Emberglass",rough="RoughEmberglass",roughName="Rough Emberglass",level=40,xp=82,minTier=4,w=10,ingot="SunsteelIngot",stat="critDamage",m=6,stat2="strength",m2=4},
+	{cut="Voidgarnet",rough="RoughVoidgarnet",roughName="Rough Voidgarnet",level=52,xp=104,minTier=5,w=6,ingot="VoidforgedIngot",stat="critChance",m=2,stat2="critDamage",m2=8},
+	{cut="Stormopal",rough="RoughStormopal",roughName="Rough Stormopal",level=64,xp=132,minTier=6,w=3,ingot="StarmetalIngot",stat="rangedStrength",m=6,stat2="rangedAccuracy",m2=8},
+	{cut="StarheartGem",rough="RoughStarheart",roughName="Rough Starheart",level=78,xp=166,minTier=7,w=1.2,ingot="PrismaticIngot",stat="magicFind",m=3,stat2="critDamage",m2=12},
+}
+CR.GemByCut, CR.GemByRough = {}, {}
+local roughScale = {0.5,0.4,0.3,0.25,0.2,0.1,0.05,0.02}
+for i, g in ipairs(CR.Gems) do
+	g.index = i
+	CR.GemByCut[g.cut], CR.GemByRough[g.rough] = g, g
+	local cut = Data.Items[g.cut]
+	g.short = string.gsub(cut.name, " Gem$", "")
+	g.short = string.gsub(g.short, " Chip$", "")
+	item(g.rough,{name=g.roughName,kind="material",category="roughGem",rarity=rarityStep(cut.rarity,-1),color=cut.color,value=math.max(2,math.floor(cut.value*0.6)),
+		description="An uncut gem from a Mining seam. Cut it with a Facet Chisel at Crafting "..g.level.."."})
+	craft(g.cut,{branch="cut",level=g.level,xp=g.xp,costs={[g.rough]=1},repeatable=true,category="Gems",shatter=true})
+	table.insert(Data.CollectionItems, g.rough)
+	Data.CollectionScale[g.rough] = roughScale[i]
+end
+-- New cut gems join the gem collections (the five existing ones already are).
+for id, scale in pairs({Dewquartz=0.5,Skyjade=0.25,Stormopal=0.05}) do
+	table.insert(Data.CollectionItems, id)
+	Data.CollectionScale[id] = scale
+end
+
+-- Spinning & weaving (Tannery). Thread strings amulets and stitches leather;
+-- Skyweave lines the better cowls and jerkins.
+item("SpunThread",{name="Spun Thread",kind="material",rarity="Common",color="EDE3CF",value=2,description="Spun from Meadow Herb fibre. Stitches leather and strings amulets."})
+item("SkyweaveBolt",{name="Skyweave Bolt",kind="material",rarity="Uncommon",color="B8D4E8",value=16,description="A bolt of woven cloth. Lines cowls and jerkins."})
+craft("SpunThread",{branch="spin",level=1,xp=3,costs={Herb=2},amount=3,repeatable=true,category="Thread"})
+craft("SkyweaveBolt",{branch="weave",level=20,xp=22,costs={SpunThread=4,Sunwheat=1},repeatable=true,category="Thread"})
+
+-- Glass (Glassworks): Copperstone sifts into sand; sand + log fuel melts into
+-- glass (grit from shattered gems fluxes a richer melt); the pipe blows it.
+item("Skysand",{name="Skysand",kind="material",rarity="Common",color="E8D9A8",value=1,description="Crushed Copperstone, sifted fine. Melts into glass."})
+item("MoltenGlass",{name="Molten Skyglass",kind="material",rarity="Common",color="9EE7E8",value=6,description="Glowing glass, ready for the Blowing Pipe."})
+craft("Skysand",{branch="sift",level=1,xp=1,costs={Ore=1},amount=2,repeatable=true,category="Glass"})
+craft("MoltenGlass",{branch="melt",level=1,xp=6,costs={Skysand=2,Timber=1},repeatable=true,category="Glass"})
+craft("MoltenGlassWindpine",{output="MoltenGlass",branch="melt",level=15,xp=12,costs={Skysand=4,WindpineLog=1},amount=2,repeatable=true,category="Glass"})
+craft("MoltenGlassGrit",{output="MoltenGlass",branch="melt",level=30,xp=14,costs={Skysand=3,GemGrit=1,EmberoakLog=1},amount=3,repeatable=true,category="Glass"})
+CR.GlassOrder = {"GlassBauble","GlassVial","LanternGlobe","SkyglassOrb","PrismLens"}
+for _, g in ipairs({
+	{id="GlassBauble",name="Glass Bauble",level=1,xp=12,glass=1,color="CFEFFF",value=8,rarity="Common",text="A pretty bauble. Merchants pay well for a basket of them."},
+	{id="GlassVial",name="Skyglass Vial",level=8,xp=20,glass=1,color="A8E6F0",value=10,rarity="Common",text="A stoppered vial. Holds Tanning Oil (and, if the guild agrees, potions)."},
+	{id="LanternGlobe",name="Lantern Globe",level=25,xp=38,glass=1,extra={Aetherite=1},color="FFE9A8",value=30,rarity="Uncommon",text="A lamp globe. Sought by builders and merchants."},
+	{id="SkyglassOrb",name="Skyglass Orb",level=46,xp=52,glass=2,color="7FD6E8",value=80,rarity="Rare",text="A flawless orb. Set into Farsight Orbs."},
+	{id="PrismLens",name="Prism Lens",level=70,xp=96,glass=2,extra={Prismite=1},color="E86FB8",value=220,rarity="Epic",text="A cut prism lens. Set into Prism Monocles."},
+}) do
+	item(g.id,{name=g.name,kind="material",rarity=g.rarity,color=g.color,value=g.value,description=g.text})
+	local costs = {MoltenGlass=g.glass}
+	for k, v in pairs(g.extra or {}) do costs[k] = v end
+	craft(g.id,{branch="blow",level=g.level,xp=g.xp,costs=costs,repeatable=true,category="Glassware"})
+end
+-- Tanning oil: vial + herbs (the glass -> leather link).
+item("TanningOil",{name="Tanning Oil",kind="material",rarity="Common",color="C9A25A",value=8,description="Brushed into pelts to cure them into supple leather."})
+craft("TanningOil",{branch="tan",level=10,xp=6,costs={GlassVial=1,Herb=2},repeatable=true,category="Tanning"})
+
+-- Leather tiers: hide -> leather (Tannery), leather + thread -> a four-piece
+-- Ranged set (Data.Sets; bonus with all four worn).
+CR.LeatherOrder = {"CuredLeather","QuiltedLeather","EmberhideLeather","ShadowhideLeather","StormhideLeather"}
+CR.Leathers = {
+	{id="CuredLeather",name="Cured Leather",hide={BeastHide=1},level=1,tanXp=2,color="9C6B46",value=8,rarity="Common",
+		set={id="Wayfarer",name="Wayfarer",level=1,ranged=1,xp=18,rarity="Common",color="9C6B46",
+			armor={defense=18,health=10,rangedAccuracy=6,rangedStrength=2},bonus={rangedAccuracy=10},text="+10 Ranged Accuracy"}},
+	{id="QuiltedLeather",name="Quilted Leather",hide={DownyPelt=1},oil=1,level=18,tanXp=6,color="E8DCC8",value=18,rarity="Uncommon",
+		set={id="Downstride",name="Downstride",level=18,ranged=10,xp=26,rarity="Uncommon",color="D8C8AE",
+			armor={defense=35,health=25,rangedAccuracy=12,rangedStrength=5},bonus={rangedAccuracy=15,defense=15},text="+15 Ranged Accuracy, +15 Defense"}},
+	{id="EmberhideLeather",name="Emberhide Leather",hide={EmberPelt=1},oil=1,level=38,tanXp=10,color="D9642B",value=45,rarity="Rare",gate={EmberPelt=1},
+		set={id="Cinderhide",name="Cinderhide",level=38,ranged=25,xp=56,rarity="Rare",color="C2562A",lining=true,
+			armor={defense=60,health=45,rangedAccuracy=20,rangedStrength=6,critChance=1},bonus={rangedStrength=8,critDamage=15},text="+8 Ranged Strength, +15 Crit Damage"}},
+	{id="ShadowhideLeather",name="Shadowhide Leather",hide={ShadowPelt=1},oil=1,level=58,tanXp=16,color="3D3654",value=110,rarity="Epic",gate={ShadowPelt=1},
+		set={id="Duskprowl",name="Duskprowl",level=58,ranged=40,xp=92,rarity="Epic",color="4A3F6B",lining=true,
+			armor={defense=95,health=75,rangedAccuracy=22,rangedStrength=8,critChance=2},bonus={rangedStrength=10,critChance=5,speed=5},text="+10 Ranged Strength, +5 Crit Chance, +5 Speed"}},
+	{id="StormhideLeather",name="Stormhide Leather",hide={StormmaneHide=1},oil=2,level=76,tanXp=24,color="8FA3C8",value=170,rarity="Epic",gate={StormmaneHide=1},
+		set={id="Stormmantle",name="Stormmantle",level=76,ranged=55,xp=132,rarity="Legendary",color="7F95C8",lining=true,
+			armor={defense=140,health=110,rangedAccuracy=18,rangedStrength=9,critChance=3},bonus={rangedStrength=12,critDamage=15,defense=40},text="+12 Ranged Strength, +15 Crit Damage, +40 Defense"}},
+}
+CR.SetOrder = {}
+local slotShare = {helmet=0.6,chest=1,legs=0.85,boots=0.5}
+local pieceNames = {helmet="Cowl",chest="Jerkin",legs="Leggings",boots="Treads"}
+local pieceLeather = {helmet=1,chest=3,legs=2,boots=1}
+local pieceLevel = {boots=0,helmet=3,legs=6,chest=10}
+for i, l in ipairs(CR.Leathers) do
+	l.index = i
+	item(l.id,{name=l.name,kind="material",rarity=l.rarity,color=l.color,value=l.value,description="Tanned at the Tanning Rack. Stitched into "..l.set.name.." leathers."})
+	local costs = table.clone(l.hide)
+	if l.oil then costs.TanningOil = l.oil end
+	craft(l.id,{branch="tan",level=l.level,xp=l.tanXp,costs=costs,repeatable=true,category="Tanning",collectionTier=l.gate})
+	local s = l.set
+	table.insert(CR.SetOrder, s.id)
+	Data.Sets[s.id] = {id=s.id,name=s.name,pieces={},bonus=s.bonus,text=s.text,color=s.color,crafting=true}
+	for _, slot in ipairs(Data.ArmorSlots) do
+		local id = s.id..pieceNames[slot]
+		local stats = {}
+		for k, v in pairs(s.armor) do stats[k] = math.max(1, math.floor(v * slotShare[slot] + 0.5)) end
+		local n = pieceLeather[slot]
+		local pcosts = {[l.id]=n,SpunThread=n}
+		if s.lining and (slot == "chest" or slot == "helmet") then pcosts.SkyweaveBolt = 1 end
+		item(id,{name=s.name.." "..pieceNames[slot],kind="armor",slot=slot,set=s.id,tier=i+1,rarity=s.rarity,color=s.color,stats=stats,requires={Ranged=s.ranged},
+			value=l.value*n+10,description="Ranged leather. Part of the "..s.name.." set: "..s.text.." with all four. Requires Ranged "..s.ranged.."."})
+		craft(id,{branch="leather",level=math.min(99,s.level+pieceLevel[slot]),xp=s.xp*n+4,costs=pcosts,repeatable=true,category=s.name,
+			collectionTier=if i >= 2 then {[l.id]=1} else nil})
+		table.insert(Data.Sets[s.id].pieces, id)
+	end
+	table.insert(Data.CollectionItems, l.id)
+	Data.CollectionScale[l.id] = ({1,0.6,0.4,0.25,0.15})[i]
+end
+
+-- Jewellery (Jeweller's Bench): ingot + cut gem cast in a mould. Rings sit two
+-- rarities below the gem, necklaces one, amulets at the gem's rarity.
+CR.JewelKinds = {
+	{id="Ring",name="Ring",mould="RingMould",dl=3,ingots=1,thread=0,rarity=-2,stats="ring",xpMult=1.1,xpAdd=5},
+	{id="Necklace",name="Necklace",mould="NecklaceMould",dl=6,ingots=2,thread=0,rarity=-1,stats="necklace",xpMult=1.3,xpAdd=10},
+	{id="Amulet",name="Amulet",mould="AmuletMould",dl=10,ingots=2,thread=1,rarity=0,stats="amulet",xpMult=1.6,xpAdd=15},
+}
+CR.JewelleryOrder = {}
+for _, g in ipairs(CR.Gems) do
+	local gemRarity = Data.Items[g.cut].rarity
+	for _, k in ipairs(CR.JewelKinds) do
+		local id = g.short:gsub("[^%w]", "")..k.id
+		local stats = if k.stats == "ring" then {[g.stat]=g.m} elseif k.stats == "necklace" then {[g.stat2]=g.m2} else {[g.stat]=g.m,[g.stat2]=g.m2}
+		local rarity = rarityStep(gemRarity, k.rarity)
+		local costs = {[g.cut]=1,[g.ingot]=k.ingots}
+		if k.thread > 0 then costs.SpunThread = k.thread end
+		item(id,{name=g.short.." "..k.name,kind="accessory",category="jewellery",gem=g.cut,rarity=rarity,color=Data.Items[g.cut].color,stats=stats,
+			value=40*Data.Rarity[rarity].rank^2,description="Jewellery accessory. Magical Power "..Data.Rarity[rarity].power.."."})
+		craft(id,{branch="jewel",level=math.min(99,g.level+k.dl),xp=math.floor(g.xp*k.xpMult+k.xpAdd),costs=costs,tool=k.mould,
+			collectionTier=if g.index >= 3 then {[g.cut]=1} else nil,category=k.name.."s"})
+		table.insert(CR.JewelleryOrder, id)
+		if k.id == "Amulet" then g.amulet = id end
+	end
+end
+-- Enchanted amulets (skill Enchanting): the four best amulets gain a rarity and
+-- a third stat. Arcane Dust + glyphs, Enchanting level gate.
+CR.EnchantOrder = {}
+for i, e in ipairs({
+	{gem="Emberglass",level=35,dust=24,glyph="SparkGlyph",glyphs=10,extra={strength=6},title="Kindled"},
+	{gem="Voidgarnet",level=50,dust=48,glyph="SurgeGlyph",glyphs=6,extra={critDamage=10},title="Hollowed"},
+	{gem="Stormopal",level=65,dust=80,glyph="SurgeGlyph",glyphs=12,extra={speed=4},title="Tempest-bound"},
+	{gem="StarheartGem",level=80,dust=128,glyph="TorrentGlyph",glyphs=8,extra={health=60},title="Starlit"},
+}) do
+	local g = CR.GemByCut[e.gem]
+	local base = Data.Items[g.amulet]
+	local id = "Enchanted"..g.amulet
+	local stats = {}
+	for k, v in pairs(base.stats) do stats[k] = math.floor(v * 1.5 + 0.5) end
+	for k, v in pairs(e.extra) do stats[k] = (stats[k] or 0) + v end
+	local rarity = rarityStep(base.rarity, 1)
+	item(id,{name=e.title.." "..base.name,kind="accessory",category="jewellery",gem=g.cut,enchanted=true,rarity=rarity,color=base.color,stats=stats,
+		value=40*Data.Rarity[rarity].rank^2,description="Enchanted jewellery accessory. Magical Power "..Data.Rarity[rarity].power.."."})
+	craft(id,{skill="Enchanting",branch="enchant",level=e.level,xp=e.dust*6,costs={[g.amulet]=1,ArcaneDust=e.dust,[e.glyph]=e.glyphs},category="Enchanted"})
+	table.insert(CR.EnchantOrder, id)
+	table.insert(CR.JewelleryOrder, id)
+end
+-- Glass accessories.
+item("FarsightOrb",{name="Farsight Orb",kind="accessory",category="jewellery",rarity="Rare",color="7FD6E8",stats={intelligence=25,magicFind=1},value=40*9,description="Accessory. Magical Power "..Data.Rarity.Rare.power.."."})
+craft("FarsightOrb",{branch="jewel",level=50,xp=180,costs={SkyglassOrb=2,Mistpearl=2,VoidforgedIngot=2},tool="AmuletMould",collectionTier={MoltenGlass=3},category="Glass Charms"})
+item("PrismMonocle",{name="Prism Monocle",kind="accessory",category="jewellery",rarity="Epic",color="E86FB8",stats={rangedAccuracy=15,critChance=2},value=40*16,description="Accessory. Magical Power "..Data.Rarity.Epic.power.."."})
+craft("PrismMonocle",{branch="jewel",level=74,xp=320,costs={PrismLens=2,Stormopal=1,StarmetalIngot=2},tool="RingMould",collectionTier={MoltenGlass=5},category="Glass Charms"})
+table.insert(CR.JewelleryOrder, "FarsightOrb")
+table.insert(CR.JewelleryOrder, "PrismMonocle")
+table.insert(Data.CollectionItems, "MoltenGlass")
+Data.CollectionScale.MoltenGlass = 1
+
+------------------------------------------------------------------------------
+-- Rules (pure; shared by the server, the UI and the tests).
+------------------------------------------------------------------------------
+-- Shatter chance (0..1) for cutting gem recipe `rec` at Crafting `level`.
+function CR.cutFailChance(rec, level)
+	if not rec or not rec.shatter then return 0 end
+	local over = math.max(0, (tonumber(level) or 1) - rec.level)
+	return math.max(0, CR.CUT_FAIL * (1 - over / CR.CUT_FADE))
+end
+-- Rough gem chance per Mining harvest of ore tier `tierIndex` (1..8+).
+function CR.gemChance(tierIndex)
+	local t = math.max(1, math.floor(tonumber(tierIndex) or 1))
+	return CR.GEM_CHANCE * (1 + CR.GEM_TIER_BONUS * (t - 1))
+end
+-- Weighted rough gem for ore tier `tierIndex`, r in [0,1).
+function CR.roughFor(tierIndex, r)
+	local t = math.max(1, math.floor(tonumber(tierIndex) or 1))
+	local total = 0
+	for _, g in ipairs(CR.Gems) do if t >= g.minTier then total += g.w end end
+	local pick = math.clamp(tonumber(r) or 0, 0, 0.999999) * total
+	local last
+	for _, g in ipairs(CR.Gems) do
+		if t >= g.minTier then
+			last = g.rough
+			pick -= g.w
+			if pick < 0 then return g.rough end
+		end
+	end
+	return last
+end
+-- Can `p` take one action of recipe `id` now? Returns ok, reason.
+-- levelOf(skill) and tierOf(item) default to Progression-free reads so the UI
+-- can call this with its own snapshot helpers.
+function CR.check(p, id, levelOf, tierOf)
+	local rec = type(id) == "string" and CR.Recipes[id]
+	if not rec then return false, "Choose a Crafting pattern." end
+	local items = (type(p) == "table" and type(p.items) == "table") and p.items or {}
+	local out = Data.Items[rec.output]
+	local lvl = levelOf(rec.skill)
+	if lvl < rec.level then return false, out.name.." requires "..rec.skill.." "..rec.level.."." end
+	if rec.tool and (items[rec.tool] or 0) < 1 then return false, "You need a "..Data.Items[rec.tool].name.." (forge one at the Forge)." end
+	for itemId, tier in pairs(rec.collectionTier or {}) do
+		if tierOf(itemId) < tier then return false, "Unlocks at "..Data.Items[itemId].name.." collection tier "..tier.."." end
+	end
+	for itemId, n in pairs(rec.costs) do
+		if (items[itemId] or 0) < n then return false, "Needs "..n.." "..Data.Items[itemId].name.."." end
+	end
+	return true
+end
+-- Recipes of a station, in CR.RecipeOrder.
+function CR.stationRecipes(station)
+	local out = {}
+	for _, id in ipairs(CR.RecipeOrder) do if CR.Recipes[id].station == station then table.insert(out, CR.Recipes[id]) end end
+	return out
+end
+-- Parse "recipe:count" (count 1..MAX_BATCH, default 1).
+function CR.parseBatch(text)
+	if type(text) ~= "string" or #text > 64 then return nil end
+	local id, n = string.match(text, "^(%w+):(%d+)$")
+	if not id then id, n = string.match(text, "^(%w+)$"), "1" end
+	n = tonumber(n)
+	if not id or not CR.Recipes[id] or not n or n < 1 or n % 1 ~= 0 then return nil end
+	return id, math.min(n, CR.MAX_BATCH)
+end
+
+------------------------------------------------------------------------------
+-- Balance model. Supply-chain XP/h: crafting XP of a recipe and all its
+-- crafted inputs, per second of gathering the raw inputs plus every station
+-- action (seconds). Raw seconds: resource tiers = max(respawn, GATHER) (the
+-- verify-skills gather model); creature/Hunter drops use CR.SourceSeconds.
+-- Gem cutting is a bonus on Mining (rough gems are rare) and is reported
+-- separately (CR.cutRate). verify-crafting.luau holds each tier's chain rate
+-- within 0.5x..2x of the best Smithing/Fletching chain open at that level.
+------------------------------------------------------------------------------
+CR.GATHER = 1 + 0.65
+CR.SourceSeconds = {BeastHide=20,DownyPelt=15,EmberPelt=35,ShadowPelt=70,StormmaneHide=110,ArcaneDust=8,SparkGlyph=4,SurgeGlyph=10,TorrentGlyph=25}
+function CR.rawSeconds(id, depth)
+	depth = depth or 0
+	for _, tiers in pairs(Data.ResourceTiers) do
+		for _, r in ipairs(tiers) do if r.id == id then return math.max(r.respawn, CR.GATHER) end end
+	end
+	if CR.SourceSeconds[id] then return CR.SourceSeconds[id] end
+	local rec = CR.Recipes[id]
+	if rec and depth < 6 then return CR.chain(rec, depth + 1).seconds / rec.amount end
+	local smith = Data.Recipes[id]
+	if smith and depth < 6 then
+		local s = 0
+		for k, n in pairs(smith.costs) do s += n * CR.rawSeconds(k, depth + 1) end
+		return s / (smith.amount or 1)
+	end
+	return 30
+end
+-- {xp, seconds} for one action of rec including crafted inputs (per action).
+function CR.chain(rec, depth)
+	depth = depth or 0
+	local xp, seconds = rec.xp, rec.seconds
+	for k, n in pairs(rec.costs) do
+		local sub = CR.Recipes[k]
+		if sub and depth < 6 and sub.skill == "Crafting" then
+			local c = CR.chain(sub, depth + 1)
+			xp += c.xp * n / sub.amount
+			seconds += c.seconds * n / sub.amount
+		else
+			seconds += n * CR.rawSeconds(k, depth + 1)
+		end
+	end
+	return {xp=xp, seconds=seconds}
+end
+function CR.chainRate(rec)
+	local c = CR.chain(rec)
+	return 3600 * c.xp / c.seconds
+end
+-- XP/h at the station with materials already in the satchel (cadence-bound).
+function CR.stationRate(rec) return 3600 * rec.xp * (1 - 0.75 * CR.cutFailChance(rec, rec.level + 10)) / rec.seconds end
+-- Expected cutting XP/h from Mining at ore tier t (bonus on top of Mining).
+function CR.cutRate(tierIndex, harvestsPerHour)
+	local total, xp = 0, 0
+	for _, g in ipairs(CR.Gems) do if tierIndex >= g.minTier then total += g.w end end
+	for _, g in ipairs(CR.Gems) do if tierIndex >= g.minTier then xp += g.w / total * g.xp end end
+	return harvestsPerHour * CR.gemChance(tierIndex) * xp
+end
+
+------------------------------------------------------------------------------
+-- Alchemy link (PENDING LEAD APPROVAL): one Skyglass Vial per potion brewed.
+-- Off by default so existing potion costs are unchanged; flipping
+-- CR.VIALS_IN_POTIONS adds the vial to each listed Data.Recipes potion.
+------------------------------------------------------------------------------
+CR.VIALS_IN_POTIONS = false
+CR.VIAL_POTIONS = {"MightDraught","IronbarkTonic","SwiftwindElixir","ProspectorsBrew","KeeneyeTincture","HarvestCordial","AnglersInfusion","TitanBrew","FortunesFavour","AetherApotheosis"}
+if CR.VIALS_IN_POTIONS then
+	for _, id in ipairs(CR.VIAL_POTIONS) do
+		local r = Data.Recipes[id]
+		if r then r.costs.GlassVial = (r.costs.GlassVial or 0) + 1 end
+	end
+end
+
+------------------------------------------------------------------------------
+-- Commissions: four Crafting tasks (kind "craft": one per crafting action of
+-- the target output, credited by the server's batch loop).
+------------------------------------------------------------------------------
+local CL = Data.CommissionsLogs
+if CL and CL.Tasks then
+	for _, t in ipairs({
+		{id="CraftGlassVial",name="Vial Order",target="GlassVial",amount=20,xp=500,coins=60,dust=20,level=8},
+		{id="CraftCuredLeather",name="Tannery Shift",target="CuredLeather",amount=20,xp=300,coins=50,dust=18,level=1},
+		{id="CraftSunstoneChip",name="Sunstone Cutting",target="SunstoneChip",amount=4,xp=480,coins=120,dust=30,level=10},
+		{id="CraftSkyweaveBolt",name="Skyweave Loom",target="SkyweaveBolt",amount=10,xp=900,coins=140,dust=34,level=20},
+	}) do
+		t.kind, t.skill, t.group, t.levels, t.level = "craft", "Crafting", "Crafting", {Crafting=t.level}, nil
+		table.insert(CL.Tasks, t)
+		CL.TaskById[t.id] = t
+	end
+end
+end
+-- End Crafting section.
+
 return Data

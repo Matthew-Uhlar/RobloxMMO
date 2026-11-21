@@ -44,7 +44,7 @@ end
 local partA = checks
 ok(ST ~= nil, "Data.SlayerTasks present")
 ok(table.find(Data.SkillOrder, "Slayer") ~= nil, "Slayer is a skill in SkillOrder")
-eq(Data.SkillOrder[#Data.SkillOrder], "Slayer", "Slayer appended last (old saves keep their order)")
+eq(Data.SkillOrder[21], "Slayer", "Slayer appended after the earlier skills (old saves keep their order; Crafting follows)")
 do
 	local def = Data.Skills.Slayer
 	ok(def and def.category == "combat" and #def.color == 6 and def.title and def.description, "Slayer skill metadata")

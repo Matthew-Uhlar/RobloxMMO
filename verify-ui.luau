@@ -818,6 +818,9 @@ local verbs = {
 		return false
 	end,
 }
+-- Crafting verbs (Crafting team): batches are "recipe:count" (server clamps), stop has no item.
+verbs.craftBatch = function(item) return Data.Crafting.parseBatch(item) ~= nil end
+verbs.craftStop = function(item) return item == nil end
 local function checkSent(ui)
 	for _, entry in ipairs(ui.sent) do
 		local verb, item = entry[1], entry[2]
@@ -2824,6 +2827,67 @@ do
 		checks += 1
 	end
 	print("Workers depth client: " .. (checks - workerChecks) .. " checks.")
+end
+-- Crafting client (Crafting team): Workshop › Crafting opens from a station
+-- visit, lists the station's patterns with batch buttons, shows the running
+-- batch with Stop, switches stations; phone layout and malformed data.
+do
+	local craftChecks = checks
+	local function check(cond, case) assert(cond, case); checks += 1 end
+	local snap = snapshot({ xp = { Crafting = Data.XP_TABLE[25] } })
+	snap.items = table.clone(snap.items)
+	snap.items.FacetChisel, snap.items.RoughSunstone, snap.items.RoughDewquartz = 1, 9, 2
+	snap.crafting = { station = "Jeweller", stationIn = 600, near = true, made = { SunstoneChip = 4 }, shattered = 2,
+		job = { recipe = "SunstoneChip", done = 2, total = 6, made = 2, shattered = 0, xp = 48, nextIn = 1.2 } }
+	local ui = run({ snapshot = snap })
+	local player = ui.player
+	player:SetAttribute("IsleStation", "Jeweller")
+	player:SetAttribute("IsleStationVisit", 1)
+	check(ui.atlas.Visible and find(ui.scroll, "CraftingStation") ~= nil, "a Jeweller visit opens Workshop › Crafting")
+	check(find(ui.scroll, "CraftingJob") ~= nil, "running batch card")
+	check(find(ui.scroll, "CraftSunstoneChip") ~= nil and find(ui.scroll, "CraftDewquartz") ~= nil, "gem cutting patterns listed")
+	table.clear(ui.sent)
+	press(find(ui.scroll, "CraftingJobStop"))
+	check(ui.sent[1] and ui.sent[1][1] == "craftStop", "Stop sends craftStop")
+	press(find(ui.scroll, "CraftSunstoneChipCraft1"))
+	check(ui.sent[2] and ui.sent[2][1] == "craftBatch" and ui.sent[2][2] == "SunstoneChip:1", "Craft ×1 sends one action")
+	press(find(ui.scroll, "CraftSunstoneChip9"))
+	check(ui.sent[3] and ui.sent[3][2] == "SunstoneChip:9", "×all sends what the satchel funds")
+	press(find(ui.scroll, "CraftMistpearlCraft1"))
+	check(#ui.sent == 3, "a pattern without materials does not send")
+	noFailures(ui, "crafting jeweller")
+	-- Other stations and categories render (not at that station: buttons disabled).
+	for _, name in ipairs({ "Tanning Rack", "Glass Furnace", "Jeweller's Bench" }) do
+		press(find(ui.scroll, "Station" .. name:gsub("[^%w]", "")))
+		check(find(ui.scroll, "CraftingStation") ~= nil, name .. " summary")
+		local bar = find(ui.scroll, "Filters")
+		for _, b in ipairs(bar and bar:GetChildren() or {}) do
+			if b.ClassName == "TextButton" and string.sub(b.Name, 1, 8) == "Category" then press(b); noFailures(ui, name .. " " .. b.Name) end
+		end
+	end
+	press(find(ui.scroll, "StationTanningRack"))
+	table.clear(ui.sent)
+	local any = false
+	for _, o in ipairs(ui.scroll:GetDescendants()) do if o.ClassName == "TextButton" and string.find(o.Name, "Craft1$") then any = true; press(o) end end
+	check(any and #ui.sent == 0, "away from the Tanning Rack nothing sends")
+	checkSent(ui)
+	-- Phone layout and malformed crafting data.
+	local phone = run({ snapshot = snap, size = roblox.Vector2.new(420, 600) })
+	visit(phone, "Workshop", "Crafting")
+	noFailures(phone, "phone crafting")
+	check(find(phone.scroll, "CraftingStation") ~= nil, "phone crafting page")
+	local bad = snapshot()
+	bad.crafting = { station = 7, job = { recipe = "Nope", done = "x" }, made = "y", stationIn = "soon" }
+	local broken = run({ snapshot = bad })
+	visit(broken, "Workshop", "Crafting")
+	noFailures(broken, "malformed crafting")
+	check(find(broken.scroll, "CraftingStation") ~= nil, "malformed data still renders")
+	local none = snapshot()
+	none.crafting = nil
+	local legacy = run({ snapshot = none })
+	visit(legacy, "Workshop", "Crafting")
+	noFailures(legacy, "crafting without server data")
+	print("Crafting client: " .. (checks - craftChecks) .. " checks.")
 end
 print("UI QA passed " .. checks .. " checks (" .. created .. " mock instances).")
 

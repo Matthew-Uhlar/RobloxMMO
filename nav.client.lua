@@ -593,7 +593,8 @@ navigatePanel = function()
 		local specs = {"station:" .. station, "anchor:Waypoint_" .. station}
 		if T.resolveFirst(specs, index) then entry(station, nextOrder(), function() setWaypoint(specs, station) end) end
 	end
-	for _, vendor in ipairs({{"SkymarkExchange", "Skymark Exchange"}, {"TrackersLodge", "Trackers' Lodge"}}) do
+	for _, vendor in ipairs({{"SkymarkExchange", "Skymark Exchange"}, {"TrackersLodge", "Trackers' Lodge"},
+		{"Jeweller", "Jeweller's Bench"}, {"Tannery", "Tanning Rack"}, {"Glassworks", "Glass Furnace"}}) do -- Crafting stations
 		local specs = {"anchor:Waypoint_" .. vendor[1]}
 		if T.resolveFirst(specs, index) then entry(vendor[2], nextOrder(), function() setWaypoint(specs, vendor[2]) end) end
 	end
