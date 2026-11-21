@@ -24,6 +24,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
+local ContextActionService = game:GetService("ContextActionService")
 local TweenService = game:GetService("TweenService")
 local ProximityPromptService = game:GetService("ProximityPromptService")
 local Workspace = game:GetService("Workspace")
@@ -40,6 +41,8 @@ local function rgb(hex)
 end
 local STYLE = {
 	slot = 52, slotCompact = 46, gap = 4, bottom = 6, reserve = 70, radius = 8, pad = 4,
+	-- Narrow screens: keep x < W - attackClear (touch Attack button) and >= edge; slots never under minSlot.
+	narrow = 700, attackClear = 196, edge = 8, minSlot = 44,
 	deep = rgb("0C1820"), raised = rgb("2A4D5E"), ivory = rgb("F7EFDC"), gold = rgb("F3C66E"), brass = rgb("C9974A"),
 	mint = rgb("7FE3CC"), track = rgb("060E14"), selected = rgb("F3C66E"), auto = rgb("7FE3CC"),
 	font = Enum.Font.BuilderSansExtraBold, glyphSize = 22, countSize = 13, keySize = 10, nameSize = 15,
@@ -81,11 +84,15 @@ local function currentHeld()
 	local id = player:GetAttribute("HeldItem")
 	return if type(id) == "string" and id ~= "" then id else nil
 end
+-- The server's HeldAuto attribute: HeldItem is a temporary auto switch that
+-- will return to the explicit choice on its own.
+local function heldIsAuto() return player:GetAttribute("HeldAuto") == true end
 
 ------------------------------------------------------------------------------
 -- GUI
 ------------------------------------------------------------------------------
-local gui = make("ScreenGui", player:WaitForChild("PlayerGui"), {Name = "IsleHotbar", ResetOnSpawn = false, DisplayOrder = 6,
+local playerGui = player:WaitForChild("PlayerGui")
+local gui = make("ScreenGui", playerGui, {Name = "IsleHotbar", ResetOnSpawn = false, DisplayOrder = 6,
 	IgnoreGuiInset = false, ZIndexBehavior = Enum.ZIndexBehavior.Sibling})
 local bar = make("Frame", gui, {Name = "Hotbar", AnchorPoint = Vector2.new(0.5, 1), BackgroundTransparency = 1, Visible = false})
 local nameTag = make("TextLabel", gui, {Name = "HeldName", AnchorPoint = Vector2.new(0.5, 1), BackgroundTransparency = 1, Font = STYLE.font,
@@ -145,7 +152,9 @@ local function requestHold(want)
 	local token = sendToken
 	task.delay(0.12, function()
 		if token ~= sendToken then return end
-		if (currentHeld() or "none") == want then return end
+		-- Already held as the explicit choice: nothing to send. A temporary auto
+		-- hold of the same item still sends, or the choice would revert later.
+		if (currentHeld() or "none") == want and not heldIsAuto() then return end
 		local result = invoke("hold", want)
 		if result and (result.heldItem or "") ~= (if want == "none" then "" else want) then toast(result.message) end
 	end)
@@ -166,6 +175,7 @@ local function glyphFor(def)
 end
 local function paint()
 	local held = currentHeld()
+	local auto = held ~= nil and heldIsAuto()
 	for i, b in ipairs(S.buttons) do
 		local id = slotItem(i)
 		local def = id and Data.Items[id]
@@ -177,7 +187,8 @@ local function paint()
 		swatch.BackgroundColor3 = if def then rgb(def.color):Lerp(STYLE.deep, 0.55) else STYLE.raised
 		swatch.BackgroundTransparency = if def then 0.15 else 0.55
 		local rim = b:FindFirstChild("Rim")
-		local isSelected, isAuto = i == S.selected, held ~= nil and id == held and i ~= S.selected
+		-- Mint ring: only a real (temporary) auto hold, never the explicit choice.
+		local isSelected, isAuto = i == S.selected, auto and id == held and i ~= S.selected
 		rim.Color = if isSelected then STYLE.selected elseif isAuto then STYLE.auto else STYLE.brass
 		rim.Thickness = if isSelected then 3 elseif isAuto then 2 else 1.5
 		b.BackgroundTransparency = if isSelected then 0 else 0.12
@@ -195,21 +206,50 @@ local function talking()
 	local box = folk and folk:FindFirstChild("Dialogue")
 	return box ~= nil and box.Visible == true
 end
-local function layout()
+-- Box for a screen width: slot size, columns, rows, bar width / height and the
+-- bar's centre x (nil = screen centre). Below STYLE.narrow px the bar keeps
+-- clear of the touch Attack button (combat.client.lua, x >= W - STYLE.attackClear):
+-- it slides left, then wraps to two rows when nine 44 px slots no longer fit.
+local function boxFor(viewport)
 	local size = if compact() then STYLE.slotCompact else STYLE.slot
-	local width = COUNT * size + (COUNT - 1) * STYLE.gap
-	bar.Size = UDim2.fromOffset(width, size)
-	bar.Position = UDim2.new(0.5, 0, 1, -STYLE.bottom)
-	for i, b in ipairs(S.buttons) do
-		b.Size = UDim2.fromOffset(size, size)
-		b.Position = UDim2.fromOffset((i - 1) * (size + STYLE.gap), 0)
+	local cols, rows = COUNT, 1
+	local W = viewport and viewport.X or 0
+	local centre = nil
+	if W > 0 and W < STYLE.narrow then
+		local left, right = STYLE.edge, W - STYLE.attackClear
+		local room = right - left
+		local fit = math.floor((room - (COUNT - 1) * STYLE.gap) / COUNT)
+		if fit >= STYLE.minSlot then
+			size = math.min(size, fit)
+		else
+			cols = math.ceil(COUNT / 2)
+			rows = 2
+			size = math.min(size, math.max(STYLE.minSlot, math.floor((room - (cols - 1) * STYLE.gap) / cols)))
+		end
+		local width = cols * size + (cols - 1) * STYLE.gap
+		centre = math.min(W / 2, right - width / 2)
 	end
-	nameTag.Position = UDim2.new(0.5, 0, 1, -(STYLE.bottom + size + 6))
-	picker.Position = UDim2.new(0.5, 0, 1, -(STYLE.bottom + size + STYLE.reserve + 4))
+	local width = cols * size + (cols - 1) * STYLE.gap
+	local height = rows * size + (rows - 1) * STYLE.gap
+	return size, cols, rows, width, height, centre
+end
+S.boxFor = boxFor
+local function layout()
+	local camera = Workspace.CurrentCamera
+	local size, cols, rows, width, barHeight, centre = boxFor(camera and camera.ViewportSize)
+	bar.Size = UDim2.fromOffset(width, barHeight)
+	bar.Position = if centre then UDim2.new(0, centre, 1, -STYLE.bottom) else UDim2.new(0.5, 0, 1, -STYLE.bottom)
+	for i, b in ipairs(S.buttons) do
+		local row, col = (i - 1) // cols, (i - 1) % cols
+		b.Size = UDim2.fromOffset(size, size)
+		b.Position = UDim2.fromOffset(col * (size + STYLE.gap), row * (size + STYLE.gap))
+	end
+	nameTag.Position = if centre then UDim2.new(0, centre, 1, -(STYLE.bottom + barHeight + 6)) else UDim2.new(0.5, 0, 1, -(STYLE.bottom + barHeight + 6))
+	picker.Position = UDim2.new(0.5, 0, 1, -(STYLE.bottom + barHeight + STYLE.reserve + 4))
 	local shown = S.loaded and player:GetAttribute("IslandBuilding") ~= true and not talking()
 	bar.Visible = shown
 	if not shown then picker.Visible = false end
-	local height = if shown then STYLE.bottom + size + STYLE.reserve else 0
+	local height = if shown then STYLE.bottom + barHeight + STYLE.reserve else 0
 	if player:GetAttribute("IsleHotbarHeight") ~= height then player:SetAttribute("IsleHotbarHeight", height) end
 	if player:GetAttribute("IsleHotbarWidth") ~= width then player:SetAttribute("IsleHotbarWidth", width) end
 end
@@ -249,7 +289,7 @@ local function assign(slot, id)
 	if id ~= nil and (type(id) ~= "string" or not Data.Items[id]) then return false, "Choose an item for the hotbar." end
 	local result = invoke("hotbarSet", slot .. ":" .. (id or ""))
 	local message = result and result.message or "The hotbar is busy."
-	local ok = result ~= nil and (string.find(message, "set to hotbar", 1, true) ~= nil or string.find(message, "cleared", 1, true) ~= nil)
+	local ok = result ~= nil and result.ok == true -- the compact reply's status field (never the message text)
 	if ok and S.selected == slot then select(slot) else paint() end
 	return ok, message
 end
@@ -295,15 +335,25 @@ end
 pickerClose.Activated:Connect(function() picker.Visible = false end)
 
 for i, b in ipairs(S.buttons) do
-	b.Activated:Connect(function() select(i) end)
-	local pressToken = 0
+	local pressToken, longPressed = 0, false
+	b.Activated:Connect(function()
+		-- The release that ends a long-press opened the picker: it must not also select.
+		if longPressed then longPressed = false; return end
+		select(i)
+	end)
 	b.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton2 then
 			openPicker(i)
 		elseif input.UserInputType == Enum.UserInputType.Touch then
 			pressToken += 1
+			longPressed = false
 			local token = pressToken
-			task.delay(0.5, function() if token == pressToken then openPicker(i) end end) -- long-press
+			task.delay(0.5, function() -- long-press
+				if token == pressToken and table.find(SLOTS, i) then
+					longPressed = true
+					openPicker(i)
+				end
+			end)
 		end
 	end)
 	b.InputEnded:Connect(function(input)
@@ -319,14 +369,29 @@ UserInputService.InputBegan:Connect(function(input, processed)
 	if i then select(i) end
 end)
 -- The wheel cycles only over the bar: elsewhere it keeps zooming the camera.
-local hovering = false
-bar.MouseEnter:Connect(function() hovering = true end)
-bar.MouseLeave:Connect(function() hovering = false end)
-UserInputService.InputChanged:Connect(function(input)
-	if not hovering or not bar.Visible or input.UserInputType ~= Enum.UserInputType.MouseWheel then return end
+-- While hovering, a high-priority ContextActionService binding takes the wheel
+-- and sinks it, so the camera does not zoom while the bar scrolls.
+local WHEEL_ACTION = "IsleHotbarWheel"
+local wheelBound = false
+local function onWheel(_, _, input)
+	if not bar.Visible or input.UserInputType ~= Enum.UserInputType.MouseWheel then return Enum.ContextActionResult.Pass end
 	local step = if input.Position.Z > 0 then -1 else 1
 	select((S.selected - 1 + step) % COUNT + 1)
-end)
+	return Enum.ContextActionResult.Sink
+end
+local function bindWheel(on)
+	if on == wheelBound then return end
+	wheelBound = on
+	if on then
+		ContextActionService:BindActionAtPriority(WHEEL_ACTION, onWheel, false, Enum.ContextActionPriority.High.Value, Enum.UserInputType.MouseWheel)
+	else
+		ContextActionService:UnbindAction(WHEEL_ACTION)
+	end
+end
+bar.Active = true
+bar.MouseEnter:Connect(function() bindWheel(true) end)
+bar.MouseLeave:Connect(function() bindWheel(false) end)
+bar:GetPropertyChangedSignal("Visible"):Connect(function() if not bar.Visible then bindWheel(false) end end)
 
 ------------------------------------------------------------------------------
 -- Inputs from other scripts and the world
@@ -344,14 +409,34 @@ end)
 
 -- Auto switch requests (animate.client.lua): temporary, the server returns it.
 local autoHold = ReplicatedStorage:FindFirstChild("IsleHeldAuto") or make("BindableEvent", ReplicatedStorage, {Name = "IsleHeldAuto"})
-local autoBusy = false
-autoHold.Event:Connect(function(id)
-	if not Held.holdable(id) or currentHeld() == id or autoBusy then return end
+-- IsleHeldAutoReply:Fire(requestedId, heldItem) after each auto request settles
+-- (heldItem "" = empty hands, nil = no reply): animate.client.lua drops its
+-- pending fit when the server did not put requestedId in hand.
+local autoReply = ReplicatedStorage:FindFirstChild("IsleHeldAutoReply") or make("BindableEvent", ReplicatedStorage, {Name = "IsleHeldAutoReply"})
+local autoBusy, autoQueued = false, nil
+local function sendAuto(id)
 	autoBusy = true
 	task.spawn(function()
-		invoke("hold", "~" .. id)
+		while id do
+			local result = invoke("hold", "~" .. id)
+			autoReply:Fire(id, if result then result.heldItem or "" else nil)
+			-- Requests that came in meanwhile: only the latest one is sent.
+			id, autoQueued = autoQueued, nil
+			if id and currentHeld() == id then
+				autoReply:Fire(id, id)
+				id = nil
+			end
+		end
 		autoBusy = false
 	end)
+end
+autoHold.Event:Connect(function(id)
+	if not Held.holdable(id) or currentHeld() == id then return end
+	if autoBusy then
+		autoQueued = id
+		return
+	end
+	sendAuto(id)
 end)
 
 local api = ReplicatedStorage:FindFirstChild("HotbarApi") or make("BindableFunction", ReplicatedStorage, {Name = "HotbarApi"})
@@ -385,17 +470,36 @@ ReplicatedStorage:WaitForChild("IsleUpdate").OnClientEvent:Connect(onSnapshot)
 local snapshots = ReplicatedStorage:FindFirstChild("IsleSnapshotLocal")
 if snapshots then snapshots.Event:Connect(onSnapshot) end
 player:GetAttributeChangedSignal("HeldItem"):Connect(paint)
+player:GetAttributeChangedSignal("HeldAuto"):Connect(paint)
 player:GetAttributeChangedSignal("Hotbar"):Connect(paint)
 player:GetAttributeChangedSignal("IslandBuilding"):Connect(layout)
 local camera = Workspace.CurrentCamera
 if camera then camera:GetPropertyChangedSignal("ViewportSize"):Connect(layout) end
--- Dialogue opening / closing: a slow poll is enough (no per-frame work).
-task.spawn(function()
-	while true do
-		task.wait(0.5)
-		if bar.Visible == talking() and S.loaded then layout() end
-	end
+-- Dialogue opening / closing: follow the dialogue box's Visible property
+-- (TownsfolkDialogue.Dialogue, built by the townsfolk script, possibly later
+-- or again after a respawn). No polling.
+local dialogueBox, dialogueConn = nil, nil
+local function hookDialogue()
+	local folk = playerGui:FindFirstChild("TownsfolkDialogue")
+	local box = folk and folk:FindFirstChild("Dialogue")
+	if box == dialogueBox then return end
+	if dialogueConn then dialogueConn:Disconnect(); dialogueConn = nil end
+	dialogueBox = box
+	if box then dialogueConn = box:GetPropertyChangedSignal("Visible"):Connect(layout) end
+	if S.loaded then layout() end
+end
+local folkConn = nil
+playerGui.ChildAdded:Connect(function(child)
+	if child.Name ~= "TownsfolkDialogue" then return end
+	if folkConn then folkConn:Disconnect() end
+	folkConn = child.ChildAdded:Connect(function(grand) if grand.Name == "Dialogue" then hookDialogue() end end)
+	hookDialogue()
 end)
+local existingFolk = playerGui:FindFirstChild("TownsfolkDialogue")
+if existingFolk then
+	folkConn = existingFolk.ChildAdded:Connect(function(grand) if grand.Name == "Dialogue" then hookDialogue() end end)
+	hookDialogue()
+end
 layout()
 local actions = ReplicatedStorage:FindFirstChild("IsleActionLocal")
 if actions then actions:Fire("snapshot") end

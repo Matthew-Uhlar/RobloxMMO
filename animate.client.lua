@@ -78,25 +78,44 @@ local ZERO = {0, 0, 0, 0, 0, 0}
 
 -- Samples keyframes {t, ease, pose, mark} at time t. Joints absent from a
 -- keyframe are at rest (zero). Returns joint → {6 numbers}.
-function Core.samplePose(keys, t)
-	local first = keys[1]
-	if t <= first.t then
-		local out = {}
-		for joint, v in pairs(first.pose) do out[joint] = table.clone(v) end
-		return out
+-- buf (optional, from Core.poseBuffer()) is reused: the result is buf.out and
+-- its per-joint arrays come from buf.pool, so the frame loop allocates no tables.
+function Core.poseBuffer() return {out = {}, pool = {}} end
+local function poseSlot(buf, joint)
+	if not buf then return table.create(6, 0) end
+	local v = buf.pool[joint]
+	if not v then
+		v = table.create(6, 0)
+		buf.pool[joint] = v
 	end
+	return v
+end
+local function copyPose(pose, buf)
+	local out = if buf then buf.out else {}
+	if buf then table.clear(out) end
+	for joint, v in pairs(pose) do
+		local dst = poseSlot(buf, joint)
+		for k = 1, 6 do dst[k] = v[k] or 0 end
+		out[joint] = dst
+	end
+	return out
+end
+function Core.samplePose(keys, t, buf)
+	local first = keys[1]
+	if t <= first.t then return copyPose(first.pose, buf) end
 	for i = 1, #keys - 1 do
 		local a, b = keys[i], keys[i + 1]
 		if t <= b.t then
 			local span = b.t - a.t
 			local alpha = if span > 0 then (t - a.t) / span else 1
 			alpha = (Core.ease[b.ease or "quadInOut"] or Core.ease.quadInOut)(math.clamp(alpha, 0, 1))
-			local out = {}
+			local out = if buf then buf.out else {}
+			if buf then table.clear(out) end
 			for _, joint in ipairs(Core.JOINTS) do
 				local pa, pb = a.pose[joint], b.pose[joint]
 				if pa or pb then
 					pa, pb = pa or ZERO, pb or ZERO
-					local v = table.create(6, 0)
+					local v = poseSlot(buf, joint)
 					for k = 1, 6 do
 						local x, y = pa[k] or 0, pb[k] or 0
 						v[k] = x + (y - x) * alpha
@@ -107,9 +126,7 @@ function Core.samplePose(keys, t)
 			return out
 		end
 	end
-	local out = {}
-	for joint, v in pairs(keys[#keys].pose) do out[joint] = table.clone(v) end
-	return out
+	return copyPose(keys[#keys].pose, buf)
 end
 
 function Core.jointCFrame(v, scale)
@@ -543,6 +560,71 @@ end
 function Core.fxBudget(reduced) return if reduced then 2 else 7 end
 function Core.shouldShake(reduced, def, isLocal) return isLocal and not reduced and def.shake == true end
 
+-- Camera shake on Humanoid.CameraOffset that adds to whatever offset is there
+-- (another script's, e.g. a crouch or a vehicle) and puts it back at the end.
+-- If the offset is changed by someone else mid-shake, theirs is kept.
+Core.SHAKE_TIME, Core.SHAKE_AMP = 0.12, 0.12
+function Core.newShake()
+	local K = {}
+	function K.start(humanoid, now)
+		if K.humanoid and K.humanoid ~= humanoid then K.stop() end
+		if not K.humanoid then K.humanoid, K.base, K.written = humanoid, humanoid.CameraOffset, nil end
+		K.untilAt = now + Core.SHAKE_TIME
+	end
+	function K.stop()
+		local h = K.humanoid
+		if not h then return end
+		if K.written == nil or h.CameraOffset == K.written then h.CameraOffset = K.base end
+		K.humanoid, K.base, K.written = nil, nil, nil
+	end
+	-- rand() in [0, 1).
+	function K.step(now, rand)
+		local h = K.humanoid
+		if not h then return end
+		if K.written ~= nil and h.CameraOffset ~= K.written then
+			K.base = h.CameraOffset -- someone else moved it: shake around theirs
+		end
+		local left = K.untilAt - now
+		if left <= 0 then
+			K.stop()
+			return
+		end
+		local a = Core.SHAKE_AMP * left / Core.SHAKE_TIME
+		K.written = K.base + Vector3.new((rand() - 0.5) * a, (rand() - 0.5) * a, 0)
+		h.CameraOffset = K.written
+	end
+	return K
+end
+
+-- Own auto switch still in flight (hotbar → server): the local swing treats the
+-- requested item as held until the server answers. A reply naming another item
+-- (refused, rate-limited) drops it at once instead of waiting for the timeout.
+Core.PENDING_HOLD = 1.5
+function Core.newPending()
+	local P = {}
+	function P.set(id, now) P.id, P.untilAt = id, now + Core.PENDING_HOLD end
+	function P.get(now)
+		if P.id and now < P.untilAt then return P.id end
+		P.id = nil
+		return nil
+	end
+	function P.reply(requested, heldItem)
+		if P.id ~= nil and P.id == requested and heldItem ~= requested then P.id = nil end
+	end
+	function P.clear() P.id = nil end
+	return P
+end
+
+-- Carry poses: only the cap nearest holders within range are posed (the local
+-- player is always distance 0). list = array of holder records with .distance;
+-- sets .admitted on each. Sorts list in place (no allocation).
+local function byDistance(a, b) return a.distance < b.distance end
+function Core.admitHolders(list, cap, range)
+	cap, range = cap or Core.REMOTE_CAP, range or Core.REMOTE_RANGE
+	table.sort(list, byDistance)
+	for i, h in ipairs(list) do h.admitted = i <= cap and h.distance <= range end
+end
+
 -- Remote admission: active = {[key] = distance}. Returns admit, keyToEvict.
 function Core.admitRemote(active, key, distance, cap, range)
 	cap, range = cap or Core.REMOTE_CAP, range or Core.REMOTE_RANGE
@@ -697,7 +779,28 @@ function Core.createEngine(deps)
 			end
 		end
 		s.conns = deps.watch(character, function() E.stop(character) end) or {}
+		-- A HeldItem model that arrives while the prop is out (the relay beat the
+		-- auto switch's replication) must never show next to the prop: swap the
+		-- prop for it when it fits the gesture, else hide it too.
+		if s.tool and deps.watchHeld then
+			local conn = deps.watchHeld(character, function(model) E.heldArrived(character, model) end)
+			if conn then table.insert(s.conns, conn) end
+		end
+		s.poseBuf = Core.poseBuffer()
 		return s
+	end
+	function E.heldArrived(character, model)
+		local s = E.active[character]
+		if not s or not s.tool then return end
+		local fits = if deps.modelFits then deps.modelFits(model, s.name) else (deps.heldFits and deps.heldFits(character, s.name))
+		if fits then
+			s.tool:Destroy()
+			s.tool = nil
+			s.usesHeld = true
+			if s.hidHeld then s.hidHeld = nil; deps.hideHeld(character, false) end
+		elseif deps.hideHeld and deps.hideHeld(character, true) then
+			s.hidHeld = true
+		end
 	end
 	function E.release(character)
 		local s = E.active[character]
@@ -771,7 +874,7 @@ function Core.createEngine(deps)
 				end
 				pose = s.lastPose or REST
 			else
-				pose = Core.samplePose(keys, now - s.phaseStart)
+				pose = Core.samplePose(keys, now - s.phaseStart, s.poseBuf)
 				weight = math.min(1, (now - s.start) / Core.FADE_IN)
 			end
 			s.weight = weight
@@ -814,7 +917,7 @@ local function reducedMotion() return player:GetAttribute("ReducedMotion") == tr
 -- Held items (§26). The server welds the held model (held.server.lua) and
 -- publishes HeldItem; pendingHeld is our own auto switch still in flight.
 local Held = Data.Held
-local pendingHeld, pendingUntil = nil, 0
+local pending = Core.newPending()
 local function bindable(name)
 	local existing = ReplicatedStorage:FindFirstChild(name)
 	if existing then return existing end
@@ -827,10 +930,15 @@ end
 local autoHold = bindable("IsleHeldAuto")
 -- Sound / VFX hook for other scripts: :Fire(gesture, fx, position, isLocal).
 local impactHook = bindable("IsleImpactLocal")
+-- hotbar.client.lua fires (requestedId, heldItem) once an auto request settles.
+bindable("IsleHeldAutoReply").Event:Connect(function(requested, heldItem) pending.reply(requested, heldItem) end)
 local function heldIdOf(character)
 	local who = Players:GetPlayerFromCharacter(character)
 	if not who then return nil end
-	if who == player and pendingHeld and os.clock() < pendingUntil then return pendingHeld end
+	if who == player then
+		local id = pending.get(os.clock())
+		if id then return id end
+	end
 	local id = who:GetAttribute("HeldItem")
 	return if type(id) == "string" and id ~= "" then id else nil
 end
@@ -956,23 +1064,11 @@ local function stepFx(dt)
 	end
 end
 
--- Tiny camera-safe shake via Humanoid.CameraOffset (local character only).
-local shakeUntil, shakeHumanoid = 0, nil
-local function shake(humanoid)
-	if humanoid.CameraOffset.Magnitude > 0.3 then return end -- someone else owns the offset
-	shakeHumanoid, shakeUntil = humanoid, os.clock() + 0.12
-end
-local function stepShake()
-	if not shakeHumanoid then return end
-	local left = shakeUntil - os.clock()
-	if left <= 0 then
-		shakeHumanoid.CameraOffset = Vector3.zero
-		shakeHumanoid = nil
-		return
-	end
-	local a = 0.12 * left / 0.12
-	shakeHumanoid.CameraOffset = Vector3.new((math.random() - 0.5) * a, (math.random() - 0.5) * a, 0)
-end
+-- Tiny camera-safe shake via Humanoid.CameraOffset (local character only): it
+-- adds to the offset already there and restores it afterwards (Core.newShake).
+local shaker = Core.newShake()
+local function shake(humanoid) shaker.start(humanoid, os.clock()) end
+local function stepShake() shaker.step(os.clock(), math.random) end
 
 local function partOf(target)
 	if typeof(target) ~= "Instance" then return nil end
@@ -1054,6 +1150,15 @@ end
 engine = Core.createEngine({
 	now = os.clock, alive = alive, bindRig = Core.bindRig, attachTool = attachTool, watch = watch, mark = mark,
 	heldFits = heldFits, hideHeld = hideHeld,
+	watchHeld = function(character, onArrive)
+		return character.ChildAdded:Connect(function(child)
+			if child.Name == "HeldItem" then onArrive(child) end
+		end)
+	end,
+	modelFits = function(model, name)
+		local class = model:GetAttribute("HeldClass")
+		return type(class) == "string" and Held.fits(name, class)
+	end,
 	cycle = function(state)
 		if state.isLocal then send(state.name, state.target, state.itemId) end
 	end,
@@ -1071,7 +1176,7 @@ local function playLocal(name, target, opts)
 	local def = Core.GESTURES[name]
 	if itemId and (def.skill or Core.MELEE_GESTURE[name] or Core.STYLE_GESTURE[name]) and Held.holdable(itemId)
 		and Held.fits(name, Held.classOf(Data.Items[itemId])) and heldIdOf(character) ~= itemId then
-		pendingHeld, pendingUntil = itemId, os.clock() + 1.5
+		pending.set(itemId, os.clock())
 		autoHold:Fire(itemId)
 	end
 	local state = engine.play(character, name, {
@@ -1204,19 +1309,32 @@ local function playAgility(who)
 	end
 	if engine.play(character, name, {duration = duration}) then remoteDistance[character] = distance end
 end
+-- Per-player connections (AgilityMove watch, CharacterAdded / Removing for the
+-- carry pose), released on PlayerRemoving so a leaver keeps nothing alive.
+local playerConns = {} -- [player] = {connections}
+local function own(who, conn)
+	local list = playerConns[who]
+	if not list then list = {}; playerConns[who] = list end
+	table.insert(list, conn)
+end
+Core.playerConns = playerConns -- exposed for the headless runtime test
 local function watchRunner(who)
-	who:GetAttributeChangedSignal("AgilityMove"):Connect(function() playAgility(who) end)
+	own(who, who:GetAttributeChangedSignal("AgilityMove"):Connect(function() playAgility(who) end))
 	if who:GetAttribute("AgilityMove") then task.defer(playAgility, who) end
 end
-Players.PlayerAdded:Connect(watchRunner)
-for _, who in ipairs(Players:GetPlayers()) do watchRunner(who) end
 
 -- Carry pose for every character holding an item (built when its HeldItem
 -- model appears or goes). Targets are fixed per character: the frame loop only
--- lerps motors, so gestures blend from and back into the carry pose.
-local holders = {} -- [character] = {player, entries, weight, root, humanoid}
+-- lerps motors, so gestures blend from and back into the carry pose. Only the
+-- REMOTE_CAP nearest remote holders within range are posed (re-ranked a few
+-- times a second into a reused list; no per-frame allocation).
+local holders = {} -- [character] = {player, entries, weight, root, humanoid, distance, admitted}
+local holderList = {} -- reused by the ranking pass
+local RANK_EVERY = 0.25
+local nextRank = 0
 local function refreshHolder(who, character)
 	holders[character] = nil
+	nextRank = 0
 	local model = character:FindFirstChild("HeldItem")
 	local class = model and model:GetAttribute("HeldClass")
 	local pose = type(class) == "string" and Core.HOLD_POSE[class]
@@ -1224,9 +1342,9 @@ local function refreshHolder(who, character)
 	local rig = Core.bindRig(character)
 	if not rig then return end
 	holders[character] = {player = who, entries = Core.holdTargets(rig, pose), weight = 0,
-		root = character:FindFirstChild("HumanoidRootPart"), humanoid = humanoidOf(character)}
+		root = character:FindFirstChild("HumanoidRootPart"), humanoid = humanoidOf(character), distance = math.huge, admitted = false}
 end
-local holderConns = {} -- [player] = {connections}
+local holderConns = {} -- [player] = {connections} on the current character
 local function watchCharacter(who, character)
 	for _, c in ipairs(holderConns[who] or {}) do c:Disconnect() end
 	local function changed(child) if child.Name == "HeldItem" then task.defer(refreshHolder, who, character) end end
@@ -1234,32 +1352,60 @@ local function watchCharacter(who, character)
 	refreshHolder(who, character)
 end
 local function watchHolder(who)
-	who.CharacterAdded:Connect(function(character) watchCharacter(who, character) end)
-	who.CharacterRemoving:Connect(function(character) holders[character] = nil end)
+	own(who, who.CharacterAdded:Connect(function(character) watchCharacter(who, character) end))
+	own(who, who.CharacterRemoving:Connect(function(character) holders[character] = nil end))
 	if who.Character then watchCharacter(who, who.Character) end
 end
-Players.PlayerAdded:Connect(watchHolder)
-for _, who in ipairs(Players:GetPlayers()) do watchHolder(who) end
+local function watchPlayer(who)
+	watchRunner(who)
+	watchHolder(who)
+end
+Players.PlayerAdded:Connect(watchPlayer)
+for _, who in ipairs(Players:GetPlayers()) do watchPlayer(who) end
 Players.PlayerRemoving:Connect(function(who)
+	for _, c in ipairs(playerConns[who] or {}) do c:Disconnect() end
+	playerConns[who] = nil
 	for _, c in ipairs(holderConns[who] or {}) do c:Disconnect() end
 	holderConns[who] = nil
 	if who.Character then holders[who.Character] = nil end
 end)
-player:GetAttributeChangedSignal("HeldItem"):Connect(function() pendingHeld = nil end)
+player:GetAttributeChangedSignal("HeldItem"):Connect(function() pending.clear() end)
+local function rankHolders(mine)
+	table.clear(holderList)
+	local hasLocal = false
+	for _, h in pairs(holders) do
+		if h.player == player then
+			h.distance = -1
+			hasLocal = true
+		else
+			h.distance = if mine and h.root then (h.root.Position - mine.Position).Magnitude else math.huge
+		end
+		table.insert(holderList, h)
+	end
+	Core.admitHolders(holderList, Core.REMOTE_CAP + (if hasLocal then 1 else 0), Core.REMOTE_RANGE)
+end
 local function stepHolders(dt)
 	local mine = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	local now = os.clock()
+	if now >= nextRank then
+		nextRank = now + RANK_EVERY
+		rankHolders(mine)
+	end
 	for character, h in pairs(holders) do
 		if not character.Parent then
 			holders[character] = nil
 			continue
 		end
 		local humanoid = h.humanoid
-		if humanoid and (humanoid.Health <= 0 or humanoid.Sit) then continue end
-		if h.player ~= player and mine and h.root and (h.root.Position - mine.Position).Magnitude > Core.REMOTE_RANGE then continue end
+		if not h.admitted or (humanoid and (humanoid.Health <= 0 or humanoid.Sit)) then
+			h.weight = 0
+			continue
+		end
 		h.weight = math.min(1, h.weight + dt * 5)
 		for _, e in ipairs(h.entries) do e.motor.Transform = e.motor.Transform:Lerp(e.target, h.weight) end
 	end
 end
+Core.holders = holders -- exposed for the headless runtime test
 
 RunService.Stepped:Connect(function(_, dt)
 	stepHolders(dt)
@@ -1267,3 +1413,5 @@ RunService.Stepped:Connect(function(_, dt)
 	if #fxParts > 0 then stepFx(dt) end
 	stepShake()
 end)
+-- Headless runtime checks (verify-held.luau) read the live tables through this hook.
+if __GestureRuntimeHarness then __GestureRuntimeHarness(Core, engine) end

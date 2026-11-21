@@ -186,11 +186,26 @@ do
 		task = {defer = function(f, ...) table.insert(deferred, table.pack(f, ...)) end},
 		__HeldServerHarness = function(b) Builder = b end}
 	load("held.server.lua", env)
-	local handGone = {}
+	local handGone, deaths, timers = {}, {}, {}
+	local t = 100
 	local S = Builder.create(Data, function(hand, onGone)
 		handGone[hand] = onGone
 		return {Disconnect = function() handGone[hand] = nil end}
-	end)
+	end, {
+		now = function() return t end,
+		delay = function(seconds, f) table.insert(timers, {at = t + seconds, f = f}) end,
+		watchDeath = function(character, onDied)
+			deaths[character] = onDied
+			return {Disconnect = function() deaths[character] = nil end}
+		end,
+	})
+	local function runTimers()
+		local i = 1
+		while i <= #timers do
+			if timers[i].at <= t then table.remove(timers, i).f() else i += 1 end
+		end
+	end
+	local function advance(seconds) t += seconds; runTimers() end
 	local attrSignals = {}
 	local who = {attrs = {}, CharacterAdded = signal(), CharacterRemoving = signal(), CharacterAppearanceLoaded = signal()}
 	function who:GetAttribute(k) return self.attrs[k] end
@@ -202,33 +217,70 @@ do
 	local function flush() while #deferred > 0 do local d = table.remove(deferred, 1); d[1](table.unpack(d, 2, d.n)) end end
 	flush()
 	eq(c:FindFirstChild("HeldItem"), nil, "nothing held yet")
+	advance(1)
 	setAttr("HeldItem", "Pickaxe")
 	local m1 = c:FindFirstChild("HeldItem")
 	ok(m1 and m1:GetAttribute("ItemId") == "Pickaxe", "HeldItem change builds the model")
+	advance(1)
 	setAttr("HeldItem", "MeadowLongbow")
 	local m2 = c:FindFirstChild("HeldItem")
 	ok(m2 ~= m1 and m1.Parent == nil and m2:GetAttribute("HeldClass") == "longbow", "change replaces the old model")
 	eq(#c:GetChildren(), 4, "exactly one held model on the character")
+	-- M2 regression: equip / unequip churn (~6 HeldItem changes a second) is
+	-- coalesced into at most one rebuild per REBUILD_GAP, with the latest value.
+	do
+		advance(1)
+		local before = S.builds
+		local churn = {"BrassSword", "", "Pickaxe", "", "MeadowLongbow", "Pickaxe"}
+		for _, id in ipairs(churn) do
+			setAttr("HeldItem", id)
+			advance(1 / 6 - 0.001)
+		end
+		eq(S.builds - before, 2, "six changes in a second rebuild twice (now + once deferred)")
+		advance(HD.REBUILD_GAP)
+		ok(S.builds - before <= 3, "never more than one rebuild per gap (" .. (S.builds - before) .. ")")
+		local last = c:FindFirstChild("HeldItem")
+		ok(last and last:GetAttribute("ItemId") == "Pickaxe", "the deferred rebuild shows the latest value")
+		eq(#c:GetChildren(), 4, "still exactly one held model after churn")
+		advance(1)
+		m2 = c:FindFirstChild("HeldItem")
+	end
 	-- Hand replaced (appearance / package): rebuilt on the new hand.
-	local onGone = handGone[c.LeftHand]
+	local onGone = handGone[c.RightHand]
 	ok(onGone ~= nil, "hand watched")
 	onGone()
 	flush()
 	ok(c:FindFirstChild("HeldItem") ~= m2, "hand loss rebuilds")
+	-- L1 regression: death removes the model at once (nothing drops through the
+	-- floor) and nothing is rebuilt on the corpse.
+	do
+		ok(deaths[c] ~= nil, "death watched")
+		deaths[c]()
+		eq(c:FindFirstChild("HeldItem"), nil, "death destroys the held model")
+		advance(1)
+		setAttr("HeldItem", "BrassSword")
+		advance(1)
+		eq(c:FindFirstChild("HeldItem"), nil, "no rebuild on a dead character")
+	end
 	-- Respawn: removing clears, the new character gets its own model.
 	who.CharacterRemoving:Fire(c)
 	eq(c:FindFirstChild("HeldItem"), nil, "CharacterRemoving destroys the model")
 	eq(next(handGone), nil, "hand watch released")
+	eq(next(deaths), nil, "death watch released")
 	local c2 = character("R6")
 	c2.Name = "Respawned"
 	who.Character = c2
-	setAttr("HeldItem", "BrassSword")
+	advance(1)
+	setAttr("HeldItem", "MeadowLongbow")
 	ok(c2:FindFirstChild("HeldItem") ~= nil, "respawned character holds the item")
+	advance(1)
 	setAttr("HeldItem", "")
 	eq(c2:FindFirstChild("HeldItem"), nil, "empty hands remove the model")
 	setAttr("HeldItem", "BrassSword")
 	S.forget(who)
-	eq(c2:FindFirstChild("HeldItem"), nil, "leave destroys the model")
+	runTimers()
+	advance(1)
+	eq(c2:FindFirstChild("HeldItem"), nil, "leave destroys the model (and cancels a pending rebuild)")
 	eq(#attrSignals.HeldItem.handlers + #who.CharacterAdded.handlers + #who.CharacterRemoving.handlers, 0, "leave disconnects everything")
 	eq(next(S.models), nil, "no model references kept")
 end
@@ -367,10 +419,68 @@ do
 	ok(r.message:find("do not own", 1, true), "unowned refused")
 	r = cmd(a, "hotbarSet", "3:")
 	eq(a.Hotbar, ",,,,,,", "slot cleared")
+	-- L7 regression: the compact reply carries a status field (no message parsing).
+	do
+		local good = cmd(a, "hotbarSet", "6:Pickaxe")
+		ok(good.ok == true, "successful hotbarSet reply has ok=true")
+		local bad = cmd(a, "hotbarSet", "6:BrassSword")
+		ok(bad.ok == false and bad.message:find("do not own", 1, true), "refused hotbarSet reply has ok=false")
+		ok(cmd(a, "hotbarSet", "6:").ok == true, "clearing reports ok")
+		ok(cmd(a, "hold", "Ore").ok == false, "refused hold reports ok=false")
+	end
+	-- M1 regression: a temporary switch is published as HeldAuto (and an explicit
+	-- hold of the very same item clears it, so the choice sticks).
+	do
+		cmd(a, "hold", "none")
+		eq(a.HeldAuto, false, "explicit choice: HeldAuto false")
+		gather(a, ore)
+		ok(a.HeldItem == "Pickaxe" and a.HeldAuto == true, "auto switch publishes HeldAuto")
+		cmd(a, "hold", "Pickaxe")
+		ok(a.HeldItem == "Pickaxe" and a.HeldAuto == false, "explicit hold of the auto item clears HeldAuto")
+		advance(HD.AUTO_RETURN + 1)
+		cmd(a, "state")
+		eq(a.HeldItem, "Pickaxe", "the explicit choice of the auto-held item does not revert")
+		cmd(a, "hold", "~Pickaxe")
+		cmd(a, "hold", "none")
+		cmd(a, "hold", "~Pickaxe")
+		advance(HD.AUTO_RETURN + 1)
+		cmd(a, "state")
+		ok(a.HeldItem == "" and a.HeldAuto == false, "auto return clears HeldAuto")
+	end
+	-- M4 regression: equipping a new weapon during an auto switch makes the
+	-- return land on the new weapon, not the old one.
+	do
+		local seed = copy(store.p41)
+		ok(seed and seed.profile ~= nil, "a stored profile to seed from")
+		seed.owner, seed.expires = "", 0
+		local prof = seed.profile
+		prof.items.Blade, prof.items.BrassSword, prof.items.Pickaxe = 1, 1, 1
+		prof.equipment = prof.equipment or {}
+		prof.equipment.weapon, prof.held = "Blade", "Blade"
+		prof.xp = prof.xp or {}
+		for skill in pairs(Data.Items.BrassSword.requires or {}) do prof.xp[skill] = 1e8 end
+		store.p42 = seed
+		local b = newPlayer(42)
+		eq(b.HeldItem, "Blade", "seeded: holding the equipped Blade")
+		cmd(b, "hold", "~Pickaxe")
+		ok(b.HeldItem == "Pickaxe" and b.HeldAuto == true, "auto switch to the pickaxe")
+		cmd(b, "equip", "BrassSword")
+		eq(b.HeldItem, "Pickaxe", "the auto switch stays until it returns")
+		advance(HD.AUTO_RETURN + 1)
+		cmd(b, "state")
+		eq(b.HeldItem, "BrassSword", "the return lands on the newly equipped weapon")
+		services.Players.PlayerRemoving:Fire(b)
+	end
 	-- Leaving mid auto switch never saves the temporary tool.
 	cmd(a, "hold", "none")
 	gather(a, ore)
 	eq(a.HeldItem, "Pickaxe", "auto switch before leaving")
+	-- M3 regression: the return comes due while the player is already leaving
+	-- (player.Parent nil: Held.tick skips the publish). The temporary id never
+	-- lived in p.held, so the save still holds the explicit choice.
+	a.Parent = nil
+	advance(HD.AUTO_RETURN + 1)
+	cmd(a, "state")
 	services.Players.PlayerRemoving:Fire(a)
 	local saved
 	for key, value in pairs(store) do if key == "p41" then saved = value end end
@@ -488,6 +598,157 @@ do
 	local localEnd, remoteEnd = impactTime(true), impactTime(false)
 	ok(localEnd - remoteEnd > 0.05, "local hit-stop holds the swing (" .. localEnd .. " vs " .. remoteEnd .. ")")
 end
+-- L2 regression: an observer starts a remote mine with the prop (HeldItem not
+-- replicated yet); when the pickaxe model arrives the prop goes and the swing
+-- uses it (never two pickaxes). A model that does not fit is hidden instead.
+do
+	local clock = {t = 0}
+	local arrive, props, hidden = {}, {}, {}
+	local engine = Core.createEngine({
+		now = function() return clock.t end, alive = function() return true end, bindRig = Core.bindRig,
+		attachTool = function(c)
+			local prop = {alive = true}
+			function prop.Destroy() prop.alive = false end
+			props[c] = prop
+			return prop
+		end,
+		watch = function() return {} end, mark = function() end,
+		heldFits = function() return false end,
+		hideHeld = function(c, h) hidden[c] = h; return true end,
+		watchHeld = function(c, onArrive) arrive[c] = onArrive; return {Disconnect = function() arrive[c] = nil end} end,
+		modelFits = function(model, name) return HD.fits(name, model.class) end,
+	})
+	local c = fakeCharacter("R15")
+	local s = engine.play(c, "mine", {})
+	ok(props[c] and props[c].alive and arrive[c] ~= nil, "prop shown and HeldItem watched while it is out")
+	arrive[c]({class = "pickaxe"})
+	ok(not props[c].alive and s.tool == nil and s.usesHeld, "the arriving pickaxe replaces the prop")
+	eq(hidden[c], false, "and is shown")
+	local c2 = fakeCharacter("R15")
+	engine.play(c2, "mine", {})
+	arrive[c2]({class = "sword"})
+	ok(props[c2].alive and hidden[c2] == true, "a non-fitting arrival is hidden while the prop stays")
+	engine.stop(c2)
+	eq(arrive[c2], nil, "HeldItem watch released when the gesture ends")
+	eq(hidden[c2], false, "hidden model shown again after the gesture")
+end
+-- L3 regression: our pending auto switch is dropped as soon as the reply shows
+-- another item in hand (refused / rate-limited), not only after the timeout.
+do
+	local P = Core.newPending()
+	P.set("Pickaxe", 10)
+	eq(P.get(10.1), "Pickaxe", "pending while in flight")
+	P.reply("Pickaxe", "")
+	eq(P.get(10.2), nil, "refused reply clears the pending fit")
+	P.set("Pickaxe", 20)
+	P.reply("CopperHatchet", "")
+	eq(P.get(20.1), "Pickaxe", "a reply to another request leaves it")
+	P.reply("Pickaxe", "Pickaxe")
+	eq(P.get(20.2), "Pickaxe", "a granted reply keeps it until HeldItem replicates")
+	eq(P.get(20 + Core.PENDING_HOLD + 0.01), nil, "timeout still applies")
+end
+-- L10 regression: carry poses only for the REMOTE_CAP nearest holders in range,
+-- and samplePose reuses its buffer (no per-frame tables).
+do
+	local list = {}
+	for i = 1, 20 do table.insert(list, {distance = 21 - i}) end
+	table.insert(list, {distance = Core.REMOTE_RANGE + 5})
+	table.insert(list, {distance = -1, isLocal = true})
+	Core.admitHolders(list, Core.REMOTE_CAP + 1)
+	local admitted, farthest = 0, -math.huge
+	for _, h in ipairs(list) do
+		if h.admitted then admitted += 1; farthest = math.max(farthest, h.distance) end
+		if h.isLocal then ok(h.admitted, "the local holder is always posed") end
+	end
+	eq(admitted, Core.REMOTE_CAP + 1, "local + REMOTE_CAP nearest remote holders posed")
+	eq(farthest, Core.REMOTE_CAP, "the nearest ones win")
+	local keys = Core.GESTURES.mine.loop
+	local buf = Core.poseBuffer()
+	local a = Core.samplePose(keys, 0.1, buf)
+	local arm = a.rightArm
+	local b = Core.samplePose(keys, 0.2, buf)
+	ok(a == b and b == buf.out and (arm == nil or b.rightArm == arm), "samplePose reuses the buffer and joint arrays")
+	local fresh = Core.samplePose(keys, 0.2)
+	for joint, v in pairs(fresh) do
+		for k = 1, 6 do ok(math.abs((v[k] or 0) - (b[joint][k] or 0)) < 1e-9, "buffered sample matches " .. joint) end
+	end
+	for joint in pairs(b) do ok(fresh[joint] ~= nil, "no stale joint " .. joint .. " in the buffer") end
+	local before = gcinfo()
+	for i = 1, 2000 do Core.samplePose(keys, (i % 50) / 100, buf) end
+	ok(gcinfo() - before < 64, "2000 buffered samples allocate (almost) nothing (" .. (gcinfo() - before) .. " KB)")
+end
+-- L12 regression (animate.client.lua runtime, fake services): every per-player
+-- connection (AgilityMove, CharacterAdded / Removing, the character's HeldItem
+-- watch) is released on PlayerRemoving.
+do
+	local function fakePlayer(name)
+		local who = {Name = name, attrs = {}, attrSignals = {}, CharacterAdded = signal(), CharacterRemoving = signal()}
+		function who:GetAttribute(k) return self.attrs[k] end
+		function who:SetAttribute(k, v) self.attrs[k] = v; if self.attrSignals[k] then self.attrSignals[k]:Fire() end end
+		function who:GetAttributeChangedSignal(k) self.attrSignals[k] = self.attrSignals[k] or signal(); return self.attrSignals[k] end
+		local c = fakeCharacter("R15")
+		c.ChildAdded, c.ChildRemoved = signal(), signal()
+		function c:FindFirstChildOfClass() return nil end
+		who.Character = c
+		return who
+	end
+	local me, other = fakePlayer("Me"), fakePlayer("Other")
+	local function bindableEvent()
+		local e = {Event = signal()}
+		function e:Fire(...) self.Event:Fire(...) end
+		return e
+	end
+	local stored = {AetherData = {Name = "AetherData"}, IsleGesture = {OnClientEvent = signal(), FireServer = function() end},
+		IsleUpdate = {OnClientEvent = signal()}, IsleHeldAuto = bindableEvent(), IsleImpactLocal = bindableEvent(),
+		IsleHeldAutoReply = bindableEvent(), IsleGestureLocal = bindableEvent()}
+	local replicatedFake = {FindFirstChild = function(_, n) return stored[n] end, WaitForChild = function(_, n) return assert(stored[n], n) end}
+	local playersFake = {LocalPlayer = me, PlayerAdded = signal(), PlayerRemoving = signal(),
+		GetPlayers = function() return {me, other} end,
+		GetPlayerFromCharacter = function(_, c) return if c == me.Character then me elseif c == other.Character then other else nil end}
+	local stepped = signal()
+	local services = {Players = playersFake, ReplicatedStorage = replicatedFake, RunService = {Stepped = stepped},
+		ProximityPromptService = {PromptButtonHoldBegan = signal(), PromptButtonHoldEnded = signal(), PromptTriggered = signal()},
+		Workspace = {CurrentCamera = {}, Gravity = 196.2}}
+	local RCore
+	luau.load(source("animate.client.lua"), {debugName = "animate.client.lua", injectGlobals = true, environment = {
+		game = {GetService = function(_, n) return assert(services[n], n) end}, Vector3 = Vector3, CFrame = CFrame, Color3 = Color3,
+		Enum = roblox.Enum, Instance = {new = function() return bindableEvent() end},
+		require = function() return Data end,
+		task = {defer = function(f, ...) f(...) end, spawn = function(f, ...) f(...) end, delay = function() end, wait = function() end},
+		__GestureRuntimeHarness = function(core) RCore = core end,
+	}})()
+	ok(RCore ~= nil, "runtime loaded headless")
+	local function handlerCount(who)
+		local n = #who.CharacterAdded.handlers + #who.CharacterRemoving.handlers + #who.Character.ChildAdded.handlers + #who.Character.ChildRemoved.handlers
+		for _, s in pairs(who.attrSignals) do n += #s.handlers end
+		return n
+	end
+	ok(handlerCount(other) >= 5, "other player watched (" .. handlerCount(other) .. " connections)")
+	ok(RCore.playerConns[other] ~= nil and #RCore.playerConns[other] >= 3, "per-player connections stored")
+	stepped:Fire(0, 1 / 60)
+	playersFake.PlayerRemoving:Fire(other)
+	eq(handlerCount(other), 0, "PlayerRemoving releases every per-player connection")
+	eq(RCore.playerConns[other], nil, "no per-player connection list kept")
+	ok(handlerCount(me) > 0, "the local player is still watched")
+end
+-- L11 regression: the camera shake adds to the existing CameraOffset and puts it back.
+do
+	local base = Vector3.new(0, -1.5, 0)
+	local hum = {CameraOffset = base}
+	local K = Core.newShake()
+	K.start(hum, 0)
+	K.step(0.02, function() return 0.9 end)
+	ok(hum.CameraOffset ~= base and math.abs(hum.CameraOffset.Y - base.Y) < 0.2, "shakes around the existing offset")
+	K.step(1, function() return 0.9 end)
+	eq(hum.CameraOffset, base, "restores the previous offset")
+	local other = Vector3.new(0, 2, 0)
+	K.start(hum, 2)
+	K.step(2.02, function() return 0.1 end)
+	hum.CameraOffset = other -- another script takes the offset mid-shake
+	K.step(2.04, function() return 0.1 end)
+	K.step(3, function() return 0.1 end)
+	eq(hum.CameraOffset, other, "another script's new offset is kept")
+end
 
 ------------------------------------------------------------------------------
 -- 5. hotbar.client.lua (atlas mock instances)
@@ -496,32 +757,41 @@ do
 	local H = require("./tools/ui-harness")
 	local new = H.new
 	local player = new("Player", {Name = "Tester", UserId = 7})
-	new("PlayerGui").Parent = player
+	local playerGui = new("PlayerGui", {ChildAdded = new("BindableEvent").Event})
+	playerGui.Parent = player
 	local replicated = new("ReplicatedStorage")
 	new("ModuleScript", {Name = "AetherData"}).Parent = replicated
 	local update = new("RemoteEvent", {Name = "IsleUpdate"})
 	update.Parent = replicated
 	local calls = {}
+	local holdGate, holdRefuse = nil, false
 	local action = new("RemoteFunction", {Name = "IsleAction"})
 	action.OnInvoke = function(verb, item)
 		table.insert(calls, {verb, item})
 		if verb == "hold" then
+			if holdGate then holdGate = coroutine.running(); coroutine.yield() end
+			if holdRefuse then return {held = true, ok = false, message = "One moment…", heldItem = player:GetAttribute("HeldItem") or ""} end
 			local id = if item == "none" then "" else (item:gsub("^~", ""))
+			player:SetAttribute("HeldAuto", item:sub(1, 1) == "~" and id ~= "")
 			player:SetAttribute("HeldItem", id)
-			return {held = true, message = "ok", heldItem = id}
+			return {held = true, ok = true, message = "ok", heldItem = id}
 		end
 		local slot, id = item:match("^(%d):(.*)$")
 		local list = string.split(player:GetAttribute("Hotbar") or ",,,,,,", ",")
 		list[tonumber(slot) - 2] = id
 		player:SetAttribute("Hotbar", table.concat(list, ","))
-		return {held = true, message = if id == "" then "cleared" else "x set to hotbar slot " .. slot}
+		-- L7: success comes from the status field; the message text is deliberately unhelpful.
+		return {held = true, ok = true, message = "done"}
 	end
 	action.Parent = replicated
 	local shown = new("BindableEvent")
 	local input = new("UserInputService", {TouchEnabled = false})
 	local camera = new("Camera")
 	local workspace = new("Workspace", {CurrentCamera = camera})
-	local services = {Players = new("Players", {LocalPlayer = player}), ReplicatedStorage = replicated, UserInputService = input,
+	local cas = {bound = {}}
+	function cas:BindActionAtPriority(name, fn, _, priority, ...) self.bound[name] = {fn = fn, priority = priority, inputs = {...}} end
+	function cas:UnbindAction(name) self.bound[name] = nil end
+	local services = {Players = new("Players", {LocalPlayer = player}), ReplicatedStorage = replicated, UserInputService = input, ContextActionService = cas,
 		TweenService = new("TweenService"), ProximityPromptService = new("ProximityPromptService", {PromptShown = shown.Event}), Workspace = workspace}
 	local game = new("DataModel")
 	function game.GetService(_, name) return assert(services[name], name) end
@@ -594,6 +864,141 @@ do
 	for _, row in ipairs(picker:FindFirstChild("List"):GetChildren()) do
 		if row.ClassName == "TextButton" then ok(row.Size.Y.Offset >= 44, "picker rows >= 44 px") end
 	end
+	picker.Visible = false
+	local function rim(i) return bar:FindFirstChild("Slot" .. i):FindFirstChild("Rim") end
+	-- L7 regression: assign trusts the reply's status field, not its wording.
+	do
+		local okA, msg = api.OnInvoke("assign", 7, "Ore")
+		ok(okA == true and msg == "done", "assign succeeds from ok=true whatever the message says")
+		api.OnInvoke("assign", 7, nil)
+	end
+	-- M1 regression: re-selecting the item that is only auto-held sends the hold
+	-- (else the server returns it after AUTO_RETURN and the choice reverts).
+	do
+		api.OnInvoke("select", 1)
+		flush()
+		player:SetAttribute("HeldItem", "CopperHatchet")
+		player:SetAttribute("HeldAuto", true)
+		local before = #calls
+		api.OnInvoke("select", 2)
+		flush()
+		eq(#calls, before + 1, "choosing the auto-held item is sent")
+		eq(calls[#calls][2], "CopperHatchet", "as an explicit hold")
+		eq(player:GetAttribute("HeldAuto"), false, "now explicit")
+		api.OnInvoke("select", 2)
+		flush()
+		eq(#calls, before + 1, "re-selecting an explicit hold sends nothing")
+	end
+	-- L8 regression: the mint ring marks a real auto hold only.
+	do
+		api.OnInvoke("select", 1)
+		flush()
+		player:SetAttribute("HeldItem", "CopperHatchet")
+		player:SetAttribute("HeldAuto", false)
+		ok(rim(2).Color ~= Color3.fromRGB(0x7F, 0xE3, 0xCC), "explicitly held, not selected: no mint ring")
+		player:SetAttribute("HeldAuto", true)
+		eq(rim(2).Color, Color3.fromRGB(0x7F, 0xE3, 0xCC), "auto-held: mint ring")
+		player:SetAttribute("HeldAuto", false)
+	end
+	-- L3 regression: auto requests that arrive while one is in flight are queued
+	-- (latest wins), and every settled request is answered on IsleHeldAutoReply.
+	do
+		local replies = {}
+		replicated:FindFirstChild("IsleHeldAutoReply").Event:Connect(function(id, heldItem) table.insert(replies, {id, heldItem}) end)
+		player:SetAttribute("HeldItem", "")
+		local before = #calls
+		holdGate = true
+		replicated:FindFirstChild("IsleHeldAuto"):Fire("Pickaxe")
+		local waiting = holdGate
+		ok(type(waiting) == "thread", "first auto request in flight")
+		replicated:FindFirstChild("IsleHeldAuto"):Fire("CopperHatchet")
+		replicated:FindFirstChild("IsleHeldAuto"):Fire("Blade")
+		holdGate = nil
+		coroutine.resume(waiting)
+		eq(#calls, before + 2, "in-flight request + only the latest queued one")
+		eq(calls[before + 1][2], "~Pickaxe", "first request")
+		eq(calls[before + 2][2], "~Blade", "latest queued request sent, the stale one dropped")
+		eq(player:GetAttribute("HeldItem"), "Blade", "queued switch applied")
+		holdRefuse = true
+		replicated:FindFirstChild("IsleHeldAuto"):Fire("Pickaxe")
+		holdRefuse = false
+		local last = replies[#replies]
+		ok(last[1] == "Pickaxe" and last[2] == "Blade", "a refused request reports what is really held")
+	end
+	-- L5 regression: hovering the bar binds a high-priority wheel action that sinks
+	-- the wheel (no camera zoom); leaving releases it.
+	do
+		eq(bar.Active, true, "bar is Active")
+		bar.MouseEnter:Fire()
+		local binding = cas.bound.IsleHotbarWheel
+		ok(binding ~= nil and binding.inputs[1] == roblox.Enum.UserInputType.MouseWheel, "wheel bound while hovering")
+		local from = api.OnInvoke("getSlots").selected
+		local result = binding.fn("IsleHotbarWheel", roblox.Enum.UserInputState.Change,
+			{UserInputType = roblox.Enum.UserInputType.MouseWheel, Position = Vector3.new(0, 0, -1)})
+		flush()
+		eq(result, roblox.Enum.ContextActionResult.Sink, "the wheel is sunk")
+		eq(api.OnInvoke("getSlots").selected, from % 9 + 1, "the wheel moves the selection")
+		bar.MouseLeave:Fire()
+		eq(cas.bound.IsleHotbarWheel, nil, "unbound after leaving the bar")
+	end
+	-- L6 regression: the release ending a long-press does not also select the slot.
+	do
+		api.OnInvoke("select", 1)
+		flush()
+		local before = #calls
+		local slot4 = bar:FindFirstChild("Slot4")
+		slot4.InputBegan:Fire({UserInputType = roblox.Enum.UserInputType.Touch})
+		flush()
+		ok(picker.Visible, "long-press opens the picker")
+		slot4.Activated:Fire()
+		flush()
+		eq(api.OnInvoke("getSlots").selected, 1, "long-press release does not select")
+		eq(#calls, before, "and sends nothing")
+		slot4.Activated:Fire()
+		flush()
+		eq(api.OnInvoke("getSlots").selected, 4, "a later tap selects as usual")
+		picker.Visible = false
+	end
+	-- L9 regression: the bar follows the dialogue box's Visible property (no poll).
+	do
+		ok(not source("hotbar.client.lua"):find("task.wait(0.5)", 1, true), "no dialogue poll")
+		local folk = new("ScreenGui", {Name = "TownsfolkDialogue", ChildAdded = new("BindableEvent").Event})
+		local box = new("Frame", {Name = "Dialogue", Visible = false})
+		box.Parent = folk
+		folk.Parent = playerGui
+		playerGui.ChildAdded:Fire(folk)
+		eq(bar.Visible, true, "dialogue closed: bar shown")
+		box.Visible = true
+		eq(bar.Visible, false, "dialogue opened: bar hidden at once")
+		box.Visible = false
+		eq(bar.Visible, true, "dialogue closed again: bar back")
+	end
+	-- L4 regression: narrow phones keep the bar clear of the touch Attack button
+	-- (x >= W - 196) with slots >= 44 px: one row at 667 x 375, two rows at 568.
+	do
+		local function edges()
+			local w = bar.Size.X.Offset
+			local cx = bar.Position.X.Scale * camera.ViewportSize.X + bar.Position.X.Offset
+			return cx - w / 2, cx + w / 2
+		end
+		for _, case in ipairs({{667, 375, 1}, {568, 320, 2}}) do
+			camera.ViewportSize = roblox.Vector2.new(case[1], case[2])
+			local left, right = edges()
+			local size = bar:FindFirstChild("Slot1").Size.X.Offset
+			ok(right <= case[1] - 196 + 0.01, case[1] .. " px: bar ends left of the Attack button (" .. right .. ")")
+			ok(left >= 8 - 0.01, case[1] .. " px: bar stays on screen (" .. left .. ")")
+			ok(size >= 44, case[1] .. " px: touch targets >= 44 px (" .. size .. ")")
+			local rows = if bar:FindFirstChild("Slot9").Position.Y.Offset > 0 then 2 else 1
+			eq(rows, case[3], case[1] .. " px rows")
+			for i = 1, 9 do
+				local b = bar:FindFirstChild("Slot" .. i)
+				ok(b.Position.X.Offset + size <= bar.Size.X.Offset + 0.01 and b.Position.Y.Offset + size <= bar.Size.Y.Offset + 0.01, case[1] .. " px slot " .. i .. " inside the bar")
+			end
+			eq(player:GetAttribute("IsleHotbarHeight"), 6 + bar.Size.Y.Offset + 70, case[1] .. " px published height covers every row")
+		end
+		camera.ViewportSize = roblox.Vector2.new(1366, 768)
+		eq(bar.Position.X.Scale, 0.5, "wide screens: centred again")
+	end
 	-- Building hides the bar and releases its height.
 	player:SetAttribute("IslandBuilding", true)
 	eq(bar.Visible, false, "hidden while building")
@@ -610,6 +1015,8 @@ ok(fs.readFile("scripts/build.sh"):find("verify-held.luau", 1, true) and fs.read
 local verify = fs.readFile("verify.luau")
 ok(verify:find('Hotbar = "hotbar.client.lua"', 1, true) and verify:find('HeldItems = "held.server.lua"', 1, true), "verify.luau binds both scripts")
 ok(fs.readFile("docs/DEPTH-CONTRACT.md"):find("## 26. Held items", 1, true), "contract §26")
+-- L13 regression: combat.client.lua no longer documents the old 1-6 spell keys.
+ok(not fs.readFile("combat.client.lua"):find("keys 1-6", 1, true), "combat spell-bar comment names Z X C V B N, not 1-6")
 
 print("verify-held: " .. checks .. " checks passed")
 print("SUITE-END verify-held.luau")

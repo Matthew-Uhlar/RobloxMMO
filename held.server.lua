@@ -5,8 +5,8 @@
 -- tier-coloured head, rarity trim, a glowing inlay from Epic up) parented to the
 -- character as Model "HeldItem", welded at RightGripAttachment (bows and shields
 -- at LeftGripAttachment), so every client sees it and swings it with the arm.
--- Rebuilt on HeldItem change, respawn, appearance load and when the hand is
--- replaced; destroyed on CharacterRemoving / PlayerRemoving. No per-frame work.
+-- Rebuilt on HeldItem change (coalesced, Data.Held.REBUILD_GAP), respawn, appearance load and when the hand is
+-- replaced; destroyed on death, CharacterRemoving and PlayerRemoving. No per-frame work.
 
 local Builder = {}
 Builder.MODEL_NAME = "HeldItem"
@@ -68,13 +68,27 @@ function Builder.build(Data, character, itemId)
 	return model, hand
 end
 
+
 -- Per-player lifecycle.
 -- watchHand(hand, onGone) -> connection (default: the hand's AncestryChanged to nil).
-function Builder.create(Data, watchHand)
+-- deps (optional): now() (os.clock), delay(seconds, fn) (task.delay),
+-- watchDeath(character, onDied) -> connection? (default: Humanoid.Died).
+-- HeldItem changes are coalesced: at most one rebuild per Data.Held.REBUILD_GAP
+-- seconds per player (equip / unequip churn, hotbar spam); the deferred rebuild
+-- reads the latest value. Respawns and hand swaps rebuild at once.
+function Builder.create(Data, watchHand, deps)
+	deps = deps or {}
 	watchHand = watchHand or function(hand, onGone)
 		return hand.AncestryChanged:Connect(function(_, parent) if parent == nil then onGone() end end)
 	end
-	local S = {models = {}, handConns = {}, conns = {}}
+	local now = deps.now or os.clock
+	local delay = deps.delay or function(seconds, fn) task.delay(seconds, fn) end
+	local watchDeath = deps.watchDeath or function(character, onDied)
+		local humanoid = character:FindFirstChildOfClass("Humanoid")
+		return if humanoid then humanoid.Died:Connect(onDied) else nil
+	end
+	local gap = (Data.Held and Data.Held.REBUILD_GAP) or 0.5
+	local S = {models = {}, handConns = {}, conns = {}, deathConns = {}, lastBuild = {}, pending = {}, dead = {}, builds = 0}
 	local function clear(player)
 		local conn = S.handConns[player]
 		if conn then conn:Disconnect(); S.handConns[player] = nil end
@@ -82,11 +96,28 @@ function Builder.create(Data, watchHand)
 		if model then model:Destroy(); S.models[player] = nil end
 	end
 	S.clear = clear
+	local function unwatchDeath(player)
+		local conn = S.deathConns[player]
+		if conn then conn:Disconnect(); S.deathConns[player] = nil end
+	end
+	-- A dead character drops nothing: the model goes with the death and is not
+	-- rebuilt on the corpse (the respawned character gets its own).
+	local function watchCharacter(player, character)
+		unwatchDeath(player)
+		S.dead[player] = nil
+		S.deathConns[player] = watchDeath(character, function()
+			if player.Character ~= character then return end
+			S.dead[player] = character
+			clear(player)
+		end)
+	end
 	function S.refresh(player)
 		clear(player)
+		S.lastBuild[player] = now()
+		S.builds += 1
 		local character = player.Character
 		local id = player:GetAttribute("HeldItem")
-		if not character or type(id) ~= "string" or id == "" then return nil end
+		if not character or type(id) ~= "string" or id == "" or S.dead[player] == character then return nil end
 		local model, hand = Builder.build(Data, character, id)
 		if not model then return nil end
 		model.Parent = character
@@ -97,25 +128,48 @@ function Builder.create(Data, watchHand)
 		end)
 		return model
 	end
+	-- HeldItem changed: rebuild now, or once when the gap ends (latest value).
+	function S.request(player)
+		if S.pending[player] then return end
+		local wait = (S.lastBuild[player] or -math.huge) + gap - now()
+		if wait <= 0 then
+			S.refresh(player)
+			return
+		end
+		S.pending[player] = true
+		delay(wait, function()
+			if not S.pending[player] then return end -- left meanwhile
+			S.pending[player] = nil
+			if S.conns[player] then S.refresh(player) end
+		end)
+	end
 	function S.track(player)
 		local list = {
-			player:GetAttributeChangedSignal("HeldItem"):Connect(function() S.refresh(player) end),
+			player:GetAttributeChangedSignal("HeldItem"):Connect(function() S.request(player) end),
 			player.CharacterAdded:Connect(function(character)
 				local rig = character:WaitForChild("Humanoid", 10) and Builder.rigType(character)
 				if not rig then character:WaitForChild("RightHand", 5) end
-				if player.Character == character then S.refresh(player) end
+				if player.Character == character then
+					watchCharacter(player, character)
+					S.refresh(player)
+				end
 			end),
-			player.CharacterRemoving:Connect(function() clear(player) end),
+			player.CharacterRemoving:Connect(function() unwatchDeath(player); clear(player) end),
 		}
 		if player.CharacterAppearanceLoaded then
 			table.insert(list, player.CharacterAppearanceLoaded:Connect(function() S.refresh(player) end))
 		end
 		S.conns[player] = list
-		if player.Character then task.defer(S.refresh, player) end
+		if player.Character then
+			watchCharacter(player, player.Character)
+			task.defer(S.refresh, player)
+		end
 	end
 	function S.forget(player)
 		for _, c in ipairs(S.conns[player] or {}) do c:Disconnect() end
 		S.conns[player] = nil
+		unwatchDeath(player)
+		S.pending[player], S.lastBuild[player], S.dead[player] = nil, nil, nil
 		clear(player)
 	end
 	return S
