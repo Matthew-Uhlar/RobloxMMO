@@ -87,7 +87,7 @@ export PATH=$HOME/.cargo/bin:$PATH   # Lune 0.11.1, Rojo 7.7.1 (cargo install ..
 
 - Since §30 was written, a grass-clipping fix landed in `island()` in `world.server.lua`: the foundation and cliff now sit below the meadow slab, and verify-world asserts this.
 
-**Also merged at pause time** (32 suites pass). These three still need their independent QC review and a fix team; nothing else is in flight:
+**Also merged at pause time** (32 suites pass). All three have since had independent QC reviews and fix rounds (merged and pushed). The live game was published from PR #5 before those fixes; publishing again needs the owner's go-ahead:
 
 | Merged | What it is |
 |---|---|
