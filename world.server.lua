@@ -253,48 +253,415 @@ local function anchor(parent,purpose,where,toward)
 	return a
 end
 
--- Signs: each is its own Model (board + posts); the board carries the mesh
--- slot and the SurfaceGui text.
-local function signAt(parent,cf,title,kicker,accent,width)
-	width = width or 12
-	local holder=group("Sign "..title,parent)
-	for _, s in ipairs({-1,1}) do
-		part(holder,"Brass-capped post",V(.28,5,.32),cf*CFrame.new(s*(width/2-.7),2.5,0),brass,MT,false)
+-------------------------------------------------------------------------------
+-- Signs (docs/DEPTH-CONTRACT.md §28): one data-driven builder for every sign.
+-- Signs.build(parent, cf, spec) -> mainBoard, model. cf is the sign's ground
+-- point; its LookVector is the side the main face reads from. spec:
+--   title, kicker, accent (Color3), width (studs, the old board width),
+--   kind = hanging | shop | post | banner | plaque | ledger (default from
+--   Signs.STYLE[title], else hanging), icon (shop: catalog shape of the trade),
+--   arrows = {{label, to = Vector3}, ...} (post: boards pointing at real places),
+--   plate = false (post: arrows only), theme (default: the island's theme).
+-- Each sign is its own Model "Sign <title>" (attributes SignArchetype,
+-- SignTitle, SignTheme; tag AetherSign) holding a frame host (post, pole,
+-- plinth or notice post: the visible primitive fallback, mesh slot with a
+-- declared ShapeBox the frame mesh fills), its text boards (mesh slots of kind
+-- "sign" that wrap the board, SurfaceGuis painted here) and, for shops, one
+-- icon prop. Parts: hanging/banner/plaque/ledger 2, shop 3, post 1 + plate +
+-- arrows. No lights: faces self-light (LightInfluence Signs.LIGHT) at night.
+-- Reference sizes match the authored meshes in art/world-shapes.cjs.
+-------------------------------------------------------------------------------
+local Signs={PPS=56,LIGHT=.25,BRIGHTNESS=1.3,MAX_DISTANCE=150,LINE=1.3}
+Signs.FONT={title="rbxasset://fonts/families/Merriweather.json",body="rbxasset://fonts/families/BuilderSans.json",
+	banner="rbxasset://fonts/families/Fondamento.json"}
+-- Island themes: panel (painted board), text, trim (rules, borders), metal
+-- (frame and board Tint: brackets, chains, caps, rivets), wood / stone (the
+-- fallback primitives), cloth (banners without an accent of their own).
+Signs.THEMES={
+	Quay={panel=C("1E3442"),text=cream,trim=C("D9B65C"),metal=C("C9A24E"),wood=C("7A5636"),stone=C("CFCFC6"),cloth=C("2E4E7A")},
+	Grove={panel=C("1F3A2C"),text=C("F3EBD2"),trim=C("A9D98F"),metal=C("6FA38A"),wood=C("5A4030"),stone=C("B9C0AA"),cloth=C("3F6E3A")},
+	Quarry={panel=C("2E2A2A"),text=C("F6E3C6"),trim=C("E09A5A"),metal=C("B8733F"),wood=C("6B4A30"),stone=C("BDB4A8"),cloth=C("8A4B2C")},
+	Warden={panel=C("2A2F45"),text=C("F4E6E0"),trim=C("E08C78"),metal=C("AFA8A0"),wood=C("5E4A3E"),stone=C("C4C0C8"),cloth=C("7E3B3A")},
+	Skyreach={panel=C("1C3A40"),text=C("EAF8F6"),trim=C("8EE6CB"),metal=C("B8C6CF"),wood=C("6A5A4E"),stone=C("D2DEE0"),cloth=C("2F6A72")},
+	Gloom={panel=C("251C36"),text=C("EFE6FF"),trim=C("B9A2EE"),metal=C("8E7BC0"),wood=C("3E3242"),stone=C("ABA5B6"),cloth=C("4A3470")},
+	Tide={panel=C("123A44"),text=C("E8FBFF"),trim=C("6FD6E4"),metal=C("7FC9C9"),wood=C("6E5A44"),stone=C("CAD8D2"),cloth=C("1F5E6E")},
+	Tempest={panel=C("1E2640"),text=C("EEF3FF"),trim=C("C6DCFF"),metal=C("A8B6CC"),wood=C("4C4A58"),stone=C("BCC2CE"),cloth=C("34426E")},
+	Crown={panel=C("241A2E"),text=C("FFF2D6"),trim=C("F2C14E"),metal=C("E0B44E"),wood=C("4A3428"),stone=C("DDD3BF"),cloth=C("5A2A4A")},
+	Home={panel=C("2E2620"),text=C("FBF0DA"),trim=C("E6C07A"),metal=C("C9A24E"),wood=C("7A5636"),stone=C("D2CBBB"),cloth=C("3C7E72")},
+}
+Signs.ISLAND_THEME={["Compass Quay"]="Quay",["Guild Terrace"]="Quay",["Mosswake Grove"]="Grove",["Meadow Reach"]="Grove",
+	["Windpine Grove"]="Grove",["Brassfall Quarry"]="Quarry",["Cinder Shelf"]="Quarry",["Warden Reach"]="Warden",Skyreach="Skyreach",
+	["Gloomhollow Caverns"]="Gloom",["Tidewater Shoals"]="Tide",["Tempest Spire"]="Tempest",["The Shattered Crown"]="Crown"}
+-- Archetype per fixed sign title (call sites may override with spec fields).
+Signs.STYLE={
+	["Compass Quay"]={kind="plaque"},["Mooncrest Gardens"]={kind="plaque"},["Aether Museum"]={kind="plaque"},
+	["Mosswake Grove"]={kind="plaque"},["Brassfall Quarry"]={kind="plaque"},["Warden Reach"]={kind="plaque"},
+	["Guild Terrace"]={kind="plaque"},["Meadow Reach"]={kind="plaque"},["Cinder Shelf"]={kind="plaque"},Skyreach={kind="plaque"},
+	["Windpine Grove"]={kind="plaque"},["Gloomhollow Caverns"]={kind="plaque"},["Tidewater Shoals"]={kind="plaque"},
+	["Tempest Spire"]={kind="plaque"},["The Shattered Crown"]={kind="plaque"},
+	["Market Row"]={kind="shop",icon="Seal"},["Artisans' Rise"]={kind="shop",icon="Anvil"},Moonpool={kind="shop",icon="Fish"},
+	Aetherite={kind="shop",icon="AetherCrystal"},["Verdant Garden"]={kind="shop",icon="CropSheaf"},
+	["Artificers' Row"]={kind="shop",icon="AetherCrystal"},["Make it yours"]={kind="shop",icon="Hatchet"},
+	Shellwarden={kind="banner"},["Vault Gate"]={kind="banner"},["Crew Haven"]={kind="banner"},["Huntmaster Oriel"]={kind="banner"},
+	["Sovereign's Dais"]={kind="banner"},["Eclipse Roost"]={kind="banner"},["Skybreach Ferry"]={kind="banner"},
+	["Sky Harbor"]={kind="post"},["Skyreach passage"]={kind="post"},["Deep descent"]={kind="post"},
+	Homeward={kind="hanging"},["Wayfarer's Rest"]={kind="plaque"},["Artisans' Row"]={kind="hanging"},
+	["Builder's Terrace"]={kind="hanging"},["Commission Board"]={kind="hanging"},
+}
+Signs.KINDS={hanging=true,shop=true,post=true,banner=true,plaque=true,ledger=true}
+function Signs.theme(parent)
+	local node=parent
+	while node and node~=world and node~=islandsFolder and node~=workspace do
+		local name=Signs.ISLAND_THEME[node.Name]
+		if name then return name end
+		if node:IsA("Model") and node:GetAttribute("Region")=="Home" then return "Home" end
+		node=node.Parent
 	end
-	local board = part(holder,title,V(width,3.1,.32),cf*CFrame.new(0,4,0),ink,SM,false)
-	meshSlot(board,"Signboard",accent)
-	for _, face in ipairs({Enum.NormalId.Front,Enum.NormalId.Back}) do
-		local gui = Instance.new("SurfaceGui")
-		gui.Face,gui.CanvasSize,gui.LightInfluence,gui.MaxDistance = face,Vector2.new(640,170),0,110
-		gui.Parent = board
-		local function rect(x,y,w,h,col)
-			local frame = Instance.new("Frame")
-			frame.BorderSizePixel,frame.BackgroundColor3 = 0,col
-			frame.Position,frame.Size = UDim2.fromOffset(x,y),UDim2.fromOffset(w,h)
-			frame.Parent = gui
-			return frame
+	return "Quay"
+end
+
+-- Text fitting. Conservative em widths (wide serif caps); verify-signs re-runs
+-- the same wrap with its own table, so a label is never sized past its box.
+Signs.GLYPH={W=1.0,M=.96,m=.88,w=.8,[" "]=.3,i=.34,l=.34,j=.34,I=.44,t=.42,f=.42,r=.46,["."]=.32,[","]=.32,
+	["'"]=.28,["•"]=.5,["/"]=.44,["-"]=.44,["+"]=.64,["·"]=.36}
+function Signs.textWidth(text,size)
+	local em=0
+	for _,code in utf8.codes(text) do
+		local ch=utf8.char(code)
+		local w=Signs.GLYPH[ch]
+		if not w then
+			w=if string.match(ch,"^%u$") then .76 elseif string.match(ch,"^%l$") then .6 elseif string.match(ch,"^%d$") then .66 else .56
 		end
-		rect(0,0,640,170,ink)
-		rect(6,6,628,2,accent) rect(6,162,628,2,accent)
-		rect(14,20,5,130,accent)
-		local crest = rect(40,62,43,43,accent)
-		crest.Rotation = 45
-		local hollow = rect(50,72,23,23,ink)
-		hollow.Rotation = 45
-		local function line(text,y,h,font,color)
-			local t = Instance.new("TextLabel")
-			t.BackgroundTransparency,t.TextXAlignment = 1,Enum.TextXAlignment.Left
-			t.Position,t.Size = UDim2.fromOffset(110,y),UDim2.fromOffset(507,h)
-			t.Font,t.TextColor3,t.Text,t.TextScaled = font,color,text,true
-			t.Parent = gui
+		em+=w
+	end
+	return em*size
+end
+-- Greedy word wrap at `size`: line count and widest line.
+function Signs.wrap(text,size,width)
+	local lines,line,widest=1,"",0
+	for word,gap in string.gmatch(text,"(%S+)(%s*)") do
+		local trimmed=string.gsub(line,"%s+$","")
+		if trimmed~="" and Signs.textWidth(trimmed.." "..word,size)>width then
+			widest=math.max(widest,Signs.textWidth(trimmed,size))
+			lines+=1
+			line=word..gap
+		else
+			line..=word..gap
 		end
-		line(kicker,22,35,Enum.Font.GothamBold,accent)
-		line(title,65,70,Enum.Font.GothamBold,cream)
+	end
+	widest=math.max(widest,Signs.textWidth((string.gsub(line,"%s+$","")),size))
+	return lines,widest
+end
+-- Largest size (px) at which text fits w x h in at most maxLines lines.
+function Signs.fit(text,w,h,maxLines,maxSize,minSize)
+	for size=math.floor(maxSize),math.ceil(minSize),-1 do
+		local lines,widest=Signs.wrap(text,size,w)
+		if lines<=maxLines and widest<=w and lines*size*Signs.LINE<=h then return size,lines,false end
+	end
+	return math.ceil(minSize),(Signs.wrap(text,math.ceil(minSize),w)),true
+end
+
+-- Painting ---------------------------------------------------------------
+do
+local function guiFrame(parent,name,x,y,w,h,color,transparency,z)
+	local f=Instance.new("Frame")
+	f.Name,f.BorderSizePixel,f.BackgroundColor3=name,0,color
+	f.BackgroundTransparency=transparency or 0
+	f.Position,f.Size=UDim2.fromOffset(math.floor(x+.5),math.floor(y+.5)),UDim2.fromOffset(math.floor(w+.5),math.floor(h+.5))
+	f.ZIndex=z or 1
+	f.Parent=parent
+	return f
+end
+local function guiStroke(obj,color,thickness,transparency)
+	local s=Instance.new("UIStroke")
+	s.Color,s.Thickness,s.Transparency=color,thickness,transparency or 0
+	s.Parent=obj
+	return s
+end
+local function diamond(parent,name,cx,cy,size,color,z)
+	local d=guiFrame(parent,name,cx-size/2,cy-size/2,size,size,color,0,z)
+	d.Rotation=45
+	return d
+end
+local function setFont(label,family)
+	local ok=pcall(function() label.FontFace=Font.new(family,Enum.FontWeight.Bold) end)
+	if not ok then label.Font=if family==Signs.FONT.body then Enum.Font.GothamBold else Enum.Font.Merriweather end
+end
+-- A fitted text line with a soft drop shadow (or an engraved highlight).
+local function guiText(gui,name,text,x,y,w,h,opts)
+	local size,lines,overflow=Signs.fit(text,w,h,opts.lines or 1,opts.max,opts.min)
+	local function make(labelName,dx,dy,color,transparency,z)
+		local t=Instance.new("TextLabel")
+		t.Name,t.BackgroundTransparency,t.Text=labelName,1,text
+		t.TextColor3,t.TextTransparency,t.TextSize=color,transparency,size
+		t.TextScaled,t.TextWrapped=false,true
+		t.TextXAlignment=opts.align or Enum.TextXAlignment.Center
+		t.TextYAlignment=Enum.TextYAlignment.Center
+		t.Position,t.Size=UDim2.fromOffset(math.floor(x+dx+.5),math.floor(y+dy+.5)),UDim2.fromOffset(math.floor(w),math.floor(h))
+		t.ZIndex=z
+		setFont(t,opts.font)
+		t.Parent=gui
+		return t
+	end
+	local offset=math.max(1,math.floor(size*.06+.5))
+	make(name.."Shadow",offset,offset,opts.shadow or ink,opts.shadowTransparency or .35,4)
+	local main=make(name,0,0,opts.color,0,5)
+	if opts.stroke~=false then guiStroke(main,opts.strokeColor or ink,math.max(1,size*.05),.25) end
+	main:SetAttribute("SignFitLines",lines)
+	if overflow then main:SetAttribute("SignOverflow",true) end
+	return main,size
+end
+local function surface(board,face,pps)
+	local gui=Instance.new("SurfaceGui")
+	gui.Name="Sign face "..face.Name
+	gui.Face=face
+	gui.SizingMode=Enum.SurfaceGuiSizingMode.PixelsPerStud
+	gui.PixelsPerStud=pps or Signs.PPS
+	gui.LightInfluence,gui.Brightness,gui.MaxDistance=Signs.LIGHT,Signs.BRIGHTNESS,Signs.MAX_DISTANCE
+	gui.AlwaysOnTop=false
+	gui:SetAttribute("SignStyled",true)
+	gui.Parent=board
+	return gui
+end
+-- Panel backdrop: gradient fill, plank seams (wood), a double rule in the
+-- trim colour and accent corner studs.
+local function backdrop(gui,cw,ch,panel,trim,accent,style)
+	local bg=guiFrame(gui,"Panel",0,0,cw,ch,panel,0,1)
+	local grad=Instance.new("UIGradient")
+	grad.Color=ColorSequence.new(panel:Lerp(cream,.1),panel:Lerp(C("05080C"),.3))
+	grad.Rotation=90
+	grad.Parent=bg
+	local unit=math.min(cw,ch)
+	if style=="wood" then
+		for _,k in ipairs({.36,.68}) do guiFrame(gui,"Plank seam",0,ch*k,cw,math.max(1,unit*.012),panel:Lerp(C("05080C"),.45),.35,2) end
+	end
+	local m=math.max(3,unit*.07)
+	local outer=guiFrame(gui,"Rule",m,m,cw-2*m,ch-2*m,panel,1,3)
+	guiStroke(outer,trim,math.max(2,unit*.024))
+	local i=m+math.max(3,unit*.045)
+	local inner=guiFrame(gui,"Inner rule",i,i,cw-2*i,ch-2*i,panel,1,3)
+	guiStroke(inner,trim,math.max(1,unit*.01),.45)
+	local stud=math.max(4,unit*.085)
+	for _,c in ipairs({{m,m},{cw-m,m},{m,ch-m},{cw-m,ch-m}}) do diamond(gui,"Corner stud",c[1],c[2],stud,accent,4) end
+	return m
+end
+-- Crest emblem: an accent diamond with the title's initial.
+local function emblem(gui,cx,cy,size,accent,panel,trim,letter,ink)
+	local outer=diamond(gui,"Emblem",cx,cy,size,accent,3)
+	guiStroke(outer,trim,math.max(1.5,size*.05))
+	diamond(gui,"Emblem field",cx,cy,size*.7,panel,4)
+	local t=Instance.new("TextLabel")
+	t.Name,t.BackgroundTransparency,t.Text="Emblem initial",1,letter
+	t.TextColor3,t.TextSize,t.TextScaled,t.TextWrapped=ink or accent:Lerp(cream,.55),math.floor(size*.62),false,true
+	t.Position,t.Size=UDim2.fromOffset(math.floor(cx-size/2),math.floor(cy-size/2)),UDim2.fromOffset(math.floor(size),math.floor(size))
+	t.ZIndex=6
+	setFont(t,Signs.FONT.title)
+	t.Parent=gui
+end
+local function initial(title) return string.upper(string.match(title,"%a") or "*") end
+-- Separator "   /   " in kickers becomes a centred bullet.
+local function kickerText(kicker) return (string.gsub(kicker or "","%s*/%s*","  •  ")) end
+
+-- Wide board (hanging, shop, plaque, title plate): emblem left when there is
+-- room, kicker over a divider over the title.
+function Signs.paintWide(board,spec,theme,style)
+	local W,H=board.Size.X,board.Size.Y
+	local cw,ch=W*Signs.PPS,H*Signs.PPS
+	local stone=style=="stone"
+	local panel=if stone then theme.stone elseif style=="scroll" then C("E9DCB8") else theme.panel
+	local trim=if stone then darken(theme.stone,.45) elseif style=="scroll" then C("8A6240") else theme.trim
+	local title=if stone or style=="scroll" then ink else theme.text
+	local kickColor=if stone or style=="scroll" then darken(spec.accent,.72) else spec.accent:Lerp(cream,.35)
+	for _,face in ipairs({Enum.NormalId.Front,Enum.NormalId.Back}) do
+		local gui=surface(board,face)
+		local m=backdrop(gui,cw,ch,panel,trim,spec.accent,if stone then "stone" else "wood")
+		local x0,align=m+ch*.12,Enum.TextXAlignment.Center
+		if cw/ch>=2.4 then
+			local e=ch*.46
+			emblem(gui,m+ch*.12+e*.71,ch/2,e,spec.accent,panel,trim,initial(spec.title),if stone or style=="scroll" then title else nil)
+			x0,align=m+ch*.12+e*1.5,Enum.TextXAlignment.Left
+		end
+		local w=cw-x0-m-ch*.12
+		local engrave={color=title,shadow=if stone or style=="scroll" then cream else ink,
+			shadowTransparency=if stone then .1 else .35,stroke=not (stone or style=="scroll")}
+		-- Long kickers (region requirements) take two lines and the title shrinks.
+		local ky,kh,kl=m+ch*.08,ch*.2,1
+		if select(3,Signs.fit(kickerText(spec.kicker),w,kh,1,ch*.15,ch*.085)) then kh,kl=ch*.3,2 end
+		guiText(gui,"Kicker",kickerText(spec.kicker),x0,ky,w,kh,{lines=kl,max=ch*.15,min=ch*.085,font=Signs.FONT.body,color=kickColor,align=align,
+			shadow=engrave.shadow,shadowTransparency=engrave.shadowTransparency,stroke=engrave.stroke})
+		local dy=ky+kh+ch*.02
+		local dw=w*.55
+		local dx=if align==Enum.TextXAlignment.Left then x0 else x0+(w-dw)/2
+		guiFrame(gui,"Divider",dx,dy,dw,math.max(2,ch*.012),spec.accent,0,3)
+		diamond(gui,"Divider stud",dx+dw,dy+1,math.max(5,ch*.045),spec.accent,4)
+		local ty=dy+ch*.04
+		guiText(gui,"Title",spec.title,x0,ty,w,ch-m-ch*.05-ty,{lines=2,max=ch*.34,min=ch*.14,font=Signs.FONT.title,align=align,
+			color=engrave.color,shadow=engrave.shadow,shadowTransparency=engrave.shadowTransparency,stroke=engrave.stroke})
+	end
+end
+-- Portrait cloth (banner): emblem on top, title, divider, kicker.
+function Signs.paintBanner(board,spec,theme)
+	local W,H=board.Size.X,board.Size.Y
+	local cw,ch=W*Signs.PPS,H*Signs.PPS
+	local panel=darken(spec.accent,.66)
+	for _,face in ipairs({Enum.NormalId.Front,Enum.NormalId.Back}) do
+		local gui=surface(board,face)
+		local m=backdrop(gui,cw,ch,panel,theme.trim,spec.accent,"cloth")
+		local e=cw*.22
+		emblem(gui,cw/2,m+cw*.06+e*.71,e,spec.accent,panel,theme.trim,initial(spec.title))
+		local x0,w=m+cw*.07,cw-2*(m+cw*.07)
+		local ty=m+cw*.1+e*1.42
+		local _,size=guiText(gui,"Title",spec.title,x0,ty,w,ch*.3,{lines=3,max=cw*.2,min=cw*.085,font=Signs.FONT.banner,color=theme.text})
+		local dy=ty+ch*.3+ch*.015
+		guiFrame(gui,"Divider",cw*.3,dy,cw*.4,math.max(2,ch*.008),spec.accent,0,3)
+		diamond(gui,"Divider stud",cw/2,dy+1,math.max(5,cw*.04),spec.accent,4)
+		local ky=dy+ch*.03
+		guiText(gui,"Kicker",kickerText(spec.kicker),x0,ky,w,ch-m-ch*.03-ky,{lines=4,max=math.min(cw*.09,size*.6),min=cw*.05,
+			font=Signs.FONT.body,color=spec.accent:Lerp(cream,.45)})
+	end
+end
+-- Arrow board: label away from the tip, a chevron stud at the tip end. On the
+-- Front face GUI +x runs along the part's -RightVector, so the tip is on the left.
+function Signs.paintArrow(board,label,accent,theme)
+	local W,H=board.Size.X,board.Size.Y
+	local cw,ch=W*Signs.PPS,H*Signs.PPS
+	for _,face in ipairs({Enum.NormalId.Front,Enum.NormalId.Back}) do
+		local gui=surface(board,face)
+		local panel=theme.panel
+		local bg=guiFrame(gui,"Panel",0,0,cw,ch,panel,0,1)
+		local grad=Instance.new("UIGradient")
+		grad.Color=ColorSequence.new(panel:Lerp(cream,.12),panel:Lerp(C("05080C"),.3))
+		grad.Rotation=90
+		grad.Parent=bg
+		local rule=guiFrame(gui,"Rule",3,3,cw-6,ch-6,panel,1,3)
+		guiStroke(rule,theme.trim,2)
+		local tipLeft=face==Enum.NormalId.Front
+		local tipX=if tipLeft then ch*.45 else cw-ch*.45
+		diamond(gui,"Chevron",tipX,ch/2,ch*.42,accent,4)
+		local x0=if tipLeft then ch*.9 else ch*.3
+		guiText(gui,"Label",label,x0,ch*.08,cw-ch*1.2,ch*.84,{max=ch*.6,min=ch*.34,font=Signs.FONT.title,color=theme.text,
+			align=if tipLeft then Enum.TextXAlignment.Right else Enum.TextXAlignment.Left})
+	end
+end
+
+-- Geometry ---------------------------------------------------------------
+local function signFrame(holder,name,size,cf,color,mat,shape,tint,boxSize,boxCenter)
+	local p=part(holder,name,size,cf,color,mat,false)
+	meshSlot(p,shape,tint)
+	p:SetAttribute("ShapeBox",boxSize)
+	p:SetAttribute("ShapeBoxOffset",cf:PointToObjectSpace(boxCenter))
+	return p
+end
+local function signBoard(holder,name,size,cf,color,mat,shape,tint)
+	local b=part(holder,name,size,cf,color,mat,false)
+	meshSlot(b,shape,tint)
+	b:SetAttribute("SignBoard",true)
+	return b
+end
+-- Hanging / shop: carved post at the left, iron bracket arm, chains, lantern
+-- (reference board 9 x 2.6: post x -5.45, arm y 6.35, board top y 5.3).
+local function buildHanging(holder,cf,spec,theme)
+	local shop=spec.kind=="shop"
+	local W=math.clamp(spec.width or 9,7,12)
+	local H=if W>=10.5 then 2.9 else 2.6
+	local hp=H+4.3
+	local arm=hp-.55
+	local postX=-(W/2+.95)
+	signFrame(holder,"Sign post",V(.5,hp,.5),cf*CFrame.new(postX,hp/2,0),theme.wood,WO,"SignHangingFrame",theme.metal,
+		V(W+3.2,hp+.7,1.6),(cf*CFrame.new(-.1,(hp+.7)/2,0)).Position)
+	local board=signBoard(holder,spec.title,V(W,H,.3),cf*CFrame.new(0,arm-1.05-H/2,0),theme.panel,WO,
+		if shop then "SignScrollBoard" else "SignCarvedBoard",theme.metal)
+	if shop then
+		Signs.paintWide(board,spec,theme,"scroll")
+		local icon=part(holder,"Sign icon",V(1.5,1.5,1.5),cf*CFrame.new(0,arm+.15+.75,0),spec.accent,SM,false)
+		meshSlot(icon,spec.icon or "EssenceOrb",spec.accent,nil,"Uniform")
+	else
+		Signs.paintWide(board,spec,theme,"wood")
 	end
 	return board
 end
-local function sign(parent,pos,title,kicker,accent,yaw,width)
-	return signAt(parent,CFrame.new(pos)*CFrame.Angles(0,math.rad(yaw or 0),0),title,kicker,accent,width)
+-- Signpost: carved post, optional title plate on its face, arrow boards that
+-- turn toward their destinations (local +X of each arrow points at `to`).
+local POST_H=6.4
+local function buildPost(holder,cf,spec,theme)
+	local base=cf.Position
+	signFrame(holder,"Sign post",V(.55,POST_H,.55),cf*CFrame.new(0,POST_H/2,0),theme.wood,WO,"SignpostFrame",theme.metal,
+		V(1.6,POST_H+1,1.6),(cf*CFrame.new(0,(POST_H+1)/2,0)).Position)
+	local main
+	local y=POST_H-1.4
+	if spec.plate~=false then
+		local W=math.clamp((spec.width or 9)*.62,4.6,7)
+		main=signBoard(holder,spec.title,V(W,1.5,.26),cf*CFrame.new(0,POST_H-1.45,-.46),theme.panel,WO,"SignCarvedBoard",theme.metal)
+		Signs.paintWide(main,spec,theme,"wood")
+		y=POST_H-2.65
+	end
+	for i,arrow in ipairs(spec.arrows or {}) do
+		local flat=V(arrow.to.X-base.X,0,arrow.to.Z-base.Z)
+		local d=if flat.Magnitude>.01 then flat.Unit else cf.RightVector
+		local Wa=math.clamp(Signs.textWidth(arrow.label,.5)+1.6,3.6,6.4)
+		local center=base+d*(Wa/2+.32)+V(0,y-(i-1)*.95,0)
+		local board=signBoard(holder,"Arrow "..arrow.label,V(Wa,.9,.22),CFrame.lookAt(center,center+V(0,1,0):Cross(d)),
+			theme.panel,WO,"SignArrowBoard",theme.metal)
+		board:SetAttribute("SignArrowTo",arrow.to)
+		Signs.paintArrow(board,arrow.label,spec.accent,theme)
+		main=main or board
+	end
+	return main
+end
+-- Banner standard: stone socket and pole behind a cloth hung from a crossbar
+-- (reference cloth 3.8 x 5: pole height 9.2, crossbar y 8.8, pole z +0.3).
+local function buildBanner(holder,cf,spec,theme)
+	local W=math.clamp((spec.width or 9)*.4,3.2,4.4)
+	local H=5.6
+	local hb=H+4.2
+	local cross=hb-.4
+	signFrame(holder,"Standard pole",V(.3,hb,.3),cf*CFrame.new(0,hb/2,.3),theme.wood,WO,"BannerStandardFrame",theme.metal,
+		V(W+1.2,hb+1.1,1.8),(cf*CFrame.new(0,(hb+1.1)/2,.3)).Position)
+	local cloth=signBoard(holder,spec.title,V(W,H,.14),cf*CFrame.new(0,cross-.2-H/2,0),darken(spec.accent,.66),Enum.Material.Fabric,"BannerCloth",spec.accent)
+	Signs.paintBanner(cloth,spec,theme)
+	return cloth
+end
+-- Stone plinth with an engraved tablet (reference tablet 7.2 x 2.4 on y 2.4).
+local function buildPlaque(holder,cf,spec,theme)
+	local W=math.clamp((spec.width or 9)*.8,5.6,9.6)
+	local H=if W>=8.8 then 2.6 else 2.4
+	signFrame(holder,"Sign plinth",V(W+.6,2.35,1.3),cf*CFrame.new(0,1.175,0),theme.stone,ST,"SignPlinthFrame",theme.metal,
+		V(W+2,2.4+H+.9,2),(cf*CFrame.new(0,(2.4+H+.9)/2,0)).Position)
+	local tablet=signBoard(holder,spec.title,V(W,H,.4),cf*CFrame.new(0,2.8+H/2,0),theme.stone,ST,"SignPlaqueBoard",theme.metal)
+	Signs.paintWide(tablet,spec,theme,"stone")
+	return tablet
+end
+-- Notice frame for ledger boards (rows are painted by ledger()).
+function Signs.ledgerFrame(holder,cf,W,H,theme)
+	signFrame(holder,"Notice post",V(.42,H+2,.42),cf*CFrame.new(-(W/2+.28),(H+2)/2,0),theme.wood,WO,"SignLedgerFrame",theme.metal,
+		V(W+1.4,H+3.1,2.2),(cf*CFrame.new(0,(H+3.1)/2,0)).Position)
+end
+local BUILDERS={hanging=buildHanging,shop=buildHanging,post=buildPost,banner=buildBanner,plaque=buildPlaque}
+function Signs.build(parent,cf,spec)
+	local style=Signs.STYLE[spec.title] or {}
+	spec.kind=spec.kind or style.kind or "hanging"
+	spec.icon=spec.icon or style.icon
+	spec.accent=spec.accent or brass
+	spec.kicker=spec.kicker or ""
+	local themeName=spec.theme or Signs.theme(parent)
+	local theme=Signs.THEMES[themeName] or Signs.THEMES.Quay
+	local holder=group("Sign "..spec.title,parent)
+	holder:SetAttribute("SignArchetype",spec.kind)
+	holder:SetAttribute("SignTitle",spec.title)
+	holder:SetAttribute("SignTheme",themeName)
+	Tags:AddTag(holder,"AetherSign")
+	local board=(BUILDERS[spec.kind] or buildHanging)(holder,cf,spec,theme)
+	return board,holder
+end
+end
+-- Legacy entry points (every call site goes through Signs.build).
+local function signAt(parent,cf,title,kicker,accent,width,opts)
+	local spec=opts or {}
+	spec.title,spec.kicker,spec.accent,spec.width=title,kicker,accent,width
+	return (Signs.build(parent,cf,spec))
+end
+local function sign(parent,pos,title,kicker,accent,yaw,width,opts)
+	return signAt(parent,CFrame.new(pos)*CFrame.Angles(0,math.rad(yaw or 0),0),title,kicker,accent,width,opts)
 end
 
 -------------------------------------------------------------------------------
@@ -569,7 +936,7 @@ local function herb(parent,pos)
 end
 -- Stall facing `toward`: counter, awning (strips abut, never overlap) and a
 -- header sign over the customer side.
-local function marketStall(parent,pos,toward,name,verb,action,item,accent,kicker)
+local function marketStall(parent,pos,toward,name,verb,action,item,accent,kicker,icon)
 	local m=group(name,parent)
 	local cf=facing(pos,toward)
 	for _, x in ipairs({-3.2,3.2}) do
@@ -581,7 +948,8 @@ local function marketStall(parent,pos,toward,name,verb,action,item,accent,kicker
 	local counter=part(m,"Counter",V(6.5,2.8,2),at(cf,0,1.4,0),navy,WO,true)
 	part(m,"Counter top",V(7,.25,2.5),at(cf,0,2.92,0),brass,WO,false)
 	meshSlot(counter,"MarketStall",accent,true)
-	signAt(m,at(cf,0,.6,-2.65),name,kicker or "COMPASS QUAY   /   SERVICES",accent,8)
+	-- Shop sign (§28) just outside the awning's front edge, the trade's icon on its bracket.
+	signAt(m,at(cf,0,.6,-3.3),name,kicker or "COMPASS QUAY   /   SERVICES",accent,8,{kind="shop",icon=icon or "Seal"})
 	if verb then prompt(counter,verb,name,action,item) end
 	return m,cf
 end
@@ -632,11 +1000,12 @@ light(heroFlame,C("FFC98A"),1.1,46,{shadows=true,lift=1})
 for _,dir in ipairs({V(1,0,0),V(-1,0,0),V(0,0,1),V(0,0,-1)}) do
 	path(hub,dir*26,dir*112,10)
 end
-sign(plaza,V(0,0,-30),"Compass Quay","01   /   SKY HARBOR + GUILDS",brass,0,12)
+sign(plaza,V(-11.5,0,-30),"Compass Quay","01   /   SKY HARBOR + GUILDS",brass,0,12)
 -- Hub spawn: every arrival from home lands on the Sky Harbor plaza.
 disk(harbor,"Harbor plaza",V(56,0,60),17,.24,C("C9B994"),ST,true)
 disk(harbor,"Harbor seal",V(56,.06,60),5,.3,navy,ST,false)
-sign(harbor,V(56,0,40),"Sky Harbor","ARRIVALS   /   HOMEWARD · CREW HAVEN",mint,0,12)
+sign(harbor,V(56,0,40),"Sky Harbor","ARRIVALS   /   HOMEWARD · CREW HAVEN",mint,0,12,{kind="post",
+	arrows={{label="Homeward",to=V(71,0,58)},{label="Crew Haven",to=V(39,0,62)},{label="Compass Plaza",to=V(0,0,0)}}})
 for i,offset in ipairs({{V(66,0,70),V(78,0,82)},{V(73,0,58),V(87,0,72)}}) do
 	local a,b=offset[1],offset[2]
 	local dir=(b-a).Unit
@@ -664,10 +1033,10 @@ anchor(hub,"Spawn",HUB_ARRIVAL-V(0,4,0),V(56,0,40))
 anchor(hub,"NPC_Herald",V(-8,0,-29),V(0,0,0))
 anchor(hub,"Waypoint_SkyHarbor",V(56,0,60),V(56,0,40))
 -- Market Row along the east avenue.
-local bank,bankCF=marketStall(hub,V(44,0,-17),V(44,0,0),"Quay Bank","Bank purse","bank",nil,mint,"MARKET ROW   /   BANK")
-local trade,tradeCF=marketStall(hub,V(68,0,-17),V(68,0,0),"Trade Counter","Sell goods","sell",nil,brass,"MARKET ROW   /   TRADE")
-marketStall(hub,V(50,0,17),V(50,0,0),"Fruit Stall",nil,nil,nil,rose,"MARKET ROW   /   PRODUCE")
-marketStall(hub,V(76,0,17),V(76,0,0),"Cloth Stall",nil,nil,nil,teal,"MARKET ROW   /   CLOTH")
+local bank,bankCF=marketStall(hub,V(44,0,-17),V(44,0,0),"Quay Bank","Bank purse","bank",nil,mint,"MARKET ROW   /   BANK","Seal")
+local trade,tradeCF=marketStall(hub,V(68,0,-17),V(68,0,0),"Trade Counter","Sell goods","sell",nil,brass,"MARKET ROW   /   TRADE","Ingot")
+marketStall(hub,V(50,0,17),V(50,0,0),"Fruit Stall",nil,nil,nil,rose,"MARKET ROW   /   PRODUCE","Feast")
+marketStall(hub,V(76,0,17),V(76,0,0),"Cloth Stall",nil,nil,nil,teal,"MARKET ROW   /   CLOTH","HideRoll")
 anchor(hub,"NPC_Banker",at(bankCF,0,0,2.4))
 anchor(hub,"NPC_Merchant",at(tradeCF,0,0,2.4))
 anchor(hub,"NPC_Auctioneer",V(86,0,-8),V(86,0,0))
@@ -685,7 +1054,7 @@ local RISE=V(-52,0,52)
 local rise,riseTop=tier(hub,"Artisans' Rise",RISE,26,4,{open={-math.pi/4,.34},top=C("A3AE86")})
 ramp(rise,V(-29,0,29),V(-37,riseTop,37),8)
 ramp(rise,V(-11,0,66),V(-30,riseTop,60),8)
-local forgeStall,forgeCF=marketStall(rise,V(-56,riseTop,42),V(-36,riseTop,30),"Starforge","Forge pickaxe","craft","Pickaxe",rose,"ARTISANS' RISE   /   SMITHING")
+local forgeStall,forgeCF=marketStall(rise,V(-56,riseTop,42),V(-36,riseTop,30),"Starforge","Forge pickaxe","craft","Pickaxe",rose,"ARTISANS' RISE   /   SMITHING","Anvil")
 anchor(hub,"NPC_Forgemaster",at(forgeCF,0,0,2.4))
 anchor(hub,"NPC_Joiner",V(-40,riseTop,50),V(-46,riseTop,58))
 anchor(hub,"Waypoint_Starforge",at(forgeCF,0,0,-5)*CFrame.Angles(0,math.pi,0))
@@ -727,10 +1096,12 @@ for i,o in ipairs({V(58,0,-70),V(70,0,-60),V(72,0,-72),V(62,0,-56)}) do decorTre
 -- Avenue lamps (night) and approach signs.
 for _,p in ipairs({V(34,0,8),V(64,0,-8),V(96,0,8),V(-34,0,-8),V(-64,0,8),V(-96,0,-8),
 	V(8,0,-34),V(-8,0,-64),V(8,0,-96),V(-8,0,34),V(8,0,64),V(-8,0,96),V(46,0,74)}) do lamp(hub,p) end
-sign(hub,V(-100,0,-12),"Mosswake Grove","WEST   /   TIMBER + HERBS",mint,90,10)
-sign(hub,V(100,0,12),"Brassfall Quarry","EAST   /   COPPER ORE",brass,90,10)
-sign(hub,V(12,0,-100),"Warden Reach","NORTH   /   HUNTS",rose,0,9)
-sign(hub,V(-12,0,100),"Guild Terrace","SOUTH   /   CRAFT · SLAYER · SKYWAY",brass,0,10)
+-- Avenue signposts (§28): arrows point at the island they name and back to the plaza.
+local PLAZA=V(0,0,0)
+sign(hub,V(-100,0,-12),"Mosswake Grove","WEST   /   TIMBER + HERBS",mint,90,10,{kind="post",arrows={{label="Mosswake Grove",to=G},{label="Compass Plaza",to=PLAZA}}})
+sign(hub,V(100,0,12),"Brassfall Quarry","EAST   /   COPPER ORE",brass,90,10,{kind="post",arrows={{label="Brassfall Quarry",to=Q},{label="Compass Plaza",to=PLAZA}}})
+sign(hub,V(12,0,-100),"Warden Reach","NORTH   /   HUNTS",rose,0,9,{kind="post",arrows={{label="Warden Reach",to=W},{label="Compass Plaza",to=PLAZA}}})
+sign(hub,V(-12,0,100),"Guild Terrace","SOUTH   /   CRAFT · SLAYER · SKYWAY",brass,0,10,{kind="post",arrows={{label="Guild Terrace",to=V(0,0,232)},{label="Compass Plaza",to=PLAZA}}})
 -- Flora and outcrops.
 for i,p in ipairs({V(-92,0,48),V(-30,0,96),V(-56,0,86),V(-20,0,-34),V(-66,0,-26),V(-24,0,-62),V(-84,0,-18),
 	V(-52,0,-16),V(30,0,-40),V(96,0,-30),V(36,0,-86),V(22,0,40),V(92,0,26),V(24,0,86),V(-88,0,-60)}) do
@@ -881,7 +1252,7 @@ anchor(skyreach,"Waypoint_Entrance_Skyreach",SKYREACH_LANDING-V(0,4,0),SR)
 -- Assigned with the regional beacons below: pcall + table check + denial notice.
 local regionTravel
 local launch = sculpture(mine,"Charter beacon",Q+V(58,2,6),"Lantern",1.2)
-sign(mine,Q+V(54,0,-4),"Skyreach passage","GUILD CHARTER REQUIRED",brass,90,9)
+sign(mine,Q+V(54,0,-4),"Skyreach passage","GUILD CHARTER REQUIRED",brass,90,9,{arrows={{label="Skyreach",to=SR},{label="Brassfall Quarry",to=Q}}})
 anchor(mine,"Waypoint_SkyreachCharter",Q+V(52,0,8),Q+V(58,0,6))
 local launchPrompt=prompt(launch,"Ascend to Skyreach","Guild charter required")
 launchPrompt:SetAttribute("IsleWarpRegion","Skyreach")
@@ -1643,36 +2014,68 @@ local function returnWarp(parent,pos,label,regionId)
 	return post
 end
 
--- Static ledger boards; rows are named so live data can be written later.
+-- Static ledger boards (§28 "ledger" archetype): a notice frame with a shingled
+-- canopy and a notice board; rows are named so live data can be written later.
 local function ledger(parent,name,pos,toward,title,kicker,rows,accent,width,height)
-	local cf=facing(pos+V(0,height/2+1.6,0),toward)
-	for _,s in ipairs({-1,1}) do part(parent,"Ledger post",V(.35,height+1.8,.35),cf*CFrame.new(s*(width/2+.1),-.7,0),brass,MT,false) end
-	local board=part(parent,name,V(width,height,.35),cf,ink,SM,false)
-	meshSlot(board,"Signboard",accent)
-	local canvasH=math.floor(600*height/width)
+	local ground=facing(pos,toward)
+	local holder=group("Sign "..title,parent)
+	holder:SetAttribute("SignArchetype","ledger")
+	holder:SetAttribute("SignTitle",title)
+	local themeName=Signs.theme(parent)
+	local theme=Signs.THEMES[themeName]
+	holder:SetAttribute("SignTheme",themeName)
+	Tags:AddTag(holder,"AetherSign")
+	Signs.ledgerFrame(holder,ground,width,height,theme)
+	local board=part(holder,name,V(width,height,.35),ground*CFrame.new(0,height/2+1.6,0),ink,WO,false)
+	meshSlot(board,"SignNoticeBoard",theme.metal)
+	board:SetAttribute("SignBoard",true)
+	local pps=600/width
+	local canvasH=math.floor(pps*height)
 	local gui=Instance.new("SurfaceGui")
-	gui.Face,gui.CanvasSize,gui.LightInfluence,gui.MaxDistance=Enum.NormalId.Front,Vector2.new(600,canvasH),0,70
+	gui.Name="Sign face Front"
+	gui.Face,gui.SizingMode,gui.PixelsPerStud=Enum.NormalId.Front,Enum.SurfaceGuiSizingMode.PixelsPerStud,pps
+	gui.LightInfluence,gui.Brightness,gui.MaxDistance=Signs.LIGHT,Signs.BRIGHTNESS,90
+	gui:SetAttribute("SignStyled",true)
 	gui.Parent=board
-	local function text(t,x,y,w,h,font,color,align,label)
+	local bg=Instance.new("Frame")
+	bg.Name,bg.BorderSizePixel,bg.BackgroundColor3,bg.Size="Panel",0,theme.panel,UDim2.fromScale(1,1)
+	bg.Parent=gui
+	local grad=Instance.new("UIGradient")
+	grad.Color,grad.Rotation=ColorSequence.new(theme.panel:Lerp(cream,.08),theme.panel:Lerp(C("05080C"),.3)),90
+	grad.Parent=bg
+	local rule=Instance.new("Frame")
+	rule.Name,rule.BackgroundTransparency="Rule",1
+	rule.Position,rule.Size=UDim2.fromOffset(10,10),UDim2.fromOffset(580,canvasH-20)
+	rule.Parent=gui
+	local stroke=Instance.new("UIStroke")
+	stroke.Color,stroke.Thickness=theme.trim,3
+	stroke.Parent=rule
+	local function text(t,x,y,w,h,family,color,align,label,maxSize)
+		local size=Signs.fit(t,w,h,1,maxSize or h/Signs.LINE,math.min(14,h/Signs.LINE))
 		local l=Instance.new("TextLabel")
 		l.Name=label or "Text"
 		l.BackgroundTransparency,l.TextXAlignment=1,align or Enum.TextXAlignment.Left
 		l.Position,l.Size=UDim2.fromOffset(x,y),UDim2.fromOffset(w,h)
-		l.Font,l.TextColor3,l.Text,l.TextScaled=font,color,t,true
+		l.TextColor3,l.Text,l.TextScaled,l.TextWrapped,l.TextSize=color,t,false,true,size
+		local ok=pcall(function() l.FontFace=Font.new(family,Enum.FontWeight.Bold) end)
+		if not ok then l.Font=Enum.Font.GothamBold end
+		local s2=Instance.new("UIStroke")
+		s2.Color,s2.Thickness,s2.Transparency=ink,1.5,.3
+		s2.Parent=l
 		l.Parent=gui
 		return l
 	end
 	local bar=Instance.new("Frame")
 	bar.BorderSizePixel,bar.BackgroundColor3=0,accent
-	bar.Position,bar.Size=UDim2.fromOffset(18,16),UDim2.fromOffset(6,canvasH-32)
+	bar.Position,bar.Size=UDim2.fromOffset(22,22),UDim2.fromOffset(6,canvasH-44)
 	bar.Parent=gui
-	text(kicker,40,14,540,26,Enum.Font.GothamBold,accent)
-	text(title,40,40,540,46,Enum.Font.GothamBold,cream)
-	local rowH=math.min(30,math.floor((canvasH-104)/math.max(1,#rows)))
+	text((string.gsub(kicker,"%s*/%s*","  •  ")),40,20,540,28,Signs.FONT.body,accent:Lerp(cream,.35),nil,"Kicker")
+	text(title,40,48,540,50,Signs.FONT.title,theme.text,nil,"Title")
+	local rowH=math.min(30,math.floor((canvasH-114)/math.max(1,#rows)))
 	for i,row in ipairs(rows) do
-		local y=96+(i-1)*rowH
-		text(row[1],40,y,300,rowH-4,Enum.Font.GothamMedium,cream,nil,"Row_"..row.key)
-		text(row[2],330,y,240,rowH-4,Enum.Font.Gotham,lighten(accent,.3),Enum.TextXAlignment.Right,"Value_"..row.key)
+		local y=104+(i-1)*rowH
+		text(row[1],40,y,300,rowH-4,Signs.FONT.body,theme.text,nil,"Row_"..row.key,20)
+		text(row[2],330,y,240,rowH-4,Signs.FONT.body,accent:Lerp(cream,.3),Enum.TextXAlignment.Right,"Value_"..row.key,20)
 	end
 	return board
 end
@@ -2078,7 +2481,8 @@ for i,id in ipairs({"Windpine","Gloomhollow","Tidewater","Tempest"}) do
 end
 anchor(terrace,"Waypoint_Skyway",SKYWAY_LANDING-V(0,4,0),GT+V(0,0,50))
 regionWarp(shelf,CS+V(0,0,-40),"Gloomhollow",destinations.Gloomhollow,"Waypoint_DeepDescent")
-sign(shelf,CS+V(12,0,-38),"Deep descent","GLOOMHOLLOW   /   "..requirementText(Data.RegionById.Gloomhollow),REGION_ACCENT.Gloomhollow,0,9)
+sign(shelf,CS+V(12,0,-38),"Deep descent","GLOOMHOLLOW   /   "..requirementText(Data.RegionById.Gloomhollow),REGION_ACCENT.Gloomhollow,0,9,
+	{arrows={{label="Gloomhollow Caverns",to=GH}}})
 
 -------------------------------------------------------------------------------
 -- Endgame (Endgame team; self-contained section): the Shattered Crown.
@@ -2243,7 +2647,8 @@ end
 local tempestIsle=islandsFolder:FindFirstChild("Tempest Spire")
 if tempestIsle then
 	regionWarp(tempestIsle,TS+V(-34,0,34),"ShatteredCrown",LANDING,"Waypoint_Skyway_ShatteredCrown")
-	sign(tempestIsle,TS+V(-34,0,44),"The Shattered Crown",requirementText(Data.RegionById.ShatteredCrown),gold,0,10)
+	sign(tempestIsle,TS+V(-34,0,44),"The Shattered Crown",requirementText(Data.RegionById.ShatteredCrown),gold,0,10,
+		{kind="post",arrows={{label="The Shattered Crown",to=SC}}})
 end
 end
 -- End Endgame section.
@@ -3047,7 +3452,8 @@ local function buildSkillContent()
 			region(q,sc.region)
 			local side=V(-toward.Z,0,toward.X)
 			local signPos=freeSpot(host,{pos-toward*3+side*5,pos-toward*3-side*5,pos+side*6,pos-side*6,pos-toward*8,pos-toward*6+side*7,pos-toward*6-side*7},4.5)
-			signAt(m,CFrame.lookAt(signPos,signPos-toward),sc.name,"AGILITY "..sc.level.." SHORTCUT",C(Data.Skills.Agility.color),8)
+			signAt(m,CFrame.lookAt(signPos,signPos-toward),sc.name,"AGILITY "..sc.level.." SHORTCUT",C(Data.Skills.Agility.color),8,
+				{kind="post",arrows={{label=kind.verb.." here",to=pos}}})
 			anchor(m,"Waypoint_Shortcut_"..sc.id.."_"..tag,pos-toward*5,pos)
 		end
 		-- Path props hang from island A's model (non-colliding: only the shortcut moves you).
@@ -3124,7 +3530,7 @@ local function buildSkillContent()
 		local face=if toCenter.Magnitude>1 then toCenter.Unit else V(0,0,1)
 		local side=V(-face.Z,0,face.X)
 		local signPos=freeSpot(host,{center+face*9,center+face*9+side*6,center+face*9-side*6,center-face*9,center+side*9,center-side*9},5)
-		signAt(m,CFrame.lookAt(signPos,signPos+face),g.name,"HUNTER "..creature.level.."   /   "..string.upper(method.name).." · "..string.upper(creature.name),C(Data.Skills.Hunter.color),9)
+		signAt(m,CFrame.lookAt(signPos,signPos+face),g.name,"HUNTER "..creature.level.."   /   "..string.upper(method.name).." · "..string.upper(creature.name),C(Data.Skills.Hunter.color),9,{kind="shop",icon="Feather"})
 		anchor(m,"Waypoint_Hunting_"..creature.id,center+face*6,center)
 	end
 
@@ -3134,7 +3540,8 @@ local function buildSkillContent()
 		local host,IC=isle(isleName)
 		local m=content(host,Data.SkillVendors[skill].name,skill)
 		local pos,toward=IC+offset,IC+towardOffset
-		local stall,cf=marketStall(m,pos,toward,Data.SkillVendors[skill].name,nil,nil,nil,C(Data.Skills[skill].color),string.upper(skill).."   /   "..(if skill=="Agility" then "SKYMARKS" else "KITS · OUTFITS"))
+		local stall,cf=marketStall(m,pos,toward,Data.SkillVendors[skill].name,nil,nil,nil,C(Data.Skills[skill].color),string.upper(skill).."   /   "..(if skill=="Agility" then "SKYMARKS" else "KITS · OUTFITS"),
+			({Agility="Boots",Hunter="Feather"})[skill] or "Charm")
 		local counter=stall:FindFirstChild("Counter")
 		prompt(counter,"Trade",Data.SkillVendors[skill].name,"skillVendor",skill)
 		anchor(m,"NPC_"..npc,at(cf,0,0,2.4))
@@ -3435,7 +3842,7 @@ do
 			local pray=prompt(kneeler,"Pray",altar.name,"altarPray",altar.id)
 			pray:SetAttribute("PrayerAltar",altar.id)
 			gate(pray,altar.region)
-			signAt(m,at(cf,5.6,0,0),altar.name,"PRAYER   /   OFFERINGS x"..altar.mult,tint,9)
+			signAt(m,at(cf,7.2,0,0),altar.name,"PRAYER   /   OFFERINGS x"..altar.mult,tint,8,{kind="plaque"})
 			anchor(m,"Waypoint_Altar_"..altar.id,at(cf,0,0,-6),pos)
 			placed+=1
 		end
@@ -3622,7 +4029,7 @@ do
 		board(anvil,"Forgeheart","Glimmerdust perks","Commissions")
 		local cluster=hidden(m,"Glimmer cluster",at(cf,-5,1.2,-1.2).Position)
 		meshSlot(cluster,"OreCluster",dust)
-		signAt(m,at(cf,0,0,4.5)*CFrame.Angles(0,math.pi,0),"Commission Board","QUARRY GUILD   /   DAILY COMMISSIONS",dust,9)
+		signAt(m,at(cf,0,0,4.5),"Commission Board","QUARRY GUILD   /   DAILY COMMISSIONS",dust,9)
 		anchor(m,"Waypoint_CommissionBoard",at(cf,0,0,-4),pos)
 	end
 	-- Aether Museum: a columned dais with a central statue, a display case and the log lectern.
@@ -3662,7 +4069,7 @@ end
 -- bumps IsleStationVisit so the client opens Workshop › Crafting). Models carry
 -- CraftingContent = true; anchors Waypoint_Jeweller / _Tannery / _Glassworks.
 -- Built from mesh slots that already exist (Workbench, OreCluster, Barrel,
--- Forge, Signboard): 18 station parts, a 3-part sign and 3 invisible waypoint
+-- Forge) plus a §28 shop sign: 18 station parts, a 3-part sign and 3 invisible waypoint
 -- anchors (24 parts), no extra lights (terrace budget).
 -------------------------------------------------------------------------------
 do
@@ -3770,8 +4177,8 @@ end
 -- gate passes (player attribute <Region>Unlocked == true).
 -- The 78 Aether Motes themselves are never built here: motes.client.lua draws
 -- them locally from Data.Exploration (no server parts). Parts: 9 shrine
--- stones + 3 standards + 4 waypoint anchors (Waypoint_MoteShrine on Compass
--- Quay, Waypoint_Faction_<id>) = 16. Models carry ExploreContent = true.
+-- stones + 3 banner standards (§28: pole + cloth, 6) + 4 waypoint anchors (Waypoint_MoteShrine on Compass
+-- Quay, Waypoint_Faction_<id>) = 19. Models carry ExploreContent = true.
 -------------------------------------------------------------------------------
 do
 	local EX,FA=Data.Exploration,Data.Factions
@@ -3841,8 +4248,9 @@ do
 				local m=group("Faction standard "..def.short,host)
 				m:SetAttribute("ExploreContent",true)
 				m:SetAttribute("Faction",id)
-				local standard=block(m,"Faction standard",pos+V(0,3,0),V(2.4,6,.4),C(def.color),Enum.Material.Fabric,true)
-				meshSlot(standard,"Banner",C(def.color))
+				-- Banner standard (§28): the faction's cloth carries its name and the prompt.
+				local IC=host:GetAttribute("IslandCenter")
+				local standard=signAt(m,facing(pos,V(IC.X,pos.Y,IC.Z)),def.name,"FACTION   /   HAIL THE STANDARD",C(def.color),9,{kind="banner"})
 				local q=prompt(standard,"Hail",def.name,"factionBoard",id)
 				local home=EX.IsleRegion[def.isle]
 				q:SetAttribute("IsleRegion",home)
