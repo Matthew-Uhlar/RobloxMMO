@@ -164,6 +164,57 @@ end
 for _, f in ipairs(RA.Folk) do scan(f.name .. f.title .. f.greet, f.role) end
 for _, q in ipairs(RA.Quests) do scan(q.title .. q.story, q.id) end
 for id, art in pairs(RA.Regions) do scan(art.title .. art.epithet .. art.landmark.name, id) end
+-- QC H1: no coin mint. Every coin-priced offer charges at least 1.3x the item's
+-- sell value per unit (`sell` pays value; faction deliveries pay up to 1.3x):
+-- regional shops, the Warp Keeper's scrolls, skill vendors (coin part) and the Roost.
+local MARGIN = 1.3
+local offers = 0
+local function fair(where, item, coins, amount)
+	offers += 1
+	local def = Data.Items[item]
+	local value = def and def.value or 1
+	ok(coins / amount >= value * MARGIN - 1e-9, where .. " " .. item .. " sells at >= 1.3x value (" .. coins .. "c / " .. amount .. " vs value " .. value .. ")")
+end
+for _, f in ipairs(RA.Folk) do
+	for i, offer in ipairs(f.shop or {}) do fair(f.role .. ":" .. i, offer.item, offer.price, offer.amount) end
+end
+for _, w in ipairs(RA.Warps) do fair("WarpKeeper", w.scroll, w.price, 1) end
+for skill, vendor in pairs(Data.SkillVendors) do
+	for _, e in ipairs(vendor.shop) do if e.cost.coins then fair(skill .. " vendor", e.item, e.cost.coins, 1) end end
+end
+for _, e in ipairs(Data.PetDepth.Shop) do fair("Roost", e.item, e.coins, 1) end
+ok(offers >= 40, "coin offers priced against sell value (" .. offers .. ")")
+eq(RA.FolkByRole.Fishmonger.shop[1].price / RA.FolkByRole.Fishmonger.shop[1].amount >= 12 * MARGIN, true, "Opal's cooked fish no longer mints coins")
+-- QC L8: dialogue labels keep their full text (the button wraps) and each
+-- quest's "How am I doing?" reports that quest.
+for _, f in ipairs(RA.Folk) do
+	local def = T.NPCs[f.role]
+	for nodeId, node in pairs(def.nodes) do
+		for _, option in ipairs(node.options) do
+			ok(#option.label <= RA.LABEL_MAX, f.role .. "." .. nodeId .. " label fits two wrapped lines")
+		end
+	end
+	for _, q in ipairs(RA.QuestsByGiver[f.role] or {}) do
+		local opened, tip = false, nil
+		for _, option in ipairs(def.nodes.hello.options) do if option.to == "quest_" .. q.id then opened = option.label == "Quest: " .. q.title end end
+		ok(opened, q.id .. " hello label carries the full title")
+		for _, option in ipairs(def.nodes["quest_" .. q.id].options) do if option.label == "How am I doing?" then tip = option.tip end end
+		eq(tip, "rq_" .. q.id, q.id .. " progress tip is quest-specific")
+		local entry = {id = q.id, available = true, objectives = {}}
+		for j, o in ipairs(q.objectives) do entry.objectives[j] = {if j == 1 then 1 else 0, if o.count then o.count else 1} end
+		local text = T.Tips[tip]({journal = {quests = {[q.index] = entry}}, regionQuests = {accepted = {[q.id] = true}, talked = {}, warps = {}}}, {})
+		ok(has(text, q.title), q.id .. " tip names its quest")
+		ok(has(text, Data.describeCheck(q.objectives[#q.objectives])), q.id .. " tip lists its own objectives")
+		local first = q.objectives[1]
+		if first.count and first.count > 1 then ok(has(text, "(1/" .. first.count .. ")"), q.id .. " tip shows counts") end
+	end
+	for _, offer in ipairs(f.shop or {}) do
+		local name = Data.Items[offer.item].name
+		local found = false
+		for _, option in ipairs(def.nodes.shop.options) do if has(option.label, name .. " (" .. offer.price .. "c)") then found = true end end
+		ok(found, f.role .. " shop label keeps " .. name .. " and its price")
+	end
+end
 print("PASS: " .. checks .. " World Art & Regions data assertions (" .. #RA.Quests .. " quests, " .. #RA.Folk .. " folk).")
 
 ------------------------------------------------------------------------------
@@ -225,6 +276,7 @@ local worldServices = {
 }
 local world = roblox.Instance.new("Workspace")
 local worldSource = fs.readFile("world.server.lua"):gsub("plans%.Position", "plans.CFrame.Position")
+local buildStarted = os.clock()
 luau.load(worldSource, {environment = {
 	game = {GetService = function(_, name) return worldServices[name] end}, workspace = world, Instance = roblox.Instance, Vector3 = Vector3,
 	Vector2 = roblox.Vector2, CFrame = CFrame, Color3 = roblox.Color3, UDim2 = roblox.UDim2, Enum = roblox.Enum,
@@ -232,6 +284,9 @@ luau.load(worldSource, {environment = {
 	NumberRange = roblox.NumberRange, NumberSequence = roblox.NumberSequence, ColorSequence = roblox.ColorSequence,
 	require = function() return Data end,
 }, injectGlobals = true})()
+local buildSeconds = os.clock() - buildStarted
+local islandsBuilt = world:FindFirstChild("Islands")
+print(string.format("World build: %.2f s (headless, whole world.server.lua); World Art section %.3f s", buildSeconds, islandsBuilt and islandsBuilt:GetAttribute("RegionArtBuildSeconds") or -1))
 local staticParts = 0
 for _, obj in world:GetDescendants() do if obj:IsA("BasePart") then staticParts += 1 end end
 ok(staticParts < 4000, "static world stays under the 4000 part budget (" .. staticParts .. ")")
@@ -333,6 +388,136 @@ end
 ok(falls >= 5, "waterfalls spill off the cliffs (" .. falls .. ")")
 local props = islands:GetAttribute("RegionArtProps")
 ok(type(props) == "number" and props >= 50, "prop kit dressed (" .. tostring(props) .. ")")
+-- QC M1: every bridge span rides its deck's pitch (the sloped Brassfall -> Cinder Shelf span too).
+local sloped = 0
+for _, obj in world:GetDescendants() do
+	if obj:IsA("BasePart") and obj.Name == "Continuous bridge deck" then
+		local deckLook = obj.CFrame.LookVector
+		if math.abs(deckLook.Y) > .02 then sloped += 1 end
+		local best
+		for _, sib in obj.Parent:GetChildren() do
+			if sib.Name == "Bridge span" and math.abs(sib.Size.Z - obj.Size.Z) < .01 and (sib.CFrame.Position - obj.CFrame.Position).Magnitude < obj.Size.Z / 2 then best = sib end
+		end
+		local angle = math.deg(math.acos(math.clamp(best.CFrame.LookVector:Dot(deckLook), -1, 1)))
+		ok(angle < 0.5, "bridge span matches its deck's pitch (" .. string.format("%.2f", angle) .. " deg)")
+		local up = best.CFrame.UpVector:Dot(obj.CFrame.UpVector)
+		ok(up > .999, "bridge span stands on its deck's up vector")
+	end
+end
+ok(sloped >= 1, "at least one sloped bridge is covered (" .. sloped .. ")")
+-- QC M4: placement clearance. Folk anchors >= 6 studs from every other NPC anchor;
+-- no solid World Art prop overlaps a Path or another prompt host on its island.
+local npcAnchors = {}
+for _, obj in world:GetDescendants() do
+	if obj:IsA("BasePart") and string.find(obj.Name, "^Anchor_NPC_") then table.insert(npcAnchors, obj) end
+end
+local regional = {}
+for _, f in ipairs(RA.Folk) do regional["Anchor_NPC_" .. f.role] = true end
+local npcPairs = 0
+for i, a in ipairs(npcAnchors) do
+	for j = i + 1, #npcAnchors do
+		local b = npcAnchors[j]
+		if (regional[a.Name] or regional[b.Name]) and math.abs(a.CFrame.Position.Y - b.CFrame.Position.Y) < 6 then
+			npcPairs += 1
+			ok(flat(a.CFrame.Position, b.CFrame.Position) >= 6 - 1e-6, a.Name .. " and " .. b.Name .. " stand >= 6 studs apart (" .. string.format("%.1f", flat(a.CFrame.Position, b.CFrame.Position)) .. ")")
+		end
+	end
+end
+ok(npcPairs > 0, "NPC spacing checked (" .. npcPairs .. " pairs)")
+local function xzBox(obj)
+	local cf, sz = obj.CFrame, obj.Size
+	local function ext(axis) return math.abs(cf.RightVector[axis]) * sz.X / 2 + math.abs(cf.UpVector[axis]) * sz.Y / 2 + math.abs(cf.LookVector[axis]) * sz.Z / 2 end
+	local c = cf.Position
+	return c.X - ext("X"), c.X + ext("X"), c.Z - ext("Z"), c.Z + ext("Z"), c.Y - ext("Y"), c.Y + ext("Y")
+end
+local function overlapXZ(a, b)
+	local ax0, ax1, az0, az1, ay0, ay1 = xzBox(a)
+	local bx0, bx1, bz0, bz1, by0, by1 = xzBox(b)
+	return ax0 < bx1 and bx0 < ax1 and az0 < bz1 and bz0 < az1 and ay0 < by1 + .5 and by0 < ay1 + .5
+end
+local solidArt, clearChecks = 0, 0
+for _, isle in islands:GetChildren() do
+	local paths, hosts = {}, {}
+	for _, obj in isle:GetDescendants() do
+		if obj:IsA("BasePart") and obj.Name == "Path" then table.insert(paths, obj) end
+		if obj:IsA("ProximityPrompt") and obj.Parent:IsA("BasePart") then table.insert(hosts, obj.Parent) end
+	end
+	for _, model in isle:GetChildren() do
+		if model:GetAttribute("RegionArt") then
+			for _, obj in model:GetDescendants() do
+				if obj:IsA("BasePart") and obj.CanCollide then
+					solidArt += 1
+					for _, path in ipairs(paths) do clearChecks += 1; ok(not overlapXZ(obj, path), obj.Name .. " on " .. isle.Name .. " keeps off the path") end
+					for _, host in ipairs(hosts) do
+						if host ~= obj then clearChecks += 1; ok(not overlapXZ(obj, host), obj.Name .. " on " .. isle.Name .. " clears prompt host " .. host.Name) end
+					end
+				end
+			end
+		end
+	end
+end
+ok(solidArt >= 40 and clearChecks > 1000, "solid World Art clearance checked (" .. solidArt .. " parts, " .. clearChecks .. " pairs)")
+-- QC M5: landmark hosts are display-only; simple colliders follow the silhouette.
+local COLLIDED = {CompassSpire = true, Sunwheel = true, EmberCaldera = true, SunkenObservatory = true, VoidglassSpire = true}
+for id in pairs(COLLIDED) do
+	local body, cols = nil, {}
+	for _, obj in world:GetDescendants() do
+		if obj:IsA("BasePart") and obj:GetAttribute("Landmark") == id then body = obj end
+		if obj:IsA("BasePart") and obj:GetAttribute("LandmarkCollider") == id then table.insert(cols, obj) end
+	end
+	ok(body ~= nil and not body.CanCollide, id .. " host does not collide (no invisible lid)")
+	ok(#cols >= 2, id .. " has colliders (" .. #cols .. ")")
+	for _, c in ipairs(cols) do
+		ok(c.CanCollide and c.Anchored and c.Transparency == 1, id .. " collider is solid and invisible")
+		local lp = body.CFrame:PointToObjectSpace(c.CFrame.Position)
+		ok(math.abs(lp.X) <= body.Size.X / 2 + .5 and math.abs(lp.Z) <= body.Size.Z / 2 + .5 and math.abs(lp.Y) <= body.Size.Y / 2 + .5, id .. " collider stays inside the landmark's box")
+	end
+	if id == "EmberCaldera" then
+		-- The crater is open: nothing covers its centre.
+		for _, c in ipairs(cols) do
+			local lp = c.CFrame:PointToObjectSpace(body.CFrame.Position)
+			ok(not (math.abs(lp.X) < c.Size.X / 2 and math.abs(lp.Z) < c.Size.Z / 2), "caldera centre is open (no lid)")
+		end
+	elseif id == "SunkenObservatory" then
+		-- The door (mesh front, -Z) is open at walking height.
+		local door = body.CFrame * CFrame.new(0, -body.Size.Y / 2 + 1.5 + 2.5, -6.55)
+		for _, c in ipairs(cols) do
+			local lp = c.CFrame:PointToObjectSpace(door.Position)
+			ok(not (math.abs(lp.X) < c.Size.X / 2 + .8 and math.abs(lp.Y) < c.Size.Y / 2 and math.abs(lp.Z) < c.Size.Z / 2 + .8), "observatory door is open")
+		end
+		local back = body.CFrame * CFrame.new(0, -body.Size.Y / 2 + 1.5 + 1.5, 6.55)
+		local walled = false
+		for _, c in ipairs(cols) do
+			local lp = c.CFrame:PointToObjectSpace(back.Position)
+			if math.abs(lp.X) < c.Size.X / 2 and math.abs(lp.Y) < c.Size.Y / 2 and math.abs(lp.Z) < c.Size.Z / 2 + .1 then walled = true end
+		end
+		ok(walled, "observatory back wall collides")
+	end
+end
+-- QC L2: waterfalls start at the cliff's outer face and hang flat facing outward.
+for _, obj in world:GetDescendants() do
+	if obj:IsA("Beam") and obj.Name == "Waterfall" then
+		local foundation = obj.Parent
+		local isle = foundation.Parent
+		local c = isle:GetAttribute("IslandCenter")
+		local lip = foundation.CFrame * obj.Attachment0.CFrame
+		local out = Vector3.new(lip.Position.X - c.X, 0, lip.Position.Z - c.Z)
+		ok(math.abs(out.Magnitude - (foundation.Size.Y / 2 + .3)) < .05, isle.Name .. " waterfall lip on the cliff face (" .. string.format("%.2f vs %.2f", out.Magnitude, foundation.Size.Y / 2 + .3) .. ")")
+		eq(obj.FaceCamera, false, isle.Name .. " waterfall has a fixed orientation")
+		for _, att in ipairs({obj.Attachment0, obj.Attachment1}) do
+			local wcf = att.Parent.CFrame * att.CFrame
+			ok(wcf.RightVector:Dot(out.Unit) > .999 and wcf.UpVector.Y > .999, isle.Name .. " waterfall attachment faces outward")
+		end
+	end
+end
+-- QC L3: the sails spin out to the forge's landmark distance (1,200 desktop / 900 phone).
+local regionsClient = fs.readFile("regions.client.lua")
+ok(has(regionsClient, "SPIN_RANGE = if mobile then 900 else 1200") and has(regionsClient, "< SPIN_RANGE then"), "sail spin cutoff matches the forge distance")
+ok(not has(regionsClient, "< 600 then"), "old 600-stud spin cutoff gone")
+eq(World.shapes.WindmillSails.range, 1200, "sails forge at 1,200 studs")
+-- QC L7: stale display names in player-facing strings.
+ok(not has(fs.readFile("server.server.lua"), "Quarry Cay") and has(fs.readFile("server.server.lua"), "Train on Ore in Brassfall Cay"), "server says Brassfall Cay")
+ok(not has(fs.readFile("ui.client.lua"), "return to the Aether Hub"), "Hubward Tablet line says Compass Quay")
 print("PASS: " .. (checks - partC) .. " world assertions (" .. BASELINE_PARTS .. " -> " .. staticParts .. " static parts, " .. decks .. " bridges, " .. falls .. " waterfalls, " .. props .. " props).")
 
 ------------------------------------------------------------------------------
@@ -556,6 +741,80 @@ do
 	ok(has(cmd(buyer, "rqBuy", "SeedSeller:9").message, "isn't for sale"), "unknown offer refused")
 	ok(has(cmd(buyer, "rqBuy", "SeedSeller:3").message, "coins"), "too poor for the scroll")
 end
+-- QC M2: bought goods never count as collection (or quest collect objectives).
+do
+	local star = RA.QuestById.StarChart
+	local offer
+	for i, o in ipairs(RA.FolkByRole.UpdraftSupplier.shop) do if o.item == "StormFeather" then offer = i end end
+	local shopper = seeded(7410, function(pr) pr.coins = 100000; seedRequirements(pr, star) end)
+	at(shopper, "Astronomer")
+	ok(has(cmd(shopper, "rqAccept", "StarChart").message, "Quest accepted"), "StarChart accepted")
+	at(shopper, "UpdraftSupplier")
+	local last
+	for _ = 1, 15 do last = cmd(shopper, "rqBuy", "UpdraftSupplier:" .. offer) end
+	ok(has(last.message, "Bought"), "bought StormFeather x15")
+	eq(last.items.StormFeather, 15, "15 StormFeather in the satchel")
+	local profile = stored(shopper)
+	eq(profile.collection.StormFeather or 0, 0, "bought StormFeather does not advance the collection")
+	shopper = player(7410)
+	local entry = cmd(shopper, "state").journal.quests[star.index]
+	for j, o in ipairs(star.objectives) do
+		if o.kind == "collect" then eq(entry.objectives[j][1], 0, "bought StormFeather does not advance StarChart") end
+	end
+	ok(not entry.ready, "StarChart not ready from shop goods")
+	-- Warp scrolls from the Warp Keeper are bought too.
+	at(shopper, "WarpKeeper")
+	ok(has(cmd(shopper, "warpBuy", "Tempest").message, "Bought"), "scroll bought")
+	eq(stored(shopper).collection[RA.WarpByRegion.Tempest.scroll] or 0, 0, "bought scroll is not a collection entry")
+end
+-- QC L4: a regional shop will not sell a scroll for a warp you already know.
+do
+	local knows = seeded(7411, function(pr) pr.coins = 5000; pr.regionQuests = {warps = {Meadow = true}} end)
+	at(knows, "SeedSeller")
+	local index
+	for i, o in ipairs(RA.FolkByRole.SeedSeller.shop) do if o.item == "WarpScrollMeadow" then index = i end end
+	local refused = cmd(knows, "rqBuy", "SeedSeller:" .. index)
+	ok(has(refused.message, "already know"), "rqBuy refuses a known warp's scroll: " .. tostring(refused.message))
+	eq(refused.coins, 5000, "no coins taken for a known warp")
+	eq(refused.items.WarpScrollMeadow or 0, 0, "no scroll given for a known warp")
+	local fresh = seeded(7412, function(pr) pr.coins = 5000 end)
+	at(fresh, "SeedSeller")
+	ok(has(cmd(fresh, "rqBuy", "SeedSeller:" .. index).message, "Bought"), "an unknown warp's scroll still sells")
+end
+-- QC L6: regional kill / collect / gather objectives count since acceptance (rejoin-safe).
+do
+	local q = RA.QuestById.BoarsInTheBarley
+	local vet = seeded(7413, function(pr) seedRequirements(pr, q); pr.bestiary.BramblebackBoar = 500 end)
+	at(vet, q.giver)
+	ok(has(cmd(vet, "rqAccept", q.id).message, "Quest accepted"), "veteran accepts " .. q.id)
+	local entry = cmd(vet, "state").journal.quests[q.index]
+	eq(entry.objectives[1][1], 0, "500 lifetime boar kills do not pre-complete the quest")
+	vet = seeded(7413, function(pr)
+		eq(pr.regionQuests.base[q.id][1], 500, "baseline saved with the profile")
+		pr.bestiary.BramblebackBoar = 505
+	end)
+	entry = cmd(vet, "state").journal.quests[q.index]
+	eq(entry.objectives[1][1], 5, "kills after acceptance count across a rejoin")
+	vet = seeded(7413, function(pr) pr.bestiary.BramblebackBoar = 512; pr.items.BeastHide = 3 end)
+	at(vet, q.giver)
+	ok(has(cmd(vet, "rqClaim", q.id).message, "Quest complete"), "handed in after 12 kills since acceptance")
+	eq(stored(vet).regionQuests.base[q.id], nil, "baseline cleared on completion")
+	-- Journal (non-regional) quests keep lifetime totals.
+	local journalQuest
+	for _, jq in ipairs(Data.Quests) do
+		if not jq.regional then for _, o in ipairs(jq.objectives) do if o.kind == "kills" and not journalQuest then journalQuest = jq end end end
+	end
+	ok(journalQuest ~= nil, "a Journal quest with a kills objective exists")
+	if journalQuest then
+		local lifer = seeded(7414, function(pr)
+			for _, o in ipairs(journalQuest.objectives) do if o.kind == "kills" then pr.bestiary[o.monster] = o.count end end
+		end)
+		local je = cmd(lifer, "state").journal.quests[journalQuest.index]
+		for j, o in ipairs(journalQuest.objectives) do
+			if o.kind == "kills" then eq(je.objectives[j][1], o.count, journalQuest.id .. " still counts lifetime kills") end
+		end
+	end
+end
 -- Warp scrolls: buy -> learn -> warp, with refusals.
 do
 	local w = RA.WarpByRegion.Quarry
@@ -582,6 +841,11 @@ do
 	ok(traveller.attrs.FastTravelAt ~= nil, "marked as known fast travel")
 	at(traveller, "WarpKeeper")
 	ok(has(cmd(traveller, "warpTo", "Quarry").message, "settling"), "warp cooldown")
+	-- QC L5: leaving and rejoining does not skip an unexpired cooldown.
+	leave(traveller)
+	traveller = player(7403)
+	at(traveller, "WarpKeeper")
+	ok(has(cmd(traveller, "warpTo", "Quarry").message, "settling"), "warp cooldown survives a quick rejoin")
 	at(traveller, "WarpKeeper")
 	advance(RA.WARP_COOLDOWN)
 	ok(has(cmd(traveller, "warpTo", "Quarry").message, "Warped"), "warp again after the cooldown")

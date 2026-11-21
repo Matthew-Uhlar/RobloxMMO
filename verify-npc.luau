@@ -63,7 +63,7 @@ for _, role in ipairs(ALL) do
 		local unconditional = false
 		for i, option in ipairs(node.options) do
 			local where = role .. "." .. nodeId .. "[" .. i .. "]"
-			ok(type(option.label) == "string" and #option.label > 0 and #option.label <= 44, "label " .. where)
+			ok(type(option.label) == "string" and #option.label > 0 and #option.label <= 80, "label " .. where) -- wraps to two lines on the dialogue button
 			local actions = 0
 			for _, key in ipairs(ACTIONS) do if option[key] ~= nil then actions += 1 end end
 			eq(actions, 1, "one action " .. where)

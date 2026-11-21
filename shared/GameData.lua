@@ -10795,7 +10795,7 @@ local folk = {
 	{role="UpdraftSupplier",region="Skyreach",name="Venn Lofthook",title="Updraft Supplier",portrait="🪁",kind="shop",
 		look={skin="C68642",shirt="00838F",pants="263238",shoes="212121",accent="80DEEA",hair="3E2723",hat="feather",held="rod"},
 		greet="Rope, feathers and courage. Two of those I sell.",
-		shop={{item="StormFeather",price=60,amount=1},{item="Tonic",price=15,amount=2},{item="WarpScrollSkyreach",price=1440,amount=1}}},
+		shop={{item="StormFeather",price=60,amount=1},{item="Tonic",price=16,amount=2},{item="WarpScrollSkyreach",price=1440,amount=1}}},
 	-- Windpine
 	{role="CanopyWarden",region="Windpine",name="Wren Tallbough",title="Canopy Warden",portrait="🍃",
 		look={skin="8D5524",shirt="2E7D32",pants="33691E",shoes="1B5E20",accent="C5E1A5",hair="4E342E",hat="feather",held="staff",cape="1B5E20"},
@@ -10806,7 +10806,7 @@ local folk = {
 	{role="Forager",region="Windpine",name="Fenna Mossglove",title="Forager",portrait="🍄",kind="shop",
 		look={skin="FFDBAC",shirt="827717",pants="5D4037",shoes="4E342E",accent="DCE775",hair="FFB74D",hat="hood",held="crate",cape="9E9D24"},
 		greet="Picked at dawn, sold by noon, and none of it poisonous. Mostly.",
-		shop={{item="MightDraught",price=180,amount=1},{item="Tonic",price=14,amount=2},{item="WarpScrollWindpine",price=1800,amount=1}}},
+		shop={{item="MightDraught",price=180,amount=1},{item="Tonic",price=16,amount=2},{item="WarpScrollWindpine",price=1800,amount=1}}},
 	-- Gloomhollow
 	{role="CrystalReader",region="Gloomhollow",name="Sable Quillmoth",title="Crystal-reader",portrait="🔮",
 		look={skin="D1A27A",shirt="311B92",pants="1A1033",shoes="0D0A14",accent="B59CFF",hair="212121",hat="hood",held="lantern",cape="4527A0"},
@@ -10828,7 +10828,7 @@ local folk = {
 	{role="Fishmonger",region="Tidewater",name="Opal Saltreed",title="Fishmonger",portrait="🐟",kind="shop",
 		look={skin="F1C27D",shirt="E1F5FE",pants="0288D1",shoes="01579B",accent="E76F7B",hair="FFCC80",hat="souwester",held="crate",apron="B3E5FC"},
 		greet="Caught this morning, smoked by lunch. Best on the Shoals!",
-		shop={{item="CookedFish",price=18,amount=2},{item="Tonic",price=14,amount=1},{item="WarpScrollTidewater",price=4800,amount=1}}},
+		shop={{item="CookedFish",price=32,amount=2},{item="Tonic",price=14,amount=1},{item="WarpScrollTidewater",price=4800,amount=1}}},
 	-- Tempest
 	{role="StormScribe",region="Tempest",name="Thessaly Vaunt",title="Storm-scribe",portrait="⚡",
 		look={skin="FFDBAC",shirt="263238",pants="1C2833",shoes="0B0F14",accent="BFD7FF",hair="CFD8DC",hat="hood",held="scroll",cape="37474F"},
@@ -11043,6 +11043,25 @@ end
 ------------------------------------------------------------------------------
 local T = Data.Townsfolk
 T.RegionFolkOrder = {}
+-- Option labels wrap on the dialogue buttons (npc.client.lua) instead of being cut.
+RA.LABEL_MAX = 80
+-- "How am I doing?" for one regional quest: its own objectives from the snapshot
+-- (journal.quests[q.index].objectives = {{have, need}, ...}; regional kills /
+-- collect / gather already count since acceptance on the server).
+function RA.progressText(s, q)
+	local entry = questEntry(s, q)
+	local st = RA.questStatus(s, q)
+	if st == "done" then return "\"" .. q.title .. "\" is complete. Thank you, wayfarer." end
+	if st == "ready" then return "\"" .. q.title .. "\": everything's done. Hand it in to me whenever you like." end
+	local lines = {}
+	for j, o in ipairs(q.objectives) do
+		local pr = tab(tab(entry.objectives)[j])
+		local have, need = tonumber(pr[1]) or 0, tonumber(pr[2]) or 1
+		table.insert(lines, (if have >= need then "✓ " else "• ") .. Data.describeCheck(o) .. (if need > 1 then " (" .. math.min(have, need) .. "/" .. need .. ")" else ""))
+	end
+	local head = if st == "active" then "\"" .. q.title .. "\" so far:" else "If you take on \"" .. q.title .. "\", you'll need to:"
+	return head .. "\n" .. table.concat(lines, "\n")
+end
 local verbs = {rqAccept={}, rqClaim={}, rqTalk={}, rqBuy={}, warpTo={}, warpBuy={}, warpLearn={}}
 local farewell = {label="Farewell", close=true}
 local function cond(id, f) T.Conditions[id] = f; return id end
@@ -11054,7 +11073,7 @@ for _, f in ipairs(folk) do
 	for _, q in ipairs(RA.QuestsByGiver[role] or {}) do
 		local nodeId = "quest_" .. q.id
 		verbs.rqAccept[q.id] = true
-		table.insert(hello, {label=string.sub("Quest: " .. q.title, 1, 44), to=nodeId,
+		table.insert(hello, {label="Quest: " .. q.title, to=nodeId,
 			when=cond("rqOpen_" .. q.id, function(s) local st = RA.questStatus(s, q); return st ~= "locked" and st ~= "done" end)})
 		local opts = {
 			{label="I'll do it",verb="rqAccept",item=q.id,when=cond("rqOffer_" .. q.id, function(s) return RA.questStatus(s, q) == "offer" end)},
@@ -11065,7 +11084,9 @@ for _, f in ipairs(folk) do
 			table.insert(opts, {label=if skill then "Hand in (lamp: " .. skill .. ")" else "Hand in the quest",verb="rqClaim",item=claim,
 				when=cond("rqReady_" .. claim, function(s) return RA.questStatus(s, q) == "ready" end)})
 		end
-		table.insert(opts, {label="How am I doing?", tip="quest"})
+		local tipId = "rq_" .. q.id
+		T.Tips[tipId] = function(s) return RA.progressText(s, q) end
+		table.insert(opts, {label="How am I doing?", tip=tipId})
 		table.insert(opts, {label="Back", to="hello"})
 		nodes[nodeId] = {text=q.story, options=opts}
 	end
@@ -11075,7 +11096,7 @@ for _, f in ipairs(folk) do
 			local key = role .. ":" .. i
 			verbs.rqBuy[key] = true
 			local def = Data.Items[offer.item]
-			table.insert(shopOpts, {label=string.sub("Buy " .. (if offer.amount > 1 then offer.amount .. "× " else "") .. (def and def.name or offer.item) .. " (" .. offer.price .. "c)", 1, 44),verb="rqBuy",item=key})
+			table.insert(shopOpts, {label="Buy " .. (if offer.amount > 1 then offer.amount .. "× " else "") .. (def and def.name or offer.item) .. " (" .. offer.price .. "c)",verb="rqBuy",item=key})
 		end
 		table.insert(shopOpts, {label="Back", to="hello"})
 		nodes.shop = {text="Have a look. Coins up front, no haggling.", options=shopOpts}
@@ -11087,11 +11108,11 @@ for _, f in ipairs(folk) do
 			local region = w.region
 			local name = Data.RegionById[region].name
 			verbs.warpTo[region], verbs.warpBuy[region], verbs.warpLearn[region] = true, true, true
-			table.insert(warpOpts, {label=string.sub("Warp to " .. name, 1, 44),verb="warpTo",item=region,
+			table.insert(warpOpts, {label="Warp to " .. name,verb="warpTo",item=region,
 				when=cond("warpKnown_" .. region, function(s) return tab(rq(s).warps)[region] == true end)})
-			table.insert(learnOpts, {label=string.sub("Read: " .. name, 1, 44),verb="warpLearn",item=region,
+			table.insert(learnOpts, {label="Read: " .. name,verb="warpLearn",item=region,
 				when=cond("warpScroll_" .. region, function(s) return tab(rq(s).warps)[region] ~= true and (tonumber(tab(tab(s).items)[w.scroll]) or 0) > 0 end)})
-			table.insert(buyOpts, {label=string.sub("Scroll: " .. name .. " (" .. w.price .. "c)", 1, 44),verb="warpBuy",item=region,
+			table.insert(buyOpts, {label="Scroll: " .. name .. " (" .. w.price .. "c)",verb="warpBuy",item=region,
 				when=cond("warpUnknown_" .. region, function(s) return tab(rq(s).warps)[region] ~= true end)})
 		end
 		table.insert(warpOpts, {label="Back", to="hello"})
@@ -11105,7 +11126,7 @@ for _, f in ipairs(folk) do
 		table.insert(hello, {label="Buy a warp scroll", to="buy"})
 	end
 	local art = RA.Regions[f.region]
-	if art then table.insert(hello, {label=string.sub("Where is " .. art.landmark.name .. "?", 1, 44),waypoint={"anchor:Waypoint_Landmark_" .. art.landmark.id,"region:" .. f.region}}) end
+	if art then table.insert(hello, {label="Where is " .. art.landmark.name .. "?",waypoint={"anchor:Waypoint_Landmark_" .. art.landmark.id,"region:" .. f.region}}) end
 	table.insert(hello, farewell)
 	nodes.hello = {text=f.greet, options=hello}
 	T.NPCs[role] = {name=f.name,title=f.title,region=f.region,portrait=f.portrait,look=f.look,start="hello",nodes=nodes,anchorOnly=true,folk=f.kind or "quest"}
