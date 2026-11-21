@@ -3765,7 +3765,9 @@ end
 -- claims milestone steps and the region bonus); triggering also sets the
 -- player's IsleStation "Motes" and bumps IsleStationVisit (Journal › Motes).
 -- Faction standards: one Banner per faction on its home island; prompt
--- IsleAction "factionBoard", IsleItem <faction>, IsleStation "Factions".
+-- IsleAction "factionBoard", IsleItem <faction>, IsleRegion <its island's region>,
+-- IsleStation "Factions". Both kinds set IsleStation only after the region
+-- gate passes (player attribute <Region>Unlocked == true).
 -- The 78 Aether Motes themselves are never built here: motes.client.lua draws
 -- them locally from Data.Exploration (no server parts). Parts: 9 shrine
 -- stones + 3 standards + 4 waypoint anchors (Waypoint_MoteShrine on Compass
@@ -3806,8 +3808,11 @@ do
 			table.insert(taken,first)
 			return first
 		end
-		local function opens(q,page)
+		-- The journal page opens only once the region gate passes (the server's
+		-- <Region>Unlocked attribute), matching the server's IsleRegion check.
+		local function opens(q,page,region)
 			q.Triggered:Connect(function(player)
+				if region and player:GetAttribute(region.."Unlocked")~=true then return end
 				player:SetAttribute("IsleStation",page)
 				player:SetAttribute("IsleStationVisit",(player:GetAttribute("IsleStationVisit") or 0)+1)
 			end)
@@ -3824,7 +3829,7 @@ do
 				meshSlot(stone,"Waystone",moteTint)
 				local q=prompt(stone,"Commune","Mote Shrine · "..(Data.RegionById[region] and Data.RegionById[region].name or region),"moteShrine",region)
 				q:SetAttribute("IsleRegion",region)
-				opens(q,"Motes")
+				opens(q,"Motes",region)
 				if region=="Hub" then anchor(m,"Waypoint_MoteShrine",pos+V(0,0,-5),pos) end
 			end
 		end
@@ -3839,7 +3844,9 @@ do
 				local standard=block(m,"Faction standard",pos+V(0,3,0),V(2.4,6,.4),C(def.color),Enum.Material.Fabric,true)
 				meshSlot(standard,"Banner",C(def.color))
 				local q=prompt(standard,"Hail",def.name,"factionBoard",id)
-				opens(q,"Factions")
+				local home=EX.IsleRegion[def.isle]
+				q:SetAttribute("IsleRegion",home)
+				opens(q,"Factions",home)
 				anchor(m,"Waypoint_Faction_"..id,pos+V(0,0,-5),pos)
 			end
 		end

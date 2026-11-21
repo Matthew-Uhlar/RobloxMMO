@@ -136,10 +136,13 @@ end
 -- Accessory family (SkyBlock-style upgrade lines): Crafting jewellery
 -- (category "jewellery") made from the same cut gem (`gem`) is one family —
 -- the ring, necklace, amulet and enchanted amulet of a gem. Returns the family
--- key or nil (every other accessory is its own family).
+-- key or nil (every other accessory is its own family). A faction's Charm and
+-- Crest (`faction`) are one family too ("faction:<id>").
 function Progression.accessoryFamily(id)
 	local def = Data.Items[id]
 	if def and def.category == "jewellery" and type(def.gem) == "string" then return "jewellery:" .. def.gem end
+	-- A faction's Charm and Crest are one family: only the better one counts.
+	if def and def.kind == "accessory" and type(def.faction) == "string" then return "faction:" .. def.faction end
 	return nil
 end
 -- Family order: highest effective rarity, then Magical Power (reforges), then

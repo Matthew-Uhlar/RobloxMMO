@@ -7983,7 +7983,8 @@ function CL.log(force)
 		if def.kind == "pet" then offer(id, "Pets") end
 		if def.trailUnique then offer(id, "Trails") end
 		if def.slayerUnique then offer(id, "Slayer") end
-		if def.minigameUnique or def.logUnique == "Minigames" then offer(id, "Minigames") end
+		if def.minigameUnique or def.logUnique == "Minigames" then offer(id, "Minigames")
+		elseif type(def.logUnique) == "string" and rank[def.logUnique] then offer(id, def.logUnique) end -- e.g. Factions
 	end
 	local seen = {}
 	local function walk(t, tab, depth)
@@ -8650,6 +8651,24 @@ EX.PICKUP_RADIUS = 9     -- studs from the HumanoidRootPart to the mote (server 
 EX.RENDER_RADIUS = 150   -- studs: the client draws unfound motes this close
 EX.PICKUP_COOLDOWN = 1   -- seconds between pickups (server, per player)
 EX.HINT_SECONDS = 120    -- a Wayglass bearing stays on screen this long
+-- Anti-teleport pickup checks (server). Positions are sampled every
+-- SAMPLE_SECONDS; a pickup needs DWELL_SECONDS inside the mote's island
+-- region since arriving (a jump between samples restarts the clock), and the
+-- horizontal travel implied since the last pickup (or sample) may not exceed
+-- SPEED_FACTOR x max(BASE_WALK, the humanoid's WalkSpeed) + SPEED_SLACK
+-- studs unless a known fast-travel event (waystone leaf, recall, ferry,
+-- respawn) happened in between. Perch motes (agility > 0) also need the
+-- HumanoidRootPart within PERCH_VERTICAL studs of the mote's height, so a
+-- plain jump (JUMP_HEIGHT) from the ground below cannot reach them.
+EX.SAMPLE_SECONDS = 1
+EX.DWELL_SECONDS = 3
+EX.SPEED_FACTOR = 3
+EX.BASE_WALK = 16
+EX.SPEED_SLACK = 12
+EX.TRACK_REACH = 160     -- studs past an island's radius that still count as its region (far arenas)
+EX.PERCH_VERTICAL = 1.5
+EX.JUMP_HEIGHT = 7.2     -- Roblox default JumpHeight (studs)
+EX.ROOT_HEIGHT = 3       -- HumanoidRootPart centre above the feet (studs)
 -- Island -> region (matches each island's Region attribute; verified by tests).
 EX.IsleRegion = {
 	["Compass Quay"]="Hub", ["Warden Reach"]="Hub", ["Guild Terrace"]="Hub",
@@ -8686,7 +8705,7 @@ EX.Motes = {
 	{id="Guild03",isle="Guild Terrace",at={-59.9,2.4,33.3},hint="Under a terrace tree"},
 	{id="Guild04",isle="Guild Terrace",at={-49.8,4.4,-32.5},hint="On the little terrace knoll"},
 	{id="Moss01",isle="Mosswake Grove",at={22.5,13.8,-102.0},hint="High on the Mosswake Hedgerow Hop perches",agility=10},
-	{id="Moss02",isle="Mosswake Grove",at={-22.5,12.7,-76.0},hint="High on the Mosswake Hedgerow Hop perches",agility=10},
+	{id="Moss02",isle="Mosswake Grove",at={0.0,12.7,-115.0},hint="High on the Mosswake Hedgerow Hop perches",agility=10},
 	{id="Moss03",isle="Mosswake Grove",at={-13.6,2.3,-23.1},hint="By the mossy pond stones"},
 	{id="Moss04",isle="Mosswake Grove",at={-17.2,2.2,30.3},hint="Behind the grove rocks"},
 	{id="Moss05",isle="Mosswake Grove",at={40.3,2.4,-45.1},hint="Under the old pine"},
@@ -8727,7 +8746,7 @@ EX.Motes = {
 	{id="Gloom06",isle="Gloomhollow Caverns",at={-44.2,2.4,24.9},hint="By the dark pool"},
 	{id="Gloom07",isle="Gloomhollow Caverns",at={53.5,5.4,42.8},hint="On the fungal ledge"},
 	{id="Tide01",isle="Tidewater Shoals",at={11.5,11.6,140.2},hint="High on the Tidewater Mastwalk perches",agility=50},
-	{id="Tide02",isle="Tidewater Shoals",at={39.5,12.7,88.8},hint="High on the Tidewater Mastwalk perches",agility=50},
+	{id="Tide02",isle="Tidewater Shoals",at={49.6,13.4,112.8},hint="High on the Tidewater Mastwalk perches",agility=50},
 	{id="Tide03",isle="Tidewater Shoals",at={-63.8,2.4,53.2},hint="At the lighthouse door"},
 	{id="Tide04",isle="Tidewater Shoals",at={-52.8,2.2,19.0},hint="Under a glimmerbark tree"},
 	{id="Tide05",isle="Tidewater Shoals",at={-33.3,2.2,46.6},hint="Beneath the beach palms"},
@@ -8955,7 +8974,8 @@ local function shop(faction, def)
 end
 local function accessory(id, name, rarity, stats, text, faction)
 	local r = Data.Rarity[rarity]
-	Data.Items[id] = {id=id,name=name,kind="accessory",rarity=rarity,color=r.color,stats=stats,value=40 * r.rank ^ 2,faction=faction,
+	-- logUnique: Collection Log › Factions (credited through collect()).
+	Data.Items[id] = {id=id,name=name,kind="accessory",rarity=rarity,color=r.color,stats=stats,value=40 * r.rank ^ 2,faction=faction,logUnique="Factions",
 		description="Accessory. Magical Power " .. r.power .. ". " .. text}
 end
 accessory("EmberwrightCharm","Emberwright Charm","Rare",{miningSpeed=20,defense=8},"Sworn of the Emberwright Concord.","Concord")
@@ -8998,17 +9018,41 @@ end
 -- play per task: kills at MG.SOLO.killsPerHour, harvests at respawn + the
 -- gather overhead, deliveries 1 minute; plus TRAVEL seconds per task.
 FA.MODEL_TRAVEL = 60
+-- One kill or harvest advances every board holding a task for it (the Storm
+-- Harrier is on both the Concord's and the Corsairs' pools; there is no
+-- deduplication), so the model splits a task's work between the factions
+-- sharing its kind and target (worst case: both drawn on the same day).
+function FA.sharers(t)
+	if t.kind == "deliver" then return 1 end
+	local n = 0
+	for _, o in ipairs(FA.Tasks) do if o.kind == t.kind and o.target == t.target then n += 1 end end
+	return math.max(1, n)
+end
 function FA.taskSeconds(t)
 	local MG = Data.Minigames
 	local travel = FA.MODEL_TRAVEL
-	if t.kind == "kill" then return travel + t.amount * 3600 / MG.SOLO.killsPerHour end
+	if t.kind == "kill" then return travel + t.amount * 3600 / MG.SOLO.killsPerHour / FA.sharers(t) end
 	if t.kind == "gather" then
 		local r = resourceDef(t.target)
-		return travel + t.amount * ((r and r.respawn or 3) + MG.SOLO.gatherOverhead)
+		return travel + t.amount * ((r and r.respawn or 3) + MG.SOLO.gatherOverhead) / FA.sharers(t)
 	end
 	return travel
 end
+-- Collection Log › Factions: the three Charms and three Crests (the items
+-- carry logUnique = "Factions"; CommissionsLogs.log() files them here).
+local CLog = Data.CommissionsLogs
+if CLog and CLog.LogTabs and not CLog.LogTabs.Factions then
+	CLog.LogTabs.Factions = {name="Factions",title="Oathbound",coins=30000,color="D4A84B"}
+	table.insert(CLog.LogTabOrder, table.find(CLog.LogTabOrder, "Curios") or #CLog.LogTabOrder + 1, "Factions")
 end
+end
+-- Permanent-stat budget (docs/DEPTH-CONTRACT.md §24): the summed maximum of
+-- every p.perkStats source (motes, Museum, commission milestones, Forgeheart,
+-- Agility laps, the Hunter log, Garden milestones, the crew perk, quests,
+-- diaries and the best furniture per hotspot) stays within these totals.
+-- Faction rewards are accessories (one active per faction family), not
+-- perkStats. verify-exploration.luau sums the sources and asserts the budget.
+Data.PerkBudget = {health=300, defense=125}
 -- <<< END Exploration & Factions <<<
 
 ------------------------------------------------------------------------------

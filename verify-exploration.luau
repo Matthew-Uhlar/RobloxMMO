@@ -10,6 +10,13 @@
 -- milestones and region bonuses into p.perkStats, the Wayglass, migration,
 -- rejoin safety, faction boards (UTC roll-forward, auto-claim), progress from
 -- kills and harvests, deliveries, pledges and switches, shop and titles.
+-- QC fixes (each with a regression test): anti-teleport pickups (dwell, speed
+-- limit, fast-travel exemptions, perch height; perch motes out of jump reach),
+-- Charm/Crest family, compact exploration snapshots (rev + exploreSync),
+-- guarded Logs.event hook, all-board top-up, paid-once region coins, crest
+-- last-copy rule, refresh at the top of snapshot(), perk budget, client
+-- server clock and gating, region-gated station prompts (Navigate entries:
+-- verify-ui.luau) and the Collection Log Factions tab.
 -- Part D renders the client mote layer (motes.client.lua) with doubles.
 -- Part E renders Journal › Motes / Factions at three sizes.
 -- Part F prints and bounds the balance model.
@@ -180,10 +187,26 @@ for _, e in ipairs(FA.Shop) do
 	if e.item then
 		local def = Data.Items[e.item]
 		ok(def ~= nil and def.kind == "accessory" and def.faction == e.faction, e.id .. " accessory")
-		ok(P.accessoryFamily(e.item) == nil, e.id .. " own family")
+		eq(P.accessoryFamily(e.item), "faction:" .. e.faction, e.id .. " joins its faction's family (QC M2)")
 		for stat in pairs(def.stats) do ok(Data.Stats[stat] ~= nil and not string.find(stat, "Fortune"), e.id .. " stat " .. stat) end
 	end
 	if e.kind == "crest" then ok(Data.Items[e.consumes] ~= nil and e.rank == #FA.Ranks, e.id .. " upgrades the charm at the top rank") end
+end
+-- Lead decision: the Charms and Crests are Collection Log › Factions entries.
+do
+	local CL = Data.CommissionsLogs
+	local L = CL.log()
+	ok(CL.LogTabs.Factions ~= nil and CL.LogTabs.Factions.coins > 0 and #CL.LogTabs.Factions.title > 3, "Factions log tab and reward")
+	ok(table.find(CL.LogTabOrder, "Factions") ~= nil and table.find(L.Order, "Factions") ~= nil, "Factions tab listed and shown")
+	local n = 0
+	for _, e in ipairs(FA.Shop) do if e.item then n += 1; eq(L.Of[e.item], "Factions", e.item .. " logged under Factions") end end
+	eq(#L.Tabs.Factions, n, "the tab holds exactly the faction accessories")
+end
+-- QC M2: both in the bag, only the Crest counts (one family).
+do
+	local p = {items = {EmberwrightCharm = 1, EmberwrightCrest = 1}, accessoryBag = {"EmberwrightCharm", "EmberwrightCrest"}, xp = {}}
+	local active = P.activeAccessories(p)
+	ok(table.find(active, "EmberwrightCrest") ~= nil and table.find(active, "EmberwrightCharm") == nil, "Charm and Crest do not stack")
 end
 do
 	local rec = {rep = {Concord = 600}, sigils = {Concord = 45}, pledge = "", unlocks = {}}
@@ -299,6 +322,44 @@ for _, m in ipairs(EX.Motes) do
 	end
 	ok(m.at[2] > -2 and m.at[2] < 40, m.id .. " height on its island")
 end
+-- QC M1: no perch mote is within reach of a plain jump from the ground below.
+-- Server reach for a perch mote: |root.Y - mote.Y| <= PERCH_VERTICAL and a
+-- PICKUP_RADIUS sphere. Standing on a surface g the root rides from g + ROOT_HEIGHT
+-- to g + ROOT_HEIGHT + JUMP_HEIGHT, so every standing surface within the pickup
+-- radius horizontally, other than the perch itself, must sit lower than
+-- mote.Y - (ROOT_HEIGHT + JUMP_HEIGHT + PERCH_VERTICAL).
+do
+	local reach = EX.ROOT_HEIGHT + EX.JUMP_HEIGHT + EX.PERCH_VERTICAL
+	for _, m in ipairs(EX.Motes) do
+		if m.agility > 0 then
+			local pos = worldPos[m.id]
+			local near = {}
+			for _, o in solids do
+				local c = o.CFrame.Position
+				local lp = Vector3.new(c.X - pos.X, 0, c.Z - pos.Z)
+				if lp.Magnitude <= EX.PICKUP_RADIUS + o.Size.Magnitude / 2 then table.insert(near, o) end
+			end
+			local function solid(pt) for _, o in near do if inside(o, pt) then return true end end return false end
+			local worst
+			for dx = -EX.PICKUP_RADIUS, EX.PICKUP_RADIUS, 1 do
+				for dz = -EX.PICKUP_RADIUS, EX.PICKUP_RADIUS, 1 do
+					if dx * dx + dz * dz <= EX.PICKUP_RADIUS * EX.PICKUP_RADIUS then
+						-- Highest standing surface below the perch band (4.5 studs under the mote).
+						for y = pos.Y - 4.5, pos.Y - reach - 0.25, -0.25 do
+							local pt = Vector3.new(pos.X + dx, y, pos.Z + dz)
+							if solid(pt) then
+								if not solid(pt + Vector3.new(0, 0.5, 0)) then worst = math.max(worst or -1e9, y) end
+								break
+							end
+						end
+					end
+				end
+			end
+			ok(worst == nil, m.id .. " (Agility " .. m.agility .. ") is out of plain-jump reach from below"
+				.. (if worst then string.format(" (ground %.1f studs under it)", pos.Y - worst) else ""))
+		end
+	end
+end
 for i, a in ipairs(EX.Motes) do
 	for j = i + 1, #EX.Motes do
 		local b = EX.Motes[j]
@@ -329,6 +390,14 @@ do
 	local visitor = {attrs = {}}
 	function visitor:SetAttribute(k, v) self.attrs[k] = v end
 	function visitor:GetAttribute(k) return self.attrs[k] end
+	-- QC L10: a locked region's prompt opens no journal page.
+	visitor.attrs.HubUnlocked, visitor.attrs.QuarryUnlocked = false, false
+	shrines.Hub.Triggered:Fire(visitor)
+	standards.Concord.Triggered:Fire(visitor)
+	eq(visitor.attrs.IsleStation, nil, "a locked shrine / standard sets no IsleStation")
+	eq(visitor.attrs.IsleStationVisit, nil, "a locked prompt bumps no visit")
+	eq(standards.Concord:GetAttribute("IsleRegion"), EX.IsleRegion[FA.Factions.Concord.isle], "standard is region-gated by its island")
+	visitor.attrs.HubUnlocked, visitor.attrs.QuarryUnlocked = true, true
 	shrines.Hub.Triggered:Fire(visitor)
 	eq(visitor.attrs.IsleStation, "Motes", "shrine opens Journal › Motes")
 	eq(visitor.attrs.IsleStationVisit, 1, "shrine bumps the visit counter")
@@ -373,6 +442,7 @@ local services = {
 }
 local serverObjects = {}
 local exploreApi
+local warnings = {}
 local env = {
 	game = {GetService = function(_, name) return services[name] end, BindToClose = function() end},
 	workspace = {GetAttribute = function(self, key) return rawget(self, key) end, FindFirstChild = function(_, name) if name == "Islands" then return islands end return nil end},
@@ -388,6 +458,7 @@ local env = {
 	require = function(target) return assert(modules[target], "unexpected require") end,
 	Random = {new = function() return {NextNumber = function() return 0.999 end, NextInteger = function(_, lo) return lo end} end},
 	__ExploreHarness = function(api) exploreApi = api end,
+	warn = function(text) table.insert(warnings, tostring(text)) end,
 	task = {
 		spawn = function(f, ...) local co = coroutine.create(f); local okRun, err = coroutine.resume(co, ...); assert(okRun, err); return co end,
 		defer = function(f, ...) f(...) end,
@@ -405,8 +476,8 @@ local function player(id)
 	local p = {UserId = id, Parent = true, CharacterAdded = signal(), Kick = function(self, why) self.kicked = why end, attrs = {}}
 	function p:GetAttribute(key) return self.attrs[key] end
 	function p:SetAttribute(key, value) self.attrs[key] = value end
-	p.Character = {Parent = true, FindFirstChild = function() return root end, FindFirstChildOfClass = function() return humanoid end,
-		WaitForChild = function() return humanoid end, PivotTo = function(_, cf) root.Position = cf.Position end}
+	p.Character = {Parent = true, FindFirstChild = function() return p.root end, FindFirstChildOfClass = function() return humanoid end,
+		WaitForChild = function() return humanoid end, PivotTo = function(_, cf) p.root.Position = cf.Position end}
 	p.root, p.humanoid = root, humanoid
 	if liveById[id] then services.Players.PlayerRemoving:Fire(liveById[id]) end
 	liveById[id] = p
@@ -441,9 +512,21 @@ local function motesOf(s) return s.exploration.motes end
 local function hp(s) return s.depth.stats.health end
 local X = Data.XP_TABLE
 
+-- snapshot.exploration is compact unless it changed: exploreSync asks for the full copy.
+local function full(p) return cmd(p, "exploreSync") end
+-- A legitimate arrival: a known fast travel (the FastTravelAt attribute the
+-- server's own teleports set), a server position sample, then the dwell.
+local function arrive(p, pos)
+	p.attrs.FastTravelAt = (p.attrs.FastTravelAt or 0) + 1
+	standAt(p, pos)
+	exploreApi.sample(p)
+	advance(EX.DWELL_SECONDS)
+	exploreApi.sample(p)
+end
+
 -- Fresh journal.
 local finder = player(9101)
-local s0 = cmd(finder, "state")
+local s0 = full(finder)
 ok(type(s0.exploration) == "table", "snapshot carries exploration")
 eq(motesOf(s0).count, 0, "nothing found")
 eq(motesOf(s0).found, string.rep("0", EX.TOTAL), "empty bitmap")
@@ -453,12 +536,14 @@ eq(s0.exploration.factions.pledge, "", "unpledged")
 for _, id in ipairs(FA.Order) do eq(#s0.exploration.factions.list[id].board, FA.TASKS, id .. " board drawn") end
 -- Far from every mote: nothing to pick up.
 ok(has(cmd(finder, "moteCollect").message, "within reach"), "no mote in the void")
+-- Every mote's own spot reads as its island region (the dwell check).
+for _, m in ipairs(EX.Motes) do eq(exploreApi.trackRegion(worldPos[m.id]), m.region, m.id .. " stands in its own region") end
 -- A hub mote: picked up by distance; the client's id is ignored.
 local hubMotes = {}
 for _, m in ipairs(EX.Motes) do if m.region == "Hub" and m.agility == 0 then table.insert(hubMotes, m) end end
 ok(#hubMotes >= 10, "hub ground motes for the test (" .. #hubMotes .. ")")
 local first = hubMotes[1]
-standAt(finder, worldPos[first.id] + Vector3.new(0, 0.6, 0))
+arrive(finder, worldPos[first.id] + Vector3.new(0, 0.6, 0))
 local s1 = cmd(finder, "moteCollect", "Crown01")
 ok(has(s1.message, "found"), "mote picked up: " .. tostring(s1.message))
 eq(motesOf(s1).count, 1, "count 1")
@@ -467,15 +552,13 @@ local crown = EX.MoteById.Crown01
 eq(string.sub(motesOf(s1).found, crown.index, crown.index), "0", "client-named id not credited")
 advance(2)
 ok(has(cmd(finder, "moteCollect").message, "within reach"), "the same mote is never picked twice")
-eq(motesOf(cmd(finder, "state")).count, 1, "still one")
+eq(motesOf(full(finder)).count, 1, "still one")
 -- Just outside the radius.
 local second = hubMotes[2]
-standAt(finder, worldPos[second.id] + Vector3.new(EX.PICKUP_RADIUS + 0.5, 0, 0))
-advance(2)
+arrive(finder, worldPos[second.id] + Vector3.new(EX.PICKUP_RADIUS + 0.5, 0, 0))
 ok(has(cmd(finder, "moteCollect").message, "within reach"), "beyond the pickup radius refused")
 -- Rate limit: a second pickup inside the cooldown is refused.
-standAt(finder, worldPos[second.id])
-advance(2)
+arrive(finder, worldPos[second.id])
 ok(has(cmd(finder, "moteCollect").message, "found"), "second mote")
 standAt(finder, worldPos[hubMotes[3].id])
 advance(0.3)
@@ -486,19 +569,17 @@ local prof = stored(finder)
 eq(prof.motes.count, 2, "count saved")
 ok(prof.motes.found[first.id] and prof.motes.found[second.id], "found ids saved")
 finder = player(9101)
-eq(motesOf(cmd(finder, "state")).count, 2, "rejoin keeps motes")
-standAt(finder, worldPos[first.id])
-advance(2)
+eq(motesOf(full(finder)).count, 2, "rejoin keeps motes")
+arrive(finder, worldPos[first.id])
 ok(has(cmd(finder, "moteCollect").message, "within reach"), "no re-pickup after a rejoin")
 -- Three more: five found, a milestone awaits.
 for i = 3, 5 do
-	standAt(finder, worldPos[hubMotes[i].id])
-	advance(2)
+	arrive(finder, worldPos[hubMotes[i].id])
 	local s = cmd(finder, "moteCollect")
 	ok(has(s.message, "found"), "hub mote " .. i)
 	if i == 5 then ok(has(s.message, "milestone"), "milestone notice at five") end
 end
-local s5 = cmd(finder, "state")
+local s5 = full(finder)
 eq(motesOf(s5).claimable, 1, "one milestone ready")
 -- The shrine is prompt-only.
 ok(has(cmd(finder, "moteShrine", "Hub").message, "in person"), "shrine verb needs the prompt")
@@ -517,25 +598,104 @@ eq(again.coins, claim.coins, "no double pay")
 ok(has(use(finder, prompt("moteShrine", "Nowhere", shrineAt)).message, "Unknown shrine"), "unknown shrine")
 eq(stored(finder).perkStats.motes.health, 2, "mote perk saved")
 finder = player(9101)
-eq(hp(cmd(finder, "state")), hp(claim), "perk survives a rejoin")
+eq(hp(full(finder)), hp(claim), "perk survives a rejoin")
 -- Region gate: a Skyreach mote needs region access.
 local sky
 for _, m in ipairs(EX.Motes) do if m.region == "Skyreach" and m.agility == 0 then sky = m break end end
-standAt(finder, worldPos[sky.id])
-advance(2)
+arrive(finder, worldPos[sky.id])
 local denied = cmd(finder, "moteCollect")
 ok(has(denied.message, "Skyreach") or has(denied.message, "charter"), "region-gated mote refused: " .. tostring(denied.message))
 eq(motesOf(denied).count, 5, "refusal credits nothing")
 -- Agility gate: a perch mote needs its course level.
 local perch
 for _, m in ipairs(EX.Motes) do if m.region == "Meadow" and m.agility > 1 then perch = m break end end
-standAt(finder, worldPos[perch.id])
-advance(2)
+arrive(finder, worldPos[perch.id])
 ok(has(cmd(finder, "moteCollect").message, "Agility"), "agility-gated mote refused")
 local nimble = seeded(9102, function(pr) pr.xp.Agility = X[perch.agility] end)
-standAt(nimble, worldPos[perch.id])
-advance(2)
+-- QC M1: a perch mote needs the root at the perch's height; jumping up from
+-- below (inside the 9-stud sphere but PERCH_VERTICAL + 1 studs under it) fails.
+arrive(nimble, worldPos[perch.id] - Vector3.new(0, EX.PERCH_VERTICAL + 1, 0))
+ok(has(cmd(nimble, "moteCollect").message, "within reach"), "perch mote out of reach from below")
+arrive(nimble, worldPos[perch.id])
 ok(has(cmd(nimble, "moteCollect").message, "found"), "agility-gated mote at its level")
+
+-- QC M1: anti-teleport. The dwell: a pickup right after arriving is refused
+-- without spending the cooldown; after EX.DWELL_SECONDS it counts.
+local tele = player(9110)
+local hops = {}
+for _, m in ipairs(EX.Motes) do if m.agility == 0 and (m.region == "Hub" or m.region == "Meadow") then table.insert(hops, m) end end
+tele.attrs.FastTravelAt = 1
+standAt(tele, worldPos[hops[1].id])
+local settle = cmd(tele, "moteCollect")
+ok(has(settle.message, "settling"), "no pickup on arrival: " .. tostring(settle.message))
+advance(0.3)
+ok(has(remote.OnServerInvoke(tele, "moteCollect").message, "settling"), "a dwell refusal spends no cooldown")
+advance(EX.DWELL_SECONDS)
+ok(has(cmd(tele, "moteCollect").message, "found"), "after the dwell the mote counts")
+-- Teleporting (no FastTravelAt change) to a far mote and waiting out the dwell:
+-- the implied travel speed since the last pickup is refused, cooldown unspent.
+local far
+for _, m in ipairs(hops) do
+	if (worldPos[m.id] - worldPos[hops[1].id]).Magnitude > 250 then far = m break end
+end
+ok(far ~= nil, "a far mote for the teleport test")
+standAt(tele, worldPos[far.id])
+exploreApi.sample(tele)
+advance(EX.DWELL_SECONDS)
+exploreApi.sample(tele)
+local blink = cmd(tele, "moteCollect")
+ok(has(blink.message, "sudden arrival"), "teleport pickup refused: " .. tostring(blink.message))
+eq(motesOf(blink).count, 1, "teleport credits nothing")
+advance(0.3)
+ok(has(remote.OnServerInvoke(tele, "moteCollect").message, "sudden arrival"), "a speed refusal spends no cooldown")
+-- Walking there at an honest pace is fine; so is a known fast travel.
+local walkTime = (worldPos[far.id] - worldPos[hops[1].id]).Magnitude / 16
+advance(walkTime)
+ok(has(cmd(tele, "moteCollect").message, "found"), "the same trip at walking pace counts")
+local back = hops[2]
+tele.attrs.FastTravelAt += 1
+standAt(tele, worldPos[back.id])
+exploreApi.sample(tele)
+advance(EX.DWELL_SECONDS)
+ok(has(cmd(tele, "moteCollect").message, "found"), "a waystone/recall teleport (FastTravelAt) is not a speed breach")
+-- A respawn (a new HumanoidRootPart) is a known fast travel too.
+tele.root = {Position = worldPos[hops[3].id], Anchored = false, AssemblyLinearVelocity = Vector3.zero}
+exploreApi.sample(tele)
+advance(EX.DWELL_SECONDS)
+ok(has(cmd(tele, "moteCollect").message, "found"), "a respawn is a known fast travel")
+-- The exploit: blink between the Hub and Meadow ground motes (alternating
+-- islands), waiting out the dwell and retrying every 2 s until accepted. The
+-- sweep can go no faster than the speed limit along its path.
+do
+	local cheat = player(9111)
+	local hub, meadow = {}, {}
+	for _, m in ipairs(hops) do table.insert(if m.region == "Hub" then hub else meadow, m) end
+	local route = {}
+	for i = 1, math.max(#hub, #meadow) do
+		if hub[i] then table.insert(route, hub[i]) end
+		if meadow[i] then table.insert(route, meadow[i]) end
+	end
+	local t0, path, got, refused = clock, 0, 0, 0
+	for i, m in ipairs(route) do
+		if i > 1 then path += Vector3.new(worldPos[m.id].X - worldPos[route[i - 1].id].X, 0, worldPos[m.id].Z - worldPos[route[i - 1].id].Z).Magnitude end
+		standAt(cheat, worldPos[m.id])
+		exploreApi.sample(cheat)
+		advance(EX.DWELL_SECONDS)
+		exploreApi.sample(cheat)
+		for _ = 1, 400 do
+			if has(cmd(cheat, "moteCollect").message, "found") then got += 1 break end
+			refused += 1
+			advance(1)
+			exploreApi.sample(cheat)
+		end
+	end
+	local took = clock - t0
+	print(string.format("Teleport exploit: %d ground motes in %.0f s (%d refusals; %.0f-stud path)", got, took, refused, path))
+	eq(got, #route, "the sweep finishes only by waiting")
+	ok(refused > #route, "most blinks are refused")
+	ok(took >= path / (EX.SPEED_FACTOR * EX.BASE_WALK) - 60, "the sweep is no faster than the speed limit (" .. math.floor(took) .. " s)")
+	ok(took >= #route * EX.DWELL_SECONDS, "every pickup waits out the dwell")
+end
 -- Wayglass bearing.
 local seeker = seeded(9103, function(pr) pr.coins = 100 end)
 standAt(seeker, worldPos[hubMotes[1].id] + Vector3.new(0, 0, 20))
@@ -558,8 +718,7 @@ local here = worldPos[hubMotes[1].id] + Vector3.new(0, 0, 20)
 for _, m in ipairs(EX.Motes) do
 	if m.region == "Hub" and m.agility <= 1 then ok((worldPos[m.id] - here).Magnitude >= (worldPos[target.id] - here).Magnitude - 0.01, "bearing is the nearest (" .. m.id .. ")") end
 end
-standAt(seeker, worldPos[target.id])
-advance(2)
+arrive(seeker, worldPos[target.id])
 ok(has(cmd(seeker, "moteCollect").message, "found"), "bearing target collected")
 eq(seeker.attrs.MoteHint, "", "bearing clears on pickup")
 standAt(seeker, Vector3.new(0, 0, 4000))
@@ -571,9 +730,10 @@ local quarry = seeded(9104, function(pr)
 	pr.motes.found.FakeMote = true
 	pr.motes.found[EX.MotesByRegion.Hub[1]] = "yes"
 end)
-local q0 = cmd(quarry, "state")
+local q0 = full(quarry)
 eq(motesOf(q0).count, EX.RegionTotal.Quarry, "migration counts only real found ids")
-eq(motesOf(q0).steps, math.floor(EX.RegionTotal.Quarry / EX.STEP), "claimed steps never exceed the motes found")
+eq(motesOf(q0).steps, EX.STEPS, "claimed steps are clamped to the milestone count, never down to the motes found")
+eq(motesOf(q0).claimable, 0, "nothing claimable when more steps were claimed than motes found")
 eq(motesOf(q0).regions.Quarry.claimed, false, "complete but unclaimed region")
 eq(motesOf(q0).regions.Hub.claimed, false, "incomplete region claim dropped")
 local hp0 = hp(q0)
@@ -581,13 +741,53 @@ standAt(quarry, shrineAt)
 local qc = use(quarry, prompt("moteShrine", "Quarry", shrineAt))
 ok(has(qc.message, "complete"), "region bonus at its own shrine")
 eq(motesOf(qc).regions.Quarry.claimed, true, "region claimed")
-eq(motesOf(qc).steps, math.floor(EX.RegionTotal.Quarry / EX.STEP), "no extra steps")
+eq(motesOf(qc).steps, EX.STEPS, "no extra steps")
 eq(hp(qc), hp0 + EX.REGION_HEALTH, "region bonus Health")
 eq(qc.coins, q0.coins + EX.regionCoins("Quarry"), "region bonus coins")
 local qcoins = qc.coins
 local qa = use(quarry, prompt("moteShrine", "Quarry", shrineAt))
 eq(qa.coins, qcoins, "region bonus once")
 ok(has(use(quarry, prompt("moteShrine", "Hub", shrineAt)).message, "hums"), "other shrines do not pay another region")
+-- QC L3: a content update that adds a mote to a claimed region drops the claim
+-- (migration), and re-completing it returns the Health but never the coins;
+-- a shrunken count never re-pays milestone steps.
+do
+	eq(stored(quarry).motes.paid.Quarry, true, "region coins recorded as paid")
+	local extra = {id = "QuarryProbe", isle = "Brassfall Quarry", at = {0, 2.3, 0}, hint = "A probe mote for the update test", agility = 0,
+		index = #EX.Motes + 1, region = "Quarry"}
+	EX.MoteById[extra.id] = extra
+	table.insert(EX.MotesByRegion.Quarry, extra.id)
+	EX.RegionTotal.Quarry += 1
+	quarry = player(9104)
+	local u0 = full(quarry)
+	eq(motesOf(u0).regions.Quarry.claimed, false, "update: the region claim waits for the new mote")
+	leave(quarry)
+	data["p9104"].profile.motes.found[extra.id] = true
+	quarry = player(9104)
+	local u1 = full(quarry)
+	standAt(quarry, shrineAt)
+	local again2 = use(quarry, prompt("moteShrine", "Quarry", shrineAt))
+	ok(has(again2.message, "complete again"), "re-completed region: " .. tostring(again2.message))
+	eq(again2.coins, u1.coins, "re-completion pays no coins twice")
+	eq(hp(again2), hp(u1) + EX.REGION_HEALTH, "re-completion returns the region Health")
+	table.remove(EX.MotesByRegion.Quarry)
+	EX.MoteById[extra.id] = nil
+	EX.RegionTotal.Quarry -= 1
+	local stepper = seeded(9105, function(pr)
+		pr.motes = {found = {}, steps = 2, regions = {}}
+		for i = 1, 5 do pr.motes.found[hubMotes[i].id] = true end
+	end)
+	local st = full(stepper)
+	eq(motesOf(st).steps, 2, "steps never clamped down to the motes found")
+	eq(motesOf(st).claimable, 0, "nothing claimable")
+	for i = 6, 10 do
+		arrive(stepper, worldPos[hubMotes[i].id])
+		local r = cmd(stepper, "moteCollect").message
+		ok(has(r, "found"), "re-find " .. i .. ": " .. tostring(r))
+	end
+	local st2 = full(stepper)
+	eq(motesOf(st2).claimable, 0, "ten found, two steps already paid: nothing re-paid")
+end
 
 -- Factions.
 local today = FA.dayOf(utc)
@@ -599,14 +799,14 @@ local function setBoards(pr, boards)
 	end
 end
 local faction = player(9201)
-local f0 = cmd(faction, "state").exploration.factions
+local f0 = full(faction).exploration.factions
 eq(f0.day, today, "boards for today")
 local firstBoard = {}
 for _, id in ipairs(FA.Order) do firstBoard[id] = f0.list[id].board[1].id end
 local fprof = stored(faction)
 ok(fprof.factions.salt >= 1, "salt stored")
 faction = player(9201)
-local f1 = cmd(faction, "state").exploration.factions
+local f1 = full(faction).exploration.factions
 for _, id in ipairs(FA.Order) do eq(f1.list[id].board[1].id, firstBoard[id], id .. " board kept on rejoin") end
 do
 	local ctx = {levels = {}, regions = {}}
@@ -619,19 +819,21 @@ local worker = seeded(9202, function(pr)
 		Circle = {{"CircleKillThornling"}, {"CircleGatherHerb"}, {"CircleDeliverHerb"}}, Corsairs = {{"CorsairsGatherFish"}, {"CorsairsGatherGlassfin"}, {"CorsairsDeliverFish"}}})
 	pr.xp.Combat = X[20]
 end)
-local w0 = cmd(worker, "state").exploration.factions
+local w0 = full(worker).exploration.factions
 eq(w0.list.Concord.board[1].id, "ConcordKillShaleCrawler", "seeded board kept")
 bridge.OnInvoke("kill", worker, {monster = "CinderMite"})
-eq(cmd(worker, "state").exploration.factions.list.Concord.board[1].progress, FA.TaskById.ConcordKillShaleCrawler.amount - 1, "other monsters do not count")
+eq(full(worker).exploration.factions.list.Concord.board[1].progress, FA.TaskById.ConcordKillShaleCrawler.amount - 1, "other monsters do not count")
 bridge.OnInvoke("kill", worker, {monster = "ShaleCrawler"})
-local w1 = cmd(worker, "state").exploration.factions.list.Concord.board[1]
-ok(w1.done, "kill task finished")
+local w1 = full(worker).exploration.factions.list.Concord.board[1]
+eq(w1.progress, FA.TaskById.ConcordKillShaleCrawler.amount, "kill task finished")
+eq(w1.done, nil, "derivable done flag is not sent (QC M3)")
+eq(w1.reward, nil, "derivable reward is not sent (QC M3)")
 local gatherNode = prompt("gather", "Ore", Vector3.new(0, 0, 0))
 standAt(worker, Vector3.new(0, 0, 0))
 use(worker, gatherNode)
-ok(cmd(worker, "state").exploration.factions.list.Concord.board[2].done, "gather task finished by a harvest")
+eq(full(worker).exploration.factions.list.Concord.board[2].progress, FA.TaskById.ConcordGatherOre.amount, "gather task finished by a harvest")
 -- Claims (unpledged: x0.6 reputation).
-local c0 = cmd(worker, "state")
+local c0 = full(worker)
 local combat0 = c0.xp.Combat
 local claimOne = cmd(worker, "factionClaim", "Concord:1")
 local r1 = FA.reward(FA.TaskById.ConcordKillShaleCrawler, "")
@@ -661,14 +863,14 @@ ok(has(cmd(worker, "factionDeliver", "Concord:3").message, "you have 5"), "deliv
 leave(worker)
 data["p9202"].profile.items.Ore = 45
 worker = player(9202)
-local d0 = cmd(worker, "state")
+local d0 = full(worker)
 local dcoins0 = d0.coins
 local dl = cmd(worker, "factionDeliver", "Concord:3")
 ok(has(dl.message, "Delivered"), "delivered")
 eq(dl.items.Ore, 45 - FA.TaskById.ConcordDeliverOre.amount, "items consumed")
 eq(dl.coins, dcoins0 + FA.TaskById.ConcordDeliverOre.coins, "delivery coins")
 ok(has(cmd(worker, "factionDeliver", "Concord:3").message, "Already"), "deliver once")
-eq(cmd(worker, "state").items.Ore, 45 - FA.TaskById.ConcordDeliverOre.amount, "no double consume")
+eq(full(worker).items.Ore, 45 - FA.TaskById.ConcordDeliverOre.amount, "no double consume")
 ok(has(cmd(worker, "factionDeliver", "Concord:1").message, "not a delivery"), "kill slot is not a delivery")
 -- Rival penalty after the pledge: the Circle (Concord's rival) earns x0.25.
 bridge.OnInvoke("kill", worker, {monster = "Thornling"})
@@ -680,16 +882,20 @@ eq(rv.exploration.factions.list.Circle.mult, 0.25, "rival multiplier shown")
 local roller = seeded(9203, function(pr)
 	setBoards(pr, {Concord = {{"ConcordGatherOre", FA.TaskById.ConcordGatherOre.amount}, {"ConcordGatherAetherite", 3}, {"ConcordDeliverOre"}}})
 end)
-local before = cmd(roller, "state").exploration.factions
+local before = full(roller).exploration.factions
 advance(86400)
-local after = cmd(roller, "state").exploration.factions
+local rolled = cmd(roller, "state")
+-- QC L5: the roll happens at the top of snapshot(), so its note and pay arrive in this very snapshot.
+ok(has(rolled.message, "claimed for you"), "day-roll auto-claim note in the same snapshot: " .. tostring(rolled.message))
+ok(rolled.exploration.compact == nil, "the roll resends the full exploration state")
+local after = rolled.exploration.factions
 eq(after.day, before.day + 1, "new UTC day")
 eq(after.list.Concord.rep, FA.reward(FA.TaskById.ConcordGatherOre, "").rep, "finished task auto-claimed at the reset")
 for _, s in ipairs(after.list.Concord.board) do eq(s.progress, 0, "fresh task"); eq(s.claimed, false, "unclaimed") end
 advance(86400)
-eq(cmd(roller, "state").exploration.factions.list.Concord.rep, after.list.Concord.rep, "unfinished tasks are not paid")
+eq(full(roller).exploration.factions.list.Concord.rep, after.list.Concord.rep, "unfinished tasks are not paid")
 local back = seeded(9204, function(pr) pr.factions.day = FA.dayOf(utc) + 5 end)
-eq(cmd(back, "state").exploration.factions.day, FA.dayOf(utc) + 5, "a clock behind the saved day never redraws")
+eq(full(back).exploration.factions.day, FA.dayOf(utc) + 5, "a clock behind the saved day never redraws")
 -- Switching: cooldown, cost, forfeit.
 worker = player(9202)
 ok(has(cmd(worker, "factionPledge", "Concord").message, "already"), "same pledge")
@@ -725,7 +931,7 @@ eq(shopper.attrs.FactionTitle, "Concord Journeyman", "title attribute")
 eq(sp.exploration.factions.list.Concord.sigils, 2000 - FA.ShopById.ConcordTitle1.sigils, "title sigils spent")
 ok(has(cmd(shopper, "factionBuy", "ConcordTitle1").message, "already"), "title once")
 local lampXp = FA.lampXp("Mining", 50)
-local l0 = cmd(shopper, "state")
+local l0 = full(shopper)
 local mining0 = l0.xp.Mining
 local lamp = cmd(shopper, "factionBuy", "ConcordLamp:Mining")
 ok(has(lamp.message, "lamp"), "lamp used")
@@ -739,7 +945,7 @@ ok(charm.collection.EmberwrightCharm == 1, "charm credited through collect()")
 cmd(shopper, "accessory", "EmberwrightCharm")
 ok(has(cmd(shopper, "factionBuy", "ConcordCrest").message, "accessory bag"), "bagged charm protected")
 cmd(shopper, "accessory", "EmberwrightCharm")
-local sig = cmd(shopper, "state").exploration.factions.list.Concord.sigils
+local sig = full(shopper).exploration.factions.list.Concord.sigils
 local crest = cmd(shopper, "factionBuy", "ConcordCrest")
 ok(has(crest.message, "reforged"), "crest forged")
 eq(crest.items.EmberwrightCharm, 0, "charm consumed")
@@ -753,12 +959,108 @@ eq(cmd(shopper, "factionTitle", "ConcordTitle1").exploration.factions.titleText,
 ok(has(cmd(shopper, "factionBoard", "Concord").message, "in person"), "board greeting is prompt-only")
 standAt(shopper, Vector3.new(0, 0, 0))
 ok(has(use(shopper, prompt("factionBoard", "Concord", Vector3.new(0, 0, 0))).message, "Luminary"), "board greeting shows the rank")
+-- Lead decision: faction Charms and Crests are Collection Log entries
+-- (tab Factions), credited through collect().
+do
+	local counts = stored(shopper).colLog.counts
+	eq(counts.EmberwrightCharm, 1, "bought charm credited to the Collection Log")
+	eq(counts.EmberwrightCrest, 1, "forged crest credited to the Collection Log")
+	shopper = player(9205)
+end
+-- QC L4: the last Charm copy is refused when starred or bound to a book
+-- (same last-copy rule as a Museum donation), not only reforged/enchanted.
+-- (Accessories cannot be starred, so the Masterwork Tome binding is the case to test.)
+for _, case in ipairs({{"books", {masterwork = true}}}) do
+	local smith = seeded(9208, function(pr)
+		pr.factions.rep.Concord, pr.factions.sigils.Concord = 12000, 2000
+		pr.factions.pledge, pr.factions.pledgedAt = "Concord", utc
+		pr.coins = 100000
+		pr.items.EmberwrightCharm = 1
+		pr.stars, pr.books = {}, {}
+		pr[case[1]].EmberwrightCharm = case[2]
+	end)
+	local refused = cmd(smith, "factionBuy", "ConcordCrest")
+	ok(has(refused.message, "anvil"), "upgraded last charm (" .. case[1] .. ") protected: " .. tostring(refused.message))
+	eq(refused.items.EmberwrightCharm, 1, "charm kept (" .. case[1] .. ")")
+	leave(smith)
+	data["p9208"] = nil
+end
+-- QC M2: a faction's Charm and Crest in the bag: only the Crest counts.
+do
+	local both = seeded(9209, function(pr)
+		pr.items.GalewakeCharm, pr.items.GalewakeCrest = 1, 1
+		pr.accessoryBag = {"GalewakeCharm", "GalewakeCrest"}
+	end)
+	local active = full(both).depth.activeAccessories
+	ok(table.find(active, "GalewakeCrest") ~= nil, "the crest is active")
+	eq(table.find(active, "GalewakeCharm"), nil, "the charm does not stack with its crest")
+end
+-- QC L1: a failing faction hook is warned and never breaks the Logs credit.
+do
+	local realEvent = exploreApi.event
+	exploreApi.event = function() error("faction board exploded") end
+	local before = #warnings
+	local okKill, problem = pcall(bridge.OnInvoke, "kill", worker, {monster = "ShaleCrawler"})
+	exploreApi.event = realEvent
+	ok(okKill, "kill bridge survives a faction error: " .. tostring(problem))
+	ok(#warnings > before and has(warnings[#warnings], "Explore.event failed"), "the error is warned")
+end
+-- QC L2: same day, any short board is topped up; saved tasks keep their progress.
+do
+	local short = seeded(9210, function(pr)
+		pr.factions.day = FA.dayOf(utc)
+		pr.factions.boards.Concord[1].progress = 2
+		pr.factions.boards.Circle = {{id = pr.factions.boards.Circle[2].id, progress = 3, claimed = false}}
+		pr.factions.boards.Corsairs = {}
+	end)
+	local saved = data["p9210"].profile.factions.boards
+	local sb = full(short).exploration.factions.list
+	eq(#sb.Circle.board, FA.TASKS, "short second board topped up")
+	eq(#sb.Corsairs.board, FA.TASKS, "empty third board drawn")
+	eq(sb.Circle.board[1].id, saved.Circle[1].id, "the saved task stays first")
+	eq(sb.Circle.board[1].progress, 3, "its progress is kept")
+	eq(sb.Concord.board[1].progress, 2, "a full board is never redrawn mid-day")
+end
+-- QC M3: snapshot.exploration is sent in full only when it changed.
+do
+	local poll = seeded(9211, function(pr) setBoards(pr, {Concord = {{"ConcordKillShaleCrawler"}, {"ConcordGatherOre"}, {"ConcordDeliverOre"}}}); pr.xp.Combat = X[20] end)
+	local a = full(poll)
+	ok(a.exploration.compact == nil and type(a.exploration.rev) == "number", "sync sends the full state with its revision")
+	local b = cmd(poll, "state")
+	eq(b.exploration.compact, true, "an unchanged state is compact")
+	eq(b.exploration.rev, a.exploration.rev, "same revision")
+	eq(b.exploration.motes, nil, "compact carries no motes")
+	ok(type(b.exploration.resetIn) == "number" and type(b.exploration.switchIn) == "number", "compact keeps the timers")
+	local function size(v)
+		if type(v) == "table" then local n = 2 for k, x in pairs(v) do n += size(k) + size(x) + 2 end return n end
+		return #tostring(v)
+	end
+	print(string.format("snapshot.exploration: full ~%d bytes, compact ~%d bytes", size(a.exploration), size(b.exploration)))
+	ok(size(b.exploration) < 80, "compact payload is tiny")
+	local c = cmd(poll, "factionClaim", "all") -- any verb bumps the revision
+	ok(c.exploration.compact == nil and c.exploration.rev > a.exploration.rev, "a verb resends the full state")
+	eq(cmd(poll, "state").exploration.compact, true, "then compact again")
+	poll.last = nil
+	bridge.OnInvoke("kill", poll, {monster = "ShaleCrawler"})
+	-- The kill pushes a snapshot: it carries the full state with the progress.
+	local d = poll.last
+	ok(d ~= nil and d.exploration.compact == nil, "board progress resends the full state")
+	eq(d.exploration.factions.list.Concord.board[1].progress, 1, "with the new progress")
+	eq(cmd(poll, "state").exploration.compact, true, "and the next poll is compact")
+	leave(poll)
+	data["p9211"].profile.xp.Agility = X[30]
+	poll = player(9211)
+	full(poll)
+	ok(cmd(poll, "state").exploration.compact == true, "compact before the context changes")
+	poll.attrs.MoteHint, poll.attrs.MoteHintUntil = "Quay03", utc + 60
+	ok(cmd(poll, "state").exploration.compact == nil, "a bearing (context) change resends the full state")
+end
 -- Migration bounds.
 local tamper = seeded(9206, function(pr)
 	pr.factions = {pledge = "Nope", rep = {Concord = 1e12, Circle = -5, Bogus = 9}, sigils = {Concord = "x"}, boards = {Concord = {{id = "Nope"}, {id = "CircleGatherHerb"}}},
 		unlocks = {ConcordLamp = true, ConcordTitle2 = true, Fake = true}, title = "ConcordLamp", salt = 0}
 end)
-local t0 = cmd(tamper, "state").exploration.factions
+local t0 = full(tamper).exploration.factions
 eq(t0.pledge, "", "unknown pledge dropped")
 eq(t0.list.Concord.rep, FA.REP_CAP, "reputation capped")
 eq(t0.list.Circle.rep, 0, "negative reputation zeroed")
@@ -772,7 +1074,7 @@ local big = seeded(9207, function(pr)
 	pr.motes = {found = {}, steps = 0, regions = {}}
 	for _, m in ipairs(EX.Motes) do pr.motes.found[m.id] = true end
 end)
-cmd(big, "state")
+full(big)
 local saved = stored(big)
 local function size(v)
 	if type(v) == "table" then local n = 2 for k, x in pairs(v) do n += size(k) + size(x) + 2 end return n end
@@ -783,7 +1085,7 @@ ok(bytes < 4000, "worst-case Exploration & Factions save is small (" .. bytes ..
 print("Worst-case Exploration & Factions save: ~" .. bytes .. " bytes")
 -- Leave cleans the session table (no leaks): a fresh session may pick up at once.
 big = player(9207)
-eq(motesOf(cmd(big, "state")).count, EX.TOTAL, "every mote kept")
+eq(motesOf(full(big)).count, EX.TOTAL, "every mote kept")
 print("PASS: " .. (checks - partC) .. " Exploration & Factions server assertions.")
 
 ------------------------------------------------------------------------------
@@ -792,6 +1094,7 @@ print("PASS: " .. (checks - partC) .. " Exploration & Factions server assertions
 local partD = checks
 do
 	roblox.implementMethod("Workspace", "WaitForChild", function(self, name) return self:FindFirstChild(name) end)
+	roblox.implementMethod("Workspace", "GetServerTimeNow", function() return utc end)
 	local snapChannel, actionChannel = signal(), signal()
 	snapChannel.Event, actionChannel.Event = snapChannel, actionChannel
 	local fired = {}
@@ -812,7 +1115,8 @@ do
 			return {}
 		end},
 		workspace = world, Instance = roblox.Instance, Vector3 = Vector3, CFrame = CFrame, Color3 = roblox.Color3, UDim2 = roblox.UDim2, Enum = roblox.Enum,
-		os = {clock = function() return clock end, time = function() return math.floor(utc) end},
+		-- QC L7: the client clock runs a day behind the server; bearings use GetServerTimeNow.
+		os = {clock = function() return clock end, time = function() return math.floor(utc) - 86400 end},
 		require = function() return Data end,
 		task = {spawn = function(f) table.insert(loops, coroutine.create(f)) end, wait = function() coroutine.yield() end},
 	}
@@ -823,6 +1127,11 @@ do
 	local function step() for _, co in ipairs(loops) do coroutine.resume(co) end render:Fire() end
 	step()
 	eq(#folder:GetChildren(), 0, "nothing drawn before the first snapshot")
+	-- QC M3: only a compact snapshot so far (the full one came earlier): ask for it.
+	snapChannel:Fire({exploration = {rev = 3, compact = true, resetIn = 10, switchIn = 0}})
+	eq(fired[#fired], "exploreSync", "a compact-only start asks the field guide for exploreSync")
+	step()
+	eq(#folder:GetChildren(), 0, "still nothing drawn without a bitmap")
 	local bits = string.rep("0", EX.TOTAL)
 	snapChannel:Fire({exploration = {motes = {found = bits}}})
 	step()
@@ -869,7 +1178,37 @@ do
 	step()
 	local still = false
 	for _, part in ipairs(folder:GetChildren()) do if (part.CFrame.Position - worldPos[far.id]).Magnitude < 1 then still = true end end
-	ok(not still, "expired bearing no longer drawn")
+	ok(not still, "expired bearing no longer drawn (server clock, QC L7)")
+	-- QC L8: motes above the journal's Agility, or in a locked region, are
+	-- dimmed with their prompt disabled; reachable ones stay live.
+	local function drawnAt(m)
+		for _, part in ipairs(folder:GetChildren()) do if (part.CFrame.Position - worldPos[m.id]).Magnitude < 1.5 then return part end end
+		return nil
+	end
+	local hop = EX.MoteById.Moss01
+	snapChannel:Fire({levels = {Agility = 1}, exploration = {motes = {found = bits}}})
+	root.Position = worldPos[hop.id]
+	step()
+	local high = drawnAt(hop)
+	ok(high ~= nil, "a perch mote is still drawn")
+	ok(high and not high:FindFirstChildOfClass("ProximityPrompt").Enabled and high.Transparency > 0.5, "above the Agility level: dimmed, prompt off")
+	snapChannel:Fire({levels = {Agility = hop.agility}, exploration = {motes = {found = bits}}})
+	step()
+	ok(drawnAt(hop):FindFirstChildOfClass("ProximityPrompt").Enabled, "at its level the prompt is live")
+	attrs.MeadowUnlocked = false
+	step()
+	ok(not drawnAt(hop):FindFirstChildOfClass("ProximityPrompt").Enabled, "a locked region's mote is not gatherable")
+	attrs.MeadowUnlocked = true
+	step()
+	ok(drawnAt(hop):FindFirstChildOfClass("ProximityPrompt").Enabled, "unlocked again")
+	-- QC M3: compact snapshots keep the bitmap; with none yet the layer asks
+	-- the field guide for exploreSync.
+	snapChannel:Fire({exploration = {rev = 9, compact = true, resetIn = 10, switchIn = 0}})
+	step()
+	ok(drawnAt(hop) ~= nil, "a compact snapshot keeps the last bitmap")
+	local syncs = 0
+	for _, v in ipairs(fired) do if v == "exploreSync" then syncs += 1 end end
+	eq(syncs, 1, "no new sync while a bitmap is known")
 	-- Walking away releases every drawn mote (pooled, bounded).
 	root.Position = Vector3.new(0, 5000, 0)
 	step()
@@ -896,11 +1235,14 @@ local function sample()
 			Corsairs = {"CorsairsGatherFish", "CorsairsGatherGlassfin", "CorsairsDeliverFish"}}
 		for j, tid in ipairs(fixed[id]) do
 			local t = FA.TaskById[tid]
-			board[j] = {id = tid, progress = j == 1 and t.amount or 0, claimed = false, done = j == 1, have = t.kind == "deliver" and 3 or nil, reward = FA.reward(t, "Concord")}
+			-- Server form (QC M3): done, reward and items held are derived by the page.
+			board[j] = {id = tid, progress = j == 1 and t.amount or 0, claimed = false}
+			if t.kind == "deliver" then snap.items[t.target] = 3 end
 		end
 		list[id] = {rep = i == 1 and 2400 or 100, sigils = i == 1 and 300 or 10, done = 4, rank = i == 1 and 3 or 1, rankName = i == 1 and "Sworn" or "Outsider", mult = FA.mult(id, "Concord"), board = board}
 	end
 	snap.exploration = {
+		rev = 1,
 		motes = {found = bits, count = 5, total = EX.TOTAL, steps = 0, claimable = 1, regions = regions, hintCost = EX.hintCost(5), hint = "Quay07", hintUntil = 0, stats = {}, agility = 1},
 		factions = {pledge = "Concord", pledgedAt = 0, switchIn = 3600, resetIn = 3725, day = 20000, list = list, unlocks = {"ConcordTitle1"}, title = "ConcordTitle1", titleText = "Concord Journeyman", total = 12},
 	}
@@ -994,6 +1336,43 @@ do
 	open(ui, "Factions")
 	eq(#ui.warnings, 0, "Factions renders unsynced")
 end
+do
+	-- QC L9: "after the next milestone" totals include the regions already claimed.
+	local ui = atlas(roblox.Vector2.new(1366, 768), function(snap) snap.exploration.motes.regions.Hub.claimed = true end)
+	open(ui, "Motes")
+	local want = "After the next milestone: +" .. EX.perkStats(1, 1).health .. " Health"
+	ok(has(texts(ui.scroll), want), "next-milestone totals count claimed regions (" .. want .. ")")
+end
+do
+	-- QC M3: derived board fields (reward, done, items held) come from the page.
+	local ui = atlas(roblox.Vector2.new(1366, 768))
+	open(ui, "Factions")
+	local text = texts(ui.scroll)
+	local r = FA.reward(FA.TaskById.ConcordGatherOre, "Concord")
+	ok(has(text, "+" .. r.rep .. " reputation"), "reward derived from FA.reward")
+	ok(H.find(ui.scroll, "FactionClaimConcord1") ~= nil, "a finished task is claimable (derived done)")
+	ok(has(text, "READY"), "derived done badge")
+	-- A compact snapshot reuses the cached copy and refreshes its timers.
+	local compact = sample()
+	compact.exploration = {rev = 1, resetIn = 600, switchIn = 0, compact = true}
+	ui.update.OnClientEvent:Fire(compact)
+	open(ui, "Factions")
+	ok(H.find(ui.scroll, "FactionTaskConcord1") ~= nil, "compact snapshot keeps the cached board")
+	ok(has(texts(ui.scroll), "RESETS 0h 10m"), "compact snapshot refreshes the reset timer")
+	local function syncs()
+		local n = 0
+		for _, e in ipairs(ui.sent) do if e[1] == "exploreSync" then n += 1 end end
+		return n
+	end
+	eq(syncs(), 0, "no sync request on a cache hit")
+	local newer = sample()
+	newer.exploration = {rev = 2, resetIn = 590, switchIn = 0, compact = true}
+	ui.setSnapshot(newer)
+	ui.update.OnClientEvent:Fire(newer)
+	open(ui, "Factions")
+	ok(syncs() >= 1 and syncs() <= 2, "an unknown revision asks exploreSync once (" .. syncs() .. ")")
+	ok(H.find(ui.scroll, "FactionTaskConcord1") ~= nil, "older copy shown while syncing")
+end
 print("PASS: " .. (checks - partE) .. " Exploration & Factions page assertions.")
 
 ------------------------------------------------------------------------------
@@ -1063,6 +1442,73 @@ do
 	for n = 0, EX.TOTAL - 1 do hints += EX.hintCost(n) end
 	print(string.format("A Wayglass for every mote: %d coins (worst case)", hints))
 	ok(hints < coins, "buying every bearing costs less than the motes pay")
+end
+-- QC L11: one kill or harvest advances every board holding it (no
+-- deduplication), so FA.taskSeconds splits shared work between them.
+do
+	local storm = FA.TaskById.ConcordKillStormHarrier
+	eq(FA.sharers(storm), 2, "the Storm Harrier is on two faction pools")
+	local MG = Data.Minigames
+	eq(FA.taskSeconds(storm), FA.MODEL_TRAVEL + storm.amount * 3600 / MG.SOLO.killsPerHour / 2, "shared kills count half the time per board")
+	eq(FA.sharers(FA.TaskById.ConcordGatherOre), 1, "an unshared task keeps its full time")
+end
+-- QC L6: permanent-stat budget. The maximum of every p.perkStats source,
+-- summed, stays within Data.PerkBudget (Health / Defense).
+do
+	local CL = Data.CommissionsLogs
+	local sources = {}
+	sources.motes = EX.perkStats(EX.STEPS, #EX.RegionOrder)
+	sources.museum = (CL.museumPerks(1e9))
+	sources["commissions:milestones"] = CL.milestonePerks(1e9).stats
+	local forge = {}
+	for id, f in pairs(CL.Forge) do forge[id] = f.max end
+	sources.forgeheart = CL.forgeStats(forge, 0)
+	local laps = {}
+	for _, c in ipairs(Data.Agility.Courses) do laps[c.id] = 1e9 end
+	sources["agility:laps"] = (Data.Agility.lapPerk(laps))
+	local hlog = {}
+	for _, c in ipairs(Data.Hunter.Creatures) do hlog[c.id] = 1e9 end
+	sources["hunter:log"] = (Data.Hunter.logPerk(hlog))
+	local crops = {}
+	for _, c in ipairs(Data.Garden.Crops) do crops[c.id] = 1e9 end
+	sources["garden:milestones"] = (Data.Garden.milestonePerk(crops))
+	local crew = Data.Coop.Levels
+	sources.coop = crew[#crew].stats
+	local quests, diaries, furniture, best = {}, {}, {}, {}
+	for _, q in pairs(Data.QuestById) do for k, v in pairs(q.rewards.perk or {}) do quests[k] = (quests[k] or 0) + v end end
+	for _, diary in pairs(Data.DiaryByRegion) do
+		for _, tier in ipairs(Data.DiaryTiers) do for k, v in pairs(diary.tiers[tier].perk or {}) do diaries[k] = (diaries[k] or 0) + v end end
+	end
+	for _, f in pairs(Data.Furniture) do
+		best[f.hotspot] = best[f.hotspot] or {}
+		for k, v in pairs(f.effect.perk or {}) do best[f.hotspot][k] = math.max(best[f.hotspot][k] or 0, v) end
+	end
+	for _, b in pairs(best) do for k, v in pairs(b) do furniture[k] = (furniture[k] or 0) + v end end
+	sources["quest:*"], sources["diary:*"], sources["furniture:*"] = quests, diaries, furniture
+	-- Faction rewards are accessories (one per faction family), not perkStats.
+	for _, t in ipairs(FA.Shop) do ok(t.perk == nil and t.stats == nil, t.id .. " grants no perkStats") end
+	local total = {health = 0, defense = 0}
+	local rows = {}
+	for name, stats in pairs(sources) do
+		stats = stats or {}
+		total.health += stats.health or 0
+		total.defense += stats.defense or 0
+		table.insert(rows, string.format("%s %d/%d", name, stats.health or 0, stats.defense or 0))
+	end
+	table.sort(rows)
+	print("Perk sources (Health/Defense): " .. table.concat(rows, ", "))
+	print(string.format("Perk budget: Health %d / %d, Defense %d / %d", total.health, Data.PerkBudget.health, total.defense, Data.PerkBudget.defense))
+	ok(type(Data.PerkBudget) == "table", "budget declared in GameData")
+	ok(total.health <= Data.PerkBudget.health, "summed perk Health within the budget (" .. total.health .. ")")
+	ok(total.defense <= Data.PerkBudget.defense, "summed perk Defense within the budget (" .. total.defense .. ")")
+	-- Every perkStats key the server writes is one of the sources above.
+	local known = {motes = true, museum = true, ["commissions:milestones"] = true, forgeheart = true, ["agility:laps"] = true, ["hunter:log"] = true,
+		["garden:milestones"] = true, coop = true}
+	for _, file in ipairs({"server.server.lua", "coop.server.lua"}) do
+		local src = fs.readFile(file)
+		for key in string.gmatch(src, "perkStats%[\"([^\"]+)\"%]") do ok(known[key] ~= nil, file .. " perk source " .. key .. " is budgeted") end
+		for key in string.gmatch(src, "perkStats%.([%a_]+)%s*=") do ok(known[key] ~= nil, file .. " perk source " .. key .. " is budgeted") end
+	end
 end
 print("PASS: " .. (checks - partF) .. " Exploration & Factions balance assertions.")
 print("PASS: " .. checks .. " Exploration & Factions assertions in total.")

@@ -1328,6 +1328,7 @@ do
 		local seq=(Skills.moveSeq[player] or 0)+1
 		Skills.moveSeq[player]=seq
 		local spec=AG.Kinds[kind]
+		player:SetAttribute("FastTravelAt",os.clock()) -- server-driven movement (Aether Mote pickup checks)
 		player:SetAttribute("AgilityMoveTo",to)
 		player:SetAttribute("AgilityMoveDuration",duration)
 		player:SetAttribute("AgilityMove",(if spec then spec.anim else kind)..":"..seq)
@@ -2481,6 +2482,7 @@ do
 			if not a or not root then return "The leaf will not carry you right now." end
 			p.items[tp.id]-=1
 			Trails.leafAt[player.UserId]=now
+			player:SetAttribute("FastTravelAt",os.clock()) -- known fast travel (Aether Mote pickup checks)
 			character:PivotTo(CFrame.new(a.CFrame.Position+Vector3.new(0,4,0)))
 			root.AssemblyLinearVelocity=Vector3.zero
 			return "The leaf crumbles to light: you step out at "..tp.name.."."
@@ -3538,7 +3540,16 @@ end
 --   moteCollect                 pick up the nearest unfound Aether Mote within
 --                               EX.PICKUP_RADIUS of the character (the client's
 --                               item is ignored: no client-trusted ids); region
---                               access and the mote's Agility gate are checked
+--                               access and the mote's Agility gate are checked.
+--                               Anti-teleport: EX.DWELL_SECONDS inside the
+--                               mote's island region since arriving, and the
+--                               implied travel speed since the last pickup at
+--                               most EX.SPEED_FACTOR x WalkSpeed unless a known
+--                               fast travel (FastTravelAt attribute: leaf,
+--                               recall, ferry; or a respawn) came in between;
+--                               refusals do not consume the pickup cooldown.
+--                               Perch motes need the root within
+--                               EX.PERCH_VERTICAL studs of the mote's height.
 --   moteShrine "<region>"       (world prompt only) claim every pending
 --                               milestone step and that region's completion bonus
 --   moteHint                    buy a Wayglass bearing: the nearest reachable
@@ -3552,8 +3563,14 @@ end
 --   factionBuy "<shop id>[:<skill>]"      rank/pledge-gated shop (lamps name a skill)
 --   factionTitle "<shop id>|none"         wear an owned faction title
 --   factionBoard "<faction>"    (world prompt only) greeting text
--- Hooks: Logs.event is wrapped (kill/gather credits faction tasks too).
--- Profile: p.motes = {found = {[id] = true}, count, steps, regions = {[region] = true}, hints};
+--   exploreSync                 resend the full snapshot.exploration (client cache miss)
+-- Hooks: Logs.event is wrapped (kill/gather credits faction tasks too; a
+-- failing Explore.event is caught and warned, never breaking the Logs credit).
+-- Explore.refresh runs at the top of snapshot() so a day roll's note joins it.
+-- Snapshot: snapshot.exploration is the full state (with .rev) when it changed
+-- since the last one sent to this player, else {rev, resetIn, switchIn, compact = true}.
+-- Profile: p.motes = {found = {[id] = true}, count, steps, regions = {[region] = true},
+--   paid = {[region] = true} (completion coins paid once, ever), hints};
 --   p.factions = {pledge, pledgedAt, switches, day, salt, rep, sigils, done,
 --   boards = {[faction] = {{id, progress, claimed}}}, unlocks = {[shopId] = true}, title}.
 --   Both sanitised by Explore.migrate (unknown ids dropped, numbers clamped).
@@ -3562,10 +3579,19 @@ end
 --   FactionPledge (faction id or ""), FactionTitle (title text or "").
 ------------------------------------------------------------------------------
 local Explore={verbs={moteCollect=true,moteShrine=true,moteHint=true,factionPledge=true,factionClaim=true,factionDeliver=true,
-	factionBuy=true,factionTitle=true,factionBoard=true}}
+	factionBuy=true,factionTitle=true,factionBoard=true,exploreSync=true}}
 do
 	local EX,FA=Data.Exploration,Data.Factions
 	if __ExploreHarness then __ExploreHarness(Explore) end -- headless tests only (nil in Roblox)
+	-- Session-only revisions: snapshot.exploration is sent in full only when it
+	-- changed (Logs pattern). Strong tables, emptied when the player leaves.
+	local revOf={} -- [profile] = revision
+	local sentRev={} -- [player] = revision last sent in full
+	local keyOf={} -- [profile] = context key (Agility level, region access, live bearing)
+	local profileOf={} -- [player] = profile whose revision was sent
+	local lastRev=0
+	local function bump(p) lastRev+=1; revOf[p]=lastRev end
+	Explore.bump=bump
 	local function whole(v,limit)
 		local n=tonumber(v)
 		if not n or n~=n or n<0 then return 0 end
@@ -3593,9 +3619,11 @@ do
 		local root=character and character:FindFirstChild("HumanoidRootPart")
 		return root and root.Position or nil
 	end
-	-- The island region a position stands in (nearest island within its radius + 70 studs).
-	local function regionAt(pos)
-		local best,bestGap=nil,70
+	-- The island region a position stands in (nearest island within its radius +
+	-- `reach` studs: 70 for the Wayglass, EX.TRACK_REACH for the pickup dwell, so
+	-- the far arenas and bridge ends still count as their island).
+	local function regionAt(pos,reach)
+		local best,bestGap=nil,reach or 70
 		for name,region in pairs(EX.IsleRegion) do
 			local info=isleInfo(name)
 			if info then
@@ -3626,11 +3654,22 @@ do
 	end
 	function Explore.migrate(p)
 		local m=type(p.motes)=="table" and p.motes or {}
-		local motes={found={},count=0,steps=0,regions={},hints=whole(m.hints,1e6)}
+		local motes={found={},count=0,steps=0,regions={},paid={},hints=whole(m.hints,1e6)}
 		if type(m.found)=="table" then
 			for id,v in pairs(m.found) do if v==true and EX.MoteById[id] then motes.found[id]=true; motes.count+=1 end end
 		end
-		motes.steps=math.min(whole(m.steps,EX.STEPS),math.floor(motes.count/EX.STEP))
+		-- Steps are never clamped down to the motes found (a content update that
+		-- moves or removes motes must not let a milestone pay twice): claimable
+		-- is max(0, floor(count / STEP) - steps).
+		motes.steps=whole(m.steps,EX.STEPS)
+		-- Completion coins are paid once per region, ever (paid survives a region
+		-- claim dropped because an update added motes to it). Older saves: every
+		-- region they had claimed was paid.
+		for _,source in ipairs({m.paid,m.regions}) do
+			if type(source)=="table" then
+				for region,v in pairs(source) do if v==true and EX.RegionTotal[region] then motes.paid[region]=true end end
+			end
+		end
 		if type(m.regions)=="table" then
 			for region,v in pairs(m.regions) do
 				if v==true and EX.RegionTotal[region] then
@@ -3670,6 +3709,7 @@ do
 		if type(f.title)=="string" and out.unlocks[f.title] then out.title=f.title end
 		p.factions=out
 		Explore.refresh(p)
+		bump(p)
 	end
 	------------------------------------------------------------------------
 	-- Faction boards: UTC day roll (forward only), auto-claim on a new day.
@@ -3685,12 +3725,36 @@ do
 		if r.xp>0 and r.skill then grantXp(p,r.skill,r.xp) end
 		return r
 	end
-	local function stale(f,today) return today>f.day or #(f.boards[FA.Order[1]] or {})==0 end
+	-- Any faction's board short of FA.TASKS (new journal, dropped unknown tasks).
+	local function short(f)
+		for _,id in ipairs(FA.Order) do if #(f.boards[id] or {})<FA.TASKS then return true end end
+		return false
+	end
+	local function stale(f,today) return today>f.day or short(f) end
 	function Explore.refresh(p)
 		local f=p.factions
 		if not f then return end
 		local today=FA.dayOf(os.time())
 		if not stale(f,today) then return end
+		if today<=f.day then
+			-- Same day: top up only the short boards, keeping every saved task
+			-- (and its progress); a full board is never redrawn mid-day.
+			local ctx,changed=context(p),false
+			for _,id in ipairs(FA.Order) do
+				local list=f.boards[id] or {}
+				f.boards[id]=list
+				if #list<FA.TASKS then
+					local have={}
+					for _,s in ipairs(list) do have[s.id]=true end
+					for _,tid in ipairs(FA.draw(id,f.day,f.salt,ctx)) do
+						if #list<FA.TASKS and not have[tid] then table.insert(list,{id=tid,progress=0,claimed=false}); have[tid]=true; changed=true end
+					end
+				end
+			end
+			if changed then bump(p) end
+			return
+		end
+		bump(p)
 		if today>f.day then
 			local paid=0
 			for _,id in ipairs(FA.Order) do
@@ -3719,17 +3783,21 @@ do
 				local t=FA.TaskById[s.id]
 				if t and t.kind==kind and t.target==id and s.progress<t.amount then
 					s.progress+=1
+					bump(p)
 					if s.progress>=t.amount then note(p,FA.Factions[fid].short.." task complete: claim it in Journal › Factions.") end
 				end
 			end
 		end
 	end
 	-- Every Commissions & Logs progress event (kill bridge, harvests) also
-	-- feeds the faction boards: one hook, no new call sites.
+	-- feeds the faction boards: one hook, no new call sites. One event advances
+	-- every board holding a matching task (no deduplication; FA.taskSeconds
+	-- models the shared work). A faction error never breaks the Logs credit.
 	local logsEvent=Logs.event
 	Logs.event=function(p,kind,id)
 		logsEvent(p,kind,id)
-		Explore.event(p,kind,id)
+		local okEvent,problem=pcall(Explore.event,p,kind,id)
+		if not okEvent then warn("Explore.event failed: "..tostring(problem)) end
 	end
 	local function titleText(p)
 		local e=p.factions and p.factions.title~="" and FA.ShopById[p.factions.title]
@@ -3744,7 +3812,9 @@ do
 	------------------------------------------------------------------------
 	-- Motes.
 	------------------------------------------------------------------------
-	local lastPickup={} -- [player] = os.clock() of the last pickup attempt
+	local lastPickup={} -- [player] = os.clock() before which the next pickup is refused
+	local lastFind={} -- [player] = {pos, t} of the last credited pickup (os.clock)
+	local track={} -- [player] = {root, pos, t, region, since, travel, mark}: server position samples
 	local function nearestUnfound(p,pos,radius,filter)
 		local best,bestDist=nil,radius
 		for _,mote in ipairs(EX.Motes) do
@@ -3758,7 +3828,51 @@ do
 		end
 		return best,bestDist
 	end
-	local function claimable(p) return math.floor(p.motes.count/EX.STEP)-p.motes.steps end
+	local function flat(a,b) return Vector3.new(a.X-b.X,0,a.Z-b.Z).Magnitude end
+	-- Fastest honest horizontal travel: SPEED_FACTOR x the server's WalkSpeed.
+	local function speedLimit(player)
+		local character=player.Character
+		local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+		local walk=humanoid and tonumber(humanoid.WalkSpeed) or EX.BASE_WALK
+		return EX.SPEED_FACTOR*math.max(EX.BASE_WALK,walk)
+	end
+	-- One position sample (slow server tick, and at every pickup). A new
+	-- HumanoidRootPart (respawn) or a changed FastTravelAt attribute (set by
+	-- the server's own teleports: waystone leaves, recall charms, the ferry,
+	-- the teleport spell) records a known fast travel. A jump faster than the
+	-- speed limit between samples, or a change of island region, restarts
+	-- the dwell clock.
+	function Explore.sample(player)
+		local character=player.Character
+		local root=character and character:FindFirstChild("HumanoidRootPart")
+		if not root then track[player]=nil return nil end
+		local now=os.clock()
+		local pos=root.Position
+		local region=regionAt(pos,EX.TRACK_REACH)
+		local mark=player:GetAttribute("FastTravelAt")
+		local tr=track[player]
+		if not tr or tr.root~=root then
+			tr={root=root,pos=pos,t=now,region=region,since=now,travel=now,mark=mark}
+			track[player]=tr
+			return tr
+		end
+		if mark~=tr.mark then tr.mark=mark; tr.travel=now end
+		if flat(pos,tr.pos)>speedLimit(player)*math.max(0,now-tr.t)+EX.SPEED_SLACK then tr.since=now end
+		if region~=tr.region then tr.region,tr.since=region,now end
+		tr.pos,tr.t=pos,now
+		return tr
+	end
+	function Explore.trackRegion(pos) return regionAt(pos,EX.TRACK_REACH) end
+	task.spawn(function()
+		while true do
+			task.wait(EX.SAMPLE_SECONDS)
+			for _,player in ipairs(Players:GetPlayers()) do
+				if profiles[player] then pcall(Explore.sample,player) end
+			end
+		end
+	end)
+	-- Steps claimed are never clamped down, so a shrunken count claims nothing.
+	local function claimable(p) return math.max(0,math.floor(p.motes.count/EX.STEP)-p.motes.steps) end
 	local function regionDone(p,region)
 		for _,id in ipairs(EX.MotesByRegion[region] or {}) do if not p.motes.found[id] then return false end end
 		return (EX.RegionTotal[region] or 0)>0
@@ -3768,12 +3882,27 @@ do
 		if not pos then return "Return to your island first." end
 		local now=os.clock()
 		if now<(lastPickup[player] or 0) then return "One moment…" end
-		lastPickup[player]=now+EX.PICKUP_COOLDOWN
-		local mote=nearestUnfound(p,pos,EX.PICKUP_RADIUS)
+		local tr=Explore.sample(player)
+		-- Perch motes need the root at the perch's height (no jumping up to them).
+		local mote=nearestUnfound(p,pos,EX.PICKUP_RADIUS,function(mote)
+			if mote.agility<=0 then return true end
+			local at=Explore.motePosition(mote)
+			return at~=nil and math.abs(pos.Y-at.Y)<=EX.PERCH_VERTICAL
+		end)
 		if not mote then return "No unfound "..EX.MOTE.name.." within reach." end
+		-- Anti-teleport (refusals keep the cooldown unspent).
+		if not tr or tr.region~=mote.region or now-tr.since<EX.DWELL_SECONDS then
+			return "The motes here are still settling around you. Give them a few seconds."
+		end
+		local last=lastFind[player]
+		if last and not (tr.travel>=last.t) and flat(pos,last.pos)>speedLimit(player)*math.max(0,now-last.t)+EX.SPEED_SLACK then
+			return "The motes scatter from such a sudden arrival. Travel on foot, by waystone leaf or by recall charm."
+		end
+		lastPickup[player]=now+EX.PICKUP_COOLDOWN
 		if not regionAllowed(p,mote.region) then return regionDenied(mote.region) end
 		if not EX.canReach(mote,agility(p)) then return "This mote drifts over an Agility "..mote.agility.." course; train Agility to claim it." end
 		local m=p.motes
+		lastFind[player]={pos=pos,t=now}
 		m.found[mote.id]=true
 		m.count+=1
 		local text=EX.MOTE.name.." found! ("..m.count.." / "..EX.TOTAL..")"
@@ -3798,9 +3927,16 @@ do
 		end
 		if regionDone(p,region) and not m.regions[region] then
 			m.regions[region]=true
-			local coins=EX.regionCoins(region)
-			p.coins+=coins
-			table.insert(parts,((Data.RegionById[region] or {}).name or region).." complete! +"..coins.." coins, +"..EX.REGION_HEALTH.." Health")
+			local name=(Data.RegionById[region] or {}).name or region
+			if m.paid[region] then
+				-- Re-completed after a content update: the Health returns, the coins were paid once already.
+				table.insert(parts,name.." complete again! +"..EX.REGION_HEALTH.." Health")
+			else
+				m.paid[region]=true
+				local coins=EX.regionCoins(region)
+				p.coins+=coins
+				table.insert(parts,name.." complete! +"..coins.." coins, +"..EX.REGION_HEALTH.." Health")
+			end
 		end
 		motePerks(p)
 		if #parts==0 then
@@ -3915,7 +4051,9 @@ do
 				local charm=e.consumes
 				local held=p.items[charm] or 0
 				local bagged=table.find(p.accessoryBag or {},charm)~=nil
-				local upgraded=(type(p.reforges)=="table" and p.reforges[charm]~=nil) or (type(p.enchants)=="table" and type(p.enchants[charm])=="table" and next(p.enchants[charm])~=nil)
+				-- Same last-copy rule as a Museum donation: reforges, stars, books, enchants.
+				local upgraded=(type(p.reforges)=="table" and p.reforges[charm]~=nil) or (type(p.stars)=="table" and (tonumber(p.stars[charm]) or 0)>0)
+					or (type(p.books)=="table" and p.books[charm]~=nil) or (type(p.enchants)=="table" and type(p.enchants[charm])=="table" and next(p.enchants[charm])~=nil)
 				if held<1 then return "The "..Data.Items[e.item].name.." is forged from a "..Data.Items[charm].name.."." end
 				if held<2 and (bagged or upgraded) then return "Take your "..Data.Items[charm].name.." out of the accessory bag (and off the anvil) first." end
 			end
@@ -3955,13 +4093,34 @@ do
 			if not prompt then return "Visit a Mote Shrine in person." end
 			reply=shrine(player,p,item)
 		elseif verb=="moteHint" then reply=hint(player,p)
+		elseif verb=="exploreSync" then sentRev[player]=nil; return ""
 		else reply=factionAction(player,p,verb,item,prompt) end
+		bump(p) -- any verb may change the state: the next snapshot carries it in full
 		return reply
+	end
+	-- What the full state reads from outside p.motes / p.factions: a change
+	-- (Agility level, region access, a bearing set or faded) bumps the revision.
+	local function contextKey(player,p)
+		local parts={tostring(agility(p))}
+		for _,region in ipairs(EX.RegionOrder) do table.insert(parts,if regionAllowed(p,region) then "1" else "0") end
+		local hintId=player:GetAttribute("MoteHint")
+		local hintUntil=tonumber(player:GetAttribute("MoteHintUntil")) or 0
+		table.insert(parts,if type(hintId)=="string" and hintId~="" and hintUntil>os.time() then hintId else "")
+		return table.concat(parts,":")
 	end
 	function Explore.state(player,p)
 		if not p.motes or not p.factions then return nil end
-		Explore.refresh(p)
 		publish(player,p)
+		local f=p.factions
+		local now=os.time()
+		local switchIn=if f.pledge~="" then math.max(0,f.pledgedAt+FA.SWITCH_COOLDOWN-now) else 0
+		local key=contextKey(player,p)
+		if keyOf[p]~=key then keyOf[p]=key; bump(p) end
+		if not revOf[p] then bump(p) end
+		local rev=revOf[p]
+		profileOf[player]=p
+		if sentRev[player]==rev then return {rev=rev,resetIn=FA.resetIn(now),switchIn=switchIn,compact=true} end
+		sentRev[player]=rev
 		local m=p.motes
 		local bits=table.create(EX.TOTAL,"0")
 		for i,mote in ipairs(EX.Motes) do if m.found[mote.id] then bits[i]="1" end end
@@ -3971,15 +4130,13 @@ do
 			for _,id in ipairs(EX.MotesByRegion[region]) do if m.found[id] then here+=1 end end
 			regions[region]={found=here,total=EX.RegionTotal[region],claimed=m.regions[region]==true,allowed=regionAllowed(p,region)}
 		end
-		local f=p.factions
 		local factions={}
 		for _,id in ipairs(FA.Order) do
 			local index,rank,nextRank=FA.rankOf(f.rep[id])
 			local board={}
-			for i,s in ipairs(f.boards[id]) do
-				local t=FA.TaskById[s.id]
-				board[i]={id=s.id,progress=s.progress,claimed=s.claimed,done=s.progress>=t.amount,have=if t.kind=="deliver" then (p.items[t.target] or 0) else nil,reward=FA.reward(t,f.pledge)}
-			end
+			-- Derivable fields stay on the client: done = progress >= amount,
+			-- reward = FA.reward(task, pledge), items held from snapshot.items.
+			for i,s in ipairs(f.boards[id]) do board[i]={id=s.id,progress=s.progress,claimed=s.claimed} end
 			factions[id]={rep=f.rep[id],sigils=f.sigils[id],done=f.done[id],rank=index,rankName=rank.name,nextAt=nextRank and nextRank.at or nil,mult=FA.mult(id,f.pledge),board=board}
 		end
 		local unlocks={}
@@ -3988,13 +4145,17 @@ do
 		local hintId=player:GetAttribute("MoteHint")
 		local hintUntil=player:GetAttribute("MoteHintUntil") or 0
 		return {
+			rev=rev,
 			motes={found=table.concat(bits),count=m.count,total=EX.TOTAL,steps=m.steps,claimable=claimable(p),regions=regions,hintCost=EX.hintCost(m.count),
-				hint=if type(hintId)=="string" and hintId~="" and hintUntil>os.time() then hintId else nil,hintUntil=hintUntil,stats=table.clone(p.perkStats and p.perkStats.motes or {}),agility=agility(p)},
-			factions={pledge=f.pledge,pledgedAt=f.pledgedAt,switchIn=if f.pledge~="" then math.max(0,f.pledgedAt+FA.SWITCH_COOLDOWN-os.time()) else 0,
-				resetIn=FA.resetIn(os.time()),day=f.day,list=factions,unlocks=unlocks,title=f.title,titleText=titleText(p),total=f.total},
+				hint=if type(hintId)=="string" and hintId~="" and hintUntil>now then hintId else nil,hintUntil=hintUntil,stats=table.clone(p.perkStats and p.perkStats.motes or {}),agility=agility(p)},
+			factions={pledge=f.pledge,pledgedAt=f.pledgedAt,switchIn=switchIn,
+				resetIn=FA.resetIn(now),day=f.day,list=factions,unlocks=unlocks,title=f.title,titleText=titleText(p),total=f.total},
 		}
 	end
-	Players.PlayerRemoving:Connect(function(player) lastPickup[player]=nil end)
+	Players.PlayerRemoving:Connect(function(player)
+		if profileOf[player] then revOf[profileOf[player]]=nil; keyOf[profileOf[player]]=nil end
+		lastPickup[player],lastFind[player],track[player],sentRev[player],profileOf[player]=nil,nil,nil,nil,nil
+	end)
 end
 -- End Exploration & Factions block.
 local function applyStats(player,p,spawned)
@@ -4112,6 +4273,9 @@ end
 local function snapshot(player,message)
 	local p=profiles[player]
 	if not p then return {loading=true,message="Opening your journal…"} end
+	-- Exploration & Factions: roll the faction day first, so its auto-claim note
+	-- and the paid rewards land in this same snapshot (notes, applyStats below).
+	if p.factions then Explore.refresh(p) end
 	local levels={}
 	local provisions={}
 	for item,config in pairs(consumables) do
@@ -4138,7 +4302,7 @@ local function snapshot(player,message)
 		slayerTasks=SlayerTasks.state(player,p), -- Slayer tasks: Hunt > Slayer page state
 		minigames=Minigames.state(player,p), -- Minigames: Hunt > Minigames page state
 		crafting=Crafting.state and Crafting.state(player,p), -- Crafting: Workshop › Crafting page state
-		exploration=Explore.state(player,p), -- Exploration & Factions: Journal > Motes / Factions
+		exploration=Explore.state(player,p), -- Exploration & Factions: Journal > Motes / Factions (full when changed, else {rev, resetIn, switchIn, compact})
 		logs=Logs.state(player,p)} -- Commissions & Logs: Journal > Commissions / Collection Log / Museum (full when changed, else {rev, resetIn, compact})
 end
 -- Prayer & Thieving: drain-loop notices (prayer points ran out).

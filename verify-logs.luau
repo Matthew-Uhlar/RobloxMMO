@@ -195,7 +195,7 @@ ok(L.total >= 90, "log has 90+ entries (" .. L.total .. ")")
 eq(CL.log(), L, "log cached")
 local expected = {}
 for id, def in pairs(Data.Items) do
-	if def.kind == "pet" or def.trailUnique or def.slayerUnique or def.minigameUnique then expected[id] = true end
+	if def.kind == "pet" or def.trailUnique or def.slayerUnique or def.minigameUnique or def.logUnique then expected[id] = true end
 end
 do
 	local seen = {}
@@ -244,6 +244,21 @@ do
 	CL.log(true)
 	L = CL.log()
 	eq(L.Of.__LogProbe, nil, "probe removed")
+end
+-- logUnique = "<tab>" files an item under any defined tab (Exploration &
+-- Factions: the faction Charms and Crests in the Factions tab).
+do
+	ok(CL.LogTabs.Factions ~= nil and table.find(CL.LogTabOrder, "Factions") ~= nil, "Factions tab defined")
+	local n = 0
+	for id, def in pairs(Data.Items) do
+		if def.logUnique == "Factions" then n += 1; eq(L.Of[id], "Factions", id .. " in the Factions tab") end
+	end
+	eq(n, 6, "three Charms and three Crests")
+	eq(#L.Tabs.Factions, 6, "Factions tab holds them")
+	Data.Items.__LogProbe = {id = "__LogProbe", name = "Probe", kind = "material", rarity = "Rare", logUnique = "NoSuchTab"}
+	eq(CL.log(true).Of.__LogProbe, nil, "an unknown logUnique tab is ignored")
+	Data.Items.__LogProbe = nil
+	L = CL.log(true)
 end
 -- Score and rank.
 do

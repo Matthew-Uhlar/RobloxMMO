@@ -2546,6 +2546,7 @@ teleportToHub = function(player)
 	if not character or not root or not humanoid or humanoid.Health <= 0 then return false end
 	local destination = hubDestination()
 	if not destination then return false end
+	player:SetAttribute("FastTravelAt", os.clock()) -- known fast travel (Aether Mote pickup checks)
 	character:PivotTo(CFrame.new(destination + Vector3.new(0, 3.5, 0)) * root.CFrame.Rotation)
 	root.AssemblyLinearVelocity = Vector3.zero
 	return true

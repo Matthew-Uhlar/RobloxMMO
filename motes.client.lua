@@ -4,7 +4,10 @@
 -- server.server.lua, docs/DEPTH-CONTRACT.md §24). This script:
 --   * reads the found bitmap from every accepted snapshot (IsleSnapshotLocal,
 --     fed by the field guide) and the Wayglass bearing from player attributes
---     MoteHint / MoteHintUntil;
+--     MoteHint / MoteHintUntil (compared with workspace:GetServerTimeNow());
+--     compact snapshots keep the last bitmap (none yet: asks "exploreSync");
+--   * dims, with its prompt disabled, any mote in a locked region (attribute
+--     <Region>Unlocked == false) or above the journal's Agility level;
 --   * draws only unfound motes within Data.Exploration.RENDER_RADIUS of the
 --     character (plus the bearing's target), from a small reusable pool;
 --   * gives each drawn mote a local ProximityPrompt (IsleAction "moteCollect",
@@ -47,13 +50,34 @@ local function positionOf(mote)
 end
 
 local found = nil -- bitmap string from snapshot.exploration.motes.found (nil until synced)
+local agilityLevel = 1 -- snapshot.levels.Agility (perch motes above it are dimmed)
 local pending = {} -- [id] = os.clock() of a local pickup request (hidden for a moment)
+local askedAt = -1e9
 snapshots.Event:Connect(function(snapshot)
-	local ex = type(snapshot) == "table" and snapshot.exploration
+	if type(snapshot) ~= "table" then return end
+	local levels = snapshot.levels
+	if type(levels) == "table" and type(levels.Agility) == "number" then agilityLevel = levels.Agility end
+	local ex = snapshot.exploration
 	local motes = type(ex) == "table" and ex.motes
-	if type(motes) == "table" and type(motes.found) == "string" then found = motes.found end
+	if type(motes) == "table" and type(motes.found) == "string" then found = motes.found
+	elseif type(ex) == "table" and ex.compact and found == nil and os.clock() - askedAt > 5 then
+		-- Only compact snapshots so far (the full one came before this script):
+		-- ask the field guide for the full exploration state.
+		askedAt = os.clock()
+		actions:Fire("exploreSync")
+	end
 end)
 actions:Fire("snapshot") -- a late start asks the field guide for the latest snapshot
+-- Server clock (MoteHintUntil is the server's os.time): never the client's own clock.
+local function serverNow()
+	local ok, now = pcall(function() return workspace:GetServerTimeNow() end)
+	return if ok and type(now) == "number" then now else os.time()
+end
+-- A mote this journal cannot gather yet: its region is locked (the server's
+-- <Region>Unlocked attribute) or it drifts over a course above its Agility.
+local function unreachable(mote)
+	return player:GetAttribute(mote.region .. "Unlocked") == false or (mote.agility or 0) > agilityLevel
+end
 
 local function isFound(mote)
 	return found == nil or string.sub(found, mote.index, mote.index) == "1"
@@ -127,7 +151,7 @@ local function refresh()
 	local root = character and character:FindFirstChild("HumanoidRootPart")
 	local hintId = player:GetAttribute("MoteHint")
 	local hintUntil = tonumber(player:GetAttribute("MoteHintUntil")) or 0
-	local hinted = type(hintId) == "string" and hintUntil > os.time() and EX.MoteById[hintId] or nil
+	local hinted = type(hintId) == "string" and hintUntil > serverNow() and EX.MoteById[hintId] or nil
 	local want = {}
 	if root then
 		local here = root.Position
@@ -141,8 +165,13 @@ local function refresh()
 	end
 	for id in pairs(drawn) do if not want[id] then hide(id) end end
 	for id, at in pairs(want) do
-		local entry = show(EX.MoteById[id], at)
-		local isHint = EX.MoteById[id] == hinted
+		local mote = EX.MoteById[id]
+		local entry = show(mote, at)
+		-- Out of reach for now: dimmed, and its prompt stays off.
+		local locked = unreachable(mote)
+		entry.prompt.Enabled = not locked
+		entry.part.Transparency = if locked then 0.75 else 0.15
+		local isHint = mote == hinted
 		entry.beacon.Enabled = isHint
 		if isHint and root then entry.label.Text = EX.MOTE.symbol .. " " .. math.floor((at - root.Position).Magnitude) .. " studs" end
 	end

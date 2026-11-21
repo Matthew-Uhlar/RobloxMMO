@@ -7723,14 +7723,51 @@ end
 -- Exploration & Factions (Exploration & Factions team). Journal › Motes
 -- (found counter, milestones, Wayglass bearing, per-region progress) and
 -- Journal › Factions (pledge, reputation ranks, daily tasks, shop, titles).
--- Server state: snapshot.exploration = {motes, factions} (Explore.state).
+-- Server state: snapshot.exploration = {rev, motes, factions} (Explore.state)
+-- when it changed, else {rev, resetIn, switchIn, compact = true}; EXP.data()
+-- keeps the last full copy and asks "exploreSync" on a cache miss. Board
+-- entries carry {id, progress, claimed}: done, reward and items held are
+-- derived here (FA.reward, snapshot.items).
 -- Verbs: moteHint, factionPledge "<id>", factionClaim "<id>:<slot>|all",
 -- factionDeliver "<id>:<slot>", factionBuy "<shop>[:<skill>]",
--- factionTitle "<shop>|none". The world motes are drawn by motes.client.lua,
--- which asks this page's sender (IsleActionLocal "moteCollect") to pick up.
+-- factionTitle "<shop>|none", exploreSync. The world motes are drawn by
+-- motes.client.lua, which asks this page's sender (IsleActionLocal "moteCollect") to pick up.
 ------------------------------------------------------------------------------
 do
-local EXP={}
+local EXP={cache=nil,asked=nil,askedAt=0}
+-- Every accepted snapshot passes here: a full exploration replaces the cache;
+-- a compact one refreshes the timers of the matching cached revision.
+function EXP.observe(data)
+	local ex=type(data)=="table" and data.exploration
+	if type(ex)~="table" then return end
+	if ex.compact then
+		local cached=EXP.cache
+		if cached and cached.rev==ex.rev and type(cached.factions)=="table" then
+			cached.factions.resetIn=ex.resetIn
+			cached.factions.switchIn=ex.switchIn
+		end
+	elseif type(ex.motes)=="table" then
+		EXP.cache=ex
+	end
+end
+-- The exploration state to draw (nil = not synced yet).
+function EXP.data()
+	local ex=state and state.exploration
+	if type(ex)~="table" then return nil end
+	if not ex.compact then EXP.observe(state) return ex end
+	local cached=EXP.cache
+	if cached and cached.rev==ex.rev then return cached end
+	if send and (EXP.asked~=ex.rev or os.clock()-EXP.askedAt>3) then
+		EXP.asked,EXP.askedAt=ex.rev,os.clock()
+		task.defer(function() send("exploreSync",nil,true) end)
+	end
+	return cached -- an older copy while the fresh one is on its way
+end
+-- A board entry with its derived fields.
+function EXP.slot(s,t,pledge)
+	local items=tbl(state and state.items)
+	return {done=num(s.progress,0)>=t.amount,reward=Data.Factions.reward(t,pledge),have=if t.kind=="deliver" then num(items[t.target],0) else nil}
+end
 Pages.EXP=EXP
 function EXP.ready() return Data and type(Data.Exploration)=="table" and type(Data.Factions)=="table" end
 function EXP.clock(seconds)
@@ -7747,7 +7784,7 @@ end
 function EXP.drawMotes()
 	if not EXP.ready() then dataMissing() return end
 	local EX=Data.Exploration
-	local ex=tbl(state and state.exploration)
+	local ex=tbl(EXP.data())
 	local m=tbl(ex.motes)
 	local synced=type(ex.motes)=="table"
 	local found=tostring(m.found or "")
@@ -7775,7 +7812,10 @@ function EXP.drawMotes()
 	end
 	heading("MILESTONES    /    EVERY "..EX.STEP.." MOTES")
 	local nextAt=(steps+1)*EX.STEP
-	local nextStats=EXP.statText(EX.perkStats(steps+1,0))
+	-- The totals after the next milestone include the regions already claimed (QC L9).
+	local claimedRegions=0
+	for _,r in pairs(tbl(m.regions)) do if type(r)=="table" and r.claimed then claimedRegions+=1 end end
+	local nextStats=EXP.statText(EX.perkStats(steps+1,claimedRegions))
 	card({name="MoteMilestones",motif="Hero",title="Shrine milestones",titleColor=gold,
 		subtitle=steps<EX.STEPS and ("Next at "..nextAt.." motes: +"..fmt(EX.stepCoins(steps+1)).." coins") or "Every milestone claimed",
 		detail="Each claimed milestone adds +2 Health; every second one also adds +1 Defense and +1 Speed. Completing a whole region pays a bonus at that region's own shrine (+"
@@ -7814,7 +7854,7 @@ end
 function EXP.drawFactions()
 	if not EXP.ready() then dataMissing() return end
 	local FA=Data.Factions
-	local ex=tbl(state and state.exploration)
+	local ex=tbl(EXP.data())
 	local fs=tbl(ex.factions)
 	local synced=type(ex.factions)=="table"
 	local list=tbl(fs.list)
@@ -7823,7 +7863,7 @@ function EXP.drawFactions()
 	for _,id in ipairs(FA.Order) do
 		for _,s in ipairs(tbl(tbl(list[id]).board)) do
 			local t=FA.TaskById[s.id]
-			if t and t.kind~="deliver" and s.done and not s.claimed then ready+=1 end
+			if t and t.kind~="deliver" and num(s.progress,0)>=t.amount and not s.claimed then ready+=1 end
 		end
 	end
 	card({name="FactionsSummary",motif="Journal",accent=pledge and rgb(pledge.color) or gold,title="Factions",titleColor=gold,
@@ -7863,22 +7903,23 @@ function EXP.drawFactions()
 		for i,s in ipairs(tbl(f.board)) do
 			local t=FA.TaskById[s.id]
 			if t then
-				local r=tbl(s.reward)
+				local d=EXP.slot(s,t,fs.pledge)
+				local r=d.reward
 				local progress=math.min(num(s.progress,0),t.amount)
 				local acts={}
 				if t.kind=="deliver" and not s.claimed then
-					local have=num(s.have,0)
+					local have=num(d.have,0)
 					table.insert(acts,{caption="Deliver",name="FactionDeliver"..id..i,primary=have>=t.amount,disabled=have<t.amount,
 						reason="You have "..fmt(have).." of "..t.amount..".",fn=function() send("factionDeliver",id..":"..i) end})
-				elseif s.done and not s.claimed then
+				elseif d.done and not s.claimed then
 					table.insert(acts,{caption="Claim",name="FactionClaim"..id..i,primary=true,fn=function() send("factionClaim",id..":"..i) end})
 				end
 				card({name="FactionTask"..id..i,item=(t.kind~="kill" and t.target) or nil,motif=t.kind=="kill" and "Hunt" or nil,accent=rgb(def.color),
 					title=EXP.taskText(t),titleColor=ivory,subtitle=def.short.."   ·   "..t.kind,
-					badge=s.claimed and "DONE" or (s.done and "READY" or "ACTIVE"),badgeColor=s.claimed and muted or (s.done and mint or gold),
+					badge=s.claimed and "DONE" or (d.done and "READY" or "ACTIVE"),badgeColor=s.claimed and muted or (d.done and mint or gold),
 					lines={"+"..fmt(num(r.rep,0)).." reputation   ·   +"..fmt(num(r.sigils,0)).." sigils   ·   +"..fmt(num(r.coins,0)).." coins"
 						..(num(r.xp,0)>0 and ("   ·   +"..fmt(r.xp).." "..tostring(r.skill).." XP") or "")},
-					bar=t.kind~="deliver" and {fraction=progress/math.max(1,t.amount),color=s.done and mint or rgb(def.color),caption=fmt(progress).." / "..fmt(t.amount)} or nil,
+					bar=t.kind~="deliver" and {fraction=progress/math.max(1,t.amount),color=d.done and mint or rgb(def.color),caption=fmt(progress).." / "..fmt(t.amount)} or nil,
 					actions=#acts>0 and acts or nil})
 			end
 		end
@@ -8351,6 +8392,7 @@ local function accept(data,quiet)
 	pcall(function() UI.snapshotChannel:Fire(data) end)
 	pcall(Pages.AH.onSnapshot) -- lap tracker best times, trap counter
 	pcall(Pages.CLP.observe,data) -- Commissions & Logs: cache full snapshot.logs (compact ones reuse it)
+	pcall(Pages.EXP.observe,data) -- Exploration & Factions: cache full snapshot.exploration (compact ones reuse it)
 	local message=data.message
 	if before then
 		local ok,bannered=pcall(celebrate,before,skillsOf(state))
@@ -8432,8 +8474,22 @@ do
 			elseif verb=="prayer" and type(item)=="string" and #item<=64 then task.spawn(send,"prayer",item)
 			-- Exploration & Factions: world mote prompts (motes.client.lua); the server picks the mote.
 			elseif verb=="moteCollect" or verb=="moteHint" then task.spawn(send,verb,nil)
-			-- A late-starting combat HUD asks for the latest snapshot.
-			elseif verb=="snapshot" and synced then pcall(function() UI.snapshotChannel:Fire(state) end) end
+			-- The mote layer saw only compact exploration snapshots: ask for the full copy.
+			elseif verb=="exploreSync" then task.spawn(send,"exploreSync",nil,true)
+			-- A late-starting combat HUD / mote layer asks for the latest snapshot
+			-- (a compact exploration is replaced by the cached full copy).
+			elseif verb=="snapshot" and synced then
+				pcall(function()
+					local snap=state
+					local ex=type(snap)=="table" and snap.exploration
+					local cached=Pages.EXP and Pages.EXP.cache
+					if type(ex)=="table" and ex.compact and cached and cached.rev==ex.rev then
+						snap=table.clone(snap)
+						snap.exploration=cached
+					end
+					UI.snapshotChannel:Fire(snap)
+				end)
+			end
 		end)
 	end
 	if toasts.Event then toasts.Event:Connect(function(text) notify(text) end) end

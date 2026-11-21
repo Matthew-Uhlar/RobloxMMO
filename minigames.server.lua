@@ -169,6 +169,7 @@ prompt(ferry, "Skybreach ferry", "Return to the Guild Terrace", function(player,
 	end
 	local home = workspace:FindFirstChild("Anchor_Waypoint_SkybreachFerry", true)
 	local destination = if home and home:IsA("BasePart") then home.Position + V(0, 4, 0) else V(0, 8, 232)
+	player:SetAttribute("FastTravelAt", os.clock()) -- known fast travel (Aether Mote pickup checks)
 	player.Character:PivotTo(CFrame.new(destination))
 	root.AssemblyLinearVelocity = V(0, 0, 0)
 end)
@@ -344,7 +345,7 @@ local function removeMember(player, match, reason)
 	clearHud(player)
 	settle(player, match, record, false, reason)
 	local root = rootOf(player)
-	if root and player.Character then player.Character:PivotTo(CFrame.new(LANDING)) end
+	if root and player.Character then player:SetAttribute("FastTravelAt", os.clock()); player.Character:PivotTo(CFrame.new(LANDING)) end
 end
 local function finish(match, won)
 	if matches[match.game] ~= match then return end
@@ -364,7 +365,7 @@ local function finish(match, won)
 		memberOf[player] = nil
 		clearHud(player)
 		settle(player, match, record, won, nil, context)
-		if rootOf(player) then player.Character:PivotTo(CFrame.new(LANDING)) end
+		if rootOf(player) then player:SetAttribute("FastTravelAt", os.clock()); player.Character:PivotTo(CFrame.new(LANDING)) end
 	end
 	match.members = {}
 	for id, d in pairs(departed) do if d.match == match then departed[id] = nil end end

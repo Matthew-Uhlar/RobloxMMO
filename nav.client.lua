@@ -32,7 +32,7 @@ end
 ------------------------------------------------------------------------------
 -- World index: islands + anchors (scan), NPCs, prompts, monster spawns.
 ------------------------------------------------------------------------------
-local scan = T.scanIslands(nil)
+local scan = T.scanIslands(workspace:FindFirstChild("Islands")) -- rescanned (debounced) as islands build
 local prompts = {station = {}, gather = {}, warp = {}, warpReturn = {}} -- [kind][prompt] = key
 -- Agility & Hunter prompts (world.server.lua): course obstacles keyed
 -- "<course>:<index>" and hunting spots whose host part carries TrapState /
@@ -597,6 +597,30 @@ navigatePanel = function()
 		{"Jeweller", "Jeweller's Bench"}, {"Tannery", "Tanning Rack"}, {"Glassworks", "Glass Furnace"}}) do -- Crafting stations
 		local specs = {"anchor:Waypoint_" .. vendor[1]}
 		if T.resolveFirst(specs, index) then entry(vendor[2], nextOrder(), function() setWaypoint(specs, vendor[2]) end) end
+	end
+	-- Exploration & Factions: the hub Mote Shrine and the three faction standards
+	-- (world anchors Waypoint_MoteShrine / Waypoint_Faction_<id>); a locked
+	-- region's entry is dimmed with a padlock, like the region list below.
+	local EX, FA = Data.Exploration, Data.Factions
+	if type(EX) == "table" and type(FA) == "table" then
+		local sites = {}
+		if T.resolveFirst({"anchor:Waypoint_MoteShrine"}, index) then
+			table.insert(sites, {text = "Mote Shrine", label = "Mote Shrine", specs = {"anchor:Waypoint_MoteShrine"}, region = EX.IsleRegion[EX.ShrineIsle.Hub]})
+		end
+		for _, id in ipairs(FA.Order) do
+			local def = FA.Factions[id]
+			local specs = {"anchor:Waypoint_Faction_" .. id}
+			if def and T.resolveFirst(specs, index) then
+				table.insert(sites, {text = def.name .. " standard", label = def.name, specs = specs, region = EX.IsleRegion[def.isle]})
+			end
+		end
+		if #sites > 0 then
+			heading("EXPLORATION", nextOrder())
+			for _, site in ipairs(sites) do
+				local locked = site.region ~= nil and player:GetAttribute(site.region .. "Unlocked") == false
+				entry(site.text .. (if locked then "  🔒" else ""), nextOrder(), function() setWaypoint(site.specs, site.label) end, locked)
+			end
+		end
 	end
 	Skill.navigate(index, heading, entry, nextOrder)
 	heading("REGIONS", nextOrder())

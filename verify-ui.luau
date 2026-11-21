@@ -1829,7 +1829,7 @@ do
 		local camera = H.new("Camera", { ViewportSize = size })
 		local workspace = {
 			CurrentCamera = camera, DescendantAdded = signal(), DescendantRemoving = signal(), ChildAdded = signal(), ChildRemoved = signal(),
-			GetDescendants = function() return (extra and extra.descendants) or {} end, FindFirstChild = function() return nil end,
+			Islands = extra and extra.islands, GetDescendants = function() return (extra and extra.descendants) or {} end, FindFirstChild = function(_, name) if name == "Islands" and extra then return extra.islands end return nil end,
 			GetAttribute = function() return nil end, GetAttributeChangedSignal = function() return signal() end,
 			WaitForChild = function(_, name)
 				if name == "Townsfolk" then return { ChildAdded = signal(), ChildRemoved = signal(), GetChildren = function() return {} end } end
@@ -2173,6 +2173,43 @@ do
 		end
 		assert(found, "Navigate lists the next obstacle")
 		checks += 16
+	end
+	-- Wayfinder Navigate list (Exploration & Factions lead decision): the hub
+	-- Mote Shrine and the three faction standards from their world anchors;
+	-- a locked region's standard is dimmed with a padlock.
+	do
+		local size = roblox.Vector2.new(1366, 768)
+		local ui = H.runAtlas(size)
+		local player = ui.player
+		local FA = H.Data.Factions
+		local function anchor(name, position, model)
+			return { Name = "Anchor_" .. name, Position = position, Parent = model, IsA = function(_, class) return class == "BasePart" end }
+		end
+		local model = { Name = "Compass Quay", AttributeChanged = signal() }
+		local anchors = { anchor("Waypoint_MoteShrine", roblox.Vector3.new(10, 2, 10), model) }
+		for i, id in ipairs(FA.Order) do table.insert(anchors, anchor("Waypoint_Faction_" .. id, roblox.Vector3.new(40 * i, 2, 0), model)) end
+		function model.GetAttribute() return nil end
+		function model.GetDescendants() return anchors end
+		local islands = { Name = "Islands", DescendantAdded = signal(), DescendantRemoving = signal(), GetChildren = function() return { model } end }
+		player:SetAttribute("QuarryUnlocked", false)
+		runClient("nav.client.lua", size, player, { islands = islands })
+		local wayfinder = ui.playerGui:FindFirstChild("Wayfinder")
+		local go
+		for _, child in ipairs(wayfinder:FindFirstChild("Minimap"):FindFirstChild("Controls"):GetChildren()) do if child.Text == "Go" then go = child end end
+		go.Activated:Fire()
+		local texts = {}
+		for _, object in ipairs(wayfinder:FindFirstChild("Navigate"):GetDescendants()) do
+			if object.ClassName == "TextButton" or object.ClassName == "TextLabel" then table.insert(texts, tostring(object.Text)) end
+		end
+		local all = table.concat(texts, "\n")
+		assert(all:find("EXPLORATION", 1, true), "Navigate has an Exploration heading")
+		assert(all:find("Mote Shrine", 1, true), "Navigate lists the hub Mote Shrine")
+		for _, id in ipairs(FA.Order) do
+			assert(all:find(FA.Factions[id].name .. " standard", 1, true), "Navigate lists the " .. id .. " standard")
+		end
+		assert(all:find(FA.Factions.Concord.name .. " standard  🔒", 1, true), "a locked region's standard is padlocked")
+		assert(not all:find(FA.Factions.Corsairs.name .. " standard  🔒", 1, true), "an open standard is not padlocked")
+		checks += 7
 	end
 end
 print("HUD overlap: " .. (checks - hudChecks) .. " checks.")

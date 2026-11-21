@@ -417,6 +417,7 @@ recall.OnInvoke = function(player, target)
 	local destination = if target == "Hub" then hubDestination() else homeDestination(player)
 	if not destination then return "That isle isn't charted yet. Try a beacon instead." end
 	lastRecall[player] = now
+	player:SetAttribute("FastTravelAt", os.clock()) -- known fast travel (Aether Mote pickup checks)
 	character:PivotTo(CF(destination + V(0, 3.5, 0)) * root.CFrame.Rotation)
 	root.AssemblyLinearVelocity = Vector3.zero
 	return message
