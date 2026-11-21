@@ -131,8 +131,9 @@ do
 	check(EG.masterStarCheck(g,"AstrarchFang"),"five stars open Master stars")
 	local b=G.breakdown(g,"AstrarchFang")
 	eq(b.masterStars,3,"breakdown carries masterStars")
-	near(b.masterStarsStats.damage,230*0.04*3,"each Master star adds 4% of base damage")
-	near(b.total.damage,230*0.04*5+230*0.04*3,"stars and Master stars sum",0.11)
+	eq(EG.MASTER_STAR_PERCENT,2,"Master stars are 2% each (QC M2)")
+	near(b.masterStarsStats.damage,230*0.02*3,"each Master star adds 2% of base damage")
+	near(b.total.damage,230*0.04*5+230*0.02*3,"stars and Master stars sum",0.11)
 	eq(Progression.upgradeStats(g,"AstrarchFang").damage,b.total.damage,"Progression.upgradeStats sees Master stars (no Progression edit needed)")
 	check(G.isUpgraded({masterStars={AstrarchFang=1}},"AstrarchFang"),"a Master star counts as an upgrade (no auction)")
 	check(has(G.displayName(g,"AstrarchFang"),"★★★★★✪✪✪"),"display name shows ✪")
@@ -140,14 +141,51 @@ do
 	eq(EG.masterStarsOf({masterStars={AstrarchFang=99}},"AstrarchFang"),5,"Master stars clamp")
 	eq(G.breakdown({},"AstrarchFang").masterStars,0,"no Master stars by default")
 	local cost1,cost5=EG.masterStarCost(Data.Items.AstrarchFang,1),EG.masterStarCost(Data.Items.AstrarchFang,5)
-	check(cost1.amount==200 and cost1.cores==1 and cost1.coins==5000,"Master star 1 cost (Legendary x2 essence)")
-	check(cost5.amount==800 and cost5.cores==3 and cost5.coins==125000,"Master star 5 cost")
+	check(cost1.amount==480 and cost1.cores==2 and cost1.coins==5000,"Master star 1 cost (Legendary x2 essence)")
+	check(cost5.amount==2000 and cost5.cores==8 and cost5.coins==125000,"Master star 5 cost")
 	eq(EG.masterStarCost(Data.Items.AstrarchFang,6),nil,"no sixth Master star")
 	local p={equipment={weapon="AstrarchFang"},items={AstrarchFang=1},stars={AstrarchFang=5},masterStars={},xp={Combat=Progression.xpForLevel(50),Dungeoneering=Progression.xpForLevel(50)}}
 	local before=Progression.computeStats(p,0)
 	p.masterStars.AstrarchFang=5
 	local after=Progression.computeStats(p,0)
 	check(after.strength>before.strength,"computeStats includes Master stars")
+	-- QC M2 (lead decision): fully upgraded dungeon gear (5★ + 5✪ = +30%) stays below the
+	-- 5-star crafted endgame item of the next higher Combat requirement, stat by stat.
+	local function fullDungeon(id) return {stars={[id]=5},masterStars={[id]=5}} end
+	local function fullCrafted(id) return {stars={[id]=5}} end
+	local function upgraded(g,id)
+		local def=Data.Items[id]
+		local bd=G.breakdown(g,id)
+		local out={}
+		for stat,v in pairs(def.stats) do out[stat]=v+(bd.total[stat] or 0) end
+		return out
+	end
+	near(upgraded(fullDungeon("Thronebreaker"),"Thronebreaker").damage,320*1.3,"5★ + 5✪ is +30% of base (ceiling)",0.11)
+	local armorSum,rivalSum={},{}
+	for id,rivalId in pairs(EG.CraftedRivals) do
+		local def,rival=Data.Items[id],Data.Items[rivalId]
+		check(def and rival and def.dungeon==true and not rival.dungeon and def.slot==rival.slot,id.." has a crafted rival "..rivalId)
+		check((rival.requires.Combat or 0)>(def.requires.Combat or 0),rivalId.." needs more Combat than "..id)
+		eq(EG.masterStarsOf(fullDungeon(id),id),5,id.." takes five Master stars")
+		local mine,theirs=upgraded(fullDungeon(id),id),upgraded(fullCrafted(rivalId),rivalId)
+		if def.kind=="weapon" then
+			for stat,v in pairs(mine) do
+				if theirs[stat] then check(v<theirs[stat],id.." 5★5✪ "..stat.." "..v.." < "..rivalId.." 5★ "..theirs[stat]) end
+			end
+		else
+			for _,stat in ipairs({"defense","health"}) do check((mine[stat] or 0)<(theirs[stat] or 0),id.." 5★5✪ "..stat.." under "..rivalId) end
+			for stat,v in pairs(mine) do armorSum[stat]=(armorSum[stat] or 0)+v end
+			for stat,v in pairs(theirs) do rivalSum[stat]=(rivalSum[stat] or 0)+v end
+		end
+	end
+	-- Armor as full sets with their set bonuses (per-piece offense rides on the set bonus for Sovereign).
+	for stat,v in pairs(Data.Sets.Duskwarden.bonus) do armorSum[stat]=(armorSum[stat] or 0)+v end
+	for stat,v in pairs(Data.Sets.Sovereign.bonus) do rivalSum[stat]=(rivalSum[stat] or 0)+v end
+	for stat,v in pairs(armorSum) do
+		if rivalSum[stat] then check(v<rivalSum[stat],"Duskwarden 5★5✪ set "..stat.." "..v.." < Sovereign's Mandate 5★ set "..rivalSum[stat]) end
+	end
+	check(upgraded(fullDungeon("Thronebreaker"),"Thronebreaker").damage<upgraded(fullCrafted("Crownbreaker"),"Crownbreaker").damage,"Thronebreaker < Crownbreaker 5★")
+	check(upgraded(fullDungeon("SovereignNightfall"),"SovereignNightfall").critDamage<upgraded(fullCrafted("SovereignGreatblade"),"SovereignGreatblade").critDamage,"Sovereign's Nightfall < Sovereign Greatblade 5★")
 
 	-- Rooms.
 	eq(#EG.roomsFor(5),0,"Floor V has no new rooms")
@@ -224,6 +262,23 @@ do
 	check(not okr and whyr=="recent","stale contribution refused")
 	check(not EG.creditCheck(nil),"no payload")
 
+	-- QC L2: Master runs raise the Bonus cap by DC.MASTER_SCORE_BONUS; they never get a flat +5.
+	eq(DC.bonusScore(0,false,true),0,"Master: no feats, no bonus (no flat +5)")
+	eq(DC.bonusScore(10,true,true),DC.BONUS_CAP+DC.MASTER_SCORE_BONUS,"Master: bonus cap 25")
+	eq(DC.bonusScore(10,true,false),DC.BONUS_CAP,"normal: bonus cap 20")
+	eq(DC.bonusScore(2,false,true),2*DC.FEAT_BONUS,"Master: feats count as usual")
+	-- QC M4: the free chest and the bonus chest apply the same grade factor to the Master rows.
+	for _,grade in ipairs({"S+","S","B","D"}) do
+		local free=DC.runRewards(7,grade,{master=true})
+		local plan=EG.bonusPlan(7,grade,true)
+		local fc,bc
+		for _,d in ipairs(free.chest) do if d.item=="EclipsedStarcore" then fc=d.chance end end
+		for _,d in ipairs(plan.drops) do if d.item=="EclipsedStarcore" then bc=d.chance end end
+		near(fc,math.min(1,EG.MasterChest[7][1].chance*Data.DungeonGradeById[grade].chance),"free chest Starcore at grade "..grade.." x grade chance",1e-9)
+		near(bc,math.min(1,fc*EG.BONUS_CHANCE),"bonus chest Starcore = free x "..EG.BONUS_CHANCE.." at grade "..grade,1e-9)
+	end
+	eq(EG.bonusPlan(7,"S",true).drops[1].min,EG.bonusPlan(7,"S",false).drops[1].min*EG.MASTER_ESSENCE,"Master bonus essence x"..EG.MASTER_ESSENCE)
+
 	-- Bonus chest.
 	for f=1,7 do
 		for _,master in ipairs({false,true}) do
@@ -231,9 +286,17 @@ do
 			eq(plan.cost,EG.bonusCost(f,master),"Floor "..f.." bonus cost")
 			eq(plan.drops[1].item,"ObservatoryEssence","Floor "..f.." bonus chest essence first")
 			eq(plan.drops[1].chance,1,"essence guaranteed")
-			local ev=EG.expectedValue(plan.drops)
-			local ratio=ev/plan.cost
-			check(ratio>=0.6 and ratio<=0.85,"Floor "..f..(master and " Master" or "").." bonus chest EV/cost "..string.format("%.2f",ratio).." (blind opening loses coins)")
+			-- QC M4: the fee is priced on the shown contents (a share of their merchant value,
+			-- with the floor's minimum), never on blind EV: contents worth more than the
+			-- minimum always cost less than they are worth.
+			eq(EG.chestFee(f,master,{}),plan.cost,"Floor "..f.." empty chest costs the minimum fee")
+			local rich={ObservatoryEssence=40,Thronebreaker=1}
+			local value=EG.chestValue(rich)
+			eq(value,40*Data.Items.ObservatoryEssence.value+Data.Items.Thronebreaker.value,"chest value = merchant value")
+			eq(EG.chestFee(f,master,rich),math.max(plan.cost,math.floor(EG.CHEST_FEE_SHARE*value)),"Floor "..f.." fee = share of shown value")
+			check(EG.chestFee(f,master,rich)<value,"Floor "..f.." opening a valuable chest never loses coins")
+			local ess={ObservatoryEssence=plan.drops[1].min}
+			check(EG.chestFee(f,master,ess)>=plan.cost,"fee never under the minimum")
 			local hasMaster=false
 			for _,d in ipairs(plan.drops) do
 				check(d.chance>0 and d.chance<=1,"chance bounded")
@@ -241,9 +304,17 @@ do
 			end
 			eq(hasMaster,master,"Floor "..f.." Master-only bonus rows only in Master Mode")
 		end
-		check(EG.bonusCost(f,true)>EG.bonusCost(f,false),"Master chest costs more")
-		if f>1 then check(EG.bonusCost(f,false)>EG.bonusCost(f-1,false),"bonus cost climbs") end
+		check(EG.bonusCost(f,true)>EG.bonusCost(f,false),"Master minimum fee is higher")
+		if f>1 then check(EG.bonusCost(f,false)>EG.bonusCost(f-1,false),"minimum fee climbs") end
 	end
+	-- QC L4: a new clear never silently drops a notable unopened chest.
+	check(EG.chestNotable({Thronebreaker=1}) and EG.chestNotable({SovereignHalo=1}) and EG.chestNotable({EclipsedStarcore=1}) and EG.chestNotable({DuskwardenCowl=1}),"Master-only items and uniques are notable")
+	check(not EG.chestNotable({ObservatoryEssence=30,StarFragment=2,LodestarKey=1}),"materials are not notable")
+	check(EG.keepOldChest({items={Thronebreaker=1}},{items={ObservatoryEssence=40}}),"a unique chest outlives a plain one")
+	check(EG.keepOldChest({items={Thronebreaker=1}},{items={DuskwardenCowl=1}}),"the better notable chest is kept")
+	check(not EG.keepOldChest({items={DuskwardenCowl=1}},{items={Thronebreaker=1}}),"a better notable chest replaces a lesser one")
+	check(not EG.keepOldChest({items={ObservatoryEssence=40}},{items={ObservatoryEssence=10}}),"a plain unopened chest is replaced")
+	check(not EG.keepOldChest(nil,{items={}}),"no old chest")
 	local planS,planD=EG.bonusPlan(7,"S",false),EG.bonusPlan(7,"D",false)
 	check(EG.expectedValue(planS.drops)>EG.expectedValue(planD.drops),"better grades fill the bonus chest")
 
@@ -281,26 +352,42 @@ do
 	check(#dirty.runs==1 and dirty.runs[1]=="a","run ids sanitised")
 	eq(EG.migrate({chest={floor=7,items={StarFragment=1},cost=1,expires=now-1}},now).chest,nil,"expired chest dropped on load")
 	eq(next(EG.migrate({week={id=1,best={["7"]=200}}},now).week.best),nil,"stale week dropped on load")
+	-- QC L1: weeks only move forward. A server whose clock is behind the saved week keeps it.
+	local wk=EG.weekOf(now)
+	local ahead=EG.migrate({week={id=wk+1,best={["7"]=250},bounty={["7"]=true}}},now)
+	check(ahead.week.id==wk+1 and ahead.week.bounty["7"]==true and ahead.week.best["7"]==250,"a newer saved week survives a clock-behind load")
+	local r6=EG.record(ahead,7,false,"S",270,500,0,now)
+	check(r6.bounty==0 and ahead.week.id==wk+1,"a clock-behind server cannot re-grant the weekly bounty")
+	eq(EG.migrate({week={id=wk+9,bounty={["7"]=true}}},now).week.id,wk,"a far-future (corrupt) week is reset")
+	local back=EG.rollWeek(ahead,now-EG.WEEK)
+	check(back.id==wk+1 and back.bounty["7"],"rollWeek never moves backwards")
+	check(EG.rollWeek(ahead,now+2*EG.WEEK).id==wk+2,"rollWeek moves forward")
 	eq(EG.key(7,true),"7m","key")
 	check(EG.validKey("7m") and EG.validKey("1") and not EG.validKey("8") and not EG.validKey("m"),"key validation")
 
 	-- Balance model: Dungeoneering XP/h and coins/h against the other endgame activities.
 	local MG=Data.Minigames
 	local E=Data.Endgame
-	print(string.format("%-5s %6s %6s %9s %9s %9s %8s %9s %8s %7s","floor","secs","runs/h","dungXP/h","cmbXP/h","coins/h","ess/h","chest/h","bonusEV","cost"))
+	print(string.format("%-5s %6s %6s %9s %9s %9s %8s %7s %9s %8s %7s %8s","floor","secs","runs/h","dungXP/h","cmbXP/h","coins/h","ess/h","cores/h","chest/h","bonusEV","fee","bnet/h"))
 	local rates={}
 	for f=1,7 do
 		for _,master in ipairs({false,true}) do
 			local x=EG.model(f,master,"S")
 			rates[EG.key(f,master)]=x
-			print(string.format("%-5s %6.0f %6.1f %9.0f %9.0f %9.0f %8.0f %9.0f %8.0f %7d",(master and "M" or "")..f,x.seconds,x.runsPerHour,x.dungeoneeringXp,x.combatXp,x.coins,x.essence,x.chestValue,x.bonusValue,x.bonusCost))
+			print(string.format("%-5s %6.0f %6.1f %9.0f %9.0f %9.0f %8.0f %7.2f %9.0f %8.0f %7.0f %8.0f",(master and "M" or "")..f,x.seconds,x.runsPerHour,x.dungeoneeringXp,x.combatXp,x.coins,x.essence,x.cores,x.chestValue,x.bonusValue,x.bonusCost,x.bonusNet))
 		end
 	end
 	local grind50,grind60=MG.soloCombatXpPerHour(50),MG.soloCombatXpPerHour(60)
 	local coins60=MG.SOLO.killsPerHour*MG.bestMonster(60).coins
 	local nyx=E.boss("Nyxwyrm")
-	print(string.format("reference: solo Combat XP/h at 50 = %d, at 60 = %d; coins/h at 60 = %d; Nyxwyrm 10%% share = %d coins + %d Combat XP per fight (once per isle day)",
-		grind50,grind60,coins60,E.bossCoins("Nyxwyrm",0.1),math.floor(nyx.xp*0.1)))
+	-- Slayer at a similar level (Combat 60: Maelis's tasks): kill coins + the master's bounty per task.
+	local ST=Data.SlayerTasks
+	local maelis=ST.MasterById.Maelis
+	local amount,weight=0,0
+	for _,t in ipairs(maelis.tasks) do amount+=t.weight*(t.min+t.max)/2 weight+=t.weight end
+	local slayer60=coins60+MG.SOLO.killsPerHour/(amount/weight)*maelis.bounty
+	print(string.format("reference: solo Combat XP/h at 50 = %d, at 60 = %d; coins/h at 60 = %d (Slayer with Maelis bounties %d); Nyxwyrm 10%% share = %d coins + %d Combat XP per fight (once per isle day)",
+		grind50,grind60,coins60,slayer60,E.bossCoins("Nyxwyrm",0.1),math.floor(nyx.xp*0.1)))
 	for f=1,7 do
 		local n,m=rates[EG.key(f,false)],rates[EG.key(f,true)]
 		local ratio=m.dungeoneeringXp/n.dungeoneeringXp
@@ -313,17 +400,30 @@ do
 	check(m7.combatXp<grind60,"Master VII Combat XP/h stays under solo grinding at Combat 60")
 	check(f7.combatXp+f7.dungeoneeringXp>=0.5*grind50,"Floor VII total XP/h is worth the time")
 	check(f7.coins<=coins60*1.25,"Floor VII coins/h close to Combat-60 grinding ("..math.floor(f7.coins).." vs "..coins60..")")
-	check(m7.coins+m7.chestValue<=3*coins60,"Master VII coins + chest value/h bounded")
+	-- Master VII coins/h: at most 1.6x Combat-60 grinding (a gated party activity: Dungeoneering 50,
+	-- a grade S clear and gear score 500; Slayer with bounties pays ~1.36x at the same level).
+	print(string.format("Master VII coins/h %d = %.2fx Combat-60 grinding, %.2fx Slayer (Maelis); with free-chest value and the bonus chest's net %d (%.2fx)",
+		m7.coins,m7.coins/coins60,m7.coins/slayer60,m7.coins+m7.chestValue+m7.bonusNet,(m7.coins+m7.chestValue+m7.bonusNet)/coins60))
+	check(m7.coins<=1.6*coins60,"Master VII coins/h <= 1.6x Combat-60 grinding ("..math.floor(m7.coins).." vs "..coins60..")")
+	check(m7.coins<=1.25*slayer60,"Master VII coins/h within 1.25x Slayer at a similar level")
+	check(m7.coins+m7.chestValue+m7.bonusNet<=3*coins60,"Master VII coins + chest value + bonus net/h bounded (3x)")
+	for f=1,7 do for _,master in ipairs({false,true}) do
+		local x=rates[EG.key(f,master)]
+		check(x.bonusCost<x.bonusValue or x.bonusValue<EG.bonusCost(f,master)/EG.CHEST_FEE_SHARE,"Floor "..f.." bonus fee below the shown value on average")
+	end end
 	-- Master star path in hours of the essence-richest floor.
 	local fullEssence,fullCores=0,0
 	for k=1,EG.MASTER_STAR_MAX do local c=EG.masterStarCost(Data.Items.SovereignNightfall,k) fullEssence+=c.amount fullCores+=c.cores end
 	local best=0 for _,x in pairs(rates) do best=math.max(best,x.essence) end
 	local hours=fullEssence/best
-	local coreRate=0
-	for _,row in ipairs(EG.MasterChest[7]) do if row.item=="EclipsedStarcore" then coreRate=row.chance*2*m7.runsPerHour end end
+	-- Starcores per Master VII run: free chest (two rolls, grade factor) + bonus chest (QC M4).
+	local coreRate=m7.cores
+	local freeCores=EG.expectedCount(DC.runRewards(7,"S",{master=true}).chest,"EclipsedStarcore")*2
+	near(m7.coresPerRun,freeCores+EG.expectedCount(EG.bonusPlan(7,"S",true).drops,"EclipsedStarcore"),"model counts the bonus chest's Starcores",1e-9)
+	print(string.format("Master VII Starcores: %.2f/run (free %.2f + bonus %.2f), %.2f/h",m7.coresPerRun,freeCores,m7.coresPerRun-freeCores,coreRate))
 	print(string.format("Master stars 1-5 on a Legendary: %d essence (%.1f h at the best essence rate), %d Starcores (%.1f h of Master VII), %d coins",fullEssence,hours,fullCores,fullCores/coreRate,5000*(1+4+9+16+25)))
-	check(hours>=5 and hours<=40,"a full Master star set takes 5-40 hours of essence")
-	check(fullCores/coreRate>=5 and fullCores/coreRate<=60,"Starcores for a full set take 5-60 Master VII hours")
+	check(hours>=8 and hours<=12,"a full Master star set takes ~10 hours of essence (bonus chest counted)")
+	check(fullCores/coreRate>=8 and fullCores/coreRate<=12,"Starcores for a full set take ~10 Master VII hours (bonus chest counted)")
 end
 local ruleChecks=checks
 
@@ -679,6 +779,50 @@ do
 	now+=40
 	ability(s7,"ability")
 	check(core:GetAttribute("Channel")~="Eventide Nova" and has(noticeOf(a7),"interrupted"),"Disrupting Shot interrupts the nova")
+	-- QC M1: a prism shield rising mid-nova holds the nova's countdown (it stays breakable),
+	-- and the wave timer holds while the nova channels.
+	do
+		local shieldAt=nil
+		local hpNow=core:GetAttribute("BossHealth")
+		for _,t in ipairs(Data.DungeonFloors[7].mechanics.shieldPhases) do
+			local v=maxHp*t
+			if v<hpNow and v>maxHp*0.35+3 and not shieldAt then shieldAt=v end
+		end
+		check(shieldAt~=nil,"a phase-2 prism shield is still ahead (HP "..hpNow..")")
+		-- Bring the core to just above the shield (fewer HP than the nova's break threshold).
+		for _=1,200 do
+			if core:GetAttribute("BossHealth")-shieldAt<=2 then break end
+			if has(caption.Text,"Retune") then tuneAll(a7) end
+			clearWisps(a7)
+			heal(a7) fire(a7,corePrompt)
+		end
+		check(core:GetAttribute("BossHealth")>shieldAt and core:GetAttribute("BossHealth")-shieldAt<EG.novaThreshold(maxHp),"core parked just above the shield")
+		check(waitChannel("Eventide Nova"),"a nova channels above the shield")
+		for _=1,10 do
+			if has(caption.Text,"Retune") then break end
+			heal(a7) fire(a7,corePrompt)
+		end
+		check(has(caption.Text,"SHIELDED") and core:GetAttribute("Channel")=="Eventide Nova","the shield rises while the nova channels")
+		local left=core:GetAttribute("ChannelLeft")
+		for _=1,30 do
+			for _,p in {a7,s7,r7} do heal(p) end
+			heartbeat:Fire(0.5)
+		end
+		eq(core:GetAttribute("Channel"),"Eventide Nova","the nova waits while the core is shielded (15 s)")
+		eq(core:GetAttribute("ChannelLeft"),left,"the nova countdown holds behind the shield")
+		eq(#wispList(),0,"no wisps ward the core during the nova")
+		tuneAll(a7)
+		check(not has(caption.Text,"SHIELDED"),"retuned: the core is exposed again")
+		local resumed=false
+		for _=1,20 do
+			for _,p in {a7,s7,r7} do heal(p) end
+			check(#wispList()==0,"the wave timer holds while the nova channels")
+			heartbeat:Fire(0.5)
+			if core:GetAttribute("Channel")~="Eventide Nova" then break end
+			if core:GetAttribute("ChannelLeft")<left then resumed=true end
+		end
+		check(resumed,"the nova countdown resumes once the core is exposed")
+	end
 	-- Constellation Lock at 35%.
 	fight({a7,s7,r7},function() return core:GetAttribute("Lock")=="chart" or not inRun(a7) end)
 	eq(core:GetAttribute("Lock"),"chart","Constellation Lock seals the core")
@@ -757,6 +901,120 @@ do
 	check(payloads[idler.Name]==nil and has(noticeOf(idler),"last "..EG.RECENT_SECONDS),"a stale contributor is refused")
 	now+=100
 
+	-- QC M3: replaying a puzzle never inflates the party total. A griefer re-tunes the first
+	-- prism 60 times (tune, wrong resonance, repeat); the others' small shares still count.
+	do
+		local g=player({level=50,gearScore=0})
+		local a=player({level=50,gearScore=0})
+		local b=player({level=50,gearScore=0})
+		use(g,"Observatory Floor II","Select floor")
+		launch({g,a,b})
+		check(inRun(g) and inRun(a) and inRun(b),"Floor II party launched")
+		local list=table.clone(pylons)
+		table.sort(list,function(x,y) return x.Parent:GetAttribute("TuneOrder")<y.Parent:GetAttribute("TuneOrder") end)
+		for i=1,60 do
+			fire(g,list[1])
+			fire(g,list[3]) -- wrong resonance: the sequence collapses
+			roots[a].Position=core.Position+r.Vector3.new(i%2*4,0,10) roots[b].Position=core.Position+r.Vector3.new(i%2*4+6,0,10)
+			heartbeat:Fire(0.01)
+		end
+		check(inRun(a) and inRun(b),"the others wait out the griefing")
+		tuneAll(g)
+		guardiansDown({a})
+		for _=1,6 do heal(b) fire(b,corePrompt) end
+		for _=1,60 do if not inRun(a) then break end heal(a) fire(a,corePrompt) end
+		check(not inRun(a),"Floor II cleared")
+		check(payloads[a.Name] and payloads[a.Name].floor==2,"the main damage dealer is credited")
+		check(payloads[b.Name] and payloads[b.Name].floor==2,"a small (>10%) damage share is still credited despite 60 prism replays ("..noticeOf(b)..")")
+		check(payloads[a.Name].mistakes>=60,"every wrong resonance still counts as a mistake")
+		now+=100
+	end
+	-- QC M3: the party total is the sum of capped points. One delver doing every (first-time)
+	-- prism tuning on Floor III (3 + 3 + 3 retunes) cannot push a 12% damage share under 10%.
+	do
+		local g=player({level=50,gearScore=0})
+		local a=player({level=50,gearScore=0})
+		local b=player({level=50,gearScore=0})
+		use(g,"Observatory Floor III","Select floor")
+		launch({g,a,b})
+		tuneAll(g)
+		guardiansDown({a})
+		for _=1,8 do heal(b) fire(b,corePrompt) end
+		for _=1,200 do
+			if not inRun(a) then break end
+			if has(caption.Text,"Retune") then tuneAll(g) else heal(a) fire(a,corePrompt) end
+		end
+		check(not inRun(a),"Floor III cleared")
+		check(payloads[b.Name] and payloads[b.Name].floor==3,"a 12% damage share is credited although one delver did all the tuning ("..noticeOf(b)..")")
+		now+=100
+	end
+	-- QC L2: Master runs raise the Bonus cap; a run with no feats scores no Bonus (not a flat +5).
+	do
+		local m=player({level=50,gearScore=0,best={[1]=265}})
+		m:SetAttribute("DungeonMasterOn",true)
+		use(m,"Observatory Floor I","Select floor")
+		launch({m})
+		check(inRun(m) and core:GetAttribute("MasterMode")==true,"Master Floor I solo launched")
+		tuneAll(m) guardiansDown({m})
+		for _=1,80 do if not inRun(m) then break end heal(m) fire(m,corePrompt) end
+		check(payloads[m.Name] and payloads[m.Name].master==true,"Master Floor I credited")
+		eq(payloads[m.Name].bonus,0,"Master run without feats: Bonus 0 (cap +5, not a flat +5)")
+		m:SetAttribute("DungeonMasterOn",false)
+		now+=100
+	end
+	-- QC L3: the boss phase never regresses when regeneration lifts the core back over a threshold.
+	do
+		local x1=player({level=40,gearScore=400,class="Riftblade"})
+		local x2=player({level=40,gearScore=400,class="Mender"})
+		use(x1,"Observatory Floor VI","Select floor")
+		launch({x1,x2})
+		tuneAll(x1) solveMirrors(x1) guardiansDown({x1,x2})
+		heartbeat:Fire(0.1)
+		clearWisps(x1)
+		local max6=core:GetAttribute("BossMaxHealth")
+		for _=1,200 do
+			if core:GetAttribute("BossHealth")<=max6*0.6 then break end
+			clearWisps(x1)
+			heal(x1) fire(x1,corePrompt)
+		end
+		heartbeat:Fire(0.01)
+		eq(core:GetAttribute("BossPhase"),2,"Floor VI phase 2 reached")
+		local low=core:GetAttribute("BossHealth")
+		check(low>max6*0.5,"above the prism shield")
+		-- Let the wisps live: the core regenerates above 60%.
+		for _=1,120 do
+			if core:GetAttribute("BossHealth")>max6*0.6 then break end
+			for _,p in {x1,x2} do heal(p) roots[p].Position=core.Position+r.Vector3.new(math.random(-3,3),0,30) end
+			heartbeat:Fire(0.5)
+		end
+		check(core:GetAttribute("BossHealth")>max6*0.6,"regeneration lifted the core over 60% ("..core:GetAttribute("BossHealth").."/"..max6..")")
+		heartbeat:Fire(0.01)
+		eq(core:GetAttribute("BossPhase"),2,"the phase does not regress to Radiant Vigil")
+		eq(core:GetAttribute("PhaseName"),"Withering Reliquary","phase name kept")
+		use(x1,"Return arch","Leave expedition")
+		use(x2,"Return arch","Leave expedition")
+		now+=100
+	end
+	-- QC L6: the matchmaking caption redraws only when the whole-second countdown changes.
+	do
+		local l=player({level=1,gearScore=0})
+		use(l,"Observatory Floor I","Select floor")
+		clearPad() onPad(l)
+		signals[promptFor("ExpeditionGate","Enter expedition")]:Fire(l)
+		heartbeat:Fire(0)
+		check(has(caption.Text,"MATCHMAKING") and has(caption.Text,"launching in "..Data.Dungeons.padSeconds.."s"),"lobby caption counts down")
+		caption.Text="probe"
+		for _=1,5 do heartbeat:Fire(0.016) end
+		eq(caption.Text,"probe","no redraw within the same second")
+		now+=1
+		heartbeat:Fire(0.016)
+		check(has(caption.Text,"launching in "..(Data.Dungeons.padSeconds-1).."s"),"redraw when the second changes")
+		now+=Data.Dungeons.padSeconds
+		heartbeat:Fire(0)
+		use(l,"Return arch","Leave expedition")
+		now+=100
+	end
+
 	-- Leak check: after every run the arena holds the same parts as before the first.
 	eq(#arena:GetDescendants(),baseline,"no parts or prompts left behind across runs")
 	eq(world:FindFirstChild("Verdict mark",true).Transparency,1,"verdict mark hidden between runs")
@@ -810,7 +1068,9 @@ do
 	check(has(msg,"weekly first clear") and has(msg,"bonus chest waiting") and has(msg,"personal best"),"clear message names bounty, PB and bonus chest")
 	s=h.cmd(p,"state")
 	local e=s.dungeonEndgame
-	check(e.chest and e.chest.floor==6 and e.chest.master==false and e.chest.cost==EG.bonusCost(6,false) and e.chest.expiresIn>0,"bonus chest waiting")
+	check(e.chest and e.chest.floor==6 and e.chest.master==false and e.chest.expiresIn>0,"bonus chest waiting")
+	eq(e.chest.cost,EG.chestFee(6,false,e.chest.items),"bonus chest fee priced on its shown contents (QC M4)")
+	check(e.chest.cost>=EG.bonusCost(6,false) and (e.chest.cost==EG.bonusCost(6,false) or e.chest.cost<EG.chestValue(e.chest.items)),"fee: the minimum, or less than the contents are worth")
 	check((e.chest.items.ObservatoryEssence or 0)>=1,"bonus chest holds essence")
 	eq(#e.log,1,"run logged")
 	check(e.log[1].f==6 and e.log[1].g=="S" and e.log[1].s==270 and e.log[1].sec==420 and e.log[1].d==1,"log row")
@@ -833,14 +1093,14 @@ do
 	for id,n in pairs(items) do eq(again.items[id],n,"chest contents unchanged after rejoin: "..id) end
 	-- Opening: coins, key or skip.
 	p=rejoin(8301,function(prof) prof.coins=10 end)
-	check(has(h.cmd(p,"dungeonChest","open").message,"costs "..EG.bonusCost(6,false)),"not enough coins")
+	check(has(h.cmd(p,"dungeonChest","open").message,"costs "..e.chest.cost),"not enough coins")
 	check(has(h.cmd(p,"dungeonChest","key").message,"no Lodestar Key"),"no key")
 	check(has(h.cmd(p,"dungeonChest","peek").message,"Open the bonus chest"),"unknown chest action")
 	p=rejoin(8301,function(prof) prof.coins=50000 end)
 	local before=h.cmd(p,"state")
 	local beforeCoins,beforeItems=before.coins,table.clone(before.items)
 	local opened=h.cmd(p,"dungeonChest","open")
-	check(has(opened.message,"Bonus chest opened") and opened.coins==beforeCoins-EG.bonusCost(6,false),"open pays the fee")
+	check(has(opened.message,"Bonus chest opened") and opened.coins==beforeCoins-e.chest.cost,"open pays the shown fee")
 	for id,n in pairs(items) do eq((opened.items[id] or 0)-(beforeItems[id] or 0),n,"chest item delivered: "..id) end
 	eq(opened.dungeonEndgame.chest,nil,"chest gone after opening")
 	check(has(h.cmd(p,"dungeonChest","open").message,"No Observatory bonus chest"),"cannot open twice")
@@ -866,6 +1126,31 @@ do
 	eq(g4.ok,true,"fourth clear accepted")
 	check(has(p.last.message,"left behind"),"an unopened chest is replaced, not stacked")
 	check(has(h.cmd(p,"dungeonChest","skip").message,"sealed"),"skip discards the chest")
+	-- QC L4: an unopened chest holding a Master-only unique is kept (and the player told).
+	local weekNow=h.cmd(p,"state").dungeonEndgame.week.id
+	p=rejoin(8301,function(prof)
+		prof.dungeonEndgame.chest={floor=6,master=true,grade="S",items={Thronebreaker=1,ObservatoryEssence=40},cost=EG.chestFee(6,true,{Thronebreaker=1,ObservatoryEssence=40}),expires=os.time()+600}
+	end)
+	check(h.cmd(p,"state").dungeonEndgame.chest~=nil,"precious chest loaded")
+	h.advance(91)
+	local g5=grant.OnInvoke(p,{floor=6,grade="B",score=200,seconds=460,partySize=1,damageShare=1,runId="job:1:6"})
+	eq(g5.ok,true,"clear over a precious chest accepted")
+	check(has(p.last.message,"was kept") and has(p.last.message,"Thronebreaker"),"the player is told the precious chest was kept ("..p.last.message..")")
+	local kept=h.cmd(p,"state").dungeonEndgame.chest
+	check(kept and kept.items.Thronebreaker==1 and kept.master==true,"the Master-only chest is not overwritten")
+	check(has(h.cmd(p,"dungeonChest","skip").message,"sealed"),"skip it")
+	-- QC L1: a server whose clock is behind the saved week keeps the newer week (no second bounty).
+	p=rejoin(8301,function(prof)
+		prof.dungeonEndgame.week={id=weekNow+1,best={["6"]=270},bounty={["6"]=true}}
+	end)
+	eq(h.cmd(p,"state").dungeonEndgame.week.id,weekNow+1,"newer saved week kept on load")
+	h.advance(91)
+	local g6=grant.OnInvoke(p,{floor=6,grade="S",score=271,seconds=400,partySize=1,damageShare=1,runId="job:1:7"})
+	eq(g6.ok,true,"clock-behind clear accepted")
+	check(not has(p.last.message,"weekly first clear"),"clock-behind server cannot re-grant the weekly bounty")
+	local wkState=h.cmd(p,"state").dungeonEndgame.week
+	check(wkState.id==weekNow+1 and wkState.best["6"]==271 and wkState.bounty["6"]==true,"the newer week keeps its bests and bounty")
+	h.cmd(p,"dungeonChest","skip")
 	-- Expiry.
 	p=rejoin(8301)
 	h.advance(91)
@@ -882,7 +1167,7 @@ do
 	check(has(h.cmd(p,"masterStar","AstrarchFang").message,"5 regular stars"),"Master star needs five stars")
 	check(has(h.cmd(p,"masterStar","Crownbreaker").message,"do not own"),"must own the item")
 	p=rejoin(8301,function(prof) prof.stars={AstrarchFang=5} prof.items.ObservatoryEssence=10 prof.items.EclipsedStarcore=0 end)
-	check(has(h.cmd(p,"masterStar","AstrarchFang").message,"200 Observatory Essence"),"essence cost")
+	check(has(h.cmd(p,"masterStar","AstrarchFang").message,EG.masterStarCost(Data.Items.AstrarchFang,1).amount.." Observatory Essence"),"essence cost")
 	p=rejoin(8301,function(prof) prof.items.ObservatoryEssence=1000 end)
 	check(has(h.cmd(p,"masterStar","AstrarchFang").message,"Eclipsed Starcore"),"Starcore cost")
 	p=rejoin(8301,function(prof) prof.items.EclipsedStarcore=2 prof.items.Crownbreaker=1 end)
@@ -891,13 +1176,13 @@ do
 	local starred=h.cmd(p,"masterStar","AstrarchFang")
 	check(has(starred.message,"Master star ✪"),"Master star forged")
 	eq(starred.depth.gear.masterStars.AstrarchFang,1,"snapshot gear view carries Master stars")
-	check(starred.items.ObservatoryEssence==800 and starred.items.EclipsedStarcore==1,"essence and Starcore spent")
+	check(starred.items.ObservatoryEssence==1000-EG.masterStarCost(Data.Items.AstrarchFang,1).amount and starred.items.EclipsedStarcore==2-EG.MasterStarCores[1],"essence and Starcore spent")
 	check(starred.depth.stats.strength>strBefore,"Master star raises worn stats")
 	eq(starred.dungeonEndgame.gearScore,364+5*EG.STAR_SCORE+EG.MASTER_STAR_SCORE,"gear score counts stars and Master stars")
 	-- Persistence and migration.
 	h.services.Players.PlayerRemoving:Fire(p)
 	local saved=h.data["p8301"].profile
-	check(saved.masterStars.AstrarchFang==1 and #saved.dungeonEndgame.log>=2 and saved.dungeonEndgame.pb["6"].score==270,"endgame record saved")
+	check(saved.masterStars.AstrarchFang==1 and #saved.dungeonEndgame.log>=2 and saved.dungeonEndgame.pb["6"].score==271,"endgame record saved")
 	saved.masterStars={AstrarchFang=99,Crownbreaker=3,Nope=1}
 	saved.dungeonEndgame={log="x",week=5,pb={["6"]={score=280,seconds=300}},runs={"job:1:1"}}
 	p=h.player(8301)
@@ -915,7 +1200,7 @@ do
 	local mok=grant.OnInvoke(p,{floor=6,grade="S",score=275,seconds=900,partySize=1,damageShare=1,master=true,runId="job:2:1"})
 	eq(mok.ok,true,"Master VI accepted after a grade S normal clear")
 	s=h.cmd(p,"state")
-	check(s.dungeonEndgame.chest.master==true and s.dungeonEndgame.chest.cost==EG.bonusCost(6,true),"Master bonus chest at the Master fee")
+	check(s.dungeonEndgame.chest.master==true and s.dungeonEndgame.chest.cost==EG.chestFee(6,true,s.dungeonEndgame.chest.items) and s.dungeonEndgame.chest.cost>=EG.bonusCost(6,true),"Master bonus chest at the Master fee (shown contents)")
 	check(s.dungeonEndgame.log[1].m==true and s.dungeonEndgame.week.best["6m"]==275 and s.dungeonEndgame.pb["6m"].score==275,"Master runs logged separately")
 	eq(s.dungeonClasses.floors[6].masterClears,1,"Master clear recorded")
 	-- Without the Master gear the grant refuses.
@@ -947,8 +1232,8 @@ do
 	local snap=h.snapshot()
 	snap.coins=100000
 	snap.items=snap.items or {}
-	snap.items.ObservatoryEssence=900
-	snap.items.EclipsedStarcore=2
+	snap.items.ObservatoryEssence=2000
+	snap.items.EclipsedStarcore=6
 	snap.items.LodestarKey=1
 	snap.items.AstrarchFang=1
 	snap.items.DuskwardenCowl=1
@@ -978,6 +1263,7 @@ do
 	check(has(texts(h.find(ui.scroll,"DungeonFloor6")),"Withering"),"Floor VI phases listed")
 	local chest=h.find(ui.scroll,"DungeonBonusChest")
 	check(chest and has(texts(chest),"Thronebreaker") and has(texts(chest),"9,000"),"bonus chest card shows the contents and fee")
+	check(has(texts(chest),math.floor(EG.CHEST_FEE_SHARE*100+.5).."% of what you see inside"),"bonus chest card explains the fee is priced on the shown contents (QC M4)")
 	local week=texts(h.find(ui.scroll,"DungeonWeekly"))
 	check(has(week,"Master VII: 271 (S)") and has(week,"VI: 240 (A)"),"weekly bests shown")
 	local log=texts(h.find(ui.scroll,"DungeonRunLog"))
@@ -1009,7 +1295,8 @@ do
 	open(ui,"Essence")
 	h.noFailures(ui,"essence page")
 	local ess=texts(ui.scroll)
-	check(has(ess,"900 essence") and has(ess,"2 Eclipsed Starcores"),"essence summary")
+	check(has(ess,"2,000 essence") and has(ess,"6 Eclipsed Starcores"),"essence summary")
+	check(has(ess,"Master stars ✪ add another "..EG.MASTER_STAR_PERCENT.."% each"),"essence page states the 2% Master star")
 	check(h.find(ui.scroll,"EssenceGear_AstrarchFang")~=nil and h.find(ui.scroll,"EssenceGear_DuskwardenCowl")~=nil,"owned dungeon gear listed")
 	check(has(texts(h.find(ui.scroll,"EssenceGear_AstrarchFang")),"Master star 3"),"next Master star offered")
 	h.press(h.find(ui.scroll,"EssenceMasterStar_AstrarchFang"))

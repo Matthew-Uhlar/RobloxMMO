@@ -5499,11 +5499,13 @@ function DC.secretsFor(floorIndex, seed)
 end
 
 -- Score: speed + survival + puzzle + secrets (each 0-100) scaled to 300 (x0.75),
--- plus Bonus (3 per class feat + 5 for a balanced team, cap 20), clamped to 300.
+-- plus Bonus (3 per class feat + 5 for a balanced team, cap 20; Master runs cap
+-- 20 + DC.MASTER_SCORE_BONUS, never a flat +5), clamped to 300.
 DC.FEAT_BONUS, DC.BONUS_CAP = 3, 20
-function DC.bonusScore(feats, balanced)
+function DC.bonusScore(feats, balanced, master)
 	feats = math.max(0, math.floor(tonumber(feats) or 0))
-	return math.min(DC.BONUS_CAP, feats * DC.FEAT_BONUS + (if balanced then 5 else 0))
+	local cap = DC.BONUS_CAP + (if master == true then (DC.MASTER_SCORE_BONUS or 0) else 0)
+	return math.min(cap, feats * DC.FEAT_BONUS + (if balanced then 5 else 0))
 end
 -- master: Master Mode runs are timed against DC.par (par x DC.masterScale(floor).par)
 -- and may carry DC.MASTER_SCORE_BONUS more Bonus (Dungeon endgame).
@@ -5615,11 +5617,15 @@ function DC.runRewards(floorIndex, grade, opts)
 	r.items.ObservatoryEssence += found
 	r.rolls = 1 + (if master then DC.MASTER_ROLLS else 0)
 	r.classXp = if DC.valid(opts.class) then DC.classXp(floorIndex, grade, master, opts.teamMult) else 0
-	-- Dungeon endgame: Master clears pay x EG.MASTER_ESSENCE essence and add the Master-only rows.
+	-- Dungeon endgame: Master clears pay x EG.MASTER_ESSENCE essence and add the Master-only rows
+	-- (at the grade's chance factor, like the floor rows and the bonus chest's EG.bonusPlan).
 	local EG = Data.DungeonEndgame
 	if master and EG then
+		local g = Data.DungeonGradeById[grade] or Data.DungeonGradeById.B
 		r.items.ObservatoryEssence = math.floor(r.items.ObservatoryEssence * EG.MASTER_ESSENCE)
-		for _, d in ipairs(EG.MasterChest[floorIndex] or {}) do table.insert(r.chest, d) end
+		for _, d in ipairs(EG.MasterChest[floorIndex] or {}) do
+			table.insert(r.chest, {item=d.item,chance=math.min(1, d.chance * g.chance),min=d.min,max=d.max})
+		end
 	end
 	r.chest = DC.classChest(r.chest, opts.class)
 	r.master, r.secrets = master, found
@@ -8607,10 +8613,10 @@ item("ColossusLumenbrand",{name="Colossus Lumenbrand",kind="weapon",slot="weapon
 	stats={damage=245,strength=100,critChance=8,critDamage=75,intelligence=30},requires={Combat=40,Dungeoneering=40},value=15000,
 	description="Observatory Floor VI+ chest drop: a shard of the Lumen Colossus. Requires Dungeoneering 40."})
 item("SovereignNightfall",{name="Sovereign's Nightfall",kind="weapon",slot="weapon",rarity="Legendary",color="3E3570",dungeon=true,
-	stats={damage=290,strength=125,critChance=10,critDamage=95},requires={Combat=45,Dungeoneering=50},value=22000,
+	stats={damage=290,strength=125,critChance=10,critDamage=84},requires={Combat=45,Dungeoneering=50},value=22000,
 	description="Observatory Floor VII chest drop: the Hollow Sovereign's blade. Requires Dungeoneering 50."})
 item("Thronebreaker",{name="Thronebreaker",kind="weapon",slot="weapon",tier=9,rarity="Mythic",color="C77DFF",dungeon=true,masterOnly=true,
-	stats={damage=320,strength=145,critChance=12,critDamage=105},requires={Combat=50,Dungeoneering=50},value=40000,
+	stats={damage=320,strength=145,critChance=12,critDamage=92},requires={Combat=50,Dungeoneering=50},value=40000,
 	description="Master Mode only: Master Floor VI-VII chests. An endgame (tier 9) drop-only unique. Requires Dungeoneering 50."})
 item("SovereignHalo",{name="Sovereign Halo",kind="accessory",rarity="Mythic",color=Data.Rarity.Mythic.color,dungeon=true,masterOnly=true,
 	stats={strength=20,critDamage=20,intelligence=20,magicFind=4},value=40*Data.Rarity.Mythic.rank^2,
@@ -8698,10 +8704,16 @@ end
 
 -- Master stars (✪) -----------------------------------------------------------
 -- Dungeon gear (def.dungeon, not accessories) with five regular stars takes up
--- to five Master stars, each +Gear.DUNGEON_STAR_PERCENT% of the base stats.
+-- to five Master stars, each +EG.MASTER_STAR_PERCENT% of the base stats: five
+-- regular stars (4% each) + five Master stars (2% each) cap dungeon gear at +30%,
+-- so a fully upgraded dungeon piece stays below the 5-star crafted endgame item
+-- of the next higher Combat requirement (EG.CraftedRivals, verify-dungeon-master).
+-- Costs are tuned so one full set takes about 10 hours of Master VII (essence and
+-- Eclipsed Starcores, both counting the bonus chest; EG.model).
 EG.MASTER_STAR_MAX = 5
-EG.MasterStarEssence = {100,150,220,300,400} -- x (1 + 0.25 x (rarity rank - 1))
-EG.MasterStarCores = {1,1,2,2,3}             -- Eclipsed Starcores
+EG.MASTER_STAR_PERCENT = 2
+EG.MasterStarEssence = {240,380,560,750,1000} -- x (1 + 0.25 x (rarity rank - 1))
+EG.MasterStarCores = {2,3,4,6,8}             -- Eclipsed Starcores
 EG.MasterStarCoins = 5000                    -- x k^2
 function EG.canMasterStar(def)
 	return type(def) == "table" and def.dungeon == true and Gear.canStar(Gear.category(def))
@@ -8733,7 +8745,7 @@ end
 table.insert(Gear.Layers, {id="masterStars",glyph="✪",stats=function(g, itemId, def)
 	local n = EG.masterStarsOf(g, itemId)
 	if n <= 0 then return 0, {} end
-	local pct = Gear.starPercent(def) * n / 100
+	local pct = EG.MASTER_STAR_PERCENT * n / 100
 	local out = {}
 	for stat, v in pairs(def.stats or {}) do
 		local bonus = math.floor(v * pct * 10 + 0.5) / 10
@@ -8741,6 +8753,14 @@ table.insert(Gear.Layers, {id="masterStars",glyph="✪",stats=function(g, itemId
 	end
 	return n, out
 end})
+
+-- Crafted rivals: each endgame dungeon weapon/armor (fully upgraded: 5★ + 5✪) must
+-- stay below the 5-star crafted Crown item of the next higher Combat requirement
+-- (armor compared as the full set with both set bonuses). Checked by verify-dungeon-master.
+EG.CraftedRivals = {
+	Thronebreaker="Crownbreaker",SovereignNightfall="SovereignGreatblade",ColossusLumenbrand="SovereignGreatblade",
+	DuskwardenCowl="SovereignHelm",DuskwardenHauberk="SovereignChestplate",DuskwardenTassets="SovereignGreaves",DuskwardenSabatons="SovereignBoots",
+}
 
 -- Essence Exchange --------------------------------------------------------------
 EG.Exchange = {
@@ -8902,24 +8922,56 @@ end
 
 -- Bonus chest ------------------------------------------------------------------
 -- Rolled once per credited clear (contents saved in the journal at the clear):
--- guaranteed essence (the clear's base essence) + the floor's chest (with the
--- Master rows on Master clears) at x BONUS_CHANCE x the grade's chance factor.
--- Opening costs coins (or one Lodestar Key); unopened chests expire.
--- Costs sit at ~1.4x the chest's expected value (EG.expectedValue): opening
--- blind loses coins on average; the contents are shown first, so the fee buys
--- the chance at a unique, never a free reroll.
-EG.BonusCost = {70,350,800,1400,2000,4000,7000}
-EG.BonusCostMaster = {430,900,1500,2300,3100,5500,9000}
+-- guaranteed essence (the clear's base essence, x EG.MASTER_ESSENCE on Master
+-- clears) + the floor's chest (with the Master rows on Master clears) at
+-- x BONUS_CHANCE x the grade's chance factor (the free chest applies the same
+-- grade factor to the Master rows, DC.runRewards). Opening costs coins (or one
+-- Lodestar Key); unopened chests expire.
+-- The contents are shown before paying, so the fee is priced on what is shown:
+-- EG.chestFee = max(the floor's minimum fee, CHEST_FEE_SHARE x the shown items'
+-- merchant value). Opening is never a blind gamble and never a free reroll.
+EG.BonusCost = {50,100,150,250,350,500,700}          -- minimum fee, normal
+EG.BonusCostMaster = {100,200,300,450,600,800,1000}  -- minimum fee, Master
+EG.CHEST_FEE_SHARE = 0.75
 EG.BONUS_CHANCE = 1.5
 EG.CHEST_SECONDS = 900
 function EG.bonusCost(floorIndex, master)
 	local list = if master == true then EG.BonusCostMaster else EG.BonusCost
 	return list[tonumber(floorIndex) or 1] or list[1]
 end
+-- Merchant value of a rolled chest {[itemId]=count}.
+function EG.chestValue(items)
+	local v = 0
+	for id, n in pairs(type(items) == "table" and items or {}) do
+		local def = Data.Items[id]
+		v += (def and tonumber(def.value) or 0) * math.max(0, tonumber(n) or 0)
+	end
+	return v
+end
+-- Fee for the shown contents.
+function EG.chestFee(floorIndex, master, items)
+	return math.max(EG.bonusCost(floorIndex, master), math.floor(EG.CHEST_FEE_SHARE * EG.chestValue(items)))
+end
+-- A chest holding a Master-only item or a unique (weapon, armor, accessory).
+function EG.chestNotable(items)
+	for id in pairs(type(items) == "table" and items or {}) do
+		local def = Data.Items[id]
+		if def and (def.masterOnly == true or def.kind == "weapon" or def.kind == "armor" or def.kind == "accessory") then return true end
+	end
+	return false
+end
+-- A new clear's chest normally replaces an unopened one, but never silently drops
+-- a notable chest: the unopened chest is kept unless the new one is notable too and
+-- worth more. Returns true to keep the old chest.
+function EG.keepOldChest(old, new)
+	if type(old) ~= "table" or not EG.chestNotable(old.items) then return false end
+	if type(new) == "table" and EG.chestNotable(new.items) and EG.chestValue(new.items) > EG.chestValue(old.items) then return false end
+	return true
+end
 function EG.bonusPlan(floorIndex, grade, master)
 	local f = floors[floorIndex] or floors[1]
 	local g = Data.DungeonGradeById[grade] or Data.DungeonGradeById.B
-	local essence = math.max(1, math.floor(f.rewards.essence * g.mult))
+	local essence = math.max(1, math.floor(f.rewards.essence * g.mult)) * (if master == true then EG.MASTER_ESSENCE else 1)
 	local table_ = {{item="ObservatoryEssence",chance=1,min=essence,max=essence * 2}}
 	local function add(list)
 		for _, d in ipairs(list) do
@@ -8949,6 +9001,13 @@ EG.RUN_MEMORY = 8 -- credited run ids remembered (one credit per run id)
 function EG.key(floorIndex, master) return tostring(math.floor(tonumber(floorIndex) or 1)) .. (if master == true then "m" else "") end
 function EG.weekOf(t) return math.floor((tonumber(t) or 0) / EG.WEEK) end
 function EG.weekEnds(t) return (EG.weekOf(t) + 1) * EG.WEEK end
+-- Weekly rollover (forward only): a server whose clock is behind the saved week
+-- keeps the newer week, so it can never re-open a bounty already claimed.
+function EG.rollWeek(state, now)
+	local wk = EG.weekOf(now)
+	if type(state.week) ~= "table" or (tonumber(state.week.id) or -1) < wk then state.week = {id=wk,best={},bounty={}} end
+	return state.week
+end
 -- Weekly first-clear bounty: the floor's base essence (x2 in Master Mode).
 function EG.bounty(floorIndex, master)
 	local f = floors[floorIndex] or floors[1]
@@ -8981,7 +9040,11 @@ function EG.migrate(raw, now)
 		end
 	end
 	local w = type(t.week) == "table" and t.week or {}
-	if tonumber(w.id) == out.week.id then
+	-- Weeks only move forward: a saved week newer than this server's clock (by at
+	-- most one week; anything further is corrupt) is kept with its bests and bounties.
+	local savedWeek = num(w.id, 0)
+	if savedWeek and savedWeek == out.week.id + 1 then out.week.id = savedWeek end
+	if savedWeek == out.week.id then
 		for k, v in pairs(type(w.best) == "table" and w.best or {}) do
 			local s = num(v, 0, 300)
 			if validKey(k) and s then out.week.best[k] = s end
@@ -9015,7 +9078,7 @@ end
 -- personal best (higher score, then faster). Returns {bounty=n, weeklyBest=bool, pb=bool}.
 function EG.record(state, floorIndex, master, grade, score, seconds, deaths, now)
 	local key = EG.key(floorIndex, master)
-	if state.week.id ~= EG.weekOf(now) then state.week = {id=EG.weekOf(now),best={},bounty={}} end
+	EG.rollWeek(state, now)
 	table.insert(state.log, 1, {t=now,f=floorIndex,m=master == true,g=grade,s=score,sec=seconds,d=deaths})
 	while #state.log > EG.LOG_LIMIT do table.remove(state.log) end
 	local out = {bounty=0,weeklyBest=false,pb=false}
@@ -9040,17 +9103,29 @@ end
 -- A clear takes MODEL_PAR x the run's par plus MODEL_OVERHEAD seconds (pad,
 -- walking, chest), never faster than the 90 s credit cooldown. Rates at grade S
 -- with every secret; chest value = expected value of the free chest roll(s).
+-- The bonus chest is counted as opened (its fee is a share of the shown value,
+-- so opening pays at merchant value): its essence and Starcores join essence/h
+-- and cores/h (as do the free chest's), its value less the fee is bonusNet (/h).
 EG.MODEL_PAR, EG.MODEL_OVERHEAD = 0.85, 45
+function EG.expectedCount(drops, id)
+	local n = 0
+	for _, d in ipairs(drops) do if d.item == id then n += d.chance * (d.min + d.max) / 2 end end
+	return n
+end
 function EG.model(floorIndex, master, grade)
 	grade = grade or "S"
 	local seconds = math.max(Data.Dungeons.clearCooldown, DC.par(floorIndex, master) * EG.MODEL_PAR + EG.MODEL_OVERHEAD)
 	local runs = 3600 / seconds
 	local r = DC.runRewards(floorIndex, grade, {master=master,secrets=DC.secretCount(floorIndex)})
 	local chest = EG.expectedValue(r.chest) * r.rolls
-	local essence = r.items.ObservatoryEssence
 	local bonus = EG.bonusPlan(floorIndex, grade, master)
+	local bonusValue = EG.expectedValue(bonus.drops)
+	local bonusFee = math.max(bonus.cost, EG.CHEST_FEE_SHARE * bonusValue)
+	local essence = r.items.ObservatoryEssence + EG.expectedCount(r.chest, "ObservatoryEssence") * r.rolls + EG.expectedCount(bonus.drops, "ObservatoryEssence")
+	local cores = EG.expectedCount(r.chest, "EclipsedStarcore") * r.rolls + EG.expectedCount(bonus.drops, "EclipsedStarcore")
 	return {seconds=seconds,runsPerHour=runs,dungeoneeringXp=r.dungeoneeringXp * runs,combatXp=r.combatXp * runs,coins=r.coins * runs,
-		essence=essence * runs,chestValue=chest * runs,bonusValue=EG.expectedValue(bonus.drops),bonusCost=bonus.cost}
+		essence=essence * runs,cores=cores * runs,coresPerRun=cores,chestValue=chest * runs,
+		bonusValue=bonusValue,bonusCost=bonusFee,bonusNet=(bonusValue - bonusFee) * runs}
 end
 -- Collection Log: Master-only rows belong to the Dungeons tab.
 if Data.CommissionsLogs and Data.CommissionsLogs.LogRoots then Data.CommissionsLogs.LogRoots.DungeonEndgame = "Dungeons" end

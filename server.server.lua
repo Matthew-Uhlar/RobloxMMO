@@ -5821,9 +5821,10 @@ do
 		local d=p.dungeonEndgame
 		if type(d)~="table" or type(d.log)~="table" or type(d.week)~="table" or type(d.pb)~="table" or type(d.runs)~="table" then Delve.migrate(p) d=p.dungeonEndgame end
 		if type(p.masterStars)~="table" then p.masterStars={} end
-		-- Weekly rollover and chest expiry on read.
+		-- Weekly rollover (forward only: a server whose clock is behind keeps the newer
+		-- saved week, so it can never re-grant a claimed bounty) and chest expiry on read.
 		local now=os.time()
-		if d.week.id~=EG.weekOf(now) then d.week={id=EG.weekOf(now),best={},bounty={}} end
+		EG.rollWeek(d,now)
 		if d.chest and (tonumber(d.chest.expires) or 0)<=now then d.chest=nil end
 		return d
 	end
@@ -5841,8 +5842,12 @@ do
 		local pb={}
 		for k,v in pairs(d.pb) do pb[k]=table.clone(v) end
 		return {gearScore=EG.gearScore(p),gates=gates,chest=chest,log=log,
-			week={id=d.week.id,best=table.clone(d.week.best),bounty=table.clone(d.week.bounty),resetIn=math.max(0,EG.weekEnds(now)-now)},
+			week={id=d.week.id,best=table.clone(d.week.best),bounty=table.clone(d.week.bounty),resetIn=math.max(0,(d.week.id+1)*EG.WEEK-now)},
 			pb=pb,keys=p.items.LodestarKey or 0,cores=p.items.EclipsedStarcore or 0,essence=p.items.ObservatoryEssence or 0,masterStars=table.clone(p.masterStars)}
+	end
+	local function chestText(items)
+		local t=string.gsub(dropText(items)," • ","",1)
+		return if t~="" then t else "nothing"
 	end
 	-- After a credited clear: log, bests, weekly bounty, bonus chest. Returns message text.
 	function Delve.afterClear(player,p,c)
@@ -5858,9 +5863,16 @@ do
 		if rec.pb then text..=" • new personal best" end
 		local plan=EG.bonusPlan(c.floor,c.grade,c.master)
 		local items=Progression.rollDrops(plan.drops,c.stats.magicFind,roll,c.stats.petLuck)
-		if d.chest then text..=" • the unopened bonus chest was left behind" end
-		d.chest={floor=c.floor,master=c.master==true,grade=c.grade,items=items,cost=plan.cost,expires=c.now+EG.CHEST_SECONDS}
-		text..=" • bonus chest waiting ("..plan.cost.." coins or a Lodestar Key)"
+		-- The fee is priced on the contents the player will see (EG.chestFee), not blind EV.
+		local fresh={floor=c.floor,master=c.master==true,grade=c.grade,items=items,cost=EG.chestFee(c.floor,c.master,items),expires=c.now+EG.CHEST_SECONDS}
+		if d.chest and EG.keepOldChest(d.chest,fresh) then
+			-- Never silently overwrite an unopened chest holding a Master-only item or a unique.
+			text..=" • your unopened bonus chest ("..chestText(d.chest.items)..") was kept; this clear's chest ("..chestText(items)..") was left behind"
+			return text
+		end
+		if d.chest then text..=" • the unopened bonus chest ("..chestText(d.chest.items)..") was left behind" end
+		d.chest=fresh
+		text..=" • bonus chest waiting ("..fresh.cost.." coins or a Lodestar Key)"
 		return text
 	end
 	function Delve.action(player,p,verb,item)

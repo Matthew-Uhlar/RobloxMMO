@@ -18,7 +18,8 @@
 -- heart carries "Class ability" (Q) and "Ultimate" (R) prompts (also fired by the
 -- party HUD's Q / R buttons in ui.client.lua for touch screens), validated here
 -- with cooldowns/charges (DC.abilityCheck). Hidden secrets (caches and levers)
--- spawn each run. Master Mode (floors I-V, after an S+) doubles HP and damage; its par is x1.6.
+-- spawn each run. Master Mode (floors I-VII, after a grade S clear) scales HP and damage x2-3.2,
+-- par x1.6-2.8 and XP/coins x2.2-4 by floor (DC.masterScale); its Bonus score cap is +5.
 -- Second Dawn (boss phase only) arms one forgiven fall for 20 s; it never stacks.
 -- Clear score = DC.score: speed + survival + puzzle + secrets (x0.75) + bonus -> grade S+..D.
 -- Credit rules (documented in GameData Dungeons section):
@@ -50,8 +51,14 @@
 --     3+) and a credited action in the last 60 s. A delver who disconnects mid-run may
 --     rejoin within 90 s with their record (idle clock + 15 s grace). Every run has a
 --     run id; the profile credits a run id once (no duplicate chests).
---   * All new parts are static (built once) or reused markers: nothing new is created
---     per run, so a run leaves no parts or connections behind.
+--   * The endgame parts (mirrors, glyph plates, lectern, beam receiver, verdict mark) are
+--     static (built once) and reused; the per-run parts (wisps, secrets, lance marks) are
+--     destroyed by reset(), so a run leaves no parts or prompts behind.
+--   * A running Eventide Nova pauses while the core is shielded or warded, and the wisp
+--     wave timer holds during a nova (the nova is always breakable while it counts down).
+--   * Contribution: the party total is the sum of each member's capped points (tuning
+--     capped at half the threshold), and a puzzle step (prism, mirror, glyph) is credited
+--     only the first time it is solved, so replaying a puzzle cannot deny others' credit.
 local Players = game:GetService("Players")
 local Storage = game:GetService("ServerStorage")
 local RunService = game:GetService("RunService")
@@ -161,7 +168,8 @@ local function newRun(floorIndex, master)
 		deaths = 0, mistakes = 0, totalDamage = 0, totalTunes = 0, partySize = 0,
 		secretsFound = 0, secretsTotal = 0, bastion = 0, bastionBy = nil, bulwark = nil, forgive = nil, team = DC.teamBonus({}),
 		-- Dungeon endgame: run id, rooms, boss phase, role mechanics.
-		id = "", mirrorStates = {}, mirrorTargets = {}, chart = nil, phase = 0, mech = {}, channel = nil, blight = nil, lock = nil, locked = {}}
+		id = "", mirrorStates = {}, mirrorTargets = {}, chart = nil, phase = 0, mech = {}, channel = nil, blight = nil, lock = nil, locked = {},
+		solved = {}} -- puzzle steps already credited (first solve only)
 end
 newRun(1)
 local function guardsAlive()
@@ -183,6 +191,27 @@ end
 local function points(record, totalPoints)
 	local cap = TUNE_CAP_OF_THRESHOLD * Rules.contributionShare * totalPoints
 	return record.damage + math.min(tunePoints(record), cap)
+end
+-- Party total = the sum of every member's capped points (fixed point of
+-- T = damage + sum(min(tunes_i, cap(T)))), so one delver's tuning can never
+-- inflate the total beyond their own capped share.
+local function partyPoints()
+	local total = run.totalDamage
+	for _, record in members do total += tunePoints(record) end
+	for _ = 1, 40 do
+		local nextTotal = 0
+		for _, record in members do nextTotal += points(record, total) end
+		nextTotal = math.max(nextTotal, run.totalDamage)
+		if math.abs(nextTotal - total) < 1e-6 then total = nextTotal break end
+		total = nextTotal
+	end
+	return total
+end
+-- A puzzle step counts as a tuning only the first time it is solved this run.
+local function firstSolve(key)
+	if run.solved[key] then return false end
+	run.solved[key] = true
+	return true
 end
 local function touch(record) record.active = os.clock() end
 local function orderOf(i)
@@ -394,8 +423,11 @@ local function tunePrism(i, member, player, spell)
 	charged[i] = true
 	touch(member)
 	member.acted = os.clock()
-	member.tunes += 1
-	run.totalTunes += 1
+	-- Retuning a step already tuned (after a wrong resonance) earns no new tuning credit.
+	if firstSolve("prism:" .. run.shieldIndex .. ":" .. run.nextPrism) then
+		member.tunes += 1
+		run.totalTunes += 1
+	end
 	run.nextPrism += 1
 	run.remaining -= 1
 	if spell then earnFeat(member, "Attune") end
@@ -439,10 +471,12 @@ local lectern = block("Star chart lectern", Vector3.new(0, 3, 19), Vector3.new(3
 local function roomActive(stage)
 	return table.find(EG.roomsFor(run.floor), stage) ~= nil
 end
--- Credited puzzle progress counts as a tuning (contribution capped at half the threshold).
-local function solveStep(member)
+-- Credited puzzle progress counts as a tuning (contribution capped at half the threshold),
+-- once per step: re-lighting a mirror or replaying chart steps after a mistake earns nothing new.
+local function solveStep(member, key)
 	touch(member)
 	member.acted = os.clock()
+	if not firstSolve(key) then return end
 	member.tunes += 1
 	run.totalTunes += 1
 end
@@ -483,7 +517,7 @@ function paintRooms()
 	end
 end
 local function startChart(offset)
-	run.chart = {seq = EG.chartSequence(run.seed * 13 + (offset or 0), EG.chartLength(run.master)), step = 1}
+	run.chart = {seq = EG.chartSequence(run.seed * 13 + (offset or 0), EG.chartLength(run.master)), step = 1, key = offset or 0}
 end
 local function chartSolved()
 	if run.stage == "chart" then
@@ -518,7 +552,7 @@ local function turnMirror(i, member, player)
 	touch(member)
 	if mistake then puzzleMistake(member, player, "You turned a lit mirror and broke the beam!") end
 	local after = EG.beamReach(run.mirrorStates, run.mirrorTargets)
-	if after > before then solveStep(member) end
+	if after > before then solveStep(member, "mirror:" .. after) end
 	if after >= EG.MIRRORS then mirrorsSolved() end
 	paintRooms()
 	display()
@@ -530,7 +564,7 @@ local function alignMirror(member, player)
 	local reach = EG.beamReach(run.mirrorStates, run.mirrorTargets)
 	if reach >= EG.MIRRORS then return false end
 	run.mirrorStates[reach + 1] = run.mirrorTargets[reach + 1]
-	solveStep(member)
+	solveStep(member, "mirror:" .. (reach + 1))
 	earnFeat(member, "Attune")
 	if EG.beamReach(run.mirrorStates, run.mirrorTargets) >= EG.MIRRORS then mirrorsSolved() end
 	paintRooms()
@@ -549,7 +583,7 @@ local function pressPlate(i, member, player, spell)
 		return false
 	end
 	run.chart.step += 1
-	solveStep(member)
+	solveStep(member, "chart:" .. run.chart.key .. ":" .. (run.chart.step - 1))
 	if spell then earnFeat(member, "Attune") end
 	if run.chart.step > #run.chart.seq then chartSolved() end
 	paintRooms()
@@ -592,7 +626,7 @@ end
 local function finish()
 	local f = floorDef()
 	local seconds = os.clock() - run.startedAt
-	local totalPoints = run.totalDamage + run.totalTunes * Rules.tuneWeight * totalHp(run.stats)
+	local totalPoints = partyPoints() -- sum of capped points (M3: replays cannot inflate it)
 	-- Credit first: the team bonus and feats count only delvers still in the run and credited.
 	local reasons, classes, feats = {}, {}, 0
 	-- Dungeon endgame (Minigames-style): the median member's points and the recent-action window.
@@ -627,7 +661,7 @@ local function finish()
 		end
 	end
 	run.team = DC.teamBonus(classes)
-	local bonus = DC.bonusScore(feats, run.team.balanced) + (if run.master then DC.MASTER_SCORE_BONUS else 0)
+	local bonus = DC.bonusScore(feats, run.team.balanced, run.master) -- Master: cap +DC.MASTER_SCORE_BONUS (not a flat +5)
 	local score, parts = DC.score(f.index, seconds, run.deaths, run.mistakes, run.secretsFound, run.secretsTotal, bonus, run.master)
 	local grade = Data.dungeonGrade(score)
 	local reward = Storage:FindFirstChild("IsleExpeditionReward")
@@ -690,8 +724,11 @@ local function updatePhase()
 	local b = EG.Bosses[run.floor]
 	if not b or run.stage ~= "core" or run.health <= 0 then return end
 	local index, ph = EG.phaseAt(run.floor, run.health / run.stats.coreHp)
-	if index == run.phase then return end
+	-- Phases only advance: regeneration lifting the core back above a threshold never
+	-- returns it to an earlier phase (index = max(index, run.phase)).
+	if index <= run.phase then return end
 	run.phase = index
+	display() -- BossPhase / PhaseName on the heart update at once
 	for ally in members do notice(ally, floorDef().boss.name .. " • " .. ph.name .. "!") end
 	if ph.lock == "chart" and not run.locked[index] then
 		run.locked[index] = true
@@ -768,7 +805,10 @@ local function stepMechanics(dt)
 		if run.blight and run.blight.left <= 0 then run.blight = nil; display() end
 	end
 	if run.channel then
-		run.channel.left -= dt
+		-- A running nova holds its countdown while the core cannot be damaged (a prism
+		-- shield or warding wisps), so it can always be broken before it strikes.
+		local frozen = run.channel.kind == "nova" and (run.shielded or warded())
+		if not frozen then run.channel.left -= dt end
 		if run.channel.left <= 0 then
 			resolveChannel()
 		elseif math.ceil(run.channel.left) ~= run.channel.shown then
@@ -1250,7 +1290,13 @@ paintPrisms()
 display()
 RunService.Heartbeat:Connect(function(dt)
 	if lobby then
-		if os.clock() >= lobby.deadline then launch() else display() end
+		if os.clock() >= lobby.deadline then
+			launch()
+		else
+			-- The caption counts whole seconds: redraw only when the shown second changes.
+			local left = math.max(0, math.ceil(lobby.deadline - os.clock()))
+			if left ~= lobby.shown then lobby.shown = left; display() end
+		end
 	end
 	if not next(members) then return end
 	local now = os.clock()
@@ -1321,8 +1367,10 @@ RunService.Heartbeat:Connect(function(dt)
 		display()
 	end
 	local wave = f.mechanics.addWaves
-	-- The wave timer pauses while a full wave still lives (and spawnWave caps live wisps).
-	if wave and not run.shielded and liveWisps() < wave.count then
+	-- The wave timer pauses while a full wave still lives (and spawnWave caps live wisps)
+	-- and holds during an Eventide Nova (no wisps ward the core mid-channel).
+	local novaRunning = run.channel ~= nil and run.channel.kind == "nova"
+	if wave and not run.shielded and not novaRunning and liveWisps() < wave.count then
 		run.waveTimer += dt
 		if run.waveTimer >= run.stats.waveEvery then
 			run.waveTimer = 0
@@ -1494,7 +1542,7 @@ local function attach(part)
 	end
 	local lever = block("Master lever", Vector3.zero, Vector3.new(1, 4, 1), violet, Enum.Material.Slate)
 	lever.Position = part.Position + Vector3.new(14, 0, 0)
-	prompt(lever, "Master Mode • floors I-VII after a grade S clear • ×2-3.5 HP, ×2-3.2 damage, longer par, ×2.2-3.7 XP and coins, ×3 essence, extra chest roll", "Toggle Master Mode", function(player)
+	prompt(lever, "Master Mode • floors I-VII after a grade S clear • ×2-3.2 HP and damage, par ×1.6-2.8, ×2.2-4.0 XP and coins, ×3 essence, extra chest roll", "Toggle Master Mode", function(player)
 		if members[player] then return end
 		local current = masterPick[player]
 		if current == nil then current = player:GetAttribute("DungeonMasterOn") == true end

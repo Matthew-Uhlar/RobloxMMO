@@ -4270,7 +4270,7 @@ function dungeonUi.drawEndgame(eview)
 		local cost=num(chest.cost,0)
 		card({name="DungeonBonusChest",motif="Hunt",accent=gold,edge=gold,title="Bonus chest  ·  Floor "..dungeonUi.mode(num(chest.floor,1),chest.master==true).."  ·  grade "..escape(tostring(chest.grade or "?")),titleColor=gold,
 			subtitle="Waiting "..clock(num(chest.expiresIn,0)).."  ·  "..fmt(cost).." coins or a Lodestar Key",badge="🗝 ×"..keys,badgeColor=ivory,
-			detail="Rolled once when the boss fell and saved to your journal: leaving, rejoining or waiting never changes it.",
+			detail="Rolled once when the boss fell and saved to your journal: leaving, rejoining or waiting never changes it. The fee is "..math.floor(EG.CHEST_FEE_SHARE*100+.5).."% of what you see inside (minimum "..fmt(EG.bonusCost(num(chest.floor,1),chest.master==true)).."), so you always know what you pay for.",
 			lines={"Inside: "..dungeonUi.itemsText(chest.items)},
 			actions={{caption="Open · "..fmt(cost).." coins",primary=coins>=cost,name="DungeonChestOpen",disabled=coins<cost,reason="Not enough coins.",fn=function() send("dungeonChest","open") end},
 				{caption="Use key ("..keys..")",name="DungeonChestKey",disabled=keys<1,reason="No Lodestar Key.",fn=function() send("dungeonChest","key") end},
@@ -4278,7 +4278,7 @@ function dungeonUi.drawEndgame(eview)
 	else
 		card({name="DungeonBonusChest",motif="Hunt",title="Bonus chest",titleColor=ivory,subtitle="None waiting  ·  🗝 Lodestar Keys ×"..keys,
 			detail="Every credited clear rolls one bonus chest (floor chest at ×"..EG.BONUS_CHANCE.." chance plus essence). Open it for coins or a Lodestar Key within "..clock(EG.CHEST_SECONDS)..", or leave it sealed.",
-			lines={"Fees: "..table.concat((function() local t={} for i=1,#Data.DungeonFloors do table.insert(t,numeral(i).." "..short(EG.bonusCost(i,false)).."/"..short(EG.bonusCost(i,true))) end return t end)(),"  ·  ").." (normal / Master)"}})
+			lines={"Fee: "..math.floor(EG.CHEST_FEE_SHARE*100+.5).."% of the shown contents' value, at least "..table.concat((function() local t={} for i=1,#Data.DungeonFloors do table.insert(t,numeral(i).." "..short(EG.bonusCost(i,false)).."/"..short(EG.bonusCost(i,true))) end return t end)(),"  ·  ").." (normal / Master)"}})
 	end
 	-- Weekly bests and the weekly first-clear bounty.
 	local week=tbl(eview.week)
@@ -4464,7 +4464,7 @@ local function drawEssence()
 	local cores=num(items.EclipsedStarcore,0)
 	card({name="EssenceSummary",motif="Hunt",accent=rgb(dungeonUi.violet),item="ObservatoryEssence",title="Observatory Essence",titleColor=rgb(lighten(dungeonUi.violet,.35)),
 		subtitle=fmt(essence).." essence  ·  "..fmt(cores).." Eclipsed Starcores  ·  "..fmt(num(items.LodestarKey,0)).." Lodestar Keys",badge="Gear score "..math.floor(num(eview.gearScore,0)),badgeColor=ivory,
-		detail="Every Observatory clear pays essence (more for grades, secrets and Master Mode, plus a weekly first-clear bounty per floor). Stars ★ add "..G.DUNGEON_STAR_PERCENT.."% of a dungeon item's base stats each; once an item has "..G.STAR_MAX.." stars, Master stars ✪ add another "..G.DUNGEON_STAR_PERCENT.."% each (up to "..EG.MASTER_STAR_MAX..") with Eclipsed Starcores from Master Mode chests."})
+		detail="Every Observatory clear pays essence (more for grades, secrets and Master Mode, plus a weekly first-clear bounty per floor). Stars ★ add "..G.DUNGEON_STAR_PERCENT.."% of a dungeon item's base stats each; once an item has "..G.STAR_MAX.." stars, Master stars ✪ add another "..(EG.MASTER_STAR_PERCENT or G.DUNGEON_STAR_PERCENT).."% each (up to "..EG.MASTER_STAR_MAX..") with Eclipsed Starcores from Master Mode chests."})
 	heading("ESSENCE EXCHANGE")
 	for _,e in ipairs(EG.Exchange) do
 		card({name="EssenceBuy_"..e.id,motif="Hunt",item=e.id,title=paint(escape(itemName(e.id)),itemHex(e.id)),subtitle=e.essence.." Observatory Essence"..(e.coins>0 and (" + "..fmt(e.coins).." coins") or ""),
