@@ -7444,7 +7444,7 @@ function LRU.drawLairs(LR,l)
 	local total=0
 	for _,n in pairs(tbl(l and l.kc)) do total+=num(n,0) end
 	card({name="LairsSummary",motif="Hunt",accent=rgb("B48CFF"),title="Lair Bosses",titleColor=rgb("D8C4FF"),
-		subtitle=fmt(total).." lair kills   ·   up to "..LR.MAX_PARTY.." crewmates per lair",badge=l and nil or "SYNCING",
+		subtitle=fmt(total).." lair kills   ·   up to "..LR.MAX_PARTY.." crewmates per lair",badge=if l then nil else "SYNCING",
 		detail="Summon a lair boss at its altar (entry fee in coins). The arena opens for "..LR.WARMUP.."s so crewmates from your co-op can join, then the boss rises. Stances switch on a beat: pray the matching Ward. Dodge telegraphs and glowing tiles; slay broods first and break sigils in order.",
 		lines={paint("Fall and you wake at home with your items (the usual purse-coin loss applies). Disconnected? Rejoin within "..LR.REJOIN_SECONDS.."s to keep your place and share. Each member rolls their own loot.","A9BDC1")}})
 	for _,id in ipairs(LR.Order) do
