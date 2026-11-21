@@ -10153,6 +10153,241 @@ if CLog and CLog.LogTabs and not CLog.LogTabs.Lairs then
 end
 end
 -- <<< END Lairs <<<
+
+-- >>> Held items & swings (docs/DEPTH-CONTRACT.md §26) >>>
+-- Pure rules shared by held.server.lua (builds the welded model), server.server.lua
+-- (`hold` / `hotbarSet` verbs, p.held, auto tool switch), animate.client.lua
+-- (which swing a held item plays, hold pose) and hotbar.client.lua.
+-- Model specs are plain numbers in the grip frame (hand grip at the origin, the
+-- handle runs along -Z, the swing plane is YZ), so this module needs no Roblox
+-- types: {n name, s size, o offset, c colour key, m material, shape}.
+------------------------------------------------------------------------------
+do
+local H = {}
+Data.Held = H
+H.MAX_PARTS = 8
+H.AUTO_RETURN = 8 -- seconds after the last gather / attack before an auto-held tool goes back
+H.RATE, H.BURST = 2, 5 -- hold / hotbarSet tokens per second, bucket size
+H.HOTBAR_SLOTS = 9
+H.FREE_SLOTS = {3, 4, 5, 6, 7, 8, 9} -- slot 1 = weapon, slot 2 = context tool
+-- Classes: every weapon / tool resolves to exactly one. hand = which grip it welds to.
+H.CLASSES = {
+	sword = {hand = "right", kind = "weapon"}, greatblade = {hand = "right", kind = "weapon"}, dagger = {hand = "right", kind = "weapon"},
+	maul = {hand = "right", kind = "weapon"}, glaive = {hand = "right", kind = "weapon"},
+	shortbow = {hand = "left", kind = "weapon"}, longbow = {hand = "left", kind = "weapon"},
+	staff = {hand = "right", kind = "weapon"}, wand = {hand = "right", kind = "weapon"},
+	shield = {hand = "left", kind = "offhand"}, -- no shield items exist yet; the class is ready for them
+	pickaxe = {hand = "right", kind = "tool"}, hatchet = {hand = "right", kind = "tool"}, rod = {hand = "right", kind = "tool"},
+	hoe = {hand = "right", kind = "tool"}, hammer = {hand = "right", kind = "tool"},
+}
+H.TOOL_CLASS = {Pickaxe = "pickaxe", Hatchet = "hatchet", Rod = "rod", Hoe = "hoe", Hammer = "hammer"}
+H.SKILL_CLASS = {Mining = "pickaxe", Woodcutting = "hatchet", Fishing = "rod", Farming = "hoe"}
+-- Named weapons whose silhouette the name patterns below would miss.
+H.OVERRIDE = {AstrarchFang = "dagger", SovereignNightfall = "dagger", EclipseGlaive = "glaive", BastionMaul = "maul",
+	Thronebreaker = "maul", Riftcleaver = "greatblade", ColossusLumenbrand = "greatblade", SovereignGreatblade = "greatblade",
+	Crownbreaker = "greatblade", LenswrightSaber = "sword", Stormblade = "sword", Blade = "sword"}
+local PATTERNS = {{"Greatblade", "greatblade"}, {"Cleaver", "greatblade"}, {"Claymore", "greatblade"}, {"Dagger", "dagger"},
+	{"Fang", "dagger"}, {"Knife", "dagger"}, {"Maul", "maul"}, {"Hammer", "maul"}, {"Glaive", "glaive"}, {"Spear", "glaive"},
+	{"Halberd", "glaive"}, {"Shield", "shield"}, {"Buckler", "shield"}}
+for id, class in pairs(H.OVERRIDE) do
+	if Data.Items[id] then Data.Items[id].heldClass = class end
+end
+
+function H.classOf(def)
+	if type(def) ~= "table" then return nil end
+	if type(def.heldClass) == "string" and H.CLASSES[def.heldClass] then return def.heldClass end
+	if def.kind == "tool" then return H.TOOL_CLASS[def.toolKind] end
+	if def.kind == "shield" or def.slot == "offhand" then return "shield" end
+	if def.kind ~= "weapon" then return nil end
+	local name = tostring(def.name or "")
+	if def.style == "ranged" then return if name:find("Shortbow") then "shortbow" else "longbow" end
+	if def.style == "magic" then
+		local wand = name:find("Wand") ~= nil or (type(def.magic) == "table" and type(def.magic.elements) == "table" and #def.magic.elements == 0)
+		return if wand then "wand" else "staff"
+	end
+	for _, pattern in ipairs(PATTERNS) do
+		if name:find(pattern[1]) then return pattern[2] end
+	end
+	return "sword"
+end
+function H.holdable(id)
+	return type(id) == "string" and H.classOf(Data.Items[id]) ~= nil
+end
+function H.hand(class) return (H.CLASSES[class] or H.CLASSES.sword).hand end
+
+-- Which gesture a held class swings when its owner attacks, and which held
+-- classes stand in for a gesture's temporary prop (the held item itself swings).
+H.ATTACK = {sword = "attack", greatblade = "cleave", maul = "cleave", dagger = "thrust", glaive = "lunge", shield = "attack",
+	shortbow = "shoot", longbow = "shoot", staff = "cast", wand = "flick"}
+H.FITS = {
+	mine = {pickaxe = true}, chop = {hatchet = true}, fish = {rod = true}, harvest = {hoe = true}, hammer = {hammer = true, maul = true},
+	attack = {sword = true, greatblade = true, dagger = true, glaive = true, maul = true},
+	thrust = {dagger = true, sword = true}, cleave = {greatblade = true, maul = true, sword = true}, lunge = {glaive = true},
+	shoot = {shortbow = true, longbow = true}, cast = {staff = true, wand = true}, flick = {wand = true, staff = true},
+}
+function H.fits(gesture, class) return class ~= nil and H.FITS[gesture] ~= nil and H.FITS[gesture][class] == true end
+function H.attackGesture(id)
+	local class = H.classOf(Data.Items[id or ""])
+	return H.ATTACK[class or "sword"] or "attack"
+end
+
+-- Tier look: head colour is the item's own; trim and a glowing inlay follow rarity.
+local RARITY_RANK = {Common = 1, Uncommon = 2, Rare = 3, Epic = 4, Legendary = 5, Mythic = 6}
+H.WOOD, H.LEATHER, H.BRASS, H.STRING = "8A5A32", "5A3A22", "C9974A", "EDE6D2"
+function H.look(def)
+	local rank = RARITY_RANK[def.rarity] or 1
+	local tier = tonumber(def.tier) or tonumber(def.toolTier) or rank
+	local rarity = Data.Rarity and Data.Rarity[def.rarity]
+	return {
+		head = tostring(def.color or "B0A89A"),
+		trim = if rank >= 3 and rarity then rarity.color else H.BRASS,
+		glow = if rank >= 4 then tostring(def.color or "FFFFFF") else nil,
+		metal = if tier >= 7 then "Foil" elseif tier >= 4 then "DiamondPlate" else "Metal",
+		rank = rank, tier = tier,
+	}
+end
+
+local function p(n, s, o, c, m, shape) return {n = n, s = s, o = o, c = c, m = m, shape = shape} end
+-- Part lists per class. c: "head" (tier colour), "trim", "wood", "leather", "string", "glow" (dropped below Epic).
+H.SHAPES = {
+	sword = {p("Grip", {0.2, 0.2, 0.9}, {0, 0, 0}, "leather", "Fabric"), p("Pommel", {0.3, 0.3, 0.3}, {0, 0, 0.55}, "trim", "Metal", "Ball"),
+		p("Guard", {0.95, 0.18, 0.24}, {0, 0, -0.52}, "trim", "Metal"), p("Blade", {0.1, 0.34, 3.0}, {0, 0, -2.1}, "head", "metal"),
+		p("Tip", {0.1, 0.2, 0.42}, {0, 0, -3.8}, "head", "metal"), p("Fuller", {0.12, 0.08, 2.3}, {0, 0, -1.95}, "glow", "Neon")},
+	greatblade = {p("Grip", {0.22, 0.22, 1.4}, {0, 0, 0.25}, "leather", "Fabric"), p("Pommel", {0.36, 0.36, 0.36}, {0, 0, 1.05}, "trim", "Metal", "Ball"),
+		p("Guard", {1.35, 0.26, 0.3}, {0, 0, -0.6}, "trim", "Metal"), p("Blade", {0.14, 0.62, 4.2}, {0, 0, -2.85}, "head", "metal"),
+		p("Tip", {0.14, 0.36, 0.5}, {0, 0, -5.15}, "head", "metal"), p("Fuller", {0.16, 0.12, 3.4}, {0, 0, -2.7}, "glow", "Neon")},
+	dagger = {p("Grip", {0.18, 0.18, 0.6}, {0, 0, 0.05}, "leather", "Fabric"), p("Pommel", {0.24, 0.24, 0.24}, {0, 0, 0.42}, "trim", "Metal", "Ball"),
+		p("Guard", {0.55, 0.14, 0.16}, {0, 0, -0.32}, "trim", "Metal"), p("Blade", {0.08, 0.26, 1.3}, {0, 0, -1.05}, "head", "metal"),
+		p("Tip", {0.08, 0.14, 0.3}, {0, 0, -1.85}, "head", "metal"), p("Gem", {0.16, 0.16, 0.16}, {0, 0.12, -0.32}, "glow", "Neon", "Ball")},
+	maul = {p("Haft", {0.22, 0.22, 3.2}, {0, 0, -0.8}, "wood", "Wood"), p("Head", {0.8, 1.4, 0.8}, {0, 0, -2.65}, "head", "metal"),
+		p("BandTop", {0.86, 0.18, 0.86}, {0, 0.5, -2.65}, "trim", "Metal"), p("BandBottom", {0.86, 0.18, 0.86}, {0, -0.5, -2.65}, "trim", "Metal"),
+		p("Butt", {0.3, 0.3, 0.3}, {0, 0, 0.85}, "trim", "Metal"), p("Core", {0.82, 0.3, 0.3}, {0, 0, -2.65}, "glow", "Neon")},
+	glaive = {p("Shaft", {0.18, 0.18, 5}, {0, 0, -1.2}, "wood", "Wood"), p("Collar", {0.3, 0.3, 0.32}, {0, 0, -3.75}, "trim", "Metal"),
+		p("Blade", {0.1, 0.7, 1.6}, {0, 0.15, -4.65}, "head", "metal"), p("Tip", {0.1, 0.34, 0.5}, {0, 0.3, -5.6}, "head", "metal"),
+		p("Butt", {0.26, 0.26, 0.3}, {0, 0, 1.35}, "trim", "Metal"), p("Edge", {0.12, 0.1, 1.5}, {0, 0.5, -4.65}, "glow", "Neon")},
+	-- Bows sit in the left hand: limbs along the grip axis, a pale string behind them.
+	shortbow = {p("Grip", {0.26, 0.26, 0.6}, {0, 0, 0}, "leather", "Fabric"), p("UpperLimb", {0.16, 0.2, 1.5}, {0, 0.14, -1.0}, "head", "Wood"),
+		p("LowerLimb", {0.16, 0.2, 1.5}, {0, 0.14, 1.0}, "head", "Wood"), p("UpperNock", {0.2, 0.24, 0.22}, {0, 0.3, -1.8}, "trim", "Metal"),
+		p("LowerNock", {0.2, 0.24, 0.22}, {0, 0.3, 1.8}, "trim", "Metal"), p("String", {0.04, 0.04, 3.6}, {0, 0.42, 0}, "string", "SmoothPlastic"),
+		p("Gem", {0.18, 0.18, 0.18}, {0, -0.16, 0}, "glow", "Neon", "Ball")},
+	longbow = {p("Grip", {0.26, 0.26, 0.6}, {0, 0, 0}, "leather", "Fabric"), p("UpperLimb", {0.18, 0.22, 2.2}, {0, 0.18, -1.35}, "head", "Wood"),
+		p("LowerLimb", {0.18, 0.22, 2.2}, {0, 0.18, 1.35}, "head", "Wood"), p("UpperNock", {0.22, 0.26, 0.24}, {0, 0.38, -2.5}, "trim", "Metal"),
+		p("LowerNock", {0.22, 0.26, 0.24}, {0, 0.38, 2.5}, "trim", "Metal"), p("String", {0.04, 0.04, 5.0}, {0, 0.52, 0}, "string", "SmoothPlastic"),
+		p("Gem", {0.2, 0.2, 0.2}, {0, -0.18, 0}, "glow", "Neon", "Ball")},
+	staff = {p("Shaft", {0.22, 0.22, 5.2}, {0, 0, -0.9}, "wood", "Wood"), p("Cradle", {0.5, 0.5, 0.3}, {0, 0, -3.5}, "trim", "Metal"),
+		p("Orb", {0.62, 0.62, 0.62}, {0, 0, -3.88}, "head", "Neon", "Ball"), p("Halo", {0.82, 0.82, 0.08}, {0, 0, -3.88}, "trim", "Metal"),
+		p("Butt", {0.28, 0.28, 0.26}, {0, 0, 1.7}, "trim", "Metal"), p("Wrap", {0.26, 0.26, 0.5}, {0, 0, 0}, "leather", "Fabric")},
+	wand = {p("Rod", {0.12, 0.12, 1.5}, {0, 0, -0.6}, "wood", "Wood"), p("Grip", {0.16, 0.16, 0.5}, {0, 0, 0.1}, "leather", "Fabric"),
+		p("Band", {0.18, 0.18, 0.08}, {0, 0, -0.2}, "trim", "Metal"), p("Tip", {0.26, 0.26, 0.26}, {0, 0, -1.42}, "head", "Neon", "Ball")},
+	shield = {p("Board", {1.7, 2.1, 0.22}, {0, 0.2, -0.45}, "head", "metal"), p("Rim", {1.85, 0.16, 0.26}, {0, 1.25, -0.45}, "trim", "Metal"),
+		p("RimLow", {1.85, 0.16, 0.26}, {0, -0.85, -0.45}, "trim", "Metal"), p("Boss", {0.5, 0.5, 0.3}, {0, 0.2, -0.62}, "trim", "Metal", "Ball"),
+		p("Strap", {0.3, 0.8, 0.12}, {0, 0.2, -0.28}, "leather", "Fabric"), p("Sigil", {0.3, 0.3, 0.05}, {0, 0.8, -0.58}, "glow", "Neon")},
+	pickaxe = {p("Handle", {0.22, 0.22, 3}, {0, 0, -1.2}, "wood", "Wood"), p("Wrap", {0.26, 0.26, 0.6}, {0, 0, 0}, "leather", "Fabric"),
+		p("Socket", {0.38, 0.42, 0.44}, {0, 0, -2.55}, "trim", "Metal"), p("Head", {0.3, 2, 0.32}, {0, 0, -2.55}, "head", "metal"),
+		p("Spike", {0.2, 0.5, 0.2}, {0, -1.15, -2.55}, "head", "metal"), p("Pick", {0.2, 0.42, 0.2}, {0, 1.12, -2.55}, "head", "metal"),
+		p("Gem", {0.2, 0.2, 0.2}, {0.2, 0, -2.55}, "glow", "Neon", "Ball")},
+	hatchet = {p("Handle", {0.22, 0.22, 2.6}, {0, 0, -1}, "wood", "Wood"), p("Wrap", {0.26, 0.26, 0.55}, {0, 0, 0}, "leather", "Fabric"),
+		p("Blade", {0.15, 0.9, 0.75}, {0, 0.4, -2.05}, "head", "metal"), p("Edge", {0.17, 0.12, 0.85}, {0, 0.88, -2.05}, "trim", "Metal"),
+		p("Poll", {0.26, 0.32, 0.42}, {0, -0.15, -2.05}, "head", "metal"), p("Gem", {0.18, 0.18, 0.18}, {0.12, 0.3, -2.05}, "glow", "Neon", "Ball")},
+	rod = {p("Grip", {0.24, 0.24, 1.2}, {0, 0, -0.3}, "leather", "Fabric"), p("Rod", {0.12, 0.12, 5}, {0, 0, -3.4}, "head", "Wood"),
+		p("Reel", {0.4, 0.4, 0.4}, {0, -0.28, -0.2}, "trim", "Metal", "Ball"), p("Guide", {0.18, 0.18, 0.08}, {0, 0, -2.2}, "trim", "Metal"),
+		p("Tip", {0.08, 0.08, 0.3}, {0, 0, -6.0}, "trim", "Metal"), p("Line", {0.03, 1.6, 0.03}, {0, -0.8, -6.1}, "string", "SmoothPlastic"),
+		p("Bobber", {0.22, 0.22, 0.22}, {0, -1.62, -6.1}, "glow", "Neon", "Ball")},
+	hoe = {p("Handle", {0.2, 0.2, 3.2}, {0, 0, -1.3}, "wood", "Wood"), p("Wrap", {0.24, 0.24, 0.55}, {0, 0, 0}, "leather", "Fabric"),
+		p("Collar", {0.28, 0.32, 0.3}, {0, 0, -2.85}, "trim", "Metal"), p("Neck", {0.14, 0.4, 0.14}, {0, -0.2, -2.85}, "head", "metal"),
+		p("Blade", {0.7, 0.5, 0.12}, {0, -0.6, -2.85}, "head", "metal"), p("Gem", {0.16, 0.16, 0.16}, {0, 0.12, -2.85}, "glow", "Neon", "Ball")},
+	hammer = {p("Handle", {0.2, 0.2, 1.6}, {0, 0, -0.5}, "wood", "Wood"), p("Head", {0.42, 0.9, 0.42}, {0, 0, -1.25}, "head", "metal"),
+		p("Face", {0.46, 0.14, 0.46}, {0, 0.46, -1.25}, "trim", "Metal")},
+}
+
+-- Resolved model spec for an item: {id, class, hand, parts = {{name, size, offset, colour, material, shape}}}.
+-- "metal" resolves to the tier's metal; glow parts are dropped below Epic.
+function H.spec(id)
+	local def = Data.Items[id or ""]
+	local class = H.classOf(def)
+	if not class then return nil end
+	local look = H.look(def)
+	local colours = {head = look.head, trim = look.trim, wood = H.WOOD, leather = H.LEATHER, string = H.STRING, glow = look.glow}
+	local parts = {}
+	for _, part in ipairs(H.SHAPES[class]) do
+		local colour = colours[part.c]
+		if colour and #parts < H.MAX_PARTS then
+			table.insert(parts, {name = part.n, size = part.s, offset = part.o, colour = colour,
+				material = if part.m == "metal" then look.metal else part.m, shape = part.shape})
+		end
+	end
+	return {id = id, class = class, hand = H.hand(class), parts = parts, look = look}
+end
+
+-- Ownership + requirement check for `hold`. raw: "<itemId>", "~<itemId>" (a
+-- temporary auto switch), "" / "none" (empty hands). meets(p, requires) -> bool, missing.
+function H.validate(p, raw, meets)
+	if raw == nil or raw == "" or raw == "none" then return true, "none", false end
+	if type(raw) ~= "string" or #raw > 65 then return false, "Choose an item to hold." end
+	local temporary = raw:sub(1, 1) == "~"
+	local id = if temporary then raw:sub(2) else raw
+	local def = Data.Items[id]
+	if not def then return false, "Choose an item to hold." end
+	if not H.classOf(def) then return false, (def.name or id) .. " can't be held." end
+	if ((p.items or {})[id] or 0) < 1 then return false, "You do not own " .. (def.name or id) .. "." end
+	if meets then
+		local allowed, missing = meets(p, def.requires)
+		if not allowed then return false, (def.name or id) .. " requires " .. tostring(missing) .. "." end
+	end
+	return true, id, temporary
+end
+-- What the character visibly holds: p.held when still valid ("none" = empty
+-- hands), else the equipped weapon (slot 1). Returns id or nil.
+function H.resolve(p, meets)
+	local held = p.held
+	if held == "none" then return nil end
+	if type(held) == "string" then
+		local ok, id = H.validate(p, held, meets)
+		if ok and id ~= "none" then return id end
+	end
+	local weapon = type(p.equipment) == "table" and p.equipment.weapon or nil
+	if type(weapon) == "string" and H.validate(p, weapon, meets) then return weapon end
+	return nil
+end
+-- Hotbar layout (slots 3-9) is saved as string keys (DataStore-safe): p.hotbar = {s3 = id, ...}.
+function H.parseSlot(raw)
+	if type(raw) ~= "string" or #raw > 70 then return nil end
+	local slot, id = raw:match("^(%d):(.*)$")
+	slot = tonumber(slot)
+	if not slot or not table.find(H.FREE_SLOTS, slot) then return nil end
+	return slot, id
+end
+function H.hotbarString(p)
+	local bar = type(p.hotbar) == "table" and p.hotbar or {}
+	local out = table.create(#H.FREE_SLOTS, "")
+	for i, slot in ipairs(H.FREE_SLOTS) do
+		local id = bar["s" .. slot]
+		out[i] = if H.assignable(p, id) then id else ""
+	end
+	return table.concat(out, ",")
+end
+-- Any owned item can sit in a free slot (SkyBlock style: tools, weapons, food,
+-- blocks with their stack count); only holdable ones go into the hand.
+function H.assignable(p, id)
+	return type(id) == "string" and Data.Items[id] ~= nil and ((p.items or {})[id] or 0) > 0
+end
+-- Token bucket (hold / hotbarSet): b = {tokens, stamp}.
+function H.take(b, now)
+	b.tokens = math.min(H.BURST, (b.tokens or H.BURST) + (now - (b.stamp or now)) * H.RATE)
+	b.stamp = now
+	if b.tokens < 1 then return false end
+	b.tokens -= 1
+	return true
+end
+-- Every holdable item id (sorted), for tests and the hotbar picker.
+function H.all()
+	local out = {}
+	for id in pairs(Data.Items) do if H.holdable(id) then table.insert(out, id) end end
+	table.sort(out)
+	return out
+end
+end
+-- <<< END Held items & swings <<<
 ------------------------------------------------------------------------------
 
 return Data

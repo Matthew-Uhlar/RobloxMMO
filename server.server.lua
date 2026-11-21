@@ -4160,7 +4160,91 @@ do
 	end)
 end
 -- End Exploration & Factions block.
+-- Held items & swings (docs/DEPTH-CONTRACT.md §26): p.held ("<itemId>" | "none" |
+-- nil = the equipped weapon) and p.hotbar ({s3..s9 = itemId}) are published as the
+-- HeldItem / Hotbar player attributes; held.server.lua builds the visible model.
+-- `hold "<id>"` is an explicit choice; `hold "~<id>"` and every gather are
+-- temporary auto switches that return to the explicit choice after
+-- Data.Held.AUTO_RETURN idle seconds. Both verbs skip the action cooldown (a hotbar
+-- key must never block the gather it precedes) and spend their own token bucket.
+local Held={verbs={hold=true,hotbarSet=true},buckets={},auto={}}
+do
+	local HD=Data.Held
+	local meets=Progression.meetsRequirements
+	function Held.apply(player,p)
+		local id=HD.resolve(p,meets) or ""
+		if player:GetAttribute("HeldItem")~=id then player:SetAttribute("HeldItem",id) end
+		local bar=HD.hotbarString(p)
+		if player:GetAttribute("Hotbar")~=bar then player:SetAttribute("Hotbar",bar) end
+		return id
+	end
+	-- temporary: remember the explicit choice once and (re)start the return timer.
+	function Held.set(player,p,id,temporary)
+		if temporary then
+			local a=Held.auto[player]
+			if not a then a={back=p.held}; Held.auto[player]=a end
+			a.untilAt=os.clock()+HD.AUTO_RETURN
+		else
+			Held.auto[player]=nil
+		end
+		p.held=id
+		return Held.apply(player,p)
+	end
+	-- A gather auto-holds the best owned tool for the skill (pickaxe, hatchet, rod, hoe).
+	function Held.gather(player,p,skill)
+		local class=HD.SKILL_CLASS[skill]
+		if not class then return end
+		local current=HD.classOf(Data.Items[player:GetAttribute("HeldItem") or ""])
+		local a=Held.auto[player]
+		if current==class then
+			if a then a.untilAt=os.clock()+HD.AUTO_RETURN end
+			return
+		end
+		local id=Progression.bestTool(p,skill)
+		if id then Held.set(player,p,id,true) end
+	end
+	function Held.tick(now)
+		for player,a in pairs(Held.auto) do
+			if now>=a.untilAt then
+				Held.auto[player]=nil
+				local p=profiles[player]
+				if p and player.Parent then p.held=a.back; Held.apply(player,p) end
+			end
+		end
+	end
+	function Held.action(player,p,verb,item)
+		local bucket=Held.buckets[player]
+		if not bucket then bucket={}; Held.buckets[player]=bucket end
+		if not HD.take(bucket,os.clock()) then return "One moment…" end
+		if verb=="hold" then
+			local ok,id,temporary=HD.validate(p,item,meets)
+			if not ok then return id end
+			local shown=Held.set(player,p,id,temporary)
+			if shown=="" then return "Hands empty." end
+			return "Holding "..(Data.Items[shown] and Data.Items[shown].name or shown).."."
+		end
+		local slot,id=HD.parseSlot(item)
+		if not slot then return "Choose hotbar slot 3-9." end
+		p.hotbar=type(p.hotbar)=="table" and p.hotbar or {}
+		if id=="" then
+			p.hotbar["s"..slot]=nil
+			Held.apply(player,p)
+			return "Hotbar slot "..slot.." cleared."
+		end
+		if not HD.assignable(p,id) then return if Data.Items[id] then "You do not own "..Data.Items[id].name.."." else "Choose an item for the hotbar." end
+		p.hotbar["s"..slot]=id
+		Held.apply(player,p)
+		return Data.Items[id].name.." set to hotbar slot "..slot.."."
+	end
+	function Held.forget(player)
+		local a,p=Held.auto[player],profiles[player]
+		if a and p then p.held=a.back end -- never save a temporary auto switch
+		Held.auto[player]=nil
+		Held.buckets[player]=nil
+	end
+end
 local function applyStats(player,p,spawned)
+	Held.apply(player,p)
 	local stats=Progression.computeStats(p,os.time())
 	player:SetAttribute("SkyreachUnlocked",(p.questCompleted or 0)>=6)
 	for _,region in ipairs(Data.Regions) do player:SetAttribute(region.id.."Unlocked",regionAllowed(p,region.id)) end
@@ -4278,6 +4362,7 @@ local function snapshot(player,message)
 	-- Exploration & Factions: roll the faction day first, so its auto-claim note
 	-- and the paid rewards land in this same snapshot (notes, applyStats below).
 	if p.factions then Explore.refresh(p) end
+	Held.tick(os.clock()) -- Held items: settle any due auto-return before HeldItem is published
 	local levels={}
 	local provisions={}
 	for item,config in pairs(consumables) do
@@ -6018,6 +6103,7 @@ local function perform(player,verb,item,prompt)
 	local character=player.Character
 	local humanoid=character and character:FindFirstChildOfClass("Humanoid")
 	if not humanoid or humanoid.Health<=0 then return "Return to your island first." end
+	if Held.verbs[verb] and not prompt then return Held.action(player,p,verb,item) end -- Held items: own bucket, no cooldown
 	if os.clock()<(cooldown[player] or 0) then return "One moment…" end
 	cooldown[player]=os.clock()+(if prompt then 0.65 else 0.24)
 	local region=prompt and prompt:GetAttribute("IsleRegion")
@@ -6094,6 +6180,7 @@ local function perform(player,verb,item,prompt)
 		local petDouble=result.petDouble==true
 		collect(p,item,result.amount)
 		grantXp(p,skill,result.xp)
+		Held.gather(player,p,skill) -- Held items: the node's tool is in hand (auto switch, returns when idle)
 		if skill=="Farming" and Garden.fieldSeed then Garden.fieldSeed(p,item) end -- Verdant Garden seed pouch
 		Trails.event(p,"gather",item) -- Treasure Trails: scroll drops + trail tasks (Fishing counts as "fish")
 		Logs.regrow(p,result,resource) -- Commissions & Logs: Steadfast Pick joins the Mastery regrowth text
@@ -6207,6 +6294,7 @@ local function perform(player,verb,item,prompt)
 		local allowed,missing=Progression.meetsRequirements(p,def.requires)
 		if not allowed then return def.name.." requires "..missing.."." end
 		if p.equipment[def.slot]==item then return def.name.." is already equipped." end
+		if def.slot=="weapon" and p.held~=nil and p.held==p.equipment.weapon then p.held=nil end -- Held items: hotbar slot 1 follows the new weapon
 		p.equipment[def.slot]=item
 		return "Equipped "..def.name.."."
 	elseif verb=="unequip" then
@@ -6435,6 +6523,9 @@ action.OnServerInvoke=function(player,verb,item)
 		stateRead[player]=os.clock()+STATE_INTERVAL
 		return snapshot(player)
 	end
+	if item~=nil and #item>70 then return snapshot(player,"That request is too long.") end
+	-- Held items: hotbar keys and scrolls get a compact reply, never a full snapshot.
+	if Held.verbs[verb] then return {held=true,message=perform(player,verb,item,nil),heldItem=player:GetAttribute("HeldItem") or ""} end
 	if item~=nil and #item>64 then return snapshot(player,"That request is too long.") end
 	return snapshot(player,perform(player,verb,item,nil))
 end
@@ -6457,6 +6548,7 @@ local function close(player)
 	while exchangeBusy[player] do task.wait(0.1) end
 	-- Minigames: settle in-match XP before the final save (see minigames.server.lua).
 	pcall(function() local mgLeave=ServerStorage:FindFirstChild("IsleMinigameLeave"); if mgLeave then mgLeave:Invoke(player) end end)
+	Held.forget(player) -- Held items: drop the auto-return timer before the final save
 	for _=1,3 do if persist(player,true) then break end; task.wait(1) end
 	forget(player)
 	for _,arena in pairs(enemies) do
@@ -6467,6 +6559,10 @@ end
 Players.PlayerRemoving:Connect(close)
 task.spawn(function()
 	while task.wait(55) do for player in pairs(profiles) do task.spawn(persist,player,false) end end
+end)
+-- Held items: auto-held tools go back to the explicit choice once idle.
+task.spawn(function()
+	while task.wait(1) do Held.tick(os.clock()) end
 end)
 -- Timed buffs: drop expired entries and re-apply stats so Health/Speed settle.
 task.spawn(function()
