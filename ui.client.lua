@@ -4204,7 +4204,116 @@ function dungeonUi.mechanics(m)
 	if type(m.regen)=="table" then table.insert(out,"Boss regenerates "..math.floor(num(m.regen.fraction,0)*100+.5).."% every "..num(m.regen.every,0).."s while wisps live") end
 	if type(m.enrage)=="table" then table.insert(out,"Enrages after "..num(m.enrage.after,0).."s ("..num(m.enrage.damageMult,1).."× damage)") end
 	if type(m.overload)=="table" then table.insert(out,"Strikes faster below "..math.floor(num(m.overload.below,0)*100+.5).."% HP") end
+	-- Dungeon endgame: cumulative rooms between the prisms and the sentinel hall.
+	if type(m.rooms)=="table" and dungeonUi.EG then
+		local names={}
+		for _,id in ipairs(m.rooms) do table.insert(names,dungeonUi.EG.RoomNames[id] or tostring(id)) end
+		table.insert(out,"Rooms: "..table.concat(names," → "))
+	end
 	return #out>0 and table.concat(out,"  ·  ") or "The original three-prism encounter"
+end
+-- Dungeon endgame (Data.DungeonEndgame): gear-score gates, Master Mode I–VII lock
+-- reasons, boss phases, bonus chest, run log / weekly bests and the Essence page.
+dungeonUi.EG=Data and type(Data.DungeonEndgame)=="table" and Data.DungeonEndgame or nil
+function dungeonUi.endgame() return tbl(tbl(state).dungeonEndgame) end
+function dungeonUi.mode(index,master) return (master and "Master " or "")..numeral(index) end
+-- nil when open, else the first unmet requirement.
+function dungeonUi.lock(index,master,level,gearScore,best)
+	local f=Data.DungeonFloors[index]
+	if type(f)~="table" then return "Unknown floor" end
+	if level<num(f.level,1) then return "Needs Dungeoneering "..num(f.level,1) end
+	if master and not (DC and DC.masterUnlocked(index,best)) then return "Needs a grade "..(DC and DC.MASTER_UNLOCK_GRADE or "S").." clear of the floor" end
+	local EG=dungeonUi.EG
+	local gate=EG and EG.gearGate(index,master) or 0
+	if gearScore<gate then return "Needs gear score "..gate.." (yours "..math.floor(gearScore)..")" end
+	return nil
+end
+function dungeonUi.phaseLines(index)
+	local EG=dungeonUi.EG
+	local b=EG and EG.Bosses[index]
+	if not b then return nil end
+	local parts={}
+	for _,ph in ipairs(b.phases) do
+		local mechs={}
+		for _,kind in ipairs({"verdict","blight","nova"}) do
+			local m=EG.Mechanics[kind]
+			if ph.every[kind] then table.insert(mechs,m.glyph.." "..m.name.." ("..m.role..")") end
+		end
+		if ph.lock then table.insert(mechs,EG.Mechanics.lock.glyph.." "..EG.Mechanics.lock.name.." (Puzzle)") end
+		table.insert(parts,paint(escape(ph.name),"F2A48F").." ≤"..math.floor(ph.below*100+.5).."%: "..table.concat(mechs,", "))
+	end
+	return "Phases: "..table.concat(parts,"  ·  ")
+end
+function dungeonUi.time(seconds)
+	seconds=math.max(0,math.floor(num(seconds,0)))
+	return (seconds//60)..":"..string.format("%02d",seconds%60)
+end
+function dungeonUi.itemsText(items)
+	local parts={}
+	for id,n in pairs(tbl(items)) do
+		if type(id)=="string" then table.insert(parts,{id=id,text=paint(escape(itemName(id)),itemHex(id)).." ×"..num(n,0)}) end
+	end
+	table.sort(parts,function(a,b) return a.id<b.id end)
+	local out={}
+	for _,x in ipairs(parts) do table.insert(out,x.text) end
+	return #out>0 and table.concat(out,", ") or "Nothing but dust"
+end
+function dungeonUi.drawEndgame(eview)
+	local EG=dungeonUi.EG
+	if not EG then return end
+	heading("ENDGAME")
+	-- Bonus chest (contents fixed at the clear; opening only reveals what was rolled).
+	local chest=eview.chest
+	local coins=num(tbl(state).coins,0)
+	local keys=num(eview.keys,0)
+	if type(chest)=="table" then
+		local cost=num(chest.cost,0)
+		card({name="DungeonBonusChest",motif="Hunt",accent=gold,edge=gold,title="Bonus chest  ·  Floor "..dungeonUi.mode(num(chest.floor,1),chest.master==true).."  ·  grade "..escape(tostring(chest.grade or "?")),titleColor=gold,
+			subtitle="Waiting "..clock(num(chest.expiresIn,0)).."  ·  "..fmt(cost).." coins or a Lodestar Key",badge="🗝 ×"..keys,badgeColor=ivory,
+			detail="Rolled once when the boss fell and saved to your journal: leaving, rejoining or waiting never changes it.",
+			lines={"Inside: "..dungeonUi.itemsText(chest.items)},
+			actions={{caption="Open · "..fmt(cost).." coins",primary=coins>=cost,name="DungeonChestOpen",disabled=coins<cost,reason="Not enough coins.",fn=function() send("dungeonChest","open") end},
+				{caption="Use key ("..keys..")",name="DungeonChestKey",disabled=keys<1,reason="No Lodestar Key.",fn=function() send("dungeonChest","key") end},
+				{caption="Leave sealed",name="DungeonChestSkip",fn=function() send("dungeonChest","skip") end}}})
+	else
+		card({name="DungeonBonusChest",motif="Hunt",title="Bonus chest",titleColor=ivory,subtitle="None waiting  ·  🗝 Lodestar Keys ×"..keys,
+			detail="Every credited clear rolls one bonus chest (floor chest at ×"..EG.BONUS_CHANCE.." chance plus essence). Open it for coins or a Lodestar Key within "..clock(EG.CHEST_SECONDS)..", or leave it sealed.",
+			lines={"Fees: "..table.concat((function() local t={} for i=1,#Data.DungeonFloors do table.insert(t,numeral(i).." "..short(EG.bonusCost(i,false)).."/"..short(EG.bonusCost(i,true))) end return t end)(),"  ·  ").." (normal / Master)"}})
+	end
+	-- Weekly bests and the weekly first-clear bounty.
+	local week=tbl(eview.week)
+	local best,bounty=tbl(week.best),tbl(week.bounty)
+	local weekLines={}
+	for i=1,#Data.DungeonFloors do
+		local row={}
+		for _,master in ipairs({false,true}) do
+			if not master or (DC and i<=DC.MASTER_FLOORS) then
+				local key=EG.key(i,master)
+				local score=best[key]
+				table.insert(row,dungeonUi.mode(i,master)..": "..(score and (num(score,0).." ("..Data.dungeonGrade(num(score,0))..")") or "—")
+					..(bounty[key] and "" or paint(" +"..EG.bounty(i,master).."✦","9EE7D2")))
+			end
+		end
+		table.insert(weekLines,table.concat(row,"   "))
+	end
+	card({name="DungeonWeekly",motif="Hunt",title="This week",titleColor=gold,subtitle="Resets in "..clock(num(week.resetIn,0)).."  ·  ✦ = weekly first-clear essence still available",lines=weekLines})
+	-- Run log and personal bests.
+	local logLines={}
+	for _,e in ipairs(tbl(eview.log)) do
+		if type(e)=="table" then
+			table.insert(logLines,"Floor "..dungeonUi.mode(num(e.f,1),e.m==true).."  ·  "..paint(escape(tostring(e.g or "?")),"F9CC77").." "..num(e.s,0).."  ·  "..dungeonUi.time(e.sec).."  ·  "..num(e.d,0).." falls")
+		end
+	end
+	if #logLines==0 then logLines={"No credited clears yet."} end
+	local pbParts={}
+	for i=1,#Data.DungeonFloors do
+		for _,master in ipairs({false,true}) do
+			local pb=tbl(eview.pb)[EG.key(i,master)]
+			if type(pb)=="table" then table.insert(pbParts,dungeonUi.mode(i,master).." "..num(pb.score,0).." in "..dungeonUi.time(pb.seconds)) end
+		end
+	end
+	table.insert(logLines,1,paint("Personal bests: ","9EE7D2")..(#pbParts>0 and table.concat(pbParts,"  ·  ") or "none yet"))
+	card({name="DungeonRunLog",motif="Hunt",title="Run log",titleColor=ivory,subtitle="Last "..EG.LOG_LIMIT.." credited clears, newest first",lines=logLines})
 end
 -- Class rows from the snapshot (server Classes.state), or level 1 defaults.
 function dungeonUi.view()
@@ -4230,8 +4339,10 @@ local function drawDungeon()
 	if type(selectedClass)~="string" or not (DC and DC.valid(selectedClass)) then selectedClass=nil end
 	local inRun=player:GetAttribute("DungeonInRun")==true
 	local classText=selectedClass and (DC.defs[selectedClass].glyph.." "..DC.defs[selectedClass].name.." "..num(dungeonUi.classRow(rows,selectedClass).level,1)) or "Unclassed"
+	local eview=dungeonUi.endgame()
+	local gearScore=num(eview.gearScore,0)
 	card({name="DungeonSummary",motif="Hunt",accent=rgb(dungeonUi.violet),title="The Hollow Observatory",titleColor=rgb(lighten(dungeonUi.violet,.35)),
-		subtitle="Dungeoneering "..level.."  ·  Selected: Floor "..numeral(chosen).."  ·  "..classText..(view.master==true and "  ·  "..paint("Master Mode","E8806A") or ""),badge="Party ≤ "..num(rules.maxParty,5),badgeColor=ivory,
+		subtitle="Dungeoneering "..level.."  ·  Gear score "..math.floor(gearScore).."  ·  Selected: Floor "..numeral(chosen).."  ·  "..classText..(view.master==true and "  ·  "..paint("Master Mode","E8806A") or ""),badge="Party ≤ "..num(rules.maxParty,5),badgeColor=ivory,
 		detail="Choose a class at the oath pedestals or below, a floor at the daises beside the Vault Gate, open the run at the gate, then stand on the matchmaking pad within "..num(rules.padSeconds,10).."s to join.",
 		lines={type(result)=="string" and result~="" and ("Last clear: "..escape(result)) or nil,
 			type(notice)=="string" and notice~="" and paint(escape(notice),"F9CC77") or nil,
@@ -4272,16 +4383,20 @@ local function drawDungeon()
 		card({name="DungeonTeam",motif="Hunt",title="Team composition",titleColor=gold,subtitle="Duplicates allowed · unique classes pay more",
 			lines={"Class XP ×(1 + "..math.floor(DC.TEAM_STEP*100+.5).."% per unique class beyond the first), up to ×"..(1+DC.TEAM_STEP*(#DC.order-1))..".",
 				"A balanced party (3+ delvers, every class different) adds +5 to the Bonus score.",
-				"Class XP = floor Dungeoneering XP × 0.75 × grade × team (× "..DC.MASTER_XP.." in Master Mode), paid to your selected class only."}})
-		-- Master Mode toggle (unlocked per floor by an S+).
+				"Class XP = floor Dungeoneering XP × 0.75 × grade × team (× Master Mode XP: "..DC.MASTER_XP.." on Floor I to "..DC.masterScale(DC.MASTER_FLOORS).xp.." on Floor "..numeral(DC.MASTER_FLOORS).."), paid to your selected class only."}})
+		-- Master Mode toggle (unlocked per floor by a grade S clear; Dungeon endgame: floors I–VII).
 		local anyMaster=false
 		for i=1,DC.MASTER_FLOORS do if tbl(floorRows[i]).masterUnlocked==true then anyMaster=true end end
 		local masterOn=view.master==true
+		local top=DC.masterScale(DC.MASTER_FLOORS)
+		local EGm=dungeonUi.EG
 		card({name="DungeonMaster",motif="Hunt",accent=rgb("E8806A"),title="Master Mode",titleColor=rgb("F2A48F"),
-			subtitle="Floors I–V · ×"..DC.MASTER_MULT.." HP and damage · par ×"..DC.MASTER_PAR.." · +"..DC.MASTER_ROLLS.." chest roll · ×"..DC.MASTER_XP.." XP and coins",badge=masterOn and "ON" or "OFF",badgeColor=ivory,
-			detail="Unlocks per floor after an S+ clear. Runs you open use your setting; every delver must have the floor's Master Mode unlocked.",
+			subtitle="Floors I–"..numeral(DC.MASTER_FLOORS).." · ×"..DC.MASTER_MULT.."–"..top.hp.." HP · ×"..DC.MASTER_MULT.."–"..top.damage.." damage · par ×"..DC.MASTER_PAR.."–"..top.par.." · +"..DC.MASTER_ROLLS.." chest roll · ×"..DC.MASTER_XP.."–"..top.xp.." XP and coins",badge=masterOn and "ON" or "OFF",badgeColor=ivory,
+			detail="Unlocks per floor after a grade "..DC.MASTER_UNLOCK_GRADE.." (or better) clear. Runs you open use your setting; every delver must have the floor's Master Mode unlocked and its Master gear score.",
+			lines={EGm and ("Master rewards: ×"..EGm.MASTER_ESSENCE.." essence · +"..DC.MASTER_SCORE_BONUS.." Bonus score cap · mechanics hit "..math.floor(EGm.MASTER_MECH*100+.5).."% harder · Master-only drops: "
+				..paint(escape(itemName("EclipsedStarcore")),itemHex("EclipsedStarcore"))..", "..paint(escape(itemName("SovereignHalo")),itemHex("SovereignHalo"))..", "..paint(escape(itemName("Thronebreaker")),itemHex("Thronebreaker"))) or nil},
 			actions={{caption=masterOn and "Turn off" or "Turn on",primary=not masterOn and anyMaster,name="DungeonMasterToggle",disabled=(not masterOn and not anyMaster) or inRun,
-				reason=inRun and "Locked during a run." or "Clear a floor at grade S+ first.",fn=function() send("dungeonMaster",masterOn and "off" or "on") end}}})
+				reason=inRun and "Locked during a run." or "Clear a floor at grade "..DC.MASTER_UNLOCK_GRADE.." first.",fn=function() send("dungeonMaster",masterOn and "off" or "on") end}}})
 	end
 	heading("FLOORS")
 	for index,f in ipairs(Data.DungeonFloors) do
@@ -4296,36 +4411,107 @@ local function drawDungeon()
 			local masterLine=nil
 			if DC and index<=DC.MASTER_FLOORS then
 				local mBest=num(fr.masterBest,0)
+				local mLock=dungeonUi.lock(index,true,level,gearScore,num(fr.best,0))
 				masterLine=fr.masterUnlocked==true and (paint("Master Mode unlocked","E8806A").."  ·  par "..math.floor(DC.par(index,true)+.5).."s"
-					..(mBest>0 and ("  ·  Master best "..mBest.." ("..Data.dungeonGrade(mBest)..")  ·  clears "..num(fr.masterClears,0)) or "  ·  no Master clear yet"))
-					or "Master Mode: clear at grade S+ to unlock"
+					..(mBest>0 and ("  ·  Master best "..mBest.." ("..Data.dungeonGrade(mBest)..")  ·  clears "..num(fr.masterClears,0)) or "  ·  no Master clear yet")
+					..(mLock and paint("  ·  "..cross.." "..mLock,"F9CC77") or ""))
+					or ("Master Mode: clear at grade "..DC.MASTER_UNLOCK_GRADE.." to unlock")
 			end
+			local lockText=dungeonUi.lock(index,false,level,gearScore,num(fr.best,0))
+			local gate=dungeonUi.EG and dungeonUi.EG.gearGate(index,false) or 0
 			card({name="DungeonFloor"..index,motif="Hunt",locked=not open,accent=open and rgb(dungeonUi.violet) or nil,
 				title=escape(f.name or ("Floor "..index)).."  ·  "..escape(f.subtitle or ""),titleColor=open and ivory or muted,
 				subtitle="Boss: "..escape(boss.name or "?").."  ·  "..paint(escape(boss.attack or ""),"E8806A"),
 				badge=(open and check or cross).." Dungeoneering "..need,badgeColor=ivory,
 				detail=dungeonUi.mechanics(f.mechanics),
 				pips=total>0 and {total=total,filled=math.clamp(found,0,total),color=gold} or nil,
-				lines={"Grade B reward: "..fmt(rw.dungeoneeringXp).." Dungeoneering XP  ·  "..fmt(rw.combatXp).." Combat XP  ·  "..fmt(rw.coins).." coins  ·  "..num(rw.stormglass,0).." Stormglass",
+				lines={lockText and paint(cross.." Locked: "..lockText,"F9CC77") or (gate>0 and paint(check.." Gear score "..gate.." met","9EE7D2") or nil),
+					dungeonUi.phaseLines(index),
+					"Grade B reward: "..fmt(rw.dungeoneeringXp).." Dungeoneering XP  ·  "..fmt(rw.combatXp).." Combat XP  ·  "..fmt(rw.coins).." coins  ·  "..num(rw.stormglass,0).." Stormglass",
 					"Chest: "..dungeonUi.drops(f.chest),
 					total>0 and ("Secrets: best "..found.." / "..total.."  ·  clears "..num(fr.clears,0)..(num(fr.best,0)>0 and ("  ·  best score "..num(fr.best,0)) or "")) or nil,
 					masterLine}})
 		end
 	end
+	dungeonUi.drawEndgame(eview)
 	heading("SCORE & GRADE")
 	local grades={}
 	for _,g in ipairs(tbl(Data.DungeonGrades)) do
 		if type(g)=="table" then table.insert(grades,paint(escape(g.grade),"F9CC77").." ≥"..num(g.min,0).." ×"..num(g.mult,1)) end
 	end
 	card({name="DungeonGrades",motif="Hunt",title="Score = (speed + survival + puzzle + secrets) × 0.75 + bonus",titleColor=gold,subtitle="Each part 0–100 · bonus ≤ "..(DC and DC.BONUS_CAP or 20).." · total 300",
-		detail="Speed is full until the floor's par time and reaches 0 at twice par. Each death costs 20 survival; each wrong prism costs 15 puzzle. Secrets: hidden caches and levers (2–5 per floor). Bonus: 3 per class feat, +5 for a balanced party.",
+		detail="Speed is full until the floor's par time and reaches 0 at twice par. Each death costs 20 survival; each wrong prism, lit mirror turned, wrong glyph or unbroken Eventide Nova costs 15 puzzle. Secrets: hidden caches and levers (2–5 per floor). Bonus: 3 per class feat, +5 for a balanced party (+5 more cap in Master Mode).",
 		lines={table.concat(grades,"   "),"Higher grades multiply XP, coins and essence, add Stormglass at S/S+, and boost the chest's rare roll (Magic Find applies too). Each secret adds 1 essence and 5% coins."}})
 	card({name="DungeonRules",motif="Hunt",title="Fair credit",titleColor=ivory,
-		lines={"Contribute at least "..math.floor(num(rules.contributionShare,0.1)*100).."% of the party's damage and tuning to open the chest.",
+		lines={"Contribute at least "..math.floor(num(rules.contributionShare,0.1)*100).."% of the party's damage and tuning to open the chest"..(dungeonUi.EG and (" (and, in parties of 3+, "..math.floor(dungeonUi.EG.MEDIAN_SHARE*100).."% of the median delver's), acting within the last "..dungeonUi.EG.RECENT_SECONDS.."s before the boss falls.") or "."),
+			dungeonUi.EG and ("Dropped out? Rejoin within "..dungeonUi.EG.REJOIN_SECONDS.."s to keep your place and contribution. Each run is credited once.") or nil,
 			"Chest cooldown: "..num(rules.clearCooldown,90).."s between credited clears.",
 			"Ironman journals are credited on solo clears or with "..math.floor(num(rules.ironmanDamageShare,0.3)*100).."% of the party's damage."}})
 end
 Pages.drawDungeon=drawDungeon
+-- Hunt › Essence (Dungeon endgame): Observatory Essence, Eclipsed Starcores and
+-- Lodestar Keys; regular stars (verb star) and Master stars (verb masterStar)
+-- for owned Observatory gear; the Essence Exchange (verb essenceBuy).
+local function drawEssence()
+	local EG=dungeonUi.EG
+	local G=Data and Data.Gear
+	if not EG or not G then dataMissing() return end
+	local eview=dungeonUi.endgame()
+	local items=tbl(tbl(state).items)
+	local gear=tbl(tbl(tbl(state).depth).gear)
+	local coins=num(tbl(state).coins,0)
+	local essence=num(items.ObservatoryEssence,0)
+	local cores=num(items.EclipsedStarcore,0)
+	card({name="EssenceSummary",motif="Hunt",accent=rgb(dungeonUi.violet),item="ObservatoryEssence",title="Observatory Essence",titleColor=rgb(lighten(dungeonUi.violet,.35)),
+		subtitle=fmt(essence).." essence  ·  "..fmt(cores).." Eclipsed Starcores  ·  "..fmt(num(items.LodestarKey,0)).." Lodestar Keys",badge="Gear score "..math.floor(num(eview.gearScore,0)),badgeColor=ivory,
+		detail="Every Observatory clear pays essence (more for grades, secrets and Master Mode, plus a weekly first-clear bounty per floor). Stars ★ add "..G.DUNGEON_STAR_PERCENT.."% of a dungeon item's base stats each; once an item has "..G.STAR_MAX.." stars, Master stars ✪ add another "..G.DUNGEON_STAR_PERCENT.."% each (up to "..EG.MASTER_STAR_MAX..") with Eclipsed Starcores from Master Mode chests."})
+	heading("ESSENCE EXCHANGE")
+	for _,e in ipairs(EG.Exchange) do
+		card({name="EssenceBuy_"..e.id,motif="Hunt",item=e.id,title=paint(escape(itemName(e.id)),itemHex(e.id)),subtitle=e.essence.." Observatory Essence"..(e.coins>0 and (" + "..fmt(e.coins).." coins") or ""),
+			detail=escape(e.text),actions={{caption="Exchange",primary=essence>=e.essence,name="EssenceBuy"..e.id,disabled=essence<e.essence or coins<e.coins,reason="Not enough essence.",fn=function() send("essenceBuy",e.id) end}}})
+	end
+	heading("OBSERVATORY GEAR")
+	local owned={}
+	for id,n in pairs(items) do
+		local def=type(id)=="string" and Data.Items[id]
+		if def and num(n,0)>0 and EG.canMasterStar(def) then table.insert(owned,id) end
+	end
+	table.sort(owned,function(a,b)
+		local ra,rb=Data.Rarity[Data.Items[a].rarity].rank,Data.Rarity[Data.Items[b].rarity].rank
+		if ra~=rb then return ra>rb end
+		return a<b
+	end)
+	if #owned==0 then
+		card({name="EssenceNoGear",motif="Hunt",title="No Observatory gear yet",titleColor=muted,detail="Observatory chests drop weapons and armor that take stars and Master stars here."})
+	end
+	for _,id in ipairs(owned) do
+		local def=Data.Items[id]
+		local b=G.breakdown(gear,id)
+		local stars,mstars=num(b.stars,0),num(b.masterStars,0)
+		local starLine=paint(string.rep("★",stars),"F9CC77")..paint(string.rep("☆",G.STAR_MAX-stars),"5A6E78").."  "..paint(string.rep("✪",mstars),"E8806A")..paint(string.rep("✪",EG.MASTER_STAR_MAX-mstars),"3E4A52")
+		local action,costLine
+		if stars<G.STAR_MAX then
+			local c=G.starCost(def,stars+1)
+			costLine="Star "..(stars+1)..": "..c.amount.." "..escape(itemName(c.essence)).." + "..fmt(c.coins).." coins"
+			action={caption="Star "..(stars+1),primary=true,name="EssenceStar_"..id,disabled=num(items[c.essence],0)<c.amount or coins<c.coins,reason="Not enough essence or coins.",fn=function() send("star",id) end}
+		elseif mstars<EG.MASTER_STAR_MAX then
+			local c=EG.masterStarCost(def,mstars+1)
+			costLine="Master star "..(mstars+1)..": "..c.amount.." essence + "..c.cores.." Eclipsed Starcore"..(c.cores>1 and "s" or "").." + "..fmt(c.coins).." coins"
+			action={caption="Master star "..(mstars+1),primary=true,name="EssenceMasterStar_"..id,disabled=essence<c.amount or cores<c.cores or coins<c.coins,reason="Not enough essence, Starcores or coins.",fn=function() send("masterStar",id) end}
+		else
+			costLine=paint("Every star and Master star forged","9EE7D2")
+		end
+		local bonus={}
+		for stat,v in pairs(tbl(b.starStats)) do bonus[stat]=(bonus[stat] or 0)+v end
+		for stat,v in pairs(tbl(b.masterStarsStats)) do bonus[stat]=(bonus[stat] or 0)+v end
+		local parts={}
+		for stat,v in pairs(bonus) do table.insert(parts,"+"..fmt(v).." "..stat) end
+		table.sort(parts)
+		card({name="EssenceGear_"..id,motif="Hunt",item=id,title=paint(escape(def.name),itemHex(id)),subtitle=starLine,badge="score "..EG.itemScore(gear,id),badgeColor=ivory,
+			lines={costLine,#parts>0 and ("Star bonus: "..table.concat(parts,", ")) or nil},actions=action and {action} or nil})
+	end
+end
+Pages.drawEssence=drawEssence
 -- Party HUD: DungeonParty = "Name|Class|Level;..." plus this delver's Q / R
 -- ability buttons (touch and click; Q / R on the keyboard are the heart's own
 -- prompt keys, so the buttons never double-fire a keypress). Placed in the right
@@ -7401,7 +7587,7 @@ local sectionLists={
 	Hero={"Skills","Mastery","Gear","Combat","Spellbook","Prayer","Enchant","Reforge","Accessories","Pets"},
 	Satchel={"Items","Collections","Trails"},
 	Workshop={"Forge","Hearth","Cauldron","Workbench","Workers","Home","Garden"},
-	Hunt={"Slayer","Bestiary","Dungeon","Hunter","Thieving","Minigames"},
+	Hunt={"Slayer","Bestiary","Dungeon","Essence","Hunter","Thieving","Minigames"},
 	Ledger={"Bank","Market","Orders","Auctions","Merchant","Vendors"},
 }
 sectionOf={Journal="Bearing",Hero="Skills",Satchel="Items",Workshop="Forge",Hunt="Slayer",Ledger="Bank"}
@@ -7412,7 +7598,7 @@ local drawers={
 	Satchel={Items=Pages.drawItems,Collections=Pages.drawCollections,Trails=Pages.drawTrails},
 	Workshop={Forge=function() Pages.drawStation("Forge") end,Hearth=function() Pages.drawStation("Hearth") end,Cauldron=function() Pages.drawStation("Cauldron") end,
 		Workbench=function() Pages.drawStation("Workbench") end,Workers=Pages.drawWorkers,Home=Pages.drawHome,Garden=Pages.drawGarden},
-	Hunt={Slayer=Pages.drawSlayer,Bestiary=Pages.drawBestiary,Dungeon=Pages.drawDungeon,Hunter=Pages.drawHunter,Thieving=Pages.drawThieving,Minigames=Pages.drawMinigames},
+	Hunt={Slayer=Pages.drawSlayer,Bestiary=Pages.drawBestiary,Dungeon=Pages.drawDungeon,Essence=Pages.drawEssence,Hunter=Pages.drawHunter,Thieving=Pages.drawThieving,Minigames=Pages.drawMinigames},
 	Ledger={Bank=Pages.drawBank,Market=Pages.drawMarket,Orders=Pages.drawOrders,Auctions=Pages.drawAuctions,Merchant=Pages.drawMerchant,Vendors=Pages.drawVendors},
 }
 local function resetTransient()

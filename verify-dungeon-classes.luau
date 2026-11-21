@@ -241,20 +241,23 @@ do
 	eq(DC.bonusScore(-2,false),0,"negative feats")
 
 	-- Master Mode.
-	check(DC.masterUnlocked(1,290) and not DC.masterUnlocked(1,289),"Master Mode unlocks at S+")
-	check(not DC.masterUnlocked(6,300) and not DC.masterUnlocked(0,300),"Master Mode floors I-V only")
+	-- Dungeon endgame: Master Mode on floors I-VII, unlocked by grade S, scaling per floor.
+	check(DC.masterUnlocked(1,260) and not DC.masterUnlocked(1,259),"Master Mode unlocks at grade S")
+	check(DC.masterUnlocked(6,300) and DC.masterUnlocked(7,260) and not DC.masterUnlocked(8,300) and not DC.masterUnlocked(0,300),"Master Mode floors I-VII")
 	check(not DC.masterUnlocked(2,nil),"no best score, no Master Mode")
-	for floor=1,5 do
+	for floor=1,7 do
 		local n,m=DC.floorStats(floor,false),DC.floorStats(floor,true)
-		check(m.coreHp==n.coreHp*2 and m.guardianHp==n.guardianHp*2 and m.guardianHit==n.guardianHit*2,"floor "..floor.." Master Mode doubles HP and damage")
-		eq(m.addHp,DC.wispHp(floor,true),"floor "..floor.." Master wisps scale with sqrt(HP x2)")
-		check(m.addHp<=math.ceil(n.addHp*math.sqrt(2)+1e-9) and (n.addHp==0 or m.addHp>n.addHp),"floor "..floor.." Master wisps x~1.41")
-		eq(m.par,DC.par(floor,false)*1.6,"floor "..floor.." Master par x1.6")
+		local sc=DC.masterScale(floor)
+		check(m.coreHp==math.ceil(n.coreHp*sc.hp-1e-9) and m.guardianHp==math.ceil(n.guardianHp*sc.hp-1e-9) and m.guardianHit==math.floor(n.guardianHit*sc.damage),"floor "..floor.." Master Mode scales HP and damage")
+		eq(m.addHp,DC.wispHp(floor,true),"floor "..floor.." Master wisps scale with sqrt(HP x master)")
+		check(m.addHp<=math.ceil(n.addHp*math.sqrt(sc.hp)+1e-9) and (n.addHp==0 or m.addHp>n.addHp),"floor "..floor.." Master wisps x~sqrt")
+		check(math.abs(m.par-DC.par(floor,false)*sc.par)<1e-9,"floor "..floor.." Master par x"..sc.par)
 		eq(n.par,Data.DungeonFloors[floor].par,"floor "..floor.." normal par")
-		check(m.bossDamageMult==2 and n.bossDamageMult==1,"floor "..floor.." boss damage multiplier")
+		check(m.bossDamageMult==sc.damage and n.bossDamageMult==1,"floor "..floor.." boss damage multiplier")
+		if floor>1 then check(sc.hp>DC.masterScale(floor-1).hp and sc.xp>DC.masterScale(floor-1).xp,"floor "..floor.." Master scales harder than the floor above") end
 	end
-	eq(DC.floorStats(6,true).bossDamageMult,1,"Floor VI ignores Master Mode")
-	eq(DC.floorStats(6,true).par,Data.DungeonFloors[6].par,"Floor VI par ignores Master Mode")
+	local s1=DC.masterScale(1)
+	check(s1.hp==2 and s1.damage==2 and s1.par==1.6 and s1.xp==2.2,"Floor I Master keeps the original x2 / par x1.6 / x2.2")
 	-- Wisp HP (review H1): proportional to sqrt(hpMult), never the full multiplier.
 	for floor=1,#Data.DungeonFloors do
 		local f=Data.DungeonFloors[floor]
@@ -264,28 +267,30 @@ do
 			eq(DC.floorStats(floor,false).addHp,DC.wispHp(floor,false),"floor "..floor.." encounter wisp HP")
 			check(DC.wispHp(floor,false)<Data.dungeonFloorStats(floor).addHp,"floor "..floor.." wisps lighter than the linear scaling")
 			-- Wave pressure: HP spawned per second stays well below 5 unclassed delvers (6.25 hits/s).
-			check(wave.count*DC.wispHp(floor,DC.MASTER_FLOORS>=floor)/wave.every<6.25*0.7,"floor "..floor.." wave HP/s leaves room for the boss")
+			check(wave.count*DC.wispHp(floor,DC.MASTER_FLOORS>=floor)/DC.waveEvery(floor,DC.MASTER_FLOORS>=floor)<6.25*0.7,"floor "..floor.." wave HP/s leaves room for the boss")
+			check(math.abs(DC.wispHp(floor,true)/DC.waveEvery(floor,true)-DC.wispHp(floor,false)/DC.waveEvery(floor,false))<1e-9,"floor "..floor.." Master waves: tougher wisps, same HP per second")
 		else
 			eq(DC.wispHp(floor,false),0,"floor "..floor.." has no wisps")
 		end
 	end
 	check(DC.WISP_CAP>=2*4-1 and DC.WISP_CAP<=10,"wisp cap holds a wave plus a partial one")
-	-- Master par (review M5): a Master run at 1.6x the normal time grades like the normal run.
-	for floor=1,5 do
+	-- Master par (review M5): a Master run at the Master par multiple of the normal time grades like the normal run.
+	for floor=1,7 do
 		local par=Data.DungeonFloors[floor].par
+		local k=DC.masterScale(floor).par
 		for _,t in ipairs({par*0.8,par,par*1.3,par*1.7}) do
-			eq(DC.score(floor,t*1.6,0,0,2,2,0,true),DC.score(floor,t,0,0,2,2,0,false),"floor "..floor.." Master score at x1.6 time ("..t..")")
+			eq(DC.score(floor,t*k,0,0,2,2,0,true),DC.score(floor,t,0,0,2,2,0,false),"floor "..floor.." Master score at x"..k.." time ("..t..")")
 		end
-		eq(DC.score(floor,par*1.6,0,0,DC.secretCount(floor),DC.secretCount(floor),0,true),300,"floor "..floor.." Master clear at its par can reach S+")
+		eq(DC.score(floor,par*k,0,0,DC.secretCount(floor),DC.secretCount(floor),0,true),300,"floor "..floor.." Master clear at its par can reach S+")
 	end
-	eq(DC.score(6,600,0,0,0,0,0,true),DC.score(6,600,0,0,0,0,0,false),"Master par ignored past Floor V")
+	eq(DC.score(7,600*DC.masterScale(7).par,2,1,0,0,25,true)-DC.score(7,600,2,1,0,0,25,false),DC.MASTER_SCORE_BONUS,"Master runs may carry 5 more Bonus")
 
 	-- Class XP and rewards.
 	eq(DC.classXp(1,"B",false,1),45,"Floor I grade B class XP")
 	eq(DC.classXp(1,"S+",false,1.24),math.floor(60*0.75*1.6*1.24),"team bonus scales class XP")
 	eq(DC.classXp(1,"S+",false,9),DC.classXp(1,"S+",false,1.24),"team multiplier clamped")
 	eq(DC.classXp(1,"B",false,0.2),45,"team multiplier floor")
-	eq(DC.classXp(3,"A",true,1),math.floor(320*0.75*1.15*DC.MASTER_XP),"Master Mode class XP x"..DC.MASTER_XP)
+	eq(DC.classXp(3,"A",true,1),math.floor(320*0.75*1.15*DC.masterScale(3).xp),"Master Mode class XP x"..DC.masterScale(3).xp)
 	eq(DC.classXp(7,"S+",false,1),math.floor(2400*0.75*1.6),"Floor VII class XP")
 	for floor=2,#Data.DungeonFloors do check(DC.classXp(floor,"B")>DC.classXp(floor-1,"B"),"class XP rises with floor "..floor) end
 	local g={"D","C","B","A","S","S+"}
@@ -297,10 +302,11 @@ do
 	check(rw.rolls==1 and rw.master==false and rw.secrets==3,"normal run rolls the chest once")
 	eq(rw.classXp,DC.classXp(3,"A",false,1.12),"run rewards include class XP")
 	local mrw=DC.runRewards(3,"A",{master=true})
-	check(mrw.rolls==2 and mrw.master and mrw.dungeoneeringXp==math.floor(plain.dungeoneeringXp*DC.MASTER_XP) and mrw.combatXp==math.floor(plain.combatXp*DC.MASTER_XP),"Master Mode: extra roll and x"..DC.MASTER_XP.." XP")
-	eq(mrw.coins,math.floor(plain.coins*DC.MASTER_XP),"Master Mode coins x"..DC.MASTER_XP)
+	local mx=DC.masterScale(3).xp
+	check(mrw.rolls==2 and mrw.master and mrw.dungeoneeringXp==math.floor(plain.dungeoneeringXp*mx) and mrw.combatXp==math.floor(plain.combatXp*mx),"Master Mode: extra roll and x"..mx.." XP")
+	eq(mrw.coins,math.floor(plain.coins*mx),"Master Mode coins x"..mx)
 	eq(mrw.classXp,0,"unclassed clear earns no class XP")
-	eq(DC.runRewards(6,"A",{master=true}).rolls,1,"no Master Mode on Floor VI")
+	eq(DC.runRewards(6,"A",{master=true}).rolls,2,"Master Mode on Floor VI (Dungeon endgame)")
 	eq(DC.runRewards(1,"B",{secrets=99}).secrets,2,"secret count clamps")
 	local legacy=DC.runRewards(1,"B")
 	check(legacy.coins==35 and legacy.items.ObservatoryEssence==1 and legacy.items.Stormglass==1,"legacy Floor I B reward unchanged")
@@ -353,12 +359,12 @@ do
 	check(fresh.selected==nil and fresh.master==false,"fresh class record")
 	for _,id in ipairs(DC.order) do eq(fresh.xp[id],0,"fresh "..id.." XP") end
 	local dirty=DC.migrate({selected="Berserk",master="yes",xp={Aegis=-5,Mender="x",Riftblade=1e12,Starshot=0/0,Arcanist=1234.9},
-		secrets={["1"]=99,["2"]=1,["3"]="x",["9"]=4},masterBest={["1"]=999,["6"]=290},masterClears={["2"]=3.7,["7"]=2}})
+		secrets={["1"]=99,["2"]=1,["3"]="x",["9"]=4},masterBest={["1"]=999,["6"]=290,["8"]=290},masterClears={["2"]=3.7,["7"]=2,["8"]=2}})
 	check(dirty.selected==nil and dirty.master==false,"invalid selection and flag dropped")
 	check(dirty.xp.Aegis==0 and dirty.xp.Mender==0 and dirty.xp.Riftblade==DC.MAX_XP and dirty.xp.Starshot==0 and dirty.xp.Arcanist==1234,"class XP sanitised")
 	check(dirty.secrets["1"]==2 and dirty.secrets["2"]==1 and dirty.secrets["3"]==nil and dirty.secrets["9"]==nil,"secret records clamp to the floor")
-	check(dirty.masterBest["1"]==300 and dirty.masterBest["6"]==nil,"master scores floors I-V only")
-	check(dirty.masterClears["2"]==3 and dirty.masterClears["7"]==nil,"master clears sanitised")
+	check(dirty.masterBest["1"]==300 and dirty.masterBest["6"]==290 and dirty.masterBest["8"]==nil,"master scores floors I-VII only")
+	check(dirty.masterClears["2"]==3 and dirty.masterClears["7"]==2 and dirty.masterClears["8"]==nil,"master clears sanitised")
 	local kept=DC.migrate({selected="Starshot",master=true,xp={Starshot=500}})
 	check(kept.selected=="Starshot" and kept.master==true and kept.xp.Starshot==500,"valid records survive")
 	eq(DC.migrate(DC.migrate(kept)).xp.Starshot,500,"migration is idempotent")
@@ -397,7 +403,7 @@ do
 	local infos,classCalls,payloads,grants={},{},{},{}
 	local bridge={Invoke=function(_,op,p,payload)
 		local i=infos[p] or {}
-		if op=="dungeon" then return {level=i.level or 1,ironman=false,class=i.class,classXp=i.classXp or {},best=i.best or {},master=i.master==true} end
+		if op=="dungeon" then return {level=i.level or 1,ironman=false,class=i.class,classXp=i.classXp or {},best=i.best or {},master=i.master==true,gearScore=i.gearScore or 999} end
 		if op=="dungeonClass" then
 			-- Classes.choose: the profile stores the class and publishes the attribute.
 			table.insert(classCalls,{p,payload.class})
@@ -477,6 +483,30 @@ do
 		return list
 	end
 	local function tuneAll(p) for _,prism in ordered() do roots[p].Position=prism.Parent.Position now+=1 signals[prism]:Fire(p) end end
+	-- Dungeon endgame rooms (Floors VI-VII): a mistake-free greedy solver. Turn the
+	-- first unlit mirror until the beam reaches the receiver; press the lectern's glyphs.
+	local function promptIn(part) for _,o in part:GetChildren() do if o:IsA("ProximityPrompt") then return o end end return nil end
+	local function roomStep(p)
+		local text=caption.Text
+		if has(text,"MIRROR GALLERY") then
+			local list={}
+			for _,o in world:GetDescendants() do if o.Name=="Gallery mirror" and o:IsA("BasePart") then table.insert(list,o) end end
+			table.sort(list,function(a,b) return a:GetAttribute("MirrorIndex")<b:GetAttribute("MirrorIndex") end)
+			for _,m in list do
+				if m:GetAttribute("VisualState")~="Lit" then roots[p].Position=m.Position signals[promptIn(m)]:Fire(p) return true end
+			end
+		elseif has(text,"STAR CHART") or has(text,"Replay the star chart") then
+			local lectern=world:FindFirstChild("Star chart lectern",true)
+			local seq={}
+			for g in string.gmatch(lectern:GetAttribute("ChartSequence") or "","%S+") do table.insert(seq,g) end
+			local want=seq[lectern:GetAttribute("ChartStep") or 1]
+			for _,o in world:GetDescendants() do
+				if o.Name=="Glyph plate" and o:IsA("BasePart") and o:GetAttribute("Glyph")==want then roots[p].Position=o.Position signals[promptIn(o)]:Fire(p) return true end
+			end
+		end
+		return false
+	end
+	local function solveRooms(p) for _=1,60 do now+=0.5 if not roomStep(p) then break end end end
 	local function heal(p) hums[p].Health=100 end
 	local function at(p,offset) roots[p].Position=core.Position+(offset or r.Vector3.zero) end
 	local function strike(p,partName,action)
@@ -687,7 +717,7 @@ do
 	use(novice,"Master lever","Toggle Master Mode")
 	clearPad() onPad(novice)
 	signals[promptFor("ExpeditionGate","Enter expedition")]:Fire(novice)
-	check(has(noticeOf(novice),"after an S+"),"Master Mode needs an S+ on the floor")
+	check(has(noticeOf(novice),"after a grade S"),"Master Mode needs a grade S on the floor")
 	use(novice,"Master lever","Toggle Master Mode")
 	eq(novice:GetAttribute("DungeonMasterPick"),false,"lever turns Master Mode off")
 	clearPad() onPad(master) onPad(novice,2)
@@ -696,7 +726,7 @@ do
 	now+=Data.Dungeons.padSeconds
 	heartbeat:Fire(0)
 	check(inside(master) and not inside(novice),"only unlocked delvers join a Master Mode run")
-	check(has(noticeOf(novice),"S+"),"locked delver told why")
+	check(has(noticeOf(novice),"grade S"),"locked delver told why")
 	check(core:GetAttribute("MasterMode")==true and core:GetAttribute("BossMaxHealth")==24,"Master Mode doubles the core")
 	tuneAll(master)
 	strike(master,"Sentinel 1","Strike guardian")
@@ -713,9 +743,12 @@ do
 	use(pageMaster,"Observatory Floor VI","Select floor")
 	clearPad() onPad(pageMaster)
 	signals[promptFor("ExpeditionGate","Enter expedition")]:Fire(pageMaster)
+	check(has(noticeOf(pageMaster),"grade S"),"Master Mode on Floor VI needs its own grade S clear (Dungeon endgame)")
+	pageMaster:SetAttribute("DungeonMasterOn",false)
+	signals[promptFor("ExpeditionGate","Enter expedition")]:Fire(pageMaster)
 	now+=Data.Dungeons.padSeconds
 	heartbeat:Fire(0)
-	check(inside(pageMaster) and core:GetAttribute("MasterMode")==false,"Master Mode ignored on Floor VI")
+	check(inside(pageMaster) and core:GetAttribute("MasterMode")==false,"normal Floor VI once Master Mode is off")
 
 	-- Floor VI: lances, regeneration while wisps live.
 	check(core:GetAttribute("BossName")=="Lumen Colossus" and core:GetAttribute("BossMaxHealth")==90,"Floor VI boss")
@@ -729,6 +762,8 @@ do
 	use(lancer,"Observatory Floor VI","Select floor")
 	launch({lancer,buddy})
 	tuneAll(lancer)
+	check(has(caption.Text,"MIRROR GALLERY"),"Floor VI opens the Mirror Gallery after the prisms")
+	solveRooms(lancer)
 	guardiansDown({lancer,buddy})
 	ability(lancer,"ultimate")
 	eq(core:GetAttribute("BossHealth"),81,"Rending Storm on Floor VI (9)")
@@ -779,6 +814,7 @@ do
 	check(core:GetAttribute("BossName")=="Hollow Sovereign" and core:GetAttribute("BossMaxHealth")==120,"Floor VII boss")
 	eq(#secrets(),5,"Floor VII hides five secrets")
 	tuneAll(sovereign)
+	solveRooms(sovereign)
 	guardiansDown({sovereign})
 	at(sovereign,r.Vector3.new(20,0,0)) heal(sovereign)
 	-- 120 sentinel strikes later the Sovereign is already enraged (360 s): 3 s tempo, 1.8 s telegraph.
@@ -913,7 +949,7 @@ do
 	local function simulate(classList,floorIndex,master)
 		local party={}
 		for _,cls in ipairs(classList) do
-			table.insert(party,player({level=50,class=if cls then cls else nil,best={295,295,295,295,295}}))
+			table.insert(party,player({level=50,class=if cls then cls else nil,best={295,295,295,295,295,295,295}}))
 		end
 		party[1]:SetAttribute("DungeonMasterOn",master)
 		use(party[1],"Observatory Floor "..Data.DungeonFloors[floorIndex].numeral,"Select floor")
@@ -928,7 +964,9 @@ do
 			for _,p in party do
 				if p:GetAttribute("DungeonInRun")~=true then break end
 				local text=caption.Text
-				if has(text,"Tune the prisms") or has(text,"Retune") then
+				if roomStep(p) then
+					-- Dungeon endgame rooms / Constellation Lock handled by the greedy solver.
+				elseif has(text,"Tune the prisms") or has(text,"Retune") then
 					local tuned=0
 					for _,pr in pylons do if pr.Parent:GetAttribute("VisualState")=="Tuned" then tuned+=1 end end
 					for _,pr in pylons do
@@ -1024,7 +1062,7 @@ do
 	check(has(h.cmd(p,"dungeonMaster","on").message,"locked"),"Master Mode locked during a run")
 	p.DungeonInRun=false
 	check(has(h.cmd(p,"dungeonMaster","maybe").message,"on or off"),"Master Mode verb validates")
-	check(has(h.cmd(p,"dungeonMaster","on").message,"S+"),"Master Mode needs an S+ clear")
+	check(has(h.cmd(p,"dungeonMaster","on").message,"grade S"),"Master Mode needs a grade S clear")
 	-- Bridge: the expedition reads class, XP, bests and the preference.
 	local info=bridge.OnInvoke("dungeon",p)
 	check(info.class=="Aegis" and info.classXp.Aegis==0 and info.best[1]==0 and info.master==false,"bridge dungeon op carries class data")
@@ -1043,7 +1081,7 @@ do
 	check(view.floors[1].secrets==2 and view.floors[1].best==295 and view.floors[1].clears==1,"secrets, best score and clears recorded")
 	eq(view.floors[1].masterUnlocked,true,"S+ unlocks Master Mode on Floor I")
 	eq(view.floors[2].masterUnlocked,false,"other floors stay locked")
-	eq(s.items.ObservatoryEssence,DC.runRewards(1,"S+",{secrets=2}).items.ObservatoryEssence,"secrets add essence")
+	eq(s.items.ObservatoryEssence,DC.runRewards(1,"S+",{secrets=2}).items.ObservatoryEssence+Data.DungeonEndgame.bounty(1,false),"secrets add essence (plus the weekly first-clear bounty)")
 	check(has(clearMessage,"Starshot XP") and has(clearMessage,"2 secrets found"),"clear message names class XP and secrets")
 	eq(p.DungeonClassLevel,view.classes.Starshot.level,"class level attribute after the clear")
 	local on=h.cmd(p,"dungeonMaster","on")
@@ -1070,7 +1108,7 @@ do
 	-- A fresh journal cannot claim Master Mode.
 	local q=h.player(8102)
 	local refused=grant.OnInvoke(q,{floor=1,grade="S",score=270,master=true,class="Aegis"})
-	check(refused.ok==false and has(refused.reason,"S+"),"Master Mode grant needs the unlock")
+	check(refused.ok==false and has(refused.reason,"grade S"),"Master Mode grant needs the unlock")
 	eq(h.cmd(q,"state").dungeonClasses.classes.Aegis.xp,0,"refused grant pays no class XP")
 	-- Legacy BindableEvent path still pays Floor I grade B.
 	local legacy=h.cmd(q,"state")

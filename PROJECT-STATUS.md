@@ -14,7 +14,8 @@ Each system below was built by its own team, independently reviewed, and fixed w
 
 - **Workers depth:** 35 worker types (incl. 6 combat workers), up to 12 slots via unique crafts, fuels, upgrades (compactor, press, auto-sell, storage, dust), Condensed/Radiant compacted items; balanced so a maxed fleet earns ≤ ~16% of active XP/h, max 3 per type, 2 combat workers.
 - **Pets depth:** Common→Legendary rarities per species, 2–3 working abilities each, 12 held items, Pet Candy, Ascendant Prism, timed Roost upgrades, 24 species, following companions.
-- **Dungeon classes:** Aegis/Mender/Riftblade/Starshot/Arcanist with abilities, ultimates and levels 1–50; secrets and bonus scoring; Floors VI–VII; Master Mode I–V.
+- **Dungeon classes:** Aegis/Mender/Riftblade/Starshot/Arcanist with abilities, ultimates and levels 1–50; secrets and bonus scoring; Floors VI–VII; Master Mode (now I–VII).
+- **Dungeon endgame (§23):** Floors VI–VII gained cumulative room puzzles (Mirror Gallery, Star Chart), multi-phase bosses with class-role mechanics (Reliquary Verdict tank check, Withering Lumen healer check, Eventide Nova damage/interrupt check, Constellation Lock puzzle) and gear-score gates; Master Mode I–VII unlocked by grade S with per-floor scaling, ×3 essence and Master-only drops; Duskwarden Regalia, Colossus Lumenbrand, Sovereign's Nightfall, Thronebreaker, Sovereign Halo; Master stars ✪ (essence + Eclipsed Starcores) via a documented `Gear.Layers` hook; pay-to-open bonus chests rolled once per credited clear (Lodestar Keys); run log, weekly bests/bounty and personal bests; Minigames-style credit (median share, recent action, 90 s rejoin) and run-id dedupe; Hunt › Essence page. Tests: `verify-dungeon-master.luau`.
 - **Prayer & Thieving:** 21 prayers with time-based drain, remains and altars, quick-prayer HUD; 14 thieving targets (stalls, pickpockets, strongboxes) with persisted cooldowns.
 - **Treasure Trails:** six clue tiers, 161 steps (dig, riddle, emote, skill, puzzle box) with server-only answers, caskets with 35 uniques, clue log.
 - **Slayer tasks:** a 99-level Slayer skill (21 skills total), four masters, 14 families, points/streaks/skips/blocks, a points shop with the Hunter's Visor, owner-only superiors and four Slayer-gated monsters.
@@ -105,7 +106,7 @@ Physical touch keyboard/controller navigation, device performance, full two-clie
 ## Required remaining work
 
 - Live cross-server economy validation (standing orders and auctions are implemented and headless-tested).
-- Further regions/activities beyond the current eight regions, five dungeon floors, three slayer lines, nine sea creatures and five recurring festivals; cross-server co-op invitations.
+- Further regions/activities beyond the current eight regions, seven dungeon floors (plus Master Mode), three slayer lines, nine sea creatures and five recurring festivals; cross-server co-op invitations.
 - Permanent mesh import/integration, texture delivery, complete sign/menu art review and device performance measurement.
 - Real multiplayer/rejoin/failure tests in Studio (requirement-by-requirement acceptance: [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md)).
 - Confirm each intended cloud update with a receipt/version check and an actual join, independently of CI and audience settings.

@@ -157,6 +157,8 @@ local Garden={verbs={}}
 local Pets={verbs={}}
 -- Dungeon classes (class choice, Master Mode, class XP); filled in by the Classes block beside the expedition grant.
 local Classes={verbs={}}
+-- Dungeon endgame (bonus chest, Master stars, Essence Exchange, run log); filled in by the Delve block beside the expedition grant.
+local Delve={verbs={}}
 -- Treasure Trails (clue scrolls, steps, caskets); filled in by the Trails block after Prayer & Thieving.
 local Trails={verbs={trailBegin=true,trailAbandon=true,trailDig=true,trailSearch=true,trailEmote=true,trailSlide=true,trailCheck=true,trailOpen=true,trailTeleport=true,trailLearn=true,trailBanner=true}}
 -- Commissions & Logs (commissions, Forgeheart, Collection Log, Museum); filled in by the Logs block after Slayer tasks.
@@ -342,7 +344,7 @@ do
 			end
 		end
 	end
-	function Gear.view(p) return {reforges=p.reforges,stars=p.stars,books=p.books} end
+	function Gear.view(p) return {reforges=p.reforges,stars=p.stars,books=p.books,masterStars=p.masterStars} end -- masterStars: Dungeon endgame
 end
 -- Workers depth (Data.Workers): up to 12 slots unlocked by unique worker crafts,
 -- a type per gathering resource tier plus combat workers, fuel, two upgrade
@@ -3660,6 +3662,7 @@ local function snapshot(player,message)
 		depth=depthState(p,stats),journal=Journal.state(p),agilityHunter=Skills.state(player,p), -- Agility & Hunter page state
 		events={claims=p.eventClaims or {},vendorUntil=player:GetAttribute("EventVendorUntil") or 0,serverTime=os.time()}, -- Events hook: Calendar page state
 		dungeonClasses=Classes.state and Classes.state(p), -- Dungeon classes: Hunt > Dungeon page state
+		dungeonEndgame=Delve.state and Delve.state(p), -- Dungeon endgame: bonus chest, run log, weekly bests, gear score
 		garden=Garden.state and Garden.state(player,p), -- Verdant Garden page state
 		prayer=Prayer.state(player,p,stats),thieving=Prayer.thievingState(player,p,stats), -- Prayer & Thieving page state
 		trails=Trails.state(player,p), -- Treasure Trails: Satchel > Trails page state
@@ -3746,6 +3749,7 @@ local function migrate(profile)
 	Progression.masteryMigrate(profile) -- Skill Mastery: drop unknown/invalid nodes, reset overspent trees
 	if Garden.migrate then Garden.migrate(profile) end -- Verdant Garden: sanitise and bound p.garden
 	if Classes.migrate then Classes.migrate(profile) end -- Dungeon classes: sanitise p.dungeonClasses
+	if Delve.migrate then Delve.migrate(profile) end -- Dungeon endgame: sanitise p.dungeonEndgame and p.masterStars
 	Trails.migrate(profile) -- Treasure Trails: sanitise p.trails (re-draws trails whose steps left the pool)
 	Minigames.migrate(profile) -- Minigames: Commendations, cache rolls, titles, minigame log
 	Logs.migrate(profile) -- Commissions & Logs: board, Glimmerdust, Forgeheart, log (retroactive on first load), museum
@@ -5056,6 +5060,8 @@ local function perform(player,verb,item,prompt)
 		return Pets.action(player,p,verb,item) -- Pets depth
 	elseif Classes.verbs[verb] then
 		return Classes.action(player,p,verb,item) -- Dungeon classes
+	elseif Delve.verbs[verb] then
+		return Delve.action(player,p,verb,item) -- Dungeon endgame
 	elseif Trails.verbs[verb] then
 		return Trails.action(player,p,verb,item) -- Treasure Trails
 	elseif Endgame.verbs[verb] and prompt then
@@ -5570,13 +5576,131 @@ do
 			if item=="on" then
 				local any=false
 				for i,score in ipairs(Classes.best(p)) do if DC.masterUnlocked(i,score) then any=true end end
-				if not any then return "Master Mode unlocks after an S+ clear of an Observatory floor (I-V)." end
+				if not any then return "Master Mode unlocks after a grade S clear of an Observatory floor (I-VII)." end
 			end
 			c.master=item=="on"
 			Classes.publish(player,p)
 			return "Master Mode "..item.." for the runs you open."
 		end
 		return "Unknown dungeon class action."
+	end
+end
+-- Dungeon endgame (Dungeon Depth team): p.dungeonEndgame (Data.DungeonEndgame.migrate)
+-- and p.masterStars. grantExpedition (below) refuses a repeated run id and a gear
+-- score under the floor's gate, then Delve.afterClear records the run log, weekly
+-- best, personal best and weekly bounty, and rolls the bonus chest once (contents
+-- saved in the journal, so rejoining or leaving never rerolls it). Verbs:
+--   dungeonChest "open" (coins) | "key" (one Lodestar Key) | "skip"
+--   masterStar "<itemId>" (Master star ✪ k+1: essence + Eclipsed Starcores + coins)
+--   essenceBuy "<exchangeId>" (Essence Exchange: Lodestar Key)
+-- Snapshot field dungeonEndgame = {gearScore, gates, chest, log, week, pb, keys, cores, essence, masterStars}.
+do
+	local EG=Data.DungeonEndgame
+	for _,verb in ipairs({"dungeonChest","masterStar","essenceBuy"}) do Delve.verbs[verb]=true end
+	function Delve.migrate(p)
+		p.dungeonEndgame=EG.migrate(p.dungeonEndgame,os.time())
+		if type(p.masterStars)~="table" then p.masterStars={} end
+		for id,n in pairs(p.masterStars) do
+			local v=tonumber(n)
+			if type(id)~="string" or not EG.canMasterStar(Data.Items[id]) or not v or v~=v or v<1 then p.masterStars[id]=nil
+			else p.masterStars[id]=math.clamp(math.floor(v),1,EG.MASTER_STAR_MAX) end
+		end
+	end
+	function Delve.of(p)
+		local d=p.dungeonEndgame
+		if type(d)~="table" or type(d.log)~="table" or type(d.week)~="table" or type(d.pb)~="table" or type(d.runs)~="table" then Delve.migrate(p) d=p.dungeonEndgame end
+		if type(p.masterStars)~="table" then p.masterStars={} end
+		-- Weekly rollover and chest expiry on read.
+		local now=os.time()
+		if d.week.id~=EG.weekOf(now) then d.week={id=EG.weekOf(now),best={},bounty={}} end
+		if d.chest and (tonumber(d.chest.expires) or 0)<=now then d.chest=nil end
+		return d
+	end
+	function Delve.state(p)
+		local d=Delve.of(p)
+		local now=os.time()
+		local gates={}
+		for i=1,#Data.DungeonFloors do gates[i]={normal=EG.gearGate(i,false),master=EG.gearGate(i,true)} end
+		local chest=nil
+		if d.chest then
+			chest={floor=d.chest.floor,master=d.chest.master,grade=d.chest.grade,items=table.clone(d.chest.items),cost=d.chest.cost,expiresIn=math.max(0,d.chest.expires-now)}
+		end
+		local log={}
+		for i,e in ipairs(d.log) do log[i]=table.clone(e) end
+		local pb={}
+		for k,v in pairs(d.pb) do pb[k]=table.clone(v) end
+		return {gearScore=EG.gearScore(p),gates=gates,chest=chest,log=log,
+			week={id=d.week.id,best=table.clone(d.week.best),bounty=table.clone(d.week.bounty),resetIn=math.max(0,EG.weekEnds(now)-now)},
+			pb=pb,keys=p.items.LodestarKey or 0,cores=p.items.EclipsedStarcore or 0,essence=p.items.ObservatoryEssence or 0,masterStars=table.clone(p.masterStars)}
+	end
+	-- After a credited clear: log, bests, weekly bounty, bonus chest. Returns message text.
+	function Delve.afterClear(player,p,c)
+		local d=Delve.of(p)
+		local seconds=math.max(1,math.floor(tonumber(c.seconds) or 0))
+		local deaths=math.clamp(math.floor(tonumber(c.deaths) or 0),0,99)
+		local rec=EG.record(d,c.floor,c.master,c.grade,c.score,seconds,deaths,c.now)
+		local text=""
+		if rec.bounty>0 then
+			collect(p,"ObservatoryEssence",rec.bounty)
+			text..=" • weekly first clear: +"..rec.bounty.." Observatory Essence"
+		end
+		if rec.pb then text..=" • new personal best" end
+		local plan=EG.bonusPlan(c.floor,c.grade,c.master)
+		local items=Progression.rollDrops(plan.drops,c.stats.magicFind,roll,c.stats.petLuck)
+		if d.chest then text..=" • the unopened bonus chest was left behind" end
+		d.chest={floor=c.floor,master=c.master==true,grade=c.grade,items=items,cost=plan.cost,expires=c.now+EG.CHEST_SECONDS}
+		text..=" • bonus chest waiting ("..plan.cost.." coins or a Lodestar Key)"
+		return text
+	end
+	function Delve.action(player,p,verb,item)
+		local d=Delve.of(p)
+		if verb=="dungeonChest" then
+			local chest=d.chest
+			if not chest then return "No Observatory bonus chest is waiting. Clear a floor to earn one." end
+			if item=="skip" then
+				d.chest=nil
+				return "Bonus chest left sealed."
+			elseif item~="open" and item~="key" then
+				return "Open the bonus chest with coins or a key, or skip it."
+			end
+			if item=="key" then
+				if (p.items.LodestarKey or 0)<1 then return "You have no Lodestar Key." end
+				spend(p,{LodestarKey=1})
+			else
+				if p.coins<chest.cost then return "The bonus chest costs "..chest.cost.." coins." end
+				p.coins-=chest.cost
+			end
+			d.chest=nil
+			for id,n in pairs(chest.items) do collect(p,id,n) end
+			p.started=true
+			return "Bonus chest opened"..(if item=="key" then " with a Lodestar Key" else " • -"..chest.cost.." coins")..dropText(chest.items)
+		elseif verb=="masterStar" then
+			if not validId(item) or not Data.Items[item] then return "Choose a dungeon weapon or armor piece." end
+			local def=Data.Items[item]
+			if (p.items[item] or 0)<1 then return "You do not own "..def.name.."." end
+			local ok,why=EG.masterStarCheck(p,item)
+			if not ok then return why end
+			local k=EG.masterStarsOf(p,item)+1
+			local cost=EG.masterStarCost(def,k)
+			if (p.items.ObservatoryEssence or 0)<cost.amount then return "Master star "..k.." needs "..cost.amount.." Observatory Essence." end
+			if (p.items.EclipsedStarcore or 0)<cost.cores then return "Master star "..k.." needs "..cost.cores.." Eclipsed Starcore"..(if cost.cores>1 then "s" else "").." (Master Mode chests)." end
+			if p.coins<cost.coins then return "Master star "..k.." costs "..cost.coins.." coins." end
+			spend(p,{ObservatoryEssence=cost.amount,EclipsedStarcore=cost.cores})
+			p.coins-=cost.coins
+			p.masterStars[item]=k
+			p.started=true
+			return def.name.." gains Master star "..string.rep("✪",k).." • -"..cost.amount.." essence, -"..cost.cores.." Starcore, -"..cost.coins.." coins."
+		elseif verb=="essenceBuy" then
+			local e=type(item)=="string" and EG.ExchangeById[item]
+			if not e then return "Choose an Essence Exchange item." end
+			if (p.items.ObservatoryEssence or 0)<e.essence then return Data.Items[e.id].name.." costs "..e.essence.." Observatory Essence." end
+			if p.coins<e.coins then return Data.Items[e.id].name.." costs "..e.coins.." coins." end
+			spend(p,{ObservatoryEssence=e.essence})
+			p.coins-=e.coins
+			collect(p,e.id,1)
+			return "Exchanged "..e.essence.." Observatory Essence for a "..Data.Items[e.id].name.."."
+		end
+		return "Unknown Observatory action."
 	end
 end
 local expedition = Instance.new("BindableEvent")
@@ -5610,8 +5734,17 @@ local function grantExpedition(player,result)
 	local c=Classes.of(p)
 	if level(p.xp.Dungeoneering)<floor.level then return {ok=false,reason=floor.name.." requires Dungeoneering "..floor.level.."."} end
 	if master and not DC.masterUnlocked(floorIndex,Classes.best(p)[floorIndex]) then
-		return {ok=false,reason="Master Mode "..floor.name.." needs an S+ clear of the floor first."}
+		return {ok=false,reason="Master Mode "..floor.name.." needs a grade S clear of the floor first."}
 	end
+	-- Dungeon endgame: gear-score gate (recomputed from the journal) and one credit per run id.
+	local EG=Data.DungeonEndgame
+	local gearScore=EG.gearScore(p)
+	if gearScore<EG.gearGate(floorIndex,master) then
+		return {ok=false,reason=EG.accessText(floorIndex,master,"gear").." Yours is "..gearScore.."."}
+	end
+	local delve=Delve.of(p)
+	local runId=if type(result.runId)=="string" and #result.runId<=64 then result.runId else nil
+	if runId and table.find(delve.runs,runId) then return {ok=false,reason="This Observatory run was already credited to your journal."} end
 	if not Data.dungeonCooldownReady(dungeons.lastClear,now) then
 		local message="Observatory chest cooling down • wait "..(Data.Dungeons.clearCooldown-(now-dungeons.lastClear)).."s between credited clears."
 		update:FireClient(player,snapshot(player,message))
@@ -5623,6 +5756,7 @@ local function grantExpedition(player,result)
 		return {ok=false,reason=message}
 	end
 	dungeons.lastClear=now
+	if runId then EG.rememberRun(delve,runId) end
 	local key=tostring(floorIndex)
 	if master then
 		c.masterClears[key]=(c.masterClears[key] or 0)+1
@@ -5653,8 +5787,9 @@ local function grantExpedition(player,result)
 		for item,n in pairs(Progression.rollDrops(reward.chest,stats.magicFind,roll,stats.petLuck)) do drops[item]=(drops[item] or 0)+n end
 	end
 	for item,n in pairs(drops) do collect(p,item,n) end
+	local endText=Delve.afterClear(player,p,{floor=floorIndex,master=master,grade=grade,score=score,deaths=result.deaths,seconds=result.seconds,stats=stats,now=now})
 	update:FireClient(player,snapshot(player,(if master then "Master " else "")..floor.name.." cleared • Grade "..grade.." • +"..reward.coins.." coins, +"..reward.combatXp.." Combat and +"
-		..reward.dungeoneeringXp.." Dungeoneering XP"..classText..", "..reward.items.Stormglass.." Stormglass"..(if secrets>0 then " • "..secrets.." secrets found" else "")..dropText(drops)))
+		..reward.dungeoneeringXp.." Dungeoneering XP"..classText..", "..reward.items.Stormglass.." Stormglass"..(if secrets>0 then " • "..secrets.." secrets found" else "")..dropText(drops)..endText))
 	return {ok=true}
 end
 expedition.Event:Connect(function(player,result) grantExpedition(player,result) end)
@@ -5819,7 +5954,8 @@ bridge.OnInvoke=function(op,player,payload)
 		-- Dungeons: floor gate + Ironman flag for expedition.server.lua;
 		-- Dungeon classes: selected class, class XP, normal-mode best scores, Master Mode preference.
 		local c=Classes.of(p)
-		return {level=level(p.xp.Dungeoneering),ironman=p.ironman==true,class=c.selected,classXp=table.clone(c.xp),best=Classes.best(p),master=c.master==true}
+		return {level=level(p.xp.Dungeoneering),ironman=p.ironman==true,class=c.selected,classXp=table.clone(c.xp),best=Classes.best(p),master=c.master==true,
+			gearScore=Data.DungeonEndgame.gearScore(p)} -- Dungeon endgame: gear-score gate
 	elseif op=="dungeonClass" then
 		-- Dungeon classes: the pad pedestals persist the chosen class.
 		return {ok=Classes.choose(player,p,payload.class)==nil}
