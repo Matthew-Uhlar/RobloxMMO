@@ -583,6 +583,16 @@ do
 		or phone.forge.templates["SignCarvedBoard#" .. string.lower(World.shapes.SignCarvedBoard.tint)] ~= nil, "phone kit board uses the shared template")
 end
 
+-- L5: BannerCloth lining stays behind the host's faces inside the text area
+-- (|x| < 1.8, |y| < 2.2 of the 3.8 x 5 x .14 reference; the gold hem band is below): no vertex crosses z = +-.07.
+do
+	local data, worst = World.shapes.BannerCloth, 0
+	for _, v in ipairs(data.vertices) do
+		if math.abs(v[1]) < 1.8 and math.abs(v[2]) < 2.2 then worst = math.max(worst, math.abs(v[3])) end
+	end
+	check(worst <= .07 + 1e-4, "BannerCloth text area stays behind its faces (max |z| " .. worst .. ")")
+end
+
 -- LRU eviction: a new template evicts the least recently used idle template.
 do
 	local function tpl(f, shape)
@@ -614,7 +624,7 @@ do
 	check(tpl(lru2.forge, "Barrel") == nil and tpl(lru2.forge, "Boulder") ~= nil, "the least recently used idle template is evicted first")
 end
 
--- Template budget tour (§28 M3): the real world, hub then five regions, on
+-- Template budget tour (§28 M3, §30): the real world, hub then every region, on
 -- desktop and phone limits. No part may be left primitive for want of a
 -- template slot while idle templates could be evicted, and sign kit pieces fit.
 do
@@ -647,13 +657,24 @@ do
 		luau.load(fs.readFile("world.server.lua"):gsub("plans%.Position", "plans.CFrame.Position"), {environment = env, injectGlobals = true})()
 		return wsp
 	end
-	local STOPS = {{"Compass Quay", Vector3.new(0, 4, 0)}, {"Mosswake Grove", Vector3.new(-230, 4, 0)}, {"Brassfall Quarry", Vector3.new(230, 4, 0)},
-		{"Gloomhollow", Vector3.new(440, -12, -440)}, {"Tidewater Shoals", Vector3.new(-520, 6, 440)}, {"Tempest Spire", Vector3.new(600, 84, -220)}}
+	-- Tour: Compass Quay first, then every static region island (IslandCenter of each Islands model).
+	local STOPS = {}
+	do
+		local wsp = buildWorld()
+		for _, isle in wsp:FindFirstChild("Islands"):GetChildren() do
+			local c = isle:GetAttribute("IslandCenter")
+			if c then table.insert(STOPS, {isle.Name, c + Vector3.new(0, 4, 0)}) end
+		end
+		table.sort(STOPS, function(a, b) return a[2].Magnitude < b[2].Magnitude end)
+	end
+	check(#STOPS >= 12, "tour visits the hub and every region island (" .. #STOPS .. ")")
 	local function tour(device)
 		local wsp = buildWorld()
+		local clock = 0
 		local run = loadForge(function(root)
 			for _, child in wsp:GetChildren() do if child:IsA("Folder") then child.Parent = root end end
 		end, nil, function(env)
+			env.os = {clock = function() return clock end}
 			if device == "phone" then
 				local services = env.game
 				env.game = {GetService = function(self, name)
@@ -662,27 +683,40 @@ do
 				end}
 			end
 		end)
+		-- Hold every instance strongly: the forge's registry is weak-keyed and Lune's
+		-- Instance userdata would otherwise be collected between steps (in Roblox the
+		-- DataModel keeps them alive).
+		local keep = run.root:GetDescendants()
 		local report, peak = {}, 0
 		for _, stop in STOPS do
 			local skipsBefore = run.forge.stats.templateSkips
-			run.moveTo(stop[2])
-			local kitPrimitive = 0
+			-- Arrive, then let every backed-off part retry (several steps, minutes apart).
+			for _ = 1, 4 do clock += 100; run.moveTo(stop[2]) end
+			local near = if device == "phone" then 40 else 150
+			local nearPrimitive, kitPrimitive, permanent = 0, 0, 0
 			for _, p in run.root:GetDescendants() do
-				if p:IsA("BasePart") and p:GetAttribute("ShapeSkipped") == "budget" and run.forge.kitShapes[p:GetAttribute("Shape")] then kitPrimitive += 1 end
+				if p:IsA("BasePart") then
+					local why = p:GetAttribute("ShapeSkipped")
+					if why == "failed" or why == "unavailable" or why == "clone failed" or why == "error" then permanent += 1 end
+					if why == "budget" and (p.CFrame.Position - stop[2]).Magnitude <= near then
+						nearPrimitive += 1
+						if run.forge.kitShapes[p:GetAttribute("Shape")] then kitPrimitive += 1 end
+					end
+				end
 			end
 			peak = math.max(peak, run.forge.stats.templates)
 			check(run.forge.stats.templates <= run.forge.limits.templates and run.forge.stats.templateTriangles <= run.forge.limits.templateTriangles,
-				device .. " " .. stop[1] .. ": template caps hold")
-			table.insert(report, string.format("%s %d tpl/%dk tris, %d evicted, %d tpl skips, %d kit primitives", stop[1], run.forge.stats.templates,
-				run.forge.stats.templateTriangles // 1000, run.forge.stats.evicted, run.forge.stats.templateSkips - skipsBefore, kitPrimitive))
-			check(kitPrimitive == 0 or device == "phone", device .. " " .. stop[1] .. ": every sign kit piece in range meshed (" .. kitPrimitive .. ")")
+				device .. " " .. stop[1] .. ": template caps hold (" .. run.forge.stats.templates .. ")")
+			check(permanent == 0, device .. " " .. stop[1] .. ": no permanent primitive fallback")
+			check(nearPrimitive == 0, device .. " " .. stop[1] .. ": every shape within " .. near .. " studs meshed (" .. nearPrimitive .. " left primitive)")
+			table.insert(report, string.format("%s %d tpl/%dk tris, %d evicted so far, %d tpl-budget skips", stop[1],
+				run.forge.stats.templates, run.forge.stats.templateTriangles // 1000, run.forge.stats.evicted, run.forge.stats.templateSkips - skipsBefore))
 		end
-		print("Template tour (" .. device .. "): " .. table.concat(report, "; ") .. "; peak " .. peak .. ".")
+		print("Template tour (" .. device .. "): " .. table.concat(report, "; ") .. "; peak " .. peak .. ", " .. run.forge.stats.reclaimed .. " reclaimed, " .. #keep .. " instances.")
 		return run
 	end
-	local desk = tour("desktop")
-	check(desk.forge.stats.evicted >= 0, "desktop tour completed")
-	tour("phone")
+	local desk, phone = tour("desktop"), tour("phone")
+	check(desk.forge.stats.evicted > 0 and phone.forge.stats.evicted > 0, "LRU eviction recycles idle templates during the tour")
 end
 
 -- Client roles: IslandArt keeps legacy sculptures and creatures; nothing runs on the server.

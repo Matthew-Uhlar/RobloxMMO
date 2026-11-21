@@ -93,6 +93,19 @@ local function islandCenter()
 	return nil
 end
 local function placements() return I.decode(player:GetAttribute("IslandPlacements")) end
+-- Decoded grid, cached until IslandPlacements / HomesteadLevel / IslandCenter
+-- change (B.invalidate); B.update re-checks only when the snapped cell,
+-- rotation or prop changes (it runs every frame while building).
+local grid = nil
+local function gridState()
+	if not grid then
+		local list = placements()
+		local counts = {}
+		for _, e in ipairs(list) do counts[e.prop] = (counts[e.prop] or 0) + 1 end
+		grid = {list = list, occupied = I.occupancy(list), counts = counts, parts = I.parts(list)}
+	end
+	return grid
+end
 -- Home islands (§27): the grid radius and the placement cap grow with the
 -- Homestead level the server publishes (HomesteadLevel 1..5).
 local function stage()
@@ -111,6 +124,9 @@ end
 local function ghostPart(parent, name, size)
 	return make("Part", parent, {Name=name, Size=size, Anchored=true, CanCollide=false, CanQuery=false, CanTouch=false, CastShadow=false,
 		Material=Enum.Material.Neon, Transparency=.55, Color=GOOD, TopSurface=Enum.SurfaceType.Smooth, BottomSurface=Enum.SurfaceType.Smooth})
+end
+function B.invalidate()
+	grid, B.cell = nil, nil
 end
 function B.clearGhost()
 	if B.ghost then B.ghost:Destroy() end
@@ -179,15 +195,19 @@ function B.update()
 	end
 	local offset = hit.Position - center
 	local x, z = I.snap(B.prop, B.rot, offset.X, offset.Z)
+	local cell = B.prop .. ":" .. x .. ":" .. z .. ":" .. B.rot
+	if cell == B.cell and B.ghost and B.ghost.Parent then return end -- same cell: nothing to re-check
+	B.cell = cell
 	B.x, B.z = x, z
-	local list = placements()
-	local valid, reason = I.check(I.occupancy(list), B.prop, x, z, B.rot, stage())
+	local state = gridState()
+	local valid, reason = I.check(state.occupied, B.prop, x, z, B.rot, stage())
 	if valid then
-		local count = 0
-		for _, e in ipairs(list) do if e.prop == B.prop then count += 1 end end
 		local def = I.Props[B.prop]
-		if #list >= I.cap(stage()) then valid, reason = false, "Your island is full"
-		elseif count >= def.max then valid, reason = false, "Most " .. def.name .. " pieces placed (" .. def.max .. ")" end
+		if #state.list >= I.cap(stage()) then valid, reason = false, "Your island is full"
+		elseif (state.counts[B.prop] or 0) >= def.max then valid, reason = false, "Most " .. def.name .. " pieces placed (" .. def.max .. ")"
+		elseif state.parts + def.parts > I.PART_BUDGET then
+			valid, reason = false, "Detail budget reached (" .. state.parts .. "/" .. I.PART_BUDGET .. " parts)"
+		end
 	end
 	B.valid, B.reason = valid, reason or "Valid spot  ·  click, tap Place or press A"
 	status.Text, status.TextColor3 = B.reason, valid and GOOD or BAD
@@ -233,6 +253,7 @@ function B.enter(mode, propId)
 	if mode == "place" and not I.Props[propId] then return end
 	if mode ~= "place" and mode ~= "remove" then return end
 	B.mode, B.prop, B.rot, B.active = mode, propId, 0, true
+	B.invalidate()
 	B.gamepad = Input.GamepadEnabled and not Input.MouseEnabled and not Input.TouchEnabled
 	B.makeGhost()
 	title.Text = if mode == "place" then "Placing  ·  " .. I.Props[propId].name else "Pick up mode"
@@ -270,8 +291,12 @@ player:GetAttributeChangedSignal("IslandBuildRequest"):Connect(function()
 	local mode, prop = player:GetAttribute("IslandBuildMode"), player:GetAttribute("IslandBuildProp")
 	B.enter(if type(mode) == "string" then mode else "", if type(prop) == "string" then prop else "")
 end)
-player:GetAttributeChangedSignal("IslandPlacements"):Connect(function() if B.active then B.update() end end)
-player:GetAttributeChangedSignal("HomesteadLevel"):Connect(function() if B.active then B.update() end end)
+for _, name in ipairs({"IslandPlacements", "HomesteadLevel", "IslandCenter"}) do
+	player:GetAttributeChangedSignal(name):Connect(function()
+		B.invalidate()
+		if B.active then B.update() end
+	end)
+end
 player.CharacterRemoving:Connect(B.exit)
 
 Input.InputChanged:Connect(function(input)

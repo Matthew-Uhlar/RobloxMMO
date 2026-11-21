@@ -121,7 +121,7 @@ local function shapeOf(part)
 	return ALIASES[shapeName] or shapeName
 end
 
-local stats = {templates = 0, templateTriangles = 0, instances = 0, placedTriangles = 0, failures = 0, skipped = 0, evicted = 0, templateSkips = 0}
+local stats = {templates = 0, templateTriangles = 0, instances = 0, placedTriangles = 0, failures = 0, skipped = 0, evicted = 0, templateSkips = 0, reclaimed = 0}
 -- Indexing a missing member errors on an Instance, so probe the API under pcall.
 local available = pcall(function()
 	assert(typeof(AssetService.CreateEditableMesh) == "function" and typeof(AssetService.CreateMeshPartAsync) == "function")
@@ -130,7 +130,38 @@ end)
 local stopReason = if available then nil else "unavailable"
 local newTemplatesBlocked = false
 local templates = {} -- key -> {part, mesh, extent, center, triangles, users, used} | false (failed)
+-- Sign kit shapes (§28; see templateTint below).
+local SIGN_KIT_SHAPES = {
+	SignHangingFrame = true, SignpostFrame = true, BannerStandardFrame = true, SignPlinthFrame = true, SignLedgerFrame = true,
+	SignCarvedBoard = true, SignScrollBoard = true, SignArrowBoard = true, SignPlaqueBoard = true, SignNoticeBoard = true, BannerCloth = true,
+}
 local useTick = 0 -- LRU clock: bumped whenever a template gains or loses a clone
+-- Tint variants per shape: a shape keeps at most VARIANTS templates (desktop 2,
+-- phones 1); a further tint reuses the shape's nearest existing variant. Legacy
+-- sign shapes (kind "sign" outside the kit: pennants, cloth, ledgers) are exempt
+-- so their colours stay exact (they are few).
+local VARIANTS = if mobile then 1 else 2
+local variants = {} -- shapeName -> {key -> tint | false}
+local function tintDistance(a, b)
+	if not a or not b then return if a == b then 0 else 1 end
+	local dr, dg, db = a.R - b.R, a.G - b.G, a.B - b.B
+	return 0.3 * dr * dr + 0.59 * dg * dg + 0.11 * db * db
+end
+-- Nearest existing template of the shape (nil when it has none).
+local function nearestVariant(shapeName, tint)
+	local best, bestDistance = nil, math.huge
+	for key, variantTint in pairs(variants[shapeName] or {}) do
+		local entry = templates[key]
+		local distance = tintDistance(tint, variantTint or nil)
+		if entry and distance < bestDistance then best, bestDistance = entry, distance end
+	end
+	return best
+end
+local function variantCount(shapeName)
+	local n = 0
+	for key in pairs(variants[shapeName] or {}) do if templates[key] then n += 1 end end
+	return n
+end
 
 -- Colours ------------------------------------------------------------------
 local function paletteColor(catalog, index, tint)
@@ -258,6 +289,7 @@ local function evictFor(triangles)
 		if stats.templates < LIMITS.templates and stats.templateTriangles + triangles <= LIMITS.templateTriangles then break end
 		local entry = item[2]
 		templates[item[1]] = nil
+		if variants[entry.shape] then variants[entry.shape][item[1]] = nil end
 		stats.templates -= 1
 		stats.templateTriangles -= entry.triangles
 		stats.evicted += 1
@@ -270,6 +302,9 @@ local function template(shapeName, data, catalog, tint)
 	local key = shapeName .. "#" .. (if tint then tint:ToHex() else "")
 	local cached = templates[key]
 	if cached ~= nil then return cached or nil end
+	if variantCount(shapeName) >= VARIANTS and not (data.kind == "sign" and not SIGN_KIT_SHAPES[shapeName]) then
+		return nearestVariant(shapeName, tint)
+	end
 	local triangles = #data.faces
 	if stopReason or newTemplatesBlocked or ((stats.templates >= LIMITS.templates or stats.templateTriangles + triangles > LIMITS.templateTriangles)
 		and not evictFor(triangles)) then
@@ -289,7 +324,9 @@ local function template(shapeName, data, catalog, tint)
 	local lo, hi = bounds(data)
 	useTick += 1
 	local entry = {part = part, mesh = mesh, extent = (hi - lo):Max(Vector3.one * 0.01), center = (lo + hi) / 2, triangles = triangles,
-		users = 0, used = useTick}
+		users = 0, used = useTick, shape = shapeName}
+	variants[shapeName] = variants[shapeName] or {}
+	variants[shapeName][key] = tint or false
 	part.Size = entry.extent
 	templates[key] = entry
 	stats.templates += 1
@@ -307,10 +344,6 @@ local SIGN_KINDS = {sign = true}
 -- a template per shape: frames and boards snap to the nearest of KIT_METALS on
 -- desktop and share the shape's default-tint template on phones; BannerCloth
 -- (its Tint is the banner's accent) snaps to CLOTH_PALETTE on every device.
-local SIGN_KIT_SHAPES = {
-	SignHangingFrame = true, SignpostFrame = true, BannerStandardFrame = true, SignPlinthFrame = true, SignLedgerFrame = true,
-	SignCarvedBoard = true, SignScrollBoard = true, SignArrowBoard = true, SignPlaqueBoard = true, SignNoticeBoard = true, BannerCloth = true,
-}
 local function hexColors(list)
 	local out = {}
 	for i, hex in ipairs(list) do out[i] = Color3.fromHex(hex) end
@@ -330,6 +363,9 @@ end
 -- Template tint for a host: the Tint itself, or its quantised kit colour.
 local function templateTint(shapeName, data, tint)
 	if typeof(tint) ~= "Color3" then return defaultTint(data) end
+	-- Phones: island hulls, bridges and far-seen landmarks (forged out to 900
+	-- studs, always in use) share their default-tint template.
+	if mobile and (data.kind == "rock" or data.kind == "bridge" or type(data.range) == "number") then return defaultTint(data) end
 	if not SIGN_KIT_SHAPES[shapeName] then return tint end
 	if shapeName == "BannerCloth" then return nearestColor(tint, CLOTH_PALETTE) end
 	if mobile then return defaultTint(data) end
@@ -381,8 +417,10 @@ local function styleSign(part)
 end
 
 -- Placement ----------------------------------------------------------------
-local registry = setmetatable({}, {__mode = "k"}) -- tagged parts this client knows
-local placed = setmetatable({}, {__mode = "k"}) -- part -> {visual, triangles, connections, decals}
+-- Strong tables: step() drops a part (and releases its mesh) once it has no Parent, so
+-- nothing leaks, and a part is never forgotten while it is still in the world.
+local registry = {} -- tagged parts this client knows
+local placed = {} -- part -> {visual, triangles, connections, decals, hidden, entry}
 local final = setmetatable({}, {__mode = "k"}) -- permanently skipped parts
 -- Budget skips back off exponentially (2 s, 4 s, ... 64 s) instead of retrying
 -- every step; any release frees budget and lets every backed-off part retry.
@@ -521,6 +559,8 @@ local function release(part)
 	pcall(record.visual.Destroy, record.visual)
 end
 
+local reclaim -- defined with step() below
+local starvedTemplate = false -- set by forge() when no template slot was free
 local function forge(part)
 	if placed[part] or final[part] or not part.Parent then return end
 	local shapeName = shapeOf(part)
@@ -533,12 +573,14 @@ local function forge(part)
 	local tint = templateTint(shapeName, data, part:GetAttribute("Tint"))
 	local entry, problem = template(shapeName, data, catalog, tint)
 	if not entry and problem == "budget" then
-		-- Reuse the shape's default-tint template rather than leaving a primitive.
-		local fallback = defaultTint(data)
-		local cached = templates[shapeName .. "#" .. (if fallback then fallback:ToHex() else "")]
-		if cached then entry = cached end
+		-- Reuse the shape's nearest existing variant rather than leaving a primitive.
+		entry = nearestVariant(shapeName, tint)
 	end
-	if not entry then skip(part, problem or stopReason or "failed", problem ~= "budget"); return end
+	if not entry then
+		if problem == "budget" then starvedTemplate = true end
+		skip(part, problem or stopReason or "failed", problem ~= "budget")
+		return
+	end
 	if not part.Parent then return end
 	local siblings = ownedSiblings(part)
 	local size, meshFrame = layout(part, data, siblings)
@@ -599,6 +641,35 @@ local function focus()
 	local camera = workspace.CurrentCamera
 	return camera and camera.CFrame.Position or nil
 end
+-- Template reclaim: every template slot is held by live clones, yet a nearer
+-- part is waiting. The template whose nearest clone is farthest away (at least
+-- RECLAIM_MARGIN studs farther than the waiting part: 100, phones 40) gives its clones back to
+-- their primitives, goes idle and is LRU-evicted for the nearer shape. Far
+-- hulls and landmarks therefore yield to what the player is walking past.
+local RECLAIM_MARGIN = if mobile then 40 else 100
+reclaim = function(starved, origin)
+	local users = {}
+	for part, record in pairs(placed) do
+		local d = (part.CFrame.Position - origin).Magnitude
+		local u = users[record.entry]
+		if not u then u = {min = d, parts = {}}; users[record.entry] = u end
+		if d < u.min then u.min = d end
+		table.insert(u.parts, part)
+	end
+	local order = {}
+	for _, u in pairs(users) do table.insert(order, u) end
+	table.sort(order, function(a, b) return a.min > b.min end)
+	local k = 1
+	for _, item in ipairs(starved) do
+		local victim = order[k]
+		if not victim or victim.min < item[2] + RECLAIM_MARGIN then break end
+		k += 1
+		for _, part in ipairs(victim.parts) do release(part) end
+		stats.reclaimed += 1
+		starvedTemplate = false
+		pcall(forge, item[1])
+	end
+end
 local stepping = false
 local function step()
 	if stepping then return end
@@ -623,9 +694,16 @@ local function step()
 		end
 		-- Nearest first, so budgets are spent on what the player sees.
 		table.sort(near, function(a, b) return a[2] < b[2] end)
+		local starved = {}
 		for _, item in ipairs(near) do
+			starvedTemplate = false
 			local ok, problem = pcall(forge, item[1])
-			if not ok then warn("[MeshForge] " .. tostring(problem)); skip(item[1], "error", true) end
+			if not ok then warn("[MeshForge] " .. tostring(problem)); skip(item[1], "error", true)
+			elseif starvedTemplate then table.insert(starved, item) end
+		end
+		if #starved > 0 then
+			local ok, problem = pcall(reclaim, starved, origin)
+			if not ok then warn("[MeshForge] reclaim: " .. tostring(problem)) end
 		end
 	end
 	stepping = false
@@ -671,9 +749,9 @@ for _, instance in ipairs(workspace:GetDescendants()) do watch(instance) end
 step()
 if MeshForgeTest then
 	MeshForgeTest.forge = {stats = stats, limits = LIMITS, templates = templates, rescan = rescan, consider = consider, step = step,
-		templateTint = templateTint, kitShapes = SIGN_KIT_SHAPES, kitMetals = KIT_METALS, clothPalette = CLOTH_PALETTE,
+		templateTint = templateTint, kitShapes = SIGN_KIT_SHAPES, kitMetals = KIT_METALS, clothPalette = CLOTH_PALETTE, variants = VARIANTS,
 		cornerNormals = cornerNormals, styleSign = styleSign, stopReason = function() return stopReason end,
-		radii = {build = BUILD_RADIUS, unload = UNLOAD_RADIUS}, mobile = mobile, backoff = backoff,
+		radii = {build = BUILD_RADIUS, unload = UNLOAD_RADIUS}, mobile = mobile, backoff = backoff, registry = registry, final = final, placed = placed,
 		-- Final mesh box for a tagged part, without forging: size, CFrame, kind.
 		describe = function(part)
 			local shapeName = shapeOf(part)

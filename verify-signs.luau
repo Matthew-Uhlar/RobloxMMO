@@ -176,6 +176,13 @@ for _, gui in world:GetDescendants() do
 					ok(label.Position.X.Offset >= 0 and label.Position.Y.Offset >= 0 and label.Position.X.Offset + w <= cw + 1 and label.Position.Y.Offset + h <= ch + 1,
 						label:GetFullName() .. " stays on its board")
 				end
+				if label.Name == "Label" and gui.Parent:GetAttribute("Shape") == "SignArrowBoard" then
+					-- L6: the label stays >= .45 studs (and past the stretched strap) clear of the tail.
+					local W = gui.Parent.Size.X
+					local need = math.max(.45, W * .37 / 4.6) * gui.PixelsPerStud
+					local tailGap = if gui.Face == roblox.Enum.NormalId.Front then cw - (label.Position.X.Offset + w) else label.Position.X.Offset
+					ok(tailGap >= need - 1, label:GetFullName() .. " clears the arrow strap (" .. tailGap .. " px >= " .. math.floor(need) .. ")")
+				end
 				local studs = size / gui.PixelsPerStud
 				if label.Name == "Title" or label.Name == "Label" then
 					ok(studs >= .22, label:GetFullName() .. " title is legible (" .. string.format("%.2f", studs) .. " studs)")
@@ -347,7 +354,7 @@ for _, board in world:GetDescendants() do
 		end
 	end
 end
-ok(oneSided >= 1, "one-sided boards found (" .. oneSided .. " one-sided, " .. twoSided .. " two-sided)")
+ok(oneSided + twoSided >= 80, "every non-ledger board classified (" .. oneSided .. " one-sided, " .. twoSided .. " two-sided)")
 print("One-sided boards: " .. oneSided .. " (back over a wall or the rim); two-sided: " .. twoSided .. ".")
 ok(not source:find("Enum.Font.Merriweather", 1, true) and not source:find("pcall(function() l.FontFace", 1, true), "no dead Font fallback (FontFace is always set)")
 
@@ -408,7 +415,8 @@ for _, alias in {"OrnateBracket", "ScrollBoard", "Crest", "Finial", "ChainLink",
 	ok(forge:find(alias .. " = \"", 1, true) ~= nil, "forge alias " .. alias)
 end
 ok(forge:find('GetAttribute("ShapeBox")', 1, true) and forge:find('GetAttribute("ShapeBoxOffset")', 1, true), "forge honours declared sign frame boxes")
-ok(forge:find("mobile and SIGN_KIT[data.kind]", 1, true) ~= nil, "phones share one template per sign kit shape")
+ok(forge:find("if not SIGN_KIT_SHAPES[shapeName] then return tint end", 1, true) ~= nil and forge:find("if mobile then return defaultTint(data) end", 1, true) ~= nil,
+	"only the eleven kit shapes share templates on phones (legacy sign shapes keep their Tint; behaviour tested in verify-mesh)")
 
 local guiPixels, guiCount, guiInstances, labelsN = 0, 0, 0, 0
 for _, gui in world:GetDescendants() do

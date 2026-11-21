@@ -544,7 +544,7 @@ local worldEnv = {
 		return {}
 	end},
 	workspace = world, Instance = roblox.Instance, Vector3 = Vector3, Vector2 = roblox.Vector2, CFrame = CFrame, Color3 = roblox.Color3,
-	UDim2 = roblox.UDim2, Enum = roblox.Enum, NumberRange = roblox.NumberRange, NumberSequence = roblox.NumberSequence, ColorSequence = roblox.ColorSequence,
+	UDim2 = roblox.UDim2, Font = roblox.Font, Enum = roblox.Enum, NumberRange = roblox.NumberRange, NumberSequence = roblox.NumberSequence, ColorSequence = roblox.ColorSequence,
 	task = {spawn = function() end, wait = function() end},
 	require = function(module) assert(module == dataModule, "world requires only AetherData") return Data end,
 }

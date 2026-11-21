@@ -637,7 +637,7 @@ local mgEnv = {
 		end
 		return roblox.Instance.new(class)
 	end},
-	Vector3 = Vector3, CFrame = CFrame, Color3 = roblox.Color3, UDim2 = roblox.UDim2, Enum = roblox.Enum,
+	Vector3 = Vector3, CFrame = CFrame, Color3 = roblox.Color3, UDim2 = roblox.UDim2, Font = roblox.Font, Enum = roblox.Enum,
 	os = {clock = function() return clock end, time = function() return math.floor(utc) end},
 	Random = {new = function() return {NextNumber = function() if #mgRolls > 0 then return table.remove(mgRolls, 1) end return 0 end} end},
 }

@@ -1236,7 +1236,7 @@ do
 	Island.LEGACY_RADIUS = 18.5
 	Island.LEGACY_RANGE = 8
 	Island.BRUSH = 0.3       -- a cell may brush a protected rectangle by this many studs
-	Island.MAX_PLACEMENTS = 200   -- absolute cap (record ids 1..200); Island.cap(stage) is 120 + 20/stage
+	Island.MAX_PLACEMENTS = 200   -- absolute cap (record ids 1..200); Island.cap(stage) = BASE_CAP + CAP_STEP * stage = 120 + 20 * stage
 	Island.BASE_CAP = 120
 	Island.CAP_STEP = 20
 	-- Part budget (§27 performance): the placements of one home may build at

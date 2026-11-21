@@ -463,7 +463,7 @@ local worldEnv = {
 		return {}
 	end},
 	workspace = world, Instance = roblox.Instance, Vector3 = Vector3, Vector2 = roblox.Vector2, CFrame = CFrame, Color3 = roblox.Color3,
-	UDim2 = roblox.UDim2, Enum = roblox.Enum, NumberRange = roblox.NumberRange, NumberSequence = roblox.NumberSequence, ColorSequence = roblox.ColorSequence,
+	UDim2 = roblox.UDim2, Font = roblox.Font, Enum = roblox.Enum, NumberRange = roblox.NumberRange, NumberSequence = roblox.NumberSequence, ColorSequence = roblox.ColorSequence,
 	task = {spawn = function() end, wait = function() end},
 	require = function(module) assert(module == dataModule, "world requires only AetherData") return Data end,
 }
@@ -558,7 +558,7 @@ local env = {
 		table.insert(serverObjects, o)
 		return o
 	end},
-	UDim2 = roblox.UDim2, Color3 = roblox.Color3, Enum = roblox.Enum,
+	UDim2 = roblox.UDim2, Color3 = roblox.Color3, Font = roblox.Font, Enum = roblox.Enum,
 	os = {clock = function() return clock end, time = function() return math.floor(utc) end},
 	require = function(target) return assert(modules[target], "unexpected require") end,
 	Random = {new = function() return {NextNumber = function() return nextRoll() end, NextInteger = function(_, lo, hi) return lo + math.floor(nextRoll() * (hi - lo + 1)) end} end},

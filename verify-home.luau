@@ -148,6 +148,26 @@ local over = {}
 for i = 1, 150 do over[i] = I.record({id = i, prop = "StonePath", x = (i % 30) - 15, z = 20 + i // 30, rot = 0}) end
 local m4, r4 = I.migrate({placed = over, v = I.VERSION}, 0)
 ok(#m4.placed == I.Props.StonePath.max and r4.Ore == (150 - I.Props.StonePath.max) * I.Props.StonePath.costs.Ore, "per-prop max refunds the extras in full")
+-- §27 part budget: every prop declares its parts; migration refunds records past the budget in save order.
+ok(I.PART_BUDGET == 600, "placement part budget is 600 parts per home")
+for id, def in pairs(I.Props) do ok(type(def.parts) == "number" and def.parts >= 1 and def.parts <= 12, id .. " declares its part count") end
+do
+	local freeCells = {}
+	for z = -20, 20 do for x = -20, 20 do if I.cellBlocked(x, z, 0) == nil then table.insert(freeCells, {x, z}) end end end
+	local heavy = {}
+	for i = 1, 60 do heavy[i] = I.record({id = i, prop = "Boardwalk", x = freeCells[i][1], z = freeCells[i][2], rot = 0}) end
+	for i = 61, 120 do heavy[i] = I.record({id = i, prop = "PicketFence", x = freeCells[i][1], z = freeCells[i][2], rot = 0}) end
+	local mb, rb, repb = I.migrate({placed = heavy, v = I.VERSION}, 0)
+	local kept = {}
+	for _, rec in ipairs(mb.placed) do table.insert(kept, I.parseRecord(rec)) end
+	eq(I.parts(kept), I.PART_BUDGET, "migration keeps records up to the part budget")
+	eq(#mb.placed, 100, "60 boardwalks + 40 picket fences fit 600 parts")
+	eq(repb.refunded, 20, "records past the budget are refunded, never deleted")
+	eq(rb.Timber, 60 * 0 + 20 * I.Props.PicketFence.costs.Timber, "refund is the full cost of the extras")
+	eq(mb.placed[100], heavy[100], "earlier records keep their cell")
+end
+-- L8: the homestead sign zone covers the "Make it yours" post (x -11.2 .. -10.7).
+ok(I.cellBlocked(-6, 7, 0) == "homestead sign" and I.cellBlocked(-5, 7, 0) ~= nil, "homestead sign zone reaches x -12")
 -- Home grid: allocator spacing.
 local foot = H.footprint()
 ok(foot >= H.meadow(H.MAX_LEVEL), "footprint covers the largest meadow")
@@ -180,11 +200,13 @@ local services = {
 	ServerStorage = {FindFirstChild = function() return nil end},
 }
 local world = roblox.Instance.new("Workspace")
+local worldLoops, worldWaits = {}, {}
 local environment = {
 	game = {GetService = function(_, name) return services[name] end},
 	workspace = world, Instance = roblox.Instance, Vector3 = roblox.Vector3, Vector2 = roblox.Vector2, CFrame = roblox.CFrame,
-	Color3 = roblox.Color3, UDim2 = roblox.UDim2, Enum = roblox.Enum,
-	task = {spawn = function(fn, ...) local co = coroutine.create(fn); coroutine.resume(co, ...); return co end, wait = function() return coroutine.yield() end},
+	Color3 = roblox.Color3, UDim2 = roblox.UDim2, Font = roblox.Font, Enum = roblox.Enum,
+	task = {spawn = function(fn, ...) local co = coroutine.create(fn); coroutine.resume(co, ...); table.insert(worldLoops, co); return co end,
+		wait = function(t) worldWaits[coroutine.running()] = t; return coroutine.yield() end},
 	NumberRange = roblox.NumberRange, NumberSequence = roblox.NumberSequence, ColorSequence = roblox.ColorSequence,
 	require = function(module) assert(module == dataModule, "world requires only AetherData") return Data end,
 }
@@ -330,6 +352,48 @@ for slot = 1, 40 do
 	assert(flat(c, Vector3.new(0, 0, 1800)) >= foot + 250 and flat(c, Vector3.new(-2400, 0, 0)) >= foot + 300, "slot " .. slot .. " clears the arenas")
 end
 checks += 1
+-- §27 lazy homes: placements and terrace furniture exist only while someone is near.
+do
+	local loop
+	for _, co in ipairs(worldLoops) do if worldWaits[co] == H.LIVE_TICK and coroutine.status(co) == "suspended" then loop = co end end
+	ok(loop ~= nil, "lazy-home presence loop running")
+	local function tick(dt) local okRun, err = coroutine.resume(loop, dt); assert(okRun, err) end
+	local root = {Position = Vector3.zero}
+	local character = {FindFirstChild = function(_, name) return if name == "HumanoidRootPart" then root else nil end}
+	local lazy = homeOwner(80, {IslandPlacements = "1:StonePath:0:-30:0;2:LanternPost:2:-30:0", FurnitureBench = "SturdyWorkbench"})
+	local lazyHome = archipelago:FindFirstChild("WayfarersRest_80")
+	local folder, terrace = lazyHome:FindFirstChild("Placements"), lazyHome:FindFirstChild("Builders Terrace")
+	local c = lazyHome:GetAttribute("IslandCenter")
+	ok(lazyHome:GetAttribute("HomeLive") == true and #folder:GetChildren() == 2, "a joining owner (no character yet) gets a live home")
+	ok(terrace:FindFirstChild("Furniture_Bench") ~= nil, "terrace furniture built while live")
+	local liveParts = (count(lazyHome))
+	lazy.Character = character
+	root.Position = c + Vector3.new(0, 3, 240)
+	tick(40)
+	ok(lazyHome:GetAttribute("HomeLive") == true, "owner within " .. H.LIVE_RANGE .. " studs keeps it live")
+	root.Position = c + Vector3.new(0, 3, 260)
+	tick(H.LIVE_LINGER - 1)
+	ok(lazyHome:GetAttribute("HomeLive") == true and #folder:GetChildren() == 2, "the home lingers after the owner leaves")
+	tick(2)
+	ok(lazyHome:GetAttribute("HomeLive") == false and #folder:GetChildren() == 0, "placements torn down " .. H.LIVE_LINGER .. " s after the last player left")
+	ok(terrace:FindFirstChild("Furniture_Bench") == nil and terrace:FindFirstChild("Workshop Bench hotspot") ~= nil, "furniture torn down, hotspot plinth stays")
+	ok(lazyHome:FindFirstChild("Island shell") ~= nil and lazyHome:FindFirstChild("Island edge") ~= nil and lazyHome:FindFirstChild("Meadow") ~= nil, "shell and edge stay")
+	local dormantParts = (count(lazyHome))
+	ok(dormantParts < liveParts, "dormant home sheds parts (" .. liveParts .. " -> " .. dormantParts .. ")")
+	lazy:SetAttribute("IslandPlacements", "1:StonePath:0:-30:0")
+	ok(#folder:GetChildren() == 0, "record changes while dormant build nothing")
+	-- A visitor brings it back.
+	local visitorRoot = {Position = c + Vector3.new(30, 3, 0)}
+	local visitor = {UserId = 81, Character = {FindFirstChild = function(_, name) return if name == "HumanoidRootPart" then visitorRoot else nil end}}
+	worldPlayers.GetPlayers = function() return {lazy, visitor} end
+	tick(1)
+	ok(lazyHome:GetAttribute("HomeLive") == true and #folder:GetChildren() == 1 and folder:FindFirstChild("Placement_1") ~= nil, "a visitor within range rebuilds the current records")
+	ok(terrace:FindFirstChild("Furniture_Bench") ~= nil, "furniture rebuilt for the visitor")
+	worldPlayers.GetPlayers = function() return {} end
+	root.Position = c + Vector3.new(0, 3, 5)
+	print(string.format("Lazy home: live %d parts, dormant %d parts.", liveParts, dormantParts))
+	worldPlayers.PlayerRemoving:Fire(lazy)
+end
 -- Leaving frees the slot and the model.
 worldPlayers.PlayerRemoving:Fire(outer)
 ok(archipelago:FindFirstChild("WayfarersRest_63") == nil, "leaving removes the home")
@@ -342,6 +406,7 @@ do
 		local tester = homeOwner(70 + #propParts, {IslandPlacements = "1:" .. id .. ":0:-30:0"})
 		local n = (count(archipelago:FindFirstChild("WayfarersRest_" .. tester.UserId):FindFirstChild("Placements")))
 		propParts[#propParts + 1] = {id = id, n = n}
+		eq(n, I.Props[id].parts, id .. " builds exactly its declared parts")
 		if n > maxParts then maxParts = n end
 		worldPlayers.PlayerRemoving:Fire(tester)
 	end
@@ -353,9 +418,12 @@ do
 		left -= take
 	end
 	local furniture = #Data.Hotspots * 16
-	local perHome = H.PART_BUDGET + furniture + worst
-	ok(maxParts <= 12 and worst <= 2000, "placement worst case bounded (" .. worst .. " parts)")
-	print(string.format("Home worst case: fixed %d + furniture %d + placements %d = %d parts/home; 40 homes = %d parts.", H.PART_BUDGET, furniture, worst, perHome, perHome * 40))
+	local before = H.PART_BUDGET + furniture + worst
+	local perHome = H.PART_BUDGET + furniture + math.min(worst, I.PART_BUDGET)
+	ok(maxParts <= 12 and worst <= 2000, "placement worst case without a budget (" .. worst .. " parts)")
+	ok(perHome <= 1000, "budgeted live home stays under 1,000 parts (" .. perHome .. ")")
+	print(string.format("Home worst case: fixed %d + furniture %d + placements %d (was %d) = %d parts/live home (was %d); 40 homes: %d parts if all are live (was %d), %d when dormant (shells only).",
+		H.PART_BUDGET, furniture, math.min(worst, I.PART_BUDGET), worst, perHome, before, perHome * 40, before * 40, H.PART_BUDGET * 40))
 	print(string.format("Measured: fresh home %d parts / %d lights, fully built %d parts / %d lights.", freshParts, freshLights, fullParts, fullLights))
 end
 print("PASS: " .. (checks - partB) .. " home island world assertions.")
@@ -508,6 +576,39 @@ c = rejoin(c, function(prof) prof.homestead = {level = 99} end)
 eq(homestead(cmd(c, "state")).level, H.MAX_LEVEL, "tampered level clamped")
 c = rejoin(c, function(prof) prof.homestead = "x" end)
 eq(homestead(cmd(c, "state")).level, 1, "junk homestead reset")
+-- C6: the place verb enforces the per-home part budget; migration on load refunds extras.
+do
+	local free = {}
+	for z = -20, 20 do for x = -20, 20 do if I.cellBlocked(x, z, 0) == nil then table.insert(free, {x, z}) end end end
+	local recs = {}
+	for i = 1, 60 do recs[i] = I.record({id = i, prop = "Boardwalk", x = free[i][1], z = free[i][2], rot = 0}) end
+	for i = 61, 99 do recs[i] = I.record({id = i, prop = "PicketFence", x = free[i][1], z = free[i][2], rot = 0}) end -- 594 parts
+	local d = player(9104)
+	d = rejoin(d, function(prof)
+		setCarpentry(prof, 60)
+		prof.items = {Timber = 500, Ore = 500}
+		prof.island = {placed = recs, paid = {}, v = I.VERSION}
+	end)
+	local st = cmd(d, "state").journal.construction.island
+	eq(st.parts, 594, "snapshot reports placement parts")
+	eq(st.partBudget, I.PART_BUDGET, "snapshot reports the part budget")
+	local occ = I.occupancy(I.decode(table.concat(recs, ";")))
+	local wx, wz
+	for z = 30, 40 do for x = -10, 10 do if not wx and I.check(occ, "StoneWell", x, z, 0, 0) then wx, wz = x, z end end end
+	local refused = cmd(d, "place", "StoneWell:" .. wx .. ":" .. wz .. ":0") -- 594 + 9 > 600
+	ok(has(refused.message, "detail budget"), "a prop past the part budget is refused: " .. tostring(refused.message))
+	eq(refused.journal.construction.island.count, 99, "refusal places nothing")
+	local fits = cmd(d, "place", "StonePath:" .. free[151][1] .. ":" .. free[151][2] .. ":0")
+	eq(fits.journal.construction.island.parts, 597, "a light prop still fits under the budget")
+	-- Over-budget save (e.g. from before the budget): extras refunded on load, never deleted.
+	d = rejoin(d, function(prof)
+		for i = 100, 110 do table.insert(prof.island.placed, I.record({id = i, prop = "PicketFence", x = free[i + 60][1], z = free[i + 60][2], rot = 0})) end
+		prof.items = {}
+	end)
+	st = cmd(d, "state").journal.construction.island
+	ok(st.parts <= I.PART_BUDGET and st.count == 100, "over-budget save trimmed to the budget on load (" .. st.parts .. " parts)")
+	eq(saved(d).items.Timber, 11 * I.Props.PicketFence.costs.Timber, "extras refunded in full")
+end
 print("PASS: " .. (checks - partC) .. " home island server assertions.")
 print("Home islands QA passed " .. checks .. " checks.")
 

@@ -1710,6 +1710,17 @@ do
 	key(roblox.Enum.KeyCode.R, true)
 	press(button("ConfirmButton"))
 	expect(player:GetAttribute("IslandPlaceRequest"):sub(-2) == ":0", "keys typed into a textbox are ignored")
+	-- L9: per-frame updates reuse the decoded grid; same cell, no re-check.
+	local decodes, realDecode = 0, I.decode
+	I.decode = function(...) decodes += 1; return realDecode(...) end
+	local statusBefore = status.Text
+	for _ = 1, 10 do runService.RenderStepped:Fire() end
+	expect(decodes == 0 and status.Text == statusBefore, "an idle frame neither decodes IslandPlacements nor re-checks the cell")
+	player:SetAttribute("IslandPlacements", "")
+	expect(decodes == 1, "a new IslandPlacements value is decoded once")
+	for _ = 1, 10 do runService.RenderStepped:Fire() end
+	expect(decodes == 1, "and cached afterwards")
+	I.decode = realDecode
 	-- Invalid spots tint red and never confirm.
 	aimAt(0, 2)
 	runService.RenderStepped:Fire()
@@ -1754,6 +1765,23 @@ do
 	aimAt(sx, sz, "CarpenterStump", 0)
 	request("place", "CarpenterStump")
 	expect(status.Text:find("Most", 1, true) ~= nil and workspace:FindFirstChild("IslandGhost"):FindFirstChild("Footprint").Color == bad, "per-prop max shown before placing")
+	-- §27 part budget shown before placing (StonePath x60 + Boardwalk x40 = 420 ... fill to 600 with pickets).
+	do
+		local recs, n = {}, 0
+		for z = -I.RANGE, I.RANGE do for x = -I.RANGE, I.RANGE do
+			if n < 100 and I.cellBlocked(x, z, 0) == nil and (x ~= sx or z ~= sz) then
+				n += 1
+				table.insert(recs, n .. ":" .. (if n <= 60 then "Boardwalk" else "PicketFence") .. ":" .. x .. ":" .. z .. ":0")
+			end
+		end end
+		player:SetAttribute("IslandPlacements", table.concat(recs, ";")) -- 60 x 6 + 40 x 6 = 600 parts
+		request("place", "StonePath")
+		aimAt(sx, sz, "StonePath", 0)
+		runService.RenderStepped:Fire()
+		expect(status.Text:find("Detail budget", 1, true) ~= nil and workspace:FindFirstChild("IslandGhost"):FindFirstChild("Footprint").Color == bad,
+			"part budget shown before placing: " .. status.Text)
+		player:SetAttribute("IslandPlacements", "1:CarpenterStump:" .. fx .. ":" .. fz .. ":0")
+	end
 	key(roblox.Enum.KeyCode.Escape)
 	expect(not gui.Enabled and workspace:FindFirstChild("IslandGhost") == nil, "Esc leaves build mode")
 	-- Starting a new session replaces the old ghost; unknown props are refused.

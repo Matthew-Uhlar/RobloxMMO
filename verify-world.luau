@@ -50,7 +50,7 @@ local environment={
 	game={GetService=function(_,name) return services[name] end},
 	workspace=world,Instance=roblox.Instance,Vector3=roblox.Vector3,
 	Vector2=roblox.Vector2,CFrame=roblox.CFrame,Color3=roblox.Color3,
-	UDim2=roblox.UDim2,Enum=roblox.Enum,task={
+	UDim2=roblox.UDim2,Font=roblox.Font,Enum=roblox.Enum,task={
 		-- Coroutine-backed so the day/night loop parks on task.wait and the
 		-- test can step it deterministically (resume with a delta time).
 		spawn=function(fn,...)
@@ -349,7 +349,7 @@ end
 check(proxyLimits.Tidewing~=nil,"companion Tidewing has a bounded proxy")
 local festival=luau.load(fs.readFile("festival.server.lua"),{environment={
 	game={GetService=function() return players end},workspace=world,Instance=roblox.Instance,
-	Vector3=roblox.Vector3,Vector2=roblox.Vector2,CFrame=roblox.CFrame,Color3=roblox.Color3,UDim2=roblox.UDim2,Enum=roblox.Enum,
+	Vector3=roblox.Vector3,Vector2=roblox.Vector2,CFrame=roblox.CFrame,Color3=roblox.Color3,UDim2=roblox.UDim2,Font=roblox.Font,Enum=roblox.Enum,
 	task={wait=function() coroutine.yield() end},
 },injectGlobals=true})
 check(coroutine.resume(coroutine.create(festival)),"festival starts with fixed sign")
@@ -882,7 +882,15 @@ do
 	owner:SetAttribute("IslandPlacements",table.concat(full,";"))
 	local fullParts=0
 	for _,obj in folder:GetDescendants() do if obj:IsA("BasePart") then fullParts+=1 end end
-	check(#folder:GetChildren()==I.MAX_PLACEMENTS and fullParts<=I.MAX_PLACEMENTS*12,"full island renders "..I.MAX_PLACEMENTS.." props ("..fullParts.." parts)")
+	-- §27 part budget: records render in order until Data.Island.PART_BUDGET parts.
+	local expected,budget=0,0
+	for _,r in ipairs(full) do
+		local e=I.parseRecord(r)
+		if budget+I.Props[e.prop].parts>I.PART_BUDGET then break end
+		budget+=I.Props[e.prop].parts; expected+=1
+	end
+	check(expected<I.MAX_PLACEMENTS and #folder:GetChildren()==expected and fullParts==budget and fullParts<=I.PART_BUDGET,
+		"full island renders "..expected.." of "..#full.." props within the part budget ("..fullParts.." parts)")
 	-- Protected zones cover every fixed object standing on the home island.
 	local deco=player(53,{HomeLanterns=true,HomeGarden=true,HomeDeck=true,Worker1Tier=1})
 	local dHome=archipelago:FindFirstChild("WayfarersRest_53")
