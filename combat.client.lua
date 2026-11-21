@@ -346,7 +346,7 @@ for i = 1, SLOT_COUNT do
 	make("TextLabel", b, {Name = "Cost", BackgroundTransparency = 1, AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 0, 1, -2), Size = UDim2.new(1, 0, 0, 12),
 		Font = heavy, TextSize = 10, TextColor3 = rgb("9FC3FF"), Text = "", ZIndex = 2})
 	local key = make("TextLabel", b, {Name = "Key", AnchorPoint = Vector2.new(0, 0), Position = UDim2.fromOffset(-3, -3), Size = UDim2.fromOffset(14, 14),
-		BackgroundColor3 = gold, Font = heavy, TextSize = 10, TextColor3 = deep, Text = tostring(i), BorderSizePixel = 0, ZIndex = 4,
+		BackgroundColor3 = gold, Font = heavy, TextSize = 10, TextColor3 = deep, Text = ({"Z", "X", "C", "V", "B", "N"})[i], BorderSizePixel = 0, ZIndex = 4,
 		Visible = not UserInputService.TouchEnabled})
 	make("UICorner", key, {CornerRadius = UDim.new(0, 4)})
 	-- Cooldown sweep: a dark veil that drains downwards as the spell recovers.
@@ -392,7 +392,17 @@ local function layoutSpellBar()
 	local width = size + n * (size + gap)
 	spellBar.Size = UDim2.fromOffset(width, size)
 	-- Touch: left of the Attack button (x W-188..W-110); else the bottom-right corner.
-	spellBar.Position = if attackButton then UDim2.new(1, -196, 1, -44) else UDim2.new(1, -10, 1, -44)
+	-- The hotbar (hotbar.client.lua) publishes its box as IsleHotbarHeight/Width
+	-- (height includes the band kept free above it); when the spell bar would
+	-- reach over it horizontally, the spell bar rises above that band.
+	local right = if attackButton then 196 else 10
+	local lift0 = 44
+	local hbH, hbW = tonumber(player:GetAttribute("IsleHotbarHeight")) or 0, tonumber(player:GetAttribute("IsleHotbarWidth")) or 0
+	local camera = Workspace.CurrentCamera
+	local viewport = camera and camera.ViewportSize
+	local screenW = if viewport and viewport.X > 0 then viewport.X else 1366
+	if hbH > 0 and screenW - right - width < screenW / 2 + hbW / 2 + 8 then lift0 = math.max(lift0, hbH + 6) end
+	spellBar.Position = UDim2.new(1, -right, 1, -lift0)
 	styleChip.Size = UDim2.fromOffset(size, size)
 	styleGlyph.TextSize = if size < 48 then 19 else 22
 	styleCaption.TextSize = if size < 48 then 10 else 11
@@ -405,7 +415,7 @@ local function layoutSpellBar()
 	local shown = player:GetAttribute("IslandBuilding") ~= true and not talking()
 	spellBar.Visible = shown
 	-- Prayer quick bar (Prayer section below) stacks above the spell bar.
-	local lift = if shown then size + 6 else 0
+	local lift = if shown then size + 6 + (lift0 - 44) else 0
 	if S.prayerLayout then lift += S.prayerLayout(size, shown) end
 	hudLift(lift)
 end
@@ -483,6 +493,7 @@ local function syncAttackButton()
 	layoutSpellBar()
 end
 player:GetAttributeChangedSignal("IslandBuilding"):Connect(syncAttackButton)
+player:GetAttributeChangedSignal("IsleHotbarHeight"):Connect(layoutSpellBar) -- the hotbar appeared, resized or hid
 syncAttackButton()
 paintSlots()
 
@@ -753,7 +764,7 @@ end
 
 ------------------------------------------------------------------------------
 -- Input: click/tap a monster, touch button or ButtonR2 attack the nearest;
--- keys 1-6 cast spell slots, DPad cycles the cursor and L1 casts it.
+-- keys Z X C V B N cast spell slots, DPad cycles the cursor and L1 casts it.
 ------------------------------------------------------------------------------
 -- Include-only filter: invisible guard walls, prompt parts and props can never
 -- swallow a tap aimed at a monster (the server still validates range).
@@ -769,8 +780,9 @@ local function pick(screenPosition)
 	local hit = Workspace:Raycast(ray.Origin, ray.Direction * 300, rayParams)
 	return hit and monsterFromPart(hit.Instance)
 end
-local SLOT_KEYS = {[Enum.KeyCode.One] = 1, [Enum.KeyCode.Two] = 2, [Enum.KeyCode.Three] = 3,
-	[Enum.KeyCode.Four] = 4, [Enum.KeyCode.Five] = 5, [Enum.KeyCode.Six] = 6}
+-- Number keys 1-9 belong to the hotbar (hotbar.client.lua); spells sit on the Z row.
+local SLOT_KEYS = {[Enum.KeyCode.Z] = 1, [Enum.KeyCode.X] = 2, [Enum.KeyCode.C] = 3,
+	[Enum.KeyCode.V] = 4, [Enum.KeyCode.B] = 5, [Enum.KeyCode.N] = 6}
 local held = nil -- "mouse" | "button" | "pad"
 UserInputService.InputBegan:Connect(function(input, processed)
 	if processed then return end

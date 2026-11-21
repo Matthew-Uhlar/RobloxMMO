@@ -10,6 +10,7 @@ local bindings = {
 	FieldGuide = "ui.client.lua", IslandArt = "mesh.client.lua", CombatInput = "combat.client.lua", IslandBuilder = "build.client.lua",
 	Townsfolk = "npc.server.lua", Minigames = "minigames.server.lua", Dialogue = "npc.client.lua", Wayfinder = "nav.client.lua", Companions = "pets.client.lua", AetherMotes = "motes.client.lua",
 	Gestures = "animate.client.lua", GestureRelay = "gesture.server.lua",
+	HeldItems = "held.server.lua", Hotbar = "hotbar.client.lua",
 	AetherArt = "art/PropCatalog.lua",
 	MaterialArt = "art/MaterialArt.lua", AetherWorldArt = "art/WorldCatalog.lua",
 	AetherData = "shared/GameData.lua", AetherProgression = "shared/Progression.lua",

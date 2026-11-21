@@ -8,6 +8,8 @@
 local Relay = {}
 Relay.NAMES = {mine = true, chop = true, fish = true, harvest = true, hammer = true, stir = true, flip = true, saw = true,
 	interact = true, attack = true, eat = true, drink = true,
+	-- Weapon classes (Data.Held.ATTACK): dagger thrust, greatblade / maul cleave, glaive lunge.
+	thrust = true, cleave = true, lunge = true,
 	-- Combat styles: bow shot, staff cast, wand flick, Mend.
 	shoot = true, cast = true, flick = true, heal = true,
 	-- Hunter: set / collect a trap, sweep a net. (Agility moves are not relayed:
@@ -15,6 +17,7 @@ Relay.NAMES = {mine = true, chop = true, fish = true, harvest = true, hammer = t
 	settrap = true, netswing = true}
 -- Combat gestures tint their held bow / staff / wand by the weapon of that style.
 Relay.STYLE_GESTURE = {shoot = "ranged", cast = "magic", flick = "magic"}
+Relay.MELEE_GESTURE = {attack = true, thrust = true, cleave = true, lunge = true}
 Relay.TARGET_RANGE = 20
 Relay.BROADCAST_RANGE = 120
 Relay.RATE = 4 -- tokens per second
@@ -29,7 +32,7 @@ function Relay.itemOk(Data, name, itemId)
 	if not def then return false end
 	local kind = Relay.TOOL_KIND[name]
 	if kind then return def.kind == "tool" and def.toolKind == kind end
-	if name == "attack" then return def.kind == "weapon" end
+	if Relay.MELEE_GESTURE[name] then return def.kind == "weapon" end
 	if Relay.STYLE_GESTURE[name] then return def.kind == "weapon" and def.style == Relay.STYLE_GESTURE[name] end
 	if name == "eat" or name == "drink" then return def.kind == "consumable" end
 	return false
