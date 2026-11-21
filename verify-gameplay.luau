@@ -2898,14 +2898,15 @@ do
 	end
 	ok(free>=I.MAX_PLACEMENTS,"grid holds the placement cap ("..free.." free cells)")
 	ok(cornersOk,"every free cell lies fully within the island radius")
-	ok(I.RADIUS<19,"buildable radius stays inside the 19-stud meadow")
+	ok(I.RADIUS==Data.Home.radius(1) and I.RADIUS+Data.Home.MARGIN==Data.Home.meadow(1),"stage-0 build radius sits inside the home meadow (§27)")
 	ok(I.cellBlocked(0,2)=="home landing","spawn landing protected")
 	ok(I.cellBlocked(-3,0)=="windpine","windpine gather node protected")
 	ok(I.cellBlocked(4,2)=="worker station","worker station protected")
 	ok(I.cellBlocked(-5,0)=="garden plot","legacy garden plot protected")
 	ok(I.cellBlocked(-8,0)=="terrace bridge","terrace bridge approach protected")
 	ok(I.cellBlocked(0,8)=="lookout bridge","lookout bridge protected")
-	ok(I.cellBlocked(8,8)=="edge" and I.cellBlocked(9,0)=="edge" and I.cellBlocked(0,-9)=="edge","cells beyond the rim are out of bounds")
+	ok(I.cellBlocked(33,33)=="edge" and I.cellBlocked(46,0)=="edge" and I.cellBlocked(0,-46)=="edge","cells beyond the rim are out of bounds")
+	ok(I.cellBlocked(8,8)==nil and I.cellBlocked(33,33,4)==nil,"the grid grows with the expansion stage")
 	ok(I.cellBlocked(0.5,0)=="edge" and I.cellBlocked(0/0,0)=="edge" and I.cellBlocked(math.huge,0)=="edge","non-integer cells refused")
 	for _,r in ipairs(I.Protected) do ok(r.x1<r.x2 and r.z1<r.z2 and type(r.name)=="string","protected zone "..r.name.." is a valid rectangle") end
 	-- Footprints and rotation.
@@ -2941,7 +2942,7 @@ do
 	-- Server: fresh island.
 	local builder=seeded(4101,function(prof) prof.items={} end)
 	local s0=act(builder,"state")
-	ok(isle(s0).count==0 and isle(s0).cap==I.MAX_PLACEMENTS and isle(s0).value==0 and isle(s0).tierName=="Bare Rock","fresh island state")
+	ok(isle(s0).count==0 and isle(s0).cap==I.cap(0) and isle(s0).value==0 and isle(s0).tierName=="Bare Rock","fresh island state")
 	ok(builder.IslandPlacements=="","empty placement attribute published")
 	local fx,fz=spot("TimberFence")
 	local m0=act(builder,"place",req("TimberFence",fx,fz))
@@ -2965,8 +2966,8 @@ do
 	local m3=act(builder,"place",req("StonePath",0,3))
 	ok(has(m3.message,"home landing") and isle(m3).count==1,"protected landing refused")
 	ok(has(act(builder,"place",req("StonePath",4,2)).message,"worker station"),"worker station zone refused")
-	ok(has(act(builder,"place",req("StonePath",8,8)).message,"fully on your island"),"rim cell refused")
-	ok(has(act(builder,"place",req("StonePath",40,0)).message,"fully on your island"),"far cell refused")
+	ok(has(act(builder,"place",req("StonePath",33,33)).message,"fully on your island"),"rim cell refused")
+	ok(has(act(builder,"place",req("StonePath",46,0)).message,"fully on your island"),"far cell refused")
 	local ex,ez
 	for x=0,I.RANGE do if I.cellBlocked(x,0)==nil and I.cellBlocked(x+1,0)=="edge" then ex,ez=x,0 end end
 	ok(ex~=nil and has(act(builder,"place",req("HedgeRow",ex,ez,0)).message,"fully on your island"),"footprint hanging off the rim refused")
@@ -3039,9 +3040,21 @@ do
 		},paid={StonePath=999,Nope=3,Boardwalk="x",TimberFence=-2}}
 	end)
 	local t1=act(tamper,"state")
-	ok(isle(t1).count==2,"only valid, non-overlapping records survive ("..isle(t1).count..")")
-	ok(isle(t1).counts.CarpenterStump==1,"per-prop max enforced on load")
-	ok(isle(t1).paid.StonePath==I.Props.StonePath.max and isle(t1).paid.Nope==nil and isle(t1).paid.Boardwalk==nil and isle(t1).paid.TimberFence==nil,"paid marks clamped and cleaned")
+	-- §27: parseable decorations are never deleted; clashing ones move to the
+	-- nearest free cell (new id when the id is taken), extras are refunded.
+	ok(isle(t1).count==6,"every parseable record within the caps survives ("..isle(t1).count..")")
+	local survivors=I.decode(tamper.IslandPlacements)
+	local ids,occupiedOk={},true
+	local occ={}
+	for _,e in ipairs(survivors) do
+		ok(ids[e.id]==nil,"migrated ids are unique")
+		ids[e.id]=true
+		occupiedOk=occupiedOk and I.check(occ,e.prop,e.x,e.z,e.rot,0)
+		for _,c in ipairs(I.cells(e.prop,e.x,e.z,e.rot)) do occ[I.key(c[1],c[2])]=e.id end
+	end
+	ok(occupiedOk,"migrated records never overlap or sit in protected zones")
+	ok(isle(t1).counts.CarpenterStump==1 and (t1.items.Timber or 0)>=I.Props.CarpenterStump.costs.Timber,"per-prop max enforced on load; the extra copy is refunded")
+	ok(isle(t1).paid.StonePath==I.Props.StonePath.max and isle(t1).paid.Nope==nil and isle(t1).paid.Boardwalk==1 and isle(t1).paid.TimberFence==nil,"paid marks clamped and cleaned")
 	local garbage=seeded(4103,function(prof) prof.island="lots" end)
 	ok(isle(act(garbage,"state")).count==0,"non-table island record reset")
 
@@ -3050,7 +3063,7 @@ do
 		local list={}
 		for z=-I.RANGE,I.RANGE do
 			for x=-I.RANGE,I.RANGE do
-				if #list<I.MAX_PLACEMENTS and I.cellBlocked(x,z)==nil then
+				if #list<I.cap(0) and I.cellBlocked(x,z)==nil then
 					local prop=if #list<60 then "StonePath" else "Boardwalk"
 					table.insert(list,{id=#list+1,prop=prop,x=x,z=z,rot=0})
 				end
@@ -3063,7 +3076,7 @@ do
 		setLevel(prof,10)
 	end)
 	local c1=act(full,"state")
-	ok(isle(c1).count==I.MAX_PLACEMENTS,"a full island loads")
+	ok(isle(c1).count==I.cap(0),"a full island loads")
 	local lastX,lastZ
 	local fullOccupied=I.occupancy(I.decode(full.IslandPlacements))
 	for z=-I.RANGE,I.RANGE do for x=-I.RANGE,I.RANGE do
@@ -3071,18 +3084,18 @@ do
 	end end
 	ok(lastX~=nil,"a free cell remains on the full island")
 	local c2=act(full,"place",req("TimberFence",lastX,lastZ))
-	ok(has(c2.message,"at most") and isle(c2).count==I.MAX_PLACEMENTS and c2.items.Timber==100,"total placement cap enforced")
-	ok(isle(c2).value==I.MAX_PLACEMENTS and isle(c2).tierName=="Charming Cottage","island value sums placed props")
+	ok(has(c2.message,"at most") and isle(c2).count==I.cap(0) and c2.items.Timber==100,"total placement cap enforced")
+	ok(isle(c2).value==I.cap(0) and isle(c2).tierName=="Charming Cottage","island value sums placed props")
 	local fullBytes=#serde.encode("json",data.p4104.profile.island)
 	-- Worst case: every record with the longest prop id, a 3-digit id and
 	-- two-character coordinates, plus every paid mark at its maximum.
 	local longest=""
 	for _,id in ipairs(I.PropOrder) do if #id>#longest then longest=id end end
-	local worst={placed={},paid={}}
-	for i=1,I.MAX_PLACEMENTS do worst.placed[i]=I.record({id=100+i%20,prop=longest,x=-8,z=-8,rot=3}) end
+	local worst={placed={},paid={},v=I.VERSION}
+	for i=1,I.MAX_PLACEMENTS do worst.placed[i]=I.record({id=100+i%20,prop=longest,x=-I.RANGE,z=-I.RANGE,rot=3}) end
 	for _,id in ipairs(I.PropOrder) do worst.paid[id]=I.Props[id].max end
 	local worstBytes=#serde.encode("json",worst)
-	ok(worstBytes<=6000,"worst-case island save stays bounded ("..worstBytes.." bytes)")
+	ok(worstBytes<=8000,"worst-case island save stays bounded ("..worstBytes.." bytes)")
 	ok(fullBytes<=worstBytes,"a real full island is below the worst case ("..fullBytes.." bytes)")
 	ok(#full.IslandPlacements<=I.MAX_PLACEMENTS*31,"replicated attribute stays bounded")
 	print("Island save sizes: full "..fullBytes.." / worst-case "..worstBytes.." JSON bytes.")

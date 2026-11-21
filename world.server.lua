@@ -594,7 +594,7 @@ end
 --   Warden Reach        (0,0,-230)     r70    Skyreach      (430,40,110)   r66
 --   Windpine Grove      (-500,24,-160) r85    Gloomhollow   (440,-16,-440) r82
 --   Tidewater Shoals    (-520,2,440)   r92    Tempest Spire (600,80,-220)  r70
---   Homes: core r21 + tiers (footprint r50), 6 per row from (-300,0,600), 120 apart.
+--   Homes (§27): build r90-148 + edge band (footprint <= r164), 8 per row from (-1260,0,2400), 360 apart.
 --   Crew havens: r46, 5 per row from (-260,0,-620), 130 apart.
 -------------------------------------------------------------------------------
 local HUB_R=115
@@ -915,39 +915,129 @@ prompt(returnPost,"Travel home","Homeward beacon").Triggered:Connect(function(pl
 end)
 
 -------------------------------------------------------------------------------
--- Homes. The core meadow (r21) keeps every fixed object at its legacy offset so
--- Data.Island's grid (RADIUS 18.5) and Protected rectangles stay valid; the
--- extra area is natural terrain: raised lobes with ramps, a pond and groves,
--- all outside the build grid. Footprint radius 50 (was 19).
+-- Home islands (Home Islands team; contract §27, rules in Data.Home).
+-- WayfarersRest_<UserId> is a SkyBlock-style private island: a flat build disc
+-- of Data.Home.Stages[level].radius studs (level 1: r90) inside a MARGIN-wide
+-- natural edge band (a sand beach, three cliff crags, a pond, three windpines
+-- and three ore rocks the owner gathers, three trees). When the server
+-- publishes a new HomesteadLevel (1..5, bought ring by ring) the shell is
+-- resized and the edge band moves out; the part count is the same at every
+-- level. The legacy core (r21) keeps every fixed object at its old offset, so
+-- Data.Island records and Protected zones stay valid; the Worker Yard, the
+-- Builder's Terrace, the Verdant Garden and the lookout deck stand on the
+-- island (plazas, no bridges). Homes sit on Data.Home.slotCenter's grid
+-- (PITCH 360, far north of the hub) so the largest island never meets a
+-- neighbour. Budgets (verify-home.luau): <= Data.Home.PART_BUDGET parts of
+-- fixed geometry with every addition built; no lights beyond the legacy lamps.
 -------------------------------------------------------------------------------
 local HOME_CORE=21
-local function homeTerrain(m,center)
-	local lobes={
-		{name="Orchard rise",o=V(0,0,-33),r=14,h=2.5},
-		{name="East overlook",o=V(34,0,4),r=15,h=4},
-		{name="Pine dell",o=V(-24,0,-26),r=16,h=1.5},
-		{name="Pond garden",o=V(24,0,24),r=14,h=1.2},
-	}
-	for i,l in ipairs(lobes) do
-		local dir=V(l.o.X,0,l.o.Z).Unit
-		local a=math.atan2(-dir.Z,-dir.X)
-		local lm,top=tier(m,l.name,center+l.o,l.r,l.h,{open={a},top=C("86AD7A")})
-		local low=center+dir*(HOME_CORE-1.6)
-		local high=center+dir*(HOME_CORE-1.6+l.h*2.4+2)+V(0,l.h,0)
-		ramp(lm,low,high,5)
-		local c=center+l.o+V(0,l.h,0)
-		if i==1 then
-			for _,o in ipairs({V(-6,0,-4),V(5,0,-6),V(0,0,4)}) do decorTree(lm,c+o,.85,"Meadow",C("9DBA6A")) end
-		elseif i==2 then
-			block(lm,"Overlook bench",c+V(4,.6,0),V(1.6,.4,5),navy,WO,true)
-			outcrop(lm,c+V(-3,0,-7),.8,i)
-			lamp(lm,c+V(2,0,6))
-		elseif i==3 then
-			for _,o in ipairs({V(-5,0,-4),V(4,0,-7),V(-7,0,6)}) do decorTree(lm,c+o,.9,"Pine") end
-		else
-			pond(lm,c+V(2,0,2),5,{stones=3})
-			bush(lm,c+V(-6,0,-3),.9) bush(lm,c+V(-2,0,8),.8,C("8DB46C"))
+local HomeKit={}
+do
+	local okData,D=pcall(function() return require(game:GetService("ReplicatedStorage"):WaitForChild("AetherData",30)) end)
+	local H=if okData and type(D)=="table" and type(D.Home)=="table" then D.Home else nil
+	HomeKit.Home=H
+	function HomeKit.level(value) return if H then H.level(value) else 1 end
+	function HomeKit.radius(level) return if H then H.radius(level) else 90 end
+	function HomeKit.meadow(level) return HomeKit.radius(level)+(if H then H.MARGIN else 10) end
+	function HomeKit.center(slot)
+		if H then
+			local x,z=H.slotCenter(slot)
+			return V(x,0,z)
 		end
+		return V(((slot-1)%8)*360-1260,0,2400+((slot-1)//8)*360)
+	end
+	HomeKit.costText=function(level) return if H then H.costText(level) else "" end
+	HomeKit.EDGE=if H then H.Edge else {}
+	local sand,cliffStone=C("D8C79A"),C("5F6B78")
+	-- Shell: the Meadow (resized in place, so references stay valid) and an
+	-- "Island shell" model rebuilt per level: foundation, stratum, basalt,
+	-- 12 fractured skirt slabs and 3 keel shards.
+	function HomeKit.shell(home,level)
+		local m,center=home.model,home.center
+		local r=HomeKit.meadow(level)
+		if not home.meadowPart then
+			home.meadowPart=disk(m,"Meadow",center-V(0,.25,0),r+.1,.5,turf,Enum.Material.Grass,true)
+		end
+		home.meadowPart.Size=V(.5,2*(r+.1),2*(r+.1))
+		if home.shell then home.shell:Destroy() end
+		local s=group("Island shell",m)
+		home.shell=s
+		disk(s,"Floating foundation",center-V(0,3.3,0),r-.4,6,rock,ST,true)
+		disk(s,"Mineral stratum",center-V(0,7.4,0),r*.82,3,shale,ST,false)
+		disk(s,"Lower basalt",center-V(0,11,0),r*.58,5,rock,ST,false)
+		for i=1,12 do
+			local a=(i+hash(i,7)*.6)*2*math.pi/12
+			local radial=V(math.cos(a),0,math.sin(a))
+			local h=8+hash(i,2)*6
+			local size=V(r*.24+4,h,r*.1+4)
+			local spot=center+radial*(r*.95)-V(0,h/2+1.4+size.X*.05+size.Z*.04,0)
+			local slab=part(s,"Fractured cliff",size,CFrame.new(spot)*CFrame.Angles(0,-a+math.pi/2,0)*CFrame.Angles(.08*(i%2*2-1),0,.1),i%2==0 and rock or shale,ST,false)
+			if i%3==0 then meshSlot(slab,"CliffRock") end
+		end
+		for i=1,3 do
+			local a=i*2*math.pi/3+hash(i,7)
+			local d=r*(.15+.25*hash(i,3))
+			local h=r*.25+6
+			local shard=part(s,"Keel rock",V(r*.2,h,r*.18),CFrame.new(center+V(math.cos(a)*d,-13.5-h*.35,math.sin(a)*d))*CFrame.Angles(.12,a,.14),i%2==0 and rock or darken(rock,.2),ST,false)
+			if i==1 then meshSlot(shard,"CliffRock") end
+		end
+		m:SetAttribute("IslandRadius",r)
+		m:SetAttribute("BuildRadius",HomeKit.radius(level))
+	end
+	-- Owner-only gather nodes on the edge band.
+	local function homeOre(parent,pos,owner)
+		local base=disk(parent,"Ore seam",pos+V(0,.4,0),2.5,.8,shale,ST,false)
+		slotBox(parent,"Ore seam mesh",pos,V(5,2.4,4.4),"OreVein",C("C98D4F"))
+		sculpture(parent,"Faceted copper cluster",pos+V(0,1.4,0),"AetherCrystal",1)
+		prompt(base,"Mine ore","Home ore rock","gather","Ore",owner)
+	end
+	-- Edge band: every feature sits between the build radius and the meadow rim
+	-- (Data.Home.Edge angles), rebuilt one ring further out per level.
+	function HomeKit.edge(home,level,owner)
+		local m,center=home.model,home.center
+		local R,RM=HomeKit.radius(level),HomeKit.meadow(level)
+		local band=(R+RM)/2
+		if home.edge then home.edge:Destroy() end
+		local e=group("Island edge",m)
+		home.edge=e
+		for i,f in ipairs(HomeKit.EDGE) do
+			local dir=V(math.cos(f.a),0,math.sin(f.a))
+			local side=V(-dir.Z,0,dir.X)
+			local at=center+dir*band
+			if f.kind=="beach" then
+				local beach=group("Sand beach",e)
+				disk(beach,"Beach shelf",center+dir*(RM-2)-V(0,1.85,0),16,3,sand,SA,true)
+				for _,s in ipairs({-1,1}) do decorTree(beach,center+dir*(RM+6)+side*6*s-V(0,.35,0),1,"Palm") end
+				meshSlot(part(beach,"Beach boulder",V(3.4,2.2,2.8),CFrame.new(center+dir*(RM+9)+V(0,.5,0))*CFrame.Angles(.1,f.a,.12),lighten(rock,.1),ST,true),"Rock")
+				-- Anchors live on the island model root (contract §10): replace, never stack.
+				if home.shoreAnchor then home.shoreAnchor:Destroy() end
+				home.shoreAnchor=anchor(e,"Waypoint_HomeShore",center+dir*(RM+4)-V(0,.35,0),center)
+			elseif f.kind=="cliff" then
+				local h=11+hash(i,5)*5
+				local crag=part(e,"Cliff crag",V(9,h,6),CFrame.new(center+dir*(R+6)+V(0,h/2-1.2,0))*CFrame.Angles(0,-f.a+math.pi/2,0)*CFrame.Angles(-.12,0,.06*(i%2*2-1)),i%2==0 and cliffStone or lighten(cliffStone,.12),ST,true)
+				meshSlot(crag,"CliffRock")
+			elseif f.kind=="pond" then
+				pond(e,at,3.2,{stones=3,name="Home pond"})
+			elseif f.kind=="windpine" then
+				windpine(e,at,1,owner)
+			elseif f.kind=="ore" then
+				homeOre(e,at,owner)
+			elseif f.kind=="pine" then
+				decorTree(e,at,1.1,"Pine")
+			else
+				decorTree(e,at,1,"Meadow")
+			end
+		end
+	end
+	-- Plaza: one paving disc whose top sits 0.04 above the meadow (no shared
+	-- plane), with the island attributes the add-ons' tests and NPCs read.
+	function HomeKit.plaza(parent,name,pos,r,color,material)
+		local model=group(name,parent)
+		disk(model,"Meadow",pos-V(0,.11,0),r,.3,color,material or ST,true) -- named Meadow like an islet top
+		model:SetAttribute("IslandCenter",pos)
+		model:SetAttribute("IslandRadius",r)
+		model:SetAttribute("Region","Home")
+		return model
 	end
 end
 local function settle(player)
@@ -955,15 +1045,46 @@ local function settle(player)
 	local slot=1
 	while slots[slot] do slot+=1 end
 	slots[slot]=true
-	local center=V((slot-1)%6*120-300,0,600+math.floor((slot-1)/6)*120)
-	local m=island("WayfarersRest_"..player.UserId,center,HOME_CORE,{parent=world,rim=false,shore=false,footprint=50})
-	homeTerrain(m,center)
+	local center=HomeKit.center(slot)
+	local m=Instance.new("Model")
+	m.Name="WayfarersRest_"..player.UserId
+	m:SetAttribute("IslandCenter",center)
+	m:SetAttribute("Region","Home")
+	m:SetAttribute("HomeSlot",slot)
+	local home={model=m,center=center,slot=slot}
+	local level=HomeKit.level(player:GetAttribute("HomesteadLevel"))
+	home.level=level
+	HomeKit.shell(home,level)
+	HomeKit.edge(home,level,player.UserId)
+	m:SetAttribute("HomesteadLevel",level)
+	m.Parent=world
 	local spawn=Instance.new("SpawnLocation")
 	spawn.Name,spawn.Anchored,spawn.Neutral,spawn.AllowTeamChangeOnTouch="Home Landing",true,true,false
 	spawn.Size,spawn.Position,spawn.Transparency=V(4,.45,4),center+V(0,.25,5),1
 	spawn.Duration,spawn.Parent=0,m
 	player.RespawnLocation=spawn
-	homes[player]={model=m,spawn=spawn,slot=slot,center=center,decorationConnections={}}
+	home.spawn,home.decorationConnections=spawn,{}
+	homes[player]=home
+	-- Expansion rings: the server publishes HomesteadLevel after a validated
+	-- purchase (or on load); the shell and edge band follow, placements re-check.
+	local stake=block(m,"Survey stake",center+V(10,1.5,-21),V(.5,3,.5),timber,WO,true)
+	block(m,"Survey pennant",center+V(10.6,2.6,-21),V(1.2,.8,.1),mint,Enum.Material.Fabric,false)
+	local survey=prompt(stake,"Expand island","Homestead","homeExpand","ring",player.UserId)
+	local function refreshSurvey()
+		survey.ObjectText="Homestead level "..home.level.." · "..HomeKit.costText(home.level)
+		survey.Enabled=HomeKit.Home==nil or home.level<HomeKit.Home.MAX_LEVEL
+	end
+	refreshSurvey()
+	table.insert(home.decorationConnections,player:GetAttributeChangedSignal("HomesteadLevel"):Connect(function()
+		local now=HomeKit.level(player:GetAttribute("HomesteadLevel"))
+		if now==home.level or not m.Parent then return end
+		home.level=now
+		HomeKit.shell(home,now)
+		HomeKit.edge(home,now,player.UserId)
+		m:SetAttribute("HomesteadLevel",now)
+		refreshSurvey()
+		if home.refreshPlacements then home.refreshPlacements() end
+	end))
 	anchor(m,"Waypoint_HomeLanding",center+V(0,0,5),center)
 	local function land(character)
 		local root=character:WaitForChild("HumanoidRootPart",10)
@@ -1018,10 +1139,9 @@ local function settle(player)
 		disk(station,"Worker pad",position+V(0,.08,0),2.3,.16,navy,SM,false)
 		local ring=disk(station,"Tier ring",position+V(0,.05,0),2.4,.1,shale,SM,false) -- 2.4: neighbouring yard rings (8-stud ring, 10 steps) never overlap
 		local engine=block(station,"Surveyor chassis",position+V(0,1.35,0),V(2.8,2.7,2.5),navy,SM,true)
-		local lensAt=position+V(0,1.7,0)+facing.LookVector*1.35
-		local lens=block(station,"Eye lens",lensAt,V(1.55,.38,.18),mint,SM,false)
-		lens.CFrame=CFrame.lookAt(lensAt,lensAt+facing.LookVector)
-		engine.Transparency,lens.Transparency=1,1
+		-- §27 part budget: the invisible eye-lens part is gone (the sculpted
+		-- surveyor shows the eye); the chassis stays as the prompt collider.
+		engine.Transparency=1
 		local interaction=prompt(engine,"Build worker","Surveyor chassis",workerSlot==1 and "worker" or "workerBuild",tostring(workerSlot),player.UserId)
 		local badge=Instance.new("BillboardGui")
 		badge.Name,badge.Size,badge.StudsOffset,badge.MaxDistance="Worker status",UDim2.fromOffset(170,44),V(0,3,0),12
@@ -1048,7 +1168,6 @@ local function settle(player)
 			local art=homeTerrace.workerArt and homeTerrace.workerArt(resource)
 			local name=art and art.name or resource
 			local locked=not active and workerSlot>unlocked
-			lens.Color=if active then (art and art.color or mint) else shale
 			engine.Color=active and teal or navy
 			ring.Color=if active then TIER_COLORS[math.clamp(tierNow,1,#TIER_COLORS)] else shale
 			interaction.Enabled=not locked
@@ -1106,13 +1225,14 @@ local function settle(player)
 			block(addition,"Rich soil",center+V(-11,.67,1),V(5.4,.14,6.4),ink,GR,false)
 			for row=-1,1 do
 				for col=-1,1 do
-					local flower=center+V(-11+col*1.6,1.2,1+row*1.8)
-					block(addition,"Flower stem",flower,V(.14,1,.14),teal,SM,false)
-					gem(addition,"Moonbloom",flower+V(0,.65,0),V(.9,.7,.9),row%2==0 and rose or cream,col*.6)
+					-- §27 part budget: blooms rest on the soil (no stem parts).
+					local flower=center+V(-11+col*1.6,1.1,1+row*1.8)
+					gem(addition,"Moonbloom",flower,V(.9,.7,.9),row%2==0 and rose or cream,col*.6)
 				end
 			end
 		else
-			bridge(addition,center+V(0,0,HOME_CORE-.5),center+V(0,0,25))
+			-- §27: the deck stands on the big island; a boardwalk replaces the bridge.
+			path(addition,center+V(0,0,16),center+V(0,0,22.5),5,timber,.1).Material=WO
 			disk(addition,"Lookout deck",center+V(0,-.22,29),7,.6,timber,WO,true)
 			for i=1,5 do
 				local a=i*math.pi/3
@@ -2441,9 +2561,10 @@ do
 		if not home or home.terrace then return end
 		local m,center=home.model,home.center
 		local tc=center+V(T.x,0,T.z)
-		local terrace=island("Builders Terrace",tc,11,{top=C("A7B08A"),parent=m,rim=false,shore=false})
+		-- §27: a paved plaza on the big island (was a bridged islet); same offsets.
+		local terrace=HomeKit.plaza(m,"Builders Terrace",tc,11,C("A7B08A"))
 		home.terrace=terrace
-		bridge(terrace,center+V(-HOME_CORE+.5,0,0),center+V(-22.4,0,0))
+		path(terrace,center+V(-16,0,0),center+V(-22.5,0,0),5)
 		disk(terrace,"Terrace court",tc+V(0,.05,0),4.2,.12,navy,ST,true)
 		disk(terrace,"Court seal",tc+V(0,.13,0),1.4,.1,brass,MT,false)
 		sign(terrace,center+V(-15,0,-6),"Builder's Terrace","CARPENTRY   /   PLAN IN YOUR JOURNAL",brass,90,8)
@@ -2800,8 +2921,9 @@ do
 			if not folder.Parent then return end
 			-- Re-validate geometry so a bad value can never stack props.
 			local want,occupied={},{}
+			local stage=(home.level or 1)-1 -- §27: the grid grows with the Homestead level
 			for _,e in ipairs(I.decode(player:GetAttribute("IslandPlacements"))) do
-				if not want[e.id] and I.check(occupied,e.prop,e.x,e.z,e.rot) then
+				if not want[e.id] and I.check(occupied,e.prop,e.x,e.z,e.rot,stage) then
 					want[e.id]=e
 					for _,c in ipairs(I.cells(e.prop,e.x,e.z,e.rot)) do occupied[I.key(c[1],c[2])]=e.id end
 				end
@@ -2818,6 +2940,7 @@ do
 			homePlacement.relight(folder)
 		end
 		table.insert(home.decorationConnections,player:GetAttributeChangedSignal("IslandPlacements"):Connect(refresh))
+		home.refreshPlacements=refresh
 		refresh()
 	end
 	for player,home in pairs(homes) do homePlacement.attach(player,home) end
@@ -3186,14 +3309,14 @@ do
 		if not G or not home or home.garden then return end
 		local m,center=home.model,home.center
 		local gc=center+GARDEN_OFFSET
-		local isle=island("Verdant Garden",gc,GARDEN_R,{top=C("7FA86A"),parent=m,rim=false,shore=false})
+		-- §27: a garden lawn on the big island (was a bridged islet); same offset.
+		local isle=HomeKit.plaza(m,"Verdant Garden",gc,GARDEN_R,C("7FA86A"),Enum.Material.Grass)
 		isle:SetAttribute("GardenOwner",player.UserId)
 		home.garden=isle
 		local dir=(center-gc).Unit
 		local frame=CFrame.lookAt(gc,gc+dir)
 		local function F(x,zf,y) return frame*CFrame.new(x,y or 0,-zf) end
 		local function L(x,zf,y) return F(x,zf,y).Position end
-		bridge(isle,center-dir*(HOME_CORE-.5),gc+dir*(GARDEN_R-.5))
 		local function openLedger(q)
 			q:SetAttribute("OwnerUserId",player.UserId)
 			q.Triggered:Connect(function(user)

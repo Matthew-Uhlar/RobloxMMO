@@ -1226,10 +1226,19 @@ do
 	local Island = {}
 	Data.Island = Island
 	Island.CELL = 2
-	Island.RANGE = 8
-	Island.RADIUS = 18.5
+	-- Home islands (§27, Data.Home below): the grid grows with the Homestead
+	-- level. RANGE / MAX_PLACEMENTS are the absolute bounds (largest stage);
+	-- Island.radius(stage) / Island.cap(stage) are what a player may use now.
+	-- The legacy core (RADIUS 18.5, RANGE 8) keeps its cell coordinates, so
+	-- old saves migrate at offset (0, 0) (Island.migrate).
+	Island.RANGE = 74             -- cells; Data.Home.Stages[5].radius 148 / CELL
+	Island.RADIUS = 90            -- stage-0 build radius (was 18.5)
+	Island.LEGACY_RADIUS = 18.5
+	Island.LEGACY_RANGE = 8
 	Island.BRUSH = 0.3       -- a cell may brush a protected rectangle by this many studs
-	Island.MAX_PLACEMENTS = 120   -- the grid holds 124 free cells
+	Island.MAX_PLACEMENTS = 200   -- absolute cap (record ids 1..200); Island.cap(stage) is 120 + 20/stage
+	Island.BASE_CAP = 120
+	Island.CAP_STEP = 20
 	Island.RATE = 3          -- placement verbs per second (token bucket)
 	Island.BURST = 6
 	Island.REFUND = 1
@@ -1254,6 +1263,18 @@ do
 		{name="lookout bridge",x1=-4,z1=16,x2=4,z2=20},
 		{name="terrace bridge",x1=-20,z1=-4,x2=-16,z2=4},
 		{name="terrace sign",x1=-15.5,z1=-10,x2=-14.5,z2=-2},
+		-- Home islands (§27): the add-ons now stand on the big island.
+		{name="terrace path",x1=-22.5,z1=-3,x2=-19.5,z2=3},
+		{name="lookout path",x1=-3,z1=19.5,x2=3,z2=22.5},
+	}
+	-- Circular protected zones (x, z centre and r in studs): a cell is blocked
+	-- when its square (shrunk by BRUSH) reaches inside the circle.
+	Island.ProtectedCircles = {
+		{name="worker yard",x=26,z=-25,r=18},          -- yard r12 + its ramp
+		{name="Builder's Terrace",x=-33,z=0,r=11.5},
+		{name="Verdant Garden",x=-28.3,z=28.3,r=14.5},
+		{name="lookout deck",x=0,z=29,r=7.5},
+		{name="survey stake",x=10,z=-21,r=2},
 	}
 	Island.Props = {
 		-- Fences
@@ -1329,16 +1350,36 @@ do
 		local w, d = Island.footprint(Island.Props[propId], rot)
 		return math.floor(ox / Island.CELL - (w - 1) / 2 + 0.5), math.floor(oz / Island.CELL - (d - 1) / 2 + 0.5)
 	end
+	-- Expansion stage (0 .. #Data.Home.Stages - 1) from any value.
+	function Island.stage(stage)
+		local n = tonumber(stage)
+		local top = (Data.Home and #Data.Home.Stages or 1) - 1
+		if not n or n ~= n then return 0 end
+		return math.clamp(math.floor(n), 0, top)
+	end
+	function Island.radius(stage)
+		if not Data.Home then return Island.RADIUS end
+		return Data.Home.Stages[Island.stage(stage) + 1].radius
+	end
+	function Island.cap(stage) return math.min(Island.MAX_PLACEMENTS, Island.BASE_CAP + Island.CAP_STEP * Island.stage(stage)) end
 	-- nil when buildable, else a short reason: "edge" or a protected zone name.
-	function Island.cellBlocked(x, z)
+	-- `stage` (default 0) is the owner's expansion stage; `radius` overrides it
+	-- (the legacy grid check passes Island.LEGACY_RADIUS).
+	function Island.cellBlocked(x, z, stage, radius)
 		if not int(x) or not int(z) or math.abs(x) > Island.RANGE or math.abs(z) > Island.RANGE then return "edge" end
 		local half = Island.CELL / 2
 		local cx, cz = x * Island.CELL, z * Island.CELL
 		local fx, fz = math.abs(cx) + half, math.abs(cz) + half
-		if fx * fx + fz * fz > Island.RADIUS * Island.RADIUS then return "edge" end
+		local R = radius or Island.radius(stage)
+		if fx * fx + fz * fz > R * R then return "edge" end
+		local e = half - Island.BRUSH
 		for _, r in ipairs(Island.Protected) do
-			local e = half - Island.BRUSH
 			if cx + e > r.x1 and cx - e < r.x2 and cz + e > r.z1 and cz - e < r.z2 then return r.name end
+		end
+		for _, c in ipairs(Island.ProtectedCircles) do
+			local dx = math.max(math.abs(c.x - cx) - e, 0)
+			local dz = math.max(math.abs(c.z - cz) - e, 0)
+			if dx * dx + dz * dz < c.r * c.r then return c.name end
 		end
 		return nil
 	end
@@ -1396,14 +1437,15 @@ do
 		end
 		return occupied
 	end
-	-- Geometry check: true, or false + a player-facing reason.
-	function Island.check(occupied, propId, x, z, rot)
+	-- Geometry check: true, or false + a player-facing reason. `stage` is the
+	-- owner's expansion stage (default 0).
+	function Island.check(occupied, propId, x, z, rot, stage, radius)
 		local def = type(propId) == "string" and Island.Props[propId]
 		if not def then return false, "Choose a prop from the island catalogue." end
 		local cells = Island.cells(propId, x, z, rot)
 		if not cells then return false, "That spot is not on the island grid." end
 		for _, c in ipairs(cells) do
-			local blocked = Island.cellBlocked(c[1], c[2])
+			local blocked = Island.cellBlocked(c[1], c[2], stage, radius)
 			if blocked == "edge" then return false, def.name .. " must sit fully on your island." end
 			if blocked then return false, "Keep the " .. blocked .. " clear." end
 			if occupied and occupied[Island.key(c[1], c[2])] then return false, "Something already stands there." end
@@ -1417,6 +1459,199 @@ do
 			if def then total += def.value end
 		end
 		return total
+	end
+	-- Home islands (§27): nearest anchor where a prop fits, searching square
+	-- rings of growing distance around (x, z), saved rotation first.
+	function Island.relocate(occupied, propId, x, z, rot, stage)
+		local R = Island.RANGE
+		if not int(x) or not int(z) or not int(rot) then return nil end
+		x, z, rot = math.clamp(x, -R, R), math.clamp(z, -R, R), rot % 4
+		local function try(px, pz)
+			for k = 0, 3 do
+				local r = (rot + k) % 4
+				if Island.check(occupied, propId, px, pz, r, stage) then return r end
+			end
+			return nil
+		end
+		local r0 = try(x, z)
+		if r0 then return x, z, r0 end
+		for d = 1, 2 * R do
+			for i = -d, d - 1 do
+				-- Four sides of the ring, each walked once (corners included once).
+				for _, c in ipairs({{x + i, z - d}, {x + d, z + i}, {x - i, z + d}, {x - d, z - i}}) do
+					if math.abs(c[1]) <= R and math.abs(c[2]) <= R then
+						local r = try(c[1], c[2])
+						if r then return c[1], c[2], r end
+					end
+				end
+			end
+		end
+		return nil
+	end
+	-- Load-time sanitiser and layout migration (server Isle.migrate). It never
+	-- deletes a decoration it can parse: a record that no longer fits (legacy
+	-- layout, overlap, protected zone, duplicate id, outside the radius) moves
+	-- to the nearest free cell with the smallest free id; only a record that
+	-- cannot stand at all (over its per-prop max, over the stage cap, or no
+	-- free cell) is refunded in full. Saves without v = VERSION are legacy
+	-- (pre-§27) and shift by LEGACY_OFFSET first: the legacy core kept its
+	-- offsets, so the shift is (0, 0) and every legacy-valid record stays put.
+	-- Returns {placed = {record...}, v = VERSION}, refunds {[material] = n},
+	-- report {kept, moved, refunded}.
+	Island.VERSION = 2
+	Island.LEGACY_OFFSET = {x = 0, z = 0}
+	function Island.migrate(raw, stage)
+		raw = if type(raw) == "table" then raw else {}
+		local legacy = raw.v ~= Island.VERSION
+		local admitted, counts, refunds = {}, {}, {}
+		local report = {kept = 0, moved = 0, refunded = 0}
+		local cap = Island.cap(stage)
+		local function refund(e)
+			for material, n in pairs(Island.Props[e.prop].costs) do refunds[material] = (refunds[material] or 0) + n end
+			report.refunded += 1
+		end
+		if type(raw.placed) == "table" then
+			local seen = 0
+			for _, record in ipairs(raw.placed) do
+				seen += 1
+				if seen > Island.MAX_PLACEMENTS * 2 then break end -- bounds work on junk saves
+				local e = Island.parseRecord(record)
+				if e then
+					if legacy then e.x += Island.LEGACY_OFFSET.x; e.z += Island.LEGACY_OFFSET.z end
+					if #admitted < cap and (counts[e.prop] or 0) < Island.Props[e.prop].max then
+						counts[e.prop] = (counts[e.prop] or 0) + 1
+						table.insert(admitted, e)
+					else
+						refund(e)
+					end
+				end
+			end
+		end
+		local placed, used, occupied, moving = {}, {}, {}, {}
+		local function accept(e)
+			used[e.id] = true
+			for _, c in ipairs(Island.cells(e.prop, e.x, e.z, e.rot)) do occupied[Island.key(c[1], c[2])] = e.id end
+			table.insert(placed, Island.record(e))
+		end
+		for _, e in ipairs(admitted) do
+			if not used[e.id] and Island.check(occupied, e.prop, e.x, e.z, e.rot, stage) then
+				accept(e)
+				report.kept += 1
+			else
+				table.insert(moving, e)
+			end
+		end
+		for _, e in ipairs(moving) do
+			local x, z, rot = Island.relocate(occupied, e.prop, e.x, e.z, e.rot, stage)
+			if x then
+				if used[e.id] then
+					local id = 1
+					while used[id] do id += 1 end
+					e.id = id
+				end
+				e.x, e.z, e.rot = x, z, rot
+				accept(e)
+				report.moved += 1
+			else
+				refund(e)
+			end
+		end
+		return {placed = placed, v = Island.VERSION}, refunds, report
+	end
+end
+
+------------------------------------------------------------------------------
+-- Home islands (Home Islands team; §27 in docs/DEPTH-CONTRACT.md).
+-- Each player's WayfarersRest_<UserId> is a SkyBlock-style private island: a
+-- flat build disc of Stages[level].radius studs (stage 0: r90, about 160 x 160
+-- studs) inside a MARGIN-wide natural edge band (cliffs, a beach, a pond,
+-- trees and ore rocks the owner gathers), grown by four expansion rings that
+-- raise the Homestead level 1 -> 5 (each ring adds ~25-30% area). A ring is a
+-- server-validated purchase (verb "homeExpand": Carpentry gate, coins and
+-- materials), saved as p.homestead.level and published as the player
+-- attribute HomesteadLevel (1..5); world.server.lua resizes the island and
+-- moves the edge band out when it changes. The legacy core (r21: spawn,
+-- windpine, beacon, worker stations 1-3, plans) and the add-ons (Worker Yard,
+-- Builder's Terrace, Verdant Garden, lookout deck) keep their offsets and are
+-- protected zones of the placement grid (Data.Island). Homes are laid out by
+-- slotCenter on a PITCH grid far from every static island, so the largest
+-- island (meadow r158 + skirt) never meets a neighbour.
+------------------------------------------------------------------------------
+do
+	local Home = {}
+	Data.Home = Home
+	Home.CORE = 21          -- legacy core meadow radius (fixed objects keep their offsets)
+	Home.MARGIN = 10        -- natural edge band beyond the build radius
+	Home.SKIRT = 6          -- cliff skirt reach beyond the meadow rim
+	Home.PART_BUDGET = 250  -- fixed geometry per home (every addition built, every station active)
+	Home.LIGHT_BUDGET = 12  -- fixed lights per home (lamps), placements add at most Data.Island glows
+	Home.Stages = {
+		{radius = 90},
+		{radius = 102, carpentry = 10, coins = 2500, costs = {Timber = 150, Ore = 100}},
+		{radius = 115, carpentry = 25, coins = 10000, costs = {WindpineLog = 80, BrassIngot = 20}},
+		{radius = 130, carpentry = 40, coins = 30000, costs = {EmberoakLog = 80, Aetherite = 60}},
+		{radius = 148, carpentry = 55, coins = 90000, costs = {StarwoodLog = 60, StarmetalIngot = 15}},
+	}
+	Home.MAX_LEVEL = #Home.Stages
+	-- Grid allocator: COLUMNS homes per row from ORIGIN, PITCH studs apart, far
+	-- north of the hub (dungeon arenas sit near z 1700-1800, minigames at x -2400).
+	Home.PITCH = 360
+	Home.COLUMNS = 8
+	Home.ORIGIN = {x = -1260, z = 2400}
+	-- Edge band features: angle (radians, x = cos, z = sin) around the rim.
+	Home.Edge = {
+		{kind = "beach", a = 0.6},
+		{kind = "cliff", a = 3.75}, {kind = "cliff", a = 4.05}, {kind = "cliff", a = 4.35},
+		{kind = "pond", a = 2.15},
+		{kind = "windpine", a = 1.55}, {kind = "windpine", a = 2.75}, {kind = "windpine", a = 5.2},
+		{kind = "ore", a = 3.2}, {kind = "ore", a = 4.8}, {kind = "ore", a = 5.75},
+		{kind = "pine", a = 1.2}, {kind = "pine", a = 2.45}, {kind = "tree", a = 5.48},
+	}
+	function Home.level(value)
+		local n = tonumber(value)
+		if not n or n ~= n then return 1 end
+		return math.clamp(math.floor(n), 1, Home.MAX_LEVEL)
+	end
+	function Home.stage(level) return Home.level(level) - 1 end
+	function Home.radius(level) return Home.Stages[Home.level(level)].radius end
+	function Home.meadow(level) return Home.radius(level) + Home.MARGIN end
+	function Home.area(level) return math.pi * Home.radius(level) ^ 2 end
+	-- Footprint radius of the largest island (meadow + cliff skirt).
+	function Home.footprint() return Home.meadow(Home.MAX_LEVEL) + Home.SKIRT end
+	function Home.slotCenter(slot)
+		slot = math.max(1, math.floor(tonumber(slot) or 1))
+		local col, row = (slot - 1) % Home.COLUMNS, (slot - 1) // Home.COLUMNS
+		return Home.ORIGIN.x + col * Home.PITCH, Home.ORIGIN.z + row * Home.PITCH
+	end
+	-- Next ring for a level, or nil at the top.
+	function Home.nextRing(level) return Home.Stages[Home.level(level) + 1] end
+	-- Purchase check: true, ring | false, player-facing reason.
+	function Home.canExpand(level, carpentry, coins, items)
+		local ring = Home.nextRing(level)
+		if not ring then return false, "Your island is fully expanded." end
+		if (tonumber(carpentry) or 0) < ring.carpentry then return false, "The next expansion ring requires Carpentry " .. ring.carpentry .. "." end
+		if (tonumber(coins) or 0) < ring.coins then return false, "The next expansion ring costs " .. ring.coins .. " coins." end
+		for material, n in pairs(ring.costs) do
+			if ((items or {})[material] or 0) < n then
+				local def = Data.Items and Data.Items[material]
+				return false, "The next expansion ring needs " .. n .. " " .. (def and def.name or material) .. "."
+			end
+		end
+		return true, ring
+	end
+	-- One-line cost text for prompts and the journal.
+	function Home.costText(level)
+		local ring = Home.nextRing(level)
+		if not ring then return "Fully expanded" end
+		local parts = {ring.coins .. " coins"}
+		local names = {}
+		for material in pairs(ring.costs) do table.insert(names, material) end
+		table.sort(names)
+		for _, material in ipairs(names) do
+			local def = Data.Items and Data.Items[material]
+			table.insert(parts, ring.costs[material] .. " " .. (def and def.name or material))
+		end
+		return table.concat(parts, " + ") .. " · Carpentry " .. ring.carpentry
 	end
 end
 
