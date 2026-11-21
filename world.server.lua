@@ -5014,11 +5014,14 @@ end
 -- One collider pad per vent (6 static parts, `Caldera` mesh slot + an updraft
 -- emitter, tag SkywardVent, attributes VentId / VentLanding). Its prompt
 -- (IsleVent = id) asks IsleRegionAccess for the destination region and the
--- IsleTravelGate when present, applies a per-rider cooldown, sets FastTravelAt,
--- publishes VentFlight = "<id>:<seq>" (the rider's client plays the arc), then
--- lands the rider server-side after Data.Vents.FLIGHT seconds (FastTravelAt
--- again). Landings sit beside the paired vent on the far isle, on clear ground
--- and >= 42 studs from every monster spawn marker.
+-- IsleTravelGate when present (an erroring gate refuses), applies a per-rider
+-- cooldown, sets FastTravelAt, publishes VentFlight = "<id>:<seq>" (the rider's
+-- client plays the arc), then lands the rider server-side after
+-- Data.Vents.FLIGHT seconds (FastTravelAt again) only if the rider is still this
+-- flight's rider, the same living character, and the travel gate still passes
+-- (hurt grace, expeditions); else the landing is abandoned and the rider stays
+-- where they are. Landings sit beside the paired vent on the far isle, on clear
+-- ground and >= 42 studs from every monster spawn marker.
 -------------------------------------------------------------------------------
 do
 	local VD=Data.Vents
@@ -5107,6 +5110,14 @@ do
 			player:SetAttribute("IsleRegionNotice",message)
 			player:SetAttribute("IsleRegionNoticeCount",(tonumber(player:GetAttribute("IsleRegionNoticeCount")) or 0)+1)
 		end
+		-- IsleTravelGate: true, or the refusal message. Fails closed when the gate errors.
+		local function gatePasses(player)
+			local gate=ServerStorage:FindFirstChild("IsleTravelGate")
+			if not gate then return true end
+			local okGate,verdict=pcall(gate.Invoke,gate,player)
+			if okGate and verdict==true then return true end
+			return if okGate and type(verdict)=="string" then verdict else "The vent will not lift you right now."
+		end
 		local function launch(player,v)
 			local character=player.Character
 			local root=character and character:FindFirstChild("HumanoidRootPart")
@@ -5124,11 +5135,8 @@ do
 				notice(player,if ok and type(result)=="table" and type(result.message)=="string" then result.message else region.name..": "..requirementText(region))
 				return
 			end
-			local gate=ServerStorage:FindFirstChild("IsleTravelGate")
-			if gate then
-				local okGate,verdict=pcall(gate.Invoke,gate,player)
-				if okGate and verdict~=true then notice(player,if type(verdict)=="string" then verdict else "The vent will not lift you right now.") return end
-			end
+			local gated=gatePasses(player)
+			if gated~=true then notice(player,gated) return end
 			seq+=1
 			local mine=seq
 			riding[player]=mine
@@ -5142,11 +5150,13 @@ do
 				local now2=player.Character
 				local r=now2 and now2:FindFirstChild("HumanoidRootPart")
 				local h=now2 and now2:FindFirstChildOfClass("Humanoid")
-				if now2==character and r and h and h.Health>0 then
-					player:SetAttribute("FastTravelAt",os.clock())
-					now2:PivotTo(CFrame.new(v.landing))
-					r.AssemblyLinearVelocity=Vector3.zero
-				end
+				if not (now2==character and r and h and h.Health>0) then return end
+				-- Re-check the gate just before landing (hurt mid-flight, pulled into an expedition, gate error).
+				local gated2=gatePasses(player)
+				if gated2~=true then notice(player,gated2) return end
+				player:SetAttribute("FastTravelAt",os.clock())
+				now2:PivotTo(CFrame.new(v.landing))
+				r.AssemblyLinearVelocity=Vector3.zero
 			end)
 		end
 		for _,v in pairs(vents) do v.prompt.Triggered:Connect(function(player) launch(player,v) end) end

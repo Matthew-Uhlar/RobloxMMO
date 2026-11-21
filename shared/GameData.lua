@@ -11456,12 +11456,35 @@ function F.announceText(e)
 	return {head="NOTICE", body=tostring(e.text or ""), color="FFFFFF"}
 end
 F.ANNOUNCE_MAX = 12 -- queued per profile between flushes
+-- Renown level-ups and path steps always survive a full queue / ring.
+F.ANNOUNCE_PRIORITY = {renown=true, guide=true}
+-- Trims `list` (oldest first) to `max` entries: drops the oldest ordinary entry
+-- first, and the oldest priority entry only when nothing else is left.
+function F.trimAnnouncements(list, max)
+	while #list > max do
+		local drop = 1
+		for i, e in ipairs(list) do
+			if not F.ANNOUNCE_PRIORITY[tab(e).kind] then drop = i; break end
+		end
+		table.remove(list, drop)
+	end
+	return list
+end
 
 -- Shop quantities --------------------------------------------------------------
 -- rqBuy "Role:i[:qty]", skillBuy "Skill:Item[:qty]", petShop "Item[:qty]".
 -- qty counts lots (an offer of 5× buys 5 per lot), 1..MAX_LOTS per call, at the
 -- same per-unit price (the ≥ 1.3 × value rule holds per unit).
 F.Shop = {MAX_LOTS=64, Presets={1,8,16,32,64}}
+-- Wares sold one at a time (the server refuses qty > 1; the picker never opens):
+-- warp scrolls and one-of-a-kind gear (armor, accessories, traps).
+function F.Shop.singleLot(itemId)
+	local def = type(itemId) == "string" and Data.Items[itemId]
+	if not def then return true end
+	if def.kind == "armor" or def.kind == "accessory" or def.category == "trap" then return true end
+	for _, w in ipairs(tab(Data.RegionArt and Data.RegionArt.Warps)) do if w.scroll == itemId then return true end end
+	return false
+end
 -- Splits a trailing ":qty" off a shop item string with `parts` base segments.
 -- Returns base, qty (1 when absent) or nil for a malformed quantity.
 function F.splitQty(item, parts)
@@ -11506,19 +11529,24 @@ end
 
 -- Resonance (Magical Power stat tuning) -------------------------------------------
 -- The Resonance Keeper in Compass Quay tunes your accessory bag's Magical Power
--- into one stat template. Stats = weight × MP^0.75 (applied through
--- p.perkStats.resonance; no Health / Defense, so Data.PerkBudget is unaffected).
+-- into one stat template. Stats = weight × min(MP, POWER_CAP)^0.75 (applied
+-- through p.perkStats.resonance; no Health / Defense, so Data.PerkBudget is
+-- unaffected). Balance: at the cap no template's Strength / Crit Damage /
+-- Intelligence exceeds 60 % of the comparable endgame source (Sovereign set
+-- bonus Strength 70 / Crit Damage 80, Riftcrown Staff Intelligence 180);
+-- Starlore's Intelligence sits at ~0.95 × Emberkeen's Strength share.
 local R = {}
 Data.Resonance = R
 R.NAME = "Resonance"
 R.EXPONENT = 0.75
+R.POWER_CAP = 400 -- Magical Power past this adds no resonance
 R.SWITCH_FEE = 250
 R.SWITCH_COOLDOWN = 120
 R.VISIT_SECONDS = 300
 R.Templates = {
-	{id="Emberkeen",name="Emberkeen",minPower=0,color="FF6B5A",text="Raw striking power.",weights={strength=0.45,critDamage=0.75}},
+	{id="Emberkeen",name="Emberkeen",minPower=0,color="FF6B5A",text="Raw striking power.",weights={strength=0.45,critDamage=0.5}},
 	{id="Galewise",name="Galewise",minPower=0,color="DDEEFF",text="Quick feet and a sure eye.",weights={speed=0.12,critChance=0.12,strength=0.2}},
-	{id="Starlore",name="Starlore",minPower=10,color="55FFFF",text="Mana for spellcasters.",weights={intelligence=1.6,critDamage=0.3}},
+	{id="Starlore",name="Starlore",minPower=10,color="55FFFF",text="Mana for spellcasters.",weights={intelligence=1.1,critDamage=0.3}},
 	{id="Tidefortune",name="Tidefortune",minPower=25,color="FF55FF",text="Luck on every drop.",weights={magicFind=0.05,petLuck=0.05,strength=0.2}},
 	{id="Lodestone",name="Lodestone",minPower=25,color="FFAA00",text="For miners.",weights={miningFortune=0.5,miningSpeed=1.5}},
 	{id="Verdance",name="Verdance",minPower=25,color="8EE05A",text="For foragers and farmers.",weights={foragingFortune=0.45,farmingFortune=0.45}},
@@ -11526,7 +11554,7 @@ R.Templates = {
 }
 R.ById = {}
 for _, t in ipairs(R.Templates) do R.ById[t.id] = t end
-function R.scale(power) return whole(power) ^ R.EXPONENT end
+function R.scale(power) return math.min(whole(power), R.POWER_CAP) ^ R.EXPONENT end
 function R.stats(id, power)
 	local t = type(id) == "string" and R.ById[id]
 	if not t or whole(power) < t.minPower then return {} end

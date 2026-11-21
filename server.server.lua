@@ -4309,9 +4309,9 @@ do
 		if player.Parent and player:GetAttribute("HeldAuto")==true then player:SetAttribute("HeldAuto",false) end
 	end
 end
-local function applyStats(player,p,spawned)
+local function applyStats(player,p,spawned,power)
 	Held.apply(player,p)
-	local stats=Progression.computeStats(p,os.time())
+	local stats=Progression.computeStats(p,os.time(),power) -- power: Magical Power already computed by snapshot (else recomputed)
 	player:SetAttribute("SkyreachUnlocked",(p.questCompleted or 0)>=6)
 	for _,region in ipairs(Data.Regions) do player:SetAttribute(region.id.."Unlocked",regionAllowed(p,region.id)) end
 	local fleet=Workers.fleet(p)
@@ -4488,7 +4488,8 @@ local function snapshot(player,message)
 	-- and the paid rewards land in this same snapshot (notes, applyStats below).
 	if p.factions then Explore.refresh(p) end
 	Held.tick(os.clock()) -- Held items: settle any due auto-return before HeldItem is published
-	if Features.refresh then Features.refresh(player,p) end -- §31: renown, onboarding, resonance (before notes and stats)
+	local power=Progression.magicalPower(p) -- computed once per snapshot (§31 resonance + the stat sheet)
+	if Features.refresh then Features.refresh(player,p,power) end -- §31: renown, onboarding, resonance (before notes and stats)
 	local levels={}
 	local provisions={}
 	for item,config in pairs(consumables) do
@@ -4501,7 +4502,7 @@ local function snapshot(player,message)
 		notes[p]=nil
 		message=if message and message~="" then message.."   ·   "..extra else extra
 	end
-	local legacyStats,stats=applyStats(player,p)
+	local legacyStats,stats=applyStats(player,p,nil,power)
 	return {satchel=Satchel.clean(p),satchelSort=Satchel.sortMode(p), -- §29 satchel order and its last sort mode
 		xp=p.xp,items=p.items,consumables=provisions,collection=p.collection,coins=p.coins,bank=p.bank,bankRevision=p.bankRevision or 0,worker=p.worker,
 		ironman=p.ironman,levels=levels,enchantRank=p.enchantRank or 0,workerResource=p.workerResource or "Ore",workerReady=Workers.ready(p),workers=Workers.state(p),workerInfo=Workers.info(p),message=message or "",kills=p.kills,
@@ -4522,7 +4523,7 @@ local function snapshot(player,message)
 		logs=Logs.state(player,p), -- Commissions & Logs: Journal > Commissions / Collection Log / Museum (full when changed, else {rev, resetIn, compact})
 		renown=Features.renownState and Features.renownState(player,p), -- §31 Isle Renown page + sidebar
 		guide=Features.guideState and Features.guideState(p), -- §31 Wayfarer's Path (sidebar Objective)
-		resonance=Features.resonanceState and Features.resonanceState(player,p), -- §31 Resonance page
+		resonance=Features.resonanceState and Features.resonanceState(player,p,power), -- §31 Resonance page
 		announce=Features.announceState and Features.announceState(player)} -- §31 toasts: {seq, list} (recent ring)
 end
 -- Prayer & Thieving: drain-loop notices (prayer points ran out).
@@ -4670,6 +4671,7 @@ function Sea.report(player,p,payload)
 	return {ok=true,drops=drops,message=monster.name.." slain • +"..monster.coins.." coins, +"..monster.fishingXp.." Fishing XP, +"..monster.xp.." Combat XP"}
 end
 local function forget(player)
+	if Features.forget then Features.forget(player,profiles[player]) end -- §31: announcement ring, queue, renown cache
 	profiles[player],cooldown[player],lastRead[player],preview[player],leaseEnd[player]=nil,nil,nil,nil,nil
 	marketViews[player],marketReads[player],stateRead[player],exchangeReady[player]=nil,nil,nil,nil
 	Econ.views[player],Econ.reads[player]=nil,nil
@@ -6576,6 +6578,14 @@ end
 --   collection / skill / renown level-ups and path steps; every snapshot carries
 --   the player's recent ring (announce = {seq, list}, ≤ 12 entries, 30 s) so a
 --   toast survives a snapshot another script consumed; clients dedupe by seq.
+--   The queue is weak-keyed by profile and, with the ring and the renown cache,
+--   cleared by forget() (Features.forget) after the final save, so an announce
+--   during close() can never pin a profile. A full queue / ring drops the oldest
+--   ordinary entry first (F.trimAnnouncements): renown and path entries stay.
+-- * Cost: the renown breakdown is recomputed only when an announced event
+--   (skill / collection level, path step) marks the profile dirty, or every
+--   RENOWN_INTERVAL seconds for the other sources; Magical Power is computed
+--   once per snapshot and passed to refresh / resonanceState / applyStats.
 -- * Resonance: p.resonance = {id, at}. resonanceVisit (at the Resonance Keeper)
 --   opens the atlas page for R.VISIT_SECONDS; resonanceSet <template> there:
 --   first tuning free, a change costs R.SWITCH_FEE coins after R.SWITCH_COOLDOWN.
@@ -6584,14 +6594,24 @@ end
 do
 	local F,RN,G,R=Data.Features,Data.Renown,Data.Features.Guide,Data.Resonance
 	local whole=F.whole
-	local pending={} -- p -> queued announcements (flushed every snapshot; dropped on leave)
-	local cache={}   -- player -> last renown breakdown (cleared on leave)
-	local rings={}                               -- player -> {seq, list}; cleared on leave
+	local pending=setmetatable({},{__mode="k"}) -- profile -> queued announcements (flushed every snapshot; weak + cleared in forget)
+	local dirty=setmetatable({},{__mode="k"})   -- profile -> true when a renown input changed since the cached breakdown
+	local cache={}   -- player -> {p, b = renown breakdown, at = os.clock()} (cleared in forget)
+	local rings={}   -- player -> {seq, list} (cleared in forget)
 	local RING_SECONDS,RING_MAX=30,F.ANNOUNCE_MAX
+	local RENOWN_INTERVAL=5 -- seconds a cached breakdown serves snapshots when nothing marked it dirty
 	function Features.announce(p,entry)
 		local list=pending[p]
 		if not list then list={}; pending[p]=list end
-		if #list<RING_MAX then table.insert(list,entry) end
+		table.insert(list,entry)
+		F.trimAnnouncements(list,RING_MAX)
+		-- Skill / collection levels and path steps change renown inputs.
+		if entry.kind~="renown" and entry.kind~="objective" then dirty[p]=true end
+	end
+	-- Called by forget() after the final save (never before: close() may still announce).
+	function Features.forget(player,p)
+		rings[player],cache[player]=nil,nil
+		if p then pending[p],dirty[p]=nil,nil end
 	end
 	local function renownOf(p)
 		local r=p.renown
@@ -6618,12 +6638,31 @@ do
 		for _,s in ipairs(G.Steps) do if guideOf(p).done[s.id] then n+=1 end end
 		return n
 	end
-	local function breakdown(p)
+	local function noteSpecies(p)
 		local r=renownOf(p)
 		for _,pet in ipairs(type(p.pets)=="table" and p.pets or {}) do
-			if type(pet)=="table" and type(pet.id)=="string" and Data.PetById[pet.id] then r.species[pet.id]=true end
+			if type(pet)=="table" and type(pet.id)=="string" and Data.PetById[pet.id] and not r.species[pet.id] then
+				r.species[pet.id]=true
+				dirty[p]=true
+			end
 		end
-		local b=RN.breakdown(p,Progression,{species=r.species,guideSteps=stepsDone(p)})
+		return r
+	end
+	local function breakdown(p)
+		local r=noteSpecies(p)
+		-- Veterans who skipped the path earn no path renown (only steps walked count).
+		local g=guideOf(p)
+		return RN.breakdown(p,Progression,{species=r.species,guideSteps=if g.skipped then 0 else stepsDone(p)})
+	end
+	-- The cached breakdown unless dirty, stale or for another profile.
+	local function cachedBreakdown(player,p)
+		noteSpecies(p)
+		local c=cache[player]
+		local now=os.clock()
+		if c and c.p==p and not dirty[p] and now-c.at<RENOWN_INTERVAL then return c.b end
+		dirty[p]=nil
+		local b=breakdown(p)
+		cache[player]={p=p,b=b,at=now}
 		return b
 	end
 	local function guideCtx(p) return {warps=Regions.warps(p)} end
@@ -6689,7 +6728,7 @@ do
 		if player:GetAttribute(key)~=value then player:SetAttribute(key,value) end
 	end
 	-- Every snapshot: onboarding steps, renown (level-ups, perks, nameplate) and resonance.
-	function Features.refresh(player,p)
+	function Features.refresh(player,p,power)
 		local g=guideOf(p)
 		if not g.complete then
 			if not g.flags.visit and onHub(player) then g.flags.visit=true end
@@ -6713,8 +6752,7 @@ do
 			end
 		end
 		local r=renownOf(p)
-		local b=breakdown(p)
-		cache[player]=b
+		local b=cachedBreakdown(player,p)
 		if b.total>r.xp then r.xp=b.total end
 		local reached=RN.levelFor(r.xp)
 		if reached>r.level then
@@ -6729,7 +6767,7 @@ do
 		local perk=RN.stats(r.level)
 		p.perkStats.renown=if next(perk) then perk else nil
 		local res=resonanceOf(p)
-		local tuned=if res.id then R.stats(res.id,Progression.magicalPower(p)) else {}
+		local tuned=if res.id then R.stats(res.id,power or Progression.magicalPower(p)) else {}
 		p.perkStats.resonance=if next(tuned) then tuned else nil
 		local tier=RN.tier(r.level)
 		setAttr(player,"RenownLevel",r.level)
@@ -6747,7 +6785,7 @@ do
 				copy.seq,copy.at=ring.seq,os.clock()
 				table.insert(ring.list,copy)
 			end
-			while #ring.list>RING_MAX do table.remove(ring.list,1) end
+			F.trimAnnouncements(ring.list,RING_MAX) -- oldest ordinary entries first; renown / path entries stay
 		end
 	end
 	function Features.announceState(player)
@@ -6765,11 +6803,13 @@ do
 	end
 	function Features.renownState(player,p)
 		local r=renownOf(p)
-		local b=(player and cache[player]) or breakdown(p)
+		local c=player and cache[player]
+		local b=if c and c.p==p then c.b else breakdown(p)
+		-- Rows carry only {id, xp, count}: names and hints are static (Data.Renown.SourceById).
 		local sources={}
 		for _,s in ipairs(RN.Sources) do
 			local row=b.sources[s.id]
-			table.insert(sources,{id=s.id,name=s.name,hint=s.hint,xp=row.xp,count=row.count})
+			table.insert(sources,{id=s.id,xp=row.xp,count=row.count})
 		end
 		local tier=RN.tier(r.level)
 		return {level=r.level,xp=r.xp,into=r.xp-r.level*RN.XP_PER_LEVEL,need=RN.XP_PER_LEVEL,title=tier.title,color=tier.color,
@@ -6781,9 +6821,9 @@ do
 		view.owed=whole(g.owed)
 		return view
 	end
-	function Features.resonanceState(player,p)
+	function Features.resonanceState(player,p,power)
 		local res=resonanceOf(p)
-		local power=Progression.magicalPower(p)
+		power=power or Progression.magicalPower(p)
 		local now=os.time()
 		return {id=res.id,power=power,stats=if res.id then R.stats(res.id,power) else {},
 			fee=if res.id then R.SWITCH_FEE else 0,readyIn=if res.id then math.max(0,res.at+R.SWITCH_COOLDOWN-now) else 0,
@@ -6811,7 +6851,6 @@ do
 			if g.flags.talk then return "Pell: \"Keep following the Objective in your sidebar.\"" end
 			g.flags.talk=true
 			g.flags.visit=true -- Pell stands in Compass Quay
-			p.started=true
 			return "Pell: \"Glad you found me! Your sidebar Objective shows each step of the Wayfarer's Path.\""
 		elseif verb=="guideClaim" then
 			local g=guideOf(p)
@@ -6843,16 +6882,10 @@ do
 			end
 			local paid=res.id~=nil
 			res.id,res.at=t.id,now
-			p.started=true
 			return "Resonance tuned: "..t.name..(if paid then " • -"..R.SWITCH_FEE.." coins" else " • first tuning free").."."
 		end
 		return "Unknown action."
 	end
-	Players.PlayerRemoving:Connect(function(player)
-		rings[player],cache[player]=nil,nil
-		local p=profiles[player]
-		if p then pending[p]=nil end
-	end)
 end
 local function perform(player,verb,item,prompt)
 	local p=profiles[player]

@@ -180,12 +180,14 @@ local function quantityHook(b, option)
 	local folk = role and Data.RegionArt and Data.RegionArt.FolkByRole[role]
 	local offer = folk and folk.shop and folk.shop[tonumber(index)]
 	if not offer then return end
+	-- Warp scrolls and one-of-a-kind wares are bought one at a time: no picker.
+	if Data.Features and Data.Features.Shop.singleLot(offer.item) then return end
 	local item = Data.Items[offer.item]
 	local function open()
 		local event = ReplicatedStorage:FindFirstChild("IsleQuantityLocal")
 		if not event then return end
 		local coins = snapshot and tonumber(snapshot.coins) or 0
-		event:Fire({verb = "rqBuy", base = option.item, name = item and item.name or offer.item, unit = offer.price, amount = offer.amount,
+		event:Fire({verb = "rqBuy", base = option.item, item = offer.item, name = item and item.name or offer.item, unit = offer.price, amount = offer.amount,
 			max = math.max(1, math.min(Data.Features.Shop.MAX_LOTS, math.floor(coins / math.max(1, offer.price))))})
 	end
 	b.MouseButton2Click:Connect(open)

@@ -144,6 +144,46 @@ for _, t in ipairs(R.Templates) do
 end
 print(string.format("Resonance at 110 / 300 MP: Emberkeen Strength %.1f / %.1f, Crit Damage %.1f / %.1f",
 	R.stats("Emberkeen", 110).strength, R.stats("Emberkeen", 300).strength, R.stats("Emberkeen", 110).critDamage, R.stats("Emberkeen", 300).critDamage))
+-- M2: Magical Power past R.POWER_CAP adds nothing, and at the cap no template
+-- outgrows 60 % of the comparable endgame stat (Sovereign set bonus Strength /
+-- Crit Damage, Riftcrown Staff Intelligence); Starlore ~ Emberkeen in share.
+eq(R.POWER_CAP, 400, "resonance power cap")
+eq(R.scale(100000), R.scale(R.POWER_CAP), "Magical Power past the cap adds nothing")
+ok(R.scale(399) < R.scale(R.POWER_CAP), "below the cap power still scales")
+local sovereign = Data.Endgame.SetById.Sovereign.bonus
+local staffInt = Data.Items.RiftcrownStaff.stats.intelligence
+local limits = {strength = sovereign.strength, critDamage = sovereign.critDamage, intelligence = staffInt}
+for _, t in ipairs(R.Templates) do
+	local st = R.stats(t.id, R.POWER_CAP)
+	for stat, ref in pairs(limits) do
+		ok((st[stat] or 0) <= 0.6 * ref + 1e-9, string.format("%s %s at the cap %.1f <= 60%% of %d", t.id, stat, st[stat] or 0, ref))
+	end
+end
+local emberShare = R.stats("Emberkeen", R.POWER_CAP).strength / sovereign.strength
+local starShare = R.stats("Starlore", R.POWER_CAP).intelligence / staffInt
+ok(starShare >= 0.9 * emberShare and starShare <= 1.0 * emberShare, string.format("Starlore Intelligence share %.3f in line with Emberkeen Strength share %.3f", starShare, emberShare))
+print(string.format("Resonance at the %d MP cap: Emberkeen Strength %.1f / Crit Damage %.1f, Starlore Intelligence %.1f",
+	R.POWER_CAP, R.stats("Emberkeen", R.POWER_CAP).strength, R.stats("Emberkeen", R.POWER_CAP).critDamage, R.stats("Starlore", R.POWER_CAP).intelligence))
+-- L2: a full queue / ring drops the oldest ordinary entry first; renown and path entries stay.
+do
+	local list = {{kind = "renown", level = 10}}
+	for i = 1, 12 do table.insert(list, {kind = "collection", item = "Ore", n = i}) end
+	table.insert(list, {kind = "guide", title = "x"})
+	F.trimAnnouncements(list, 12)
+	eq(#list, 12, "trimmed to the cap")
+	eq(list[1].kind, "renown", "the renown level-up survives a full ring")
+	eq(list[#list].kind, "guide", "the newest path entry is kept")
+	eq(list[2].n, 3, "the two oldest ordinary entries were dropped")
+	local all = {}
+	for i = 1, 14 do table.insert(all, {kind = "renown", level = i}) end
+	F.trimAnnouncements(all, 12)
+	eq(all[1].level, 3, "only priority entries: the oldest go")
+end
+-- L6: warp scrolls and one-of-a-kind wares are single-lot (no quantity picker).
+ok(F.Shop.singleLot(Data.RegionArt.Warps[1].scroll), "warp scrolls are single-lot")
+ok(F.Shop.singleLot("SovereignSignet"), "accessories are single-lot")
+ok(not F.Shop.singleLot("Fish"), "stackable wares take a quantity")
+ok(F.Shop.singleLot("NoSuchItem"), "unknown wares are single-lot")
 -- The Resonance Keeper is a regional folk entry with dialogue verbs.
 local T = Data.Townsfolk
 ok(T.NPCs.Resonator ~= nil and T.NPCs.Resonator.anchorOnly and table.find(T.RegionFolkOrder, "Resonator") ~= nil, "Resonance Keeper registered")
@@ -202,7 +242,12 @@ local services = {
 	RunService = {IsStudio = function() return false end},
 }
 local serverObjects = {}
+local weakTables = {} -- every weak table the server creates (M1: the announcement queue)
 local env = {
+	setmetatable = function(t, mt)
+		if type(mt) == "table" and mt.__mode then table.insert(weakTables, t) end
+		return setmetatable(t, mt)
+	end,
 	game = {GetService = function(_, name) return services[name] end, BindToClose = function() end},
 	workspace = {GetAttribute = function(self, key) return rawget(self, key) end,
 		FindFirstChild = function(_, name) return if name == "Islands" then islandsDouble elseif name == "Townsfolk" then townsfolk else nil end},
@@ -227,6 +272,13 @@ local env = {
 }
 local serverSource = fs.readFile("server.server.lua"):gsub("^\239\187\191", ""):gsub("base%.Position", "base.CFrame.Position")
 luau.load(serverSource, {environment = env, injectGlobals = true})()
+-- Probes: the live profile last handed to the renown breakdown, breakdown and Magical Power call counts.
+local probe = {breakdowns = 0, power = 0, profile = nil}
+do
+	local origBreakdown, origPower = RN.breakdown, P.magicalPower
+	RN.breakdown = function(pr, ...) probe.breakdowns += 1; probe.profile = pr; return origBreakdown(pr, ...) end
+	P.magicalPower = function(...) probe.power += 1; return origPower(...) end
+end
 local liveById = {}
 local function player(id)
 	local humanoid = {Health = 100, MaxHealth = 100, WalkSpeed = 16, Died = signal(), TakeDamage = function(self, n) self.Health -= n end}
@@ -326,7 +378,9 @@ local vet = seeded(9002, function(pr)
 	pr.pets = {{id = Data.Pets[1].id, level = 1, xp = 0}}
 end)
 local first = cmd(vet, "state")
-local expect = RN.breakdown(stored(vet), P, {species = {[Data.Pets[1].id] = true}, guideSteps = #G.Steps}).total
+-- L3: veterans who skipped the path earn no path renown.
+local expect = RN.breakdown(stored(vet), P, {species = {[Data.Pets[1].id] = true}, guideSteps = 0}).total
+for _, row in ipairs(first.renown.sources) do if row.id == "guide" then eq(row.xp, 0, "a skipped path earns no path renown") end end
 vet = player(9002)
 ok(first.renown.xp == expect and first.renown.level == RN.levelFor(expect), "existing progress credited on the first load (" .. first.renown.xp .. ")")
 ok(first.renown.level >= 10, "a veteran starts well past level 10 (" .. first.renown.level .. ")")
@@ -471,6 +525,105 @@ local switched = cmd(tuner, "resonanceSet", "Galewise")
 ok(has(switched.message, "-" .. R.SWITCH_FEE), "switching costs the fee")
 eq(switched.coins, 1000 - R.SWITCH_FEE, "fee charged once")
 eq(stored(tuner).resonance.id, "Galewise", "switch saved")
+-- B5. QC fixes.
+-- L5: talking to Pell and tuning a resonance never mark the journal started.
+local quiet = player(9011)
+at(quiet, "Guide")
+ok(has(cmd(quiet, "guideTalk").message, "Glad you found me"), "fresh journal talks to Pell")
+ok(stored(quiet).started ~= true, "guideTalk does not set p.started")
+local quietTuner = seeded(9012, function(pr)
+	pr.started = false
+	pr.items.MeadowCharm = 1
+	pr.accessoryBag = {"MeadowCharm"}
+end)
+at(quietTuner, "Resonator")
+cmd(quietTuner, "resonanceVisit")
+ok(has(cmd(quietTuner, "resonanceSet", "Emberkeen").message, "first tuning free"), "fresh journal tunes Emberkeen")
+local qs = stored(quietTuner)
+ok(qs.resonance.id == "Emberkeen" and qs.started ~= true, "resonanceSet does not set p.started")
+-- L4: Magical Power once per snapshot; renown rows {id, xp, count}; the breakdown
+-- is reused until an announced event marks it dirty or RENOWN_INTERVAL passes.
+local busy = seeded(9013, function(pr)
+	for _, skill in ipairs(Data.SkillOrder) do pr.xp[skill] = X[99] end
+	pr.items.MeadowCharm = 1
+	pr.accessoryBag = {"MeadowCharm"}
+	pr.resonance = {id = "Emberkeen", at = 0}
+	pr.collection = {}
+end)
+cmd(busy, "state")
+probe.power, probe.breakdowns = 0, 0
+local bs = cmd(busy, "state")
+eq(probe.power, 1, "Magical Power computed once per snapshot")
+eq(probe.breakdowns, 0, "an unchanged journal reuses the cached renown breakdown")
+for _, row in ipairs(bs.renown.sources) do
+	local keys = 0
+	for _ in pairs(row) do keys += 1 end
+	ok(keys == 3 and row.name == nil and RN.SourceById[row.id] ~= nil, "renown row " .. tostring(row.id) .. " is {id, xp, count}")
+end
+ok(bs.resonance.power > 0 and bs.resonance.stats.strength ~= nil, "resonance uses the snapshot Magical Power")
+local gathered = use(busy, prompt("gather", "Ore", Vector3.new(0, 5000, 0)))
+ok(probe.breakdowns >= 1, "a collection unlock marks renown dirty (recomputed at once)")
+local cbefore = probe.breakdowns
+cmd(busy, "state")
+eq(probe.breakdowns, cbefore, "and is cached again afterwards")
+advance(6)
+cmd(busy, "state")
+eq(probe.breakdowns, cbefore + 1, "a stale breakdown is recomputed after RENOWN_INTERVAL")
+local gatheredRow
+for _, row in ipairs(gathered.renown.sources) do if row.id == "collections" then gatheredRow = row end end
+ok(gatheredRow ~= nil, "renown rows still list collections")
+-- L2: a ring full of ordinary entries keeps the renown level-ups.
+local rush = seeded(9014, function(pr)
+	for _, skill in ipairs(Data.SkillOrder) do pr.xp[skill] = X[99] end
+	pr.renown = {xp = 0, level = 0, species = {}}
+	pr.collection = {}
+	for id, def in pairs(Data.Items) do if def.kind == "tool" then pr.items[id] = 1 end end
+end)
+local rs = cmd(rush, "state")
+local renownSeen = 0
+for _, e in ipairs(rs.announce.list) do if e.kind == "renown" then renownSeen += 1 end end
+eq(renownSeen, 3, "a big renown jump announces its last three levels")
+local unlocked = 0
+for i, id in ipairs(Data.CollectionItems) do
+	if Data.ResourceSkill[id] and Data.ResourceSkill[id] ~= "Fishing" and unlocked < 14 then
+		advance(1)
+		rush.last = nil
+		services.ProximityPromptService.PromptTriggered:Fire(prompt("gather", id, Vector3.new(0, 5000, i)), rush)
+		if rush.last and has(rush.last.message, "+") then unlocked += 1 end
+	end
+end
+ok(unlocked >= 13, "13+ first gathers inside the 30 s ring (" .. unlocked .. ")")
+local ring = cmd(rush, "state").announce
+local kept, ordinary = 0, 0
+for _, e in ipairs(ring.list) do if e.kind == "renown" then kept += 1 else ordinary += 1 end end
+eq(#ring.list, F.ANNOUNCE_MAX, "the ring is full")
+eq(kept, 3, "renown level-ups survive a full ring")
+-- M1: an announcement queued while the journal closes (minigame leave settles
+-- XP after PlayerRemoving) leaves nothing behind: the queue is weak-keyed and
+-- forget() clears it after the final save.
+local bridge
+for _, o in ipairs(serverObjects) do if o.Name == "IsleBridge" then bridge = o end end
+ok(bridge ~= nil and bridge.OnInvoke ~= nil, "IsleBridge found")
+local closer = player(9015)
+cmd(closer, "state")
+local closerProfile = probe.profile
+local monsterId, best = nil, 0
+for id, m in pairs(Data.Monsters) do if not m.lair and (m.xp or 0) > best and (m.hp or 0) > 0 then monsterId, best = id, m.xp end end
+local queueTable
+storage.IsleMinigameLeave = {Invoke = function(_, who)
+	who.Parent = nil -- departed: no snapshot flushes the queue
+	local reply = bridge.OnInvoke("combatXp", who, {style = "melee", damage = Data.Monsters[monsterId].hp, monster = monsterId})
+	ok(type(reply) == "table" and reply.ok ~= false, "minigame leave settles XP during close")
+	for _, t in ipairs(weakTables) do
+		local v = rawget(t, closerProfile)
+		if type(v) == "table" and v[1] and v[1].kind == "skill" then queueTable = t end
+	end
+end}
+leave(closer)
+storage.IsleMinigameLeave = nil
+ok(queueTable ~= nil, "the level-up was queued during close")
+ok(queueTable ~= nil and getmetatable(queueTable).__mode == "k", "the announcement queue is weak-keyed")
+ok(queueTable ~= nil and rawget(queueTable, closerProfile) == nil, "forget() cleared the queued announcement after the final save")
 print("PASS: " .. (checks - partB) .. " server assertions.")
 
 ------------------------------------------------------------------------------
@@ -495,7 +648,7 @@ do
 		ReplicatedStorage = {WaitForChild = function(_, name) return if name == "AetherData" then dataModule else nil end},
 		ServerStorage = {FindFirstChild = function(_, name)
 			if name == "IsleRegionAccess" then return regionAccess end
-			if name == "IsleTravelGate" then return {Invoke = function() return gateVerdict end} end
+			if name == "IsleTravelGate" then return {Invoke = function() if gateVerdict == "ERROR" then error("gate down") end return gateVerdict end} end
 			return nil
 		end},
 	}
@@ -601,6 +754,32 @@ do
 	standAt(t2, byId.WindpineDowndraft.CFrame.Position)
 	back.Triggered:Fire(t2)
 	ok(has(t2.attributes.VentFlight, "WindpineDowndraft:"), "return vent rides home")
+	-- L1: an erroring gate refuses the launch; the gate and the flight are checked
+	-- again just before landing, and a failed check leaves the rider where they are.
+	local t3 = rider()
+	standAt(t3, pad.CFrame.Position)
+	gateVerdict = "ERROR"
+	q.Triggered:Fire(t3)
+	eq(t3.attributes.VentFlight, nil, "an erroring travel gate refuses the launch (fails closed)")
+	ok(has(t3.attributes.IsleRegionNotice, "will not lift"), "the refusal is shown")
+	local function flight(verdictAtLanding, midFlight)
+		wclock += VD.COOLDOWN
+		standAt(t3, pad.CFrame.Position)
+		gateVerdict = true
+		local n0 = #spawned
+		q.Triggered:Fire(t3)
+		ok(has(t3.attributes.VentFlight, "MosswakeUpdraft:"), "launched")
+		gateVerdict = verdictAtLanding
+		if midFlight then midFlight() end
+		assert(coroutine.resume(spawned[n0 + 1]))
+		gateVerdict = true
+		return t3.landed
+	end
+	eq(flight("You can't travel mid-fight."), nil, "hurt mid-flight: no landing, the rider stays put")
+	eq(t3.attributes.IsleRegionNotice, "You can't travel mid-fight.", "the mid-flight refusal is shown")
+	eq(flight("ERROR"), nil, "a gate error at landing aborts the landing")
+	eq(flight(true, function() players.PlayerRemoving:Fire(t3) end), nil, "a rider no longer launched is not landed")
+	ok(flight(true) ~= nil, "a clean flight still lands")
 end
 print("PASS: " .. (checks - partC) .. " world assertions.")
 
@@ -693,6 +872,32 @@ do
 	ui.replicated:FindFirstChild("IsleQuantityLocal"):Fire({verb = "petShop", base = "PetCandy", name = "Pet Candy", unit = 8000, amount = 1, max = 1})
 	H.press(H.find(S.picker_frame, "Qty1"))
 	ok(relayed[3] and relayed[3][2] == "PetCandy", "a single lot sends the plain item id")
+	-- L6: warp scrolls and one-of-a-kind wares never open the picker.
+	ui.replicated:FindFirstChild("IsleQuantityLocal"):Fire({verb = "rqBuy", base = "WarpKeeper:1", item = Data.RegionArt.Warps[1].scroll, name = "Scroll", unit = 100, amount = 1, max = 64})
+	ok(not S.picker_frame.Visible, "a warp scroll offer does not open the quantity picker")
+	ui.replicated:FindFirstChild("IsleQuantityLocal"):Fire({verb = "rqBuy", base = "X:1", item = "SovereignSignet", name = "Signet", unit = 100, amount = 1, max = 64})
+	ok(not S.picker_frame.Visible, "a one-of-a-kind offer does not open the quantity picker")
+	ok(has(fs.readFile("npc.client.lua"), "Shop.singleLot(offer.item) then return end"), "dialogue offers skip the picker for single-lot wares")
+	-- L2 (client): a long toast queue drops ordinary toasts before a renown level-up.
+	local burst = {{seq = 11, kind = "renown", level = 11}}
+	for i = 12, 20 do table.insert(burst, {seq = i, kind = "collection", item = "Ore"}) end
+	snapChannel:Fire({announce = {seq = 20, list = burst}})
+	local queuedRenown = false
+	for _, e in ipairs(S.queue) do if e.kind == "renown" and e.level == 11 then queuedRenown = true end end
+	ok(#S.queue <= 8 and queuedRenown, "the renown toast survives a full queue")
+	-- L8: nameplate connections are kept per player and disconnected when they leave.
+	local other = {attrs = {RenownLevel = 3}, CharacterAdded = signal(), changed = {}}
+	function other:GetAttribute(k) return self.attrs[k] end
+	function other:GetAttributeChangedSignal(k) local sig = signal(); self.changed[k] = sig; return sig end
+	players.PlayerAdded:Fire(other)
+	local conns = S.watches[other]
+	ok(conns ~= nil and #conns == 4, "four nameplate connections stored for the new player")
+	players.PlayerRemoving:Fire(other)
+	local live = 0
+	for _, c in ipairs(conns or {}) do if c.Connected then live += 1 end end
+	eq(live, 0, "every nameplate connection disconnected on leave")
+	eq(S.watches[other], nil, "the watch entry is dropped")
+	ok(string.sub(fs.readFile("features.client.lua"), 1, 9) == "--!strict", "features.client.lua is --!strict")
 	-- The atlas relays the quantity verbs (server validates).
 	local src = fs.readFile("ui.client.lua")
 	for _, verb in ipairs({"rqBuy", "skillBuy", "petShop", "resonanceSet", "guideClaim"}) do ok(has(src, verb .. "=true"), "atlas relays " .. verb) end

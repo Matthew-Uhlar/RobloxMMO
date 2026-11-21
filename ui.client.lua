@@ -8451,10 +8451,12 @@ function Pages.drawRenown()
 			actions=owed>0 and {{caption="Claim "..fmt(owed).." coins",primary=true,name="GuideClaim",fn=function() send("guideClaim") end}} or nil})
 	end
 	heading("RENOWN SOURCES")
+	local byId=Data and Data.Renown and Data.Renown.SourceById or {}
 	for _,s in ipairs(tbl(r.sources)) do
 		if type(s)=="table" then
-			card({name="RenownSource"..tostring(s.id),title=escape(tostring(s.name)),badge=fmt(num(s.xp,0)),badgeColor=gold,
-				subtitle=fmt(num(s.count,0)).." counted",detail=escape(tostring(s.hint or ""))})
+			local def=tbl(byId[s.id]) -- rows are {id, xp, count}; names and hints are static data
+			card({name="RenownSource"..tostring(s.id),title=escape(tostring(def.name or s.name or s.id)),badge=fmt(num(s.xp,0)),badgeColor=gold,
+				subtitle=fmt(num(s.count,0)).." counted",detail=escape(tostring(def.hint or s.hint or ""))})
 		end
 	end
 end
