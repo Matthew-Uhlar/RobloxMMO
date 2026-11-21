@@ -113,6 +113,10 @@ do
 	ok(HD.chatShows("Game", states, "All", { important = true }) and not HD.chatShows("Game", states, "All", {}), "Filtered game: important only")
 	states.Trade = "Off"
 	ok(not HD.chatShows("Trade", states, "All", { friend = true }) and HD.chatShows("Trade", states, "All", { self = true }), "Off hides all but your own echo")
+	-- QC H4: whispers always pass, whatever the Private state or tab.
+	states.Private = "Off"
+	ok(HD.chatShows("Private", states, "All", {}) and HD.chatShows("Private", states, "Trade", {}), "whispers always pass")
+	states.Private = "On"
 	eq(HD.cycleState("On"), "Filtered", "cycle On")
 	eq(HD.cycleState("Filtered"), "Off", "cycle Filtered")
 	eq(HD.cycleState("Off"), "On", "cycle Off")
@@ -146,6 +150,10 @@ do
 	local d = HD.itemDeltas({ Ore = 10, Herb = 4 }, { Ore = 13, Herb = 2, Fish = 1 }, 100, 220)
 	ok(#d == 3 and d[1].id == "Fish" and d[2].id == "Ore" and d[2].n == 3 and d[3].id == "coins" and d[3].n == 120, "gains only, coins last")
 	eq(#HD.itemDeltas({}, { Ore = 1 }, nil, nil), 1, "no coins without both totals")
+	-- QC M8: the feed reads the server's snapshot.pickups, validated and merged.
+	local picks = HD.pickupEntries({ { id = "Ore", n = 2 }, { id = "Ore", n = 1.6 }, { id = "coins", n = 40 }, { id = "Nope", n = 3 }, { id = "Herb", n = -1 }, "junk" }, Data)
+	ok(#picks == 2 and picks[1].id == "Ore" and picks[1].n == 3 and picks[2].id == "coins" and picks[2].n == 40, "pickups validated and merged")
+	eq(#HD.pickupEntries(nil, Data), 0, "no pickups list, no feed")
 	local feed = {}
 	HD.feedPush(feed, "Ore", 3, 0, 3, 5)
 	local e, merged = HD.feedPush(feed, "Ore", 2, 2, 3, 5)
@@ -169,7 +177,11 @@ do
 	local resist = HD.splatStyle({ amount = 70, tag = "resist" }, T)
 	ok(resist.tag == "resist" and resist.fill == T.HudDepth.splatResist, "resist splat grey")
 	eq(HD.splatStyle({ heal = true, amount = 20 }, T).text, "+20", "heal splat")
-	eq(HD.splatStyle({ hurt = true, amount = 0 }, T).kind, "miss", "a zero hit on you is a miss splat")
+	-- QC L3: "miss" only for a real miss; a landed hit that did nothing is a blue 0.
+	local zero = HD.splatStyle({ hurt = true, amount = 0 }, T)
+	ok(zero.kind == "zero" and zero.text == "0" and zero.fill == T.HudDepth.splatMiss, "a zero hit on you is a blue 0, not miss")
+	local resisted = HD.splatStyle({ amount = 0, tag = "resist" }, T)
+	ok(resisted.text == "0" and resisted.fill == T.HudDepth.splatMiss and resisted.tag == "resist", "a fully resisted hit is a blue 0 with its tag")
 	ok(HD.barColor(0.8) == "57D96A" and HD.barColor(0.4) == "F2C14E" and HD.barColor(0.1) == "E8413C", "overhead bar colours")
 	ok(HD.splatShape("37") == "diamond" and HD.splatShape("miss") == "pill" and select(2, HD.splatShape("1,284", 21)) > select(2, HD.splatShape("miss", 13)),
 		"short numbers in diamonds, long ones in pills sized to the text")
@@ -385,6 +397,7 @@ do
 		snap.items = table.clone(snap.items)
 		snap.items.Ore += 3
 		snap.coins += 120
+		snap.pickups = { { id = "Ore", n = 3 }, { id = "coins", n = 120 } }
 		ui.update.OnClientEvent:Fire(snap)
 		ok(S.feedRows[1] and S.feedRows[1].Visible, "pickup feed row at " .. tag)
 		-- A level-up banner joins the set.
@@ -452,7 +465,7 @@ do
 	local ov = H.runOverlay(size, ui.player, ui.replicated, { clock = function() return clock end, raycast = function() return hit end, delays = delays,
 		tagged = { w.mite } })
 	local S = ov.state
-	ui.replicated:FindFirstChild("IsleAttackLocal").Event:Connect(function(model) table.insert(attacked, model) end)
+	ui.replicated:FindFirstChild("IsleAttackLocal").Event:Connect(function(model) if model ~= "cancel" then table.insert(attacked, model) end end)
 	local function runDelays()
 		local due = table.clone(delays)
 		table.clear(delays)
@@ -476,28 +489,112 @@ do
 	eq(plain(S.labelMain.Text), "Talk-to Pell Ashgrove", "hover label on Pell")
 	hover(nil)
 	ok(not S.label.Visible, "nothing under the cursor hides the label")
-	-- Left click drives the prompt in reach (InputHoldBegin, then InputHoldEnd after its hold).
+	-- Left click drives the prompt in reach: InputHoldBegin, released when the
+	-- prompt fires (QC M5: Triggered / PromptButtonHoldEnded, not a blind timer).
 	hit = { Instance = w.nodePart, Position = w.nodePart.Position }
+	local cancels = 0
+	ui.replicated:FindFirstChild("IsleAttackLocal").Event:Connect(function(model) if model == "cancel" then cancels += 1 end end)
 	ov.input.InputBegan:Fire(mouse(Enum.UserInputType.MouseButton1, 500, 400), false)
 	eq(w.held.begin, 1, "left click holds the prompt")
+	ok(cancels == 1, "driving a prompt clears combat's pending attack (QC M2)")
+	ov.input.InputBegan:Fire(mouse(Enum.UserInputType.MouseButton1, 500, 400), false)
+	ok(w.held.begin == 1 and w.held.ended == 0 and S.lastDriven == nil, "QC M5: a second click while the hold runs is skipped")
+	w.prompt.Triggered:Fire(ui.player)
+	ok(w.held.ended == 1 and S.lastDriven == w.prompt, "released on Triggered; lastDriven set on success only")
+	w.prompt.Triggered:Fire(ui.player)
+	eq(w.held.ended, 1, "a finished hold ends once")
+	ov.input.InputBegan:Fire(mouse(Enum.UserInputType.MouseButton1, 500, 400), false)
+	eq(w.held.begin, 2, "a new hold after the last ended")
+	w.prompt.PromptButtonHoldEnded:Fire()
+	eq(w.held.ended, 2, "an early release ends the hold too")
 	runDelays()
-	eq(w.held.ended, 1, "and releases it after HoldDuration")
+	eq(w.held.ended, 2, "the safety delay does not end a finished hold again")
+	S.lastDriven = nil
 	ov.input.InputBegan:Fire(mouse(Enum.UserInputType.MouseButton1, 500, 400), true)
-	eq(w.held.begin, 1, "a click the GUI used does nothing")
-	-- Out of reach: walk up first (Humanoid:MoveTo), hold on arrival.
+	eq(w.held.begin, 2, "a click the GUI used does nothing")
+	-- QC M1: out of reach, walk up along a computed route (ground-checked), hold on arrival.
 	root.Position = Vector3.new(0, 0, 0)
 	ov.input.InputBegan:Fire(mouse(Enum.UserInputType.MouseButton1, 500, 400), false)
-	ok(#humanoid.moves == 1 and humanoid.moves[1] == w.nodePart.Position and w.held.begin == 1, "out of reach: walks to the vein " .. #humanoid.moves .. " " .. w.held.begin)
+	local dest = humanoid.moves[1]
+	ok(#humanoid.moves == 1 and dest and (dest - w.nodePart.Position).Magnitude <= 10 and dest.X < w.nodePart.Position.X and w.held.begin == 2,
+		"out of reach: walks to a spot in reach on the player's side " .. #humanoid.moves .. " " .. tostring(dest))
+	ok(#ov.routes >= 1 and S.walking ~= nil, "the walk follows a PathfindingService route")
+	-- QC M2: manual movement (a movement key) cancels the walk-up.
+	local token = S.walkToken
+	ov.input.InputBegan:Fire({ UserInputType = Enum.UserInputType.Keyboard, KeyCode = Enum.KeyCode.W, Position = Vector3.zero }, false)
+	ok(S.walkToken == token + 1 and S.walking == nil, "a movement key cancels the walk-up")
+	-- Steering by hand (MoveDirection away from the route) cancels it too.
+	ok(S.steered({ MoveDirection = Vector3.new(-1, 0, 0) }, root, Vector3.new(30, 0, 0)) and not S.steered({ MoveDirection = Vector3.new(1, 0, 0) }, root, Vector3.new(30, 0, 0)),
+		"MoveDirection against the route counts as steering")
+	-- QC M1: more than 60 studs: "Too far", no walk.
+	local toasts = {}
+	ui.replicated:FindFirstChild("IsleToastLocal").Event:Connect(function(text) table.insert(toasts, text) end)
+	root.Position = Vector3.new(-50, 0, 0)
+	local moves = #humanoid.moves
+	ok(S.drive(w.prompt) == false and #humanoid.moves == moves and has(toasts[#toasts], "Too far"), "beyond 60 studs: Too far, no walk")
+	-- Unreachable (no path) aborts; a waypoint with no ground under it aborts (never off an edge).
+	root.Position = Vector3.new(0, 0, 0)
+	ov.setPath(function() return nil end)
+	ok(S.drive(w.prompt) == false and #humanoid.moves == moves and has(toasts[#toasts], "can't reach"), "no route: aborted")
+	ov.setPath(function(from, to) return { from, Vector3.new(15, -40, 0), to } end)
+	local ground = ov.setGround(function(origin) return origin.Y > -20 end)
+	ok(S.drive(w.prompt) == false and #humanoid.moves == moves, "a waypoint over the void: aborted")
+	ov.setPath(nil)
+	ov.setGround(ground)
+	-- Arriving in reach mid-walk holds.
+	S.walkPath(Vector3.new(26, 0, 0), function() return true end, function() w.arrived = true end)
+	ok(w.arrived, "arrival runs the hold")
 	root.Position = Vector3.new(25, 0, 0)
+	-- QC M6: a prompt under a Model measures from its PrimaryPart; no character: not in reach.
+	local crate = H.new("Model", { Name = "Crate" })
+	local lid = H.new("Part", { Name = "Lid", Position = Vector3.new(26, 0, 0) })
+	lid.Parent = crate
+	crate.PrimaryPart = lid
+	local modelPrompt = H.new("ProximityPrompt", { Name = "Open", ActionText = "Open", MaxActivationDistance = 8, Enabled = true })
+	modelPrompt.Parent = crate
+	ok(S.promptPoint(modelPrompt) == lid.Position, "a Model's prompt measures from its PrimaryPart")
+	ok(not S.within(modelPrompt), "no ancestor BasePart (the server would refuse): not in reach")
+	local char = ui.player.Character
+	ui.player.Character = nil
+	ok(not S.within(w.prompt), "no character: not in reach")
+	ui.player.Character = char
+	-- QC M4 / L6: someone else's prompt, ClickablePrompt = false; IsleDefault leads.
+	local shelf = H.new("Part", { Name = "Shelf", Position = Vector3.new(27, 0, 0) })
+	local theirs = H.new("ProximityPrompt", { Name = "Theirs", ActionText = "Loot", ObjectText = "Chest", Enabled = true })
+	theirs:SetAttribute("OwnerUserId", 99)
+	theirs.Parent = shelf
+	local noclick = H.new("ProximityPrompt", { Name = "NoClick", ActionText = "Sit", ObjectText = "Bench", Enabled = true, ClickablePrompt = false })
+	noclick.Parent = shelf
+	local inspect = H.new("ProximityPrompt", { Name = "Inspect", ActionText = "Inspect", ObjectText = "Shelf", Enabled = true })
+	inspect.Parent = shelf
+	local take = H.new("ProximityPrompt", { Name = "Take", ActionText = "Take", ObjectText = "Shelf", Enabled = true })
+	take:SetAttribute("IsleDefault", true)
+	take.Parent = shelf
+	local resolved = S.resolve(shelf, shelf.Position)
+	ok(resolved and #resolved.prompts == 2 and resolved.prompts[1].instance == take and resolved.prompts[2].instance == inspect,
+		"someone else's and unclickable prompts skipped; IsleDefault is the left-click default")
+	local mine = H.new("ProximityPrompt", { Name = "Mine", ActionText = "Loot", ObjectText = "Chest", Enabled = true })
+	mine:SetAttribute("OwnerUserId", ui.player.UserId)
+	mine.Parent = shelf
+	eq(#S.resolve(shelf, shelf.Position).prompts, 3, "your own owned prompt stays")
 	-- Creatures keep combat's left click.
 	hit = { Instance = w.body, Position = w.body.Position }
 	ov.input.InputBegan:Fire(mouse(Enum.UserInputType.MouseButton1, 500, 400), false)
-	ok(#attacked == 0 and w.held.begin == 1, "left click on a creature is left to combat")
+	ok(#attacked == 0 and w.held.begin == 2, "left click on a creature is left to combat")
 	-- Right click without a drag opens the menu; a drag (camera turn) does not.
 	hit = { Instance = w.nodePart, Position = w.nodePart.Position }
 	ov.input.InputBegan:Fire(mouse(Enum.UserInputType.MouseButton2, 500, 400), false)
 	ov.input.InputEnded:Fire(mouse(Enum.UserInputType.MouseButton2, 540, 400), false)
 	ok(not S.menu.Visible, "a right drag turns the camera, no menu")
+	-- QC M3: the cursor is locked while the camera turns, so the drag is the summed Delta.
+	ov.input.InputBegan:Fire(mouse(Enum.UserInputType.MouseButton2, 500, 400), false)
+	for _ = 1, 4 do ov.input.InputChanged:Fire({ UserInputType = Enum.UserInputType.MouseMovement, Position = Vector3.new(500, 400, 0), Delta = Vector3.new(2, 0, 0) }) end
+	ov.input.InputEnded:Fire(mouse(Enum.UserInputType.MouseButton2, 500, 400), false)
+	ok(not S.menu.Visible, "a locked-cursor camera turn (Delta 8 px) opens no menu")
+	ov.input.InputBegan:Fire(mouse(Enum.UserInputType.MouseButton2, 500, 400), false)
+	clock += 0.5
+	ov.input.InputEnded:Fire(mouse(Enum.UserInputType.MouseButton2, 500, 400), false)
+	ok(not S.menu.Visible, "a press held 0.5 s opens no menu")
 	ov.input.InputBegan:Fire(mouse(Enum.UserInputType.MouseButton2, 500, 400), false)
 	ov.input.InputEnded:Fire(mouse(Enum.UserInputType.MouseButton2, 502, 401), false)
 	ok(S.menu.Visible and not S.label.Visible, "right click opens the menu and hides the label")
@@ -523,14 +620,16 @@ do
 	ok(S.menu.Visible, "a press inside keeps the menu")
 	ov.input.InputBegan:Fire(mouse(Enum.UserInputType.MouseButton1, 5, 700), false)
 	ok(not S.menu.Visible, "a press outside closes it")
-	eq(w.held.begin, 1, "and does not also act on the world")
+	eq(w.held.begin, 2, "and does not also act on the world")
 	-- Creature menu: Attack fires IsleAttackLocal for combat.
 	hit = { Instance = w.body, Position = w.body.Position }
 	ov.input.InputBegan:Fire(mouse(Enum.UserInputType.MouseButton2, 500, 400), false)
 	ov.input.InputEnded:Fire(mouse(Enum.UserInputType.MouseButton2, 500, 400), false)
 	ok(has(plain(S.menuButtons[1].Text), "Attack Cinder Mite"), "creature menu starts with Attack")
+	local before = S.walkToken
 	H.press(S.menuButtons[1])
 	ok(#attacked == 1 and attacked[1] == w.mite, "Attack asks combat through IsleAttackLocal")
+	ok(S.walkToken > before, "QC M2: an attack cancels any walk-up")
 	-- Townsfolk: Talk-to drives the talk prompt.
 	hit = { Instance = w.head, Position = w.head.Position }
 	ov.input.InputBegan:Fire(mouse(Enum.UserInputType.MouseButton1, 500, 400), false)
@@ -562,15 +661,21 @@ do
 	ok(S.orbs.Prayer.value.Text == "30" and S.orbs.Prayer.fraction == 0.5 and S.orbs.Prayer.button.Active, "prayer orb reads the attributes")
 	local fill = S.orbs.Prayer.fill.Transparency.Keypoints
 	ok(fill[1].Value == 1 and fill[#fill].Value == 0, "liquid gradient: empty top, full bottom")
-	local sentBefore = #S.sent
+	-- QC H3: the whole quick-prayer plan is one atomic server verb, relayed through
+	-- the atlas' queue (never dropped behind a request in flight).
+	local sentBefore, serverBefore = #S.sent, #ui.sent
 	H.press(S.orbs.Prayer.button)
-	ok(#S.sent == sentBefore + 1 and S.sent[#S.sent][1] == "prayer" and S.sent[#S.sent][2] == "Steadfast", "quick-prayer orb sends the first quick prayer")
+	ok(#S.sent == sentBefore + 1 and S.sent[#S.sent][1] == "prayerQuickToggle" and S.sent[#S.sent][2] == nil, "quick-prayer orb sends one prayerQuickToggle")
 	runDelays()
-	ok(S.sent[#S.sent][2] == "Keen", "then the second, spaced")
+	eq(#S.sent, sentBefore + 1, "no per-prayer toggles follow")
+	ok(#ui.sent == serverBefore + 1 and ui.sent[#ui.sent][1] == "prayerQuickToggle", "the atlas relays it to the server")
 	ui.player:SetAttribute("PrayerActive", "Keen")
 	ok(S.orbs.Prayer.halo.Visible, "lit while prayers run")
 	H.press(S.orbs.Prayer.button)
-	ok(S.sent[#S.sent][1] == "prayer" and S.sent[#S.sent][2] == "Keen", "clicking again switches the active prayer off")
+	ok(S.sent[#S.sent][1] == "prayerQuickToggle" and #S.sent == sentBefore + 2, "clicking again sends the same verb (the server switches them off)")
+	-- QC L8: orb numbers at least 11 px.
+	for _, id in ipairs(HD.ORB_IDS) do ok(S.orbs[id].value.TextSize >= 11, id .. " orb value is at least 11 px") end
+	ok(S.tabs.Public:FindFirstChild("State").TextSize >= 11, "tab state caption is at least 11 px")
 	local opened
 	ui.replicated:FindFirstChild("IsleHudLocal").Event:Connect(function(kind, tab, section) opened = { kind, tab, section } end)
 	H.press(S.orbs.Speed.button)
@@ -604,6 +709,24 @@ do
 	clock += 2
 	runDelays()
 	eq(#ov.chat, base + 2, "a snapshot is routed once")
+	-- QC H1: the server's seq dedupes copies (the atlas replays clones), and a
+	-- replay to a late-starting script prints nothing.
+	local stamped = H.snapshot({ message = "Brassite mined" })
+	stamped.seq = 4001
+	ui.update.OnClientEvent:Fire(stamped)
+	local copy = table.clone(stamped)
+	ui.replicated:FindFirstChild("IsleSnapshotLocal"):Fire(copy)
+	ui.replicated:FindFirstChild("IsleActionLocal"):Fire("snapshot")
+	clock += 2
+	runDelays()
+	eq(#ov.chat, base + 3, "one line per seq: copies and atlas replays are not reprinted")
+	local replay = H.snapshot({ message = "An old notice" })
+	replay.seq, replay.replay = 3990, true
+	ui.replicated:FindFirstChild("IsleSnapshotLocal"):Fire(replay)
+	clock += 2
+	runDelays()
+	ok(#ov.chat == base + 3 and S.snap == replay, "a replay of an unseen seq sets state but prints nothing")
+	base += 1
 	-- Tabs and states: Game Filtered keeps important lines; Off drops them all.
 	S.cycleTab("Game")
 	eq(S.chatStates.Game, "Filtered", "right click cycles Game to Filtered")
@@ -623,6 +746,10 @@ do
 	clock += 2
 	runDelays()
 	eq(#ov.chat, base + 4, "Game Off prints nothing")
+	-- QC L1: an Examine the player asked for always echoes.
+	S.run({ ["local"] = "examine" }, S.resolve(w.nodePart, w.nodePart.Position))
+	ok(#ov.chat == base + 5 and has(ov.chat[#ov.chat].text, "Needs Mining 1"), "examine echoes even with Game Off")
+	base += 1
 	S.cycleTab("Game")
 	eq(S.chatStates.Game, "On", "and back to On")
 	-- Tab buttons: click selects, right click cycles.
@@ -647,18 +774,59 @@ do
 	S.chatStates.Public = "On"
 	ok(incoming(message(9, "WTS brass sword")).Text == "", "Trade Off hides trade lines")
 	eq(incoming(message(9, "nice sword")), nil, "Public On shows the rest")
-	S.selectTab("Private")
-	ok(incoming(message(9, "nice sword")).Text == "" and incoming(message(9, "psst", "RBXWhisper:1_9")) == nil, "the Private tab shows whispers only")
-	eq(incoming({ TextSource = nil, TextChannel = { Name = "RBXSystem" }, Text = "x", Metadata = "IsleGame:info" }), nil, "router lines are never filtered twice")
+	-- QC H4: tabs never delete lines (the chat window has no per-tab view).
+	S.selectTab("Trade")
+	eq(incoming(message(9, "nice sword")), nil, "selecting another tab never blanks a line")
 	S.selectTab("All")
+	-- Whispers always pass (even Private Off) and badge the Private tab.
+	S.chatStates.Private = "Off"
+	eq(incoming(message(9, "psst", "RBXWhisper:1_9")), nil, "whispers always show")
+	incoming(message(9, "psst again", "RBXWhisper:1_9"))
+	local badge = S.tabs.Private:FindFirstChild("Unread")
+	ok(S.unread.Private == 2 and badge.Visible and badge.Text == "2", "unread whispers badge the Private tab")
+	incoming(message(1, "reply", "RBXWhisper:1_9"))
+	eq(S.unread.Private, 2, "your own whisper is not unread")
+	S.selectTab("Private")
+	ok(S.unread.Private == nil and not badge.Visible, "selecting Private clears the badge")
+	incoming(message(9, "more", "RBXWhisper:1_9"))
+	eq(S.unread.Private, nil, "whispers on the Private tab are read")
+	S.selectTab("All")
+	S.chatStates.Private = "On"
+	-- Bubble chat: lines a state hides get invisible bubbles.
+	local bubble = ov.textChat.OnBubbleAdded
+	ok(type(bubble) == "function", "OnBubbleAdded installed")
+	local b = bubble(message(9, "WTS brass sword"))
+	ok(b and b.BackgroundTransparency == 1 and b.TailVisible == false, "Trade Off: the bubble is hidden")
+	eq(bubble(message(9, "nice sword")), nil, "Public On: bubbles untouched")
+	eq(incoming({ TextSource = nil, TextChannel = { Name = "RBXSystem" }, Text = "x", Metadata = "IsleGame:info" }), nil, "router lines are never filtered twice")
+	-- QC L9: the tab row hides while the chat window is closed and follows its left edge.
+	local config = H.new("ChatWindowConfiguration", { Name = "ChatWindowConfiguration", Enabled = false })
+	config.Parent = ov.textChat
+	S.relayout()
+	ok(not S.tabRow.Visible, "chat window closed: no tabs")
+	config.Enabled = true
+	config.AbsolutePosition, config.AbsoluteSize = Vector2.new(24, 40), Vector2.new(420, 260)
+	S.relayout()
+	ok(S.tabRow.Visible and S.tabRow.Position.X.Offset == 24, "tabs follow the real chat window's left edge")
+	config.Parent = nil
+	S.relayout()
 
 	-- Pickup feed: merged per item inside the window, rarity colour, coins.
 	table.clear(S.feed)
 	local s1 = H.snapshot()
 	ui.update.OnClientEvent:Fire(s1)
+	-- QC M8: items that rise without a server pickups entry (a bank withdrawal,
+	-- a trade, a market collect, crafting, a shop buy) never reach the feed.
+	local withdraw = H.snapshot()
+	withdraw.items = table.clone(withdraw.items)
+	withdraw.items.Brassite += 40
+	withdraw.coins += 5000
+	ui.update.OnClientEvent:Fire(withdraw)
+	eq(#S.feed, 0, "a withdrawal is not a pickup")
 	local s2 = H.snapshot()
 	s2.items = table.clone(s2.items)
 	s2.items.Ore += 3
+	s2.pickups = { { id = "Ore", n = 3 } }
 	clock += 0.5
 	ui.update.OnClientEvent:Fire(s2)
 	local row = S.feedRows[#S.feed]
@@ -669,15 +837,42 @@ do
 	s3.items = table.clone(s2.items)
 	s3.items.Ore += 2
 	s3.coins = s2.coins + 75
+	s3.pickups = { { id = "Ore", n = 2 }, { id = "coins", n = 75 } }
+	s3.seq = 4100
 	clock += 1
 	ui.update.OnClientEvent:Fire(s3)
 	ok(#S.feed == 2 and S.feed[1].n == 5, "merged into +5 within the window")
 	ok(S.feedRows[1]:FindFirstChild("Text").Text == "+5 Copperstone Ore" and S.feedRows[2]:FindFirstChild("Text").Text == "+75 coins", "coins line under it")
 	ui.replicated:FindFirstChild("IsleSnapshotLocal"):Fire(s3)
-	eq(S.feed[1].n, 5, "a re-fired snapshot is not counted twice")
+	ui.replicated:FindFirstChild("IsleSnapshotLocal"):Fire(table.clone(s3))
+	eq(S.feed[1].n, 5, "a re-fired snapshot (or a copy with its seq) is not counted twice")
 	clock += 10
 	runDelays()
 	ok(#S.feed == 0 and not S.feedRows[1].Visible, "lines expire")
+
+	-- QC L4: no hover over an Active GUI object, nor while a gamepad drives.
+	local playerGui = ui.player:FindFirstChild("PlayerGui")
+	local panel = H.new("TextButton", { Name = "Panel", Active = true, Visible = true })
+	playerGui.GetGuiObjectsAtPosition = function() return { panel } end
+	hover(w.nodePart)
+	ok(not S.label.Visible and S.hover == nil, "no world hover over a GUI button")
+	playerGui.GetGuiObjectsAtPosition = function() return {} end
+	hover(w.nodePart)
+	ok(S.label.Visible, "hover returns off the GUI")
+	ov.input.InputChanged:Fire({ UserInputType = Enum.UserInputType.Gamepad1, KeyCode = Enum.KeyCode.Thumbstick2, Position = Vector3.new(0.8, 0, 0) })
+	ok(not S.mouseMode and not S.label.Visible, "gamepad input hides the label")
+	clock += 0.2
+	ov.run.Heartbeat:Fire(0.2)
+	ok(not S.label.Visible, "and no hover while the gamepad drives")
+	-- QC L10 (touch laptops): the next mouse movement brings the label back.
+	hover(w.nodePart)
+	ok(S.mouseMode and S.label.Visible, "mouse movement re-enables the label")
+	-- QC L5: the hover resolve is cached per part.
+	local first = S.hover
+	hover(w.nodePart)
+	ok(S.hover == first, "same part: the cached target is reused")
+	hover(w.body)
+	ok(S.hover ~= first and S.hover.kind == "monster", "a different part resolves afresh")
 	print("Part D (overlay): " .. (checks - before) .. " checks.")
 end
 
@@ -704,9 +899,9 @@ do
 		end
 		return out
 	end
-	combat.fx.OnClientEvent:Fire("hit", { model = monster, position = Vector3.new(0, 5, 0), amount = 1234 })
-	combat.fx.OnClientEvent:Fire("hit", { model = monster, position = Vector3.new(0, 5, 0), amount = 90, crit = true, tag = "weak" })
-	combat.fx.OnClientEvent:Fire("hit", { model = monster, position = Vector3.new(0, 5, 0), amount = 0, miss = true })
+	combat.fx.OnClientEvent:Fire("hit", { model = monster, position = Vector3.new(0, 5, 0), amount = 1234, attacker = 1 })
+	combat.fx.OnClientEvent:Fire("hit", { model = monster, position = Vector3.new(0, 5, 0), amount = 90, crit = true, tag = "weak", attacker = 1 })
+	combat.fx.OnClientEvent:Fire("hit", { model = monster, position = Vector3.new(0, 5, 0), amount = 0, miss = true, attacker = 1 })
 	local list = splats()
 	eq(#list, 3, "three pooled splats")
 	ok(list[1]:FindFirstChild("Value").Text == "1,234" and list[1]:FindFirstChild("Badge").BackgroundColor3 == roblox.Color3.fromHex(T.HudDepth.splatHit), "damage splat")
@@ -727,6 +922,7 @@ do
 	local fill = H.find(bar, "Fill")
 	ok(math.abs(fill.Size.X.Scale - 0.8) < 1e-5 and fill.BackgroundColor3 == roblox.Color3.fromHex(HD.barColor(0.8)), "bar at 80% in green " .. tostring(fill.Size) .. " " .. tostring(fill.BackgroundColor3))
 	ok(H.find(bar, "Level").Text == "Lv 12", "bar carries the level")
+	ok(H.find(bar, "Level").TextSize >= 11, "QC L8: bar level text is at least 11 px")
 	monster:SetAttribute("Health", 200)
 	ok(math.abs(fill.Size.X.Scale - 0.2) < 1e-5 and fill.BackgroundColor3 == roblox.Color3.fromHex(HD.barColor(0.2)), "bar follows Health (red at 20%)")
 	ok(H.find(bar, "Trail").Size.X.Scale <= 0.2 + 1e-5, "the damage trail drains to it")
@@ -735,6 +931,42 @@ do
 	eq(count, 1, "one pooled bar per creature")
 	monster:SetAttribute("Health", 0)
 	ok(not bar.Enabled and bar.Adornee == nil, "a dead creature releases its bar")
+	-- QC L2: a released bar's running tweens are cancelled (a reused bar never
+	-- keeps fading from its previous life); a restyled splat drops its old fades.
+	local OB, SP = combat.state.overhead, combat.state.splats
+	local function creature(name, x)
+		local m = H.new("Model", { Name = name })
+		m:SetAttribute("Health", 100)
+		m:SetAttribute("MaxHealth", 100)
+		local part = H.new("Part", { Name = "Body", Position = Vector3.new(x, 4, 0), Size = Vector3.new(4, 6, 4) })
+		part.Parent = m
+		m.PrimaryPart = part
+		m.Parent = combat.workspace
+		return m
+	end
+	local m1 = creature("Boar", 10)
+	combat.fx.OnClientEvent:Fire("hit", { model = m1, position = Vector3.new(10, 5, 0), amount = 5, attacker = 1 })
+	m1:SetAttribute("Health", 60)
+	local b1 = OB.byModel[m1]
+	local running = table.clone(b1.tweens)
+	ok(#running > 0 and running[1].playing, "the trail drain tween runs")
+	OB.release(m1)
+	ok(not running[1].playing and #b1.tweens == 0, "release cancels the bar's tweens")
+	local oldest = SP.live[1]
+	local fades = table.clone(oldest.tweens)
+	ok(#fades > 0 and fades[1].playing, "a live splat is fading")
+	ok(SP.show(Vector3.new(0, 5, 0), HD.splatStyle({ amount = 3 }, T)) == oldest and not fades[1].playing, "restyling the oldest splat cancels its old fade")
+	-- QC M7: other players' hits never claim a bar; a full pool evicts the oldest
+	-- bar that is not over your target.
+	local theirs = creature("Theirs", 20)
+	combat.fx.OnClientEvent:Fire("hit", { model = theirs, position = Vector3.new(20, 5, 0), amount = 5, attacker = 2 })
+	eq(OB.byModel[theirs], nil, "another player's hit: no bar")
+	local herd = {}
+	for i = 1, OB.POOL + 1 do
+		herd[i] = creature("Herd" .. i, 30 + i)
+		combat.fx.OnClientEvent:Fire("hit", { model = herd[i], position = Vector3.new(30 + i, 5, 0), amount = 1, attacker = 1 })
+	end
+	ok(OB.byModel[herd[OB.POOL + 1]] ~= nil and OB.byModel[herd[1]] == nil and OB.byModel[herd[2]] ~= nil, "a full pool evicts the oldest bar for your new hit")
 	-- Hurt splats on you; heal text through the same pool.
 	combat.fx.OnClientEvent:Fire("hurt", { amount = 0 })
 	ok(true, "hurt splat without a character is safe")
@@ -760,7 +992,21 @@ do
 	layer.state.priceText("Ore")
 	local refreshes = 0
 	for _, c in ipairs(calls) do if c[2] == true then refreshes += 1 end end
-	eq(refreshes, 1, "one refresh a minute per item")
+	eq(refreshes, 0, "QC H2: hovering never asks the server to refresh a price")
+	-- QC H2: a price-check reply is silent: the chat router prints nothing of it.
+	local ov = H.runOverlay(size, ui.player, ui.replicated, {})
+	local quiet = H.snapshot({ message = "" })
+	quiet.seq, quiet.silent, quiet.reply = 7001, true, "Copperstone Ore price check: 24h avg 5 coins."
+	ui.update.OnClientEvent:Fire(quiet)
+	ov.state.gameLine("info", "flush")
+	eq(#ov.chat, 0, "a silent price-check snapshot prints nothing")
+	local server = fs.readFile("server.server.lua")
+	ok(has(server, 'if verb=="priceCheck" then') and has(server, "snap.silent,snap.reply=true,message"), "the server flags price-check replies silent")
+	-- QC H1 / M8 / H3: the server stamps seq and pickups, and owns the quick-prayer verb.
+	ok(has(server, "seq=HudFeed.stamp(player),pickups=HudFeed.take(p)"), "snapshots carry seq and pickups")
+	ok(has(server, 'elseif verb=="prayerQuickToggle" then return Prayer.quickToggle(player,p)') and has(server, "prayerQuickToggle=true"), "prayerQuickToggle is a server verb")
+	ok(has(server, "pickup(p,item,result.amount)") and has(server, "for item,n in pairs(drops) do pickup(p,item,n) end"), "gathering and kill drops feed pickups")
+	ok(has(server, 'collect(p,recipe.output,recipe.amount)'), "crafting stays a plain collect (no pickup)")
 end
 
 ------------------------------------------------------------------------------
@@ -779,6 +1025,8 @@ do
 	ok(has(features, 'channel("IsleChatLocal")') and not features:find("DisplaySystemMessage", 1, true), "announcements route through the chat router")
 	ok(has(fs.readFile("nav.client.lua"), "L.lane.left, 8"), "the Navigate list opens right of the orbs")
 	ok(has(fs.readFile("combat.client.lua"), '"IsleAttackLocal"'), "combat listens for menu attacks")
+	ok(has(fs.readFile("docs/DEPTH-CONTRACT.md"), "\n## 34. HUD depth"), "the contract carries its §34 section")
+	ok(not fs.readFile("hud.client.lua"):find("Invoke(id, true)", 1, true), "tooltips never ask for a price refresh")
 	local hd = fs.readFile("shared/HudDepth.lua")
 	ok(not hd:find("Instance.new", 1, true) and not hd:find("require(", 1, true), "HudDepth is pure")
 end

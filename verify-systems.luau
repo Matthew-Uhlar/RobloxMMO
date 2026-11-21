@@ -766,10 +766,12 @@ ok(closedHour.t == 2 and closedHour.q == nil and closedHour.pr == nil and closed
 ok(table.find(openHour.u, "9105") and table.find(openHour.u, "9106") and openHour.pr["9105|9106"] == 3, "the open hour tracks its traders and the pair's units")
 advance(20)
 local pc = cmd(taker, "priceCheck", "Ore")
-ok(has(pc.message, "price check") and has(pc.message, "24h avg 20") and has(pc.message, "(10 sold)") and has(pc.message, "thin market"), "priceCheck (2 traders: thin market): " .. pc.message)
+-- §34: price-check replies are silent (reply text in `reply`, never in the chat-bound `message`).
+ok(pc.silent == true and not has(pc.message, "price check"), "price-check replies are silent")
+ok(has(pc.reply, "price check") and has(pc.reply, "24h avg 20") and has(pc.reply, "(10 sold)") and has(pc.reply, "thin market"), "priceCheck (2 traders: thin market): " .. tostring(pc.reply))
 ok(pc.systems.prices[1].item == "Ore" and pc.systems.prices[1].vol7 == 10, "price check kept for the client")
-ok(has(cmd(taker, "priceCheck", "Nope").message, "Choose an item"), "unknown item refused")
-ok(has(cmd(taker, "priceCheck", "Tonic").message, "not traded"), "untraded item refused")
+ok(has(cmd(taker, "priceCheck", "Nope").reply, "Choose an item"), "unknown item refused")
+ok(has(cmd(taker, "priceCheck", "Tonic").reply, "not traded"), "untraded item refused")
 for i = 1, 12 do advance(2); cmd(taker, "priceCheck", ({"Ore", "Herb", "Timber", "Fish", "Aetherite", "Sunwheat", "Glowcap", "Brassite", "Voidstone", "Glassfin", "Stormeel", "Moonbloom"})[i]) end
 ok(#cmd(taker, "state").systems.prices <= PR.CHECKS, "price checks bounded per player")
 -- QC M3: priceCheck skips the 0.24 s action cooldown (read throttle only) and
@@ -778,7 +780,7 @@ advance(60)
 remote.OnServerInvoke(taker, "goalClear") -- an action starts the cooldown
 advance(0.1)
 local quick = remote.OnServerInvoke(taker, "priceCheck", "Ore")
-ok(quick and not has(quick.message, "One moment"), "priceCheck is not held by the action cooldown: " .. tostring(quick and quick.message))
+ok(quick and not has((quick.reply or quick.message), "One moment"), "priceCheck is not held by the action cooldown: " .. tostring(quick and quick.message))
 local commodities = {}
 for cid in pairs(Data.Items) do if Data.Economy.isCommodity(cid) and cid ~= "Ore" then table.insert(commodities, cid) end end
 table.sort(commodities)
@@ -786,7 +788,7 @@ local busy = 0
 for i = 1, 14 do
 	advance(0.1)
 	local r = remote.OnServerInvoke(taker, "priceCheck", commodities[i])
-	if r and has(r.message, "busy") then busy += 1 end
+	if r and has(r.reply or r.message, "busy") then busy += 1 end
 end
 ok(busy > 0, "uncached price checks are bounded by their own budget (" .. busy .. " refused)")
 local trade = cmd(taker, "buyNow", "Ore:1:25")
@@ -822,7 +824,7 @@ ok(has(bought.message, "Bought"), "auction bought: " .. bought.message)
 local ah = data["auction_v1_weapon"].history
 ok(ah and ah[weapon] and ah[weapon][1].n == 1 and ah[weapon][1].v == 500, "auction sale recorded under the item")
 advance(20)
-ok(has(cmd(taker, "priceCheck", weapon).message, "24h avg 500"), "auction price check")
+ok(has(cmd(taker, "priceCheck", weapon).reply, "24h avg 500"), "auction price check")
 -- Ironman journals can read prices too (read-only).
 print("PASS: " .. (checks - partB) .. " server assertions.")
 

@@ -56,6 +56,7 @@ local events = {
 	TextBoxFocusReleased = true, InputEnded = true, TouchTapInWorld = true, RenderStepped = true, AncestryChanged = true,
 	MouseEnter = true, SelectionLost = true, Completed = true, Heartbeat = true, InputChanged = true, CharacterRemoving = true,
 	Event = true, MouseButton2Click = true, AttributeChanged = true, TouchPinch = true, Destroying = true,
+	Triggered = true, PromptButtonHoldEnded = true,
 	TouchLongPress = true, PlayerAdded = true, PlayerRemoving = true,
 }
 local guiClasses = { Frame = true, TextLabel = true, TextButton = true, ImageLabel = true, ImageButton = true, ScrollingFrame = true, ViewportFrame = true, TextBox = true, CanvasGroup = true }
@@ -612,7 +613,9 @@ function H.runCombat(size, player, shared)
 	chunk()
 	local monster = new("Model", { Name = "Golem" })
 	monster.Parent = services.Workspace
+	local api = player:FindFirstChild("IsleCombatApi")
 	return { hud = player:FindFirstChild("PlayerGui"):FindFirstChild("IsleCombatHud"), fx = fx, remote = remote, monster = monster, tagged = tagged,
+		state = api and api.OnInvoke("state"),
 		run = services.RunService, workspace = services.Workspace, input = services.UserInputService }
 end
 
@@ -827,6 +830,7 @@ function H.runOverlay(size, player, shared, options)
 	local tagged = options.tagged or {}
 	local others = options.players or {}
 	local chat = {}
+	options.ground = options.ground or function() return true end
 	local channels = new("Folder", { Name = "TextChannels" })
 	local general = new("TextChannel", { Name = "RBXGeneral" })
 	general.Parent = channels
@@ -837,7 +841,14 @@ function H.runOverlay(size, player, shared, options)
 	camera.ScreenPointToRay = function(_, x, y) return { Origin = roblox.Vector3.new(x, 100, y), Direction = roblox.Vector3.new(0, -1, 0) } end
 	local space = {
 		CurrentCamera = camera,
-		Raycast = function(_, origin, direction) return if options.raycast then options.raycast(origin, direction) else nil end,
+		-- Short downward rays are the overlay's ground checks: ground(origin) decides
+		-- (default: ground everywhere, 3 studs below the origin).
+		Raycast = function(_, origin, direction)
+			if direction.Magnitude < 50 and direction.Y < 0 then
+				return if options.ground(origin) then { Instance = camera, Position = origin - roblox.Vector3.new(0, 3, 0) } else nil
+			end
+			return if options.raycast then options.raycast(origin, direction) else nil
+		end,
 		FindFirstChild = function() return nil end,
 	}
 	local playersService = new("Players", { LocalPlayer = player })
@@ -851,8 +862,28 @@ function H.runOverlay(size, player, shared, options)
 		return nil
 	end
 	local run = new("RunService")
+	-- PathfindingService: options.path(from, to) returns waypoint positions (nil:
+	-- no path); the default is the straight line. Each route is recorded.
+	local routes = {}
+	local pathfinding = {
+		CreatePath = function()
+			local path = { Status = roblox.Enum.PathStatus.NoPath, points = {} }
+			function path.ComputeAsync(_, from, to)
+				table.insert(routes, { from = from, to = to })
+				local points = if options.path then options.path(from, to) else { from, to }
+				path.points = points or {}
+				path.Status = if points then roblox.Enum.PathStatus.Success else roblox.Enum.PathStatus.NoPath
+			end
+			function path.GetWaypoints()
+				local out = {}
+				for _, position in ipairs(path.points) do table.insert(out, { Position = position, Action = roblox.Enum.PathWaypointAction.Walk }) end
+				return out
+			end
+			return path
+		end,
+	}
 	local services = {
-		Players = playersService, ReplicatedStorage = replicated, RunService = run, TextChatService = textChat,
+		Players = playersService, ReplicatedStorage = replicated, RunService = run, TextChatService = textChat, PathfindingService = pathfinding,
 		UserInputService = new("UserInputService", { TouchEnabled = options.touch == true }), TweenService = new("TweenService"),
 		CollectionService = { GetTagged = function() return tagged end, HasTag = function(_, object, tag) return tag == "IsleMonster" and table.find(tagged, object) ~= nil end },
 	}
@@ -881,7 +912,9 @@ function H.runOverlay(size, player, shared, options)
 	luau.load(fs.readFile("overlay.client.lua"), { debugName = "overlay.client.lua", environment = env, injectGlobals = true })()
 	local api = player:FindFirstChild("IsleOverlayApi")
 	return { gui = player:FindFirstChild("PlayerGui"):FindFirstChild("IsleOverlay"), state = api.OnInvoke("state"), api = api, input = services.UserInputService,
-		run = run, chat = chat, textChat = textChat, theme = theme, camera = camera }
+		run = run, chat = chat, textChat = textChat, theme = theme, camera = camera, routes = routes,
+		setPath = function(fn) options.path = fn end,
+		setGround = function(fn) local old = options.ground; options.ground = fn or function() return true end; return old end }
 end
 
 -- Calls recorded by a RemoteEvent's FireServer.
