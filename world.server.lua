@@ -983,9 +983,9 @@ local function bridge(parent,a,b,style,tint)
 		guard.Transparency,guard.CastShadow=1,false
 	end
 	local dims=BRIDGE_STYLE[style]
-	local top=(a.Y+b.Y)/2+.08
-	local centre=(a+b)/2
-	local span=part(parent,"Bridge span",V(8.4,dims.top+dims.low,length),CFrame.lookAt(V(centre.X,top+(dims.top-dims.low)/2,centre.Z),V(b.X,top+(dims.top-dims.low)/2,b.Z)),cream,SM,false)
+	-- The span rides the deck's own pitch (sloped bridges, e.g. Brassfall ->
+	-- Cinder Shelf): centred on the deck's top face, offset along its up vector.
+	local span=part(parent,"Bridge span",V(8.4,dims.top+dims.low,length),cf*CFrame.new(0,.25+(dims.top-dims.low)/2,0),cream,SM,false)
 	span.Transparency,span.CastShadow,span.CanQuery=1,false,false
 	meshSlot(span,style,tint)
 	return deck,span
@@ -4467,6 +4467,7 @@ end
 ;(function()
 	local RA=Data.RegionArt
 	if RA then
+		local sectionStarted=os.clock()
 		local FLOOR={Meadow=true,["Floating foundation"]=true,["Island underside"]=true,["Edge guard"]=true,["Shore ledge"]=true,Path=true,Wildflowers=true,
 			["Plaza ring"]=true,["Compass court"]=true,["Harbor plaza"]=true,["Harbor seal"]=true,["Pond bank"]=true}
 		local taken={}
@@ -4482,43 +4483,107 @@ end
 			local c=isle and isle:GetAttribute("IslandCenter")
 			if c and type(mote.at)=="table" then table.insert(keepOut,{c+V(mote.at[1],mote.at[2],mote.at[3]),4}) end
 		end
-		local function blocked(host,pos,radius)
+		-- Clearance index (one per island, built once): every blocker's world
+		-- AABB bucketed on a CELL-stud XZ grid, so a candidate spot only tests
+		-- the few boxes around it instead of walking the island's descendants.
+		-- Blockers: visible or colliding parts (FLOOR names excepted), prompt
+		-- hosts, AetherSculpture hosts (box from SculptureScale) and NPC anchors
+		-- (Anchor_NPC_*, NPC_CLEAR studs). Paths ("path" kind) only block solid
+		-- props. Parts this section places are added as they go (track).
+		local CELL,NPC_CLEAR=16,3
+		local indexes={}
+		local function classify(obj)
+			if not obj:IsA("BasePart") then return nil end
+			local name=obj.Name
+			if string.find(name,"^Anchor_NPC_") then return "npc" end
+			if string.find(name,"^Anchor_") then return nil end
+			if obj:GetAttribute("SculptureScale")~=nil then return "sculpture" end
+			if name=="Path" then return "path" end
+			if FLOOR[name] then return nil end
+			if obj:FindFirstChildOfClass("ProximityPrompt") or obj.Transparency<1 or obj.CanCollide then return "solid" end
+			return nil
+		end
+		local function insert(index,obj)
+			local kind=classify(obj)
+			if not kind then return end
+			local c=obj.CFrame.Position
+			local hx,hy,hz
+			if kind=="npc" then
+				hx,hz=NPC_CLEAR,NPC_CLEAR
+				hy=3.5
+				c=c+V(0,3,0)
+			elseif kind=="sculpture" then
+				local r=math.max(1,2*(tonumber(obj:GetAttribute("SculptureScale")) or 1))
+				hx,hy,hz=r,r,r
+			else
+				local cf,sz=obj.CFrame,obj.Size
+				local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
+				hx,hy,hz=ext("X"),ext("Y"),ext("Z")
+			end
+			local e={c.X-hx,c.X+hx,c.Z-hz,c.Z+hz,c.Y-hy,c.Y+hy,kind}
+			for ix=math.floor(e[1]/CELL),math.floor(e[2]/CELL) do
+				for iz=math.floor(e[3]/CELL),math.floor(e[4]/CELL) do
+					local key=ix..","..iz
+					local cell=index[key]
+					if not cell then cell={} index[key]=cell end
+					table.insert(cell,e)
+				end
+			end
+		end
+		local function indexOf(host)
+			local index=indexes[host]
+			if not index then
+				index={}
+				indexes[host]=index
+				for _,obj in ipairs(host:GetDescendants()) do insert(index,obj) end
+			end
+			return index
+		end
+		local function track(host,inst)
+			local index=indexes[host]
+			if not index then return end -- indexed lazily later, inst included
+			insert(index,inst)
+			for _,obj in ipairs(inst:GetDescendants()) do insert(index,obj) end
+		end
+		local function blocked(host,pos,radius,solid)
 			for _,q in ipairs(taken) do if V(pos.X-q[1].X,0,pos.Z-q[1].Z).Magnitude<radius+q[2] then return true end end
 			for _,k in ipairs(keepOut) do if V(pos.X-k[1].X,0,pos.Z-k[1].Z).Magnitude<radius+k[2] then return true end end
-			for _,obj in ipairs(host:GetDescendants()) do
-				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
-					local cf,sz=obj.CFrame,obj.Size
-					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
-					local c=cf.Position
-					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
-					local dz=math.max(0,math.abs(pos.Z-c.Z)-ext("Z"))
-					local ey=ext("Y")
-					if dx*dx+dz*dz<radius*radius and c.Y+ey>pos.Y+.3 and c.Y-ey<pos.Y+14 then return true end
+			local index=indexOf(host)
+			for ix=math.floor((pos.X-radius)/CELL),math.floor((pos.X+radius)/CELL) do
+				for iz=math.floor((pos.Z-radius)/CELL),math.floor((pos.Z+radius)/CELL) do
+					for _,e in ipairs(index[ix..","..iz] or {}) do
+						if e[7]~="path" or solid then
+							local dx=math.max(0,e[1]-pos.X,pos.X-e[2])
+							local dz=math.max(0,e[3]-pos.Z,pos.Z-e[4])
+							local low=if e[7]=="path" then pos.Y-1 else pos.Y+.3
+							if dx*dx+dz*dz<radius*radius and e[6]>low and e[5]<pos.Y+14 then return true end
+						end
+					end
 				end
 			end
 			return false
 		end
 		-- First clear ground spot on `host` near `angle` (degrees), searching
 		-- outward rings; nil when the island has no room (the caller skips).
-		local function spot(host,angle,radius,fractions)
+		local function spot(host,angle,radius,fractions,solid)
 			local IC,R=host:GetAttribute("IslandCenter"),host:GetAttribute("IslandRadius")
 			for _,f in ipairs(fractions or {.5,.4,.6,.3,.68,.2,.75}) do
 				for k=0,23 do
 					local a=math.rad(angle+(if k%2==0 then 1 else -1)*math.ceil(k/2)*15)
 					local pos=IC+V(math.cos(a),0,math.sin(a))*math.min(R*f,R-radius-6)
-					if not blocked(host,pos,radius) then table.insert(taken,{pos,radius}) return pos end
+					if not blocked(host,pos,radius,solid) then table.insert(taken,{pos,radius}) return pos end
 				end
 			end
 			return nil
 		end
 		-- A spot near a world point (rings around it), on its island.
-		local function near(host,target,radius,from,to)
+		local function near(host,target,radius,from,to,solid)
 			local IC,R=host:GetAttribute("IslandCenter"),host:GetAttribute("IslandRadius")
 			for d=from or 6,to or 30,4 do
 				for k=0,15 do
 					local a=k*math.pi/8+d*.37
 					local pos=V(target.X+math.cos(a)*d,IC.Y,target.Z+math.sin(a)*d)
-					if V(pos.X-IC.X,0,pos.Z-IC.Z).Magnitude<R-radius-6 and not blocked(host,pos,radius) then table.insert(taken,{pos,radius}) return pos end
+					if V(pos.X-IC.X,0,pos.Z-IC.Z).Magnitude<R-radius-6 and not blocked(host,pos,radius,solid) then table.insert(taken,{pos,radius}) return pos end
 				end
 			end
 			return nil
@@ -4552,7 +4617,54 @@ end
 			local def=Data.RegionById[l.region]
 			if def and next(def.requires) then q:SetAttribute("IsleRegion",l.region) end
 			anchor(model,"Waypoint_Landmark_"..l.id,pos+(toward-pos).Unit*-3*V(1,0,1),toward)
+			track(islandModel(model),stone)
 			return stone
+		end
+		-- Landmark colliders: the mesh host is display-only (CanCollide off) so
+		-- nobody walks on an invisible box lid or corner; these invisible parts
+		-- follow the silhouette instead. Units are the mesh's own (art/region-
+		-- shapes.cjs), scaled by the host's uniform fit (k = host / mesh extent),
+		-- y measured from the mesh floor `y0`. cyl {r,y0,y1}; box {sx,sz,y0,y1};
+		-- ring {r,thick,y0,y1,n,door} (door: segments facing -Z, the front, stay open).
+		local COLLIDE={
+			CompassSpire={w=7.8,h=27.8,floor=0,{"box",7,7,0,2},{"box",5.6,5.6,2,17.2},{"cyl",3.2,17.2,20.5},{"cyl",1.8,20.5,24.5}},
+			Sunwheel={w=10.4,h=20.4,floor=0,{"cyl",5.1,0,3.5},{"cyl",4.1,3.5,9},{"cyl",3.6,9,15},{"cyl",4.2,15,17.8}},
+			EmberCaldera={w=20.8,h=6.6,floor=-.3,{"ring",7.2,3.6,-.3,3.6,12}},
+			SunkenObservatory={w=13.8,h=10.8,floor=-1.5,{"ring",6.55,.8,-1.5,3.2,14,true},{"ring",5.4,.6,3.2,6.6,12,true}},
+			VoidglassSpire={w=9.6,h=23,floor=-.24,{"cyl",3.8,-.24,1.6},{"cyl",1.4,1.6,18}},
+		}
+		local function colliders(model,body,id)
+			local spec=COLLIDE[id]
+			if not spec then return end
+			body.CanCollide=false
+			local k=math.min(body.Size.X/spec.w,body.Size.Y/spec.h)
+			local function local_(x,y,z) return body.CFrame*CFrame.new(x*k,(y-spec.floor)*k-body.Size.Y/2,z*k) end
+			local function solidPart(size,cf,shape)
+				local c=part(model,"Landmark collider",size,cf,cream,SM,true,shape)
+				c.Transparency,c.CastShadow=1,false
+				c:SetAttribute("LandmarkCollider",id)
+				return c
+			end
+			for _,c in ipairs(spec) do
+				if c[1]=="box" then
+					solidPart(V(c[2]*k,(c[5]-c[4])*k,c[3]*k),local_(0,(c[4]+c[5])/2,0))
+				elseif c[1]=="cyl" then
+					solidPart(V((c[4]-c[3])*k,2*c[2]*k,2*c[2]*k),local_(0,(c[3]+c[4])/2,0)*CFrame.Angles(0,0,math.pi/2),Enum.PartType.Cylinder)
+				elseif c[1]=="ring" then
+					local r,thick,y0,y1,n,door=c[2],c[3],c[4],c[5],c[6],c[7]
+					for i=0,n-1 do
+						local a=(i+.5)*2*math.pi/n
+						local x,z=math.cos(a)*r,math.sin(a)*r
+						-- Front door: the mesh front faces -Z; leave that segment open.
+						if not (door and -z/r>math.cos(math.pi/n*1.2)) then
+							local seg=2*(r+thick/2)*math.tan(math.pi/n)+.2
+							local centre=local_(x,(y0+y1)/2,z)
+							local out=(local_(x*2,(y0+y1)/2,z*2).Position-centre.Position)
+							solidPart(V(seg*k,(y1-y0)*k,thick*k),CFrame.lookAt(centre.Position,centre.Position+out,body.CFrame.UpVector))
+						end
+					end
+				end
+			end
 		end
 		local LANDMARK_BUILD={
 			-- shape host: footprint radius, host size (studs), solid, angle hint
@@ -4575,11 +4687,13 @@ end
 				local accent=hex(ra.palette[2])
 				local centre
 				if spec then
-					local pos=spot(host,spec.angle,spec.radius)
+					local pos=spot(host,spec.angle,spec.radius,nil,true)
 					if pos then
 						local body=part(model,l.name,spec.size,CFrame.new(pos+V(0,spec.size.Y/2-(spec.sink or 0),0))*CFrame.Angles(0,math.rad(spec.angle+90),0),lighten(rock,.1),ST,true)
 						meshSlot(body,l.shape,accent,false,"Uniform")
 						body:SetAttribute("Landmark",l.id)
+						colliders(model,body,l.id)
+						track(host,model)
 						centre=pos
 						built[l.id]=body
 						if l.id=="Sunwheel" then
@@ -4618,7 +4732,7 @@ end
 					centre=centre or host:GetAttribute("IslandCenter")
 				end
 				if centre then
-					local at=near(host,centre,2.5,if spec then spec.radius+3 else 8,44) or near(host,centre,2.5,46,70) or spot(host,90,2.5)
+					local at=near(host,centre,2.5,if spec then spec.radius+3 else 8,44,true) or near(host,centre,2.5,46,70,true) or spot(host,90,2.5,nil,true)
 					if at then survey(model,l,at,centre) end
 				end
 			end
@@ -4635,10 +4749,11 @@ end
 				local l=RA.Regions[f.region].landmark
 				local target=built[l.id] and built[l.id].CFrame.Position
 				local pos
-				if f.role=="WarpKeeper" then pos=near(host,V(56,0,60),2.5,22,60) end
-				if not pos and target and host:IsAncestorOf(built[l.id]) then pos=near(host,target,2.5,14,46) end
-				pos=pos or spot(host,i*47,2.5,{.35,.45,.25,.55,.6})
-				if pos then anchor(host,"NPC_"..f.role,pos,host:GetAttribute("IslandCenter")+V(0,0,.01)) end
+				-- NPC_CLEAR each side: folk stand >= 6 studs from every other NPC.
+				if f.role=="WarpKeeper" then pos=near(host,V(56,0,60),NPC_CLEAR,22,60) end
+				if not pos and target and host:IsAncestorOf(built[l.id]) then pos=near(host,target,NPC_CLEAR,14,46) end
+				pos=pos or spot(host,i*47,NPC_CLEAR,{.35,.45,.25,.55,.6})
+				if pos then track(host,anchor(host,"NPC_"..f.role,pos,host:GetAttribute("IslandCenter")+V(0,0,.01))) end
 			end
 		end
 
@@ -4666,10 +4781,11 @@ end
 				for li,entry in ipairs(list) do
 					local shape,count,size,solid,tint=entry[1],entry[2],entry[3],entry[4],entry[5]
 					for k=1,count do
-						local pos=spot(host,(li*97+k*61)%360,math.max(size.X,size.Z)/2+1,{.62,.5,.72,.4,.3})
+						local pos=spot(host,(li*97+k*61)%360,math.max(size.X,size.Z)/2+1,{.62,.5,.72,.4,.3},solid)
 						if pos then
 							local p=part(model,shape,size,CFrame.new(pos+V(0,size.Y/2,0))*CFrame.Angles(0,hash(k,li)*math.pi*2,0),if solid then darken(timber,.2) else C("6C9A58"),WO,solid)
 							meshSlot(p,shape,tint and hex(tint),false,"Uniform")
+							track(host,p)
 							dressed+=1
 						end
 					end
@@ -4687,13 +4803,19 @@ end
 				local r=host:GetAttribute("IslandRadius")
 				local a=math.rad(fall[2])
 				local out=V(math.cos(a),0,math.sin(a))
+				-- The lip starts on the cliff's outer face: the foundation's own radius
+				-- (it sits just outside the meadow, see island()) plus 0.3. Both
+				-- attachments face outward (X axis = out, Y up) and the Beam keeps a
+				-- fixed orientation (FaceCamera off) so the sheet hangs flat on the cliff.
+				local cliffR=foundation.Size.Y/2
+				local function facingOut(p) return foundation.CFrame:ToObjectSpace(CFrame.fromMatrix(p,out,V(0,1,0))) end
 				local top=Instance.new("Attachment")
 				top.Name="Waterfall lip"
-				top.CFrame=foundation.CFrame:ToObjectSpace(CFrame.new(host:GetAttribute("IslandCenter")+out*(r+.3)-V(0,.1,0)))
+				top.CFrame=facingOut(host:GetAttribute("IslandCenter")+out*(cliffR+.3)-V(0,.1,0))
 				top.Parent=foundation
 				local foot=Instance.new("Attachment")
 				foot.Name="Waterfall foot"
-				foot.CFrame=foundation.CFrame:ToObjectSpace(CFrame.new(host:GetAttribute("IslandCenter")+out*(r+5)-V(0,math.clamp(r*.9,40,90),0)))
+				foot.CFrame=facingOut(host:GetAttribute("IslandCenter")+out*(cliffR+5)-V(0,math.clamp(r*.9,40,90),0))
 				foot.Parent=foundation
 				local water=Instance.new("Beam")
 				water.Name="Waterfall"
@@ -4701,7 +4823,7 @@ end
 				water.Texture="rbxasset://textures/particles/smoke_main.dds"
 				water.TextureMode,water.TextureLength,water.TextureSpeed=Enum.TextureMode.Wrap,6,-1.6
 				water.Width0,water.Width1=6,10
-				water.FaceCamera,water.Segments,water.LightEmission,water.LightInfluence=true,6,.2,.6
+				water.FaceCamera,water.Segments,water.LightEmission,water.LightInfluence=false,6,.2,.6
 				water.Color=ColorSequence.new(hex("BFEFFF"),hex("6FC3DF"))
 				water.Transparency=NumberSequence.new(.15,.7)
 				water.Parent=foundation
@@ -4717,6 +4839,7 @@ end
 			end
 		end
 		islandsFolder:SetAttribute("RegionArtProps",dressed)
+		islandsFolder:SetAttribute("RegionArtBuildSeconds",os.clock()-sectionStarted) -- placement cost (verify-regions reports it)
 	end
 end)()
 -- End World Art & Regions section.

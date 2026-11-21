@@ -160,9 +160,12 @@ end
 local closeDialogue
 local showNode
 local function optionButton(text, order, onClick, accent)
-	local b = make("TextButton", optionsFrame, {LayoutOrder = order, Size = UDim2.new(1, -6, 0, 36), BackgroundColor3 = if accent then slate else deep,
-		Text = "  " .. text, Font = bold, TextSize = 14, TextColor3 = if accent then gold else ivory, TextXAlignment = Enum.TextXAlignment.Left,
-		TextTruncate = Enum.TextTruncate.AtEnd, AutoButtonColor = true})
+	-- Long labels (regional quests, shop offers) wrap onto a second line; the
+	-- button grows to fit (36 px minimum) and the options list scrolls.
+	local b = make("TextButton", optionsFrame, {LayoutOrder = order, Size = UDim2.new(1, -6, 0, 36), AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundColor3 = if accent then slate else deep, Text = text, Font = bold, TextSize = 14, TextColor3 = if accent then gold else ivory,
+		TextXAlignment = Enum.TextXAlignment.Left, TextWrapped = true, AutoButtonColor = true})
+	make("UIPadding", b, {PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 8), PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6)})
 	round(b, 8, if accent then gold else slate)
 	b.Activated:Connect(function() if not busy then onClick() end end)
 	return b

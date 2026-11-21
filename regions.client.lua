@@ -7,7 +7,9 @@
 --   island's Ambience attribute (pollen, embers, spores...), plus an optional
 --   looped Sound when AmbientSound names an asset (hook; empty by default).
 -- * Spin: parts tagged RegionSpin (the Sunwheel sails) turn locally about
---   their look axis at SpinRate rad/s within 600 studs; the forge's mesh
+--   their look axis at SpinRate rad/s within SPIN_RANGE studs (the forge's
+--   landmark distance: 1,200 desktop / 900 phone, so a forged sail never
+--   hangs frozen in view); the forge's mesh
 --   follows its host's CFrame. Nothing here touches the server or lighting.
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -147,6 +149,13 @@ end)
 ------------------------------------------------------------------------------
 -- Local spin (windmill sails) and the ambience box following the camera.
 ------------------------------------------------------------------------------
+-- Same distance the forge builds the sails at (catalog range 1200, phones capped at 900).
+local mobile = false
+pcall(function()
+	local UserInputService = game:GetService("UserInputService")
+	mobile = UserInputService.TouchEnabled == true and UserInputService.KeyboardEnabled ~= true
+end)
+local SPIN_RANGE = if mobile then 900 else 1200
 local spinning = {}
 local function addSpin(p) if p:IsA("BasePart") then spinning[p] = p.CFrame end end
 Tags:GetInstanceAddedSignal("RegionSpin"):Connect(addSpin)
@@ -160,7 +169,7 @@ RunService.Heartbeat:Connect(function(dt)
 	angle += dt
 	for p, base in pairs(spinning) do
 		if not p.Parent then spinning[p] = nil
-		elseif (base.Position - camera.CFrame.Position).Magnitude < 600 then
+		elseif (base.Position - camera.CFrame.Position).Magnitude < SPIN_RANGE then
 			local rate = p:GetAttribute("SpinRate")
 			p.CFrame = base * CFrame.Angles(0, 0, angle * (if type(rate) == "number" then rate else .3))
 		end

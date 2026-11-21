@@ -2887,7 +2887,7 @@ function Pages.drawSpellbook()
 		elseif spell.kind=="heal" then
 			table.insert(lines,"Restores "..num(spell.heal,0).."% of your max health  ·  "..num(spell.cooldown,0).."s cooldown  ·  any weapon")
 		elseif spell.kind=="teleport" then
-			table.insert(lines,"Breaks a Hubward Tablet to return to the Aether Hub  ·  not within "..num(cs.combatLock,5).."s of being struck")
+			table.insert(lines,"Breaks a Hubward Tablet to return to Compass Quay  ·  not within "..num(cs.combatLock,5).."s of being struck")
 		end
 		table.insert(lines,paint("+"..fmt(num(spell.xp,0)).." Magic XP per cast","F9CC77")..(spell.requiresWeapon and "  ·  needs a staff or wand" or ""))
 		local actions
