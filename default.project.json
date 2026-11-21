@@ -41,7 +41,8 @@
         "Companions": { "$path": "pets.client.lua" },
         "AetherMotes": { "$path": "motes.client.lua" },
         "IsleHud": { "$path": "hud.client.lua" },
-        "RegionBanner": { "$path": "regions.client.lua" }
+        "RegionBanner": { "$path": "regions.client.lua" },
+        "IsleFeatures": { "$path": "features.client.lua" }
       }
     },
     "Lighting": {

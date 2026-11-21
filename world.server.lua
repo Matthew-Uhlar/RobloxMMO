@@ -5009,6 +5009,152 @@ do
 end
 -- End Lairs section.
 
+-------------------------------------------------------------------------------
+-- Skyward Vents (MMO Features, docs/DEPTH-CONTRACT.md §31; Data.Vents).
+-- One collider pad per vent (6 static parts, `Caldera` mesh slot + an updraft
+-- emitter, tag SkywardVent, attributes VentId / VentLanding). Its prompt
+-- (IsleVent = id) asks IsleRegionAccess for the destination region and the
+-- IsleTravelGate when present, applies a per-rider cooldown, sets FastTravelAt,
+-- publishes VentFlight = "<id>:<seq>" (the rider's client plays the arc), then
+-- lands the rider server-side after Data.Vents.FLIGHT seconds (FastTravelAt
+-- again). Landings sit beside the paired vent on the far isle, on clear ground
+-- and >= 42 studs from every monster spawn marker.
+-------------------------------------------------------------------------------
+do
+	local VD=Data.Vents
+	if VD then
+		local FLOOR={Meadow=true,["Floating foundation"]=true,["Mineral stratum"]=true,["Lower basalt"]=true,["Fractured cliff"]=true,
+			["Keel rock"]=true,["Edge guard"]=true,["Aether vein"]=true,["Shore ledge"]=true,Path=true,Wildflowers=true}
+		local markers={}
+		local spawns=workspace:FindFirstChild("MonsterSpawns")
+		if spawns then for _,m in ipairs(spawns:GetChildren()) do if m:IsA("BasePart") then table.insert(markers,m.CFrame.Position) end end end
+		local function blocked(host,pos,radius,clear)
+			for _,m in ipairs(markers) do if V(pos.X-m.X,0,pos.Z-m.Z).Magnitude<clear then return true end end
+			for _,obj in ipairs(host:GetDescendants()) do
+				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
+					local cf,sz=obj.CFrame,obj.Size
+					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
+					local c=cf.Position
+					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
+					local dz=math.max(0,math.abs(pos.Z-c.Z)-ext("Z"))
+					local ey=ext("Y")
+					if dx*dx+dz*dz<radius*radius and c.Y+ey>pos.Y+.3 and c.Y-ey<pos.Y+9 then return true end
+				end
+			end
+			return false
+		end
+		local function spot(host,angle,radius,clear)
+			local IC,R=host:GetAttribute("IslandCenter"),host:GetAttribute("IslandRadius")
+			for _,f in ipairs({.6,.5,.7,.4,.75,.3}) do
+				for k=0,23 do
+					local a=math.rad(angle+(if k%2==0 then 1 else -1)*math.ceil(k/2)*15)
+					local pos=IC+V(math.cos(a),0,math.sin(a))*R*f
+					if not blocked(host,pos,radius,clear) then return pos end
+				end
+			end
+			return nil
+		end
+		local vents,byIsle={},{}
+		for i,def in ipairs(VD.List) do
+			local host=islandsFolder:FindFirstChild(def.isle)
+			local target=Data.RegionById[def.to]
+			local pos=host and target and (spot(host,20+i*61,9,42) or spot(host,20+i*61,9,26))
+			if pos then
+				local tint=C(def.color)
+				local pad=disk(host,"Skyward vent",pos+V(0,.5,0),4,1,darken(tint,.35),ST,true)
+				meshSlot(pad,"Caldera",tint,nil,"Uniform")
+				pad:SetAttribute("VentId",def.id)
+				Tags:AddTag(pad,"SkywardVent")
+				local draft=Instance.new("ParticleEmitter")
+				draft.Name="Updraft"
+				draft.EmissionDirection=Enum.NormalId.Right -- the disk's axis points up
+				draft.Rate,draft.LightEmission=14,.6
+				draft.Speed,draft.Lifetime=NumberRange.new(14,20),NumberRange.new(.9,1.3)
+				draft.Size=NumberSequence.new(1.2,0)
+				draft.Transparency=NumberSequence.new(.35,1)
+				draft.Color=ColorSequence.new(lighten(tint,.5),tint)
+				draft.Parent=pad
+				local q=prompt(pad,"Ride the "..def.name,"To "..target.name)
+				q:SetAttribute("IsleVent",def.id)
+				vents[def.id]={def=def,pad=pad,pos=pos,host=host,prompt=q}
+				byIsle[def.isle]=def.id
+			end
+		end
+		-- Landings: beside the vent on the far isle that leads back (open ground,
+		-- >= 42 studs from monster markers), else that isle's own clear spot.
+		for _,v in pairs(vents) do
+			local host=islandsFolder:FindFirstChild(v.def.land)
+			local back=byIsle[v.def.land] and vents[byIsle[v.def.land]]
+			local land
+			if back then
+				local IC=host:GetAttribute("IslandCenter")
+				local inward=V(IC.X-back.pos.X,0,IC.Z-back.pos.Z)
+				inward=if inward.Magnitude>1e-3 then inward.Unit else V(1,0,0)
+				land=back.pos+inward*8
+				-- Beside a vent that had to stand nearer a spawn: land on the isle's clearest ground instead.
+				if blocked(host,land,0,42) then land=spot(host,200,6,42) end
+			elseif host then
+				land=spot(host,200,6,42)
+			end
+			if land then
+				v.landing=land+V(0,4,0)
+				v.pad:SetAttribute("VentLanding",v.landing)
+				anchor(host,"Waypoint_Vent_"..v.def.id,land,v.pos)
+			end
+		end
+		local riding,ready,seq={},{},0
+		local function notice(player,message)
+			player:SetAttribute("IsleRegionNotice",message)
+			player:SetAttribute("IsleRegionNoticeCount",(tonumber(player:GetAttribute("IsleRegionNoticeCount")) or 0)+1)
+		end
+		local function launch(player,v)
+			local character=player.Character
+			local root=character and character:FindFirstChild("HumanoidRootPart")
+			local hum=character and character:FindFirstChildOfClass("Humanoid")
+			if not v.landing or not root or not hum or hum.Health<=0 then return end
+			if (v.pad.CFrame.Position-root.Position).Magnitude>VD.RANGE+3 then return end
+			local now=os.clock()
+			if riding[player] then return end
+			if (ready[player] or 0)>now then notice(player,v.def.name.." is gathering its breath ("..math.ceil(ready[player]-now).."s).") return end
+			local region=Data.RegionById[v.def.to]
+			local access=ServerStorage:FindFirstChild("IsleRegionAccess")
+			if not access then return end
+			local ok,result=pcall(access.Invoke,access,player,v.def.to)
+			if not (ok and type(result)=="table" and result.allowed) then
+				notice(player,if ok and type(result)=="table" and type(result.message)=="string" then result.message else region.name..": "..requirementText(region))
+				return
+			end
+			local gate=ServerStorage:FindFirstChild("IsleTravelGate")
+			if gate then
+				local okGate,verdict=pcall(gate.Invoke,gate,player)
+				if okGate and verdict~=true then notice(player,if type(verdict)=="string" then verdict else "The vent will not lift you right now.") return end
+			end
+			seq+=1
+			local mine=seq
+			riding[player]=mine
+			ready[player]=now+VD.COOLDOWN
+			player:SetAttribute("FastTravelAt",os.clock()) -- known fast travel (Aether Mote pickup checks)
+			player:SetAttribute("VentFlight",v.def.id..":"..mine)
+			task.spawn(function()
+				task.wait(VD.FLIGHT)
+				if riding[player]~=mine then return end
+				riding[player]=nil
+				local now2=player.Character
+				local r=now2 and now2:FindFirstChild("HumanoidRootPart")
+				local h=now2 and now2:FindFirstChildOfClass("Humanoid")
+				if now2==character and r and h and h.Health>0 then
+					player:SetAttribute("FastTravelAt",os.clock())
+					now2:PivotTo(CFrame.new(v.landing))
+					r.AssemblyLinearVelocity=Vector3.zero
+				end
+			end)
+		end
+		for _,v in pairs(vents) do v.prompt.Triggered:Connect(function(player) launch(player,v) end) end
+		Players.PlayerRemoving:Connect(function(player) riding[player]=nil; ready[player]=nil end)
+	end
+end
+-- End Skyward Vents.
+
 -- Signs (§28 performance): drop Back faces nobody can read on the static world.
 Signs.cullBacks(world)
 Signs.cullBacks(islandsFolder)

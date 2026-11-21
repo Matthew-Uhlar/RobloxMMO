@@ -172,6 +172,33 @@ local function optionButton(text, order, onClick, accent)
 	b.Activated:Connect(function() if not busy then onClick() end end)
 	return b
 end
+-- §31 shop quantities: right-click or long-press a shop offer for the quantity
+-- picker (features.client.lua on IsleQuantityLocal; verb rqBuy "Role:i:qty").
+local quantitySuppress = setmetatable({}, {__mode = "k"}) -- a long-press must not also buy one
+local function quantityHook(b, option)
+	local role, index = string.match(option.item or "", "^(%w+):(%d+)$")
+	local folk = role and Data.RegionArt and Data.RegionArt.FolkByRole[role]
+	local offer = folk and folk.shop and folk.shop[tonumber(index)]
+	if not offer then return end
+	local item = Data.Items[offer.item]
+	local function open()
+		local event = ReplicatedStorage:FindFirstChild("IsleQuantityLocal")
+		if not event then return end
+		local coins = snapshot and tonumber(snapshot.coins) or 0
+		event:Fire({verb = "rqBuy", base = option.item, name = item and item.name or offer.item, unit = offer.price, amount = offer.amount,
+			max = math.max(1, math.min(Data.Features.Shop.MAX_LOTS, math.floor(coins / math.max(1, offer.price))))})
+	end
+	b.MouseButton2Click:Connect(open)
+	local pressedAt
+	b.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.Touch then
+			local stamp = os.clock()
+			pressedAt = stamp
+			task.delay(0.55, function() if pressedAt == stamp then pressedAt = nil; quantitySuppress[option] = os.clock(); open() end end)
+		end
+	end)
+	b.InputEnded:Connect(function() pressedAt = nil end)
+end
 local function clearOptions()
 	for _, c in ipairs(optionsFrame:GetChildren()) do if c:IsA("GuiObject") then c:Destroy() end end
 end
@@ -339,7 +366,13 @@ showNode = function(nodeId)
 	clearOptions()
 	local options = T.visibleOptions(node, snapshot, context())
 	for i, option in ipairs(options) do
-		optionButton(option.label, i, function() runOption(option) end, option.verb ~= nil or option.waypoint ~= nil)
+		local b = optionButton(option.label, i, function()
+			local held = quantitySuppress[option]
+			quantitySuppress[option] = nil
+			if held and os.clock() - held < 1.5 then return end
+			runOption(option)
+		end, option.verb ~= nil or option.waypoint ~= nil)
+		if option.verb == "rqBuy" then quantityHook(b, option) end
 	end
 	layout(#options)
 end
