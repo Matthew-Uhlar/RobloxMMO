@@ -811,8 +811,15 @@ local function island(name,pos,r,opts)
 	m.Parent=opts.parent or islandsFolder
 	local stone,stratum=opts.stone or rock,opts.stratum or shale
 	disk(m,"Meadow",pos-V(0,.25,0),r+.1,.5,opts.top or turf,opts.ground or Enum.Material.Grass,true)
-	local foundation=disk(m,"Floating foundation",pos-V(0,3.3,0),r-.4,6,stone,ST,true)
 	local grassy=(opts.ground or Enum.Material.Grass)==Enum.Material.Grass or opts.ground==LEAF
+	-- The forged cliff (fit box = this cylinder, top at its top) must never
+	-- reach into the meadow slab (top 0, bottom -0.5): its strata, cap and the
+	-- grass lip (up to +0.52 above the fit top) otherwise clip through the grass.
+	-- So the foundation top sits below the meadow bottom (grass lip: -0.6, the
+	-- bare cliff's rubble crown: -0.9) and its radius puts the lip's inner edge
+	-- (0.99 x radius) just outside the meadow's side wall.
+	local drop=if grassy then .6 else .9
+	local foundation=disk(m,"Floating foundation",pos-V(0,drop+3,0),(r+.15)/.99,6,stone,ST,true)
 	meshSlot(foundation,opts.cliff or (if grassy then "IslandCliff" else "IslandCliffBare"),stone)
 	-- Keel depth grows with the island (deep spires under the big isles).
 	local depth=math.clamp(r*.55+6,10,62)
@@ -830,7 +837,7 @@ local function island(name,pos,r,opts)
 			if not angleNear(a,clear,0) then
 				local radial=V(math.cos(a),0,math.sin(a))
 				local w=6+hash(i,5)*6
-				part(m,"Shore ledge",V(w,1.2,w*.7),CFrame.new(pos+radial*(r+w*.18)-V(0,.95,0))*CFrame.Angles(0,-a+hash(i,9),0),opts.ledge or lighten(stone,.15),ST,false)
+				part(m,"Shore ledge",V(w,1.2,w*.7),CFrame.new(pos+radial*(r+w*.18)-V(0,1.25,0))*CFrame.Angles(0,-a+hash(i,9),0),opts.ledge or lighten(stone,.15),ST,false)
 			end
 		end
 		local stones=math.clamp(math.floor(r/9),3,12)

@@ -959,7 +959,19 @@ do
 		-- Layer stack: the foundation top sits inside the meadow (no shared plane).
 		local foundation=isle:FindFirstChild("Floating foundation")
 		local fTop=foundation.CFrame.Position.Y+foundation.Size.X/2
-		check(fTop<center.Y-.1 and fTop>center.Y-.5,isle.Name.." foundation does not z-fight the meadow")
+		-- The forged cliff rides the foundation's fit box, so the whole hull
+		-- (top below the meadow's bottom, lip ring outside its side wall) must
+		-- stay clear of the meadow slab or the grass clips into the rock.
+		local meadow=isle:FindFirstChild("Meadow")
+		local mBottom=meadow.CFrame.Position.Y-meadow.Size.X/2
+		local mRadius=meadow.Size.Y/2
+		check(fTop<mBottom-.05,isle.Name.." foundation/cliff top sits below the meadow slab")
+		check(foundation.Size.Y/2*.99>mRadius+.02,isle.Name.." cliff lip ring starts outside the meadow side wall")
+		for _,ledge in isle:GetChildren() do
+			if ledge.Name=="Shore ledge" then
+				check(ledge.CFrame.Position.Y+ledge.Size.Y/2<mBottom-.05,isle.Name.." shore ledge stays below the meadow slab")
+			end
+		end
 		local parts,shore=0,0
 		for _,obj in isle:GetDescendants() do
 			if obj:IsA("BasePart") then parts+=1 end

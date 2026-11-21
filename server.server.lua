@@ -4204,29 +4204,36 @@ end
 -- HeldItem / Hotbar player attributes; held.server.lua builds the visible model.
 -- `hold "<id>"` is an explicit choice; `hold "~<id>"` and every gather are
 -- temporary auto switches that return to the explicit choice after
--- Data.Held.AUTO_RETURN idle seconds. Both verbs skip the action cooldown (a hotbar
+-- Data.Held.AUTO_RETURN idle seconds. A temporary switch lives only in
+-- Held.auto[player].id (published with HeldAuto=true), never in p.held, so no
+-- save can ever store it. Both verbs skip the action cooldown (a hotbar
 -- key must never block the gather it precedes) and spend their own token bucket.
 local Held={verbs={hold=true,hotbarSet=true},buckets={},auto={}}
 do
 	local HD=Data.Held
 	local meets=Progression.meetsRequirements
 	function Held.apply(player,p)
-		local id=HD.resolve(p,meets) or ""
+		local a=Held.auto[player]
+		local id,temporary=HD.resolve(p,meets,a and a.id)
+		id=id or ""
 		if player:GetAttribute("HeldItem")~=id then player:SetAttribute("HeldItem",id) end
+		local auto=temporary==true
+		if (player:GetAttribute("HeldAuto")==true)~=auto then player:SetAttribute("HeldAuto",auto) end
 		local bar=HD.hotbarString(p)
 		if player:GetAttribute("Hotbar")~=bar then player:SetAttribute("Hotbar",bar) end
 		return id
 	end
-	-- temporary: remember the explicit choice once and (re)start the return timer.
+	-- temporary: hold id until the return timer runs out; p.held stays the explicit choice.
 	function Held.set(player,p,id,temporary)
 		if temporary then
 			local a=Held.auto[player]
-			if not a then a={back=p.held}; Held.auto[player]=a end
+			if not a then a={}; Held.auto[player]=a end
+			a.id=id
 			a.untilAt=os.clock()+HD.AUTO_RETURN
 		else
 			Held.auto[player]=nil
+			p.held=id
 		end
-		p.held=id
 		return Held.apply(player,p)
 	end
 	-- A gather auto-holds the best owned tool for the skill (pickaxe, hatchet, rod, hoe).
@@ -4247,39 +4254,40 @@ do
 			if now>=a.untilAt then
 				Held.auto[player]=nil
 				local p=profiles[player]
-				if p and player.Parent then p.held=a.back; Held.apply(player,p) end
+				if p and player.Parent then Held.apply(player,p) end
 			end
 		end
 	end
+	-- Returns message, ok (ok feeds the compact reply's status field).
 	function Held.action(player,p,verb,item)
 		local bucket=Held.buckets[player]
 		if not bucket then bucket={}; Held.buckets[player]=bucket end
-		if not HD.take(bucket,os.clock()) then return "One moment…" end
+		if not HD.take(bucket,os.clock()) then return "One moment…",false end
 		if verb=="hold" then
 			local ok,id,temporary=HD.validate(p,item,meets)
-			if not ok then return id end
+			if not ok then return id,false end
 			local shown=Held.set(player,p,id,temporary)
-			if shown=="" then return "Hands empty." end
-			return "Holding "..(Data.Items[shown] and Data.Items[shown].name or shown).."."
+			if shown=="" then return "Hands empty.",true end
+			return "Holding "..(Data.Items[shown] and Data.Items[shown].name or shown)..".",true
 		end
 		local slot,id=HD.parseSlot(item)
-		if not slot then return "Choose hotbar slot 3-9." end
+		if not slot then return "Choose hotbar slot 3-9.",false end
 		p.hotbar=type(p.hotbar)=="table" and p.hotbar or {}
 		if id=="" then
 			p.hotbar["s"..slot]=nil
 			Held.apply(player,p)
-			return "Hotbar slot "..slot.." cleared."
+			return "Hotbar slot "..slot.." cleared.",true
 		end
-		if not HD.assignable(p,id) then return if Data.Items[id] then "You do not own "..Data.Items[id].name.."." else "Choose an item for the hotbar." end
+		if not HD.assignable(p,id) then return (if Data.Items[id] then "You do not own "..Data.Items[id].name.."." else "Choose an item for the hotbar."),false end
 		p.hotbar["s"..slot]=id
 		Held.apply(player,p)
-		return Data.Items[id].name.." set to hotbar slot "..slot.."."
+		return Data.Items[id].name.." set to hotbar slot "..slot..".",true
 	end
 	function Held.forget(player)
-		local a,p=Held.auto[player],profiles[player]
-		if a and p then p.held=a.back end -- never save a temporary auto switch
+		-- p.held is always the explicit choice: dropping the timer is all a leave needs.
 		Held.auto[player]=nil
 		Held.buckets[player]=nil
+		if player.Parent and player:GetAttribute("HeldAuto")==true then player:SetAttribute("HeldAuto",false) end
 	end
 end
 local function applyStats(player,p,spawned)
@@ -6607,7 +6615,10 @@ local function perform(player,verb,item,prompt)
 		local allowed,missing=Progression.meetsRequirements(p,def.requires)
 		if not allowed then return def.name.." requires "..missing.."." end
 		if p.equipment[def.slot]==item then return def.name.." is already equipped." end
-		if def.slot=="weapon" and p.held~=nil and p.held==p.equipment.weapon then p.held=nil end -- Held items: hotbar slot 1 follows the new weapon
+		-- Held items: hotbar slot 1 follows the new weapon. p.held is the explicit choice
+		-- even during an auto switch (Held.auto keeps the temporary id), so the return
+		-- lands on the new weapon, never the old one.
+		if def.slot=="weapon" and p.held~=nil and p.held==p.equipment.weapon then p.held=nil end
 		p.equipment[def.slot]=item
 		return "Equipped "..def.name.."."
 	elseif verb=="unequip" then
@@ -6838,7 +6849,10 @@ action.OnServerInvoke=function(player,verb,item)
 	end
 	if item~=nil and #item>70 then return snapshot(player,"That request is too long.") end
 	-- Held items: hotbar keys and scrolls get a compact reply, never a full snapshot.
-	if Held.verbs[verb] then return {held=true,message=perform(player,verb,item,nil),heldItem=player:GetAttribute("HeldItem") or ""} end
+	if Held.verbs[verb] then
+		local message,done=perform(player,verb,item,nil)
+		return {held=true,ok=done==true,message=message,heldItem=player:GetAttribute("HeldItem") or ""}
+	end
 	if item~=nil and #item>64 then return snapshot(player,"That request is too long.") end
 	return snapshot(player,perform(player,verb,item,nil))
 end

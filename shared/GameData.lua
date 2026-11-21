@@ -10449,6 +10449,7 @@ Data.Held = H
 H.MAX_PARTS = 8
 H.AUTO_RETURN = 8 -- seconds after the last gather / attack before an auto-held tool goes back
 H.RATE, H.BURST = 2, 5 -- hold / hotbarSet tokens per second, bucket size
+H.REBUILD_GAP = 0.5 -- held.server.lua rebuilds a player's model at most once per this many seconds
 H.HOTBAR_SLOTS = 9
 H.FREE_SLOTS = {3, 4, 5, 6, 7, 8, 9} -- slot 1 = weapon, slot 2 = context tool
 -- Classes: every weapon / tool resolves to exactly one. hand = which grip it welds to.
@@ -10617,9 +10618,15 @@ function H.validate(p, raw, meets)
 	end
 	return true, id, temporary
 end
--- What the character visibly holds: p.held when still valid ("none" = empty
--- hands), else the equipped weapon (slot 1). Returns id or nil.
-function H.resolve(p, meets)
+-- What the character visibly holds: a temporary auto switch (autoId, kept out
+-- of the profile so it is never saved) when still valid, else p.held when still
+-- valid ("none" = empty hands), else the equipped weapon (slot 1).
+-- Returns id or nil, and true when the id is the temporary auto switch.
+function H.resolve(p, meets, autoId)
+	if type(autoId) == "string" and autoId ~= "" then
+		local ok, id = H.validate(p, autoId, meets)
+		if ok and id ~= "none" then return id, true end
+	end
 	local held = p.held
 	if held == "none" then return nil end
 	if type(held) == "string" then
