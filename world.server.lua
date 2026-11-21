@@ -3853,3 +3853,71 @@ do
 	end
 end
 -- End Exploration & Factions section.
+
+-------------------------------------------------------------------------------
+-- Lairs (Bossing team; self-contained section). One lair altar per boss
+-- (Data.Lairs.Order) on its island: a dais, the altar stone (mesh slot
+-- "Obelisk", tinted the boss colour) carrying the prompt IsleAction
+-- "lairEnter", IsleItem <boss>, IsleRegion <the island's region> (gate),
+-- two torches (mesh slot "Torch") and the anchor Waypoint_Lair_<boss> where
+-- lairs.server.lua returns fighters. Parts: 4 x (dais + stone + 2 torches +
+-- anchor) = 20, no lights. The arenas themselves are built on demand by
+-- lairs.server.lua (off-map, destroyed after each fight). Models carry
+-- LairContent = true and LairAltar = <boss>.
+-------------------------------------------------------------------------------
+do
+	local LR=Data.Lairs
+	if LR then
+		local FLOOR={Meadow=true,["Floating foundation"]=true,["Mineral stratum"]=true,["Lower basalt"]=true,["Fractured cliff"]=true,
+			["Keel rock"]=true,["Edge guard"]=true,["Aether vein"]=true,["Shore ledge"]=true,Path=true,Wildflowers=true}
+		local function blocked(host,pos,radius)
+			for _,obj in ipairs(host:GetDescendants()) do
+				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
+					local cf,sz=obj.CFrame,obj.Size
+					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
+					local c=cf.Position
+					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
+					local dz=math.max(0,math.abs(pos.Z-c.Z)-ext("Z"))
+					local ey=ext("Y")
+					if dx*dx+dz*dz<radius*radius and c.Y+ey>pos.Y+.3 and c.Y-ey<pos.Y+9 then return true end
+				end
+			end
+			return false
+		end
+		local function spot(host,angle,radius)
+			local IC,R=host:GetAttribute("IslandCenter"),host:GetAttribute("IslandRadius")
+			local first
+			for _,f in ipairs({.55,.45,.65,.35,.7}) do
+				for k=0,23 do
+					local a=math.rad(angle+(if k%2==0 then 1 else -1)*math.ceil(k/2)*15)
+					local pos=IC+V(math.cos(a),0,math.sin(a))*R*f
+					first=first or pos
+					if not blocked(host,pos,radius) then return pos end
+				end
+			end
+			return first
+		end
+		for i,id in ipairs(LR.Order) do
+			local def=LR.Bosses[id]
+			local host=islandsFolder:FindFirstChild(def.isle)
+			if host then
+				local pos=spot(host,200+i*37,6)
+				local tint=C(def.color)
+				local m=group("Lair altar "..def.short,host)
+				m:SetAttribute("LairContent",true)
+				m:SetAttribute("LairAltar",id)
+				block(m,"Lair altar dais",pos+V(0,.4,0),V(6,.8,6),darken(C(def.arenaColor),.2),ST,true)
+				local stone=block(m,"Lair altar",pos+V(0,2.8,0),V(2.6,4,2.6),lighten(rock,.1),ST,true)
+				meshSlot(stone,"Obelisk",tint)
+				local q=prompt(stone,"Summon ("..def.fee.." coins)",def.lairName.." · "..def.short.." (Combat "..def.combat..")","lairEnter",id)
+				q:SetAttribute("IsleRegion",def.region)
+				for side=-1,1,2 do
+					local torch=block(m,"Lair torch",pos+V(2.3*side,2.3,-1.6),V(.6,3,.6),timber,WO,false)
+					meshSlot(torch,"Torch",tint)
+				end
+				anchor(m,"Waypoint_Lair_"..id,pos+V(0,0,-5),pos)
+			end
+		end
+	end
+end
+-- End Lairs section.

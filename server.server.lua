@@ -165,6 +165,8 @@ local Trails={verbs={trailBegin=true,trailAbandon=true,trailDig=true,trailSearch
 local Logs={verbs={commissionClaim=true,commissionClaimAll=true,forgeBuy=true,logClaim=true,logTitle=true,museumDonate=true,logsBoard=true,logsSync=true}}
 -- Crafting (gem cutting, jewellery, leather, glass); filled in by the Crafting block before perform().
 local Crafting={verbs={craftStation=true,craftBatch=true,craftStop=true},jobs={},visits={},seq={}}
+-- Lairs (instanced lair bosses: altars, fees, kill rewards); filled in by the Lairs block after Endgame.
+local Lairs={verbs={lairEnter=true,lairLeave=true}}
 -- One-time coins for each newly reached skill level.
 local function levelCoins(p,skill,newLevel)
 	p.levelRewards=p.levelRewards or {}
@@ -4302,6 +4304,7 @@ local function snapshot(player,message)
 		slayerTasks=SlayerTasks.state(player,p), -- Slayer tasks: Hunt > Slayer page state
 		minigames=Minigames.state(player,p), -- Minigames: Hunt > Minigames page state
 		crafting=Crafting.state and Crafting.state(player,p), -- Crafting: Workshop › Crafting page state
+		lairs=Lairs.state and Lairs.state(player,p), -- Lairs: Hunt › Bosses (kill counts, personal bests, uniques)
 		exploration=Explore.state(player,p), -- Exploration & Factions: Journal > Motes / Factions (full when changed, else {rev, resetIn, switchIn, compact})
 		logs=Logs.state(player,p)} -- Commissions & Logs: Journal > Commissions / Collection Log / Museum (full when changed, else {rev, resetIn, compact})
 end
@@ -4390,6 +4393,7 @@ local function migrate(profile)
 	Logs.migrate(profile) -- Commissions & Logs: board, Glimmerdust, Forgeheart, log (retroactive on first load), museum
 	if Crafting.migrate then Crafting.migrate(profile) end -- Crafting: p.crafting {made, shattered}
 	Explore.migrate(profile) -- Exploration & Factions: p.motes, p.factions, p.perkStats.motes
+	if Lairs.migrate then Lairs.migrate(profile) end -- Lairs: kill counts, personal bests, uniques
 end
 -- Clears every per-player table and ends this player's session slot.
 -- Sea creatures: a successful Fishing gather may hook one (Data.rollSeaCreature).
@@ -5671,6 +5675,128 @@ do
 	end
 end
 ------------------------------------------------------------------------------
+-- Lairs (Bossing team). Rules and data: Data.Lairs (shared/GameData.lua);
+-- instances: lairs.server.lua (ServerStorage.IsleLairs); creatures:
+-- combat.server.lua Lairs section. docs/DEPTH-CONTRACT.md §25.
+--   lairEnter "<boss>" (altar prompt only, IsleRegion gate): Combat level,
+--     region, coins (the entry fee), not busy in a dungeon run / minigame /
+--     another lair; IsleLairs "enter" opens an instance (or joins a crewmate's
+--     during its warmup) synchronously, then the fee is spent. Lairs.entered
+--     [userId] = {fight, boss, fee, at} is the only key a reward can match.
+--   lairLeave (arena exit prompt): forfeits the fight (IsleLairs "leave").
+--   bridge "lair" {action = "kill", boss, fight, seconds, party, share}: once
+--     per fight per journal: coin roll + LR.Loot via Progression.rollDrops
+--     (Magic Find / Pet Luck) through collect() (Collection Log: tab Lairs),
+--     kill count, personal best and uniques (LR.record). Not live -> "sync"
+--     (lairs.server.lua resends). {action = "end", result} closes the entry
+--     (a "died" result counts a death); {action = "refund"} returns the fee
+--     when the arena or boss could not be built (never after a reward).
+-- Profile p.lairs (LR.migrate); snapshot key lairs = {kc, pb, pbParty, got,
+-- deaths, log, active}.
+------------------------------------------------------------------------------
+do
+	local LR=Data.Lairs
+	Lairs.entered={} -- [userId]={fight,boss,fee,at,paid,refunded}
+	Lairs.ENTRY_TTL=7200
+	local TEXT={level="Your Combat level is too low for this lair.",region="You cannot reach this lair's region yet.",
+		coins="You cannot afford the lair's entry fee.",busy="Finish your current dungeon run, minigame or lair first.",
+		boss="This altar is silent.",capacity="Every lair on this server is in use. Try again in a minute.",
+		full="That lair is full.",active="You are already inside a lair.",invalid="The altar flickers. Try again shortly."}
+	function Lairs.migrate(p) p.lairs=LR.migrate(p.lairs) end
+	function Lairs.of(p)
+		local s=p.lairs
+		if type(s)~="table" or type(s.kc)~="table" or type(s.pb)~="table" or type(s.got)~="table" or type(s.log)~="table" then Lairs.migrate(p) end
+		return p.lairs
+	end
+	local function invoke(op,player,arg)
+		local fn=ServerStorage:FindFirstChild("IsleLairs")
+		if not fn then return nil end
+		local ok,reply=pcall(fn.Invoke,fn,op,player,arg)
+		if not ok or type(reply)~="table" then return nil end
+		return reply
+	end
+	local function busy(player)
+		local game=player:GetAttribute("MinigameGame")
+		local lair=player:GetAttribute("LairBoss")
+		return player:GetAttribute("DungeonInRun")==true or (type(game)=="string" and game~="") or (type(lair)=="string" and lair~="")
+	end
+	function Lairs.action(player,p,verb,item,prompt)
+		if verb=="lairLeave" then
+			local reply=invoke("leave",player)
+			if not reply then return "The way out is sealed for a moment." end
+			return if reply.ok then "You leave the lair. The boss keeps its hoard." else "You are not inside a lair."
+		end
+		if verb~="lairEnter" then return "Unknown lair action." end
+		if not prompt then return "Summon a lair boss at its altar." end
+		local def=LR.boss(item)
+		if not def then return TEXT.boss end
+		local ok,reason=LR.canEnter(item,{combat=level(p.xp.Combat),region=regionAllowed(p,def.region),coins=p.coins,busy=busy(player)})
+		if not ok then
+			if reason=="level" then return def.short.."'s lair needs Combat "..def.combat.."." end
+			if reason=="coins" then return def.short.."'s lair costs "..def.fee.." coins to enter." end
+			return TEXT[reason] or TEXT.invalid
+		end
+		local reply=invoke("enter",player,item)
+		if not reply then return TEXT.invalid end
+		if not reply.ok then return TEXT[reply.reason] or TEXT.invalid end
+		p.coins-=def.fee
+		local now=os.time()
+		for uid,e in pairs(Lairs.entered) do if now-e.at>Lairs.ENTRY_TTL then Lairs.entered[uid]=nil end end
+		Lairs.entered[player.UserId]={fight=reply.fight,boss=item,fee=def.fee,at=now}
+		p.started=true
+		if reply.mode=="join" then return "You join the hunt in "..def.lairName.." • -"..def.fee.." coins." end
+		return "The altar flares: "..def.lairName.." opens • -"..def.fee.." coins. "..def.short.." rises in "..LR.WARMUP.."s."
+	end
+	-- Bridge op "lair" (lairs.server.lua only).
+	function Lairs.bridge(player,p,payload)
+		local def=LR.boss(payload.boss)
+		local e=Lairs.entered[player.UserId]
+		if not def or type(payload.fight)~="string" then return {ok=false,reason="invalid"} end
+		if not e or e.fight~=payload.fight or e.boss~=payload.boss then return {ok=false,reason="entry"} end
+		local action=payload.action
+		if action=="refund" then
+			if e.paid or e.refunded then return {ok=false,reason="paid"} end
+			e.refunded=true
+			p.coins+=e.fee
+			Lairs.entered[player.UserId]=nil
+			return {ok=true,coins=e.fee,message="The altar returns your "..e.fee.."-coin offering."}
+		elseif action=="end" then
+			Lairs.entered[player.UserId]=nil
+			if payload.result=="died" then
+				local s=Lairs.of(p)
+				s.deaths[payload.boss]=math.min(LR.MAX_KC,(s.deaths[payload.boss] or 0)+1)
+			end
+			return {ok=true}
+		elseif action~="kill" then
+			return {ok=false,reason="invalid"}
+		end
+		if e.paid then return {ok=false,reason="paid"} end
+		e.paid=true
+		local seconds=math.clamp(math.floor(tonumber(payload.seconds) or def.duration),1,def.duration)
+		local party=math.clamp(math.floor(tonumber(payload.party) or 1),1,LR.MAX_PARTY)
+		local stats=Progression.computeStats(p,os.time())
+		local drops=Progression.rollDrops(LR.Loot[payload.boss],stats.magicFind,roll,stats.petLuck)
+		local coins=LR.coinRoll(payload.boss,roll())
+		p.coins+=coins
+		for id,n in pairs(drops) do collect(p,id,n) end
+		local rec=LR.record(Lairs.of(p),payload.boss,seconds,party,drops,os.time())
+		Logs.event(p,"kill",payload.boss) -- Commissions & Logs (and faction boards) see the kill
+		p.started=true
+		local extra=""
+		for _,id in ipairs(rec.uniques) do
+			local d=Data.Items[id]
+			extra..="   ·   "..(if d.kind=="pet" then "PET DROP! " else "RARE DROP! ")..d.name
+		end
+		return {ok=true,drops=drops,coins=coins,kc=rec.kc,pb=rec.pb,uniques=rec.uniques,
+			message=def.short.." slain in "..LR.formatTime(seconds)..(if rec.pb then " (personal best!)" else "").." • KC "..rec.kc.." • +"..coins.." coins"..dropText(drops)..extra}
+	end
+	function Lairs.state(player,p)
+		local s=Lairs.of(p)
+		local lair=player:GetAttribute("LairBoss")
+		return {kc=s.kc,pb=s.pb,pbParty=s.pbParty,got=s.got,deaths=s.deaths,log=s.log,active=if type(lair)=="string" then lair else ""}
+	end
+end
+------------------------------------------------------------------------------
 -- Crafting (Crafting team). Rules and data: Data.Crafting (shared/GameData.lua);
 -- stations: world.server.lua (prompt IsleAction "craftStation", IsleItem
 -- Jeweller | Tannery | Glassworks on the Guild Terrace).
@@ -5924,6 +6050,8 @@ local function perform(player,verb,item,prompt)
 		return Delve.action(player,p,verb,item) -- Dungeon endgame
 	elseif Trails.verbs[verb] then
 		return Trails.action(player,p,verb,item) -- Treasure Trails
+	elseif Lairs.verbs[verb] then
+		return Lairs.action(player,p,verb,item,prompt) -- Lairs: altars and the arena exit
 	elseif Endgame.verbs[verb] and prompt then
 		return Endgame.action(player,p,verb,item) -- Endgame: Sovereign Altar
 	elseif Econ.verbs and Econ.verbs[verb] then
@@ -6807,7 +6935,7 @@ bridge.OnInvoke=function(op,player,payload)
 	if not p then
 		-- Combat re-arms the boss / resends the sea creature kill (ticket kept)
 		-- when its report could not be applied; Endgame: combat resends world boss rewards.
-		return if op=="slayerBoss" or op=="seaCreature" or op=="worldBoss" or op=="slayerSuperior" then {ok=false,reason="sync"} else nil
+		return if op=="slayerBoss" or op=="seaCreature" or op=="worldBoss" or op=="slayerSuperior" or op=="lair" then {ok=false,reason="sync"} else nil
 	end
 	if op=="stats" then
 		return {stats=Progression.computeStats(p,os.time()),combatLevel=level(p.xp.Combat),ironman=p.ironman==true,
@@ -6836,7 +6964,7 @@ bridge.OnInvoke=function(op,player,payload)
 		local monsterId=payload.monster
 		local monster=validId(monsterId) and Data.Monsters[monsterId]
 		-- Sea creatures pay only through their owner's ticket (op "seaCreature").
-		if not monster or monster.seaCreature or monster.worldBoss or monster.superior then return nil end
+		if not monster or monster.seaCreature or monster.worldBoss or monster.superior or monster.lair then return nil end -- Lairs: paid only through op "lair"
 		local stats=Progression.computeStats(p,os.time())
 		p.started=true
 		-- Pets depth: family abilities add % coins, Magic Find and slayer progress vs that line.
@@ -6865,6 +6993,11 @@ bridge.OnInvoke=function(op,player,payload)
 		local superior=if payload.task==true then SlayerTasks.onKill(player,p,monsterId,monster) else nil
 		notify(player,monster.name.." slain • +"..coins.." coins"..dropText(drops))
 		return {drops=drops,bossReady=quest~=nil and quest.bossReady==true,superior=superior}
+	elseif op=="lair" then
+		-- Lairs: kill rewards, entry closes and fee refunds from lairs.server.lua.
+		local reply=Lairs.bridge(player,p,payload)
+		if reply.message then notify(player,reply.message); reply.message=nil end
+		return reply
 	elseif op=="worldBoss" then
 		local reply=Endgame.reward(player,p,payload)
 		if reply.message then notify(player,reply.message); reply.message=nil end

@@ -378,7 +378,8 @@ Core.COOP_GESTURE = {Timber = "chop", Ore = "mine", Herb = "harvest"}
 Core.STATION_GESTURE = {Forge = {"hammer"}, Cauldron = {"stir"}, Hearth = {"flip", "stir"}, Workbench = {"hammer", "saw"}, Slayer = {"interact"},
 	-- Crafting stations (prompt action "craftStation"): Jeweller's Bench, Tanning Rack, Glass Furnace.
 	Jeweller = {"hammer"}, Tannery = {"saw", "hammer"}, Glassworks = {"stir"}}
-Core.ACTION_GESTURE = {fight = "attack", worker = "hammer", workerBuild = "hammer", decorate = "hammer", trap = "settrap", net = "netswing"}
+Core.ACTION_GESTURE = {fight = "attack", worker = "hammer", workerBuild = "hammer", decorate = "hammer", trap = "settrap", net = "netswing",
+	lairEnter = "interact", lairLeave = "interact"} -- Lairs: summoning altars and the arena exit
 -- Agility prompts animate from the AgilityMove attribute the server sets instead.
 Core.SILENT_ACTION = {agility = true, shortcut = true}
 

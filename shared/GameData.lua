@@ -9637,4 +9637,522 @@ end
 -- <<< END Dungeon endgame <<<
 ------------------------------------------------------------------------------
 
+------------------------------------------------------------------------------
+-- >>> BEGIN Lairs (Bossing team; append-only section) >>>
+-- Instanced lair bosses (docs/DEPTH-CONTRACT.md §25): four original bosses at
+-- Combat 30/50/70/90, summoned at lair altars on existing islands and fought
+-- solo or with up to two crewmates in an arena built off-map on demand.
+-- Pure data and pure rules only; lairs.server.lua runs the instances (arena,
+-- teleports, rejoin, rewards relay), combat.server.lua's Lairs section runs
+-- the creatures (stances, telegraphs, tiles, brood wards, ordered sigils,
+-- enrage), server.server.lua's Lairs block charges fees and pays loot.
+------------------------------------------------------------------------------
+do
+local LR = {}
+Data.Lairs = LR
+local CS = Data.CombatStyles
+LR.MAX_PARTY = 3            -- players per instance (the host + two crewmates)
+LR.MAX_INSTANCES = 6        -- concurrent lair instances per server
+LR.MAX_ADDS = 4             -- live adds per instance (creature cap: 6 x (1 + 4) = 30)
+LR.WARMUP = 15              -- seconds between opening and the boss rising (crewmates may join)
+LR.REJOIN_SECONDS = 75      -- a dropped member may rejoin the live fight this long
+LR.EXIT_SECONDS = 8         -- after a kill, members return to the altar
+LR.AWAY_SECONDS = 8         -- a member outside the arena this long has left the fight
+LR.EMPTY_SECONDS = 75       -- a fight with no member present this long ends ("abandoned")
+LR.ARENA_RANGE = 40         -- flat studs from the arena centre that count as "inside" (covers the floor corners)
+LR.PARTY_HP = 0.85          -- extra boss health per extra member (at the boss's rise)
+LR.MIN_FAIR_SHARE = 0.4     -- party credit: damage >= 40% of an equal share of the boss's health
+LR.IRONMAN_SHARE = 0.3      -- Ironman journals in a party carry their own weight
+LR.RECENT_SECONDS = 60      -- credit needs a hit this recently before the kill
+LR.WARD = 0.35              -- boss damage taken while a brood ward (unordered adds) lives
+LR.PRAYED = 0.25            -- a stance attack into the matching Ward prayer: x0.25 before the prayer's own -40%
+LR.ENRAGE_DAMAGE = 1.6
+LR.ENRAGE_TEMPO = 0.7
+LR.ATTACK_SECONDS = 2.2     -- basic (stance) attack interval
+LR.STANCE_WARN = 1          -- the HUD flags the stance change this many attacks ahead
+LR.GRID = 5                 -- tile lattice: GRID x GRID cells of CELL studs (the arena floor)
+LR.CELL = 11
+LR.MIN_SAFE = 6             -- every tile pattern leaves at least this many safe cells
+LR.PET_HOURS = 40           -- pets: expected hours of kills at the model's kill rate
+LR.KEEP_LOG = 10            -- recent kills kept in the journal
+LR.MAX_KC = 1000000
+LR.REWARD_RETRY, LR.REWARD_WINDOW = 5, 120
+
+-- Combat triangle for a weakness w: w deals +30%, the style w beats is resisted.
+function LR.triangle(w)
+	local style = CS.beats[w]
+	return w, CS.beats[style]
+end
+local function attack(kind, name, fields)
+	local a = {kind=kind,name=name}
+	for k, v in pairs(fields or {}) do a[k] = v end
+	return a
+end
+
+-- Bosses ------------------------------------------------------------------------
+-- stances: basic attack styles cycled every stanceEvery attacks (phase.stances
+-- overrides); the matching Ward prayer is the counter. Specials rotate per
+-- phase every `interval` s: disc (on a member), ring (around the boss), safe
+-- (only near the boss is safe), tiles (charged lattice cells), adds (a brood
+-- ward: the boss takes LR.WARD damage while it lives), sigils (ordered adds:
+-- the boss is immune and only the lowest-numbered sigil can be struck).
+-- Telegraphs carry no style (dodge them; prayers do not help).
+LR.Order = {"Bramblemaw","Aerisca","Pyrewarden","Nihlvar"}
+LR.Bosses = {
+	Bramblemaw={name="Bramblemaw, the Thorn Matriarch",short="Bramblemaw",lairName="Thornroot Hollow",level=30,combat=30,
+		isle="Windpine Grove",region="Windpine",fee=300,color="6BBF59",body="stalker",arenaColor="4E6B3A",floor="LeafyGrass",
+		hp=24000,damage=90,defense=60,xp=800,speed=13,coins=550,coinRange={min=400,max=700},weakness="magic",stances={"melee"},stanceEvery=99,
+		enrage=150,duration=300,
+		blurb="A bramble-wolf grown fat on the grove's thorns. Her brood shields her: cut it down, then strike.",
+		mechanics={"Brood ward: Thornspawn shield her (65% less damage) until slain","Thornburst and Bramble Lash telegraphs","Enrage after 2:30"},
+		phases={
+			{at=1,name="Rooted",rotation={"brood","lash","thornburst"},interval=7},
+			{at=0.5,name="Bloodbloom",rotation={"lash","brood","thornburst","lash"},interval=5.5},
+		},
+		attacks={
+			lash=attack("disc","Bramble Lash",{radius=7,windup=1.8,mult=2.0}),
+			thornburst=attack("ring","Thornburst",{radius=11,windup=2.2,mult=2.2}),
+			brood=attack("adds","Brood Call",{add="Thornspawn",count=3,radius=13}),
+		}},
+	Aerisca={name="Aerisca, the Squall Siren",short="Aerisca",lairName="Squallglass Eyrie",level=50,combat=50,
+		isle="Skyreach",region="Skyreach",fee=800,color="8FD3E8",body="harrier",arenaColor="5A7E95",floor="Glass",
+		hp=78000,damage=200,defense=150,xp=3000,speed=16,coins=1750,coinRange={min=1400,max=2100},weakness="ranged",stances={"melee","ranged"},stanceEvery=4,
+		enrage=210,duration=360,tiles=true,
+		blurb="A storm-singer who calls lightning down the glass lattice. Her talons and quills alternate: pray to match.",
+		mechanics={"Stance switch every 4 attacks: Ward of Fangs / Ward of Quills","Squall Lattice: charged tiles strike after 2.6 s","Eye of the Storm: only beside her is safe","Enrage after 3:30"},
+		phases={
+			{at=1,name="Updraft",rotation={"squall","spear"},interval=8},
+			{at=0.6,name="Maelstrom",rotation={"squall","spear","squall","eye"},interval=6.5},
+		},
+		attacks={
+			squall=attack("tiles","Squall Lattice",{count=10,windup=2.6,mult=2.4}),
+			spear=attack("disc","Gale Spear",{radius=6,windup=1.6,mult=1.8}),
+			eye=attack("safe","Eye of the Storm",{radius=9,windup=3.0,mult=2.5}),
+		}},
+	Pyrewarden={name="The Pyrewarden",short="Pyrewarden",lairName="Emberforge Vault",level=70,combat=70,
+		isle="Cinder Shelf",region="Quarry",fee=2000,color="E8643A",body="golem",arenaColor="5C3A2E",floor="Basalt",
+		hp=150000,damage=360,defense=260,xp=5500,speed=11,coins=3700,coinRange={min=3000,max=4400},weakness="melee",stances={"magic","ranged"},stanceEvery=3,
+		enrage=240,duration=420,
+		blurb="A forge-guardian bound by three sigils. Break them in order to bare its core; its flames and slag shots alternate.",
+		mechanics={"Forge Sigils: immune until sigils I, II, III fall in order","Stance switch every 3 attacks: Ward of Glyphs / Ward of Quills","Slag, Flare and Nova telegraphs","Enrage after 4:00"},
+		phases={
+			{at=1,name="Kindled",rotation={"sigils","slag","flare"},interval=7},
+			{at=0.66,name="Smelting",rotation={"slag","sigils","flare","slag"},interval=6},
+			{at=0.33,name="Meltdown",rotation={"sigils","flare","slag","nova"},interval=5},
+		},
+		attacks={
+			slag=attack("disc","Slag Spit",{radius=8,windup=1.8,mult=2.2}),
+			flare=attack("ring","Forge Flare",{radius=12,windup=2.2,mult=2.4}),
+			nova=attack("safe","Heart Nova",{radius=10,windup=3.0,mult=2.8}),
+			sigils=attack("sigils","Forge Sigils",{add="ForgeSigil",count=3,radius=17}),
+		}},
+	Nihlvar={name="Nihlvar, the Hollow Archon",short="Nihlvar",lairName="Riftcrown Sanctum",level=90,combat=85,
+		isle="The Shattered Crown",region="ShatteredCrown",fee=4000,color="7A5BC4",body="seer",arenaColor="2E2448",floor="Slate",
+		hp=480000,damage=620,defense=380,xp=7600,speed=13,coins=6800,coinRange={min=5800,max=7800},weakness="magic",stances={"melee","ranged","magic"},stanceEvery=3,
+		enrage=300,duration=480,tiles=true,
+		blurb="An archon of the broken crown. Each phase turns its weakness and its stances cycle all three styles.",
+		mechanics={"Stance cycle melee → ranged → magic every 3 attacks (all three Wards)","Weakness shifts magic → ranged → melee by phase","Rift Anchors (ordered, immune) and the Null Lattice tiles","Enrage after 5:00"},
+		phases={
+			{at=1,name="Hollow Court",weakness="magic",rotation={"rend","anchors","rend","umbra"},interval=7},
+			{at=0.66,name="Riftfall",weakness="ranged",rotation={"lattice","rend","anchors","umbra"},interval=6},
+			{at=0.33,name="Null Crown",weakness="melee",rotation={"lattice","eclipse","anchors","rend"},interval=5},
+		},
+		attacks={
+			rend=attack("disc","Void Rend",{radius=7,windup=1.7,mult=2.0}),
+			umbra=attack("ring","Umbral Ring",{radius=12,windup=2.2,mult=2.4}),
+			eclipse=attack("safe","Hollow Eclipse",{radius=9,windup=3.0,mult=2.8}),
+			lattice=attack("tiles","Null Lattice",{count=13,windup=2.4,mult=2.6}),
+			anchors=attack("sigils","Rift Anchors",{add="RiftAnchor",count=3,radius=16}),
+		}},
+}
+-- Adds: never iterated through Data.Monsters (reached via __index for damage XP).
+LR.Adds = {
+	Thornspawn={name="Thornspawn",level=24,hp=1500,damage=40,defense=20,xp=40,speed=15,color="8BC34A",style="melee",body="thornling"},
+	ForgeSigil={name="Forge Sigil",level=66,hp=12000,damage=0,defense=120,xp=260,speed=0,color="FFB347",style="magic",body="wisp",stationary=true},
+	RiftAnchor={name="Rift Anchor",level=88,hp=30000,damage=0,defense=200,xp=520,speed=0,color="B48CFF",style="magic",body="wisp",stationary=true},
+}
+for i, id in ipairs(LR.Order) do
+	local def = LR.Bosses[id]
+	def.id, def.index, def.lair = id, i, true
+	def.attackStyle = def.stances[1]
+	def.weakness, def.defenceStyle = LR.triangle(def.weakness)
+	def.coinsAvg = (def.coinRange.min + def.coinRange.max) / 2
+	for k, a in pairs(def.attacks) do a.id = k end
+end
+for id, def in pairs(LR.Adds) do
+	def.id, def.lair, def.lairAdd = id, true, true
+	def.attackStyle, def.weakness, def.defenceStyle = def.style, CS.beatenBy[def.style], CS.beats[def.style]
+	def.coins, def.drops = 0, {}
+end
+-- Lookups by id reach lair bosses and adds; pairs() still sees marker monsters only.
+do
+	local mt = getmetatable(Data.Monsters)
+	local prior = mt and mt.__index
+	setmetatable(Data.Monsters, {__index = function(t, id)
+		local v
+		if type(prior) == "function" then v = prior(t, id) elseif type(prior) == "table" then v = prior[id] end
+		if v ~= nil then return v end
+		return rawget(LR.Bosses, id) or rawget(LR.Adds, id)
+	end})
+end
+function LR.boss(id) return type(id) == "string" and rawget(LR.Bosses, id) or nil end
+
+-- Uniques (each below the crafted/dungeon item of the next higher requirement) ---
+-- LR.Rivals: unique -> rival item id; verify-bosses.luau checks every stat
+-- (and a bow/staff's power/speed/ammo tier) stays strictly below the rival,
+-- whose requirement is strictly higher.
+LR.Uniques = {
+	Bramblemaw={weapon="ThornmawCleaver",accessory="ThornheartLocket",pet="BramblingPet"},
+	Aerisca={weapon="GalesongLongbow",accessory="SquallglassPendant",pet="SirenletPet"},
+	Pyrewarden={weapon="PyreheartStaff",accessory="EmberwardSeal",pet="ForgekinPet"},
+	Nihlvar={weapon="HollowcrownEdge",accessory="ArchonSigil",pet="HollowispPet"},
+}
+LR.Rivals = {
+	ThornmawCleaver="PrismaticSword",GalesongLongbow="AetherheartLongbow",PyreheartStaff="RiftcrownStaff",HollowcrownEdge="Crownbreaker",
+	ThornheartLocket="SlayerEmblem",SquallglassPendant="EnchantedStormopalAmulet",EmberwardSeal="SovereignHalo",ArchonSigil="SovereignSignet",
+}
+local function unique(id, boss, def)
+	def.lairBoss, def.logUnique = boss, "Lairs"
+	return item(id, def)
+end
+local R = Data.Rarity
+unique("ThornmawCleaver","Bramblemaw",{name="Thornmaw Cleaver",kind="weapon",slot="weapon",tier=5,rarity="Epic",color="6BBF59",
+	stats={damage=190,strength=75,critChance=7,critDamage=50},requires={Combat=30},value=4500,
+	description="Melee. Bramblemaw's own thorn-fang, still green. Requires Combat 30. Lair unique."})
+unique("GalesongLongbow","Aerisca",{name="Galesong Longbow",kind="weapon",slot="weapon",style="ranged",tier=6,rarity="Legendary",color="8FD3E8",
+	stats={critDamage=44,rangedAccuracy=78},ranged={power=260,speed=1.05,range=CS.maxRange,maxAmmoTier=6},requires={Ranged=45},value=9000,
+	description="Ranged weapon. Strung with Aerisca's storm-gut. "..CS.maxRange.." stud reach. Arrows up to tier 6. Requires Ranged 45. Lair unique."})
+unique("PyreheartStaff","Pyrewarden",{name="Pyreheart Staff",kind="weapon",slot="weapon",style="magic",tier=7,rarity="Legendary",color="E8643A",
+	stats={intelligence=170,abilityDamage=5},magic={power=175,speed=1.2,elements={"Ember","Stone"}},requires={Magic=55},value=16000,
+	description="Magic weapon. The Pyrewarden's banked core. Supplies unlimited Ember, Stone glyphs. Requires Magic 55. Lair unique."})
+unique("HollowcrownEdge","Nihlvar",{name="Hollowcrown Edge",kind="weapon",slot="weapon",tier=9,rarity="Mythic",color="7A5BC4",
+	stats={damage=370,strength=168,critChance=17,critDamage=104},requires={Combat=65},value=30000,
+	description="Melee. A shard of Nihlvar's hollow crown. Requires Combat 65. Lair unique."})
+unique("ThornheartLocket","Bramblemaw",{name="Thornheart Locket",kind="accessory",rarity="Rare",color=R.Rare.color,stats={strength=8,critDamage=6},
+	value=40*R.Rare.rank^2,description="Accessory. Magical Power "..R.Rare.power..". Only Bramblemaw's den holds one."})
+unique("SquallglassPendant","Aerisca",{name="Squallglass Pendant",kind="accessory",rarity="Epic",color=R.Epic.color,stats={rangedAccuracy=9,rangedStrength=6,speed=3},
+	value=40*R.Epic.rank^2,description="Accessory. Magical Power "..R.Epic.power..". Only Aerisca's eyrie holds one."})
+unique("EmberwardSeal","Pyrewarden",{name="Emberward Seal",kind="accessory",rarity="Legendary",color=R.Legendary.color,stats={intelligence=16,critDamage=14,strength=10},
+	value=40*R.Legendary.rank^2,description="Accessory. Magical Power "..R.Legendary.power..". Only the Emberforge Vault holds one."})
+unique("ArchonSigil","Nihlvar",{name="Archon's Sigil",kind="accessory",rarity="Mythic",color=R.Mythic.color,stats={strength=34,critDamage=26,health=60},
+	value=40*R.Mythic.rank^2,description="Accessory. Magical Power "..R.Mythic.power..". Only the Riftcrown Sanctum holds one."})
+
+-- Boss pets (Data.Pets species + Pet depth abilities and looks) ----------------
+do
+	local PD = Data.PetDepth
+	local species = {
+		{boss="Bramblemaw",id="Brambling",name="Brambling",skill="Combat",rarity="Epic",color="6BBF59",perLevel={strength=0.3,health=0.6},form="quad",accent="C5E1A5",
+			list={{name="Thorn Pup",kind="xp",skills={"Combat"},per=0.1,rarity="Common"},{name="Bramble Kin",kind="family",line="Bramble",per=0.25,rarity="Rare"},
+				{name="Barbed Hide",kind="stat",stat="defense",per=0.4,rarity="Legendary",level=40}}},
+		{boss="Aerisca",id="Sirenlet",name="Sirenlet",skill="Ranged",rarity="Epic",color="8FD3E8",perLevel={rangedAccuracy=0.3,speed=0.1},form="flyer",accent="E0F7FF",
+			list={{name="Squall Song",kind="xp",skills={"Ranged"},per=0.1,rarity="Common"},{name="Keen Gale",kind="stat",stat="rangedStrength",per=0.3,rarity="Rare"},
+				{name="Tailwind",kind="stat",stat="speed",per=0.15,rarity="Legendary",level=40}}},
+		{boss="Pyrewarden",id="Forgekin",name="Forgekin",skill="Magic",rarity="Legendary",color="E8643A",perLevel={intelligence=0.8,defense=0.3},form="float",accent="FFD6A5",
+			list={{name="Banked Embers",kind="xp",skills={"Magic"},per=0.12,rarity="Common"},{name="Kiln Heart",kind="stat",stat="intelligence",per=0.8,rarity="Rare"},
+				{name="Slag Shell",kind="stat",stat="defense",per=0.5,rarity="Legendary",level=40}}},
+		{boss="Nihlvar",id="Hollowisp",name="Hollowisp",skill="Combat",rarity="Legendary",color="7A5BC4",perLevel={strength=0.6,critDamage=0.6,health=1},form="float",accent="E0C3FC",
+			list={{name="Hollow Hunger",kind="xp",skills={"Combat"},per=0.15,rarity="Common"},{name="Null Edge",kind="stat",stat="damagePercent",per=0.08,rarity="Rare"},
+				{name="Archon's Ward",kind="stat",stat="defense",per=0.6,rarity="Legendary",level=40}}},
+	}
+	LR.PetSpecies = {}
+	for _, s in ipairs(species) do
+		local pet = {id=s.id,name=s.name,skill=s.skill,rarity=s.rarity,color=s.color,perLevel=s.perLevel}
+		table.insert(Data.Pets, pet)
+		Data.PetById[s.id] = pet
+		for i, a in ipairs(s.list) do a.index = i; a.id = a.name:gsub("[^%w]", "") end
+		if PD then
+			PD.Abilities[s.id] = s.list
+			PD.Looks[s.id] = {form=s.form,accent=s.accent}
+			pet.ability = s.list[1].name..": up to "..PD.abilityText(s.list[1], PD.abilityValue(s.list[1], Data.PET_MAX_LEVEL, PD.MAX_RARITY))
+		else
+			pet.ability = s.list[1].name
+		end
+		pet.abilityNames = {s.list[1].name, s.list[2].name, s.list[3].name}
+		unique(s.id.."Pet", s.boss, {name=s.name.." Pet",kind="pet",pet=s.id,rarity=s.rarity,color=s.color,value=200*R[s.rarity].rank^2,
+			description="Summon from your pet menu. Abilities: "..table.concat(pet.abilityNames, ", ")..". "..LR.Bosses[s.boss].short.."'s lair pet."})
+		LR.PetSpecies[s.boss] = s.id
+	end
+end
+
+-- Loot ------------------------------------------------------------------------------
+-- Rolled per credited member (Progression.rollDrops: Magic Find raises chances
+-- under 5%, Pet Luck also raises pet rows). Non-unique rows stay at >= 5% so
+-- only the uniques join the Collection Log (CommissionsLogs.RARE_CHANCE).
+-- Pet chance = 1 / (LR.PET_HOURS x the model's kills per hour), rounded.
+LR.PetChance = {Bramblemaw=1/900,Aerisca=1/800,Pyrewarden=1/650,Nihlvar=1/550}
+LR.Loot = {
+	Bramblemaw={
+		{item="BeastHide",chance=1,min=8,max=16},{item="ArcaneDust",chance=1,min=8,max=16},{item="Shard",chance=0.4,min=2,max=4},
+		{item="GolemCore",chance=0.15,min=1,max=2},
+		{item="ThornheartLocket",chance=1/90,min=1,max=1},{item="ThornmawCleaver",chance=1/180,min=1,max=1},
+	},
+	Aerisca={
+		{item="StormFeather",chance=1,min=6,max=12},{item="DriftPlume",chance=1,min=20,max=40},{item="VoidEssence",chance=0.35,min=2,max=4},
+		{item="Stormglass",chance=0.15,min=1,max=2},
+		{item="SquallglassPendant",chance=1/100,min=1,max=1},{item="GalesongLongbow",chance=1/200,min=1,max=1},
+	},
+	Pyrewarden={
+		{item="GolemCore",chance=1,min=2,max=4},{item="VoidEssence",chance=1,min=3,max=6},{item="StarFragment",chance=0.08,min=1,max=1},
+		{item="EmberwardSeal",chance=1/110,min=1,max=1},{item="PyreheartStaff",chance=1/220,min=1,max=1},
+	},
+	Nihlvar={
+		{item="CrownShard",chance=1,min=8,max=14},{item="VoidEssence",chance=1,min=4,max=8},{item="StarFragment",chance=0.15,min=1,max=2},
+		{item="SovereignEssence",chance=0.06,min=1,max=1},
+		{item="ArchonSigil",chance=1/120,min=1,max=1},{item="HollowcrownEdge",chance=1/240,min=1,max=1},
+	},
+}
+for _, id in ipairs(LR.Order) do
+	table.insert(LR.Loot[id], {item=LR.Uniques[id].pet,chance=LR.PetChance[id],min=1,max=1})
+	LR.Bosses[id].drops = LR.Loot[id] -- bestiary-style display
+end
+-- SkyBlock-style drop rarity labels (original names) by chance per kill.
+LR.DropTiers = {
+	{id="Guaranteed",min=1,color="FFFFFF"},{id="Frequent",min=0.2,color="55FF55"},{id="Occasional",min=0.05,color="5555FF"},
+	{id="Rare",min=0.01,color="AA00AA"},{id="Elusive",min=0.002,color="FFAA00"},{id="Fabled",min=0,color="FF55FF"},
+}
+function LR.dropTier(chance)
+	chance = tonumber(chance) or 0
+	for _, t in ipairs(LR.DropTiers) do if chance >= t.min - 1e-12 then return t end end
+	return LR.DropTiers[#LR.DropTiers]
+end
+function LR.isUnique(id) local d = type(id) == "string" and Data.Items[id] return d ~= nil and d.lairBoss ~= nil end
+function LR.coinRoll(id, r)
+	local def = LR.boss(id)
+	if not def then return 0 end
+	return def.coinRange.min + math.floor(math.clamp(tonumber(r) or 0, 0, 0.999999) * (def.coinRange.max - def.coinRange.min + 1))
+end
+
+-- Fight rules -------------------------------------------------------------------------
+function LR.partyHp(def, n)
+	n = math.clamp(math.floor(tonumber(n) or 1), 1, LR.MAX_PARTY)
+	return math.floor(def.hp * (1 + LR.PARTY_HP * (n - 1)))
+end
+function LR.phaseAt(def, fraction)
+	local index = 1
+	for i, phase in ipairs(def.phases) do if (tonumber(fraction) or 1) <= phase.at + 1e-9 then index = i end end
+	return index
+end
+function LR.attackAt(def, phase, n)
+	local list = (def.phases[phase] or def.phases[1]).rotation
+	return list[((math.max(1, math.floor(n)) - 1) % #list) + 1]
+end
+function LR.interval(def, phase, enraged)
+	local p = def.phases[phase] or def.phases[1]
+	return p.interval * (if enraged then LR.ENRAGE_TEMPO else 1)
+end
+function LR.stances(def, phase) return (def.phases[phase] or {}).stances or def.stances end
+-- Style of basic attack number n (1-based) in a phase.
+function LR.stanceAt(def, phase, n)
+	local list = LR.stances(def, phase)
+	local every = math.max(1, def.stanceEvery or 99)
+	local k = (math.max(1, math.floor(n)) - 1) // every
+	return list[(k % #list) + 1]
+end
+-- Weakness / resisted style in a phase.
+function LR.weaknessAt(def, phase)
+	local p = def.phases[phase]
+	if p and p.weakness then return LR.triangle(p.weakness) end
+	return def.weakness, def.defenceStyle
+end
+-- Prayer check: multiplier on a stance attack of `style` against a protection.
+function LR.prayerMult(style, protect)
+	if style ~= nil and protect == style then return LR.PRAYED end
+	return 1
+end
+-- Telegraph geometry (flat distance).
+function LR.struck(a, cx, cz, x, z)
+	local dx, dz = x - cx, z - cz
+	local d = math.sqrt(dx * dx + dz * dz)
+	if a.kind == "disc" or a.kind == "ring" then return d <= a.radius end
+	if a.kind == "safe" then return d > a.radius end
+	return false
+end
+-- Lattice cell (1..GRID^2) under offset (dx, dz) from the arena centre, or nil off the lattice.
+function LR.cellAt(dx, dz)
+	local half = LR.GRID * LR.CELL / 2
+	local i, j = math.floor((dx + half) / LR.CELL) + 1, math.floor((dz + half) / LR.CELL) + 1
+	if i < 1 or j < 1 or i > LR.GRID or j > LR.GRID then return nil end
+	return (j - 1) * LR.GRID + i
+end
+-- Offset of a cell's centre from the arena centre.
+function LR.cellOffset(index)
+	local i, j = (index - 1) % LR.GRID + 1, (index - 1) // LR.GRID + 1
+	local half = LR.GRID * LR.CELL / 2
+	return -half + (i - 0.5) * LR.CELL, -half + (j - 0.5) * LR.CELL
+end
+-- Charged cells for one lattice strike: `count` distinct cells (at least
+-- LR.MIN_SAFE left safe), deterministic from the fight seed and the step.
+function LR.tilePattern(seed, step, count)
+	local total = LR.GRID * LR.GRID
+	count = math.clamp(math.floor(tonumber(count) or 0), 0, total - LR.MIN_SAFE)
+	local x = (math.floor(tonumber(seed) or 0) * 7919 + math.floor(tonumber(step) or 0) * 104729) % 2147483647
+	local cells = {}
+	for i = 1, total do cells[i] = i end
+	for i = total, 2, -1 do
+		x = (x * 48271) % 2147483647
+		local j = x % i + 1
+		cells[i], cells[j] = cells[j], cells[i]
+	end
+	local out = {}
+	for i = 1, count do out[i] = cells[i] end
+	table.sort(out)
+	return out
+end
+-- Kill credit for one member: c = {party, share, member, alive, inside, lastHit, now, ironman}.
+function LR.credit(c)
+	if type(c) ~= "table" or c.member ~= true then return false, "member" end
+	local party = math.clamp(math.floor(tonumber(c.party) or 1), 1, LR.MAX_PARTY)
+	local share = tonumber(c.share) or 0
+	if share ~= share or share <= 0 then return false, "share" end
+	if c.alive ~= true then return false, "dead" end
+	if c.inside ~= true then return false, "away" end
+	if not c.lastHit or not c.now or c.now - c.lastHit > LR.RECENT_SECONDS then return false, "idle" end
+	if party > 1 and share < LR.MIN_FAIR_SHARE / party then return false, "share" end
+	if party > 1 and c.ironman and share < LR.IRONMAN_SHARE then return false, "ironman" end
+	return true
+end
+-- Entry check. info = {combat, region (allowed bool), coins, busy}.
+function LR.canEnter(id, info)
+	local def = LR.boss(id)
+	if not def then return false, "boss" end
+	if type(info) ~= "table" then return false, "invalid" end
+	if (tonumber(info.combat) or 0) < def.combat then return false, "level" end
+	if info.region == false then return false, "region" end
+	if info.busy then return false, "busy" end
+	if (tonumber(info.coins) or 0) < def.fee then return false, "coins" end
+	return true
+end
+
+-- Journal state: p.lairs = {kc={[boss]=n}, pb={[boss]=seconds}, pbParty={[boss]=n},
+-- got={[item]=n} (lair uniques looted), deaths={[boss]=n}, log={{b,s,t,n,u}...}}.
+local function count(v, cap)
+	v = tonumber(v)
+	if not v or v ~= v or v < 0 then return nil end
+	return math.min(cap or LR.MAX_KC, math.floor(v))
+end
+function LR.migrate(t)
+	t = type(t) == "table" and t or {}
+	local out = {kc={},pb={},pbParty={},got={},deaths={},log={}}
+	for _, key in ipairs({"kc","deaths"}) do
+		for id, n in pairs(type(t[key]) == "table" and t[key] or {}) do
+			local v = LR.boss(id) and count(n)
+			if v and v > 0 then out[key][id] = v end
+		end
+	end
+	for id, s in pairs(type(t.pb) == "table" and t.pb or {}) do
+		local v = LR.boss(id) and count(s, 86400)
+		if v and v >= 1 then
+			out.pb[id] = v
+			local n = type(t.pbParty) == "table" and count(t.pbParty[id], LR.MAX_PARTY)
+			out.pbParty[id] = if n and n >= 1 then n else 1
+		end
+	end
+	for id, n in pairs(type(t.got) == "table" and t.got or {}) do
+		local v = LR.isUnique(id) and count(n)
+		if v and v > 0 then out.got[id] = v end
+	end
+	for _, e in ipairs(type(t.log) == "table" and t.log or {}) do
+		if type(e) == "table" and LR.boss(e.b) and #out.log < LR.KEEP_LOG then
+			local u = if type(e.u) == "string" and LR.isUnique(e.u) then e.u else nil
+			table.insert(out.log, {b=e.b,s=count(e.s, 86400) or 0,t=count(e.t, 4e9) or 0,n=count(e.n, LR.MAX_PARTY) or 1,u=u})
+		end
+	end
+	return out
+end
+-- One credited kill. Returns {kc, pb = bool (new best), uniques = {id...}}.
+function LR.record(state, id, seconds, party, drops, now)
+	seconds = math.max(1, math.floor(tonumber(seconds) or 1))
+	party = math.clamp(math.floor(tonumber(party) or 1), 1, LR.MAX_PARTY)
+	state.kc[id] = math.min(LR.MAX_KC, (state.kc[id] or 0) + 1)
+	local out = {kc=state.kc[id],pb=false,uniques={}}
+	if not state.pb[id] or seconds < state.pb[id] then
+		state.pb[id], state.pbParty[id] = seconds, party
+		out.pb = true
+	end
+	local first
+	for item, n in pairs(type(drops) == "table" and drops or {}) do
+		if LR.isUnique(item) and n > 0 then
+			state.got[item] = math.min(LR.MAX_KC, (state.got[item] or 0) + n)
+			table.insert(out.uniques, item)
+		end
+	end
+	table.sort(out.uniques)
+	first = out.uniques[1]
+	table.insert(state.log, 1, {b=id,s=seconds,t=math.floor(tonumber(now) or 0),n=party,u=first})
+	while #state.log > LR.KEEP_LOG do table.remove(state.log) end
+	return out
+end
+function LR.formatTime(seconds)
+	seconds = math.max(0, math.floor(tonumber(seconds) or 0))
+	return string.format("%d:%02d", seconds // 60, seconds % 60)
+end
+
+-- Balance model (printed and bounded by verify-bosses.luau) -------------------------
+-- Player DPS at a level = the best open monster's effective health / MODEL_TTK
+-- (the same 300 kills/h solo model the Minigames and Dungeon models use), used
+-- for MODEL_UPTIME of the fight (dodging, prayer swaps, adds). The weakness
+-- applies (+30%) as players bring the right style. A kill takes the fight plus
+-- MODEL_OVERHEAD s (altar, warmup, return, restock). Coins/h = coin roll + the
+-- merchant value of expected drops (uniques and pets included) - the fee.
+-- Slayer reference: 300 kills/h of the best monster's coins + the best open
+-- master's task bounty per task; XP reference: solo Combat XP/h at that level.
+LR.MODEL_TTK, LR.MODEL_UPTIME, LR.MODEL_OVERHEAD = 8, 0.75, 60
+function LR.dpsAt(level)
+	local m = Data.Minigames.bestMonster(level)
+	return m.hp * (1 + (m.defense or 0) / 100) / LR.MODEL_TTK
+end
+function LR.expectedValue(drops)
+	local v = 0
+	for _, d in ipairs(drops) do
+		local def = Data.Items[d.item]
+		v += d.chance * (d.min + d.max) / 2 * (def and def.value or 0)
+	end
+	return v
+end
+function LR.model(id, party)
+	local def = LR.boss(id)
+	party = party or 1
+	local dps = LR.dpsAt(def.level) * (1 + CS.weaknessBonus)
+	local addHp, addXp = 0, 0
+	for _, a in pairs(def.attacks) do
+		if a.kind == "adds" or a.kind == "sigils" then
+			local add = LR.Adds[a.add]
+			local waves = #def.phases
+			addHp += waves * a.count * add.hp * (1 + add.defense / 100)
+			addXp += waves * a.count * add.xp
+		end
+	end
+	local effHp = LR.partyHp(def, party) * (1 + def.defense / 100) + addHp
+	local fight = effHp / (dps * party * LR.MODEL_UPTIME)
+	local seconds = fight + LR.MODEL_OVERHEAD
+	local kph = 3600 / seconds
+	local loot = LR.expectedValue(LR.Loot[id])
+	local xpKill = (def.xp * LR.partyHp(def, party) / def.hp + addXp) / party
+	local coinsKill = def.coinsAvg + loot - def.fee
+	return {fight=fight,seconds=seconds,kph=kph,xp=xpKill * kph,coins=coinsKill * kph,coinsKill=coinsKill,
+		lootValue=loot,petHours=1 / (LR.PetChance[id] * kph)}
+end
+function LR.slayerReference(level)
+	local MG, ST = Data.Minigames, Data.SlayerTasks
+	local m = MG.bestMonster(level)
+	local best
+	for _, master in ipairs(ST.Masters) do if master.combat <= level then best = master end end
+	local amount, weight = 0, 0
+	for _, t in ipairs(best.tasks) do amount += t.weight * (t.min + t.max) / 2; weight += t.weight end
+	local kills = MG.SOLO.killsPerHour
+	return {coins=kills * m.coins + kills / (amount / weight) * best.bounty,xp=MG.soloCombatXpPerHour(level),master=best.id,monster=m.id}
+end
+
+-- Collection Log: the Lairs tab (after World Bosses); uniques carry logUnique = "Lairs".
+local CLog = Data.CommissionsLogs
+if CLog and CLog.LogTabs and not CLog.LogTabs.Lairs then
+	CLog.LogTabs.Lairs = {name="Lair Bosses",title="Lairbreaker",coins=40000,color="B48CFF"}
+	local at = table.find(CLog.LogTabOrder, "Bosses")
+	table.insert(CLog.LogTabOrder, if at then at + 1 else #CLog.LogTabOrder + 1, "Lairs")
+	CLog.LogRoots.Lairs = "Lairs"
+end
+end
+-- <<< END Lairs <<<
+------------------------------------------------------------------------------
+
 return Data
