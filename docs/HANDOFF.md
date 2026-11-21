@@ -73,7 +73,7 @@ export PATH=$HOME/.cargo/bin:$PATH   # Lune 0.11.1, Rojo 7.7.1 (cargo install ..
 
 ## 5. State at handoff
 
-**Merged and pushed** (head `19197da`; all 30 suites pass). Contract sections:
+**Merged and pushed** (all 32 suites pass at pause). Contract sections:
 
 | § | Systems |
 |---|---|
@@ -87,15 +87,36 @@ export PATH=$HOME/.cargo/bin:$PATH   # Lune 0.11.1, Rojo 7.7.1 (cargo install ..
 
 - Since §30 was written, a grass-clipping fix landed in `island()` in `world.server.lua`: the foundation and cliff now sit below the meadow slab, and verify-world asserts this.
 
-**In flight.** Three teams were resumed after a usage-limit stop. Each works in a worktree branch `worktree-agent-<id>`; merge it when the team reports, or check with `git log claude/pensive-maxwell-145p0c..worktree-agent-<id>`.
+**Also merged at pause time** (32 suites pass). These three still need their independent QC review and a fix team; nothing else is in flight:
 
-| Team | Branch suffix | Scope |
-|---|---|---|
-| UI overhaul fixes | `a50ac0cc002df3d2d` | Satchel drag and click bugs, M opens the Sky Chart, Tab disables the core player list, minimap setting, world-boss board relayout, XP-drop lane, tablet docking, short windows, sell/drop guard for upgraded last copies, plus 12 lows. Was finishing §29 docs. |
-| MMO feature gap | `a76e7974ed3e4bf31` | Account-level renown, onboarding objective chain into the sidebar, "COLLECTION UNLOCKED" and level-up toasts, shop quantity picker, launch vents, Magical Power stat-template NPC. Was writing `verify-features.luau` (§31). |
-| Sky Chart map art | `a03113a93bebbd229` | 3D ViewportFrame warp map from the real island models (Hypixel-style), a more detailed minimap, §32. |
+| Merged | What it is |
+|---|---|
+| UI overhaul QC fixes | All 24 findings: satchel drag and click bugs; M opens the Sky Chart; PlayerList core GUI off; the minimap setting hides the whole block; XP-drop lanes; tablet docking; short windows; `Gear.upgraded` guard on sell and drop; 12 lows. |
+| §31 MMO features | `features.client.lua`, `verify-features.luau`: Isle Renown account level (perkStats `renown`, accessory slots at renown 10/25/50/100/150), Wayfarer's Path onboarding (10 steps, claimed via `guideClaim`), announcement toasts, shop quantity `:qty` 1–64, six Skyward Vents, Resonance (Magical Power templates, NPC Oriel Thrumwright). |
+| §32 map art | `shared/MapArt.lua`, `verify-map.luau`: 3D ViewportFrame Sky Chart built from the real islands, plus region-tinted minimap plates. |
 
-When each lands: merge, build, push, run a QC review, then a fix team.
+**Open decisions from §31:**
+- Should Pell's older 6-step client tutorial be retired, now that Wayfarer's Path exists?
+- Merchant selling is still whole-stack only; add a quantity picker for selling.
+- Resonance gathering templates (about +36 fortune / +108 mining speed at 300 MP) need a play-test.
+
+**Follow-ups from §31:**
+- per-player shop stock limits
+- full tooltip footer
+- top objective progress bar
+- tier-1 worker recipe unlock message
+- pickup feed
+- OSRS action label and status orbs
+- chat filter tabs
+- goal board
+- price history
+- server browser
+- account-mode choice at the end of onboarding
+
+**From §32, to check in Studio:**
+- the first-open hitch when copying about 2.2k parts
+- label overlap around Compass Quay
+- forge budget contention from the chart's 40 pinned meshes
 
 **Known open items and ideas:**
 - **Hollowcrown Edge** (lair unique) is now weaker than an easier crafted sword after the 85% rival cap. Give it a niche, such as a special ability. See §25.
