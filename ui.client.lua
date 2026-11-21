@@ -14,6 +14,10 @@ local function make(class, parent, properties)
 	for key, value in pairs(properties or {}) do
 		object[key] = value
 	end
+	if class == "UICorner" then
+		local r = object.CornerRadius
+		if r and r.Scale == 0 and r.Offset > 7 then object.CornerRadius = UDim.new(0, if r.Offset >= 12 then 7 else 5) end
+	end
 	object.Parent = parent
 	return object
 end
@@ -21,24 +25,33 @@ local function rgb(hex)
 	return Color3.fromHex(hex)
 end
 ------------------------------------------------------------------------------
--- "Aether Brass" design system.
+-- "Skyforge" design system: every token comes from the shared theme
+-- (shared/UiTheme.lua → ReplicatedStorage.AetherUiTheme, §29), which the HUD,
+-- satchel, Wayfinder and hotbar use too.
 -- Surfaces, darkest to brightest: track (wells, bar tracks) < deep (cards,
 -- tiles) < ink (window body) < slate (controls) < UI.raised (hover/selected).
--- Brass rims and ornaments frame the important surfaces; mint marks state,
--- gold marks primary actions and headings, ember marks danger/locked.
--- Type scale: display FredokaOne (titles, banners) · heading Builder Sans
--- ExtraBold 12-18 · label Builder Sans Bold · body Builder Sans Medium 12-14.
--- Spacing on a 4px grid (4/8/12/16). Tokens and helpers live in one table
--- (UI): this chunk sits at Luau's 200 top-level local limit.
+-- Bronze frames with gold top light and corner studs frame the important
+-- surfaces; mint marks state, gold marks primary actions and headings, ember
+-- marks danger/locked. Type: pixel display face (Arcade) for titles, section
+-- heads and counters; Builder Sans ExtraBold/Bold/Medium for everything read.
+-- Spacing on a 4px grid (4/8/12/16); square-ish corners (radius <= 7).
+-- Tokens and helpers live in one table (UI): this chunk sits at Luau's 200
+-- top-level local limit.
 ------------------------------------------------------------------------------
-local ink, deep, slate = rgb("12222C"), rgb("0C1820"), rgb("1E3946")
-local ivory, muted, mint, gold = rgb("F7EFDC"), rgb("A9BDC1"), rgb("7FE3CC"), rgb("F3C66E")
-local ember, track = rgb("EF7D67"), rgb("060E14")
-local UI = {
-	raised = rgb("2A4D5E"), line = rgb("2E4A58"), rim = rgb("557886"), brass = rgb("C9974A"), brassDark = rgb("6B4E24"),
-	copy = rgb("CBD8D9"), onGold = rgb("2B1B05"), white = Color3.new(1, 1, 1), black = Color3.new(0, 0, 0),
-	heavy = Enum.Font.BuilderSansExtraBold, display = Enum.Font.FredokaOne,
-}
+local UI = {T = require(ReplicatedStorage:WaitForChild("AetherUiTheme"))}
+local ink, deep, slate = UI.T.color.panel, rgb("0D141D"), UI.T.color.raised
+local ivory, muted, mint, gold = UI.T.color.text, UI.T.color.dim, UI.T.color.mint, UI.T.color.gold
+local ember, track = UI.T.color.ember, UI.T.color.void
+UI.raised, UI.line, UI.rim, UI.brass, UI.brassDark = UI.T.color.hover, UI.T.color.line, rgb("4A5A6E"), UI.T.color.frame, UI.T.color.frameLo
+UI.copy, UI.onGold, UI.white, UI.black = rgb("D6DCE4"), UI.T.color.onGold, Color3.new(1, 1, 1), Color3.new(0, 0, 0)
+UI.heavy, UI.display = Enum.Font.BuilderSansExtraBold, UI.T.font.display
+UI.TOUCH = 44 -- minimum touch target (px) for every control on phone layouts (compactAtlas)
+-- HUD lanes for the current screen (Theme.hudLayout; the hotbar gap included).
+function UI.lay()
+	local view = (UI.gui and UI.gui.AbsoluteSize) or Vector2.new(1366, 768)
+	if view.X <= 0 or view.Y <= 0 then view = Vector2.new(1366, 768) end
+	return UI.T.hudLayout(view.X, view.Y, {touch = Input.TouchEnabled, satchelOpen = player:GetAttribute("IsleSatchelOpen") == true})
+end
 do
 	local materials = ReplicatedStorage:FindFirstChild("MaterialArt")
 	if materials then
@@ -81,6 +94,7 @@ end
 -- Ornamental corners: a brass gem on each corner with L-bracket arms along
 -- both edges (built from rotated frames, no images).
 function UI.corners(object,color,size,inset)
+	if UI.T then return UI.T.ornaments(object,size or 6,inset or 5,color) end
 	size,inset=size or 7,inset or 6
 	local holder=make("Frame",object,{Name="Ornaments",BackgroundTransparency=1,Size=UDim2.fromScale(1,1),Active=false,Selectable=false})
 	local arm=math.floor(size*2.4)
@@ -123,7 +137,7 @@ local function label(parent, value, x, y, w, h, font, size, color)
 		TextTruncate = Enum.TextTruncate.AtEnd,
 	})
 end
-local full, bold, book, regular = UDim.new(1, 0), Enum.Font.BuilderSansBold, Enum.Font.FredokaOne, Enum.Font.BuilderSansMedium
+local full, bold, book, regular = UDim.new(1, 0), Enum.Font.BuilderSansBold, UI.T.font.display, Enum.Font.BuilderSansMedium
 -- Leading action glyph on card buttons (parts named "Cut" take the button fill).
 function UI.engrave(parent,caption)
 	-- (UIPadding offsets children too: -8 lands the glyph 10px inside the rim.)
@@ -311,6 +325,8 @@ local function fmt(value)
 	if tenth>0 then grouped..="."..tenth end
 	return (negative and "-" or "")..grouped
 end
+-- Multipliers and rates (×1.24, ×2.8): at most two decimals, never float noise.
+function UI.dec(value) return (string.format("%.2f",num(value,0)):gsub("%.?0+$","")) end
 local function short(value)
 	value=num(value,0)
 	if value>=1e6 then return string.format("%.1fM",value/1e6) elseif value>=1e4 then return string.format("%.1fk",value/1e3) end
@@ -511,7 +527,7 @@ local function motif(parent,kind,size)
 	make("UICorner",frame,{CornerRadius=UDim.new(0,math.max(4,size//5))})
 	local rim=make("UIStroke",frame,{Name="Rim",Color=UI.brass,Thickness=1,Transparency=.35})
 	make("UIGradient",rim,{Rotation=90,Color=ColorSequence.new(UI.white,Color3.new(.4,.4,.4))})
-	make("UIGradient",frame,{Name="Sheen",Rotation=90,Color=ColorSequence.new(rgb("3A6A7C"),rgb("0E1C24"))})
+	make("UIGradient",frame,{Name="Sheen",Rotation=90,Color=ColorSequence.new(rgb("3A4E68"),rgb("0C121A"))})
 	local function stroke(x,y,w,h,angle,color)
 		local mark=make("Frame",frame,{Position=UDim2.fromScale(x,y),Size=UDim2.fromScale(w,h),AnchorPoint=Vector2.new(.5,.5),Rotation=angle or 0,BackgroundColor3=color or gold,BorderSizePixel=0})
 		return mark
@@ -537,6 +553,16 @@ local function motif(parent,kind,size)
 		local shield=round(stroke(.5,.48,.54,.6,0,mint),.3)
 		stroke(.5,.66,.38,.38,45,mint)
 		stroke(.5,.5,.1,.5,0,gold);stroke(.5,.42,.36,.1,0,gold)
+	elseif kind=="Menu" then
+		-- Menu: a 3 × 3 grid of tiles, the centre one lit.
+		for r=0,2 do for c=0,2 do local t=stroke(.26+c*.24,.26+r*.24,.17,.17,0,(r==1 and c==1) and gold or mint);round(t,.2) end end
+	elseif kind=="Map" then
+		-- Sky Chart: a floating isle with a warp spark.
+		round(stroke(.5,.42,.72,.3,0,mint),.5);stroke(.5,.64,.32,.32,45,gold);round(stroke(.5,.3,.16,.16,0,ivory),.5)
+	elseif kind=="Settings" then
+		local cog=round(stroke(.5,.5,.5,.5,0,mint),.5);make("UIStroke",cog,{Color=deep,Thickness=2})
+		for _,a in ipairs({0,45,90,135}) do stroke(.5,.5,.12,.78,a,mint) end
+		round(stroke(.5,.5,.2,.2,0,gold),.5)
 	elseif kind=="Hunt" then
 		stroke(.5,.5,.09,.8,40,mint);stroke(.5,.5,.09,.8,-40,gold)
 		stroke(.29,.74,.26,.08,-50,gold);stroke(.71,.74,.26,.08,50,mint)
@@ -697,55 +723,106 @@ local function itemIcon(parent,id,size,locked)
 end
 
 ------------------------------------------------------------------------------
--- HUD: guild badge, action bar (health / XP / defense pills), XP popups,
--- level-up banner and toasts.
+-- HUD: the isle sidebar (top-right scoreboard + dock), the action bar above
+-- the hotbar gap, level-up banner and toasts. XP drops and the skill toast
+-- live in hud.client.lua (fed through IsleXpLocal). Lanes: UI.lay().
 ------------------------------------------------------------------------------
--- Guild badge (top-left; the combat HUD keeps clear of x 10-315, y 8-96).
-local hud = panel(gui, UDim2.fromOffset(10, 8), UDim2.new(1, -20, 0, 84), deep)
-hud.Name = "GuildBadge"
-hud.BackgroundTransparency = .06
-make("UISizeConstraint", hud, { MaxSize = Vector2.new(305, 84) })
-rounded(hud, 14, UI.brass)
-UI.sheen(hud, 1, .74)
-UI.bevel(hud, 14)
-UI.compass(hud, 10, 9, 40)
-label(hud, "AETHER  ISLES", 59, 8, UDim.new(1, -126), 14, UI.heavy, 11, gold)
-UI.purse = label(hud, "Opening ledger…", 59, 23, UDim.new(1, -126), 22, bold, 14, ivory)
-UI.purse.RichText = true
-UI.rule(hud, UI.brass, 55, 10).BackgroundTransparency = .35
-make("Frame", hud, {Name="GoalMark", AnchorPoint=Vector2.new(.5,.5), Position=UDim2.fromOffset(17, 69), Size=UDim2.fromOffset(6, 6), Rotation=45, BackgroundColor3=gold, BorderSizePixel=0})
-UI.goal = label(hud, "Charting the islands…", 27, 58, UDim.new(1, -38), 22, bold, 13, rgb("FFDFA0"))
-local openAtlas
+-- Sidebar: date / season / time, region, purse and Skymarks, the active
+-- objective, the crew, and a dock (Menu = atlas, Bag = satchel, Map = Sky Chart).
+local hud = UI.T.frame(gui, {name="Sidebar", title="AETHER  ISLES", titleAlign=Enum.TextXAlignment.Center, size=UDim2.fromOffset(214, 226), transparency=.12, header=26})
+UI.gui = gui
+UI.side = {}
 do
-	local opener = button(hud, "Atlas", UDim2.new(1, -62, 0, 8), UDim2.fromOffset(52, 44), function()
-		openAtlas()
-	end)
-	opener.Text = ""
-	local rim = opener:FindFirstChild("Rim")
-	if rim then rim.Color = UI.brass end
-	local glyph = motif(opener, "Journal", 22)
-	glyph.Name = "AtlasGlyph"
-	glyph.AnchorPoint = Vector2.new(.5, 0)
-	glyph.Position = UDim2.new(.5, 0, 0, 4)
-	glyph.BackgroundTransparency = 1
-	glyph:FindFirstChild("Rim").Enabled = false
-	local caption = label(opener, "ATLAS", 0, 27, full, 14, UI.heavy, 11, ivory)
-	caption.TextXAlignment = Enum.TextXAlignment.Center
-	if not Input.TouchEnabled then
-		local key = make("TextLabel", opener, {Name="KeyHint", AnchorPoint=Vector2.new(1, 0), Position=UDim2.new(1, 5, 0, -5), Size=UDim2.fromOffset(15, 15),
-			BackgroundColor3=gold, Text="J", Font=UI.heavy, TextSize=11, TextColor3=UI.onGold, BorderSizePixel=0})
-		make("UICorner", key, {CornerRadius=UDim.new(0, 4)})
-		make("UIStroke", key, {Color=UI.brassDark, Thickness=1})
+	local body = hud:FindFirstChild("Body")
+	local function line(name, y, color, size, font)
+		local l = label(body, "", 12, y, UDim.new(1, -24), 16, font or bold, size or 13, color or ivory)
+		l.Name = name
+		l.RichText = true
+		return l
+	end
+	UI.side.date = line("Date", 4, ivory, 13)
+	UI.side.clock = line("Clock", 20, muted, 13)
+	UI.side.region = line("Region", 36, mint, 13)
+	UI.side.rule1 = UI.T.rule(body, 57, UI.brass, 10)
+	UI.purse = line("Purse", 62, ivory, 13)
+	UI.side.marks = line("Marks", 78, ivory, 13)
+	UI.side.rule2 = UI.T.rule(body, 99, UI.brass, 10)
+	UI.side.goalHead = line("GoalHead", 102, muted, 10, UI.display)
+	UI.side.goalHead.Text = "OBJECTIVE"
+	UI.goal = line("Goal", 115, rgb("FFE6A6"), 12)
+	UI.side.crew = line("Crew", 133, muted, 12)
+	UI.side.dock = make("Frame", body, {Name = "Dock", BackgroundTransparency = 1, AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 8, 1, -8), Size = UDim2.new(1, -16, 0, 36)})
+	local function dockButton(name, caption, key, motifName, fn)
+		local b = button(UI.side.dock, caption, UDim2.new(), UDim2.fromOffset(60, 36), fn)
+		b.Name = name
+		b.Text = ""
+		local rim = b:FindFirstChild("Rim")
+		if rim then rim.Color = UI.brass end
+		local glyph = motif(b, motifName, 18)
+		glyph.Name = "DockGlyph"
+		glyph.AnchorPoint = Vector2.new(.5, 0)
+		glyph.Position = UDim2.new(.5, 0, 0, 3)
+		glyph.BackgroundTransparency = 1
+		glyph:FindFirstChild("Rim").Enabled = false
+		local cap = label(b, caption, 0, 0, full, 12, UI.display, 8, ivory)
+		cap.Name = "DockCaption"
+		cap.AnchorPoint = Vector2.new(0, 1)
+		cap.Position = UDim2.new(0, 0, 1, -3)
+		cap.TextXAlignment = Enum.TextXAlignment.Center
+		if not Input.TouchEnabled then
+			local hint = make("TextLabel", b, {Name="KeyHint", AnchorPoint=Vector2.new(1, 0), Position=UDim2.new(1, 4, 0, -4), Size=UDim2.fromOffset(14, 14),
+				BackgroundColor3=gold, Text=key, Font=UI.heavy, TextSize=10, TextColor3=UI.onGold, BorderSizePixel=0})
+			make("UICorner", hint, {CornerRadius=UDim.new(0, 3)})
+		end
+		return b
+	end
+	UI.side.menu = dockButton("AtlasButton", "MENU", "J", "Journal", function() UI.openAtlas() end)
+	UI.side.bag = dockButton("SatchelButton", "BAG", "E", "Satchel", function() UI.hudChannel:Fire("satchel") end)
+	UI.side.map = dockButton("ChartButton", "MAP", "M", "Hunt", function() UI.hudChannel:Fire("warpmap") end)
+end
+-- Places the sidebar and its dock for the current screen.
+function UI.layoutSidebar()
+	local L = UI.lay()
+	local r = L.sidebar
+	hud.Position, hud.Size = UDim2.fromOffset(r.x, r.y), UDim2.fromOffset(r.w, r.h)
+	local short, tiny = L.short, L.tiny
+	local s = UI.side
+	local dockH = (short or Input.TouchEnabled) and UI.TOUCH or 36
+	s.dock.Size = UDim2.new(1, -16, 0, dockH)
+	local bw = math.floor((r.w - 16 - 8) / 3)
+	for i, b in ipairs({s.menu, s.bag, s.map}) do
+		b.Position, b.Size = UDim2.fromOffset((i - 1) * (bw + 4), 0), UDim2.fromOffset(bw, dockH)
+	end
+	local fs = short and 11 or 13
+	for _, l in ipairs({s.date, s.clock, s.region, UI.purse, s.marks}) do l.TextSize = fs end
+	-- Header band: 26 px (desktop), 18 px on phones with a smaller pixel title.
+	local headerH = short and 18 or 26
+	local band, body = hud:FindFirstChild("Header"), hud:FindFirstChild("Body")
+	band.Size = UDim2.new(1, -6, 0, headerH - 3)
+	band:FindFirstChild("Title").TextSize = short and 9 or 12
+	hud:FindFirstChild("HeaderRule").Position = UDim2.new(0, 10, 0, headerH)
+	body.Position, body.Size = UDim2.fromOffset(0, headerH), UDim2.new(1, 0, 1, -headerH)
+	s.dock.Position = UDim2.new(0, 8, 1, short and -4 or -8)
+	if short then
+		-- Compact: date · time on one line, purse · marks on one line, goal last.
+		s.date.Position, s.region.Position, UI.purse.Position = UDim2.fromOffset(10, 1), UDim2.fromOffset(10, 15), UDim2.fromOffset(10, 29)
+		for _, l in ipairs({s.date, s.region, UI.purse}) do l.Size = UDim2.new(1, -20, 0, 14) end
+		s.clock.Visible, s.marks.Visible, s.rule1.Visible, s.rule2.Visible, s.goalHead.Visible, s.crew.Visible = false, false, false, false, false, false
+		UI.goal.Visible = not tiny
+		UI.goal.Position, UI.goal.Size, UI.goal.TextSize, UI.goal.TextWrapped = UDim2.fromOffset(10, 44), UDim2.new(1, -20, 0, 28), 11, true
+	else
+		s.clock.Visible, s.marks.Visible, s.rule1.Visible, s.rule2.Visible, s.goalHead.Visible, s.crew.Visible, UI.goal.Visible = true, true, true, true, true, true, true
+		s.date.Position, s.region.Position, UI.purse.Position = UDim2.fromOffset(12, 4), UDim2.fromOffset(12, 36), UDim2.fromOffset(12, 62)
+		UI.goal.Position, UI.goal.Size, UI.goal.TextSize, UI.goal.TextWrapped = UDim2.fromOffset(12, 115), UDim2.new(1, -24, 0, 16), 12, false
 	end
 end
--- Action bar: four pills. Health (0-24%), mana (24-46%) and defense (76-100%)
--- stay up; the XP pill (46-76%) shows while an XP popup is live.
-local actionBar=make("Frame",gui,{Name="ActionBar",AnchorPoint=Vector2.new(.5,1),Position=UDim2.new(.5,0,1,-8),Size=UDim2.new(.94,0,0,32),BackgroundTransparency=1,BorderSizePixel=0})
-make("UISizeConstraint",actionBar,{MaxSize=Vector2.new(680,32)})
+local openAtlas
+-- Action bar (SkyBlock-style readout) over the hotbar gap: health, defense,
+-- mana. Health and mana are meters with their numbers on them.
+local actionBar=make("Frame",gui,{Name="ActionBar",BackgroundTransparency=1,BorderSizePixel=0,Size=UDim2.fromOffset(500,30)})
 function UI.pill(parent,name,position,size)
-	local pill=make("Frame",parent,{Name=name,Position=position,Size=size,BackgroundColor3=deep,BackgroundTransparency=.1,BorderSizePixel=0})
-	rounded(pill,16,UI.rim)
-	UI.sheen(pill,1,.78)
+	local pill=make("Frame",parent,{Name=name,Position=position,Size=size,BackgroundColor3=track,BackgroundTransparency=.3,BorderSizePixel=0})
+	rounded(pill,5,UI.brassDark)
 	return pill
 end
 -- Round glyph chip (frame + label so the gradient never tints the glyph).
@@ -757,19 +834,17 @@ function UI.chip(parent,glyph,color,size,x)
 	local text=make("TextLabel",chip,{Name="Glyph",BackgroundTransparency=1,Size=UDim2.fromScale(1,1),Text=glyph,Font=UI.heavy,TextSize=math.floor(size*.62),TextColor3=UI.white,TextStrokeTransparency=.5,TextStrokeColor3=deep})
 	return chip,text
 end
--- A gradient meter with gloss and a bright end cap (HUD and atlas share it).
+-- A gradient meter with gloss (HUD and atlas share it).
 function UI.meter(parent,name,color,height)
 	local bar=make("Frame",parent,{Name=name,BackgroundColor3=track,BorderSizePixel=0,Size=UDim2.new(1,0,0,height)})
-	make("UICorner",bar,{CornerRadius=UDim.new(0,height//2)})
-	make("UIStroke",bar,{Color=UI.line,Transparency=0,Thickness=1})
+	make("UICorner",bar,{CornerRadius=UDim.new(0,math.min(4,height//2))})
+	make("UIStroke",bar,{Color=UI.brassDark,Transparency=0,Thickness=1})
 	local fill=make("Frame",bar,{Name="Fill",BackgroundColor3=color,BorderSizePixel=0,Size=UDim2.fromScale(1,1)})
-	make("UICorner",fill,{CornerRadius=UDim.new(0,height//2)})
-	make("UIGradient",fill,{Name="Shade",Color=ColorSequence.new(Color3.new(.62,.62,.62),UI.white)})
-	local gloss=make("Frame",fill,{Name="Gloss",BackgroundColor3=UI.white,BackgroundTransparency=.8,BorderSizePixel=0,Position=UDim2.fromOffset(2,1),Size=UDim2.new(1,-4,.42,0)})
-	make("UICorner",gloss,{CornerRadius=UDim.new(0,height//2)})
-	local cap=make("Frame",fill,{Name="Cap",AnchorPoint=Vector2.new(1,.5),Position=UDim2.new(1,-1,.5,0),Size=UDim2.fromOffset(math.max(3,height//3),math.max(2,height-4)),BackgroundColor3=color:Lerp(UI.white,.65),BorderSizePixel=0})
-	make("UICorner",cap,{CornerRadius=UDim.new(1,0)})
-	make("UIStroke",cap,{Color=color:Lerp(UI.white,.3),Thickness=2,Transparency=.45})
+	make("UICorner",fill,{CornerRadius=UDim.new(0,math.min(4,height//2))})
+	make("UIGradient",fill,{Name="Shade",Rotation=90,Color=ColorSequence.new(UI.white,Color3.new(.62,.62,.62))})
+	local gloss=make("Frame",fill,{Name="Gloss",BackgroundColor3=UI.white,BackgroundTransparency=.8,BorderSizePixel=0,Position=UDim2.fromOffset(1,1),Size=UDim2.new(1,-2,.38,0)})
+	make("UICorner",gloss,{CornerRadius=UDim.new(0,math.min(3,height//2))})
+	local cap=make("Frame",fill,{Name="Cap",AnchorPoint=Vector2.new(1,.5),Position=UDim2.new(1,-1,.5,0),Size=UDim2.fromOffset(2,math.max(2,height-4)),BackgroundColor3=color:Lerp(UI.white,.65),BorderSizePixel=0})
 	return bar,fill,cap
 end
 function UI.setMeter(fill,fraction)
@@ -780,57 +855,43 @@ function UI.setMeter(fill,fraction)
 	if cap then cap.Visible=fraction>.04 and fraction<.995 end
 end
 do
-	local health=UI.pill(actionBar,"HealthPill",UDim2.new(),UDim2.new(.24,-6,1,0))
-	UI.chip(health,"❤",rgb("E2504A"),24)
+	local function readout(parent,name)
+		local t=label(parent,"—",0,0,full,16,UI.heavy,13,ivory)
+		t.Name=name
+		t.Size=UDim2.fromScale(1,1)
+		t.TextXAlignment=Enum.TextXAlignment.Center
+		t.TextStrokeTransparency=.2
+		t.TextStrokeColor3=track
+		t.ZIndex=2
+		t.RichText=true
+		return t
+	end
+	local health=UI.pill(actionBar,"HealthPill",UDim2.new(),UDim2.new(.38,-4,1,0))
 	local meter
-	meter,UI.healthFill=UI.meter(health,"HealthMeter",rgb("F05A4E"),16)
-	meter.AnchorPoint=Vector2.new(0,.5)
-	meter.Position=UDim2.new(0,34,.5,0)
-	meter.Size=UDim2.new(1,-44,0,16)
-	UI.healthText=label(meter,"—",0,0,full,16,UI.heavy,12,ivory)
-	UI.healthText.Size=UDim2.fromScale(1,1)
-	UI.healthText.TextXAlignment=Enum.TextXAlignment.Center
-	UI.healthText.TextStrokeTransparency=.35
-	UI.healthText.TextStrokeColor3=deep
-	UI.healthText.ZIndex=2
-	-- Mana (combat styles): Mana / MaxMana player attributes from the combat server.
-	local manaPill=UI.pill(actionBar,"ManaPill",UDim2.new(.24,6,0,0),UDim2.new(.22,-12,1,0))
-	UI.chip(manaPill,"✦",rgb("4F6FE0"),24)
+	meter,UI.healthFill=UI.meter(health,"HealthMeter",UI.T.color.health,16)
+	meter.Position,meter.Size=UDim2.fromOffset(3,3),UDim2.new(1,-6,1,-6)
+	UI.healthText=readout(meter,"HealthText")
+	local defense=UI.pill(actionBar,"DefensePill",UDim2.new(.38,2,0,0),UDim2.new(.24,-4,1,0))
+	UI.defenseText=readout(defense,"DefenseText")
+	UI.defenseText.TextColor3=rgb("8CF59A")
+	local manaPill=UI.pill(actionBar,"ManaPill",UDim2.new(.62,4,0,0),UDim2.new(.38,-4,1,0))
 	local manaMeter
-	manaMeter,UI.manaFill=UI.meter(manaPill,"ManaMeter",rgb("5C8BFF"),16)
-	manaMeter.AnchorPoint=Vector2.new(0,.5)
-	manaMeter.Position=UDim2.new(0,34,.5,0)
-	manaMeter.Size=UDim2.new(1,-44,0,16)
-	UI.manaText=label(manaMeter,"—",0,0,full,16,UI.heavy,12,ivory)
-	UI.manaText.Size=UDim2.fromScale(1,1)
-	UI.manaText.TextXAlignment=Enum.TextXAlignment.Center
-	UI.manaText.TextStrokeTransparency=.35
-	UI.manaText.TextStrokeColor3=deep
-	UI.manaText.ZIndex=2
-	local defense=UI.pill(actionBar,"DefensePill",UDim2.new(.76,6,0,0),UDim2.new(.24,-6,1,0))
-	UI.chip(defense,"❈",rgb("3FBF6A"),24)
-	UI.defenseText=label(defense,"—",34,0,UDim.new(1,-44),32,UI.heavy,15,rgb("9BF5B4"))
-	UI.defenseText.RichText=true
-	UI.xpPill=UI.pill(actionBar,"XpPill",UDim2.new(.46,6,0,0),UDim2.new(.3,-12,1,0))
-	UI.xpPill.Visible=false
-	UI.xpChip,UI.xpGlyph=UI.chip(UI.xpPill,"",gold,24)
-	local xpMeter
-	xpMeter,UI.xpFill=UI.meter(UI.xpPill,"XpMeter",gold,4)
-	xpMeter.Position=UDim2.new(0,38,1,-7)
-	xpMeter.Size=UDim2.new(1,-50,0,3)
-	xpMeter:FindFirstChildOfClass("UIStroke").Enabled=false
+	manaMeter,UI.manaFill=UI.meter(manaPill,"ManaMeter",UI.T.color.mana,16)
+	manaMeter.Position,manaMeter.Size=UDim2.fromOffset(3,3),UDim2.new(1,-6,1,-6)
+	UI.manaText=readout(manaMeter,"ManaText")
 end
--- XP popup owns 46-76% between the mana (24-46%) and defense (76-100%) pills
--- and shrinks its text instead of spilling over them.
-UI.xp=label(actionBar,"",0,0,UDim.new(.3,-58),24,UI.heavy,13,gold)
-UI.xp.Name="XpPopup"
-UI.xp.Position=UDim2.new(.46,44,0,1)
-UI.xp.TextXAlignment=Enum.TextXAlignment.Left
-UI.xp.RichText=true
-UI.xp.TextWrapped=false
-UI.xp.TextScaled=true
-make("UITextSizeConstraint",UI.xp,{MinTextSize=8,MaxTextSize=13})
-UI.xp.TextTransparency=1
+gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(function() UI.layoutSidebar();UI.layoutActionBar() end)
+-- The island builder owns the bottom of the screen (the hotbar hides too).
+player:GetAttributeChangedSignal("IslandBuilding"):Connect(function() UI.layoutActionBar() end)
+-- The Wayfinder publishes the region under the player (sidebar region line).
+player:GetAttributeChangedSignal("IsleRegionHere"):Connect(function() if UI.refreshSidebar then UI.refreshSidebar() end end)
+function UI.layoutActionBar()
+	local L=UI.lay()
+	actionBar.Position,actionBar.Size=UDim2.fromOffset(L.action.x,L.action.y),UDim2.fromOffset(L.action.w,L.action.h)
+	actionBar.Visible=not (UI.atlasOpen==true) and player:GetAttribute("IslandBuilding")~=true
+	local size=L.tiny and 11 or (L.short and 12 or 13)
+	for _,t in ipairs({UI.healthText,UI.defenseText,UI.manaText}) do t.TextSize=size end
+end
 -- Level-up banner sits below the top HUD row: the combat target panel and its
 -- banner own y 10-138 (combat.client.lua), the atlas HUD the top-left corner.
 do
@@ -866,7 +927,7 @@ do
 	UI.bannerInitial.TextXAlignment=Enum.TextXAlignment.Center
 	UI.bannerInitial.TextStrokeTransparency=.3
 	UI.bannerInitial.TextStrokeColor3=deep
-	UI.bannerTitle=label(banner,"",76,17,UDim.new(1,-92),32,book,26,ivory)
+	UI.bannerTitle=label(banner,"",76,17,UDim.new(1,-92),32,book,16,ivory)
 	UI.bannerReward=label(banner,"",76,50,UDim.new(1,-92),20,bold,12,muted)
 	UI.bannerReward.RichText=true
 	UI.bannerReward.TextScaled=true
@@ -903,13 +964,12 @@ do
 	local window = panel(atlas, UDim2.new(), UDim2.fromScale(1, 1), ink)
 	window.Name = "Window"
 	make("UICorner", window, {CornerRadius=UDim.new(0, 16)})
-	local rim = make("UIStroke", window, {Color=UI.brass, Thickness=1.5})
-	make("UIGradient", rim, {Rotation=90, Color=ColorSequence.new(rgb("FFE6AE"), rgb("6B4E24"))})
-	make("UIGradient", window, {Name="Sheen", Rotation=90, Color=ColorSequence.new(rgb("FFFFFF"), rgb("8E9CA2"))})
+	UI.T.rim(window, 2.5)
+	make("UIGradient", window, {Name="Sheen", Rotation=90, Color=ColorSequence.new(rgb("E4E9F0"), rgb("8A93A0"))})
 	local inner = make("Frame", window, {Name="InnerRim", BackgroundTransparency=1, Position=UDim2.fromOffset(5, 5), Size=UDim2.new(1, -10, 1, -10)})
 	make("UICorner", inner, {CornerRadius=UDim.new(0, 12)})
-	make("UIStroke", inner, {Color=UI.brass, Transparency=.74, Thickness=1})
-	UI.corners(window, gold, 7, 8)
+	make("UIStroke", inner, {Color=UI.T.color.frameHi, Transparency=.78, Thickness=1})
+	UI.corners(window, UI.T.color.frameHi, 7, 6)
 end
 UI.head = make("Frame", atlas, {Name="Head", BackgroundTransparency=1, Size=UDim2.new(1, 0, 0, 70)})
 do
@@ -919,7 +979,7 @@ do
 end
 UI.crest = UI.compass(UI.head, 16, 13, 44)
 UI.kicker = label(UI.head, "CARTOGRAPHERS' GUILD", 70, 12, UDim.new(1, -250), 14, UI.heavy, 11, mint)
-UI.title = label(UI.head, "Voyager’s Atlas", 69, 25, UDim.new(1, -250), 36, book, 28, ivory)
+UI.title = label(UI.head, "Voyager’s Atlas", 69, 25, UDim.new(1, -250), 36, book, 18, ivory)
 make("UIGradient", UI.title, {Rotation=90, Color=ColorSequence.new(rgb("FFF7E2"), rgb("F2C15E"))})
 UI.headRule = UI.rule(UI.head, UI.brass, 69, 14)
 -- Purse chip in the masthead.
@@ -937,7 +997,8 @@ local function closeAtlas()
 	atlas.Visible = false
 	shade.Visible = false
 	hud.Visible = true
-	actionBar.Visible = true
+	UI.atlasOpen = false
+	UI.layoutActionBar()
 	-- Leave UI selection entirely so gamepad input drives the character again.
 	GuiService.SelectedObject = nil
 end
@@ -1002,9 +1063,10 @@ local function notify(message)
 	notice.Visible = true
 	notice.TextTransparency = 0.35
 	-- The combat spell bar (combat.client.lua) publishes its height as IsleHudLift.
-	local lift = math.clamp(num(player:GetAttribute("IsleHudLift"),0),0,120)
-	notice.Position = UDim2.new(0.5, 0, 1, -42 - lift)
-	TweenService:Create(notice, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { TextTransparency = 0, Position = UDim2.new(0.5, 0, 1, -50 - lift) }):Play()
+	-- Above the hotbar band (UI.lay().toastBottom) and any spell / prayer bars.
+	local lift = math.max(UI.lay().toastBottom, 50 + math.clamp(num(player:GetAttribute("IsleHudLift"),0),0,200))
+	notice.Position = UDim2.new(0.5, 0, 1, 8 - lift)
+	TweenService:Create(notice, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { TextTransparency = 0, Position = UDim2.new(0.5, 0, 1, -lift) }):Play()
 	task.delay(3.6, function()
 		if token == UI.noticeIndex then
 			notice.Visible = false
@@ -1031,7 +1093,7 @@ local state = {
 	started = false,
 }
 local synced = false
-local current = "Journal"
+local current = "Menu"
 local railMode = false
 local render, send, sendCoop
 local coopState, coopError
@@ -1043,6 +1105,39 @@ local sectionOf -- selected section per primary tab (filled in by the navigation
 local enchantTarget -- item chosen on the Enchant section
 local function depth() local d=state.depth if type(d)=="table" then return d end return nil end
 local function dget(key) local d=depth() if d and type(d[key])=="table" then return d[key] end return nil end
+-- Sidebar text (snapshot + 1 Hz clock). Strings only; no instances made.
+function UI.refreshSidebar()
+	local s = UI.side
+	local L = UI.lay()
+	local now = os.time()
+	local ok, server = pcall(function() return workspace:GetServerTimeNow() end)
+	if ok and type(server) == "number" and server > 1e9 then now = server end
+	local cal = UI.T.isleClock(now, Data)
+	if cal then
+		local sun = cal.night and paint("☾", "B8C0FF") or paint("☀", "F7C548")
+		if L.short then
+			s.date.Text = paint(cal.seasonName .. " " .. cal.day, cal.seasonColor) .. paint(" · " .. cal.clock, "A9B4C0")
+		else
+			s.date.Text = paint(cal.date, cal.seasonColor) .. paint("   Year " .. cal.year, "6E7A88")
+			s.clock.Text = cal.clock .. "  " .. sun .. (cal.event and paint("   ✦ event", "F7C548") or "")
+		end
+	else
+		s.date.Text, s.clock.Text = "Skyward Calendar", ""
+	end
+	local here = player:GetAttribute("IsleRegionHere")
+	local region = type(here) == "string" and Data and type(Data.RegionById) == "table" and Data.RegionById[here]
+	s.region.Text = "◉ " .. escape(region and region.name or (here == "Home" and "Your Isle") or (type(here) == "string" and here ~= "" and here) or "The Skyways")
+	local coins = fmt(num(state.coins, 0))
+	local marks = fmt(num(tbl(state.items).Skymark, 0))
+	if L.short then
+		UI.purse.Text = synced and (paint("◆ " .. coins, "F7C548") .. paint("   ✦ " .. marks, "55FFFF")) or "Opening ledger…"
+	else
+		UI.purse.Text = synced and ("Purse: " .. paint(coins, "F7C548")) or "Opening ledger…"
+		s.marks.Text = "Skymarks: " .. paint(marks, "55FFFF")
+	end
+	local crew = coopState and type(coopState.members) == "table" and #coopState.members or 0
+	s.crew.Text = crew > 0 and ("Crew: " .. paint(crew .. " member" .. (crew == 1 and "" or "s"), "6FE3C8")) or ("Crew: " .. paint("solo", "6E7A88") .. (state.ironman and paint("  ·  Ironman", "A9B4C0") or ""))
+end
 local function listItem(object)
 	order += 1
 	object.LayoutOrder = order
@@ -1069,7 +1164,9 @@ local function heading(text)
 		make("UIStroke",gem,{Color=UI.brassDark,Thickness=1})
 		x=20
 	end
-	local title=label(strip,main,x,0,UDim.new(1,-x),h-4,UI.heavy,compactAtlas and 12 or 13,gold)
+	local title=label(strip,string.upper(main),x,0,UDim.new(1,-x),h-4,UI.display,compactAtlas and 10 or 11,gold)
+	title.TextStrokeTransparency=.55
+	title.TextStrokeColor3=track
 	if meta then
 		title.Size=UDim2.new(.62,-x,0,h-4)
 		local right=label(strip,meta,0,0,UDim.new(.38,0),h-4,bold,compactAtlas and 12 or 11,muted)
@@ -1225,13 +1322,26 @@ function card(o)
 	if o.bar then progress(body,o.bar.fraction,o.bar.color,o.bar.caption).LayoutOrder=nextOrder() end
 	if o.after then o.after(body,nextOrder) end
 	if o.actions and #o.actions>0 then
-		local height=compactAtlas and 36 or 40
+		local height=compactAtlas and UI.TOUCH or 40
 		local width=compactAtlas and 104 or 124
 		local strip=make("Frame",body,{Name="Actions",BackgroundTransparency=1,Size=UDim2.new(1,0,0,height),LayoutOrder=nextOrder()})
-		local total=#o.actions*width+(#o.actions-1)*8
+		-- Each button widens to keep its caption on one line ("Switch · 25,000"),
+		-- sharing the strip with its neighbours: never narrower than the base width.
+		local widths,total={},0
+		local room=contentWidth()-2*(compactAtlas and 10 or 14)-8
 		for i,action in ipairs(o.actions) do
-			local x=-total+(i-1)*(width+8)
-			local b=button(strip,action.caption,UDim2.new(1,x,0,0),UDim2.fromOffset(width,height),function()
+			local chars=utf8.len(action.caption) or #action.caption
+			widths[i]=math.max(width,math.min(compactAtlas and 190 or 220,chars*8+(chars<=7 and 46 or 28)))
+			total+=widths[i]+(i>1 and 8 or 0)
+		end
+		if total>room then
+			for i=1,#widths do widths[i]=width end
+			total=#o.actions*width+(#o.actions-1)*8
+		end
+		local x=-total
+		for i,action in ipairs(o.actions) do
+			local w=widths[i]
+			local b=button(strip,action.caption,UDim2.new(1,x,0,0),UDim2.fromOffset(w,height),function()
 				if action.disabled then notify(action.reason or "Not available yet.") return end
 				action.fn()
 			end)
@@ -1241,6 +1351,7 @@ function card(o)
 			if #action.caption<=7 then UI.engrave(b,action.caption) end
 			local danger=action.caption=="Abandon" or action.caption=="Remove" or action.caption=="Dismantle" or action.caption=="Unequip" or action.caption=="Cancel lot"
 			UI.tone(b,action.disabled and "disabled" or (action.primary and "primary") or (danger and "danger") or nil)
+			x+=w+8
 		end
 	end
 	return box
@@ -1288,17 +1399,51 @@ local function sectionBar(options,selected,onPick,opts)
 	local per=math.ceil(n/rows)
 	local height=opts.small and (compactAtlas and 30 or 32) or (compactAtlas and 34 or 38)
 	local inset=4
-	local holder=container(rows*height+(rows-1)*4+inset*2)
+	-- Phones: one row of UI.TOUCH-tall segments sized to their captions. When
+	-- they do not all fit, the well scrolls sideways (selected segment brought
+	-- into view) instead of stacking rows that push the page off a short screen.
+	local strip=nil
+	if compactAtlas then
+		height=UI.TOUCH
+		local avail=contentWidth()-inset*2
+		local widths,total={},0
+		for i,name in ipairs(options) do
+			local text=tostring(name)
+			widths[i]=math.max(64,(utf8.len(text) or #text)*8+28)
+			total+=widths[i]+(i>1 and 4 or 0)
+		end
+		if total<avail then
+			for i=1,n do widths[i]+=(avail-total)/n end
+			total=avail
+		end
+		strip={widths=widths,total=total,avail=avail}
+	end
+	local holder
+	if strip then
+		holder=listItem(make("ScrollingFrame",scroll,{BackgroundTransparency=1,BorderSizePixel=0,Size=UDim2.new(1,-7,0,height+inset*2),
+			ScrollingDirection=Enum.ScrollingDirection.X,CanvasSize=UDim2.fromOffset(strip.total+inset*2,0),ScrollBarThickness=0,
+			ElasticBehavior=Enum.ElasticBehavior.WhenScrollable,Selectable=false}))
+		rows,per=1,n
+	else
+		holder=container(rows*height+(rows-1)*4+inset*2)
+	end
 	holder.Name=opts.small and "Filters" or "Sections"
 	holder.BackgroundColor3=track
 	holder.BackgroundTransparency=opts.small and .45 or .2
 	make("UICorner",holder,{CornerRadius=UDim.new(0,(height+inset*2)//2)})
 	make("UIStroke",holder,{Color=UI.line,Thickness=1,Transparency=0})
+	local x=inset
 	for i,name in ipairs(options) do
 		local r,c=(i-1)//per,(i-1)%per
 		local on=name==selected
+		local position,size=UDim2.new(c/per,c==0 and inset or inset//2,0,inset+r*(height+4)),UDim2.new(1/per,(c==0 or c==per-1) and -inset*1.5 or -inset,0,height)
+		if strip then
+			position,size=UDim2.fromOffset(math.floor(x),inset),UDim2.fromOffset(math.floor(strip.widths[i]),height)
+			if on then holder.CanvasPosition=Vector2.new(math.clamp(x-(strip.avail-strip.widths[i])/2,0,math.max(0,strip.total-strip.avail)),0) end
+			x+=strip.widths[i]+4
+		end
 		local b=make("TextButton",holder,{Name=(opts.prefix or "Section")..(tostring(name):gsub("[^%w]","")),Text=tostring(name),AutoButtonColor=false,Selectable=true,BorderSizePixel=0,
-			Position=UDim2.new(c/per,c==0 and inset or inset//2,0,inset+r*(height+4)),Size=UDim2.new(1/per,(c==0 or c==per-1) and -inset*1.5 or -inset,0,height),
+			Position=position,Size=size,
 			BackgroundColor3=on and (opts.small and mint or gold) or slate,BackgroundTransparency=on and 0 or 1,
 			Font=on and UI.heavy or bold,TextColor3=on and (opts.small and deep or UI.onGold) or muted,TextScaled=true})
 		make("UICorner",b,{CornerRadius=UDim.new(0,height//2)})
@@ -3618,7 +3763,7 @@ function WK.tile(grid,slot,w,unlocked,size,W)
 		local need=W and W.SlotUniques[slot-W.BASE_SLOTS]
 		local head=label(cell,locked and ("SLOT "..slot) or ("BUILD "..slot),0,size+8,full,14,UI.heavy,11,locked and muted or gold)
 		head.TextXAlignment=Enum.TextXAlignment.Center
-		local sub=label(cell,locked and (need and (need.." uniques") or "Locked") or "Open slot",0,size+22,full,14,bold,10,muted)
+		local sub=label(cell,locked and (need and (need.." uniques") or "Locked") or "Open slot",0,size+22,full,14,bold,11,muted)
 		sub.TextXAlignment=Enum.TextXAlignment.Center
 	end
 end
@@ -4306,7 +4451,7 @@ function dungeonUi.drawEndgame(eview)
 	local logLines={}
 	for _,e in ipairs(tbl(eview.log)) do
 		if type(e)=="table" then
-			table.insert(logLines,"Floor "..dungeonUi.mode(num(e.f,1),e.m==true).."  ·  "..paint(escape(tostring(e.g or "?")),"F9CC77").." "..num(e.s,0).."  ·  "..dungeonUi.time(e.sec).."  ·  "..num(e.d,0).." falls")
+			table.insert(logLines,"Floor "..dungeonUi.mode(num(e.f,1),e.m==true).."  ·  "..paint(escape(tostring(e.g or "?")),"F9CC77").." "..num(e.s,0).."  ·  "..dungeonUi.time(e.sec).."  ·  "..num(e.d,0)..(num(e.d,0)==1 and " fall" or " falls"))
 		end
 	end
 	if #logLines==0 then logLines={"No credited clears yet."} end
@@ -4386,9 +4531,9 @@ local function drawDungeon()
 				actions=actions})
 		end
 		card({name="DungeonTeam",motif="Hunt",title="Team composition",titleColor=gold,subtitle="Duplicates allowed · unique classes pay more",
-			lines={"Class XP ×(1 + "..math.floor(DC.TEAM_STEP*100+.5).."% per unique class beyond the first), up to ×"..(1+DC.TEAM_STEP*(#DC.order-1))..".",
+			lines={"Class XP ×(1 + "..math.floor(DC.TEAM_STEP*100+.5).."% per unique class beyond the first), up to ×"..UI.dec(1+DC.TEAM_STEP*(#DC.order-1))..".",
 				"A balanced party (3+ delvers, every class different) adds +5 to the Bonus score.",
-				"Class XP = floor Dungeoneering XP × 0.75 × grade × team (× Master Mode XP: "..DC.MASTER_XP.." on Floor I to "..DC.masterScale(DC.MASTER_FLOORS).xp.." on Floor "..numeral(DC.MASTER_FLOORS).."), paid to your selected class only."}})
+				"Class XP = floor Dungeoneering XP × 0.75 × grade × team (× Master Mode XP: "..UI.dec(DC.MASTER_XP).." on Floor I to "..UI.dec(DC.masterScale(DC.MASTER_FLOORS).xp).." on Floor "..numeral(DC.MASTER_FLOORS).."), paid to your selected class only."}})
 		-- Master Mode toggle (unlocked per floor by a grade S clear; Dungeon endgame: floors I–VII).
 		local anyMaster=false
 		for i=1,DC.MASTER_FLOORS do if tbl(floorRows[i]).masterUnlocked==true then anyMaster=true end end
@@ -4396,9 +4541,10 @@ local function drawDungeon()
 		local top=DC.masterScale(DC.MASTER_FLOORS)
 		local EGm=dungeonUi.EG
 		card({name="DungeonMaster",motif="Hunt",accent=rgb("E8806A"),title="Master Mode",titleColor=rgb("F2A48F"),
-			subtitle="Floors I–"..numeral(DC.MASTER_FLOORS).." · ×"..DC.MASTER_MULT.."–"..top.hp.." HP · ×"..DC.MASTER_MULT.."–"..top.damage.." damage · par ×"..DC.MASTER_PAR.."–"..top.par.." · +"..DC.MASTER_ROLLS.." chest roll · ×"..DC.MASTER_XP.."–"..top.xp.." XP and coins",badge=masterOn and "ON" or "OFF",badgeColor=ivory,
+			subtitle="Floors I–"..numeral(DC.MASTER_FLOORS).."  ·  tougher bosses, richer chests",badge=masterOn and "ON" or "OFF",badgeColor=ivory,
 			detail="Unlocks per floor after a grade "..DC.MASTER_UNLOCK_GRADE.." (or better) clear. Runs you open use your setting; every delver must have the floor's Master Mode unlocked and its Master gear score.",
-			lines={EGm and ("Master rewards: ×"..EGm.MASTER_ESSENCE.." essence · +"..DC.MASTER_SCORE_BONUS.." Bonus score cap · mechanics hit "..math.floor(EGm.MASTER_MECH*100+.5).."% harder · Master-only drops: "
+			lines={"×"..UI.dec(DC.MASTER_MULT).."–"..UI.dec(top.hp).." HP  ·  ×"..UI.dec(DC.MASTER_MULT).."–"..UI.dec(top.damage).." damage  ·  par ×"..UI.dec(DC.MASTER_PAR).."–"..UI.dec(top.par).."  ·  +"..DC.MASTER_ROLLS.." chest roll  ·  ×"..UI.dec(DC.MASTER_XP).."–"..UI.dec(top.xp).." XP and coins",
+				EGm and ("Master rewards: ×"..EGm.MASTER_ESSENCE.." essence · +"..DC.MASTER_SCORE_BONUS.." Bonus score cap · mechanics hit "..math.floor(EGm.MASTER_MECH*100+.5).."% harder · Master-only drops: "
 				..paint(escape(itemName("EclipsedStarcore")),itemHex("EclipsedStarcore"))..", "..paint(escape(itemName("SovereignHalo")),itemHex("SovereignHalo"))..", "..paint(escape(itemName("Thronebreaker")),itemHex("Thronebreaker"))) or nil},
 			actions={{caption=masterOn and "Turn off" or "Turn on",primary=not masterOn and anyMaster,name="DungeonMasterToggle",disabled=(not masterOn and not anyMaster) or inRun,
 				reason=inRun and "Locked during a run." or "Clear a floor at grade "..DC.MASTER_UNLOCK_GRADE.." first.",fn=function() send("dungeonMaster",masterOn and "off" or "on") end}}})
@@ -4522,7 +4668,7 @@ Pages.drawEssence=drawEssence
 -- prompt keys, so the buttons never double-fire a keypress). Placed in the right
 -- column under the Wayfinder minimap (nav.client.lua: y 8, SIZE 118 on short
 -- screens / 156, + 34 controls), clear of the toast lane; short screens use a
--- 96 px column right of the Attack button (glyph + level roster).
+-- 100 px column right of the Attack button (glyph + level roster).
 do
 	local hudFrame=make("TextButton",gui,{Name="DungeonPartyHud",Text="",AutoButtonColor=false,BackgroundColor3=deep,BackgroundTransparency=.06,BorderSizePixel=0,
 		AnchorPoint=Vector2.new(1,0),Position=UDim2.new(1,-10,0,204),Size=UDim2.fromOffset(220,46),Visible=false,Selectable=false})
@@ -4574,12 +4720,13 @@ do
 		if #rows==0 then return end
 		local view=gui.AbsoluteSize
 		local height=(view and view.Y>0) and view.Y or 720
-		-- Short screens: a 96 px column between the Attack button and the right edge
+		-- Short screens: a 100 px column between the Attack button and the right edge
 		-- (glyph + level, three per line); tall screens: one row per delver.
 		local short=height<520
-		local width=short and 96 or 220
-		local top=8+(short and 118 or 156)+34+6
-		local pad=short and 6 or 12
+		local width=short and 100 or 214
+		local lanes=UI.lay()
+		local top=lanes.rightTop
+		local pad=short and 4 or 12
 		local text={}
 		for i,r in ipairs(rows) do
 			local def=r.class and DC.defs[r.class]
@@ -4592,10 +4739,10 @@ do
 			end
 		end
 		local rowsShown=short and math.min(2,math.ceil(#rows/3)) or #text
-		local rowHeight=short and 14 or 18
-		local titleHeight=short and 14 or 16
+		local rowHeight=short and 13 or 18
+		local titleHeight=short and 13 or 16
 		title.Text=short and "PARTY" or "OBSERVATORY PARTY"
-		title.TextSize=short and 10 or 11
+		title.TextSize=11
 		title.Position,title.Size=UDim2.fromOffset(pad,4),UDim2.new(1,-2*pad,0,titleHeight)
 		list.Text=short and table.concat(text) or table.concat(text,"\n")
 		list.TextSize=short and 11 or 12
@@ -4608,10 +4755,18 @@ do
 			local ready=num(player:GetAttribute("DungeonAbilityReady"),0)
 			local inner=width-2*pad
 			local gap=short and 4 or 6
-			local qWidth=short and math.floor((inner-gap)/2) or math.floor((inner-gap)*.62)
-			local bh=short and 24 or 26
-			qButton.Position,qButton.Size=UDim2.fromOffset(pad,y),UDim2.fromOffset(qWidth,bh)
-			rButton.Position,rButton.Size=UDim2.fromOffset(pad+qWidth+gap,y),UDim2.fromOffset(inner-qWidth-gap,bh)
+			-- Phones: Q and R side by side as UI.TOUCH squares; tall screens: Q
+			-- (with its ability name) and R on their own full-width rows.
+			local bh=short and UI.TOUCH or 30
+			if short then
+				local qWidth=math.floor((inner-gap)/2)
+				qButton.Position,qButton.Size=UDim2.fromOffset(pad,y),UDim2.fromOffset(qWidth,bh)
+				rButton.Position,rButton.Size=UDim2.fromOffset(pad+qWidth+gap,y),UDim2.fromOffset(inner-qWidth-gap,bh)
+			else
+				qButton.Position,qButton.Size=UDim2.fromOffset(pad,y),UDim2.fromOffset(inner,bh)
+				rButton.Position,rButton.Size=UDim2.fromOffset(pad,y+bh+gap),UDim2.fromOffset(inner,bh)
+				y+=bh+gap
+			end
 			qButton.TextSize,rButton.TextSize=short and 11 or 12,short and 11 or 12
 			if short then
 				qButton.Text="Q "..(ready>0 and (ready.."s") or "✓")
@@ -4619,14 +4774,14 @@ do
 				qButton.Text="Q · "..escape(mine.ability.name)..(ready>0 and (" "..ready.."s") or " ready")
 			end
 			rButton.Text="R ×"..num(player:GetAttribute("DungeonUltimates"),0)
-			y+=bh+6
+			y+=bh+(short and 4 or 6) -- phones: 95 px tall, clear of the action bar
 		else
 			y+=2
 		end
-		hudFrame.Position=UDim2.new(1,-10,0,top)
+		hudFrame.Position=UDim2.new(0,lanes.rightEdge,0,top)
 		hudFrame.Size=UDim2.fromOffset(width,y)
 	end
-	for _,name in ipairs({"DungeonParty","DungeonAbilityReady","DungeonUltimates","DungeonClass"}) do
+	for _,name in ipairs({"DungeonParty","DungeonAbilityReady","DungeonUltimates","DungeonClass","IsleSatchelOpen"}) do
 		player:GetAttributeChangedSignal(name):Connect(function() dungeonUi.refreshHud() end)
 	end
 	dungeonUi.refreshHud()
@@ -4654,15 +4809,15 @@ local function drawBank()
 	for index,entry in ipairs({{"PURSE",num(state.coins,0),gold},{"VAULT",num(state.bank,0),mint}}) do
 		local column=make("Frame",balance,{Name=entry[1],BackgroundTransparency=1,Position=UDim2.new((index-1)*.5,index==1 and x or 8,0,compactAtlas and 10 or 12),Size=UDim2.new(.5,index==1 and -x or -20,0,52)})
 		label(column,entry[1],0,0,full,16,UI.heavy,11,entry[3])
-		label(column,fmt(entry[2]),0,16,full,32,book,compactAtlas and 22 or 26,ivory)
+		label(column,fmt(entry[2]),0,16,full,32,book,compactAtlas and 15 or 18,ivory)
 	end
 	local note=label(balance,"Vault coins are protected from death loss.",x,0,UDim.new(1,-x-12),18,regular,compactAtlas and 12 or 12,muted)
 	note.Position=UDim2.new(0,x,1,compactAtlas and -22 or -26)
-	local direction=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,40),ink))
+	local direction=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,UI.TOUCH),ink))
 	direction.BackgroundTransparency=1
 	for index,option in ipairs({{"deposit","Deposit"},{"withdraw","Withdraw"}}) do
 		local selected=option[1]
-		local control=button(direction,option[2],UDim2.new((index-1)*.5,index==1 and 0 or 4,0,0),UDim2.new(.5,-4,0,40),function() bankDirection=selected;render() end)
+		local control=button(direction,option[2],UDim2.new((index-1)*.5,index==1 and 0 or 4,0,0),UDim2.new(.5,-4,0,UI.TOUCH),function() bankDirection=selected;render() end)
 		UI.tone(control,bankDirection==selected and "selected" or nil)
 	end
 	local entry=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,46),track))
@@ -4670,7 +4825,7 @@ local function drawBank()
 	rounded(entry,10,UI.line)
 	label(entry,"AMOUNT",14,0,UDim.new(0,72),46,UI.heavy,11,gold)
 	local input=make("TextBox",entry,{Name="BankAmount",Position=UDim2.fromOffset(90,0),Size=UDim2.new(1,-100,0,46),BackgroundTransparency=1,Text=bankAmount,PlaceholderText="Whole coins, half or all",PlaceholderColor3=muted,TextColor3=ivory,TextSize=17,Font=UI.heavy,ClearTextOnFocus=false,TextXAlignment=Enum.TextXAlignment.Left,Selectable=true,MultiLine=false})
-	local presets=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,38),ink))
+	local presets=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,UI.TOUCH),ink))
 	presets.BackgroundTransparency=1
 	local preview=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,46),deep))
 	rounded(preview,10,UI.line)
@@ -4711,7 +4866,7 @@ local function drawBank()
 	end)
 	UI.tone(transfer,"primary")
 	for index,preset in ipairs({"25","100","half","all"}) do
-		button(presets,preset=="half" and "Half" or (preset=="all" and "All" or preset),UDim2.new((index-1)/4,index==1 and 1 or 2,0,0),UDim2.new(.25,-4,0,38),function()
+		button(presets,preset=="half" and "Half" or (preset=="all" and "All" or preset),UDim2.new((index-1)/4,index==1 and 1 or 2,0,0),UDim2.new(.25,-4,0,UI.TOUCH),function()
 			bankAmount=preset
 			input.Text=preset
 			updatePreview()
@@ -5562,21 +5717,24 @@ function AH.layout()
 	local height=720
 	if view and view.Y>0 then height=view.Y end
 	local short=height<520
-	local top=100
+	local lanes=UI.lay()
+	local top=lanes.leftTop
 	local playerGui=player:FindFirstChild("PlayerGui")
 	local folk=playerGui and playerGui:FindFirstChild("TownsfolkDialogue")
 	local tutorial=folk and folk:FindFirstChild("TutorialTracker")
-	if tutorial and tutorial.Visible then top=174 end
-	local width=short and 184 or 250
+	if tutorial and tutorial.Visible then top=lanes.leftTop+tutorial.Size.Y.Offset+4 end
+	local width=lanes.leftWidth
 	local trackerHeight=short and 64 or 70
-	local tight=AH.tracker.Visible and AH.traps.Visible and top+trackerHeight+6+30>height-48
-	if tight then trackerHeight=50 end
+	-- The left column ends above the hotbar (x 142+ on the smallest phones).
+	local floor=lanes.hotbar.y-4
+	local tight=AH.tracker.Visible and AH.traps.Visible and top+trackerHeight+6+30>floor
+	if tight then trackerHeight=44 end
 	AH.tracker.Size=UDim2.fromOffset(width,trackerHeight)
 	AH.tracker.Position=UDim2.fromOffset(10,top)
 	AH.lapLine.Visible=not tight
 	AH.lapLine.Position=UDim2.fromOffset(12,short and 47 or 51)
-	AH.steps.Position=UDim2.fromOffset(12,short and 42 or 44)
-	local trapHeight=tight and 26 or 30
+	AH.steps.Position=UDim2.fromOffset(12,tight and 37 or (short and 42 or 44))
+	local trapHeight=tight and 22 or 30
 	AH.traps.Position=UDim2.fromOffset(10,AH.tracker.Visible and top+trackerHeight+(tight and 4 or 6) or top)
 	AH.traps.Size=UDim2.fromOffset(width,trapHeight)
 	AH.trapText.Size=UDim2.new(1,width<200 and -40 or -120,0,trapHeight)
@@ -6119,7 +6277,7 @@ function MS.canvas(tree,view)
 	local rows=0
 	for _,n in ipairs(tree.nodes) do rows=math.max(rows,num(n.y,1)) end
 	local rowH=compactAtlas and 62 or 74
-	local size=compactAtlas and 42 or 50
+	local size=compactAtlas and UI.TOUCH or 50
 	local height=rows*rowH+16
 	local holder=container(height)
 	holder.Name="MasteryCanvas"
@@ -6212,7 +6370,7 @@ function MS.draw()
 	local tv=MS.treeView(tree.id)
 	local tokens=tbl(view.tokens)
 	local synced=next(view)~=nil
-	card({name="MasterySummary",motif="Hero",title="Skill Mastery",titleColor=gold,badge=synced and nil or "SYNCING",badgeColor=muted,
+	card({name="MasterySummary",motif="Hero",title="Skill Mastery",titleColor=gold,badge=if synced then nil else "SYNCING",badgeColor=muted,
 		subtitle=fmt(num(tokens.free,0)).." Mastery Token"..(num(tokens.free,0)==1 and "" or "s").." free   ·   "..fmt(num(tokens.earned,0)).." earned",
 		detail="Each tree draws on its skill: 1 point per level above "..num(ma.POINT_START_LEVEL,10)..", +1 per "..fmt(num(ma.POST_MAX_STEP,1000000))
 			.." XP beyond 99. Tokens from collection tiers "..table.concat(ma.TOKEN_TIERS or {},"/").." fill any tree."})
@@ -6801,7 +6959,7 @@ function PT.drawPrayer()
 		card({name="Remains"..r.id,item=r.id,title=escape(r.name),titleColor=rgb(rarityHex(r.rarity)),
 			subtitle="Held "..fmt(have).."   ·   "..fmt(each).." XP each"..(altarDef and (" at the "..escape(altarDef.name)) or ""),
 			badge=fmt(num(offered[r.id],0)).." offered",badgeColor=muted,
-			lines={altarDef and nil or "Visit an altar, then offer from here for "..PR.ALTAR_SECONDS.."s. Each altar use offers up to "..PR.BATCH.."."},
+			lines={if altarDef then nil else "Visit an altar, then offer from here for "..PR.ALTAR_SECONDS.."s. Each altar use offers up to "..PR.BATCH.."."},
 			actions={{caption="Offer",name="Offer"..r.id,primary=altarDef~=nil and have>0,disabled=altarDef==nil or have<1 or riteIn>0,
 				reason=if altarDef==nil then "Visit an altar first." elseif have<1 then "You have no "..r.name.."." else "The rite is still underway.",
 				fn=function() send("offerRemains",r.id) end}}})
@@ -7092,9 +7250,9 @@ function TT.draw()
 	for _,tier in ipairs(TR.TierOrder) do done+=num(tbl(tbl(t.log)[tier]).completed,0) end
 	card({name="TrailsSummary",item=TR.SPADE,accent=gold,title="Treasure Trails",titleColor=gold,
 		subtitle=fmt(done).." trails completed   ·   "..(t.spade==true and "spade packed" or "no spade"),
-		badge=state.trails and nil or "SYNCING",
+		badge=if state.trails then nil else "SYNCING",
 		detail="Scrolls lead from riddle to map to dig site. Dig with a Wayfinder's Spade, search where riddles point, perform emotes at landmarks, finish trail tasks and crack puzzle boxes. Each step is checked by the guild, so the only way through is to walk it.",
-		lines={t.spade==true and nil or paint("Forge a Wayfinder's Spade (1 Alloy Ingot, 2 Timber) at a Forge before your first dig.","F3C66E")}})
+		lines={if t.spade==true then nil else paint("Forge a Wayfinder's Spade (1 Alloy Ingot, 2 Timber) at a Forge before your first dig.","F3C66E")}})
 	heading("TRAILS    /    ONE SCROLL PER TIER")
 	for _,tier in ipairs(TR.TierOrder) do TT.drawTier(tier,t) end
 	TT.drawLog(t)
@@ -7151,21 +7309,21 @@ function MGU.drawLobbies(MG,m)
 	local combat,fishing=skills.Combat and skills.Combat.level or 1,skills.Fishing and skills.Fishing.level or 1
 	local lob=MGU.lobbies()
 	card({name="MinigamesSummary",motif="Hunt",accent=gold,title=escape(MG.ISLAND),titleColor=gold,
-		subtitle=fmt(m and m.commendations or 0).." Commendations   ·   "..fmt(m and m.rolls or 0).." Squall Cache rolls",badge=m and nil or "SYNCING",
+		subtitle=fmt(m and m.commendations or 0).." Commendations   ·   "..fmt(m and m.rolls or 0)..(num(m and m.rolls,0)==1 and " Squall Cache roll" or " Squall Cache rolls"),badge=if m then nil else "SYNCING",
 		detail="Board the Skybreach ferry on the Guild Terrace (Combat "..MG.Siege.Tiers[1].combat.." or Fishing "..MG.Haul.FISHING_LEVEL.."). Stand on a lobby pad: the match launches when enough players wait through the countdown.",
 		lines={paint("Points come only from what you do: strikes, repairs, catches, cooking, loading, dousing. Idle players are removed after "..MG.IDLE_SECONDS.."s and earn nothing. Disconnected? Rejoin within "..MG.REJOIN_SECONDS.."s to keep your points.","A9BDC1")}})
 	local S,H=MG.Siege,MG.Haul
 	local lines={}
 	for _,t in ipairs(S.Tiers) do
 		local ok=combat>=t.combat
-		table.insert(lines,lobbyLine(lob["Siege"..t.id],t.name.." (Combat "..t.combat..", "..t.commendations.." Commendations)",ok,ok and nil or "Combat "..t.combat))
+		table.insert(lines,lobbyLine(lob["Siege"..t.id],t.name.." (Combat "..t.combat..", "..t.commendations.." Commendations)",ok,if ok then nil else "Combat "..t.combat))
 	end
 	card({name="MinigameSiege",motif="Hunt",accent=rgb(S.color),title=escape(S.name),titleColor=rgb(S.color),
 		subtitle=S.MIN_PLAYERS.."-"..S.MAX_PLAYERS.." players   ·   defend the "..escape(S.keeper),detail=escape(S.rules),lines=lines})
 	local fishOk=fishing>=H.FISHING_LEVEL
 	card({name="MinigameHaul",motif="Hunt",accent=rgb(H.color),title=escape(H.name),titleColor=rgb(H.color),
 		subtitle="1-"..H.MAX_PLAYERS.." players   ·   the "..escape(H.boss),detail=escape(H.rules),
-		lines={lobbyLine(lob.Haul,"Haul gangway (Fishing "..H.FISHING_LEVEL..")",fishOk,fishOk and nil or "Fishing "..H.FISHING_LEVEL),
+		lines={lobbyLine(lob.Haul,"Haul gangway (Fishing "..H.FISHING_LEVEL..")",fishOk,if fishOk then nil else "Fishing "..H.FISHING_LEVEL),
 			paint("Fishing, Cooking and Carpentry XP for every action. Solo hauls pay "..math.floor(H.SOLO_REWARD*100).."% of the cache rolls.","A9BDC1")}})
 end
 function MGU.drawShop(MG,m)
@@ -7321,14 +7479,15 @@ function MGU.refreshHud()
 	local view=gui.AbsoluteSize
 	local height=(view and view.Y>0) and view.Y or 720
 	local short=height<520
-	local width=short and 96 or 220
-	local top=8+(short and 118 or 156)+34+6
+	local width=short and 100 or 214
+	local lanes=UI.lay()
+		local top=lanes.rightTop
 	local pad=short and 6 or 12
 	local lines=MGU.hudLines(h,short)
 	local def=MG[game]
 	title.Text=short and string.upper(game) or string.upper(def.name)..(h.tier and ("  ·  "..string.upper(h.tier)) or "")
 	title.TextColor3=rgb(def.color)
-	title.TextSize=short and 10 or 11
+	title.TextSize=11
 	local titleHeight=short and 14 or 16
 	local rowHeight=short and 14 or 18
 	title.Position,title.Size=UDim2.fromOffset(pad,4),UDim2.new(1,-2*pad,0,titleHeight)
@@ -7336,10 +7495,10 @@ function MGU.refreshHud()
 	body.TextSize=short and 11 or 12
 	body.Position=UDim2.fromOffset(pad,4+titleHeight)
 	body.Size=UDim2.new(1,-2*pad,0,rowHeight*#lines)
-	hudFrame.Position=UDim2.new(1,-10,0,top)
+	hudFrame.Position=UDim2.new(0,lanes.rightEdge,0,top)
 	hudFrame.Size=UDim2.fromOffset(width,4+titleHeight+rowHeight*#lines+8)
 end
-for _,name in ipairs({"MinigameGame","MinigameHud"}) do
+for _,name in ipairs({"MinigameGame","MinigameHud","IsleSatchelOpen"}) do
 	player:GetAttributeChangedSignal(name):Connect(function() MGU.refreshHud() end)
 end
 player:GetAttributeChangedSignal("MinigameNoticeCount"):Connect(function()
@@ -7384,7 +7543,7 @@ function LRU.drawLairs(LR,l)
 	local total=0
 	for _,n in pairs(tbl(l and l.kc)) do total+=num(n,0) end
 	card({name="LairsSummary",motif="Hunt",accent=rgb("B48CFF"),title="Lair Bosses",titleColor=rgb("D8C4FF"),
-		subtitle=fmt(total).." lair kills   ·   up to "..LR.MAX_PARTY.." crewmates per lair",badge=l and nil or "SYNCING",
+		subtitle=fmt(total).." lair kills   ·   up to "..LR.MAX_PARTY.." crewmates per lair",badge=if l then nil else "SYNCING",
 		detail="Summon a lair boss at its altar (entry fee in coins). The arena opens for "..LR.WARMUP.."s so crewmates from your co-op can join, then the boss rises. Stances switch on a beat: pray the matching Ward. Dodge telegraphs and glowing tiles; slay broods first and break sigils in order.",
 		lines={paint("Fall and you wake at home with your items (the usual purse-coin loss applies). Disconnected? Rejoin within "..LR.REJOIN_SECONDS.."s to keep your place and share. Each member rolls their own loot.","A9BDC1")}})
 	for _,id in ipairs(LR.Order) do
@@ -7507,7 +7666,8 @@ function LRU.refreshHud()
 	local height=(view and view.Y>0) and view.Y or 720
 	local short=height<520
 	local width=short and 96 or 220
-	local top=8+(short and 118 or 156)+34+6
+	local lanes=UI.lay()
+		local top=lanes.rightTop
 	local pad=short and 6 or 12
 	local lines=LRU.hudLines(h,short)
 	title.Text=short and string.upper(def.short) or (string.upper(def.short)..(h.pname and h.pname~="" and ("  ·  "..string.upper(h.pname)) or ""))
@@ -7520,10 +7680,10 @@ function LRU.refreshHud()
 	body.TextSize=short and 11 or 12
 	body.Position=UDim2.fromOffset(pad,4+titleHeight)
 	body.Size=UDim2.new(1,-2*pad,0,rowHeight*#lines)
-	hudFrame.Position=UDim2.new(1,-10,0,top)
+	hudFrame.Position=UDim2.new(0,lanes.rightEdge,0,top)
 	hudFrame.Size=UDim2.fromOffset(width,4+titleHeight+rowHeight*#lines+8)
 end
-for _,name in ipairs({"LairBoss","LairHud"}) do
+for _,name in ipairs({"LairBoss","LairHud","IsleSatchelOpen"}) do
 	player:GetAttributeChangedSignal(name):Connect(function() LRU.refreshHud() end)
 end
 player:GetAttributeChangedSignal("LairNoticeCount"):Connect(function()
@@ -8144,7 +8304,7 @@ function EXP.drawFactions()
 		if e.kind=="lamp" then detail="XP in "..table.concat(def.lampSkills,", ").." (about "..math.floor(FA.LAMP_HOURS*60).." minutes of level-appropriate training). Repeatable."
 		elseif e.kind=="title" then detail="A cosmetic title shown in your journal."
 		else local item=itemDef(e.item); detail=item and escape(item.description) or nil end
-		card({name="FactionShop"..e.id,item=e.item,motif=e.item and nil or "Journal",accent=rgb(def.color),title=escape(title),titleColor=rgb(def.color),subtitle=subtitle,
+		card({name="FactionShop"..e.id,item=e.item,motif=if e.item then nil else "Journal",accent=rgb(def.color),title=escape(title),titleColor=rgb(def.color),subtitle=subtitle,
 			badge=unlocks[e.id] and "OWNED" or (okRank and okPledge and "OPEN" or "LOCKED"),badgeColor=unlocks[e.id] and mint or (okRank and okPledge and gold or muted),
 			detail=detail,actions=acts})
 	end
@@ -8153,10 +8313,95 @@ Pages.drawMotes,Pages.drawFactions=EXP.drawMotes,EXP.drawFactions
 end
 
 ------------------------------------------------------------------------------
--- Navigation: six primary tabs, each with a section switcher.
+-- Menu: the landing page (a SkyBlock-style grid of big icon tiles) and the
+-- Settings page (local HUD preferences published as player attributes that
+-- hud.client.lua / nav.client.lua read).
 ------------------------------------------------------------------------------
-local tabOrder={"Journal","Hero","Satchel","Workshop","Hunt","Ledger"}
+do
+local MENU={
+	{id="Skills",motif="Hero",tab="Hero",section="Skills"},{id="Collections",motif="Satchel",tab="Satchel",section="Collections"},
+	{id="Recipes",motif="Workshop",tab="Workshop",section="Forge"},{id="Bestiary",motif="Hunt",tab="Hunt",section="Bestiary"},
+	{id="Quests",motif="Journal",tab="Journal",section="Quests"},{id="Pets",motif="Co-op",tab="Hero",section="Pets"},
+	{id="Wardrobe",title="Wardrobe & Gear",motif="Hero",tab="Hero",section="Gear"},{id="Bank",motif="Ledger",tab="Ledger",section="Bank"},
+	{id="Market",motif="Ledger",tab="Ledger",section="Orders"},{id="Satchel",motif="Satchel",hud="satchel"},
+	{id="Chart",title="Sky Chart",motif="Map",hud="warpmap"},{id="Settings",motif="Settings",tab="Menu",section="Settings"},
+}
+local function caption(id)
+	local d=depth() or EMPTY
+	if id=="Skills" then return "Total level "..fmt(num(d.totalLevel,0))
+	elseif id=="Collections" then local n=0 for _,c in pairs(tbl(d.collections)) do if type(c)=="table" and num(c.tier,0)>0 then n+=1 end end return n.." unlocked"
+	elseif id=="Recipes" then return "Stations & crafting"
+	elseif id=="Bestiary" then local n=0 for _,k in pairs(tbl(d.bestiary)) do n+=num(k,0) end return fmt(n).." creatures slain"
+	elseif id=="Quests" then local j=tbl(state.journal) local ready=0 for _,q in ipairs(tbl(j.quests)) do if type(q)=="table" and q.ready then ready+=1 end end return ready>0 and (ready.." ready to claim") or (fmt(num(j.questPoints,0)).." quest points")
+	elseif id=="Pets" then return #tbl(d.pets).." companions"
+	elseif id=="Wardrobe" then local n=0 for _ in pairs(tbl(d.equipment)) do n+=1 end return n.." slots equipped"
+	elseif id=="Bank" then return "◆ "..fmt(num(state.bank,0)).." banked"
+	elseif id=="Market" then return "Bazaar & auctions"
+	elseif id=="Satchel" then return "Inventory · E"
+	elseif id=="Chart" then return "Warp map · M"
+	end
+	return "Preferences"
+end
+function Pages.drawMenu()
+	heading("MAIN MENU / "..(state.ironman and "IRONMAN" or "VOYAGER"))
+	local width=contentWidth()
+	local cols=width>=640 and 4 or (width>=400 and 3 or 2)
+	local cell=math.floor((width-6-(cols-1)*8)/cols)
+	-- Desktop: tall icon-over-title tiles (SkyBlock menu); phones: icon-left rows.
+	local tall=compactAtlas and 64 or 124
+	local grid=gridHolder(UDim2.fromOffset(cell,tall),8)
+	grid.Name="MenuGrid"
+	for i,t in ipairs(MENU) do
+		local b=tile(grid,"Menu"..t.id,i,function()
+			if t.hud then closeAtlas();UI.hudChannel:Fire(t.hud) return end
+			Pages.openTo(t.tab,t.section)
+			UI.slide()
+		end)
+		UI.T.rim(b,1.5)
+		local title,sub
+		if compactAtlas then
+			local icon=motif(b,t.motif,34)
+			icon.AnchorPoint=Vector2.new(0,.5)
+			icon.Position=UDim2.new(0,10,.5,0)
+			title=label(b,t.id,52,12,UDim.new(1,-60),20,UI.heavy,14,ivory)
+			sub=label(b,caption(t.id),52,32,UDim.new(1,-60),18,regular,12,muted)
+		else
+			local icon=motif(b,t.motif,54)
+			icon.AnchorPoint=Vector2.new(.5,0)
+			icon.Position=UDim2.new(.5,0,0,12)
+			title=label(b,t.title or t.id,8,72,UDim.new(1,-16),20,UI.heavy,16,ivory)
+			sub=label(b,caption(t.id),8,94,UDim.new(1,-16),18,regular,12,muted)
+			title.TextXAlignment,sub.TextXAlignment=Enum.TextXAlignment.Center,Enum.TextXAlignment.Center
+		end
+		title.Name,sub.Name="Title","Caption"
+	end
+end
+local SETTINGS={
+	{attr="IsleSettingPinSatchel",title="Pin the satchel",detail="Keep the satchel open beside the sidebar while you play (desktop).",default=false},
+	{attr="IsleSettingXpDrops",title="XP drops",detail="Floating +XP counters and the skill progress toast when you gain experience.",default=true},
+	{attr="IsleSettingMinimap",title="Minimap",detail="The top-left minimap with region name and coordinates (M toggles it too).",default=true},
+}
+function Pages.drawSettings()
+	heading("SETTINGS / SAVED FOR THIS SESSION")
+	for _,o in ipairs(SETTINGS) do
+		local value=player:GetAttribute(o.attr)
+		if value==nil then value=o.default end
+		card({name="Setting"..o.attr,motif="Settings",title=o.title,subtitle=value and paint("On","6FE3C8") or paint("Off","A9B4C0"),detail=o.detail,
+			actions={{caption=value and "Turn off" or "Turn on",primary=not value,name="Toggle"..o.attr,fn=function()
+				player:SetAttribute(o.attr,not value)
+				render()
+			end}}})
+	end
+	card({name="SettingKeys",motif="Journal",title="Keys",detail="J  menu & atlas   ·   E / Tab  satchel   ·   M  minimap   ·   right-click (long-press) an item for its options   ·   drag items to reorder"})
+end
+end
+
+------------------------------------------------------------------------------
+-- Navigation: the Menu plus six primary tabs, each with a section switcher.
+------------------------------------------------------------------------------
+local tabOrder={"Menu","Journal","Hero","Satchel","Workshop","Hunt","Ledger"}
 local sectionLists={
+	Menu={"Home","Settings"},
 	Journal={"Bearing","Quests","Diaries","Construction","Regions","Crew","Calendar","Agility","Commissions","Collection Log","Museum","Motes","Factions"},
 	Hero={"Skills","Mastery","Gear","Combat","Spellbook","Prayer","Enchant","Reforge","Accessories","Pets"},
 	Satchel={"Items","Collections","Trails"},
@@ -8164,8 +8409,9 @@ local sectionLists={
 	Hunt={"Slayer","Bestiary","Dungeon","Essence","Bosses","Hunter","Thieving","Minigames"},
 	Ledger={"Bank","Market","Orders","Auctions","Merchant","Vendors"},
 }
-sectionOf={Journal="Bearing",Hero="Skills",Satchel="Items",Workshop="Forge",Hunt="Slayer",Ledger="Bank"}
+sectionOf={Menu="Home",Journal="Bearing",Hero="Skills",Satchel="Items",Workshop="Forge",Hunt="Slayer",Ledger="Bank"}
 local drawers={
+	Menu={Home=function() Pages.drawMenu() end,Settings=function() Pages.drawSettings() end},
 	Journal={Bearing=Pages.drawBearing,Quests=Pages.drawQuests,Diaries=Pages.drawDiaries,Construction=Pages.drawConstruction,Regions=Pages.drawRegions,Crew=Pages.drawCoop,Calendar=Pages.drawCalendar,Agility=Pages.drawAgility,
 		Commissions=Pages.drawCommissions,["Collection Log"]=Pages.drawCollectionLog,Museum=Pages.drawMuseum, -- Commissions & Logs
 		Motes=Pages.drawMotes,Factions=Pages.drawFactions}, -- Exploration & Factions
@@ -8213,7 +8459,17 @@ local function layoutTabs()
 			local icon=b:FindFirstChild("TabIcon")
 			local caption=b:FindFirstChild("TabCaption")
 			local glow=b:FindFirstChild("TabGlow")
-			if railMode then
+			if railMode and UI.railGrid then
+				-- Short phones: six stacked rows would be under UI.TOUCH, so the rail
+				-- becomes a 2 × 3 grid of icon-over-caption tiles.
+				local c,r=(i-1)%2,(i-1)//2
+				local rowsN=math.ceil(n/2)
+				b.Position=UDim2.new(c/2,c==0 and 0 or 2,r/rowsN,0)
+				b.Size=UDim2.new(.5,-2,1/rowsN,-4)
+				if icon then icon.Size=UDim2.fromOffset(22,22);icon.Position=UDim2.new(.5,-11,.5,-21) end
+				if caption then caption.Position=UDim2.new(0,1,.5,3);caption.Size=UDim2.new(1,-2,0,16);caption.TextXAlignment=Enum.TextXAlignment.Center end
+				if glow then glow.AnchorPoint=Vector2.new(.5,1);glow.Position=UDim2.new(.5,0,1,-1);glow.Size=UDim2.new(.44,0,0,3) end
+			elseif railMode then
 				b.Position=UDim2.new(0,0,(i-1)/n,0)
 				b.Size=UDim2.new(1,0,1/n,-5)
 				if icon then icon.Size=UDim2.fromOffset(22,22);icon.Position=UDim2.new(0,10,.5,-11) end
@@ -8262,20 +8518,23 @@ render = function(fromPush)
 	UI.crest.Position=UDim2.fromOffset(railMode and 12 or (compactAtlas and 12 or 16),(headHeight-crest)//2)
 	UI.title.Position=UDim2.fromOffset(crest+(railMode and 20 or 24),railMode and 7 or (compactAtlas and 11 or 25))
 	UI.title.Size=UDim2.new(1,-crest-220,0,railMode and 32 or 36)
-	UI.title.TextSize=railMode and 22 or (compactAtlas and 24 or 28)
+	UI.title.TextSize=railMode and 14 or (compactAtlas and 15 or 18)
 	UI.kicker.Position=UDim2.fromOffset(crest+25,12)
-	local closeSize=railMode and 34 or (compactAtlas and 38 or 40)
+	local closeSize=compactAtlas and UI.TOUCH or 40
 	UI.close.Size=UDim2.fromOffset(closeSize,closeSize)
 	UI.close.Position=UDim2.new(1,-closeSize-(railMode and 20 or 18),0,(headHeight-closeSize)//2)
 	UI.coins.Visible=size.X>=460
 	UI.coins.Position=UDim2.new(1,-closeSize-(railMode and 30 or 28),.5,0)
 	UI.coins.Size=UDim2.fromOffset(railMode and 118 or 132,railMode and 28 or 32)
 	UI.coinText.Text=fmt(num(state.coins,0))
+	-- Rail rows must stay UI.TOUCH tall; when six do not fit, a 2-column grid (wider rail).
+	UI.railGrid=railMode and (size.Y-headHeight-18)/#tabOrder-5<UI.TOUCH
 	if railMode then
+		local railWidth=UI.railGrid and 128 or 112
 		tabs.Position=UDim2.fromOffset(12,headHeight+8)
-		tabs.Size=UDim2.new(0,112,1,-headHeight-18)
-		scroll.Position=UDim2.fromOffset(134,headHeight+8)
-		scroll.Size=UDim2.new(1,-146,1,-headHeight-16)
+		tabs.Size=UDim2.new(0,railWidth,1,-headHeight-18)
+		scroll.Position=UDim2.fromOffset(railWidth+22,headHeight+8)
+		scroll.Size=UDim2.new(1,-railWidth-34,1,-headHeight-16)
 	else
 		local tabHeight=compactAtlas and 46 or 60
 		tabs.Position=UDim2.fromOffset(14,headHeight+6)
@@ -8287,8 +8546,9 @@ render = function(fromPush)
 	UI.footer.Visible=not railMode
 	UI.hint.Visible=not railMode and not compactAtlas
 	UI.footRule.Visible=not railMode
-	UI.purse.Text = synced and ((state.ironman and "Ironman" or "Voyager") .. "   " .. paint("◆ " .. fmt(num(state.coins,0)), "F3C66E"))
-		or "Opening ledger…"
+	UI.layoutSidebar()
+	UI.layoutActionBar()
+	UI.refreshSidebar()
 	UI.goal.Text = synced and nextGoal() or "Charting the islands…"
 	updateVitals()
 	if not atlas.Visible then
@@ -8371,6 +8631,7 @@ end
 layoutTabs()
 atlas:GetPropertyChangedSignal("AbsoluteSize"):Connect(function() if atlas.Visible then render() end end)
 openAtlas = function()
+	if current == nil then current = "Menu" end
 	atlas.Visible = true
 	atlas.Position=UDim2.new(.5,0,.5,16)
 	UI.atlasScale.Scale=.96
@@ -8379,6 +8640,7 @@ openAtlas = function()
 	TweenService:Create(UI.atlasScale,TweenInfo.new(.26,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Scale=1}):Play()
 	TweenService:Create(shade,TweenInfo.new(.2),{BackgroundTransparency=.35}):Play()
 	hud.Visible = false
+	UI.atlasOpen = true
 	actionBar.Visible = false
 	shade.Visible = true
 	render()
@@ -8388,6 +8650,7 @@ openAtlas = function()
 		GuiService.SelectedObject = tabButtons[current]
 	end
 end
+UI.openAtlas=function() current="Menu";sectionOf.Menu="Home";resetTransient();scroll.CanvasPosition=Vector2.zero;openAtlas() end
 local function openTo(tab,section)
 	current=tab
 	if section then sectionOf[tab]=section end
@@ -8421,20 +8684,20 @@ updateVitals=function()
 	local maxHealth=humanoid and num(humanoid.MaxHealth,nil) or num(stats.health,nil) or num(legacy.maxHealth,nil)
 	local health=humanoid and num(humanoid.Health,nil) or maxHealth
 	if maxHealth then
-		UI.healthText.Text=fmt(math.max(0,math.floor(health or 0))).." / "..fmt(math.floor(maxHealth))
+		UI.healthText.Text=fmt(math.max(0,math.floor(health or 0))).."/"..fmt(math.floor(maxHealth)).." ❤"
 		UI.setMeter(UI.healthFill,(health or 0)/math.max(1,maxHealth))
 	else
 		UI.healthText.Text="—"
 		UI.setMeter(UI.healthFill,0)
 	end
 	local defense=num(stats.defense,nil) or num(legacy.defense,nil)
-	UI.defenseText.Text=defense and (fmt(defense)..'  <font size="10" color="#A9BDC1">DEFENSE</font>') or "—"
+	UI.defenseText.Text=defense and (fmt(defense)..' ❈'..(UI.lay().tiny and "" or ' <font color="#A9B4C0">Defense</font>')) or "—"
 	-- Mana: live attributes from the combat server; before the first push, max
 	-- mana is Intelligence (full).
 	local maxMana=num(player:GetAttribute("MaxMana"),nil) or num(stats.intelligence,nil)
 	local mana=num(player:GetAttribute("Mana"),nil) or maxMana
 	if maxMana then
-		UI.manaText.Text=fmt(math.max(0,math.floor(mana or 0))).." / "..fmt(math.floor(maxMana))
+		UI.manaText.Text=fmt(math.max(0,math.floor(mana or 0))).."/"..fmt(math.floor(maxMana)).." ✎ Mana"
 		UI.setMeter(UI.manaFill,(mana or 0)/math.max(1,maxMana))
 	else
 		UI.manaText.Text="—"
@@ -8455,28 +8718,12 @@ end
 player.CharacterAdded:Connect(watchCharacter)
 if player.Character then task.spawn(watchCharacter,player.Character) end
 UI.xpToken,UI.bannerQueue,UI.bannerBusy=0,{},false
--- XP popup: skill medallion, gain text and the skill's level progress.
-local function showXp(text,skill,fraction)
-	UI.xpToken+=1
-	local token=UI.xpToken
-	local hex=skill and skillHex(skill) or "F3C66E"
-	UI.xp.Text=text
-	UI.xp.TextColor3=gold
-	UI.xp.TextTransparency=0
-	UI.xpPill.Visible=true
-	UI.xpChip.BackgroundColor3=rgb(hex)
-	UI.xpGlyph.Text=skill and initials(skill) or "✦"
-	UI.xpGlyph.TextSize=13
-	UI.xpFill.BackgroundColor3=rgb(lighten(hex,.15))
-	local cap=UI.xpFill:FindFirstChild("Cap")
-	if cap then cap.BackgroundColor3=rgb(lighten(hex,.7)) end
-	UI.setMeter(UI.xpFill,fraction or 0)
-	task.delay(2.6,function()
-		if token==UI.xpToken then
-			TweenService:Create(UI.xp,TweenInfo.new(.4),{TextTransparency=1}):Play()
-			task.delay(.4,function() if token==UI.xpToken then UI.xpPill.Visible=false end end)
-		end
-	end)
+-- XP gains go to hud.client.lua (OSRS XP drops + the skill progress toast)
+-- through IsleXpLocal: {{skill, amount, level, fraction, maxed, color}, ...}.
+-- UI.lastGains keeps the latest list for tests and tools.
+local function showXp(gains)
+	UI.lastGains=gains
+	if UI.xpChannel then pcall(function() UI.xpChannel:Fire(gains) end) end
 end
 local function showNextBanner()
 	local entry=table.remove(UI.bannerQueue,1)
@@ -8488,16 +8735,17 @@ local function showNextBanner()
 	local narrow=view and view.X<900
 	-- Short screens (phone landscape 303px): a slimmer banner that clears the toast.
 	local short=view and view.Y<340
-	local height=short and 68 or 82
+	local height=short and 60 or 82
 	banner:FindFirstChild("BannerLimit").MaxSize=Vector2.new(narrow and 340 or 440,height)
 	banner.Size=UDim2.new(.9,0,0,height)
-	banner.Position=UDim2.new(.5,0,0,short and 148 or 142)
-	UI.bannerTitle.Position=UDim2.fromOffset(76,short and 12 or 17)
-	UI.bannerReward.Position=UDim2.fromOffset(76,short and 42 or 50)
+	-- Short phones: under the event banner, clear of the spell bar in the hotbar band.
+	banner.Position=UDim2.new(.5,0,0,short and 112 or 142)
+	UI.bannerTitle.Position=UDim2.fromOffset(76,short and 8 or 17)
+	UI.bannerReward.Position=UDim2.fromOffset(76,short and 36 or 50)
 	UI.bannerEmblem.Size=UDim2.fromOffset(short and 40 or 48,short and 40 or 48)
 	local hex=skillHex(entry.skill)
 	UI.bannerTitle.Text=entry.skill.."  "..entry.from.." → "..entry.to
-	UI.bannerTitle.TextSize=narrow and 21 or 26
+	UI.bannerTitle.TextSize=narrow and 12 or 16
 	UI.bannerTitle.TextColor3=rgb(lighten(hex,.45))
 	UI.bannerEmblem.BackgroundColor3=rgb(hex)
 	UI.bannerInitial.Text=initials(entry.skill)
@@ -8535,13 +8783,12 @@ local function celebrate(before,after)
 		end
 	end
 	if #gains>0 then
-		local parts={}
-		for i=1,math.min(compactAtlas and 1 or 3,#gains) do
+		local list={}
+		for i=1,math.min(3,#gains) do
 			local gain=gains[i]
-			local percent=gain.info.maxed and "MAX" or (math.floor(gain.info.fraction*1000+.5)/10 .."%")
-			table.insert(parts,paint("+"..fmt(gain.amount).." "..gain.skill,lighten(skillHex(gain.skill),.35))..paint("  "..percent,"F7EFDC"))
+			list[i]={skill=gain.skill,amount=gain.amount,level=gain.info.level,fraction=gain.info.fraction,maxed=gain.info.maxed==true,color=lighten(skillHex(gain.skill),.35)}
 		end
-		showXp(table.concat(parts,"   "),gains[1].skill,gains[1].info.fraction)
+		showXp(list)
 	end
 	if #UI.bannerQueue>0 and not UI.bannerBusy then showNextBanner() end
 	return bannered
@@ -8551,6 +8798,7 @@ end
 ------------------------------------------------------------------------------
 -- Server wiring
 ------------------------------------------------------------------------------
+UI.relay={equip=true,unequip=true,consume=true,sell=true,accessory=true,petAdopt=true,drop=true,satchelMove=true,satchelSort=true,recall=true}
 local remote = ReplicatedStorage:WaitForChild("IsleAction")
 local updates = ReplicatedStorage:WaitForChild("IsleUpdate")
 local function accept(data,quiet)
@@ -8650,10 +8898,18 @@ do
 		return created
 	end
 	UI.snapshotChannel=channel("IsleSnapshotLocal")
+	UI.xpChannel,UI.hudChannel=channel("IsleXpLocal"),channel("IsleHudLocal")
 	local actions,toasts=channel("IsleActionLocal"),channel("IsleToastLocal")
+	-- hud.client.lua asks the atlas to open a page ("open", tab, section).
+	UI.hudChannel.Event:Connect(function(kind,tab,section)
+		if kind=="open" and type(tab)=="string" and sectionLists[tab] then openTo(tab,type(section)=="string" and section or nil) end
+	end)
 	if actions.Event then
 		actions.Event:Connect(function(verb,item)
 			if verb=="autocast" and (item==nil or type(item)=="string") then task.spawn(send,"autocast",item)
+			-- Satchel / paperdoll / Sky Chart (hud.client.lua): existing validated verbs
+			-- plus satchelMove / satchelSort / drop (§29); the server checks everything.
+			elseif UI.relay[verb] and (item==nil or (type(item)=="string" and #item<=64)) then task.spawn(send,verb,item)
 			-- Prayer quick bar taps (combat HUD): the server validates the prayer.
 			elseif verb=="prayer" and type(item)=="string" and #item<=64 then task.spawn(send,"prayer",item)
 			-- Exploration & Factions: world mote prompts (motes.client.lua); the server picks the mote.
@@ -8724,6 +8980,7 @@ task.spawn(function()
 	-- Keep the action bar's health readout fresh between snapshots.
 	while task.wait(1) do
 		updateVitals()
+		UI.refreshSidebar() -- isle clock
 	end
 end)
 updates.OnClientEvent:Connect(accept)

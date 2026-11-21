@@ -30,6 +30,7 @@ from functools import lru_cache
 from PIL import Image, ImageDraw, ImageFont
 
 S = 2  # supersampling factor
+TOUCH_MIN = 44  # minimum touch target (px) on phone-sized screens (height < 500)
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEJAVU = "/usr/share/fonts/truetype/dejavu/"
 INTER = "/usr/share/fonts/opentype/inter/"
@@ -47,6 +48,8 @@ FONT_CANDIDATES = {
     "b-bold": [INTER + "Inter-Bold.otf", DEJAVU + "DejaVuSans-Bold.ttf"],
     "b-heavy": [INTER + "Inter-ExtraBold.otf", DEJAVU + "DejaVuSans-Bold.ttf"],
     "display": [os.path.join(HERE, "fonts", "FredokaOne-Regular.ttf"), INTER + "Inter-Black.otf", DEJAVU + "DejaVuSans-Bold.ttf"],
+    # Roblox "Arcade" is Press Start 2P (vendored, OFL).
+    "pixel": [os.path.join(HERE, "fonts", "PressStart2P-Regular.ttf"), DEJAVU + "DejaVuSans-Bold.ttf"],
 }
 FALLBACK = {"regular": DEJAVU + "DejaVuSans.ttf", "bold": DEJAVU + "DejaVuSans-Bold.ttf"}
 LIGHT_KINDS = {"regular", "b-regular", "b-medium"}
@@ -163,6 +166,8 @@ def font_kind(name, bold=False):
     name = name or "Legacy"
     if name == "Antique":
         return "serif"
+    if name == "Arcade":
+        return "pixel"
     if name == "FredokaOne":
         return "display"
     if name.startswith("BuilderSans"):
@@ -695,7 +700,7 @@ class Painter:
                 patch.alpha_composite(layer)
             else:
                 ImageDraw.Draw(patch).rounded_rectangle(box, radius=radius * S, fill=color + (int(255 * alpha),))
-        if border:
+        if border and w > 0 and h > 0:
             t = border["thickness"] * S
             outer = [m - t, m - t, m + w * S - 1 + t, m + h * S - 1 + t]
             if border["grad"] is not None:
@@ -711,7 +716,9 @@ class Painter:
                 layer.putalpha(ImageChops.multiply(layer.getchannel("A"), ring))
                 patch.alpha_composite(layer)
             else:
-                ImageDraw.Draw(patch).rounded_rectangle(outer, radius=(radius * S + t) if radius else 0, outline=border["color"] + (int(255 * border["alpha"]),), width=max(1, int(round(t))))
+                # Thick rims on tiny boxes: keep the corner radius within the box.
+                rr = min((radius * S + t) if radius else 0, max(0, (outer[2] - outer[0]) / 2 - 1), max(0, (outer[3] - outer[1]) / 2 - 1))
+                ImageDraw.Draw(patch).rounded_rectangle(outer, radius=rr, outline=border["color"] + (int(255 * border["alpha"]),), width=max(1, int(round(t))))
         elif not node.comp("UICorner") and (node.get("BorderSizePixel", 1) or 0) > 0 and alpha > 0.003:
             bc = hex2rgb(node.get("BorderColor3"), (27, 42, 53))
             bw = node.get("BorderSizePixel", 1) * S
@@ -929,6 +936,14 @@ class Renderer:
         if not node.visible:
             return
         p = self.painter
+        # Touch targets: on phone-sized screens every tappable control is at
+        # least 44x44 (TOUCH_MIN); a control pushed past its clipping parent's
+        # right edge cannot be reached at all.
+        if node.cls in ("TextButton", "ImageButton", "TextBox") and node.get("Active", True) is not False:
+            if getattr(self, "touch", False) and (h < TOUCH_MIN - 0.5 or w < TOUCH_MIN - 0.5) and w > 0 and h > 0:
+                p.issues.append(("touch-target", node.name, "%dx%d" % (round(w), round(h)), (node.get("Text") or "")[:30]))
+            if x + w > clip[2] + 1 and x < clip[2] and clip[2] - clip[0] < p.w:
+                p.issues.append(("clipped-x", node.name, int(x + w - clip[2]), (node.get("Text") or "")[:30]))
         p.draw_box(node, x, y, w, h, clip)
         if node.cls == "ViewportFrame":
             p.draw_viewport(node, x, y, w, h, clip)
@@ -965,6 +980,7 @@ def render_shot(guis, sw, sh, art, backdrop=True):
         painter.backdrop()
     layout = Layout()
     renderer = Renderer(painter, layout)
+    renderer.touch = sh < 500
     for gui in guis:
         renderer.render_gui(gui, sw, sh)
     return painter, renderer, layout
@@ -984,6 +1000,7 @@ def render_full(guis, sw, sh, art):
     tall = Painter(int(math.ceil(w)) + 16, int(math.ceil(canvas_h)) + 16, art)
     tall.img.paste((16, 39, 51, 255), (0, 0, tall.img.width, tall.img.height))
     sub = Renderer(tall, layout)
+    sub.touch = sh < 500
     sub.render_children(placements, 8 + pl, 8 + pt, (0, 0, tall.w, tall.h))
     return tall, tall.issues
 
@@ -1025,7 +1042,7 @@ def main():
                 tall, tall_issues = render_full(to_nodes(shot["guis"]), sw, sh, art)
                 if tall:
                     finish(tall).save(os.path.join(folder, shot["id"] + "-full.png"), optimize=True)
-                    issues = tall_issues
+                    issues = issues + tall_issues
             if args.issues:
                 seen = set()
                 for issue in issues:

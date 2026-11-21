@@ -7,7 +7,8 @@
       "AetherWorldArt": { "$path": "art/WorldCatalog.lua" },
       "MaterialArt": { "$path": "art/MaterialArt.lua" },
       "AetherData": { "$path": "shared/GameData.lua" },
-      "AetherProgression": { "$path": "shared/Progression.lua" }
+      "AetherProgression": { "$path": "shared/Progression.lua" },
+      "AetherUiTheme": { "$path": "shared/UiTheme.lua" }
     },
     "ServerStorage": {
       "AetherTrails": { "$path": "trails.lua" }
@@ -38,6 +39,7 @@
         "Wayfinder": { "$path": "nav.client.lua" },
         "Companions": { "$path": "pets.client.lua" },
         "AetherMotes": { "$path": "motes.client.lua" },
+        "IsleHud": { "$path": "hud.client.lua" },
         "RegionBanner": { "$path": "regions.client.lua" }
       }
     },

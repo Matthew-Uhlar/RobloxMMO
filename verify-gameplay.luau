@@ -1210,6 +1210,41 @@ eq(soldSword.coins,Data.Items.BrassSword.value,"sold at Data value")
 knight=rejoin(knight)
 eq(data.p240.profile.equipment.helmet,"BrassHelm","equipment persisted")
 eq(st(knight).depth.equipment.chest,"BrassChestplate","equipment restored on rejoin")
+-- §29 satchel verbs (UI overhaul): satchelMove / satchelSort reorder p.satchel
+-- (display order only), drop destroys an unequipped, unbagged stack.
+do
+	local s0=st(knight)
+	ok(type(s0.satchel)=="table" and #s0.satchel>1,"snapshot carries the satchel order")
+	local seen={}
+	for _,id in ipairs(s0.satchel) do ok(not seen[id] and (s0.items[id] or 0)>0,"satchel lists each owned item once: "..id); seen[id]=true end
+	local last=s0.satchel[#s0.satchel]
+	local moved=cmd(knight,"satchelMove",last..":1")
+	eq(moved.satchel[1],last,"satchelMove puts the item in slot 1")
+	eq(moved.message,"","satchelMove is silent")
+	eq(#moved.satchel,#s0.satchel,"satchelMove keeps every item")
+	ok(has(cmd(knight,"satchelMove","NotAnItem:1").message,"Choose"),"unknown item rejected")
+	ok(has(cmd(knight,"satchelMove",last..":x").message,"Choose"),"bad slot rejected")
+	ok(has(cmd(knight,"satchelMove",last..":9999").message,"Choose"),"slot index capped at three digits")
+	local sorted=cmd(knight,"satchelSort","name")
+	for i=2,#sorted.satchel do ok(Data.Items[sorted.satchel[i-1]].name<=Data.Items[sorted.satchel[i]].name,"satchelSort name order") end
+	ok(has(cmd(knight,"satchelSort","bogus").message,"Sort by"),"unknown sort rejected")
+	local helm=st(knight).depth.equipment.helmet
+	ok(helm~=nil,"knight wears a helmet")
+	local kept=cmd(knight,"drop",helm)
+	ok(has(kept.message,"Unequip"),"equipped item cannot be dropped")
+	eq(kept.items[helm],1,"equipped item kept")
+	ok(has(cmd(knight,"drop","Celestium").message,"You have no"),"cannot drop what you lack")
+	ok(has(cmd(knight,"drop",nil).message,"Choose"),"drop needs an item")
+	local ore=st(knight).items.Ore or 0
+	if ore>0 then
+		local dropped=cmd(knight,"drop","Ore")
+		eq(dropped.items.Ore,0,"drop clears the stack")
+		ok(has(dropped.message,"Dropped "..ore),"drop names the count")
+		ok(table.find(dropped.satchel,"Ore")==nil,"dropped item leaves the satchel order")
+	end
+	knight=rejoin(knight)
+	ok(type(data.p240.profile.satchel)=="table","satchel order persisted")
+end
 knight=rejoin(knight,function(p) p.xp.Combat=0 end)
 eq(st(knight).depth.stats.defense,0,"equipment ignored when requirements no longer met")
 

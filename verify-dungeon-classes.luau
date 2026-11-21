@@ -1218,7 +1218,7 @@ do
 	local qb,rb=h.find(hudFrame,"AbilityQ"),h.find(hudFrame,"AbilityR")
 	check(qb and rb and qb.Visible and rb.Visible,"party HUD carries Q and R buttons")
 	check(has(qb.Text,"Q · Starwall Bulwark 12s") and has(rb.Text,"R ×2"),"Q / R buttons show the timers")
-	eq(hudFrame.Position.Y.Offset,8+156+34+6,"party HUD sits under the desktop minimap")
+	eq(hudFrame.Position.Y.Offset,8+226+6,"party HUD sits under the desktop sidebar (UI overhaul §29 lanes)")
 	-- Q / R fire the Eclipse Heart prompts (server-validated), or explain the range.
 	local held={}
 	h.press(qb)
@@ -1250,8 +1250,8 @@ do
 	pui.player:SetAttribute("DungeonClass","Mender")
 	pui.player:SetAttribute("DungeonParty","Tester|Mender|4;Bo|Aegis|31;Cy||1;Di|Starshot|2;Ed|Arcanist|9")
 	check(phud.Visible and has(h.find(phud,"Members").Text,"✚4") and has(h.find(phud,"Members").Text,"⛨31"),"compact roster shows glyph and level")
-	eq(phud.Position.Y.Offset,8+118+34+6,"compact party HUD sits under the compact minimap")
-	check(phud.Size.Y.Offset<=80 and h.find(phud,"AbilityQ").Visible,"compact party HUD stays short with Q / R")
+	eq(phud.Position.Y.Offset,8+112+6,"compact party HUD sits under the compact sidebar (§29 lanes)")
+	check(phud.Size.Y.Offset<=100 and h.find(phud,"AbilityQ").Visible and h.find(phud,"AbilityQ").Size.Y.Offset>=44,"compact party HUD stays short with 44 px Q / R touch targets")
 	h.noFailures(pui,"compact party HUD")
 	-- Malformed or missing class data still renders.
 	for _,bad in ipairs({"oops",{classes="x",floors={1,"y"}},{selected="Mage",classes={Aegis={level="x",fraction="y"}}}}) do

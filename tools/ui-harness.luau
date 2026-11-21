@@ -18,6 +18,11 @@ local Data = loadModule("shared/GameData.lua")
 local Progression = loadModule("shared/Progression.lua", { script = nil })
 Progression.useData(Data)
 local Catalog = loadModule("art/PropCatalog.lua")
+-- The shared theme builds instances, so each client script gets a copy loaded
+-- in its own environment (its Instance.new is the mock's).
+function H.loadTheme(env)
+	return luau.load(fs.readFile("shared/UiTheme.lua"), { debugName = "shared/UiTheme.lua", environment = env, injectGlobals = true })()
+end
 H.Data, H.Progression, H.Catalog = Data, Progression, Catalog
 
 ------------------------------------------------------------------------------
@@ -44,7 +49,7 @@ local events = {
 	FocusLost = true, OnClientEvent = true, HealthChanged = true, CharacterAdded = true, InputBegan = true,
 	TextBoxFocusReleased = true, InputEnded = true, TouchTapInWorld = true, RenderStepped = true, AncestryChanged = true,
 	MouseEnter = true, SelectionLost = true, Completed = true, Heartbeat = true, InputChanged = true, CharacterRemoving = true,
-	Event = true,
+	Event = true, MouseButton2Click = true, AttributeChanged = true,
 }
 local guiClasses = { Frame = true, TextLabel = true, TextButton = true, ImageLabel = true, ImageButton = true, ScrollingFrame = true, ViewportFrame = true, TextBox = true, CanvasGroup = true }
 H.guiClasses = guiClasses
@@ -522,6 +527,9 @@ function H.runAtlas(size, options)
 		print = function() end,
 		task = baseTask(delays),
 	}
+	local themeObject = new("ModuleScript", { Name = "AetherUiTheme" })
+	themeObject.Parent = replicated
+	modules[themeObject] = H.loadTheme(env)
 	local chunk = luau.load(fs.readFile("ui.client.lua"), { debugName = "ui.client.lua", environment = env, injectGlobals = true })
 	local main = coroutine.create(chunk)
 	local ok, problem = coroutine.resume(main)
@@ -575,18 +583,148 @@ function H.runCombat(size, player, shared)
 		TweenInfo = { new = function() return {} end },
 		Instance = { new = function(class) return new(class) end }, RaycastParams = { new = function() return {} end },
 		typeof = function(value) return if data[value] then "Instance" else typeof(value) end,
-		require = function(target)
-			assert(target.Name == "AetherData", "unexpected require")
-			return Data
-		end,
 		task = baseTask(),
 	}
+	local theme = H.loadTheme(env)
+	env.require = function(target)
+		if target.Name == "AetherUiTheme" then return theme end
+		assert(target.Name == "AetherData", "unexpected require")
+		return Data
+	end
+	if not replicated:FindFirstChild("AetherUiTheme") then new("ModuleScript", { Name = "AetherUiTheme" }).Parent = replicated end
 	local chunk = luau.load(fs.readFile("combat.client.lua"), { debugName = "combat.client.lua", environment = env, injectGlobals = true })
 	chunk()
 	local monster = new("Model", { Name = "Golem" })
 	monster.Parent = services.Workspace
 	return { hud = player:FindFirstChild("PlayerGui"):FindFirstChild("IsleCombatHud"), fx = fx, remote = remote, monster = monster, tagged = tagged,
 		run = services.RunService, workspace = services.Workspace, input = services.UserInputService }
+end
+
+-- Loads hud.client.lua (satchel, paperdoll, XP drops, Sky Chart) into an
+-- existing player's PlayerGui; pass the atlas handle's `replicated` so the
+-- local channels (snapshots, verbs, XP, HUD commands) are shared.
+function H.runHud(size, player, shared, options)
+	options = options or {}
+	screen = size
+	local replicated = shared or new("ReplicatedStorage")
+	local services = {
+		Players = new("Players", { LocalPlayer = player }), ReplicatedStorage = replicated,
+		UserInputService = new("UserInputService", { TouchEnabled = options.touch == true }), TweenService = new("TweenService"),
+	}
+	local game = new("DataModel")
+	function game.GetService(_, name) return assert(services[name], name) end
+	local camera = new("Camera")
+	local env = {
+		game = game, workspace = { CurrentCamera = camera }, Enum = roblox.Enum, UDim = roblox.UDim, UDim2 = roblox.UDim2, Vector2 = roblox.Vector2, Vector3 = roblox.Vector3,
+		CFrame = roblox.CFrame, Color3 = roblox.Color3, ColorSequence = roblox.ColorSequence, NumberSequence = roblox.NumberSequence,
+		NumberSequenceKeypoint = roblox.NumberSequenceKeypoint, TweenInfo = { new = function() return {} end },
+		Instance = { new = function(class) return new(class) end },
+		task = baseTask(options.delays),
+	}
+	local theme = H.loadTheme(env)
+	env.require = function(target)
+		if target.Name == "AetherUiTheme" then return theme end
+		return Data
+	end
+	if not replicated:FindFirstChild("AetherUiTheme") then new("ModuleScript", { Name = "AetherUiTheme" }).Parent = replicated end
+	if not replicated:FindFirstChild("AetherData") then new("ModuleScript", { Name = "AetherData" }).Parent = replicated end
+	luau.load(fs.readFile("hud.client.lua"), { debugName = "hud.client.lua", environment = env, injectGlobals = true })()
+	local api = player:FindFirstChild("IsleHudApi")
+	return { gui = player:FindFirstChild("PlayerGui"):FindFirstChild("IsleHud"), state = api.OnInvoke("state"), api = api, theme = theme, input = services.UserInputService }
+end
+
+-- Loads nav.client.lua (the Wayfinder minimap) with the world's island layout
+-- (Theme.WorldMap), a few townsfolk and the player standing at `at` (studs),
+-- then runs one minimap tick.
+function H.runNav(size, player, shared, options)
+	options = options or {}
+	screen = size
+	local replicated = shared or new("ReplicatedStorage")
+	local function signal() return newSignal() end
+	local islands = new("Folder", { Name = "Islands" })
+	local env0 = { Instance = { new = function(class) return new(class) end }, Color3 = roblox.Color3, Enum = roblox.Enum, UDim2 = roblox.UDim2, UDim = roblox.UDim,
+		Vector2 = roblox.Vector2, ColorSequence = roblox.ColorSequence, NumberSequence = roblox.NumberSequence, NumberSequenceKeypoint = roblox.NumberSequenceKeypoint }
+	local theme = H.loadTheme(env0)
+	for _, isle in ipairs(theme.WorldMap.islands) do
+		local m = new("Model", { Name = isle.name })
+		m:SetAttribute("IslandCenter", roblox.Vector3.new(isle.x, 0, isle.z))
+		m:SetAttribute("IslandRadius", isle.r)
+		m:SetAttribute("Region", isle.region)
+		m.Parent = islands
+	end
+	local folk = new("Folder", { Name = "Townsfolk" })
+	for i, role in ipairs({ "Guide", "Banker", "Smith" }) do
+		local npc = new("Model", { Name = role })
+		npc:SetAttribute("TownsfolkRole", role)
+		local root = new("Part", { Name = "HumanoidRootPart", Position = roblox.Vector3.new(20 * i - 30, 0, 18 * (i % 2) - 6) })
+		root.Parent = npc
+		npc.Parent = folk
+	end
+	local at = options.at or roblox.Vector3.new(12, 4, 20)
+	local character = new("Model", { Name = "Character" })
+	local root = new("Part", { Name = "HumanoidRootPart", Position = at, CFrame = roblox.CFrame.new(at, at + roblox.Vector3.new(0.6, 0, -1)) })
+	root.Parent = character
+	player.Character = character
+	local camera = new("Camera", { ViewportSize = size })
+	local workspace = {
+		CurrentCamera = camera, DescendantAdded = signal(), DescendantRemoving = signal(), ChildAdded = signal(), ChildRemoved = signal(),
+		Islands = islands, GetDescendants = function() return {} end,
+		FindFirstChild = function(_, name) if name == "Islands" then return islands elseif name == "Townsfolk" then return folk end return nil end,
+		GetAttribute = function() return nil end, GetAttributeChangedSignal = function() return signal() end,
+		WaitForChild = function(_, name) if name == "Townsfolk" then return folk end return nil end,
+	}
+	islands.DescendantAdded, islands.DescendantRemoving = signal(), signal()
+	local run = new("RunService")
+	local services = {
+		Players = new("Players", { LocalPlayer = player }), ReplicatedStorage = replicated, RunService = run,
+		UserInputService = new("UserInputService", { TouchEnabled = options.touch == true }), TweenService = new("TweenService"),
+	}
+	local game = new("DataModel")
+	function game.GetService(_, name) return assert(services[name], name) end
+	local env = {
+		game = game, workspace = workspace, Enum = roblox.Enum, UDim = roblox.UDim, UDim2 = roblox.UDim2, Vector2 = roblox.Vector2,
+		Vector3 = roblox.Vector3, CFrame = roblox.CFrame, Color3 = roblox.Color3, ColorSequence = roblox.ColorSequence,
+		ColorSequenceKeypoint = roblox.ColorSequenceKeypoint, NumberSequence = roblox.NumberSequence, NumberSequenceKeypoint = roblox.NumberSequenceKeypoint,
+		TweenInfo = { new = function() return {} end }, Instance = { new = function(class) return new(class) end },
+		typeof = function(value) return if data[value] then "Instance" else typeof(value) end,
+		task = baseTask(),
+	}
+	local navTheme = H.loadTheme(env)
+	env.require = function(target)
+		if target and target.Name == "AetherUiTheme" then return navTheme end
+		return Data
+	end
+	if not replicated:FindFirstChild("AetherUiTheme") then new("ModuleScript", { Name = "AetherUiTheme" }).Parent = replicated end
+	if not replicated:FindFirstChild("AetherData") then new("ModuleScript", { Name = "AetherData" }).Parent = replicated end
+	if not replicated:FindFirstChild("IsleAction") then
+		local action = new("RemoteFunction", { Name = "IsleAction" })
+		action.OnInvoke = function() return H.snapshot() end
+		action.Parent = replicated
+	end
+	luau.load(fs.readFile("nav.client.lua"), { debugName = "nav.client.lua", environment = env, injectGlobals = true })()
+	run.Heartbeat:Fire(1)
+	return { gui = player:FindFirstChild("PlayerGui"):FindFirstChild("Wayfinder"), run = run, root = root }
+end
+
+-- Render-only stand-in for hotbar.client.lua (the Held Items team's 9-slot
+-- bar): Theme slots where the real bar sits, filled from the snapshot.
+function H.hotbarPreview(playerGui, size, theme, snap)
+	local L = theme.hudLayout(size.X, size.Y, { touch = size.Y < 500 })
+	local gui = new("ScreenGui", { Name = "HotbarPreview", DisplayOrder = 6 })
+	gui.Parent = playerGui
+	local equipment = (snap.depth or {}).equipment or {}
+	local ids = { equipment.weapon, "BrassPickaxe", "CopperHatchet", "MeadowLongbow", "CookedFish", "Tonic", "BrassArrow", "HubwardTablet", "MightDraught" }
+	for i = 1, 9 do
+		local b = theme.slot(gui, { name = "Hotbar" .. i, size = L.hotbar.slot, key = i })
+		b.Position = roblox.UDim2.fromOffset(L.hotbar.x + (i - 1) * (L.hotbar.slot + 4), L.hotbar.y)
+		local id = ids[i]
+		theme.setSlot(b, { id = id, def = id and Data.Items[id], count = id and (snap.items or {})[id] or 0, selected = i == 1 })
+		if i == 1 then
+			b:FindFirstChild("Rarity").Thickness = 3
+			b:FindFirstChild("Rarity").Color = theme.color.gold
+		end
+	end
+	return gui
 end
 
 -- A founded crew (Journal > Crew) for renders.

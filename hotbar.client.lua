@@ -50,6 +50,18 @@ local STYLE = {
 		staff = "✦", wand = "✧", shield = "⛨", pickaxe = "⛏", hatchet = "⚒", rod = "⚓", hoe = "⚘", hammer = "⚒"},
 	kindGlyph = {consumable = "✚", resource = "◆", material = "◈", accessory = "❖", armor = "⛊", pet = "❦"},
 }
+-- Skyforge theme (UI overhaul, docs/DEPTH-CONTRACT.md §29): when the shared
+-- ReplicatedStorage.AetherUiTheme is present its hotbarStyle() replaces the
+-- colours and sizes above (same keys); glyph tables stay local.
+do
+	local module = ReplicatedStorage:FindFirstChild("AetherUiTheme")
+	local ok, Theme = pcall(function() return module and require(module) end)
+	if ok and type(Theme) == "table" and type(Theme.hotbarStyle) == "function" then
+		for key, value in pairs(Theme.hotbarStyle()) do
+			if STYLE[key] ~= nil then STYLE[key] = value end
+		end
+	end
+end
 local COUNT, SLOTS = Held.HOTBAR_SLOTS, Held.FREE_SLOTS
 
 local function make(class, parent, props)

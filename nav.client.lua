@@ -1,4 +1,5 @@
--- Wayfinder: compact minimap/compass (top-right, toggle with the Map button or M),
+-- Wayfinder: compact minimap/compass (top-left with the region name and the
+-- player's coordinates; toggle with the Map button or M; §29 HUD lanes),
 -- island labels, NPC/station/beacon markers read from Workspace.Islands anchors
 -- and the world's own prompts, a Navigate list, recall charms, and waypoints: a
 -- glowing beam + beacon to the target that clears itself on arrival.
@@ -11,11 +12,13 @@ local Input = game:GetService("UserInputService")
 local player = Players.LocalPlayer
 local Data = require(ReplicatedStorage:WaitForChild("AetherData"))
 local T = Data.Townsfolk
+-- Colours, fonts and HUD lanes from the shared theme (§29).
+local Theme = require(ReplicatedStorage:WaitForChild("AetherUiTheme"))
 
 local function rgb(h) return Color3.fromHex(h) end
-local ink, deep, slate = rgb("102733"), rgb("091923"), rgb("244857")
-local ivory, muted, mint, gold, violet = rgb("FFF4D9"), rgb("BECECA"), rgb("9EE7D2"), rgb("F9CC77"), rgb("B8A6FF")
-local bold, regular = Enum.Font.GothamBold, Enum.Font.Gotham
+local ink, deep, slate = Theme.color.panel, Theme.color.inset, Theme.color.raised
+local ivory, muted, mint, gold, violet = Theme.color.text, Theme.color.dim, Theme.color.mint, Theme.color.gold, rgb("B8A6FF")
+local bold, regular = Enum.Font.BuilderSansBold, Enum.Font.BuilderSansMedium
 local function make(class, parent, props)
 	local o = Instance.new(class)
 	if class == "UIStroke" then o.ApplyStrokeMode = Enum.ApplyStrokeMode.Border end
@@ -155,14 +158,29 @@ end
 local gui = make("ScreenGui", player:WaitForChild("PlayerGui"), {Name = "Wayfinder", ResetOnSpawn = false, DisplayOrder = 6,
 	ZIndexBehavior = Enum.ZIndexBehavior.Sibling})
 local camera = workspace.CurrentCamera
-local compact = camera and camera.ViewportSize.Y < 520
-local SIZE = if compact then 118 else 156
-local holder = make("Frame", gui, {Name = "Minimap", AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -10, 0, 8),
-	Size = UDim2.fromOffset(SIZE, SIZE + 34), BackgroundTransparency = 1})
-local map = make("Frame", holder, {Name = "Map", Size = UDim2.fromOffset(SIZE, SIZE), BackgroundColor3 = deep, BackgroundTransparency = 0.08,
+local function lanes()
+	local view = gui.AbsoluteSize
+	if not view or view.X <= 0 or view.Y <= 0 then view = if camera then camera.ViewportSize else Vector2.new(1280, 720) end
+	return Theme.hudLayout(view.X, view.Y, {touch = Input.TouchEnabled})
+end
+local L0 = lanes()
+local SIZE = L0.map.size
+local holder = make("Frame", gui, {Name = "Minimap", Position = UDim2.fromOffset(L0.mapBlock.x, L0.mapBlock.y),
+	Size = UDim2.fromOffset(L0.mapBlock.w, L0.mapBlock.h), BackgroundTransparency = 1})
+local map = make("Frame", holder, {Name = "Map", Size = UDim2.fromOffset(SIZE, SIZE), BackgroundColor3 = rgb("0E1A22"), BackgroundTransparency = 0.05,
 	ClipsDescendants = true, BorderSizePixel = 0})
-round(map, 12, gold)
+round(map, 6)
+Theme.rim(map, 2)
+make("UIGradient", map, {Rotation = 90, Color = ColorSequence.new(rgb("C9D6E0"), rgb("8C99A6"))})
 local layer = make("Frame", map, {Name = "Layer", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1})
+-- Region name + coordinates: under the map on desktop, inside its foot on phones.
+local info = make("Frame", holder, {Name = "Info", BackgroundColor3 = Theme.color.void, BackgroundTransparency = 0.25, BorderSizePixel = 0, ZIndex = 8})
+round(info, 4)
+make("UIStroke", info, {Color = Theme.color.frame, Thickness = 1, Transparency = 0.3})
+local regionLabel = make("TextLabel", info, {Name = "Region", BackgroundTransparency = 1, Font = bold, TextSize = 12, TextColor3 = gold, ZIndex = 9,
+	TextXAlignment = Enum.TextXAlignment.Center, TextTruncate = Enum.TextTruncate.AtEnd, Text = "The Skyways"})
+local coordsLabel = make("TextLabel", info, {Name = "Coords", BackgroundTransparency = 1, Font = Theme.font.number, TextSize = 8, TextColor3 = muted, ZIndex = 9,
+	TextXAlignment = Enum.TextXAlignment.Center, Text = "0, 0, 0"})
 -- Compass rose letters stay on the rim (north-up map).
 for _, mark in ipairs({{"N", 0.5, 0.06, gold}, {"S", 0.5, 0.94, muted}, {"E", 0.94, 0.5, muted}, {"W", 0.06, 0.5, muted}}) do
 	make("TextLabel", map, {AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(mark[2], mark[3]), Size = UDim2.fromOffset(14, 14),
@@ -172,11 +190,13 @@ local arrow = make("TextLabel", map, {Name = "PlayerArrow", AnchorPoint = Vector
 	Size = UDim2.fromOffset(18, 18), BackgroundTransparency = 1, Text = "▲", Font = bold, TextSize = 16, TextColor3 = mint, ZIndex = 7})
 make("UIStroke", arrow, {Color = deep, Thickness = 1.5, ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual})
 local bar = make("Frame", holder, {Name = "Controls", Position = UDim2.fromOffset(0, SIZE + 4), Size = UDim2.fromOffset(SIZE, 30), BackgroundTransparency = 1})
-make("UIListLayout", bar, {FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 4), HorizontalAlignment = Enum.HorizontalAlignment.Right})
+local barLayout = make("UIListLayout", bar, {FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 4), HorizontalAlignment = Enum.HorizontalAlignment.Right})
+local controls = {}
 local function smallButton(text, width, onClick)
-	local b = make("TextButton", bar, {Size = UDim2.fromOffset(width, 30), BackgroundColor3 = ink, Text = text, Font = bold, TextSize = 13, TextColor3 = ivory, AutoButtonColor = true})
-	round(b, 8, slate)
+	local b = Theme.button(bar, text, {name = "Map" .. (({["−"] = "ZoomOut", ["+"] = "ZoomIn"})[text] or text), size = UDim2.fromOffset(width, 30), textSize = 13})
+	b.AutoButtonColor = true
 	b.Activated:Connect(onClick)
+	table.insert(controls, b)
 	return b
 end
 local ZOOMS = {0.12, 0.2, 0.32, 0.5, 0.8, 1.3}
@@ -186,12 +206,44 @@ local navigatePanel
 local function setMapOpen(open)
 	mapOpen = open
 	map.Visible = open
-	bar.Position = UDim2.fromOffset(0, if open then SIZE + 4 else 0)
+	if info then info.Visible = open end
 end
-smallButton("−", 30, function() zoom = math.max(1, zoom - 1) end)
-smallButton("+", 30, function() zoom = math.min(#ZOOMS, zoom + 1) end)
+local zoomOut = smallButton("−", 30, function() zoom = math.max(1, zoom - 1) end)
+local zoomIn = smallButton("+", 30, function() zoom = math.min(#ZOOMS, zoom + 1) end)
 smallButton("Go", 34, function() navigatePanel() end)
 smallButton("Map", 40, function() setMapOpen(not mapOpen) end)
+-- Phones: tap the map to cycle the zoom (the − / + buttons fold away).
+local zoomTap = make("TextButton", map, {Name = "ZoomTap", BackgroundTransparency = 1, Text = "", Size = UDim2.fromScale(1, 1), ZIndex = 9, Visible = false})
+zoomTap.Activated:Connect(function() zoom = zoom % #ZOOMS + 1 end)
+-- Lays the minimap block out for the current screen (desktop: info strip and a
+-- controls row under the map; touch: info inside the map, a 44 px column).
+local function layoutMinimap()
+	local L = lanes()
+	SIZE = L.map.size
+	holder.Position, holder.Size = UDim2.fromOffset(L.mapBlock.x, L.mapBlock.y), UDim2.fromOffset(L.mapBlock.w, L.mapBlock.h)
+	map.Size = UDim2.fromOffset(SIZE, SIZE)
+	info.Position = UDim2.fromOffset(L.mapInfo.x - L.mapBlock.x, L.mapInfo.y - L.mapBlock.y)
+	info.Size = UDim2.fromOffset(L.mapInfo.w, L.mapInfo.h)
+	local inside = L.mapInfo.inside == true
+	regionLabel.Position, regionLabel.Size = UDim2.fromOffset(2, 1), UDim2.new(1, -4, 0, if inside then 11 else 14)
+	regionLabel.TextSize = if inside then 10 else 12
+	coordsLabel.Position, coordsLabel.Size = UDim2.fromOffset(2, if inside then 12 else 15), UDim2.new(1, -4, 0, 9)
+	coordsLabel.TextSize = if inside then 7 else 8
+	zoomOut.Visible, zoomIn.Visible, zoomTap.Visible = not L.touch, not L.touch, L.touch
+	if L.mapControls.column then
+		bar.Position, bar.Size = UDim2.fromOffset(L.mapControls.x - L.mapBlock.x, 0), UDim2.fromOffset(44, L.mapControls.h)
+		barLayout.FillDirection = Enum.FillDirection.Vertical
+		barLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+		for _, b in ipairs(controls) do b.Size = UDim2.fromOffset(44, 44) end
+	else
+		bar.Position, bar.Size = UDim2.fromOffset(0, L.mapControls.y - L.mapBlock.y), UDim2.fromOffset(L.mapControls.w, 30)
+		barLayout.FillDirection = Enum.FillDirection.Horizontal
+		barLayout.HorizontalAlignment = Enum.HorizontalAlignment.Right
+		for _, b in ipairs(controls) do b.Size = UDim2.fromOffset(if b.Text == "Map" then 40 elseif b.Text == "Go" then 34 else 30, 30) end
+	end
+end
+layoutMinimap()
+gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(layoutMinimap)
 Input.InputBegan:Connect(function(input, processed)
 	if processed then return end
 	if input.KeyCode == Enum.KeyCode.M then setMapOpen(not mapOpen) end
@@ -211,8 +263,12 @@ local toast = make("TextLabel", gui, {Name = "WayfinderToast", AnchorPoint = Vec
 round(toast, 9, gold)
 make("UIPadding", toast, {PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8)})
 local function placeToast()
-	local width = screenSize().X
-	local left, right = 325, width - 10 - SIZE - 10
+	local L = lanes()
+	local width = L.w
+	-- Short phones: a slimmer toast just under the event-banner slot.
+	TOAST_TOP, TOAST_HEIGHT = if L.tiny then 111 else 118, if L.tiny then 28 else 40
+	local left, right = L.lane.left, L.lane.right
+	if TOAST_TOP + TOAST_HEIGHT > L.leftTop then left = math.max(left, 10 + L.leftWidth + 6) end
 	if width / 2 - TOAST_WIDTH / 2 >= left and width / 2 + TOAST_WIDTH / 2 <= right then
 		toast.AnchorPoint = Vector2.new(0.5, 0)
 		toast.Position, toast.Size = UDim2.new(0.5, 0, 0, TOAST_TOP), UDim2.fromOffset(TOAST_WIDTH, TOAST_HEIGHT)
@@ -529,14 +585,17 @@ local list = make("Frame", gui, {Name = "Navigate", AnchorPoint = Vector2.new(1,
 -- opens beside the minimap from the top instead. Never past the action bar.
 local LIST_FLOOR = 48 -- the atlas action bar (bottom 40) plus a gap
 local function placeList()
-	local height = screenSize().Y
-	local below = SIZE + 46
-	if height - below - LIST_FLOOR >= 200 then
-		list.Position = UDim2.new(1, -10, 0, below)
-		list.Size = UDim2.fromOffset(240, math.min(300, height - below - LIST_FLOOR))
+	local L = lanes()
+	local height = L.h
+	local below = L.leftTop
+	local floor = height - L.action.y + 6
+	list.AnchorPoint = Vector2.new(0, 0)
+	if height - below - floor >= 200 then
+		list.Position = UDim2.fromOffset(10, below)
+		list.Size = UDim2.fromOffset(240, math.min(300, height - below - floor))
 	else
-		list.Position = UDim2.new(1, -(10 + SIZE + 10), 0, 8)
-		list.Size = UDim2.fromOffset(240, math.max(120, math.min(300, height - 8 - LIST_FLOOR)))
+		list.Position = UDim2.fromOffset(L.mapBlock.x + L.mapBlock.w + 10, 8)
+		list.Size = UDim2.fromOffset(240, math.max(120, math.min(300, height - 8 - floor)))
 	end
 end
 make("UISizeConstraint", list, {MaxSize = Vector2.new(260, 380)})
@@ -634,6 +693,27 @@ navigatePanel = function()
 	list.Visible = true
 end
 
+-- Region under the player (nearest island whose footprint holds them): the
+-- minimap strip and the IsleRegionHere attribute the sidebar reads.
+local Here = {region = nil, coords = "", tint = {}}
+for _, isle in ipairs(Theme.WorldMap.islands) do Here.tint[isle.region] = Here.tint[isle.region] or Theme.darken(rgb(isle.top), 0.35) end
+function Here.update(pos)
+	local best, bestD = nil, math.huge
+	for _, island in ipairs(scan.list) do
+		local dx, dz = pos.X - island.center.X, pos.Z - island.center.Z
+		local d = math.sqrt(dx * dx + dz * dz)
+		if d <= island.radius * 1.2 and d < bestD then best, bestD = island, d end
+	end
+	local region = if best then (best.region or "Home") else "Skyways"
+	if region ~= Here.region then
+		Here.region = region
+		local def = Data.RegionById[region]
+		regionLabel.Text = if def then def.name elseif region == "Home" then "Your Isle" else "The Skyways"
+		if player:GetAttribute("IsleRegionHere") ~= region then player:SetAttribute("IsleRegionHere", region) end
+	end
+	local coords = math.floor(pos.X + 0.5) .. ", " .. math.floor(pos.Y + 0.5) .. ", " .. math.floor(pos.Z + 0.5)
+	if coords ~= Here.coords then Here.coords = coords; coordsLabel.Text = coords end
+end
 ------------------------------------------------------------------------------
 -- Minimap drawing (≤ 10 Hz) with pooled markers.
 ------------------------------------------------------------------------------
@@ -682,9 +762,11 @@ local function drawMap(me, facing)
 			f.Position = UDim2.fromOffset(half + x, half + y)
 			f.Size = UDim2.fromOffset(r * 2, r * 2)
 			local region = Data.RegionById[island.region or ""]
-			local label = f.Label
-			label.Text = if region then region.name elseif island.region == "Home" then "Home" else island.model.Name
-			label.Visible = r > 14
+			local label = f:FindFirstChild("Label")
+			local tint = Here.tint[island.region or ""]
+			if tint and f.BackgroundColor3 ~= tint then f.BackgroundColor3 = tint end
+			label.Text = if island.region == "Home" or not region and island.region == nil then "Home" else island.model.Name
+			label.Visible = r > 24
 		end
 	end
 	local folder = workspace:FindFirstChild("Townsfolk")
@@ -779,7 +861,8 @@ RunService.Heartbeat:Connect(function(dt)
 	end
 	Skill.refreshNext()
 	Skill.pulse(now)
-	if mapOpen and root then
+	if root then Here.update(root.Position) end
+	if mapOpen and root and player:GetAttribute("IsleSettingMinimap") ~= false then
 		local look = root.CFrame.LookVector
 		drawMap(root.Position, look)
 	end
