@@ -742,7 +742,7 @@ local function tryAttack(model)
 	slash(style)
 	return true
 end
--- Spell bar slot i (keys 1-6, taps, gamepad L1 on the cursor).
+-- Spell bar slot i (keys Z X C V B N, taps, gamepad L1 on the cursor; 1-9 belong to the hotbar).
 local function castSlot(i)
 	local id = S.slots[i]
 	if not id then return false end
