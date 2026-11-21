@@ -539,7 +539,7 @@ ok(flat(gc, homeCenter) - 14 > 21 + 3, "islet clears the home meadow")
 local terraceCenter = homeCenter + Vector3.new(Data.TERRACE_OFFSET.x, 0, Data.TERRACE_OFFSET.z)
 ok(flat(gc, terraceCenter) > 14 + 11 + 2, "islet clears the Builder's Terrace")
 ok(flat(gc, homeCenter + Vector3.new(0, 0, 29)) > 14 + 7 + 2, "islet clears the lookout deck")
-ok(flat(gc, homeCenter) + 14 < 120 - 50, "islet stays clear of neighbouring homes")
+ok(flat(gc, homeCenter) + 14 < Data.Home.radius(1), "garden stands inside the stage-0 build radius (§27)")
 local plotPrompts, plotBeds = {}, {}
 for _, obj in garden:GetDescendants() do
 	if obj:IsA("ProximityPrompt") and obj:GetAttribute("IsleAction") == "gardenPlot" then
@@ -577,16 +577,19 @@ for _, name in ipairs({"Anchor_Waypoint_VerdantGarden", "Anchor_Garden_Composter
 	local a = home:FindFirstChild(name, true)
 	ok(a ~= nil and flat(a.CFrame.Position, gc) < 14, name .. " on the islet")
 end
-local bridgeDeck
-for _, obj in garden:GetChildren() do if obj.Name == "Continuous bridge deck" then bridgeDeck = obj end end
-ok(bridgeDeck ~= nil and bridgeDeck.CanCollide, "a bridge joins the islet to home")
+-- §27: the garden is a lawn on the big home island; no bridge is needed.
+local lawn = garden:FindFirstChild("Meadow")
+ok(lawn ~= nil and lawn.CanCollide and near(lawn.CFrame.Position.Y + lawn.Size.X / 2, homeCenter.Y + .04, .01), "garden lawn sits just above the home meadow")
+local gardenZone
+for _, c in ipairs(Data.Island.ProtectedCircles) do if c.name == "Verdant Garden" then gardenZone = c end end
+ok(gardenZone and near(gardenZone.x, gc.X - homeCenter.X, .01) and near(gardenZone.z, gc.Z - homeCenter.Z, .01) and gardenZone.r >= 14, "the garden is a protected zone of the placement grid")
 local function partCount(root)
 	local count = 0
 	for _, obj in root:GetDescendants() do if obj:IsA("BasePart") then count += 1 end end
 	return count
 end
 local baseParts = partCount(garden)
-ok(baseParts >= 40 and baseParts <= 90, "garden islet part budget (" .. baseParts .. " parts)")
+ok(baseParts >= 25 and baseParts <= 60, "garden islet part budget (" .. baseParts .. " parts)")
 for _, obj in garden:GetDescendants() do if obj:IsA("BasePart") then assert(obj.Anchored, "garden parts anchored") end end
 checks += 1
 -- Solid garden geometry never intersects solid home geometry (floors excluded).

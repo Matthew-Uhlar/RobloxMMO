@@ -1716,7 +1716,7 @@ do
 	expect(slab.Color == bad and status.Text:find("home landing", 1, true) ~= nil, "protected zone tints red with a reason")
 	press(button("ConfirmButton"))
 	expect(player:GetAttribute("IslandPlaceCount") == 4, "invalid confirm sends nothing")
-	aimAt(8, 8)
+	aimAt(33, 33) -- §27: beyond the stage-0 r90 rim
 	runService.RenderStepped:Fire()
 	expect(slab.Color == bad, "rim tints red")
 	aimAt(fx, fz, "HedgeRow", 0)

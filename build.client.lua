@@ -93,6 +93,12 @@ local function islandCenter()
 	return nil
 end
 local function placements() return I.decode(player:GetAttribute("IslandPlacements")) end
+-- Home islands (§27): the grid radius and the placement cap grow with the
+-- Homestead level the server publishes (HomesteadLevel 1..5).
+local function stage()
+	if type(Data.Home) ~= "table" then return 0 end
+	return Data.Home.stage(player:GetAttribute("HomesteadLevel"))
+end
 local function placementFolder()
 	local isles = workspace:FindFirstChild("AetherIsles")
 	local home = isles and isles:FindFirstChild("WayfarersRest_" .. player.UserId)
@@ -143,7 +149,7 @@ function B.ray()
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
 	params.FilterDescendantsInstances = {B.ghost, player.Character}
-	return workspace:Raycast(ray.Origin, ray.Direction * 400, params)
+	return workspace:Raycast(ray.Origin, ray.Direction * 600, params) -- §27: islands reach r164
 end
 function B.update()
 	if not B.active then return end
@@ -175,12 +181,12 @@ function B.update()
 	local x, z = I.snap(B.prop, B.rot, offset.X, offset.Z)
 	B.x, B.z = x, z
 	local list = placements()
-	local valid, reason = I.check(I.occupancy(list), B.prop, x, z, B.rot)
+	local valid, reason = I.check(I.occupancy(list), B.prop, x, z, B.rot, stage())
 	if valid then
 		local count = 0
 		for _, e in ipairs(list) do if e.prop == B.prop then count += 1 end end
 		local def = I.Props[B.prop]
-		if #list >= I.MAX_PLACEMENTS then valid, reason = false, "Your island is full"
+		if #list >= I.cap(stage()) then valid, reason = false, "Your island is full"
 		elseif count >= def.max then valid, reason = false, "Most " .. def.name .. " pieces placed (" .. def.max .. ")" end
 	end
 	B.valid, B.reason = valid, reason or "Valid spot  ·  click, tap Place or press A"
@@ -265,6 +271,7 @@ player:GetAttributeChangedSignal("IslandBuildRequest"):Connect(function()
 	B.enter(if type(mode) == "string" then mode else "", if type(prop) == "string" then prop else "")
 end)
 player:GetAttributeChangedSignal("IslandPlacements"):Connect(function() if B.active then B.update() end end)
+player:GetAttributeChangedSignal("HomesteadLevel"):Connect(function() if B.active then B.update() end end)
 player.CharacterRemoving:Connect(B.exit)
 
 Input.InputChanged:Connect(function(input)

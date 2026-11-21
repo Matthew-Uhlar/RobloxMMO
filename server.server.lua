@@ -1130,34 +1130,60 @@ do
 		end
 		return out
 	end
-	-- Keeps only well-formed, in-bounds, non-overlapping records within the caps.
+	-- Home islands (§27): p.homestead={level=1..5} (expansion rings bought with
+	-- "homeExpand"); the placement grid and cap follow the level.
+	local Home=Data.Home
+	function Isle.stage(p) return Home.stage(p.homestead and p.homestead.level) end
+	-- Sanitises the Homestead level, then Island.migrate: well-formed records
+	-- keep their cell; anything that no longer fits (legacy layout, overlap,
+	-- protected zone, duplicate id) moves to the nearest free cell, and only a
+	-- record that cannot stand at all is refunded in full (never deleted).
 	function Isle.migrate(p)
-		local raw=if type(p.island)=="table" then p.island else {}
-		local placed,paid,used,counts,occupied={},{},{},{},{}
-		if type(raw.placed)=="table" then
-			for _,record in ipairs(raw.placed) do
-				if #placed>=I.MAX_PLACEMENTS then break end
-				local e=I.parseRecord(record)
-				if e and not used[e.id] and (counts[e.prop] or 0)<I.Props[e.prop].max and I.check(occupied,e.prop,e.x,e.z,e.rot) then
-					used[e.id]=true
-					counts[e.prop]=(counts[e.prop] or 0)+1
-					for _,c in ipairs(I.cells(e.prop,e.x,e.z,e.rot)) do occupied[I.key(c[1],c[2])]=e.id end
-					table.insert(placed,I.record(e))
-				end
-			end
+		local raw=if type(p.homestead)=="table" then p.homestead else {}
+		p.homestead={level=Home.level(raw.level)}
+		local island,refunds,report=I.migrate(p.island,Isle.stage(p))
+		local paid,counts={},{}
+		local rawPaid=if type(p.island)=="table" and type(p.island.paid)=="table" then p.island.paid else {}
+		for id,n in pairs(rawPaid) do
+			local def=type(id)=="string" and I.Props[id]
+			n=tonumber(n)
+			if def and n and n==n and n>=1 then paid[id]=math.min(math.floor(n),def.max) end
 		end
-		if type(raw.paid)=="table" then
-			for id,n in pairs(raw.paid) do
-				local def=type(id)=="string" and I.Props[id]
-				n=tonumber(n)
-				if def and n and n==n and n>=1 then paid[id]=math.min(math.floor(n),def.max) end
-			end
+		for _,record in ipairs(island.placed) do
+			local e=I.parseRecord(record)
+			counts[e.prop]=(counts[e.prop] or 0)+1
 		end
 		for id,n in pairs(counts) do paid[id]=math.max(paid[id] or 0,n) end
-		p.island={placed=placed,paid=paid}
+		island.paid=paid
+		p.island=island
+		if type(p.items)=="table" then
+			for material,n in pairs(refunds) do p.items[material]=(p.items[material] or 0)+n end
+		end
+		if report.moved>0 or report.refunded>0 then
+			note(p,"Your island grew: "..report.moved.." decoration"..(if report.moved==1 then "" else "s").." moved to a free spot"
+				..(if report.refunded>0 then ", "..report.refunded.." returned to your satchel" else "")..".")
+		end
+		return report
 	end
 	function Isle.apply(player,p)
+		-- Level first: the world re-checks placements against the grown grid.
+		player:SetAttribute("HomesteadLevel",p.homestead.level)
 		player:SetAttribute("IslandPlacements",table.concat(p.island.placed,";"))
+	end
+	-- Buy the next expansion ring: Carpentry gate, coins and materials, all
+	-- checked before anything is spent; the level only ever grows.
+	function Isle.expand(player,p)
+		if not Isle.allow(player) then return "Building too quickly. One moment…" end
+		local levelNow=p.homestead.level
+		local okRing,ring=Home.canExpand(levelNow,level(p.xp.Carpentry),p.coins,p.items)
+		if not okRing then return ring end
+		if not spend(p,ring.costs) then return "Gather the materials for the next expansion ring first." end
+		p.coins-=ring.coins
+		p.homestead.level=levelNow+1
+		p.started=true
+		Isle.apply(player,p)
+		local area=math.floor(Home.area(p.homestead.level)/Home.area(levelNow)*100-100+.5)
+		return "Homestead level "..p.homestead.level.." · your island grew to radius "..ring.radius.." (+"..area.."% build area)"
 	end
 	-- Token bucket (Data.Island.RATE per second, BURST) on top of the verb cooldown.
 	function Isle.allow(player)
@@ -1177,7 +1203,8 @@ do
 		if not def then return "Choose a prop and a spot on your island." end
 		if level(p.xp.Carpentry)<def.level then return def.name.." requires Carpentry "..def.level.."." end
 		local list=Isle.list(p)
-		if #list>=I.MAX_PLACEMENTS then return "Your island holds at most "..I.MAX_PLACEMENTS.." placed props. Pick some up first." end
+		local cap=I.cap(Isle.stage(p))
+		if #list>=cap then return "Your island holds at most "..cap.." placed props. Pick some up first"..(if cap<I.MAX_PLACEMENTS then " or expand your island" else "").."." end
 		local count=0
 		local used={}
 		for _,e in ipairs(list) do
@@ -1185,7 +1212,7 @@ do
 			if e.prop==propId then count+=1 end
 		end
 		if count>=def.max then return "You have placed the most "..def.name.." pieces allowed ("..def.max..")." end
-		local ok,why=I.check(I.occupancy(list),propId,x,z,rot)
+		local ok,why=I.check(I.occupancy(list),propId,x,z,rot,Isle.stage(p))
 		if not ok then return why end
 		for material,n in pairs(def.costs) do
 			if (p.items[material] or 0)<n then return def.name.." needs "..n.." "..Data.Items[material].name.."." end
@@ -1231,8 +1258,12 @@ do
 		local value=I.value(list)
 		local tier,def=I.tier(value)
 		-- Records themselves replicate through the IslandPlacements attribute.
-		return {count=#list,cap=I.MAX_PLACEMENTS,counts=counts,
-			paid=table.clone(p.island.paid),value=value,tier=tier,tierName=def.name}
+		local lv=p.homestead.level
+		local ring=Home.nextRing(lv)
+		return {count=#list,cap=I.cap(Isle.stage(p)),counts=counts,
+			paid=table.clone(p.island.paid),value=value,tier=tier,tierName=def.name,
+			homestead={level=lv,max=Home.MAX_LEVEL,radius=Home.radius(lv),area=math.floor(Home.area(lv)),
+				next=ring and {radius=ring.radius,coins=ring.coins,costs=table.clone(ring.costs),carpentry=ring.carpentry} or nil}}
 	end
 end
 ------------------------------------------------------------------------------
@@ -6013,6 +6044,8 @@ local function perform(player,verb,item,prompt)
 		return Journal.isle.place(player,p,item)
 	elseif verb=="pickup" then
 		return Journal.isle.pickup(player,p,item)
+	elseif verb=="homeExpand" then
+		return Journal.isle.expand(player,p)
 	elseif verb=="quest" then
 		local state=questState(p)
 		if not state.ready then return "Complete the current guild contract first." end

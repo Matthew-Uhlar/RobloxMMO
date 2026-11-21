@@ -187,7 +187,10 @@ do
 			end
 			check(inside,"station "..slot.." sits in a protected worker rectangle")
 		else
-			check(math.sqrt(o.X^2+o.Z^2)-2.6>I.RADIUS,"yard station "..slot.." is outside the placement grid")
+			-- §27: the build grid now covers the island; the yard is a protected circle.
+			local zone
+			for _,c in ipairs(I.ProtectedCircles) do if c.name=="worker yard" then zone=c end end
+			check(zone~=nil and math.sqrt((o.X-zone.x)^2+(o.Z-zone.z)^2)+2.6<=zone.r,"yard station "..slot.." is inside the protected worker yard")
 			local y=yard:FindFirstChild("Upper meadow").CFrame.Position
 			check(math.sqrt((pad.X-y.X)^2+(pad.Z-y.Z)^2)+2.6<=11.55,"yard station "..slot.." on the yard")
 			check(math.abs(pad.Y-homeA:GetAttribute("IslandCenter").Y-1.58)<.05,"yard station "..slot.." stands on the yard top")
