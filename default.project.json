@@ -21,7 +21,8 @@
       "Combat": { "$path": "combat.server.lua" },
       "GestureRelay": { "$path": "gesture.server.lua" },
       "Townsfolk": { "$path": "npc.server.lua" },
-      "Minigames": { "$path": "minigames.server.lua" }
+      "Minigames": { "$path": "minigames.server.lua" },
+      "Lairs": { "$path": "lairs.server.lua" }
     },
     "StarterPlayer": {
       "StarterPlayerScripts": {

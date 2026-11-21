@@ -582,6 +582,8 @@ local DENIED_TEXT = {
 	level = "Magic level too low", spell = "Choose a spell to cast", immune = "Bosses shrug off Rootbind",
 	combat = "Can't teleport while in combat", teleport = "The tablet fizzles", target = "No target in range",
 	leashing = "It's retreating — let it reset",
+	-- Lairs: ordered sigils, a sealed boss, another party's fight.
+	order = "Break the sigils in order: lowest number first", sealed = "Sealed! Break its sigils first", lair = "That fight is not yours",
 }
 local function deniedText(action, reason)
 	if reason == "weapon" then

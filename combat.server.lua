@@ -2390,6 +2390,452 @@ local function createLogic(env)
 		return slayerHasState(player) or superiorOwned[player] ~= nil or superiorRetry[player] ~= nil or deniedAt[player] ~= nil
 	end
 	-- End Slayer tasks section.
+
+	------------------------------------------------------------------------
+	-- Lairs section (Bossing team). Data.Lairs (LR), docs/DEPTH-CONTRACT.md §25.
+	-- One boss record per lair fight (r.lair, r.fight): only the fight's
+	-- members (UserIds, fixed when the boss rises) may strike it or its adds;
+	-- it never leaves its arena (LR.ARENA_RANGE from r.center).
+	--   Stances: the basic attack's style cycles def.stances every
+	--   def.stanceEvery swings; a swing into the matching Ward prayer (bridge
+	--   "stats" prayer.protect) is multiplied by LR.PRAYED before the bridge
+	--   applies the prayer's own reduction. Ranged/magic stances strike from
+	--   anywhere in the arena; melee chases.
+	--   Specials (L.lrTick): disc / ring / safe telegraphs, tile lattices
+	--   (LR.tilePattern cells under LR.cellAt) - all styleless (dodge them) -
+	--   brood adds (boss takes LR.WARD damage while any lives) and ordered
+	--   sigils (boss immune; only the lowest-numbered sigil can be struck,
+	--   refusal "order"). Waves never stack. Phases only advance and may turn
+	--   the weakness (LR.weaknessAt); enrage at def.enrage; def.duration ends
+	--   the fight ("timeout").
+	--   Damage and damage XP are kept per UserId (r.dmg), so a member who
+	--   drops and rejoins keeps their share. At the kill, LR.credit decides
+	--   each member's credit; credited members are paid their damage XP and the
+	--   outcome waits in L.lrResult(fight) for lairs.server.lua (which relays
+	--   the reward through bridge "lair").
+	------------------------------------------------------------------------
+	local LR = Data.Lairs
+	local lairFights = {}   -- [fight] = boss record
+	local lairResults = {}  -- [fight] = {result, credit = {[uid] = {share, damage, ok, reason}}, seconds, party}
+	local lairAlert = 0     -- telegraph sequence (HUD notices)
+	local function lairBossOf(r)
+		if r.lair then return r end
+		if r.lairAdd then return r.parent end
+		return nil
+	end
+	function L.lrRecord(fight) return lairFights[fight] end
+	function L.lrResult(fight) return lairResults[fight] end
+	function L.lrForget(fight) lairResults[fight] = nil end
+	function L.lrCount()
+		local n = 0
+		for _, r in pairs(lairFights) do n += 1; for _ in pairs(r.adds) do n += 1 end end
+		return n
+	end
+	function L.lrRegister(fight, bossId, model, position, opts)
+		local def = LR and LR.boss(bossId)
+		if type(fight) ~= "string" or not def or lairFights[fight] then return nil end
+		local count = 0
+		for _ in pairs(lairFights) do count += 1 end
+		if count >= LR.MAX_INSTANCES then return nil end
+		opts = opts or {}
+		local now = env.now()
+		local members, party = {}, 0
+		for _, uid in ipairs(type(opts.members) == "table" and opts.members or {}) do
+			if type(uid) == "number" and not members[uid] and party < LR.MAX_PARTY then members[uid] = true; party += 1 end
+		end
+		if party == 0 then return nil end
+		local hp = LR.partyHp(def, party)
+		local weakness, defenceStyle = LR.weaknessAt(def, 1)
+		local center = typeof(opts.center) == "Vector3" and opts.center or position
+		local r = newRecord({
+			id = bossId, def = def, lair = true, fight = fight, name = def.name, level = def.level, maxHp = hp, hp = hp,
+			damage = def.damage, defense = def.defense, speed = def.speed, attackCooldown = LR.ATTACK_SECONDS, passive = false, provoked = true,
+			home = position, position = position, model = model, radius = math.clamp(opts.radius or 0, 0, C.MAX_RADIUS_BONUS),
+			weakness = weakness, defenceStyle = defenceStyle, attackStyle = LR.stanceAt(def, 1, 1), swings = 0,
+			phase = 1, step = 0, nextSpecial = now + 5, nextHit = now + 2.5, telegraphs = {}, adds = {}, members = members, party = party,
+			dmg = {}, started = now, enrageAt = now + def.enrage, expires = now + def.duration, lastSeen = now,
+			seed = math.floor(tonumber(opts.seed) or 1), center = center, ground = if type(opts.ground) == "number" then opts.ground else center.Y,
+		})
+		lairFights[fight] = r
+		lairResults[fight] = nil
+		return r
+	end
+	function L.lrNextOrder(boss)
+		local best
+		for a in pairs(boss.adds) do if a.order and (not best or a.order < best) then best = a.order end end
+		return best
+	end
+	function L.lrSealed(boss) return L.lrNextOrder(boss) ~= nil end
+	function L.lrWarded(boss)
+		for a in pairs(boss.adds) do if not a.order then return true end end
+		return false
+	end
+	function L.lrRegisterAdd(boss, addId, model, position, opts)
+		local def = LR and LR.Adds[addId]
+		if not boss or not boss.alive or not boss.lair or not def then return nil end
+		local n = 0
+		for _ in pairs(boss.adds) do n += 1 end
+		if n >= LR.MAX_ADDS then return nil end
+		opts = opts or {}
+		local r = newRecord({
+			id = addId, def = def, add = true, lairAdd = true, parent = boss, fight = boss.fight, name = def.name, level = def.level,
+			maxHp = def.hp, hp = def.hp, damage = def.damage, defense = def.defense, speed = def.speed, attackCooldown = L.monsterCooldown(def.speed),
+			passive = false, provoked = true, home = position, position = position, model = model,
+			radius = math.clamp(opts.radius or 0, 0, C.MAX_RADIUS_BONUS), stationary = def.stationary == true,
+			order = if type(opts.order) == "number" then opts.order else nil,
+			weakness = def.weakness, defenceStyle = def.defenceStyle, attackStyle = def.attackStyle,
+		})
+		boss.adds[r] = true
+		return r
+	end
+	-- Members alive inside the arena, in player-list order.
+	local function lairPlayers(boss)
+		local list = {}
+		for _, player in ipairs(playerList()) do
+			local uid = uidOf(player)
+			if uid and boss.members[uid] and isAlive(player) then
+				local pos = positionOf(player)
+				if pos and flatDist(pos, boss.center) <= LR.ARENA_RANGE then table.insert(list, player) end
+			end
+		end
+		return list
+	end
+	L.lrPlayers = lairPlayers
+	-- Lair rule for one player striking r: nil = allowed, else the refusal.
+	function L.lrRefusal(player, r)
+		local boss = lairBossOf(r)
+		if not boss then return nil end
+		local uid = uidOf(player)
+		if not (uid and boss.members[uid]) then return "lair" end
+		if r.lair and L.lrSealed(r) then return "sealed" end
+		if r.lairAdd and r.order and r.order ~= L.lrNextOrder(boss) then return "order" end
+		return nil
+	end
+	local lairValidate = L.validateTarget
+	function L.validateTarget(player, target, range)
+		local ok, r, pos = lairValidate(player, target, range)
+		if not ok then return ok, r, pos end
+		local refusal = L.lrRefusal(player, r)
+		if refusal then return false, refusal end
+		return true, r, pos
+	end
+	local lairSplash = L.multishotTargets
+	function L.multishotTargets(player, primary, pos, reach, count)
+		local out = {}
+		for _, r in ipairs(lairSplash(player, primary, pos, reach, count)) do
+			if not L.lrRefusal(player, r) then table.insert(out, r) end
+		end
+		return out
+	end
+	local lairMitigate = L.mitigate
+	function L.mitigate(r, raw, style, player)
+		local dealt, tag = lairMitigate(r, raw, style, player)
+		if r.lair and L.lrWarded(r) then dealt = math.floor(dealt * LR.WARD) end
+		return dealt, tag
+	end
+	-- Damage, the last action and damage XP per UserId (kept across a rejoin).
+	local lairLand = L.landHit
+	function L.landHit(player, r, dealt, style, spellId)
+		local applied = lairLand(player, r, dealt, style, spellId)
+		local boss = lairBossOf(r)
+		local uid = boss and uidOf(player)
+		if uid and boss.members[uid] then
+			local d = boss.dmg[uid]
+			if not d then d = {damage = 0, xp = {}}; boss.dmg[uid] = d end
+			d.lastHit = env.now()
+			if r.lair then
+				d.damage += applied
+				if applied > 0 then d.xp[style] = (d.xp[style] or 0) + applied end
+			end
+		end
+		return applied
+	end
+	-- A stance attack: the prayer check, then bridge "damage" with the style.
+	function L.lrStrike(r, player, style, amount)
+		lastHurt[player] = env.now()
+		local info = L.statsFor(player)
+		local pr = type(info) == "table" and type(info.prayer) == "table" and info.prayer or nil
+		local mult = LR.prayerMult(style, pr and pr.protect)
+		local dealt = math.max(1, math.floor(amount * mult))
+		env.bridge("damage", player, {amount = dealt, style = style})
+		return dealt, mult < 1
+	end
+	function L.lrSwing(r, player)
+		local now = env.now()
+		r.nextHit = now + r.attackCooldown
+		r.lungeUntil = now + 0.25
+		r.swings += 1
+		local dealt, prayed = L.lrStrike(r, player, r.attackStyle, r.damage)
+		r.lastSwing = {player = player, style = r.attackStyle, amount = dealt, prayed = prayed}
+		local nextStyle = LR.stanceAt(r.def, r.phase, r.swings + 1)
+		if nextStyle ~= r.attackStyle then
+			r.attackStyle = nextStyle
+			r.stanceChanged = true
+		end
+		return dealt
+	end
+	function L.lrThink(r)
+		local now = env.now()
+		local best, bestD
+		for _, player in ipairs(lairPlayers(r)) do
+			local d = flatDist(positionOf(player), r.position)
+			if not bestD or d < bestD then best, bestD = player, d end
+		end
+		r.target = best
+		if not best then
+			if flatDist(r.position, r.home) > C.RETURN_RADIUS then return {kind = "leash", goal = r.home, speed = r.speed, stop = 0} end
+			return {kind = "idle"}
+		end
+		local pos = positionOf(best)
+		local reach = C.MONSTER_REACH + r.radius
+		local melee = r.attackStyle == "melee"
+		if not melee or bestD <= reach then
+			if now >= r.nextHit then
+				L.lrSwing(r, best)
+				return {kind = "strike", face = pos, target = best}
+			end
+			return {kind = "hold", face = pos}
+		end
+		local goal = pos
+		local offset = flat(pos) - flat(r.center)
+		local limit = LR.ARENA_RANGE - 4
+		if offset.Magnitude > limit then goal = r.center + offset.Unit * limit end
+		return {kind = "chase", goal = goal, speed = r.speed, face = pos, stop = reach * 0.7}
+	end
+	function L.lrAddThink(r)
+		local boss = r.parent
+		if r.stationary or not boss or not boss.alive then return {kind = "idle"} end
+		local now = env.now()
+		local best, bestD
+		for _, player in ipairs(lairPlayers(boss)) do
+			local d = flatDist(positionOf(player), r.position)
+			if not bestD or d < bestD then best, bestD = player, d end
+		end
+		r.target = best
+		if not best then return {kind = "idle"} end
+		local pos = positionOf(best)
+		local reach = C.MONSTER_REACH + r.radius
+		if bestD <= reach then
+			if now >= r.nextHit then
+				L.strike(r, best)
+				return {kind = "strike", face = pos, target = best}
+			end
+			return {kind = "hold", face = pos}
+		end
+		return {kind = "chase", goal = pos, speed = r.speed, face = pos, stop = reach * 0.7}
+	end
+	local lairThink = L.think
+	function L.think(r)
+		if r.alive and r.lair then return L.lrThink(r) end
+		if r.alive and r.lairAdd then return L.lrAddThink(r) end
+		return lairThink(r)
+	end
+	-- Removes a fight's adds and boss without a result; returns the records removed.
+	local function lairRemove(r)
+		local removed = {}
+		for add in pairs(r.adds) do table.insert(removed, add) end
+		for _, add in ipairs(removed) do L.unregister(add) end
+		if lairFights[r.fight] == r then lairFights[r.fight] = nil end
+		if records[r] then L.unregister(r) end
+		table.insert(removed, r)
+		return removed
+	end
+	function L.lrDespawn(fight)
+		local r = lairFights[fight]
+		lairResults[fight] = nil
+		if not r then return {} end
+		return lairRemove(r)
+	end
+	function L.lrKill(r)
+		local now = env.now()
+		r.hp = 0
+		local credit, credited = {}, {}
+		local uids = {}
+		for uid in pairs(r.members) do table.insert(uids, uid) end
+		table.sort(uids)
+		for _, uid in ipairs(uids) do
+			local d = r.dmg[uid]
+			local player = onlineByUserId(uid)
+			local alive = player ~= nil and env.alive(player) == true
+			local pos = alive and env.position(player) or nil
+			local info = player and L.peekStats(player)
+			local share = if d then d.damage / r.maxHp else 0
+			local ok, reason = LR.credit({party = r.party, share = share, member = true, alive = alive,
+				inside = pos ~= nil and flatDist(pos, r.center) <= LR.ARENA_RANGE, lastHit = d and d.lastHit, now = now,
+				ironman = info ~= nil and info.ironman == true})
+			credit[uid] = {share = share, damage = if d then math.floor(d.damage) else 0, ok = ok == true, reason = reason}
+			if ok then
+				table.insert(credited, player)
+				for _, style in ipairs(XP_STYLES) do
+					local dmg = d.xp[style]
+					if dmg and dmg > 0 then L.reportXp(player, r, style, dmg) end
+				end
+			end
+		end
+		r.removedAdds = lairRemove(r)
+		table.remove(r.removedAdds) -- the boss itself (its view goes with the kill)
+		lairResults[r.fight] = {result = "win", credit = credit, seconds = now - r.started, party = r.party}
+		return credited
+	end
+	local lairKill = L.kill
+	function L.kill(r)
+		if r.lair then return L.lrKill(r) end
+		if r.lairAdd then
+			r.hp = 0
+			local credited = {}
+			local boss = r.parent
+			for player, c in pairs(r.contributors) do
+				local uid = uidOf(player)
+				if c.damage > 0 and env.alive(player) and boss and uid and boss.members[uid] then table.insert(credited, player) end
+			end
+			L.unregister(r)
+			L.payXp(r, credited)
+			return credited
+		end
+		return lairKill(r)
+	end
+	-- Advances every live fight. Returns events for the runtime:
+	-- {kind = "telegraph"|"strike"|"phase"|"stance"|"enrage"|"adds"|"timeout", record, ...}.
+	function L.lrTick()
+		local now, events = env.now(), {}
+		local ids = {}
+		for fight in pairs(lairFights) do table.insert(ids, fight) end
+		table.sort(ids)
+		for _, fight in ipairs(ids) do
+			local r = lairFights[fight]
+			local def = r.def
+			if now >= r.expires then
+				local removed = lairRemove(r)
+				lairResults[fight] = {result = "timeout", credit = {}, seconds = now - r.started, party = r.party}
+				table.insert(events, {kind = "timeout", record = r, removed = removed})
+				continue
+			end
+			local phase = math.max(r.phase, LR.phaseAt(def, r.hp / r.maxHp))
+			if phase > r.phase then
+				r.phase, r.step = phase, 0
+				r.weakness, r.defenceStyle = LR.weaknessAt(def, phase)
+				local style = LR.stanceAt(def, phase, r.swings + 1)
+				if style ~= r.attackStyle then r.attackStyle, r.stanceChanged = style, true end
+				r.nextSpecial = math.min(r.nextSpecial, now + 2)
+				table.insert(events, {kind = "phase", record = r, phase = phase})
+			end
+			if r.stanceChanged then
+				r.stanceChanged = nil
+				table.insert(events, {kind = "stance", record = r, style = r.attackStyle})
+			end
+			if not r.enraged and now >= r.enrageAt then
+				r.enraged = true
+				r.damage = math.floor(def.damage * LR.ENRAGE_DAMAGE)
+				r.attackCooldown = LR.ATTACK_SECONDS * LR.ENRAGE_TEMPO
+				table.insert(events, {kind = "enrage", record = r})
+			end
+			local inside = lairPlayers(r)
+			-- Resolve telegraphs whose windup has elapsed.
+			local i = 1
+			while i <= #r.telegraphs do
+				local tg = r.telegraphs[i]
+				if now >= tg.resolveAt then
+					table.remove(r.telegraphs, i)
+					local hits = {}
+					for _, player in ipairs(inside) do
+						local pos = positionOf(player)
+						local struck
+						if tg.kind == "tiles" then
+							local cell = LR.cellAt(pos.X - r.center.X, pos.Z - r.center.Z)
+							struck = cell ~= nil and tg.charged[cell] == true
+						else
+							struck = LR.struck(tg.attack, tg.center.X, tg.center.Z, pos.X, pos.Z)
+						end
+						if struck then
+							local amount = math.floor(r.damage * tg.attack.mult)
+							lastHurt[player] = now
+							env.bridge("damage", player, {amount = amount}) -- styleless: prayers do not help
+							table.insert(hits, {player = player, amount = amount})
+						end
+					end
+					table.insert(events, {kind = "strike", record = r, telegraph = tg, hits = hits})
+				else
+					i += 1
+				end
+			end
+			-- A fight with nobody inside holds its rotation (paused while members rejoin).
+			if #inside == 0 then
+				r.nextSpecial = math.max(r.nextSpecial, now + 2)
+				r.nextHit = math.max(r.nextHit, now + 1)
+				continue
+			end
+			r.lastSeen = now
+			if now >= r.nextSpecial then
+				r.step += 1
+				local attackId = LR.attackAt(def, r.phase, r.step)
+				local a = def.attacks[attackId]
+				r.nextSpecial = now + LR.interval(def, r.phase, r.enraged)
+				if a.kind == "adds" or a.kind == "sigils" then
+					if not next(r.adds) then
+						table.insert(events, {kind = "adds", record = r, attack = a, add = a.add, count = math.min(a.count, LR.MAX_ADDS), ordered = a.kind == "sigils"})
+					end
+				else
+					lairAlert += 1
+					local tg = {id = attackId, attack = a, kind = a.kind, name = a.name, resolveAt = now + a.windup, windup = a.windup, seq = lairAlert}
+					if a.kind == "tiles" then
+						tg.cells = LR.tilePattern(r.seed, r.step + 100 * r.phase, a.count)
+						tg.charged = {}
+						for _, cell in ipairs(tg.cells) do tg.charged[cell] = true end
+						tg.center = r.center
+					else
+						local center = r.position
+						if a.kind == "disc" then
+							local victim = inside[1 + math.floor(env.rng() * #inside) % #inside]
+							center = positionOf(victim)
+							tg.victim = victim
+						end
+						tg.center = Vector3.new(center.X, r.ground, center.Z)
+						tg.radius = a.radius
+					end
+					r.alert = {seq = tg.seq, name = a.name, kind = a.kind}
+					table.insert(r.telegraphs, tg)
+					table.insert(events, {kind = "telegraph", record = r, telegraph = tg})
+				end
+			end
+		end
+		return events
+	end
+	-- Fight status for lairs.server.lua (HUD, result, notices).
+	function L.lrStatus(fight)
+		local r = lairFights[fight]
+		local result = lairResults[fight]
+		if not r then return {alive = false, result = result and result.result, outcome = result} end
+		local now = env.now()
+		local every = math.max(1, r.def.stanceEvery or 99)
+		local stances = LR.stances(r.def, r.phase)
+		local switchIn = if #stances > 1 then every - (r.swings % every) else nil
+		local adds, order = 0, L.lrNextOrder(r)
+		for _ in pairs(r.adds) do adds += 1 end
+		local phase = r.def.phases[r.phase]
+		return {alive = true, boss = r.id, hp = math.max(0, math.floor(r.hp)), maxHp = r.maxHp, phase = r.phase, phases = #r.def.phases,
+			phaseName = phase and phase.name, style = r.attackStyle, nextStyle = LR.stanceAt(r.def, r.phase, r.swings + every - (r.swings % every) + 1),
+			switchIn = switchIn, weakness = r.weakness, enraged = r.enraged == true, enrageIn = math.max(0, math.ceil(r.enrageAt - now)),
+			endsIn = math.max(0, math.ceil(r.expires - now)), elapsed = math.floor(now - r.started), warded = L.lrWarded(r), sealed = order ~= nil,
+			order = order, adds = adds, party = r.party, alert = r.alert, inside = #lairPlayers(r)}
+	end
+	local lairUnregister = L.unregister
+	function L.unregister(r, noRespawn)
+		if r.lair then
+			if not records[r] then return end
+			records[r] = nil
+			r.alive = false
+			if r.model ~= nil and byModel[r.model] == r then byModel[r.model] = nil end
+			if lairFights[r.fight] == r then lairFights[r.fight] = nil end
+			return
+		end
+		return lairUnregister(r, noRespawn)
+	end
+	local lairRemoving = L.playerRemoving
+	function L.playerRemoving(player)
+		-- r.dmg is keyed by UserId and survives; only the Player-keyed state goes.
+		return lairRemoving(player)
+	end
+	-- End Lairs section.
 	return L
 end
 
@@ -3041,6 +3487,156 @@ do
 end
 -- End World Boss section.
 
+-- Lairs section (Bossing team, runtime) -----------------------------------------
+-- lairs.server.lua builds each arena and asks ServerStorage.IsleLairCombat
+-- (BindableFunction, synchronous, never yields):
+--   "spawn"   {fight, boss, center (arena floor centre), members = {userId...},
+--              seed, tiles = {[cell] = BasePart}?}  -> {ok, reason}
+--   "status"  {fight} -> Logic.lrStatus (alive, hp, phase, stance, alert, result...)
+--   "despawn" {fight} -> removes the boss and its adds (no reward), restores tiles.
+-- Telegraphs reuse the world-boss FX (telegraph / bossStrike); a tile lattice
+-- lights its charged tile parts (Neon) for the windup instead.
+DENY_REASONS.order, DENY_REASONS.lair, DENY_REASONS.sealed = true, true, true
+local LairRT = {tiles = {}, lit = {}}
+local STANCE_COLOR = {melee = Color3.fromRGB(255, 120, 110), ranged = Color3.fromRGB(150, 225, 120), magic = Color3.fromRGB(140, 170, 255)}
+local ROMAN_ORDER = {"I", "II", "III", "IV"}
+function LairRT.paintStance(r)
+	local v = view[r]
+	if not v then return end
+	v.label.TextColor3 = STANCE_COLOR[r.attackStyle] or v.label.TextColor3
+	v.model:SetAttribute("LairStance", r.attackStyle)
+	v.model:SetAttribute("Phase", r.phase)
+end
+function LairRT.spawn(payload)
+	local Lairs = Data.Lairs
+	local def = Lairs and Lairs.boss(payload.boss)
+	local center = payload.center
+	if not def or type(payload.fight) ~= "string" or typeof(center) ~= "Vector3" then return {ok = false, reason = "invalid"} end
+	if Logic.lrRecord(payload.fight) then return {ok = false, reason = "active"} end
+	local plan = blueprint(def.body, def.color, true)
+	local position = Vector3.new(center.X, center.Y + plan.hip, center.Z + Lairs.CELL)
+	local ok, model, root, parts = pcall(buildModel, def.name, plan, {id = def.id, level = def.level, hp = Lairs.partyHp(def, #(payload.members or {})), color = def.color})
+	if not ok then
+		warn("[Combat] could not build lair boss " .. def.id .. ": " .. tostring(model))
+		return {ok = false, reason = "build"}
+	end
+	local r = Logic.lrRegister(payload.fight, def.id, model, position, {radius = plan.radius, members = payload.members, seed = payload.seed, center = center, ground = center.Y})
+	if not r then model:Destroy() return {ok = false, reason = "register"} end
+	model:SetAttribute("Lair", payload.fight)
+	model:SetAttribute("MaxHealth", r.maxHp)
+	model:SetAttribute("Health", r.hp)
+	view[r] = {model = model, root = root, plan = plan, fill = parts.fill, label = parts.label, welds = parts.welds, phase = 0}
+	LairRT.tiles[payload.fight] = type(payload.tiles) == "table" and payload.tiles or nil
+	LairRT.paintStance(r)
+	place(r)
+	model.Parent = folder
+	broadcast(position, "death", {position = position, color = def.color, boss = true, scale = plan.scale})
+	return {ok = true, hp = r.maxHp}
+end
+function LairRT.restoreTiles(fight)
+	local lit = LairRT.lit[fight]
+	LairRT.lit[fight] = nil
+	for part, look in pairs(lit or {}) do
+		if part.Parent then part.Color, part.Material = look.color, look.material end
+	end
+end
+function LairRT.lightTiles(r, tg)
+	local tiles = LairRT.tiles[r.fight]
+	if not tiles then return end
+	LairRT.restoreTiles(r.fight)
+	local lit = {}
+	for _, cell in ipairs(tg.cells) do
+		local part = tiles[cell]
+		if typeof(part) == "Instance" and part:IsA("BasePart") and part.Parent then
+			lit[part] = {color = part.Color, material = part.Material}
+			part.Color, part.Material = Color3.fromRGB(120, 200, 255), Enum.Material.Neon
+		end
+	end
+	LairRT.lit[r.fight] = lit
+end
+function LairRT.spawnAdds(event)
+	local boss = event.record
+	local Lairs = Data.Lairs
+	local def = Lairs.Adds[event.add]
+	if not def then return end
+	for i = 1, event.count do
+		local plan = blueprint(def.body, def.color, false)
+		local a = (i - 1) * 2 * math.pi / event.count + (if event.ordered then 0 else random:NextNumber(0, 0.6))
+		local spot = boss.center + Vector3.new(math.cos(a) * event.attack.radius, 0, math.sin(a) * event.attack.radius)
+		local position = Vector3.new(spot.X, boss.center.Y + plan.hip, spot.Z)
+		local name = if event.ordered then def.name .. " " .. (ROMAN_ORDER[i] or tostring(i)) else def.name
+		local ok, model, root, parts = pcall(buildModel, name, plan, {id = event.add, level = def.level, hp = def.hp, color = def.color})
+		if ok then
+			local r = Logic.lrRegisterAdd(boss, event.add, model, position, {radius = plan.radius, order = if event.ordered then i else nil})
+			if r then
+				if r.order then model:SetAttribute("LairOrder", r.order) end
+				view[r] = {model = model, root = root, plan = plan, fill = parts.fill, label = parts.label, welds = parts.welds, phase = random:NextNumber(0, 10)}
+				place(r)
+				model.Parent = folder
+				broadcast(position, "death", {position = position, color = def.color, boss = false, scale = 1})
+			else
+				model:Destroy()
+			end
+		end
+	end
+end
+-- The boss died (player attack path): its adds go, tiles return to rest.
+function LairRT.finish(r)
+	for _, add in ipairs(r.removedAdds or {}) do destroyView(add, true) end
+	r.removedAdds = nil
+	LairRT.restoreTiles(r.fight)
+end
+function LairRT.step()
+	for _, event in ipairs(Logic.lrTick()) do
+		local r = event.record
+		if event.kind == "telegraph" then
+			local tg = event.telegraph
+			if tg.kind == "tiles" then
+				LairRT.lightTiles(r, tg)
+			else
+				broadcast(r.center, "telegraph", {center = tg.center, radius = tg.radius, kind = tg.kind, windup = tg.windup, name = tg.name, boss = r.id})
+			end
+		elseif event.kind == "strike" then
+			local tg = event.telegraph
+			if tg.kind == "tiles" then
+				LairRT.restoreTiles(r.fight)
+				broadcast(r.center, "bossStrike", {center = r.center, radius = Data.Lairs.CELL, kind = "ring", hits = #event.hits})
+			else
+				broadcast(r.center, "bossStrike", {center = tg.center, radius = tg.radius, kind = tg.kind, hits = #event.hits})
+			end
+		elseif event.kind == "phase" or event.kind == "stance" or event.kind == "enrage" then
+			LairRT.paintStance(r)
+		elseif event.kind == "adds" then
+			LairRT.spawnAdds(event)
+		elseif event.kind == "timeout" then
+			for _, removed in ipairs(event.removed or {}) do destroyView(removed, false) end
+			LairRT.restoreTiles(r.fight)
+			LairRT.tiles[r.fight] = nil
+		end
+	end
+end
+do
+	local existing = ServerStorage:FindFirstChild("IsleLairCombat")
+	local fn = if existing and existing:IsA("BindableFunction") then existing else Instance.new("BindableFunction")
+	fn.Name = "IsleLairCombat"
+	fn.OnInvoke = function(op, payload)
+		if type(payload) ~= "table" then return nil end
+		if op == "spawn" then
+			return LairRT.spawn(payload)
+		elseif op == "status" then
+			return Logic.lrStatus(payload.fight)
+		elseif op == "despawn" then
+			for _, r in ipairs(Logic.lrDespawn(payload.fight)) do destroyView(r, false) end
+			LairRT.restoreTiles(payload.fight)
+			LairRT.tiles[payload.fight] = nil
+			return {ok = true}
+		end
+		return nil
+	end
+	fn.Parent = ServerStorage
+end
+-- End Lairs section (runtime).
+
 -- Player attacks -------------------------------------------------------------
 local denyAt = {} -- [player] = os.clock() before which no further "denied" notice is sent
 local function deny(player, verb, reason)
@@ -3081,6 +3677,7 @@ combatRemote.OnServerEvent:Connect(function(player, verb, target, spellId)
 			attacker = player.UserId, style = result.style, miss = result.miss == true, tag = result.tag, spell = result.spell})
 		if result.killed then destroyView(r, true) end
 		if result.killed and r.worldBoss then WB.finish(r, "win") end
+		if result.killed and r.lair then LairRT.finish(r) end -- Lairs section: adds and tiles go with the boss
 	elseif result.kind == "snare" and r then
 		broadcast(r.position, "snare", {model = r.model, position = top, duration = result.duration, attacker = player.UserId})
 	elseif result.kind == "heal" or result.kind == "teleport" then
@@ -3097,6 +3694,7 @@ combatRemote.OnServerEvent:Connect(function(player, verb, target, spellId)
 			attacker = player.UserId, style = hit.style, miss = hit.miss == true, tag = hit.tag})
 		if hit.killed then destroyView(other, true) end
 		if hit.killed and other.worldBoss then WB.finish(other, "win") end
+		if hit.killed and other.lair then LairRT.finish(other) end
 	end
 end)
 
@@ -3202,6 +3800,7 @@ RunService.Heartbeat:Connect(function(dt)
 	if animTick then animClock = 0 end
 	Logic.beginTick()
 	WB.step(step) -- World Boss section: telegraphs, phases, schedule, HUD (inside the tick snapshot)
+	LairRT.step() -- Lairs section: stances, telegraphs, tiles, adds, enrage (inside the tick snapshot)
 	for _, r in ipairs(Logic.records()) do
 		local v = view[r]
 		if v then

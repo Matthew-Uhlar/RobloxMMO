@@ -102,6 +102,7 @@ for _, m in pairs(Data.Monsters) do scan(m.drops) end
 for _, m in pairs(Data.SeaCreatures) do scan(m.drops) end
 for _, s in pairs(Data.Slayers) do for _, t in ipairs(s.tiers) do scan(t.drops) end end
 for _, b in pairs(Data.WorldBosses or {}) do scan(b.loot) end
+for _, loot in pairs(Data.Lairs and Data.Lairs.Loot or {}) do scan(loot) end -- Lairs: boss pets
 scan(Data.Agility.LapDrops)
 for _, c in ipairs(Data.Hunter.Creatures) do scan(c.drops) end
 for _, id in pairs(PD.SkillPets) do sources[id] = true end

@@ -7349,6 +7349,190 @@ end)
 MGU.refreshHud()
 end
 -- End Minigames section.
+------------------------------------------------------------------------------
+-- Lairs (Bossing team). Page: Hunt › Bosses — views Lairs (the four lair
+-- bosses: altar, fee, requirements, mechanics, kill count and personal best),
+-- Uniques (each boss's drop table with rarity labels and the uniques you have
+-- looted) and Log (recent kills, deaths). Server state: snapshot.lairs =
+-- {kc, pb, pbParty, got, deaths, log, active}. Summon at the altars (prompt
+-- lairEnter); there is no remote verb to enter from the page.
+-- In-fight HUD "LairHud": the right column under the minimap (the Observatory
+-- party / Minigame HUD slot; one cannot be in two at once) reading player
+-- attributes LairBoss / LairHud ("k=v;..."). Toasts: LairNotice / LairNoticeCount.
+------------------------------------------------------------------------------
+do
+local LRU={view="Lairs",views={"Lairs","Uniques","Log"}}
+Pages.LRU=LRU
+local function rules() return Data and type(Data.Lairs)=="table" and Data.Lairs or nil end
+local function ledger() return type(state.lairs)=="table" and state.lairs or nil end
+local STYLE_HEX={melee="FF8A7A",ranged="96E178",magic="8CAAFF"}
+local STYLE_GLYPH={melee="⚔",ranged="➶",magic="✦"}
+local WARD={melee="Ward of Fangs",ranged="Ward of Quills",magic="Ward of Glyphs"}
+function LRU.parse(text)
+	local out={}
+	if type(text)~="string" then return out end
+	for pair in text:gmatch("[^;]+") do
+		local k,v=pair:match("^([%w_]+)=(.*)$")
+		if k then out[k]=v end
+	end
+	return out
+end
+local function styleText(style) return paint((STYLE_GLYPH[style] or "").." "..string.upper(tostring(style or "?")),STYLE_HEX[style] or "F7EFDC") end
+function LRU.drawLairs(LR,l)
+	local skills=skillsOf(state)
+	local combat=skills.Combat and skills.Combat.level or 1
+	local total=0
+	for _,n in pairs(tbl(l and l.kc)) do total+=num(n,0) end
+	card({name="LairsSummary",motif="Hunt",accent=rgb("B48CFF"),title="Lair Bosses",titleColor=rgb("D8C4FF"),
+		subtitle=fmt(total).." lair kills   ·   up to "..LR.MAX_PARTY.." crewmates per lair",badge=l and nil or "SYNCING",
+		detail="Summon a lair boss at its altar (entry fee in coins). The arena opens for "..LR.WARMUP.."s so crewmates from your co-op can join, then the boss rises. Stances switch on a beat: pray the matching Ward. Dodge telegraphs and glowing tiles; slay broods first and break sigils in order.",
+		lines={paint("Fall and you wake at home with your items (the usual purse-coin loss applies). Disconnected? Rejoin within "..LR.REJOIN_SECONDS.."s to keep your place and share. Each member rolls their own loot.","A9BDC1")}})
+	for _,id in ipairs(LR.Order) do
+		local def=LR.Bosses[id]
+		local kc=num(tbl(l and l.kc)[id],0)
+		local pb=tbl(l and l.pb)[id]
+		local ok=combat>=def.combat
+		local stances={}
+		for _,s in ipairs(def.stances) do table.insert(stances,styleText(s)) end
+		local lines={}
+		for _,m in ipairs(def.mechanics) do table.insert(lines,"•  "..escape(m)) end
+		table.insert(lines,"Weak to "..styleText(def.weakness).."   ·   stances "..table.concat(stances," → ").."   ·   enrage "..LR.formatTime(def.enrage))
+		table.insert(lines,(pb and ("Personal best "..paint(LR.formatTime(pb),"7FE3CC")..paint(num(tbl(l.pbParty)[id],1)>1 and (" ("..num(tbl(l.pbParty)[id],1).." players)") or " (solo)","A9BDC1")) or paint("No kills yet","A9BDC1"))
+			.."   ·   deaths "..fmt(num(tbl(l and l.deaths)[id],0)))
+		if not ok then table.insert(lines,paint("Requires Combat "..def.combat,"E8806A")) end
+		card({name="Lair"..id,motif="Hunt",accent=rgb(def.color),item=LR.Uniques[id].weapon,title=paint(escape(def.name),def.color),
+			subtitle="Lv "..def.level.."   ·   "..escape(def.lairName).."   ·   altar on "..escape(def.isle).."   ·   "..fmt(def.fee).." coins",
+			badge="KC "..fmt(kc),badgeColor=kc>0 and gold or muted,detail=escape(def.blurb),lines=lines})
+	end
+end
+function LRU.drawUniques(LR,l)
+	local got=tbl(l and l.got)
+	for _,id in ipairs(LR.Order) do
+		local def=LR.Bosses[id]
+		local u=LR.Uniques[id]
+		local found=0
+		for _,item in ipairs({u.weapon,u.accessory,u.pet}) do if num(got[item],0)>0 then found+=1 end end
+		heading(string.upper(def.short).."    /    "..found.."/3 UNIQUES")
+		for _,d in ipairs(LR.Loot[id]) do
+			local t=LR.dropTier(d.chance)
+			local unique=LR.isUnique(d.item)
+			local have=num(got[d.item],0)
+			local odds=if d.chance>=1 then "every kill" elseif d.chance>=0.05 then math.floor(d.chance*100+.5).."%" else "1 in "..fmt(math.floor(1/d.chance+.5))
+			card({name="LairDrop"..id..d.item,item=d.item,title=paint(escape(itemName(d.item)),itemHex(d.item)),
+				subtitle=paint(string.upper(t.id),t.color).."   ·   "..odds..(d.max>1 and ("   ·   "..d.min.."-"..d.max) or ""),
+				badge=unique and (have>0 and ("×"..fmt(have)) or "NOT YET") or nil,badgeColor=have>0 and mint or muted,
+				detail=unique and escape(tbl(itemDef(d.item)).description or "") or nil})
+		end
+	end
+end
+function LRU.drawLog(LR,l)
+	heading("RECENT KILLS    /    NEWEST FIRST")
+	local log=tbl(l.log)
+	if #log==0 then card({name="LairLogEmpty",motif="Journal",title="No lair kills yet",titleColor=muted,detail="Your last "..LR.KEEP_LOG.." lair kills appear here."}) end
+	for i,e in ipairs(log) do
+		local def=type(e)=="table" and type(e.b)=="string" and LR.Bosses[e.b] or nil
+		if def then
+			card({name="LairLog"..i,motif="Hunt",accent=rgb(def.color),title=paint(escape(def.short),def.color),
+				subtitle=LR.formatTime(e.s).."   ·   "..(num(e.n,1)>1 and (e.n.." players") or "solo"),
+				lines={type(e.u)=="string" and (paint("Unique: ","A9BDC1")..paint(escape(itemName(e.u)),itemHex(e.u))) or nil}})
+		end
+	end
+end
+function LRU.draw()
+	local LR=rules()
+	if not LR then syncing("lairs") return end
+	sectionBar(LRU.views,LRU.view,function(name) LRU.view=name render() end,{small=true,prefix="LairView",maxPer=3})
+	local l=ledger()
+	if LRU.view=="Lairs" then return LRU.drawLairs(LR,l) end
+	if not l then syncing("lairs") return end
+	if LRU.view=="Uniques" then LRU.drawUniques(LR,l) else LRU.drawLog(LR,l) end
+end
+Pages.drawBosses=LRU.draw
+
+-- In-fight HUD.
+local hudFrame=make("TextButton",gui,{Name="LairHud",Text="",AutoButtonColor=false,BackgroundColor3=deep,BackgroundTransparency=.06,BorderSizePixel=0,
+	AnchorPoint=Vector2.new(1,0),Position=UDim2.new(1,-10,0,204),Size=UDim2.fromOffset(220,46),Visible=false,Selectable=false})
+rounded(hudFrame,12,UI.brass)
+local title=label(hudFrame,"",12,4,UDim.new(1,-24),16,UI.heavy,11,gold)
+title.Name="Title"
+local body=label(hudFrame,"",12,20,UDim.new(1,-24),18,bold,12,ivory)
+body.Name="Lines"
+body.RichText=true
+body.TextWrapped=true
+body.TextYAlignment=Enum.TextYAlignment.Top
+body.TextTruncate=Enum.TextTruncate.None
+hudFrame.Activated:Connect(function() if Pages.openTo then Pages.openTo("Hunt","Bosses") end end)
+LRU.hud=hudFrame
+local function bar(fraction,width)
+	local n=math.floor(math.clamp(fraction,0,1)*width+.5)
+	return string.rep("█",n)..string.rep("░",width-n)
+end
+function LRU.hudLines(h,short)
+	local lines={}
+	if h.state=="warmup" then
+		table.insert(lines,(short and "⏳ " or "Rises in ")..paint(num(tonumber(h.rise),0).."s","F3C66E"))
+		table.insert(lines,(short and "👥 " or "Party ")..escape(h.party or "1").."/"..(rules() and rules().MAX_PARTY or 3))
+		return lines
+	end
+	if h.state=="won" then
+		table.insert(lines,paint(short and "SLAIN" or "Slain in "..clock(tonumber(h.t)),"7FE3CC"))
+		table.insert(lines,(short and "↩ " or "Returning in ")..num(tonumber(h.exit),0).."s")
+		return lines
+	end
+	local a,b=tostring(h.hp or ""):match("^(%d+)/(%d+)$")
+	local frac=(tonumber(a) or 0)/math.max(1,tonumber(b) or 1)
+	table.insert(lines,(short and "♥ " or "")..paint(short and (math.floor(frac*100).."%") or (bar(frac,10).." "..math.floor(frac*100).."%"),frac>.33 and "7FE3CC" or "EF7D67"))
+	local style=h.style
+	local stance=styleText(style)
+	if h["next"] and h["in"] then stance..=paint((short and " →" or "  → ")..(STYLE_GLYPH[h["next"]] or "")..(short and "" or (" in "..h["in"])),"A9BDC1") end
+	table.insert(lines,stance)
+	if not short then
+		table.insert(lines,paint("Pray: "..(WARD[style] or "—"),"A9BDC1").."   ·   weak "..styleText(h.weak))
+		local timer=h.enr=="1" and paint("ENRAGED","EF7D67") or ("enrage "..clock(tonumber(h.enrage)))
+		table.insert(lines,timer.."   ·   "..clock(tonumber(h.t)))
+	end
+	if h.seal and h.seal~="0" then table.insert(lines,paint(short and ("⛓ "..h.seal) or ("Sealed: break sigil "..h.seal),"F3C66E"))
+	elseif h.ward=="1" then table.insert(lines,paint(short and "⛨ brood" or "Brood ward: slay the brood","F3C66E")) end
+	return lines
+end
+function LRU.refreshHud()
+	local boss=player:GetAttribute("LairBoss")
+	local h=LRU.parse(player:GetAttribute("LairHud"))
+	local LR=rules()
+	local def=nil
+	if LR and type(boss)=="string" and boss~="" then def=LR.Bosses[boss] end
+	hudFrame.Visible=def~=nil and h.boss==boss
+	if not hudFrame.Visible then return end
+	local view=gui.AbsoluteSize
+	local height=(view and view.Y>0) and view.Y or 720
+	local short=height<520
+	local width=short and 96 or 220
+	local top=8+(short and 118 or 156)+34+6
+	local pad=short and 6 or 12
+	local lines=LRU.hudLines(h,short)
+	title.Text=short and string.upper(def.short) or (string.upper(def.short)..(h.pname and h.pname~="" and ("  ·  "..string.upper(h.pname)) or ""))
+	title.TextColor3=rgb(def.color)
+	title.TextSize=short and 10 or 11
+	local titleHeight=short and 14 or 16
+	local rowHeight=short and 14 or 18
+	title.Position,title.Size=UDim2.fromOffset(pad,4),UDim2.new(1,-2*pad,0,titleHeight)
+	body.Text=table.concat(lines,"\n")
+	body.TextSize=short and 11 or 12
+	body.Position=UDim2.fromOffset(pad,4+titleHeight)
+	body.Size=UDim2.new(1,-2*pad,0,rowHeight*#lines)
+	hudFrame.Position=UDim2.new(1,-10,0,top)
+	hudFrame.Size=UDim2.fromOffset(width,4+titleHeight+rowHeight*#lines+8)
+end
+for _,name in ipairs({"LairBoss","LairHud"}) do
+	player:GetAttributeChangedSignal(name):Connect(function() LRU.refreshHud() end)
+end
+player:GetAttributeChangedSignal("LairNoticeCount"):Connect(function()
+	local message=player:GetAttribute("LairNotice")
+	if type(message)=="string" and message~="" then notify(message) end
+end)
+LRU.refreshHud()
+end
+-- End Lairs section.
 -- Commissions & Logs (Mining & Logs team). Journal › Commissions (daily slots,
 -- progress, reset timer, milestones, Forgeheart shop), Journal › Collection Log
 -- (tab filter, icon grid, counts, tab rewards, score/rank, titles) and
@@ -7977,7 +8161,7 @@ local sectionLists={
 	Hero={"Skills","Mastery","Gear","Combat","Spellbook","Prayer","Enchant","Reforge","Accessories","Pets"},
 	Satchel={"Items","Collections","Trails"},
 	Workshop={"Forge","Hearth","Cauldron","Workbench","Crafting","Workers","Home","Garden"},
-	Hunt={"Slayer","Bestiary","Dungeon","Essence","Hunter","Thieving","Minigames"},
+	Hunt={"Slayer","Bestiary","Dungeon","Essence","Bosses","Hunter","Thieving","Minigames"},
 	Ledger={"Bank","Market","Orders","Auctions","Merchant","Vendors"},
 }
 sectionOf={Journal="Bearing",Hero="Skills",Satchel="Items",Workshop="Forge",Hunt="Slayer",Ledger="Bank"}
@@ -7989,7 +8173,7 @@ local drawers={
 	Satchel={Items=Pages.drawItems,Collections=Pages.drawCollections,Trails=Pages.drawTrails},
 	Workshop={Forge=function() Pages.drawStation("Forge") end,Hearth=function() Pages.drawStation("Hearth") end,Cauldron=function() Pages.drawStation("Cauldron") end,
 		Workbench=function() Pages.drawStation("Workbench") end,Crafting=Pages.drawCrafting,Workers=Pages.drawWorkers,Home=Pages.drawHome,Garden=Pages.drawGarden},
-	Hunt={Slayer=Pages.drawSlayer,Bestiary=Pages.drawBestiary,Dungeon=Pages.drawDungeon,Essence=Pages.drawEssence,Hunter=Pages.drawHunter,Thieving=Pages.drawThieving,Minigames=Pages.drawMinigames},
+	Hunt={Slayer=Pages.drawSlayer,Bestiary=Pages.drawBestiary,Dungeon=Pages.drawDungeon,Essence=Pages.drawEssence,Hunter=Pages.drawHunter,Thieving=Pages.drawThieving,Minigames=Pages.drawMinigames,Bosses=Pages.drawBosses},
 	Ledger={Bank=Pages.drawBank,Market=Pages.drawMarket,Orders=Pages.drawOrders,Auctions=Pages.drawAuctions,Merchant=Pages.drawMerchant,Vendors=Pages.drawVendors},
 }
 local function resetTransient()
