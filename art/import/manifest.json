@@ -2,7 +2,7 @@
   "format": 1,
   "metersPerStud": 0.28,
   "axes": "Right-handed +Y up; source X/Z and local origin preserved (no rotation/reflection).",
-  "glbSha256": "631986ecfaf009aa6a6c2fd8cc65a0b9b673738055fc048b71e4825f2a7d216d",
+  "glbSha256": "4581fa1b1359b31d7c732efec76bc572fdbc606bccbb565422d5b37b7a99b630",
   "materials": 44,
   "triangles": 59823,
   "models": [
@@ -1329,19 +1329,19 @@
     {
       "name": "FenceRun",
       "source": "FenceRun.obj",
-      "sourceSha256": "3b66fd00d68693265d2a69cad56b10046413e3cb61bdee796a1f916e76b15337",
+      "sourceSha256": "3229a82d74fa8eae3e86c0e6a68a59a6fb51613648f940459d49f7b6ece22638",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "e865b970dd8d29227fa3e50b4ac2d9266f695083887cf3a29fcd6b73accc8d71",
       "vertices": 136,
       "triangles": 236,
       "boundsStuds": {
         "min": [
-          -0.763,
+          -0.182,
           0,
           -4.175
         ],
         "max": [
-          0.763,
+          0.18,
           1.95,
           4.19
         ]
@@ -1889,7 +1889,7 @@
     {
       "name": "IslandCliff",
       "source": "IslandCliff.obj",
-      "sourceSha256": "957eccc5fec4a10aa7e7d78c8acddfd4a84883e0010f8fea43ac457ef68131b5",
+      "sourceSha256": "cd83d12fc13ace64f9b6a3239cc98e5cb58c869e98b69b807ed0f14086c05982",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "e865b970dd8d29227fa3e50b4ac2d9266f695083887cf3a29fcd6b73accc8d71",
       "vertices": 807,
@@ -1902,7 +1902,7 @@
         ],
         "max": [
           10.773,
-          0.4,
+          0.52,
           10.673
         ]
       },

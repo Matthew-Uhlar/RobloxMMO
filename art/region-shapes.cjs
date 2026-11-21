@@ -29,9 +29,9 @@ module.exports = ({ world, C, PI, hash }) => {
   };
   world('IslandCliff', { smooth: 0, tint: '6B7380', fit: CLIFF_FIT, kind: 'rock', range: 1400 }, kit => {
     cliffWall(kit, 401, true);
-    // Grass lip: a turf collar 0.08 above the meadow (meadow top = fit top + 0.3)
-    // that overhangs the rim and droops into tufts.
-    kit.lathe([[9.72, .38], [10.05, .4], [10.45, .3], [10.55, .02], [10.35, -.35], [10.05, -.55], [9.9, -.2]], {
+    // Grass lip: a low turf curb on the meadow's outer edge (meadow top = fit
+    // top + 0.3) that overhangs the rim and droops into tufts.
+    kit.lathe([[9.98, .46], [10.2, .52], [10.45, .38], [10.55, .02], [10.35, -.35], [10.05, -.55], [9.9, -.2]], {
       n: 40, phase: .05, capStart: false, jitter: (level, i) => level >= 3 ? 1 + (hash(level, i, 402) - .5) * .06 : 1,
       lift: (level, i) => level === 4 || level === 5 ? -(hash(i, 5, 403) * .5) : 0,
       color: (level, i) => level <= 1 ? (hash(i, 7, 404) < .4 ? C.MOSS : C.LEAF) : level <= 3 ? C.MOSS : C.LEAF_DARK,
@@ -254,7 +254,7 @@ module.exports = ({ world, C, PI, hash }) => {
   world('FenceRun', { smooth: 20, tint: '8A6240', fit: [[-.3, 0, -4], [.3, 1.9, 4]], kind: 'prop' }, kit => {
     for (let i = 0; i < 5; i++) kit.group({ pos: [0, 0, -4 + i * 2] }, () => kit.lathe([[.18, 0], [.17, 1.65], [.12, 1.9], [0, 1.95]], { n: 5, phase: i, capStart: true, color: l => l === 1 ? TINT_DARK : TINT, jitter: wave(510 + i, .06) }));
     for (const y of [.65, 1.35]) kit.tube([[0, y, -4], [.04, y - .05, -2], [-.03, y + .03, 0], [.03, y - .04, 2], [0, y, 4]], .09, { n: 4, color: (i, k) => k % 2 ? TINT : TINT_LIGHT });
-    for (const z of [-3, 1]) kit.box(0, 1, z, .06, 1.9, .14, TINT_DARK, .9);
+    for (const z of [-3.8, .2]) kit.tube([[0, .25, z], [0, 1.5, z + 1.6]], .06, { n: 4, color: TINT_DARK });
   });
   world('CanopyTree', { smooth: 50, tint: '5E9C4E', kind: 'tree' }, kit => {
     kit.tube([[0, -.1, 0], [.2, 2.5, .1], [-.1, 5.2, 0], [.1, 8.2, .1]], [.7, .52, .4, .22], { n: 7, capStart: true, color: (i, k) => k % 3 === 0 ? C.BARK_DARK : C.BARK });

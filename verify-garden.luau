@@ -586,7 +586,8 @@ local function partCount(root)
 	return count
 end
 local baseParts = partCount(garden)
-ok(baseParts >= 40 and baseParts <= 90, "garden islet part budget (" .. baseParts .. " parts)")
+-- World Art (§30): forged hull + 4-part bridge spans dropped the islet from ~60 to ~36 parts.
+ok(baseParts >= 25 and baseParts <= 90, "garden islet part budget (" .. baseParts .. " parts)")
 for _, obj in garden:GetDescendants() do if obj:IsA("BasePart") then assert(obj.Anchored, "garden parts anchored") end end
 checks += 1
 -- Solid garden geometry never intersects solid home geometry (floors excluded).

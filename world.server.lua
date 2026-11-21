@@ -347,6 +347,12 @@ end
 -- A floating island: a grass Meadow (top = pos.Y) over a slate foundation.
 -- The foundation top sits 0.3 studs inside the meadow, so no two upward faces
 -- share a plane (the old stack z-fought across every island top).
+-- World Art (§30): the hull is two forged meshes instead of ~20 primitive
+-- slabs: the foundation carries the cliff wall (strata, grass lip, vines) and
+-- one "Island underside" cylinder carries the keel (tapered strata, hanging
+-- spires, roots / crystals / ember seams). Both stay visible as the fallback.
+local HULL_KEEL={["Gloomhollow Caverns"]="IslandKeelCrystal",["Tempest Spire"]="IslandKeelCrystal",["The Shattered Crown"]="IslandKeelCrystal",
+	["Cinder Shelf"]="IslandKeelEmber",["Brassfall Quarry"]="IslandKeelEmber"}
 local function island(name,pos,r,opts)
 	opts=opts or {}
 	local m=Instance.new("Model")
@@ -354,31 +360,13 @@ local function island(name,pos,r,opts)
 	m.Parent=opts.parent or islandsFolder
 	local stone,stratum=opts.stone or rock,opts.stratum or shale
 	disk(m,"Meadow",pos-V(0,.25,0),r+.1,.5,opts.top or turf,opts.ground or Enum.Material.Grass,true)
-	disk(m,"Floating foundation",pos-V(0,3.3,0),r-.4,6,stone,ST,true)
-	disk(m,"Mineral stratum",pos-V(0,7.4,0),r*.82,3,stratum,ST,false)
-	disk(m,"Lower basalt",pos-V(0,11,0),r*.58,5,stone,ST,false)
-	-- Fractured cliff skirt: irregular slabs under the rim break the disc outline.
-	local count=math.clamp(math.floor(r/5),8,18)
-	for i=1,count do
-		local a=(i+hash(i,r)*.6)*2*math.pi/count
-		local radial=V(math.cos(a),0,math.sin(a))
-		local h=7+hash(i,2)*5
-		local size=V(r*.16+5,h,r*.12+3)
-		-- Sink by the tilt's rise too, so no corner pokes through the meadow.
-		local spot=pos+radial*(r*.95)-V(0,h/2+1.4+size.X*.05+size.Z*.04,0)
-		local slab=part(m,"Fractured cliff",size,CFrame.new(spot)*CFrame.Angles(0,-a+math.pi/2,0)*CFrame.Angles(.08*(i%2*2-1),0,.1),i%2==0 and stone or stratum,ST,false)
-		if i%4==0 then meshSlot(slab,"CliffRock") end
-		if i%5==0 then gem(m,"Aether vein",spot-V(0,h/2,0),V(1.6,6,1.6),opts.vein or mint,a) end
-	end
-	-- Keel: rock shards hanging under the island.
-	local keel=opts.keel or (if r>=60 then 5 elseif r>=25 then 4 else 3)
-	for i=1,keel do
-		local a=i*2*math.pi/keel+hash(i,7)
-		local d=r*(.15+.25*hash(i,3))
-		local h=r*.3+6
-		local shard=part(m,"Keel rock",V(r*.22,h,r*.2),CFrame.new(pos+V(math.cos(a)*d,-13.5-h*.35,math.sin(a)*d))*CFrame.Angles(.12,a,.14),i%2==0 and stone or darken(stone,.2),ST,false)
-		if i==1 then meshSlot(shard,"CliffRock") end
-	end
+	local foundation=disk(m,"Floating foundation",pos-V(0,3.3,0),r-.4,6,stone,ST,true)
+	local grassy=(opts.ground or Enum.Material.Grass)==Enum.Material.Grass or opts.ground==LEAF
+	meshSlot(foundation,opts.cliff or (if grassy then "IslandCliff" else "IslandCliffBare"),stone)
+	-- Keel depth grows with the island (deep spires under the big isles).
+	local depth=math.clamp(r*.55+6,10,62)
+	local keel=disk(m,"Island underside",pos-V(0,6.2+depth/2,0),(r-.4)*.92,depth,darken(stone,.1),ST,false)
+	meshSlot(keel,opts.keelShape or HULL_KEEL[name] or "IslandKeel",stone)
 	-- Shoreline: weathered ledges beyond the rim (below the meadow top) and a
 	-- few boulders just inside it. Openings (bridges, docks) stay clear.
 	local clear={}
@@ -514,31 +502,35 @@ local function lamp(parent,pos)
 	light(lantern,warm,1.2,18,{kind="SpotLight",face=Enum.NormalId.Bottom,angle=120,night=true})
 	return m
 end
-local function bridge(parent,a,b)
+-- Bridges (World Art §30): the collider deck, two invisible guards and one
+-- invisible slot box carrying the span mesh: "RopeBridge" (rope-and-plank with
+-- sagging handrails), "StoneArchBridge" (paved arch with balustrades) or
+-- "CrystalBridge" (glass light-bridge; Tint = the region's crystal colour).
+-- The deck stays visible (dark) under the planks as the fallback and shadow gap.
+local BRIDGE_STYLE={RopeBridge={top=3.6,low=1},StoneArchBridge={top=3.4,low=3.4},CrystalBridge={top=3.8,low=1.6}}
+local function bridge(parent,a,b,style,tint)
+	style=if BRIDGE_STYLE[style] then style else "RopeBridge"
 	local dir=(b-a).Unit
 	-- Decks reach 1.5 studs onto each meadow (their top is above it).
 	a,b=a-dir*1.5,b+dir*1.5
 	local side=V(-dir.Z,0,dir.X)
+	local length=(b-a).Magnitude
 	-- Deck top 0.08 above both meadows so its ends never share a plane with them.
 	local cf=CFrame.lookAt((a+b)/2-V(0,.17,0),b-V(0,.17,0))
-	part(parent,"Continuous bridge deck",V(7,.5,(b-a).Magnitude),cf,timber,WO,true)
-	local count=math.ceil((b-a).Magnitude/4)
-	for i=0,count do
-		local p=a+(b-a)*i/count+V(0,.1,0)
-		part(parent,"Cross tie",V(7.3,.14,.5),CFrame.lookAt(p,p+dir),brass,WO,false)
-		if i%2==0 or i==count then
-			for _,s in ipairs({-1,1}) do
-				local post=block(parent,"Railing post",p+side*3.7*s+V(0,1.2,0),V(.38,3,.38),ink,WO,false)
-				if i%4==0 then meshSlot(post,"BridgePost") end
-			end
-		end
-	end
+	local deck=part(parent,"Continuous bridge deck",V(7,.5,length),cf,if style=="StoneArchBridge" then C("6F6A62") else darken(timber,.45),if style=="StoneArchBridge" then ST else WO,true)
+	deck:SetAttribute("BridgeStyle",style)
 	for _,s in ipairs({-1,1}) do
-		beam(parent,"Guide rail",a+side*3.7*s+V(0,2.3,0),b+side*3.7*s+V(0,2.3,0),.27,brass,SM)
 		-- Invisible collider behind the rail: the void is only crossed on the deck.
-		local guard=part(parent,"Bridge guard",V(.4,7,(b-a).Magnitude+1),CFrame.lookAt((a+b)/2+side*3.9*s+V(0,3.5,0),b+side*3.9*s+V(0,3.5,0)),cream,SM,true)
+		local guard=part(parent,"Bridge guard",V(.4,7,length+1),CFrame.lookAt((a+b)/2+side*3.9*s+V(0,3.5,0),b+side*3.9*s+V(0,3.5,0)),cream,SM,true)
 		guard.Transparency,guard.CastShadow=1,false
 	end
+	local dims=BRIDGE_STYLE[style]
+	local top=(a.Y+b.Y)/2+.08
+	local centre=(a+b)/2
+	local span=part(parent,"Bridge span",V(8.4,dims.top+dims.low,length),CFrame.lookAt(V(centre.X,top+(dims.top-dims.low)/2,centre.Z),V(b.X,top+(dims.top-dims.low)/2,b.Z)),cream,SM,false)
+	span.Transparency,span.CastShadow,span.CanQuery=1,false,false
+	meshSlot(span,style,tint)
+	return deck,span
 end
 
 -------------------------------------------------------------------------------
@@ -754,8 +746,8 @@ local grove = island("Mosswake Grove",G,GR_R,{region="Meadow",gaps={0,HALF}})
 local mine = island("Brassfall Quarry",Q,Q_R,{top=C("9C9682"),region="Quarry",gaps={math.pi,-HALF},ground=GR})
 local wild = island("Warden Reach",W,W_R,{top=C("7C8498"),region="Hub",gaps={HALF}})
 bridge(hub,V(-HUB_R,0,0),G+V(GR_R,0,0))
-bridge(hub,V(HUB_R,0,0),Q-V(Q_R,0,0))
-bridge(hub,V(0,0,-HUB_R),W+V(0,0,W_R))
+bridge(hub,V(HUB_R,0,0),Q-V(Q_R,0,0),"StoneArchBridge")
+bridge(hub,V(0,0,-HUB_R),W+V(0,0,W_R),"StoneArchBridge")
 anchor(hub,"Waypoint_Bridge_MosswakeGrove",V(-HUB_R+6,0,0),G)
 anchor(hub,"Waypoint_Bridge_BrassfallQuarry",V(HUB_R-6,0,0),Q)
 anchor(hub,"Waypoint_Bridge_WardenReach",V(0,0,-HUB_R+6),W)
@@ -1681,7 +1673,7 @@ end
 -- Guild Terrace (Hub): crafting stations, the Guild Hall and the Skyway.
 -------------------------------------------------------------------------------
 local terrace=regionIsle("Hub","Guild Terrace",GT,GT_R,{top=C("A7B08A"),vein=brass,gaps={-HALF}})
-bridge(hub,V(0,0,HUB_R),GT-V(0,0,GT_R))
+bridge(hub,V(0,0,HUB_R),GT-V(0,0,GT_R),"StoneArchBridge")
 anchor(hub,"Waypoint_Bridge_GuildTerrace",V(0,0,HUB_R-6),GT)
 do
 path(terrace,GT-V(0,0,GT_R-2),GT-V(0,0,20),10)
@@ -2195,8 +2187,8 @@ local function arena(name,center,gapAngle,top,accent)
 end
 local east=arena("Sovereign's Dais",EAST,math.pi,C("8A7E58"),gold)
 local west=arena("Eclipse Roost",WEST,0,C("4C4166"),violet)
-bridge(crown,SC+V(SC_R,0,0),EAST-V(ARENA_R,0,0))
-bridge(crown,SC-V(SC_R,0,0),WEST+V(ARENA_R,0,0))
+bridge(crown,SC+V(SC_R,0,0),EAST-V(ARENA_R,0,0),"CrystalBridge",gold)
+bridge(crown,SC-V(SC_R,0,0),WEST+V(ARENA_R,0,0),"CrystalBridge",C("B59CFF"))
 anchor(crown,"WorldBoss_Aurelith",EAST,SC)
 anchor(crown,"WorldBoss_Nyxwyrm",WEST,SC)
 anchor(crown,"Waypoint_Bridge_SovereignsDais",SC+V(SC_R-6,0,0),EAST)
@@ -3757,6 +3749,283 @@ do
 	end
 end
 -- End Crafting section.
+
+-------------------------------------------------------------------------------
+-- World Art & Regions (World Art & Regions team; self-contained section).
+-- docs/DEPTH-CONTRACT.md §30. Data: Data.RegionArt.
+--   * Identity: every static island Model carries IsleTitle / IsleEpithet /
+--     RegionTitle / RegionEpithet / RegionAccent / Ambience / AmbientSound
+--     (regions.client.lua shows the entry banner and the local ambience).
+--   * Landmarks: one per region. New centrepieces are forged meshes on one
+--     collider host each (Compass Spire, Sunwheel Mill + spinning sails, Ember
+--     Caldera, Sunken Observatory, Voidglass Spire); existing centrepieces
+--     (Aetherheart, Shoal Light, Storm Crown, Broken Crown) are adopted. Each
+--     gets a "Survey stone" (prompt IsleAction "landmark", IsleItem <id>,
+--     IsleRegion for gated regions) and Anchor_Waypoint_Landmark_<id>.
+--     Landmark hosts carry Landmark = <id>.
+--   * Regional folk: Anchor_NPC_<Role> for every Data.Townsfolk.RegionFolkOrder role.
+--   * Prop kit dressing (fences, hay carts, flowers, canopy trees, banners,
+--     lanterns, cargo, glowshrooms, coral) and waterfalls (Beam + mist on the
+--     cliff; no parts). Spots are searched clear of every existing part,
+--     spawn marker and Aether Mote, so later sections still find room.
+-------------------------------------------------------------------------------
+-- (A function body, not a do-block: the script's top level is near Luau's 200-register limit.)
+;(function()
+	local RA=Data.RegionArt
+	if RA then
+		local FLOOR={Meadow=true,["Floating foundation"]=true,["Island underside"]=true,["Edge guard"]=true,["Shore ledge"]=true,Path=true,Wildflowers=true,
+			["Plaza ring"]=true,["Compass court"]=true,["Harbor plaza"]=true,["Harbor seal"]=true,["Pond bank"]=true}
+		local taken={}
+		-- Fixed things this section must keep clear of: spawn markers and motes.
+		local keepOut={}
+		local spawns=workspace:FindFirstChild("MonsterSpawns")
+		for _,m in ipairs(spawns and spawns:GetChildren() or {}) do
+			if m:IsA("BasePart") then table.insert(keepOut,{m.CFrame.Position,(m:GetAttribute("Radius") or 0)+12}) end
+		end
+		local EX=Data.Exploration
+		for _,mote in ipairs(EX and EX.Motes or {}) do
+			local isle=islandsFolder:FindFirstChild(mote.isle)
+			local c=isle and isle:GetAttribute("IslandCenter")
+			if c and type(mote.at)=="table" then table.insert(keepOut,{c+V(mote.at[1],mote.at[2],mote.at[3]),4}) end
+		end
+		local function blocked(host,pos,radius)
+			for _,q in ipairs(taken) do if V(pos.X-q[1].X,0,pos.Z-q[1].Z).Magnitude<radius+q[2] then return true end end
+			for _,k in ipairs(keepOut) do if V(pos.X-k[1].X,0,pos.Z-k[1].Z).Magnitude<radius+k[2] then return true end end
+			for _,obj in ipairs(host:GetDescendants()) do
+				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
+					local cf,sz=obj.CFrame,obj.Size
+					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
+					local c=cf.Position
+					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
+					local dz=math.max(0,math.abs(pos.Z-c.Z)-ext("Z"))
+					local ey=ext("Y")
+					if dx*dx+dz*dz<radius*radius and c.Y+ey>pos.Y+.3 and c.Y-ey<pos.Y+14 then return true end
+				end
+			end
+			return false
+		end
+		-- First clear ground spot on `host` near `angle` (degrees), searching
+		-- outward rings; nil when the island has no room (the caller skips).
+		local function spot(host,angle,radius,fractions)
+			local IC,R=host:GetAttribute("IslandCenter"),host:GetAttribute("IslandRadius")
+			for _,f in ipairs(fractions or {.5,.4,.6,.3,.68,.2,.75}) do
+				for k=0,23 do
+					local a=math.rad(angle+(if k%2==0 then 1 else -1)*math.ceil(k/2)*15)
+					local pos=IC+V(math.cos(a),0,math.sin(a))*math.min(R*f,R-radius-6)
+					if not blocked(host,pos,radius) then table.insert(taken,{pos,radius}) return pos end
+				end
+			end
+			return nil
+		end
+		-- A spot near a world point (rings around it), on its island.
+		local function near(host,target,radius,from,to)
+			local IC,R=host:GetAttribute("IslandCenter"),host:GetAttribute("IslandRadius")
+			for d=from or 6,to or 30,4 do
+				for k=0,15 do
+					local a=k*math.pi/8+d*.37
+					local pos=V(target.X+math.cos(a)*d,IC.Y,target.Z+math.sin(a)*d)
+					if V(pos.X-IC.X,0,pos.Z-IC.Z).Magnitude<R-radius-6 and not blocked(host,pos,radius) then table.insert(taken,{pos,radius}) return pos end
+				end
+			end
+			return nil
+		end
+		local function isle(name) return islandsFolder:FindFirstChild(name) end
+		local function art(model) local m=group("Region art",model); m:SetAttribute("RegionArt",true); return m end
+		local hex=C
+
+		-- Identity attributes on every static island.
+		for _,model in ipairs(islandsFolder:GetChildren()) do
+			local region=model:GetAttribute("RegionId")
+			local ra=region and RA.Regions[region]
+			if ra then
+				model:SetAttribute("IsleTitle",model.Name)
+				model:SetAttribute("IsleEpithet",RA.Isles[model.Name] or ra.epithet)
+				model:SetAttribute("RegionTitle",ra.title)
+				model:SetAttribute("RegionEpithet",ra.epithet)
+				model:SetAttribute("RegionAccent",hex(ra.palette[2]))
+				model:SetAttribute("Ambience",ra.ambience.particles)
+				model:SetAttribute("AmbientSound",ra.ambience.sound or "")
+			end
+		end
+
+		-- Landmarks.
+		local function survey(model,l,pos,toward)
+			local stone=block(model,"Survey stone",pos+V(0,.6,0),V(2.2,1.2,1.8),lighten(rock,.15),ST,true)
+			stone.CFrame=facing(stone.CFrame.Position,toward)
+			meshSlot(stone,"Rock")
+			local q=prompt(stone,"Survey",l.name,"landmark",l.id)
+			q.MaxActivationDistance=10
+			local def=Data.RegionById[l.region]
+			if def and next(def.requires) then q:SetAttribute("IsleRegion",l.region) end
+			anchor(model,"Waypoint_Landmark_"..l.id,pos+(toward-pos).Unit*-3*V(1,0,1),toward)
+			return stone
+		end
+		local LANDMARK_BUILD={
+			-- shape host: footprint radius, host size (studs), solid, angle hint
+			CompassSpire={radius=6,size=V(7,28,7),angle=150},
+			Sunwheel={radius=10,size=V(14.5,28.5,14.5),angle=90},
+			EmberCaldera={radius=11,size=V(19.6,6.6,19.6),angle=0},
+			SunkenObservatory={radius=9,size=V(13.8,10.8,13.8),angle=200,sink=1.5},
+			VoidglassSpire={radius=6,size=V(9.6,23,9.6),angle=300},
+		}
+		local ADOPT={AetherheartTree="AetherheartTree",ShoalLight="Lighthouse",StormCrown="StormSpire",BrokenCrown="Obelisk"}
+		local built={}
+		for _,region in ipairs(RA.Order) do
+			local ra=RA.Regions[region]
+			local l=ra.landmark
+			local host=isle(l.isle)
+			if host then
+				local model=art(host)
+				model.Name="Landmark "..l.name
+				local spec=LANDMARK_BUILD[l.id]
+				local accent=hex(ra.palette[2])
+				local centre
+				if spec then
+					local pos=spot(host,spec.angle,spec.radius)
+					if pos then
+						local body=part(model,l.name,spec.size,CFrame.new(pos+V(0,spec.size.Y/2-(spec.sink or 0),0))*CFrame.Angles(0,math.rad(spec.angle+90),0),lighten(rock,.1),ST,true)
+						meshSlot(body,l.shape,accent,false,"Uniform")
+						body:SetAttribute("Landmark",l.id)
+						centre=pos
+						built[l.id]=body
+						if l.id=="Sunwheel" then
+							-- Sails: an invisible host the client spins locally (tag RegionSpin).
+							local hub=body.CFrame*CFrame.new(0,15.4*1.4-spec.size.Y/2,-6.6)
+							local sails=part(model,"Sunwheel sails",V(35,35,2.4),hub,cream,SM,false)
+							sails.Transparency,sails.CastShadow,sails.CanQuery=1,false,false
+							meshSlot(sails,"WindmillSails",hex("E9DFC7"),false,"Uniform")
+							sails:SetAttribute("SpinRate",.35)
+							Tags:AddTag(sails,"RegionSpin")
+						elseif l.id=="EmberCaldera" then
+							local smoke=Instance.new("ParticleEmitter")
+							smoke.Name="Caldera smoke"
+							smoke.Rate,smoke.LightEmission=3,.1
+							smoke.Lifetime,smoke.Speed=NumberRange.new(6,9),NumberRange.new(3,5)
+							smoke.SpreadAngle=Vector2.new(12,12)
+							smoke.Size=NumberSequence.new(3,9)
+							smoke.Color=ColorSequence.new(hex("6B5E57"))
+							smoke.Parent=body
+							light(body,hex("FF8A3D"),1.2,26)
+						elseif l.id=="VoidglassSpire" then
+							light(body,hex("B59CFF"),1,24)
+						end
+					end
+				else
+					-- Adopt an existing centrepiece on this island (by mesh slot).
+					local want=ADOPT[l.id]
+					for _,obj in ipairs(host:GetDescendants()) do
+						if obj:IsA("BasePart") and want and obj:GetAttribute("Shape")==want then
+							obj:SetAttribute("Landmark",l.id)
+							centre=V(obj.CFrame.Position.X,host:GetAttribute("IslandCenter").Y,obj.CFrame.Position.Z)
+							built[l.id]=obj
+							break
+						end
+					end
+					centre=centre or host:GetAttribute("IslandCenter")
+				end
+				if centre then
+					local at=near(host,centre,2.5,if spec then spec.radius+3 else 8,44) or near(host,centre,2.5,46,70) or spot(host,90,2.5)
+					if at then survey(model,l,at,centre) end
+				end
+			end
+		end
+
+		-- Regional folk anchors: near their region's landmark when it has room,
+		-- else around the island centre.
+		local FOLK_ISLE={Hub="Compass Quay",Meadow="Meadow Reach",Quarry="Brassfall Quarry",Skyreach="Skyreach",Windpine="Windpine Grove",
+			Gloomhollow="Gloomhollow Caverns",Tidewater="Tidewater Shoals",Tempest="Tempest Spire",ShatteredCrown="The Shattered Crown"}
+		local FOLK_ISLE_ROLE={CalderaWatcher="Cinder Shelf",WarpKeeper="Compass Quay"}
+		for i,f in ipairs(RA.Folk) do
+			local host=isle(FOLK_ISLE_ROLE[f.role] or FOLK_ISLE[f.region])
+			if host then
+				local l=RA.Regions[f.region].landmark
+				local target=built[l.id] and built[l.id].CFrame.Position
+				local pos
+				if f.role=="WarpKeeper" then pos=near(host,V(56,0,60),2.5,22,60) end
+				if not pos and target and host:IsAncestorOf(built[l.id]) then pos=near(host,target,2.5,14,46) end
+				pos=pos or spot(host,i*47,2.5,{.35,.45,.25,.55,.6})
+				if pos then anchor(host,"NPC_"..f.role,pos,host:GetAttribute("IslandCenter")+V(0,0,.01)) end
+			end
+		end
+
+		-- Prop kit dressing per island: {shape, count, size, solid, tint}.
+		local DRESS={
+			["Meadow Reach"]={{"FenceRun",6,V(.6,1.9,8),true,"8A6240"},{"HayCart",3,V(2.8,2.9,5.2),true},{"FlowerPatch",4,V(3.8,1.3,3.8),false,"E9C46A"},{"BannerPole",2,V(2.2,8.1,1),true,"E9C46A"}},
+			["Mosswake Grove"]={{"FlowerPatch",3,V(3.8,1.3,3.8),false,"C9A0DC"},{"FenceRun",3,V(.6,1.9,8),true,"7A5636"}},
+			["Compass Quay"]={{"BannerPole",4,V(2.2,8.1,1),true,"DBAD65"},{"CargoStack",3,V(4.2,2.8,3),true},{"TwinLantern",3,V(2.8,5.3,.9),true,"FFE08A"}},
+			["Guild Terrace"]={{"BannerPole",3,V(2.2,8.1,1),true,"C15557"}},
+			["Brassfall Quarry"]={{"CargoStack",3,V(4.2,2.8,3),true},{"BannerPole",2,V(2.2,8.1,1),true,"FF8A3D"}},
+			["Cinder Shelf"]={{"CargoStack",2,V(4.2,2.8,3),true}},
+			["Skyreach"]={{"BannerPole",3,V(2.2,8.1,1),true,"39898E"},{"TwinLantern",2,V(2.8,5.3,.9),true,"BFF4FF"}},
+			["Windpine Grove"]={{"CanopyTree",5,V(7.6,9.6,7.6),true,"5E9C4E"},{"FlowerPatch",3,V(3.8,1.3,3.8),false,"E8D98E"}},
+			["Gloomhollow Caverns"]={{"Glowshroom",6,V(3.6,3.7,3.2),false,"7FD3C4"}},
+			["Tidewater Shoals"]={{"CoralFan",5,V(3,3.4,2.4),false,"E76F7B"},{"CargoStack",2,V(4.2,2.8,3),true}},
+			["Tempest Spire"]={{"BannerPole",2,V(2.2,8.1,1),true,"BFD7FF"}},
+			["The Shattered Crown"]={{"BannerPole",2,V(2.2,8.1,1),true,"F2D27A"}},
+		}
+		local dressed=0
+		for name,list in pairs(DRESS) do
+			local host=isle(name)
+			if host then
+				local model=art(host)
+				model.Name="Prop kit"
+				for li,entry in ipairs(list) do
+					local shape,count,size,solid,tint=entry[1],entry[2],entry[3],entry[4],entry[5]
+					for k=1,count do
+						local pos=spot(host,(li*97+k*61)%360,math.max(size.X,size.Z)/2+1,{.62,.5,.72,.4,.3})
+						if pos then
+							local p=part(model,shape,size,CFrame.new(pos+V(0,size.Y/2,0))*CFrame.Angles(0,hash(k,li)*math.pi*2,0),if solid then darken(timber,.2) else C("6C9A58"),WO,solid)
+							meshSlot(p,shape,tint and hex(tint),false,"Uniform")
+							dressed+=1
+						end
+					end
+				end
+			end
+		end
+
+		-- Waterfalls spilling off the cliffs: a scrolling Beam and a mist puff
+		-- (no parts; Beam textures animate on the client by themselves).
+		local FALLS={{"Meadow Reach",200},{"Mosswake Grove",160},{"Windpine Grove",250},{"Tidewater Shoals",60},{"Compass Quay",205},{"Compass Quay",320}}
+		for _,fall in ipairs(FALLS) do
+			local host=isle(fall[1])
+			local foundation=host and host:FindFirstChild("Floating foundation")
+			if foundation then
+				local r=host:GetAttribute("IslandRadius")
+				local a=math.rad(fall[2])
+				local out=V(math.cos(a),0,math.sin(a))
+				local top=Instance.new("Attachment")
+				top.Name="Waterfall lip"
+				top.CFrame=foundation.CFrame:ToObjectSpace(CFrame.new(host:GetAttribute("IslandCenter")+out*(r+.3)-V(0,.1,0)))
+				top.Parent=foundation
+				local foot=Instance.new("Attachment")
+				foot.Name="Waterfall foot"
+				foot.CFrame=foundation.CFrame:ToObjectSpace(CFrame.new(host:GetAttribute("IslandCenter")+out*(r+5)-V(0,math.clamp(r*.9,40,90),0)))
+				foot.Parent=foundation
+				local water=Instance.new("Beam")
+				water.Name="Waterfall"
+				water.Attachment0,water.Attachment1=top,foot
+				water.Texture="rbxasset://textures/particles/smoke_main.dds"
+				water.TextureMode,water.TextureLength,water.TextureSpeed=Enum.TextureMode.Wrap,6,-1.6
+				water.Width0,water.Width1=6,10
+				water.FaceCamera,water.Segments,water.LightEmission,water.LightInfluence=true,6,.2,.6
+				water.Color=ColorSequence.new(hex("BFEFFF"),hex("6FC3DF"))
+				water.Transparency=NumberSequence.new(.15,.7)
+				water.Parent=foundation
+				local mist=Instance.new("ParticleEmitter")
+				mist.Name="Waterfall mist"
+				mist.Rate,mist.LightEmission=4,.2
+				mist.Lifetime,mist.Speed=NumberRange.new(3,5),NumberRange.new(2,4)
+				mist.SpreadAngle=Vector2.new(60,60)
+				mist.Size=NumberSequence.new(4,10)
+				mist.Transparency=NumberSequence.new(.6,1)
+				mist.Color=ColorSequence.new(hex("E6F7FF"))
+				mist.Parent=foot
+			end
+		end
+		islandsFolder:SetAttribute("RegionArtProps",dressed)
+	end
+end)()
+-- End World Art & Regions section.
 
 -------------------------------------------------------------------------------
 -- Exploration & Factions (Exploration & Factions team; self-contained section).
