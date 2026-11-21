@@ -842,6 +842,8 @@ end)
 do
 	local attackLocal = ReplicatedStorage:FindFirstChild("IsleAttackLocal") or make("BindableEvent", ReplicatedStorage, {Name = "IsleAttackLocal"})
 	attackLocal.Event:Connect(function(model)
+		-- "cancel": the overlay is driving a prompt / walking elsewhere (§34 M2).
+		if model == "cancel" then S.pendingAttack = nil return end
 		if typeof(model) ~= "Instance" or not canTarget(model) then return end
 		setTarget(model)
 		S.pendingAttack = nil
@@ -951,7 +953,19 @@ function SP.new()
 		RichText = true})
 	local tag = make("TextLabel", board, {Name = "Tag", BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromScale(0.5, 0.68),
 		Size = UDim2.new(1, 0, 0, 14), Font = heavy, TextSize = 12, TextColor3 = gold, TextStrokeTransparency = 0.1, TextStrokeColor3 = deep, Text = "", ZIndex = 3})
-	return {anchor = anchor, board = board, burst = burst, badge = badge, edge = edge, value = value, tag = tag, token = 0}
+	return {anchor = anchor, board = board, burst = burst, badge = badge, edge = edge, value = value, tag = tag, token = 0, tweens = {}}
+end
+-- Stops a pooled object's running tweens (a reused splat or bar must not keep
+-- fading from its previous life).
+local function stopTweens(o)
+	for _, tween in ipairs(o.tweens) do pcall(function() tween:Cancel() end) end
+	table.clear(o.tweens)
+end
+local function play(o, object, info, goals)
+	local tween = TweenService:Create(object, info, goals)
+	table.insert(o.tweens, tween)
+	tween:Play()
+	return tween
 end
 function SP.take()
 	local s = table.remove(SP.free)
@@ -973,6 +987,7 @@ end
 function SP.show(position, style, model)
 	local s = SP.take()
 	s.token += 1
+	stopTweens(s)
 	local token = s.token
 	local offset = Vector3.zero
 	if model then
@@ -1011,19 +1026,19 @@ function SP.show(position, style, model)
 	s.board.Enabled = true
 	if not Theme.reducedMotion(player) then
 		-- Rise and fade; crits pop from 1.5x.
-		TweenService:Create(s.board, TweenInfo.new(0.9, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {StudsOffsetWorldSpace = Vector3.new(0, 1.8, 0)}):Play()
+		play(s, s.board, TweenInfo.new(0.9, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {StudsOffsetWorldSpace = Vector3.new(0, 1.8, 0)})
 		if style.kind == "crit" then
 			s.board.Size = UDim2.fromOffset(180, 96)
-			TweenService:Create(s.board, TweenInfo.new(0.18, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = UDim2.fromOffset(120, 64)}):Play()
+			play(s, s.board, TweenInfo.new(0.18, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = UDim2.fromOffset(120, 64)})
 		else
 			s.board.Size = UDim2.fromOffset(120, 64)
 		end
 		local fade = TweenInfo.new(0.35, Enum.EasingStyle.Linear, Enum.EasingDirection.In, 0, false, 0.55)
-		TweenService:Create(s.value, fade, {TextTransparency = 1, TextStrokeTransparency = 1}):Play()
-		TweenService:Create(s.tag, fade, {TextTransparency = 1, TextStrokeTransparency = 1}):Play()
-		TweenService:Create(s.badge, fade, {BackgroundTransparency = 1}):Play()
-		TweenService:Create(s.edge, fade, {Transparency = 1}):Play()
-		TweenService:Create(s.burst, fade, {BackgroundTransparency = 1}):Play()
+		play(s, s.value, fade, {TextTransparency = 1, TextStrokeTransparency = 1})
+		play(s, s.tag, fade, {TextTransparency = 1, TextStrokeTransparency = 1})
+		play(s, s.badge, fade, {BackgroundTransparency = 1})
+		play(s, s.edge, fade, {Transparency = 1})
+		play(s, s.burst, fade, {BackgroundTransparency = 1})
 	end
 	task.delay(SP.LIFE, function()
 		if s.token ~= token then return end
@@ -1040,15 +1055,15 @@ floatText = function(position, text, color, size)
 end
 
 ------------------------------------------------------------------------------
--- Overhead health bars (§34): a slim bar over each creature you fight (struck
--- or targeted), with a pale "recent damage" trail that drains after it. Bars
+-- Overhead health bars (§34): a slim bar over each creature you fight (hit by
+-- you, or your current target; other players' hits never claim one), with a pale "recent damage" trail that drains after it. Bars
 -- are pooled (OB.POOL), listen to the creature's Health attribute (no per-frame
 -- work) and fade out OB.LINGER s after the last hit; a dead or removed creature
 -- releases its bar at once.
 ------------------------------------------------------------------------------
-local OB = {POOL = 12, LINGER = 5, free = {}, byModel = {}, count = 0}
+local OB = {POOL = 12, LINGER = 5, free = {}, byModel = {}, count = 0, clock = 0}
 function OB.new()
-	local board = make("BillboardGui", nil, {Name = "OverheadBar", Size = UDim2.fromOffset(78, 18), AlwaysOnTop = true, LightInfluence = 0, MaxDistance = 90,
+	local board = make("BillboardGui", nil, {Name = "OverheadBar", Size = UDim2.fromOffset(78, 23), AlwaysOnTop = true, LightInfluence = 0, MaxDistance = 90,
 		Enabled = false, ResetOnSpawn = false})
 	local well = make("Frame", board, {Name = "Track", AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -2), Size = UDim2.new(1, -4, 0, 9),
 		BackgroundColor3 = track, BackgroundTransparency = 0.1, BorderSizePixel = 0})
@@ -1060,9 +1075,9 @@ function OB.new()
 	make("UICorner", fill, {CornerRadius = UDim.new(0, 3)})
 	make("UIGradient", fill, {Rotation = 90, Color = ColorSequence.new(white, Color3.new(0.62, 0.62, 0.62))})
 	local level = make("TextLabel", board, {Name = "Level", BackgroundTransparency = 1, AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 0, 1, -12),
-		Size = UDim2.new(1, 0, 0, 8), Font = display, TextSize = 8, TextColor3 = ivory, TextStrokeTransparency = 0.2, TextStrokeColor3 = deep,
+		Size = UDim2.new(1, 0, 0, 11), Font = display, TextSize = 11, TextColor3 = ivory, TextStrokeTransparency = 0.2, TextStrokeColor3 = deep,
 		TextXAlignment = Enum.TextXAlignment.Left, Text = ""})
-	return {board = board, well = well, trail = trail, fill = fill, level = level, token = 0}
+	return {board = board, well = well, trail = trail, fill = fill, level = level, token = 0, tweens = {}, touched = 0}
 end
 function OB.release(model)
 	local b = OB.byModel[model]
@@ -1073,6 +1088,8 @@ function OB.release(model)
 	b.board.Enabled = false
 	b.board.Adornee = nil
 	b.token += 1
+	stopTweens(b)
+	OB.opacity(b, 0)
 	table.insert(OB.free, b)
 end
 function OB.paint(model, b, animate)
@@ -1082,7 +1099,7 @@ function OB.paint(model, b, animate)
 	b.fill.Visible = f > 0
 	b.fill.BackgroundColor3 = rgb(HD.barColor(f))
 	if animate and not Theme.reducedMotion(player) then
-		TweenService:Create(b.trail, TweenInfo.new(0.45, Enum.EasingStyle.Quad, Enum.EasingDirection.In, 0, false, 0.25), {Size = UDim2.fromScale(f, 1)}):Play()
+		play(b, b.trail, TweenInfo.new(0.45, Enum.EasingStyle.Quad, Enum.EasingDirection.In, 0, false, 0.25), {Size = UDim2.fromScale(f, 1)})
 	else
 		b.trail.Size = UDim2.fromScale(f, 1)
 	end
@@ -1094,8 +1111,17 @@ function OB.touch(model)
 	local b = OB.byModel[model]
 	if not b then
 		b = table.remove(OB.free)
+		if not b and OB.count >= OB.POOL then
+			-- Pool full: hand back the bar idle longest that is not over your target.
+			local oldest, at = nil, math.huge
+			for m, other in pairs(OB.byModel) do
+				if m ~= target and other.touched < at then oldest, at = m, other.touched end
+			end
+			if not oldest then return nil end
+			OB.release(oldest)
+			b = table.remove(OB.free)
+		end
 		if not b then
-			if OB.count >= OB.POOL then return nil end
 			OB.count += 1
 			b = OB.new()
 		end
@@ -1118,7 +1144,10 @@ function OB.touch(model)
 		if OB.byModel[model] ~= b then return nil end
 	end
 	b.board.Enabled = true
+	stopTweens(b)
 	OB.opacity(b, 0)
+	OB.clock += 1
+	b.touched = OB.clock -- touch order (eviction picks the smallest)
 	b.token += 1
 	local token = b.token
 	task.delay(OB.LINGER, function()
@@ -1126,8 +1155,8 @@ function OB.touch(model)
 		-- Out of combat: fade, then hand the bar back to the pool.
 		if not Theme.reducedMotion(player) then
 			local info = TweenInfo.new(0.4)
-			for _, o in ipairs({b.well, b.trail, b.fill}) do TweenService:Create(o, info, {BackgroundTransparency = 1}):Play() end
-			TweenService:Create(b.level, info, {TextTransparency = 1, TextStrokeTransparency = 1}):Play()
+			for _, o in ipairs({b.well, b.trail, b.fill}) do play(b, o, info, {BackgroundTransparency = 1}) end
+			play(b, b.level, info, {TextTransparency = 1, TextStrokeTransparency = 1})
 		end
 		task.delay(0.45, function() if b.token == token and OB.byModel[model] == b then OB.release(model) end end)
 	end)
@@ -1314,12 +1343,12 @@ fx.OnClientEvent:Connect(function(kind, payload)
 	if type(payload) ~= "table" then return end
 	if kind == "hit" and typeof(payload.position) == "Vector3" then
 		-- §34 hitsplats: miss (blue), damage (red), crit (amber burst), with the
-		-- triangle tags WEAK! (gold) and resist (grey); the struck creature gets an
-		-- overhead bar.
+		-- triangle tags WEAK! (gold) and resist (grey); a creature you hit (or your
+		-- current target) gets an overhead bar; other players' hits do not.
 		local model = if typeof(payload.model) == "Instance" then payload.model else nil
 		SP.show(payload.position, HD.splatStyle(payload, Theme), model)
 		if model then
-			OB.touch(model)
+			if payload.attacker == player.UserId or model == target then OB.touch(model) end
 			if not payload.miss then flash(model) end
 		end
 	elseif kind == "projectile" then
@@ -1778,3 +1807,14 @@ RunService.RenderStepped:Connect(function()
 		panelTimer.Visible = false
 	end
 end)
+
+-- Test / tooling handle (no gameplay effect): the splat and bar pools.
+do
+	local api = Instance.new("BindableFunction")
+	api.Name = "IsleCombatApi"
+	api.OnInvoke = function(method)
+		if method == "state" then return S end
+		return nil
+	end
+	api.Parent = player
+end

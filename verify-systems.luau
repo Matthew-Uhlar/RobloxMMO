@@ -612,10 +612,12 @@ ok(has(cmd(taker, "buyNow", "Ore:3:25").message, "Bought 3"), "an hour later: 3 
 eq(#data["bazaar_v1_Ore"].history, 2, "a new hourly bucket")
 advance(20)
 local pc = cmd(taker, "priceCheck", "Ore")
-ok(has(pc.message, "price check") and has(pc.message, "24h avg 20") and has(pc.message, "(10 sold)"), "priceCheck: " .. pc.message)
+-- §34: price-check replies are silent (reply text in `reply`, never in the chat-bound `message`).
+ok(pc.silent == true and not has(pc.message, "price check"), "price-check replies are silent")
+ok(has(pc.reply, "price check") and has(pc.reply, "24h avg 20") and has(pc.reply, "(10 sold)"), "priceCheck: " .. pc.reply)
 ok(pc.systems.prices[1].item == "Ore" and pc.systems.prices[1].vol7 == 10, "price check kept for the client")
-ok(has(cmd(taker, "priceCheck", "Nope").message, "Choose an item"), "unknown item refused")
-ok(has(cmd(taker, "priceCheck", "Tonic").message, "not traded"), "untraded item refused")
+ok(has(cmd(taker, "priceCheck", "Nope").reply, "Choose an item"), "unknown item refused")
+ok(has(cmd(taker, "priceCheck", "Tonic").reply, "not traded"), "untraded item refused")
 for i = 1, 12 do advance(2); cmd(taker, "priceCheck", ({"Ore", "Herb", "Timber", "Fish", "Aetherite", "Sunwheat", "Glowcap", "Brassite", "Voidstone", "Glassfin", "Stormeel", "Moonbloom"})[i]) end
 ok(#cmd(taker, "state").systems.prices <= PR.CHECKS, "price checks bounded per player")
 -- Auctions: a completed sale records its price under the item.
@@ -637,7 +639,7 @@ ok(has(bought.message, "Bought"), "auction bought: " .. bought.message)
 local ah = data["auction_v1_weapon"].history
 ok(ah and ah[weapon] and ah[weapon][1].n == 1 and ah[weapon][1].v == 500, "auction sale recorded under the item")
 advance(20)
-ok(has(cmd(taker, "priceCheck", weapon).message, "24h avg 500"), "auction price check")
+ok(has(cmd(taker, "priceCheck", weapon).reply, "24h avg 500"), "auction price check")
 -- Ironman journals can read prices too (read-only).
 print("PASS: " .. (checks - partB) .. " server assertions.")
 

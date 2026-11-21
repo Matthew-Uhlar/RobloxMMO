@@ -230,6 +230,38 @@ local function collect(p,item,count)
 		if Mastery.tokenNote then Mastery.tokenNote(p,claimed,tier) end
 	end
 end
+-- §34 HUD depth: snapshot sequence numbers and the pickup feed.
+-- HudFeed.seq[player] stamps every snapshot (snapshot.seq, monotonically rising
+-- per player per server) so clients print a snapshot's message once even when
+-- the atlas replays it to a late-starting script. HudFeed.pending[p] collects
+-- what came from gathering, fishing, loot and kill drops (pickup / HudFeed.coins
+-- at those call sites only: never bank withdrawals, trades, market collects,
+-- crafting or shop buys) and is handed out once as snapshot.pickups = {{id, n}}.
+-- Both tables are strong (player / profile keys) and cleared by forget().
+local HudFeed={seq={},pending={},MAX=24}
+function HudFeed.push(p,id,n)
+	if type(n)~="number" or n<=0 then return end
+	local list=HudFeed.pending[p] or {}
+	HudFeed.pending[p]=list
+	for _,e in ipairs(list) do if e.id==id then e.n+=n return end end
+	if #list<HudFeed.MAX then table.insert(list,{id=id,n=n}) end
+end
+function HudFeed.coins(p,n) HudFeed.push(p,"coins",n) end
+function HudFeed.take(p)
+	local list=HudFeed.pending[p]
+	HudFeed.pending[p]=nil
+	return list
+end
+function HudFeed.stamp(player)
+	local n=(HudFeed.seq[player] or 0)+1
+	HudFeed.seq[player]=n
+	return n
+end
+-- collect() for gathered / looted / dropped / fished items (feeds the pickup feed).
+local function pickup(p,item,count)
+	collect(p,item,count)
+	HudFeed.push(p,item,count)
+end
 local function spend(p,cost)
 	for item,n in pairs(cost) do
 		if (p.items[item] or 0)<n then return false end
@@ -1438,7 +1470,7 @@ do
 		end
 		local stats=Progression.computeStats(p,os.time())
 		local drops=Progression.rollDrops(AG.LapDrops,stats.magicFind,roll,stats.petLuck)
-		for id,n in pairs(drops) do collect(p,id,n); table.insert(parts,"+"..n.." "..Data.Items[id].name.."!") end
+		for id,n in pairs(drops) do pickup(p,id,n); table.insert(parts,"+"..n.." "..Data.Items[id].name.."!") end
 		Skills.refreshPerks(p)
 		return table.concat(parts,"   ·   ")
 	end
@@ -1586,7 +1618,7 @@ do
 		if drops[primary] then drops[primary]=Progression.fortuneRoll(drops[primary],stats.huntingFortune,roll) end
 		local xp,doubled=creature.xp,false
 		drops,xp,doubled=Progression.applyHuntMastery(p,drops,xp,roll,os.time())
-		for id,n in pairs(drops) do collect(p,id,n) end
+		for id,n in pairs(drops) do pickup(p,id,n) end
 		grantXp(p,"Hunter",xp)
 		local _,before=HU.logPerk(p.hunterLog)
 		p.hunterLog[creature.id]=(p.hunterLog[creature.id] or 0)+1
@@ -1771,6 +1803,7 @@ end
 --   prayer "<id>"            toggle a prayer (Prayer level, points > 0); prayers
 --                            sharing a group with it switch off
 --   prayerOff                every prayer off
+--   prayerQuickToggle        §34 quick-prayer orb: any active -> all off, else every quick prayer on
 --   prayerQuick "<slot>:<id>" | "<slot>:"  HUD favourite slot 1-2 (empty clears)
 --   offerRemains "<remains>" offer a batch of that remains at the altar visited in
 --                            the last PR.ALTAR_SECONDS (atlas Prayer page)
@@ -1803,7 +1836,7 @@ end
 -- (os.time), ThievingStunUntil (os.time). Snapshot keys: prayer, thieving.
 -- All tables strong and player-keyed; Prayer.forget clears them.
 ------------------------------------------------------------------------------
-local Prayer={verbs={prayer=true,prayerOff=true,prayerQuick=true,offerRemains=true,altarOffer=true,altarPray=true,thieve=true},
+local Prayer={verbs={prayer=true,prayerOff=true,prayerQuick=true,prayerQuickToggle=true,offerRemains=true,altarOffer=true,altarPray=true,thieve=true},
 	riteUntil={},altarSeen={},stunUntil={},stunSeq={},cooldowns={}}
 do
 	local PR,TH=Data.Prayer,Data.Thieving
@@ -1971,6 +2004,26 @@ do
 		Prayer.publish(player,p)
 		return if id=="" then "Quick prayer "..slot.." reset." else PR.PrayerById[id].name.." set as quick prayer "..slot.."."
 	end
+	-- §34 quick-prayer orb: the whole plan in one verb (no per-prayer toggles to
+	-- be dropped by the action cooldown). Any prayer active -> every prayer off
+	-- (as prayerOff); none active -> each quick prayer switched on through the
+	-- same PR.toggle validation as the prayer verb (level, points, groups).
+	function Prayer.quickToggle(player,p)
+		local r=p.prayer
+		if next(r.active) then
+			local _,empty=Prayer.settle(player,p)
+			if empty then return "Your prayers have already faded." end
+			r.active,r.credit,r.since={},{},nil
+			Prayer.publish(player,p)
+			return "Quick-prayers off."
+		end
+		local parts={}
+		for _,id in ipairs(Prayer.quick(p)) do
+			if type(id)=="string" and id~="" and PR.PrayerById[id] and not r.active[id] then table.insert(parts,(Prayer.toggle(player,p,id))) end
+		end
+		if #parts==0 then return "Choose quick-prayers on the Hero › Prayer page." end
+		return table.concat(parts,"   ·   ")
+	end
 	-- One drain tick for a live profile: settle the elapsed time, then Mending
 	-- Hymn heals (only prayers still on at the tick).
 	function Prayer.step(player,p)
@@ -2091,8 +2144,8 @@ do
 		if roll()<chance then
 			local coins=TH.coins(target,roll)
 			local drops=Progression.rollDrops(target.drops,stats.magicFind,roll,stats.petLuck)
-			p.coins+=coins
-			for id,n in pairs(drops) do collect(p,id,n) end
+			p.coins+=coins; HudFeed.coins(p,coins)
+			for id,n in pairs(drops) do pickup(p,id,n) end
 			grantXp(p,"Thieving",target.xp)
 			p.thieving.thefts[target.id]=(p.thieving.thefts[target.id] or 0)+1
 			Trails.event(p,"thieve",target.id) -- Treasure Trails: scroll drops + trail tasks
@@ -2131,6 +2184,7 @@ do
 			Prayer.publish(player,p)
 			return "Every prayer off."
 		elseif verb=="prayerQuick" then return Prayer.quickSet(player,p,item)
+		elseif verb=="prayerQuickToggle" then return Prayer.quickToggle(player,p)
 		elseif verb=="consume" then return Prayer.drink(player,p,item)
 		elseif verb=="thieve" then return Prayer.thieve(player,p,item,prompt,humanoid)
 		elseif verb=="altarOffer" or verb=="altarPray" then
@@ -2818,9 +2872,9 @@ do
 		p.started=true
 		local xp=ST.killXp(def)
 		grantXp(p,"Slayer",xp)
-		p.coins+=def.coins
+		p.coins+=def.coins; HudFeed.coins(p,def.coins)
 		local drops=Progression.rollDrops(def.drops,stats.magicFind,roll,stats.petLuck)
-		for item,n in pairs(drops) do collect(p,item,n) end
+		for item,n in pairs(drops) do pickup(p,item,n) end
 		p.bestiary[def.base]=(p.bestiary[def.base] or 0)+1
 		st.superiors[id]=(st.superiors[id] or 0)+1
 		local task=st.task
@@ -3395,7 +3449,7 @@ do
 		local chance=CL.gemChance(c.forge,c.total)
 		if chance>0 and roll()*100<chance then
 			local gem=CL.gemFor(resource.index,roll())
-			collect(p,gem,1)
+			pickup(p,gem,1)
 			text="   ·   Gemseeker: +1 "..itemName(gem)
 		end
 		return text
@@ -4514,7 +4568,8 @@ local function snapshot(player,message)
 		message=if message and message~="" then message.."   ·   "..extra else extra
 	end
 	local legacyStats,stats=applyStats(player,p,nil,power)
-	return {satchel=Satchel.clean(p),satchelSort=Satchel.sortMode(p), -- §29 satchel order and its last sort mode
+	return {seq=HudFeed.stamp(player),pickups=HudFeed.take(p), -- §34: message dedupe + pickup feed
+		satchel=Satchel.clean(p),satchelSort=Satchel.sortMode(p), -- §29 satchel order and its last sort mode
 		xp=p.xp,items=p.items,consumables=provisions,collection=p.collection,coins=p.coins,bank=p.bank,bankRevision=p.bankRevision or 0,worker=p.worker,
 		ironman=p.ironman,levels=levels,enchantRank=p.enchantRank or 0,workerResource=p.workerResource or "Ore",workerReady=Workers.ready(p),workers=Workers.state(p),workerInfo=Workers.info(p),message=message or "",kills=p.kills,
 		companionBond=p.companionBond or 0,market=marketViews[player],economy=Econ.view and Econ.view(player,p),recipes=recipeState(p),regions=regionState(p),stats=legacyStats,quest=questState(p),slayer=slayerState(p),started=p.started,decorations=p.decorations,preview=preview[player]==true,
@@ -4676,9 +4731,9 @@ function Sea.report(player,p,payload)
 	p.started=true
 	grantXp(p,"Fishing",monster.fishingXp)
 	grantXp(p,"Combat",monster.xp)
-	p.coins+=monster.coins
+	p.coins+=monster.coins; HudFeed.coins(p,monster.coins)
 	local drops=Progression.rollDrops(monster.drops,stats.magicFind,roll,stats.petLuck)
-	for item,n in pairs(drops) do collect(p,item,n) end
+	for item,n in pairs(drops) do pickup(p,item,n) end
 	p.bestiary[id]=(p.bestiary[id] or 0)+1
 	SlayerTasks.onKill(player,p,id,monster,true) -- Slayer tasks: sea creature task credit (owner only)
 	return {ok=true,drops=drops,message=monster.name.." slain • +"..monster.coins.." coins, +"..monster.fishingXp.." Fishing XP, +"..monster.xp.." Combat XP"}
@@ -4686,6 +4741,8 @@ end
 local function forget(player)
 	if Features.forget then Features.forget(player,profiles[player]) end -- §31: announcement ring, queue, renown cache
 	if Systems.forget then Systems.forget(player) end -- §33: XP / goal samples, price checks, pinned-step cache
+	if profiles[player] then HudFeed.pending[profiles[player]]=nil end -- §34 pickup feed
+	HudFeed.seq[player]=nil
 	profiles[player],cooldown[player],lastRead[player],preview[player],leaseEnd[player]=nil,nil,nil,nil,nil
 	marketViews[player],marketReads[player],stateRead[player],exchangeReady[player]=nil,nil,nil,nil
 	Econ.views[player],Econ.reads[player]=nil,nil
@@ -4838,7 +4895,7 @@ do
 	function Mastery.gather(p,result)
 		local parts={}
 		for id,n in pairs(result.bonus or {}) do
-			collect(p,id,n)
+			pickup(p,id,n)
 			table.insert(parts,"+"..n.." "..Data.Items[id].name)
 		end
 		if result.coins then p.coins+=result.coins; table.insert(parts,"+"..result.coins.." coins") end
@@ -5138,11 +5195,11 @@ do
 		result.amount=G.yieldFor(c.id,fortuneFor(p,g,c,stats),pest,roll,mult)
 		if perks then Progression.applyGatherMastery(p,result,roll,now,perks) end
 		result.respawnSkip=nil
-		collect(p,c.id,result.amount)
+		pickup(p,c.id,result.amount)
 		local mastered=Mastery.gather(p,result)
 		grantXp(p,"Farming",result.xp)
 		local seeds=G.seedReturn(c,roll)
-		if seeds>0 then collect(p,c.seed,seeds) end
+		if seeds>0 then pickup(p,c.seed,seeds) end
 		g.harvested[c.id]=math.min(1e9,(g.harvested[c.id] or 0)+result.amount)
 		g.plots[i]={}
 		Garden.addXp(p,g,c.gxp)
@@ -5813,7 +5870,7 @@ do
 		local stats=Progression.computeStats(p,os.time())
 		local drops=Progression.rollDrops(plan.drops,stats.magicFind,roll,stats.petLuck)
 		for id,n in pairs(plan.items) do drops[id]=(drops[id] or 0)+n end
-		for id,n in pairs(drops) do collect(p,id,n) end
+		for id,n in pairs(drops) do pickup(p,id,n) end
 		p.coins+=plan.coins
 		p.bestiary[payload.boss]=(p.bestiary[payload.boss] or 0)+1
 		p.started=true
@@ -6036,8 +6093,8 @@ do
 		local stats=Progression.computeStats(p,os.time())
 		local drops=Progression.rollDrops(LR.Loot[payload.boss],stats.magicFind,roll,stats.petLuck)
 		local coins=LR.coinRoll(payload.boss,roll())
-		p.coins+=coins
-		for id,n in pairs(drops) do collect(p,id,n) end
+		p.coins+=coins; HudFeed.coins(p,coins)
+		for id,n in pairs(drops) do pickup(p,id,n) end
 		local rec=LR.record(Lairs.of(p),payload.boss,seconds,party,drops,os.time())
 		Logs.event(p,"kill",payload.boss) -- Commissions & Logs (and faction boards) see the kill
 		p.started=true
@@ -6299,7 +6356,7 @@ do
 		if resource.skill~="Mining" or roll()>=CR.gemChance(resource.index) then return "" end
 		local rough=CR.roughFor(resource.index,roll())
 		if not rough then return "" end
-		collect(p,rough,1)
+		pickup(p,rough,1)
 		return "   ·   Rough gem! +1 "..nameOf(rough)
 	end
 	function Crafting.action(player,p,verb,item,prompt)
@@ -7277,11 +7334,11 @@ local function perform(player,verb,item,prompt)
 		end
 		-- Events hook: festival yield/XP multipliers apply exactly once, after fortune; festival-only catches.
 		result.amount*=event.mult; result.xp=math.floor(result.xp*event.xpMult)
-		for id,n in pairs(event.extra) do collect(p,id,n); note(p,"Festival catch • +"..n.." "..Data.Items[id].name) end
+		for id,n in pairs(event.extra) do pickup(p,id,n); note(p,"Festival catch • +"..n.." "..Data.Items[id].name) end
 		-- Pets depth: the doubled-harvest ability is one more yield candidate inside
 		-- Progression.gatherYieldMult (never stacks with mastery procs/surges).
 		local petDouble=result.petDouble==true
-		collect(p,item,result.amount)
+		pickup(p,item,result.amount)
 		grantXp(p,skill,result.xp)
 		Held.gather(player,p,skill) -- Held items: the node's tool is in hand (auto switch, returns when idle)
 		if skill=="Farming" and Garden.fieldSeed then Garden.fieldSeed(p,item) end -- Verdant Garden seed pouch
@@ -7667,7 +7724,16 @@ action.OnServerInvoke=function(player,verb,item)
 		return {held=true,ok=done==true,message=message,heldItem=player:GetAttribute("HeldItem") or ""}
 	end
 	if item~=nil and #item>64 then return snapshot(player,"That request is too long.") end
-	return snapshot(player,perform(player,verb,item,nil))
+	local message=perform(player,verb,item,nil)
+	if verb=="priceCheck" then
+		-- §34: price-check replies are silent (tooltips and the Ledger read them;
+		-- the chat router and the atlas toast skip them). The reply text rides in
+		-- `reply` so an explicit Ledger refresh can still show a refusal.
+		local snap=snapshot(player,nil)
+		snap.silent,snap.reply=true,message
+		return snap
+	end
+	return snapshot(player,message)
 end
 action.Parent=ReplicatedStorage
 prompts.PromptTriggered:Connect(function(prompt,player)
@@ -8026,7 +8092,7 @@ local function grantExpedition(player,result)
 	for _=1,reward.rolls do
 		for item,n in pairs(Progression.rollDrops(reward.chest,stats.magicFind,roll,stats.petLuck)) do drops[item]=(drops[item] or 0)+n end
 	end
-	for item,n in pairs(drops) do collect(p,item,n) end
+	for item,n in pairs(drops) do pickup(p,item,n) end
 	local endText=Delve.afterClear(player,p,{floor=floorIndex,master=master,grade=grade,score=score,deaths=result.deaths,seconds=result.seconds,stats=stats,now=now})
 	update:FireClient(player,snapshot(player,(if master then "Master " else "")..floor.name.." cleared • Grade "..grade.." • +"..reward.coins.." coins, +"..reward.combatXp.." Combat and +"
 		..reward.dungeoneeringXp.." Dungeoneering XP"..classText..", "..reward.items.Stormglass.." Stormglass"..(if secrets>0 then " • "..secrets.." secrets found" else "")..dropText(drops)..endText))
@@ -8222,11 +8288,11 @@ bridge.OnInvoke=function(op,player,payload)
 		local coins=monster.coins+math.floor(monster.coins*family/100+0.5)
 		-- No flat Combat XP here: the damage XP accrued on the monster is paid
 		-- through "combatXp" when it dies (monster.xp in total for melee).
-		p.coins+=coins
+		p.coins+=coins; HudFeed.coins(p,coins)
 		local drops=Progression.rollDrops(monster.drops,stats.magicFind+family,roll,stats.petLuck)
-		for item,n in pairs(drops) do collect(p,item,n) end
+		for item,n in pairs(drops) do pickup(p,item,n) end
 		-- Events hook: Hollow Night event-only drops (Data.eventKillDrops).
-		for item,n in pairs(Data.eventKillDrops(monsterId,Data.eventState(workspace,os.time()),roll)) do drops[item]=(drops[item] or 0)+n; collect(p,item,n) end
+		for item,n in pairs(Data.eventKillDrops(monsterId,Data.eventState(workspace,os.time()),roll)) do drops[item]=(drops[item] or 0)+n; pickup(p,item,n) end
 		p.bestiary[monsterId]=(p.bestiary[monsterId] or 0)+1
 		Trails.event(p,"kill",monsterId) -- Treasure Trails: scroll drops + trail tasks
 		Logs.event(p,"kill",monsterId) -- Commissions & Logs: kill commissions
@@ -8283,7 +8349,7 @@ bridge.OnInvoke=function(op,player,payload)
 		local skillXp=Data.SlayerTasks.bossXp(quest.line,quest.tier) -- Slayer tasks: boss lines also train the Slayer skill
 		grantXp(p,"Slayer",skillXp)
 		local drops=Progression.rollDrops(tier.drops,stats.magicFind,roll,stats.petLuck)
-		for item,n in pairs(drops) do collect(p,item,n) end
+		for item,n in pairs(drops) do pickup(p,item,n) end
 		notify(player,line.name.." defeated • +"..tier.xp.." "..quest.line.." Slayer XP, +"..skillXp.." Slayer skill XP"..dropText(drops))
 		return {ok=true,drops=drops}
 	end

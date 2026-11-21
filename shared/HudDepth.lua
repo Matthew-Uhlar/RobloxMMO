@@ -322,6 +322,7 @@ end
 function HD.chatShows(category, states, tab, msg)
 	msg = tbl(msg)
 	if msg.self then return true end -- your own lines always echo
+	if category == "Private" then return true end -- whispers always pass (the Private tab badges them)
 	if tab and tab ~= "All" and tab ~= category then return false end
 	local state = tbl(states)[category] or "On"
 	if state == "Off" then return false end
@@ -420,6 +421,20 @@ function HD.itemDeltas(before, after, coinsBefore, coinsAfter)
 	if coinsBefore ~= nil and coinsAfter ~= nil and coins > 0 then table.insert(out, {id = "coins", n = math.floor(coins)}) end
 	return out
 end
+-- The server's snapshot.pickups ({{id, n}}: gathering, fishing, loot and kill
+-- drops only) validated: known items or "coins", whole positive counts, merged.
+function HD.pickupEntries(list, Data)
+	local out, index = {}, {}
+	if type(list) ~= "table" then return out end
+	local items = tbl(tbl(Data).Items)
+	for _, e in ipairs(list) do
+		local id, n = type(e) == "table" and e.id, math.floor(num(type(e) == "table" and e.n))
+		if type(id) == "string" and n > 0 and (id == "coins" or items[id]) then
+			if index[id] then index[id].n += n else index[id] = {id = id, n = n}; table.insert(out, index[id]) end
+		end
+	end
+	return out
+end
 -- feed: array of {id, n, at (last merge), born}; merges into a live entry of the
 -- same id within `window` s, else appends; trims the oldest past maxLines.
 -- Returns the entry and whether it merged.
@@ -465,8 +480,14 @@ function HD.splatStyle(payload, Theme)
 	payload = tbl(payload)
 	local tok = tbl(Theme and Theme.HudDepth)
 	local amount = math.max(0, math.floor(num(payload.amount)))
-	if payload.miss or (amount == 0 and not payload.heal) then
+	-- "miss" only for a real miss; a landed hit that did nothing (resisted,
+	-- absorbed) is a blue 0, as in OSRS.
+	if payload.miss then
 		return {kind = "miss", text = "miss", fill = tok.splatMiss or "3E78C8", edge = tok.splatMissEdge or "1C3A66", ink = "FFFFFF", size = 13, scale = 0.86}
+	end
+	if amount == 0 and not payload.heal then
+		return {kind = "zero", text = "0", fill = tok.splatMiss or "3E78C8", edge = tok.splatMissEdge or "1C3A66", ink = "FFFFFF", size = 16, scale = 0.9,
+			tag = if payload.tag == "resist" then "resist" else nil, tagColor = "A9BDC1"}
 	end
 	if payload.heal then
 		return {kind = "heal", text = "+" .. HD.commas(amount), fill = tok.splatHeal or "3FBF5A", edge = "184A22", ink = "FFFFFF", size = 16, scale = 0.95}

@@ -9414,7 +9414,8 @@ end
 ------------------------------------------------------------------------------
 UI.relay={equip=true,unequip=true,consume=true,sell=true,accessory=true,petAdopt=true,drop=true,satchelMove=true,satchelSort=true,recall=true,
 	rqBuy=true,skillBuy=true,petShop=true,resonanceSet=true,guideClaim=true, -- §31
-	helperPin=true,goalSet=true,goalRemove=true,goalClear=true,priceCheck=true} -- §33: quantity picker (features.client.lua), Resonance, Path rewards
+	helperPin=true,goalSet=true,goalRemove=true,goalClear=true,priceCheck=true, -- §33
+	prayerQuickToggle=true} -- §34 quick-prayer orb (one atomic verb, queued, never dropped). Earlier: quantity picker (features.client.lua), Resonance, Path rewards
 local remote = ReplicatedStorage:WaitForChild("IsleAction")
 local updates = ReplicatedStorage:WaitForChild("IsleUpdate")
 local function accept(data,quiet)
@@ -9456,7 +9457,12 @@ local function accept(data,quiet)
 			message=table.concat(kept,"   ·   ")
 		end
 	end
-	if not quiet then notify(message) end
+	-- §34: price-check replies are silent (data.silent); an explicit (non-quiet)
+	-- request still toasts its own reply text, never a hover refresh.
+	if data.silent then
+		if not quiet and type(data.reply)=="string" and not data.reply:find("price check:",1,true) then notify(data.reply) end
+		if type(message)=="string" and message~="" and not quiet then notify(message) end
+	elseif not quiet then notify(message) end
 	return true
 end
 local pending = false
@@ -9571,10 +9577,11 @@ do
 					local snap=state
 					local ex=type(snap)=="table" and snap.exploration
 					local cached=Pages.EXP and Pages.EXP.cache
-					if type(ex)=="table" and ex.compact and cached and cached.rev==ex.rev then
-						snap=table.clone(snap)
-						snap.exploration=cached
-					end
+					snap=table.clone(snap)
+					if type(ex)=="table" and ex.compact and cached and cached.rev==ex.rev then snap.exploration=cached end
+					-- §34: a replay keeps the original seq and is marked, so the chat router
+					-- and pickup feed never print it a second time.
+					snap.replay=true
 					UI.snapshotChannel:Fire(snap)
 				end)
 			end
