@@ -8379,7 +8379,8 @@ end
 local SETTINGS={
 	{attr="IsleSettingPinSatchel",title="Pin the satchel",detail="Keep the satchel open beside the sidebar while you play (desktop).",default=false},
 	{attr="IsleSettingXpDrops",title="XP drops",detail="Floating +XP counters and the skill progress toast when you gain experience.",default=true},
-	{attr="IsleSettingMinimap",title="Minimap",detail="The top-left minimap with region name and coordinates (M toggles it too).",default=true},
+	{attr="IsleSettingMinimap",title="Minimap",detail="The top-left minimap with region name and coordinates (its Map button folds the map away).",default=true},
+	{attr="IsleSettingReducedMotion",title="Reduced motion",detail="XP drops and level-up banners appear in place instead of sliding and scaling.",default=false},
 }
 function Pages.drawSettings()
 	heading("SETTINGS / SAVED FOR THIS SESSION")
@@ -8392,7 +8393,7 @@ function Pages.drawSettings()
 				render()
 			end}}})
 	end
-	card({name="SettingKeys",motif="Journal",title="Keys",detail="J  menu & atlas   ·   E / Tab  satchel   ·   M  minimap   ·   right-click (long-press) an item for its options   ·   drag items to reorder"})
+	card({name="SettingKeys",motif="Journal",title="Keys",detail="J  menu & atlas   ·   E / Tab  satchel   ·   M  Sky Chart (warp map)   ·   right-click (long-press) an item for its options   ·   drag items to reorder"})
 end
 end
 
@@ -8759,8 +8760,11 @@ local function showNextBanner()
 	local stats=statText(perLevel,entry.to-entry.from,"  ")
 	UI.bannerReward.Text=reward..(reward~="" and stats~="" and "   ·   " or "")..stats
 	banner.Visible=true
-	UI.bannerScale.Scale=.82
-	TweenService:Create(UI.bannerScale,TweenInfo.new(.35,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Scale=1}):Play()
+	-- Reduced motion (Settings or the device): the banner appears at full size.
+	if UI.T.reducedMotion(player) then UI.bannerScale.Scale=1 else
+		UI.bannerScale.Scale=.82
+		TweenService:Create(UI.bannerScale,TweenInfo.new(.35,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Scale=1}):Play()
+	end
 	task.delay(3.4,showNextBanner)
 end
 local function celebrate(before,after)
@@ -8844,6 +8848,17 @@ local function accept(data,quiet)
 	return true
 end
 local pending = false
+-- Satchel / paperdoll / Sky Chart verbs relayed from hud.client.lua wait their
+-- turn while a request is in flight (up to 8, then a toast) instead of being
+-- dropped; the queue drains in order after each reply.
+UI.relayQueue={}
+function UI.relaySend(verb,item)
+	if pending then
+		if #UI.relayQueue<8 then table.insert(UI.relayQueue,{verb,item}) else notify("Still working on your last few actions. Try again in a moment.") end
+		return
+	end
+	send(verb,item)
+end
 send = function(action, item, quiet)
 	if pending then
 		return
@@ -8853,11 +8868,17 @@ send = function(action, item, quiet)
 		return remote:InvokeServer(action, item)
 	end)
 	pending = false
+	local accepted = false
 	if ok then
-		return accept(result,quiet)
+		accepted = accept(result,quiet)
+	else
+		notify("Your ledger could not be reached. Try again.")
 	end
-	notify("Your ledger could not be reached. Try again.")
-	return false
+	if #UI.relayQueue>0 then
+		local nextAction=table.remove(UI.relayQueue,1)
+		task.defer(send,nextAction[1],nextAction[2])
+	end
+	return accepted
 end
 local function acceptCoop(result)
 	if type(result) ~= "table" or type(result.members) ~= "table" then return false end
@@ -8909,7 +8930,7 @@ do
 			if verb=="autocast" and (item==nil or type(item)=="string") then task.spawn(send,"autocast",item)
 			-- Satchel / paperdoll / Sky Chart (hud.client.lua): existing validated verbs
 			-- plus satchelMove / satchelSort / drop (§29); the server checks everything.
-			elseif UI.relay[verb] and (item==nil or (type(item)=="string" and #item<=64)) then task.spawn(send,verb,item)
+			elseif UI.relay[verb] and (item==nil or (type(item)=="string" and #item<=64)) then task.spawn(UI.relaySend,verb,item)
 			-- Prayer quick bar taps (combat HUD): the server validates the prayer.
 			elseif verb=="prayer" and type(item)=="string" and #item<=64 then task.spawn(send,"prayer",item)
 			-- Exploration & Factions: world mote prompts (motes.client.lua); the server picks the mote.

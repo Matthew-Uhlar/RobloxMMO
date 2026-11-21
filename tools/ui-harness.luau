@@ -607,9 +607,13 @@ function H.runHud(size, player, shared, options)
 	options = options or {}
 	screen = size
 	local replicated = shared or new("ReplicatedStorage")
+	-- StarterGui records SetCoreGuiEnabled calls (hud.client.lua turns the player list off).
+	local coreGui = {}
 	local services = {
 		Players = new("Players", { LocalPlayer = player }), ReplicatedStorage = replicated,
 		UserInputService = new("UserInputService", { TouchEnabled = options.touch == true }), TweenService = new("TweenService"),
+		StarterGui = { SetCoreGuiEnabled = function(_, kind, enabled) coreGui[kind.Name] = enabled end },
+		ProximityPromptService = { PromptShown = newSignal(), PromptHidden = newSignal() },
 	}
 	local game = new("DataModel")
 	function game.GetService(_, name) return assert(services[name], name) end
@@ -630,7 +634,8 @@ function H.runHud(size, player, shared, options)
 	if not replicated:FindFirstChild("AetherData") then new("ModuleScript", { Name = "AetherData" }).Parent = replicated end
 	luau.load(fs.readFile("hud.client.lua"), { debugName = "hud.client.lua", environment = env, injectGlobals = true })()
 	local api = player:FindFirstChild("IsleHudApi")
-	return { gui = player:FindFirstChild("PlayerGui"):FindFirstChild("IsleHud"), state = api.OnInvoke("state"), api = api, theme = theme, input = services.UserInputService }
+	return { gui = player:FindFirstChild("PlayerGui"):FindFirstChild("IsleHud"), state = api.OnInvoke("state"), api = api, theme = theme, input = services.UserInputService,
+		coreGui = coreGui, prompts = services.ProximityPromptService }
 end
 
 -- Loads nav.client.lua (the Wayfinder minimap) with the world's island layout
@@ -703,7 +708,7 @@ function H.runNav(size, player, shared, options)
 	end
 	luau.load(fs.readFile("nav.client.lua"), { debugName = "nav.client.lua", environment = env, injectGlobals = true })()
 	run.Heartbeat:Fire(1)
-	return { gui = player:FindFirstChild("PlayerGui"):FindFirstChild("Wayfinder"), run = run, root = root }
+	return { gui = player:FindFirstChild("PlayerGui"):FindFirstChild("Wayfinder"), run = run, root = root, input = services.UserInputService }
 end
 
 -- Render-only stand-in for hotbar.client.lua (the Held Items team's 9-slot

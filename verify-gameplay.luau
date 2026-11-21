@@ -1244,6 +1244,38 @@ do
 	end
 	knight=rejoin(knight)
 	ok(type(data.p240.profile.satchel)=="table","satchel order persisted")
+	-- L7: the last applied sort mode persists with the order (whitelisted on read).
+	eq(data.p240.profile.satchelSort,"name","sort mode persisted")
+	eq(st(knight).satchelSort,"name","snapshot carries the sort mode")
+	knight=rejoin(knight,function(p) p.satchelSort="bogus" end)
+	eq(st(knight).satchelSort,nil,"unknown saved sort mode ignored")
+	-- M12: sell / drop keep the last copy of an upgraded item (Gear.upgraded,
+	-- the Museum / faction crest rule); spare copies still go.
+	knight=rejoin(knight,function(p) p.items.SunsteelSword=1; p.stars=p.stars or {}; p.stars.SunsteelSword=2; p.items.CopperHatchet=3; p.enchants.CopperHatchet={Efficiency=1} end)
+	ok(has(cmd(knight,"sell","SunsteelSword").message,"carries upgrades"),"sell refuses the last upgraded copy")
+	ok(has(cmd(knight,"drop","SunsteelSword").message,"carries upgrades"),"drop refuses the last upgraded copy")
+	eq(st(knight).items.SunsteelSword,1,"upgraded copy kept")
+	local spare=cmd(knight,"drop","CopperHatchet")
+	eq(spare.items.CopperHatchet,1,"drop keeps the enchanted copy, spares go")
+	ok(has(spare.message,"Dropped 2"),"drop counts only the spares")
+	ok(has(cmd(knight,"sell","CopperHatchet").message,"carries upgrades"),"then the last enchanted copy is refused")
+	-- L9: an owned id outside the stored order (past Satchel.MAX) can still be moved.
+	local added,ids={},{}
+	for id in pairs(Data.Items) do table.insert(ids,id) end
+	table.sort(ids)
+	knight=rejoin(knight,function(p)
+		for _,id in ipairs(ids) do if (p.items[id] or 0)<1 and #added<450 then p.items[id]=1; table.insert(added,id) end end
+	end)
+	local full=st(knight)
+	eq(#full.satchel,400,"stored order capped at 400 ids")
+	local outside
+	for _,id in ipairs(added) do if not table.find(full.satchel,id) then outside=id end end
+	ok(outside~=nil,"some owned id sits past the stored order")
+	local placed=cmd(knight,"satchelMove",outside..":1")
+	eq(placed.message,"","satchelMove accepts an id past the stored order")
+	eq(placed.satchel[1],outside,"satchelMove places it in slot 1")
+	eq(#placed.satchel,400,"satchel order stays bounded")
+	knight=rejoin(knight,function(p) for _,id in ipairs(added) do p.items[id]=nil end end)
 end
 knight=rejoin(knight,function(p) p.xp.Combat=0 end)
 eq(st(knight).depth.stats.defense,0,"equipment ignored when requirements no longer met")
