@@ -133,17 +133,46 @@ local function gearStats(p, itemId)
 	out.magicalPower = nil
 	return out
 end
--- Active accessories: owned, unique by id, within bag capacity, highest
--- rarity first (SkyBlock: duplicates do not stack).
+-- Accessory family (SkyBlock-style upgrade lines): Crafting jewellery
+-- (category "jewellery") made from the same cut gem (`gem`) is one family —
+-- the ring, necklace, amulet and enchanted amulet of a gem. Returns the family
+-- key or nil (every other accessory is its own family).
+function Progression.accessoryFamily(id)
+	local def = Data.Items[id]
+	if def and def.category == "jewellery" and type(def.gem) == "string" then return "jewellery:" .. def.gem end
+	return nil
+end
+-- Family order: highest effective rarity, then Magical Power (reforges), then
+-- total stats, then id (deterministic).
+local function familyBetter(p, a, b)
+	local ra, rb = Data.Rarity[Progression.effectiveRarity(p, a)].rank, Data.Rarity[Progression.effectiveRarity(p, b)].rank
+	if ra ~= rb then return ra > rb end
+	local ma, mb = Progression.upgradeStats(p, a).magicalPower or 0, Progression.upgradeStats(p, b).magicalPower or 0
+	if ma ~= mb then return ma > mb end
+	local sa, sb = 0, 0
+	for _, v in pairs(Data.Items[a].stats or {}) do sa += v end
+	for _, v in pairs(Data.Items[b].stats or {}) do sb += v end
+	if sa ~= sb then return sa > sb end
+	return a < b
+end
+-- Active accessories: owned, unique by id, one per accessory family (only the
+-- best member counts for Magical Power and stats), within bag capacity,
+-- highest rarity first (SkyBlock: duplicates do not stack).
 function Progression.activeAccessories(p)
-	local seen, list = {}, {}
+	local seen, list, best = {}, {}, {}
 	for _, id in ipairs(p.accessoryBag or {}) do
 		local def = Data.Items[id]
 		if def and def.kind == "accessory" and not seen[id] and (p.items[id] or 0) > 0 then
 			seen[id] = true
-			table.insert(list, id)
+			local family = Progression.accessoryFamily(id)
+			if not family then
+				table.insert(list, id)
+			elseif not best[family] or familyBetter(p, id, best[family]) then
+				best[family] = id
+			end
 		end
 	end
+	for _, id in pairs(best) do table.insert(list, id) end
 	table.sort(list, function(a, b)
 		local ra, rb = Data.Rarity[Progression.effectiveRarity(p, a)].rank, Data.Rarity[Progression.effectiveRarity(p, b)].rank
 		if ra ~= rb then return ra > rb end

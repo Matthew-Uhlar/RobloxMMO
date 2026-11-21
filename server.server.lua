@@ -4753,11 +4753,13 @@ do
 		return line and (Progression.petEffects(p).family[line] or 0) or 0
 	end
 	-- Doubled harvests roll inside Progression.gatherYieldMult (max with mastery).
-	-- Extra craft: only stackable outputs (repeatable recipes, materials and
-	-- consumables); one-of-a-kind gear never duplicates.
+	-- Extra craft: only stackable outputs (materials, consumables and pet candy,
+	-- which is used up when fed); armour, weapons, accessories, held pet items
+	-- and other one-of-a-kind gear never duplicate, even from a repeatable recipe.
 	function Pets.craftStackable(recipe)
 		local def=type(recipe)=="table" and Data.Items[recipe.output]
-		return def~=nil and def~=false and (recipe.repeatable==true or def.kind=="material" or def.kind=="consumable")
+		if not def then return false end
+		return def.kind=="material" or def.kind=="consumable" or (def.kind=="petitem" and def.petItem=="candy")
 	end
 	function Pets.craftExtra(p,recipe)
 		if not Pets.craftStackable(recipe) then return false end
@@ -5084,16 +5086,8 @@ do
 		return humanoid~=nil and humanoid.Health>0
 	end
 	-- A cost item that is worn (gear slot) or bagged keeps those copies back:
-	-- a batch never consumes them (Slayer review rule).
-	local function keepsWorn(p,rec)
-		for id,n in pairs(rec.costs) do
-			local held=0
-			for _,e in pairs(p.equipment or {}) do if e==id then held+=1 end end
-			for _,b in ipairs(type(p.accessoryBag)=="table" and p.accessoryBag or {}) do if b==id then held+=1 end end
-			if held>0 and (p.items[id] or 0)-n<held then return "Unequip "..nameOf(id).." (or take it out of your accessory bag) first, or carry a spare." end
-		end
-		return nil
-	end
+	-- a batch never consumes them (Slayer review rule). CR.check counts only
+	-- CR.spare copies, so the UI (same rule) and the server agree.
 	local function publish(player,job)
 		player:SetAttribute("CraftingJob",if job then job.recipe..":"..job.done..":"..job.total else "")
 	end
@@ -5121,8 +5115,6 @@ do
 		if not near(player,visit) then return "Stand at the "..station.name.." to craft." end
 		local ok,why=CR.check(p,id,levelsOf(p),tiersOf(p))
 		if not ok then return why end
-		local wornWhy=keepsWorn(p,rec)
-		if wornWhy then return wornWhy end
 		local replaced=Crafting.jobs[player]~=nil
 		Crafting.jobs[player]={recipe=id,total=n,done=0,made=0,shattered=0,xp=0,visit=visit,nextAt=os.clock()+rec.seconds}
 		publish(player,Crafting.jobs[player])
@@ -5142,10 +5134,31 @@ do
 		if job.shattered>0 then text..=", "..job.shattered.." shattered" end
 		return text.." • +"..job.xp.." "..rec.skill.." XP"
 	end
+	-- Run a grant hook; a throw is logged, never propagated (the action's
+	-- materials are already spent, so the rest of the grant must still happen).
+	local function safely(what,f,...)
+		local ok,err=pcall(f,...)
+		if not ok then (warn or print)("Crafting "..what.." failed: "..tostring(err)) end
+		return ok
+	end
+	-- Grant `amount` of `item`; if collect() throws before the item lands, the
+	-- spent costs come back (materials are never lost). Returns true if granted.
+	local function grantOutput(p,rec,item,amount)
+		local before=p.items[item] or 0
+		if safely("grant",collect,p,item,amount) then return true end
+		if (p.items[item] or 0)>=before+amount then return true end -- landed; a later hook threw
+		for id,n in pairs(rec.costs) do p.items[id]=(p.items[id] or 0)+n end
+		return false
+	end
 	-- One action of a live job. Returns nothing; pushes its own snapshot.
 	function Crafting.step(player,job)
 		local p=live(player)
-		if not p or not player.Parent then Crafting.jobs[player]=nil return end
+		if not p or not player.Parent then
+			-- Journal lease lost (or the player left): drop the job and clear its attribute.
+			Crafting.jobs[player]=nil
+			safely("publish",publish,player,nil)
+			return
+		end
 		local rec=CR.Recipes[job.recipe]
 		local station=CR.Stations[rec.station]
 		local function finish(text)
@@ -5157,30 +5170,32 @@ do
 		if not near(player,job.visit) then return finish("You stepped away from the "..station.name..". "..summary(job)) end
 		local ok,why=CR.check(p,job.recipe,levelsOf(p),tiersOf(p))
 		if not ok then return finish(summary(job).." • "..why) end
-		local wornWhy=keepsWorn(p,rec)
-		if wornWhy then return finish(summary(job).." • "..wornWhy) end
-		spend(p,rec.costs)
-		local xp=rec.xp
 		local shatter=CR.cutFailChance(rec,level(p.xp.Crafting))
+		local shattered=shatter>0 and roll()<shatter
+		local amount=rec.amount
+		-- Pets depth: an extra-craft ability may add one more batch of a stackable output (no XP).
+		if not shattered and Pets.craftExtra and Pets.craftExtra(p,rec) then amount+=rec.amount end
+		if not spend(p,rec.costs) then return finish(summary(job).." • Materials missing.") end
+		-- From here the costs are spent: every grant is protected. If the output
+		-- cannot be granted the costs are refunded; a failing hook (journal,
+		-- commissions, XP) is logged and the rest still happens.
+		local xp=rec.xp
 		local text
-		if shatter>0 and roll()<shatter then
+		if shattered then
+			if not grantOutput(p,rec,"GemGrit",1) then return finish(summary(job).." • Something went wrong; your materials were returned.") end
 			xp=math.max(1,math.floor(rec.xp*CR.SHATTER_XP))
-			collect(p,"GemGrit",1)
 			job.shattered+=1
 			p.crafting.shattered=math.min(CR.MAX_MADE,p.crafting.shattered+1)
 			text="The "..nameOf(next(rec.costs)).." shattered into Gem Grit"
 		else
-			local amount=rec.amount
-			-- Pets depth: an extra-craft ability may add one more batch of a stackable output (no XP).
-			if Pets.craftExtra and Pets.craftExtra(p,rec) then amount+=rec.amount end
-			collect(p,rec.output,amount)
-			Journal.count(p,"crafts",rec.output,amount)
-			Logs.event(p,"craft",rec.output) -- Commissions & Logs: "craft" commissions
+			if not grantOutput(p,rec,rec.output,amount) then return finish(summary(job).." • Something went wrong; your materials were returned.") end
+			safely("journal",Journal.count,p,"crafts",rec.output,amount)
+			safely("commission",Logs.event,p,"craft",rec.output) -- Commissions & Logs: "craft" commissions
 			job.made+=amount
 			p.crafting.made[rec.id]=math.min(CR.MAX_MADE,(p.crafting.made[rec.id] or 0)+1)
 			text="+"..amount.." "..nameOf(rec.output)..(if amount>rec.amount then " (pet ×2)" else "")
 		end
-		grantXp(p,rec.skill,xp)
+		safely("xp",grantXp,p,rec.skill,xp)
 		job.xp+=xp
 		job.done+=1
 		p.started=true

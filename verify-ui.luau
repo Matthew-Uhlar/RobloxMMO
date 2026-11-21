@@ -2871,6 +2871,50 @@ do
 	for _, o in ipairs(ui.scroll:GetDescendants()) do if o.ClassName == "TextButton" and string.find(o.Name, "Craft1$") then any = true; press(o) end end
 	check(any and #ui.sent == 0, "away from the Tanning Rack nothing sends")
 	checkSent(ui)
+	-- QC L4: the client mirrors the server. Exactly five fundable actions show
+	-- one ×5 button (no duplicate); a lapsed range (near=false) blocks sends;
+	-- a worn/bagged cost item is not counted as spendable.
+	do
+		local function buttons(u, name)
+			local n = 0
+			for _, o in ipairs(u.scroll:GetDescendants()) do if o.ClassName == "TextButton" and o.Name == name then n += 1 end end
+			return n
+		end
+		local five = table.clone(snap)
+		five.items = table.clone(snap.items)
+		five.items.RoughSunstone = 5
+		five.crafting = { station = "Jeweller", stationIn = 600, near = true, made = {}, shattered = 0 }
+		local u5 = run({ snapshot = five })
+		visit(u5, "Workshop", "Crafting")
+		check(buttons(u5, "CraftSunstoneChip5") == 1, "afford == 5 shows a single ×5 button")
+		table.clear(u5.sent)
+		press(find(u5.scroll, "CraftSunstoneChip5"))
+		check(u5.sent[1] and u5.sent[1][2] == "SunstoneChip:5", "×5 sends five")
+		local far = table.clone(five)
+		far.crafting = { station = "Jeweller", stationIn = 600, near = false, made = {}, shattered = 0 }
+		local uf = run({ snapshot = far })
+		visit(uf, "Workshop", "Crafting")
+		table.clear(uf.sent)
+		press(find(uf.scroll, "CraftSunstoneChipCraft1"))
+		check(#uf.sent == 0, "out of range (near=false) nothing sends")
+		noFailures(uf, "crafting out of range")
+		local worn = snapshot({ xp = { Crafting = Data.XP_TABLE[60], Enchanting = Data.XP_TABLE[40] } })
+		worn.items = table.clone(worn.items)
+		worn.items.EmberglassAmulet, worn.items.ArcaneDust, worn.items.SparkGlyph = 1, 100, 40
+		worn.depth = table.clone(worn.depth or {})
+		worn.depth.accessoryBag = { "EmberglassAmulet" }
+		worn.crafting = { station = "Jeweller", stationIn = 600, near = true, made = {}, shattered = 0 }
+		local uw = run({ snapshot = worn })
+		visit(uw, "Workshop", "Crafting")
+		press(find(uw.scroll, "CategoryEnchanted"))
+		check(find(uw.scroll, "CraftEnchantedEmberglassAmulet") ~= nil, "enchanted amulet card")
+		table.clear(uw.sent)
+		press(find(uw.scroll, "CraftEnchantedEmberglassAmuletCraft1"))
+		check(#uw.sent == 0, "a bagged amulet is not spendable on the client either")
+		local spare = Data.Crafting.affordable({ items = { EmberglassAmulet = 2, ArcaneDust = 100, SparkGlyph = 40 }, accessoryBag = { "EmberglassAmulet" } }, Data.Crafting.Recipes.EnchantedEmberglassAmulet)
+		check(spare == 1, "affordable counts only spare copies")
+		noFailures(uw, "crafting worn copies")
+	end
 	-- Phone layout and malformed crafting data.
 	local phone = run({ snapshot = snap, size = roblox.Vector2.new(420, 600) })
 	visit(phone, "Workshop", "Crafting")

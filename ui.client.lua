@@ -2353,7 +2353,7 @@ local function drawAccessories()
 	card({name="AccessoryBag",motif="Satchel",title="Accessory bag",titleColor=gold,subtitle=fmt(inBag).." in bag  ·  "..fmt(activeCount).." active",
 		badge=activeCount.." / "..slots,
 		detail=paint("✧ Magical Power "..fmt(power),"FFAA00").."  grants "..statText({health=power,strength=math.floor(power/4)})..".",
-		lines={"Duplicates do not stack; highest rarity fills slots first. +1 slot every "..every.." "..tostring(tbl(rule.slotsPerLevel).skill or "Combat").." levels (max "..num(rule.maxSlots,24)..")."},
+		lines={"Duplicates do not stack; only the best piece of a gem's jewellery family counts; highest rarity fills slots first. +1 slot every "..every.." "..tostring(tbl(rule.slotsPerLevel).skill or "Combat").." levels (max "..num(rule.maxSlots,24)..")."},
 		bar={fraction=slots>0 and activeCount/slots or 0,color=gold,caption=activeCount.." / "..slots.." slots"}})
 	local owned,missing={},{}
 	for id,def in pairs(tbl(Data.Items)) do
@@ -2384,7 +2384,12 @@ local function drawAccessories()
 		local power=tbl(tbl(Data.Rarity)[def.rarity]).power
 		local statsLine=label(entry,statText(def.stats,1,"  "),size+14,compactAtlas and 24 or 28,UDim.new(1,-size-20),16,regular,compactAtlas and 10 or 11,muted)
 		statsLine.RichText=true
-		local status=label(entry,isActive and "ACTIVE" or (isBagged and "NO SLOT" or "ADD"),0,compactAtlas and 5 or 7,UDim.new(0,70),18,UI.heavy,11,isActive and mint or (isBagged and gold or muted))
+		-- A bagged jewellery piece outranked by a better piece of its gem family.
+		local outranked=false
+		if isBagged and not isActive and def.gem then
+			for other in pairs(active) do if itemDef(other).gem==def.gem then outranked=true end end
+		end
+		local status=label(entry,isActive and "ACTIVE" or (outranked and "FAMILY" or (isBagged and "NO SLOT" or "ADD")),0,compactAtlas and 5 or 7,UDim.new(0,70),18,UI.heavy,11,isActive and mint or (isBagged and gold or muted))
 		status.Position=UDim2.new(1,-76,0,compactAtlas and 5 or 7)
 		status.TextXAlignment=Enum.TextXAlignment.Right
 		if power then
@@ -7596,12 +7601,26 @@ function CRP.levelOf(skill)
 	return info and info.level or 1
 end
 function CRP.tierOf(id) local _,tier=collectionInfo(id) return tier end
--- How many actions the satchel can fund right now (capped at the batch size).
+-- The journal as CR.check / CR.affordable read it: items plus worn gear and the
+-- accessory bag, whose copies the server never spends (CR.spare).
+function CRP.journal()
+	local d=tbl(state.depth)
+	return {items=tbl(state.items),equipment=tbl(d.equipment),accessoryBag=tbl(d.accessoryBag)}
+end
+-- How many actions the satchel can fund right now (spare copies, capped at the batch size).
 function CRP.affordable(rec)
 	local CR=CRD()
+	if CR and CR.affordable then return CR.affordable(CRP.journal(),rec) end
 	local n=CR and CR.MAX_BATCH or 28
 	for id,need in pairs(tbl(rec.costs)) do n=math.min(n,math.floor(count("items",id)/math.max(1,num(need,1)))) end
 	return math.max(0,n)
+end
+-- Batch buttons for `afford` actions: ×1 always, ×5 and ×afford when they differ.
+function CRP.batchSizes(afford)
+	local sizes={1}
+	if afford>=5 then table.insert(sizes,5) end
+	if afford>1 and afford~=5 then table.insert(sizes,afford) end
+	return sizes
 end
 function CRP.categories(list)
 	local cats,by={},{}
@@ -7616,7 +7635,7 @@ function CRP.outputLine(def)
 	if not def then return "" end
 	local parts={}
 	if def.stats then table.insert(parts,statText(def.stats)) end
-	if def.kind=="accessory" then table.insert(parts,paint("✧ "..tostring(tbl(tbl(Data.Rarity)[def.rarity]).power or "?").." Magical Power","FFAA00")) end
+	if def.kind=="accessory" then table.insert(parts,paint("✧ "..tostring(tbl(tbl(Data.Rarity)[def.rarity]).power or "?").." Magical Power","FFAA00")..(def.gem and " (best of its gem family only)" or "")) end
 	if def.kind=="armor" and def.set and Data.Sets and Data.Sets[def.set] then table.insert(parts,"Set: "..escape(tostring(Data.Sets[def.set].text))) end
 	if type(def.requires)=="table" then
 		for skill,lvl in pairs(def.requires) do table.insert(parts,"Wear: "..escape(skill).." "..fmt(lvl)) end
@@ -7636,8 +7655,10 @@ function CRP.draw()
 	sectionBar(names,CR.Stations[CRP.station].name,function(name) CRP.station=ids[name];scroll.CanvasPosition=Vector2.zero;render() end,{small=true,prefix="Station"})
 	local st=CR.Stations[CRP.station]
 	local info=skillsOf(state).Crafting
-	local here=at==CRP.station
-	local presence=if here and snap.near~=false then paint("At the "..st.name.." · batches open for "..clock(num(snap.stationIn,0)),"9EE7D2")
+	-- Present = a live visit to this station AND standing in range (snap.near),
+	-- exactly what the server's craftBatch requires.
+	local here=at==CRP.station and snap.near~=false
+	local presence=if here then paint("At the "..st.name.." · batches open for "..clock(num(snap.stationIn,0)),"9EE7D2")
 		else paint("Visit the "..st.name.." on the Guild Terrace (Artificers' Row) to craft here.","E8806A")
 	local tools={}
 	for _,id in ipairs(CR.ToolOrder) do
@@ -7668,7 +7689,7 @@ function CRP.draw()
 	local craftLevel=CRP.levelOf("Crafting")
 	for _,rec in ipairs(by[cat] or {}) do
 		local out=itemDef(rec.output)
-		local ok,reason=CR.check({items=tbl(state.items)},rec.id,CRP.levelOf,CRP.tierOf)
+		local ok,reason=CR.check(CRP.journal(),rec.id,CRP.levelOf,CRP.tierOf)
 		local gates={(CRP.levelOf(rec.skill)>=rec.level and check or cross).." "..escape(rec.skill).." "..rec.level}
 		if rec.tool then table.insert(gates,(count("items",rec.tool)>0 and check or cross).." "..escape(itemName(rec.tool))) end
 		for id,tier in pairs(tbl(rec.collectionTier)) do table.insert(gates,(CRP.tierOf(id)>=tier and check or cross).." "..escape(itemName(id)).." collection "..numeral(tier)) end
@@ -7687,10 +7708,11 @@ function CRP.draw()
 		table.insert(lines,xpLine)
 		local afford=CRP.affordable(rec)
 		local blocked=not ok or not here
-		local why=reason or (not here and ("Visit the "..st.name.." first.")) or nil
-		local actions={{caption="Craft ×1",primary=not blocked,disabled=blocked,reason=why,fn=function() send("craftBatch",rec.id..":1") end}}
-		if afford>=5 then table.insert(actions,{caption="×5",disabled=blocked,reason=why,fn=function() send("craftBatch",rec.id..":5") end}) end
-		if afford>1 then table.insert(actions,{caption="×"..afford,disabled=blocked,reason=why,fn=function() send("craftBatch",rec.id..":"..afford) end}) end
+		local why=reason or (not here and (if at==CRP.station then "Stand at the "..st.name.." to craft." else "Visit the "..st.name.." first.")) or nil
+		local actions={}
+		for _,n in ipairs(CRP.batchSizes(afford)) do
+			table.insert(actions,{caption=n==1 and "Craft ×1" or "×"..n,primary=n==1 and not blocked or nil,disabled=blocked,reason=why,fn=function() send("craftBatch",rec.id..":"..n) end})
+		end
 		card({name="Craft"..rec.id,item=rec.output,title=escape(out and out.name or rec.output)..(rec.amount>1 and ("  ×"..rec.amount) or ""),titleColor=rgb(itemHex(rec.output)),
 			subtitle=escape((out and out.rarity or "").." "..kindLabel(out)).."  ·  Lv "..rec.level,badge=ok and "READY" or nil,badgeColor=mint,lines=lines,actions=actions})
 	end

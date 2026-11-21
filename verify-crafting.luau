@@ -81,7 +81,15 @@ for _, id in ipairs(CR.RecipeOrder) do
 	ok(Data.Items[r.output] ~= nil, id .. " output exists")
 	ok(r.level >= 1 and r.level <= 99 and r.xp > 0 and r.amount >= 1, id .. " level/xp/amount")
 	ok(r.skill == "Crafting" or (r.skill == "Enchanting" and r.branch == "enchant"), id .. " trains Crafting (Enchanting for amulets)")
-	ok(r.repeatable == true and r.seconds == CR.Branches[r.branch].seconds and r.station == CR.Branches[r.branch].station, id .. " branch fields")
+	ok(r.seconds == CR.Branches[r.branch].seconds and r.station == CR.Branches[r.branch].station, id .. " branch fields")
+	-- QC L1: only stackable outputs are `repeatable` (pet extra-craft never duplicates gear).
+	local outKind = Data.Items[r.output].kind
+	eq(r.repeatable, outKind == "material" or outKind == "consumable", id .. " repeatable only for materials/consumables (" .. outKind .. ")")
+	-- QC H1: no pattern mints coins: output value <= floor(input value / amount).
+	local input = 0
+	for item, n in pairs(r.costs) do input += Data.Items[item].value * n end
+	ok(Data.Items[r.output].value <= math.floor(input / r.amount), string.format("%s sells for %d <= inputs %d / %d", id, Data.Items[r.output].value, input, r.amount))
+	eq(CR.valueCap(r), math.floor(input / r.amount), id .. " valueCap")
 	for item, n in pairs(r.costs) do ok(Data.Items[item] ~= nil and n >= 1 and n % 1 == 0, id .. " cost " .. item) end
 	for item, t in pairs(r.collectionTier or {}) do
 		ok(table.find(Data.CollectionItems, item) ~= nil and t >= 1 and t <= #Data.CollectionTiers, id .. " gate " .. item .. " is a collection")
@@ -185,17 +193,99 @@ do
 		ok(Data.Rarity[ring.rarity].rank <= Data.Rarity[neck.rarity].rank and Data.Rarity[neck.rarity].rank <= Data.Rarity[amulet.rarity].rank, g.cut .. " rarity ring <= necklace <= amulet")
 		ok(CR.Recipes[g.amulet].costs.SpunThread == 1 and CR.Recipes[g.amulet].tool == "AmuletMould", g.cut .. " amulet strung, cast in a mould")
 	end
+	-- QC M1: Magical Power per coin of input within 2x of the Workbench
+	-- talismans (crafted, non-jewellery accessories) of the same rarity: input
+	-- value >= half the cheapest talisman's and <= twice the dearest's.
+	local talisman = {}
+	for id, def in pairs(Data.Items) do
+		local rec = Data.Recipes[id]
+		if def.kind == "accessory" and def.category ~= "jewellery" and rec then
+			local input = 0
+			for item, n in pairs(rec.costs) do input += Data.Items[item].value * n end
+			local t = talisman[def.rarity] or {min = math.huge, max = 0}
+			t.min, t.max = math.min(t.min, input), math.max(t.max, input)
+			talisman[def.rarity] = t
+		end
+	end
+	for _, id in ipairs(CR.JewelleryOrder) do
+		local def, t = Data.Items[id], talisman[Data.Items[id].rarity]
+		ok(t ~= nil, id .. " has talismans of its rarity to compare")
+		local input = CR.inputValue(CR.Recipes[id])
+		ok(input >= t.min / 2 and input <= t.max * 2, string.format("%s (%s) input %d within 2x of talismans %d..%d", id, def.rarity, input, t.min, t.max))
+	end
+	ok(CR.inputValue(CR.Recipes.DewquartzRing) >= CR.inputValue(Data.Recipes.MeadowCharm) / 2, "Dewquartz Ring no longer ~6x cheaper per MP than the Meadow Charm")
+	-- QC M1: one accessory family per gem — only its best piece counts.
+	for _, g in ipairs(CR.Gems) do
+		local short = g.short:gsub("[^%w]", "")
+		for _, k in ipairs({"Ring", "Necklace", "Amulet"}) do eq(P.accessoryFamily(short .. k), "jewellery:" .. g.cut, short .. k .. " family") end
+	end
+	eq(P.accessoryFamily("EnchantedEmberglassAmulet"), "jewellery:Emberglass", "enchanted amulet joins its gem's family")
+	eq(P.accessoryFamily("FarsightOrb"), nil, "glass charms are their own family")
+	eq(P.accessoryFamily("MeadowCharm"), nil, "talismans are their own family")
+	do
+		local line = {"VoidgarnetRing", "VoidgarnetNecklace", "VoidgarnetAmulet", "EnchantedVoidgarnetAmulet"}
+		local p = {xp = {Combat = Data.XP_TABLE[99]}, items = {MeadowCharm = 1, FarsightOrb = 1}, accessoryBag = {"MeadowCharm", "FarsightOrb"}}
+		for _, id in ipairs(line) do p.items[id] = 1; table.insert(p.accessoryBag, id) end
+		local active = P.activeAccessories(p)
+		eq(#active, 3, "family: four Voidgarnet pieces count once (+ charm + orb)")
+		ok(table.find(active, "EnchantedVoidgarnetAmulet") ~= nil and table.find(active, "VoidgarnetAmulet") == nil, "family keeps the highest rarity")
+		eq(P.magicalPower(p), Data.Rarity.Legendary.power + Data.Rarity.Rare.power + Data.Rarity.Common.power, "family Magical Power")
+		local s = P.computeStats(p, 0)
+		local alone = P.computeStats({xp = p.xp, items = {EnchantedVoidgarnetAmulet = 1, MeadowCharm = 1, FarsightOrb = 1}, accessoryBag = {"EnchantedVoidgarnetAmulet", "MeadowCharm", "FarsightOrb"}}, 0)
+		eq(s.critDamage, alone.critDamage, "outranked family pieces add no stats")
+		-- Tie on rarity: the piece with more stats wins (Common Dewquartz ring/necklace/amulet).
+		local q = {xp = {}, items = {DewquartzRing = 1, DewquartzNecklace = 1, DewquartzAmulet = 1}, accessoryBag = {"DewquartzRing", "DewquartzNecklace", "DewquartzAmulet"}}
+		local a = P.activeAccessories(q)
+		eq(#a, 1, "one Dewquartz piece active")
+		eq(a[1], "DewquartzAmulet", "tie broken by stats (amulet has both stats)")
+		-- Before the rule every bagged piece counted; now the whole jewellery line is one piece per gem.
+		local all = {xp = {Combat = Data.XP_TABLE[99]}, items = {}, accessoryBag = {}}
+		for _, id in ipairs(CR.JewelleryOrder) do all.items[id] = 1; table.insert(all.accessoryBag, id) end
+		eq(#P.activeAccessories(all), #CR.Gems + 2, "full jewellery line: one per gem + two glass charms")
+	end
 	for _, id in ipairs(CR.EnchantOrder) do
 		local r = CR.Recipes[id]
 		ok(r.skill == "Enchanting" and r.costs.ArcaneDust > 0, id .. " Enchanting with Arcane Dust")
+		-- QC M2: ~2 Enchanting XP per Arcane Dust (the Tempering Tome rate), not 6.
+		eq(r.xp, r.costs.ArcaneDust * CR.ENCHANT_XP_PER_DUST, id .. " XP per dust")
+		ok(CR.ENCHANT_XP_PER_DUST <= 2.5 and r.xp / r.costs.ArcaneDust <= 2 * Data.Recipes.TemperingTome.xp / Data.Recipes.TemperingTome.costs.ArcaneDust, id .. " near the Tempering Tome XP/dust")
 		local base
 		for k in pairs(r.costs) do if Data.Items[k].kind == "accessory" then base = k end end
 		ok(base ~= nil and Data.Rarity[Data.Items[id].rarity].rank == Data.Rarity[Data.Items[base].rarity].rank + 1, id .. " one rarity above " .. tostring(base))
 	end
 end
--- Alchemy link is proposed but OFF: potion costs are unchanged.
-eq(CR.VIALS_IN_POTIONS, false, "vial potion change awaits the lead")
-for _, id in ipairs(CR.VIAL_POTIONS) do ok(Data.Recipes[id] and Data.Recipes[id].skill == "Alchemy" and Data.Recipes[id].costs.GlassVial == nil, id .. " unchanged") end
+-- QC L7: Alchemy link ON (lead decision): every Alchemy potion of Alchemy 8+
+-- takes one Skyglass Vial; potions below Alchemy 8 stay vial-free.
+eq(CR.VIALS_IN_POTIONS, true, "vials in potions approved")
+do
+	local listed, potions = 0, 0
+	for id, r in pairs(Data.Recipes) do
+		if r.category == "Potions" and r.skill == "Alchemy" then
+			potions += 1
+			if r.level >= CR.VIAL_MIN_ALCHEMY then
+				listed += 1
+				ok(table.find(CR.VIAL_POTIONS, id) ~= nil and r.costs.GlassVial == 1, id .. " (Alchemy " .. r.level .. ") takes one vial")
+			else
+				ok(table.find(CR.VIAL_EXEMPT, id) ~= nil and r.costs.GlassVial == nil, id .. " (Alchemy " .. r.level .. ") stays vial-free")
+			end
+		end
+	end
+	eq(#CR.VIAL_POTIONS, listed, "vial list covers every Alchemy 8+ potion")
+	ok(potions >= 15 and listed >= 14, "all potions considered (" .. potions .. ")")
+	for _, id in ipairs({"FeatherlightDraught", "TrackersFocus", "VerdantElixir", "DevotionDraught", "ChoirTonic"}) do ok(table.find(CR.VIAL_POTIONS, id) ~= nil, id .. " included") end
+	ok(table.find(CR.VIAL_EXEMPT, "MightDraught") ~= nil, "Might Draught (Alchemy 5) exempt")
+	ok(CR.Recipes.GlassVial.level <= CR.VIAL_MIN_ALCHEMY, "vials are blowable by the time potions need them")
+	-- Diary tasks that brew potions use only vial-free potions.
+	for _, diary in ipairs(Data.Diaries) do
+		for _, tier in pairs(diary.tiers) do
+			for _, task in ipairs(tier.tasks or tier) do
+				if type(task) == "table" and task.kind == "craft" and Data.Recipes[task.item] and Data.Recipes[task.item].category == "Potions" then
+					ok(Data.Recipes[task.item].costs.GlassVial == nil, "diary brew " .. task.item .. " stays vial-free")
+				end
+			end
+		end
+	end
+end
 ok(CR.Recipes.TanningOil.costs.GlassVial == 1, "vials already feed Tanning Oil")
 -- Commissions: craft tasks credit Crafting outputs.
 do
@@ -253,10 +343,11 @@ do
 		for k, n in pairs(r.costs) do s += n * CR.rawSeconds(k) end
 		return 3600 * r.xp / s
 	end
-	local function refRate(L)
+	local function refRate(L, skills)
+		skills = skills or {Smithing = true, Fletching = true, Glyphcraft = true}
 		local best = 0
 		for _, r in pairs(Data.Recipes) do
-			if (r.skill == "Smithing" or r.skill == "Fletching" or r.skill == "Glyphcraft") and r.level <= L and r.repeatable then best = math.max(best, prodRate(r)) end
+			if skills[r.skill] and r.level <= L and r.repeatable then best = math.max(best, prodRate(r)) end
 		end
 		return best
 	end
@@ -267,6 +358,12 @@ do
 			local c, ref = CR.chainRate(r), refRate(r.level)
 			ok(c / ref >= 0.5 and c / ref <= 2, string.format("%s chain %.0f XP/h vs production %.0f (x%.2f) within 0.5..2", id, c, ref, c / ref))
 			if r.branch ~= "leather" or Data.Items[r.output].slot == "chest" then table.insert(rows, string.format("%s L%d %.0f (x%.2f)", id, r.level, c, c / ref)) end
+		elseif r.branch == "enchant" then
+			-- QC M2: enchanted amulets train Enchanting at the Tempering Tome's chain rate.
+			local c, ref = CR.chainRate(r), refRate(r.level, {Enchanting = true})
+			ok(ref > 0 and c / ref >= 0.5 and c / ref <= 2, string.format("%s chain %.0f Enchanting XP/h vs Enchanting %.0f (x%.2f) within 0.5..2", id, c, ref, c / ref))
+			ok(CR.stationRate(r) <= 400000, string.format("%s banked-material rate %.0f XP/h (was 6 XP/dust: up to 921,600)", id, CR.stationRate(r)))
+			table.insert(rows, string.format("%s E%d %.0f (x%.2f)", id, r.level, c, c / ref))
 		end
 		-- Cadence: one action per branch period, so a full batch takes MAX_BATCH x seconds.
 		ok(CR.stationRate(r) <= 3600 / r.seconds * r.xp + 1e-6, id .. " station rate is cadence-bound")
@@ -277,6 +374,17 @@ do
 		local perHour = 3600 / math.max(r.respawn, CR.GATHER)
 		local bonus = CR.cutRate(t, perHour)
 		ok(bonus > 0 and bonus <= 0.06 * perHour * r.xp, string.format("%s: cutting bonus %.0f XP/h vs mining %.0f", r.id, bonus, perHour * r.xp))
+	end
+	-- QC L6: realistic rough-gem rate when cycling nodes (gather-bound, no
+	-- respawn wait) stays below the Thieving gem sources (Gemcutter's Stall).
+	local stall = Data.Thieving.TargetById.GemStall
+	local stallGems = 0
+	for _, d in ipairs(stall.drops) do if Data.Items[d.item].category == "gem" then stallGems += d.chance * (d.min + d.max) / 2 end end
+	local stallPerHour = 3600 / stall.respawn * stall.base * stallGems
+	for t = 1, #Data.ResourceTiers.Mining do
+		local cycling = 3600 / CR.GATHER * CR.gemChance(t)
+		ok(cycling >= 15 and cycling <= 60, string.format("ore tier %d: %.0f rough gems/h cycling nodes", t, cycling))
+		ok(cycling <= 0.5 * stallPerHour, string.format("ore tier %d gems %.0f/h below half the Gemcutter's Stall %.0f/h", t, cycling, stallPerHour))
 	end
 end
 print("PASS: " .. (checks - partA) .. " Crafting data/rule assertions.")
@@ -358,6 +466,17 @@ for _, m in terrace:GetChildren() do
 	end
 end
 ok(craftParts >= 12 and craftParts <= 40, "Crafting stations stay within a small part budget (" .. craftParts .. ")")
+-- QC L8: the documented figure (DEPTH-CONTRACT §22, world.server.lua header):
+-- 18 station parts + a 3-part sign + 3 invisible waypoint anchors = 24.
+eq(craftParts, 18, "documented station part count")
+do
+	local sign = terrace:FindFirstChild("Sign Artificers' Row")
+	local signParts, anchors = 0, 0
+	for _, obj in (sign and sign:GetDescendants() or {}) do if obj:IsA("BasePart") then signParts += 1 end end
+	for _, id in ipairs(CR.StationOrder) do if terrace:FindFirstChild("Anchor_Waypoint_" .. id, true) then anchors += 1 end end
+	eq(signParts, 3, "documented sign part count")
+	eq(craftParts + signParts + anchors, 24, "documented Artificers' Row total")
+end
 -- Stations use existing mesh slots and stand apart from each other and from the old stations.
 do
 	local shapes = {}
@@ -666,7 +785,7 @@ local jeweller = seeded(7003, function(prof)
 	prof.xp.Crafting = X[60]
 	prof.xp.Enchanting = X[40]
 	prof.items = {EmberglassAmulet = 1, ArcaneDust = 100, SparkGlyph = 40, AmuletMould = 1, RingMould = 1, NecklaceMould = 1,
-		Dewquartz = 4, AlloyIngot = 10, SpunThread = 4, Emberglass = 3, SunsteelIngot = 4}
+		Dewquartz = 8, AlloyIngot = 10, SpunThread = 4, Emberglass = 3, SunsteelIngot = 4}
 	prof.collection = {Emberglass = 5000}
 	prof.accessoryBag = {"EmberglassAmulet"}
 end)
@@ -780,6 +899,74 @@ use(iron, G)
 cmd(iron, "craftBatch", "Skysand:1")
 run(CR.Branches.sift.seconds)
 eq(iron.last.items.Skysand, 2, "ironman crafts at the station")
+-- QC L1: a pet extra-craft ability doubles only stackable outputs; armour and
+-- jewellery batches never duplicate.
+do
+	local petCrafter = seeded(7008, function(prof)
+		prof.xp.Crafting = X[20]
+		prof.items = {Ore = 4, HideNeedle = 1, CuredLeather = 2, SpunThread = 2, RingMould = 1, Dewquartz = 4, AlloyIngot = 4}
+	end)
+	local realEffects = P.petEffects
+	P.petEffects = function(p)
+		local fx = table.clone(realEffects(p))
+		fx.craft = {Crafting = 100}
+		return fx
+	end
+	use(petCrafter, G)
+	cmd(petCrafter, "craftBatch", "Skysand:1")
+	run(CR.Branches.sift.seconds)
+	eq(petCrafter.last.items.Skysand, 4, "pet doubles a material output (Skysand)")
+	use(petCrafter, T)
+	cmd(petCrafter, "craftBatch", "WayfarerTreads:1")
+	run(CR.Branches.leather.seconds)
+	eq(petCrafter.last.items.WayfarerTreads, 1, "pet never duplicates armour")
+	use(petCrafter, J)
+	cmd(petCrafter, "craftBatch", "DewquartzRing:1")
+	run(CR.Branches.jewel.seconds)
+	eq(petCrafter.last.items.DewquartzRing, 1, "pet never duplicates jewellery")
+	P.petEffects = realEffects
+end
+-- QC L2: a throw in a grant hook never loses the spent materials: the output
+-- still lands (or the costs are refunded) and the batch carries on.
+do
+	local hooked = seeded(7009, function(prof)
+		prof.xp.Crafting = X[5]
+		prof.items = {Ore = 4, Skysand = 4, Timber = 2}
+	end)
+	use(hooked, G)
+	local realAddXp = P.addXp
+	P.addXp = function() P.addXp = realAddXp; error("xp hook failed") end -- one-shot throw
+	local xp0 = cmd(hooked, "state").xp.Crafting
+	cmd(hooked, "craftBatch", "Skysand:2")
+	run(CR.Branches.sift.seconds)
+	P.addXp = realAddXp
+	local h1 = hooked.last
+	eq(h1.items.Ore, 3, "XP throw: the Ore is spent once")
+	eq(h1.items.Skysand, 6, "XP throw: the Skysand still lands")
+	eq(hooked.attrs.CraftingJob, "Skysand:1:2", "XP throw: the batch carries on")
+	run(CR.Branches.sift.seconds)
+	eq(hooked.last.items.Skysand, 8, "next action after a failed hook")
+	ok(hooked.last.xp.Crafting > xp0, "later actions pay XP again")
+	local realTier = P.collectionTier
+	cmd(hooked, "craftBatch", "MoltenGlass:1")
+	P.collectionTier = function() P.collectionTier = realTier; error("collection hook failed") end -- throws inside collect()
+	run(CR.Branches.melt.seconds)
+	P.collectionTier = realTier
+	eq(hooked.last.items.MoltenGlass, 1, "collect throw after the item landed: the glass is kept")
+	eq(hooked.last.items.Skysand, 6, "and the sand spent once")
+	eq(hooked.last.items.Timber, 1, "and the log spent once")
+end
+-- QC L3: losing the journal lease mid-batch clears the job and its attribute.
+do
+	local leased = seeded(7010, function(prof) prof.items = {Ore = 5} end)
+	use(leased, G)
+	cmd(leased, "craftBatch", "Skysand:5")
+	eq(leased.attrs.CraftingJob, "Skysand:0:5", "job published")
+	utc += 400 -- past the 180 s lease, no autosave renewal
+	run(CR.Branches.sift.seconds)
+	eq(leased.attrs.CraftingJob, "", "lease loss clears CraftingJob")
+	utc -= 400
+end
 print("PASS: " .. (checks - partC) .. " Crafting server assertions.")
 print("Crafting QA passed " .. checks .. " checks.")
 print("SUITE-END verify-crafting.luau")
