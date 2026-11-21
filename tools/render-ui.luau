@@ -57,7 +57,7 @@ end
 
 -- Sections other teams own right now (rendered and reviewed by them).
 local skip = { ["Hunt-Bosses"] = true }
-local tabs = { "Journal", "Hero", "Satchel", "Workshop", "Hunt", "Ledger" }
+local tabs = { "Menu", "Journal", "Hero", "Satchel", "Workshop", "Hunt", "Ledger" }
 local function wanted(id)
 	return filter == nil or id:lower():find(filter:lower(), 1, true) ~= nil
 end
@@ -85,13 +85,20 @@ local function screenTree(playerGui)
 	table.sort(guis, function(a, b) return (a.props.DisplayOrder or 0) < (b.props.DisplayOrder or 0) end)
 	return guis
 end
--- A HUD scene: atlas closed, combat HUD, optional extras.
+-- A HUD scene: atlas closed, combat HUD, Wayfinder minimap, the satchel / XP
+-- layer (hud.client.lua) and a stand-in for the 9-slot hotbar (hotbar.client.lua
+-- is another team's; the preview draws Theme slots where it sits).
 local function hudScene(size, profile, message)
+	local touch = size.Y < 500
 	local hudUi = H.runAtlas(size, { touch = true, snapshot = snapshotFor(profile) })
 	hudUi.player:SetAttribute("Mana", 118)
 	hudUi.player:SetAttribute("MaxMana", 160)
 	local combat = H.runCombat(size, hudUi.player, hudUi.replicated)
-	if message then hudUi.update.OnClientEvent:Fire(snapshotFor(profile, { message = message })) end
+	local layer = H.runHud(size, hudUi.player, hudUi.replicated, { touch = touch })
+	H.runNav(size, hudUi.player, hudUi.replicated, { touch = touch })
+	H.hotbarPreview(hudUi.playerGui, size, layer.theme, snapshotFor(profile))
+	hudUi.update.OnClientEvent:Fire(snapshotFor(profile, { message = message or "" }))
+	hudUi.hud = layer
 	return hudUi, combat
 end
 
@@ -145,6 +152,19 @@ for _, profile in ipairs(profiles) do
 			local nextLevel = math.min(H.Progression.levelForXp(mining) + 1, H.Data.MAX_LEVEL or 99)
 			local after = snapshotFor(profile, { message = "Mined Brassite ore   ·   Mining level " .. nextLevel .. "! +" .. H.Data.levelCoinReward(nextLevel) .. " coins" })
 			after.xp.Mining = H.Data.XP_TABLE[nextLevel] + 5
+			-- depth.skills is what the HUD reads: a level-up in Mining and a Combat gain.
+			local skills = after.depth and after.depth.skills
+			if skills then
+				skills = table.clone(skills)
+				after.depth = table.clone(after.depth)
+				after.depth.skills = skills
+				local m = table.clone(skills.Mining or {})
+				m.xp, m.level, m.fraction, m.maxed = after.xp.Mining, nextLevel, 0.06, false
+				skills.Mining = m
+				local c = table.clone(skills.Combat or { level = 1, xp = 0, fraction = 0 })
+				c.xp, c.fraction = (c.xp or 0) + 48, math.min(0.98, (c.fraction or 0) + 0.04)
+				skills.Combat = c
+			end
 			hudUi.update.OnClientEvent:Fire(after)
 			table.insert(combat.tagged, combat.monster)
 			combat.monster:SetAttribute("Health", 640)
@@ -155,7 +175,45 @@ for _, profile in ipairs(profiles) do
 			combat.monster:SetAttribute("DisplayName", "Brassfall Golem")
 			combat.fx.OnClientEvent:Fire("bossSpawn", { owner = 1, name = "Brassfall Golem" })
 			combat.run.RenderStepped:Fire()
+			-- Tweens settle instantly here, so freeze the XP drops mid-flight.
+			for i = 1, 5 do
+				local drop = H.find(hudUi.hud.gui, "Drop" .. i)
+				if drop and drop.Text ~= "" then
+					drop.Visible, drop.TextTransparency, drop.TextStrokeTransparency = true, 0, 0.2
+					drop.Position = roblox.UDim2.fromOffset(170, (i - 1) * 20)
+				end
+			end
 			table.insert(shots, { id = "HUD", guis = screenTree(hudUi.playerGui) })
+		end
+		-- Satchel side panel, its context menu and lore tooltip, the paperdoll, the Sky Chart.
+		for _, extra in ipairs({ "HUD-Satchel", "HUD-ContextMenu", "HUD-Gear", "WarpMap" }) do
+			if wanted(extra) then
+				local hudUi = hudScene(size, profile)
+				local layer = hudUi.hud
+				local S = layer.state
+				if extra == "WarpMap" then
+					layer.api.OnInvoke("chart")
+					for _, isle in ipairs(layer.theme.WorldMap.islands) do
+						if isle.id == "Skyreach" then S.pickWarp(isle, H.find(S.chart, "Isle_Skyreach")) end
+					end
+				else
+					S.setOpen(true)
+					if extra == "HUD-Gear" then S.view = "Gear"; S.refresh() end
+					if extra == "HUD-Satchel" then
+						local slot = S.slots[2]
+						local id = (S.pageIds or {})[2]
+						if id then
+							local ctx, def = S.ctx(id)
+							layer.theme.showTooltip(S.tooltip, layer.theme.lore(def, ctx), roblox.Vector2.new(S.panel.Position.X.Offset - 262, S.panel.Position.Y.Offset + 60), size)
+						end
+						S.selected = id
+						S.refresh()
+					elseif extra == "HUD-ContextMenu" then
+						S.openMenu("SunsteelSword", roblox.Vector2.new(S.panel.Position.X.Offset - 180, S.panel.Position.Y.Offset + 120))
+					end
+				end
+				table.insert(shots, { id = extra, guis = screenTree(hudUi.playerGui) })
+			end
 		end
 		-- Agility & Hunter HUD: a lap underway (lap tracker) and a caught trap (trap counter).
 		if wanted("hud-agility") then

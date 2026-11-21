@@ -47,9 +47,11 @@ local function rgb(hex)
 	return Color3.fromRGB(tonumber(hex:sub(1, 2), 16) or 255, tonumber(hex:sub(3, 4), 16) or 255, tonumber(hex:sub(5, 6), 16) or 255)
 end
 -- Palette and type match the atlas "Aether Brass" design system (ui.client.lua).
-local deep, ivory, gold, mint = rgb("0C1820"), rgb("F7EFDC"), rgb("F3C66E"), rgb("7FE3CC")
-local brass, brassDark, track, ember, raised = rgb("C9974A"), rgb("6B4E24"), rgb("060E14"), rgb("EF7D67"), rgb("2A4D5E")
-local heavy, display = Enum.Font.BuilderSansExtraBold, Enum.Font.FredokaOne
+-- Colours, fonts and HUD lanes from the shared theme (§29).
+local Theme = require(ReplicatedStorage:WaitForChild("AetherUiTheme"))
+local deep, ivory, gold, mint = Theme.color.inset, Theme.color.text, Theme.color.gold, Theme.color.mint
+local brass, brassDark, track, ember, raised = Theme.color.frame, Theme.color.frameLo, Theme.color.void, Theme.color.ember, Theme.color.raised
+local heavy, display = Enum.Font.BuilderSansExtraBold, Theme.font.display
 local bold = heavy
 local white = Color3.new(1, 1, 1)
 
@@ -150,13 +152,20 @@ end
 --   event banner y 76-110, Wayfinder toast y 118-158.
 -- Items centre on the screen when they fit the lane, else centre in the lane
 -- (shrunk to it). Screens whose lane is under 220 px stack below the tracker.
-local HUD_RIGHT, EDGE, BELOW_HUD = 325, 10, 174
-local function laneFor(width)
+local EDGE, BELOW_HUD = 10, 174
+-- Theme.hudLayout for the current screen (the hotbar gap, minimap, sidebar).
+local function lanes()
+	local view = gui.AbsoluteSize
 	local camera = Workspace.CurrentCamera
-	local viewport = camera and camera.ViewportSize
-	local height = if viewport and viewport.Y > 0 then viewport.Y else (gui.AbsoluteSize and gui.AbsoluteSize.Y or 720)
-	local mapSize = if height < 520 then 118 else 156
-	return HUD_RIGHT, width - EDGE - mapSize - EDGE
+	local w = if view and view.X > 0 then view.X else 1280
+	local h = if view and view.Y > 0 then view.Y elseif camera and camera.ViewportSize.Y > 0 then camera.ViewportSize.Y else 720
+	return Theme.hudLayout(w, h, {touch = UserInputService.TouchEnabled, satchelOpen = player:GetAttribute("IsleSatchelOpen") == true})
+end
+-- The top lane runs between the minimap block (left) and the sidebar (right).
+local function laneFor(width)
+	local L = lanes()
+	BELOW_HUD = L.leftTop
+	return L.lane.left, L.lane.right
 end
 local function placeInLane(object, wanted, top, height, width)
 	local left, right = laneFor(width)
@@ -211,7 +220,8 @@ local STYLE_LOOK = {
 local function ensureAttackButton()
 	if attackButton or not UserInputService.TouchEnabled then return end
 	attackButton = make("TextButton", gui, {
-		Name = "AttackButton", AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -110, 1, -40),
+		-- Bottom-right corner, right of the hotbar gap (§29 lanes).
+		Name = "AttackButton", AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -10, 1, -4),
 		Size = UDim2.fromOffset(78, 78), BackgroundColor3 = raised, BackgroundTransparency = 0.05,
 		Font = heavy, Text = "⚔", TextSize = 30, TextColor3 = gold, AutoButtonColor = true, TextYAlignment = Enum.TextYAlignment.Top,
 	})
@@ -391,8 +401,16 @@ local function layoutSpellBar()
 	local n = #S.slots
 	local width = size + n * (size + gap)
 	spellBar.Size = UDim2.fromOffset(width, size)
-	-- Touch: left of the Attack button (x W-188..W-110); else the bottom-right corner.
-	spellBar.Position = if attackButton then UDim2.new(1, -196, 1, -44) else UDim2.new(1, -10, 1, -44)
+	-- Touch: left of the Attack button (x W-88..W-10); else the bottom-right
+	-- corner. When that would reach over the hotbar (phones), the bar centres in
+	-- the band above the hotbar, just over the action bar (Theme.hudLayout).
+	local L = lanes()
+	local right = if attackButton then 96 else 10
+	local lift0, centred = 44, false
+	if L.w - right - width < L.hotbar.x + L.hotbar.w + 8 then lift0, centred = L.h - L.action.y + 4, true end
+	S.spellLift0, S.spellCentred, S.spellRight = lift0, centred, right
+	spellBar.AnchorPoint = if centred then Vector2.new(0.5, 1) else Vector2.new(1, 1)
+	spellBar.Position = if centred then UDim2.new(0.5, 0, 1, -lift0) else UDim2.new(1, -right, 1, -lift0)
 	styleChip.Size = UDim2.fromOffset(size, size)
 	styleGlyph.TextSize = if size < 48 then 19 else 22
 	styleCaption.TextSize = 11
@@ -405,7 +423,7 @@ local function layoutSpellBar()
 	local shown = player:GetAttribute("IslandBuilding") ~= true and not talking()
 	spellBar.Visible = shown
 	-- Prayer quick bar (Prayer section below) stacks above the spell bar.
-	local lift = if shown then size + 6 else 0
+	local lift = if shown then size + 6 + (S.spellLift0 - 44) else 0
 	if S.prayerLayout then lift += S.prayerLayout(size, shown) end
 	hudLift(lift)
 end
@@ -1212,10 +1230,11 @@ function WBH.layout()
 		WBH.bar.AnchorPoint, WBH.bar.Position = Vector2.new(0, 0), UDim2.fromOffset(EDGE, BELOW_HUD)
 		WBH.bar.Size = UDim2.fromOffset(math.max(160, math.min(380, right - EDGE)), WBH.BAR_HEIGHT)
 	end
-	local mapSize = if height < 520 then 118 else 156
+	local L = lanes()
 	WBH.tall = height >= 520
-	WBH.board.Position = UDim2.new(1, -EDGE, 0, mapSize + 42 + 8)
-	WBH.board.Size = UDim2.fromOffset(math.max(150, mapSize + 20), 126)
+	WBH.board.AnchorPoint = Vector2.new(1, 0)
+	WBH.board.Position = UDim2.fromOffset(L.rightEdge, L.rightTop)
+	WBH.board.Size = UDim2.fromOffset(math.min(L.sidebar.w, 214), 126)
 end
 function WBH.render()
 	local p = WBH.payload
@@ -1445,7 +1464,8 @@ do
 		local gaugeWidth = slot + 12
 		local width = gaugeWidth + #P.buttons * (slot + gap)
 		bar.Size = UDim2.fromOffset(width, slot)
-		bar.Position = if attackButton then UDim2.new(1, -196, 1, -44 - size - 6) else UDim2.new(1, -10, 1, -44 - size - 6)
+		bar.AnchorPoint = spellBar.AnchorPoint
+		bar.Position = if S.spellCentred then UDim2.new(0.5, 0, 1, -S.spellLift0 - size - 6) else UDim2.new(1, -S.spellRight, 1, -S.spellLift0 - size - 6)
 		gauge.Size = UDim2.fromOffset(gaugeWidth, slot)
 		count.TextSize = if slot < 34 then 12 else 13
 		for i, b in ipairs(P.buttons) do

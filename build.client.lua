@@ -47,7 +47,7 @@ local gui = make("ScreenGui", player:WaitForChild("PlayerGui"), {Name="IslandBui
 local camera = workspace.CurrentCamera
 local short = camera ~= nil and camera.ViewportSize.Y > 0 and camera.ViewportSize.Y < 360
 local BAR_H = if short then 88 else 112 -- controls are 44 px touch targets
-local bar = make("Frame", gui, {Name="BuildBar", AnchorPoint=Vector2.new(.5, 1), Position=UDim2.new(.5, 0, 1, -48),
+local bar = make("Frame", gui, {Name="BuildBar", AnchorPoint=Vector2.new(.5, 1), Position=UDim2.new(.5, 0, 1, if short then -36 else -48),
 	Size=UDim2.new(.94, 0, 0, BAR_H), BackgroundColor3=DEEP, BackgroundTransparency=.04, BorderSizePixel=0})
 make("UISizeConstraint", bar, {MaxSize=Vector2.new(480, BAR_H)})
 make("UICorner", bar, {CornerRadius=UDim.new(0, 14)})

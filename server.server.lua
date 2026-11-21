@@ -4272,6 +4272,59 @@ local function depthState(p,stats)
 		combat=Progression.combatLoadout(p), -- Combat styles: {style,weapon,ammo,ammoCount,supplies,levels,autocast}
 		mastery=Mastery.state and Mastery.state(p)} -- Skill Mastery: points, trees, capstones, milestones, mantles
 end
+-- Satchel (UI overhaul, docs/DEPTH-CONTRACT.md §29): p.satchel is the player's
+-- item order for the satchel panel (a list of item ids, <= Satchel.MAX). It is
+-- display order only: counts stay in p.items. Unknown or unowned ids are
+-- dropped whenever it is read; owned ids missing from it follow in snapshot order.
+local Satchel={MAX=400,sorts={rarity=true,name=true,kind=true,value=true}}
+function Satchel.rank(def) local r=Data.Rarity[def.rarity] return r and r.rank or 1 end
+function Satchel.clean(p)
+	local list,seen={},{}
+	for _,id in ipairs(type(p.satchel)=="table" and p.satchel or {}) do
+		if type(id)=="string" and not seen[id] and Data.Items[id] and (p.items[id] or 0)>0 and #list<Satchel.MAX then seen[id]=true; table.insert(list,id) end
+	end
+	-- Owned ids not yet placed keep a stable spot at the end (rarity, then name).
+	local rest={}
+	for id,n in pairs(p.items) do if not seen[id] and Data.Items[id] and (n or 0)>0 then table.insert(rest,id) end end
+	table.sort(rest,function(a,b)
+		local ra,rb=Satchel.rank(Data.Items[a]),Satchel.rank(Data.Items[b])
+		if ra~=rb then return ra>rb end
+		return Data.Items[a].name<Data.Items[b].name
+	end)
+	for _,id in ipairs(rest) do if #list<Satchel.MAX then table.insert(list,id) end end
+	p.satchel=list
+	return list
+end
+-- satchelMove "<itemId>:<index>": move an owned item to a 1-based slot.
+function Satchel.move(p,item)
+	local id,raw
+	if type(item)=="string" then id,raw=string.match(item,"^(%w+):(%d+)$") end
+	local index=raw and #raw<=3 and tonumber(raw)
+	if not id or not index or index<1 or not Data.Items[id] then return "Choose an item and a satchel slot." end
+	if (p.items[id] or 0)<1 then return "You do not have that item." end
+	local list=Satchel.clean(p)
+	local from=table.find(list,id)
+	if not from then return "You do not have that item." end
+	table.remove(list,from)
+	table.insert(list,math.clamp(index,1,#list+1),id)
+	return ""
+end
+-- satchelSort "<rarity|name|kind|value>": reorders the whole satchel.
+function Satchel.sort(p,item)
+	if not Satchel.sorts[item] then return "Sort by rarity, name, kind or value." end
+	local kindRank={weapon=1,armor=2,tool=3,accessory=4,consumable=5,pet=6,resource=7,material=8}
+	local list=Satchel.clean(p)
+	table.sort(list,function(a,b)
+		local da,db=Data.Items[a],Data.Items[b]
+		local ra,rb=Satchel.rank(da),Satchel.rank(db)
+		if item=="name" then return da.name<db.name end
+		if item=="value" and (da.value or 0)~=(db.value or 0) then return (da.value or 0)>(db.value or 0) end
+		if item=="kind" and (kindRank[da.kind] or 9)~=(kindRank[db.kind] or 9) then return (kindRank[da.kind] or 9)<(kindRank[db.kind] or 9) end
+		if ra~=rb then return ra>rb end
+		return da.name<db.name
+	end)
+	return "Satchel sorted by "..item.."."
+end
 local function snapshot(player,message)
 	local p=profiles[player]
 	if not p then return {loading=true,message="Opening your journal…"} end
@@ -4291,7 +4344,8 @@ local function snapshot(player,message)
 		message=if message and message~="" then message.."   ·   "..extra else extra
 	end
 	local legacyStats,stats=applyStats(player,p)
-	return {xp=p.xp,items=p.items,consumables=provisions,collection=p.collection,coins=p.coins,bank=p.bank,bankRevision=p.bankRevision or 0,worker=p.worker,
+	return {satchel=Satchel.clean(p), -- §29 satchel order
+		xp=p.xp,items=p.items,consumables=provisions,collection=p.collection,coins=p.coins,bank=p.bank,bankRevision=p.bankRevision or 0,worker=p.worker,
 		ironman=p.ironman,levels=levels,enchantRank=p.enchantRank or 0,workerResource=p.workerResource or "Ore",workerReady=Workers.ready(p),workers=Workers.state(p),workerInfo=Workers.info(p),message=message or "",kills=p.kills,
 		companionBond=p.companionBond or 0,market=marketViews[player],economy=Econ.view and Econ.view(player,p),recipes=recipeState(p),regions=regionState(p),stats=legacyStats,quest=questState(p),slayer=slayerState(p),started=p.started,decorations=p.decorations,preview=preview[player]==true,
 		depth=depthState(p,stats),journal=Journal.state(p),agilityHunter=Skills.state(player,p), -- Agility & Hunter page state
@@ -6326,6 +6380,21 @@ local function perform(player,verb,item,prompt)
 		if not p.slayerQuest then return "You have no slayer quest." end
 		p.slayerQuest=nil
 		return "Slayer quest abandoned. The fee is not refunded."
+	elseif verb=="satchelMove" then
+		return Satchel.move(p,item) -- §29: display order only
+	elseif verb=="satchelSort" then
+		return Satchel.sort(p,item)
+	elseif verb=="drop" then
+		-- §29: destroy a whole stack (the satchel asks twice first). Equipped,
+		-- bagged, summoned-pet and quiver items must be taken off first.
+		local def=validId(item) and Data.Items[item]
+		if not def then return "Choose an item to drop." end
+		local count=p.items[item] or 0
+		if count<1 then return "You have no "..def.name.." to drop." end
+		if isEquipped(p,item) then return "Unequip "..def.name.." before dropping it." end
+		if table.find(p.accessoryBag,item) then return "Take "..def.name.." out of your accessory bag first." end
+		p.items[item]=0
+		return "Dropped "..count.." "..def.name.."."
 	elseif verb=="sell" then
 		if item==nil or prices[item] then
 			local total=0

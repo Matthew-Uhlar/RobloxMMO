@@ -8,6 +8,15 @@ local luau = require("@lune/luau")
 local roblox = require("@lune/roblox")
 
 local source = fs.readFile("ui.client.lua")
+-- The shared UI theme (shared/UiTheme.lua) builds instances, so every mocked
+-- client gets a copy loaded in its own environment.
+local themeSource = fs.readFile("shared/UiTheme.lua")
+local function loadTheme(env)
+	return luau.load(themeSource, { debugName = "shared/UiTheme.lua", environment = env, injectGlobals = true })()
+end
+-- A copy for the pure helpers (layout, lore, context menus).
+local ThemePure = loadTheme({ Color3 = roblox.Color3, Enum = roblox.Enum, UDim2 = roblox.UDim2, UDim = roblox.UDim, Vector2 = roblox.Vector2,
+	ColorSequence = roblox.ColorSequence, NumberSequence = roblox.NumberSequence, NumberSequenceKeypoint = roblox.NumberSequenceKeypoint })
 local function loadModule(path, env)
 	return luau.load(fs.readFile(path), { debugName = path, environment = env or {}, injectGlobals = true })()
 end
@@ -40,7 +49,7 @@ local events = {
 	MouseButton1Down = true, MouseButton1Up = true, MouseLeave = true, SelectionGained = true, Activated = true,
 	FocusLost = true, OnClientEvent = true, HealthChanged = true, CharacterAdded = true, InputBegan = true,
 	TextBoxFocusReleased = true, InputEnded = true, TouchTapInWorld = true, RenderStepped = true, AncestryChanged = true, InputChanged = true, CharacterRemoving = true,
-	MouseEnter = true, SelectionLost = true, Event = true,
+	MouseEnter = true, SelectionLost = true, Event = true, MouseButton2Click = true, AttributeChanged = true,
 }
 local guiClasses = { Frame = true, TextLabel = true, TextButton = true, ImageLabel = true, ScrollingFrame = true, ViewportFrame = true, TextBox = true }
 local absoluteSize = roblox.Vector2.new(730, 303)
@@ -648,6 +657,9 @@ local function run(options)
 			wait = function() return coroutine.yield() end,
 		},
 	}
+	local themeObject = new("ModuleScript", { Name = "AetherUiTheme" })
+	themeObject.Parent = replicated
+	modules[themeObject] = loadTheme(env)
 	local chunk = luau.load(source, { debugName = "ui.client.lua", environment = env, injectGlobals = true })
 	local main = coroutine.create(chunk)
 	local ok, problem = coroutine.resume(main)
@@ -659,7 +671,7 @@ local function run(options)
 	local scroll = atlas:FindFirstChildOfClass("ScrollingFrame")
 	local tabs = atlas:FindFirstChild("Tabs")
 	return {
-		gui = gui, atlas = atlas, scroll = scroll, tabs = tabs, sent = sent, warnings = warnings, player = player, update = update, workspace = world,
+		gui = gui, atlas = atlas, scroll = scroll, tabs = tabs, sent = sent, warnings = warnings, player = player, update = update, workspace = world, replicated = replicated,
 		setSnapshot = function(value) current = value end, input = services.UserInputService, guiService = services.GuiService,
 	}
 end
@@ -674,6 +686,14 @@ end
 local function press(object)
 	assert(object, "missing button")
 	object.Activated:Fire()
+end
+-- XP gains the atlas publishes on IsleXpLocal (hud.client.lua draws the drops).
+local function xpWatch(ui)
+	local seen = {}
+	local channel = ui.replicated:FindFirstChild("IsleXpLocal")
+	assert(channel, "atlas publishes IsleXpLocal")
+	channel.Event:Connect(function(gains) table.insert(seen, gains) end)
+	return seen
 end
 local function noFailures(ui, context)
 	for _, message in ipairs(ui.warnings) do
@@ -1225,6 +1245,7 @@ end
 -- 6. XP popup and level-up banner between snapshots.
 do
 	local ui = run()
+	local gainsSeen = xpWatch(ui)
 	local before = snapshot()
 	local nextLevel = Progression.levelForXp(before.xp.Mining) + 1
 	local after = snapshot({ xp = { Mining = Data.XP_TABLE[nextLevel] + 5, Woodcutting = 900 },
@@ -1241,16 +1262,12 @@ do
 	local joined = table.concat(texts, " | ")
 	assert(joined:find("Mining", 1, true) and joined:find(tostring(nextLevel), 1, true), joined)
 	assert(joined:find(tostring(Data.levelCoinReward(nextLevel)), 1, true) or joined:find("coins", 1, true), "coin reward shown: " .. joined)
-	local bar = ui.gui:FindFirstChild("ActionBar")
-	local xpLabel
-	for _, object in ipairs(bar:GetChildren()) do
-		if object.ClassName == "TextLabel" and object.Text:find("Mining", 1, true) then
-			xpLabel = object
-		end
-	end
-	assert(xpLabel and xpLabel.Text:find("+", 1, true), "XP popup shows")
-	assert(not xpLabel.Text:find("Woodcutting", 1, true), "compact XP popup shows one entry")
-	assert(xpLabel.Position.X.Scale >= 0.46 and xpLabel.Position.X.Scale + xpLabel.Size.X.Scale <= 0.7601, "XP popup stays between mana and defense")
+	-- XP drops: one entry per skill gained (Mining with its new level, Woodcutting).
+	local gains = gainsSeen[#gainsSeen]
+	assert(gains and #gains == 2, "XP drops carry both gains")
+	local mining
+	for _, g in ipairs(gains) do if g.skill == "Mining" then mining = g end end
+	assert(mining and mining.amount > 0 and mining.level == nextLevel and type(mining.fraction) == "number" and type(mining.color) == "string", "Mining drop: amount, level, progress, colour")
 	local toast
 	for _, object in ipairs(ui.gui:GetChildren()) do
 		if object.ClassName == "TextLabel" and object.Text:find("Mined ore", 1, true) then toast = object end
@@ -1264,23 +1281,24 @@ end
 -- empty message lands just before the kill toast (which no longer names XP).
 do
 	local ui = run()
+	local gainsSeen = xpWatch(ui)
 	local before = snapshot()
 	local nextLevel = Progression.levelForXp(before.xp.Combat) + 1
 	local xp = { Combat = Data.XP_TABLE[nextLevel] + 3 }
 	ui.update.OnClientEvent:Fire(snapshot({ xp = xp, message = "" }))
 	assert(ui.gui:FindFirstChild("LevelBanner").Visible, "combat level-up banner on the XP snapshot")
-	local popup = find(ui.gui:FindFirstChild("ActionBar"), "XpPopup")
-	assert(popup.Text:find("Combat", 1, true) and find(ui.gui:FindFirstChild("ActionBar"), "XpPill").Visible, "combat XP popup")
+	assert(#gainsSeen == 1 and gainsSeen[1][1].skill == "Combat", "combat XP drop")
 	ui.update.OnClientEvent:Fire(snapshot({ xp = xp, message = "Thornling slain • +4 coins" }))
 	local toast
 	for _, object in ipairs(ui.gui:GetChildren()) do
 		if object.ClassName == "TextLabel" and object.Text:find("slain", 1, true) then toast = object end
 	end
-	assert(toast and toast.Visible and popup.Text:find("Combat", 1, true), "kill toast follows, popup kept")
+	assert(toast and toast.Visible and #gainsSeen == 1, "kill toast follows, no second drop without a gain")
 	-- Without a level-up the kill snapshot itself carries the XP gain.
 	local quiet = run()
+	local quietSeen = xpWatch(quiet)
 	quiet.update.OnClientEvent:Fire(snapshot({ xp = { Combat = before.xp.Combat + 40 }, message = "Thornling slain • +4 coins" }))
-	assert(find(quiet.gui:FindFirstChild("ActionBar"), "XpPopup").Text:find("+40 Combat", 1, true), "kill snapshot shows the XP popup")
+	assert(quietSeen[1] and quietSeen[1][1].skill == "Combat" and quietSeen[1][1].amount == 40, "kill snapshot shows the +40 Combat XP drop")
 	noFailures(ui, "combat xp on kill")
 	checks += 4
 	-- Pets depth review fixes (on this run, no extra harness): the Roost Cancel
@@ -1338,11 +1356,16 @@ local function combatHud(size)
 		TweenInfo = { new = function() return {} end },
 		Instance = { new = function(class) return new(class) end }, RaycastParams = { new = function() return {} end },
 		typeof = function(value) return if data[value] then "Instance" else typeof(value) end,
-		require = function(target) assert(target.Name == "AetherData", "unexpected require"); return Data end,
 		task = { spawn = function(fn, ...) local co = coroutine.create(fn); assert(coroutine.resume(co, ...)) end,
 			delay = function(_, fn) table.insert(delayed, fn) end },
 	}
+	local theme = loadTheme(env)
+	env.require = function(target)
+		if target.Name == "AetherUiTheme" then return theme end
+		assert(target.Name == "AetherData", "unexpected require"); return Data
+	end
 	new("ModuleScript", { Name = "AetherData" }).Parent = replicated
+	if not replicated:FindFirstChild("AetherUiTheme") then new("ModuleScript", { Name = "AetherUiTheme" }).Parent = replicated end
 	local chunk = luau.load(fs.readFile("combat.client.lua"), { debugName = "combat.client.lua", environment = env, injectGlobals = true })
 	chunk()
 	local hud = playerGui:FindFirstChild("IsleCombatHud")
@@ -1359,8 +1382,11 @@ local function box(object, width, height)
 	local y = object.Position.Y.Scale * height + object.Position.Y.Offset - object.AnchorPoint.Y * h
 	return x, y, w, h
 end
-local function clearOfAtlasHud(x, y, w, h)
-	return x >= 325 or y >= 104 or x + w <= 0 or y + h <= 0
+-- The atlas HUD corners: the minimap block (top-left) and the sidebar (top-right).
+local function clearOfAtlasHud(x, y, w, h, size)
+	local L = ThemePure.hudLayout(size.X, size.Y, { touch = true })
+	local function clear(r) return x >= r.x + r.w or x + w <= r.x or y >= r.y + r.h or y + h <= r.y end
+	return clear(L.mapBlock) and clear(L.sidebar)
 end
 for _, size in ipairs({ roblox.Vector2.new(730, 303), roblox.Vector2.new(560, 320), roblox.Vector2.new(1366, 768) }) do
 	for _, boss in ipairs({ false, true }) do
@@ -1380,8 +1406,8 @@ for _, size in ipairs({ roblox.Vector2.new(730, 303), roblox.Vector2.new(560, 32
 		local tag = size.X .. "x" .. size.Y .. (boss and " boss" or "")
 		local px, py, pw, ph = box(panel, size.X, size.Y)
 		local bx, by, bw, bh = box(banner, size.X, size.Y)
-		assert(clearOfAtlasHud(px, py, pw, ph), "target panel clears the atlas HUD at " .. tag)
-		assert(clearOfAtlasHud(bx, by, bw, bh), "combat banner clears the atlas HUD at " .. tag)
+		assert(clearOfAtlasHud(px, py, pw, ph, size), "target panel clears the atlas HUD at " .. tag)
+		assert(clearOfAtlasHud(bx, by, bw, bh, size), "combat banner clears the atlas HUD at " .. tag)
 		assert(px >= 0 and px + pw <= size.X and bx >= 0 and bx + bw <= size.X, "combat HUD stays on screen at " .. tag)
 		assert(by >= py + ph or bx >= px + pw or bx + bw <= px, "banner does not cover the target panel at " .. tag)
 		if boss then assert(panel.Visible and pw >= 220, "boss panel shows at " .. tag) end
@@ -1853,8 +1879,11 @@ do
 				if class == "BindableEvent" then object.Event = signal() end
 				return object
 			end },
-			require = function() return H.Data end, task = baseTask(),
+			task = baseTask(),
 		}
+		local theme = H.loadTheme(env)
+		env.require = function(target) if target and target.Name == "AetherUiTheme" then return theme end return H.Data end
+		H.new("ModuleScript", { Name = "AetherUiTheme" }).Parent = replicated
 		local chunk = luau.load(fs.readFile(path), { debugName = path, environment = env, injectGlobals = true })
 		local co = coroutine.create(chunk)
 		local ok, problem = coroutine.resume(co)
@@ -1948,7 +1977,9 @@ do
 		assert(shownPrayers == 5 and prayerBar:FindFirstChild("Prayer1"):FindFirstChild("On").Visible, "three wards and two favourites, Ward of Fangs lit at " .. tag.name)
 		assert(prayerBar:FindFirstChild("Points"):FindFirstChild("Count").Text == "30", "prayer gauge shows the points at " .. tag.name)
 		assert(prayerRect.y + prayerRect.h <= spellRect.y and prayerRect.x + prayerRect.w <= spellRect.x + spellRect.w + 0.5, "prayer bar sits above the spell bar at " .. tag.name)
-		assert(player:GetAttribute("IsleHudLift") == spellRect.h + 6 + prayerRect.h + 6, "toasts lift above the spell and prayer bars at " .. tag.name)
+		-- IsleHudLift: everything from the screen foot to the top of the prayer bar
+		-- (the spell bar may sit in the hotbar band on phones), minus the 44 px base.
+		assert(player:GetAttribute("IsleHudLift") == (size.Y - spellRect.y) - 44 + 6 + prayerRect.h + 6, "toasts lift above the spell and prayer bars at " .. tag.name)
 		checks += 4
 		-- Observatory party HUD (five delvers, classed: Q / R buttons) under the minimap.
 		player:SetAttribute("DungeonClass", "Aegis")
@@ -1964,12 +1995,16 @@ do
 				name .. " inside the party HUD at " .. tag.name)
 		end
 		checks += 3
+		local lanes = ThemePure.hudLayout(size.X, size.Y, { touch = true })
 		local persistent = {
-			{ "atlas badge", rect(atlas:FindFirstChild("GuildBadge")) },
+			{ "sidebar", rect(atlas:FindFirstChild("Sidebar")) },
 			{ "minimap", rect(wayfinder:FindFirstChild("Minimap")) },
 			{ "action bar", rect(atlas:FindFirstChild("ActionBar")) },
 		}
+		-- The 9-slot hotbar (hotbar.client.lua) owns the bottom centre while exploring.
+		local hotbarGap = { "hotbar gap", { x = lanes.hotbar.x, y = lanes.hotbar.y, w = lanes.hotbar.w, h = lanes.hotbar.h } }
 		local explore = table.clone(persistent)
+		table.insert(explore, hotbarGap)
 		for _, item in ipairs({ { "event banner", rect(banner) }, { "tutorial tracker", rect(tracker) },
 			{ "wayfinder toast", rect(wayfinder:FindFirstChild("WayfinderToast")) }, { "attack button", rect(attack) }, { "spell bar", spellRect },
 			{ "lap tracker", rect(lapTracker) }, { "trap counter", rect(trapCounter) }, { "prayer bar", prayerRect }, { "party HUD", partyRect } }) do
@@ -2009,7 +2044,9 @@ do
 		assert(bar.Enabled and not attack.Visible, "Attack hides while the island builder runs at " .. tag.name)
 		assert(not spellBar.Visible and player:GetAttribute("IsleHudLift") == 0, "spell bar hides while building at " .. tag.name)
 		local building = {}
-		for _, item in ipairs(explore) do if item[1] ~= "attack button" and item[1] ~= "spell bar" and item[1] ~= "lap tracker" and item[1] ~= "trap counter" and item[1] ~= "prayer bar" then table.insert(building, item) end end
+		-- The hotbar and the action bar step aside too (the builder owns the bottom).
+		assert(not atlas:FindFirstChild("ActionBar").Visible, "action bar hides while building at " .. tag.name)
+		for _, item in ipairs(explore) do if item[1] ~= "attack button" and item[1] ~= "spell bar" and item[1] ~= "lap tracker" and item[1] ~= "trap counter" and item[1] ~= "prayer bar" and item[1] ~= "hotbar gap" and item[1] ~= "action bar" then table.insert(building, item) end end
 		assert(not prayerBar.Visible, "prayer bar hides while building at " .. tag.name)
 		assert(not lapTracker.Visible and not trapCounter.Visible, "lap tracker and trap counter step aside for the builder at " .. tag.name)
 		table.insert(building, { "builder controls", rect(bar:FindFirstChild("BuildBar")) })
@@ -2459,7 +2496,7 @@ do
 	assert(find(tracker, "Next").Text:find("Rigging rope", 1, true), "next obstacle named")
 	assert(find(tracker, "Countdown").Text:match("^0:2%d$"), "step countdown: " .. find(tracker, "Countdown").Text)
 	assert(find(tracker, "Lap").Text:find("41.2s", 1, true), "best lap from the snapshot")
-	assert(find(tracker, "Step3").BackgroundColor3 == roblox.Color3.fromHex("F3C66E"), "next obstacle pip is gold")
+	assert(find(tracker, "Step3").BackgroundColor3 == ThemePure.color.gold, "next obstacle pip is gold")
 	player:SetAttribute("AgilityRun", "QuayRigging:6:6")
 	player:SetAttribute("AgilityRun", "")
 	assert(tracker.Visible and find(tracker, "Next").Text:find("LAP COMPLETE", 1, true), "final landing shows the finished lap")
@@ -2542,11 +2579,11 @@ do
 	assert(unlocks >= 3, "Hunter unlocks listed")
 	noFailures(ui, "agility & hunter")
 	checks += 30
-	-- Lap tracker HUD while the dialogue is closed but the tutorial is done: moves up to y 100.
+	-- Lap tracker HUD while the dialogue is closed but the tutorial is done: moves up to the top of the left column (under the minimap).
 	local view = run({ size = roblox.Vector2.new(730, 303), snapshot = snapshot({ vendorClosed = true }) })
 	view.player:SetAttribute("AgilityRun", "QuayRigging:2:6")
 	local t = find(view.gui, "CourseTracker")
-	assert(t.Visible and t.Position.Y.Offset == 100 and t.Size.X.Offset <= 184, "phone lap tracker: top of the column, narrow")
+	assert(t.Visible and t.Position.Y.Offset == ThemePure.hudLayout(730, 303).leftTop and t.Size.X.Offset <= 184, "phone lap tracker: top of the column, narrow")
 	press(find(view.gui, "AtlasButton"))
 	press(view.tabs:FindFirstChild("LedgerButton"))
 	press(find(view.scroll, "SectionVendors"))

@@ -48,6 +48,8 @@ FONT_CANDIDATES = {
     "b-bold": [INTER + "Inter-Bold.otf", DEJAVU + "DejaVuSans-Bold.ttf"],
     "b-heavy": [INTER + "Inter-ExtraBold.otf", DEJAVU + "DejaVuSans-Bold.ttf"],
     "display": [os.path.join(HERE, "fonts", "FredokaOne-Regular.ttf"), INTER + "Inter-Black.otf", DEJAVU + "DejaVuSans-Bold.ttf"],
+    # Roblox "Arcade" is Press Start 2P (vendored, OFL).
+    "pixel": [os.path.join(HERE, "fonts", "PressStart2P-Regular.ttf"), DEJAVU + "DejaVuSans-Bold.ttf"],
 }
 FALLBACK = {"regular": DEJAVU + "DejaVuSans.ttf", "bold": DEJAVU + "DejaVuSans-Bold.ttf"}
 LIGHT_KINDS = {"regular", "b-regular", "b-medium"}
@@ -164,6 +166,8 @@ def font_kind(name, bold=False):
     name = name or "Legacy"
     if name == "Antique":
         return "serif"
+    if name == "Arcade":
+        return "pixel"
     if name == "FredokaOne":
         return "display"
     if name.startswith("BuilderSans"):

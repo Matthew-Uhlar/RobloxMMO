@@ -13,11 +13,13 @@ local TweenService = game:GetService("TweenService")
 local player = Players.LocalPlayer
 local Data = require(ReplicatedStorage:WaitForChild("AetherData"))
 local T = Data.Townsfolk
+-- Colours, fonts and HUD lanes from the shared theme (§29).
+local Theme = require(ReplicatedStorage:WaitForChild("AetherUiTheme"))
 
 local function rgb(h) return Color3.fromHex(h) end
-local ink, deep, slate = rgb("102733"), rgb("091923"), rgb("244857")
-local ivory, muted, mint, gold = rgb("FFF4D9"), rgb("BECECA"), rgb("9EE7D2"), rgb("F9CC77")
-local bold, regular, book = Enum.Font.GothamBold, Enum.Font.Gotham, Enum.Font.Antique
+local ink, deep, slate = Theme.color.panel, Theme.color.inset, Theme.color.raised
+local ivory, muted, mint, gold = Theme.color.text, Theme.color.dim, Theme.color.mint, Theme.color.gold
+local bold, regular, book = Enum.Font.BuilderSansBold, Enum.Font.BuilderSansMedium, Theme.font.display
 local function make(class, parent, props)
 	local o = Instance.new(class)
 	if class == "UIStroke" then o.ApplyStrokeMode = Enum.ApplyStrokeMode.Border end
@@ -76,7 +78,7 @@ local gui = make("ScreenGui", player:WaitForChild("PlayerGui"), {Name = "Townsfo
 local box = make("Frame", gui, {Name = "Dialogue", AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -46),
 	Size = UDim2.new(1, -20, 0, 260), BackgroundColor3 = ink, BorderSizePixel = 0, Visible = false})
 make("UISizeConstraint", box, {MaxSize = Vector2.new(620, 420)})
-round(box, 12, gold)
+round(box, 6, gold)
 make("UIGradient", box, {Color = ColorSequence.new(ink, deep), Rotation = 90})
 local portrait = make("Frame", box, {Name = "Portrait", Position = UDim2.fromOffset(12, 12), Size = UDim2.fromOffset(64, 64), BackgroundColor3 = slate, BorderSizePixel = 0})
 round(portrait, 32, gold)
@@ -103,7 +105,7 @@ local optionsFrame = make("ScrollingFrame", box, {Name = "Options", Position = U
 make("UIListLayout", optionsFrame, {Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder})
 
 -- Toast for dialogue-side notices (arrivals are the Wayfinder's).
-local toast = make("TextLabel", gui, {AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -50), Size = UDim2.fromOffset(420, 36),
+local toast = make("TextLabel", gui, {AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -140), Size = UDim2.fromOffset(420, 36),
 	BackgroundColor3 = deep, BackgroundTransparency = 0.1, TextColor3 = gold, Font = bold, TextSize = 14, TextWrapped = true, Visible = false, Text = ""})
 make("UISizeConstraint", toast, {MaxSize = Vector2.new(420, 60)})
 round(toast, 9, gold)
@@ -177,6 +179,16 @@ end
 -- the portrait, name and close button are always on screen. Short screens (phone
 -- landscape) use a compact header and leave the checklist to the tracker.
 local DIALOGUE_TOP, DIALOGUE_FLOOR = 100, 46
+-- HUD lanes (Theme.hudLayout): the dialogue stays above the action bar and
+-- clear of the minimap (top-left) and the sidebar (top-right).
+local function lanes()
+	local view = gui.AbsoluteSize
+	if not view or view.X <= 0 or view.Y <= 0 then
+		local camera = workspace.CurrentCamera
+		view = if camera then camera.ViewportSize else Vector2.new(1280, 720)
+	end
+	return Theme.hudLayout(view.X, view.Y, {touch = Input.TouchEnabled})
+end
 local function screenSize()
 	local size = gui.AbsoluteSize
 	if size and size.X > 0 and size.Y > 0 then return size end
@@ -184,7 +196,8 @@ local function screenSize()
 	return if camera then camera.ViewportSize else Vector2.new(1280, 720)
 end
 local function isCompact()
-	return screenSize().Y - DIALOGUE_FLOOR - DIALOGUE_TOP < 240
+	local L = lanes()
+	return L.action.y - 6 - (math.max(L.mapBlock.y + L.mapBlock.h, L.sidebar.y + L.sidebar.h) + 8) < 240
 end
 local function metrics(compact)
 	local textX = if compact then 58 else 86
@@ -203,21 +216,21 @@ local function metrics(compact)
 	return if compact then 100 else 126
 end
 local function placeBox(desired)
-	local view = screenSize()
-	local width, height = view.X, view.Y
-	local camera = workspace.CurrentCamera
-	local viewportY = if camera and camera.ViewportSize.Y > 0 then camera.ViewportSize.Y else height
-	local mapSize = if viewportY < 520 then 118 else 156
-	local bottom = height - DIALOGUE_FLOOR
-	local top = math.max(DIALOGUE_TOP, bottom - desired)
-	local right = width - 10
-	if Input.TouchEnabled then right = width - 196 end -- Attack: x W-188..W-110, y H-118..H-40
-	if top < 8 + mapSize + 34 + 8 then right = math.min(right, width - 10 - mapSize - 10) end
-	local w = math.min(620, width - 20)
-	local x = math.floor(width / 2 - w / 2)
-	if x + w > right then
-		x = 10
-		w = math.min(620, right - 10)
+	local L = lanes()
+	local width = L.w
+	local bottom = L.action.y - 6
+	local clear = math.max(L.mapBlock.y + L.mapBlock.h, L.sidebar.y + L.sidebar.h) + 8
+	local top, x, w
+	if bottom - clear >= math.min(desired, 240) then
+		-- Tall screens: centred under the top HUD row.
+		top = math.max(clear, bottom - desired)
+		w = math.min(620, width - 20)
+		x = math.floor(width / 2 - w / 2)
+	else
+		-- Short screens: the top lane between the minimap and the sidebar.
+		top = math.max(8, bottom - desired)
+		w = math.min(620, L.lane.right - L.lane.left)
+		x = L.lane.left + math.floor((L.lane.right - L.lane.left - w) / 2)
 	end
 	box.AnchorPoint, box.Position, box.Size = Vector2.new(0, 1), UDim2.fromOffset(x, bottom), UDim2.fromOffset(w, bottom - top)
 	return bottom - top
@@ -365,9 +378,9 @@ end)
 ------------------------------------------------------------------------------
 -- Tutorial tracker (left column under the atlas guild badge: x 10-260, y 100-166).
 ------------------------------------------------------------------------------
-local tracker = make("Frame", gui, {Name = "TutorialTracker", Position = UDim2.fromOffset(10, 100), Size = UDim2.fromOffset(250, 66),
+local tracker = make("Frame", gui, {Name = "TutorialTracker", Position = UDim2.fromOffset(10, 234), Size = UDim2.fromOffset(250, 66),
 	BackgroundColor3 = deep, BackgroundTransparency = 0.08, BorderSizePixel = 0, Visible = false})
-round(tracker, 10, gold)
+round(tracker, 6, gold)
 local trackerTitle = make("TextLabel", tracker, {Position = UDim2.fromOffset(10, 5), Size = UDim2.new(1, -40, 0, 16), BackgroundTransparency = 1, Font = bold,
 	TextSize = 11, TextColor3 = mint, TextXAlignment = Enum.TextXAlignment.Left, Text = "FIRST STEPS"})
 local trackerStep = make("TextLabel", tracker, {Position = UDim2.fromOffset(10, 21), Size = UDim2.new(1, -20, 0, 18), BackgroundTransparency = 1, Font = bold,
@@ -382,6 +395,15 @@ round(trackerGo, 7, gold)
 local trackerHide = make("TextButton", tracker, {Position = UDim2.new(1, -28, 0, 4), Size = UDim2.fromOffset(22, 22), BackgroundTransparency = 1, Text = "–",
 	Font = bold, TextSize = 16, TextColor3 = muted})
 local trackerHidden, lastStep = false, nil
+-- Left column under the minimap (Theme.hudLayout leftTop); the toast above the hotbar band.
+local function placeTracker()
+	local L = lanes()
+	tracker.Position = UDim2.fromOffset(10, L.leftTop)
+	tracker.Size = UDim2.fromOffset(if L.short then 184 else 250, 66)
+	toast.Position = UDim2.new(0.5, 0, 1, -L.toastBottom)
+end
+placeTracker()
+gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(placeTracker)
 local function updateTracker()
 	local state = T.tutorialState(snapshot)
 	local visible = not trackerHidden and not state.loading and not state.complete and not talking
