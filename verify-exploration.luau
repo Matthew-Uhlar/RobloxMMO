@@ -1485,6 +1485,15 @@ do
 	end
 	for _, b in pairs(best) do for k, v in pairs(b) do furniture[k] = (furniture[k] or 0) + v end end
 	sources["quest:*"], sources["diary:*"], sources["furniture:*"] = quests, diaries, furniture
+	-- MMO Features (§31): Isle Renown at its top level; Resonance at any Magical Power (no Health / Defense).
+	sources.renown = Data.Renown.stats(100000)
+	local resonance = {health = 0, defense = 0}
+	for _, t in ipairs(Data.Resonance.Templates) do
+		local st = Data.Resonance.stats(t.id, 100000)
+		resonance.health = math.max(resonance.health, st.health or 0)
+		resonance.defense = math.max(resonance.defense, st.defense or 0)
+	end
+	sources.resonance = resonance
 	-- Faction rewards are accessories (one per faction family), not perkStats.
 	for _, t in ipairs(FA.Shop) do ok(t.perk == nil and t.stats == nil, t.id .. " grants no perkStats") end
 	local total = {health = 0, defense = 0}
@@ -1503,7 +1512,7 @@ do
 	ok(total.defense <= Data.PerkBudget.defense, "summed perk Defense within the budget (" .. total.defense .. ")")
 	-- Every perkStats key the server writes is one of the sources above.
 	local known = {motes = true, museum = true, ["commissions:milestones"] = true, forgeheart = true, ["agility:laps"] = true, ["hunter:log"] = true,
-		["garden:milestones"] = true, coop = true}
+		["garden:milestones"] = true, coop = true, renown = true, resonance = true}
 	for _, file in ipairs({"server.server.lua", "coop.server.lua"}) do
 		local src = fs.readFile(file)
 		for key in string.gmatch(src, "perkStats%[\"([^\"]+)\"%]") do ok(known[key] ~= nil, file .. " perk source " .. key .. " is budgeted") end

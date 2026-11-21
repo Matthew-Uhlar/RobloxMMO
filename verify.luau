@@ -8,7 +8,7 @@ local bindings = {
 	Observatory = "expedition.server.lua", Assembly = "festival.server.lua",
 	Homesteads = "coop.server.lua", Combat = "combat.server.lua", MeshForge = "forge.client.lua",
 	FieldGuide = "ui.client.lua", IslandArt = "mesh.client.lua", CombatInput = "combat.client.lua", IslandBuilder = "build.client.lua",
-	Townsfolk = "npc.server.lua", Minigames = "minigames.server.lua", Lairs = "lairs.server.lua", Dialogue = "npc.client.lua", Wayfinder = "nav.client.lua", Companions = "pets.client.lua", AetherMotes = "motes.client.lua", RegionBanner = "regions.client.lua",
+	Townsfolk = "npc.server.lua", Minigames = "minigames.server.lua", Lairs = "lairs.server.lua", Dialogue = "npc.client.lua", Wayfinder = "nav.client.lua", Companions = "pets.client.lua", AetherMotes = "motes.client.lua", RegionBanner = "regions.client.lua", IsleFeatures = "features.client.lua",
 	Gestures = "animate.client.lua", GestureRelay = "gesture.server.lua",
 	HeldItems = "held.server.lua", Hotbar = "hotbar.client.lua",
 	AetherArt = "art/PropCatalog.lua",

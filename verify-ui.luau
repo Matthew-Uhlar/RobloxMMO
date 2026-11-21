@@ -3732,7 +3732,12 @@ do
 		local grid = H.find(ui.scroll, "MenuGrid")
 		local tilesN = 0
 		for _, child in ipairs(grid:GetChildren()) do if child.ClassName == "TextButton" then tilesN += 1 end end
-		assert(tilesN == 12, "menu grid has 12 tiles")
+		assert(tilesN == 13, "menu grid has 13 tiles (12 + Isle Renown, §31)")
+		-- §31: the Renown tile opens Menu › Renown (full page checks in verify-features.luau).
+		H.press(H.find(ui.scroll, "MenuRenown"))
+		assert(H.find(ui.scroll, "RenownLevel"), "Isle Renown tile opens its page")
+		H.press(H.find(side, "AtlasButton"))
+		checks += 2
 		for _, want in ipairs({ { "MenuSkills", "SectionSkills" }, { "MenuBank", "BankAmount" }, { "MenuBestiary", "SectionBestiary" }, { "MenuCollections", "SectionCollections" } }) do
 			H.press(H.find(side, "AtlasButton"))
 			H.press(H.find(ui.scroll, want[1]))
