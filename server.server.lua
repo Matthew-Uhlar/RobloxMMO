@@ -1141,7 +1141,8 @@ do
 	-- Sanitises the Homestead level, then Island.migrate: well-formed records
 	-- keep their cell; anything that no longer fits (legacy layout, overlap,
 	-- protected zone, duplicate id) moves to the nearest free cell, and only a
-	-- record that cannot stand at all is refunded in full (never deleted).
+	-- record that cannot stand at all (per-prop max, stage cap, part budget, no
+	-- free cell) is refunded in full (never deleted).
 	function Isle.migrate(p)
 		local raw=if type(p.homestead)=="table" then p.homestead else {}
 		p.homestead={level=Home.level(raw.level)}
@@ -1216,6 +1217,11 @@ do
 			if e.prop==propId then count+=1 end
 		end
 		if count>=def.max then return "You have placed the most "..def.name.." pieces allowed ("..def.max..")." end
+		-- §27 performance: per-home placement part budget (Data.Island.PART_BUDGET).
+		local parts=I.parts(list)
+		if parts+def.parts>I.PART_BUDGET then
+			return "Your island's decorations are at their detail budget ("..parts.."/"..I.PART_BUDGET.." parts). Pick something up first."
+		end
 		local ok,why=I.check(I.occupancy(list),propId,x,z,rot,Isle.stage(p))
 		if not ok then return why end
 		for material,n in pairs(def.costs) do
@@ -1264,7 +1270,7 @@ do
 		-- Records themselves replicate through the IslandPlacements attribute.
 		local lv=p.homestead.level
 		local ring=Home.nextRing(lv)
-		return {count=#list,cap=I.cap(Isle.stage(p)),counts=counts,
+		return {count=#list,cap=I.cap(Isle.stage(p)),counts=counts,parts=I.parts(list),partBudget=I.PART_BUDGET,
 			paid=table.clone(p.island.paid),value=value,tier=tier,tierName=def.name,
 			homestead={level=lv,max=Home.MAX_LEVEL,radius=Home.radius(lv),area=math.floor(Home.area(lv)),
 				next=ring and {radius=ring.radius,coins=ring.coins,costs=table.clone(ring.costs),carpentry=ring.carpentry} or nil}}

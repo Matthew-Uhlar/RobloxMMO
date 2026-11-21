@@ -142,6 +142,22 @@ for _, gui in world:GetDescendants() do
 		ok(gui.LightInfluence <= .35 and gui.Brightness >= 1, gui:GetFullName() .. " self-lights for night reading")
 		ok(gui.MaxDistance >= 80 and not gui.AlwaysOnTop, gui:GetFullName() .. " reads from afar but never through walls")
 		ok(gui:GetAttribute("SignStyled") == true, gui:GetFullName() .. " is styled on the server (the client keeps it)")
+		-- §28 performance: PPS 40 (ledgers 600 px across), MaxDistance 100 (landmark plaques 150, ledgers 90).
+		local archetype = holder:GetAttribute("SignArchetype")
+		if archetype == "ledger" then
+			ok(gui.MaxDistance == 90 and math.abs(gui.PixelsPerStud * gui.Parent.Size.X - 600) < 1, gui:GetFullName() .. " ledger face")
+		else
+			ok(gui.PixelsPerStud == 40, gui:GetFullName() .. " paints at 40 pixels per stud")
+			ok(gui.MaxDistance == (if archetype == "plaque" then 150 else 100), gui:GetFullName() .. " MaxDistance by archetype (" .. gui.MaxDistance .. ")")
+		end
+		-- One outline per label: a UIStroke or an engraved highlight label, never both.
+		for _, label in gui:GetChildren() do
+			if label:IsA("TextLabel") and not label.Name:find("Shadow", 1, true) and label.Name ~= "Emblem initial" then
+				local stroke = label:FindFirstChildOfClass("UIStroke") ~= nil
+				local shadow = gui:FindFirstChild(label.Name .. "Shadow") ~= nil
+				ok(stroke ~= shadow or (archetype == "ledger" and stroke), label:GetFullName() .. " has exactly one outline (stroke " .. tostring(stroke) .. ", shadow " .. tostring(shadow) .. ")")
+			end
+		end
 		local panel = gui:FindFirstChild("Panel")
 		ok(panel ~= nil, gui:GetFullName() .. " has a painted panel")
 		local face = gui.Parent.Size
@@ -277,6 +293,65 @@ end
 ok(standards == #Data.Factions.Order, "every faction has a banner standard")
 
 ------------------------------------------------------------------------------
+-- One-sided boards (§28 performance): only a board whose back looks into a
+-- wall or over the rim loses its Back face; independent re-measure.
+------------------------------------------------------------------------------
+local function islandOf(node)
+	while node.Parent ~= islands and node.Parent ~= archipelago do node = node.Parent end
+	return node
+end
+local function containsPoint(p, pos)
+	local rel = p.CFrame:PointToObjectSpace(pos)
+	local h = p.Size / 2
+	if p:IsA("Part") and p.Shape == roblox.Enum.PartType.Cylinder then
+		return math.abs(rel.X) <= h.X and rel.Y ^ 2 + rel.Z ^ 2 <= math.min(h.Y, h.Z) ^ 2
+	elseif p:IsA("Part") and p.Shape == roblox.Enum.PartType.Ball then
+		return rel.Magnitude <= math.min(h.X, h.Y, h.Z)
+	end
+	return math.abs(rel.X) <= h.X and math.abs(rel.Y) <= h.Y and math.abs(rel.Z) <= h.Z
+end
+local function backReason(board)
+	local solids = {}
+	for _, p in islandOf(board):GetDescendants() do
+		if p:IsA("BasePart") and (p.CanCollide or p.Transparency < 1) and not p.Parent:GetAttribute("SignArchetype") then table.insert(solids, p) end
+	end
+	local back, c = -board.CFrame.LookVector, board.CFrame.Position
+	for _, d in {1, 2.5} do
+		for _, p in solids do if containsPoint(p, c + back * (board.Size.Z / 2 + d)) then return "wall" end end
+	end
+	for _, d in {3, 5.5, 8} do
+		local probe, ground = c + back * (board.Size.Z / 2 + d), false
+		for _, p in solids do
+			if p.CanCollide then
+				local lo, hi = box(p)
+				if hi.Y <= probe.Y + .5 and hi.Y >= probe.Y - 40 and containsPoint(p, Vector3.new(probe.X, (lo.Y + hi.Y) / 2, probe.Z)) then ground = true; break end
+			end
+		end
+		if not ground then return "rim" end
+	end
+	return nil
+end
+local oneSided, twoSided = 0, 0
+for _, board in world:GetDescendants() do
+	if board:IsA("BasePart") and board:GetAttribute("SignBoard") and board.Parent:GetAttribute("SignArchetype") ~= "ledger" then
+		local backFace = board:FindFirstChild("Sign face Back")
+		if board:GetAttribute("Shape") == "SignArrowBoard" then
+			ok(backFace ~= nil, board:GetFullName() .. " arrow keeps both faces")
+		elseif board:GetAttribute("SignOneSided") then
+			oneSided += 1
+			ok(backFace == nil and board:FindFirstChild("Sign face Front") ~= nil, board:GetFullName() .. " one-sided board keeps its Front face only")
+			ok(backReason(board) == board:GetAttribute("SignOneSided"), board:GetFullName() .. " back faces " .. tostring(board:GetAttribute("SignOneSided")))
+		else
+			twoSided += 1
+			ok(backFace ~= nil and backReason(board) == nil, board:GetFullName() .. " readable back keeps its Back face")
+		end
+	end
+end
+ok(oneSided >= 1, "one-sided boards found (" .. oneSided .. " one-sided, " .. twoSided .. " two-sided)")
+print("One-sided boards: " .. oneSided .. " (back over a wall or the rim); two-sided: " .. twoSided .. ".")
+ok(not source:find("Enum.Font.Merriweather", 1, true) and not source:find("pcall(function() l.FontFace", 1, true), "no dead Font fallback (FontFace is always set)")
+
+------------------------------------------------------------------------------
 -- Placement: no sign host on a path, no foreign prompt inside a sign.
 ------------------------------------------------------------------------------
 local paths, prompts = {}, {}
@@ -334,6 +409,21 @@ for _, alias in {"OrnateBracket", "ScrollBoard", "Crest", "Finial", "ChainLink",
 end
 ok(forge:find('GetAttribute("ShapeBox")', 1, true) and forge:find('GetAttribute("ShapeBoxOffset")', 1, true), "forge honours declared sign frame boxes")
 ok(forge:find("mobile and SIGN_KIT[data.kind]", 1, true) ~= nil, "phones share one template per sign kit shape")
+
+local guiPixels, guiCount, guiInstances, labelsN = 0, 0, 0, 0
+for _, gui in world:GetDescendants() do
+	if gui:IsA("SurfaceGui") then
+		guiCount += 1
+		local face = gui.Parent.Size
+		local fx = if gui.Face == roblox.Enum.NormalId.Front or gui.Face == roblox.Enum.NormalId.Back then face.X else face.Z
+		guiPixels += math.floor(fx * gui.PixelsPerStud) * math.floor(face.Y * gui.PixelsPerStud)
+		for _, d in gui:GetDescendants() do guiInstances += 1; if d:IsA("TextLabel") then labelsN += 1 end end
+	end
+end
+print(string.format("SIGN-FACES: %d SurfaceGuis, %.2f Mpx canvas, %d GUI instances (%d text labels)", guiCount, guiPixels / 1e6, guiInstances, labelsN))
+-- §28 performance budget (before the pass: 234 faces, 11.55 Mpx, 4,570 GUI instances, 1,088 labels at PPS 56).
+ok(guiPixels <= 6.5e6, "sign canvas stays under 6.5 Mpx (" .. string.format("%.2f", guiPixels / 1e6) .. ")")
+ok(guiInstances <= 4400 and labelsN <= 900, "sign GUI instances bounded (" .. guiInstances .. " instances, " .. labelsN .. " labels)")
 
 local parts = {}
 for kind, n in counts do table.insert(parts, kind .. " " .. n) end

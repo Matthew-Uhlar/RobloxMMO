@@ -1239,6 +1239,11 @@ do
 	Island.MAX_PLACEMENTS = 200   -- absolute cap (record ids 1..200); Island.cap(stage) is 120 + 20/stage
 	Island.BASE_CAP = 120
 	Island.CAP_STEP = 20
+	-- Part budget (§27 performance): the placements of one home may build at
+	-- most PART_BUDGET primitive parts (prop.parts each, asserted against the
+	-- world builders by verify-home). Checked by the place verb and by
+	-- Island.migrate (records past the budget are refunded in full, never deleted).
+	Island.PART_BUDGET = 600
 	Island.RATE = 3          -- placement verbs per second (token bucket)
 	Island.BURST = 6
 	Island.REFUND = 1
@@ -1254,7 +1259,7 @@ do
 		{name="worker cache",x1=9.7,z1=7.9,x2=12.3,z2=10.1},
 		{name="lamp",x1=-5.7,z1=-9.7,x2=-4.3,z2=-8.3},
 		{name="homestead plans",x1=-8.5,z1=10,x2=-1.5,z2=12.5},
-		{name="homestead sign",x1=-10,z1=13.5,x2=0,z2=14.5},
+		{name="homestead sign",x1=-12,z1=13.5,x2=0,z2=14.5},
 		{name="lantern spot",x1=-13,z1=-9,x2=-11,z2=-7},
 		{name="lantern spot",x1=11,z1=-8,x2=13,z2=-6},
 		{name="lantern spot",x1=-14,z1=5,x2=-12,z2=7},
@@ -1278,40 +1283,40 @@ do
 	}
 	Island.Props = {
 		-- Fences
-		TimberFence={name="Timber Fence",category="Fences",level=1,xp=12,costs={Timber=4},size={1,1},max=40,value=1,color="966B4C",text="A rail of meadow timber."},
-		PicketFence={name="Picket Fence",category="Fences",level=8,xp=24,costs={Timber=6,Ore=2},size={1,1},max=40,value=2,color="F9EDCD",text="Painted pickets with copper nails."},
-		BrassRailing={name="Brass Railing",category="Fences",level=25,xp=70,costs={WindpineLog=3,BrassIngot=1},size={1,1},max=30,value=4,color="DBAD65",text="Polished brass on windpine posts."},
+		TimberFence={name="Timber Fence",category="Fences",level=1,xp=12,costs={Timber=4},size={1,1},parts=4,max=40,value=1,color="966B4C",text="A rail of meadow timber."},
+		PicketFence={name="Picket Fence",category="Fences",level=8,xp=24,costs={Timber=6,Ore=2},size={1,1},parts=6,max=40,value=2,color="F9EDCD",text="Painted pickets with copper nails."},
+		BrassRailing={name="Brass Railing",category="Fences",level=25,xp=70,costs={WindpineLog=3,BrassIngot=1},size={1,1},parts=6,max=30,value=4,color="DBAD65",text="Polished brass on windpine posts."},
 		-- Paths
-		StonePath={name="Stone Path",category="Paths",level=1,xp=8,costs={Ore=3},size={1,1},max=60,value=1,color="687481",text="Flagstones for a tidy walk."},
-		Boardwalk={name="Boardwalk",category="Paths",level=5,xp=12,costs={Timber=4},size={1,1},max=60,value=1,color="A0784F",text="Timber planks over the meadow."},
-		AetherMosaic={name="Aether Mosaic",category="Paths",level=30,xp=60,costs={Aetherite=6,Ore=4},size={1,1},max=40,value=3,color="7FD6E8",text="Glowing inlaid tiles."},
+		StonePath={name="Stone Path",category="Paths",level=1,xp=8,costs={Ore=3},size={1,1},parts=3,max=60,value=1,color="687481",text="Flagstones for a tidy walk."},
+		Boardwalk={name="Boardwalk",category="Paths",level=5,xp=12,costs={Timber=4},size={1,1},parts=6,max=60,value=1,color="A0784F",text="Timber planks over the meadow."},
+		AetherMosaic={name="Aether Mosaic",category="Paths",level=30,xp=60,costs={Aetherite=6,Ore=4},size={1,1},parts=5,max=40,value=3,color="7FD6E8",text="Glowing inlaid tiles."},
 		-- Lights (utility: lamp glow)
-		LanternPost={name="Lantern Post",category="Lights",level=3,xp=20,costs={Timber=3,Ore=2},size={1,1},max=20,value=3,color="8EE6CB",effect={light={color="8EE6CB",range=9}},text="Lights the island at dusk."},
-		BrassStreetlamp={name="Brass Streetlamp",category="Lights",level=20,xp=90,costs={WindpineLog=2,BrassIngot=2},size={1,1},max=16,value=6,color="F9CC77",effect={light={color="FFD58A",range=12}},text="A tall lamp with a warm glow."},
-		CrystalBrazier={name="Crystal Brazier",category="Lights",level=40,xp=260,costs={Aetherite=12,EmberoakLog=4},size={1,1},max=10,value=12,color="C77DFF",effect={light={color="C77DFF",range=14}},text="Aetherite flames in an ember bowl."},
+		LanternPost={name="Lantern Post",category="Lights",level=3,xp=20,costs={Timber=3,Ore=2},size={1,1},parts=5,max=20,value=3,color="8EE6CB",effect={light={color="8EE6CB",range=9}},text="Lights the island at dusk."},
+		BrassStreetlamp={name="Brass Streetlamp",category="Lights",level=20,xp=90,costs={WindpineLog=2,BrassIngot=2},size={1,1},parts=6,max=16,value=6,color="F9CC77",effect={light={color="FFD58A",range=12}},text="A tall lamp with a warm glow."},
+		CrystalBrazier={name="Crystal Brazier",category="Lights",level=40,xp=260,costs={Aetherite=12,EmberoakLog=4},size={1,1},parts=6,max=10,value=12,color="C77DFF",effect={light={color="C77DFF",range=14}},text="Aetherite flames in an ember bowl."},
 		-- Garden
-		FlowerPlanter={name="Flower Planter",category="Garden",level=2,xp=14,costs={Timber=3,Herb=5},size={1,1},max=30,value=2,color="D67D6A",text="A box of meadow blooms."},
-		HedgeRow={name="Hedge Row",category="Garden",level=10,xp=40,costs={Herb=10,Timber=2},size={2,1},max=30,value=3,color="5E8C55",text="A clipped hedge two cells long."},
-		YoungWindpine={name="Young Windpine",category="Garden",level=12,xp=50,costs={Timber=8,Herb=6},size={1,1},max=15,value=4,color="6B8E5A",text="A sapling for shade (not a gathering node)."},
-		MoonbloomBed={name="Moonbloom Bed",category="Garden",level=45,xp=420,costs={Moonbloom=12,GlimmerbarkLog=4},size={2,2},max=10,value=15,color="B8C0FF",text="A raised bed of night flowers."},
+		FlowerPlanter={name="Flower Planter",category="Garden",level=2,xp=14,costs={Timber=3,Herb=5},size={1,1},parts=6,max=30,value=2,color="D67D6A",text="A box of meadow blooms."},
+		HedgeRow={name="Hedge Row",category="Garden",level=10,xp=40,costs={Herb=10,Timber=2},size={2,1},parts=4,max=30,value=3,color="5E8C55",text="A clipped hedge two cells long."},
+		YoungWindpine={name="Young Windpine",category="Garden",level=12,xp=50,costs={Timber=8,Herb=6},size={1,1},parts=4,max=15,value=4,color="6B8E5A",text="A sapling for shade (not a gathering node)."},
+		MoonbloomBed={name="Moonbloom Bed",category="Garden",level=45,xp=420,costs={Moonbloom=12,GlimmerbarkLog=4},size={2,2},parts=8,max=10,value=15,color="B8C0FF",text="A raised bed of night flowers."},
 		-- Banners
-		GuildBanner={name="Guild Banner",category="Banners",level=6,xp=20,costs={Timber=4,Herb=2},size={1,1},max=20,value=3,color="3C9291",text="The Cartographers' Guild colours."},
-		VoyagerPennant={name="Voyager Pennant",category="Banners",level=28,xp=110,costs={WindpineLog=3,BeastHide=4},size={1,1},max=12,value=6,color="D67D6A",text="A hide pennant for far voyages."},
-		StormStandard={name="Storm Standard",category="Banners",level=55,xp=900,costs={StarwoodLog=4,Stormglass=1},size={1,1},max=4,value=30,color="7B8CDE",text="Crackling stormglass on a starwood pole."},
+		GuildBanner={name="Guild Banner",category="Banners",level=6,xp=20,costs={Timber=4,Herb=2},size={1,1},parts=5,max=20,value=3,color="3C9291",text="The Cartographers' Guild colours."},
+		VoyagerPennant={name="Voyager Pennant",category="Banners",level=28,xp=110,costs={WindpineLog=3,BeastHide=4},size={1,1},parts=5,max=12,value=6,color="D67D6A",text="A hide pennant for far voyages."},
+		StormStandard={name="Storm Standard",category="Banners",level=55,xp=900,costs={StarwoodLog=4,Stormglass=1},size={1,1},parts=5,max=4,value=30,color="7B8CDE",text="Crackling stormglass on a starwood pole."},
 		-- Statues
-		SurveyorStatue={name="Surveyor Statue",category="Statues",level=15,xp=120,costs={Ore=30,Brassite=8},size={2,2},max=4,value=12,color="B8B2A6",text="A stone surveyor on a plinth."},
-		SkywhaleStatue={name="Skywhale Statue",category="Statues",level=50,xp=1100,costs={Aetherite=30,GolemCore=2},size={2,2},max=2,value=40,color="7FD6E8",text="A crystal whale breaching the clouds."},
-		AetherObelisk={name="Aether Obelisk",category="Statues",level=65,xp=2200,costs={StarmetalIngot=6,Aetherite=40},size={1,1},max=3,value=50,color="C9D6E3",effect={light={color="8EE6CB",range=16}},text="A starmetal spire humming with aether."},
+		SurveyorStatue={name="Surveyor Statue",category="Statues",level=15,xp=120,costs={Ore=30,Brassite=8},size={2,2},parts=6,max=4,value=12,color="B8B2A6",text="A stone surveyor on a plinth."},
+		SkywhaleStatue={name="Skywhale Statue",category="Statues",level=50,xp=1100,costs={Aetherite=30,GolemCore=2},size={2,2},parts=8,max=2,value=40,color="7FD6E8",text="A crystal whale breaching the clouds."},
+		AetherObelisk={name="Aether Obelisk",category="Statues",level=65,xp=2200,costs={StarmetalIngot=6,Aetherite=40},size={1,1},parts=5,max=3,value=50,color="C9D6E3",effect={light={color="8EE6CB",range=16}},text="A starmetal spire humming with aether."},
 		-- Structures
-		PicnicBench={name="Picnic Bench",category="Structures",level=4,xp=24,costs={Timber=8},size={2,1},max=10,value=3,color="9C6B3E",text="Seats for visiting voyagers."},
-		StoneWell={name="Stone Well",category="Structures",level=12,xp=80,costs={Ore=25,Timber=5},size={2,2},max=2,value=8,color="6F7A86",text="A covered well with a brass bucket."},
-		SupplyShed={name="Supply Shed",category="Structures",level=18,xp=150,costs={Timber=40,Ore=10},size={2,2},max=3,value=10,color="8A5A3B",text="A small shed with a pitched roof."},
-		GardenGazebo={name="Garden Gazebo",category="Structures",level=22,xp=300,costs={WindpineLog=30,BrassIngot=4},size={3,3},max=2,value=25,color="F9EDCD",text="An open pavilion with a brass crown."},
+		PicnicBench={name="Picnic Bench",category="Structures",level=4,xp=24,costs={Timber=8},size={2,1},parts=5,max=10,value=3,color="9C6B3E",text="Seats for visiting voyagers."},
+		StoneWell={name="Stone Well",category="Structures",level=12,xp=80,costs={Ore=25,Timber=5},size={2,2},parts=9,max=2,value=8,color="6F7A86",text="A covered well with a brass bucket."},
+		SupplyShed={name="Supply Shed",category="Structures",level=18,xp=150,costs={Timber=40,Ore=10},size={2,2},parts=6,max=3,value=10,color="8A5A3B",text="A small shed with a pitched roof."},
+		GardenGazebo={name="Garden Gazebo",category="Structures",level=22,xp=300,costs={WindpineLog=30,BrassIngot=4},size={3,3},parts=9,max=2,value=25,color="F9EDCD",text="An open pavilion with a brass crown."},
 		-- Utility: home crafting prompts reuse the existing station effect.
-		CarpenterStump={name="Carpenter's Stump",category="Utility",level=8,xp=40,costs={Timber=20},size={1,1},max=1,value=4,color="7A5634",effect={station="Workbench"},text="Home Workbench station."},
-		CampStove={name="Camp Stove",category="Utility",level=10,xp=50,costs={Ore=15,Timber=10},size={1,1},max=1,value=5,color="B5651D",effect={station="Hearth",light={color="FFB36B",range=8}},text="Home Hearth station."},
-		FieldAnvil={name="Field Anvil",category="Utility",level=20,xp=120,costs={Ore=20,BrassIngot=3},size={1,1},max=1,value=6,color="485565",effect={station="Forge"},text="Home Forge station."},
-		BrewingStand={name="Brewing Stand",category="Utility",level=30,xp=240,costs={Herb=30,EmberoakLog=6},size={1,1},max=1,value=8,color="6A4C93",effect={station="Cauldron"},text="Home Cauldron station."},
+		CarpenterStump={name="Carpenter's Stump",category="Utility",level=8,xp=40,costs={Timber=20},size={1,1},parts=4,max=1,value=4,color="7A5634",effect={station="Workbench"},text="Home Workbench station."},
+		CampStove={name="Camp Stove",category="Utility",level=10,xp=50,costs={Ore=15,Timber=10},size={1,1},parts=5,max=1,value=5,color="B5651D",effect={station="Hearth",light={color="FFB36B",range=8}},text="Home Hearth station."},
+		FieldAnvil={name="Field Anvil",category="Utility",level=20,xp=120,costs={Ore=20,BrassIngot=3},size={1,1},parts=5,max=1,value=6,color="485565",effect={station="Forge"},text="Home Forge station."},
+		BrewingStand={name="Brewing Stand",category="Utility",level=30,xp=240,costs={Herb=30,EmberoakLog=6},size={1,1},parts=6,max=1,value=8,color="6A4C93",effect={station="Cauldron"},text="Home Cauldron station."},
 	}
 	Island.PropOrder = {}
 	Island.CategoryOf = {}
@@ -1452,6 +1457,15 @@ do
 		end
 		return true
 	end
+	-- Primitive parts the listed placements build (Island.PART_BUDGET caps it).
+	function Island.parts(list)
+		local total = 0
+		for _, e in ipairs(list) do
+			local def = Island.Props[e.prop]
+			if def then total += def.parts end
+		end
+		return total
+	end
 	function Island.value(list)
 		local total = 0
 		for _, e in ipairs(list) do
@@ -1492,8 +1506,8 @@ do
 	-- deletes a decoration it can parse: a record that no longer fits (legacy
 	-- layout, overlap, protected zone, duplicate id, outside the radius) moves
 	-- to the nearest free cell with the smallest free id; only a record that
-	-- cannot stand at all (over its per-prop max, over the stage cap, or no
-	-- free cell) is refunded in full. Saves without v = VERSION are legacy
+	-- cannot stand at all (over its per-prop max, over the stage cap, past the
+	-- PART_BUDGET in save order, or no free cell) is refunded in full. Saves without v = VERSION are legacy
 	-- (pre-§27) and shift by LEGACY_OFFSET first: the legacy core kept its
 	-- offsets, so the shift is (0, 0) and every legacy-valid record stays put.
 	-- Returns {placed = {record...}, v = VERSION}, refunds {[material] = n},
@@ -1506,6 +1520,7 @@ do
 		local admitted, counts, refunds = {}, {}, {}
 		local report = {kept = 0, moved = 0, refunded = 0}
 		local cap = Island.cap(stage)
+		local parts = 0
 		local function refund(e)
 			for material, n in pairs(Island.Props[e.prop].costs) do refunds[material] = (refunds[material] or 0) + n end
 			report.refunded += 1
@@ -1518,8 +1533,10 @@ do
 				local e = Island.parseRecord(record)
 				if e then
 					if legacy then e.x += Island.LEGACY_OFFSET.x; e.z += Island.LEGACY_OFFSET.z end
-					if #admitted < cap and (counts[e.prop] or 0) < Island.Props[e.prop].max then
+					local def = Island.Props[e.prop]
+					if #admitted < cap and (counts[e.prop] or 0) < def.max and parts + def.parts <= Island.PART_BUDGET then
 						counts[e.prop] = (counts[e.prop] or 0) + 1
+						parts += def.parts
 						table.insert(admitted, e)
 					else
 						refund(e)
@@ -1585,6 +1602,13 @@ do
 	Home.SKIRT = 6          -- cliff skirt reach beyond the meadow rim
 	Home.PART_BUDGET = 250  -- fixed geometry per home (every addition built, every station active)
 	Home.LIGHT_BUDGET = 12  -- fixed lights per home (lamps), placements add at most Data.Island glows
+	-- Lazy homes (§27 performance): a home's placements and terrace furniture
+	-- exist on the server only while a player (owner or visitor) stands within
+	-- LIVE_RANGE studs (flat) of its centre; they are torn down LIVE_LINGER
+	-- seconds after the last one leaves. Shell, edge band and core always stay.
+	Home.LIVE_RANGE = 250
+	Home.LIVE_LINGER = 30
+	Home.LIVE_TICK = 1      -- seconds between presence checks (world.server.lua)
 	Home.Stages = {
 		{radius = 90},
 		{radius = 102, carpentry = 10, coins = 2500, costs = {Timber = 150, Ore = 100}},

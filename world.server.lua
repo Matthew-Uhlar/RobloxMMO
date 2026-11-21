@@ -271,7 +271,11 @@ end
 -- arrows. No lights: faces self-light (LightInfluence Signs.LIGHT) at night.
 -- Reference sizes match the authored meshes in art/world-shapes.cjs.
 -------------------------------------------------------------------------------
-local Signs={PPS=56,LIGHT=.25,BRIGHTNESS=1.3,MAX_DISTANCE=150,LINE=1.3}
+-- Face cost (§28 performance): PPS 40 (was 56), MaxDistance 100 (landmark
+-- plaques 150), one outline per label (UIStroke, or the engraved highlight
+-- label on stone/scroll boards; never both), and Signs.cullBacks drops the
+-- Back face of a board whose back looks into a wall or over the rim.
+local Signs={PPS=40,LIGHT=.25,BRIGHTNESS=1.3,MAX_DISTANCE=100,LANDMARK_DISTANCE=150,LINE=1.3}
 Signs.FONT={title="rbxasset://fonts/families/Merriweather.json",body="rbxasset://fonts/families/BuilderSans.json",
 	banner="rbxasset://fonts/families/Fondamento.json"}
 -- Island themes: panel (painted board), text, trim (rules, borders), metal
@@ -383,12 +387,11 @@ local function diamond(parent,name,cx,cy,size,color,z)
 	d.Rotation=45
 	return d
 end
-local function setFont(label,family)
-	local ok=pcall(function() label.FontFace=Font.new(family,Enum.FontWeight.Bold) end)
-	if not ok then label.Font=if family==Signs.FONT.body then Enum.Font.GothamBold else Enum.Font.Merriweather end
-end
--- A fitted text line with a soft drop shadow (or an engraved highlight).
+local function setFont(label,family) label.FontFace=Font.new(family,Enum.FontWeight.Bold) end
+-- A fitted text line with an ink outline (UIStroke), or, on engraved stone and
+-- scroll boards (opts.stroke == false), an offset highlight label instead.
 local function guiText(gui,name,text,x,y,w,h,opts)
+	w,h=math.floor(w),math.floor(h) -- fit the box the label really gets
 	local size,lines,overflow=Signs.fit(text,w,h,opts.lines or 1,opts.max,opts.min)
 	local function make(labelName,dx,dy,color,transparency,z)
 		local t=Instance.new("TextLabel")
@@ -403,21 +406,23 @@ local function guiText(gui,name,text,x,y,w,h,opts)
 		t.Parent=gui
 		return t
 	end
-	local offset=math.max(1,math.floor(size*.06+.5))
-	make(name.."Shadow",offset,offset,opts.shadow or ink,opts.shadowTransparency or .35,4)
+	if opts.stroke==false then
+		local offset=math.max(1,math.floor(size*.06+.5))
+		make(name.."Shadow",offset,offset,opts.shadow or ink,opts.shadowTransparency or .35,4)
+	end
 	local main=make(name,0,0,opts.color,0,5)
 	if opts.stroke~=false then guiStroke(main,opts.strokeColor or ink,math.max(1,size*.05),.25) end
 	main:SetAttribute("SignFitLines",lines)
 	if overflow then main:SetAttribute("SignOverflow",true) end
 	return main,size
 end
-local function surface(board,face,pps)
+local function surface(board,face,distance)
 	local gui=Instance.new("SurfaceGui")
 	gui.Name="Sign face "..face.Name
 	gui.Face=face
 	gui.SizingMode=Enum.SurfaceGuiSizingMode.PixelsPerStud
-	gui.PixelsPerStud=pps or Signs.PPS
-	gui.LightInfluence,gui.Brightness,gui.MaxDistance=Signs.LIGHT,Signs.BRIGHTNESS,Signs.MAX_DISTANCE
+	gui.PixelsPerStud=Signs.PPS
+	gui.LightInfluence,gui.Brightness,gui.MaxDistance=Signs.LIGHT,Signs.BRIGHTNESS,distance or Signs.MAX_DISTANCE
 	gui.AlwaysOnTop=false
 	gui:SetAttribute("SignStyled",true)
 	gui.Parent=board
@@ -473,7 +478,7 @@ function Signs.paintWide(board,spec,theme,style)
 	local title=if stone or style=="scroll" then ink else theme.text
 	local kickColor=if stone or style=="scroll" then darken(spec.accent,.72) else spec.accent:Lerp(cream,.35)
 	for _,face in ipairs({Enum.NormalId.Front,Enum.NormalId.Back}) do
-		local gui=surface(board,face)
+		local gui=surface(board,face,if spec.kind=="plaque" then Signs.LANDMARK_DISTANCE else nil)
 		local m=backdrop(gui,cw,ch,panel,trim,spec.accent,if stone then "stone" else "wood")
 		local x0,align=m+ch*.12,Enum.TextXAlignment.Center
 		if cw/ch>=2.4 then
@@ -495,7 +500,7 @@ function Signs.paintWide(board,spec,theme,style)
 		guiFrame(gui,"Divider",dx,dy,dw,math.max(2,ch*.012),spec.accent,0,3)
 		diamond(gui,"Divider stud",dx+dw,dy+1,math.max(5,ch*.045),spec.accent,4)
 		local ty=dy+ch*.04
-		guiText(gui,"Title",spec.title,x0,ty,w,ch-m-ch*.05-ty,{lines=2,max=ch*.34,min=ch*.14,font=Signs.FONT.title,align=align,
+		guiText(gui,"Title",spec.title,x0,ty,w,ch-m-ch*.05-ty,{lines=2,max=ch*.34,min=ch*.13,font=Signs.FONT.title,align=align,
 			color=engrave.color,shadow=engrave.shadow,shadowTransparency=engrave.shadowTransparency,stroke=engrave.stroke})
 	end
 end
@@ -538,8 +543,11 @@ function Signs.paintArrow(board,label,accent,theme)
 		local tipLeft=face==Enum.NormalId.Front
 		local tipX=if tipLeft then ch*.45 else cw-ch*.45
 		diamond(gui,"Chevron",tipX,ch/2,ch*.42,accent,4)
-		local x0=if tipLeft then ch*.9 else ch*.3
-		guiText(gui,"Label",label,x0,ch*.08,cw-ch*1.2,ch*.84,{max=ch*.6,min=ch*.34,font=Signs.FONT.title,color=theme.text,
+		-- The mesh's mounting strap sits .23-.37 studs from the tail at the
+		-- reference width 4.6 (stretched with W): keep the label >= .45 studs clear.
+		local tail=math.max(.45,W*.37/4.6+.06)*Signs.PPS
+		local x0=if tipLeft then ch*.9 else tail
+		guiText(gui,"Label",label,x0,ch*.08,cw-ch*.9-tail,ch*.84,{max=ch*.6,min=ch*.34,font=Signs.FONT.title,color=theme.text,
 			align=if tipLeft then Enum.TextXAlignment.Right else Enum.TextXAlignment.Left})
 	end
 end
@@ -635,6 +643,82 @@ end
 function Signs.ledgerFrame(holder,cf,W,H,theme)
 	signFrame(holder,"Notice post",V(.42,H+2,.42),cf*CFrame.new(-(W/2+.28),(H+2)/2,0),theme.wood,WO,"SignLedgerFrame",theme.metal,
 		V(W+1.4,H+3.1,2.2),(cf*CFrame.new(0,(H+3.1)/2,0)).Position)
+end
+-- Back faces nobody can read: a board (not an arrow) whose back looks into a
+-- wall (a visible or solid part 1 or 2.5 studs behind its centre) or over the
+-- rim (no solid ground under a point 3, 5.5 or 8 studs behind it, i.e. a
+-- reader would have to stand on a ledge under 8 studs wide) keeps only its
+-- Front SurfaceGui. Run once after the static world is built and on each new
+-- home. Geometry only (no physics), so the headless suites see the same result.
+local function islandSolids(isle,cache)
+	local cached=cache[isle]
+	if cached then return cached end
+	cached={}
+	for _,p in ipairs(isle:GetDescendants()) do
+		if p:IsA("BasePart") and (p.CanCollide or p.Transparency<1) and not (p.Parent and p.Parent:GetAttribute("SignArchetype")) then
+			local cf,h=p.CFrame,p.Size/2
+			local r,u,l=cf.RightVector,cf.UpVector,cf.LookVector
+			local e=V(math.abs(r.X)*h.X+math.abs(u.X)*h.Y+math.abs(l.X)*h.Z,math.abs(r.Y)*h.X+math.abs(u.Y)*h.Y+math.abs(l.Y)*h.Z,
+				math.abs(r.Z)*h.X+math.abs(u.Z)*h.Y+math.abs(l.Z)*h.Z)
+			table.insert(cached,{p=p,lo=cf.Position-e,hi=cf.Position+e})
+		end
+	end
+	cache[isle]=cached
+	return cached
+end
+-- Point inside a part's real shape (block, cylinder along local X, ball).
+local function contains(p,pos)
+	local rel=p.CFrame:PointToObjectSpace(pos)
+	local h=p.Size/2
+	if p:IsA("Part") and p.Shape==Enum.PartType.Cylinder then
+		local r=math.min(h.Y,h.Z)
+		return math.abs(rel.X)<=h.X and rel.Y*rel.Y+rel.Z*rel.Z<=r*r
+	elseif p:IsA("Part") and p.Shape==Enum.PartType.Ball then
+		return rel.Magnitude<=math.min(h.X,h.Y,h.Z)
+	end
+	return math.abs(rel.X)<=h.X and math.abs(rel.Y)<=h.Y and math.abs(rel.Z)<=h.Z
+end
+function Signs.backBlocked(board,isle,cache)
+	local solids=islandSolids(isle,cache or {})
+	local back=-board.CFrame.LookVector
+	local c=board.CFrame.Position
+	for _,d in ipairs({1,2.5}) do
+		local probe=c+back*(board.Size.Z/2+d)
+		for _,s in ipairs(solids) do
+			if probe.X>=s.lo.X and probe.X<=s.hi.X and probe.Y>=s.lo.Y and probe.Y<=s.hi.Y and probe.Z>=s.lo.Z and probe.Z<=s.hi.Z
+				and contains(s.p,probe) then return "wall" end
+		end
+	end
+	for _,d in ipairs({3,5.5,8}) do
+		local probe=c+back*(board.Size.Z/2+d)
+		local ground=false
+		for _,s in ipairs(solids) do
+			if s.p.CanCollide and probe.X>=s.lo.X and probe.X<=s.hi.X and probe.Z>=s.lo.Z and probe.Z<=s.hi.Z
+				and s.hi.Y<=probe.Y+.5 and s.hi.Y>=probe.Y-40 and contains(s.p,V(probe.X,(s.lo.Y+s.hi.Y)/2,probe.Z)) then
+				ground=true
+				break
+			end
+		end
+		if not ground then return "rim" end
+	end
+	return nil
+end
+function Signs.cullBacks(root)
+	local culled,cache=0,{}
+	for _,board in ipairs(root:GetDescendants()) do
+		if board:IsA("BasePart") and board:GetAttribute("SignBoard") and board:GetAttribute("Shape")~="SignArrowBoard" then
+			local backGui=board:FindFirstChild("Sign face Back")
+			if backGui then
+				local why=Signs.backBlocked(board,islandModel(board),cache)
+				if why then
+					backGui:Destroy()
+					board:SetAttribute("SignOneSided",why)
+					culled+=1
+				end
+			end
+		end
+	end
+	return culled
 end
 local BUILDERS={hanging=buildHanging,shop=buildHanging,post=buildPost,banner=buildBanner,plaque=buildPlaque}
 function Signs.build(parent,cf,spec)
@@ -1402,6 +1486,56 @@ do
 		model:SetAttribute("Region","Home")
 		return model
 	end
+	-- Lazy homes (§27 performance): placements and terrace furniture exist
+	-- only while someone stands within LIVE_RANGE studs (flat) of the home's
+	-- centre, and are torn down LIVE_LINGER seconds after the last one leaves.
+	-- Builders register a hook in home.liveHooks; HomeKit.setLive runs them.
+	-- An owner without a character yet counts as present (they spawn at home).
+	HomeKit.LIVE_RANGE=if H then H.LIVE_RANGE else 250
+	HomeKit.LIVE_LINGER=if H then H.LIVE_LINGER else 30
+	HomeKit.LIVE_TICK=if H then H.LIVE_TICK else 1
+	local function rootPosition(player)
+		local ok,pos=pcall(function()
+			local character=player.Character
+			local root=character and character:FindFirstChild("HumanoidRootPart")
+			return root and root.Position
+		end)
+		return if ok and typeof(pos)=="Vector3" then pos else nil
+	end
+	local function within(home,pos)
+		local dx,dz=pos.X-home.center.X,pos.Z-home.center.Z
+		return dx*dx+dz*dz<=HomeKit.LIVE_RANGE*HomeKit.LIVE_RANGE
+	end
+	function HomeKit.occupied(home,owner)
+		local pos=rootPosition(owner)
+		if not pos or within(home,pos) then return true end
+		for _,visitor in ipairs(Players:GetPlayers()) do
+			if visitor~=owner then
+				local at=rootPosition(visitor)
+				if at and within(home,at) then return true end
+			end
+		end
+		return false
+	end
+	function HomeKit.setLive(home,live)
+		if home.live==live then return end
+		home.live=live
+		home.model:SetAttribute("HomeLive",live)
+		for _,hook in ipairs(home.liveHooks) do hook() end
+	end
+	-- One presence pass at clock `now` (seconds, accumulated by the loop below settle).
+	function HomeKit.step(now)
+		for owner,home in pairs(homes) do
+			if HomeKit.occupied(home,owner) then
+				home.seen=now
+				HomeKit.setLive(home,true)
+			elseif home.live and now-(home.seen or now)>=HomeKit.LIVE_LINGER then
+				HomeKit.setLive(home,false)
+			elseif home.seen==nil then
+				home.seen=now
+			end
+		end
+	end
 end
 local function settle(player)
 	if homes[player] then return end
@@ -1414,7 +1548,9 @@ local function settle(player)
 	m:SetAttribute("IslandCenter",center)
 	m:SetAttribute("Region","Home")
 	m:SetAttribute("HomeSlot",slot)
-	local home={model=m,center=center,slot=slot}
+	local home={model=m,center=center,slot=slot,liveHooks={}}
+	home.live=HomeKit.occupied(home,player)
+	m:SetAttribute("HomeLive",home.live)
 	local level=HomeKit.level(player:GetAttribute("HomesteadLevel"))
 	home.level=level
 	HomeKit.shell(home,level)
@@ -1616,6 +1752,7 @@ local function settle(player)
 	if homeTerrace.attach then homeTerrace.attach(player,homes[player]) end
 	if homePlacement.attach then homePlacement.attach(player,homes[player]) end
 	if homeTerrace.garden then homeTerrace.garden(player,homes[player]) end -- Verdant Garden islet (Garden section)
+	Signs.cullBacks(m) -- §28: one-sided boards where the back faces a wall or the rim
 end
 Players.PlayerAdded:Connect(settle)
 Players.PlayerRemoving:Connect(function(player)
@@ -1626,6 +1763,17 @@ Players.PlayerRemoving:Connect(function(player)
 	end
 end)
 for _,player in ipairs(Players:GetPlayers()) do settle(player) end
+-- Lazy homes: presence pass every LIVE_TICK seconds (task.wait returns the elapsed time).
+if task.wait then
+	task.spawn(function()
+		local now=0
+		while true do
+			local dt=task.wait(HomeKit.LIVE_TICK)
+			now+=(if type(dt)=="number" then dt else HomeKit.LIVE_TICK)
+			HomeKit.step(now)
+		end
+	end)
+end
 
 -- Group islands are instantiated once per local crew; their build flags come
 -- from the co-op service's persistent group record, never from client intent.
@@ -2170,8 +2318,7 @@ local function ledger(parent,name,pos,toward,title,kicker,rows,accent,width,heig
 		l.BackgroundTransparency,l.TextXAlignment=1,align or Enum.TextXAlignment.Left
 		l.Position,l.Size=UDim2.fromOffset(x,y),UDim2.fromOffset(w,h)
 		l.TextColor3,l.Text,l.TextScaled,l.TextWrapped,l.TextSize=color,t,false,true,size
-		local ok=pcall(function() l.FontFace=Font.new(family,Enum.FontWeight.Bold) end)
-		if not ok then l.Font=Enum.Font.GothamBold end
+		l.FontFace=Font.new(family,Enum.FontWeight.Bold)
 		local s2=Instance.new("UIStroke")
 		s2.Color,s2.Thickness,s2.Transparency=ink,1.5,.3
 		s2.Parent=l
@@ -2977,12 +3124,14 @@ do
 			local f=type(value)=="string" and Data.Furniture[value]
 			if f and f.hotspot~=h.id then f=nil end
 			local id=f and value or nil
-			if built[h.id] and built[h.id].id==id then return end
+			plinths[h.id].Transparency=if id then 1 else 0
+			-- §27 lazy homes: furniture is built only while the home is live.
+			local want=if home.live and m.Parent then id else nil
+			if built[h.id] and built[h.id].id==want then return end
 			if built[h.id] then built[h.id].model:Destroy() end
 			built[h.id]=nil
 			if h.id=="Portal" then portalPrompt=nil end
-			plinths[h.id].Transparency=if id then 1 else 0
-			if not id or not m.Parent then return end
+			if not want then return end
 			local model,main,veil=buildFurniture(terrace,id,hotspotFrame(center,h))
 			built[h.id]={id=id,model=model}
 			for _,kind in ipairs(f.effect.station or {}) do
@@ -3023,6 +3172,7 @@ do
 			refresh(h)
 		end
 		table.insert(home.decorationConnections,player:GetAttributeChangedSignal("HomePortal"):Connect(refreshPortal))
+		table.insert(home.liveHooks,function() for _,h in ipairs(Data.Hotspots) do refresh(h) end end)
 	end
 	for player,home in pairs(homes) do homeTerrace.attach(player,home) end
 end
@@ -3031,9 +3181,11 @@ end
 -- Island placement (Island Builder team). The server publishes the owner's
 -- free-form placements as player attribute IslandPlacements ("id:prop:x:z:rot"
 -- records joined by ";", Data.Island grid). Each record becomes an anchored
--- primitive model (<= 12 parts) named Placement_<id> in the home's Placements
--- folder; a change rebuilds only the records that differ. The folder goes with
--- the home model when the player leaves. Player attribute IslandCenter lets the
+-- primitive model (<= 12 parts, Data.Island.Props[prop].parts) named
+-- Placement_<id> in the home's Placements folder; a change rebuilds only the
+-- records that differ, and at most Data.Island.PART_BUDGET parts are built.
+-- §27 lazy homes: the folder stays, its models exist only while the home is
+-- live (HomeKit.setLive). The folder goes with the home model when the player leaves. Player attribute IslandCenter lets the
 -- client snap its build-mode ghost to the same grid.
 -------------------------------------------------------------------------------
 do
@@ -3317,11 +3469,14 @@ do
 		local function refresh()
 			if not folder.Parent then return end
 			-- Re-validate geometry so a bad value can never stack props.
-			local want,occupied={},{}
+			-- §27 lazy homes: nothing is built while the home is dormant.
+			local want,occupied,parts={},{},0
 			local stage=(home.level or 1)-1 -- §27: the grid grows with the Homestead level
-			for _,e in ipairs(I.decode(player:GetAttribute("IslandPlacements"))) do
-				if not want[e.id] and I.check(occupied,e.prop,e.x,e.z,e.rot,stage) then
+			for _,e in ipairs(if home.live then I.decode(player:GetAttribute("IslandPlacements")) else {}) do
+				local cost=I.Props[e.prop].parts
+				if not want[e.id] and parts+cost<=I.PART_BUDGET and I.check(occupied,e.prop,e.x,e.z,e.rot,stage) then
 					want[e.id]=e
+					parts+=cost
 					for _,c in ipairs(I.cells(e.prop,e.x,e.z,e.rot)) do occupied[I.key(c[1],c[2])]=e.id end
 				end
 			end
@@ -3338,6 +3493,7 @@ do
 		end
 		table.insert(home.decorationConnections,player:GetAttributeChangedSignal("IslandPlacements"):Connect(refresh))
 		home.refreshPlacements=refresh
+		table.insert(home.liveHooks,refresh)
 		refresh()
 	end
 	for player,home in pairs(homes) do homePlacement.attach(player,home) end
@@ -4722,3 +4878,7 @@ do
 	end
 end
 -- End Lairs section.
+
+-- Signs (§28 performance): drop Back faces nobody can read on the static world.
+Signs.cullBacks(world)
+Signs.cullBacks(islandsFolder)

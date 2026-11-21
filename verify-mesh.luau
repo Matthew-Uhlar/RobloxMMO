@@ -530,6 +530,161 @@ do
 	check(streamed.forge.stats.instances == 0, "removed parts release their mesh")
 end
 
+-- Sign kit tints (§28 M2/M3): only the eleven kit shapes are quantised; legacy
+-- sign shapes (pennants, agility cloth, crew pennant, ledger) keep their Tint
+-- on phones too; BannerCloth snaps to a small palette everywhere.
+do
+	local function phoneForge()
+		return loadForge(nil, nil, function(env)
+			local services = env.game
+			env.game = {GetService = function(self, name)
+				if name == "UserInputService" then return {TouchEnabled = true, KeyboardEnabled = false} end
+				return services.GetService(self, name)
+			end}
+		end)
+	end
+	local phone, desk = phoneForge(), ok
+	local red, teal = Color3.fromRGB(200, 40, 40), Color3.fromHex("6FA38A")
+	local kit = {"SignHangingFrame", "SignpostFrame", "BannerStandardFrame", "SignPlinthFrame", "SignLedgerFrame", "SignCarvedBoard",
+		"SignScrollBoard", "SignArrowBoard", "SignPlaqueBoard", "SignNoticeBoard", "BannerCloth"}
+	local kitSet = {}
+	for _, name in kit do kitSet[name] = true end
+	local n = 0
+	for name in pairs(phone.forge.kitShapes) do n += 1; check(kitSet[name] == true, name .. " is a kit shape") end
+	check(n == 11, "exactly the eleven kit shapes are shared (" .. n .. ")")
+	for _, legacy in {"Banner", "Signboard", "SignboardPosted", "SignPost"} do
+		check(World.shapes[legacy].kind == "sign", legacy .. " is a sign-kind shape")
+		check(phone.forge.templateTint(legacy, World.shapes[legacy], red) == red, legacy .. " keeps its Tint on phones")
+		check(desk.forge.templateTint(legacy, World.shapes[legacy], red) == red, legacy .. " keeps its Tint on desktop")
+	end
+	local themeMetals = {"C9A24E", "6FA38A", "B8733F", "AFA8A0", "B8C6CF", "8E7BC0", "7FC9C9", "A8B6CC", "E0B44E"}
+	for _, name in kit do
+		local data = World.shapes[name]
+		local seen, distinct = {}, 0
+		for _, hex in themeMetals do
+			local phoneTint = phone.forge.templateTint(name, data, Color3.fromHex(hex))
+			local deskTint = desk.forge.templateTint(name, data, Color3.fromHex(hex))
+			if name == "BannerCloth" then
+				check(table.find(phone.forge.clothPalette, phoneTint) ~= nil and phoneTint == deskTint, "BannerCloth tint snaps to the cloth palette on every device")
+			else
+				check(phoneTint:ToHex() == data.tint or phoneTint:ToHex():upper() == data.tint, name .. " shares its default tint on phones")
+				check(table.find(desk.forge.kitMetals, deskTint) ~= nil, name .. " tint snaps to a kit metal on desktop")
+				if not seen[deskTint:ToHex()] then seen[deskTint:ToHex()] = true; distinct += 1 end
+			end
+		end
+		if name ~= "BannerCloth" then check(distinct <= 3, name .. ": ten themes use <= 3 metal templates (" .. distinct .. ")") end
+	end
+	check(#phone.forge.clothPalette <= 8, "cloth palette is small")
+	-- A legacy pennant (Banner) keeps its colour on a phone: its template carries the tint.
+	local pennant = part(nil, "Pennant", Vector3.new(1, 2, .1), CFrame.new(), {Shape = "Banner", Tint = red}); phone.add(pennant)
+	check(phone.forge.templates["Banner#" .. red:ToHex()] ~= nil, "phone pennant template keeps its tint")
+	local plate = part(nil, "Plate", Vector3.new(4, 1.5, .3), CFrame.new(5, 0, 0), {Shape = "SignCarvedBoard", Tint = teal}); phone.add(plate)
+	check(phone.forge.templates["SignCarvedBoard#" .. World.shapes.SignCarvedBoard.tint] ~= nil
+		or phone.forge.templates["SignCarvedBoard#" .. string.lower(World.shapes.SignCarvedBoard.tint)] ~= nil, "phone kit board uses the shared template")
+end
+
+-- LRU eviction: a new template evicts the least recently used idle template.
+do
+	local function tpl(f, shape)
+		for key, entry in pairs(f.templates) do if string.sub(key, 1, #shape + 1) == shape .. "#" then return entry end end
+		return nil
+	end
+	local lru = loadForge()
+	lru.forge.limits.templates = 2
+	local a = part(nil, "A", Vector3.new(3, 3, 3), CFrame.new(), {Shape = "Boulder"}); lru.add(a)
+	local b = part(nil, "B", Vector3.new(3, 3, 3), CFrame.new(5, 0, 0), {Shape = "Barrel"}); lru.add(b)
+	local c = part(nil, "C", Vector3.new(3, 3, 3), CFrame.new(10, 0, 0), {Shape = "Crate"}); lru.add(c)
+	check(c:GetAttribute("ShapeSkipped") == "budget" and lru.forge.stats.evicted == 0, "templates with live clones are never evicted")
+	a.Parent = nil; lru.forge.step()
+	-- The release frees a slot: the waiting crate retries at once and evicts the idle boulder template.
+	check(c:GetAttribute("ShapeDone") == true and lru.forge.stats.evicted == 1 and tpl(lru.forge, "Boulder") == nil, "idle template evicted for a waiting shape")
+	check(lru.forge.stats.templates == 2 and lru.calls.destroyed == 1, "eviction destroys the EditableMesh and keeps the count")
+	check(tpl(lru.forge, "Barrel").users == 1 and tpl(lru.forge, "Crate").users == 1, "in-use templates kept and counted")
+	local d = part(nil, "D", Vector3.new(3, 3, 3), CFrame.new(15, 0, 0), {Shape = "Crate"}); lru.add(d)
+	check(d:GetAttribute("ShapeDone") == true and tpl(lru.forge, "Crate").users == 2 and lru.forge.stats.evicted == 1, "clones share the template")
+	-- Least recently used goes first.
+	local lru2 = loadForge()
+	lru2.forge.limits.templates = 3
+	local p1 = part(nil, "P1", Vector3.new(3, 3, 3), CFrame.new(), {Shape = "Boulder"}); lru2.add(p1)
+	local p2 = part(nil, "P2", Vector3.new(3, 3, 3), CFrame.new(5, 0, 0), {Shape = "Barrel"}); lru2.add(p2)
+	local p3 = part(nil, "P3", Vector3.new(3, 3, 3), CFrame.new(10, 0, 0), {Shape = "Crate"}); lru2.add(p3)
+	p2.Parent = nil; lru2.forge.step()
+	p1.Parent = nil; lru2.forge.step()
+	local p4 = part(nil, "P4", Vector3.new(3, 3, 3), CFrame.new(15, 0, 0), {Shape = "Anvil"}); lru2.add(p4)
+	check(tpl(lru2.forge, "Barrel") == nil and tpl(lru2.forge, "Boulder") ~= nil, "the least recently used idle template is evicted first")
+end
+
+-- Template budget tour (§28 M3): the real world, hub then five regions, on
+-- desktop and phone limits. No part may be left primitive for want of a
+-- template slot while idle templates could be evicted, and sign kit pieces fit.
+do
+	local Data = luau.load(fs.readFile("shared/GameData.lua"), {injectGlobals = true})()
+	local function sig()
+		local listeners = {}
+		return {Connect = function(_, f) table.insert(listeners, f) return {Disconnect = function() end} end,
+			Fire = function(_, ...) for _, f in listeners do f(...) end end}
+	end
+	roblox.implementProperty("ProximityPrompt", "Triggered", function() return sig() end)
+	local players = {PlayerAdded = sig(), PlayerRemoving = sig(), GetPlayers = function() return {} end}
+	local dataModule = {Name = "AetherData"}
+	local function buildWorld()
+		local wsp = Instance.new("Workspace")
+		local env = {
+			game = {GetService = function(_, name)
+				if name == "Players" then return players end
+				if name == "Lighting" then return Instance.new("Lighting") end
+				if name == "CollectionService" then return {AddTag = function() end} end
+				if name == "ReplicatedStorage" then return {WaitForChild = function(_, n) return if n == "AetherData" then dataModule else nil end} end
+				if name == "ServerStorage" then return {FindFirstChild = function() return nil end} end
+				return {}
+			end},
+			workspace = wsp, Instance = Instance, Vector3 = Vector3, Vector2 = roblox.Vector2, CFrame = CFrame, Color3 = Color3,
+			UDim2 = roblox.UDim2, UDim = roblox.UDim, Font = roblox.Font, Enum = roblox.Enum, NumberRange = roblox.NumberRange,
+			NumberSequence = roblox.NumberSequence, ColorSequence = roblox.ColorSequence,
+			task = {spawn = function() end, wait = function() end, defer = function() end, delay = function() end},
+			require = function() return Data end,
+		}
+		luau.load(fs.readFile("world.server.lua"):gsub("plans%.Position", "plans.CFrame.Position"), {environment = env, injectGlobals = true})()
+		return wsp
+	end
+	local STOPS = {{"Compass Quay", Vector3.new(0, 4, 0)}, {"Mosswake Grove", Vector3.new(-230, 4, 0)}, {"Brassfall Quarry", Vector3.new(230, 4, 0)},
+		{"Gloomhollow", Vector3.new(440, -12, -440)}, {"Tidewater Shoals", Vector3.new(-520, 6, 440)}, {"Tempest Spire", Vector3.new(600, 84, -220)}}
+	local function tour(device)
+		local wsp = buildWorld()
+		local run = loadForge(function(root)
+			for _, child in wsp:GetChildren() do if child:IsA("Folder") then child.Parent = root end end
+		end, nil, function(env)
+			if device == "phone" then
+				local services = env.game
+				env.game = {GetService = function(self, name)
+					if name == "UserInputService" then return {TouchEnabled = true, KeyboardEnabled = false} end
+					return services.GetService(self, name)
+				end}
+			end
+		end)
+		local report, peak = {}, 0
+		for _, stop in STOPS do
+			local skipsBefore = run.forge.stats.templateSkips
+			run.moveTo(stop[2])
+			local kitPrimitive = 0
+			for _, p in run.root:GetDescendants() do
+				if p:IsA("BasePart") and p:GetAttribute("ShapeSkipped") == "budget" and run.forge.kitShapes[p:GetAttribute("Shape")] then kitPrimitive += 1 end
+			end
+			peak = math.max(peak, run.forge.stats.templates)
+			check(run.forge.stats.templates <= run.forge.limits.templates and run.forge.stats.templateTriangles <= run.forge.limits.templateTriangles,
+				device .. " " .. stop[1] .. ": template caps hold")
+			table.insert(report, string.format("%s %d tpl/%dk tris, %d evicted, %d tpl skips, %d kit primitives", stop[1], run.forge.stats.templates,
+				run.forge.stats.templateTriangles // 1000, run.forge.stats.evicted, run.forge.stats.templateSkips - skipsBefore, kitPrimitive))
+			check(kitPrimitive == 0 or device == "phone", device .. " " .. stop[1] .. ": every sign kit piece in range meshed (" .. kitPrimitive .. ")")
+		end
+		print("Template tour (" .. device .. "): " .. table.concat(report, "; ") .. "; peak " .. peak .. ".")
+		return run
+	end
+	local desk = tour("desktop")
+	check(desk.forge.stats.evicted >= 0, "desktop tour completed")
+	tour("phone")
+end
+
 -- Client roles: IslandArt keeps legacy sculptures and creatures; nothing runs on the server.
 local client = fs.readFile("mesh.client.lua")
 check(client:find('GetAttribute("ShapeScale")', 1, true) ~= nil and client:find("CREATURES", 1, true) ~= nil, "IslandArt leaves contract-sized Shape parts to MeshForge")

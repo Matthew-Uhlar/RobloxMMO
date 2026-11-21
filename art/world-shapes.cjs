@@ -712,6 +712,7 @@ module.exports = ({ world, C, PI, hash, jitterOf }) => {
       for (const x of [-w / 2 + .5, w / 2 - .6]) rivet(kit, x, s * (h / 2 + .05), (d + .08) / 2 + .01, .045);
     }
     kit.bevelBox(-w / 2 - .05, 0, 0, .12, h + .2, d + .1, .03, C.BARK);
+    // Mounting strap (x -w/2 + .23 .. .37 at the reference width): world paintArrow keeps the label >= .45 studs clear of the tail.
     kit.box(-w / 2 + .3, 0, 0, .14, h + .26, d + .14, TINT);
     // Tip: brass edge behind a tinted point.
     kit.prism([[w / 2 - .05, -h / 2 - .16], [w / 2 + .52, 0], [w / 2 - .05, h / 2 + .16]], d + .04, TINT, TINT_DARK);
@@ -761,7 +762,8 @@ module.exports = ({ world, C, PI, hash, jitterOf }) => {
       }
       kit.box(s * w / 4, -h / 2 + .18, 0, w / 2 - .1, .08, d + .02, C.GOLD);
     }
-    for (let k = -1; k <= 1; k++) kit.box(k * 1.1, 0, d / 2 + .01, .06, h - .3, .03, TINT);
+    // Lining stripes sit at z = d * .35, behind the host's Back face (z = d / 2) so they never cross its text.
+    for (let k = -1; k <= 1; k++) kit.box(k * 1.1, 0, d * .35, .06, h - .3, .03, TINT);
   });
 
   // Notice board for ledgers (reference 9 x 8.5 x .35): heavy moulded frame,

@@ -2,7 +2,7 @@
   "format": 1,
   "metersPerStud": 0.28,
   "axes": "Right-handed +Y up; source X/Z and local origin preserved (no rotation/reflection).",
-  "glbSha256": "c4664469db303c61b79b20cdd062396e8b36185deddcd7c293e7ff842c5f994a",
+  "glbSha256": "b81692262a7b7134cfc53b08d0029ff16daf5a771d6c2ab673043b19f51a6b50",
   "materials": 44,
   "triangles": 68281,
   "models": [
@@ -266,7 +266,7 @@
     {
       "name": "BannerCloth",
       "source": "BannerCloth.obj",
-      "sourceSha256": "ffadf5af820770c9cf85c8ab6d9685dbb747bde4313500630a4aedcea25bbaa7",
+      "sourceSha256": "71f19c50ea07c77bbc97e7743903c141f48a152c1ea4b3203ad7c33b2d116959",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "e865b970dd8d29227fa3e50b4ac2d9266f695083887cf3a29fcd6b73accc8d71",
       "vertices": 156,
