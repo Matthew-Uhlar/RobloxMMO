@@ -352,6 +352,16 @@ do
 	end
 	function Gear.view(p) return {reforges=p.reforges,stars=p.stars,books=p.books,masterStars=p.masterStars} end -- masterStars: Dungeon endgame
 end
+-- True when an item id carries upgrades bound to it (reforge, stars, master
+-- stars, tomes or enchantments). Shared by every "last copy" rule: Museum
+-- donations, faction crests and the satchel's sell / drop (§29) all keep one
+-- upgraded copy back.
+function Gear.upgraded(p,id)
+	local function has(map) return type(map)=="table" and map[id]~=nil and map[id]~=false end
+	return has(p.reforges) or (type(p.stars)=="table" and (tonumber(p.stars[id]) or 0)>0)
+		or (type(p.masterStars)=="table" and (tonumber(p.masterStars[id]) or 0)>0)
+		or has(p.books) or (type(p.enchants)=="table" and type(p.enchants[id])=="table" and next(p.enchants[id])~=nil)
+end
 -- Workers depth (Data.Workers): up to 12 slots unlocked by unique worker crafts,
 -- a type per gathering resource tier plus combat workers, fuel, two upgrade
 -- slots, a chest, Condensed/Radiant pressing and an auto-seller. Output is
@@ -3450,8 +3460,7 @@ do
 		local worn,bagged=0,0
 		for _,eq in pairs(type(p.equipment)=="table" and p.equipment or {}) do if eq==id then worn+=1 end end
 		for _,b in ipairs(type(p.accessoryBag)=="table" and p.accessoryBag or {}) do if b==id then bagged+=1 end end
-		local upgraded=(type(p.reforges)=="table" and p.reforges[id]~=nil) or (type(p.stars)=="table" and (tonumber(p.stars[id]) or 0)>0)
-			or (type(p.books)=="table" and p.books[id]~=nil) or (type(p.enchants)=="table" and type(p.enchants[id])=="table" and next(p.enchants[id])~=nil)
+		local upgraded=Gear.upgraded(p,id)
 		if have>math.max(worn+bagged,if upgraded then 1 else 0) then return nil end
 		if worn>0 then return "Unequip "..itemName(id).." before donating it (or donate a spare copy)." end
 		if bagged>0 then return "Take "..itemName(id).." out of your accessory bag first (or donate a spare copy)." end
@@ -4093,8 +4102,7 @@ do
 				local held=p.items[charm] or 0
 				local bagged=table.find(p.accessoryBag or {},charm)~=nil
 				-- Same last-copy rule as a Museum donation: reforges, stars, books, enchants.
-				local upgraded=(type(p.reforges)=="table" and p.reforges[charm]~=nil) or (type(p.stars)=="table" and (tonumber(p.stars[charm]) or 0)>0)
-					or (type(p.books)=="table" and p.books[charm]~=nil) or (type(p.enchants)=="table" and type(p.enchants[charm])=="table" and next(p.enchants[charm])~=nil)
+				local upgraded=Gear.upgraded(p,charm)
 				if held<1 then return "The "..Data.Items[e.item].name.." is forged from a "..Data.Items[charm].name.."." end
 				if held<2 and (bagged or upgraded) then return "Take your "..Data.Items[charm].name.." out of the accessory bag (and off the anvil) first." end
 			end
@@ -4435,9 +4443,12 @@ function Satchel.move(p,item)
 	if (p.items[id] or 0)<1 then return "You do not have that item." end
 	local list=Satchel.clean(p)
 	local from=table.find(list,id)
-	if not from then return "You do not have that item." end
-	table.remove(list,from)
+	-- An owned id past Satchel.MAX (more than 400 distinct items) is not in the
+	-- stored list yet: insert it, then trim the tail so the saved list stays bounded
+	-- (trimmed ids are still owned and follow at the end on the next read).
+	if from then table.remove(list,from) end
 	table.insert(list,math.clamp(index,1,#list+1),id)
+	while #list>Satchel.MAX do table.remove(list) end
 	return ""
 end
 -- satchelSort "<rarity|name|kind|value>": reorders the whole satchel.
@@ -4454,8 +4465,11 @@ function Satchel.sort(p,item)
 		if ra~=rb then return ra>rb end
 		return da.name<db.name
 	end)
+	p.satchelSort=item -- the last applied mode (the satchel's sort label); read back through Satchel.sortMode
 	return "Satchel sorted by "..item.."."
 end
+-- The saved sort mode, whitelisted on read (nil when unset or unknown).
+function Satchel.sortMode(p) return if Satchel.sorts[p.satchelSort] then p.satchelSort else nil end
 local function snapshot(player,message)
 	local p=profiles[player]
 	if not p then return {loading=true,message="Opening your journal…"} end
@@ -4476,7 +4490,7 @@ local function snapshot(player,message)
 		message=if message and message~="" then message.."   ·   "..extra else extra
 	end
 	local legacyStats,stats=applyStats(player,p)
-	return {satchel=Satchel.clean(p), -- §29 satchel order
+	return {satchel=Satchel.clean(p),satchelSort=Satchel.sortMode(p), -- §29 satchel order and its last sort mode
 		xp=p.xp,items=p.items,consumables=provisions,collection=p.collection,coins=p.coins,bank=p.bank,bankRevision=p.bankRevision or 0,worker=p.worker,
 		ironman=p.ironman,levels=levels,enchantRank=p.enchantRank or 0,workerResource=p.workerResource or "Ore",workerReady=Workers.ready(p),workers=Workers.state(p),workerInfo=Workers.info(p),message=message or "",kills=p.kills,
 		companionBond=p.companionBond or 0,market=marketViews[player],economy=Econ.view and Econ.view(player,p),recipes=recipeState(p),regions=regionState(p),stats=legacyStats,quest=questState(p),slayer=slayerState(p),started=p.started,decorations=p.decorations,preview=preview[player]==true,
@@ -6854,13 +6868,19 @@ local function perform(player,verb,item,prompt)
 		if count<1 then return "You have no "..def.name.." to drop." end
 		if isEquipped(p,item) then return "Unequip "..def.name.." before dropping it." end
 		if table.find(p.accessoryBag,item) then return "Take "..def.name.." out of your accessory bag first." end
-		p.items[item]=0
-		return "Dropped "..count.." "..def.name.."."
+		-- The last copy of an upgraded item stays (Gear.upgraded); spares go.
+		local keep=if Gear.upgraded(p,item) then 1 else 0
+		if count<=keep then return def.name.." carries upgrades; it cannot be dropped (only spare copies can)." end
+		p.items[item]=keep
+		return "Dropped "..(count-keep).." "..def.name..(if keep>0 then " (kept your upgraded copy)." else ".")
 	elseif verb=="sell" then
 		if item==nil or prices[item] then
 			local total=0
 			for raw,price in pairs(prices) do
-				if not item or raw==item then total+=(p.items[raw] or 0)*price; p.items[raw]=0 end
+				if not item or raw==item then
+					local keep=if Gear.upgraded(p,raw) then math.min(1,p.items[raw] or 0) else 0
+					total+=((p.items[raw] or 0)-keep)*price; p.items[raw]=keep
+				end
 			end
 			p.coins+=total
 			return "Merchant paid "..total.." coins."
@@ -6870,10 +6890,14 @@ local function perform(player,verb,item,prompt)
 		local count=p.items[item] or 0
 		if count<1 then return "You have no "..def.name.." to sell." end
 		if isEquipped(p,item) then return "Unequip "..def.name.." before selling it." end
-		local total=count*(def.value or 1)
-		p.items[item]=0
+		if table.find(p.accessoryBag,item) then return "Take "..def.name.." out of your accessory bag first." end
+		-- The last copy of an upgraded item stays (Gear.upgraded); spares sell.
+		local keep=if Gear.upgraded(p,item) then 1 else 0
+		if count<=keep then return def.name.." carries upgrades; the merchant only buys spare copies." end
+		local total=(count-keep)*(def.value or 1)
+		p.items[item]=keep
 		p.coins+=total
-		return "Merchant paid "..total.." coins for "..count.." "..def.name.."."
+		return "Merchant paid "..total.." coins for "..(count-keep).." "..def.name..(if keep>0 then " (kept your upgraded copy)." else ".")
 	elseif verb=="deposit" or verb=="bank" or verb=="withdraw" then
 		local source=if verb=="withdraw" then "bank" else "coins"
 		local destination=if source=="bank" then "coins" else "bank"

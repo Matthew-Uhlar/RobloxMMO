@@ -262,7 +262,10 @@ for _, size in ipairs({ roblox.Vector2.new(1366, 768), roblox.Vector2.new(844, 3
 	H.press(travel)
 	check(guided and guided[2] == "Brassfall Quarry" and guided[1][1] == "region:Quarry" and guided[1][2] == "warp:Quarry", "region warps still guide through the Wayfinder at " .. tag)
 	layer.api.OnInvoke("chart")
-	S.pickWarp(T.WorldMap.islands[10], S.tiles.Gloomhollow.frame)
+	-- The HUD's whole-tile button (locked isles are clickable) still picks.
+	H.press(H.find(H.find(S.chart, "Isle_Gloomhollow"), "TileButton"))
+	check(S.warpPick and S.warpPick.id == "Gloomhollow", "a locked isle's tile button picks it at " .. tag)
+	check(S.tiles.Gloomhollow.button.Size.X.Offset <= 150, "tile button shrinks to the gem and name at " .. tag)
 	check(travel.Text == "Locked" and H.find(S.chart, "Detail").Text:find("Mining 30", 1, true), "locked isle names its requirement at " .. tag)
 	art.setHover("Gloomhollow")
 	check(H.find(S.chart, "Halo").Visible and H.find(S.chart, "HoverCaption").Text:find("Mining 30", 1, true), "hover halo and requirement at " .. tag)

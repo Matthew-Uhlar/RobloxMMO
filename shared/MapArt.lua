@@ -593,6 +593,12 @@ function MapArt.mountChart(opts)
 		t.name.TextColor3, t.name.TextStrokeColor3, t.name.TextStrokeTransparency = rgb(A.labelInk), rgb(A.labelOutline), 0
 		make("UIStroke", t.name, {Name = "Outline", ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual, Color = rgb(A.labelOutline), Thickness = 2})
 		t.here.Position = UDim2.new(0.5, 0, 0.36, -22)
+		-- The HUD's whole-tile button shrinks to the gem and its name, so the
+		-- island around it stays draggable / hoverable (clicks on it still pick).
+		if t.button then
+			t.button.AnchorPoint, t.button.Position = Vector2.new(0.5, 0), UDim2.new(0.5, 0, 0.36, -24)
+			t.button.Size = UDim2.fromOffset(if opts.touch then 150 else 130, if opts.touch then 76 else 72)
+		end
 		-- Hover from the gem itself (desktop).
 		pcall(function()
 			t.warp.MouseEnter:Connect(function() ctl.setHover(t.island.id) end)

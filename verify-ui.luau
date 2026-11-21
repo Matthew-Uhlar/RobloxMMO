@@ -2023,6 +2023,9 @@ do
 				name .. " inside the party HUD at " .. tag.name)
 		end
 		checks += 3
+		-- XP drops and the skill toast (hud.client.lua) in their own lane (§29 M9).
+		local xpLayer = H.runHud(size, player, ui.replicated, {})
+		xpLayer.state.placeDrops()
 		local lanes = ThemePure.hudLayout(size.X, size.Y, { touch = true })
 		local persistent = {
 			{ "sidebar", rect(atlas:FindFirstChild("Sidebar")) },
@@ -2035,7 +2038,8 @@ do
 		table.insert(explore, hotbarGap)
 		for _, item in ipairs({ { "event banner", rect(banner) }, { "tutorial tracker", rect(tracker) },
 			{ "wayfinder toast", rect(wayfinder:FindFirstChild("WayfinderToast")) }, { "attack button", rect(attack) }, { "spell bar", spellRect },
-			{ "lap tracker", rect(lapTracker) }, { "trap counter", rect(trapCounter) }, { "prayer bar", prayerRect }, { "party HUD", partyRect } }) do
+			{ "lap tracker", rect(lapTracker) }, { "trap counter", rect(trapCounter) }, { "prayer bar", prayerRect }, { "party HUD", partyRect },
+			{ "XP drops", rect(xpLayer.state.drops) }, { "skill toast", rect(xpLayer.state.skillToast) } }) do
 			table.insert(explore, item)
 		end
 		noOverlap(table.move({ { "target panel", targetRect } }, 1, 1, #explore + 1, table.clone(explore)), tag)
@@ -3314,6 +3318,9 @@ do
 	local equippedMenu = options("SunsteelSword", { equipped = true })
 	assert(not equippedMenu.Sell and not equippedMenu.Drop and equippedMenu.Hotbar and equippedMenu.Examine, "equipped gear: no Sell / Drop")
 	assert(options("Ore", { count = 40 }).Drop.confirm and options("Ore", { count = 40 }).Drop.danger, "Drop always confirms")
+	-- M12: Sell always confirms (as the atlas does); upgraded items say so.
+	assert(options("Ore", { count = 1 }).Sell.confirm and options("BrassSword", { count = 1, upgraded = true }).Sell.upgraded and options("BrassSword", { count = 1, upgraded = true }).Drop.upgraded, "Sell confirms; upgrades flagged")
+	checks += 1
 	assert(options("Ore", { count = 40 }).Use and options("Ore", { count = 40 }).Use["local"] == "use", "materials: Use opens their collection")
 	checks += 3
 	-- The atlas relays exactly these verbs from hud.client.lua.
@@ -3356,6 +3363,16 @@ do
 		assert(#ui.sent == 0 and S.menu.Visible, "first Drop press only asks")
 		H.press(H.find(S.menu, "OptionDrop"))
 		assert(ui.sent[1] and ui.sent[1][1] == "drop" and ui.sent[1][2] == "Ore" and not S.menu.Visible, "second press drops")
+		-- M12: an enchanted item (snapshot enchants) asks first and says the upgraded copy stays.
+		local tips = {}
+		ui.replicated:FindFirstChild("IsleToastLocal").Event:Connect(function(text) table.insert(tips, text) end)
+		S.openMenu("BrassSword", roblox.Vector2.new(400, 300))
+		table.clear(ui.sent)
+		H.press(H.find(S.menu, "OptionSell"))
+		assert(#ui.sent == 0 and tips[#tips]:find("carries upgrades", 1, true), "selling an enchanted item confirms and warns")
+		H.press(H.find(S.menu, "OptionSell"))
+		assert(ui.sent[1] and ui.sent[1][1] == "sell" and ui.sent[1][2] == "BrassSword", "second press sells")
+		checks += 2
 		-- Examine and Move to hotbar stay local.
 		S.openMenu("Ore", roblox.Vector2.new(400, 300))
 		table.clear(ui.sent)
@@ -3370,14 +3387,53 @@ do
 		assert(#S.pageIds > 0 and #S.pageIds < 28, "search narrows the grid")
 		search.Text = ""
 		-- Drag the first item onto slot 6 (grid origin at 0,0 in the mock).
+		local UIT = roblox.Enum.UserInputType
+		local function v3(x, y) return roblox.Vector3.new(x, y, 0) end
 		local first = S.pageIds[1]
 		table.clear(ui.sent)
-		S.slots[1].MouseButton1Down:Fire()
+		S.slots[1].InputBegan:Fire({ UserInputType = UIT.MouseButton1, Position = v3(4, 4) })
 		local cell = S.cell + 4
-		local at = roblox.Vector3.new(5 * cell + 4, 4, 0)
-		layer.input.InputChanged:Fire({ UserInputType = roblox.Enum.UserInputType.MouseMovement, Position = at })
-		layer.input.InputEnded:Fire({ UserInputType = roblox.Enum.UserInputType.MouseButton1, Position = at })
+		local at = v3(5 * cell + 4, 4)
+		-- M2: a few pixels of jitter is still a click, not a drag.
+		layer.input.InputChanged:Fire({ UserInputType = UIT.MouseMovement, Position = v3(8, 6) })
+		assert(not S.drag and not H.find(layer.gui, "DragGhost").Visible, "under 7 px of travel is not a drag")
+		layer.input.InputChanged:Fire({ UserInputType = UIT.MouseMovement, Position = at })
+		assert(S.drag and H.find(layer.gui, "DragGhost").Visible, "a drag starts past the threshold")
+		layer.input.InputEnded:Fire({ UserInputType = UIT.MouseButton1, Position = at })
 		assert(ui.sent[1] and ui.sent[1][1] == "satchelMove" and ui.sent[1][2] == first .. ":6", "drag reorders: " .. tostring(ui.sent[1] and ui.sent[1][2]))
+		-- M1: a drag that ends on another slot fires no click there; the next
+		-- click (any slot) still works. Only the click in the same frame is eaten.
+		table.clear(ui.sent)
+		H.press(S.slots[6])
+		assert(#ui.sent == 0, "the release click on the drop slot is swallowed")
+		H.press(S.slots[index])
+		assert(ui.sent[1] and ui.sent[1][1] == "equip", "the next click after a drag acts (not ignored)")
+		table.clear(ui.sent)
+		S.slots[2].InputBegan:Fire({ UserInputType = UIT.MouseButton1, Position = v3(cell + 4, 4) })
+		layer.input.InputChanged:Fire({ UserInputType = UIT.MouseMovement, Position = at })
+		layer.input.InputEnded:Fire({ UserInputType = UIT.MouseButton1, Position = at })
+		H.press(S.slots[index])
+		assert(#ui.sent == 2 and ui.sent[2][1] == "equip", "a click on another slot right after a drag still acts")
+		-- M3: dragging while searching sends a full-satchel position (the slot of
+		-- the item shown there), never the filtered index.
+		search.Text = "brass"
+		local shown = table.clone(S.pageIds)
+		assert(#shown >= 3, "search shows several brass items")
+		table.clear(ui.sent)
+		S.slots[1].InputBegan:Fire({ UserInputType = UIT.MouseButton1, Position = v3(4, 4) })
+		local onto = v3(2 * cell + 4, 4)
+		layer.input.InputChanged:Fire({ UserInputType = UIT.MouseMovement, Position = onto })
+		layer.input.InputEnded:Fire({ UserInputType = UIT.MouseButton1, Position = onto })
+		local want = table.find(S.all, shown[3])
+		assert(want and want ~= 3 and ui.sent[1] and ui.sent[1][2] == shown[1] .. ":" .. want, "search drag targets the full order: " .. tostring(ui.sent[1] and ui.sent[1][2]) .. " want " .. tostring(want))
+		table.clear(ui.sent)
+		local past = v3(6 * cell + 4, 3 * cell + 4) -- an empty slot past the matches
+		S.slots[1].InputBegan:Fire({ UserInputType = UIT.MouseButton1, Position = v3(4, 4) })
+		layer.input.InputChanged:Fire({ UserInputType = UIT.MouseMovement, Position = past })
+		layer.input.InputEnded:Fire({ UserInputType = UIT.MouseButton1, Position = past })
+		assert(ui.sent[1] and ui.sent[1][2] == shown[1] .. ":" .. table.find(S.all, shown[#shown]), "search drag past the matches lands after the last one")
+		search.Text = ""
+		checks += 8
 		-- Gear tab: paperdoll slots and the stat sheet.
 		H.press(H.find(S.panel, "TabGear"))
 		local doll = H.find(S.panel, "Paperdoll")
@@ -3412,9 +3468,14 @@ do
 		H.press(travel)
 		assert(ui.sent[1] and ui.sent[1][1] == "recall" and ui.sent[1][2] == "Hub" and not S.chart.Visible, "recall Hub")
 		H.press(H.find(ui.gui, "ChartButton"))
-		assert(H.find(H.find(S.chart, "Isle_Gloomhollow"), "Lock").Visible, "locked region shows a padlock")
-		S.pickWarp(T.WorldMap.islands[10], H.find(S.chart, "Isle_Gloomhollow"))
-		assert(H.find(S.chart, "Detail").Text:find("Mining 30", 1, true) and travel.Text == "Locked", "locked warp names its requirement")
+		local gloom = H.find(S.chart, "Isle_Gloomhollow")
+		assert(H.find(gloom, "Lock").Visible and not H.find(gloom, "Warp").Visible, "locked region shows a padlock")
+		-- M4: the locked isle itself is a button (no warp point to press).
+		H.press(H.find(gloom, "TileButton"))
+		assert(H.find(S.chart, "WarpInfo").Visible and H.find(S.chart, "Detail").Text:find("Mining 30", 1, true) and travel.Text == "Locked", "clicking a locked isle names its requirement")
+		table.clear(ui.sent)
+		H.press(travel)
+		assert(#ui.sent == 0 and S.chart.Visible, "a locked warp does not travel")
 		local guided
 		local request = H.new("BindableEvent", { Name = "WayfinderRequest" })
 		request.Event:Connect(function(specs, label) guided = { specs, label } end)
@@ -3440,6 +3501,210 @@ do
 		ui.update.OnClientEvent:Fire(after)
 		assert(drop.Text == "", "XP drops can be switched off in Settings")
 		checks += 3
+	end
+
+	-- Skyforge QC fixes (§29): keys, player list, minimap setting, prompts,
+	-- paperdoll pet slot, hotbar-full, pin sync, sort label, queued verbs,
+	-- reduced motion, contrast and pooled minimap markers.
+	do
+		local size = roblox.Vector2.new(1366, 768)
+		local ui = H.runAtlas(size, {})
+		local layer = H.runHud(size, ui.player, ui.replicated, {})
+		local nav = H.runNav(size, ui.player, ui.replicated, {})
+		local S = layer.state
+		local UIT, Key = roblox.Enum.UserInputType, roblox.Enum.KeyCode
+		local function key(code, input) (input or layer.input).InputBegan:Fire({ KeyCode = code, UserInputType = UIT.Keyboard }, false) end
+		local toasts, hudFired = {}, {}
+		ui.replicated:FindFirstChild("IsleToastLocal").Event:Connect(function(text) table.insert(toasts, text) end)
+		ui.replicated:FindFirstChild("IsleHudLocal").Event:Connect(function(...) table.insert(hudFired, { ... }) end)
+		-- M5: M is the Sky Chart's key; the minimap ignores it (its Map button and
+		-- Settings › Minimap remain); dock hint, tile caption and keys card agree.
+		key(Key.M)
+		assert(S.chart.Visible, "M opens the Sky Chart")
+		key(Key.M)
+		assert(not S.chart.Visible, "M closes the Sky Chart")
+		key(Key.M, nav.input)
+		assert(H.find(nav.gui, "Map").Visible ~= false and H.find(nav.gui, "Info").Visible ~= false, "M no longer folds the minimap")
+		assert(H.find(H.find(ui.gui, "ChartButton"), "KeyHint").Text == "M", "MAP dock hint is M")
+		H.press(H.find(ui.gui, "AtlasButton"))
+		assert(H.find(H.find(ui.scroll, "MenuChart"), "Caption").Text:find("· M", 1, true), "Sky Chart tile caption names M")
+		H.press(H.find(ui.scroll, "MenuSettings"))
+		local keysText = ""
+		for _, o in ipairs(H.find(ui.scroll, "SettingKeys"):GetDescendants()) do if type(o.Text) == "string" then keysText ..= o.Text end end
+		assert(keysText:find("M  Sky Chart", 1, true) and not keysText:find("minimap", 1, true), "keys card: M opens the Sky Chart")
+		local minimapText = ""
+		for _, o in ipairs(H.find(ui.scroll, "SettingIsleSettingMinimap"):GetDescendants()) do if type(o.Text) == "string" then minimapText ..= o.Text end end
+		assert(not minimapText:find("M toggles", 1, true), "minimap setting no longer claims M")
+		-- M6: Tab is the satchel's; Roblox's player list (also Tab) is off.
+		assert(layer.coreGui.PlayerList == false, "PlayerList core GUI disabled")
+		key(Key.Tab)
+		assert(S.panel.Visible, "Tab opens the satchel")
+		key(Key.Tab)
+		-- M7: Settings › Minimap off hides the whole minimap block and its strip.
+		local holder = nav.gui:FindFirstChild("Minimap")
+		H.press(H.find(ui.scroll, "ToggleIsleSettingMinimap"))
+		assert(ui.player:GetAttribute("IsleSettingMinimap") == false and not holder.Visible, "minimap setting off hides the minimap and its info strip")
+		ui.player:SetAttribute("IsleSettingMinimap", true)
+		assert(holder.Visible, "minimap setting on shows it again")
+		checks += 12
+		-- L2: shown prompts are a set keyed by prompt; a destroyed prompt (no
+		-- PromptHidden) is pruned, so E opens the satchel again.
+		local prompt = H.new("ProximityPrompt")
+		prompt.Parent = H.new("Part")
+		layer.prompts.PromptShown:Fire(prompt)
+		layer.prompts.PromptShown:Fire(prompt)
+		key(Key.E)
+		assert(not S.panel.Visible, "E belongs to a shown prompt")
+		layer.prompts.PromptHidden:Fire(prompt)
+		key(Key.E)
+		assert(S.panel.Visible, "a prompt shown twice and hidden once no longer holds E")
+		key(Key.E)
+		layer.prompts.PromptShown:Fire(prompt)
+		prompt.Parent = nil
+		key(Key.E)
+		assert(S.panel.Visible, "a destroyed prompt is pruned")
+		checks += 3
+		-- L4: the paperdoll's pet slot opens the Pets page, never the item menu.
+		H.press(H.find(S.panel, "TabGear"))
+		table.clear(hudFired)
+		H.press(H.find(S.panel, "Equippet"))
+		local last = hudFired[#hudFired]
+		assert(last and last[1] == "open" and last[2] == "Hero" and last[3] == "Pets" and not S.menu.Visible, "pet slot opens Hero › Pets")
+		H.press(H.find(S.panel, "TabItems"))
+		-- L5: Move to hotbar never overwrites: full → a toast; a free slot → assigned.
+		local assigned, slots = {}, { slots = {} }
+		for i = 1, 9 do slots.slots[i] = "Herb" end
+		local api = H.new("BindableFunction", { Name = "HotbarApi" })
+		api.Invoke = function(_, method, slot, id)
+			if method == "getSlots" then return slots end
+			table.insert(assigned, { slot, id })
+			return true
+		end
+		api.Parent = ui.replicated
+		S.openMenu("Timber", roblox.Vector2.new(400, 300))
+		H.press(H.find(S.menu, "OptionHotbar"))
+		assert(#assigned == 0 and toasts[#toasts]:find("hotbar is full", 1, true), "full hotbar: no overwrite, a toast")
+		slots.slots[7] = nil
+		S.openMenu("Timber", roblox.Vector2.new(400, 300))
+		H.press(H.find(S.menu, "OptionHotbar"))
+		assert(assigned[1] and assigned[1][1] == 7 and assigned[1][2] == "Timber", "free slot 7 is used")
+		checks += 3
+		-- L6: Pin and Settings › Pin the satchel agree both ways.
+		local pinButton = H.find(S.panel, "PinSatchel")
+		H.press(pinButton)
+		assert(S.pinned and ui.player:GetAttribute("IsleSettingPinSatchel") == true and pinButton:GetAttribute("Tone") == "selected", "Pin sets the setting")
+		ui.player:SetAttribute("IsleSettingPinSatchel", false)
+		assert(not S.pinned and pinButton:GetAttribute("Tone") == "ghost", "the setting turns the Pin button off")
+		ui.player:SetAttribute("IsleSettingPinSatchel", true)
+		assert(S.pinned and pinButton:GetAttribute("Tone") == "selected", "the setting turns the Pin button on")
+		H.press(H.find(S.panel, "CloseSatchel"))
+		assert(ui.player:GetAttribute("IsleSettingPinSatchel") == false, "closing unpins in Settings too")
+		S.setOpen(true)
+		checks += 4
+		-- L7: the sort label shows the last mode the server applied.
+		local snap = H.snapshot()
+		snap.satchelSort = "value"
+		ui.update.OnClientEvent:Fire(snap)
+		local sortButton = H.find(S.panel, "SortButton")
+		assert(sortButton.Text:find("Value", 1, true), "sort label from the snapshot: " .. sortButton.Text)
+		table.clear(ui.sent)
+		ui.setSnapshot(H.snapshot())
+		H.press(sortButton)
+		assert(ui.sent[1][1] == "satchelSort" and ui.sent[1][2] == "rarity" and sortButton.Text:find("Value", 1, true), "an unconfirmed sort keeps the applied label")
+		local applied = H.snapshot()
+		applied.satchelSort = "rarity"
+		ui.setSnapshot(applied)
+		H.press(sortButton)
+		assert(sortButton.Text:find("Rarity", 1, true), "the applied mode shows once the server confirms: " .. sortButton.Text)
+		ui.setSnapshot(H.snapshot())
+		checks += 3
+		-- L8: a verb relayed while a request is pending waits its turn.
+		local action = ui.replicated:FindFirstChild("IsleAction")
+		local original, nested = action.OnInvoke, false
+		action.OnInvoke = function(verb, item)
+			local reply = original(verb, item)
+			if not nested then nested = true; ui.replicated:FindFirstChild("IsleActionLocal"):Fire("sell", "Ore") end
+			return reply
+		end
+		table.clear(ui.sent)
+		ui.replicated:FindFirstChild("IsleActionLocal"):Fire("satchelMove", "Ore:1")
+		action.OnInvoke = original
+		assert(#ui.sent == 2 and ui.sent[1][1] == "satchelMove" and ui.sent[2][1] == "sell" and ui.sent[2][2] == "Ore", "queued verb sent after the reply")
+		checks += 1
+		-- L11: faint text ≥ 4.5:1 on the panel surfaces; reduced motion keeps XP
+		-- drops in place (no fade tween) and the level-up banner unscaled.
+		local function lum(hex)
+			local c = roblox.Color3.fromHex(hex)
+			local function ch(x) return if x <= 0.03928 then x / 12.92 else ((x + 0.055) / 1.055) ^ 2.4 end
+			return 0.2126 * ch(c.R) + 0.7152 * ch(c.G) + 0.0722 * ch(c.B)
+		end
+		for _, bg in ipairs({ "void", "inset", "panel", "panelTop" }) do
+			local a, b = lum(T.hex.faint), lum(T.hex[bg])
+			assert((math.max(a, b) + 0.05) / (math.min(a, b) + 0.05) >= 4.5, "faint text contrast on " .. bg)
+		end
+		local xp = ui.replicated:FindFirstChild("IsleXpLocal")
+		xp:Fire({ { skill = "Mining", amount = 5, level = 3, fraction = 0.5, color = "8EE05A" } })
+		local moving
+		for _, l in ipairs(S.drops:GetChildren()) do if l.Visible and l.Text:find("+5", 1, true) then moving = l end end
+		assert(moving and moving.TextTransparency == 1, "XP drops fade by default")
+		ui.player:SetAttribute("IsleSettingReducedMotion", true)
+		assert(T.reducedMotion(ui.player), "reduced motion setting read")
+		xp:Fire({ { skill = "Mining", amount = 7, level = 3, fraction = 0.5, color = "8EE05A" } })
+		local still
+		for _, l in ipairs(S.drops:GetChildren()) do if l.Visible and l.Text:find("+7", 1, true) then still = l end end
+		assert(still and still.TextTransparency == 0, "reduced motion: XP drops appear in place")
+		assert(source:find("if UI.T.reducedMotion(player) then UI.bannerScale.Scale=1", 1, true), "reduced motion: banner skips its scale tween")
+		local touchNav = H.runNav(roblox.Vector2.new(844, 390), ui.player, ui.replicated, { touch = true })
+		assert(H.find(touchNav.gui, "Coords").TextSize >= 8, "touch coordinate caption is at least 8 px")
+		checks += 8
+		-- L12: minimap markers are pooled: off-map markers hide, then come back
+		-- as the same instances.
+		local markerLayer = H.find(nav.gui, "Layer")
+		local before = {}
+		for _, m in ipairs(markerLayer:GetChildren()) do if m.Visible ~= false then table.insert(before, m) end end
+		local count = #markerLayer:GetChildren()
+		local walker = ui.player.Character:FindFirstChild("HumanoidRootPart") -- the latest runNav's character
+		local home = walker.Position
+		walker.Position = roblox.Vector3.new(5000, 4, 5000)
+		nav.run.Heartbeat:Fire(1)
+		local hidden = 0
+		for _, m in ipairs(before) do if m.Parent == markerLayer and m.Visible == false then hidden += 1 end end
+		assert(#before >= 3 and hidden == #before and #markerLayer:GetChildren() == count, "far away: markers hide, none destroyed (" .. hidden .. "/" .. #before .. ")")
+		walker.Position = home
+		nav.run.Heartbeat:Fire(1)
+		for _, m in ipairs(before) do assert(m.Visible ~= false and m.Parent == markerLayer, "marker shown again (pooled)") end
+		checks += 2
+	end
+	-- L3 / M2 / M10 (tablet, touch): a long-press opens the menu and its release
+	-- does not also select; only the finger that started a press moves it; jitter
+	-- keeps the long-press; a tall touch screen docks the satchel.
+	do
+		local size = roblox.Vector2.new(1024, 768)
+		local delays = {}
+		local ui = H.runAtlas(size, { touch = true })
+		local layer = H.runHud(size, ui.player, ui.replicated, { touch = true, delays = delays })
+		local S = layer.state
+		local UIT = roblox.Enum.UserInputType
+		S.setOpen(true)
+		assert(S.docked and ui.player:GetAttribute("IsleSatchelOpen") == true, "M10: a tablet docks the satchel (screen size, not touch)")
+		local id = S.pageIds[1]
+		local finger = { UserInputType = UIT.Touch, Position = roblox.Vector3.new(10, 10, 0) }
+		local other = { UserInputType = UIT.Touch, Position = roblox.Vector3.new(400, 400, 0) }
+		table.clear(delays)
+		S.slots[1].InputBegan:Fire(finger)
+		layer.input.InputChanged:Fire(other)
+		assert(not S.drag, "another finger does not drag this press")
+		finger.Position = roblox.Vector3.new(13, 12, 0)
+		layer.input.InputChanged:Fire(finger)
+		assert(not S.drag, "jitter under the threshold is not a drag")
+		for _, d in ipairs(delays) do d.fn(table.unpack(d.args, 1, d.args.n)) end
+		assert(S.press == nil and S.menu.Visible and S.menuFor == id, "long-press with jitter opens the menu")
+		layer.input.InputEnded:Fire(finger)
+		H.press(S.slots[1])
+		assert(S.menu.Visible and S.selected ~= id and not S.tooltip.Visible, "the long-press release does not select or show the tooltip")
+		H.press(S.slots[2])
+		assert(S.selected == S.pageIds[2], "the next tap selects")
+		checks += 6
 	end
 
 	-- Sidebar, action bar, menu grid.
@@ -3483,24 +3748,51 @@ do
 	-- HUD lanes at three resolutions: the persistent HUD (sidebar, minimap,
 	-- action bar, hotbar gap, docked satchel on desktop) never overlaps and stays
 	-- on screen; satchel, menu and chart controls meet the touch floor on phones.
-	for _, size in ipairs({ roblox.Vector2.new(1366, 768), roblox.Vector2.new(844, 390), roblox.Vector2.new(730, 303) }) do
-		local tag = size.X .. "x" .. size.Y
-		local touch = size.Y < 500
+	-- Plus a touch tablet (M10: docks like desktop) and short desktop windows
+	-- (M11: the docked satchel shrinks its cells or drops a row, never overflows);
+	-- the XP lane, the left-column trackers and the world boss board join the set
+	-- (M9), and the board steps left of the docked satchel (M8).
+	for _, case in ipairs({ { 1366, 768, false }, { 844, 390, true }, { 730, 303, true }, { 1024, 768, true }, { 1366, 710, false }, { 1280, 650, false } }) do
+		local size = roblox.Vector2.new(case[1], case[2])
+		local tag = size.X .. "x" .. size.Y .. (if case[3] then " touch" else "")
+		local touch = case[3]
 		local ui = H.runAtlas(size, { touch = touch })
 		local layer = H.runHud(size, ui.player, ui.replicated, { touch = touch })
 		local nav = H.runNav(size, ui.player, ui.replicated, { touch = touch })
+		local combat = H.runCombat(size, ui.player, ui.replicated)
 		local L = T.hudLayout(size.X, size.Y, { touch = touch })
 		local S = layer.state
+		H.agilityHud(ui.player)
+		combat.fx.OnClientEvent:Fire("worldBoss", { id = "Aurelith", name = "Aurelith", level = 120, hp = 1500000, maxHp = 3000000, phase = 2, phases = 3,
+			enraged = false, enrageIn = 200, departIn = 400, fighters = 2, top = { { name = "Ysolde", damage = 900000, share = 0.3 } }, you = { rank = 2, damage = 300000, share = 0.1, tier = "Vanguard" } })
+		combat.run.RenderStepped:Fire()
+		local board = combat.hud:FindFirstChild("WorldBossBoard")
+		local boardBefore = rectOf(board, size)
 		S.setOpen(true)
+		S.placeDrops()
 		local items = {
 			{ "sidebar", rectOf(ui.gui:FindFirstChild("Sidebar"), size) },
 			{ "minimap", rectOf(nav.gui:FindFirstChild("Minimap"), size) },
 			{ "action bar", rectOf(ui.gui:FindFirstChild("ActionBar"), size) },
 			{ "hotbar gap", { x = L.hotbar.x, y = L.hotbar.y, w = L.hotbar.w, h = L.hotbar.h } },
+			{ "XP drops", rectOf(S.drops, size) },
+			{ "skill toast", rectOf(S.skillToast, size) },
+			{ "lap tracker", rectOf(ui.gui:FindFirstChild("CourseTracker"), size) },
+			{ "trap counter", rectOf(ui.gui:FindFirstChild("TrapTracker"), size) },
 		}
 		local panel = rectOf(S.panel, size)
 		assert(panel.x >= 0 and panel.y >= 0 and panel.x + panel.w <= size.X and panel.y + panel.h <= size.Y, "satchel on screen at " .. tag .. " " .. show(panel))
-		if not touch then table.insert(items, { "docked satchel", panel }) end
+		assert(S.docked == not L.short, "the satchel docks by screen size at " .. tag)
+		if S.docked then table.insert(items, { "docked satchel", panel }) end
+		if board.Visible then
+			local moved = rectOf(board, size)
+			assert(moved.x + moved.w <= panel.x + 0.5 and moved.x < boardBefore.x, "world boss board steps left of the docked satchel at " .. tag)
+			table.insert(items, { "world boss board", moved })
+			S.setOpen(false)
+			assert(rectOf(board, size).x == boardBefore.x, "world boss board returns when the satchel closes at " .. tag)
+			S.setOpen(true)
+			checks += 2
+		end
 		for i = 1, #items do
 			local a = items[i][2]
 			assert(a.x >= 0 and a.y >= 0 and a.x + a.w <= size.X + 0.5 and a.y + a.h <= size.Y + 0.5, items[i][1] .. " on screen at " .. tag .. " " .. show(a))
@@ -3509,7 +3801,9 @@ do
 				checks += 1
 			end
 		end
-		-- Desktop: the bottom-left chat lane stays clear of the persistent HUD.
+		-- Desktop: the bottom-left chat lane stays clear of the persistent HUD and
+		-- the left-column trackers (L1); touch keeps Roblox's chat position.
+		assert(S.chatDocked == not touch, "chat docks bottom-left on desktop only at " .. tag)
 		if not touch then
 			for _, item in ipairs(items) do assert(not overlaps(item[2], L.chat), item[1] .. " clears the chat lane at " .. tag) end
 			checks += 1
@@ -3517,8 +3811,10 @@ do
 		-- The action bar sits in the band above the hotbar, no wider than it.
 		local action = items[3][2]
 		assert(action.y + action.h <= L.hotbar.y and action.y >= L.band.y and action.w <= L.hotbar.w, "action bar in the hotbar band at " .. tag)
-		-- Every grid slot sits inside the panel.
-		for i = 1, 28 do
+		-- Every grid slot of the page sits inside the panel (short desktop windows:
+		-- 34 px cells at least, or fewer rows a page).
+		assert(S.perPage >= 21 and S.perPage % 7 == 0 and S.cell >= (if touch then 44 else 34), "page of " .. S.perPage .. " x " .. S.cell .. " px at " .. tag)
+		for i = 1, S.perPage do
 			local r = rectOf(S.slots[i], size)
 			assert(inside(r, panel), "slot " .. i .. " inside the satchel at " .. tag .. " " .. show(r) .. " in " .. show(panel))
 			if touch then assert(r.w >= 44 and r.h >= 44, "slot " .. i .. " is a 44 px target at " .. tag) end

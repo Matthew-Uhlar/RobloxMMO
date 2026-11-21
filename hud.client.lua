@@ -15,9 +15,11 @@
 --   Sort            satchelSort "<mode>"   Sky Chart: recall "Hub" | "Home"
 -- Move to hotbar calls ReplicatedStorage.HotbarApi:Invoke("assign", slot, id)
 -- (hotbar.client.lua); region warps set a Wayfinder waypoint to the beacon.
--- Opened by: E / Tab, the sidebar's Satchel button and IsleHudLocal:Fire("satchel").
--- Local attributes published: IsleSatchelOpen (docked on desktop; the right
--- column HUDs step left of it).
+-- Opened by: E / Tab, the sidebar's Satchel button and IsleHudLocal:Fire("satchel");
+-- M (or the MAP dock button) opens the Sky Chart. Tab belongs to the satchel, so
+-- Roblox's player list (also on Tab) is turned off here.
+-- Local attributes published: IsleSatchelOpen (docked on desktop and tablets;
+-- the right column HUDs step left of it).
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Input = game:GetService("UserInputService")
@@ -44,13 +46,25 @@ local gui = make("ScreenGui", player:WaitForChild("PlayerGui"), {Name = "IsleHud
 
 local S = {snap = nil, items = {}, order = {}, page = 1, search = "", sort = "rarity", view = "Items", open = false, pinned = false,
 	selected = nil, confirm = nil, drag = nil, menuFor = nil, slots = {}, doll = {}, menuButtons = {}}
-local PER_PAGE = 28
-S.prompts = 0
+local PER_PAGE = 28 -- pooled slots; S.perPage shrinks on short desktop windows (fewer rows, more pages)
+S.perPage = PER_PAGE
+-- Shown ProximityPrompts (E is their key): a set keyed by prompt, pruned of
+-- prompts that were destroyed without a PromptHidden.
+S.prompts = {}
 pcall(function()
 	local prompts = game:GetService("ProximityPromptService")
-	prompts.PromptShown:Connect(function() S.prompts += 1 end)
-	prompts.PromptHidden:Connect(function() S.prompts = math.max(0, S.prompts - 1) end)
+	prompts.PromptShown:Connect(function(prompt) if prompt then S.prompts[prompt] = true end end)
+	prompts.PromptHidden:Connect(function(prompt) if prompt then S.prompts[prompt] = nil end end)
 end)
+function S.promptShowing()
+	for prompt in pairs(S.prompts) do
+		local ok, parent = pcall(function() return prompt.Parent end)
+		if not ok or parent == nil then S.prompts[prompt] = nil else return true end
+	end
+	return false
+end
+-- Tab is the satchel's key: Roblox's player list (also on Tab) stays off.
+pcall(function() game:GetService("StarterGui"):SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, false) end)
 local function tbl(v) return if type(v) == "table" then v else {} end
 local function screen()
 	local size = gui.AbsoluteSize
@@ -59,6 +73,9 @@ local function screen()
 	return if camera then camera.ViewportSize else Vector2.new(1366, 768)
 end
 local function layout() return T.hudLayout(screen().X, screen().Y, {touch = Input.TouchEnabled, satchelOpen = S.open and S.docked}) end
+-- The satchel docks on any screen tall enough (desktop and tablets alike); only
+-- short screens (phones) get the modal. Screen size decides, not TouchEnabled.
+local function dockable() return not T.hudLayout(screen().X, screen().Y, {touch = Input.TouchEnabled}).short end
 local function toast(text) if text then toasts:Fire(text) end end
 local function send(verb, item) actions:Fire(verb, item) end
 local function depth() return tbl(S.snap and S.snap.depth) end
@@ -177,8 +194,13 @@ local function visibleIds()
 end
 function S.ctx(id)
 	local def = Data.Items[id]
+	local gear = tbl(depth().gear)
+	local enchants = tbl(depth().enchants)[id]
+	-- Upgrades bound to the id (server Gear.upgraded): reforge, stars, master stars, tome, enchantments.
+	local upgraded = tbl(gear.reforges)[id] ~= nil or (tonumber(tbl(gear.stars)[id]) or 0) > 0 or (tonumber(tbl(gear.masterStars)[id]) or 0) > 0
+		or tbl(gear.books)[id] ~= nil or (type(enchants) == "table" and next(enchants) ~= nil)
 	return {Data = Data, count = tonumber(tbl(S.snap and S.snap.items)[id]) or 0, equipped = equippedSlot(id) ~= nil, bagged = bagged(id),
-		levels = levels(), enchants = tbl(depth().enchants)[id]}, def
+		levels = levels(), enchants = enchants, upgraded = upgraded}, def
 end
 
 ------------------------------------------------------------------------------
@@ -194,7 +216,7 @@ function S.run(option, id)
 	local def = Data.Items[id]
 	if option.confirm and S.confirm ~= option.id .. id then
 		S.confirm = option.id .. id
-		toast(option.label .. " " .. def.name .. "? Choose it again to confirm.")
+		toast(option.label .. " " .. def.name .. "?" .. (if option.upgraded then " It carries upgrades: the upgraded copy is kept, only spares go." else "") .. " Choose it again to confirm.")
 		return false
 	end
 	S.confirm = nil
@@ -203,14 +225,17 @@ function S.run(option, id)
 	elseif option["local"] == "examine" then
 		toast(T.examine(def))
 	elseif option["local"] == "hotbar" then
+		-- The first free slot of 3–9 (1–2 are the weapon / tool); never overwrite.
 		local api = ReplicatedStorage:FindFirstChild("HotbarApi")
 		local ok, done, message = false, false, nil
 		if api then
 			ok, done, message = pcall(function()
 				local slots = api:Invoke("getSlots")
-				local target = 3
-				for i = 3, 9 do if type(slots) == "table" and type(slots.slots) == "table" and not slots.slots[i] then target = i; break end end
-				return api:Invoke("assign", target, id)
+				local list = type(slots) == "table" and type(slots.slots) == "table" and slots.slots or nil
+				if not list then return false, nil end
+				for i = 3, 9 do if list[i] == id then return false, def.name .. " is already on your hotbar (slot " .. i .. ")." end end
+				for i = 3, 9 do if not list[i] then return api:Invoke("assign", i, id) end end
+				return false, "Your hotbar is full (slots 3–9). Clear a slot on the hotbar first."
 			end)
 		end
 		toast(if ok and done then def.name .. " moved to your hotbar." elseif ok and message then message else "The hotbar is still being fitted. Try again in a moment.")
@@ -270,10 +295,11 @@ S.openMenu = openMenu
 local function placePanel()
 	local L = layout()
 	local touch = Input.TouchEnabled or L.short
-	S.docked = not L.short and not Input.TouchEnabled
+	S.docked = not L.short
 	local rect = L.satchel
-	-- Grid shapes (always 28 slots): 7 × 4 on the docked panel and the phone
-	-- modal, 14 × 2 on the shortest phones.
+	-- Grid shapes (28 slots a page): 7 × 4 on the docked panel and the phone
+	-- modal, 14 × 2 on the shortest phones. A short desktop window first shrinks
+	-- the cells (to the 34 px floor), then drops to fewer rows (more pages).
 	local cols = if L.tiny then 14 elseif rect.w >= 300 then 7 else 4
 	local rows = PER_PAGE // cols
 	local tall = if touch then 44 else 28
@@ -287,7 +313,13 @@ local function placePanel()
 	local pager = tall + 8
 	local cellMin = if touch then 44 else 34
 	local cell = math.floor(math.min((rect.w - 16 - (cols - 1) * 4) / cols, 52))
+	if not L.short then
+		local room = rect.h - headerH - toolbar - pager
+		cell = math.min(cell, math.floor(room / rows) - 4)
+		if cell < cellMin then rows = math.clamp(math.floor(room / (cellMin + 4)), 1, rows) end
+	end
 	cell = math.max(cell, cellMin)
+	S.perPage = rows * cols
 	local width = math.max(rect.w, cols * (cell + 4) + 12)
 	local height = math.min(if L.short then L.h - 8 else rect.h, headerH + toolbar + rows * (cell + 4) + pager)
 	if L.short then
@@ -301,6 +333,7 @@ local function placePanel()
 		local c, r = (i - 1) % cols, (i - 1) // cols
 		b.Size = UDim2.fromOffset(cell, cell)
 		b.Position = UDim2.fromOffset(c * (cell + 4), r * (cell + 4))
+		b.Visible = i <= S.perPage
 	end
 	S.cell, S.cols = cell, cols
 	grid.Size = UDim2.new(1, -16, 0, rows * (cell + 4))
@@ -360,17 +393,19 @@ function S.refresh()
 	itemsView.Visible = S.view == "Items"
 	gearView.Visible = S.view == "Gear"
 	T.selectTab(tabs, S.view)
+	-- The last applied mode (snapshot satchelSort), not a click still in flight.
 	sortButton.Text = "⇅ " .. string.upper(S.sort:sub(1, 1)) .. S.sort:sub(2)
 	local items = tbl(S.snap and S.snap.items)
 	if S.view == "Items" then
 		local ids = visibleIds()
-		local pages = math.max(1, math.ceil(#ids / PER_PAGE))
+		local per = S.perPage
+		local pages = math.max(1, math.ceil(#ids / per))
 		S.page = math.clamp(S.page, 1, pages)
 		S.pageIds = ids
 		for i, b in ipairs(S.slots) do
-			local id = ids[(S.page - 1) * PER_PAGE + i]
+			local id = if i <= per then ids[(S.page - 1) * per + i] else nil
 			local def = id and Data.Items[id]
-			b:SetAttribute("Index", (S.page - 1) * PER_PAGE + i)
+			b:SetAttribute("Index", (S.page - 1) * per + i)
 			T.setSlot(b, {id = id, def = def, count = id and tonumber(items[id]) or 0, equipped = id ~= nil and (equippedSlot(id) ~= nil or bagged(id)),
 				selected = id ~= nil and id == S.selected})
 		end
@@ -402,23 +437,28 @@ local function setOpen(open)
 	S.open = open
 	panel.Visible = open
 	satchelShade.Visible = open and layout().short
-	if not open then hideMenu(); tooltip.Visible = false; ghost.Visible = false; S.drag = nil end
+	if not open then hideMenu(); tooltip.Visible = false; ghost.Visible = false; S.drag = nil; S.press = nil end
 	S.refresh()
 	local docked = open and S.docked == true
 	if player:GetAttribute("IsleSatchelOpen") ~= docked then player:SetAttribute("IsleSatchelOpen", docked) end
 end
 S.setOpen = setOpen
-close.Activated:Connect(function() S.pinned = false; setOpen(false) end)
+-- Pin: the button tone, S.pinned and Settings › Pin the satchel
+-- (IsleSettingPinSatchel) always agree, whichever side changes.
+function S.setPinned(pinned)
+	S.pinned = pinned == true
+	T.tone(pin, if S.pinned then "selected" else "ghost")
+	if (player:GetAttribute("IsleSettingPinSatchel") == true) ~= S.pinned then player:SetAttribute("IsleSettingPinSatchel", S.pinned) end
+end
+close.Activated:Connect(function() S.setPinned(false); setOpen(false) end)
 satchelShade.Activated:Connect(function() setOpen(false) end)
 pin.Activated:Connect(function()
-	S.pinned = not S.pinned
-	T.tone(pin, if S.pinned then "selected" else "ghost")
+	S.setPinned(not S.pinned)
 	toast(if S.pinned then "Satchel pinned: it stays open while you play." else "Satchel unpinned.")
 end)
 sortButton.Activated:Connect(function()
 	local i = table.find(T.SORTS, S.sort) or 1
-	S.sort = T.SORTS[i % #T.SORTS + 1]
-	send("satchelSort", S.sort)
+	send("satchelSort", T.SORTS[i % #T.SORTS + 1])
 	S.refresh()
 end)
 prevPage.Activated:Connect(function() S.page -= 1; S.refresh() end)
@@ -426,27 +466,52 @@ nextPage.Activated:Connect(function() S.page += 1; S.refresh() end)
 search:GetPropertyChangedSignal("Text"):Connect(function() S.search = search.Text; S.page = 1; S.refresh() end)
 
 -- Slot input: left click = primary option (OSRS), right click / long press =
--- context menu, hover = tooltip, drag = reorder (or drop on the paperdoll).
+-- context menu, hover = tooltip, drag a slot onto another slot = reorder.
+-- A press tracks the InputObject that started it (one finger on touch), and
+-- becomes a drag only after DRAG_START px of travel, so a long-press survives
+-- small jitter.
+local DRAG_START = 7
 local function slotAt(pos)
 	local origin, cell = grid.AbsolutePosition, (S.cell or 44) + 4
 	local c, r = math.floor((pos.X - origin.X) / cell), math.floor((pos.Y - origin.Y) / cell)
-	if c < 0 or r < 0 or c >= (S.cols or 4) or r >= PER_PAGE // (S.cols or 4) then return nil end
+	if c < 0 or r < 0 or c >= (S.cols or 4) or r >= S.perPage // (S.cols or 4) then return nil end
 	return r * (S.cols or 4) + c + 1
 end
+-- The full-satchel position (what satchelMove expects) of a grid index; while
+-- searching the grid is filtered, so the drop lands before the item shown there
+-- (or after the last match when dropped past the end).
+function S.fullIndex(index)
+	local ids, all = S.pageIds or {}, S.all or {}
+	local id = ids[index]
+	if id then return table.find(all, id) or index end
+	if S.search ~= "" and #ids > 0 then return table.find(all, ids[#ids]) or #all end
+	return index
+end
+local function isPress(input) return input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch end
+-- True when this release / tap of slot i ended a drag or a long-press menu (the
+-- Activated that follows in the same frame is swallowed; anything later is not).
+local function consumed(key, i)
+	local mark = S[key]
+	S[key] = nil
+	return mark ~= nil and mark.slots[i] == true and os.clock() - mark.at < 0.3
+end
 for i, b in ipairs(S.slots) do
-	local function item() local ids = S.pageIds or {} return ids[(S.page - 1) * PER_PAGE + i] end
+	local function item() local ids = S.pageIds or {} return ids[(S.page - 1) * S.perPage + i] end
 	b.MouseEnter:Connect(function() local id = item() if id and not S.drag and not menu.Visible then showTip(id, b.AbsolutePosition + Vector2.new(b.AbsoluteSize.X, 0)) end end)
 	b.MouseLeave:Connect(function() tooltip.Visible = false end)
 	b.MouseButton2Click:Connect(function() local id = item() if id then openMenu(id, b.AbsolutePosition + Vector2.new(b.AbsoluteSize.X, 0)) end end)
-	b.MouseButton1Down:Connect(function()
+	b.InputBegan:Connect(function(input)
+		if not isPress(input) or S.press then return end
 		local id = item()
 		if not id then return end
-		S.press = {id = id, from = i, at = os.clock(), moved = false}
-		if Input.TouchEnabled then
+		local touchPress = input.UserInputType == Enum.UserInputType.Touch
+		S.press = {id = id, from = i, at = os.clock(), moved = false, input = input, touch = touchPress, start = Vector2.new(input.Position.X, input.Position.Y)}
+		if touchPress then
 			local token = S.press
 			task.delay(0.45, function()
 				if S.press == token and not token.moved then
 					S.press = nil
+					S.longPressed = {at = os.clock(), slots = {[i] = true}}
 					openMenu(id, b.AbsolutePosition + Vector2.new(b.AbsoluteSize.X * 0.5, 0))
 				end
 			end)
@@ -454,8 +519,8 @@ for i, b in ipairs(S.slots) do
 	end)
 	b.Activated:Connect(function()
 		local id = item()
+		if consumed("dragged", i) or consumed("longPressed", i) then return end
 		if not id then hideMenu() return end
-		if S.dragged then S.dragged = false return end
 		if Input.TouchEnabled then
 			-- Tap: select and show the lore; a second tap opens the menu.
 			if S.selected == id then openMenu(id, b.AbsolutePosition + Vector2.new(b.AbsoluteSize.X * 0.5, 0))
@@ -469,9 +534,14 @@ for i, b in ipairs(S.slots) do
 end
 Input.InputChanged:Connect(function(input)
 	local press = S.press
-	if not press or (input.UserInputType ~= Enum.UserInputType.MouseMovement and input.UserInputType ~= Enum.UserInputType.Touch) then return end
+	if not press then return end
+	-- Touch: only the finger that started the press; mouse: mouse movement.
+	if press.touch then
+		if input ~= press.input then return end
+	elseif input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
 	local pos = Vector2.new(input.Position.X, input.Position.Y)
 	if not press.moved then
+		if (pos - press.start).Magnitude < DRAG_START then return end
 		press.moved = true
 		S.drag = press
 		T.setSlot(ghost, {id = press.id, def = Data.Items[press.id], count = tonumber(tbl(S.snap and S.snap.items)[press.id]) or 0})
@@ -481,24 +551,28 @@ Input.InputChanged:Connect(function(input)
 	ghost.Position = UDim2.fromOffset(pos.X - 22, pos.Y - 22)
 end)
 Input.InputEnded:Connect(function(input)
-	if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
+	local press = S.press
+	if not press or not isPress(input) then return end
+	if press.touch and input ~= press.input then return end
+	if not press.touch and input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
 	local drag = S.drag
 	S.press, S.drag = nil, nil
 	ghost.Visible = false
 	if not drag then return end
-	S.dragged = true
-	local pos = Vector2.new(input.Position.X, input.Position.Y)
-	local target = slotAt(pos)
+	local target = slotAt(Vector2.new(input.Position.X, input.Position.Y))
+	-- Swallow only the click this release produces (on the origin or drop slot).
+	S.dragged = {at = os.clock(), slots = {[drag.from] = true, [target or 0] = true}}
 	if target and target ~= drag.from then
-		local index = (S.page - 1) * PER_PAGE + target
-		send("satchelMove", drag.id .. ":" .. index)
+		send("satchelMove", drag.id .. ":" .. S.fullIndex((S.page - 1) * S.perPage + target))
 	end
 end)
 for slot, b in pairs(S.doll) do
 	b.Activated:Connect(function()
+		-- The pet slot is the Pets page (its roster, levels and summons), not an item.
+		if slot == "pet" then hudEvents:Fire("open", "Hero", "Pets") return end
 		local id = b:GetAttribute("ItemId")
 		if id == nil or id == "" then
-			if slot == "accessory" then hudEvents:Fire("open", "Hero", "Accessories") elseif slot == "pet" then hudEvents:Fire("open", "Hero", "Pets") end
+			if slot == "accessory" then hudEvents:Fire("open", "Hero", "Accessories") end
 			return
 		end
 		openMenu(id, b.AbsolutePosition + Vector2.new(b.AbsoluteSize.X, 0))
@@ -521,24 +595,32 @@ local skillToast = T.frame(gui, {name = "SkillToast", size = UDim2.fromOffset(23
 local toastSkill = T.label(skillToast, {Name = "Skill", Position = UDim2.fromOffset(10, 5), Size = UDim2.new(1, -20, 0, 16), Font = T.font.label, TextSize = 12, RichText = true})
 local toastBar = T.bar(skillToast, {name = "Progress", position = UDim2.fromOffset(10, 25), size = UDim2.new(1, -20, 0, 13), height = 13, textSize = 10})
 S.toastToken = 0
+-- The XP lane (Theme.hudLayout xpDrops / xpToast): its own column left of the
+-- right-column HUDs (party, minigame, lair, world boss board), so drops never
+-- sit on them; it steps left with them when the satchel docks.
 local function placeDrops()
 	local L = layout()
-	-- Tiny phones: the toast first, then two drop lines (clear of the Attack button).
-	drops.Size = UDim2.fromOffset(170, if L.tiny then 42 elseif L.short then 62 else 120)
-	drops.Position = UDim2.fromOffset(L.sidebar.x + L.sidebar.w, L.rightTop + (if L.tiny then 50 else 0))
-	if S.open and S.docked then drops.Position = UDim2.fromOffset(L.satchel.x - 8, L.rightTop) end
-	-- The progress toast sits under the drops column (right side, OSRS-style).
-	local tw = if L.short then 190 else 230
-	skillToast.Size = UDim2.fromOffset(tw, 46)
-	local right = if S.open and S.docked then L.satchel.x - 8 else L.sidebar.x + L.sidebar.w
-	skillToast.Position = UDim2.fromOffset(right - tw, L.rightTop + (if L.tiny then 0 elseif L.short then 66 else 124))
+	local d, t = L.xpDrops, L.xpToast
+	drops.Position, drops.Size = UDim2.fromOffset(d.x + d.w, d.y), UDim2.fromOffset(d.w, d.h)
+	S.dropLines = d.lines or 5
+	for _, l in ipairs(dropPool) do l.Size = UDim2.fromOffset(d.w, 20) end
+	skillToast.Position, skillToast.Size = UDim2.fromOffset(t.x, t.y), UDim2.fromOffset(t.w, t.h)
+	local slim = t.h < 46
+	toastSkill.Position = UDim2.fromOffset(10, if slim then 2 else 5)
+	toastBar.Position = UDim2.fromOffset(10, t.h - (if slim then 16 else 21))
+	S.toastCompact = t.compact == true
 end
+S.placeDrops = placeDrops
 -- gains: {{skill, amount, level, fraction, maxed, color}, ...}
 local function showGains(gains)
 	if type(gains) ~= "table" or player:GetAttribute("IsleSettingXpDrops") == false then return end
 	placeDrops()
+	-- Reduced motion (Settings or the device): drops appear in place and clear
+	-- after a moment instead of drifting and fading.
+	local still = T.reducedMotion(player)
+	local width = drops.Size.X.Offset
 	for k, g in ipairs(gains) do
-		if k > 3 then break end
+		if k > math.min(3, S.dropLines or 5) then break end
 		local l = dropPool[dropNext]
 		dropNext = dropNext % #dropPool + 1
 		l.Text = "<font color=\"#" .. (g.color or "F7C548") .. "\">+" .. T.commas(g.amount) .. "</font> " .. T.escape(g.skill) .. " XP"
@@ -546,16 +628,22 @@ local function showGains(gains)
 		l.TextStrokeTransparency = 0.2
 		-- Newest at the foot of the column, drifting up and fading (OSRS drops).
 		local foot = drops.Size.Y.Offset - 20
-		l.Position = UDim2.fromOffset(170, foot - (k - 1) * 20)
+		l.Position = UDim2.fromOffset(width, foot - (k - 1) * 20)
 		l.Visible = true
-		TweenService:Create(l, TweenInfo.new(1.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Position = UDim2.fromOffset(170, math.max(0, foot - 40) - (k - 1) * 20), TextTransparency = 1, TextStrokeTransparency = 1}):Play()
-		task.delay(1.7, function() if l.TextTransparency >= 1 then l.Visible = false end end)
+		local text = l.Text
+		if still then
+			task.delay(1.7, function() if l.Text == text then l.Visible = false end end)
+		else
+			TweenService:Create(l, TweenInfo.new(1.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Position = UDim2.fromOffset(width, math.max(0, foot - 40) - (k - 1) * 20), TextTransparency = 1, TextStrokeTransparency = 1}):Play()
+			task.delay(1.7, function() if l.TextTransparency >= 1 then l.Visible = false end end)
+		end
 	end
 	local g = gains[1]
 	if g then
 		S.toastToken += 1
 		local token = S.toastToken
-		toastSkill.Text = "<font color=\"#" .. (g.color or "F7C548") .. "\">" .. T.escape(g.skill) .. " " .. tostring(g.level or "") .. "</font>  <font color=\"#A9B4C0\">+" .. T.commas(g.amount) .. " XP</font>"
+		toastSkill.Text = if S.toastCompact then "<font color=\"#" .. (g.color or "F7C548") .. "\">+" .. T.commas(g.amount) .. "</font> " .. T.escape(g.skill)
+			else "<font color=\"#" .. (g.color or "F7C548") .. "\">" .. T.escape(g.skill) .. " " .. tostring(g.level or "") .. "</font>  <font color=\"#A9B4C0\">+" .. T.commas(g.amount) .. " XP</font>"
 		toastBar:FindFirstChild("Fill").BackgroundColor3 = T.rgb(g.color or "8EE05A")
 		T.setBar(toastBar, g.fraction or 0, if g.maxed then "MAX" else (math.floor((g.fraction or 0) * 1000 + 0.5) / 10 .. "%"))
 		skillToast.Visible = true
@@ -656,9 +744,14 @@ local function tile(island)
 	make("UIStroke", body, {Color = C.frameLo, Thickness = 1})
 	local here = T.label(t, {Name = "Here", Text = "YOU ARE HERE", AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.fromScale(0.5, 0.02), Size = UDim2.fromOffset(110, 12),
 		TextXAlignment = Enum.TextXAlignment.Center, Font = T.font.number, TextSize = 8, TextColor3 = C.gold, Visible = false, ZIndex = 6, TextStrokeTransparency = 0.1, TextStrokeColor3 = C.void})
+	-- The whole isle is a button (under the warp point), so a locked isle with
+	-- no warp point still opens its card with the requirement.
+	local pickButton = make("TextButton", t, {Name = "TileButton", Text = "", BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), ZIndex = 3,
+		AutoButtonColor = false, Selectable = true})
 	local pick = function() S.pickWarp(island, t) end
 	warp.Activated:Connect(pick)
-	S.tiles[island.id] = {frame = t, warp = warp, lock = lock, here = here, name = name, island = island, grass = grass}
+	pickButton.Activated:Connect(pick)
+	S.tiles[island.id] = {frame = t, warp = warp, lock = lock, here = here, name = name, island = island, grass = grass, button = pickButton}
 	return t
 end
 for _, island in ipairs(T.WorldMap.islands) do tile(island) end
@@ -756,6 +849,8 @@ chartShade.Activated:Connect(function() setChart(false) end)
 local function accept(snap)
 	if type(snap) ~= "table" or type(snap.items) ~= "table" then return end
 	S.snap = snap
+	-- The sort label shows the last mode the server applied (saved with p.satchel).
+	if type(snap.satchelSort) == "string" and table.find(T.SORTS, snap.satchelSort) then S.sort = snap.satchelSort end
 	if S.open then S.refresh() end
 	if chart.Visible then refreshChart() end
 end
@@ -775,7 +870,8 @@ Input.InputBegan:Connect(function(input, used)
 	local key = input.KeyCode
 	-- E is also the default ProximityPrompt key: while a prompt is on screen it
 	-- belongs to the prompt (Tab always works).
-	if (key == Enum.KeyCode.E and S.prompts <= 0) or key == Enum.KeyCode.Tab then setOpen(not S.open)
+	if (key == Enum.KeyCode.E and not S.promptShowing()) or key == Enum.KeyCode.Tab then setOpen(not S.open)
+	elseif key == Enum.KeyCode.M then setChart(not chart.Visible)
 	elseif key == Enum.KeyCode.Escape then hideMenu(); setChart(false)
 	elseif input.UserInputType == Enum.UserInputType.MouseButton1 and menu.Visible then
 		task.defer(function() if menu.Visible and S.menuFor and not S.confirm then hideMenu() end end)
@@ -783,15 +879,17 @@ Input.InputBegan:Connect(function(input, used)
 end)
 gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(function() if S.open then S.refresh() end end)
 player:GetAttributeChangedSignal("IsleSettingPinSatchel"):Connect(function()
-	S.pinned = player:GetAttribute("IsleSettingPinSatchel") == true
-	if S.pinned and not layout().short then setOpen(true) end
+	S.setPinned(player:GetAttribute("IsleSettingPinSatchel") == true)
+	if S.pinned and dockable() then setOpen(true) end
 end)
 actions:Fire("snapshot")
--- Chat-safe layout: the minimap owns the top-left, so the chat window docks
--- bottom-left (the lane Theme.hudLayout keeps clear on desktop).
+-- Chat-safe layout: the minimap owns the top-left, so on desktop the chat
+-- window docks bottom-left (the lane Theme.hudLayout keeps clear, under the
+-- left column). Touch devices keep Roblox's default chat position.
+S.chatDocked = not Input.TouchEnabled
 pcall(function()
 	local config = game:GetService("TextChatService"):FindFirstChildOfClass("ChatWindowConfiguration")
-	if config then
+	if config and S.chatDocked then
 		config.VerticalAlignment = Enum.VerticalAlignment.Bottom
 		config.HorizontalAlignment = Enum.HorizontalAlignment.Left
 	end

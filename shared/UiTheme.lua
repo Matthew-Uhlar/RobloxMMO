@@ -35,7 +35,7 @@ Theme.rgb = rgb
 Theme.hex = {
 	void = "05080C", inset = "0B1017", panel = "111822", panelTop = "1A2431", raised = "223042", hover = "2E4058",
 	line = "2B3A4C", frame = "8A6A3B", frameHi = "F0CE82", frameLo = "3E2C15",
-	gold = "F7C548", goldSoft = "FFE6A6", text = "F3EEE2", dim = "A9B4C0", faint = "6E7A88",
+	gold = "F7C548", goldSoft = "FFE6A6", text = "F3EEE2", dim = "A9B4C0", faint = "8592A0", -- faint ≥ 4.5:1 on void / inset / panel / panelTop
 	mint = "6FE3C8", ember = "FF6B5A", health = "FF4F4F", defense = "57D96A", mana = "4FA8FF", xp = "8EE05A",
 	onGold = "2A1A04",
 }
@@ -556,12 +556,12 @@ end
 
 ------------------------------------------------------------------------------
 -- Context menu (pure): the options for an item, each mapped to an existing
--- server verb (or a local action). ctx: {count, equipped, bagged, canAdopt}.
+-- server verb (or a local action). ctx: {count, equipped, bagged, canAdopt, upgraded}.
 -- Option: {id, label, verb?, arg?, local?, confirm?, danger?}
 --   Wield/Equip → equip "<id>" (Unequip → unequip "<slot>")
 --   Eat/Drink   → consume "<id>"      Use (pet) → petAdopt "<id>"
 --   Equip (accessory) → accessory "<id>" (toggles the bag)
---   Sell        → sell "<id>" (whole stack, merchant price; not while equipped)
+--   Sell        → sell "<id>" (whole stack, merchant price; not while equipped; always confirms)
 --   Drop        → drop "<id>" (whole stack, confirm; §29)
 --   Move to hotbar → local (ReplicatedStorage.HotbarApi "assign")
 --   Examine     → local (examine text toast)
@@ -589,8 +589,10 @@ function Theme.itemActions(def, ctx)
 	add({id = "Hotbar", label = "Move to hotbar", ["local"] = "hotbar"})
 	add({id = "Examine", label = "Examine", ["local"] = "examine"})
 	if not ctx.equipped and not ctx.bagged then
-		add({id = "Sell", label = "Sell" .. (if (ctx.count or 1) > 1 then " all" else ""), verb = "sell", arg = id, confirm = (tonumber(def.value) or 0) * (ctx.count or 1) >= 500})
-		add({id = "Drop", label = "Drop", verb = "drop", arg = id, confirm = true, danger = true})
+		-- Sell always confirms (as the atlas does); with upgrades (reforge, stars,
+		-- tome, enchantments) the server keeps the upgraded copy (§29 last-copy rule).
+		add({id = "Sell", label = "Sell" .. (if (ctx.count or 1) > 1 then " all" else ""), verb = "sell", arg = id, confirm = true, upgraded = ctx.upgraded == true})
+		add({id = "Drop", label = "Drop", verb = "drop", arg = id, confirm = true, danger = true, upgraded = ctx.upgraded == true})
 	end
 	return out
 end
@@ -675,13 +677,48 @@ function Theme.hudLayout(w, h, opts)
 		L.satchel = {x = w - 10 - satW, y = L.rightTop, w = satW, h = math.min(372, h - L.rightTop - 140), modal = false}
 	end
 	-- Right column (party / minigame / lair HUDs, world boss board): under the
-	-- sidebar, stepping left of a docked satchel.
+	-- sidebar, stepping left of a docked satchel; rightWidth is its widest HUD.
 	L.rightEdge = if opts.satchelOpen and not short then w - 10 - satW - 8 else w - 10
+	L.rightWidth = if short then 100 else 220 -- the widest right-column HUD (phones fold theirs to 96–100 px)
 	-- Top lane between the map block and the sidebar (target panel, banners).
 	L.lane = {left = L.mapBlock.x + L.mapBlock.w + 10, right = L.sidebar.x - 10}
-	-- Chat: kept to the bottom-left on desktop, clear of the hotbar.
-	L.chat = {x = 10, y = h - 300, w = math.max(0, L.hotbar.x - 24), h = 290}
+	-- XP lane (hud.client.lua: OSRS XP drops and the skill progress toast): its
+	-- own column left of the right column, from rightTop, clear of the left
+	-- column. Phones: one row (toast | drops) under the Wayfinder toast slot;
+	-- desktop: drops over the toast. A narrow window with a docked satchel moves
+	-- the lane under the right column instead.
+	local leftLimit = 10 + L.leftWidth + 8
+	local xr = L.rightEdge - L.rightWidth - 8
+	if tiny then
+		-- The smallest phones: one compact toast ("+48 Mining", level bar) between
+		-- the Wayfinder toast (ends y 139), the prayer / spell bars and the right
+		-- column; the drops column folds into it.
+		L.xpToast = {x = xr - 120, y = 140, w = 120, h = 36, compact = true}
+		L.xpDrops = {x = xr, y = 140, w = 0, h = 0, lines = 0}
+	elseif short then
+		local dw, tw, th = 120, 190, 46
+		L.xpDrops = {x = xr - dw, y = L.rightTop, w = dw, h = th, lines = 2}
+		L.xpToast = {x = xr - dw - 6 - tw, y = L.rightTop, w = tw, h = th}
+	else
+		local dw, tw = 170, 230
+		local x, y = xr, L.rightTop
+		if xr - tw < leftLimit then x, y = L.rightEdge, L.rightTop + 192 end
+		L.xpDrops = {x = x - dw, y = y, w = dw, h = 120, lines = 5}
+		L.xpToast = {x = x - tw, y = y + 126, w = tw, h = 46}
+	end
+	-- Chat: kept to the bottom-left on desktop, clear of the hotbar and under the
+	-- left column (tutorial 66 + lap 70 + traps 30 with their gaps: 176 px).
+	local chatTop = math.max(h - 300, L.leftTop + 176 + 6)
+	L.chat = {x = 10, y = chatTop, w = math.max(0, L.hotbar.x - 24), h = math.max(0, h - 10 - chatTop)}
 	return L
+end
+-- Reduced motion: Settings › Reduced motion (IsleSettingReducedMotion) or the
+-- device's own setting (GuiService.ReducedMotionEnabled, where available).
+-- XP drops and banners then appear in place instead of tweening.
+function Theme.reducedMotion(player)
+	if player and player:GetAttribute("IsleSettingReducedMotion") == true then return true end
+	local ok, on = pcall(function() return game:GetService("GuiService").ReducedMotionEnabled end)
+	return ok and on == true
 end
 -- The hotbar team's STYLE table (hotbar.client.lua) in this theme's colours.
 function Theme.hotbarStyle()

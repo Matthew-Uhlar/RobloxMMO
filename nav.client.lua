@@ -1,5 +1,6 @@
 -- Wayfinder: compact minimap/compass (top-left with the region name and the
--- player's coordinates; toggle with the Map button or M; §29 HUD lanes),
+-- player's coordinates; the Map button on it folds the map away and Settings ›
+-- Minimap hides the whole block; M is the Sky Chart's key; §29 HUD lanes),
 -- island labels, NPC/station/beacon markers read from Workspace.Islands anchors
 -- and the world's own prompts, a Navigate list, recall charms, and waypoints: a
 -- glowing beam + beacon to the target that clears itself on arrival.
@@ -238,7 +239,7 @@ local function layoutMinimap()
 	regionLabel.Position, regionLabel.Size = UDim2.fromOffset(2, 1), UDim2.new(1, -4, 0, if inside then 11 else 14)
 	regionLabel.TextSize = if inside then 10 else 12
 	coordsLabel.Position, coordsLabel.Size = UDim2.fromOffset(2, if inside then 12 else 15), UDim2.new(1, -4, 0, 9)
-	coordsLabel.TextSize = if inside then 7 else 8
+	coordsLabel.TextSize = 8 -- the pixel face's floor (§29: captions ≥ 8 px)
 	zoomOut.Visible, zoomIn.Visible, zoomTap.Visible = not L.touch, not L.touch, L.touch
 	if L.mapControls.column then
 		bar.Position, bar.Size = UDim2.fromOffset(L.mapControls.x - L.mapBlock.x, 0), UDim2.fromOffset(44, L.mapControls.h)
@@ -254,10 +255,11 @@ local function layoutMinimap()
 end
 layoutMinimap()
 gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(layoutMinimap)
-Input.InputBegan:Connect(function(input, processed)
-	if processed then return end
-	if input.KeyCode == Enum.KeyCode.M then setMapOpen(not mapOpen) end
-end)
+-- Settings › Minimap off hides the whole block (map, region / coordinates strip
+-- and its controls); M opens the Sky Chart (hud.client.lua), not this.
+local function applyMinimapSetting() holder.Visible = player:GetAttribute("IsleSettingMinimap") ~= false end
+applyMinimapSetting()
+player:GetAttributeChangedSignal("IsleSettingMinimap"):Connect(applyMinimapSetting)
 
 -- The toast takes the third row of the top lane between the atlas badge and the
 -- minimap (shared HUD map in combat.client.lua): y 118-158, x 325..W-SIZE-20.
@@ -731,7 +733,11 @@ local pool = {} -- [key] = frame
 local seen = {}
 local function marker(key, kind)
 	local f = pool[key]
-	if f then seen[key] = true; return f end
+	if f then
+		seen[key] = true
+		if f.Visible == false then f.Visible = true end
+		return f
+	end
 	if kind == "island" then
 		f = make("Frame", layer, {AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = slate, BackgroundTransparency = 0.25, BorderSizePixel = 0, ZIndex = 2})
 		round(f, "circle", rgb("2E5E6E"))
@@ -842,8 +848,13 @@ local function drawMap(me, facing)
 		f.Position = UDim2.fromOffset(half + x, half + y)
 		f.BackgroundTransparency = if m > edge then 0.25 else 0
 	end
+	-- Off-map markers hide (pooled, shown again when back in view); a marker is
+	-- destroyed only when the instance it tracks has left the world.
 	for key, f in pairs(pool) do
-		if not seen[key] then f:Destroy(); pool[key] = nil end
+		if not seen[key] then
+			if typeof(key) == "Instance" and key.Parent == nil then f:Destroy(); pool[key] = nil
+			elseif f.Visible ~= false then f.Visible = false end
+		end
 	end
 	arrow.Rotation = math.deg(math.atan2(facing.X, -facing.Z))
 end
