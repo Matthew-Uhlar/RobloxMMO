@@ -344,7 +344,7 @@ for i = 1, SLOT_COUNT do
 	make("TextLabel", b, {Name = "Glyph", BackgroundTransparency = 1, Position = UDim2.fromOffset(0, 1), Size = UDim2.new(1, 0, 0.66, 0),
 		Font = heavy, TextSize = 20, TextColor3 = white, Text = "", TextStrokeTransparency = 0.35, TextStrokeColor3 = deep, ZIndex = 2})
 	make("TextLabel", b, {Name = "Cost", BackgroundTransparency = 1, AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 0, 1, -2), Size = UDim2.new(1, 0, 0, 12),
-		Font = heavy, TextSize = 10, TextColor3 = rgb("9FC3FF"), Text = "", ZIndex = 2})
+		Font = heavy, TextSize = 11, TextColor3 = rgb("9FC3FF"), Text = "", ZIndex = 2})
 	local key = make("TextLabel", b, {Name = "Key", AnchorPoint = Vector2.new(0, 0), Position = UDim2.fromOffset(-3, -3), Size = UDim2.fromOffset(14, 14),
 		BackgroundColor3 = gold, Font = heavy, TextSize = 10, TextColor3 = deep, Text = tostring(i), BorderSizePixel = 0, ZIndex = 4,
 		Visible = not UserInputService.TouchEnabled})
@@ -371,7 +371,7 @@ local function slotSize()
 	local camera = Workspace.CurrentCamera
 	local viewport = camera and camera.ViewportSize
 	local height = if viewport and viewport.Y > 0 then viewport.Y else (gui.AbsoluteSize and gui.AbsoluteSize.Y or 720)
-	return if height < 520 then 40 else 48
+	return if height < 520 then 44 else 48 -- 44 px: the phone touch-target floor
 end
 local function hudLift(value)
 	if player:GetAttribute("IsleHudLift") ~= value then player:SetAttribute("IsleHudLift", value) end
@@ -395,7 +395,7 @@ local function layoutSpellBar()
 	spellBar.Position = if attackButton then UDim2.new(1, -196, 1, -44) else UDim2.new(1, -10, 1, -44)
 	styleChip.Size = UDim2.fromOffset(size, size)
 	styleGlyph.TextSize = if size < 48 then 19 else 22
-	styleCaption.TextSize = if size < 48 then 10 else 11
+	styleCaption.TextSize = 11
 	for i, b in ipairs(S.buttons) do
 		b.Position = UDim2.fromOffset(size + gap + (i - 1) * (size + gap), 0)
 		b.Size = UDim2.fromOffset(size, size)

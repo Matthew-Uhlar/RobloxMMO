@@ -2970,6 +2970,153 @@ do
 	noFailures(legacy, "crafting without server data")
 	print("Crafting client: " .. (checks - craftChecks) .. " checks.")
 end
+-- Visual QA (menu overhaul): every atlas page at both phone sizes for the early,
+-- mid and endgame snapshots the real server builds (tools/ui-profiles.luau):
+--  * touch targets: every visible control is at least UI.TOUCH (44 px) both ways;
+--  * section and filter bars are one row on phones (sideways strip), with the
+--    selected segment scrolled into view;
+--  * no page is blank (an empty state always says something);
+--  * no float noise ("2.8000000000000003") in any visible copy;
+--  * HUD controls (spell slots, party Q / R, builder) meet the touch floor;
+--  * the `x and nil or y` idiom (always y) never reaches the client scripts.
+local visualChecks = checks
+do
+	local H = require("./tools/ui-harness")
+	local Profiles = require("./tools/ui-profiles")
+	local TOUCH = 44
+	-- Exempt: HUD readouts whose tap is only a shortcut to an atlas page the
+	-- tab rail already reaches (they stay slim so the left column fits).
+	local exempt = { TrapTracker = true, CourseTracker = true }
+	local function visible(object)
+		local node = object
+		while node do
+			if node.ClassName == "ScreenGui" then return node.Enabled ~= false end
+			if node.Visible == false then return false end
+			node = node.Parent
+		end
+		return false
+	end
+	-- Laid-out size: scale against the parent's content box (UIPadding), grid
+	-- cells from UIGridLayout.CellSize, UISizeConstraint clamps. An axis that
+	-- scales against an AutomaticSize parent is unknown (nil).
+	local function sizeOf(object, screen)
+		if object.ClassName == "ScreenGui" then return screen.X, screen.Y end
+		local pw, ph = sizeOf(object.Parent, screen)
+		local parent = object.Parent
+		local pad = parent and parent:FindFirstChildOfClass("UIPadding")
+		if pad and pw then pw -= (pad.PaddingLeft and (pad.PaddingLeft.Scale * pw + pad.PaddingLeft.Offset) or 0) + (pad.PaddingRight and (pad.PaddingRight.Scale * pw + pad.PaddingRight.Offset) or 0) end
+		if pad and ph then ph -= (pad.PaddingTop and (pad.PaddingTop.Scale * ph + pad.PaddingTop.Offset) or 0) + (pad.PaddingBottom and (pad.PaddingBottom.Scale * ph + pad.PaddingBottom.Offset) or 0) end
+		local grid = parent and parent:FindFirstChildOfClass("UIGridLayout")
+		local size = if grid then grid.CellSize else object.Size
+		size = size or roblox.UDim2.new()
+		local auto = parent and parent.AutomaticSize and tostring(parent.AutomaticSize) or ""
+		local w = if size.X.Scale ~= 0 and (pw == nil or auto:find("X") or auto:find("XY")) then nil else size.X.Scale * (pw or 0) + size.X.Offset
+		local h = if size.Y.Scale ~= 0 and (ph == nil or auto:find("Y")) then nil else size.Y.Scale * (ph or 0) + size.Y.Offset
+		local limit = object:FindFirstChildOfClass("UISizeConstraint")
+		if limit and limit.MaxSize then
+			if w then w = math.min(w, limit.MaxSize.X) end
+			if h then h = math.min(h, limit.MaxSize.Y) end
+		end
+		return w, h
+	end
+	local function touchSweep(root, screen, where)
+		for _, o in ipairs(root:GetDescendants()) do
+			if (o.ClassName == "TextButton" or o.ClassName == "ImageButton" or o.ClassName == "TextBox") and o.Active ~= false and not exempt[o.Name] and visible(o) then
+				local w, h = sizeOf(o, screen)
+				assert(w == nil or w >= TOUCH - 0.5, string.format("%s is %d px wide, under the %d px touch floor at %s", o.Name, w or 0, TOUCH, where))
+				assert(h == nil or h >= TOUCH - 0.5, string.format("%s is %d px tall, under the %d px touch floor at %s", o.Name, h or 0, TOUCH, where))
+				checks += 1
+			end
+		end
+	end
+	local function textSweep(root, where)
+		local words = 0
+		for _, o in ipairs(root:GetDescendants()) do
+			if (o.ClassName == "TextLabel" or o.ClassName == "TextButton") and type(o.Text) == "string" and visible(o) then
+				assert(not o.Text:find("%d%.%d%d%d%d"), "float noise in '" .. o.Text:sub(1, 80) .. "' at " .. where)
+				if o.Text:gsub("<[^>]+>", ""):find("%a") then words += 1 end
+			end
+		end
+		checks += 1
+		return words
+	end
+	local tabs = { "Journal", "Hero", "Satchel", "Workshop", "Hunt", "Ledger" }
+	for _, stage in ipairs(Profiles.order) do
+		for _, size in ipairs({ roblox.Vector2.new(844, 390), roblox.Vector2.new(730, 303) }) do
+			local ui = H.runAtlas(size, { snapshot = Profiles.snapshot(stage), coop = H.coopSample() })
+			H.press(H.find(ui.gui, "AtlasButton"))
+			for _, tab in ipairs(tabs) do
+				H.press(ui.tabs:FindFirstChild(tab .. "Button"))
+				local bar = H.find(ui.scroll, "Sections")
+				local names = {}
+				for _, b in ipairs(bar:GetChildren()) do if b.ClassName == "TextButton" then table.insert(names, b.Name) end end
+				for _, name in ipairs(names) do
+					H.press(H.find(ui.scroll, name))
+					local where = stage .. " " .. tab .. "-" .. name:sub(8) .. " " .. size.X .. "x" .. size.Y
+					for _, message in ipairs(ui.warnings) do error("warning at " .. where .. ": " .. message) end
+					-- One row of segments on phones; the chosen one in view.
+					for _, strip in ipairs(ui.scroll:GetDescendants()) do
+						if strip.Name == "Sections" or strip.Name == "Filters" then
+							local _, h = sizeOf(strip, size)
+							assert(h and h <= TOUCH + 8 + 0.5, strip.Name .. " bar wraps to more than one row (" .. tostring(h) .. " px) at " .. where)
+							assert(strip.ClassName == "ScrollingFrame" and strip.ScrollingDirection == roblox.Enum.ScrollingDirection.X, strip.Name .. " bar scrolls sideways at " .. where)
+							local viewW = sizeOf(strip, size)
+							for _, b in ipairs(strip:GetChildren()) do
+								if b.ClassName == "TextButton" and b.BackgroundTransparency == 0 then
+									local x = b.Position.X.Offset - strip.CanvasPosition.X
+									assert(viewW == nil or (x >= -0.5 and x + b.Size.X.Offset <= viewW + 0.5), "selected " .. b.Name .. " scrolled out of view at " .. where)
+								end
+							end
+							checks += 2
+						end
+					end
+					touchSweep(ui.atlas, size, where)
+					-- Beyond the section bar, the page always says something.
+					assert(textSweep(ui.scroll, where) > #names + 1, "blank page (no copy beyond the section bar) at " .. where)
+				end
+			end
+			-- Header close and the rail tabs.
+			touchSweep(ui.atlas, size, stage .. " atlas chrome " .. size.X .. "x" .. size.Y)
+		end
+	end
+	-- HUD controls on phones: spell slots, party Q / R, minigame HUD, builder.
+	for _, size in ipairs({ roblox.Vector2.new(844, 390), roblox.Vector2.new(730, 303) }) do
+		local where = "HUD " .. size.X .. "x" .. size.Y
+		local hudUi = H.runAtlas(size, { touch = true, snapshot = Profiles.snapshot("mid") })
+		hudUi.player:SetAttribute("Mana", 118)
+		hudUi.player:SetAttribute("MaxMana", 160)
+		local combat = H.runCombat(size, hudUi.player, hudUi.replicated)
+		hudUi.player:SetAttribute("DungeonClass", "Aegis")
+		hudUi.player:SetAttribute("DungeonAbilityReady", 12)
+		hudUi.player:SetAttribute("DungeonParty", "Voyager|Aegis|31;Bo|Mender|4;Cy||1;Di|Starshot|2;Ed|Arcanist|9")
+		local party = hudUi.gui:FindFirstChild("DungeonPartyHud")
+		assert(party.Visible and party:FindFirstChild("AbilityQ").Visible, "party HUD shows at " .. where)
+		touchSweep(hudUi.gui, size, where)
+		touchSweep(combat.hud, size, where)
+		local slots = 0
+		for i = 1, 6 do
+			local slot = combat.hud:FindFirstChild("SpellBar"):FindFirstChild("Spell" .. i)
+			if slot.Visible then slots += 1; assert(slot.Size.Y.Offset >= TOUCH, "spell slot " .. i .. " under 44 px at " .. where) end
+		end
+		assert(slots > 0, "spell slots measured at " .. where)
+		local builder = H.runBuilder(size, hudUi.player)
+		builder.enter("place", "LanternPost")
+		touchSweep(hudUi.playerGui:FindFirstChild("IslandBuilder"), size, where .. " builder")
+		checks += 3
+	end
+	-- `cond and nil or value` is always `value`: it hid SYNCING badges and hints.
+	for _, file in ipairs({ "ui.client.lua", "combat.client.lua", "build.client.lua", "nav.client.lua", "npc.client.lua", "pets.client.lua", "motes.client.lua" }) do
+		if fs.isFile(file) then
+			local n = 0
+			for line in fs.readFile(file):gmatch("[^\n]+") do
+				if not line:match("^%s*%-%-") and line:find(" and nil or ", 1, true) then n += 1; print("  " .. file .. ": " .. line:sub(1, 120)) end
+			end
+			assert(n == 0, file .. " uses `x and nil or y` (always y) " .. n .. " time(s)")
+			checks += 1
+		end
+	end
+	print("Visual QA: " .. (checks - visualChecks) .. " checks (touch targets, one-row bars, empty states, number copy).")
+end
 print("UI QA passed " .. checks .. " checks (" .. created .. " mock instances).")
 
 -- Completion sentinel: scripts/build.sh fails if a suite stops early without erroring.

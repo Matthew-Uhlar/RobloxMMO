@@ -38,6 +38,7 @@ local UI = {
 	raised = rgb("2A4D5E"), line = rgb("2E4A58"), rim = rgb("557886"), brass = rgb("C9974A"), brassDark = rgb("6B4E24"),
 	copy = rgb("CBD8D9"), onGold = rgb("2B1B05"), white = Color3.new(1, 1, 1), black = Color3.new(0, 0, 0),
 	heavy = Enum.Font.BuilderSansExtraBold, display = Enum.Font.FredokaOne,
+	TOUCH = 44, -- minimum touch target (px) for every control on phone layouts (compactAtlas)
 }
 do
 	local materials = ReplicatedStorage:FindFirstChild("MaterialArt")
@@ -311,6 +312,8 @@ local function fmt(value)
 	if tenth>0 then grouped..="."..tenth end
 	return (negative and "-" or "")..grouped
 end
+-- Multipliers and rates (×1.24, ×2.8): at most two decimals, never float noise.
+function UI.dec(value) return (string.format("%.2f",num(value,0)):gsub("%.?0+$","")) end
 local function short(value)
 	value=num(value,0)
 	if value>=1e6 then return string.format("%.1fM",value/1e6) elseif value>=1e4 then return string.format("%.1fk",value/1e3) end
@@ -1225,13 +1228,26 @@ function card(o)
 	if o.bar then progress(body,o.bar.fraction,o.bar.color,o.bar.caption).LayoutOrder=nextOrder() end
 	if o.after then o.after(body,nextOrder) end
 	if o.actions and #o.actions>0 then
-		local height=compactAtlas and 36 or 40
+		local height=compactAtlas and UI.TOUCH or 40
 		local width=compactAtlas and 104 or 124
 		local strip=make("Frame",body,{Name="Actions",BackgroundTransparency=1,Size=UDim2.new(1,0,0,height),LayoutOrder=nextOrder()})
-		local total=#o.actions*width+(#o.actions-1)*8
+		-- Each button widens to keep its caption on one line ("Switch · 25,000"),
+		-- sharing the strip with its neighbours: never narrower than the base width.
+		local widths,total={},0
+		local room=contentWidth()-2*(compactAtlas and 10 or 14)-8
 		for i,action in ipairs(o.actions) do
-			local x=-total+(i-1)*(width+8)
-			local b=button(strip,action.caption,UDim2.new(1,x,0,0),UDim2.fromOffset(width,height),function()
+			local chars=utf8.len(action.caption) or #action.caption
+			widths[i]=math.max(width,math.min(compactAtlas and 190 or 220,chars*8+(chars<=7 and 46 or 28)))
+			total+=widths[i]+(i>1 and 8 or 0)
+		end
+		if total>room then
+			for i=1,#widths do widths[i]=width end
+			total=#o.actions*width+(#o.actions-1)*8
+		end
+		local x=-total
+		for i,action in ipairs(o.actions) do
+			local w=widths[i]
+			local b=button(strip,action.caption,UDim2.new(1,x,0,0),UDim2.fromOffset(w,height),function()
 				if action.disabled then notify(action.reason or "Not available yet.") return end
 				action.fn()
 			end)
@@ -1241,6 +1257,7 @@ function card(o)
 			if #action.caption<=7 then UI.engrave(b,action.caption) end
 			local danger=action.caption=="Abandon" or action.caption=="Remove" or action.caption=="Dismantle" or action.caption=="Unequip" or action.caption=="Cancel lot"
 			UI.tone(b,action.disabled and "disabled" or (action.primary and "primary") or (danger and "danger") or nil)
+			x+=w+8
 		end
 	end
 	return box
@@ -1288,17 +1305,51 @@ local function sectionBar(options,selected,onPick,opts)
 	local per=math.ceil(n/rows)
 	local height=opts.small and (compactAtlas and 30 or 32) or (compactAtlas and 34 or 38)
 	local inset=4
-	local holder=container(rows*height+(rows-1)*4+inset*2)
+	-- Phones: one row of UI.TOUCH-tall segments sized to their captions. When
+	-- they do not all fit, the well scrolls sideways (selected segment brought
+	-- into view) instead of stacking rows that push the page off a short screen.
+	local strip=nil
+	if compactAtlas then
+		height=UI.TOUCH
+		local avail=contentWidth()-inset*2
+		local widths,total={},0
+		for i,name in ipairs(options) do
+			local text=tostring(name)
+			widths[i]=math.max(64,(utf8.len(text) or #text)*8+28)
+			total+=widths[i]+(i>1 and 4 or 0)
+		end
+		if total<avail then
+			for i=1,n do widths[i]+=(avail-total)/n end
+			total=avail
+		end
+		strip={widths=widths,total=total,avail=avail}
+	end
+	local holder
+	if strip then
+		holder=listItem(make("ScrollingFrame",scroll,{BackgroundTransparency=1,BorderSizePixel=0,Size=UDim2.new(1,-7,0,height+inset*2),
+			ScrollingDirection=Enum.ScrollingDirection.X,CanvasSize=UDim2.fromOffset(strip.total+inset*2,0),ScrollBarThickness=0,
+			ElasticBehavior=Enum.ElasticBehavior.WhenScrollable,Selectable=false}))
+		rows,per=1,n
+	else
+		holder=container(rows*height+(rows-1)*4+inset*2)
+	end
 	holder.Name=opts.small and "Filters" or "Sections"
 	holder.BackgroundColor3=track
 	holder.BackgroundTransparency=opts.small and .45 or .2
 	make("UICorner",holder,{CornerRadius=UDim.new(0,(height+inset*2)//2)})
 	make("UIStroke",holder,{Color=UI.line,Thickness=1,Transparency=0})
+	local x=inset
 	for i,name in ipairs(options) do
 		local r,c=(i-1)//per,(i-1)%per
 		local on=name==selected
+		local position,size=UDim2.new(c/per,c==0 and inset or inset//2,0,inset+r*(height+4)),UDim2.new(1/per,(c==0 or c==per-1) and -inset*1.5 or -inset,0,height)
+		if strip then
+			position,size=UDim2.fromOffset(math.floor(x),inset),UDim2.fromOffset(math.floor(strip.widths[i]),height)
+			if on then holder.CanvasPosition=Vector2.new(math.clamp(x-(strip.avail-strip.widths[i])/2,0,math.max(0,strip.total-strip.avail)),0) end
+			x+=strip.widths[i]+4
+		end
 		local b=make("TextButton",holder,{Name=(opts.prefix or "Section")..(tostring(name):gsub("[^%w]","")),Text=tostring(name),AutoButtonColor=false,Selectable=true,BorderSizePixel=0,
-			Position=UDim2.new(c/per,c==0 and inset or inset//2,0,inset+r*(height+4)),Size=UDim2.new(1/per,(c==0 or c==per-1) and -inset*1.5 or -inset,0,height),
+			Position=position,Size=size,
 			BackgroundColor3=on and (opts.small and mint or gold) or slate,BackgroundTransparency=on and 0 or 1,
 			Font=on and UI.heavy or bold,TextColor3=on and (opts.small and deep or UI.onGold) or muted,TextScaled=true})
 		make("UICorner",b,{CornerRadius=UDim.new(0,height//2)})
@@ -3618,7 +3669,7 @@ function WK.tile(grid,slot,w,unlocked,size,W)
 		local need=W and W.SlotUniques[slot-W.BASE_SLOTS]
 		local head=label(cell,locked and ("SLOT "..slot) or ("BUILD "..slot),0,size+8,full,14,UI.heavy,11,locked and muted or gold)
 		head.TextXAlignment=Enum.TextXAlignment.Center
-		local sub=label(cell,locked and (need and (need.." uniques") or "Locked") or "Open slot",0,size+22,full,14,bold,10,muted)
+		local sub=label(cell,locked and (need and (need.." uniques") or "Locked") or "Open slot",0,size+22,full,14,bold,11,muted)
 		sub.TextXAlignment=Enum.TextXAlignment.Center
 	end
 end
@@ -4306,7 +4357,7 @@ function dungeonUi.drawEndgame(eview)
 	local logLines={}
 	for _,e in ipairs(tbl(eview.log)) do
 		if type(e)=="table" then
-			table.insert(logLines,"Floor "..dungeonUi.mode(num(e.f,1),e.m==true).."  ·  "..paint(escape(tostring(e.g or "?")),"F9CC77").." "..num(e.s,0).."  ·  "..dungeonUi.time(e.sec).."  ·  "..num(e.d,0).." falls")
+			table.insert(logLines,"Floor "..dungeonUi.mode(num(e.f,1),e.m==true).."  ·  "..paint(escape(tostring(e.g or "?")),"F9CC77").." "..num(e.s,0).."  ·  "..dungeonUi.time(e.sec).."  ·  "..num(e.d,0)..(num(e.d,0)==1 and " fall" or " falls"))
 		end
 	end
 	if #logLines==0 then logLines={"No credited clears yet."} end
@@ -4386,9 +4437,9 @@ local function drawDungeon()
 				actions=actions})
 		end
 		card({name="DungeonTeam",motif="Hunt",title="Team composition",titleColor=gold,subtitle="Duplicates allowed · unique classes pay more",
-			lines={"Class XP ×(1 + "..math.floor(DC.TEAM_STEP*100+.5).."% per unique class beyond the first), up to ×"..(1+DC.TEAM_STEP*(#DC.order-1))..".",
+			lines={"Class XP ×(1 + "..math.floor(DC.TEAM_STEP*100+.5).."% per unique class beyond the first), up to ×"..UI.dec(1+DC.TEAM_STEP*(#DC.order-1))..".",
 				"A balanced party (3+ delvers, every class different) adds +5 to the Bonus score.",
-				"Class XP = floor Dungeoneering XP × 0.75 × grade × team (× Master Mode XP: "..DC.MASTER_XP.." on Floor I to "..DC.masterScale(DC.MASTER_FLOORS).xp.." on Floor "..numeral(DC.MASTER_FLOORS).."), paid to your selected class only."}})
+				"Class XP = floor Dungeoneering XP × 0.75 × grade × team (× Master Mode XP: "..UI.dec(DC.MASTER_XP).." on Floor I to "..UI.dec(DC.masterScale(DC.MASTER_FLOORS).xp).." on Floor "..numeral(DC.MASTER_FLOORS).."), paid to your selected class only."}})
 		-- Master Mode toggle (unlocked per floor by a grade S clear; Dungeon endgame: floors I–VII).
 		local anyMaster=false
 		for i=1,DC.MASTER_FLOORS do if tbl(floorRows[i]).masterUnlocked==true then anyMaster=true end end
@@ -4396,9 +4447,10 @@ local function drawDungeon()
 		local top=DC.masterScale(DC.MASTER_FLOORS)
 		local EGm=dungeonUi.EG
 		card({name="DungeonMaster",motif="Hunt",accent=rgb("E8806A"),title="Master Mode",titleColor=rgb("F2A48F"),
-			subtitle="Floors I–"..numeral(DC.MASTER_FLOORS).." · ×"..DC.MASTER_MULT.."–"..top.hp.." HP · ×"..DC.MASTER_MULT.."–"..top.damage.." damage · par ×"..DC.MASTER_PAR.."–"..top.par.." · +"..DC.MASTER_ROLLS.." chest roll · ×"..DC.MASTER_XP.."–"..top.xp.." XP and coins",badge=masterOn and "ON" or "OFF",badgeColor=ivory,
+			subtitle="Floors I–"..numeral(DC.MASTER_FLOORS).."  ·  tougher bosses, richer chests",badge=masterOn and "ON" or "OFF",badgeColor=ivory,
 			detail="Unlocks per floor after a grade "..DC.MASTER_UNLOCK_GRADE.." (or better) clear. Runs you open use your setting; every delver must have the floor's Master Mode unlocked and its Master gear score.",
-			lines={EGm and ("Master rewards: ×"..EGm.MASTER_ESSENCE.." essence · +"..DC.MASTER_SCORE_BONUS.." Bonus score cap · mechanics hit "..math.floor(EGm.MASTER_MECH*100+.5).."% harder · Master-only drops: "
+			lines={"×"..UI.dec(DC.MASTER_MULT).."–"..UI.dec(top.hp).." HP  ·  ×"..UI.dec(DC.MASTER_MULT).."–"..UI.dec(top.damage).." damage  ·  par ×"..UI.dec(DC.MASTER_PAR).."–"..UI.dec(top.par).."  ·  +"..DC.MASTER_ROLLS.." chest roll  ·  ×"..UI.dec(DC.MASTER_XP).."–"..UI.dec(top.xp).." XP and coins",
+				EGm and ("Master rewards: ×"..EGm.MASTER_ESSENCE.." essence · +"..DC.MASTER_SCORE_BONUS.." Bonus score cap · mechanics hit "..math.floor(EGm.MASTER_MECH*100+.5).."% harder · Master-only drops: "
 				..paint(escape(itemName("EclipsedStarcore")),itemHex("EclipsedStarcore"))..", "..paint(escape(itemName("SovereignHalo")),itemHex("SovereignHalo"))..", "..paint(escape(itemName("Thronebreaker")),itemHex("Thronebreaker"))) or nil},
 			actions={{caption=masterOn and "Turn off" or "Turn on",primary=not masterOn and anyMaster,name="DungeonMasterToggle",disabled=(not masterOn and not anyMaster) or inRun,
 				reason=inRun and "Locked during a run." or "Clear a floor at grade "..DC.MASTER_UNLOCK_GRADE.." first.",fn=function() send("dungeonMaster",masterOn and "off" or "on") end}}})
@@ -4522,7 +4574,7 @@ Pages.drawEssence=drawEssence
 -- prompt keys, so the buttons never double-fire a keypress). Placed in the right
 -- column under the Wayfinder minimap (nav.client.lua: y 8, SIZE 118 on short
 -- screens / 156, + 34 controls), clear of the toast lane; short screens use a
--- 96 px column right of the Attack button (glyph + level roster).
+-- 100 px column right of the Attack button (glyph + level roster).
 do
 	local hudFrame=make("TextButton",gui,{Name="DungeonPartyHud",Text="",AutoButtonColor=false,BackgroundColor3=deep,BackgroundTransparency=.06,BorderSizePixel=0,
 		AnchorPoint=Vector2.new(1,0),Position=UDim2.new(1,-10,0,204),Size=UDim2.fromOffset(220,46),Visible=false,Selectable=false})
@@ -4574,12 +4626,12 @@ do
 		if #rows==0 then return end
 		local view=gui.AbsoluteSize
 		local height=(view and view.Y>0) and view.Y or 720
-		-- Short screens: a 96 px column between the Attack button and the right edge
+		-- Short screens: a 100 px column between the Attack button and the right edge
 		-- (glyph + level, three per line); tall screens: one row per delver.
 		local short=height<520
-		local width=short and 96 or 220
+		local width=short and 100 or 220
 		local top=8+(short and 118 or 156)+34+6
-		local pad=short and 6 or 12
+		local pad=short and 4 or 12
 		local text={}
 		for i,r in ipairs(rows) do
 			local def=r.class and DC.defs[r.class]
@@ -4592,10 +4644,10 @@ do
 			end
 		end
 		local rowsShown=short and math.min(2,math.ceil(#rows/3)) or #text
-		local rowHeight=short and 14 or 18
-		local titleHeight=short and 14 or 16
+		local rowHeight=short and 13 or 18
+		local titleHeight=short and 13 or 16
 		title.Text=short and "PARTY" or "OBSERVATORY PARTY"
-		title.TextSize=short and 10 or 11
+		title.TextSize=11
 		title.Position,title.Size=UDim2.fromOffset(pad,4),UDim2.new(1,-2*pad,0,titleHeight)
 		list.Text=short and table.concat(text) or table.concat(text,"\n")
 		list.TextSize=short and 11 or 12
@@ -4608,10 +4660,18 @@ do
 			local ready=num(player:GetAttribute("DungeonAbilityReady"),0)
 			local inner=width-2*pad
 			local gap=short and 4 or 6
-			local qWidth=short and math.floor((inner-gap)/2) or math.floor((inner-gap)*.62)
-			local bh=short and 24 or 26
-			qButton.Position,qButton.Size=UDim2.fromOffset(pad,y),UDim2.fromOffset(qWidth,bh)
-			rButton.Position,rButton.Size=UDim2.fromOffset(pad+qWidth+gap,y),UDim2.fromOffset(inner-qWidth-gap,bh)
+			-- Phones: Q and R side by side as UI.TOUCH squares; tall screens: Q
+			-- (with its ability name) and R on their own full-width rows.
+			local bh=short and UI.TOUCH or 30
+			if short then
+				local qWidth=math.floor((inner-gap)/2)
+				qButton.Position,qButton.Size=UDim2.fromOffset(pad,y),UDim2.fromOffset(qWidth,bh)
+				rButton.Position,rButton.Size=UDim2.fromOffset(pad+qWidth+gap,y),UDim2.fromOffset(inner-qWidth-gap,bh)
+			else
+				qButton.Position,qButton.Size=UDim2.fromOffset(pad,y),UDim2.fromOffset(inner,bh)
+				rButton.Position,rButton.Size=UDim2.fromOffset(pad,y+bh+gap),UDim2.fromOffset(inner,bh)
+				y+=bh+gap
+			end
 			qButton.TextSize,rButton.TextSize=short and 11 or 12,short and 11 or 12
 			if short then
 				qButton.Text="Q "..(ready>0 and (ready.."s") or "✓")
@@ -4619,7 +4679,7 @@ do
 				qButton.Text="Q · "..escape(mine.ability.name)..(ready>0 and (" "..ready.."s") or " ready")
 			end
 			rButton.Text="R ×"..num(player:GetAttribute("DungeonUltimates"),0)
-			y+=bh+6
+			y+=bh+(short and 4 or 6) -- phones: 95 px tall, clear of the action bar
 		else
 			y+=2
 		end
@@ -4658,11 +4718,11 @@ local function drawBank()
 	end
 	local note=label(balance,"Vault coins are protected from death loss.",x,0,UDim.new(1,-x-12),18,regular,compactAtlas and 12 or 12,muted)
 	note.Position=UDim2.new(0,x,1,compactAtlas and -22 or -26)
-	local direction=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,40),ink))
+	local direction=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,UI.TOUCH),ink))
 	direction.BackgroundTransparency=1
 	for index,option in ipairs({{"deposit","Deposit"},{"withdraw","Withdraw"}}) do
 		local selected=option[1]
-		local control=button(direction,option[2],UDim2.new((index-1)*.5,index==1 and 0 or 4,0,0),UDim2.new(.5,-4,0,40),function() bankDirection=selected;render() end)
+		local control=button(direction,option[2],UDim2.new((index-1)*.5,index==1 and 0 or 4,0,0),UDim2.new(.5,-4,0,UI.TOUCH),function() bankDirection=selected;render() end)
 		UI.tone(control,bankDirection==selected and "selected" or nil)
 	end
 	local entry=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,46),track))
@@ -4670,7 +4730,7 @@ local function drawBank()
 	rounded(entry,10,UI.line)
 	label(entry,"AMOUNT",14,0,UDim.new(0,72),46,UI.heavy,11,gold)
 	local input=make("TextBox",entry,{Name="BankAmount",Position=UDim2.fromOffset(90,0),Size=UDim2.new(1,-100,0,46),BackgroundTransparency=1,Text=bankAmount,PlaceholderText="Whole coins, half or all",PlaceholderColor3=muted,TextColor3=ivory,TextSize=17,Font=UI.heavy,ClearTextOnFocus=false,TextXAlignment=Enum.TextXAlignment.Left,Selectable=true,MultiLine=false})
-	local presets=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,38),ink))
+	local presets=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,UI.TOUCH),ink))
 	presets.BackgroundTransparency=1
 	local preview=listItem(panel(scroll,UDim2.new(),UDim2.new(1,-7,0,46),deep))
 	rounded(preview,10,UI.line)
@@ -4711,7 +4771,7 @@ local function drawBank()
 	end)
 	UI.tone(transfer,"primary")
 	for index,preset in ipairs({"25","100","half","all"}) do
-		button(presets,preset=="half" and "Half" or (preset=="all" and "All" or preset),UDim2.new((index-1)/4,index==1 and 1 or 2,0,0),UDim2.new(.25,-4,0,38),function()
+		button(presets,preset=="half" and "Half" or (preset=="all" and "All" or preset),UDim2.new((index-1)/4,index==1 and 1 or 2,0,0),UDim2.new(.25,-4,0,UI.TOUCH),function()
 			bankAmount=preset
 			input.Text=preset
 			updatePreview()
@@ -6119,7 +6179,7 @@ function MS.canvas(tree,view)
 	local rows=0
 	for _,n in ipairs(tree.nodes) do rows=math.max(rows,num(n.y,1)) end
 	local rowH=compactAtlas and 62 or 74
-	local size=compactAtlas and 42 or 50
+	local size=compactAtlas and UI.TOUCH or 50
 	local height=rows*rowH+16
 	local holder=container(height)
 	holder.Name="MasteryCanvas"
@@ -6212,7 +6272,7 @@ function MS.draw()
 	local tv=MS.treeView(tree.id)
 	local tokens=tbl(view.tokens)
 	local synced=next(view)~=nil
-	card({name="MasterySummary",motif="Hero",title="Skill Mastery",titleColor=gold,badge=synced and nil or "SYNCING",badgeColor=muted,
+	card({name="MasterySummary",motif="Hero",title="Skill Mastery",titleColor=gold,badge=if synced then nil else "SYNCING",badgeColor=muted,
 		subtitle=fmt(num(tokens.free,0)).." Mastery Token"..(num(tokens.free,0)==1 and "" or "s").." free   ·   "..fmt(num(tokens.earned,0)).." earned",
 		detail="Each tree draws on its skill: 1 point per level above "..num(ma.POINT_START_LEVEL,10)..", +1 per "..fmt(num(ma.POST_MAX_STEP,1000000))
 			.." XP beyond 99. Tokens from collection tiers "..table.concat(ma.TOKEN_TIERS or {},"/").." fill any tree."})
@@ -6801,7 +6861,7 @@ function PT.drawPrayer()
 		card({name="Remains"..r.id,item=r.id,title=escape(r.name),titleColor=rgb(rarityHex(r.rarity)),
 			subtitle="Held "..fmt(have).."   ·   "..fmt(each).." XP each"..(altarDef and (" at the "..escape(altarDef.name)) or ""),
 			badge=fmt(num(offered[r.id],0)).." offered",badgeColor=muted,
-			lines={altarDef and nil or "Visit an altar, then offer from here for "..PR.ALTAR_SECONDS.."s. Each altar use offers up to "..PR.BATCH.."."},
+			lines={if altarDef then nil else "Visit an altar, then offer from here for "..PR.ALTAR_SECONDS.."s. Each altar use offers up to "..PR.BATCH.."."},
 			actions={{caption="Offer",name="Offer"..r.id,primary=altarDef~=nil and have>0,disabled=altarDef==nil or have<1 or riteIn>0,
 				reason=if altarDef==nil then "Visit an altar first." elseif have<1 then "You have no "..r.name.."." else "The rite is still underway.",
 				fn=function() send("offerRemains",r.id) end}}})
@@ -7092,9 +7152,9 @@ function TT.draw()
 	for _,tier in ipairs(TR.TierOrder) do done+=num(tbl(tbl(t.log)[tier]).completed,0) end
 	card({name="TrailsSummary",item=TR.SPADE,accent=gold,title="Treasure Trails",titleColor=gold,
 		subtitle=fmt(done).." trails completed   ·   "..(t.spade==true and "spade packed" or "no spade"),
-		badge=state.trails and nil or "SYNCING",
+		badge=if state.trails then nil else "SYNCING",
 		detail="Scrolls lead from riddle to map to dig site. Dig with a Wayfinder's Spade, search where riddles point, perform emotes at landmarks, finish trail tasks and crack puzzle boxes. Each step is checked by the guild, so the only way through is to walk it.",
-		lines={t.spade==true and nil or paint("Forge a Wayfinder's Spade (1 Alloy Ingot, 2 Timber) at a Forge before your first dig.","F3C66E")}})
+		lines={if t.spade==true then nil else paint("Forge a Wayfinder's Spade (1 Alloy Ingot, 2 Timber) at a Forge before your first dig.","F3C66E")}})
 	heading("TRAILS    /    ONE SCROLL PER TIER")
 	for _,tier in ipairs(TR.TierOrder) do TT.drawTier(tier,t) end
 	TT.drawLog(t)
@@ -7151,21 +7211,21 @@ function MGU.drawLobbies(MG,m)
 	local combat,fishing=skills.Combat and skills.Combat.level or 1,skills.Fishing and skills.Fishing.level or 1
 	local lob=MGU.lobbies()
 	card({name="MinigamesSummary",motif="Hunt",accent=gold,title=escape(MG.ISLAND),titleColor=gold,
-		subtitle=fmt(m and m.commendations or 0).." Commendations   ·   "..fmt(m and m.rolls or 0).." Squall Cache rolls",badge=m and nil or "SYNCING",
+		subtitle=fmt(m and m.commendations or 0).." Commendations   ·   "..fmt(m and m.rolls or 0)..(num(m and m.rolls,0)==1 and " Squall Cache roll" or " Squall Cache rolls"),badge=if m then nil else "SYNCING",
 		detail="Board the Skybreach ferry on the Guild Terrace (Combat "..MG.Siege.Tiers[1].combat.." or Fishing "..MG.Haul.FISHING_LEVEL.."). Stand on a lobby pad: the match launches when enough players wait through the countdown.",
 		lines={paint("Points come only from what you do: strikes, repairs, catches, cooking, loading, dousing. Idle players are removed after "..MG.IDLE_SECONDS.."s and earn nothing. Disconnected? Rejoin within "..MG.REJOIN_SECONDS.."s to keep your points.","A9BDC1")}})
 	local S,H=MG.Siege,MG.Haul
 	local lines={}
 	for _,t in ipairs(S.Tiers) do
 		local ok=combat>=t.combat
-		table.insert(lines,lobbyLine(lob["Siege"..t.id],t.name.." (Combat "..t.combat..", "..t.commendations.." Commendations)",ok,ok and nil or "Combat "..t.combat))
+		table.insert(lines,lobbyLine(lob["Siege"..t.id],t.name.." (Combat "..t.combat..", "..t.commendations.." Commendations)",ok,if ok then nil else "Combat "..t.combat))
 	end
 	card({name="MinigameSiege",motif="Hunt",accent=rgb(S.color),title=escape(S.name),titleColor=rgb(S.color),
 		subtitle=S.MIN_PLAYERS.."-"..S.MAX_PLAYERS.." players   ·   defend the "..escape(S.keeper),detail=escape(S.rules),lines=lines})
 	local fishOk=fishing>=H.FISHING_LEVEL
 	card({name="MinigameHaul",motif="Hunt",accent=rgb(H.color),title=escape(H.name),titleColor=rgb(H.color),
 		subtitle="1-"..H.MAX_PLAYERS.." players   ·   the "..escape(H.boss),detail=escape(H.rules),
-		lines={lobbyLine(lob.Haul,"Haul gangway (Fishing "..H.FISHING_LEVEL..")",fishOk,fishOk and nil or "Fishing "..H.FISHING_LEVEL),
+		lines={lobbyLine(lob.Haul,"Haul gangway (Fishing "..H.FISHING_LEVEL..")",fishOk,if fishOk then nil else "Fishing "..H.FISHING_LEVEL),
 			paint("Fishing, Cooking and Carpentry XP for every action. Solo hauls pay "..math.floor(H.SOLO_REWARD*100).."% of the cache rolls.","A9BDC1")}})
 end
 function MGU.drawShop(MG,m)
@@ -7321,14 +7381,14 @@ function MGU.refreshHud()
 	local view=gui.AbsoluteSize
 	local height=(view and view.Y>0) and view.Y or 720
 	local short=height<520
-	local width=short and 96 or 220
+	local width=short and 100 or 220
 	local top=8+(short and 118 or 156)+34+6
 	local pad=short and 6 or 12
 	local lines=MGU.hudLines(h,short)
 	local def=MG[game]
 	title.Text=short and string.upper(game) or string.upper(def.name)..(h.tier and ("  ·  "..string.upper(h.tier)) or "")
 	title.TextColor3=rgb(def.color)
-	title.TextSize=short and 10 or 11
+	title.TextSize=11
 	local titleHeight=short and 14 or 16
 	local rowHeight=short and 14 or 18
 	title.Position,title.Size=UDim2.fromOffset(pad,4),UDim2.new(1,-2*pad,0,titleHeight)
@@ -8144,7 +8204,7 @@ function EXP.drawFactions()
 		if e.kind=="lamp" then detail="XP in "..table.concat(def.lampSkills,", ").." (about "..math.floor(FA.LAMP_HOURS*60).." minutes of level-appropriate training). Repeatable."
 		elseif e.kind=="title" then detail="A cosmetic title shown in your journal."
 		else local item=itemDef(e.item); detail=item and escape(item.description) or nil end
-		card({name="FactionShop"..e.id,item=e.item,motif=e.item and nil or "Journal",accent=rgb(def.color),title=escape(title),titleColor=rgb(def.color),subtitle=subtitle,
+		card({name="FactionShop"..e.id,item=e.item,motif=if e.item then nil else "Journal",accent=rgb(def.color),title=escape(title),titleColor=rgb(def.color),subtitle=subtitle,
 			badge=unlocks[e.id] and "OWNED" or (okRank and okPledge and "OPEN" or "LOCKED"),badgeColor=unlocks[e.id] and mint or (okRank and okPledge and gold or muted),
 			detail=detail,actions=acts})
 	end
@@ -8213,7 +8273,17 @@ local function layoutTabs()
 			local icon=b:FindFirstChild("TabIcon")
 			local caption=b:FindFirstChild("TabCaption")
 			local glow=b:FindFirstChild("TabGlow")
-			if railMode then
+			if railMode and UI.railGrid then
+				-- Short phones: six stacked rows would be under UI.TOUCH, so the rail
+				-- becomes a 2 × 3 grid of icon-over-caption tiles.
+				local c,r=(i-1)%2,(i-1)//2
+				local rowsN=math.ceil(n/2)
+				b.Position=UDim2.new(c/2,c==0 and 0 or 2,r/rowsN,0)
+				b.Size=UDim2.new(.5,-2,1/rowsN,-4)
+				if icon then icon.Size=UDim2.fromOffset(22,22);icon.Position=UDim2.new(.5,-11,.5,-21) end
+				if caption then caption.Position=UDim2.new(0,1,.5,3);caption.Size=UDim2.new(1,-2,0,16);caption.TextXAlignment=Enum.TextXAlignment.Center end
+				if glow then glow.AnchorPoint=Vector2.new(.5,1);glow.Position=UDim2.new(.5,0,1,-1);glow.Size=UDim2.new(.44,0,0,3) end
+			elseif railMode then
 				b.Position=UDim2.new(0,0,(i-1)/n,0)
 				b.Size=UDim2.new(1,0,1/n,-5)
 				if icon then icon.Size=UDim2.fromOffset(22,22);icon.Position=UDim2.new(0,10,.5,-11) end
@@ -8264,18 +8334,21 @@ render = function(fromPush)
 	UI.title.Size=UDim2.new(1,-crest-220,0,railMode and 32 or 36)
 	UI.title.TextSize=railMode and 22 or (compactAtlas and 24 or 28)
 	UI.kicker.Position=UDim2.fromOffset(crest+25,12)
-	local closeSize=railMode and 34 or (compactAtlas and 38 or 40)
+	local closeSize=compactAtlas and UI.TOUCH or 40
 	UI.close.Size=UDim2.fromOffset(closeSize,closeSize)
 	UI.close.Position=UDim2.new(1,-closeSize-(railMode and 20 or 18),0,(headHeight-closeSize)//2)
 	UI.coins.Visible=size.X>=460
 	UI.coins.Position=UDim2.new(1,-closeSize-(railMode and 30 or 28),.5,0)
 	UI.coins.Size=UDim2.fromOffset(railMode and 118 or 132,railMode and 28 or 32)
 	UI.coinText.Text=fmt(num(state.coins,0))
+	-- Rail rows must stay UI.TOUCH tall; when six do not fit, a 2-column grid (wider rail).
+	UI.railGrid=railMode and (size.Y-headHeight-18)/#tabOrder-5<UI.TOUCH
 	if railMode then
+		local railWidth=UI.railGrid and 128 or 112
 		tabs.Position=UDim2.fromOffset(12,headHeight+8)
-		tabs.Size=UDim2.new(0,112,1,-headHeight-18)
-		scroll.Position=UDim2.fromOffset(134,headHeight+8)
-		scroll.Size=UDim2.new(1,-146,1,-headHeight-16)
+		tabs.Size=UDim2.new(0,railWidth,1,-headHeight-18)
+		scroll.Position=UDim2.fromOffset(railWidth+22,headHeight+8)
+		scroll.Size=UDim2.new(1,-railWidth-34,1,-headHeight-16)
 	else
 		local tabHeight=compactAtlas and 46 or 60
 		tabs.Position=UDim2.fromOffset(14,headHeight+6)

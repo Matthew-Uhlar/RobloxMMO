@@ -30,6 +30,7 @@ from functools import lru_cache
 from PIL import Image, ImageDraw, ImageFont
 
 S = 2  # supersampling factor
+TOUCH_MIN = 44  # minimum touch target (px) on phone-sized screens (height < 500)
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEJAVU = "/usr/share/fonts/truetype/dejavu/"
 INTER = "/usr/share/fonts/opentype/inter/"
@@ -929,6 +930,14 @@ class Renderer:
         if not node.visible:
             return
         p = self.painter
+        # Touch targets: on phone-sized screens every tappable control is at
+        # least 44x44 (TOUCH_MIN); a control pushed past its clipping parent's
+        # right edge cannot be reached at all.
+        if node.cls in ("TextButton", "ImageButton", "TextBox") and node.get("Active", True) is not False:
+            if getattr(self, "touch", False) and (h < TOUCH_MIN - 0.5 or w < TOUCH_MIN - 0.5) and w > 0 and h > 0:
+                p.issues.append(("touch-target", node.name, "%dx%d" % (round(w), round(h)), (node.get("Text") or "")[:30]))
+            if x + w > clip[2] + 1 and x < clip[2] and clip[2] - clip[0] < p.w:
+                p.issues.append(("clipped-x", node.name, int(x + w - clip[2]), (node.get("Text") or "")[:30]))
         p.draw_box(node, x, y, w, h, clip)
         if node.cls == "ViewportFrame":
             p.draw_viewport(node, x, y, w, h, clip)
@@ -965,6 +974,7 @@ def render_shot(guis, sw, sh, art, backdrop=True):
         painter.backdrop()
     layout = Layout()
     renderer = Renderer(painter, layout)
+    renderer.touch = sh < 500
     for gui in guis:
         renderer.render_gui(gui, sw, sh)
     return painter, renderer, layout
@@ -984,6 +994,7 @@ def render_full(guis, sw, sh, art):
     tall = Painter(int(math.ceil(w)) + 16, int(math.ceil(canvas_h)) + 16, art)
     tall.img.paste((16, 39, 51, 255), (0, 0, tall.img.width, tall.img.height))
     sub = Renderer(tall, layout)
+    sub.touch = sh < 500
     sub.render_children(placements, 8 + pl, 8 + pt, (0, 0, tall.w, tall.h))
     return tall, tall.issues
 
@@ -1025,7 +1036,7 @@ def main():
                 tall, tall_issues = render_full(to_nodes(shot["guis"]), sw, sh, art)
                 if tall:
                     finish(tall).save(os.path.join(folder, shot["id"] + "-full.png"), optimize=True)
-                    issues = tall_issues
+                    issues = issues + tall_issues
             if args.issues:
                 seen = set()
                 for issue in issues:
