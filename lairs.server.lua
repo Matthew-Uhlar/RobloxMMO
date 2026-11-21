@@ -1,6 +1,12 @@
 -- Lairs (Bossing team): instanced lair bosses for one to three players.
 -- docs/DEPTH-CONTRACT.md §25; rules and data in Data.Lairs (shared/GameData.lua).
 --
+-- Typing: default (non-strict) mode with explicit Fight / Member types. The
+-- headless suite (verify-bosses.luau, Part D) loads this script with doubles
+-- for game, workspace, Instance and Players, then hands the Lair table to the
+-- global __LairsHarness (nil in Roblox); --!strict would flag those doubles
+-- and no analyzer runs in CI, so strict mode waits for a typed harness.
+--
 -- Four lair altars stand on existing islands (world.server.lua, Lairs section:
 -- prompt IsleAction "lairEnter", IsleItem <boss>, IsleRegion <region>). The
 -- Adventure script (server.server.lua, Lairs block) checks the journal (Combat
@@ -9,32 +15,53 @@
 --   "enter" (player, boss) -> {ok, fight, mode = "open"|"join"} | {ok = false, reason}
 --       opens an instance: an arena built off-map on demand in one of
 --       LR.MAX_INSTANCES slots (Workspace.LairInstances), or joins a crewmate's
---       (same non-empty CoopId attribute) instance of that boss during its
---       LR.WARMUP; the fee is spent only after ok. Teleports run on the next
---       step (FastTravelAt is set on every move: Aether Mote anti-teleport).
---   "cancel" (player) -> undo an enter the journal could not pay for.
+--       (same non-empty CoopId attribute; crew-only by lead decision) instance
+--       of that boss during its LR.WARMUP; the fee is spent only after ok.
+--       Refused with "pending" while a kill reward for that UserId is still
+--       being resent. Teleports run on the next steps (retried until the rise;
+--       FastTravelAt is set on every move: Aether Mote anti-teleport).
 --   "leave" (player) -> forfeit (the arena exit prompt, verb lairLeave).
+--   "depart" (player) -> the journal's close() calls this before its final
+--       save (PlayerRemoving here does the same; idempotent): a member who
+--       disconnects while dead, or below LR.FLEE_HP within LR.FLEE_SECONDS of
+--       taking damage, has died (bridge "end" died + the purse-coin penalty);
+--       otherwise they are held with their health recorded.
+--   "holds" (player, fight) -> {held}: the journal's load check for an owed fee.
+--   "drain" () -> shutdown: tears every unfinished fight down silently and
+--       returns its unpaid members {userId, fight, boss} for the journal to
+--       refund before the journals save (Endgame.drain pattern).
 -- After the warmup the boss rises (ServerStorage.IsleLairCombat "spawn", in
--- combat.server.lua) with the members inside the arena; anyone outside then
--- has left. During the fight:
+-- combat.server.lua) with the members inside the arena plus members held
+-- offline in the rejoin window (party health counts only those inside);
+-- members never brought in are refunded, the dead have died, anyone else
+-- outside has left. During the fight:
 --   * a member who dies has fallen: out of the fight (respawn at home, items
---     kept; the game's usual purse-coin death loss applies), bridge "lair"
---     {action = "end", result = "died"};
+--     kept; the game's usual 10% purse-coin death loss applies, lead decision),
+--     bridge "lair" {action = "end", result = "died"};
 --   * a member outside the arena for LR.AWAY_SECONDS (a teleport spell, a
 --     fall) has left (result "left");
 --   * a member who disconnects is held for LR.REJOIN_SECONDS: rejoining the
---     server in time puts them back in the arena with their damage share kept
---     (combat keys damage by UserId); the fight keeps running meanwhile and
---     pauses its specials while nobody is inside. A fight with no member
---     inside for LR.EMPTY_SECONDS, or with every member gone, ends cleanly.
+--     server in time puts them back in the arena (player attribute LairRejoin
+--     makes world.server.lua's home landing stand aside, and the position is
+--     re-checked for LR.REJOIN_VERIFY s) with their damage share kept (combat
+--     keys damage by UserId) and their health as it was at the disconnect;
+--     the fight keeps running meanwhile and pauses its specials while nobody
+--     is inside. A fight with no member inside for LR.EMPTY_SECONDS, or with
+--     every member gone, ends cleanly.
+--   * members removed while offline close their journal entry through the
+--     bridge by UserId (player argument = the UserId number).
 -- The kill (IsleLairCombat "status" -> result "win" with per-UserId credit) is
 -- paid through bridge "lair" {action = "kill", boss, fight, seconds, party,
--- share} for every credited member (resent while the journal syncs, until
--- LR.REWARD_WINDOW); members return to the altar LR.EXIT_SECONDS later and the
--- arena, its connections and its creatures are destroyed. A boss that cannot
--- be built refunds every member's fee (action "refund"); so does a shutdown.
+-- share} for every credited member (resent by UserId while the journal syncs
+-- or the member is away, until LR.REWARD_WINDOW); members return to the altar
+-- LR.EXIT_SECONDS later and the arena, its connections and its creatures are
+-- destroyed. A boss that cannot be built refunds every member's fee (action
+-- "refund", resent on "sync"); so does a shutdown. The journal also keeps the
+-- open entry on the profile (p.lairs.owed) and refunds it at the next load
+-- unless the fight still holds the member or the member forfeited it.
 -- Player attributes: LairBoss (boss id while inside, else ""), LairHud
--- ("k=v;..." for the in-fight HUD), LairNotice / LairNoticeCount (toasts).
+-- ("k=v;..." for the in-fight HUD), LairNotice / LairNoticeCount (toasts),
+-- LairRejoin (true while this script owns a rejoin respawn).
 -- Workspace attribute LairInstances = "<used>/<max>".
 local Players = game:GetService("Players")
 local ServerStorage = game:GetService("ServerStorage")
@@ -48,43 +75,68 @@ local HALF = LR.GRID * LR.CELL / 2    -- arena floor half-width (the tile lattic
 local WALL = 14
 local rng = Random.new()
 
+type Member = {
+	player: Player?, index: number, joinedAt: number, broughtIn: boolean?,
+	offlineAt: number?, awaySince: number?, hud: string?, paid: boolean?, credited: boolean?,
+	health: number?, lastHp: number?, hurtAt: number?, rejoinUntil: number?, fled: boolean?,
+}
+type Fight = {
+	id: string, def: any, slot: number, seed: number, state: string, center: Vector3,
+	members: {[number]: Member}, joined: number, crew: string?, openedAt: number, riseAt: number,
+	connections: {RBXScriptConnection}, hud: {[any]: any}, seen: {[string]: any},
+	model: Model?, tiles: {BasePart}?, spawned: boolean?, rising: boolean?, startedAt: number?,
+	seconds: number?, exitAt: number?, lost: number?, emptySince: number?,
+}
+type Job = {uid: number, payload: {[string]: any}, member: Member?, at: number, deadline: number}
+
 local folder = Instance.new("Folder")
 folder.Name = "LairInstances"
 folder.Parent = workspace
 
-local Lair = {fights = {}, slots = {}, byUser = {}, stash = {}, pending = {}, retries = {}, seq = 0, altars = {}}
+local Lair = {fights = {} :: {[string]: Fight}, slots = {} :: {[number]: Fight}, byUser = {} :: {[number]: Fight},
+	stash = {} :: {[number]: Fight}, pending = {} :: {{fight: Fight, uid: number}}, retries = {} :: {Job}, seq = 0, altars = {}}
 
-local function bridge(op, player, payload)
+-- who: a Player, or a UserId number for a member who is offline (the journal
+-- then closes the entry by UserId).
+local function bridge(op: string, who: any, payload: {[string]: any}): any
 	local fn = ServerStorage:FindFirstChild("IsleBridge")
 	if not fn then return nil end
-	local ok, reply = pcall(fn.Invoke, fn, op, player, payload)
+	local ok, reply = pcall(fn.Invoke, fn, op, who, payload)
 	if not ok then warn("[Lairs] bridge " .. tostring(op) .. " failed: " .. tostring(reply)) return nil end
 	return reply
 end
-local function combat(op, payload)
+local function combat(op: string, payload: {[string]: any}): any
 	local fn = ServerStorage:FindFirstChild("IsleLairCombat")
 	if not fn then return nil end
 	local ok, reply = pcall(fn.Invoke, fn, op, payload)
 	if not ok then warn("[Lairs] combat " .. tostring(op) .. " failed: " .. tostring(reply)) return nil end
 	return reply
 end
-local function rootOf(player)
+local function replyOk(reply: any): boolean return type(reply) == "table" and reply.ok == true end
+local function playerByUid(uid: number): Player?
+	for _, p in ipairs(Players:GetPlayers()) do if p.UserId == uid and p.Parent then return p end end
+	return nil
+end
+local function rootOf(player: Player?): (BasePart?, Model?)
 	local character = player and player.Parent and player.Character
 	return character and character:FindFirstChild("HumanoidRootPart"), character
 end
-local function aliveOf(player)
+local function humanoidOf(player: Player?): Humanoid?
 	local character = player and player.Parent and player.Character
-	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	return character and character:FindFirstChildOfClass("Humanoid")
+end
+local function aliveOf(player: Player?): boolean
+	local humanoid = humanoidOf(player)
 	return humanoid ~= nil and humanoid.Health > 0
 end
-local function notice(player, text)
+local function notice(player: Player?, text: string)
 	if not player or not player.Parent then return end
 	player:SetAttribute("LairNotice", text)
 	player:SetAttribute("LairNoticeCount", (player:GetAttribute("LairNoticeCount") or 0) + 1)
 end
-local function moveTo(player, cf)
+local function moveTo(player: Player?, cf: CFrame): boolean
 	local root, character = rootOf(player)
-	if not root then return false end
+	if not root or not character or not player then return false end
 	player:SetAttribute("FastTravelAt", os.clock()) -- known fast travel (Aether Mote pickup checks)
 	character:PivotTo(cf)
 	root.AssemblyLinearVelocity = Vector3.zero
@@ -97,7 +149,7 @@ local function publish()
 end
 
 -- Altars: world.server.lua places Anchor_Waypoint_Lair_<boss> beside each altar.
-function Lair.altar(boss)
+function Lair.altar(boss: string): CFrame
 	local cached = Lair.altars[boss]
 	if cached and cached.Parent then return cached.CFrame + V(0, 3, 0) end
 	local islands = workspace:FindFirstChild("Islands")
@@ -185,50 +237,97 @@ local function inside(f, root)
 	return V(d.X, 0, d.Z).Magnitude <= LR.ARENA_RANGE + 2 and math.abs(d.Y) <= 40
 end
 
+
 -- Members -------------------------------------------------------------------------
-local function memberCount(f)
+local function memberCount(f: Fight): number
 	local n = 0
 	for _ in pairs(f.members) do n += 1 end
 	return n
 end
-local function bringIn(f, uid)
+local function bringIn(f: Fight, uid: number): boolean
 	local m = f.members[uid]
-	if not m or not m.player or Lair.fights[f.id] ~= f then return end
+	if not m or not m.player or Lair.fights[f.id] ~= f then return false end
 	if moveTo(m.player, spawnCFrame(f, m.index)) then
 		m.player:SetAttribute("LairBoss", f.def.id)
-		m.awaySince = nil
+		m.awaySince, m.broughtIn = nil, true
+		return true
+	end
+	return false
+end
+local function retrying(uid: number, action: string): boolean
+	for _, job in ipairs(Lair.retries) do if job.uid == uid and job.payload.action == action then return true end end
+	return false
+end
+-- Delivers a kill reward or a refund to a member by UserId (the Player object
+-- is resolved on every try, so a rejoin gets it). Resent every LR.REWARD_RETRY
+-- while the journal answers "sync" or the member is away, until the deadline;
+-- a refund that never lands is filed by UserId (the journal refunds the owed
+-- fee at the next load).
+local function deliver(job: Job): boolean
+	local player = playerByUid(job.uid)
+	local reply = if player then bridge("lair", player, job.payload) else nil
+	if replyOk(reply) then
+		if job.member then job.member.paid = job.payload.action == "kill" or job.member.paid end
+		return true
+	end
+	local transient = player == nil or reply == nil or (type(reply) == "table" and reply.reason == "sync")
+	if transient and os.clock() + LR.REWARD_RETRY <= job.deadline then
+		job.at = os.clock() + LR.REWARD_RETRY
+		table.insert(Lair.retries, job)
+	elseif transient and job.payload.action == "refund" then
+		bridge("lair", job.uid, job.payload)
+	end
+	return false
+end
+local function refundMember(f: Fight, uid: number, m: Member)
+	if m.paid then return end
+	local payload = {action = "refund", boss = f.def.id, fight = f.id}
+	if m.player and m.player.Parent then
+		deliver({uid = uid, payload = payload, member = m, at = 0, deadline = os.clock() + LR.REWARD_WINDOW})
+	else
+		bridge("lair", uid, payload) -- offline: the journal files the refund by UserId
 	end
 end
--- Removes a member. result: "left" | "died" | "won" | nil (silent: cancelled entry).
-function Lair.removeMember(f, uid, result, sendHome)
+-- Removes a member. result: "left" | "died" | "won" | other end reasons | nil
+-- (silent: refunded or drained). Unpaid members close their journal entry
+-- ("won" without credit closes as "left"); a credited member whose reward is
+-- still being resent keeps the entry open.
+function Lair.removeMember(f: Fight, uid: number, result: string?, sendHome: boolean?)
 	local m = f.members[uid]
 	if not m then return end
 	f.members[uid] = nil
 	if Lair.byUser[uid] == f then Lair.byUser[uid] = nil end
 	if Lair.stash[uid] == f then Lair.stash[uid] = nil end
 	local player = m.player
-	if player and player.Parent then
+	local online = player ~= nil and player.Parent ~= nil
+	local current = playerByUid(uid)
+	if current then current:SetAttribute("LairRejoin", nil) end
+	if online and player then
 		player:SetAttribute("LairBoss", "")
 		player:SetAttribute("LairHud", "")
 		if sendHome then moveTo(player, Lair.altar(f.def.id)) end
-		if result and result ~= "won" and not m.paid then bridge("lair", player, {action = "end", boss = f.def.id, fight = f.id, result = result}) end
+	end
+	if result and not m.paid and not m.credited then
+		local payload = {action = "end", boss = f.def.id, fight = f.id, result = if result == "won" then "left" else result,
+			penalty = if m.fled then true else nil}
+		bridge("lair", if online then player else uid, payload)
 	end
 end
-function Lair.teardown(f, result, refund)
+-- mode: "refund" (refund every unpaid member), "silent" (no bridge: the
+-- journal settles, see drain) or nil (close entries with `result`).
+function Lair.teardown(f: Fight, result: string, mode: string?)
 	if Lair.fights[f.id] ~= f then return end
-	if f.spawned then combat("despawn", {fight = f.id}) end
+	if f.spawned or f.rising then combat("despawn", {fight = f.id}) end
 	local uids = {}
 	for uid in pairs(f.members) do table.insert(uids, uid) end
 	table.sort(uids)
 	for _, uid in ipairs(uids) do
 		local m = f.members[uid]
 		local player = m.player
-		local present = player and player.Parent and inside(f, (rootOf(player)))
-		if refund and player and player.Parent and not m.paid then
-			bridge("lair", player, {action = "refund", boss = f.def.id, fight = f.id})
-		end
+		local present = player ~= nil and player.Parent ~= nil and inside(f, (rootOf(player)))
+		if mode == "refund" then refundMember(f, uid, m) end
 		if result ~= "won" then notice(player, Lair.endText(f, result)) end
-		Lair.removeMember(f, uid, if refund then nil else result, present)
+		Lair.removeMember(f, uid, if mode then nil else result, present)
 	end
 	for _, c in ipairs(f.connections) do c:Disconnect() end
 	if f.model then f.model:Destroy() end
@@ -236,7 +335,7 @@ function Lair.teardown(f, result, refund)
 	Lair.slots[f.slot] = nil
 	publish()
 end
-function Lair.endText(f, result)
+function Lair.endText(f: Fight, result: string): string
 	local name = f.def.short
 	if result == "timeout" then return name .. " outlasts you: the lair seals and casts you out." end
 	if result == "abandoned" then return "The lair falls silent: nobody stood against " .. name .. "." end
@@ -246,13 +345,15 @@ function Lair.endText(f, result)
 end
 
 -- IsleLairs ops -------------------------------------------------------------------
-function Lair.enter(player, boss)
+function Lair.enter(player: Player, boss: string)
 	local def = LR.boss(boss)
 	if typeof(player) ~= "Instance" and type(player) ~= "table" then return {ok = false, reason = "invalid"} end
 	if not def then return {ok = false, reason = "boss"} end
 	local uid = player.UserId
-	if Lair.byUser[uid] then return {ok = false, reason = "active"} end
-	-- Join a crewmate's instance of this boss during its warmup.
+	if Lair.byUser[uid] or Lair.stash[uid] then return {ok = false, reason = "active"} end
+	-- An unpaid kill reward keeps its journal entry until the retry window closes.
+	if retrying(uid, "kill") then return {ok = false, reason = "pending"} end
+	-- Join a crewmate's instance of this boss during its warmup (crew-only).
 	local crew = player:GetAttribute("CoopId")
 	crew = if crew ~= nil and crew ~= "" then tostring(crew) else nil
 	if crew then
@@ -272,7 +373,7 @@ function Lair.enter(player, boss)
 	if not slot then return {ok = false, reason = "capacity"} end
 	Lair.seq += 1
 	local seed = math.floor(rng:NextNumber() * 1e6)
-	local f = {id = string.format("L%d:%d:%d", Lair.seq, slot, seed), def = def, slot = slot, seed = seed, state = "warmup",
+	local f: Fight = {id = string.format("L%d:%d:%d", Lair.seq, slot, seed), def = def, slot = slot, seed = seed, state = "warmup",
 		center = ORIGIN + V((slot - 1) * SPACING, 0, 0), members = {}, joined = 1, crew = crew,
 		openedAt = os.clock(), riseAt = os.clock() + LR.WARMUP, connections = {}, hud = {}, seen = {}}
 	local ok, err = pcall(Lair.build, f)
@@ -289,27 +390,69 @@ function Lair.enter(player, boss)
 	publish()
 	return {ok = true, fight = f.id, mode = "open", members = 1}
 end
-function Lair.cancel(player)
-	local f = player and Lair.byUser[player.UserId]
-	if not f then return {ok = false} end
-	Lair.removeMember(f, player.UserId, nil, false)
-	if memberCount(f) == 0 then Lair.teardown(f, "abandoned") end
-	return {ok = true}
-end
-function Lair.leave(player)
+function Lair.leave(player: Player)
 	local f = player and Lair.byUser[player.UserId]
 	if not f then return {ok = false} end
 	Lair.removeMember(f, player.UserId, if f.state == "won" then "won" else "left", true)
 	if memberCount(f) == 0 and f.state ~= "won" then Lair.teardown(f, "abandoned") end
 	return {ok = true}
 end
+-- Does a fight still hold this UserId (inside, or offline in the rejoin window)?
+function Lair.held(uid: number, fight: string?): boolean
+	local f = Lair.stash[uid] or Lair.byUser[uid]
+	return f ~= nil and Lair.fights[f.id] == f and f.members[uid] ~= nil and (fight == nil or f.id == fight)
+end
+-- A member's connection ends (PlayerRemoving, or the journal's close() first).
+function Lair.depart(player: Player)
+	local uid = player and player.UserId
+	local f = uid and Lair.byUser[uid]
+	local m = f and f.members[uid]
+	if not f or not m or m.player ~= player or m.offlineAt then return {ok = false} end
+	local now = os.clock()
+	local humanoid = humanoidOf(player)
+	if humanoid then
+		local hp = humanoid.Health
+		if m.lastHp and hp < m.lastHp then m.hurtAt = now end
+		local fleeing = hp > 0 and hp < humanoid.MaxHealth * LR.FLEE_HP and m.hurtAt ~= nil and now - m.hurtAt <= LR.FLEE_SECONDS
+		if f.state ~= "won" and (hp <= 0 or fleeing) then
+			-- Disconnecting to dodge a death is a death.
+			m.fled = hp > 0
+			Lair.removeMember(f, uid, "died", false)
+			if memberCount(f) == 0 then Lair.teardown(f, "failed") end
+			return {ok = true, died = true}
+		end
+		m.health = hp
+	end
+	m.player, m.offlineAt = nil, now
+	Lair.stash[uid] = f
+	return {ok = true}
+end
+-- Shutdown: unfinished fights close silently; the journal refunds the list.
+function Lair.drain()
+	local out = {}
+	local ids = {}
+	for id in pairs(Lair.fights) do table.insert(ids, id) end
+	table.sort(ids)
+	for _, id in ipairs(ids) do
+		local f = Lair.fights[id]
+		if f and f.state ~= "won" then
+			for uid, m in pairs(f.members) do
+				if not m.paid then table.insert(out, {userId = uid, fight = f.id, boss = f.def.id}) end
+			end
+			Lair.teardown(f, "error", "silent")
+		end
+	end
+	return out
+end
 do
 	local fn = Instance.new("BindableFunction")
 	fn.Name = "IsleLairs"
 	fn.OnInvoke = function(op, player, arg)
 		if op == "enter" then return Lair.enter(player, arg)
-		elseif op == "cancel" then return Lair.cancel(player)
 		elseif op == "leave" then return Lair.leave(player)
+		elseif op == "depart" then return Lair.depart(player)
+		elseif op == "drain" then return Lair.drain()
+		elseif op == "holds" then return {held = player ~= nil and Lair.held(player.UserId, arg)}
 		elseif op == "status" then
 			local f = player and Lair.byUser[player.UserId]
 			return {active = f ~= nil, boss = f and f.def.id, state = f and f.state}
@@ -322,7 +465,7 @@ end
 -- Fight loop ----------------------------------------------------------------------
 local STYLE_NAME = {melee = "MELEE", ranged = "RANGED", magic = "MAGIC"}
 local WARD_NAME = {melee = "Ward of Fangs", ranged = "Ward of Quills", magic = "Ward of Glyphs"}
-local function present(f)
+local function present(f: Fight): {number}
 	local list = {}
 	for uid, m in pairs(f.members) do
 		if m.player and m.player.Parent and aliveOf(m.player) and inside(f, (rootOf(m.player))) then table.insert(list, uid) end
@@ -330,10 +473,10 @@ local function present(f)
 	table.sort(list)
 	return list
 end
-local function broadcastNotice(f, text)
+local function broadcastNotice(f: Fight, text: string)
 	for _, m in pairs(f.members) do notice(m.player, text) end
 end
-local function hudText(f, status, now)
+local function hudText(f: Fight, status: any, now: number): string
 	local parts = {"boss=" .. f.def.id, "state=" .. f.state, "party=" .. memberCount(f)}
 	if f.state == "warmup" then
 		table.insert(parts, "rise=" .. math.max(0, math.ceil(f.riseAt - now)))
@@ -358,19 +501,7 @@ local function hudText(f, status, now)
 end
 local REASON_TEXT = {share = "you dealt too little of its health", dead = "you fell before it did", away = "you were outside the arena",
 	idle = "you had not struck for a minute", ironman = "Ironman journals must carry 30% of a party kill", member = "you were not in this fight"}
-local function payReward(f, uid, player, payload, deadline)
-	local reply = bridge("lair", player, payload)
-	if type(reply) == "table" and reply.ok then
-		local m = f.members[uid]
-		if m then m.paid = true end
-		return true
-	end
-	if (reply == nil or (type(reply) == "table" and reply.reason == "sync")) and os.clock() + LR.REWARD_RETRY <= deadline then
-		table.insert(Lair.retries, {fight = f, uid = uid, player = player, payload = payload, at = os.clock() + LR.REWARD_RETRY, deadline = deadline})
-	end
-	return false
-end
-function Lair.won(f, status, now)
+function Lair.won(f: Fight, status: any, now: number)
 	local outcome = status.outcome or {}
 	f.state, f.exitAt, f.seconds = "won", now + LR.EXIT_SECONDS, outcome.seconds or 0
 	local deadline = now + LR.REWARD_WINDOW
@@ -378,37 +509,55 @@ function Lair.won(f, status, now)
 		local c = type(outcome.credit) == "table" and outcome.credit[uid]
 		if c and c.ok and m.player and m.player.Parent then
 			m.credited = true
-			payReward(f, uid, m.player, {action = "kill", boss = f.def.id, fight = f.id, seconds = math.max(1, math.floor(f.seconds + 0.5)),
-				party = outcome.party or memberCount(f), share = c.share}, deadline)
+			deliver({uid = uid, member = m, at = 0, deadline = deadline, payload = {action = "kill", boss = f.def.id, fight = f.id,
+				seconds = math.max(1, math.floor((f.seconds or 0) + 0.5)), party = outcome.party or memberCount(f), share = c.share}})
 			notice(m.player, f.def.short .. " is slain in " .. LR.formatTime(f.seconds) .. "! Returning to the altar in " .. LR.EXIT_SECONDS .. "s.")
 		elseif m.player then
 			notice(m.player, f.def.short .. " is slain, but " .. (REASON_TEXT[c and c.reason or "member"] or "you earned no share") .. ".")
 		end
 	end
 end
-function Lair.rise(f, now)
-	local uids = present(f)
-	-- Members not inside at the rise have left.
-	for uid in pairs(f.members) do
-		if not table.find(uids, uid) then Lair.removeMember(f, uid, "left", false) end
+function Lair.rise(f: Fight, now: number)
+	local inArena = present(f)
+	local roster = table.clone(inArena)
+	local refund, died, left = {}, {}, {}
+	for uid, m in pairs(f.members) do
+		if table.find(inArena, uid) then continue end
+		if m.offlineAt then
+			table.insert(roster, uid) -- held in the rejoin window: a member, not counted for party health
+		elseif not m.broughtIn then
+			table.insert(refund, uid) -- the teleport in never landed: not their fault
+		elseif m.player and m.player.Parent and rootOf(m.player) and not aliveOf(m.player) then
+			table.insert(died, uid)
+		else
+			table.insert(left, uid)
+		end
 	end
-	if #uids == 0 then Lair.teardown(f, "abandoned") return end
-	local tiles = nil
-	if f.tiles then tiles = f.tiles end
-	local reply = combat("spawn", {fight = f.id, boss = f.def.id, center = f.center, members = uids, seed = f.seed, tiles = tiles})
-	if type(reply) ~= "table" or not reply.ok then
+	for _, uid in ipairs(refund) do
+		local m = f.members[uid]
+		refundMember(f, uid, m)
+		notice(m.player, "You never reached " .. f.def.lairName .. "; your offering is returned.")
+		Lair.removeMember(f, uid, nil, false)
+	end
+	for _, uid in ipairs(died) do Lair.removeMember(f, uid, "died", false) end
+	for _, uid in ipairs(left) do Lair.removeMember(f, uid, "left", false) end
+	if #inArena == 0 then Lair.teardown(f, "abandoned") return end
+	table.sort(roster)
+	f.rising = true
+	local reply = combat("spawn", {fight = f.id, boss = f.def.id, center = f.center, members = roster, party = #inArena, seed = f.seed, tiles = f.tiles})
+	if not replyOk(reply) then
 		warn("[Lairs] boss could not rise: " .. tostring(type(reply) == "table" and reply.reason))
-		Lair.teardown(f, "error", true)
+		Lair.teardown(f, "error", "refund") -- also despawns whatever combat registered before failing
 		return
 	end
-	f.spawned, f.state, f.startedAt = true, "fight", now
+	f.rising, f.spawned, f.state, f.startedAt = nil, true, "fight", now
 	broadcastNotice(f, f.def.short .. " rises! " .. (f.def.mechanics[1] or ""))
 end
-function Lair.fightStep(f, now)
+function Lair.fightStep(f: Fight, now: number): any
 	local status = combat("status", {fight = f.id})
 	if type(status) ~= "table" then
 		f.lost = f.lost or now
-		if now - f.lost > 10 then Lair.teardown(f, "error", true) end
+		if now - (f.lost or now) > 10 then Lair.teardown(f, "error", "refund") end
 		return nil
 	end
 	f.lost = nil
@@ -427,9 +576,7 @@ function Lair.fightStep(f, now)
 	end
 	if status.enraged and not seen.enraged then broadcastNotice(f, f.def.short .. " is ENRAGED!") end
 	if status.alert and status.alert.seq ~= seen.alert then
-		if seen.alert ~= nil or status.alert.kind == "tiles" then
-			if status.alert.kind == "tiles" then broadcastNotice(f, status.alert.name .. "! Step off the glowing tiles!") end
-		end
+		if status.alert.kind == "tiles" then broadcastNotice(f, status.alert.name .. "! Step off the glowing tiles!") end
 		seen.alert = status.alert.seq
 	end
 	if status.sealed and not seen.sealed then broadcastNotice(f, f.def.short .. " is sealed: break the sigils in order, I first!") end
@@ -437,24 +584,47 @@ function Lair.fightStep(f, now)
 	seen.style, seen.phase, seen.enraged, seen.sealed, seen.warded = status.style, status.phase, status.enraged, status.sealed, status.warded
 	return status
 end
-function Lair.memberStep(f, now)
+-- A rejoined member: keep them in the arena (another respawn handler may move
+-- them) and never above the health they disconnected with, then hand the
+-- respawn back (LairRejoin cleared).
+local function settleRejoin(f: Fight, m: Member, player: Player, now: number)
+	local humanoid = humanoidOf(player)
+	if humanoid and m.health and humanoid.Health > m.health then humanoid.Health = math.max(1, m.health) end
+	if now <= (m.rejoinUntil or 0) then
+		if not inside(f, (rootOf(player))) then moveTo(player, spawnCFrame(f, m.index)) end
+		m.awaySince = nil
+		return
+	end
+	m.rejoinUntil, m.health = nil, nil
+	player:SetAttribute("LairRejoin", nil)
+end
+function Lair.memberStep(f: Fight, now: number)
 	for uid, m in pairs(f.members) do
 		local player = m.player
 		if m.offlineAt then
 			if now - m.offlineAt > LR.REJOIN_SECONDS then Lair.removeMember(f, uid, "left", false) end
 		elseif not player or not player.Parent then
-			m.offlineAt = now
+			m.player, m.offlineAt = nil, now
 			Lair.stash[uid] = f
+		elseif m.rejoinUntil then
+			settleRejoin(f, m, player, now)
+		elseif not m.broughtIn then
+			-- Still waiting for the teleport in (retried every step until the rise).
 		elseif f.state ~= "warmup" or now - m.joinedAt > 3 then
 			local root = rootOf(player)
-			if f.state == "fight" and root and not aliveOf(player) then
+			local humanoid = humanoidOf(player)
+			if humanoid then
+				if m.lastHp and humanoid.Health < m.lastHp then m.hurtAt = now end
+				m.lastHp = humanoid.Health
+			end
+			if f.state ~= "won" and root and not aliveOf(player) then
 				notice(player, "You fell to " .. f.def.short .. ". Your items are safe at home.")
 				Lair.removeMember(f, uid, "died", false)
 			elseif inside(f, root) then
 				m.awaySince = nil
 			elseif root then
 				m.awaySince = m.awaySince or now
-				if now - m.awaySince > LR.AWAY_SECONDS then
+				if now - (m.awaySince or now) > LR.AWAY_SECONDS then
 					notice(player, "You left " .. f.def.lairName .. ".")
 					Lair.removeMember(f, uid, if f.state == "won" then "won" else "left", false)
 				end
@@ -462,22 +632,23 @@ function Lair.memberStep(f, now)
 		end
 	end
 end
-function Lair.step(now)
-	-- Deferred moves (after the journal paid the fee).
+function Lair.step(now: number)
+	-- Deferred moves (after the journal paid the fee); a failed teleport is retried until the rise.
 	local pending = Lair.pending
 	Lair.pending = {}
-	for _, job in ipairs(pending) do bringIn(job.fight, job.uid) end
-	-- Reward resends.
-	local i = 1
-	while i <= #Lair.retries do
-		local job = Lair.retries[i]
-		if now >= job.at then
-			table.remove(Lair.retries, i)
-			if job.player.Parent then payReward(job.fight, job.uid, job.player, job.payload, job.deadline) end
-		else
-			i += 1
+	for _, job in ipairs(pending) do
+		local f = job.fight
+		if Lair.fights[f.id] == f and f.state == "warmup" and f.members[job.uid] and not bringIn(f, job.uid) then
+			table.insert(Lair.pending, job)
 		end
 	end
+	-- Reward and refund resends (by UserId).
+	local due = {}
+	local i = 1
+	while i <= #Lair.retries do
+		if now >= Lair.retries[i].at then table.insert(due, table.remove(Lair.retries, i)) else i += 1 end
+	end
+	for _, job in ipairs(due) do deliver(job) end
 	local ids = {}
 	for id in pairs(Lair.fights) do table.insert(ids, id) end
 	table.sort(ids)
@@ -491,7 +662,7 @@ function Lair.step(now)
 			if now >= f.riseAt then Lair.rise(f, now) end
 		elseif f.state == "fight" then
 			status = Lair.fightStep(f, now)
-		elseif f.state == "won" and now >= f.exitAt then
+		elseif f.state == "won" and now >= (f.exitAt or now) then
 			Lair.teardown(f, "won")
 			continue
 		end
@@ -503,7 +674,7 @@ function Lair.step(now)
 		if f.state == "fight" then
 			if #present(f) == 0 then
 				f.emptySince = f.emptySince or now
-				if now - f.emptySince > LR.EMPTY_SECONDS then Lair.teardown(f, "abandoned") continue end
+				if now - (f.emptySince or now) > LR.EMPTY_SECONDS then Lair.teardown(f, "abandoned") continue end
 			else
 				f.emptySince = nil
 			end
@@ -526,38 +697,47 @@ RunService.Heartbeat:Connect(function(dt)
 end)
 
 -- Rejoin ------------------------------------------------------------------------------
-local function rejoin(player, character)
-	local f = Lair.stash[player.UserId]
-	local m = f and f.members[player.UserId]
-	if not m or Lair.fights[f.id] ~= f or not m.offlineAt or os.clock() - m.offlineAt > LR.REJOIN_SECONDS then return end
+local function rejoin(player: Player, character: Model?)
+	local uid = player.UserId
+	local f = Lair.stash[uid]
+	local m = f and f.members[uid]
+	if not f or not m or Lair.fights[f.id] ~= f or not m.offlineAt or os.clock() - m.offlineAt > LR.REJOIN_SECONDS then
+		player:SetAttribute("LairRejoin", nil)
+		return
+	end
 	local root = character and character:WaitForChild("HumanoidRootPart", 5)
-	if not root or Lair.stash[player.UserId] ~= f or f.members[player.UserId] ~= m then return end
-	Lair.stash[player.UserId] = nil
-	m.player, m.offlineAt, m.awaySince, m.hud = player, nil, nil, nil
-	Lair.byUser[player.UserId] = f
+	if not root or Lair.stash[uid] ~= f or f.members[uid] ~= m then
+		if not Lair.held(uid) then player:SetAttribute("LairRejoin", nil) end
+		return
+	end
+	Lair.stash[uid] = nil
+	m.player, m.offlineAt, m.awaySince, m.hud, m.broughtIn = player, nil, nil, nil, true
+	m.lastHp, m.hurtAt = nil, nil
+	m.rejoinUntil = os.clock() + LR.REJOIN_VERIFY
+	Lair.byUser[uid] = f
+	player:SetAttribute("LairRejoin", true)
 	if moveTo(player, spawnCFrame(f, m.index)) then player:SetAttribute("LairBoss", f.def.id) end
+	settleRejoin(f, m, player, os.clock())
 	notice(player, "Back into " .. f.def.lairName .. " • your share of the fight was kept.")
 end
-local function watch(player)
+local function watch(player: Player)
+	-- Claim the respawn before any CharacterAdded handler runs (world.server.lua's
+	-- home landing skips while LairRejoin is set).
+	if Lair.stash[player.UserId] and Lair.held(player.UserId) then player:SetAttribute("LairRejoin", true) end
 	if player.CharacterAdded then player.CharacterAdded:Connect(function(character) rejoin(player, character) end) end
 	if player.Character then rejoin(player, player.Character) end
 end
 Players.PlayerAdded:Connect(watch)
 for _, player in ipairs(Players:GetPlayers()) do watch(player) end
-Players.PlayerRemoving:Connect(function(player)
-	local f = Lair.byUser[player.UserId]
-	local m = f and f.members[player.UserId]
-	if not m then return end
-	m.player, m.offlineAt = nil, os.clock()
-	Lair.stash[player.UserId] = f
-end)
--- Shutdown: unfinished fights refund their members' fees (the journals save after).
+Players.PlayerRemoving:Connect(function(player) Lair.depart(player) end)
+-- Shutdown fallback: the journal's BindToClose drains first (IsleLairs "drain");
+-- whatever is left refunds through the bridge (or the owed fee at next load).
 game:BindToClose(function()
 	local ids = {}
 	for id in pairs(Lair.fights) do table.insert(ids, id) end
 	for _, id in ipairs(ids) do
 		local f = Lair.fights[id]
-		if f and f.state ~= "won" then Lair.teardown(f, "error", true) end
+		if f and f.state ~= "won" then Lair.teardown(f, "error", "refund") end
 	end
 end)
 publish()

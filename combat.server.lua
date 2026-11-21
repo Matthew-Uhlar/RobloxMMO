@@ -910,6 +910,7 @@ local function createLogic(env)
 	function L.reportXp(player, r, style, damage, spellId)
 		local payload = {style = style, spell = spellId}
 		if r and damage and damage > 0 then payload.monster, payload.tier, payload.damage = r.id, r.tier, damage end
+		if r and r.lair then payload.maxHp = r.maxHp end -- Lairs: damage XP caps at the party-scaled health
 		if not payload.damage and not spellId then return end
 		env.bridge("combatXp", player, payload)
 	end
@@ -2444,7 +2445,8 @@ local function createLogic(env)
 			if type(uid) == "number" and not members[uid] and party < LR.MAX_PARTY then members[uid] = true; party += 1 end
 		end
 		if party == 0 then return nil end
-		local hp = LR.partyHp(def, party)
+		-- opts.party: members inside at the rise (held offline members do not scale health).
+		local hp = LR.partyHp(def, math.clamp(math.floor(tonumber(opts.party) or party), 1, party))
 		local weakness, defenceStyle = LR.weaknessAt(def, 1)
 		local center = typeof(opts.center) == "Vector3" and opts.center or position
 		local r = newRecord({
@@ -3515,12 +3517,12 @@ function LairRT.spawn(payload)
 	if Logic.lrRecord(payload.fight) then return {ok = false, reason = "active"} end
 	local plan = blueprint(def.body, def.color, true)
 	local position = Vector3.new(center.X, center.Y + plan.hip, center.Z + Lairs.CELL)
-	local ok, model, root, parts = pcall(buildModel, def.name, plan, {id = def.id, level = def.level, hp = Lairs.partyHp(def, #(payload.members or {})), color = def.color})
+	local ok, model, root, parts = pcall(buildModel, def.name, plan, {id = def.id, level = def.level, hp = Lairs.partyHp(def, tonumber(payload.party) or #(payload.members or {})), color = def.color})
 	if not ok then
 		warn("[Combat] could not build lair boss " .. def.id .. ": " .. tostring(model))
 		return {ok = false, reason = "build"}
 	end
-	local r = Logic.lrRegister(payload.fight, def.id, model, position, {radius = plan.radius, members = payload.members, seed = payload.seed, center = center, ground = center.Y})
+	local r = Logic.lrRegister(payload.fight, def.id, model, position, {radius = plan.radius, members = payload.members, party = payload.party, seed = payload.seed, center = center, ground = center.Y})
 	if not r then model:Destroy() return {ok = false, reason = "register"} end
 	model:SetAttribute("Lair", payload.fight)
 	model:SetAttribute("MaxHealth", r.maxHp)

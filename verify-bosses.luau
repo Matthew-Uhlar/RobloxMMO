@@ -171,13 +171,14 @@ for item, rivalId in pairs(LR.Rivals) do
 		ok(req(rival) > req(def), rivalId .. " needs more than " .. item .. " (" .. req(rival) .. " > " .. req(def) .. ")")
 		for skill in pairs(def.requires) do ok(rival.requires[skill] ~= nil, item .. " requirement skill matches the rival") end
 		if def.ranged then
-			ok(def.ranged.power < rival.ranged.power and def.ranged.maxAmmoTier <= rival.ranged.maxAmmoTier and def.ranged.speed >= rival.ranged.speed, item .. " bow below " .. rivalId)
+			ok(def.ranged.power <= rival.ranged.power * LR.UNIQUE_MAX + 1e-9 and def.ranged.maxAmmoTier <= rival.ranged.maxAmmoTier and def.ranged.speed >= rival.ranged.speed, item .. " bow power <= 85% of " .. rivalId)
 		end
-		if def.magic then ok(def.magic.power < rival.magic.power and #def.magic.elements <= #rival.magic.elements, item .. " staff below " .. rivalId) end
+		if def.magic then ok(def.magic.power <= rival.magic.power * LR.UNIQUE_MAX + 1e-9 and #def.magic.elements <= #rival.magic.elements, item .. " staff power <= 85% of " .. rivalId) end
 	end
+	-- Lead decision: every main stat <= 85% of the higher-requirement rival's.
 	for stat, v in pairs(def.stats) do
 		ok(rival.stats[stat] ~= nil, item .. " " .. stat .. " is a stat the rival has")
-		ok(v < (rival.stats[stat] or 0), item .. " " .. stat .. " " .. v .. " < " .. rivalId .. " " .. tostring(rival.stats[stat]))
+		ok(v <= (rival.stats[stat] or 0) * LR.UNIQUE_MAX + 1e-9, item .. " " .. stat .. " " .. v .. " <= 85% of " .. rivalId .. " " .. tostring(rival.stats[stat]))
 	end
 	-- Five regular stars on both: the same +% keeps the order.
 	local mine = G.breakdown({stars = {[item] = 5}}, item).total
@@ -187,7 +188,8 @@ end
 -- Uniques also beat (or match) the open crafted item of their own tier: a real reward.
 ok(Data.Items.ThornmawCleaver.stats.damage > Data.Items.StarmetalSword.stats.damage, "Thornmaw Cleaver above the Combat-30 craft")
 ok(Data.Items.GalesongLongbow.ranged.power > Data.Items.StarwoodLongbow.ranged.power, "Galesong above the Ranged-40 longbow")
-ok(Data.Items.HollowcrownEdge.stats.damage > Data.Items.SovereignGreatblade.stats.damage, "Hollowcrown above the Combat-60 craft")
+-- (At 85% of Crownbreaker, Hollowcrown sits below the Combat-60 Sovereign Greatblade; it still beats the Combat-40 Prismatic Sword.)
+ok(Data.Items.HollowcrownEdge.stats.damage > Data.Items.PrismaticSword.stats.damage, "Hollowcrown above the Combat-40 craft")
 -- Loot: only the uniques are rare; pets ~40 h of kills.
 for _, id in ipairs(LR.Order) do
 	local loot, unique = LR.Loot[id], 0
@@ -655,8 +657,9 @@ local services = {
 	RunService = {IsStudio = function() return false end, Heartbeat = signal()},
 }
 local serverObjects = {}
+local journalClosers = {} -- the journal's BindToClose (Part D fires it last)
 local env = {
-	game = {GetService = function(_, name) return services[name] end, BindToClose = function() end},
+	game = {GetService = function(_, name) return services[name] end, BindToClose = function(_, f) table.insert(journalClosers, f) end},
 	workspace = {GetAttribute = function(self, key) return rawget(self, key) end, FindFirstChild = function() return nil end},
 	Vector3 = Vector3, CFrame = CFrame,
 	Instance = {new = function(className)
@@ -742,6 +745,7 @@ local function op(p, payload) advance(0.1) return bridge.OnInvoke("lair", p, pay
 local lairCalls = {}
 local lairReply = {ok = true, fight = "T1", mode = "open"}
 storage.IsleLairs = {Invoke = function(_, opName, who, arg)
+	if opName == "depart" or opName == "holds" then return nil end -- the journal's close()/load hooks (Part D runs the real ones)
 	table.insert(lairCalls, {op = opName, player = who, arg = arg})
 	if opName == "enter" then return lairReply end
 	if opName == "leave" then return {ok = true} end
@@ -830,6 +834,54 @@ local old = seeded(9203, function(p) p.lairs = "corrupt" end)
 ok(next(cmd(old, "state").lairs.kc) == nil, "old saves migrate")
 -- Not live: "sync" so lairs.server.lua resends.
 eq(bridge.OnInvoke("lair", {UserId = 1, Parent = true, GetAttribute = function() return nil end}, {action = "kill"}).reason, "sync", "an unopened journal answers sync")
+-- QC fixes, journal side.
+-- (#4) Damage XP on a party-scaled lair boss caps at the fight's real health (combat sends maxHp).
+do
+	local nih = LR.Bosses.Nihlvar
+	local function gain(payload)
+		local before = cmd(hunter, "state").xp.Combat
+		payload.style, payload.monster = "melee", "Nihlvar"
+		bridge.OnInvoke("combatXp", hunter, payload)
+		return cmd(hunter, "state").xp.Combat - before
+	end
+	within(gain({damage = nih.hp * 1.5}), nih.xp - 1, nih.xp + 1, "without maxHp the cap is the base health")
+	within(gain({damage = nih.hp * 1.5, maxHp = LR.partyHp(nih, 3)}), nih.xp * 1.5 - 1, nih.xp * 1.5 + 1, "a party carry is paid past the base health")
+	within(gain({damage = nih.hp * 9, maxHp = 1e12}), nih.xp * LR.partyHp(nih, 3) / nih.hp - 1, nih.xp * LR.partyHp(nih, 3) / nih.hp + 1, "maxHp clamps to a party of three")
+end
+-- (#2) The open entry is saved on the profile (owed) and cleared when it settles.
+lairReply = {ok = true, fight = "T7", mode = "open"}
+use(hunter, altarPrompt("Bramblemaw"))
+leave(hunter)
+local owedSaved = data["p9202"].profile.lairs.owed
+ok(owedSaved ~= nil and owedSaved.fight == "T7" and owedSaved.fee == LR.Bosses.Bramblemaw.fee, "the open entry is saved as owed")
+local coinsAway = data["p9202"].profile.coins
+hunter = player(9202)
+eq(cmd(hunter, "state").coins, coinsAway + LR.Bosses.Bramblemaw.fee, "an owed entry no fight holds is refunded at load")
+leave(hunter)
+eq(data["p9202"].profile.lairs.owed, nil, "owed cleared once refunded")
+hunter = player(9202)
+eq(cmd(hunter, "state").coins, coinsAway + LR.Bosses.Bramblemaw.fee, "the owed refund is applied once (idempotent)")
+local seededOwed = seeded(9204, function(prof) prof.coins = 10; prof.lairs = {owed = {fight = "Elsewhere", boss = "Aerisca", fee = 999999}} end)
+eq(cmd(seededOwed, "state").coins, 10 + LR.Bosses.Aerisca.fee, "a forged owed fee is clamped to the boss's fee")
+-- (#12) A member removed while offline closes the entry by UserId; a forfeit is not refunded at load.
+lairReply = {ok = true, fight = "T8", mode = "open"}
+use(hunter, altarPrompt("Bramblemaw"))
+leave(hunter)
+local coinsForfeit = data["p9202"].profile.coins
+eq(bridge.OnInvoke("lair", 9202, {action = "end", boss = "Bramblemaw", fight = "T8", result = "left"}).ok, true, "offline end by UserId")
+hunter = player(9202)
+eq(cmd(hunter, "state").coins, coinsForfeit, "a forfeited entry is not refunded at load")
+eq(op(hunter, {action = "kill", boss = "Bramblemaw", fight = "T8"}).reason, "entry", "the offline close cleared the entry")
+-- (#3) A disconnect that dodges a death pays the purse-coin death penalty and counts the death.
+lairReply = {ok = true, fight = "T9", mode = "open"}
+use(hunter, altarPrompt("Bramblemaw"))
+local purse = cmd(hunter, "state").coins
+local deaths0 = cmd(hunter, "state").lairs.deaths.Bramblemaw or 0
+local fled = op(hunter, {action = "end", boss = "Bramblemaw", fight = "T9", result = "died", penalty = true})
+eq(fled.lost, math.floor(purse * 0.10), "10% purse-coin death penalty")
+local afterFlee = cmd(hunter, "state")
+eq(afterFlee.coins, purse - math.floor(purse * 0.10), "penalty applied")
+eq(afterFlee.lairs.deaths.Bramblemaw, deaths0 + 1, "the dodged death is counted")
 print("PASS: " .. (checks - partC) .. " lair server assertions.")
 
 ------------------------------------------------------------------------------
@@ -852,6 +904,7 @@ end
 -- Combat double: the real Lairs logic, damage/stats/XP through the real bridge.
 local fightClock = 0
 local spawnFails = false
+local registerThenFail = false -- combat registers the boss, then its view fails (QC #8)
 local combatLogic = Combat.createLogic({
 	Data = Data, Progression = P,
 	now = function() return clock end, time = function() return utc end, rng = function() return 0.5 end,
@@ -871,8 +924,9 @@ storage.IsleLairCombat = {Invoke = function(_, opName, payload)
 	if opName == "spawn" then
 		if spawnFails then return {ok = false, reason = "build"} end
 		local r = combatLogic.lrRegister(payload.fight, payload.boss, {Name = payload.boss}, payload.center + Vector3.new(0, 3, 11),
-			{members = payload.members, seed = payload.seed, center = payload.center, ground = payload.center.Y})
+			{members = payload.members, party = payload.party, seed = payload.seed, center = payload.center, ground = payload.center.Y})
 		if not r then return {ok = false, reason = "register"} end
+		if registerThenFail then error("view failed after registration") end
 		spawned[payload.fight] = {record = r, tiles = payload.tiles}
 		return {ok = true}
 	elseif opName == "status" then
@@ -1147,6 +1201,184 @@ eq(cmd(late, "state").coins, 50000 - LR.Bosses.Bramblemaw.fee, "fee taken")
 for _, f in ipairs(closers) do f() end
 eq(cmd(late, "state").coins, 50000, "shutdown refund")
 eq(#instances:GetChildren(), 0, "shutdown tears down")
+-- QC fixes, instance side.
+local function arenaOf(p) return Lair.byUser[p.UserId] or Lair.stash[p.UserId] end
+local function enterInside(p, boss)
+	use(p, altarPrompt(boss, altarAt[boss]))
+	tick(0.25)
+	local f = arenaOf(p)
+	p.root.Position = f.center + Vector3.new(0, 3, -20)
+	return f
+end
+local realBridgeInvoke = storage.IsleBridge.Invoke
+local function failLair(action) -- the journal answers "sync" to this lair action
+	storage.IsleBridge.Invoke = function(self, opName, who, payload)
+		if opName == "lair" and type(payload) == "table" and payload.action == action then return {ok = false, reason = "sync"} end
+		return realBridgeInvoke(self, opName, who, payload)
+	end
+end
+local function healBridge() storage.IsleBridge.Invoke = realBridgeInvoke end
+
+-- 10. (#1) A rejoin owns the respawn: LairRejoin makes the home landing stand
+-- aside, and a racing move is undone during the re-check; the member stays in.
+local rj = solo(9501, "Bramblemaw")
+local fRj = enterInside(rj, "Bramblemaw")
+tick(LR.WARMUP)
+ok(bossOf(rj) ~= nil, "rejoin fight rises")
+leave(rj)
+tick(1)
+local rj2 = player(9501)
+rj2.humanoid.TakeDamage = function() end
+eq(rj2.attrs.LairRejoin, true, "LairRejoin set while lairs owns the respawn")
+rj2.root.Position = Vector3.new(0, 10, 0) -- the home landing wins the race
+tick(0.5)
+ok((rj2.root.Position - fRj.center).Magnitude < 40, "re-checked back into the arena")
+tick(LR.REJOIN_VERIFY + LR.AWAY_SECONDS)
+eq(rj2.attrs.LairRejoin, nil, "LairRejoin released after the re-check")
+ok(Lair.byUser[9501] == fRj and rj2.attrs.LairBoss == "Bramblemaw", "still a member (never removed as left)")
+ok(has(fs.readFile("world.server.lua"), 'player.Character==character and not player:GetAttribute("LairRejoin")'), "world home landing skips a lair rejoin")
+
+-- 11. (#3) Health survives a disconnect; a disconnect dodging a death is a death.
+rj2.humanoid.Health = 30
+tick(5) -- the hit is older than LR.FLEE_SECONDS
+leave(rj2)
+local rj3 = player(9501)
+rj3.humanoid.TakeDamage = function() end
+tick(0.5)
+ok(rj3.humanoid.Health <= 30, "rejoined at the health of the disconnect (" .. rj3.humanoid.Health .. ")")
+tick(LR.REJOIN_VERIFY + 0.5)
+ok(rj3.humanoid.Health <= 30, "the respawn heal is undone during the re-check")
+local purse = cmd(rj3, "state").coins
+local deaths0 = cmd(rj3, "state").lairs.deaths.Bramblemaw or 0
+rj3.humanoid.Health = 20
+tick(0.25) -- hit just now, below 25%
+leave(rj3)
+eq(Lair.stash[9501], nil, "a fleeing member is not held for a rejoin")
+eq(data["p9501"].profile.lairs.deaths.Bramblemaw, deaths0 + 1, "the dodged death is counted")
+eq(data["p9501"].profile.coins, purse - math.floor(purse * 0.10), "the purse-coin death penalty applies")
+tick(0.5)
+eq(#instances:GetChildren(), 0, "the emptied fight closes")
+
+-- 12. (#5) A failed teleport in is retried until the rise; never brought in -> refunded, not "left".
+local tp = solo(9502, "Bramblemaw")
+local tpCoins = cmd(tp, "state").coins
+local tpChar = tp.Character
+use(tp, altarPrompt("Bramblemaw", altarAt.Bramblemaw))
+tp.Character = nil
+tick(2)
+ok(not arenaOf(tp).members[9502].broughtIn, "no character: not brought in yet")
+tp.Character = tpChar
+tick(0.25)
+ok(arenaOf(tp).members[9502].broughtIn and (tp.root.Position - arenaOf(tp).center).Magnitude < 40, "the teleport is retried")
+cmd(tp, "lairLeave")
+tick(0.5)
+tpCoins = cmd(tp, "state").coins
+use(tp, altarPrompt("Bramblemaw", altarAt.Bramblemaw))
+tp.Character = nil
+tick(LR.WARMUP + 0.5)
+tp.Character = tpChar
+eq(cmd(tp, "state").coins, tpCoins, "never brought in: the fee is refunded")
+ok(has(tp.attrs.LairNotice, "never reached"), "refund notice")
+eq(#instances:GetChildren(), 0, "closed")
+
+-- 13. (#6) A kill reward is resent by UserId (to the rejoined Player) and an
+-- unpaid won entry blocks a new enter until it is paid.
+local rw = solo(9503, "Bramblemaw")
+enterInside(rw, "Bramblemaw")
+tick(LR.WARMUP)
+failLair("kill")
+finish(rw, (bossOf(rw)))
+tick(0.5)
+eq(cmd(rw, "state").lairs.kc.Bramblemaw, nil, "the journal is syncing: not paid yet")
+leave(rw)
+local rw2 = player(9503)
+rw2.humanoid.TakeDamage = function() end
+tick(LR.EXIT_SECONDS + 0.5)
+ok(has(use(rw2, altarPrompt("Bramblemaw", altarAt.Bramblemaw)).message, "still being counted"), "a new enter waits for the unpaid reward")
+healBridge()
+tick(LR.REWARD_RETRY + 0.5)
+eq(cmd(rw2, "state").lairs.kc.Bramblemaw, 1, "the resend reaches the rejoined Player by UserId")
+
+-- 14. (#8) A boss whose spawn fails after registration is despawned (no orphan).
+local orphan = solo(9504, "Bramblemaw")
+local orphanCoins = cmd(orphan, "state").coins
+local fOrphan = enterInside(orphan, "Bramblemaw")
+registerThenFail = true
+tick(LR.WARMUP)
+registerThenFail = false
+eq(combatLogic.lrRecord(fOrphan.id), nil, "the registered boss is despawned")
+eq(#combatLogic.records(), 0, "no orphaned creatures")
+eq(cmd(orphan, "state").coins, orphanCoins, "fee refunded")
+
+-- 15. (#9) A member offline in the warmup stays a member at the rise, not counted for party health.
+local h9 = solo(9511, "Aerisca")
+local m9 = solo(9512, "Aerisca")
+h9.attrs.CoopId, m9.attrs.CoopId = "crew-9", "crew-9"
+use(h9, altarPrompt("Aerisca", altarAt.Aerisca))
+use(m9, altarPrompt("Aerisca", altarAt.Aerisca))
+tick(0.25)
+local f9 = arenaOf(h9)
+h9.root.Position = f9.center + Vector3.new(0, 3, -20)
+leave(m9)
+tick(LR.WARMUP)
+local r9 = bossOf(h9)
+ok(r9 ~= nil and r9.members[9512] == true, "the offline member is kept at the rise")
+eq(r9.maxHp, LR.partyHp(LR.Bosses.Aerisca, 1), "party health counts only members inside")
+local m9b = player(9512)
+m9b.humanoid.TakeDamage = function() end
+tick(0.5)
+ok(Lair.byUser[9512] == f9 and (m9b.root.Position - f9.center).Magnitude < 40, "the warmup dropout rejoins the fight")
+finish(h9, r9)
+tick(0.5)
+eq(cmd(m9b, "state").lairs.kc.Aerisca, 1, "and is paid")
+tick(LR.EXIT_SECONDS + LR.REWARD_RETRY)
+
+-- 16. (#10) A death during the warmup is recorded as died, not left.
+local wd = solo(9505, "Bramblemaw")
+enterInside(wd, "Bramblemaw")
+tick(4)
+wd.humanoid.Health = 0
+tick(0.5)
+eq(cmd(wd, "state").lairs.deaths.Bramblemaw, 1, "warmup death counted")
+wd.humanoid.Health = 100
+tick(0.5)
+eq(#instances:GetChildren(), 0, "closed")
+
+-- 17. (#11) A refund the journal cannot take yet ("sync") is resent.
+local rs = solo(9506, "Bramblemaw")
+local rsCoins = cmd(rs, "state").coins
+enterInside(rs, "Bramblemaw")
+failLair("refund")
+spawnFails = true
+tick(LR.WARMUP)
+spawnFails = false
+eq(cmd(rs, "state").coins, rsCoins - LR.Bosses.Bramblemaw.fee, "refund pending while the journal syncs")
+healBridge()
+tick(LR.REWARD_RETRY + 0.5)
+eq(cmd(rs, "state").coins, rsCoins, "the refund is resent")
+
+-- 18. (#13) The dead "cancel" op is gone.
+eq(storage.IsleLairs.OnInvoke("cancel", rs), nil, "no cancel op")
+
+-- 19. (#2) Shutdown: the journal's BindToClose drains lairs before the journals
+-- save (online members refunded at once); an offline member's owed fee is
+-- refunded at their next load.
+local sdOn = solo(9507, "Bramblemaw")
+local sdOff = solo(9508, "Bramblemaw")
+local onCoins, offCoins = cmd(sdOn, "state").coins, cmd(sdOff, "state").coins
+enterInside(sdOn, "Bramblemaw")
+enterInside(sdOff, "Bramblemaw")
+tick(LR.WARMUP)
+leave(sdOff)
+local closing = coroutine.create(journalClosers[1])
+local okClose, closeErr = coroutine.resume(closing)
+ok(okClose and coroutine.status(closing) == "dead", "journal BindToClose ran: " .. tostring(closeErr))
+eq(#instances:GetChildren(), 0, "drained")
+eq(data["p9507"].profile.coins, onCoins, "online member refunded before the save")
+eq(data["p9507"].profile.lairs.owed, nil, "and nothing left owed")
+ok(data["p9508"].profile.lairs.owed ~= nil, "the offline member's fee is saved as owed")
+local sdBack = player(9508)
+eq(cmd(sdBack, "state").coins, offCoins, "owed fee refunded at the next load")
 print("PASS: " .. (checks - partD) .. " lair instance assertions.")
 
 ------------------------------------------------------------------------------
@@ -1322,7 +1554,7 @@ print("PASS: " .. (checks - partF) .. " lair atlas assertions.")
 local partG = checks
 local EG = Data.DungeonEndgame
 local MASTER_FLOOR = {Bramblemaw = 2, Aerisca = 4, Pyrewarden = 6, Nihlvar = 7}
-print(string.format("%-11s %4s %6s %6s %9s %9s %6s %9s %9s %6s %7s %9s %6s", "boss", "lvl", "fight", "kph", "xp/h", "ref xp", "ratio", "coins/h", "slayer", "ratio", "pet h", "master", "ratio"))
+print(string.format("%-11s %4s %6s %6s %9s %9s %6s %9s %9s %6s %7s %9s %6s %9s", "boss", "lvl", "fight", "kph", "xp/h", "ref xp", "ratio", "coins/h", "slayer", "ratio", "pet h", "master", "ratio", "uniques/h"))
 local prevCoins, prevXp = 0, 0
 for _, id in ipairs(LR.Order) do
 	local def = LR.Bosses[id]
@@ -1331,8 +1563,19 @@ for _, id in ipairs(LR.Order) do
 	local ref = LR.slayerReference(def.level)
 	local master = EG.model(MASTER_FLOOR[id], true, "S")
 	local masterValue = master.coins + master.chestValue
-	print(string.format("%-11s %4d %5.0fs %6.1f %9.0f %9.0f %5.2fx %9.0f %9.0f %5.2fx %6.0fh %9.0f %5.2fx", id, def.level, m.fight, m.kph, m.xp, ref.xp, m.xp / ref.xp,
-		m.coins, ref.coins, m.coins / ref.coins, m.petHours, masterValue, m.coins / masterValue))
+	print(string.format("%-11s %4d %5.0fs %6.1f %9.0f %9.0f %5.2fx %9.0f %9.0f %5.2fx %6.0fh %9.0f %5.2fx %9.0f", id, def.level, m.fight, m.kph, m.xp, ref.xp, m.xp / ref.xp,
+		m.coins, ref.coins, m.coins / ref.coins, m.petHours, masterValue, m.coins / masterValue, m.uniques))
+	-- Uniques' merchant value is reported, not counted in coins/h (lead decision).
+	ok(m.uniques > 0 and math.abs(m.lootValue + m.uniqueValue - LR.expectedValue(LR.Loot[id])) < 1e-6, id .. " unique value split out of coins/h")
+	-- Party XP model = the real damage-XP rule with the fight's scaled health as the cap:
+	-- a member's equal share of a party-of-three boss pays in full (Progression.styleXp).
+	local hp3 = LR.partyHp(def, LR.MAX_PARTY)
+	local real = P.styleXp("melee", hp3 / LR.MAX_PARTY, def.xp * hp3 / def.hp, hp3).Combat
+	local share = def.xp * (hp3 / LR.MAX_PARTY) / def.hp -- the model's boss XP per member per kill
+	within(math.abs(real / Data.CombatStyles.damageXpRate - share), 0, 1e-6, id .. " party XP model matches styleXp at the scaled health")
+	ok(m3.xp / m3.kph >= share, id .. " party model pays at least the boss share per member")
+	local carry = P.styleXp("melee", def.hp * 1.5, def.xp * hp3 / def.hp, hp3).Combat
+	within(carry / P.styleXp("melee", def.hp, def.xp, def.hp).Combat, 1.5 - 1e-6, 1.5 + 1e-6, id .. " a party carry is paid past the base health")
 	within(m.fight, 60, 240, id .. " fight length (s)")
 	within(m.xp / ref.xp, 0.6, 1.25, id .. " Combat XP/h vs solo grinding at its level")
 	within(m.coins / ref.coins, 0.6, 1.25, id .. " coins/h (net of the fee, drops at merchant value) vs Slayer")
