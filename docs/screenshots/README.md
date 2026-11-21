@@ -1,7 +1,8 @@
 # Atlas & HUD screenshots
 
 > **These are renders from an approximate layout emulator, not Roblox captures.**
-> `tools/render-ui.luau` runs `ui.client.lua` and `combat.client.lua` headlessly
+> `tools/render-ui.luau` runs `ui.client.lua`, `combat.client.lua`, `hud.client.lua`
+> and `nav.client.lua` headlessly
 > against a mock instance tree with a mid-game snapshot, and
 > `tools/rasterize-ui.py` lays the resulting GUI tree out with a re-implementation
 > of the parts of Roblox's layout model the atlas uses, then draws it with Pillow.
@@ -20,8 +21,9 @@ lune run tools/render-ui.luau [outDir] [filter] [--full] [--issues] [--sizes=136
 - `outDir` — where PNGs go (default `build/screenshots`, untracked; do not commit
   bulk output — curate into this folder). One subfolder per size:
   `desktop` (1366x768), `phone` (844x390), `compact` (730x303).
-- `filter` — substring of `<Tab>-<Section>` (e.g. `Ledger`, `Hero-Gear`), `HUD` or `Builder`
-  (the island builder controls, `build.client.lua`).
+- `filter` — substring of `<Tab>-<Section>` (e.g. `Ledger`, `Hero-Gear`, `Menu`), `HUD`
+  (`HUD-Satchel`, `HUD-ContextMenu`, `HUD-Gear`), `WarpMap` or `Builder` (the island
+  builder controls, `build.client.lua`).
 - `--full` — also write `<page>-full.png`, the atlas ScrollingFrame unrolled to
   its whole canvas height (the normal PNG shows only what fits on screen).
 - `--issues` — print automated findings: text under 11 px, truncated
@@ -60,79 +62,60 @@ Not modelled: UIScale (renders at rest scale 1), CanvasGroup, images/textures,
 UIListLayout wrapping/flex, rotated children, top-bar inset, gamepad selection
 rings.
 
-## Design system ("Aether Brass")
+## Design system ("Skyforge", UI overhaul — docs/DEPTH-CONTRACT.md §29)
 
-- **Surfaces** (dark → light): track `060E14` (wells, bar tracks) · deep `0C1820`
-  (cards, tiles) · ink `12222C` (window) · slate `1E3946` (controls) · raised
-  `2A4D5E` (selected/hover). Every plate gets a vertical sheen (UIGradient), a
-  1px inner bevel highlight that fades downwards, and a rim stroke whose
-  gradient lights the top edge.
-- **Accents**: brass `C9974A` rims and ornaments, gold `F3C66E` headings and
-  primary actions, mint `7FE3CC` state/selection, ember `EF7D67` danger/locked.
-- **Ornament**: corner gems with L-bracket arms (rotated frames) on the atlas
-  window, level-up banner, bank plate and boss panel; double rim on the window;
-  ribbon tab on the level-up banner; fading brass hairline dividers.
-- **Type scale**: display FredokaOne 22–28 (titles, banner) · heading Builder
-  Sans ExtraBold 13–17 (card titles, section headings in gold caps) · label
-  Builder Sans Bold 11–14 · body Builder Sans Medium 12–14. Floor 11px (12px on
-  phones).
-- **Spacing**: 4px grid; cards pad 14 (10 on phones), lists gap 8.
-- **Components**: segmented section bars in a sunken well (gold = page section,
-  mint = in-page filter); buttons with primary (gold) / secondary / danger /
-  disabled tones, leading action glyphs, hover wash, press scale and a brass
-  gamepad selection ring; pill status badges; rarity item plates with glow from
-  Rare up and an "E" tag for equipped gear; gradient meters with gloss and a
-  glowing end cap; tick-box checklists; depth-bar order book; two-card stat sheet.
-- **Motion**: atlas opens with a slide + Back-eased scale and a shade fade; page
-  and section switches slide content up 10px; toasts rise in; the level-up
-  banner pops in.
+All tokens and components live in `shared/UiTheme.lua` (`ReplicatedStorage.AetherUiTheme`).
+
+- **Surfaces** (dark → light): void `05080C` (tracks, wells) · inset `0B1017` (slots,
+  cards) · panel `111822` (windows, sidebar) · raised `223042` (controls) · hover `2E4058`.
+  Panels are translucent with a top-lit sheen.
+- **Frames**: bronze `8A6A3B` rims lit to `F0CE82` at the top, an inner hairline, and
+  four gold corner studs with bracket arms ("9-slice" built from frames, no images).
+- **Accents**: gold `F7C548` headings and primary actions, mint `6FE3C8` state,
+  ember `FF6B5A` danger/locked; bars health `FF4F4F`, defense `57D96A`, mana `4FA8FF`.
+- **Rarity tiers**: Common `FFFFFF`, Uncommon `55FF55`, Rare `6E7BFF`, Epic `C04CFF`,
+  Legendary `FFAA00`, Mythic `FF55FF` (+ reserved Divine / Special): slot borders,
+  tooltip names and footers.
+- **Type**: pixel display face (Roblox Arcade = Press Start 2P, vendored OFL in
+  `tools/fonts`) for titles, section heads, stack counts and XP drops; Builder Sans
+  ExtraBold / Bold / Medium for everything read. Floor 11 px (12 on phones).
+- **Components**: item slot (pictogram, rarity border, count, equipped tag, cooldown
+  sweep), lore tooltip, buttons (primary / secondary / danger / selected / ghost),
+  tabs, bars, ornate frames; original item pictograms drawn from frames.
+- **HUD lanes** (`Theme.hudLayout`): minimap top-left, sidebar top-right, a 9-slot
+  hotbar gap bottom-centre with the action bar in the band above it, left/right
+  columns for trackers and party/minigame/lair HUDs, a top lane for target panels.
+
+The hotbar in these renders is a **stand-in** drawn with Theme slots where
+`hotbar.client.lua` (Held Items team, not in this branch) places its bar.
 
 ## Index
 
-All renders come from the redesigned UI unless prefixed `before-`.
-
 | File | Size | What |
 | --- | --- | --- |
-| `desktop-Journal-Bearing.png` | 1366x768 | Numbered heading, next goal, route chart, guild contract with primary Claim |
-| `desktop-Journal-Diaries.png` | 1366x768 | Diary tiers: tier pips, tick-box task checklists, progress meters |
-| `desktop-Journal-Calendar.png` | 1366x768 | Skyward Calendar: season pips, day meter, countdowns, festivals |
-| `desktop-Journal-Crew.png` | 1366x768 | Crew page: homestead level meter, roster, stores |
-| `desktop-Hero-Skills.png` | 1366x768 | Skill tiles with level medallions, perks and gradient meters |
-| `desktop-Satchel-Items.png` | 1366x768 | Rarity item plates with glow, stack counts, equipped tags |
-| `desktop-Satchel-ItemDetail.png` | 1366x768 | Item detail card: Equip (primary), Enchant, Sell |
-| `desktop-Workshop-Forge.png` | 1366x768 | Station card with skill meter, category filter, recipe cards |
-| `desktop-Hunt-Slayer.png` | 1366x768 | Active contract (danger-toned Abandon), slayer lines, tier filter |
-| `desktop-Ledger-Bank.png` | 1366x768 | Ornamented balance plate, amount well, presets, gold Transfer |
-| `phone-Hero-Skills.png` | 844x390 | Side tab rail, skills grid |
-| `phone-HUD.png` | 844x390 | HUD: guild badge, boss panel, banners, toast, action bar pills, attack button |
-| `phone-Builder.png` | 844x390 | Island builder controls above the action bar |
-| `compact-HUD.png` | 730x303 | Short-screen HUD: slim level-up banner clears the toast |
-| `compact-Satchel-Items.png` | 730x303 | Rail layout, item grid |
+| `desktop-HUD.png` | 1366x768 | Minimap with region + coordinates, isle sidebar (date, time, region, purse, Skymarks, objective, crew, dock), boss panel, level-up banner, OSRS XP drops + skill toast, action bar over the hotbar, spell bar + Attack |
+| `phone-HUD.png` / `compact-HUD.png` | 844x390 / 730x303 | The same HUD on phones: 44 px minimap column, folded sidebar, spell bar centred in the hotbar band |
+| `desktop-HUD-Satchel.png` | 1366x768 | Docked satchel (7 × 4, bag pages, search, sort, equipped tags) with a lore tooltip |
+| `phone-HUD-Satchel.png` / `compact-HUD-Satchel.png` | 844x390 / 730x303 | Satchel modal (7 × 4; 14 × 2 on 303 px screens), 44 px controls |
+| `desktop-HUD-ContextMenu.png` | 1366x768 | Right-click menu: Wield / Move to hotbar / Examine / Sell / Drop |
+| `desktop-HUD-Gear.png` / `phone-HUD-Gear.png` | 1366x768 / 844x390 | Paperdoll (bag · head · pet / weapon · body · quiver / legs / feet) beside the stat sheet |
+| `desktop-WarpMap.png` / `phone-WarpMap.png` / `compact-WarpMap.png` | all | Sky Chart: illustrated isles, warp points, padlocks with requirements, "you are here" |
+| `desktop-Menu-Home.png` / `phone-Menu-Home.png` / `compact-Menu-Home.png` | all | Main menu grid (12 icon tiles with live captions) |
+| `desktop-Menu-Settings.png` | 1366x768 | HUD preferences (pin satchel, XP drops, minimap) and keys |
+| `desktop-HUD-Dungeon.png` | 1366x768 | Observatory party HUD in the right column under the sidebar |
+| `compact-HUD-Agility.png` | 730x303 | Lap tracker and trap counter in the left column, clear of the hotbar |
+| `desktop-Journal-Bearing.png` | 1366x768 | Re-skinned page: pixel section heads, bronze frames |
+| `desktop-Journal-Diaries.png`, `desktop-Journal-Calendar.png`, `desktop-Journal-Crew.png`, `desktop-Journal-Agility.png` | 1366x768 | Journal pages in the new theme |
+| `desktop-Hero-Skills.png`, `desktop-Hero-Combat-full.png`, `desktop-Hero-Spellbook.png` | 1366x768 | Hero pages |
+| `desktop-Satchel-Items.png`, `desktop-Satchel-ItemDetail.png`, `compact-Satchel-Items.png` | | Atlas Satchel › Items (kept alongside the HUD satchel) |
+| `desktop-Workshop-Forge.png`, `desktop-Hunt-Slayer.png`, `desktop-Hunt-Bestiary.png`, `desktop-Hunt-Hunter.png`, `desktop-Ledger-Bank.png` | 1366x768 | Workshop, Hunt and Ledger pages |
+| `phone-Hero-Skills.png`, `phone-Ledger-Vendors.png`, `phone-Builder.png` | 844x390 | Phone rail layout, vendors, island builder (the action bar steps aside) |
 
-Before / after (four key pages):
+Before / after (the previous "Aether Brass" design → Skyforge):
 
-| Before | After | Change |
-| --- | --- | --- |
-| `before-desktop-Hero-Gear.png` | `after-desktop-Hero-Gear.png` | 3-column stat chips → two titled stat cards (Combat, Gathering & luck) with glyph chips and zebra rows; layered window, ornamental corners, crisp tab plates, segmented section well |
-| `before-desktop-HUD.png` | `after-desktop-HUD.png` | Flat text action bar → health meter / XP pill (skill medallion + level meter) / defense pills; level-up banner with ribbon, medallion and ornaments; boss panel with level medallion, ember rim and corner gems; ribbon toast and event banner |
-| `before-phone-Ledger-Orders.png` | `after-phone-Ledger-Orders.png` | Order book lines → depth-bar order book; rarity plates; pill badges; rail with selected tab glow |
-| `before-desktop-Journal-Quests-full.png` | `after-desktop-Journal-Quests-full.png` | Inline ✓/✗ text → tick-box checklists with right-aligned counts, status pills, gold Claim |
-
-Combat styles (bows, staves, spells):
-
-| File | Size | Shows |
-| --- | --- | --- |
-| `combat-desktop-HUD.png` | 1366x768 | Mana pill beside health, spell bar (style chip with mana, autocast slot, greyed unaffordable slot, cost captions), CAST button |
-| `combat-compact-HUD.png` | 730x303 | The same HUD on a short phone: spell bar left of the Attack button, toasts lifted above it |
-| `desktop-Hero-Combat-full.png` | 1366x768 | Hero › Combat: style card with mana meter, quiver and arrows, combat levels, triangle explainer, switch-style weapons |
-| `desktop-Hero-Spellbook.png` | 1366x768 | Hero › Spellbook: autocast summary, spell costs (staff-supplied glyphs free), damage estimate |
-| `desktop-Hunt-Bestiary.png` | 1366x768 | Bestiary entries with attack style, weakness and resistance |
-
-Agility & Hunter:
-
-| File | Size | Shows |
-| --- | --- | --- |
-| `compact-HUD-Agility.png` | 730x303 | Lap tracker (course, obstacle 3/6, next obstacle, step countdown, obstacle pips, best lap) and trap counter in the left column, narrow so the toast clears them |
-| `desktop-Journal-Agility.png` | 1366x768 | Journal › Agility: Skyrunner's log (lap milestones, Surefoot), course cards with obstacle chains, slip chance, lap-milestone pips, Guide |
-| `desktop-Hunt-Hunter.png` | 1366x768 | Hunt › Hunter: Tracker's log, traps in the field, hunter log entries with log-tier pips, kit, catch chance and drops |
-| `phone-Ledger-Vendors.png` | 844x390 | Ledger › Vendors: Skymark Exchange open with countdown, Skymark purse, stock with owned badges |
+| Before | After |
+| --- | --- |
+| `before-desktop-HUD.png` | `after-desktop-HUD.png` |
+| `before-desktop-Hero-Gear.png` | `after-desktop-Hero-Gear.png` |
+| `before-phone-Ledger-Orders.png` | `after-phone-Ledger-Orders.png` |
+| `before-desktop-Journal-Quests-full.png` | `after-desktop-Journal-Quests-full.png` |

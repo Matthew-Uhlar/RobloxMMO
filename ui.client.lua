@@ -1116,7 +1116,7 @@ function UI.refreshSidebar()
 	if cal then
 		local sun = cal.night and paint("☾", "B8C0FF") or paint("☀", "F7C548")
 		if L.short then
-			s.date.Text = paint(cal.date, cal.seasonColor) .. paint("  ·  " .. cal.clock .. " ", "A9B4C0") .. sun
+			s.date.Text = paint(cal.seasonName .. " " .. cal.day, cal.seasonColor) .. paint(" · " .. cal.clock, "A9B4C0")
 		else
 			s.date.Text = paint(cal.date, cal.seasonColor) .. paint("   Year " .. cal.year, "6E7A88")
 			s.clock.Text = cal.clock .. "  " .. sun .. (cal.event and paint("   ✦ event", "F7C548") or "")
@@ -4723,7 +4723,7 @@ do
 		-- Short screens: a 100 px column between the Attack button and the right edge
 		-- (glyph + level, three per line); tall screens: one row per delver.
 		local short=height<520
-		local width=short and 100 or 220
+		local width=short and 100 or 214
 		local lanes=UI.lay()
 		local top=lanes.rightTop
 		local pad=short and 4 or 12
@@ -7479,7 +7479,7 @@ function MGU.refreshHud()
 	local view=gui.AbsoluteSize
 	local height=(view and view.Y>0) and view.Y or 720
 	local short=height<520
-	local width=short and 100 or 220
+	local width=short and 100 or 214
 	local lanes=UI.lay()
 		local top=lanes.rightTop
 	local pad=short and 6 or 12
@@ -8363,7 +8363,7 @@ function Pages.drawMenu()
 			local icon=motif(b,t.motif,34)
 			icon.AnchorPoint=Vector2.new(0,.5)
 			icon.Position=UDim2.new(0,10,.5,0)
-			title=label(b,t.title or t.id,52,12,UDim.new(1,-60),20,UI.heavy,14,ivory)
+			title=label(b,t.id,52,12,UDim.new(1,-60),20,UI.heavy,14,ivory)
 			sub=label(b,caption(t.id),52,32,UDim.new(1,-60),18,regular,12,muted)
 		else
 			local icon=motif(b,t.motif,54)

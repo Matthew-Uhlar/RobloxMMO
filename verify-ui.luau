@@ -3481,6 +3481,11 @@ do
 				checks += 1
 			end
 		end
+		-- Desktop: the bottom-left chat lane stays clear of the persistent HUD.
+		if not touch then
+			for _, item in ipairs(items) do assert(not overlaps(item[2], L.chat), item[1] .. " clears the chat lane at " .. tag) end
+			checks += 1
+		end
 		-- The action bar sits in the band above the hotbar, no wider than it.
 		local action = items[3][2]
 		assert(action.y + action.h <= L.hotbar.y and action.y >= L.band.y and action.w <= L.hotbar.w, "action bar in the hotbar band at " .. tag)

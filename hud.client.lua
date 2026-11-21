@@ -66,6 +66,9 @@ local function levels() return tbl(S.snap and S.snap.levels) end
 ------------------------------------------------------------------------------
 -- Satchel panel
 ------------------------------------------------------------------------------
+-- Phones: the satchel is a modal over a dimmed screen (tap outside to close).
+local satchelShade = make("TextButton", gui, {Name = "SatchelShade", Text = "", AutoButtonColor = false, BackgroundColor3 = C.void, BackgroundTransparency = 0.45,
+	BorderSizePixel = 0, Size = UDim2.fromScale(1, 1), Visible = false, ZIndex = 1, Selectable = false})
 local panel = T.frame(gui, {name = "Satchel", title = "SATCHEL", size = UDim2.fromOffset(226, 420), visible = false, zIndex = 2})
 local body = panel:FindFirstChild("Body")
 local close = T.button(panel, "✕", {name = "CloseSatchel", size = UDim2.fromOffset(26, 22), anchor = Vector2.new(1, 0), position = UDim2.new(1, -6, 0, 4), tone = "ghost", textSize = 13})
@@ -91,24 +94,19 @@ local gearView = make("Frame", body, {Name = "GearView", BackgroundTransparency 
 local doll = make("Frame", gearView, {Name = "Paperdoll", BackgroundColor3 = C.void, BackgroundTransparency = 0.45, BorderSizePixel = 0, Position = UDim2.fromOffset(8, 0), Size = UDim2.new(1, -16, 0, 204)})
 T.corner(doll, 5)
 make("UIStroke", doll, {Color = C.line, Thickness = 1})
-do -- silhouette behind the slots
-	local function part(x, y, w, h, r)
-		local f = make("Frame", doll, {Name = "Figure", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, x, 0, y), Size = UDim2.fromOffset(w, h),
-			BackgroundColor3 = C.raised, BackgroundTransparency = 0.55, BorderSizePixel = 0})
-		T.corner(f, r or 6)
-	end
-	part(0, 34, 34, 34, 17); part(0, 86, 46, 60, 8); part(0, 144, 40, 50, 6); part(0, 186, 46, 14, 4)
-end
--- OSRS equipment layout: head top, cape/amulet row, weapon-body-shield row, legs, feet.
+-- Silhouette spine behind the centre column (head, body, legs, feet).
+local figure = make("Frame", doll, {Name = "Figure", AnchorPoint = Vector2.new(0.5, 0), BackgroundColor3 = C.raised, BackgroundTransparency = 0.6, BorderSizePixel = 0})
+T.corner(figure, 8)
+-- OSRS equipment layout on a 3 × 4 grid: bag · head · pet / weapon · body ·
+-- quiver / legs / feet (col, row). The shortest phones lay the slots in a row.
 local DOLL = {
-	{slot = "helmet", label = "Head", x = 0, y = 12}, {slot = "accessory", label = "Bag", x = -62, y = 44}, {slot = "pet", label = "Pet", x = 62, y = 44},
-	{slot = "weapon", label = "Weapon", x = -62, y = 96}, {slot = "chest", label = "Body", x = 0, y = 76}, {slot = "ammo", label = "Quiver", x = 62, y = 96},
-	{slot = "legs", label = "Legs", x = 0, y = 124}, {slot = "boots", label = "Feet", x = 0, y = 166},
+	{slot = "accessory", label = "Bag", col = 1, row = 1}, {slot = "helmet", label = "Head", col = 2, row = 1}, {slot = "pet", label = "Pet", col = 3, row = 1},
+	{slot = "weapon", label = "Weapon", col = 1, row = 2}, {slot = "chest", label = "Body", col = 2, row = 2}, {slot = "ammo", label = "Quiver", col = 3, row = 2},
+	{slot = "legs", label = "Legs", col = 2, row = 3}, {slot = "boots", label = "Feet", col = 2, row = 4},
 }
 for _, d in ipairs(DOLL) do
-	local b = T.slot(doll, {name = "Equip" .. d.slot, size = 38})
+	local b = T.slot(doll, {name = "Equip" .. d.slot, size = 40})
 	b.AnchorPoint = Vector2.new(0.5, 0)
-	b.Position = UDim2.new(0.5, d.x, 0, d.y)
 	T.label(b, {Name = "SlotName", Text = d.label, Position = UDim2.new(0, 0, 1, -1), Size = UDim2.new(1, 0, 0, 10), TextSize = 8, Font = T.font.label,
 		TextColor3 = C.faint, TextXAlignment = Enum.TextXAlignment.Center, Visible = false})
 	S.doll[d.slot] = b
@@ -324,9 +322,26 @@ local function placePanel()
 	footer.Size = UDim2.new(1, -16, 0, tall)
 	pageLabel.Position = UDim2.fromOffset(tall + 4, 0)
 	pageLabel.Size = UDim2.new(1, -2 * tall - 8, 1, 0)
+	-- Paperdoll: 40 px slots (44 on touch) on the 3 × 4 grid, or one row on 303 px screens.
+	local dollSize = if touch then 44 else 40
+	local gap = dollSize + 6
+	for i, d in ipairs(DOLL) do
+		local b = S.doll[d.slot]
+		b.Size = UDim2.fromOffset(dollSize, dollSize)
+		if L.tiny then
+			b.Position = UDim2.new(0, 8 + dollSize / 2 + (i - 1) * gap, 0, 6)
+		else
+			b.Position = UDim2.new(0.5, (d.col - 2) * (gap + 14), 0, 6 + (d.row - 1) * gap)
+		end
+	end
+	figure.Visible = not L.tiny
+	figure.Position, figure.Size = UDim2.new(0.5, 0, 0, 2), UDim2.fromOffset(dollSize + 14, 4 * gap + 2)
+	if L.tiny then
+		doll.Size = UDim2.new(0, 8 * gap + 10, 0, dollSize + 12)
+		statsList.Position, statsList.Size = UDim2.new(0, 8 * gap + 26, 0, 0), UDim2.new(1, -8 * gap - 34, 1, -4)
 	-- Wide panels: paperdoll left, stat sheet right; narrow: stacked.
-	if width >= 300 then
-		doll.Size = UDim2.new(0.5, -10, 0, math.min(204, height - headerH - (if touch then tall + 10 else 40) - 6))
+	elseif width >= 300 then
+		doll.Size = UDim2.new(0.5, -10, 0, 4 * gap + 8)
 		statsList.Position, statsList.Size = UDim2.new(0.5, 2, 0, 0), UDim2.new(0.5, -10, 1, -4)
 	else
 		doll.Size = UDim2.new(1, -16, 0, 204)
@@ -380,6 +395,7 @@ end
 local function setOpen(open)
 	S.open = open
 	panel.Visible = open
+	satchelShade.Visible = open and layout().short
 	if not open then hideMenu(); tooltip.Visible = false; ghost.Visible = false; S.drag = nil end
 	S.refresh()
 	local docked = open and S.docked == true
@@ -387,6 +403,7 @@ local function setOpen(open)
 end
 S.setOpen = setOpen
 close.Activated:Connect(function() S.pinned = false; setOpen(false) end)
+satchelShade.Activated:Connect(function() setOpen(false) end)
 pin.Activated:Connect(function()
 	S.pinned = not S.pinned
 	T.tone(pin, if S.pinned then "selected" else "ghost")
@@ -674,6 +691,15 @@ local function refreshChart()
 	local L = layout()
 	chart.Size = UDim2.new(1, -16, 1, -16)
 	chartHint.Visible = not L.tiny
+	-- Touch: 44 px close and travel buttons (a taller header and info card).
+	local touch = Input.TouchEnabled or L.short
+	local headerH = if touch then 46 else 28
+	chart:FindFirstChild("Header").Size = UDim2.new(1, -6, 0, headerH - 3)
+	chart:FindFirstChild("HeaderRule").Position = UDim2.new(0, 10, 0, headerH)
+	chartBody.Position, chartBody.Size = UDim2.fromOffset(0, headerH), UDim2.new(1, 0, 1, -headerH)
+	chartClose.Size, chartClose.Position = UDim2.fromOffset(44, if touch then 44 else 26), UDim2.new(1, -6, 0, if touch then 1 else 2)
+	chartInfo.Size = UDim2.fromOffset(260, if touch then 96 else 74)
+	infoGo.Position, infoGo.Size = UDim2.new(0, 10, 1, if touch then -50 else -30), UDim2.new(1, -20, 0, if touch then 44 else 24)
 	sky.Position, sky.Size = UDim2.fromOffset(10, if L.tiny then 4 else 26), UDim2.new(1, -20, 1, if L.tiny then -12 else -36)
 	local area = sky.AbsoluteSize
 	S.chartScale = math.clamp(math.min(area.X / 940, area.Y / 520), 0.55, 1)
@@ -738,6 +764,15 @@ player:GetAttributeChangedSignal("IsleSettingPinSatchel"):Connect(function()
 	if S.pinned and not layout().short then setOpen(true) end
 end)
 actions:Fire("snapshot")
+-- Chat-safe layout: the minimap owns the top-left, so the chat window docks
+-- bottom-left (the lane Theme.hudLayout keeps clear on desktop).
+pcall(function()
+	local config = game:GetService("TextChatService"):FindFirstChildOfClass("ChatWindowConfiguration")
+	if config then
+		config.VerticalAlignment = Enum.VerticalAlignment.Bottom
+		config.HorizontalAlignment = Enum.HorizontalAlignment.Left
+	end
+end)
 -- Test / tooling handle (no gameplay effect).
 S.panel, S.menu, S.tooltip, S.chart, S.drops, S.skillToast, S.gui = panel, menu, tooltip, chart, drops, skillToast, gui
 local api = Instance.new("BindableFunction")
