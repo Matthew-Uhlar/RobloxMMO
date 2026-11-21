@@ -1109,7 +1109,8 @@ do
 			shapeCount+=1
 		end
 	end
-	local signShapes={Signboard=true,SignPost=true,Banner=true}
+	local signShapes={Signboard=true,SignPost=true,Banner=true,SignCarvedBoard=true,SignScrollBoard=true,SignArrowBoard=true,
+		SignPlaqueBoard=true,BannerCloth=true,SignNoticeBoard=true}
 	local signBoards=0
 	for _,gui in world:GetDescendants() do
 		if gui:IsA("SurfaceGui") and gui.Parent:IsA("BasePart") and gui:FindFirstAncestor("Islands") then
@@ -1140,7 +1141,7 @@ do
 			task={spawn=function() end,defer=function() end,wait=function() end},warn=function() end,print=function() end,MeshForgeTest=probe,
 		}})()
 		local describe=probe.forge.describe
-		local UPRIGHT={tree=true,crop=true,ore=true,sign=true,lamp=true,warp=true,stall=true,station=true,statue=true,tower=true,ship=true,plant=true,trap=true}
+		local UPRIGHT={tree=true,crop=true,ore=true,sign=true,signframe=true,lamp=true,warp=true,stall=true,station=true,statue=true,tower=true,ship=true,plant=true,trap=true}
 		local meshed,owners,upright=0,0,0
 		local CREATURE_TAGS={Shellwarden=true,Tidewing=true}
 		local resolved={}
@@ -1172,7 +1173,7 @@ do
 					for _,axis in {"X","Y","Z"} do
 						check(size[axis]<=box[axis]*1.5+.6,obj:GetFullName().." mesh "..axis.." "..string.format("%.1f",size[axis]).." stays within 1.5x of its slot "..string.format("%.1f",box[axis]))
 					end
-					if #d.siblings==0 then
+					if #d.siblings==0 and obj:GetAttribute("ShapeBox")==nil then
 						-- A lone host's slot is its own (upright) box.
 						local own=obj.Size
 						check(math.abs(box.X*box.Y*box.Z-own.X*own.Y*own.Z)<=1e-3*own.X*own.Y*own.Z+1e-6,obj.Name.." slot is the host's own box")

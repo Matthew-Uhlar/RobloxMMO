@@ -136,3 +136,21 @@ Agility & Hunter:
 | `desktop-Journal-Agility.png` | 1366x768 | Journal › Agility: Skyrunner's log (lap milestones, Surefoot), course cards with obstacle chains, slip chance, lap-milestone pips, Guide |
 | `desktop-Hunt-Hunter.png` | 1366x768 | Hunt › Hunter: Tracker's log, traps in the field, hunter log entries with log-tier pips, kit, catch chance and drops |
 | `phone-Ledger-Vendors.png` | 844x390 | Ledger › Vendors: Skymark Exchange open with countdown, Skymark purse, stock with owned badges |
+
+## Sign previews (`signs-*.png`)
+
+Approximate offline renders of the §28 sign system (DEPTH-CONTRACT §28), not
+Roblox captures. `tools/dump-signs.luau` builds the real world headlessly and
+dumps chosen sign models (parts, mesh slots, declared boxes, SurfaceGui trees);
+`tools/render-signs.py` lays the OBJ masters out the way `forge.client.lua` does
+and perspective-warps the painted faces onto the boards:
+
+```sh
+lune run tools/dump-signs.luau build/signs.json "Artisans' Row" "Starforge" "Sky Harbor"
+python3 tools/render-signs.py build/signs.json docs/screenshots/signs-archetypes.png [--night]
+```
+
+Fonts are stand-ins (DejaVu Serif Bold for Merriweather/Fondamento, Inter Bold
+for BuilderSans) and wider than Roblox's, so a label may wrap here that fits in
+one line in Studio. `--night` darkens the scene and keeps the faces ~80% lit
+(LightInfluence 0.25). Confirm materials, fonts and night glow in Studio.

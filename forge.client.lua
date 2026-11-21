@@ -18,6 +18,10 @@
 --   ShapeOwnsModel (bool)   the mesh stands for the whole Model: the slot box grows to cover
 --                           every visible sibling BasePart (no Shape, not Neon) of the host's
 --                           Model, and those siblings are hidden locally while the mesh exists
+--   ShapeBox (Vector3)      declared slot box size (sign frames, §28): the mesh fills this box
+--                           instead of the host's own; the host (a post, pole or plinth) stays
+--                           the visible fallback and is hidden locally once the mesh exists
+--   ShapeBoxOffset (Vector3) centre of the declared box in the host's local frame (default 0)
 -- Resource slots (CropBed, OreVein) whose host carries a gather prompt (IsleItem) use
 -- the catalog's shape for that resource (Catalog.resourceShape), so each crop patch
 -- and ore node shows its own crop or ore. Shapes with an `along` axis (ropes, lines)
@@ -68,6 +72,11 @@ end
 -- tagged prop gets a mesh. Names with no good match stay primitive by design.
 local ALIASES = {
 	Rock = "Boulder", CliffRock = "CliffPiece", OreVein = "OreVein2", Lamp = "StreetLamp", PineTree = "WindpineTree",
+	-- Sign system (§28): descriptive names for the sign kit pieces.
+	OrnateBracket = "SignHangingFrame", Signpost = "SignpostFrame", Standard = "BannerStandardFrame", Finial = "BannerStandardFrame",
+	Plinth = "SignPlinthFrame", Crest = "SignPlinthFrame", NoticeFrame = "SignLedgerFrame", CarvedBoard = "SignCarvedBoard",
+	ScrollBoard = "SignScrollBoard", ArrowBoard = "SignArrowBoard", Plaque = "SignPlaqueBoard", NoticeBoard = "SignNoticeBoard",
+	ChainLink = "SignHangingFrame",
 }
 local RESOURCE_SLOTS = {CropBed = true, OreVein = true}
 local function lookup(shapeName)
@@ -250,6 +259,7 @@ end
 -- Signs: the original board keeps its SurfaceGui (the meshed frame wraps it);
 -- text gets one consistent, higher-contrast style.
 local SIGN_KINDS = {sign = true}
+local SIGN_KIT = {sign = true, signframe = true}
 local fonts
 local function signFonts()
 	if fonts == nil then
@@ -345,6 +355,11 @@ local function ownedSiblings(part)
 end
 local function slotBox(part, siblings)
 	local frame, size = hostFrame(part)
+	local declared = part:GetAttribute("ShapeBox")
+	if typeof(declared) == "Vector3" and declared.X > 0 and declared.Y > 0 and declared.Z > 0 then
+		local offset = part:GetAttribute("ShapeBoxOffset")
+		return part.CFrame * CFrame.new(if typeof(offset) == "Vector3" then offset else Vector3.new()), declared
+	end
 	if not siblings or #siblings == 0 then return frame, size end
 	local lo, hi = -size / 2, size / 2
 	for _, other in ipairs(siblings) do
@@ -438,7 +453,9 @@ local function forge(part)
 	if stopReason then skip(part, stopReason, true); return end
 	if stats.instances >= LIMITS.instances or stats.placedTriangles + #data.faces > LIMITS.placedTriangles then skip(part, "budget"); return end
 	local tint = part:GetAttribute("Tint")
-	if typeof(tint) ~= "Color3" then tint = defaultTint(data) end
+	-- Phones: sign kit pieces (many themes, one shape each) share their default-tint
+	-- template, so a busy plaza cannot spend the small template budget on signs.
+	if typeof(tint) ~= "Color3" or (mobile and SIGN_KIT[data.kind]) then tint = defaultTint(data) end
 	local entry, problem = template(shapeName, data, catalog, tint)
 	if not entry and problem == "budget" then
 		-- Reuse the shape's default-tint template rather than leaving a primitive.
@@ -543,7 +560,8 @@ local function consider(part)
 	-- Re-forge when the slot's attributes change (signals, not periodic rescans).
 	pcall(function()
 		part.AttributeChanged:Connect(function(name)
-			if name ~= "Shape" and name ~= "ShapeScale" and name ~= "ShapeFit" and name ~= "Tint" and name ~= "ShapeOwnsModel" then return end
+			if name ~= "Shape" and name ~= "ShapeScale" and name ~= "ShapeFit" and name ~= "Tint" and name ~= "ShapeOwnsModel"
+				and name ~= "ShapeBox" and name ~= "ShapeBoxOffset" then return end
 			release(part)
 			final[part], backoff[part] = nil, nil
 			if type(part:GetAttribute("Shape")) ~= "string" then registry[part] = nil end
