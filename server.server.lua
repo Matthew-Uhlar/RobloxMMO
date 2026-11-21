@@ -363,11 +363,13 @@ end
 -- stars, tomes or enchantments). Shared by every "last copy" rule: Museum
 -- donations, faction crests and the satchel's sell / drop (§29) all keep one
 -- upgraded copy back.
+-- Upgrades are read through Data.Gear.isUpgraded (valid reforge, stars, tempering /
+-- masterwork tome, Gear.Layers such as master stars), so an empty or stale record
+-- (a reforge id that no longer exists, a book with nothing applied) never locks
+-- an item; enchantments are checked here (they live outside Gear.view).
 function Gear.upgraded(p,id)
-	local function has(map) return type(map)=="table" and map[id]~=nil and map[id]~=false end
-	return has(p.reforges) or (type(p.stars)=="table" and (tonumber(p.stars[id]) or 0)>0)
-		or (type(p.masterStars)=="table" and (tonumber(p.masterStars[id]) or 0)>0)
-		or has(p.books) or (type(p.enchants)=="table" and type(p.enchants[id])=="table" and next(p.enchants[id])~=nil)
+	if Data.Gear and Data.Gear.isUpgraded(p,id) then return true end
+	return type(p.enchants)=="table" and type(p.enchants[id])=="table" and next(p.enchants[id])~=nil
 end
 -- Workers depth (Data.Workers): up to 12 slots unlocked by unique worker crafts,
 -- a type per gathering resource tier plus combat workers, fuel, two upgrade
@@ -4449,17 +4451,19 @@ end
 function Satchel.move(p,item)
 	local id,raw
 	if type(item)=="string" then id,raw=string.match(item,"^(%w+):(%d+)$") end
-	local index=raw and #raw<=3 and tonumber(raw)
+	local index=raw and #raw<=4 and tonumber(raw) -- up to 4 digits; clamped below
 	if not id or not index or index<1 or not Data.Items[id] then return "Choose an item and a satchel slot." end
 	if (p.items[id] or 0)<1 then return "You do not have that item." end
 	local list=Satchel.clean(p)
 	local from=table.find(list,id)
 	-- An owned id past Satchel.MAX (more than 400 distinct items) is not in the
 	-- stored list yet: insert it, then trim the tail so the saved list stays bounded
-	-- (trimmed ids are still owned and follow at the end on the next read).
+	-- (trimmed ids are still owned and follow at the end on the next read). The
+	-- target is clamped to MAX first, so the moved id itself is never the one trimmed.
 	if from then table.remove(list,from) end
-	table.insert(list,math.clamp(index,1,#list+1),id)
+	table.insert(list,math.clamp(index,1,math.min(#list+1,Satchel.MAX)),id)
 	while #list>Satchel.MAX do table.remove(list) end
+	if index>Satchel.MAX then return "Your satchel order keeps "..Satchel.MAX.." slots: moved to slot "..table.find(list,id).."." end
 	return ""
 end
 -- satchelSort "<rarity|name|kind|value>": reorders the whole satchel.
@@ -6894,8 +6898,13 @@ local function perform(player,verb,item,prompt)
 	local humanoid=character and character:FindFirstChildOfClass("Humanoid")
 	if not humanoid or humanoid.Health<=0 then return "Return to your island first." end
 	if Held.verbs[verb] and not prompt then return Held.action(player,p,verb,item) end -- Held items: own bucket, no cooldown
-	if os.clock()<(cooldown[player] or 0) then return "One moment…" end
-	cooldown[player]=os.clock()+(if prompt then 0.65 else 0.24)
+	-- §29: satchelMove / satchelSort only reorder the display list, so the 0.08 s
+	-- read throttle bounds them, not the 0.24 s action cooldown (a drag queued
+	-- behind a sell must not be refused, nor push the next action back).
+	if prompt or (verb~="satchelMove" and verb~="satchelSort") then
+		if os.clock()<(cooldown[player] or 0) then return "One moment…" end
+		cooldown[player]=os.clock()+(if prompt then 0.65 else 0.24)
+	end
 	local region=prompt and prompt:GetAttribute("IsleRegion")
 	if region and not regionAllowed(p,region) then return regionDenied(region) end
 	if Features.verbs[verb] then
@@ -7224,8 +7233,9 @@ local function perform(player,verb,item,prompt)
 		if not def then return "Choose an item to drop." end
 		local count=p.items[item] or 0
 		if count<1 then return "You have no "..def.name.." to drop." end
-		if isEquipped(p,item) then return "Unequip "..def.name.." before dropping it." end
+		-- The bag check first: isEquipped also counts bagged accessories.
 		if table.find(p.accessoryBag,item) then return "Take "..def.name.." out of your accessory bag first." end
+		if isEquipped(p,item) then return "Unequip "..def.name.." before dropping it." end
 		-- The last copy of an upgraded item stays (Gear.upgraded); spares go.
 		local keep=if Gear.upgraded(p,item) then 1 else 0
 		if count<=keep then return def.name.." carries upgrades; it cannot be dropped (only spare copies can)." end
@@ -7248,8 +7258,9 @@ local function perform(player,verb,item,prompt)
 		if not def then return "The merchant does not buy that." end
 		local count=p.items[item] or 0
 		if count<1 then return "You have no "..def.name.." to sell." end
-		if isEquipped(p,item) then return "Unequip "..def.name.." before selling it." end
+		-- The bag check first: isEquipped also counts bagged accessories.
 		if table.find(p.accessoryBag,item) then return "Take "..def.name.." out of your accessory bag first." end
+		if isEquipped(p,item) then return "Unequip "..def.name.." before selling it." end
 		-- The last copy of an upgraded item stays (Gear.upgraded); spares sell.
 		local keep=if Gear.upgraded(p,item) then 1 else 0
 		if count<=keep then return def.name.." carries upgrades; the merchant only buys spare copies." end

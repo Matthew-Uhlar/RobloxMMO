@@ -219,7 +219,9 @@ local function loadForge(setup, asset, preset)
 		require = function(token) return if token == "world" then World elseif token == "props" then Props else error("unknown module") end,
 		Content = {fromObject = function(object) return {object = object} end},
 		MeshForgeTest = test,
-		task = {spawn = function(f, ...) f(...) end, defer = function(f, ...) table.insert(deferred, table.pack(f, ...)) end, wait = function() end},
+		-- task.spawn resumes a waiting thread too (template waiters, §32 QC H3).
+		task = {spawn = function(f, ...) if type(f) == "thread" then assert(coroutine.resume(f, ...)) else f(...) end end,
+			defer = function(f, ...) table.insert(deferred, table.pack(f, ...)) end, wait = function() end},
 	})
 	if preset then preset(env) end
 	luau.load(MeshForgeSource, {environment = env, injectGlobals = true})()
@@ -622,6 +624,81 @@ do
 	p1.Parent = nil; lru2.forge.step()
 	local p4 = part(nil, "P4", Vector3.new(3, 3, 3), CFrame.new(15, 0, 0), {Shape = "Anvil"}); lru2.add(p4)
 	check(tpl(lru2.forge, "Barrel") == nil and tpl(lru2.forge, "Boulder") ~= nil, "the least recently used idle template is evicted first")
+end
+
+-- Sky Chart requests (§32 QC H2 / H3): served from existing templates, a new
+-- template only while 8 slots stay free, pinned only on accept (released on
+-- reject), at most 16 chart pins, chart-only pins yield to a starved world, and
+-- concurrent builds of one template share a single EditableMesh.
+do
+	local function tpl(f, shape)
+		for key, entry in pairs(f.templates) do if string.sub(key, 1, #shape + 1) == shape .. "#" and entry then return entry end end
+		return nil
+	end
+	local function host(name, shape, x) return part(nil, name, Vector3.new(3, 3, 3), CFrame.new(x or 0, 0, 0), {Shape = shape}) end
+	local f = loadForge()
+	local C = f.forge.chart
+	f.forge.limits.templates = 9
+	local mesh1, tris1, tok1 = C.visual(host("H1", "Boulder"))
+	check(mesh1 ~= nil and tris1 > 0 and tok1 ~= nil and mesh1:GetAttribute("ShapeTriangles") == tris1, "a free forge serves the chart a mesh, its triangles and a token")
+	check(tpl(f.forge, "Boulder").users == 0, "nothing is pinned before the chart accepts")
+	check(C.visual(host("H2", "Barrel")) == nil and f.forge.stats.templates == 1, "a new chart template needs 8 free slots (the world's reserve)")
+	local mesh3, _, tok3 = C.visual(host("H3", "Boulder"))
+	check(mesh3 ~= nil, "an existing template still serves the chart")
+	check(C.accept(tok1) and tpl(f.forge, "Boulder").users == 1 and f.forge.stats.chartPins == 1, "accept pins the template once")
+	check(C.accept(tok3) and tpl(f.forge, "Boulder").users == 1 and f.forge.stats.chartPins == 1, "a second accepted mesh shares the pin")
+	C.release(tok1)
+	check(tpl(f.forge, "Boulder").users == 1, "one mesh still accepted keeps the pin")
+	C.release(tok3)
+	check(tpl(f.forge, "Boulder").users == 0 and f.forge.stats.chartPins == 0, "releasing every mesh unpins the template")
+	local _, _, tok4 = C.visual(host("H4", "Boulder"))
+	C.release(tok4)
+	check(tpl(f.forge, "Boulder").users == 0 and not C.accept(tok4), "a rejected (released) mesh never pins")
+	-- Pin cap: 16 chart-pinned templates on desktop.
+	local caps = loadForge()
+	local names = {}
+	for name, data in pairs(World.shapes) do if data.kind ~= "sign" and #data.faces < 800 then table.insert(names, name) end end
+	table.sort(names)
+	local pinned = 0
+	for i = 1, caps.forge.chart.pinCap + 1 do
+		local _, _, token = caps.forge.chart.visual(host("Cap" .. i, names[i], i * 6))
+		if token and caps.forge.chart.accept(token) then pinned += 1 end
+	end
+	check(caps.forge.chart.pinCap == 16 and pinned == 16 and caps.forge.stats.chartPins == 16 and caps.forge.stats.chartRefused >= 1, "at most 16 chart pins on desktop")
+	-- A starved world takes back a template only the chart holds; the chart's
+	-- mesh is marked ShapeRevoked (the chart swaps its stand-in back).
+	local starve = loadForge()
+	starve.forge.limits.templates = 2
+	local a = part(nil, "A", Vector3.new(3, 3, 3), CFrame.new(), {Shape = "Boulder"}); starve.add(a)
+	local b = part(nil, "B", Vector3.new(3, 3, 3), CFrame.new(5, 0, 0), {Shape = "Barrel"}); starve.add(b)
+	local ma, _, ta = starve.forge.chart.visual(host("FarA", "Boulder", 900))
+	local mb, _, tb = starve.forge.chart.visual(host("FarB", "Barrel", 905))
+	check(ma and mb and starve.forge.chart.accept(ta) and starve.forge.chart.accept(tb), "the chart pins the world's own templates")
+	a.Parent = nil; b.Parent = nil; starve.forge.step()
+	local c = part(nil, "C", Vector3.new(3, 3, 3), CFrame.new(10, 0, 0), {Shape = "Crate"}); starve.add(c)
+	check(c:GetAttribute("ShapeDone") == true and starve.forge.stats.chartRevoked == 1, "a chart-only pin yields to the starved world")
+	check((ma:GetAttribute("ShapeRevoked") == true) ~= (mb:GetAttribute("ShapeRevoked") == true), "the yielded mesh is marked for its stand-in")
+	-- H3: a template build yields (CreateMeshPartAsync); a second request for it waits.
+	local myCalls = {meshes = 0, parts = 0, colors = {}, triangles = 0, normals = 0, faceNormals = 0, destroyed = 0}
+	local base = editableAsset(myCalls)
+	local gate = {hold = false}
+	local asset = {CreateEditableMesh = base.CreateEditableMesh, CreateMeshPartAsync = function(self, content, options)
+		if gate.hold then gate.waiting = coroutine.running(); coroutine.yield() end
+		return base.CreateMeshPartAsync(self, content, options)
+	end}
+	local y = loadForge(nil, asset)
+	gate.hold = true
+	local results = {}
+	local co1 = coroutine.create(function() results[1] = table.pack(y.forge.chart.visual(host("Y1", "Boulder"))) end)
+	assert(coroutine.resume(co1))
+	check(coroutine.status(co1) == "suspended" and y.forge.stats.templates == 1 and myCalls.meshes == 1, "the build in flight holds its template slot")
+	local co2 = coroutine.create(function() results[2] = table.pack(y.forge.chart.visual(host("Y2", "Boulder"))) end)
+	assert(coroutine.resume(co2))
+	check(coroutine.status(co2) == "suspended" and myCalls.meshes == 1, "a concurrent request waits instead of building a second EditableMesh")
+	gate.hold = false
+	assert(coroutine.resume(gate.waiting))
+	check(results[1] and results[1][1] and results[2] and results[2][1], "both requests are served when the build lands")
+	check(myCalls.meshes == 1 and y.forge.stats.templates == 1 and myCalls.destroyed == 0 and tpl(y.forge, "Boulder").pending == nil, "one template, no leaked mesh or slot")
 end
 
 -- Template budget tour (§28 M3, §30): the real world, hub then every region, on

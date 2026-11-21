@@ -1224,7 +1224,25 @@ do
 	eq(#moved.satchel,#s0.satchel,"satchelMove keeps every item")
 	ok(has(cmd(knight,"satchelMove","NotAnItem:1").message,"Choose"),"unknown item rejected")
 	ok(has(cmd(knight,"satchelMove",last..":x").message,"Choose"),"bad slot rejected")
-	ok(has(cmd(knight,"satchelMove",last..":9999").message,"Choose"),"slot index capped at three digits")
+	ok(has(cmd(knight,"satchelMove",last..":99999").message,"Choose"),"slot index capped at four digits")
+	-- QC L8: a 4-digit index is clamped to the end of the order (never past 400).
+	local far=cmd(knight,"satchelMove",last..":9999")
+	eq(far.satchel[#far.satchel],last,"a 4-digit slot lands at the end of the order")
+	ok(has(far.message,"keeps 400 slots"),"a slot past 400 is reported")
+	cmd(knight,"satchelMove",last..":1")
+	-- QC H1: satchelMove / satchelSort are display-only: the read throttle bounds
+	-- them, not the 0.24 s action cooldown (a queued drag right after a sell is not refused).
+	do
+		local function raw(verb,item) clock+=0.1; return objects.RemoteFunction.OnServerInvoke(knight,verb,item) end
+		advance(1)
+		raw("sell","NotAnItem")
+		local quick=raw("satchelMove",last..":2")
+		ok(quick and quick.message=="" and quick.satchel[2]==last,"satchelMove 0.1 s after an action is accepted: "..tostring(quick and quick.message))
+		local sortQuick=raw("satchelSort","rarity")
+		ok(sortQuick and not has(sortQuick.message,"One moment"),"satchelSort is not held by the action cooldown")
+		ok(objects.RemoteFunction.OnServerInvoke(knight,"satchelSort","name")==nil,"the 0.08 s read throttle still bounds display verbs")
+		advance(1)
+	end
 	local sorted=cmd(knight,"satchelSort","name")
 	for i=2,#sorted.satchel do ok(Data.Items[sorted.satchel[i-1]].name<=Data.Items[sorted.satchel[i]].name,"satchelSort name order") end
 	ok(has(cmd(knight,"satchelSort","bogus").message,"Sort by"),"unknown sort rejected")
@@ -1259,6 +1277,16 @@ do
 	eq(spare.items.CopperHatchet,1,"drop keeps the enchanted copy, spares go")
 	ok(has(spare.message,"Dropped 2"),"drop counts only the spares")
 	ok(has(cmd(knight,"sell","CopperHatchet").message,"carries upgrades"),"then the last enchanted copy is refused")
+	-- QC L7: Gear.upgraded reads Data.Gear.isUpgraded: an empty book or a stale
+	-- reforge id is not an upgrade, so the last copy can go.
+	knight=rejoin(knight,function(p) p.items.BrassSword=1; p.books=p.books or {}; p.books.BrassSword={}; p.items.BrassBand=1; p.reforges=p.reforges or {}; p.reforges.BrassBand="NoSuchReforge" end)
+	ok(has(cmd(knight,"drop","BrassSword").message,"Dropped 1"),"an empty tome record does not lock the last copy")
+	ok(has(cmd(knight,"drop","BrassBand").message,"Dropped 1"),"a stale reforge id does not lock the last copy")
+	-- QC L6: a bagged accessory names the bag, not "Unequip".
+	knight=rejoin(knight,function(p) p.items.MeadowCharm=1; p.accessoryBag={"MeadowCharm"} end)
+	ok(has(cmd(knight,"sell","MeadowCharm").message,"accessory bag"),"sell of a bagged accessory names the bag")
+	ok(has(cmd(knight,"drop","MeadowCharm").message,"accessory bag"),"drop of a bagged accessory names the bag")
+	knight=rejoin(knight,function(p) p.accessoryBag={}; p.items.MeadowCharm=nil end)
 	-- L9: an owned id outside the stored order (past Satchel.MAX) can still be moved.
 	local added,ids={},{}
 	for id in pairs(Data.Items) do table.insert(ids,id) end

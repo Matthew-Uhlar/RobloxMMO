@@ -590,9 +590,19 @@ function Theme.itemActions(def, ctx)
 	add({id = "Examine", label = "Examine", ["local"] = "examine"})
 	if not ctx.equipped and not ctx.bagged then
 		-- Sell always confirms (as the atlas does); with upgrades (reforge, stars,
-		-- tome, enchantments) the server keeps the upgraded copy (§29 last-copy rule).
-		add({id = "Sell", label = "Sell" .. (if (ctx.count or 1) > 1 then " all" else ""), verb = "sell", arg = id, confirm = true, upgraded = ctx.upgraded == true})
-		add({id = "Drop", label = "Drop", verb = "drop", arg = id, confirm = true, danger = true, upgraded = ctx.upgraded == true})
+		-- tome, enchantments) the server keeps the upgraded copy (§29 last-copy rule):
+		-- spares say "spares", and the last upgraded copy offers neither verb, only
+		-- an explanation (the server would refuse both).
+		local count = ctx.count or 1
+		if ctx.upgraded == true and count <= 1 then
+			add({id = "Kept", label = "Upgraded: kept", ["local"] = "kept"})
+		elseif ctx.upgraded == true then
+			add({id = "Sell", label = "Sell " .. (count - 1) .. " spare" .. (if count > 2 then "s" else ""), verb = "sell", arg = id, confirm = true, upgraded = true})
+			add({id = "Drop", label = "Drop spares", verb = "drop", arg = id, confirm = true, danger = true, upgraded = true})
+		else
+			add({id = "Sell", label = "Sell" .. (if count > 1 then " all" else ""), verb = "sell", arg = id, confirm = true, upgraded = false})
+			add({id = "Drop", label = "Drop", verb = "drop", arg = id, confirm = true, danger = true, upgraded = false})
+		end
 	end
 	return out
 end
@@ -705,6 +715,18 @@ function Theme.hudLayout(w, h, opts)
 		if xr - tw < leftLimit then x, y = L.rightEdge, L.rightTop + 192 end
 		L.xpDrops = {x = x - dw, y = y, w = dw, h = 120, lines = 5}
 		L.xpToast = {x = x - tw, y = y + 126, w = tw, h = 46}
+	end
+	-- Level-up banner (ui.client.lua): centred under the top lane on wide
+	-- screens; on short screens it sits in the top lane between the left column
+	-- and the XP toast, so it never covers the XP lane (phones: same row).
+	if short then
+		local x0 = math.max(L.lane.left, leftLimit)
+		local x1 = L.xpToast.x - 6
+		local bw = math.min(340, x1 - x0)
+		L.levelBanner = {x = x0 + math.floor((x1 - x0 - bw) / 2), y = if tiny then 112 else 142, w = bw, h = 60, slim = true}
+	else
+		local bw = math.min(if w < 900 then 340 else 440, math.floor(w * 0.9))
+		L.levelBanner = {x = math.floor((w - bw) / 2), y = 142, w = bw, h = 82, slim = false}
 	end
 	-- Chat: kept to the bottom-left on desktop, clear of the hotbar and under the
 	-- left column (tutorial 66 + lap 70 + traps 30 with their gaps: 176 px).

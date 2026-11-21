@@ -3404,9 +3404,14 @@ local function itemDetail(id)
 		table.insert(actions,{caption=tostring(legacy.action or "Use"),fn=function() send("heal",id) end})
 	end
 	if legacy and num(legacy.readyIn,0)>0 then table.insert(lines,paint("Recovering: ready in "..math.ceil(legacy.readyIn).."s","F9CC77")) end
-	if def then
+	-- §29 last-copy rule: the server keeps one copy of an upgraded item (Gear.upgraded).
+	local kept=def and (UI.Gear.upgraded(id) or next(tbl(tbl(tbl(depth()).enchants)[id]))~=nil) and 1 or 0
+	if def and n<=kept then
+		table.insert(lines,paint("Upgraded: your last copy cannot be sold (spare copies can).","A9BDC1"))
+	elseif def then
 		if sellConfirm==id then
-			table.insert(lines,paint("Tap Confirm to sell all "..fmt(n).." for "..fmt(num(def.value,0)*n).." coins"..(equippedSlotOf(id) and " (including the equipped piece)" or "")..".","F9CC77"))
+			table.insert(lines,paint("Tap Confirm to sell "..(kept>0 and (fmt(n-kept).." spare"..(n-kept>1 and "s" or "")) or ("all "..fmt(n))).." for "..fmt(num(def.value,0)*(n-kept)).." coins"
+				..(kept>0 and " (your upgraded copy is kept)" or (equippedSlotOf(id) and " (including the equipped piece)" or ""))..".","F9CC77"))
 			table.insert(actions,{caption="Confirm",fn=function() sellConfirm=nil;send("sell",id) end})
 		else
 			table.insert(actions,{caption="Sell",fn=function() sellConfirm=id;render() end})
@@ -8486,14 +8491,26 @@ local SETTINGS={
 	{attr="IsleSettingMinimap",title="Minimap",detail="The top-left minimap with region name and coordinates (its Map button folds the map away).",default=true},
 	{attr="IsleSettingReducedMotion",title="Reduced motion",detail="XP drops and level-up banners appear in place instead of sliding and scaling.",default=false},
 }
+-- The live value of a setting (the HUD's Pin button and closing the satchel
+-- change IsleSettingPinSatchel too, so a toggle never acts on a stale card).
+function Pages.settingValue(o)
+	local value=player:GetAttribute(o.attr)
+	if value==nil then value=o.default end
+	return value==true
+end
+-- Re-render the Settings page when a setting changes elsewhere while it shows.
+for _,o in ipairs(SETTINGS) do
+	player:GetAttributeChangedSignal(o.attr):Connect(function()
+		if UI.atlasOpen and current=="Menu" and sectionOf and sectionOf.Menu=="Settings" and render then render() end
+	end)
+end
 function Pages.drawSettings()
 	heading("SETTINGS / SAVED FOR THIS SESSION")
 	for _,o in ipairs(SETTINGS) do
-		local value=player:GetAttribute(o.attr)
-		if value==nil then value=o.default end
+		local value=Pages.settingValue(o)
 		card({name="Setting"..o.attr,motif="Settings",title=o.title,subtitle=value and paint("On","6FE3C8") or paint("Off","A9B4C0"),detail=o.detail,
 			actions={{caption=value and "Turn off" or "Turn on",primary=not value,name="Toggle"..o.attr,fn=function()
-				player:SetAttribute(o.attr,not value)
+				player:SetAttribute(o.attr,not Pages.settingValue(o))
 				render()
 			end}}})
 	end
@@ -8830,21 +8847,27 @@ local function showXp(gains)
 	UI.lastGains=gains
 	if UI.xpChannel then pcall(function() UI.xpChannel:Fire(gains) end) end
 end
+-- The banner's lane (Theme.hudLayout levelBanner): centred under the top lane
+-- on wide screens; on short screens (phones) a slim banner in the top lane
+-- between the left column and the XP toast, so it never covers the XP lane.
+function UI.placeBanner()
+	local slot=UI.lay().levelBanner
+	local banner=UI.banner
+	banner:FindFirstChild("BannerLimit").MaxSize=Vector2.new(slot.w,slot.h)
+	banner.AnchorPoint=Vector2.new(0,0)
+	banner.Position,banner.Size=UDim2.fromOffset(slot.x,slot.y),UDim2.fromOffset(slot.w,slot.h)
+	UI.bannerSlim=slot.slim
+	return slot
+end
 local function showNextBanner()
 	local entry=table.remove(UI.bannerQueue,1)
 	local banner=UI.banner
 	if not entry then UI.bannerBusy=false;banner.Visible=false;return end
 	UI.bannerBusy=true
-	-- Narrow screens: keep the banner clear of the touch attack button (bottom right).
+	UI.placeBanner()
 	local view=gui.AbsoluteSize
 	local narrow=view and view.X<900
-	-- Short screens (phone landscape 303px): a slimmer banner that clears the toast.
-	local short=view and view.Y<340
-	local height=short and 60 or 82
-	banner:FindFirstChild("BannerLimit").MaxSize=Vector2.new(narrow and 340 or 440,height)
-	banner.Size=UDim2.new(.9,0,0,height)
-	-- Short phones: under the event banner, clear of the spell bar in the hotbar band.
-	banner.Position=UDim2.new(.5,0,0,short and 112 or 142)
+	local short=UI.bannerSlim==true
 	UI.bannerTitle.Position=UDim2.fromOffset(76,short and 8 or 17)
 	UI.bannerReward.Position=UDim2.fromOffset(76,short and 36 or 50)
 	UI.bannerEmblem.Size=UDim2.fromOffset(short and 40 or 48,short and 40 or 48)
@@ -8955,11 +8978,28 @@ end
 local pending = false
 -- Satchel / paperdoll / Sky Chart verbs relayed from hud.client.lua wait their
 -- turn while a request is in flight (up to 8, then a toast) instead of being
--- dropped; the queue drains in order after each reply.
-UI.relayQueue={}
+-- dropped. Order is kept: a verb queues whenever a request is pending OR the
+-- queue is not empty, and UI.relayDrain is the one place that sends queued
+-- verbs, spaced RELAY_GAP s after the previous send so they never land inside
+-- the server's 0.24 s action cooldown. A queued verb that meets a request in
+-- flight goes back to the front of the queue (the reply drains it).
+UI.relayQueue,UI.relayLast,UI.RELAY_GAP={},-math.huge,0.26
+function UI.relayDrain(due)
+	if UI.relayDraining or #UI.relayQueue==0 or pending then return end
+	local wait=math.max(0,UI.RELAY_GAP-(os.clock()-UI.relayLast))
+	if wait>0 and not due then
+		UI.relayDraining=true
+		task.delay(wait,function() UI.relayDraining=false; UI.relayDrain(true) end)
+		return
+	end
+	local nextAction=table.remove(UI.relayQueue,1)
+	if pending then table.insert(UI.relayQueue,1,nextAction) return end
+	send(nextAction[1],nextAction[2])
+end
 function UI.relaySend(verb,item)
-	if pending then
+	if pending or #UI.relayQueue>0 or UI.relayDraining then
 		if #UI.relayQueue<8 then table.insert(UI.relayQueue,{verb,item}) else notify("Still working on your last few actions. Try again in a moment.") end
+		UI.relayDrain()
 		return
 	end
 	send(verb,item)
@@ -8969,6 +9009,7 @@ send = function(action, item, quiet)
 		return
 	end
 	pending = true
+	UI.relayLast=os.clock()
 	local ok, result = pcall(function()
 		return remote:InvokeServer(action, item)
 	end)
@@ -8979,10 +9020,7 @@ send = function(action, item, quiet)
 	else
 		notify("Your ledger could not be reached. Try again.")
 	end
-	if #UI.relayQueue>0 then
-		local nextAction=table.remove(UI.relayQueue,1)
-		task.defer(send,nextAction[1],nextAction[2])
-	end
+	UI.relayDrain()
 	return accepted
 end
 local function acceptCoop(result)

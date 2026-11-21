@@ -48,18 +48,30 @@ local S = {snap = nil, items = {}, order = {}, page = 1, search = "", sort = "ra
 	selected = nil, confirm = nil, drag = nil, menuFor = nil, slots = {}, doll = {}, menuButtons = {}}
 local PER_PAGE = 28 -- pooled slots; S.perPage shrinks on short desktop windows (fewer rows, more pages)
 S.perPage = PER_PAGE
--- Shown ProximityPrompts (E is their key): a set keyed by prompt, pruned of
--- prompts that were destroyed without a PromptHidden.
+-- Shown ProximityPrompts (E is their key): a set keyed by prompt, pruned on
+-- PromptHidden and when the prompt leaves the world (AncestryChanged; a
+-- destroyed prompt fires no PromptHidden), so the set never holds dead prompts.
 S.prompts = {}
+local function forgetPrompt(prompt)
+	local link = S.prompts[prompt]
+	S.prompts[prompt] = nil
+	if type(link) == "table" then pcall(function() link:Disconnect() end) end
+end
 pcall(function()
 	local prompts = game:GetService("ProximityPromptService")
-	prompts.PromptShown:Connect(function(prompt) if prompt then S.prompts[prompt] = true end end)
-	prompts.PromptHidden:Connect(function(prompt) if prompt then S.prompts[prompt] = nil end end)
+	prompts.PromptShown:Connect(function(prompt)
+		if not prompt or S.prompts[prompt] then return end
+		local ok, link = pcall(function()
+			return prompt.AncestryChanged:Connect(function() if prompt.Parent == nil then forgetPrompt(prompt) end end)
+		end)
+		S.prompts[prompt] = if ok and link then link else true
+	end)
+	prompts.PromptHidden:Connect(function(prompt) if prompt then forgetPrompt(prompt) end end)
 end)
 function S.promptShowing()
 	for prompt in pairs(S.prompts) do
 		local ok, parent = pcall(function() return prompt.Parent end)
-		if not ok or parent == nil then S.prompts[prompt] = nil else return true end
+		if not ok or parent == nil then forgetPrompt(prompt) else return true end
 	end
 	return false
 end
@@ -196,9 +208,13 @@ function S.ctx(id)
 	local def = Data.Items[id]
 	local gear = tbl(depth().gear)
 	local enchants = tbl(depth().enchants)[id]
-	-- Upgrades bound to the id (server Gear.upgraded): reforge, stars, master stars, tome, enchantments.
-	local upgraded = tbl(gear.reforges)[id] ~= nil or (tonumber(tbl(gear.stars)[id]) or 0) > 0 or (tonumber(tbl(gear.masterStars)[id]) or 0) > 0
-		or tbl(gear.books)[id] ~= nil or (type(enchants) == "table" and next(enchants) ~= nil)
+	-- Upgrades bound to the id (server Gear.upgraded): Data.Gear.isUpgraded on the
+	-- gear view (reforge, stars, tome, master stars) or any enchantment.
+	local upgraded = (type(enchants) == "table" and next(enchants) ~= nil)
+	if not upgraded and Data.Gear and Data.Gear.isUpgraded then
+		local ok, yes = pcall(Data.Gear.isUpgraded, gear, id)
+		upgraded = ok and yes == true
+	end
 	return {Data = Data, count = tonumber(tbl(S.snap and S.snap.items)[id]) or 0, equipped = equippedSlot(id) ~= nil, bagged = bagged(id),
 		levels = levels(), enchants = enchants, upgraded = upgraded}, def
 end
@@ -241,6 +257,8 @@ function S.run(option, id)
 		toast(if ok and done then def.name .. " moved to your hotbar." elseif ok and message then message else "The hotbar is still being fitted. Try again in a moment.")
 	elseif option["local"] == "use" then
 		hudEvents:Fire("open", "Satchel", "Collections")
+	elseif option["local"] == "kept" then
+		toast(def.name .. " carries upgrades, so your last copy cannot be sold or dropped. Spare copies can.")
 	end
 	return true
 end
@@ -295,7 +313,14 @@ S.openMenu = openMenu
 local function placePanel()
 	local L = layout()
 	local touch = Input.TouchEnabled or L.short
+	local wasDocked = S.docked
 	S.docked = not L.short
+	-- Crossing the 520 px threshold while open (a resized window, a rotated
+	-- tablet): the shade and IsleSatchelOpen follow the new mode.
+	if wasDocked ~= nil and wasDocked ~= S.docked and S.open then
+		satchelShade.Visible = L.short
+		if player:GetAttribute("IsleSatchelOpen") ~= S.docked then player:SetAttribute("IsleSatchelOpen", S.docked) end
+	end
 	local rect = L.satchel
 	-- Grid shapes (28 slots a page): 7 × 4 on the docked panel and the phone
 	-- modal, 14 × 2 on the shortest phones. A short desktop window first shrinks
@@ -451,6 +476,11 @@ function S.setPinned(pinned)
 	if (player:GetAttribute("IsleSettingPinSatchel") == true) ~= S.pinned then player:SetAttribute("IsleSettingPinSatchel", S.pinned) end
 end
 close.Activated:Connect(function() S.setPinned(false); setOpen(false) end)
+-- E / Tab / BAG / IsleHudLocal("satchel"): closing a pinned satchel unpins it
+-- (as the ✕ does), so it does not reopen by itself.
+function S.toggle()
+	if S.open then S.setPinned(false); setOpen(false) else setOpen(true) end
+end
 satchelShade.Activated:Connect(function() setOpen(false) end)
 pin.Activated:Connect(function()
 	S.setPinned(not S.pinned)
@@ -488,12 +518,21 @@ function S.fullIndex(index)
 	return index
 end
 local function isPress(input) return input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch end
--- True when this release / tap of slot i ended a drag or a long-press menu (the
--- Activated that follows in the same frame is swallowed; anything later is not).
+-- True when this release / tap of slot i ended a drag (the Activated that
+-- follows in the same frame is swallowed; anything later is not).
 local function consumed(key, i)
 	local mark = S[key]
 	S[key] = nil
 	return mark ~= nil and mark.slots[i] == true and os.clock() - mark.at < 0.3
+end
+-- The long-press swallow is keyed to the InputObject that held the slot: it eats
+-- the Activated of that slot's release however long the hold lasted, and is
+-- dropped once that input has ended and a new press begins (no timer).
+local function longPressConsumed(i)
+	local mark = S.longPressed
+	if not mark then return false end
+	S.longPressed = nil
+	return mark.slots[i] == true
 end
 for i, b in ipairs(S.slots) do
 	local function item() local ids = S.pageIds or {} return ids[(S.page - 1) * S.perPage + i] end
@@ -502,6 +541,8 @@ for i, b in ipairs(S.slots) do
 	b.MouseButton2Click:Connect(function() local id = item() if id then openMenu(id, b.AbsolutePosition + Vector2.new(b.AbsoluteSize.X, 0)) end end)
 	b.InputBegan:Connect(function(input)
 		if not isPress(input) or S.press then return end
+		-- A new press: a finished long-press (its input ended) no longer swallows.
+		if S.longPressed and S.longPressed.ended then S.longPressed = nil end
 		local id = item()
 		if not id then return end
 		local touchPress = input.UserInputType == Enum.UserInputType.Touch
@@ -511,7 +552,7 @@ for i, b in ipairs(S.slots) do
 			task.delay(0.45, function()
 				if S.press == token and not token.moved then
 					S.press = nil
-					S.longPressed = {at = os.clock(), slots = {[i] = true}}
+					S.longPressed = {input = token.input, slots = {[i] = true}, ended = false}
 					openMenu(id, b.AbsolutePosition + Vector2.new(b.AbsoluteSize.X * 0.5, 0))
 				end
 			end)
@@ -519,7 +560,11 @@ for i, b in ipairs(S.slots) do
 	end)
 	b.Activated:Connect(function()
 		local id = item()
-		if consumed("dragged", i) or consumed("longPressed", i) then return end
+		-- A drag in progress (Activated can come before InputEnded, e.g. a drag
+		-- back onto its own slot) or a press that moved never fires the slot.
+		local press = S.press
+		if S.drag ~= nil or (press and press.moved) then return end
+		if consumed("dragged", i) or longPressConsumed(i) then return end
 		if not id then hideMenu() return end
 		if Input.TouchEnabled then
 			-- Tap: select and show the lore; a second tap opens the menu.
@@ -544,6 +589,8 @@ Input.InputChanged:Connect(function(input)
 		if (pos - press.start).Magnitude < DRAG_START then return end
 		press.moved = true
 		S.drag = press
+		-- Swallow mark from the moment the drag starts (refreshed on the drop).
+		S.dragged = {at = os.clock(), slots = {[press.from] = true}}
 		T.setSlot(ghost, {id = press.id, def = Data.Items[press.id], count = tonumber(tbl(S.snap and S.snap.items)[press.id]) or 0})
 		ghost.Visible = true
 		tooltip.Visible = false
@@ -551,6 +598,8 @@ Input.InputChanged:Connect(function(input)
 	ghost.Position = UDim2.fromOffset(pos.X - 22, pos.Y - 22)
 end)
 Input.InputEnded:Connect(function(input)
+	-- The long-press finger lifted: its swallow now waits only for that release's Activated.
+	if S.longPressed and S.longPressed.input == input then S.longPressed.ended = true end
 	local press = S.press
 	if not press or not isPress(input) then return end
 	if press.touch and input ~= press.input then return end
@@ -595,6 +644,7 @@ local skillToast = T.frame(gui, {name = "SkillToast", size = UDim2.fromOffset(23
 local toastSkill = T.label(skillToast, {Name = "Skill", Position = UDim2.fromOffset(10, 5), Size = UDim2.new(1, -20, 0, 16), Font = T.font.label, TextSize = 12, RichText = true})
 local toastBar = T.bar(skillToast, {name = "Progress", position = UDim2.fromOffset(10, 25), size = UDim2.new(1, -20, 0, 13), height = 13, textSize = 10})
 S.toastToken = 0
+S.dropSeq, S.stillDrops = {}, {} -- XP drop label → latest show token; reduced-motion stack (foot first)
 -- The XP lane (Theme.hudLayout xpDrops / xpToast): its own column left of the
 -- right-column HUDs (party, minigame, lair, world boss board), so drops never
 -- sit on them; it steps left with them when the satchel docks.
@@ -619,24 +669,45 @@ local function showGains(gains)
 	-- after a moment instead of drifting and fading.
 	local still = T.reducedMotion(player)
 	local width = drops.Size.X.Offset
+	local foot = drops.Size.Y.Offset - 20
+	local lines = S.dropLines or 5
 	for k, g in ipairs(gains) do
-		if k > math.min(3, S.dropLines or 5) then break end
+		if k > math.min(3, lines) then break end
 		local l = dropPool[dropNext]
 		dropNext = dropNext % #dropPool + 1
+		-- Per-label sequence token: a reused label is hidden only by its own latest delay.
+		S.dropSeq[l] = (S.dropSeq[l] or 0) + 1
+		local seq = S.dropSeq[l]
 		l.Text = "<font color=\"#" .. (g.color or "F7C548") .. "\">+" .. T.commas(g.amount) .. "</font> " .. T.escape(g.skill) .. " XP"
 		l.TextTransparency = 0
 		l.TextStrokeTransparency = 0.2
-		-- Newest at the foot of the column, drifting up and fading (OSRS drops).
-		local foot = drops.Size.Y.Offset - 20
-		l.Position = UDim2.fromOffset(width, foot - (k - 1) * 20)
 		l.Visible = true
-		local text = l.Text
 		if still then
-			task.delay(1.7, function() if l.Text == text then l.Visible = false end end)
+			-- Reduced motion: labels stack (newest gains at the foot, older ones
+			-- pushed up a row) instead of printing over each other.
+			local at = table.find(S.stillDrops, l)
+			if at then table.remove(S.stillDrops, at) end
+			table.insert(S.stillDrops, math.min(k, #S.stillDrops + 1), l)
+			task.delay(1.7, function()
+				if S.dropSeq[l] ~= seq then return end
+				l.Visible = false
+				local i = table.find(S.stillDrops, l)
+				if i then table.remove(S.stillDrops, i) end
+			end)
 		else
+			local at = table.find(S.stillDrops, l)
+			if at then table.remove(S.stillDrops, at) end
+			-- Newest at the foot of the column, drifting up and fading (OSRS drops).
+			l.Position = UDim2.fromOffset(width, foot - (k - 1) * 20)
 			TweenService:Create(l, TweenInfo.new(1.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Position = UDim2.fromOffset(width, math.max(0, foot - 40) - (k - 1) * 20), TextTransparency = 1, TextStrokeTransparency = 1}):Play()
-			task.delay(1.7, function() if l.TextTransparency >= 1 then l.Visible = false end end)
+			task.delay(1.7, function() if S.dropSeq[l] == seq then l.Visible = false end end)
 		end
+	end
+	-- Re-stack the still labels; those past the lane's lines are hidden.
+	for i = #S.stillDrops, 1, -1 do
+		local l = S.stillDrops[i]
+		if i > lines then l.Visible = false; table.remove(S.stillDrops, i)
+		else l.Position = UDim2.fromOffset(width, foot - (i - 1) * 20) end
 	end
 	local g = gains[1]
 	if g then
@@ -785,7 +856,14 @@ do
 	if ok and type(MapArt) == "table" and MapArt.mountChart then
 		S.art = MapArt.mountChart({sky = sky, chart = chart, info = chartInfo, hint = chartHint, state = S, regionState = regionState, Theme = T, Data = Data,
 			touch = Input.TouchEnabled, Input = Input, TweenService = TweenService, workspace = workspace, player = player,
-			forge = function(host) local api = ReplicatedStorage:FindFirstChild("MeshForgeLocal") if api then return api:Invoke("visual", host) end return nil end})
+			-- MeshForge (forge.client.lua): "ready" (is it running?), "visual" host ->
+			-- mesh, triangles, token; "accept" / "release" token (the chart's pins).
+			forge = function(method, ...)
+				local api = ReplicatedStorage:FindFirstChild("MeshForgeLocal")
+				if method == "ready" then return api ~= nil end
+				if api then return api:Invoke(method, ...) end
+				return nil
+			end})
 	end
 end
 infoGo.Activated:Connect(function()
@@ -860,7 +938,7 @@ task.spawn(function()
 	if updates then updates.OnClientEvent:Connect(accept) end
 end)
 hudEvents.Event:Connect(function(kind)
-	if kind == "satchel" then setOpen(not S.open)
+	if kind == "satchel" then S.toggle()
 	elseif kind == "gear" then S.view = "Gear"; setOpen(true)
 	elseif kind == "warpmap" then setChart(not chart.Visible)
 	end
@@ -870,10 +948,10 @@ Input.InputBegan:Connect(function(input, used)
 	local key = input.KeyCode
 	-- E is also the default ProximityPrompt key: while a prompt is on screen it
 	-- belongs to the prompt (Tab always works).
-	if (key == Enum.KeyCode.E and not S.promptShowing()) or key == Enum.KeyCode.Tab then setOpen(not S.open)
+	if (key == Enum.KeyCode.E and not S.promptShowing()) or key == Enum.KeyCode.Tab then S.toggle()
 	elseif key == Enum.KeyCode.M then setChart(not chart.Visible)
 	elseif key == Enum.KeyCode.Escape then hideMenu(); setChart(false)
-	elseif input.UserInputType == Enum.UserInputType.MouseButton1 and menu.Visible then
+	elseif (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) and menu.Visible then
 		task.defer(function() if menu.Visible and S.menuFor and not S.confirm then hideMenu() end end)
 	end
 end)
