@@ -7016,6 +7016,8 @@ do
 		rec.n[key]=math.min(ST.limit(key),whole(rec.n[key])+units)
 	end
 	-- Price history (called inside Econ's UpdateAsync transform) ---------------
+	-- Bazaar fills only: auction sales go to their own history key per category
+	-- (hist:auction:<cat>), queued by Econ after the sale commits.
 	function Systems.recordTrade(book,kind,order,result,now)
 		local hour=PR.hour(now)
 		if kind=="bazaar" then
@@ -7023,9 +7025,6 @@ do
 			if type(book.history)~="table" then book.history={} end
 			-- fill = {maker's price, units, maker uid, taker uid}: pair caps and distinct traders (QC M1).
 			for _,fill in ipairs(result.fills) do PR.record(book.history,hour,fill[1],fill[2],fill[3],fill[4],PR.BazaarCaps) end
-		elseif type(result.sale)=="table" then
-			if type(book.history)~="table" then book.history={} end
-			PR.recordAuction(book.history,result.sale.item,hour,result.sale.price,result.sale.seller,result.sale.buyer)
 		end
 	end
 	-- Samples (rolling window for XP/hour and goal ETAs) ----------------------
@@ -7763,6 +7762,7 @@ task.spawn(function()
 	end
 end)
 game:BindToClose(function()
+	if Econ.flushHistory then pcall(Econ.flushHistory) end -- §33: pending auction price history (best effort)
 	Endgame.drain() -- Endgame: refund unspent altar sigils before the journals save
 	if Lairs.drain then Lairs.drain() end -- Lairs: refund unfinished fights' fees before the journals save
 	local pending=0
@@ -8584,9 +8584,11 @@ end
 -- Economy: Bazaar standing orders (commodities) and the Auction House (gear).
 -- Same durability pattern as the exchange above: escrow is taken into the
 -- profile (p.econPending, with a random nonce) and saved before the shared key
--- is written. Keys: bazaar_v1_<item>, auction_v1_<kind>.
+-- is written. Keys: bazaar_v1_<item>, auction_v1_<kind> (auction price history:
+-- hist:auction:<kind>, written after the sale commits; see Prices.mergeAuction).
 --
--- Receipts (one per trader, {seq, n=nonce, coins, items, at, text}) make a
+-- Receipts (one per trader, {n=nonce, coins, items, at, text}; seq only for legacy
+-- nonce-less orders) make a
 -- replayed order apply exactly once: an order applies only when its nonce differs
 -- from the trader's receipt, and settles only against the receipt with its nonce.
 -- Keys stay small and bounded:
@@ -8607,8 +8609,10 @@ local READ_INTERVAL=2
 local RECEIPT_TTL=14*86400
 local RECEIPT_EVICT_AGE=3600
 -- Live trader slots per key, so the worst-case value stays far below the
--- DataStore per-key throughput budget (see the size fixture in verify-gameplay).
-local LIVE_CAP={bazaar=1500,auction=600}
+-- DataStore per-key budget (see the size fixtures in verify-gameplay: every
+-- economy key stays <= 480 KB). Auction keys hold up to 10 returned items per
+-- trader, so they take fewer traders (500) than Bazaar keys.
+local LIVE_CAP={bazaar=1500,auction=500}
 local categorySet={}
 for _,kind in ipairs(Rules.auctionCategories) do categorySet[kind]=true end
 local bazaarVerbs={bid=true,offer=true,buyNow=true,sellToBid=true,bidCancel=true,bidClaim=true}
@@ -8701,6 +8705,7 @@ local function prune(book,kind,uid,now,busy)
 			book.receipts[id]=nil
 		else
 			r.at=tonumber(r.at) or now
+			if r.n~=nil then r.seq=nil end -- a nonce receipt never needs its sequence number
 			if id~=uid then r.text=nil;r.open=nil end
 			if id~=uid and not busy[id] and now-r.at>RECEIPT_TTL then book.receipts[id]=nil else live+=1 end
 		end
@@ -8877,7 +8882,7 @@ local function auctionTrade(book,uid,order,now)
 			book.proceeds[listing.seller]=(book.proceeds[listing.seller] or 0)+listing.price
 			give(listing.item,1)
 			coins+=order.price-listing.price
-			sale={item=listing.item,price=listing.price,seller=listing.seller,buyer=uid}
+			sale={id=listing.id,item=listing.item,price=listing.price,seller=listing.seller,buyer=uid}
 			changed=true
 			text="Bought "..itemName(listing.item).." for "..listing.price.." coins."
 		end
@@ -8932,13 +8937,21 @@ local function transact(old,kind,uid,order,now)
 	if not result.changed then return nil,{kind="noop",book=book,text=result.text} end
 	if not admitted then return nil,{kind="full",book=book} end
 	if evict then book.receipts[evict]=nil end
-	-- §33 price history: recorded in the same atomic write as the trade (cross-server; replays never reach here).
+	-- §33 price history: Bazaar fills are recorded in the same atomic write as the
+	-- trade (cross-server; replays never reach here). Auction sales and any legacy
+	-- in-key auction history (moved out on this write) go to hist:auction:<cat>.
 	if Systems.recordTrade then Systems.recordTrade(book,kind,order,result,now) end
-	receipt={seq=order.seq,n=order.nonce,coins=result.coins,items=result.items,at=now,text=result.text}
+	local moved
+	if kind~="bazaar" and book.history~=nil then
+		moved=if type(book.history)=="table" and next(book.history) then book.history else nil
+		book.history=nil
+	end
+	-- Nonce orders match on n alone; seq is kept only for legacy (nonce-less) orders.
+	receipt={seq=if order.nonce then nil else order.seq,n=order.nonce,coins=result.coins,items=result.items,at=now,text=result.text}
 	book.receipts[uid]=receipt
 	prune(book,kind,uid,now,busyTraders(book,kind))
 	book.revision+=1
-	return book,{kind="applied",book=book,receipt=receipt}
+	return book,{kind="applied",book=book,receipt=receipt,sale=result.sale,moved=moved}
 end
 Econ.transact=transact
 local function depthOf(list)
@@ -9080,6 +9093,78 @@ local function remirror(p,order,book,uid)
 		p.econListings=kept
 	end
 end
+-- §33 auction price history: its own key per category (Prices.histKey), off the
+-- trade's atomic write so the auction key keeps its size budget. Committed
+-- sales (and legacy in-key history moved out by a write) are queued per server
+-- and merged by one best-effort UpdateAsync per category every Prices.FLUSH
+-- seconds (DataStore: one write per key per 6 s); a failed flush retries up to
+-- Prices.ATTEMPTS times. Entries carry ids ("s<listing>", "m<revision>") and
+-- Prices.mergeAuction skips ids already merged, so a retried flush whose
+-- acknowledgement was lost counts nothing twice. Reads (priceCheck) go through
+-- the shared read cache, refreshed by this server's own flushes.
+local HP=Data.Systems.Prices
+local histQueue,histStash,histStashed,histScheduled,histFlushing={},{},0,false,false
+local flushHistory
+local function scheduleFlush()
+	if histScheduled then return end
+	histScheduled=true
+	task.delay(HP.FLUSH,function() flushHistory() end)
+end
+flushHistory=function()
+	histScheduled=false
+	if not store then return end
+	if histFlushing then scheduleFlush() return end
+	histFlushing=true
+	local cats={}
+	for cat in pairs(histQueue) do table.insert(cats,cat) end
+	for _,cat in ipairs(cats) do
+		local q=histQueue[cat]
+		if q and #q>0 then
+			local batch=table.clone(q)
+			local key=HP.histKey(cat)
+			local ok,committed=pcall(function()
+				return store:UpdateAsync(key,function(old)
+					local book,added=HP.mergeAuction(old,batch,HP.hour(os.time()))
+					if added==0 then return nil end
+					return book
+				end)
+			end)
+			for _,e in ipairs(batch) do
+				local at=table.find(q,e)
+				if at and (ok or (e.tries or 0)+1>=HP.ATTEMPTS) then table.remove(q,at) elseif at then e.tries=(e.tries or 0)+1 end
+			end
+			if ok and type(committed)=="table" then rememberBook(key,committed) end
+		end
+	end
+	histFlushing=false
+	for _,cat in ipairs(cats) do if histQueue[cat] and #histQueue[cat]==0 then histQueue[cat]=nil end end
+	if next(histQueue) then scheduleFlush() end
+end
+Econ.flushHistory=function() if next(histQueue) then flushHistory() end end
+local function queueHistory(cat,entries,local_)
+	if local_ then
+		-- Studio preview: the in-memory books merge at once.
+		local key=HP.histKey(cat)
+		local book,added=HP.mergeAuction(deepCopy(previewEcon[key]),entries,HP.hour(os.time()))
+		if added>0 then previewEcon[key]=book end
+		return
+	end
+	local q=histQueue[cat] or {}
+	histQueue[cat]=q
+	for _,e in ipairs(entries) do table.insert(q,e) end
+	while #q>HP.QUEUE do table.remove(q,1) end
+	scheduleFlush()
+end
+-- History entries of an applied auction write (nil when it had none).
+local function historyEntries(outcome,now)
+	local entries={}
+	if type(outcome.moved)=="table" then table.insert(entries,{id="m"..tostring(outcome.book.revision),moved=outcome.moved}) end
+	local sale=outcome.sale
+	if type(sale)=="table" then
+		table.insert(entries,{id="s"..tostring(sale.id),item=sale.item,h=HP.hour(now),price=sale.price,seller=sale.seller,buyer=sale.buyer})
+	end
+	return if #entries>0 then entries else nil
+end
 local function settle(player)
 	local p=profiles[player]
 	local order=p.econPending
@@ -9101,7 +9186,24 @@ local function settle(player)
 			store:UpdateAsync(order.key,apply)
 		end
 	end)
-	if not ok or not outcome then return "Order pending. The exchange will retry safely." end
+	-- §33 auction history: queued once the write is known to have committed. An
+	-- ambiguous write (acknowledgement lost) keeps its entries by nonce; the
+	-- replay that proves the commit queues them.
+	local entries=if order.kind=="auction" and outcome and outcome.kind=="applied" then historyEntries(outcome,now) else nil
+	if not ok or not outcome then
+		if entries and order.nonce then
+			if not histStash[order.nonce] then histStashed+=1 end
+			if histStashed>64 then histStash,histStashed={},1 end
+			histStash[order.nonce]=entries
+		end
+		return "Order pending. The exchange will retry safely."
+	end
+	if order.kind=="auction" and order.nonce then
+		local stashed=histStash[order.nonce]
+		if stashed then histStash[order.nonce]=nil; histStashed-=1 end
+		if outcome.kind=="replay" then entries=stashed end
+		if entries then queueHistory(order.cat,entries,preview[player]) end
+	end
 	if not preview[player] then rememberBook(order.key,outcome.book) end
 	if outcome.kind=="noop" then
 		refund(p,order)
@@ -9231,7 +9333,7 @@ end
 -- read cache shared by every player; uncached reads spend the market budget).
 Econ.priceCheck=function(player,id)
 	local PR=Data.Systems.Prices
-	local key,kind=PR.keyFor(id)
+	local key,kind=PR.keyFor(id) -- auction items: hist:auction:<cat>
 	if not key then return nil,"That item is not traded on the Bazaar or the Auction House." end
 	local ok,book
 	if preview[player] then ok,book=true,deepCopy(previewEcon[key]) else ok,book=cachedBook(player,key,"price") end

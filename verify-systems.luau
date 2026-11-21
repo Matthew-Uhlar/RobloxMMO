@@ -5,8 +5,9 @@
 --   NEW OBJECTIVE on step change, auto-unpin), goals (validation, cap, completion
 --   toast, rolling-window ETA, rejoin / tamper safety), daily stock on regional
 --   shops / skill vendors / the Roost (UTC roll-forward only), price history
---   written inside the economy transform (Bazaar fills, auction sales, lost-ack
---   replay counted once) and priceCheck.
+--   (Bazaar fills inside the economy transform; auction sales in their own
+--   hist:auction:<cat> key via a queued best-effort flush, deduped by sale id;
+--   lost-ack replays counted once; legacy in-key history moved out) and priceCheck.
 -- Part C: clients — atlas pages (Journal › Helper / Goals, Hero › Calculator,
 --   Ledger › Prices), quest-card guide/pin, the sidebar Objective, stock text,
 --   IslePriceCheckLocal, dialogue stock labels.
@@ -266,7 +267,55 @@ end
 local auctionBytes = #serde.encode("json", worstAuction)
 ok(bazaarBytes < 32 * 1024, "worst-case Bazaar history < 32 KB: " .. bazaarBytes)
 ok(auctionBytes < 192 * 1024, "worst-case auction history < 192 KB: " .. auctionBytes)
-print("Price history worst case: Bazaar " .. bazaarBytes .. " / Auction category " .. auctionBytes .. " JSON bytes.")
+-- The auction history key: every item's buckets plus PR.SEEN recent ids (the
+-- longest id shape: "m" / "s" + a 10-digit revision or listing id).
+do
+local worstHistKey = {history = worstAuction, seen = {}, version = 1}
+for k = 1, PR.SEEN do worstHistKey.seen[k] = "m" .. tostring(9000000000 + k) end
+local histKeyBytes = #serde.encode("json", worstHistKey)
+ok(histKeyBytes <= 480 * 1024, "worst-case auction history key (hist:auction:<cat>) <= 480 KB: " .. histKeyBytes)
+print("Price history worst case: Bazaar " .. bazaarBytes .. " / Auction category " .. auctionBytes .. " / auction history key " .. histKeyBytes .. " JSON bytes.")
+end
+
+-- A4e. Auction history key: merge, dedupe by sale id, migration, late sales.
+do
+	eq(PR.histKey("weapon"), "hist:auction:weapon", "auction history key per category")
+	local key, kind, cat = PR.keyFor(ids[1])
+	ok(key == "hist:auction:weapon" and kind == "auction" and cat == "weapon", "keyFor points auction items at their history key")
+	eq(select(1, PR.keyFor("Ore")), "bazaar_v1_Ore", "Bazaar history stays in the Bazaar key")
+	local H = 800000
+	local sale = {id = "s1", item = ids[1], h = H, price = 500, seller = "1", buyer = "2"}
+	local book, added = PR.mergeAuction(nil, {sale}, H)
+	ok(added == 1 and book.history[ids[1]][1].n == 1 and book.seen[1] == "s1" and book.version == 1, "a sale merges into a fresh history key")
+	local again
+	book, again = PR.mergeAuction(book, {sale, {id = "s1", item = ids[1], h = H, price = 500}}, H)
+	ok(again == 0 and book.history[ids[1]][1].n == 1, "a re-sent sale id is skipped (at-least-once flush counts once)")
+	book, added = PR.mergeAuction(book, {{id = "s2", item = ids[1], h = H, price = 520, seller = "3", buyer = "4"}, {item = ids[1], price = 9}, "junk"}, H)
+	ok(added == 1 and book.history[ids[1]][1].n == 2, "a new id counts; entries without ids are ignored")
+	-- Medians, outliers and pair caps still apply (QC M1): the same pair's third sale this hour.
+	for k = 3, 5 do PR.mergeAuction(book, {{id = "s" .. k, item = ids[1], h = H, price = 510, seller = "1", buyer = "2"}}, H) end
+	ok(book.history[ids[1]][1].n == 3 and book.history[ids[1]][1].x == 2, "pair cap (2 sales per pair per hour) still holds")
+	-- Seen ids stay bounded.
+	local many = {}
+	for k = 1, PR.SEEN + 40 do many[k] = {id = "x" .. k, item = ids[2], h = H, price = 100, seller = tostring(k), buyer = "b" .. k} end
+	PR.mergeAuction(book, many, H)
+	eq(#book.seen, PR.SEEN, "recent ids bounded to Prices.SEEN")
+	eq(book.seen[#book.seen], "x" .. (PR.SEEN + 40), "newest id kept")
+	-- A late sale (stamped hours earlier) never prunes a newer server's bucket.
+	local late = PR.mergeAuction(nil, {{id = "a", item = ids[1], h = H + 1, price = 100, seller = "1", buyer = "2"}}, H + 1)
+	PR.mergeAuction(late, {{id = "b", item = ids[1], h = H - 5, price = 100, seller = "3", buyer = "4"}}, H + 1)
+	local hours = {}
+	for _, b in ipairs(late.history[ids[1]]) do table.insert(hours, b.h) end
+	ok(#hours == 2 and hours[1] == H and hours[2] == H + 1, "a late sale is clamped to the previous hour; the newer bucket stays")
+	-- Migration of legacy in-key history: buckets merge by hour, under the caps.
+	local legacy = {[ids[1]] = {{h = H + 1, n = 3, v = 300, lo = 100, hi = 100, m = 100, t = 3}}, [ids[3]] = {{h = H, n = 1, v = 50, lo = 50, hi = 50}}}
+	local moved, n = PR.mergeAuction(late, {{id = "m7", moved = legacy}}, H + 1)
+	ok(n == 1 and moved.history[ids[3]][1].n == 1, "legacy items move into the history key")
+	local merged = moved.history[ids[1]]
+	ok(#merged == 2 and merged[2].h == H + 1 and merged[2].n == 4, "legacy buckets merge with the same hour")
+	local _, twice = PR.mergeAuction(moved, {{id = "m7", moved = legacy}}, H + 1)
+	eq(twice, 0, "a migration id merges once")
+end
 
 -- A4b. QC M1: wash trading cannot fake the price history.
 do
@@ -400,14 +449,22 @@ local data = {}
 local db = {}
 local econFailure = nil -- "after": commit, then lose the acknowledgement
 local repeatEcon = false -- run economy transforms twice (UpdateAsync retries)
+local histFailure = nil -- auction history keys: "before" fails without committing, "after" commits then loses the ack
+local histWrites = 0
 local onGet = nil -- a hook run during a read (QC L1: the player leaves mid-read)
 function db:GetAsync(key) if onGet then local f = onGet; onGet = nil; f(key) end return copy(data[key]) end
 function db:UpdateAsync(key, op)
 	local econ = key:match("^bazaar") or key:match("^auction")
+	local hist = key:match("^hist:auction:")
+	if hist then
+		histWrites += 1
+		if histFailure == "before" then histFailure = nil; error("Injected history outage") end
+	end
 	if econ and repeatEcon then op(copy(data[key])) end
 	local value = op(copy(data[key]))
 	if value then data[key] = copy(value) end
 	if econ and econFailure == "after" then econFailure = nil; error("Injected lost acknowledgement") end
+	if hist and histFailure == "after" then histFailure = nil; error("Injected lost history acknowledgement") end
 	return copy(data[key])
 end
 local npcAt, models = {}, {}
@@ -434,6 +491,15 @@ local services = {
 	RunService = {IsStudio = function() return false end},
 }
 local serverObjects = {}
+local delayed = {} -- task.delay callbacks; runFlush() runs the §33 history flushes
+local function runFlush()
+	local ran = 0
+	for i = #delayed, 1, -1 do
+		local d = delayed[i]
+		if d[1] == PR.FLUSH then table.remove(delayed, i); d[2](table.unpack(d[3])); ran += 1 end
+	end
+	return ran
+end
 local env = {
 	game = {GetService = function(_, name) return services[name] end, BindToClose = function() end},
 	workspace = {GetAttribute = function(self, key) return rawget(self, key) end,
@@ -454,7 +520,7 @@ local env = {
 		spawn = function(f, ...) local co = coroutine.create(f); local okRun, err = coroutine.resume(co, ...); assert(okRun, err); return co end,
 		defer = function(f, ...) f(...) end,
 		wait = function(t) return coroutine.yield(t) end,
-		delay = function() end,
+		delay = function(t, f, ...) table.insert(delayed, {t, f, {...}}) end,
 	},
 }
 local serverSource = fs.readFile("server.server.lua"):gsub("^\239\187\191", ""):gsub("base%.Position", "base.CFrame.Position")
@@ -819,10 +885,86 @@ taker = player(9106)
 advance(60)
 local bought = cmd(taker, "ahBuy", "weapon:" .. listingId .. ":500")
 ok(has(bought.message, "Bought"), "auction bought: " .. bought.message)
-local ah = data["auction_v1_weapon"].history
-ok(ah and ah[weapon] and ah[weapon][1].n == 1 and ah[weapon][1].v == 500, "auction sale recorded under the item")
+do
+eq(data["auction_v1_weapon"].history, nil, "the auction key itself holds no price history")
+eq(data["hist:auction:weapon"], nil, "the history write waits for the server's flush")
+eq(runFlush(), 1, "one flush scheduled for the queued sale")
+local ah = data["hist:auction:weapon"] and data["hist:auction:weapon"].history
+ok(ah and ah[weapon] and ah[weapon][1].n == 1 and ah[weapon][1].v == 500, "auction sale recorded under the item in hist:auction:weapon")
+ok(table.find(data["hist:auction:weapon"].seen, "s" .. listingId) ~= nil, "the sale id is remembered for dedupe")
 advance(20)
-ok(has(cmd(taker, "priceCheck", weapon).message, "24h avg 500"), "auction price check")
+ok(has(cmd(taker, "priceCheck", weapon).message, "24h avg 500"), "auction price check reads the history key")
+-- Sales recorded for the weapon (counted + excluded units, every bucket).
+local function sales()
+	local total = 0
+	for _, b in ipairs(data["hist:auction:weapon"].history[weapon] or {}) do total += (b.n or 0) + (b.x or 0) end
+	return total
+end
+local function sellOne(price)
+	local l = seeded(9107, function(pr) pr.items[weapon] = 1; pr.coins = 100000 end)
+	advance(60)
+	ok(has(cmd(l, "ahList", weapon .. ":" .. price).message, "Listed"), "listed at " .. price)
+	local id = data["auction_v1_weapon"].nextId
+	local t = player(9106)
+	advance(60)
+	ok(has(cmd(t, "ahBuy", "weapon:" .. id .. ":" .. price).message, "Bought"), "bought at " .. price)
+	return id
+end
+-- Batched: two sales, one flush, one history write.
+local writesBefore = histWrites
+sellOne(510); sellOne(490)
+eq(runFlush(), 1, "two sales share one scheduled flush")
+eq(histWrites - writesBefore, 1, "and one history write")
+eq(sales(), 3, "both sales recorded")
+-- Flush fails before committing: retried on the next flush, recorded once.
+sellOne(500)
+histFailure = "before"
+eq(runFlush(), 1, "flush attempted")
+eq(sales(), 3, "a failed flush wrote nothing")
+eq(runFlush(), 1, "the failed batch is rescheduled")
+eq(sales(), 4, "the retry records the sale once")
+-- Flush commits but loses its acknowledgement: the retry is deduped by sale id.
+sellOne(500)
+histFailure = "after"
+runFlush()
+eq(sales(), 5, "committed despite the lost acknowledgement")
+eq(runFlush(), 1, "the unacknowledged batch is retried")
+eq(sales(), 5, "the re-sent sale id adds nothing (at-least-once, counted once)")
+eq(runFlush(), 0, "nothing left to flush")
+-- The auction write itself loses its acknowledgement: the replay queues the sale once.
+do
+	local l = seeded(9107, function(pr) pr.items[weapon] = 1; pr.coins = 100000 end)
+	advance(60)
+	cmd(l, "ahList", weapon .. ":500")
+	local id = data["auction_v1_weapon"].nextId
+	local t = player(9106)
+	advance(60)
+	econFailure = "after"
+	local pending = cmd(t, "ahBuy", "weapon:" .. id .. ":500")
+	ok(not has(pending.message, "Bought"), "ack lost: purchase pending (" .. pending.message .. ")")
+	eq(runFlush(), 0, "nothing queued before the commit is proven")
+	advance(60)
+	local rec = cmd(t, "ahClaim", "weapon")
+	ok(has(rec.message, "Recovered"), "pending purchase recovered: " .. rec.message)
+	eq(runFlush(), 1, "the replay queued the stashed sale")
+	eq(sales(), 6, "the sale is in history once")
+end
+-- Legacy history inside the auction key moves out on its next write.
+do
+	local legacyItem = ids[#ids]
+	data["auction_v1_weapon"].history = {[legacyItem] = {{h = PR.hour(utc), n = 2, v = 600, lo = 300, hi = 300, m = 300, t = 3}}}
+	local l = seeded(9107, function(pr) pr.items[weapon] = 1; pr.coins = 100000 end)
+	advance(60)
+	ok(has(cmd(l, "ahList", weapon .. ":700").message, "Listed"), "a write to the legacy key")
+	eq(data["auction_v1_weapon"].history, nil, "legacy history removed from the auction key")
+	eq(runFlush(), 1, "migration queued")
+	local moved = data["hist:auction:weapon"].history[legacyItem]
+	ok(moved and moved[1].n == 2 and moved[1].v == 600, "legacy history now in hist:auction:weapon")
+	eq(sales(), 6, "existing history untouched by the migration")
+	advance(20)
+	ok(has(cmd(player(9106), "priceCheck", legacyItem).message, "24h avg 300"), "migrated history answers price checks")
+end
+end
 -- Ironman journals can read prices too (read-only).
 print("PASS: " .. (checks - partB) .. " server assertions.")
 

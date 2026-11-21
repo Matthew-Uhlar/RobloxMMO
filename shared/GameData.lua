@@ -12024,10 +12024,15 @@ function GL.rate(samples, now)
 end
 
 -- Market price history -----------------------------------------------------
--- Hourly buckets kept for PR.HOURS inside the shared economy keys
--- (bazaar_v1_<item>.history and auction_v1_<cat>.history[item]), written in the
--- same atomic transform as the trade: history is cross-server and a replayed
--- order never counts twice.
+-- Hourly buckets kept for PR.HOURS. Bazaar: inside the shared key
+-- (bazaar_v1_<item>.history), written in the same atomic transform as the
+-- trade. Auction House: in its own key per category (hist:auction:<cat> =
+-- {history = {[item] = buckets}, seen = {recent sale ids}, version}), merged by
+-- a separate best-effort UpdateAsync after the sale commits (per-server queue,
+-- one write per category per PR.FLUSH seconds); the write is at-least-once and
+-- PR.mergeAuction drops any sale id already in `seen` (<= PR.SEEN ids), so a
+-- retried flush never counts a sale twice. History is cross-server and a
+-- replayed order never counts twice.
 -- A bucket is {h = os.time() // 3600, n, v, lo, hi, m, c, t, x}:
 --   n / v / lo / hi  counted units, their coins, low and high (averages only);
 --   x                units left out of the averages (outliers, pair-cap excess);
@@ -12047,14 +12052,19 @@ end
 local PR = {}
 SY.Prices = PR
 PR.HOURS = 168            -- 7 days of hourly buckets
-PR.AUCTION_BUCKETS = 1200 -- total buckets per auction category key (oldest evicted first)
-PR.AUCTION_ITEMS = 96     -- distinct items tracked per auction category key
+PR.AUCTION_BUCKETS = 1200 -- total buckets per auction history key (oldest evicted first)
+PR.AUCTION_ITEMS = 96     -- distinct items tracked per auction history key
 PR.SPARK = 28             -- sparkline points: 7 days at 6 hours each
 PR.CHECKS = 8             -- price checks remembered per player (session)
 PR.OUTLIER = 3            -- fills > 3x / < 1/3x the previous bucket's median skip the averages
 PR.THIN = 3               -- fewer distinct traders than this in the window: "thin market"
 PR.BazaarCaps = {pair = 160, levels = 24, ids = 8, pairs = 32} -- units per maker/taker pair per hour
 PR.AuctionCaps = {pair = 2, levels = 6, ids = 4, pairs = 6}    -- sales per seller/buyer pair per hour
+PR.HIST_PREFIX = "hist:auction:" -- auction history key prefix (one key per category)
+PR.SEEN = 512             -- recent sale / migration ids kept per auction history key (dedupe)
+PR.FLUSH = 6              -- seconds between a server's history flushes (one write per key per 6 s)
+PR.QUEUE = 200            -- pending history entries per category per server (oldest dropped)
+PR.ATTEMPTS = 5           -- failed flushes before a pending entry is dropped (best effort)
 function PR.hour(t) return math.floor(num(t) / 3600) end
 -- Volume-weighted median of a price ladder (field 2 = every pair-capped unit, 3 = counted).
 local function median(q, field)
@@ -12215,33 +12225,82 @@ function PR.record(list, hour, price, units, a, b, caps)
 	if within > 0 then addLevel(bucket.q, price, within, counted, caps.levels) end
 	return list
 end
--- Auction keys: one list per item under one bounded total. The item just
--- recorded is never the one evicted while another item can give up a bucket.
-function PR.recordAuction(hist, item, hour, price, seller, buyer)
-	local list = type(hist[item]) == "table" and hist[item] or {}
-	hist[item] = list
-	PR.record(list, hour, price, 1, seller, buyer, PR.AuctionCaps)
+-- Auction history: one list per item under one bounded total. Prunes every
+-- list to `hour`, drops empty ones and evicts the oldest bucket until the caps
+-- hold. The item `keep` is never the one evicted while another item can give a
+-- bucket up (and never loses its last bucket).
+local function capAuction(hist, hour, keep)
 	local items, total = 0, 0
 	for id, l in pairs(hist) do
 		if type(l) == "table" then PR.prune(l, hour) end
-		if type(l) ~= "table" or #l == 0 then hist[id] = nil else items += 1; total += #l end
+		if type(id) ~= "string" or type(l) ~= "table" or #l == 0 then hist[id] = nil else items += 1; total += #l end
 	end
 	while total > PR.AUCTION_BUCKETS or items > PR.AUCTION_ITEMS do
 		local oldestId, oldestH
 		for id, l in pairs(hist) do
-			if id ~= item and (not oldestH or l[1].h < oldestH or (l[1].h == oldestH and id < oldestId)) then oldestId, oldestH = id, l[1].h end
+			if id ~= keep and (not oldestH or l[1].h < oldestH or (l[1].h == oldestH and id < oldestId)) then oldestId, oldestH = id, l[1].h end
 		end
 		if not oldestId then
-			-- Only the recorded item is left: trim its own oldest bucket, never its last.
-			local own = hist[item]
+			-- Only the kept item is left: trim its own oldest bucket, never its last.
+			local own = keep and hist[keep]
 			if not own or #own <= 1 then break end
-			oldestId = item
+			oldestId = keep
 		end
 		table.remove(hist[oldestId], 1)
 		total -= 1
 		if #hist[oldestId] == 0 then hist[oldestId] = nil; items -= 1 end
 	end
 	return hist
+end
+function PR.recordAuction(hist, item, hour, price, seller, buyer)
+	local list = type(hist[item]) == "table" and hist[item] or {}
+	hist[item] = list
+	PR.record(list, hour, price, 1, seller, buyer, PR.AuctionCaps)
+	return capAuction(hist, hour, item)
+end
+function PR.histKey(cat) return PR.HIST_PREFIX .. tostring(cat) end
+function PR.normalizeHist(book)
+	book = if type(book) == "table" then book else {}
+	if type(book.history) ~= "table" then book.history = {} end
+	if type(book.seen) ~= "table" then book.seen = {} end
+	book.version = 1
+	return book
+end
+-- Merges queued entries into an auction history key value (the UpdateAsync
+-- transform). An entry is a sale {id = "s<listing id>", item, h, price, seller,
+-- buyer} or a migration {id = "m<auction key revision>", moved = legacy
+-- auction_v1_<cat>.history}. Ids already in book.seen are skipped (at-least-once
+-- flushes count once). A sale recorded late keeps its hour, clamped to the
+-- previous hour at the earliest, so pruning never drops a newer server's bucket.
+-- Returns the book and the number of entries applied (0: cancel the write).
+function PR.mergeAuction(book, entries, hour)
+	book = PR.normalizeHist(book)
+	local hist, seen = book.history, book.seen
+	local known = {}
+	for _, id in ipairs(seen) do known[id] = true end
+	local added = 0
+	for _, e in ipairs(tab(entries)) do
+		local id = if type(e) == "table" and type(e.id) == "string" then e.id else nil
+		if id and not known[id] then
+			known[id] = true
+			table.insert(seen, id)
+			added += 1
+			if type(e.moved) == "table" then
+				for item, list in pairs(e.moved) do
+					if type(item) == "string" and type(list) == "table" then
+						local own = if type(hist[item]) == "table" then hist[item] else {}
+						for _, b in ipairs(list) do table.insert(own, b) end
+						hist[item] = own
+					end
+				end
+				capAuction(hist, hour, nil)
+			elseif type(e.item) == "string" then
+				PR.recordAuction(hist, e.item, math.clamp(whole(e.h), hour - 1, hour), e.price, e.seller, e.buyer)
+			end
+		end
+	end
+	while #seen > PR.SEEN do table.remove(seen, 1) end
+	return book, added
 end
 -- Snapshot summary {item, last, avg24, vol24, avg7, vol7, lo7, hi7, traders24,
 -- traders7, thin, spark = {PR.SPARK prices; 0 = no trades}, at}. Averages are
@@ -12291,12 +12350,13 @@ function PR.text(s)
 	if s.thin then table.insert(parts, "thin market") end
 	return table.concat(parts, "  ·  ")
 end
--- Which shared key holds an item's history: bazaar (commodities) or its auction category.
+-- Which key holds an item's history: its Bazaar key (commodities) or its
+-- auction category's history key. Returns key, kind, category.
 function PR.keyFor(id)
 	local E = Data.Economy
 	if E.isCommodity(id) then return "bazaar_v1_" .. id, "bazaar" end
 	local cat = E.auctionCategory(id)
-	if cat then return "auction_v1_" .. cat, "auction" end
+	if cat then return PR.histKey(cat), "auction", cat end
 	return nil
 end
 

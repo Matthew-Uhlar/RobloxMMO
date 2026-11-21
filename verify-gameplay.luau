@@ -2298,12 +2298,12 @@ end
 table.sort(auctionIds,function(a,b) return #a>#b end)
 local function nonce(u) return string.format("%016x",u) end
 local text=string.rep("x",260)
-local bazaarCap,auctionCap=math.min(Rules.accountCap,1500),math.min(Rules.accountCap,600)
+local bazaarCap,auctionCap=math.min(Rules.accountCap,1500),math.min(Rules.accountCap,500)
 local worstBazaar={bids={},asks={},claims={},receipts={},accounts=bazaarCap,nextId=999999999,revision=999999999,version=1}
 for i=1,Rules.bookCap do table.insert(worstBazaar.bids,{id=999999000+i,owner=tostring(9000000000+i),price=Rules.maxPrice,qty=Rules.maxQuantity}) end
 for u=1,bazaarCap do
 	local uid=tostring(9000000000+u)
-	worstBazaar.receipts[uid]={seq=9999999,n=nonce(u),coins=640000000,items={[longestCommodity]=6400},at=1999999999,text=if u==1 then text else nil}
+	worstBazaar.receipts[uid]={n=nonce(u),coins=640000000,items={[longestCommodity]=6400},at=1999999999,text=if u==1 then text else nil}
 	worstBazaar.claims[uid]={units=6400,coins=6400000000}
 end
 local bazaarBytes=#serde.encode("json",worstBazaar)
@@ -2315,12 +2315,17 @@ for u=1,auctionCap do
 	local items,back={},{}
 	for k=1,Rules.listingCap+1 do items[auctionIds[k]]=10 end
 	for k=1,Rules.listingCap do back[auctionIds[k]]=10 end
-	worstAuction.receipts[uid]={seq=9999999,n=nonce(u),coins=1000000000,items=items,at=1999999999,text=if u==1 then text else nil}
+	worstAuction.receipts[uid]={n=nonce(u),coins=1000000000,items=items,at=1999999999,text=if u==1 then text else nil}
 	worstAuction.proceeds[uid]=10000000000
 	worstAuction.returns[uid]=back
 end
 local auctionBytes=#serde.encode("json",worstAuction)
 ok(auctionBytes<512*1024,"worst-case Auction House key after pruning < 512 KB: "..auctionBytes)
+-- §33: auction price history lives in its own key (hist:auction:<cat>), so the
+-- category key is receipts + listings only; both keep a margin under 512 KB.
+ok(auctionBytes<=480*1024,"worst-case Auction House key (no price history) <= 480 KB: "..auctionBytes)
+ok(bazaarBytes<=480*1024,"worst-case Bazaar key <= 480 KB: "..bazaarBytes)
+eq(worstAuction.history,nil,"the auction key fixture carries no price history")
 print("Economy maximum-shape fixtures after pruning: Bazaar "..bazaarBytes.." / Auction "..auctionBytes.." JSON bytes.")
 print("PASS: "..(checks-before).." economy (Bazaar / Auction House) assertions.")
 end)()
