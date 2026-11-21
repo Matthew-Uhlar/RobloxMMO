@@ -534,6 +534,7 @@ function world(name,meta,build){
   shape(name,build,worldShapes,1000);worldMeta[name]=meta;
 }
 require('./world-shapes.cjs')({world,C,PI,hash,jitterOf});
+require('./region-shapes.cjs')({world,C,PI,hash,jitterOf});
 
 // ---------------------------------------------------------------------------
 // Validation and output.
@@ -645,6 +646,7 @@ const worldEntries=Object.entries(worldShapes).map(([name,data])=>{
   if(m.tint)extra.tint=m.tint;
   if(m.fit)extra.fit=m.fit;
   if(m.along)extra.along=m.along;
+  if(m.range)extra.range=m.range;
   const verts=data.vertices.map(p=>p.map(x=>packNumber(Math.round(x*1000)+PACK_OFFSET,3)).join('')).join('');
   const faces=data.faces.map(([a,b,c,shade])=>packNumber(a,2)+packNumber(b,2)+packNumber(c,2)+packNumber(shade,1)).join('');
   return `shapes.${name}=unpack("${verts}","${faces}",${luaTable(extra)})`;
