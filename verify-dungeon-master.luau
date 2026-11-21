@@ -423,6 +423,7 @@ do
 	print(string.format("Master VII Starcores: %.2f/run (free %.2f + bonus %.2f), %.2f/h",m7.coresPerRun,freeCores,m7.coresPerRun-freeCores,coreRate))
 	print(string.format("Master stars 1-5 on a Legendary: %d essence (%.1f h at the best essence rate), %d Starcores (%.1f h of Master VII), %d coins",fullEssence,hours,fullCores,fullCores/coreRate,5000*(1+4+9+16+25)))
 	check(hours>=8 and hours<=12,"a full Master star set takes ~10 hours of essence (bonus chest counted)")
+	for f=1,6 do check(rates[EG.key(f,true)].cores<m7.cores,"Master VII out-earns Master "..f.." in Starcores per hour") end
 	check(fullCores/coreRate>=8 and fullCores/coreRate<=12,"Starcores for a full set take ~10 Master VII hours (bonus chest counted)")
 end
 local ruleChecks=checks

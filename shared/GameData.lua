@@ -8719,7 +8719,7 @@ drop(floors[7].chest, "SovereignNightfall", 0.004)
 EG.MasterChest = {}
 for f = 1, #floors do
 	local list = {}
-	drop(list, "EclipsedStarcore", 0.04 + 0.02 * (f - 1))
+	drop(list, "EclipsedStarcore", 0.16 * 0.7 ^ (7 - f)) -- deeper floors are the best Starcore source per hour
 	drop(list, "LodestarKey", 0.04 + 0.01 * (f - 1))
 	if f >= 5 then drop(list, "SovereignHalo", ({[5]=0.003,[6]=0.005,[7]=0.008})[f]) end
 	if f >= 6 then drop(list, "Thronebreaker", ({[6]=0.002,[7]=0.004})[f]) end
