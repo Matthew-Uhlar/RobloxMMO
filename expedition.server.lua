@@ -35,6 +35,23 @@
 -- delvers idle for 90 s (no damage, tuning or movement) or away from the arena are removed.
 -- Player attributes: DungeonClass, DungeonInRun, DungeonParty ("Name|Class|Level;..."),
 -- DungeonAbilityReady (seconds), DungeonUltimates (charges left), DungeonMasterPick.
+-- Dungeon endgame (Data.DungeonEndgame, docs/DEPTH-CONTRACT.md §23):
+--   * Master Mode on every floor I-VII (DC.masterScale), unlocked by a grade S clear.
+--   * Gear-score gates (EG.floorAccess) at the daises, the gate and the pad.
+--   * Cumulative rooms between the prisms and the sentinel hall: VI+ Mirror Gallery
+--     (turn four mirrors to carry the beam; turning a lit mirror is a mistake),
+--     VII Star Chart (press glyph plates in the lectern's order).
+--   * Boss phases on VI-VII (EG.Bosses) with role mechanics: Reliquary Verdict (tank:
+--     taunted by an Aegis), Withering Lumen (healer: Mending Light / Second Dawn
+--     cleanse), Eventide Nova (damage: break it with 5% of the core or a Disrupting
+--     Shot; an unbroken nova is a puzzle mistake) and Constellation Lock (the core
+--     seals until the Star Chart is replayed; Attune presses plates).
+--   * Credit adds the Minigames rules: points >= 25% of the median delver (parties of
+--     3+) and a credited action in the last 60 s. A delver who disconnects mid-run may
+--     rejoin within 90 s with their record (idle clock + 15 s grace). Every run has a
+--     run id; the profile credits a run id once (no duplicate chests).
+--   * All new parts are static (built once) or reused markers: nothing new is created
+--     per run, so a run leaves no parts or connections behind.
 local Players = game:GetService("Players")
 local Storage = game:GetService("ServerStorage")
 local RunService = game:GetService("RunService")
@@ -42,6 +59,7 @@ local CollectionService=game:GetService("CollectionService")
 local Data = require(game:GetService("ReplicatedStorage"):WaitForChild("AetherData"))
 local Rules = Data.Dungeons
 local DC = Data.DungeonClasses
+local EG = Data.DungeonEndgame
 local origin = Vector3.new(0, 42, 1800)
 -- Run limits (M4/M5): see the header.
 local IDLE_LIMIT, AWAY_RADIUS, AWAY_GRACE, RUN_CAP_PARS = 90, 120, 10, 2
@@ -126,6 +144,11 @@ local members, pylons, charged, selected, masterPick = {}, {}, {}, {}, {}
 local lastCredit = setmetatable({}, {__mode = "k"})
 local known = {}
 local guardians, adds, secretParts, lanceMarks = {}, {}, {}, {}
+-- Dungeon endgame: static room parts and delvers who dropped mid-run (rejoin).
+local mirrors, plates, departed = {}, {}, {}
+local runCounter = 0
+local okJob, jobId = pcall(function() return game.JobId end)
+jobId = if okJob and type(jobId) == "string" then string.sub(jobId, 1, 12) else "local"
 local lobby = nil
 local run = {}
 local function floorDef() return Data.DungeonFloors[run.floor or 1] end
@@ -136,7 +159,9 @@ local function newRun(floorIndex, master)
 		health = stats.coreHp, guardianHealth = {stats.guardianHp, stats.guardianHp}, pulse = 0, telegraph = nil,
 		attacks = 0, shieldIndex = 1, shielded = false, waveTimer = 0, regenTimer = 0, enraged = false, startedAt = 0,
 		deaths = 0, mistakes = 0, totalDamage = 0, totalTunes = 0, partySize = 0,
-		secretsFound = 0, secretsTotal = 0, bastion = 0, bastionBy = nil, bulwark = nil, forgive = nil, team = DC.teamBonus({})}
+		secretsFound = 0, secretsTotal = 0, bastion = 0, bastionBy = nil, bulwark = nil, forgive = nil, team = DC.teamBonus({}),
+		-- Dungeon endgame: run id, rooms, boss phase, role mechanics.
+		id = "", mirrorStates = {}, mirrorTargets = {}, chart = nil, phase = 0, mech = {}, channel = nil, blight = nil, lock = nil, locked = {}}
 end
 newRun(1)
 local function guardsAlive()
@@ -219,7 +244,22 @@ local function display()
 	heart:SetAttribute("SecretsFound", run.secretsFound)
 	heart:SetAttribute("SecretsTotal", run.secretsTotal)
 	local locked = run.stage ~= "core" or run.shielded or warded()
-	heart:SetAttribute("VisualState", if locked then "Shielded" elseif run.telegraph then "Warning" else "Active")
+	heart:SetAttribute("VisualState", if locked then "Shielded" elseif run.telegraph or run.channel then "Warning" else "Active")
+	-- Dungeon endgame HUD attributes.
+	local phase = EG.Bosses[f.index] and EG.Bosses[f.index].phases[run.phase] or nil
+	heart:SetAttribute("BossPhase", run.phase)
+	heart:SetAttribute("PhaseName", if phase then phase.name else "")
+	heart:SetAttribute("Channel", if run.channel then EG.Mechanics[run.channel.kind].name else "")
+	heart:SetAttribute("ChannelLeft", if run.channel then math.max(0, math.ceil(run.channel.left)) else 0)
+	heart:SetAttribute("Blight", run.blight ~= nil)
+	heart:SetAttribute("Lock", run.lock or "")
+	local mechLine = ""
+	if run.channel and run.channel.kind == "verdict" then
+		mechLine = "\n" .. string.upper(EG.Mechanics.verdict.name) .. " on " .. (run.channel.name or "?") .. " in " .. math.max(0, math.ceil(run.channel.left)) .. "s • an Aegis draws it"
+	elseif run.channel and run.channel.kind == "nova" then
+		mechLine = "\n" .. string.upper(EG.Mechanics.nova.name) .. " in " .. math.max(0, math.ceil(run.channel.left)) .. "s • break it " .. run.channel.dealt .. " / " .. run.channel.need .. " or Disrupting Shot"
+	end
+	if run.blight then mechLine ..= "\nWITHERING LUMEN • a Mender's light cleanses it" end
 	local title = string.upper(boss.name) .. (if run.enraged then " ENRAGED" else "")
 	local tuned = (3 - run.remaining) .. " / 3"
 	local order = if f.mechanics.orderedPrisms then " in order" else ""
@@ -229,19 +269,25 @@ local function display()
 		caption.Text = "MATCHMAKING  •  " .. (if lobby.master then "MASTER " else "") .. string.upper(Data.DungeonFloors[lobby.floor].name) .. "\nStand on the pad  •  launching in " .. wait .. "s"
 	elseif run.stage == "prisms" then
 		caption.Text = "HOLLOW OBSERVATORY  •  " .. mode .. "FLOOR " .. f.numeral .. "\nTune the prisms" .. order .. "  •  " .. tuned
+	elseif run.stage == "mirrors" then
+		caption.Text = "MIRROR GALLERY  •  " .. mode .. "FLOOR " .. f.numeral .. "\nTurn the mirrors to carry the beam  •  " .. EG.beamReach(run.mirrorStates, run.mirrorTargets) .. " / " .. EG.MIRRORS .. " lit"
+	elseif run.stage == "chart" then
+		caption.Text = "STAR CHART  •  " .. mode .. "FLOOR " .. f.numeral .. "\nPress the plates in order: " .. EG.chartText(run.chart.seq) .. "  •  step " .. run.chart.step .. " / " .. #run.chart.seq
 	elseif run.stage == "guardians" then
 		caption.Text = "SENTINEL HALL\nEnter the northern passage • defeat both guardians"
+	elseif run.lock == "chart" and run.chart then
+		caption.Text = title .. " SEALED  •  " .. run.health .. " / " .. run.stats.coreHp .. "\nReplay the star chart: " .. EG.chartText(run.chart.seq) .. "  •  step " .. run.chart.step .. " / " .. #run.chart.seq .. mechLine
 	elseif run.shielded then
-		caption.Text = title .. " SHIELDED  •  " .. run.health .. " / " .. run.stats.coreHp .. "\nRetune the prisms" .. order .. "  •  " .. tuned
+		caption.Text = title .. " SHIELDED  •  " .. run.health .. " / " .. run.stats.coreHp .. "\nRetune the prisms" .. order .. "  •  " .. tuned .. mechLine
 	elseif warded() then
 		caption.Text = title .. " WARDED  •  " .. run.health .. " / " .. run.stats.coreHp .. "\nDestroy the umbral wisps"
-			.. (if f.mechanics.regen then " before it regenerates" else "")
+			.. (if f.mechanics.regen then " before it regenerates" else "") .. mechLine
 	else
 		local hint = if run.telegraph == "ring" then "Close in: the ring strikes the outer floor"
 			elseif run.telegraph == "meteor" then "Starfall marked: scatter from the target"
 			elseif run.telegraph == "lances" then "Lances marked: step off your own mark"
 			else "Step outside the amber pulse"
-		caption.Text = title .. "  •  " .. run.health .. " / " .. run.stats.coreHp .. "\n" .. hint
+		caption.Text = title .. "  •  " .. run.health .. " / " .. run.stats.coreHp .. "\n" .. hint .. mechLine
 	end
 end
 local function paintPrisms()
@@ -281,12 +327,17 @@ local function publishParty()
 	local text = DC.partyString(partyRows())
 	for player in members do player:SetAttribute("DungeonParty", text) end
 end
+local paintRooms, enterRoom -- Dungeon endgame rooms (defined with the mirrors and plates below)
+local hideVerdict
 local function reset()
 	table.clear(charged)
+	table.clear(departed)
 	clearAdds()
 	clearSecrets()
 	clearLances()
 	newRun(run.floor or 1)
+	if hideVerdict then hideVerdict() end
+	if paintRooms then paintRooms() end
 	for _, guardian in guardians do guardian.Color = gold;guardian:SetAttribute("VisualState","Active") end
 	warning.Transparency = 1
 	paintPrisms()
@@ -294,6 +345,7 @@ local function reset()
 end
 local function credit(record, amount)
 	touch(record)
+	record.acted = os.clock()
 	record.damage += amount
 	run.totalDamage += amount
 end
@@ -318,14 +370,15 @@ for index, x in ipairs({-13,13}) do
 		end
 		if not guardsAlive() then
 			run.stage = "core"
-			run.waveTimer = if floorDef().mechanics.addWaves then floorDef().mechanics.addWaves.every else 0
+			run.waveTimer = if floorDef().mechanics.addWaves then run.stats.waveEvery else 0
 		end
 		display()
 	end)
 end
 -- Tune prism i for a member (by hand or by Attune / Eclipse Rift). Returns true when tuned.
 local function tunePrism(i, member, player, spell)
-	local tuning = run.stage == "prisms" or (run.stage == "core" and run.shielded)
+	-- Core retunes answer a prism shield only (never the Constellation Lock).
+	local tuning = run.stage == "prisms" or (run.stage == "core" and run.shielded and run.prismShield == true)
 	if not member or not tuning or charged[i] then return false end
 	if floorDef().mechanics.orderedPrisms and orderOf(i) ~= run.nextPrism then
 		-- Wrong resonance: the whole sequence collapses and counts as a puzzle mistake.
@@ -340,13 +393,20 @@ local function tunePrism(i, member, player, spell)
 	end
 	charged[i] = true
 	touch(member)
+	member.acted = os.clock()
 	member.tunes += 1
 	run.totalTunes += 1
 	run.nextPrism += 1
 	run.remaining -= 1
 	if spell then earnFeat(member, "Attune") end
 	if run.remaining == 0 then
-		if run.stage == "prisms" then run.stage = "guardians" else run.shielded = false end
+		if run.stage == "prisms" then
+			run.stage = EG.nextStage(run.floor, "prisms")
+			if enterRoom then enterRoom() end
+		else
+			run.prismShield = false
+			run.shielded = run.lock ~= nil
+		end
 	end
 	paintPrisms()
 	display()
@@ -370,6 +430,149 @@ for i = 1, 3 do
 		tunePrism(i, members[player], player, false)
 	end)
 end
+-- Dungeon endgame rooms: four mirrors (Mirror Gallery, VI+) and six glyph plates with
+-- a lectern (Star Chart, VII; also the Constellation Lock of the final phase). Built
+-- once; dormant on floors without them.
+local mirrorSpots = {Vector3.new(-25, 3, -28), Vector3.new(25, 3, -28), Vector3.new(25, 3, 26), Vector3.new(-25, 3, 26)}
+local receiver = block("Beam receiver", Vector3.new(0, 11, -34), Vector3.new(4, 4, 1), dark, Enum.Material.Glass)
+local lectern = block("Star chart lectern", Vector3.new(0, 3, 19), Vector3.new(3, 4, 2), dark, Enum.Material.Slate)
+local function roomActive(stage)
+	return table.find(EG.roomsFor(run.floor), stage) ~= nil
+end
+-- Credited puzzle progress counts as a tuning (contribution capped at half the threshold).
+local function solveStep(member)
+	touch(member)
+	member.acted = os.clock()
+	member.tunes += 1
+	run.totalTunes += 1
+end
+local function puzzleMistake(member, player, text)
+	run.mistakes += 1
+	member.mistakes += 1
+	notice(player, text)
+end
+function paintRooms()
+	local mirrorsOn = run.active and roomActive("mirrors")
+	local reach = if mirrorsOn then EG.beamReach(run.mirrorStates, run.mirrorTargets) else 0
+	for i, m in mirrors do
+		local facing = run.mirrorStates[i] or 0
+		m.Orientation = Vector3.new(0, facing * 90 + 45, 0)
+		m.Transparency = if mirrorsOn then 0.15 else 0.75
+		m.Color = if i <= reach then gold else teal
+		m:SetAttribute("Facing", facing)
+		m:SetAttribute("VisualState", if not mirrorsOn then "Dormant" elseif i <= reach then "Lit" else "Active")
+		for _, child in m:GetChildren() do
+			if child:IsA("ProximityPrompt") then
+				child.Enabled = mirrorsOn and run.stage == "mirrors"
+				child.ObjectText = "Mirror " .. i .. " • beam " .. reach .. " / " .. EG.MIRRORS .. " • turning a lit mirror breaks the beam"
+			end
+		end
+	end
+	receiver.Color = if mirrorsOn and reach >= EG.MIRRORS then gold else dark
+	receiver:SetAttribute("VisualState", if mirrorsOn and reach >= EG.MIRRORS then "Lit" else "Dormant")
+	local chartOn = run.active and run.chart ~= nil and (run.stage == "chart" or run.lock == "chart")
+	lectern:SetAttribute("ChartSequence", if chartOn then EG.chartText(run.chart.seq) else "")
+	lectern:SetAttribute("ChartStep", if chartOn then run.chart.step else 0)
+	lectern.Color = if chartOn then violet else dark
+	for i, plate in plates do
+		plate.Transparency = if chartOn then 0.1 else 0.7
+		plate:SetAttribute("VisualState", if chartOn then "Active" else "Dormant")
+		for _, child in plate:GetChildren() do
+			if child:IsA("ProximityPrompt") then child.Enabled = chartOn end
+		end
+	end
+end
+local function startChart(offset)
+	run.chart = {seq = EG.chartSequence(run.seed * 13 + (offset or 0), EG.chartLength(run.master)), step = 1}
+end
+local function chartSolved()
+	if run.stage == "chart" then
+		run.stage = EG.nextStage(run.floor, "chart")
+		run.chart = nil
+	elseif run.lock == "chart" then
+		run.lock = nil
+		run.shielded = run.prismShield == true -- a prism shield raised meanwhile still needs its retune
+		run.chart = nil
+		for ally in members do notice(ally, "The constellation is restored • the core is exposed!") end
+	end
+end
+function enterRoom()
+	if run.stage == "mirrors" then
+		run.mirrorTargets = EG.mirrorTargets(run.seed)
+		run.mirrorStates = EG.mirrorStart(run.seed)
+	elseif run.stage == "chart" then
+		startChart(0)
+	end
+	paintRooms()
+end
+local function mirrorsSolved()
+	for ally in members do notice(ally, "The beam reaches the receiver • the gallery opens.") end
+	run.stage = EG.nextStage(run.floor, "mirrors")
+	enterRoom()
+end
+-- Turn mirror i (by hand); returns true when the gallery is solved.
+local function turnMirror(i, member, player)
+	if not member or not run.active or run.stage ~= "mirrors" then return false end
+	local before = EG.beamReach(run.mirrorStates, run.mirrorTargets)
+	local _, mistake = EG.turnMirror(run.mirrorStates, run.mirrorTargets, i)
+	touch(member)
+	if mistake then puzzleMistake(member, player, "You turned a lit mirror and broke the beam!") end
+	local after = EG.beamReach(run.mirrorStates, run.mirrorTargets)
+	if after > before then solveStep(member) end
+	if after >= EG.MIRRORS then mirrorsSolved() end
+	paintRooms()
+	display()
+	return after >= EG.MIRRORS
+end
+-- Attune / Eclipse Rift: align the next mirror on the beam. Returns true if one was aligned.
+local function alignMirror(member, player)
+	if run.stage ~= "mirrors" then return false end
+	local reach = EG.beamReach(run.mirrorStates, run.mirrorTargets)
+	if reach >= EG.MIRRORS then return false end
+	run.mirrorStates[reach + 1] = run.mirrorTargets[reach + 1]
+	solveStep(member)
+	earnFeat(member, "Attune")
+	if EG.beamReach(run.mirrorStates, run.mirrorTargets) >= EG.MIRRORS then mirrorsSolved() end
+	paintRooms()
+	display()
+	return true
+end
+-- Press glyph plate i (Star Chart room or Constellation Lock).
+local function pressPlate(i, member, player, spell)
+	local chartOn = run.chart ~= nil and (run.stage == "chart" or (run.stage == "core" and run.lock == "chart"))
+	if not member or not run.active or not chartOn then return false end
+	if run.chart.seq[run.chart.step] ~= i then
+		puzzleMistake(member, player, "Wrong glyph! The chart restarts: " .. EG.chartText(run.chart.seq) .. ".")
+		run.chart.step = 1
+		paintRooms()
+		display()
+		return false
+	end
+	run.chart.step += 1
+	solveStep(member)
+	if spell then earnFeat(member, "Attune") end
+	if run.chart.step > #run.chart.seq then chartSolved() end
+	paintRooms()
+	display()
+	return true
+end
+for i, spot in ipairs(mirrorSpots) do
+	local m = block("Gallery mirror", spot, Vector3.new(0.6, 6, 4), teal, Enum.Material.Glass)
+	m:SetAttribute("MirrorIndex", i)
+	table.insert(mirrors, m)
+	local p = prompt(m, "Mirror " .. i, "Turn mirror", function(player) turnMirror(i, members[player], player) end, 8)
+	p.Enabled = false
+end
+for i, g in ipairs(EG.Glyphs) do
+	local plate = block("Glyph plate", Vector3.new(-21 + i * 6, 1.7, 14), Vector3.new(4, 0.4, 4), violet, Enum.Material.Neon)
+	plate:SetAttribute("PlateIndex", i)
+	plate:SetAttribute("Glyph", g.glyph)
+	table.insert(plates, plate)
+	local p = prompt(plate, g.glyph .. " " .. g.id .. " plate", "Press plate", function(player) pressPlate(i, members[player], player, false) end, 5)
+	p.Enabled = false
+end
+paintRooms()
+
 local gate, pad
 local function leave(player, character)
 	local was = members[player] ~= nil
@@ -392,6 +595,10 @@ local function finish()
 	local totalPoints = run.totalDamage + run.totalTunes * Rules.tuneWeight * totalHp(run.stats)
 	-- Credit first: the team bonus and feats count only delvers still in the run and credited.
 	local reasons, classes, feats = {}, {}, 0
+	-- Dungeon endgame (Minigames-style): the median member's points and the recent-action window.
+	local pointList = {}
+	for _, record in members do table.insert(pointList, points(record, totalPoints)) end
+	local median = EG.median(pointList)
 	for participant, record in members do
 		local character = participant.Character
 		local root = character and character:FindFirstChild("HumanoidRootPart")
@@ -402,6 +609,10 @@ local function finish()
 			reason = "Stand in the Observatory, alive, when the boss falls to earn the chest."
 		elseif not Data.dungeonContributed(points(record, totalPoints), totalPoints) then
 			reason = "Contribute at least " .. math.floor(Rules.contributionShare * 100) .. "% of the party's damage and tuning to earn the chest (tuning counts for at most half)."
+		elseif run.partySize >= 3 and points(record, totalPoints) < EG.MEDIAN_SHARE * median then
+			reason = "Your share was under " .. math.floor(EG.MEDIAN_SHARE * 100) .. "% of the median delver's: pull your weight to earn the chest."
+		elseif not record.acted or os.clock() - record.acted > EG.RECENT_SECONDS then
+			reason = "Strike, tune or solve within the last " .. EG.RECENT_SECONDS .. "s before the boss falls to earn the chest."
 		elseif run.partySize > 1 and share < MIN_DAMAGE_SHARE then
 			reason = "Deal at least " .. math.floor(MIN_DAMAGE_SHARE * 100) .. "% of the party's damage to earn the chest."
 		elseif not Data.dungeonIronmanCredit(record.ironman, run.partySize, share) then
@@ -416,7 +627,7 @@ local function finish()
 		end
 	end
 	run.team = DC.teamBonus(classes)
-	local bonus = DC.bonusScore(feats, run.team.balanced)
+	local bonus = DC.bonusScore(feats, run.team.balanced) + (if run.master then DC.MASTER_SCORE_BONUS else 0)
 	local score, parts = DC.score(f.index, seconds, run.deaths, run.mistakes, run.secretsFound, run.secretsTotal, bonus, run.master)
 	local grade = Data.dungeonGrade(score)
 	local reward = Storage:FindFirstChild("IsleExpeditionReward")
@@ -432,7 +643,7 @@ local function finish()
 			local payload = {floor = f.index, grade = grade, score = score, seconds = math.floor(seconds), deaths = run.deaths,
 				mistakes = run.mistakes, partySize = run.partySize, damageShare = share,
 				class = record.class, master = run.master, secrets = run.secretsFound, secretsTotal = run.secretsTotal,
-				bonus = parts.bonus, teamMult = run.team.xpMult, feat = record.feat == true}
+				bonus = parts.bonus, teamMult = run.team.xpMult, feat = record.feat == true, runId = run.id}
 			-- The profile may still refuse (lease lapsed, floor gate, cooldown): only an
 			-- accepted grant opens the chest and starts this script's cooldown.
 			local grant = Storage:FindFirstChild("IsleExpeditionGrant")
@@ -456,6 +667,137 @@ local function finish()
 	end
 	if run.active then reset() end
 end
+-- Dungeon endgame: boss phases and role mechanics (Floors VI-VII, EG.Bosses).
+local verdictMark = block("Verdict mark", Vector3.new(0, 1.7, 0), Vector3.new(0.12, 9, 9), Color3.fromRGB(232, 128, 106), Enum.Material.Neon)
+verdictMark.Shape = Enum.PartType.Cylinder
+verdictMark.Orientation = Vector3.new(0, 0, 90)
+verdictMark.CanCollide = false
+verdictMark.Transparency = 1
+function hideVerdict()
+	verdictMark.Transparency = 1
+	verdictMark.Position = origin + Vector3.new(0, 1.7, 0)
+end
+local function aliveHumanoid(player)
+	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+	return if hum and hum.Health > 0 then hum else nil
+end
+local function phaseDef()
+	local b = EG.Bosses[run.floor]
+	return b and b.phases[run.phase] or nil
+end
+-- Enter the phase for the core's HP fraction; a phase with lock = "chart" seals the core once.
+local function updatePhase()
+	local b = EG.Bosses[run.floor]
+	if not b or run.stage ~= "core" or run.health <= 0 then return end
+	local index, ph = EG.phaseAt(run.floor, run.health / run.stats.coreHp)
+	if index == run.phase then return end
+	run.phase = index
+	for ally in members do notice(ally, floorDef().boss.name .. " • " .. ph.name .. "!") end
+	if ph.lock == "chart" and not run.locked[index] then
+		run.locked[index] = true
+		run.lock = "chart"
+		run.shielded = true
+		run.channel = nil
+		hideVerdict()
+		startChart(index)
+		paintRooms()
+	end
+end
+local function startChannel(kind)
+	local m = EG.Mechanics[kind]
+	if kind == "verdict" then
+		local rows = {}
+		for player, record in members do
+			table.insert(rows, {key = player, class = record.class, damage = record.damage, alive = aliveHumanoid(player) ~= nil})
+		end
+		local target = EG.verdictTarget(rows)
+		if not target then return end
+		run.channel = {kind = kind, left = m.channel, target = target.key, name = target.key.Name}
+		local root = target.key.Character and target.key.Character:FindFirstChild("HumanoidRootPart")
+		if root then
+			verdictMark.Position = Vector3.new(root.Position.X, origin.Y + 1.7, root.Position.Z)
+			verdictMark.Transparency = 0.25
+		end
+		notice(target.key, EG.Mechanics.verdict.name .. " is coming for you" .. (if target.class == "Aegis" then " • brace, Aegis!" else " • no Aegis to draw it!"))
+	elseif kind == "nova" then
+		run.channel = {kind = kind, left = m.channel, dealt = 0, need = EG.novaThreshold(run.stats.coreHp)}
+	elseif kind == "blight" then
+		run.blight = {left = m.duration, tick = 0}
+		for ally in members do notice(ally, m.name .. "! A Mender's Mending Light or Second Dawn cleanses it.") end
+	end
+	display()
+end
+local function resolveChannel()
+	local c = run.channel
+	run.channel = nil
+	hideVerdict()
+	display()
+	if not c then return end
+	if c.kind == "verdict" then
+		local record = members[c.target]
+		local hum = record and aliveHumanoid(c.target)
+		if hum then
+			hum:TakeDamage(EG.mechDamage("verdict", hum.MaxHealth, run.master, takenMult(c.target)))
+			if record.class == "Aegis" then earnFeat(record, "Absorb") end
+		end
+	elseif c.kind == "nova" then
+		if c.dealt >= c.need then return end
+		run.mistakes += 1 -- an unbroken nova costs puzzle score like a wrong tuning
+		for player in members do
+			local hum = aliveHumanoid(player)
+			if hum then hum:TakeDamage(EG.mechDamage("nova", hum.MaxHealth, run.master, 1)) end
+			notice(player, EG.Mechanics.nova.name .. " was not broken!")
+		end
+	end
+end
+-- Heartbeat step of the role mechanics (core stage only).
+local function stepMechanics(dt)
+	local ph = phaseDef()
+	if not ph then return end
+	if run.blight then
+		run.blight.left -= dt
+		run.blight.tick += dt
+		local m = EG.Mechanics.blight
+		while run.blight and run.blight.tick >= m.tick do
+			run.blight.tick -= m.tick
+			for player in members do
+				local hum = aliveHumanoid(player)
+				if hum then hum:TakeDamage(EG.mechDamage("blight", hum.MaxHealth, run.master, 1)) end
+			end
+		end
+		if run.blight and run.blight.left <= 0 then run.blight = nil; display() end
+	end
+	if run.channel then
+		run.channel.left -= dt
+		if run.channel.left <= 0 then
+			resolveChannel()
+		elseif math.ceil(run.channel.left) ~= run.channel.shown then
+			run.channel.shown = math.ceil(run.channel.left)
+			display() -- countdown on the caption
+		end
+		return
+	end
+	for _, kind in ipairs({"verdict", "blight", "nova"}) do
+		local every = ph.every[kind]
+		-- The nova waits while the core cannot be damaged (it must be breakable).
+		local paused = kind == "nova" and (run.shielded or warded())
+		if every and not paused and not (kind == "blight" and run.blight) then
+			run.mech[kind] = (run.mech[kind] or 0) + dt
+			if run.mech[kind] >= every and not run.channel then
+				run.mech[kind] = 0
+				startChannel(kind)
+			end
+		end
+	end
+end
+-- Mending Light / Second Dawn: cleanse Withering Lumen.
+local function cleanse(player)
+	if not run.blight then return end
+	run.blight = nil
+	for ally in members do notice(ally, "Withering Lumen cleansed by " .. player.Name .. ".") end
+	display()
+end
+
 -- Damage the core (strikes, abilities). Returns false when the run just finished.
 local function damageCore(member, amount)
 	local hit = math.min(run.health, math.max(0, math.floor(amount)))
@@ -463,16 +805,26 @@ local function damageCore(member, amount)
 	run.health -= hit
 	credit(member, hit)
 	if run.health <= 0 then finish() return false end
+	if run.channel and run.channel.kind == "nova" then
+		run.channel.dealt += hit
+		if run.channel.dealt >= run.channel.need then
+			run.channel = nil
+			for ally in members do notice(ally, EG.Mechanics.nova.name .. " broken!") end
+		end
+		display()
+	end
 	local phases = floorDef().mechanics.shieldPhases
 	local threshold = phases and phases[run.shieldIndex]
 	if threshold and run.health <= run.stats.coreHp * threshold then
 		run.shieldIndex += 1
 		run.shielded = true
+		run.prismShield = true
 		table.clear(charged)
 		run.remaining, run.nextPrism = 3, 1
 		run.seed += 1
 		paintPrisms()
 	end
+	updatePhase()
 	return true
 end
 local function healPlayer(player, amount, healer)
@@ -677,7 +1029,7 @@ local function abilityState(player, record)
 	return {inRun = run.active and record ~= nil, classId = record and record.class, level = record and record.level or 1,
 		now = os.clock(), readyAt = record and record.readyAt or 0, ultimatesUsed = record and record.ultimatesUsed or 0,
 		ultimateAt = record and record.ultimateAt, stage = run.stage, shielded = run.shielded, warded = warded(),
-		telegraph = run.telegraph, wisps = liveWisps()}
+		telegraph = run.telegraph, wisps = liveWisps(), channel = run.channel and run.channel.kind}
 end
 local function useAbility(player, kind)
 	local record = members[player]
@@ -704,7 +1056,9 @@ local function useAbility(player, kind)
 			local hum = ally.Character and ally.Character:FindFirstChildOfClass("Humanoid")
 			if hum then healPlayer(ally, DC.healAmount(hum.MaxHealth * power, record.level), helper) end
 		end
+		cleanse(player)
 	elseif id == "SecondDawn" then
+		cleanse(player)
 		for ally in members do
 			local hum = ally.Character and ally.Character:FindFirstChildOfClass("Humanoid")
 			if hum then healPlayer(ally, hum.MaxHealth, helper) end
@@ -717,6 +1071,12 @@ local function useAbility(player, kind)
 	elseif id == "RendingStorm" then
 		for _, add in table.clone(adds) do hitWisp(add, record, 5) end
 		if not damageCore(record, math.ceil(run.stats.coreHp * def.ultimate.power)) then return true end
+	elseif id == "DisruptingShot" and run.channel and run.channel.kind == "nova" then
+		-- Dungeon endgame: interrupt the Eventide Nova channel.
+		run.channel = nil
+		earnFeat(record, "Disrupt")
+		for ally in members do notice(ally, player.Name .. " interrupted the " .. EG.Mechanics.nova.name .. "!") end
+		if not run.shielded and not warded() and not damageCore(record, power) then return true end
 	elseif id == "DisruptingShot" then
 		hideTelegraph()
 		run.pulse = 0
@@ -729,15 +1089,27 @@ local function useAbility(player, kind)
 			if add.hp > 0 then any = true; hitWisp(add, record, add.hp) end
 		end
 		if not any and not run.shielded and not damageCore(record, math.ceil(run.stats.coreHp * def.ultimate.power)) then return true end
-	elseif id == "Attune" then
-		for _ = 1, power do
-			local i = nextPrismIndex()
-			if not i or not tunePrism(i, record, player, true) then break end
+	elseif id == "Attune" or id == "EclipseRift" then
+		-- Attune: `power` steps; Eclipse Rift: the whole puzzle in front of the party
+		-- (prisms, Mirror Gallery or Star Chart). A finished puzzle never spills into the next.
+		local function puzzle()
+			if run.stage == "mirrors" then return "mirrors" end
+			if run.chart and (run.stage == "chart" or run.lock == "chart") then return "chart" end
+			return "prisms"
 		end
-	elseif id == "EclipseRift" then
-		for _ = 1, 3 do
-			local i = nextPrismIndex()
-			if not i or not tunePrism(i, record, player, true) then break end
+		local first = puzzle()
+		for _ = 1, if id == "Attune" then power else 99 do
+			if puzzle() ~= first then break end
+			local ok
+			if first == "mirrors" then
+				ok = alignMirror(record, player)
+			elseif first == "chart" then
+				ok = pressPlate(run.chart.seq[run.chart.step], record, player, true)
+			else
+				local i = nextPrismIndex()
+				ok = i ~= nil and tunePrism(i, record, player, true)
+			end
+			if not ok then break end
 		end
 	end
 	notice(player, (if kind == "ability" then def.ability.name else def.ultimate.name) .. "!")
@@ -796,10 +1168,11 @@ local function profileInfo(player)
 			return {level = tonumber(result.level) or 1, ironman = result.ironman == true, profile = true,
 				class = if DC.valid(result.class) then result.class else nil,
 				classXp = if type(result.classXp) == "table" then result.classXp else {},
-				best = if type(result.best) == "table" then result.best else {}, master = result.master == true}
+				best = if type(result.best) == "table" then result.best else {}, master = result.master == true,
+				gearScore = tonumber(result.gearScore) or 0}
 		end
 	end
-	return {level = 1, ironman = false, classXp = {}, best = {}, master = false}
+	return {level = 1, ironman = false, classXp = {}, best = {}, master = false, gearScore = 0}
 end
 -- The profile's class (pedestal and Dungeon page both write it); the attribute
 -- published from the profile is the fallback when no bridge answers.
@@ -811,6 +1184,14 @@ end
 local function masterOpen(info, floorIndex)
 	return DC.masterUnlocked(floorIndex, tonumber(info.best[floorIndex]) or 0)
 end
+-- Dungeon endgame gate (Dungeoneering level, Master unlock, gear score): nil or a refusal.
+local function accessRefusal(info, floorIndex, master)
+	local ok, why = EG.floorAccess(floorIndex, master, info.level, info.gearScore, tonumber(info.best[floorIndex]) or 0)
+	if ok then return nil end
+	local text = EG.accessText(floorIndex, master, why)
+	if why == "gear" then text ..= " Yours is " .. math.floor(info.gearScore) .. "." end
+	return text
+end
 local function launch()
 	local floorIndex, master = lobby.floor, lobby.master
 	lobby = nil
@@ -821,10 +1202,9 @@ local function launch()
 			if onPad(player) then notice(player, "The party is full (" .. Rules.maxParty .. " delvers).") end
 		elseif onPad(player) and not members[player] then
 			local info = profileInfo(player)
-			if not Data.dungeonFloorUnlocked(floorIndex, info.level) then
-				notice(player, "Requires Dungeoneering " .. Data.DungeonFloors[floorIndex].level .. " for " .. Data.DungeonFloors[floorIndex].name .. ".")
-			elseif master and not masterOpen(info, floorIndex) then
-				notice(player, "Master Mode " .. Data.DungeonFloors[floorIndex].name .. " needs an S+ clear of the floor first.")
+			local refusal = accessRefusal(info, floorIndex, master)
+			if refusal then
+				notice(player, refusal)
 			else
 				table.insert(joined, {player = player, info = info})
 			end
@@ -833,9 +1213,12 @@ local function launch()
 	if #joined == 0 then display() return end
 	local seed = (run.seed or 0) + 1
 	table.clear(charged)
+	table.clear(departed)
 	clearAdds()
 	newRun(floorIndex, master)
 	run.seed = seed
+	runCounter += 1
+	run.id = jobId .. ":" .. runCounter .. ":" .. seed
 	run.active = true
 	run.startedAt = os.clock()
 	run.partySize = #joined
@@ -860,6 +1243,7 @@ local function launch()
 	placeSecrets()
 	publishParty()
 	paintPrisms()
+	paintRooms()
 	display()
 end
 paintPrisms()
@@ -926,6 +1310,10 @@ RunService.Heartbeat:Connect(function(dt)
 		end
 	end
 	if run.stage ~= "core" then return end
+	-- Dungeon endgame: boss phases and role mechanics (VI-VII).
+	updatePhase()
+	stepMechanics(dt)
+	if not run.active or run.stage ~= "core" then return end
 	local f = floorDef()
 	local enrage = f.mechanics.enrage
 	if enrage and not run.enraged and os.clock() - run.startedAt >= enrage.after then
@@ -936,7 +1324,7 @@ RunService.Heartbeat:Connect(function(dt)
 	-- The wave timer pauses while a full wave still lives (and spawnWave caps live wisps).
 	if wave and not run.shielded and liveWisps() < wave.count then
 		run.waveTimer += dt
-		if run.waveTimer >= wave.every then
+		if run.waveTimer >= run.stats.waveEvery then
 			run.waveTimer = 0
 			spawnWave()
 			display()
@@ -971,6 +1359,39 @@ RunService.Heartbeat:Connect(function(dt)
 		display()
 	end
 end)
+-- Dungeon endgame rejoin: a delver whose character or connection drops mid-run is
+-- stashed (record, run id, time) and restored if they come back within
+-- EG.REJOIN_SECONDS while the same run is live. The stash is cleared when the run ends.
+local function rejoinKey(player) return player.UserId or player.Name or player end
+local function depart(player)
+	local record = members[player]
+	if record and run.active and run.id ~= "" then
+		departed[rejoinKey(player)] = {record = record, runId = run.id, at = os.clock()}
+	end
+	leave(player)
+end
+local function rejoin(player)
+	local key = rejoinKey(player)
+	local entry = departed[key]
+	if not entry then return false end
+	departed[key] = nil
+	if not run.active or entry.runId ~= run.id or os.clock() - entry.at > EG.REJOIN_SECONDS or members[player] then return false end
+	local record = entry.record
+	-- The idle clock carries over, with at least EG.REJOIN_GRACE seconds to act or move.
+	record.active = math.max(record.active or 0, os.clock() - IDLE_LIMIT + EG.REJOIN_GRACE)
+	record.down, record.awaySince, record.pos, record.shownReady, record.shownUlt = false, nil, nil, nil, nil
+	members[player] = record
+	player:SetAttribute("ExpeditionFloor", run.floor)
+	player:SetAttribute("DungeonInRun", true)
+	player:SetAttribute("DungeonAbilityReady", 0)
+	player:SetAttribute("DungeonUltimates", if record.class then math.max(0, DC.ultimateCharges(record.level) - record.ultimatesUsed) else 0)
+	publishParty()
+	notice(player, "You rejoined the expedition with your contribution intact.")
+	local character = player.Character
+	if character and character:FindFirstChild("HumanoidRootPart") then character:PivotTo(CFrame.new(origin + Vector3.new(0, 5, 24))) end
+	display()
+	return true
+end
 local function watch(player)
 	if not table.find(known, player) then table.insert(known, player) end
 	player.CharacterRemoving:Connect(function(character)
@@ -984,21 +1405,23 @@ local function watch(player)
 			end
 			return
 		end
-		leave(player)
+		depart(player)
 	end)
 	if player.CharacterAdded then
 		player.CharacterAdded:Connect(function(character)
+			if not members[player] and not rejoin(player) then return end
 			local record = members[player]
 			if not record or not run.active then return end
 			local root = character:WaitForChild("HumanoidRootPart", 5)
 			if root and members[player] then character:PivotTo(CFrame.new(origin + Vector3.new(0, 5, 24))) end
 		end)
 	end
+	rejoin(player)
 end
 Players.PlayerAdded:Connect(watch)
 for _, player in Players:GetPlayers() do watch(player) end
 Players.PlayerRemoving:Connect(function(player)
-	leave(player)
+	depart(player)
 	selected[player], masterPick[player] = nil, nil
 	local index = table.find(known, player)
 	if index then table.remove(known, index) end
@@ -1016,9 +1439,11 @@ local function openLobby(player)
 	if wantMaster == nil then wantMaster = player:GetAttribute("DungeonMasterOn") == true end
 	local master = wantMaster and floorIndex <= DC.MASTER_FLOORS
 	if master and not masterOpen(info, floorIndex) then
-		notice(player, "Master Mode unlocks on " .. Data.DungeonFloors[floorIndex].name .. " after an S+ clear. Switch it off at the Master lever.")
+		notice(player, "Master Mode unlocks on " .. Data.DungeonFloors[floorIndex].name .. " after a grade " .. DC.MASTER_UNLOCK_GRADE .. " (or better) clear. Switch it off at the Master lever.")
 		return
 	end
+	local refusal = accessRefusal(info, floorIndex, master)
+	if refusal then notice(player, refusal) return end
 	lobby = {floor = floorIndex, master = master, deadline = os.clock() + Rules.padSeconds}
 	if pad then pad:SetAttribute("LobbyFloor", floorIndex); pad:SetAttribute("LobbyMaster", master) end
 	notice(player, (if master then "Master " else "") .. Data.DungeonFloors[floorIndex].name .. " forming • stand on the pad for " .. Rules.padSeconds .. "s (max " .. Rules.maxParty .. ").")
@@ -1069,7 +1494,7 @@ local function attach(part)
 	end
 	local lever = block("Master lever", Vector3.zero, Vector3.new(1, 4, 1), violet, Enum.Material.Slate)
 	lever.Position = part.Position + Vector3.new(14, 0, 0)
-	prompt(lever, "Master Mode • floors I-V after an S+ • ×2 HP and damage, par ×1.6, ×2.2 XP and coins, extra chest roll", "Toggle Master Mode", function(player)
+	prompt(lever, "Master Mode • floors I-VII after a grade S clear • ×2-3.5 HP, ×2-3.2 damage, longer par, ×2.2-3.7 XP and coins, ×3 essence, extra chest roll", "Toggle Master Mode", function(player)
 		if members[player] then return end
 		local current = masterPick[player]
 		if current == nil then current = player:GetAttribute("DungeonMasterOn") == true end
@@ -1082,11 +1507,17 @@ local function attach(part)
 		dais.Position = part.Position + Vector3.new((index-4)*4, 0, -8)
 		dais:SetAttribute("FloorIndex", index)
 		dais:SetAttribute("RequiredLevel", def.level)
-		prompt(dais, def.name .. " • " .. def.subtitle .. " • Dungeoneering " .. def.level, "Select floor", function(player)
+		local gearGate = EG.gearGate(index, false)
+		dais:SetAttribute("RequiredGearScore", gearGate)
+		prompt(dais, def.name .. " • " .. def.subtitle .. " • Dungeoneering " .. def.level .. (if gearGate > 0 then " • gear score " .. gearGate else ""), "Select floor", function(player)
 			if members[player] then return end
 			local info = profileInfo(player)
 			if not Data.dungeonFloorUnlocked(index, info.level) then
 				notice(player, "Requires Dungeoneering " .. def.level .. " (you are " .. info.level .. ").")
+				return
+			end
+			if info.gearScore < gearGate then
+				notice(player, def.name .. " needs gear score " .. gearGate .. " (yours is " .. math.floor(info.gearScore) .. "): weapon and armor rarity, item level, stars and tomes.")
 				return
 			end
 			selected[player] = index

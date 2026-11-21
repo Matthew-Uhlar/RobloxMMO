@@ -2933,6 +2933,8 @@ Gear.RarityScale = {Common=1,Uncommon=1.5,Rare=2,Epic=3,Legendary=4,Mythic=5}
 -- Reforge Anvil coins per roll (and per stone application) by effective rarity.
 Gear.ReforgeCost = {Common=250,Uncommon=500,Rare=1000,Epic=2500,Legendary=5000,Mythic=10000}
 Gear.STAR_MAX = 5
+-- Extra upgrade layers appended by later sections: {id, stats(g, itemId, def, breakdown) -> level, stats}.
+Gear.Layers = {}
 Gear.STAR_PERCENT = 2
 Gear.DUNGEON_STAR_PERCENT = 4
 Gear.StarEssence = {10,20,35,55,80} -- essence for star k, x (1 + 0.25 * (rank - 1)) by base rarity
@@ -3200,7 +3202,16 @@ function Gear.breakdown(g, itemId)
 		reforgeStats=if reforge then Gear.reforgeStats(reforge, rarity, Gear.toolSkill(def)) else {},
 		starStats=Gear.starStats(def, stars),tomeStats=Gear.tomeStats(def, tempering)}
 	local total = {}
-	for _, layer in ipairs({out.reforgeStats, out.starStats, out.tomeStats}) do
+	local layers = {out.reforgeStats, out.starStats, out.tomeStats}
+	-- Extension layers (Gear.Layers, e.g. Dungeon endgame Master stars): each adds
+	-- out[layer.id] = level and out[layer.id.."Stats"] = stats, summed into total.
+	for _, layer in ipairs(Gear.Layers) do
+		local level, stats = layer.stats(g, itemId, def, out)
+		out[layer.id] = level or 0
+		out[layer.id .. "Stats"] = stats or {}
+		table.insert(layers, out[layer.id .. "Stats"])
+	end
+	for _, layer in ipairs(layers) do
 		for stat, v in pairs(layer) do total[stat] = round1((total[stat] or 0) + v) end
 	end
 	out.total = total
@@ -3209,7 +3220,9 @@ end
 function Gear.upgradeStats(g, itemId) return Gear.breakdown(g, itemId).total end
 function Gear.isUpgraded(g, itemId)
 	local book = Gear.bookOf(g, itemId)
-	return Gear.reforgeOf(g, itemId) ~= nil or Gear.starsOf(g, itemId) > 0 or book.tempering > 0 or book.masterwork
+	if Gear.reforgeOf(g, itemId) ~= nil or Gear.starsOf(g, itemId) > 0 or book.tempering > 0 or book.masterwork then return true end
+	for _, layer in ipairs(Gear.Layers) do if ((layer.stats(g, itemId, Data.Items[itemId], nil)) or 0) > 0 then return true end end
+	return false
 end
 -- "Honed Brass Sword ★★★"
 function Gear.displayName(g, itemId)
@@ -3219,6 +3232,10 @@ function Gear.displayName(g, itemId)
 	if reforge then name = Gear.Reforges[reforge].name.." "..name end
 	local stars = Gear.starsOf(g, itemId)
 	if stars > 0 then name ..= " "..string.rep("★", stars) end
+	for _, layer in ipairs(Gear.Layers) do
+		local level = layer.glyph and (layer.stats(g, itemId, def, nil)) or 0
+		if level > 0 then name ..= string.rep(layer.glyph, level) end
+	end
 	return name
 end
 function Gear.reforgeCost(g, itemId) return Gear.ReforgeCost[Gear.effectiveRarity(g, itemId)] or Gear.ReforgeCost.Common end
@@ -5417,14 +5434,15 @@ function DC.abilityCheck(kind, s)
 	if not d then return false, "Choose a class at the matchmaking pad first." end
 	local now = tonumber(s.now) or 0
 	local core = s.stage == "core"
-	local tuning = s.stage == "prisms" or (core and s.shielded == true)
+	-- Dungeon endgame: the Mirror Gallery and Star Chart rooms are tuning stages too.
+	local tuning = s.stage == "prisms" or s.stage == "mirrors" or s.stage == "chart" or (core and s.shielded == true)
 	if kind == "ability" then
 		local readyAt = tonumber(s.readyAt) or 0
 		if now < readyAt then return false, d.ability.name .. " recharging • " .. math.ceil(readyAt - now) .. "s." end
 		local id = d.ability.id
 		if id == "Bulwark" and not core then return false, d.ability.name .. " needs the boss phase." end
 		if id == "Cleave" and not (core and ((tonumber(s.wisps) or 0) > 0 or (not s.shielded and not s.warded))) then return false, "Nothing in reach of " .. d.ability.name .. "." end
-		if id == "DisruptingShot" and not (core and s.telegraph) then return false, d.ability.name .. " needs a telegraphing boss." end
+		if id == "DisruptingShot" and not (core and (s.telegraph or s.channel == "nova")) then return false, d.ability.name .. " needs a telegraphing boss." end
 		if id == "Attune" and not tuning then return false, "No prism to attune right now." end
 		return true
 	elseif kind == "ultimate" then
@@ -5487,32 +5505,45 @@ function DC.bonusScore(feats, balanced)
 	feats = math.max(0, math.floor(tonumber(feats) or 0))
 	return math.min(DC.BONUS_CAP, feats * DC.FEAT_BONUS + (if balanced then 5 else 0))
 end
--- master: Master Mode runs are timed against DC.par (par x DC.MASTER_PAR).
+-- master: Master Mode runs are timed against DC.par (par x DC.masterScale(floor).par)
+-- and may carry DC.MASTER_SCORE_BONUS more Bonus (Dungeon endgame).
 function DC.score(floorIndex, seconds, deaths, mistakes, found, total, bonus, master)
-	local scale = if master == true and (tonumber(floorIndex) or 0) <= DC.MASTER_FLOORS then DC.MASTER_PAR else 1
+	local isMaster = master == true and (tonumber(floorIndex) or 0) <= DC.MASTER_FLOORS
+	local scale = if isMaster then DC.masterScale(floorIndex).par else 1
 	local _, parts = Data.dungeonScore(floorIndex, (tonumber(seconds) or 0) / scale, deaths, mistakes)
 	total = math.max(0, math.floor(tonumber(total) or 0))
 	found = math.clamp(math.floor(tonumber(found) or 0), 0, total)
 	local secrets = if total > 0 then found * 100 / total else 100
-	bonus = math.clamp(math.floor(tonumber(bonus) or 0), 0, DC.BONUS_CAP)
+	bonus = math.clamp(math.floor(tonumber(bonus) or 0), 0, DC.BONUS_CAP + (if isMaster then DC.MASTER_SCORE_BONUS else 0))
 	local base = (parts.speed + parts.survival + parts.skill + secrets) * 0.75
 	local score = math.clamp(math.floor(base + bonus + 0.5), 0, 300)
 	return score, {speed=parts.speed,survival=parts.survival,skill=parts.skill,secrets=secrets,bonus=bonus}
 end
 
--- Master Mode (floors I-V): x2 HP and damage, par x1.6, one extra chest roll,
--- x2.2 XP and coins (a Master clear takes ~2x as long, so it must pay >= normal per hour).
--- Unlocked per floor by an S+ normal-mode clear (best score >= the S+ minimum).
-DC.MASTER_FLOORS = 5
+-- Master Mode (floors I-VII; Dungeon endgame extended it from I-V): Floor I is
+-- x2 HP and damage, par x1.6, x2.2 XP and coins; every deeper floor scales harder
+-- by DC.MASTER_STEP (Floor VII: x3.2 HP, x3.2 damage, par x2.8, x4 XP and coins),
+-- plus one extra chest roll. A Master clear takes longer, so it must pay >= normal per hour.
+-- Unlocked per floor by a normal-mode clear at grade S or better (best score >= the S minimum).
+DC.MASTER_FLOORS = 7
 DC.MASTER_MULT, DC.MASTER_XP, DC.MASTER_ROLLS, DC.MASTER_PAR = 2, 2.2, 1, 1.6
--- Par time (seconds) of a floor; Master Mode runs get x1.6.
+DC.MASTER_STEP = {hp=0.2,damage=0.2,xp=0.3,par=0.2}
+DC.MASTER_UNLOCK_GRADE = "S"
+DC.MASTER_SCORE_BONUS = 5 -- Master runs: Bonus score may reach BONUS_CAP + 5
+-- Master Mode multipliers of a floor: {hp, damage, xp, par}.
+function DC.masterScale(floorIndex)
+	local n = math.clamp(math.floor(tonumber(floorIndex) or 1), 1, #Data.DungeonFloors) - 1
+	local st = DC.MASTER_STEP
+	return {hp=DC.MASTER_MULT + st.hp * n,damage=DC.MASTER_MULT + st.damage * n,xp=DC.MASTER_XP + st.xp * n,par=DC.MASTER_PAR + st.par * n}
+end
+-- Par time (seconds) of a floor; Master Mode runs get x masterScale(floor).par.
 function DC.par(floorIndex, master)
 	local f = Data.DungeonFloors[floorIndex] or Data.DungeonFloors[1]
-	return f.par * (if master == true and f.index <= DC.MASTER_FLOORS then DC.MASTER_PAR else 1)
+	return f.par * (if master == true and f.index <= DC.MASTER_FLOORS then DC.masterScale(f.index).par else 1)
 end
 function DC.masterUnlocked(floorIndex, bestScore)
 	return type(floorIndex) == "number" and floorIndex >= 1 and floorIndex <= DC.MASTER_FLOORS
-		and (tonumber(bestScore) or 0) >= Data.DungeonGradeById["S+"].min
+		and (tonumber(bestScore) or 0) >= Data.DungeonGradeById[DC.MASTER_UNLOCK_GRADE].min
 end
 -- Umbral wisp HP grows with the square root of the floor's HP multiplier (x2 in
 -- Master Mode), so wave clearing keeps pace with party damage on deep floors.
@@ -5523,19 +5554,29 @@ function DC.wispHp(floorIndex, master)
 	local f = Data.DungeonFloors[floorIndex] or Data.DungeonFloors[1]
 	local wave = f.mechanics.addWaves
 	if not wave then return 0 end
-	local mult = f.hpMult * (if master == true and f.index <= DC.MASTER_FLOORS then DC.MASTER_MULT else 1)
+	local mult = f.hpMult * (if master == true and f.index <= DC.MASTER_FLOORS then DC.masterScale(f.index).hp else 1)
 	return math.ceil(wave.hp * math.sqrt(mult) - 1e-9)
+end
+-- Seconds between wisp waves: Master waves arrive less often in proportion to
+-- their tougher wisps, so wave HP per second matches the normal floor.
+function DC.waveEvery(floorIndex, master)
+	local f = Data.DungeonFloors[floorIndex] or Data.DungeonFloors[1]
+	local wave = f.mechanics.addWaves
+	if not wave then return 0 end
+	if not (master == true and f.index <= DC.MASTER_FLOORS) then return wave.every end
+	return wave.every * DC.wispHp(f.index, true) / DC.wispHp(f.index, false)
 end
 function DC.floorStats(floorIndex, master)
 	local s = Data.dungeonFloorStats(floorIndex)
 	s.bossDamageMult = 1
 	master = master == true and floorIndex <= DC.MASTER_FLOORS
 	if master then
-		local m = DC.MASTER_MULT
-		s.guardianHp, s.coreHp, s.guardianHit = s.guardianHp * m, s.coreHp * m, s.guardianHit * m
-		s.bossDamageMult = m
+		local m = DC.masterScale(floorIndex)
+		s.guardianHp, s.coreHp, s.guardianHit = math.ceil(s.guardianHp * m.hp - 1e-9), math.ceil(s.coreHp * m.hp - 1e-9), math.floor(s.guardianHit * m.damage)
+		s.bossDamageMult = m.damage
 	end
 	s.addHp = DC.wispHp(floorIndex, master)
+	s.waveEvery = DC.waveEvery(floorIndex, master)
 	s.par = DC.par(floorIndex, master)
 	return s
 end
@@ -5545,7 +5586,7 @@ function DC.classXp(floorIndex, grade, master, teamMult)
 	local f = Data.DungeonFloors[floorIndex] or Data.DungeonFloors[1]
 	local g = Data.DungeonGradeById[grade] or Data.DungeonGradeById.B
 	local team = math.clamp(tonumber(teamMult) or 1, 1, 1 + DC.TEAM_STEP * (#DC.order - 1))
-	return math.floor(f.rewards.dungeoneeringXp * 0.75 * g.mult * (if master then DC.MASTER_XP else 1) * team)
+	return math.floor(f.rewards.dungeoneeringXp * 0.75 * g.mult * (if master then DC.masterScale(f.index).xp else 1) * team)
 end
 -- A class's own dungeon weapon rolls at twice the chance when that class clears.
 function DC.classChest(chest, classId)
@@ -5565,14 +5606,21 @@ function DC.runRewards(floorIndex, grade, opts)
 	local master = opts.master == true and floorIndex <= DC.MASTER_FLOORS
 	local found = math.clamp(math.floor(tonumber(opts.secrets) or 0), 0, DC.secretCount(floorIndex))
 	if master then
-		r.dungeoneeringXp = math.floor(r.dungeoneeringXp * DC.MASTER_XP)
-		r.combatXp = math.floor(r.combatXp * DC.MASTER_XP)
-		r.coins = math.floor(r.coins * DC.MASTER_XP)
+		local x = DC.masterScale(floorIndex).xp
+		r.dungeoneeringXp = math.floor(r.dungeoneeringXp * x)
+		r.combatXp = math.floor(r.combatXp * x)
+		r.coins = math.floor(r.coins * x)
 	end
 	r.coins += math.floor(r.coins * 0.05 * found)
 	r.items.ObservatoryEssence += found
 	r.rolls = 1 + (if master then DC.MASTER_ROLLS else 0)
 	r.classXp = if DC.valid(opts.class) then DC.classXp(floorIndex, grade, master, opts.teamMult) else 0
+	-- Dungeon endgame: Master clears pay x EG.MASTER_ESSENCE essence and add the Master-only rows.
+	local EG = Data.DungeonEndgame
+	if master and EG then
+		r.items.ObservatoryEssence = math.floor(r.items.ObservatoryEssence * EG.MASTER_ESSENCE)
+		for _, d in ipairs(EG.MasterChest[floorIndex] or {}) do table.insert(r.chest, d) end
+	end
 	r.chest = DC.classChest(r.chest, opts.class)
 	r.master, r.secrets = master, found
 	return r
@@ -8496,5 +8544,518 @@ if CL and CL.Tasks then
 end
 end
 -- End Crafting section.
+
+------------------------------------------------------------------------------
+-- >>> BEGIN Dungeon endgame (Dungeon Depth team; append-only section) >>>
+-- Observatory endgame on top of Floors I-VII and the Dungeon classes section:
+--   * Floors VI-VII: cumulative room puzzles (VI Mirror Gallery; VII adds the
+--     Star Chart), multi-phase bosses whose telegraphed mechanics each check a
+--     class role (Reliquary Verdict = tank, Withering Lumen = healer, Eventide
+--     Nova = damage/interrupt, Constellation Lock = puzzle/Arcanist), and a
+--     gear-score gate (EG.gearScore: rarity + item level + upgrades of the five
+--     worn slots) on top of the Dungeoneering level.
+--   * Master Mode I-VII (DC.MASTER_FLOORS = 7, DC.masterScale per floor,
+--     unlocked by a normal clear at grade S): +5 Bonus score cap, x3 essence,
+--     +30% mechanic damage and Master-only chest rows (EG.MasterChest).
+--   * Essence: Observatory Essence buys Master stars (✪ 1-5) for dungeon gear
+--     with five regular stars (Gear.Layers hook, EG.masterStarCost) and Lodestar
+--     Keys at the Essence Exchange (EG.Exchange).
+--   * Chest economy: every credited clear rolls a pay-to-open bonus chest once
+--     (EG.bonusPlan); the contents are fixed and saved in the journal at the
+--     clear (no reroll by rejoining or leaving), opened for coins or a Lodestar
+--     Key within EG.CHEST_SECONDS, or skipped. One run id is credited once.
+--   * Credit (Minigames-style): contribution >= max(10% of the party,
+--     EG.MEDIAN_SHARE x the median member) and a credited action in the last
+--     EG.RECENT_SECONDS; delvers who drop may rejoin within EG.REJOIN_SECONDS.
+--   * Run log (last EG.LOG_LIMIT clears), weekly bests and a weekly first-clear
+--     essence bounty per floor and mode, all-time personal bests.
+-- Pure data + pure rules: expedition.server.lua runs rooms and phases,
+-- server.server.lua (Endgame block) persists p.dungeonEndgame and the Master
+-- stars (p.masterStars), ui.client.lua draws Hunt > Dungeon and Hunt > Essence;
+-- verify-dungeon-master.luau checks everything here.
+--   p.dungeonEndgame = {log={{t,f,m,g,s,sec,d}}, week={id, best={[key]=score},
+--     bounty={[key]=true}}, pb={[key]={score,seconds}}, chest={...}|nil, runs={runId,...}}
+--   key = "<floor>" or "<floor>m" (Master Mode)
+------------------------------------------------------------------------------
+do
+local EG = {}
+Data.DungeonEndgame = EG
+local DC = Data.DungeonClasses
+local Gear = Data.Gear
+local floors = Data.DungeonFloors
+
+-- Items ---------------------------------------------------------------------
+item("LodestarKey",{name="Lodestar Key",kind="material",rarity="Rare",color="E9C46A",value=300,
+	description="Opens an Observatory bonus chest without its coin fee. Observatory chests (Floor IV+) or the Essence Exchange."})
+item("EclipsedStarcore",{name="Eclipsed Starcore",kind="material",rarity="Epic",color="7A5BC4",value=2500,masterOnly=true,
+	description="Master Mode only. A star that burned out inside the Observatory; forges Master stars (✪) onto dungeon gear."})
+Data.Sets.Duskwarden = {id="Duskwarden",name="Duskwarden Regalia",pieces={},bonus={strength=40,critDamage=40,health=150},
+	text="+40 Strength, +40 Crit Damage, +150 Health",color="5B6FA8"}
+local duskwarden = {
+	{id="DuskwardenCowl",slot="helmet",name="Duskwarden Cowl",level=40,stats={defense=80,health=70,strength=15,critDamage=10}},
+	{id="DuskwardenHauberk",slot="chest",name="Duskwarden Hauberk",level=45,stats={defense=150,health=130,strength=25,critDamage=15}},
+	{id="DuskwardenTassets",slot="legs",name="Duskwarden Tassets",level=45,stats={defense=125,health=105,strength=20,critDamage=12}},
+	{id="DuskwardenSabatons",slot="boots",name="Duskwarden Sabatons",level=40,stats={defense=70,health=60,speed=8}},
+}
+for _, a in ipairs(duskwarden) do
+	item(a.id,{name=a.name,kind="armor",slot=a.slot,set="Duskwarden",rarity="Legendary",color="5B6FA8",stats=a.stats,dungeon=true,
+		requires={Combat=a.level,Dungeoneering=a.level},value=6000+a.level*100,
+		description="Observatory Floor VI-VII chest drop. Part of the Duskwarden Regalia set. Requires Dungeoneering "..a.level.."."})
+	table.insert(Data.Sets.Duskwarden.pieces, a.id)
+end
+item("ColossusLumenbrand",{name="Colossus Lumenbrand",kind="weapon",slot="weapon",rarity="Legendary",color="F2E3A0",dungeon=true,
+	stats={damage=245,strength=100,critChance=8,critDamage=75,intelligence=30},requires={Combat=40,Dungeoneering=40},value=15000,
+	description="Observatory Floor VI+ chest drop: a shard of the Lumen Colossus. Requires Dungeoneering 40."})
+item("SovereignNightfall",{name="Sovereign's Nightfall",kind="weapon",slot="weapon",rarity="Legendary",color="3E3570",dungeon=true,
+	stats={damage=290,strength=125,critChance=10,critDamage=95},requires={Combat=45,Dungeoneering=50},value=22000,
+	description="Observatory Floor VII chest drop: the Hollow Sovereign's blade. Requires Dungeoneering 50."})
+item("Thronebreaker",{name="Thronebreaker",kind="weapon",slot="weapon",tier=9,rarity="Mythic",color="C77DFF",dungeon=true,masterOnly=true,
+	stats={damage=320,strength=145,critChance=12,critDamage=105},requires={Combat=50,Dungeoneering=50},value=40000,
+	description="Master Mode only: Master Floor VI-VII chests. An endgame (tier 9) drop-only unique. Requires Dungeoneering 50."})
+item("SovereignHalo",{name="Sovereign Halo",kind="accessory",rarity="Mythic",color=Data.Rarity.Mythic.color,dungeon=true,masterOnly=true,
+	stats={strength=20,critDamage=20,intelligence=20,magicFind=4},value=40*Data.Rarity.Mythic.rank^2,
+	description="Accessory. Magical Power "..Data.Rarity.Mythic.power..". Master Mode only: Master Floor V-VII chests."})
+-- Normal chests: Floors VI-VII uniques and keys from Floor IV.
+local function drop(list, id, chance, min, max) table.insert(list, {item=id,chance=chance,min=min or 1,max=max or 1}) end
+drop(floors[4].chest, "LodestarKey", 0.02)
+drop(floors[5].chest, "LodestarKey", 0.03)
+drop(floors[6].chest, "LodestarKey", 0.04)
+drop(floors[6].chest, "DuskwardenCowl", 0.012)
+drop(floors[6].chest, "DuskwardenSabatons", 0.012)
+drop(floors[6].chest, "ColossusLumenbrand", 0.005)
+drop(floors[7].chest, "LodestarKey", 0.05)
+drop(floors[7].chest, "DuskwardenCowl", 0.015)
+drop(floors[7].chest, "DuskwardenSabatons", 0.015)
+drop(floors[7].chest, "DuskwardenHauberk", 0.01)
+drop(floors[7].chest, "DuskwardenTassets", 0.01)
+drop(floors[7].chest, "ColossusLumenbrand", 0.006)
+drop(floors[7].chest, "SovereignNightfall", 0.004)
+-- Master-only rows, appended to the floor's chest on Master clears (DC.runRewards).
+EG.MasterChest = {}
+for f = 1, #floors do
+	local list = {}
+	drop(list, "EclipsedStarcore", 0.04 + 0.02 * (f - 1))
+	drop(list, "LodestarKey", 0.04 + 0.01 * (f - 1))
+	if f >= 5 then drop(list, "SovereignHalo", ({[5]=0.003,[6]=0.005,[7]=0.008})[f]) end
+	if f >= 6 then drop(list, "Thronebreaker", ({[6]=0.002,[7]=0.004})[f]) end
+	EG.MasterChest[f] = list
+end
+EG.MASTER_ESSENCE = 3 -- Master clears: essence x3 (after grade and secrets)
+
+-- Gear score ------------------------------------------------------------------
+-- Per worn item (weapon + four armor slots): rarity points (effective rarity)
+-- + its highest skill requirement + 8 per star + 12 per Master star
+-- + 2 per Tempering Tome + 5 for a reforge. Style-agnostic: melee, ranged and
+-- magic gear of the same tier score alike.
+EG.RarityScore = {Common=10,Uncommon=20,Rare=35,Epic=55,Legendary=80,Mythic=110}
+EG.GEAR_SLOTS = {"weapon","helmet","chest","legs","boots"}
+EG.STAR_SCORE, EG.MASTER_STAR_SCORE, EG.TOME_SCORE, EG.REFORGE_SCORE = 8, 12, 2, 5
+-- gearGate[floor] = {normal, master} minimum gear score.
+EG.GearGate = {{0,0},{0,0},{0,0},{0,100},{0,180},{300,380},{420,500}}
+function EG.gearGate(floorIndex, master)
+	local g = EG.GearGate[tonumber(floorIndex) or 0]
+	if not g then return 0 end
+	return if master == true then g[2] else g[1]
+end
+function EG.itemScore(g, itemId)
+	local def = Data.Items[itemId]
+	if type(def) ~= "table" then return 0 end
+	local req = 0
+	for _, lvl in pairs(type(def.requires) == "table" and def.requires or {}) do req = math.max(req, tonumber(lvl) or 0) end
+	local b = Gear.breakdown(g, itemId)
+	return (EG.RarityScore[b.rarity] or 10) + req + EG.STAR_SCORE * b.stars + EG.MASTER_STAR_SCORE * (b.masterStars or 0)
+		+ EG.TOME_SCORE * b.tempering + (if b.reforge then EG.REFORGE_SCORE else 0)
+end
+-- p = {equipment={[slot]=itemId}, items={[id]=n}, reforges, stars, books, masterStars}.
+-- Items not owned (count < 1) or in the wrong slot score 0.
+function EG.gearScore(p)
+	if type(p) ~= "table" or type(p.equipment) ~= "table" then return 0 end
+	local items = type(p.items) == "table" and p.items or nil
+	local total = 0
+	for _, slot in ipairs(EG.GEAR_SLOTS) do
+		local id = p.equipment[slot]
+		local def = type(id) == "string" and Data.Items[id]
+		if def and def.slot == slot and (items == nil or (tonumber(items[id]) or 0) >= 1) then total += EG.itemScore(p, id) end
+	end
+	return total
+end
+-- Floor gate for a delver: ok, reason ("level" | "gear" | "master").
+function EG.floorAccess(floorIndex, master, level, gearScore, bestScore)
+	local f = floors[tonumber(floorIndex) or 0]
+	if not f then return false, "floor" end
+	if (tonumber(level) or 1) < f.level then return false, "level" end
+	if master == true and not DC.masterUnlocked(f.index, bestScore) then return false, "master" end
+	if (tonumber(gearScore) or 0) < EG.gearGate(f.index, master) then return false, "gear" end
+	return true
+end
+function EG.accessText(floorIndex, master, reason)
+	local f = floors[tonumber(floorIndex) or 1] or floors[1]
+	if reason == "level" then return f.name .. " requires Dungeoneering " .. f.level .. "." end
+	if reason == "master" then return "Master Mode " .. f.name .. " unlocks after a grade " .. DC.MASTER_UNLOCK_GRADE .. " (or better) clear of the floor." end
+	if reason == "gear" then return (if master then "Master Mode " else "") .. f.name .. " needs gear score " .. EG.gearGate(f.index, master) .. " (weapon + armor: rarity, item level, stars and tomes)." end
+	return "Unknown floor."
+end
+
+-- Master stars (✪) -----------------------------------------------------------
+-- Dungeon gear (def.dungeon, not accessories) with five regular stars takes up
+-- to five Master stars, each +Gear.DUNGEON_STAR_PERCENT% of the base stats.
+EG.MASTER_STAR_MAX = 5
+EG.MasterStarEssence = {100,150,220,300,400} -- x (1 + 0.25 x (rarity rank - 1))
+EG.MasterStarCores = {1,1,2,2,3}             -- Eclipsed Starcores
+EG.MasterStarCoins = 5000                    -- x k^2
+function EG.canMasterStar(def)
+	return type(def) == "table" and def.dungeon == true and Gear.canStar(Gear.category(def))
+end
+function EG.masterStarsOf(g, itemId)
+	if not EG.canMasterStar(Data.Items[itemId]) then return 0 end
+	local t = type(g) == "table" and type(g.masterStars) == "table" and g.masterStars or nil
+	local n = t and tonumber(t[itemId]) or 0
+	if n ~= n then return 0 end
+	return math.clamp(math.floor(n), 0, EG.MASTER_STAR_MAX)
+end
+function EG.masterStarCost(def, k)
+	if not EG.canMasterStar(def) or not EG.MasterStarEssence[k] then return nil end
+	local rank = Data.Rarity[def.rarity] and Data.Rarity[def.rarity].rank or 1
+	return {essence="ObservatoryEssence",amount=math.floor(EG.MasterStarEssence[k] * (1 + 0.25 * (rank - 1))),
+		cores=EG.MasterStarCores[k],coins=EG.MasterStarCoins * k * k}
+end
+-- Can star k+1 be bought? g = profile-like table. Returns ok, reason.
+function EG.masterStarCheck(g, itemId)
+	local def = Data.Items[itemId]
+	if not EG.canMasterStar(def) then return false, "Only Observatory weapons and armor take Master stars." end
+	if Gear.starsOf(g, itemId) < Gear.STAR_MAX then return false, def.name .. " needs " .. Gear.STAR_MAX .. " regular stars first." end
+	local k = EG.masterStarsOf(g, itemId)
+	if k >= EG.MASTER_STAR_MAX then return false, def.name .. " already has " .. EG.MASTER_STAR_MAX .. " Master stars." end
+	return true
+end
+-- Gear.Layers hook: Master stars add to Gear.breakdown (and so to
+-- Progression.upgradeStats / computeStats, which call Gear.breakdown).
+table.insert(Gear.Layers, {id="masterStars",glyph="✪",stats=function(g, itemId, def)
+	local n = EG.masterStarsOf(g, itemId)
+	if n <= 0 then return 0, {} end
+	local pct = Gear.starPercent(def) * n / 100
+	local out = {}
+	for stat, v in pairs(def.stats or {}) do
+		local bonus = math.floor(v * pct * 10 + 0.5) / 10
+		if bonus ~= 0 then out[stat] = bonus end
+	end
+	return n, out
+end})
+
+-- Essence Exchange --------------------------------------------------------------
+EG.Exchange = {
+	{id="LodestarKey",essence=60,coins=0,text="A key for one bonus chest."},
+}
+EG.ExchangeById = {}
+for _, e in ipairs(EG.Exchange) do EG.ExchangeById[e.id] = e end
+
+-- Rooms (cumulative) ---------------------------------------------------------------
+-- Mirror Gallery (VI+): four mirrors; the beam reaches mirror i+1 only when
+-- mirrors 1..i face their targets. Turning a lit mirror breaks the beam and is
+-- a puzzle mistake. Star Chart (VII): press the glyph plates in the order on
+-- the lectern; a wrong plate is a mistake and restarts the chart.
+EG.Rooms = {[6]={"mirrors"},[7]={"mirrors","chart"}}
+floors[6].mechanics.rooms = EG.Rooms[6]
+floors[7].mechanics.rooms = EG.Rooms[7]
+EG.RoomNames = {mirrors="Mirror Gallery",chart="Star Chart"}
+function EG.roomsFor(floorIndex) return EG.Rooms[tonumber(floorIndex) or 0] or {} end
+-- Stage after `stage` on a floor: prisms -> rooms... -> guardians.
+function EG.nextStage(floorIndex, stage)
+	local rooms = EG.roomsFor(floorIndex)
+	if stage == "prisms" then return rooms[1] or "guardians" end
+	local i = table.find(rooms, stage)
+	if i then return rooms[i + 1] or "guardians" end
+	return "guardians"
+end
+EG.MIRRORS = 4
+function EG.mirrorTargets(seed)
+	seed = math.floor(tonumber(seed) or 0)
+	local out = {}
+	for i = 1, EG.MIRRORS do out[i] = (seed * 7 + i * 3 + seed // 3) % 4 end
+	return out
+end
+-- Starting facings: never already on target (each mirror needs 1-3 turns).
+function EG.mirrorStart(seed)
+	seed = math.floor(tonumber(seed) or 0)
+	local t, out = EG.mirrorTargets(seed), {}
+	for i = 1, EG.MIRRORS do out[i] = (t[i] + 1 + (seed + i) % 3) % 4 end
+	return out
+end
+function EG.beamReach(states, targets)
+	local n = 0
+	for i = 1, EG.MIRRORS do
+		if states[i] ~= targets[i] then break end
+		n = i
+	end
+	return n
+end
+-- Turn mirror i a quarter: returns the new facing and whether it was a mistake.
+function EG.turnMirror(states, targets, i)
+	local mistake = i <= EG.beamReach(states, targets)
+	states[i] = (states[i] + 1) % 4
+	return states[i], mistake
+end
+EG.CHART_PLATES = 6
+EG.Glyphs = {{id="Lantern",glyph="☼"},{id="Crescent",glyph="☾"},{id="Comet",glyph="☄"},{id="Spindle",glyph="✶"},{id="Crown",glyph="♛"},{id="Tide",glyph="≈"}}
+function EG.chartLength(master) return if master == true then 5 else 4 end
+-- Deterministic per seed (Park-Miller steps); never the same plate twice in a row.
+function EG.chartSequence(seed, length)
+	local state = (math.floor(math.abs(tonumber(seed) or 0)) * 48271 + 11) % 2147483647
+	local out, prev = {}, 0
+	for i = 1, length do
+		state = (state * 16807) % 2147483647
+		local v = ((state // 4096) % EG.CHART_PLATES) + 1
+		if v == prev then v = (v % EG.CHART_PLATES) + 1 end
+		out[i], prev = v, v
+	end
+	return out
+end
+function EG.chartText(seq)
+	local parts = {}
+	for _, v in ipairs(seq) do table.insert(parts, EG.Glyphs[v].glyph) end
+	return table.concat(parts, " ")
+end
+
+-- Boss phases and role mechanics (Floors VI-VII) ------------------------------
+-- Phase = the highest-index phase whose `below` >= the core's HP fraction.
+-- Mechanics (damage as a fraction of max health; Master x(1 + MASTER_MECH)):
+--   verdict (Tank)   channel, then one heavy blow on the Aegis with the most
+--                    damage (taunt) or, with no living Aegis, the top damage dealer
+--   blight  (Healer) every delver withers each `tick` for `duration`; Mending
+--                    Light or Second Dawn cleanses it at once
+--   nova    (Damage) channel; dealing breakShare of the core's max HP during it,
+--                    or a Starshot Disrupting Shot, breaks it; else it strikes
+--                    everyone and counts as a puzzle mistake
+--   lock    (Puzzle) the final phase seals the core until the Star Chart is
+--                    replayed (Arcanist Attune presses the next plate)
+EG.MASTER_MECH = 0.3
+EG.Mechanics = {
+	verdict={name="Reliquary Verdict",role="Tank",channel=3,damage=0.45,glyph="⛨",
+		text="Channel, then a heavy blow on the Aegis (taunt) or the top damage dealer."},
+	blight={name="Withering Lumen",role="Healer",duration=12,tick=2,damage=0.04,glyph="✚",
+		text="Everyone withers for 12 s; a Mender's Mending Light or Second Dawn cleanses it."},
+	nova={name="Eventide Nova",role="Damage",channel=6,damage=0.7,breakShare=0.05,glyph="⚔",
+		text="A 6 s channel: break it with 5% of the boss's HP or a Disrupting Shot, or it strikes everyone."},
+	lock={name="Constellation Lock",role="Puzzle",glyph="✦",
+		text="The core seals until the Star Chart is replayed (Attune presses the next plate)."},
+}
+EG.Bosses = {
+	[6]={phases={
+		{below=1,name="Radiant Vigil",every={verdict=20}},
+		{below=0.6,name="Withering Reliquary",every={verdict=20,blight=24}},
+	}},
+	[7]={phases={
+		{below=1,name="Sovereign's Court",every={verdict=18}},
+		{below=0.7,name="Eventide Rite",every={verdict=18,blight=24,nova=30}},
+		{below=0.35,name="Constellation Lock",every={verdict=18,blight=24,nova=30},lock="chart"},
+	}},
+}
+function EG.phaseAt(floorIndex, fraction)
+	local b = EG.Bosses[tonumber(floorIndex) or 0]
+	if not b then return 0, nil end
+	fraction = tonumber(fraction) or 1
+	local index = 1
+	for i, ph in ipairs(b.phases) do if fraction <= ph.below + 1e-9 then index = i end end
+	return index, b.phases[index]
+end
+function EG.mechDamage(kind, maxHealth, master, takenMult)
+	local m = EG.Mechanics[kind]
+	if not m or not m.damage then return 0 end
+	local frac = m.damage * (if master == true then 1 + EG.MASTER_MECH else 1)
+	return math.max(1, math.floor((tonumber(maxHealth) or 100) * frac * (tonumber(takenMult) or 1)))
+end
+-- Verdict target among rows {key, class, damage, alive}: the living Aegis with
+-- the most damage (taunt), else the living delver with the most damage.
+function EG.verdictTarget(rows)
+	local best, bestAegis
+	for _, r in ipairs(rows) do
+		if r.alive then
+			if r.class == "Aegis" and (not bestAegis or (r.damage or 0) > (bestAegis.damage or 0)) then bestAegis = r end
+			if not best or (r.damage or 0) > (best.damage or 0) then best = r end
+		end
+	end
+	return bestAegis or best
+end
+function EG.novaThreshold(coreHp) return math.max(1, math.ceil((tonumber(coreHp) or 0) * EG.Mechanics.nova.breakShare - 1e-9)) end
+
+-- Credit (Minigames-style) -------------------------------------------------------
+EG.RECENT_SECONDS = 60    -- a credited action (damage, tuning, puzzle) this recently before the kill
+EG.MEDIAN_SHARE = 0.25    -- parties of 3+: points >= 25% of the median member's points
+EG.REJOIN_SECONDS = 90    -- a delver who drops mid-run may rejoin with their record
+EG.REJOIN_GRACE = 15      -- ... keeping their idle clock plus this many seconds
+function EG.median(list)
+	local t = {}
+	for _, v in ipairs(list) do table.insert(t, tonumber(v) or 0) end
+	if #t == 0 then return 0 end
+	table.sort(t)
+	local mid = (#t + 1) // 2
+	return if #t % 2 == 1 then t[mid] else (t[mid] + t[mid + 1]) / 2
+end
+-- c = {points, total, median, partySize, lastAction, now}. Returns ok, reason.
+function EG.creditCheck(c)
+	if type(c) ~= "table" then return false, "invalid" end
+	if not Data.dungeonContributed(c.points, c.total) then return false, "share" end
+	if (tonumber(c.partySize) or 1) >= 3 and (tonumber(c.points) or 0) < EG.MEDIAN_SHARE * (tonumber(c.median) or 0) then return false, "median" end
+	if not c.lastAction or not c.now or c.now - c.lastAction > EG.RECENT_SECONDS then return false, "recent" end
+	return true
+end
+
+-- Bonus chest ------------------------------------------------------------------
+-- Rolled once per credited clear (contents saved in the journal at the clear):
+-- guaranteed essence (the clear's base essence) + the floor's chest (with the
+-- Master rows on Master clears) at x BONUS_CHANCE x the grade's chance factor.
+-- Opening costs coins (or one Lodestar Key); unopened chests expire.
+-- Costs sit at ~1.4x the chest's expected value (EG.expectedValue): opening
+-- blind loses coins on average; the contents are shown first, so the fee buys
+-- the chance at a unique, never a free reroll.
+EG.BonusCost = {70,350,800,1400,2000,4000,7000}
+EG.BonusCostMaster = {430,900,1500,2300,3100,5500,9000}
+EG.BONUS_CHANCE = 1.5
+EG.CHEST_SECONDS = 900
+function EG.bonusCost(floorIndex, master)
+	local list = if master == true then EG.BonusCostMaster else EG.BonusCost
+	return list[tonumber(floorIndex) or 1] or list[1]
+end
+function EG.bonusPlan(floorIndex, grade, master)
+	local f = floors[floorIndex] or floors[1]
+	local g = Data.DungeonGradeById[grade] or Data.DungeonGradeById.B
+	local essence = math.max(1, math.floor(f.rewards.essence * g.mult))
+	local table_ = {{item="ObservatoryEssence",chance=1,min=essence,max=essence * 2}}
+	local function add(list)
+		for _, d in ipairs(list) do
+			if d.item ~= "ObservatoryEssence" then
+				table.insert(table_, {item=d.item,chance=math.min(1, d.chance * g.chance * EG.BONUS_CHANCE),min=d.min,max=d.max})
+			end
+		end
+	end
+	add(f.chest)
+	if master == true then add(EG.MasterChest[f.index] or {}) end
+	return {cost=EG.bonusCost(f.index, master),drops=table_}
+end
+-- Expected coin value of a drop table (item value x mean count x chance).
+function EG.expectedValue(drops)
+	local v = 0
+	for _, d in ipairs(drops) do
+		local def = Data.Items[d.item]
+		v += (def and def.value or 0) * d.chance * (d.min + d.max) / 2
+	end
+	return v
+end
+
+-- Run log, weekly bests, personal bests -------------------------------------------
+EG.LOG_LIMIT = 12
+EG.WEEK = 7 * 24 * 3600
+EG.RUN_MEMORY = 8 -- credited run ids remembered (one credit per run id)
+function EG.key(floorIndex, master) return tostring(math.floor(tonumber(floorIndex) or 1)) .. (if master == true then "m" else "") end
+function EG.weekOf(t) return math.floor((tonumber(t) or 0) / EG.WEEK) end
+function EG.weekEnds(t) return (EG.weekOf(t) + 1) * EG.WEEK end
+-- Weekly first-clear bounty: the floor's base essence (x2 in Master Mode).
+function EG.bounty(floorIndex, master)
+	local f = floors[floorIndex] or floors[1]
+	return f.rewards.essence * (if master == true then 2 else 1)
+end
+local function num(v, lo, hi)
+	v = tonumber(v)
+	if not v or v ~= v then return nil end
+	v = math.floor(v)
+	if lo and v < lo then return nil end
+	if hi and v > hi then v = hi end
+	return v
+end
+local function validKey(k)
+	if type(k) ~= "string" then return false end
+	local f, m = string.match(k, "^(%d+)(m?)$")
+	f = tonumber(f)
+	return f ~= nil and floors[f] ~= nil and (m == "" or f <= DC.MASTER_FLOORS)
+end
+EG.validKey = validKey
+-- Always returns a clean p.dungeonEndgame; drops stale weeks and expired chests.
+function EG.migrate(raw, now)
+	local t = type(raw) == "table" and raw or {}
+	now = tonumber(now) or 0
+	local out = {log={},week={id=EG.weekOf(now),best={},bounty={}},pb={},chest=nil,runs={}}
+	for _, e in ipairs(type(t.log) == "table" and t.log or {}) do
+		if type(e) == "table" and floors[tonumber(e.f) or 0] and #out.log < EG.LOG_LIMIT then
+			table.insert(out.log, {t=num(e.t, 0) or 0,f=num(e.f, 1),m=e.m == true,g=if Data.DungeonGradeById[e.g] then e.g else "D",
+				s=num(e.s, 0, 300) or 0,sec=num(e.sec, 0) or 0,d=num(e.d, 0, 99) or 0})
+		end
+	end
+	local w = type(t.week) == "table" and t.week or {}
+	if tonumber(w.id) == out.week.id then
+		for k, v in pairs(type(w.best) == "table" and w.best or {}) do
+			local s = num(v, 0, 300)
+			if validKey(k) and s then out.week.best[k] = s end
+		end
+		for k, v in pairs(type(w.bounty) == "table" and w.bounty or {}) do
+			if validKey(k) and v == true then out.week.bounty[k] = true end
+		end
+	end
+	for k, v in pairs(type(t.pb) == "table" and t.pb or {}) do
+		if validKey(k) and type(v) == "table" then
+			local s, sec = num(v.score, 0, 300), num(v.seconds, 1)
+			if s and sec then out.pb[k] = {score=s,seconds=sec} end
+		end
+	end
+	local c = t.chest
+	if type(c) == "table" and floors[tonumber(c.floor) or 0] and type(c.items) == "table" and (tonumber(c.expires) or 0) > now then
+		local items = {}
+		for id, n in pairs(c.items) do
+			local v = num(n, 1, 9999)
+			if type(id) == "string" and Data.Items[id] and v then items[id] = v end
+		end
+		out.chest = {floor=num(c.floor, 1),master=c.master == true and num(c.floor, 1) <= DC.MASTER_FLOORS,grade=if Data.DungeonGradeById[c.grade] then c.grade else "B",
+			items=items,cost=num(c.cost, 0) or 0,expires=num(c.expires, 0)}
+	end
+	for _, id in ipairs(type(t.runs) == "table" and t.runs or {}) do
+		if type(id) == "string" and #id <= 64 and #out.runs < EG.RUN_MEMORY then table.insert(out.runs, id) end
+	end
+	return out
+end
+-- Record one credited clear: log row (newest first), weekly best, bounty claim,
+-- personal best (higher score, then faster). Returns {bounty=n, weeklyBest=bool, pb=bool}.
+function EG.record(state, floorIndex, master, grade, score, seconds, deaths, now)
+	local key = EG.key(floorIndex, master)
+	if state.week.id ~= EG.weekOf(now) then state.week = {id=EG.weekOf(now),best={},bounty={}} end
+	table.insert(state.log, 1, {t=now,f=floorIndex,m=master == true,g=grade,s=score,sec=seconds,d=deaths})
+	while #state.log > EG.LOG_LIMIT do table.remove(state.log) end
+	local out = {bounty=0,weeklyBest=false,pb=false}
+	if score > (state.week.best[key] or -1) then state.week.best[key] = score; out.weeklyBest = true end
+	if not state.week.bounty[key] then state.week.bounty[key] = true; out.bounty = EG.bounty(floorIndex, master) end
+	local pb = state.pb[key]
+	if not pb or score > pb.score or (score == pb.score and seconds < pb.seconds) then
+		state.pb[key] = {score=score,seconds=math.max(1, seconds)}
+		out.pb = true
+	end
+	return out
+end
+function EG.rememberRun(state, runId)
+	if type(runId) ~= "string" or runId == "" then return true end
+	if table.find(state.runs, runId) then return false end
+	table.insert(state.runs, 1, runId)
+	while #state.runs > EG.RUN_MEMORY do table.remove(state.runs) end
+	return true
+end
+
+-- Balance model (verify-dungeon-master.luau) ------------------------------------
+-- A clear takes MODEL_PAR x the run's par plus MODEL_OVERHEAD seconds (pad,
+-- walking, chest), never faster than the 90 s credit cooldown. Rates at grade S
+-- with every secret; chest value = expected value of the free chest roll(s).
+EG.MODEL_PAR, EG.MODEL_OVERHEAD = 0.85, 45
+function EG.model(floorIndex, master, grade)
+	grade = grade or "S"
+	local seconds = math.max(Data.Dungeons.clearCooldown, DC.par(floorIndex, master) * EG.MODEL_PAR + EG.MODEL_OVERHEAD)
+	local runs = 3600 / seconds
+	local r = DC.runRewards(floorIndex, grade, {master=master,secrets=DC.secretCount(floorIndex)})
+	local chest = EG.expectedValue(r.chest) * r.rolls
+	local essence = r.items.ObservatoryEssence
+	local bonus = EG.bonusPlan(floorIndex, grade, master)
+	return {seconds=seconds,runsPerHour=runs,dungeoneeringXp=r.dungeoneeringXp * runs,combatXp=r.combatXp * runs,coins=r.coins * runs,
+		essence=essence * runs,chestValue=chest * runs,bonusValue=EG.expectedValue(bonus.drops),bonusCost=bonus.cost}
+end
+-- Collection Log: Master-only rows belong to the Dungeons tab.
+if Data.CommissionsLogs and Data.CommissionsLogs.LogRoots then Data.CommissionsLogs.LogRoots.DungeonEndgame = "Dungeons" end
+end
+-- <<< END Dungeon endgame <<<
+------------------------------------------------------------------------------
 
 return Data
