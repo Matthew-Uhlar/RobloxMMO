@@ -4626,6 +4626,8 @@ local function open(player)
 	player.CharacterAdded:Connect(spawnCharacter)
 	if player.Character then task.spawn(spawnCharacter,player.Character) end
 	local refundNote=applySigilRefund and applySigilRefund(player,profile) -- Endgame: altar refunds owed while away
+	local lairNote=Lairs.settle and Lairs.settle(player,profile) -- Lairs: an entry fee owed from a fight that closed while away
+	if lairNote then refundNote=if refundNote then refundNote.." • "..lairNote else lairNote end
 	update:FireClient(player,snapshot(player,(if preview[player] then "Studio practice session • saving unavailable" else "Journal opened")..(if refundNote then " • "..refundNote else "")))
 end
 local function live(player)
@@ -5782,11 +5784,13 @@ end
 do
 	local LR=Data.Lairs
 	Lairs.entered={} -- [userId]={fight,boss,fee,at,paid,refunded}
+	Lairs.closed={} -- [userId]={fight,refund}: entries closed by UserId while the member was offline
 	Lairs.ENTRY_TTL=7200
 	local TEXT={level="Your Combat level is too low for this lair.",region="You cannot reach this lair's region yet.",
 		coins="You cannot afford the lair's entry fee.",busy="Finish your current dungeon run, minigame or lair first.",
 		boss="This altar is silent.",capacity="Every lair on this server is in use. Try again in a minute.",
-		full="That lair is full.",active="You are already inside a lair.",invalid="The altar flickers. Try again shortly."}
+		full="That lair is full.",active="You are already inside a lair.",invalid="The altar flickers. Try again shortly.",
+		pending="Your last lair reward is still being counted. Try again in a moment."}
 	function Lairs.migrate(p) p.lairs=LR.migrate(p.lairs) end
 	function Lairs.of(p)
 		local s=p.lairs
@@ -5828,6 +5832,7 @@ do
 		local now=os.time()
 		for uid,e in pairs(Lairs.entered) do if now-e.at>Lairs.ENTRY_TTL then Lairs.entered[uid]=nil end end
 		Lairs.entered[player.UserId]={fight=reply.fight,boss=item,fee=def.fee,at=now}
+		Lairs.of(p).owed={fight=reply.fight,boss=item,fee=def.fee} -- saved with the journal until the entry settles
 		p.started=true
 		if reply.mode=="join" then return "You join the hunt in "..def.lairName.." • -"..def.fee.." coins." end
 		return "The altar flares: "..def.lairName.." opens • -"..def.fee.." coins. "..def.short.." rises in "..LR.WARMUP.."s."
@@ -5839,17 +5844,27 @@ do
 		if not def or type(payload.fight)~="string" then return {ok=false,reason="invalid"} end
 		if not e or e.fight~=payload.fight or e.boss~=payload.boss then return {ok=false,reason="entry"} end
 		local action=payload.action
+		local s=Lairs.of(p)
+		local function settled() if s.owed and s.owed.fight==payload.fight then s.owed=nil end end
 		if action=="refund" then
 			if e.paid or e.refunded then return {ok=false,reason="paid"} end
 			e.refunded=true
 			p.coins+=e.fee
 			Lairs.entered[player.UserId]=nil
+			settled()
 			return {ok=true,coins=e.fee,message="The altar returns your "..e.fee.."-coin offering."}
 		elseif action=="end" then
 			Lairs.entered[player.UserId]=nil
+			settled()
 			if payload.result=="died" then
-				local s=Lairs.of(p)
 				s.deaths[payload.boss]=math.min(LR.MAX_KC,(s.deaths[payload.boss] or 0)+1)
+				if payload.penalty==true then
+					-- Disconnected to dodge a death: the usual 10% purse-coin death loss (Humanoid.Died never fired).
+					local lost=math.floor(p.coins*0.10)
+					p.coins-=lost
+					p.bankRevision=(p.bankRevision or 0)+1
+					return {ok=true,lost=lost}
+				end
 			end
 			return {ok=true}
 		elseif action~="kill" then
@@ -5857,6 +5872,7 @@ do
 		end
 		if e.paid then return {ok=false,reason="paid"} end
 		e.paid=true
+		settled()
 		local seconds=math.clamp(math.floor(tonumber(payload.seconds) or def.duration),1,def.duration)
 		local party=math.clamp(math.floor(tonumber(payload.party) or 1),1,LR.MAX_PARTY)
 		local stats=Progression.computeStats(p,os.time())
@@ -5879,6 +5895,64 @@ do
 		local s=Lairs.of(p)
 		local lair=player:GetAttribute("LairBoss")
 		return {kc=s.kc,pb=s.pb,pbParty=s.pbParty,got=s.got,deaths=s.deaths,log=s.log,active=if type(lair)=="string" then lair else ""}
+	end
+	local function heldJournal(uid)
+		for player,p in pairs(profiles) do if player.UserId==uid then return player,p end end
+		return nil
+	end
+	-- Bridge "lair" by UserId (lairs.server.lua: a member removed while offline).
+	-- A journal still held here settles at once; the close is always filed so
+	-- the next load knows whether the owed fee was forfeited or refunded.
+	function Lairs.offline(uid,payload)
+		if uid%1~=0 or uid<=0 or type(payload.fight)~="string" or not LR.boss(payload.boss) then return {ok=false,reason="invalid"} end
+		if payload.action~="end" and payload.action~="refund" then return {ok=false,reason="invalid"} end
+		local e=Lairs.entered[uid]
+		local reply
+		if e and e.fight==payload.fight then
+			local player,p=heldJournal(uid)
+			if player then reply=Lairs.bridge(player,p,payload); reply.message=nil end
+			Lairs.entered[uid]=nil
+		end
+		Lairs.closed[uid]={fight=payload.fight,refund=payload.action=="refund"}
+		return reply or {ok=true,mode="filed"}
+	end
+	-- Load: an entry still owed (p.lairs.owed) is kept while the fight holds the
+	-- member (a rejoin), dropped when this server filed a forfeit, else refunded
+	-- once (a shutdown, a failed refund, a fight that closed elsewhere).
+	function Lairs.settle(player,p)
+		local s=Lairs.of(p)
+		local o=s.owed
+		if not o then return nil end
+		local uid=player.UserId
+		local held=invoke("holds",player,o.fight)
+		if held and held.held then
+			local e=Lairs.entered[uid]
+			if not e or e.fight~=o.fight then Lairs.entered[uid]={fight=o.fight,boss=o.boss,fee=o.fee,at=os.time()} end
+			return nil
+		end
+		local c=Lairs.closed[uid]
+		Lairs.closed[uid]=nil
+		s.owed=nil
+		local e=Lairs.entered[uid]
+		if e and e.fight==o.fight then Lairs.entered[uid]=nil end
+		if c and c.fight==o.fight and not c.refund then return nil end
+		p.coins+=o.fee
+		return "The altar returned your "..o.fee.."-coin lair offering."
+	end
+	-- Shutdown (BindToClose, before the journals save): lairs.server.lua tears
+	-- down unfinished fights and lists unpaid members; held journals are refunded
+	-- now, offline ones keep p.lairs.owed (refunded at their next load).
+	function Lairs.drain()
+		local fn=ServerStorage:FindFirstChild("IsleLairs")
+		if not fn then return 0 end
+		local ok,list=pcall(fn.Invoke,fn,"drain")
+		if not ok or type(list)~="table" then return 0 end
+		local n=0
+		for _,e in ipairs(list) do
+			local player,p=heldJournal(type(e)=="table" and e.userId or 0)
+			if player and Lairs.bridge(player,p,{action="refund",boss=e.boss,fight=e.fight}).ok then n+=1 end
+		end
+		return n
 	end
 end
 ------------------------------------------------------------------------------
@@ -6546,6 +6620,8 @@ local function close(player)
 	-- Still loading: open() notices the departure, releases the lease and forgets.
 	if opening[player] then return end
 	while exchangeBusy[player] do task.wait(0.1) end
+	-- Lairs: a disconnect dodging a death is settled while the journal is live (lairs.server.lua "depart").
+	pcall(function() local lairs=ServerStorage:FindFirstChild("IsleLairs"); if lairs then lairs:Invoke("depart",player) end end)
 	-- Minigames: settle in-match XP before the final save (see minigames.server.lua).
 	pcall(function() local mgLeave=ServerStorage:FindFirstChild("IsleMinigameLeave"); if mgLeave then mgLeave:Invoke(player) end end)
 	Held.forget(player) -- Held items: drop the auto-return timer before the final save
@@ -6584,6 +6660,7 @@ task.spawn(function()
 end)
 game:BindToClose(function()
 	Endgame.drain() -- Endgame: refund unspent altar sigils before the journals save
+	if Lairs.drain then Lairs.drain() end -- Lairs: refund unfinished fights' fees before the journals save
 	local pending=0
 	for player in pairs(profiles) do
 		pending+=1
@@ -6958,7 +7035,7 @@ function CombatStyles.refund(p,payload)
 	for id,n in pairs(back) do p.items[id]=(p.items[id] or 0)+n end
 	return {ok=true}
 end
-function CombatStyles.xpRate(monsterId,tier)
+function CombatStyles.xpRate(monsterId,tier,maxHp)
 	if type(monsterId)~="string" then return nil end
 	local line=string.match(monsterId,"^Boss:(%a+)$")
 	if line then
@@ -6968,6 +7045,13 @@ function CombatStyles.xpRate(monsterId,tier)
 	end
 	local monster=validId(monsterId) and Data.Monsters[monsterId]
 	if not monster then return nil end
+	-- Lairs: a boss's health scales with its party; damage XP caps at the scaled
+	-- health (combat sends maxHp, clamped to the largest party) at the same rate.
+	if monster.lair and not monster.lairAdd and Data.Lairs then
+		local cap=math.clamp(tonumber(maxHp) or monster.hp,monster.hp,Data.Lairs.partyHp(monster,Data.Lairs.MAX_PARTY))
+		if cap~=cap then cap=monster.hp end
+		return monster.xp*cap/monster.hp,cap
+	end
 	return monster.xp,monster.hp
 end
 function CombatStyles.xp(p,payload)
@@ -6976,7 +7060,7 @@ function CombatStyles.xp(p,payload)
 	local gains={}
 	local damage=payload.damage
 	if type(damage)=="number" and damage==damage and damage>0 then
-		local xp,hp=CombatStyles.xpRate(payload.monster,payload.tier)
+		local xp,hp=CombatStyles.xpRate(payload.monster,payload.tier,payload.maxHp)
 		if xp then gains=Progression.styleXp(style,damage,xp,hp) end
 	end
 	local spell=style=="magic" and validId(payload.spell) and Data.Spells[payload.spell]
@@ -7014,6 +7098,10 @@ bridge.OnInvoke=function(op,player,payload)
 	if op=="worldBossRefund" then
 		-- Endgame: unspent altar sigils; the placer may be offline (player = UserId).
 		return Endgame.refund(payload)
+	end
+	if op=="lair" and type(player)=="number" then
+		-- Lairs: a member removed while offline (player = UserId).
+		return Lairs.offline(player,payload)
 	end
 	if op=="damage" then
 		local raw=payload.amount

@@ -967,7 +967,8 @@ local function settle(player)
 	anchor(m,"Waypoint_HomeLanding",center+V(0,0,5),center)
 	local function land(character)
 		local root=character:WaitForChild("HumanoidRootPart",10)
-		if root and homes[player] and player.Character==character then character:PivotTo(CFrame.new(spawn.Position+V(0,3.4,0))) end
+		-- Lairs: lairs.server.lua owns a rejoin respawn (LairRejoin) and returns the member to their arena.
+		if root and homes[player] and player.Character==character and not player:GetAttribute("LairRejoin") then character:PivotTo(CFrame.new(spawn.Position+V(0,3.4,0))) end
 	end
 	player.CharacterAdded:Connect(land)
 	if player.Character then task.spawn(land,player.Character) end

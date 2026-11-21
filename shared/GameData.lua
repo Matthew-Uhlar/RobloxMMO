@@ -9677,6 +9677,9 @@ LR.PET_HOURS = 40           -- pets: expected hours of kills at the model's kill
 LR.KEEP_LOG = 10            -- recent kills kept in the journal
 LR.MAX_KC = 1000000
 LR.REWARD_RETRY, LR.REWARD_WINDOW = 5, 120
+LR.REJOIN_VERIFY = 3        -- after a rejoin the arena position (and the disconnect health) is re-applied this long
+LR.FLEE_HP, LR.FLEE_SECONDS = 0.25, 3 -- a disconnect below 25% health within 3 s of a hit counts as a death
+LR.UNIQUE_MAX = 0.85        -- every unique stat <= 85% of its higher-requirement rival's (lead decision)
 
 -- Combat triangle for a weakness w: w deals +30%, the style w beats is resisted.
 function LR.triangle(w)
@@ -9817,16 +9820,16 @@ local function unique(id, boss, def)
 end
 local R = Data.Rarity
 unique("ThornmawCleaver","Bramblemaw",{name="Thornmaw Cleaver",kind="weapon",slot="weapon",tier=5,rarity="Epic",color="6BBF59",
-	stats={damage=190,strength=75,critChance=7,critDamage=50},requires={Combat=30},value=4500,
+	stats={damage=187,strength=75,critChance=7,critDamage=50},requires={Combat=30},value=4500,
 	description="Melee. Bramblemaw's own thorn-fang, still green. Requires Combat 30. Lair unique."})
 unique("GalesongLongbow","Aerisca",{name="Galesong Longbow",kind="weapon",slot="weapon",style="ranged",tier=6,rarity="Legendary",color="8FD3E8",
-	stats={critDamage=44,rangedAccuracy=78},ranged={power=260,speed=1.05,range=CS.maxRange,maxAmmoTier=6},requires={Ranged=45},value=9000,
+	stats={critDamage=40,rangedAccuracy=71},ranged={power=239,speed=1.05,range=CS.maxRange,maxAmmoTier=6},requires={Ranged=45},value=9000,
 	description="Ranged weapon. Strung with Aerisca's storm-gut. "..CS.maxRange.." stud reach. Arrows up to tier 6. Requires Ranged 45. Lair unique."})
 unique("PyreheartStaff","Pyrewarden",{name="Pyreheart Staff",kind="weapon",slot="weapon",style="magic",tier=7,rarity="Legendary",color="E8643A",
-	stats={intelligence=170,abilityDamage=5},magic={power=175,speed=1.2,elements={"Ember","Stone"}},requires={Magic=55},value=16000,
+	stats={intelligence=153,abilityDamage=5},magic={power=161,speed=1.2,elements={"Ember","Stone"}},requires={Magic=55},value=16000,
 	description="Magic weapon. The Pyrewarden's banked core. Supplies unlimited Ember, Stone glyphs. Requires Magic 55. Lair unique."})
 unique("HollowcrownEdge","Nihlvar",{name="Hollowcrown Edge",kind="weapon",slot="weapon",tier=9,rarity="Mythic",color="7A5BC4",
-	stats={damage=370,strength=168,critChance=17,critDamage=104},requires={Combat=65},value=30000,
+	stats={damage=323,strength=148,critChance=15,critDamage=93},requires={Combat=65},value=30000,
 	description="Melee. A shard of Nihlvar's hollow crown. Requires Combat 65. Lair unique."})
 unique("ThornheartLocket","Bramblemaw",{name="Thornheart Locket",kind="accessory",rarity="Rare",color=R.Rare.color,stats={strength=8,critDamage=6},
 	value=40*R.Rare.rank^2,description="Accessory. Magical Power "..R.Rare.power..". Only Bramblemaw's den holds one."})
@@ -9834,7 +9837,7 @@ unique("SquallglassPendant","Aerisca",{name="Squallglass Pendant",kind="accessor
 	value=40*R.Epic.rank^2,description="Accessory. Magical Power "..R.Epic.power..". Only Aerisca's eyrie holds one."})
 unique("EmberwardSeal","Pyrewarden",{name="Emberward Seal",kind="accessory",rarity="Legendary",color=R.Legendary.color,stats={intelligence=16,critDamage=14,strength=10},
 	value=40*R.Legendary.rank^2,description="Accessory. Magical Power "..R.Legendary.power..". Only the Emberforge Vault holds one."})
-unique("ArchonSigil","Nihlvar",{name="Archon's Sigil",kind="accessory",rarity="Mythic",color=R.Mythic.color,stats={strength=34,critDamage=26,health=60},
+unique("ArchonSigil","Nihlvar",{name="Archon's Sigil",kind="accessory",rarity="Mythic",color=R.Mythic.color,stats={strength=34,critDamage=25,health=60},
 	value=40*R.Mythic.rank^2,description="Accessory. Magical Power "..R.Mythic.power..". Only the Riftcrown Sanctum holds one."})
 
 -- Boss pets (Data.Pets species + Pet depth abilities and looks) ----------------
@@ -10057,6 +10060,14 @@ function LR.migrate(t)
 			table.insert(out.log, {b=e.b,s=count(e.s, 86400) or 0,t=count(e.t, 4e9) or 0,n=count(e.n, LR.MAX_PARTY) or 1,u=u})
 		end
 	end
+	-- owed = the open entry {fight, boss, fee}: set when the fee is paid, cleared
+	-- when the entry settles; still set at a load -> refunded (server Lairs.settle).
+	local o = t.owed
+	local od = type(o) == "table" and LR.boss(o.boss)
+	if od and type(o.fight) == "string" and #o.fight <= 64 then
+		local fee = count(o.fee, od.fee)
+		if fee and fee > 0 then out.owed = {fight=o.fight,boss=o.boss,fee=fee} end
+	end
 	return out
 end
 -- One credited kill. Returns {kc, pb = bool (new best), uniques = {id...}}.
@@ -10093,7 +10104,11 @@ end
 -- for MODEL_UPTIME of the fight (dodging, prayer swaps, adds). The weakness
 -- applies (+30%) as players bring the right style. A kill takes the fight plus
 -- MODEL_OVERHEAD s (altar, warmup, return, restock). Coins/h = coin roll + the
--- merchant value of expected drops (uniques and pets included) - the fee.
+-- merchant value of expected non-unique drops - the fee; the uniques' (and
+-- pets') merchant value is reported separately (uniqueValue per kill, uniques
+-- per hour) and kept out of the coins/h ratio (lead decision). The model rolls
+-- base drop chances: it ignores Magic Find and Pet Luck, which raise every row
+-- under 5% (uniques and pets) for geared players (see DEPTH-CONTRACT §25).
 -- Slayer reference: 300 kills/h of the best monster's coins + the best open
 -- master's task bounty per task; XP reference: solo Combat XP/h at that level.
 LR.MODEL_TTK, LR.MODEL_UPTIME, LR.MODEL_OVERHEAD = 8, 0.75, 60
@@ -10101,11 +10116,14 @@ function LR.dpsAt(level)
 	local m = Data.Minigames.bestMonster(level)
 	return m.hp * (1 + (m.defense or 0) / 100) / LR.MODEL_TTK
 end
-function LR.expectedValue(drops)
+-- uniques: nil = every row, false = without the lair uniques (pets included), true = uniques only.
+function LR.expectedValue(drops, uniques)
 	local v = 0
 	for _, d in ipairs(drops) do
 		local def = Data.Items[d.item]
-		v += d.chance * (d.min + d.max) / 2 * (def and def.value or 0)
+		if uniques == nil or (uniques == true) == LR.isUnique(d.item) then
+			v += d.chance * (d.min + d.max) / 2 * (def and def.value or 0)
+		end
 	end
 	return v
 end
@@ -10126,11 +10144,15 @@ function LR.model(id, party)
 	local fight = effHp / (dps * party * LR.MODEL_UPTIME)
 	local seconds = fight + LR.MODEL_OVERHEAD
 	local kph = 3600 / seconds
-	local loot = LR.expectedValue(LR.Loot[id])
-	local xpKill = (def.xp * LR.partyHp(def, party) / def.hp + addXp) / party
+	local loot = LR.expectedValue(LR.Loot[id], false)
+	local uniqueValue = LR.expectedValue(LR.Loot[id], true)
+	-- Party XP: each member deals an equal share of the scaled health; damage XP
+	-- caps at the fight's real health (combat sends maxHp), so the share pays in full.
+	local hp = LR.partyHp(def, party)
+	local xpKill = def.xp * math.min(hp / party, hp) / def.hp + addXp / party
 	local coinsKill = def.coinsAvg + loot - def.fee
 	return {fight=fight,seconds=seconds,kph=kph,xp=xpKill * kph,coins=coinsKill * kph,coinsKill=coinsKill,
-		lootValue=loot,petHours=1 / (LR.PetChance[id] * kph)}
+		lootValue=loot,uniqueValue=uniqueValue,uniques=uniqueValue * kph,petHours=1 / (LR.PetChance[id] * kph)}
 end
 function LR.slayerReference(level)
 	local MG, ST = Data.Minigames, Data.SlayerTasks
