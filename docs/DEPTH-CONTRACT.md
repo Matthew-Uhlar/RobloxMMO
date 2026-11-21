@@ -186,3 +186,14 @@ Slayer review rules: superior loot scales with base level (Ichor/Sigil only from
 ## 20. Commissions, Collection Log and Museum
 
 `Data.CommissionsLogs`. Commissions: 4 daily slots (UTC day, deterministic per journal) from 40 tasks; rewards XP, coins, Glimmerdust; milestones at 1/5/15/50/150; Forgeheart perks (Mining Speed, Fortune sharing a 99 budget with Mastery, gem chance). Collection Log: 112 auto-generated uniques in 10 tabs, retroactive credit, tab rewards and rank. Museum: 205 donatable items (consumed; equipped/bagged/last upgraded copy refused), 7 milestones. Verbs `commissionClaim "<slot>"`, `commissionClaimAll`, `forgeBuy "<perk>"`, `logClaim "<tab>"`, `logTitle "<tab>|Paragon|none"`, `museumDonate "<item>"`, prompt verb `logsBoard`. Profile `p.commissions`, `p.colLog`, `p.museum`; perks in `p.perkStats` (`commissions:milestones`, `forgeheart`, `museum`); snapshot `logs`; attribute `LogTitle`. Items flagged `minigameUnique` join the Minigames tab.
+
+## 21. Minigames (Skybreach Siege, Tempest Haul)
+
+- `minigames.server.lua` (ServerScriptService "Minigames") runs lobbies, matches, scoring and the in-match world; all rules live in the `-- Minigames` section of `shared/GameData.lua`.
+- Bridge op `"minigame"`: `info`, `spend` (Timber only), `settle` (server clamps points to 12/s of match time and only accepts XP in the game's own skills).
+- `ServerStorage.IsleMinigameAccess` gates the Skybreach ferry (Combat 20 or Fishing 20).
+- Verbs: `mgBuy <shopId>`, `mgRoll 1|all`, `mgTitle <id>|none`. Profile key `p.minigames`; snapshot key `minigames`.
+- Workspace attributes `MinigameLobbies`, `MinigameMatches`; player attributes `MinigameGame`, `MinigameHud`, `MinigameNotice`, `MinigameNoticeCount`, `MinigameTitle`.
+- Rewards are paid only to members who reach the point minimum; removed (idle/away) members keep XP but get no reward; disconnects may rejoin within 90 s.
+- Open item: the Lumenward helm-style bonus is applied by a server-only wrapper around `Progression.computeStats`; it is to be replaced by a lead-approved hook inside Progression so client previews match.
+- Tests: `verify-minigames.luau`.
