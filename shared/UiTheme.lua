@@ -732,7 +732,7 @@ Theme.WorldMap = {
 	bounds = {minX = -640, maxX = 940, minZ = -720, maxZ = 560},
 	islands = {
 		{id = "Hub", u = 0.42, v = 0.5, size = 150, name = "Compass Quay", region = "Hub", x = 0, z = 0, r = 115, top = "9DAA85", travel = "recall", target = "Hub"},
-		{id = "SkywayTerrace", u = 0.42, v = 0.82, size = 100, name = "Skyway Terrace", region = "Hub", x = 0, z = 232, r = 75, top = "A7B08A", travel = "guide", specs = {"anchor:Waypoint_Skyway"}},
+		{id = "SkywayTerrace", u = 0.42, v = 0.82, size = 100, name = "Guild Terrace", region = "Hub", x = 0, z = 232, r = 75, top = "A7B08A", travel = "guide", specs = {"anchor:Waypoint_Skyway"}},
 		{id = "WardenReach", u = 0.42, v = 0.2, size = 95, name = "Warden Reach", region = "Hub", x = 0, z = -230, r = 70, top = "7C8498", travel = "guide", specs = {"region:Hub"}},
 		{id = "Meadow", u = 0.24, v = 0.48, size = 100, name = "Mosswake Grove", region = "Meadow", x = -230, z = 0, r = 72, top = "8DB86E", travel = "guide", specs = {"region:Meadow", "warp:Meadow"}},
 		{id = "MeadowReach", u = 0.24, v = 0.8, size = 95, name = "Meadow Reach", region = "Meadow", x = -230, z = 185, r = 70, top = "8DB86E", travel = "guide", specs = {"anchor:Waypoint_Entrance_Meadow", "region:Meadow"}},

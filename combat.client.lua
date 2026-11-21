@@ -356,7 +356,7 @@ for i = 1, SLOT_COUNT do
 	make("TextLabel", b, {Name = "Cost", BackgroundTransparency = 1, AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 0, 1, -2), Size = UDim2.new(1, 0, 0, 12),
 		Font = heavy, TextSize = 11, TextColor3 = rgb("9FC3FF"), Text = "", ZIndex = 2})
 	local key = make("TextLabel", b, {Name = "Key", AnchorPoint = Vector2.new(0, 0), Position = UDim2.fromOffset(-3, -3), Size = UDim2.fromOffset(14, 14),
-		BackgroundColor3 = gold, Font = heavy, TextSize = 10, TextColor3 = deep, Text = tostring(i), BorderSizePixel = 0, ZIndex = 4,
+		BackgroundColor3 = gold, Font = heavy, TextSize = 10, TextColor3 = deep, Text = ({"Z", "X", "C", "V", "B", "N"})[i], BorderSizePixel = 0, ZIndex = 4,
 		Visible = not UserInputService.TouchEnabled})
 	make("UICorner", key, {CornerRadius = UDim.new(0, 4)})
 	-- Cooldown sweep: a dark veil that drains downwards as the spell recovers.
@@ -501,6 +501,7 @@ local function syncAttackButton()
 	layoutSpellBar()
 end
 player:GetAttributeChangedSignal("IslandBuilding"):Connect(syncAttackButton)
+player:GetAttributeChangedSignal("IsleHotbarHeight"):Connect(layoutSpellBar) -- the hotbar appeared, resized or hid
 syncAttackButton()
 paintSlots()
 
@@ -749,7 +750,7 @@ local function tryAttack(model)
 	slash(style)
 	return true
 end
--- Spell bar slot i (keys 1-6, taps, gamepad L1 on the cursor).
+-- Spell bar slot i (keys Z X C V B N, taps, gamepad L1 on the cursor; 1-9 belong to the hotbar).
 local function castSlot(i)
 	local id = S.slots[i]
 	if not id then return false end
@@ -773,7 +774,7 @@ end
 
 ------------------------------------------------------------------------------
 -- Input: click/tap a monster, touch button or ButtonR2 attack the nearest;
--- keys 1-6 cast spell slots, DPad cycles the cursor and L1 casts it.
+-- keys Z X C V B N cast spell slots, DPad cycles the cursor and L1 casts it.
 ------------------------------------------------------------------------------
 -- Include-only filter: invisible guard walls, prompt parts and props can never
 -- swallow a tap aimed at a monster (the server still validates range).
@@ -789,8 +790,9 @@ local function pick(screenPosition)
 	local hit = Workspace:Raycast(ray.Origin, ray.Direction * 300, rayParams)
 	return hit and monsterFromPart(hit.Instance)
 end
-local SLOT_KEYS = {[Enum.KeyCode.One] = 1, [Enum.KeyCode.Two] = 2, [Enum.KeyCode.Three] = 3,
-	[Enum.KeyCode.Four] = 4, [Enum.KeyCode.Five] = 5, [Enum.KeyCode.Six] = 6}
+-- Number keys 1-9 belong to the hotbar (hotbar.client.lua); spells sit on the Z row.
+local SLOT_KEYS = {[Enum.KeyCode.Z] = 1, [Enum.KeyCode.X] = 2, [Enum.KeyCode.C] = 3,
+	[Enum.KeyCode.V] = 4, [Enum.KeyCode.B] = 5, [Enum.KeyCode.N] = 6}
 local held = nil -- "mouse" | "button" | "pad"
 UserInputService.InputBegan:Connect(function(input, processed)
 	if processed then return end

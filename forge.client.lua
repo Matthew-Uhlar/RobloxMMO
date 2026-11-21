@@ -18,6 +18,10 @@
 --   ShapeOwnsModel (bool)   the mesh stands for the whole Model: the slot box grows to cover
 --                           every visible sibling BasePart (no Shape, not Neon) of the host's
 --                           Model, and those siblings are hidden locally while the mesh exists
+--   ShapeBox (Vector3)      declared slot box size (sign frames, §28): the mesh fills this box
+--                           instead of the host's own; the host (a post, pole or plinth) stays
+--                           the visible fallback and is hidden locally once the mesh exists
+--   ShapeBoxOffset (Vector3) centre of the declared box in the host's local frame (default 0)
 -- Resource slots (CropBed, OreVein) whose host carries a gather prompt (IsleItem) use
 -- the catalog's shape for that resource (Catalog.resourceShape), so each crop patch
 -- and ore node shows its own crop or ore. Shapes with an `along` axis (ropes, lines)
@@ -39,15 +43,18 @@ local UserInputService = game:GetService("UserInputService")
 local mobile = false
 pcall(function() mobile = UserInputService.TouchEnabled == true and UserInputService.KeyboardEnabled ~= true end)
 local LIMITS = if mobile then {
-	templates = 24, templateTriangles = 24000, instances = 400, placedTriangles = 150000, failures = 3,
+	templates = 24, templateTriangles = 30000, instances = 400, placedTriangles = 150000, failures = 3,
 } else {
-	templates = 48, -- distinct (shape, tint) EditableMeshes kept alive
-	templateTriangles = 45000, -- triangles across all cached EditableMeshes
+	templates = 64, -- distinct (shape, tint) EditableMeshes kept alive (§30: island hulls, bridges, landmarks)
+	templateTriangles = 72000, -- triangles across all cached EditableMeshes
 	instances = 900, -- placed MeshPart clones near the player
 	placedTriangles = 600000, -- triangles across all placed clones
 	failures = 3, -- template build failures before the forge stops trying
 }
 local BUILD_RADIUS, UNLOAD_RADIUS = if mobile then 250 else 400, if mobile then 310 else 480
+-- Shapes seen from afar (island hulls, bridges, landmarks; catalog meta `range`)
+-- forge within their own range, capped on phones; release at 1.2x that range.
+local RANGE_CAP = if mobile then 900 else 1600
 local STEP_SECONDS = 1
 local BACKOFF_FIRST, BACKOFF_MAX = 2, 64 -- seconds between retries of a budget-skipped part
 local OWN_LIMIT = 40 -- a ShapeOwnsModel host's Model must be this small (a prop, not an island)
@@ -68,6 +75,11 @@ end
 -- tagged prop gets a mesh. Names with no good match stay primitive by design.
 local ALIASES = {
 	Rock = "Boulder", CliffRock = "CliffPiece", OreVein = "OreVein2", Lamp = "StreetLamp", PineTree = "WindpineTree",
+	-- Sign system (§28): descriptive names for the sign kit pieces.
+	OrnateBracket = "SignHangingFrame", Signpost = "SignpostFrame", Standard = "BannerStandardFrame", Finial = "BannerStandardFrame",
+	Plinth = "SignPlinthFrame", Crest = "SignPlinthFrame", NoticeFrame = "SignLedgerFrame", CarvedBoard = "SignCarvedBoard",
+	ScrollBoard = "SignScrollBoard", ArrowBoard = "SignArrowBoard", Plaque = "SignPlaqueBoard", NoticeBoard = "SignNoticeBoard",
+	ChainLink = "SignHangingFrame",
 }
 local RESOURCE_SLOTS = {CropBed = true, OreVein = true}
 local function lookup(shapeName)
@@ -77,6 +89,19 @@ local function lookup(shapeName)
 		if type(data) == "table" and type(data.vertices) == "table" and type(data.faces) == "table" then return data, catalog end
 	end
 	return nil
+end
+
+-- Build radius for a tagged part (catalog `range` for far-seen shapes).
+local rangeCache = setmetatable({}, {__mode = "k"})
+local function buildRadius(part)
+	local cached = rangeCache[part]
+	if cached then return cached end
+	local radius = BUILD_RADIUS
+	local shapeName = part:GetAttribute("Shape")
+	local data = type(shapeName) == "string" and lookup(shapeName)
+	if data and type(data.range) == "number" and data.range > BUILD_RADIUS then radius = math.min(data.range, RANGE_CAP) end
+	rangeCache[part] = radius
+	return radius
 end
 
 -- Final catalog shape name for a tagged part (resource slot, then alias).
@@ -250,6 +275,7 @@ end
 -- Signs: the original board keeps its SurfaceGui (the meshed frame wraps it);
 -- text gets one consistent, higher-contrast style.
 local SIGN_KINDS = {sign = true}
+local SIGN_KIT = {sign = true, signframe = true}
 local fonts
 local function signFonts()
 	if fonts == nil then
@@ -345,6 +371,11 @@ local function ownedSiblings(part)
 end
 local function slotBox(part, siblings)
 	local frame, size = hostFrame(part)
+	local declared = part:GetAttribute("ShapeBox")
+	if typeof(declared) == "Vector3" and declared.X > 0 and declared.Y > 0 and declared.Z > 0 then
+		local offset = part:GetAttribute("ShapeBoxOffset")
+		return part.CFrame * CFrame.new(if typeof(offset) == "Vector3" then offset else Vector3.new()), declared
+	end
 	if not siblings or #siblings == 0 then return frame, size end
 	local lo, hi = -size / 2, size / 2
 	for _, other in ipairs(siblings) do
@@ -438,7 +469,9 @@ local function forge(part)
 	if stopReason then skip(part, stopReason, true); return end
 	if stats.instances >= LIMITS.instances or stats.placedTriangles + #data.faces > LIMITS.placedTriangles then skip(part, "budget"); return end
 	local tint = part:GetAttribute("Tint")
-	if typeof(tint) ~= "Color3" then tint = defaultTint(data) end
+	-- Phones: sign kit pieces (many themes, one shape each) share their default-tint
+	-- template, so a busy plaza cannot spend the small template budget on signs.
+	if typeof(tint) ~= "Color3" or (mobile and SIGN_KIT[data.kind]) then tint = defaultTint(data) end
 	local entry, problem = template(shapeName, data, catalog, tint)
 	if not entry and problem == "budget" then
 		-- Reuse the shape's default-tint template rather than leaving a primitive.
@@ -515,7 +548,7 @@ local function step()
 			if not part.Parent then
 				registry[part] = nil
 				release(part)
-			elseif placed[part] and (part.CFrame.Position - origin).Magnitude > UNLOAD_RADIUS then
+			elseif placed[part] and (part.CFrame.Position - origin).Magnitude > math.max(UNLOAD_RADIUS, buildRadius(part) * 1.2) then
 				release(part)
 			end
 		end
@@ -523,7 +556,7 @@ local function step()
 		for part in pairs(registry) do
 			if not placed[part] and not final[part] and not waiting(part) then
 				local distance = (part.CFrame.Position - origin).Magnitude
-				if distance <= BUILD_RADIUS then table.insert(near, {part, distance}) end
+				if distance <= buildRadius(part) then table.insert(near, {part, distance}) end
 			end
 		end
 		-- Nearest first, so budgets are spent on what the player sees.
@@ -543,9 +576,10 @@ local function consider(part)
 	-- Re-forge when the slot's attributes change (signals, not periodic rescans).
 	pcall(function()
 		part.AttributeChanged:Connect(function(name)
-			if name ~= "Shape" and name ~= "ShapeScale" and name ~= "ShapeFit" and name ~= "Tint" and name ~= "ShapeOwnsModel" then return end
+			if name ~= "Shape" and name ~= "ShapeScale" and name ~= "ShapeFit" and name ~= "Tint" and name ~= "ShapeOwnsModel"
+				and name ~= "ShapeBox" and name ~= "ShapeBoxOffset" then return end
 			release(part)
-			final[part], backoff[part] = nil, nil
+			final[part], backoff[part], rangeCache[part] = nil, nil, nil
 			if type(part:GetAttribute("Shape")) ~= "string" then registry[part] = nil end
 			task.defer(step)
 		end)

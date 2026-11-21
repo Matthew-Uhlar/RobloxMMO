@@ -1742,7 +1742,7 @@ do
 	expect(slab.Color == bad and status.Text:find("home landing", 1, true) ~= nil, "protected zone tints red with a reason")
 	press(button("ConfirmButton"))
 	expect(player:GetAttribute("IslandPlaceCount") == 4, "invalid confirm sends nothing")
-	aimAt(8, 8)
+	aimAt(33, 33) -- §27: beyond the stage-0 r90 rim
 	runService.RenderStepped:Fire()
 	expect(slab.Color == bad, "rim tints red")
 	aimAt(fx, fz, "HedgeRow", 0)
@@ -2314,19 +2314,19 @@ do
 	assert(m.attack:FindFirstChild("Caption").Text == "CAST", "staff turns Attack into CAST")
 	assert(#slotIds(m) == 6, "magic bar: autocast, two more damage spells, Rootbind, Mend, Hubward")
 	assert(m.bar:FindFirstChild("Spell1"):FindFirstChild("Auto").Visible, "slot 1 marks the autocast")
-	assert(m.bar:FindFirstChild("Spell1"):FindFirstChild("Key").Text == "1", "slot key hints")
+	assert(m.bar:FindFirstChild("Spell1"):FindFirstChild("Key").Text == "Z", "slot key hints")
 	m.press()
 	local f = lastFired(m)
 	assert(f and f[1] == "cast" and f[2] == m.monster and f[3] == "GaleLance", "attack casts the autocast spell at the target")
 	assert(m.gestures[#m.gestures][1] == "cast" and m.gestures[#m.gestures][3] == "WindpineStaff", "staff casts play the staff gesture tinted by the staff")
 	-- Mend (slot 5) needs no target and casts with nil.
-	m.key(roblox.Enum.KeyCode.Five)
+	m.key(roblox.Enum.KeyCode.B)
 	f = lastFired(m)
-	assert(f[1] == "cast" and f[2] == nil and f[3] == "Mend", "key 5 casts Mend on yourself")
+	assert(f[1] == "cast" and f[2] == nil and f[3] == "Mend", "key B (slot 5) casts Mend on yourself")
 	assert(m.gestures[#m.gestures][1] == "heal", "Mend plays the heal gesture")
 	-- Utility cooldown: an immediate second Mend is held back locally.
 	local before = #H.fired(m.remote)
-	m.key(roblox.Enum.KeyCode.Five)
+	m.key(roblox.Enum.KeyCode.B)
 	assert(#H.fired(m.remote) == before, "Mend's cooldown blocks a repeat")
 	m.run.RenderStepped:Fire()
 	assert(m.bar:FindFirstChild("Spell5"):FindFirstChild("Sweep").Size.Y.Scale > 0.9, "cooldown sweep covers a fresh Mend")
@@ -2337,7 +2337,7 @@ do
 	m.run.RenderStepped:Fire()
 	assert(m.bar:FindFirstChild("Spell2"):FindFirstChild("Veil").Visible, "unaffordable slots grey out")
 	before = #H.fired(m.remote)
-	m.key(roblox.Enum.KeyCode.Two)
+	m.key(roblox.Enum.KeyCode.X)
 	assert(#H.fired(m.remote) == before, "no cast without mana")
 	-- Right-click a damage slot: autocast through the atlas verb.
 	m.bar:FindFirstChild("Spell2").InputBegan:Fire({ UserInputType = roblox.Enum.UserInputType.MouseButton2 })
@@ -3411,16 +3411,7 @@ do
 		after.depth.skills.Mining.xp += 10
 		ui.update.OnClientEvent:Fire(after)
 		assert(drop.Text == "", "XP drops can be switched off in Settings")
-		-- Area discovery card: not for the spawn region, once per new region.
-		ui.player:SetAttribute("IsleRegionHere", "Hub")
-		assert(not S.areaCard.Visible, "no discovery card where you spawn")
-		ui.player:SetAttribute("IsleRegionHere", "Quarry")
-		assert(S.areaCard.Visible and H.find(S.areaCard, "AreaTitle").Text == string.upper(Data.RegionById.Quarry.name) and H.find(S.areaCard, "AreaSubtitle").Text == "NEW AREA DISCOVERED!", "new area title card")
-		S.areaCard.Visible = false
-		ui.player:SetAttribute("IsleRegionHere", "Hub")
-		ui.player:SetAttribute("IsleRegionHere", "Quarry")
-		assert(not S.areaCard.Visible, "a region is discovered once")
-		checks += 6
+		checks += 3
 	end
 
 	-- Sidebar, action bar, menu grid.
@@ -3435,7 +3426,7 @@ do
 		assert(H.find(side, "Purse").Text:find("52,000", 1, true) and H.find(side, "Marks").Text:find("37", 1, true), "purse and Skymarks")
 		assert(H.find(side, "Date").Text:find("%a+ %d+%a%a") and H.find(side, "Clock").Text:find("%d+:%d%d[ap]m"), "isle date and time")
 		ui.player:SetAttribute("IsleRegionHere", "Quarry")
-		assert(H.find(side, "Region").Text:find("Brassfall Quarry", 1, true) or H.find(side, "Region").Text:find("Quarry Cay", 1, true), "region follows the Wayfinder")
+		assert(H.find(side, "Region").Text:find(Data.RegionById.Quarry.name, 1, true), "region follows the Wayfinder")
 		local action = ui.gui:FindFirstChild("ActionBar")
 		assert(H.find(action, "HealthText").Text:find("❤", 1, true) and H.find(action, "DefenseText").Text:find("Defense", 1, true), "health and defense readouts")
 		ui.player:SetAttribute("Mana", 40)

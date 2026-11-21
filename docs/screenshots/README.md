@@ -119,3 +119,21 @@ Before / after (the previous "Aether Brass" design → Skyforge):
 | `before-desktop-Hero-Gear.png` | `after-desktop-Hero-Gear.png` |
 | `before-phone-Ledger-Orders.png` | `after-phone-Ledger-Orders.png` |
 | `before-desktop-Journal-Quests-full.png` | `after-desktop-Journal-Quests-full.png` |
+
+## Sign previews (`signs-*.png`)
+
+Approximate offline renders of the §28 sign system (DEPTH-CONTRACT §28), not
+Roblox captures. `tools/dump-signs.luau` builds the real world headlessly and
+dumps chosen sign models (parts, mesh slots, declared boxes, SurfaceGui trees);
+`tools/render-signs.py` lays the OBJ masters out the way `forge.client.lua` does
+and perspective-warps the painted faces onto the boards:
+
+```sh
+lune run tools/dump-signs.luau build/signs.json "Artisans' Row" "Starforge" "Sky Harbor"
+python3 tools/render-signs.py build/signs.json docs/screenshots/signs-archetypes.png [--night]
+```
+
+Fonts are stand-ins (DejaVu Serif Bold for Merriweather/Fondamento, Inter Bold
+for BuilderSans) and wider than Roblox's, so a label may wrap here that fits in
+one line in Studio. `--night` darkens the scene and keeps the faces ~80% lit
+(LightInfluence 0.25). Confirm materials, fonts and night glow in Studio.

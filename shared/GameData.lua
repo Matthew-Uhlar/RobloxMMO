@@ -1226,10 +1226,19 @@ do
 	local Island = {}
 	Data.Island = Island
 	Island.CELL = 2
-	Island.RANGE = 8
-	Island.RADIUS = 18.5
+	-- Home islands (§27, Data.Home below): the grid grows with the Homestead
+	-- level. RANGE / MAX_PLACEMENTS are the absolute bounds (largest stage);
+	-- Island.radius(stage) / Island.cap(stage) are what a player may use now.
+	-- The legacy core (RADIUS 18.5, RANGE 8) keeps its cell coordinates, so
+	-- old saves migrate at offset (0, 0) (Island.migrate).
+	Island.RANGE = 74             -- cells; Data.Home.Stages[5].radius 148 / CELL
+	Island.RADIUS = 90            -- stage-0 build radius (was 18.5)
+	Island.LEGACY_RADIUS = 18.5
+	Island.LEGACY_RANGE = 8
 	Island.BRUSH = 0.3       -- a cell may brush a protected rectangle by this many studs
-	Island.MAX_PLACEMENTS = 120   -- the grid holds 124 free cells
+	Island.MAX_PLACEMENTS = 200   -- absolute cap (record ids 1..200); Island.cap(stage) is 120 + 20/stage
+	Island.BASE_CAP = 120
+	Island.CAP_STEP = 20
 	Island.RATE = 3          -- placement verbs per second (token bucket)
 	Island.BURST = 6
 	Island.REFUND = 1
@@ -1254,6 +1263,18 @@ do
 		{name="lookout bridge",x1=-4,z1=16,x2=4,z2=20},
 		{name="terrace bridge",x1=-20,z1=-4,x2=-16,z2=4},
 		{name="terrace sign",x1=-15.5,z1=-10,x2=-14.5,z2=-2},
+		-- Home islands (§27): the add-ons now stand on the big island.
+		{name="terrace path",x1=-22.5,z1=-3,x2=-19.5,z2=3},
+		{name="lookout path",x1=-3,z1=19.5,x2=3,z2=22.5},
+	}
+	-- Circular protected zones (x, z centre and r in studs): a cell is blocked
+	-- when its square (shrunk by BRUSH) reaches inside the circle.
+	Island.ProtectedCircles = {
+		{name="worker yard",x=26,z=-25,r=18},          -- yard r12 + its ramp
+		{name="Builder's Terrace",x=-33,z=0,r=11.5},
+		{name="Verdant Garden",x=-28.3,z=28.3,r=14.5},
+		{name="lookout deck",x=0,z=29,r=7.5},
+		{name="survey stake",x=10,z=-21,r=2},
 	}
 	Island.Props = {
 		-- Fences
@@ -1329,16 +1350,36 @@ do
 		local w, d = Island.footprint(Island.Props[propId], rot)
 		return math.floor(ox / Island.CELL - (w - 1) / 2 + 0.5), math.floor(oz / Island.CELL - (d - 1) / 2 + 0.5)
 	end
+	-- Expansion stage (0 .. #Data.Home.Stages - 1) from any value.
+	function Island.stage(stage)
+		local n = tonumber(stage)
+		local top = (Data.Home and #Data.Home.Stages or 1) - 1
+		if not n or n ~= n then return 0 end
+		return math.clamp(math.floor(n), 0, top)
+	end
+	function Island.radius(stage)
+		if not Data.Home then return Island.RADIUS end
+		return Data.Home.Stages[Island.stage(stage) + 1].radius
+	end
+	function Island.cap(stage) return math.min(Island.MAX_PLACEMENTS, Island.BASE_CAP + Island.CAP_STEP * Island.stage(stage)) end
 	-- nil when buildable, else a short reason: "edge" or a protected zone name.
-	function Island.cellBlocked(x, z)
+	-- `stage` (default 0) is the owner's expansion stage; `radius` overrides it
+	-- (the legacy grid check passes Island.LEGACY_RADIUS).
+	function Island.cellBlocked(x, z, stage, radius)
 		if not int(x) or not int(z) or math.abs(x) > Island.RANGE or math.abs(z) > Island.RANGE then return "edge" end
 		local half = Island.CELL / 2
 		local cx, cz = x * Island.CELL, z * Island.CELL
 		local fx, fz = math.abs(cx) + half, math.abs(cz) + half
-		if fx * fx + fz * fz > Island.RADIUS * Island.RADIUS then return "edge" end
+		local R = radius or Island.radius(stage)
+		if fx * fx + fz * fz > R * R then return "edge" end
+		local e = half - Island.BRUSH
 		for _, r in ipairs(Island.Protected) do
-			local e = half - Island.BRUSH
 			if cx + e > r.x1 and cx - e < r.x2 and cz + e > r.z1 and cz - e < r.z2 then return r.name end
+		end
+		for _, c in ipairs(Island.ProtectedCircles) do
+			local dx = math.max(math.abs(c.x - cx) - e, 0)
+			local dz = math.max(math.abs(c.z - cz) - e, 0)
+			if dx * dx + dz * dz < c.r * c.r then return c.name end
 		end
 		return nil
 	end
@@ -1396,14 +1437,15 @@ do
 		end
 		return occupied
 	end
-	-- Geometry check: true, or false + a player-facing reason.
-	function Island.check(occupied, propId, x, z, rot)
+	-- Geometry check: true, or false + a player-facing reason. `stage` is the
+	-- owner's expansion stage (default 0).
+	function Island.check(occupied, propId, x, z, rot, stage, radius)
 		local def = type(propId) == "string" and Island.Props[propId]
 		if not def then return false, "Choose a prop from the island catalogue." end
 		local cells = Island.cells(propId, x, z, rot)
 		if not cells then return false, "That spot is not on the island grid." end
 		for _, c in ipairs(cells) do
-			local blocked = Island.cellBlocked(c[1], c[2])
+			local blocked = Island.cellBlocked(c[1], c[2], stage, radius)
 			if blocked == "edge" then return false, def.name .. " must sit fully on your island." end
 			if blocked then return false, "Keep the " .. blocked .. " clear." end
 			if occupied and occupied[Island.key(c[1], c[2])] then return false, "Something already stands there." end
@@ -1417,6 +1459,199 @@ do
 			if def then total += def.value end
 		end
 		return total
+	end
+	-- Home islands (§27): nearest anchor where a prop fits, searching square
+	-- rings of growing distance around (x, z), saved rotation first.
+	function Island.relocate(occupied, propId, x, z, rot, stage)
+		local R = Island.RANGE
+		if not int(x) or not int(z) or not int(rot) then return nil end
+		x, z, rot = math.clamp(x, -R, R), math.clamp(z, -R, R), rot % 4
+		local function try(px, pz)
+			for k = 0, 3 do
+				local r = (rot + k) % 4
+				if Island.check(occupied, propId, px, pz, r, stage) then return r end
+			end
+			return nil
+		end
+		local r0 = try(x, z)
+		if r0 then return x, z, r0 end
+		for d = 1, 2 * R do
+			for i = -d, d - 1 do
+				-- Four sides of the ring, each walked once (corners included once).
+				for _, c in ipairs({{x + i, z - d}, {x + d, z + i}, {x - i, z + d}, {x - d, z - i}}) do
+					if math.abs(c[1]) <= R and math.abs(c[2]) <= R then
+						local r = try(c[1], c[2])
+						if r then return c[1], c[2], r end
+					end
+				end
+			end
+		end
+		return nil
+	end
+	-- Load-time sanitiser and layout migration (server Isle.migrate). It never
+	-- deletes a decoration it can parse: a record that no longer fits (legacy
+	-- layout, overlap, protected zone, duplicate id, outside the radius) moves
+	-- to the nearest free cell with the smallest free id; only a record that
+	-- cannot stand at all (over its per-prop max, over the stage cap, or no
+	-- free cell) is refunded in full. Saves without v = VERSION are legacy
+	-- (pre-§27) and shift by LEGACY_OFFSET first: the legacy core kept its
+	-- offsets, so the shift is (0, 0) and every legacy-valid record stays put.
+	-- Returns {placed = {record...}, v = VERSION}, refunds {[material] = n},
+	-- report {kept, moved, refunded}.
+	Island.VERSION = 2
+	Island.LEGACY_OFFSET = {x = 0, z = 0}
+	function Island.migrate(raw, stage)
+		raw = if type(raw) == "table" then raw else {}
+		local legacy = raw.v ~= Island.VERSION
+		local admitted, counts, refunds = {}, {}, {}
+		local report = {kept = 0, moved = 0, refunded = 0}
+		local cap = Island.cap(stage)
+		local function refund(e)
+			for material, n in pairs(Island.Props[e.prop].costs) do refunds[material] = (refunds[material] or 0) + n end
+			report.refunded += 1
+		end
+		if type(raw.placed) == "table" then
+			local seen = 0
+			for _, record in ipairs(raw.placed) do
+				seen += 1
+				if seen > Island.MAX_PLACEMENTS * 2 then break end -- bounds work on junk saves
+				local e = Island.parseRecord(record)
+				if e then
+					if legacy then e.x += Island.LEGACY_OFFSET.x; e.z += Island.LEGACY_OFFSET.z end
+					if #admitted < cap and (counts[e.prop] or 0) < Island.Props[e.prop].max then
+						counts[e.prop] = (counts[e.prop] or 0) + 1
+						table.insert(admitted, e)
+					else
+						refund(e)
+					end
+				end
+			end
+		end
+		local placed, used, occupied, moving = {}, {}, {}, {}
+		local function accept(e)
+			used[e.id] = true
+			for _, c in ipairs(Island.cells(e.prop, e.x, e.z, e.rot)) do occupied[Island.key(c[1], c[2])] = e.id end
+			table.insert(placed, Island.record(e))
+		end
+		for _, e in ipairs(admitted) do
+			if not used[e.id] and Island.check(occupied, e.prop, e.x, e.z, e.rot, stage) then
+				accept(e)
+				report.kept += 1
+			else
+				table.insert(moving, e)
+			end
+		end
+		for _, e in ipairs(moving) do
+			local x, z, rot = Island.relocate(occupied, e.prop, e.x, e.z, e.rot, stage)
+			if x then
+				if used[e.id] then
+					local id = 1
+					while used[id] do id += 1 end
+					e.id = id
+				end
+				e.x, e.z, e.rot = x, z, rot
+				accept(e)
+				report.moved += 1
+			else
+				refund(e)
+			end
+		end
+		return {placed = placed, v = Island.VERSION}, refunds, report
+	end
+end
+
+------------------------------------------------------------------------------
+-- Home islands (Home Islands team; §27 in docs/DEPTH-CONTRACT.md).
+-- Each player's WayfarersRest_<UserId> is a SkyBlock-style private island: a
+-- flat build disc of Stages[level].radius studs (stage 0: r90, about 160 x 160
+-- studs) inside a MARGIN-wide natural edge band (cliffs, a beach, a pond,
+-- trees and ore rocks the owner gathers), grown by four expansion rings that
+-- raise the Homestead level 1 -> 5 (each ring adds ~25-30% area). A ring is a
+-- server-validated purchase (verb "homeExpand": Carpentry gate, coins and
+-- materials), saved as p.homestead.level and published as the player
+-- attribute HomesteadLevel (1..5); world.server.lua resizes the island and
+-- moves the edge band out when it changes. The legacy core (r21: spawn,
+-- windpine, beacon, worker stations 1-3, plans) and the add-ons (Worker Yard,
+-- Builder's Terrace, Verdant Garden, lookout deck) keep their offsets and are
+-- protected zones of the placement grid (Data.Island). Homes are laid out by
+-- slotCenter on a PITCH grid far from every static island, so the largest
+-- island (meadow r158 + skirt) never meets a neighbour.
+------------------------------------------------------------------------------
+do
+	local Home = {}
+	Data.Home = Home
+	Home.CORE = 21          -- legacy core meadow radius (fixed objects keep their offsets)
+	Home.MARGIN = 10        -- natural edge band beyond the build radius
+	Home.SKIRT = 6          -- cliff skirt reach beyond the meadow rim
+	Home.PART_BUDGET = 250  -- fixed geometry per home (every addition built, every station active)
+	Home.LIGHT_BUDGET = 12  -- fixed lights per home (lamps), placements add at most Data.Island glows
+	Home.Stages = {
+		{radius = 90},
+		{radius = 102, carpentry = 10, coins = 2500, costs = {Timber = 150, Ore = 100}},
+		{radius = 115, carpentry = 25, coins = 10000, costs = {WindpineLog = 80, BrassIngot = 20}},
+		{radius = 130, carpentry = 40, coins = 30000, costs = {EmberoakLog = 80, Aetherite = 60}},
+		{radius = 148, carpentry = 55, coins = 90000, costs = {StarwoodLog = 60, StarmetalIngot = 15}},
+	}
+	Home.MAX_LEVEL = #Home.Stages
+	-- Grid allocator: COLUMNS homes per row from ORIGIN, PITCH studs apart, far
+	-- north of the hub (dungeon arenas sit near z 1700-1800, minigames at x -2400).
+	Home.PITCH = 360
+	Home.COLUMNS = 8
+	Home.ORIGIN = {x = -1260, z = 2400}
+	-- Edge band features: angle (radians, x = cos, z = sin) around the rim.
+	Home.Edge = {
+		{kind = "beach", a = 0.6},
+		{kind = "cliff", a = 3.75}, {kind = "cliff", a = 4.05}, {kind = "cliff", a = 4.35},
+		{kind = "pond", a = 2.15},
+		{kind = "windpine", a = 1.55}, {kind = "windpine", a = 2.75}, {kind = "windpine", a = 5.2},
+		{kind = "ore", a = 3.2}, {kind = "ore", a = 4.8}, {kind = "ore", a = 5.75},
+		{kind = "pine", a = 1.2}, {kind = "pine", a = 2.45}, {kind = "tree", a = 5.48},
+	}
+	function Home.level(value)
+		local n = tonumber(value)
+		if not n or n ~= n then return 1 end
+		return math.clamp(math.floor(n), 1, Home.MAX_LEVEL)
+	end
+	function Home.stage(level) return Home.level(level) - 1 end
+	function Home.radius(level) return Home.Stages[Home.level(level)].radius end
+	function Home.meadow(level) return Home.radius(level) + Home.MARGIN end
+	function Home.area(level) return math.pi * Home.radius(level) ^ 2 end
+	-- Footprint radius of the largest island (meadow + cliff skirt).
+	function Home.footprint() return Home.meadow(Home.MAX_LEVEL) + Home.SKIRT end
+	function Home.slotCenter(slot)
+		slot = math.max(1, math.floor(tonumber(slot) or 1))
+		local col, row = (slot - 1) % Home.COLUMNS, (slot - 1) // Home.COLUMNS
+		return Home.ORIGIN.x + col * Home.PITCH, Home.ORIGIN.z + row * Home.PITCH
+	end
+	-- Next ring for a level, or nil at the top.
+	function Home.nextRing(level) return Home.Stages[Home.level(level) + 1] end
+	-- Purchase check: true, ring | false, player-facing reason.
+	function Home.canExpand(level, carpentry, coins, items)
+		local ring = Home.nextRing(level)
+		if not ring then return false, "Your island is fully expanded." end
+		if (tonumber(carpentry) or 0) < ring.carpentry then return false, "The next expansion ring requires Carpentry " .. ring.carpentry .. "." end
+		if (tonumber(coins) or 0) < ring.coins then return false, "The next expansion ring costs " .. ring.coins .. " coins." end
+		for material, n in pairs(ring.costs) do
+			if ((items or {})[material] or 0) < n then
+				local def = Data.Items and Data.Items[material]
+				return false, "The next expansion ring needs " .. n .. " " .. (def and def.name or material) .. "."
+			end
+		end
+		return true, ring
+	end
+	-- One-line cost text for prompts and the journal.
+	function Home.costText(level)
+		local ring = Home.nextRing(level)
+		if not ring then return "Fully expanded" end
+		local parts = {ring.coins .. " coins"}
+		local names = {}
+		for material in pairs(ring.costs) do table.insert(names, material) end
+		table.sort(names)
+		for _, material in ipairs(names) do
+			local def = Data.Items and Data.Items[material]
+			table.insert(parts, ring.costs[material] .. " " .. (def and def.name or material))
+		end
+		return table.concat(parts, " + ") .. " · Carpentry " .. ring.carpentry
 	end
 end
 
@@ -9677,6 +9912,9 @@ LR.PET_HOURS = 40           -- pets: expected hours of kills at the model's kill
 LR.KEEP_LOG = 10            -- recent kills kept in the journal
 LR.MAX_KC = 1000000
 LR.REWARD_RETRY, LR.REWARD_WINDOW = 5, 120
+LR.REJOIN_VERIFY = 3        -- after a rejoin the arena position (and the disconnect health) is re-applied this long
+LR.FLEE_HP, LR.FLEE_SECONDS = 0.25, 3 -- a disconnect below 25% health within 3 s of a hit counts as a death
+LR.UNIQUE_MAX = 0.85        -- every unique stat <= 85% of its higher-requirement rival's (lead decision)
 
 -- Combat triangle for a weakness w: w deals +30%, the style w beats is resisted.
 function LR.triangle(w)
@@ -9817,16 +10055,16 @@ local function unique(id, boss, def)
 end
 local R = Data.Rarity
 unique("ThornmawCleaver","Bramblemaw",{name="Thornmaw Cleaver",kind="weapon",slot="weapon",tier=5,rarity="Epic",color="6BBF59",
-	stats={damage=190,strength=75,critChance=7,critDamage=50},requires={Combat=30},value=4500,
+	stats={damage=187,strength=75,critChance=7,critDamage=50},requires={Combat=30},value=4500,
 	description="Melee. Bramblemaw's own thorn-fang, still green. Requires Combat 30. Lair unique."})
 unique("GalesongLongbow","Aerisca",{name="Galesong Longbow",kind="weapon",slot="weapon",style="ranged",tier=6,rarity="Legendary",color="8FD3E8",
-	stats={critDamage=44,rangedAccuracy=78},ranged={power=260,speed=1.05,range=CS.maxRange,maxAmmoTier=6},requires={Ranged=45},value=9000,
+	stats={critDamage=40,rangedAccuracy=71},ranged={power=239,speed=1.05,range=CS.maxRange,maxAmmoTier=6},requires={Ranged=45},value=9000,
 	description="Ranged weapon. Strung with Aerisca's storm-gut. "..CS.maxRange.." stud reach. Arrows up to tier 6. Requires Ranged 45. Lair unique."})
 unique("PyreheartStaff","Pyrewarden",{name="Pyreheart Staff",kind="weapon",slot="weapon",style="magic",tier=7,rarity="Legendary",color="E8643A",
-	stats={intelligence=170,abilityDamage=5},magic={power=175,speed=1.2,elements={"Ember","Stone"}},requires={Magic=55},value=16000,
+	stats={intelligence=153,abilityDamage=5},magic={power=161,speed=1.2,elements={"Ember","Stone"}},requires={Magic=55},value=16000,
 	description="Magic weapon. The Pyrewarden's banked core. Supplies unlimited Ember, Stone glyphs. Requires Magic 55. Lair unique."})
 unique("HollowcrownEdge","Nihlvar",{name="Hollowcrown Edge",kind="weapon",slot="weapon",tier=9,rarity="Mythic",color="7A5BC4",
-	stats={damage=370,strength=168,critChance=17,critDamage=104},requires={Combat=65},value=30000,
+	stats={damage=323,strength=148,critChance=15,critDamage=93},requires={Combat=65},value=30000,
 	description="Melee. A shard of Nihlvar's hollow crown. Requires Combat 65. Lair unique."})
 unique("ThornheartLocket","Bramblemaw",{name="Thornheart Locket",kind="accessory",rarity="Rare",color=R.Rare.color,stats={strength=8,critDamage=6},
 	value=40*R.Rare.rank^2,description="Accessory. Magical Power "..R.Rare.power..". Only Bramblemaw's den holds one."})
@@ -9834,7 +10072,7 @@ unique("SquallglassPendant","Aerisca",{name="Squallglass Pendant",kind="accessor
 	value=40*R.Epic.rank^2,description="Accessory. Magical Power "..R.Epic.power..". Only Aerisca's eyrie holds one."})
 unique("EmberwardSeal","Pyrewarden",{name="Emberward Seal",kind="accessory",rarity="Legendary",color=R.Legendary.color,stats={intelligence=16,critDamage=14,strength=10},
 	value=40*R.Legendary.rank^2,description="Accessory. Magical Power "..R.Legendary.power..". Only the Emberforge Vault holds one."})
-unique("ArchonSigil","Nihlvar",{name="Archon's Sigil",kind="accessory",rarity="Mythic",color=R.Mythic.color,stats={strength=34,critDamage=26,health=60},
+unique("ArchonSigil","Nihlvar",{name="Archon's Sigil",kind="accessory",rarity="Mythic",color=R.Mythic.color,stats={strength=34,critDamage=25,health=60},
 	value=40*R.Mythic.rank^2,description="Accessory. Magical Power "..R.Mythic.power..". Only the Riftcrown Sanctum holds one."})
 
 -- Boss pets (Data.Pets species + Pet depth abilities and looks) ----------------
@@ -10057,6 +10295,14 @@ function LR.migrate(t)
 			table.insert(out.log, {b=e.b,s=count(e.s, 86400) or 0,t=count(e.t, 4e9) or 0,n=count(e.n, LR.MAX_PARTY) or 1,u=u})
 		end
 	end
+	-- owed = the open entry {fight, boss, fee}: set when the fee is paid, cleared
+	-- when the entry settles; still set at a load -> refunded (server Lairs.settle).
+	local o = t.owed
+	local od = type(o) == "table" and LR.boss(o.boss)
+	if od and type(o.fight) == "string" and #o.fight <= 64 then
+		local fee = count(o.fee, od.fee)
+		if fee and fee > 0 then out.owed = {fight=o.fight,boss=o.boss,fee=fee} end
+	end
 	return out
 end
 -- One credited kill. Returns {kc, pb = bool (new best), uniques = {id...}}.
@@ -10093,7 +10339,11 @@ end
 -- for MODEL_UPTIME of the fight (dodging, prayer swaps, adds). The weakness
 -- applies (+30%) as players bring the right style. A kill takes the fight plus
 -- MODEL_OVERHEAD s (altar, warmup, return, restock). Coins/h = coin roll + the
--- merchant value of expected drops (uniques and pets included) - the fee.
+-- merchant value of expected non-unique drops - the fee; the uniques' (and
+-- pets') merchant value is reported separately (uniqueValue per kill, uniques
+-- per hour) and kept out of the coins/h ratio (lead decision). The model rolls
+-- base drop chances: it ignores Magic Find and Pet Luck, which raise every row
+-- under 5% (uniques and pets) for geared players (see DEPTH-CONTRACT §25).
 -- Slayer reference: 300 kills/h of the best monster's coins + the best open
 -- master's task bounty per task; XP reference: solo Combat XP/h at that level.
 LR.MODEL_TTK, LR.MODEL_UPTIME, LR.MODEL_OVERHEAD = 8, 0.75, 60
@@ -10101,11 +10351,14 @@ function LR.dpsAt(level)
 	local m = Data.Minigames.bestMonster(level)
 	return m.hp * (1 + (m.defense or 0) / 100) / LR.MODEL_TTK
 end
-function LR.expectedValue(drops)
+-- uniques: nil = every row, false = without the lair uniques (pets included), true = uniques only.
+function LR.expectedValue(drops, uniques)
 	local v = 0
 	for _, d in ipairs(drops) do
 		local def = Data.Items[d.item]
-		v += d.chance * (d.min + d.max) / 2 * (def and def.value or 0)
+		if uniques == nil or (uniques == true) == LR.isUnique(d.item) then
+			v += d.chance * (d.min + d.max) / 2 * (def and def.value or 0)
+		end
 	end
 	return v
 end
@@ -10126,11 +10379,15 @@ function LR.model(id, party)
 	local fight = effHp / (dps * party * LR.MODEL_UPTIME)
 	local seconds = fight + LR.MODEL_OVERHEAD
 	local kph = 3600 / seconds
-	local loot = LR.expectedValue(LR.Loot[id])
-	local xpKill = (def.xp * LR.partyHp(def, party) / def.hp + addXp) / party
+	local loot = LR.expectedValue(LR.Loot[id], false)
+	local uniqueValue = LR.expectedValue(LR.Loot[id], true)
+	-- Party XP: each member deals an equal share of the scaled health; damage XP
+	-- caps at the fight's real health (combat sends maxHp), so the share pays in full.
+	local hp = LR.partyHp(def, party)
+	local xpKill = def.xp * math.min(hp / party, hp) / def.hp + addXp / party
 	local coinsKill = def.coinsAvg + loot - def.fee
 	return {fight=fight,seconds=seconds,kph=kph,xp=xpKill * kph,coins=coinsKill * kph,coinsKill=coinsKill,
-		lootValue=loot,petHours=1 / (LR.PetChance[id] * kph)}
+		lootValue=loot,uniqueValue=uniqueValue,uniques=uniqueValue * kph,petHours=1 / (LR.PetChance[id] * kph)}
 end
 function LR.slayerReference(level)
 	local MG, ST = Data.Minigames, Data.SlayerTasks
@@ -10153,6 +10410,741 @@ if CLog and CLog.LogTabs and not CLog.LogTabs.Lairs then
 end
 end
 -- <<< END Lairs <<<
+
+-- >>> Held items & swings (docs/DEPTH-CONTRACT.md §26) >>>
+-- Pure rules shared by held.server.lua (builds the welded model), server.server.lua
+-- (`hold` / `hotbarSet` verbs, p.held, auto tool switch), animate.client.lua
+-- (which swing a held item plays, hold pose) and hotbar.client.lua.
+-- Model specs are plain numbers in the grip frame (hand grip at the origin, the
+-- handle runs along -Z, the swing plane is YZ), so this module needs no Roblox
+-- types: {n name, s size, o offset, c colour key, m material, shape}.
+------------------------------------------------------------------------------
+do
+local H = {}
+Data.Held = H
+H.MAX_PARTS = 8
+H.AUTO_RETURN = 8 -- seconds after the last gather / attack before an auto-held tool goes back
+H.RATE, H.BURST = 2, 5 -- hold / hotbarSet tokens per second, bucket size
+H.REBUILD_GAP = 0.5 -- held.server.lua rebuilds a player's model at most once per this many seconds
+H.HOTBAR_SLOTS = 9
+H.FREE_SLOTS = {3, 4, 5, 6, 7, 8, 9} -- slot 1 = weapon, slot 2 = context tool
+-- Classes: every weapon / tool resolves to exactly one. hand = which grip it welds to.
+H.CLASSES = {
+	sword = {hand = "right", kind = "weapon"}, greatblade = {hand = "right", kind = "weapon"}, dagger = {hand = "right", kind = "weapon"},
+	maul = {hand = "right", kind = "weapon"}, glaive = {hand = "right", kind = "weapon"},
+	shortbow = {hand = "left", kind = "weapon"}, longbow = {hand = "left", kind = "weapon"},
+	staff = {hand = "right", kind = "weapon"}, wand = {hand = "right", kind = "weapon"},
+	shield = {hand = "left", kind = "offhand"}, -- no shield items exist yet; the class is ready for them
+	pickaxe = {hand = "right", kind = "tool"}, hatchet = {hand = "right", kind = "tool"}, rod = {hand = "right", kind = "tool"},
+	hoe = {hand = "right", kind = "tool"}, hammer = {hand = "right", kind = "tool"},
+}
+H.TOOL_CLASS = {Pickaxe = "pickaxe", Hatchet = "hatchet", Rod = "rod", Hoe = "hoe", Hammer = "hammer"}
+H.SKILL_CLASS = {Mining = "pickaxe", Woodcutting = "hatchet", Fishing = "rod", Farming = "hoe"}
+-- Named weapons whose silhouette the name patterns below would miss.
+H.OVERRIDE = {AstrarchFang = "dagger", SovereignNightfall = "dagger", EclipseGlaive = "glaive", BastionMaul = "maul",
+	Thronebreaker = "maul", Riftcleaver = "greatblade", ColossusLumenbrand = "greatblade", SovereignGreatblade = "greatblade",
+	Crownbreaker = "greatblade", LenswrightSaber = "sword", Stormblade = "sword", Blade = "sword"}
+local PATTERNS = {{"Greatblade", "greatblade"}, {"Cleaver", "greatblade"}, {"Claymore", "greatblade"}, {"Dagger", "dagger"},
+	{"Fang", "dagger"}, {"Knife", "dagger"}, {"Maul", "maul"}, {"Hammer", "maul"}, {"Glaive", "glaive"}, {"Spear", "glaive"},
+	{"Halberd", "glaive"}, {"Shield", "shield"}, {"Buckler", "shield"}}
+for id, class in pairs(H.OVERRIDE) do
+	if Data.Items[id] then Data.Items[id].heldClass = class end
+end
+
+function H.classOf(def)
+	if type(def) ~= "table" then return nil end
+	if type(def.heldClass) == "string" and H.CLASSES[def.heldClass] then return def.heldClass end
+	if def.kind == "tool" then return H.TOOL_CLASS[def.toolKind] end
+	if def.kind == "shield" or def.slot == "offhand" then return "shield" end
+	if def.kind ~= "weapon" then return nil end
+	local name = tostring(def.name or "")
+	if def.style == "ranged" then return if name:find("Shortbow") then "shortbow" else "longbow" end
+	if def.style == "magic" then
+		local wand = name:find("Wand") ~= nil or (type(def.magic) == "table" and type(def.magic.elements) == "table" and #def.magic.elements == 0)
+		return if wand then "wand" else "staff"
+	end
+	for _, pattern in ipairs(PATTERNS) do
+		if name:find(pattern[1]) then return pattern[2] end
+	end
+	return "sword"
+end
+function H.holdable(id)
+	return type(id) == "string" and H.classOf(Data.Items[id]) ~= nil
+end
+function H.hand(class) return (H.CLASSES[class] or H.CLASSES.sword).hand end
+
+-- Which gesture a held class swings when its owner attacks, and which held
+-- classes stand in for a gesture's temporary prop (the held item itself swings).
+H.ATTACK = {sword = "attack", greatblade = "cleave", maul = "cleave", dagger = "thrust", glaive = "lunge", shield = "attack",
+	shortbow = "shoot", longbow = "shoot", staff = "cast", wand = "flick"}
+H.FITS = {
+	mine = {pickaxe = true}, chop = {hatchet = true}, fish = {rod = true}, harvest = {hoe = true}, hammer = {hammer = true, maul = true},
+	attack = {sword = true, greatblade = true, dagger = true, glaive = true, maul = true},
+	thrust = {dagger = true, sword = true}, cleave = {greatblade = true, maul = true, sword = true}, lunge = {glaive = true},
+	shoot = {shortbow = true, longbow = true}, cast = {staff = true, wand = true}, flick = {wand = true, staff = true},
+}
+function H.fits(gesture, class) return class ~= nil and H.FITS[gesture] ~= nil and H.FITS[gesture][class] == true end
+function H.attackGesture(id)
+	local class = H.classOf(Data.Items[id or ""])
+	return H.ATTACK[class or "sword"] or "attack"
+end
+
+-- Tier look: head colour is the item's own; trim and a glowing inlay follow rarity.
+local RARITY_RANK = {Common = 1, Uncommon = 2, Rare = 3, Epic = 4, Legendary = 5, Mythic = 6}
+H.WOOD, H.LEATHER, H.BRASS, H.STRING = "8A5A32", "5A3A22", "C9974A", "EDE6D2"
+function H.look(def)
+	local rank = RARITY_RANK[def.rarity] or 1
+	local tier = tonumber(def.tier) or tonumber(def.toolTier) or rank
+	local rarity = Data.Rarity and Data.Rarity[def.rarity]
+	return {
+		head = tostring(def.color or "B0A89A"),
+		trim = if rank >= 3 and rarity then rarity.color else H.BRASS,
+		glow = if rank >= 4 then tostring(def.color or "FFFFFF") else nil,
+		metal = if tier >= 7 then "Foil" elseif tier >= 4 then "DiamondPlate" else "Metal",
+		rank = rank, tier = tier,
+	}
+end
+
+local function p(n, s, o, c, m, shape) return {n = n, s = s, o = o, c = c, m = m, shape = shape} end
+-- Part lists per class. c: "head" (tier colour), "trim", "wood", "leather", "string", "glow" (dropped below Epic).
+H.SHAPES = {
+	sword = {p("Grip", {0.2, 0.2, 0.9}, {0, 0, 0}, "leather", "Fabric"), p("Pommel", {0.3, 0.3, 0.3}, {0, 0, 0.55}, "trim", "Metal", "Ball"),
+		p("Guard", {0.95, 0.18, 0.24}, {0, 0, -0.52}, "trim", "Metal"), p("Blade", {0.1, 0.34, 3.0}, {0, 0, -2.1}, "head", "metal"),
+		p("Tip", {0.1, 0.2, 0.42}, {0, 0, -3.8}, "head", "metal"), p("Fuller", {0.12, 0.08, 2.3}, {0, 0, -1.95}, "glow", "Neon")},
+	greatblade = {p("Grip", {0.22, 0.22, 1.4}, {0, 0, 0.25}, "leather", "Fabric"), p("Pommel", {0.36, 0.36, 0.36}, {0, 0, 1.05}, "trim", "Metal", "Ball"),
+		p("Guard", {1.35, 0.26, 0.3}, {0, 0, -0.6}, "trim", "Metal"), p("Blade", {0.14, 0.62, 4.2}, {0, 0, -2.85}, "head", "metal"),
+		p("Tip", {0.14, 0.36, 0.5}, {0, 0, -5.15}, "head", "metal"), p("Fuller", {0.16, 0.12, 3.4}, {0, 0, -2.7}, "glow", "Neon")},
+	dagger = {p("Grip", {0.18, 0.18, 0.6}, {0, 0, 0.05}, "leather", "Fabric"), p("Pommel", {0.24, 0.24, 0.24}, {0, 0, 0.42}, "trim", "Metal", "Ball"),
+		p("Guard", {0.55, 0.14, 0.16}, {0, 0, -0.32}, "trim", "Metal"), p("Blade", {0.08, 0.26, 1.3}, {0, 0, -1.05}, "head", "metal"),
+		p("Tip", {0.08, 0.14, 0.3}, {0, 0, -1.85}, "head", "metal"), p("Gem", {0.16, 0.16, 0.16}, {0, 0.12, -0.32}, "glow", "Neon", "Ball")},
+	maul = {p("Haft", {0.22, 0.22, 3.2}, {0, 0, -0.8}, "wood", "Wood"), p("Head", {0.8, 1.4, 0.8}, {0, 0, -2.65}, "head", "metal"),
+		p("BandTop", {0.86, 0.18, 0.86}, {0, 0.5, -2.65}, "trim", "Metal"), p("BandBottom", {0.86, 0.18, 0.86}, {0, -0.5, -2.65}, "trim", "Metal"),
+		p("Butt", {0.3, 0.3, 0.3}, {0, 0, 0.85}, "trim", "Metal"), p("Core", {0.82, 0.3, 0.3}, {0, 0, -2.65}, "glow", "Neon")},
+	glaive = {p("Shaft", {0.18, 0.18, 5}, {0, 0, -1.2}, "wood", "Wood"), p("Collar", {0.3, 0.3, 0.32}, {0, 0, -3.75}, "trim", "Metal"),
+		p("Blade", {0.1, 0.7, 1.6}, {0, 0.15, -4.65}, "head", "metal"), p("Tip", {0.1, 0.34, 0.5}, {0, 0.3, -5.6}, "head", "metal"),
+		p("Butt", {0.26, 0.26, 0.3}, {0, 0, 1.35}, "trim", "Metal"), p("Edge", {0.12, 0.1, 1.5}, {0, 0.5, -4.65}, "glow", "Neon")},
+	-- Bows sit in the left hand: limbs along the grip axis, a pale string behind them.
+	shortbow = {p("Grip", {0.26, 0.26, 0.6}, {0, 0, 0}, "leather", "Fabric"), p("UpperLimb", {0.16, 0.2, 1.5}, {0, 0.14, -1.0}, "head", "Wood"),
+		p("LowerLimb", {0.16, 0.2, 1.5}, {0, 0.14, 1.0}, "head", "Wood"), p("UpperNock", {0.2, 0.24, 0.22}, {0, 0.3, -1.8}, "trim", "Metal"),
+		p("LowerNock", {0.2, 0.24, 0.22}, {0, 0.3, 1.8}, "trim", "Metal"), p("String", {0.04, 0.04, 3.6}, {0, 0.42, 0}, "string", "SmoothPlastic"),
+		p("Gem", {0.18, 0.18, 0.18}, {0, -0.16, 0}, "glow", "Neon", "Ball")},
+	longbow = {p("Grip", {0.26, 0.26, 0.6}, {0, 0, 0}, "leather", "Fabric"), p("UpperLimb", {0.18, 0.22, 2.2}, {0, 0.18, -1.35}, "head", "Wood"),
+		p("LowerLimb", {0.18, 0.22, 2.2}, {0, 0.18, 1.35}, "head", "Wood"), p("UpperNock", {0.22, 0.26, 0.24}, {0, 0.38, -2.5}, "trim", "Metal"),
+		p("LowerNock", {0.22, 0.26, 0.24}, {0, 0.38, 2.5}, "trim", "Metal"), p("String", {0.04, 0.04, 5.0}, {0, 0.52, 0}, "string", "SmoothPlastic"),
+		p("Gem", {0.2, 0.2, 0.2}, {0, -0.18, 0}, "glow", "Neon", "Ball")},
+	staff = {p("Shaft", {0.22, 0.22, 5.2}, {0, 0, -0.9}, "wood", "Wood"), p("Cradle", {0.5, 0.5, 0.3}, {0, 0, -3.5}, "trim", "Metal"),
+		p("Orb", {0.62, 0.62, 0.62}, {0, 0, -3.88}, "head", "Neon", "Ball"), p("Halo", {0.82, 0.82, 0.08}, {0, 0, -3.88}, "trim", "Metal"),
+		p("Butt", {0.28, 0.28, 0.26}, {0, 0, 1.7}, "trim", "Metal"), p("Wrap", {0.26, 0.26, 0.5}, {0, 0, 0}, "leather", "Fabric")},
+	wand = {p("Rod", {0.12, 0.12, 1.5}, {0, 0, -0.6}, "wood", "Wood"), p("Grip", {0.16, 0.16, 0.5}, {0, 0, 0.1}, "leather", "Fabric"),
+		p("Band", {0.18, 0.18, 0.08}, {0, 0, -0.2}, "trim", "Metal"), p("Tip", {0.26, 0.26, 0.26}, {0, 0, -1.42}, "head", "Neon", "Ball")},
+	shield = {p("Board", {1.7, 2.1, 0.22}, {0, 0.2, -0.45}, "head", "metal"), p("Rim", {1.85, 0.16, 0.26}, {0, 1.25, -0.45}, "trim", "Metal"),
+		p("RimLow", {1.85, 0.16, 0.26}, {0, -0.85, -0.45}, "trim", "Metal"), p("Boss", {0.5, 0.5, 0.3}, {0, 0.2, -0.62}, "trim", "Metal", "Ball"),
+		p("Strap", {0.3, 0.8, 0.12}, {0, 0.2, -0.28}, "leather", "Fabric"), p("Sigil", {0.3, 0.3, 0.05}, {0, 0.8, -0.58}, "glow", "Neon")},
+	pickaxe = {p("Handle", {0.22, 0.22, 3}, {0, 0, -1.2}, "wood", "Wood"), p("Wrap", {0.26, 0.26, 0.6}, {0, 0, 0}, "leather", "Fabric"),
+		p("Socket", {0.38, 0.42, 0.44}, {0, 0, -2.55}, "trim", "Metal"), p("Head", {0.3, 2, 0.32}, {0, 0, -2.55}, "head", "metal"),
+		p("Spike", {0.2, 0.5, 0.2}, {0, -1.15, -2.55}, "head", "metal"), p("Pick", {0.2, 0.42, 0.2}, {0, 1.12, -2.55}, "head", "metal"),
+		p("Gem", {0.2, 0.2, 0.2}, {0.2, 0, -2.55}, "glow", "Neon", "Ball")},
+	hatchet = {p("Handle", {0.22, 0.22, 2.6}, {0, 0, -1}, "wood", "Wood"), p("Wrap", {0.26, 0.26, 0.55}, {0, 0, 0}, "leather", "Fabric"),
+		p("Blade", {0.15, 0.9, 0.75}, {0, 0.4, -2.05}, "head", "metal"), p("Edge", {0.17, 0.12, 0.85}, {0, 0.88, -2.05}, "trim", "Metal"),
+		p("Poll", {0.26, 0.32, 0.42}, {0, -0.15, -2.05}, "head", "metal"), p("Gem", {0.18, 0.18, 0.18}, {0.12, 0.3, -2.05}, "glow", "Neon", "Ball")},
+	rod = {p("Grip", {0.24, 0.24, 1.2}, {0, 0, -0.3}, "leather", "Fabric"), p("Rod", {0.12, 0.12, 5}, {0, 0, -3.4}, "head", "Wood"),
+		p("Reel", {0.4, 0.4, 0.4}, {0, -0.28, -0.2}, "trim", "Metal", "Ball"), p("Guide", {0.18, 0.18, 0.08}, {0, 0, -2.2}, "trim", "Metal"),
+		p("Tip", {0.08, 0.08, 0.3}, {0, 0, -6.0}, "trim", "Metal"), p("Line", {0.03, 1.6, 0.03}, {0, -0.8, -6.1}, "string", "SmoothPlastic"),
+		p("Bobber", {0.22, 0.22, 0.22}, {0, -1.62, -6.1}, "glow", "Neon", "Ball")},
+	hoe = {p("Handle", {0.2, 0.2, 3.2}, {0, 0, -1.3}, "wood", "Wood"), p("Wrap", {0.24, 0.24, 0.55}, {0, 0, 0}, "leather", "Fabric"),
+		p("Collar", {0.28, 0.32, 0.3}, {0, 0, -2.85}, "trim", "Metal"), p("Neck", {0.14, 0.4, 0.14}, {0, -0.2, -2.85}, "head", "metal"),
+		p("Blade", {0.7, 0.5, 0.12}, {0, -0.6, -2.85}, "head", "metal"), p("Gem", {0.16, 0.16, 0.16}, {0, 0.12, -2.85}, "glow", "Neon", "Ball")},
+	hammer = {p("Handle", {0.2, 0.2, 1.6}, {0, 0, -0.5}, "wood", "Wood"), p("Head", {0.42, 0.9, 0.42}, {0, 0, -1.25}, "head", "metal"),
+		p("Face", {0.46, 0.14, 0.46}, {0, 0.46, -1.25}, "trim", "Metal")},
+}
+
+-- Resolved model spec for an item: {id, class, hand, parts = {{name, size, offset, colour, material, shape}}}.
+-- "metal" resolves to the tier's metal; glow parts are dropped below Epic.
+function H.spec(id)
+	local def = Data.Items[id or ""]
+	local class = H.classOf(def)
+	if not class then return nil end
+	local look = H.look(def)
+	local colours = {head = look.head, trim = look.trim, wood = H.WOOD, leather = H.LEATHER, string = H.STRING, glow = look.glow}
+	local parts = {}
+	for _, part in ipairs(H.SHAPES[class]) do
+		local colour = colours[part.c]
+		if colour and #parts < H.MAX_PARTS then
+			table.insert(parts, {name = part.n, size = part.s, offset = part.o, colour = colour,
+				material = if part.m == "metal" then look.metal else part.m, shape = part.shape})
+		end
+	end
+	return {id = id, class = class, hand = H.hand(class), parts = parts, look = look}
+end
+
+-- Ownership + requirement check for `hold`. raw: "<itemId>", "~<itemId>" (a
+-- temporary auto switch), "" / "none" (empty hands). meets(p, requires) -> bool, missing.
+function H.validate(p, raw, meets)
+	if raw == nil or raw == "" or raw == "none" then return true, "none", false end
+	if type(raw) ~= "string" or #raw > 65 then return false, "Choose an item to hold." end
+	local temporary = raw:sub(1, 1) == "~"
+	local id = if temporary then raw:sub(2) else raw
+	local def = Data.Items[id]
+	if not def then return false, "Choose an item to hold." end
+	if not H.classOf(def) then return false, (def.name or id) .. " can't be held." end
+	if ((p.items or {})[id] or 0) < 1 then return false, "You do not own " .. (def.name or id) .. "." end
+	if meets then
+		local allowed, missing = meets(p, def.requires)
+		if not allowed then return false, (def.name or id) .. " requires " .. tostring(missing) .. "." end
+	end
+	return true, id, temporary
+end
+-- What the character visibly holds: a temporary auto switch (autoId, kept out
+-- of the profile so it is never saved) when still valid, else p.held when still
+-- valid ("none" = empty hands), else the equipped weapon (slot 1).
+-- Returns id or nil, and true when the id is the temporary auto switch.
+function H.resolve(p, meets, autoId)
+	if type(autoId) == "string" and autoId ~= "" then
+		local ok, id = H.validate(p, autoId, meets)
+		if ok and id ~= "none" then return id, true end
+	end
+	local held = p.held
+	if held == "none" then return nil end
+	if type(held) == "string" then
+		local ok, id = H.validate(p, held, meets)
+		if ok and id ~= "none" then return id end
+	end
+	local weapon = type(p.equipment) == "table" and p.equipment.weapon or nil
+	if type(weapon) == "string" and H.validate(p, weapon, meets) then return weapon end
+	return nil
+end
+-- Hotbar layout (slots 3-9) is saved as string keys (DataStore-safe): p.hotbar = {s3 = id, ...}.
+function H.parseSlot(raw)
+	if type(raw) ~= "string" or #raw > 70 then return nil end
+	local slot, id = raw:match("^(%d):(.*)$")
+	slot = tonumber(slot)
+	if not slot or not table.find(H.FREE_SLOTS, slot) then return nil end
+	return slot, id
+end
+function H.hotbarString(p)
+	local bar = type(p.hotbar) == "table" and p.hotbar or {}
+	local out = table.create(#H.FREE_SLOTS, "")
+	for i, slot in ipairs(H.FREE_SLOTS) do
+		local id = bar["s" .. slot]
+		out[i] = if H.assignable(p, id) then id else ""
+	end
+	return table.concat(out, ",")
+end
+-- Any owned item can sit in a free slot (SkyBlock style: tools, weapons, food,
+-- blocks with their stack count); only holdable ones go into the hand.
+function H.assignable(p, id)
+	return type(id) == "string" and Data.Items[id] ~= nil and ((p.items or {})[id] or 0) > 0
+end
+-- Token bucket (hold / hotbarSet): b = {tokens, stamp}.
+function H.take(b, now)
+	b.tokens = math.min(H.BURST, (b.tokens or H.BURST) + (now - (b.stamp or now)) * H.RATE)
+	b.stamp = now
+	if b.tokens < 1 then return false end
+	b.tokens -= 1
+	return true
+end
+-- Every holdable item id (sorted), for tests and the hotbar picker.
+function H.all()
+	local out = {}
+	for id in pairs(Data.Items) do if H.holdable(id) then table.insert(out, id) end end
+	table.sort(out)
+	return out
+end
+end
+-- <<< END Held items & swings <<<
+------------------------------------------------------------------------------
+
+
+------------------------------------------------------------------------------
+-- >>> World Art & Regions (World Art & Regions team; self-contained section) >>>
+-- docs/DEPTH-CONTRACT.md §30. Region identity (display names, palettes,
+-- landmarks, ambience, entry banners), regional questgivers, shopkeepers and
+-- townsfolk (Data.Townsfolk.RegionFolkOrder), the regional quest chains
+-- (appended to Data.Quests with `giver`), and warp scrolls (fast travel: learn
+-- a region's scroll once, then the Warp Keeper sends you there).
+-- New objective kinds (server: Journal.measure; rejoin-safe in p.regionQuests):
+--   talk  {npc=<role>}         speak to that NPC while the quest is accepted (verb rqTalk)
+--   visit {landmark=<id>}      survey that landmark's prompt (IsleAction "landmark")
+-- Quests with a giver are accepted at the giver (rqAccept) and handed in there
+-- (rqClaim) or from the Journal once accepted. rewards.unlock.warp = region also
+-- unlocks that region's warp.
+------------------------------------------------------------------------------
+do
+local RA = {}
+Data.RegionArt = RA
+-- Generic display names get Aether-Isles names; ids stay stable for saves.
+local RENAMES = {Hub="Compass Quay", Meadow="Sunwheel Downs", Quarry="Brassfall Cay"}
+for id, name in pairs(RENAMES) do
+	local r = Data.RegionById[id]
+	if r then r.name = name end
+	local d = Data.DiaryByRegion and Data.DiaryByRegion[id]
+	if d then d.name = name .. " Diary" end
+end
+-- Per region: banner epithet, palette (ground, accent, glow), landmark (id,
+-- display name, world shape, island), ambience (client particle kind; sound =
+-- optional asset id hook, "" = none).
+RA.Regions = {
+	Hub={epithet="Heart of the Skyway",palette={"C9B994","DBAD65","9DF3D7"},
+		landmark={id="CompassSpire",name="The Compass Spire",shape="CompassTower",isle="Compass Quay"},ambience={particles="motes",sound=""}},
+	Meadow={epithet="Where the Sunwheel turns",palette={"8DB86E","E9C46A","FFE08A"},
+		landmark={id="Sunwheel",name="The Sunwheel Mill",shape="Windmill",isle="Meadow Reach"},ambience={particles="pollen",sound=""}},
+	Quarry={epithet="Copper, brass and smouldering stone",palette={"9C9682","FF8A3D","FFB86B"},
+		landmark={id="EmberCaldera",name="The Ember Caldera",shape="Caldera",isle="Cinder Shelf"},ambience={particles="embers",sound=""}},
+	Skyreach={epithet="Highest of the charted isles",palette={"96ACAB","39898E","BFF4FF"},
+		landmark={id="SunkenObservatory",name="The Sunken Observatory",shape="Observatory",isle="Skyreach"},ambience={particles="wind",sound=""}},
+	Windpine={epithet="The grove that whispers",palette={"5F8A57","9BD18B","E8D98E"},
+		landmark={id="AetherheartTree",name="The Aetherheart",shape="AetherheartTree",isle="Windpine Grove"},ambience={particles="leaves",sound=""}},
+	Gloomhollow={epithet="Lanterns below the light",palette={"3A3F52","B59CFF","7FD3C4"},
+		landmark={id="VoidglassSpire",name="The Voidglass Spire",shape="CrystalSpire",isle="Gloomhollow Caverns"},ambience={particles="spores",sound=""}},
+	Tidewater={epithet="Skylakes and singing reefs",palette={"D9C9A0","5EC8D8","E76F7B"},
+		landmark={id="ShoalLight",name="The Shoal Light",shape="Lighthouse",isle="Tidewater Shoals"},ambience={particles="spray",sound=""}},
+	Tempest={epithet="The storm that never breaks",palette={"4A5266","BFD7FF","8FB8D6"},
+		landmark={id="StormCrown",name="The Storm Crown",shape="StormSpire",isle="Tempest Spire"},ambience={particles="sparks",sound=""}},
+	ShatteredCrown={epithet="A sky-crown in pieces",palette={"6E6A8C","F2D27A","B59CFF"},
+		landmark={id="BrokenCrown",name="The Broken Crown",shape="Obelisk",isle="The Shattered Crown"},ambience={particles="glints",sound=""}},
+}
+-- Island banners: every static island's entry epithet (the banner title is the island's own name).
+RA.Isles = {
+	["Compass Quay"]="Sky Harbor · Market Row · Artisans' Rise",["Guild Terrace"]="Stations, the Guild Hall and the Skyway",
+	["Warden Reach"]="Waystones around the Shellwarden",["Mosswake Grove"]="Mossy timber and moonleaf beds",
+	["Meadow Reach"]="Sunwheat terraces under the Sunwheel",["Brassfall Quarry"]="The crane sings over the copper seams",
+	["Cinder Shelf"]="Ash terraces around the Ember Caldera",["Skyreach"]="Thin air, golems and the Sunken Observatory",
+	["Windpine Grove"]="Towering windpines round the Aetherheart",["Gloomhollow Caverns"]="Voidstone grottoes and glowshrooms",
+	["Tidewater Shoals"]="Sandbars, lagoons and the Shoal Light",["Tempest Spire"]="Crystal pylons crackling in the gale",
+	["The Shattered Crown"]="Islets of a broken sky-crown",
+}
+RA.LandmarkById = {}
+for region, art in pairs(RA.Regions) do
+	local r = Data.RegionById[region]
+	art.title = r and r.name or region
+	art.landmark.region = region
+	RA.LandmarkById[art.landmark.id] = art.landmark
+end
+RA.Order = {"Hub","Meadow","Quarry","Skyreach","Windpine","Gloomhollow","Tidewater","Tempest","ShatteredCrown"}
+RA.SURVEY_RADIUS = 14 -- studs from a landmark's survey prompt that count as a visit
+RA.TALK_RADIUS = 16   -- studs from an NPC that count as speaking to them
+
+------------------------------------------------------------------------------
+-- Warp scrolls: read once to learn a region's warp; the Warp Keeper carries
+-- you to its entrance anchor afterwards.
+------------------------------------------------------------------------------
+RA.WARP_COOLDOWN = 20
+RA.Warps = {
+	{region="Hub",anchor="Waypoint_SkyHarbor",price=150},
+	{region="Meadow",anchor="Waypoint_Entrance_Meadow",price=300},
+	{region="Quarry",anchor="Waypoint_Entrance_CinderShelf",price=300},
+	{region="Skyreach",anchor="Waypoint_Entrance_Skyreach",price=1200},
+	{region="Windpine",anchor="Waypoint_Entrance_Windpine",price=1500},
+	{region="Gloomhollow",anchor="Waypoint_Entrance_Gloomhollow",price=4000},
+	{region="Tidewater",anchor="Waypoint_Entrance_Tidewater",price=4000},
+	{region="Tempest",anchor="Waypoint_Entrance_Tempest",price=9000},
+	{region="ShatteredCrown",anchor="Waypoint_Entrance_ShatteredCrown",price=20000},
+}
+RA.WarpByRegion = {}
+for _, w in ipairs(RA.Warps) do
+	w.scroll = "WarpScroll" .. w.region
+	RA.WarpByRegion[w.region] = w
+	local name = Data.RegionById[w.region].name
+	item(w.scroll,{name="Warp Scroll: "..name,kind="material",category="warp",rarity="Rare",color="C77DFF",value=math.floor(w.price/10),
+		description="Read it with the Warp Keeper to learn the warp to "..name..". Learned once, used forever."})
+end
+
+------------------------------------------------------------------------------
+-- Regional folk: questgivers, shopkeepers, the Warp Keeper and townsfolk.
+------------------------------------------------------------------------------
+local folk = {
+	-- Compass Quay
+	{role="WarpKeeper",region="Hub",name="Ilsabet Vanewright",title="Warp Keeper",portrait="🌀",kind="warp",
+		look={skin="D1A27A",shirt="4B2C7A",pants="241A33",shoes="17111F",accent="C77DFF",hair="F2E8D5",hat="tophat",held="staff",cape="2E1A4A",spectacles=true},
+		greet="Every isle has a thread, wayfarer, and I hold the spindle. Learn a warp scroll and I'll send you along its thread."},
+	{role="Lamplighter",region="Hub",name="Corwin Tallowmere",title="Quay Lamplighter",portrait="🕯",
+		look={skin="F1C27D",shirt="6D4C41",pants="3E2723",shoes="1B1B1B",accent="FFD166",hair="8D6E63",hat="cap",held="lantern",beard=true},
+		greet="Sixty lamps on the Quay and every one wants oil by dusk. Spare a hand?"},
+	{role="QuayCrier",region="Hub",name="Mirelle Dunfeather",title="Town Crier",portrait="📣",kind="townsfolk",
+		look={skin="FFDBAC",shirt="1E88E5",pants="F2E8D5",shoes="5D4037",accent="FFC107",hair="A1887F",hat="feather",held="scroll"},
+		greet="News of the isles! The Sunwheel turns, the Caldera smoulders and the Shoal Light still shines. Folk in regional colours always need a hand!"},
+	-- Sunwheel Downs
+	{role="Millwarden",region="Meadow",name="Hesper Furrowmilde",title="Millwarden of the Sunwheel",portrait="🌾",
+		look={skin="E0AC69",shirt="C9A24E",pants="5D4037",shoes="3E2723",accent="FFE08A",hair="D7CCC8",hat="wayfarer",held="crate",apron="F5E6C8"},
+		greet="The Sunwheel grinds for every oven on the Quay. When she stops, the isles go hungry."},
+	{role="Shepherd",region="Meadow",name="Bram Oatley",title="Downs Shepherd",portrait="🐑",
+		look={skin="C68642",shirt="7CB342",pants="4E342E",shoes="3E2723",accent="F9CC77",hair="5D4037",hat="hood",held="staff",cape="558B2F",beard=true},
+		greet="Boars in the barley again. I'd chase 'em myself if my knees were younger."},
+	{role="SeedSeller",region="Meadow",name="Tilly Sackbright",title="Seed-seller",portrait="🌱",kind="shop",
+		look={skin="FFDBAC",shirt="F06292",pants="6D4C41",shoes="4E342E",accent="AED581",hair="FF8A65",hat="cap",held="crate",apron="FFF3E0"},
+		greet="Tonics, tea and the odd trinket, all grown on the Downs!",
+		shop={{item="Tonic",price=12,amount=1},{item="CookedFish",price=20,amount=1},{item="WarpScrollMeadow",price=360,amount=1}}},
+	-- Brassfall Cay
+	{role="CalderaWatcher",region="Quarry",name="Garrick Slagmere",title="Caldera Watcher",portrait="🌋",
+		look={skin="8D5524",shirt="BF360C",pants="3E2723",shoes="1B1B1B",accent="FF8A3D",hair="212121",hat="goggles",held="pickaxe",beard=true},
+		greet="She's breathing slow today, the Caldera. That's when the mites come up to warm their bellies."},
+	{role="CraneHand",region="Quarry",name="Pim Brassbuckle",title="Crane-hand",portrait="🏗",
+		look={skin="F1C27D",shirt="FFB300",pants="37474F",shoes="263238",accent="546E7A",hair="6D4C41",hat="minerhelm",held="hammer"},
+		greet="The old crane's held together with hope and rivets. Mostly hope."},
+	{role="ToolTrader",region="Quarry",name="Dorra Flintwick",title="Tool-trader",portrait="⛏",kind="shop",
+		look={skin="A0522D",shirt="5D4037",pants="2E2A26",shoes="1E1A16",accent="D4A84B",hair="9E9E9E",hat="cap",held="ledger",apron="8D6E63",spectacles=true},
+		greet="Alloy, dust and a sturdy scroll. Everything a quarry hand needs.",
+		shop={{item="AlloyIngot",price=45,amount=1},{item="ArcaneDust",price=30,amount=1},{item="WarpScrollQuarry",price=360,amount=1}}},
+	-- Skyreach
+	{role="Astronomer",region="Skyreach",name="Aurelie Starling",title="Astronomer of the Observatory",portrait="🔭",
+		look={skin="FFDBAC",shirt="1A237E",pants="283593",shoes="1A1A2E",accent="BFF4FF",hair="ECEFF1",hat="hood",held="scroll",cape="0D1B4A",spectacles=true},
+		greet="From the Observatory you can see every isle at once. And something else, lately. Something moving."},
+	{role="Golemwright",region="Skyreach",name="Tobias Gearwhit",title="Golemwright",portrait="⚙",
+		look={skin="E0AC69",shirt="795548",pants="4E342E",shoes="3E2723",accent="D4A84B",hair="BDBDBD",hat="goggles",held="hammer",apron="A1887F"},
+		greet="Brass golems tick in unison. Find out why and you'll know more than the guild does."},
+	{role="UpdraftSupplier",region="Skyreach",name="Venn Lofthook",title="Updraft Supplier",portrait="🪁",kind="shop",
+		look={skin="C68642",shirt="00838F",pants="263238",shoes="212121",accent="80DEEA",hair="3E2723",hat="feather",held="rod"},
+		greet="Rope, feathers and courage. Two of those I sell.",
+		shop={{item="StormFeather",price=60,amount=1},{item="Tonic",price=16,amount=2},{item="WarpScrollSkyreach",price=1440,amount=1}}},
+	-- Windpine
+	{role="CanopyWarden",region="Windpine",name="Wren Tallbough",title="Canopy Warden",portrait="🍃",
+		look={skin="8D5524",shirt="2E7D32",pants="33691E",shoes="1B5E20",accent="C5E1A5",hair="4E342E",hat="feather",held="staff",cape="1B5E20"},
+		greet="Walk softly. The Aetherheart listens through every root on this isle."},
+	{role="Sawyer",region="Windpine",name="Osric Pinewhistle",title="Grove Sawyer",portrait="🪓",
+		look={skin="F1C27D",shirt="B71C1C",pants="3E2723",shoes="1B1B1B",accent="FFCDD2",hair="BF360C",hat="cap",held="saw",beard=true},
+		greet="I only fell what the Warden marks. The stalkers don't share my manners."},
+	{role="Forager",region="Windpine",name="Fenna Mossglove",title="Forager",portrait="🍄",kind="shop",
+		look={skin="FFDBAC",shirt="827717",pants="5D4037",shoes="4E342E",accent="DCE775",hair="FFB74D",hat="hood",held="crate",cape="9E9D24"},
+		greet="Picked at dawn, sold by noon, and none of it poisonous. Mostly.",
+		shop={{item="MightDraught",price=180,amount=1},{item="Tonic",price=16,amount=2},{item="WarpScrollWindpine",price=1800,amount=1}}},
+	-- Gloomhollow
+	{role="CrystalReader",region="Gloomhollow",name="Sable Quillmoth",title="Crystal-reader",portrait="🔮",
+		look={skin="D1A27A",shirt="311B92",pants="1A1033",shoes="0D0A14",accent="B59CFF",hair="212121",hat="hood",held="lantern",cape="4527A0"},
+		greet="The Voidglass Spire hums a little louder each night. I write down every note."},
+	{role="TunnelForeman",region="Gloomhollow",name="Drogan Ashlamp",title="Tunnel Foreman",portrait="⛑",
+		look={skin="6D4C41",shirt="455A64",pants="263238",shoes="1C1C1C",accent="FFAB40",hair="9E9E9E",hat="helm",held="pickaxe",beard=true},
+		greet="Three tunnels lost to silk this month. I need someone with a sharp blade and a steady lamp."},
+	{role="LanternSeller",region="Gloomhollow",name="Mott Candlewick",title="Lantern-seller",portrait="🏮",kind="shop",
+		look={skin="FFDBAC",shirt="4E342E",pants="3E2723",shoes="212121",accent="FFD54F",hair="FFFFFF",hat="tricorn",held="lantern",spectacles=true},
+		greet="Light's the only currency down here that never loses value.",
+		shop={{item="ArcaneDust",price=28,amount=2},{item="Shard",price=90,amount=1},{item="WarpScrollGloomhollow",price=4800,amount=1}}},
+	-- Tidewater
+	{role="Lightkeeper",region="Tidewater",name="Marisol Brinehart",title="Keeper of the Shoal Light",portrait="🗼",
+		look={skin="C68642",shirt="0277BD",pants="01579B",shoes="263238",accent="FFF59D",hair="3E2723",hat="souwester",held="lantern"},
+		greet="The Shoal Light has never gone dark. Not once in three hundred years. I'd like to keep it that way."},
+	{role="NetMender",region="Tidewater",name="Kel Driftnet",title="Net-mender",portrait="🪢",
+		look={skin="8D5524",shirt="00695C",pants="37474F",shoes="263238",accent="B2DFDB",hair="1B1B1B",hat="tricorn",held="rod",beard=true},
+		greet="Lurkers chew through a net a night. Lanternrays are worth the trouble, mind."},
+	{role="Fishmonger",region="Tidewater",name="Opal Saltreed",title="Fishmonger",portrait="🐟",kind="shop",
+		look={skin="F1C27D",shirt="E1F5FE",pants="0288D1",shoes="01579B",accent="E76F7B",hair="FFCC80",hat="souwester",held="crate",apron="B3E5FC"},
+		greet="Caught this morning, smoked by lunch. Best on the Shoals!",
+		shop={{item="CookedFish",price=32,amount=2},{item="Tonic",price=14,amount=1},{item="WarpScrollTidewater",price=4800,amount=1}}},
+	-- Tempest
+	{role="StormScribe",region="Tempest",name="Thessaly Vaunt",title="Storm-scribe",portrait="⚡",
+		look={skin="FFDBAC",shirt="263238",pants="1C2833",shoes="0B0F14",accent="BFD7FF",hair="CFD8DC",hat="hood",held="scroll",cape="37474F"},
+		greet="Every bolt that strikes the Crown, I record. The pattern is almost a word."},
+	{role="SpireSentinel",region="Tempest",name="Captain Rook Halberd",title="Spire Sentinel",portrait="🛡",
+		look={skin="A0522D",shirt="37474F",pants="263238",shoes="1C1C1C",accent="90CAF9",hair="1B1B1B",hat="helm",held="sword",cape="1565C0",beard=true},
+		greet="Hold the line, hold the spire. Do you hold a blade, or just your breath?"},
+	{role="Stormglazier",region="Tempest",name="Ivo Sparkwright",title="Stormglazier",portrait="💠",kind="shop",
+		look={skin="E0AC69",shirt="5C6BC0",pants="283593",shoes="1A237E",accent="E1F5FE",hair="FFEE58",hat="goggles",held="ledger"},
+		greet="Stormglass, blown in lightning. Mind your fingers.",
+		shop={{item="Stormglass",price=220,amount=1},{item="MightDraught",price=200,amount=1},{item="WarpScrollTempest",price=10800,amount=1}}},
+	-- The Shattered Crown
+	{role="CrownArchivist",region="ShatteredCrown",name="Seraphine Gildmourn",title="Crown Archivist",portrait="👑",
+		look={skin="D1A27A",shirt="6A1B9A",pants="38006B",shoes="1A0033",accent="F2D27A",hair="FFF8E1",hat="tophat",held="scroll",cape="4A148C"},
+		greet="Every shard of the Crown remembers the hand that broke it. I intend to learn whose."},
+	{role="Shardkeeper",region="ShatteredCrown",name="Halvard Riftwatch",title="Warden of the Rift",portrait="🗡",
+		look={skin="8D5524",shirt="4A148C",pants="1A0033",shoes="0D0014",accent="CE93D8",hair="E0E0E0",hat="helm",held="sword",cape="7B1FA2",beard=true},
+		greet="The rift spits out horrors every hour. I count them. I'd rather count fewer."},
+	{role="RelicBroker",region="ShatteredCrown",name="Nim Glintwright",title="Relic Broker",portrait="💎",kind="shop",
+		look={skin="FFDBAC",shirt="F9A825",pants="4E342E",shoes="3E2723",accent="FFF59D",hair="5D4037",hat="feather",held="ledger",spectacles=true},
+		greet="Relics, shards, curios. Nothing cursed. Probably.",
+		shop={{item="Stormglass",price=200,amount=2},{item="Shard",price=80,amount=2},{item="WarpScrollShatteredCrown",price=24000,amount=1}}},
+}
+RA.Folk = folk
+RA.FolkByRole = {}
+for _, f in ipairs(folk) do RA.FolkByRole[f.role] = f end
+
+------------------------------------------------------------------------------
+-- Regional quest chains (appended to Data.Quests; giver = folk role).
+------------------------------------------------------------------------------
+local function ql(...) return {...} end
+local function K(m, n) return {kind="kills",monster=m,count=n} end
+local function H(i, n) return {kind="have",item=i,count=n,consume=true} end
+local function Cl(i, n) return {kind="collect",item=i,count=n} end
+local function G(r, n) return {kind="gather",region=r,count=n} end
+local function TALK(role) return {kind="talk",npc=role} end
+local function VISIT(id) return {kind="visit",landmark=id} end
+local function Q(id) return {kind="quest",quest=id} end
+local function LV(skill, n) return {kind="level",skill=skill,level=n} end
+local EXCL = {"Dungeoneering","Carpentry"}
+RA.Quests = {
+	{id="SkywayCharter",title="Charting the Skyway",giver="WarpKeeper",region="Hub",
+		story="Ilsabet wants a fresh wayfarer to walk the Quay's threads: meet the Lamplighter and survey the Compass Spire.",
+		requires=ql({kind="contracts",count=1}),objectives=ql(TALK("Lamplighter"),VISIT("CompassSpire")),
+		rewards={coins=300,points=1,items={WarpScrollMeadow=1}}},
+	{id="LampsOfTheQuay",title="Lamps of the Quay",giver="Lamplighter",region="Hub",
+		story="Corwin needs timber for new posts and ore for lamp brackets before the Quay goes dark.",
+		requires=ql(Q("SkywayCharter")),objectives=ql(H("Timber",15),H("Ore",10)),
+		rewards={coins=400,points=1,lamp={xp=500,skills={"Woodcutting","Mining"}}}},
+	{id="SunwheelTurns",title="The Sunwheel Turns",giver="Millwarden",region="Meadow",
+		story="Hesper's mill has seized. Survey the Sunwheel, bring sunwheat for the stones and fetch Bram's help with the sails.",
+		requires=ql({kind="contracts",count=2}),objectives=ql(VISIT("Sunwheel"),Cl("Sunwheat",30),TALK("Shepherd")),
+		rewards={coins=600,points=1,xp={Farming=800}}},
+	{id="BoarsInTheBarley",title="Boars in the Barley",giver="Shepherd",region="Meadow",
+		story="Bram's barley rows are trampled flat. Drive the boars off and bring back hides for new sail-cloth.",
+		requires=ql(Q("SunwheelTurns")),objectives=ql(K("BramblebackBoar",12),H("BeastHide",3)),
+		rewards={coins=700,points=1,items={MightDraught=1}}},
+	{id="MillersFeast",title="The Miller's Feast",giver="Millwarden",region="Meadow",
+		story="With the Sunwheel turning again, Hesper throws a harvest feast. She needs sunwheat and herbs for the tables.",
+		requires=ql(Q("BoarsInTheBarley")),objectives=ql(H("Sunwheat",40),H("Herb",20)),
+		rewards={coins=900,points=2,lamp={xp=1200,skills={"Farming","Cooking"}},unlock={warp="Meadow"}}},
+	{id="CalderaWatch",title="Caldera Watch",giver="CalderaWatcher",region="Quarry",
+		story="Garrick needs eyes on the Ember Caldera while the cinder mites swarm its rim.",
+		requires=ql({kind="contracts",count=3}),objectives=ql(VISIT("EmberCaldera"),K("CinderMite",10)),
+		rewards={coins=800,points=1,xp={Mining=1000}}},
+	{id="CraneRepairs",title="Rivets and Hope",giver="CraneHand",region="Quarry",
+		story="Pim's crane needs alloy rivets and a load of fresh ore to test the winch. Garrick signs off on the lift.",
+		requires=ql({kind="contracts",count=3}),objectives=ql(H("AlloyIngot",5),Cl("Ore",60),TALK("CalderaWatcher")),
+		rewards={coins=900,points=1,unlock={warp="Quarry"}}},
+	{id="SlagAndEmber",title="Slag and Ember",giver="CalderaWatcher",region="Quarry",
+		story="The crawlers are tunnelling under the Caldera. Thin them and bring brassite to shore up the vents.",
+		requires=ql(Q("CalderaWatch"),Q("CraneRepairs"),LV("Mining",15)),objectives=ql(K("ShaleCrawler",20),H("Brassite",25)),
+		rewards={coins=1200,points=2,lamp={xp=2000,skills={"Mining","Smithing"}}}},
+	{id="LensOfTheHeights",title="Lens of the Heights",giver="Astronomer",region="Skyreach",
+		story="Aurelie's great lens is fogged with golem grit. Survey the Observatory and gather around the heights while she cleans it.",
+		requires=ql({kind="contracts",count=6}),objectives=ql(VISIT("SunkenObservatory"),G("Skyreach",15)),
+		rewards={coins=1200,points=1,unlock={warp="Skyreach"}}},
+	{id="TickingHearts",title="Ticking Hearts",giver="Golemwright",region="Skyreach",
+		story="Tobias wants to hear a golem's heart stop. Break a few, then tell Aurelie what the rhythm sounded like.",
+		requires=ql({kind="contracts",count=6},LV("Combat",15)),objectives=ql(K("BrassGolem",8),TALK("Astronomer")),
+		rewards={coins=1500,points=1,xp={Smithing=1500}}},
+	{id="StarChart",title="The Star Chart",giver="Astronomer",region="Skyreach",
+		story="Whatever moves past the Observatory rides the updrafts. Harriers fly the same paths; follow them and pluck their feathers.",
+		requires=ql(Q("LensOfTheHeights"),Q("TickingHearts")),objectives=ql(K("StormHarrier",10),Cl("StormFeather",15)),
+		rewards={coins=2000,points=2,lamp={xp=3000,skills={"Combat","Mining","Smithing"}}}},
+	{id="HeartOfTheGrove",title="Heart of the Grove",giver="CanopyWarden",region="Windpine",
+		story="Wren asks you to lay a hand on the Aetherheart and gather from the grove so it knows your name.",
+		requires=ql(LV("Woodcutting",10)),objectives=ql(VISIT("AetherheartTree"),G("Windpine",25)),
+		rewards={coins=1200,points=1,xp={Woodcutting=1500},unlock={warp="Windpine"}}},
+	{id="StalkerInTheRoots",title="Stalker in the Roots",giver="Sawyer",region="Windpine",
+		story="Osric's crews won't work while bark stalkers lurk. Clear them and stack emberoak for the lodge.",
+		requires=ql(LV("Woodcutting",10)),objectives=ql(K("BarkStalker",10),Cl("EmberoakLog",30)),
+		rewards={coins=1500,points=1,items={MightDraught=2}}},
+	{id="WindsongOath",title="The Windsong Oath",giver="CanopyWarden",region="Windpine",
+		story="Gale sprites have stolen the grove's song. Scatter them, then let Osric swear the woodcutters' oath with you.",
+		requires=ql(Q("HeartOfTheGrove"),Q("StalkerInTheRoots")),objectives=ql(K("GaleSprite",15),TALK("Sawyer")),
+		rewards={coins=2000,points=2,lamp={xp=3000,skills={"Woodcutting","Farming"}}}},
+	{id="VoidglassSpire",title="The Voidglass Spire",giver="CrystalReader",region="Gloomhollow",
+		story="Sable needs a reading taken at the Spire's foot and voidstone to tune her lenses.",
+		requires=ql(LV("Mining",30),LV("Combat",15)),objectives=ql(VISIT("VoidglassSpire"),Cl("Voidstone",25)),
+		rewards={coins=2500,points=1,unlock={warp="Gloomhollow"}}},
+	{id="SilkAndShadow",title="Silk and Shadow",giver="TunnelForeman",region="Gloomhollow",
+		story="Drogan's tunnels are choked with web. Cut the gloomfangs down and bring their silk for safety lines.",
+		requires=ql(LV("Mining",30),LV("Combat",15)),objectives=ql(K("GloomfangSpider",15),H("SpiderSilk",8)),
+		rewards={coins=2500,points=1,xp={Mining=3000}}},
+	{id="EchoesOfTheWisp",title="Echoes of the Wisp",giver="CrystalReader",region="Gloomhollow",
+		story="The Spire's hum is the wisps singing back. Silence a dozen and tell Drogan the tunnels are safe.",
+		requires=ql(Q("VoidglassSpire"),Q("SilkAndShadow")),objectives=ql(K("VoidWisp",12),TALK("TunnelForeman")),
+		rewards={coins=3500,points=2,lamp={xp=5000,exclude=EXCL}}},
+	{id="LightOverTheShoals",title="Light over the Shoals",giver="Lightkeeper",region="Tidewater",
+		story="Marisol's lamp oil comes from the shoals themselves. Climb to the Shoal Light and harvest the lagoons.",
+		requires=ql(LV("Fishing",30)),objectives=ql(VISIT("ShoalLight"),G("Tidewater",20)),
+		rewards={coins=2500,points=1,unlock={warp="Tidewater"}}},
+	{id="NetsAndLurkers",title="Nets and Lurkers",giver="NetMender",region="Tidewater",
+		story="Kel's nets need saving from the lurkers, and the lanternrays won't land themselves. Tell Marisol when the catch is in.",
+		requires=ql(LV("Fishing",30)),objectives=ql(K("ReefLurker",10),Cl("Lanternray",15),TALK("Lightkeeper")),
+		rewards={coins=3000,points=2,xp={Fishing=3000}}},
+	{id="EyeOfTheStorm",title="Eye of the Storm",giver="StormScribe",region="Tempest",
+		story="Thessaly must copy the glyphs at the Storm Crown, but wraiths circle it. Survey the Crown and drive them off.",
+		requires=ql(LV("Combat",40)),objectives=ql(VISIT("StormCrown"),K("TempestWraith",10)),
+		rewards={coins=5000,points=1,unlock={warp="Tempest"}}},
+	{id="SentinelsWatch",title="The Sentinel's Watch",giver="SpireSentinel",region="Tempest",
+		story="Rook wants proof you can stand where the starborn stand. Fell three, then report to the Storm-scribe.",
+		requires=ql(LV("Combat",40)),objectives=ql(K("StarbornSentinel",3),TALK("StormScribe")),
+		rewards={coins=6000,points=2,lamp={xp=6000,exclude=EXCL}}},
+	{id="ShardsOfTheCrown",title="Shards of the Crown",giver="CrownArchivist",region="ShatteredCrown",
+		story="Seraphine catalogues the Broken Crown shard by shard. Survey it, and keep the riftmaws off her ledgers.",
+		requires=ql(Q("CrownOfTempest"),LV("Combat",60)),objectives=ql(VISIT("BrokenCrown"),K("RiftmawStalker",10)),
+		rewards={coins=10000,points=2,unlock={warp="ShatteredCrown"}}},
+	{id="VigilAtTheRift",title="Vigil at the Rift",giver="Shardkeeper",region="ShatteredCrown",
+		story="Halvard's count of rift-horrors grows. Shatter the glass seers and bring his tally to the Archivist.",
+		requires=ql(Q("CrownOfTempest"),LV("Combat",60)),objectives=ql(K("ShardglassSeer",8),TALK("CrownArchivist")),
+		rewards={coins=8000,points=2,lamp={xp=10000,exclude=EXCL}}},
+}
+RA.QuestById = {}
+RA.QuestsByGiver = {}
+for _, q in ipairs(RA.Quests) do
+	q.line, q.regional = "side", true -- Journal groups them with side quests; `regional` marks the chain
+	table.insert(Data.Quests, q)
+	q.index = #Data.Quests
+	Data.QuestById[q.id] = q
+	RA.QuestById[q.id] = q
+	RA.QuestsByGiver[q.giver] = RA.QuestsByGiver[q.giver] or {}
+	table.insert(RA.QuestsByGiver[q.giver], q)
+end
+-- Human-readable text for the new objective kinds.
+local describe = Data.describeCheck
+function Data.describeCheck(o)
+	if type(o) == "table" and o.kind == "talk" then
+		local f = RA.FolkByRole[o.npc]
+		return "Speak with " .. (if f then f.name else tostring(o.npc))
+	elseif type(o) == "table" and o.kind == "visit" then
+		local l = RA.LandmarkById[o.landmark]
+		return "Survey " .. (if l then l.name else tostring(o.landmark))
+	end
+	return describe(o)
+end
+-- Claim items a giver's dialogue may send (quest id, or "id:Skill" for lamps;
+-- open lamps offer three common picks here, every skill from the Journal).
+function RA.claimItems(q)
+	local out = {}
+	local lamp = q.rewards.lamp
+	if not lamp then table.insert(out, q.id); return out end
+	for _, skill in ipairs(lamp.skills or {"Combat", "Mining", "Woodcutting"}) do table.insert(out, q.id .. ":" .. skill) end
+	return out
+end
+
+------------------------------------------------------------------------------
+-- Snapshot helpers for dialogue conditions and quest markers
+-- (snapshot.regionQuests {accepted, talked, visited, warps} and snapshot.journal).
+------------------------------------------------------------------------------
+local function tab(v) return if type(v) == "table" then v else {} end
+local function rq(s) return tab(tab(s).regionQuests) end
+local function questEntry(s, q)
+	local entry = tab(tab(tab(tab(s).journal).quests)[q.index])
+	return if entry.id == q.id then entry else {}
+end
+-- "done" | "ready" | "active" | "offer" | "locked"
+function RA.questStatus(s, q)
+	local e = questEntry(s, q)
+	if e.done then return "done" end
+	if tab(rq(s).accepted)[q.id] then return if e.ready then "ready" else "active" end
+	if e.available then return "offer" end
+	return "locked"
+end
+local function wantsTalk(s, role)
+	if tab(rq(s).talked)[role] then return false end
+	for _, q in ipairs(RA.Quests) do
+		if RA.questStatus(s, q) == "active" or RA.questStatus(s, q) == "ready" then
+			for _, o in ipairs(q.objectives) do if o.kind == "talk" and o.npc == role then return true end end
+		end
+	end
+	return false
+end
+-- Marker over an NPC's head: "ready" (gold ?), "offer" (gold !), "talk" (gold …),
+-- "active" (grey ?) or nil.
+function RA.marker(s, role)
+	local best
+	for _, q in ipairs(RA.QuestsByGiver[role] or {}) do
+		local st = RA.questStatus(s, q)
+		if st == "ready" then return "ready" end
+		if st == "offer" then best = "offer" elseif st == "active" and not best then best = "active" end
+	end
+	if best == "offer" then return best end
+	if wantsTalk(s, role) then return "talk" end
+	return best
+end
+
+------------------------------------------------------------------------------
+-- Dialogue: every folk NPC is a Townsfolk entry (anchor-only placement) with
+-- generated quest, shop and warp nodes.
+------------------------------------------------------------------------------
+local T = Data.Townsfolk
+T.RegionFolkOrder = {}
+-- Option labels wrap on the dialogue buttons (npc.client.lua) instead of being cut.
+RA.LABEL_MAX = 80
+-- "How am I doing?" for one regional quest: its own objectives from the snapshot
+-- (journal.quests[q.index].objectives = {{have, need}, ...}; regional kills /
+-- collect / gather already count since acceptance on the server).
+function RA.progressText(s, q)
+	local entry = questEntry(s, q)
+	local st = RA.questStatus(s, q)
+	if st == "done" then return "\"" .. q.title .. "\" is complete. Thank you, wayfarer." end
+	if st == "ready" then return "\"" .. q.title .. "\": everything's done. Hand it in to me whenever you like." end
+	local lines = {}
+	for j, o in ipairs(q.objectives) do
+		local pr = tab(tab(entry.objectives)[j])
+		local have, need = tonumber(pr[1]) or 0, tonumber(pr[2]) or 1
+		table.insert(lines, (if have >= need then "✓ " else "• ") .. Data.describeCheck(o) .. (if need > 1 then " (" .. math.min(have, need) .. "/" .. need .. ")" else ""))
+	end
+	local head = if st == "active" then "\"" .. q.title .. "\" so far:" else "If you take on \"" .. q.title .. "\", you'll need to:"
+	return head .. "\n" .. table.concat(lines, "\n")
+end
+local verbs = {rqAccept={}, rqClaim={}, rqTalk={}, rqBuy={}, warpTo={}, warpBuy={}, warpLearn={}}
+local farewell = {label="Farewell", close=true}
+local function cond(id, f) T.Conditions[id] = f; return id end
+for _, f in ipairs(folk) do
+	local nodes, hello = {}, {}
+	local role = f.role
+	verbs.rqTalk[role] = true
+	table.insert(hello, {label="I was sent to speak with you",verb="rqTalk",item=role,when=cond("rqTalk_" .. role, function(s) return wantsTalk(s, role) end)})
+	for _, q in ipairs(RA.QuestsByGiver[role] or {}) do
+		local nodeId = "quest_" .. q.id
+		verbs.rqAccept[q.id] = true
+		table.insert(hello, {label="Quest: " .. q.title, to=nodeId,
+			when=cond("rqOpen_" .. q.id, function(s) local st = RA.questStatus(s, q); return st ~= "locked" and st ~= "done" end)})
+		local opts = {
+			{label="I'll do it",verb="rqAccept",item=q.id,when=cond("rqOffer_" .. q.id, function(s) return RA.questStatus(s, q) == "offer" end)},
+		}
+		for _, claim in ipairs(RA.claimItems(q)) do
+			verbs.rqClaim[claim] = true
+			local skill = string.match(claim, ":(%w+)$")
+			table.insert(opts, {label=if skill then "Hand in (lamp: " .. skill .. ")" else "Hand in the quest",verb="rqClaim",item=claim,
+				when=cond("rqReady_" .. claim, function(s) return RA.questStatus(s, q) == "ready" end)})
+		end
+		local tipId = "rq_" .. q.id
+		T.Tips[tipId] = function(s) return RA.progressText(s, q) end
+		table.insert(opts, {label="How am I doing?", tip=tipId})
+		table.insert(opts, {label="Back", to="hello"})
+		nodes[nodeId] = {text=q.story, options=opts}
+	end
+	if f.shop then
+		local shopOpts = {}
+		for i, offer in ipairs(f.shop) do
+			local key = role .. ":" .. i
+			verbs.rqBuy[key] = true
+			local def = Data.Items[offer.item]
+			table.insert(shopOpts, {label="Buy " .. (if offer.amount > 1 then offer.amount .. "× " else "") .. (def and def.name or offer.item) .. " (" .. offer.price .. "c)",verb="rqBuy",item=key})
+		end
+		table.insert(shopOpts, {label="Back", to="hello"})
+		nodes.shop = {text="Have a look. Coins up front, no haggling.", options=shopOpts}
+		table.insert(hello, {label="Show me your wares", to="shop"})
+	end
+	if f.kind == "warp" then
+		local warpOpts, learnOpts, buyOpts = {}, {}, {}
+		for _, w in ipairs(RA.Warps) do
+			local region = w.region
+			local name = Data.RegionById[region].name
+			verbs.warpTo[region], verbs.warpBuy[region], verbs.warpLearn[region] = true, true, true
+			table.insert(warpOpts, {label="Warp to " .. name,verb="warpTo",item=region,
+				when=cond("warpKnown_" .. region, function(s) return tab(rq(s).warps)[region] == true end)})
+			table.insert(learnOpts, {label="Read: " .. name,verb="warpLearn",item=region,
+				when=cond("warpScroll_" .. region, function(s) return tab(rq(s).warps)[region] ~= true and (tonumber(tab(tab(s).items)[w.scroll]) or 0) > 0 end)})
+			table.insert(buyOpts, {label="Scroll: " .. name .. " (" .. w.price .. "c)",verb="warpBuy",item=region,
+				when=cond("warpUnknown_" .. region, function(s) return tab(rq(s).warps)[region] ~= true end)})
+		end
+		table.insert(warpOpts, {label="Back", to="hello"})
+		table.insert(learnOpts, {label="Back", to="hello"})
+		table.insert(buyOpts, {label="Back", to="hello"})
+		nodes.warps = {text="Name the thread and I'll pull you along it.", options=warpOpts}
+		nodes.learn = {text="Hand me a scroll and read the name aloud. Once learned, never forgotten.", options=learnOpts}
+		nodes.buy = {text="Each scroll is spun from that isle's own wind. Priced accordingly.", options=buyOpts}
+		table.insert(hello, {label="Warp me somewhere", to="warps"})
+		table.insert(hello, {label="Learn a warp scroll", to="learn"})
+		table.insert(hello, {label="Buy a warp scroll", to="buy"})
+	end
+	local art = RA.Regions[f.region]
+	if art then table.insert(hello, {label="Where is " .. art.landmark.name .. "?",waypoint={"anchor:Waypoint_Landmark_" .. art.landmark.id,"region:" .. f.region}}) end
+	table.insert(hello, farewell)
+	nodes.hello = {text=f.greet, options=hello}
+	T.NPCs[role] = {name=f.name,title=f.title,region=f.region,portrait=f.portrait,look=f.look,start="hello",nodes=nodes,anchorOnly=true,folk=f.kind or "quest"}
+	table.insert(T.RegionFolkOrder, role)
+end
+for verb, items in pairs(verbs) do T.Verbs[verb] = {item=items} end
+-- Region folk stand only on their Anchor_NPC_<Role> (World Art section of world.server.lua).
+local placement = T.placement
+function T.placement(role, scan)
+	local def = T.NPCs[role]
+	if def and def.anchorOnly then
+		local anchors = scan.anchors["Anchor_NPC_" .. role]
+		return if anchors and anchors[1] then {source="anchor", part=anchors[1]} else nil
+	end
+	return placement(role, scan)
+end
+end
+-- <<< END World Art & Regions <<<
 ------------------------------------------------------------------------------
 
 return Data

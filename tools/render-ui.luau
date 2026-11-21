@@ -90,7 +90,7 @@ end
 -- is another team's; the preview draws Theme slots where it sits).
 local function hudScene(size, profile, message)
 	local touch = size.Y < 500
-	local hudUi = H.runAtlas(size, { touch = true, snapshot = snapshotFor(profile) })
+	local hudUi = H.runAtlas(size, { touch = touch, snapshot = snapshotFor(profile) })
 	hudUi.player:SetAttribute("Mana", 118)
 	hudUi.player:SetAttribute("MaxMana", 160)
 	local combat = H.runCombat(size, hudUi.player, hudUi.replicated)

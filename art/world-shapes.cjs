@@ -470,6 +470,327 @@ module.exports = ({ world, C, PI, hash, jitterOf }) => {
     for (const s of [-1, 1]) kit.tube([[s * 1.2, 4.0, 0], [0, 4.6, 0]], .025, { n: 4, color: C.STRAW });
   });
   // -------------------------------------------------------------------------
+  // Sign system (§28, world.server.lua "Signs"). Every sign is a frame host
+  // (post, pole, plinth or notice posts; its mesh fills the declared ShapeBox
+  // through the `fit` box below) plus one or more text boards (their mesh wraps
+  // the board part, which keeps the SurfaceGui). Frames: kind 'signframe';
+  // boards: kind 'sign'. Reference sizes here must match SIGN_GEOMETRY in
+  // world.server.lua (the Lua side places boards relative to the same boxes).
+  // TINT on frames and boards is the island theme's metal (brackets, chains,
+  // caps, rivets); the per-sign accent lives in the SurfaceGui.
+  // -------------------------------------------------------------------------
+  const rivet = (kit, x, y, z, r = .07, color = C.BRASS) => kit.jewel(x, y, z, r, r, r * .7, color);
+  // Chain of `links` alternating oval links hanging from yTop to yBot.
+  const chain = (kit, x, yTop, yBot, z, links, color = TINT) => {
+    const L = (yTop - yBot) / links;
+    for (let i = 0; i < links; i++) {
+      kit.group({ pos: [x, yTop - L * (i + .5), z], rot: [0, i % 2 ? PI / 2 : 0, 0], scale: [1, L * .62 / .09, 1] },
+        () => kit.ring(.09, .035, .035, color, 5));
+    }
+  };
+  // Flat spiral curl in the XY plane (ironwork scrolls), `turns` from r0 inward.
+  const curl = (kit, cx, cy, z, r0, turns, dir, color = TINT, radius = .045, start = 0) => {
+    const pts = [], steps = Math.max(5, Math.round(turns * 7));
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps, a = start + dir * t * turns * 2 * PI, r = r0 * (1 - .78 * t);
+      pts.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r, z]);
+    }
+    kit.tube(pts, i => radius * (1 - .45 * i / steps), { n: 5, color });
+  };
+  // Small hanging lantern: cap, glass, four bars and a flame (centre y).
+  const lantern = (kit, x, y, z, color = TINT) => kit.group({ pos: [x, 0, z] }, () => {
+    kit.lathe([[.24, y - .36], [.26, y - .3], [.2, y - .26]], { n: 6, capStart: true, capEnd: true, color });
+    kit.lathe([[.17, y - .26], [.19, y + .22]], { n: 6, capStart: true, capEnd: true, color: C.GLASS });
+    for (let k = 0; k < 3; k++) { const a = k * 2 * PI / 3 + .3; kit.box(Math.cos(a) * .2, y, Math.sin(a) * .2, .05, .5, .05, color) }
+    kit.lathe([[.27, y + .22], [.24, y + .3], [.1, y + .46], [0, y + .5]], { n: 6, capStart: true, color });
+    kit.group({ pos: [0, y + .58, 0] }, () => kit.ring(.08, .03, .03, color, 6));
+    kit.jewel(0, y - .02, 0, .1, .17, .1, C.FLAME);
+  });
+  const FRAME_WOOD = (l, i) => l % 3 === 1 ? C.BARK : C.PLANK;
+
+  // Hanging (tavern) frame: carved post, ornate iron bracket, chains, lantern.
+  // Reference board 9 x 2.6: post at x=-5.45 (height 6.9), arm at y=6.35, chains
+  // to the board top at y=5.3 (board centre y=4.0), lantern at x=5.5, tip x=6.0.
+  const HANG = { post: -5.45, height: 6.9, arm: 6.35, top: 5.3 };
+  world('SignHangingFrame', { smooth: 35, tint: 'C9A24E', kind: 'signframe', fit: [[-6.2, 0, -.8], [6.0, 7.6, .8]] }, kit => {
+    const { post: px, height: hp, arm } = HANG;
+    kit.bevelBox(px, .22, 0, 1.3, .44, 1.3, .08, { top: C.STONE_LIGHT, side: C.STONE, bevel: C.STONE_LIGHT, bottom: C.STONE_DARK });
+    for (let i = 0; i < 3; i++) kit.blob(px + [-.62, .58, -.1][i], .14, [.5, -.45, -.62][i], .26, .18, .22, { sub: 0, amount: .2, seed: 410 + i, color: rock(410 + i, false) });
+    kit.group({ pos: [px, 0, 0] }, () => {
+      kit.lathe([[.34, .44], [.32, .9], [.27, 1.05], [.27, 3.2], [.23, 3.35], [.27, 3.5], [.27, hp - 1.2], [.32, hp - 1.05], [.32, hp - .85], [.27, hp - .7], [.27, hp - .1], [.34, hp]],
+        { n: 8, phase: PI / 8, capStart: true, color: FRAME_WOOD });
+      for (const y of [1.35, hp - 1.75]) kit.lathe([[.3, y], [.31, y + .14]], { n: 8, phase: PI / 8, capStart: true, capEnd: true, color: TINT });
+      kit.lathe([[.38, hp], [.38, hp + .12], [.22, hp + .2], [.12, hp + .36], [0, hp + .4]], { n: 8, phase: PI / 8, capStart: true, color: TINT });
+      kit.jewel(0, hp + .62, 0, .16, .26, .16, TINT_LIGHT);
+      for (const s of [-1, 1]) rivet(kit, 0, 1.42, s * .31, .06);
+    });
+    // Arm: a moulded beam with an iron strap, rivets and a curled tip.
+    kit.bevelBox((px + 5.75) / 2, arm, 0, 5.75 - px, .3, .32, .07, { top: C.PLANK, side: C.BARK, bevel: C.PLANK, bottom: C.BARK, front: C.PLANK });
+    kit.box((px + 5.6) / 2, arm + .16, 0, 5.6 - px - .3, .05, .2, TINT);
+    for (let x = px + 1.2; x < 5.5; x += 2.2) for (const s of [-1, 1]) rivet(kit, x, arm, s * .17);
+    curl(kit, 5.7, arm - .28, 0, .3, 1.2, -1, TINT, .05, PI / 2);
+    // Ornate scroll brace under the arm and a wooden strut.
+    const brace = [];
+    for (let i = 0; i <= 7; i++) { const t = i / 7; brace.push([px + .2 + 2.3 * t, arm - 2.1 + 2.0 * Math.sin(t * PI / 2), 0]) }
+    kit.tube(brace, .05, { n: 5, color: TINT });
+    curl(kit, px + 1.05, arm - .95, 0, .42, 1.1, 1, TINT, .045, -PI / 2);
+    curl(kit, px + 2.05, arm - .45, 0, .2, 1, -1, TINT, .035, PI);
+    kit.tube([[px + .18, arm - 1.65, 0], [px + 1.55, arm - .15, 0]], .09, { n: 5, color: C.BARK });
+    // Chains to the board's top rail and the lantern hanging from the arm tip.
+    for (const x of [-3.9, 3.9]) {
+      kit.group({ pos: [x, arm - .16, 0], rot: [0, PI / 2, 0] }, () => kit.ring(.11, .04, .04, TINT, 5));
+      chain(kit, x, arm - .24, HANG.top + .06, 0, 3);
+    }
+    kit.tube([[5.5, arm - .15, 0], [5.5, arm - .62, 0]], .03, { n: 4, color: TINT });
+    lantern(kit, 5.5, arm - 1.0, 0);
+  });
+
+  // Signpost: footing stones, carved octagonal post, brass crown and crystal.
+  const POST_H = 6.4;
+  world('SignpostFrame', { smooth: 35, tint: 'C9A24E', kind: 'signframe', fit: [[-.8, 0, -.8], [.8, POST_H + 1.0, .8]] }, kit => {
+    for (let i = 0; i < 5; i++) { const a = i * 2 * PI / 5 + .4; kit.blob(Math.cos(a) * .55, .16, Math.sin(a) * .55, .27, .2, .25, { sub: 0, amount: .2, seed: 430 + i, color: rock(430 + i, false) }) }
+    kit.bevelBox(0, .2, 0, .9, .4, .9, .07, { top: C.STONE_LIGHT, side: C.STONE, bevel: C.STONE_LIGHT, bottom: C.STONE_DARK });
+    const h = POST_H;
+    kit.lathe([[.31, .4], [.28, .7], [.26, 1.1], [.21, 1.2], [.26, 1.3], [.26, 2.2], [.21, 2.3], [.26, 2.4], [.26, h - .6], [.3, h - .45], [.3, h - .3], [.26, h - .2], [.28, h]],
+      { n: 8, phase: PI / 8, capStart: true, color: (l, i) => l === 3 || l === 6 ? C.BARK_DARK : (l % 2 ? C.BARK : C.PLANK) });
+    for (const y of [.75, h - .42]) kit.lathe([[.3, y], [.31, y + .14]], { n: 8, phase: PI / 8, capStart: true, capEnd: true, color: TINT });
+    for (let k = 0; k < 4; k++) { const a = k * PI / 2 + PI / 4; rivet(kit, Math.cos(a) * .31, .82, Math.sin(a) * .31, .05) }
+    // Crown: a flared brass cap with four prongs cradling an aether crystal.
+    kit.lathe([[.3, h], [.36, h + .1], [.3, h + .2], [.16, h + .26]], { n: 8, phase: PI / 8, capStart: true, capEnd: true, color: TINT });
+    for (let k = 0; k < 4; k++) {
+      const a = k * PI / 2;
+      kit.tube([[Math.cos(a) * .14, h + .22, Math.sin(a) * .14], [Math.cos(a) * .26, h + .5, Math.sin(a) * .26], [Math.cos(a) * .12, h + .78, Math.sin(a) * .12]], .035, { n: 4, color: TINT });
+    }
+    kit.jewel(0, h + .55, 0, .17, .38, .17, TINT_LIGHT);
+    kit.jewel(0, h + .55, -.1, .07, .14, .05, C.GLINT);
+  });
+
+  // Banner standard: stone socket, ringed pole, crossbar with finials, spear tip
+  // with a halo ring, tassels. Reference cloth 3.8 x 5: crossbar y=8.8.
+  const STD = { height: 9.2, cross: 8.8, pole: .3 };
+  world('BannerStandardFrame', { smooth: 35, tint: 'C9A24E', kind: 'signframe', fit: [[-2.5, 0, -.6], [2.5, STD.height + 1.1, 1.2]] }, kit => {
+    const z = STD.pole, hb = STD.height, cy = STD.cross;
+    kit.bevelBox(0, .25, z, 1.2, .5, 1.2, .08, { top: C.STONE_LIGHT, side: C.STONE, bevel: C.STONE_LIGHT, bottom: C.STONE_DARK });
+    for (let k = 0; k < 4; k++) { const a = k * PI / 2 + PI / 4; kit.slab(Math.cos(a) * .55, .45, z + Math.sin(a) * .55, .26, .26, .1, .1, .5, C.STONE) }
+    kit.group({ pos: [0, 0, z] }, () => {
+      kit.lathe([[.24, .5], [.2, .75], [.13, .9], [.12, hb]], { n: 8, capStart: true, color: (l) => l < 2 ? TINT : C.PLANK });
+      for (let y = 2; y < hb - 1; y += 1.9) kit.lathe([[.15, y], [.15, y + .12]], { n: 8, capStart: true, capEnd: true, color: TINT });
+      // Spear finial with a halo ring.
+      kit.lathe([[.15, hb], [.18, hb + .12], [.08, hb + .22], [.2, hb + .45], [0, hb + 1.0]], { n: 6, capStart: true, color: (l) => l >= 2 ? TINT_LIGHT : TINT });
+      kit.group({ pos: [0, hb + .45, 0] }, () => kit.ring(.34, .05, .05, TINT, 10));
+    });
+    // Crossbar (in front of the pole, carrying the cloth) with pine-cone finials.
+    kit.tube([[-2.15, cy, .05], [2.15, cy, .05]], .075, { n: 6, color: C.PLANK });
+    kit.box(0, cy, (z + .05) / 2, .14, .14, z - .05, TINT);
+    for (const s of [-1, 1]) {
+      kit.group({ pos: [s * 2.25, cy, .05], rot: [0, 0, PI / 2] }, () => kit.lathe([[.1, -.12 * s], [.15, 0], [.1, .14 * s], [0, .26 * s]], { n: 6, capStart: true, color: TINT }));
+      kit.jewel(s * 2.47, cy, .05, .06, .06, .06, TINT_LIGHT);
+      kit.tube([[s * 2.0, cy - .05, .12], [s * 2.04, cy - .8, .14], [s * 2.02, cy - 1.45, .14]], .025, { n: 4, color: C.STRAW });
+      kit.group({ pos: [s * 2.02, 0, .14] }, () => kit.lathe([[.02, cy - 1.95], [.11, cy - 1.75], [.07, cy - 1.5], [0, cy - 1.42]], { n: 6, capStart: true, color: TINT_LIGHT }));
+    }
+    for (const x of [-1.5, -.5, .5, 1.5]) kit.group({ pos: [x, cy, .05], rot: [0, PI / 2, 0] }, () => kit.ring(.12, .035, .035, TINT, 6));
+  });
+
+  // Stone plinth: stepped base, carved body with a medallion, cornice and two
+  // pilasters with orb finials. Reference tablet 7.2 x 2.4 standing on y=2.4.
+  const PLINTH = { top: 2.4, half: 3.6 };
+  world('SignPlinthFrame', { smooth: 30, tint: 'C9A24E', kind: 'signframe', fit: [[-4.6, 0, -1.0], [4.6, 5.7, 1.0]] }, kit => {
+    const t = PLINTH.top, hx = PLINTH.half + .55;
+    kit.bevelBox(0, .15, 0, 9.0, .3, 2.0, .06, { top: C.STONE, side: C.STONE_DARK, bevel: C.STONE, bottom: C.STONE_DARK });
+    kit.bevelBox(0, .45, 0, 8.5, .3, 1.7, .06, { top: C.STONE_LIGHT, side: C.STONE, bevel: C.STONE_LIGHT, bottom: C.STONE });
+    kit.bevelBox(0, 1.4, 0, 7.8, 1.6, 1.3, .08, { top: C.STONE_LIGHT, side: C.STONE_LIGHT, bevel: C.MARBLE, bottom: C.STONE, front: C.STONE_LIGHT });
+    for (const s of [-1, 1]) {
+      // Carved front and back panels: a sunk field with a raised border.
+      kit.box(0, 1.4, s * .66, 6.6, 1.0, .04, C.STONE);
+      for (const y of [.88, 1.92]) kit.box(0, y, s * .68, 6.8, .08, .05, C.MARBLE);
+      kit.group({ pos: [0, 1.4, s * .7], rot: [PI / 2, 0, 0] }, () => kit.lathe([[.36, -.03], [.36, .03]], { n: 10, capStart: true, capEnd: true, color: TINT }));
+      kit.jewel(0, 1.4, s * .76, .16, .2, .06, TINT_LIGHT);
+      for (const x of [-2.6, 2.6]) kit.jewel(x, 1.4, s * .7, .12, .12, .05, TINT);
+    }
+    kit.bevelBox(0, t - .1, 0, 8.3, .2, 1.5, .05, C.MARBLE);
+    for (const s of [-1, 1]) {
+      kit.bevelBox(s * hx, t + 1.2, 0, .7, 2.4, .7, .07, { top: C.MARBLE, side: C.STONE_LIGHT, bevel: C.MARBLE, bottom: C.STONE });
+      kit.box(s * hx, t + 1.2, -.36, .3, 1.8, .04, C.STONE);
+      kit.bevelBox(s * hx, t + 2.47, 0, .86, .16, .86, .05, C.MARBLE);
+      kit.group({ pos: [s * hx, 0, 0] }, () => kit.lathe([[.18, t + 2.55], [.2, t + 2.62]], { n: 8, capStart: true, capEnd: true, color: TINT }));
+      kit.blob(s * hx, t + 2.88, 0, .27, .27, .27, { sub: 1, color: TINT_LIGHT });
+      curl(kit, s * (hx - .55), t + 1.8, 0, .22, 1.1, s, TINT, .04, s > 0 ? PI : 0);
+    }
+  });
+
+  // Notice frame for ledger boards (reference board 9 x 8.5, centre y 5.85):
+  // two posts, a shingled canopy, a ridge beam, iron corner braces.
+  const NOTICE = { half: 4.5, top: 10.1, post: 4.78 };
+  world('SignLedgerFrame', { smooth: 30, tint: 'C9A24E', kind: 'signframe', fit: [[-5.2, 0, -1.1], [5.2, 11.6, 1.1]] }, kit => {
+    const top = NOTICE.top;
+    for (const s of [-1, 1]) {
+      const x = s * NOTICE.post;
+      kit.bevelBox(x, .2, 0, .9, .4, .9, .07, { top: C.STONE_LIGHT, side: C.STONE, bevel: C.STONE_LIGHT, bottom: C.STONE_DARK });
+      kit.bevelBox(x, (top + .6) / 2 + .2, 0, .42, top + .2, .42, .06, { top: C.PLANK, side: C.PLANK, bevel: C.BARK, bottom: C.BARK });
+      for (const y of [1.0, top - .3]) kit.box(x, y, 0, .5, .14, .5, TINT);
+      for (const y of [1.6, top - .9]) { rivet(kit, x, y, -.23); rivet(kit, x, y, .23) }
+      curl(kit, s * (NOTICE.post - .55), top - .35, -.05, .3, 1.1, -s, TINT, .04, s > 0 ? 0 : PI);
+    }
+    // Canopy: two sloped shingle courses over a ridge beam.
+    kit.tube([[-5.05, top + .45, 0], [5.05, top + .45, 0]], .13, { n: 6, color: C.BARK });
+    for (const s of [-1, 1]) kit.group({ pos: [0, top + .62, s * .5], rot: [s * .42, 0, 0] }, () => {
+      kit.box(0, 0, 0, 10.3, .14, 1.15, C.BARK_DARK);
+      for (let r = 0; r < 2; r++) for (let k = 0; k < 9; k++) {
+        const x = -4.6 + k * 1.15 + (r ? .57 : 0);
+        if (x < 4.9) kit.box(x, .1 + r * .02, s * (r ? .28 : -.22), 1.08, .06, .55, (k + r) % 3 ? C.PLANK : C.BARK);
+      }
+    });
+    for (const s of [-1, 1]) kit.jewel(s * 5.1, top + .45, 0, .1, .14, .14, TINT_LIGHT);
+    kit.lathe([[.14, top + .55], [.08, top + .8], [0, top + .95]], { n: 6, capStart: true, color: TINT });
+  });
+
+  // Carved wooden board (hanging signs, signpost title plates): moulded rails,
+  // brass corner caps and rivets, chain eyelets, a crest medallion and a drop.
+  const CARVED = [9, 2.6, .3];
+  world('SignCarvedBoard', { smooth: 30, tint: 'C9A24E', kind: 'sign', fit: [[-4.5, -1.3, -.15], [4.5, 1.3, .15]] }, kit => {
+    const [w, h, d] = CARVED, f = .28;
+    kit.box(0, 0, 0, w, h, d * .8, C.INK);
+    for (const s of [-1, 1]) {
+      kit.bevelBox(0, s * (h / 2 + f / 2), 0, w + 2 * f, f, d + .16, .07, { top: C.PLANK, side: C.BARK, bevel: C.PLANK, bottom: C.BARK, front: C.PLANK });
+      kit.bevelBox(s * (w / 2 + f / 2), 0, 0, f, h, d + .16, .07, { top: C.PLANK, side: C.PLANK, bevel: C.PLANK, bottom: C.BARK });
+      // Inner moulding lip just over the board's edge (inside the text margin).
+      for (const z of [-1, 1]) {
+        kit.box(0, s * (h / 2 - .02), z * (d / 2 + .02), w, .07, .04, C.BARK_DARK);
+        kit.box(s * (w / 2 - .02), 0, z * (d / 2 + .02), .07, h - .1, .04, C.BARK_DARK);
+      }
+      for (const t of [-1, 1]) {
+        kit.bevelBox(s * (w / 2 + f / 2), t * (h / 2 + f / 2), 0, f + .18, f + .18, d + .24, .06, TINT);
+        for (const z of [-1, 1]) rivet(kit, s * (w / 2 + f / 2), t * (h / 2 + f / 2), z * ((d + .24) / 2 + .02), .08, C.GLINT);
+      }
+      for (const k of [1, 2.6]) for (const z of [-1, 1]) for (const t of [-1, 1]) rivet(kit, s * k * w / 8, t * (h / 2 + f / 2), z * ((d + .16) / 2 + .015), .055);
+      kit.group({ pos: [s * 3.9, h / 2 + f + .1, 0], rot: [0, PI / 2, 0] }, () => kit.ring(.11, .04, .04, TINT, 6));
+    }
+    // Crest: arched cartouche with a tinted medallion.
+    kit.prism([[-1.3, 0], [-1.0, .34], [-.4, .56], [.4, .56], [1.0, .34], [1.3, 0]].map(([x, y]) => [x, y + h / 2 + f - .02]), d + .06, C.PLANK, C.BARK);
+    kit.group({ pos: [0, h / 2 + f + .3, 0], rot: [PI / 2, 0, 0] }, () => kit.lathe([[.22, -(d + .12) / 2], [.22, (d + .12) / 2]], { n: 10, capStart: true, capEnd: true, color: TINT }));
+    for (const z of [-1, 1]) kit.jewel(0, h / 2 + f + .3, z * ((d + .12) / 2 + .01), .13, .13, .05, TINT_LIGHT);
+    // Drop pendant under the bottom rail.
+    kit.prism([[-.45, 0], [.45, 0], [.12, -.24], [-.12, -.24]].map(([x, y]) => [x, y - h / 2 - f + .02]), d, C.PLANK, C.BARK);
+    kit.blob(0, -h / 2 - f - .3, 0, .1, .1, .1, { sub: 0, color: TINT });
+  });
+
+  // Shop board: a scroll with paper rolls at both ends, knobbed caps, a shield
+  // crest and eyelets (reference 8 x 2.6).
+  const SCROLL = [8, 2.6, .3];
+  world('SignScrollBoard', { smooth: 35, tint: 'C9A24E', kind: 'sign', fit: [[-4, -1.3, -.15], [4, 1.3, .15]] }, kit => {
+    const [w, h, d] = SCROLL;
+    kit.box(0, 0, 0, w, h, d * .8, C.STRAW);
+    for (const s of [-1, 1]) {
+      kit.bevelBox(0, s * (h / 2 + .09), 0, w + .1, .18, d + .12, .05, { top: C.PLANK, side: C.BARK, bevel: C.PLANK, bottom: C.BARK });
+      for (const z of [-1, 1]) kit.box(0, s * (h / 2 - .02), z * (d / 2 + .02), w, .06, .04, C.BARK_DARK);
+      // Paper roll with a curled lip and knobbed caps.
+      kit.group({ pos: [s * (w / 2 + .24), 0, 0] }, () => {
+        kit.lathe([[.28, -h / 2 - .2], [.3, -h / 2], [.3, h / 2], [.28, h / 2 + .2]], { n: 10, capStart: true, capEnd: true, color: (l, i) => i % 5 === 0 ? C.STRAW : C.CLOTH });
+        for (const t of [-1, 1]) {
+          kit.lathe([[.16, t * (h / 2 + .2)], [.2, t * (h / 2 + .28)], [.08, t * (h / 2 + .42)], [0, t * (h / 2 + .46)]], { n: 8, capStart: true, color: TINT });
+        }
+      });
+      curl(kit, s * (w / 2 + .1), 0, -.2, .2, 1.1, s, C.CLOTH, .04, s > 0 ? PI : 0);
+      curl(kit, s * (w / 2 + .1), 0, .2, .2, 1.1, s, C.CLOTH, .04, s > 0 ? PI : 0);
+      kit.group({ pos: [s * 3.4, h / 2 + .3, 0], rot: [0, PI / 2, 0] }, () => kit.ring(.11, .04, .04, TINT, 6));
+      for (let k = 0; k < 4; k++) for (const z of [-1, 1]) rivet(kit, s * (.6 + k * 1.05), s * 0 + (k % 2 ? 1 : -1) * (h / 2 + .09), z * ((d + .12) / 2 + .015), .05);
+    }
+    // Shield crest over the top rail.
+    kit.prism([[-.62, .05], [.62, .05], [.6, .5], [.34, .78], [0, .9], [-.34, .78], [-.6, .5]].map(([x, y]) => [x, y + h / 2 + .1]), d + .1, TINT, TINT_DARK);
+    for (const z of [-1, 1]) kit.jewel(0, h / 2 + .55, z * ((d + .1) / 2 + .02), .18, .2, .05, TINT_LIGHT);
+  });
+
+  // Direction arrow (reference 4.6 x .9 x .22): rails, nails, a tinted brass-
+  // edged tip at +X, fletching at the tail and a mounting strap.
+  const ARROW = [4.6, .9, .22];
+  world('SignArrowBoard', { smooth: 30, tint: 'C9A24E', kind: 'sign', fit: [[-2.3, -.45, -.11], [2.3, .45, .11]] }, kit => {
+    const [w, h, d] = ARROW;
+    kit.box(0, 0, 0, w, h, d * .8, C.PLANK);
+    for (const s of [-1, 1]) {
+      kit.bevelBox(-.05, s * (h / 2 + .05), 0, w - .1, .1, d + .08, .03, { top: C.PLANK, side: C.BARK, bevel: C.PLANK, bottom: C.BARK });
+      for (const x of [-w / 2 + .5, w / 2 - .6]) rivet(kit, x, s * (h / 2 + .05), -(d + .08) / 2 - .01, .045);
+      for (const x of [-w / 2 + .5, w / 2 - .6]) rivet(kit, x, s * (h / 2 + .05), (d + .08) / 2 + .01, .045);
+    }
+    kit.bevelBox(-w / 2 - .05, 0, 0, .12, h + .2, d + .1, .03, C.BARK);
+    kit.box(-w / 2 + .3, 0, 0, .14, h + .26, d + .14, TINT);
+    // Tip: brass edge behind a tinted point.
+    kit.prism([[w / 2 - .05, -h / 2 - .16], [w / 2 + .52, 0], [w / 2 - .05, h / 2 + .16]], d + .04, TINT, TINT_DARK);
+    kit.prism([[w / 2 - .1, -h / 2 - .1], [w / 2 + .38, 0], [w / 2 - .1, h / 2 + .1]], d + .1, TINT_LIGHT, TINT);
+    // Fletching.
+    for (const s of [-1, 1]) kit.prism([[-w / 2 - .02, s * .05], [-w / 2 - .02, s * .38], [-w / 2 - .22, s * .5], [-w / 2 - .22, s * .18]], d * .5, TINT_DARK, TINT);
+  });
+
+  // Stone plaque (reference 7.2 x 2.4 x .4): moulded marble border, rosettes,
+  // an arched pediment with an emblem, and a ledge.
+  const PLAQUE = [7.2, 2.4, .4];
+  world('SignPlaqueBoard', { smooth: 30, tint: 'C9A24E', kind: 'sign', fit: [[-3.6, -1.2, -.2], [3.6, 1.2, .2]] }, kit => {
+    const [w, h, d] = PLAQUE, f = .22;
+    kit.box(0, 0, 0, w, h, d * .8, C.STONE_LIGHT);
+    for (const s of [-1, 1]) {
+      kit.bevelBox(0, s * (h / 2 + f / 2), 0, w + 2 * f, f, d + .14, .06, { top: C.MARBLE, side: C.STONE_LIGHT, bevel: C.MARBLE, bottom: C.STONE });
+      kit.bevelBox(s * (w / 2 + f / 2), 0, 0, f, h, d + .14, .06, C.MARBLE);
+      for (const t of [-1, 1]) for (const z of [-1, 1]) {
+        kit.group({ pos: [s * (w / 2 + f / 2), t * (h / 2 + f / 2), z * ((d + .14) / 2)], rot: [PI / 2, 0, 0] }, () => kit.lathe([[.15, -.04], [.15, .03], [.08, .07]], { n: 8, capStart: true, capEnd: true, color: TINT }));
+      }
+    }
+    // Pediment with an emblem and acroteria.
+    const arc = [];
+    for (let k = 0; k <= 8; k++) { const a = PI * k / 8; arc.push([-Math.cos(a) * 2.2, Math.sin(a) * .62]) }
+    kit.prism([[2.2, 0], ...arc.slice(1, 8).reverse(), [-2.2, 0]].reverse().map(([x, y]) => [x, y + h / 2 + f - .02]), d + .06, C.MARBLE, C.STONE_LIGHT);
+    kit.group({ pos: [0, h / 2 + f + .3, 0], rot: [PI / 2, 0, 0] }, () => kit.lathe([[.24, -(d + .14) / 2], [.24, (d + .14) / 2]], { n: 10, capStart: true, capEnd: true, color: TINT }));
+    for (const z of [-1, 1]) kit.jewel(0, h / 2 + f + .3, z * ((d + .14) / 2 + .01), .14, .16, .05, TINT_LIGHT);
+    for (const s of [-1, 1]) kit.jewel(s * 2.2, h / 2 + f + .08, 0, .1, .12, .1, TINT);
+    kit.bevelBox(0, -h / 2 - f - .09, 0, w + .9, .18, d + .36, .05, { top: C.STONE_LIGHT, side: C.STONE, bevel: C.STONE_LIGHT, bottom: C.STONE_DARK });
+  });
+
+  // Banner cloth (reference 3.8 x 5 x .14): hem sleeve, gold side braid,
+  // swallowtail hem with a fringe and painted lining on the back.
+  const CLOTH = [3.8, 5, .14];
+  world('BannerCloth', { smooth: 25, tint: 'C15557', kind: 'sign', fit: [[-1.9, -2.5, -.07], [1.9, 2.5, .07]] }, kit => {
+    const [w, h, d] = CLOTH;
+    kit.box(0, 0, 0, w, h, d * .7, TINT_DARK);
+    kit.bevelBox(0, h / 2 + .12, 0, w + .12, .32, d + .1, .05, TINT);
+    for (const s of [-1, 1]) {
+      kit.box(s * (w / 2 + .04), -.1, 0, .1, h + .2, d + .04, C.GOLD);
+      // Swallowtail halves.
+      const tail = [[0, 0], [s * w / 2, 0], [s * w / 2, -1.05], [s * .1, -.38]].map(([x, y]) => [x, y - h / 2 + .01]);
+      kit.prism(s > 0 ? tail : tail.slice().reverse(), d * .7, TINT_DARK, TINT);
+      for (let k = 0; k < 4; k++) {
+        const t = (k + .5) / 4, x = s * (.1 + (w / 2 - .1) * t), y = -h / 2 - .38 - (1.05 - .38) * t;
+        kit.jewel(x, y - .1, 0, .06, .14, .04, C.GOLD);
+      }
+      kit.box(s * w / 4, -h / 2 + .18, 0, w / 2 - .1, .08, d + .02, C.GOLD);
+    }
+    for (let k = -1; k <= 1; k++) kit.box(k * 1.1, 0, d / 2 + .01, .06, h - .3, .03, TINT);
+  });
+
+  // Notice board for ledgers (reference 9 x 8.5 x .35): heavy moulded frame,
+  // iron corner braces with rivets, a crest and a pen ledge.
+  const NOTICEB = [9, 8.5, .35];
+  world('SignNoticeBoard', { smooth: 30, tint: 'C9A24E', kind: 'sign', fit: [[-4.5, -4.25, -.175], [4.5, 4.25, .175]] }, kit => {
+    const [w, h, d] = NOTICEB, f = .34;
+    kit.box(0, 0, 0, w, h, d * .8, C.INK);
+    for (const s of [-1, 1]) {
+      kit.bevelBox(0, s * (h / 2 + f / 2), 0, w + 2 * f, f, d + .16, .07, { top: C.PLANK, side: C.BARK, bevel: C.PLANK, bottom: C.BARK, front: C.PLANK });
+      kit.bevelBox(s * (w / 2 + f / 2), 0, 0, f, h, d + .16, .07, { top: C.PLANK, side: C.PLANK, bevel: C.PLANK, bottom: C.BARK });
+      for (const z of [-1, 1]) {
+        kit.box(0, s * (h / 2 - .02), z * (d / 2 + .02), w, .08, .04, C.BARK_DARK);
+        kit.box(s * (w / 2 - .02), 0, z * (d / 2 + .02), .08, h - .1, .04, C.BARK_DARK);
+      }
+      for (const t of [-1, 1]) {
+        // L-shaped iron corner brace.
+        kit.box(s * (w / 2 - .25), t * (h / 2 + f / 2), -(d + .16) / 2 - .02, 1.3, .2, .04, TINT);
+        kit.box(s * (w / 2 + f / 2), t * (h / 2 - .4), -(d + .16) / 2 - .02, .2, 1.3, .04, TINT);
+        for (const [x, y] of [[s * (w / 2 - .7), t * (h / 2 + f / 2)], [s * (w / 2 + f / 2), t * (h / 2 - .9)], [s * (w / 2 + f / 2), t * (h / 2 + f / 2)]]) rivet(kit, x, y, -(d + .16) / 2 - .05, .06, C.GLINT);
+      }
+    }
+    kit.prism([[-1.6, 0], [-1.2, .4], [-.5, .66], [.5, .66], [1.2, .4], [1.6, 0]].map(([x, y]) => [x, y + h / 2 + f - .02]), d + .06, C.PLANK, C.BARK);
+    kit.group({ pos: [0, h / 2 + f + .34, 0], rot: [PI / 2, 0, 0] }, () => kit.lathe([[.26, -(d + .12) / 2], [.26, (d + .12) / 2]], { n: 10, capStart: true, capEnd: true, color: TINT }));
+    for (const z of [-1, 1]) kit.jewel(0, h / 2 + f + .34, z * ((d + .12) / 2 + .01), .16, .16, .05, TINT_LIGHT);
+    kit.bevelBox(0, -h / 2 - f - .08, -.18, w + .4, .16, .55, .04, { top: C.PLANK, side: C.BARK, bevel: C.PLANK, bottom: C.BARK });
+  });
+
+  // -------------------------------------------------------------------------
   // Landmarks, harbour and island props. Authored at their world slot sizes
   // (world.server.lua hosts) so the stretch onto each slot box stays close to 1.
   // -------------------------------------------------------------------------

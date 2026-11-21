@@ -167,6 +167,8 @@ local Logs={verbs={commissionClaim=true,commissionClaimAll=true,forgeBuy=true,lo
 local Crafting={verbs={craftStation=true,craftBatch=true,craftStop=true},jobs={},visits={},seq={}}
 -- Lairs (instanced lair bosses: altars, fees, kill rewards); filled in by the Lairs block after Endgame.
 local Lairs={verbs={lairEnter=true,lairLeave=true}}
+-- World Art & Regions (regional quests, shops, warp scrolls); filled in by the Regions block before perform().
+local Regions={verbs={rqAccept=true,rqTalk=true,rqClaim=true,rqBuy=true,warpBuy=true,warpLearn=true,warpTo=true,landmark=true},warpAt={}}
 -- One-time coins for each newly reached skill level.
 local function levelCoins(p,skill,newLevel)
 	p.levelRewards=p.levelRewards or {}
@@ -1132,34 +1134,60 @@ do
 		end
 		return out
 	end
-	-- Keeps only well-formed, in-bounds, non-overlapping records within the caps.
+	-- Home islands (§27): p.homestead={level=1..5} (expansion rings bought with
+	-- "homeExpand"); the placement grid and cap follow the level.
+	local Home=Data.Home
+	function Isle.stage(p) return Home.stage(p.homestead and p.homestead.level) end
+	-- Sanitises the Homestead level, then Island.migrate: well-formed records
+	-- keep their cell; anything that no longer fits (legacy layout, overlap,
+	-- protected zone, duplicate id) moves to the nearest free cell, and only a
+	-- record that cannot stand at all is refunded in full (never deleted).
 	function Isle.migrate(p)
-		local raw=if type(p.island)=="table" then p.island else {}
-		local placed,paid,used,counts,occupied={},{},{},{},{}
-		if type(raw.placed)=="table" then
-			for _,record in ipairs(raw.placed) do
-				if #placed>=I.MAX_PLACEMENTS then break end
-				local e=I.parseRecord(record)
-				if e and not used[e.id] and (counts[e.prop] or 0)<I.Props[e.prop].max and I.check(occupied,e.prop,e.x,e.z,e.rot) then
-					used[e.id]=true
-					counts[e.prop]=(counts[e.prop] or 0)+1
-					for _,c in ipairs(I.cells(e.prop,e.x,e.z,e.rot)) do occupied[I.key(c[1],c[2])]=e.id end
-					table.insert(placed,I.record(e))
-				end
-			end
+		local raw=if type(p.homestead)=="table" then p.homestead else {}
+		p.homestead={level=Home.level(raw.level)}
+		local island,refunds,report=I.migrate(p.island,Isle.stage(p))
+		local paid,counts={},{}
+		local rawPaid=if type(p.island)=="table" and type(p.island.paid)=="table" then p.island.paid else {}
+		for id,n in pairs(rawPaid) do
+			local def=type(id)=="string" and I.Props[id]
+			n=tonumber(n)
+			if def and n and n==n and n>=1 then paid[id]=math.min(math.floor(n),def.max) end
 		end
-		if type(raw.paid)=="table" then
-			for id,n in pairs(raw.paid) do
-				local def=type(id)=="string" and I.Props[id]
-				n=tonumber(n)
-				if def and n and n==n and n>=1 then paid[id]=math.min(math.floor(n),def.max) end
-			end
+		for _,record in ipairs(island.placed) do
+			local e=I.parseRecord(record)
+			counts[e.prop]=(counts[e.prop] or 0)+1
 		end
 		for id,n in pairs(counts) do paid[id]=math.max(paid[id] or 0,n) end
-		p.island={placed=placed,paid=paid}
+		island.paid=paid
+		p.island=island
+		if type(p.items)=="table" then
+			for material,n in pairs(refunds) do p.items[material]=(p.items[material] or 0)+n end
+		end
+		if report.moved>0 or report.refunded>0 then
+			note(p,"Your island grew: "..report.moved.." decoration"..(if report.moved==1 then "" else "s").." moved to a free spot"
+				..(if report.refunded>0 then ", "..report.refunded.." returned to your satchel" else "")..".")
+		end
+		return report
 	end
 	function Isle.apply(player,p)
+		-- Level first: the world re-checks placements against the grown grid.
+		player:SetAttribute("HomesteadLevel",p.homestead.level)
 		player:SetAttribute("IslandPlacements",table.concat(p.island.placed,";"))
+	end
+	-- Buy the next expansion ring: Carpentry gate, coins and materials, all
+	-- checked before anything is spent; the level only ever grows.
+	function Isle.expand(player,p)
+		if not Isle.allow(player) then return "Building too quickly. One moment…" end
+		local levelNow=p.homestead.level
+		local okRing,ring=Home.canExpand(levelNow,level(p.xp.Carpentry),p.coins,p.items)
+		if not okRing then return ring end
+		if not spend(p,ring.costs) then return "Gather the materials for the next expansion ring first." end
+		p.coins-=ring.coins
+		p.homestead.level=levelNow+1
+		p.started=true
+		Isle.apply(player,p)
+		local area=math.floor(Home.area(p.homestead.level)/Home.area(levelNow)*100-100+.5)
+		return "Homestead level "..p.homestead.level.." · your island grew to radius "..ring.radius.." (+"..area.."% build area)"
 	end
 	-- Token bucket (Data.Island.RATE per second, BURST) on top of the verb cooldown.
 	function Isle.allow(player)
@@ -1179,7 +1207,8 @@ do
 		if not def then return "Choose a prop and a spot on your island." end
 		if level(p.xp.Carpentry)<def.level then return def.name.." requires Carpentry "..def.level.."." end
 		local list=Isle.list(p)
-		if #list>=I.MAX_PLACEMENTS then return "Your island holds at most "..I.MAX_PLACEMENTS.." placed props. Pick some up first." end
+		local cap=I.cap(Isle.stage(p))
+		if #list>=cap then return "Your island holds at most "..cap.." placed props. Pick some up first"..(if cap<I.MAX_PLACEMENTS then " or expand your island" else "").."." end
 		local count=0
 		local used={}
 		for _,e in ipairs(list) do
@@ -1187,7 +1216,7 @@ do
 			if e.prop==propId then count+=1 end
 		end
 		if count>=def.max then return "You have placed the most "..def.name.." pieces allowed ("..def.max..")." end
-		local ok,why=I.check(I.occupancy(list),propId,x,z,rot)
+		local ok,why=I.check(I.occupancy(list),propId,x,z,rot,Isle.stage(p))
 		if not ok then return why end
 		for material,n in pairs(def.costs) do
 			if (p.items[material] or 0)<n then return def.name.." needs "..n.." "..Data.Items[material].name.."." end
@@ -1233,8 +1262,12 @@ do
 		local value=I.value(list)
 		local tier,def=I.tier(value)
 		-- Records themselves replicate through the IslandPlacements attribute.
-		return {count=#list,cap=I.MAX_PLACEMENTS,counts=counts,
-			paid=table.clone(p.island.paid),value=value,tier=tier,tierName=def.name}
+		local lv=p.homestead.level
+		local ring=Home.nextRing(lv)
+		return {count=#list,cap=I.cap(Isle.stage(p)),counts=counts,
+			paid=table.clone(p.island.paid),value=value,tier=tier,tierName=def.name,
+			homestead={level=lv,max=Home.MAX_LEVEL,radius=Home.radius(lv),area=math.floor(Home.area(lv)),
+				next=ring and {radius=ring.radius,coins=ring.coins,costs=table.clone(ring.costs),carpentry=ring.carpentry} or nil}}
 	end
 end
 ------------------------------------------------------------------------------
@@ -1643,7 +1676,7 @@ do
 		for k,n in pairs(materials) do if (p.items[k] or 0)<n then return def.name.." costs "..costText(entry.cost).."." end end
 		spend(p,materials)
 		p.coins-=coins
-		collect(p,id,1)
+		p.items[id]=(p.items[id] or 0)+1 -- bought, not collected (no collection / log / museum credit)
 		p.started=true
 		return "Bought "..def.name.." for "..costText(entry.cost).."."
 	end
@@ -4160,7 +4193,99 @@ do
 	end)
 end
 -- End Exploration & Factions block.
+-- Held items & swings (docs/DEPTH-CONTRACT.md §26): p.held ("<itemId>" | "none" |
+-- nil = the equipped weapon) and p.hotbar ({s3..s9 = itemId}) are published as the
+-- HeldItem / Hotbar player attributes; held.server.lua builds the visible model.
+-- `hold "<id>"` is an explicit choice; `hold "~<id>"` and every gather are
+-- temporary auto switches that return to the explicit choice after
+-- Data.Held.AUTO_RETURN idle seconds. A temporary switch lives only in
+-- Held.auto[player].id (published with HeldAuto=true), never in p.held, so no
+-- save can ever store it. Both verbs skip the action cooldown (a hotbar
+-- key must never block the gather it precedes) and spend their own token bucket.
+local Held={verbs={hold=true,hotbarSet=true},buckets={},auto={}}
+do
+	local HD=Data.Held
+	local meets=Progression.meetsRequirements
+	function Held.apply(player,p)
+		local a=Held.auto[player]
+		local id,temporary=HD.resolve(p,meets,a and a.id)
+		id=id or ""
+		if player:GetAttribute("HeldItem")~=id then player:SetAttribute("HeldItem",id) end
+		local auto=temporary==true
+		if (player:GetAttribute("HeldAuto")==true)~=auto then player:SetAttribute("HeldAuto",auto) end
+		local bar=HD.hotbarString(p)
+		if player:GetAttribute("Hotbar")~=bar then player:SetAttribute("Hotbar",bar) end
+		return id
+	end
+	-- temporary: hold id until the return timer runs out; p.held stays the explicit choice.
+	function Held.set(player,p,id,temporary)
+		if temporary then
+			local a=Held.auto[player]
+			if not a then a={}; Held.auto[player]=a end
+			a.id=id
+			a.untilAt=os.clock()+HD.AUTO_RETURN
+		else
+			Held.auto[player]=nil
+			p.held=id
+		end
+		return Held.apply(player,p)
+	end
+	-- A gather auto-holds the best owned tool for the skill (pickaxe, hatchet, rod, hoe).
+	function Held.gather(player,p,skill)
+		local class=HD.SKILL_CLASS[skill]
+		if not class then return end
+		local current=HD.classOf(Data.Items[player:GetAttribute("HeldItem") or ""])
+		local a=Held.auto[player]
+		if current==class then
+			if a then a.untilAt=os.clock()+HD.AUTO_RETURN end
+			return
+		end
+		local id=Progression.bestTool(p,skill)
+		if id then Held.set(player,p,id,true) end
+	end
+	function Held.tick(now)
+		for player,a in pairs(Held.auto) do
+			if now>=a.untilAt then
+				Held.auto[player]=nil
+				local p=profiles[player]
+				if p and player.Parent then Held.apply(player,p) end
+			end
+		end
+	end
+	-- Returns message, ok (ok feeds the compact reply's status field).
+	function Held.action(player,p,verb,item)
+		local bucket=Held.buckets[player]
+		if not bucket then bucket={}; Held.buckets[player]=bucket end
+		if not HD.take(bucket,os.clock()) then return "One moment…",false end
+		if verb=="hold" then
+			local ok,id,temporary=HD.validate(p,item,meets)
+			if not ok then return id,false end
+			local shown=Held.set(player,p,id,temporary)
+			if shown=="" then return "Hands empty.",true end
+			return "Holding "..(Data.Items[shown] and Data.Items[shown].name or shown)..".",true
+		end
+		local slot,id=HD.parseSlot(item)
+		if not slot then return "Choose hotbar slot 3-9.",false end
+		p.hotbar=type(p.hotbar)=="table" and p.hotbar or {}
+		if id=="" then
+			p.hotbar["s"..slot]=nil
+			Held.apply(player,p)
+			return "Hotbar slot "..slot.." cleared.",true
+		end
+		if not HD.assignable(p,id) then return (if Data.Items[id] then "You do not own "..Data.Items[id].name.."." else "Choose an item for the hotbar."),false end
+		p.hotbar["s"..slot]=id
+		Held.apply(player,p)
+		return Data.Items[id].name.." set to hotbar slot "..slot..".",true
+	end
+	function Held.forget(player)
+		-- p.held is always the explicit choice: dropping the timer is all a leave needs.
+		Held.auto[player]=nil
+		Held.buckets[player]=nil
+		if player.Parent and player:GetAttribute("HeldAuto")==true then player:SetAttribute("HeldAuto",false) end
+	end
+end
 local function applyStats(player,p,spawned)
+	Held.apply(player,p)
 	local stats=Progression.computeStats(p,os.time())
 	player:SetAttribute("SkyreachUnlocked",(p.questCompleted or 0)>=6)
 	for _,region in ipairs(Data.Regions) do player:SetAttribute(region.id.."Unlocked",regionAllowed(p,region.id)) end
@@ -4331,6 +4456,7 @@ local function snapshot(player,message)
 	-- Exploration & Factions: roll the faction day first, so its auto-claim note
 	-- and the paid rewards land in this same snapshot (notes, applyStats below).
 	if p.factions then Explore.refresh(p) end
+	Held.tick(os.clock()) -- Held items: settle any due auto-return before HeldItem is published
 	local levels={}
 	local provisions={}
 	for item,config in pairs(consumables) do
@@ -4360,6 +4486,7 @@ local function snapshot(player,message)
 		crafting=Crafting.state and Crafting.state(player,p), -- Crafting: Workshop › Crafting page state
 		lairs=Lairs.state and Lairs.state(player,p), -- Lairs: Hunt › Bosses (kill counts, personal bests, uniques)
 		exploration=Explore.state(player,p), -- Exploration & Factions: Journal > Motes / Factions (full when changed, else {rev, resetIn, switchIn, compact})
+		regionQuests=Regions.state(p), -- World Art & Regions: accepted/talked/visited/warps
 		logs=Logs.state(player,p)} -- Commissions & Logs: Journal > Commissions / Collection Log / Museum (full when changed, else {rev, resetIn, compact})
 end
 -- Prayer & Thieving: drain-loop notices (prayer points ran out).
@@ -4448,6 +4575,7 @@ local function migrate(profile)
 	if Crafting.migrate then Crafting.migrate(profile) end -- Crafting: p.crafting {made, shattered}
 	Explore.migrate(profile) -- Exploration & Factions: p.motes, p.factions, p.perkStats.motes
 	if Lairs.migrate then Lairs.migrate(profile) end -- Lairs: kill counts, personal bests, uniques
+	if Regions.migrate then Regions.migrate(profile) end -- World Art & Regions: p.regionQuests
 end
 -- Clears every per-player table and ends this player's session slot.
 -- Sea creatures: a successful Fishing gather may hook one (Data.rollSeaCreature).
@@ -4595,6 +4723,8 @@ local function open(player)
 	player.CharacterAdded:Connect(spawnCharacter)
 	if player.Character then task.spawn(spawnCharacter,player.Character) end
 	local refundNote=applySigilRefund and applySigilRefund(player,profile) -- Endgame: altar refunds owed while away
+	local lairNote=Lairs.settle and Lairs.settle(player,profile) -- Lairs: an entry fee owed from a fight that closed while away
+	if lairNote then refundNote=if refundNote then refundNote.." • "..lairNote else lairNote end
 	update:FireClient(player,snapshot(player,(if preview[player] then "Studio practice session • saving unavailable" else "Journal opened")..(if refundNote then " • "..refundNote else "")))
 end
 local function live(player)
@@ -5352,7 +5482,7 @@ do
 			if not entry then return "The Roost keeper does not sell that." end
 			if p.coins<entry.coins then return "You need "..entry.coins.." coins for "..Data.Items[item].name.."." end
 			p.coins-=entry.coins
-			collect(p,item,1)
+			p.items[item]=(p.items[item] or 0)+1 -- bought, not collected (no collection / log / museum credit)
 			return "Bought "..Data.Items[item].name.." for "..entry.coins.." coins."
 		elseif verb=="petClaim" or (verb=="petCancel" and p.petUpgrade and os.time()>=p.petUpgrade.ends) then
 			local job=p.petUpgrade
@@ -5751,11 +5881,13 @@ end
 do
 	local LR=Data.Lairs
 	Lairs.entered={} -- [userId]={fight,boss,fee,at,paid,refunded}
+	Lairs.closed={} -- [userId]={fight,refund}: entries closed by UserId while the member was offline
 	Lairs.ENTRY_TTL=7200
 	local TEXT={level="Your Combat level is too low for this lair.",region="You cannot reach this lair's region yet.",
 		coins="You cannot afford the lair's entry fee.",busy="Finish your current dungeon run, minigame or lair first.",
 		boss="This altar is silent.",capacity="Every lair on this server is in use. Try again in a minute.",
-		full="That lair is full.",active="You are already inside a lair.",invalid="The altar flickers. Try again shortly."}
+		full="That lair is full.",active="You are already inside a lair.",invalid="The altar flickers. Try again shortly.",
+		pending="Your last lair reward is still being counted. Try again in a moment."}
 	function Lairs.migrate(p) p.lairs=LR.migrate(p.lairs) end
 	function Lairs.of(p)
 		local s=p.lairs
@@ -5797,6 +5929,7 @@ do
 		local now=os.time()
 		for uid,e in pairs(Lairs.entered) do if now-e.at>Lairs.ENTRY_TTL then Lairs.entered[uid]=nil end end
 		Lairs.entered[player.UserId]={fight=reply.fight,boss=item,fee=def.fee,at=now}
+		Lairs.of(p).owed={fight=reply.fight,boss=item,fee=def.fee} -- saved with the journal until the entry settles
 		p.started=true
 		if reply.mode=="join" then return "You join the hunt in "..def.lairName.." • -"..def.fee.." coins." end
 		return "The altar flares: "..def.lairName.." opens • -"..def.fee.." coins. "..def.short.." rises in "..LR.WARMUP.."s."
@@ -5808,17 +5941,27 @@ do
 		if not def or type(payload.fight)~="string" then return {ok=false,reason="invalid"} end
 		if not e or e.fight~=payload.fight or e.boss~=payload.boss then return {ok=false,reason="entry"} end
 		local action=payload.action
+		local s=Lairs.of(p)
+		local function settled() if s.owed and s.owed.fight==payload.fight then s.owed=nil end end
 		if action=="refund" then
 			if e.paid or e.refunded then return {ok=false,reason="paid"} end
 			e.refunded=true
 			p.coins+=e.fee
 			Lairs.entered[player.UserId]=nil
+			settled()
 			return {ok=true,coins=e.fee,message="The altar returns your "..e.fee.."-coin offering."}
 		elseif action=="end" then
 			Lairs.entered[player.UserId]=nil
+			settled()
 			if payload.result=="died" then
-				local s=Lairs.of(p)
 				s.deaths[payload.boss]=math.min(LR.MAX_KC,(s.deaths[payload.boss] or 0)+1)
+				if payload.penalty==true then
+					-- Disconnected to dodge a death: the usual 10% purse-coin death loss (Humanoid.Died never fired).
+					local lost=math.floor(p.coins*0.10)
+					p.coins-=lost
+					p.bankRevision=(p.bankRevision or 0)+1
+					return {ok=true,lost=lost}
+				end
 			end
 			return {ok=true}
 		elseif action~="kill" then
@@ -5826,6 +5969,7 @@ do
 		end
 		if e.paid then return {ok=false,reason="paid"} end
 		e.paid=true
+		settled()
 		local seconds=math.clamp(math.floor(tonumber(payload.seconds) or def.duration),1,def.duration)
 		local party=math.clamp(math.floor(tonumber(payload.party) or 1),1,LR.MAX_PARTY)
 		local stats=Progression.computeStats(p,os.time())
@@ -5848,6 +5992,64 @@ do
 		local s=Lairs.of(p)
 		local lair=player:GetAttribute("LairBoss")
 		return {kc=s.kc,pb=s.pb,pbParty=s.pbParty,got=s.got,deaths=s.deaths,log=s.log,active=if type(lair)=="string" then lair else ""}
+	end
+	local function heldJournal(uid)
+		for player,p in pairs(profiles) do if player.UserId==uid then return player,p end end
+		return nil
+	end
+	-- Bridge "lair" by UserId (lairs.server.lua: a member removed while offline).
+	-- A journal still held here settles at once; the close is always filed so
+	-- the next load knows whether the owed fee was forfeited or refunded.
+	function Lairs.offline(uid,payload)
+		if uid%1~=0 or uid<=0 or type(payload.fight)~="string" or not LR.boss(payload.boss) then return {ok=false,reason="invalid"} end
+		if payload.action~="end" and payload.action~="refund" then return {ok=false,reason="invalid"} end
+		local e=Lairs.entered[uid]
+		local reply
+		if e and e.fight==payload.fight then
+			local player,p=heldJournal(uid)
+			if player then reply=Lairs.bridge(player,p,payload); reply.message=nil end
+			Lairs.entered[uid]=nil
+		end
+		Lairs.closed[uid]={fight=payload.fight,refund=payload.action=="refund"}
+		return reply or {ok=true,mode="filed"}
+	end
+	-- Load: an entry still owed (p.lairs.owed) is kept while the fight holds the
+	-- member (a rejoin), dropped when this server filed a forfeit, else refunded
+	-- once (a shutdown, a failed refund, a fight that closed elsewhere).
+	function Lairs.settle(player,p)
+		local s=Lairs.of(p)
+		local o=s.owed
+		if not o then return nil end
+		local uid=player.UserId
+		local held=invoke("holds",player,o.fight)
+		if held and held.held then
+			local e=Lairs.entered[uid]
+			if not e or e.fight~=o.fight then Lairs.entered[uid]={fight=o.fight,boss=o.boss,fee=o.fee,at=os.time()} end
+			return nil
+		end
+		local c=Lairs.closed[uid]
+		Lairs.closed[uid]=nil
+		s.owed=nil
+		local e=Lairs.entered[uid]
+		if e and e.fight==o.fight then Lairs.entered[uid]=nil end
+		if c and c.fight==o.fight and not c.refund then return nil end
+		p.coins+=o.fee
+		return "The altar returned your "..o.fee.."-coin lair offering."
+	end
+	-- Shutdown (BindToClose, before the journals save): lairs.server.lua tears
+	-- down unfinished fights and lists unpaid members; held journals are refunded
+	-- now, offline ones keep p.lairs.owed (refunded at their next load).
+	function Lairs.drain()
+		local fn=ServerStorage:FindFirstChild("IsleLairs")
+		if not fn then return 0 end
+		local ok,list=pcall(fn.Invoke,fn,"drain")
+		if not ok or type(list)~="table" then return 0 end
+		local n=0
+		for _,e in ipairs(list) do
+			local player,p=heldJournal(type(e)=="table" and e.userId or 0)
+			if player and Lairs.bridge(player,p,{action="refund",boss=e.boss,fight=e.fight}).ok then n+=1 end
+		end
+		return n
 	end
 end
 ------------------------------------------------------------------------------
@@ -6066,17 +6268,263 @@ do
 		while task.wait(CR.TICK) do Crafting.tick(os.clock()) end
 	end)
 end
+------------------------------------------------------------------------------
+-- World Art & Regions (World Art & Regions team; self-contained section,
+-- docs/DEPTH-CONTRACT.md §30). Regional quest chains on the Journal framework,
+-- regional shops and warp scrolls. Profile: p.regionQuests = {accepted={[quest]=true},
+-- talked={[role]=true}, visited={[landmark]=true}, warps={[region]=true},
+-- base={[quest]={[objective index]=lifetime total at acceptance}}} (bounded to known
+-- ids by Regions.migrate, so saves stay rejoin-safe). Regional kills / collect /
+-- gather objectives count progress since acceptance (have = lifetime - base);
+-- Journal quests keep lifetime totals. Shop purchases (rqBuy, warpBuy) go
+-- straight to p.items: bought goods never count as collection, log, museum or
+-- mastery progress. Regions.warpAt[UserId] = warp cooldown expiry (os.clock);
+-- expired entries are pruned when players leave (an unexpired one outlives a
+-- quick rejoin). Verbs:
+--   rqAccept <quest>          at its giver (within RA.TALK_RADIUS), requirements met
+--   rqTalk <role>             at that NPC; records the talk for accepted quests that need it
+--   rqClaim <quest[:Skill]>   at its giver; Journal.claimQuest (lamps name a skill)
+--   rqBuy <role:i>            regional shop offer i, at that shopkeeper
+--   warpBuy / warpLearn <region>   at the Warp Keeper: buy a scroll / read one (learn the warp)
+--   warpTo <region>           at the Warp Keeper: travel to the region's entrance anchor
+--                             (learned warp, region access, travel gate, cooldown)
+--   landmark <id>             prompt-only (IsleAction "landmark"): survey a landmark
+-- Quests with a giver must be accepted before any claim (NPC or Journal).
+------------------------------------------------------------------------------
+do
+	local RA=Data.RegionArt
+	local function bucket(p)
+		local r=p.regionQuests
+		if type(r)~="table" then r={} p.regionQuests=r end
+		for _,key in ipairs({"accepted","talked","visited","warps","base"}) do if type(r[key])~="table" then r[key]={} end end
+		return r
+	end
+	-- Regional objectives measured since acceptance: objective table -> {quest, index}.
+	local SINCE={kills=true,collect=true,gather=true}
+	local owner={}
+	for _,q in ipairs(RA.Quests) do
+		for i,o in ipairs(q.objectives) do if SINCE[o.kind] then owner[o]={q=q,i=i} end end
+	end
+	local scrollRegion={}
+	for _,w in ipairs(RA.Warps) do scrollRegion[w.scroll]=w.region end
+	local function addItems(p,item,n) p.items[item]=(p.items[item] or 0)+n end -- bought, not collected
+	function Regions.migrate(p)
+		local old=type(p.regionQuests)=="table" and p.regionQuests or {}
+		local r={accepted={},talked={},visited={},warps={},base={}}
+		for id,v in pairs(type(old.accepted)=="table" and old.accepted or {}) do if v==true and RA.QuestById[id] then r.accepted[id]=true end end
+		for role,v in pairs(type(old.talked)=="table" and old.talked or {}) do if v==true and RA.FolkByRole[role] then r.talked[role]=true end end
+		for id,v in pairs(type(old.visited)=="table" and old.visited or {}) do if v==true and RA.LandmarkById[id] then r.visited[id]=true end end
+		for region,v in pairs(type(old.warps)=="table" and old.warps or {}) do if v==true and RA.WarpByRegion[region] then r.warps[region]=true end end
+		for id,list in pairs(type(old.base)=="table" and old.base or {}) do
+			local q=r.accepted[id] and RA.QuestById[id]
+			if q and type(list)=="table" then
+				local clean={}
+				for i,o in ipairs(q.objectives) do
+					local n=tonumber(list[i])
+					if SINCE[o.kind] and n and n==n and n>=0 then clean[i]=math.floor(n) end
+				end
+				r.base[id]=clean
+			end
+		end
+		p.regionQuests=r
+	end
+	-- Warps known: learned scrolls plus quest unlocks (derived, never stored twice).
+	function Regions.warps(p)
+		local out=table.clone(bucket(p).warps)
+		for id in pairs(p.questsDone or {}) do
+			local q=Data.QuestById[id]
+			local warp=q and q.rewards.unlock and q.rewards.unlock.warp
+			if warp then out[warp]=true end
+		end
+		return out
+	end
+	function Regions.state(p)
+		local r=bucket(p)
+		return {accepted=table.clone(r.accepted),talked=table.clone(r.talked),visited=table.clone(r.visited),warps=Regions.warps(p)}
+	end
+	-- New objective kinds on the Journal (talk / visit).
+	local measure=Journal.measure
+	function Journal.measure(p,o)
+		if o.kind=="talk" then return if bucket(p).talked[o.npc] then 1 else 0,1
+		elseif o.kind=="visit" then return if bucket(p).visited[o.landmark] then 1 else 0,1 end
+		local own=owner[o]
+		if own then
+			local have,need=measure(p,o)
+			local r=bucket(p)
+			if not r.accepted[own.q.id] then return 0,need end
+			-- Accepted before baselines existed: lifetime totals (legacy saves).
+			local base=r.base[own.q.id] and r.base[own.q.id][own.i] or 0
+			return math.max(0,have-base),need
+		end
+		return measure(p,o)
+	end
+	-- Giver quests are accepted before they can be handed in (NPC or Journal).
+	local claim=Journal.claimQuest
+	function Journal.claimQuest(p,item)
+		local id=string.match(item or "","^(%w+)")
+		local q=id and RA.QuestById[id]
+		if q and not p.questsDone[id] and not bucket(p).accepted[id] then
+			return "Speak with "..RA.FolkByRole[q.giver].name.." to take on "..q.title.." first."
+		end
+		local result=claim(p,item)
+		if q and p.questsDone[id] then
+			-- Talks only count for the quests that asked; clear the ones no open quest needs.
+			local r=bucket(p)
+			r.base[id]=nil
+			for role in pairs(r.talked) do
+				local needed=false
+				for _,other in ipairs(RA.Quests) do
+					if r.accepted[other.id] and not p.questsDone[other.id] then
+						for _,o in ipairs(other.objectives) do if o.kind=="talk" and o.npc==role then needed=true end end
+					end
+				end
+				if not needed then r.talked[role]=nil end
+			end
+		end
+		return result
+	end
+	-- Live NPC position by role (Workspace.Townsfolk, placed by npc.server.lua).
+	local function npcNear(player,role)
+		local root=player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+		local folder=workspace:FindFirstChild("Townsfolk")
+		if not root or not folder then return false end
+		for _,model in ipairs(folder:GetChildren()) do
+			if model:GetAttribute("TownsfolkRole")==role then
+				local npcRoot=model:FindFirstChild("HumanoidRootPart")
+				if npcRoot and (npcRoot.Position-root.Position).Magnitude<=RA.TALK_RADIUS then return true end
+			end
+		end
+		return false
+	end
+	local function away(role)
+		local f=RA.FolkByRole[role]
+		return "Find "..(if f then f.name else "them").." to do that."
+	end
+	local function itemName(id) local def=Data.Items[id]; return if def then def.name else tostring(id) end
+	function Regions.action(player,p,verb,item,prompt)
+		local r=bucket(p)
+		if verb=="landmark" then
+			local l=type(item)=="string" and RA.LandmarkById[item]
+			if not prompt or not l then return "Survey a landmark in person." end
+			if r.visited[l.id] then return l.name.." is already in your survey log." end
+			r.visited[l.id]=true
+			p.started=true
+			return "Surveyed "..l.name.."   ·   "..RA.Regions[l.region].epithet
+		elseif verb=="rqAccept" then
+			local q=type(item)=="string" and RA.QuestById[item]
+			if not q then return "That quest is not on offer." end
+			if p.questsDone[q.id] then return q.title.." is already complete." end
+			if r.accepted[q.id] then return q.title.." is already in your Journal." end
+			if not npcNear(player,q.giver) then return away(q.giver) end
+			local ok,missing=Journal.met(p,q.requires)
+			if not ok then return q.title.." requires: "..Data.describeCheck(missing).."." end
+			-- Baselines: kills / collect / gather count from here on.
+			local base={}
+			for i,o in ipairs(q.objectives) do if SINCE[o.kind] then base[i]=(measure(p,o)) end end
+			r.base[q.id]=base
+			r.accepted[q.id]=true
+			p.started=true
+			local steps={}
+			for _,o in ipairs(q.objectives) do table.insert(steps,Data.describeCheck(o)) end
+			return "Quest accepted • "..q.title..": "..table.concat(steps,", ").."."
+		elseif verb=="rqTalk" then
+			local f=type(item)=="string" and RA.FolkByRole[item]
+			if not f then return "Nobody by that name." end
+			if not npcNear(player,f.role) then return away(f.role) end
+			local wanted=false
+			for _,q in ipairs(RA.Quests) do
+				if r.accepted[q.id] and not p.questsDone[q.id] then
+					for _,o in ipairs(q.objectives) do if o.kind=="talk" and o.npc==f.role then wanted=true end end
+				end
+			end
+			if not wanted then return f.name.." nods politely. Nobody sent you here." end
+			if r.talked[f.role] then return "You've already spoken with "..f.name.."." end
+			r.talked[f.role]=true
+			p.started=true
+			return f.name..": \"Good, you came. Tell them I'm ready.\"   ·   Quest step complete."
+		elseif verb=="rqClaim" then
+			local id=string.match(type(item)=="string" and item or "","^(%w+)")
+			local q=id and RA.QuestById[id]
+			if not q then return "That quest is not in your journal." end
+			if not npcNear(player,q.giver) then return away(q.giver) end
+			return Journal.claimQuest(p,item)
+		elseif verb=="rqBuy" then
+			local role,index=string.match(type(item)=="string" and item or "","^(%w+):(%d+)$")
+			local f=role and RA.FolkByRole[role]
+			local offer=f and f.shop and f.shop[tonumber(index)]
+			if not offer then return "That isn't for sale." end
+			if not npcNear(player,f.role) then return away(f.role) end
+			local warp=scrollRegion[offer.item]
+			if warp and Regions.warps(p)[warp] then return "You already know the warp to "..Data.RegionById[warp].name.."." end
+			if (p.coins or 0)<offer.price then return "You need "..offer.price.." coins for that." end
+			p.coins-=offer.price
+			addItems(p,offer.item,offer.amount)
+			p.started=true
+			return "Bought "..offer.amount.."× "..itemName(offer.item).." for "..offer.price.." coins."
+		end
+		-- Warps: always at the Warp Keeper.
+		local w=type(item)=="string" and RA.WarpByRegion[item]
+		if not w then return "Name a charted region." end
+		local name=Data.RegionById[w.region].name
+		if not npcNear(player,"WarpKeeper") then return away("WarpKeeper") end
+		local known=Regions.warps(p)
+		if verb=="warpBuy" then
+			if known[w.region] then return "You already know the warp to "..name.."." end
+			if (p.coins or 0)<w.price then return "A scroll to "..name.." costs "..w.price.." coins." end
+			p.coins-=w.price
+			addItems(p,w.scroll,1)
+			p.started=true
+			return "Bought "..itemName(w.scroll)..". Read it to learn the warp."
+		elseif verb=="warpLearn" then
+			if known[w.region] then return "You already know the warp to "..name.."." end
+			if (p.items[w.scroll] or 0)<1 then return "You have no "..itemName(w.scroll).."." end
+			p.items[w.scroll]-=1
+			r.warps[w.region]=true
+			p.started=true
+			return "Warp learned • "..name..". Ilsabet can send you there any time."
+		elseif verb=="warpTo" then
+			if not known[w.region] then return "You haven't learned the warp to "..name.." yet." end
+			if not regionAllowed(p,w.region) then return regionDenied(w.region) end
+			local now=os.clock()
+			local ready=Regions.warpAt[player.UserId]
+			if ready and now<ready then return "The thread is still settling ("..math.ceil(ready-now).."s)." end
+			local gate=ServerStorage:FindFirstChild("IsleTravelGate")
+			if not gate then return "The warp will not open right now." end
+			local okGate,verdict=pcall(gate.Invoke,gate,player)
+			if not okGate or verdict~=true then return if okGate and type(verdict)=="string" then verdict else "The warp will not open right now." end
+			local a=Trails.anchor(w.anchor)
+			local character=player.Character
+			local root=character and character:FindFirstChild("HumanoidRootPart")
+			if not a or not root then return "The warp will not open right now." end
+			Regions.warpAt[player.UserId]=now+RA.WARP_COOLDOWN
+			player:SetAttribute("FastTravelAt",os.clock()) -- known fast travel (Aether Mote pickup checks)
+			character:PivotTo(CFrame.new(a.CFrame.Position+Vector3.new(0,4,0)))
+			root.AssemblyLinearVelocity=Vector3.zero
+			return "Warped to "..name.."."
+		end
+		return "Unknown action."
+	end
+	-- Leaving prunes every expired warp cooldown (the leaver's too); an unexpired
+	-- one stays until it lapses, so a quick rejoin cannot skip it.
+	Players.PlayerRemoving:Connect(function()
+		local now=os.clock()
+		for id,ready in pairs(Regions.warpAt) do if ready<=now then Regions.warpAt[id]=nil end end
+	end)
+end
 local function perform(player,verb,item,prompt)
 	local p=profiles[player]
 	if not p or (not preview[player] and os.time()>=(leaseEnd[player] or 0)) then return "Waiting for journal sync." end
 	local character=player.Character
 	local humanoid=character and character:FindFirstChildOfClass("Humanoid")
 	if not humanoid or humanoid.Health<=0 then return "Return to your island first." end
+	if Held.verbs[verb] and not prompt then return Held.action(player,p,verb,item) end -- Held items: own bucket, no cooldown
 	if os.clock()<(cooldown[player] or 0) then return "One moment…" end
 	cooldown[player]=os.clock()+(if prompt then 0.65 else 0.24)
 	local region=prompt and prompt:GetAttribute("IsleRegion")
 	if region and not regionAllowed(p,region) then return regionDenied(region) end
-	if Skills.verbs[verb] then
+	if Regions.verbs[verb] then
+		return Regions.action(player,p,verb,item,prompt) -- World Art & Regions: regional quests, shops, warps
+	elseif Skills.verbs[verb] then
 		return Skills.action(player,p,verb,item,prompt,humanoid) -- Agility & Hunter
 	elseif Prayer.claims(verb,item) then
 		return Prayer.action(player,p,verb,item,prompt,humanoid) -- Prayer & Thieving
@@ -6137,7 +6585,7 @@ local function perform(player,verb,item,prompt)
 		local stats=Progression.computeStats(p,os.time())
 		local ok,result=Progression.harvest(p,item,stats,roll,bonus,os.time())
 		if not ok then
-			if item=="Aetherite" then return result.." Train on Ore in Quarry Cay." end
+			if item=="Aetherite" then return result.." Train on Ore in Brassfall Cay." end
 			return result
 		end
 		-- Events hook: festival yield/XP multipliers apply exactly once, after fortune; festival-only catches.
@@ -6148,6 +6596,7 @@ local function perform(player,verb,item,prompt)
 		local petDouble=result.petDouble==true
 		collect(p,item,result.amount)
 		grantXp(p,skill,result.xp)
+		Held.gather(player,p,skill) -- Held items: the node's tool is in hand (auto switch, returns when idle)
 		if skill=="Farming" and Garden.fieldSeed then Garden.fieldSeed(p,item) end -- Verdant Garden seed pouch
 		Trails.event(p,"gather",item) -- Treasure Trails: scroll drops + trail tasks (Fishing counts as "fish")
 		Logs.regrow(p,result,resource) -- Commissions & Logs: Steadfast Pick joins the Mastery regrowth text
@@ -6195,6 +6644,8 @@ local function perform(player,verb,item,prompt)
 		return Journal.isle.place(player,p,item)
 	elseif verb=="pickup" then
 		return Journal.isle.pickup(player,p,item)
+	elseif verb=="homeExpand" then
+		return Journal.isle.expand(player,p)
 	elseif verb=="quest" then
 		local state=questState(p)
 		if not state.ready then return "Complete the current guild contract first." end
@@ -6261,6 +6712,10 @@ local function perform(player,verb,item,prompt)
 		local allowed,missing=Progression.meetsRequirements(p,def.requires)
 		if not allowed then return def.name.." requires "..missing.."." end
 		if p.equipment[def.slot]==item then return def.name.." is already equipped." end
+		-- Held items: hotbar slot 1 follows the new weapon. p.held is the explicit choice
+		-- even during an auto switch (Held.auto keeps the temporary id), so the return
+		-- lands on the new weapon, never the old one.
+		if def.slot=="weapon" and p.held~=nil and p.held==p.equipment.weapon then p.held=nil end
 		p.equipment[def.slot]=item
 		return "Equipped "..def.name.."."
 	elseif verb=="unequip" then
@@ -6504,6 +6959,12 @@ action.OnServerInvoke=function(player,verb,item)
 		stateRead[player]=os.clock()+STATE_INTERVAL
 		return snapshot(player)
 	end
+	if item~=nil and #item>70 then return snapshot(player,"That request is too long.") end
+	-- Held items: hotbar keys and scrolls get a compact reply, never a full snapshot.
+	if Held.verbs[verb] then
+		local message,done=perform(player,verb,item,nil)
+		return {held=true,ok=done==true,message=message,heldItem=player:GetAttribute("HeldItem") or ""}
+	end
 	if item~=nil and #item>64 then return snapshot(player,"That request is too long.") end
 	return snapshot(player,perform(player,verb,item,nil))
 end
@@ -6524,8 +6985,11 @@ local function close(player)
 	-- Still loading: open() notices the departure, releases the lease and forgets.
 	if opening[player] then return end
 	while exchangeBusy[player] do task.wait(0.1) end
+	-- Lairs: a disconnect dodging a death is settled while the journal is live (lairs.server.lua "depart").
+	pcall(function() local lairs=ServerStorage:FindFirstChild("IsleLairs"); if lairs then lairs:Invoke("depart",player) end end)
 	-- Minigames: settle in-match XP before the final save (see minigames.server.lua).
 	pcall(function() local mgLeave=ServerStorage:FindFirstChild("IsleMinigameLeave"); if mgLeave then mgLeave:Invoke(player) end end)
+	Held.forget(player) -- Held items: drop the auto-return timer before the final save
 	for _=1,3 do if persist(player,true) then break end; task.wait(1) end
 	forget(player)
 	for _,arena in pairs(enemies) do
@@ -6536,6 +7000,10 @@ end
 Players.PlayerRemoving:Connect(close)
 task.spawn(function()
 	while task.wait(55) do for player in pairs(profiles) do task.spawn(persist,player,false) end end
+end)
+-- Held items: auto-held tools go back to the explicit choice once idle.
+task.spawn(function()
+	while task.wait(1) do Held.tick(os.clock()) end
 end)
 -- Timed buffs: drop expired entries and re-apply stats so Health/Speed settle.
 task.spawn(function()
@@ -6557,6 +7025,7 @@ task.spawn(function()
 end)
 game:BindToClose(function()
 	Endgame.drain() -- Endgame: refund unspent altar sigils before the journals save
+	if Lairs.drain then Lairs.drain() end -- Lairs: refund unfinished fights' fees before the journals save
 	local pending=0
 	for player in pairs(profiles) do
 		pending+=1
@@ -6931,7 +7400,7 @@ function CombatStyles.refund(p,payload)
 	for id,n in pairs(back) do p.items[id]=(p.items[id] or 0)+n end
 	return {ok=true}
 end
-function CombatStyles.xpRate(monsterId,tier)
+function CombatStyles.xpRate(monsterId,tier,maxHp)
 	if type(monsterId)~="string" then return nil end
 	local line=string.match(monsterId,"^Boss:(%a+)$")
 	if line then
@@ -6941,6 +7410,13 @@ function CombatStyles.xpRate(monsterId,tier)
 	end
 	local monster=validId(monsterId) and Data.Monsters[monsterId]
 	if not monster then return nil end
+	-- Lairs: a boss's health scales with its party; damage XP caps at the scaled
+	-- health (combat sends maxHp, clamped to the largest party) at the same rate.
+	if monster.lair and not monster.lairAdd and Data.Lairs then
+		local cap=math.clamp(tonumber(maxHp) or monster.hp,monster.hp,Data.Lairs.partyHp(monster,Data.Lairs.MAX_PARTY))
+		if cap~=cap then cap=monster.hp end
+		return monster.xp*cap/monster.hp,cap
+	end
 	return monster.xp,monster.hp
 end
 function CombatStyles.xp(p,payload)
@@ -6949,7 +7425,7 @@ function CombatStyles.xp(p,payload)
 	local gains={}
 	local damage=payload.damage
 	if type(damage)=="number" and damage==damage and damage>0 then
-		local xp,hp=CombatStyles.xpRate(payload.monster,payload.tier)
+		local xp,hp=CombatStyles.xpRate(payload.monster,payload.tier,payload.maxHp)
 		if xp then gains=Progression.styleXp(style,damage,xp,hp) end
 	end
 	local spell=style=="magic" and validId(payload.spell) and Data.Spells[payload.spell]
@@ -6987,6 +7463,10 @@ bridge.OnInvoke=function(op,player,payload)
 	if op=="worldBossRefund" then
 		-- Endgame: unspent altar sigils; the placer may be offline (player = UserId).
 		return Endgame.refund(payload)
+	end
+	if op=="lair" and type(player)=="number" then
+		-- Lairs: a member removed while offline (player = UserId).
+		return Lairs.offline(player,payload)
 	end
 	if op=="damage" then
 		local raw=payload.amount

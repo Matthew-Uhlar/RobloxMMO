@@ -187,7 +187,10 @@ do
 			end
 			check(inside,"station "..slot.." sits in a protected worker rectangle")
 		else
-			check(math.sqrt(o.X^2+o.Z^2)-2.6>I.RADIUS,"yard station "..slot.." is outside the placement grid")
+			-- §27: the build grid now covers the island; the yard is a protected circle.
+			local zone
+			for _,c in ipairs(I.ProtectedCircles) do if c.name=="worker yard" then zone=c end end
+			check(zone~=nil and math.sqrt((o.X-zone.x)^2+(o.Z-zone.z)^2)+2.6<=zone.r,"yard station "..slot.." is inside the protected worker yard")
 			local y=yard:FindFirstChild("Upper meadow").CFrame.Position
 			check(math.sqrt((pad.X-y.X)^2+(pad.Z-y.Z)^2)+2.6<=11.55,"yard station "..slot.." on the yard")
 			check(math.abs(pad.Y-homeA:GetAttribute("IslandCenter").Y-1.58)<.05,"yard station "..slot.." stands on the yard top")
@@ -956,7 +959,19 @@ do
 		-- Layer stack: the foundation top sits inside the meadow (no shared plane).
 		local foundation=isle:FindFirstChild("Floating foundation")
 		local fTop=foundation.CFrame.Position.Y+foundation.Size.X/2
-		check(fTop<center.Y-.1 and fTop>center.Y-.5,isle.Name.." foundation does not z-fight the meadow")
+		-- The forged cliff rides the foundation's fit box, so the whole hull
+		-- (top below the meadow's bottom, lip ring outside its side wall) must
+		-- stay clear of the meadow slab or the grass clips into the rock.
+		local meadow=isle:FindFirstChild("Meadow")
+		local mBottom=meadow.CFrame.Position.Y-meadow.Size.X/2
+		local mRadius=meadow.Size.Y/2
+		check(fTop<mBottom-.05,isle.Name.." foundation/cliff top sits below the meadow slab")
+		check(foundation.Size.Y/2*.99>mRadius+.02,isle.Name.." cliff lip ring starts outside the meadow side wall")
+		for _,ledge in isle:GetChildren() do
+			if ledge.Name=="Shore ledge" then
+				check(ledge.CFrame.Position.Y+ledge.Size.Y/2<mBottom-.05,isle.Name.." shore ledge stays below the meadow slab")
+			end
+		end
 		local parts,shore=0,0
 		for _,obj in isle:GetDescendants() do
 			if obj:IsA("BasePart") then parts+=1 end
@@ -1106,7 +1121,8 @@ do
 			shapeCount+=1
 		end
 	end
-	local signShapes={Signboard=true,SignPost=true,Banner=true}
+	local signShapes={Signboard=true,SignPost=true,Banner=true,SignCarvedBoard=true,SignScrollBoard=true,SignArrowBoard=true,
+		SignPlaqueBoard=true,BannerCloth=true,SignNoticeBoard=true}
 	local signBoards=0
 	for _,gui in world:GetDescendants() do
 		if gui:IsA("SurfaceGui") and gui.Parent:IsA("BasePart") and gui:FindFirstAncestor("Islands") then
@@ -1137,7 +1153,7 @@ do
 			task={spawn=function() end,defer=function() end,wait=function() end},warn=function() end,print=function() end,MeshForgeTest=probe,
 		}})()
 		local describe=probe.forge.describe
-		local UPRIGHT={tree=true,crop=true,ore=true,sign=true,lamp=true,warp=true,stall=true,station=true,statue=true,tower=true,ship=true,plant=true,trap=true}
+		local UPRIGHT={tree=true,crop=true,ore=true,sign=true,signframe=true,lamp=true,warp=true,stall=true,station=true,statue=true,tower=true,ship=true,plant=true,trap=true}
 		local meshed,owners,upright=0,0,0
 		local CREATURE_TAGS={Shellwarden=true,Tidewing=true}
 		local resolved={}
@@ -1169,7 +1185,7 @@ do
 					for _,axis in {"X","Y","Z"} do
 						check(size[axis]<=box[axis]*1.5+.6,obj:GetFullName().." mesh "..axis.." "..string.format("%.1f",size[axis]).." stays within 1.5x of its slot "..string.format("%.1f",box[axis]))
 					end
-					if #d.siblings==0 then
+					if #d.siblings==0 and obj:GetAttribute("ShapeBox")==nil then
 						-- A lone host's slot is its own (upright) box.
 						local own=obj.Size
 						check(math.abs(box.X*box.Y*box.Z-own.X*own.Y*own.Z)<=1e-3*own.X*own.Y*own.Z+1e-6,obj.Name.." slot is the host's own box")

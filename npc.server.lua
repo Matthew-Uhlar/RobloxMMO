@@ -248,7 +248,10 @@ end
 -- Placement.
 ------------------------------------------------------------------------------
 local npcs = {}
-for _, role in ipairs(T.Order) do
+-- World Art regional folk (T.RegionFolkOrder, §30) stand only on their anchors.
+local roster = table.clone(T.Order)
+for _, role in ipairs(T.RegionFolkOrder or {}) do table.insert(roster, role) end
+for _, role in ipairs(roster) do
 	local model = buildRig(role)
 	model.Parent = stash
 	npcs[role] = model

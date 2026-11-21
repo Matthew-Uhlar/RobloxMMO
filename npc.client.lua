@@ -162,9 +162,12 @@ end
 local closeDialogue
 local showNode
 local function optionButton(text, order, onClick, accent)
-	local b = make("TextButton", optionsFrame, {LayoutOrder = order, Size = UDim2.new(1, -6, 0, 36), BackgroundColor3 = if accent then slate else deep,
-		Text = "  " .. text, Font = bold, TextSize = 14, TextColor3 = if accent then gold else ivory, TextXAlignment = Enum.TextXAlignment.Left,
-		TextTruncate = Enum.TextTruncate.AtEnd, AutoButtonColor = true})
+	-- Long labels (regional quests, shop offers) wrap onto a second line; the
+	-- button grows to fit (36 px minimum) and the options list scrolls.
+	local b = make("TextButton", optionsFrame, {LayoutOrder = order, Size = UDim2.new(1, -6, 0, 36), AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundColor3 = if accent then slate else deep, Text = text, Font = bold, TextSize = 14, TextColor3 = if accent then gold else ivory,
+		TextXAlignment = Enum.TextXAlignment.Left, TextWrapped = true, AutoButtonColor = true})
+	make("UIPadding", b, {PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 8), PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6)})
 	round(b, 8, if accent then gold else slate)
 	b.Activated:Connect(function() if not busy then onClick() end end)
 	return b
@@ -459,13 +462,31 @@ local function register(model)
 		AlwaysOnTop = false, MaxDistance = 120, LightInfluence = 0, Enabled = false})
 	local bubble = make("TextLabel", marker, {Size = UDim2.fromScale(1, 1), BackgroundColor3 = gold, Text = "!", Font = bold, TextSize = 22, TextColor3 = deep})
 	round(bubble, 17, deep)
-	entry.marker = marker
+	entry.marker, entry.bubble = marker, bubble
+	-- A "CLICK" cue under the server nameplate (SkyBlock-style vendor hologram,
+	-- §29 theme), shown only up close.
+	local tag = make("BillboardGui", head, {Name = "TownsfolkClick", Size = UDim2.fromOffset(90, 16), StudsOffset = Vector3.new(0, 1.15, 0),
+		AlwaysOnTop = false, MaxDistance = 36, LightInfluence = 0})
+	make("TextLabel", tag, {Name = "Click", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = "CLICK", Font = Theme.font.display, TextSize = 10,
+		TextColor3 = Theme.rgb("FFE066"), TextStrokeTransparency = 0.3, TextStrokeColor3 = Theme.color.void})
+	entry.tag = tag
 	npcs[model] = entry
 end
 local function updateMarkers()
 	local s, ctx = snapshot, context()
 	for _, entry in pairs(npcs) do
 		local show = false
+		-- World Art regional folk (§30): "!" quest on offer, gold "?" ready to hand
+		-- in, grey "?" in progress, "…" someone sent you to talk to them.
+		local RA = Data.RegionArt
+		if s and RA and RA.FolkByRole[entry.role] then
+			local state = RA.marker(s, entry.role)
+			show = state ~= nil
+			entry.bubble.Text = if state == "offer" then "!" elseif state == "talk" then "…" else "?"
+			entry.bubble.BackgroundColor3 = if state == "active" then muted else gold
+			entry.marker.Enabled = show
+			continue
+		end
 		if s then
 			if entry.role == "Guide" then show = T.Conditions.tutorialActive(s) or T.Conditions.contractReady(s)
 			elseif entry.role == "Slayer" then show = T.Conditions.huntReady(s)
