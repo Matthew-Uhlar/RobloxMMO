@@ -10647,4 +10647,476 @@ end
 -- <<< END Held items & swings <<<
 ------------------------------------------------------------------------------
 
+
+------------------------------------------------------------------------------
+-- >>> World Art & Regions (World Art & Regions team; self-contained section) >>>
+-- docs/DEPTH-CONTRACT.md §30. Region identity (display names, palettes,
+-- landmarks, ambience, entry banners), regional questgivers, shopkeepers and
+-- townsfolk (Data.Townsfolk.RegionFolkOrder), the regional quest chains
+-- (appended to Data.Quests with `giver`), and warp scrolls (fast travel: learn
+-- a region's scroll once, then the Warp Keeper sends you there).
+-- New objective kinds (server: Journal.measure; rejoin-safe in p.regionQuests):
+--   talk  {npc=<role>}         speak to that NPC while the quest is accepted (verb rqTalk)
+--   visit {landmark=<id>}      survey that landmark's prompt (IsleAction "landmark")
+-- Quests with a giver are accepted at the giver (rqAccept) and handed in there
+-- (rqClaim) or from the Journal once accepted. rewards.unlock.warp = region also
+-- unlocks that region's warp.
+------------------------------------------------------------------------------
+do
+local RA = {}
+Data.RegionArt = RA
+-- Generic display names get Aether-Isles names; ids stay stable for saves.
+local RENAMES = {Hub="Compass Quay", Meadow="Sunwheel Downs", Quarry="Brassfall Cay"}
+for id, name in pairs(RENAMES) do
+	local r = Data.RegionById[id]
+	if r then r.name = name end
+	local d = Data.DiaryByRegion and Data.DiaryByRegion[id]
+	if d then d.name = name .. " Diary" end
+end
+-- Per region: banner epithet, palette (ground, accent, glow), landmark (id,
+-- display name, world shape, island), ambience (client particle kind; sound =
+-- optional asset id hook, "" = none).
+RA.Regions = {
+	Hub={epithet="Heart of the Skyway",palette={"C9B994","DBAD65","9DF3D7"},
+		landmark={id="CompassSpire",name="The Compass Spire",shape="CompassTower",isle="Compass Quay"},ambience={particles="motes",sound=""}},
+	Meadow={epithet="Where the Sunwheel turns",palette={"8DB86E","E9C46A","FFE08A"},
+		landmark={id="Sunwheel",name="The Sunwheel Mill",shape="Windmill",isle="Meadow Reach"},ambience={particles="pollen",sound=""}},
+	Quarry={epithet="Copper, brass and smouldering stone",palette={"9C9682","FF8A3D","FFB86B"},
+		landmark={id="EmberCaldera",name="The Ember Caldera",shape="Caldera",isle="Cinder Shelf"},ambience={particles="embers",sound=""}},
+	Skyreach={epithet="Highest of the charted isles",palette={"96ACAB","39898E","BFF4FF"},
+		landmark={id="SunkenObservatory",name="The Sunken Observatory",shape="Observatory",isle="Skyreach"},ambience={particles="wind",sound=""}},
+	Windpine={epithet="The grove that whispers",palette={"5F8A57","9BD18B","E8D98E"},
+		landmark={id="AetherheartTree",name="The Aetherheart",shape="AetherheartTree",isle="Windpine Grove"},ambience={particles="leaves",sound=""}},
+	Gloomhollow={epithet="Lanterns below the light",palette={"3A3F52","B59CFF","7FD3C4"},
+		landmark={id="VoidglassSpire",name="The Voidglass Spire",shape="CrystalSpire",isle="Gloomhollow Caverns"},ambience={particles="spores",sound=""}},
+	Tidewater={epithet="Skylakes and singing reefs",palette={"D9C9A0","5EC8D8","E76F7B"},
+		landmark={id="ShoalLight",name="The Shoal Light",shape="Lighthouse",isle="Tidewater Shoals"},ambience={particles="spray",sound=""}},
+	Tempest={epithet="The storm that never breaks",palette={"4A5266","BFD7FF","8FB8D6"},
+		landmark={id="StormCrown",name="The Storm Crown",shape="StormSpire",isle="Tempest Spire"},ambience={particles="sparks",sound=""}},
+	ShatteredCrown={epithet="A sky-crown in pieces",palette={"6E6A8C","F2D27A","B59CFF"},
+		landmark={id="BrokenCrown",name="The Broken Crown",shape="Obelisk",isle="The Shattered Crown"},ambience={particles="glints",sound=""}},
+}
+-- Island banners: every static island's entry epithet (the banner title is the island's own name).
+RA.Isles = {
+	["Compass Quay"]="Sky Harbor · Market Row · Artisans' Rise",["Guild Terrace"]="Stations, the Guild Hall and the Skyway",
+	["Warden Reach"]="Waystones around the Shellwarden",["Mosswake Grove"]="Mossy timber and moonleaf beds",
+	["Meadow Reach"]="Sunwheat terraces under the Sunwheel",["Brassfall Quarry"]="The crane sings over the copper seams",
+	["Cinder Shelf"]="Ash terraces around the Ember Caldera",["Skyreach"]="Thin air, golems and the Sunken Observatory",
+	["Windpine Grove"]="Towering windpines round the Aetherheart",["Gloomhollow Caverns"]="Voidstone grottoes and glowshrooms",
+	["Tidewater Shoals"]="Sandbars, lagoons and the Shoal Light",["Tempest Spire"]="Crystal pylons crackling in the gale",
+	["The Shattered Crown"]="Islets of a broken sky-crown",
+}
+RA.LandmarkById = {}
+for region, art in pairs(RA.Regions) do
+	local r = Data.RegionById[region]
+	art.title = r and r.name or region
+	art.landmark.region = region
+	RA.LandmarkById[art.landmark.id] = art.landmark
+end
+RA.Order = {"Hub","Meadow","Quarry","Skyreach","Windpine","Gloomhollow","Tidewater","Tempest","ShatteredCrown"}
+RA.SURVEY_RADIUS = 14 -- studs from a landmark's survey prompt that count as a visit
+RA.TALK_RADIUS = 16   -- studs from an NPC that count as speaking to them
+
+------------------------------------------------------------------------------
+-- Warp scrolls: read once to learn a region's warp; the Warp Keeper carries
+-- you to its entrance anchor afterwards.
+------------------------------------------------------------------------------
+RA.WARP_COOLDOWN = 20
+RA.Warps = {
+	{region="Hub",anchor="Waypoint_SkyHarbor",price=150},
+	{region="Meadow",anchor="Waypoint_Entrance_Meadow",price=300},
+	{region="Quarry",anchor="Waypoint_Entrance_CinderShelf",price=300},
+	{region="Skyreach",anchor="Waypoint_Entrance_Skyreach",price=1200},
+	{region="Windpine",anchor="Waypoint_Entrance_Windpine",price=1500},
+	{region="Gloomhollow",anchor="Waypoint_Entrance_Gloomhollow",price=4000},
+	{region="Tidewater",anchor="Waypoint_Entrance_Tidewater",price=4000},
+	{region="Tempest",anchor="Waypoint_Entrance_Tempest",price=9000},
+	{region="ShatteredCrown",anchor="Waypoint_Entrance_ShatteredCrown",price=20000},
+}
+RA.WarpByRegion = {}
+for _, w in ipairs(RA.Warps) do
+	w.scroll = "WarpScroll" .. w.region
+	RA.WarpByRegion[w.region] = w
+	local name = Data.RegionById[w.region].name
+	item(w.scroll,{name="Warp Scroll: "..name,kind="material",category="warp",rarity="Rare",color="C77DFF",value=math.floor(w.price/10),
+		description="Read it with the Warp Keeper to learn the warp to "..name..". Learned once, used forever."})
+end
+
+------------------------------------------------------------------------------
+-- Regional folk: questgivers, shopkeepers, the Warp Keeper and townsfolk.
+------------------------------------------------------------------------------
+local folk = {
+	-- Compass Quay
+	{role="WarpKeeper",region="Hub",name="Ilsabet Vanewright",title="Warp Keeper",portrait="🌀",kind="warp",
+		look={skin="D1A27A",shirt="4B2C7A",pants="241A33",shoes="17111F",accent="C77DFF",hair="F2E8D5",hat="tophat",held="staff",cape="2E1A4A",spectacles=true},
+		greet="Every isle has a thread, wayfarer, and I hold the spindle. Learn a warp scroll and I'll send you along its thread."},
+	{role="Lamplighter",region="Hub",name="Corwin Tallowmere",title="Quay Lamplighter",portrait="🕯",
+		look={skin="F1C27D",shirt="6D4C41",pants="3E2723",shoes="1B1B1B",accent="FFD166",hair="8D6E63",hat="cap",held="lantern",beard=true},
+		greet="Sixty lamps on the Quay and every one wants oil by dusk. Spare a hand?"},
+	{role="QuayCrier",region="Hub",name="Mirelle Dunfeather",title="Town Crier",portrait="📣",kind="townsfolk",
+		look={skin="FFDBAC",shirt="1E88E5",pants="F2E8D5",shoes="5D4037",accent="FFC107",hair="A1887F",hat="feather",held="scroll"},
+		greet="News of the isles! The Sunwheel turns, the Caldera smoulders and the Shoal Light still shines. Folk in regional colours always need a hand!"},
+	-- Sunwheel Downs
+	{role="Millwarden",region="Meadow",name="Hesper Furrowmilde",title="Millwarden of the Sunwheel",portrait="🌾",
+		look={skin="E0AC69",shirt="C9A24E",pants="5D4037",shoes="3E2723",accent="FFE08A",hair="D7CCC8",hat="wayfarer",held="crate",apron="F5E6C8"},
+		greet="The Sunwheel grinds for every oven on the Quay. When she stops, the isles go hungry."},
+	{role="Shepherd",region="Meadow",name="Bram Oatley",title="Downs Shepherd",portrait="🐑",
+		look={skin="C68642",shirt="7CB342",pants="4E342E",shoes="3E2723",accent="F9CC77",hair="5D4037",hat="hood",held="staff",cape="558B2F",beard=true},
+		greet="Boars in the barley again. I'd chase 'em myself if my knees were younger."},
+	{role="SeedSeller",region="Meadow",name="Tilly Sackbright",title="Seed-seller",portrait="🌱",kind="shop",
+		look={skin="FFDBAC",shirt="F06292",pants="6D4C41",shoes="4E342E",accent="AED581",hair="FF8A65",hat="cap",held="crate",apron="FFF3E0"},
+		greet="Tonics, tea and the odd trinket, all grown on the Downs!",
+		shop={{item="Tonic",price=12,amount=1},{item="CookedFish",price=20,amount=1},{item="WarpScrollMeadow",price=360,amount=1}}},
+	-- Brassfall Cay
+	{role="CalderaWatcher",region="Quarry",name="Garrick Slagmere",title="Caldera Watcher",portrait="🌋",
+		look={skin="8D5524",shirt="BF360C",pants="3E2723",shoes="1B1B1B",accent="FF8A3D",hair="212121",hat="goggles",held="pickaxe",beard=true},
+		greet="She's breathing slow today, the Caldera. That's when the mites come up to warm their bellies."},
+	{role="CraneHand",region="Quarry",name="Pim Brassbuckle",title="Crane-hand",portrait="🏗",
+		look={skin="F1C27D",shirt="FFB300",pants="37474F",shoes="263238",accent="546E7A",hair="6D4C41",hat="minerhelm",held="hammer"},
+		greet="The old crane's held together with hope and rivets. Mostly hope."},
+	{role="ToolTrader",region="Quarry",name="Dorra Flintwick",title="Tool-trader",portrait="⛏",kind="shop",
+		look={skin="A0522D",shirt="5D4037",pants="2E2A26",shoes="1E1A16",accent="D4A84B",hair="9E9E9E",hat="cap",held="ledger",apron="8D6E63",spectacles=true},
+		greet="Alloy, dust and a sturdy scroll. Everything a quarry hand needs.",
+		shop={{item="AlloyIngot",price=45,amount=1},{item="ArcaneDust",price=30,amount=1},{item="WarpScrollQuarry",price=360,amount=1}}},
+	-- Skyreach
+	{role="Astronomer",region="Skyreach",name="Aurelie Starling",title="Astronomer of the Observatory",portrait="🔭",
+		look={skin="FFDBAC",shirt="1A237E",pants="283593",shoes="1A1A2E",accent="BFF4FF",hair="ECEFF1",hat="hood",held="scroll",cape="0D1B4A",spectacles=true},
+		greet="From the Observatory you can see every isle at once. And something else, lately. Something moving."},
+	{role="Golemwright",region="Skyreach",name="Tobias Gearwhit",title="Golemwright",portrait="⚙",
+		look={skin="E0AC69",shirt="795548",pants="4E342E",shoes="3E2723",accent="D4A84B",hair="BDBDBD",hat="goggles",held="hammer",apron="A1887F"},
+		greet="Brass golems tick in unison. Find out why and you'll know more than the guild does."},
+	{role="UpdraftSupplier",region="Skyreach",name="Venn Lofthook",title="Updraft Supplier",portrait="🪁",kind="shop",
+		look={skin="C68642",shirt="00838F",pants="263238",shoes="212121",accent="80DEEA",hair="3E2723",hat="feather",held="rod"},
+		greet="Rope, feathers and courage. Two of those I sell.",
+		shop={{item="StormFeather",price=60,amount=1},{item="Tonic",price=15,amount=2},{item="WarpScrollSkyreach",price=1440,amount=1}}},
+	-- Windpine
+	{role="CanopyWarden",region="Windpine",name="Wren Tallbough",title="Canopy Warden",portrait="🍃",
+		look={skin="8D5524",shirt="2E7D32",pants="33691E",shoes="1B5E20",accent="C5E1A5",hair="4E342E",hat="feather",held="staff",cape="1B5E20"},
+		greet="Walk softly. The Aetherheart listens through every root on this isle."},
+	{role="Sawyer",region="Windpine",name="Osric Pinewhistle",title="Grove Sawyer",portrait="🪓",
+		look={skin="F1C27D",shirt="B71C1C",pants="3E2723",shoes="1B1B1B",accent="FFCDD2",hair="BF360C",hat="cap",held="saw",beard=true},
+		greet="I only fell what the Warden marks. The stalkers don't share my manners."},
+	{role="Forager",region="Windpine",name="Fenna Mossglove",title="Forager",portrait="🍄",kind="shop",
+		look={skin="FFDBAC",shirt="827717",pants="5D4037",shoes="4E342E",accent="DCE775",hair="FFB74D",hat="hood",held="crate",cape="9E9D24"},
+		greet="Picked at dawn, sold by noon, and none of it poisonous. Mostly.",
+		shop={{item="MightDraught",price=180,amount=1},{item="Tonic",price=14,amount=2},{item="WarpScrollWindpine",price=1800,amount=1}}},
+	-- Gloomhollow
+	{role="CrystalReader",region="Gloomhollow",name="Sable Quillmoth",title="Crystal-reader",portrait="🔮",
+		look={skin="D1A27A",shirt="311B92",pants="1A1033",shoes="0D0A14",accent="B59CFF",hair="212121",hat="hood",held="lantern",cape="4527A0"},
+		greet="The Voidglass Spire hums a little louder each night. I write down every note."},
+	{role="TunnelForeman",region="Gloomhollow",name="Drogan Ashlamp",title="Tunnel Foreman",portrait="⛑",
+		look={skin="6D4C41",shirt="455A64",pants="263238",shoes="1C1C1C",accent="FFAB40",hair="9E9E9E",hat="helm",held="pickaxe",beard=true},
+		greet="Three tunnels lost to silk this month. I need someone with a sharp blade and a steady lamp."},
+	{role="LanternSeller",region="Gloomhollow",name="Mott Candlewick",title="Lantern-seller",portrait="🏮",kind="shop",
+		look={skin="FFDBAC",shirt="4E342E",pants="3E2723",shoes="212121",accent="FFD54F",hair="FFFFFF",hat="tricorn",held="lantern",spectacles=true},
+		greet="Light's the only currency down here that never loses value.",
+		shop={{item="ArcaneDust",price=28,amount=2},{item="Shard",price=90,amount=1},{item="WarpScrollGloomhollow",price=4800,amount=1}}},
+	-- Tidewater
+	{role="Lightkeeper",region="Tidewater",name="Marisol Brinehart",title="Keeper of the Shoal Light",portrait="🗼",
+		look={skin="C68642",shirt="0277BD",pants="01579B",shoes="263238",accent="FFF59D",hair="3E2723",hat="souwester",held="lantern"},
+		greet="The Shoal Light has never gone dark. Not once in three hundred years. I'd like to keep it that way."},
+	{role="NetMender",region="Tidewater",name="Kel Driftnet",title="Net-mender",portrait="🪢",
+		look={skin="8D5524",shirt="00695C",pants="37474F",shoes="263238",accent="B2DFDB",hair="1B1B1B",hat="tricorn",held="rod",beard=true},
+		greet="Lurkers chew through a net a night. Lanternrays are worth the trouble, mind."},
+	{role="Fishmonger",region="Tidewater",name="Opal Saltreed",title="Fishmonger",portrait="🐟",kind="shop",
+		look={skin="F1C27D",shirt="E1F5FE",pants="0288D1",shoes="01579B",accent="E76F7B",hair="FFCC80",hat="souwester",held="crate",apron="B3E5FC"},
+		greet="Caught this morning, smoked by lunch. Best on the Shoals!",
+		shop={{item="CookedFish",price=18,amount=2},{item="Tonic",price=14,amount=1},{item="WarpScrollTidewater",price=4800,amount=1}}},
+	-- Tempest
+	{role="StormScribe",region="Tempest",name="Thessaly Vaunt",title="Storm-scribe",portrait="⚡",
+		look={skin="FFDBAC",shirt="263238",pants="1C2833",shoes="0B0F14",accent="BFD7FF",hair="CFD8DC",hat="hood",held="scroll",cape="37474F"},
+		greet="Every bolt that strikes the Crown, I record. The pattern is almost a word."},
+	{role="SpireSentinel",region="Tempest",name="Captain Rook Halberd",title="Spire Sentinel",portrait="🛡",
+		look={skin="A0522D",shirt="37474F",pants="263238",shoes="1C1C1C",accent="90CAF9",hair="1B1B1B",hat="helm",held="sword",cape="1565C0",beard=true},
+		greet="Hold the line, hold the spire. Do you hold a blade, or just your breath?"},
+	{role="Stormglazier",region="Tempest",name="Ivo Sparkwright",title="Stormglazier",portrait="💠",kind="shop",
+		look={skin="E0AC69",shirt="5C6BC0",pants="283593",shoes="1A237E",accent="E1F5FE",hair="FFEE58",hat="goggles",held="ledger"},
+		greet="Stormglass, blown in lightning. Mind your fingers.",
+		shop={{item="Stormglass",price=220,amount=1},{item="MightDraught",price=200,amount=1},{item="WarpScrollTempest",price=10800,amount=1}}},
+	-- The Shattered Crown
+	{role="CrownArchivist",region="ShatteredCrown",name="Seraphine Gildmourn",title="Crown Archivist",portrait="👑",
+		look={skin="D1A27A",shirt="6A1B9A",pants="38006B",shoes="1A0033",accent="F2D27A",hair="FFF8E1",hat="tophat",held="scroll",cape="4A148C"},
+		greet="Every shard of the Crown remembers the hand that broke it. I intend to learn whose."},
+	{role="Shardkeeper",region="ShatteredCrown",name="Halvard Riftwatch",title="Warden of the Rift",portrait="🗡",
+		look={skin="8D5524",shirt="4A148C",pants="1A0033",shoes="0D0014",accent="CE93D8",hair="E0E0E0",hat="helm",held="sword",cape="7B1FA2",beard=true},
+		greet="The rift spits out horrors every hour. I count them. I'd rather count fewer."},
+	{role="RelicBroker",region="ShatteredCrown",name="Nim Glintwright",title="Relic Broker",portrait="💎",kind="shop",
+		look={skin="FFDBAC",shirt="F9A825",pants="4E342E",shoes="3E2723",accent="FFF59D",hair="5D4037",hat="feather",held="ledger",spectacles=true},
+		greet="Relics, shards, curios. Nothing cursed. Probably.",
+		shop={{item="Stormglass",price=200,amount=2},{item="Shard",price=80,amount=2},{item="WarpScrollShatteredCrown",price=24000,amount=1}}},
+}
+RA.Folk = folk
+RA.FolkByRole = {}
+for _, f in ipairs(folk) do RA.FolkByRole[f.role] = f end
+
+------------------------------------------------------------------------------
+-- Regional quest chains (appended to Data.Quests; giver = folk role).
+------------------------------------------------------------------------------
+local function ql(...) return {...} end
+local function K(m, n) return {kind="kills",monster=m,count=n} end
+local function H(i, n) return {kind="have",item=i,count=n,consume=true} end
+local function Cl(i, n) return {kind="collect",item=i,count=n} end
+local function G(r, n) return {kind="gather",region=r,count=n} end
+local function TALK(role) return {kind="talk",npc=role} end
+local function VISIT(id) return {kind="visit",landmark=id} end
+local function Q(id) return {kind="quest",quest=id} end
+local function LV(skill, n) return {kind="level",skill=skill,level=n} end
+local EXCL = {"Dungeoneering","Carpentry"}
+RA.Quests = {
+	{id="SkywayCharter",title="Charting the Skyway",giver="WarpKeeper",region="Hub",
+		story="Ilsabet wants a fresh wayfarer to walk the Quay's threads: meet the Lamplighter and survey the Compass Spire.",
+		requires=ql({kind="contracts",count=1}),objectives=ql(TALK("Lamplighter"),VISIT("CompassSpire")),
+		rewards={coins=300,points=1,items={WarpScrollMeadow=1}}},
+	{id="LampsOfTheQuay",title="Lamps of the Quay",giver="Lamplighter",region="Hub",
+		story="Corwin needs timber for new posts and ore for lamp brackets before the Quay goes dark.",
+		requires=ql(Q("SkywayCharter")),objectives=ql(H("Timber",15),H("Ore",10)),
+		rewards={coins=400,points=1,lamp={xp=500,skills={"Woodcutting","Mining"}}}},
+	{id="SunwheelTurns",title="The Sunwheel Turns",giver="Millwarden",region="Meadow",
+		story="Hesper's mill has seized. Survey the Sunwheel, bring sunwheat for the stones and fetch Bram's help with the sails.",
+		requires=ql({kind="contracts",count=2}),objectives=ql(VISIT("Sunwheel"),Cl("Sunwheat",30),TALK("Shepherd")),
+		rewards={coins=600,points=1,xp={Farming=800}}},
+	{id="BoarsInTheBarley",title="Boars in the Barley",giver="Shepherd",region="Meadow",
+		story="Bram's barley rows are trampled flat. Drive the boars off and bring back hides for new sail-cloth.",
+		requires=ql(Q("SunwheelTurns")),objectives=ql(K("BramblebackBoar",12),H("BeastHide",3)),
+		rewards={coins=700,points=1,items={MightDraught=1}}},
+	{id="MillersFeast",title="The Miller's Feast",giver="Millwarden",region="Meadow",
+		story="With the Sunwheel turning again, Hesper throws a harvest feast. She needs sunwheat and herbs for the tables.",
+		requires=ql(Q("BoarsInTheBarley")),objectives=ql(H("Sunwheat",40),H("Herb",20)),
+		rewards={coins=900,points=2,lamp={xp=1200,skills={"Farming","Cooking"}},unlock={warp="Meadow"}}},
+	{id="CalderaWatch",title="Caldera Watch",giver="CalderaWatcher",region="Quarry",
+		story="Garrick needs eyes on the Ember Caldera while the cinder mites swarm its rim.",
+		requires=ql({kind="contracts",count=3}),objectives=ql(VISIT("EmberCaldera"),K("CinderMite",10)),
+		rewards={coins=800,points=1,xp={Mining=1000}}},
+	{id="CraneRepairs",title="Rivets and Hope",giver="CraneHand",region="Quarry",
+		story="Pim's crane needs alloy rivets and a load of fresh ore to test the winch. Garrick signs off on the lift.",
+		requires=ql({kind="contracts",count=3}),objectives=ql(H("AlloyIngot",5),Cl("Ore",60),TALK("CalderaWatcher")),
+		rewards={coins=900,points=1,unlock={warp="Quarry"}}},
+	{id="SlagAndEmber",title="Slag and Ember",giver="CalderaWatcher",region="Quarry",
+		story="The crawlers are tunnelling under the Caldera. Thin them and bring brassite to shore up the vents.",
+		requires=ql(Q("CalderaWatch"),Q("CraneRepairs"),LV("Mining",15)),objectives=ql(K("ShaleCrawler",20),H("Brassite",25)),
+		rewards={coins=1200,points=2,lamp={xp=2000,skills={"Mining","Smithing"}}}},
+	{id="LensOfTheHeights",title="Lens of the Heights",giver="Astronomer",region="Skyreach",
+		story="Aurelie's great lens is fogged with golem grit. Survey the Observatory and gather around the heights while she cleans it.",
+		requires=ql({kind="contracts",count=6}),objectives=ql(VISIT("SunkenObservatory"),G("Skyreach",15)),
+		rewards={coins=1200,points=1,unlock={warp="Skyreach"}}},
+	{id="TickingHearts",title="Ticking Hearts",giver="Golemwright",region="Skyreach",
+		story="Tobias wants to hear a golem's heart stop. Break a few, then tell Aurelie what the rhythm sounded like.",
+		requires=ql({kind="contracts",count=6},LV("Combat",15)),objectives=ql(K("BrassGolem",8),TALK("Astronomer")),
+		rewards={coins=1500,points=1,xp={Smithing=1500}}},
+	{id="StarChart",title="The Star Chart",giver="Astronomer",region="Skyreach",
+		story="Whatever moves past the Observatory rides the updrafts. Harriers fly the same paths; follow them and pluck their feathers.",
+		requires=ql(Q("LensOfTheHeights"),Q("TickingHearts")),objectives=ql(K("StormHarrier",10),Cl("StormFeather",15)),
+		rewards={coins=2000,points=2,lamp={xp=3000,skills={"Combat","Mining","Smithing"}}}},
+	{id="HeartOfTheGrove",title="Heart of the Grove",giver="CanopyWarden",region="Windpine",
+		story="Wren asks you to lay a hand on the Aetherheart and gather from the grove so it knows your name.",
+		requires=ql(LV("Woodcutting",10)),objectives=ql(VISIT("AetherheartTree"),G("Windpine",25)),
+		rewards={coins=1200,points=1,xp={Woodcutting=1500},unlock={warp="Windpine"}}},
+	{id="StalkerInTheRoots",title="Stalker in the Roots",giver="Sawyer",region="Windpine",
+		story="Osric's crews won't work while bark stalkers lurk. Clear them and stack emberoak for the lodge.",
+		requires=ql(LV("Woodcutting",10)),objectives=ql(K("BarkStalker",10),Cl("EmberoakLog",30)),
+		rewards={coins=1500,points=1,items={MightDraught=2}}},
+	{id="WindsongOath",title="The Windsong Oath",giver="CanopyWarden",region="Windpine",
+		story="Gale sprites have stolen the grove's song. Scatter them, then let Osric swear the woodcutters' oath with you.",
+		requires=ql(Q("HeartOfTheGrove"),Q("StalkerInTheRoots")),objectives=ql(K("GaleSprite",15),TALK("Sawyer")),
+		rewards={coins=2000,points=2,lamp={xp=3000,skills={"Woodcutting","Farming"}}}},
+	{id="VoidglassSpire",title="The Voidglass Spire",giver="CrystalReader",region="Gloomhollow",
+		story="Sable needs a reading taken at the Spire's foot and voidstone to tune her lenses.",
+		requires=ql(LV("Mining",30),LV("Combat",15)),objectives=ql(VISIT("VoidglassSpire"),Cl("Voidstone",25)),
+		rewards={coins=2500,points=1,unlock={warp="Gloomhollow"}}},
+	{id="SilkAndShadow",title="Silk and Shadow",giver="TunnelForeman",region="Gloomhollow",
+		story="Drogan's tunnels are choked with web. Cut the gloomfangs down and bring their silk for safety lines.",
+		requires=ql(LV("Mining",30),LV("Combat",15)),objectives=ql(K("GloomfangSpider",15),H("SpiderSilk",8)),
+		rewards={coins=2500,points=1,xp={Mining=3000}}},
+	{id="EchoesOfTheWisp",title="Echoes of the Wisp",giver="CrystalReader",region="Gloomhollow",
+		story="The Spire's hum is the wisps singing back. Silence a dozen and tell Drogan the tunnels are safe.",
+		requires=ql(Q("VoidglassSpire"),Q("SilkAndShadow")),objectives=ql(K("VoidWisp",12),TALK("TunnelForeman")),
+		rewards={coins=3500,points=2,lamp={xp=5000,exclude=EXCL}}},
+	{id="LightOverTheShoals",title="Light over the Shoals",giver="Lightkeeper",region="Tidewater",
+		story="Marisol's lamp oil comes from the shoals themselves. Climb to the Shoal Light and harvest the lagoons.",
+		requires=ql(LV("Fishing",30)),objectives=ql(VISIT("ShoalLight"),G("Tidewater",20)),
+		rewards={coins=2500,points=1,unlock={warp="Tidewater"}}},
+	{id="NetsAndLurkers",title="Nets and Lurkers",giver="NetMender",region="Tidewater",
+		story="Kel's nets need saving from the lurkers, and the lanternrays won't land themselves. Tell Marisol when the catch is in.",
+		requires=ql(LV("Fishing",30)),objectives=ql(K("ReefLurker",10),Cl("Lanternray",15),TALK("Lightkeeper")),
+		rewards={coins=3000,points=2,xp={Fishing=3000}}},
+	{id="EyeOfTheStorm",title="Eye of the Storm",giver="StormScribe",region="Tempest",
+		story="Thessaly must copy the glyphs at the Storm Crown, but wraiths circle it. Survey the Crown and drive them off.",
+		requires=ql(LV("Combat",40)),objectives=ql(VISIT("StormCrown"),K("TempestWraith",10)),
+		rewards={coins=5000,points=1,unlock={warp="Tempest"}}},
+	{id="SentinelsWatch",title="The Sentinel's Watch",giver="SpireSentinel",region="Tempest",
+		story="Rook wants proof you can stand where the starborn stand. Fell three, then report to the Storm-scribe.",
+		requires=ql(LV("Combat",40)),objectives=ql(K("StarbornSentinel",3),TALK("StormScribe")),
+		rewards={coins=6000,points=2,lamp={xp=6000,exclude=EXCL}}},
+	{id="ShardsOfTheCrown",title="Shards of the Crown",giver="CrownArchivist",region="ShatteredCrown",
+		story="Seraphine catalogues the Broken Crown shard by shard. Survey it, and keep the riftmaws off her ledgers.",
+		requires=ql(Q("CrownOfTempest"),LV("Combat",60)),objectives=ql(VISIT("BrokenCrown"),K("RiftmawStalker",10)),
+		rewards={coins=10000,points=2,unlock={warp="ShatteredCrown"}}},
+	{id="VigilAtTheRift",title="Vigil at the Rift",giver="Shardkeeper",region="ShatteredCrown",
+		story="Halvard's count of rift-horrors grows. Shatter the glass seers and bring his tally to the Archivist.",
+		requires=ql(Q("CrownOfTempest"),LV("Combat",60)),objectives=ql(K("ShardglassSeer",8),TALK("CrownArchivist")),
+		rewards={coins=8000,points=2,lamp={xp=10000,exclude=EXCL}}},
+}
+RA.QuestById = {}
+RA.QuestsByGiver = {}
+for _, q in ipairs(RA.Quests) do
+	q.line, q.regional = "side", true -- Journal groups them with side quests; `regional` marks the chain
+	table.insert(Data.Quests, q)
+	q.index = #Data.Quests
+	Data.QuestById[q.id] = q
+	RA.QuestById[q.id] = q
+	RA.QuestsByGiver[q.giver] = RA.QuestsByGiver[q.giver] or {}
+	table.insert(RA.QuestsByGiver[q.giver], q)
+end
+-- Human-readable text for the new objective kinds.
+local describe = Data.describeCheck
+function Data.describeCheck(o)
+	if type(o) == "table" and o.kind == "talk" then
+		local f = RA.FolkByRole[o.npc]
+		return "Speak with " .. (if f then f.name else tostring(o.npc))
+	elseif type(o) == "table" and o.kind == "visit" then
+		local l = RA.LandmarkById[o.landmark]
+		return "Survey " .. (if l then l.name else tostring(o.landmark))
+	end
+	return describe(o)
+end
+-- Claim items a giver's dialogue may send (quest id, or "id:Skill" for lamps;
+-- open lamps offer three common picks here, every skill from the Journal).
+function RA.claimItems(q)
+	local out = {}
+	local lamp = q.rewards.lamp
+	if not lamp then table.insert(out, q.id); return out end
+	for _, skill in ipairs(lamp.skills or {"Combat", "Mining", "Woodcutting"}) do table.insert(out, q.id .. ":" .. skill) end
+	return out
+end
+
+------------------------------------------------------------------------------
+-- Snapshot helpers for dialogue conditions and quest markers
+-- (snapshot.regionQuests {accepted, talked, visited, warps} and snapshot.journal).
+------------------------------------------------------------------------------
+local function tab(v) return if type(v) == "table" then v else {} end
+local function rq(s) return tab(tab(s).regionQuests) end
+local function questEntry(s, q)
+	local entry = tab(tab(tab(tab(s).journal).quests)[q.index])
+	return if entry.id == q.id then entry else {}
+end
+-- "done" | "ready" | "active" | "offer" | "locked"
+function RA.questStatus(s, q)
+	local e = questEntry(s, q)
+	if e.done then return "done" end
+	if tab(rq(s).accepted)[q.id] then return if e.ready then "ready" else "active" end
+	if e.available then return "offer" end
+	return "locked"
+end
+local function wantsTalk(s, role)
+	if tab(rq(s).talked)[role] then return false end
+	for _, q in ipairs(RA.Quests) do
+		if RA.questStatus(s, q) == "active" or RA.questStatus(s, q) == "ready" then
+			for _, o in ipairs(q.objectives) do if o.kind == "talk" and o.npc == role then return true end end
+		end
+	end
+	return false
+end
+-- Marker over an NPC's head: "ready" (gold ?), "offer" (gold !), "talk" (gold …),
+-- "active" (grey ?) or nil.
+function RA.marker(s, role)
+	local best
+	for _, q in ipairs(RA.QuestsByGiver[role] or {}) do
+		local st = RA.questStatus(s, q)
+		if st == "ready" then return "ready" end
+		if st == "offer" then best = "offer" elseif st == "active" and not best then best = "active" end
+	end
+	if best == "offer" then return best end
+	if wantsTalk(s, role) then return "talk" end
+	return best
+end
+
+------------------------------------------------------------------------------
+-- Dialogue: every folk NPC is a Townsfolk entry (anchor-only placement) with
+-- generated quest, shop and warp nodes.
+------------------------------------------------------------------------------
+local T = Data.Townsfolk
+T.RegionFolkOrder = {}
+local verbs = {rqAccept={}, rqClaim={}, rqTalk={}, rqBuy={}, warpTo={}, warpBuy={}, warpLearn={}}
+local farewell = {label="Farewell", close=true}
+local function cond(id, f) T.Conditions[id] = f; return id end
+for _, f in ipairs(folk) do
+	local nodes, hello = {}, {}
+	local role = f.role
+	verbs.rqTalk[role] = true
+	table.insert(hello, {label="I was sent to speak with you",verb="rqTalk",item=role,when=cond("rqTalk_" .. role, function(s) return wantsTalk(s, role) end)})
+	for _, q in ipairs(RA.QuestsByGiver[role] or {}) do
+		local nodeId = "quest_" .. q.id
+		verbs.rqAccept[q.id] = true
+		table.insert(hello, {label=string.sub("Quest: " .. q.title, 1, 44), to=nodeId,
+			when=cond("rqOpen_" .. q.id, function(s) local st = RA.questStatus(s, q); return st ~= "locked" and st ~= "done" end)})
+		local opts = {
+			{label="I'll do it",verb="rqAccept",item=q.id,when=cond("rqOffer_" .. q.id, function(s) return RA.questStatus(s, q) == "offer" end)},
+		}
+		for _, claim in ipairs(RA.claimItems(q)) do
+			verbs.rqClaim[claim] = true
+			local skill = string.match(claim, ":(%w+)$")
+			table.insert(opts, {label=if skill then "Hand in (lamp: " .. skill .. ")" else "Hand in the quest",verb="rqClaim",item=claim,
+				when=cond("rqReady_" .. claim, function(s) return RA.questStatus(s, q) == "ready" end)})
+		end
+		table.insert(opts, {label="How am I doing?", tip="quest"})
+		table.insert(opts, {label="Back", to="hello"})
+		nodes[nodeId] = {text=q.story, options=opts}
+	end
+	if f.shop then
+		local shopOpts = {}
+		for i, offer in ipairs(f.shop) do
+			local key = role .. ":" .. i
+			verbs.rqBuy[key] = true
+			local def = Data.Items[offer.item]
+			table.insert(shopOpts, {label=string.sub("Buy " .. (if offer.amount > 1 then offer.amount .. "× " else "") .. (def and def.name or offer.item) .. " (" .. offer.price .. "c)", 1, 44),verb="rqBuy",item=key})
+		end
+		table.insert(shopOpts, {label="Back", to="hello"})
+		nodes.shop = {text="Have a look. Coins up front, no haggling.", options=shopOpts}
+		table.insert(hello, {label="Show me your wares", to="shop"})
+	end
+	if f.kind == "warp" then
+		local warpOpts, learnOpts, buyOpts = {}, {}, {}
+		for _, w in ipairs(RA.Warps) do
+			local region = w.region
+			local name = Data.RegionById[region].name
+			verbs.warpTo[region], verbs.warpBuy[region], verbs.warpLearn[region] = true, true, true
+			table.insert(warpOpts, {label=string.sub("Warp to " .. name, 1, 44),verb="warpTo",item=region,
+				when=cond("warpKnown_" .. region, function(s) return tab(rq(s).warps)[region] == true end)})
+			table.insert(learnOpts, {label=string.sub("Read: " .. name, 1, 44),verb="warpLearn",item=region,
+				when=cond("warpScroll_" .. region, function(s) return tab(rq(s).warps)[region] ~= true and (tonumber(tab(tab(s).items)[w.scroll]) or 0) > 0 end)})
+			table.insert(buyOpts, {label=string.sub("Scroll: " .. name .. " (" .. w.price .. "c)", 1, 44),verb="warpBuy",item=region,
+				when=cond("warpUnknown_" .. region, function(s) return tab(rq(s).warps)[region] ~= true end)})
+		end
+		table.insert(warpOpts, {label="Back", to="hello"})
+		table.insert(learnOpts, {label="Back", to="hello"})
+		table.insert(buyOpts, {label="Back", to="hello"})
+		nodes.warps = {text="Name the thread and I'll pull you along it.", options=warpOpts}
+		nodes.learn = {text="Hand me a scroll and read the name aloud. Once learned, never forgotten.", options=learnOpts}
+		nodes.buy = {text="Each scroll is spun from that isle's own wind. Priced accordingly.", options=buyOpts}
+		table.insert(hello, {label="Warp me somewhere", to="warps"})
+		table.insert(hello, {label="Learn a warp scroll", to="learn"})
+		table.insert(hello, {label="Buy a warp scroll", to="buy"})
+	end
+	local art = RA.Regions[f.region]
+	if art then table.insert(hello, {label=string.sub("Where is " .. art.landmark.name .. "?", 1, 44),waypoint={"anchor:Waypoint_Landmark_" .. art.landmark.id,"region:" .. f.region}}) end
+	table.insert(hello, farewell)
+	nodes.hello = {text=f.greet, options=hello}
+	T.NPCs[role] = {name=f.name,title=f.title,region=f.region,portrait=f.portrait,look=f.look,start="hello",nodes=nodes,anchorOnly=true,folk=f.kind or "quest"}
+	table.insert(T.RegionFolkOrder, role)
+end
+for verb, items in pairs(verbs) do T.Verbs[verb] = {item=items} end
+-- Region folk stand only on their Anchor_NPC_<Role> (World Art section of world.server.lua).
+local placement = T.placement
+function T.placement(role, scan)
+	local def = T.NPCs[role]
+	if def and def.anchorOnly then
+		local anchors = scan.anchors["Anchor_NPC_" .. role]
+		return if anchors and anchors[1] then {source="anchor", part=anchors[1]} else nil
+	end
+	return placement(role, scan)
+end
+end
+-- <<< END World Art & Regions <<<
+------------------------------------------------------------------------------
+
 return Data

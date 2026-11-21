@@ -35,7 +35,11 @@ ok(T ~= nil, "Townsfolk section present")
 local ACTIONS = {"to", "atlas", "waypoint", "tip", "verb", "close"}
 ok(#T.Order >= 8 and #T.Order <= 16, "8-16 townsfolk (three regional Slayer masters)")
 local names, roles = {}, {}
-for _, role in ipairs(T.Order) do
+-- Core townsfolk plus the World Art regional folk (anchor-only, §30).
+local ALL = table.clone(T.Order)
+for _, role in ipairs(T.RegionFolkOrder or {}) do table.insert(ALL, role) end
+ok(#(T.RegionFolkOrder or {}) >= 18, "regional folk present (" .. #(T.RegionFolkOrder or {}) .. ")")
+for _, role in ipairs(ALL) do
 	ok(not roles[role], "unique role " .. role)
 	roles[role] = true
 	local def = T.NPCs[role]
@@ -422,7 +426,7 @@ local folder = workspaceDouble:FindFirstChild("Townsfolk")
 ok(folder ~= nil, "Townsfolk folder in workspace")
 eq(#folder:GetChildren(), 0, "nobody stands anywhere before islands exist")
 local stash = serverStorage:FindFirstChild("TownsfolkUnplaced")
-eq(#stash:GetChildren(), #T.Order, "every NPC built and waiting")
+eq(#stash:GetChildren(), #T.Order + #(T.RegionFolkOrder or {}), "every NPC built and waiting")
 local function npc(role)
 	for _, parent in ipairs({folder, stash}) do
 		for _, m in ipairs(parent:GetChildren()) do if m:GetAttribute("TownsfolkRole") == role then return m end end
@@ -451,7 +455,7 @@ for _, role in ipairs(T.Order) do
 end
 -- Distinct silhouettes: no two NPCs share the same hat + held + shirt.
 local looks = {}
-for _, role in ipairs(T.Order) do
+for _, role in ipairs(ALL) do
 	local l = T.NPCs[role].look
 	local key = l.hat .. "/" .. l.held .. "/" .. l.shirt
 	ok(not looks[key], "distinct outfit " .. role)

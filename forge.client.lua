@@ -43,15 +43,18 @@ local UserInputService = game:GetService("UserInputService")
 local mobile = false
 pcall(function() mobile = UserInputService.TouchEnabled == true and UserInputService.KeyboardEnabled ~= true end)
 local LIMITS = if mobile then {
-	templates = 24, templateTriangles = 24000, instances = 400, placedTriangles = 150000, failures = 3,
+	templates = 24, templateTriangles = 30000, instances = 400, placedTriangles = 150000, failures = 3,
 } else {
-	templates = 48, -- distinct (shape, tint) EditableMeshes kept alive
-	templateTriangles = 45000, -- triangles across all cached EditableMeshes
+	templates = 64, -- distinct (shape, tint) EditableMeshes kept alive (§30: island hulls, bridges, landmarks)
+	templateTriangles = 72000, -- triangles across all cached EditableMeshes
 	instances = 900, -- placed MeshPart clones near the player
 	placedTriangles = 600000, -- triangles across all placed clones
 	failures = 3, -- template build failures before the forge stops trying
 }
 local BUILD_RADIUS, UNLOAD_RADIUS = if mobile then 250 else 400, if mobile then 310 else 480
+-- Shapes seen from afar (island hulls, bridges, landmarks; catalog meta `range`)
+-- forge within their own range, capped on phones; release at 1.2x that range.
+local RANGE_CAP = if mobile then 900 else 1600
 local STEP_SECONDS = 1
 local BACKOFF_FIRST, BACKOFF_MAX = 2, 64 -- seconds between retries of a budget-skipped part
 local OWN_LIMIT = 40 -- a ShapeOwnsModel host's Model must be this small (a prop, not an island)
@@ -86,6 +89,19 @@ local function lookup(shapeName)
 		if type(data) == "table" and type(data.vertices) == "table" and type(data.faces) == "table" then return data, catalog end
 	end
 	return nil
+end
+
+-- Build radius for a tagged part (catalog `range` for far-seen shapes).
+local rangeCache = setmetatable({}, {__mode = "k"})
+local function buildRadius(part)
+	local cached = rangeCache[part]
+	if cached then return cached end
+	local radius = BUILD_RADIUS
+	local shapeName = part:GetAttribute("Shape")
+	local data = type(shapeName) == "string" and lookup(shapeName)
+	if data and type(data.range) == "number" and data.range > BUILD_RADIUS then radius = math.min(data.range, RANGE_CAP) end
+	rangeCache[part] = radius
+	return radius
 end
 
 -- Final catalog shape name for a tagged part (resource slot, then alias).
@@ -532,7 +548,7 @@ local function step()
 			if not part.Parent then
 				registry[part] = nil
 				release(part)
-			elseif placed[part] and (part.CFrame.Position - origin).Magnitude > UNLOAD_RADIUS then
+			elseif placed[part] and (part.CFrame.Position - origin).Magnitude > math.max(UNLOAD_RADIUS, buildRadius(part) * 1.2) then
 				release(part)
 			end
 		end
@@ -540,7 +556,7 @@ local function step()
 		for part in pairs(registry) do
 			if not placed[part] and not final[part] and not waiting(part) then
 				local distance = (part.CFrame.Position - origin).Magnitude
-				if distance <= BUILD_RADIUS then table.insert(near, {part, distance}) end
+				if distance <= buildRadius(part) then table.insert(near, {part, distance}) end
 			end
 		end
 		-- Nearest first, so budgets are spent on what the player sees.
@@ -563,7 +579,7 @@ local function consider(part)
 			if name ~= "Shape" and name ~= "ShapeScale" and name ~= "ShapeFit" and name ~= "Tint" and name ~= "ShapeOwnsModel"
 				and name ~= "ShapeBox" and name ~= "ShapeBoxOffset" then return end
 			release(part)
-			final[part], backoff[part] = nil, nil
+			final[part], backoff[part], rangeCache[part] = nil, nil, nil
 			if type(part:GetAttribute("Shape")) ~= "string" then registry[part] = nil end
 			task.defer(step)
 		end)

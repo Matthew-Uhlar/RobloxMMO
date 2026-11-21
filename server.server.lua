@@ -167,6 +167,8 @@ local Logs={verbs={commissionClaim=true,commissionClaimAll=true,forgeBuy=true,lo
 local Crafting={verbs={craftStation=true,craftBatch=true,craftStop=true},jobs={},visits={},seq={}}
 -- Lairs (instanced lair bosses: altars, fees, kill rewards); filled in by the Lairs block after Endgame.
 local Lairs={verbs={lairEnter=true,lairLeave=true}}
+-- World Art & Regions (regional quests, shops, warp scrolls); filled in by the Regions block before perform().
+local Regions={verbs={rqAccept=true,rqTalk=true,rqClaim=true,rqBuy=true,warpBuy=true,warpLearn=true,warpTo=true,landmark=true},warpAt={}}
 -- One-time coins for each newly reached skill level.
 local function levelCoins(p,skill,newLevel)
 	p.levelRewards=p.levelRewards or {}
@@ -4422,6 +4424,7 @@ local function snapshot(player,message)
 		crafting=Crafting.state and Crafting.state(player,p), -- Crafting: Workshop › Crafting page state
 		lairs=Lairs.state and Lairs.state(player,p), -- Lairs: Hunt › Bosses (kill counts, personal bests, uniques)
 		exploration=Explore.state(player,p), -- Exploration & Factions: Journal > Motes / Factions (full when changed, else {rev, resetIn, switchIn, compact})
+		regionQuests=Regions.state(p), -- World Art & Regions: accepted/talked/visited/warps
 		logs=Logs.state(player,p)} -- Commissions & Logs: Journal > Commissions / Collection Log / Museum (full when changed, else {rev, resetIn, compact})
 end
 -- Prayer & Thieving: drain-loop notices (prayer points ran out).
@@ -4510,6 +4513,7 @@ local function migrate(profile)
 	if Crafting.migrate then Crafting.migrate(profile) end -- Crafting: p.crafting {made, shattered}
 	Explore.migrate(profile) -- Exploration & Factions: p.motes, p.factions, p.perkStats.motes
 	if Lairs.migrate then Lairs.migrate(profile) end -- Lairs: kill counts, personal bests, uniques
+	if Regions.migrate then Regions.migrate(profile) end -- World Art & Regions: p.regionQuests
 end
 -- Clears every per-player table and ends this player's session slot.
 -- Sea creatures: a successful Fishing gather may hook one (Data.rollSeaCreature).
@@ -6202,6 +6206,200 @@ do
 		while task.wait(CR.TICK) do Crafting.tick(os.clock()) end
 	end)
 end
+------------------------------------------------------------------------------
+-- World Art & Regions (World Art & Regions team; self-contained section,
+-- docs/DEPTH-CONTRACT.md §30). Regional quest chains on the Journal framework,
+-- regional shops and warp scrolls. Profile: p.regionQuests = {accepted={[quest]=true},
+-- talked={[role]=true}, visited={[landmark]=true}, warps={[region]=true}} (bounded
+-- to known ids by Regions.migrate, so saves stay rejoin-safe). Verbs:
+--   rqAccept <quest>          at its giver (within RA.TALK_RADIUS), requirements met
+--   rqTalk <role>             at that NPC; records the talk for accepted quests that need it
+--   rqClaim <quest[:Skill]>   at its giver; Journal.claimQuest (lamps name a skill)
+--   rqBuy <role:i>            regional shop offer i, at that shopkeeper
+--   warpBuy / warpLearn <region>   at the Warp Keeper: buy a scroll / read one (learn the warp)
+--   warpTo <region>           at the Warp Keeper: travel to the region's entrance anchor
+--                             (learned warp, region access, travel gate, cooldown)
+--   landmark <id>             prompt-only (IsleAction "landmark"): survey a landmark
+-- Quests with a giver must be accepted before any claim (NPC or Journal).
+------------------------------------------------------------------------------
+do
+	local RA=Data.RegionArt
+	local function bucket(p)
+		local r=p.regionQuests
+		if type(r)~="table" then r={} p.regionQuests=r end
+		for _,key in ipairs({"accepted","talked","visited","warps"}) do if type(r[key])~="table" then r[key]={} end end
+		return r
+	end
+	function Regions.migrate(p)
+		local old=type(p.regionQuests)=="table" and p.regionQuests or {}
+		local r={accepted={},talked={},visited={},warps={}}
+		for id,v in pairs(type(old.accepted)=="table" and old.accepted or {}) do if v==true and RA.QuestById[id] then r.accepted[id]=true end end
+		for role,v in pairs(type(old.talked)=="table" and old.talked or {}) do if v==true and RA.FolkByRole[role] then r.talked[role]=true end end
+		for id,v in pairs(type(old.visited)=="table" and old.visited or {}) do if v==true and RA.LandmarkById[id] then r.visited[id]=true end end
+		for region,v in pairs(type(old.warps)=="table" and old.warps or {}) do if v==true and RA.WarpByRegion[region] then r.warps[region]=true end end
+		p.regionQuests=r
+	end
+	-- Warps known: learned scrolls plus quest unlocks (derived, never stored twice).
+	function Regions.warps(p)
+		local out=table.clone(bucket(p).warps)
+		for id in pairs(p.questsDone or {}) do
+			local q=Data.QuestById[id]
+			local warp=q and q.rewards.unlock and q.rewards.unlock.warp
+			if warp then out[warp]=true end
+		end
+		return out
+	end
+	function Regions.state(p)
+		local r=bucket(p)
+		return {accepted=table.clone(r.accepted),talked=table.clone(r.talked),visited=table.clone(r.visited),warps=Regions.warps(p)}
+	end
+	-- New objective kinds on the Journal (talk / visit).
+	local measure=Journal.measure
+	function Journal.measure(p,o)
+		if o.kind=="talk" then return if bucket(p).talked[o.npc] then 1 else 0,1
+		elseif o.kind=="visit" then return if bucket(p).visited[o.landmark] then 1 else 0,1 end
+		return measure(p,o)
+	end
+	-- Giver quests are accepted before they can be handed in (NPC or Journal).
+	local claim=Journal.claimQuest
+	function Journal.claimQuest(p,item)
+		local id=string.match(item or "","^(%w+)")
+		local q=id and RA.QuestById[id]
+		if q and not p.questsDone[id] and not bucket(p).accepted[id] then
+			return "Speak with "..RA.FolkByRole[q.giver].name.." to take on "..q.title.." first."
+		end
+		local result=claim(p,item)
+		if q and p.questsDone[id] then
+			-- Talks only count for the quests that asked; clear the ones no open quest needs.
+			local r=bucket(p)
+			for role in pairs(r.talked) do
+				local needed=false
+				for _,other in ipairs(RA.Quests) do
+					if r.accepted[other.id] and not p.questsDone[other.id] then
+						for _,o in ipairs(other.objectives) do if o.kind=="talk" and o.npc==role then needed=true end end
+					end
+				end
+				if not needed then r.talked[role]=nil end
+			end
+		end
+		return result
+	end
+	-- Live NPC position by role (Workspace.Townsfolk, placed by npc.server.lua).
+	local function npcNear(player,role)
+		local root=player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+		local folder=workspace:FindFirstChild("Townsfolk")
+		if not root or not folder then return false end
+		for _,model in ipairs(folder:GetChildren()) do
+			if model:GetAttribute("TownsfolkRole")==role then
+				local npcRoot=model:FindFirstChild("HumanoidRootPart")
+				if npcRoot and (npcRoot.Position-root.Position).Magnitude<=RA.TALK_RADIUS then return true end
+			end
+		end
+		return false
+	end
+	local function away(role)
+		local f=RA.FolkByRole[role]
+		return "Find "..(if f then f.name else "them").." to do that."
+	end
+	local function itemName(id) local def=Data.Items[id]; return if def then def.name else tostring(id) end
+	function Regions.action(player,p,verb,item,prompt)
+		local r=bucket(p)
+		if verb=="landmark" then
+			local l=type(item)=="string" and RA.LandmarkById[item]
+			if not prompt or not l then return "Survey a landmark in person." end
+			if r.visited[l.id] then return l.name.." is already in your survey log." end
+			r.visited[l.id]=true
+			p.started=true
+			return "Surveyed "..l.name.."   ·   "..RA.Regions[l.region].epithet
+		elseif verb=="rqAccept" then
+			local q=type(item)=="string" and RA.QuestById[item]
+			if not q then return "That quest is not on offer." end
+			if p.questsDone[q.id] then return q.title.." is already complete." end
+			if r.accepted[q.id] then return q.title.." is already in your Journal." end
+			if not npcNear(player,q.giver) then return away(q.giver) end
+			local ok,missing=Journal.met(p,q.requires)
+			if not ok then return q.title.." requires: "..Data.describeCheck(missing).."." end
+			r.accepted[q.id]=true
+			p.started=true
+			local steps={}
+			for _,o in ipairs(q.objectives) do table.insert(steps,Data.describeCheck(o)) end
+			return "Quest accepted • "..q.title..": "..table.concat(steps,", ").."."
+		elseif verb=="rqTalk" then
+			local f=type(item)=="string" and RA.FolkByRole[item]
+			if not f then return "Nobody by that name." end
+			if not npcNear(player,f.role) then return away(f.role) end
+			local wanted=false
+			for _,q in ipairs(RA.Quests) do
+				if r.accepted[q.id] and not p.questsDone[q.id] then
+					for _,o in ipairs(q.objectives) do if o.kind=="talk" and o.npc==f.role then wanted=true end end
+				end
+			end
+			if not wanted then return f.name.." nods politely. Nobody sent you here." end
+			if r.talked[f.role] then return "You've already spoken with "..f.name.."." end
+			r.talked[f.role]=true
+			p.started=true
+			return f.name..": \"Good, you came. Tell them I'm ready.\"   ·   Quest step complete."
+		elseif verb=="rqClaim" then
+			local id=string.match(type(item)=="string" and item or "","^(%w+)")
+			local q=id and RA.QuestById[id]
+			if not q then return "That quest is not in your journal." end
+			if not npcNear(player,q.giver) then return away(q.giver) end
+			return Journal.claimQuest(p,item)
+		elseif verb=="rqBuy" then
+			local role,index=string.match(type(item)=="string" and item or "","^(%w+):(%d+)$")
+			local f=role and RA.FolkByRole[role]
+			local offer=f and f.shop and f.shop[tonumber(index)]
+			if not offer then return "That isn't for sale." end
+			if not npcNear(player,f.role) then return away(f.role) end
+			if (p.coins or 0)<offer.price then return "You need "..offer.price.." coins for that." end
+			p.coins-=offer.price
+			collect(p,offer.item,offer.amount)
+			p.started=true
+			return "Bought "..offer.amount.."× "..itemName(offer.item).." for "..offer.price.." coins."
+		end
+		-- Warps: always at the Warp Keeper.
+		local w=type(item)=="string" and RA.WarpByRegion[item]
+		if not w then return "Name a charted region." end
+		local name=Data.RegionById[w.region].name
+		if not npcNear(player,"WarpKeeper") then return away("WarpKeeper") end
+		local known=Regions.warps(p)
+		if verb=="warpBuy" then
+			if known[w.region] then return "You already know the warp to "..name.."." end
+			if (p.coins or 0)<w.price then return "A scroll to "..name.." costs "..w.price.." coins." end
+			p.coins-=w.price
+			collect(p,w.scroll,1)
+			p.started=true
+			return "Bought "..itemName(w.scroll)..". Read it to learn the warp."
+		elseif verb=="warpLearn" then
+			if known[w.region] then return "You already know the warp to "..name.."." end
+			if (p.items[w.scroll] or 0)<1 then return "You have no "..itemName(w.scroll).."." end
+			p.items[w.scroll]-=1
+			r.warps[w.region]=true
+			p.started=true
+			return "Warp learned • "..name..". Ilsabet can send you there any time."
+		elseif verb=="warpTo" then
+			if not known[w.region] then return "You haven't learned the warp to "..name.." yet." end
+			if not regionAllowed(p,w.region) then return regionDenied(w.region) end
+			local now=os.clock()
+			local last=Regions.warpAt[player.UserId]
+			if last and now-last<RA.WARP_COOLDOWN then return "The thread is still settling ("..math.ceil(RA.WARP_COOLDOWN-(now-last)).."s)." end
+			local gate=ServerStorage:FindFirstChild("IsleTravelGate")
+			if not gate then return "The warp will not open right now." end
+			local okGate,verdict=pcall(gate.Invoke,gate,player)
+			if not okGate or verdict~=true then return if okGate and type(verdict)=="string" then verdict else "The warp will not open right now." end
+			local a=Trails.anchor(w.anchor)
+			local character=player.Character
+			local root=character and character:FindFirstChild("HumanoidRootPart")
+			if not a or not root then return "The warp will not open right now." end
+			Regions.warpAt[player.UserId]=now
+			player:SetAttribute("FastTravelAt",os.clock()) -- known fast travel (Aether Mote pickup checks)
+			character:PivotTo(CFrame.new(a.CFrame.Position+Vector3.new(0,4,0)))
+			root.AssemblyLinearVelocity=Vector3.zero
+			return "Warped to "..name.."."
+		end
+		return "Unknown action."
+	end
+end
 local function perform(player,verb,item,prompt)
 	local p=profiles[player]
 	if not p or (not preview[player] and os.time()>=(leaseEnd[player] or 0)) then return "Waiting for journal sync." end
@@ -6213,7 +6411,9 @@ local function perform(player,verb,item,prompt)
 	cooldown[player]=os.clock()+(if prompt then 0.65 else 0.24)
 	local region=prompt and prompt:GetAttribute("IsleRegion")
 	if region and not regionAllowed(p,region) then return regionDenied(region) end
-	if Skills.verbs[verb] then
+	if Regions.verbs[verb] then
+		return Regions.action(player,p,verb,item,prompt) -- World Art & Regions: regional quests, shops, warps
+	elseif Skills.verbs[verb] then
 		return Skills.action(player,p,verb,item,prompt,humanoid) -- Agility & Hunter
 	elseif Prayer.claims(verb,item) then
 		return Prayer.action(player,p,verb,item,prompt,humanoid) -- Prayer & Thieving

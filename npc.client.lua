@@ -437,13 +437,24 @@ local function register(model)
 		AlwaysOnTop = false, MaxDistance = 120, LightInfluence = 0, Enabled = false})
 	local bubble = make("TextLabel", marker, {Size = UDim2.fromScale(1, 1), BackgroundColor3 = gold, Text = "!", Font = bold, TextSize = 22, TextColor3 = deep})
 	round(bubble, 17, deep)
-	entry.marker = marker
+	entry.marker, entry.bubble = marker, bubble
 	npcs[model] = entry
 end
 local function updateMarkers()
 	local s, ctx = snapshot, context()
 	for _, entry in pairs(npcs) do
 		local show = false
+		-- World Art regional folk (§30): "!" quest on offer, gold "?" ready to hand
+		-- in, grey "?" in progress, "…" someone sent you to talk to them.
+		local RA = Data.RegionArt
+		if s and RA and RA.FolkByRole[entry.role] then
+			local state = RA.marker(s, entry.role)
+			show = state ~= nil
+			entry.bubble.Text = if state == "offer" then "!" elseif state == "talk" then "…" else "?"
+			entry.bubble.BackgroundColor3 = if state == "active" then muted else gold
+			entry.marker.Enabled = show
+			continue
+		end
 		if s then
 			if entry.role == "Guide" then show = T.Conditions.tutorialActive(s) or T.Conditions.contractReady(s)
 			elseif entry.role == "Slayer" then show = T.Conditions.huntReady(s)
