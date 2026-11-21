@@ -5460,6 +5460,8 @@ local function close(player)
 	-- Still loading: open() notices the departure, releases the lease and forgets.
 	if opening[player] then return end
 	while exchangeBusy[player] do task.wait(0.1) end
+	-- Minigames: settle in-match XP before the final save (see minigames.server.lua).
+	pcall(function() local mgLeave=ServerStorage:FindFirstChild("IsleMinigameLeave"); if mgLeave then mgLeave:Invoke(player) end end)
 	for _=1,3 do if persist(player,true) then break end; task.wait(1) end
 	forget(player)
 	for _,arena in pairs(enemies) do

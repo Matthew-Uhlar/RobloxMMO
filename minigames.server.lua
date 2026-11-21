@@ -841,7 +841,7 @@ local function watch(player)
 end
 Players.PlayerAdded:Connect(watch)
 for _, player in ipairs(Players:GetPlayers()) do watch(player) end
-Players.PlayerRemoving:Connect(function(player)
+local function leaving(player)
 	local match = memberOf[player]
 	if not match then return end
 	local record = match.members[player]
@@ -856,7 +856,15 @@ Players.PlayerRemoving:Connect(function(player)
 		xpSettled(record, reply)
 	end
 	departed[player.UserId] = {match = match, record = record, expires = os.clock() + MG.REJOIN_SECONDS}
-end)
+end
+Players.PlayerRemoving:Connect(leaving)
+-- The main server calls this from its own PlayerRemoving before the final save,
+-- so the XP-only settle always lands in the saved journal (handler order across
+-- scripts is not guaranteed). Idempotent: a second call finds no membership.
+local leave = Instance.new("BindableFunction")
+leave.Name = "IsleMinigameLeave"
+leave.OnInvoke = function(player) leaving(player); return true end
+leave.Parent = game:GetService("ServerStorage")
 
 -- Ferry gate (world.server.lua's Guild Terrace beacon): Combat or Fishing high
 -- enough for at least one game.
