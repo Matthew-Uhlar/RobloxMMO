@@ -262,25 +262,35 @@ do
 		if extra then extra(p) end
 		return p
 	end
+	-- Client-side Progression.computeStats (the shared module, no server wrapper)
+	-- carries the style bonus through the Data.Sets set-style hook.
+	local styleHook = Data.Sets.Lumenward.style
 	for helm, style in pairs(MG.LumenwardStyle) do
 		local p = profile(helm)
-		eq(MG.lumenwardStyle(p), style, helm .. " sets the style")
+		eq(MG.lumenwardStyle(p, P.equipped), style, helm .. " sets the style")
+		local s = P.computeStats(p, 0)
+		eq(s.activeSet, "Lumenward", helm .. " completes the set")
+		Data.Sets.Lumenward.style = nil
 		local base = P.computeStats(p, 0)
-		eq(base.activeSet, "Lumenward", helm .. " completes the set")
-		local s = MG.applyLumenward(p, P.computeStats(p, 0))
-		for stat, v in pairs(style.stats) do eq(s[stat], (base[stat] or 0) + v, helm .. " adds " .. stat) end
-		eq(s.lumenwardStyle, style.style, helm .. " style tag")
-		eq(s.effectiveHealth, math.floor(s.health * (1 + s.defense / 100)), helm .. " effective health recomputed")
+		Data.Sets.Lumenward.style = styleHook
+		for stat, v in pairs(style.stats) do
+			local def = Data.Stats[stat]
+			eq(s[stat], math.min(def.cap or math.huge, (base[stat] or 0) + v), helm .. " adds " .. stat .. " in the shared computeStats")
+		end
+		eq(s.setStyle, style.style, helm .. " style tag")
+		eq(s.effectiveHealth, math.floor(s.health * (1 + s.defense / 100)), helm .. " effective health")
 	end
-	eq(MG.lumenwardStyle(profile("LumenwardWarhelm", function(p) p.equipment.boots = nil end)), nil, "three pieces: no style")
-	eq(MG.lumenwardStyle(profile("LumenwardWarhelm", function(p) p.items.LumenwardTreads = 0 end)), nil, "unowned piece: no style")
-	eq(MG.lumenwardStyle(profile("StormcallerHood")), nil, "foreign helm: no style")
-	eq(MG.lumenwardStyle(nil), nil, "nil profile")
+	eq(MG.lumenwardStyle(profile("LumenwardWarhelm", function(p) p.equipment.boots = nil end), P.equipped), nil, "three pieces: no style")
+	eq(MG.lumenwardStyle(profile("LumenwardWarhelm", function(p) p.items.LumenwardTreads = 0 end), P.equipped), nil, "unowned piece: no style")
+	eq(MG.lumenwardStyle(profile("StormcallerHood"), P.equipped), nil, "foreign helm: no style")
+	eq(MG.lumenwardStyle(nil, P.equipped), nil, "nil profile")
+	-- LOW 3: pieces must be validly equipped (Progression.equipped: requirements), not just listed.
+	local weakWearer = profile("LumenwardWarhelm", function(p) p.xp.Combat = X[20] end)
+	eq(MG.lumenwardStyle(weakWearer, P.equipped), nil, "Combat 20 wearer: not validly equipped, no style")
+	eq(P.computeStats(weakWearer, 0).setStyle, nil, "no style stats below the requirement")
 	local plain = {xp = {}, items = {}, equipment = {}}
-	local s = P.computeStats(plain, 0)
-	local before = s.strength
-	MG.applyLumenward(plain, s)
-	eq(s.strength, before, "no outfit, no change")
+	eq(P.computeStats(plain, 0).setStyle, nil, "no outfit, no style")
+	ok(not has(fs.readFile("server.server.lua"), "minigamesStatsHook"), "the server-only computeStats wrapper is gone")
 end
 -- Migration.
 do
@@ -494,7 +504,7 @@ eq(sv.minigames.log.Siege.won, 1, "siege won")
 eq(sv.minigames.log.Siege.points, 120, "siege points logged")
 eq(sv.minigames.log.Siege.best, 120, "best match")
 eq(sv.minigames.log.Siege.paid, 5, "paid logged")
-eq(sv.xp.Carpentry - carp0, 500, "Carpentry XP paid")
+eq(sv.xp.Carpentry - carp0, math.min(500, S.repairXp(30) * S.REPAIR_XP_LIMIT), "Carpentry XP paid (capped at the per-match repair budget)")
 eq(sv.xp.Mining, 0, "XP outside the game's skills refused")
 ok(has(veteran.last.message, "+5 Commendations"), "settlement notice")
 -- Clamps.
@@ -567,15 +577,15 @@ eq(worn.depth.equipment.helmet, "LumenwardWarhelm", "helm equipped")
 eq(worn.minigames.lumenward, "melee", "snapshot reports the melee style")
 local meleeStats = bridge.OnInvoke("stats", rich, {}).stats
 eq(meleeStats.activeSet, "Lumenward", "set active")
-eq(meleeStats.lumenwardStyle, "melee", "bridge stats carry the style")
+eq(meleeStats.setStyle, "melee", "bridge stats carry the style")
 ok(meleeStats.strength >= plainStats.strength + 25, "melee helm adds Strength")
 eq(op(rich, {action = "info"}).lumenward, true, "info reports Lumenward")
 cmd(rich, "equip", "LumenwardSightcowl")
 local rangedStats = bridge.OnInvoke("stats", rich, {}).stats
-eq(rangedStats.lumenwardStyle, "ranged", "ranged helm swaps the style")
+eq(rangedStats.setStyle, "ranged", "ranged helm swaps the style")
 ok((rangedStats.rangedAccuracy or 0) >= 30 and rangedStats.strength < meleeStats.strength, "ranged bonus replaces melee")
 cmd(rich, "unequip", "boots")
-eq(bridge.OnInvoke("stats", rich, {}).stats.lumenwardStyle, nil, "three pieces: no style bonus")
+eq(bridge.OnInvoke("stats", rich, {}).stats.setStyle, nil, "three pieces: no style bonus")
 -- Persistence and migration.
 leave(rich)
 local saved = data["p9103"].profile.minigames
@@ -792,13 +802,26 @@ local h1 = hud(A)
 local damaged = false
 for bar in h1.barricades:gmatch("[^,]+") do local a, b = bar:match("(%d+)/(%d+)"); if tonumber(a) < tonumber(b) then damaged = true end end
 ok(damaged, "creatures batter a barricade")
-local function hurtBarricade()
+local function hurtBarricade(missing)
 	local list = {}
 	for bar in hud(A).barricades:gmatch("[^,]+") do table.insert(list, bar) end
-	for i, bar in ipairs(list) do local a, b = bar:match("(%d+)/(%d+)"); if tonumber(a) < tonumber(b) then return S.Portals[i] end end
+	for i, bar in ipairs(list) do local a, b = bar:match("(%d+)/(%d+)"); if tonumber(b) - tonumber(a) >= (missing or 1) then return S.Portals[i] end end
 	return nil
 end
-local hurt = hurtBarricade()
+local repairAmount = S.scaled("Novice", 4).repair
+-- HIGH 1: a scratched barricade (less than one repair missing) refuses the repair and keeps the Timber.
+do
+	local scratched = hurtBarricade(1)
+	ok(scratched ~= nil and hurtBarricade(repairAmount) == nil, "a barricade is only scratched so far")
+	local bp0 = points(B)
+	use(B, find(scratched.name .. " barricade"), "Repair (1 Timber)")
+	ok(has(B.attrs.MinigameNotice, "scratches"), "scratch repair refused: " .. tostring(B.attrs.MinigameNotice))
+	eq(points(B), bp0, "a refused repair earns nothing")
+	eq(cmd(B, "state").items.Timber, 4, "a refused repair keeps the Timber")
+end
+for _ = 1, 120 do if hurtBarricade(repairAmount) then break end tick(0.5) end
+local hurt = hurtBarricade(repairAmount)
+ok(hurt ~= nil, "a barricade takes a full repair's worth of damage")
 local carp = cmd(B, "state").xp.Carpentry
 local bp = points(B)
 use(B, find(hurt.name .. " barricade"), "Repair (1 Timber)")

@@ -157,10 +157,20 @@ anchor:SetAttribute("AnchorPurpose", "Waypoint_SkybreachLanding")
 local ferry = block(bastion, "Return ferry beacon", PLAZA + V(0, 4, 36), V(2, 6, 2), teal, Enum.Material.Glass, false)
 ferry:SetAttribute("Shape", "WarpBeacon")
 ferry:SetAttribute("Tint", teal)
-prompt(ferry, "Skybreach ferry", "Return to the Guild Terrace", function(player)
+-- Same recall gates as a waystone leaf (ServerStorage.IsleTravelGate: alive,
+-- not mid-fight, not in an expedition); the character's velocity is zeroed.
+prompt(ferry, "Skybreach ferry", "Return to the Guild Terrace", function(player, root)
+	local gate = Storage:FindFirstChild("IsleTravelGate")
+	local okGate, verdict = false, nil
+	if gate then okGate, verdict = pcall(gate.Invoke, gate, player) end
+	if not okGate or verdict ~= true then
+		notice(player, if okGate and type(verdict) == "string" then verdict else "The ferry cannot carry you right now.")
+		return
+	end
 	local home = workspace:FindFirstChild("Anchor_Waypoint_SkybreachFerry", true)
 	local destination = if home and home:IsA("BasePart") then home.Position + V(0, 4, 0) else V(0, 8, 232)
 	player.Character:PivotTo(CFrame.new(destination))
+	root.AssemblyLinearVelocity = V(0, 0, 0)
 end)
 
 -- Lobbies: three siege landings and the haul gangway.
@@ -234,8 +244,17 @@ local function count(t) local n = 0; for _ in pairs(t) do n += 1 end; return n e
 local function centerOf(game) return if game == "Siege" then SIEGE_C else HAUL_C end
 local function spawnFor(game) return if game == "Siege" then SIEGE_C + V(0, 5, -14) else HAUL_C + V(0, 5, 30) end
 
+-- A member's seconds in the match (from their join, or the start).
+local function memberSeconds(match, record) return math.max(1, math.floor(os.clock() - math.max(match.started, record.joined))) end
+-- Siege contribution gate for one member (S.requiredPoints): grows with their
+-- time in the match and with the median member's points.
+local function siegeRequired(match, record)
+	local list = {}
+	for _, r in pairs(match.members) do table.insert(list, r.points) end
+	return S.requiredPoints(memberSeconds(match, record), MG.median(list))
+end
 local function hudFor(match, record)
-	local parts = {"game=" .. match.game, "points=" .. math.floor(record.points), "min=" .. (if match.game == "Siege" then S.MIN_POINTS else H.MIN_POINTS),
+	local parts = {"game=" .. match.game, "points=" .. math.floor(record.points), "min=" .. (if match.game == "Siege" then siegeRequired(match, record) else H.MIN_POINTS),
 		"time=" .. math.max(0, math.ceil(match.limit - (os.clock() - match.started))), "players=" .. count(match.members)}
 	if match.game == "Siege" then
 		table.insert(parts, "tier=" .. match.tier)
@@ -292,12 +311,25 @@ end
 local function addXp(record, xp)
 	for skill, n in pairs(xp) do record.xp[skill] = (record.xp[skill] or 0) + n end
 end
--- Pay one member: XP always, rewards only on a win with the minimum points.
-local function settle(player, match, record, won, reason)
-	local seconds = math.max(1, math.floor(os.clock() - math.max(match.started, record.joined)))
+-- XP earned since the last successful settlement, and the seconds it covers.
+local function xpPayload(record)
+	return record.xp, math.max(1, math.floor(os.clock() - record.xpFrom))
+end
+local function xpSettled(record, reply)
+	-- Cleared only when the journal took it: a dropped call keeps the XP for later.
+	if type(reply) == "table" and reply.ok == true then record.xp = {}; record.xpFrom = os.clock() end
+end
+-- Pay one member: XP always, rewards only on a win with the required points.
+-- context (finish only): {partySize, required = fn(record)}.
+local function settle(player, match, record, won, reason, context)
+	local seconds = memberSeconds(match, record)
+	local xp, xpSeconds = xpPayload(record)
+	local required = if match.game == "Siege" then (if context and context.required then context.required(record) else siegeRequired(match, record)) else H.MIN_POINTS
 	local reply = bridge("minigame", player, {action = "settle", game = match.game, tier = match.tier, points = math.floor(record.points),
-		won = won == true, partySize = match.size, seconds = seconds, xp = record.xp, forfeit = reason ~= nil})
-	record.xp = {}
+		won = won == true, partySize = if context and context.partySize then context.partySize else match.size,
+		seconds = seconds, xpSeconds = math.min(seconds, xpSeconds), xp = xp, forfeit = reason ~= nil,
+		required = required, recent = os.clock() - record.active <= S.RECENT_SECONDS})
+	xpSettled(record, reply)
 	local text = reason or (if won then (if match.game == "Siege" then "The rifts are sealed!" else "The Squall Leviathan is driven off!") else
 		(if match.game == "Siege" then "The Lumen Keeper has fallen." else "The haul is lost."))
 	if type(reply) == "table" and type(reply.message) == "string" and reply.message ~= "" then text ..= " " .. reply.message end
@@ -317,10 +349,21 @@ end
 local function finish(match, won)
 	if matches[match.game] ~= match then return end
 	matches[match.game] = nil
+	-- Settle-time party: members still present who reached the minimum (an alt
+	-- that idled out or never contributed does not lift the solo Haul penalty).
+	-- Siege: the median is taken over the members present at the end.
+	local present, qualified = {}, 0
+	for _, record in pairs(match.members) do
+		table.insert(present, record.points)
+		if record.points >= (if match.game == "Siege" then S.MIN_POINTS else H.MIN_POINTS) then qualified += 1 end
+	end
+	local median = MG.median(present)
+	local context = {partySize = math.max(1, qualified),
+		required = function(record) return S.requiredPoints(memberSeconds(match, record), median) end}
 	for player, record in pairs(match.members) do
 		memberOf[player] = nil
 		clearHud(player)
-		settle(player, match, record, won)
+		settle(player, match, record, won, nil, context)
 		if rootOf(player) then player.Character:PivotTo(CFrame.new(LANDING)) end
 	end
 	match.members = {}
@@ -345,6 +388,9 @@ local function actor(player, game)
 	if now < record.ready then return nil end
 	record.ready = now + MG.ACTION_COOLDOWN
 	record.active = now
+	-- spent: seconds since this member's previous credited action (or their start).
+	record.spent = now - (record.lastAction or math.max(match.started, record.joined))
+	record.lastAction = now
 	return match, record
 end
 local function credit(match, record, amount)
@@ -489,6 +535,11 @@ for _, def in ipairs(S.Portals) do
 		if not match or memberOf[player] ~= match then return end
 		local bar = match.barricades[id]
 		if bar.hp >= bar.max then notice(player, "This barricade is already sound.") return end
+		-- A repair needs a full repair's worth of damage (no Timber-per-scratch XP farm).
+		if not S.canRepair(bar.hp, bar.max, bar.repair) then
+			notice(player, "This barricade only has scratches: repair it once " .. bar.repair .. " health is missing.")
+			return
+		end
 		local record = match.members[player]
 		if os.clock() < record.ready then return end
 		local paid = bridge("minigame", player, {action = "spend", item = "Timber", amount = S.REPAIR_TIMBER})
@@ -496,8 +547,14 @@ for _, def in ipairs(S.Portals) do
 		local m, rec = actor(player, "Siege")
 		if not m then return end
 		bar.hp = math.min(bar.max, bar.hp + bar.repair)
-		credit(match, rec, S.Points.repair)
-		addXp(rec, {Carpentry = S.repairXp(rec.carpentry)})
+		-- Per member per match: points up to REPAIR_POINT_CAP (repairs alone never
+		-- qualify), XP for at most REPAIR_XP_LIMIT repairs at the solo Carpentry rate.
+		local points = math.clamp(S.REPAIR_POINT_CAP - rec.repairPoints, 0, S.Points.repair)
+		if points > 0 then rec.repairPoints += points; credit(match, rec, points) end
+		if rec.repairs < S.REPAIR_XP_LIMIT then
+			rec.repairs += 1
+			addXp(rec, {Carpentry = S.repairXp(rec.carpentry)})
+		end
 		publish(match)
 	end, 10)
 end
@@ -516,7 +573,8 @@ local function haulAction(player, action, fn)
 	if not m then return end
 	fn(match, rec, false)
 	credit(match, rec, if action == "load" then (if rec.loaded == "cooked" then H.Points.loadCooked else H.Points.loadRaw) else H.Points[action])
-	addXp(rec, H.actionXp(action, rec.levels))
+	-- XP for the time actually spent (capped at the action's model seconds).
+	addXp(rec, H.actionXp(action, rec.levels, rec.spent))
 	publish(match)
 	if match.essence <= 0 then finish(match, true) end
 end
@@ -635,7 +693,7 @@ local function padPlayers(lobby)
 	return list
 end
 local function newRecord(player, details)
-	return {points = 0, xp = {}, ready = 0, active = os.clock(), joined = os.clock(), raw = 0, cooked = 0,
+	return {points = 0, xp = {}, xpFrom = os.clock(), repairs = 0, repairPoints = 0, ready = 0, active = os.clock(), joined = os.clock(), raw = 0, cooked = 0,
 		combat = tonumber(details.combat) or 1, levels = details.levels or {}, carpentry = tonumber((details.levels or {}).Carpentry) or 1,
 		lumenward = details.lumenward == true, userId = player.UserId}
 end
@@ -647,7 +705,10 @@ local function launch(lobby)
 		local details = info(player)
 		local ok, why = true, nil
 		if lobby.game == "Siege" then ok, why = S.canEnter(lobby.tier, details.combat)
-		elseif (tonumber(details.levels.Fishing) or 1) < H.FISHING_LEVEL then ok, why = false, H.name .. " needs Fishing " .. H.FISHING_LEVEL .. "." end
+		elseif (tonumber(details.levels.Fishing) or 1) < H.FISHING_LEVEL then ok, why = false, H.name .. " needs Fishing " .. H.FISHING_LEVEL .. "."
+		elseif details.rollRoom ~= nil and (tonumber(details.rollRoom) or 0) < H.MAX_ROLLS then
+			ok, why = false, "Your Squall Cache bank is nearly full: open some caches (Hunt › Minigames) before another haul."
+		end
 		if ok then table.insert(eligible, {player = player, details = details}) else notice(player, why) end
 	end
 	if #eligible < rules.MIN_PLAYERS then
@@ -714,13 +775,15 @@ local function step(dt)
 		for player, record in pairs(match.members) do
 			local root = rootOf(player)
 			if root then
-				if not record.pos or (root.Position - record.pos).Magnitude > 1 then record.pos = root.Position; record.moved = now end
+				-- A fresh position (launch, rejoin) is a reference point, not movement.
+				if not record.pos then record.pos = root.Position
+				elseif (root.Position - record.pos).Magnitude > 1 then record.pos = root.Position; record.moved = now end
 				if flat(root.Position, centerOf(game)) > MG.AWAY_RADIUS then record.awaySince = record.awaySince or now else record.awaySince = nil end
 			end
 			local lastSign = math.max(record.active, record.moved or record.active)
 			if record.awaySince and now - record.awaySince > MG.AWAY_GRACE then
 				removeMember(player, match, "You left the " .. (if game == "Siege" then S.name else H.name) .. " and were removed (no reward).")
-			elseif now - lastSign > MG.IDLE_SECONDS or now - record.active > MG.IDLE_SECONDS * 2 then
+			elseif now >= (record.graceUntil or 0) and (now - lastSign > MG.IDLE_SECONDS or now - record.active > MG.IDLE_SECONDS * 2) then
 				removeMember(player, match, "Removed for inactivity after " .. MG.IDLE_SECONDS .. " s (no reward).")
 			end
 		end
@@ -742,16 +805,23 @@ end
 RunService.Heartbeat:Connect(step)
 
 -- Rejoin: a dropped member's record waits REJOIN_SECONDS for their return.
-local function rejoin(player)
+-- The returning member keeps their points (their XP was paid when they left)
+-- and their old idle clock: only REJOIN_GRACE seconds to act or move again.
+local function rejoin(player, character)
 	local d = departed[player.UserId]
 	if not d or os.clock() > d.expires or matches[d.match.game] ~= d.match then return end
+	-- Wait for the body (as a respawn does) before moving it into the arena.
+	local root = character and character:WaitForChild("HumanoidRootPart", 5)
+	if not root or departed[player.UserId] ~= d or matches[d.match.game] ~= d.match then return end
 	departed[player.UserId] = nil
-	local match = d.match
-	d.record.active, d.record.moved, d.record.pos, d.record.awaySince = os.clock(), os.clock(), nil, nil
-	match.members[player] = d.record
+	local match, record = d.match, d.record
+	local now = os.clock()
+	record.graceUntil = now + MG.REJOIN_GRACE
+	record.pos, record.awaySince = nil, nil
+	match.members[player] = record
 	memberOf[player] = match
-	if player.Character then player.Character:PivotTo(CFrame.new(spawnFor(match.game))) end
-	notice(player, "Welcome back to the " .. (if match.game == "Siege" then S.name else H.name) .. " • your " .. math.floor(d.record.points) .. " points were kept.")
+	character:PivotTo(CFrame.new(spawnFor(match.game)))
+	notice(player, "Welcome back to the " .. (if match.game == "Siege" then S.name else H.name) .. " • your " .. math.floor(record.points) .. " points were kept.")
 	publish(match)
 end
 local function watch(player)
@@ -763,11 +833,11 @@ local function watch(player)
 				local root = character:WaitForChild("HumanoidRootPart", 5)
 				if root and memberOf[player] == match then character:PivotTo(CFrame.new(spawnFor(match.game))) end
 			else
-				rejoin(player)
+				rejoin(player, character)
 			end
 		end)
 	end
-	if player.Character then rejoin(player) end
+	if player.Character then rejoin(player, player.Character) end
 end
 Players.PlayerAdded:Connect(watch)
 for _, player in ipairs(Players:GetPlayers()) do watch(player) end
@@ -777,6 +847,14 @@ Players.PlayerRemoving:Connect(function(player)
 	local record = match.members[player]
 	match.members[player] = nil
 	memberOf[player] = nil
+	-- Pay the XP earned so far now, while the journal is still live (XP only: no
+	-- log entry, no reward). A failed call keeps it on the record for later.
+	if next(record.xp) ~= nil then
+		local xp, xpSeconds = xpPayload(record)
+		local reply = bridge("minigame", player, {action = "settle", xpOnly = true, game = match.game, tier = match.tier,
+			seconds = memberSeconds(match, record), xpSeconds = xpSeconds, xp = xp})
+		xpSettled(record, reply)
+	end
 	departed[player.UserId] = {match = match, record = record, expires = os.clock() + MG.REJOIN_SECONDS}
 end)
 

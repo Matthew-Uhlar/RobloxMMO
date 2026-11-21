@@ -7137,7 +7137,8 @@ end
 --     barricade repairs (1 Timber, Carpentry XP); MIN_POINTS earns the tier's
 --     Commendations on a win. Commendations buy the Lumenward outfit (shared
 --     hauberk / greaves / treads and one helm per combat style; the 4-piece set
---     adds the worn helm's style stats, MG.applyLumenward), XP lamps for the
+--     adds the worn helm's style stats via Data.Sets.Lumenward.style inside
+--     Progression.computeStats), XP lamps for the
 --     combat skills and cosmetic titles.
 --   * Tempest Haul (skilling boss): 1-10 players catch and cook stormfish,
 --     load them into the deck cannons, repair cracked masts (Carpentry) and
@@ -7156,6 +7157,7 @@ Data.Minigames = MG
 MG.ISLAND = "Skybreach Bastion"
 MG.Order = {"Siege","Haul"}
 MG.REJOIN_SECONDS = 90   -- a player who drops mid-match may rejoin with their points
+MG.REJOIN_GRACE = 15     -- a rejoiner keeps their idle clock; this long to act or move again
 MG.IDLE_SECONDS = 60     -- no credited action and no movement: removed (AFK)
 MG.AWAY_RADIUS = 120     -- this far from the arena centre for AWAY_GRACE seconds: removed
 MG.AWAY_GRACE = 10
@@ -7215,9 +7217,17 @@ local S = {id="Siege", name="Skybreach Siege", keeper="Lumen Keeper", color="7FE
 	KEEPER_HP=2400, PORTAL_HP=900, BARRICADE_HP=400, REPAIR_HP=120, REPAIR_TIMBER=1,
 	MIN_POINTS=50, LANE=60, BARRICADE_AT=0.45, HIT_RANGE=4, FLYER_RANGE=14,
 	Points={strike=1, kill=2, portal=2, repair=5},
+	-- Contribution gate (S.requiredPoints): at least MIN_POINTS, MIN_POINTS_PER_MINUTE
+	-- per minute in the match and MEDIAN_SHARE of the median member's points, plus a
+	-- credited action in the last RECENT_SECONDS when the match settles.
+	MIN_POINTS_PER_MINUTE=6, MEDIAN_SHARE=0.25, RECENT_SECONDS=45,
+	-- Barricade repairs: only when at least the repair amount is missing; per member
+	-- per match, repairs pay XP at most REPAIR_XP_LIMIT times and points up to
+	-- REPAIR_POINT_CAP (below MIN_POINTS: repairs alone never qualify).
+	REPAIR_XP_LIMIT=12, REPAIR_POINT_CAP=25,
 	-- Balance model: one match plus its lobby, and how often a public party wins.
 	Model={gameSeconds={Novice=300,Veteran=360,Elite=420}, lobbySeconds=45, winRate=0.85},
-	rules="Defend the Lumen Keeper while the four rift shields drop one by one. Strike creatures and open portals, repair barricades with Timber. Destroy every portal before the Keeper falls. Earn at least 50 points to be paid.",
+	rules="Defend the Lumen Keeper while the four rift shields drop one by one. Strike creatures and open portals, repair barricades with Timber. Destroy every portal before the Keeper falls. Earn at least 50 points (more in long matches) and keep fighting to the end to be paid.",
 }
 MG.Siege = S
 S.Tiers = {
@@ -7264,8 +7274,33 @@ function S.scaled(tierId, n)
 	return {keeper=round(S.KEEPER_HP * t.hpMult * k), portal=round(S.PORTAL_HP * t.hpMult * k),
 		barricade=round(S.BARRICADE_HP * t.hpMult), repair=round(S.REPAIR_HP * t.hpMult), hpMult=t.hpMult, damageMult=t.damageMult, party=k}
 end
--- Carpentry XP for one barricade repair.
-function S.repairXp(level) return 10 + 2 * math.clamp(math.floor(tonumber(level) or 1), 1, 99) end
+-- Solo Carpentry XP per Timber: the best XP per material unit of any Carpentry
+-- build that uses Timber (workbench recipes, island decor, home furniture) at
+-- or below the level. Carpentry is a costly skill; repairs never beat it.
+function MG.soloCarpentryXpPerTimber(level)
+	level = math.clamp(math.floor(tonumber(level) or 1), 1, 99)
+	local best = 0
+	local function scan(list, carpentryOnly)
+		for _, r in pairs(list or {}) do
+			if type(r) == "table" and type(r.costs) == "table" and r.costs.Timber and (r.level or 1) <= level and (r.xp or 0) > 0
+				and (not carpentryOnly or r.skill == "Carpentry") then
+				local units = 0
+				for _, n in pairs(r.costs) do units += n end
+				if units > 0 then best = math.max(best, r.xp / units) end
+			end
+		end
+	end
+	scan(Data.Recipes, true)
+	scan(Data.Island and Data.Island.Props, false)
+	scan(Data.Furniture, false)
+	return best
+end
+-- Carpentry XP for one barricade repair: the Timber it costs at the solo rate.
+function S.repairXp(level)
+	return math.max(1, round(S.REPAIR_TIMBER * MG.soloCarpentryXpPerTimber(level) * MG.SOCIAL_BONUS))
+end
+-- Repairs need at least one full repair's worth of missing health.
+function S.canRepair(hp, max, amount) return (tonumber(max) or 0) - (tonumber(hp) or 0) >= (tonumber(amount) or math.huge) end
 function S.creatureHp(id, tierId) local c = S.CreatureById[id]; local t = S.TierById[tierId] or S.Tiers[1]; return round(c.hp * t.hpMult) end
 function S.creatureDamage(id, tierId) local c = S.CreatureById[id]; local t = S.TierById[tierId] or S.Tiers[1]; return round(c.damage * t.damageMult) end
 -- Strike damage from Combat level (Lumenward adds 15% inside the bastion).
@@ -7300,10 +7335,26 @@ function S.pickCreature(roll)
 	end
 	return S.Creatures[1].id
 end
--- Reward for one player: Commendations only on a win with MIN_POINTS.
-function S.reward(tierId, points, won)
+-- Points a member needs for a reward: MIN_POINTS, MIN_POINTS_PER_MINUTE of
+-- their time in the match, and MEDIAN_SHARE of the median member's points.
+function S.requiredPoints(seconds, median)
+	local s = math.max(0, tonumber(seconds) or 0)
+	local m = math.max(0, tonumber(median) or 0)
+	return math.max(S.MIN_POINTS, math.floor(S.MIN_POINTS_PER_MINUTE * s / 60), math.floor(S.MEDIAN_SHARE * m))
+end
+function MG.median(list)
+	local t = {}
+	for _, v in ipairs(list or {}) do if type(v) == "number" and v == v then table.insert(t, v) end end
+	if #t == 0 then return 0 end
+	table.sort(t)
+	local mid = (#t + 1) / 2
+	return (t[math.floor(mid)] + t[math.ceil(mid)]) / 2
+end
+-- Reward for one player: Commendations only on a win with the required points
+-- (MIN_POINTS when required is omitted).
+function S.reward(tierId, points, won, required)
 	local t = S.TierById[tierId]
-	if not t or not won or (tonumber(points) or 0) < S.MIN_POINTS then return 0 end
+	if not t or not won or (tonumber(points) or 0) < math.max(S.MIN_POINTS, tonumber(required) or 0) then return 0 end
 	return t.commendations
 end
 function S.commendationsPerHour(tierId)
@@ -7331,24 +7382,43 @@ local H = {id="Haul", name="Tempest Haul", boss="Squall Leviathan", color="5EC8D
 MG.Haul = H
 -- XP per action: each second spent on an action earns XP_RATIO x the solo
 -- fish-and-cook XP rate at the player's level, in the action's skill.
+-- The server pays an action for the time the player actually spent on it:
+-- seconds since their previous credited action, capped at the action's model
+-- seconds (H.actionXp(action, levels, seconds)), so XP/h never beats XP_RATIO x
+-- solo however fast the cadence. Without seconds: the full modelled action.
 H.ActionSkill = {catch="Fishing", cook="Cooking", load="Fishing", repair="Carpentry", douse="Fishing", harpoon="Fishing"}
-function H.actionXp(action, levels)
+function H.actionSeconds(action) return H.Model[if action == "harpoon" then "load" else action] end
+-- XP per second of play in a skill at a level (XP_RATIO x the solo fish+cook rate).
+function H.xpPerSecond(level)
+	return H.XP_RATIO * MG.soloFishCookXpPerHour(math.clamp(tonumber(level) or 1, 1, 99)) / 3600
+end
+function H.actionXp(action, levels, seconds)
 	levels = type(levels) == "table" and levels or {}
 	local skill = H.ActionSkill[action]
 	if not skill then return {} end
 	local level = math.clamp(tonumber(levels[skill]) or tonumber(levels.Fishing) or 1, 1, 99)
-	return {[skill] = math.max(1, round(H.XP_RATIO * MG.soloFishCookXpPerHour(level) / 3600 * H.Model[if action == "harpoon" then "load" else action]))}
+	local model = H.actionSeconds(action)
+	if seconds ~= nil then
+		return {[skill] = H.xpPerSecond(level) * math.clamp(tonumber(seconds) or 0, 0, model)}
+	end
+	return {[skill] = math.max(1, round(H.xpPerSecond(level) * model))}
 end
 function H.energyHit(cooked, n)
 	return (if cooked then H.COOKED_HIT else H.RAW_HIT) / MG.partyScale(n)
 end
 function H.essenceHit(n) return H.HARPOON_HIT / MG.partyScale(n) end
--- Reward rolls from points (solo pays SOLO_REWARD of the points).
-function H.rolls(points, won, partySize)
+-- Reward rolls from points (solo pays SOLO_REWARD of the points). With
+-- seconds, rolls are also capped by match time (H.maxRolls): a haul never pays
+-- more than the modelled game's rolls, scaled down for a shorter game, so
+-- stalling the Leviathan to farm points is not profitable.
+function H.rolls(points, won, partySize, seconds)
 	points = tonumber(points) or 0
 	if not won or points < H.MIN_POINTS then return 0 end
-	local effective = points * (if (tonumber(partySize) or 1) <= 1 then H.SOLO_REWARD else 1)
-	return math.clamp(math.floor(effective / H.ROLL_POINTS), 1, H.MAX_ROLLS)
+	local solo = (tonumber(partySize) or 1) <= 1
+	local effective = points * (if solo then H.SOLO_REWARD else 1)
+	local cap = H.MAX_ROLLS
+	if seconds ~= nil then cap = math.min(cap, H.maxRolls(seconds, solo)) end
+	return math.clamp(math.floor(effective / H.ROLL_POINTS), 1, math.max(1, cap))
 end
 -- Modelled points/h and XP/h (all three skills) for a typical player.
 function H.modelPointsPerHour()
@@ -7367,10 +7437,20 @@ function H.modelXpPerHour(level)
 	local essence = 3600 * m.essence / 2 * total("harpoon")
 	return loop + chores + essence
 end
+-- Rolls of one modelled game (crew points, no time cap).
+function H.modelRollsPerGame()
+	return math.floor(H.modelPointsPerHour() * H.Model.gameSeconds / 3600 / H.ROLL_POINTS)
+end
+-- Time cap: the modelled game's rolls x min(1, seconds / gameSeconds) (solo x SOLO_REWARD).
+function H.maxRolls(seconds, solo)
+	local share = math.clamp((tonumber(seconds) or 0) / H.Model.gameSeconds, 0, 1)
+	local cap = H.modelRollsPerGame() * share * (if solo then H.SOLO_REWARD else 1)
+	return math.clamp(math.floor(cap + 0.5), 1, H.MAX_ROLLS)
+end
 function H.rollsPerHour(solo)
 	local m = H.Model
 	local points = H.modelPointsPerHour() * m.gameSeconds / 3600
-	local perGame = H.rolls(points, true, if solo then 1 else 4)
+	local perGame = H.rolls(points, true, if solo then 1 else 4, m.gameSeconds)
 	return perGame * m.winRate * 3600 / (m.gameSeconds + m.lobbySeconds)
 end
 
@@ -7514,26 +7594,19 @@ function MG.lampXp(skill, level)
 	if not f then return 0 end
 	return round(f * MG.LAMP_HOURS * MG.soloCombatXpPerHour(math.clamp(tonumber(level) or 1, 1, 99)))
 end
--- Lumenward: with all four pieces worn (and owned), the helm's style stats join the sheet.
-function MG.lumenwardStyle(p)
-	local eq = type(p) == "table" and type(p.equipment) == "table" and p.equipment or nil
-	if not eq then return nil end
+-- Lumenward: with all four pieces validly equipped (equipped = Progression.equipped:
+-- owned, right slot, requirements met), the helm's style {style, name, stats}.
+-- Progression.computeStats applies it through Data.Sets.Lumenward.style (the
+-- set-style hook: after perk stats, before caps), so client and server agree.
+function MG.lumenwardStyle(p, equipped)
+	if type(p) ~= "table" or type(p.items) ~= "table" or type(equipped) ~= "function" then return nil end
 	for _, slot in ipairs(Data.ArmorSlots) do
-		local id = eq[slot]
-		local def = id and Data.Items[id]
-		if not def or def.set ~= "Lumenward" or (type(p.items) == "table" and (p.items[id] or 0) < 1) then return nil end
+		local _, def = equipped(p, slot)
+		if not def or def.set ~= "Lumenward" then return nil end
 	end
-	return MG.LumenwardStyle[eq.helmet]
+	return MG.LumenwardStyle[(equipped(p, "helmet"))]
 end
-function MG.applyLumenward(p, s)
-	local style = MG.lumenwardStyle(p)
-	if not style or type(s) ~= "table" then return s end
-	for stat, v in pairs(style.stats) do s[stat] = (s[stat] or 0) + v end
-	for stat, def in pairs(Data.Stats) do if def.cap and s[stat] then s[stat] = math.min(def.cap, s[stat]) end end
-	s.effectiveHealth = math.floor((s.health or 0) * (1 + (s.defense or 0) / 100))
-	s.lumenwardStyle = style.style
-	return s
-end
+Data.Sets.Lumenward.style = MG.lumenwardStyle
 -- Shop purchase check (pure): returns the entry or nil, reason.
 function MG.canBuy(id, ledger, levels)
 	local e = MG.ShopById[id]

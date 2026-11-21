@@ -396,6 +396,18 @@ function Progression.computeStats(p, now)
 			end
 		end
 	end
+	-- Set styles: a complete set may add stats chosen by one of its pieces
+	-- (Data.Sets[id].style(p, Progression.equipped) -> {style, stats}; e.g. the
+	-- Lumenward helm's combat style). Shared, so client previews match the server.
+	local setDef = s.activeSet and Data.Sets[s.activeSet]
+	s.setStyle = nil
+	if setDef and type(setDef.style) == "function" then
+		local style = setDef.style(p, Progression.equipped)
+		if type(style) == "table" and type(style.stats) == "table" then
+			addStats(s, style.stats)
+			s.setStyle = style.style
+		end
+	end
 	-- Legacy bonuses
 	s.health += (p.companionBond or 0) * 2
 	s.damage += (p.enchantRank or 0) * 3

@@ -2850,33 +2850,32 @@ end
 ------------------------------------------------------------------------------
 -- Minigames (Minigames team; self-contained block). Skybreach Siege and
 -- Tempest Haul run in minigames.server.lua; this block owns the journal side:
---   bridge op "minigame" {action = "info"}   -> {combat, levels, ironman, lumenward}
+--   bridge op "minigame" {action = "info"}   -> {combat, levels, ironman, lumenward, rollRoom}
 --                        {action = "spend", item = "Timber", amount}  -> {ok} (barricade repairs)
---                        {action = "settle", game, tier, points, won, partySize, seconds, xp, forfeit}
---       validates and clamps everything (points <= MAX_POINTS_PER_SECOND x seconds,
---       XP only in the game's skills and <= the action rate allows), pays XP,
---       Commendations (Siege: Data.Minigames.Siege.reward) or Squall Cache rolls
---       (Haul: Data.Minigames.Haul.rolls), and writes the minigame log.
+--                        {action = "settle", game, tier, points, won, partySize, seconds, xp,
+--                         forfeit, xpOnly, required, recent}
+--       validates and clamps everything (points <= MAX_POINTS_PER_SECOND x seconds;
+--       XP only in the game's skills: Siege Carpentry <= REPAIR_XP_LIMIT repairs,
+--       Haul XP <= Haul.xpPerSecond x seconds summed over its skills), pays XP,
+--       Commendations (Siege: Data.Minigames.Siege.reward with the required points,
+--       never below Siege.requiredPoints(seconds), and only with a recent action)
+--       or Squall Cache rolls (Haul: Data.Minigames.Haul.rolls, capped by match
+--       time), and writes the minigame log. xpOnly = pay XP only (a member who
+--       disconnected mid-match; no log, no reward). Rolls past the 500 bank cap
+--       are opened on the spot, never dropped.
 --   verbs  mgBuy "<shop id>"     Commendation shop (Lumenward armour, XP lamps, cosmetics)
 --          mgRoll "1"|"all"      open banked Squall Cache rolls (up to 20 at once)
 --          mgTitle "<id>|none"   wear an owned cosmetic title (player attribute MinigameTitle)
--- Lumenward: Progression.computeStats is wrapped once (server only) so the
--- four-piece outfit adds the worn helm's style stats (MG.applyLumenward).
+-- Lumenward: the four-piece outfit's helm style is applied inside the shared
+-- Progression.computeStats (Data.Sets.Lumenward.style), so the client agrees.
 -- Profile p.minigames = {commendations, rolls, unlocks = {[id] = true}, title,
 -- log = {[game] = {played, won, points, best, paid}}}; snapshot key minigames.
 ------------------------------------------------------------------------------
 local Minigames={verbs={mgBuy=true,mgRoll=true,mgTitle=true}}
 do
 	local MG=Data.Minigames
-	if not Progression.minigamesStatsHook then
-		local computeStats=Progression.computeStats
-		Progression.computeStats=function(p,now)
-			local s,breakdown=computeStats(p,now)
-			MG.applyLumenward(p,s)
-			return s,breakdown
-		end
-		Progression.minigamesStatsHook=true
-	end
+	local ROLL_BANK=500
+	local function styleOf(p) return MG.lumenwardStyle(p,Progression.equipped) end
 	function Minigames.migrate(p) p.minigames=MG.migrate(p.minigames) end
 	local function ledger(p)
 		if type(p.minigames)~="table" then Minigames.migrate(p) end
@@ -2908,20 +2907,52 @@ do
 		table.sort(unlocks)
 		local log={}
 		for game,l in pairs(m.log) do log[game]=table.clone(l) end
-		local style=MG.lumenwardStyle(p)
+		local style=styleOf(p)
 		return {commendations=m.commendations,rolls=m.rolls,unlocks=unlocks,title=m.title,log=log,lamps=lamps,lumenward=style and style.style or nil}
 	end
-	-- XP a game may pay per skill: the most XP one action can give, once per cooldown.
-	local function xpCap(game,skill,lv,seconds)
-		local per=0
+	-- XP a settlement may pay, by skill (only the game's own skills).
+	-- Siege: Carpentry from at most REPAIR_XP_LIMIT repairs (and one per cooldown).
+	-- Haul: each skill's XP is worth amount / Haul.xpPerSecond(level) seconds of
+	-- play; the sum may not exceed the seconds played (plus one action of slack),
+	-- else everything scales down: XP/h stays at XP_RATIO x the solo rate.
+	local function settleXp(game,lv,seconds,xp)
+		local out={}
+		if type(xp)~="table" then return out end
 		if game=="Siege" then
-			if skill=="Carpentry" then per=MG.Siege.repairXp(lv.Carpentry) end
-		else
-			for action,s in pairs(MG.Haul.ActionSkill) do
-				if s==skill then per=math.max(per,(MG.Haul.actionXp(action,lv)[skill] or 0)) end
+			local per=MG.Siege.repairXp(lv.Carpentry)
+			out.Carpentry=int(xp.Carpentry,0,math.floor(per*math.min(MG.Siege.REPAIR_XP_LIMIT,seconds/MG.ACTION_COOLDOWN+1)))
+			return out
+		end
+		local used=0
+		for _,skill in pairs(MG.Haul.ActionSkill) do
+			local a=tonumber(xp[skill])
+			if out[skill]==nil and a and a==a and a>0 and a<1e9 then
+				out[skill]=a
+				used+=a/MG.Haul.xpPerSecond(lv[skill])
 			end
 		end
-		return math.floor(per*(seconds/MG.ACTION_COOLDOWN+1))
+		local budget=seconds+MG.Haul.Model.catch
+		local scale=if used>budget then budget/used else 1
+		for skill,a in pairs(out) do out[skill]=math.floor(a*scale) end
+		return out
+	end
+	-- Opens n Squall Caches straight into the journal; returns the loot text.
+	local function openCaches(p,n)
+		local coins,items=0,{}
+		for _=1,n do
+			local loot=MG.Haul.rollCache(level(p.xp.Fishing),roll)
+			coins+=loot.coins
+			for id,k in pairs(loot.items) do items[id]=(items[id] or 0)+k end
+		end
+		p.coins+=coins
+		local names={}
+		for id,k in pairs(items) do
+			collect(p,id,k)
+			local def=Data.Items[id]
+			table.insert(names,"+"..k.." "..(def and def.name or id))
+		end
+		table.sort(names)
+		return "+"..coins.." coins"..(if #names>0 then ", "..table.concat(names,", ") else "")
 	end
 	function Minigames.settle(player,p,payload)
 		local game=payload.game
@@ -2931,46 +2962,57 @@ do
 		local m=ledger(p)
 		local lv=levels(p)
 		local seconds=int(payload.seconds,1,rules.TIME_LIMIT+120)
-		local points=int(payload.points,0,MG.MAX_POINTS_PER_SECOND*seconds)
-		local won=payload.won==true and payload.forfeit~=true
 		local gained={}
-		if type(payload.xp)=="table" then
-			for skill,n in pairs(payload.xp) do
-				if type(skill)=="string" and Data.Skills[skill] then
-					local amount=int(n,0,xpCap(game,skill,lv,seconds))
-					if amount>0 then grantXp(p,skill,amount); table.insert(gained,"+"..amount.." "..skill.." XP") end
-				end
-			end
+		-- xpSeconds: the part of the match this XP covers (after an earlier xpOnly settlement).
+		local xpSeconds=if payload.xpSeconds~=nil then int(payload.xpSeconds,1,seconds) else seconds
+		for skill,amount in pairs(settleXp(game,lv,xpSeconds,payload.xp)) do
+			if amount>0 then grantXp(p,skill,amount); table.insert(gained,"+"..amount.." "..skill.." XP") end
 		end
 		table.sort(gained)
+		p.started=true
+		-- A disconnected member's XP (paid while the journal is still live): no log, no reward.
+		if payload.xpOnly==true then return {ok=true,paid=0,points=0,message=table.concat(gained," • ")} end
+		local points=int(payload.points,0,MG.MAX_POINTS_PER_SECOND*seconds)
+		local won=payload.won==true and payload.forfeit~=true
+		local required=rules.MIN_POINTS
+		local recent=true
+		if game=="Siege" then
+			required=math.max(MG.Siege.requiredPoints(seconds,0),int(payload.required,0,MG.MAX_POINTS_PER_SECOND*seconds+1))
+			recent=payload.recent~=false
+		end
 		local log=m.log[game]
 		log.played+=1
 		log.points+=points
 		log.best=math.max(log.best,points)
-		if won and points>=rules.MIN_POINTS then log.won+=1 end -- a win counts only for members who earned it
-		p.started=true
+		if won and recent and points>=required then log.won+=1 end -- a win counts only for members who earned it
 		local parts={}
 		local paid=0
 		if game=="Siege" then
-			paid=MG.Siege.reward(payload.tier,points,won)
+			paid=if recent then MG.Siege.reward(payload.tier,points,won,required) else 0
 			m.commendations+=paid
 			if paid>0 then table.insert(parts,"+"..paid.." Commendations ("..m.commendations.." banked)")
-			elseif won then table.insert(parts,"No Commendations: "..points.." / "..MG.Siege.MIN_POINTS.." points") end
+			elseif won and not recent then table.insert(parts,"No Commendations: no action in the last "..MG.Siege.RECENT_SECONDS.." s")
+			elseif won then table.insert(parts,"No Commendations: "..points.." / "..required.." points") end
 		else
-			paid=MG.Haul.rolls(points,won,payload.partySize)
-			m.rolls=math.min(500,m.rolls+paid)
-			if paid>0 then table.insert(parts,"+"..paid.." Squall Cache roll"..(if paid==1 then "" else "s").." (open them in Hunt › Minigames)")
-			elseif won then table.insert(parts,"No reward: "..points.." / "..MG.Haul.MIN_POINTS.." points") end
+			paid=MG.Haul.rolls(points,won,payload.partySize,seconds)
+			local banked=math.min(paid,math.max(0,ROLL_BANK-m.rolls))
+			m.rolls+=banked
+			if banked>0 then table.insert(parts,"+"..banked.." Squall Cache roll"..(if banked==1 then "" else "s").." (open them in Hunt › Minigames)")
+			elseif won and paid==0 then table.insert(parts,"No reward: "..points.." / "..MG.Haul.MIN_POINTS.." points") end
+			if paid>banked then
+				-- The bank is full: never drop a roll, open the overflow on the spot.
+				table.insert(parts,"Cache bank full ("..ROLL_BANK.."): "..(paid-banked).." opened on the spot: "..openCaches(p,paid-banked))
+			end
 		end
 		log.paid+=paid
 		for _,g in ipairs(gained) do table.insert(parts,g) end
-		return {ok=true,paid=paid,points=points,message=table.concat(parts," • ")}
+		return {ok=true,paid=paid,points=points,required=required,message=table.concat(parts," • ")}
 	end
 	function Minigames.bridge(player,p,payload)
 		local action=payload.action
 		if action=="info" then
 			local lv=levels(p)
-			return {combat=lv.Combat,levels=lv,ironman=p.ironman==true,lumenward=MG.lumenwardStyle(p)~=nil}
+			return {combat=lv.Combat,levels=lv,ironman=p.ironman==true,lumenward=styleOf(p)~=nil,rollRoom=math.max(0,ROLL_BANK-ledger(p).rolls)}
 		elseif action=="spend" then
 			local n=int(payload.amount,1,5)
 			if payload.item~="Timber" or (p.items.Timber or 0)<n then return {ok=false} end
@@ -3004,22 +3046,8 @@ do
 		elseif verb=="mgRoll" then
 			if m.rolls<1 then return "You have no Squall Cache rolls. Win a Tempest Haul with "..MG.Haul.MIN_POINTS.."+ points." end
 			local n=if item=="all" then math.min(m.rolls,20) else 1
-			local coins,items=0,{}
-			for _=1,n do
-				local loot=MG.Haul.rollCache(level(p.xp.Fishing),roll)
-				coins+=loot.coins
-				for id,k in pairs(loot.items) do items[id]=(items[id] or 0)+k end
-			end
 			m.rolls-=n
-			p.coins+=coins
-			local names={}
-			for id,k in pairs(items) do
-				collect(p,id,k)
-				local def=Data.Items[id]
-				table.insert(names,"+"..k.." "..(def and def.name or id))
-			end
-			table.sort(names)
-			reply="Opened "..n.." Squall Cache"..(if n==1 then "" else "s")..": +"..coins.." coins"..(if #names>0 then ", "..table.concat(names,", ") else "").."."
+			reply="Opened "..n.." Squall Cache"..(if n==1 then "" else "s")..": "..openCaches(p,n).."."
 		elseif verb=="mgTitle" then
 			if item=="none" then m.title=""; reply="Title hidden."
 			elseif validId(item) and m.unlocks[item] then m.title=item; reply="Now wearing "..MG.ShopById[item].title.."."
