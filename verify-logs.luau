@@ -528,15 +528,18 @@ local services = {
 }
 local serverObjects = {}
 local logsApi
+local resolve -- defined below: every pushed snapshot passes through the client-side logs cache
 local env = {
 	game = {GetService = function(_, name) return services[name] end, BindToClose = function() end},
 	workspace = {GetAttribute = function(self, key) return rawget(self, key) end, FindFirstChild = function(_, name) if name == "Islands" then return islands end return nil end},
 	Vector3 = Vector3, CFrame = CFrame,
-	Instance = {new = function()
-		local o = {Event = signal(), FireClient = function(_, player, state) player.last = state end}
+	Instance = {new = function(className)
+		local o = {ClassName = className, Event = signal(), FireClient = function(_, player, state) player.last = if resolve then resolve(player, state) else state end}
+		function o:Destroy() self.Parent = nil; self.destroyed = true end
 		table.insert(serverObjects, o)
 		return o
 	end},
+	UDim2 = roblox.UDim2, Color3 = roblox.Color3, Enum = roblox.Enum,
 	os = {clock = function() return clock end, time = function() return math.floor(utc) end},
 	require = function(target) return assert(modules[target], "unexpected require") end,
 	Random = {new = function() return {NextNumber = function() return nextRoll() end, NextInteger = function(_, lo, hi) return lo + math.floor(nextRoll() * (hi - lo + 1)) end} end},
@@ -580,7 +583,26 @@ for _, o in ipairs(serverObjects) do
 	if o.Name == "IsleBridge" then bridge = o end
 end
 ok(remote ~= nil and bridge ~= nil, "IsleAction and IsleBridge found")
-local function cmd(p, verb, item) advance(1); return remote.OnServerInvoke(p, verb, item) end
+-- Client-side logs cache (mirrors ui.client.lua CLP.logs): a compact
+-- snapshot.logs {rev, resetIn, compact} reuses the last full one of that rev.
+local logsCache = setmetatable({}, {__mode = "k"})
+local compactSeen = 0
+function resolve(p, snap)
+	if type(snap) == "table" and type(snap.logs) == "table" then
+		if snap.logs.compact then
+			local cached = logsCache[p]
+			assert(cached and cached.rev == snap.logs.rev, "compact logs without the cached revision")
+			compactSeen += 1
+			cached.commissions.resetIn = snap.logs.resetIn
+			snap.logs = cached
+		else
+			logsCache[p] = snap.logs
+		end
+	end
+	return snap
+end
+local function cmd(p, verb, item) advance(1); return resolve(p, remote.OnServerInvoke(p, verb, item)) end
+local function raw(p, verb, item) advance(1); return remote.OnServerInvoke(p, verb, item) end
 -- A gather prompt double (server checks attributes, distance and Enabled).
 local function node(item, region)
 	local base = {CFrame = CFrame.new(0, 0, 0)}
@@ -800,19 +822,25 @@ local nogem = use(gemmer, node("Ore"))
 ok(not has(nogem.message, "Gemseeker"), "no gem on a missed roll")
 eq(nogem.items.SunstoneChip, 1, "no extra gem")
 ok(nogem.logs.log.counts.SunstoneChip == 1, "gem logged in the Collection Log")
+-- Steadfast Pick regrowth reaches the harvest message (Mastery's "quick regrowth" text).
+ok(has(gem.message, "quick regrowth (" .. (math.floor(P.regrowthTime(P.resource("Ore").respawn or 3, 20) * 10 + 0.5) / 10) .. "s)"), "Steadfast Pick regrowth in the harvest text: " .. tostring(gem.message))
 do
 	local profile = {commissions = {forge = {SteadfastPick = 10}, total = 0, slots = {}, day = CL.dayOf(utc)}, xp = {Mining = 0}, items = {}, collection = {}, perkStats = {}}
 	local result = {}
-	logsApi.gather(profile, "Voidstone", result, P.resource("Voidstone"))
+	logsApi.regrow(profile, result, P.resource("Voidstone"))
 	eq(result.regrowth, P.regrowthTime(10, 20), "Steadfast Pick shortens Voidstone regrowth by 20%")
+	eq(result.respawnSkip, true, "shortened regrowth is flagged for the Mastery text")
 	local r2 = {}
 	profile.commissions.forge = {}
-	logsApi.gather(profile, "Voidstone", r2, P.resource("Voidstone"))
+	logsApi.regrow(profile, r2, P.resource("Voidstone"))
 	eq(r2.regrowth, nil, "no perk, no regrowth change")
 	local r3 = {}
 	profile.commissions.forge = {SteadfastPick = 10}
-	logsApi.gather(profile, "Timber", r3, P.resource("Timber"))
+	logsApi.regrow(profile, r3, P.resource("Timber"))
 	eq(r3.regrowth, nil, "only Mining nodes")
+	local r4 = {}
+	logsApi.gather(profile, "Voidstone", r4, P.resource("Voidstone"))
+	eq(r4.regrowth, nil, "the post-harvest hook no longer touches regrowth (applied before Mastery.gather)")
 	-- Catch progress through the shared event (Hunter hook).
 	profile.commissions.slots = {{id = "CatchPuffcapHopper", progress = 0, claimed = false}}
 	logsApi.event(profile, "catch", "PuffcapHopper")
@@ -959,6 +987,159 @@ ok(has(use(iron, boardPrompt("Museum")).message, "curator"), "museum prompt")
 ok(has(use(iron, boardPrompt("Log")).message, "Collection Log"), "log prompt")
 ok(has(cmd(iron, "logsBoard", "Museum").message, "in person"), "board verb needs a prompt")
 
+-- Review fix (HIGH): only the first load sweeps p.items. Items bought on the
+-- Auction House / Bazaar or withdrawn from a crew land in p.items without
+-- collect() and must never credit the log or complete a tab.
+do
+	local bossIds = CL.log().Tabs.Bosses
+	local buyer = player(7030)
+	local b0 = cmd(buyer, "state")
+	eq(b0.logs.log.found, 0, "log opened empty (first load done)")
+	buyer = seeded(7030, function(prof)
+		-- Offline AH/Bazaar fills: every Bosses unique lands in p.items (and one is worn).
+		for _, id in ipairs(bossIds) do prof.items[id] = 1 end
+		prof.equipment = {weapon = bossIds[1]}
+		prof.items.BurrowmolePet = 1
+	end)
+	local b1 = cmd(buyer, "state")
+	for _, id in ipairs(bossIds) do eq(b1.logs.log.counts[id], nil, "bought " .. id .. " not logged") end
+	eq(b1.logs.log.counts.BurrowmolePet, nil, "bought pet item not logged")
+	eq(b1.logs.log.found, 0, "nothing credited after the first load")
+	eq(b1.logs.log.retro, 0, "no retroactive credit on a later load")
+	eq(b1.logs.log.complete.Bosses, false, "bought tab is not complete")
+	ok(has(cmd(buyer, "logClaim", "Bosses").message, "Complete every"), "bought tab cannot be claimed")
+	eq(cmd(buyer, "state").logs.log.claimed.Bosses, nil, "no claim recorded")
+	-- Live crew withdrawal (coop credit) and verbs afterwards: still no credit.
+	local coop
+	for _, o in ipairs(serverObjects) do if o.Name == "IsleCoopProfile" then coop = o end end
+	ok(coop ~= nil, "crew bridge found")
+	local res = coop.OnInvoke(buyer, false, {credit = {token = "crew-1", resource = "AurelionPet", amount = 1}})
+	ok(type(res) == "table" and res.ready == true and type(res.result) == "table" and res.result.ok == true, "crew withdrawal delivered")
+	local b2 = cmd(buyer, "state")
+	eq(b2.items.AurelionPet, 1, "withdrawn unique is in the satchel")
+	eq(b2.logs.log.counts.AurelionPet, nil, "crew withdrawal not logged")
+	cmd(buyer, "logTitle", "none") -- any verb: still no sweep of p.items
+	eq(cmd(buyer, "state").logs.log.found, 0, "verbs never sweep held items")
+	-- Genuine sources still count: adopted pets and the clue log (narrow sweep), collect() drops.
+	buyer = seeded(7030, function(prof)
+		prof.pets = {{id = "Emberfox", level = 1, xp = 0}}
+		prof.trails = prof.trails or {}
+		prof.trails.uniques = {TrailCapWayfarer = 2}
+	end)
+	local b3 = cmd(buyer, "state")
+	eq(b3.logs.log.counts.EmberfoxPet, 1, "adopted pet logged by the narrow sweep")
+	eq(b3.logs.log.counts.TrailCapWayfarer, 2, "clue-log unique logged by the narrow sweep")
+	eq(b3.logs.log.found, 2, "only the genuine entries")
+	eq(b3.logs.log.counts[bossIds[1]], nil, "worn bought unique still not logged")
+	local u = logsApi.sweepOngoing({colLog = {counts = {}}, items = {BurrowmolePet = 3}, equipment = {weapon = "LenswrightSaber"}, pets = {}})
+	eq(u, 0, "narrow sweep ignores held and worn items")
+end
+
+-- Review fix (MED): a server clock behind the saved day never redraws the board.
+do
+	local ahead = today() + 2
+	local behind = seeded(7031, function(prof)
+		setBoard(prof, {"MineOre", "GatherHerb", "GatherTimber", "GatherFish"}, {CL.TaskById.MineOre.amount, 2, 0, 0})
+		prof.commissions.day = ahead -- saved by a server whose clock ran ahead
+	end)
+	local c1 = cmd(behind, "state")
+	eq(c1.logs.commissions.day, ahead, "future saved day kept by migrate")
+	eq(c1.logs.commissions.slots[1].id, "MineOre", "board not redrawn on a clock behind")
+	eq(c1.logs.commissions.slots[2].progress, 2, "progress kept on a clock behind")
+	eq(c1.logs.commissions.total, 0, "no auto-claim on a clock behind")
+	use(behind, node("Herb"))
+	eq(cmd(behind, "state").logs.commissions.slots[2].progress, 3, "events still count on the saved board")
+	eq(stored(behind).commissions.day, ahead, "future day persisted")
+	-- Empty board with a future day: drawn for the saved day, not today.
+	behind = seeded(7031, function(prof) prof.commissions.day = ahead; prof.commissions.slots = {} end)
+	local c2 = cmd(behind, "state")
+	eq(c2.logs.commissions.day, ahead, "empty board drawn for the saved (later) day")
+	local salt = stored(behind).commissions.salt
+	behind = player(7031)
+	eq(cmd(behind, "state").logs.commissions.slots[1].id, CL.draw(ahead, salt, {levels = {}, regions = {}})[1], "drawn from the saved day's seed")
+	-- Once the clock passes the saved day the board rolls forward as usual.
+	advance(86400 * 3)
+	local c3 = cmd(behind, "state")
+	eq(c3.logs.commissions.day, today(), "rolls forward when the clock catches up")
+	ok(c3.logs.commissions.day > ahead, "never backwards")
+end
+
+-- Review fix (LOW): museum takes a spare copy of an equipped / bagged item.
+do
+	local acc
+	for id, def in pairs(Data.Items) do if def.kind == "accessory" and CL.museumCategory(id) and not acc then acc = id end end
+	local spare = seeded(7032, function(prof)
+		prof.items.BrassHelm = 2
+		prof.equipment = {helmet = "BrassHelm"}
+		prof.items.SunsteelSword = 1
+		prof.equipment.weapon = "SunsteelSword"
+		if acc then prof.items[acc] = 2; prof.accessoryBag = {acc} end
+		prof.items.StarmetalSword = 2
+		prof.stars = {StarmetalSword = 1}
+		prof.equipment.ammo = nil
+	end)
+	ok(has(cmd(spare, "museumDonate", "SunsteelSword").message, "Unequip"), "last equipped copy refused")
+	local d = cmd(spare, "museumDonate", "BrassHelm")
+	ok(has(d.message, "donated"), "spare copy of an equipped item donated")
+	eq(d.items.BrassHelm, 1, "the worn copy stays")
+	if acc then
+		local da = cmd(spare, "museumDonate", acc)
+		ok(has(da.message, "donated"), "spare copy of a bagged accessory donated")
+		eq(da.items[acc], 1, "the bagged copy stays")
+	end
+	eq(logsApi.donateCheck({museum = {donated = {}}, items = {BrassHelm = 2}, equipment = {helmet = "BrassHelm", weapon = "BrassHelm"}}, "BrassHelm") ~= nil, true, "two worn copies: no spare")
+	eq(logsApi.donateCheck({museum = {donated = {}}, items = {BrassHelm = 2}, equipment = {helmet = "BrassHelm"}, stars = {BrassHelm = 1}}, "BrassHelm"), nil, "worn + upgraded share the held copy")
+end
+
+-- Review fix (LOW): Paragon is wearable and LogTitle shows on a billboard.
+do
+	local par = seeded(7033, function(prof) prof.commissions.total = 150 end)
+	local ps = cmd(par, "state")
+	eq(ps.logs.commissions.paragon, "Forgeheart Paragon", "snapshot names the Paragon title")
+	cmd(par, "logTitle", "Paragon")
+	eq(par.attrs.LogTitle, "Forgeheart Paragon", "Paragon worn")
+	local function plateOf(p)
+		local found
+		for _, o in ipairs(serverObjects) do if o.Name == "LogTitlePlate" and not o.destroyed and o.Parent == p.root then found = o end end
+		return found
+	end
+	local board = plateOf(par)
+	ok(board ~= nil and board.ClassName == "BillboardGui", "title billboard above the head")
+	local label
+	for _, o in ipairs(serverObjects) do if o.Parent == board and o.ClassName == "TextLabel" then label = o end end
+	eq(label and label.Text, "Forgeheart Paragon", "billboard shows the title")
+	ok(board.AlwaysOnTop == false and board.MaxDistance <= 80 and board.Size.X.Scale > 0 and board.StudsOffset.Y >= 3, "billboard is cheap and sits above the name tag (stud-scaled)")
+	local count = 0
+	for _ = 1, 5 do cmd(par, "state") end
+	for _, o in ipairs(serverObjects) do if o.Name == "LogTitlePlate" and not o.destroyed and o.Parent == par.root then count += 1 end end
+	eq(count, 1, "snapshots reuse one billboard")
+	cmd(par, "logTitle", "none")
+	eq(plateOf(par), nil, "billboard removed with the title")
+	eq(par.attrs.LogTitle, "", "attribute cleared")
+end
+
+-- Review fix (LOW): snapshot.logs is sent in full only when it changed.
+do
+	local poll = player(7034)
+	local a = raw(poll, "state")
+	ok(a.logs.compact == true, "join snapshot already carried the logs: polls are compact")
+	local a2 = raw(poll, "state")
+	eq(a2.logs.compact, true, "unchanged logs stay compact")
+	eq(a2.logs.rev, a.logs.rev, "same revision")
+	eq(a2.logs.commissions, nil, "compact payload carries no board")
+	ok(type(a2.logs.resetIn) == "number", "compact payload keeps the reset timer fresh")
+	local f = raw(poll, "logTitle", "none") -- a successful verb changes the revision
+	ok(f.logs.compact == nil and type(f.logs.commissions) == "table", "change sends full logs")
+	ok(f.logs.rev > a.logs.rev, "revision advanced")
+	eq(raw(poll, "state").logs.compact, true, "then compact again")
+	local sync = raw(poll, "logsSync")
+	ok(sync.logs.compact == nil and sync.logs.rev == f.logs.rev, "logsSync resends the full logs at the same revision")
+	use(poll, node("Ore")) -- collect() bumps the revision when a log entry or commission changes
+	local g = raw(poll, "state")
+	ok(g.logs.compact == true or g.logs.rev ~= f.logs.rev, "gathering only resends when something changed")
+	ok(compactSeen > 50, "most snapshots in this suite were compact (" .. compactSeen .. ")")
+end
+
 -- Migration bounds: tampered saves are sanitised.
 local tampered = seeded(7019, function(prof)
 	prof.commissions = {day = CL.dayOf(utc), salt = -5, dust = 1e15, total = -3, earned = "x",
@@ -1013,7 +1194,7 @@ local partE = checks
 local H = require("./tools/ui-harness")
 local function sample()
 	local snap = H.snapshot({xp = {Mining = X[20]}})
-	snap.items.BrassSword = 1
+	snap.items.BrassSword = 2 -- the harness enchants BrassSword: a spare copy is donatable
 	snap.items.SunsteelSword = 1
 	local L2 = CL.log()
 	local counts = {}
@@ -1144,6 +1325,88 @@ do
 		eq(#bare.warnings, 0, section .. " renders before sync")
 	end
 	ok(has(texts(bare.scroll), "SYNCING"), "syncing badge")
+end
+do
+	-- Review fix: the Paragon title is worn from the Commissions page.
+	local ui = atlas(roblox.Vector2.new(1366, 768), function(snap)
+		snap.logs.commissions.total = 150; snap.logs.commissions.milestone = #CL.Milestones; snap.logs.commissions.paragon = "Forgeheart Paragon"
+	end)
+	open(ui, "Commissions")
+	local wear = H.find(ui.scroll, "LogTitleParagon")
+	ok(wear ~= nil, "Paragon wear button")
+	H.press(wear)
+	eq(ui.sent[#ui.sent][1], "logTitle", "wear Paragon verb")
+	eq(ui.sent[#ui.sent][2], "Paragon", "wear Paragon payload")
+	local worn = atlas(roblox.Vector2.new(844, 390), function(snap)
+		snap.logs.commissions.total = 150; snap.logs.commissions.paragon = "Forgeheart Paragon"; snap.logs.log.title = "Paragon"
+	end)
+	open(worn, "Commissions")
+	ok(H.find(worn.scroll, "LogTitleParagon") == nil and H.find(worn.scroll, "LogTitleParagonOff") ~= nil, "worn Paragon offers removal")
+	eq(#worn.warnings, 0, "Paragon card renders cleanly")
+	local plain = atlas(roblox.Vector2.new(1366, 768))
+	open(plain, "Commissions")
+	ok(H.find(plain.scroll, "LogTitleParagon") == nil, "no Paragon button before 150 completions")
+end
+do
+	-- Review fix: museum donatable mirrors the server (spare copies of worn,
+	-- bagged and upgraded items may go; the last held copy may not).
+	local ui = atlas(roblox.Vector2.new(1366, 768), function(snap)
+		snap.items.BrassHelm = 2
+		snap.items.BrassChestplate = 1
+		snap.items.SunsteelSword = 1
+		snap.depth.equipment = {helmet = "BrassHelm", chest = "BrassChestplate"}
+		snap.depth.gear = {reforges = {}, stars = {SunsteelSword = 2}, books = {}}
+		snap.logs.museum.donated = {}
+	end)
+	open(ui, "Museum")
+	H.press(H.find(ui.scroll, "MuseumCatArmor"))
+	H.press(H.find(ui.scroll, "MuseumItemBrassHelm"))
+	local donate = H.find(ui.scroll, "MuseumDonate")
+	ok(donate ~= nil, "spare worn helm opens a donation card")
+	local before = #ui.sent
+	H.press(donate)
+	ok(#ui.sent == before + 1 and ui.sent[#ui.sent][2] == "BrassHelm", "spare worn copy can be donated")
+	open(ui, "Museum")
+	H.press(H.find(ui.scroll, "MuseumCatArmor"))
+	H.press(H.find(ui.scroll, "MuseumItemBrassChestplate"))
+	before = #ui.sent
+	H.press(H.find(ui.scroll, "MuseumDonate"))
+	eq(#ui.sent, before, "last worn copy stays local")
+	ok(has(texts(ui.scroll), "Unequip"), "worn refusal explained")
+	open(ui, "Museum")
+	H.press(H.find(ui.scroll, "MuseumCatWeapons"))
+	H.press(H.find(ui.scroll, "MuseumItemSunsteelSword"))
+	before = #ui.sent
+	H.press(H.find(ui.scroll, "MuseumDonate"))
+	eq(#ui.sent, before, "last upgraded copy stays local")
+	ok(has(texts(ui.scroll), "upgrades"), "upgrade refusal explained")
+end
+do
+	-- Review fix: compact snapshot.logs reuses the cached full copy; a cache
+	-- miss asks logsSync once.
+	local ui = atlas(roblox.Vector2.new(1366, 768), function(snap) snap.logs.rev = 5 end)
+	open(ui, "Commissions")
+	ok(H.find(ui.scroll, "Commission1") ~= nil, "full logs drawn")
+	local compact = sample()
+	compact.logs = {rev = 5, resetIn = 600, compact = true}
+	ui.update.OnClientEvent:Fire(compact)
+	open(ui, "Commissions")
+	ok(H.find(ui.scroll, "Commission1") ~= nil, "compact snapshot keeps the cached board")
+	ok(has(texts(ui.scroll), "RESETS 0h 10m"), "compact snapshot refreshes the reset timer")
+	ok(not has(texts(ui.scroll), "SYNCING"), "no syncing badge on a cache hit")
+	local syncs = 0
+	for _, e in ipairs(ui.sent) do if e[1] == "logsSync" then syncs += 1 end end
+	eq(syncs, 0, "no sync request on a cache hit")
+	local newer = sample()
+	newer.logs = {rev = 6, resetIn = 590, compact = true}
+	ui.setSnapshot(newer)
+	ui.update.OnClientEvent:Fire(newer)
+	open(ui, "Commissions")
+	syncs = 0
+	for _, e in ipairs(ui.sent) do if e[1] == "logsSync" then syncs += 1 end end
+	ok(syncs >= 1, "unknown revision asks logsSync")
+	ok(syncs <= 2, "sync is not spammed (" .. syncs .. ")")
+	ok(H.find(ui.scroll, "Commission1") ~= nil, "older copy shown while syncing")
 end
 print("PASS: " .. (checks - partE) .. " Commissions & Logs page assertions.")
 print("PASS: " .. checks .. " Commissions & Logs assertions in total.")

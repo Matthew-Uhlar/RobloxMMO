@@ -160,7 +160,7 @@ local Classes={verbs={}}
 -- Treasure Trails (clue scrolls, steps, caskets); filled in by the Trails block after Prayer & Thieving.
 local Trails={verbs={trailBegin=true,trailAbandon=true,trailDig=true,trailSearch=true,trailEmote=true,trailSlide=true,trailCheck=true,trailOpen=true,trailTeleport=true,trailLearn=true,trailBanner=true}}
 -- Commissions & Logs (commissions, Forgeheart, Collection Log, Museum); filled in by the Logs block after Slayer tasks.
-local Logs={verbs={commissionClaim=true,commissionClaimAll=true,forgeBuy=true,logClaim=true,logTitle=true,museumDonate=true,logsBoard=true}}
+local Logs={verbs={commissionClaim=true,commissionClaimAll=true,forgeBuy=true,logClaim=true,logTitle=true,museumDonate=true,logsBoard=true,logsSync=true}}
 -- One-time coins for each newly reached skill level.
 local function levelCoins(p,skill,newLevel)
 	p.levelRewards=p.levelRewards or {}
@@ -2857,12 +2857,21 @@ end
 --   logClaim "<tab>"              claim a completed Collection Log tab (coins + title, once)
 --   logTitle "<tab>|Paragon|none" wear an unlocked title (attribute LogTitle)
 --   museumDonate "<item id>"      donate one owned copy (consumed): refused when
---                                 already donated, not owned, equipped/bagged, or
---                                 the last copy of an upgraded id
+--                                 already donated, not owned, or when it would take
+--                                 the last copy held by gear/bag/upgrades (spares go)
 --   logsBoard "<Commissions|Museum|Log>" (world prompt only) greeting text
+--   logsSync                      resend the full snapshot.logs (client cache miss)
 -- Hooks: Logs.prime before the gather stats (Forgeheart fortune budget),
--- Logs.gather after a harvest (commission progress, gem roll, regrowth),
+-- Logs.regrow before Mastery.gather (Steadfast Pick joins the regrowth text),
+-- Logs.gather after a harvest (commission progress, gem roll),
 -- Logs.event from the kill bridge and Hunter catches, Logs.collect from collect().
+-- Log credit: one full retroactive sweep on the first load only (no p.colLog
+-- yet); afterwards entries come from collect() (drops, gathering, crafting)
+-- plus a narrow sweep of adopted pets and the Treasure Trails clue log.
+-- Items that land in p.items without collect() (Auction House, Bazaar, crew
+-- withdrawals, refunds) never credit the log.
+-- Snapshot: snapshot.logs is the full state (with .rev) when it changed since
+-- the last one sent to this player, else {rev, resetIn, compact = true}.
 -- Profile: p.commissions = {day, salt, slots = {{id, progress, claimed}}, total,
 --   dust, earned, forge = {[perk] = level}}; p.colLog = {counts = {[item] = n},
 --   claimed = {[tab] = true}, title = tab | "Paragon" | "", retro = n};
@@ -2870,7 +2879,9 @@ end
 --   Logs.migrate (unknown ids dropped, numbers clamped).
 -- Perks: p.perkStats["commissions:milestones"], ["forgeheart"], ["museum"].
 -- A UTC day change auto-claims finished commissions, then draws a new board.
--- Snapshot key: logs. Player attribute: LogTitle (title text or "").
+-- The board only rolls forward: a server clock behind the saved day keeps it.
+-- Snapshot key: logs. Player attribute: LogTitle (title text or ""), shown on
+-- a small billboard above the character's head (LogTitlePlate).
 ------------------------------------------------------------------------------
 do
 	local CL=Data.CommissionsLogs
@@ -2882,6 +2893,14 @@ do
 		return math.floor(math.min(n,limit or MAX_COUNT))
 	end
 	local function itemName(id) return Data.Items[id] and Data.Items[id].name or tostring(id) end
+	-- Session-only revisions: snapshot.logs is sent in full only when it changed.
+	-- Strong tables, emptied when the player leaves (see the end of this block).
+	local revOf={} -- [profile] = revision
+	local sentRev={} -- [player] = revision last sent in full
+	local profileOf={} -- [player] = profile whose revision was sent
+	local lastRev=0
+	local function bump(p) lastRev+=1; revOf[p]=lastRev end
+	Logs.bump=bump
 	function Logs.migrate(p)
 		local c=type(p.commissions)=="table" and p.commissions or {}
 		local out={day=whole(c.day),salt=whole(c.salt,1e6),slots={},total=whole(c.total,CL.MAX_TOTAL),dust=whole(c.dust,CL.MAX_DUST),earned=whole(c.earned,CL.MAX_DUST*10),forge={}}
@@ -2916,13 +2935,14 @@ do
 		end
 		museum.paid=math.min(whole(m.paid,#CL.MuseumMilestones),select(2,CL.museumPerks(museum.count)))
 		p.museum=museum
-		-- First load of the log: retroactive credit from what the journal already holds.
-		if not g then log.retro=Logs.sweep(p) end
+		-- First load of the log only: retroactive credit from what the journal
+		-- already holds. Later loads never sweep p.items (bought/borrowed items).
+		if not g then log.retro=Logs.sweep(p) else Logs.sweepOngoing(p) end
 		Logs.refresh(p)
 	end
-	-- Raises log counts to what the journal provably obtained (lifetime
-	-- collections, held items, worn gear, adopted pets, clue-log uniques,
-	-- museum donations). Returns how many entries were newly credited.
+	-- First-load sweep: raises log counts to what the journal provably obtained
+	-- (lifetime collections, held items, worn gear, adopted pets, clue-log
+	-- uniques, museum donations). Returns how many entries were newly credited.
 	function Logs.sweep(p)
 		local L=CL.log()
 		local counts=p.colLog.counts
@@ -2945,6 +2965,35 @@ do
 		end
 		return fresh
 	end
+	-- Ongoing sweep (every load and snapshot, cheap): only adopted pets and the
+	-- Treasure Trails clue log, which are earned and never traded in. Returns
+	-- how many entries were newly credited.
+	function Logs.sweepOngoing(p)
+		local log=p.colLog
+		if not log then return 0 end
+		local L=CL.log()
+		local counts=log.counts
+		local seen={}
+		for _,pet in ipairs(type(p.pets)=="table" and p.pets or {}) do
+			local id=type(pet)=="table" and type(pet.id)=="string" and pet.id.."Pet"
+			if id and L.Of[id] then seen[id]=(seen[id] or 0)+1 end
+		end
+		local trailUniques=type(p.trails)=="table" and type(p.trails.uniques)=="table" and p.trails.uniques or nil
+		if trailUniques then
+			for id,n in pairs(trailUniques) do if L.Of[id] then seen[id]=math.max(seen[id] or 0,whole(n)) end end
+		end
+		local fresh,changed=0,false
+		for id,n in pairs(seen) do
+			local had=counts[id] or 0
+			if n>had then
+				counts[id]=n
+				changed=true
+				if had==0 then fresh+=1 end
+			end
+		end
+		if changed then bump(p) end
+		return fresh
+	end
 	local function board(p) return p.commissions end
 	local function context(p) return SlayerTasks.context(p) end
 	local function pay(p,t)
@@ -2963,6 +3012,7 @@ do
 		return r
 	end
 	-- Fortune budget: Forgeheart fills only what Mastery leaves under CL.FORTUNE_BUDGET.
+	local function fortuneOf(p) return type(p.perkStats)=="table" and p.perkStats.forgeheart and p.perkStats.forgeheart.miningFortune or 0 end
 	function Logs.prime(p)
 		if type(p.perkStats)~="table" then p.perkStats={} end
 		local c=p.commissions
@@ -2971,19 +3021,26 @@ do
 		local stats=CL.forgeStats(c.forge,mastery)
 		p.perkStats.forgeheart=if next(stats) then stats else nil
 	end
+	-- True when the board must be drawn: a later UTC day, or an empty board.
+	-- A server clock behind the saved day never redraws (forward only).
+	local function stale(c,today) return today>c.day or #c.slots==0 end
+	-- Full refresh: day roll (forward only), milestone/museum perks, Forgeheart.
+	-- Runs on load, on a new day and after verbs, never on every snapshot.
 	function Logs.refresh(p)
 		local c=board(p)
 		local today=CL.dayOf(os.time())
-		if c.day~=today or #c.slots==0 then
-			local paid=0
-			for _,s in ipairs(c.slots) do
-				local t=CL.TaskById[s.id]
-				if t and not s.claimed and s.progress>=t.amount then s.claimed=true; pay(p,t); paid+=1 end
+		if stale(c,today) then
+			if today>c.day then
+				local paid=0
+				for _,s in ipairs(c.slots) do
+					local t=CL.TaskById[s.id]
+					if t and not s.claimed and s.progress>=t.amount then s.claimed=true; pay(p,t); paid+=1 end
+				end
+				if paid>0 then note(p,"Yesterday's finished commissions were claimed for you ("..paid..").") end
 			end
-			if paid>0 then note(p,"Yesterday's finished commissions were claimed for you ("..paid..").") end
-			c.day=today
+			c.day=math.max(today,c.day)
 			c.slots={}
-			for _,id in ipairs(CL.draw(today,c.salt,context(p))) do table.insert(c.slots,{id=id,progress=0,claimed=false}) end
+			for _,id in ipairs(CL.draw(c.day,c.salt,context(p))) do table.insert(c.slots,{id=id,progress=0,claimed=false}) end
 		end
 		if type(p.perkStats)~="table" then p.perkStats={} end
 		local perks=CL.milestonePerks(c.total)
@@ -2991,41 +3048,62 @@ do
 		local stats=CL.museumPerks(p.museum.count)
 		p.perkStats.museum=if next(stats) then stats else nil
 		Logs.prime(p)
-		Logs.sweep(p)
+		bump(p)
+	end
+	-- Cheap per-snapshot upkeep: a day change triggers the full refresh; the
+	-- narrow pet/clue sweep and the Forgeheart budget bump the revision only
+	-- when they change something.
+	function Logs.tick(p)
+		local c=p.commissions
+		if not c then return end
+		if stale(c,CL.dayOf(os.time())) then Logs.refresh(p) end
+		Logs.sweepOngoing(p)
+		local before=fortuneOf(p)
+		Logs.prime(p)
+		if fortuneOf(p)~=before then bump(p) end
 	end
 	-- Commission progress: kind "gather" (resource id), "kill" (monster id), "catch" (Hunter creature id).
 	function Logs.event(p,kind,id)
 		local c=p.commissions
 		if not c or type(id)~="string" then return end
-		if c.day~=CL.dayOf(os.time()) then Logs.refresh(p) end
+		if CL.dayOf(os.time())>c.day then Logs.refresh(p) end
 		for _,s in ipairs(c.slots) do
 			local t=CL.TaskById[s.id]
 			if t and t.kind==kind and t.target==id and s.progress<t.amount then
 				s.progress+=1
+				bump(p)
 				if s.progress>=t.amount then note(p,"Commission complete: "..t.name.."! Claim it in Journal › Commissions.") end
 			end
 		end
 	end
+	-- The only ongoing item credit: collect() (genuine drops, gathering, crafting).
 	function Logs.collect(p,item,count)
 		local log=p.colLog
 		if not log or not CL.log().Of[item] or type(count)~="number" or count<=0 then return end
 		local had=log.counts[item] or 0
 		log.counts[item]=math.min(MAX_COUNT,had+math.floor(count))
+		bump(p)
 		if had==0 then note(p,"New Collection Log entry: "..itemName(item).."!") end
 	end
-	-- After a harvest: commission progress, Gemseeker roll (Mining), Steadfast Pick regrowth.
+	-- Steadfast Pick regrowth, before Mastery.gather so its "quick regrowth"
+	-- text reports the combined timer (Mastery + Forgeheart, one cap).
+	function Logs.regrow(p,result,resource)
+		local c=p.commissions
+		if not c or resource.skill~="Mining" then return end
+		local skip=CL.forgeSkip(c.forge)
+		if skip<=0 then return end
+		local base=tonumber(resource.respawn) or 3
+		local mastery=Progression.masteryPerks(p,"Mining",os.time()).respawnSkip or 0
+		local total=math.max(mastery,math.min(Data.Mastery.PASSIVE_CAPS.respawnSkip,mastery+skip))
+		result.regrowth=Progression.regrowthTime(base,total)
+		if result.regrowth<base then result.respawnSkip=true end
+	end
+	-- After a harvest: commission progress and the Gemseeker roll (Mining).
 	function Logs.gather(p,item,result,resource)
 		Logs.event(p,"gather",item)
 		if not p.commissions or resource.skill~="Mining" then return "" end
 		local c=p.commissions
 		local text=""
-		local skip=CL.forgeSkip(c.forge)
-		if skip>0 then
-			local base=tonumber(resource.respawn) or 3
-			local mastery=Progression.masteryPerks(p,"Mining",os.time()).respawnSkip or 0
-			local total=math.max(mastery,math.min(Data.Mastery.PASSIVE_CAPS.respawnSkip,mastery+skip))
-			result.regrowth=Progression.regrowthTime(base,total)
-		end
 		local chance=CL.gemChance(c.forge,c.total)
 		if chance>0 and roll()*100<chance then
 			local gem=CL.gemFor(resource.index,roll())
@@ -3040,6 +3118,60 @@ do
 		local tab=CL.LogTabs[t]
 		return tab and tab.title or ""
 	end
+	-- Title billboard: one small plate per titled character, sized in studs so
+	-- it keeps its gap above the name tag at any distance; destroyed when the
+	-- title is removed, rebuilt on respawn.
+	local plates={} -- [player] = {head, board, label}
+	local hooked={} -- [player] = CharacterAdded connection
+	local function plate(player,text)
+		local held=plates[player]
+		if text=="" and not held then return end
+		if text~="" and not hooked[player] and player.CharacterAdded then
+			hooked[player]=player.CharacterAdded:Connect(function(character)
+				task.spawn(function()
+					local head=character:WaitForChild("Head",10)
+					if head and player.Parent then plates[player]=nil; Logs.plate(player,player:GetAttribute("LogTitle") or "") end
+				end)
+			end)
+		end
+		local character=player.Character
+		local head=character and character:FindFirstChild("Head")
+		if text=="" or not head then
+			if held then held.board:Destroy(); plates[player]=nil end
+			return
+		end
+		if held and held.head==head and held.board.Parent then
+			if held.label.Text~=text then held.label.Text=text end
+			return
+		end
+		if held then held.board:Destroy() end
+		local gui=Instance.new("BillboardGui")
+		gui.Name="LogTitlePlate"
+		gui.Size=UDim2.new(5,0,0.55,0)
+		gui.StudsOffset=Vector3.new(0,3.3,0)
+		gui.MaxDistance=60
+		gui.LightInfluence=0
+		gui.AlwaysOnTop=false
+		local label=Instance.new("TextLabel")
+		label.Name="Title"
+		label.BackgroundTransparency=1
+		label.Size=UDim2.fromScale(1,1)
+		label.Font=Enum.Font.GothamBold
+		label.TextScaled=true
+		label.TextColor3=Color3.fromRGB(243,198,110)
+		label.TextStrokeTransparency=0.35
+		label.Text=text
+		label.Parent=gui
+		gui.Adornee=head
+		gui.Parent=head
+		plates[player]={head=head,board=gui,label=label}
+	end
+	Logs.plate=plate
+	function Logs.applyTitle(player,p)
+		local text=Logs.titleText(p)
+		if player:GetAttribute("LogTitle")~=text then player:SetAttribute("LogTitle",text) end
+		plate(player,text)
+	end
 	local function tabDone(p,tab)
 		local list=CL.log().Tabs[tab]
 		if not list or #list==0 then return false end
@@ -3048,20 +3180,27 @@ do
 	end
 	Logs.tabDone=tabDone
 	-- Donation check without changing anything: nil = allowed, else the refusal.
+	-- Equipped, bagged and upgraded ids each hold copies back: a donation is
+	-- refused only when it would take one of those held copies (a spare goes).
 	function Logs.donateCheck(p,id)
 		local cat=CL.museumCategory(id)
 		if not cat then return "That item cannot be displayed in the Museum." end
 		if p.museum.donated[id] then return itemName(id).." is already on display." end
-		if (p.items[id] or 0)<1 then return "You do not own "..itemName(id).."." end
-		for _,eq in pairs(p.equipment or {}) do if eq==id then return "Unequip "..itemName(id).." before donating it." end end
-		if table.find(p.accessoryBag or {},id) then return "Take "..itemName(id).." out of your accessory bag first." end
+		local have=p.items[id] or 0
+		if have<1 then return "You do not own "..itemName(id).."." end
+		local worn,bagged=0,0
+		for _,eq in pairs(type(p.equipment)=="table" and p.equipment or {}) do if eq==id then worn+=1 end end
+		for _,b in ipairs(type(p.accessoryBag)=="table" and p.accessoryBag or {}) do if b==id then bagged+=1 end end
 		local upgraded=(type(p.reforges)=="table" and p.reforges[id]~=nil) or (type(p.stars)=="table" and (tonumber(p.stars[id]) or 0)>0)
 			or (type(p.books)=="table" and p.books[id]~=nil) or (type(p.enchants)=="table" and type(p.enchants[id])=="table" and next(p.enchants[id])~=nil)
-		if upgraded and (p.items[id] or 0)<=1 then return itemName(id).." carries upgrades; donate a spare copy instead." end
-		return nil
+		if have>math.max(worn+bagged,if upgraded then 1 else 0) then return nil end
+		if worn>0 then return "Unequip "..itemName(id).." before donating it (or donate a spare copy)." end
+		if bagged>0 then return "Take "..itemName(id).." out of your accessory bag first (or donate a spare copy)." end
+		return itemName(id).." carries upgrades; donate a spare copy instead."
 	end
 	function Logs.action(player,p,verb,item,prompt)
-		Logs.refresh(p)
+		if verb=="logsSync" then sentRev[player]=nil; return "" end
+		Logs.tick(p)
 		local c=board(p)
 		local reply
 		if verb=="logsBoard" then
@@ -3099,7 +3238,6 @@ do
 			if c.dust<cost then return f.name.." "..(lvl+1).." needs "..cost.." Glimmerdust (you have "..c.dust..")." end
 			c.dust-=cost
 			c.forge[item]=lvl+1
-			Logs.prime(p)
 			reply=f.name.." "..(lvl+1).."/"..f.max.." forged • -"..cost.." Glimmerdust."
 		elseif verb=="logClaim" then
 			local tab=CL.LogTabs[item]
@@ -3127,21 +3265,26 @@ do
 			for i=m.paid+1,reached do coins+=CL.MuseumMilestones[i].coins end
 			m.paid=math.max(m.paid,reached)
 			p.coins+=coins
-			Logs.refresh(p)
 			reply=itemName(item).." donated to the Museum ("..m.count.." on display)"..(if coins>0 then " • milestone! +"..coins.." coins" else "").."."
 		else
 			return "Unknown action."
 		end
 		p.started=true
-		player:SetAttribute("LogTitle",Logs.titleText(p))
+		Logs.refresh(p) -- perks, Forgeheart budget and a new revision after every change
+		Logs.applyTitle(player,p)
 		return reply
 	end
 	function Logs.state(player,p)
 		if not p.commissions then return nil end
-		Logs.refresh(p)
-		player:SetAttribute("LogTitle",Logs.titleText(p))
+		Logs.tick(p)
+		Logs.applyTitle(player,p)
 		local c=p.commissions
 		local now=os.time()
+		if not revOf[p] then bump(p) end
+		local rev=revOf[p]
+		profileOf[player]=p
+		if sentRev[player]==rev then return {rev=rev,resetIn=CL.resetIn(now),compact=true} end
+		sentRev[player]=rev
 		local slots={}
 		for i,s in ipairs(c.slots) do
 			local t=CL.TaskById[s.id]
@@ -3156,13 +3299,19 @@ do
 		for _,tab in ipairs(CL.log().Order) do complete[tab]=tabDone(p,tab) end
 		local _,reached=CL.museumPerks(p.museum.count)
 		return {
+			rev=rev,
 			commissions={day=c.day,resetIn=CL.resetIn(now),slots=slots,total=c.total,dust=c.dust,earned=c.earned,milestone=perks.reached,
 				forge=table.clone(c.forge),costs=costs,discount=perks.forgeDiscount,gemChance=CL.gemChance(c.forge,c.total),
-				fortune=(p.perkStats.forgeheart and p.perkStats.forgeheart.miningFortune) or 0},
-			log={counts=p.colLog.counts,claimed=p.colLog.claimed,complete=complete,title=p.colLog.title,titleText=Logs.titleText(p),score=score,max=max,found=found,rank=rank.name,retro=p.colLog.retro},
-			museum={donated=p.museum.donated,count=p.museum.count,milestone=reached,stats=p.perkStats.museum or {}},
+				fortune=fortuneOf(p),paragon=perks.title},
+			log={counts=table.clone(p.colLog.counts),claimed=table.clone(p.colLog.claimed),complete=complete,title=p.colLog.title,titleText=Logs.titleText(p),score=score,max=max,found=found,rank=rank.name,retro=p.colLog.retro},
+			museum={donated=table.clone(p.museum.donated),count=p.museum.count,milestone=reached,stats=table.clone(p.perkStats.museum or {})},
 		}
 	end
+	Players.PlayerRemoving:Connect(function(player)
+		if profileOf[player] then revOf[profileOf[player]]=nil end
+		if hooked[player] then hooked[player]:Disconnect() end
+		sentRev[player],profileOf[player],plates[player],hooked[player]=nil,nil,nil,nil
+	end)
 end
 -- End Commissions & Logs block.
 local function applyStats(player,p,spawned)
@@ -3303,7 +3452,7 @@ local function snapshot(player,message)
 		prayer=Prayer.state(player,p,stats),thieving=Prayer.thievingState(player,p,stats), -- Prayer & Thieving page state
 		trails=Trails.state(player,p), -- Treasure Trails: Satchel > Trails page state
 		slayerTasks=SlayerTasks.state(player,p), -- Slayer tasks: Hunt > Slayer page state
-		logs=Logs.state(player,p)} -- Commissions & Logs: Journal > Commissions / Collection Log / Museum
+		logs=Logs.state(player,p)} -- Commissions & Logs: Journal > Commissions / Collection Log / Museum (full when changed, else {rev, resetIn, compact})
 end
 -- Prayer & Thieving: drain-loop notices (prayer points ran out).
 Prayer.push=function(player,message) if player.Parent then update:FireClient(player,snapshot(player,message)) end end
@@ -4737,8 +4886,9 @@ local function perform(player,verb,item,prompt)
 		grantXp(p,skill,result.xp)
 		if skill=="Farming" and Garden.fieldSeed then Garden.fieldSeed(p,item) end -- Verdant Garden seed pouch
 		Trails.event(p,"gather",item) -- Treasure Trails: scroll drops + trail tasks (Fishing counts as "fish")
+		Logs.regrow(p,result,resource) -- Commissions & Logs: Steadfast Pick joins the Mastery regrowth text
 		local mastered=Mastery.gather(p,result) -- Skill Mastery: bonus ingots, coins, regrowth skip
-		mastered..=Logs.gather(p,item,result,resource) -- Commissions & Logs: commission progress, Gemseeker, Steadfast Pick
+		mastered..=Logs.gather(p,item,result,resource) -- Commissions & Logs: commission progress, Gemseeker
 		if region then Journal.count(p,"gathers",region,1) end
 		p.started=true
 		if not regrowth then regrowth={}; nodeRegrowth[prompt]=regrowth; watchPrompt(prompt) end
