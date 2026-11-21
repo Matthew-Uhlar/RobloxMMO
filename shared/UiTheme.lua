@@ -725,25 +725,27 @@ end
 -- each tile's region (Data.Regions id) and its warp. travel = "recall" (the
 -- recall charm verb, Hub/Home) or "guide" (Wayfinder waypoint to the island's
 -- skyway beacon / entrance; region warps happen at the beacons in the world).
+-- u / v / size place the illustrated tile on the Sky Chart (0..1 of the canvas,
+-- px at full scale); x / z / r are the world layout the minimap tints use.
 ------------------------------------------------------------------------------
 Theme.WorldMap = {
 	bounds = {minX = -640, maxX = 940, minZ = -720, maxZ = 560},
 	islands = {
-		{id = "Hub", name = "Compass Quay", region = "Hub", x = 0, z = 0, r = 115, top = "9DAA85", travel = "recall", target = "Hub"},
-		{id = "SkywayTerrace", name = "Skyway Terrace", region = "Hub", x = 0, z = 232, r = 75, top = "A7B08A", travel = "guide", specs = {"anchor:Waypoint_Skyway"}},
-		{id = "WardenReach", name = "Warden Reach", region = "Hub", x = 0, z = -230, r = 70, top = "7C8498", travel = "guide", specs = {"region:Hub"}},
-		{id = "Meadow", name = "Mosswake Grove", region = "Meadow", x = -230, z = 0, r = 72, top = "8DB86E", travel = "guide", specs = {"region:Meadow", "warp:Meadow"}},
-		{id = "MeadowReach", name = "Meadow Reach", region = "Meadow", x = -230, z = 185, r = 70, top = "8DB86E", travel = "guide", specs = {"anchor:Waypoint_Entrance_Meadow", "region:Meadow"}},
-		{id = "Quarry", name = "Brassfall Quarry", region = "Quarry", x = 230, z = 0, r = 74, top = "9C9682", travel = "guide", specs = {"region:Quarry", "warp:Quarry"}},
-		{id = "CinderShelf", name = "Cinder Shelf", region = "Quarry", x = 230, z = -185, r = 58, top = "8F8676", travel = "guide", specs = {"anchor:Waypoint_Entrance_CinderShelf", "region:Quarry"}},
-		{id = "Skyreach", name = "Skyreach Heights", region = "Skyreach", x = 430, z = 110, r = 66, top = "96ACAB", travel = "guide", specs = {"warp:Skyreach", "region:Skyreach"}},
-		{id = "Windpine", name = "Windpine Grove", region = "Windpine", x = -500, z = -160, r = 85, top = "6B8E5A", travel = "guide", specs = {"warp:Windpine", "region:Windpine"}},
-		{id = "Gloomhollow", name = "Gloomhollow Caverns", region = "Gloomhollow", x = 440, z = -440, r = 82, top = "5B4F7A", travel = "guide", specs = {"warp:Gloomhollow", "region:Gloomhollow"}},
-		{id = "Tidewater", name = "Tidewater Shoals", region = "Tidewater", x = -520, z = 440, r = 92, top = "4FB0C6", travel = "guide", specs = {"warp:Tidewater", "region:Tidewater"}},
-		{id = "Tempest", name = "Tempest Spire", region = "Tempest", x = 600, z = -220, r = 70, top = "6F7FA8", travel = "guide", specs = {"warp:Tempest", "region:Tempest"}},
-		{id = "ShatteredCrown", name = "The Shattered Crown", region = "ShatteredCrown", x = 820, z = -600, r = 96, top = "B48CFF", travel = "guide", specs = {"warp:ShatteredCrown", "region:ShatteredCrown"}},
+		{id = "Hub", u = 0.42, v = 0.5, size = 150, name = "Compass Quay", region = "Hub", x = 0, z = 0, r = 115, top = "9DAA85", travel = "recall", target = "Hub"},
+		{id = "SkywayTerrace", u = 0.42, v = 0.82, size = 100, name = "Skyway Terrace", region = "Hub", x = 0, z = 232, r = 75, top = "A7B08A", travel = "guide", specs = {"anchor:Waypoint_Skyway"}},
+		{id = "WardenReach", u = 0.42, v = 0.2, size = 95, name = "Warden Reach", region = "Hub", x = 0, z = -230, r = 70, top = "7C8498", travel = "guide", specs = {"region:Hub"}},
+		{id = "Meadow", u = 0.24, v = 0.48, size = 100, name = "Mosswake Grove", region = "Meadow", x = -230, z = 0, r = 72, top = "8DB86E", travel = "guide", specs = {"region:Meadow", "warp:Meadow"}},
+		{id = "MeadowReach", u = 0.24, v = 0.8, size = 95, name = "Meadow Reach", region = "Meadow", x = -230, z = 185, r = 70, top = "8DB86E", travel = "guide", specs = {"anchor:Waypoint_Entrance_Meadow", "region:Meadow"}},
+		{id = "Quarry", u = 0.6, v = 0.48, size = 100, name = "Brassfall Quarry", region = "Quarry", x = 230, z = 0, r = 74, top = "9C9682", travel = "guide", specs = {"region:Quarry", "warp:Quarry"}},
+		{id = "CinderShelf", u = 0.6, v = 0.2, size = 85, name = "Cinder Shelf", region = "Quarry", x = 230, z = -185, r = 58, top = "8F8676", travel = "guide", specs = {"anchor:Waypoint_Entrance_CinderShelf", "region:Quarry"}},
+		{id = "Skyreach", u = 0.76, v = 0.64, size = 95, name = "Skyreach Heights", region = "Skyreach", x = 430, z = 110, r = 66, top = "96ACAB", travel = "guide", specs = {"warp:Skyreach", "region:Skyreach"}},
+		{id = "Windpine", u = 0.08, v = 0.28, size = 110, name = "Windpine Grove", region = "Windpine", x = -500, z = -160, r = 85, top = "6B8E5A", travel = "guide", specs = {"warp:Windpine", "region:Windpine"}},
+		{id = "Gloomhollow", u = 0.75, v = 0.18, size = 105, name = "Gloomhollow Caverns", region = "Gloomhollow", x = 440, z = -440, r = 82, top = "5B4F7A", travel = "guide", specs = {"warp:Gloomhollow", "region:Gloomhollow"}},
+		{id = "Tidewater", u = 0.08, v = 0.74, size = 115, name = "Tidewater Shoals", region = "Tidewater", x = -520, z = 440, r = 92, top = "4FB0C6", travel = "guide", specs = {"warp:Tidewater", "region:Tidewater"}},
+		{id = "Tempest", u = 0.89, v = 0.42, size = 95, name = "Tempest Spire", region = "Tempest", x = 600, z = -220, r = 70, top = "6F7FA8", travel = "guide", specs = {"warp:Tempest", "region:Tempest"}},
+		{id = "ShatteredCrown", u = 0.92, v = 0.13, size = 115, name = "The Shattered Crown", region = "ShatteredCrown", x = 820, z = -600, r = 96, top = "B48CFF", travel = "guide", specs = {"warp:ShatteredCrown", "region:ShatteredCrown"}},
 	},
-	home = {id = "Home", name = "Your Isle", region = "Home", travel = "recall", target = "Home", top = "7FA86A"},
+	home = {id = "Home", u = 0.92, v = 0.86, size = 80, name = "Your Isle", region = "Home", travel = "recall", target = "Home", top = "7FA86A"},
 }
 -- Tile rectangle (0..1 of the map canvas) for an island.
 function Theme.mapPoint(island)

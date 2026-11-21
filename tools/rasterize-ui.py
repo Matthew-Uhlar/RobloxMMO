@@ -700,7 +700,7 @@ class Painter:
                 patch.alpha_composite(layer)
             else:
                 ImageDraw.Draw(patch).rounded_rectangle(box, radius=radius * S, fill=color + (int(255 * alpha),))
-        if border:
+        if border and w > 0 and h > 0:
             t = border["thickness"] * S
             outer = [m - t, m - t, m + w * S - 1 + t, m + h * S - 1 + t]
             if border["grad"] is not None:
@@ -716,7 +716,9 @@ class Painter:
                 layer.putalpha(ImageChops.multiply(layer.getchannel("A"), ring))
                 patch.alpha_composite(layer)
             else:
-                ImageDraw.Draw(patch).rounded_rectangle(outer, radius=(radius * S + t) if radius else 0, outline=border["color"] + (int(255 * border["alpha"]),), width=max(1, int(round(t))))
+                # Thick rims on tiny boxes: keep the corner radius within the box.
+                rr = min((radius * S + t) if radius else 0, max(0, (outer[2] - outer[0]) / 2 - 1), max(0, (outer[3] - outer[1]) / 2 - 1))
+                ImageDraw.Draw(patch).rounded_rectangle(outer, radius=rr, outline=border["color"] + (int(255 * border["alpha"]),), width=max(1, int(round(t))))
         elif not node.comp("UICorner") and (node.get("BorderSizePixel", 1) or 0) > 0 and alpha > 0.003:
             bc = hex2rgb(node.get("BorderColor3"), (27, 42, 53))
             bw = node.get("BorderSizePixel", 1) * S

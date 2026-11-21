@@ -883,6 +883,8 @@ end
 gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(function() UI.layoutSidebar();UI.layoutActionBar() end)
 -- The island builder owns the bottom of the screen (the hotbar hides too).
 player:GetAttributeChangedSignal("IslandBuilding"):Connect(function() UI.layoutActionBar() end)
+-- The Wayfinder publishes the region under the player (sidebar region line).
+player:GetAttributeChangedSignal("IsleRegionHere"):Connect(function() if UI.refreshSidebar then UI.refreshSidebar() end end)
 function UI.layoutActionBar()
 	local L=UI.lay()
 	actionBar.Position,actionBar.Size=UDim2.fromOffset(L.action.x,L.action.y),UDim2.fromOffset(L.action.w,L.action.h)
@@ -8327,8 +8329,8 @@ local MENU={
 local function caption(id)
 	local d=depth() or EMPTY
 	if id=="Skills" then return "Total level "..fmt(num(d.totalLevel,0))
-	elseif id=="Collections" then local n=0 for _,c in pairs(tbl(d.collections)) do if type(c)=="table" and num(c.tier,0)>0 then n+=1 end end return n.." collections unlocked"
-	elseif id=="Recipes" then return "Forge · Hearth · Cauldron"
+	elseif id=="Collections" then local n=0 for _,c in pairs(tbl(d.collections)) do if type(c)=="table" and num(c.tier,0)>0 then n+=1 end end return n.." unlocked"
+	elseif id=="Recipes" then return "Stations & crafting"
 	elseif id=="Bestiary" then local n=0 for _,k in pairs(tbl(d.bestiary)) do n+=num(k,0) end return fmt(n).." creatures slain"
 	elseif id=="Quests" then local j=tbl(state.journal) local ready=0 for _,q in ipairs(tbl(j.quests)) do if type(q)=="table" and q.ready then ready+=1 end end return ready>0 and (ready.." ready to claim") or (fmt(num(j.questPoints,0)).." quest points")
 	elseif id=="Pets" then return #tbl(d.pets).." companions"
@@ -8345,7 +8347,8 @@ function Pages.drawMenu()
 	local width=contentWidth()
 	local cols=width>=640 and 4 or (width>=400 and 3 or 2)
 	local cell=math.floor((width-6-(cols-1)*8)/cols)
-	local tall=compactAtlas and 64 or 84
+	-- Desktop: tall icon-over-title tiles (SkyBlock menu); phones: icon-left rows.
+	local tall=compactAtlas and 64 or 124
 	local grid=gridHolder(UDim2.fromOffset(cell,tall),8)
 	grid.Name="MenuGrid"
 	for i,t in ipairs(MENU) do
@@ -8355,14 +8358,22 @@ function Pages.drawMenu()
 			UI.slide()
 		end)
 		UI.T.rim(b,1.5)
-		local icon=motif(b,t.motif,compactAtlas and 34 or 46)
-		icon.AnchorPoint=Vector2.new(0,.5)
-		icon.Position=UDim2.new(0,compactAtlas and 10 or 14,.5,0)
-		local x=(compactAtlas and 34 or 46)+(compactAtlas and 18 or 26)
-		local title=label(b,t.title or t.id,x,compactAtlas and 12 or 20,UDim.new(1,-x-8),20,UI.heavy,compactAtlas and 14 or 16,ivory)
-		title.Name="Title"
-		local sub=label(b,caption(t.id),x,compactAtlas and 32 or 42,UDim.new(1,-x-8),18,regular,12,muted)
-		sub.Name="Caption"
+		local title,sub
+		if compactAtlas then
+			local icon=motif(b,t.motif,34)
+			icon.AnchorPoint=Vector2.new(0,.5)
+			icon.Position=UDim2.new(0,10,.5,0)
+			title=label(b,t.title or t.id,52,12,UDim.new(1,-60),20,UI.heavy,14,ivory)
+			sub=label(b,caption(t.id),52,32,UDim.new(1,-60),18,regular,12,muted)
+		else
+			local icon=motif(b,t.motif,54)
+			icon.AnchorPoint=Vector2.new(.5,0)
+			icon.Position=UDim2.new(.5,0,0,12)
+			title=label(b,t.title or t.id,8,72,UDim.new(1,-16),20,UI.heavy,16,ivory)
+			sub=label(b,caption(t.id),8,94,UDim.new(1,-16),18,regular,12,muted)
+			title.TextXAlignment,sub.TextXAlignment=Enum.TextXAlignment.Center,Enum.TextXAlignment.Center
+		end
+		title.Name,sub.Name="Title","Caption"
 	end
 end
 local SETTINGS={

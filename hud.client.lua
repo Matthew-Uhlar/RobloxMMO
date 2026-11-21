@@ -274,12 +274,18 @@ local function placePanel()
 	local rows = PER_PAGE // cols
 	local tall = if touch then 44 else 28
 	local toolbar = if touch then 4 + tall + 6 else 6 + 30 + 4 + tall + 6
+	-- Touch: a taller header so the close button is a full 44 px target.
+	local headerH = if touch then 46 else 28
+	local band, bodyFrame = panel:FindFirstChild("Header"), panel:FindFirstChild("Body")
+	band.Size = UDim2.new(1, -6, 0, headerH - 3)
+	panel:FindFirstChild("HeaderRule").Position = UDim2.new(0, 10, 0, headerH)
+	bodyFrame.Position, bodyFrame.Size = UDim2.fromOffset(0, headerH), UDim2.new(1, 0, 1, -headerH)
 	local pager = tall + 8
 	local cellMin = if touch then 44 else 34
 	local cell = math.floor(math.min((rect.w - 16 - (cols - 1) * 4) / cols, 52))
 	cell = math.max(cell, cellMin)
 	local width = math.max(rect.w, cols * (cell + 4) + 12)
-	local height = math.min(rect.h, 28 + toolbar + rows * (cell + 4) + pager)
+	local height = math.min(if L.short then L.h - 8 else rect.h, headerH + toolbar + rows * (cell + 4) + pager)
 	if L.short then
 		width = math.min(width, L.w - 16)
 		panel.Position = UDim2.fromOffset(math.floor((L.w - width) / 2), math.floor((L.h - height) / 2))
@@ -294,13 +300,13 @@ local function placePanel()
 	end
 	S.cell, S.cols = cell, cols
 	grid.Size = UDim2.new(1, -16, 0, rows * (cell + 4))
-	close.Size = UDim2.fromOffset(if touch then 44 else 26, if touch then 26 else 22)
+	close.Size = UDim2.fromOffset(if touch then 44 else 26, if touch then 44 else 22)
 	close.Position = UDim2.new(1, -4, 0, if touch then 1 else 3)
 	pin.Visible = S.docked
 	local tabRow = tabs.Items.Parent
 	if touch then
 		-- One toolbar row: [Items|Gear] [search…] [sort].
-		tabRow.Position, tabRow.Size = UDim2.fromOffset(8, 4), UDim2.fromOffset(150, tall)
+		tabRow.Position, tabRow.Size = UDim2.fromOffset(8, 1), UDim2.fromOffset(156, tall + 6)
 		for _, b in pairs(tabs) do b.Size = UDim2.new(0.5, -3, 1, -6) end
 		itemsView.Position, itemsView.Size = UDim2.fromOffset(0, 4), UDim2.new(1, 0, 1, -4)
 		search.Position, search.Size = UDim2.fromOffset(164, 0), UDim2.new(1, -164 - 96, 0, tall)
@@ -320,7 +326,7 @@ local function placePanel()
 	pageLabel.Size = UDim2.new(1, -2 * tall - 8, 1, 0)
 	-- Wide panels: paperdoll left, stat sheet right; narrow: stacked.
 	if width >= 300 then
-		doll.Size = UDim2.new(0.5, -10, 0, math.min(204, height - 28 - (if touch then tall + 10 else 40) - 6))
+		doll.Size = UDim2.new(0.5, -10, 0, math.min(204, height - headerH - (if touch then tall + 10 else 40) - 6))
 		statsList.Position, statsList.Size = UDim2.new(0.5, 2, 0, 0), UDim2.new(0.5, -10, 1, -4)
 	else
 		doll.Size = UDim2.new(1, -16, 0, 204)
@@ -538,6 +544,8 @@ xpEvents.Event:Connect(showGains)
 ------------------------------------------------------------------------------
 -- Sky Chart: the floating islands as illustrated tiles with warp points.
 ------------------------------------------------------------------------------
+local chartShade = make("TextButton", gui, {Name = "ChartShade", Text = "", AutoButtonColor = false, BackgroundColor3 = C.void, BackgroundTransparency = 0.35,
+	BorderSizePixel = 0, Size = UDim2.fromScale(1, 1), Visible = false, ZIndex = 19, Selectable = false})
 local chart = T.frame(gui, {name = "WarpMap", title = "SKY CHART", size = UDim2.fromScale(1, 1), visible = false, zIndex = 20, transparency = 0.04})
 make("UISizeConstraint", chart, {MaxSize = Vector2.new(980, 640)})
 chart.AnchorPoint, chart.Position = Vector2.new(0.5, 0.5), UDim2.fromScale(0.5, 0.5)
@@ -549,7 +557,7 @@ T.corner(sky, 6)
 make("UIGradient", sky, {Rotation = 90, Color = ColorSequence.new(T.rgb("5C86B8"), T.rgb("1A2C44"))})
 for i, cloud in ipairs({{0.1, 0.15, 0.22}, {0.72, 0.1, 0.18}, {0.45, 0.82, 0.26}, {0.86, 0.66, 0.16}, {0.2, 0.7, 0.14}}) do
 	local f = make("Frame", sky, {Name = "Cloud" .. i, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(cloud[1], cloud[2]), Size = UDim2.fromScale(cloud[3], cloud[3] * 0.35),
-		BackgroundColor3 = C.white, BackgroundTransparency = 0.86, BorderSizePixel = 0})
+		BackgroundColor3 = C.white, BackgroundTransparency = 0.9, BorderSizePixel = 0, ZIndex = 1})
 	T.corner(f, 40)
 end
 local chartClose = T.button(chart, "✕", {name = "CloseChart", size = UDim2.fromOffset(44, 26), anchor = Vector2.new(1, 0), position = UDim2.new(1, -6, 0, 2), tone = "ghost", textSize = 14})
@@ -574,55 +582,77 @@ local function regionState(region)
 	end
 	return true, ""
 end
-local function tile(island, x, y, size)
-	local t = make("Frame", sky, {Name = "Isle_" .. island.id, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(x, y), Size = UDim2.fromOffset(size, size * 0.8),
-		BackgroundTransparency = 1})
+-- Floating-island tile: a grassy crown (ellipse) with tree tufts, a layered
+-- rock underside with stalactites, the name plate below and a violet warp
+-- point (or a drawn padlock when the isle is still locked).
+local function tile(island)
+	local t = make("Frame", sky, {Name = "Isle_" .. island.id, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(island.u, island.v),
+		Size = UDim2.fromOffset(island.size, island.size * 0.78), BackgroundTransparency = 1, ZIndex = 2})
 	local top = T.rgb(island.top or "8DB86E")
-	-- Rock underside (two stacked plates narrowing down), grassy top, rim light.
-	local rock = make("Frame", t, {Name = "Rock", AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromScale(0.5, 0.34), Size = UDim2.fromScale(0.78, 0.42),
-		BackgroundColor3 = T.rgb("5A4A3C"), BorderSizePixel = 0})
-	T.corner(rock, 14)
-	make("UIGradient", rock, {Rotation = 90, Color = ColorSequence.new(T.rgb("7A6450"), T.rgb("2E241C"))})
-	local spike = make("Frame", t, {Name = "Spike", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.74), Size = UDim2.fromScale(0.3, 0.3),
-		Rotation = 45, BackgroundColor3 = T.rgb("3A2E24"), BorderSizePixel = 0})
-	local grass = make("Frame", t, {Name = "Top", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.34), Size = UDim2.fromScale(1, 0.46),
-		BackgroundColor3 = top, BorderSizePixel = 0})
-	T.corner(grass, 60)
-	make("UIGradient", grass, {Rotation = 90, Color = ColorSequence.new(T.lighten(top, 0.25), T.darken(top, 0.2))})
-	make("UIStroke", grass, {Color = T.darken(top, 0.55), Thickness = 1.5})
-	local name = T.label(t, {Name = "Name", Text = island.name, AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromScale(0.5, 0.9), Size = UDim2.fromOffset(160, 16),
-		TextXAlignment = Enum.TextXAlignment.Center, Font = T.font.label, TextSize = 12, TextStrokeTransparency = 0.2, TextStrokeColor3 = C.void, ZIndex = 4})
-	local warp = make("TextButton", t, {Name = "Warp", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.3), Size = UDim2.fromOffset(30, 30),
-		BackgroundColor3 = T.rgb("6A3FC8"), Text = "✦", Font = T.font.heading, TextSize = 15, TextColor3 = C.white, AutoButtonColor = true, ZIndex = 5})
-	T.corner(warp, 15)
-	make("UIStroke", warp, {Color = T.rgb("E2D0FF"), Thickness = 2})
-	local lock = T.label(t, {Name = "Lock", Text = "🔒", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.3), Size = UDim2.fromOffset(30, 30),
-		TextXAlignment = Enum.TextXAlignment.Center, TextSize = 16, Visible = false, ZIndex = 6})
-	local here = T.label(t, {Name = "Here", Text = "▼ YOU", AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.fromScale(0.5, 0.02), Size = UDim2.fromOffset(60, 12),
-		TextXAlignment = Enum.TextXAlignment.Center, Font = T.font.number, TextSize = 8, TextColor3 = C.gold, Visible = false, ZIndex = 6, TextStrokeTransparency = 0.2})
-	warp.Activated:Connect(function() S.pickWarp(island, t) end)
+	local rockTop, rockFoot = T.rgb("7A6650"), T.rgb("2A211A")
+	local function plate(name, x, y, w, h, color, radius, rot)
+		local f = make("Frame", t, {Name = name, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(x, y), Size = UDim2.fromScale(w, h),
+			BackgroundColor3 = color, BorderSizePixel = 0, Rotation = rot or 0})
+		if radius then T.corner(f, radius) end
+		return f
+	end
+	-- Underside: a broad slab, two stalactites and a long central spire.
+	local slab = plate("Rock", 0.5, 0.52, 0.9, 0.44, rockTop, 18)
+	make("UIGradient", slab, {Rotation = 90, Color = ColorSequence.new(rockTop, rockFoot)})
+	for i, s in ipairs({{0.28, 0.68, 0.2}, {0.72, 0.66, 0.18}, {0.5, 0.76, 0.3}}) do
+		local spike = plate("Spike" .. i, s[1], s[2], s[3], s[3], T.darken(rockTop, 0.35 + i * 0.05), nil, 45)
+		make("UIGradient", spike, {Rotation = 45, Color = ColorSequence.new(T.darken(rockTop, 0.2), rockFoot)})
+	end
+	-- Crown: grass ellipse with a lit rim and tufts.
+	local grass = plate("Top", 0.5, 0.34, 1, 0.44, top, 80)
+	make("UIGradient", grass, {Rotation = 90, Color = ColorSequence.new(T.lighten(top, 0.3), T.darken(top, 0.15))})
+	make("UIStroke", grass, {Color = T.darken(top, 0.6), Thickness = 1.5})
+	for i, tuft in ipairs({{0.22, 0.3, 0.12}, {0.34, 0.24, 0.1}, {0.72, 0.28, 0.13}, {0.62, 0.42, 0.09}, {0.28, 0.44, 0.08}}) do
+		local f = plate("Tuft" .. i, tuft[1], tuft[2], tuft[3], tuft[3] * 1.25, T.darken(top, 0.35), 40)
+		make("UIStroke", f, {Color = T.darken(top, 0.6), Thickness = 1})
+	end
+	local name = T.label(t, {Name = "Name", Text = island.name, AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromScale(0.5, 0.84), Size = UDim2.fromOffset(170, 16),
+		TextXAlignment = Enum.TextXAlignment.Center, Font = T.font.label, TextSize = 12, TextStrokeTransparency = 0.15, TextStrokeColor3 = C.void, ZIndex = 4})
+	local warp = make("TextButton", t, {Name = "Warp", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.26), Size = UDim2.fromOffset(32, 32),
+		BackgroundColor3 = T.rgb("6A3FC8"), Text = "✦", Font = T.font.heading, TextSize = 16, TextColor3 = C.white, AutoButtonColor = true, ZIndex = 5})
+	T.corner(warp, 16)
+	make("UIGradient", warp, {Rotation = 90, Color = ColorSequence.new(T.rgb("E8DAFF"), T.rgb("8C6AD8"))})
+	make("UIStroke", warp, {Color = T.rgb("F2E9FF"), Thickness = 2})
+	-- Padlock drawn from frames: shackle ring over a gold body.
+	local lock = make("Frame", t, {Name = "Lock", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.26), Size = UDim2.fromOffset(22, 24),
+		BackgroundTransparency = 1, Visible = false, ZIndex = 6})
+	local shackle = make("Frame", lock, {Name = "Shackle", AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromScale(0.5, 0), Size = UDim2.fromOffset(14, 14),
+		BackgroundTransparency = 1, ZIndex = 6})
+	T.corner(shackle, 7)
+	make("UIStroke", shackle, {Color = T.rgb("C9D2DC"), Thickness = 3})
+	local body = make("Frame", lock, {Name = "Body", AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.fromScale(0.5, 1), Size = UDim2.fromOffset(22, 14),
+		BackgroundColor3 = C.gold, BorderSizePixel = 0, ZIndex = 7})
+	T.corner(body, 3)
+	make("UIStroke", body, {Color = C.frameLo, Thickness = 1})
+	local here = T.label(t, {Name = "Here", Text = "YOU ARE HERE", AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.fromScale(0.5, 0.02), Size = UDim2.fromOffset(110, 12),
+		TextXAlignment = Enum.TextXAlignment.Center, Font = T.font.number, TextSize = 8, TextColor3 = C.gold, Visible = false, ZIndex = 6, TextStrokeTransparency = 0.1, TextStrokeColor3 = C.void})
+	local pick = function() S.pickWarp(island, t) end
+	warp.Activated:Connect(pick)
 	S.tiles[island.id] = {frame = t, warp = warp, lock = lock, here = here, name = name, island = island, grass = grass}
 	return t
 end
-for _, island in ipairs(T.WorldMap.islands) do
-	local x, y = T.mapPoint(island)
-	tile(island, 0.06 + x * 0.88, 0.08 + y * 0.8, math.clamp(island.r * 0.95, 56, 110))
-end
-tile(T.WorldMap.home, 0.08, 0.9, 60)
+for _, island in ipairs(T.WorldMap.islands) do tile(island) end
+tile(T.WorldMap.home)
 function S.pickWarp(island, frame)
 	local unlocked, requirement = regionState(island.region)
 	S.warpPick = island
 	chartInfo.Visible = true
-	local abs = frame.Position
-	chartInfo.Position = UDim2.new(abs.X.Scale, 10, abs.Y.Scale, -20)
-	chartInfo.AnchorPoint = Vector2.new(if abs.X.Scale > 0.6 then 1 else 0, 0.5)
+	-- Beside the tile, on the side with more room.
+	local right = island.u > 0.6
+	chartInfo.AnchorPoint = Vector2.new(if right then 1 else 0, 0.5)
+	chartInfo.Position = UDim2.new(island.u, if right then -island.size / 2 - 8 else island.size / 2 + 8, island.v, 0)
 	infoTitle.Text = T.escape(island.name)
 	if not unlocked then
-		infoText.Text = "<font color=\"#FF6B5A\">Locked</font> · " .. T.escape(if requirement ~= "" then "Requires " .. requirement else "Not charted yet")
+		infoText.Text = "<font color=\"#FF6B5A\">Locked</font> · " .. T.escape(if requirement ~= "" then requirement else "Not charted yet")
 		infoGo.Text = "Locked"
 		T.tone(infoGo, "ghost")
 	else
-		infoText.Text = if island.travel == "recall" then "Recall charm · instant travel" else "Guided route to the skyway beacon"
+		infoText.Text = if island.travel == "recall" then "Recall charm · instant travel" else "Guided route to its skyway beacon"
 		infoGo.Text = if island.travel == "recall" then "Travel" else "Guide me"
 		T.tone(infoGo, "primary")
 	end
@@ -637,18 +667,25 @@ infoGo.Activated:Connect(function()
 		local request = player:FindFirstChild("WayfinderRequest")
 		if request then request:Fire(island.specs, island.name) else toast("The Wayfinder is still charting. Try again in a moment.") end
 	end
-	chart.Visible = false
+	S.setChart(false)
 end)
 local function refreshChart()
 	local here = player:GetAttribute("IsleRegionHere")
 	local L = layout()
 	chart.Size = UDim2.new(1, -16, 1, -16)
 	chartHint.Visible = not L.tiny
+	sky.Position, sky.Size = UDim2.fromOffset(10, if L.tiny then 4 else 26), UDim2.new(1, -20, 1, if L.tiny then -12 else -36)
+	local area = sky.AbsoluteSize
+	S.chartScale = math.clamp(math.min(area.X / 940, area.Y / 520), 0.55, 1)
 	for id, t in pairs(S.tiles) do
 		local unlocked = regionState(t.island.region)
 		t.lock.Visible = not unlocked
 		t.warp.Visible = unlocked
-		t.warp.Size = UDim2.fromOffset(if Input.TouchEnabled then 44 else 30, if Input.TouchEnabled then 44 else 30)
+		local size = math.floor(t.island.size * S.chartScale)
+		t.frame.Size = UDim2.fromOffset(size, math.floor(size * 0.78))
+		local warpSize = if Input.TouchEnabled then 44 else 32
+		t.warp.Size = UDim2.fromOffset(warpSize, warpSize)
+		t.warp:FindFirstChildOfClass("UICorner").CornerRadius = UDim.new(0, warpSize // 2)
 		t.grass.BackgroundTransparency = if unlocked then 0 else 0.45
 		t.name.TextColor3 = if unlocked then C.text else C.dim
 		t.here.Visible = here ~= nil and (here == t.island.region and (id == t.island.region or (id == "Hub" and here == "Hub")))
@@ -658,11 +695,13 @@ local function refreshChart()
 end
 local function setChart(open)
 	chart.Visible = open
+	chartShade.Visible = open
 	chartInfo.Visible = false
 	if open then refreshChart(); setOpen(S.pinned and S.open) end
 end
 S.setChart = setChart
 chartClose.Activated:Connect(function() setChart(false) end)
+chartShade.Activated:Connect(function() setChart(false) end)
 
 ------------------------------------------------------------------------------
 -- Wiring

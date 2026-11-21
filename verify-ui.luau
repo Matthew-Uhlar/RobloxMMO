@@ -3154,6 +3154,373 @@ do
 	end
 	print("Visual QA: " .. (checks - visualChecks) .. " checks (touch targets, one-row bars, empty states, number copy).")
 end
+-- 29. UI overhaul (§29): the shared theme's component contracts, item lore,
+-- context menus mapped to server verbs, the satchel / paperdoll / Sky Chart
+-- (hud.client.lua), the sidebar, action bar and minimap, and the HUD lanes at
+-- 1366x768, 844x390 and 730x303 around the 9-slot hotbar gap.
+local overhaulChecks = checks
+do
+	local H = require("./tools/ui-harness")
+	local T = ThemePure
+	local function rectOf(object, size)
+		local chain = {}
+		local node = object
+		while node and node.ClassName ~= "ScreenGui" do table.insert(chain, 1, node); node = node.Parent end
+		local x, y, w, h = 0, 0, size.X, size.Y
+		for _, item in ipairs(chain) do
+			local s, p, a = item.Size, item.Position, item.AnchorPoint or roblox.Vector2.zero
+			local cw, ch = s.X.Scale * w + s.X.Offset, s.Y.Scale * h + s.Y.Offset
+			local limit = item:FindFirstChildOfClass("UISizeConstraint")
+			if limit then cw, ch = math.min(cw, limit.MaxSize.X), math.min(ch, limit.MaxSize.Y) end
+			x, y = x + p.X.Scale * w + p.X.Offset - a.X * cw, y + p.Y.Scale * h + p.Y.Offset - a.Y * ch
+			w, h = cw, ch
+		end
+		return { x = x, y = y, w = w, h = h }
+	end
+	local function overlaps(a, b) return a.x < b.x + b.w and b.x < a.x + a.w and a.y < b.y + b.h and b.y < a.y + a.h end
+	local function inside(a, b) return a.x >= b.x - 0.5 and a.y >= b.y - 0.5 and a.x + a.w <= b.x + b.w + 0.5 and a.y + a.h <= b.y + b.h + 0.5 end
+	local function show(r) return string.format("(%d,%d %dx%d)", r.x, r.y, r.w, r.h) end
+	local Items = Data.Items
+
+	-- Theme tokens: one rarity per game rarity, distinct colours, a pixel display face.
+	for _, rarity in ipairs(Data.RarityOrder) do
+		assert(T.Rarities[rarity] and T.rarity(rarity).color and T.rarity(rarity).rank == Data.Rarity[rarity].rank, "theme rarity " .. rarity)
+		checks += 1
+	end
+	assert(T.font.display == roblox.Enum.Font.Arcade and T.text.compactFloor >= 12 and T.space.touch == 44, "type scale and touch floor")
+	local hb = T.hotbarStyle()
+	for _, key in ipairs({ "slot", "slotCompact", "gap", "bottom", "reserve", "deep", "raised", "ivory", "gold", "brass", "mint", "track", "selected", "auto", "font", "glyphSize", "countSize", "keySize", "nameSize" }) do
+		assert(hb[key] ~= nil, "hotbar STYLE key " .. key)
+	end
+	assert(hb.slot == 52 and hb.slotCompact == 46 and hb.reserve == 70, "hotbar sizes match hotbar.client.lua")
+	checks += 3
+
+	-- Components (built against the harness mock).
+	local env = { Instance = { new = function(class) return H.new(class) end }, Color3 = roblox.Color3, Enum = roblox.Enum, UDim2 = roblox.UDim2, UDim = roblox.UDim,
+		Vector2 = roblox.Vector2, ColorSequence = roblox.ColorSequence, NumberSequence = roblox.NumberSequence, NumberSequenceKeypoint = roblox.NumberSequenceKeypoint }
+	local TC = H.loadTheme(env)
+	local root = H.new("Frame")
+	local frame, body = TC.frame(root, { title = "TEST" })
+	assert(frame:FindFirstChild("Rim") and frame:FindFirstChild("Ornaments") and frame:FindFirstChild("Header") and body == frame:FindFirstChild("Body"), "ornate frame: rim, studs, header, body")
+	local studs = 0
+	for _, o in ipairs(frame:FindFirstChild("Ornaments"):GetChildren()) do if o.Name == "Stud" then studs += 1 end end
+	assert(studs == 4, "four corner studs")
+	local slot = TC.slot(root, { size = 44, key = 3 })
+	for _, name in ipairs({ "Rarity", "Count", "Sweep", "Glow", "Tag", "Key" }) do assert(slot:FindFirstChild(name), "slot part " .. name) end
+	TC.setSlot(slot, { id = "SunsteelSword", def = Items.SunsteelSword, count = 1, equipped = true, cooldown = 0.4 })
+	local icon = slot:FindFirstChild("Icon")
+	assert(icon and icon:GetAttribute("Shape") == "sword" and slot:FindFirstChild("Tag").Visible and slot:FindFirstChild("Count").Text == "", "sword icon, equipped tag, no count for one")
+	assert(slot:FindFirstChild("Sweep").Visible and math.abs(slot:FindFirstChild("Sweep").Size.Y.Scale - 0.4) < 1e-4, "cooldown sweep follows the fraction")
+	assert(slot:FindFirstChild("Rarity").Color == T.rarity("Rare").frameColor, "rarity border colour")
+	TC.setSlot(slot, { id = "SunsteelSword", def = Items.SunsteelSword, count = 1340 })
+	assert(slot:FindFirstChild("Icon") == icon, "same item keeps its pictogram (no rebuild)")
+	TC.setSlot(slot, { id = "Ore", def = Items.Ore, count = 1340 })
+	assert(slot:FindFirstChild("Icon") ~= icon and slot:FindFirstChild("Icon"):GetAttribute("Shape") == "ore" and slot:FindFirstChild("Count").Text == "1340", "new item, new icon, stack count")
+	TC.setSlot(slot, {})
+	assert(slot:FindFirstChild("Icon") == nil and not slot:FindFirstChild("Sweep").Visible, "empty slot")
+	local bar = TC.bar(root, { height = 14 })
+	TC.setBar(bar, 1.7, "MAX")
+	assert(bar:FindFirstChild("Fill").Size.X.Scale == 1 and bar:FindFirstChild("Caption").Text == "MAX", "bar clamps and captions")
+	TC.setBar(bar, 0 / 0)
+	assert(bar:FindFirstChild("Fill").Size.X.Scale == 0, "bar ignores NaN")
+	local tabsMap = TC.tabs(root, { "A", "B" }, "B")
+	assert(tabsMap.B:GetAttribute("Tone") == "primary" and tabsMap.A:GetAttribute("Tone") == "ghost", "tabs mark the selection")
+	checks += 12
+	-- Every item has a pictogram shape.
+	for id, def in pairs(Items) do
+		local shape = T.shapeOf(def)
+		assert(type(shape) == "string", "shape for " .. id)
+	end
+	checks += 1
+
+	-- Item lore (SkyBlock tooltip): name in rarity colour, stats, requirement, rarity footer.
+	local lore = T.lore(Items.SunsteelSword, { Data = Data, levels = { Combat = 3 }, count = 1 })
+	assert(lore[1].title and lore[1].color == T.rarity("Rare").hex and lore[1].text:find("Sunsteel Sword", 1, true), "lore name line")
+	local kinds, statsSeen, req = {}, {}, nil
+	for _, l in ipairs(lore) do kinds[l.kind or "blank"] = true; if l.stat then statsSeen[l.stat] = true end; if l.kind == "requires" then req = l end end
+	assert(statsSeen.damage and statsSeen.strength and statsSeen.critDamage, "lore stat lines")
+	assert(req and req.unmet and req.color == T.hex.ember, "unmet requirement in ember")
+	assert(lore[#lore].kind == "rarity" and lore[#lore].text:find("RARE SWORD", 1, true), "rarity footer")
+	assert(kinds.value, "sell value line")
+	local met = T.lore(Items.SunsteelSword, { Data = Data, levels = { Combat = 50 } })
+	for _, l in ipairs(met) do if l.kind == "requires" then assert(not l.unmet, "met requirement not flagged") end end
+	local food = T.lore(Items.ExpeditionRation, { Data = Data, count = 4 })
+	assert(food[1].text:find("x4", 1, true), "stack count on the name")
+	local healLine = false
+	for _, l in ipairs(food) do if l.kind == "stat" and l.text:find("65", 1, true) then healLine = true end end
+	assert(healLine and food[#food].text:find("FOOD", 1, true), "food heal line and FOOD footer")
+	assert(T.examine(Items.Ore):find(Items.Ore.name, 1, true), "examine text names the item")
+	checks += 9
+
+	-- Context menus per item kind, each option mapped to an existing verb.
+	local serverSource = fs.readFile("server.server.lua")
+	local function verbExists(verb) return serverSource:find('verb=="' .. verb .. '"', 1, true) ~= nil end
+	local function options(id, ctx)
+		local out = {}
+		for _, o in ipairs(T.itemActions(Items[id], ctx or { count = 1 })) do out[o.id] = o end
+		return out, T.itemActions(Items[id], ctx or { count = 1 })
+	end
+	local cases = {
+		{ "SunsteelSword", nil, "Wield", "equip", "SunsteelSword" },
+		{ "SunsteelSword", { equipped = true }, "Unequip", "unequip", "weapon" },
+		{ "BrassHelm", nil, "Equip", "equip", "BrassHelm" },
+		{ "CookedFish", { count = 3 }, "Eat", "consume", "CookedFish" },
+		{ "MightDraught", nil, "Drink", "consume", "MightDraught" },
+		{ "MeadowCharm", nil, "Equip", "accessory", "MeadowCharm" },
+		{ "MeadowCharm", { bagged = true }, "Unequip", "accessory", "MeadowCharm" },
+		{ "EmberfoxPet", nil, "Use", "petAdopt", "EmberfoxPet" },
+		{ "Ore", { count = 40 }, "Sell", "sell", "Ore" },
+		{ "Ore", { count = 40 }, "Drop", "drop", "Ore" },
+	}
+	for _, c in ipairs(cases) do
+		local map, list = options(c[1], c[2])
+		local o = map[c[3]]
+		assert(o and o.verb == c[4] and o.arg == c[5], c[1] .. " offers " .. c[3] .. " → " .. c[4])
+		assert(verbExists(o.verb), "server handles verb " .. o.verb)
+		for _, opt in ipairs(list) do
+			if opt.verb then assert(verbExists(opt.verb), "server handles " .. opt.verb) end
+			assert(opt.verb or opt["local"], c[1] .. " option " .. opt.id .. " has an action")
+		end
+		checks += 2
+	end
+	local equippedMenu = options("SunsteelSword", { equipped = true })
+	assert(not equippedMenu.Sell and not equippedMenu.Drop and equippedMenu.Hotbar and equippedMenu.Examine, "equipped gear: no Sell / Drop")
+	assert(options("Ore", { count = 40 }).Drop.confirm and options("Ore", { count = 40 }).Drop.danger, "Drop always confirms")
+	assert(options("Ore", { count = 40 }).Use and options("Ore", { count = 40 }).Use["local"] == "use", "materials: Use opens their collection")
+	checks += 3
+	-- The atlas relays exactly these verbs from hud.client.lua.
+	for _, verb in ipairs({ "equip", "unequip", "consume", "sell", "accessory", "petAdopt", "drop", "satchelMove", "satchelSort", "recall" }) do
+		assert(source:find(verb .. "=true", 1, true), "atlas relays " .. verb)
+		assert(verbExists(verb) or verb == "satchelMove" and serverSource:find('verb=="satchelMove"', 1, true), "server verb " .. verb)
+		checks += 2
+	end
+
+	-- Satchel end to end (desktop, mouse): click wields, menu sells after a
+	-- confirm, drop asks twice, sort and drag reorder send their verbs.
+	do
+		local size = roblox.Vector2.new(1366, 768)
+		local ui = H.runAtlas(size, {})
+		local layer = H.runHud(size, ui.player, ui.replicated, {})
+		local S = layer.state
+		H.press(H.find(ui.gui, "SatchelButton"))
+		assert(S.panel.Visible and S.docked and ui.player:GetAttribute("IsleSatchelOpen") == true, "Bag opens the docked satchel")
+		local filled = 0
+		for i = 1, 28 do if S.slots[i]:GetAttribute("ItemId") ~= "" and S.slots[i]:GetAttribute("ItemId") ~= nil then filled += 1 end end
+		assert(#S.slots == 28 and filled == 28, "28 slots on the first bag page, all filled (" .. filled .. ")")
+		local pageLabel = H.find(S.panel, "PageLabel")
+		assert(pageLabel.Text:find("Bag 1/2", 1, true), "bag pages: " .. pageLabel.Text)
+		H.press(H.find(S.panel, "NextPage"))
+		assert(pageLabel.Text:find("Bag 2/2", 1, true), "next bag page")
+		H.press(H.find(S.panel, "PrevPage"))
+		-- Left click: the first option (Wield) for an unequipped weapon.
+		local index
+		for i, id in ipairs(S.pageIds) do if id == "SunsteelSword" then index = i end end
+		assert(index and index <= 28, "sword on page 1")
+		table.clear(ui.sent)
+		H.press(S.slots[index])
+		assert(ui.sent[1] and ui.sent[1][1] == "equip" and ui.sent[1][2] == "SunsteelSword", "click wields the sword")
+		-- Context menu: Drop needs two presses.
+		S.openMenu("Ore", roblox.Vector2.new(400, 300))
+		assert(S.menu.Visible, "context menu opens")
+		local drop = H.find(S.menu, "OptionDrop")
+		table.clear(ui.sent)
+		H.press(drop)
+		assert(#ui.sent == 0 and S.menu.Visible, "first Drop press only asks")
+		H.press(H.find(S.menu, "OptionDrop"))
+		assert(ui.sent[1] and ui.sent[1][1] == "drop" and ui.sent[1][2] == "Ore" and not S.menu.Visible, "second press drops")
+		-- Examine and Move to hotbar stay local.
+		S.openMenu("Ore", roblox.Vector2.new(400, 300))
+		table.clear(ui.sent)
+		H.press(H.find(S.menu, "OptionExamine"))
+		assert(#ui.sent == 0, "examine sends nothing")
+		-- Sort and search.
+		H.press(H.find(S.panel, "SortButton"))
+		assert(ui.sent[#ui.sent][1] == "satchelSort" and ui.sent[#ui.sent][2] == "name", "sort cycles to name and saves it")
+		local search = H.find(S.panel, "Search")
+		search.Text = "brass"
+		for _, id in ipairs(S.pageIds) do assert(Items[id].name:lower():find("brass", 1, true) or T.kindLabel(Items[id]):lower():find("brass", 1, true), "search keeps " .. id) end
+		assert(#S.pageIds > 0 and #S.pageIds < 28, "search narrows the grid")
+		search.Text = ""
+		-- Drag the first item onto slot 6 (grid origin at 0,0 in the mock).
+		local first = S.pageIds[1]
+		table.clear(ui.sent)
+		S.slots[1].MouseButton1Down:Fire()
+		local cell = S.cell + 4
+		local at = roblox.Vector3.new(5 * cell + 4, 4, 0)
+		layer.input.InputChanged:Fire({ UserInputType = roblox.Enum.UserInputType.MouseMovement, Position = at })
+		layer.input.InputEnded:Fire({ UserInputType = roblox.Enum.UserInputType.MouseButton1, Position = at })
+		assert(ui.sent[1] and ui.sent[1][1] == "satchelMove" and ui.sent[1][2] == first .. ":6", "drag reorders: " .. tostring(ui.sent[1] and ui.sent[1][2]))
+		-- Gear tab: paperdoll slots and the stat sheet.
+		H.press(H.find(S.panel, "TabGear"))
+		local doll = H.find(S.panel, "Paperdoll")
+		assert(doll.Parent.Visible, "gear view shows")
+		for _, slotName in ipairs({ "helmet", "chest", "legs", "boots", "weapon", "ammo", "accessory", "pet" }) do
+			assert(H.find(doll, "Equip" .. slotName), "paperdoll slot " .. slotName)
+		end
+		assert(H.find(doll, "Equiphelmet"):GetAttribute("ItemId") == "BrassHelm" and H.find(doll, "Equipaccessory"):GetAttribute("ItemId") == "MeadowCharm", "paperdoll shows worn gear and the bag")
+		assert(H.find(S.panel, "Stat_health"):FindFirstChild("Value").Text ~= "—", "stat sheet filled")
+		-- Close, E toggles.
+		H.press(H.find(S.panel, "CloseSatchel"))
+		assert(not S.panel.Visible and ui.player:GetAttribute("IsleSatchelOpen") == false, "close")
+		layer.input.InputBegan:Fire({ KeyCode = roblox.Enum.KeyCode.E, UserInputType = roblox.Enum.UserInputType.Keyboard }, false)
+		assert(S.panel.Visible, "E opens the satchel")
+		checks += 17
+		-- Right-column HUDs step left of the docked satchel.
+		ui.player:SetAttribute("DungeonParty", "Voyager|Aegis|31;Bo|Mender|4")
+		local party = ui.gui:FindFirstChild("DungeonPartyHud")
+		assert(not overlaps(rectOf(party, size), rectOf(S.panel, size)), "party HUD clears the docked satchel")
+		checks += 1
+		-- Sky Chart: Hub recalls, a locked isle explains itself, regions guide.
+		H.press(H.find(ui.gui, "ChartButton"))
+		assert(S.chart.Visible, "Map opens the Sky Chart")
+		local tiles = 0
+		for _, child in ipairs(H.find(S.chart, "Sky"):GetChildren()) do if child.Name:sub(1, 5) == "Isle_" then tiles += 1 end end
+		assert(tiles == #T.WorldMap.islands + 1, "one tile per isle plus home")
+		for _, region in ipairs(Data.Regions) do assert(H.find(S.chart, "Isle_" .. region.id), "tile for region " .. region.id) end
+		H.press(H.find(H.find(S.chart, "Isle_Hub"), "Warp"))
+		local travel = H.find(S.chart, "TravelButton")
+		assert(travel.Text == "Travel", "Hub travels by recall")
+		table.clear(ui.sent)
+		H.press(travel)
+		assert(ui.sent[1] and ui.sent[1][1] == "recall" and ui.sent[1][2] == "Hub" and not S.chart.Visible, "recall Hub")
+		H.press(H.find(ui.gui, "ChartButton"))
+		assert(H.find(H.find(S.chart, "Isle_Gloomhollow"), "Lock").Visible, "locked region shows a padlock")
+		S.pickWarp(T.WorldMap.islands[10], H.find(S.chart, "Isle_Gloomhollow"))
+		assert(H.find(S.chart, "Detail").Text:find("Mining 30", 1, true) and travel.Text == "Locked", "locked warp names its requirement")
+		local guided
+		local request = H.new("BindableEvent", { Name = "WayfinderRequest" })
+		request.Event:Connect(function(specs, label) guided = { specs, label } end)
+		request.Parent = ui.player
+		for _, isle in ipairs(T.WorldMap.islands) do if isle.id == "Quarry" then S.pickWarp(isle, H.find(S.chart, "Isle_Quarry")) end end
+		H.press(travel)
+		assert(guided and guided[2] == "Brassfall Quarry" and guided[1][1] == "region:Quarry", "region warps guide through the Wayfinder")
+		checks += 7
+		-- XP drops and the skill toast from an atlas XP gain.
+		local snap = H.snapshot()
+		local after = H.snapshot()
+		after.depth.skills = table.clone(after.depth.skills)
+		after.depth.skills.Mining = table.clone(after.depth.skills.Mining)
+		after.depth.skills.Mining.xp += 48
+		ui.update.OnClientEvent:Fire(snap)
+		ui.update.OnClientEvent:Fire(after)
+		local drop = H.find(layer.gui, "Drop1")
+		assert(drop.Text:find("+48", 1, true) and drop.Text:find("Mining XP", 1, true), "OSRS XP drop: " .. drop.Text)
+		assert(S.skillToast.Visible and H.find(S.skillToast, "Skill").Text:find("Mining", 1, true), "skill progress toast")
+		ui.player:SetAttribute("IsleSettingXpDrops", false)
+		drop.Text = ""
+		after.depth.skills.Mining.xp += 10
+		ui.update.OnClientEvent:Fire(after)
+		assert(drop.Text == "", "XP drops can be switched off in Settings")
+		checks += 3
+	end
+
+	-- Sidebar, action bar, menu grid.
+	do
+		local size = roblox.Vector2.new(1366, 768)
+		local ui = H.runAtlas(size, {})
+		local side = ui.gui:FindFirstChild("Sidebar")
+		for _, name in ipairs({ "Date", "Clock", "Region", "Purse", "Marks", "GoalHead", "Goal", "Crew", "AtlasButton", "SatchelButton", "ChartButton" }) do
+			local o = H.find(side, name)
+			assert(o and (o.ClassName ~= "TextLabel" or o.Text ~= ""), "sidebar field " .. name)
+		end
+		assert(H.find(side, "Purse").Text:find("52,000", 1, true) and H.find(side, "Marks").Text:find("37", 1, true), "purse and Skymarks")
+		assert(H.find(side, "Date").Text:find("%a+ %d+%a%a") and H.find(side, "Clock").Text:find("%d+:%d%d[ap]m"), "isle date and time")
+		ui.player:SetAttribute("IsleRegionHere", "Quarry")
+		assert(H.find(side, "Region").Text:find("Brassfall Quarry", 1, true) or H.find(side, "Region").Text:find("Quarry Cay", 1, true), "region follows the Wayfinder")
+		local action = ui.gui:FindFirstChild("ActionBar")
+		assert(H.find(action, "HealthText").Text:find("❤", 1, true) and H.find(action, "DefenseText").Text:find("Defense", 1, true), "health and defense readouts")
+		ui.player:SetAttribute("Mana", 40)
+		ui.player:SetAttribute("MaxMana", 160)
+		assert(H.find(action, "ManaText").Text == "40/160 ✎ Mana" and H.find(H.find(action, "ManaMeter"), "Fill").Size.X.Scale == 0.25, "mana bar and numbers")
+		local clock = T.isleClock(1700000000, Data)
+		assert(clock and clock.date:find(clock.seasonName, 1, true) and clock.clock:find("[ap]m$"), "isle clock")
+		-- Menu landing page: 12 tiles, each opening its page.
+		H.press(H.find(side, "AtlasButton"))
+		local grid = H.find(ui.scroll, "MenuGrid")
+		local tilesN = 0
+		for _, child in ipairs(grid:GetChildren()) do if child.ClassName == "TextButton" then tilesN += 1 end end
+		assert(tilesN == 12, "menu grid has 12 tiles")
+		for _, want in ipairs({ { "MenuSkills", "SectionSkills" }, { "MenuBank", "BankAmount" }, { "MenuBestiary", "SectionBestiary" }, { "MenuCollections", "SectionCollections" } }) do
+			H.press(H.find(side, "AtlasButton"))
+			H.press(H.find(ui.scroll, want[1]))
+			assert(H.find(ui.scroll, want[2]), want[1] .. " opens its page")
+		end
+		H.press(H.find(side, "AtlasButton"))
+		H.press(H.find(ui.scroll, "MenuSettings"))
+		H.press(H.find(ui.scroll, "ToggleIsleSettingPinSatchel"))
+		assert(ui.player:GetAttribute("IsleSettingPinSatchel") == true, "settings toggle publishes its attribute")
+		checks += 16
+	end
+
+	-- HUD lanes at three resolutions: the persistent HUD (sidebar, minimap,
+	-- action bar, hotbar gap, docked satchel on desktop) never overlaps and stays
+	-- on screen; satchel, menu and chart controls meet the touch floor on phones.
+	for _, size in ipairs({ roblox.Vector2.new(1366, 768), roblox.Vector2.new(844, 390), roblox.Vector2.new(730, 303) }) do
+		local tag = size.X .. "x" .. size.Y
+		local touch = size.Y < 500
+		local ui = H.runAtlas(size, { touch = touch })
+		local layer = H.runHud(size, ui.player, ui.replicated, { touch = touch })
+		local nav = H.runNav(size, ui.player, ui.replicated, { touch = touch })
+		local L = T.hudLayout(size.X, size.Y, { touch = touch })
+		local S = layer.state
+		S.setOpen(true)
+		local items = {
+			{ "sidebar", rectOf(ui.gui:FindFirstChild("Sidebar"), size) },
+			{ "minimap", rectOf(nav.gui:FindFirstChild("Minimap"), size) },
+			{ "action bar", rectOf(ui.gui:FindFirstChild("ActionBar"), size) },
+			{ "hotbar gap", { x = L.hotbar.x, y = L.hotbar.y, w = L.hotbar.w, h = L.hotbar.h } },
+		}
+		local panel = rectOf(S.panel, size)
+		assert(panel.x >= 0 and panel.y >= 0 and panel.x + panel.w <= size.X and panel.y + panel.h <= size.Y, "satchel on screen at " .. tag .. " " .. show(panel))
+		if not touch then table.insert(items, { "docked satchel", panel }) end
+		for i = 1, #items do
+			local a = items[i][2]
+			assert(a.x >= 0 and a.y >= 0 and a.x + a.w <= size.X + 0.5 and a.y + a.h <= size.Y + 0.5, items[i][1] .. " on screen at " .. tag .. " " .. show(a))
+			for j = i + 1, #items do
+				assert(not overlaps(a, items[j][2]), items[i][1] .. " " .. show(a) .. " overlaps " .. items[j][1] .. " " .. show(items[j][2]) .. " at " .. tag)
+				checks += 1
+			end
+		end
+		-- The action bar sits in the band above the hotbar, no wider than it.
+		local action = items[3][2]
+		assert(action.y + action.h <= L.hotbar.y and action.y >= L.band.y and action.w <= L.hotbar.w, "action bar in the hotbar band at " .. tag)
+		-- Every grid slot sits inside the panel.
+		for i = 1, 28 do
+			local r = rectOf(S.slots[i], size)
+			assert(inside(r, panel), "slot " .. i .. " inside the satchel at " .. tag .. " " .. show(r) .. " in " .. show(panel))
+			if touch then assert(r.w >= 44 and r.h >= 44, "slot " .. i .. " is a 44 px target at " .. tag) end
+		end
+		if touch then
+			for _, name in ipairs({ "CloseSatchel", "SortButton", "PrevPage", "NextPage", "TabItems", "TabGear", "Search" }) do
+				local o = H.find(S.panel, name)
+				local r = rectOf(o, size)
+				assert(r.h >= 43.5, name .. " is touch-tall at " .. tag .. " (" .. r.h .. ")")
+			end
+			S.openMenu("Ore", roblox.Vector2.new(100, 100))
+			for _, b in ipairs(S.menuButtons) do if b.Visible then assert(b.Size.Y.Offset >= 44, "menu option " .. b.Text .. " is 44 px at " .. tag) end end
+			for _, name in ipairs({ "AtlasButton", "SatchelButton", "ChartButton" }) do
+				assert(rectOf(H.find(ui.gui, name), size).h >= 44, name .. " is 44 px at " .. tag)
+			end
+			layer.api.OnInvoke("chart")
+			for _, child in ipairs(H.find(S.chart, "Sky"):GetChildren()) do
+				local warp = child:FindFirstChild("Warp")
+				if warp and warp.Visible then assert(warp.Size.X.Offset >= 44, "warp point " .. child.Name .. " is 44 px at " .. tag) end
+			end
+		end
+		-- Minimap: islands, townsfolk and the player arrow; region and coordinates.
+		local map = H.find(nav.gui, "Layer")
+		local islandMarks, dots = 0, 0
+		for _, m in ipairs(map:GetChildren()) do
+			if m:FindFirstChild("Label") then islandMarks += 1 elseif m.ClassName == "Frame" then dots += 1 end
+		end
+		assert(islandMarks >= 3 and dots >= 2, "minimap draws isles (" .. islandMarks .. ") and townsfolk (" .. dots .. ") at " .. tag)
+		assert(H.find(nav.gui, "PlayerArrow") and ui.player:GetAttribute("IsleRegionHere") == "Hub" and H.find(nav.gui, "Coords").Text == "12, 4, 20", "minimap arrow, region and coordinates at " .. tag)
+		local info = rectOf(H.find(nav.gui, "Info"), size)
+		assert(inside(info, items[2][2]), "region strip inside the minimap block at " .. tag)
+		checks += 6
+	end
+end
+print("UI overhaul (§29): " .. (checks - overhaulChecks) .. " checks.")
 print("UI QA passed " .. checks .. " checks (" .. created .. " mock instances).")
 
 -- Completion sentinel: scripts/build.sh fails if a suite stops early without erroring.
