@@ -228,6 +228,105 @@ for _, profile in ipairs(profiles) do
 				table.insert(shots, { id = extra, guis = screenTree(hudUi.playerGui) })
 			end
 		end
+		-- HUD depth (§34): action label over a creature, status orbs, pickup feed,
+		-- chat tabs; the world context menu on a vein; hitsplat / overhead bar preview.
+		for _, extra in ipairs({ "HUD-Depth", "HUD-WorldMenu", "HUD-Hitsplats" }) do
+			if wanted(extra) then
+				local touch = size.Y < 500
+				local hudUi, combat = hudScene(size, profile, "Mined Copperstone Ore")
+				local char = hudUi.player.Character
+				local humanoid = H.new("Humanoid", { Name = "Humanoid", Health = 212, MaxHealth = 264 })
+				humanoid.Parent = char
+				hudUi.player:SetAttribute("PrayerMax", 43)
+				hudUi.player:SetAttribute("PrayerPoints", 31)
+				hudUi.player:SetAttribute("PrayerLevel", 12)
+				hudUi.player:SetAttribute("PrayerQuick", "BarkhideWard,KindledEdge")
+				hudUi.player:SetAttribute("PrayerActive", "BarkhideWard")
+				-- The world under the cursor: a Copperstone vein and a Cinder Mite.
+				local vein = H.new("Part", { Name = "Vein", Position = roblox.Vector3.new(14, 4, 22) })
+				local prompt = H.new("ProximityPrompt", { Name = "Gather", ActionText = "Mine", ObjectText = "Copperstone Ore (Lv 1)", Enabled = true, HoldDuration = 1 })
+				prompt:SetAttribute("IsleItem", "Ore")
+				prompt.Parent = vein
+				local mite = H.new("Model", { Name = "CinderMite" })
+				for k, v in pairs({ DisplayName = "Cinder Mite", Level = 12, MonsterId = "CinderMite", Health = 500, MaxHealth = 500 }) do mite:SetAttribute(k, v) end
+				local body = H.new("Part", { Name = "Body", Position = roblox.Vector3.new(20, 4, 22), Size = roblox.Vector3.new(3, 3, 3) })
+				body.Parent = mite
+				table.insert(combat.tagged, mite)
+				local hit = { Instance = if extra == "HUD-WorldMenu" then vein else body, Position = roblox.Vector3.new(20, 4, 22) }
+				local ov = H.runOverlay(size, hudUi.player, hudUi.replicated, { touch = touch, raycast = function() return hit end, tagged = combat.tagged })
+				local S = ov.state
+				-- A few pickups merged in the feed.
+				local snap = snapshotFor(profile)
+				local gained = table.clone(snap)
+				gained.items = table.clone(snap.items or {})
+				for id, n in pairs({ Ore = 3, Brassite = 2, ArcaneDust = 4, GolemCore = 1 }) do gained.items[id] = (gained.items[id] or 0) + n end
+				gained.coins = (snap.coins or 0) + 120
+				hudUi.update.OnClientEvent:Fire(gained)
+				if extra == "HUD-WorldMenu" then
+					if touch then
+						ov.input.TouchLongPress:Fire({ roblox.Vector2.new(math.floor(size.X * 0.55), math.floor(size.Y * 0.45)) }, roblox.Enum.UserInputState.Begin, false)
+					else
+						local at = roblox.Vector3.new(math.floor(size.X * 0.55), math.floor(size.Y * 0.45), 0)
+						ov.input.InputChanged:Fire({ UserInputType = roblox.Enum.UserInputType.MouseMovement, Position = at })
+						ov.input.InputBegan:Fire({ UserInputType = roblox.Enum.UserInputType.MouseButton2, Position = at }, false)
+						ov.input.InputEnded:Fire({ UserInputType = roblox.Enum.UserInputType.MouseButton2, Position = at }, false)
+					end
+				else
+					ov.input.InputChanged:Fire({ UserInputType = roblox.Enum.UserInputType.MouseMovement, Position = roblox.Vector3.new(700, 400, 0) })
+					S.hoverAt = -1
+					ov.run.Heartbeat:Fire(0.1)
+				end
+				if extra == "HUD-Hitsplats" then
+					-- Billboards do not rasterize: lay the pooled splats and an overhead bar
+					-- out on a preview strip in the middle of the screen.
+					local preview = H.new("ScreenGui", { Name = "SplatPreview", DisplayOrder = 20 })
+					preview.Parent = hudUi.playerGui
+					local strip = H.new("Frame", { Name = "Strip", BackgroundColor3 = roblox.Color3.fromHex("3A5A6E"), BackgroundTransparency = 0.2,
+						Position = roblox.UDim2.fromOffset(math.floor(size.X / 2) - 300, math.floor(size.Y * 0.42)), Size = roblox.UDim2.fromOffset(600, 96) })
+					strip.Parent = preview
+					local payloads = { { amount = 37 }, { amount = 1284, crit = true }, { amount = 0, miss = true }, { amount = 130, tag = "weak" },
+						{ amount = 70, tag = "resist" }, { heal = true, amount = 40 } }
+					local monster = combat.monster
+					monster:SetAttribute("Health", 330)
+					monster:SetAttribute("MaxHealth", 1000)
+					monster:SetAttribute("Level", 30)
+					local mbody = H.new("Part", { Name = "Body", Position = roblox.Vector3.new(0, 4, 0), Size = roblox.Vector3.new(4, 6, 4) })
+					mbody.Parent = monster
+					monster.PrimaryPart = mbody
+					for i, p in ipairs(payloads) do
+						p.model, p.position = monster, roblox.Vector3.new(i * 3, 5, 0)
+						if p.heal then combat.fx.OnClientEvent:Fire("heal", {}) else combat.fx.OnClientEvent:Fire("hit", p) end
+					end
+					local boards = {}
+					for _, a in ipairs(combat.workspace:FindFirstChild("Terrain"):GetChildren()) do
+						if a.Name == "Hitsplat" then table.insert(boards, a:FindFirstChild("Splat")) end
+					end
+					for i, board in ipairs(boards) do
+						local cell = H.new("Frame", { Name = "Cell" .. i, BackgroundTransparency = 1, Position = roblox.UDim2.fromOffset((i - 1) * 100 - 10, 4),
+							Size = roblox.UDim2.fromOffset(120, 64) })
+						cell.Parent = strip
+						for _, child in ipairs(board:GetChildren()) do
+							local copy = child:Clone()
+							copy.Parent = cell
+							-- The harness settles tweens at once (faded out): show the first frame.
+							if copy.Name == "Badge" then copy.BackgroundTransparency = 0.04 end
+							if copy.Name == "Burst" then copy.BackgroundTransparency = 0.15 end
+							if copy.Name == "Value" or copy.Name == "Tag" then copy.TextTransparency, copy.TextStrokeTransparency = 0, 0.05 end
+							local edge = copy:FindFirstChild("Edge")
+							if edge then edge.Transparency = 0 end
+						end
+					end
+					for _, child in ipairs(hudUi.playerGui:GetChildren()) do
+						if child.Name == "OverheadBar" then
+							local cell = H.new("Frame", { Name = "Bar", BackgroundTransparency = 1, Position = roblox.UDim2.fromOffset(261, 72), Size = roblox.UDim2.fromOffset(78, 18) })
+							cell.Parent = strip
+							for _, c in ipairs(child:GetChildren()) do c:Clone().Parent = cell end
+						end
+					end
+				end
+				table.insert(shots, { id = extra, guis = screenTree(hudUi.playerGui) })
+			end
+		end
 		-- Agility & Hunter HUD: a lap underway (lap tracker) and a caught trap (trap counter).
 		if wanted("hud-agility") then
 			local hudUi = hudScene(size, profile, "Mooring spar • +6 Agility XP")

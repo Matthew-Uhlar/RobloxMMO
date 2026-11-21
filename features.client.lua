@@ -70,15 +70,14 @@ local function placeToast()
 	local bottom = L.band.y - (if L.short then 50 else 64)
 	toast.Position = UDim2.fromOffset(math.floor((L.w - w) / 2), math.max(8, bottom - h))
 end
+-- Announcements are Game messages: the chat router (overlay.client.lua, §34)
+-- applies the Game tab's On / Filtered / Off state (announcements count as
+-- important), collapses repeats and prints the coloured system line.
+local chatRouter = channel("IsleChatLocal")
 local function chatLine(text: string, color: string)
 	table.insert(S.chat, text)
 	if #S.chat > 20 then table.remove(S.chat, 1) end
-	pcall(function()
-		local service = game:GetService("TextChatService")
-		local channels = service and service:FindFirstChild("TextChannels")
-		local general = channels and channels:FindFirstChild("RBXGeneral")
-		if general then general:DisplaySystemMessage("<font color=\"#" .. color .. "\"><b>" .. T.escape(text) .. "</b></font>") end
-	end)
+	pcall(function() chatRouter:Fire("announce", text, color, true) end)
 end
 local showNext: () -> ()
 showNext = function()

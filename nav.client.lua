@@ -606,7 +606,7 @@ local function placeList()
 		list.Position = UDim2.fromOffset(10, below)
 		list.Size = UDim2.fromOffset(240, math.min(300, height - below - floor))
 	else
-		list.Position = UDim2.fromOffset(L.mapBlock.x + L.mapBlock.w + 10, 8)
+		list.Position = UDim2.fromOffset(L.lane.left, 8) -- right of the status orbs (§34)
 		list.Size = UDim2.fromOffset(240, math.max(120, math.min(300, height - 8 - floor)))
 	end
 end

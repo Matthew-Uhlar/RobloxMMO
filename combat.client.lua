@@ -49,6 +49,8 @@ end
 -- Palette and type match the atlas "Aether Brass" design system (ui.client.lua).
 -- Colours, fonts and HUD lanes from the shared theme (§29).
 local Theme = require(ReplicatedStorage:WaitForChild("AetherUiTheme"))
+-- Hitsplat styles and overhead bar colours (§34, shared/HudDepth.lua).
+local HD = require(ReplicatedStorage:WaitForChild("AetherHudDepth"))
 local deep, ivory, gold, mint = Theme.color.inset, Theme.color.text, Theme.color.gold, Theme.color.mint
 local brass, brassDark, track, ember, raised = Theme.color.frame, Theme.color.frameLo, Theme.color.void, Theme.color.ember, Theme.color.raised
 local heavy, display = Enum.Font.BuilderSansExtraBold, Theme.font.display
@@ -545,7 +547,13 @@ local function reach()
 end
 local function setTarget(model)
 	if model == target then return end
+	local old = target
 	target = model
+	-- §34: the target keeps its overhead bar; the old one lingers, then fades.
+	if S.overhead then
+		if old then S.overhead.touch(old) end
+		if model then S.overhead.touch(model) end
+	end
 	-- Highlights live under the camera (adorned), so a server-side Destroy of the
 	-- monster never takes the reusable highlight with it.
 	targetHighlight.Adornee = model
@@ -827,6 +835,25 @@ UserInputService.TouchTapInWorld:Connect(function(position, processed)
 	local model = pick(position)
 	if model then tryAttack(model) end
 end)
+-- §34: "Attack" from the world context menu (overlay.client.lua) on
+-- ReplicatedStorage.IsleAttackLocal:Fire(model). In reach it swings now;
+-- otherwise the character walks over (Humanoid:MoveTo) and swings on arrival
+-- (checked each frame for at most 6 s; any new attack input replaces it).
+do
+	local attackLocal = ReplicatedStorage:FindFirstChild("IsleAttackLocal") or make("BindableEvent", ReplicatedStorage, {Name = "IsleAttackLocal"})
+	attackLocal.Event:Connect(function(model)
+		if typeof(model) ~= "Instance" or not canTarget(model) then return end
+		setTarget(model)
+		S.pendingAttack = nil
+		if distanceTo(model) <= reach() then tryAttack(model) return end
+		local _, humanoid = rootOf()
+		local body = model.PrimaryPart
+		if humanoid and body then
+			humanoid:MoveTo(body.Position)
+			S.pendingAttack = {model = model, untilAt = os.clock() + 6}
+		end
+	end)
+end
 if attackButton then
 	attackButton.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
@@ -896,24 +923,223 @@ local function commas(n)
 		if count == 0 then return s end
 	end
 end
-floatText = function(position, text, color, size)
-	local anchor = make("Attachment", Workspace.Terrain, {
-		WorldPosition = position + Vector3.new((math.random() - 0.5) * 2, math.random() * 0.8, (math.random() - 0.5) * 2),
-	})
-	local board = make("BillboardGui", anchor, {
-		Size = UDim2.fromOffset(160, 44), AlwaysOnTop = true, LightInfluence = 0, MaxDistance = 120,
-	})
-	local label = make("TextLabel", board, {
-		BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Font = bold, TextSize = size, RichText = true,
-		TextColor3 = color, TextStrokeTransparency = 0.2, TextStrokeColor3 = deep, Text = text,
-	})
-	local info = TweenInfo.new(0.9, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-	TweenService:Create(board, info, {StudsOffsetWorldSpace = Vector3.new(0, 3, 0)}):Play()
-	TweenService:Create(label, TweenInfo.new(0.5, Enum.EasingStyle.Linear, Enum.EasingDirection.In, 0, false, 0.45), {
-		TextTransparency = 1, TextStrokeTransparency = 1,
-	}):Play()
-	task.delay(1, function() anchor:Destroy() end)
+------------------------------------------------------------------------------
+-- Hitsplats (§34): pooled billboards on pooled Terrain attachments. Each splat
+-- is a top-lit badge (a rounded diamond; crits add an amber starburst) with the
+-- number in the pixel face and an optional tag (WEAK! / resist). Styles come
+-- from HudDepth.splatStyle: damage red, crit amber + larger, miss blue "miss",
+-- heal green, resist grey. At most SP.POOL exist; when all are live the oldest
+-- is restyled. Hits on one model within 0.6 s fan out so numbers never stack.
+------------------------------------------------------------------------------
+local SP = {POOL = 24, LIFE = 0.95, free = {}, live = {}, count = 0, fan = setmetatable({}, {__mode = "k"})}
+SP.FAN = {Vector3.new(0, 0, 0), Vector3.new(-1.2, 0.5, 0), Vector3.new(1.2, 0.5, 0), Vector3.new(0, 1.2, 0), Vector3.new(-0.8, -0.6, 0), Vector3.new(0.8, -0.6, 0)}
+function SP.new()
+	local anchor = make("Attachment", Workspace.Terrain, {Name = "Hitsplat"})
+	local board = make("BillboardGui", anchor, {Name = "Splat", Size = UDim2.fromOffset(120, 64), AlwaysOnTop = true, LightInfluence = 0, MaxDistance = 140,
+		Enabled = false, ResetOnSpawn = false})
+	local burst = make("Frame", board, {Name = "Burst", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.4), Size = UDim2.fromOffset(40, 40),
+		BorderSizePixel = 0, Visible = false})
+	make("UICorner", burst, {CornerRadius = UDim.new(0, 4)})
+	local badge = make("Frame", board, {Name = "Badge", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.4), Size = UDim2.fromOffset(32, 32),
+		Rotation = 45, BorderSizePixel = 0, ZIndex = 2})
+	make("UICorner", badge, {CornerRadius = UDim.new(0, 7)})
+	local edge = make("UIStroke", badge, {Name = "Edge", Thickness = 2, ApplyStrokeMode = Enum.ApplyStrokeMode.Border})
+	-- Lit from the top: the badge is turned 45°, so the gradient turns back.
+	make("UIGradient", badge, {Rotation = 45, Color = ColorSequence.new(white, Color3.new(0.58, 0.58, 0.58))})
+	local value = make("TextLabel", board, {Name = "Value", BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.4),
+		Size = UDim2.new(1, 0, 0, 24), Font = display, TextSize = 16, TextColor3 = white, TextStrokeTransparency = 0, TextStrokeColor3 = deep, Text = "", ZIndex = 3,
+		RichText = true})
+	local tag = make("TextLabel", board, {Name = "Tag", BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromScale(0.5, 0.68),
+		Size = UDim2.new(1, 0, 0, 14), Font = heavy, TextSize = 12, TextColor3 = gold, TextStrokeTransparency = 0.1, TextStrokeColor3 = deep, Text = "", ZIndex = 3})
+	return {anchor = anchor, board = board, burst = burst, badge = badge, edge = edge, value = value, tag = tag, token = 0}
 end
+function SP.take()
+	local s = table.remove(SP.free)
+	if not s then
+		if SP.count < SP.POOL then
+			SP.count += 1
+			s = SP.new()
+		else
+			s = table.remove(SP.live, 1) -- every splat is live: restyle the oldest
+		end
+	else
+		local i = table.find(SP.live, s)
+		if i then table.remove(SP.live, i) end
+	end
+	table.insert(SP.live, s)
+	return s
+end
+-- style = HudDepth.splatStyle(...) or {kind = "text", text, ink (Color3), size}.
+function SP.show(position, style, model)
+	local s = SP.take()
+	s.token += 1
+	local token = s.token
+	local offset = Vector3.zero
+	if model then
+		local fan = SP.fan[model]
+		local now = os.clock()
+		if not fan or now - fan.at > 0.6 then fan = {n = 0, at = now}; SP.fan[model] = fan end
+		fan.n, fan.at = fan.n % #SP.FAN + 1, now
+		offset = SP.FAN[fan.n]
+	end
+	s.anchor.WorldPosition = position + offset
+	s.board.StudsOffsetWorldSpace = Vector3.zero
+	local text = style.kind == "text"
+	local scale = style.scale or 1
+	s.badge.Visible = not text
+	s.burst.Visible = style.kind == "crit"
+	if not text then
+		local fill = rgb(style.fill)
+		s.badge.BackgroundColor3 = fill
+		local shape, bw, bh = HD.splatShape(style.text, style.size)
+		s.badge.Rotation = if shape == "diamond" then 45 else 0
+		s.badge.Size = UDim2.fromOffset(math.floor(bw * scale), math.floor(bh * scale))
+		s.badge:FindFirstChildOfClass("UIGradient").Rotation = if shape == "diamond" then 45 else 90
+		s.edge.Color = rgb(style.edge)
+		s.burst.BackgroundColor3 = fill:Lerp(white, 0.35)
+		s.burst.Size = UDim2.fromOffset(math.floor(40 * scale), math.floor(40 * scale))
+	end
+	s.value.Text = style.text
+	s.value.Font = if text then heavy else display
+	s.value.TextSize = style.size or 16
+	s.value.TextColor3 = if typeof(style.ink) == "Color3" then style.ink else rgb(style.ink or "FFFFFF")
+	s.tag.Text = style.tag or ""
+	s.tag.TextColor3 = if style.tagColor then rgb(style.tagColor) else gold
+	s.tag.Visible = style.tag ~= nil
+	for _, o in ipairs({s.value, s.tag}) do o.TextTransparency, o.TextStrokeTransparency = 0, 0.05 end
+	s.badge.BackgroundTransparency, s.burst.BackgroundTransparency, s.edge.Transparency = 0.04, 0.15, 0
+	s.board.Enabled = true
+	if not Theme.reducedMotion(player) then
+		-- Rise and fade; crits pop from 1.5x.
+		TweenService:Create(s.board, TweenInfo.new(0.9, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {StudsOffsetWorldSpace = Vector3.new(0, 1.8, 0)}):Play()
+		if style.kind == "crit" then
+			s.board.Size = UDim2.fromOffset(180, 96)
+			TweenService:Create(s.board, TweenInfo.new(0.18, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = UDim2.fromOffset(120, 64)}):Play()
+		else
+			s.board.Size = UDim2.fromOffset(120, 64)
+		end
+		local fade = TweenInfo.new(0.35, Enum.EasingStyle.Linear, Enum.EasingDirection.In, 0, false, 0.55)
+		TweenService:Create(s.value, fade, {TextTransparency = 1, TextStrokeTransparency = 1}):Play()
+		TweenService:Create(s.tag, fade, {TextTransparency = 1, TextStrokeTransparency = 1}):Play()
+		TweenService:Create(s.badge, fade, {BackgroundTransparency = 1}):Play()
+		TweenService:Create(s.edge, fade, {Transparency = 1}):Play()
+		TweenService:Create(s.burst, fade, {BackgroundTransparency = 1}):Play()
+	end
+	task.delay(SP.LIFE, function()
+		if s.token ~= token then return end
+		s.board.Enabled = false
+		local i = table.find(SP.live, s)
+		if i then table.remove(SP.live, i) end
+		table.insert(SP.free, s)
+	end)
+	return s
+end
+S.splats = SP
+floatText = function(position, text, color, size)
+	SP.show(position, {kind = "text", text = text, ink = color, size = size})
+end
+
+------------------------------------------------------------------------------
+-- Overhead health bars (§34): a slim bar over each creature you fight (struck
+-- or targeted), with a pale "recent damage" trail that drains after it. Bars
+-- are pooled (OB.POOL), listen to the creature's Health attribute (no per-frame
+-- work) and fade out OB.LINGER s after the last hit; a dead or removed creature
+-- releases its bar at once.
+------------------------------------------------------------------------------
+local OB = {POOL = 12, LINGER = 5, free = {}, byModel = {}, count = 0}
+function OB.new()
+	local board = make("BillboardGui", nil, {Name = "OverheadBar", Size = UDim2.fromOffset(78, 18), AlwaysOnTop = true, LightInfluence = 0, MaxDistance = 90,
+		Enabled = false, ResetOnSpawn = false})
+	local well = make("Frame", board, {Name = "Track", AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -2), Size = UDim2.new(1, -4, 0, 9),
+		BackgroundColor3 = track, BackgroundTransparency = 0.1, BorderSizePixel = 0})
+	make("UICorner", well, {CornerRadius = UDim.new(0, 3)})
+	make("UIStroke", well, {Name = "Rim", Color = brassDark, Thickness = 1.5, ApplyStrokeMode = Enum.ApplyStrokeMode.Border})
+	local trail = make("Frame", well, {Name = "Trail", Size = UDim2.fromScale(1, 1), BackgroundColor3 = rgb("FFE6C8"), BorderSizePixel = 0})
+	make("UICorner", trail, {CornerRadius = UDim.new(0, 3)})
+	local fill = make("Frame", well, {Name = "Fill", Size = UDim2.fromScale(1, 1), BackgroundColor3 = mint, BorderSizePixel = 0, ZIndex = 2})
+	make("UICorner", fill, {CornerRadius = UDim.new(0, 3)})
+	make("UIGradient", fill, {Rotation = 90, Color = ColorSequence.new(white, Color3.new(0.62, 0.62, 0.62))})
+	local level = make("TextLabel", board, {Name = "Level", BackgroundTransparency = 1, AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 0, 1, -12),
+		Size = UDim2.new(1, 0, 0, 8), Font = display, TextSize = 8, TextColor3 = ivory, TextStrokeTransparency = 0.2, TextStrokeColor3 = deep,
+		TextXAlignment = Enum.TextXAlignment.Left, Text = ""})
+	return {board = board, well = well, trail = trail, fill = fill, level = level, token = 0}
+end
+function OB.release(model)
+	local b = OB.byModel[model]
+	if not b then return end
+	OB.byModel[model] = nil
+	for _, c in ipairs(b.connections or {}) do c:Disconnect() end
+	b.connections = nil
+	b.board.Enabled = false
+	b.board.Adornee = nil
+	b.token += 1
+	table.insert(OB.free, b)
+end
+function OB.paint(model, b, animate)
+	local hp, maxHp = tonumber(model:GetAttribute("Health")) or 0, math.max(1, tonumber(model:GetAttribute("MaxHealth")) or 1)
+	local f = math.clamp(hp / maxHp, 0, 1)
+	b.fill.Size = UDim2.fromScale(f, 1)
+	b.fill.Visible = f > 0
+	b.fill.BackgroundColor3 = rgb(HD.barColor(f))
+	if animate and not Theme.reducedMotion(player) then
+		TweenService:Create(b.trail, TweenInfo.new(0.45, Enum.EasingStyle.Quad, Enum.EasingDirection.In, 0, false, 0.25), {Size = UDim2.fromScale(f, 1)}):Play()
+	else
+		b.trail.Size = UDim2.fromScale(f, 1)
+	end
+	if model:GetAttribute("Dead") or hp <= 0 then OB.release(model) end
+end
+-- Shows (or refreshes) the bar over `model`, fading LINGER s after the last call.
+function OB.touch(model)
+	if typeof(model) ~= "Instance" or not model.Parent then return nil end
+	local b = OB.byModel[model]
+	if not b then
+		b = table.remove(OB.free)
+		if not b then
+			if OB.count >= OB.POOL then return nil end
+			OB.count += 1
+			b = OB.new()
+		end
+		OB.byModel[model] = b
+		local body = model.PrimaryPart or model:FindFirstChild("HumanoidRootPart")
+		if not body then
+			for _, child in ipairs(model:GetChildren()) do if child:IsA("BasePart") then body = child break end end
+		end
+		b.board.Adornee = body
+		b.board.StudsOffsetWorldSpace = Vector3.new(0, (if body then body.Size.Y / 2 else 2) + 1.6, 0)
+		b.board.Parent = player:FindFirstChild("PlayerGui")
+		local lvl = model:GetAttribute("Level")
+		b.level.Text = if lvl then "Lv " .. tostring(lvl) else ""
+		b.connections = {
+			model:GetAttributeChangedSignal("Health"):Connect(function() OB.paint(model, b, true) end),
+			model.AncestryChanged:Connect(function() if not model:IsDescendantOf(Workspace) then OB.release(model) end end),
+		}
+		b.trail.Size = UDim2.fromScale(1, 1)
+		OB.paint(model, b, false)
+		if OB.byModel[model] ~= b then return nil end
+	end
+	b.board.Enabled = true
+	OB.opacity(b, 0)
+	b.token += 1
+	local token = b.token
+	task.delay(OB.LINGER, function()
+		if b.token ~= token or OB.byModel[model] ~= b or model == target then return end
+		-- Out of combat: fade, then hand the bar back to the pool.
+		if not Theme.reducedMotion(player) then
+			local info = TweenInfo.new(0.4)
+			for _, o in ipairs({b.well, b.trail, b.fill}) do TweenService:Create(o, info, {BackgroundTransparency = 1}):Play() end
+			TweenService:Create(b.level, info, {TextTransparency = 1, TextStrokeTransparency = 1}):Play()
+		end
+		task.delay(0.45, function() if b.token == token and OB.byModel[model] == b then OB.release(model) end end)
+	end)
+	return b
+end
+-- Resets the fade (0 = fully shown).
+function OB.opacity(b, t)
+	b.well.BackgroundTransparency = math.max(t, 0.1)
+	b.trail.BackgroundTransparency, b.fill.BackgroundTransparency = t, t
+	b.level.TextTransparency, b.level.TextStrokeTransparency = t, math.max(t, 0.2)
+end
+S.overhead = OB
 -- One reusable flash Highlight per monster (Roblox renders at most 31 at once);
 -- it is disabled between hits and destroyed when the monster leaves the world.
 local flashes = {} -- [model] = {highlight = Highlight, token = number}
@@ -1087,21 +1313,14 @@ end
 fx.OnClientEvent:Connect(function(kind, payload)
 	if type(payload) ~= "table" then return end
 	if kind == "hit" and typeof(payload.position) == "Vector3" then
-		local amount = tonumber(payload.amount) or 0
-		if payload.miss then
-			floatText(payload.position, "miss", rgb("A9BDC1"), 17)
-		else
-			local text, color, size = commas(amount), Color3.new(1, 1, 1), 20
-			if payload.crit then text, color, size = "✧ " .. text .. " ✧", gold, 26 end
-			-- Triangle tags: WEAK! in gold, resist in grey.
-			if payload.tag == "weak" then
-				text, size = text .. ' <font color="#FFD24A" size="' .. (size - 4) .. '">WEAK!</font>', size + 2
-			elseif payload.tag == "resist" then
-				text = text .. ' <font color="#A9BDC1" size="' .. (size - 6) .. '">resist</font>'
-				if not payload.crit then color = rgb("D5DDDF") end
-			end
-			floatText(payload.position, text, color, size)
-			if typeof(payload.model) == "Instance" then flash(payload.model) end
+		-- §34 hitsplats: miss (blue), damage (red), crit (amber burst), with the
+		-- triangle tags WEAK! (gold) and resist (grey); the struck creature gets an
+		-- overhead bar.
+		local model = if typeof(payload.model) == "Instance" then payload.model else nil
+		SP.show(payload.position, HD.splatStyle(payload, Theme), model)
+		if model then
+			OB.touch(model)
+			if not payload.miss then flash(model) end
 		end
 	elseif kind == "projectile" then
 		projectile(payload)
@@ -1122,7 +1341,7 @@ fx.OnClientEvent:Connect(function(kind, payload)
 		toast(deniedText(payload.action, payload.reason))
 	elseif kind == "hurt" then
 		local root = rootOf()
-		if root then floatText(root.Position + Vector3.new(0, 2.5, 0), "-" .. commas(tonumber(payload.amount) or 0), rgb("FF6B5B"), 18) end
+		if root then SP.show(root.Position + Vector3.new(0, 2.5, 0), HD.splatStyle({hurt = true, amount = payload.amount}, Theme), player) end
 	elseif kind == "death" and typeof(payload.position) == "Vector3" then
 		burst(payload.position, payload.color, if payload.boss then 2.2 else 1)
 	elseif kind == "bossSpawn" and payload.owner == player.UserId then
@@ -1505,8 +1724,17 @@ local lastBossScan, boss = 0, nil
 RunService.RenderStepped:Connect(function()
 	if target and (not liveMonster(target) or distanceTo(target) > TARGET_DROP_RANGE) then setTarget(nil) end
 	if held then
+		S.pendingAttack = nil
 		local model = if held == "mouse" then target else nearestMonster()
 		if model then tryAttack(model) end
+	end
+	local pending = S.pendingAttack
+	if pending then
+		if os.clock() > pending.untilAt or not canTarget(pending.model) then S.pendingAttack = nil
+		elseif distanceTo(pending.model) <= reach() then
+			S.pendingAttack = nil
+			tryAttack(pending.model)
+		end
 	end
 	local now = os.clock()
 	if now - lastBossScan > 0.5 then

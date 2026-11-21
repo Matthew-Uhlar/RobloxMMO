@@ -1362,9 +1362,11 @@ local function combatHud(size)
 	local theme = loadTheme(env)
 	env.require = function(target)
 		if target.Name == "AetherUiTheme" then return theme end
+		if target.Name == "AetherHudDepth" then return loadModule("shared/HudDepth.lua") end
 		assert(target.Name == "AetherData", "unexpected require"); return Data
 	end
 	new("ModuleScript", { Name = "AetherData" }).Parent = replicated
+	new("ModuleScript", { Name = "AetherHudDepth" }).Parent = replicated
 	if not replicated:FindFirstChild("AetherUiTheme") then new("ModuleScript", { Name = "AetherUiTheme" }).Parent = replicated end
 	local chunk = luau.load(fs.readFile("combat.client.lua"), { debugName = "combat.client.lua", environment = env, injectGlobals = true })
 	chunk()
@@ -3272,7 +3274,10 @@ do
 	for _, l in ipairs(lore) do kinds[l.kind or "blank"] = true; if l.stat then statsSeen[l.stat] = true end; if l.kind == "requires" then req = l end end
 	assert(statsSeen.damage and statsSeen.strength and statsSeen.critDamage, "lore stat lines")
 	assert(req and req.unmet and req.color == T.hex.ember, "unmet requirement in ember")
-	assert(lore[#lore].kind == "rarity" and lore[#lore].text:find("RARE SWORD", 1, true), "rarity footer")
+	-- §34 footer: RARITY TYPE, then the sell price, then the yellow click prompt.
+	local function footerAt(l, kind) for i, line in ipairs(l) do if line.kind == kind then return i, line end end return nil end
+	local ri, rline = footerAt(lore, "rarity")
+	assert(rline and rline.text:find("RARE SWORD", 1, true) and lore[#lore].kind == "click" and footerAt(lore, "value") == ri + 1, "rarity footer, sell price, click prompt")
 	assert(kinds.value, "sell value line")
 	local met = T.lore(Items.SunsteelSword, { Data = Data, levels = { Combat = 50 } })
 	for _, l in ipairs(met) do if l.kind == "requires" then assert(not l.unmet, "met requirement not flagged") end end
@@ -3280,7 +3285,7 @@ do
 	assert(food[1].text:find("x4", 1, true), "stack count on the name")
 	local healLine = false
 	for _, l in ipairs(food) do if l.kind == "stat" and l.text:find("65", 1, true) then healLine = true end end
-	assert(healLine and food[#food].text:find("FOOD", 1, true), "food heal line and FOOD footer")
+	assert(healLine and select(2, footerAt(food, "rarity")).text:find("FOOD", 1, true) and food[#food].text:find("Click to eat!", 1, true), "food heal line, FOOD footer and click prompt")
 	assert(T.examine(Items.Ore):find(Items.Ore.name, 1, true), "examine text names the item")
 	checks += 9
 

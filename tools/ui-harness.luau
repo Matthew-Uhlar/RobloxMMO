@@ -28,6 +28,8 @@ function H.loadMapArt(env)
 	return luau.load(fs.readFile("shared/MapArt.lua"), { debugName = "shared/MapArt.lua", environment = env, injectGlobals = true })()
 end
 H.Data, H.Progression, H.Catalog = Data, Progression, Catalog
+-- HUD depth rules (shared/HudDepth.lua, §34): pure, no instances.
+H.HudDepth = loadModule("shared/HudDepth.lua")
 
 ------------------------------------------------------------------------------
 -- Mock instances
@@ -54,6 +56,7 @@ local events = {
 	TextBoxFocusReleased = true, InputEnded = true, TouchTapInWorld = true, RenderStepped = true, AncestryChanged = true,
 	MouseEnter = true, SelectionLost = true, Completed = true, Heartbeat = true, InputChanged = true, CharacterRemoving = true,
 	Event = true, MouseButton2Click = true, AttributeChanged = true, TouchPinch = true, Destroying = true,
+	TouchLongPress = true, PlayerAdded = true, PlayerRemoving = true,
 }
 local guiClasses = { Frame = true, TextLabel = true, TextButton = true, ImageLabel = true, ImageButton = true, ScrollingFrame = true, ViewportFrame = true, TextBox = true, CanvasGroup = true }
 H.guiClasses = guiClasses
@@ -189,6 +192,7 @@ end
 function methods:IsA(class)
 	local own = rawget(self, STATE).props.ClassName
 	return own == class or class == "Instance" or (class == "GuiObject" and guiClasses[own] == true)
+		or (class == "BasePart" and (own == "Part" or own == "MeshPart" or own == "WedgePart" or own == "TrussPart"))
 end
 function methods:IsDescendantOf(other)
 	local parent = rawget(self, STATE).parent
@@ -598,10 +602,12 @@ function H.runCombat(size, player, shared)
 	local theme = H.loadTheme(env)
 	env.require = function(target)
 		if target.Name == "AetherUiTheme" then return theme end
+		if target.Name == "AetherHudDepth" then return H.HudDepth end
 		assert(target.Name == "AetherData", "unexpected require")
 		return Data
 	end
 	if not replicated:FindFirstChild("AetherUiTheme") then new("ModuleScript", { Name = "AetherUiTheme" }).Parent = replicated end
+	if not replicated:FindFirstChild("AetherHudDepth") then new("ModuleScript", { Name = "AetherHudDepth" }).Parent = replicated end
 	local chunk = luau.load(fs.readFile("combat.client.lua"), { debugName = "combat.client.lua", environment = env, injectGlobals = true })
 	chunk()
 	local monster = new("Model", { Name = "Golem" })
@@ -806,6 +812,76 @@ function H.runBuilder(size, player)
 			player:SetAttribute("IslandBuildRequest", (player:GetAttribute("IslandBuildRequest") or 0) + 1)
 		end,
 	}
+end
+
+-- Loads overlay.client.lua (§34: action label, world menu, status orbs, chat
+-- tabs and router, pickup feed) into an existing player's PlayerGui; pass the
+-- atlas handle's `replicated` to share its local channels. options: touch,
+-- raycast(origin, direction) -> {Instance, Position} | nil (the world under the
+-- cursor), tagged (CollectionService "IsleMonster" list), players (other Player
+-- mocks), delays (records task.delay calls), clock (os.clock stand-in).
+function H.runOverlay(size, player, shared, options)
+	options = options or {}
+	screen = size
+	local replicated = shared or new("ReplicatedStorage")
+	local tagged = options.tagged or {}
+	local others = options.players or {}
+	local chat = {}
+	local channels = new("Folder", { Name = "TextChannels" })
+	local general = new("TextChannel", { Name = "RBXGeneral" })
+	general.Parent = channels
+	general.DisplaySystemMessage = function(_, text, metadata) table.insert(chat, { text = text, metadata = metadata }) end
+	local textChat = new("TextChatService")
+	channels.Parent = textChat
+	local camera = new("Camera", { ViewportSize = size })
+	camera.ScreenPointToRay = function(_, x, y) return { Origin = roblox.Vector3.new(x, 100, y), Direction = roblox.Vector3.new(0, -1, 0) } end
+	local space = {
+		CurrentCamera = camera,
+		Raycast = function(_, origin, direction) return if options.raycast then options.raycast(origin, direction) else nil end,
+		FindFirstChild = function() return nil end,
+	}
+	local playersService = new("Players", { LocalPlayer = player })
+	function playersService.GetPlayers() local out = { player }; for _, o in ipairs(others) do table.insert(out, o) end; return out end
+	function playersService.GetPlayerFromCharacter(_, model)
+		for _, o in ipairs(others) do if o.Character == model then return o end end
+		return if player.Character == model then player else nil
+	end
+	function playersService.GetPlayerByUserId(_, id)
+		for _, o in ipairs(others) do if o.UserId == id then return o end end
+		return nil
+	end
+	local run = new("RunService")
+	local services = {
+		Players = playersService, ReplicatedStorage = replicated, RunService = run, TextChatService = textChat,
+		UserInputService = new("UserInputService", { TouchEnabled = options.touch == true }), TweenService = new("TweenService"),
+		CollectionService = { GetTagged = function() return tagged end, HasTag = function(_, object, tag) return tag == "IsleMonster" and table.find(tagged, object) ~= nil end },
+	}
+	local game = new("DataModel")
+	function game.GetService(_, name) return assert(services[name], name) end
+	local base = baseTask(options.delays)
+	local env = {
+		game = game, workspace = space, Enum = roblox.Enum, UDim = roblox.UDim, UDim2 = roblox.UDim2, Vector2 = roblox.Vector2, Vector3 = roblox.Vector3,
+		CFrame = roblox.CFrame, Color3 = roblox.Color3, ColorSequence = roblox.ColorSequence, ColorSequenceKeypoint = roblox.ColorSequenceKeypoint,
+		NumberSequence = roblox.NumberSequence, NumberSequenceKeypoint = roblox.NumberSequenceKeypoint, TweenInfo = { new = function() return {} end },
+		Instance = { new = function(class) return new(class) end }, RaycastParams = { new = function() return {} end },
+		typeof = function(value) return if data[value] then "Instance" else typeof(value) end,
+		-- The 1 Hz orb tick and walk loops yield forever here (task.wait never resumes).
+		task = { spawn = base.spawn, delay = base.delay, defer = base.defer, wait = function() return coroutine.yield() end },
+		os = { clock = options.clock or os.clock, time = os.time },
+	}
+	local theme = H.loadTheme(env)
+	env.require = function(target)
+		if target.Name == "AetherUiTheme" then return theme end
+		if target.Name == "AetherHudDepth" then return H.HudDepth end
+		return Data
+	end
+	for _, name in ipairs({ "AetherUiTheme", "AetherHudDepth", "AetherData" }) do
+		if not replicated:FindFirstChild(name) then new("ModuleScript", { Name = name }).Parent = replicated end
+	end
+	luau.load(fs.readFile("overlay.client.lua"), { debugName = "overlay.client.lua", environment = env, injectGlobals = true })()
+	local api = player:FindFirstChild("IsleOverlayApi")
+	return { gui = player:FindFirstChild("PlayerGui"):FindFirstChild("IsleOverlay"), state = api.OnInvoke("state"), api = api, input = services.UserInputService,
+		run = run, chat = chat, textChat = textChat, theme = theme, camera = camera }
 end
 
 -- Calls recorded by a RemoteEvent's FireServer.
