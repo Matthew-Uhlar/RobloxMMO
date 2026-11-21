@@ -615,8 +615,10 @@ end)
 local world = roblox.Instance.new("Workspace")
 local mgObjects = {}
 local bridgeCalls = {}
+local bridgeDown = false -- Part E: the journal is unreachable (the bridge answers nil)
 local bridgeProxy = {Invoke = function(_, opName, who, payload)
 	table.insert(bridgeCalls, {op = opName, player = who, payload = payload})
+	if bridgeDown then return nil end
 	return bridge.OnInvoke(opName, who, payload)
 end}
 local mgServices = {
@@ -1056,6 +1058,346 @@ do
 	ok(has(server, "minigames=Minigames.state(player,p)"), "snapshot key wired")
 end
 print("PASS: " .. (checks - partC) .. " minigame lifecycle assertions.")
+
+------------------------------------------------------------------------------
+-- Part E: QC regressions, driven through minigames.server.lua and the live
+-- journal at the real action cadence (use() = 1.2 s per action).
+------------------------------------------------------------------------------
+local partE = checks
+local CL = Data.CommissionsLogs
+local function step(p, part, action) use(p, part, action); heartbeat:Fire(1.2) end
+local function lastSettle(p, filter)
+	for i = #bridgeCalls, 1, -1 do
+		local c = bridgeCalls[i]
+		if c.player == p and c.op == "minigame" and c.payload.action == "settle" and (not filter or filter(c.payload)) then return c.payload end
+	end
+	return nil
+end
+local function xpOf(p, skills)
+	local xp = cmd(p, "state").xp
+	local n = 0
+	for _, s in ipairs(skills) do n += xp[s] or 0 end
+	return n
+end
+local function barricadeHpOf(p, i)
+	local list = {}
+	for bar in tostring(hud(p).barricades):gmatch("[^,]+") do table.insert(list, bar) end
+	local a, b = list[i]:match("(%d+)/(%d+)")
+	return tonumber(a), tonumber(b)
+end
+local HAUL_SKILLS ={"Fishing", "Cooking", "Carpentry"}
+local qcLines = {}
+-- One haul member's play at the real cadence: tend fires/masts, catch, cook,
+-- load; harpoon once the Leviathan surfaces after stallUntil seconds.
+local function playHaul(p, stallUntil, limit)
+	local t0 = clock
+	local spray, brazierPart, harpoonPart = find("Stormfish spray"), find("Storm brazier"), find("Harpoon mount")
+	while p.attrs.MinigameGame == "Haul" and clock - t0 < (limit or 1e9) do
+		local h = hud(p)
+		local m1, m2 = h.masts:match("(%d),(%d)")
+		local fire
+		if tonumber(h.fires) > 0 then for i = 1, H.FIRE_CAP do if not fire and find("Deck fire " .. i).Transparency < 1 then fire = i end end end
+		if fire then step(p, find("Deck fire " .. fire), "Douse fire")
+		elseif m1 == "0" then step(p, find("Mast 1"), "Repair mast")
+		elseif m2 == "0" then step(p, find("Mast 2"), "Repair mast")
+		elseif h.phase == "vulnerable" and clock - t0 > stallUntil then step(p, harpoonPart, "Harpoon the Leviathan")
+		elseif h.phase == "vulnerable" then
+			if tonumber(h.raw) + tonumber(h.cooked) < H.CARRY then step(p, spray, "Catch stormfish")
+			elseif tonumber(h.raw) > 0 then step(p, brazierPart, "Cook stormfish")
+			else tick(1.2, 1.2) end
+		elseif tonumber(h.cooked) == 0 and tonumber(h.raw) < H.CARRY then step(p, spray, "Catch stormfish")
+		elseif tonumber(h.raw) > 0 then step(p, brazierPart, "Cook stormfish")
+		else step(p, find("Cannon 1"), "Load cannon") end
+	end
+	return clock - t0
+end
+local function startHaulWith(list)
+	for _, p in ipairs(list) do onPad(p, "Haul pad") end
+	tick(H.PAD_SECONDS + 1)
+	for _, p in ipairs(list) do p.root.Position = p.root.Position + Vector3.new(0, 0, 0) end
+end
+
+-- HIGH 1: barricade repair farm. Riftlings are left on one barricade and a
+-- member repairs it at the real cadence for a whole match.
+do
+	for lvl = 1, 99 do
+		ok(S.repairXp(lvl) <= math.max(1, MG.soloCarpentryXpPerTimber(lvl) * S.REPAIR_TIMBER * MG.SOCIAL_BONUS) + 0.5, "repair XP never beats solo Carpentry per Timber at " .. lvl)
+	end
+	ok(S.REPAIR_POINT_CAP < S.MIN_POINTS, "repairs alone cannot reach the point minimum")
+	ok(not S.canRepair(399, 400, 120) and S.canRepair(280, 400, 120), "repairs need a full repair's worth of damage")
+	local farmers = {}
+	for i = 1, 3 do
+		farmers[i] = seeded(9500 + i, function(p) p.xp.Combat = X[30]; p.xp.Carpentry = X[30]; p.items.Timber = 5000 end)
+		join(farmers[i])
+		onPad(farmers[i], "SiegeNovice pad")
+	end
+	tick(S.PAD_SECONDS + 1)
+	local F = farmers[1]
+	eq(F.attrs.MinigameGame, "Siege", "repair-farm siege started")
+	local carp0 = cmd(F, "state").xp.Carpentry
+	local timber0 = cmd(F, "state").items.Timber
+	local t0 = clock
+	movers[farmers[2]], movers[farmers[3]] = true, true
+	local farmed = find(S.Portals[4].name .. " barricade")
+	local maxPoints = 0
+	while F.attrs.MinigameGame == "Siege" and clock - t0 < 800 do
+		local hp, max = barricadeHpOf(F, 4)
+		if hp < max then step(F, farmed, "Repair (1 Timber)") else tick(1.2, 1.2) end
+		maxPoints = math.max(maxPoints, points(F))
+		for k = 2, 3 do
+			for _, d in ipairs(bastion:GetDescendants()) do
+				if d:IsA("BasePart") and d:GetAttribute("Creature") and (d.Position - farmed.Position).Magnitude > 12 then use(farmers[k], d, "Strike"); heartbeat:Fire(1.2) break end
+			end
+		end
+	end
+	local elapsed = clock - t0
+	eq(F.attrs.MinigameGame, "", "the farmed match ended")
+	local s = cmd(F, "state")
+	local gained = s.xp.Carpentry - carp0
+	local spent = timber0 - s.items.Timber
+	ok(spent >= 1, "the farmer did repair (" .. spent .. " Timber)")
+	ok(gained <= S.repairXp(30) * S.REPAIR_XP_LIMIT, "Carpentry XP capped by the per-match repair budget (" .. gained .. ")")
+	ok(gained <= spent * MG.soloCarpentryXpPerTimber(30) * MG.SOCIAL_BONUS + 1, "repairs never pay more Carpentry XP per Timber than solo building")
+	ok(maxPoints <= S.REPAIR_POINT_CAP, "repair-only points stop at the repair cap (" .. maxPoints .. ")")
+	ok(maxPoints < S.MIN_POINTS, "repairs alone never reach the minimum")
+	table.insert(qcLines, string.format("Siege repair farm (Carpentry 30, %.0f s): %d Timber -> %d Carpentry XP = %.0f XP/h (was ~142,700 XP/h)", elapsed, spent, gained, gained * 3600 / elapsed))
+	for _, p in ipairs(farmers) do p.root.Position = Vector3.new(0, 10, 0); movers[p] = nil end
+end
+
+-- HIGH 2: Tempest Haul XP is paid on measured time; rolls are capped by match time.
+do
+	-- Pure rules.
+	local L30 = {Fishing = 30, Cooking = 30, Carpentry = 30}
+	eq(H.actionXp("catch", L30, 1.1).Fishing, H.xpPerSecond(30) * 1.1, "a 1.1 s catch pays 1.1 s of XP")
+	eq(H.actionXp("catch", L30, 99).Fishing, H.xpPerSecond(30) * H.Model.catch, "a slow catch is capped at its model seconds")
+	eq(H.actionXp("cook", L30, -4).Cooking, 0, "negative time pays nothing")
+	eq(H.maxRolls(900, false), H.maxRolls(H.Model.gameSeconds, false), "stalling past the model game adds no rolls")
+	ok(H.maxRolls(120, false) < H.maxRolls(H.Model.gameSeconds, false), "short games cap fewer rolls")
+	ok(H.maxRolls(900, true) < H.maxRolls(900, false), "solo cap is reduced")
+	eq(H.rolls(1e6, true, 4, 900), H.maxRolls(900, false), "huge points still capped by time")
+	-- Server clamp: the XP of a settlement fits XP_RATIO x solo per second played.
+	local clampP = seeded(9610, function(p) p.xp.Fishing = X[30]; p.xp.Cooking = X[30]; p.xp.Carpentry = X[30] end)
+	local before = xpOf(clampP, HAUL_SKILLS)
+	op(clampP, {action = "settle", game = "Haul", points = 0, won = false, partySize = 1, seconds = 100, xp = {Fishing = 1e6, Cooking = 1e6, Carpentry = 1e6}})
+	local paid = xpOf(clampP, HAUL_SKILLS) - before
+	ok(paid <= H.xpPerSecond(30) * (100 + H.Model.catch) + 3, "server caps Haul XP at the intended rate (" .. paid .. ")")
+	ok(paid >= H.xpPerSecond(30) * 100 * 0.95, "the full rate is still paid")
+	-- Real cadence, normal play (harpoon as soon as it surfaces).
+	local L = 30
+	local solo = MG.soloFishCookXpPerHour(L)
+	local fast = seeded(9600, function(p) p.xp.Fishing = X[L]; p.xp.Cooking = X[L]; p.xp.Carpentry = X[L] end)
+	join(fast)
+	startHaulWith({fast})
+	eq(fast.attrs.MinigameGame, "Haul", "cadence haul started")
+	local x0 = xpOf(fast, HAUL_SKILLS)
+	local secs = playHaul(fast, 0)
+	local rate = (xpOf(fast, HAUL_SKILLS) - x0) * 3600 / secs
+	within(rate / solo, 0.5, MG.SOCIAL_BONUS * 1.1, "Haul XP/h at the 1.2 s cadence vs solo fish+cook")
+	table.insert(qcLines, string.format("Haul real cadence (L%d, %.0f s): %.0f XP/h = %.2fx solo (was 2.12x)", L, secs, rate, rate / solo))
+	fast.root.Position = Vector3.new(0, 10, 0)
+	-- Real cadence, stalling the Leviathan to the end of the clock for points.
+	local staller = seeded(9601, function(p) p.xp.Fishing = X[L]; p.xp.Cooking = X[L]; p.xp.Carpentry = X[L] end)
+	join(staller)
+	startHaulWith({staller})
+	local r0 = cmd(staller, "state").minigames.rolls
+	x0 = xpOf(staller, HAUL_SKILLS)
+	secs = playHaul(staller, H.TIME_LIMIT - 120)
+	local st = cmd(staller, "state")
+	eq(st.minigames.log.Haul.won, 1, "the staller still won")
+	local rolls = st.minigames.rolls - r0
+	ok(rolls <= H.maxRolls(secs, true), "stalled haul rolls capped by time (" .. rolls .. ")")
+	local stallPerHour = rolls * 3600 / (secs + H.Model.lobbySeconds)
+	ok(stallPerHour <= H.rollsPerHour(true), "stalling earns no more rolls/h than the solo model (" .. string.format("%.1f", stallPerHour) .. ")")
+	rate = (xpOf(staller, HAUL_SKILLS) - x0) * 3600 / secs
+	ok(rate / solo <= MG.SOCIAL_BONUS * 1.1, "stalling does not raise XP/h")
+	local payload = lastSettle(staller, function(pl) return pl.won == true end)
+	ok(payload and payload.seconds >= H.TIME_LIMIT - 130, "settlement reports the stalled match length")
+	table.insert(qcLines, string.format("Haul staller (solo, %.0f s): %d rolls = %.1f rolls/h incl. lobby (was 47.2; solo model %.1f), %.2fx solo XP", secs, rolls, stallPerHour, H.rollsPerHour(true), rate / solo))
+	staller.root.Position = Vector3.new(0, 10, 0)
+end
+
+-- MEDIUM 1: a disconnecting member's XP is paid when they leave (XP only);
+-- a failed call keeps it for later; a rejoin keeps the points.
+do
+	local crew = seeded(9620, function(p) p.xp.Fishing = X[30]; p.xp.Cooking = X[30] end)
+	local mate = seeded(9621, function(p) p.xp.Fishing = X[30] end)
+	join(crew); join(mate)
+	startHaulWith({crew, mate})
+	movers[mate] = true
+	eq(crew.attrs.MinigameGame, "Haul", "crew aboard")
+	local spray = find("Stormfish spray")
+	for _ = 1, 3 do step(crew, spray, "Catch stormfish") end
+	local pts = points(crew)
+	local x0 = xpOf(crew, HAUL_SKILLS)
+	local played0 = cmd(crew, "state").minigames.log.Haul.played
+	drop(crew)
+	local x1 = xpOf(crew, HAUL_SKILLS)
+	ok(x1 > x0, "XP paid as the member leaves (" .. (x1 - x0) .. ")")
+	local xpCall = lastSettle(crew)
+	ok(xpCall and xpCall.xpOnly == true, "departure settlement is XP-only")
+	eq(cmd(crew, "state").minigames.log.Haul.played, played0, "an XP-only settlement writes no log entry")
+	-- Rejoin: points kept, XP not paid twice.
+	leave(crew)
+	local crew2 = player(crew.UserId)
+	join(crew2)
+	eq(crew2.attrs.MinigameGame, "Haul", "crew rejoined")
+	eq(points(crew2), pts, "points kept across the rejoin")
+	-- Journal unreachable on the next departure: the XP stays on the record.
+	for _ = 1, 2 do step(crew2, spray, "Catch stormfish") end
+	local x2 = xpOf(crew2, HAUL_SKILLS)
+	ok(x2 == x1, "no XP paid twice on rejoin")
+	bridgeDown = true
+	drop(crew2)
+	bridgeDown = false
+	eq(xpOf(crew2, HAUL_SKILLS), x2, "a failed settlement pays nothing")
+	leave(crew2)
+	local crew3 = player(crew.UserId)
+	join(crew3)
+	eq(crew3.attrs.MinigameGame, "Haul", "crew rejoined again")
+	drop(crew3)
+	local x3 = xpOf(crew3, HAUL_SKILLS)
+	ok(x3 > x2, "the XP kept after the failed call is paid on the next settlement (" .. (x3 - x2) .. ")")
+	leave(crew3)
+	local back = player(crew.UserId)
+	join(back)
+	-- Clean up: the mate leaves too; the match ends once nobody can return.
+	movers[mate] = nil
+	drop(mate)
+	drop(back)
+	tick(MG.REJOIN_SECONDS + 2, 1)
+	ok(not has(lobbies().Haul, "running"), "haul over after everyone left")
+	join(mate); join(back)
+end
+
+-- MEDIUM 2: an alt that idles out does not lift the solo penalty.
+do
+	local main = seeded(9630, function(p) p.xp.Fishing = X[30]; p.xp.Cooking = X[30]; p.xp.Carpentry = X[30] end)
+	local alt = seeded(9631, function(p) p.xp.Fishing = X[20] end)
+	join(main); join(alt)
+	startHaulWith({main, alt})
+	eq(alt.attrs.MinigameGame, "Haul", "alt aboard")
+	playHaul(main, 0)
+	ok(alt.attrs.MinigameGame ~= "Haul", "the idle alt was removed")
+	local payload = lastSettle(main, function(pl) return pl.won == true end)
+	ok(payload ~= nil, "main won the haul")
+	eq(payload.partySize, 1, "settle-time party counts members still present with the minimum")
+	local paidRolls = cmd(main, "state").minigames.rolls
+	eq(paidRolls, H.rolls(payload.points, true, 1, payload.seconds), "solo penalty applied")
+	main.root.Position = Vector3.new(0, 10, 0)
+	alt.root.Position = Vector3.new(0, 10, 0)
+end
+
+-- MEDIUM 3: Siege rewards scale with time and the party, and need a recent action.
+do
+	eq(S.requiredPoints(30, 0), S.MIN_POINTS, "short stay: the floor")
+	eq(S.requiredPoints(720, 0), math.floor(S.MIN_POINTS_PER_MINUTE * 12), "a full match needs points per minute")
+	eq(S.requiredPoints(60, 800), math.floor(S.MEDIAN_SHARE * 800), "a share of the median member")
+	eq(MG.median({1, 9, 3}), 3, "median odd")
+	eq(MG.median({1, 9, 3, 5}), 4, "median even")
+	eq(S.reward("Novice", 60, true, 70), 0, "below the required points: nothing")
+	eq(S.reward("Novice", 70, true, 70), S.Tiers[1].commendations, "at the required points: paid")
+	local vet = seeded(9640, function(p) p.xp.Combat = X[40] end)
+	local base = {action = "settle", game = "Siege", tier = "Novice", won = true, partySize = 5}
+	local function settleWith(extra) local t = table.clone(base); for k, v in pairs(extra) do t[k] = v end; return op(vet, t) end
+	eq(settleWith({points = 55, seconds = 700}).paid, 0, "55 points over 700 s is not enough")
+	ok(has(vet.last.message, "/ " .. S.requiredPoints(700, 0)), "refusal names the required points")
+	eq(settleWith({points = 80, seconds = 300, required = 120}).paid, 0, "the party's median raises the bar")
+	eq(settleWith({points = 200, seconds = 300, recent = false}).paid, 0, "no recent action: no reward")
+	ok(has(vet.last.message, "no action"), "recent-action refusal explained")
+	eq(settleWith({points = 200, seconds = 300, required = 120, recent = true}).paid, S.Tiers[1].commendations, "a real contributor is paid")
+	-- The real match in Part C sent the scaled requirement and the recent flag.
+	local aWin = lastSettle(A, function(pl) return pl.game == "Siege" and pl.won == true end)
+	ok(aWin and aWin.required >= S.MIN_POINTS and aWin.recent == true, "live siege settlement carries the required points and recent flag")
+end
+
+-- LOW 1 + LOW 2: a rejoin keeps the idle clock (short grace only) and waits for the body.
+do
+	local idler = seeded(9650, function(p) p.xp.Fishing = X[30] end)
+	join(idler)
+	startHaulWith({idler})
+	eq(idler.attrs.MinigameGame, "Haul", "idler aboard")
+	step(idler, find("Stormfish spray"), "Catch stormfish")
+	tick(40, 1)
+	drop(idler)
+	leave(idler)
+	tick(22, 1)
+	local again = player(idler.UserId)
+	local body = again.Character
+	local pivoted = false
+	again.Character = {Parent = true, FindFirstChild = function() return nil end, FindFirstChildOfClass = function() return nil end,
+		WaitForChild = function() return nil end, PivotTo = function() pivoted = true end}
+	join(again)
+	ok(again.attrs.MinigameGame ~= "Haul" and not pivoted, "no rejoin while the character has no root part")
+	again.Character = body
+	again.CharacterAdded:Fire(body)
+	eq(again.attrs.MinigameGame, "Haul", "rejoined once the root part exists")
+	ok((again.root.Position - find("Storm brazier").Position).Magnitude < 60, "moved onto the deck")
+	tick(MG.REJOIN_GRACE - 2, 1)
+	eq(again.attrs.MinigameGame, "Haul", "inside the rejoin grace")
+	tick(4, 1)
+	eq(again.attrs.MinigameGame, "", "the old idle clock applies after the grace")
+	ok(has(again.attrs.MinigameNotice, "inactivity"), "idle removal after a rejoin")
+	again.root.Position = Vector3.new(0, 10, 0)
+end
+
+-- LOW 5: a full Squall Cache bank never drops a roll.
+do
+	local hoarder = seeded(9660, function(p) p.xp.Fishing = X[40]; p.minigames = {commendations = 0, rolls = 498, unlocks = {}, title = "", log = {}} end)
+	eq(op(hoarder, {action = "info"}).rollRoom, 2, "info reports the bank room")
+	local coins0 = cmd(hoarder, "state").coins
+	local r = op(hoarder, {action = "settle", game = "Haul", points = 5000, won = true, partySize = 4, seconds = H.Model.gameSeconds})
+	ok(r.paid > 2, "the haul paid more rolls than the bank holds (" .. r.paid .. ")")
+	local s = cmd(hoarder, "state")
+	eq(s.minigames.rolls, 500, "bank filled to 500")
+	ok(s.coins > coins0, "overflow rolls opened on the spot")
+	ok(has(hoarder.last.message, "opened on the spot"), "overflow explained")
+	-- A nearly full bank is turned away at the pad.
+	join(hoarder)
+	onPad(hoarder, "Haul pad")
+	tick(H.PAD_SECONDS + 1)
+	ok(hoarder.attrs.MinigameGame ~= "Haul" and has(hoarder.attrs.MinigameNotice, "bank is nearly full"), "full bank refused at launch")
+	hoarder.root.Position = Vector3.new(0, 10, 0)
+	tick(1)
+end
+
+-- LOW 6: the return ferry passes the travel gate and zeroes velocity.
+do
+	local rider = fighters[1]
+	local beacon = find("Return ferry beacon")
+	mgObjects.IsleTravelGate = nil
+	rider.root.AssemblyLinearVelocity = Vector3.new(0, -80, 0)
+	use(rider, beacon, "Return to the Guild Terrace")
+	ok((rider.root.Position - beacon.Position).Magnitude < 15 and has(rider.attrs.MinigameNotice, "cannot carry"), "no gate: the ferry refuses")
+	mgObjects.IsleTravelGate = {Invoke = function() return "You can't travel mid-fight. Catch your breath first." end}
+	use(rider, beacon, "Return to the Guild Terrace")
+	ok((rider.root.Position - beacon.Position).Magnitude < 15 and has(rider.attrs.MinigameNotice, "mid-fight"), "the gate's refusal is shown")
+	mgObjects.IsleTravelGate = {Invoke = function() return true end}
+	use(rider, beacon, "Return to the Guild Terrace")
+	ok((rider.root.Position - beacon.Position).Magnitude > 100, "the ferry carries the rider home")
+	eq(rider.root.AssemblyLinearVelocity.Magnitude, 0, "velocity zeroed after the ferry")
+	mgObjects.IsleTravelGate = nil
+end
+
+-- Collection Log: minigame uniques granted after the first load credit the
+-- Minigames tab through collect() (shop purchase and Squall Cache roll).
+do
+	local L = CL.log()
+	for _, id in ipairs({"LumenwardHauberk", "LumenwardWarhelm", "TidebreakerRod", "StormcallerHood"}) do eq(L.Of[id], "Minigames", id .. " is a Minigames log entry") end
+	ok(L.Of.SquallpupPet ~= nil, "the Squallpup is a log entry")
+	local fan = seeded(9670, function(p) p.xp.Combat = X[40]; p.xp.Fishing = X[40]; p.minigames = {commendations = 1000, rolls = 1, unlocks = {}, title = "", log = {}} end)
+	cmd(fan, "mgBuy", "LumenwardHauberk")
+	rolls = {0.5, 0.5, 0.5, 0, 0, 0, 0, 0, 0}
+	ok(has(cmd(fan, "mgRoll", "1").message, "Tidebreaker"), "a 0 roll pays the uniques")
+	rolls = {}
+	leave(fan)
+	local counts = data["p" .. fan.UserId].profile.colLog.counts
+	eq(counts.LumenwardHauberk, 1, "a bought Lumenward piece credits the log")
+	eq(counts.TidebreakerRod, 1, "a rolled Tidebreaker Rod credits the log")
+	eq(counts.StormcallerHood, 1, "a rolled Stormcaller piece credits the log")
+	eq(counts.SquallpupPet, 1, "a rolled Squallpup credits the log")
+end
+for _, line in ipairs(qcLines) do print("  " .. line) end
+print("PASS: " .. (checks - partE) .. " minigame QC regression assertions.")
 
 ------------------------------------------------------------------------------
 -- Part D: Hunt › Minigames and the in-game HUD.

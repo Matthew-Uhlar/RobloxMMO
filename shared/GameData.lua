@@ -7570,7 +7570,8 @@ for _, a in ipairs({
 	{"LumenwardTreads","boots","Lumenward Treads",{defense=14,speed=3},150},
 }) do
 	local style = MG.LumenwardStyle[a[1]]
-	item(a[1],{name=a[3],kind="armor",slot=a[2],set="Lumenward",tier=5,rarity="Epic",color="9FE6F2",stats=a[4],requires={Combat=30},value=a[5]*10,
+	-- minigameUnique: Commendation-shop pieces are Minigames Collection Log entries (credited by collect() on purchase).
+	item(a[1],{name=a[3],kind="armor",slot=a[2],set="Lumenward",tier=5,rarity="Epic",color="9FE6F2",stats=a[4],requires={Combat=30},value=a[5]*10,minigameUnique=true,
 		description="Lumenward outfit (Commendation shop). Requires Combat 30. Four pieces: "..Data.Sets.Lumenward.text..(if style then ". "..style.name.." helm." else ".")})
 	-- Sets list four pieces: any of the three helms fills the helm slot (Data.Sets.Lumenward.helms).
 	if style then table.insert(Data.Sets.Lumenward.helms, a[1]) end
