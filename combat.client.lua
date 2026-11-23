@@ -1471,6 +1471,12 @@ function WBH.clock(seconds)
 end
 -- Places the bar in the top lane (or at the top of the left column on narrow
 -- screens) and the board under the minimap when the screen is tall enough.
+-- §39 QC M3: the board's foot (px from the top; 0 = hidden) as the local
+-- attribute WorldBossBoard, so the atlas's contest tracker stacks below it.
+function WBH.publish()
+	local foot = if WBH.board.Visible then WBH.board.Position.Y.Offset + WBH.board.Size.Y.Offset else 0
+	if player:GetAttribute("WorldBossBoard") ~= foot then player:SetAttribute("WorldBossBoard", foot) end
+end
 function WBH.layout()
 	local view = gui.AbsoluteSize
 	local width = if view and view.X > 0 then view.X else 1280
@@ -1485,6 +1491,7 @@ function WBH.layout()
 	WBH.board.AnchorPoint = Vector2.new(1, 0)
 	WBH.board.Position = UDim2.fromOffset(L.rightEdge, L.rightTop)
 	WBH.board.Size = UDim2.fromOffset(math.min(L.sidebar.w, 214), 126)
+	WBH.publish()
 end
 function WBH.render()
 	local p = WBH.payload
@@ -1520,6 +1527,7 @@ function WBH.render()
 	end
 	WBH.rankLine.Text = line
 	WBH.board.Visible = WBH.tall == true and #top > 0
+	WBH.publish()
 	for i, row in ipairs(WBH.rows) do
 		local e = top[i]
 		if i == 6 and you and you.rank and you.rank > 5 then
@@ -1547,6 +1555,7 @@ function WBH.hide()
 	WBH.payload = nil
 	WBH.bar.Visible = false
 	WBH.board.Visible = false
+	WBH.publish()
 end
 -- Warning discs: a translucent cylinder that fills over the windup; "safe"
 -- marks the shelter (green) inside a red arena ring.

@@ -148,6 +148,39 @@ do
 	-- Backoff: doubling, jittered, capped.
 	ok(CT.backoff(1, 1) == CT.BACKOFF_BASE and CT.backoff(2, 1) == 2 * CT.BACKOFF_BASE and CT.backoff(1, 0) == CT.BACKOFF_BASE / 2, "backoff doubles, jitter 50-100%")
 	eq(CT.backoff(40, 1), CT.BACKOFF_MAX, "backoff capped")
+	-- QC L5: a histogram mirror group holds at most ceil(SHARDS / GROUPS) shards,
+	-- and the worst case (every bucket of every slot filled in each) fits 32 KB.
+	do
+		local per = math.ceil(CT.SHARDS / CT.GROUPS)
+		local counts = {}
+		for sh = 1, CT.SHARDS do local g = CT.groupOf(sh); counts[g] = (counts[g] or 0) + 1 end
+		for g = 1, CT.GROUPS do ok(counts[g] <= per, "group " .. g .. " holds at most " .. per .. " shards") end
+		local least = math.huge
+		for _, c in ipairs(CT.Crops) do least = math.min(least, c.min) end
+		local hmax = {}
+		for slot = 1, CT.FEATURED do
+			hmax[slot] = {}
+			for bucket = CT.bucket(least), CT.bucket(CT.SCORE_CAP) do hmax[slot][tostring(bucket)] = CT.SHARD_CAP end
+		end
+		local entries = {}
+		for i = 1, per do entries[tostring(CT.SHARDS - i + 1)] = {ver = 999999999, h = hmax} end
+		local group = CT.mirror(nil, k, entries)
+		local gjson = roblox.serializeJson and roblox.serializeJson(group) or require("@lune/serde").encode("json", group)
+		ok(#gjson <= 32 * 1024, "QC L5: the worst-case mirror group fits MemoryStore's 32 KB (" .. #gjson .. " bytes)")
+	end
+	-- QC L10: server memory past a contest's write deadline is pruned.
+	do
+		local w0 = CT.window(k)
+		local mq = {[k] = {[1] = {}}, [k + 1] = {[1] = {}}}
+		local ks = {[CT.mapName(k) .. "/s1"] = {fails = 3, at = 0}, [CT.boardName(k) .. "/123"] = {fails = 1, at = 0},
+			[CT.mapName(k + 1) .. "/g2"] = {fails = 1, at = 0}, ["junk"] = {fails = 1, at = 0}}
+		eq(CT.keyContest(CT.boardName(k) .. "/123"), k, "contest of a leaderboard key")
+		CT.prune(mq, ks, w0.writeDeadline - 1)
+		ok(mq[k] and ks[CT.mapName(k) .. "/s1"] and ks["junk"] == nil, "QC L10: live contests keep their state; junk keys go")
+		CT.prune(mq, ks, w0.writeDeadline)
+		ok(mq[k] == nil and ks[CT.mapName(k) .. "/s1"] == nil and ks[CT.boardName(k) .. "/123"] == nil and mq[k + 1] and ks[CT.mapName(k + 1) .. "/g2"],
+			"QC L10: mirror queues and key backoff of a contest past its write deadline are dropped")
+	end
 end
 -- A4. Histograms, mirrors, estimates and exact sealing.
 do
@@ -224,6 +257,31 @@ do
 		if ei == xi then agree += 1 end
 	end
 	ok(agree >= 75, "the live estimate matches the sealed bracket for most scores (" .. agree .. "/100)")
+	-- QC L9 (lead decision): only Farming 10+ entrants scoring >= 25 % of the crop
+	-- median count toward n (bracket shares and minimum fields).
+	do
+		local sh = {[1] = {k = k, v = {}}}
+		for i = 1, 49 do sh[1].v["q" .. i] = CT.pack(1, 1000 + i) end
+		for i = 1, 30 do sh[1].v["alt" .. i] = CT.pack(1, 2000 + i, true) end -- below Farming 10
+		for i = 1, 10 do sh[1].v["dust" .. i] = CT.pack(1, def.min) end -- under 25 % of the median
+		local r = CT.seal(k, sh)
+		eq(r.slots[1].n, 49, "QC L9: alts and dust never pad the field")
+		eq(r.slots[1].cut.Diamond, nil, "QC L9: Diamond still needs 50 qualified entrants")
+		eq(r.slots[1].cut.Platinum, 1048, "QC L9: cut-offs come from the qualified field")
+		eq(r.slots[1].top[1].s, 2030, "an unqualified entrant can still top the crop")
+		eq(CT.bracketOf(CT.cleanResult(r, k), 1, 2030, crops[1]), "Platinum", "and is judged by the qualified cut-offs")
+		local h = CT.histogram(sh[1].v, k)
+		local hn = 0
+		for _, c in pairs(h[1]) do hn += c end
+		eq(hn, 59, "the live histogram leaves low-level entrants out")
+		local t0 = CT.window(k).starts + 60
+		local it = CT.applyScores(nil, {u = {c = 1, s = 50, l = true}}, k, t0)
+		local _, _, low1 = CT.unpack(it.v.u)
+		local it2 = CT.applyScores(it, {u = {c = 1, s = 50}}, k, t0)
+		local _, s2, low2 = CT.unpack(it2 and it2.v.u)
+		ok(low1 and it2 and not low2 and s2 == 50, "the low flag clears once the journal scores at Farming 10+")
+		eq((CT.applyScores(it2, {u = {c = 1, s = 50, l = true}}, k, t0)), nil, "and never comes back")
+	end
 	local alone = CT.estimate({buckets = {}, n = 0}, def.min + 5, crops[1])
 	eq(alone, "Bronze", "an unmirrored first entrant estimates itself")
 	eq(CT.estimate(hist[1], def.min - 1, crops[1]), nil, "no estimate below the minimum")
@@ -250,6 +308,43 @@ do
 		elseif e.kind == "title" then
 			ok(CT.TitleById[e.title] ~= nil and e.medals > 0, e.id .. " title")
 		end
+	end
+	-- QC M5: nothing undercuts the Verdant Garden shop (coins + materials at their
+	-- value per unit), nor buys more garden produce per coin; same garden gate.
+	local gardenOffers = 0
+	for _, e in ipairs(CT.Shop) do
+		local ge = e.kind == "item" and Data.Garden.ShopById[e.item]
+		if ge then
+			gardenOffers += 1
+			local perUnit = e.medals * CT.MEDAL_VALUE / e.amount
+			local gv = CT.gardenUnitValue(e.item)
+			ok(gv ~= nil and perUnit >= gv, string.format("QC M5: %s costs %d coins of medals per unit >= the garden shop's %d", e.id, perUnit, gv or -1))
+			ok(e.gardenLevel ~= nil and e.gardenLevel >= ge.level, "QC M5: " .. e.id .. " keeps the garden-level gate")
+			local crop = Data.Garden.CropBySeed[e.item]
+			if crop then
+				local produce = crop.yield * Data.Items[crop.id].value
+				ok(produce / perUnit <= produce / gv, "QC M5: " .. e.id .. " buys no more " .. crop.id .. " per coin than the garden shop")
+			end
+		end
+	end
+	ok(gardenOffers >= 1 and CT.ShopById.LotusBud.medals >= 40 and CT.ShopById.LotusBud.amount == 1, "QC M5: Lotus Buds cost 40+ medals each")
+	-- QC M1: the medallions are one accessory family; the upgrade path is known.
+	ok(P.accessoryFamily("FurrowMedallion") ~= nil and P.accessoryFamily("FurrowMedallion") == P.accessoryFamily("LaureateMedallion"), "QC M1: one medallion family")
+	do
+		local both = {xp = {}, items = {FurrowMedallion = 1, LaureateMedallion = 1}, accessoryBag = {"FurrowMedallion", "LaureateMedallion"}}
+		local active = P.activeAccessories(both)
+		ok(#active == 1 and active[1] == "LaureateMedallion", "QC M1: both medallions bagged count once (the Laureate's)")
+		eq(P.magicalPower(both), Data.Rarity.Epic.power, "QC M1: one medallion's Magical Power")
+		ok(table.find(CT.upgradesOf("FurrowMedallion"), "LaureateMedallion") ~= nil and #CT.upgradesOf("LaureateMedallion") == 0, "upgrade path")
+	end
+	-- QC L11: the bell toast goes to Farming 5+ or a recent entrant only.
+	do
+		local k0 = 71000
+		ok(CT.wantsStartToast(5, {}, k0) and not CT.wantsStartToast(4, {}, k0), "QC L11: Farming 5 hears the bell")
+		ok(CT.wantsStartToast(1, {history = {{k = k0 - 60, c = "Herb", s = 70}}}, k0), "QC L11: an entrant two days ago hears it")
+		ok(not CT.wantsStartToast(1, {history = {{k = k0 - 90, c = "Herb", s = 70}}}, k0), "QC L11: four days ago does not")
+		ok(CT.wantsStartToast(1, {open = {{k = k0 - 1, c = "Herb", s = 7}}}, k0) and CT.wantsStartToast(1, {cur = {k = k0, c = "Herb", s = 3}}, k0)
+			and not CT.wantsStartToast(1, {cur = {k = k0, c = "Herb", s = 0}}, k0), "QC L11: pending and scored entries count; an unscored one does not")
 	end
 	local st = CT.almanacStats(#CT.ALMANAC)
 	ok(st.farmingFortune == 20 and st.health == nil and st.defense == nil, "the Furrow Almanac adds Farming Fortune only (PerkBudget untouched)")
@@ -362,6 +457,9 @@ do
 	ok(mig.caught.PebblefinDarter.Bronze == 3 and mig.caught.PebblefinDarter.Diamond == nil and mig.caught.Nope == nil and mig.total == 3, "catches sanitised")
 	ok(mig.pity.PebblefinDarter.g == TF.PITY_GOLD and mig.pity.PebblefinDarter.d == 0 and mig.bait == nil, "pity clamped, unknown bait dropped")
 	ok(mig.claimed.Bronze and not mig.claimed.Fake and mig.title == nil, "the Bronze tier has no title to wear")
+	local mig2 = TF.migrate({ledgerAnn = {Silver = true, Fake = true, [3] = true}})
+	ok(mig2.ledgerAnn.Silver and mig2.ledgerAnn.Fake == nil and mig2.ledgerAnn[3] == nil and next(TF.migrate({ledgerAnn = "x"}).ledgerAnn) == nil,
+		"QC L2: ledger announcements migrate (known ids only)")
 	-- Announcements.
 	local F = Data.Features
 	ok(has(F.announceText({kind = "trophy", fish = "TidewyrmFry", tier = "Diamond"}).head, "DIAMOND TROPHY"), "Diamond toast")
@@ -413,6 +511,7 @@ local function newMemory()
 			M.keyWrites[name .. "/" .. key] = (M.keyWrites[name .. "/" .. key] or 0) + 1
 			assert(type(ttl) == "number" and ttl > 0 and ttl <= 3888000, "a valid expiration")
 			M.ttls[name .. "/" .. key] = ttl
+			if M.yieldNext then M.yieldNext = false; coroutine.yield("memory") end -- a slow call (QC L4 / L7)
 			if M.down or (M.throttle and M.throttle(name, key)) then error("Injected throttle") end
 			if M.fail == "before" then M.fail = nil; error("Injected outage") end
 			local value, sortKey = op(copy(data[key]), sorts[key])
@@ -451,6 +550,7 @@ local function newStore()
 		return copy(self.data[key])
 	end
 	function S:UpdateAsync(key, op)
+		if self.failKeys and self.failKeys[key] then error("Injected journal outage") end
 		local contest = key:match("^contest") ~= nil
 		if contest then
 			self.writes += 1
@@ -706,7 +806,7 @@ local lb = store.memory.map(mapLB)
 ok(lb["9001"] and lb["9001"].s == gained and lb["9001"].n == "Farmer9001", "leaderboard entry with a display name")
 eq(store.memory.sortKeys[mapLB]["9001"], 1e8 + gained, "sortKey = slot * 1e8 + score")
 for key, ttl in pairs(store.memory.ttls) do
-	if has(key, "contest_v1_" .. K) then ok(ttl <= W.ends + CT.TTL_PAD - (W.starts) and ttl > CT.GRACE, "per-contest TTL on " .. key) end
+	if has(key, CT.MAP_PREFIX .. K) then ok(ttl <= W.ends + CT.TTL_PAD - (W.starts) and ttl > CT.GRACE, "per-contest TTL on " .. key) end
 end
 tickAll(CT.MIRROR + 1)
 local groups = 0
@@ -894,6 +994,14 @@ do
 	local bag = profileOf(store, 9002) and true
 	local live9002 = S1.cmd(b, "state")
 	ok(table.find(live9002.depth.accessoryBag, "LaureateMedallion") ~= nil and table.find(live9002.depth.accessoryBag, "FurrowMedallion") == nil, "an equipped base becomes the equipped upgrade")
+	-- QC M1: a Furrow Medallion cannot be bought again once upgraded (owned or bagged).
+	local medalsBefore = live9002.contests.medals
+	local again = S1.cmd(b, "contestBuy", "FurrowMedallion")
+	ok(has(again.message, "already own a Laureate's Medallion") and (again.items.FurrowMedallion or 0) == 0 and again.contests.medals == medalsBefore,
+		"QC M1: the upgraded base is refused (" .. tostring(again.message) .. ")")
+	-- QC M5: Lotus Buds keep the garden shop's garden-level gate.
+	local lotus = S1.cmd(b, "contestBuy", "LotusBud")
+	ok(has(lotus.message, "requires garden level " .. CT.ShopById.LotusBud.gardenLevel) and lotus.items.LotusBud == nil, "QC M5: Lotus Buds need garden level " .. CT.ShopById.LotusBud.gardenLevel)
 	local r4 = S1.cmd(b, "contestBuy", "Almanac")
 	ok(has(r4.message, "volume 1") and r4.contests.almanac == 1, "almanac volume")
 	local ff0 = live9002.depth.stats.farmingFortune
@@ -943,6 +1051,167 @@ end
 do
 	local pr = profileOf(store, 9001)
 	ok(#pr.contests.open <= CT.OPEN_MAX and #pr.contests.history <= CT.HISTORY, "journal record bounded")
+end
+-- B12. QC fixes on a fresh store: the bell toast gate (L11), preview journals
+-- (M4), forget during a yielding flush (L4), harvest-all order (L8), the
+-- shutdown drain beside the saves (L7), an empty server sealing (M2), a lapsed
+-- lease never paid (L3), a late rejoiner paid from the ring (M2).
+do
+	local store2 = newStore()
+	local K3
+	for k = K + 40, K + 400 do
+		local crops = CT.cropsOf(k)
+		if crops[1] == "Herb" then K3 = k break end
+	end
+	assert(K3, "a later contest featuring Herb first")
+	local W3 = CT.window(K3)
+	local X3, Y3 = W3.crops[1], W3.crops[2]
+	local clock2 = {utc = W3.starts - 60, cpu = 5000}
+	local E1 = newServer(store2, clock2, 0)
+	local E2 = newServer(store2, clock2, 0)
+	local function seed2(sv, id, mutate)
+		if not store2.data["p" .. id] then sv.leave(sv.join(id)) end
+		return sv.join(id, function(pr)
+			pr.xp.Farming = X[40]
+			pr.started = true
+			if mutate then mutate(pr) end
+		end)
+	end
+	local function stored2(id)
+		local item = store2.memory.map(CT.mapName(K3))[CT.shardKey(CT.shardOf(id))]
+		local v = item and item.v[tostring(id)]
+		if v == nil then return nil end
+		return select(2, CT.unpack(v))
+	end
+	local function step(servers, seconds)
+		clock2.utc += seconds or 0
+		clock2.cpu += seconds or 0
+		for _, sv in ipairs(servers) do sv.renew(); sv.tick() end
+	end
+	local function scoreOf(sv, pl) local e = sv.cmd(pl, "state").contests.entry return e and e.s or 0 end
+	local newbie = E1.join(9401)
+	local farmer = seed2(E1, 9402)
+	local hopper = seed2(E1, 9404)
+	local leaver = seed2(E1, 9405)
+	local gardener = seed2(E1, 9406, function(pr)
+		pr.xp.Farming = X[99]
+		pr.garden = {xp = 0, plots = {
+			{crop = Y3, grown = Data.Garden.CropById[Y3].grow, planted = 1, at = W3.starts - 60, treated = true},
+			{crop = X3, grown = Data.Garden.CropById[X3].grow, planted = 1, at = W3.starts - 60, treated = true}}}
+	end)
+	-- QC L11: the bell toast skips a Farming 1 newcomer with no recent entry.
+	clock2.utc = W3.starts + 5
+	newbie.last, farmer.last = nil, nil
+	step({E1, E2}, 0)
+	ok(not announced(E1.cmd(newbie, "state"), "contest", "phase", "start") and not announced(newbie.last, "contest", "phase", "start"), "QC L11: no bell toast for a Farming 1 newcomer")
+	ok(announced(farmer.last, "contest", "phase", "start") or announced(E1.cmd(farmer, "state"), "contest", "phase", "start"), "QC L11: a Farming 40 journal hears the bell")
+	-- QC M4: a preview (failed-load) journal never writes a score or counts as an entrant.
+	do
+		local E4 = newServer(store2, clock2, 0)
+		E4.services.RunService.IsStudio = function() return true end
+		store2.failKeys = {p9403 = true}
+		local ghost = E4.join(9403)
+		store2.failKeys = nil
+		ok(E4.cmd(ghost, "state").preview == true, "a failed load opens a preview journal")
+		for _ = 1, 30 do E4.gather(ghost, "Herb") end
+		local gs = scoreOf(E4, ghost)
+		ok(gs > 0, "the preview journal harvests (" .. gs .. ")")
+		local ranges0 = store2.memory.ranges
+		clock2.utc += CT.FLUSH + 1; clock2.cpu += CT.READ + 1
+		E4.tick()
+		eq(stored2(9403), nil, "QC M4: a preview journal's score is never written")
+		eq(store2.memory.map(CT.boardName(K3))["9403"], nil, "QC M4: nor its leaderboard entry")
+		eq(store2.memory.ranges, ranges0, "QC M4: a preview journal is not an entrant (no live reads)")
+		E4.leave(ghost)
+		E4.tick()
+		eq(stored2(9403), nil, "QC M4: not even when it leaves")
+	end
+	-- Entrants on server E1.
+	for _ = 1, 150 do E1.gather(farmer, "Herb"); if scoreOf(E1, farmer) >= CT.CropById.Herb.min + 60 then break end end
+	for _ = 1, 10 do E1.gather(hopper, "Herb") end
+	for _ = 1, 10 do E1.gather(leaver, "Herb") end
+	step({E1, E2}, CT.FLUSH + 1)
+	ok(stored2(9402) ~= nil and stored2(9402) == scoreOf(E1, farmer), "entrants flushed")
+	-- QC L4: a journal leaving while a flush is suspended in a MemoryStore call:
+	-- its newer score waits for the next heartbeat (the queues are not touched mid-walk).
+	do
+		for _ = 1, 3 do E1.gather(leaver, "Herb") end
+		clock2.utc += CT.FLUSH + 1; clock2.cpu += CT.FLUSH + 1
+		E1.renew()
+		store2.memory.yieldNext = true
+		local co = coroutine.create(function() E1.tick() end)
+		local okRun, why = coroutine.resume(co)
+		ok(okRun and why == "memory" and coroutine.status(co) == "suspended", "QC L4: the flush is suspended in a MemoryStore call")
+		for _ = 1, 4 do E1.gather(leaver, "Herb") end
+		local final = scoreOf(E1, leaver)
+		E1.leave(leaver)
+		okRun, why = coroutine.resume(co)
+		ok(okRun and coroutine.status(co) == "dead", "QC L4: the flush finishes after the leave (" .. tostring(why) .. ")")
+		ok((stored2(9405) or 0) < final, "QC L4: the suspended flush never picked up the leaver's newer score mid-walk")
+		step({E1, E2}, CT.FLUSH + 1)
+		eq(stored2(9405), final, "QC L4: the leaver's last score is merged and written by the next heartbeat")
+	end
+	-- QC L8: harvest-all credits the entered crop's plots first.
+	do
+		ok(has(E1.cmd(gardener, "contestEnter", X3).message, "Entered with"), "gardener entered with " .. X3)
+		local before = E1.cmd(gardener, "state").items[X3] or 0
+		local r = E1.cmd(gardener, "harvestPlot", "all")
+		local gain = (r.items[X3] or 0) - before
+		local entry = r.contests.entry
+		ok(gain > 0 and entry and entry.c == X3 and entry.s == gain, "QC L8: harvest-all keeps the entered crop (" .. tostring(entry and entry.c) .. " " .. tostring(entry and entry.s) .. ", +" .. gain .. ")")
+	end
+	-- The hopper moves to E2 well before the close (its E2 lease is not renewed below).
+	clock2.utc = W3.ends - 300
+	E1.leave(hopper)
+	hopper = E2.join(9404)
+	-- QC L7: the shutdown drain runs beside the journal saves: a slow MemoryStore
+	-- call never holds the saves back.
+	for _ = 1, 5 do E1.gather(farmer, "Herb") end
+	local farmScore = scoreOf(E1, farmer)
+	do
+		store2.memory.yieldNext = true
+		local co = coroutine.create(E1.onClose)
+		local okRun = coroutine.resume(co)
+		ok(okRun and coroutine.status(co) == "suspended", "BindToClose waits for the suspended drain")
+		local saved = profileOf(store2, 9402)
+		ok(saved and saved.contests.cur and saved.contests.cur.s == farmScore, "QC L7: the journals saved while the contest drain was still writing")
+		local drain = E1.co[#E1.co]
+		ok(drain and coroutine.status(drain[1]) == "suspended", "the drain is suspended")
+		assert(coroutine.resume(drain[1]))
+		assert(coroutine.resume(co))
+		ok(coroutine.status(co) == "dead", "BindToClose finishes once the drain is done")
+		eq(stored2(9402), farmScore, "the drain wrote the final score")
+	end
+	-- QC M2: no server that wrote contest K3 is ticking any more (E1 closed, E2
+	-- idle); an empty server seals it.
+	local E5 = newServer(store2, clock2, 0)
+	clock2.utc = W3.sealAt + 1
+	clock2.cpu += 400
+	E5.renew()
+	E5.tick()
+	local ring = store2.data[CT.resultKey(K3)]
+	ok(ring and ring.k == K3 and ring.slots[1].n >= 1, "QC M2: an empty server sealed the contest (" .. tostring(ring and ring.slots[1].n) .. " entrants)")
+	-- QC L3: the hopper's lease lapsed on E2; its snapshot never pays it.
+	E2.tick()
+	local sh = E2.cmd(hopper, "state").contests
+	ok(#sh.history == 0 and sh.medals == 0 and sh.entries == 0, "QC L3: a journal whose lease lapsed is neither closed nor paid")
+	E2.renew()
+	clock2.cpu += 2
+	local sh2 = E2.cmd(hopper, "state").contests
+	ok(sh2.pending == 0 and sh2.history[1] and sh2.history[1].k == K3, "QC L3: paid once the lease is renewed")
+	-- QC M2: the farmer rejoins hours later (score items expired) on a fresh server: paid from the ring.
+	clock2.utc = W3.ends + CT.TTL_PAD + 3600
+	clock2.cpu += 30
+	local E3 = newServer(store2, clock2, 0)
+	farmer = E3.join(9402)
+	clock2.utc += 1
+	E3.renew()
+	E3.tick()
+	local sf = E3.cmd(farmer, "state").contests
+	local result = CT.cleanResult(ring, K3)
+	local want = CT.bracketOf(result, 1, farmScore, "Herb")
+	ok(sf.pending == 0 and sf.history[1] and sf.history[1].k == K3 and want ~= nil and sf.history[1].b == want,
+		"QC M2: a late rejoiner is paid with its bracket (" .. tostring(want) .. ")")
 end
 print("PASS: " .. (checks - partB) .. " Contests server assertions.")
 
@@ -999,6 +1268,24 @@ do
 	ok(has(r2.message, "surfaces"), "a sea creature surfaced")
 	ok(r2.trophies.casts == casts0 and r2.trophies.total == 1 and #T1.trophyRolls == 3, "no trophy roll on a sea-creature cast")
 	table.clear(T1.trophyRolls)
+	-- QC L6: at the live sea-creature cap the chance is still rolled; a cast that
+	-- would have hooked one never rolls a trophy, one that would not still does.
+	do
+		Data.rollSeaCreature = function() return "ShellsnapCrab" end
+		for _ = 1, Data.SeaCreatureCap do
+			tclock.cpu += 1
+			T1.gather(fisher, "Fish")
+		end
+		table.insert(T1.trophyRolls, 0.0); table.insert(T1.trophyRolls, 0.0); table.insert(T1.trophyRolls, 0.0)
+		local capped = T1.gather(fisher, "Fish")
+		ok(not has(capped.message, "surfaces") and capped.trophies.casts == casts0 and #T1.trophyRolls == 3, "QC L6: a would-be sea creature at the cap spends the cast (no trophy roll)")
+		Data.rollSeaCreature = function() return nil end
+		local miss = T1.gather(fisher, "Fish")
+		ok(miss.trophies.casts == casts0 + 1 and #T1.trophyRolls == 0, "QC L6: a miss at the cap still rolls for a trophy")
+		Data.rollSeaCreature = rollWas
+		casts0 = miss.trophies.casts
+		r1 = miss
+	end
 	-- No trophy waters in Windpine.
 	local r3 = cast(fisher, "Windpine", {0.0, 0.0, 0.0})
 	ok(r3.trophies.casts == casts0 and #T1.trophyRolls == 3, "no trophy fish outside trophy waters")
@@ -1045,6 +1332,7 @@ do
 	ok(announced(r7, "trophy", "tier", "Diamond"), "DIAMOND TROPHY toast for the angler")
 	ok(other.last and announced(other.last, "trophyWorld", "fish", "PebblefinDarter"), "every player on the server hears of a Diamond")
 	ok(announced(other.last, "trophyWorld", "who", "Farmer9101"), "with the angler's name")
+	ok(other.last.items == nil and other.last.contests == nil and other.last.trophies == nil, "QC L1: others get a toast-only payload, not a full snapshot")
 	-- Ledger: claims, refusals, titles.
 	ok(has(T1.cmd(fisher, "trophyClaim", "Bronze").message, "needs " .. #TF.Fish), "an incomplete tier is refused")
 	T1.leave(fisher)

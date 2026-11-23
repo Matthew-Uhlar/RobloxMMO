@@ -8625,9 +8625,14 @@ local function drawExchange(CT,s)
 			itemId=e.item
 			local def=itemDef(e.item)
 			done=e.unique and count("items",e.item)>0
+			-- QC M1: a base you already upgraded is never offered again.
+			if e.unique and not done and CT.upgradesOf then
+				for _,up in ipairs(CT.upgradesOf(e.item)) do if count("items",up)>0 then done=true end end
+			end
 			title=escape(itemName(e.item))..(e.amount>1 and ("  ×"..e.amount) or "")
 			subtitle=escape(def and def.description or "")
-			lines={e.upgrade and ("Upgrades your "..escape(itemName(e.upgrade))) or "",e.level and ("Requires Farming "..e.level) or ""}
+			lines={e.upgrade and ("Upgrades your "..escape(itemName(e.upgrade))) or "",e.level and ("Requires Farming "..e.level) or "",
+				e.gardenLevel and ("Requires garden level "..e.gardenLevel) or ""}
 		end
 		local reason=(done and "Already yours.") or (cost and medals<cost and ("Needs "..fmt(cost).." Harvest Medals.")) or nil
 		card({name="ContestShop"..e.id,item=itemId,motif=itemId==nil and "Ledger" or nil,title=title,titleColor=itemId and rgb(itemHex(itemId)) or gold,subtitle=subtitle,
@@ -8840,19 +8845,37 @@ function CTP.refreshHud()
 	local width=short and 100 or 214
 	local lanes=UI.lay()
 	local pad=short and 6 or 12
-	hudTitle.Text=short and "CONTEST" or "HARVEST CONTEST"
 	local titleHeight=short and 14 or 16
 	local rowHeight=short and 14 or 18
+	local frameHeight=4+titleHeight+rowHeight*#lines+8
+	-- QC M3: the right column is shared. Stack under the world boss board
+	-- (combat.client.lua publishes its foot as the local attribute
+	-- WorldBossBoard) and the dungeon party HUD; hide when there is no room
+	-- above the action bar or the stack would meet the XP lane.
+	local top=lanes.rightTop
+	local boardFoot=num(player:GetAttribute("WorldBossBoard"),0)
+	if boardFoot>0 then top=math.max(top,boardFoot+6) end
+	local party=gui:FindFirstChild("DungeonPartyHud")
+	if party and party.Visible then top=math.max(top,party.Position.Y.Offset+party.Size.Y.Offset+6) end
+	local x0=lanes.rightEdge-width
+	local function clash(r)
+		return type(r)=="table" and num(r.w,0)>0 and num(r.h,0)>0 and r.x<lanes.rightEdge and x0<r.x+r.w and r.y<top+frameHeight and top<r.y+r.h
+	end
+	if top>lanes.rightTop and (top+frameHeight>lanes.action.y-6 or clash(lanes.xpDrops) or clash(lanes.xpToast)) then
+		hudFrame.Visible=false
+		return
+	end
+	hudTitle.Text=short and "CONTEST" or "HARVEST CONTEST"
 	hudTitle.Position,hudTitle.Size=UDim2.fromOffset(pad,4),UDim2.new(1,-2*pad,0,titleHeight)
 	hudBody.Text=table.concat(lines,"\n")
 	hudBody.TextSize=short and 11 or 12
 	hudBody.Position=UDim2.fromOffset(pad,4+titleHeight)
 	hudBody.Size=UDim2.new(1,-2*pad,0,rowHeight*#lines)
 	hudFrame.AnchorPoint=Vector2.new(1,0)
-	hudFrame.Position=UDim2.new(0,lanes.rightEdge,0,lanes.rightTop)
-	hudFrame.Size=UDim2.fromOffset(width,4+titleHeight+rowHeight*#lines+8)
+	hudFrame.Position=UDim2.new(0,lanes.rightEdge,0,top)
+	hudFrame.Size=UDim2.fromOffset(width,frameHeight)
 end
-for _,name in ipairs({"MinigameGame","LairBoss","IsleSatchelOpen"}) do
+for _,name in ipairs({"MinigameGame","LairBoss","IsleSatchelOpen","WorldBossBoard","DungeonParty"}) do
 	player:GetAttributeChangedSignal(name):Connect(function() CTP.refreshHud() end)
 end
 task.spawn(function()
@@ -10257,6 +10280,7 @@ local function accept(data,quiet)
 	-- Share every accepted snapshot with the combat HUD (combat.client.lua).
 	pcall(function() UI.snapshotChannel:Fire(data) end)
 	pcall(Pages.AH.onSnapshot) -- lap tracker best times, trap counter
+	pcall(function() Pages.CT.refreshHud() end) -- §39 contest tracker (QC M3: re-stacks with the snapshot)
 	pcall(Pages.CLP.observe,data) -- Commissions & Logs: cache full snapshot.logs (compact ones reuse it)
 	pcall(Pages.EXP.observe,data) -- Exploration & Factions: cache full snapshot.exploration (compact ones reuse it)
 	local message=data.message

@@ -3237,6 +3237,28 @@ do
 	local hud = find(us.gui, "ContestHud")
 	check(hud ~= nil, "contest tracker exists")
 	noFailures(us, "contest locked")
+	-- QC M3: the tracker stacks under the world boss board (combat.client.lua's
+	-- local attribute WorldBossBoard = the board's foot) and the dungeon party HUD,
+	-- and hides when the column has no room left.
+	do
+		local wide = run({ snapshot = scored, size = roblox.Vector2.new(1366, 768) })
+		local th = find(wide.gui, "ContestHud")
+		check(th.Visible, "tracker shows during a contest")
+		local top0 = th.Position.Y.Offset
+		wide.player:SetAttribute("WorldBossBoard", top0 + 126)
+		check(th.Visible and th.Position.Y.Offset >= top0 + 126 + 6, "QC M3: the tracker stacks below the world boss board")
+		wide.player:SetAttribute("WorldBossBoard", 0)
+		check(th.Position.Y.Offset == top0, "QC M3: back in place when the board hides")
+		wide.player:SetAttribute("DungeonParty", "Tester|Aegis|31;Bo|Mender|4")
+		local party = find(wide.gui, "DungeonPartyHud")
+		check(party.Visible and th.Visible and th.Position.Y.Offset >= party.Position.Y.Offset + party.Size.Y.Offset + 6, "QC M3: the tracker stacks below the dungeon party HUD")
+		wide.player:SetAttribute("DungeonParty", "")
+		wide.player:SetAttribute("WorldBossBoard", 700)
+		check(not th.Visible, "QC M3: no room under the board: the tracker hides")
+		wide.player:SetAttribute("WorldBossBoard", 0)
+		check(th.Visible, "QC M3: and returns")
+		noFailures(wide, "contest tracker stacking")
+	end
 	-- Between bells.
 	local idle = table.clone(snap)
 	idle.contests = table.clone(snap.contests)
@@ -4262,6 +4284,13 @@ do
 		up.depth.skills.Mining = table.clone(up.depth.skills.Mining)
 		up.depth.skills.Mining.xp += 500
 		up.depth.skills.Mining.level += 1
+		-- §39 QC M3: a running contest puts the tracker in the right column with the board.
+		do
+			local CT = Data.Contests
+			local W = CT.window(71014)
+			up.contests = { now = W.starts + 100, k = 71014, active = true, starts = W.starts, ends = W.ends, crops = W.crops,
+				entry = { c = W.crops[1], s = 90, slot = 1, min = CT.CropById[W.crops[1]].min }, estimate = { bracket = "Gold", rank = 5, n = 60 } }
+		end
 		ui.update.OnClientEvent:Fire(H.snapshot())
 		ui.update.OnClientEvent:Fire(up)
 		local levelBanner = ui.gui:FindFirstChild("LevelBanner")
@@ -4277,6 +4306,10 @@ do
 			{ "trap counter", rectOf(ui.gui:FindFirstChild("TrapTracker"), size) },
 		}
 		table.insert(items, { "level banner", rectOf(levelBanner, size) })
+		local contestHud = ui.gui:FindFirstChild("ContestHud")
+		if size.X == 1366 and size.Y == 768 then assert(contestHud.Visible and rectOf(contestHud, size).y >= rectOf(board, size).y + rectOf(board, size).h, "QC M3: the contest tracker stacks under the world boss board at " .. tag) end
+		if contestHud.Visible then table.insert(items, { "contest tracker", rectOf(contestHud, size) }) end
+		checks += 1
 		local panel = rectOf(S.panel, size)
 		assert(panel.x >= 0 and panel.y >= 0 and panel.x + panel.w <= size.X and panel.y + panel.h <= size.Y, "satchel on screen at " .. tag .. " " .. show(panel))
 		assert(S.docked == not L.short, "the satchel docks by screen size at " .. tag)
