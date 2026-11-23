@@ -119,6 +119,40 @@ end
 ok(B.feedsBeacon(B.Beacons.Quarry, "EmberoakLog") and not B.feedsBeacon(B.Beacons.Quarry, "Timber"), "better logs feed, worse do not")
 eq(B.beaconFuel(B.Beacons.Quarry, {Timber = 50, WindpineLog = 5, EmberoakLog = 6}).id, "EmberoakLog", "lowest full feed")
 eq(B.beaconFuel(B.Beacons.Quarry, {WindpineLog = 5}), nil, "short feed")
+-- QC H1: fuel only from logs the lighter can kindle; XP from the beacon's own tier.
+eq(B.beaconFuel(B.Beacons.Hub, {ShatterbarkLog = 6}, 1), nil, "H1: Beaconry 1 cannot feed Shatterbark")
+eq(B.beaconFuel(B.Beacons.Hub, {ShatterbarkLog = 6, Timber = 6}, 1).id, "Timber", "H1: Beaconry 1 feeds the Timber it can kindle")
+eq(B.beaconXpFor(B.Beacons.Hub), B.beaconXp(B.LogById.Timber), "H1: Quayfire pays its own (Timber) tier")
+do
+	local c = B.migrate({})
+	local paid = 0
+	for _ = 1, B.BEACON_XP_PER_DAY + 3 do if B.takeBeaconXp(c, 500) then paid += 1 end end
+	eq(paid, B.BEACON_XP_PER_DAY, "H1: beacon XP for the first N lightings of an isle day")
+	ok(B.takeBeaconXp(c, 501), "H1: a new isle day pays again")
+	ok(not B.takeBeaconXp(c, 499) and c.xpDay.id == 501, "H1: an earlier day never rewinds the counter")
+	local m = B.migrate({xpDay = {id = 501, n = 99}})
+	eq(m.xpDay.n, B.BEACON_XP_PER_DAY, "H1: xpDay migrated and clamped")
+	-- Beacons can never beat banked kindling: a whole isle day of capped beacon XP
+	-- (best beacon every time) is a small fraction of that day's banked kindling.
+	local best = B.Logs[#B.Logs]
+	local dayBeacon = B.BEACON_XP_PER_DAY * B.beaconXpFor(B.Beacons.ShatteredCrown)
+	local dayBanked = B.bankedRate(99, best, 3) * Data.Calendar.dayLength / 3600
+	ok(dayBeacon < 0.05 * dayBanked, string.format("H1: capped beacon XP/day %.0f < 5%% of banked kindling %.0f", dayBeacon, dayBanked))
+end
+-- QC M3: per-server contributions merge idempotently and fold.
+do
+	local v = B.weekMerge(nil, "jobA", {[10] = 3}, 40000)
+	eq(B.weekSum(v), 3, "M3: first write")
+	v = B.weekMerge(v, "jobA", {[10] = 3}, 40010)
+	eq(B.weekSum(v), 3, "M3: a repeated (timed-out but committed) write never double counts")
+	v = B.weekMerge(v, "jobA", {[10] = 5, [11] = 1}, 40020)
+	v = B.weekMerge(v, "jobB", {[11] = 4}, 40030)
+	eq(B.weekSum(v), 10, "M3: servers and segments sum on read")
+	eq(B.weekSum(B.weekMerge(7, "jobC", {[11] = 2}, 40040)), 9, "M3: a legacy number is the base")
+	local folded = B.weekMerge(v, "jobB", {[11] = 4}, 40030 + B.WEEK_FOLD + 1)
+	eq(B.weekSum(folded), 10, "M3: folding keeps the sum")
+	ok(folded.s["jobA:10"] == nil and folded.s["jobB:11"] ~= nil and folded.base == 6, "M3: idle entries fold into base")
+end
 -- Campfire ground rules.
 local function chain(...) local out = {} for _, n in ipairs({...}) do table.insert(out, {name = n}) end return out end
 ok(B.groundVerdict(chain("Meadow", "Compass Quay", "Islands"), 7), "open isle ground")
@@ -133,6 +167,13 @@ ok(not B.groundVerdict({}, 7), "nothing underfoot")
 ok(not B.spacingVerdict(Vector3.new(0, 0, 0), {{pos = Vector3.new(2, 0, 0)}}, {}), "fire spacing")
 ok(B.spacingVerdict(Vector3.new(0, 0, 0), {{pos = Vector3.new(5, 0, 0)}}, {}), "spaced fires")
 ok(not B.spacingVerdict(Vector3.new(0, 0, 0), {}, {Vector3.new(8, 0, 0)}), "beacon clearance")
+-- QC L2: clearance from prompts / spawn markers / townsfolk anchors; never inside a station or stall.
+ok(not B.spacingVerdict(Vector3.new(0, 0, 0), {}, {}, {Vector3.new(B.SPOT_CLEARANCE - 1, 0, 0)}), "L2: too close to a prompt, marker or anchor")
+ok(B.spacingVerdict(Vector3.new(0, 0, 0), {}, {}, {Vector3.new(B.SPOT_CLEARANCE + 0.5, 0, 0)}), "L2: clear of busy spots")
+ok(not B.groundVerdict(chain("Counter", "Quay Bank stall", "Compass Quay", "Islands"), 7), "L2: not inside a market stall")
+ok(not B.groundVerdict(chain("Council dais", "Council Hall", "Compass Quay", "Islands"), 7), "L2: not on the Council dais")
+ok(not B.groundVerdict(chain("Base", "Forge", "Compass Quay", "Islands"), 7), "L2: not inside a station model")
+ok(B.groundVerdict(chain("Meadow", "Brassfall Quarry", "Islands"), 7), "L2: an isle's own name never refuses")
 -- Profile migration and weeks.
 do
 	local m = B.migrate({kindled = {Timber = 5, Nope = 2, EmberoakLog = -3, WindpineLog = 0 / 0}, beacons = {Hub = 2, Fake = 1}, failed = "x", cooked = 1e99,
@@ -169,6 +210,21 @@ do
 			ok(Data.Systems.Helper.specsFor(o, {access = {}}) ~= nil, id .. " objective has a helper waypoint")
 		end
 		for stat in pairs(q.rewards.perk or {}) do ok(stat ~= "health" and stat ~= "defense", id .. " perk stays outside the Health/Defense budget") end
+	end
+	-- QC: the keeper the quest names exists (Hub folk with dialogue pointing at the network).
+	local keeperNpc = Data.Townsfolk.NPCs[B.KEEPER]
+	ok(keeperNpc and keeperNpc.anchorOnly and table.find(Data.Townsfolk.RegionFolkOrder, B.KEEPER) and Data.RegionArt.FolkByRole[B.KEEPER].region == "Hub", "Beaconkeeper is Hub folk")
+	ok(has(Data.QuestById.KindlingLessons.story, keeperNpc.name) and not has(Data.QuestById.KindlingLessons.story, "Brannoch"), "Kindling Lessons names the Beaconkeeper")
+	do
+		local points, atlas = false, false
+		for _, node in pairs(keeperNpc.nodes) do
+			for _, o in ipairs(node.options) do
+				if type(o.waypoint) == "table" and o.waypoint[1] == "anchor:Waypoint_Beacon_Hub" then points = true end
+				if o.atlas == "Beaconry" then atlas = true end
+				if o.to then ok(keeperNpc.nodes[o.to] ~= nil, "keeper option leads to a node: " .. o.to) end
+			end
+		end
+		ok(points and atlas and has(keeperNpc.nodes.network.text, "Crownfire Beacon"), "keeper dialogue points to the beacon network")
 	end
 	local guide = Data.Systems.Helper.questGuide(Data.QuestById.KindlingLessons, nil, {accepted = true, access = {}})
 	ok(guide and #guide.steps >= 3, "quest helper builds steps for Kindling Lessons")
@@ -302,6 +358,20 @@ for _, id in ipairs(B.BeaconOrder) do
 	end
 end
 eq(pyreParts, 36, "documented pyre parts (4 x 9)")
+do -- QC: the Beaconkeeper stands beside the Quayfire, clear of other townsfolk.
+	local quay = islands:FindFirstChild(Data.Exploration.ShrineIsle.Hub)
+	local keeper, others = nil, {}
+	for _, obj in quay:GetDescendants() do
+		if obj.Name == "Anchor_NPC_" .. B.KEEPER then ok(keeper == nil, "one keeper anchor") keeper = obj
+		elseif obj:IsA("BasePart") and string.sub(obj.Name, 1, 11) == "Anchor_NPC_" then table.insert(others, obj.CFrame.Position) end
+	end
+	ok(keeper ~= nil, "Beaconkeeper anchor on Compass Quay")
+	local pyre = beaconPrompt.Hub.Parent.CFrame.Position
+	local k = keeper.CFrame.Position
+	local d = Vector3.new(k.X - pyre.X, 0, k.Z - pyre.Z).Magnitude
+	ok(d > beaconPrompt.Hub.MaxActivationDistance and d <= 16, string.format("keeper beside the Quayfire (%.1f studs)", d))
+	for _, q in others do ok(Vector3.new(k.X - q.X, 0, k.Z - q.Z).Magnitude >= 6.9, "keeper clear of other townsfolk") end
+end
 eq(pyreParts + anchors, 45, "documented Beaconry static parts (45)")
 do
 	local total = 0
@@ -382,9 +452,11 @@ local function advance(seconds) clock += seconds; utc += seconds end
 local data = {}
 local db = {}
 function db:GetAsync(key) return copy(data[key]) end
+local commitThenFail = false
 function db:UpdateAsync(key, op)
 	local value = op(copy(data[key]))
 	if value ~= nil then data[key] = copy(value) end
+	if commitThenFail then commitThenFail = false; error("DataStore request timed out (but committed)") end
 	return copy(data[key])
 end
 local markers = {AetherData = {Name = "AetherData"}, AetherProgression = {Name = "AetherProgression"}}
@@ -395,7 +467,7 @@ local function queue(...) for _, v in ipairs({...}) do table.insert(rolls, v) en
 local services = {
 	Players = {PlayerAdded = signal(), PlayerRemoving = signal(), GetPlayers = function() return {} end},
 	ProximityPromptService = {PromptTriggered = signal()},
-	ReplicatedStorage = {WaitForChild = function(_, name) return assert(markers[name], name) end}, ServerStorage = {},
+	ReplicatedStorage = {WaitForChild = function(_, name) return assert(markers[name], name) end}, ServerStorage = {FindFirstChild = function() return nil end},
 	DataStoreService = {GetDataStore = function() return db end},
 	HttpService = {GenerateGUID = function() return "beaconry-test" end},
 	RunService = {IsStudio = function() return false end},
@@ -414,15 +486,20 @@ local GROUND = {
 local ground = "meadow"
 function fakeWorkspace:GetAttribute(key) return self.attrs[key] end
 function fakeWorkspace:SetAttribute(key, value) self.attrs[key] = value end
-function fakeWorkspace:FindFirstChild(name) if name == "Islands" then return islands end return nil end
+function fakeWorkspace:FindFirstChild(name)
+	if name == "Islands" then return islands end
+	if name == "MonsterSpawns" then return world:FindFirstChild("MonsterSpawns") end
+	return nil
+end
 function fakeWorkspace:Raycast(origin)
 	if ground == "air" then return nil end
 	return {Instance = GROUND[ground], Position = Vector3.new(origin.X, origin.Y - 4, origin.Z)}
 end
 local coroutines, yieldOf = {}, {}
+closeHandlers = {}
 local serverObjects = {}
 local env = {
-	game = {GetService = function(_, name) return services[name] end, BindToClose = function() end},
+	game = {GetService = function(_, name) return services[name] end, BindToClose = function(_, f) closeHandlers = closeHandlers or {}; table.insert(closeHandlers, f) end},
 	workspace = fakeWorkspace, Vector3 = Vector3, CFrame = CFrame,
 	Instance = {new = function()
 		local o = {Event = signal(), FireClient = function(_, player, state) player.last = state; player.pushes = (player.pushes or 0) + 1 end}
@@ -621,6 +698,13 @@ eq(k.attrs.BeaconryJob, "", "job cleared")
 eq(k.last.items.Fish, 2, "nothing spent away from the fire")
 ok(has(cmd(k, "fireCook", "CookedFish:1").message, "Stand beside a lit campfire"), "no campfire, no cooking")
 ok(has(cmd(k, "fireCook", "BrassIngot:1").message, "Choose a campfire recipe"), "only campfire recipes")
+do -- QC L4: campfire cooking keeps every Data.Recipes gate (Progression.canCraft).
+	local rec = Data.Recipes.CookedFish
+	local saved = rec.collectionTier
+	rec.collectionTier = {Fish = 9}
+	ok(has(cmd(k, "fireCook", "CookedFish:1").message, "collection tier"), "L4: a collection-tier gate holds at the campfire")
+	rec.collectionTier = saved
+end
 ok(has(cmd(k, "fireStop").message, "not cooking"), "stop with no job")
 -- Campfire-only dish (never burns), then the fire burns out under the cook.
 k = seeded(7001, function(prof) prof.xp.Cooking = X[30]; prof.items.Glassfin = 4; prof.items.Sunwheat = 4 end)
@@ -659,6 +743,7 @@ local bsXp = bs.xp.Beaconry or 0
 ok(bs.depth.buffs[B.WARMTH_ID] ~= nil, "a bystander within the radius is warmed")
 ok(cmd(far, "state").depth.buffs[B.WARMTH_ID] == nil, "a far player is not")
 eq(b1.beaconry.lit.Hub, 1, "beacon tally")
+ok(has(k.attrs.BeaconryGesture, "kindle:"), "L3: a lit beacon plays the strike once from BeaconryGesture")
 eq(b1.beaconry.week.lit, 1, "week contribution")
 -- A lit beacon: basking refreshes warmth, never lights again.
 local b2 = use(bystander, hubQ)
@@ -669,11 +754,11 @@ ok(has(use(k, beaconPrompt.Quarry).message, "requires Beaconry 20"), "beacon lev
 -- The community total flushes to the DataStore key for the week.
 run(B.FLUSH + 1)
 local key = B.WEEK_KEY .. B.weekOf(utc)
-eq(data[key], 1, "community total written once per flush")
+eq(B.weekSum(data[key]), 1, "community total written once per flush")
 -- Claims: not before the goal; then once.
 ok(has(cmd(k, "beaconClaim").message, "1/" .. B.WEEK_GOAL), "no claim below the goal")
 ok(has(cmd(bystander, "beaconClaim").message, "Light a beacon"), "basking does not join the watch")
-data[key] = B.WEEK_GOAL + 3 -- other servers lit the rest
+data[key].base = (data[key].base or 0) + B.WEEK_GOAL + 2 -- other servers lit the rest (shared total GOAL + 3)
 -- One more lighting here (after the beacon burns out) pushes a flush that reads the shared total.
 jump(B.BEACON_SECONDS + 1)
 tick()
@@ -681,7 +766,7 @@ ok(not has(fakeWorkspace.attrs.BeaconryBeacons, "Hub:"), "beacon goes dark after
 k = seeded(7001, function(prof) prof.items.Timber = 6 end)
 use(k, hubQ)
 run(B.FLUSH + 1)
-eq(data[key], B.WEEK_GOAL + 4, "flush adds to the shared total")
+eq(B.weekSum(data[key]), B.WEEK_GOAL + 4, "flush adds to the shared total")
 local week = cmd(k, "state").beaconry.week
 ok(week.total >= B.WEEK_GOAL and week.canClaim, "goal reached and claimable")
 local sC = cmd(k, "state")
@@ -703,6 +788,34 @@ advance(B.WEEK)
 tick()
 local nw = cmd(k, "state").beaconry.week
 ok(nw.lit == 0 and nw.claimed == false and nw.total == 0, "a new week starts fresh")
+do
+	local wkey = B.WEEK_KEY .. B.weekOf(utc)
+	-- QC M2: a claim below the goal re-reads the shared total before refusing.
+	k = seeded(7001, function(prof) prof.items.Timber = 12 end)
+	use(k, hubQ)
+	data[wkey] = {base = B.WEEK_GOAL, s = {}} -- other servers reached the goal
+	local cl2 = cmd(k, "beaconClaim")
+	ok(has(cl2.message, "burned bright"), "M2: a claim re-reads the shared total before refusing: " .. tostring(cl2.message))
+	-- QC M2: with nothing pending the total is refreshed periodically (GetAsync).
+	run(B.FLUSH + 1)
+	eq(B.weekSum(data[wkey]), B.WEEK_GOAL + 1, "our lighting written once")
+	data[wkey].base += 7
+	run(B.WEEK_REFRESH + 1)
+	eq(cmd(k, "state").beaconry.week.total, B.WEEK_GOAL + 8, "M2: idle servers refresh the shared total")
+	-- QC M3: a write that timed out but committed is not counted twice on retry.
+	jump(B.BEACON_SECONDS + 1)
+	tick()
+	use(k, hubQ)
+	commitThenFail = true
+	run(B.FLUSH + 1)
+	eq(B.weekSum(data[wkey]), B.WEEK_GOAL + 9, "the timed-out write committed")
+	run(B.FLUSH + 1)
+	run(B.FLUSH + 1)
+	eq(B.weekSum(data[wkey]), B.WEEK_GOAL + 9, "M3: retries never double count")
+	eq(cmd(k, "state").beaconry.week.total, B.WEEK_GOAL + 9, "M3: the server's total matches the store")
+	jump(B.BEACON_SECONDS + 1)
+	tick()
+end
 -- Everflame: with the mantle worn, kindles never fail and fires burn longer.
 local master = seeded(7010, function(prof)
 	prof.xp.Beaconry = X[99]
@@ -731,6 +844,7 @@ do
 			queue(0.0)
 			local r = cmd(kp, "kindle", "Timber")
 			ok(has(r.message, "catches"), "cap filler kindles: " .. tostring(r.message))
+			ok(fireCount() <= B.MAX_FIRES, "M1: total never exceeds MAX_FIRES")
 			made += 1
 		end
 		id += 1
@@ -739,6 +853,56 @@ do
 	local late = seeded(7999, function(prof) prof.items = {FlintStriker = 1, Timber = 5} end)
 	late.root.Position = Vector3.new(-300, 10, 0)
 	ok(has(cmd(late, "kindle", "Timber").message, "Too many fires"), "server-wide fire cap")
+	-- QC M1: at the cap a kindler who owns a fire (fewer than MAX_PER_PLAYER) snuffs their own oldest.
+	master.root.Position = Vector3.new(-60, 10, 0)
+	advance(B.KINDLE_SECONDS)
+	local m1 = cmd(master, "kindle", "ShatterbarkLog")
+	ok(has(m1.message, "catches"), "M1: a kindler with a fire may kindle at the cap: " .. tostring(m1.message))
+	eq(fireCount(), B.MAX_FIRES, "M1: the server total never exceeds MAX_FIRES")
+	eq(#m1.beaconry.fires, 1, "M1: the kindler's own oldest fire made room")
+	ok(not string.find(fires(), ":%-40%.0:"), "M1: the old fire at -40 is gone")
+end
+-- QC H1: Shatterbark at Quayfire, Beaconry 1 — a log you cannot kindle never feeds a beacon.
+do
+	local novice = seeded(7300, function(prof) prof.xp.Beaconry = 0; prof.items = {FlintStriker = 1, ShatterbarkLog = 6} end)
+	local r = use(novice, hubQ)
+	ok(has(r.message, "Feed the Quayfire Beacon") and has(r.message, "you can kindle"), "H1: Shatterbark at Quayfire, Beaconry 1 is refused: " .. tostring(r.message))
+	eq(r.items.ShatterbarkLog, 6, "H1: nothing spent")
+	ok(not has(fakeWorkspace.attrs.BeaconryBeacons, "Hub:"), "H1: Quayfire stays dark")
+	local vet = seeded(7301, function(prof) prof.xp.Beaconry = X[95]; prof.items = {FlintStriker = 1, ShatterbarkLog = 6} end)
+	local xp0 = cmd(vet, "state").xp.Beaconry
+	local r2 = use(vet, hubQ)
+	ok(has(r2.message, "blazes up") and has(r2.message, "+" .. B.beaconXpFor(B.Beacons.Hub) .. " Beaconry XP"), "H1: a master feeds Shatterbark to Quayfire")
+	eq(r2.xp.Beaconry - xp0, B.beaconXpFor(B.Beacons.Hub), "H1: Quayfire pays its own tier, not the Shatterbark spent")
+	-- Server-hopping: the day's paid lightings live on the profile, so a fresh server pays nothing more.
+	jump(B.BEACON_SECONDS + 1)
+	tick()
+	vet = seeded(7301, function(prof)
+		prof.items.ShatterbarkLog = 6
+		prof.beaconry.xpDay = {id = B.dayOf(utc), n = B.BEACON_XP_PER_DAY}
+	end)
+	local xp1 = cmd(vet, "state").xp.Beaconry
+	local r3 = use(vet, hubQ)
+	ok(has(r3.message, "blazes up") and has(r3.message, "no XP"), "H1: past the daily cap a beacon still lights")
+	eq(r3.xp.Beaconry, xp1, "H1: no beacon XP past B.BEACON_XP_PER_DAY lightings per isle day")
+	jump(B.BEACON_SECONDS + 1)
+	tick()
+end
+-- QC L2: no campfire within B.SPOT_CLEARANCE of a prompt (stations, nodes, townsfolk).
+do
+	local spot
+	for _, q in islands:GetDescendants() do
+		if q:IsA("ProximityPrompt") and q:GetAttribute("IsleAction") ~= "beaconLight" and q.Parent and q.Parent:IsA("BasePart") then spot = q.Parent.CFrame.Position break end
+	end
+	ok(spot ~= nil, "a world prompt to test against")
+	local camper = seeded(7302, function(prof) prof.items = {FlintStriker = 1, Timber = 3}; prof.xp.Beaconry = X[50] end)
+	camper.root.Position = spot + Vector3.new(B.SPOT_CLEARANCE - 2, 3, 0)
+	ok(has(cmd(camper, "kindle", "Timber").message, "Too close to a station"), "L2: refused beside a prompt")
+	local marker = world:FindFirstChild("MonsterSpawns"):GetChildren()[1]
+	camper.root.Position = marker.CFrame.Position + Vector3.new(2, 3, 0)
+	advance(B.KINDLE_SECONDS)
+	ok(has(cmd(camper, "kindle", "Timber").message, "Too close to a station"), "L2: refused on a creature spawn marker")
+	eq(cmd(camper, "state").items.Timber, 3, "L2: refusals spend nothing")
 end
 -- Leaving: the cook job ends, fires burn on (no ash for a departed kindler).
 leave(master)
@@ -750,6 +914,18 @@ local iron = seeded(7200, function(prof) prof.ironman = true; prof.items = {Flin
 iron.root.Position = Vector3.new(-500, 10, 0)
 queue(0.0)
 ok(has(cmd(iron, "kindle", "Timber").message, "catches"), "Ironman kindles")
+-- QC L1: BindToClose flushes pending lightings before the journals save.
+do
+	local wkey = B.WEEK_KEY .. B.weekOf(utc)
+	local before = B.weekSum(data[wkey])
+	k = seeded(7001, function(prof) prof.items.Timber = 6 end)
+	ok(has(use(k, hubQ).message, "blazes up"), "a last lighting before shutdown")
+	eq(B.weekSum(data[wkey]), before, "not yet flushed")
+	ok(#closeHandlers >= 1, "BindToClose handler registered")
+	local co = coroutine.create(closeHandlers[1])
+	assert(coroutine.resume(co))
+	eq(B.weekSum(data[wkey]), before + 1, "L1: BindToClose flushed the pending lighting")
+end
 print("PASS: " .. (checks - partC) .. " Beaconry server assertions.")
 print("PASS: " .. checks .. " Beaconry assertions in total.")
 print("SUITE-END verify-beaconry.luau")

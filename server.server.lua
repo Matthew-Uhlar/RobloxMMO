@@ -6474,8 +6474,13 @@ end
 -- "id:until;..." (lit beacons) and BeaconryWeek "week:total:goal". Campfires
 -- burn down on the server tick (B.TICK) and leave one Pyre Ash for their
 -- kindler's UserId if a live journal of it is on this server. The community total is one DataStore key per UTC week
--- (B.WEEK_KEY..week), incremented every B.FLUSH s (UpdateAsync, pending kept
--- on failure). Player attributes: BeaconryGesture "<gesture>:<seq>:<item>"
+-- (B.WEEK_KEY..week) holding per-server contributions (B.weekMerge: this
+-- server's JobId and hourly segment -> its monotonic local count, so a write
+-- that timed out but committed is never counted twice; B.weekSum reads it).
+-- Written every B.FLUSH s while lightings are pending, re-read (GetAsync)
+-- every B.WEEK_REFRESH s when idle and before a claim is refused, flushed in
+-- BindToClose. Beacon XP: the beacon's own tier (B.beaconXpFor) for the first
+-- B.BEACON_XP_PER_DAY lightings per isle day (p.beaconry.xpDay). Player attributes: BeaconryGesture "<gesture>:<seq>:<item>"
 -- (animate.client.lua plays kindle / flip once per seq), BeaconryJob
 -- "<recipe>:<done>:<total>" or "". Profile p.beaconry (B.migrate) and quest
 -- flags p.beaconKindled / p.beaconLit / p.beaconNetwork. Jobs, cooldowns and
@@ -6485,8 +6490,21 @@ do
 	local B=Data.Beaconry
 	local fires,fireOrder={},{} -- fires[id]={id,userId,player,pos,log,tier,untilAt}; fireOrder = ids oldest first
 	Beaconry.fires=fires
-	local week={id=B.weekOf(os.time()),total=0,pending=0,loaded=false,flushAt=0,busy=false}
+	local week={id=B.weekOf(os.time()),total=0,pending=0,shared=0,segs={},acked={},loaded=false,flushAt=0,readAt=0,claimReadAt=-math.huge,busy=false}
 	Beaconry.week=week
+	local jobId
+	do
+		local okJ,jid=pcall(function() return game.JobId end)
+		jobId=if okJ and type(jid)=="string" and jid~="" then jid else uid
+	end
+	Beaconry.jobId=jobId
+	-- total = the shared sum last read or written + this server's unacknowledged lightings.
+	local function recount()
+		local pending=0
+		for seg,n in pairs(week.segs) do pending+=math.max(0,n-(week.acked[seg] or 0)) end
+		week.pending=pending
+		week.total=week.shared+pending
+	end
 	local function nameOf(id) return Data.Items[id] and Data.Items[id].name or id end
 	local function levelOf(p,skill) return level(p.xp[skill or "Beaconry"]) end
 	local function capeOn(p) return Progression.masteryCape and Progression.masteryCape(p)=="Beaconry" end
@@ -6592,6 +6610,34 @@ do
 		end)
 		return beaconSpots.list
 	end
+	-- QC L2: prompt parents, creature spawn markers and townsfolk anchors (cached).
+	local busySpots={list={},at=-math.huge}
+	function Beaconry.busySpots()
+		local now=os.clock()
+		if now-busySpots.at<30 then return busySpots.list end
+		busySpots.at=now
+		local list={}
+		pcall(function()
+			local root=workspace:FindFirstChild("Islands")
+			if root then
+				for _,obj in ipairs(root:GetDescendants()) do
+					if obj:IsA("ProximityPrompt") and obj.Parent and obj.Parent:IsA("BasePart") then
+						table.insert(list,obj.Parent.CFrame.Position)
+					elseif obj:IsA("BasePart") and string.find(obj.Name,"^Anchor_NPC_") then
+						table.insert(list,obj.CFrame.Position)
+					end
+				end
+			end
+			local spawns=workspace:FindFirstChild("MonsterSpawns")
+			if spawns then
+				for _,marker in ipairs(spawns:GetChildren()) do
+					if marker:IsA("BasePart") then table.insert(list,marker.CFrame.Position) end
+				end
+			end
+		end)
+		busySpots.list=list
+		return list
+	end
 	local function fireList()
 		local out={}
 		for _,id in ipairs(fireOrder) do if fires[id] then table.insert(out,fires[id]) end end
@@ -6644,6 +6690,12 @@ do
 			removeFire(mine[1].id,"Your oldest campfire was snuffed")
 			table.remove(mine,1)
 		end
+		-- QC M1: at the server cap the kindler's own oldest fire makes room; with none, refuse.
+		while countFires()>=B.MAX_FIRES do
+			if #mine==0 then return nil end
+			removeFire(mine[1].id,"The isles are crowded: your oldest campfire was snuffed")
+			table.remove(mine,1)
+		end
 		Beaconry.seq+=1
 		local id=Beaconry.seq
 		fires[id]={id=id,userId=player.UserId,pos=pos,log=log.id,tier=log.tier,untilAt=os.time()+B.fireSeconds(log,cape)}
@@ -6689,7 +6741,7 @@ do
 		local okGround,why=B.groundVerdict(hit and chainOf(hit.Instance) or {},player.UserId)
 		if not okGround then return why end
 		local pos=hit.Position or (root.Position-Vector3.new(0,3,0))
-		local okSpace,whySpace=B.spacingVerdict(pos,fireList(),Beaconry.beaconPositions())
+		local okSpace,whySpace=B.spacingVerdict(pos,fireList(),Beaconry.beaconPositions(),Beaconry.busySpots())
 		if not okSpace then return whySpace end
 		if countFires()>=B.MAX_FIRES and #ownFires(player)==0 then return "Too many fires are burning on the isles right now. Try again shortly." end
 		Beaconry.next[player]=now+B.KINDLE_SECONDS
@@ -6704,6 +6756,10 @@ do
 		end
 		if not spend(p,{[log.id]=1}) then return "You have no "..log.name.."." end
 		local fire=addFire(player,pos,log,cape)
+		if not fire then
+			p.items[log.id]=(p.items[log.id] or 0)+1
+			return "Too many fires are burning on the isles right now. Try again shortly."
+		end
 		c.kindled[log.id]=math.min(B.MAX_COUNT,(c.kindled[log.id] or 0)+1)
 		p.beaconKindled=true
 		safely("commission",Logs.event,p,"kindle",log.id) -- Commissions: "kindle" tasks
@@ -6726,6 +6782,11 @@ do
 		if not id then return "Choose a campfire recipe (and how many, up to "..B.MAX_BATCH..")." end
 		local rec=B.cookRecipe(id)
 		if levelOf(p,"Cooking")<rec.level then return nameOf(rec.output).." requires Cooking "..rec.level.."." end
+		-- QC L4: a Data.Recipes meal keeps every Hearth gate (collection tiers included).
+		if Data.Recipes[id]==rec then
+			local okCraft,whyCraft=Progression.canCraft(p,id)
+			if not okCraft then return whyCraft end
+		end
 		local fire=nearFire(player)
 		if not fire then return "Stand beside a lit campfire to cook on it (kindle one in Workshop › Beaconry)." end
 		local okHave,why=has(p,rec.costs)
@@ -6764,6 +6825,10 @@ do
 		if levelOf(p,"Cooking")<rec.level then return finish(cookSummary(job).." • requires Cooking "..rec.level..".") end
 		local okHave,why=has(p,rec.costs)
 		if not okHave then return finish(cookSummary(job).." • "..why) end
+		if Data.Recipes[job.recipe]==rec then
+			local okCraft,whyCraft=Progression.canCraft(p,job.recipe)
+			if not okCraft then return finish(cookSummary(job).." • "..tostring(whyCraft)) end
+		end
 		local burnt=roll()<B.burnChance(levelOf(p,"Cooking"),rec)
 		if not spend(p,rec.costs) then return finish(cookSummary(job).." • Ingredients missing.") end
 		local c=journal(p)
@@ -6823,8 +6888,9 @@ do
 		if levelOf(p)<b.level then return b.name.." requires Beaconry "..b.level.."." end
 		local striker=B.bestStriker(p.items,function(skill) return levelOf(p,skill) end)
 		if not striker then return "You need a Flint Striker to light a beacon." end
-		local fuel=B.beaconFuel(b,p.items)
-		if not fuel then return "Feed the "..b.name.." "..B.BEACON_LOGS.." "..nameOf(b.log).." (or better logs)." end
+		-- QC H1: only logs this Beaconry level can kindle feed it.
+		local fuel=B.beaconFuel(b,p.items,levelOf(p))
+		if not fuel then return "Feed the "..b.name.." "..B.BEACON_LOGS.." "..nameOf(b.log).." (or better logs you can kindle)." end
 		if not spend(p,{[fuel.id]=B.BEACON_LOGS}) then return "Feed the "..b.name.." "..B.BEACON_LOGS.." logs." end
 		Beaconry.beacons[item]={untilAt=now+B.BEACON_SECONDS,by=player.UserId}
 		Beaconry.publishBeacons()
@@ -6834,15 +6900,18 @@ do
 		local w=B.rollWeek(c,B.weekOf(now))
 		w.lit=math.min(B.MAX_COUNT,w.lit+1)
 		if week.id==w.id then
-			week.total+=1
-			week.pending+=1
+			local seg=B.weekSeg(now)
+			week.segs[seg]=(week.segs[seg] or 0)+1
+			recount()
 			publishWeek()
 		end
 		p.started=true
 		gesture(player,"kindle",striker.id)
 		safely("hold",Held.set,player,p,striker.id,true)
-		local xp=B.beaconXp(fuel)
-		safely("xp",grantXp,p,"Beaconry",xp)
+		-- QC H1: the beacon's own tier pays (never the logs spent), for the first
+		-- B.BEACON_XP_PER_DAY lightings per isle day on any server.
+		local xp=if B.takeBeaconXp(c,B.dayOf(now)) then B.beaconXpFor(b) else 0
+		if xp>0 then safely("xp",grantXp,p,"Beaconry",xp) end
 		-- Warmth for the lighter and every live journal near the pyre.
 		warm(p,b,now)
 		local warmed=0
@@ -6854,13 +6923,23 @@ do
 				push(other,b.name.." was lit by "..tostring(player.Name or "a wayfarer").."! Beacon Warmth: "..buffText(b)..".")
 			end
 		end
-		return b.name.." blazes up! ("..B.BEACON_LOGS.." "..fuel.name..")   ·   +"..xp.." Beaconry XP   ·   Warmth: "..buffText(b)
+		return b.name.." blazes up! ("..B.BEACON_LOGS.." "..fuel.name..")   ·   "
+			..(if xp>0 then "+"..xp.." Beaconry XP" else "no XP (today's "..B.BEACON_XP_PER_DAY.." beacon lightings already paid)").."   ·   Warmth: "..buffText(b)
 			..(if warmed>0 then " (shared with "..warmed..")" else "").."   ·   Week: "..week.total.."/"..B.WEEK_GOAL
 	end
 	function Beaconry.claim(player,p)
 		local c=journal(p)
 		local w=B.weekOf(os.time())
 		local ok,why=B.canClaim(c,w,if week.id==w then week.total else 0)
+		-- QC M2: below the goal, re-read the shared total before refusing (rate-limited per server).
+		if not ok and week.id==w and c.week.id==w and c.week.lit>=1 and not c.week.claimed and week.total<B.WEEK_GOAL then
+			local now=os.clock()
+			if now-week.claimReadAt>=B.CLAIM_REFRESH then
+				week.claimReadAt=now
+				Beaconry.read()
+				ok,why=B.canClaim(c,w,if week.id==w then week.total else 0)
+			end
+		end
 		if not ok then return why end
 		c.week.claimed=true
 		c.weeks=math.min(10000,c.weeks+1)
@@ -6869,33 +6948,69 @@ do
 		return "The isles burned bright this week! +"..xp.." Beaconry XP."
 	end
 	-- Community total (cross-server, one key per UTC week) ------------------------------
+	-- QC M2: re-read the shared total (GetAsync); our acknowledged lightings are inside it.
+	function Beaconry.read()
+		if week.busy or not store then return false end
+		week.busy=true
+		local id=week.id
+		local ok,value=pcall(function() return store:GetAsync(B.WEEK_KEY..id) end)
+		week.busy=false
+		if ok and week.id==id then
+			week.shared=math.max(week.shared,B.weekSum(value))
+			week.loaded=true
+			week.readAt=os.clock()+B.WEEK_REFRESH
+			recount()
+			publishWeek()
+			return true
+		end
+		return false
+	end
+	-- QC M3: write this server's segment counts idempotently (B.weekMerge).
 	function Beaconry.flush(force)
-		if week.busy or not store then return end
+		if not store then return end
+		if week.busy then
+			if not force then return end
+			for _=1,50 do if not week.busy then break end task.wait(0.1) end
+			if week.busy then return end
+		end
 		local now=os.clock()
 		if not force and now<week.flushAt then return end
-		if week.loaded and week.pending<=0 then week.flushAt=now+B.FLUSH return end
-		week.busy=true
 		week.flushAt=now+B.FLUSH
-		local id,sent=week.id,week.pending
+		recount()
+		if week.pending<=0 then
+			if force or (week.loaded and now<week.readAt) then return end
+			Beaconry.read()
+			return
+		end
+		local id,cur=week.id,B.weekSeg(os.time())
+		local sent={}
+		for seg,n in pairs(week.segs) do
+			if seg>=cur-1 then sent[seg]=n
+			elseif (week.acked[seg] or 0)<n then week.acked[seg]=n end -- older than a fold window: never resent (no double count)
+		end
+		week.busy=true
 		local ok,result=pcall(function()
 			return store:UpdateAsync(B.WEEK_KEY..id,function(old)
-				return math.max(0,math.floor(tonumber(old) or 0))+sent
+				return B.weekMerge(old,jobId,sent,os.time())
 			end)
 		end)
 		week.busy=false
 		if ok and week.id==id then
-			week.pending=math.max(0,week.pending-sent)
+			for seg,n in pairs(sent) do week.acked[seg]=math.max(week.acked[seg] or 0,n) end
+			week.shared=math.max(week.shared,B.weekSum(result))
 			week.loaded=true
-			week.total=math.max(week.total,math.floor(tonumber(result) or 0)+week.pending)
-			publishWeek()
+			week.readAt=os.clock()+B.WEEK_REFRESH
 		end
+		recount()
+		publishWeek()
 	end
 	function Beaconry.tick()
 		local t=os.time()
 		-- Weeks roll forward only.
 		local w=B.weekOf(t)
 		if w>week.id then
-			week.id,week.total,week.pending,week.loaded,week.flushAt=w,0,0,false,0
+			week.id,week.total,week.pending,week.shared,week.loaded,week.flushAt,week.readAt=w,0,0,0,false,0,0
+			week.segs,week.acked={},{}
 			publishWeek()
 		end
 		local burnt={}
@@ -9098,6 +9213,7 @@ game:BindToClose(function()
 	if Econ.flushHistory then pcall(Econ.flushHistory) end -- §33: pending auction price history (best effort)
 	Endgame.drain() -- Endgame: refund unspent altar sigils before the journals save
 	if Lairs.drain then Lairs.drain() end -- Lairs: refund unfinished fights' fees before the journals save
+	if Beaconry.flush then pcall(Beaconry.flush,true) end -- §37 QC L1: pending beacon lightings reach the weekly total
 	local pending=0
 	for player in pairs(profiles) do
 		pending+=1

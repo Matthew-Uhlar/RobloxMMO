@@ -3097,6 +3097,14 @@ do
 	visit(ui, "Workshop", "Beaconry")
 	check(find(ui.scroll, "BeaconrySummary") ~= nil and find(ui.scroll, "BeaconryKindle") ~= nil, "Workshop › Beaconry opens on Kindle")
 	check(find(ui.scroll, "KindleTimber") ~= nil and find(ui.scroll, "KindleShatterbarkLog") ~= nil, "every log listed")
+	do -- QC: the server-wide campfire count and the lifetime kindles are separate facts.
+		local line
+		for _, o in ipairs(ui.scroll:GetDescendants()) do
+			if (o.ClassName == "TextLabel" or o.ClassName == "TextButton") and string.find(o.Text, "campfires burning on this server", 1, true) then line = o.Text end
+		end
+		check(line and string.find(line, "6/" .. Data.Beaconry.MAX_FIRES .. " campfires burning", 1, true) and string.find(line, "9 kindled", 1, true)
+			and not string.find(line, "Kindled 6", 1, true), "campfire count label reads N/MAX burning, kindled separately")
+	end
 	table.clear(ui.sent)
 	press(find(ui.scroll, "KindleTimberKindle"))
 	check(ui.sent[1] and ui.sent[1][1] == "kindle" and ui.sent[1][2] == "Timber", "Kindle sends the log")

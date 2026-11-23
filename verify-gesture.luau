@@ -188,7 +188,7 @@ eq(sel("craftStation", "Tannery", nil, 1), "hammer", "Tanning Rack alternates to
 eq(sel("craftStation", "Glassworks", nil, 0), "stir", "Glass Furnace stirs")
 -- Beaconry (§37): beacon pyres and kindling strike with the striker; the
 -- server's BeaconryGesture "<gesture>:<seq>[:<item>]" parses to name + item.
-eq(sel("beaconLight", "Hub"), "kindle", "beacon pyres play the kindle strike")
+eq(sel("beaconLight", "Hub"), "interact", "beacon pyre hold reaches in (the strike plays only from BeaconryGesture)")
 ok(Core.GESTURES.kindle and Core.GESTURES.kindle.tool == "Striker" and Core.toolSpec("Striker") ~= nil, "kindle gesture has a striker prop")
 do
 	local name, item = Core.beaconryGesture("kindle:3:FlintStriker")
