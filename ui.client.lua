@@ -8311,6 +8311,14 @@ function BCP.levelOf(skill)
 	local info=skillsOf(state)[skill]
 	return info and info.level or 1
 end
+-- QC: the server-wide count and your lifetime kindles read as separate facts.
+function BCP.burningLine(snap)
+	local B=BD()
+	local kindled=0
+	for _,n in pairs(tbl(snap.kindled)) do kindled+=num(n,0) end
+	return fmt(num(snap.burning,0)).."/"..fmt(B and B.MAX_FIRES or 40).." campfires burning on this server  ·  "..fmt(kindled).." kindled  ·  "
+		..fmt(num(snap.ash,0)).." ash gathered  ·  "..fmt(num(snap.failed,0)).." sparks that failed"
+end
 function BCP.cookAfford(rec)
 	local B=BD()
 	local n=B and B.MAX_BATCH or 28
@@ -8336,7 +8344,7 @@ local function drawKindle(B,snap)
 			..(snap.everflame and "  ·  "..paint("EVERFLAME","FFB347") or ""),
 		detail="Kindle a log on open ground (never on paths, bridges or another wayfarer's island). A campfire burns for a while, then leaves Pyre Ash. Cook on any lit campfire.",
 		lines={#fireLines>0 and ("Your campfires: "..table.concat(fireLines,"   ")) or "No campfire of yours is burning.",
-			"Kindled "..fmt(num(snap.burning,0)).." burning on this server  ·  "..fmt(num(snap.ash,0)).." ash gathered  ·  "..fmt(num(snap.failed,0)).." sparks that failed"},
+			BCP.burningLine(snap)},
 		bar=cooldown>0 and {fraction=math.clamp(1-cooldown/B.KINDLE_SECONDS,0,1),color=mint,caption="Striker ready in "..string.format("%.1f",cooldown).."s"} or nil,
 		actions={{caption="Kindle best log",primary=striker~=nil or nil,disabled=striker==nil,reason="Forge a Flint Striker first.",fn=function() send("kindle","") end}}})
 	heading("LOGS")
@@ -9988,7 +9996,7 @@ do
 end
 -- Crafting stations and the slayer board set IsleStation on the player; open
 -- the matching page. Values may carry a suffix ("Forge:3") so repeats fire.
-local stationTabs={Forge="Workshop",Hearth="Workshop",Cauldron="Workshop",Workbench="Workshop",Slayer="Hunt",Construction="Journal",Calendar="Journal",
+local stationTabs={Forge="Workshop",Hearth="Workshop",Cauldron="Workshop",Workbench="Workshop",Beaconry="Workshop",Slayer="Hunt",Construction="Journal",Calendar="Journal",
 	SkymarkExchange="Ledger",TrackersLodge="Ledger",Garden="Workshop",Commissions="Journal",Museum="Journal",CollectionLog="Journal", -- Commissions & Logs: board / museum prompts
 	Jeweller="Workshop",Tannery="Workshop",Glassworks="Workshop", -- Crafting stations (Workshop › Crafting)
 	Motes="Journal",Factions="Journal", -- Exploration & Factions: Mote Shrines, faction standards

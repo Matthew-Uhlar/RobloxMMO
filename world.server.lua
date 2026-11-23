@@ -5327,6 +5327,26 @@ do
 				local q=prompt(brazier,"Light",b.name.." · Beaconry","beaconLight",id)
 				q:SetAttribute("IsleRegion",b.region)
 				anchor(m,"Waypoint_Beacon_"..id,at(cf,0,0,-6).Position,pos)
+				-- QC: the Beaconkeeper (Kindling Lessons) stands beside the Quayfire,
+				-- 7+ studs from every other townsfolk anchor and outside the pyre prompt's reach.
+				if B.KEEPER and id=="Hub" then
+					local keeperName="Anchor_NPC_"..B.KEEPER
+					local keeper,others=nil,{}
+					for _,obj in ipairs(host:GetDescendants()) do
+						if obj.Name==keeperName then keeper=obj
+						elseif obj:IsA("BasePart") and string.find(obj.Name,"^Anchor_NPC_") then table.insert(others,obj.CFrame.Position) end
+					end
+					local stand
+					for _,o in ipairs({{-8,-7},{8,-7},{-10,-2},{10,-2},{-6,-11},{6,-11}}) do
+						local p=at(cf,o[1],0,o[2]).Position
+						local clear=true
+						for _,q in ipairs(others) do if V(p.X-q.X,0,p.Z-q.Z).Magnitude<7 then clear=false end end
+						if clear then stand=p break end
+					end
+					stand=stand or at(cf,-8,0,-7).Position
+					if keeper then keeper.CFrame=facing(V(stand.X,keeper.CFrame.Position.Y,stand.Z),pos)
+					else anchor(host,"NPC_"..B.KEEPER,stand,pos) end
+				end
 			end
 		end
 	end

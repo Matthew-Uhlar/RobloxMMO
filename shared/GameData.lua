@@ -12755,11 +12755,65 @@ B.WARMTH_ID = "Beacon Warmth" -- p.buffs key (one warmth at a time; a new one re
 B.WEEK = 604800              -- UTC weeks since the epoch (Thursday 00:00 UTC)
 B.WEEK_GOAL = 150            -- beacon lightings across every server in one week
 B.FLUSH = 30                 -- seconds between community-total DataStore writes
+B.WEEK_REFRESH = 60          -- QC M2: re-read the shared total (GetAsync) this often when nothing is pending
+B.CLAIM_REFRESH = 10         -- QC M2: a claim refused below the goal re-reads the total at most this often
 B.WEEK_KEY = "beaconry_week_"
+-- QC M3: the weekly key holds per-server contributions {base=n, s={["<JobId>:<seg>"]={n=, t=}}}.
+-- A server writes max(stored, its monotonic local count) for its own hourly
+-- segment, so a write that timed out but committed is never counted twice.
+-- Entries untouched for B.WEEK_FOLD seconds fold into base (servers write only
+-- their current and previous segment, so a folded entry is never written again).
+B.WEEK_SEG = 3600
+B.WEEK_FOLD = 3 * 3600
+-- QC H1: beacon XP is paid for the first B.BEACON_XP_PER_DAY lightings per
+-- player per isle day (Data.Calendar.dayLength), saved on the profile, so
+-- hopping servers to relight beacons never outpaces banked kindling.
+B.BEACON_XP_PER_DAY = 9
+B.SPOT_CLEARANCE = 6         -- QC L2: studs from prompts, spawn markers and townsfolk anchors
 B.MAX_COUNT = 1000000000
 B.ASH = "PyreAsh"
 function B.weekOf(t) return math.floor(whole(t) / B.WEEK) end
 function B.weekResetIn(t) t = whole(t); return (B.weekOf(t) + 1) * B.WEEK - t end
+function B.dayOf(t)
+	local cal = Data.Calendar
+	return math.floor((whole(t) - (cal and cal.epoch or 0)) / (cal and cal.dayLength or 86400))
+end
+function B.weekSeg(t) return math.floor(whole(t) / B.WEEK_SEG) end
+-- Community total stored under one week key (a legacy plain number is the base).
+function B.weekSum(v)
+	if type(v) == "number" then return math.max(0, whole(v)) end
+	if type(v) ~= "table" then return 0 end
+	local total = math.max(0, whole(v.base))
+	for _, e in pairs(type(v.s) == "table" and v.s or {}) do
+		if type(e) == "table" then total += math.max(0, whole(e.n)) end
+	end
+	return total
+end
+-- UpdateAsync transform: this server's segment counts (segs = {[seg] = count},
+-- monotonic) merged idempotently; stale entries fold into base.
+function B.weekMerge(old, jobId, segs, now)
+	local v = {base = 0, s = {}}
+	if type(old) == "number" then v.base = math.max(0, whole(old))
+	elseif type(old) == "table" then
+		v.base = math.max(0, whole(old.base))
+		for k, e in pairs(type(old.s) == "table" and old.s or {}) do
+			if type(k) == "string" and type(e) == "table" then v.s[k] = {n = math.max(0, whole(e.n)), t = whole(e.t)} end
+		end
+	end
+	now = whole(now)
+	for seg, n in pairs(type(segs) == "table" and segs or {}) do
+		local key = tostring(jobId) .. ":" .. tostring(seg)
+		local cur = v.s[key]
+		v.s[key] = {n = math.max(cur and cur.n or 0, math.max(0, whole(n))), t = now}
+	end
+	for k, e in pairs(v.s) do
+		if now - e.t > B.WEEK_FOLD then
+			v.base += e.n
+			v.s[k] = nil
+		end
+	end
+	return v
+end
 -- Community reward for a journal that lit at least one beacon in a week whose
 -- goal was met: Beaconry XP scaling with level (claimed once per week).
 function B.weekXp(level) return 250 + 60 * math.clamp(whole(level), 1, 99) end
@@ -12948,14 +13002,30 @@ function B.feedsBeacon(beacon, logId)
 	return need ~= nil and log ~= nil and log.tier >= need.tier
 end
 -- The log stack a beacon lighting spends: the lowest qualifying tier with a
--- full feed (B.BEACON_LOGS logs). Returns the log def or nil.
-function B.beaconFuel(beacon, items)
+-- full feed (B.BEACON_LOGS logs) that the lighter's Beaconry `level` can kindle
+-- (QC H1; level omitted = any). Returns the log def or nil.
+function B.beaconFuel(beacon, items, level)
 	for _, log in ipairs(B.Logs) do
-		if B.feedsBeacon(beacon, log.id) and whole((items or {})[log.id]) >= B.BEACON_LOGS then return log end
+		if B.feedsBeacon(beacon, log.id) and (level == nil or whole(level) >= log.level)
+			and whole((items or {})[log.id]) >= B.BEACON_LOGS then return log end
 	end
 	return nil
 end
 function B.beaconXp(log) return math.floor(whole(log and log.xp) * B.BEACON_LOGS * B.BEACON_XP_MULT) end
+-- XP for lighting a beacon: always its own tier's feed (as the UI and the XP
+-- calculator show), never the logs actually spent (QC H1).
+function B.beaconXpFor(beacon) return B.beaconXp(B.LogById[beacon and beacon.log or ""]) end
+-- QC H1: does this lighting pay XP? Counts it on the journal (c.xpDay) when it does.
+function B.takeBeaconXp(c, day)
+	day = whole(day)
+	if type(c.xpDay) ~= "table" or c.xpDay.id ~= day then
+		if type(c.xpDay) == "table" and whole(c.xpDay.id) > day then return false end -- a clock behind never rewinds it
+		c.xpDay = {id = day, n = 0}
+	end
+	if c.xpDay.n >= B.BEACON_XP_PER_DAY then return false end
+	c.xpDay.n += 1
+	return true
+end
 function B.warmthSeconds(cape) return B.WARMTH_SECONDS * (if cape then B.CAPE_WARMTH_MULT else 1) end
 
 ------------------------------------------------------------------------------
@@ -12966,6 +13036,10 @@ function B.warmthSeconds(cape) return B.WARMTH_SECONDS * (if cape then B.CAPE_WA
 -- player's home, a lair, an arena or the Observatory.
 ------------------------------------------------------------------------------
 local BRIDGE_WORDS = {"bridge","deck","plank","rope","ladder","stair","dock","pier","path"}
+-- QC L2: never inside a station, stall or other built structure on an isle.
+local STRUCTURE_WORDS = {"stall","station","counter","forge","hearth","cauldron","workbench","anvil","altar",
+	"council","dais","vault","booth","kiosk","bench","tanning","furnace","chest","board","statue","fountain"}
+B.STRUCTURE_WORDS = STRUCTURE_WORDS
 function B.groundVerdict(chain, userId)
 	if type(chain) ~= "table" or #chain == 0 then return false, "Stand on solid ground to kindle a fire." end
 	local first = chain[1]
@@ -12975,19 +13049,30 @@ function B.groundVerdict(chain, userId)
 		if string.find(name, w, 1, true) then return false, "Not on a path or bridge. Step onto open ground." end
 	end
 	local onIsles = false
-	for _, node in ipairs(chain) do
+	for i, node in ipairs(chain) do
 		local owner = string.match(tostring(node.name or ""), "^WayfarersRest_(%d+)$")
 		if owner then
 			if tonumber(owner) ~= tonumber(userId) then return false, "That is another wayfarer's island. Kindle on your own ground." end
 			return true
 		end
-		if node.name == "Islands" then onIsles = true end
+		if node.name == "Islands" then
+			onIsles = true
+			-- Below the isle model (chain[i - 1]) every node is a part or a built model.
+			for j = 1, i - 2 do
+				local lower = string.lower(tostring(chain[j].name or ""))
+				for _, w in ipairs(STRUCTURE_WORDS) do
+					if string.find(lower, w, 1, true) then return false, "Not inside a station or stall. Step out onto open ground." end
+				end
+			end
+			break
+		end
 	end
 	if not onIsles then return false, "Fires can only be kindled on the open ground of the isles." end
 	return true
 end
--- Spacing: fires = list of {pos = Vector3-like}, beacons = list of positions.
-function B.spacingVerdict(pos, fires, beacons)
+-- Spacing: fires = list of {pos = Vector3-like}, beacons = list of positions,
+-- spots = positions of prompts, spawn markers and townsfolk anchors (QC L2).
+function B.spacingVerdict(pos, fires, beacons, spots)
 	local function flat(a, b) local dx, dz = a.X - b.X, a.Z - b.Z; return math.sqrt(dx * dx + dz * dz), math.abs(a.Y - b.Y) end
 	for _, f in ipairs(fires or {}) do
 		local d, dy = flat(pos, f.pos)
@@ -12996,6 +13081,10 @@ function B.spacingVerdict(pos, fires, beacons)
 	for _, b in ipairs(beacons or {}) do
 		local d, dy = flat(pos, b)
 		if d < B.BEACON_CLEARANCE and dy < 12 then return false, "Too close to the beacon pyre." end
+	end
+	for _, q in ipairs(spots or {}) do
+		local d, dy = flat(pos, q)
+		if d < B.SPOT_CLEARANCE and dy < 12 then return false, "Too close to a station, a townsfolk post or a creature den. Step into the open." end
 	end
 	return true
 end
@@ -13025,6 +13114,7 @@ function B.migrate(raw)
 		burnt = math.clamp(whole(c.burnt), 0, B.MAX_COUNT), ash = math.clamp(whole(c.ash), 0, B.MAX_COUNT),
 		week = {id = math.max(0, whole(week.id)), lit = math.clamp(whole(week.lit), 0, B.MAX_COUNT), claimed = week.claimed == true},
 		weeks = math.clamp(whole(c.weeks), 0, 10000),
+		xpDay = if type(c.xpDay) == "table" then {id = whole(c.xpDay.id), n = math.clamp(whole(c.xpDay.n), 0, B.BEACON_XP_PER_DAY)} else nil,
 	}
 end
 function B.distinctBeacons(c)
@@ -13156,7 +13246,7 @@ do
 	end
 	for _, q in ipairs({
 		{id="KindlingLessons",title="Kindling Lessons",line="side",region="Hub",
-			story="Old Brannoch keeps the Quayfire burning. He will teach you to strike a spark, if you can keep a campfire going and bring him its ash.",
+			story="Old Hesketh Ashby, the Beaconkeeper, tends the Quayfire on Compass Quay. He will teach you to strike a spark, if you can keep a campfire going and bring him its ash.",
 			requires={{kind="contracts",count=1}},
 			objectives={{kind="flag",flag="beaconKindled"},{kind="level",skill="Beaconry",level=10},{kind="collect",item=B.ASH,count=10}},
 			rewards={coins=400,points=1,xp={Beaconry=1200,Cooking=400}}},
@@ -13203,6 +13293,42 @@ do
 			end)
 			return out
 		end
+	end
+end
+
+------------------------------------------------------------------------------
+-- The Beaconkeeper (Compass Quay), named in Kindling Lessons: a regional folk
+-- entry, so World Art places Anchor_NPC_Beaconkeeper on the hub; the Beaconry
+-- section of world.server.lua then moves it beside the Quayfire pyre.
+------------------------------------------------------------------------------
+do
+	local T, RA = Data.Townsfolk, Data.RegionArt
+	if T and RA and RA.Folk and T.NPCs then
+		B.KEEPER = "Beaconkeeper"
+		local keeper = {role=B.KEEPER,region="Hub",name="Old Hesketh Ashby",title="Beaconkeeper",portrait="🔥",kind="beaconry",
+			look={skin="C68642",shirt="6B3A22",pants="3A2E24",shoes="231A14",accent="F26B38",hair="D8D2C8",hat="cap",held="lantern",apron="4A3426",beard=true},
+			greet="Every beacon on the isles answers the Quayfire, and I've kept it burning longer than you've been walking. Strike a spark, wayfarer, and keep it fed."}
+		table.insert(RA.Folk, keeper)
+		RA.FolkByRole[keeper.role] = keeper
+		if T.AtlasStations then T.AtlasStations.Beaconry = "Workshop · Beaconry" end -- ui.client.lua stationTabs.Beaconry
+		local names = {}
+		for _, id in ipairs(B.BeaconOrder) do table.insert(names, B.Beacons[id].name) end
+		T.NPCs[keeper.role] = {name=keeper.name,title=keeper.title,region="Hub",portrait=keeper.portrait,look=keeper.look,start="hello",anchorOnly=true,folk="beaconry",
+			nodes={
+				hello={text=keeper.greet,options={
+					{label="Teach me to kindle",atlas="Beaconry"},
+					{label="Show me the Quayfire",waypoint={"anchor:Waypoint_Beacon_Hub","region:Hub"}},
+					{label="Tell me about the beacon network",to="network"},
+					{label="Farewell",close=true}}},
+				network={text="One beacon stands on every region's shrine isle: "..table.concat(names, ", ")
+					..". Feed one "..B.BEACON_LOGS.." logs of its wood or better and it blazes for "..(B.BEACON_SECONDS // 60).." minutes. Everyone near it shares its warmth, "
+					.."and every lighting counts toward the week's watch: when the isles reach "..B.WEEK_GOAL..", each keeper who lit one may claim a reward in Workshop › Beaconry.",options={
+					{label="Show me the Quayfire",waypoint={"anchor:Waypoint_Beacon_Hub","region:Hub"}},
+					{label="Open Workshop › Beaconry",atlas="Beaconry"},
+					{label="Back",to="hello"},
+					{label="Farewell",close=true}}},
+			}}
+		table.insert(T.RegionFolkOrder, keeper.role)
 	end
 end
 

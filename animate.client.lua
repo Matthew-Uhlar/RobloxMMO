@@ -443,7 +443,7 @@ Core.STATION_GESTURE = {Forge = {"hammer"}, Cauldron = {"stir"}, Hearth = {"flip
 	Jeweller = {"hammer"}, Tannery = {"saw", "hammer"}, Glassworks = {"stir"}}
 Core.ACTION_GESTURE = {fight = "attack", worker = "hammer", workerBuild = "hammer", decorate = "hammer", trap = "settrap", net = "netswing",
 	lairEnter = "interact", lairLeave = "interact", -- Lairs: summoning altars and the arena exit
-	beaconLight = "kindle"} -- Beaconry: feeding / lighting a beacon pyre
+	beaconLight = "interact"} -- Beaconry: the pyre hold reaches in; the strike plays once from BeaconryGesture (QC L3)
 -- Agility prompts animate from the AgilityMove attribute the server sets instead.
 Core.SILENT_ACTION = {agility = true, shortcut = true}
 
