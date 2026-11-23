@@ -186,7 +186,7 @@ local Lairs={verbs={lairEnter=true,lairLeave=true}}
 -- World Art & Regions (regional quests, shops, warp scrolls); filled in by the Regions block before perform().
 local Regions={verbs={rqAccept=true,rqTalk=true,rqClaim=true,rqBuy=true,warpBuy=true,warpLearn=true,warpTo=true,landmark=true},warpAt={}}
 -- MMO Features (§31: Isle Renown, Wayfarer's Path, announcements, Resonance); filled in by the Features block before perform().
-local Features={verbs={guideTalk=true,guideClaim=true,resonanceVisit=true,resonanceSet=true}}
+local Features={verbs={guideTalk=true,guideClaim=true,guideMode=true,resonanceVisit=true,resonanceSet=true}}
 -- Systems Depth (§33: quest helper pins, goal board, price checks, daily shop stock); filled in by the Systems block before perform().
 local Systems={verbs={helperPin=true,goalSet=true,goalRemove=true,goalClear=true,priceCheck=true}}
 -- One-time coins for each newly reached skill level.
@@ -242,7 +242,14 @@ local function collect(p,item,count)
 		p.collectionRewards[item]=tier
 		p.coins+=coins
 		note(p,Data.Items[item].name.." collection tier "..tier.."! +"..coins.." coins")
-		if Features.announce then Features.announce(p,{kind="collectionTier",item=item,tier=tier}) end -- §31
+		if Features.announce then
+			Features.announce(p,{kind="collectionTier",item=item,tier=tier}) -- §31
+			-- Polish: a tier that unlocks a worker type announces it (SkyBlock's minion recipe unlock).
+			for _,t in ipairs(Data.Features.workerUnlocks(item,claimed,tier)) do
+				Features.announce(p,{kind="workerRecipe",item=item,worker=t.id,tier=t.collectionTier})
+				note(p,"Worker recipe unlocked: "..t.name.."! Assign it at your worker slots.")
+			end
+		end
 		if Mastery.tokenNote then Mastery.tokenNote(p,claimed,tier) end
 	end
 end
@@ -4605,6 +4612,7 @@ local function snapshot(player,message)
 		logs=Logs.state(player,p), -- Commissions & Logs: Journal > Commissions / Collection Log / Museum (full when changed, else {rev, resetIn, compact})
 		renown=Features.renownState and Features.renownState(player,p), -- §31 Isle Renown page + sidebar
 		guide=Features.guideState and Features.guideState(p), -- §31 Wayfarer's Path (sidebar Objective)
+		accountMode=if p.ironman then "ironman" elseif p.accountMode=="standard" then "standard" else nil, -- Polish: the Path's journal-mode step
 		resonance=Features.resonanceState and Features.resonanceState(player,p,power), -- §31 Resonance page
 		announce=Features.announceState and Features.announceState(player), -- §31 toasts: {seq, list} (recent ring)
 		systems=Systems.state and Systems.state(player,p)} -- §33: pinned guide, goals (ETA), XP rates, price checks, daily stock
@@ -6702,7 +6710,7 @@ do
 		F.trimAnnouncements(list,RING_MAX)
 		-- Skill / collection levels and path steps change renown inputs.
 		-- Renown inputs only: §33 objective and goal toasts never change renown (QC L6).
-		if entry.kind~="renown" and entry.kind~="objective" and entry.kind~="goal" then dirty[p]=true end
+		if entry.kind~="renown" and entry.kind~="objective" and entry.kind~="goal" and entry.kind~="workerRecipe" then dirty[p]=true end
 	end
 	-- Called by forget() after the final save (never before: close() may still announce).
 	function Features.forget(player,p)
@@ -6779,6 +6787,11 @@ do
 		g.complete=g.complete==true or nil
 		g.skipped=g.skipped==true or nil
 		g.owed=math.min(whole(g.owed),G.MAX_OWED)
+		-- Polish: journal mode is "standard" | "ironman" | nil (an Ironman flag wins).
+		if p.ironman==true then p.accountMode="ironman"
+		elseif p.accountMode~="standard" then p.accountMode=nil end
+		-- A Path finished before the journal-mode step existed stays finished (no new pay).
+		if g.complete then for _,s in ipairs(G.Steps) do g.done[s.id]=true end end
 		if guideFirst then
 			local veteran=totalLevel(p)>=G.VETERAN_TOTAL_LEVEL or (tonumber(p.questCompleted) or 0)>=G.VETERAN_CONTRACTS
 			local ctx=guideCtx(p)
@@ -6915,6 +6928,10 @@ do
 		local g=guideOf(p)
 		local view=G.view(g)
 		view.owed=whole(g.owed)
+		-- Polish: per-step marks for Pell's checklist ("1" done, "0" open, in step order).
+		local marks={}
+		for i,s in ipairs(G.Steps) do marks[i]=if g.done[s.id] then "1" else "0" end
+		view.marks=table.concat(marks)
 		return view
 	end
 	function Features.resonanceState(player,p,power)
@@ -6948,6 +6965,21 @@ do
 			g.flags.talk=true
 			g.flags.visit=true -- Pell stands in Compass Quay
 			return "Pell: \"Glad you found me! Your sidebar Objective shows each step of the Wayfarer's Path.\""
+		elseif verb=="guideMode" then
+			-- Polish: the Path's final step. Standard always; Ironman needs the confirm
+			-- token and follows the ironman verb's rule (only before any progression).
+			if not npcNear(player,"Guide") then return "Find Pell Ashgrove in Compass Quay to choose your journal mode." end
+			if p.ironman then p.accountMode="ironman"; return "Your journal is already an Ironman journal. It cannot be undone." end
+			if item==G.MODE_STANDARD then
+				p.accountMode="standard"
+				return "Pell: \"A Standard journal it is: trade, bid and hunt with anyone.\""
+			elseif item==G.MODE_IRONMAN then
+				if p.started then return "Ironman can only be sealed before any progression. Your journal stays Standard; choose Standard to finish the Path." end
+				p.ironman=true
+				p.accountMode="ironman"
+				return "Ironman journal sealed. No player exchange, Bazaar or Auction House; your Warden hunts are solo."
+			end
+			return "Choose Standard, or confirm the Ironman charter."
 		elseif verb=="guideClaim" then
 			local g=guideOf(p)
 			local owed=whole(g.owed)
@@ -7636,12 +7668,26 @@ local function perform(player,verb,item,prompt)
 		p.items[item]=keep
 		return "Dropped "..(count-keep).." "..def.name..(if keep>0 then " (kept your upgraded copy)." else ".")
 	elseif verb=="sell" then
+		-- Polish: an optional quantity "<id>:<n>" (Data.Features.splitSell) sells n of
+		-- the stack (n <= held - the kept upgraded copy); without one the whole stack goes.
+		local qty
+		if type(item)=="string" and string.find(item,":",1,true) then
+			local base,n=Data.Features.splitSell(item)
+			if not base then return "Choose how many to sell (a whole number)." end
+			item,qty=base,n
+		end
 		if item==nil or prices[item] then
 			local total=0
 			for raw,price in pairs(prices) do
 				if not item or raw==item then
-					local keep=if Gear.upgraded(p,raw) then math.min(1,p.items[raw] or 0) else 0
-					total+=((p.items[raw] or 0)-keep)*price; p.items[raw]=keep
+					local have=p.items[raw] or 0
+					local keep=if Gear.upgraded(p,raw) then math.min(1,have) else 0
+					local sold=have-keep
+					if qty then
+						if qty>sold then return "You can sell at most "..math.max(0,sold).." "..Data.Items[raw].name.."." end
+						sold=qty
+					end
+					total+=sold*price; p.items[raw]=have-sold
 				end
 			end
 			p.coins+=total
@@ -7658,11 +7704,16 @@ local function perform(player,verb,item,prompt)
 		-- The last copy of an upgraded item stays (Gear.upgraded); spares sell.
 		local keep=if Gear.upgraded(p,item) then 1 else 0
 		if count<=keep then return def.name.." carries upgrades; the merchant only buys spare copies." end
-		local total=(count-keep)*(def.value or 1)
-		p.items[item]=keep
+		local sold=count-keep
+		if qty then
+			if qty>sold then return "You can sell at most "..sold.." "..def.name..(if keep>0 then " (your upgraded copy stays)." else ".") end
+			sold=qty
+		end
+		local total=sold*(def.value or 1)
+		p.items[item]=count-sold
 		p.coins+=total
 		if Features.flag then Features.flag(p,"sell") end -- §31 Wayfarer's Path
-		return "Merchant paid "..total.." coins for "..(count-keep).." "..def.name..(if keep>0 then " (kept your upgraded copy)." else ".")
+		return "Merchant paid "..total.." coins for "..sold.." "..def.name..(if keep>0 and count-sold==keep then " (kept your upgraded copy)." else ".")
 	elseif verb=="deposit" or verb=="bank" or verb=="withdraw" then
 		local source=if verb=="withdraw" then "bank" else "coins"
 		local destination=if source=="bank" then "coins" else "bank"
@@ -7703,6 +7754,7 @@ local function perform(player,verb,item,prompt)
 	elseif verb=="ironman" then
 		if p.started then return "Choose Ironman before starting progression, construction, hunts or trading." end
 		p.ironman=true
+		p.accountMode="ironman" -- Polish: also completes the Path's journal-mode step
 		return "Ironman journal sealed. Your Warden hunts are solo."
 	elseif verb=="heal" then
 		return provision(p,humanoid,item or "Tonic")

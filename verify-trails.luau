@@ -1268,7 +1268,7 @@ local function atlas(size, mutate)
 	snap.items.TrailCapWayfarer = 1
 	snap.trails = {
 		active = {
-			Beginner = {step = 1, kind = "riddle", style = "riddle", text = "Riddle: Coins sleep behind my iron door.", hint = "Search for the answer somewhere in Aether Hub.", guide = {"region:Hub"}},
+			Beginner = {step = 1, kind = "riddle", style = "riddle", text = "Riddle: Coins sleep behind my iron door.", hint = "Search for the answer somewhere in Compass Quay.", guide = {"region:Hub"}},
 			Medium = {step = 2, kind = "puzzle", style = "puzzle", text = "Puzzle box: Gearwright's Box.", hint = "Slide tiles.", guide = {}, board = "123456708", moves = 4},
 			Hard = {step = 3, kind = "emote", style = "emote", text = "Perform the Stir at the guild Hearth.", hint = "Stand close.", guide = {"anchor:Waypoint_Hearth", "region:Hub"}, gesture = "stir", wear = {"BrassHelm"}},
 			Elite = {step = 1, kind = "skill", style = "skill", text = "Task: Gather Starmetal Ore x2.", hint = "Progress counts.", guide = {}, need = 2, have = 1},
@@ -1310,7 +1310,7 @@ do
 	open(ui)
 	local text = texts(ui.scroll)
 	ok(has(text, "Coins sleep behind my iron door"), "riddle text shown")
-	ok(has(text, "Aether Hub"), "region hint shown")
+	ok(has(text, "Compass Quay"), "region hint shown")
 	ok(has(text, "1 OF") or has(text, "1 of"), "clue log counts uniques found")
 	ok(has(text, "1 / 2"), "task progress bar")
 	local function pressSends(name, verb, item)

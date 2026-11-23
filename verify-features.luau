@@ -95,14 +95,14 @@ local base = P.accessorySlots({xp = {}})
 eq(P.accessorySlots({xp = {}, renown = {level = 25}}), base + 2, "renown 25 adds two bag slots")
 eq(P.accessorySlots({xp = {}, renown = {level = "x"}}), base, "malformed renown adds nothing")
 -- Wayfarer's Path data.
-eq(#G.Steps, 10, "ten onboarding steps")
+eq(#G.Steps, 11, "eleven onboarding steps (Polish: the journal-mode step closes the Path)")
 local ids = {}
 for i, s in ipairs(G.Steps) do
 	ok(type(s.title) == "string" and #s.title > 4 and #s.detail > 10 and s.coins > 0 and s.coins <= 100, s.id .. " step text and a small reward")
 	ok((s.flag ~= nil) ~= (s.check ~= nil), s.id .. " is a flag or a check")
 	ids[i] = s.id
 end
-eq(table.concat(ids, ","), "chop,craft,visit,talk,ore,sell,equip,kill,quest,warp", "step order")
+eq(table.concat(ids, ","), "chop,craft,visit,talk,ore,sell,equip,kill,quest,warp,mode", "step order")
 local fresh = {collection = {}, counters = {}, equipment = {}, bestiary = {}, kills = 0}
 for _, s in ipairs(G.Steps) do ok(not G.satisfied(fresh, s, {warps = {}}), s.id .. " not satisfied on a fresh journal") end
 ok(G.satisfied({collection = {Timber = 1}}, G.StepById.chop, {}), "a log satisfies chop")
@@ -323,7 +323,7 @@ local newbie = player(9001)
 local s = cmd(newbie, "state")
 ok(type(s.renown) == "table" and s.renown.level == 0 and s.renown.xp == 0, "fresh renown 0")
 eq(#s.renown.sources, #RN.Sources, "renown page lists every source")
-ok(type(s.guide) == "table" and s.guide.id == "chop" and s.guide.step == 1 and s.guide.total == 10, "sidebar objective: Chop a log")
+ok(type(s.guide) == "table" and s.guide.id == "chop" and s.guide.step == 1 and s.guide.total == #G.Steps, "sidebar objective: Chop a log")
 eq(newbie.attrs.RenownLevel, 0, "nameplate attribute RenownLevel")
 eq(newbie.attrs.RenownTitle, "Driftling", "nameplate attribute RenownTitle")
 ok(type(s.announce) == "table" and type(s.announce.list) == "table", "snapshot carries the announcement ring")
@@ -369,6 +369,71 @@ ok(has(r.message, "Merchant paid"), "sold the ore")
 local saved = stored(newbie)
 ok(saved.guide.done.visit and saved.guide.done.talk and saved.guide.done.sell and saved.guide.done.ore, "visit, talk, sell and ore done")
 eq(saved.guide.owed, G.StepById.visit.coins + G.StepById.talk.coins + G.StepById.sell.coins, "their coins are owed (rejoin-safe)")
+-- Polish: the journal-mode step closes the Path (verb guideMode at Pell; ironman verb rules).
+do
+	newbie = player(9001)
+	away(newbie)
+	ok(has(cmd(newbie, "guideMode", G.MODE_STANDARD).message, "Find Pell"), "journal mode is chosen at Pell")
+	at(newbie, "Guide")
+	ok(has(cmd(newbie, "guideMode", "ironman").message, "confirm"), "Ironman needs the confirm token")
+	ok(has(cmd(newbie, "guideMode", G.MODE_IRONMAN).message, "before any progression"), "Ironman refused after progression (ironman verb rule)")
+	eq(stored(newbie).ironman, false, "the refused seal leaves the journal Standard")
+	newbie = player(9001)
+	at(newbie, "Guide")
+	ok(has(cmd(newbie, "guideMode", G.MODE_STANDARD).message, "Standard journal"), "Standard is always open")
+	local st = cmd(newbie, "state")
+	eq(st.accountMode, "standard", "snapshot carries the journal mode")
+	local saved = stored(newbie)
+	ok(saved.accountMode == "standard" and saved.guide.done.mode == true, "mode step done and saved (rejoin-safe)")
+	-- A brand-new journal can seal Ironman from Pell before any progression; guideMode never sets p.started.
+	local iron = player(9051)
+	at(iron, "Guide")
+	local sealed = cmd(iron, "guideMode", G.MODE_IRONMAN)
+	ok(has(sealed.message, "Ironman journal sealed") and sealed.ironman == true and sealed.accountMode == "ironman", "fresh journal seals Ironman with confirmation")
+	ok(has(cmd(iron, "guideMode", G.MODE_STANDARD).message, "cannot be undone"), "Ironman cannot be undone")
+	local ironSaved = stored(iron)
+	ok(ironSaved.ironman == true and ironSaved.started ~= true and ironSaved.guide.done.mode == true, "Ironman completes the mode step without starting progression")
+	-- The legacy ironman verb also fills the step; a finished pre-update Path stays finished, unpaid.
+	local legacyIron = player(9052)
+	cmd(legacyIron, "ironman")
+	eq(stored(legacyIron).accountMode, "ironman", "the ironman verb records the mode")
+	local done = seeded(9053, function(pr)
+		pr.guide = {done = {}, flags = {}, owed = 0, complete = true}
+		for _, step in ipairs(G.Steps) do if step.id ~= "mode" then pr.guide.done[step.id] = true end end
+	end)
+	local doneState = cmd(done, "state")
+	ok(doneState.guide.complete == true and doneState.guide.owed == 0, "a finished Path is not reopened by the new step")
+	eq(string.rep("1", #G.Steps), doneState.guide.marks, "every step marked for Pell's checklist")
+	at(done, "Guide")
+	ok(has(cmd(done, "guideMode", "bogus").message, "Choose Standard"), "unknown journal modes are refused")
+end
+-- Polish: a collection tier that unlocks a worker type announces WORKER RECIPE UNLOCKED.
+do
+	local target
+	for _, t in ipairs(Data.Workers.Types) do if t.kind == "gather" and t.skill == "Mining" and t.collectionTier == 1 then target = t; break end end
+	ok(target ~= nil, "a Mining worker unlocks at collection tier 1")
+	local need = P.collectionThreshold(target.output, 1)
+	local miner = seeded(9054, function(pr)
+		pr.xp.Mining = X[99]
+		for id, def in pairs(Data.Items) do if def.kind == "tool" then pr.items[id] = 1 end end
+		pr.collection[target.output] = need - 1
+		pr.collectionRewards = {[target.output] = 0}
+	end)
+	local rock = prompt("gather", target.output, Vector3.new(0, 5000, 0))
+	local res = use(miner, rock)
+	ok(res ~= nil, "gathered " .. target.output .. ": " .. tostring(res and res.message))
+	local found
+	for _, e in ipairs(res.announce.list) do if e.kind == "workerRecipe" and e.worker == target.id then found = e end end
+	ok(found ~= nil and found.tier == 1 and found.item == target.output, "WORKER RECIPE UNLOCKED " .. target.name .. " announced")
+	local text = Data.Features.announceText(found)
+	ok(text.head == "WORKER RECIPE UNLOCKED" and has(text.body, target.name), "announcement text names the worker")
+	local again = use(miner, rock)
+	local twice = 0
+	for _, e in ipairs(again.announce.list) do if e.kind == "workerRecipe" and e.seq > found.seq then twice += 1 end end
+	eq(twice, 0, "the unlock is announced once")
+	eq(#Data.Features.workerUnlocks(target.output, 1, 1), 0, "nothing re-unlocks within the same tier")
+	eq(#Data.Features.workerUnlocks("Ore", 0, 9), 0, "starter workers never announce")
+end
 -- B2. Retroactive renown, once: a journal from before the update.
 local vet = seeded(9002, function(pr)
 	pr.renown, pr.guide = nil, nil
@@ -816,9 +881,11 @@ do
 	-- Features client against the same local channels.
 	local players = H.new("Players", {LocalPlayer = ui.player})
 	local tagged = {}
+	local binds, unbinds = {}, {}
 	local heartbeat = signal()
 	local fservices = {Players = players, ReplicatedStorage = ui.replicated, UserInputService = H.new("UserInputService", {TouchEnabled = false}),
-		RunService = {Heartbeat = heartbeat}, CollectionService = {GetTagged = function() return tagged end}}
+		RunService = {Heartbeat = heartbeat, BindToRenderStep = function(_, name, _, fn) table.insert(binds, {name = name, fn = fn}) end,
+			UnbindFromRenderStep = function(_, name) table.insert(unbinds, name) end}, CollectionService = {GetTagged = function() return tagged end}}
 	function players.GetPlayers() return {ui.player} end
 	players.PlayerAdded, players.PlayerRemoving = signal(), signal()
 	local game = H.new("DataModel")
@@ -826,7 +893,7 @@ do
 	local delays = {}
 	local fenv = {game = game, workspace = {CurrentCamera = H.new("Camera")}, Enum = roblox.Enum, UDim = roblox.UDim, UDim2 = roblox.UDim2, Vector2 = roblox.Vector2,
 		Vector3 = roblox.Vector3, CFrame = roblox.CFrame, Color3 = roblox.Color3, ColorSequence = roblox.ColorSequence, NumberSequence = roblox.NumberSequence,
-		NumberSequenceKeypoint = roblox.NumberSequenceKeypoint, TweenInfo = {new = function() return {} end},
+		NumberSequenceKeypoint = roblox.NumberSequenceKeypoint, NumberRange = roblox.NumberRange, TweenInfo = {new = function() return {} end},
 		Instance = {new = function(class) return H.new(class) end},
 		task = {spawn = function(f, ...) local co = coroutine.create(f); coroutine.resume(co, ...) end, delay = function(sec, f, ...) table.insert(delays, {sec, f}) end,
 			wait = function() return 0 end, defer = function(f, ...) f(...) end},
@@ -878,6 +945,61 @@ do
 	ui.replicated:FindFirstChild("IsleQuantityLocal"):Fire({verb = "rqBuy", base = "X:1", item = "SovereignSignet", name = "Signet", unit = 100, amount = 1, max = 64})
 	ok(not S.picker_frame.Visible, "a one-of-a-kind offer does not open the quantity picker")
 	ok(has(fs.readFile("npc.client.lua"), "Shop.singleLot(offer.item) then return end"), "dialogue offers skip the picker for single-lot wares")
+	-- Polish: sell mode (sell "<id>:<n>"): any count up to the sellable amount, "+coins", a Sell button.
+	local relayedBefore = #relayed
+	ui.replicated:FindFirstChild("IsleQuantityLocal"):Fire({verb = "sell", base = "Ore", item = "Ore", name = "Ore", unit = 4, amount = 1, max = 200, sell = true})
+	ok(S.picker_frame.Visible and S.picker_frame:GetAttribute("Mode") == "sell", "the picker opens in sell mode")
+	ok(has(H.find(S.picker_frame, "Total").Text, "+4 coins") and H.find(S.picker_frame, "BuyCustom").Text == "Sell", "sell totals and button")
+	H.press(H.find(S.picker_frame, "Qty1"))
+	ok(relayed[relayedBefore + 1] and relayed[relayedBefore + 1][1] == "sell" and relayed[relayedBefore + 1][2] == "Ore:1", "×1 sells exactly one (never the whole stack)")
+	ui.replicated:FindFirstChild("IsleQuantityLocal"):Fire({verb = "sell", base = "Ore", item = "Ore", name = "Ore", unit = 4, amount = 1, max = 200, sell = true})
+	S.custom.Text = "150"
+	H.press(H.find(S.picker_frame, "BuyCustom"))
+	ok(relayed[relayedBefore + 2] and relayed[relayedBefore + 2][2] == "Ore:150", "custom sell quantity past 64 relays")
+	ui.replicated:FindFirstChild("IsleQuantityLocal"):Fire({verb = "sell", base = "SovereignSignet", item = "SovereignSignet", name = "Signet", unit = 100, amount = 1, max = 3, sell = true})
+	ok(S.picker_frame.Visible, "one-of-a-kind items still open the sell picker")
+	S.custom.Text = "4"
+	H.press(H.find(S.picker_frame, "BuyCustom"))
+	eq(#relayed, relayedBefore + 2, "more than the sellable count is refused locally")
+	H.press(S.shade)
+	ui.replicated:FindFirstChild("IsleQuantityLocal"):Fire({verb = "rqBuy", base = "X:1", item = "Ore", name = "Ore", unit = 4, amount = 1, max = 8})
+	ok(H.find(S.picker_frame, "BuyCustom").Text == "Buy" and S.picker_frame:GetAttribute("Mode") == "buy", "buy mode restored")
+	H.press(S.shade)
+	-- Polish: Skyward Vent launch feel: wind streaks, FOV kick and tilt; reduced motion skips the camera.
+	local VF = Data.Vents.Fx
+	eq(VF.fovKick(0), 0, "FOV kick starts at 0")
+	eq(VF.fovKick(0.2), VF.FOV_KICK, "FOV kick peaks early")
+	ok(math.abs(VF.fovKick(1)) < 1e-9 and math.abs(VF.tilt(1)) < 1e-9 and math.abs(VF.tilt(0.5) - VF.TILT) < 1e-9, "kick and tilt are back to zero at the landing")
+	ok(VF.WIND_RATE_REDUCED < VF.WIND_RATE, "reduced motion has a lighter wind")
+	local ventPad = H.new("Part", {Name = "Skyward vent"})
+	ventPad:SetAttribute("VentId", "MosswakeUpdraft")
+	ventPad:SetAttribute("VentLanding", Vector3.new(120, 40, 0))
+	table.insert(tagged, ventPad)
+	local character = H.new("Model", {Name = "Character"})
+	local root = H.new("Part", {Name = "HumanoidRootPart", Position = Vector3.new(0, 10, 0), CFrame = roblox.CFrame.new(0, 10, 0)})
+	root.Parent = character
+	ui.player.Character = character
+	local camera = fenv.workspace.CurrentCamera
+	camera.FieldOfView, camera.CFrame = 70, roblox.CFrame.new()
+	ui.player:SetAttribute("IsleSettingReducedMotion", false)
+	ui.player:SetAttribute("VentFlight", "MosswakeUpdraft:1")
+	local wind = root:FindFirstChild("VentWind")
+	local streaks = wind and wind:FindFirstChild("VentWindStreaks")
+	ok(streaks ~= nil and streaks.Rate == VF.WIND_RATE, "wind streaks on the rider")
+	eq(#binds, 1, "camera tilt bound for the arc")
+	binds[1].fn()
+	ok(camera.FieldOfView >= 70, "FOV kick applied")
+	ui.player:SetAttribute("IsleSettingReducedMotion", true)
+	ui.player:SetAttribute("VentFlight", "MosswakeUpdraft:2")
+	heartbeat:Fire(0.016)
+	eq(#unbinds, 1, "the previous arc unbinds its tilt")
+	eq(camera.FieldOfView, 70, "FOV restored after the arc")
+	eq(#binds, 1, "reduced motion: no camera tilt or FOV kick")
+	ok(S.ventReduced == true and S.ventWind:FindFirstChild("VentWindStreaks").Rate == VF.WIND_RATE_REDUCED, "reduced motion keeps a lighter wind")
+	ui.player:SetAttribute("IsleSettingReducedMotion", nil)
+	-- Polish: the worker recipe announcement toast.
+	local recipeText = Data.Features.announceText({kind = "workerRecipe", item = "Brassite", worker = "Brassite", tier = 1})
+	ok(recipeText.head == "WORKER RECIPE UNLOCKED" and recipeText.color == "FFAA00", "worker recipe toast text")
 	-- L2 (client): a long toast queue drops ordinary toasts before a renown level-up.
 	local burst = {{seq = 11, kind = "renown", level = 11}}
 	for i = 12, 20 do table.insert(burst, {seq = i, kind = "collection", item = "Ore"}) end

@@ -478,7 +478,7 @@ local function snapshot(options)
 		buffs = { MightDraught = { remaining = 95, stats = { strength = 15 } } }, collections = collections, bestiary = p.bestiary,
 		slayer = { lines = lines, quest = if options.noQuest then nil else { line = "Bramble", tier = 1, progress = 40, needed = 150, bossReady = options.bossReady == true } },
 		enchants = p.enchants, combat = Progression.combatLoadout(p), gear = { reforges = p.reforges, stars = p.stars, books = p.books },
-		regions = { { id = "Hub", name = "Aether Hub", unlocked = true, requirement = "" }, { id = "Gloomhollow", name = "Gloomhollow Caverns", unlocked = false, requirement = "Mining 30, Combat 15" } },
+		regions = { { id = "Hub", name = "Compass Quay", unlocked = true, requirement = "" }, { id = "Gloomhollow", name = "Gloomhollow Caverns", unlocked = false, requirement = "Mining 30, Combat 15" } },
 		mastery = Progression.masteryView(p, options.masteryNow or 0),
 	}
 	-- Quest journal: every status (done, ready with and without a lamp, active, locked).
@@ -1056,6 +1056,19 @@ do
 	assert(find(ui.scroll, "ItemDetail"), "item detail opens")
 	press(find(ui.scroll, "ItemDetailSell"))
 	press(find(ui.scroll, "ItemDetailConfirm"))
+	-- Polish: the atlas Items page offers "Sell…" (the §31 picker in sell mode) for a stack.
+	do
+		local qtyEvent = ui.replicated:FindFirstChild("IsleQuantityLocal")
+		if not qtyEvent then qtyEvent = new("BindableEvent", { Name = "IsleQuantityLocal" }); qtyEvent.Parent = ui.replicated end
+		local picked
+		qtyEvent.Event:Connect(function(spec) picked = spec end)
+		press(find(ui.scroll, "ItemOre"))
+		local sellQty = find(ui.scroll, "ItemDetailSellQty")
+		assert(sellQty, "atlas item detail offers Sell…")
+		press(sellQty)
+		assert(picked and picked.verb == "sell" and picked.sell == true and picked.base == "Ore" and picked.max >= 2, "atlas Sell… opens the sell picker")
+		checks += 2
+	end
 	visit(ui, "Hunt", "Slayer")
 	press(find(ui.scroll, "SlayerTierBrambleBegin"))
 	noFailures(ui, "flows")
@@ -1979,8 +1992,8 @@ do
 		combat.run.RenderStepped:Fire()
 		assert(panel.Visible, "boss panel shows at " .. tag.name)
 		local bossRect = rect(panel)
-		local tracker = townsfolk:FindFirstChild("TutorialTracker")
-		tracker.Visible = true -- measured whether or not this snapshot's tutorial is finished
+		-- Polish (lead decision): the old tutorial tracker is retired (the Wayfarer's Path lives in the sidebar).
+		assert(townsfolk:FindFirstChild("TutorialTracker") == nil, "retired tutorial tracker is gone at " .. tag.name)
 		-- Agility & Hunter HUD: a lap underway and two traps (one caught) under the tutorial tracker.
 		H.agilityHud(player)
 		local lapTracker, trapCounter = atlas:FindFirstChild("CourseTracker"), atlas:FindFirstChild("TrapTracker")
@@ -2038,7 +2051,7 @@ do
 		local hotbarGap = { "hotbar gap", { x = lanes.hotbar.x, y = lanes.hotbar.y, w = lanes.hotbar.w, h = lanes.hotbar.h } }
 		local explore = table.clone(persistent)
 		table.insert(explore, hotbarGap)
-		for _, item in ipairs({ { "event banner", rect(banner) }, { "tutorial tracker", rect(tracker) },
+		for _, item in ipairs({ { "event banner", rect(banner) },
 			{ "wayfinder toast", rect(wayfinder:FindFirstChild("WayfinderToast")) }, { "attack button", rect(attack) }, { "spell bar", spellRect },
 			{ "lap tracker", rect(lapTracker) }, { "trap counter", rect(trapCounter) }, { "prayer bar", prayerRect }, { "party HUD", partyRect },
 			{ "XP drops", rect(xpLayer.state.drops) }, { "skill toast", rect(xpLayer.state.skillToast) } }) do
@@ -2098,7 +2111,6 @@ do
 		local buttons = 0
 		for _, child in ipairs(options:GetChildren()) do if child.ClassName == "TextButton" then buttons += 1 end end
 		assert(dialogue.Visible and buttons >= 3, "dialogue open with " .. buttons .. " options at " .. tag.name)
-		assert(not tracker.Visible, "tutorial tracker tucks away while talking at " .. tag.name)
 		-- The dialogue owns the bottom: the spell bar steps aside on the next HUD scan.
 		combat.run.RenderStepped:Fire()
 		assert(not spellBar.Visible and not prayerBar.Visible, "spell and prayer bars hide while talking at " .. tag.name)
@@ -3331,6 +3343,12 @@ do
 	assert(options("BrassSword", { count = 3, upgraded = true }).Sell.label == "Sell 2 spares", "upgraded stacks sell their spares")
 	checks += 3
 	assert(options("Ore", { count = 40 }).Use and options("Ore", { count = 40 }).Use["local"] == "use", "materials: Use opens their collection")
+	-- Polish: "Sell…" opens the quantity picker when two or more can be sold (held − the kept upgraded copy).
+	assert(options("Ore", { count = 40 }).SellQty and options("Ore", { count = 40 }).SellQty["local"] == "sellQty" and options("Ore", { count = 40 }).SellQty.max == 40, "Sell… for a stack")
+	assert(not options("Ore", { count = 1 }).SellQty, "no picker for a single item")
+	assert(options("BrassSword", { count = 3, upgraded = true }).SellQty.max == 2, "the picker excludes the kept upgraded copy")
+	assert(not options("BrassSword", { count = 2, upgraded = true }).SellQty and not options("SunsteelSword", { equipped = true, count = 4 }).SellQty, "no picker for one spare or equipped gear")
+	checks += 4
 	checks += 3
 	-- The atlas relays exactly these verbs from hud.client.lua.
 	for _, verb in ipairs({ "equip", "unequip", "consume", "sell", "accessory", "petAdopt", "drop", "satchelMove", "satchelSort", "recall" }) do
@@ -3394,6 +3412,18 @@ do
 		H.press(H.find(S.menu, "OptionSell"))
 		assert(ui.sent[1] and ui.sent[1][1] == "sell" and ui.sent[1][2] == "BrassSword", "second press sells")
 		ui.update.OnClientEvent:Fire(H.snapshot())
+		-- Polish: Sell… opens the §31 quantity picker in sell mode (sell "<id>:<n>").
+		local picked
+		local qtyEvent = ui.replicated:FindFirstChild("IsleQuantityLocal")
+		if not qtyEvent then qtyEvent = H.new("BindableEvent", { Name = "IsleQuantityLocal" }); qtyEvent.Parent = ui.replicated end
+		qtyEvent.Event:Connect(function(spec) picked = spec end)
+		S.openMenu("Ore", roblox.Vector2.new(400, 300))
+		local sellQty = H.find(S.menu, "OptionSellQty")
+		assert(sellQty and sellQty.Visible and sellQty.Text == "Sell…", "satchel menu offers Sell…")
+		table.clear(ui.sent)
+		H.press(sellQty)
+		assert(#ui.sent == 0 and picked and picked.verb == "sell" and picked.sell == true and picked.base == "Ore" and picked.max == H.snapshot().items.Ore, "Sell… opens the picker for the whole sellable count")
+		checks += 2
 		checks += 5
 		-- Examine and Move to hotbar stay local.
 		S.openMenu("Ore", roblox.Vector2.new(400, 300))

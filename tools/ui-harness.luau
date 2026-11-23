@@ -413,7 +413,7 @@ function H.snapshot(options)
 		pets = pets, buffs = { MightDraught = { remaining = 95, stats = { strength = 15 } } }, collections = collections, bestiary = p.bestiary,
 		slayer = { lines = lines, quest = { line = "Bramble", tier = 1, progress = 40, needed = 150, bossReady = false } },
 		enchants = p.enchants, combat = Progression.combatLoadout(p),
-		regions = { { id = "Hub", name = "Aether Hub", unlocked = true, requirement = "" }, { id = "Gloomhollow", name = "Gloomhollow Caverns", unlocked = false, requirement = "Mining 30, Combat 15" } },
+		regions = { { id = "Hub", name = "Compass Quay", unlocked = true, requirement = "" }, { id = "Gloomhollow", name = "Gloomhollow Caverns", unlocked = false, requirement = "Mining 30, Combat 15" } },
 	}
 	local quests = {}
 	for i, q in ipairs(Data.Quests) do

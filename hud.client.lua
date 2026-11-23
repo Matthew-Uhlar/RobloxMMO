@@ -10,7 +10,7 @@
 -- request at a time and every reply refreshes every HUD:
 --   Wield / Equip   equip "<id>"        Unequip   unequip "<slot>"
 --   Eat / Drink     consume "<id>"      Equip (accessory) accessory "<id>"
---   Use (pet item)  petAdopt "<id>"     Sell      sell "<id>"
+--   Use (pet item)  petAdopt "<id>"     Sell      sell "<id>"   Sell…  sell "<id>:<n>" (picker)
 --   Drop            drop "<id>"         reorder   satchelMove "<id>:<index>"
 --   Sort            satchelSort "<mode>"   Sky Chart: recall "Hub" | "Home"
 -- Move to hotbar calls ReplicatedStorage.HotbarApi:Invoke("assign", slot, id)
@@ -270,6 +270,10 @@ function S.run(option, id)
 		toast(if ok and done then def.name .. " moved to your hotbar." elseif ok and message then message else "The hotbar is still being fitted. Try again in a moment.")
 	elseif option["local"] == "use" then
 		hudEvents:Fire("open", "Satchel", "Collections")
+	elseif option["local"] == "sellQty" then
+		-- Polish: the §31 quantity picker in sell mode (features.client.lua); it sends sell "<id>:<n>".
+		local event = ReplicatedStorage:FindFirstChild("IsleQuantityLocal")
+		if event then event:Fire({verb = "sell", base = id, item = id, name = def.name, unit = tonumber(def.value) or 0, amount = 1, max = option.max, sell = true}) end
 	elseif option["local"] == "kept" then
 		toast(def.name .. " carries upgrades, so your last copy cannot be sold or dropped. Spare copies can.")
 	end

@@ -9,10 +9,15 @@
 --     unit (coins per lot), amount (items per lot), max (lots)}. Buying fires
 --     IsleActionLocal(verb, base .. ":" .. qty) through the atlas; the server
 --     validates the quantity, coins and stock.
+--     Sell mode (spec.sell = true, verb "sell"): max = the sellable count (held −
+--     the kept upgraded copy), the totals read "+coins" and the button "Sell";
+--     the satchel's "Sell…" and the atlas Items page open it (sell "<id>:<n>").
 --   * Renown nameplates: "✦ <level> <title>" above every player's head from the
 --     server-set attributes RenownLevel / RenownTitle / RenownColor.
 --   * Skyward Vents: when the server sets VentFlight on this player, the arc to
 --     the vent's VentLanding plays locally; the server lands the rider anyway.
+--     Polish: wind streaks on the rider, a camera FOV kick and banking tilt
+--     (Data.Vents.Fx); reduced motion keeps only a lighter wind.
 -- Nothing here grants anything.
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -147,7 +152,8 @@ local function lots(spec: any, qty: any): number return math.clamp(math.floor(nu
 local function costText(spec: any, qty: number): string
 	local amount = math.max(1, math.floor(num(spec.amount)))
 	local items = qty * amount
-	return "×" .. T.commas(items) .. "  ·  " .. T.commas(qty * num(spec.unit)) .. " coins"
+	-- Polish: in sell mode the total is what the merchant pays.
+	return "×" .. T.commas(items) .. "  ·  " .. (if spec.sell then "+" else "") .. T.commas(qty * num(spec.unit)) .. " coins"
 end
 local function buy(qty: any)
 	local spec = S.picker
@@ -155,7 +161,8 @@ local function buy(qty: any)
 	qty = math.floor(num(qty))
 	if qty < 1 or qty > math.max(1, math.floor(num(spec.max))) then return end
 	closePicker()
-	actions:Fire(spec.verb, if qty == 1 then spec.base else spec.base .. ":" .. qty)
+	-- A sell always names its count (a bare sell "<id>" sells the whole stack).
+	actions:Fire(spec.verb, if qty == 1 and not spec.sell then spec.base else spec.base .. ":" .. qty)
 end
 for i, n in ipairs(F.Shop.Presets) do
 	local b = T.button(grid, "×" .. n, {name = "Qty" .. n, order = i, textSize = 13})
@@ -172,10 +179,15 @@ end)
 local function openPicker(spec: any)
 	if type(spec) ~= "table" or type(spec.verb) ~= "string" or type(spec.base) ~= "string" then return end
 	-- Warp scrolls and one-of-a-kind wares are bought one at a time (the server refuses qty > 1).
-	if spec.item ~= nil and F.Shop.singleLot(spec.item) then return end
+	-- Polish: sell mode (spec.sell; verb sell "<id>:<n>") is up to the sellable count, any item.
+	if not spec.sell and spec.item ~= nil and F.Shop.singleLot(spec.item) then return end
+	if spec.sell and spec.verb ~= "sell" then return end
 	S.picker = spec
-	local maxLots = math.clamp(math.floor(num(spec.max)), 1, F.Shop.MAX_LOTS)
+	local maxLots = math.clamp(math.floor(num(spec.max)), 1, if spec.sell then F.SELL_MAX else F.Shop.MAX_LOTS)
 	spec.max = maxLots
+	buyCustom.Text = if spec.sell then "Sell" else "Buy"
+	customBox.PlaceholderText = "Custom (1-" .. T.commas(maxLots) .. ")"
+	picker:SetAttribute("Mode", if spec.sell then "sell" else "buy")
 	local L = layout()
 	local w, h = math.min(330, L.w - 20), math.min(252, L.h - 16)
 	picker.Size = UDim2.fromOffset(w, h)
@@ -184,7 +196,7 @@ local function openPicker(spec: any)
 	pickTotal.Text = costText(spec, 1) .. "  each"
 	for n, b in pairs(presetButtons) do
 		local ok = n <= maxLots
-		b.Text = "×" .. n .. "\n" .. T.shortCount(n * num(spec.unit)) .. "c"
+		b.Text = "×" .. n .. "\n" .. (if spec.sell then "+" else "") .. T.shortCount(n * num(spec.unit)) .. "c"
 		T.tone(b, if ok then "secondary" else "ghost")
 		b.Active = ok
 		b.AutoButtonColor = false
@@ -282,10 +294,56 @@ local function fly()
 	local from = root.Position
 	local started = os.clock()
 	local V = Data.Vents
+	local fx = V.Fx
+	-- Polish: wind streaks on the rider and (unless reduced motion) a camera FOV
+	-- kick and a banking tilt over the arc; everything is undone at the landing.
+	local reduced = T.reducedMotion(player)
+	S.ventReduced = reduced
+	local wind = Instance.new("Attachment")
+	wind.Name = "VentWind"
+	local streaks = Instance.new("ParticleEmitter")
+	streaks.Name = "VentWindStreaks"
+	streaks.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+	streaks.Rate = if reduced then fx.WIND_RATE_REDUCED else fx.WIND_RATE
+	streaks.Lifetime = NumberRange.new(0.25, 0.45)
+	streaks.Speed = NumberRange.new(28, 40)
+	streaks.SpreadAngle = Vector2.new(25, 25)
+	streaks.EmissionDirection = Enum.NormalId.Bottom
+	streaks.Size = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.35), NumberSequenceKeypoint.new(1, 0)})
+	streaks.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.35), NumberSequenceKeypoint.new(1, 1)})
+	streaks.LightEmission = 0.4
+	streaks.Color = ColorSequence.new(Color3.fromRGB(230, 246, 255))
+	streaks.Parent = wind
+	wind.Parent = root
+	S.ventWind = wind
+	local camera = workspace.CurrentCamera
+	local baseFov = camera and camera.FieldOfView or 70
+	local side = if (landing - from):Cross(Vector3.yAxis).X >= 0 then 1 else -1
+	local tiltName = "IsleVentTilt" .. token
+	local tilting = false
+	if camera and not reduced then
+		tilting = true
+		pcall(function()
+			RunService:BindToRenderStep(tiltName, Enum.RenderPriority.Camera.Value + 1, function()
+				local t = math.clamp((os.clock() - started) / V.FLIGHT, 0, 1)
+				camera.FieldOfView = baseFov + fx.fovKick(t)
+				camera.CFrame = camera.CFrame * CFrame.Angles(0, 0, side * fx.tilt(t))
+			end)
+		end)
+	end
+	local function finishFx()
+		if tilting then
+			tilting = false
+			pcall(function() RunService:UnbindFromRenderStep(tiltName) end)
+			if camera then camera.FieldOfView = baseFov end
+		end
+		streaks.Enabled = false
+		task.delay(0.5, function() wind:Destroy() end)
+	end
 	local connection: RBXScriptConnection? = nil
 	connection = RunService.Heartbeat:Connect(function()
 		local t = (os.clock() - started) / V.FLIGHT
-		if token ~= S.flights or t >= 0.98 or not root.Parent then if connection then connection:Disconnect() end; return end
+		if token ~= S.flights or t >= 0.98 or not root.Parent then if connection then connection:Disconnect() end; finishFx(); return end
 		local flat = from:Lerp(landing, t)
 		local pos = Vector3.new(flat.X, V.arcY(from.Y, landing.Y, t), flat.Z)
 		local ahead = from:Lerp(landing, math.min(1, t + 0.05))

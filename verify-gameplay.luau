@@ -1465,6 +1465,44 @@ eq(legacySale.coins,236,"nil sell keeps legacy four resources")
 eq(legacySale.items.StarFragment,1,"nil sell ignores other items")
 eq(cmd(merchant,"sell","StarFragment").coins,416,"rare item sold by id")
 
+-- Polish: sell quantity "<id>:<n>" (validated; at most held - the kept upgraded copy).
+do
+	local seller=seeded(291,function(p) p.coins=0; p.items={BrassIngot=10,Ore=30,SunsteelSword=4}; p.stars={SunsteelSword=2} end)
+	local part=cmd(seller,"sell","BrassIngot:3")
+	eq(part.items.BrassIngot,7,"sold three of the stack")
+	eq(part.coins,3*Data.Items.BrassIngot.value,"paid for three")
+	ok(has(cmd(seller,"sell","BrassIngot:8").message,"at most 7"),"no more than held")
+	eq(st(seller).items.BrassIngot,7,"an over-count sells nothing")
+	for _,bad in ipairs({"BrassIngot:0","BrassIngot:-1","BrassIngot:1.5","BrassIngot:01","BrassIngot:x","BrassIngot:1:2","BrassIngot:99999999",":3"}) do
+		local before=st(seller).coins
+		local r=cmd(seller,"sell",bad)
+		eq(r.coins,before,"malformed quantity "..bad.." pays nothing")
+	end
+	eq(st(seller).items.BrassIngot,7,"malformed quantities sell nothing")
+	local raw=cmd(seller,"sell","Ore:10")
+	eq(raw.items.Ore,20,"raw materials sell by quantity too")
+	-- The upgraded copy stays: 4 held, 1 kept, so at most 3.
+	ok(has(cmd(seller,"sell","SunsteelSword:4").message,"at most 3"),"the kept upgraded copy is not counted")
+	local spares=cmd(seller,"sell","SunsteelSword:3")
+	eq(spares.items.SunsteelSword,1,"spares sold, the upgraded copy kept")
+	ok(has(spares.message,"kept your upgraded copy"),"the reply names the kept copy")
+	ok(has(cmd(seller,"sell","SunsteelSword:1").message,"carries upgrades"),"the last upgraded copy never sells")
+	local whole=cmd(seller,"sell","BrassIngot")
+	eq(whole.items.BrassIngot,0,"a bare id still sells the whole stack")
+	seller=rejoin(seller)
+	eq(st(seller).items.Ore,20,"partial sales survive a rejoin")
+end
+-- Polish: stale display names (ids stay stable).
+eq(Data.RegionById.Hub.name,"Compass Quay","Hub region displays Compass Quay")
+eq(Data.RegionById.Quarry.name,"Brassfall Cay","Quarry region displays Brassfall Cay")
+eq(Data.DiaryByRegion.Quarry.name,"Brassfall Cay Diary","diary name follows")
+eq(Data.Townsfolk.RecallTargets.Hub,"Compass Quay","recall target names Compass Quay")
+ok(has(Data.Items.HubwardTablet.description,"Compass Quay"),"Hubward Tablet text says Compass Quay")
+for _,file in ipairs({"shared/GameData.lua","server.server.lua","ui.client.lua","hud.client.lua","nav.client.lua","npc.client.lua","features.client.lua","world.server.lua"}) do
+	local src=fs.readFile(file)
+	ok(not has(src,"Aether Hub") and not has(src,"Quarry Cay"),file.." has no stale display names")
+end
+
 -- Slayer quests.
 local slayer=seeded(300,function(p) p.xp.Combat=X[5]; p.levelRewards.Combat=5; p.coins=1000 end)
 for _,bad in ipairs({"Bramble","Bramble:9","Bramble:0","Nope:1","Bramble:1:2","bramble:1","Bramble:10"}) do
