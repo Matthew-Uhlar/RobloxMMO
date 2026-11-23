@@ -3386,6 +3386,11 @@ do
 	visit(showing, "Hero", "Lectern")
 	check(find(showing.scroll, "LecternSession") ~= nil and find(showing.scroll, "LecternShow") ~= nil and find(showing.scroll, "LecternPad") == nil, "the reveal shows glyphs, no pad")
 	noFailures(showing, "sequence reveal")
+	-- QC L6: a resume uses the remaining window (revealIn), not the whole reveal.
+	local resumed = run({ snapshot = base({ session = { g = "seq", t = 3, r = 3, rounds = 10, reveal = 3, revealIn = 0, showing = true, show = { 2, 5, 1 }, glyphs = 6, endsIn = 80 } }) })
+	visit(resumed, "Hero", "Lectern")
+	check(find(resumed.scroll, "LecternShow") == nil and find(resumed.scroll, "LecternPad") ~= nil, "QC L6: a spent reveal window resumes on the pad")
+	noFailures(resumed, "resumed reveal")
 	local seq = run({ snapshot = base({ session = { g = "seq", t = 3, r = 3, rounds = 10, reveal = 3, showing = false, glyphs = 6, endsIn = 80 } }) })
 	visit(seq, "Hero", "Lectern")
 	check(find(seq.scroll, "LecternPad") ~= nil and find(seq.scroll, "Glyph6") ~= nil and find(seq.scroll, "Glyph7") == nil, "six glyph keys")
@@ -3421,6 +3426,15 @@ do
 	press(find(pairs_.scroll, "Card7"))
 	check(pairs_.sent[1] and pairs_.sent[1][1] == "lecternFlip" and pairs_.sent[1][2] == "7", "a hidden card flips")
 	noFailures(pairs_, "pairs board")
+	-- QC L7: a "no match" card can be turned again (the server allows it).
+	local missed = run({ snapshot = base({ session = { g = "pairs", t = 3, n = 12, cols = 4, left = 9, endsIn = 300,
+		face = { ["3"] = { g = 4, miss = true }, ["8"] = { g = 6, miss = true } }, won = {} } }) })
+	visit(missed, "Hero", "Lectern")
+	table.clear(missed.sent)
+	press(find(missed.scroll, "Card8"))
+	check(missed.sent[1] and missed.sent[1][1] == "lecternFlip" and missed.sent[1][2] == "8", "QC L7: a no-match card flips")
+	noFailures(missed, "missed pairs")
+	checkSent(missed)
 	checkSent(pairs_)
 	-- Wardrobe.
 	local wd = run({ snapshot = base() })
@@ -3451,6 +3465,20 @@ do
 	local pets = run({ snapshot = base() })
 	visit(pets, "Hero", "Pets")
 	check(find(pets.scroll, "PetTether") ~= nil, "Hero › Pets shows the tether card")
+	-- QC L4: the summoned pet takes no slot; a max-level tether says so (no "next level after 0").
+	do
+		local snap = base()
+		snap.qol.tether.pets = { { index = 1, id = "Tidewing", level = 5, need = 400, activeXp = 4000, active = true, sharing = false },
+			{ index = 2, id = "Tidewing", level = 100, need = 0, activeXp = 0, sharing = true, max = true } }
+		local tp = run({ snapshot = snap })
+		visit(tp, "Hero", "Pets")
+		local text = ""
+		for _, o in ipairs(find(tp.scroll, "PetTether"):GetDescendants()) do if o:IsA("TextLabel") then text ..= o.Text .. "\n" end end
+		check(string.find(text, "Roost tethers  1/1", 1, true) ~= nil, "QC L4: the summoned pet is not counted against tether slots")
+		check(string.find(text, "max level", 1, true) ~= nil and string.find(text, "next level after", 1, true) == nil, "QC L4: a max-level tether shows no XP preview")
+		check(string.find(text, "takes no tether slot", 1, true) ~= nil, "QC L4: the summoned row explains it is free")
+		noFailures(tp, "tether preview")
+	end
 	noFailures(pets, "tethers")
 	checkSent(pets)
 	-- Malformed and missing qol data never break the pages.

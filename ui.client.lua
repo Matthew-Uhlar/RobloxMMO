@@ -8793,9 +8793,25 @@ Pages.drawTrophies=CTP.drawTrophies
 -- checks every answer; this page only shows what a snapshot carries (a round's
 -- glyphs / stars during its reveal window, turned cards) and the player's input.
 -- Helpers live on UI.QL (the chunk is near Luau's local limit).
-UI.QL={tier=nil,input="",key=nil,hideAt=0,slot=1}
+UI.QL={tier=nil,input="",key=nil,hideAt=0,slot=1,at=0,wakes={}}
 do
 local QL=UI.QL
+-- QC L7: server countdowns (visitIn, endsIn, wardrobe wait, revealIn) are
+-- seconds-left when the snapshot arrived (QL.at, set by accept); the page
+-- turns them into deadlines and redraws when one passes.
+function QL.left(secs) return math.max(0,num(secs,0)-(os.clock()-num(QL.at,0))) end
+function QL.wake(secs,section)
+	local left=QL.left(secs)
+	if left<=0 then return end
+	local due=math.floor((os.clock()+left)*10+.5)
+	local key=section..":"..due
+	if QL.wakes[key] then return end
+	QL.wakes[key]=true
+	task.delay(left+.05,function()
+		QL.wakes[key]=nil
+		if current=="Hero" and sectionOf and sectionOf.Hero==section then render() end
+	end)
+end
 local function QD() return Data and type(Data.QoL)=="table" and Data.QoL or nil end
 local function qol() return tbl(state.qol) end
 local function glyphOf(A,i) return tbl(tbl(A.GLYPHS)[num(i,0)]) end
@@ -8826,10 +8842,12 @@ local function revealing(v)
 	local key=tostring(v.g)..":"..tostring(v.r)..":"..tostring(v.t)
 	if v.showing==true and type(v.show)=="table" then
 		if QL.key~=key then
+			-- QC L6: the window left when the snapshot arrived (a resume shows only that).
+			local left=QL.left(v.revealIn~=nil and v.revealIn or v.reveal)
 			QL.key=key
 			QL.input=""
-			QL.hideAt=os.clock()+num(v.reveal,3)
-			task.delay(num(v.reveal,3)+.05,function() if QL.key==key and current=="Hero" then render() end end)
+			QL.hideAt=os.clock()+left
+			task.delay(left+.05,function() if QL.key==key and current=="Hero" then render() end end)
 		end
 		return os.clock()<QL.hideAt
 	end
@@ -8840,7 +8858,7 @@ local function sessionHeader(A,v,t)
 	local game=tbl(tbl(A.Games)[v.g])
 	local sub=v.g=="pairs" and (num(v.left,0).." reveals left") or ("Round "..num(v.r,1).." of "..num(v.rounds,1))
 	card({name="LecternSession",icon=CTP.medallion(t.color or "B9A7FF","❖"),accent=safeColor(t.color,gold),title=paint(string.upper(tostring(game.name or "Trial")),t.color or "FFD166"),
-		subtitle=escape(tostring(t.id or "")).." tier  ·  "..sub,badge=clock(num(v.endsIn,0)).." left",badgeColor=gold,detail=escape(tostring(game.text or "")),
+		subtitle=escape(tostring(t.id or "")).." tier  ·  "..sub,badge=clock(math.ceil(QL.left(v.endsIn))).." left",badgeColor=gold,detail=escape(tostring(game.text or "")),
 		actions={{caption="Stop",name="LecternStop",fn=function() send("lecternEnd") end}}})
 end
 local function drawSequence(A,v,t)
@@ -8916,8 +8934,9 @@ local function drawPairs(A,v,t)
 		local f=faces[tostring(i)]
 		if type(f)=="table" then
 			local gl=glyphOf(A,f.g)
+			-- QC L7: a "no match" card may be turned again (the server allows any unmatched card but the open one).
 			face(holder,"Card"..i,i,tostring(gl.mark or "?"),gl.color,f.m and string.gsub(rewardText(f.rw),"<[^>]+>","") or (f.miss and "no match" or "turned"),
-				f.m and rgb("1E3A2E") or (f.miss and rgb("3A1E24") or rgb("1E2C46")))
+				f.m and rgb("1E3A2E") or (f.miss and rgb("3A1E24") or rgb("1E2C46")),f.miss and function() send("lecternFlip",tostring(i)) end or nil)
 		else
 			face(holder,"Card"..i,i,"✧","5E6B7A",nil,nil,function() send("lecternFlip",tostring(i)) end)
 		end
@@ -8935,6 +8954,7 @@ function QL.drawLectern()
 	local s=L.session
 	if type(s)=="table" then
 		local t=tbl(A.Tiers[num(s.t,1)])
+		QL.wake(s.endsIn,"Lectern")
 		sessionHeader(A,s,t)
 		if s.g=="seq" then drawSequence(A,s,t) elseif s.g=="recall" then drawRecall(A,s,t) elseif s.g=="pairs" then drawPairs(A,s,t) end
 		return
@@ -8942,7 +8962,8 @@ function QL.drawLectern()
 	QL.key=nil
 	local best=math.clamp(num(L.tier,1),1,#A.Tiers)
 	QL.tier=math.clamp(num(QL.tier,best),1,best)
-	local visit=num(L.visitIn,0)
+	local visit=math.ceil(QL.left(L.visitIn))
+	QL.wake(L.visitIn,"Lectern")
 	card({name="LecternHeader",icon=CTP.medallion("B9A7FF","❖"),accent=rgb("B9A7FF"),title=paint("LUMEN LECTERN","B9A7FF"),
 		subtitle="Enchanting "..num(L.level,1).."  ·  "..fmt(num(L.runs,0)).." trials studied  ·  renews in "..clock(num(L.resetIn,0)),
 		badge=visit>0 and ("OPEN "..clock(visit)) or "AT THE MUSEUM",badgeColor=visit>0 and mint or muted,
@@ -8993,7 +9014,8 @@ function QL.drawWardrobe()
 	local w=tbl(qol().wardrobe)
 	if next(w)==nil then syncing("wardrobe") return end
 	local slots=math.clamp(num(w.slots,3),0,W.MAX)
-	local wait=num(w.wait,0)
+	local wait=math.ceil(QL.left(w.wait))
+	QL.wake(w.wait,"Wardrobe")
 	card({name="WardrobeHeader",motif="Hero",title="Wardrobe",titleColor=gold,subtitle=slots.."/"..W.MAX.." loadouts open  ·  "..num(w.accSlots,0).." accessory slots",
 		badge=wait>0 and ("READY IN "..wait.."s") or "READY",badgeColor=wait>0 and gold or mint,
 		detail="Save your armour and accessory bag as a loadout, then swap the whole set in one tap. Your weapon stays in hand. Swaps wait out a fight.",
@@ -9081,14 +9103,20 @@ function QL.tether(index,pet)
 	local lines={}
 	for _,r in ipairs(rows) do
 		local def=tbl(tbl(Data.PetById)[r.id])
-		table.insert(lines,paint(escape(tostring(def.name or r.id)),"F9CC77").."  Lv "..num(r.level,1).."  ·  "..
-			(r.active==true and paint("summoned (learns directly)","8A9AA0") or (r.sharing==true and ("next level after "..paint(fmt(num(r.activeXp,0)),"9EE7D2").." pet XP from your summoned pet") or paint("over your tether limit","E8806A"))))
+		-- QC L4: the summoned pet takes no tether slot; a max-level pet has nothing to preview.
+		local status=(r.active==true and paint("summoned: learns directly, takes no tether slot","8A9AA0"))
+			or (r.sharing~=true and paint("over your tether limit","E8806A"))
+			or (r.max==true and paint("max level","8A9AA0"))
+			or ("next level after "..paint(fmt(num(r.activeXp,0)),"9EE7D2").." pet XP earned by your summoned pet")
+		table.insert(lines,paint(escape(tostring(def.name or r.id)),"F9CC77").."  Lv "..num(r.level,1).."  ·  "..status)
 	end
 	if #lines==0 then table.insert(lines,paint("No pets tethered.","8A9AA0")) end
+	local used=0
+	for _,r in ipairs(rows) do if r.active~=true then used+=1 end end
 	local reason=(slots<1 and ("Tethers open at Taming "..tostring(K.UNLOCKS[1]).."."))
-		or (not mine and #rows>=slots and "All tethers are in use.") or nil
-	card({name="PetTether",motif="Co-op",title="Roost tethers  "..#rows.."/"..slots,titleColor=gold,
-		subtitle="Each tethered pet earns "..math.floor(num(k.share,0.1)*100).."% of your summoned pet's pet XP",lines=lines,
+		or (not mine and used>=slots and "All tethers are in use.") or nil
+	card({name="PetTether",motif="Co-op",title="Roost tethers  "..used.."/"..slots,titleColor=gold,
+		subtitle="Each tethered pet earns "..math.floor(num(k.share,0.1)*100).."% of the pet XP your summoned pet earns (or would earn, at max level)",lines=lines,
 		actions={mine and {caption="Untether",name="PetTetherButton",fn=function() send("petTether",index..":"..tostring(pet.id)) end}
 			or {caption="Tether",primary=reason==nil or nil,disabled=reason~=nil,reason=reason,name="PetTetherButton",fn=function() send("petTether",index..":"..tostring(pet.id)) end}}})
 	-- Roost preview: what the next rarity changes.
@@ -10590,6 +10618,7 @@ local function accept(data,quiet)
 		end
 		return false
 	end
+	if type(data.qol)=="table" and UI.QL then UI.QL.at=os.clock() end -- §41 QC L7: countdowns become deadlines
 	if type(data.market)=="table" and type(data.market.item)=="string" then
 		local quote=data.market
 		local previous=marketQuotes[quote.item]

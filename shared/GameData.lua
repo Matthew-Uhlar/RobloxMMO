@@ -15646,9 +15646,16 @@ function A.makeBoard(t, rng)
 		i += 1
 		if i % 2 == 1 then table.insert(rewards, {k="xp",n=t.xp * 4}) else table.insert(rewards, {k="item",id="ArcaneDust",n=t.dust}) end
 	end
+	-- QC M1: the glyph -> reward link is drawn per board (server RNG): rewards
+	-- are shuffled over the pairs and each pair gets a random distinct glyph, so
+	-- no glyph always hides the reveal card, a tome or a reward kind.
+	for k = #rewards, 2, -1 do local j = pick(rng, k); rewards[k], rewards[j] = rewards[j], rewards[k] end
+	local glyphs = {}
+	for g = 1, #A.GLYPHS do glyphs[g] = g end
+	for k = #glyphs, 2, -1 do local j = pick(rng, k); glyphs[k], glyphs[j] = glyphs[j], glyphs[k] end
 	local cards = {}
 	for p = 1, t.pairs do
-		local glyph = ((p - 1) % #A.GLYPHS) + 1
+		local glyph = glyphs[p]
 		table.insert(cards, {g=glyph,p=p})
 		table.insert(cards, {g=glyph,p=p})
 	end
@@ -15770,7 +15777,9 @@ function V.interest(t, bank)
 	if bank ~= bank then bank = 0 end
 	return math.floor(math.clamp(bank, 0, t.cap) * t.rate)
 end
--- p.vault = {tier, day, paid, last}. Returns the coins due today (0 unless the day is new).
+-- p.vault = {tier, day, paid, last, low}. Returns the coins due today (0 unless
+-- the day is new). `bank` is the lowest vault balance since the last payment
+-- (QC L5: p.vault.low), so a deposit made just before the UTC day earns nothing.
 function V.roll(rec, day, bank)
 	local seen = tonumber(rec.day)
 	if seen and seen >= day then return 0 end

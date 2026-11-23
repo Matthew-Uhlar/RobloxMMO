@@ -251,14 +251,16 @@ function Progression.addXpToPet(pet, amount)
 	return pet.level - start
 end
 -- Pets earn the full XP of their skill, a share of other skills (same category
--- 50%, others 25%), boosted by Taming and an XP held item. Returns leveled, gained.
+-- 50%, others 25%), boosted by Taming and an XP held item. Returns leveled,
+-- gained, notional: `notional` is what the pet would have earned even at max
+-- level (§41 QC L4: Roost tethers still learn from a max-level summoned pet).
 function Progression.addPetXp(p, skill, amount)
 	local pet, def = Progression.activePet(p)
-	if not pet then return false, 0 end
-	if pet.level >= Data.PET_MAX_LEVEL then pet.xp = 0 return false, 0 end
-	local gained = amount * Progression.petShare(def, skill) * Progression.petXpMult(p, pet, skill)
-	local leveled = Progression.addXpToPet(pet, gained) > 0
-	return leveled, gained
+	if not pet then return false, 0, 0 end
+	local notional = amount * Progression.petShare(def, skill) * Progression.petXpMult(p, pet, skill)
+	if pet.level >= Data.PET_MAX_LEVEL then pet.xp = 0 return false, 0, notional end
+	local leveled = Progression.addXpToPet(pet, notional) > 0
+	return leveled, notional, notional
 end
 -- Stats one pet gives while summoned: species perLevel scaled by rarity and
 -- Taming, unlocked stat abilities, held item stats.

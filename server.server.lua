@@ -238,17 +238,24 @@ local function grantXp(p,skill,amount,source)
 		local _,newLevel=Progression.addXp(p,skill,councilXp(skill,amount))
 		return levelCoins(p,skill,newLevel)
 	end
+	if source=="lectern" then
+		-- §41 QC L2: the Lumen Lectern's audited daily caps (A.dailyMaxXp) are
+		-- flat XP: no pet or council multipliers and no pet XP.
+		local _,newLevel=Progression.addXp(p,skill,amount)
+		return levelCoins(p,skill,newLevel)
+	end
 	-- Pets depth: the summoned pet's XP abilities raise the player's grant; the
 	-- pet itself shares the base amount, and its gain trains Taming.
 	local _,newLevel=Progression.addXp(p,skill,councilXp(skill,amount*Progression.petSkillXpMult(p,skill)))
 	local pet,petDef=Progression.activePet(p)
 	local petLevel=pet and pet.level
 	-- Taming is earned from pets, so it never feeds them back.
-	local petGain=0
-	if skill~="Taming" then _,petGain=Progression.addPetXp(p,skill,amount) end
+	local petGain,petNotional=0,0
+	if skill~="Taming" then _,petGain,petNotional=Progression.addPetXp(p,skill,amount) end
 	if pet and pet.level>petLevel then note(p,petDef.name.." pet level "..pet.level.."!") end
 	if Pets.tamingShare and (petGain or 0)>0 then Pets.tamingShare(p,petGain) end
-	if QoL.tetherShare and (petGain or 0)>0 then QoL.tetherShare(p,petGain) end -- §41: Roost tethers
+	-- §41: Roost tethers share what the summoned pet earned (or, at max level, would have earned).
+	if QoL.tetherShare and (petNotional or 0)>0 then QoL.tetherShare(p,petNotional) end
 	if Pets.skillRoll then Pets.skillRoll(p,skill,amount) end
 	levelCoins(p,skill,newLevel)
 end
@@ -4904,6 +4911,10 @@ local function open(player)
 		local humanoid=character:WaitForChild("Humanoid",10)
 		if not humanoid then return end
 		applyStats(player,profile,true)
+		-- §41 QC L1: any lost health (agility falls, thieving, the Warden,
+		-- expedition / raid / lair damage, every non-bridge path) holds the
+		-- wardrobe. A lowered MaxHealth (gear swap) is not a hit.
+		if QoL.watchHealth then QoL.watchHealth(player,humanoid) end
 		humanoid.Died:Connect(function()
 			local p=profiles[player]
 			-- Raids (§38): a death inside the vaults costs raid points (raids.server.lua), not purse coins.
@@ -5780,6 +5791,7 @@ do
 			spend(p,cost.items)
 			p.coins-=cost.coins
 			takePet(p,index)
+			pet.kin=nil -- §41 QC L3: a pet at the Roost is untethered
 			p.petUpgrade={pet=pet,from=from,to=cost.to,ends=os.time()+cost.seconds}
 			return PD.KEEPER.." takes your "..petName(pet,def)..". It returns "..cost.to.." in "..span(cost.seconds).."."
 		end
@@ -9704,11 +9716,17 @@ end
 -- * Wardrobe (Q.Wardrobe): wardrobeSave / wardrobeWear / wardrobeClear "<slot>".
 --   Wearing checks every piece first and then swaps armour and the accessory
 --   bag together (all or nothing); refused within W.HURT_GRACE s of a hit
---   (bridge "damage") and W.COOLDOWN s after the last swap.
+--   (bridge "damage", even fully absorbed, and any lost health: watchHealth)
+--   and W.COOLDOWN s after the last swap. The same fight lockout holds the
+--   armour slots and the accessory bag on equip / unequip / accessory
+--   (armourLock; weapon and ammo swaps stay free); those verbs clear w.worn.
 -- * Vault Charters (Q.Vault): vaultUpgrade buys the next charter from the purse;
---   interest is paid on the first refresh of each new UTC day (V.roll).
+--   interest is paid on the first refresh of each new UTC day (V.roll), on the
+--   lowest vault balance since the last payment (p.vault.low).
 -- * Roost tethers (Q.Tether): petTether "index:species" toggles pet.kin; a
---   tethered roster pet earns K.SHARE of the summoned pet's pet XP (grantXp).
+--   tethered roster pet earns K.SHARE of the summoned pet's pet XP (grantXp),
+--   or of what a max-level summoned pet would have earned. The summoned pet
+--   never takes a tether slot; a pet sent to the Roost is untethered.
 -- Profile: p.lectern, p.wardrobe, p.vault, pet.kin. Snapshot key qol.
 ------------------------------------------------------------------------------
 do
@@ -9776,7 +9794,7 @@ do
 		s.ends=now+reveal+A.ANSWER_SECONDS
 	end
 	local function grantReward(p,rw)
-		if rw.k=="xp" then grantXp(p,A.SKILL,rw.n) return "+"..fmtNum(rw.n).." Enchanting XP"
+		if rw.k=="xp" then grantXp(p,A.SKILL,rw.n,"lectern") return "+"..fmtNum(rw.n).." Enchanting XP"
 		elseif rw.k=="item" then collect(p,rw.id,rw.n) return "+"..rw.n.." "..itemName(rw.id)
 		end
 		return "+"..rw.n.." reveals"
@@ -9827,7 +9845,7 @@ do
 			local right=if s.g=="seq" then A.checkSequence(s.seq,s.r,item) else A.checkRecall(s.cells,item)
 			if not right then return finish(p,rec,"The glyphs scatter: round "..s.r.." missed. "..A.Games[s.g].name.." ends.") end
 			local xp=A.roundXp(t,s.r)
-			grantXp(p,A.SKILL,xp)
+			grantXp(p,A.SKILL,xp,"lectern")
 			local cleared=s.r
 			if cleared>=A.rounds(t,s.g) then
 				s.r=cleared+1
@@ -9887,6 +9905,8 @@ do
 				v.reveal=s.reveal
 				local showing=now<(s.shown or 0)+(s.reveal or 0)
 				v.showing=showing
+				-- QC L6: the remaining reveal window (a resume shows only what is left).
+				v.revealIn=if showing then (s.shown or 0)+(s.reveal or 0)-now else 0
 				if s.g=="seq" then
 					v.glyphs=t.glyphs
 					if showing then v.show=table.move(s.seq,1,s.r,1,{}) end
@@ -9910,6 +9930,36 @@ do
 		return view
 	end
 	-- Wardrobe -----------------------------------------------------------------
+	local function hurtLeft(player)
+		local hurt=QoL.hurtAt[player]
+		return if hurt then W.HURT_GRACE-(os.clock()-hurt) else 0
+	end
+	-- QC L1: the fight lockout also holds the armour slots and the accessory bag
+	-- ("bag") on equip / unequip / accessory. Weapon (and ammo) swaps stay free.
+	function QoL.armourLock(player,slot)
+		if slot~="bag" and not table.find(W.SLOTS,slot) then return nil end
+		if hurtLeft(player)>0 then return "You can't change "..(if slot=="bag" then "accessories" else "armour").." mid-fight. Catch your breath first." end
+		return nil
+	end
+	-- QC L7: armour or the bag changed outside the wardrobe: no loadout is "worn".
+	function QoL.gearChanged(p,slot)
+		if slot~="bag" and not table.find(W.SLOTS,slot) then return end
+		if type(p.wardrobe)=="table" then p.wardrobe.worn=nil end
+	end
+	-- QC L1: lost health from any source counts as a hit. Compared as a share
+	-- of MaxHealth: applyStats keeps the health fraction when gear or stats
+	-- change MaxHealth, so a stat change is never read as a hit.
+	function QoL.watchHealth(player,humanoid)
+		local changed=humanoid.HealthChanged
+		if not changed then return end
+		local function frac() local m=tonumber(humanoid.MaxHealth) or 0 return if m>0 then (tonumber(humanoid.Health) or 0)/m else 0 end
+		local last=frac()
+		changed:Connect(function()
+			local now=frac()
+			if now<last-1e-3 then QoL.hurtAt[player]=os.clock() end
+			last=now
+		end)
+	end
 	function QoL.wardrobeAction(player,p,verb,item)
 		local w=wrec(p)
 		local slots=W.slotsFor(level(p.xp.Combat))
@@ -9932,8 +9982,7 @@ do
 		-- wardrobeWear
 		local set=w.sets[key]
 		if not set then return "Wardrobe slot "..i.." is empty." end
-		local hurt=QoL.hurtAt[player]
-		if hurt and os.clock()-hurt<W.HURT_GRACE then return "You can't change loadouts mid-fight. Catch your breath first." end
+		if hurtLeft(player)>0 then return "You can't change loadouts mid-fight. Catch your breath first." end
 		local last=QoL.swapAt[player]
 		if last and os.clock()-last<W.COOLDOWN then return "Your wardrobe is still settling ("..math.ceil(W.COOLDOWN-(os.clock()-last)).."s)." end
 		local ok,why=W.check(set,p.items,Progression.accessorySlots(p),function(req) return Progression.meetsRequirements(p,req) end)
@@ -9953,14 +10002,25 @@ do
 			sets[i]=if set then set else false
 		end
 		local last=QoL.swapAt[player]
-		local hurt=QoL.hurtAt[player]
-		local wait=math.max(0,if last then W.COOLDOWN-(os.clock()-last) else 0,if hurt then W.HURT_GRACE-(os.clock()-hurt) else 0)
+		local wait=math.max(0,if last then W.COOLDOWN-(os.clock()-last) else 0,hurtLeft(player))
 		return {slots=W.slotsFor(level(p.xp.Combat)),max=W.MAX,worn=w.worn,sets=sets,wait=math.ceil(wait),accSlots=Progression.accessorySlots(p)}
 	end
 	-- Vault Charters -------------------------------------------------------------
+	-- QC L5: interest pays on the lowest balance since the last payment.
+	local function low(p,v)
+		local bank=tonumber(p.bank) or 0
+		local l=tonumber(v.low)
+		if not l or l~=l or l>bank then l=bank end
+		return math.max(0,l)
+	end
+	function QoL.bankLowered(p)
+		local v=vrec(p)
+		v.low=low(p,v)
+	end
 	function QoL.vaultRefresh(p,now)
 		local v=vrec(p)
-		local due=V.roll(v,Q.dayOf(now),p.bank)
+		local seen=v.day
+		local due=V.roll(v,Q.dayOf(now),low(p,v))
 		if due>0 then
 			p.bank+=due
 			v.paid=(tonumber(v.paid) or 0)+due
@@ -9968,6 +10028,9 @@ do
 			p.bankRevision=(p.bankRevision or 0)+1
 			note(p,"Vault interest: +"..fmtNum(due).." coins ("..V.tier(v.tier).name..")")
 		end
+		-- A new day: the count restarts at the balance after the payment, so a
+		-- later deposit only counts once it has stayed through a whole day.
+		if v.day~=seen then v.low=math.max(0,math.floor(tonumber(p.bank) or 0)) end
 	end
 	local function vaultUpgrade(p)
 		local v=vrec(p)
@@ -9992,24 +10055,26 @@ do
 				table.insert(need,{id=id,tier=n.needs[id],have=Progression.collectionTier(p,id)})
 			end
 		end
-		return {tier=t.index,rate=t.rate,cap=t.cap,maxDaily=V.maxDaily(t),next=V.interest(t,p.bank),paid=tonumber(v.paid) or 0,last=tonumber(v.last) or 0,
+		return {tier=t.index,rate=t.rate,cap=t.cap,maxDaily=V.maxDaily(t),next=V.interest(t,low(p,v)),paid=tonumber(v.paid) or 0,last=tonumber(v.last) or 0,
 			nextIn=(Q.dayOf(now)+1)*Q.DAY-now,upgrade=n and {tier=n.index,cost=n.cost,need=need} or nil}
 	end
 	-- Roost tethers --------------------------------------------------------------
+	-- QC L4: the summoned pet never takes a tether slot.
 	local function tetherCount(p)
 		local n=0
-		for _,pet in ipairs(p.pets) do if type(pet)=="table" and pet.kin then n+=1 end end
+		for index,pet in ipairs(p.pets) do if type(pet)=="table" and pet.kin and index~=p.activePet then n+=1 end end
 		return n
 	end
+	-- gain: the summoned pet's pet XP (or, at max level, what it would have earned).
 	function QoL.tetherShare(p,gain)
-		if type(gain)~="number" or gain<=0 or gain~=gain then return end
+		if type(gain)~="number" or gain<=0 or gain~=gain or gain==math.huge then return end
 		local slots=K.slotsFor(Progression.tamingLevel(p))
 		local used=0
 		for index,pet in ipairs(p.pets) do
 			if used>=slots then break end
-			if type(pet)=="table" and pet.kin and Data.PetById[pet.id] then
+			if type(pet)=="table" and pet.kin and index~=p.activePet and Data.PetById[pet.id] then
 				used+=1
-				if index~=p.activePet and pet.level<Data.PET_MAX_LEVEL then Progression.addXpToPet(pet,gain*K.SHARE) end
+				if pet.level<Data.PET_MAX_LEVEL then Progression.addXpToPet(pet,gain*K.SHARE) end
 			end
 		end
 	end
@@ -10030,15 +10095,20 @@ do
 	local function tetherView(p)
 		local slots=K.slotsFor(Progression.tamingLevel(p))
 		local rows={}
+		local used=0
 		for index,pet in ipairs(p.pets) do
 			if type(pet)=="table" and pet.kin and Data.PetById[pet.id] then
 				local lvl=Progression.petLevel(pet)
-				local need=if lvl<Data.PET_MAX_LEVEL then math.max(0,Data.petXpToNext(lvl,Progression.petRarity(pet))-(pet.xp or 0)) else 0
-				table.insert(rows,{index=index,id=pet.id,level=lvl,need=math.ceil(need),activeXp=K.activeXpFor(need),active=p.activePet==index,
-					sharing=#rows<slots and p.activePet~=index})
+				local maxed=lvl>=Data.PET_MAX_LEVEL
+				local need=if not maxed then math.max(0,Data.petXpToNext(lvl,Progression.petRarity(pet))-(pet.xp or 0)) else 0
+				local active=p.activePet==index
+				local sharing=not active and used<slots
+				if not active then used+=1 end
+				table.insert(rows,{index=index,id=pet.id,level=lvl,need=math.ceil(need),activeXp=K.activeXpFor(need),active=active,
+					sharing=sharing,max=maxed or nil})
 			end
 		end
-		return {slots=slots,share=K.SHARE,unlocks=K.UNLOCKS,taming=Progression.tamingLevel(p),pets=rows}
+		return {slots=slots,used=used,share=K.SHARE,unlocks=K.UNLOCKS,taming=Progression.tamingLevel(p),pets=rows}
 	end
 	-- Dispatch -----------------------------------------------------------------
 	function QoL.action(player,p,verb,item,prompt)
@@ -10110,7 +10180,10 @@ do
 		v.day=whole(v.day,0)
 		v.paid=whole(v.paid,0) or 0
 		v.last=whole(v.last,0)
+		v.low=whole(v.low,0) or math.max(0,math.floor(tonumber(p.bank) or 0))
 		for _,pet in ipairs(p.pets or {}) do if type(pet)=="table" and pet.kin~=nil and pet.kin~=true then pet.kin=nil end end
+		-- QC L3: a pet at the Roost is never tethered.
+		if type(p.petUpgrade)=="table" and type(p.petUpgrade.pet)=="table" then p.petUpgrade.pet.kin=nil end
 	end
 	function QoL.forget(player)
 		QoL.hurtAt[player]=nil
@@ -10344,6 +10417,9 @@ local function perform(player,verb,item,prompt)
 		local allowed,missing=Progression.meetsRequirements(p,def.requires)
 		if not allowed then return def.name.." requires "..missing.."." end
 		if p.equipment[def.slot]==item then return def.name.." is already equipped." end
+		local locked=QoL.armourLock and QoL.armourLock(player,def.slot) -- §41 QC L1: armour waits out a fight
+		if locked then return locked end
+		if QoL.gearChanged and def.slot~="weapon" then QoL.gearChanged(p,def.slot) end -- §41 QC L7
 		-- Held items: hotbar slot 1 follows the new weapon. p.held is the explicit choice
 		-- even during an auto switch (Held.auto keeps the temporary id), so the return
 		-- lands on the new weapon, never the old one.
@@ -10354,6 +10430,9 @@ local function perform(player,verb,item,prompt)
 		if type(item)~="string" or not gearSlots[item] then return "Choose weapon, helmet, chest, legs, boots or ammo." end
 		local id=p.equipment[item]
 		if not id then return "Nothing is equipped in that slot." end
+		local locked=QoL.armourLock and QoL.armourLock(player,item) -- §41 QC L1
+		if locked then return locked end
+		if QoL.gearChanged then QoL.gearChanged(p,item) end -- §41 QC L7
 		p.equipment[item]=nil
 		return "Unequipped "..(Data.Items[id] and Data.Items[id].name or id).."."
 	elseif verb=="autocast" then
@@ -10384,7 +10463,10 @@ local function perform(player,verb,item,prompt)
 	elseif verb=="accessory" then
 		local def=validId(item) and Data.Items[item]
 		if not def or def.kind~="accessory" then return "Choose an accessory." end
+		local locked=QoL.armourLock and QoL.armourLock(player,"bag") -- §41 QC L1: the bag waits out a fight
+		if locked then return locked end
 		local index=table.find(p.accessoryBag,item)
+		if index and QoL.gearChanged then QoL.gearChanged(p,"bag") end -- §41 QC L7
 		if index then
 			table.remove(p.accessoryBag,index)
 			return def.name.." removed from your accessory bag."
@@ -10392,6 +10474,7 @@ local function perform(player,verb,item,prompt)
 		if (p.items[item] or 0)<1 then return "You do not own "..def.name.."." end
 		local slots=Progression.accessorySlots(p)
 		if #p.accessoryBag>=slots then return "Accessory bag full ("..slots.." slots). Raise Combat to unlock more." end
+		if QoL.gearChanged then QoL.gearChanged(p,"bag") end -- §41 QC L7
 		table.insert(p.accessoryBag,item)
 		return def.name.." added to your accessory bag."
 	elseif verb=="petSummon" then
@@ -10553,6 +10636,7 @@ local function perform(player,verb,item,prompt)
 		if amount>p[source] then return "Not enough coins in the "..(if source=="bank" then "vault." else "purse.") end
 		p[source]-=amount
 		p[destination]+=amount
+		if source=="bank" and QoL.bankLowered then QoL.bankLowered(p) end -- §41 QC L5: interest on the lowest balance
 		p.bankRevision=(p.bankRevision or 0)+1
 		return (if source=="bank" then "Withdrew " else "Deposited ")..amount.." coins."
 	elseif verb=="eventGift" or verb=="eventTrade" then
@@ -11176,7 +11260,7 @@ bridge.OnInvoke=function(op,player,payload)
 		local amount=Progression.damageTaken(math.min(raw,1e9),defense)
 		if Raids.wardMult then amount=math.floor(amount*Raids.wardMult(player)+0.5) end -- Raids (§38): a brewed ward
 		humanoid:TakeDamage(amount)
-		if amount>0 then QoL.hurtAt[player]=os.clock() end -- §41: the Wardrobe waits out a fight
+		QoL.hurtAt[player]=os.clock() -- §41: the Wardrobe waits out a fight (QC L1: even a fully absorbed hit)
 		return amount
 	end
 	local p=live(player)

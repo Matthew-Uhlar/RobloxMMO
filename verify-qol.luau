@@ -145,6 +145,34 @@ do
 	eq(A.bonusFor("recall", 5, A.Tiers[3]), 2, "recall: one bonus per 2 rounds")
 	eq(A.reveals(A.Tiers[1], 99), A.baseReveals(A.Tiers[1]) + math.min(A.BONUS_CAP, A.Tiers[1].pairs), "bonus reveals capped")
 end
+-- A3b. QC M1: the glyph -> reward link is drawn per board, never fixed.
+do
+	for _, t in ipairs(A.Tiers) do
+		local revealGlyphs, firstKinds = {}, {}
+		local nReveal, nKinds = 0, 0
+		for seed = 1, 60 do
+			local cards, rewards = A.makeBoard(t, seeded(seed * 7919))
+			local glyphOfPair, used = {}, {}
+			for _, c in ipairs(cards) do
+				ok(glyphOfPair[c.p] == nil or glyphOfPair[c.p] == c.g, "a pair shares one glyph")
+				glyphOfPair[c.p] = c.g
+			end
+			for p = 1, t.pairs do
+				ok(not used[glyphOfPair[p]], t.id .. " glyphs distinct per board")
+				used[glyphOfPair[p]] = true
+				if rewards[p].k == "reveal" then
+					if not revealGlyphs[glyphOfPair[p]] then nReveal += 1 end
+					revealGlyphs[glyphOfPair[p]] = true
+				end
+			end
+			local kind = rewards[1].id or rewards[1].k
+			if not firstKinds[kind] then nKinds += 1 end
+			firstKinds[kind] = true
+		end
+		ok(nReveal >= 3, t.id .. ": the reveal card hides under different glyphs across boards (" .. nReveal .. ")")
+		ok(nKinds >= 2, t.id .. ": pair 1's reward varies across boards")
+	end
+end
 -- A4. Balance: a perfect day stays well inside normal Enchanting progress and pays little coin value.
 do
 	for _, t in ipairs(A.Tiers) do
@@ -390,7 +418,8 @@ end
 ok(remote ~= nil and bridge ~= nil, "IsleAction and IsleBridge found")
 local function renew() assert(coroutine.resume(saver, 55)) end
 local function player(id)
-	local humanoid = {Health = 100, MaxHealth = 100, WalkSpeed = 16, Died = signal(), TakeDamage = function(self, n) self.Health -= n end}
+	local humanoid = {Health = 100, MaxHealth = 100, WalkSpeed = 16, Died = signal(), HealthChanged = signal()}
+	function humanoid:TakeDamage(n) self.Health -= n; self.HealthChanged:Fire(self.Health) end
 	local root = {Position = Vector3.new(0, 10, 0), Anchored = false, AssemblyLinearVelocity = Vector3.zero}
 	local p = {UserId = id, Name = "Scholar" .. id, Parent = true, CharacterAdded = signal(), Kick = function(self, why) self.kicked = why end, attrs = {}}
 	function p:GetAttribute(key) return self.attrs[key] end
@@ -470,6 +499,13 @@ local r2 = cmd(s1, "lecternAnswer", seqAnswer(secret, 1))
 ok(has(r2.message, "Round 1 cleared"), "round 1 cleared")
 eq(r2.xp.Enchanting, xp0 + A.roundXp(t3, 1), "round 1 pays its XP")
 ok(#r2.qol.lectern.session.show == 2, "round 2 shows two glyphs")
+eq(r2.qol.lectern.session.revealIn, r2.qol.lectern.session.reveal, "QC L6: a fresh round sends its whole reveal window")
+do
+	-- A snapshot partway through the reveal (a resume) carries only what is left.
+	advance(1)
+	local mid = cmd(s1, "state").qol.lectern.session -- cmd advances one more second
+	ok(mid.showing and mid.revealIn == mid.reveal - 2, "QC L6: revealIn is the remaining window (" .. tostring(mid.revealIn) .. ")")
+end
 -- After the reveal window the glyphs are gone from snapshots.
 advance(A.revealSeconds("seq", 2) + 2)
 local hidden = cmd(s1, "state").qol.lectern.session
@@ -624,6 +660,28 @@ ok(has(cmd(w1, "wardrobeWear", "2").message, "mid-fight"), "no swap right after 
 advance(W.HURT_GRACE)
 local wear2 = cmd(w1, "wardrobeWear", "2")
 ok(has(wear2.message, "Loadout 2 on") and wear2.depth.equipment.boots == TA.boots and wear2.depth.equipment.helmet == nil, "swap after the fight")
+-- QC L1: any lost health (here a non-bridge hit, like an agility fall) holds
+-- the armour slots and the accessory bag too; weapon swaps stay free.
+do
+	advance(W.COOLDOWN + 1)
+	w1.humanoid:TakeDamage(5)
+	local held = cmd(w1, "wardrobeWear", "1").message
+	ok(has(held, "mid-fight"), "QC L1: a non-bridge hit holds the wardrobe (" .. tostring(held) .. ")")
+	ok(has(cmd(w1, "equip", TA.helm).message, "mid-fight"), "QC L1: no armour equip mid-fight")
+	ok(has(cmd(w1, "unequip", "boots").message, "mid-fight"), "QC L1: no armour unequip mid-fight")
+	ok(has(cmd(w1, "accessory", TA.accs[2]).message, "mid-fight"), "QC L1: the accessory bag waits too")
+	ok(has(cmd(w1, "unequip", "weapon").message, "Unequipped") and has(cmd(w1, "equip", "Blade").message, "Equipped"), "QC L1: weapon swaps stay free")
+	eq(cmd(w1, "state").qol.wardrobe.worn, 2, "a weapon swap keeps the worn loadout")
+	advance(W.HURT_GRACE)
+	-- QC L7: changing armour outside the wardrobe clears the worn marker.
+	local eqh = cmd(w1, "equip", TA.helm)
+	ok(has(eqh.message, "Equipped") and eqh.qol.wardrobe.worn == nil, "QC L7: equipping armour clears the worn loadout")
+	advance(W.COOLDOWN + 1)
+	ok(has(cmd(w1, "wardrobeWear", "2").message, "Loadout 2 on"), "wear loadout 2 again")
+	eq(cmd(w1, "accessory", TA.accs[2]).qol.wardrobe.worn, nil, "QC L7: an accessory change clears the worn loadout")
+	advance(W.COOLDOWN + 1)
+	ok(has(cmd(w1, "wardrobeWear", "2").message, "Loadout 2 on"), "back to loadout 2")
+end
 -- A sold piece refuses the whole set (nothing changes).
 w1 = join(8201, function(pr) pr.items[TA.chest] = nil end)
 advance(W.COOLDOWN + 1)
@@ -646,7 +704,8 @@ eq(cmd(w1, "state").qol.wardrobe.slots, 9, "nine loadouts at Combat 45")
 ok(has(cmd(w1, "wardrobeSave", "9").message, "Loadout 9 saved"), "Ironman saves a loadout")
 
 -- C8. Vault Charters.
-local b1 = join(8301, function(pr) pr.bank = 80000; pr.coins = 30000; pr.started = true end)
+-- (pr.vault = nil: a journal from before charters, so the 80k counts as held.)
+local b1 = join(8301, function(pr) pr.bank = 80000; pr.coins = 30000; pr.started = true; pr.vault = nil end)
 local vs = cmd(b1, "state")
 eq(vs.qol.vault.tier, 1, "Strongbox charter by default")
 eq(vs.bank, 80000, "no interest on the first day seen")
@@ -659,7 +718,7 @@ eq(cmd(b1, "state").bank, 80080, "never twice a day")
 b1 = join(8301)
 eq(cmd(b1, "state").bank, 80080, "a rejoin the same day pays nothing")
 ok(has(cmd(b1, "vaultUpgrade").message, "collection tier"), "charters need collections")
-b1 = join(8301, function(pr) pr.collection.Ore = 300; pr.collection.Timber = 300; pr.bank = 900000 end)
+b1 = join(8301, function(pr) pr.collection.Ore = 300; pr.collection.Timber = 300; pr.bank = 900000; pr.vault.low = 900000 end)
 local up = cmd(b1, "vaultUpgrade")
 ok(has(up.message, "Coffer Charter"), "Coffer charter sealed")
 eq(up.coins, 30000 - V.Tiers[2].cost, "paid from the purse")
@@ -667,6 +726,27 @@ eq(up.qol.vault.tier, 2, "tier 2")
 utc = (Q.dayOf(utc) + 5) * DAY + 10
 eq(cmd(b1, "state").bank, 900000 + V.maxDaily(V.Tiers[2]), "five days away pay one capped day")
 ok(has(cmd(b1, "vaultUpgrade").message, "collection tier"), "next charter gated")
+-- QC L5: interest pays on the lowest balance since the last payment.
+do
+	local before = cmd(b1, "state")
+	local w = cmd(b1, "withdraw", "800000:" .. before.bankRevision)
+	ok(has(w.message, "Withdrew 800000"), "withdraw most of the vault")
+	local d = cmd(b1, "deposit", "800000:" .. w.bankRevision)
+	ok(has(d.message, "Deposited 800000") and d.bank == before.bank, "deposit it straight back")
+	local low = before.bank - 800000
+	eq(d.qol.vault.next, V.interest(V.Tiers[2], low), "QC L5: the preview uses the day's lowest balance")
+	utc = (Q.dayOf(utc) + 1) * DAY + 10
+	eq(cmd(b1, "state").bank, before.bank + V.interest(V.Tiers[2], low), "QC L5: a withdraw-and-redeposit earns only on the low point")
+	local held = cmd(b1, "state").bank
+	utc = (Q.dayOf(utc) + 1) * DAY + 10
+	eq(cmd(b1, "state").bank, held + V.interest(V.Tiers[2], held), "QC L5: the low point resets after each payment")
+	-- A deposit made just before the UTC day earns nothing until it has stayed a day.
+	b1 = join(8301, function(pr) pr.coins = 5000000 end)
+	local pre = cmd(b1, "state")
+	local dep = cmd(b1, "deposit", "5000000:" .. pre.bankRevision)
+	utc = (Q.dayOf(utc) + 1) * DAY + 10
+	eq(cmd(b1, "state").bank, dep.bank + V.interest(V.Tiers[2], pre.bank), "QC L5: a last-minute deposit earns nothing that day")
+end
 
 -- C9. Tethers.
 local k1 = join(8401, function(pr)
@@ -682,16 +762,77 @@ ok(has(cmd(k1, "petTether", "2:Burrowmole").message, "tethered"), "tether a pet"
 ok(has(cmd(k1, "petTether", "1:Tidewing").message, "in use"), "tether limit at Taming 10")
 local ts = cmd(k1, "state").qol.tether
 ok(ts.slots == 1 and #ts.pets == 1 and ts.pets[1].index == 2 and ts.pets[1].sharing and ts.pets[1].activeXp == K.activeXpFor(ts.pets[1].need), "tether preview")
-local before1 = saved(8401).pets
-visit(k1)
-cmd(k1, "lecternStart", "seq:1")
-local sk = saved(8401).lectern.s
-cmd(k1, "lecternAnswer", tostring(sk.seq[1]))
-local after1 = saved(8401).pets
+-- Pet XP comes from a skill action (the lectern pays flat XP: QC L2 below).
+local function enchantOnce(id, mutate)
+	local pl = join(id, function(pr)
+		pr.items.Blade = 1; pr.items.Shard = 2; pr.items.Herb = 4; pr.enchantRank = 0
+		if mutate then mutate(pr) end
+	end)
+	local before = saved(id)
+	local reply = cmd(pl, "enchant")
+	assert(has(reply.message, "Weapon enchantment rank"), reply.message)
+	return pl, before, saved(id)
+end
+local before1, after1
+k1, before1, after1 = enchantOnce(8401)
+before1, after1 = before1.pets, after1.pets
 local activeGain = (after1[1].xp or 0) - (before1[1].xp or 0)
 local kinGain = (after1[2].xp or 0) - (before1[2].xp or 0)
 ok(activeGain > 0 and after1[1].level == 40, "the summoned pet earned XP")
 ok(math.abs(kinGain - activeGain * K.SHARE) < 1e-6, "the tethered pet earned 10% (" .. kinGain .. " of " .. activeGain .. ")")
+-- QC L2: lectern XP is flat (no pet / council multipliers) and feeds no pet.
+do
+	visit(k1)
+	local xpBefore = cmd(k1, "state").xp.Enchanting
+	local petsBefore = saved(8401).pets
+	cmd(k1, "lecternStart", "seq:1")
+	local sk = saved(8401).lectern.s
+	local answered = cmd(k1, "lecternAnswer", tostring(sk.seq[1]))
+	eq(answered.xp.Enchanting, xpBefore + A.roundXp(A.Tiers[1], 1), "QC L2: a lectern round pays exactly its audited XP")
+	local petsAfter = saved(8401).pets
+	ok(petsAfter[1].xp == petsBefore[1].xp and petsAfter[2].xp == petsBefore[2].xp, "QC L2: lectern XP feeds no pet")
+	cmd(k1, "lecternEnd")
+end
+-- QC L4: a max-level summoned pet still teaches its tethers (10% of what it
+-- would have earned), and it never takes a tether slot itself.
+do
+	local _, b4, a4 = enchantOnce(8402, function(pr)
+		pr.xp.Taming = X[10]
+		pr.pets = {{id = "Tidewing", level = Data.PET_MAX_LEVEL, xp = 0, kin = true}, {id = "Burrowmole", level = 40, xp = 0, kin = true}}
+		pr.activePet = 1
+		pr.started = true
+	end)
+	local gain = (a4.pets[2].xp or 0) - (b4.pets[2].xp or 0)
+	local pr = copy(b4)
+	local _, _, notional = P.addPetXp(pr, "Enchanting", 30)
+	ok(gain > 0 and math.abs(gain - notional * K.SHARE) < 1e-6, "QC L4: a tether learns from a max-level summoned pet (" .. gain .. ")")
+	local k2 = online[8402]
+	local tv = cmd(k2, "state").qol.tether
+	ok(tv.used == 1 and tv.pets[1].active and tv.pets[2].sharing and tv.pets[1].sharing == false, "QC L4: the summoned pet takes no tether slot")
+	ok(has(cmd(k2, "petTether", "2:Burrowmole").message, "untethered") and has(cmd(k2, "petTether", "2:Burrowmole").message, "tethered"), "QC L4: one slot left for a roster pet while a tethered pet is summoned")
+end
+-- QC L3: a tethered pet handed to the Roost is untethered.
+do
+	local def = Data.PetById.Burrowmole
+	local rar = P.petRarity({id = "Burrowmole", level = 40, xp = 0})
+	local cost = Data.PetDepth.upgradeCost(def, rar)
+	ok(cost ~= nil, "Burrowmole can be upgraded")
+	local k3 = join(8401, function(pr)
+		pr.coins = cost.coins + 10
+		for id, n in pairs(cost.items) do pr.items[id] = n end
+		pr.pets[2].kin = true
+	end)
+	ok(saved(8401).pets[2].kin == true, "tethered before the Roost")
+	local up = cmd(k3, "petUpgrade", "2:Burrowmole")
+	ok(has(up.message, "takes your"), "the Roost takes the pet (" .. tostring(up.message) .. ")")
+	local job = saved(8401).petUpgrade
+	ok(job and job.pet.id == "Burrowmole" and job.pet.kin == nil, "QC L3: the Roost's pet is untethered")
+	local k4 = join(8401, function(pr) pr.petUpgrade.pet.kin = true end)
+	eq(saved(8401).petUpgrade.pet.kin, nil, "QC L3: migration untethers a pet already at the Roost")
+	cmd(k4, "petCancel")
+	k1 = k4
+end
+ok(has(cmd(k1, "petTether", "2:Burrowmole").message, "tethered"), "tether again after the Roost")
 ok(has(cmd(k1, "petTether", "2:Burrowmole").message, "untethered"), "untether")
 
 -- C10. Migration: malformed records are made safe and nothing is paid.
