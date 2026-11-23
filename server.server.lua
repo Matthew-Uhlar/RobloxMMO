@@ -193,6 +193,8 @@ local Features={verbs={guideTalk=true,guideClaim=true,guideMode=true,resonanceVi
 local Systems={verbs={helperPin=true,goalSet=true,goalRemove=true,goalClear=true,priceCheck=true}}
 -- Isle Council (§36: elected council, cross-server ballots, term perks); filled in by the Council block before perform().
 local Council={verbs={councilVote=true,councilView=true,councilVisit=true}}
+-- Contests & Trophy Angling (§39: Harvest Contests, Medal Exchange, trophy fishing); filled in by the Contests block before perform().
+local Contests={verbs={contestEnter=true,contestBuy=true,contestTitle=true,trophyBait=true,trophyClaim=true,trophyTitle=true}}
 -- One-time coins for each newly reached skill level.
 local function levelCoins(p,skill,newLevel)
 	p.levelRewards=p.levelRewards or {}
@@ -4601,6 +4603,7 @@ local function snapshot(player,message)
 	if p.factions then Explore.refresh(p) end
 	Held.tick(os.clock()) -- Held items: settle any due auto-return before HeldItem is published
 	local power=Progression.magicalPower(p) -- computed once per snapshot (§31 resonance + the stat sheet)
+	if Contests.refresh then Contests.refresh(player,p) end -- §39: close / pay contest entries, contest toasts (before §31 flushes announcements)
 	if Council.refresh then Council.refresh(player,p) end -- §36: re-queue an unacknowledged ballot, phase toasts, p.perkStats.council (before §31 flushes announcements)
 	if Systems.refresh then Systems.refresh(player,p) end -- §33: goal completions, pinned objective (before §31 flushes announcements)
 	if Features.refresh then Features.refresh(player,p,power) end -- §31: renown, onboarding, resonance (before notes and stats)
@@ -4643,6 +4646,8 @@ local function snapshot(player,message)
 		resonance=Features.resonanceState and Features.resonanceState(player,p,power), -- §31 Resonance page
 		announce=Features.announceState and Features.announceState(player), -- §31 toasts: {seq, list} (recent ring)
 		council=Council.state and Council.state(player,p), -- §36 Journal › Council: election, cached tally, term, history
+		contests=Contests.state and Contests.state(player,p), -- §39 Workshop › Contests: schedule, entry, live estimate, leaderboard, medals
+		trophies=Contests.trophyState and Contests.trophyState(player,p), -- §39 Hunt › Trophies: ledger, pity, bait, conditions
 		systems=Systems.state and Systems.state(player,p)} -- §33: pinned guide, goals (ETA), XP rates, price checks, daily stock
 end
 -- Prayer & Thieving: drain-loop notices (prayer points ran out).
@@ -4736,6 +4741,7 @@ local function migrate(profile)
 	if Features.migrate then Features.migrate(profile) end -- §31: p.renown (retroactive once), p.guide, p.resonance
 	if Systems.migrate then Systems.migrate(profile) end -- §33: p.goals, p.goalSeq, p.helperPin, p.shopStock
 	if Council.migrate then Council.migrate(profile) end -- §36: p.council ballot record, p.perkStats.council
+	if Contests.migrate then Contests.migrate(profile) end -- §39: p.contests, p.trophy, p.perkStats.contests
 end
 -- Clears every per-player table and ends this player's session slot.
 -- Sea creatures: a successful Fishing gather may hook one (Data.rollSeaCreature).
@@ -4798,6 +4804,7 @@ local function forget(player)
 	if Features.forget then Features.forget(player,profiles[player]) end -- §31: announcement ring, queue, renown cache
 	if Systems.forget then Systems.forget(player) end -- §33: XP / goal samples, price checks, pinned-step cache
 	if Council.forget then Council.forget(player) end -- §36: (nothing per session since QC H1; kept as the hook)
+	if Contests.forget then Contests.forget(player) end -- §39: queue a leaving journal's unwritten score; display name, entry cooldown
 	if profiles[player] then HudFeed.pending[profiles[player]]=nil end -- §34 pickup feed
 	HudFeed.seq[player]=nil
 	profiles[player],cooldown[player],lastRead[player],preview[player],leaseEnd[player]=nil,nil,nil,nil,nil
@@ -4872,6 +4879,7 @@ local function open(player)
 	profile.settings=Data.PlayerSettings.sanitize(profile.settings)
 	for attr,value in pairs(profile.settings) do player:SetAttribute(attr,value) end
 	if Classes.publish then Classes.publish(player,profile) end -- Dungeon classes: DungeonClass / DungeonMasterOn attributes
+	if Contests.publish then Contests.publish(player,profile) end -- §39: ContestTitle / TrophyTitle attributes
 	for name in pairs(decorations) do player:SetAttribute("Home"..name,profile.decorations[name]==true) end
 	leaseEnd[player]=if preview[player] then os.time()+180 else committed.expires
 	opening[player]=nil
@@ -5297,6 +5305,7 @@ do
 		for _,i in ipairs(list) do
 			local id=g.plots[i].crop
 			local n,x,s,more=harvest(p,g,i,stats,now)
+			if Contests.harvest then Contests.harvest(p,id,n) end -- §39: Harvest Contest entry score (plot order)
 			xp+=x; seeds+=s
 			crops[id]=(crops[id] or 0)+n
 			extra..=more
@@ -8627,6 +8636,754 @@ do
 		return "Unknown action."
 	end
 end
+------------------------------------------------------------------------------
+-- >>> BEGIN Contests & Trophy Angling (Contests team; docs/DEPTH-CONTRACT.md §39) >>>
+-- Data in the "Contests & Trophy Angling" section of shared/GameData.lua
+-- (Data.Contests = CT, Data.Trophies = TF).
+-- * Harvest Contests. CT.at(os.time()) names the contest (k, window, three
+--   featured crops), identical on every server. Contests.harvest (field
+--   gathers and Verdant Garden harvests) credits the journal's entry
+--   p.contests.cur = {k, c, s}: one featured crop per contest (contestEnter,
+--   or the first featured crop harvested). The journal is the source of truth
+--   for its score; the heartbeat (CT.TICK) queues any score the stores have
+--   not acknowledged and every CT.FLUSH seconds writes one UpdateAsync per
+--   pending shard item (CT.applyScores: atomic max-merge, idempotent across
+--   retries, lost acknowledgements, rejoins and server hops; refused after the
+--   contest's write deadline) plus up to CT.LB_BATCH leaderboard entries (one
+--   per entrant, sortKey = slot * 1e8 + score). Committed shard histograms are
+--   mirrored (versioned) into CT.GROUPS group items every CT.MIRROR s; servers
+--   with entrants read only those (and the top CT.LB_TOP per crop) every
+--   CT.READ s for the live bracket estimate. Failing keys back off (CT.backoff).
+--   Every MemoryStore structure is a SortedMap per contest (CT.mapName,
+--   CT.boardName) whose items expire CT.TTL_PAD after the close.
+-- * Sealing: CT.GRACE after the close, a server that wrote scores for the
+--   contest (or holds a journal waiting on it) reads the DataStore ring slot
+--   CT.resultKey(k); when absent it claims the seal lease, reads the CT.SHARDS
+--   score items once, computes exact cut-offs (CT.seal) and writes the result
+--   only if the slot does not already hold contest k. Every server adopts the
+--   stored result; journals are paid once (entry removed from p.contests.open
+--   in the same mutation that pays it), online at the heartbeat or on their
+--   next load.
+-- * Medal Exchange (contestBuy), titles (contestTitle), Furrow Almanac
+--   (p.perkStats.contests, Farming Fortune only).
+-- * Trophy Angling: Contests.trophyCast runs on a Fishing gather that did NOT
+--   hook a sea creature (the cast credits one or the other, never both); its
+--   rolls come from a dedicated generator. Records p.trophy; verbs trophyBait,
+--   trophyClaim, trophyTitle; §31 toasts (Diamond catches to every player on
+--   the server).
+------------------------------------------------------------------------------
+do
+	local CT,TF=Data.Contests,Data.Trophies
+	local whole=CT.whole
+	local memoryStore=nil
+	pcall(function() memoryStore=game:GetService("MemoryStoreService") end)
+	local memory={}            -- DataStore stand-in (Studio without DataStore access)
+	local useMemory=store==nil
+	local maps={}              -- [map name] = SortedMap (or a local stand-in)
+	local queue={}             -- [k] = {[shard] = {[uid] = {c, s}}}
+	local board={}             -- [k] = {[uid] = {c, s, n}}: leaderboard writes pending
+	local acked={}             -- [k] = {[uid] = highest score the store acknowledged (or refused)}
+	local mirrorQ={}           -- [k] = {[group] = {[shard] = {ver, h}}}
+	local keyState={}          -- ["<map>/<key>"] = {fails, at}
+	local wrote={}             -- [k] = true: this server wrote scores for contest k (it helps seal)
+	local liveEst={}           -- [k] = {sum, at, board = {[slot] = {{n, s, u}}}, boardAt}
+	local results={}           -- [k] = cleaned sealed result
+	local resultTry={}         -- [k] = os.clock() of the last result read / seal attempt
+	local names={}             -- [uid] = display name (online journals)
+	local lastEnter={}         -- [UserId] = os.clock()
+	local flushAt,mirrorAt=0,0
+	local busy=false
+	local jitter=Random.new()
+	local trophyRng=Random.new() -- trophy rolls: their own stream (never shifts the shared gather rolls)
+	-- DataStore helpers (ok, value).
+	local function dsGet(key)
+		if useMemory or not store then return true,deepCopy(memory[key]) end
+		local ok,value=pcall(function() return store:GetAsync(key) end)
+		if not ok and RunService:IsStudio() then useMemory=true; return true,deepCopy(memory[key]) end
+		return ok,value
+	end
+	local function dsUpdate(key,transform)
+		if useMemory or not store then
+			local value=transform(deepCopy(memory[key]))
+			if value~=nil then memory[key]=deepCopy(value) end
+			return true,if value~=nil then deepCopy(value) else nil
+		end
+		local ok,value=pcall(function() return store:UpdateAsync(key,transform) end)
+		if not ok and RunService:IsStudio() then useMemory=true; return dsUpdate(key,transform) end
+		return ok,value
+	end
+	-- A local stand-in for a MemoryStore SortedMap (no MemoryStoreService, or Studio without access).
+	local function localMap()
+		local data={}
+		return {local_=true,
+			GetAsync=function(_,key) local e=data[key] if e then return deepCopy(e.value),e.sortKey end return nil end,
+			UpdateAsync=function(_,key,transform)
+				local e=data[key]
+				local value,sortKey=transform(if e then deepCopy(e.value) else nil,e and e.sortKey)
+				if value~=nil then data[key]={value=deepCopy(value),sortKey=sortKey} end
+				return if value~=nil then deepCopy(value) else nil
+			end,
+			RemoveAsync=function(_,key) data[key]=nil end,
+			GetRangeAsync=function(_,_,count,lower,upper)
+				local lo,hi=lower and lower.sortKey or -math.huge,upper and upper.sortKey or math.huge
+				local list={}
+				for key,e in pairs(data) do
+					if type(e.sortKey)=="number" and e.sortKey>lo and e.sortKey<hi then table.insert(list,{key=key,value=deepCopy(e.value),sortKey=e.sortKey}) end
+				end
+				table.sort(list,function(a,b) if a.sortKey~=b.sortKey then return a.sortKey>b.sortKey end return a.key<b.key end)
+				while #list>count do table.remove(list) end
+				return list
+			end}
+	end
+	local function mapOf(name)
+		local m=maps[name]
+		if m then return m end
+		if memoryStore then
+			local ok,res=pcall(function() return memoryStore:GetSortedMap(name) end)
+			if ok and res then m=res end
+		end
+		m=m or localMap()
+		maps[name]=m
+		local n=0
+		for _ in pairs(maps) do n+=1 end
+		if n>24 then table.clear(maps); maps[name]=m end -- bounded: older contests' maps are fetched again if needed
+		return m
+	end
+	-- ok, value for "get" | "update" | "remove" | "range" on a contest map.
+	local function ms(name,method,key,transform,k,a,b,c)
+		local m=mapOf(name)
+		local ok,value=pcall(function()
+			if method=="get" then return m:GetAsync(key) end
+			if method=="remove" then return m:RemoveAsync(key) end
+			if method=="range" then
+				local direction=nil
+				pcall(function() direction=Enum.SortDirection.Descending end)
+				return m:GetRangeAsync(direction,a,b,c)
+			end
+			return m:UpdateAsync(key,transform,CT.ttl(k,os.time()))
+		end)
+		if not ok and not m.local_ and RunService:IsStudio() then
+			maps[name]=localMap()
+			return ms(name,method,key,transform,k,a,b,c)
+		end
+		return ok,value
+	end
+	local function keyReady(name) local st=keyState[name] return st==nil or os.clock()>=st.at end
+	local function keyFailed(name)
+		local st=keyState[name] or {fails=0,at=0}
+		st.fails+=1
+		st.at=os.clock()+CT.backoff(st.fails,jitter:NextNumber())
+		keyState[name]=st
+	end
+	local function keyOk(name) keyState[name]=nil end
+	-- Journal records.
+	local function rec(p)
+		local c=p.contests
+		if type(c)~="table" or type(c.open)~="table" or type(c.best)~="table" or type(c.history)~="table" then c=CT.migrate(c); p.contests=c end
+		return c
+	end
+	local function trec(p)
+		local t=p.trophy
+		if type(t)~="table" or type(t.caught)~="table" or type(t.best)~="table" or type(t.pity)~="table" or type(t.claimed)~="table" then t=TF.migrate(t); p.trophy=t end
+		return t
+	end
+	Contests.rec,Contests.trec=rec,trec
+	local function applyPerk(p)
+		local c=rec(p)
+		if type(p.perkStats)~="table" then p.perkStats={} end
+		p.perkStats.contests=CT.almanacStats(c.almanac)
+	end
+	function Contests.migrate(p)
+		p.contests=CT.migrate(p.contests)
+		p.trophy=TF.migrate(p.trophy)
+		applyPerk(p)
+	end
+	local function itemName(id) return Data.Items[id] and Data.Items[id].name or tostring(id) end
+	local function uidOf(player) return tostring(player.UserId) end
+	local function nameOf(player)
+		local ok,n=pcall(function() return player.DisplayName end)
+		if not ok or type(n)~="string" or n=="" then n=type(player.Name)=="string" and player.Name or ("Wayfarer"..tostring(player.UserId)) end
+		return string.sub(n,1,20)
+	end
+	-- Queue ---------------------------------------------------------------------------
+	local function enqueue(uid,k,slot,score,name)
+		local shard=CT.shardOf(tonumber(uid))
+		queue[k]=queue[k] or {}
+		queue[k][shard]=queue[k][shard] or {}
+		queue[k][shard][uid]={c=slot,s=score}
+		board[k]=board[k] or {}
+		board[k][uid]={c=slot,s=score,n=name}
+		wrote[k]=true
+	end
+	-- Re-queue a journal's entries the stores have not acknowledged (cur, and
+	-- closed entries still inside their write window).
+	local function requeue(player,p,now)
+		local c=rec(p)
+		local uid=uidOf(player)
+		local function want(e)
+			if type(e)~="table" or whole(e.s)<1 then return end
+			local w=CT.window(e.k)
+			if now>=w.writeDeadline then return end
+			local slot=CT.featured(e.k,e.c)
+			if not slot then return end
+			local done=acked[e.k] and acked[e.k][uid]
+			if done and done>=e.s then return end
+			local pending=queue[e.k] and queue[e.k][CT.shardOf(tonumber(uid))]
+			pending=pending and pending[uid]
+			if pending and pending.s>=e.s then return end
+			enqueue(uid,e.k,slot,math.min(whole(e.s),CT.SCORE_CAP),names[uid] or nameOf(player))
+		end
+		want(c.cur)
+		for _,e in ipairs(c.open) do want(e) end
+	end
+	local function ack(k,uid,score)
+		acked[k]=acked[k] or {}
+		if (acked[k][uid] or 0)<score then acked[k][uid]=score end
+	end
+	-- One UpdateAsync per pending shard (force: ignore backoff, e.g. at shutdown).
+	local function flushQueue(now,force,deadline)
+		for k,shards in pairs(queue) do
+			local name=CT.mapName(k)
+			for shard,ops in pairs(shards) do
+				if deadline and os.clock()>=deadline then return end
+				local key=CT.shardKey(shard)
+				if force or keyReady(name.."/"..key) then
+					local batch={}
+					for uid,op in pairs(ops) do batch[uid]={c=op.c,s=op.s} end
+					local verdicts
+					local ok,committed=ms(name,"update",key,function(old)
+						local item
+						item,verdicts=CT.applyScores(old,batch,k,os.time())
+						return item
+					end,k)
+					if ok then
+						keyOk(name.."/"..key)
+						for uid,op in pairs(batch) do
+							local v=verdicts and verdicts[uid]
+							if v and (v.v=="ok" or v.v=="stale" or v.v=="late" or v.v=="full" or v.v=="bad") then
+								-- refused scores are not retried (the journal keeps its score; cut-offs still apply)
+								ack(k,uid,if v.v=="ok" or v.v=="stale" then math.max(op.s,whole(v.s)) else op.s)
+								local cur=ops[uid]
+								if cur and cur.s<=op.s then ops[uid]=nil end
+							end
+						end
+						if type(committed)=="table" and whole(committed.ver)>0 then
+							local g=CT.groupOf(shard)
+							mirrorQ[k]=mirrorQ[k] or {}
+							mirrorQ[k][g]=mirrorQ[k][g] or {}
+							mirrorQ[k][g][tostring(shard)]={ver=whole(committed.ver),h=committed.h}
+						end
+						if not next(ops) then shards[shard]=nil end
+					else
+						keyFailed(name.."/"..key)
+					end
+				end
+			end
+			if not next(shards) then queue[k]=nil end
+		end
+		-- Leaderboard entries (bounded per flush).
+		local budget=CT.LB_BATCH
+		for k,entries in pairs(board) do
+			local name=CT.boardName(k)
+			if os.time()>=CT.window(k).writeDeadline then board[k]=nil
+			else
+				for uid,e in pairs(entries) do
+					if budget<=0 or (deadline and os.clock()>=deadline) then return end
+					if force or keyReady(name.."/"..uid) then
+						budget-=1
+						local ok=ms(name,"update",uid,function(old)
+							if type(old)=="table" and whole(old.s)>=e.s then return nil end
+							return {c=e.c,s=e.s,n=e.n},e.c*1e8+e.s
+						end,k)
+						if ok then keyOk(name.."/"..uid); if entries[uid]==e then entries[uid]=nil end else keyFailed(name.."/"..uid) end
+					end
+				end
+				if not next(entries) then board[k]=nil end
+			end
+		end
+	end
+	local function flushMirrors(force,deadline)
+		for k,groups in pairs(mirrorQ) do
+			local name=CT.mapName(k)
+			for g,entries in pairs(groups) do
+				if deadline and os.clock()>=deadline then return end
+				local key=CT.groupKey(g)
+				if force or keyReady(name.."/"..key) then
+					local ok=ms(name,"update",key,function(old) return CT.mirror(old,k,entries) end,k)
+					if ok then keyOk(name.."/"..key); groups[g]=nil else keyFailed(name.."/"..key) end
+				end
+			end
+			if not next(groups) then mirrorQ[k]=nil end
+		end
+	end
+	-- Live estimate: the CT.GROUPS histogram items and the top entries per crop.
+	local function readLive(k)
+		local name=CT.mapName(k)
+		local groups={}
+		for g=1,CT.GROUPS do
+			local ok,item=ms(name,"get",CT.groupKey(g))
+			if not ok then return false end
+			groups[g]=item
+		end
+		local entry={sum=CT.sumGroups(groups),at=os.time(),board={}}
+		for slot=1,CT.FEATURED do
+			local ok,list=ms(CT.boardName(k),"range",nil,nil,k,CT.LB_TOP,{sortKey=slot*1e8},{sortKey=(slot+1)*1e8})
+			local rows={}
+			if ok and type(list)=="table" then
+				for _,row in ipairs(list) do
+					local v=type(row)=="table" and row.value
+					if type(v)=="table" and #rows<CT.LB_TOP then table.insert(rows,{n=type(v.n)=="string" and string.sub(v.n,1,20) or "Wayfarer",s=whole(v.s),u=tostring(row.key)}) end
+				end
+			end
+			entry.board[slot]=rows
+		end
+		liveEst[k]=entry
+		-- bounded: keep the last few contests only
+		for old in pairs(liveEst) do if old<k-2 then liveEst[old]=nil end end
+		return true
+	end
+	-- Sealing --------------------------------------------------------------------------
+	local function trySeal(k)
+		resultTry[k]=os.clock()
+		local w=CT.window(k)
+		local ok,stored=dsGet(CT.resultKey(k))
+		if not ok then return false end
+		local final=CT.cleanResult(stored,k)
+		if not final then
+			-- The score items expire TTL_PAD after the close: past that, never seal from empty items.
+			if os.time()>=w.ends+CT.TTL_PAD-300 then return false end
+			local name=CT.mapName(k)
+			local okClaim,claim=ms(name,"update","seal",function(old)
+				if type(old)=="table" and old.by~=uid and (tonumber(old.till) or 0)>os.time() then return nil end
+				return {by=uid,till=os.time()+CT.SEAL_LEASE}
+			end,k)
+			if not okClaim or type(claim)~="table" or claim.by~=uid then return false end
+			local shards={}
+			for s=1,CT.SHARDS do
+				local okRead,item=ms(name,"get",CT.shardKey(s))
+				if not okRead then return false end
+				if type(item)=="table" then shards[s]=CT.cleanShard(item,k) end
+			end
+			local result=CT.seal(k,shards)
+			-- Names of the top three per crop (from the leaderboard map).
+			for slot=1,CT.FEATURED do
+				for _,e in ipairs(result.slots[slot].top) do
+					local okName,v=ms(CT.boardName(k),"get",e.u)
+					if okName and type(v)=="table" and type(v.n)=="string" then e.n=string.sub(v.n,1,20) end
+				end
+			end
+			local okWrite,written=dsUpdate(CT.resultKey(k),function(old)
+				if type(old)=="table" and whole(old.k)==k then return nil end
+				return result
+			end)
+			if not okWrite then return false end
+			if written==nil then
+				local okAgain,again=dsGet(CT.resultKey(k))
+				if not okAgain then return false end
+				written=again
+			end
+			final=CT.cleanResult(written,k)
+		end
+		if final then results[k]=final; return true end
+		return false
+	end
+	-- Journal settlement ------------------------------------------------------------------
+	local function announce(p,entry) if Features.announce then Features.announce(p,entry) end end
+	-- Close the current entry once its contest has ended (keeps it pending for the result).
+	local function closeEntry(p,now)
+		local c=rec(p)
+		local e=c.cur
+		if not e then return false end
+		local w=CT.window(e.k)
+		if now<w.ends then return false end
+		c.cur=nil
+		if whole(e.s)<1 then return false end
+		c.entries+=1
+		if whole(e.s)>whole(c.best[e.c]) then
+			local first=c.best[e.c]==nil
+			c.best[e.c]=whole(e.s)
+			if not first then announce(p,{kind="contest",phase="best",crop=e.c,score=e.s}) end
+		end
+		table.insert(c.open,{k=e.k,c=e.c,s=whole(e.s)})
+		while #c.open>CT.OPEN_MAX do table.remove(c.open,1) end
+		return true
+	end
+	local function pay(player,p,e,result)
+		local c=rec(p)
+		local slot=CT.featured(e.k,e.c)
+		local def=CT.CropById[e.c]
+		local placed=def~=nil and whole(e.s)>=def.min
+		local bracket=result and slot and CT.bracketOf(result,slot,e.s,e.c) or nil
+		local medals,xp=CT.reward(e.c,bracket,placed)
+		c.medals+=medals
+		c.earned+=medals
+		if placed then c.placed+=1 end
+		if bracket then c.brackets[bracket]=whole(c.brackets[bracket])+1 end
+		if xp>0 then grantXp(p,"Farming",xp) end
+		table.insert(c.history,1,{k=e.k,c=e.c,s=whole(e.s),b=bracket,m=medals})
+		while #c.history>CT.HISTORY do table.remove(c.history) end
+		announce(p,{kind="contest",phase="result",crop=e.c,score=e.s,bracket=bracket,medals=medals})
+		note(p,"Harvest Contest result • "..itemName(e.c).." "..whole(e.s)..(if bracket then " • "..bracket.." bracket, +"..medals.." Harvest Medals" elseif placed then " • no bracket" else " • below the "..(def and def.min or 0).." minimum")
+			..(if xp>0 then " • +"..xp.." Farming XP" else ""))
+		p.started=true
+	end
+	-- Pays every pending entry whose result is known; expires entries whose result can no longer be sealed.
+	local function settleOpen(player,p,now)
+		local c=rec(p)
+		local changed=false
+		local i=1
+		while i<=#c.open do
+			local e=c.open[i]
+			local w=CT.window(e.k)
+			local result=results[e.k]
+			if result then
+				table.remove(c.open,i); pay(player,p,e,result); changed=true
+			elseif now>=w.ends+CT.TTL_PAD+CT.RESULT_SLOTS*CT.PERIOD//2 then
+				-- No sealed result exists any more (no server could seal in time): participation only.
+				table.remove(c.open,i); pay(player,p,e,nil); changed=true
+			else
+				i+=1
+			end
+		end
+		return changed
+	end
+	-- Snapshot hook: roll / pay / announce; returns true when anything changed.
+	function Contests.refresh(player,p)
+		local now=os.time()
+		local c=rec(p)
+		names[uidOf(player)]=nameOf(player)
+		local changed=closeEntry(p,now)
+		if settleOpen(player,p,now) then changed=true end
+		local at=CT.at(now)
+		if at.active and c.ann<at.k then
+			c.ann=at.k
+			announce(p,{kind="contest",phase="start",crops=at.crops})
+			changed=true
+		end
+		if p.perkStats==nil or (p.perkStats.contests==nil)~=(c.almanac<=0) then applyPerk(p) end
+		return changed
+	end
+	-- Harvest credit (field gathers and Verdant Garden plots). Returns the entry's score or nil.
+	function Contests.harvest(p,crop,n)
+		n=whole(n)
+		if n<1 or not CT.CropById[crop] then return nil end
+		local now=os.time()
+		local at=CT.at(now)
+		if not at.active then return nil end
+		local slot=CT.featured(at.k,crop)
+		if not slot then return nil end
+		local c=rec(p)
+		closeEntry(p,now)
+		local e=c.cur
+		if e and e.k==at.k then
+			if e.c~=crop then
+				if whole(e.s)>0 then return nil end
+				e.c=crop -- an entry chosen but not yet scored follows the first featured harvest
+			end
+		else
+			e={k=at.k,c=crop,s=0,at=now}
+			c.cur=e
+		end
+		e.s=math.min(whole(e.s)+n,CT.SCORE_CAP)
+		return e.s
+	end
+	-- Heartbeat --------------------------------------------------------------------------
+	function Contests.tick()
+		local now=os.time()
+		for userId,at in pairs(lastEnter) do if os.clock()-at>CT.ENTER_COOLDOWN then lastEnter[userId]=nil end end
+		if busy then return end
+		busy=true
+		local pushes={}
+		local okRun,err=pcall(function()
+			local wanted={}
+			for player,p in pairs(profiles) do
+				if live(player) then
+					if Contests.refresh(player,p) then pushes[player]=true end
+					requeue(player,p,now)
+					for _,e in ipairs(rec(p).open) do wanted[e.k]=true end
+				end
+			end
+			if next(queue) or next(board) then
+				if os.clock()>=flushAt then flushAt=os.clock()+CT.FLUSH; flushQueue(now,false) end
+			end
+			if next(mirrorQ) and os.clock()>=mirrorAt then mirrorAt=os.clock()+CT.MIRROR; flushMirrors(false) end
+			-- Live estimate for the running contest (only while someone here has an entry in it).
+			local at=CT.at(now)
+			if at.active then
+				local entrants=false
+				for _,p in pairs(profiles) do local e=rec(p).cur if e and e.k==at.k and whole(e.s)>0 then entrants=true end end
+				local l=liveEst[at.k]
+				if entrants and (not l or os.clock()>=l.clock+CT.READ) then
+					if readLive(at.k) then liveEst[at.k].clock=os.clock()
+					elseif l then l.clock=os.clock() -- failed read: keep the last estimate, try again after CT.READ
+					else liveEst[at.k]={sum=CT.sumGroups({}),at=0,board={},clock=os.clock()} end
+				end
+			end
+			-- Seal / read results: contests this server wrote for, or journals here are waiting on.
+			for k in pairs(wrote) do
+				if now>=CT.window(k).ends+CT.TTL_PAD then wrote[k]=nil else wanted[k]=true end
+			end
+			for k in pairs(wanted) do
+				local w=CT.window(k)
+				if not results[k] and now>=w.sealAt and os.clock()-(resultTry[k] or -math.huge)>=CT.SEAL_RETRY then trySeal(k) end
+			end
+			for k in pairs(results) do if now>=CT.window(k).ends+CT.RESULT_SLOTS*CT.PERIOD then results[k]=nil end end
+			for k in pairs(acked) do if now>=CT.window(k).writeDeadline+60 then acked[k]=nil end end
+			for k in pairs(resultTry) do if results[k] or now>=CT.window(k).ends+CT.RESULT_SLOTS*CT.PERIOD then resultTry[k]=nil end end
+			-- Pay journals whose results just arrived.
+			for player,p in pairs(profiles) do
+				if live(player) and settleOpen(player,p,now) then pushes[player]=true end
+			end
+		end)
+		busy=false
+		for player in pairs(pushes) do if player.Parent and profiles[player] then update:FireClient(player,snapshot(player,nil)) end end
+		if not okRun then error(err,0) end
+	end
+	-- Shutdown: write queued scores and mirrors (ignoring backoff) before the journals save.
+	function Contests.drain(budget)
+		local deadline=os.clock()+(budget or 6)
+		while busy and os.clock()<deadline do task.wait(0.1) end
+		if busy then return end
+		busy=true
+		pcall(function()
+			local now=os.time()
+			for player,p in pairs(profiles) do requeue(player,p,now) end
+			for _=1,2 do
+				if not (next(queue) or next(board)) or os.clock()>=deadline then break end
+				flushQueue(now,true,deadline)
+			end
+			if next(mirrorQ) and os.clock()<deadline then flushMirrors(true,deadline) end
+		end)
+		busy=false
+	end
+	local function loop()
+		pcall(Contests.tick)
+		task.delay(CT.TICK,loop)
+	end
+	task.delay(CT.TICK,loop)
+	-- A leaving journal's unacknowledged score stays queued: the next flush writes it.
+	function Contests.forget(player)
+		local p=profiles[player]
+		if p and not preview[player] then pcall(requeue,player,p,os.time()) end
+		names[uidOf(player)]=nil
+		lastEnter[player.UserId]=nil
+	end
+	-- Snapshot key `contests`.
+	function Contests.state(player,p)
+		local now=os.time()
+		local c=rec(p)
+		local at=CT.at(now)
+		local out={now=now,k=at.k,active=at.active,starts=at.starts,ends=at.ends,crops=at.crops,
+			next={k=at.k+1,starts=at.nextWindow.starts,crops=at.nextWindow.crops},
+			medals=c.medals,earned=c.earned,entries=c.entries,placed=c.placed,best=c.best,brackets=c.brackets,almanac=c.almanac,
+			titles=c.titles,title=c.title,pending=#c.open,history={}}
+		for i=1,math.min(6,#c.history) do out.history[i]=c.history[i] end
+		local e=c.cur
+		if e and e.k==at.k then
+			local slot=CT.featured(e.k,e.c)
+			out.entry={c=e.c,s=whole(e.s),slot=slot,min=CT.CropById[e.c].min}
+			local l=liveEst[at.k]
+			if l and l.at>0 and slot and whole(e.s)>0 then
+				local bracket,rank,n=CT.estimate(l.sum[slot],e.s,e.c)
+				out.estimate={bracket=bracket,rank=rank,n=n,at=l.at}
+			end
+		end
+		local l=liveEst[at.k]
+		if l and l.at>0 then
+			out.board={}
+			local me=uidOf(player)
+			for slot=1,CT.FEATURED do
+				local rows={}
+				for i,row in ipairs(l.board[slot] or {}) do rows[i]={n=row.n,s=row.s,me=row.u==me or nil} end
+				out.board[slot]=rows
+			end
+			out.boardAt=l.at
+		end
+		return out
+	end
+	-- Snapshot key `trophies`.
+	function Contests.trophyState(player,p)
+		local t=trec(p)
+		local now=os.time()
+		local cal=Data.calendarAt(now)
+		local ev=Data.eventState(workspace,now)
+		return {total=t.total,diamonds=t.diamonds,casts=t.casts,caught=t.caught,best=t.best,pity=t.pity,bait=t.bait,
+			baitHave=t.bait and (p.items[t.bait] or 0) or 0,claimed=t.claimed,title=t.title,
+			hour=TF.hourAt(now),season=cal.season,event=ev.event,hood=p.equipment and p.equipment.helmet=="GillwardHood" or false}
+	end
+	-- Trophy Angling ------------------------------------------------------------------
+	local function glintgillLevel(p)
+		local pet=Progression.activePet(p)
+		return if pet and pet.id==TF.PET then whole(pet.level) else 0
+	end
+	function Contests.trophyCast(player,p,toolId,region)
+		local water=TF.waterOf(region)
+		if not water or not TF.waterHasFish(water) then return "" end
+		local t=trec(p)
+		t.casts=math.min(whole(t.casts)+1,1e9)
+		local now=os.time()
+		local bait=nil
+		if t.bait then
+			if (p.items[t.bait] or 0)>0 then
+				bait=t.bait
+				p.items[bait]-=1
+				if p.items[bait]<=0 then p.items[bait]=nil end
+			else
+				note(p,"Out of "..itemName(t.bait).." • bait unloaded")
+				t.bait=nil
+			end
+		end
+		local rod=toolId and Data.Items[toolId]
+		local ctx={water=water,hour=TF.hourAt(now),season=Data.calendarAt(now).season,event=Data.eventState(workspace,now).event,
+			rod=rod and whole(rod.toolTier) or 0,fishing=level(p.xp.Fishing),bait=bait,
+			hood=p.equipment and p.equipment.helmet=="GillwardHood",petLevel=glintgillLevel(p)}
+		local fish,tier=TF.roll(ctx,function(id) return t.pity[id] end,trophyRng:NextNumber(),trophyRng:NextNumber(),trophyRng:NextNumber())
+		if not fish then return "" end
+		local new=TF.record(t,fish.id,tier)
+		local xp=TF.xp(fish,tier)
+		grantXp(p,"Fishing",xp)
+		p.started=true
+		if tier=="Gold" or tier=="Diamond" or new then announce(p,{kind="trophy",fish=fish.id,tier=tier,new=new or nil}) end
+		if tier=="Diamond" and Features.announce then
+			local who=nameOf(player)
+			for other,op in pairs(profiles) do
+				if other~=player and live(other) then
+					Features.announce(op,{kind="trophyWorld",fish=fish.id,tier=tier,who=who})
+					if other.Parent then update:FireClient(other,snapshot(other,nil)) end
+				end
+			end
+		end
+		-- A ledger tier newly within reach: one toast per tier.
+		t.ledgerAnn=type(t.ledgerAnn)=="table" and t.ledgerAnn or {}
+		for _,l in ipairs(TF.Ledger) do
+			if not t.claimed[l.id] and not t.ledgerAnn[l.id] and TF.ledgerDone(t.best,l) then
+				t.ledgerAnn[l.id]=true
+				announce(p,{kind="trophyLedger",ledger=l.id})
+			end
+		end
+		return "   ·   "..tier.." trophy: "..fish.name.."! +"..xp.." Fishing XP"
+	end
+	-- Verbs ----------------------------------------------------------------------------
+	local function lots(item)
+		local id,n=nil,1
+		if validId(item) then
+			id=string.match(item,"^(%w+)$")
+			if not id then
+				local a,b=string.match(item,"^(%w+):(%d+)$")
+				id,n=a,tonumber(b)
+			end
+		end
+		return id,n
+	end
+	local function buy(player,p,item)
+		local c=rec(p)
+		local id,n=lots(item)
+		local e=id and CT.ShopById[id]
+		if not e then return "The Medal Exchange does not stock that." end
+		if not n or n<1 or n>16 or n%1~=0 then return "Choose 1 to 16." end
+		if e.kind~="item" or e.unique then n=1 end
+		local cost=CT.offerCost(e,c.almanac)
+		if not cost then return "Your Furrow Almanac is complete." end
+		cost*=n
+		if e.kind=="title" and c.titles[e.title] then return "You already hold that title." end
+		if e.kind=="item" then
+			if e.level and level(p.xp.Farming)<e.level then return itemName(e.item).." requires Farming "..e.level.."." end
+			if e.unique and ((p.items[e.item] or 0)>0 or table.find(p.accessoryBag or {},e.item)) then return "You already own a "..itemName(e.item).."." end
+			if e.upgrade and (p.items[e.upgrade] or 0)<1 and not table.find(p.accessoryBag or {},e.upgrade) then return "Bring your "..itemName(e.upgrade).." to upgrade it." end
+		end
+		if c.medals<cost then return "You need "..cost.." Harvest Medals (you have "..c.medals..")." end
+		c.medals-=cost
+		c.spent+=cost
+		p.started=true
+		if e.kind=="almanac" then
+			c.almanac+=1
+			applyPerk(p)
+			return "Furrow Almanac volume "..c.almanac.." • +"..CT.ALMANAC[c.almanac].." Farming Fortune (permanent) • -"..cost.." Harvest Medals"
+		elseif e.kind=="title" then
+			c.titles[e.title]=true
+			return "Title unlocked: "..CT.TitleById[e.title].title.." • wear it from Workshop › Contests • -"..cost.." Harvest Medals"
+		end
+		if e.upgrade then
+			if (p.items[e.upgrade] or 0)>0 then
+				p.items[e.upgrade]-=1
+				if p.items[e.upgrade]<=0 then p.items[e.upgrade]=nil end
+				-- An equipped copy stays equipped: the bag entry moves to the upgrade.
+				local i=table.find(p.accessoryBag or {},e.upgrade)
+				if i and (p.items[e.upgrade] or 0)<=0 then p.accessoryBag[i]=e.item end
+			end
+		end
+		p.items[e.item]=(p.items[e.item] or 0)+e.amount*n -- shop purchases go straight to the satchel (never collect())
+		return "Bought "..(e.amount*n).."× "..itemName(e.item).." • -"..cost.." Harvest Medals"
+	end
+	function Contests.action(player,p,verb,item,prompt)
+		local now=os.time()
+		if verb=="contestEnter" then
+			local at=CT.at(now)
+			if not at.active then return "No Harvest Contest is running. The next opens in "..CT.span(at.nextWindow.starts-now).."." end
+			if not (validId(item) and CT.featured(at.k,item)) then return "Choose one of this contest's featured crops." end
+			local c=rec(p)
+			closeEntry(p,now)
+			local e=c.cur
+			if e and e.k==at.k and whole(e.s)>0 then
+				return if e.c==item then "You are already competing with "..itemName(item).."." else "You are competing with "..itemName(e.c).." this contest; entries are locked once you score."
+			end
+			local wait=(lastEnter[player.UserId] or -math.huge)+CT.ENTER_COOLDOWN-os.clock()
+			if wait>0 then return "One moment…" end
+			lastEnter[player.UserId]=os.clock()
+			c.cur={k=at.k,c=item,s=0,at=now}
+			return "Entered with "..itemName(item).." • harvest it before the bell in "..CT.span(at.ends-now).."."
+		elseif verb=="contestBuy" then
+			return buy(player,p,item)
+		elseif verb=="contestTitle" then
+			local c=rec(p)
+			if item=="none" then c.title=nil; player:SetAttribute("ContestTitle",""); return "Contest title hidden." end
+			if not (validId(item) and c.titles[item]) then return "Unlock that title at the Medal Exchange first." end
+			c.title=item
+			player:SetAttribute("ContestTitle",CT.TitleById[item].title)
+			return "Now wearing: "..CT.TitleById[item].title.."."
+		elseif verb=="trophyBait" then
+			local t=trec(p)
+			if item=="none" then t.bait=nil; return "Bait unloaded." end
+			if not (validId(item) and TF.Baits[item]) then return "Choose a trophy bait." end
+			if (p.items[item] or 0)<1 then return "You have no "..itemName(item)..". Cook some at a Hearth (Cooking "..TF.Baits[item].level..")." end
+			t.bait=item
+			return itemName(item).." loaded • one is used per cast in trophy waters."
+		elseif verb=="trophyClaim" then
+			local t=trec(p)
+			local l=validId(item) and TF.LedgerById[item]
+			if not l then return "Choose a ledger tier." end
+			if t.claimed[l.id] then return "You already claimed the "..l.name.."." end
+			if not TF.ledgerDone(t.best,l) then
+				return "The "..l.name.." needs "..TF.ledgerNeed(l).." trophy fish at "..l.need.tier.." or better (you have "..TF.countAt(t.best,l.need.tier)..")."
+			end
+			t.claimed[l.id]=true
+			local parts={}
+			if l.item then p.items[l.item]=(p.items[l.item] or 0)+1; table.insert(parts,"+1 "..itemName(l.item)) end
+			if l.title then table.insert(parts,"title "..l.title) end
+			if l.xp then grantXp(p,"Fishing",l.xp); table.insert(parts,"+"..l.xp.." Fishing XP") end
+			p.started=true
+			return "The Trophy Keeper signs your "..l.name.."! "..table.concat(parts,", ")
+		elseif verb=="trophyTitle" then
+			local t=trec(p)
+			if item=="none" then t.title=nil; player:SetAttribute("TrophyTitle",""); return "Trophy title hidden." end
+			local l=validId(item) and TF.LedgerById[item]
+			if not (l and l.title and t.claimed[l.id]) then return "Claim that ledger tier from the Trophy Keeper first." end
+			t.title=l.id
+			player:SetAttribute("TrophyTitle",l.title)
+			return "Now wearing: "..l.title.."."
+		end
+		return "Unknown action."
+	end
+	-- Titles back on join (server-set attributes).
+	function Contests.publish(player,p)
+		local c,t=rec(p),trec(p)
+		player:SetAttribute("ContestTitle",c.title and CT.TitleById[c.title] and CT.TitleById[c.title].title or "")
+		local l=t.title and TF.LedgerById[t.title]
+		player:SetAttribute("TrophyTitle",l and l.title or "")
+	end
+end
+-- <<< END Contests & Trophy Angling <<<
+------------------------------------------------------------------------------
 local function perform(player,verb,item,prompt)
 	local p=profiles[player]
 	if not p or (not preview[player] and os.time()>=(leaseEnd[player] or 0)) then return "Waiting for journal sync." end
@@ -8648,6 +9405,8 @@ local function perform(player,verb,item,prompt)
 		return Features.action(player,p,verb,item,prompt) -- §31: Wayfarer's Path talk, Resonance
 	elseif Council.verbs[verb] then
 		return Council.action(player,p,verb,item,prompt) -- §36: Isle Council ballot, view, clerk
+	elseif Contests.verbs[verb] then
+		return Contests.action(player,p,verb,item,prompt) -- §39: contest entry, Medal Exchange, titles, trophy bait / ledger
 	elseif Systems.verbs[verb] then
 		return Systems.action(player,p,verb,item) -- §33: quest helper pin, goal board, price check
 	elseif Regions.verbs[verb] then
@@ -8725,6 +9484,7 @@ local function perform(player,verb,item,prompt)
 		-- Progression.gatherYieldMult (never stacks with mastery procs/surges).
 		local petDouble=result.petDouble==true
 		pickup(p,item,result.amount)
+		if skill=="Farming" and Contests.harvest then Contests.harvest(p,item,result.amount) end -- §39: Harvest Contest entry score
 		grantXp(p,skill,result.xp)
 		Held.gather(player,p,skill) -- Held items: the node's tool is in hand (auto switch, returns when idle)
 		if skill=="Farming" and Garden.fieldSeed then Garden.fieldSeed(p,item) end -- Verdant Garden seed pouch
@@ -8739,6 +9499,8 @@ local function perform(player,verb,item,prompt)
 		-- Skill Mastery: Quick regrowth shortens the timer down to a floor (Progression.regrowthTime), never to zero.
 		regrowth[player]=os.clock()+(tonumber(result.regrowth) or tonumber(resource.respawn) or 3)
 		local hooked=if skill=="Fishing" then Sea.cast(player,p,stats,result.tool,region,prompt) else ""
+		-- §39: a cast that raised no sea creature may land a trophy fish (never both).
+		if skill=="Fishing" and hooked=="" and Contests.trophyCast then hooked=Contests.trophyCast(player,p,result.tool,region) end
 		return "+"..result.amount.." "..resource.name..(if petDouble then " (pet ×2)" else "").."   ·   +"..result.xp.." "..skill.." XP"..mastered..hooked
 	elseif verb=="explore" and prompt and item=="Skyreach" and region=="Skyreach" then
 		if p.skyreachVisited then return "Skyreach is already charted. Gather rich Aetherite or continue your guild contracts." end
@@ -9210,6 +9972,7 @@ task.spawn(function()
 end)
 game:BindToClose(function()
 	if Council.drain then Council.drain(8) end -- §36 QC M2: write queued ballots (journals then save their acknowledgements)
+	if Contests.drain then Contests.drain(6) end -- §39: write queued contest scores before the journals save
 	if Econ.flushHistory then pcall(Econ.flushHistory) end -- §33: pending auction price history (best effort)
 	Endgame.drain() -- Endgame: refund unspent altar sigils before the journals save
 	if Lairs.drain then Lairs.drain() end -- Lairs: refund unfinished fights' fees before the journals save

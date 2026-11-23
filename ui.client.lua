@@ -8476,6 +8476,390 @@ end
 Pages.drawBeaconry=BCP.draw
 end
 ------------------------------------------------------------------------------
+-- Workshop › Contests and Hunt › Trophies (Contests team; docs/DEPTH-CONTRACT.md
+-- §39), plus the contest tracker HUD (right column, during a contest).
+-- Workshop › Contests sections: Contest (the running contest: countdown,
+-- featured crops with Enter, your score, the live bracket estimate, the top
+-- entries per crop; the next contest), Exchange (Harvest Medals: gear, the
+-- Furrow Almanac, titles) and Records (personal bests, brackets won, recent
+-- results). Hunt › Trophies sections: Ledger (the fifteen trophy fish, their
+-- waters and conditions, the qualities caught), Rewards (the Trophy Keeper's
+-- ledger tiers, titles) and Bait. The schedule and every rule come from
+-- Data.Contests / Data.Trophies (deterministic); scores, estimates and
+-- records from snapshot.contests / snapshot.trophies. State: Pages.CT.
+------------------------------------------------------------------------------
+do
+local CTP={section="Contest",tsection="Ledger",timers={},boundary=math.huge}
+Pages.CT=CTP
+local function CD() return Data and type(Data.Contests)=="table" and Data.Contests or nil end
+local function TD() return Data and type(Data.Trophies)=="table" and Data.Trophies or nil end
+function CTP.now()
+	local ok,t=pcall(function() return workspace:GetServerTimeNow() end)
+	if ok and type(t)=="number" and t==t and t>1577836800 then return math.floor(t) end
+	local snap=num(tbl(state.contests).now,0)
+	return math.floor(if snap>1577836800 then snap else os.time())
+end
+function CTP.timer(fn,color)
+	return function(body,nextOrder)
+		local copy=para(body,fn(CTP.now()),nextOrder(),color or gold,compactAtlas and 13 or 14)
+		copy.Name="Countdown"
+		table.insert(CTP.timers,{label=copy,fn=fn})
+	end
+end
+-- A round medallion icon (fish and brackets are not satchel items).
+function CTP.medallion(hex,glyph)
+	return function(band,size)
+		local disc=make("TextLabel",band,{Name="Medallion",Size=UDim2.fromOffset(size,size),BackgroundColor3=safeColor(hex,gold),BackgroundTransparency=.55,
+			Text=glyph or "◆",TextSize=math.floor(size*.5),Font=Enum.Font.GothamBold,TextColor3=ivory,BorderSizePixel=0})
+		make("UICorner",disc,{CornerRadius=UDim.new(1,0)})
+		make("UIStroke",disc,{Color=safeColor(hex,gold),Thickness=2})
+		return disc
+	end
+end
+function CTP.bracketText(id)
+	local CT=CD()
+	local b=CT and CT.BracketById[id]
+	return if b then paint(string.upper(b.name),b.color) else paint("NO BRACKET YET","B9C7CC")
+end
+-- The running contest (the snapshot's while it holds, else the client's clock).
+function CTP.contest()
+	local CT=CD()
+	local now=CTP.now()
+	local at=CT.at(now)
+	local s=tbl(state.contests)
+	local entry=type(s.entry)=="table" and num(s.k,-1)==at.k and s.entry or nil
+	return at,s,entry,now
+end
+local function drawContest(CT,s)
+	local at,_,entry,now=CTP.contest()
+	CTP.boundary=if at.active then at.ends else at.nextWindow.starts
+	local cropNames={}
+	for _,id in ipairs(at.crops) do table.insert(cropNames,paint(escape(itemName(id)),itemHex(id))) end
+	if at.active then
+		local lines={"Featured: "..table.concat(cropNames,"  ·  ")}
+		if entry then
+			local def=CT.CropById[entry.c]
+			table.insert(lines,"Your entry: "..paint(escape(itemName(entry.c)),itemHex(entry.c)).."  ·  "..paint(fmt(num(entry.s,0)),"FFF4D9").." harvested"
+				..(def and num(entry.s,0)<def.min and paint("  ·  "..fmt(def.min).." to place","E9C46A") or ""))
+			local est=type(s.estimate)=="table" and s.estimate or nil
+			if est then
+				table.insert(lines,"Live estimate: "..CTP.bracketText(est.bracket).."  ·  about #"..fmt(num(est.rank,0)).." of "..fmt(num(est.n,0)).." placing entrants")
+			elseif num(entry.s,0)>0 then
+				table.insert(lines,paint("Gathering every isle's ledgers for a live estimate…","B9C7CC"))
+			end
+		else
+			table.insert(lines,"Harvest a featured crop to enter, or choose one below.")
+		end
+		card({name="ContestNow",icon=CTP.medallion(CT.COLOR,"🌾"),accent=rgb(CT.COLOR),title=paint("HARVEST CONTEST  ·  RUNNING",CT.COLOR),
+			subtitle="Contest #"..fmt(at.k).."  ·  one crop per entry  ·  every isle on one ledger",badge=entry and paint("ENTERED","9EE7D2") or paint("OPEN","F7C548"),
+			lines=lines,after=CTP.timer(function(t) return "The bell rings in "..CT.span(at.ends-t) end)})
+		heading("FEATURED CROPS    /    ENTER ONE")
+		for slot,id in ipairs(at.crops) do
+			local def=CT.CropById[id]
+			local mine=entry and entry.c==id
+			local locked=entry and num(entry.s,0)>0 and not mine
+			local reason=(mine and "You are competing with this crop.") or (locked and "Entries lock once you score.") or nil
+			local rows={}
+			local boardRows=tbl(tbl(s.board)[slot])
+			for i,row in ipairs(boardRows) do
+				if i>CT.LB_TOP then break end
+				if type(row)~="table" then continue end
+				local who=escape(type(row.n)=="string" and row.n or "Wayfarer")
+				table.insert(rows,paint("#"..i,"B9C7CC").."  "..(row.me and paint(who,"9EE7D2") or who).."  "..paint(fmt(num(row.s,0)),"FFF4D9"))
+			end
+			if #rows==0 then table.insert(rows,paint("No scores on the ledger yet.","B9C7CC")) end
+			table.insert(rows,1,"Places from "..fmt(def and def.min or 0).."  ·  your best "..fmt(num(tbl(s.best)[id],0)))
+			card({name="ContestCrop"..id,item=id,accent=mine and gold or nil,edge=mine and gold or nil,title=escape(itemName(id)),titleColor=rgb(itemHex(id)),
+				subtitle=(def and def.exclusive) and "Verdant Garden crop" or "Field and garden crop",badge=mine and paint("YOUR ENTRY","9EE7D2") or nil,
+				lines=rows,actions={{caption=mine and "Entered" or "Enter",primary=reason==nil or nil,disabled=reason~=nil,reason=reason,
+					name="ContestEnter"..id,fn=function() send("contestEnter",id) end}}})
+		end
+	else
+		card({name="ContestNow",icon=CTP.medallion(CT.COLOR,"🌾"),accent=rgb(CT.COLOR),title=paint("HARVEST CONTEST",CT.COLOR),
+			subtitle="Three contests every isle day  ·  20 minutes each",badge=paint("BETWEEN BELLS","B9C7CC"),
+			detail="Enter one featured crop: everything you harvest of it, in the fields or your Verdant Garden, counts against every isle's farmers.",
+			lines={"Next: "..(function() local n={} for _,id in ipairs(at.nextWindow.crops) do table.insert(n,paint(escape(itemName(id)),itemHex(id))) end return table.concat(n,"  ·  ") end)()},
+			after=CTP.timer(function(t) return "Next contest in "..CT.span(at.nextWindow.starts-t) end,mint)})
+	end
+	if at.active then
+		local nx={}
+		for _,id in ipairs(at.nextWindow.crops) do table.insert(nx,paint(escape(itemName(id)),itemHex(id))) end
+		card({name="ContestNext",motif="Workshop",title="Next contest",titleColor=gold,lines={table.concat(nx,"  ·  ")},
+			after=CTP.timer(function(t) return "Opens in "..CT.span(at.nextWindow.starts-t) end,muted)})
+	end
+	if num(s.pending,0)>0 then
+		card({name="ContestPending",motif="Ledger",title="Awaiting results",titleColor=gold,
+			detail=fmt(s.pending).." finished entr"..(num(s.pending,0)==1 and "y is" or "ies are").." being sealed across the isles. Medals arrive automatically."})
+	end
+	heading("BRACKETS    /    BY RANK AMONG PLACING ENTRANTS")
+	local lines={}
+	for _,b in ipairs(CT.Brackets) do
+		table.insert(lines,paint(b.name,b.color).."  top "..math.floor(b.top*100+.5).."%  ·  "..b.medals.." medal"..(b.medals==1 and "" or "s").."  ·  needs "..b.minPop.."+ entrants")
+	end
+	card({name="ContestBrackets",motif="Journal",title="How brackets are awarded",titleColor=gold,lines=lines})
+end
+local function drawExchange(CT,s)
+	local medals=num(s.medals,0)
+	local volumes=num(s.almanac,0)
+	card({name="ContestMedals",icon=CTP.medallion("F7C548","✪"),title=paint(fmt(medals).." Harvest Medals","F7C548"),
+		subtitle=fmt(num(s.earned,0)).." earned in all  ·  Furrow Almanac "..volumes.."/"..#CT.ALMANAC,
+		detail="Medals come only from contest brackets. Spend them here; the Exchange never takes coins."})
+	heading("MEDAL EXCHANGE")
+	local owned=tbl(s.titles)
+	for _,e in ipairs(CT.Shop) do
+		local cost=CT.offerCost(e,volumes)
+		local title,subtitle,lines,itemId,done
+		if e.kind=="almanac" then
+			itemId=nil
+			done=cost==nil
+			title="Furrow Almanac"..(done and "" or ("  ·  Vol. "..numeral(volumes+1)))
+			subtitle=done and "Complete" or ("+"..CT.ALMANAC[volumes+1].." Farming Fortune, permanent")
+			lines={"Volumes read: "..volumes.."/"..#CT.ALMANAC}
+		elseif e.kind=="title" then
+			local t=CT.TitleById[e.title]
+			done=owned[e.title]==true
+			title="Title: "..paint(escape(t.title),t.color)
+			subtitle="Cosmetic  ·  worn from Records"
+			lines={}
+		else
+			itemId=e.item
+			local def=itemDef(e.item)
+			done=e.unique and count("items",e.item)>0
+			title=escape(itemName(e.item))..(e.amount>1 and ("  ×"..e.amount) or "")
+			subtitle=escape(def and def.description or "")
+			lines={e.upgrade and ("Upgrades your "..escape(itemName(e.upgrade))) or "",e.level and ("Requires Farming "..e.level) or ""}
+		end
+		local reason=(done and "Already yours.") or (cost and medals<cost and ("Needs "..fmt(cost).." Harvest Medals.")) or nil
+		card({name="ContestShop"..e.id,item=itemId,motif=itemId==nil and "Ledger" or nil,title=title,titleColor=itemId and rgb(itemHex(itemId)) or gold,subtitle=subtitle,
+			badge=done and "OWNED" or (cost and (fmt(cost).." ✪")) or nil,badgeColor=done and mint or gold,lines=lines,
+			actions=not done and {{caption="Buy",primary=reason==nil or nil,disabled=reason~=nil,reason=reason,name="ContestBuy"..e.id,fn=function() send("contestBuy",e.id) end}} or nil})
+	end
+end
+local function drawRecords(CT,s)
+	local bl={}
+	for _,b in ipairs(CT.Brackets) do table.insert(bl,paint(b.name,b.color).." "..fmt(num(tbl(s.brackets)[b.id],0))) end
+	card({name="ContestRecord",motif="Journal",title="Your contest record",titleColor=gold,
+		subtitle=fmt(num(s.entries,0)).." entries  ·  "..fmt(num(s.placed,0)).." placed",lines={table.concat(bl,"   ")}})
+	heading("PERSONAL BESTS")
+	for _,c in ipairs(CT.Crops) do
+		local best=num(tbl(s.best)[c.id],0)
+		card({name="ContestBest"..c.id,item=c.id,title=escape(itemName(c.id)),titleColor=rgb(itemHex(c.id)),
+			subtitle=best>0 and ("Best: "..fmt(best)) or "No entry yet",lines={"Places from "..fmt(c.min)}})
+	end
+	heading("TITLES")
+	local any=false
+	for _,t in ipairs(CT.Titles) do
+		if tbl(s.titles)[t.id] then
+			any=true
+			local worn=s.title==t.id
+			card({name="ContestTitle"..t.id,motif="Ledger",title=paint(escape(t.title),t.color),subtitle=worn and "Worn" or "Unlocked",
+				actions={worn and {caption="Hide",name="ContestTitleOff"..t.id,fn=function() send("contestTitle","none") end}
+					or {caption="Wear",primary=true,name="ContestTitleWear"..t.id,fn=function() send("contestTitle",t.id) end}}})
+		end
+	end
+	if not any then card({name="ContestTitlesNone",motif="Ledger",title="No titles yet",titleColor=muted,detail="Unlock titles at the Medal Exchange."}) end
+	heading("RECENT RESULTS")
+	local hist=tbl(s.history)
+	if #hist==0 then card({name="ContestHistoryNone",motif="Journal",title="No results yet",titleColor=muted,detail="Finished contests appear here once they are sealed."}) end
+	for i,h in ipairs(hist) do
+		if type(h)=="table" then
+			card({name="ContestHistory"..i,item=h.c,title=escape(itemName(h.c)).."  ·  "..fmt(num(h.s,0)),titleColor=rgb(itemHex(h.c)),
+				subtitle="Contest #"..fmt(num(h.k,0)),badge=CTP.bracketText(h.b),badgeColor=gold,
+				lines={num(h.m,0)>0 and ("+"..fmt(h.m).." Harvest Medals") or ""}})
+		end
+	end
+end
+function CTP.draw()
+	table.clear(CTP.timers)
+	CTP.boundary=math.huge
+	local CT=CD()
+	if not CT then dataMissing() return end
+	local s=tbl(state.contests)
+	local sections={"Contest","Exchange","Records"}
+	if not table.find(sections,CTP.section) then CTP.section="Contest" end
+	sectionBar(sections,CTP.section,function(name) CTP.section=name;scroll.CanvasPosition=Vector2.zero;render() end,{small=true,prefix="Contests"})
+	if CTP.section=="Exchange" then drawExchange(CT,s) elseif CTP.section=="Records" then drawRecords(CT,s) else drawContest(CT,s) end
+end
+Pages.drawContests=CTP.draw
+
+-- Hunt › Trophies ----------------------------------------------------------------------
+local REASON={water="other waters",fishing="Fishing level",rod="rod tier",season="season",event="festival",hours="hour",bait="bait"}
+function CTP.conditions(TF,f)
+	local parts={paint(escape(TF.WaterById[f.water] and TF.WaterById[f.water].name or f.water),TF.WaterById[f.water] and TF.WaterById[f.water].color or "8FB8D6")}
+	table.insert(parts,"Fishing "..f.fishing)
+	table.insert(parts,"rod tier "..f.rod.."+")
+	if f.hours then table.insert(parts,"isle hours "..f.hours[1].."–"..f.hours[2]) end
+	if f.season then table.insert(parts,escape(f.season)) end
+	if f.event then local ev=Data.Events and Data.Events[f.event] table.insert(parts,escape(ev and ev.name or f.event)) end
+	if f.bait then table.insert(parts,escape(itemName(f.bait))) end
+	return table.concat(parts,"  ·  ")
+end
+local function drawLedger(TF,t)
+	local best=tbl(t.best)
+	local hour=num(t.hour,12)
+	local tiers={}
+	for _,tier in ipairs(TF.Tiers) do table.insert(tiers,paint(tier.name,tier.color).." "..TF.countAt(best,tier.id).."/"..#TF.Fish) end
+	local bait=type(t.bait)=="string" and TF.Baits[t.bait] and t.bait or nil
+	card({name="TrophySummary",icon=CTP.medallion(TF.COLOR,"🏆"),accent=rgb(TF.COLOR),title=paint("TROPHY LEDGER",TF.COLOR),
+		subtitle=fmt(num(t.total,0)).." trophy fish  ·  "..fmt(num(t.diamonds,0)).." Diamond  ·  "..fmt(num(t.casts,0)).." casts in trophy waters",
+		detail="Any cast in trophy waters that raises no sea creature may land a trophy fish when its conditions are right.",
+		lines={table.concat(tiers,"   "),
+			"Now: isle hour "..math.floor(hour).."  ·  "..escape(tostring(t.season or "?"))..(type(t.event)=="string" and ("  ·  "..paint(escape(Data.Events and Data.Events[t.event] and Data.Events[t.event].name or t.event),"F7C548")) or "")
+				.."  ·  bait: "..(bait and (escape(itemName(bait)).." ("..fmt(num(t.baitHave,0))..")") or "none")}})
+	for _,w in ipairs(TF.Waters) do
+		heading(string.upper(w.name))
+		for _,f in ipairs(TF.Fish) do
+			if f.water==w.id then
+				local row=tbl(tbl(t.caught)[f.id])
+				local got={}
+				for _,tier in ipairs(TF.Tiers) do
+					local n=num(row[tier.id],0)
+					table.insert(got,paint(tier.name:sub(1,1),n>0 and tier.color or "4A5560").." "..fmt(n))
+				end
+				local b=TF.TierById[best[f.id]]
+				local pity=tbl(tbl(t.pity)[f.id])
+				local now=f.hours and (TF.inHours(f.hours,hour) and paint("biting hour","9EE7D2") or paint("not its hour","B9C7CC")) or ""
+				card({name="Trophy"..f.id,icon=CTP.medallion(f.color,b and "🐟" or "?"),accent=b and rgb(b.color) or nil,title=escape(f.name),titleColor=rgb(f.color),
+					subtitle=escape(f.rarity).."  ·  +"..fmt(TF.xp(f,"Bronze")).." Fishing XP (Bronze)",badge=b and string.upper(b.name) or "UNCAUGHT",badgeColor=b and rgb(b.color) or muted,
+					detail=escape(f.text),lines={CTP.conditions(TF,f),table.concat(got,"   ")..(now~="" and ("   "..now) or ""),
+						"Gold within "..fmt(math.max(0,TF.PITY_GOLD-num(pity.g,0))).."  ·  Diamond within "..fmt(math.max(0,TF.PITY_DIAMOND-num(pity.d,0))).." catches"}})
+			end
+		end
+	end
+end
+local function drawRewards(TF,t)
+	local claimed=tbl(t.claimed)
+	for _,l in ipairs(TF.Ledger) do
+		local have=TF.countAt(t.best,l.need.tier)
+		local need=TF.ledgerNeed(l)
+		local done=have>=need
+		local got=claimed[l.id]==true
+		local parts={}
+		if l.title then table.insert(parts,"title "..paint(escape(l.title),l.color)) end
+		if l.item then table.insert(parts,escape(itemName(l.item))) end
+		if l.xp then table.insert(parts,fmt(l.xp).." Fishing XP") end
+		local reason=(got and "Already claimed.") or (not done and ("Catch "..need.." trophy fish at "..l.need.tier.." or better.")) or nil
+		local acts={{caption=got and "Claimed" or "Claim",primary=reason==nil or nil,disabled=reason~=nil,reason=reason,name="TrophyClaim"..l.id,fn=function() send("trophyClaim",l.id) end}}
+		if got and l.title then
+			if t.title==l.id then table.insert(acts,{caption="Hide",name="TrophyTitleOff"..l.id,fn=function() send("trophyTitle","none") end})
+			else table.insert(acts,{caption="Wear",name="TrophyTitleWear"..l.id,fn=function() send("trophyTitle",l.id) end}) end
+		end
+		card({name="TrophyLedger"..l.id,item=l.item,icon=l.item==nil and CTP.medallion(l.color,"✦") or nil,accent=rgb(l.color),title=escape(l.name),titleColor=rgb(l.color),
+			subtitle=fmt(math.min(have,need)).."/"..fmt(need).." fish at "..l.need.tier.." or better",badge=got and "CLAIMED" or (done and "READY" or nil),badgeColor=got and muted or mint,
+			lines={"Reward: "..table.concat(parts,", ")},bar={fraction=math.clamp(have/math.max(1,need),0,1),color=rgb(l.color),caption=fmt(math.min(have,need)).." / "..fmt(need)},actions=acts})
+	end
+end
+local function drawBait(TF,t)
+	local loaded=type(t.bait)=="string" and t.bait or nil
+	local cook=skillsOf(state).Cooking
+	for _,id in ipairs(TF.BaitOrder) do
+		local b=TF.Baits[id]
+		local have=count("items",id)
+		local mine=loaded==id
+		local reason=(have<=0 and ("Cook "..b.name.." at a Hearth (Cooking "..b.level..").")) or nil
+		local needs={}
+		for cid,n in pairs(b.costs) do table.insert(needs,fmt(n).." "..escape(itemName(cid))) end
+		table.sort(needs)
+		card({name="TrophyBait"..id,item=id,title=escape(b.name),titleColor=rgb(itemHex(id)),subtitle="+"..UI.dec(b.bonus*100).."% trophy chance  ·  "..fmt(have).." in satchel",
+			badge=mine and "LOADED" or nil,badgeColor=mint,
+			lines={((cook and cook.level or 1)>=b.level and check or cross).." Cooking "..b.level.."  ·  "..b.amount.." from "..table.concat(needs,", ")},
+			actions={mine and {caption="Unload",name="TrophyBaitOff",fn=function() send("trophyBait","none") end}
+				or {caption="Load",primary=reason==nil or nil,disabled=reason~=nil,reason=reason,name="TrophyBaitLoad"..id,fn=function() send("trophyBait",id) end}}})
+	end
+end
+function CTP.drawTrophies()
+	local TF=TD()
+	if not TF then dataMissing() return end
+	local t=tbl(state.trophies)
+	local sections={"Ledger","Rewards","Bait"}
+	if not table.find(sections,CTP.tsection) then CTP.tsection="Ledger" end
+	sectionBar(sections,CTP.tsection,function(name) CTP.tsection=name;scroll.CanvasPosition=Vector2.zero;render() end,{small=true,prefix="Trophies"})
+	if CTP.tsection=="Rewards" then drawRewards(TF,t) elseif CTP.tsection=="Bait" then drawBait(TF,t) else drawLedger(TF,t) end
+end
+Pages.drawTrophies=CTP.drawTrophies
+
+-- Countdowns tick in place; the page redraws at the bell.
+task.spawn(function()
+	while task.wait(1) do
+		if #CTP.timers>0 and atlas.Visible and current=="Workshop" and sectionOf and sectionOf.Workshop=="Contests" then
+			local now=CTP.now()
+			if now>=CTP.boundary then render() else
+				for _,t in ipairs(CTP.timers) do pcall(function() t.label.Text=t.fn(now) end) end
+			end
+		end
+	end
+end)
+
+-- Contest tracker (right column, during a contest): crop, count, estimate, timer.
+local hudFrame=make("TextButton",gui,{Name="ContestHud",Text="",AutoButtonColor=false,BackgroundColor3=deep,BackgroundTransparency=.06,BorderSizePixel=0,
+	AnchorPoint=Vector2.new(1,0),Position=UDim2.new(1,-10,0,240),Size=UDim2.fromOffset(214,64),Visible=false,Selectable=false})
+rounded(hudFrame,12,UI.brass)
+local hudTitle=label(hudFrame,"",12,4,UDim.new(1,-24),16,UI.heavy,11,gold)
+hudTitle.Name="Title"
+local hudBody=label(hudFrame,"",12,20,UDim.new(1,-24),18,bold,12,ivory)
+hudBody.Name="Lines"
+hudBody.RichText=true
+hudBody.TextWrapped=true
+hudBody.TextYAlignment=Enum.TextYAlignment.Top
+hudBody.TextTruncate=Enum.TextTruncate.None
+hudFrame.Activated:Connect(function() if Pages.openTo then Pages.openTo("Workshop","Contests") end end)
+CTP.hud=hudFrame
+function CTP.hudLines(short)
+	local CT=CD()
+	if not CT then return nil end
+	local at,s,entry,now=CTP.contest()
+	if not at.active then return nil end
+	local lines={}
+	local left=CT.span(at.ends-now)
+	if entry then
+		local est=type(s.estimate)=="table" and s.estimate or nil
+		if short then
+			table.insert(lines,paint(escape(itemName(entry.c)),itemHex(entry.c)).." "..fmt(num(entry.s,0)))
+			table.insert(lines,(est and CTP.bracketText(est.bracket) or paint("…","B9C7CC")).."  "..paint(left,"A9BDC1"))
+		else
+			table.insert(lines,paint(escape(itemName(entry.c)),itemHex(entry.c)).."  ·  "..paint(fmt(num(entry.s,0)),"FFF4D9").." harvested")
+			table.insert(lines,"Estimate: "..(est and CTP.bracketText(est.bracket) or paint("gathering…","B9C7CC")).."   "..paint(left.." left","A9BDC1"))
+		end
+	else
+		local names={}
+		for _,id in ipairs(at.crops) do table.insert(names,escape(itemName(id))) end
+		table.insert(lines,short and paint(left,"A9BDC1") or (table.concat(names,"  ·  ")))
+		if not short then table.insert(lines,paint(left.." left  ·  harvest one to enter","A9BDC1")) end
+	end
+	return lines
+end
+function CTP.refreshHud()
+	local busy=player:GetAttribute("MinigameGame") or player:GetAttribute("LairBoss")
+	local lines=(not busy or busy=="") and CTP.hudLines(false) or nil
+	hudFrame.Visible=lines~=nil
+	if not lines then return end
+	local view=gui.AbsoluteSize
+	local height=(view and view.Y>0) and view.Y or 720
+	local short=height<520
+	lines=CTP.hudLines(short) or lines
+	local width=short and 100 or 214
+	local lanes=UI.lay()
+	local pad=short and 6 or 12
+	hudTitle.Text=short and "CONTEST" or "HARVEST CONTEST"
+	local titleHeight=short and 14 or 16
+	local rowHeight=short and 14 or 18
+	hudTitle.Position,hudTitle.Size=UDim2.fromOffset(pad,4),UDim2.new(1,-2*pad,0,titleHeight)
+	hudBody.Text=table.concat(lines,"\n")
+	hudBody.TextSize=short and 11 or 12
+	hudBody.Position=UDim2.fromOffset(pad,4+titleHeight)
+	hudBody.Size=UDim2.new(1,-2*pad,0,rowHeight*#lines)
+	hudFrame.AnchorPoint=Vector2.new(1,0)
+	hudFrame.Position=UDim2.new(0,lanes.rightEdge,0,lanes.rightTop)
+	hudFrame.Size=UDim2.fromOffset(width,4+titleHeight+rowHeight*#lines+8)
+end
+for _,name in ipairs({"MinigameGame","LairBoss","IsleSatchelOpen"}) do
+	player:GetAttributeChangedSignal(name):Connect(function() CTP.refreshHud() end)
+end
+task.spawn(function()
+	while task.wait(1) do pcall(CTP.refreshHud) end
+end)
+end
+------------------------------------------------------------------------------
 -- Exploration & Factions (Exploration & Factions team). Journal › Motes
 -- (found counter, milestones, Wayglass bearing, per-region progress) and
 -- Journal › Factions (pledge, reputation ranks, daily tasks, shop, titles).
@@ -9439,8 +9823,8 @@ local sectionLists={
 	Journal={"Bearing","Quests","Helper","Goals","Diaries","Construction","Regions","Crew","Calendar","Council","Agility","Commissions","Collection Log","Museum","Motes","Factions"}, -- §33: Helper, Goals
 	Hero={"Skills","Mastery","Gear","Combat","Spellbook","Prayer","Enchant","Reforge","Accessories","Pets","Calculator"}, -- §33: Calculator
 	Satchel={"Items","Collections","Trails"},
-	Workshop={"Forge","Hearth","Cauldron","Workbench","Crafting","Beaconry","Workers","Home","Garden"}, -- §37: Beaconry
-	Hunt={"Slayer","Bestiary","Dungeon","Essence","Bosses","Hunter","Thieving","Minigames"},
+	Workshop={"Forge","Hearth","Cauldron","Workbench","Crafting","Beaconry","Workers","Home","Garden","Contests"}, -- §37: Beaconry; §39: Contests
+	Hunt={"Slayer","Bestiary","Dungeon","Essence","Bosses","Hunter","Thieving","Minigames","Trophies"}, -- §39: Trophies
 	Ledger={"Bank","Market","Orders","Auctions","Prices","Merchant","Vendors"}, -- §33: Prices
 }
 sectionOf={Menu="Home",Journal="Bearing",Hero="Skills",Satchel="Items",Workshop="Forge",Hunt="Slayer",Ledger="Bank"}
@@ -9453,8 +9837,10 @@ local drawers={
 	Hero={Skills=Pages.drawSkills,Mastery=Pages.drawMastery,Gear=Pages.drawGear,Combat=Pages.drawCombat,Spellbook=Pages.drawSpellbook,Prayer=Pages.drawPrayer,Enchant=Pages.drawEnchant,Reforge=function() Pages.drawReforge() end,Accessories=Pages.drawAccessories,Pets=Pages.drawPets,Calculator=Pages.drawCalculator},
 	Satchel={Items=Pages.drawItems,Collections=Pages.drawCollections,Trails=Pages.drawTrails},
 	Workshop={Forge=function() Pages.drawStation("Forge") end,Hearth=function() Pages.drawStation("Hearth") end,Cauldron=function() Pages.drawStation("Cauldron") end,
-		Workbench=function() Pages.drawStation("Workbench") end,Crafting=Pages.drawCrafting,Beaconry=Pages.drawBeaconry,Workers=Pages.drawWorkers,Home=Pages.drawHome,Garden=Pages.drawGarden},
-	Hunt={Slayer=Pages.drawSlayer,Bestiary=Pages.drawBestiary,Dungeon=Pages.drawDungeon,Essence=Pages.drawEssence,Hunter=Pages.drawHunter,Thieving=Pages.drawThieving,Minigames=Pages.drawMinigames,Bosses=Pages.drawBosses},
+		Workbench=function() Pages.drawStation("Workbench") end,Crafting=Pages.drawCrafting,Beaconry=Pages.drawBeaconry,Workers=Pages.drawWorkers,Home=Pages.drawHome,Garden=Pages.drawGarden,
+		Contests=function() Pages.drawContests() end}, -- §39
+	Hunt={Slayer=Pages.drawSlayer,Bestiary=Pages.drawBestiary,Dungeon=Pages.drawDungeon,Essence=Pages.drawEssence,Hunter=Pages.drawHunter,Thieving=Pages.drawThieving,Minigames=Pages.drawMinigames,Bosses=Pages.drawBosses,
+		Trophies=function() Pages.drawTrophies() end}, -- §39
 	Ledger={Bank=Pages.drawBank,Market=Pages.drawMarket,Orders=Pages.drawOrders,Auctions=Pages.drawAuctions,Merchant=Pages.drawMerchant,Vendors=Pages.drawVendors,Prices=Pages.drawPrices},
 }
 local function resetTransient()
@@ -10026,6 +10412,7 @@ local stationTabs={Forge="Workshop",Hearth="Workshop",Cauldron="Workshop",Workbe
 	Jeweller="Workshop",Tannery="Workshop",Glassworks="Workshop", -- Crafting stations (Workshop › Crafting)
 	Motes="Journal",Factions="Journal", -- Exploration & Factions: Mote Shrines, faction standards
 	Resonance="Menu", -- §31: the Resonance Keeper opens Menu › Resonance
+	Contests="Workshop",Trophies="Hunt", -- §39: the Contest Steward and the Trophy Keeper
 	Council="Journal"} -- §36: the Council Clerk and the ballot chest open Journal › Council
 local function openStation()
 	local value=player:GetAttribute("IsleStation")
@@ -10037,6 +10424,7 @@ local function openStation()
 	if tab=="Ledger" then Pages.AH.vendor=station=="SkymarkExchange" and "Agility" or "Hunter";openTo("Ledger","Vendors") return end
 	if tab=="Menu" then openTo("Menu",station) return end -- §31: Resonance Keeper
 	if tab=="Workshop" and Pages.CR and Data and Data.Crafting and Data.Crafting.Stations[station] then Pages.CR.station=station;openTo("Workshop","Crafting") return end
+	if tab=="Hunt" and station=="Trophies" then openTo("Hunt","Trophies") return end -- §39
 	if tab=="Workshop" then openTo("Workshop",station) elseif tab=="Journal" then openTo("Journal",if station=="Calendar" then "Calendar" elseif station=="Council" then "Council" elseif station=="Commissions" or station=="Museum" or station=="Motes" or station=="Factions" then station elseif station=="CollectionLog" then "Collection Log" else "Construction") else openTo("Hunt","Slayer") end
 end
 -- World sets IsleStation and then bumps IsleStationVisit on every trigger; only the

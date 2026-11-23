@@ -3171,6 +3171,141 @@ do
 	-- The skill page lists Beaconry's unlocks.
 	print("Beaconry client: " .. (checks - bcChecks) .. " checks.")
 end
+-- Contests client (§39): Workshop › Contests (Contest / Exchange / Records),
+-- Hunt › Trophies (Ledger / Rewards / Bait), the contest tracker HUD; phone
+-- layout and malformed data.
+verbs.contestEnter = function(item) return Data.Contests.CropById[item] ~= nil end
+verbs.contestBuy = function(item) return Data.Contests.ShopById[(string.match(item or "", "^(%w+)"))] ~= nil end
+verbs.contestTitle = function(item) return item == "none" or Data.Contests.TitleById[item] ~= nil end
+verbs.trophyBait = function(item) return item == "none" or Data.Trophies.Baits[item] ~= nil end
+verbs.trophyClaim = function(item) return Data.Trophies.LedgerById[item] ~= nil end
+verbs.trophyTitle = function(item) return item == "none" or Data.Trophies.LedgerById[item] ~= nil end
+do
+	local ctChecks = checks
+	local function check(cond, case) assert(cond, case); checks += 1 end
+	local CT, TF = Data.Contests, Data.Trophies
+	local K = 71014
+	local W = CT.window(K)
+	local crops = W.crops
+	local snap = snapshot({ xp = { Farming = Data.XP_TABLE[60], Cooking = Data.XP_TABLE[20], Fishing = Data.XP_TABLE[40] } })
+	snap.items = table.clone(snap.items)
+	snap.items.GlowgrubBait = 3
+	snap.contests = { now = W.starts + 100, k = K, active = true, starts = W.starts, ends = W.ends, crops = crops, next = { k = K + 1, starts = W.starts + CT.PERIOD, crops = CT.cropsOf(K + 1) },
+		entry = { c = crops[1], s = 0, slot = 1, min = CT.CropById[crops[1]].min }, medals = 40, earned = 52, entries = 6, placed = 4, best = { [crops[1]] = 310 },
+		brackets = { Gold = 2, Bronze = 2 }, almanac = 1, titles = { Furrowhand = true }, title = nil, pending = 1,
+		history = { { k = K - 1, c = crops[2], s = 120, b = "Gold", m = 4 } },
+		board = { { { n = "Ana", s = 300 }, { n = "Tester", s = 90, me = true } }, {}, {} }, boardAt = W.starts + 90 }
+	snap.trophies = { total = 9, diamonds = 1, casts = 300, caught = { PebblefinDarter = { Bronze = 6, Diamond = 1 } }, best = { PebblefinDarter = "Diamond" },
+		pity = { PebblefinDarter = { g = 3, d = 0 } }, bait = nil, baitHave = 0, claimed = {}, hour = 12.5, season = "Sunreach", hood = false }
+	local ui = run({ snapshot = snap })
+	visit(ui, "Workshop", "Contests")
+	check(find(ui.scroll, "ContestNow") ~= nil and find(ui.scroll, "ContestCrop" .. crops[1]) ~= nil and find(ui.scroll, "ContestCrop" .. crops[3]) ~= nil, "Workshop › Contests: running contest and its crops")
+	check(find(ui.scroll, "ContestNext") ~= nil and find(ui.scroll, "ContestPending") ~= nil and find(ui.scroll, "ContestBrackets") ~= nil, "next contest, pending results, bracket table")
+	table.clear(ui.sent)
+	press(find(ui.scroll, "ContestEnter" .. crops[2]))
+	check(ui.sent[1] and ui.sent[1][1] == "contestEnter" and ui.sent[1][2] == crops[2], "an unscored entry can switch crops")
+	noFailures(ui, "contests running")
+	checkSent(ui)
+	-- Exchange.
+	press(find(ui.scroll, "ContestsExchange"))
+	check(find(ui.scroll, "ContestMedals") ~= nil and find(ui.scroll, "ContestShopHarvestTonic") ~= nil and find(ui.scroll, "ContestShopAlmanac") ~= nil, "Medal Exchange")
+	table.clear(ui.sent)
+	press(find(ui.scroll, "ContestBuyHarvestTonic"))
+	check(ui.sent[1] and ui.sent[1][1] == "contestBuy" and ui.sent[1][2] == "HarvestTonic", "Buy sends contestBuy")
+	press(find(ui.scroll, "ContestBuyMedalistHoe"))
+	check(#ui.sent == 1, "an offer you cannot afford does not send")
+	noFailures(ui, "contest exchange")
+	checkSent(ui)
+	-- Records.
+	press(find(ui.scroll, "ContestsRecords"))
+	check(find(ui.scroll, "ContestRecord") ~= nil and find(ui.scroll, "ContestBest" .. crops[1]) ~= nil and find(ui.scroll, "ContestHistory1") ~= nil, "records, bests, history")
+	table.clear(ui.sent)
+	press(find(ui.scroll, "ContestTitleWearFurrowhand"))
+	check(ui.sent[1] and ui.sent[1][1] == "contestTitle" and ui.sent[1][2] == "Furrowhand", "Wear sends contestTitle")
+	noFailures(ui, "contest records")
+	checkSent(ui)
+	-- A scored entry locks the other crops; the HUD tracker shows the entry.
+	local scored = table.clone(snap)
+	scored.contests = table.clone(snap.contests)
+	scored.contests.entry = { c = crops[1], s = 90, slot = 1, min = CT.CropById[crops[1]].min }
+	scored.contests.estimate = { bracket = "Gold", rank = 5, n = 60, at = W.starts + 90 }
+	local us = run({ snapshot = scored })
+	visit(us, "Workshop", "Contests")
+	table.clear(us.sent)
+	press(find(us.scroll, "ContestEnter" .. crops[2]))
+	check(#us.sent == 0, "a scored entry is locked")
+	local hud = find(us.gui, "ContestHud")
+	check(hud ~= nil, "contest tracker exists")
+	noFailures(us, "contest locked")
+	-- Between bells.
+	local idle = table.clone(snap)
+	idle.contests = table.clone(snap.contests)
+	idle.contests.now = W.ends + 60
+	idle.contests.active = false
+	local ui2 = run({ snapshot = idle })
+	visit(ui2, "Workshop", "Contests")
+	check(find(ui2.scroll, "ContestNow") ~= nil and find(ui2.scroll, "ContestCrop" .. crops[1]) == nil, "between bells: the next contest only")
+	noFailures(ui2, "contest idle")
+	-- Hunt › Trophies.
+	visit(ui, "Hunt", "Trophies")
+	check(find(ui.scroll, "TrophySummary") ~= nil, "Hunt › Trophies ledger summary")
+	for _, f in ipairs(TF.Fish) do check(find(ui.scroll, "Trophy" .. f.id) ~= nil, "fish card " .. f.id) end
+	noFailures(ui, "trophy ledger")
+	press(find(ui.scroll, "TrophiesRewards"))
+	check(find(ui.scroll, "TrophyLedgerNovice") ~= nil and find(ui.scroll, "TrophyLedgerDiamond") ~= nil, "ledger tiers")
+	table.clear(ui.sent)
+	press(find(ui.scroll, "TrophyClaimBronze"))
+	check(#ui.sent == 0, "an incomplete tier does not send")
+	noFailures(ui, "trophy rewards")
+	press(find(ui.scroll, "TrophiesBait"))
+	table.clear(ui.sent)
+	press(find(ui.scroll, "TrophyBaitLoadGlowgrubBait"))
+	check(ui.sent[1] and ui.sent[1][1] == "trophyBait" and ui.sent[1][2] == "GlowgrubBait", "Load sends trophyBait")
+	press(find(ui.scroll, "TrophyBaitLoadAbyssalLure"))
+	check(#ui.sent == 1, "bait you do not hold does not send")
+	noFailures(ui, "trophy bait")
+	checkSent(ui)
+	-- A complete tier claims; a claimed title can be worn.
+	local full = table.clone(snap)
+	full.trophies = table.clone(snap.trophies)
+	full.trophies.best = {}
+	for _, f in ipairs(TF.Fish) do full.trophies.best[f.id] = "Silver" end
+	full.trophies.claimed = { Novice = true }
+	local uf = run({ snapshot = full })
+	visit(uf, "Hunt", "Trophies")
+	press(find(uf.scroll, "TrophiesRewards"))
+	table.clear(uf.sent)
+	press(find(uf.scroll, "TrophyClaimBronze"))
+	check(uf.sent[1] and uf.sent[1][1] == "trophyClaim" and uf.sent[1][2] == "Bronze", "Claim sends trophyClaim")
+	press(find(uf.scroll, "TrophyTitleWearNovice"))
+	check(uf.sent[2] and uf.sent[2][1] == "trophyTitle" and uf.sent[2][2] == "Novice", "Wear sends trophyTitle")
+	noFailures(uf, "trophy claim")
+	checkSent(uf)
+	-- Phone, malformed and missing data.
+	local phone = run({ snapshot = scored, size = roblox.Vector2.new(420, 600) })
+	visit(phone, "Workshop", "Contests")
+	noFailures(phone, "phone contests")
+	visit(phone, "Hunt", "Trophies")
+	noFailures(phone, "phone trophies")
+	local bad = snapshot()
+	bad.contests = { now = "soon", k = "x", entry = { c = "Nope", s = "many" }, estimate = 4, board = { "x", { 5 } }, history = { 3, { c = "Nope" } }, titles = 2, best = "x" }
+	bad.trophies = { caught = { Nope = 3, PebblefinDarter = "x" }, best = { PebblefinDarter = "Mythic" }, pity = 4, claimed = "x", hour = "noon", bait = "Nope" }
+	local broken = run({ snapshot = bad })
+	visit(broken, "Workshop", "Contests")
+	noFailures(broken, "malformed contests")
+	for _, s in ipairs({ "ContestsExchange", "ContestsRecords" }) do press(find(broken.scroll, s)); noFailures(broken, "malformed " .. s) end
+	visit(broken, "Hunt", "Trophies")
+	noFailures(broken, "malformed trophies")
+	for _, s in ipairs({ "TrophiesRewards", "TrophiesBait" }) do press(find(broken.scroll, s)); noFailures(broken, "malformed " .. s) end
+	local none = snapshot()
+	none.contests, none.trophies = nil, nil
+	local legacy = run({ snapshot = none })
+	visit(legacy, "Workshop", "Contests")
+	noFailures(legacy, "contests without server data")
+	visit(legacy, "Hunt", "Trophies")
+	noFailures(legacy, "trophies without server data")
+	print("Contests client: " .. (checks - ctChecks) .. " checks.")
+end
 -- Visual QA (menu overhaul): every atlas page at both phone sizes for the early,
 -- mid and endgame snapshots the real server builds (tools/ui-profiles.luau):
 --  * touch targets: every visible control is at least UI.TOUCH (44 px) both ways;

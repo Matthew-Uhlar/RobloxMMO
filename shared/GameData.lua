@@ -13887,5 +13887,805 @@ end
 -- <<< END Isle Council <<<
 ------------------------------------------------------------------------------
 
+------------------------------------------------------------------------------
+-- >>> BEGIN Contests & Trophy Angling (Contests team; append-only section; docs/DEPTH-CONTRACT.md §39) >>>
+-- Two competitive skilling layers (SkyBlock's farming contests and trophy
+-- fishing in spirit; every name, fish and rule here is original):
+--   * Harvest Contests (Data.Contests = CT): every CT.PERIOD seconds (one third
+--     of an isle day, ~51 min) a CT.DURATION (20 min) contest opens on the
+--     Skyward Calendar featuring three garden crops (deterministic per contest
+--     index, so every server and client agrees). A journal enters ONE featured
+--     crop (chosen, or the first featured crop it harvests) and every unit of
+--     that crop it harvests (field nodes and Verdant Garden plots) during the
+--     window counts. Scores meet across servers in MemoryStore SortedMaps:
+--     sharded score items (atomic, idempotent max-merge) feed a versioned
+--     histogram mirror (live bracket estimates) and a per-contest leaderboard
+--     map (top scores per crop); after the close one server seals exact
+--     bracket cut-offs into a bounded DataStore ring. Brackets by percentile
+--     (Bronze 60 % / Silver 30 % / Gold 10 % / Platinum 5 % / Diamond 2 %, each
+--     needing a minimum score and a minimum field of entrants) pay Harvest
+--     Medals, a journal currency spent at the Medal Exchange (farming gear,
+--     the Furrow Almanac upgrade, titles). Medals never come from coins and
+--     nothing in the exchange sells for more than CT.MEDAL_VALUE coins a medal.
+--   * Trophy Angling (Data.Trophies = TF): fifteen trophy fish in four
+--     waters, each with conditions (isle hour, season / festival, rod tier,
+--     bait, Fishing level). A fishing cast that did not hook a sea creature
+--     may land one (never both: no double counting); four qualities with pity
+--     counters; the Trophy Ledger; the Trophy Keeper's completion rewards
+--     (titles, the Gillward Hood, the Glintgill pet); a §31 announcement for
+--     every Diamond catch.
+-- Pure data and rules; server.server.lua ("Contests & Trophy Angling" block),
+-- ui.client.lua (Workshop › Contests, Hunt › Trophies, the contest tracker).
+------------------------------------------------------------------------------
+do
+local Cal = Data.Calendar
+local G = Data.Garden
+local function tab(v) return if type(v) == "table" then v else {} end
+local function whole(v) return if type(v) == "number" and v == v and v >= 0 and v < math.huge then math.floor(v) else 0 end
+local function item(id, def)
+	def.id = id
+	def.rarity = def.rarity or "Common"
+	def.value = def.value or 1
+	Data.Items[id] = def
+	return def
+end
+local function recipe(id, def)
+	def.id = id
+	def.output = def.output or id
+	def.amount = def.amount or 1
+	Data.Recipes[id] = def
+	return def
+end
+local function valueOf(costs)
+	local v = 0
+	for id, n in pairs(costs) do v += (Data.Items[id] and Data.Items[id].value or 0) * n end
+	return v
+end
+-- Park-Miller stream (deterministic per seed).
+local function stream(seed)
+	local s = (whole(seed) % 2147483646) + 1
+	return function()
+		s = (s * 16807) % 2147483647
+		return (s - 1) / 2147483646
+	end
+end
+
+------------------------------------------------------------------------------
+-- Harvest Contests
+------------------------------------------------------------------------------
+local CT = {}
+Data.Contests = CT
+CT.whole = whole
+CT.NAME = "Harvest Contest"
+CT.COLOR = "E9C46A"
+CT.PERIOD = Cal.dayLength // 3      -- 3,050 s: three contests per isle day (dawn, midday, dusk bells)
+CT.DURATION = 1200                  -- the scoring window (20 real minutes)
+CT.FEATURED = 3                     -- crops per contest
+CT.GRACE = 90                       -- seconds after the close before a server seals; scores harvested in time are written until GRACE / 2
+CT.SHARDS = 64                      -- score items per contest (UserId % SHARDS)
+CT.SHARD_CAP = 1000                 -- entrants per score item (~25 KB JSON worst case, under the 32 KB item limit; 64k per contest)
+CT.GROUPS = 8                       -- histogram mirror items per contest (live estimates read these only)
+CT.SCORE_CAP = 10000000             -- one entry's score never exceeds this
+CT.FLUSH = 10                       -- seconds between a server's score flushes (one UpdateAsync per pending shard)
+CT.MIRROR = 20                      -- seconds between histogram mirror writes
+CT.READ = 45                        -- seconds a server's live estimate / leaderboard stays fresh
+CT.LB_BATCH = 40                    -- leaderboard writes per flush (the rest wait for the next one)
+CT.LB_TOP = 10                      -- leaderboard rows read per crop
+CT.TICK = 5                         -- contest heartbeat (seconds)
+CT.BACKOFF_BASE = 2                 -- first retry delay of a failing key (doubles, jittered 50-100 %)
+CT.BACKOFF_MAX = 120
+CT.SEAL_LEASE = 60                  -- one server's claim to seal a contest
+CT.SEAL_RETRY = 30                  -- seconds between sealing attempts / result reads
+CT.TTL_PAD = 7200                   -- MemoryStore items expire this long after the close (per-contest TTL)
+CT.RESULT_SLOTS = 64                -- DataStore ring of sealed results (~54 hours of contests)
+CT.OPEN_MAX = 8                     -- entries awaiting a sealed result per journal
+CT.HISTORY = 12                     -- finished entries kept per journal
+CT.ENTER_COOLDOWN = 2               -- seconds between contestEnter changes
+CT.MEDAL = "HarvestMedal"           -- journal currency (p.contests.medals), not an item
+CT.MEDAL_VALUE = 25                 -- most coins any exchange item sells for, per medal paid (no coin mint)
+CT.MAP_PREFIX = "contest_v1_"       -- MemoryStore SortedMaps: <k>_t (score shards, histogram groups, seal), <k>_lb (leaderboard)
+CT.RESULT_PREFIX = "contest_v1_result_" -- DataStore ring key <k % RESULT_SLOTS>
+CT.STEWARD = "ContestSteward"
+
+-- Crops: the Verdant Garden crops (field crops count from nodes and plots,
+-- garden-only crops from plots). min = the least score that places.
+CT.Crops = {}
+CT.CropById = {}
+for i, c in ipairs(G.Crops) do
+	local entry = {id=c.id, index=i, min=math.max(12, 60 - 7 * (i - 1)), tint=c.tint, exclusive=c.exclusive}
+	table.insert(CT.Crops, entry)
+	CT.CropById[c.id] = entry
+end
+
+-- Brackets, best first: top = share of placing entrants (by rank), minPop =
+-- entrants a crop needs before the bracket is awarded at all.
+CT.Brackets = {
+	{id="Diamond",name="Diamond",top=0.02,minPop=50,medals=9,mult=3.0,color="9AE6FF"},
+	{id="Platinum",name="Platinum",top=0.05,minPop=20,medals=6,mult=2.5,color="D8E3EA"},
+	{id="Gold",name="Gold",top=0.10,minPop=8,medals=4,mult=2.0,color="F7C548"},
+	{id="Silver",name="Silver",top=0.30,minPop=3,medals=2,mult=1.5,color="C9D1D9"},
+	{id="Bronze",name="Bronze",top=0.60,minPop=1,medals=1,mult=1.25,color="CD8A4E"},
+}
+CT.BracketById = {}
+for i, b in ipairs(CT.Brackets) do b.rank = #CT.Brackets - i + 1; CT.BracketById[b.id] = b end
+
+-- Schedule ------------------------------------------------------------------------
+function CT.indexAt(t) return (math.floor(tonumber(t) or 0) - Cal.epoch) // CT.PERIOD end
+function CT.cropsOf(k)
+	local draw = stream(whole(k) * 7919 + 104729)
+	local pool = {}
+	for _, c in ipairs(CT.Crops) do table.insert(pool, c.id) end
+	local out = {}
+	for _ = 1, CT.FEATURED do
+		local i = math.floor(draw() * #pool) + 1
+		table.insert(out, table.remove(pool, i))
+	end
+	return out
+end
+local windows = {}
+-- Contest k: {k, starts, ends, sealAt, writeDeadline, crops}.
+function CT.window(k)
+	k = math.floor(tonumber(k) or 0)
+	local w = windows[k]
+	if w then return w end
+	local starts = Cal.epoch + k * CT.PERIOD
+	w = {k=k, starts=starts, ends=starts + CT.DURATION, sealAt=starts + CT.DURATION + CT.GRACE,
+		writeDeadline=starts + CT.DURATION + CT.GRACE // 2, crops=CT.cropsOf(k)}
+	local n = 0
+	for _ in pairs(windows) do n += 1 end
+	if n > 64 then table.clear(windows) end
+	windows[k] = w
+	return w
+end
+-- The contest at t: {k, active, starts, ends, crops, next = the next contest's window}.
+function CT.at(t)
+	t = math.floor(tonumber(t) or 0)
+	local k = CT.indexAt(t)
+	local w = CT.window(k)
+	local active = t >= w.starts and t < w.ends
+	return {k=k, active=active, starts=w.starts, ends=w.ends, crops=w.crops, window=w, nextWindow=CT.window(k + 1)}
+end
+function CT.featured(k, crop)
+	for i, id in ipairs(CT.window(k).crops) do if id == crop then return i end end
+	return nil
+end
+function CT.span(seconds)
+	seconds = math.max(0, math.floor(tonumber(seconds) or 0))
+	if seconds >= 3600 then return (seconds // 3600) .. "h " .. ((seconds % 3600) // 60) .. "m" end
+	if seconds >= 60 then return (seconds // 60) .. "m " .. string.format("%02d", seconds % 60) .. "s" end
+	return seconds .. "s"
+end
+
+-- Scores ---------------------------------------------------------------------------
+-- A stored entry packs the featured slot (1..3) with the score: score * 4 + slot.
+function CT.pack(slot, score) return math.min(whole(score), CT.SCORE_CAP) * 4 + math.clamp(whole(slot), 1, 3) end
+function CT.unpack(v)
+	v = whole(v)
+	local slot = v % 4
+	if slot < 1 then return nil, 0 end
+	return slot, v // 4
+end
+function CT.shardOf(userId) return whole(userId) % CT.SHARDS + 1 end
+function CT.groupOf(shard) return (whole(shard) - 1) % CT.GROUPS + 1 end
+function CT.shardKey(shard) return "s" .. whole(shard) end
+function CT.groupKey(g) return "g" .. whole(g) end
+function CT.mapName(k) return CT.MAP_PREFIX .. whole(k) .. "_t" end
+function CT.boardName(k) return CT.MAP_PREFIX .. whole(k) .. "_lb" end
+function CT.resultKey(k) return CT.RESULT_PREFIX .. (whole(k) % CT.RESULT_SLOTS) end
+-- Seconds a contest's MemoryStore items live (expiration argument), within 45 days.
+function CT.ttl(k, now)
+	local w = CT.window(k)
+	return math.clamp(w.ends + CT.TTL_PAD - math.floor(tonumber(now) or 0), 60, 3888000)
+end
+function CT.backoff(fails, r)
+	local span = math.min(CT.BACKOFF_MAX, CT.BACKOFF_BASE * 2 ^ math.max(0, whole(fails) - 1))
+	return span * (0.5 + 0.5 * math.clamp(tonumber(r) or 0, 0, 1))
+end
+-- Log-scale score buckets for the live histogram (~10 % wide).
+CT.BUCKET_BASE = 1.1
+function CT.bucket(score)
+	score = whole(score)
+	if score < 1 then return 0 end
+	return math.floor(math.log(score) / math.log(CT.BUCKET_BASE)) + 1
+end
+-- Per-slot histograms of an entry map {[uid] = packed}: {[slot] = {[bucket] = n}}, counting only placing scores.
+function CT.histogram(v, k)
+	local crops = CT.window(k).crops
+	local h = {{}, {}, {}}
+	for _, packed in pairs(tab(v)) do
+		local slot, score = CT.unpack(packed)
+		local crop = slot and CT.CropById[crops[slot]]
+		if crop and score >= crop.min then
+			local b = tostring(CT.bucket(score))
+			h[slot][b] = (h[slot][b] or 0) + 1
+		end
+	end
+	return h
+end
+-- A shard item, sanitised: {k, v = {[uid string] = packed}, h, n, ver}.
+function CT.cleanShard(old, k)
+	old = tab(old)
+	local out = {k=whole(k), v={}, n=0, ver=whole(old.ver)}
+	if whole(old.k) ~= out.k then out.ver = 0; return out end
+	for uid, packed in pairs(tab(old.v)) do
+		if type(uid) == "string" and #uid <= 20 and CT.unpack(packed) then out.v[uid] = whole(packed); out.n += 1 end
+	end
+	return out
+end
+-- Atomic shard transform: ops = {[uid string] = {c = slot, s = score}} (the
+-- journal's current entry). Scores only rise (idempotent under retries, lost
+-- acknowledgements, rejoins on other servers and out-of-order flushes); a
+-- write after the contest's write deadline, or a new entrant into a full
+-- shard, is refused. Returns the new item (nil = nothing changed) and
+-- verdicts {[uid] = "ok" | "stale" | "late" | "full" | "bad"} with the stored score.
+function CT.applyScores(old, ops, k, now)
+	local item = CT.cleanShard(old, k)
+	local verdicts, changed = {}, false
+	local w = CT.window(k)
+	local late = math.floor(tonumber(now) or 0) >= w.writeDeadline
+	for uid, op in pairs(tab(ops)) do
+		local slot, score = whole(tab(op).c), math.min(whole(tab(op).s), CT.SCORE_CAP)
+		if type(uid) ~= "string" or #uid > 20 or slot < 1 or slot > CT.FEATURED or score < 1 then
+			verdicts[uid] = {v="bad"}
+		else
+			local oldSlot, oldScore = CT.unpack(item.v[uid])
+			if oldSlot and oldScore >= score then
+				verdicts[uid] = {v="stale", s=oldScore}
+			elseif late then
+				verdicts[uid] = {v="late", s=oldScore}
+			elseif not oldSlot and item.n >= CT.SHARD_CAP then
+				verdicts[uid] = {v="full", s=0}
+			else
+				if not oldSlot then item.n += 1 end
+				item.v[uid] = CT.pack(oldSlot or slot, score)
+				verdicts[uid] = {v="ok", s=score}
+				changed = true
+			end
+		end
+	end
+	if not changed then return nil, verdicts end
+	item.ver += 1
+	item.h = CT.histogram(item.v, k)
+	return item, verdicts
+end
+-- Histogram mirror group: {k, s = {[shard string] = {ver, h}}}; keeps the highest version per shard.
+function CT.mirror(old, k, entries)
+	old = tab(old)
+	local out = {k=whole(k), s={}}
+	if whole(old.k) == out.k then for key, e in pairs(tab(old.s)) do out.s[key] = e end end
+	local changed = false
+	for shard, e in pairs(tab(entries)) do
+		local key = tostring(shard)
+		local have = tab(out.s[key])
+		if whole(e.ver) > whole(have.ver) then out.s[key] = {ver=whole(e.ver), h=e.h}; changed = true end
+	end
+	return if changed then out else nil
+end
+-- Summed histograms {[slot] = {buckets = {[b] = n}, n}} from group items.
+function CT.sumGroups(groups)
+	local out = {{buckets={}, n=0}, {buckets={}, n=0}, {buckets={}, n=0}}
+	for _, g in pairs(tab(groups)) do
+		for _, e in pairs(tab(tab(g).s)) do
+			for slot = 1, CT.FEATURED do
+				for b, n in pairs(tab(tab(tab(e).h)[slot])) do
+					n = whole(n)
+					out[slot].buckets[tostring(b)] = (out[slot].buckets[tostring(b)] or 0) + n
+					out[slot].n += n
+				end
+			end
+		end
+	end
+	return out
+end
+-- The best bracket a rank earns among n placing entrants (rank 1 = best).
+function CT.bracketForRank(rank, n)
+	rank, n = whole(rank), whole(n)
+	if rank < 1 or n < 1 then return nil end
+	for _, b in ipairs(CT.Brackets) do
+		if n >= b.minPop and rank <= math.max(1, math.floor(b.top * n)) then return b.id end
+	end
+	return nil
+end
+-- Live estimate from a summed histogram: entrants in strictly higher buckets
+-- rank ahead of you, and of your own bucket the share above your position in
+-- it (scores spread evenly in log space). Returns bracket id | nil, rank, n.
+function CT.estimate(hist, score, crop)
+	hist = tab(hist)
+	local def = CT.CropById[crop]
+	score = whole(score)
+	if not def or score < def.min then return nil, 0, whole(hist.n) end
+	local mine = CT.bucket(score)
+	local above, same, n = 0, 0, 0
+	for b, count in pairs(tab(hist.buckets)) do
+		b, count = tonumber(b) or 0, whole(count)
+		n += count
+		if b > mine then above += count elseif b == mine then same += count end
+	end
+	if same == 0 then same, n = 1, n + 1 end -- not mirrored yet: count yourself in
+	local position = math.clamp(math.log(score) / math.log(CT.BUCKET_BASE) + 1 - mine, 0, 1)
+	local rank = above + math.floor((same - 1) * (1 - position) + 0.5) + 1
+	return CT.bracketForRank(rank, n), rank, n
+end
+-- Exact sealing: cut-off scores per slot from every stored entry.
+-- result = {k, crops, slots = {[slot] = {n, cut = {[bracket] = score}, top = {{u, s}}}}}.
+function CT.seal(k, shards)
+	local w = CT.window(k)
+	local lists = {{}, {}, {}}
+	local seen = {}
+	for _, sh in pairs(tab(shards)) do
+		for uid, packed in pairs(tab(tab(sh).v)) do
+			local slot, score = CT.unpack(packed)
+			local crop = slot and CT.CropById[w.crops[slot]]
+			if crop and score >= crop.min and not seen[uid] then
+				seen[uid] = true
+				table.insert(lists[slot], {u=uid, s=score})
+			end
+		end
+	end
+	local result = {k=w.k, crops=w.crops, slots={}}
+	for slot = 1, CT.FEATURED do
+		local list = lists[slot]
+		table.sort(list, function(a, b) if a.s ~= b.s then return a.s > b.s end return a.u < b.u end)
+		local n = #list
+		local cut = {}
+		for _, b in ipairs(CT.Brackets) do
+			if n >= b.minPop then cut[b.id] = list[math.max(1, math.floor(b.top * n))].s end
+		end
+		local top = {}
+		for i = 1, math.min(3, n) do table.insert(top, {u=list[i].u, s=list[i].s}) end
+		result.slots[slot] = {n=n, cut=cut, top=top}
+	end
+	return result
+end
+-- A stored result, sanitised (nil when it is not contest k's).
+function CT.cleanResult(r, k)
+	r = tab(r)
+	if whole(r.k) ~= whole(k) or type(r.slots) ~= "table" then return nil end
+	local out = {k=whole(k), slots={}}
+	for slot = 1, CT.FEATURED do
+		local s = tab(r.slots[slot] or r.slots[tostring(slot)])
+		local cut = {}
+		for _, b in ipairs(CT.Brackets) do
+			local v = tab(s.cut)[b.id]
+			if type(v) == "number" and v >= 1 then cut[b.id] = whole(v) end
+		end
+		local top = {}
+		for _, e in ipairs(tab(s.top)) do
+			if type(e) == "table" and type(e.u) == "string" and #top < 3 then table.insert(top, {u=e.u, s=whole(e.s), n=type(e.n) == "string" and string.sub(e.n, 1, 20) or nil}) end
+		end
+		out.slots[slot] = {n=whole(s.n), cut=cut, top=top}
+	end
+	return out
+end
+-- The bracket a final score earns against a sealed result's cut-offs (nil = no bracket).
+function CT.bracketOf(result, slot, score, crop)
+	local s = tab(tab(tab(result).slots)[slot])
+	local def = CT.CropById[crop]
+	score = whole(score)
+	if not def or score < def.min then return nil end
+	for _, b in ipairs(CT.Brackets) do
+		local cut = tab(s.cut)[b.id]
+		if type(cut) == "number" and score >= cut then return b.id end
+	end
+	return nil
+end
+-- Rewards for a finished entry: medals and Farming XP (placing entrants only).
+function CT.reward(crop, bracket, placed)
+	local def = CT.CropById[crop]
+	if not def or not placed then return 0, 0 end
+	local b = CT.BracketById[bracket]
+	local xp = math.floor(150 * def.index * (b and b.mult or 1))
+	return b and b.medals or 0, xp
+end
+
+-- Medal Exchange ------------------------------------------------------------------
+item("FurrowMedallion",{name="Furrow Medallion",kind="accessory",rarity="Uncommon",color=Data.Rarity.Uncommon.color,stats={farmingFortune=8},value=40*Data.Rarity.Uncommon.rank^2,
+	description="Accessory. Magical Power "..Data.Rarity.Uncommon.power..". Medal Exchange (Harvest Contests)."})
+item("LaureateMedallion",{name="Laureate's Medallion",kind="accessory",rarity="Epic",color=Data.Rarity.Epic.color,stats={farmingFortune=20,health=10},value=40*Data.Rarity.Epic.rank^2,
+	description="Accessory. Magical Power "..Data.Rarity.Epic.power..". Medal Exchange; upgrades the Furrow Medallion."})
+item("MedalistHoe",{name="Medalist's Hoe",kind="tool",toolKind="Hoe",slot="hoe",toolTier=5,tier=5,rarity="Epic",color="E9C46A",stats={farmingFortune=135},requires={Farming=55},value=1800,
+	description="Tier 5 hoe from the Medal Exchange. Requires Farming 55."})
+item("HarvestTonic",{name="Harvest Tonic",kind="consumable",category="potion",rarity="Uncommon",color="E9C46A",buff={stats={farmingFortune=50},duration=600},value=30,
+	description="Potion: +50 Farming Fortune for 10 minutes. Medal Exchange."})
+-- kind: item (amount; unique = one owned at most; upgrade = item consumed),
+-- almanac (the next Furrow Almanac volume), title (cosmetic).
+CT.ALMANAC = {5, 5, 5, 5}           -- +Farming Fortune per volume (p.perkStats.contests; never Health / Defense)
+CT.ALMANAC_COST = {20, 45, 80, 130}
+CT.Titles = {
+	{id="Furrowhand",title="Furrowhand",medals=15,color="CD8A4E"},
+	{id="GoldenSheaf",title="Golden Sheaf",medals=60,color="F7C548"},
+	{id="FieldLaureate",title="Field Laureate",medals=150,color="9AE6FF"},
+}
+CT.TitleById = {}
+for _, t in ipairs(CT.Titles) do CT.TitleById[t.id] = t end
+CT.Shop = {
+	{id="HarvestTonic",kind="item",item="HarvestTonic",amount=2,medals=3},
+	{id="LotusBud",kind="item",item="LotusBud",amount=2,medals=4},
+	{id="FurrowMedallion",kind="item",item="FurrowMedallion",amount=1,medals=25,unique=true},
+	{id="LaureateMedallion",kind="item",item="LaureateMedallion",amount=1,medals=90,unique=true,upgrade="FurrowMedallion"},
+	{id="MedalistHoe",kind="item",item="MedalistHoe",amount=1,medals=110,unique=true,level=55},
+	{id="Almanac",kind="almanac"},
+}
+for _, t in ipairs(CT.Titles) do table.insert(CT.Shop, {id="Title"..t.id, kind="title", title=t.id, medals=t.medals}) end
+CT.ShopById = {}
+for i, e in ipairs(CT.Shop) do e.index = i; CT.ShopById[e.id] = e end
+function CT.almanacStats(volumes)
+	local ff = 0
+	for i = 1, math.min(whole(volumes), #CT.ALMANAC) do ff += CT.ALMANAC[i] end
+	return if ff > 0 then {farmingFortune=ff} else nil
+end
+function CT.offerCost(e, volumes)
+	if e.kind == "almanac" then return CT.ALMANAC_COST[whole(volumes) + 1] end
+	return e.medals
+end
+
+-- Journal record p.contests = {cur = {k, c, s, at} | nil, open = {{k, c, s}},
+-- best = {[crop] = score}, medals, earned, entries, placed, brackets = {[id] = n},
+-- history = {{k, c, s, b, m}}, almanac, titles = {[id] = true}, title, ann}.
+function CT.migrate(raw)
+	raw = tab(raw)
+	local c = {open={}, best={}, history={}, brackets={}, titles={}, ann=whole(raw.ann)}
+	for _, key in ipairs({"medals","earned","entries","placed","almanac","spent"}) do c[key] = whole(raw[key]) end
+	c.almanac = math.min(c.almanac, #CT.ALMANAC)
+	local cur = tab(raw.cur)
+	if whole(cur.k) > 0 and CT.CropById[cur.c] and CT.featured(cur.k, cur.c) then
+		c.cur = {k=whole(cur.k), c=cur.c, s=math.min(whole(cur.s), CT.SCORE_CAP), at=whole(cur.at)}
+	end
+	for _, e in ipairs(tab(raw.open)) do
+		if type(e) == "table" and whole(e.k) > 0 and CT.CropById[e.c] and CT.featured(e.k, e.c) and #c.open < CT.OPEN_MAX then
+			table.insert(c.open, {k=whole(e.k), c=e.c, s=math.min(whole(e.s), CT.SCORE_CAP)})
+		end
+	end
+	for crop, s in pairs(tab(raw.best)) do if CT.CropById[crop] then c.best[crop] = math.min(whole(s), CT.SCORE_CAP) end end
+	for _, e in ipairs(tab(raw.history)) do
+		if type(e) == "table" and CT.CropById[e.c] and #c.history < CT.HISTORY then
+			table.insert(c.history, {k=whole(e.k), c=e.c, s=whole(e.s), b=CT.BracketById[e.b] and e.b or nil, m=whole(e.m)})
+		end
+	end
+	for _, b in ipairs(CT.Brackets) do local n = whole(tab(raw.brackets)[b.id]); if n > 0 then c.brackets[b.id] = n end end
+	for id in pairs(tab(raw.titles)) do if CT.TitleById[id] then c.titles[id] = true end end
+	if type(raw.title) == "string" and c.titles[raw.title] then c.title = raw.title end
+	return c
+end
+
+------------------------------------------------------------------------------
+-- Trophy Angling
+------------------------------------------------------------------------------
+local TF = {}
+Data.Trophies = TF
+TF.whole = whole
+TF.NAME = "Trophy Angling"
+TF.COLOR = "5EC8D8"
+TF.KEEPER = "TrophyKeeper"
+-- Qualities, worst first. weight = base share of trophy catches.
+TF.Tiers = {
+	{id="Bronze",name="Bronze",weight=0.70,mult=1,color="CD8A4E"},
+	{id="Silver",name="Silver",weight=0.22,mult=1.5,color="C9D1D9"},
+	{id="Gold",name="Gold",weight=0.07,mult=2.5,color="F7C548"},
+	{id="Diamond",name="Diamond",weight=0.01,mult=5,color="9AE6FF"},
+}
+TF.TierById = {}
+for i, t in ipairs(TF.Tiers) do t.index = i; TF.TierById[t.id] = t end
+TF.PITY_GOLD = 60                   -- catches of one fish without Gold or better: the next is at least Gold
+TF.PITY_DIAMOND = 300               -- catches of one fish without a Diamond: the next is Diamond
+TF.ROD_GOLD, TF.ROD_DIAMOND = 0.01, 0.002 -- per rod tier above the fish's requirement
+TF.BASE_CHANCE = 0.03               -- a trophy bite per eligible cast
+TF.CHANCE_CAP = 0.10
+TF.HOOD_CHANCE = 0.01               -- Gillward Hood worn
+TF.PET = "Glintgill"
+TF.PET_CHANCE = 0.00015             -- per Glintgill level (+1.5 % at level 100)
+TF.RarityXp = {Common=40, Uncommon=80, Rare=160, Epic=320, Legendary=640}
+-- Waters: region id of the fishing prompt -> water (nil / Meadow / Hub = the Shallows).
+TF.Waters = {
+	{id="Shallows",name="Sunwheel Shallows",regions={"Meadow","Hub"},color="8FB8D6"},
+	{id="Gloomhollow",name="Gloomhollow Mere",regions={"Gloomhollow"},color="6A4C93"},
+	{id="Tidewater",name="Tidewater Deeps",regions={"Tidewater"},color="2F8FA8"},
+	{id="ShatteredCrown",name="Crownrift Pools",regions={"ShatteredCrown"},color="F2D27A"},
+}
+TF.WaterById = {}
+for _, w in ipairs(TF.Waters) do TF.WaterById[w.id] = w end
+function TF.waterOf(region)
+	if region == nil or region == "" then return "Shallows" end
+	for _, w in ipairs(TF.Waters) do if table.find(w.regions, region) then return w.id end end
+	return nil
+end
+-- Isle clock hour 0..24 (the sidebar's clock; night = hour < 6 or >= 19).
+function TF.hourAt(t)
+	local into = (math.floor(tonumber(t) or 0) - Cal.epoch) % Cal.dayLength
+	return into / Cal.dayLength * 24
+end
+function TF.inHours(hours, h)
+	if type(hours) ~= "table" then return true end
+	local from, to = hours[1], hours[2]
+	if from <= to then return h >= from and h < to end
+	return h >= from or h < to
+end
+-- Baits (Cooking at the Hearth; one is spent per cast in trophy waters while loaded).
+TF.BaitOrder = {"GlowgrubBait","BrineglowLure","AbyssalLure"}
+TF.Baits = {
+	GlowgrubBait={name="Glowgrub Bait",level=10,bonus=0.01,costs={Fish=2,Herb=2},amount=4,color="C6E377",rarity="Common"},
+	BrineglowLure={name="Brineglow Lure",level=35,bonus=0.015,costs={BrineShell=2,GlowJelly=1},amount=4,color="C3A6FF",rarity="Uncommon"},
+	AbyssalLure={name="Abyssal Lure",level=60,bonus=0.02,costs={AbyssInk=1,SeaScale=2},amount=4,color="2B2D42",rarity="Rare"},
+}
+for _, id in ipairs(TF.BaitOrder) do
+	local b = TF.Baits[id]
+	b.id = id
+	recipe(id, {skill="Cooking",level=b.level,xp=12 + b.level,costs=b.costs,amount=b.amount,repeatable=true,station="Hearth",category="Bait"})
+	item(id, {name=b.name,kind="material",category="bait",rarity=b.rarity,color=b.color,value=math.floor(valueOf(b.costs) / b.amount * 0.8),
+		description="Trophy bait: load it in Hunt › Trophies. +"..(b.bonus * 100).."% trophy chance; some trophy fish bite only on it."})
+end
+-- The fifteen trophy fish. water, hours = isle clock window, season / event
+-- (Data.Calendar), rod = least rod tier, bait = bait item, fishing = level.
+TF.Fish = {
+	{id="PebblefinDarter",name="Pebblefin Darter",water="Shallows",rod=0,fishing=1,weight=100,rarity="Common",color="A8C5D6",text="Darts between the dock stones of the Shallows at any hour."},
+	{id="DawnscaleMinnow",name="Dawnscale Minnow",water="Shallows",hours={5,9},rod=1,fishing=5,weight=60,rarity="Uncommon",color="FFD6A5",text="Rises to the first light: isle hours 5 to 9."},
+	{id="BloomtideCarplet",name="Bloomtide Carplet",water="Shallows",season="Bloomtide",rod=1,fishing=10,weight=50,rarity="Uncommon",color="9BD77E",text="Spawns only in the season of Bloomtide."},
+	{id="MooncressLoach",name="Mooncress Loach",water="Shallows",hours={19,6},bait="GlowgrubBait",rod=1,fishing=15,weight=35,rarity="Rare",color="B8C0FF",text="Feeds at night, and only on Glowgrub Bait."},
+	{id="BrinebarbSnapper",name="Brinebarb Snapper",water="Tidewater",rod=2,fishing=30,weight=90,rarity="Common",color="E07A5F",text="The common brawler of the Tidewater Deeps."},
+	{id="SunglintBream",name="Sunglint Bream",water="Tidewater",season="Sunreach",hours={9,17},rod=2,fishing=32,weight=45,rarity="Uncommon",color="FFD166",text="Basks in Sunreach daylight: isle hours 9 to 17."},
+	{id="GloamtideRay",name="Gloamtide Ray",water="Tidewater",hours={17,21},bait="BrineglowLure",rod=3,fishing=45,weight=35,rarity="Rare",color="7A6FC2",text="Glides up at dusk (isle hours 17 to 21) for a Brineglow Lure."},
+	{id="FestivalSquallfin",name="Glimmer Squallfin",water="Tidewater",event="GlimmertideFestival",rod=3,fishing=40,weight=30,rarity="Epic",color="F4B860",text="Leaps only while the Glimmertide Festival is on."},
+	{id="CoralcrownAngler",name="Coralcrown Angler",water="Tidewater",bait="AbyssalLure",rod=5,fishing=70,weight=20,rarity="Epic",color="EF6F6C",text="Lurks in the deepest reef; it takes only an Abyssal Lure on a tier 5 rod."},
+	{id="TidewyrmFry",name="Tidewyrm Fry",water="Tidewater",hours={19,6},rod=5,fishing=78,weight=6,rarity="Legendary",color="06D6A0",text="A Matriarch's hatchling, abroad only at night."},
+	{id="LanternjawGudgeon",name="Lanternjaw Gudgeon",water="Gloomhollow",rod=4,fishing=60,weight=80,rarity="Uncommon",color="FFE08A",text="Its glowing jaw lights the Gloomhollow Mere."},
+	{id="VoidgillCavefish",name="Voidgill Cavefish",water="Gloomhollow",hours={19,6},rod=4,fishing=62,weight=40,rarity="Rare",color="5B3F8C",text="Blind and patient; it surfaces at night."},
+	{id="HollowmereEel",name="Hollowmere Eel",water="Gloomhollow",event="HollowNight",rod=4,fishing=64,weight=25,rarity="Epic",color="C77DFF",text="Stirs only on Hollow Night."},
+	{id="RiftscaleKoi",name="Riftscale Koi",water="ShatteredCrown",rod=5,fishing=80,weight=50,rarity="Rare",color="F2D27A",text="Swims the Crownrift Pools, scales split by starlight."},
+	{id="CrownveilSunfish",name="Crownveil Sunfish",water="ShatteredCrown",season="Frostveil",rod=6,fishing=88,weight=8,rarity="Legendary",color="FFF3B0",text="A Frostveil wonder; only a tier 6 rod holds it."},
+}
+TF.FishById = {}
+for i, f in ipairs(TF.Fish) do f.index = i; TF.FishById[f.id] = f end
+-- Does fish f bite for this cast? ctx = {water, hour, season, event, rod, fishing, bait}.
+function TF.bites(f, ctx)
+	ctx = tab(ctx)
+	if f.water ~= ctx.water then return false, "water" end
+	if whole(ctx.fishing) < f.fishing then return false, "fishing" end
+	if whole(ctx.rod) < f.rod then return false, "rod" end
+	if f.season and ctx.season ~= f.season then return false, "season" end
+	if f.event and ctx.event ~= f.event then return false, "event" end
+	if f.hours and not TF.inHours(f.hours, tonumber(ctx.hour) or 12) then return false, "hours" end
+	if f.bait and ctx.bait ~= f.bait then return false, "bait" end
+	return true
+end
+function TF.pool(ctx)
+	local out = {}
+	for _, f in ipairs(TF.Fish) do if TF.bites(f, ctx) then table.insert(out, f) end end
+	return out
+end
+function TF.waterHasFish(water)
+	for _, f in ipairs(TF.Fish) do if f.water == water then return true end end
+	return false
+end
+-- Trophy chance for a cast: base + bait + hood + Glintgill pet level, capped.
+function TF.chance(ctx)
+	ctx = tab(ctx)
+	local c = TF.BASE_CHANCE
+	local bait = ctx.bait and TF.Baits[ctx.bait]
+	if bait then c += bait.bonus end
+	if ctx.hood then c += TF.HOOD_CHANCE end
+	c += math.clamp(whole(ctx.petLevel), 0, Data.PET_MAX_LEVEL) * TF.PET_CHANCE
+	return math.min(TF.CHANCE_CAP, c)
+end
+-- Quality for one catch of fish f: rod tiers above the requirement shift
+-- weight to Gold / Diamond; pity guarantees Gold after PITY_GOLD catches
+-- without Gold+ and Diamond after PITY_DIAMOND without one.
+function TF.quality(f, rod, pity, r)
+	pity = tab(pity)
+	if whole(pity.d) + 1 >= TF.PITY_DIAMOND then return "Diamond", true end
+	local above = math.max(0, whole(rod) - f.rod)
+	local w = {TF.Tiers[1].weight, TF.Tiers[2].weight, TF.Tiers[3].weight + above * TF.ROD_GOLD, TF.Tiers[4].weight + above * TF.ROD_DIAMOND}
+	w[1] = math.max(0.3, 1 - w[2] - w[3] - w[4])
+	local total = w[1] + w[2] + w[3] + w[4]
+	local pick = (tonumber(r) or 0) * total
+	local tier = "Diamond"
+	for i = 1, 4 do
+		if pick < w[i] then tier = TF.Tiers[i].id; break end
+		pick -= w[i]
+	end
+	if whole(pity.g) + 1 >= TF.PITY_GOLD and TF.TierById[tier].index < 3 then return "Gold", true end
+	return tier, false
+end
+-- One eligible cast: rolls r1 (bite), r2 (which fish), r3 (quality). Returns fish, tier, pityUsed | nil.
+function TF.roll(ctx, pityOf, r1, r2, r3)
+	local pool = TF.pool(ctx)
+	if #pool == 0 or (tonumber(r1) or 1) >= TF.chance(ctx) then return nil end
+	local total = 0
+	for _, f in ipairs(pool) do total += f.weight end
+	local pick, fish = (tonumber(r2) or 0) * total, pool[#pool]
+	for _, f in ipairs(pool) do
+		pick -= f.weight
+		if pick < 0 then fish = f; break end
+	end
+	local tier, pity = TF.quality(fish, ctx.rod, pityOf and pityOf(fish.id), r3)
+	return fish, tier, pity
+end
+function TF.xp(f, tier)
+	local t = TF.TierById[tier]
+	return math.floor((TF.RarityXp[f.rarity] or 40) * (t and t.mult or 1))
+end
+-- Gillward Hood (Trophy Keeper): a fishing helmet under the Stormcaller line.
+item("GillwardHood",{name="Gillward Hood",kind="armor",slot="helmet",tier=3,rarity="Rare",color="5EC8D8",stats={fishingFortune=6,health=10,seaCreatureChance=1},requires={Fishing=25},value=600,
+	trophyChance=TF.HOOD_CHANCE,description="The Trophy Keeper's gift. +1% trophy fish chance while worn. Requires Fishing 25."})
+-- Glintgill: the trophy-fishing pet (Trophy Keeper).
+do
+	local pet = {id=TF.PET,name="Glintgill",skill="Fishing",rarity="Epic",color="7FE0D0",perLevel={fishingFortune=0.4,seaCreatureChance=0.03,health=0.3}}
+	table.insert(Data.Pets, pet)
+	Data.PetById[pet.id] = pet
+	local PD = Data.PetDepth
+	if PD and PD.Abilities then
+		local list = {
+			{name="Gleam Lure",kind="xp",skills={"Fishing"},per=0.08,rarity="Common"},
+			{name="Shoal Sight",kind="stat",stat="fishingFortune",per=0.25,rarity="Rare"},
+			{name="Deep Glint",kind="stat",stat="seaCreatureChance",per=0.03,rarity="Legendary",level=40},
+		}
+		for i, a in ipairs(list) do a.index = i; a.id = a.name:gsub("[^%w]", "") end
+		PD.Abilities[pet.id] = list
+		if PD.Looks then PD.Looks[pet.id] = {form="hopper",accent="E8FFF9"} end
+		pet.ability = list[1].name..": up to "..PD.abilityText(list[1], PD.abilityValue(list[1], Data.PET_MAX_LEVEL, PD.MAX_RARITY))
+		pet.abilityNames = {list[1].name, list[2].name, list[3].name}
+	else
+		pet.ability = "Gleam Lure"
+	end
+	item(pet.id.."Pet",{name=pet.name.." Pet",kind="pet",pet=pet.id,rarity=pet.rarity,color=pet.color,value=200*Data.Rarity.Epic.rank^2,
+		description="Summon from your pet menu. Abilities: "..table.concat(pet.abilityNames or {pet.ability}, ", ")..". Trophy Sense: +"..(TF.PET_CHANCE * 100 * Data.PET_MAX_LEVEL).."% trophy fish chance at level "..Data.PET_MAX_LEVEL..". The Trophy Keeper's reward."})
+end
+-- The Trophy Ledger: completion tiers claimed from the Trophy Keeper.
+-- need = {tier = least quality, count = fish (nil = every fish)}.
+TF.Ledger = {
+	{id="Novice",name="First Catches",need={tier="Bronze",count=5},title="Trophy Angler",xp=2000,color="CD8A4E"},
+	{id="Bronze",name="Bronze Ledger",need={tier="Bronze"},item="GillwardHood",xp=6000,color="CD8A4E"},
+	{id="Silver",name="Silver Ledger",need={tier="Silver"},title="Silverline Angler",item=TF.PET.."Pet",xp=20000,color="C9D1D9"},
+	{id="Gold",name="Gold Ledger",need={tier="Gold"},title="Gilded Angler",xp=60000,color="F7C548"},
+	{id="Diamond",name="Diamond Ledger",need={tier="Diamond"},title="Diamond Tidekeeper",xp=150000,color="9AE6FF"},
+}
+TF.LedgerById = {}
+for i, l in ipairs(TF.Ledger) do l.index = i; TF.LedgerById[l.id] = l end
+-- Fish whose best quality is at least `tier`.
+function TF.countAt(best, tier)
+	local need = TF.TierById[tier] and TF.TierById[tier].index or 1
+	local n = 0
+	for _, f in ipairs(TF.Fish) do
+		local b = TF.TierById[tab(best)[f.id]]
+		if b and b.index >= need then n += 1 end
+	end
+	return n
+end
+function TF.ledgerNeed(l) return l.need.count or #TF.Fish end
+function TF.ledgerDone(best, l) return TF.countAt(best, l.need.tier) >= TF.ledgerNeed(l) end
+function TF.titles(claimed)
+	local out = {}
+	for _, l in ipairs(TF.Ledger) do if l.title and tab(claimed)[l.id] then table.insert(out, l) end end
+	return out
+end
+-- Journal record p.trophy = {caught = {[fish] = {Bronze, Silver, Gold, Diamond counts}},
+-- best = {[fish] = tier}, pity = {[fish] = {g, d}}, total, diamonds, bait, claimed = {[ledger] = true}, title, casts}.
+function TF.migrate(raw)
+	raw = tab(raw)
+	local t = {caught={}, best={}, pity={}, claimed={}, total=0, diamonds=0, casts=whole(raw.casts)}
+	for _, f in ipairs(TF.Fish) do
+		local c = tab(tab(raw.caught)[f.id])
+		local row, any = {}, false
+		for _, tier in ipairs(TF.Tiers) do
+			local n = whole(c[tier.id])
+			if n > 0 then row[tier.id] = n; any = true; t.total += n; if tier.id == "Diamond" then t.diamonds += n end; t.best[f.id] = tier.id end
+		end
+		if any then t.caught[f.id] = row end
+		local p = tab(tab(raw.pity)[f.id])
+		if whole(p.g) > 0 or whole(p.d) > 0 then t.pity[f.id] = {g=math.min(whole(p.g), TF.PITY_GOLD), d=math.min(whole(p.d), TF.PITY_DIAMOND)} end
+	end
+	if type(raw.bait) == "string" and TF.Baits[raw.bait] then t.bait = raw.bait end
+	for id in pairs(tab(raw.claimed)) do if TF.LedgerById[id] then t.claimed[id] = true end end
+	if type(raw.title) == "string" then
+		for _, l in ipairs(TF.titles(t.claimed)) do if l.id == raw.title then t.title = raw.title end end
+	end
+	return t
+end
+-- Record one catch (mutates the record); returns isNewBest.
+function TF.record(t, fishId, tier)
+	t.caught[fishId] = t.caught[fishId] or {}
+	t.caught[fishId][tier] = whole(t.caught[fishId][tier]) + 1
+	t.total = whole(t.total) + 1
+	if tier == "Diamond" then t.diamonds = whole(t.diamonds) + 1 end
+	local p = t.pity[fishId] or {g=0, d=0}
+	local idx = TF.TierById[tier].index
+	p.g = if idx >= 3 then 0 else math.min(whole(p.g) + 1, TF.PITY_GOLD)
+	p.d = if idx >= 4 then 0 else math.min(whole(p.d) + 1, TF.PITY_DIAMOND)
+	t.pity[fishId] = p
+	local old = TF.TierById[t.best[fishId]]
+	if not old or idx > old.index then t.best[fishId] = tier; return true end
+	return false
+end
+
+------------------------------------------------------------------------------
+-- §31 announcements: contest start / result / personal best, trophy catches.
+------------------------------------------------------------------------------
+local F = Data.Features
+if F and F.announceText then
+	local announceText = F.announceText
+	function F.announceText(e)
+		if type(e) == "table" and e.kind == "contest" then
+			local crops = {}
+			for _, id in ipairs(tab(e.crops)) do table.insert(crops, Data.Items[id] and Data.Items[id].name or tostring(id)) end
+			local crop = type(e.crop) == "string" and Data.Items[e.crop] and Data.Items[e.crop].name or tostring(e.crop)
+			if e.phase == "start" then
+				return {head="HARVEST CONTEST", body=table.concat(crops, "  ·  ") .. "  ·  20 minutes", color=CT.COLOR}
+			elseif e.phase == "best" then
+				return {head="NEW PERSONAL BEST", body=crop .. "  ·  " .. whole(e.score), color="9EE7D2"}
+			end
+			local b = CT.BracketById[e.bracket]
+			return {head=b and (string.upper(b.name) .. " BRACKET") or "CONTEST RESULT",
+				body=crop .. "  ·  " .. whole(e.score) .. (if whole(e.medals) > 0 then "  ·  +" .. whole(e.medals) .. " Harvest Medals" else "  ·  no bracket"),
+				color=b and b.color or CT.COLOR}
+		elseif type(e) == "table" and (e.kind == "trophy" or e.kind == "trophyWorld") then
+			local f = TF.FishById[e.fish]
+			local t = TF.TierById[e.tier] or TF.Tiers[1]
+			local name = f and f.name or tostring(e.fish)
+			if e.kind == "trophyWorld" then
+				return {head="DIAMOND TROPHY", body=string.sub(tostring(e.who or "A wayfarer"), 1, 20) .. " landed a Diamond " .. name, color=t.color}
+			end
+			return {head=string.upper(t.name) .. " TROPHY", body=name .. (if e.new then "  ·  new best" else ""), color=t.color}
+		elseif type(e) == "table" and e.kind == "trophyLedger" then
+			local l = TF.LedgerById[e.ledger]
+			return {head="TROPHY LEDGER", body=(l and l.name or "Ledger") .. " complete  ·  see the Trophy Keeper", color=l and l.color or TF.COLOR}
+		end
+		return announceText(e)
+	end
+	F.ANNOUNCE_PRIORITY.contest = true
+end
+
+------------------------------------------------------------------------------
+-- Townsfolk: the Contest Steward (Sunwheel Downs) and the Trophy Keeper
+-- (Tidewater Shoals). Regional folk entries: World Art places their anchors.
+------------------------------------------------------------------------------
+local T, RA = Data.Townsfolk, Data.RegionArt
+if T and RA and RA.Folk and T.NPCs then
+	if T.AtlasStations then
+		T.AtlasStations.Contests = "Workshop · Contests"
+		T.AtlasStations.Trophies = "Hunt · Trophies"
+	end
+	local steward = {role=CT.STEWARD,region="Meadow",name="Odile Furrowgate",title="Contest Steward",portrait="🌾",kind="contests",
+		look={skin="E0AC69",shirt="7A8F3A",pants="4A3B2A",shoes="2E2418",accent="E9C46A",hair="8A5A2B",hat="wayfarer",held="ledger",apron="C9A66B"},
+		greet="Three crops to a contest, twenty minutes on the bell, and every isle's farmers on one ledger. Pick your crop and swing that hoe!"}
+	table.insert(RA.Folk, steward)
+	RA.FolkByRole[steward.role] = steward
+	T.NPCs[steward.role] = {name=steward.name,title=steward.title,region="Meadow",portrait=steward.portrait,look=steward.look,start="hello",anchorOnly=true,folk="contests",
+		nodes={
+			hello={text=steward.greet,options={
+				{label="Show me the contests",atlas="Contests"},
+				{label="How do contests work?",to="explain"},
+				{label="Farewell",close=true}}},
+			explain={text="A contest opens three times every isle day and runs for twenty minutes. Each one features three crops. "
+				.. "Enter one of them, or simply harvest a featured crop and I'll enter you with it. Everything you harvest of that crop counts, from fields or your garden. "
+				.. "When the bell rings, the top sixty in a hundred earn a bracket: Bronze, Silver, Gold, Platinum, and Diamond for the very best. "
+				.. "Brackets pay Harvest Medals, which my Medal Exchange takes for tools, tonics and titles.",options={
+				{label="Show me the contests",atlas="Contests"},
+				{label="Back",to="hello"},
+				{label="Farewell",close=true}}},
+		}}
+	table.insert(T.RegionFolkOrder, steward.role)
+	local keeper = {role=TF.KEEPER,region="Tidewater",name="Marlow Gillcrest",title="Trophy Keeper",portrait="🐟",kind="trophies",
+		look={skin="C68642",shirt="2F5D6B",pants="2A3A44",shoes="1E2226",accent="5EC8D8",hair="B8B2A7",hat="souwester",held="rod",beard=true},
+		greet="Every fish in that ledger I've landed myself, once. Bring me the rarest the isles hide, and the finest of each, and I'll make it worth your while."}
+	table.insert(RA.Folk, keeper)
+	RA.FolkByRole[keeper.role] = keeper
+	T.NPCs[keeper.role] = {name=keeper.name,title=keeper.title,region="Tidewater",portrait=keeper.portrait,look=keeper.look,start="hello",anchorOnly=true,folk="trophies",
+		nodes={
+			hello={text=keeper.greet,options={
+				{label="Open the Trophy Ledger",atlas="Trophies"},
+				{label="How does trophy fishing work?",to="explain"},
+				{label="Farewell",close=true}}},
+			explain={text="Fifteen trophy fish swim four waters: the Sunwheel Shallows, the Tidewater Deeps, Gloomhollow Mere and the Crownrift Pools. "
+				.. "Each bites only when its conditions are right: the hour, the season or a festival, your rod, sometimes a bait. "
+				.. "Any cast that doesn't raise a sea creature might land one, in Bronze, Silver, Gold or, rarely, Diamond. "
+				.. "Fill the ledger and I'll reward you: titles, my old Gillward Hood, even a Glintgill of your own.",options={
+				{label="Open the Trophy Ledger",atlas="Trophies"},
+				{label="Back",to="hello"},
+				{label="Farewell",close=true}}},
+		}}
+	table.insert(T.RegionFolkOrder, keeper.role)
+end
+end
+-- <<< END Contests & Trophy Angling <<<
+------------------------------------------------------------------------------
 
 return Data

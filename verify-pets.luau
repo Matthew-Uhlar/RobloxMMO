@@ -106,6 +106,7 @@ for _, loot in pairs(Data.Lairs and Data.Lairs.Loot or {}) do scan(loot) end -- 
 scan(Data.Agility.LapDrops)
 for _, c in ipairs(Data.Hunter.Creatures) do scan(c.drops) end
 for _, id in pairs(PD.SkillPets) do sources[id] = true end
+for _, l in ipairs(Data.Trophies and Data.Trophies.Ledger or {}) do if l.item then sources[l.item] = true end end -- §39: the Trophy Keeper's Glintgill
 for _, pet in ipairs(Data.Pets) do ok(sources[pet.id .. "Pet"], pet.id .. " is obtainable") end
 for skill, id in pairs(PD.SkillPets) do
 	ok(Data.Skills[skill] ~= nil and Data.Items[id] and Data.Items[id].kind == "pet", "skilling pet " .. skill)
