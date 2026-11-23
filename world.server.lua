@@ -4,7 +4,6 @@
 -- Region attributes + Anchor_<Purpose> parts, docs/DEPTH-CONTRACT.md section 10);
 -- props that should become custom meshes carry Shape / Tint / ShapeScale.
 local Players = game:GetService("Players")
-local Lighting = game:GetService("Lighting")
 local Tags = game:GetService("CollectionService")
 local world = Instance.new("Folder")
 world.Name = "AetherIsles"
@@ -23,81 +22,16 @@ local BALL=Enum.PartType.Ball
 local warm=C("FFD9A0")
 
 -------------------------------------------------------------------------------
--- Lighting. Technology = Future is set in default.project.json (not scriptable);
--- the same look is applied here so a place opened without the project matches.
--- Bugs fixed (wave 4): over-bright OutdoorAmbient/Ambient flattened every
--- island and lit caves; stacked post effects if the place already had some;
--- 0.19 density haze with a near-white colour washed distant islands out.
+-- Lighting (§35): this script writes NO Lighting property and adds no Lighting
+-- child. lighting.client.lua (StarterPlayerScripts.IsleLighting) is the one
+-- writer: day-night from the isle clock, region profiles, post effects, the
+-- graphics tier and the world light budget. Technology = Future and the day
+-- look are the place defaults in default.project.json. The old server cycle
+-- here (its own 20-minute clock that disagreed with the sidebar, ClockTime
+-- stepped every 2 s so shadows jittered, and Lighting children rebuilt on the
+-- server) was removed. Night lamps are created off and tagged NightLight; the
+-- director lights them after dusk near the player.
 -------------------------------------------------------------------------------
-local LOOK = {
-	Brightness=2.6, ClockTime=14.5, GeographicLatitude=38,
-	Ambient=C("3A4150"), OutdoorAmbient=C("7D8A9C"),
-	EnvironmentDiffuseScale=.5, EnvironmentSpecularScale=.3,
-	ExposureCompensation=0, ShadowSoftness=.3, GlobalShadows=true,
-}
-for key,value in pairs(LOOK) do Lighting[key]=value end
-for _,child in ipairs(Lighting:GetChildren()) do
-	if child:IsA("PostEffect") or child:IsA("Atmosphere") or child:IsA("Sky") then child:Destroy() end
-end
-local grade=Instance.new("ColorCorrectionEffect")
-grade.Name,grade.Brightness,grade.Contrast,grade.Saturation="Aether grade",0,.1,.08
-grade.TintColor=C("FFF6EA")
-grade.Parent=Lighting
-local bloom=Instance.new("BloomEffect")
-bloom.Name,bloom.Intensity,bloom.Size,bloom.Threshold="Aether bloom",.3,20,1.5
-bloom.Parent=Lighting
-local rays=Instance.new("SunRaysEffect")
-rays.Name,rays.Intensity,rays.Spread="Aether sun rays",.045,.45
-rays.Parent=Lighting
-local air = Instance.new("Atmosphere")
-air.Name="Aether air"
-air.Density,air.Offset,air.Color,air.Decay,air.Glare,air.Haze=.24,.1,C("C9D8E6"),C("7186A6"),.3,.7
-air.Parent = Lighting
-local sky=Instance.new("Sky")
-sky.Name,sky.StarCount,sky.SunAngularSize,sky.MoonAngularSize="Aether sky",2600,12,9
-sky.Parent=Lighting
-
--- Slow day/night: one server loop, one update every 2 s. Lamps (night lights)
--- switch on at dusk; hero lights stay on. Daylight 15 min, night 5 min.
-local DAY_SECONDS,NIGHT_SECONDS=900,300
-local NIGHT_OUTDOOR,NIGHT_AIR=C("3E4A66"),C("4A5878")
-local nightLights={}
-local nightOn=false
-local function isNight(clock) return clock<6.2 or clock>17.8 end
-local function applyClock(clock)
-	Lighting.ClockTime=clock
-	local sun=math.clamp(math.min(clock-5.5,18.5-clock)/1.5,0,1)
-	Lighting.OutdoorAmbient=NIGHT_OUTDOOR:Lerp(LOOK.OutdoorAmbient,sun)
-	air.Color=NIGHT_AIR:Lerp(C("C9D8E6"),sun)
-	local night=isNight(clock)
-	if night~=nightOn then
-		nightOn=night
-		-- Lamps of departed homes drop out here, so the list never leaks.
-		local kept={}
-		for _,l in ipairs(nightLights) do
-			if l.Parent then
-				l.Enabled=night
-				table.insert(kept,l)
-			end
-		end
-		nightLights=kept
-	end
-end
-local function advanceClock(clock,dt)
-	local rate=if clock>=6 and clock<18 then 12/DAY_SECONDS else 12/NIGHT_SECONDS
-	return (clock+dt*rate)%24
-end
-if task.wait then
-	task.spawn(function()
-		local clock=LOOK.ClockTime
-		while true do
-			local dt=task.wait(2)
-			clock=advanceClock(clock,tonumber(dt) or 2)
-			applyClock(clock)
-		end
-	end)
-end
-
 -------------------------------------------------------------------------------
 -- Primitive helpers.
 -------------------------------------------------------------------------------
@@ -213,8 +147,8 @@ local function light(parent,color,brightness,range,opts)
 	if opts.face then l.Face=opts.face end
 	if opts.angle then l.Angle=opts.angle end
 	if opts.night then
-		l.Enabled=nightOn
-		table.insert(nightLights,l)
+		l.Enabled=false -- the client director (§35) lights it after dusk
+		l:SetAttribute("NightLight",true)
 	end
 	l.Parent=host
 	return l
@@ -5014,11 +4948,14 @@ end
 -- One collider pad per vent (6 static parts, `Caldera` mesh slot + an updraft
 -- emitter, tag SkywardVent, attributes VentId / VentLanding). Its prompt
 -- (IsleVent = id) asks IsleRegionAccess for the destination region and the
--- IsleTravelGate when present, applies a per-rider cooldown, sets FastTravelAt,
--- publishes VentFlight = "<id>:<seq>" (the rider's client plays the arc), then
--- lands the rider server-side after Data.Vents.FLIGHT seconds (FastTravelAt
--- again). Landings sit beside the paired vent on the far isle, on clear ground
--- and >= 42 studs from every monster spawn marker.
+-- IsleTravelGate when present (an erroring gate refuses), applies a per-rider
+-- cooldown, sets FastTravelAt, publishes VentFlight = "<id>:<seq>" (the rider's
+-- client plays the arc), then lands the rider server-side after
+-- Data.Vents.FLIGHT seconds (FastTravelAt again) only if the rider is still this
+-- flight's rider, the same living character, and the travel gate still passes
+-- (hurt grace, expeditions); else the landing is abandoned and the rider stays
+-- where they are. Landings sit beside the paired vent on the far isle, on clear
+-- ground and >= 42 studs from every monster spawn marker.
 -------------------------------------------------------------------------------
 do
 	local VD=Data.Vents
@@ -5107,6 +5044,14 @@ do
 			player:SetAttribute("IsleRegionNotice",message)
 			player:SetAttribute("IsleRegionNoticeCount",(tonumber(player:GetAttribute("IsleRegionNoticeCount")) or 0)+1)
 		end
+		-- IsleTravelGate: true, or the refusal message. Fails closed when the gate errors.
+		local function gatePasses(player)
+			local gate=ServerStorage:FindFirstChild("IsleTravelGate")
+			if not gate then return true end
+			local okGate,verdict=pcall(gate.Invoke,gate,player)
+			if okGate and verdict==true then return true end
+			return if okGate and type(verdict)=="string" then verdict else "The vent will not lift you right now."
+		end
 		local function launch(player,v)
 			local character=player.Character
 			local root=character and character:FindFirstChild("HumanoidRootPart")
@@ -5124,11 +5069,8 @@ do
 				notice(player,if ok and type(result)=="table" and type(result.message)=="string" then result.message else region.name..": "..requirementText(region))
 				return
 			end
-			local gate=ServerStorage:FindFirstChild("IsleTravelGate")
-			if gate then
-				local okGate,verdict=pcall(gate.Invoke,gate,player)
-				if okGate and verdict~=true then notice(player,if type(verdict)=="string" then verdict else "The vent will not lift you right now.") return end
-			end
+			local gated=gatePasses(player)
+			if gated~=true then notice(player,gated) return end
 			seq+=1
 			local mine=seq
 			riding[player]=mine
@@ -5142,11 +5084,13 @@ do
 				local now2=player.Character
 				local r=now2 and now2:FindFirstChild("HumanoidRootPart")
 				local h=now2 and now2:FindFirstChildOfClass("Humanoid")
-				if now2==character and r and h and h.Health>0 then
-					player:SetAttribute("FastTravelAt",os.clock())
-					now2:PivotTo(CFrame.new(v.landing))
-					r.AssemblyLinearVelocity=Vector3.zero
-				end
+				if not (now2==character and r and h and h.Health>0) then return end
+				-- Re-check the gate just before landing (hurt mid-flight, pulled into an expedition, gate error).
+				local gated2=gatePasses(player)
+				if gated2~=true then notice(player,gated2) return end
+				player:SetAttribute("FastTravelAt",os.clock())
+				now2:PivotTo(CFrame.new(v.landing))
+				r.AssemblyLinearVelocity=Vector3.zero
 			end)
 		end
 		for _,v in pairs(vents) do v.prompt.Triggered:Connect(function(player) launch(player,v) end) end

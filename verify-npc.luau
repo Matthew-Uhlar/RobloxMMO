@@ -78,7 +78,7 @@ for _, role in ipairs(ALL) do
 				else ok(rule.item[option.item] == true, "verb item " .. where) end
 			end
 			if option.waypoint then
-				if option.waypoint == "tutorial" then ok(node.tutorial == true, "tutorial waypoint only on the tutorial node " .. where)
+				if option.waypoint == "path" then ok(node.path == true, "path waypoint only on the Wayfarer's Path node " .. where)
 				else
 					ok(type(option.waypoint) == "table" and #option.waypoint > 0, "waypoint list " .. where)
 					for _, spec in ipairs(option.waypoint) do ok(T.parseTarget(spec) ~= nil, "waypoint spec " .. spec .. " " .. where) end
@@ -152,7 +152,8 @@ eq(state.current, 1, "new player starts at gather")
 eq(state.done, 0, "nothing done")
 eq(state.complete, false, "tutorial active")
 eq(state.steps[1].need, 9, "gather needs 6 ore + 3 timber")
-ok(T.Conditions.tutorialActive(s), "tutorialActive condition")
+-- Polish (lead decision): the 6-step tutorial is retired; its data still evaluates, but nothing offers it.
+ok(T.TUTORIAL_RETIRED == true and not T.Conditions.tutorialActive(s), "retired tutorial is never offered")
 s.collection.Ore = 4
 eq(T.tutorialState(s).steps[1].have, 4, "partial gather progress")
 s.collection.Ore, s.collection.Timber = 12, 3
@@ -209,7 +210,19 @@ for i, sample in ipairs(samples) do
 		ok(okCond and type(value) == "boolean", "condition " .. id .. " on sample " .. i)
 	end
 end
-ok(has(T.Tips.next(fresh()), "Step 1/6"), "next tip follows the tutorial")
+ok(not has(T.Tips.next(fresh()), "Step 1/6"), "next tip no longer follows the retired tutorial")
+do
+	local pathSnap = fresh()
+	pathSnap.guide = {step = 2, total = #Data.Features.Guide.Steps, id = "craft", title = "Craft at a workbench", detail = "Craft anything.", complete = false}
+	ok(has(T.Tips.next(pathSnap), "Wayfarer's Path 2/" .. #Data.Features.Guide.Steps), "next tip follows the Wayfarer's Path")
+	ok(T.Conditions.pathActive(pathSnap) and not T.Conditions.pathActive(fresh()), "pathActive follows the snapshot's guide")
+	eq(T.pathStep(pathSnap).waypoint[1], "station:Workbench", "Path step waypoint")
+	for id, specs in pairs(Data.Features.Guide.Waypoints) do
+		ok(Data.Features.Guide.StepById[id] ~= nil, "waypoint for a real Path step " .. id)
+		for _, spec in ipairs(specs) do ok(T.parseTarget(spec) ~= nil, "Path waypoint spec " .. spec) end
+	end
+	ok(T.NPCs.Guide.nodes.tutorial == nil and T.NPCs.Guide.nodes.path ~= nil, "Pell's tutorial node replaced by the Path node")
+end
 ok(has(T.Tips.next(s), "First sparks"), "graduate next tip shows the contract")
 ok(has(T.Tips.contract(s), "ready"), "contract tip flags a ready claim")
 local unlock = T.Tips.unlock(fresh())
@@ -232,7 +245,8 @@ ok(has(questText, "Surveyor's Oath") and has(questText, "Brambleback Boar 3/10")
 local guideHello = T.NPCs.Guide.nodes.hello
 local function labels(list) local out = {} for _, o in ipairs(list) do out[o.label] = true end return out end
 local newOpts = labels(T.visibleOptions(guideHello, fresh(), {}))
-ok(newOpts["Walk me through the basics"] and not newOpts["Claim my guild contract"], "new player sees the tutorial, no claim")
+ok(not newOpts["Walk me through the basics"] and not newOpts["Claim my guild contract"], "the retired tutorial option is gone, no claim")
+ok(newOpts["Choose my journal mode"], "a new journal can choose its mode at Pell")
 local readyOpts = labels(T.visibleOptions(guideHello, s, {}))
 ok(readyOpts["Claim my guild contract"] and not readyOpts["Walk me through the basics"], "graduate with a ready contract sees the claim")
 local slayerHello = T.NPCs.Slayer.nodes.hello
@@ -559,7 +573,7 @@ spawnPad.Parent = workspaceDouble
 local traveller = new("Player", {Name = "Traveller", Character = character, RespawnLocation = spawnPad, UserId = 7})
 table.insert(playerList, traveller)
 players.PlayerAdded:Fire(traveller)
-eq(recallFn.OnInvoke(traveller, "Skyreach"), "Choose Hub or Home to recall to.", "invalid target")
+eq(recallFn.OnInvoke(traveller, "Skyreach"), "Choose Compass Quay (Hub) or Home to recall to.", "invalid target")
 eq(character:GetPivot().Position, V(0, 0, 0), "no travel on an invalid target")
 local reply = recallFn.OnInvoke(traveller, "Home")
 ok(has(reply, "Recalled"), "home recall")

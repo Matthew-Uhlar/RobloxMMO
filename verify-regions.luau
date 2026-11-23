@@ -204,7 +204,7 @@ for _, f in ipairs(RA.Folk) do
 		for j, o in ipairs(q.objectives) do entry.objectives[j] = {if j == 1 then 1 else 0, if o.count then o.count else 1} end
 		local text = T.Tips[tip]({journal = {quests = {[q.index] = entry}}, regionQuests = {accepted = {[q.id] = true}, talked = {}, warps = {}}}, {})
 		ok(has(text, q.title), q.id .. " tip names its quest")
-		ok(has(text, Data.describeCheck(q.objectives[#q.objectives])), q.id .. " tip lists its own objectives")
+		ok(has(text, Data.describeCheck(q.objectives[#q.objectives], true)), q.id .. " tip lists its own objectives") -- regional: "since accepting" (§33 QC)
 		local first = q.objectives[1]
 		if first.count and first.count > 1 then ok(has(text, "(1/" .. first.count .. ")"), q.id .. " tip shows counts") end
 	end

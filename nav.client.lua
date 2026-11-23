@@ -606,7 +606,7 @@ local function placeList()
 		list.Position = UDim2.fromOffset(10, below)
 		list.Size = UDim2.fromOffset(240, math.min(300, height - below - floor))
 	else
-		list.Position = UDim2.fromOffset(L.mapBlock.x + L.mapBlock.w + 10, 8)
+		list.Position = UDim2.fromOffset(L.lane.left, 8) -- right of the status orbs (§34)
 		list.Size = UDim2.fromOffset(240, math.max(120, math.min(300, height - 8 - floor)))
 	end
 end
@@ -650,7 +650,7 @@ navigatePanel = function()
 	if waypoint then entry("✕ Clear waypoint (" .. waypoint.label .. ")", nextOrder(), function() clearWaypoint("Waypoint cleared.") end) end
 	heading("RECALL CHARM", nextOrder())
 	entry("Return Home", nextOrder(), function() recall("Home") end)
-	entry("Return to Hub", nextOrder(), function() recall("Hub") end)
+	entry("Return to Compass Quay", nextOrder(), function() recall("Hub") end)
 	if #index.warpReturn > 0 then entry("Nearest homeward beacon", nextOrder(), function() setWaypoint({"warpReturn"}) end) end
 	heading("TOWNSFOLK", nextOrder())
 	for _, role in ipairs(T.Order) do

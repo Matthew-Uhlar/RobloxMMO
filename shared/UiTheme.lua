@@ -37,7 +37,7 @@ Theme.hex = {
 	line = "2B3A4C", frame = "8A6A3B", frameHi = "F0CE82", frameLo = "3E2C15",
 	gold = "F7C548", goldSoft = "FFE6A6", text = "F3EEE2", dim = "A9B4C0", faint = "8592A0", -- faint ≥ 4.5:1 on void / inset / panel / panelTop
 	mint = "6FE3C8", ember = "FF6B5A", health = "FF4F4F", defense = "57D96A", mana = "4FA8FF", xp = "8EE05A",
-	onGold = "2A1A04",
+	onGold = "2A1A04", prompt = "FFFF55", -- prompt: SkyBlock's yellow click line (tooltip footer, §34)
 }
 Theme.color = {}
 for name, hex in pairs(Theme.hex) do Theme.color[name] = rgb(hex) end
@@ -542,10 +542,35 @@ function Theme.lore(def, ctx)
 	end
 	if ctx.equipped then add("Currently equipped", Theme.hex.mint, {kind = "state"}) end
 	if ctx.bagged then add("In your accessory bag", Theme.hex.mint, {kind = "state"}) end
-	if tonumber(def.value) then add("Sell value: <font color=\"#F7C548\">" .. Theme.commas(def.value) .. " coins</font>" .. (if (ctx.count or 0) > 1 then " each" else ""), Theme.hex.faint, {kind = "value"}) end
+	-- SkyBlock footer (§34): the bold RARITY TYPE line, the sell price, then the
+	-- yellow click prompt (the satchel's left-click action; ctx.click = false
+	-- hides it, a string replaces it).
 	add("", nil, {blank = true})
 	add("<b>" .. string.upper(def.rarity or "Common") .. " " .. Theme.kindLabel(def) .. "</b>", rarity.hex, {kind = "rarity", bold = true})
+	if tonumber(def.value) then add("Sell price: <font color=\"#F7C548\">" .. Theme.commas(def.value) .. " coins</font>" .. (if (ctx.count or 0) > 1 then " each" else ""), Theme.hex.faint, {kind = "value"}) end
+	-- Market price (§33 IslePriceCheckLocal text, passed in by the caller).
+	if type(ctx.price) == "string" and ctx.price ~= "" then add("Market: <font color=\"#F7C548\">" .. escape(ctx.price) .. "</font>", Theme.hex.faint, {kind = "price"}) end
+	local click = Theme.clickPrompt(def, ctx)
+	if click then add(click, Theme.hex.prompt, {kind = "click", bold = true}) end
 	return lines
+end
+-- The yellow click line for an item: ctx.click (string) or the first context
+-- option's verb ("Click to wield!"), plus "Right-click for options." when more exist.
+Theme.CLICK_WORDS = {Wield = "wield", Equip = "equip", Unequip = "unequip", Eat = "eat", Drink = "drink", Use = "use", Hotbar = "move it to your hotbar"}
+function Theme.clickPrompt(def, ctx)
+	ctx = ctx or {}
+	if ctx.click == false then return nil end
+	if type(ctx.click) == "string" then return ctx.click end
+	if type(def) ~= "table" or type(def.id) ~= "string" then return nil end
+	local options = Theme.itemActions(def, ctx)
+	local first = options[1]
+	if not first then return nil end
+	local word = Theme.CLICK_WORDS[first.id]
+	if first.id == "Use" and def.kind == "pet" then word = "adopt" end
+	if first.id == "Use" and (def.kind == "resource" or def.kind == "material") then word = "view its collection" end
+	if first.id == "Unequip" and def.kind == "accessory" then word = "remove it" end
+	if not word then return "Right-click for options!" end
+	return "Click to " .. word .. "!" .. (if #options > 1 then "  Right-click for options." else "")
 end
 -- OSRS examine text: the description, or a short line from the kind.
 function Theme.examine(def)
@@ -562,6 +587,7 @@ end
 --   Eat/Drink   → consume "<id>"      Use (pet) → petAdopt "<id>"
 --   Equip (accessory) → accessory "<id>" (toggles the bag)
 --   Sell        → sell "<id>" (whole stack, merchant price; not while equipped; always confirms)
+--   Sell…       → local "sellQty": the quantity picker (sell "<id>:<n>"), when 2+ can be sold
 --   Drop        → drop "<id>" (whole stack, confirm; §29)
 --   Move to hotbar → local (ReplicatedStorage.HotbarApi "assign")
 --   Examine     → local (examine text toast)
@@ -590,9 +616,21 @@ function Theme.itemActions(def, ctx)
 	add({id = "Examine", label = "Examine", ["local"] = "examine"})
 	if not ctx.equipped and not ctx.bagged then
 		-- Sell always confirms (as the atlas does); with upgrades (reforge, stars,
-		-- tome, enchantments) the server keeps the upgraded copy (§29 last-copy rule).
-		add({id = "Sell", label = "Sell" .. (if (ctx.count or 1) > 1 then " all" else ""), verb = "sell", arg = id, confirm = true, upgraded = ctx.upgraded == true})
-		add({id = "Drop", label = "Drop", verb = "drop", arg = id, confirm = true, danger = true, upgraded = ctx.upgraded == true})
+		-- tome, enchantments) the server keeps the upgraded copy (§29 last-copy rule):
+		-- spares say "spares", and the last upgraded copy offers neither verb, only
+		-- an explanation (the server would refuse both).
+		local count = ctx.count or 1
+		if ctx.upgraded == true and count <= 1 then
+			add({id = "Kept", label = "Upgraded: kept", ["local"] = "kept"})
+		elseif ctx.upgraded == true then
+			add({id = "Sell", label = "Sell " .. (count - 1) .. " spare" .. (if count > 2 then "s" else ""), verb = "sell", arg = id, confirm = true, upgraded = true})
+			if count > 2 then add({id = "SellQty", label = "Sell…", ["local"] = "sellQty", max = count - 1}) end
+			add({id = "Drop", label = "Drop spares", verb = "drop", arg = id, confirm = true, danger = true, upgraded = true})
+		else
+			add({id = "Sell", label = "Sell" .. (if count > 1 then " all" else ""), verb = "sell", arg = id, confirm = true, upgraded = false})
+			if count > 1 then add({id = "SellQty", label = "Sell…", ["local"] = "sellQty", max = count}) end
+			add({id = "Drop", label = "Drop", verb = "drop", arg = id, confirm = true, danger = true, upgraded = false})
+		end
 	end
 	return out
 end
@@ -660,6 +698,15 @@ function Theme.hudLayout(w, h, opts)
 		L.mapControls = {x = 10, y = 8 + map + 4 + 26 + 4, w = map, h = 30}
 		L.mapBlock = {x = 10, y = 8, w = map, h = map + 4 + 26 + 4 + 30}
 	end
+	-- Status orbs (overlay.client.lua, §34): Health, Prayer, Speed, Special beside
+	-- the minimap. Desktop: a column of four 34 px orbs right of the map; touch:
+	-- a 2 × 2 grid of 44 px orbs right of the controls column (touch floor).
+	do
+		local size, cols = if touch then 44 else 34, if touch then 2 else 1
+		local x = if touch then L.mapControls.x + L.mapControls.w + 6 else L.map.x + map + 6
+		local rows = math.ceil(4 / cols)
+		L.orbs = {x = x, y = 8, size = size, cols = cols, gap = 4, w = cols * size + (cols - 1) * 4, h = rows * size + (rows - 1) * 4}
+	end
 	L.leftTop = L.mapBlock.y + L.mapBlock.h + 6
 	L.leftWidth = if short then 184 else 250
 	-- Sidebar (top-right scoreboard) with its dock row of buttons.
@@ -681,7 +728,13 @@ function Theme.hudLayout(w, h, opts)
 	L.rightEdge = if opts.satchelOpen and not short then w - 10 - satW - 8 else w - 10
 	L.rightWidth = if short then 100 else 220 -- the widest right-column HUD (phones fold theirs to 96–100 px)
 	-- Top lane between the map block and the sidebar (target panel, banners).
-	L.lane = {left = L.mapBlock.x + L.mapBlock.w + 10, right = L.sidebar.x - 10}
+	-- (It starts right of the status orbs, which sit right of the minimap block.)
+	L.lane = {left = math.max(L.mapBlock.x + L.mapBlock.w, L.orbs.x + L.orbs.w) + 10, right = L.sidebar.x - 10}
+	-- Action label (§34, OSRS "verb target / N more options"): the top of the top
+	-- lane, left of the centred target / boss panel (≤ 420 px wide from y 10).
+	-- Mouse only: w = 0 on touch layouts or when the lane is too narrow.
+	local alw = math.min(360, math.floor(w / 2) - 218 - L.lane.left)
+	L.actionLabel = {x = L.lane.left, y = 8, w = if alw >= 180 and not touch then alw else 0, h = 34}
 	-- XP lane (hud.client.lua: OSRS XP drops and the skill progress toast): its
 	-- own column left of the right column, from rightTop, clear of the left
 	-- column. Phones: one row (toast | drops) under the Wayfinder toast slot;
@@ -706,10 +759,47 @@ function Theme.hudLayout(w, h, opts)
 		L.xpDrops = {x = x - dw, y = y, w = dw, h = 120, lines = 5}
 		L.xpToast = {x = x - tw, y = y + 126, w = tw, h = 46}
 	end
+	-- Level-up banner (ui.client.lua): centred under the top lane on wide
+	-- screens; on short screens it sits in the top lane between the left column
+	-- and the XP toast, so it never covers the XP lane (phones: same row).
+	if short then
+		local x0 = math.max(L.lane.left, leftLimit)
+		local x1 = L.xpToast.x - 6
+		local bw = math.min(340, x1 - x0)
+		L.levelBanner = {x = x0 + math.floor((x1 - x0 - bw) / 2), y = if tiny then 112 else 142, w = bw, h = 60, slim = true}
+	else
+		local bw = math.min(if w < 900 then 340 else 440, math.floor(w * 0.9))
+		L.levelBanner = {x = math.floor((w - bw) / 2), y = 142, w = bw, h = 82, slim = false}
+	end
 	-- Chat: kept to the bottom-left on desktop, clear of the hotbar and under the
 	-- left column (tutorial 66 + lap 70 + traps 30 with their gaps: 176 px).
+	-- §34: the chat filter tabs (All / Game / Public / Private / Crew / Trade) take
+	-- the lane's top row and the docked window sits under them. Touch layouts keep
+	-- Roblox's chat position, so the tab row is desktop-only (w = 0 on touch).
 	local chatTop = math.max(h - 300, L.leftTop + 176 + 6)
-	L.chat = {x = 10, y = chatTop, w = math.max(0, L.hotbar.x - 24), h = math.max(0, h - 10 - chatTop)}
+	local chatW = math.max(0, L.hotbar.x - 24)
+	L.chatTabs = {x = 10, y = chatTop, w = if touch then 0 else math.min(chatW, 6 * 64 + 5 * 3), h = 26, gap = 3}
+	L.chat = {x = 10, y = chatTop + 30, w = chatW, h = math.max(0, h - 10 - chatTop - 30)}
+	-- §34: the item pickup feed ("+3 Copperstone Ore"). Tall screens: under the
+	-- XP toast in the XP lane (up to five 20 px lines, clear of the hotbar band);
+	-- short screens: two 18 px lines (150 px) at the right edge above the touch Attack
+	-- button (78 px, 4 px from the foot).
+	if short then
+		local fh = 2 * 18
+		L.pickupFeed = {x = w - 10 - 150, y = h - 4 - 78 - 6 - fh, w = 150, h = fh, lines = 2, row = 18}
+	else
+		local y = L.xpToast.y + L.xpToast.h + 6
+		local lines = math.clamp(math.floor((L.band.y - 8 - y) / 20), 0, 5)
+		L.pickupFeed = {x = L.xpToast.x, y = y, w = L.xpToast.w, h = lines * 20, lines = lines, row = 20}
+		if lines < 2 then
+			-- No room under the toast (a narrow window with a docked satchel): the
+			-- feed takes the column left of the XP lane, level with the drops.
+			local right = math.min(L.xpDrops.x, L.xpToast.x) - 8
+			local x = math.max(leftLimit, right - 220)
+			local n = math.clamp(math.floor((L.band.y - 8 - L.xpDrops.y) / 20), 0, 5)
+			L.pickupFeed = {x = x, y = L.xpDrops.y, w = right - x, h = n * 20, lines = n, row = 20}
+		end
+	end
 	return L
 end
 -- Reduced motion: Settings › Reduced motion (IsleSettingReducedMotion) or the
@@ -812,6 +902,23 @@ Theme.MapArt = {
 	sea = "173452", seaLow = "0D2238", shadow = "06101A", rim = "3E4856", water = "4FB6D8", waterDeep = "2D7FAE",
 	path = "E2D3AC", bridge = "8B6A4A", canopy = "3F7A45", roof = "B0533F", beacon = "B48CFF", landmark = "FFD86B",
 	npc = "F7C548", quest = "FFE14D", station = "6FE3C8",
+}
+
+------------------------------------------------------------------------------
+-- HUD depth tokens (§34: shared/HudDepth.lua, overlay.client.lua, combat hitsplats).
+------------------------------------------------------------------------------
+Theme.HudDepth = {
+	-- Action label / context menu: verb ivory, objects cyan, townsfolk yellow,
+	-- creatures gold (level coloured green → red), players white, "/ N more" dim.
+	verb = "F3EEE2", object = "5FE0E8", npc = "F7E26B", monster = "FFE14D", player = "FFFFFF", more = "A9B4C0",
+	met = "6FE3C8", unmet = "FF6B5A", menuHead = "F7C548",
+	-- Status orbs: liquid colours and the orb glass.
+	orbHealth = "E8413C", orbPrayer = "5EC8E6", orbSpeed = "F2D15C", orbSpecial = "B07CFF", orbGlass = "0B1017", orbLow = "FF6B5A",
+	-- Chat: game line colours by kind.
+	chatLevel = "F7C548", chatRare = "FF8CF0", chatWarn = "FF8A7A", chatDrop = "8EE05A", chatCoins = "FFE6A6", chatAnnounce = "6FE3C8", chatInfo = "C9D3DC",
+	-- Hitsplats: damage red, crit amber, miss blue, heal green, resist grey.
+	splatHit = "C8282C", splatHitEdge = "4E0A0C", splatCrit = "FF9A1F", splatCritEdge = "6A2A00", splatMiss = "3E78C8", splatMissEdge = "1C3A66",
+	splatHeal = "3FBF5A", splatHurt = "D2452E", splatResist = "7A858C", splatWeak = "FFD24A",
 }
 
 return Theme

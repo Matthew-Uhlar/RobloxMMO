@@ -121,7 +121,8 @@ local function shapeOf(part)
 	return ALIASES[shapeName] or shapeName
 end
 
-local stats = {templates = 0, templateTriangles = 0, instances = 0, placedTriangles = 0, failures = 0, skipped = 0, evicted = 0, templateSkips = 0, reclaimed = 0}
+local stats = {templates = 0, templateTriangles = 0, instances = 0, placedTriangles = 0, failures = 0, skipped = 0, evicted = 0, templateSkips = 0, reclaimed = 0,
+	chartPins = 0, chartRevoked = 0, chartRefused = 0}
 -- Indexing a missing member errors on an Instance, so probe the API under pcall.
 local available = pcall(function()
 	assert(typeof(AssetService.CreateEditableMesh) == "function" and typeof(AssetService.CreateMeshPartAsync) == "function")
@@ -129,7 +130,10 @@ local available = pcall(function()
 end)
 local stopReason = if available then nil else "unavailable"
 local newTemplatesBlocked = false
-local templates = {} -- key -> {part, mesh, extent, center, triangles, users, used} | false (failed)
+-- key -> {part, mesh, extent, center, triangles, users, used, key, chartPins} | false (failed)
+-- | {pending = true, waiters} while its first build is in flight (CreateMeshPartAsync
+-- yields): the slot is already counted, and concurrent callers wait for it.
+local templates = {}
 -- Sign kit shapes (§28; see templateTint below).
 local SIGN_KIT_SHAPES = {
 	SignHangingFrame = true, SignpostFrame = true, BannerStandardFrame = true, SignPlinthFrame = true, SignLedgerFrame = true,
@@ -153,7 +157,7 @@ local function nearestVariant(shapeName, tint)
 	for key, variantTint in pairs(variants[shapeName] or {}) do
 		local entry = templates[key]
 		local distance = tintDistance(tint, variantTint or nil)
-		if entry and distance < bestDistance then best, bestDistance = entry, distance end
+		if entry and not entry.pending and distance < bestDistance then best, bestDistance = entry, distance end
 	end
 	return best
 end
@@ -282,7 +286,7 @@ end
 local function evictFor(triangles)
 	local idle = {}
 	for key, entry in pairs(templates) do
-		if entry and entry.users == 0 then table.insert(idle, {key, entry}) end
+		if entry and not entry.pending and entry.users == 0 then table.insert(idle, {key, entry}) end
 	end
 	table.sort(idle, function(a, b) return a[2].used < b[2].used end)
 	for _, item in ipairs(idle) do
@@ -301,6 +305,12 @@ end
 local function template(shapeName, data, catalog, tint)
 	local key = shapeName .. "#" .. (if tint then tint:ToHex() else "")
 	local cached = templates[key]
+	if cached and cached.pending then
+		-- Another thread is building this template (CreateMeshPartAsync yields):
+		-- wait for its result instead of building (and leaking) a second one.
+		table.insert(cached.waiters, coroutine.running())
+		return coroutine.yield()
+	end
 	if cached ~= nil then return cached or nil end
 	if variantCount(shapeName) >= VARIANTS and not (data.kind == "sign" and not SIGN_KIT_SHAPES[shapeName]) then
 		return nearestVariant(shapeName, tint)
@@ -311,27 +321,35 @@ local function template(shapeName, data, catalog, tint)
 		stats.templateSkips += 1
 		return nil, "budget"
 	end
+	-- Reserve the slot before the build yields, so concurrent callers see it.
+	local marker = {pending = true, waiters = {}, users = 0, used = 0, triangles = triangles, shape = shapeName}
+	templates[key] = marker
+	stats.templates += 1
+	stats.templateTriangles += triangles
 	local part, mesh, problem = buildTemplate(shapeName, data, catalog, tint)
+	local entry, reason = nil, nil
 	if not part then
 		templates[key] = false
+		stats.templates -= 1
+		stats.templateTriangles -= triangles
 		stats.failures += 1
 		local message = string.lower(problem or "")
 		if message:find("budget", 1, true) or message:find("memory", 1, true) or message:find("limit", 1, true) then newTemplatesBlocked = true end
 		if stats.failures >= LIMITS.failures then stopReason = "unavailable" end
 		warn("[MeshForge] " .. shapeName .. " could not be meshed: " .. tostring(problem))
-		return nil, "failed"
+		reason = "failed"
+	else
+		local lo, hi = bounds(data)
+		useTick += 1
+		entry = {part = part, mesh = mesh, extent = (hi - lo):Max(Vector3.one * 0.01), center = (lo + hi) / 2, triangles = triangles,
+			users = 0, used = useTick, shape = shapeName, key = key, chartPins = 0}
+		variants[shapeName] = variants[shapeName] or {}
+		variants[shapeName][key] = tint or false
+		part.Size = entry.extent
+		templates[key] = entry
 	end
-	local lo, hi = bounds(data)
-	useTick += 1
-	local entry = {part = part, mesh = mesh, extent = (hi - lo):Max(Vector3.one * 0.01), center = (lo + hi) / 2, triangles = triangles,
-		users = 0, used = useTick, shape = shapeName}
-	variants[shapeName] = variants[shapeName] or {}
-	variants[shapeName][key] = tint or false
-	part.Size = entry.extent
-	templates[key] = entry
-	stats.templates += 1
-	stats.templateTriangles += triangles
-	return entry
+	for _, waiter in ipairs(marker.waiters) do task.spawn(waiter, entry, reason) end
+	return entry, reason
 end
 
 -- Signs: the original board keeps its SurfaceGui (the meshed frame wraps it);
@@ -560,6 +578,7 @@ local function release(part)
 end
 
 local reclaim -- defined with step() below
+local chartYield -- defined with the chart API below
 local starvedTemplate = false -- set by forge() when no template slot was free
 local function forge(part)
 	if placed[part] or final[part] or not part.Parent then return end
@@ -663,9 +682,13 @@ reclaim = function(starved, origin)
 	local k = 1
 	for _, item in ipairs(starved) do
 		local victim = order[k]
-		if not victim or victim.min < item[2] + RECLAIM_MARGIN then break end
-		k += 1
-		for _, part in ipairs(victim.parts) do release(part) end
+		if victim and victim.min >= item[2] + RECLAIM_MARGIN then
+			k += 1
+			for _, part in ipairs(victim.parts) do release(part) end
+		elseif not chartYield() then
+			-- Nothing far enough to give back, and no chart-only pin to drop.
+			break
+		end
 		stats.reclaimed += 1
 		starvedTemplate = false
 		pcall(forge, item[1])
@@ -745,6 +768,101 @@ local function rescan()
 	end
 end
 
+-- Map Art (§32): the Sky Chart's miniature asks for a forged copy of a far
+-- island hull or landmark: ReplicatedStorage.MeshForgeLocal:Invoke("visual",
+-- host) -> an unparented MeshPart sized and placed like the world's, its
+-- triangle count and a token. The chart never starves the world's forge:
+--   * requests are served from an existing template of the shape (exact tint or
+--     its nearest variant); a new template is built only while CHART_RESERVE
+--     slots stay free for the world (stats.templates < LIMITS.templates - 8);
+--   * a template is pinned (users + 1, so LRU eviction never empties a mesh the
+--     cached chart shows) only when the chart accepts the mesh: Invoke("accept",
+--     token). Invoke("release", token) unpins (a rejected mesh, a destroyed or
+--     rebuilt chart). At most CHART_PIN_CAP templates are chart-pinned (6 on
+--     phones, 16 on desktop);
+--   * when the world is starved and nothing nearer can be reclaimed, a template
+--     pinned only by the chart is unpinned (chartYield): its meshes get the
+--     ShapeRevoked attribute and the chart swaps its primitive stand-ins back.
+local CHART_RESERVE = 8
+local CHART_PIN_CAP = if mobile then 6 else 16
+local chartTokens, chartNext = {}, 0 -- token -> {entry, clone, accepted}
+local function chartVisual(part)
+	local shapeName = shapeOf(part)
+	if not shapeName or stopReason then return nil end
+	local data, catalog = lookup(shapeName)
+	if not data then return nil end
+	local tint = templateTint(shapeName, data, part:GetAttribute("Tint"))
+	local key = shapeName .. "#" .. (if tint then tint:ToHex() else "")
+	local entry = templates[key]
+	if entry and entry.pending then
+		entry = template(shapeName, data, catalog, tint) -- waits for the build in flight
+	elseif not entry then
+		entry = nearestVariant(shapeName, tint)
+		if not entry and stats.templates < LIMITS.templates - CHART_RESERVE then entry = template(shapeName, data, catalog, tint) end
+	end
+	if not entry or entry.pending then stats.chartRefused += 1; return nil end
+	if entry.chartPins == 0 and stats.chartPins >= CHART_PIN_CAP then stats.chartRefused += 1; return nil end
+	local size, meshFrame = layout(part, data, ownedSiblings(part))
+	local clone = entry.part:Clone()
+	clone.Name = part.Name .. " Mesh"
+	clone.Size, clone.CFrame = size, meshFrame
+	clone:SetAttribute("ShapeOf", shapeName)
+	clone:SetAttribute("ShapeTriangles", entry.triangles)
+	chartNext += 1
+	chartTokens[chartNext] = {entry = entry, clone = clone, accepted = false}
+	return clone, entry.triangles, chartNext
+end
+-- The chart keeps the mesh: pin its template (false when it was evicted since,
+-- or the chart pin cap is reached; the chart then keeps its stand-in).
+local function chartAccept(token)
+	local t = chartTokens[token]
+	if not t or t.accepted then return false end
+	local entry = t.entry
+	if templates[entry.key] ~= entry or (entry.chartPins == 0 and stats.chartPins >= CHART_PIN_CAP) then
+		chartTokens[token] = nil
+		return false
+	end
+	if entry.chartPins == 0 then stats.chartPins += 1; entry.users += 1 end
+	entry.chartPins += 1
+	t.accepted = true
+	return true
+end
+local function chartUnpin(entry)
+	if entry.chartPins <= 0 then return end
+	entry.chartPins -= 1
+	if entry.chartPins == 0 then
+		stats.chartPins -= 1
+		entry.users -= 1
+		useTick += 1
+		entry.used = useTick
+	end
+end
+local function chartRelease(token)
+	local t = chartTokens[token]
+	if not t then return end
+	chartTokens[token] = nil
+	if t.accepted then chartUnpin(t.entry) end
+end
+-- A starved world takes back the least recently used template that only the
+-- chart holds (no world clones). Returns true when one was freed.
+chartYield = function()
+	local best
+	for _, entry in pairs(templates) do
+		if entry and not entry.pending and entry.chartPins > 0 and entry.users == 1 and (not best or entry.used < best.used) then best = entry end
+	end
+	if not best then return false end
+	for token, t in pairs(chartTokens) do
+		if t.entry == best then
+			chartTokens[token] = nil
+			pcall(function() t.clone:SetAttribute("ShapeRevoked", true) end)
+		end
+	end
+	best.chartPins = 1
+	chartUnpin(best)
+	stats.chartRevoked += 1
+	return true
+end
+
 workspace.DescendantAdded:Connect(function(instance) task.defer(watch, instance) end)
 for _, instance in ipairs(workspace:GetDescendants()) do watch(instance) end
 step()
@@ -753,6 +871,7 @@ if MeshForgeTest then
 		templateTint = templateTint, kitShapes = SIGN_KIT_SHAPES, kitMetals = KIT_METALS, clothPalette = CLOTH_PALETTE, variants = VARIANTS,
 		cornerNormals = cornerNormals, styleSign = styleSign, stopReason = function() return stopReason end,
 		radii = {build = BUILD_RADIUS, unload = UNLOAD_RADIUS}, mobile = mobile, backoff = backoff, registry = registry, final = final, placed = placed,
+		chart = {visual = chartVisual, accept = chartAccept, release = chartRelease, tokens = chartTokens, pinCap = CHART_PIN_CAP, reserve = CHART_RESERVE},
 		-- Final mesh box for a tagged part, without forging: size, CFrame, kind.
 		describe = function(part)
 			local shapeName = shapeOf(part)
@@ -766,33 +885,13 @@ if MeshForgeTest then
 		end}
 	return
 end
--- Map Art (§32): the Sky Chart's miniature asks for a forged copy of a far
--- island hull or landmark: ReplicatedStorage.MeshForgeLocal:Invoke("visual",
--- host) -> an unparented MeshPart sized and placed like the world's, and its
--- triangle count. The template is pinned once (users + 1) so LRU eviction never
--- empties a mesh the cached chart still shows.
-local function chartVisual(part)
-	local shapeName = shapeOf(part)
-	if not shapeName or stopReason then return nil end
-	local data, catalog = lookup(shapeName)
-	if not data then return nil end
-	local tint = templateTint(shapeName, data, part:GetAttribute("Tint"))
-	local entry = template(shapeName, data, catalog, tint) or nearestVariant(shapeName, tint)
-	if not entry then return nil end
-	local size, meshFrame = layout(part, data, ownedSiblings(part))
-	local clone = entry.part:Clone()
-	clone.Name = part.Name .. " Mesh"
-	clone.Size, clone.CFrame = size, meshFrame
-	clone:SetAttribute("ShapeOf", shapeName)
-	clone:SetAttribute("ShapeTriangles", entry.triangles)
-	if not entry.chartPinned then entry.chartPinned = true; entry.users += 1 end
-	return clone, entry.triangles
-end
 do
 	local api = ReplicatedStorage:FindFirstChild("MeshForgeLocal") or Instance.new("BindableFunction")
 	api.Name = "MeshForgeLocal"
-	api.OnInvoke = function(method, part)
-		if method == "visual" and typeof(part) == "Instance" and part:IsA("BasePart") then return chartVisual(part) end
+	api.OnInvoke = function(method, arg)
+		if method == "visual" and typeof(arg) == "Instance" and arg:IsA("BasePart") then return chartVisual(arg) end
+		if method == "accept" and type(arg) == "number" then return chartAccept(arg) end
+		if method == "release" and type(arg) == "number" then chartRelease(arg) return true end
 		return nil
 	end
 	api.Parent = ReplicatedStorage
@@ -808,7 +907,7 @@ end)
 script.Destroying:Once(function()
 	for part in pairs(placed) do release(part) end
 	for _, entry in pairs(templates) do
-		if entry then
+		if entry and not entry.pending then
 			pcall(entry.part.Destroy, entry.part)
 			if entry.mesh then pcall(entry.mesh.Destroy, entry.mesh) end
 		end

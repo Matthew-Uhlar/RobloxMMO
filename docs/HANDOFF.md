@@ -87,7 +87,7 @@ export PATH=$HOME/.cargo/bin:$PATH   # Lune 0.11.1, Rojo 7.7.1 (cargo install ..
 
 - Since §30 was written, a grass-clipping fix landed in `island()` in `world.server.lua`: the foundation and cliff now sit below the meadow slab, and verify-world asserts this.
 
-**Also merged at pause time** (32 suites pass). These three still need their independent QC review and a fix team; nothing else is in flight:
+**Also merged at pause time** (32 suites pass). All three have since had independent QC reviews and fix rounds (merged and pushed). The live game was published from PR #5 before those fixes; publishing again needs the owner's go-ahead:
 
 | Merged | What it is |
 |---|---|
@@ -96,22 +96,23 @@ export PATH=$HOME/.cargo/bin:$PATH   # Lune 0.11.1, Rojo 7.7.1 (cargo install ..
 | §32 map art | `shared/MapArt.lua`, `verify-map.luau`: 3D ViewportFrame Sky Chart built from the real islands, plus region-tinted minimap plates. |
 
 **Open decisions from §31:**
-- Should Pell's older 6-step client tutorial be retired, now that Wayfarer's Path exists?
-- Merchant selling is still whole-stack only; add a quantity picker for selling.
+- ~~Retire Pell's older 6-step tutorial~~ — done (Polish wave, lead decision): the Wayfarer's Path is the only onboarding; see §31 "Polish".
+- ~~Merchant selling is whole-stack only~~ — done: `sell "<id>:<n>"` with the picker in sell mode.
 - Resonance gathering templates (about +36 fortune / +108 mining speed at 300 MP) need a play-test.
+- **Journal mode timing (needs a lead decision):** the Path's final step keeps the ironman verb's rule (only before progression), but the first Path step (chop a log) already sets `p.started`. Pell therefore offers the mode choice from the first talk; anyone who reaches the last step without choosing can only pick Standard. Options: keep this, move the choice before the first step, or relax the rule to "never used trading, Bazaar, Auction House or a party" with a new tracked flag.
 
 **Follow-ups from §31:**
 - per-player shop stock limits
 - full tooltip footer
 - top objective progress bar
-- tier-1 worker recipe unlock message
+- ~~tier-1 worker recipe unlock message~~ (done: WORKER RECIPE UNLOCKED announcement)
 - pickup feed
 - OSRS action label and status orbs
 - chat filter tabs
 - goal board
 - price history
 - server browser
-- account-mode choice at the end of onboarding
+- ~~account-mode choice at the end of onboarding~~ (done: Path step `mode`, verb `guideMode`)
 
 **From §32, to check in Studio:**
 - the first-open hitch when copying about 2.2k parts
@@ -119,9 +120,10 @@ export PATH=$HOME/.cargo/bin:$PATH   # Lune 0.11.1, Rojo 7.7.1 (cargo install ..
 - forge budget contention from the chart's 40 pinned meshes
 
 **Known open items and ideas:**
-- **Hollowcrown Edge** (lair unique) is now weaker than an easier crafted sword after the 85% rival cap. Give it a niche, such as a special ability. See §25.
+- ~~**Hollowcrown Edge** niche~~ — done: Hollow Sunder (+25% vs bosses, +50% vs warded bosses), modelled in verify-bosses. See §25. Play-test the feel against Nihlvar and world bosses.
 - **StreamingEnabled is off.** Enabling it needs an audit of client scripts that read far-away world children (nav, motes, regions, ui). See §27.
-- **Stale display names** remain in `shared/GameData.lua`: "Aether Hub" and "Quarry Cay" in the base regions, tutorial and recall text.
+- ~~Stale display names~~ — done: base data says Compass Quay / Sunwheel Downs / Brassfall Cay (ids unchanged).
+- **Vent launch feel** (Polish): FOV kick, banking tilt and wind streaks need a Studio check for comfort and with the Lighting team's director.
 - **Gaps from the OSRS videos still unbuilt:**
   - a "verb + target" action label;
   - a per-skill unlock guide in the skills panel;

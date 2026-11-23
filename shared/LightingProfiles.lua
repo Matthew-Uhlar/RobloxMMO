@@ -1,0 +1,467 @@
+--!nocheck
+-- Aether Isles lighting profiles (ReplicatedStorage.AetherLighting).
+-- docs/DEPTH-CONTRACT.md §35. Pure rules, no instances and no requires: the
+-- one Lighting writer (lighting.client.lua, StarterPlayerScripts.IsleLighting)
+-- feeds it the isle clock, the player's context and the graphics tier and
+-- writes what it returns. verify-lighting.luau exercises every function here.
+--
+--   L.FIELDS                 the blended look: Lighting, Atmosphere, Bloom,
+--                            SunRays and ColorCorrection values with ranges
+--   L.Profiles[key]          day look per region / interior (+ optional night)
+--   L.REGION_KEYS            keys a player can stand in (Data.Regions + Home,
+--                            Skyways) and L.INTERIOR_KEYS (Dungeon, Lair, Minigame)
+--   L.clockAt(t, Calendar)   isle clock 0..24 (same hour as the sidebar clock)
+--   L.skyClock(clock)        Lighting.ClockTime (sun sets at the sidebar's dusk)
+--   L.dayFactor(clock)       0 night .. 1 day (< .5 exactly when the sidebar says night)
+--   L.context(attrs, pos)    which profile the player is in
+--   L.target(key, clock, tier) -> state   the look to blend toward
+--   L.alphaFor(dt, tau), L.blend(a, b, alpha), L.distance(a, b)
+--   L.Tiers / L.TIER_ORDER / L.defaultTier(device) / L.readTier(value, device)
+--   L.selectLights(list, origin, tier, night) -> {[i] = mode} light budget
+--   L.valid(state) -> ok, why   finite and in range
+local L = {}
+L.VERSION = 1
+L.SETTING_ATTR = "IsleSettingGraphics" -- player attribute (client-set, like the other IsleSetting* toggles)
+
+local function rgb(hex) return Color3.fromHex(hex) end
+
+------------------------------------------------------------------------------
+-- Fields. kind "number" | "color"; min / max bound every composed and blended
+-- value (verify-lighting asserts them). Bloom thresholds stay above 1 so white
+-- UI text on BillboardGuis / SurfaceGuis never blooms.
+------------------------------------------------------------------------------
+L.FIELDS = {
+	{key = "Brightness", kind = "number", min = 0.5, max = 3.2},
+	{key = "ExposureCompensation", kind = "number", min = -0.5, max = 0.5},
+	{key = "Ambient", kind = "color", maxLum = 0.35},
+	{key = "OutdoorAmbient", kind = "color", maxLum = 0.6, minLum = 0.12},
+	{key = "ColorShift_Top", kind = "color"},
+	{key = "ColorShift_Bottom", kind = "color", maxLum = 0.3},
+	{key = "EnvironmentDiffuseScale", kind = "number", min = 0, max = 1},
+	{key = "EnvironmentSpecularScale", kind = "number", min = 0, max = 1},
+	{key = "ShadowSoftness", kind = "number", min = 0, max = 1},
+	{key = "AtmDensity", kind = "number", min = 0.1, max = 0.5},
+	{key = "AtmOffset", kind = "number", min = 0, max = 1},
+	{key = "AtmColor", kind = "color"},
+	{key = "AtmDecay", kind = "color"},
+	{key = "AtmGlare", kind = "number", min = 0, max = 2},
+	{key = "AtmHaze", kind = "number", min = 0, max = 2.5},
+	{key = "BloomIntensity", kind = "number", min = 0, max = 0.6},
+	{key = "BloomSize", kind = "number", min = 8, max = 32},
+	{key = "BloomThreshold", kind = "number", min = 1.05, max = 2.5},
+	{key = "RaysIntensity", kind = "number", min = 0, max = 0.12},
+	{key = "RaysSpread", kind = "number", min = 0, max = 1},
+	{key = "GradeBrightness", kind = "number", min = -0.05, max = 0.05},
+	{key = "GradeContrast", kind = "number", min = -0.05, max = 0.2},
+	{key = "GradeSaturation", kind = "number", min = -0.2, max = 0.2},
+	{key = "GradeTint", kind = "color", minLum = 0.8},
+}
+L.FieldByKey = {}
+for _, f in ipairs(L.FIELDS) do L.FieldByKey[f.key] = f end
+
+------------------------------------------------------------------------------
+-- Profiles. Art bible: cool stone, saturated foliage, warm light; distance
+-- haze; a sky tint per biome (bright blue isles, violet arcane isles, red-black
+-- depths). Missing keys inherit BASE. `night` overrides the derived night look;
+-- `dayFloor` keeps a little daylight in sheltered places; interiors use
+-- `fixedDay` (the clock does not change them) and skip the golden hour.
+------------------------------------------------------------------------------
+local BASE = {
+	Brightness = 2.6, ExposureCompensation = 0,
+	Ambient = "3A4150", OutdoorAmbient = "7D8A9C", ColorShift_Top = "FFE6C4", ColorShift_Bottom = "26303F",
+	EnvironmentDiffuseScale = 0.5, EnvironmentSpecularScale = 0.3, ShadowSoftness = 0.3,
+	AtmDensity = 0.24, AtmOffset = 0.1, AtmColor = "C9D8E6", AtmDecay = "7186A6", AtmGlare = 0.3, AtmHaze = 0.7,
+	BloomIntensity = 0.3, BloomSize = 20, BloomThreshold = 1.5,
+	RaysIntensity = 0.045, RaysSpread = 0.45,
+	GradeBrightness = 0, GradeContrast = 0.1, GradeSaturation = 0.08, GradeTint = "FFF6EA",
+}
+L.BASE = BASE
+-- Night: a moonlit blue that keeps paths and caves readable (the old server
+-- night dropped OutdoorAmbient to 3E4A66 with no exposure lift: over-dark).
+local NIGHT = {
+	Brightness = 1.1, ExposureCompensation = 0.12,
+	Ambient = "2C3449", OutdoorAmbient = "56648A", ColorShift_Top = "93A9D8", ColorShift_Bottom = "1A2034",
+	EnvironmentDiffuseScale = 0.4, EnvironmentSpecularScale = 0.25,
+	AtmColor = "46547A", AtmDecay = "182038", AtmGlare = 0, AtmHaze = 0.9,
+	BloomIntensity = 0.45, BloomSize = 24, BloomThreshold = 1.15,
+	RaysIntensity = 0,
+	GradeBrightness = 0.02, GradeContrast = 0.12, GradeSaturation = -0.08, GradeTint = "D8E2FF",
+}
+L.NIGHT = NIGHT
+local GOLDEN = {ColorShift_Top = "FFB27A", AtmColor = "F2B48A", GradeTint = "FFE2C8"}
+
+L.Profiles = {
+	-- Compass Quay: warm market light on cool stone.
+	Hub = {label = "Compass Quay"},
+	-- Sunwheel Downs: bright foliage, clear air.
+	Meadow = {label = "Sunwheel Downs", Brightness = 2.75, Ambient = "3C4450", OutdoorAmbient = "8494A0", ColorShift_Top = "FFEBC0",
+		AtmDensity = 0.22, AtmColor = "D3E2EC", AtmDecay = "7A95B0", AtmHaze = 0.6, GradeSaturation = 0.12, GradeTint = "FFF4E0"},
+	-- Brassfall Cay: sun-warmed stone and quarry dust.
+	Quarry = {label = "Brassfall Cay", Ambient = "44403E", OutdoorAmbient = "8A8478", ColorShift_Top = "FFD9A8",
+		AtmDensity = 0.28, AtmColor = "E2D2B8", AtmDecay = "A08A6A", AtmGlare = 0.4, AtmHaze = 1.1,
+		GradeContrast = 0.12, GradeSaturation = 0.05, GradeTint = "FFEEDC"},
+	-- Skyreach Heights: thin cold air, crisp sun.
+	Skyreach = {label = "Skyreach Heights", Brightness = 2.9, ExposureCompensation = 0.05, Ambient = "3A4656", OutdoorAmbient = "7E92A6",
+		ColorShift_Top = "F4F2E8", AtmDensity = 0.18, AtmColor = "D8E8F4", AtmDecay = "7C9CC0", AtmGlare = 0.5, AtmHaze = 0.4,
+		RaysIntensity = 0.06, GradeSaturation = 0.04, GradeTint = "F2F8FF"},
+	-- Windpine Grove: green forest shade, soft haze.
+	Windpine = {label = "Windpine Grove", Brightness = 2.4, Ambient = "343E38", OutdoorAmbient = "6E8476", ColorShift_Top = "F6E6BA",
+		AtmDensity = 0.3, AtmColor = "BCD3BE", AtmDecay = "5E7E66", AtmHaze = 1.2, GradeSaturation = 0.1, GradeTint = "F4FFE8",
+		dayFloor = 0.1},
+	-- Gloomhollow Caverns: violet grotto lit by voidstone (arcane biome tint).
+	Gloomhollow = {label = "Gloomhollow Caverns", Brightness = 1.6, ExposureCompensation = 0.1, Ambient = "2E2A42", OutdoorAmbient = "4A4466",
+		ColorShift_Top = "C8B8F0", ColorShift_Bottom = "3A2C5A", EnvironmentDiffuseScale = 0.4,
+		AtmDensity = 0.42, AtmOffset = 0.2, AtmColor = "6E5E9A", AtmDecay = "2A2240", AtmGlare = 0, AtmHaze = 1.6,
+		BloomIntensity = 0.5, BloomSize = 24, BloomThreshold = 1.1, RaysIntensity = 0,
+		GradeContrast = 0.14, GradeSaturation = 0.02, GradeTint = "E8E0FF",
+		dayFloor = 0.35, golden = 0,
+		night = {OutdoorAmbient = "3E3A5C", AtmColor = "3C3460", AtmDecay = "16122A", GradeTint = "E0D8FF"}},
+	-- Tidewater Shoals: aqua shallows, glittering water.
+	Tidewater = {label = "Tidewater Shoals", Brightness = 2.8, Ambient = "3A4A54", OutdoorAmbient = "7E9CAA", ColorShift_Top = "FFF0D0",
+		EnvironmentSpecularScale = 0.45, AtmDensity = 0.2, AtmColor = "CBE6EE", AtmDecay = "6AA6BE", AtmGlare = 0.4, AtmHaze = 0.5,
+		RaysIntensity = 0.05, GradeSaturation = 0.1, GradeTint = "F2FCFF"},
+	-- Tempest Spire: storm-grey, heavy haze, desaturated.
+	Tempest = {label = "Tempest Spire", Brightness = 2.0, ExposureCompensation = -0.05, Ambient = "323846", OutdoorAmbient = "66728A",
+		ColorShift_Top = "C8D4EA", ColorShift_Bottom = "2A3350", AtmDensity = 0.36, AtmOffset = 0.15, AtmColor = "8C98B0", AtmDecay = "3E4A66",
+		AtmGlare = 0, AtmHaze = 1.8, BloomIntensity = 0.4, BloomSize = 22, BloomThreshold = 1.2, RaysIntensity = 0.02,
+		GradeContrast = 0.16, GradeSaturation = -0.08, GradeTint = "E6EEFF", golden = 0.4},
+	-- The Shattered Crown: arcane gold and violet.
+	ShatteredCrown = {label = "The Shattered Crown", Brightness = 2.4, Ambient = "3A3450", OutdoorAmbient = "7A7298", ColorShift_Top = "F2D8A8",
+		ColorShift_Bottom = "40305E", AtmDensity = 0.3, AtmColor = "B8A8D8", AtmDecay = "5A4A8A", AtmGlare = 0.6, AtmHaze = 1.2,
+		BloomIntensity = 0.45, BloomSize = 24, BloomThreshold = 1.2, RaysIntensity = 0.06,
+		GradeContrast = 0.12, GradeSaturation = 0.1, GradeTint = "FFF0FA"},
+	-- Your isle (home islands): cosy and warm.
+	Home = {label = "Your Isle", Brightness = 2.7, Ambient = "3C4250", OutdoorAmbient = "8090A0", ColorShift_Top = "FFE4BE",
+		AtmDensity = 0.22, AtmColor = "D0DEEA", AtmHaze = 0.6, GradeSaturation = 0.1, GradeTint = "FFF4E4"},
+	-- Between islands (bridges, open sky): light haze so the isles read.
+	Skyways = {label = "The Skyways", AtmDensity = 0.2, AtmHaze = 0.6, AtmGlare = 0.4, RaysIntensity = 0.05},
+	-- Interiors.
+	-- The Hollow Observatory dungeon: cold starlight, the clock does not reach it.
+	Dungeon = {label = "The Hollow Observatory", interior = true, fixedDay = 0.55, Brightness = 1.4, ExposureCompensation = 0.1,
+		Ambient = "2E3448", OutdoorAmbient = "4E5A74", ColorShift_Top = "D8E4FF", ColorShift_Bottom = "1E2A40",
+		AtmDensity = 0.34, AtmColor = "5A6E8C", AtmDecay = "1E2A40", AtmGlare = 0, AtmHaze = 1.3,
+		BloomIntensity = 0.5, BloomSize = 24, BloomThreshold = 1.1, RaysIntensity = 0,
+		GradeContrast = 0.14, GradeSaturation = -0.02, GradeTint = "E8F0FF"},
+	-- Lair arenas: brazier-lit, red-black depths.
+	Lair = {label = "Lair", interior = true, fixedDay = 0.45, Brightness = 1.5, Ambient = "3A2E2E", OutdoorAmbient = "5E4E4A",
+		ColorShift_Top = "FFC89A", ColorShift_Bottom = "2A1A16", AtmDensity = 0.36, AtmColor = "6A4E44", AtmDecay = "2A1A16", AtmGlare = 0,
+		AtmHaze = 1.4, BloomIntensity = 0.5, BloomSize = 24, BloomThreshold = 1.1, RaysIntensity = 0,
+		GradeContrast = 0.16, GradeSaturation = 0, GradeTint = "FFE8DA"},
+	-- Skybreach Bastion minigames: a storm-sieged fortress (outdoors, muted clock).
+	Minigame = {label = "Skybreach Bastion", interior = true, fixedDay = 0.7, Brightness = 2.2, Ambient = "363C4A", OutdoorAmbient = "6E7A90",
+		ColorShift_Top = "E8DCC8", AtmDensity = 0.3, AtmColor = "A0AEC4", AtmDecay = "4A5872", AtmHaze = 1.2,
+		BloomIntensity = 0.35, BloomThreshold = 1.3, RaysIntensity = 0.03, GradeContrast = 0.14, GradeSaturation = 0, GradeTint = "F0F4FF"},
+}
+L.REGION_KEYS = {"Hub", "Meadow", "Quarry", "Skyreach", "Windpine", "Gloomhollow", "Tidewater", "Tempest", "ShatteredCrown", "Home", "Skyways"}
+L.INTERIOR_KEYS = {"Dungeon", "Lair", "Minigame"}
+L.DEFAULT_KEY = "Skyways"
+
+------------------------------------------------------------------------------
+-- Isle clock. The sidebar (Theme.isleClock) shows minutes since the isle
+-- day's dawn over Data.Calendar.dayLength; the same server time gives the
+-- same hour here, so the sky never disagrees with the clock.
+------------------------------------------------------------------------------
+function L.clockAt(t, Calendar)
+	local epoch = (Calendar and tonumber(Calendar.epoch)) or 1577836800
+	local dayLength = (Calendar and tonumber(Calendar.dayLength)) or 9150
+	t = tonumber(t) or 0
+	if t ~= t or dayLength <= 0 then return 12 end
+	local into = (t - epoch) % dayLength
+	return into / dayLength * 24
+end
+-- Sidebar night is hour < 6 or >= 19. Roblox's sun rises about 6:00 and sets
+-- about 18:00, so the day half [6, 19) is mapped onto [6, 18) and the night
+-- half [19, 30) onto [18, 30): continuous, rising, and the sun sets at dusk.
+L.DAWN, L.DUSK = 6, 19
+function L.skyClock(clock)
+	clock = (tonumber(clock) or 12) % 24
+	if clock ~= clock then return 12 end
+	if clock >= L.DAWN and clock < L.DUSK then
+		return L.DAWN + (clock - L.DAWN) * (12 / (L.DUSK - L.DAWN))
+	end
+	local into = (clock - L.DUSK) % 24 -- 0 .. 11 through the night
+	return (18 + into * (12 / (24 - (L.DUSK - L.DAWN)))) % 24
+end
+local function smooth(x) x = math.clamp(x, 0, 1) return x * x * (3 - 2 * x) end
+L.RAMP = 0.75 -- hours either side of dawn / dusk
+function L.dayFactor(clock)
+	clock = (tonumber(clock) or 12) % 24
+	if clock ~= clock then return 1 end
+	local up = smooth((clock - (L.DAWN - L.RAMP)) / (2 * L.RAMP))
+	local down = 1 - smooth((clock - (L.DUSK - L.RAMP)) / (2 * L.RAMP))
+	return math.min(up, down)
+end
+
+------------------------------------------------------------------------------
+-- Context. attrs: {LairBoss, DungeonInRun, MinigameGame, IsleRegionHere}
+-- (player attributes the servers / nav.client.lua already publish). pos is the
+-- player's position (optional): the instanced arenas sit far off the
+-- archipelago, so their lobbies light correctly before a run starts.
+------------------------------------------------------------------------------
+L.ZONES = {
+	{key = "Dungeon", x = 0, z = 1800, r = 260}, -- expedition.server.lua origin (0, 42, 1800)
+	{key = "Minigame", x = -2400, z = 0, r = 380}, -- minigames.server.lua ORIGIN (-2400, 90, 0)
+	{key = "Lair", minX = 3300}, -- lairs.server.lua ORIGIN (3600, 300, -3600) + slots along +X
+}
+function L.context(attrs, pos)
+	attrs = type(attrs) == "table" and attrs or {}
+	local lair = attrs.LairBoss
+	if type(lair) == "string" and lair ~= "" then return "Lair" end
+	if attrs.DungeonInRun == true then return "Dungeon" end
+	local match = attrs.MinigameGame
+	if type(match) == "string" and match ~= "" then return "Minigame" end
+	if pos and type(pos.X) == "number" and pos.X == pos.X then
+		for _, zone in ipairs(L.ZONES) do
+			if zone.minX then
+				if pos.X >= zone.minX then return zone.key end
+			else
+				local dx, dz = pos.X - zone.x, pos.Z - zone.z
+				if dx * dx + dz * dz <= zone.r * zone.r then return zone.key end
+			end
+		end
+	end
+	local here = attrs.IsleRegionHere
+	if type(here) == "string" and L.Profiles[here] and not L.Profiles[here].interior then return here end
+	return L.DEFAULT_KEY
+end
+
+------------------------------------------------------------------------------
+-- Composition.
+------------------------------------------------------------------------------
+local function value(profile, key)
+	local v = profile[key]
+	if v == nil then v = BASE[key] end
+	return v
+end
+local function resolve(field, v)
+	if field.kind == "color" and type(v) == "string" then return rgb(v) end
+	return v
+end
+local function lerp(field, a, b, t)
+	if field.kind == "color" then return a:Lerp(b, t) end
+	return a + (b - a) * t
+end
+-- Day look of a profile (fully resolved).
+function L.dayLook(key)
+	local profile = L.Profiles[key] or L.Profiles[L.DEFAULT_KEY]
+	local out = {}
+	for _, f in ipairs(L.FIELDS) do out[f.key] = resolve(f, value(profile, f.key)) end
+	return out
+end
+-- Night look: the profile's own night overrides, else the shared moonlit
+-- night tinted 25% toward the region's day colours (so biomes stay distinct).
+function L.nightLook(key)
+	local profile = L.Profiles[key] or L.Profiles[L.DEFAULT_KEY]
+	local day = L.dayLook(key)
+	local own = profile.night or {}
+	local out = {}
+	for _, f in ipairs(L.FIELDS) do
+		local v = own[f.key]
+		if v ~= nil then
+			out[f.key] = resolve(f, v)
+		elseif f.key == "AtmDensity" then
+			out[f.key] = math.min(day.AtmDensity + 0.04, 0.5)
+		elseif NIGHT[f.key] ~= nil then
+			local n = resolve(f, NIGHT[f.key])
+			out[f.key] = if f.kind == "color" then n:Lerp(day[f.key], 0.25) else n
+		else
+			out[f.key] = day[f.key]
+		end
+	end
+	return out
+end
+-- Effective daylight for a profile at an isle clock.
+function L.daylight(key, clock)
+	local profile = L.Profiles[key] or L.Profiles[L.DEFAULT_KEY]
+	if profile.interior then return profile.fixedDay or 0.5 end
+	local floor = profile.dayFloor or 0
+	return floor + (1 - floor) * L.dayFactor(clock)
+end
+function L.target(key, clock, tierName)
+	local profile = L.Profiles[key] or L.Profiles[L.DEFAULT_KEY]
+	local d = L.daylight(key, clock)
+	local day, night = L.dayLook(key), L.nightLook(key)
+	local out = {}
+	for _, f in ipairs(L.FIELDS) do out[f.key] = lerp(f, night[f.key], day[f.key], d) end
+	if not profile.interior then
+		-- Golden hour: warm sun, haze and grade around dawn and dusk.
+		local g = 4 * d * (1 - d) * (profile.golden or 1)
+		if g > 0 then
+			out.ColorShift_Top = out.ColorShift_Top:Lerp(rgb(GOLDEN.ColorShift_Top), 0.5 * g)
+			out.AtmColor = out.AtmColor:Lerp(rgb(GOLDEN.AtmColor), 0.35 * g)
+			out.GradeTint = out.GradeTint:Lerp(rgb(GOLDEN.GradeTint), 0.4 * g)
+			out.RaysIntensity = math.min(out.RaysIntensity + 0.03 * g, 0.12)
+		end
+	end
+	local tier = L.Tiers[tierName] or L.Tiers[L.DEFAULT_TIER]
+	out.BloomIntensity *= tier.bloomScale
+	return out
+end
+
+------------------------------------------------------------------------------
+-- Blending: exponential approach toward the target, frame-rate independent,
+-- never overshooting (alpha in [0, 1]).
+------------------------------------------------------------------------------
+L.REGION_TAU = 1.2 -- seconds; 95% of a region change lands in ~3.6 s
+L.SNAP_DISTANCE = 0.002 -- below this every field is written as the target
+function L.alphaFor(dt, tau)
+	dt, tau = tonumber(dt) or 0, tonumber(tau) or L.REGION_TAU
+	if dt ~= dt or dt <= 0 then return 0 end
+	if tau ~= tau or tau <= 0 then return 1 end
+	return math.clamp(1 - math.exp(-dt / tau), 0, 1)
+end
+function L.blend(a, b, alpha)
+	local out = {}
+	for _, f in ipairs(L.FIELDS) do
+		local x, y = a and a[f.key], b[f.key]
+		if x == nil then out[f.key] = y else out[f.key] = lerp(f, x, y, alpha) end
+	end
+	return out
+end
+-- Largest per-field gap (colours by channel, numbers relative to their range).
+function L.distance(a, b)
+	local worst = 0
+	for _, f in ipairs(L.FIELDS) do
+		local x, y = a[f.key], b[f.key]
+		local d
+		if f.kind == "color" then
+			d = math.max(math.abs(x.R - y.R), math.abs(x.G - y.G), math.abs(x.B - y.B))
+		else
+			d = math.abs(x - y) / math.max(f.max - f.min, 1e-6)
+		end
+		if d ~= d then return math.huge end
+		if d > worst then worst = d end
+	end
+	return worst
+end
+
+------------------------------------------------------------------------------
+-- Graphics tiers (Settings › Graphics). Lighting.Technology cannot change at
+-- runtime, so the place ships with Future (default.project.json) and the
+-- tiers are emulated with properties: GlobalShadows, light counts and
+-- shadows, post effects.
+--   lights       hard cap on world lights enabled at once (nearest first)
+--   cull         lights further than this (studs) are switched off
+--   pool         client glow lights on lamp / lantern meshes without a light (night only)
+--   shadows      "hero" keeps the few authored shadow casters within heroShadowRange; "none" drops all
+------------------------------------------------------------------------------
+L.Tiers = {
+	High = {label = "High", detail = "Future lighting with sun and lamp shadows, bloom, sun rays and colour grading.",
+		globalShadows = true, bloom = true, rays = true, grade = true, bloomScale = 1,
+		lights = 40, cull = 280, pool = 8, shadows = "hero", heroShadowRange = 140},
+	Balanced = {label = "Balanced", detail = "Sun shadows and colour grading; lamps cast no shadows and fewer are lit. The phone default.",
+		globalShadows = true, bloom = true, rays = false, grade = true, bloomScale = 0.8,
+		lights = 22, cull = 200, pool = 4, shadows = "none", heroShadowRange = 0},
+	Performance = {label = "Performance", detail = "No shadows or post effects and only the nearest lamps lit. For older devices.",
+		globalShadows = false, bloom = false, rays = false, grade = false, bloomScale = 0,
+		lights = 10, cull = 130, pool = 0, shadows = "none", heroShadowRange = 0},
+}
+L.TIER_ORDER = {"High", "Balanced", "Performance"}
+L.DEFAULT_TIER = "High"
+L.MAX_LIGHT_BRIGHTNESS = 1.5 -- verify-world's per-light ceiling
+L.NIGHT_BOOST = 0.3 -- lamps and glows burn 30% brighter at full night
+-- device: {touch, keyboard, gamepad, viewportX, quality (1..10 or nil = automatic)}
+function L.defaultTier(device)
+	device = type(device) == "table" and device or {}
+	local q = tonumber(device.quality)
+	if q and q >= 1 and q <= 3 then return "Performance" end
+	local phone = device.touch == true and device.keyboard ~= true
+	local small = tonumber(device.viewportX) and device.viewportX < 900
+	if phone or (small and device.keyboard ~= true and device.gamepad ~= true) then return "Balanced" end
+	if q and q <= 5 then return "Balanced" end
+	return "High"
+end
+function L.readTier(v, device)
+	if type(v) == "string" and L.Tiers[v] then return v end
+	return L.defaultTier(device)
+end
+
+------------------------------------------------------------------------------
+-- Light budget. list entries: {pos = Vector3, base = bool (the server wants it
+-- on), night = bool (a night lamp: on only after dusk), hero = bool (authored
+-- shadow caster), pooled = bool (a client glow site)}. Returns modes per index:
+-- nil = off, "on", "shadow" (on with shadows); plus counts.
+------------------------------------------------------------------------------
+function L.selectLights(list, origin, tierName, isNight)
+	local tier = L.Tiers[tierName] or L.Tiers[L.DEFAULT_TIER]
+	local wanted, pooled = {}, {}
+	for i, e in ipairs(list) do
+		local want = if e.pooled or e.night then isNight == true else e.base ~= false
+		if want and e.pos and origin then
+			local d = (e.pos - origin).Magnitude
+			if d == d and d <= tier.cull then
+				-- Hero lights read from further away: they rank as if 40% nearer.
+				local rank = if e.hero then d * 0.6 else d
+				table.insert(if e.pooled then pooled else wanted, {i = i, d = d, rank = rank})
+			end
+		end
+	end
+	local byRank = function(a, b) if a.rank ~= b.rank then return a.rank < b.rank end return a.i < b.i end
+	table.sort(wanted, byRank)
+	table.sort(pooled, byRank)
+	local modes, lit, shadows = {}, 0, 0
+	local poolCap = math.min(tier.pool, tier.lights)
+	local glow = 0
+	for _, w in ipairs(pooled) do
+		if glow >= poolCap then break end
+		modes[w.i] = "on"; glow += 1
+	end
+	for _, w in ipairs(wanted) do
+		if lit + glow >= tier.lights then break end
+		local e = list[w.i]
+		if tier.shadows == "hero" and e.hero and w.d <= tier.heroShadowRange then
+			modes[w.i] = "shadow"; shadows += 1
+		else
+			modes[w.i] = "on"
+		end
+		lit += 1
+	end
+	return modes, {lit = lit, pooled = glow, shadows = shadows}
+end
+-- Brightness a managed light burns at (night boost, ceiling).
+function L.lightBrightness(base, nightness)
+	base = tonumber(base) or 0
+	if base ~= base or base < 0 then base = 0 end
+	local n = math.clamp(tonumber(nightness) or 0, 0, 1)
+	return math.min(base * (1 + L.NIGHT_BOOST * n), math.max(base, L.MAX_LIGHT_BRIGHTNESS))
+end
+
+------------------------------------------------------------------------------
+-- Glow sites: lamp / lantern meshes (Shape attribute) that carry no light of
+-- their own get one of the tier's pooled client lights at night, nearest
+-- first. A part can opt in with the GlowSite attribute ("lantern" | "window" |
+-- "stall"), e.g. future lit windows.
+------------------------------------------------------------------------------
+L.GLOW_SHAPES = {Lantern = "lantern", HangingLantern = "lantern", TwinLantern = "lantern", Torch = "lantern",
+	StreetLamp = "lantern", LampPost = "lantern", MarketStall = "stall"}
+L.GLOW_KINDS = {
+	lantern = {color = "FFD9A0", brightness = 0.9, range = 14},
+	window = {color = "FFC98A", brightness = 0.7, range = 12},
+	stall = {color = "FFD3A0", brightness = 0.6, range = 12},
+}
+
+------------------------------------------------------------------------------
+-- Validation (every composed / blended state; verify-lighting).
+------------------------------------------------------------------------------
+local function lum(c) return 0.2126 * c.R + 0.7152 * c.G + 0.0722 * c.B end
+L.luminance = lum
+function L.valid(state)
+	if type(state) ~= "table" then return false, "no state" end
+	for _, f in ipairs(L.FIELDS) do
+		local v = state[f.key]
+		if f.kind == "color" then
+			if typeof(v) ~= "Color3" then return false, f.key .. " is not a colour" end
+			for _, ch in ipairs({v.R, v.G, v.B}) do
+				if ch ~= ch or ch < -1e-6 or ch > 1 + 1e-6 then return false, f.key .. " channel out of range" end
+			end
+			if f.maxLum and lum(v) > f.maxLum + 1e-6 then return false, f.key .. " too bright" end
+			if f.minLum and lum(v) < f.minLum - 1e-6 then return false, f.key .. " too dark" end
+		else
+			if type(v) ~= "number" or v ~= v or v == math.huge or v == -math.huge then return false, f.key .. " is not finite" end
+			if v < f.min - 1e-6 or v > f.max + 1e-6 then return false, f.key .. " out of range (" .. v .. ")" end
+		end
+	end
+	return true
+end
+
+return L

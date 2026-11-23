@@ -1224,7 +1224,25 @@ do
 	eq(#moved.satchel,#s0.satchel,"satchelMove keeps every item")
 	ok(has(cmd(knight,"satchelMove","NotAnItem:1").message,"Choose"),"unknown item rejected")
 	ok(has(cmd(knight,"satchelMove",last..":x").message,"Choose"),"bad slot rejected")
-	ok(has(cmd(knight,"satchelMove",last..":9999").message,"Choose"),"slot index capped at three digits")
+	ok(has(cmd(knight,"satchelMove",last..":99999").message,"Choose"),"slot index capped at four digits")
+	-- QC L8: a 4-digit index is clamped to the end of the order (never past 400).
+	local far=cmd(knight,"satchelMove",last..":9999")
+	eq(far.satchel[#far.satchel],last,"a 4-digit slot lands at the end of the order")
+	ok(has(far.message,"keeps 400 slots"),"a slot past 400 is reported")
+	cmd(knight,"satchelMove",last..":1")
+	-- QC H1: satchelMove / satchelSort are display-only: the read throttle bounds
+	-- them, not the 0.24 s action cooldown (a queued drag right after a sell is not refused).
+	do
+		local function raw(verb,item) clock+=0.1; return objects.RemoteFunction.OnServerInvoke(knight,verb,item) end
+		advance(1)
+		raw("sell","NotAnItem")
+		local quick=raw("satchelMove",last..":2")
+		ok(quick and quick.message=="" and quick.satchel[2]==last,"satchelMove 0.1 s after an action is accepted: "..tostring(quick and quick.message))
+		local sortQuick=raw("satchelSort","rarity")
+		ok(sortQuick and not has(sortQuick.message,"One moment"),"satchelSort is not held by the action cooldown")
+		ok(objects.RemoteFunction.OnServerInvoke(knight,"satchelSort","name")==nil,"the 0.08 s read throttle still bounds display verbs")
+		advance(1)
+	end
 	local sorted=cmd(knight,"satchelSort","name")
 	for i=2,#sorted.satchel do ok(Data.Items[sorted.satchel[i-1]].name<=Data.Items[sorted.satchel[i]].name,"satchelSort name order") end
 	ok(has(cmd(knight,"satchelSort","bogus").message,"Sort by"),"unknown sort rejected")
@@ -1259,6 +1277,16 @@ do
 	eq(spare.items.CopperHatchet,1,"drop keeps the enchanted copy, spares go")
 	ok(has(spare.message,"Dropped 2"),"drop counts only the spares")
 	ok(has(cmd(knight,"sell","CopperHatchet").message,"carries upgrades"),"then the last enchanted copy is refused")
+	-- QC L7: Gear.upgraded reads Data.Gear.isUpgraded: an empty book or a stale
+	-- reforge id is not an upgrade, so the last copy can go.
+	knight=rejoin(knight,function(p) p.items.BrassSword=1; p.books=p.books or {}; p.books.BrassSword={}; p.items.BrassBand=1; p.reforges=p.reforges or {}; p.reforges.BrassBand="NoSuchReforge" end)
+	ok(has(cmd(knight,"drop","BrassSword").message,"Dropped 1"),"an empty tome record does not lock the last copy")
+	ok(has(cmd(knight,"drop","BrassBand").message,"Dropped 1"),"a stale reforge id does not lock the last copy")
+	-- QC L6: a bagged accessory names the bag, not "Unequip".
+	knight=rejoin(knight,function(p) p.items.MeadowCharm=1; p.accessoryBag={"MeadowCharm"} end)
+	ok(has(cmd(knight,"sell","MeadowCharm").message,"accessory bag"),"sell of a bagged accessory names the bag")
+	ok(has(cmd(knight,"drop","MeadowCharm").message,"accessory bag"),"drop of a bagged accessory names the bag")
+	knight=rejoin(knight,function(p) p.accessoryBag={}; p.items.MeadowCharm=nil end)
 	-- L9: an owned id outside the stored order (past Satchel.MAX) can still be moved.
 	local added,ids={},{}
 	for id in pairs(Data.Items) do table.insert(ids,id) end
@@ -1436,6 +1464,44 @@ local legacySale=cmd(merchant,"sell")
 eq(legacySale.coins,236,"nil sell keeps legacy four resources")
 eq(legacySale.items.StarFragment,1,"nil sell ignores other items")
 eq(cmd(merchant,"sell","StarFragment").coins,416,"rare item sold by id")
+
+-- Polish: sell quantity "<id>:<n>" (validated; at most held - the kept upgraded copy).
+do
+	local seller=seeded(291,function(p) p.coins=0; p.items={BrassIngot=10,Ore=30,SunsteelSword=4}; p.stars={SunsteelSword=2} end)
+	local part=cmd(seller,"sell","BrassIngot:3")
+	eq(part.items.BrassIngot,7,"sold three of the stack")
+	eq(part.coins,3*Data.Items.BrassIngot.value,"paid for three")
+	ok(has(cmd(seller,"sell","BrassIngot:8").message,"at most 7"),"no more than held")
+	eq(st(seller).items.BrassIngot,7,"an over-count sells nothing")
+	for _,bad in ipairs({"BrassIngot:0","BrassIngot:-1","BrassIngot:1.5","BrassIngot:01","BrassIngot:x","BrassIngot:1:2","BrassIngot:99999999",":3"}) do
+		local before=st(seller).coins
+		local r=cmd(seller,"sell",bad)
+		eq(r.coins,before,"malformed quantity "..bad.." pays nothing")
+	end
+	eq(st(seller).items.BrassIngot,7,"malformed quantities sell nothing")
+	local raw=cmd(seller,"sell","Ore:10")
+	eq(raw.items.Ore,20,"raw materials sell by quantity too")
+	-- The upgraded copy stays: 4 held, 1 kept, so at most 3.
+	ok(has(cmd(seller,"sell","SunsteelSword:4").message,"at most 3"),"the kept upgraded copy is not counted")
+	local spares=cmd(seller,"sell","SunsteelSword:3")
+	eq(spares.items.SunsteelSword,1,"spares sold, the upgraded copy kept")
+	ok(has(spares.message,"kept your upgraded copy"),"the reply names the kept copy")
+	ok(has(cmd(seller,"sell","SunsteelSword:1").message,"carries upgrades"),"the last upgraded copy never sells")
+	local whole=cmd(seller,"sell","BrassIngot")
+	eq(whole.items.BrassIngot,0,"a bare id still sells the whole stack")
+	seller=rejoin(seller)
+	eq(st(seller).items.Ore,20,"partial sales survive a rejoin")
+end
+-- Polish: stale display names (ids stay stable).
+eq(Data.RegionById.Hub.name,"Compass Quay","Hub region displays Compass Quay")
+eq(Data.RegionById.Quarry.name,"Brassfall Cay","Quarry region displays Brassfall Cay")
+eq(Data.DiaryByRegion.Quarry.name,"Brassfall Cay Diary","diary name follows")
+eq(Data.Townsfolk.RecallTargets.Hub,"Compass Quay","recall target names Compass Quay")
+ok(has(Data.Items.HubwardTablet.description,"Compass Quay"),"Hubward Tablet text says Compass Quay")
+for _,file in ipairs({"shared/GameData.lua","server.server.lua","ui.client.lua","hud.client.lua","nav.client.lua","npc.client.lua","features.client.lua","world.server.lua"}) do
+	local src=fs.readFile(file)
+	ok(not has(src,"Aether Hub") and not has(src,"Quarry Cay"),file.." has no stale display names")
+end
 
 -- Slayer quests.
 local slayer=seeded(300,function(p) p.xp.Combat=X[5]; p.levelRewards.Combat=5; p.coins=1000 end)
@@ -2270,12 +2336,12 @@ end
 table.sort(auctionIds,function(a,b) return #a>#b end)
 local function nonce(u) return string.format("%016x",u) end
 local text=string.rep("x",260)
-local bazaarCap,auctionCap=math.min(Rules.accountCap,1500),math.min(Rules.accountCap,600)
+local bazaarCap,auctionCap=math.min(Rules.accountCap,1500),math.min(Rules.accountCap,500)
 local worstBazaar={bids={},asks={},claims={},receipts={},accounts=bazaarCap,nextId=999999999,revision=999999999,version=1}
 for i=1,Rules.bookCap do table.insert(worstBazaar.bids,{id=999999000+i,owner=tostring(9000000000+i),price=Rules.maxPrice,qty=Rules.maxQuantity}) end
 for u=1,bazaarCap do
 	local uid=tostring(9000000000+u)
-	worstBazaar.receipts[uid]={seq=9999999,n=nonce(u),coins=640000000,items={[longestCommodity]=6400},at=1999999999,text=if u==1 then text else nil}
+	worstBazaar.receipts[uid]={n=nonce(u),coins=640000000,items={[longestCommodity]=6400},at=1999999999,text=if u==1 then text else nil}
 	worstBazaar.claims[uid]={units=6400,coins=6400000000}
 end
 local bazaarBytes=#serde.encode("json",worstBazaar)
@@ -2287,12 +2353,17 @@ for u=1,auctionCap do
 	local items,back={},{}
 	for k=1,Rules.listingCap+1 do items[auctionIds[k]]=10 end
 	for k=1,Rules.listingCap do back[auctionIds[k]]=10 end
-	worstAuction.receipts[uid]={seq=9999999,n=nonce(u),coins=1000000000,items=items,at=1999999999,text=if u==1 then text else nil}
+	worstAuction.receipts[uid]={n=nonce(u),coins=1000000000,items=items,at=1999999999,text=if u==1 then text else nil}
 	worstAuction.proceeds[uid]=10000000000
 	worstAuction.returns[uid]=back
 end
 local auctionBytes=#serde.encode("json",worstAuction)
 ok(auctionBytes<512*1024,"worst-case Auction House key after pruning < 512 KB: "..auctionBytes)
+-- §33: auction price history lives in its own key (hist:auction:<cat>), so the
+-- category key is receipts + listings only; both keep a margin under 512 KB.
+ok(auctionBytes<=480*1024,"worst-case Auction House key (no price history) <= 480 KB: "..auctionBytes)
+ok(bazaarBytes<=480*1024,"worst-case Bazaar key <= 480 KB: "..bazaarBytes)
+eq(worstAuction.history,nil,"the auction key fixture carries no price history")
 print("Economy maximum-shape fixtures after pruning: Bazaar "..bazaarBytes.." / Auction "..auctionBytes.." JSON bytes.")
 print("PASS: "..(checks-before).." economy (Bazaar / Auction House) assertions.")
 end)()
