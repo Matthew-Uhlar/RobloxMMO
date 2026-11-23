@@ -5686,7 +5686,7 @@ end
 -- the page redraws when the ballot opens or closes.
 ------------------------------------------------------------------------------
 do
-local CO={timers={},boundary=math.huge}
+local CO={timers={},boundary=math.huge,readySnap=nil,readyAt=0}
 function CO.ready() return Data and type(Data.Council)=="table" and type(Data.Council.slate)=="function" end
 -- Synced server clock; unsynced clocks fall back to the snapshot's server time, then os.time().
 function CO.now()
@@ -5729,8 +5729,22 @@ local function drawCouncil()
 	local C=Data.Council
 	local s=tbl(state.council)
 	local now=CO.now()
+	-- QC L4: the server's election (it rolls forward; a lagging client clock never
+	-- shows an older ballot) while its window still holds, else the client's clock.
 	local el=C.election(now)
-	CO.boundary=if el.open then el.closes else el.opens
+	local se=math.floor(num(s.e,0))
+	if se>0 then
+		local w=C.termWindow(se)
+		if now<w.starts then
+			el={e=se,opens=w.opens,closes=w.starts,open=s.open==true and now>=w.opens,termYear=se-1}
+		end
+	end
+	local boundary=if el.open then el.closes else el.opens
+	CO.boundary=if boundary>now then boundary else math.huge
+	-- QC L2: the vote cooldown is a deadline: the page redraws when it passes.
+	if s~=CO.readySnap then CO.readySnap=s; CO.readyAt=now+math.max(0,num(s.readyIn,0)) end
+	local wait=math.max(0,CO.readyAt-now)
+	if wait>0 then CO.boundary=math.min(CO.boundary,CO.readyAt) end
 	local term=tbl(s.term)
 	-- The ruling term.
 	if term.sealed and type(term.winner)=="string" then
@@ -5748,11 +5762,22 @@ local function drawCouncil()
 	end
 	-- The ballot.
 	local voted=type(s.vote)=="string" and s.vote or nil
-	local yourVote=if voted then "Your vote: "..paint(escape(C.candidateName(voted)),"FFF4D9").."  "..(if s.confirmed then paint("✓ counted","9EE7D2") else paint("counting…","B9C7CC")) else "You have not voted yet."
+	-- QC L1: a refused ballot and the candidate last confirmed by the count.
+	local REFUSED={closed="not counted: the ballot had closed",late="not counted: the ballot closed before it was written",
+		full="not counted: the ballot box is full",bad="not counted: refused"}
+	local status=if s.refused then paint("✗ "..(REFUSED[s.refused] or REFUSED.bad),"E07A5F") elseif s.confirmed then paint("✓ counted","9EE7D2") else paint("counting…","B9C7CC")
+	local yourVote=if voted then "Your vote: "..paint(escape(C.candidateName(voted)),"FFF4D9").."  "..status else "You have not voted yet."
+	local ballotLines={yourVote}
+	if voted and not s.confirmed and type(s.counted)=="string" and s.counted~=voted then
+		table.insert(ballotLines,"Last counted: "..paint(escape(C.candidateName(s.counted)),"FFF4D9"))
+	end
+	local minRenown=math.floor(num(s.minRenown,C.MIN_RENOWN or 0))
+	local ineligible=s.eligible==false
+	if ineligible then table.insert(ballotLines,paint("Voting needs Isle Renown "..minRenown.." (you are Renown "..math.floor(num(s.renown,0))..")","E9C46A")) end
 	if el.open then
 		card({name="CouncilBallot",motif="Ledger",accent=gold,title=paint("YEAR "..el.e.." BALLOT  ·  OPEN",C.COLOR),
 			subtitle="One vote per account  ·  change it any time before the close",badge=paint("VOTING","9EE7D2"),
-			lines={yourVote,"Changes left: "..math.max(0,num(s.changesLeft,C.MAX_CHANGES)-(if voted then 0 else 1))},
+			lines=(function() table.insert(ballotLines,"Changes left: "..math.max(0,num(s.changesLeft,C.MAX_CHANGES)-(if voted then 0 else 1))) return ballotLines end)(),
 			after=CO.timer(function(t) return "Ballot closes in "..C.span(el.closes-t) end)})
 	else
 		card({name="CouncilBallot",motif="Ledger",title=paint("YEAR "..el.e.." BALLOT",C.COLOR),subtitle="Opens on Emberfall 1",
@@ -5763,11 +5788,10 @@ local function drawCouncil()
 	local counts=type(s.counts)=="table" and s.counts or nil
 	local total=num(s.total,0)
 	local shares=counts and C.shares(counts,total) or nil
-	local wait=num(s.readyIn,0)
 	for i,entry in ipairs(C.slate(el.e)) do
 		local cand=C.CandidateById[entry.id]
 		local mine=voted==entry.id
-		local reason=(not el.open and "The ballot is not open yet.") or (mine and "Your vote is already with "..cand.name..".")
+		local reason=(not el.open and "The ballot is not open yet.") or (ineligible and "Voting needs Isle Renown "..minRenown..".") or (mine and "Your vote is already with "..cand.name..".")
 			or (num(s.changesLeft,C.MAX_CHANGES)<=0 and "You have no vote changes left this election.") or (wait>0 and "One moment: the clerk is inking your last ballot.") or nil
 		local bar=nil
 		if shares then
@@ -5792,9 +5816,10 @@ local function drawCouncil()
 	if #hist==0 then card({name="CouncilHistoryEmpty",motif="Journal",title="No sealed terms yet",titleColor=muted,detail="Past winners appear here once a ballot is sealed."}) end
 	for _,h in ipairs(hist) do
 		local w=C.CandidateById[h.winner] or {}
-		local share=if num(h.total,0)>0 then string.format("%.0f%%",num(h.votes,0)/h.total*100) else "unopposed"
+		-- Lead decision (b): a term nobody voted in seats its first slate place, with full perks.
+		local share=if num(h.total,0)>0 then string.format("%.0f%%",num(h.votes,0)/h.total*100).." of "..fmt(num(h.total,0)).." votes" else "No votes cast: first on the slate"
 		card({name="CouncilHistory"..tostring(h.e),icon=CO.portrait(w),title=paint("Year "..num(h.e,0).."  ·  "..escape(w.name or tostring(h.winner)),w.color or C.COLOR),
-			subtitle=share.." of "..fmt(num(h.total,0)).." votes"..(if type(h.minister)=="string" then "  ·  Minister "..escape(C.candidateName(h.minister)) else ""),
+			subtitle=share..(if type(h.minister)=="string" then "  ·  Minister "..escape(C.candidateName(h.minister)) else ""),
 			lines=CO.perkLines(C.termPerks({e=h.e,winner=h.winner,ministerPerk=h.ministerPerk}),h.ministerPerk)})
 	end
 end

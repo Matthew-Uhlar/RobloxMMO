@@ -12706,7 +12706,7 @@ end
 -- the next term on every server; the runner-up becomes Minister and grants one
 -- perk (the first of theirs that does not overlap the winner's).
 -- Pure data + pure rules: server.server.lua ("Isle Council" block) owns the
--- ballots (sharded DataStore keys, idempotent per-account sequence numbers),
+-- ballots (sharded MemoryStore items, idempotent per-account sequence numbers),
 -- the sealed result and every perk hook. docs/DEPTH-CONTRACT.md §36.
 ------------------------------------------------------------------------------
 do
@@ -12718,18 +12718,28 @@ C.whole = whole
 C.NAME = "Isle Council"
 C.OPEN_DAY = 25          -- day of the isle year the ballot opens (Emberfall 1); closes at year's end
 C.SLATE = 5              -- candidates per election
-C.SHARDS = 8             -- ballot keys per election (UserId % SHARDS)
-C.SHARD_CAP = 50000      -- ballots per shard key (~1.3 MB JSON worst case; 400k voters per election)
-C.GRACE = 120            -- seconds after the close before a server seals the result (clock skew, in-flight writes)
+C.SHARDS = 512           -- MemoryStore shard items per election (UserId % SHARDS); see §36 capacity math
+C.SHARD_CAP = 1500       -- ballots per shard item (~29 KB JSON worst case, under MemoryStore's 32 KB item limit; 768k voters)
+C.GROUPS = 16            -- count-mirror items per election (tally reads fetch these only, never ballots)
+C.MAX_SEQ = 4095         -- highest ballot sequence number (packed with the slot: seq * 8 + slot)
+C.GRACE = 120            -- seconds after the close before a server seals; ballots cast before the close are written until GRACE / 2
+C.TTL_PAD = 7 * 86400    -- live ballot items expire this long after the seal time
 C.FLUSH = 10             -- seconds between a server's ballot flushes (one UpdateAsync per pending shard)
+C.MIRROR = 30            -- seconds between a server's count-mirror writes (one UpdateAsync per pending group)
+C.BACKOFF_BASE = 2       -- seconds: first retry delay of a failing key (doubles per failure, jittered 50-100%)
+C.BACKOFF_MAX = 120      -- seconds: longest retry delay of a failing key
 C.READ = 90              -- seconds a server's cached tally stays fresh
+C.VIEW_COOLDOWN = 60     -- seconds between one account's forced tally refreshes (councilView)
+C.VIEW_FLOOR = 30        -- seconds between any two forced tally refreshes on one server
 C.TICK = 3               -- council heartbeat (seconds)
 C.SEAL_RETRY = 30        -- seconds between sealing attempts after a failure
+C.SEAL_LEASE = 90        -- seconds a server's claim to seal an election lasts (one server reads the shards)
 C.VOTE_COOLDOWN = 4      -- seconds between one account's votes
 C.MAX_CHANGES = 12       -- ballots per account per election (the first vote and 11 changes)
+C.MIN_RENOWN = 5         -- Isle Renown level needed to vote (lead decision: deters throwaway alts)
 C.HISTORY = 8            -- past terms kept in the shared history key
-C.ATTEMPTS = 20          -- failed flushes before a queued ballot is dropped (the journal keeps it; a rejoin re-queues it)
-C.PREFIX = "council_v1_"
+C.PREFIX = "council_v1_"   -- DataStore keys: result, history (and legacy v1 ballot shards, swept after the seal)
+C.MAP_PREFIX = "council_v2_" -- MemoryStore hash map per election
 C.HISTORY_KEY = C.PREFIX .. "history"
 C.CLERK = "CouncilClerk"
 C.COLOR = "E9C46A"
@@ -12849,64 +12859,138 @@ function C.slotOf(e, id)
 	return nil
 end
 
--- Ballot books (one DataStore key per shard) -------------------------------------
+-- Ballot storage (QC H1) ----------------------------------------------------------
+-- Live ballots sit in a MemoryStore hash map per election (C.mapName(e)), split
+-- over C.SHARDS shard items (UserId % C.SHARDS). One shard item holds the
+-- counts and a compact, bounded ballot map {[UserId] = seq * 8 + slot}, so one
+-- atomic UpdateAsync both records a ballot and moves the counts (idempotent by
+-- sequence number). Tally reads never download ballots: after each committed
+-- shard write the writing server mirrors that shard's counts, tagged with the
+-- shard's write version, into one of C.GROUPS small count items (C.mirror keeps
+-- the highest version per shard, so late or repeated mirror writes are
+-- harmless). Sealing reads the shard items once (authoritative) and persists the
+-- result to DataStore. Items expire C.TTL_PAD after the seal time (C.ttl).
 function C.shardOf(userId) return (whole(tonumber(userId)) % C.SHARDS) + 1 end
-function C.key(e, shard) return C.PREFIX .. whole(e) .. "_s" .. whole(shard) end
+function C.mapName(e) return C.MAP_PREFIX .. whole(e) end
+function C.shardKey(shard) return "s" .. whole(shard) end
+function C.groupOf(shard) return ((whole(shard) - 1) % C.GROUPS) + 1 end
+function C.groupKey(group) return "n" .. whole(group) end
+C.SEAL_KEY = "seal"
+C.LEGACY_SHARDS = 8      -- v1 stored ballots in 8 DataStore keys per election
+-- Legacy (v1) DataStore shard keys, swept once a term's result is in history (QC L5).
+function C.legacyKey(e, shard) return C.PREFIX .. whole(e) .. "_s" .. whole(shard) end
 function C.resultKey(e) return C.PREFIX .. whole(e) .. "_result" end
+-- Expiration (seconds from `now`) for election e's items: past the seal plus a pad, within MemoryStore's 45-day limit.
+function C.ttl(e, now)
+	return math.clamp(C.termWindow(e).sealAt + C.TTL_PAD - whole(now), 60, 3888000)
+end
+-- The last moment a ballot cast before the close may still be written (QC M1).
+function C.writeDeadline(e) return C.termWindow(e).starts + C.GRACE / 2 end
+function C.pack(slot, seq) return whole(seq) * 8 + whole(slot) end
+function C.unpack(v)
+	v = whole(v)
+	return v % 8, v // 8
+end
 local function emptyCounts() local n = {} for i = 1, C.SLATE do n[i] = 0 end return n end
-function C.newBook(e) return {e=whole(e), v={}, n=emptyCounts(), size=0} end
--- A sanitised copy-in-place of a stored book for election e (a fresh book when
--- it is missing, malformed or for another election).
+C.emptyCounts = emptyCounts
+function C.newBook(e) return {e=whole(e), v={}, n=emptyCounts(), size=0, ver=0} end
+-- A sanitised copy-in-place of a stored shard (a fresh one when it is missing,
+-- malformed or for another election).
 function C.cleanBook(old, e)
 	if type(old) ~= "table" or old.e ~= e or type(old.v) ~= "table" then return C.newBook(e) end
 	if type(old.n) ~= "table" then old.n = emptyCounts() end
 	for i = 1, C.SLATE do old.n[i] = whole(old.n[i]) end
-	old.size = whole(old.size)
+	old.size, old.ver = whole(old.size), whole(old.ver)
 	return old
 end
 -- Counts recomputed from the ballots themselves (tests; repair).
 function C.recount(book)
 	local n, size = emptyCounts(), 0
 	for _, b in pairs(tab(tab(book).v)) do
-		local c = type(b) == "table" and whole(b[1]) or 0
+		local c = C.unpack(b)
 		if c >= 1 and c <= C.SLATE then n[c] += 1 end
 		size += 1
 	end
 	return n, size
 end
--- Applies queued ballots {u = "<UserId>", c = slot, s = seq} to a stored book
--- (the UpdateAsync transform). One ballot per account: a ballot replaces the
--- account's earlier one only when its sequence number is higher, so a retried
--- or replayed flush, or an older ballot arriving after a newer one, changes
--- nothing. Returns book, results {[u] = "ok"|"stale"|"full"|"closed"|"bad"}, changed.
+-- Applies queued ballots {u = "<UserId>", c = slot, s = seq, t = castAt} to a
+-- stored shard (the UpdateAsync transform). One ballot per account: a ballot
+-- replaces the account's earlier one only when its sequence number is higher,
+-- so retries, replays and out-of-order flushes change nothing. A ballot counts
+-- only if it was cast (server-stamped t) before the close and is written before
+-- C.writeDeadline (QC M1). Returns book, results {[u] = "ok"|"stale"|"full"|
+-- "closed"|"bad"}, changed, stored {[u] = {c, s}} (the ballot already stored
+-- for every "stale" verdict, QC M3).
 function C.applyBallots(old, ops, e, closes, now)
 	local book = C.cleanBook(old, e)
-	local results, changed = {}, false
+	local results, stored, changed = {}, {}, false
 	for _, op in ipairs(tab(ops)) do
-		local u, c, s = type(op) == "table" and op.u, type(op) == "table" and whole(op.c) or 0, type(op) == "table" and whole(op.s) or 0
-		if type(u) ~= "string" or #u == 0 or #u > 20 or c < 1 or c > C.SLATE or s < 1 then
+		local u = type(op) == "table" and op.u
+		local c, s = type(op) == "table" and whole(op.c) or 0, type(op) == "table" and whole(op.s) or 0
+		local castAt = type(op) == "table" and tonumber(op.t) or nil
+		if type(u) ~= "string" or #u == 0 or #u > 20 or not string.match(u, "^%d+$") or c < 1 or c > C.SLATE or s < 1 or s > C.MAX_SEQ then
 			if type(u) == "string" then results[u] = "bad" end
-		elseif now >= closes then
+		elseif castAt == nil or castAt >= closes or now >= closes + C.GRACE / 2 then
 			results[u] = "closed"
 		else
 			local cur = book.v[u]
-			local curSeq = type(cur) == "table" and whole(cur[2]) or 0
+			local curC, curSeq = C.unpack(cur)
 			if cur ~= nil and curSeq >= s then
 				results[u] = "stale"
+				stored[u] = {c=curC, s=curSeq}
 			elseif cur == nil and book.size >= C.SHARD_CAP then
 				results[u] = "full"
 			else
-				local prev = type(cur) == "table" and whole(cur[1]) or 0
-				if prev >= 1 and prev <= C.SLATE then book.n[prev] = math.max(0, book.n[prev] - 1) end
+				if cur ~= nil and curC >= 1 and curC <= C.SLATE then book.n[curC] = math.max(0, book.n[curC] - 1) end
 				if cur == nil then book.size += 1 end
 				book.n[c] += 1
-				book.v[u] = {c, s}
+				book.v[u] = C.pack(c, s)
 				results[u] = "ok"
 				changed = true
 			end
 		end
 	end
-	return book, results, changed
+	if changed then book.ver += 1 end
+	return book, results, changed, stored
+end
+-- Count mirror: a group item {[tostring(shard)] = {ver, n1..nSLATE}}. Merges
+-- shard counts carrying their write version; returns the item and whether it
+-- changed (an older or equal version never overwrites a newer one).
+function C.mirror(old, entries)
+	local item = if type(old) == "table" then old else {}
+	local changed = false
+	for shard, entry in pairs(tab(entries)) do
+		local k = tostring(shard)
+		local cur = item[k]
+		local curVer = type(cur) == "table" and whole(cur[1]) or -1
+		if whole(entry.ver) > curVer then
+			local row = {whole(entry.ver)}
+			for i = 1, C.SLATE do row[i + 1] = whole(tab(entry.n)[i]) end
+			item[k] = row
+			changed = true
+		end
+	end
+	return item, changed
+end
+-- Per-shard counts {[shard] = {n...}} from mirror items {[group] = item}.
+function C.fromMirror(groups)
+	local shards = {}
+	for _, item in pairs(tab(groups)) do
+		for k, row in pairs(tab(item)) do
+			local shard = whole(tonumber(k))
+			if shard >= 1 and shard <= C.SHARDS and type(row) == "table" then
+				local n = {}
+				for i = 1, C.SLATE do n[i] = whole(row[i + 1]) end
+				shards[shard] = {ver=whole(row[1]), n=n}
+			end
+		end
+	end
+	return shards
+end
+-- Jittered exponential backoff (seconds) after `fails` consecutive failures on one key; r in [0, 1).
+function C.backoff(fails, r)
+	local span = math.min(C.BACKOFF_MAX, C.BACKOFF_BASE * 2 ^ math.max(0, whole(fails) - 1))
+	return span * (0.5 + 0.5 * math.clamp(tonumber(r) or 0, 0, 1))
 end
 -- Summed counts across shard count lists {[shard] = {n...}}.
 function C.sum(shards)

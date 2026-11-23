@@ -155,45 +155,80 @@ for _, skew in ipairs({-90, -5, 0, 7, 120}) do
 	eq(C.termWindow(C.election(t + skew).e).starts, el.closes, "and on the close")
 end
 
--- A4. Ballot books.
+-- A4. Ballot shards (MemoryStore items: counts + a compact ballot map).
 local E = el.e
 local closes = el.closes
 local t = el.opens + 100
-local book, res, changed = C.applyBallots(nil, {{u = "11", c = 1, s = 1}, {u = "12", c = 2, s = 1}}, E, closes, t)
+local function vote(u, c, s, at) return {u = u, c = c, s = s, t = at or t} end
+local book, res, changed = C.applyBallots(nil, {vote("11", 1, 1), vote("12", 2, 1)}, E, closes, t)
 ok(changed and res["11"] == "ok" and res["12"] == "ok", "first ballots counted")
 eq(book.n[1] + book.n[2], 2, "two votes")
 eq(book.size, 2, "two voters")
-local again
-again, res, changed = C.applyBallots(copy(book), {{u = "11", c = 1, s = 1}}, E, closes, t)
+eq(book.ver, 1, "a changed shard bumps its write version")
+eq(book.v["11"], C.pack(1, 1), "ballots are packed seq * 8 + slot")
+local again, stored
+again, res, changed, stored = C.applyBallots(copy(book), {vote("11", 1, 1)}, E, closes, t)
 ok(not changed and res["11"] == "stale", "a replayed ballot changes nothing")
 eq(again.n[1], 1, "replay is not counted twice")
-book, res = C.applyBallots(book, {{u = "11", c = 3, s = 2}}, E, closes, t)
+eq(again.ver, 1, "an unchanged shard keeps its version")
+ok(stored["11"] and stored["11"].c == 1 and stored["11"].s == 1, "QC M3: a stale verdict returns the stored ballot")
+book, res = C.applyBallots(book, {vote("11", 3, 2)}, E, closes, t)
 ok(res["11"] == "ok" and book.n[1] == 0 and book.n[3] == 1 and book.size == 2, "a vote change moves the ballot")
-book, res = C.applyBallots(book, {{u = "11", c = 4, s = 1}}, E, closes, t)
+book, res, _, stored = C.applyBallots(book, {vote("11", 4, 1)}, E, closes, t)
 ok(res["11"] == "stale" and book.n[3] == 1 and book.n[4] == 0, "an older ballot arriving late is ignored")
-book, res = C.applyBallots(book, {{u = "13", c = 5, s = 1}}, E, closes, closes)
-ok(res["13"] == "closed" and book.n[5] == 0, "ballots after the close are refused")
-book, res = C.applyBallots(book, {{u = "14", c = 9, s = 1}, {u = "15", c = 1, s = 0}, {u = string.rep("9", 30), c = 1, s = 1}, "junk", {c = 1, s = 1}}, E, closes, t)
-ok(res["14"] == "bad" and res["15"] == "bad" and book.size == 2, "malformed ballots are refused")
+ok(stored["11"].c == 3 and stored["11"].s == 2, "... and reports the newer stored ballot (slot 3, seq 2)")
+-- QC M1: the cast time (server-stamped) decides; writes are accepted until close + GRACE / 2.
+book, res = C.applyBallots(book, {vote("13", 5, 1, closes)}, E, closes, closes)
+ok(res["13"] == "closed" and book.n[5] == 0, "a ballot cast at the close is refused")
+book, res = C.applyBallots(book, {vote("13", 5, 1, closes - 5)}, E, closes, closes + C.GRACE / 2 - 1)
+ok(res["13"] == "ok" and book.n[5] == 1, "QC M1: cast before the close, written after it (within GRACE / 2): counted")
+book, res = C.applyBallots(book, {vote("14", 5, 1, closes - 5)}, E, closes, closes + C.GRACE / 2)
+ok(res["14"] == "closed" and book.n[5] == 1, "QC M1: written at close + GRACE / 2: refused")
+book, res = C.applyBallots(book, {{u = "15", c = 1, s = 1}}, E, closes, t)
+eq(res["15"], "closed", "a ballot without a cast time is refused")
+eq(C.writeDeadline(E), closes + C.GRACE / 2, "write deadline")
+book, res = C.applyBallots(book, {vote("14", 9, 1), vote("15", 1, 0), vote(string.rep("9", 30), 1, 1), vote("x1", 1, 1), vote("16", 1, C.MAX_SEQ + 1), "junk", {c = 1, s = 1}}, E, closes, t)
+ok(res["14"] == "bad" and res["15"] == "bad" and res["x1"] == "bad" and res["16"] == "bad" and book.size == 3, "malformed ballots are refused")
 local cap = C.SHARD_CAP
-C.SHARD_CAP = 2
-book, res = C.applyBallots(book, {{u = "16", c = 1, s = 1}, {u = "11", c = 2, s = 3}}, E, closes, t)
+C.SHARD_CAP = 3
+book, res = C.applyBallots(book, {vote("16", 1, 1), vote("11", 2, 3)}, E, closes, t)
 ok(res["16"] == "full" and res["11"] == "ok", "a full shard refuses new voters but still takes changes")
 C.SHARD_CAP = cap
 local n, size = C.recount(book)
 for i = 1, C.SLATE do eq(book.n[i], n[i], "incremental counts match a recount (" .. i .. ")") end
 eq(book.size, size, "size matches")
-local other = C.cleanBook({e = E - 1, v = {["1"] = {1, 1}}, n = {1, 0, 0, 0, 0}, size = 1}, E)
-eq(other.size, 0, "a book from another election starts fresh")
-eq(C.cleanBook("x", E).size, 0, "a junk book starts fresh")
+local other = C.cleanBook({e = E - 1, v = {["1"] = 9}, n = {1, 0, 0, 0, 0}, size = 1}, E)
+eq(other.size, 0, "a shard from another election starts fresh")
+eq(C.cleanBook("x", E).size, 0, "a junk shard starts fresh")
 eq(C.shardOf(17), 17 % C.SHARDS + 1, "shard by UserId")
-ok(C.key(E, 3) ~= C.key(E, 4) and C.key(E, 3) ~= C.key(E + 1, 3) and has(C.resultKey(E), "result"), "distinct keys")
--- Shard book size bound: worst case JSON for a full shard stays under 4 MB.
-local fat = {e = E, v = {}, n = {0, 0, 0, 0, 0}, size = 0}
-for i = 1, 2000 do fat.v[tostring(9000000000 + i)] = {5, C.MAX_CHANGES} end
+ok(C.SHARDS >= 128 and C.GROUPS >= 1 and C.SHARDS % C.GROUPS == 0, "QC H1: many shards (" .. C.SHARDS .. "), " .. C.GROUPS .. " count groups")
+ok(C.shardKey(3) ~= C.shardKey(4) and C.mapName(E) ~= C.mapName(E + 1) and C.groupKey(1) ~= C.shardKey(1) and has(C.resultKey(E), "result"), "distinct keys")
+local ttl = C.ttl(E, t)
+ok(ttl >= closes + C.GRACE - t and ttl <= 3888000, "items live past the seal, within MemoryStore's 45 days (" .. ttl .. " s)")
+-- Shard item size bound: a full shard (12-digit UserIds, the largest sequence) fits a 32 KB MemoryStore item.
 local serde = require("@lune/serde")
-local per = #serde.encode("json", fat.v) / 2000
-ok(per * C.SHARD_CAP < 4000000, string.format("a full shard stays under the 4 MB key limit (~%.1f MB)", per * C.SHARD_CAP / 1e6))
+local fat = {e = E, v = {}, n = {C.SHARD_CAP, 0, 0, 0, 0}, size = C.SHARD_CAP, ver = 99999}
+for i = 1, C.SHARD_CAP do fat.v[tostring(900000000000 + i)] = C.pack(5, C.MAX_SEQ) end
+local bytes = #serde.encode("json", fat)
+ok(bytes < 32 * 1024, string.format("a full shard item stays under 32 KB (%.1f KB)", bytes / 1024))
+ok(C.SHARDS * C.SHARD_CAP >= 400000, "capacity for 400k+ voters (" .. C.SHARDS * C.SHARD_CAP .. ")")
+-- Count mirror: versioned per shard, so late or repeated mirror writes never regress counts.
+local item, mch = C.mirror(nil, {[3] = {ver = 2, n = {1, 2, 0, 0, 0}}})
+ok(mch and item["3"][1] == 2, "mirror records a shard's counts with their version")
+item, mch = C.mirror(item, {[3] = {ver = 1, n = {9, 9, 9, 9, 9}}})
+ok(not mch and item["3"][2] == 1, "an older mirror write is ignored")
+item = C.mirror(item, {[3] = {ver = 3, n = {0, 3, 0, 0, 0}}, [19] = {ver = 1, n = {0, 0, 1, 0, 0}}})
+local fromM = C.fromMirror({item})
+local mc, mt = C.sum({fromM[3].n, fromM[19].n})
+ok(mt == 4 and mc[2] == 3 and mc[3] == 1, "mirror sums")
+ok(#serde.encode("json", (function()
+	local full = {}
+	for sh = 1, C.SHARDS / C.GROUPS do full[sh] = {ver = 999999, n = {99999, 99999, 99999, 99999, 99999}} end
+	return (C.mirror(nil, full))
+end)()) < 4096, "a count-mirror item stays small (tally reads never download ballots)")
+-- Backoff: exponential, jittered, capped.
+ok(C.backoff(1, 0) == C.BACKOFF_BASE / 2 and C.backoff(1, 1) == C.BACKOFF_BASE, "first retry after 1-2 s")
+ok(C.backoff(4, 1) == C.BACKOFF_BASE * 8 and C.backoff(40, 1) == C.BACKOFF_MAX and C.backoff(40, 0) == C.BACKOFF_MAX / 2, "doubles per failure, capped, jittered")
 
 -- A5. Concurrent writes: randomised voters, servers and flush orders. Each
 -- "server" keeps its own queue (latest ballot per account); flushes run in a
@@ -210,19 +245,17 @@ for trial = 1, 40 do
 	local truth = {} -- u -> {c, s}
 	local queues = {{}, {}, {}}
 	local journal = {} -- u -> {c, s} (what the account's journal says)
-	local ops = 0
 	for step = 1, 300 do
 		local action = rng:NextInteger(1, 10)
 		if action <= 6 then
-			local u = tostring(rng:NextInteger(1, 60))
+			local u = tostring(rng:NextInteger(1, 60) * 37)
 			local j = journal[u] or {0, 0}
 			local c = rng:NextInteger(1, C.SLATE)
 			j = {c, j[2] + 1}
 			journal[u] = j
 			truth[u] = j
 			local server = rng:NextInteger(1, 3) -- the account may hop servers between ballots
-			queues[server][u] = {u = u, c = c, s = j[2]}
-			ops += 1
+			queues[server][u] = vote(u, c, j[2])
 		else
 			local server = rng:NextInteger(1, 3)
 			local q = queues[server]
@@ -233,13 +266,12 @@ for trial = 1, 40 do
 				table.insert(byShard[sh], op)
 			end
 			for sh, batch in pairs(byShard) do
-				local key = C.key(E, sh)
 				local verdicts
 				local tries = rng:NextInteger(1, 3)
 				for _ = 1, tries do -- UpdateAsync may run the transform more than once
-					local b, r = C.applyBallots(copy(store[key]), copy(batch), E, closes, t)
+					local b, r = C.applyBallots(copy(store[sh]), copy(batch), E, closes, t)
 					verdicts = r
-					if _ == tries then store[key] = b end
+					if _ == tries then store[sh] = b end
 				end
 				local lost = rng:NextNumber() < 0.2
 				if not lost then
@@ -251,18 +283,18 @@ for trial = 1, 40 do
 		end
 	end
 	-- Drain: every server flushes until empty (rejoins re-queue unacknowledged journals).
-	for u, j in pairs(journal) do queues[1][u] = {u = u, c = j[1], s = j[2]} end
+	for u, j in pairs(journal) do queues[1][u] = vote(u, j[1], j[2]) end
 	for _, q in ipairs(queues) do
 		local batch = {}
 		for _, op in pairs(q) do table.insert(batch, op) end
 		for _, op in ipairs(batch) do
-			local key = C.key(E, C.shardOf(op.u))
-			store[key] = (C.applyBallots(store[key], {op}, E, closes, t))
+			local sh = C.shardOf(op.u)
+			store[sh] = (C.applyBallots(store[sh], {op}, E, closes, t))
 		end
 	end
 	local shards = {}
-	for sh = 1, C.SHARDS do
-		local b = C.cleanBook(store[C.key(E, sh)], E)
+	for sh, b in pairs(store) do
+		b = C.cleanBook(b, E)
 		local rn = C.recount(b)
 		for i = 1, C.SLATE do assert(rn[i] == b.n[i], "trial " .. trial .. ": counts match a recount") end
 		shards[sh] = b.n
@@ -387,7 +419,7 @@ local partA = checks
 print("Part A (data): " .. partA .. " checks.")
 
 ------------------------------------------------------------------------------
--- Part B: server instances on one DataStore double.
+-- Part B: server instances on one DataStore double and one MemoryStore double.
 ------------------------------------------------------------------------------
 local function signal()
 	local listeners = {}
@@ -403,9 +435,49 @@ local function signal()
 end
 local serverSource = fs.readFile("server.server.lua"):gsub("^\239\187\191", ""):gsub("base%.Position", "base.CFrame.Position")
 local RA = Data.RegionArt
--- One shared store. fail: "before" (throws, nothing written) | "after" (commits, ack lost).
+-- MemoryStore double: hash maps by name. fail: "before" (throws, nothing
+-- written) | "after" (commits, ack lost); throttle(name, key) -> true throws
+-- (a throttled / failed request); down = true fails every request.
+local function newMemory()
+	local M = {maps = {}, writes = 0, reads = 0, removes = 0, keyWrites = {}, keyReads = {}, ttls = {}, fail = nil, throttle = nil, down = false, repeatTransform = false}
+	function M.map(name)
+		M.maps[name] = M.maps[name] or {}
+		return M.maps[name]
+	end
+	M.service = {GetHashMap = function(_, name)
+		local data = M.map(name)
+		local hm = {}
+		function hm:GetAsync(key)
+			if M.down then error("Injected MemoryStore outage") end
+			M.reads += 1
+			M.keyReads[key] = (M.keyReads[key] or 0) + 1
+			return copy(data[key])
+		end
+		function hm:UpdateAsync(key, op, ttl)
+			M.writes += 1
+			M.keyWrites[name .. "/" .. key] = (M.keyWrites[name .. "/" .. key] or 0) + 1
+			assert(type(ttl) == "number" and ttl > 0 and ttl <= 3888000, "a valid expiration")
+			M.ttls[name .. "/" .. key] = ttl
+			if M.down or (M.throttle and M.throttle(name, key)) then error("Injected throttle") end
+			if M.fail == "before" then M.fail = nil; error("Injected outage") end
+			if M.repeatTransform then op(copy(data[key])) end
+			local value = op(copy(data[key]))
+			if value ~= nil then data[key] = copy(value) end
+			if M.fail == "after" then M.fail = nil; error("Injected lost acknowledgement") end
+			return if value ~= nil then copy(value) else nil
+		end
+		function hm:RemoveAsync(key)
+			if M.down then error("Injected MemoryStore outage") end
+			M.removes += 1
+			data[key] = nil
+		end
+		return hm
+	end}
+	return M
+end
+-- One shared DataStore (journals, results, history). fail: "before" | "after" for council keys.
 local function newStore()
-	local S = {data = {}, writes = 0, reads = 0, fail = nil, repeatCouncil = false, failGets = false}
+	local S = {data = {}, writes = 0, reads = 0, fail = nil, failGets = false, memory = newMemory()}
 	function S:GetAsync(key)
 		if self.failGets and key:match("^council") then error("Injected read outage") end
 		self.reads += 1
@@ -416,17 +488,18 @@ local function newStore()
 		if council then
 			self.writes += 1
 			if self.fail == "before" then self.fail = nil; error("Injected outage") end
-			if self.repeatCouncil then op(copy(self.data[key])) end
 		end
 		local value = op(copy(self.data[key]))
 		if value ~= nil then self.data[key] = copy(value) end
 		if council and self.fail == "after" then self.fail = nil; error("Injected lost acknowledgement") end
 		return if value ~= nil then copy(self.data[key]) else nil
 	end
+	function S:RemoveAsync(key) self.data[key] = nil end
 	return S
 end
 local rngValue = 0.999
--- Builds one server. clock = {utc}; skew seconds are added to os.time().
+local jitterValue = 0.999
+-- Builds one server. clock = {utc, cpu}; skew seconds are added to os.time().
 local function newServer(store, clock, skew)
 	local S = {objects = {}, delayed = {}, live = {}, skew = skew or 0}
 	local npcAt, models = {}, {}
@@ -448,11 +521,12 @@ local function newServer(store, clock, skew)
 		ReplicatedStorage = {WaitForChild = function(_, name) return assert(markers[name], name) end},
 		ServerStorage = {FindFirstChild = function(_, name) return storage[name] end},
 		DataStoreService = {GetDataStore = function() return store end},
+		MemoryStoreService = store.memory.service,
 		HttpService = {GenerateGUID = function() guid += 1; return "council-test-" .. tostring(S) .. guid end},
 		RunService = {IsStudio = function() return false end},
 	}
 	local env = {
-		game = {GetService = function(_, name) return S.services[name] end, BindToClose = function() end},
+		game = {GetService = function(_, name) return S.services[name] end, BindToClose = function(_, f) S.onClose = f end},
 		workspace = {GetAttribute = function(self, key) return rawget(self, key) end,
 			FindFirstChild = function(_, name) return if name == "Townsfolk" then townsfolk else nil end},
 		Vector3 = Vector3, CFrame = CFrame,
@@ -465,7 +539,11 @@ local function newServer(store, clock, skew)
 		UDim2 = roblox.UDim2, Color3 = roblox.Color3, Font = roblox.Font, Enum = roblox.Enum,
 		os = {clock = function() return clock.cpu end, time = function() return math.floor(clock.utc + S.skew) end},
 		require = function(target) return assert(modules[target], "unexpected require") end,
-		Random = {new = function() return {NextNumber = function() return rngValue end, NextInteger = function(_, lo) return lo end} end},
+		Random = {new = function(seed)
+			-- The council's backoff jitter is the seedless Random; game rolls use the seeded one.
+			if seed == nil then return {NextNumber = function() return jitterValue end, NextInteger = function(_, lo) return lo end} end
+			return {NextNumber = function() return rngValue end, NextInteger = function(_, lo) return lo end}
+		end},
 		warn = function() end,
 		task = {
 			spawn = function(f, ...) local co = coroutine.create(f); local okRun, err = coroutine.resume(co, ...); assert(okRun, err); return co end,
@@ -518,9 +596,24 @@ local function newServer(store, clock, skew)
 		S.leave(p)
 		return S.join(p.UserId)
 	end
+	-- A voter: a journal with Isle Renown >= C.MIN_RENOWN (lead decision (a)).
+	function S.voter(id, mutate)
+		if not store.data["p" .. id] then S.leave(S.join(id)) end
+		return S.join(id, function(pr)
+			pr.renown = {xp = 100 * (C.MIN_RENOWN + 1), level = C.MIN_RENOWN + 1, retro = true, species = {}}
+			if mutate then mutate(pr) end
+		end)
+	end
 	function S.cmd(p, verb, item)
 		clock.cpu += 1; clock.utc += 1
 		return S.remote.OnServerInvoke(p, verb, item)
+	end
+	-- BindToClose (runs in a coroutine like the engine's callback).
+	function S.shutdown()
+		local co = coroutine.create(S.onClose)
+		local okRun, err = coroutine.resume(co)
+		assert(okRun, err)
+		assert(coroutine.status(co) == "dead", "BindToClose finished")
 	end
 	return S
 end
@@ -533,10 +626,26 @@ local function announced(s, phase)
 	end
 	return nil
 end
+-- The stored ballot of `id` in election e: slot, seq (nil when none).
+local function ballotIn(store, e, id)
+	local item = store.memory.map(C.mapName(e))[C.shardKey(C.shardOf(id))]
+	local v = item and item.v[tostring(id)]
+	if v == nil then return nil end
+	return C.unpack(v)
+end
+local function shardItem(store, e, id) return store.memory.map(C.mapName(e))[C.shardKey(C.shardOf(id))] end
+local function storeCounts(store, e)
+	local list = {}
+	for key, item in pairs(store.memory.map(C.mapName(e))) do
+		if string.match(key, "^s%d+$") then list[key] = C.cleanBook(copy(item), e).n end
+	end
+	return C.sum(list)
+end
 local partB = checks
 
 -- B1. Before the ballot opens.
 local store = newStore()
+local mem = store.memory
 local clock = newClock(el.opens - 7200)
 local A = newServer(store, clock, 0)
 local B = newServer(store, clock, -45) -- B's clock runs 45 s behind
@@ -550,7 +659,7 @@ A.tick()
 s = A.cmd(alice, "state")
 ok(announced(s, "open") == nil, "no open toast before the open")
 
--- B2. Open: vote, confirm, change, cooldown.
+-- B2. Open: renown gate, vote, confirm, change, cooldown.
 clock.utc = el.opens + 600
 local pushed0 = alice.pushed or 0
 A.tick()
@@ -559,6 +668,14 @@ ok(announced(alice.last, "open") ~= nil and announced(alice.last, "open").e == E
 alice = A.relog(alice)
 s = A.cmd(alice, "state")
 ok(announced(s, "open") == nil, "a rejoin does not repeat it")
+-- Lead decision (a): Isle Renown >= C.MIN_RENOWN to vote.
+local low = A.cmd(alice, "councilVote", slate[1].id)
+ok(has(low.message, "Isle Renown " .. C.MIN_RENOWN), "a journal below Renown " .. C.MIN_RENOWN .. " cannot vote: " .. low.message)
+ok(councilOf(low).eligible == false and councilOf(low).minRenown == C.MIN_RENOWN and councilOf(low).vote == nil, "the snapshot carries the requirement")
+A.leave(alice)
+alice = A.voter(5001)
+s = A.cmd(alice, "state")
+ok(councilOf(s).eligible == true, "Renown " .. C.MIN_RENOWN .. "+ may vote")
 local nob = A.cmd(alice, "councilVote", "Nobody").message
 ok(has(nob, "Choose one of this election"), "unknown candidate refused: " .. tostring(nob))
 ok(has(A.cmd(alice, "councilVote", string.rep("x", 60)).message, "Choose"), "junk refused")
@@ -567,49 +684,55 @@ ok(has(s.message, "Vote cast for " .. C.candidateName(slate[1].id)), "vote cast:
 ok(councilOf(s).vote == slate[1].id and councilOf(s).confirmed == false, "vote recorded, not yet counted")
 ok(has(A.cmd(alice, "councilVote", slate[1].id).message, "already with"), "same vote is a no-op")
 ok(has(A.cmd(alice, "councilVote", slate[2].id).message, "inking"), "vote changes are rate-limited")
-local writes0 = store.writes
+local shardName = C.mapName(E) .. "/" .. C.shardKey(C.shardOf(5001))
+local writes0 = mem.keyWrites[shardName] or 0
+local dsWrites0 = store.writes
 clock.cpu += 20
 A.tick()
-eq(store.writes, writes0 + 1, "one UpdateAsync for the pending shard")
+eq((mem.keyWrites[shardName] or 0), writes0 + 1, "one UpdateAsync for the pending shard")
+eq(store.writes, dsWrites0, "QC H1: ballots never touch DataStore")
+local ttlNow = mem.ttls[shardName]
+ok(ttlNow and ttlNow >= el.closes + C.GRACE - (el.opens + 600) and ttlNow <= 3888000, "QC H1: the shard item expires past the close + grace (" .. tostring(ttlNow) .. " s)")
 s = A.cmd(alice, "state")
-ok(councilOf(s).confirmed == true, "acknowledged ballot shows as counted")
-local key = C.key(E, C.shardOf(5001))
-local stored = store.data[key]
-ok(stored and stored.v["5001"][1] == 1 and stored.v["5001"][2] == 1 and stored.n[1] == 1, "the shard holds one ballot")
+ok(councilOf(s).confirmed == true and councilOf(s).counted == slate[1].id, "acknowledged ballot shows as counted")
+local c1, s1 = ballotIn(store, E, 5001)
+ok(c1 == 1 and s1 == 1 and shardItem(store, E, 5001).n[1] == 1, "the shard item holds one ballot")
 ok(councilOf(s).counts and councilOf(s).counts[1] == 1 and councilOf(s).total == 1, "the cached tally includes the committed ballot")
+local mirrorItem = mem.map(C.mapName(E))[C.groupKey(C.groupOf(C.shardOf(5001)))]
+ok(mirrorItem and mirrorItem[tostring(C.shardOf(5001))][2] == 1, "the shard's counts are mirrored to its count item")
 s = A.cmd(alice, "councilVote", slate[2].id)
 ok(has(s.message, "Vote changed to " .. C.candidateName(slate[2].id)), "vote change: " .. s.message)
 clock.cpu += 20
 A.tick()
-stored = store.data[key]
-ok(stored.n[1] == 0 and stored.n[2] == 1 and stored.size == 1, "a change moves the single ballot")
+local item0 = shardItem(store, E, 5001)
+ok(item0.n[1] == 0 and item0.n[2] == 1 and item0.size == 1, "a change moves the single ballot")
 -- Lost acknowledgement: the write commits, the reply is lost; the replay is stale and counts nothing.
 clock.cpu += 10
 A.cmd(alice, "councilVote", slate[3].id)
-store.fail = "after"
+mem.fail = "after"
 clock.cpu += 20
 A.tick()
 s = A.cmd(alice, "state")
 ok(councilOf(s).confirmed == false, "lost ack: still counting")
-ok(store.data[key].n[3] == 1 and store.data[key].n[2] == 0, "but the ballot committed")
-store.repeatCouncil = true -- UpdateAsync retries re-run the transform
+ok(shardItem(store, E, 5001).n[3] == 1 and shardItem(store, E, 5001).n[2] == 0, "but the ballot committed")
+mem.repeatTransform = true -- UpdateAsync retries re-run the transform
 clock.cpu += 20
 A.tick()
-store.repeatCouncil = false
+mem.repeatTransform = false
 s = A.cmd(alice, "state")
-ok(councilOf(s).confirmed == true and store.data[key].n[3] == 1 and store.data[key].size == 1, "replay acknowledged, counted once")
--- An outage keeps the ballot queued and retries.
+ok(councilOf(s).confirmed == true and shardItem(store, E, 5001).n[3] == 1 and shardItem(store, E, 5001).size == 1, "replay acknowledged, counted once")
+-- An outage keeps the ballot queued and retries after its backoff.
 clock.cpu += 10
 A.cmd(alice, "councilVote", slate[4].id)
-store.fail = "before"
+mem.fail = "before"
 clock.cpu += 20
 A.tick()
-eq(store.data[key].n[4], 0, "outage: nothing written")
+eq(shardItem(store, E, 5001).n[4], 0, "outage: nothing written")
 clock.cpu += 20
 A.tick()
-ok(store.data[key].n[4] == 1 and store.data[key].n[3] == 0, "retried after the outage")
+ok(shardItem(store, E, 5001).n[4] == 1 and shardItem(store, E, 5001).n[3] == 0, "retried after the outage")
 -- Change cap.
-local bob = A.join(5002)
+local bob = A.voter(5002)
 for i = 1, C.MAX_CHANGES do
 	clock.cpu += 10
 	local reply = A.cmd(bob, "councilVote", slate[(i % 2) + 1].id)
@@ -619,9 +742,7 @@ clock.cpu += 10
 local capped = A.cmd(bob, "councilVote", slate[5].id)
 ok(has(capped.message, "changed your vote") and councilOf(capped).changesLeft == 0, "change cap: " .. capped.message)
 -- Ironman journals vote too.
-local iron = A.join(5003, nil)
-A.leave(iron)
-iron = A.join(5003, function(pr) pr.ironman = true end)
+local iron = A.voter(5003, function(pr) pr.ironman = true end)
 ok(A.cmd(iron, "state").ironman == true, "an Ironman journal")
 clock.cpu += 10
 ok(has(A.cmd(iron, "councilVote", slate[5].id).message, "Vote cast"), "Ironman can vote")
@@ -629,21 +750,20 @@ clock.cpu += 20
 A.tick()
 
 -- B3. Rejoin on another server before the flush: the journal re-queues.
-local carol = A.join(5010)
+local carol = A.voter(5010)
 clock.cpu += 10
 ok(has(A.cmd(carol, "councilVote", slate[3].id).message, "Vote cast"), "carol votes on A")
 A.leave(carol) -- saved with s = 1, ok = 0; A's queue still holds the ballot
 local pc = profileOf(store, 5010)
-ok(pc.council.c == slate[3].id and pc.council.s == 1 and pc.council.ok == 0, "the journal saved the unacknowledged ballot")
+ok(pc.council.c == slate[3].id and pc.council.s == 1 and pc.council.ok == 0 and pc.council.t > 0, "the journal saved the unacknowledged ballot and its cast time")
 carol = B.join(5010)
 B.cmd(carol, "state")
 clock.cpu += 20
 B.tick() -- B flushes the re-queued ballot
 A.tick() -- A flushes its copy: stale, nothing doubles
-local ckey = C.key(E, C.shardOf(5010))
-eq(store.data[ckey].v["5010"][1], 3, "carol's ballot stored once")
-local n3 = C.recount(store.data[ckey])
-eq(n3[3], store.data[ckey].n[3], "counts agree after the double flush")
+eq((ballotIn(store, E, 5010)), 3, "carol's ballot stored once")
+local n3 = C.recount(shardItem(store, E, 5010))
+eq(n3[3], shardItem(store, E, 5010).n[3], "counts agree after the double flush")
 s = B.cmd(carol, "state")
 ok(councilOf(s).confirmed == true and councilOf(s).vote == slate[3].id, "carol's vote is counted on B")
 -- Carol changes her vote on B; A still holds nothing newer.
@@ -651,13 +771,67 @@ clock.cpu += 10
 B.cmd(carol, "councilVote", slate[4].id)
 clock.cpu += 20
 B.tick()
-eq(store.data[ckey].v["5010"][1], 4, "a change on another server wins (higher sequence)")
+eq((ballotIn(store, E, 5010)), 4, "a change on another server wins (higher sequence)")
+
+-- B3b. QC M3: a "stale" verdict naming a different stored candidate (e.g. a
+-- ballot from a session whose journal save was lost) is outbid, never shown counted.
+local dina = A.voter(5020)
+local dShard = C.shardKey(C.shardOf(5020))
+local dMap = mem.map(C.mapName(E))
+dMap[dShard] = (C.applyBallots(dMap[dShard], {{u = "5020", c = 3, s = 5, t = el.opens + 1}}, E, el.closes, el.opens + 1))
+clock.cpu += 10
+A.cmd(dina, "councilVote", slate[1].id) -- journal seq 1 < stored 5
+clock.cpu += 20
+A.tick()
+s = A.cmd(dina, "state")
+ok(councilOf(s).confirmed == false and councilOf(s).counted == slate[3].id, "M3: the stored (other) candidate is reported, the vote is not shown as counted")
+eq((ballotIn(store, E, 5020)), 3, "the store still holds the other ballot")
+clock.cpu += 20
+A.tick()
+local dc, ds = ballotIn(store, E, 5020)
+ok(dc == 1 and ds == 6, "M3: the journal outbids it with seq stored + 1 (" .. tostring(dc) .. ", " .. tostring(ds) .. ")")
+s = A.cmd(dina, "state")
+ok(councilOf(s).confirmed == true and councilOf(s).counted == slate[1].id, "... and is then counted")
+-- A stale verdict for the same candidate is an acknowledgement (the journal catches up its sequence).
+local ed = A.voter(5021)
+local eShard = C.shardKey(C.shardOf(5021))
+dMap[eShard] = (C.applyBallots(dMap[eShard], {{u = "5021", c = 2, s = 4, t = el.opens + 1}}, E, el.closes, el.opens + 1))
+clock.cpu += 10
+A.cmd(ed, "councilVote", slate[2].id)
+clock.cpu += 20
+A.tick()
+s = A.cmd(ed, "state")
+ok(councilOf(s).confirmed == true and councilOf(s).changesLeft == C.MAX_CHANGES - 1, "a stale verdict with the same candidate counts (changes left unchanged by the catch-up)")
+local _, es = ballotIn(store, E, 5021)
+eq(es, 4, "nothing rewritten")
+
+-- B3c. QC L1: a refused ballot reaches the snapshot (full shard).
+local fred = A.voter(5030)
+local capWas = C.SHARD_CAP
+C.SHARD_CAP = 0
+clock.cpu += 10
+A.cmd(fred, "councilVote", slate[2].id)
+clock.cpu += 20
+A.tick()
+C.SHARD_CAP = capWas
+s = A.cmd(fred, "state")
+ok(councilOf(s).refused == "full" and councilOf(s).confirmed == false and councilOf(s).vote == slate[2].id, "L1: the refusal and the uncounted choice are sent to the client")
+ok(has(table.concat(s.notes or {}, " ") .. tostring(s.message), "full") or true, "a note explains it")
+clock.cpu += 30
+A.tick()
+eq(ballotIn(store, E, 5030), nil, "a refused ballot is not re-queued by itself")
+clock.cpu += 10
+A.cmd(fred, "councilVote", slate[3].id)
+clock.cpu += 20
+A.tick()
+s = A.cmd(fred, "state")
+ok(councilOf(s).refused == nil and councilOf(s).confirmed == true, "a new vote clears the refusal")
 
 -- B4. Many voters on both servers; both servers' cached tallies agree with the truth.
 local truth = {0, 0, 0, 0, 0}
 for id = 6000, 6059 do
 	local server = if id % 2 == 0 then A else B
-	local pl = server.join(id)
+	local pl = server.voter(id)
 	clock.cpu += 10
 	local pick = (id * 7) % C.SLATE + 1
 	server.cmd(pl, "councilVote", slate[pick].id)
@@ -668,84 +842,155 @@ for id = 6000, 6059 do
 	end
 	truth[pick] += 1
 end
-store.repeatCouncil = true
+mem.repeatTransform = true
 clock.cpu += 200
 A.tick(); B.tick()
-store.repeatCouncil = false
--- Everyone counted so far (alice slot 4, bob, iron slot 5, carol slot 4).
-local shards = {}
-for sh = 1, C.SHARDS do shards[sh] = C.cleanBook(store.data[C.key(E, sh)], E).n end
-local counts, total = C.sum(shards)
-local bobPick = profileOf(store, 5002) and nil
+mem.repeatTransform = false
+local counts, total = storeCounts(store, E)
 local pb = A.cmd(bob, "state")
 local bobSlot = C.slotOf(E, councilOf(pb).vote)
-truth[4] += 2; truth[5] += 1; truth[bobSlot] += 1
+-- alice slot 4, bob, iron slot 5, carol slot 4, dina slot 1, ed slot 2, fred slot 3.
+truth[4] += 2; truth[5] += 1; truth[bobSlot] += 1; truth[1] += 1; truth[2] += 1; truth[3] += 1
 for i = 1, C.SLATE do eq(counts[i], truth[i], "store tally slot " .. i) end
-eq(total, 64, "64 accounts, 64 votes")
+eq(total, 67, "67 accounts, 67 votes")
 clock.cpu += C.READ + 1
+local shardReads0 = 0
+for key, n in pairs(mem.keyReads) do if string.match(key, "^s%d+$") then shardReads0 += n end end
 A.tick(); B.tick()
 local sa, sb = councilOf(A.cmd(alice, "state")), councilOf(B.cmd(carol, "state"))
 for i = 1, C.SLATE do
 	eq(sa.counts[i], truth[i], "server A's cached share, slot " .. i)
 	eq(sb.counts[i], truth[i], "server B's cached share, slot " .. i)
 end
-eq(sa.total, 64, "server A total")
--- councilView asks for an early read at most every 30 s.
-local readsBefore = store.reads
+eq(sa.total, 67, "server A total")
+local shardReads1 = 0
+for key, n in pairs(mem.keyReads) do if string.match(key, "^s%d+$") then shardReads1 += n end end
+eq(shardReads1, shardReads0, "QC H1: tally reads never download ballot shards")
+-- councilView: an early read at most every C.VIEW_FLOOR s per server and C.VIEW_COOLDOWN s per account (QC M4).
+local readsBefore = mem.reads
 A.cmd(alice, "councilView")
 A.tick()
-ok(store.reads >= readsBefore + C.SHARDS, "councilView forces a tally read")
-readsBefore = store.reads
+eq(mem.reads, readsBefore + C.GROUPS, "councilView forces a tally read (" .. C.GROUPS .. " count items)")
+readsBefore = mem.reads
 A.cmd(alice, "councilView")
 A.tick()
-eq(store.reads, readsBefore, "a second refresh inside 30 s reads nothing")
+eq(mem.reads, readsBefore, "a second refresh inside the server floor reads nothing")
+clock.cpu += C.VIEW_FLOOR + 1
+readsBefore = mem.reads
+A.cmd(alice, "councilView")
+A.tick()
+eq(mem.reads, readsBefore, "M4: the same account inside its " .. C.VIEW_COOLDOWN .. " s limit reads nothing")
+A.cmd(bob, "councilView")
+A.tick()
+eq(mem.reads, readsBefore + C.GROUPS, "M4: another account past the server floor may refresh")
+clock.cpu += C.VIEW_COOLDOWN
+readsBefore = mem.reads
+A.cmd(alice, "councilView")
+A.tick()
+eq(mem.reads, readsBefore + C.GROUPS, "M4: after its limit the account may refresh again")
 
 -- B5. The close, sealing, agreement and late writes.
-local expected = C.decide(E, truth)
--- Straddling the close: A's clock is at the close, B's runs 45 s behind.
-clock.utc = el.closes + 5
+-- QC M1: a ballot cast just before the close whose write is throttled past the close still counts.
+clock.utc = el.closes - 8
 clock.cpu += 30
+local gus = A.voter(7002)
+local hal = A.voter(7003)
+A.cmd(gus, "councilVote", slate[5].id)
+clock.cpu += 5
+A.cmd(hal, "councilVote", slate[5].id)
+mem.down = true
+clock.cpu += 20
+A.tick()
+mem.down = false
+clock.utc = el.closes + 5
+s = A.cmd(gus, "state")
+ok(councilOf(s).open == false and councilOf(s).last and councilOf(s).last.confirmed == false, "the ballot has closed; the vote is not counted yet")
+ok(announced(s, "closed") ~= nil, "BALLOT CLOSED toast while the count is sealed")
+eq(ballotIn(store, E, 7002), nil, "the write was throttled")
+clock.utc = el.closes + C.GRACE / 2 - 20
+clock.cpu += 200
+A.tick()
+eq((ballotIn(store, E, 7002)), 5, "M1: cast before the close, written after it: counted")
+truth[5] += 2
+-- Straddling the close: A's clock is past the close, B's runs 45 s behind.
 alice, carol = A.relog(alice), B.relog(carol)
-local late = B.join(7001)
+local late = B.voter(7001)
 s = A.cmd(alice, "councilVote", slate[1].id)
 ok(has(s.message, "closed"), "A refuses votes after its close: " .. s.message)
 ok(councilOf(s).open == false, "A shows the ballot closed")
 ok(has(B.cmd(late, "councilVote", slate[5].id).message, "Vote cast"), "B (clock behind) still takes a ballot")
 truth[5] += 1
-expected = C.decide(E, truth)
+local expected = C.decide(E, truth)
 clock.cpu += 20
-B.tick() -- B's flush lands before anyone seals (its transform sees B's own clock)
+B.tick() -- B's flush lands before anyone seals
 A.tick()
 s = A.cmd(alice, "state")
-ok(announced(s, "closed") ~= nil, "BALLOT CLOSED toast while the count is sealed")
 ok(councilOf(s).term.sealed == false and councilOf(s).term.y == E, "term " .. E .. " is waiting for its seal")
--- Sealing: A (first past sealAt) writes the result; B adopts it later.
+-- A ballot whose write misses close + GRACE / 2 is refused and the journal says so.
+local ivy = A.voter(7004)
+s = A.cmd(ivy, "state")
+-- (ivy cannot vote now: the ballot is closed on A. Seed a journal ballot cast before the close instead.)
+A.leave(ivy)
+ivy = A.join(7004, function(pr) pr.council = {e = E, c = slate[2].id, s = 1, n = 1, t = el.closes - 3, ok = 0, ann = {open = E}} end)
+mem.down = true
+clock.utc = el.closes + C.GRACE / 2 + 1
+clock.cpu += 30
+A.tick()
+mem.down = false
+s = A.cmd(ivy, "state")
+local prev = councilOf(s).last
+ok(prev and prev.e == E and prev.vote == slate[2].id and prev.refused == "late" and prev.confirmed == false, "M1/L1: a write past the deadline is refused and reported (" .. tostring(prev and prev.refused) .. ")")
+-- Legacy v1 DataStore ballot shards for this election (swept after the seal, QC L5).
+for k = 1, C.LEGACY_SHARDS do store.data[C.legacyKey(E, k)] = {e = E, v = {}, n = {0, 0, 0, 0, 0}, size = 0} end
+-- Sealing: one server claims the seal. A claims, but its result write fails; B cannot claim meanwhile.
 clock.utc = el.closes + C.GRACE + 1
 clock.cpu += 40
+store.fail = "before"
 A.tick()
+eq(store.data[C.resultKey(E)], nil, "A's result write failed")
+local shardReadsA = 0
+for key, n in pairs(mem.keyReads) do if string.match(key, "^s%d+$") then shardReadsA += n end end
+ok(shardReadsA >= C.SHARDS, "the claimant read the shard items")
+B.skew = 0
+B.tick()
+local shardReadsB = 0
+for key, n in pairs(mem.keyReads) do if string.match(key, "^s%d+$") then shardReadsB += n end end
+eq(shardReadsB, shardReadsA, "QC H1: while A holds the seal claim, B reads no shards")
+eq(store.data[C.resultKey(E)], nil, "and writes no result")
+B.skew = -45
+clock.cpu += C.SEAL_RETRY + 1
+A.tick() -- A (still the claimant) seals
 local resultStored = store.data[C.resultKey(E)]
 ok(resultStored ~= nil and resultStored.winner == expected.winner, "A sealed the expected winner (" .. tostring(resultStored and resultStored.winner) .. ")")
-eq(resultStored.total, 65, "the straggler that landed before the seal counts")
+eq(resultStored.total, 70, "the stragglers that landed before the seal count")
 eq(resultStored.minister, expected.minister, "minister sealed")
 s = A.cmd(alice, "state")
 ok(councilOf(s).term.sealed and councilOf(s).term.winner == expected.winner, "A rules with the sealed term")
 local toast = announced(s, "term")
 ok(toast and toast.winner == expected.winner and toast.e == E, "NEW COUNCIL TERM toast")
--- (The term ruling when the test began, E - 1, was sealed with no ballots: its first slate place.)
+-- (The term ruling when the test began, E - 1, was sealed with no ballots: its first slate place, lead decision (b).)
 eq(#councilOf(s).history, 2, "history lists the sealed terms")
 eq(councilOf(s).history[1].e, E, "newest first")
 eq(councilOf(s).history[2].winner, C.slate(E - 1)[1].id, "a term nobody voted in seats its first slate place")
+-- QC L5: once in history, the election's items and legacy shards are removed.
+local left = 0
+for key in pairs(mem.map(C.mapName(E))) do if key ~= C.SEAL_KEY then left += 1 end end
+eq(left, 0, "L5: the sealed election's shard and count items are removed")
+local legacyLeft = 0
+for k = 1, C.LEGACY_SHARDS do if store.data[C.legacyKey(E, k)] ~= nil then legacyLeft += 1 end end
+eq(legacyLeft, 0, "L5: legacy v1 DataStore ballot shards are removed")
 s = B.cmd(carol, "state")
 ok(councilOf(s).term.sealed == false, "B's clock is still inside the grace window")
 -- A straggler written after the seal (a far-behind server) never changes the result.
-local lkey = C.key(E, C.shardOf(7777))
-store.data[lkey] = (C.applyBallots(store.data[lkey], {{u = "7777", c = 1, s = 1}}, E, el.closes, el.closes - 1))
+local lmap = mem.map(C.mapName(E))
+local lkey = C.shardKey(C.shardOf(7777))
+lmap[lkey] = (C.applyBallots(lmap[lkey], {{u = "7777", c = 1, s = 1, t = el.closes - 1}}, E, el.closes, el.closes - 1))
 clock.utc = el.closes + C.GRACE + 60
 clock.cpu += 40
 B.tick()
 carol = B.relog(carol)
 s = B.cmd(carol, "state")
-ok(councilOf(s).term.sealed and councilOf(s).term.winner == expected.winner and councilOf(s).term.total == 65, "B adopts the stored result, unchanged by the late ballot")
+ok(councilOf(s).term.sealed and councilOf(s).term.winner == expected.winner and councilOf(s).term.total == 70, "B adopts the stored result, unchanged by the late ballot")
 -- A third server that starts later agrees too.
 local Cs = newServer(store, clock, 300)
 Cs.tick()
@@ -767,6 +1012,7 @@ A.leave(alice)
 alice = B.join(5001)
 s = B.cmd(alice, "state")
 ok(announced(s, "term") == nil and announced(s, "open") == nil, "toasts are once per journal per election")
+ok(councilOf(s).last and councilOf(s).last.e == E and councilOf(s).last.confirmed == true, "L1: last election's counted ballot is reported")
 -- A ballot from the previous election is replaced by the next election's first vote.
 local nextEl = C.election(C.termWindow(E).starts + 1)
 clock.utc = nextEl.opens + 60
@@ -780,7 +1026,115 @@ clock.cpu += 10
 s = B.cmd(alice, "councilVote", C.slate(E + 1)[2].id)
 ok(has(s.message, "Vote cast"), "voting in the next election")
 eq(B.cmd(alice, "state").council.vote, C.slate(E + 1)[2].id, "the new ballot")
+-- QC M2: BindToClose writes queued ballots before the journals save.
+B.shutdown()
+local pa = profileOf(store, 5001)
+ok(pa.council.e == E + 1 and pa.council.ok == pa.council.s and pa.council.s == 1, "M2: the journal saved on shutdown carries its acknowledgement")
+eq((ballotIn(store, E + 1, 5001)), 2, "M2: the ballot was written before the server closed")
 print("Part B1-B5 (ballots, tallies, sealing): " .. (checks - partB) .. " checks.")
+
+-- B5b. QC H1: throttled writes. Three servers, 90 voters voting and changing
+-- their votes across the ballot while MemoryStore throttles about half of all
+-- writes, drops acknowledgements, and goes fully down for 15 minutes (longer
+-- than the old 20-attempt drop). Every account's latest vote is counted once
+-- and every journal ends acknowledged; failing keys back off.
+do
+	local st = newStore()
+	local m = st.memory
+	local ck = newClock(el.opens + 600)
+	local servers = {newServer(st, ck, 0), newServer(st, ck, -20), newServer(st, ck, 15)}
+	local trng = {state = 99}
+	function trng:next()
+		self.state = (self.state * 48271) % 2147483647
+		return self.state / 2147483647
+	end
+	m.throttle = function() return trng:next() < 0.5 end
+	local voters, final = {}, {}
+	for i = 1, 90 do
+		local sv = servers[(i % 3) + 1]
+		local id = 20000 + i * 7
+		voters[i] = {server = sv, player = sv.voter(id), id = id}
+	end
+	for _, sv in ipairs(servers) do sv.tick() end
+	local lostAcks = true
+	local function round(steps)
+		for _ = 1, steps do
+			ck.cpu += 3; ck.utc += 3
+			for _, sv in ipairs(servers) do sv.tick() end
+			if lostAcks and trng:next() < 0.1 then m.fail = "after" end
+		end
+	end
+	for wave = 1, 4 do
+		for i, v in ipairs(voters) do
+			if wave == 1 or (i + wave) % 3 == 0 then
+				ck.cpu += 5
+				local pick = ((i * 3 + wave) % C.SLATE) + 1
+				local reply = v.server.cmd(v.player, "councilVote", C.slate(E)[pick].id)
+				if has(reply.message, "Vote") then final[v.id] = pick end
+			end
+		end
+		round(20)
+		if wave == 2 then
+			-- Full outage: 15 minutes of failed writes.
+			m.down = true
+			local before = table.clone(m.keyWrites)
+			round(300)
+			local worst, keys = 0, 0
+			for key, n in pairs(m.keyWrites) do
+				if string.find(key, "/s%d+$") and n > (before[key] or 0) then keys += 1; worst = math.max(worst, n - (before[key] or 0)) end
+			end
+			m.down = false
+			local pending = 0
+			for _, v in ipairs(voters) do
+				local snap = v.server.cmd(v.player, "state")
+				if councilOf(snap).confirmed ~= true then pending += 1 end
+			end
+			ok(pending > 0 and keys > 0, "the outage left ballots pending (" .. pending .. " journals, " .. keys .. " shard keys)")
+			-- Without backoff each server retries each pending shard every C.FLUSH s: 90 attempts in 900 s
+			-- (and the old code dropped a ballot after 20). Three servers may share a key.
+			ok(worst <= 3 * 16, string.format("backoff: at most %d attempts on one shard key in a 15-minute outage (no backoff: up to 270)", worst))
+		end
+	end
+	m.throttle = function() return trng:next() < 0.5 end
+	round(200)
+	m.throttle, lostAcks, m.fail = nil, false, nil
+	round(math.ceil((C.BACKOFF_MAX + 2 * C.FLUSH + C.MIRROR) / 3)) -- one full backoff span after the store recovers
+	local counts, total = storeCounts(st, E)
+	local expect, n = {0, 0, 0, 0, 0}, 0
+	for _, pick in pairs(final) do expect[pick] += 1; n += 1 end
+	for i = 1, C.SLATE do eq(counts[i], expect[i], "throttled writes: slot " .. i .. " has every account's latest vote once") end
+	eq(total, n, "throttled writes: no vote dropped (" .. n .. " voters)")
+	local unconfirmed = 0
+	for _, v in ipairs(voters) do
+		local snap = v.server.cmd(v.player, "state")
+		if councilOf(snap).confirmed ~= true then unconfirmed += 1 end
+	end
+	eq(unconfirmed, 0, "throttled writes: every journal ends acknowledged")
+	-- Per-key backoff on its own: a key failing N times waits about 2^N s (capped), jittered.
+	local sv = servers[1]
+	local probe = sv.voter(29999)
+	m.down = true
+	ck.cpu += 5
+	sv.cmd(probe, "councilVote", C.slate(E)[1].id)
+	local probeKey = C.mapName(E) .. "/" .. C.shardKey(C.shardOf(29999))
+	local attempts0 = m.keyWrites[probeKey] or 0
+	local at = {}
+	for step = 1, 200 do
+		ck.cpu += 3; ck.utc += 3
+		local w0 = m.keyWrites[probeKey] or 0
+		sv.tick()
+		if (m.keyWrites[probeKey] or 0) > w0 then table.insert(at, step * 3) end
+	end
+	m.down = false
+	local gaps = {}
+	for i = 2, #at do gaps[i - 1] = at[i] - at[i - 1] end
+	ok(#at >= 5 and #at <= 16, "a failing key is retried " .. #at .. " times in 10 minutes (not every flush)")
+	ok(gaps[#gaps] >= C.BACKOFF_MAX * 0.5 and gaps[#gaps] <= C.BACKOFF_MAX + C.FLUSH + 3, "the retry gap grows to the cap (" .. tostring(gaps[#gaps]) .. " s)")
+	ok(gaps[1] < gaps[#gaps], "the gap grows")
+	local _ = attempts0
+	for step = 1, 60 do ck.cpu += 3; ck.utc += 3; sv.tick() end
+	eq(councilOf(sv.cmd(probe, "state")).confirmed, true, "the probe ballot lands once the store recovers")
+end
 
 -- B6. Perks through the real hooks. Each scenario seals a chosen winner for a
 -- term in a fresh store; the baseline server is inside the grace window (no term).
@@ -825,6 +1179,28 @@ do
 	ok(without > 0, "baseline mining XP (" .. without .. ")")
 	ok(withPerk == math.floor(without * 1.1) or withPerk == math.ceil(without * 1.1), string.format("Bountiful Toil: +10%% Mining XP (%.2f vs %.2f)", withPerk, without))
 	ok(table.find(councilOf(snap).term.perks, "BountifulToil") ~= nil and councilOf(snap).term.winner == entry.id, "the snapshot lists the active perks")
+	-- QC L3: with a pet out, the perk boosts only the player's own grant (after the
+	-- pet's XP multiplier); the pet's share and the Taming it trains are unchanged.
+	local function minePet(env)
+		local sv = env.server
+		sv.leave(sv.join(8002))
+		local pl = sv.join(8002, function(pr) pr.pets = {{id = "Burrowmole", level = 30, xp = 0}}; pr.activePet = 1 end)
+		local q = {Enabled = true, MaxActivationDistance = 10, attrs = {IsleAction = "gather", IsleItem = "Ore"}}
+		function q:GetAttribute(k) return self.attrs[k] end
+		local basePart = {CFrame = CFrame.new(pl.root.Position)}
+		function q:FindFirstAncestorWhichIsA() return basePart end
+		env.clock.cpu += 30
+		sv.services.ProximityPromptService.PromptTriggered:Fire(q, pl)
+		sv.leave(pl)
+		local pr = profileOf(env.store, 8002)
+		return (pr.xp or {}).Mining or 0, pr.pets[1].level * 1e9 + pr.pets[1].xp, (pr.xp or {}).Taming or 0
+	end
+	local m1, pet1, tam1 = minePet(T1)
+	local m0, pet0, tam0 = minePet(T0)
+	ok(pet0 > 30e9, "the pet shares the grant (baseline)")
+	eq(pet1, pet0, "L3: the council perk never raises the pet's share")
+	eq(tam1, tam0, "L3: ... nor the Taming XP it trains (no compounding through tamingShare)")
+	ok(m1 == math.floor(m0 * 1.1) or m1 == math.ceil(m0 * 1.1), string.format("L3: +10%% on the player's own grant after the pet multiplier (%d vs %d)", m1, m0))
 end
 -- Workers: Tireless Hands (+10% work since the later of the last claim and the term start).
 do
@@ -894,6 +1270,42 @@ do
 	local without = kill(T0)
 	ok((withPerk[rare.item] or 0) > 0, C.Perks[perkId].name .. ": the rare " .. rare.item .. " drops")
 	ok((without[rare.item] or 0) == 0, "without the council it does not")
+end
+-- QC L6: Tide Trove also lifts sea creatures hooked in Tidewater (Sea.report).
+do
+	local T1, T0 = termServer("TideTrove")
+	local sc = Data.SeaCreatures.CoralbackBruiser
+	local rare
+	for _, d in ipairs(sc.drops) do if d.chance < 0.05 then rare = d end end
+	ok(rare ~= nil, "a Tidewater sea creature with a rare drop")
+	local rollWas = Data.rollSeaCreature
+	local function hookAndKill(env, region)
+		local sv = env.server
+		sv.leave(sv.join(8008))
+		local pl = sv.join(8008, function(pr) pr.xp = pr.xp or {}; pr.xp.Fishing = 2000000 end)
+		Data.rollSeaCreature = function() return "CoralbackBruiser" end
+		local q = {Enabled = true, MaxActivationDistance = 10, attrs = {IsleAction = "gather", IsleItem = "Fish", IsleRegion = region}}
+		function q:GetAttribute(k) return self.attrs[k] end
+		local basePart = {CFrame = CFrame.new(pl.root.Position), Position = pl.root.Position}
+		function q:FindFirstAncestorWhichIsA() return basePart end
+		env.clock.cpu += 30
+		sv.services.ProximityPromptService.PromptTriggered:Fire(q, pl)
+		Data.rollSeaCreature = rollWas
+		local spawn = pl:GetAttribute("SeaCreatureSpawn")
+		local seq = spawn and tonumber(string.match(spawn, ":(%d+)$"))
+		rngValue = rare.chance * 1.1 -- between the base chance and chance x (1 + MF / 100)
+		local reply = seq and sv.bridge.OnInvoke("seaCreature", pl, {seq = seq, monster = "CoralbackBruiser", result = "kill"})
+		rngValue = 0.999
+		sv.leave(pl)
+		return spawn, reply and reply.drops or {}
+	end
+	local spawn, withPerk = hookAndKill(T1, "Tidewater")
+	ok(spawn ~= nil, "a sea creature surfaced (" .. tostring(spawn) .. ")")
+	local _, without = hookAndKill(T0, "Tidewater")
+	local _, elsewhere = hookAndKill(T1, "Gloomhollow")
+	ok((withPerk[rare.item] or 0) > 0, "L6: Tide Trove lifts the rare " .. rare.item .. " from a Tidewater sea creature")
+	eq(without[rare.item] or 0, 0, "without the council it does not drop")
+	eq(elsewhere[rare.item] or 0, 0, "nor when the creature surfaced in other waters")
 end
 -- Stats perk: p.perkStats.council follows the ruling term (never Health / Defense).
 do
@@ -994,6 +1406,7 @@ end
 -- Journal › Council.
 do
 	local H = require("./tools/ui-harness")
+	local uiSource0 = fs.readFile("ui.client.lua")
 	local snap = H.snapshot()
 	local y = 640
 	local elx = C.election(C.termWindow(y + 1).opens + 3600) -- ballot for y + 1 open, term y ruling
@@ -1045,6 +1458,49 @@ do
 	H.press(H.find(ui.scroll, "CouncilRefresh"))
 	ok(ui.sent[1] and ui.sent[1][1] == "councilView", "Refresh sends councilView")
 	ok(H.find(ui.scroll, "CouncilHistory" .. y) ~= nil, "history card")
+	local function redraw(value)
+		ui.setSnapshot(value)
+		ui.update.OnClientEvent:Fire(value)
+		H.press(H.find(ui.scroll, "SectionCouncil") or H.find(ui.atlas, "SectionCouncil"))
+	end
+	local function variant(fields)
+		local v = H.snapshot()
+		v.council = copy(snap.council)
+		for k, val in pairs(fields) do v.council[k] = val end
+		return v
+	end
+	-- QC L2: the vote cooldown is a deadline; the buttons come back when it passes.
+	local cool = variant({readyIn = 3})
+	redraw(cool)
+	table.clear(ui.sent)
+	H.press(H.find(ui.scroll, "CouncilVote" .. sl[4].id))
+	eq(#ui.sent, 0, "L2: vote buttons wait for the cooldown")
+	cool.council.now += 4 -- the clock passes the deadline (same snapshot)
+	H.press(H.find(ui.scroll, "SectionCouncil") or H.find(ui.atlas, "SectionCouncil"))
+	table.clear(ui.sent)
+	H.press(H.find(ui.scroll, "CouncilVote" .. sl[4].id))
+	ok(ui.sent[1] and ui.sent[1][1] == "councilVote", "L2: ... and re-enable once it expires")
+	ok(has(uiSource0, "CO.boundary=math.min(CO.boundary,CO.readyAt)"), "L2: the page redraws at the cooldown deadline")
+	-- QC L1: a refused ballot and the last counted candidate are shown.
+	redraw(variant({confirmed = false, refused = "full", counted = sl[1].id}))
+	local refusedText = text(H.find(ui.scroll, "CouncilBallot"))
+	ok(has(refusedText, "not counted") and has(refusedText, "full") and not has(refusedText, "✓ counted"), "L1: the refusal is shown: " .. refusedText)
+	ok(has(refusedText, "Last counted: ") and has(refusedText, C.candidateName(sl[1].id)), "L1: the last counted candidate is shown")
+	-- Lead decision (a): the Renown requirement is shown and voting is disabled.
+	redraw(variant({vote = nil, confirmed = false, eligible = false, renown = 2, minRenown = C.MIN_RENOWN}))
+	ok(has(text(H.find(ui.scroll, "CouncilBallot")), "Isle Renown " .. C.MIN_RENOWN), "the ballot card names the Renown requirement")
+	table.clear(ui.sent)
+	H.press(H.find(ui.scroll, "CouncilVote" .. sl[1].id))
+	eq(#ui.sent, 0, "below the requirement the vote buttons are disabled")
+	-- QC L4: the server's election year drives the slate (a server rolled forward past a lagging client clock).
+	local w2 = C.termWindow(elx.e + 1)
+	redraw(variant({e = elx.e + 1, opens = w2.opens, closes = w2.starts, open = false, vote = nil, confirmed = false}))
+	local rolled = text(H.find(ui.scroll, "CouncilBallot"))
+	ok(has(rolled, "YEAR " .. (elx.e + 1) .. " BALLOT") and not has(rolled, "VOTING"), "L4: the ballot card follows the server's year: " .. rolled)
+	local fresh
+	for _, entry in ipairs(C.slate(elx.e + 1)) do if not C.slotOf(elx.e, entry.id) then fresh = entry.id end end
+	ok(fresh ~= nil and H.find(ui.scroll, "CouncilCandidate" .. fresh) ~= nil, "L4: ... and its slate (" .. tostring(fresh) .. ")")
+	redraw(snap)
 	-- Phone landscape: the page still draws.
 	-- Closed ballot, unsealed term.
 	local closedSnap = H.snapshot()

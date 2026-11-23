@@ -208,11 +208,13 @@ end
 -- source (optional): "worker" for idle worker claims, which skip every pet
 -- hook (the pet's player-XP multiplier, its XP share and Taming, skilling-pet
 -- rolls); pets reward the player's own active play only.
-local function grantXp(p,skill,amount,source)
-	if not Data.Skills[skill] or type(amount)~="number" or amount<=0 then return end
-	-- §36 council perk: +XP in a skill category (capped). Stochastic rounding keeps
-	-- the bonus exact on average for small grants (XP is stored in whole points).
-	if Council.xpMult then
+-- §36 council perk (QC L3): +XP in a skill category (capped), applied once to
+-- the player's own grant after pet multipliers (never to the pet's share, so it
+-- cannot compound through Taming). The input is floored; stochastic rounding
+-- keeps the bonus exact on average for small grants (XP is stored in whole points).
+local function councilXp(skill,amount)
+	amount=math.max(0,math.floor(amount))
+	if Council.xpMult and amount>0 then
 		local mult=Council.xpMult(skill)
 		if mult>1 then
 			local boosted=amount*mult
@@ -220,13 +222,17 @@ local function grantXp(p,skill,amount,source)
 			if roll()<boosted-amount then amount+=1 end
 		end
 	end
+	return amount
+end
+local function grantXp(p,skill,amount,source)
+	if not Data.Skills[skill] or type(amount)~="number" or amount<=0 then return end
 	if source=="worker" then
-		local _,newLevel=Progression.addXp(p,skill,amount)
+		local _,newLevel=Progression.addXp(p,skill,councilXp(skill,amount))
 		return levelCoins(p,skill,newLevel)
 	end
 	-- Pets depth: the summoned pet's XP abilities raise the player's grant; the
 	-- pet itself shares the base amount, and its gain trains Taming.
-	local _,newLevel=Progression.addXp(p,skill,amount*Progression.petSkillXpMult(p,skill))
+	local _,newLevel=Progression.addXp(p,skill,councilXp(skill,amount*Progression.petSkillXpMult(p,skill)))
 	local pet,petDef=Progression.activePet(p)
 	local petLevel=pet and pet.level
 	-- Taming is earned from pets, so it never feeds them back.
@@ -4754,7 +4760,7 @@ function Sea.cast(player,p,stats,toolId,region,prompt)
 	local id=Data.rollSeaCreature(level(p.xp.Fishing),region,chance,roll)
 	if not id then return "" end
 	book.seq+=1
-	book.live[book.seq]={id=id,expires=os.clock()+Data.SeaCreatureLifetime+Sea.GRACE}
+	book.live[book.seq]={id=id,expires=os.clock()+Data.SeaCreatureLifetime+Sea.GRACE,region=region} -- region: §36 council Magic Find
 	local base=prompt and prompt:FindFirstAncestorWhichIsA("BasePart")
 	if base then player:SetAttribute("SeaCreatureAt",base.Position) end
 	player:SetAttribute("SeaCreatureSpawn",id..":"..book.seq)
@@ -4776,7 +4782,9 @@ function Sea.report(player,p,payload)
 	grantXp(p,"Fishing",monster.fishingXp)
 	grantXp(p,"Combat",monster.xp)
 	p.coins+=monster.coins; HudFeed.coins(p,monster.coins)
-	local drops=Progression.rollDrops(monster.drops,stats.magicFind,roll,stats.petLuck)
+	-- §36 QC L6: council Magic Find against the creatures of the waters it surfaced in (Tide Trove: Tidewater).
+	local council=if Council.magicFind and type(ticket.region)=="string" then Council.magicFind({region=ticket.region}) else 0
+	local drops=Progression.rollDrops(monster.drops,stats.magicFind+council,roll,stats.petLuck)
 	for item,n in pairs(drops) do pickup(p,item,n) end
 	p.bestiary[id]=(p.bestiary[id] or 0)+1
 	SlayerTasks.onKill(player,p,id,monster,true) -- Slayer tasks: sea creature task credit (owner only)
@@ -4785,7 +4793,7 @@ end
 local function forget(player)
 	if Features.forget then Features.forget(player,profiles[player]) end -- §31: announcement ring, queue, renown cache
 	if Systems.forget then Systems.forget(player) end -- §33: XP / goal samples, price checks, pinned-step cache
-	if Council.forget then Council.forget(player) end -- §36: per-session ballot re-queue flag
+	if Council.forget then Council.forget(player) end -- §36: (nothing per session since QC H1; kept as the hook)
 	if profiles[player] then HudFeed.pending[profiles[player]]=nil end -- §34 pickup feed
 	HudFeed.seq[player]=nil
 	profiles[player],cooldown[player],lastRead[player],preview[player],leaseEnd[player]=nil,nil,nil,nil,nil
@@ -7364,55 +7372,63 @@ end
 --   (C.slate) from the year. termYear (the year now ruled) only rolls FORWARD:
 --   a server whose clock steps back keeps the newer term, and a journal whose
 --   ballot is for a later election than this server's clock refuses to vote.
--- * Ballots: verb councilVote <candidateId>. The journal (p.council = {e, c, s,
---   ok, ann}) is the source of truth for the account's choice: s counts its
---   ballots this election (≤ C.MAX_CHANGES), ok the highest sequence a shard
---   acknowledged. Each ballot queues {u = UserId, c = slate slot, s} for shard
---   C.shardOf(UserId); every C.FLUSH seconds one UpdateAsync per pending shard
---   key applies the batch with C.applyBallots, which keeps one ballot per
---   account and replaces it only with a higher sequence (atomic, idempotent:
---   retries, lost acknowledgements, rejoins on another server and out-of-order
---   flushes never count twice). An unacknowledged ballot is re-queued from the
---   journal on the next snapshot of a later session. Shards are bounded
---   (C.SHARD_CAP ballots); the vote verb is rate-limited per account.
--- * Tally: each server reads the C.SHARDS keys at most every C.READ seconds
---   (and refreshes a shard from its own committed writes), so vote shares are
---   a cached, slightly stale view. councilView asks for an early read (≥ 30 s apart).
--- * Sealing: C.GRACE seconds after the close, the first server to try writes
---   C.resultKey(y) only if it is absent (C.decide over the summed shards);
---   every server then adopts the stored result, so all agree even if a
---   straggler ballot landed later. The shared history key keeps C.HISTORY terms.
+-- * Ballots: verb councilVote <candidateId> (Isle Renown >= C.MIN_RENOWN). The
+--   journal (p.council = {e, c, s, n, t, ok, k, refused, ann}) is the source
+--   of truth for the account's choice: s its ballot sequence number, n ballots
+--   cast this election (<= C.MAX_CHANGES), t the server-stamped cast time, ok
+--   the highest sequence the store acknowledged, k the candidate last
+--   confirmed. Each ballot queues {u = UserId, c = slate slot, s, t} for
+--   MemoryStore shard item C.shardOf(UserId) (C.SHARDS per election, map
+--   C.mapName(e)); every C.FLUSH seconds one UpdateAsync per pending shard
+--   applies the batch with C.applyBallots (atomic; one ballot per account,
+--   replaced only by a higher sequence; idempotent under retries, lost
+--   acknowledgements, rejoins and out-of-order flushes). A failing key backs
+--   off (C.backoff: exponential, jittered) and its ballots stay queued until
+--   written; nothing is dropped while a ballot can still count (until
+--   C.writeDeadline). Whenever a live journal's acknowledged sequence is behind
+--   its current one and nothing is queued for it, it is re-queued.
+-- * Tally: committed shard counts are mirrored (versioned) into C.GROUPS small
+--   items; each server reads only those, at most every C.READ seconds, so tally
+--   reads never download ballots. councilView asks for an early read
+--   (per account every C.VIEW_COOLDOWN s, per server every C.VIEW_FLOOR s).
+-- * Sealing: C.GRACE seconds after the close, one server claims the seal
+--   (MemoryStore lease), reads the shard items once, writes C.resultKey(y) to
+--   DataStore only if it is absent, merges the history key and removes the
+--   election's items (and any legacy v1 DataStore shards); every server adopts
+--   the stored result. The shared history key keeps C.HISTORY terms.
 -- * Perks (C.effects of C.termPerks: winner's perks + the Minister's one), all
---   capped by C.CAPS: grantXp (category XP), the kill bridge (Magic Find vs a
---   region's creatures), worker settle (extra work since the later of the last
---   claim and the term start), Observatory chest rolls, faction board rep, the
---   Auction House listing fee, and p.perkStats.council (no Health / Defense).
+--   capped by C.CAPS: grantXp (category XP on the player's own grant, after
+--   pet multipliers), the kill bridge and sea-creature reports (Magic Find vs a
+--   region's creatures), worker settle, Observatory chest rolls, faction board
+--   rep, the Auction House listing fee, and p.perkStats.council.
 -- * §31 announcements (kind "council"): election open, ballot closed, new term;
 --   once per account per election via p.council.ann.
--- * Alt accounts: one vote per Roblox account (UserId); alts can vote too.
---   Accepted risk (as with SkyBlock); the perks are small, capped and shared by everyone.
+-- * Alt accounts: one vote per Roblox account (UserId), gated by Isle Renown.
 -- * Ironman journals vote like everyone else (perks never move items between players).
 ------------------------------------------------------------------------------
 do
 	local C=Data.Council
 	local whole=C.whole
-	local memory={}            -- in-memory store (Studio without DataStore access)
+	local memory={}            -- DataStore stand-in (Studio without DataStore access)
 	local useMemory=store==nil
-	local queue={}             -- [shard] = {[u] = {u, c, s, e, tries}}
-	local tally={e=0,shards={},at=0}
+	local memoryStore=nil
+	pcall(function() memoryStore=game:GetService("MemoryStoreService") end)
+	local maps={}              -- [e] = MemoryStore hash map for election e (or a local stand-in)
+	local queue={}             -- [shard] = {[u] = {u, c, s, t, e}}
+	local keyState={}          -- ["<e>:<key>"] = {fails, at}: per-key backoff
+	local mirrorQ={}           -- [e] = {[group] = {[shard] = {ver, n}}}: committed counts awaiting their mirror write
+	local tally={e=0,shards={},at=0} -- shards[shard] = {ver, n}
 	local results={}           -- [term year] = sealed, cleaned result
 	local history={}           -- shared history list (newest first)
 	local historyAt=-math.huge
 	local termYear=0           -- the term now ruled; rolls forward only
 	local sealTry={}           -- [year] = os.clock() of the last sealing attempt
 	local lastVote={}          -- [UserId] = os.clock() of the last accepted ballot
-	local requeued={}          -- [player] = true once this session re-queued its ballot (cleared in forget)
-	local flushAt,readAt,forcedAt=0,-math.huge,-math.huge
+	local lastView={}          -- [UserId] = os.clock() of the last forced tally read
+	local flushAt,mirrorAt,readAt,forcedAt=0,0,-math.huge,-math.huge
+	local busy=false           -- a heartbeat or the shutdown drain is talking to the stores
+	local jitter=Random.new()
 	local fxCache={y=-1}
-	local function budgetOk()
-		local ok,n=pcall(function() return DataStoreService:GetRequestBudgetForRequestType(Enum.DataStoreRequestType.UpdateAsync) end)
-		return not ok or type(n)~="number" or n>=10
-	end
 	-- ok, value. Studio without API access falls back to memory for the session.
 	local function dsGet(key)
 		if useMemory then return true,deepCopy(memory[key]) end
@@ -7434,6 +7450,56 @@ do
 		end
 		return ok,value
 	end
+	local function dsRemove(key)
+		if useMemory then memory[key]=nil return true end
+		return (pcall(function() return store:RemoveAsync(key) end))
+	end
+	-- A local stand-in for a MemoryStore hash map (no MemoryStoreService, or Studio without access).
+	local function localMap()
+		local data={}
+		return {local_=true,
+			GetAsync=function(_,key) return deepCopy(data[key]) end,
+			UpdateAsync=function(_,key,transform)
+				local value=transform(deepCopy(data[key]))
+				if value~=nil then data[key]=deepCopy(value) end
+				return if value~=nil then deepCopy(value) else nil
+			end,
+			RemoveAsync=function(_,key) data[key]=nil end}
+	end
+	local function mapOf(e)
+		local m=maps[e]
+		if m then return m end
+		if memoryStore then
+			local ok,res=pcall(function() return memoryStore:GetHashMap(C.mapName(e)) end)
+			if ok and res then m=res end
+		end
+		m=m or localMap()
+		maps[e]=m
+		for old in pairs(maps) do if old<e-2 then maps[old]=nil end end
+		return m
+	end
+	-- ok, value for method "get" | "update" | "remove" on election e's map.
+	local function ms(e,method,key,transform)
+		local m=mapOf(e)
+		local ok,value=pcall(function()
+			if method=="get" then return m:GetAsync(key) end
+			if method=="remove" then return m:RemoveAsync(key) end
+			return m:UpdateAsync(key,transform,C.ttl(e,os.time()))
+		end)
+		if not ok and not m.local_ and RunService:IsStudio() then
+			maps[e]=localMap()
+			return ms(e,method,key,transform)
+		end
+		return ok,value
+	end
+	-- Per-key jittered exponential backoff (QC H1).
+	local function keyReady(name) local st=keyState[name] return st==nil or os.clock()>=st.at end
+	local function keyFailed(name)
+		local st=keyState[name] or {fails=0,at=0}
+		st.fails+=1
+		st.at=os.clock()+C.backoff(st.fails,jitter:NextNumber())
+		keyState[name]=st
+	end
 	local function rollTerm(now)
 		local y=C.election(now).termYear
 		if y>termYear then termYear=y end
@@ -7450,13 +7516,19 @@ do
 		end
 		return el
 	end
+	local REFUSALS={closed=true,full=true,bad=true,late=true}
 	local function ballotOf(p)
 		local b=p.council
 		if type(b)~="table" then b={}; p.council=b end
-		b.e,b.s,b.ok=whole(b.e),math.min(whole(b.s),C.MAX_CHANGES),whole(b.ok)
+		b.e,b.s,b.ok=whole(b.e),math.min(whole(b.s),C.MAX_SEQ),whole(b.ok)
+		b.n=math.min(whole(b.n or b.s),C.MAX_CHANGES)
 		if b.c~=nil and not (type(b.c)=="string" and b.e>0 and C.slotOf(b.e,b.c)) then b.c=nil end
-		if b.c==nil then b.s,b.ok=0,0 end
+		if b.c==nil then b.s,b.ok,b.n=0,0,0 end
 		b.ok=math.min(b.ok,b.s)
+		b.t=whole(b.t)
+		if b.c~=nil and b.t==0 then b.t=C.termWindow(b.e).opens end -- a journal from before cast times were stamped
+		if b.k~=nil and not (type(b.k)=="string" and b.e>0 and C.slotOf(b.e,b.k)) then b.k=nil end
+		if b.refused~=nil and not REFUSALS[b.refused] then b.refused=nil end
 		if type(b.ann)~="table" then b.ann={} end
 		local ann={}
 		for _,k in ipairs({"open","closed","term"}) do ann[k]=whole(b.ann[k]) end
@@ -7464,6 +7536,7 @@ do
 		return b
 	end
 	Council.ballotOf=ballotOf
+	local function renownOf(p) return type(p.renown)=="table" and whole(p.renown.level) or 0 end
 	-- Effects of the term now ruling (nil while it is unsealed or unknown).
 	function Council.effects()
 		local y=rollTerm(os.time())
@@ -7488,80 +7561,189 @@ do
 		return extra
 	end
 	-- Queue ---------------------------------------------------------------------
-	local function enqueue(u,e,slot,s)
+	local function enqueue(u,e,slot,s,t)
+		if not slot then return end
 		local shard=C.shardOf(u)
 		local q=queue[shard] or {}
 		queue[shard]=q
 		local cur=q[u]
 		if cur and cur.e==e and cur.s>=s then return end
-		q[u]={u=u,c=slot,s=s,e=e,tries=0}
+		q[u]={u=u,c=slot,s=s,t=t,e=e}
+	end
+	local function queuedFor(u,e,s)
+		local q=queue[C.shardOf(u)]
+		local op=q and q[u]
+		return op~=nil and op.e==e and op.s>=s
+	end
+	Council.queuedFor=queuedFor
+	-- Re-queues a live journal's ballot whenever its acknowledged sequence is
+	-- behind its current one and nothing is queued for it (QC H1), while the
+	-- ballot can still be written (cast before the close, before the deadline).
+	local function requeue(player,p,now)
+		local b=ballotOf(p)
+		if b.e<=0 or not b.c or b.ok>=b.s or b.refused then return false end
+		if b.t>=C.termWindow(b.e).starts or now>=C.writeDeadline(b.e) then return false end
+		local u=tostring(player.UserId)
+		if queuedFor(u,b.e,b.s) then return false end
+		enqueue(u,b.e,C.slotOf(b.e,b.c),b.s,b.t)
+		return true
 	end
 	local function liveByUser()
 		local out={}
 		for player,p in pairs(profiles) do out[tostring(player.UserId)]={player=player,p=p} end
 		return out
 	end
-	local function flush(now)
-		local who=nil
-		for shard=1,C.SHARDS do
-			local q=queue[shard]
-			if q and next(q) then
-				local byElection={}
-				for u,op in pairs(q) do
-					local list=byElection[op.e] or {}
-					byElection[op.e]=list
-					table.insert(list,op)
-				end
-				for e,ops in pairs(byElection) do
-					local closes=C.termWindow(e).starts
-					local batch={}
-					for _,op in ipairs(ops) do table.insert(batch,{u=op.u,c=op.c,s=op.s}) end
-					local verdicts
-					local ok,committed=dsUpdate(C.key(e,shard),function(old)
-						local book,res,changed=C.applyBallots(old,batch,e,closes,os.time())
-						verdicts=res
-						return if changed then book else nil
-					end)
-					if ok and type(committed)=="table" and committed.e==e and tally.e==e then
-						tally.shards[shard]=table.clone(C.cleanBook(committed,e).n)
-					end
-					who=who or liveByUser()
-					for _,op in ipairs(ops) do
-						local verdict=ok and verdicts and verdicts[op.u]
-						local current=q[op.u]
-						local same=current and current.e==op.e and current.s==op.s
-						if verdict=="ok" or verdict=="stale" then
-							if same then q[op.u]=nil end
-							local live=who[op.u]
-							local b=live and live.p.council
-							if type(b)=="table" and b.e==e and whole(b.s)>=op.s then b.ok=math.max(whole(b.ok),op.s) end
-						elseif verdict then
-							if same then q[op.u]=nil end
-							local live=who[op.u]
-							if live then
-								note(live.p,if verdict=="closed" then "The ballot had closed: your last vote change was not counted."
-									elseif verdict=="full" then "The ballot box is full this election: your vote could not be counted." else "Your ballot was refused.")
-								local b=live.p.council
-								if type(b)=="table" and b.e==e then b.refused=true end
-							end
-						elseif same then
-							current.tries+=1
-							if current.tries>=C.ATTEMPTS or now>=closes+C.GRACE then q[op.u]=nil end
-						end
-					end
-				end
-				if not next(q) then queue[shard]=nil end
+	-- Committed shard counts: into the local tally and the mirror queue.
+	local function noteShard(e,shard,ver,n)
+		local g=C.groupOf(shard)
+		mirrorQ[e]=mirrorQ[e] or {}
+		local group=mirrorQ[e][g] or {}
+		mirrorQ[e][g]=group
+		if not group[shard] or group[shard].ver<ver then group[shard]={ver=ver,n=table.clone(n)} end
+		if tally.e==e then
+			local cur=tally.shards[shard]
+			if not cur or cur.ver<ver then tally.shards[shard]={ver=ver,n=table.clone(n)} end
+		end
+	end
+	local REFUSAL_TEXT={closed="The ballot had closed: your last vote change was not counted.",
+		late="The ballot closed before your last vote could be written: it was not counted.",
+		full="The ballot box is full this election: your vote could not be counted.",bad="Your ballot was refused."}
+	-- One op's verdict from a shard write (nil = the write failed: it stays queued).
+	local function settle(q,op,verdict,stored,who)
+		local e=op.e
+		local current=q[op.u]
+		local same=current~=nil and current.e==op.e and current.s==op.s
+		local live=who[op.u]
+		local b=live and live.p.council
+		local mine=type(b)=="table" and b.e==e
+		local slate=C.slate(e)
+		if verdict=="ok" or verdict=="stale" then
+			if same then q[op.u]=nil end
+			local st=if verdict=="stale" then stored and stored[op.u] else {c=op.c,s=op.s}
+			if not st then return end
+			local storedId=slate[st.c] and slate[st.c].id
+			if not mine or not storedId then return end
+			b.k=storedId
+			if b.c==storedId then
+				-- The store holds the journal's choice: acknowledged (a rolled-back journal catches up its sequence).
+				if st.s>b.s then b.s=math.min(st.s,C.MAX_SEQ) end
+				b.ok=math.max(b.ok,math.min(b.s,math.max(op.s,st.s)))
+			elseif st.s>=b.s then
+				-- QC M3: the store holds a newer ballot for another candidate than this
+				-- (live) journal's choice: outbid it and re-queue; never shown as counted.
+				b.s=math.min(st.s+1,C.MAX_SEQ)
+				if b.s>st.s then enqueue(op.u,e,C.slotOf(e,b.c),b.s,b.t) end
+			end
+		elseif verdict then
+			if same then q[op.u]=nil end
+			if mine and b.s==op.s then
+				b.refused=verdict
+				note(live.p,REFUSAL_TEXT[verdict] or REFUSAL_TEXT.bad)
 			end
 		end
 	end
-	local function readTally(e)
+	local function flushShard(shard,now,who,force)
+		local q=queue[shard]
+		if not q then return end
+		local byElection={}
+		for _,op in pairs(q) do
+			local list=byElection[op.e] or {}
+			byElection[op.e]=list
+			table.insert(list,op)
+		end
+		for e,ops in pairs(byElection) do
+			local key=C.shardKey(shard)
+			local name=e..":"..key
+			if now>=C.writeDeadline(e) then
+				for _,op in ipairs(ops) do settle(q,op,"late",nil,who) end
+			elseif force or keyReady(name) then
+				local closes=C.termWindow(e).starts
+				local batch={}
+				for _,op in ipairs(ops) do table.insert(batch,{u=op.u,c=op.c,s=op.s,t=op.t}) end
+				local verdicts,stored
+				local ok,committed=ms(e,"update",key,function(old)
+					local book,res,changed,st=C.applyBallots(old,batch,e,closes,os.time())
+					verdicts,stored=res,st
+					return if changed then book else nil
+				end)
+				if ok then keyState[name]=nil else keyFailed(name) end
+				if ok and type(committed)=="table" and committed.e==e then
+					local book=C.cleanBook(committed,e)
+					noteShard(e,shard,book.ver,book.n)
+				end
+				for _,op in ipairs(ops) do settle(q,op,ok and verdicts and verdicts[op.u] or nil,stored,who) end
+			end
+		end
+		if not next(q) then queue[shard]=nil end
+	end
+	local function flushQueue(now,force,deadline)
+		local who=liveByUser()
 		local shards={}
-		for shard=1,C.SHARDS do
-			local ok,value=dsGet(C.key(e,shard))
+		for shard in pairs(queue) do table.insert(shards,shard) end
+		table.sort(shards)
+		for _,shard in ipairs(shards) do
+			if deadline and os.clock()>=deadline then break end
+			flushShard(shard,now,who,force)
+		end
+	end
+	local function flushMirrors(force,deadline)
+		local now=os.time()
+		for e,groups in pairs(mirrorQ) do
+			if now>=C.termWindow(e).sealAt+C.TTL_PAD then mirrorQ[e]=nil
+			else
+				for g,entries in pairs(groups) do
+					local key=C.groupKey(g)
+					local name=e..":"..key
+					if (force or keyReady(name)) and not (deadline and os.clock()>=deadline) then
+						local ok=ms(e,"update",key,function(old)
+							local item,changed=C.mirror(old,entries)
+							return if changed then item else nil
+						end)
+						if ok then keyState[name]=nil; groups[g]=nil else keyFailed(name) end
+					end
+				end
+				if not next(groups) then mirrorQ[e]=nil end
+			end
+		end
+	end
+	-- Tally: the C.GROUPS count-mirror items only (never the ballots).
+	local function readTally(e)
+		local groups={}
+		for g=1,C.GROUPS do
+			local ok,item=ms(e,"get",C.groupKey(g))
 			if not ok then return false end
-			shards[shard]=table.clone(C.cleanBook(value,e).n)
+			groups[g]=item
+		end
+		local shards=C.fromMirror(groups)
+		if tally.e==e then -- keep this server's newer committed counts
+			for shard,cur in pairs(tally.shards) do
+				if not shards[shard] or shards[shard].ver<cur.ver then shards[shard]=cur end
+			end
 		end
 		return true,shards
+	end
+	local function tallyCounts(shards)
+		local list={}
+		for shard,row in pairs(shards) do list[shard]=row.n end
+		return C.sum(list)
+	end
+	-- Authoritative counts for sealing: every shard item, read once by the claimant.
+	local function readShards(e)
+		local list={}
+		for shard=1,C.SHARDS do
+			local ok,book=ms(e,"get",C.shardKey(shard))
+			if not ok then return false end
+			list[shard]=C.cleanBook(book,e).n
+		end
+		return true,list
+	end
+	-- QC L5: once the result is in history, remove the election's items (TTL is
+	-- the backstop) and any legacy v1 DataStore ballot shards.
+	local function sweep(y)
+		for shard=1,C.SHARDS do ms(y,"remove",C.shardKey(shard)) end
+		for g=1,C.GROUPS do ms(y,"remove",C.groupKey(g)) end
+		for shard=1,C.LEGACY_SHARDS do dsRemove(C.legacyKey(y,shard)) end
+		mirrorQ[y]=nil
 	end
 	local function announceAll()
 		local now=os.time()
@@ -7575,10 +7757,17 @@ do
 		local ok,stored=dsGet(key)
 		if not ok then return false end
 		local final=C.cleanResult(stored,y)
+		local sealer=false
 		if not final then
-			local okRead,shards=readTally(y)
+			-- One server seals: claim a short lease, then read the shard items once.
+			local okClaim,claim=ms(y,"update",C.SEAL_KEY,function(old)
+				if type(old)=="table" and old.by~=uid and (tonumber(old.till) or 0)>os.time() then return nil end
+				return {by=uid,till=os.time()+C.SEAL_LEASE}
+			end)
+			if not okClaim or type(claim)~="table" or claim.by~=uid then return false end
+			local okRead,list=readShards(y)
 			if not okRead then return false end
-			local decided=C.decide(y,C.sum(shards))
+			local decided=C.decide(y,C.sum(list))
 			decided.at=os.time()
 			local okWrite,committed=dsUpdate(key,function(old)
 				if C.cleanResult(old,y) then return nil end
@@ -7591,44 +7780,86 @@ do
 				final=okAgain and C.cleanResult(again,y) or nil
 			end
 			if not final then return false end
+			sealer=true
 		end
 		results[y]=final
-		local okHist,list=dsUpdate(C.HISTORY_KEY,function(old)
-			local merged,added=C.mergeHistory(old,final)
-			return if added then merged else nil
-		end)
-		if okHist and type(list)=="table" then history=C.mergeHistory(list,nil); historyAt=os.clock()
-		else history=C.mergeHistory(history,final) end
+		-- History: read first; only a server that finds the term missing writes.
+		local okHist,list=dsGet(C.HISTORY_KEY)
+		local merged,added=C.mergeHistory(if okHist then list else history,final)
+		local inHistory=okHist and not added
+		if okHist and added then
+			local okW,written=dsUpdate(C.HISTORY_KEY,function(old)
+				local m,a=C.mergeHistory(old,final)
+				return if a then m else nil
+			end)
+			if okW then
+				inHistory=true
+				if type(written)=="table" then merged=C.mergeHistory(written,final) end
+			end
+		end
+		history=merged
+		if okHist then historyAt=os.clock() end
+		if sealer and inHistory then sweep(y) end
 		return true
 	end
-	-- Council heartbeat (C.TICK): flush ballots, refresh the tally, seal the
-	-- term's result, read the history, announce phase changes.
+	-- Council heartbeat (C.TICK): re-queue journals, flush ballots and count
+	-- mirrors, refresh the tally, seal the term's result, read the history,
+	-- announce phase changes.
 	function Council.tick()
 		local now=os.time()
 		local el=election(now)
 		local y=rollTerm(now)
 		local anyone=next(profiles)~=nil
-		for userId,at in pairs(lastVote) do if os.clock()-at>C.VOTE_COOLDOWN then lastVote[userId]=nil end end -- bounded rate-limit table
-		if os.clock()>=flushAt and next(queue) and budgetOk() then
-			flushAt=os.clock()+C.FLUSH
-			flush(now)
-		end
-		if el.open and anyone and os.clock()>=readAt then
-			readAt=os.clock()+C.READ
-			local ok,shards=readTally(el.e)
-			if ok then tally={e=el.e,shards=shards,at=now} end
-		end
-		local sealAt=C.termWindow(y).sealAt
-		if not results[y] and now>=sealAt and os.clock()-(sealTry[y] or -math.huge)>=C.SEAL_RETRY then seal(y) end
-		if anyone and os.clock()-historyAt>=600 then
-			historyAt=os.clock()
-			local ok,list=dsGet(C.HISTORY_KEY)
-			if ok then
-				history=C.mergeHistory(list,nil)
-				for _,r in ipairs(history) do if not results[r.e] then results[r.e]=r end end
+		for userId,at in pairs(lastVote) do if os.clock()-at>C.VOTE_COOLDOWN then lastVote[userId]=nil end end -- bounded rate-limit tables
+		for userId,at in pairs(lastView) do if os.clock()-at>C.VIEW_COOLDOWN then lastView[userId]=nil end end
+		if busy then return end
+		busy=true
+		local okRun,err=pcall(function()
+			for player,p in pairs(profiles) do requeue(player,p,now) end
+			if next(queue) and os.clock()>=flushAt then
+				flushAt=os.clock()+C.FLUSH
+				flushQueue(now,false)
 			end
-		end
+			if next(mirrorQ) and os.clock()>=mirrorAt then
+				mirrorAt=os.clock()+C.MIRROR
+				flushMirrors(false)
+			end
+			if el.open and anyone and os.clock()>=readAt then
+				readAt=os.clock()+C.READ
+				local ok,shards=readTally(el.e)
+				if ok then tally={e=el.e,shards=shards,at=now} end
+			end
+			local sealAt=C.termWindow(y).sealAt
+			if not results[y] and now>=sealAt and os.clock()-(sealTry[y] or -math.huge)>=C.SEAL_RETRY then seal(y) end
+			if anyone and os.clock()-historyAt>=600 then
+				historyAt=os.clock()
+				local ok,list=dsGet(C.HISTORY_KEY)
+				if ok then
+					history=C.mergeHistory(list,nil)
+					for _,r in ipairs(history) do if not results[r.e] then results[r.e]=r end end
+				end
+			end
+		end)
+		busy=false
+		if not okRun then error(err,0) end
 		if anyone then announceAll() end
+	end
+	-- QC M2: BindToClose flushes queued ballots and count mirrors (ignoring
+	-- backoff, within `budget` seconds) before the journals save, so the saved
+	-- journals carry their acknowledgements.
+	function Council.drain(budget)
+		local deadline=os.clock()+(budget or 8)
+		while busy and os.clock()<deadline do task.wait(0.1) end
+		if busy then return end
+		busy=true
+		pcall(function()
+			for _=1,3 do
+				if not next(queue) or os.clock()>=deadline then break end
+				flushQueue(os.time(),true,deadline)
+			end
+			if next(mirrorQ) and os.clock()<deadline then flushMirrors(true,deadline) end
+		end)
+		busy=false
 	end
 	local function loop()
 		pcall(Council.tick)
@@ -7660,17 +7891,12 @@ do
 		end
 		return queued
 	end
-	-- Every snapshot: re-queue an unacknowledged ballot once per session, queue
-	-- phase toasts, and keep p.perkStats.council in step with the ruling term.
+	-- Every snapshot: re-queue an unacknowledged ballot, queue phase toasts, and
+	-- keep p.perkStats.council in step with the ruling term.
 	function Council.refresh(player,p)
 		local now=os.time()
 		rollTerm(now)
-		local b=ballotOf(p)
-		local el=election(now)
-		if not requeued[player] then
-			requeued[player]=true
-			if el.open and b.e==el.e and b.c and b.ok<b.s then enqueue(tostring(player.UserId),b.e,C.slotOf(b.e,b.c),b.s) end
-		end
+		requeue(player,p,now)
 		Council.phases(player,p,now)
 		local stats=C.stats(Council.effects())
 		if type(p.perkStats)~="table" then p.perkStats={} end
@@ -7681,7 +7907,7 @@ do
 		local stats=C.stats(Council.effects())
 		if type(p.perkStats)=="table" then p.perkStats.council=if next(stats) then stats else nil end
 	end
-	function Council.forget(player) requeued[player]=nil end
+	function Council.forget(_player) end -- per-account limits are keyed by UserId and pruned by the heartbeat (a rejoin never resets them)
 	function Council.state(player,p)
 		local now=os.time()
 		local el=election(now)
@@ -7689,7 +7915,7 @@ do
 		local b=ballotOf(p)
 		local mine=b.e==el.e
 		local counts,total=nil,nil
-		if tally.e==el.e and next(tally.shards) then counts,total=C.sum(tally.shards) end
+		if tally.e==el.e and next(tally.shards) then counts,total=tallyCounts(tally.shards) end
 		local r=results[y]
 		local hist={}
 		for i,h in ipairs(history) do
@@ -7697,9 +7923,14 @@ do
 			table.insert(hist,{e=h.e,winner=h.winner,minister=h.minister,ministerPerk=h.ministerPerk,total=h.total,
 				votes=h.counts[C.slotOf(h.e,h.winner) or 1] or 0})
 		end
-		return {e=el.e,opens=el.opens,closes=el.closes,open=el.open,now=now,
-			vote=if mine then b.c else nil,confirmed=mine and b.c~=nil and b.ok>=b.s,
-			changesLeft=C.MAX_CHANGES-(if mine then b.s else 0),readyIn=math.max(0,math.ceil((lastVote[player.UserId] or -math.huge)+C.VOTE_COOLDOWN-os.clock())),
+		local renown=renownOf(p)
+		-- QC L1: the previous election's ballot (counted, or why not) once its ballot has closed.
+		local last=if b.c and b.e>0 and b.e<el.e then {e=b.e,vote=b.c,counted=b.k,refused=b.refused,confirmed=b.ok>=b.s and b.k==b.c} else nil
+		return {e=el.e,last=last,opens=el.opens,closes=el.closes,open=el.open,now=now,
+			vote=if mine then b.c else nil,confirmed=mine and b.c~=nil and b.ok>=b.s and b.k==b.c,
+			counted=if mine then b.k else nil,refused=if mine and b.c then b.refused else nil,
+			changesLeft=C.MAX_CHANGES-(if mine then b.n else 0),readyIn=math.max(0,math.ceil((lastVote[player.UserId] or -math.huge)+C.VOTE_COOLDOWN-os.clock())),
+			renown=renown,minRenown=C.MIN_RENOWN,eligible=renown>=C.MIN_RENOWN,
 			counts=counts,total=total,tallyAt=if counts then tally.at else nil,
 			term={y=y,ends=C.termWindow(y).ends,sealed=r~=nil,winner=r and r.winner,minister=r and r.minister,ministerPerk=r and r.ministerPerk,
 				perks=r and C.termPerks(r) or {},counts=r and r.counts,total=r and r.total},
@@ -7727,7 +7958,11 @@ do
 			player:SetAttribute("IsleStationVisit",(player:GetAttribute("IsleStationVisit") or 0)+1)
 			return "The Council Clerk unrolls the ballot • see Journal › Council."
 		elseif verb=="councilView" then
-			if os.clock()-forcedAt>=30 and el.open then forcedAt=os.clock(); readAt=0 end
+			-- QC M4: one forced read per account per C.VIEW_COOLDOWN, and per server per C.VIEW_FLOOR.
+			local u=player.UserId
+			if el.open and os.clock()-(lastView[u] or -math.huge)>=C.VIEW_COOLDOWN and os.clock()-forcedAt>=C.VIEW_FLOOR then
+				lastView[u],forcedAt,readAt=os.clock(),os.clock(),0
+			end
 			if prompt then return C.NAME.." • "..(if el.open then "the Year "..el.e.." ballot closes in "..C.span(el.closes-now).."." else "the next ballot opens in "..C.span(el.opens-now)..".") end
 			return ""
 		elseif verb=="councilVote" then
@@ -7739,16 +7974,20 @@ do
 			end
 			local slot=type(item)=="string" and C.slotOf(el.e,item)
 			if not slot then return "Choose one of this election's candidates." end
-			if b.e<el.e then b.e,b.c,b.s,b.ok,b.refused=el.e,nil,0,0,nil end
+			local renown=renownOf(p)
+			if renown<C.MIN_RENOWN then
+				return "Voting needs Isle Renown "..C.MIN_RENOWN.." (you are Renown "..renown.."). Earn renown from skills, collections and the Wayfarer's Path."
+			end
+			if b.e<el.e then b.e,b.c,b.s,b.n,b.t,b.ok,b.k,b.refused=el.e,nil,0,0,0,0,nil,nil end
 			local name=C.candidateName(item)
 			if b.c==item then return "Your vote is already with "..name.."." end
 			local wait=(lastVote[player.UserId] or -math.huge)+C.VOTE_COOLDOWN-os.clock()
 			if wait>0 then return "The clerk is still inking your last ballot ("..math.ceil(wait).."s)." end
-			if b.s>=C.MAX_CHANGES then return "You have changed your vote "..(C.MAX_CHANGES-1).." times this election; it stays with "..C.candidateName(b.c).."." end
+			if b.n>=C.MAX_CHANGES or b.s>=C.MAX_SEQ then return "You have changed your vote "..(C.MAX_CHANGES-1).." times this election; it stays with "..C.candidateName(b.c).."." end
 			local changed=b.c~=nil
-			b.c,b.s,b.refused=item,b.s+1,nil
+			b.c,b.s,b.n,b.t,b.refused=item,b.s+1,b.n+1,now,nil
 			lastVote[player.UserId]=os.clock()
-			enqueue(tostring(player.UserId),el.e,slot,b.s)
+			enqueue(tostring(player.UserId),el.e,slot,b.s,now)
 			p.started=true
 			return (if changed then "Vote changed to " else "Vote cast for ")..name.." • you can change it until the ballot closes in "..C.span(el.closes-now).."."
 		end
@@ -8335,6 +8574,7 @@ task.spawn(function()
 	end
 end)
 game:BindToClose(function()
+	if Council.drain then Council.drain(8) end -- §36 QC M2: write queued ballots (journals then save their acknowledgements)
 	if Econ.flushHistory then pcall(Econ.flushHistory) end -- §33: pending auction price history (best effort)
 	Endgame.drain() -- Endgame: refund unspent altar sigils before the journals save
 	if Lairs.drain then Lairs.drain() end -- Lairs: refund unfinished fights' fees before the journals save
