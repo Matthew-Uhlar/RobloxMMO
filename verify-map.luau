@@ -135,19 +135,211 @@ local chosen, used = MapArt.plan({ { rec(0, 50, 48), rec(2, 9, 12), rec(2, 3, 12
 check(used.parts == 4 and chosen[1][1].extent == 50 and chosen[1][2].extent == 9 and chosen[2][1].extent == 20, "planner keeps the hull, then the largest props per island")
 local _, tight = MapArt.plan({ { rec(0, 50, 900), rec(2, 9, 200) } }, { parts = 10, triangles = 1000, floor = 1 })
 check(tight.triangles <= 1000 and tight.parts == 1, "planner respects the triangle budget")
+-- A MeshForge stand-in modelling what the real forge (forge.client.lua) does to
+-- the chart: templates per shape with pins, LRU eviction of unpinned templates
+-- (every mesh cloned from an evicted template goes blank: it carries the
+-- template's StubTemplate id), revocation (ShapeRevoked) and yields (a request
+-- can suspend mid-build, as CreateMeshPartAsync does).
+local function forgeStub(tris)
+	local F = { templates = {}, tokens = {}, nextToken = 0, nextTemplate = 0, calls = 0, accepted = 0, released = 0, hold = false, waiting = {}, hosts = {} }
+	local function tpl(shape)
+		local t = F.templates[shape]
+		if not t then F.nextTemplate += 1; t = { id = F.nextTemplate, pins = 0 }; F.templates[shape] = t end
+		return t
+	end
+	-- The world's own forged mesh beside its host, which the forge hides locally.
+	function F.world(host)
+		local m = roblox.Instance.new("MeshPart")
+		m.Name, m.Size, m.CFrame = host.Name .. " Mesh", host.Size, host.CFrame
+		m:SetAttribute("ShapeOf", host:GetAttribute("Shape"))
+		m:SetAttribute("ShapeTriangles", 900)
+		m:SetAttribute("StubTemplate", tpl(host:GetAttribute("Shape")).id)
+		m.Parent = host.Parent
+		host.LocalTransparencyModifier = 1
+		return m
+	end
+	-- LRU eviction of every template nothing pins.
+	function F.evictIdle()
+		for shape, t in pairs(F.templates) do if t.pins == 0 then F.templates[shape] = nil end end
+	end
+	function F.alive(id)
+		for _, t in pairs(F.templates) do if t.id == id then return true end end
+		return false
+	end
+	function F.revoke(token)
+		local k = F.tokens[token]
+		F.tokens[token] = nil
+		if k.accepted then k.t.pins -= 1 end
+		k.mesh:SetAttribute("ShapeRevoked", true)
+	end
+	F.fn = function(method, arg)
+		if method == "ready" then return true end
+		if method == "visual" then
+			F.calls += 1
+			F.hosts[arg] = (F.hosts[arg] or 0) + 1
+			if F.hold then table.insert(F.waiting, coroutine.running()); coroutine.yield() end
+			local t = tpl(arg:GetAttribute("Shape"))
+			local m = roblox.Instance.new("MeshPart")
+			m.Size, m.CFrame, m.Color = arg.Size, arg.CFrame, arg.Color
+			m:SetAttribute("StubTemplate", t.id)
+			F.nextToken += 1
+			F.tokens[F.nextToken] = { t = t, mesh = m }
+			return m, tris or 1800, F.nextToken
+		elseif method == "accept" then
+			local k = F.tokens[arg]
+			if not k then return false end
+			k.accepted, k.t.pins = true, k.t.pins + 1
+			F.accepted += 1
+			return true
+		elseif method == "release" then
+			local k = F.tokens[arg]
+			F.tokens[arg] = nil
+			if k and k.accepted then k.t.pins -= 1 end
+			F.released += 1
+			return true
+		end
+		return nil
+	end
+	return F
+end
+local function blankParts(s0, F)
+	local n = 0
+	for _, isle in ipairs(s0.islands) do
+		for _, p in ipairs(isle.parts) do
+			local id = p:GetAttribute("StubTemplate")
+			if id and not F.alive(id) then n += 1 end
+		end
+	end
+	return n
+end
 -- Forge upgrades: hosts swap for meshes, within the forge and triangle budgets.
 local queued = #scene.queue
 local before = scene.stats.parts
-local forgeCalls = 0
-local added = MapArt.upgrade(scene, function(host)
-	forgeCalls += 1
-	local m = roblox.Instance.new("MeshPart")
-	m.Size, m.CFrame, m.Color = host.Size, host.CFrame, host.Color
-	return m, 1800
-end)
+local stub = forgeStub()
+local added = MapArt.upgrade(scene, stub.fn)
 check(queued > 0 and added > 0 and added <= desktop.forge and scene.stats.forged == added, "forged hull / landmark meshes replace their hosts (" .. added .. ")")
 check(scene.stats.triangles <= desktop.triangles and scene.stats.parts <= desktop.parts and scene.stats.parts >= before, "forge upgrades stay in budget")
 check(#scene.queue == 0, "the forge queue is spent once")
+check(stub.accepted == added and stub.released == stub.calls - added, "accepted meshes pin; rejected ones are released at once")
+
+-- QC H1: the forge's own world meshes are never copied (their template can be
+-- evicted); hidden hull / landmark hosts stand in and queue for a pinned chart
+-- mesh; other hidden hosts are dropped. After LRU eviction nothing goes blank.
+do
+	local F = forgeStub()
+	local majors, props, worldMeshes = {}, {}, {}
+	for _, e in ipairs(entries) do
+		for _, d in ipairs(e.model:GetDescendants()) do
+			local shp = d:GetAttribute("Shape")
+			if d:IsA("BasePart") and not d:IsA("MeshPart") and type(shp) == "string" and d.Transparency < 0.9 then
+				local size = math.max(d.Size.X, d.Size.Y, d.Size.Z)
+				if (MapArt.HULL[shp] or landmarkShapes[shp]) and #majors < 10 then table.insert(majors, d)
+				elseif not MapArt.HULL[shp] and not landmarkShapes[shp] and size >= desktop.minExtent * 2 and #props < 40 then table.insert(props, d) end
+			end
+		end
+	end
+	check(#majors > 0 and #props > 0, "the world has visible landmark hosts and prop hosts (" .. #majors .. ", " .. #props .. ")")
+	for _, h in ipairs(majors) do table.insert(worldMeshes, F.world(h)) end
+	for _, h in ipairs(props) do table.insert(worldMeshes, F.world(h)) end
+	local s1 = MapArt.buildScene(entries, desktop, { landmarks = landmarkShapes })
+	local queuedHosts, copiedAt = {}, {}
+	for _, job in ipairs(s1.queue) do queuedHosts[job.host] = job end
+	for _, isle in ipairs(s1.islands) do
+		for _, p in ipairs(isle.parts) do
+			check(p:GetAttribute("ShapeOf") == nil, "no forged world mesh is copied (" .. p.Name .. ")")
+			copiedAt[p.Name .. "@" .. tostring(p.CFrame.Position)] = true
+		end
+	end
+	for _, h in ipairs(majors) do
+		local job = queuedHosts[h]
+		check(job and job.stand and copiedAt[h.Name .. "@" .. tostring(h.CFrame.Position)], "hidden landmark host " .. h.Name .. " stands in and is queued")
+	end
+	for _, h in ipairs(props) do
+		check(not copiedAt[h.Name .. "@" .. tostring(h.CFrame.Position)] and not queuedHosts[h], "hidden prop host " .. h.Name .. " is dropped")
+	end
+	MapArt.upgrade(s1, F.fn)
+	check(s1.stats.forged > 0, "the stand-ins are upgraded through the chart's pinned meshes")
+	F.evictIdle()
+	check(blankParts(s1, F) == 0, "after LRU eviction no chart part is blank (every chart mesh is pinned)")
+	-- H2 (chart side): a revoked mesh gives its slot back to the stand-in.
+	local job = s1.forged[1]
+	local isle1, mesh1, stand1 = job.isle, job.mesh, job.stand
+	local tris0, forged0 = s1.stats.triangles, s1.stats.forged
+	F.revoke(job.token)
+	check(MapArt.checkRevoked(s1) == 1 and stand1 and stand1.Parent == isle1.model and table.find(isle1.parts, stand1) and not table.find(isle1.parts, mesh1),
+		"a revoked mesh swaps back to its primitive stand-in")
+	check(s1.stats.forged == forged0 - 1 and s1.stats.triangles == tris0 - job.net, "the revert gives back its triangles")
+	-- The chart is destroyed: every accepted pin is released.
+	local pinsBefore = F.accepted
+	MapArt.releaseAll(s1, F.fn)
+	local pinned = 0
+	for _, t in pairs(F.templates) do pinned += t.pins end
+	check(pinsBefore > 0 and pinned == 0, "destroying the chart releases its pins")
+	s1.root:Destroy()
+	for _, m in ipairs(worldMeshes) do m:Destroy() end
+	for _, h in ipairs(majors) do h.LocalTransparencyModifier = 0 end
+	for _, h in ipairs(props) do h.LocalTransparencyModifier = 0 end
+end
+-- QC H3 (chart side): the forge yields mid-request. A second upgrade call never
+-- repeats a host, and a scene destroyed meanwhile releases what comes back.
+do
+	local F = forgeStub()
+	local s2 = MapArt.buildScene(entries, phone, { landmarks = landmarkShapes })
+	F.hold = true
+	local co = coroutine.create(MapArt.upgrade)
+	assert(coroutine.resume(co, s2, F.fn))
+	check(coroutine.status(co) == "suspended" and F.calls == 1, "the first request is in flight")
+	check(MapArt.upgrade(s2, F.fn) == 0 and F.calls == 1, "a concurrent upgrade waits its turn (no repeated request)")
+	F.hold = false
+	assert(coroutine.resume(table.remove(F.waiting, 1)))
+	check(coroutine.status(co) == "dead" and s2.stats.forged > 0, "the upgrade finishes after the yield")
+	local repeated = 0
+	for _, n in pairs(F.hosts) do if n > 1 then repeated += 1 end end
+	check(repeated == 0, "every host is requested once")
+	local s3 = MapArt.buildScene(entries, phone, { landmarks = landmarkShapes })
+	local G = forgeStub()
+	G.hold = true
+	local co3 = coroutine.create(MapArt.upgrade)
+	assert(coroutine.resume(co3, s3, G.fn))
+	MapArt.releaseAll(s3, G.fn)
+	G.hold = false
+	assert(coroutine.resume(table.remove(G.waiting, 1)))
+	check(G.accepted == 0 and G.released == 1 and s3.stats.forged == 0, "a mesh arriving after the chart is destroyed is released, never pinned")
+	s2.root:Destroy()
+	s3.root:Destroy()
+end
+-- QC L1: locked forged MeshParts take Theme.MapArt.lockWash (their palette is in vertex colours).
+do
+	local wash = roblox.Color3.fromHex(T.MapArt.lockWash)
+	local s4 = MapArt.buildScene({ entries[1] }, desktop, { landmarks = landmarkShapes, wash = wash })
+	MapArt.upgrade(s4, forgeStub().fn)
+	local isle4 = s4.islands[1]
+	MapArt.setLocked(isle4, true)
+	local meshes, washed, tinted = 0, 0, 0
+	for i, p in ipairs(isle4.parts) do
+		if p:IsA("MeshPart") then meshes += 1; if p.Color == wash then washed += 1 end
+		elseif p.Color ~= isle4.colors[i] then tinted += 1 end
+	end
+	check(meshes > 0 and washed == meshes and tinted > 0, "locked meshes take the lock wash, primitives the grey tint")
+	MapArt.setLocked(isle4, false)
+	s4.root:Destroy()
+end
+-- QC M6: the idle pre-build yields every MapArt.CHUNK copied parts; per-chunk cost.
+do
+	local times, last = {}, os.clock()
+	local timed = MapArt.buildScene(entries, desktop, { landmarks = landmarkShapes, pause = function()
+		local now = os.clock()
+		table.insert(times, now - last)
+		last = now
+	end })
+	table.insert(times, os.clock() - last)
+	local worst, total = 0, 0
+	for _, t in ipairs(times) do worst = math.max(worst, t); total += t end
+	check(timed.stats.chunks >= math.floor(timed.stats.parts / MapArt.CHUNK) and #times == timed.stats.chunks + 1, "the build yields every " .. MapArt.CHUNK .. " parts (" .. timed.stats.chunks .. " chunks)")
+	print(string.format("Sky Chart pre-build (desktop): %d parts in %d chunks; measured here %.1f ms/chunk mean, %.1f ms worst (Lune; one chunk runs per frame, so the first open no longer waits on the whole copy).",
+		timed.stats.parts, #times, total / #times * 1000, worst * 1000))
+	timed.root:Destroy()
+end
 
 -- 5. Lock wash and hover raise are exact and reversible.
 local isle = scene.islands[1]
@@ -208,13 +400,25 @@ for _, size in ipairs({ roblox.Vector2.new(1366, 768), roblox.Vector2.new(844, 3
 	local root = H.new("Part", { Name = "HumanoidRootPart", CFrame = CFrame.new(12, 4, 20) })
 	root.Parent = character
 	ui.player.Character = character
-	local layer = H.runHud(size, ui.player, ui.replicated, { touch = touch, workspace = space() })
+	local delays = {}
+	local layer = H.runHud(size, ui.player, ui.replicated, { touch = touch, workspace = space(), delays = delays })
 	local S = layer.state
 	local art = S.art
 	check(art ~= nil, "Sky Chart mounts the map art at " .. tag)
 	check(art.builds == 0 and art.scene == nil, "nothing is built before the chart opens at " .. tag)
+	-- QC L7: the looping drifts are paused while the chart is closed.
+	for _, tw in ipairs(art.tweens) do check(not tw.playing, "chart tweens wait while closed at " .. tag) end
+	if not touch then
+		-- QC M6: desktop pre-builds in idle chunks after load (no first-open hitch).
+		for _, d in ipairs(delays) do if d.seconds == MapArt.PREBUILD_DELAY then d.fn(table.unpack(d.args, 1, d.args.n)) end end
+		local co, chunks = art.prebuildThread, 0
+		check(co ~= nil and art.building, "the pre-build starts after load and yields at " .. tag)
+		while coroutine.status(co) == "suspended" do chunks += 1; assert(coroutine.resume(co)) end
+		check(art.builds == 1 and art.scene ~= nil and chunks >= 5 and not S.chart.Visible, "pre-built in " .. chunks .. " idle chunks before the first open at " .. tag)
+	end
 	layer.api.OnInvoke("chart")
-	check(S.chart.Visible and art.builds == 1 and art.scene ~= nil, "first open builds the miniature at " .. tag)
+	check(S.chart.Visible and art.builds == 1 and art.scene ~= nil, "first open shows the miniature at " .. tag)
+	for _, tw in ipairs(art.tweens) do check(tw.playing, "chart tweens play while open at " .. tag) end
 	local viewport = H.find(S.chart, "Miniature")
 	check(viewport and viewport.ClassName == "ViewportFrame" and viewport.CurrentCamera and art.scene.root.Parent == viewport, "miniature lives in a ViewportFrame at " .. tag)
 	local b = MapArt.budget(touch)
@@ -293,6 +497,119 @@ for _, size in ipairs({ roblox.Vector2.new(1366, 768), roblox.Vector2.new(844, 3
 	if touch then
 		for _, t in pairs(S.tiles) do if t.warp.Visible then check(t.warp.Size.X.Offset >= 44, "warp gem is a 44 px target at " .. tag) end end
 	end
+	-- QC L4: no two island names overlap (at fit zoom and zoomed in).
+	local function labelsClear(label)
+		local rects = {}
+		for _, t in pairs(S.tiles) do
+			if t.frame.Visible and t.name.Visible and t.frame:GetAttribute("MapArt") and t ~= S.tiles.Home then
+				local half = #t.name.Text * t.name.TextSize / 2
+				local cx = t.frame.Position.X.Offset + t.name.Position.X.Offset
+				local top = t.frame.Position.Y.Offset - 40 + 0.36 * 80 + t.name.Position.Y.Offset
+				table.insert(rects, { x = cx - half, y = top, w = half * 2, h = MapArt.LABEL_H, id = t.island.id })
+			end
+		end
+		for i = 1, #rects do
+			for j = i + 1, #rects do
+				local a, b = rects[i], rects[j]
+				check(not (a.x < b.x + b.w and b.x < a.x + a.w and a.y < b.y + b.h and b.y < a.y + a.h), a.id .. " and " .. b.id .. " names clear " .. label .. " at " .. tag)
+			end
+		end
+	end
+	labelsClear("at fit zoom")
+	art.zoom(0.5)
+	labelsClear("zoomed in")
+	art.zoom(100)
+	-- QC L2: warp tiles above the halo and insets; the Home tile above its inset.
+	check(S.tiles.Hub.frame.ZIndex > H.find(S.chart, "Halo").ZIndex and S.tiles.Hub.frame.ZIndex > H.find(S.chart, "CrewInset").ZIndex, "tiles over the halo and insets at " .. tag)
+	check(S.tiles.Home.frame.ZIndex > H.find(S.chart, "HomeInset").ZIndex, "Home tile over its inset at " .. tag)
+	-- QC M3: the tile button is the gem's own hit area.
+	check(S.tiles.Quarry.button.Size.X.Offset <= 44 and S.tiles.Quarry.button.Size.Y.Offset <= 44, "tile button is gem-sized at " .. tag)
+	-- QC M4: hover follows UserInputService positions (the same space as clicks).
+	local quarry2 = art.links.Quarry
+	layer.input.InputChanged:Fire({ UserInputType = roblox.Enum.UserInputType.MouseMovement, Position = Vector3.new(quarry2.sx, quarry2.sy, 0) })
+	check(art.hover == "Quarry", "mouse hover picks the island under the cursor at " .. tag)
+	layer.input.InputChanged:Fire({ UserInputType = roblox.Enum.UserInputType.MouseMovement, Position = Vector3.new(-50, -50, 0) })
+	check(art.hover == nil, "leaving the sky clears the hover at " .. tag)
+	-- QC M1: a second finger never pans the press; a pinch turns it into a non-click.
+	local dragLayer = H.find(S.chart, "ChartDrag")
+	local UIT = roblox.Enum.UserInputType
+	local f1 = { UserInputType = UIT.Touch, Position = Vector3.new(200, 200, 0) }
+	local f2 = { UserInputType = UIT.Touch, Position = Vector3.new(400, 260, 0) }
+	dragLayer.InputBegan:Fire(f1)
+	dragLayer.InputBegan:Fire(f2)
+	local pan0 = art.view.pan
+	f2.Position = Vector3.new(480, 300, 0)
+	layer.input.InputChanged:Fire(f2)
+	check(art.view.pan == pan0, "a second finger does not pan at " .. tag)
+	layer.input.TouchPinch:Fire({}, 1.2, 0, roblox.Enum.UserInputState.Begin)
+	S.warpPick = nil
+	layer.input.InputEnded:Fire(f1)
+	check(S.warpPick == nil, "a pinch never ends in a click at " .. tag)
+	layer.input.TouchPinch:Fire({}, 1, 0, roblox.Enum.UserInputState.End)
+	art.zoom(100)
+	f1.Position = Vector3.new(200, 200, 0)
+	dragLayer.InputBegan:Fire(f1)
+	f1.Position = Vector3.new(260, 230, 0)
+	layer.input.InputChanged:Fire(f1)
+	check(art.view.pan ~= Vector3.zero, "the first finger pans at " .. tag)
+	layer.input.InputEnded:Fire(f1)
+	art.zoom(100)
+	-- QC L5: gamepad: left stick pans, right stick zooms, A picks the hovered isle.
+	layer.input.InputChanged:Fire({ UserInputType = UIT.Gamepad1, KeyCode = roblox.Enum.KeyCode.Thumbstick1, Position = Vector3.new(0.9, 0, 0) })
+	check(art.view.pan ~= Vector3.zero, "the left stick pans at " .. tag)
+	layer.input.InputChanged:Fire({ UserInputType = UIT.Gamepad1, KeyCode = roblox.Enum.KeyCode.Thumbstick2, Position = Vector3.new(0, 1, 0) })
+	check(art.view.zoom < 1, "the right stick zooms at " .. tag)
+	art.zoom(100)
+	art.setHover("Quarry")
+	S.warpPick = nil
+	layer.input.InputBegan:Fire({ UserInputType = UIT.Gamepad1, KeyCode = roblox.Enum.KeyCode.ButtonA }, false)
+	check(S.warpPick and S.warpPick.id == "Quarry", "A picks the hovered isle at " .. tag)
+	art.setHover(nil)
+	-- QC M2: the sky resizing while open lays the chart out again.
+	local skyFrame = H.find(S.chart, "Sky")
+	local w0 = art.w
+	skyFrame.Size = roblox.UDim2.new(1, -140, 1, -36)
+	skyFrame:GetPropertyChangedSignal("AbsoluteSize"):Fire()
+	check(art.w ~= w0 and art.w > 0, "a resized sky relays out at " .. tag)
+	skyFrame.Size = roblox.UDim2.new(1, -20, 1, -36)
+	skyFrame:GetPropertyChangedSignal("AbsoluteSize"):Fire()
+	-- QC M5 / L8: the home inset rebuilds when the home changes, on the next open only.
+	local homeModel = archipelago:FindFirstChild("WayfarersRest_1")
+	local homeScene = art.insets.home.scene
+	local level0 = homeModel:GetAttribute("HomesteadLevel")
+	homeModel:SetAttribute("HomesteadLevel", (tonumber(level0) or 1) + 1)
+	art.refresh()
+	check(art.insets.home.scene == homeScene, "no inset rebuild while the chart stays open at " .. tag)
+	S.setChart(false)
+	layer.api.OnInvoke("chart")
+	check(art.insets.home.scene ~= homeScene and art.insets.home.scene ~= nil, "an expanded home rebuilds its inset on the next open at " .. tag)
+	homeModel:SetAttribute("HomesteadLevel", level0)
+	-- QC L3: insets fill from the right with no gap (crew alone takes slot 0).
+	homeModel.Parent = nil
+	S.setChart(false)
+	layer.api.OnInvoke("chart")
+	check(not H.find(S.chart, "HomeInset").Visible and H.find(S.chart, "CrewInset").Visible and H.find(S.chart, "CrewInset").Position.X.Offset == -8, "the crew inset takes the first slot without a home at " .. tag)
+	homeModel.Parent = archipelago
+	S.setChart(false)
+	layer.api.OnInvoke("chart")
+	-- QC L9: no MeshForge yet: the queue waits; once MeshForgeLocal appears, a refresh upgrades.
+	check(#art.scene.queue > 0 and art.scene.stats.forged == 0, "forge requests wait for MeshForge at " .. tag)
+	local api = H.new("BindableFunction", { Name = "MeshForgeLocal" })
+	local hudStub = forgeStub()
+	local inner = hudStub.fn
+	api.Invoke = function(_, method, arg)
+		if method == "visual" then
+			local m, tris, token = inner(method, arg)
+			local copy = H.new("MeshPart", { Name = "Forged", Size = m.Size, CFrame = m.CFrame, Color = m.Color })
+			return copy, tris, token
+		end
+		return inner(method, arg)
+	end
+	api.Parent = ui.replicated
+	art.refresh()
+	check(art.scene.stats.forged > 0 and hudStub.accepted == art.scene.stats.forged, "MeshForge appearing later still upgrades the chart at " .. tag)
+	S.setChart(false)
+	for _, tw in ipairs(art.tweens) do check(not tw.playing, "chart tweens pause when closed at " .. tag) end
 end
 
 ------------------------------------------------------------------------------
@@ -304,9 +621,16 @@ do
 	local nav = H.runNav(size, ui.player, ui.replicated, {})
 	local holder = H.find(nav.gui, "IslandArt")
 	check(holder ~= nil, "minimap draws island plates")
-	local plates = 0
-	for _, c in ipairs(holder:GetChildren()) do if c.Name:sub(1, 6) == "Plate_" then plates += 1 end end
-	check(plates == #T.WorldMap.islands, "one plate per island (" .. plates .. ")")
+	local function countPlates()
+		local plates = 0
+		for _, c in ipairs(holder:GetChildren()) do if c.Name:sub(1, 6) == "Plate_" then plates += 1 end end
+		return plates
+	end
+	-- QC L6: plates are built lazily, at most MapArt.PLATES_PER_TICK per tick.
+	check(countPlates() <= MapArt.PLATES_PER_TICK, "the first tick builds at most " .. MapArt.PLATES_PER_TICK .. " plates (" .. countPlates() .. ")")
+	for _ = 1, 20 do nav.run.Heartbeat:Fire(1) end
+	local plates = countPlates()
+	check(plates == #T.WorldMap.islands, "one plate per island after a few ticks (" .. plates .. ")")
 	-- Real islands: plates are cached; a zoom only resizes them.
 	local env = { Instance = { new = function(class) return H.new(class) end }, Color3 = roblox.Color3, Enum = roblox.Enum, UDim2 = roblox.UDim2, UDim = roblox.UDim,
 		Vector2 = roblox.Vector2, Vector3 = Vector3, CFrame = CFrame, ColorSequence = roblox.ColorSequence, NumberSequence = roblox.NumberSequence,
@@ -318,12 +642,24 @@ do
 	layerFrame.Parent = map
 	local art = MA.mountMinimap({ layer = layerFrame, Theme = TM, Data = Data, touch = false })
 	local list = Data.Townsfolk.scanIslands(islandsFolder).list
-	art.draw(Vector3.new(0, 0, 0), 0.32, 78, list)
+	local ticks = 0
+	repeat
+		art.draw(Vector3.new(0, 0, 0), 0.32, 78, list)
+		ticks += 1
+	until art.built >= #list or ticks > 50
 	local built = art.built
-	check(built == #list, "a plate per island on the real world (" .. built .. ")")
+	check(built == #list and ticks == math.ceil(#list / MA.PLATES_PER_TICK), "a plate per island on the real world, " .. MA.PLATES_PER_TICK .. " per tick (" .. built .. " in " .. ticks .. ")")
 	art.draw(Vector3.new(40, 0, 10), 0.8, 78, list)
 	art.draw(Vector3.new(-200, 0, 30), 0.12, 78, list)
 	check(art.built == built, "plates are built once and re-placed")
+	-- Keyed on model, centre and radius: an expanded island rebuilds its plate.
+	local grown = table.clone(list[1])
+	grown.radius += 20
+	local changed = table.clone(list)
+	changed[1] = grown
+	local plate0 = art.plates[grown.model]
+	art.draw(Vector3.new(0, 0, 0), 0.32, 78, changed)
+	check(art.built == built + 1 and art.plates[grown.model] ~= plate0 and art.plates[grown.model].radius == grown.radius, "an island's new radius rebuilds its plate")
 	for _, plate in pairs(art.plates) do
 		check(#plate.frame:GetChildren() <= MA.BUDGET.desktop.plate * 3, "plate " .. plate.frame.Name .. " within its budget")
 	end

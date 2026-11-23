@@ -627,7 +627,9 @@ luau.load(serverSource, {environment = env, injectGlobals = true})()
 -- only by weak keys): the only weak tables left are keyed by profile tables.
 for line in string.gmatch(serverSource, "[^\n]+") do
 	if string.find(line, "__mode", 1, true) then
-		ok(string.match(line, "^local notes=") ~= nil or string.match(line, "^local CombatStyles=") ~= nil,
+		-- §31 Features: the announcement queue and renown dirty set are keyed by profile tables.
+		ok(string.match(line, "^local notes=") ~= nil or string.match(line, "^local CombatStyles=") ~= nil
+			or string.match(line, "^\tlocal pending=setmetatable%(") ~= nil or string.match(line, "^\tlocal dirty=setmetatable%(") ~= nil,
 			"no weak Instance-keyed table: " .. line)
 	end
 end

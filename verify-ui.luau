@@ -478,7 +478,7 @@ local function snapshot(options)
 		buffs = { MightDraught = { remaining = 95, stats = { strength = 15 } } }, collections = collections, bestiary = p.bestiary,
 		slayer = { lines = lines, quest = if options.noQuest then nil else { line = "Bramble", tier = 1, progress = 40, needed = 150, bossReady = options.bossReady == true } },
 		enchants = p.enchants, combat = Progression.combatLoadout(p), gear = { reforges = p.reforges, stars = p.stars, books = p.books },
-		regions = { { id = "Hub", name = "Aether Hub", unlocked = true, requirement = "" }, { id = "Gloomhollow", name = "Gloomhollow Caverns", unlocked = false, requirement = "Mining 30, Combat 15" } },
+		regions = { { id = "Hub", name = "Compass Quay", unlocked = true, requirement = "" }, { id = "Gloomhollow", name = "Gloomhollow Caverns", unlocked = false, requirement = "Mining 30, Combat 15" } },
 		mastery = Progression.masteryView(p, options.masteryNow or 0),
 	}
 	-- Quest journal: every status (done, ready with and without a lamp, active, locked).
@@ -1056,6 +1056,19 @@ do
 	assert(find(ui.scroll, "ItemDetail"), "item detail opens")
 	press(find(ui.scroll, "ItemDetailSell"))
 	press(find(ui.scroll, "ItemDetailConfirm"))
+	-- Polish: the atlas Items page offers "Sell…" (the §31 picker in sell mode) for a stack.
+	do
+		local qtyEvent = ui.replicated:FindFirstChild("IsleQuantityLocal")
+		if not qtyEvent then qtyEvent = new("BindableEvent", { Name = "IsleQuantityLocal" }); qtyEvent.Parent = ui.replicated end
+		local picked
+		qtyEvent.Event:Connect(function(spec) picked = spec end)
+		press(find(ui.scroll, "ItemOre"))
+		local sellQty = find(ui.scroll, "ItemDetailSellQty")
+		assert(sellQty, "atlas item detail offers Sell…")
+		press(sellQty)
+		assert(picked and picked.verb == "sell" and picked.sell == true and picked.base == "Ore" and picked.max >= 2, "atlas Sell… opens the sell picker")
+		checks += 2
+	end
 	visit(ui, "Hunt", "Slayer")
 	press(find(ui.scroll, "SlayerTierBrambleBegin"))
 	noFailures(ui, "flows")
@@ -1362,9 +1375,11 @@ local function combatHud(size)
 	local theme = loadTheme(env)
 	env.require = function(target)
 		if target.Name == "AetherUiTheme" then return theme end
+		if target.Name == "AetherHudDepth" then return loadModule("shared/HudDepth.lua") end
 		assert(target.Name == "AetherData", "unexpected require"); return Data
 	end
 	new("ModuleScript", { Name = "AetherData" }).Parent = replicated
+	new("ModuleScript", { Name = "AetherHudDepth" }).Parent = replicated
 	if not replicated:FindFirstChild("AetherUiTheme") then new("ModuleScript", { Name = "AetherUiTheme" }).Parent = replicated end
 	local chunk = luau.load(fs.readFile("combat.client.lua"), { debugName = "combat.client.lua", environment = env, injectGlobals = true })
 	chunk()
@@ -1977,8 +1992,8 @@ do
 		combat.run.RenderStepped:Fire()
 		assert(panel.Visible, "boss panel shows at " .. tag.name)
 		local bossRect = rect(panel)
-		local tracker = townsfolk:FindFirstChild("TutorialTracker")
-		tracker.Visible = true -- measured whether or not this snapshot's tutorial is finished
+		-- Polish (lead decision): the old tutorial tracker is retired (the Wayfarer's Path lives in the sidebar).
+		assert(townsfolk:FindFirstChild("TutorialTracker") == nil, "retired tutorial tracker is gone at " .. tag.name)
 		-- Agility & Hunter HUD: a lap underway and two traps (one caught) under the tutorial tracker.
 		H.agilityHud(player)
 		local lapTracker, trapCounter = atlas:FindFirstChild("CourseTracker"), atlas:FindFirstChild("TrapTracker")
@@ -2036,7 +2051,7 @@ do
 		local hotbarGap = { "hotbar gap", { x = lanes.hotbar.x, y = lanes.hotbar.y, w = lanes.hotbar.w, h = lanes.hotbar.h } }
 		local explore = table.clone(persistent)
 		table.insert(explore, hotbarGap)
-		for _, item in ipairs({ { "event banner", rect(banner) }, { "tutorial tracker", rect(tracker) },
+		for _, item in ipairs({ { "event banner", rect(banner) },
 			{ "wayfinder toast", rect(wayfinder:FindFirstChild("WayfinderToast")) }, { "attack button", rect(attack) }, { "spell bar", spellRect },
 			{ "lap tracker", rect(lapTracker) }, { "trap counter", rect(trapCounter) }, { "prayer bar", prayerRect }, { "party HUD", partyRect },
 			{ "XP drops", rect(xpLayer.state.drops) }, { "skill toast", rect(xpLayer.state.skillToast) } }) do
@@ -2096,7 +2111,6 @@ do
 		local buttons = 0
 		for _, child in ipairs(options:GetChildren()) do if child.ClassName == "TextButton" then buttons += 1 end end
 		assert(dialogue.Visible and buttons >= 3, "dialogue open with " .. buttons .. " options at " .. tag.name)
-		assert(not tracker.Visible, "tutorial tracker tucks away while talking at " .. tag.name)
 		-- The dialogue owns the bottom: the spell bar steps aside on the next HUD scan.
 		combat.run.RenderStepped:Fire()
 		assert(not spellBar.Visible and not prayerBar.Visible, "spell and prayer bars hide while talking at " .. tag.name)
@@ -3272,7 +3286,10 @@ do
 	for _, l in ipairs(lore) do kinds[l.kind or "blank"] = true; if l.stat then statsSeen[l.stat] = true end; if l.kind == "requires" then req = l end end
 	assert(statsSeen.damage and statsSeen.strength and statsSeen.critDamage, "lore stat lines")
 	assert(req and req.unmet and req.color == T.hex.ember, "unmet requirement in ember")
-	assert(lore[#lore].kind == "rarity" and lore[#lore].text:find("RARE SWORD", 1, true), "rarity footer")
+	-- §34 footer: RARITY TYPE, then the sell price, then the yellow click prompt.
+	local function footerAt(l, kind) for i, line in ipairs(l) do if line.kind == kind then return i, line end end return nil end
+	local ri, rline = footerAt(lore, "rarity")
+	assert(rline and rline.text:find("RARE SWORD", 1, true) and lore[#lore].kind == "click" and footerAt(lore, "value") == ri + 1, "rarity footer, sell price, click prompt")
 	assert(kinds.value, "sell value line")
 	local met = T.lore(Items.SunsteelSword, { Data = Data, levels = { Combat = 50 } })
 	for _, l in ipairs(met) do if l.kind == "requires" then assert(not l.unmet, "met requirement not flagged") end end
@@ -3280,7 +3297,7 @@ do
 	assert(food[1].text:find("x4", 1, true), "stack count on the name")
 	local healLine = false
 	for _, l in ipairs(food) do if l.kind == "stat" and l.text:find("65", 1, true) then healLine = true end end
-	assert(healLine and food[#food].text:find("FOOD", 1, true), "food heal line and FOOD footer")
+	assert(healLine and select(2, footerAt(food, "rarity")).text:find("FOOD", 1, true) and food[#food].text:find("Click to eat!", 1, true), "food heal line, FOOD footer and click prompt")
 	assert(T.examine(Items.Ore):find(Items.Ore.name, 1, true), "examine text names the item")
 	checks += 9
 
@@ -3319,9 +3336,19 @@ do
 	assert(not equippedMenu.Sell and not equippedMenu.Drop and equippedMenu.Hotbar and equippedMenu.Examine, "equipped gear: no Sell / Drop")
 	assert(options("Ore", { count = 40 }).Drop.confirm and options("Ore", { count = 40 }).Drop.danger, "Drop always confirms")
 	-- M12: Sell always confirms (as the atlas does); upgraded items say so.
-	assert(options("Ore", { count = 1 }).Sell.confirm and options("BrassSword", { count = 1, upgraded = true }).Sell.upgraded and options("BrassSword", { count = 1, upgraded = true }).Drop.upgraded, "Sell confirms; upgrades flagged")
-	checks += 1
+	assert(options("Ore", { count = 1 }).Sell.confirm and options("BrassSword", { count = 2, upgraded = true }).Sell.upgraded and options("BrassSword", { count = 2, upgraded = true }).Drop.upgraded, "Sell confirms; upgrades flagged")
+	-- QC L5: the last upgraded copy has no Sell / Drop, only the explanation.
+	local lastCopy = options("BrassSword", { count = 1, upgraded = true })
+	assert(not lastCopy.Sell and not lastCopy.Drop and lastCopy.Kept and lastCopy.Kept["local"] == "kept", "last upgraded copy: no Sell / Drop")
+	assert(options("BrassSword", { count = 3, upgraded = true }).Sell.label == "Sell 2 spares", "upgraded stacks sell their spares")
+	checks += 3
 	assert(options("Ore", { count = 40 }).Use and options("Ore", { count = 40 }).Use["local"] == "use", "materials: Use opens their collection")
+	-- Polish: "Sell…" opens the quantity picker when two or more can be sold (held − the kept upgraded copy).
+	assert(options("Ore", { count = 40 }).SellQty and options("Ore", { count = 40 }).SellQty["local"] == "sellQty" and options("Ore", { count = 40 }).SellQty.max == 40, "Sell… for a stack")
+	assert(not options("Ore", { count = 1 }).SellQty, "no picker for a single item")
+	assert(options("BrassSword", { count = 3, upgraded = true }).SellQty.max == 2, "the picker excludes the kept upgraded copy")
+	assert(not options("BrassSword", { count = 2, upgraded = true }).SellQty and not options("SunsteelSword", { equipped = true, count = 4 }).SellQty, "no picker for one spare or equipped gear")
+	checks += 4
 	checks += 3
 	-- The atlas relays exactly these verbs from hud.client.lua.
 	for _, verb in ipairs({ "equip", "unequip", "consume", "sell", "accessory", "petAdopt", "drop", "satchelMove", "satchelSort", "recall" }) do
@@ -3363,16 +3390,41 @@ do
 		assert(#ui.sent == 0 and S.menu.Visible, "first Drop press only asks")
 		H.press(H.find(S.menu, "OptionDrop"))
 		assert(ui.sent[1] and ui.sent[1][1] == "drop" and ui.sent[1][2] == "Ore" and not S.menu.Visible, "second press drops")
-		-- M12: an enchanted item (snapshot enchants) asks first and says the upgraded copy stays.
+		-- QC L5: the last copy of an enchanted item (snapshot enchants) offers no
+		-- Sell / Drop, only an explanation; spare copies sell as "spares".
 		local tips = {}
 		ui.replicated:FindFirstChild("IsleToastLocal").Event:Connect(function(text) table.insert(tips, text) end)
 		S.openMenu("BrassSword", roblox.Vector2.new(400, 300))
+		assert(not H.find(S.menu, "OptionSell") or not H.find(S.menu, "OptionSell").Visible, "the last upgraded copy offers no Sell")
 		table.clear(ui.sent)
-		H.press(H.find(S.menu, "OptionSell"))
+		H.press(H.find(S.menu, "OptionKept"))
+		assert(#ui.sent == 0 and tips[#tips]:find("cannot be sold or dropped", 1, true), "the kept copy explains itself")
+		local spares = H.snapshot()
+		spares.items = table.clone(spares.items)
+		spares.items.BrassSword = 3
+		ui.update.OnClientEvent:Fire(spares)
+		S.openMenu("BrassSword", roblox.Vector2.new(400, 300))
+		local sellSpares = H.find(S.menu, "OptionSell")
+		assert(sellSpares and sellSpares.Visible and sellSpares.Text == "Sell 2 spares", "spares are sold by name: " .. tostring(sellSpares and sellSpares.Text))
+		-- M12: it asks first and says the upgraded copy stays.
+		H.press(sellSpares)
 		assert(#ui.sent == 0 and tips[#tips]:find("carries upgrades", 1, true), "selling an enchanted item confirms and warns")
 		H.press(H.find(S.menu, "OptionSell"))
 		assert(ui.sent[1] and ui.sent[1][1] == "sell" and ui.sent[1][2] == "BrassSword", "second press sells")
+		ui.update.OnClientEvent:Fire(H.snapshot())
+		-- Polish: Sell… opens the §31 quantity picker in sell mode (sell "<id>:<n>").
+		local picked
+		local qtyEvent = ui.replicated:FindFirstChild("IsleQuantityLocal")
+		if not qtyEvent then qtyEvent = H.new("BindableEvent", { Name = "IsleQuantityLocal" }); qtyEvent.Parent = ui.replicated end
+		qtyEvent.Event:Connect(function(spec) picked = spec end)
+		S.openMenu("Ore", roblox.Vector2.new(400, 300))
+		local sellQty = H.find(S.menu, "OptionSellQty")
+		assert(sellQty and sellQty.Visible and sellQty.Text == "Sell…", "satchel menu offers Sell…")
+		table.clear(ui.sent)
+		H.press(sellQty)
+		assert(#ui.sent == 0 and picked and picked.verb == "sell" and picked.sell == true and picked.base == "Ore" and picked.max == H.snapshot().items.Ore, "Sell… opens the picker for the whole sellable count")
 		checks += 2
+		checks += 5
 		-- Examine and Move to hotbar stay local.
 		S.openMenu("Ore", roblox.Vector2.new(400, 300))
 		table.clear(ui.sent)
@@ -3627,10 +3679,37 @@ do
 			return reply
 		end
 		table.clear(ui.sent)
+		table.clear(ui.delays)
 		ui.replicated:FindFirstChild("IsleActionLocal"):Fire("satchelMove", "Ore:1")
 		action.OnInvoke = original
+		-- QC H1: the queued verb waits out the server's 0.24 s action cooldown
+		-- (spaced 0.26 s after the last send) instead of landing inside it.
+		assert(#ui.sent == 1 and #ui.delays == 1 and ui.delays[1].seconds > 0.2 and ui.delays[1].seconds <= 0.26, "queued verb spaced after the last send")
+		ui.runDelays()
 		assert(#ui.sent == 2 and ui.sent[1][1] == "satchelMove" and ui.sent[2][1] == "sell" and ui.sent[2][2] == "Ore", "queued verb sent after the reply")
-		checks += 1
+		-- QC M1: order holds: verbs fired while the queue is non-empty (even with
+		-- no request pending) queue behind it; one drain point sends them in order.
+		nested = false
+		action.OnInvoke = function(verb, item)
+			local reply = original(verb, item)
+			if not nested then
+				nested = true
+				ui.replicated:FindFirstChild("IsleActionLocal"):Fire("sell", "Ore")
+				ui.replicated:FindFirstChild("IsleActionLocal"):Fire("drop", "Herb")
+			end
+			return reply
+		end
+		table.clear(ui.sent)
+		table.clear(ui.delays)
+		ui.replicated:FindFirstChild("IsleActionLocal"):Fire("satchelSort", "rarity")
+		ui.replicated:FindFirstChild("IsleActionLocal"):Fire("consume", "CookedFish")
+		assert(#ui.sent == 1, "nothing jumps the queue while it drains")
+		for _ = 1, 8 do if ui.runDelays() == 0 then break end end
+		action.OnInvoke = original
+		local order = {}
+		for _, sent in ipairs(ui.sent) do table.insert(order, sent[1]) end
+		assert(table.concat(order, ",") == "satchelSort,sell,drop,consume", "queued verbs keep their order: " .. table.concat(order, ","))
+		checks += 4
 		-- L11: faint text ≥ 4.5:1 on the panel surfaces; reduced motion keeps XP
 		-- drops in place (no fade tween) and the level-up banner unscaled.
 		local function lum(hex)
@@ -3705,6 +3784,121 @@ do
 		H.press(S.slots[2])
 		assert(S.selected == S.pageIds[2], "the next tap selects")
 		checks += 6
+		-- QC M3: the long-press swallow is keyed to its InputObject, not a 0.3 s
+		-- timer: a hold released well after the menu opened still does nothing more.
+		S.selected = nil
+		S.menu.Visible = false
+		local id1 = S.pageIds[1]
+		local slow = { UserInputType = UIT.Touch, Position = roblox.Vector3.new(10, 10, 0) }
+		table.clear(delays)
+		S.slots[1].InputBegan:Fire(slow)
+		for _, d in ipairs(delays) do d.fn(table.unpack(d.args, 1, d.args.n)) end
+		assert(S.menu.Visible and S.menuFor == id1, "long-press menu")
+		local held = os.clock()
+		repeat until os.clock() - held > 0.35
+		layer.input.InputEnded:Fire(slow)
+		H.press(S.slots[1])
+		assert(S.selected ~= id1 and S.menu.Visible, "a long hold's release (0.35 s later) is still swallowed")
+		S.slots[2].InputBegan:Fire({ UserInputType = UIT.Touch, Position = roblox.Vector3.new(60, 10, 0) })
+		H.press(S.slots[2])
+		assert(S.selected == S.pageIds[2], "a new press after the long-press acts")
+		layer.input.InputEnded:Fire({ UserInputType = UIT.Touch, Position = roblox.Vector3.new(60, 10, 0) })
+		-- QC L9: a tap outside closes the context menu on touch.
+		S.openMenu(id1, roblox.Vector2.new(100, 100))
+		layer.input.InputBegan:Fire({ UserInputType = UIT.Touch, Position = roblox.Vector3.new(900, 700, 0) }, false)
+		assert(not S.menu.Visible, "a tap outside closes the context menu")
+		checks += 4
+	end
+	-- QC fixes, desktop: drag back onto the origin slot, reduced-motion XP drop
+	-- stacking, the 520 px threshold, closing unpins, live Settings, prompt pruning.
+	do
+		local size = roblox.Vector2.new(1366, 768)
+		local delays = {}
+		local ui = H.runAtlas(size, {})
+		local layer = H.runHud(size, ui.player, ui.replicated, { delays = delays })
+		local S = layer.state
+		local UIT, Key = roblox.Enum.UserInputType, roblox.Enum.KeyCode
+		local function v3(x, y) return roblox.Vector3.new(x, y, 0) end
+		S.setOpen(true)
+		-- M2: Activated before InputEnded on a drag that came back to its own slot
+		-- does not fire the slot's first option.
+		local index
+		for i, id in ipairs(S.pageIds) do if id == "SunsteelSword" then index = i end end
+		local cell, cols = S.cell + 4, S.cols
+		local home = v3(((index - 1) % cols) * cell + 4, ((index - 1) // cols) * cell + 4)
+		table.clear(ui.sent)
+		S.slots[index].InputBegan:Fire({ UserInputType = UIT.MouseButton1, Position = home })
+		layer.input.InputChanged:Fire({ UserInputType = UIT.MouseMovement, Position = v3(home.X + 120, home.Y + 60) })
+		layer.input.InputChanged:Fire({ UserInputType = UIT.MouseMovement, Position = home })
+		H.press(S.slots[index])
+		assert(#ui.sent == 0, "a drag back onto its slot (Activated first) does not wield")
+		layer.input.InputEnded:Fire({ UserInputType = UIT.MouseButton1, Position = home })
+		H.press(S.slots[index])
+		assert(#ui.sent == 0, "nor does the release click that follows")
+		H.press(S.slots[index])
+		assert(ui.sent[1] and ui.sent[1][1] == "equip", "the next click wields")
+		checks += 3
+		-- L1: reduced motion: drops stack instead of overprinting, and a reused
+		-- label is not hidden early by an older delay.
+		ui.player:SetAttribute("IsleSettingReducedMotion", true)
+		local xp = ui.replicated:FindFirstChild("IsleXpLocal")
+		table.clear(delays)
+		for _ = 1, 6 do xp:Fire({ { skill = "Mining", amount = 5, level = 3, fraction = 0.5, color = "8EE05A" } }) end
+		local ys, shown = {}, 0
+		for _, l in ipairs(S.drops:GetChildren()) do
+			if l.Visible and l.Text:find("+5", 1, true) then
+				shown += 1
+				assert(not ys[l.Position.Y.Offset], "reduced-motion drops do not overprint")
+				ys[l.Position.Y.Offset] = true
+			end
+		end
+		assert(shown == 5, "five stacked drops in the lane (" .. shown .. ")")
+		local drop1 = H.find(S.drops, "Drop1")
+		delays[1].fn(table.unpack(delays[1].args, 1, delays[1].args.n))
+		assert(drop1.Visible, "the first gain's delay does not hide the reused label")
+		ui.player:SetAttribute("IsleSettingReducedMotion", false)
+		checks += 3
+		-- L2: crossing the 520 px height threshold while open re-publishes the mode.
+		assert(S.docked and ui.player:GetAttribute("IsleSatchelOpen") == true, "docked at 1366x768")
+		H.setScreen(roblox.Vector2.new(1366, 480))
+		S.refresh()
+		assert(not S.docked and ui.player:GetAttribute("IsleSatchelOpen") == false and H.find(layer.gui, "SatchelShade").Visible, "a short window: modal, shade, not docked")
+		H.setScreen(size)
+		S.refresh()
+		assert(S.docked and ui.player:GetAttribute("IsleSatchelOpen") == true and not H.find(layer.gui, "SatchelShade").Visible, "tall again: docked")
+		checks += 2
+		-- L3: closing a pinned satchel with E / the BAG button unpins it.
+		S.setPinned(true)
+		layer.input.InputBegan:Fire({ KeyCode = Key.E, UserInputType = UIT.Keyboard }, false)
+		assert(not S.panel.Visible and not S.pinned and ui.player:GetAttribute("IsleSettingPinSatchel") == false, "E closes and unpins")
+		ui.player:SetAttribute("IsleSettingPinSatchel", true)
+		assert(S.panel.Visible and S.pinned, "the setting pins and opens")
+		H.press(H.find(ui.gui, "SatchelButton"))
+		assert(not S.panel.Visible and ui.player:GetAttribute("IsleSettingPinSatchel") == false, "BAG closes and unpins")
+		checks += 3
+		-- L4: Settings › Pin reads the live attribute (the HUD changed it meanwhile).
+		H.press(H.find(ui.gui, "AtlasButton"))
+		H.press(H.find(ui.scroll, "MenuSettings"))
+		local function pinCaption()
+			local card = H.find(ui.scroll, "SettingIsleSettingPinSatchel")
+			local button = card and H.find(card, "ToggleIsleSettingPinSatchel")
+			return button and button.Text
+		end
+		assert(pinCaption() == "Turn on", "pin setting off: " .. tostring(pinCaption()))
+		S.setPinned(true)
+		assert(pinCaption() == "Turn off", "the Settings card re-renders when the HUD pins")
+		H.press(H.find(ui.scroll, "ToggleIsleSettingPinSatchel"))
+		assert(ui.player:GetAttribute("IsleSettingPinSatchel") == false, "the toggle flips the live value")
+		checks += 3
+		-- L10: a prompt leaving the world is pruned on AncestryChanged.
+		local prompt = H.new("ProximityPrompt")
+		prompt.Parent = H.new("Part")
+		layer.prompts.PromptShown:Fire(prompt)
+		assert(S.prompts[prompt] ~= nil, "shown prompt tracked")
+		prompt.Parent = nil
+		prompt.AncestryChanged:Fire()
+		assert(S.prompts[prompt] == nil, "a removed prompt is pruned at once")
+		checks += 2
 	end
 
 	-- Sidebar, action bar, menu grid.
@@ -3775,6 +3969,16 @@ do
 		local boardBefore = rectOf(board, size)
 		S.setOpen(true)
 		S.placeDrops()
+		-- QC M4: a live level-up banner (Theme.hudLayout levelBanner) joins the lanes.
+		local up = H.snapshot()
+		up.depth.skills = table.clone(up.depth.skills)
+		up.depth.skills.Mining = table.clone(up.depth.skills.Mining)
+		up.depth.skills.Mining.xp += 500
+		up.depth.skills.Mining.level += 1
+		ui.update.OnClientEvent:Fire(H.snapshot())
+		ui.update.OnClientEvent:Fire(up)
+		local levelBanner = ui.gui:FindFirstChild("LevelBanner")
+		assert(levelBanner.Visible, "level-up banner shows at " .. tag)
 		local items = {
 			{ "sidebar", rectOf(ui.gui:FindFirstChild("Sidebar"), size) },
 			{ "minimap", rectOf(nav.gui:FindFirstChild("Minimap"), size) },
@@ -3785,6 +3989,7 @@ do
 			{ "lap tracker", rectOf(ui.gui:FindFirstChild("CourseTracker"), size) },
 			{ "trap counter", rectOf(ui.gui:FindFirstChild("TrapTracker"), size) },
 		}
+		table.insert(items, { "level banner", rectOf(levelBanner, size) })
 		local panel = rectOf(S.panel, size)
 		assert(panel.x >= 0 and panel.y >= 0 and panel.x + panel.w <= size.X and panel.y + panel.h <= size.Y, "satchel on screen at " .. tag .. " " .. show(panel))
 		assert(S.docked == not L.short, "the satchel docks by screen size at " .. tag)

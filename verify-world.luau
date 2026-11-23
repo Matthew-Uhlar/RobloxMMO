@@ -921,31 +921,31 @@ do
 	local beforeChecks=checks
 	local serde=require("@lune/serde")
 	local L=services.Lighting
-	-- Lighting: project properties (Technology is not scriptable) match the script.
+	-- Lighting (§35): Technology = Future and the day look are place defaults;
+	-- the world script never writes Lighting (lighting.client.lua is the one
+	-- writer, verify-lighting.luau). The project look matches the Hub day profile.
 	local project=serde.decode("json",fs.readFile("default.project.json"))
 	local lp=project.tree.Lighting and project.tree.Lighting["$properties"]
 	check(lp~=nil and lp.Technology=="Future","Lighting.Technology = Future in default.project.json")
 	check(project.tree.Workspace["$properties"].StreamingEnabled==false,"StreamingEnabled stays false")
-	for _,key in {"Brightness","ClockTime","GeographicLatitude","EnvironmentDiffuseScale","EnvironmentSpecularScale","ExposureCompensation","ShadowSoftness"} do
-		check(math.abs(L[key]-lp[key])<1e-3,key.." in the project matches the runtime look")
+	local LP=luau.load(fs.readFile("shared/LightingProfiles.lua"),{environment={Color3=roblox.Color3},injectGlobals=true})()
+	local hub=LP.dayLook("Hub")
+	for _,key in {"Brightness","EnvironmentDiffuseScale","EnvironmentSpecularScale","ExposureCompensation","ShadowSoftness"} do
+		check(math.abs(hub[key]-lp[key])<1e-3,key.." in the project matches the Hub day profile")
 	end
 	for _,key in {"Ambient","OutdoorAmbient"} do
-		local c=L[key]
-		check(math.abs(c.R-lp[key][1])<.003 and math.abs(c.G-lp[key][2])<.003 and math.abs(c.B-lp[key][3])<.003,key.." in the project matches the runtime look")
+		local c=hub[key]
+		check(math.abs(c.R-lp[key][1])<.003 and math.abs(c.G-lp[key][2])<.003 and math.abs(c.B-lp[key][3])<.003,key.." in the project matches the Hub day profile")
 	end
-	check(lp.GlobalShadows==true and L.GlobalShadows,"global shadows on")
-	check(L.Brightness<=3 and L.ExposureCompensation<=.25,"sun and exposure are not blown out")
+	check(lp.GlobalShadows==true,"global shadows on by default")
+	local fresh=roblox.Instance.new("Lighting")
+	check(#L:GetChildren()==0,"the world script adds no Lighting children")
+	for _,key in {"Brightness","ClockTime","GlobalShadows","ExposureCompensation","Ambient","OutdoorAmbient"} do
+		local okA,a=pcall(function() return L[key] end)
+		local okB,b=pcall(function() return fresh[key] end)
+		check(okA==okB and (not okA or a==b),"the world script leaves Lighting."..key.." alone")
+	end
 	local function lum(c) return .2126*c.R+.7152*c.G+.0722*c.B end
-	check(lum(L.Ambient)<.35 and lum(L.OutdoorAmbient)<.6,"ambient light leaves shade and caves readable")
-	local kinds={}
-	for _,child in L:GetChildren() do kinds[child.ClassName]=(kinds[child.ClassName] or 0)+1 end
-	for _,class in {"Atmosphere","BloomEffect","ColorCorrectionEffect","SunRaysEffect","Sky"} do
-		check(kinds[class]==1,"exactly one "..class.." (no stacked post effects)")
-	end
-	local air,bloomFx,gradeFx,raysFx=L:FindFirstChildOfClass("Atmosphere"),L:FindFirstChildOfClass("BloomEffect"),L:FindFirstChildOfClass("ColorCorrectionEffect"),L:FindFirstChildOfClass("SunRaysEffect")
-	check(air.Density>=.15 and air.Density<=.32 and air.Haze<=1.5,"atmosphere lets distant islands read")
-	check(bloomFx.Intensity<=.5 and bloomFx.Threshold>=1.2,"bloom is subtle")
-	check(math.abs(gradeFx.Brightness)<=.05 and gradeFx.Contrast<=.2 and raysFx.Intensity<=.1,"grade and sun rays are subtle")
 
 	-- Workspace.Islands: one Model per static island with the contract attributes.
 	local oldRadius={["Compass Quay"]=43,["Mosswake Grove"]=30,["Brassfall Quarry"]=31,["Warden Reach"]=32,Skyreach=30,
@@ -1288,23 +1288,13 @@ do
 		end
 	end
 	check(neon<=90,"neon is reserved for glowing accents ("..neon..")")
-	-- Day/night: one loop, parked on task.wait; lamps follow the clock.
-	local loop=spawned[1]
-	check(loop~=nil and coroutine.status(loop)=="suspended","day/night loop waits on task.wait")
+	-- Night lamps: downward spot lights, created off and tagged for the client
+	-- director (§35), which lights them after dusk near the player.
 	local lamps={}
-	for _,l in world:GetDescendants() do if l:IsA("SpotLight") then table.insert(lamps,l) end end
-	check(#lamps>=40,"lamps are downward spot lights ("..#lamps..")")
-	local function allLamps(on) for _,l in lamps do if l.Enabled~=on then return false end end return true end
-	check(allLamps(false),"lamps are dark by day")
-	local startClock=L.ClockTime
-	check(coroutine.resume(loop,300),"day/night step runs")
-	check(L.ClockTime>18 and L.ClockTime<19 and allLamps(true),"dusk lights the lamps ("..L.ClockTime..")")
-	check(lum(L.OutdoorAmbient)<lum(roblox.Color3.fromHex("7D8A9C")),"night dims outdoor ambient")
-	check(coroutine.resume(loop,200),"day/night step runs")
-	check(L.ClockTime<6 and allLamps(true),"lamps stay lit through the night")
-	check(coroutine.resume(loop,150),"day/night step runs")
-	check(L.ClockTime>6 and L.ClockTime<12 and allLamps(false),"dawn puts the lamps out")
-	check(startClock==14.5,"day starts mid-afternoon")
+	for _,l in world:GetDescendants() do if l:IsA("SpotLight") and l:GetAttribute("NightLight")==true then table.insert(lamps,l) end end
+	check(#lamps>=40,"lamps are downward spot lights tagged NightLight ("..#lamps..")")
+	for _,l in lamps do check(l.Enabled==false,"night lamps start dark (the director owns them)") end
+	check(lum(roblox.Color3.fromHex("7D8A9C"))<.6,"reference ambient stays readable")
 
 	-- Prompt holds: gathers read as swings, fishing as cast-bob-reel, interacts stay snappy.
 	local fishing={}

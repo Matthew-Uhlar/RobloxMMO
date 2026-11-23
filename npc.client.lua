@@ -1,5 +1,5 @@
--- Dialogue: talk to the Townsfolk (Data.Townsfolk), the new-player tutorial
--- tracker, and the NPCs' client-side idle animation (one shared loop).
+-- Dialogue: talk to the Townsfolk (Data.Townsfolk), the Wayfarer's Path checklist
+-- in Pell's Path node, and the NPCs' client-side idle animation (one shared loop).
 -- Options open atlas pages (IsleStation/IsleStationVisit, like world stations),
 -- set waypoints through the Wayfinder, give tips from the server snapshot, or
 -- call an existing IsleAction verb. Nothing here grants anything: the server
@@ -172,6 +172,30 @@ local function optionButton(text, order, onClick, accent)
 	b.Activated:Connect(function() if not busy then onClick() end end)
 	return b
 end
+-- §33 per-player daily stock on a regional shop offer: "8/64 left today"
+-- (snapshot.systems.stock.left[Stock.key("rq", role, item)] = {left, limit}; the key is per item
+-- across every shop, §33 QC M2); nil when unlimited.
+local function stockOf(option)
+	local role, index = string.match(option.item or "", "^(%w+):(%d+)$")
+	local folk = role and Data.RegionArt and Data.RegionArt.FolkByRole[role]
+	local offer = folk and folk.shop and folk.shop[tonumber(index)]
+	local systems = snapshot and type(snapshot.systems) == "table" and snapshot.systems
+	local stock = systems and type(systems.stock) == "table" and type(systems.stock.left) == "table" and systems.stock.left
+	local entry = offer and stock and Data.Systems and stock[Data.Systems.Stock.key("rq", role, offer.item)]
+	if type(entry) ~= "table" or type(entry[1]) ~= "number" or type(entry[2]) ~= "number" then return nil end
+	return entry[1], entry[2], offer
+end
+local function stockLeft(option)
+	local left, limit = stockOf(option)
+	if not left then return nil end
+	return if left > 0 then left .. "/" .. limit .. " left today" else "sold out today"
+end
+-- Lots still allowed today for an offer (MAX_LOTS when unlimited); caps the picker.
+local function lotsLeft(option)
+	local left, _, offer = stockOf(option)
+	if not left then return Data.Features.Shop.MAX_LOTS end
+	return math.max(1, math.floor(left / math.max(1, offer.amount)))
+end
 -- §31 shop quantities: right-click or long-press a shop offer for the quantity
 -- picker (features.client.lua on IsleQuantityLocal; verb rqBuy "Role:i:qty").
 local quantitySuppress = setmetatable({}, {__mode = "k"}) -- a long-press must not also buy one
@@ -180,13 +204,15 @@ local function quantityHook(b, option)
 	local folk = role and Data.RegionArt and Data.RegionArt.FolkByRole[role]
 	local offer = folk and folk.shop and folk.shop[tonumber(index)]
 	if not offer then return end
+	-- Warp scrolls and one-of-a-kind wares are bought one at a time: no picker.
+	if Data.Features and Data.Features.Shop.singleLot(offer.item) then return end
 	local item = Data.Items[offer.item]
 	local function open()
 		local event = ReplicatedStorage:FindFirstChild("IsleQuantityLocal")
 		if not event then return end
 		local coins = snapshot and tonumber(snapshot.coins) or 0
-		event:Fire({verb = "rqBuy", base = option.item, name = item and item.name or offer.item, unit = offer.price, amount = offer.amount,
-			max = math.max(1, math.min(Data.Features.Shop.MAX_LOTS, math.floor(coins / math.max(1, offer.price))))})
+		event:Fire({verb = "rqBuy", base = option.item, item = offer.item, name = item and item.name or offer.item, unit = offer.price, amount = offer.amount,
+			max = math.max(1, math.min(Data.Features.Shop.MAX_LOTS, math.floor(coins / math.max(1, offer.price)), lotsLeft(option)))})
 	end
 	b.MouseButton2Click:Connect(open)
 	local pressedAt
@@ -281,16 +307,19 @@ local function drawChecklist(show)
 	if show and isCompact() then show = false end
 	checklist.Visible = show
 	if not show then checklist.Size = UDim2.new(1, -24, 0, 0); return end
-	local state = T.tutorialState(snapshot)
-	for i, step in ipairs(state.steps) do
-		local current = state.current == i
-		local mark = if step.done then "✓" elseif current then "➤" else "•"
-		local detail = if step.need > 1 and not step.done then "  (" .. step.have .. "/" .. step.need .. ")" else ""
-		make("TextLabel", checklist, {LayoutOrder = i, Size = UDim2.new(1, 0, 0, 18), BackgroundTransparency = 1, Font = if current then bold else regular,
-			TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left, TextColor3 = if step.done then mint elseif current then gold else muted,
-			Text = mark .. "  " .. i .. ". " .. step.title .. detail})
+	-- Polish: the Wayfarer's Path checklist (the retired 6-step tutorial is gone).
+	local G = Data.Features.Guide
+	local g = type(snapshot) == "table" and type(snapshot.guide) == "table" and snapshot.guide or {}
+	local marks = if type(g.marks) == "string" then g.marks else ""
+	for i, step in ipairs(G.Steps) do
+		local done = string.sub(marks, i, i) == "1" or g.complete == true
+		local current = not g.complete and g.id == step.id
+		local mark = if done then "✓" elseif current then "➤" else "•"
+		make("TextLabel", checklist, {LayoutOrder = i, Size = UDim2.new(1, 0, 0, 14), BackgroundTransparency = 1, Font = if current then bold else regular,
+			TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left, TextColor3 = if done then mint elseif current then gold else muted,
+			Text = mark .. "  " .. i .. ". " .. step.title})
 	end
-	checklist.Size = UDim2.new(1, -24, 0, #state.steps * 20 + 8)
+	checklist.Size = UDim2.new(1, -24, 0, #G.Steps * 15 + 8)
 end
 -- A reply (tip or verb result) with Back / Farewell.
 local function reply(text)
@@ -311,14 +340,11 @@ local function runOption(option)
 		stationVisit(option.atlas)
 	elseif option.waypoint then
 		local specs, label = option.waypoint, nil
-		if specs == "tutorial" then
-			local state = T.tutorialState(snapshot)
-			local step = state.current and T.Tutorial[state.current]
-			if not step then reply("You've finished the basics! Ask me what to do next any time."); return end
-			if not step.waypoint then
-				reply(step.text .. (if step.atlas then "" else " No walking needed for this one."))
-				return
-			end
+		if specs == "path" then
+			-- Polish: the Wayfarer's Path step's waypoint (Data.Features.Guide.Waypoints).
+			local step = T.pathStep(snapshot)
+			if not step then reply("You've walked the whole Wayfarer's Path! Ask me what to do next any time."); return end
+			if not step.waypoint then reply(step.title .. ": " .. step.detail .. " No walking needed for this one."); return end
 			specs, label = step.waypoint, step.title
 		end
 		if requestWaypoint(specs, label) then
@@ -353,15 +379,14 @@ showNode = function(nodeId)
 	local node = talking.def.nodes[nodeId]
 	if not node then closeDialogue(); return end
 	talking.node = nodeId
-	if node.tutorial then refresh(true) end
+	if node.path then refresh(true) end
 	if not talking then return end
 	local text = node.text
-	if node.tutorial then
-		local state = T.tutorialState(snapshot)
-		local step = state.current and T.Tutorial[state.current]
-		text = if step then text .. "\n➤ " .. step.text else "You've mastered the basics, wayfarer. The isles are yours to explore!"
+	if node.path then
+		local step = T.pathStep(snapshot)
+		text = if step then text .. "\n➤ " .. step.title .. ": " .. step.detail else "You've walked the whole Wayfarer's Path. The isles are yours to explore!"
 	end
-	drawChecklist(node.tutorial == true)
+	drawChecklist(node.path == true)
 	typeText(text)
 	clearOptions()
 	local options = T.visibleOptions(node, snapshot, context())
@@ -372,11 +397,15 @@ showNode = function(nodeId)
 			if held and os.clock() - held < 1.5 then return end
 			runOption(option)
 		end, option.verb ~= nil or option.waypoint ~= nil)
-		if option.verb == "rqBuy" then quantityHook(b, option) end
+		if option.verb == "rqBuy" then
+			quantityHook(b, option)
+			local stock = stockLeft(option)
+			if stock then b.Text = option.label .. "   ·   " .. stock end -- §33 per-player daily stock
+		end
 	end
 	layout(#options)
 end
-local trackerSync -- the tutorial tracker hides while a dialogue is open
+local trackerSync -- (retired with the tutorial tracker; kept nil)
 closeDialogue = function()
 	talking = nil
 	typeToken += 1
@@ -412,67 +441,18 @@ Input.InputBegan:Connect(function(input, processed)
 end)
 
 ------------------------------------------------------------------------------
--- Tutorial tracker (left column under the atlas guild badge: x 10-260, y 100-166).
+-- Polish: the old tutorial tracker is retired (the Wayfarer's Path shows in the
+-- sidebar Objective and Menu › Renown). The open Path checklist follows snapshots.
 ------------------------------------------------------------------------------
-local tracker = make("Frame", gui, {Name = "TutorialTracker", Position = UDim2.fromOffset(10, 234), Size = UDim2.fromOffset(250, 66),
-	BackgroundColor3 = deep, BackgroundTransparency = 0.08, BorderSizePixel = 0, Visible = false})
-round(tracker, 6, gold)
-local trackerTitle = make("TextLabel", tracker, {Position = UDim2.fromOffset(10, 5), Size = UDim2.new(1, -40, 0, 16), BackgroundTransparency = 1, Font = bold,
-	TextSize = 11, TextColor3 = mint, TextXAlignment = Enum.TextXAlignment.Left, Text = "FIRST STEPS"})
-local trackerStep = make("TextLabel", tracker, {Position = UDim2.fromOffset(10, 21), Size = UDim2.new(1, -20, 0, 18), BackgroundTransparency = 1, Font = bold,
-	TextSize = 14, TextColor3 = gold, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Text = ""})
-local trackerBar = make("Frame", tracker, {Position = UDim2.fromOffset(10, 44), Size = UDim2.new(1, -100, 0, 8), BackgroundColor3 = rgb("0B1E29"), BorderSizePixel = 0})
-round(trackerBar, 4)
-local trackerFill = make("Frame", trackerBar, {Size = UDim2.fromScale(0, 1), BackgroundColor3 = mint, BorderSizePixel = 0})
-round(trackerFill, 4)
-local trackerGo = make("TextButton", tracker, {Position = UDim2.new(1, -84, 0, 36), Size = UDim2.fromOffset(74, 26), BackgroundColor3 = slate, Text = "Show me",
-	Font = bold, TextSize = 13, TextColor3 = gold, AutoButtonColor = true})
-round(trackerGo, 7, gold)
-local trackerHide = make("TextButton", tracker, {Position = UDim2.new(1, -28, 0, 4), Size = UDim2.fromOffset(22, 22), BackgroundTransparency = 1, Text = "–",
-	Font = bold, TextSize = 16, TextColor3 = muted})
-local trackerHidden, lastStep = false, nil
--- Left column under the minimap (Theme.hudLayout leftTop); the toast above the hotbar band.
-local function placeTracker()
-	local L = lanes()
-	tracker.Position = UDim2.fromOffset(10, L.leftTop)
-	tracker.Size = UDim2.fromOffset(if L.short then 184 else 250, 66)
-	toast.Position = UDim2.new(0.5, 0, 1, -L.toastBottom)
+local function placeToast()
+	toast.Position = UDim2.new(0.5, 0, 1, -lanes().toastBottom)
 end
-placeTracker()
-gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(placeTracker)
-local function updateTracker()
-	local state = T.tutorialState(snapshot)
-	local visible = not trackerHidden and not state.loading and not state.complete and not talking
-	tracker.Visible = visible
-	if state.loading then return end
-	if lastStep and state.current ~= lastStep and lastStep <= #T.Tutorial then
-		local finished = T.Tutorial[lastStep]
-		notify(if state.complete then "Tutorial complete! Pell has more advice whenever you need it." else "✓ " .. finished.title .. " — next: " .. T.Tutorial[state.current].title)
-	end
-	lastStep = state.current or (#T.Tutorial + 1)
-	if not visible then return end
-	local step = T.Tutorial[state.current]
-	trackerTitle.Text = "FIRST STEPS · " .. state.done .. "/" .. state.total
-	trackerStep.Text = step.title .. (if state.steps[state.current].need > 1 then " (" .. state.steps[state.current].have .. "/" .. state.steps[state.current].need .. ")" else "")
-	TweenService:Create(trackerFill, TweenInfo.new(0.3), {Size = UDim2.fromScale(state.done / state.total, 1)}):Play()
-	trackerGo.Text = if step.waypoint then "Show me" elseif step.atlas then "Open" else "How?"
-end
-trackerGo.Activated:Connect(function()
-	local state = T.tutorialState(snapshot)
-	local step = state.current and T.Tutorial[state.current]
-	if not step then return end
-	if step.waypoint then
-		if requestWaypoint(step.waypoint, step.title) then notify(step.text) end
-	elseif step.atlas then stationVisit(step.atlas)
-	else notify(step.text) end
-end)
-trackerHide.Activated:Connect(function() trackerHidden = true; tracker.Visible = false; notify("Tutorial hidden. Talk to Pell to see it again.") end)
-table.insert(listeners, updateTracker)
-trackerSync = updateTracker
+placeToast()
+gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(placeToast)
 table.insert(listeners, function()
 	if talking and box.Visible then
 		local node = talking.def.nodes[talking.node or ""]
-		if node and node.tutorial then drawChecklist(true) end
+		if node and node.path then drawChecklist(true) end
 	end
 end)
 
@@ -521,7 +501,7 @@ local function updateMarkers()
 			continue
 		end
 		if s then
-			if entry.role == "Guide" then show = T.Conditions.tutorialActive(s) or T.Conditions.contractReady(s)
+			if entry.role == "Guide" then show = T.Conditions.guideTalkActive(s) or T.Conditions.guideRewardReady(s) or T.Conditions.contractReady(s)
 			elseif entry.role == "Slayer" then show = T.Conditions.huntReady(s)
 			elseif entry.role == "Herald" then show = T.Conditions.eventActive(s, ctx)
 			end
@@ -579,12 +559,5 @@ RunService.Heartbeat:Connect(function(dt)
 	end
 end)
 
--- Keep the tracker honest: poll gently while the tutorial is active.
-task.spawn(function()
-	refresh(false)
-	while true do
-		task.wait(10)
-		local state = T.tutorialState(snapshot)
-		if not state.complete and not trackerHidden then refresh(false) end
-	end
-end)
+-- (Polish: the tutorial tracker's poll loop retired with the tracker; one refresh at start.)
+task.spawn(function() refresh(false) end)

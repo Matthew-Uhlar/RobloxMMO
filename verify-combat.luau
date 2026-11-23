@@ -623,7 +623,8 @@ do
 	local order = tonumber(client:match("DisplayOrder = (%d+)"))
 	ok(order and order < 8, "combat HUD sits below the atlas")
 	ok(client:find("ButtonR2", 1, true) and client:find("TouchTapInWorld", 1, true) and client:find("AttackButton", 1, true), "mouse, touch and gamepad inputs")
-	ok(client:find("✧", 1, true) ~= nil, "crit numbers marked")
+	-- §34: crit styling lives in shared/HudDepth.lua (splatStyle); the client renders it.
+	ok(client:find("HD.splatStyle(payload, Theme)", 1, true) ~= nil and fs.readFile("shared/HudDepth.lua"):find("style.kind = \"crit\"", 1, true) ~= nil, "crit numbers marked")
 	-- Combat styles client: every verb the server accepts, and every fx kind it sends.
 	ok(client:find('"ranged"', 1, true) and client:find('FireServer("cast", model, id)', 1, true), "client sends ranged and cast verbs")
 	for _, kind in ipairs({"projectile", "snare", "heal", "teleport", "denied"}) do

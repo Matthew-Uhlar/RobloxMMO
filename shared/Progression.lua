@@ -336,7 +336,8 @@ function Progression.enchantStats(p, itemId, kind, skill)
 end
 
 -- Full stat sheet. now = os.time() for buff expiry.
-function Progression.computeStats(p, now)
+-- `power` (optional): Magical Power already computed by the caller this tick.
+function Progression.computeStats(p, now, power)
 	now = now or 0
 	local s = {}
 	for stat, def in pairs(Data.Stats) do s[stat] = def.base end
@@ -391,7 +392,7 @@ function Progression.computeStats(p, now)
 			addStats(s, gearStats(p, toolId))
 		end
 	end
-	s.magicalPower = Progression.magicalPower(p)
+	s.magicalPower = if type(power) == "number" then power else Progression.magicalPower(p)
 	-- Magical power grants scaling stats (SkyBlock accessory power).
 	s.health += s.magicalPower * 1
 	s.strength += math.floor(s.magicalPower / 4)
