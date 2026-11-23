@@ -12693,5 +12693,549 @@ function S.sanitize(map)
 end
 Data.PlayerSettings = S
 end
+------------------------------------------------------------------------------
+-- >>> BEGIN Beaconry (Beaconry team; append-only section; docs/DEPTH-CONTRACT.md §37) >>>
+-- A 1-99 production skill with OSRS Firemaking depth (all names original):
+--   * Kindle a log of any wood tier with a Flint Striker (held in the hand,
+--     strike gesture "kindle"): level-gated, a success chance that rises with
+--     level and striker tier, XP per log tier. A campfire burns for a while,
+--     then goes out and leaves Pyre Ash for its kindler.
+--   * Beacon network: one beacon pyre per region (B.Beacons). Feeding one
+--     B.BEACON_LOGS logs lights it for B.BEACON_SECONDS: Beacon Warmth (a short
+--     regional buff) for the lighter, everyone near it and anyone who basks in it
+--     while it burns; every lighting counts toward the weekly community goal.
+--   * Campfire cooking: Cooking's Hearth meals and feasts at any lit campfire
+--     (paced batches, a burn chance by Cooking level, +10% Cooking XP) and two
+--     dishes only a campfire can make.
+--   * Pyre Ash: Alchemy (Emberward Draught) and Farming (composter matter).
+-- Pure data and rules; server.server.lua (Beaconry block) runs it,
+-- world.server.lua builds the beacon pyres, beaconry.server.lua draws the
+-- campfires and beacon flames, ui.client.lua Workshop › Beaconry shows it.
+------------------------------------------------------------------------------
+do
+local B = {}
+Data.Beaconry = B
+local function whole(v)
+	v = tonumber(v)
+	if not v or v ~= v or v == math.huge or v == -math.huge then return 0 end
+	return math.floor(v)
+end
+B.whole = whole
+
+-- Skill registration (appended: old saves keep their order).
+table.insert(Data.SkillOrder, "Beaconry")
+Data.Skills.Beaconry = {category="production",color="F26B38",title="Flamewarden",perLevel={health=1,intelligence=0.5},
+	description="Kindle fires, cook at your own campfire and keep the isles' beacons burning. Raises Health and Intelligence."}
+-- 99 mantle: stats plus "Everflame" (B.CAPE_*): kindles never fail, campfires
+-- burn half as long again and beacon warmth lasts twice as long.
+if Data.Mastery and Data.Mastery.CapePerk then Data.Mastery.CapePerk.Beaconry = {health=30,intelligence=20} end
+B.CAPE_FIRE_MULT, B.CAPE_WARMTH_MULT = 1.5, 2
+
+-- Pacing and bounds.
+B.TICK = 0.5                 -- server loop (fires, cooking, week flush)
+B.KINDLE_SECONDS = 2.4       -- one kindle attempt per 2.4 s (OSRS: four game ticks)
+B.MAX_FIRES = 40             -- campfires burning on one server
+B.MAX_PER_PLAYER = 4         -- a fifth kindle snuffs your oldest campfire
+B.FIRE_SPACING = 3.5         -- studs between two campfires
+B.BEACON_CLEARANCE = 12      -- no campfire this close to a beacon pyre
+B.SUCCESS_BASE = 0.45        -- chance at the log's own level with a Flint Striker
+B.SUCCESS_FADE = 25          -- levels above the log until a kindle never fails
+B.COOK_RANGE = 9             -- studs from a lit campfire to cook on it
+B.COOK_SECONDS = 1.8         -- one campfire cook per 1.8 s
+B.MAX_BATCH = 28
+B.FIRE_XP_MULT = 1.1         -- Cooking XP at a campfire
+B.BURN_BASE, B.BURN_FADE = 0.35, 30 -- burn chance at the recipe level, gone 30 levels later
+B.BEACON_LOGS = 6
+B.BEACON_SECONDS = 600       -- a lit beacon burns ten minutes
+B.BEACON_XP_MULT = 1.5       -- XP per log fed to a beacon, vs a campfire
+B.BEACON_RANGE = 14          -- studs: bask / light only standing at the pyre
+B.WARMTH_SECONDS = 300
+B.WARMTH_RADIUS = 110        -- studs: players this close to a beacon when it is lit get warmth
+B.WARMTH_ID = "Beacon Warmth" -- p.buffs key (one warmth at a time; a new one replaces it)
+B.WEEK = 604800              -- UTC weeks since the epoch (Thursday 00:00 UTC)
+B.WEEK_GOAL = 150            -- beacon lightings across every server in one week
+B.FLUSH = 30                 -- seconds between community-total DataStore writes
+B.WEEK_KEY = "beaconry_week_"
+B.MAX_COUNT = 1000000000
+B.ASH = "PyreAsh"
+function B.weekOf(t) return math.floor(whole(t) / B.WEEK) end
+function B.weekResetIn(t) t = whole(t); return (B.weekOf(t) + 1) * B.WEEK - t end
+-- Community reward for a journal that lit at least one beacon in a week whose
+-- goal was met: Beaconry XP scaling with level (claimed once per week).
+function B.weekXp(level) return 250 + 60 * math.clamp(whole(level), 1, 99) end
+
+------------------------------------------------------------------------------
+-- Logs: every Woodcutting tier (seven today). XP is 1.25x the log's
+-- Woodcutting XP + 5 (OSRS Firemaking pays ~1.2-1.6x Woodcutting per log).
+------------------------------------------------------------------------------
+B.Logs, B.LogById = {}, {}
+for i, r in ipairs(Data.ResourceTiers.Woodcutting) do
+	local def = {id=r.id,name=r.name,level=r.level,tier=i,xp=math.floor(r.xp * 1.25 + 5),color=r.color,
+		seconds=45 + 15 * i}  -- campfire burn time
+	table.insert(B.Logs, def)
+	B.LogById[r.id] = def
+end
+-- Success chance of one kindle: 45% at the log's level with a Flint Striker,
+-- certain 25 levels later; each striker tier above the first adds 5%.
+function B.successChance(level, log, strikerTier)
+	if type(log) ~= "table" then return 0 end
+	level = whole(level)
+	if level < log.level then return 0 end
+	local over = (level - log.level) / B.SUCCESS_FADE
+	local c = B.SUCCESS_BASE + (1 - B.SUCCESS_BASE) * over + 0.05 * math.max(0, whole(strikerTier) - 1)
+	return math.clamp(c, 0, 1)
+end
+function B.fireSeconds(log, cape)
+	return math.floor((type(log) == "table" and log.seconds or 60) * (if cape then B.CAPE_FIRE_MULT else 1))
+end
+
+------------------------------------------------------------------------------
+-- Items: strikers (Forge, Smithing; held class "striker", never used up),
+-- Pyre Ash, the Emberward Draught and the two campfire-only dishes.
+------------------------------------------------------------------------------
+local function item(id, def)
+	def.id = id
+	def.rarity = def.rarity or "Common"
+	def.value = def.value or 1
+	Data.Items[id] = def
+	return def
+end
+local function recipe(id, def)
+	def.id = id
+	def.output = def.output or id
+	def.amount = def.amount or 1
+	Data.Recipes[id] = def
+	return def
+end
+local function valueOf(costs)
+	local v = 0
+	for id, n in pairs(costs) do v += (Data.Items[id] and Data.Items[id].value or 0) * n end
+	return v
+end
+B.valueOf = valueOf
+B.StrikerOrder = {"FlintStriker","SunsteelStriker","StarmetalStriker"}
+B.Strikers = {}
+for i, s in ipairs({
+	{id="FlintStriker",name="Flint Striker",level=1,smithing=1,color="B9B2A6",costs={AlloyIngot=1,Ore=2},rarity="Common"},
+	{id="SunsteelStriker",name="Sunsteel Striker",level=30,smithing=30,color="F2C14E",costs={SunsteelIngot=2,EmberoakLog=1},rarity="Uncommon"},
+	{id="StarmetalStriker",name="Starmetal Striker",level=60,smithing=60,color="C9D6E3",costs={StarmetalIngot=2,StarwoodLog=1},rarity="Rare"},
+}) do
+	s.tier = i
+	B.Strikers[s.id] = s
+	-- Value stays under the inputs (no coin mint through the Forge).
+	item(s.id,{name=s.name,kind="material",category="beaconTool",heldClass="striker",tier=i,rarity=s.rarity,color=s.color,
+		value=math.max(1, math.floor(valueOf(s.costs) * 0.8)),requires={Beaconry=s.level},
+		description="Beaconry tool (tier "..i.."): strike sparks to kindle logs. "..(if i > 1 then "+"..(5 * (i - 1)).."% kindle chance. " else "").."Never used up."})
+	recipe(s.id,{skill="Smithing",level=s.smithing,xp=10 + s.smithing,costs=s.costs,station="Forge",category="Tools"})
+end
+-- Best striker a journal can use: the striker def or nil. levelOf(skill) -> level.
+function B.bestStriker(items, levelOf)
+	local best
+	for _, id in ipairs(B.StrikerOrder) do
+		local s = B.Strikers[id]
+		if whole((items or {})[id]) > 0 and (not levelOf or levelOf("Beaconry") >= s.level) then best = s end
+	end
+	return best
+end
+
+item(B.ASH,{name="Pyre Ash",kind="material",rarity="Common",color="8A8178",value=2,
+	description="Fine ash left when a campfire burns down. Alchemists bind it into draughts; gardeners feed it to the composter."})
+table.insert(Data.CollectionItems, B.ASH)
+Data.CollectionScale[B.ASH] = 0.5
+-- Farming: ash is rich composter matter (Verdant Garden).
+if Data.Garden and Data.Garden.ORGANIC_EXTRA then Data.Garden.ORGANIC_EXTRA[B.ASH] = 6 end
+-- Alchemy: one ash potion (takes a Skyglass Vial like every Alchemy 8+ potion, §22).
+item("EmberwardDraught",{name="Emberward Draught",kind="consumable",category="potion",rarity="Uncommon",color="E07A3F",
+	buff={stats={defense=30,health=40},duration=300},value=20,requires={Alchemy=22},description="Potion: 5 minute buff. Brewed from Pyre Ash."})
+recipe("EmberwardDraught",{skill="Alchemy",level=22,xp=70,costs={[B.ASH]=4,Herb=2},repeatable=true,station="Cauldron",category="Potions",
+	collectionTier={[B.ASH]=1}})
+do
+	local CR = Data.Crafting
+	if CR and CR.VIAL_POTIONS then
+		local r = Data.Recipes.EmberwardDraught
+		if CR.VIALS_IN_POTIONS then r.costs.GlassVial = (r.costs.GlassVial or 0) + 1 end
+		table.insert(CR.VIAL_POTIONS, "EmberwardDraught")
+		table.sort(CR.VIAL_POTIONS, function(a, b)
+			local la, lb = Data.Recipes[a].level, Data.Recipes[b].level
+			if la ~= lb then return la < lb end
+			return a < b
+		end)
+	end
+	Data.Items.EmberwardDraught.value = math.min(Data.Items.EmberwardDraught.value, valueOf(Data.Recipes.EmberwardDraught.costs))
+end
+
+-- Campfire-only dishes (B.FireRecipes, not Data.Recipes: the generic craft verb
+-- cannot make them). Value never above the inputs.
+B.FireRecipes, B.FireRecipeOrder = {}, {}
+for _, d in ipairs({
+	{id="HearthfireSkewer",name="Hearthfire Skewer",level=22,xp=70,costs={Glassfin=2,Sunwheat=2},rarity="Uncommon",color="E9A23B",
+		buff={health=40,defense=15},duration=600},
+	{id="BeaconwatchStew",name="Beaconwatch Stew",level=58,xp=200,costs={Lanternray=2,Moonbloom=2,Glowcap=1},rarity="Rare",color="C8553D",
+		buff={health=80,strength=20,foragingFortune=20},duration=600},
+}) do
+	local parts = {}
+	for stat, v in pairs(d.buff) do table.insert(parts, "+"..v.." "..((Data.Stats[stat] and Data.Stats[stat].name) or stat)) end
+	table.sort(parts)
+	item(d.id,{name=d.name,kind="consumable",category="buff",rarity=d.rarity,color=d.color,buff={stats=d.buff,duration=d.duration},
+		value=math.max(1, math.floor(valueOf(d.costs) * 0.9)),requires={Cooking=d.level},
+		description="Campfire dish: "..table.concat(parts, ", ").." for "..(d.duration // 60).." minutes."})
+	local rec = {id=d.id,output=d.id,amount=1,skill="Cooking",level=d.level,xp=d.xp,costs=d.costs,fireOnly=true,category="Campfire"}
+	B.FireRecipes[d.id] = rec
+	table.insert(B.FireRecipeOrder, d.id)
+end
+-- A recipe the campfire can cook: Cooking's Hearth meals and feasts, or a
+-- campfire dish. Returns the recipe table or nil.
+function B.cookRecipe(id)
+	if type(id) ~= "string" then return nil end
+	local fire = B.FireRecipes[id]
+	if fire then return fire end
+	local r = Data.Recipes[id]
+	if type(r) == "table" and r.skill == "Cooking" and r.station == "Hearth" then return r end
+	return nil
+end
+-- Every campfire recipe, sorted by level then id (UI and tests).
+function B.cookList()
+	local out = {}
+	for id in pairs(Data.Recipes) do if B.cookRecipe(id) then table.insert(out, B.cookRecipe(id)) end end
+	for _, id in ipairs(B.FireRecipeOrder) do table.insert(out, B.FireRecipes[id]) end
+	table.sort(out, function(a, b) if a.level ~= b.level then return a.level < b.level end return a.id < b.id end)
+	return out
+end
+-- Campfire burn chance (OSRS: open fires burn more than ranges): 35% at the
+-- recipe level, falling to 0 thirty Cooking levels later; dishes made for the
+-- campfire never burn.
+function B.burnChance(cookLevel, rec)
+	if type(rec) ~= "table" or rec.fireOnly then return 0 end
+	local over = whole(cookLevel) - whole(rec.level)
+	return math.clamp(B.BURN_BASE * (1 - over / B.BURN_FADE), 0, B.BURN_BASE)
+end
+function B.cookXp(rec) return math.floor(whole(rec and rec.xp) * B.FIRE_XP_MULT) end
+-- "recipe:count" -> id, count (1..MAX_BATCH) or nil.
+function B.parseBatch(text)
+	if type(text) ~= "string" or #text > 64 then return nil end
+	local id, n = string.match(text, "^(%w+):(%d+)$")
+	n = tonumber(n)
+	if not id or not B.cookRecipe(id) or not n or n < 1 then return nil end
+	return id, math.min(n, B.MAX_BATCH)
+end
+
+------------------------------------------------------------------------------
+-- Beacons: one pyre per region (world.server.lua builds them on the region's
+-- Mote Shrine island, Data.Exploration.ShrineIsle). log = the lowest log tier
+-- that can feed it (any higher tier also burns); buff = Beacon Warmth.
+------------------------------------------------------------------------------
+B.BeaconOrder = {"Hub","Meadow","Quarry","Windpine","Skyreach","Tidewater","Gloomhollow","Tempest","ShatteredCrown"}
+B.Beacons = {
+	Hub={name="Quayfire Beacon",region="Hub",level=1,log="Timber",buff={health=20},color="FFB347"},
+	Meadow={name="Sunwheel Beacon",region="Meadow",level=10,log="Timber",buff={farmingFortune=15},color="F4D35E"},
+	Quarry={name="Brassfall Beacon",region="Quarry",level=20,log="WindpineLog",buff={miningFortune=15},color="E9A23B"},
+	Windpine={name="Canopy Beacon",region="Windpine",level=30,log="EmberoakLog",buff={foragingFortune=20},color="FF8C42"},
+	Skyreach={name="Summit Beacon",region="Skyreach",level=40,log="EmberoakLog",buff={miningSpeed=30},color="FFC15E"},
+	Tidewater={name="Shoalward Beacon",region="Tidewater",level=50,log="GlimmerbarkLog",buff={fishingFortune=20},color="7FD6E8"},
+	Gloomhollow={name="Hollowlight Beacon",region="Gloomhollow",level=62,log="StarwoodLog",buff={defense=25},color="B59CFF"},
+	Tempest={name="Stormcrown Beacon",region="Tempest",level=78,log="AetherheartLog",buff={strength=20,critDamage=10},color="9AD8FF"},
+	ShatteredCrown={name="Crownfire Beacon",region="ShatteredCrown",level=90,log="ShatterbarkLog",buff={health=40,critDamage=15},color="D8B4FF"},
+}
+for i, id in ipairs(B.BeaconOrder) do
+	local b = B.Beacons[id]
+	b.id, b.index = id, i
+	-- A region whose log tier does not exist falls back to the best log there is.
+	if not B.LogById[b.log] then b.log = B.Logs[#B.Logs].id end
+end
+-- Logs that can feed a beacon: its own tier or better.
+function B.feedsBeacon(beacon, logId)
+	local need, log = B.LogById[beacon and beacon.log or ""], B.LogById[logId or ""]
+	return need ~= nil and log ~= nil and log.tier >= need.tier
+end
+-- The log stack a beacon lighting spends: the lowest qualifying tier with a
+-- full feed (B.BEACON_LOGS logs). Returns the log def or nil.
+function B.beaconFuel(beacon, items)
+	for _, log in ipairs(B.Logs) do
+		if B.feedsBeacon(beacon, log.id) and whole((items or {})[log.id]) >= B.BEACON_LOGS then return log end
+	end
+	return nil
+end
+function B.beaconXp(log) return math.floor(whole(log and log.xp) * B.BEACON_LOGS * B.BEACON_XP_MULT) end
+function B.warmthSeconds(cape) return B.WARMTH_SECONDS * (if cape then B.CAPE_WARMTH_MULT else 1) end
+
+------------------------------------------------------------------------------
+-- Campfire sites. chain = the ground part the kindler stands on and its
+-- ancestors, {{name=, bridge=bool}, ...} from the hit part upward. Fires burn
+-- only on the open ground of a static isle (under Workspace.Islands) or on the
+-- kindler's own home island; never on a path, bridge, rope deck, another
+-- player's home, a lair, an arena or the Observatory.
+------------------------------------------------------------------------------
+local BRIDGE_WORDS = {"bridge","deck","plank","rope","ladder","stair","dock","pier","path"}
+function B.groundVerdict(chain, userId)
+	if type(chain) ~= "table" or #chain == 0 then return false, "Stand on solid ground to kindle a fire." end
+	local first = chain[1]
+	local name = string.lower(tostring(first.name or ""))
+	if first.bridge then return false, "Not on a path or bridge. Step onto open ground." end
+	for _, w in ipairs(BRIDGE_WORDS) do
+		if string.find(name, w, 1, true) then return false, "Not on a path or bridge. Step onto open ground." end
+	end
+	local onIsles = false
+	for _, node in ipairs(chain) do
+		local owner = string.match(tostring(node.name or ""), "^WayfarersRest_(%d+)$")
+		if owner then
+			if tonumber(owner) ~= tonumber(userId) then return false, "That is another wayfarer's island. Kindle on your own ground." end
+			return true
+		end
+		if node.name == "Islands" then onIsles = true end
+	end
+	if not onIsles then return false, "Fires can only be kindled on the open ground of the isles." end
+	return true
+end
+-- Spacing: fires = list of {pos = Vector3-like}, beacons = list of positions.
+function B.spacingVerdict(pos, fires, beacons)
+	local function flat(a, b) local dx, dz = a.X - b.X, a.Z - b.Z; return math.sqrt(dx * dx + dz * dz), math.abs(a.Y - b.Y) end
+	for _, f in ipairs(fires or {}) do
+		local d, dy = flat(pos, f.pos)
+		if d < B.FIRE_SPACING and dy < 6 then return false, "A fire is already burning here. Step aside." end
+	end
+	for _, b in ipairs(beacons or {}) do
+		local d, dy = flat(pos, b)
+		if d < B.BEACON_CLEARANCE and dy < 12 then return false, "Too close to the beacon pyre." end
+	end
+	return true
+end
+
+------------------------------------------------------------------------------
+-- Profile p.beaconry = {kindled={[log]=n}, failed=n, beacons={[beacon]=n},
+-- cooked=n, burnt=n, ash=n, week={id, lit, claimed}, weeks=n}. Quest flags
+-- p.beaconKindled / p.beaconLit / p.beaconNetwork (top-level booleans, flag checks).
+------------------------------------------------------------------------------
+B.NETWORK_BEACONS = 5 -- distinct beacons lit for the beaconNetwork flag
+function B.migrate(raw)
+	local c = type(raw) == "table" and raw or {}
+	local function counts(t, valid)
+		local out = {}
+		if type(t) == "table" then
+			for id, n in pairs(t) do
+				n = whole(n)
+				if type(id) == "string" and valid[id] and n > 0 then out[id] = math.min(n, B.MAX_COUNT) end
+			end
+		end
+		return out
+	end
+	local week = type(c.week) == "table" and c.week or {}
+	return {
+		kindled = counts(c.kindled, B.LogById), beacons = counts(c.beacons, B.Beacons),
+		failed = math.clamp(whole(c.failed), 0, B.MAX_COUNT), cooked = math.clamp(whole(c.cooked), 0, B.MAX_COUNT),
+		burnt = math.clamp(whole(c.burnt), 0, B.MAX_COUNT), ash = math.clamp(whole(c.ash), 0, B.MAX_COUNT),
+		week = {id = math.max(0, whole(week.id)), lit = math.clamp(whole(week.lit), 0, B.MAX_COUNT), claimed = week.claimed == true},
+		weeks = math.clamp(whole(c.weeks), 0, 10000),
+	}
+end
+function B.distinctBeacons(c)
+	local n = 0
+	for id, v in pairs(type(c) == "table" and type(c.beacons) == "table" and c.beacons or {}) do
+		if B.Beacons[id] and whole(v) > 0 then n += 1 end
+	end
+	return n
+end
+-- The journal's week entry for week `w`, rolled forward only (a server whose
+-- clock is behind never rewinds it).
+function B.rollWeek(c, w)
+	if whole(w) > c.week.id then c.week = {id = whole(w), lit = 0, claimed = false} end
+	return c.week
+end
+-- Claim check: (ok, reason). total = the community total for week w.
+function B.canClaim(c, w, total)
+	if type(c) ~= "table" or type(c.week) ~= "table" or c.week.id ~= whole(w) or c.week.lit < 1 then
+		return false, "Light a beacon this week to join the watch."
+	end
+	if c.week.claimed then return false, "You already claimed this week's beacon reward." end
+	if whole(total) < B.WEEK_GOAL then return false, "The isles have lit "..whole(total).."/"..B.WEEK_GOAL.." beacons this week." end
+	return true
+end
+
+------------------------------------------------------------------------------
+-- Balance model (verify-beaconry.luau; documented in §37). Supply chain:
+-- chop the log (one node, max(respawn, 1.65) s like §22) then kindle it
+-- (B.KINDLE_SECONDS per attempt at the success chance).
+------------------------------------------------------------------------------
+function B.kindleSecondsPerLog(level, log, strikerTier)
+	local c = B.successChance(level, log, strikerTier)
+	return if c > 0 then B.KINDLE_SECONDS / c else math.huge
+end
+local function woodTier(log)
+	for _, t in ipairs(Data.ResourceTiers.Woodcutting) do if t.id == log.id then return t end end
+	return nil
+end
+-- XP/h kindling banked logs (cadence-bound).
+function B.bankedRate(level, log, strikerTier)
+	return log.xp * 3600 / B.kindleSecondsPerLog(level, log, strikerTier)
+end
+-- XP/h chopping then kindling every log yourself.
+function B.chainRate(level, log, strikerTier)
+	local t = woodTier(log)
+	local chop = math.max(t and t.respawn or 3, 1.65)
+	return log.xp * 3600 / (chop + B.kindleSecondsPerLog(level, log, strikerTier))
+end
+-- Woodcutting XP/h on the same log (one node), for comparison.
+function B.woodcuttingRate(log)
+	local t = woodTier(log)
+	return if t then t.xp * 3600 / math.max(t.respawn, 1.65) else 0
+end
+
+------------------------------------------------------------------------------
+-- Unlock list for the Skills page (Hero › Skills › Beaconry): {level, text, item}.
+------------------------------------------------------------------------------
+function B.unlocks()
+	local out = {}
+	for _, log in ipairs(B.Logs) do
+		table.insert(out, {level=log.level,text="Kindle "..log.name.." (+"..log.xp.." XP, burns "..log.seconds.."s)",item=log.id})
+	end
+	for _, id in ipairs(B.BeaconOrder) do
+		local b = B.Beacons[id]
+		table.insert(out, {level=b.level,text="Light the "..b.name.." ("..B.BEACON_LOGS.." "..((B.LogById[b.log] or {}).name or b.log).." or better)"})
+	end
+	for _, id in ipairs(B.StrikerOrder) do
+		local s = B.Strikers[id]
+		if s.level > 1 then table.insert(out, {level=s.level,text="Strike with a "..s.name.." (+"..(5 * (s.tier - 1)).."% kindle chance)",item=id}) end
+	end
+	table.insert(out, {level=99,text="Everflame mantle: kindles never fail, campfires burn 50% longer, warmth lasts twice as long"})
+	return out
+end
+
+------------------------------------------------------------------------------
+-- Held items (§26): the striker class (right hand) swings in the "kindle" gesture.
+------------------------------------------------------------------------------
+do
+	local H = Data.Held
+	if H then
+		H.CLASSES.striker = {hand = "right", kind = "tool"}
+		H.FITS.kindle = {striker = true}
+		H.SHAPES.striker = {
+			{n = "Grip", s = {0.22, 0.22, 0.7}, o = {0, 0, -0.05}, c = "leather", m = "Fabric"},
+			{n = "Steel", s = {0.5, 0.16, 0.16}, o = {0, 0.05, -0.55}, c = "head", m = "metal"},
+			{n = "Bow", s = {0.12, 0.42, 0.12}, o = {0.22, 0.2, -0.55}, c = "head", m = "metal"},
+			{n = "Flint", s = {0.34, 0.34, 0.34}, o = {0, 0.24, -0.72}, c = "trim", m = "Slate", shape = "Ball"},
+			{n = "Spark", s = {0.14, 0.14, 0.14}, o = {0, 0.34, -0.86}, c = "glow", m = "Neon", shape = "Ball"},
+		}
+	end
+end
+
+------------------------------------------------------------------------------
+-- Commissions (§20): kind "kindle" (target = log id, one credit per campfire).
+------------------------------------------------------------------------------
+do
+	local CL = Data.CommissionsLogs
+	if CL and CL.Tasks then
+		for _, t in ipairs({
+			{id="KindleTimber",name="Hearth Kindling",target="Timber",amount=25,dust=14},
+			{id="KindleWindpineLog",name="Windpine Blaze",target="WindpineLog",amount=20,dust=20},
+			{id="KindleEmberoakLog",name="Ember Watch",target="EmberoakLog",amount=16,dust=26},
+			{id="KindleGlimmerbarkLog",name="Glimmer Pyres",target="GlimmerbarkLog",amount=12,dust=32},
+		}) do
+			local log = B.LogById[t.target]
+			if log then
+				t.kind, t.skill, t.group = "kindle", "Beaconry", "Beaconry"
+				t.levels = {Beaconry = log.level}
+				t.xp = math.floor(log.xp * t.amount * 1.2)
+				t.coins = 15 + log.level * 3
+				table.insert(CL.Tasks, t)
+				CL.TaskById[t.id] = t
+			end
+		end
+	end
+end
+
+------------------------------------------------------------------------------
+-- Quests (two side quests) and their quest-helper waypoints / check texts.
+------------------------------------------------------------------------------
+do
+	local FLAG_TEXT = {beaconKindled = "Kindle your first campfire", beaconLit = "Light a regional beacon",
+		beaconNetwork = "Light "..B.NETWORK_BEACONS.." different beacons"}
+	B.FLAG_TEXT = FLAG_TEXT
+	local describe = Data.describeCheck
+	function Data.describeCheck(o, regional)
+		if type(o) == "table" and o.kind == "flag" and FLAG_TEXT[o.flag] then return FLAG_TEXT[o.flag] end
+		return describe(o, regional)
+	end
+	for _, q in ipairs({
+		{id="KindlingLessons",title="Kindling Lessons",line="side",region="Hub",
+			story="Old Brannoch keeps the Quayfire burning. He will teach you to strike a spark, if you can keep a campfire going and bring him its ash.",
+			requires={{kind="contracts",count=1}},
+			objectives={{kind="flag",flag="beaconKindled"},{kind="level",skill="Beaconry",level=10},{kind="collect",item=B.ASH,count=10}},
+			rewards={coins=400,points=1,xp={Beaconry=1200,Cooking=400}}},
+		{id="TheLongWatch",title="The Long Watch",line="side",region="Hub",
+			story="When the beacons of the isles burn together, no ship is lost in the cloud-sea. Light the Quayfire, then carry the flame across the regions.",
+			requires={{kind="quest",quest="KindlingLessons"},{kind="level",skill="Beaconry",level=30}},
+			objectives={{kind="flag",flag="beaconLit"},{kind="flag",flag="beaconNetwork"},{kind="collect",item=B.ASH,count=100}},
+			rewards={coins=2500,points=2,xp={Beaconry=9000},perk={intelligence=5}}},
+	}) do
+		table.insert(Data.Quests, q)
+		q.index = #Data.Quests
+		Data.QuestById[q.id] = q
+	end
+	local SY = Data.Systems
+	local HP = SY and SY.Helper
+	if HP and HP.specsFor then
+		local specsFor = HP.specsFor
+		function HP.specsFor(o, ctx)
+			if type(o) == "table" then
+				if o.kind == "flag" and o.flag == "beaconKindled" then return {"gather:Timber"} end
+				if o.kind == "flag" and (o.flag == "beaconLit" or o.flag == "beaconNetwork") then return {"anchor:Waypoint_Beacon_Hub", "region:Hub"} end
+				if o.kind == "level" and o.skill == "Beaconry" then return {"anchor:Waypoint_Beacon_Hub", "gather:Timber"} end
+				if (o.kind == "collect" or o.kind == "have" or o.kind == "collectionTier") and o.item == B.ASH then return {"gather:Timber"} end
+			end
+			return specsFor(o, ctx)
+		end
+	end
+	-- XP calculator (§33): campfire logs and beacon feeds train Beaconry.
+	local CA = SY and SY.Calc
+	if CA and CA.actions then
+		local actions = CA.actions
+		function CA.actions(skill)
+			if skill ~= "Beaconry" then return actions(skill) end
+			local out = {}
+			for _, log in ipairs(B.Logs) do table.insert(out, {id = log.id, name = "Kindle "..log.name, level = log.level, xp = log.xp, kind = "kindle"}) end
+			for _, id in ipairs(B.BeaconOrder) do
+				local b = B.Beacons[id]
+				table.insert(out, {id = "Beacon"..id, name = b.name, level = b.level, xp = B.beaconXp(B.LogById[b.log]), kind = "beacon"})
+			end
+			table.sort(out, function(a, c)
+				if a.level ~= c.level then return a.level < c.level end
+				if a.xp ~= c.xp then return a.xp < c.xp end
+				return a.id < c.id
+			end)
+			return out
+		end
+	end
+end
+
+------------------------------------------------------------------------------
+-- Isle Renown (§31): beacons lit (15 per distinct beacon) and community weeks
+-- claimed (10 each, at most 52 counted). Bounded: 9 x 15 + 52 x 10 = 655.
+------------------------------------------------------------------------------
+do
+	local RN = Data.Renown
+	if RN and RN.breakdown then
+		B.RENOWN_BEACON, B.RENOWN_WEEK, B.RENOWN_WEEKS_CAP = 15, 10, 52
+		local src = {id="beacons",name="Beacon watch",hint="15 XP per regional beacon you have lit; 10 XP per weekly beacon goal you helped reach (52 at most)."}
+		table.insert(RN.Sources, src)
+		src.index = #RN.Sources
+		RN.SourceById[src.id] = src
+		local breakdown = RN.breakdown
+		function RN.breakdown(p, P, extra)
+			local out = breakdown(p, P, extra)
+			local c = type(p) == "table" and type(p.beaconry) == "table" and p.beaconry or {}
+			local beacons = B.distinctBeacons(c)
+			local weeks = math.min(math.max(0, whole(c.weeks)), B.RENOWN_WEEKS_CAP)
+			local xp = beacons * B.RENOWN_BEACON + weeks * B.RENOWN_WEEK
+			out.sources.beacons = out.sources.beacons or {xp = 0, count = 0}
+			out.sources.beacons.xp += xp
+			out.sources.beacons.count += beacons + weeks
+			out.total += xp
+			return out
+		end
+	end
+end
+end
+-- <<< END Beaconry <<<
+------------------------------------------------------------------------------
+
 
 return Data

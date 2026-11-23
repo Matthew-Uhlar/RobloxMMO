@@ -669,6 +669,13 @@ navigatePanel = function()
 		local specs = {"anchor:Waypoint_" .. vendor[1]}
 		if T.resolveFirst(specs, index) then entry(vendor[2], nextOrder(), function() setWaypoint(specs, vendor[2]) end) end
 	end
+	-- Beaconry (§37): the regional beacon pyres (anchors Waypoint_Beacon_<id>).
+	local BC = Data.Beaconry
+	for _, id in ipairs(BC and BC.BeaconOrder or {}) do
+		local name = BC.Beacons[id].name
+		local specs = {"anchor:Waypoint_Beacon_" .. id}
+		if T.resolveFirst(specs, index) then entry(name, nextOrder(), function() setWaypoint(specs, name) end) end
+	end
 	-- Exploration & Factions: the hub Mote Shrine and the three faction standards
 	-- (world anchors Waypoint_MoteShrine / Waypoint_Faction_<id>); a locked
 	-- region's entry is dimmed with a padlock, like the region list below.

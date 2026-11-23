@@ -3075,6 +3075,94 @@ do
 	noFailures(legacy, "crafting without server data")
 	print("Crafting client: " .. (checks - craftChecks) .. " checks.")
 end
+-- Beaconry client (§37): Workshop › Beaconry — Kindle (summary, logs with
+-- Kindle buttons), Campfire (running batch with Stop, recipe cards with batch
+-- buttons, blocked away from a fire), Beacons (the weekly watch claim and the
+-- nine pyres); phone layout and malformed data.
+verbs.kindle = function(item) return item == "" or Data.Beaconry.LogById[item] ~= nil end
+verbs.fireCook = function(item) return Data.Beaconry.parseBatch(item) ~= nil end
+verbs.fireStop = function(item) return item == nil end
+verbs.beaconClaim = function(item) return item == nil end
+do
+	local bcChecks = checks
+	local function check(cond, case) assert(cond, case); checks += 1 end
+	local snap = snapshot({ xp = { Beaconry = Data.XP_TABLE[20], Cooking = Data.XP_TABLE[25] } })
+	snap.items = table.clone(snap.items)
+	snap.items.FlintStriker, snap.items.Timber, snap.items.WindpineLog, snap.items.Fish, snap.items.Herb = 1, 12, 3, 7, 7
+	snap.beaconry = { striker = "FlintStriker", fires = { { id = 3, log = "Timber", left = 40 } }, near = { id = 3, log = "Timber", left = 40, mine = true },
+		job = { recipe = "CookedFish", done = 1, total = 4, cooked = 1, burnt = 0, xp = 22, nextIn = 0.6 },
+		beacons = { Hub = 320 }, week = { id = 2480, total = 151, goal = 150, lit = 1, claimed = false, canClaim = true, resetIn = 90000 },
+		kindled = { Timber = 9 }, lit = { Hub = 2 }, failed = 3, cooked = 5, burnt = 1, ash = 4, weeks = 0, kindleIn = 0, everflame = false, burning = 6 }
+	local ui = run({ snapshot = snap })
+	visit(ui, "Workshop", "Beaconry")
+	check(find(ui.scroll, "BeaconrySummary") ~= nil and find(ui.scroll, "BeaconryKindle") ~= nil, "Workshop › Beaconry opens on Kindle")
+	check(find(ui.scroll, "KindleTimber") ~= nil and find(ui.scroll, "KindleShatterbarkLog") ~= nil, "every log listed")
+	table.clear(ui.sent)
+	press(find(ui.scroll, "KindleTimberKindle"))
+	check(ui.sent[1] and ui.sent[1][1] == "kindle" and ui.sent[1][2] == "Timber", "Kindle sends the log")
+	press(find(ui.scroll, "BeaconryKindleKindlebestlog"))
+	check(ui.sent[2] and ui.sent[2][1] == "kindle" and ui.sent[2][2] == "", "Kindle best log sends an empty item")
+	press(find(ui.scroll, "KindleEmberoakLogKindle"))
+	check(#ui.sent == 2, "a log above your level does not send")
+	noFailures(ui, "beaconry kindle")
+	-- Campfire section.
+	press(find(ui.scroll, "SectionCampfire") or find(ui.scroll, "BeaconryCampfire"))
+	if not find(ui.scroll, "BeaconryCampfire") then
+		for _, o in ipairs(ui.scroll:GetDescendants()) do if o.ClassName == "TextButton" and string.find(o.Name, "Campfire$") then press(o) break end end
+	end
+	check(find(ui.scroll, "BeaconryCampfire") ~= nil and find(ui.scroll, "BeaconryJob") ~= nil, "campfire summary and running batch")
+	check(find(ui.scroll, "FireCookedFish") ~= nil and find(ui.scroll, "FireHearthfireSkewer") ~= nil, "Hearth meals and campfire dishes listed")
+	table.clear(ui.sent)
+	press(find(ui.scroll, "BeaconryJobStop"))
+	check(ui.sent[1] and ui.sent[1][1] == "fireStop", "Stop sends fireStop")
+	press(find(ui.scroll, "FireCookedFishCook1"))
+	check(ui.sent[2] and ui.sent[2][1] == "fireCook" and ui.sent[2][2] == "CookedFish:1", "Cook ×1 sends one action")
+	press(find(ui.scroll, "FireCookedFish5"))
+	check(ui.sent[3] and ui.sent[3][2] == "CookedFish:5", "×5 sends five")
+	press(find(ui.scroll, "FireCookedFish7"))
+	check(ui.sent[4] and ui.sent[4][2] == "CookedFish:7", "×all sends what the satchel funds")
+	press(find(ui.scroll, "FireBeaconwatchStewCook1"))
+	check(#ui.sent == 4, "a recipe above your Cooking level does not send")
+	noFailures(ui, "beaconry campfire")
+	checkSent(ui)
+	-- Beacons section and the weekly claim.
+	for _, o in ipairs(ui.scroll:GetDescendants()) do if o.ClassName == "TextButton" and string.find(o.Name, "Beacons$") then press(o) break end end
+	check(find(ui.scroll, "BeaconryWeek") ~= nil and find(ui.scroll, "BeaconHub") ~= nil and find(ui.scroll, "BeaconShatteredCrown") ~= nil, "weekly watch and the nine pyres")
+	table.clear(ui.sent)
+	press(find(ui.scroll, "BeaconryWeekClaim"))
+	check(ui.sent[1] and ui.sent[1][1] == "beaconClaim", "Claim sends beaconClaim")
+	noFailures(ui, "beaconry beacons")
+	checkSent(ui)
+	-- Away from a fire: cook buttons blocked.
+	local far = table.clone(snap)
+	far.beaconry = table.clone(snap.beaconry)
+	far.beaconry.near, far.beaconry.job = nil, nil
+	local uf = run({ snapshot = far })
+	visit(uf, "Workshop", "Beaconry")
+	for _, o in ipairs(uf.scroll:GetDescendants()) do if o.ClassName == "TextButton" and string.find(o.Name, "Campfire$") then press(o) break end end
+	table.clear(uf.sent)
+	press(find(uf.scroll, "FireCookedFishCook1"))
+	check(#uf.sent == 0, "away from a campfire nothing sends")
+	noFailures(uf, "beaconry away from a fire")
+	-- Phone layout, malformed and missing data.
+	local phone = run({ snapshot = snap, size = roblox.Vector2.new(420, 600) })
+	visit(phone, "Workshop", "Beaconry")
+	noFailures(phone, "phone beaconry")
+	check(find(phone.scroll, "BeaconryKindle") ~= nil, "phone beaconry page")
+	local bad = snapshot()
+	bad.beaconry = { striker = 9, fires = "x", near = { left = "soon" }, job = { recipe = "Nope" }, week = 4, beacons = { Hub = "lit" }, lit = 2 }
+	local broken = run({ snapshot = bad })
+	visit(broken, "Workshop", "Beaconry")
+	noFailures(broken, "malformed beaconry")
+	for _, o in ipairs(broken.scroll:GetDescendants()) do if o.ClassName == "TextButton" and (string.find(o.Name, "Campfire$") or string.find(o.Name, "Beacons$")) then press(o); noFailures(broken, "malformed " .. o.Name) end end
+	local none = snapshot()
+	none.beaconry = nil
+	local legacy = run({ snapshot = none })
+	visit(legacy, "Workshop", "Beaconry")
+	noFailures(legacy, "beaconry without server data")
+	-- The skill page lists Beaconry's unlocks.
+	print("Beaconry client: " .. (checks - bcChecks) .. " checks.")
+end
 -- Visual QA (menu overhaul): every atlas page at both phone sizes for the early,
 -- mid and endgame snapshots the real server builds (tools/ui-profiles.luau):
 --  * touch targets: every visible control is at least UI.TOUCH (44 px) both ways;

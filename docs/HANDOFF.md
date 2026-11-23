@@ -46,7 +46,7 @@ export PATH=$HOME/.cargo/bin:$PATH   # Lune 0.11.1, Rojo 7.7.1 (cargo install ..
 - Every suite must print `SUITE-END <file>`. Lune exits 0 on a coroutine that yields forever, so the build fails if any suite is missing its sentinel.
 - `build.ps1` mirrors the suite list. **Add every new suite to both files.**
 - **Generated art:** after editing `art/*-shapes.cjs`, run `node art/generate-props.cjs && node art/generate-import.cjs`. On merge conflicts in `art/import/*.glb` or `manifest.json`, regenerate instead of hand-merging.
-- **Static world part budget:** 4000, about 3,485 used. Detailed shapes are forged on the client as EditableMeshes (`forge.client.lua`), so a `meshSlot` proxy costs one server part.
+- **Static world part budget:** 4000, about 3,543 used (Beaconry pyres §37: +45). Detailed shapes are forged on the client as EditableMeshes (`forge.client.lua`), so a `meshSlot` proxy costs one server part.
 
 ## 4. How the work is organised
 
@@ -94,6 +94,7 @@ export PATH=$HOME/.cargo/bin:$PATH   # Lune 0.11.1, Rojo 7.7.1 (cargo install ..
 | UI overhaul QC fixes | All 24 findings: satchel drag and click bugs; M opens the Sky Chart; PlayerList core GUI off; the minimap setting hides the whole block; XP-drop lanes; tablet docking; short windows; `Gear.upgraded` guard on sell and drop; 12 lows. |
 | §31 MMO features | `features.client.lua`, `verify-features.luau`: Isle Renown account level (perkStats `renown`, accessory slots at renown 10/25/50/100/150), Wayfarer's Path onboarding (11 steps since Polish, journal mode first; claimed via `guideClaim`), announcement toasts, shop quantity `:qty` 1–64, six Skyward Vents, Resonance (Magical Power templates, NPC Oriel Thrumwright). |
 | §32 map art | `shared/MapArt.lua`, `verify-map.luau`: 3D ViewportFrame Sky Chart built from the real islands, plus region-tinted minimap plates. |
+| §37 Beaconry | New 1-99 skill (23 skills): kindling with held strikers, bounded campfires (`beaconry.server.lua` draws them), nine regional beacon pyres with warmth buffs and a weekly cross-server goal, campfire cooking, Pyre Ash for Alchemy / Farming; `verify-beaconry.luau`. Open decisions in §37. |
 
 **Open decisions from §31:**
 - ~~Retire Pell's older 6-step tutorial~~ — done (Polish wave, lead decision): the Wayfarer's Path is the only onboarding; see §31 "Polish".
