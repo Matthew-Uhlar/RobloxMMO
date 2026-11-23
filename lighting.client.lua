@@ -17,6 +17,19 @@
 --     Menu › Settings).
 -- It never touches GUI: ViewportFrames (Sky Chart, thumbnails) keep their own
 -- Ambient / LightColor, and post effects live under Lighting (3D only).
+--
+-- Server intent (QC M1): the budget writes Enabled / Shadows on authored
+-- lights, so it can never read them back as "what the server wants". The
+-- server states intent in attributes this script never writes: LightWanted
+-- (bool; set wherever a server script toggles a world light, e.g.
+-- world.server.lua light() and homePlacement.relight) and LightHero (bool:
+-- an authored shadow caster). A light without them falls back to its
+-- Enabled / Shadows at registration (and adopts later server edits by diff).
+--
+-- Type mode (QC L8): not --!strict. The build has no Luau type checker (the
+-- headless suites run under Lune, which ignores the directive), so strict
+-- annotations here could not be verified; the module is kept small and its
+-- rules live in the pure shared/LightingProfiles.lua, which the suite covers.
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local Lighting = game:GetService("Lighting")
@@ -27,6 +40,7 @@ local player = Players.LocalPlayer
 
 local Director = {key = nil, pendingKey = nil, pendingSince = 0, state = nil, written = {}, tier = nil, clock = 12}
 local OWNED = "AetherLightingDirector" -- attribute on the instances this script created
+local WANTED, HERO = "LightWanted", "LightHero" -- server-intent attributes (read only here)
 
 local function connect(inst, signalName, fn)
 	local ok, signal = pcall(function() return inst[signalName] end)
@@ -79,7 +93,7 @@ end
 local function sweepForeign()
 	for _, child in ipairs(Lighting:GetChildren()) do
 		if (child:IsA("PostEffect") or child:IsA("Atmosphere") or child:IsA("Sky") or child:IsA("Clouds")) and child:GetAttribute(OWNED) ~= true then
-			child:Destroy()
+			pcall(child.Destroy, child) -- QC L5: a locked / foreign instance must not stop the sweep
 		end
 	end
 end
@@ -92,7 +106,7 @@ FX.rays = own("SunRaysEffect", "Aether sun rays")
 FX.grade = own("ColorCorrectionEffect", "Aether grade")
 connect(Lighting, "ChildAdded", function(child)
 	if child:GetAttribute(OWNED) ~= true and (child:IsA("PostEffect") or child:IsA("Atmosphere") or child:IsA("Sky") or child:IsA("Clouds")) then
-		task.defer(function() if child.Parent == Lighting then child:Destroy() end end)
+		task.defer(function() if child.Parent == Lighting then pcall(child.Destroy, child) end end)
 	end
 end)
 
@@ -165,25 +179,72 @@ end
 ------------------------------------------------------------------------------
 local ROOT_NAMES = {AetherIsles = true, Islands = true, Townsfolk = true, LairInstances = true, ["The Hollow Observatory"] = true}
 pcall(function() ROOT_NAMES[Data.Minigames.ISLAND] = true end)
-local Lights = {list = {}, byLight = {}, sites = {}, bySite = {}, pool = {}, poolFolder = nil, connected = false}
+-- QC L1: entries / recs / selectLights scratch are reused every update.
+local Lights = {list = {}, byLight = {}, sites = {}, bySite = {}, pool = {}, poolFolder = nil, connected = false,
+	entries = {}, recs = {}, entryPool = {}, scratch = {}, dirty = false}
+Director.lights = Lights -- read by the headless suite
+-- Position of a light's host, and whether it can be cached (anchored host:
+-- the cache is dropped on every 10 s rescan, so a moved prop catches up).
 local function lightPos(l)
 	local host = l.Parent
-	if host and host:IsA("Attachment") and host.Parent and host.Parent:IsA("BasePart") then return (host.Parent.CFrame * host.CFrame).Position end
-	if host and host:IsA("BasePart") then return host.CFrame.Position end
-	return nil
+	if host and host:IsA("Attachment") and host.Parent and host.Parent:IsA("BasePart") then
+		return (host.Parent.CFrame * host.CFrame).Position, host.Parent.Anchored
+	end
+	if host and host:IsA("BasePart") then return host.CFrame.Position, host.Anchored end
+	return nil, false
 end
+local function boolAttr(inst, name)
+	local v = inst:GetAttribute(name)
+	return if type(v) == "boolean" then v else nil
+end
+local function watchAttr(inst, name)
+	local ok, connection = pcall(function()
+		return inst:GetAttributeChangedSignal(name):Connect(function() Lights.dirty = true end)
+	end)
+	return if ok then connection else nil
+end
+local dropSite
 local function register(l)
 	if Lights.byLight[l] or l:GetAttribute(OWNED) then return end
-	local rec = {light = l, night = l:GetAttribute("NightLight") == true, base = l.Enabled, brightness = l.Brightness,
-		hero = l.Shadows == true, enabled = l.Enabled, bright = l.Brightness, shadows = l.Shadows}
+	local night = l:GetAttribute("NightLight") == true
+	local wanted, hero = boolAttr(l, WANTED), boolAttr(l, HERO)
+	-- Legacy lights (no LightWanted): a night lamp is wanted (it is created off
+	-- and lit after dusk); any other light is wanted if it starts enabled.
+	if wanted == nil then wanted = night or l.Enabled end
+	if hero == nil then hero = l.Shadows == true end
+	local rec = {light = l, night = night, base = wanted, brightness = l.Brightness,
+		hero = hero, enabled = l.Enabled, bright = l.Brightness, shadows = l.Shadows,
+		conns = {watchAttr(l, WANTED), watchAttr(l, HERO)}}
 	Lights.byLight[l] = rec
 	table.insert(Lights.list, rec)
+	-- QC M2: a glow site registered before its own light arrived (streaming,
+	-- a late placement) must stop drawing a pooled light: drop any site that is
+	-- the light's host or an ancestor (3 levels), or a part of a small model on
+	-- that path (the same rule as hasOwnLight below).
+	local anc = l.Parent
+	for _ = 1, 3 do
+		if not anc then break end
+		local site = Lights.bySite[anc]
+		if site then dropSite(site) end
+		if anc:IsA("Model") and #anc:GetChildren() <= 12 then
+			for _, child in ipairs(anc:GetChildren()) do
+				local s = Lights.bySite[child]
+				if s then dropSite(s) end
+			end
+		end
+		anc = anc.Parent
+	end
 end
 local function hasOwnLight(part)
 	if part:FindFirstChildWhichIsA("Light", true) then return true end
 	local model = part.Parent
 	if model and model:IsA("Model") and #model:GetChildren() <= 12 and model:FindFirstChildWhichIsA("Light", true) then return true end
 	return false
+end
+dropSite = function(site)
+	site.dead = true
+	if Lights.bySite[site.part] == site then Lights.bySite[site.part] = nil end
+	Lights.dirty = true
 end
 local function registerSite(part)
 	if Lights.bySite[part] then return end
@@ -244,44 +305,80 @@ local function sitePosition(site)
 	-- Windows / stalls: spill just in front of the face, a third of the way up.
 	return cf.Position + cf.LookVector * (size.Z / 2 + 1) + Vector3.new(0, -size.Y / 6, 0)
 end
+local function entryAt(n)
+	local e = Lights.entryPool[n]
+	if not e then e = {}; Lights.entryPool[n] = e end
+	Lights.entries[n] = e
+	return e
+end
+local function dropRec(rec)
+	Lights.byLight[rec.light] = nil
+	for _, c in pairs(rec.conns) do pcall(function() c:Disconnect() end) end
+end
 function Lights.update(tierName, nightness)
 	local origin = rootPosition()
 	if not origin then return end
-	-- Drop lights / sites that left the world; adopt server changes (a value
-	-- that differs from what this script last wrote came from the server).
-	local entries, recs = {}, {}
-	local kept = {}
-	for _, rec in ipairs(Lights.list) do
+	Lights.dirty = false
+	-- Drop lights / sites that left the world (in place, QC L1); read server
+	-- intent from LightWanted / LightHero (QC M1), never from Enabled / Shadows.
+	local entries, recs = Lights.entries, Lights.recs
+	table.clear(entries); table.clear(recs)
+	local n, kept = 0, 0
+	local list = Lights.list
+	for i = 1, #list do
+		local rec = list[i]
 		local l = rec.light
 		if l.Parent and l:IsDescendantOf(workspace) then
-			table.insert(kept, rec)
-			if l.Enabled ~= rec.enabled then rec.base, rec.enabled = l.Enabled, l.Enabled end
+			kept += 1
+			list[kept] = rec
+			local wanted, hero = boolAttr(l, WANTED), boolAttr(l, HERO)
+			if wanted ~= nil then rec.base = wanted
+			elseif l.Enabled ~= rec.enabled then rec.base, rec.enabled = l.Enabled, l.Enabled end -- legacy: adopt a server edit
+			if hero ~= nil then rec.hero = hero
+			elseif l.Shadows ~= rec.shadows then rec.hero, rec.shadows = l.Shadows, l.Shadows end
 			if math.abs(l.Brightness - rec.bright) > 1e-3 then rec.brightness, rec.bright = l.Brightness, l.Brightness end
-			if l.Shadows ~= rec.shadows then rec.hero, rec.shadows = l.Shadows, l.Shadows end
-			local pos = lightPos(l)
+			local pos = rec.pos
+			if not pos then
+				local fixed
+				pos, fixed = lightPos(l)
+				if fixed then rec.pos = pos end
+			end
 			if pos then
-				table.insert(entries, {pos = pos, base = rec.base, night = rec.night, hero = rec.hero})
-				table.insert(recs, rec)
+				n += 1
+				local e = entryAt(n)
+				e.pos, e.base, e.night, e.hero, e.pooled = pos, rec.base, rec.night, rec.hero, false
+				recs[n] = rec
 			end
 		else
-			Lights.byLight[l] = nil
+			dropRec(rec)
 		end
 	end
-	Lights.list = kept
-	local keptSites = {}
-	for _, site in ipairs(Lights.sites) do
-		if site.part.Parent and site.part:IsDescendantOf(workspace) then
-			table.insert(keptSites, site)
-			table.insert(entries, {pos = sitePosition(site), pooled = true})
-			table.insert(recs, site)
-		else
+	for i = kept + 1, #list do list[i] = nil end
+	local sites = Lights.sites
+	kept = 0
+	for i = 1, #sites do
+		local site = sites[i]
+		if not site.dead and site.part.Parent and site.part:IsDescendantOf(workspace) then
+			kept += 1
+			sites[kept] = site
+			local pos = site.pos
+			if not pos then
+				pos = sitePosition(site)
+				if site.part.Anchored then site.pos = pos end
+			end
+			n += 1
+			local e = entryAt(n)
+			e.pos, e.base, e.night, e.hero, e.pooled = pos, true, false, false, true
+			recs[n] = site
+		elseif Lights.bySite[site.part] == site then
 			Lights.bySite[site.part] = nil
 		end
 	end
-	Lights.sites = keptSites
-	local modes = L.selectLights(entries, origin, tierName, nightness >= 0.5)
+	for i = kept + 1, #sites do sites[i] = nil end
+	local modes = L.selectLights(entries, origin, tierName, nightness >= 0.5, Lights.scratch)
 	local used = 0
-	for i, rec in ipairs(recs) do
+	for i = 1, n do
+		local rec = recs[i]
 		local mode = modes[i]
 		if rec.part then
 			if mode then
@@ -292,6 +389,7 @@ function Lights.update(tierName, nightness)
 				entry.light.Color, entry.light.Range = Color3.fromHex(kind.color), kind.range
 				entry.light.Brightness = L.lightBrightness(kind.brightness, nightness)
 				if not entry.light.Enabled then entry.light.Enabled = true end
+				entry.site = rec
 			end
 		else
 			local l = rec.light
@@ -307,9 +405,20 @@ function Lights.update(tierName, nightness)
 		end
 	end
 	for i = used + 1, #Lights.pool do
-		if Lights.pool[i].light.Enabled then Lights.pool[i].light.Enabled = false end
+		local entry = Lights.pool[i]
+		entry.site = nil
+		if entry.light.Enabled then entry.light.Enabled = false end
 	end
 	Lights.lastCount = used
+end
+-- Every 10 s: re-check glow sites (a light may have arrived in a sibling
+-- part since, QC M2) and drop cached anchored positions (QC L1).
+function Lights.rescan()
+	for _, site in ipairs(Lights.sites) do
+		site.pos = nil
+		if not site.dead and hasOwnLight(site.part) then dropSite(site) end
+	end
+	for _, rec in ipairs(Lights.list) do rec.pos = nil end
 end
 
 ------------------------------------------------------------------------------
@@ -328,6 +437,7 @@ function Director.step(dt)
 		contextAcc = 0
 		local tier = readTier()
 		if tier ~= Director.tier then Director.tier = tier; applyTier(tier); lightAcc = LIGHT_STEP end
+		if Lights.dirty then lightAcc = LIGHT_STEP end -- a LightWanted / LightHero change applies at once
 		updateContext(clockT)
 	end
 	if acc < STEP then return end
@@ -335,7 +445,7 @@ function Director.step(dt)
 	acc = 0
 	local clock = L.clockAt(now(), Data.Calendar)
 	Director.clock = clock
-	local sky = L.skyClock(clock)
+	local sky = L.skyClockFor(Director.key or L.DEFAULT_KEY, clock) -- interiors hold a fixed sun (QC L3)
 	if math.abs((Director.written.ClockTime or -1) - sky) >= 0.002 then
 		Lighting.ClockTime = sky
 		Director.written.ClockTime = sky
@@ -361,6 +471,7 @@ function Director.step(dt)
 		findRoots()
 		-- No DescendantAdded (headless harness): rescan the roots instead.
 		if not Lights.connected then for root in pairs(roots) do for _, inst in ipairs(root:GetDescendants()) do consider(inst) end end end
+		Lights.rescan()
 		sweepForeign()
 	end
 end

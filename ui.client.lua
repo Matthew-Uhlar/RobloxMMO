@@ -9033,27 +9033,63 @@ for _,o in ipairs(watchedSettings) do
 		if UI.atlasOpen and current=="Menu" and sectionOf and sectionOf.Menu=="Settings" and render then render() end
 	end)
 end
+-- §35 QC L6: a Settings change is applied locally at once and saved on the
+-- profile through the `setting` verb ("Attr=value"; the server whitelists it
+-- and re-applies saved values on join). Saves are coalesced per attribute and
+-- sent one at a time outside the action queue (no toast, no snapshot).
+UI.settingSaves,UI.settingSaving={},false
+function UI.saveSetting(attr,value)
+	player:SetAttribute(attr,value)
+	UI.settingSaves[attr]=value
+	if UI.settingSaving then return end
+	UI.settingSaving=true
+	task.spawn(function()
+		while true do
+			local nextAttr,nextValue=next(UI.settingSaves)
+			if nextAttr==nil then break end
+			UI.settingSaves[nextAttr]=nil
+			local action=ReplicatedStorage:FindFirstChild("IsleAction") -- (the `remote` local is declared further down)
+			if action then pcall(function() action:InvokeServer("setting",nextAttr.."="..tostring(nextValue)) end) end
+		end
+		UI.settingSaving=false
+	end)
+end
+-- §35 QC L7: the graphics card reads its tier text from AetherLighting
+-- (L.Tiers[*].detail, the same table the director runs), resolved lazily.
+function UI.lightingRules()
+	if UI.lightingModule==nil then
+		local object=ReplicatedStorage:FindFirstChild("AetherLighting")
+		if object then
+			local ok,rules=pcall(require,object)
+			UI.lightingModule=ok and type(rules)=="table" and rules or false
+		end
+	end
+	return UI.lightingModule or nil
+end
 function Pages.drawSettings()
-	heading("SETTINGS / SAVED FOR THIS SESSION")
+	heading("SETTINGS / SAVED TO YOUR JOURNAL")
 	for _,o in ipairs(SETTINGS) do
 		local value=Pages.settingValue(o)
 		card({name="Setting"..o.attr,motif="Settings",title=o.title,subtitle=value and paint("On","6FE3C8") or paint("Off","A9B4C0"),detail=o.detail,
 			actions={{caption=value and "Turn off" or "Turn on",primary=not value,name="Toggle"..o.attr,fn=function()
-				player:SetAttribute(o.attr,not Pages.settingValue(o))
+				UI.saveSetting(o.attr,not Pages.settingValue(o))
 				render()
 			end}}})
 	end
 	-- Graphics (§35): lighting.client.lua reads IsleSettingGraphics (it publishes
 	-- the device default on first run: phones Balanced, low quality Performance).
 	local GA="IsleSettingGraphics"
-	local tiers={{id="High",text="Future lighting with sun and lamp shadows, bloom, sun rays and grading."},
-		{id="Balanced",text="Sun shadows and grading; fewer lamps, no lamp shadows. Phone default."},
-		{id="Performance",text="No shadows or post effects; only the nearest lamps lit."}}
+	local LR=UI.lightingRules()
+	local tiers={}
+	for _,id in ipairs(LR and LR.TIER_ORDER or {"High","Balanced","Performance"}) do
+		local def=LR and LR.Tiers and LR.Tiers[id]
+		table.insert(tiers,{id=id,text=def and type(def.detail)=="string" and def.detail or nil})
+	end
 	local now=player:GetAttribute(GA)
-	local actions,detail={},{}
+	local actions,detail={},nil
 	for _,t in ipairs(tiers) do
 		local on=now==t.id
-		table.insert(actions,{caption=(on and "✓ " or "")..t.id,primary=on,name="Graphics"..t.id,fn=function() player:SetAttribute(GA,t.id) render() end})
+		table.insert(actions,{caption=(on and "✓ " or "")..t.id,primary=on,name="Graphics"..t.id,fn=function() UI.saveSetting(GA,t.id) render() end})
 		if on then detail=t.text end
 	end
 	card({name="SettingGraphics",motif="Settings",title="Graphics quality",subtitle=paint(type(now)=="string" and now or "Automatic","6FE3C8"),

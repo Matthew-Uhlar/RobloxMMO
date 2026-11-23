@@ -503,6 +503,7 @@ function H.runAtlas(size, options)
 	end
 	module("AetherArt", Catalog)
 	module("AetherData", Data)
+	if options.lighting then module("AetherLighting", options.lighting) end -- §35 Settings › Graphics quality reads L.Tiers
 	local action = new("RemoteFunction", { Name = "IsleAction" })
 	action.OnInvoke = function(verb, item)
 		table.insert(sent, { verb, item })

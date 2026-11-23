@@ -3944,6 +3944,40 @@ do
 		checks += 16
 	end
 
+	-- §35 QC L6 / L7: Settings › Graphics quality reads its tier text from
+	-- AetherLighting (L.Tiers[*].detail) and every Settings change is saved on
+	-- the profile with the whitelisted `setting` verb.
+	do
+		local L = luau.load(fs.readFile("shared/LightingProfiles.lua"), { debugName = "LightingProfiles", environment = { Color3 = roblox.Color3 }, injectGlobals = true })()
+		local ui = H.runAtlas(roblox.Vector2.new(1366, 768), { lighting = L })
+		ui.player:SetAttribute("IsleSettingGraphics", "Balanced")
+		H.press(H.find(ui.gui, "AtlasButton"))
+		H.press(H.find(ui.scroll, "MenuSettings"))
+		local function cardText(name)
+			local text = ""
+			for _, o in ipairs(H.find(ui.scroll, name):GetDescendants()) do if type(o.Text) == "string" then text ..= o.Text .. "\n" end end
+			return text
+		end
+		local function plain(text) return (string.gsub(text, "<[^>]->", "")) end
+		assert(plain(cardText("SettingGraphics")):find(L.Tiers.Balanced.detail, 1, true), "graphics card shows L.Tiers.Balanced.detail")
+		for _, id in ipairs(L.TIER_ORDER) do assert(H.find(ui.scroll, "Graphics" .. id), "a button per L.TIER_ORDER tier: " .. id) end
+		table.clear(ui.sent)
+		H.press(H.find(ui.scroll, "GraphicsPerformance"))
+		assert(ui.player:GetAttribute("IsleSettingGraphics") == "Performance", "choosing a tier applies it locally")
+		assert(plain(cardText("SettingGraphics")):find(L.Tiers.Performance.detail, 1, true), "graphics card follows the choice (L.Tiers.Performance.detail)")
+		local saved
+		for _, v in ipairs(ui.sent) do if v[1] == "setting" then saved = v[2] end end
+		assert(saved == "IsleSettingGraphics=Performance", "the tier is saved with the setting verb (" .. tostring(saved) .. ")")
+		assert(H.Data.PlayerSettings.parse(saved) == "IsleSettingGraphics", "the saved item passes the server whitelist")
+		table.clear(ui.sent)
+		H.press(H.find(ui.scroll, "ToggleIsleSettingMinimap"))
+		saved = nil
+		for _, v in ipairs(ui.sent) do if v[1] == "setting" then saved = v[2] end end
+		assert(saved == "IsleSettingMinimap=false", "a toggle is saved with the setting verb (" .. tostring(saved) .. ")")
+		for _, v in ipairs(ui.sent) do assert(v[1] == "setting", "a Settings change sends no other verb (" .. tostring(v[1]) .. ")") end
+		checks += 8
+	end
+
 	-- HUD lanes at three resolutions: the persistent HUD (sidebar, minimap,
 	-- action bar, hotbar gap, docked satchel on desktop) never overlaps and stays
 	-- on screen; satchel, menu and chart controls meet the touch floor on phones.

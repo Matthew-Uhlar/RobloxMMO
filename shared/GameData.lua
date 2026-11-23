@@ -12624,4 +12624,56 @@ end
 -- <<< END Systems Depth <<<
 ------------------------------------------------------------------------------
 
+------------------------------------------------------------------------------
+-- Player settings (docs/DEPTH-CONTRACT.md §35 QC L6). The IsleSetting*
+-- player attributes are client-set (and so never seen by the server); the
+-- Settings page also sends the `setting` verb ("Attr=value") so the choice is
+-- saved on the profile (p.settings) and re-applied as a server-set attribute
+-- on join. Only this whitelist is accepted; values are validated per kind.
+------------------------------------------------------------------------------
+do
+local S = {}
+S.list = {
+	{attr = "IsleSettingPinSatchel", kind = "bool"},
+	{attr = "IsleSettingXpDrops", kind = "bool"},
+	{attr = "IsleSettingMinimap", kind = "bool"},
+	{attr = "IsleSettingReducedMotion", kind = "bool"},
+	{attr = "IsleSettingGraphics", kind = "enum", values = {"High", "Balanced", "Performance"}}, -- = AetherLighting.TIER_ORDER (asserted)
+}
+S.byAttr = {}
+for _, o in ipairs(S.list) do S.byAttr[o.attr] = o end
+-- The validated value of a setting (bool / enum string), or nil.
+function S.clean(attr, value)
+	local o = type(attr) == "string" and S.byAttr[attr]
+	if not o then return nil end
+	if o.kind == "bool" then
+		if value == true or value == "true" then return true end
+		if value == false or value == "false" then return false end
+		return nil
+	end
+	if type(value) == "string" and table.find(o.values, value) then return value end
+	return nil
+end
+-- "Attr=value" (the verb's item) -> attr, value; nil when not whitelisted / invalid.
+function S.parse(item)
+	if type(item) ~= "string" or #item > 64 then return nil end
+	local attr, raw = string.match(item, "^([%w_]+)=([%w_]+)$")
+	local value = S.clean(attr, raw)
+	if value == nil then return nil end
+	return attr, value
+end
+function S.encode(attr, value) return tostring(attr) .. "=" .. tostring(value) end
+-- A saved map with only whitelisted, valid entries (unknown keys dropped).
+function S.sanitize(map)
+	local out = {}
+	if type(map) ~= "table" then return out end
+	for _, o in ipairs(S.list) do
+		local v = S.clean(o.attr, map[o.attr])
+		if v ~= nil then out[o.attr] = v end
+	end
+	return out
+end
+Data.PlayerSettings = S
+end
+
 return Data

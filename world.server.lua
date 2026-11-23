@@ -150,6 +150,11 @@ local function light(parent,color,brightness,range,opts)
 		l.Enabled=false -- the client director (§35) lights it after dusk
 		l:SetAttribute("NightLight",true)
 	end
+	-- §35 QC M1: server intent rides in attributes the client director never
+	-- writes (it culls Enabled / Shadows). Any later server toggle of this
+	-- light sets LightWanted too (see homePlacement.relight).
+	l:SetAttribute("LightWanted",true)
+	l:SetAttribute("LightHero",l.Shadows)
 	l.Parent=host
 	return l
 end
@@ -3396,6 +3401,7 @@ do
 			local ok=#lit<MAX_GLOWS
 			for _,o in ipairs(lit) do if ok and (o.pos-g.pos).Magnitude<GLOW_SPACING then ok=false end end
 			g.light.Enabled=ok
+			g.light:SetAttribute("LightWanted",ok) -- §35 QC M1: the director reads intent, not Enabled
 			if ok then table.insert(lit,g) end
 		end
 	end

@@ -12,18 +12,23 @@
 --                            Skyways) and L.INTERIOR_KEYS (Dungeon, Lair, Minigame)
 --   L.clockAt(t, Calendar)   isle clock 0..24 (same hour as the sidebar clock)
 --   L.skyClock(clock)        Lighting.ClockTime (sun sets at the sidebar's dusk)
+--   L.skyClockFor(key, clock) the same, but interiors hold a fixed daytime sky
 --   L.dayFactor(clock)       0 night .. 1 day (< .5 exactly when the sidebar says night)
 --   L.context(attrs, pos)    which profile the player is in
 --   L.target(key, clock, tier) -> state   the look to blend toward
 --   L.alphaFor(dt, tau), L.blend(a, b, alpha), L.distance(a, b)
 --   L.Tiers / L.TIER_ORDER / L.defaultTier(device) / L.readTier(value, device)
---   L.selectLights(list, origin, tier, night) -> {[i] = mode} light budget
+--   L.selectLights(list, origin, tier, night, scratch) -> {[i] = mode} light budget
+--   L.effectiveAmbient(state, tier) the ambient a surface actually gets on a tier
 --   L.valid(state) -> ok, why   finite and in range
 local L = {}
 L.VERSION = 1
 L.SETTING_ATTR = "IsleSettingGraphics" -- player attribute (client-set, like the other IsleSetting* toggles)
 
 local function rgb(hex) return Color3.fromHex(hex) end
+-- Relative luminance of a Color3 (gamma values, as the profiles are authored).
+local function lum(c) return 0.2126 * c.R + 0.7152 * c.G + 0.0722 * c.B end
+L.luminance = lum
 
 ------------------------------------------------------------------------------
 -- Fields. kind "number" | "color"; min / max bound every composed and blended
@@ -182,6 +187,18 @@ function L.skyClock(clock)
 	local into = (clock - L.DUSK) % 24 -- 0 .. 11 through the night
 	return (18 + into * (12 / (24 - (L.DUSK - L.DAWN)))) % 24
 end
+-- QC L3: interiors (Observatory, lairs, Skybreach Bastion) are instanced
+-- arenas the clock does not reach, so they hold a fixed daytime sun instead
+-- of showing the outdoor night sky: ClockTime = 8 + 6 × fixedDay (fixedDay
+-- 0.45 → 10.7, 0.55 → 11.3, 0.7 → 12.2: high sun, short shadows).
+function L.interiorClock(key)
+	local profile = L.Profiles[key]
+	if not profile or not profile.interior then return nil end
+	return 8 + 6 * math.clamp(tonumber(profile.fixedDay) or 0.5, 0, 1)
+end
+function L.skyClockFor(key, clock)
+	return L.interiorClock(key) or L.skyClock(clock)
+end
 local function smooth(x) x = math.clamp(x, 0, 1) return x * x * (3 - 2 * x) end
 L.RAMP = 0.75 -- hours either side of dawn / dusk
 function L.dayFactor(clock)
@@ -203,23 +220,34 @@ L.ZONES = {
 	{key = "Minigame", x = -2400, z = 0, r = 380}, -- minigames.server.lua ORIGIN (-2400, 90, 0)
 	{key = "Lair", minX = 3300}, -- lairs.server.lua ORIGIN (3600, 300, -3600) + slots along +X
 }
+local function inZone(zone, pos)
+	if zone.minX then return pos.X >= zone.minX end
+	local dx, dz = pos.X - zone.x, pos.Z - zone.z
+	return dx * dx + dz * dz <= zone.r * zone.r
+end
 function L.context(attrs, pos)
 	attrs = type(attrs) == "table" and attrs or {}
-	local lair = attrs.LairBoss
-	if type(lair) == "string" and lair ~= "" then return "Lair" end
-	if attrs.DungeonInRun == true then return "Dungeon" end
-	local match = attrs.MinigameGame
-	if type(match) == "string" and match ~= "" then return "Minigame" end
-	if pos and type(pos.X) == "number" and pos.X == pos.X then
+	local hasPos = pos ~= nil and type(pos.X) == "number" and pos.X == pos.X and type(pos.Z) == "number" and pos.Z == pos.Z
+	local zoneKey
+	if hasPos then
 		for _, zone in ipairs(L.ZONES) do
-			if zone.minX then
-				if pos.X >= zone.minX then return zone.key end
-			else
-				local dx, dz = pos.X - zone.x, pos.Z - zone.z
-				if dx * dx + dz * dz <= zone.r * zone.r then return zone.key end
-			end
+			if inZone(zone, pos) then zoneKey = zone.key break end
 		end
 	end
+	-- QC L4: an interior attribute names the arena the server thinks the
+	-- player is in, but the attributes can lag a teleport (or stick after a
+	-- crash). When the position is known and outside that arena's zone, the
+	-- position wins.
+	local claimed
+	local lair = attrs.LairBoss
+	if type(lair) == "string" and lair ~= "" then claimed = "Lair"
+	elseif attrs.DungeonInRun == true then claimed = "Dungeon"
+	else
+		local match = attrs.MinigameGame
+		if type(match) == "string" and match ~= "" then claimed = "Minigame" end
+	end
+	if claimed and (not hasPos or zoneKey == claimed) then return claimed end
+	if zoneKey then return zoneKey end
 	local here = attrs.IsleRegionHere
 	if type(here) == "string" and L.Profiles[here] and not L.Profiles[here].interior then return here end
 	return L.DEFAULT_KEY
@@ -241,17 +269,30 @@ local function lerp(field, a, b, t)
 	if field.kind == "color" then return a:Lerp(b, t) end
 	return a + (b - a) * t
 end
+-- Day / night looks are memoized per profile key (QC L2: L.target runs at
+-- 15 Hz). The cached tables are shared: callers must not mutate them.
+-- L.clearLookCache() drops the cache after a profile is edited (tests).
+local dayCache, nightCache = {}, {}
+function L.clearLookCache() table.clear(dayCache); table.clear(nightCache) end
+local function profileKey(key) return if L.Profiles[key] then key else L.DEFAULT_KEY end
 -- Day look of a profile (fully resolved).
 function L.dayLook(key)
-	local profile = L.Profiles[key] or L.Profiles[L.DEFAULT_KEY]
+	key = profileKey(key)
+	local cached = dayCache[key]
+	if cached then return cached end
+	local profile = L.Profiles[key]
 	local out = {}
 	for _, f in ipairs(L.FIELDS) do out[f.key] = resolve(f, value(profile, f.key)) end
+	dayCache[key] = out
 	return out
 end
 -- Night look: the profile's own night overrides, else the shared moonlit
 -- night tinted 25% toward the region's day colours (so biomes stay distinct).
 function L.nightLook(key)
-	local profile = L.Profiles[key] or L.Profiles[L.DEFAULT_KEY]
+	key = profileKey(key)
+	local cached = nightCache[key]
+	if cached then return cached end
+	local profile = L.Profiles[key]
 	local day = L.dayLook(key)
 	local own = profile.night or {}
 	local out = {}
@@ -268,6 +309,7 @@ function L.nightLook(key)
 			out[f.key] = day[f.key]
 		end
 	end
+	nightCache[key] = out
 	return out
 end
 -- Effective daylight for a profile at an isle clock.
@@ -295,7 +337,25 @@ function L.target(key, clock, tierName)
 	end
 	local tier = L.Tiers[tierName] or L.Tiers[L.DEFAULT_TIER]
 	out.BloomIntensity *= tier.bloomScale
+	if not tier.globalShadows then
+		-- QC M3: with GlobalShadows off Roblox lights every surface with Ambient
+		-- only (OutdoorAmbient drops out), so Performance went far darker than
+		-- the other tiers at night. Lift Ambient toward OutdoorAmbient just far
+		-- enough to reach the readability floor (luminance is linear in RGB, so
+		-- the lerp fraction is exact), never past OutdoorAmbient itself.
+		local a, o = lum(out.Ambient), lum(out.OutdoorAmbient)
+		local floor = tier.ambientFloor or L.READABLE_AMBIENT
+		if a < floor and o > a then
+			out.Ambient = out.Ambient:Lerp(out.OutdoorAmbient, math.clamp((floor - a) / (o - a), 0, 1))
+		end
+	end
 	return out
+end
+-- The ambient light a surface actually receives on a tier: OutdoorAmbient
+-- under open sky with GlobalShadows on, Ambient everywhere with it off.
+function L.effectiveAmbient(state, tierName)
+	local tier = L.Tiers[tierName] or L.Tiers[L.DEFAULT_TIER]
+	return if tier.globalShadows then state.OutdoorAmbient else state.Ambient
 end
 
 ------------------------------------------------------------------------------
@@ -357,6 +417,10 @@ L.Tiers = {
 		lights = 10, cull = 130, pool = 0, shadows = "none", heroShadowRange = 0},
 }
 L.TIER_ORDER = {"High", "Balanced", "Performance"}
+-- Readability floor for the ambient a surface receives (L.effectiveAmbient):
+-- a tier without GlobalShadows lifts Ambient toward OutdoorAmbient until it
+-- reaches this luminance (or OutdoorAmbient itself, if that is darker).
+L.READABLE_AMBIENT = 0.3
 L.DEFAULT_TIER = "High"
 L.MAX_LIGHT_BRIGHTNESS = 1.5 -- verify-world's per-light ceiling
 L.NIGHT_BOOST = 0.3 -- lamps and glows burn 30% brighter at full night
@@ -382,24 +446,41 @@ end
 -- shadow caster), pooled = bool (a client glow site)}. Returns modes per index:
 -- nil = off, "on", "shadow" (on with shadows); plus counts.
 ------------------------------------------------------------------------------
-function L.selectLights(list, origin, tierName, isNight)
+-- QC M1: `base` is the server's intent (the LightWanted attribute), never the
+-- light's live Enabled (which this budget itself writes). A night lamp burns
+-- only at night AND only while the server wants it; a glow site only at night.
+-- scratch (optional, QC L1): a table the caller keeps between calls; its
+-- candidate nodes and modes table are reused instead of reallocated. The
+-- returned modes table is then scratch.modes (valid until the next call).
+local function byRank(a, b) if a.rank ~= b.rank then return a.rank < b.rank end return a.i < b.i end
+function L.selectLights(list, origin, tierName, isNight, scratch)
 	local tier = L.Tiers[tierName] or L.Tiers[L.DEFAULT_TIER]
-	local wanted, pooled = {}, {}
+	local wanted, pooled, nodes, modes
+	if scratch then
+		scratch.wanted, scratch.pooled, scratch.nodes, scratch.modes = scratch.wanted or {}, scratch.pooled or {}, scratch.nodes or {}, scratch.modes or {}
+		wanted, pooled, nodes, modes = scratch.wanted, scratch.pooled, scratch.nodes, scratch.modes
+		table.clear(wanted); table.clear(pooled); table.clear(modes)
+	else
+		wanted, pooled, nodes, modes = {}, {}, {}, {}
+	end
+	local used = 0
 	for i, e in ipairs(list) do
-		local want = if e.pooled or e.night then isNight == true else e.base ~= false
+		local want = if e.pooled then isNight == true elseif e.night then isNight == true and e.base ~= false else e.base ~= false
 		if want and e.pos and origin then
 			local d = (e.pos - origin).Magnitude
 			if d == d and d <= tier.cull then
 				-- Hero lights read from further away: they rank as if 40% nearer.
-				local rank = if e.hero then d * 0.6 else d
-				table.insert(if e.pooled then pooled else wanted, {i = i, d = d, rank = rank})
+				used += 1
+				local node = nodes[used]
+				if not node then node = {}; nodes[used] = node end
+				node.i, node.d, node.rank = i, d, if e.hero then d * 0.6 else d
+				table.insert(if e.pooled then pooled else wanted, node)
 			end
 		end
 	end
-	local byRank = function(a, b) if a.rank ~= b.rank then return a.rank < b.rank end return a.i < b.i end
 	table.sort(wanted, byRank)
 	table.sort(pooled, byRank)
-	local modes, lit, shadows = {}, 0, 0
+	local lit, shadows = 0, 0
 	local poolCap = math.min(tier.pool, tier.lights)
 	local glow = 0
 	for _, w in ipairs(pooled) do
@@ -443,8 +524,6 @@ L.GLOW_KINDS = {
 ------------------------------------------------------------------------------
 -- Validation (every composed / blended state; verify-lighting).
 ------------------------------------------------------------------------------
-local function lum(c) return 0.2126 * c.R + 0.7152 * c.G + 0.0722 * c.B end
-L.luminance = lum
 function L.valid(state)
 	if type(state) ~= "table" then return false, "no state" end
 	for _, f in ipairs(L.FIELDS) do

@@ -4833,6 +4833,10 @@ local function open(player)
 		return
 	end
 	profiles[player]=profile
+	-- §35 QC L6: saved Settings (whitelisted IsleSetting* values) come back as
+	-- server-set attributes, so the graphics tier and toggles survive a rejoin.
+	profile.settings=Data.PlayerSettings.sanitize(profile.settings)
+	for attr,value in pairs(profile.settings) do player:SetAttribute(attr,value) end
 	if Classes.publish then Classes.publish(player,profile) end -- Dungeon classes: DungeonClass / DungeonMasterOn attributes
 	for name in pairs(decorations) do player:SetAttribute("Home"..name,profile.decorations[name]==true) end
 	leaseEnd[player]=if preview[player] then os.time()+180 else committed.expires
@@ -7805,6 +7809,17 @@ action.OnServerInvoke=function(player,verb,item)
 		if os.clock()<(stateRead[player] or 0) then return nil end
 		stateRead[player]=os.clock()+STATE_INTERVAL
 		return snapshot(player)
+	end
+	if verb=="setting" then
+		-- §35 QC L6: save one whitelisted Settings value ("Attr=value") on the
+		-- profile; no snapshot, no toast, no action cooldown (the 0.08 s read
+		-- throttle above bounds it). The client already applied it locally.
+		local p=live(player)
+		local attr,value=Data.PlayerSettings.parse(item)
+		if not p or not attr then return {setting=true,ok=false} end
+		p.settings=Data.PlayerSettings.sanitize(p.settings)
+		p.settings[attr]=value
+		return {setting=true,ok=true}
 	end
 	if item~=nil and #item>70 then return snapshot(player,"That request is too long.") end
 	-- Held items: hotbar keys and scrolls get a compact reply, never a full snapshot.

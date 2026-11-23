@@ -242,6 +242,26 @@ eq(cmd(builder,"state").items.Timber,5,"duplicate decoration does not charge")
 services.Players.PlayerRemoving:Fire(builder)
 builder=player(20)
 eq(cmd(builder,"state").decorations.Lanterns,true,"decoration survives rejoin")
+-- §35 QC L6: Settings (graphics tier + IsleSetting* toggles) persist across a
+-- rejoin through the whitelisted `setting` verb; anything else is refused.
+do
+	local viewer=player(9722)
+	cmd(viewer,"state")
+	eq(cmd(viewer,"setting","IsleSettingGraphics=Performance").ok,true,"graphics tier saved")
+	eq(cmd(viewer,"setting","IsleSettingMinimap=false").ok,true,"a toggle saved")
+	eq(cmd(viewer,"setting","IsleSettingGraphics=Ultra").ok,false,"an unknown tier is refused")
+	eq(cmd(viewer,"setting","LairBoss=Ashmaw").ok,false,"a non-whitelisted attribute is refused")
+	eq(cmd(viewer,"setting","IsleSettingMinimap").ok,false,"a malformed setting is refused")
+	eq(cmd(viewer,"setting",nil).ok,false,"a missing setting is refused")
+	eq(viewer.IsleSettingGraphics,nil,"the verb never echoes the attribute mid-session")
+	services.Players.PlayerRemoving:Fire(viewer)
+	viewer=player(9722)
+	cmd(viewer,"state")
+	eq(viewer.IsleSettingGraphics,"Performance","the graphics tier is re-applied on rejoin")
+	eq(viewer.IsleSettingMinimap,false,"the toggle is re-applied on rejoin")
+	eq(viewer.LairBoss,nil,"refused settings were never saved")
+	services.Players.PlayerRemoving:Fire(viewer)
+end
 local novice=player(21)
 eq(cmd(novice,"craft","Blade").items.Blade,nil,"collection recipe locked")
 for _=1,6 do use(novice,ore) end
