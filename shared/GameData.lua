@@ -13964,7 +13964,7 @@ CT.FEATURED = 3                     -- crops per contest
 CT.GRACE = 90                       -- seconds after the close before a server seals; scores harvested in time are written until GRACE / 2
 CT.SHARDS = 64                      -- score items per contest (UserId % SHARDS)
 CT.SHARD_CAP = 1000                 -- entrants per score item (~25 KB JSON worst case, under the 32 KB item limit; 64k per contest)
-CT.GROUPS = 8                       -- histogram mirror items per contest (live estimates read these only)
+CT.GROUPS = 16                      -- histogram mirror items per contest (live estimates read these only; QC L5: 4 shards a group, worst case < 32 KB)
 CT.SCORE_CAP = 10000000             -- one entry's score never exceeds this
 CT.FLUSH = 10                       -- seconds between a server's score flushes (one UpdateAsync per pending shard)
 CT.MIRROR = 20                      -- seconds between histogram mirror writes
@@ -13976,16 +13976,20 @@ CT.BACKOFF_BASE = 2                 -- first retry delay of a failing key (doubl
 CT.BACKOFF_MAX = 120
 CT.SEAL_LEASE = 60                  -- one server's claim to seal a contest
 CT.SEAL_RETRY = 30                  -- seconds between sealing attempts / result reads
-CT.TTL_PAD = 7200                   -- MemoryStore items expire this long after the close (per-contest TTL)
+CT.TTL_PAD = 21600                  -- MemoryStore items expire this long after the close (per-contest TTL; QC M2: 6 h, so a late rejoiner can still get a seal)
 CT.RESULT_SLOTS = 64                -- DataStore ring of sealed results (~54 hours of contests)
 CT.OPEN_MAX = 8                     -- entries awaiting a sealed result per journal
 CT.HISTORY = 12                     -- finished entries kept per journal
 CT.ENTER_COOLDOWN = 2               -- seconds between contestEnter changes
 CT.MEDAL = "HarvestMedal"           -- journal currency (p.contests.medals), not an item
 CT.MEDAL_VALUE = 25                 -- most coins any exchange item sells for, per medal paid (no coin mint)
-CT.MAP_PREFIX = "contest_v1_"       -- MemoryStore SortedMaps: <k>_t (score shards, histogram groups, seal), <k>_lb (leaderboard)
+CT.MAP_PREFIX = "contest_v2_"       -- MemoryStore SortedMaps: <k>_t (score shards, histogram groups, seal), <k>_lb (leaderboard); v2 = the QC L9 packing
 CT.RESULT_PREFIX = "contest_v1_result_" -- DataStore ring key <k % RESULT_SLOTS>
 CT.STEWARD = "ContestSteward"
+CT.QUALIFY_FARMING = 10             -- QC L9 (lead decision): entrants below Farming 10 never count toward a crop's field n
+CT.QUALIFY_MEDIAN = 0.25            -- QC L9: nor do scores under 25 % of the crop's median placing score
+CT.START_TOAST_FARMING = 5          -- QC L11: the HARVEST CONTEST bell toast goes to Farming 5+ journals ...
+CT.START_TOAST_DAYS = 3             -- ... or to journals that scored in a contest within the last 3 days
 
 -- Crops: the Verdant Garden crops (field crops count from nodes and plots,
 -- garden-only crops from plots). min = the least score that places.
@@ -14057,13 +14061,15 @@ function CT.span(seconds)
 end
 
 -- Scores ---------------------------------------------------------------------------
--- A stored entry packs the featured slot (1..3) with the score: score * 4 + slot.
-function CT.pack(slot, score) return math.min(whole(score), CT.SCORE_CAP) * 4 + math.clamp(whole(slot), 1, 3) end
+-- A stored entry packs the featured slot (1..3), the QC L9 low flag (the
+-- journal was below CT.QUALIFY_FARMING when it scored) and the score:
+-- score * 8 + low * 4 + slot. unpack -> slot, score, low.
+function CT.pack(slot, score, low) return math.min(whole(score), CT.SCORE_CAP) * 8 + (if low then 4 else 0) + math.clamp(whole(slot), 1, 3) end
 function CT.unpack(v)
 	v = whole(v)
 	local slot = v % 4
-	if slot < 1 then return nil, 0 end
-	return slot, v // 4
+	if slot < 1 then return nil, 0, false end
+	return slot, v // 8, (v // 4) % 2 == 1
 end
 function CT.shardOf(userId) return whole(userId) % CT.SHARDS + 1 end
 function CT.groupOf(shard) return (whole(shard) - 1) % CT.GROUPS + 1 end
@@ -14093,9 +14099,9 @@ function CT.histogram(v, k)
 	local crops = CT.window(k).crops
 	local h = {{}, {}, {}}
 	for _, packed in pairs(tab(v)) do
-		local slot, score = CT.unpack(packed)
+		local slot, score, low = CT.unpack(packed)
 		local crop = slot and CT.CropById[crops[slot]]
-		if crop and score >= crop.min then
+		if crop and score >= crop.min and not low then -- QC L9: low-level entrants never join the field
 			local b = tostring(CT.bucket(score))
 			h[slot][b] = (h[slot][b] or 0) + 1
 		end
@@ -14112,8 +14118,8 @@ function CT.cleanShard(old, k)
 	end
 	return out
 end
--- Atomic shard transform: ops = {[uid string] = {c = slot, s = score}} (the
--- journal's current entry). Scores only rise (idempotent under retries, lost
+-- Atomic shard transform: ops = {[uid string] = {c = slot, s = score, l = low}}
+-- (the journal's current entry; l = below CT.QUALIFY_FARMING). Scores only rise (idempotent under retries, lost
 -- acknowledgements, rejoins on other servers and out-of-order flushes); a
 -- write after the contest's write deadline, or a new entrant into a full
 -- shard, is refused. Returns the new item (nil = nothing changed) and
@@ -14128,8 +14134,11 @@ function CT.applyScores(old, ops, k, now)
 		if type(uid) ~= "string" or #uid > 20 or slot < 1 or slot > CT.FEATURED or score < 1 then
 			verdicts[uid] = {v="bad"}
 		else
-			local oldSlot, oldScore = CT.unpack(item.v[uid])
-			if oldSlot and oldScore >= score then
+			local oldSlot, oldScore, oldLow = CT.unpack(item.v[uid])
+			-- QC L9: the low flag only ever clears (a journal that scores at Farming 10+ stays qualified).
+			local low = tab(op).l == true
+			local newLow = if oldSlot then oldLow and low else low
+			if oldSlot and oldScore >= score and newLow == oldLow then
 				verdicts[uid] = {v="stale", s=oldScore}
 			elseif late then
 				verdicts[uid] = {v="late", s=oldScore}
@@ -14137,7 +14146,8 @@ function CT.applyScores(old, ops, k, now)
 				verdicts[uid] = {v="full", s=0}
 			else
 				if not oldSlot then item.n += 1 end
-				item.v[uid] = CT.pack(oldSlot or slot, score)
+				score = math.max(score, oldScore)
+				item.v[uid] = CT.pack(oldSlot or slot, score, newLow)
 				verdicts[uid] = {v="ok", s=score}
 				changed = true
 			end
@@ -14206,7 +14216,18 @@ function CT.estimate(hist, score, crop)
 	local rank = above + math.floor((same - 1) * (1 - position) + 0.5) + 1
 	return CT.bracketForRank(rank, n), rank, n
 end
+-- Median score of a list of {s} sorted best first (0 when empty).
+function CT.median(list)
+	local m = #tab(list)
+	if m == 0 then return 0 end
+	return (list[(m + 1) // 2].s + list[m // 2 + 1].s) / 2
+end
 -- Exact sealing: cut-off scores per slot from every stored entry.
+-- QC L9 (lead decision): the field n (bracket shares and minimum fields) and
+-- the cut-offs come only from qualified entrants: Farming >= CT.QUALIFY_FARMING
+-- when they scored (the packed low flag) and a score >= CT.QUALIFY_MEDIAN x the
+-- crop's median placing score. Every placing entrant is still judged by the
+-- cut-offs and can hold a top-three row.
 -- result = {k, crops, slots = {[slot] = {n, cut = {[bracket] = score}, top = {{u, s}}}}}.
 function CT.seal(k, shards)
 	local w = CT.window(k)
@@ -14214,11 +14235,11 @@ function CT.seal(k, shards)
 	local seen = {}
 	for _, sh in pairs(tab(shards)) do
 		for uid, packed in pairs(tab(tab(sh).v)) do
-			local slot, score = CT.unpack(packed)
+			local slot, score, low = CT.unpack(packed)
 			local crop = slot and CT.CropById[w.crops[slot]]
 			if crop and score >= crop.min and not seen[uid] then
 				seen[uid] = true
-				table.insert(lists[slot], {u=uid, s=score})
+				table.insert(lists[slot], {u=uid, s=score, low=low})
 			end
 		end
 	end
@@ -14226,16 +14247,50 @@ function CT.seal(k, shards)
 	for slot = 1, CT.FEATURED do
 		local list = lists[slot]
 		table.sort(list, function(a, b) if a.s ~= b.s then return a.s > b.s end return a.u < b.u end)
-		local n = #list
+		local least = CT.QUALIFY_MEDIAN * CT.median(list)
+		local field = {}
+		for _, e in ipairs(list) do if not e.low and e.s >= least then table.insert(field, e) end end
+		local n = #field
 		local cut = {}
 		for _, b in ipairs(CT.Brackets) do
-			if n >= b.minPop then cut[b.id] = list[math.max(1, math.floor(b.top * n))].s end
+			if n >= b.minPop then cut[b.id] = field[math.max(1, math.floor(b.top * n))].s end
 		end
 		local top = {}
-		for i = 1, math.min(3, n) do table.insert(top, {u=list[i].u, s=list[i].s}) end
+		for i = 1, math.min(3, #list) do table.insert(top, {u=list[i].u, s=list[i].s}) end
 		result.slots[slot] = {n=n, cut=cut, top=top}
 	end
 	return result
+end
+-- QC L5 / L10: the contest k of a server-memory key "<map name>/<key>" (nil
+-- when it is not a contest map key).
+function CT.keyContest(name)
+	local prefix = string.gsub(CT.MAP_PREFIX, "%p", "%%%0")
+	return tonumber(string.match(tostring(name), "^" .. prefix .. "(%d+)_"))
+end
+-- Drops server memory no write can use any more: mirror queues and per-key
+-- backoff state of contests past their write deadline (and keys of no contest).
+function CT.prune(mirrorQ, keyState, now)
+	now = math.floor(tonumber(now) or 0)
+	for k in pairs(tab(mirrorQ)) do
+		if type(k) ~= "number" or now >= CT.window(k).writeDeadline then mirrorQ[k] = nil end
+	end
+	for name in pairs(tab(keyState)) do
+		local k = CT.keyContest(name)
+		if not k or now >= CT.window(k).writeDeadline then keyState[name] = nil end
+	end
+end
+-- QC L11: does contest k's bell toast go to this journal? Farming >=
+-- CT.START_TOAST_FARMING, or an entry scored within CT.START_TOAST_DAYS.
+function CT.wantsStartToast(farmingLevel, c, k)
+	if whole(farmingLevel) >= CT.START_TOAST_FARMING then return true end
+	c = tab(c)
+	local recent = whole(k) - math.ceil(CT.START_TOAST_DAYS * 86400 / CT.PERIOD)
+	local cur = tab(c.cur)
+	if whole(cur.s) > 0 and whole(cur.k) >= recent then return true end
+	for _, list in ipairs({tab(c.open), tab(c.history)}) do
+		for _, e in ipairs(list) do if type(e) == "table" and whole(e.k) >= recent then return true end end
+	end
+	return false
 end
 -- A stored result, sanitised (nil when it is not contest k's).
 function CT.cleanResult(r, k)
@@ -14279,16 +14334,29 @@ function CT.reward(crop, bracket, placed)
 end
 
 -- Medal Exchange ------------------------------------------------------------------
-item("FurrowMedallion",{name="Furrow Medallion",kind="accessory",rarity="Uncommon",color=Data.Rarity.Uncommon.color,stats={farmingFortune=8},value=40*Data.Rarity.Uncommon.rank^2,
+-- QC M1: the two medallions are one accessory family (Progression.accessoryFamily
+-- reads def.family): only the better one ever counts.
+item("FurrowMedallion",{name="Furrow Medallion",kind="accessory",family="contests:medallion",rarity="Uncommon",color=Data.Rarity.Uncommon.color,stats={farmingFortune=8},value=40*Data.Rarity.Uncommon.rank^2,
 	description="Accessory. Magical Power "..Data.Rarity.Uncommon.power..". Medal Exchange (Harvest Contests)."})
-item("LaureateMedallion",{name="Laureate's Medallion",kind="accessory",rarity="Epic",color=Data.Rarity.Epic.color,stats={farmingFortune=20,health=10},value=40*Data.Rarity.Epic.rank^2,
+item("LaureateMedallion",{name="Laureate's Medallion",kind="accessory",family="contests:medallion",rarity="Epic",color=Data.Rarity.Epic.color,stats={farmingFortune=20,health=10},value=40*Data.Rarity.Epic.rank^2,
 	description="Accessory. Magical Power "..Data.Rarity.Epic.power..". Medal Exchange; upgrades the Furrow Medallion."})
 item("MedalistHoe",{name="Medalist's Hoe",kind="tool",toolKind="Hoe",slot="hoe",toolTier=5,tier=5,rarity="Epic",color="E9C46A",stats={farmingFortune=135},requires={Farming=55},value=1800,
 	description="Tier 5 hoe from the Medal Exchange. Requires Farming 55."})
 item("HarvestTonic",{name="Harvest Tonic",kind="consumable",category="potion",rarity="Uncommon",color="E9C46A",buff={stats={farmingFortune=50},duration=600},value=30,
 	description="Potion: +50 Farming Fortune for 10 minutes. Medal Exchange."})
--- kind: item (amount; unique = one owned at most; upgrade = item consumed),
--- almanac (the next Furrow Almanac volume), title (cosmetic).
+-- kind: item (amount; unique = one owned at most; upgrade = item consumed;
+-- level = Farming; gardenLevel = Verdant Garden level), almanac (the next
+-- Furrow Almanac volume), title (cosmetic).
+-- QC M5: an item the Verdant Garden shop also sells never costs fewer medals
+-- than its garden price per unit (coins + materials at their value) /
+-- CT.MEDAL_VALUE, behind the same garden-level gate.
+function CT.gardenUnitValue(itemId)
+	local e = G.ShopById[itemId]
+	if not e or e.kind ~= "item" then return nil end
+	local v = 0
+	for id, n in pairs(e.cost) do v += (if id == "coins" then 1 else (Data.Items[id] and Data.Items[id].value or 0)) * n end
+	return v / math.max(1, e.amount)
+end
 CT.ALMANAC = {5, 5, 5, 5}           -- +Farming Fortune per volume (p.perkStats.contests; never Health / Defense)
 CT.ALMANAC_COST = {20, 45, 80, 130}
 CT.Titles = {
@@ -14300,7 +14368,7 @@ CT.TitleById = {}
 for _, t in ipairs(CT.Titles) do CT.TitleById[t.id] = t end
 CT.Shop = {
 	{id="HarvestTonic",kind="item",item="HarvestTonic",amount=2,medals=3},
-	{id="LotusBud",kind="item",item="LotusBud",amount=2,medals=4},
+	{id="LotusBud",kind="item",item="LotusBud",amount=1,medals=math.ceil(CT.gardenUnitValue("LotusBud") / CT.MEDAL_VALUE),gardenLevel=G.ShopById.LotusBud.level},
 	{id="FurrowMedallion",kind="item",item="FurrowMedallion",amount=1,medals=25,unique=true},
 	{id="LaureateMedallion",kind="item",item="LaureateMedallion",amount=1,medals=90,unique=true,upgrade="FurrowMedallion"},
 	{id="MedalistHoe",kind="item",item="MedalistHoe",amount=1,medals=110,unique=true,level=55},
@@ -14309,6 +14377,17 @@ CT.Shop = {
 for _, t in ipairs(CT.Titles) do table.insert(CT.Shop, {id="Title"..t.id, kind="title", title=t.id, medals=t.medals}) end
 CT.ShopById = {}
 for i, e in ipairs(CT.Shop) do e.index = i; CT.ShopById[e.id] = e end
+-- QC M1: items that upgrade from `itemId` through the exchange (transitively).
+function CT.upgradesOf(itemId)
+	local out, frontier = {}, {itemId}
+	while #frontier > 0 do
+		local from = table.remove(frontier)
+		for _, e in ipairs(CT.Shop) do
+			if e.upgrade == from and e.item and not table.find(out, e.item) then table.insert(out, e.item); table.insert(frontier, e.item) end
+		end
+	end
+	return out
+end
 function CT.almanacStats(volumes)
 	local ff = 0
 	for i = 1, math.min(whole(volumes), #CT.ALMANAC) do ff += CT.ALMANAC[i] end
@@ -14558,7 +14637,7 @@ function TF.titles(claimed)
 	return out
 end
 -- Journal record p.trophy = {caught = {[fish] = {Bronze, Silver, Gold, Diamond counts}},
--- best = {[fish] = tier}, pity = {[fish] = {g, d}}, total, diamonds, bait, claimed = {[ledger] = true}, title, casts}.
+-- best = {[fish] = tier}, pity = {[fish] = {g, d}}, total, diamonds, bait, claimed = {[ledger] = true}, title, casts, ledgerAnn = {[ledger] = true}}.
 function TF.migrate(raw)
 	raw = tab(raw)
 	local t = {caught={}, best={}, pity={}, claimed={}, total=0, diamonds=0, casts=whole(raw.casts)}
@@ -14575,6 +14654,9 @@ function TF.migrate(raw)
 	end
 	if type(raw.bait) == "string" and TF.Baits[raw.bait] then t.bait = raw.bait end
 	for id in pairs(tab(raw.claimed)) do if TF.LedgerById[id] then t.claimed[id] = true end end
+	-- QC L2: ledger tiers already announced (known ids only).
+	t.ledgerAnn = {}
+	for id in pairs(tab(raw.ledgerAnn)) do if TF.LedgerById[id] then t.ledgerAnn[id] = true end end
 	if type(raw.title) == "string" then
 		for _, l in ipairs(TF.titles(t.claimed)) do if l.id == raw.title then t.title = raw.title end end
 	end

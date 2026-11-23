@@ -142,6 +142,8 @@ end
 -- Crest (`faction`) are one family too ("faction:<id>").
 function Progression.accessoryFamily(id)
 	local def = Data.Items[id]
+	-- An explicit family (§39 QC M1: the Furrow and Laureate's Medallions).
+	if def and def.kind == "accessory" and type(def.family) == "string" then return def.family end
 	if def and def.category == "jewellery" and type(def.gem) == "string" then return "jewellery:" .. def.gem end
 	-- A faction's Charm and Crest are one family: only the better one counts.
 	if def and def.kind == "accessory" and type(def.faction) == "string" then return "faction:" .. def.faction end

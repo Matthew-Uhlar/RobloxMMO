@@ -4768,11 +4768,14 @@ function Sea.count(book)
 end
 function Sea.cast(player,p,stats,toolId,region,prompt)
 	local book=Sea.book(player)
-	if Sea.count(book)>=Data.SeaCreatureCap then return "" end
+	local capped=Sea.count(book)>=Data.SeaCreatureCap
 	local rod=toolId and Data.Items[toolId]
 	local chance=Data.seaCreatureChance(stats,rod and rod.stats,toolId and Progression.enchantStats(p,toolId,"tool","Fishing"))
 	local id=Data.rollSeaCreature(level(p.xp.Fishing),region,chance,roll)
 	if not id then return "" end
+	-- §39 QC L6: at the cap the chance is still rolled; a hit spends the cast
+	-- (second result true: no trophy roll), so a full book never raises the trophy rate.
+	if capped then return "",true end
 	book.seq+=1
 	book.live[book.seq]={id=id,expires=os.clock()+Data.SeaCreatureLifetime+Sea.GRACE,region=region} -- region: §36 council Magic Find
 	local base=prompt and prompt:FindFirstAncestorWhichIsA("BasePart")
@@ -5312,6 +5315,15 @@ do
 	local function harvestAll(p,g,now,list)
 		local stats=Progression.computeStats(p,now)
 		local xp,seeds,crops,extra=0,0,{},""
+		-- §39 QC L8: the entered contest crop's plots first (an unscored entry
+		-- follows the first featured harvest, so plot order must not switch it).
+		local entered=Contests.entryCrop and Contests.entryCrop(p)
+		if entered and #list>1 then
+			local ordered={}
+			for _,i in ipairs(list) do if g.plots[i].crop==entered then table.insert(ordered,i) end end
+			for _,i in ipairs(list) do if g.plots[i].crop~=entered then table.insert(ordered,i) end end
+			list=ordered
+		end
 		for _,i in ipairs(list) do
 			local id=g.plots[i].crop
 			local n,x,s,more=harvest(p,g,i,stats,now)
@@ -7577,6 +7589,21 @@ do
 	local rings={}   -- player -> {seq, list} (cleared in forget)
 	local RING_SECONDS,RING_MAX=30,F.ANNOUNCE_MAX
 	local RENOWN_INTERVAL=5 -- seconds a cached breakdown serves snapshots when nothing marked it dirty
+	-- Move a profile's queued announcements into the player's recent ring.
+	local function toRing(player,p)
+		local list=pending[p]
+		if not list then return end
+		pending[p]=nil
+		local ring=rings[player]
+		if not ring then ring={seq=0,list={}}; rings[player]=ring end
+		for _,entry in ipairs(list) do
+			ring.seq+=1
+			local copy=table.clone(entry)
+			copy.seq,copy.at=ring.seq,os.clock()
+			table.insert(ring.list,copy)
+		end
+		F.trimAnnouncements(ring.list,RING_MAX) -- oldest ordinary entries first; renown / path entries stay
+	end
 	function Features.announce(p,entry)
 		local list=pending[p]
 		if not list then list={}; pending[p]=list end
@@ -7768,20 +7795,13 @@ do
 		setAttr(player,"RenownLevel",r.level)
 		setAttr(player,"RenownTitle",tier.title)
 		setAttr(player,"RenownColor",tier.color)
-		-- Move this profile's queue into the player's recent ring.
-		local list=pending[p]
-		if list then
-			pending[p]=nil
-			local ring=rings[player]
-			if not ring then ring={seq=0,list={}}; rings[player]=ring end
-			for _,entry in ipairs(list) do
-				ring.seq+=1
-				local copy=table.clone(entry)
-				copy.seq,copy.at=ring.seq,os.clock()
-				table.insert(ring.list,copy)
-			end
-			F.trimAnnouncements(ring.list,RING_MAX) -- oldest ordinary entries first; renown / path entries stay
-		end
+		toRing(player,p) -- move this profile's queue into the player's recent ring
+	end
+	-- §39 QC L1: a toast-only push ({announce = ring}) for news that changes
+	-- nothing else (another player's Diamond catch): no full snapshot is built.
+	function Features.toastPayload(player,p)
+		toRing(player,p)
+		return {announce=Features.announceState(player)}
 	end
 	function Features.announceState(player)
 		local ring=rings[player]
@@ -8890,6 +8910,7 @@ do
 	local resultTry={}         -- [k] = os.clock() of the last result read / seal attempt
 	local names={}             -- [uid] = display name (online journals)
 	local lastEnter={}         -- [UserId] = os.clock()
+	local pendingQ={}          -- QC L4: {{uid, k, slot, score, name, low}} queued by forget(), merged by the heartbeat / drain
 	local flushAt,mirrorAt=0,0
 	local busy=false
 	local jitter=Random.new()
@@ -9005,20 +9026,32 @@ do
 		return string.sub(n,1,20)
 	end
 	-- Queue ---------------------------------------------------------------------------
-	local function enqueue(uid,k,slot,score,name)
+	local function enqueue(uid,k,slot,score,name,low)
 		local shard=CT.shardOf(tonumber(uid))
 		queue[k]=queue[k] or {}
 		queue[k][shard]=queue[k][shard] or {}
-		queue[k][shard][uid]={c=slot,s=score}
+		queue[k][shard][uid]={c=slot,s=score,l=low or nil}
 		board[k]=board[k] or {}
 		board[k][uid]={c=slot,s=score,n=name}
 		wrote[k]=true
 	end
+	-- QC L4: forget() never touches the queues (a flush may be iterating them
+	-- across a yield); its entries wait in pendingQ until the heartbeat or the
+	-- drain merges them.
+	local function mergePending()
+		if #pendingQ==0 then return end
+		local list=pendingQ
+		pendingQ={}
+		for _,e in ipairs(list) do enqueue(e[1],e[2],e[3],e[4],e[5],e[6]) end
+	end
 	-- Re-queue a journal's entries the stores have not acknowledged (cur, and
-	-- closed entries still inside their write window).
-	local function requeue(player,p,now)
+	-- closed entries still inside their write window). sink(uid, k, slot, score,
+	-- name, low) defaults to enqueue. low = below CT.QUALIFY_FARMING (QC L9).
+	local function requeue(player,p,now,sink)
+		sink=sink or enqueue
 		local c=rec(p)
 		local uid=uidOf(player)
+		local low=level(p.xp and p.xp.Farming or 0)<CT.QUALIFY_FARMING
 		local function want(e)
 			if type(e)~="table" or whole(e.s)<1 then return end
 			local w=CT.window(e.k)
@@ -9030,7 +9063,7 @@ do
 			local pending=queue[e.k] and queue[e.k][CT.shardOf(tonumber(uid))]
 			pending=pending and pending[uid]
 			if pending and pending.s>=e.s then return end
-			enqueue(uid,e.k,slot,math.min(whole(e.s),CT.SCORE_CAP),names[uid] or nameOf(player))
+			sink(uid,e.k,slot,math.min(whole(e.s),CT.SCORE_CAP),names[uid] or nameOf(player),low)
 		end
 		want(c.cur)
 		for _,e in ipairs(c.open) do want(e) end
@@ -9040,15 +9073,23 @@ do
 		if (acked[k][uid] or 0)<score then acked[k][uid]=score end
 	end
 	-- One UpdateAsync per pending shard (force: ignore backoff, e.g. at shutdown).
+	-- QC L4: every loop below walks a snapshot of the keys (UpdateAsync yields).
+	local function keysOf(t)
+		local out={}
+		for key in pairs(t) do table.insert(out,key) end
+		return out
+	end
 	local function flushQueue(now,force,deadline)
-		for k,shards in pairs(queue) do
+		for _,k in ipairs(keysOf(queue)) do
+			local shards=queue[k]
 			local name=CT.mapName(k)
-			for shard,ops in pairs(shards) do
+			for _,shard in ipairs(if shards then keysOf(shards) else {}) do
 				if deadline and os.clock()>=deadline then return end
 				local key=CT.shardKey(shard)
-				if force or keyReady(name.."/"..key) then
+				local ops=shards[shard]
+				if ops and (force or keyReady(name.."/"..key)) then
 					local batch={}
-					for uid,op in pairs(ops) do batch[uid]={c=op.c,s=op.s} end
+					for uid,op in pairs(ops) do batch[uid]={c=op.c,s=op.s,l=op.l} end
 					local verdicts
 					local ok,committed=ms(name,"update",key,function(old)
 						local item
@@ -9078,17 +9119,20 @@ do
 					end
 				end
 			end
-			if not next(shards) then queue[k]=nil end
+			if shards and queue[k]==shards and not next(shards) then queue[k]=nil end
 		end
 		-- Leaderboard entries (bounded per flush).
 		local budget=CT.LB_BATCH
-		for k,entries in pairs(board) do
+		for _,k in ipairs(keysOf(board)) do
+			local entries=board[k]
 			local name=CT.boardName(k)
+			if not entries then continue end
 			if os.time()>=CT.window(k).writeDeadline then board[k]=nil
 			else
-				for uid,e in pairs(entries) do
+				for _,uid in ipairs(keysOf(entries)) do
+					local e=entries[uid]
 					if budget<=0 or (deadline and os.clock()>=deadline) then return end
-					if force or keyReady(name.."/"..uid) then
+					if e and (force or keyReady(name.."/"..uid)) then
 						budget-=1
 						local ok=ms(name,"update",uid,function(old)
 							if type(old)=="table" and whole(old.s)>=e.s then return nil end
@@ -9097,22 +9141,25 @@ do
 						if ok then keyOk(name.."/"..uid); if entries[uid]==e then entries[uid]=nil end else keyFailed(name.."/"..uid) end
 					end
 				end
-				if not next(entries) then board[k]=nil end
+				if board[k]==entries and not next(entries) then board[k]=nil end
 			end
 		end
 	end
 	local function flushMirrors(force,deadline)
-		for k,groups in pairs(mirrorQ) do
+		for _,k in ipairs(keysOf(mirrorQ)) do
+			local groups=mirrorQ[k]
 			local name=CT.mapName(k)
-			for g,entries in pairs(groups) do
+			for _,g in ipairs(if groups then keysOf(groups) else {}) do
 				if deadline and os.clock()>=deadline then return end
 				local key=CT.groupKey(g)
-				if force or keyReady(name.."/"..key) then
+				local entries=groups[g]
+				if entries and (force or keyReady(name.."/"..key)) then
 					local ok=ms(name,"update",key,function(old) return CT.mirror(old,k,entries) end,k)
-					if ok then keyOk(name.."/"..key); groups[g]=nil else keyFailed(name.."/"..key) end
+					-- a newer mirror queued during the yield stays queued
+					if ok then keyOk(name.."/"..key); if groups[g]==entries then groups[g]=nil end else keyFailed(name.."/"..key) end
 				end
 			end
-			if not next(groups) then mirrorQ[k]=nil end
+			if groups and mirrorQ[k]==groups and not next(groups) then mirrorQ[k]=nil end
 		end
 	end
 	-- Live estimate: the CT.GROUPS histogram items and the top entries per crop.
@@ -9251,13 +9298,21 @@ do
 		local now=os.time()
 		local c=rec(p)
 		names[uidOf(player)]=nameOf(player)
-		local changed=closeEntry(p,now)
-		if settleOpen(player,p,now) then changed=true end
+		-- QC L3: only a live journal (lease held, or a preview) closes or is paid;
+		-- a snapshot built while the lease lapses never pays a journal that won't save.
+		local changed=false
+		if live(player) then
+			changed=closeEntry(p,now)
+			if settleOpen(player,p,now) then changed=true end
+		end
 		local at=CT.at(now)
 		if at.active and c.ann<at.k then
 			c.ann=at.k
-			announce(p,{kind="contest",phase="start",crops=at.crops})
-			changed=true
+			-- QC L11: the bell toast only for Farming 5+ or a recent entrant.
+			if CT.wantsStartToast(level(p.xp and p.xp.Farming or 0),c,at.k) then
+				announce(p,{kind="contest",phase="start",crops=at.crops})
+				changed=true
+			end
 		end
 		if p.perkStats==nil or (p.perkStats.contests==nil)~=(c.almanac<=0) then applyPerk(p) end
 		return changed
@@ -9286,6 +9341,14 @@ do
 		e.s=math.min(whole(e.s)+n,CT.SCORE_CAP)
 		return e.s
 	end
+	-- QC L8: the running contest's entry crop (nil without an entry), so a
+	-- garden harvest-all credits the entered crop's plots first.
+	function Contests.entryCrop(p)
+		local at=CT.at(os.time())
+		local e=rec(p).cur
+		if at.active and e and e.k==at.k then return e.c end
+		return nil
+	end
 	-- Heartbeat --------------------------------------------------------------------------
 	function Contests.tick()
 		local now=os.time()
@@ -9295,11 +9358,15 @@ do
 		local pushes={}
 		local okRun,err=pcall(function()
 			local wanted={}
+			mergePending()
 			for player,p in pairs(profiles) do
 				if live(player) then
 					if Contests.refresh(player,p) then pushes[player]=true end
-					requeue(player,p,now)
-					for _,e in ipairs(rec(p).open) do wanted[e.k]=true end
+					-- QC M4: a preview (failed-load) journal never writes scores or waits on a seal.
+					if not preview[player] then
+						requeue(player,p,now)
+						for _,e in ipairs(rec(p).open) do wanted[e.k]=true end
+					end
 				end
 			end
 			if next(queue) or next(board) then
@@ -9310,7 +9377,10 @@ do
 			local at=CT.at(now)
 			if at.active then
 				local entrants=false
-				for _,p in pairs(profiles) do local e=rec(p).cur if e and e.k==at.k and whole(e.s)>0 then entrants=true end end
+				for player,p in pairs(profiles) do
+					local e=rec(p).cur
+					if e and e.k==at.k and whole(e.s)>0 and not preview[player] then entrants=true end -- QC M4
+				end
 				local l=liveEst[at.k]
 				if entrants and (not l or os.clock()>=l.clock+CT.READ) then
 					if readLive(at.k) then liveEst[at.k].clock=os.clock()
@@ -9322,12 +9392,19 @@ do
 			for k in pairs(wrote) do
 				if now>=CT.window(k).ends+CT.TTL_PAD then wrote[k]=nil else wanted[k]=true end
 			end
+			-- QC M2: every live server helps seal the latest closed contest (the seal
+			-- lease keeps it to one shard reader), so a contest is sealed even when
+			-- every server its entrants scored on has closed.
+			local last=CT.indexAt(now)
+			if now<CT.window(last).sealAt then last-=1 end
+			if now<CT.window(last).ends+CT.TTL_PAD-300 then wanted[last]=true end
 			for k in pairs(wanted) do
 				local w=CT.window(k)
 				if not results[k] and now>=w.sealAt and os.clock()-(resultTry[k] or -math.huge)>=CT.SEAL_RETRY then trySeal(k) end
 			end
 			for k in pairs(results) do if now>=CT.window(k).ends+CT.RESULT_SLOTS*CT.PERIOD then results[k]=nil end end
 			for k in pairs(acked) do if now>=CT.window(k).writeDeadline+60 then acked[k]=nil end end
+			CT.prune(mirrorQ,keyState,now) -- QC L5 / L10: mirror queues and key backoff past the write deadline
 			for k in pairs(resultTry) do if results[k] or now>=CT.window(k).ends+CT.RESULT_SLOTS*CT.PERIOD then resultTry[k]=nil end end
 			-- Pay journals whose results just arrived.
 			for player,p in pairs(profiles) do
@@ -9346,7 +9423,8 @@ do
 		busy=true
 		pcall(function()
 			local now=os.time()
-			for player,p in pairs(profiles) do requeue(player,p,now) end
+			mergePending()
+			for player,p in pairs(profiles) do if not preview[player] then requeue(player,p,now) end end -- QC M4
 			for _=1,2 do
 				if not (next(queue) or next(board)) or os.clock()>=deadline then break end
 				flushQueue(now,true,deadline)
@@ -9360,10 +9438,13 @@ do
 		task.delay(CT.TICK,loop)
 	end
 	task.delay(CT.TICK,loop)
-	-- A leaving journal's unacknowledged score stays queued: the next flush writes it.
+	-- A leaving journal's unacknowledged score waits in pendingQ (QC L4): the
+	-- next heartbeat merges it and a flush writes it.
 	function Contests.forget(player)
 		local p=profiles[player]
-		if p and not preview[player] then pcall(requeue,player,p,os.time()) end
+		if p and not preview[player] then
+			pcall(requeue,player,p,os.time(),function(...) table.insert(pendingQ,{...}) end)
+		end
 		names[uidOf(player)]=nil
 		lastEnter[player.UserId]=nil
 	end
@@ -9448,7 +9529,8 @@ do
 			for other,op in pairs(profiles) do
 				if other~=player and live(other) then
 					Features.announce(op,{kind="trophyWorld",fish=fish.id,tier=tier,who=who})
-					if other.Parent then update:FireClient(other,snapshot(other,nil)) end
+					-- QC L1: a toast-only push (no full snapshot per player per Diamond).
+					if other.Parent and Features.toastPayload then update:FireClient(other,Features.toastPayload(other,op)) end
 				end
 			end
 		end
@@ -9488,6 +9570,16 @@ do
 		if e.kind=="item" then
 			if e.level and level(p.xp.Farming)<e.level then return itemName(e.item).." requires Farming "..e.level.."." end
 			if e.unique and ((p.items[e.item] or 0)>0 or table.find(p.accessoryBag or {},e.item)) then return "You already own a "..itemName(e.item).."." end
+			-- QC M1: never a second copy of a base you already upgraded (owned or bagged).
+			if e.unique then
+				for _,up in ipairs(CT.upgradesOf(e.item)) do
+					if (p.items[up] or 0)>0 or table.find(p.accessoryBag or {},up) then return "You already own a "..itemName(up)..", the upgrade of the "..itemName(e.item).."." end
+				end
+			end
+			-- QC M5: the garden-level gate of the Verdant Garden shop's own offer.
+			if e.gardenLevel and Data.Garden.level(type(p.garden)=="table" and tonumber(p.garden.xp) or 0)<e.gardenLevel then
+				return itemName(e.item).." requires garden level "..e.gardenLevel.."."
+			end
 			if e.upgrade and (p.items[e.upgrade] or 0)<1 and not table.find(p.accessoryBag or {},e.upgrade) then return "Bring your "..itemName(e.upgrade).." to upgrade it." end
 		end
 		if c.medals<cost then return "You need "..cost.." Harvest Medals (you have "..c.medals..")." end
@@ -9699,9 +9791,10 @@ local function perform(player,verb,item,prompt)
 		if not regrowth then regrowth={}; nodeRegrowth[prompt]=regrowth; watchPrompt(prompt) end
 		-- Skill Mastery: Quick regrowth shortens the timer down to a floor (Progression.regrowthTime), never to zero.
 		regrowth[player]=os.clock()+(tonumber(result.regrowth) or tonumber(resource.respawn) or 3)
-		local hooked=if skill=="Fishing" then Sea.cast(player,p,stats,result.tool,region,prompt) else ""
-		-- §39: a cast that raised no sea creature may land a trophy fish (never both).
-		if skill=="Fishing" and hooked=="" and Contests.trophyCast then hooked=Contests.trophyCast(player,p,result.tool,region) end
+		local hooked,spent="",false
+		if skill=="Fishing" then hooked,spent=Sea.cast(player,p,stats,result.tool,region,prompt) end
+		-- §39: a cast that raised no sea creature (nor would have, at the cap: QC L6) may land a trophy fish (never both).
+		if skill=="Fishing" and hooked=="" and not spent and Contests.trophyCast then hooked=Contests.trophyCast(player,p,result.tool,region) end
 		return "+"..result.amount.." "..resource.name..(if petDouble then " (pet ×2)" else "").."   ·   +"..result.xp.." "..skill.." XP"..mastered..hooked
 	elseif verb=="explore" and prompt and item=="Skyreach" and region=="Skyreach" then
 		if p.skyreachVisited then return "Skyreach is already charted. Gather rich Aetherite or continue your guild contracts." end
@@ -10174,8 +10267,11 @@ task.spawn(function()
 	end
 end)
 game:BindToClose(function()
+	-- §39 QC L7: the contest drain runs beside the council drain and the journal
+	-- saves (a journal is its own score's source of truth), so it never spends their budget.
+	local contestsDrained=Contests.drain==nil
+	if Contests.drain then task.spawn(function() pcall(Contests.drain,6); contestsDrained=true end) end
 	if Council.drain then Council.drain(8) end -- §36 QC M2: write queued ballots (journals then save their acknowledgements)
-	if Contests.drain then Contests.drain(6) end -- §39: write queued contest scores before the journals save
 	if Econ.flushHistory then pcall(Econ.flushHistory) end -- §33: pending auction price history (best effort)
 	Endgame.drain() -- Endgame: refund unspent altar sigils before the journals save
 	if Lairs.drain then Lairs.drain() end -- Lairs: refund unfinished fights' fees before the journals save
@@ -10186,7 +10282,7 @@ game:BindToClose(function()
 		pending+=1
 		task.spawn(function() close(player); pending-=1 end)
 	end
-	while pending>0 do task.wait(0.1) end
+	while pending>0 or not contestsDrained do task.wait(0.1) end
 end)
 -- Dungeon classes (Dungeon Classes team): p.dungeonClasses (Data.DungeonClasses.migrate),
 -- verbs dungeonClass "<classId>|none" and dungeonMaster "on|off" (refused while
