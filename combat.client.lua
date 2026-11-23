@@ -147,7 +147,7 @@ for _, x in ipairs({0, 1}) do
 end
 -- Layout (shared HUD map, kept in step with nav.client.lua and npc.client.lua):
 --   atlas guild badge (ui.client.lua)  top-left      x 10-315, y 8-92
---   tutorial tracker (npc.client.lua)  left column   x 10-260, y 100-166
+--   left column (x 10-260, from y 100): free; the old tutorial tracker is retired (Polish)
 --   Wayfinder minimap (nav.client.lua) top-right     SIZE 118 (viewport < 520 tall) or 156,
 --                                                    x W-10-SIZE..W-10, y 8..SIZE+42
 --   top lane between them (x 325..W-SIZE-20): target/boss panel y 10-68,
@@ -192,7 +192,7 @@ local function layoutHud(isBoss)
 	layoutKey = key
 	local panelWidth = if isBoss then 380 else 300
 	if not placeInLane(panel, panelWidth, EDGE, PANEL_HEIGHT, width) or not placeInLane(banner, 460, 76, 34, width) then
-		-- Very narrow: stack in the left column under the tutorial tracker.
+		-- Very narrow: stack at the top of the left column.
 		local _, right = laneFor(width)
 		local w = math.max(160, math.min(panelWidth, right - EDGE))
 		panel.AnchorPoint, panel.Position, panel.Size = Vector2.new(0, 0), UDim2.fromOffset(EDGE, BELOW_HUD), UDim2.fromOffset(w, PANEL_HEIGHT)
@@ -1469,7 +1469,7 @@ function WBH.clock(seconds)
 	seconds = math.max(0, math.floor(tonumber(seconds) or 0))
 	return string.format("%d:%02d", seconds // 60, seconds % 60)
 end
--- Places the bar in the top lane (or under the tutorial tracker on narrow
+-- Places the bar in the top lane (or at the top of the left column on narrow
 -- screens) and the board under the minimap when the screen is tall enough.
 function WBH.layout()
 	local view = gui.AbsoluteSize

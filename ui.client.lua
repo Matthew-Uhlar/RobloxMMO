@@ -3421,12 +3421,18 @@ local function itemDetail(id)
 	if legacy and num(legacy.readyIn,0)>0 then table.insert(lines,paint("Recovering: ready in "..math.ceil(legacy.readyIn).."s","F9CC77")) end
 	-- §29 last-copy rule: the server keeps one copy of an upgraded item (Gear.upgraded).
 	local kept=def and (UI.Gear.upgraded(id) or next(tbl(tbl(tbl(depth()).enchants)[id]))~=nil) and 1 or 0
-	if def and n<=kept then
+	-- Polish QC M2: equipped or bagged items offer no Sell / Sell… (the server refuses
+	-- both, as Theme.itemActions already hides them in the satchel menu).
+	local worn=equippedSlotOf(id)~=nil or table.find(tbl(d and d.accessoryBag),id)~=nil
+	if def and worn then
+		if sellConfirm==id then sellConfirm=nil end
+		table.insert(lines,paint("Equipped: unequip it (or take it out of your accessory bag) to sell it.","A9BDC1"))
+	elseif def and n<=kept then
 		table.insert(lines,paint("Upgraded: your last copy cannot be sold (spare copies can).","A9BDC1"))
 	elseif def then
 		if sellConfirm==id then
 			table.insert(lines,paint("Tap Confirm to sell "..(kept>0 and (fmt(n-kept).." spare"..(n-kept>1 and "s" or "")) or ("all "..fmt(n))).." for "..fmt(num(def.value,0)*(n-kept)).." coins"
-				..(kept>0 and " (your upgraded copy is kept)" or (equippedSlotOf(id) and " (including the equipped piece)" or ""))..".","F9CC77"))
+				..(kept>0 and " (your upgraded copy is kept)" or "")..".","F9CC77"))
 			table.insert(actions,{caption="Confirm",fn=function() sellConfirm=nil;send("sell",id) end})
 		else
 			table.insert(actions,{caption="Sell",fn=function() sellConfirm=id;render() end})
@@ -5669,8 +5675,8 @@ end
 ------------------------------------------------------------------------------
 -- Agility & Hunter (Agility/Hunter client team). HUD: a lap tracker (course,
 -- obstacle n/total, step countdown, lap clock and best lap, an arrow to the
--- next obstacle) and a trap counter (placed/max, caught, collapsed) in the
--- left column under the tutorial tracker. Pages: Journal › Agility (courses,
+-- next obstacle) and a trap counter (placed/max, caught, collapsed) at the
+-- top of the left column. Pages: Journal › Agility (courses,
 -- lap milestones, shortcuts), Hunt › Hunter (hunter log, traps, companions)
 -- and Ledger › Vendors (Skymark Exchange, Trackers' Lodge; verb skillBuy).
 -- Server state: snapshot.agilityHunter = {agility={laps,best,lapTiers,run},
@@ -5771,11 +5777,11 @@ do
 	traps.Activated:Connect(function() if Pages.openTo then Pages.openTo("Hunt","Hunter") end end)
 	AH.traps=traps
 end
--- Left column under the tutorial tracker (npc.client.lua, y 100-166), or from
--- y 100 once the tutorial is done; 184 px wide on short screens so it clears
--- the centred toast. When both panels would reach the action bar (phone
--- landscape with the tutorial up) the lap tracker drops its best-lap line and
--- the trap counter slims down.
+-- Top of the left column (lanes.leftTop; the old tutorial tracker that sat
+-- above it is retired, Polish); 184 px wide on short screens so it clears the
+-- centred toast. When both panels would reach the action bar (phone
+-- landscape) the lap tracker drops its best-lap line and the trap counter
+-- slims down.
 -- The island builder and townsfolk dialogue own the bottom and left: step aside.
 function AH.suppressed()
 	if player:GetAttribute("IslandBuilding") then return true end
@@ -5791,10 +5797,6 @@ function AH.layout()
 	local short=height<520
 	local lanes=UI.lay()
 	local top=lanes.leftTop
-	local playerGui=player:FindFirstChild("PlayerGui")
-	local folk=playerGui and playerGui:FindFirstChild("TownsfolkDialogue")
-	local tutorial=folk and folk:FindFirstChild("TutorialTracker")
-	if tutorial and tutorial.Visible then top=lanes.leftTop+tutorial.Size.Y.Offset+4 end
 	local width=lanes.leftWidth
 	local trackerHeight=short and 64 or 70
 	-- The left column ends above the hotbar (x 142+ on the smallest phones).
@@ -5966,7 +5968,7 @@ task.spawn(function()
 	end
 end)
 task.spawn(function()
-	-- Vendor countdowns on the open Vendors page; layout follows the tutorial tracker.
+	-- Vendor countdowns on the open Vendors page; layout re-checks the left column.
 	while task.wait(1) do
 		pcall(AH.refreshCourse)
 		pcall(AH.refreshTraps)
