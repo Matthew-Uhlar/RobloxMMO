@@ -363,9 +363,9 @@ function Data.enchantSkillLevel(enchant, level) return math.min(99, enchant.leve
 -- Regions: travel destinations with requirements (OSRS gated areas).
 ------------------------------------------------------------------------------
 Data.Regions = {
-	{id="Hub",name="Aether Hub",requires={},description="The shared hub: bank, market and guild."},
-	{id="Meadow",name="Meadow Reach",requires={},description="Gentle hills. Brambleback boars and Thornlings roam.",monsters={"BramblebackBoar","Thornling"}},
-	{id="Quarry",name="Quarry Cay",requires={},description="Copperstone and Aetherite seams.",monsters={"ShaleCrawler","CinderMite"}},
+	{id="Hub",name="Compass Quay",requires={},description="The shared hub: bank, market and guild."},
+	{id="Meadow",name="Sunwheel Downs",requires={},description="Gentle hills. Brambleback boars and Thornlings roam.",monsters={"BramblebackBoar","Thornling"}},
+	{id="Quarry",name="Brassfall Cay",requires={},description="Copperstone and Aetherite seams.",monsters={"ShaleCrawler","CinderMite"}},
 	{id="Skyreach",name="Skyreach Heights",requires={quest=6},description="Rich Aetherite and Brass golems.",monsters={"BrassGolem","StormHarrier"}},
 	{id="Windpine",name="Windpine Grove",requires={skills={Woodcutting=10}},description="Ancient windpines and emberoaks. Bark Stalkers hunt here.",monsters={"BarkStalker","GaleSprite"}},
 	{id="Gloomhollow",name="Gloomhollow Caverns",requires={skills={Mining=30,Combat=15}},description="Voidstone deep below. Gloomfang spiders nest here.",monsters={"GloomfangSpider","VoidWisp"}},
@@ -753,13 +753,13 @@ local function g(region, count) return {kind="gather",region=region,count=count}
 local function s(line, lvl) return {kind="slayer",line=line,level=lvl} end
 local function q(quest) return {kind="quest",quest=quest} end
 Data.Diaries = {
-	{region="Meadow",name="Meadow Reach Diary",tiers={
+	{region="Meadow",name="Sunwheel Downs Diary",tiers={
 		Easy={tasks={k("BramblebackBoar",5),c("Herb",50),c("Timber",50),l("Farming",5)},perk={health=10}},
 		Medium={tasks={k("Thornling",25),c("Sunwheat",100),cr("MightDraught",5),l("Farming",20)},perk={farmingFortune=10}},
 		Hard={tasks={k("BramblebackBoar",250),c("Glowcap",250),s("Bramble",3),l("Farming",40)},perk={farmingFortune=15,health=15}},
 		Elite={tasks={c("AetherLotus",500),k("Thornling",500),s("Bramble",6),l("Farming",75)},perk={farmingFortune=25,health=25}},
 	}},
-	{region="Quarry",name="Quarry Cay Diary",tiers={
+	{region="Quarry",name="Brassfall Cay Diary",tiers={
 		Easy={tasks={c("Ore",100),k("ShaleCrawler",5),cr("AlloyIngot",5),l("Mining",5)},perk={defense=5}},
 		Medium={tasks={c("Brassite",100),k("CinderMite",25),cr("BrassIngot",10),l("Mining",20)},perk={miningFortune=10}},
 		Hard={tasks={c("SunsteelOre",250),k("CinderMite",250),cr("SunsteelIngot",25),l("Mining",45)},perk={miningFortune=15,defense=10}},
@@ -1725,7 +1725,7 @@ T.AtlasStations = {Forge="Workshop · Forge",Hearth="Workshop · Hearth",Cauldro
 -- Existing IsleAction verbs dialogue may call (item rules per verb).
 T.Verbs = {quest={item=false},claim={item=false},slayerStart={item=false},slayerClaim={item=false},sell={item=false},
 	recall={item={Hub=true,Home=true}}}
-T.RecallTargets = {Hub="the Aether Hub",Home="your Wayfarer's Rest"}
+T.RecallTargets = {Hub="Compass Quay",Home="your Wayfarer's Rest"}
 T.TargetKinds = {anchor=true,npc=true,region=true,station=true,gather=true,monster=true,warp=true,warpReturn=true,home=true}
 
 ------------------------------------------------------------------------------
@@ -1770,7 +1770,7 @@ T.skillLevel, T.contracts = skillLevel, contracts
 ------------------------------------------------------------------------------
 T.Tutorial = {
 	{id="gather",title="Gather supplies",
-		text="Mine 6 Copperstone Ore in Quarry Cay and cut 3 Meadow Timber. Walk up to a node and hold the prompt.",
+		text="Mine 6 Copperstone Ore in Brassfall Cay and cut 3 Meadow Timber. Walk up to a node and hold the prompt.",
 		progress=function(s) return math.min(6, collected(s, "Ore")) + math.min(3, collected(s, "Timber")), 9 end,
 		waypoint={"gather:Ore","region:Quarry"}},
 	{id="craft",title="Forge a Copper Blade",
@@ -2044,7 +2044,7 @@ end
 -- Recall (server hook "recall"): cooldown and recent-damage gate.
 ------------------------------------------------------------------------------
 function T.recallCheck(target, now, lastRecall, lastHurt)
-	if type(target) ~= "string" or not T.RecallTargets[target] then return false, "Choose Hub or Home to recall to." end
+	if type(target) ~= "string" or not T.RecallTargets[target] then return false, "Choose Compass Quay (Hub) or Home to recall to." end
 	if lastHurt and now - lastHurt < T.RECALL_HURT_GRACE then return false, "You can't recall mid-fight. Catch your breath first." end
 	if lastRecall and now - lastRecall < T.RECALL_COOLDOWN then
 		return false, "Your recall charm is recharging (" .. math.ceil(T.RECALL_COOLDOWN - (now - lastRecall)) .. "s)."
@@ -2134,7 +2134,7 @@ T.NPCs = {
 				back()}},
 			travel={text="Beacons link the isles — step up and use one. Your map's Navigate list can point the way, and once every 90 seconds I can lend you a recall charm.",options={
 				{label="Recall me home",verb="recall",item="Home"},
-				{label="Recall me to the Hub",verb="recall",item="Hub"},
+				{label="Recall me to Compass Quay",verb="recall",item="Hub"},
 				{label="Guide me to a homeward beacon",waypoint={"warpReturn","anchor:Waypoint_Homeward","region:Hub"}},
 				back()}},
 		}},
@@ -2424,7 +2424,7 @@ for id, g in pairs(glyphs) do
 		color=g.color,value=math.max(2,g.level//2),description="Spell glyph. Inscribed with Glyphcraft "..g.level.."."})
 	recipe(id,{skill="Glyphcraft",level=g.level,xp=g.xp,costs=g.costs,amount=g.amount,repeatable=true,collectionTier=g.gate,station="Cauldron",category="Glyphs"})
 end
-item("HubwardTablet",{name="Hubward Tablet",kind="material",category="tablet",combatUse=true,rarity="Uncommon",color="F9CC77",value=20,description="Break to teleport to the Aether Hub (spell Hubward). Not while in combat."})
+item("HubwardTablet",{name="Hubward Tablet",kind="material",category="tablet",combatUse=true,rarity="Uncommon",color="F9CC77",value=20,description="Break to teleport to Compass Quay (spell Hubward). Not while in combat."})
 recipe("HubwardTablet",{skill="Glyphcraft",level=15,xp=25,costs={Aetherite=2,GaleGlyph=3},repeatable=true,station="Cauldron",category="Tablets"})
 -- Style accessories.
 item("FletcherQuiver",{name="Fletcher's Quiver",kind="accessory",rarity="Uncommon",color=Data.Rarity.Uncommon.color,stats={rangedStrength=5,rangedAccuracy=5},value=40*Data.Rarity.Uncommon.rank^2,description="Accessory. Magical Power "..Data.Rarity.Uncommon.power.."."})
@@ -10091,7 +10091,21 @@ unique("PyreheartStaff","Pyrewarden",{name="Pyreheart Staff",kind="weapon",slot=
 	description="Magic weapon. The Pyrewarden's banked core. Supplies unlimited Ember, Stone glyphs. Requires Magic 55. Lair unique."})
 unique("HollowcrownEdge","Nihlvar",{name="Hollowcrown Edge",kind="weapon",slot="weapon",tier=9,rarity="Mythic",color="7A5BC4",
 	stats={damage=323,strength=148,critChance=15,critDamage=93},requires={Combat=65},value=30000,
-	description="Melee. A shard of Nihlvar's hollow crown. Requires Combat 65. Lair unique."})
+	special={id="HollowSunder",name="Hollow Sunder",boss=0.25,warded=0.5},
+	description="Melee. A shard of Nihlvar's hollow crown. Hollow Sunder: +25% damage to bosses (lair, world and slayer bosses), +50% while a ward, brood or add wave shields them. Requires Combat 65. Lair unique."})
+-- Hollow Sunder (Polish; the Hollowcrown Edge's niche after the 85% cap). A
+-- melee swing with a weapon carrying `special.boss` multiplies its raw damage by
+-- 1 + boss against a boss record (r.boss slayer boss, r.worldBoss, a lair boss;
+-- never adds or ordinary monsters), or by 1 + warded while that boss is shielded
+-- (lair brood ward / sigils, world boss add wave). verify-bosses models it:
+-- general content stays below the Sovereign Greatblade; on bosses it beats the
+-- Greatblade and stays below Crownbreaker while unwarded.
+function LR.sunderMult(weaponId, target)
+	local def = type(weaponId) == "string" and Data.Items[weaponId]
+	local sp = def and def.special
+	if type(sp) ~= "table" or type(sp.boss) ~= "number" or type(target) ~= "table" or target.boss ~= true then return 1 end
+	return 1 + (if target.warded == true then sp.warded or sp.boss else sp.boss)
+end
 unique("ThornheartLocket","Bramblemaw",{name="Thornheart Locket",kind="accessory",rarity="Rare",color=R.Rare.color,stats={strength=8,critDamage=6},
 	value=40*R.Rare.rank^2,description="Accessory. Magical Power "..R.Rare.power..". Only Bramblemaw's den holds one."})
 unique("SquallglassPendant","Aerisca",{name="Squallglass Pendant",kind="accessory",rarity="Epic",color=R.Epic.color,stats={rangedAccuracy=9,rangedStrength=6,speed=3},
@@ -11408,7 +11422,20 @@ G.Steps = {
 		check=function(p) return next(tab(tab(p.regionQuests).accepted)) ~= nil or next(tab(p.questsDone)) ~= nil or whole(p.questCompleted) > 0 end},
 	{id="warp",title="Learn a warp",detail="Buy a warp scroll from Ilsabet the Warp Keeper and read it.",coins=100,
 		check=function(_, ctx) return next(tab(tab(ctx).warps)) ~= nil end},
+	-- Polish (lead decision): the account-mode choice closes the Path. Standard is
+	-- always open; Ironman follows the ironman verb's rule (only before any
+	-- progression), so it can be chosen from Pell at any point before that too.
+	{id="mode",title="Choose your journal mode",detail="Talk to Pell: keep a Standard journal, or seal an Ironman journal (only before any progression).",coins=50,
+		check=function(p) return p.accountMode == "standard" or p.accountMode == "ironman" or p.ironman == true end},
 }
+-- Wayfinder waypoints per step (T.parseTarget specs; Pell's "Show me the way").
+G.Waypoints = {
+	chop={"gather:Timber","region:Meadow"}, craft={"station:Workbench","station:Forge"}, visit={"region:Hub"}, talk={"npc:Guide"},
+	ore={"gather:Ore","region:Quarry"}, sell={"npc:Merchant"}, kill={"monster:BramblebackBoar","region:Meadow"},
+	warp={"npc:WarpKeeper"}, mode={"npc:Guide"},
+}
+-- Account modes (verb guideMode): Standard, or Ironman with the confirm token.
+G.MODE_STANDARD, G.MODE_IRONMAN = "standard", "ironman:confirm"
 G.COMPLETE_COINS = 250
 G.StepById = {}
 G.MAX_OWED = G.COMPLETE_COINS
@@ -11429,7 +11456,7 @@ function G.view(guide)
 	local n = 0
 	for _, s in ipairs(G.Steps) do if done[s.id] then n += 1 end end
 	for _, s in ipairs(G.Steps) do
-		if not done[s.id] then
+		if not done[s.id] and guide.complete ~= true then
 			return {step=s.index, total=#G.Steps, done=n, id=s.id, title=s.title, detail=s.detail, coins=s.coins, complete=false}
 		end
 	end
@@ -11452,6 +11479,9 @@ function F.announceText(e)
 	elseif e.kind == "renown" then
 		local t = RN.tier(whole(e.level))
 		return {head=string.upper(RN.NAME) .. " " .. whole(e.level), body=t.title .. (if type(e.reward) == "string" then "  ·  " .. e.reward else ""), color=t.color}
+	elseif e.kind == "workerRecipe" then
+		local t = Data.Workers and type(e.worker) == "string" and Data.Workers.TypeById[e.worker]
+		return {head="WORKER RECIPE UNLOCKED", body=(t and t.name or tostring(e.worker)) .. "  ·  " .. (item and item.name or tostring(e.item)) .. " collection " .. whole(e.tier), color="FFAA00"}
 	elseif e.kind == "guide" then
 		return {head=string.upper(G.NAME), body=tostring(e.title) .. (if whole(e.coins) > 0 then "  ·  +" .. whole(e.coins) .. " coins" else ""), color="6FE3C8"}
 	end
@@ -11502,6 +11532,30 @@ function F.splitQty(item, parts)
 	return table.concat(segs, ":"), qty
 end
 
+-- Merchant sell quantity (Polish): sell "<id>:<n>" sells n of a stack (the server
+-- also checks n <= held - the kept upgraded copy). Returns base, n or nil.
+F.SELL_MAX = 1000000
+function F.splitSell(item)
+	if type(item) ~= "string" or #item == 0 or #item > 64 then return nil end
+	local base, raw = string.match(item, "^([%w_]+):([1-9]%d*)$")
+	if not base or #raw > 7 then return nil end
+	local n = tonumber(raw)
+	if not n or n < 1 or n > F.SELL_MAX then return nil end
+	return base, n
+end
+
+-- Worker unlocks by collection tier (Polish): the worker types whose output is
+-- `item` and whose collectionTier lies in (fromTier, toTier] (SkyBlock's minion
+-- recipe unlock at a collection tier). Starter types (tier 0) are never listed.
+function F.workerUnlocks(item, fromTier, toTier)
+	local out = {}
+	local W = Data.Workers
+	for _, t in ipairs(W and W.Types or {}) do
+		if t.output == item and t.collectionTier > whole(fromTier) and t.collectionTier <= whole(toTier) then table.insert(out, t) end
+	end
+	return out
+end
+
 -- Skyward Vents (launch pads) ----------------------------------------------------
 -- Gated by the destination region's access rules (IsleRegionAccess); the world
 -- sets FastTravelAt, plays a short arc and lands the rider server-side.
@@ -11521,6 +11575,17 @@ V.List = {
 }
 V.ById = {}
 for _, v in ipairs(V.List) do V.ById[v.id] = v end
+-- Launch feel (Polish; client only, features.client.lua): an FOV kick that
+-- rises fast and eases back by the landing, a banking roll that peaks mid-arc,
+-- and wind streaks. Reduced motion: no FOV / tilt, a lighter wind.
+V.Fx = {FOV_KICK=14, TILT=math.rad(7), WIND_RATE=60, WIND_RATE_REDUCED=20}
+function V.Fx.fovKick(t)
+	t = math.clamp(t, 0, 1)
+	if t < 0.2 then return V.Fx.FOV_KICK * (t / 0.2) end
+	local u = (t - 0.2) / 0.8
+	return V.Fx.FOV_KICK * (1 - u * u)
+end
+function V.Fx.tilt(t) return V.Fx.TILT * math.sin(math.pi * math.clamp(t, 0, 1)) end
 -- Arc height at t ∈ [0,1] from ya to yb peaking `height` above the higher end
 -- (a quadratic through both ends and the peak at t = 0.5).
 function V.arcY(ya, yb, t, height)
@@ -11606,6 +11671,68 @@ local pell = T.NPCs.Guide
 if pell and pell.nodes and pell.nodes.hello then
 	table.insert(pell.nodes.hello.options, 1, {label="I'm walking the Wayfarer's Path",verb="guideTalk",when="guideTalkActive"})
 	table.insert(pell.nodes.hello.options, 2, {label="Claim my Wayfarer's Path rewards",verb="guideClaim",when="guideRewardReady"})
+end
+
+-- Polish (lead decision): Pell's older 6-step client tutorial is retired in
+-- favour of the Wayfarer's Path. T.Tutorial / T.tutorialState stay as pure data
+-- (old snapshots and tests still evaluate), but nothing offers or tracks it:
+-- tutorialActive is always false, Pell's "Walk me through the basics" opens the
+-- Path node, the old "tutorial" node redirects there, and the "next" tip reads
+-- the Path step. The Path's final step is the account-mode choice.
+T.TUTORIAL_RETIRED = true
+T.Conditions.tutorialActive = function() return false end
+T.Conditions.pathActive = function(s)
+	local g = tab(tab(s).guide)
+	return type(g.title) == "string" and g.complete ~= true
+end
+-- Journal mode not chosen yet (and the journal is not Ironman already).
+T.Conditions.modeOpen = function(s)
+	s = tab(s)
+	return s.accountMode == nil and s.ironman ~= true and type(s.items) == "table"
+end
+-- Ironman can still be sealed: no progression yet (the ironman verb's rule).
+T.Conditions.ironmanOpen = function(s)
+	s = tab(s)
+	return s.ironman ~= true and s.started ~= true and type(s.items) == "table"
+end
+T.Verbs.guideMode = {item={[G.MODE_STANDARD]=true, [G.MODE_IRONMAN]=true}}
+function T.pathStep(s)
+	local g = tab(tab(s).guide)
+	if type(g.title) ~= "string" or g.complete == true then return nil end
+	local step = G.StepById[tostring(g.id)]
+	return {index=whole(g.step), total=whole(g.total), id=g.id, title=g.title, detail=tostring(g.detail or ""), waypoint=step and G.Waypoints[step.id] or nil}
+end
+if pell and pell.nodes then
+	for _, o in ipairs(pell.nodes.hello.options) do
+		if o.to == "tutorial" then o.label, o.to, o.when = "Walk me through the Wayfarer's Path", "path", "pathActive" end
+	end
+	table.insert(pell.nodes.hello.options, 3, {label="Choose my journal mode",to="mode",when="modeOpen"})
+	pell.nodes.path = {path=true,text="The Wayfarer's Path takes you from your first log to your first warp. Here's your next step:",options={
+		{label="Show me the way",waypoint="path"},
+		{label="Choose my journal mode",to="mode",when="modeOpen"},
+		{label="Claim my Wayfarer's Path rewards",verb="guideClaim",when="guideRewardReady"},
+		{label="Back",to="hello"}}}
+	-- The retired tutorial node now shows the Path (old references keep working).
+	pell.nodes.tutorial = nil
+	pell.nodes.mode = {text="Every journal picks a mode. STANDARD: trade, use the Bazaar and Auction House, and hunt with anyone. "
+		.. "IRONMAN: a permanent charter. No player exchange, Bazaar or Auction House, Warden hunts are solo, and party credit needs a real share of the damage. "
+		.. "Ironman can only be sealed before any progression, and it can never be undone.",options={
+		{label="Keep a Standard journal",verb="guideMode",item=G.MODE_STANDARD},
+		{label="Review the Ironman charter",to="ironman",when="ironmanOpen"},
+		{label="Back",to="hello"}}}
+	pell.nodes.ironman = {text="Are you sure? Sealing an Ironman journal is PERMANENT: you will never trade with other players or use the Bazaar or Auction House on this journal. "
+		.. "If you have already started gathering, crafting or fighting, the seal will refuse and your journal stays Standard.",options={
+		{label="Seal my journal as Ironman (permanent)",verb="guideMode",item=G.MODE_IRONMAN},
+		{label="Keep a Standard journal",verb="guideMode",item=G.MODE_STANDARD},
+		{label="Back",to="mode"}}}
+end
+T.Tips.next = function(s, ctx)
+	local step = T.pathStep(s)
+	if step then return "Wayfarer's Path " .. step.index .. "/" .. step.total .. " — " .. step.title .. ": " .. step.detail end
+	if type(s) ~= "table" or s.loading or type(s.items) ~= "table" then return "Your journal is still opening. Ask me again in a moment." end
+	local q = tab(s.quest)
+	if T.Conditions.contractReady(s) or (not q.complete and q.title) then return T.Tips.contract(s) end
+	return T.Tips.quest(s)
 end
 end
 -- <<< END MMO Features <<<

@@ -587,6 +587,7 @@ end
 --   Eat/Drink   → consume "<id>"      Use (pet) → petAdopt "<id>"
 --   Equip (accessory) → accessory "<id>" (toggles the bag)
 --   Sell        → sell "<id>" (whole stack, merchant price; not while equipped; always confirms)
+--   Sell…       → local "sellQty": the quantity picker (sell "<id>:<n>"), when 2+ can be sold
 --   Drop        → drop "<id>" (whole stack, confirm; §29)
 --   Move to hotbar → local (ReplicatedStorage.HotbarApi "assign")
 --   Examine     → local (examine text toast)
@@ -623,9 +624,11 @@ function Theme.itemActions(def, ctx)
 			add({id = "Kept", label = "Upgraded: kept", ["local"] = "kept"})
 		elseif ctx.upgraded == true then
 			add({id = "Sell", label = "Sell " .. (count - 1) .. " spare" .. (if count > 2 then "s" else ""), verb = "sell", arg = id, confirm = true, upgraded = true})
+			if count > 2 then add({id = "SellQty", label = "Sell…", ["local"] = "sellQty", max = count - 1}) end
 			add({id = "Drop", label = "Drop spares", verb = "drop", arg = id, confirm = true, danger = true, upgraded = true})
 		else
 			add({id = "Sell", label = "Sell" .. (if count > 1 then " all" else ""), verb = "sell", arg = id, confirm = true, upgraded = false})
+			if count > 1 then add({id = "SellQty", label = "Sell…", ["local"] = "sellQty", max = count}) end
 			add({id = "Drop", label = "Drop", verb = "drop", arg = id, confirm = true, danger = true, upgraded = false})
 		end
 	end

@@ -3431,6 +3431,13 @@ local function itemDetail(id)
 		else
 			table.insert(actions,{caption="Sell",fn=function() sellConfirm=id;render() end})
 		end
+		-- Polish: sell part of a stack through the §31 quantity picker (sell "<id>:<n>").
+		if n-kept>1 then
+			table.insert(actions,{caption="Sell…",name="ItemDetailSellQty",fn=function()
+				sellConfirm=nil
+				UI.pickQuantity({verb="sell",base=id,item=id,name=def.name,unit=num(def.value,0),amount=1,max=n-kept,sell=true})
+			end})
+		end
 	end
 	local equipped=equippedSlotOf(id)
 	-- Gear depth: "<Reforge> <Item name> ★★★" in the effective rarity colour.
@@ -5627,7 +5634,7 @@ local function drawCalendar()
 	local open=num(events.vendorUntil,0)>now
 	heading("FESTIVAL VENDOR    /    "..(open and "OPEN" or "VISIT THE HUB STALL"))
 	if not open then
-		card({name="VendorClosed",motif="Ledger",title="Festival Vendor",titleColor=gold,subtitle="Hub stall beside the Island Assembly board",
+		card({name="VendorClosed",motif="Ledger",title="Festival Vendor",titleColor=gold,subtitle="Compass Quay stall beside the Island Assembly board",
 			detail="Trade Hollow Night candy, Starfall shards and Sunscale Carp for keepsakes. Visit the stall to open trading for "..math.floor(num(Data.EVENT_VENDOR_SECONDS,300)/60).." minutes."})
 	else
 		card({name="VendorOpen",motif="Ledger",title="Festival Vendor",titleColor=gold,subtitle="Trading open",

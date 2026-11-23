@@ -1017,6 +1017,14 @@ local function createLogic(env)
 		return env.rng() * 100 < perks.firstStrike
 	end
 	-- Raw damage after execute (target health before this hit).
+	-- Hollow Sunder: is r a boss (never an add or an ordinary monster), and is it shielded?
+	function L.sunderMult(weaponId, r)
+		local LRD = Data.Lairs
+		if not LRD or not LRD.sunderMult or type(r) ~= "table" or r.add or r.lairAdd then return 1 end
+		if not (r.boss == true or r.worldBoss == true or r.lair == true) then return 1 end
+		local warded = (r.worldBoss == true or r.lair == true) and type(r.adds) == "table" and next(r.adds) ~= nil
+		return LRD.sunderMult(weaponId, {boss = true, warded = warded})
+	end
 	function L.executeBonus(r, raw, perks)
 		if (perks.execute or 0) <= 0 or r.hp * 100 >= C.EXECUTE_THRESHOLD * r.maxHp then return raw, false end
 		return raw * (1 + perks.execute / 100), true
@@ -1039,11 +1047,15 @@ local function createLogic(env)
 		local raw, crit = Progression.meleeDamage(if opening then critStats(stats) else stats, env.rng)
 		local executed
 		raw, executed = L.executeBonus(r, raw, perks)
+		-- Polish: Hollow Sunder (Data.Lairs.sunderMult) on boss records only.
+		local sunder = L.sunderMult(loadoutOf(info).weapon, r)
+		if sunder > 1 then raw = math.floor(raw * sunder) end
 		local dealt, tag = L.mitigate(r, raw, "melee", player)
 		L.landHit(player, r, dealt, "melee")
 		local lifesteal = tonumber(stats.lifesteal) or 0
 		if lifesteal > 0 then env.heal(player, lifesteal) end
 		local result = {record = r, damage = dealt, crit = crit == true, healed = lifesteal > 0, style = "melee", tag = tag}
+		if sunder > 1 then result.sunder = true end
 		if opening then result.firstStrike = true end
 		if executed then result.execute = true end
 		return finish(result, r)
