@@ -15526,4 +15526,310 @@ end
 -- <<< END Raids <<<
 ------------------------------------------------------------------------------
 
+------------------------------------------------------------------------------
+-- >>> QoL Depth (§41) >>>
+-- QoL Depth team: the Lumen Lectern (daily Enchanting memory trials), the
+-- Wardrobe (saved armour + accessory loadouts), Roost tethers (pet XP sharing
+-- with a preview), the Roost keeper as Hub folk, and Vault Charters (bank
+-- tiers with a capped daily interest). Data.QoL = Q. Pure rules only; the
+-- "QoL Depth" block in server.server.lua owns state. All names original.
+------------------------------------------------------------------------------
+do
+local Q = {}
+Data.QoL = Q
+Q.DAY = 86400
+-- UTC day index; daily records only roll forward (a server whose clock is
+-- behind never re-opens a day it already counted).
+function Q.dayOf(t) return math.floor((tonumber(t) or 0) / Q.DAY) end
+local function whole(v, lo, hi)
+	v = tonumber(v)
+	if not v or v ~= v or v == math.huge or v == -math.huge then return nil end
+	v = math.floor(v)
+	if lo and v < lo then return nil end
+	if hi and v > hi then return nil end
+	return v
+end
+Q.whole = whole
+
+------------------------------------------------------------------------------
+-- Lumen Lectern: three memory trials, six tiers gated by Enchanting level.
+-- The server generates every puzzle and checks every answer; a snapshot only
+-- carries what the lectern is showing right now.
+------------------------------------------------------------------------------
+local A = {}
+Q.Lectern = A
+A.NAME = "Lumen Lectern"
+A.SKILL = "Enchanting"
+A.VISIT_SECONDS = 600 -- a trial starts within 10 minutes of touching the lectern
+A.ANSWER_SECONDS = 90 -- per round, after the reveal ends
+A.PAIRS_SECONDS = 600 -- a Mirror Pairs board stays open this long
+A.BONUS_CAP = 6 -- bonus reveals banked per day
+A.GLYPHS = {
+	{id="Sun",mark="☼",color="FFD166"},{id="Moon",mark="☾",color="BFD7FF"},{id="Star",mark="✦",color="FFF3B0"},
+	{id="Rune",mark="❖",color="C77DFF"},{id="Leaf",mark="✿",color="8CE99A"},{id="Wave",mark="≈",color="66D9E8"},
+	{id="Flame",mark="✸",color="FF8A3D"},{id="Gem",mark="◆",color="F783AC"},{id="Eye",mark="◉",color="E9ECEF"},
+}
+A.Games = {
+	seq={id="seq",name="Glyph Sequence",attempts=2,text="The lectern lights glyphs in order, one more each round. Repeat the whole sequence."},
+	recall={id="recall",name="Starfall Recall",attempts=2,text="Numbered stars fall onto the grid and fade. Touch their cells in order, 1 first."},
+	pairs={id="pairs",name="Mirror Pairs",attempts=1,text="Hidden glyph pairs hold rewards. Each reveal costs one light; a matched pair pays out."},
+}
+A.GameOrder = {"seq","recall","pairs"}
+-- xp: Enchanting XP for round 1 (later rounds pay more); dust: Arcane Dust per dust card;
+-- tome / masterwork: chance a Mirror Pairs board hides a Tempering / Masterwork Tome.
+A.Tiers = {
+	{id="Apprentice",level=1,color="A9B4C0",glyphs=4,seqRounds=6,grid={3,3},recallStart=3,recallRounds=5,pairs=4,xp=12,dust=4},
+	{id="Adept",level=15,color="8CE99A",glyphs=5,seqRounds=8,grid={4,3},recallStart=3,recallRounds=6,pairs=5,xp=35,dust=8},
+	{id="Scholar",level=30,color="66D9E8",glyphs=6,seqRounds=10,grid={4,4},recallStart=4,recallRounds=7,pairs=6,xp=100,dust=16},
+	{id="Savant",level=50,color="C77DFF",glyphs=7,seqRounds=12,grid={5,4},recallStart=4,recallRounds=8,pairs=7,xp=400,dust=28,tome=0.6},
+	{id="Magister",level=70,color="F783AC",glyphs=8,seqRounds=14,grid={5,5},recallStart=5,recallRounds=9,pairs=8,xp=900,dust=40,tome=1},
+	{id="Luminary",level=85,color="FFD166",glyphs=9,seqRounds=15,grid={5,5},recallStart=5,recallRounds=10,pairs=9,xp=1600,dust=56,tome=1,masterwork=0.25},
+}
+for i, t in ipairs(A.Tiers) do t.index = i; t.cells = t.grid[1] * t.grid[2] end
+function A.tier(i) i = whole(i, 1, #A.Tiers) return if i then A.Tiers[i] else nil end
+function A.bestTier(level)
+	local best = 1
+	for i, t in ipairs(A.Tiers) do if (tonumber(level) or 1) >= t.level then best = i end end
+	return best
+end
+-- Enchanting XP for clearing round r of a tier (+20 % per round after the first).
+function A.roundXp(t, r) return math.floor(t.xp * (1 + 0.2 * (math.max(1, r) - 1)) + 0.5) end
+function A.rounds(t, game) return if game == "seq" then t.seqRounds elseif game == "recall" then t.recallRounds else 0 end
+-- Bonus reveals for today's Mirror Pairs: seq 1 per 3 rounds, recall 1 per 2, +1 for a perfect run.
+function A.bonusFor(game, cleared, t)
+	cleared = math.max(0, math.floor(tonumber(cleared) or 0))
+	local b = if game == "seq" then cleared // 3 elseif game == "recall" then cleared // 2 else 0
+	if t and cleared > 0 and cleared >= A.rounds(t, game) then b += 1 end
+	return b
+end
+function A.recallCount(t, r) return math.min(t.cells, t.recallStart + r - 1) end
+-- How long (s) the client shows a round before it fades.
+function A.revealSeconds(game, n) return if game == "seq" then 1 + 0.7 * n else 2 + 0.45 * n end
+-- Generators: rng() returns [0, 1).
+local function pick(rng, n) return math.clamp(math.floor(rng() * n) + 1, 1, n) end
+function A.makeSequence(t, rng)
+	local s = {}
+	for i = 1, t.seqRounds do s[i] = pick(rng, t.glyphs) end
+	return s
+end
+-- n distinct cells (1..t.cells); position k holds star number k.
+function A.makeRecall(t, r, rng)
+	local pool = {}
+	for c = 1, t.cells do pool[c] = c end
+	local out = {}
+	for _ = 1, A.recallCount(t, r) do table.insert(out, table.remove(pool, pick(rng, #pool))) end
+	return out
+end
+A.CELL_CHARS = "123456789abcdefghijklmnop" -- cell index <-> one character (<= 25 cells)
+function A.cellChar(c) return string.sub(A.CELL_CHARS, c, c) end
+function A.charCell(ch) return (string.find(A.CELL_CHARS, ch, 1, true)) end
+-- Answers: seq "1324" (glyph indices), recall "3a7" (cell characters in order).
+function A.checkSequence(seq, r, answer)
+	if type(answer) ~= "string" or #answer ~= r or not string.match(answer, "^[1-9]+$") then return false end
+	for i = 1, r do if tonumber(string.sub(answer, i, i)) ~= seq[i] then return false end end
+	return true
+end
+function A.checkRecall(cells, answer)
+	if type(answer) ~= "string" or #answer ~= #cells then return false end
+	for i = 1, #cells do if A.charCell(string.sub(answer, i, i)) ~= cells[i] then return false end end
+	return true
+end
+-- Mirror Pairs: 2 x pairs cards {g = glyph, p = pair}; rewards[pair] =
+-- {k = "xp"|"item"|"reveal", id, n}. One reveal card per board; tomes by chance.
+function A.makeBoard(t, rng)
+	local rewards = {}
+	if t.masterwork and rng() < t.masterwork then table.insert(rewards, {k="item",id="MasterworkTome",n=1}) end
+	if t.tome and rng() < t.tome then table.insert(rewards, {k="item",id="TemperingTome",n=1}) end
+	table.insert(rewards, {k="reveal",n=2})
+	local i = 0
+	while #rewards < t.pairs do
+		i += 1
+		if i % 2 == 1 then table.insert(rewards, {k="xp",n=t.xp * 4}) else table.insert(rewards, {k="item",id="ArcaneDust",n=t.dust}) end
+	end
+	local cards = {}
+	for p = 1, t.pairs do
+		local glyph = ((p - 1) % #A.GLYPHS) + 1
+		table.insert(cards, {g=glyph,p=p})
+		table.insert(cards, {g=glyph,p=p})
+	end
+	for k = #cards, 2, -1 do local j = pick(rng, k); cards[k], cards[j] = cards[j], cards[k] end
+	return cards, rewards
+end
+function A.baseReveals(t) return 2 * t.pairs + 2 end
+function A.reveals(t, bonus) return A.baseReveals(t) + math.clamp(math.floor(tonumber(bonus) or 0), 0, math.min(A.BONUS_CAP, t.pairs)) end
+-- Daily ceiling of Enchanting XP (every round cleared, every XP card matched).
+function A.dailyMaxXp(t)
+	local total = 0
+	for _, g in ipairs({"seq","recall"}) do
+		local per = 0
+		for r = 1, A.rounds(t, g) do per += A.roundXp(t, r) end
+		total += per * A.Games[g].attempts
+	end
+	return total + t.xp * 4 * t.pairs * A.Games.pairs.attempts
+end
+-- p.lectern = {day, used = {[game] = n}, bonus, best = {[game] = rounds}, runs, s = session | nil}
+function A.roll(rec, day)
+	if (tonumber(rec.day) or -1) < day then
+		rec.day, rec.used, rec.bonus = day, {}, 0
+		return true
+	end
+	return false
+end
+function A.left(rec, game) return math.max(0, A.Games[game].attempts - (tonumber(rec.used and rec.used[game]) or 0)) end
+
+------------------------------------------------------------------------------
+-- Wardrobe: saved armour + accessory loadouts (never the weapon). A set holds
+-- item ids only; the items stay in the satchel, so nothing is duplicated.
+------------------------------------------------------------------------------
+local W = {}
+Q.Wardrobe = W
+W.MAX = 9
+W.SLOTS = {"helmet","chest","legs","boots"}
+W.UNLOCKS = {15,30,45} -- Combat levels that add two slots each (3 -> 9)
+W.COOLDOWN = 3 -- seconds between swaps
+W.HURT_GRACE = 8 -- no swap within this many seconds of taking damage
+W.MAX_ACC = 64
+function W.slotsFor(combatLevel)
+	local n = 3
+	for _, lv in ipairs(W.UNLOCKS) do if (tonumber(combatLevel) or 1) >= lv then n += 2 end end
+	return math.min(W.MAX, n)
+end
+function W.capture(equipment, bag)
+	local set = {acc={}}
+	for _, s in ipairs(W.SLOTS) do set[s] = type(equipment) == "table" and equipment[s] or nil end
+	for _, id in ipairs(type(bag) == "table" and bag or {}) do if #set.acc < W.MAX_ACC then table.insert(set.acc, id) end end
+	return set
+end
+function W.empty(set)
+	if type(set) ~= "table" then return true end
+	for _, s in ipairs(W.SLOTS) do if set[s] then return false end end
+	return type(set.acc) ~= "table" or #set.acc == 0
+end
+-- Sanitise a saved set (unknown items dropped, accessories unique, bounded); nil when empty.
+function W.clean(set)
+	if type(set) ~= "table" then return nil end
+	local out = {acc={}}
+	for _, s in ipairs(W.SLOTS) do
+		local id = set[s]
+		local def = type(id) == "string" and Data.Items[id]
+		if def and def.slot == s then out[s] = id end
+	end
+	local seen = {}
+	for _, id in ipairs(type(set.acc) == "table" and set.acc or {}) do
+		local def = type(id) == "string" and Data.Items[id]
+		if def and def.kind == "accessory" and not seen[id] and #out.acc < W.MAX_ACC then seen[id] = true; table.insert(out.acc, id) end
+	end
+	if W.empty(out) then return nil end
+	return out
+end
+-- Pure check that `set` can be worn: owned, right slot, requirements, bag room.
+-- meets(requires) -> ok, missing. Returns ok, reason.
+function W.check(set, items, accessorySlots, meets)
+	if type(set) ~= "table" then return false, "That wardrobe slot is empty." end
+	for _, s in ipairs(W.SLOTS) do
+		local id = set[s]
+		if id then
+			local def = Data.Items[id]
+			if not def or def.slot ~= s then return false, "That loadout holds a piece that no longer fits." end
+			if (items[id] or 0) < 1 then return false, "You no longer own " .. def.name .. "." end
+			local ok, missing = meets(def.requires)
+			if not ok then return false, def.name .. " requires " .. tostring(missing) .. "." end
+		end
+	end
+	local seen = {}
+	for _, id in ipairs(set.acc or {}) do
+		local def = Data.Items[id]
+		if not def or def.kind ~= "accessory" then return false, "That loadout holds an unknown accessory." end
+		if seen[id] then return false, "That loadout lists " .. def.name .. " twice." end
+		seen[id] = true
+		if (items[id] or 0) < 1 then return false, "You no longer own " .. def.name .. "." end
+	end
+	if #(set.acc or {}) > accessorySlots then return false, "That loadout needs " .. #set.acc .. " accessory slots (you have " .. accessorySlots .. ")." end
+	return true
+end
+
+------------------------------------------------------------------------------
+-- Vault Charters: bank tiers. Interest is paid once per UTC day, on the vault
+-- balance up to the charter's insured capacity; nothing builds up while you
+-- are away, so a charter never pays more than its daily ceiling.
+------------------------------------------------------------------------------
+local V = {}
+Q.Vault = V
+V.Tiers = {
+	{id="Strongbox",name="Strongbox Charter",rate=0.001,cap=100000},
+	{id="Coffer",name="Coffer Charter",rate=0.0015,cap=500000,cost=25000,needs={Ore=3,Timber=3}},
+	{id="Ledger",name="Ledger Charter",rate=0.002,cap=2000000,cost=250000,needs={Ore=5,Timber=5,Fish=4,Herb=4}},
+	{id="Gilded",name="Gilded Charter",rate=0.0025,cap=8000000,cost=2000000,needs={SunsteelOre=5,EmberoakLog=5,Stormeel=4,ArcaneDust=5}},
+	{id="Treasury",name="Sky Treasury Charter",rate=0.003,cap=25000000,cost=10000000,needs={StarmetalOre=6,StarwoodLog=6,AbyssKoi=5,VoidEssence=6}},
+}
+for i, t in ipairs(V.Tiers) do t.index = i end
+function V.tier(i) return V.Tiers[math.clamp(whole(i) or 1, 1, #V.Tiers)] end
+function V.maxDaily(t) return math.floor(t.cap * t.rate) end
+function V.interest(t, bank)
+	bank = tonumber(bank) or 0
+	if bank ~= bank then bank = 0 end
+	return math.floor(math.clamp(bank, 0, t.cap) * t.rate)
+end
+-- p.vault = {tier, day, paid, last}. Returns the coins due today (0 unless the day is new).
+function V.roll(rec, day, bank)
+	local seen = tonumber(rec.day)
+	if seen and seen >= day then return 0 end
+	rec.day = day
+	if not seen then return 0 end -- a new charter starts counting tomorrow
+	return V.interest(V.tier(rec.tier), bank)
+end
+
+------------------------------------------------------------------------------
+-- Roost tethers: roster pets that share the summoned pet's pet XP.
+------------------------------------------------------------------------------
+local K = {}
+Q.Tether = K
+K.SHARE = 0.1 -- each tethered pet earns 10 % of the pet XP the summoned pet earns
+K.UNLOCKS = {10,25,50} -- Taming levels for tether slots 1, 2, 3
+function K.slotsFor(tamingLevel)
+	local n = 0
+	for _, lv in ipairs(K.UNLOCKS) do if (tonumber(tamingLevel) or 1) >= lv then n += 1 end end
+	return n
+end
+-- Preview: pet XP your summoned pet must earn for a tethered pet to gain `need`.
+function K.activeXpFor(need) return math.ceil(math.max(0, tonumber(need) or 0) / K.SHARE) end
+
+------------------------------------------------------------------------------
+-- The Roost keeper (Wren Halloway, already named by Data.PetDepth.KEEPER) as
+-- Hub folk, and the atlas stations Roost (Hero › Pets) and Lectern.
+------------------------------------------------------------------------------
+do
+	local T, RA = Data.Townsfolk, Data.RegionArt
+	Q.ROOST_KEEPER = "RoostKeeper"
+	if T and RA and RA.Folk and T.NPCs and not RA.FolkByRole[Q.ROOST_KEEPER] then
+		local keeper = {role=Q.ROOST_KEEPER,region="Hub",name="Wren Halloway",title="Roost Keeper",portrait="🪺",kind="roost",
+			look={skin="E0AC69",shirt="7FA35B",pants="4A3B2A",shoes="2E241A",accent="FFD6A5",hair="8B5A2B",hat="cap",held="lantern",apron="5C7A3A"},
+			greet="Every pet on the isles passes my perches sooner or later. Leave one with me for a while and it comes home grander."}
+		table.insert(RA.Folk, keeper)
+		RA.FolkByRole[keeper.role] = keeper
+		if T.AtlasStations then
+			T.AtlasStations.Roost = "Hero · Pets"
+			T.AtlasStations.Lectern = "Hero · Lectern"
+		end
+		T.NPCs[keeper.role] = {name=keeper.name,title=keeper.title,region="Hub",portrait=keeper.portrait,look=keeper.look,start="hello",anchorOnly=true,folk="roost",
+			nodes={
+				hello={text=keeper.greet,options={
+					{label="Show me the Roost",atlas="Roost"},
+					{label="How do upgrades work?",to="upgrade"},
+					{label="Tell me about tethers",to="tether"},
+					{label="Farewell",close=true}}},
+				upgrade={text="Bring coins and your pet's own trade goods. I raise one pet a rarity at a time: an hour for Uncommon, three days for Legendary. "
+					.."Come and go as you please; the perch keeps time while you are away. Claim it in Hero › Pets.",options={
+					{label="Show me the Roost",atlas="Roost"},{label="Back",to="hello"},{label="Farewell",close=true}}},
+				tether={text="A tethered pet learns from the one at your side: it earns a tenth of every bit of pet XP your summoned pet earns. "
+					.."Taming 10 opens your first tether, 25 the second and 50 the third.",options={
+					{label="Show me the Roost",atlas="Roost"},{label="Back",to="hello"},{label="Farewell",close=true}}},
+			}}
+		table.insert(T.RegionFolkOrder, keeper.role)
+	end
+end
+end
+-- <<< END QoL Depth <<<
+------------------------------------------------------------------------------
+
 return Data

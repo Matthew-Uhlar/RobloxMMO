@@ -5427,6 +5427,30 @@ do
 end
 -- <<< END Beaconry <<<
 
+-------------------------------------------------------------------------------
+-- >>> QoL Depth (§41) >>> The Lumen Lectern: one station prop on the front of
+-- the Aether Museum dais (Compass Quay), between the display case and the log
+-- lectern, in its own Model "Lumen Lectern" (LecternContent = true). Prompt IsleAction "lecternVisit" (server: QoL block opens the
+-- 10-minute trial window and Hero › Lectern). 1 mesh-slot part + the invisible
+-- Anchor_Waypoint_Lectern = 2 static parts; no lights, no Neon.
+-------------------------------------------------------------------------------
+do
+	local hub=islandsFolder:FindFirstChild("Compass Quay")
+	local museum=hub and hub:FindFirstChild("Aether Museum",true)
+	local dais=museum and museum:FindFirstChild("Museum dais")
+	if dais then
+		local cf=dais.CFrame*CFrame.new(0,-.285,0)
+		-- Its own model beside the museum's (the museum's prompts all route to logsBoard).
+		local m=group("Lumen Lectern",hub)
+		m:SetAttribute("LecternContent",true)
+		local stand=part(m,"Lumen Lectern",V(2.4,2.2,1.4),at(cf,0,1.67,-4.4),C("3A2E5C"),WO,true)
+		meshSlot(stand,"Workbench",C("B9A7FF"))
+		prompt(stand,"Study","Lumen Lectern · Enchanting trials","lecternVisit")
+		anchor(m,"Waypoint_Lectern",at(cf,0,0,-6.4),cf.Position)
+	end
+end
+-- <<< END QoL Depth <<<
+
 -- Signs (§28 performance): drop Back faces nobody can read on the static world.
 Signs.cullBacks(world)
 Signs.cullBacks(islandsFolder)

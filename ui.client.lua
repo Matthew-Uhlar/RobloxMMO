@@ -2854,6 +2854,7 @@ local function drawPets()
 			if e.index==PT.sel then chosen=e end
 		end
 		if chosen then PT.detail(chosen.index,chosen.pet) end
+		if chosen and UI.QL and UI.QL.tether then UI.QL.tether(chosen.index,chosen.pet) end -- §41 Roost tethers + preview
 	end
 	-- The Roost keeper's stall: compact tiles (tap to buy).
 	local width=contentWidth()
@@ -4963,6 +4964,7 @@ local function drawBank()
 	end)
 	input.FocusLost:Connect(function() updatePreview() end)
 	updatePreview()
+	if UI.QL and UI.QL.charter then UI.QL.charter() end -- §41 Vault Charter
 end
 local buyLimits,listPrices={},{}
 local function quoteAge(quote)
@@ -8783,6 +8785,328 @@ function CTP.drawTrophies()
 end
 Pages.drawTrophies=CTP.drawTrophies
 
+-- >>> QoL Depth (§41) >>> -----------------------------------------------------
+-- Hero › Lectern (the Lumen Lectern's three memory trials), Hero › Wardrobe
+-- (saved armour + accessory loadouts), the Vault Charter card on Ledger › Bank
+-- and the Roost tether card on Hero › Pets. Server state: snapshot.qol =
+-- {lectern, wardrobe, vault, tether}. The server generates every puzzle and
+-- checks every answer; this page only shows what a snapshot carries (a round's
+-- glyphs / stars during its reveal window, turned cards) and the player's input.
+-- Helpers live on UI.QL (the chunk is near Luau's local limit).
+UI.QL={tier=nil,input="",key=nil,hideAt=0,slot=1}
+do
+local QL=UI.QL
+local function QD() return Data and type(Data.QoL)=="table" and Data.QoL or nil end
+local function qol() return tbl(state.qol) end
+local function glyphOf(A,i) return tbl(tbl(A.GLYPHS)[num(i,0)]) end
+local function glyphText(A,i) local g=glyphOf(A,i) return paint(tostring(g.mark or "?"),tostring(g.color or "FFFFFF")) end
+-- A square tile showing big text (glyph, number, card face).
+local function face(parent,name,order,text,hex,sub,fill,action)
+	local b=tile(parent,name,order,action or function() end)
+	if fill then b.BackgroundColor3=fill end
+	UI.T.rim(b,1.5)
+	local mark=make("TextLabel",b,{Name="Mark",BackgroundTransparency=1,Size=UDim2.new(1,0,sub and .7 or 1,0),Text=text,RichText=true,Font=Enum.Font.GothamBold,
+		TextScaled=true,TextColor3=safeColor(hex,ivory)})
+	make("UITextSizeConstraint",mark,{MaxTextSize=compactAtlas and 26 or 34,MinTextSize=10})
+	if sub then
+		local s=label(b,sub,0,0,full,14,UI.heavy,11,muted)
+		s.Position=UDim2.new(0,0,.7,0)
+		s.Size=UDim2.new(1,0,.3,-2)
+		s.TextXAlignment=Enum.TextXAlignment.Center
+	end
+	return b
+end
+local function grid(cols,height)
+	local width=contentWidth()
+	local cell=math.min(compactAtlas and 56 or 76,math.floor((width-12-(cols-1)*6)/cols))
+	return gridHolder(UDim2.fromOffset(cell,height or cell),6),cell
+end
+-- Remembers when the current round's reveal must fade (client side).
+local function revealing(v)
+	local key=tostring(v.g)..":"..tostring(v.r)..":"..tostring(v.t)
+	if v.showing==true and type(v.show)=="table" then
+		if QL.key~=key then
+			QL.key=key
+			QL.input=""
+			QL.hideAt=os.clock()+num(v.reveal,3)
+			task.delay(num(v.reveal,3)+.05,function() if QL.key==key and current=="Hero" then render() end end)
+		end
+		return os.clock()<QL.hideAt
+	end
+	if QL.key~=key then QL.key=key;QL.input="" end
+	return false
+end
+local function sessionHeader(A,v,t)
+	local game=tbl(tbl(A.Games)[v.g])
+	local sub=v.g=="pairs" and (num(v.left,0).." reveals left") or ("Round "..num(v.r,1).." of "..num(v.rounds,1))
+	card({name="LecternSession",icon=CTP.medallion(t.color or "B9A7FF","❖"),accent=safeColor(t.color,gold),title=paint(string.upper(tostring(game.name or "Trial")),t.color or "FFD166"),
+		subtitle=escape(tostring(t.id or "")).." tier  ·  "..sub,badge=clock(num(v.endsIn,0)).." left",badgeColor=gold,detail=escape(tostring(game.text or "")),
+		actions={{caption="Stop",name="LecternStop",fn=function() send("lecternEnd") end}}})
+end
+local function drawSequence(A,v,t)
+	local showing=revealing(v)
+	local r=num(v.r,1)
+	if showing then
+		heading("MEMORISE    /    "..r.." GLYPH"..(r==1 and "" or "S"))
+		local holder=grid(math.min(r,8))
+		holder.Name="LecternShow"
+		for i,g in ipairs(tbl(v.show)) do local gl=glyphOf(A,g) face(holder,"Show"..i,i,tostring(gl.mark or "?"),gl.color,tostring(i)) end
+		return
+	end
+	heading("REPEAT THE SEQUENCE    /    "..#QL.input.."/"..r)
+	local typed=grid(math.min(math.max(r,1),8))
+	typed.Name="LecternTyped"
+	for i=1,r do
+		local ch=string.sub(QL.input,i,i)
+		local gl=ch~="" and glyphOf(A,tonumber(ch)) or nil
+		face(typed,"Typed"..i,i,gl and tostring(gl.mark or "?") or "·",gl and gl.color or "4A5866",nil,track)
+	end
+	heading("GLYPHS")
+	local pad=grid(math.min(num(v.glyphs,4),5))
+	pad.Name="LecternPad"
+	for i=1,math.clamp(num(v.glyphs,4),1,9) do
+		local gl=glyphOf(A,i)
+		face(pad,"Glyph"..i,i,tostring(gl.mark or "?"),gl.color,tostring(gl.id or i),nil,function()
+			if #QL.input>=r then return end
+			QL.input=QL.input..tostring(i)
+			if #QL.input==r then local answer=QL.input;QL.input="";send("lecternAnswer",answer) else render() end
+		end)
+	end
+	card({name="LecternUndo",motif="Settings",title="Entered "..#QL.input.." of "..r,titleColor=muted,
+		actions={{caption="Undo",name="LecternUndoButton",disabled=#QL.input==0,reason="Nothing entered yet.",fn=function() QL.input=string.sub(QL.input,1,-2);render() end}}})
+end
+local function drawRecall(A,v,t)
+	local showing=revealing(v)
+	local cols,rows,n=math.clamp(num(v.cols,3),1,5),math.clamp(num(v.rows,3),1,5),num(v.n,0)
+	heading((showing and "MEMORISE" or "TOUCH IN ORDER").."    /    "..n.." STARS"..(showing and "" or ("  ·  "..#QL.input.."/"..n)))
+	local holder=grid(cols)
+	holder.Name="LecternGrid"
+	local shown={}
+	if showing then for k,c in ipairs(tbl(v.show)) do shown[num(c,0)]=k end end
+	local picked={}
+	for k=1,#QL.input do local c=A.charCell(string.sub(QL.input,k,k)) if c then picked[c]=k end end
+	for c=1,cols*rows do
+		local k=shown[c] or picked[c]
+		face(holder,"Cell"..c,c,k and tostring(k) or "",k and (showing and "FFD166" or "9EE7D2") or "FFFFFF",nil,k and rgb("1E2C46") or nil,function()
+			if showing or picked[c] or #QL.input>=n then return end
+			QL.input=QL.input..A.cellChar(c)
+			if #QL.input==n then local answer=QL.input;QL.input="";send("lecternAnswer",answer) else render() end
+		end)
+	end
+	if not showing then
+		card({name="LecternUndo",motif="Settings",title="Touched "..#QL.input.." of "..n,titleColor=muted,
+			actions={{caption="Undo",name="LecternUndoButton",disabled=#QL.input==0,reason="Nothing touched yet.",fn=function() QL.input=string.sub(QL.input,1,-2);render() end}}})
+	end
+end
+local function rewardText(rw)
+	rw=tbl(rw)
+	if rw.k=="xp" then return paint("+"..fmt(num(rw.n,0)).." XP","C77DFF")
+	elseif rw.k=="item" then return paint("+"..fmt(num(rw.n,0)).." "..escape(itemName(rw.id)),itemHex(rw.id))
+	elseif rw.k=="reveal" then return paint("+"..fmt(num(rw.n,0)).." reveals","9EE7D2") end
+	return ""
+end
+local function drawPairs(A,v,t)
+	local n=math.clamp(num(v.n,0),0,36)
+	local cols=math.clamp(num(v.cols,4),2,6)
+	heading("MIRROR PAIRS    /    "..num(v.left,0).." REVEALS LEFT")
+	local holder,cell=grid(cols)
+	holder.Name="LecternBoard"
+	local faces=tbl(v.face)
+	for i=1,n do
+		local f=faces[tostring(i)]
+		if type(f)=="table" then
+			local gl=glyphOf(A,f.g)
+			face(holder,"Card"..i,i,tostring(gl.mark or "?"),gl.color,f.m and string.gsub(rewardText(f.rw),"<[^>]+>","") or (f.miss and "no match" or "turned"),
+				f.m and rgb("1E3A2E") or (f.miss and rgb("3A1E24") or rgb("1E2C46")))
+		else
+			face(holder,"Card"..i,i,"✧","5E6B7A",nil,nil,function() send("lecternFlip",tostring(i)) end)
+		end
+	end
+	local won={}
+	for _,rw in ipairs(tbl(v.won)) do table.insert(won,rewardText(rw)) end
+	card({name="LecternWon",motif="Ledger",title="Won this board",titleColor=gold,lines={#won>0 and table.concat(won,"  ·  ") or paint("Nothing matched yet.","8A9AA0")}})
+end
+function QL.drawLectern()
+	local Q=QD()
+	if not Q then dataMissing() return end
+	local A=Q.Lectern
+	local L=tbl(qol().lectern)
+	if next(L)==nil then syncing("lectern") return end
+	local s=L.session
+	if type(s)=="table" then
+		local t=tbl(A.Tiers[num(s.t,1)])
+		sessionHeader(A,s,t)
+		if s.g=="seq" then drawSequence(A,s,t) elseif s.g=="recall" then drawRecall(A,s,t) elseif s.g=="pairs" then drawPairs(A,s,t) end
+		return
+	end
+	QL.key=nil
+	local best=math.clamp(num(L.tier,1),1,#A.Tiers)
+	QL.tier=math.clamp(num(QL.tier,best),1,best)
+	local visit=num(L.visitIn,0)
+	card({name="LecternHeader",icon=CTP.medallion("B9A7FF","❖"),accent=rgb("B9A7FF"),title=paint("LUMEN LECTERN","B9A7FF"),
+		subtitle="Enchanting "..num(L.level,1).."  ·  "..fmt(num(L.runs,0)).." trials studied  ·  renews in "..clock(num(L.resetIn,0)),
+		badge=visit>0 and ("OPEN "..clock(visit)) or "AT THE MUSEUM",badgeColor=visit>0 and mint or muted,
+		detail=visit>0 and "The lectern is listening. Choose a tier and a trial below." or "Touch the Lumen Lectern in the Aether Museum on Compass Quay to begin a trial (the lectern stays open for 10 minutes).",
+		lines={"Today's bonus reveals for Mirror Pairs: "..paint(tostring(num(L.bonus,0)),"9EE7D2").."  (play Glyph Sequence and Starfall Recall first)"}})
+	heading("TIER    /    ENCHANTING GATES")
+	local labels={}
+	for i,t in ipairs(A.Tiers) do labels[i]=i<=best and string.sub(t.id,1,3) or ("Lv"..t.level) end
+	local tiers=gridHolder(UDim2.new(1/#A.Tiers,-6,0,compactAtlas and 44 or 48),6)
+	tiers.Name="LecternTiers"
+	for i,t in ipairs(A.Tiers) do
+		local b=tile(tiers,"LecternTier"..i,i,function()
+			if i>best then notify(t.id.." trials require Enchanting "..t.level..".") return end
+			QL.tier=i;render()
+		end)
+		if i==QL.tier then b.BackgroundColor3=rgb("2A2246") end
+		UI.T.rim(b,i==QL.tier and 2 or 1)
+		local tx=label(b,(i<=best and t.id or ("🔒 "..t.level)),0,0,full,compactAtlas and 44 or 48,UI.heavy,compactAtlas and 11 or 13,i<=best and safeColor(t.color,ivory) or muted)
+		tx.Size=UDim2.fromScale(1,1)
+		tx.TextXAlignment=Enum.TextXAlignment.Center
+	end
+	local t=A.Tiers[QL.tier]
+	heading("TRIALS    /    "..string.upper(t.id).." TIER")
+	for _,g in ipairs(A.GameOrder) do
+		local game=A.Games[g]
+		local left=num(tbl(L.left)[g],0)
+		local reason=(visit<=0 and "Touch the Lumen Lectern in the Aether Museum first.") or (left<1 and "No attempts left today.") or nil
+		local lines
+		if g=="pairs" then
+			lines={(t.pairs*2).." cards  ·  "..A.baseReveals(t).." reveals + "..paint(tostring(math.min(num(L.bonus,0),t.pairs)).." bonus","9EE7D2"),
+				"Pairs hold "..fmt(t.xp*4).." XP, "..t.dust.." Arcane Dust, +2 reveals"..(t.tome and ("  ·  Tempering Tome "..math.floor(t.tome*100).."%") or "")..(t.masterwork and ("  ·  Masterwork Tome "..math.floor(t.masterwork*100).."%") or "")}
+		else
+			local rounds=A.rounds(t,g)
+			lines={rounds.." rounds  ·  "..fmt(A.roundXp(t,1)).." → "..fmt(A.roundXp(t,rounds)).." Enchanting XP a round",
+				g=="seq" and (t.glyphs.." glyphs") or (t.grid[1].."×"..t.grid[2].." grid, "..t.recallStart.."+ stars")}
+		end
+		table.insert(lines,"Best: "..fmt(num(tbl(L.best)[g],0)).."  ·  "..left.."/"..game.attempts.." attempts left today")
+		card({name="LecternGame"..g,icon=CTP.medallion(t.color,g=="seq" and "☼" or (g=="recall" and "✦" or "◆")),title=escape(game.name),titleColor=safeColor(t.color,gold),
+			subtitle=escape(game.text),lines=lines,badge=left.."/"..game.attempts,badgeColor=left>0 and mint or muted,
+			actions={{caption="Begin",primary=reason==nil or nil,disabled=reason~=nil,reason=reason,name="LecternBegin"..g,fn=function() send("lecternStart",g..":"..QL.tier) end}}})
+	end
+end
+-- Hero › Wardrobe ------------------------------------------------------------
+function QL.drawWardrobe()
+	local Q=QD()
+	if not Q then dataMissing() return end
+	local W=Q.Wardrobe
+	local w=tbl(qol().wardrobe)
+	if next(w)==nil then syncing("wardrobe") return end
+	local slots=math.clamp(num(w.slots,3),0,W.MAX)
+	local wait=num(w.wait,0)
+	card({name="WardrobeHeader",motif="Hero",title="Wardrobe",titleColor=gold,subtitle=slots.."/"..W.MAX.." loadouts open  ·  "..num(w.accSlots,0).." accessory slots",
+		badge=wait>0 and ("READY IN "..wait.."s") or "READY",badgeColor=wait>0 and gold or mint,
+		detail="Save your armour and accessory bag as a loadout, then swap the whole set in one tap. Your weapon stays in hand. Swaps wait out a fight.",
+		lines={"More loadouts open at Combat "..table.concat(W.UNLOCKS,", ").."."}})
+	QL.slot=math.clamp(num(QL.slot,1),1,W.MAX)
+	local holder=gridHolder(UDim2.new(1/(compactAtlas and 5 or 9),-6,0,compactAtlas and 48 or 56),6)
+	holder.Name="WardrobeSlots"
+	local sets=tbl(w.sets)
+	for i=1,W.MAX do
+		local set=sets[i]
+		local open=i<=slots
+		local b=face(holder,"WardrobeSlot"..i,i,open and tostring(i) or "🔒",open and (type(set)=="table" and "FFD166" or "8A9AA0") or "5E6B7A",
+			num(w.worn,0)==i and "worn" or (type(set)=="table" and "saved" or (open and "empty" or "locked")),QL.slot==i and rgb("2A2246") or nil,function() QL.slot=i;render() end)
+		if num(w.worn,0)==i then UI.tag(b,"W") end
+	end
+	local i=QL.slot
+	local set=sets[i]
+	local open=i<=slots
+	local lines={}
+	if type(set)=="table" then
+		for _,s in ipairs(W.SLOTS) do
+			local id=set[s]
+			table.insert(lines,paint(string.upper(string.sub(s,1,1))..string.sub(s,2),"BECECA").."  "..(id and paint(escape(itemName(id)),itemHex(id))..(count("items",id)<1 and paint("  (missing)","E8806A") or "") or paint("empty","8A9AA0")))
+		end
+		local acc={}
+		for _,id in ipairs(tbl(set.acc)) do table.insert(acc,paint(escape(itemName(id)),itemHex(id))..(count("items",id)<1 and paint(" (missing)","E8806A") or "")) end
+		table.insert(lines,paint("Accessories","BECECA").."  "..(#acc>0 and table.concat(acc,", ") or paint("none","8A9AA0")))
+	end
+	local actions={}
+	if open then
+		table.insert(actions,{caption="Save current",name="WardrobeSave",fn=function() send("wardrobeSave",tostring(i)) end})
+		if type(set)=="table" then
+			table.insert(actions,1,{caption="Wear",primary=wait<=0 or nil,disabled=wait>0,reason="Your wardrobe is settling ("..wait.."s).",name="WardrobeWear",fn=function() send("wardrobeWear",tostring(i)) end})
+			table.insert(actions,{caption="Clear",name="WardrobeClear",fn=function() send("wardrobeClear",tostring(i)) end})
+		end
+	end
+	card({name="WardrobeDetail",motif="Hero",title="Loadout "..i,titleColor=gold,subtitle=open and (type(set)=="table" and (#tbl(set.acc).." accessories") or "Empty") or ("Opens at Combat "..tostring(W.UNLOCKS[math.ceil((i-3)/2)] or "?")),
+		badge=num(w.worn,0)==i and "WORN" or nil,badgeColor=mint,lines=lines,
+		detail=open and type(set)~="table" and "Equip the armour and accessories you want, then Save current." or nil,actions=actions})
+end
+-- Ledger › Bank: the Vault Charter card.
+function QL.charter()
+	local Q=QD()
+	local v=tbl(qol().vault)
+	if not Q or next(v)==nil then return end
+	local V=Q.Vault
+	local t=tbl(V.Tiers[num(v.tier,1)])
+	heading("02    /    VAULT CHARTER")
+	card({name="VaultCharter",motif="Ledger",accent=mint,title=escape(tostring(t.name or "Charter")),titleColor=mint,
+		subtitle=(math.floor(num(t.rate,0)*10000+.5)/100).."% a day on up to "..fmt(num(t.cap,0)).." vault coins",
+		badge="+"..fmt(num(v.next,0)).." tomorrow",badgeColor=gold,
+		lines={"Daily ceiling "..fmt(num(v.maxDaily,0)).." coins  ·  next payment in "..clock(num(v.nextIn,0)),
+			"Interest earned: "..fmt(num(v.paid,0)).." coins"..(num(v.last,0)>0 and ("  ·  last "..fmt(v.last)) or ""),
+			paint("Paid once per UTC day when you open your journal; nothing builds up while you are away.","8A9AA0")}})
+	local up=v.upgrade
+	if type(up)=="table" then
+		local n=tbl(V.Tiers[num(up.tier,0)])
+		local items,met={},num(state.coins,0)>=num(up.cost,0)
+		table.insert(items,{text=fmt(num(up.cost,0)).." coins from your purse",met=num(state.coins,0)>=num(up.cost,0),amount=fmt(num(state.coins,0))})
+		for _,need in ipairs(tbl(up.need)) do
+			need=tbl(need)
+			local ok=num(need.have,0)>=num(need.tier,1)
+			met=met and ok
+			table.insert(items,{text=escape(itemName(need.id)).." collection tier "..numeral(num(need.tier,1)),met=ok,amount=num(need.have,0).."/"..num(need.tier,1)})
+		end
+		card({name="VaultUpgrade",motif="Ledger",title="Next: "..escape(tostring(n.name or "Charter")),titleColor=gold,
+			subtitle=(math.floor(num(n.rate,0)*10000+.5)/100).."% on up to "..fmt(num(n.cap,0)).."  ·  ceiling "..fmt(math.floor(num(n.cap,0)*num(n.rate,0))).." a day",
+			after=function(body,nextOrder) UI.checklist(body,nextOrder,"REQUIREMENTS",items) end,
+			actions={{caption="Seal charter",primary=met or nil,disabled=not met,reason="Meet every requirement first.",name="VaultUpgradeButton",fn=function() send("vaultUpgrade") end}}})
+	end
+end
+-- Hero › Pets: tether toggle for the selected pet and the sharing preview.
+function QL.tether(index,pet)
+	local Q=QD()
+	local k=tbl(qol().tether)
+	if not Q or next(k)==nil or type(pet)~="table" then return end
+	local K=Q.Tether
+	local slots=num(k.slots,0)
+	local rows=tbl(k.pets)
+	local mine
+	local clean={}
+	for _,r in ipairs(rows) do if type(r)=="table" then table.insert(clean,r) end end
+	rows=clean
+	for _,r in ipairs(rows) do if num(r.index,0)==index then mine=r end end
+	local lines={}
+	for _,r in ipairs(rows) do
+		local def=tbl(tbl(Data.PetById)[r.id])
+		table.insert(lines,paint(escape(tostring(def.name or r.id)),"F9CC77").."  Lv "..num(r.level,1).."  ·  "..
+			(r.active==true and paint("summoned (learns directly)","8A9AA0") or (r.sharing==true and ("next level after "..paint(fmt(num(r.activeXp,0)),"9EE7D2").." pet XP from your summoned pet") or paint("over your tether limit","E8806A"))))
+	end
+	if #lines==0 then table.insert(lines,paint("No pets tethered.","8A9AA0")) end
+	local reason=(slots<1 and ("Tethers open at Taming "..tostring(K.UNLOCKS[1]).."."))
+		or (not mine and #rows>=slots and "All tethers are in use.") or nil
+	card({name="PetTether",motif="Co-op",title="Roost tethers  "..#rows.."/"..slots,titleColor=gold,
+		subtitle="Each tethered pet earns "..math.floor(num(k.share,0.1)*100).."% of your summoned pet's pet XP",lines=lines,
+		actions={mine and {caption="Untether",name="PetTetherButton",fn=function() send("petTether",index..":"..tostring(pet.id)) end}
+			or {caption="Tether",primary=reason==nil or nil,disabled=reason~=nil,reason=reason,name="PetTetherButton",fn=function() send("petTether",index..":"..tostring(pet.id)) end}}})
+	-- Roost preview: what the next rarity changes.
+	local cost=type(pet.upgrade)=="table" and pet.upgrade or nil
+	local PD=tbl(Data.PetDepth)
+	if cost then
+		local from,to=UI.PT.rarity(pet.rarity),UI.PT.rarity(cost.to)
+		local sm,xm=tbl(PD.STAT_MULT),tbl(PD.XP_MULT)
+		card({name="RoostPreview",motif="Co-op",title="Roost preview  "..paint(from,rarityHex(from)).." → "..paint(to,rarityHex(to)),titleColor=gold,
+			lines={"Stats ×"..num(sm[from],1).." → ×"..num(sm[to],1).."  ·  level curve ×"..num(xm[from],1).." → ×"..num(xm[to],1).." (lifetime XP kept)",
+				"Away for "..clock(num(cost.seconds,0)).."  ·  "..UI.PT.costLine(cost)}})
+	end
+end
+end
+Pages.drawLectern=function() UI.QL.drawLectern() end
+Pages.drawWardrobe=function() UI.QL.drawWardrobe() end
+-- <<< END QoL Depth <<< ---------------------------------------------------------
+
 -- Countdowns tick in place; the page redraws at the bell.
 task.spawn(function()
 	while task.wait(1) do
@@ -9639,7 +9963,7 @@ local MENU={
 	{id="Skills",motif="Hero",tab="Hero",section="Skills"},{id="Collections",motif="Satchel",tab="Satchel",section="Collections"},
 	{id="Recipes",motif="Workshop",tab="Workshop",section="Forge"},{id="Bestiary",motif="Hunt",tab="Hunt",section="Bestiary"},
 	{id="Quests",motif="Journal",tab="Journal",section="Quests"},{id="Pets",motif="Co-op",tab="Hero",section="Pets"},
-	{id="Wardrobe",title="Wardrobe & Gear",motif="Hero",tab="Hero",section="Gear"},{id="Bank",motif="Ledger",tab="Ledger",section="Bank"},
+	{id="Wardrobe",title="Wardrobe",motif="Hero",tab="Hero",section="Wardrobe"},{id="Bank",motif="Ledger",tab="Ledger",section="Bank"},
 	{id="Market",motif="Ledger",tab="Ledger",section="Orders"},{id="Satchel",motif="Satchel",hud="satchel"},
 	{id="Chart",title="Sky Chart",motif="Map",hud="warpmap"},{id="Settings",motif="Settings",tab="Menu",section="Settings"},
 	{id="Renown",title="Isle Renown",motif="Journal",tab="Menu",section="Renown"}, -- §31 MMO Features
@@ -9652,7 +9976,7 @@ local function caption(id)
 	elseif id=="Bestiary" then local n=0 for _,k in pairs(tbl(d.bestiary)) do n+=num(k,0) end return fmt(n).." creatures slain"
 	elseif id=="Quests" then local j=tbl(state.journal) local ready=0 for _,q in ipairs(tbl(j.quests)) do if type(q)=="table" and q.ready then ready+=1 end end return ready>0 and (ready.." ready to claim") or (fmt(num(j.questPoints,0)).." quest points")
 	elseif id=="Pets" then return #tbl(d.pets).." companions"
-	elseif id=="Wardrobe" then local n=0 for _ in pairs(tbl(d.equipment)) do n+=1 end return n.." slots equipped"
+	elseif id=="Wardrobe" then local n=0 for _,s in pairs(tbl(tbl(tbl(state.qol).wardrobe).sets)) do if type(s)=="table" then n+=1 end end return n.." loadouts saved" -- §41
 	elseif id=="Bank" then return "◆ "..fmt(num(state.bank,0)).." banked"
 	elseif id=="Market" then return "Bazaar & auctions"
 	elseif id=="Satchel" then return "Inventory · E"
@@ -9844,7 +10168,7 @@ local tabOrder={"Menu","Journal","Hero","Satchel","Workshop","Hunt","Ledger"}
 local sectionLists={
 	Menu={"Home","Renown","Resonance","Settings"}, -- §31: Renown, Resonance
 	Journal={"Bearing","Quests","Helper","Goals","Diaries","Construction","Regions","Crew","Calendar","Council","Agility","Commissions","Collection Log","Museum","Motes","Factions"}, -- §33: Helper, Goals
-	Hero={"Skills","Mastery","Gear","Combat","Spellbook","Prayer","Enchant","Reforge","Accessories","Pets","Calculator"}, -- §33: Calculator
+	Hero={"Skills","Mastery","Gear","Wardrobe","Combat","Spellbook","Prayer","Enchant","Lectern","Reforge","Accessories","Pets","Calculator"}, -- §33: Calculator; §41: Wardrobe, Lectern
 	Satchel={"Items","Collections","Trails"},
 	Workshop={"Forge","Hearth","Cauldron","Workbench","Crafting","Beaconry","Workers","Home","Garden","Contests"}, -- §37: Beaconry; §39: Contests
 	Hunt={"Slayer","Bestiary","Dungeon","Essence","Bosses","Hunter","Thieving","Minigames","Trophies"}, -- §39: Trophies
@@ -9857,7 +10181,8 @@ local drawers={
 		Commissions=Pages.drawCommissions,["Collection Log"]=Pages.drawCollectionLog,Museum=Pages.drawMuseum, -- Commissions & Logs
 		Motes=Pages.drawMotes,Factions=Pages.drawFactions, -- Exploration & Factions
 		Helper=Pages.drawHelper,Goals=Pages.drawGoals}, -- §33 quest helper, goal board
-	Hero={Skills=Pages.drawSkills,Mastery=Pages.drawMastery,Gear=Pages.drawGear,Combat=Pages.drawCombat,Spellbook=Pages.drawSpellbook,Prayer=Pages.drawPrayer,Enchant=Pages.drawEnchant,Reforge=function() Pages.drawReforge() end,Accessories=Pages.drawAccessories,Pets=Pages.drawPets,Calculator=Pages.drawCalculator},
+	Hero={Skills=Pages.drawSkills,Mastery=Pages.drawMastery,Gear=Pages.drawGear,Combat=Pages.drawCombat,Spellbook=Pages.drawSpellbook,Prayer=Pages.drawPrayer,Enchant=Pages.drawEnchant,Reforge=function() Pages.drawReforge() end,Accessories=Pages.drawAccessories,Pets=Pages.drawPets,Calculator=Pages.drawCalculator,
+		Wardrobe=function() Pages.drawWardrobe() end,Lectern=function() Pages.drawLectern() end}, -- §41
 	Satchel={Items=Pages.drawItems,Collections=Pages.drawCollections,Trails=Pages.drawTrails},
 	Workshop={Forge=function() Pages.drawStation("Forge") end,Hearth=function() Pages.drawStation("Hearth") end,Cauldron=function() Pages.drawStation("Cauldron") end,
 		Workbench=function() Pages.drawStation("Workbench") end,Crafting=Pages.drawCrafting,Beaconry=Pages.drawBeaconry,Workers=Pages.drawWorkers,Home=Pages.drawHome,Garden=Pages.drawGarden,
@@ -10438,6 +10763,7 @@ local stationTabs={Forge="Workshop",Hearth="Workshop",Cauldron="Workshop",Workbe
 	Motes="Journal",Factions="Journal", -- Exploration & Factions: Mote Shrines, faction standards
 	Resonance="Menu", -- §31: the Resonance Keeper opens Menu › Resonance
 	Contests="Workshop",Trophies="Hunt", -- §39: the Contest Steward and the Trophy Keeper
+	Roost="Hero",Lectern="Hero", -- §41: the Roost keeper opens Hero › Pets, the Lumen Lectern Hero › Lectern
 	Council="Journal"} -- §36: the Council Clerk and the ballot chest open Journal › Council
 local function openStation()
 	local value=player:GetAttribute("IsleStation")
@@ -10448,6 +10774,7 @@ local function openStation()
 	-- Skill vendors (Agility & Hunter): Ledger › Vendors on that vendor's stock.
 	if tab=="Ledger" then Pages.AH.vendor=station=="SkymarkExchange" and "Agility" or "Hunter";openTo("Ledger","Vendors") return end
 	if tab=="Menu" then openTo("Menu",station) return end -- §31: Resonance Keeper
+	if tab=="Hero" then openTo("Hero",if station=="Roost" then "Pets" else "Lectern") return end -- §41
 	if tab=="Workshop" and Pages.CR and Data and Data.Crafting and Data.Crafting.Stations[station] then Pages.CR.station=station;openTo("Workshop","Crafting") return end
 	if tab=="Hunt" and station=="Trophies" then openTo("Hunt","Trophies") return end -- §39
 	if tab=="Workshop" then openTo("Workshop",station) elseif tab=="Journal" then openTo("Journal",if station=="Calendar" then "Calendar" elseif station=="Council" then "Council" elseif station=="Commissions" or station=="Museum" or station=="Motes" or station=="Factions" then station elseif station=="CollectionLog" then "Collection Log" else "Construction") else openTo("Hunt","Slayer") end

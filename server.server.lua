@@ -196,6 +196,8 @@ local Systems={verbs={helperPin=true,goalSet=true,goalRemove=true,goalClear=true
 -- Isle Council (§36: elected council, cross-server ballots, term perks); filled in by the Council block before perform().
 local Council={verbs={councilVote=true,councilView=true,councilVisit=true}}
 -- Contests & Trophy Angling (§39: Harvest Contests, Medal Exchange, trophy fishing); filled in by the Contests block before perform().
+-- QoL Depth (§41: Lumen Lectern, Wardrobe, Vault Charters, Roost tethers); filled in by the QoL block before perform().
+local QoL={verbs={},hurtAt={},swapAt={}}
 local Contests={verbs={contestEnter=true,contestBuy=true,contestTitle=true,trophyBait=true,trophyClaim=true,trophyTitle=true}}
 -- One-time coins for each newly reached skill level.
 local function levelCoins(p,skill,newLevel)
@@ -246,6 +248,7 @@ local function grantXp(p,skill,amount,source)
 	if skill~="Taming" then _,petGain=Progression.addPetXp(p,skill,amount) end
 	if pet and pet.level>petLevel then note(p,petDef.name.." pet level "..pet.level.."!") end
 	if Pets.tamingShare and (petGain or 0)>0 then Pets.tamingShare(p,petGain) end
+	if QoL.tetherShare and (petGain or 0)>0 then QoL.tetherShare(p,petGain) end -- §41: Roost tethers
 	if Pets.skillRoll then Pets.skillRoll(p,skill,amount) end
 	levelCoins(p,skill,newLevel)
 end
@@ -4605,6 +4608,7 @@ local function snapshot(player,message)
 	if p.factions then Explore.refresh(p) end
 	Held.tick(os.clock()) -- Held items: settle any due auto-return before HeldItem is published
 	local power=Progression.magicalPower(p) -- computed once per snapshot (§31 resonance + the stat sheet)
+	if QoL.refresh then QoL.refresh(player,p) end -- §41: lectern day roll / timed-out trials, vault interest (notes before the message)
 	if Contests.refresh then Contests.refresh(player,p) end -- §39: close / pay contest entries, contest toasts (before §31 flushes announcements)
 	if Council.refresh then Council.refresh(player,p) end -- §36: re-queue an unacknowledged ballot, phase toasts, p.perkStats.council (before §31 flushes announcements)
 	if Systems.refresh then Systems.refresh(player,p) end -- §33: goal completions, pinned objective (before §31 flushes announcements)
@@ -4651,6 +4655,7 @@ local function snapshot(player,message)
 		council=Council.state and Council.state(player,p), -- §36 Journal › Council: election, cached tally, term, history
 		contests=Contests.state and Contests.state(player,p), -- §39 Workshop › Contests: schedule, entry, live estimate, leaderboard, medals
 		trophies=Contests.trophyState and Contests.trophyState(player,p), -- §39 Hunt › Trophies: ledger, pity, bait, conditions
+		qol=QoL.state and QoL.state(player,p), -- §41: lectern, wardrobe, vault charter, tethers
 		systems=Systems.state and Systems.state(player,p)} -- §33: pinned guide, goals (ETA), XP rates, price checks, daily stock
 end
 -- Prayer & Thieving: drain-loop notices (prayer points ran out).
@@ -4745,7 +4750,8 @@ local function migrate(profile)
 	if Features.migrate then Features.migrate(profile) end -- §31: p.renown (retroactive once), p.guide, p.resonance
 	if Systems.migrate then Systems.migrate(profile) end -- §33: p.goals, p.goalSeq, p.helperPin, p.shopStock
 	if Council.migrate then Council.migrate(profile) end -- §36: p.council ballot record, p.perkStats.council
-	if Contests.migrate then Contests.migrate(profile) end -- §39: p.contests, p.trophy, p.perkStats.contests
+	if Contests.migrate then Contests.migrate(profile) end
+	if QoL.migrate then QoL.migrate(profile) end -- §41: p.lectern, p.wardrobe, p.vault, pet.kin -- §39: p.contests, p.trophy, p.perkStats.contests
 end
 -- Clears every per-player table and ends this player's session slot.
 -- Sea creatures: a successful Fishing gather may hook one (Data.rollSeaCreature).
@@ -4811,7 +4817,8 @@ local function forget(player)
 	if Features.forget then Features.forget(player,profiles[player]) end -- §31: announcement ring, queue, renown cache
 	if Systems.forget then Systems.forget(player) end -- §33: XP / goal samples, price checks, pinned-step cache
 	if Council.forget then Council.forget(player) end -- §36: (nothing per session since QC H1; kept as the hook)
-	if Contests.forget then Contests.forget(player) end -- §39: queue a leaving journal's unwritten score; display name, entry cooldown
+	if Contests.forget then Contests.forget(player) end
+	if QoL.forget then QoL.forget(player) end -- §41: wardrobe hurt / swap clocks -- §39: queue a leaving journal's unwritten score; display name, entry cooldown
 	if profiles[player] then HudFeed.pending[profiles[player]]=nil end -- §34 pickup feed
 	HudFeed.seq[player]=nil
 	profiles[player],cooldown[player],lastRead[player],preview[player],leaseEnd[player]=nil,nil,nil,nil,nil
@@ -9681,6 +9688,437 @@ do
 end
 -- <<< END Contests & Trophy Angling <<<
 ------------------------------------------------------------------------------
+------------------------------------------------------------------------------
+-- >>> QoL Depth (§41) >>>
+-- QoL Depth team; docs/DEPTH-CONTRACT.md §41. Rules in the "QoL Depth"
+-- section of shared/GameData.lua (Data.QoL = Q).
+-- * Lumen Lectern (Q.Lectern): lecternVisit (world prompt) opens a 10-minute
+--   window (player attribute LecternUntil); lecternStart "game:tier" spends a
+--   daily attempt (UTC day, rolls forward only) and saves the session in
+--   p.lectern.s, so a rejoin resumes it; lecternAnswer "<answer>" (seq: glyph
+--   digits, recall: cell characters), lecternFlip "<card>" (pairs) and
+--   lecternEnd (stop and keep what you won). Rewards are paid as each round /
+--   pair is cleared; the bonus reveals for today's Mirror Pairs when a run ends.
+--   The snapshot shows a round's glyphs / stars only during its reveal window
+--   and never an unflipped card.
+-- * Wardrobe (Q.Wardrobe): wardrobeSave / wardrobeWear / wardrobeClear "<slot>".
+--   Wearing checks every piece first and then swaps armour and the accessory
+--   bag together (all or nothing); refused within W.HURT_GRACE s of a hit
+--   (bridge "damage") and W.COOLDOWN s after the last swap.
+-- * Vault Charters (Q.Vault): vaultUpgrade buys the next charter from the purse;
+--   interest is paid on the first refresh of each new UTC day (V.roll).
+-- * Roost tethers (Q.Tether): petTether "index:species" toggles pet.kin; a
+--   tethered roster pet earns K.SHARE of the summoned pet's pet XP (grantXp).
+-- Profile: p.lectern, p.wardrobe, p.vault, pet.kin. Snapshot key qol.
+------------------------------------------------------------------------------
+do
+	local Q=Data.QoL
+	local A,W,V,K=Q.Lectern,Q.Wardrobe,Q.Vault,Q.Tether
+	local whole=Q.whole
+	QoL.verbs={lecternVisit=true,lecternStart=true,lecternAnswer=true,lecternFlip=true,lecternEnd=true,
+		wardrobeSave=true,wardrobeWear=true,wardrobeClear=true,vaultUpgrade=true,petTether=true}
+	QoL.hurtAt=QoL.hurtAt or {}
+	QoL.swapAt=QoL.swapAt or {}
+	local function itemName(id) return Data.Items[id] and Data.Items[id].name or tostring(id) end
+	local function fmtNum(n)
+		local s=tostring(math.floor(n))
+		local out=s:reverse():gsub("(%d%d%d)","%1,"):reverse()
+		return (out:gsub("^,",""))
+	end
+	-- Records ------------------------------------------------------------------
+	local function lrec(p)
+		if type(p.lectern)~="table" then p.lectern={used={},bonus=0,best={},runs=0} end
+		return p.lectern
+	end
+	local function wrec(p)
+		if type(p.wardrobe)~="table" then p.wardrobe={sets={}} end
+		if type(p.wardrobe.sets)~="table" then p.wardrobe.sets={} end
+		return p.wardrobe
+	end
+	local function vrec(p)
+		if type(p.vault)~="table" then p.vault={tier=1,paid=0} end
+		return p.vault
+	end
+	local function enchantLevel(p) return level(p.xp[A.SKILL]) end
+	-- Lectern sessions ------------------------------------------------------------
+	local function bankBonus(rec,n)
+		if n>0 then rec.bonus=math.min(A.BONUS_CAP,(tonumber(rec.bonus) or 0)+n) end
+	end
+	-- Ends the running trial: best record and (seq / recall) today's bonus reveals.
+	local function finish(p,rec,why)
+		local s=rec.s
+		if not s then return "" end
+		rec.s=nil
+		local t=A.tier(s.t)
+		local cleared=if s.g=="pairs" then #(s.m or {})//2 else math.max(0,(s.r or 1)-1)
+		rec.best[s.g]=math.max(tonumber(rec.best[s.g]) or 0,cleared)
+		local extra=""
+		if s.g~="pairs" and t then
+			local before=rec.bonus or 0
+			bankBonus(rec,A.bonusFor(s.g,cleared,t))
+			local gained=(rec.bonus or 0)-before
+			if gained>0 then extra=" · +"..gained.." Mirror Pairs reveal"..(if gained==1 then "" else "s").." today" end
+		end
+		return why..extra
+	end
+	-- Closes a trial whose time ran out (also on every refresh / rejoin).
+	local function expire(p,rec,now)
+		if rec.s and now>(tonumber(rec.s.ends) or 0) then
+			note(p,finish(p,rec,"The lectern dims: your "..A.Games[rec.s.g].name.." timed out."))
+		end
+	end
+	local function startRound(s,t,now)
+		local n=if s.g=="seq" then s.r else A.recallCount(t,s.r)
+		local reveal=math.ceil(A.revealSeconds(s.g,n))
+		if s.g=="recall" then s.cells=A.makeRecall(t,s.r,roll) end
+		s.shown=now
+		s.reveal=reveal
+		s.ends=now+reveal+A.ANSWER_SECONDS
+	end
+	local function grantReward(p,rw)
+		if rw.k=="xp" then grantXp(p,A.SKILL,rw.n) return "+"..fmtNum(rw.n).." Enchanting XP"
+		elseif rw.k=="item" then collect(p,rw.id,rw.n) return "+"..rw.n.." "..itemName(rw.id)
+		end
+		return "+"..rw.n.." reveals"
+	end
+	function QoL.lecternAction(player,p,verb,item)
+		local rec=lrec(p)
+		local now=os.time()
+		A.roll(rec,Q.dayOf(now))
+		expire(p,rec,now)
+		if verb=="lecternStart" then
+			if rec.s then return "Finish your "..A.Games[rec.s.g].name.." first (or stop it)." end
+			if (tonumber(player:GetAttribute("LecternUntil")) or 0)<now then return "Touch the "..A.NAME.." in the Aether Museum to begin a trial." end
+			local g,ti=nil,nil
+			if validId(item) then g,ti=string.match(item,"^(%a+):(%d)$") end
+			local game=g and A.Games[g]
+			local t=ti and A.tier(tonumber(ti))
+			if not game or not t then return "Choose a trial and a tier." end
+			if enchantLevel(p)<t.level then return t.id.." trials require Enchanting "..t.level.."." end
+			if A.left(rec,g)<1 then return "No "..game.name.." attempts left today. The lectern renews at the UTC day." end
+			rec.used[g]=(tonumber(rec.used[g]) or 0)+1
+			rec.runs=(tonumber(rec.runs) or 0)+1
+			local s={g=g,t=t.index}
+			if g=="seq" then
+				s.seq=A.makeSequence(t,roll); s.r=1
+				startRound(s,t,now)
+			elseif g=="recall" then
+				s.r=1
+				startRound(s,t,now)
+			else
+				local cards,rewards=A.makeBoard(t,roll)
+				s.cards,s.rw,s.m,s.won=cards,rewards,{},{}
+				s.left=A.reveals(t,rec.bonus)
+				rec.bonus=0 -- the day's bonus reveals go into this board
+				s.ends=now+A.PAIRS_SECONDS
+			end
+			rec.s=s
+			p.started=true
+			return t.id.." "..game.name.." begins. "..game.text
+		elseif verb=="lecternEnd" then
+			if not rec.s then return "No trial is running." end
+			return finish(p,rec,"You step back from the lectern and keep what you won.")
+		elseif verb=="lecternAnswer" then
+			local s=rec.s
+			if not s or s.g=="pairs" then return "No trial is waiting for an answer." end
+			if type(item)~="string" or #item>25 then return "That answer does not fit this round." end
+			local t=A.tier(s.t)
+			if not t then rec.s=nil return "The lectern resets." end
+			local right=if s.g=="seq" then A.checkSequence(s.seq,s.r,item) else A.checkRecall(s.cells,item)
+			if not right then return finish(p,rec,"The glyphs scatter: round "..s.r.." missed. "..A.Games[s.g].name.." ends.") end
+			local xp=A.roundXp(t,s.r)
+			grantXp(p,A.SKILL,xp)
+			local cleared=s.r
+			if cleared>=A.rounds(t,s.g) then
+				s.r=cleared+1
+				return finish(p,rec,"Perfect "..A.Games[s.g].name.."! Round "..cleared.." cleared · +"..fmtNum(xp).." Enchanting XP")
+			end
+			s.r=cleared+1
+			startRound(s,t,now)
+			return "Round "..cleared.." cleared · +"..fmtNum(xp).." Enchanting XP. Watch closely…"
+		elseif verb=="lecternFlip" then
+			local s=rec.s
+			if not s or s.g~="pairs" then return "No Mirror Pairs board is open." end
+			local i=whole(item)
+			local card=i and i==tonumber(item) and tostring(i)==item and s.cards[i]
+			if not card then return "Choose a card." end
+			if table.find(s.m,i) then return "That pair is already matched." end
+			if s.open==i then return "That card is already turned." end
+			if (s.left or 0)<1 then return finish(p,rec,"Your lights are spent.") end
+			s.left-=1
+			local msg
+			if not s.open then
+				s.open,s.miss=i,nil
+				msg="You turn a "..A.GLYPHS[card.g].id.." glyph."
+			else
+				local other=s.cards[s.open]
+				if other.p==card.p then
+					table.insert(s.m,s.open); table.insert(s.m,i)
+					local rw=s.rw[card.p]
+					if rw.k=="reveal" then s.left+=rw.n end
+					table.insert(s.won,card.p)
+					s.open,s.miss=nil,nil
+					msg="Matched "..A.GLYPHS[card.g].id.."! "..grantReward(p,rw)
+				else
+					s.miss={s.open,i}
+					s.open=nil
+					msg="No match."
+				end
+			end
+			if #s.m>=#s.cards then return finish(p,rec,msg.." · Every pair matched!") end
+			if s.left<1 then return finish(p,rec,msg.." · Your lights are spent.") end
+			return msg
+		end
+		return "Unknown action."
+	end
+	local function lecternView(player,p,now)
+		local rec=lrec(p)
+		A.roll(rec,Q.dayOf(now))
+		local left={}
+		for _,g in ipairs(A.GameOrder) do left[g]=A.left(rec,g) end
+		local view={tier=A.bestTier(enchantLevel(p)),level=enchantLevel(p),left=left,bonus=rec.bonus or 0,best=rec.best or {},runs=rec.runs or 0,
+			resetIn=(Q.dayOf(now)+1)*Q.DAY-now,visitIn=math.max(0,(tonumber(player:GetAttribute("LecternUntil")) or 0)-now)}
+		local s=rec.s
+		if s then
+			local t=A.tier(s.t)
+			local v={g=s.g,t=s.t,endsIn=math.max(0,(tonumber(s.ends) or now)-now)}
+			if s.g=="seq" or s.g=="recall" then
+				v.r,v.rounds=s.r,A.rounds(t,s.g)
+				v.reveal=s.reveal
+				local showing=now<(s.shown or 0)+(s.reveal or 0)
+				v.showing=showing
+				if s.g=="seq" then
+					v.glyphs=t.glyphs
+					if showing then v.show=table.move(s.seq,1,s.r,1,{}) end
+				else
+					v.cols,v.rows,v.n=t.grid[1],t.grid[2],#(s.cells or {})
+					if showing then v.show=table.clone(s.cells) end
+				end
+			else
+				v.n,v.cols,v.left=#s.cards,math.ceil(math.sqrt(#s.cards)),s.left
+				local face={}
+				for _,i in ipairs(s.m) do face[tostring(i)]={g=s.cards[i].g,m=true,rw=s.rw[s.cards[i].p]} end
+				if s.open then face[tostring(s.open)]={g=s.cards[s.open].g} end
+				if s.miss then for _,i in ipairs(s.miss) do face[tostring(i)]={g=s.cards[i].g,miss=true} end end
+				v.face=face
+				local won={}
+				for _,pi in ipairs(s.won) do table.insert(won,s.rw[pi]) end
+				v.won=won
+			end
+			view.session=v
+		end
+		return view
+	end
+	-- Wardrobe -----------------------------------------------------------------
+	function QoL.wardrobeAction(player,p,verb,item)
+		local w=wrec(p)
+		local slots=W.slotsFor(level(p.xp.Combat))
+		local i=validId(item) and whole(item)
+		if not i or tostring(i)~=item or i<1 or i>W.MAX then return "Choose a wardrobe slot." end
+		if i>slots then return "Wardrobe slot "..i.." opens at Combat "..W.UNLOCKS[math.ceil((i-3)/2)].."." end
+		local key=tostring(i)
+		if verb=="wardrobeSave" then
+			local set=W.clean(W.capture(p.equipment,p.accessoryBag))
+			if not set then return "Wear some armour or accessories first, then save the loadout." end
+			w.sets[key]=set
+			w.worn=i
+			return "Loadout "..i.." saved."
+		elseif verb=="wardrobeClear" then
+			if not w.sets[key] then return "Wardrobe slot "..i.." is already empty." end
+			w.sets[key]=nil
+			if w.worn==i then w.worn=nil end
+			return "Loadout "..i.." cleared. Your gear stays where it is."
+		end
+		-- wardrobeWear
+		local set=w.sets[key]
+		if not set then return "Wardrobe slot "..i.." is empty." end
+		local hurt=QoL.hurtAt[player]
+		if hurt and os.clock()-hurt<W.HURT_GRACE then return "You can't change loadouts mid-fight. Catch your breath first." end
+		local last=QoL.swapAt[player]
+		if last and os.clock()-last<W.COOLDOWN then return "Your wardrobe is still settling ("..math.ceil(W.COOLDOWN-(os.clock()-last)).."s)." end
+		local ok,why=W.check(set,p.items,Progression.accessorySlots(p),function(req) return Progression.meetsRequirements(p,req) end)
+		if not ok then return why end
+		-- All checks passed: swap armour and the accessory bag together.
+		for _,s in ipairs(W.SLOTS) do p.equipment[s]=set[s] end
+		p.accessoryBag=table.clone(set.acc or {})
+		w.worn=i
+		QoL.swapAt[player]=os.clock()
+		return "Loadout "..i.." on: "..#(set.acc or {}).." accessories."
+	end
+	local function wardrobeView(player,p)
+		local w=wrec(p)
+		local sets={}
+		for i=1,W.MAX do
+			local set=w.sets[tostring(i)]
+			sets[i]=if set then set else false
+		end
+		local last=QoL.swapAt[player]
+		local hurt=QoL.hurtAt[player]
+		local wait=math.max(0,if last then W.COOLDOWN-(os.clock()-last) else 0,if hurt then W.HURT_GRACE-(os.clock()-hurt) else 0)
+		return {slots=W.slotsFor(level(p.xp.Combat)),max=W.MAX,worn=w.worn,sets=sets,wait=math.ceil(wait),accSlots=Progression.accessorySlots(p)}
+	end
+	-- Vault Charters -------------------------------------------------------------
+	function QoL.vaultRefresh(p,now)
+		local v=vrec(p)
+		local due=V.roll(v,Q.dayOf(now),p.bank)
+		if due>0 then
+			p.bank+=due
+			v.paid=(tonumber(v.paid) or 0)+due
+			v.last=due
+			p.bankRevision=(p.bankRevision or 0)+1
+			note(p,"Vault interest: +"..fmtNum(due).." coins ("..V.tier(v.tier).name..")")
+		end
+	end
+	local function vaultUpgrade(p)
+		local v=vrec(p)
+		local nextTier=V.Tiers[(v.tier or 1)+1]
+		if not nextTier then return "Your vault already holds the "..V.tier(v.tier).name.."." end
+		for id,tier in pairs(nextTier.needs) do
+			if Progression.collectionTier(p,id)<tier then return nextTier.name.." needs "..itemName(id).." collection tier "..tier.."." end
+		end
+		if p.coins<nextTier.cost then return nextTier.name.." costs "..fmtNum(nextTier.cost).." coins from your purse." end
+		p.coins=p.coins-nextTier.cost -- (verify-council scans the blocks before perform for coin changes)
+		v.tier=nextTier.index
+		return "Odile seals your "..nextTier.name..": interest on up to "..fmtNum(nextTier.cap).." vault coins, at most "..fmtNum(V.maxDaily(nextTier)).." a day."
+	end
+	local function vaultView(p,now)
+		local v=vrec(p)
+		local t=V.tier(v.tier)
+		local n=V.Tiers[t.index+1]
+		local need
+		if n then
+			need={}
+			for _,id in ipairs((function() local ids={} for id in pairs(n.needs) do table.insert(ids,id) end table.sort(ids) return ids end)()) do
+				table.insert(need,{id=id,tier=n.needs[id],have=Progression.collectionTier(p,id)})
+			end
+		end
+		return {tier=t.index,rate=t.rate,cap=t.cap,maxDaily=V.maxDaily(t),next=V.interest(t,p.bank),paid=tonumber(v.paid) or 0,last=tonumber(v.last) or 0,
+			nextIn=(Q.dayOf(now)+1)*Q.DAY-now,upgrade=n and {tier=n.index,cost=n.cost,need=need} or nil}
+	end
+	-- Roost tethers --------------------------------------------------------------
+	local function tetherCount(p)
+		local n=0
+		for _,pet in ipairs(p.pets) do if type(pet)=="table" and pet.kin then n+=1 end end
+		return n
+	end
+	function QoL.tetherShare(p,gain)
+		if type(gain)~="number" or gain<=0 or gain~=gain then return end
+		local slots=K.slotsFor(Progression.tamingLevel(p))
+		local used=0
+		for index,pet in ipairs(p.pets) do
+			if used>=slots then break end
+			if type(pet)=="table" and pet.kin and Data.PetById[pet.id] then
+				used+=1
+				if index~=p.activePet and pet.level<Data.PET_MAX_LEVEL then Progression.addXpToPet(pet,gain*K.SHARE) end
+			end
+		end
+	end
+	local function tether(p,item)
+		local raw,species=nil,nil
+		if validId(item) then raw,species=string.match(item,"^(%d+):(%w+)$") end
+		local index=raw and tonumber(raw)
+		local pet=index and p.pets[index]
+		if type(pet)~="table" or pet.id~=species or not Data.PetById[pet.id] then return "Choose one of your pets." end
+		local name=Data.PetById[pet.id].name
+		if pet.kin then pet.kin=nil return name.." is untethered." end
+		local slots=K.slotsFor(Progression.tamingLevel(p))
+		if slots<1 then return "Tethers open at Taming "..K.UNLOCKS[1].."." end
+		if tetherCount(p)>=slots then return "All "..slots.." tether"..(if slots==1 then " is" else "s are").." in use. Untether a pet first." end
+		pet.kin=true
+		return name.." is tethered: it earns "..math.floor(K.SHARE*100).."% of your summoned pet's XP."
+	end
+	local function tetherView(p)
+		local slots=K.slotsFor(Progression.tamingLevel(p))
+		local rows={}
+		for index,pet in ipairs(p.pets) do
+			if type(pet)=="table" and pet.kin and Data.PetById[pet.id] then
+				local lvl=Progression.petLevel(pet)
+				local need=if lvl<Data.PET_MAX_LEVEL then math.max(0,Data.petXpToNext(lvl,Progression.petRarity(pet))-(pet.xp or 0)) else 0
+				table.insert(rows,{index=index,id=pet.id,level=lvl,need=math.ceil(need),activeXp=K.activeXpFor(need),active=p.activePet==index,
+					sharing=#rows<slots and p.activePet~=index})
+			end
+		end
+		return {slots=slots,share=K.SHARE,unlocks=K.UNLOCKS,taming=Progression.tamingLevel(p),pets=rows}
+	end
+	-- Dispatch -----------------------------------------------------------------
+	function QoL.action(player,p,verb,item,prompt)
+		if verb=="lecternVisit" then
+			if not prompt then return "Touch the "..A.NAME.." in the Aether Museum." end
+			player:SetAttribute("LecternUntil",os.time()+A.VISIT_SECONDS)
+			player:SetAttribute("IsleStation","Lectern")
+			player:SetAttribute("IsleStationVisit",(player:GetAttribute("IsleStationVisit") or 0)+1)
+			return "The "..A.NAME.." hums awake • choose a trial in your atlas."
+		elseif verb=="lecternStart" or verb=="lecternAnswer" or verb=="lecternFlip" or verb=="lecternEnd" then
+			return QoL.lecternAction(player,p,verb,item)
+		elseif verb=="wardrobeSave" or verb=="wardrobeWear" or verb=="wardrobeClear" then
+			return QoL.wardrobeAction(player,p,verb,item)
+		elseif verb=="vaultUpgrade" then
+			return vaultUpgrade(p)
+		elseif verb=="petTether" then
+			return tether(p,item)
+		end
+		return "Unknown action."
+	end
+	function QoL.refresh(player,p)
+		local now=os.time()
+		local rec=lrec(p)
+		A.roll(rec,Q.dayOf(now))
+		expire(p,rec,now)
+		QoL.vaultRefresh(p,now)
+	end
+	function QoL.state(player,p)
+		local now=os.time()
+		return {lectern=lecternView(player,p,now),wardrobe=wardrobeView(player,p),vault=vaultView(p,now),tether=tetherView(p)}
+	end
+	-- Migration: bounded, well-formed records; never pays anything.
+	function QoL.migrate(p)
+		local rec=lrec(p)
+		rec.day=whole(rec.day,0)
+		local used={}
+		for _,g in ipairs(A.GameOrder) do
+			local n=whole(type(rec.used)=="table" and rec.used[g],0)
+			if n and n>0 then used[g]=math.min(n,A.Games[g].attempts) end
+		end
+		rec.used=used
+		rec.bonus=math.clamp(whole(rec.bonus,0) or 0,0,A.BONUS_CAP)
+		local best={}
+		for _,g in ipairs(A.GameOrder) do
+			local n=whole(type(rec.best)=="table" and rec.best[g],0,64)
+			if n and n>0 then best[g]=n end
+		end
+		rec.best=best
+		rec.runs=whole(rec.runs,0) or 0
+		local s=rec.s
+		if s~=nil then
+			local t=type(s)=="table" and A.tier(s.t)
+			local okSession=t and A.Games[s.g]~=nil and whole(s.ends)~=nil
+			if okSession and s.g=="seq" then okSession=type(s.seq)=="table" and #s.seq==t.seqRounds and whole(s.r,1,t.seqRounds)~=nil
+			elseif okSession and s.g=="recall" then okSession=type(s.cells)=="table" and #s.cells<=t.cells and whole(s.r,1,t.recallRounds)~=nil
+			elseif okSession then okSession=type(s.cards)=="table" and #s.cards==2*t.pairs and type(s.rw)=="table" and type(s.m)=="table" and type(s.won)=="table" and whole(s.left,0,64)~=nil end
+			if not okSession then rec.s=nil end
+		end
+		local w=wrec(p)
+		local sets={}
+		for i=1,W.MAX do
+			local set=W.clean(w.sets[tostring(i)])
+			if set then sets[tostring(i)]=set end
+		end
+		w.sets=sets
+		w.worn=whole(w.worn,1,W.MAX)
+		local v=vrec(p)
+		v.tier=whole(v.tier,1,#V.Tiers) or 1
+		v.day=whole(v.day,0)
+		v.paid=whole(v.paid,0) or 0
+		v.last=whole(v.last,0)
+		for _,pet in ipairs(p.pets or {}) do if type(pet)=="table" and pet.kin~=nil and pet.kin~=true then pet.kin=nil end end
+	end
+	function QoL.forget(player)
+		QoL.hurtAt[player]=nil
+		QoL.swapAt[player]=nil
+	end
+end
+-- <<< END QoL Depth <<<
+------------------------------------------------------------------------------
 local function perform(player,verb,item,prompt)
 	local p=profiles[player]
 	if not p or (not preview[player] and os.time()>=(leaseEnd[player] or 0)) then return "Waiting for journal sync." end
@@ -9702,6 +10140,8 @@ local function perform(player,verb,item,prompt)
 		return Features.action(player,p,verb,item,prompt) -- §31: Wayfarer's Path talk, Resonance
 	elseif Council.verbs[verb] then
 		return Council.action(player,p,verb,item,prompt) -- §36: Isle Council ballot, view, clerk
+	elseif QoL.verbs[verb] then
+		return QoL.action(player,p,verb,item,prompt) -- §41: Lumen Lectern, Wardrobe, Vault Charters, Roost tethers
 	elseif Contests.verbs[verb] then
 		return Contests.action(player,p,verb,item,prompt) -- §39: contest entry, Medal Exchange, titles, trophy bait / ledger
 	elseif Systems.verbs[verb] then
@@ -10736,6 +11176,7 @@ bridge.OnInvoke=function(op,player,payload)
 		local amount=Progression.damageTaken(math.min(raw,1e9),defense)
 		if Raids.wardMult then amount=math.floor(amount*Raids.wardMult(player)+0.5) end -- Raids (§38): a brewed ward
 		humanoid:TakeDamage(amount)
+		if amount>0 then QoL.hurtAt[player]=os.clock() end -- §41: the Wardrobe waits out a fight
 		return amount
 	end
 	local p=live(player)

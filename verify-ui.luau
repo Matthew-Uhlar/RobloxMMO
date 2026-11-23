@@ -3328,6 +3328,142 @@ do
 	noFailures(legacy, "trophies without server data")
 	print("Contests client: " .. (checks - ctChecks) .. " checks.")
 end
+-- QoL Depth client (§41): Hero › Lectern (the three trials, reveal and input),
+-- Hero › Wardrobe, the Vault Charter card on Ledger › Bank and the Roost
+-- tether card on Hero › Pets; malformed and missing qol data.
+verbs.lecternStart = function(item) local g, t = tostring(item):match("^(%a+):(%d)$") return g ~= nil and Data.QoL.Lectern.Games[g] ~= nil and Data.QoL.Lectern.Tiers[tonumber(t)] ~= nil end
+verbs.lecternAnswer = function(item) return type(item) == "string" and #item >= 1 and #item <= 25 and item:match("^[1-9a-p]+$") ~= nil end
+verbs.lecternFlip = function(item) return type(item) == "string" and item:match("^[1-9]%d?$") ~= nil end
+verbs.lecternEnd = function(item) return item == nil end
+verbs.wardrobeSave = function(item) return type(item) == "string" and item:match("^[1-9]$") ~= nil end
+verbs.wardrobeWear = verbs.wardrobeSave
+verbs.wardrobeClear = verbs.wardrobeSave
+verbs.vaultUpgrade = function(item) return item == nil end
+verbs.petTether = function(item) local i, s = tostring(item):match("^(%d+):(%w+)$") return i ~= nil and Data.PetById[s] ~= nil end
+do
+	local qlChecks = checks
+	local function check(cond, case) assert(cond, case); checks += 1 end
+	local QA = Data.QoL.Lectern
+	local function base(extra)
+		local snap = snapshot({ xp = { Enchanting = Data.XP_TABLE[32], Taming = Data.XP_TABLE[12] } })
+		snap.items = table.clone(snap.items)
+		snap.items.GildedWayHood = 1
+		snap.qol = {
+			lectern = { tier = 3, level = 32, left = { seq = 2, recall = 1, pairs = 1 }, bonus = 2, best = { seq = 4 }, runs = 7, resetIn = 3600, visitIn = 500 },
+			wardrobe = { slots = 5, max = 9, worn = 1, wait = 0, accSlots = 4, sets = { { helmet = "GildedWayHood", acc = {} }, false, { chest = "NopeChest", acc = { "MeadowCharm" } }, false, false, false, false, false, false } },
+			vault = { tier = 1, rate = 0.001, cap = 100000, maxDaily = 100, next = 10, paid = 50, last = 10, nextIn = 4000,
+				upgrade = { tier = 2, cost = 25000, need = { { id = "Ore", tier = 3, have = 4 }, { id = "Timber", tier = 3, have = 1 } } } },
+			tether = { slots = 1, share = 0.1, unlocks = { 10, 25, 50 }, taming = 12, pets = { { index = 1, id = "Tidewing", level = 5, need = 400, activeXp = 4000, sharing = true } } },
+		}
+		for k, v in pairs(extra or {}) do snap.qol.lectern[k] = v end
+		return snap
+	end
+	-- Trial choice.
+	local ui = run({ snapshot = base() })
+	visit(ui, "Hero", "Lectern")
+	check(find(ui.scroll, "LecternHeader") ~= nil and find(ui.scroll, "LecternGameseq") ~= nil and find(ui.scroll, "LecternGamepairs") ~= nil, "Hero › Lectern lists the trials")
+	table.clear(ui.sent)
+	press(find(ui.scroll, "LecternBeginseq"))
+	check(ui.sent[1] and ui.sent[1][1] == "lecternStart" and ui.sent[1][2] == "seq:3", "Begin sends lecternStart at the best tier")
+	press(find(ui.scroll, "LecternTier2"))
+	table.clear(ui.sent)
+	press(find(ui.scroll, "LecternBeginrecall"))
+	check(ui.sent[1] and ui.sent[1][2] == "recall:2", "a lower tier can be chosen")
+	press(find(ui.scroll, "LecternTier5"))
+	table.clear(ui.sent)
+	press(find(ui.scroll, "LecternBeginpairs"))
+	check(ui.sent[1] and ui.sent[1][2] == "pairs:2", "a locked tier cannot be chosen")
+	noFailures(ui, "lectern choice")
+	checkSent(ui)
+	-- Closed window: Begin is disabled.
+	local closed = run({ snapshot = base({ visitIn = 0 }) })
+	visit(closed, "Hero", "Lectern")
+	table.clear(closed.sent)
+	press(find(closed.scroll, "LecternBeginseq"))
+	check(#closed.sent == 0, "no trial without touching the lectern")
+	-- Glyph Sequence: reveal, then the pad.
+	local showing = run({ snapshot = base({ session = { g = "seq", t = 3, r = 3, rounds = 10, reveal = 3, showing = true, show = { 2, 5, 1 }, glyphs = 6, endsIn = 80 } }) })
+	visit(showing, "Hero", "Lectern")
+	check(find(showing.scroll, "LecternSession") ~= nil and find(showing.scroll, "LecternShow") ~= nil and find(showing.scroll, "LecternPad") == nil, "the reveal shows glyphs, no pad")
+	noFailures(showing, "sequence reveal")
+	local seq = run({ snapshot = base({ session = { g = "seq", t = 3, r = 3, rounds = 10, reveal = 3, showing = false, glyphs = 6, endsIn = 80 } }) })
+	visit(seq, "Hero", "Lectern")
+	check(find(seq.scroll, "LecternPad") ~= nil and find(seq.scroll, "Glyph6") ~= nil and find(seq.scroll, "Glyph7") == nil, "six glyph keys")
+	table.clear(seq.sent)
+	press(find(seq.scroll, "Glyph2")); press(find(seq.scroll, "Glyph5"))
+	check(#seq.sent == 0, "no send before the sequence is complete")
+	press(find(seq.scroll, "LecternUndoButton"))
+	press(find(seq.scroll, "Glyph5")); press(find(seq.scroll, "Glyph1"))
+	check(seq.sent[1] and seq.sent[1][1] == "lecternAnswer" and seq.sent[1][2] == "251", "a full sequence sends lecternAnswer")
+	table.clear(seq.sent)
+	press(find(seq.scroll, "LecternStop"))
+	check(seq.sent[1] and seq.sent[1][1] == "lecternEnd", "Stop sends lecternEnd")
+	noFailures(seq, "sequence input")
+	checkSent(seq)
+	-- Starfall Recall: touch cells in order.
+	local recall = run({ snapshot = base({ session = { g = "recall", t = 3, r = 1, rounds = 7, reveal = 4, showing = false, cols = 4, rows = 4, n = 3, endsIn = 60 } }) })
+	visit(recall, "Hero", "Lectern")
+	check(find(recall.scroll, "LecternGrid") ~= nil and find(recall.scroll, "Cell16") ~= nil and find(recall.scroll, "Cell17") == nil, "a 4×4 grid")
+	table.clear(recall.sent)
+	press(find(recall.scroll, "Cell10")); press(find(recall.scroll, "Cell10")); press(find(recall.scroll, "Cell2")); press(find(recall.scroll, "Cell16"))
+	check(recall.sent[1] and recall.sent[1][2] == QA.cellChar(10) .. QA.cellChar(2) .. QA.cellChar(16), "cells sent in touch order, a repeat ignored")
+	noFailures(recall, "recall input")
+	checkSent(recall)
+	-- Mirror Pairs: hidden cards flip, turned cards do not.
+	local pairs_ = run({ snapshot = base({ session = { g = "pairs", t = 3, n = 12, cols = 4, left = 9, endsIn = 300,
+		face = { ["1"] = { g = 2, m = true, rw = { k = "item", id = "ArcaneDust", n = 16 } }, ["5"] = { g = 2, m = true, rw = { k = "item", id = "ArcaneDust", n = 16 } }, ["3"] = { g = 4 } },
+		won = { { k = "item", id = "ArcaneDust", n = 16 } } } }) })
+	visit(pairs_, "Hero", "Lectern")
+	check(find(pairs_.scroll, "LecternBoard") ~= nil and find(pairs_.scroll, "Card12") ~= nil and find(pairs_.scroll, "LecternWon") ~= nil, "the board and winnings")
+	table.clear(pairs_.sent)
+	press(find(pairs_.scroll, "Card1")); press(find(pairs_.scroll, "Card3"))
+	check(#pairs_.sent == 0, "turned cards do not flip again")
+	press(find(pairs_.scroll, "Card7"))
+	check(pairs_.sent[1] and pairs_.sent[1][1] == "lecternFlip" and pairs_.sent[1][2] == "7", "a hidden card flips")
+	noFailures(pairs_, "pairs board")
+	checkSent(pairs_)
+	-- Wardrobe.
+	local wd = run({ snapshot = base() })
+	visit(wd, "Hero", "Wardrobe")
+	check(find(wd.scroll, "WardrobeHeader") ~= nil and find(wd.scroll, "WardrobeSlot9") ~= nil and find(wd.scroll, "WardrobeDetail") ~= nil, "Hero › Wardrobe")
+	table.clear(wd.sent)
+	press(find(wd.scroll, "WardrobeWear"))
+	check(wd.sent[1] and wd.sent[1][1] == "wardrobeWear" and wd.sent[1][2] == "1", "Wear sends wardrobeWear")
+	press(find(wd.scroll, "WardrobeSlot2"))
+	check(find(wd.scroll, "WardrobeWear") == nil and find(wd.scroll, "WardrobeSave") ~= nil, "an empty slot offers Save only")
+	table.clear(wd.sent)
+	press(find(wd.scroll, "WardrobeSave"))
+	check(wd.sent[1] and wd.sent[1][1] == "wardrobeSave" and wd.sent[1][2] == "2", "Save sends wardrobeSave")
+	press(find(wd.scroll, "WardrobeSlot8"))
+	table.clear(wd.sent)
+	check(find(wd.scroll, "WardrobeSave") == nil, "a locked slot offers nothing")
+	noFailures(wd, "wardrobe")
+	checkSent(wd)
+	-- Vault Charter card.
+	local bank = run({ snapshot = base() })
+	visit(bank, "Ledger", "Bank")
+	check(find(bank.scroll, "VaultCharter") ~= nil and find(bank.scroll, "VaultUpgrade") ~= nil, "the charter and its upgrade on Ledger › Bank")
+	table.clear(bank.sent)
+	press(find(bank.scroll, "VaultUpgradeButton"))
+	check(#bank.sent == 0, "an unmet charter does not send")
+	noFailures(bank, "vault charter")
+	-- Tether card on the selected pet.
+	local pets = run({ snapshot = base() })
+	visit(pets, "Hero", "Pets")
+	check(find(pets.scroll, "PetTether") ~= nil, "Hero › Pets shows the tether card")
+	noFailures(pets, "tethers")
+	checkSent(pets)
+	-- Malformed and missing qol data never break the pages.
+	for name, value in pairs({ missing = false, junk = "x", broken = { lectern = { session = { g = "seq", t = 99, show = "x", r = "y" } }, wardrobe = { sets = 4, slots = "x" }, vault = { tier = 77, upgrade = { need = 5 } }, tether = { pets = { 5 } } } }) do
+		local snap = base()
+		snap.qol = value or nil
+		local bad = run({ snapshot = snap })
+		for _, section in ipairs({ "Lectern", "Wardrobe", "Pets" }) do visit(bad, "Hero", section); noFailures(bad, name .. " qol " .. section) end
+		visit(bad, "Ledger", "Bank"); noFailures(bad, name .. " qol Bank")
+		checks += 4
+	end
+	print("QoL Depth client: " .. (checks - qlChecks) .. " checks.")
+end
 -- Visual QA (menu overhaul): every atlas page at both phone sizes for the early,
 -- mid and endgame snapshots the real server builds (tools/ui-profiles.luau):
 --  * touch targets: every visible control is at least UI.TOUCH (44 px) both ways;
