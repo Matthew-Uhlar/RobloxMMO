@@ -1050,12 +1050,15 @@ local function createLogic(env)
 		-- Polish: Hollow Sunder (Data.Lairs.sunderMult) on boss records only.
 		local sunder = L.sunderMult(loadoutOf(info).weapon, r)
 		if sunder > 1 then raw = math.floor(raw * sunder) end
+		local tide = if L.tideMult then L.tideMult(loadoutOf(info).weapon, r) else 1 -- Raids: Riptide (Data.Raids.tideMult)
+		if tide > 1 then raw = math.floor(raw * tide) end
 		local dealt, tag = L.mitigate(r, raw, "melee", player)
 		L.landHit(player, r, dealt, "melee")
 		local lifesteal = tonumber(stats.lifesteal) or 0
 		if lifesteal > 0 then env.heal(player, lifesteal) end
 		local result = {record = r, damage = dealt, crit = crit == true, healed = lifesteal > 0, style = "melee", tag = tag}
 		if sunder > 1 then result.sunder = true end
+		if tide > 1 then result.tide = true end
 		if opening then result.firstStrike = true end
 		if executed then result.execute = true end
 		return finish(result, r)
@@ -1068,6 +1071,8 @@ local function createLogic(env)
 			local raw, crit = Progression.rangedDamage(if opening then critStats(stats) else stats, bow, arrow, level, env.rng)
 			local executed
 			raw, executed = L.executeBonus(r, raw, perks)
+			local tide = if L.tideMult then L.tideMult(bow and bow.id, r) else 1 -- Raids: Undertow (Data.Raids.tideMult)
+			if tide > 1 then raw = math.floor(raw * tide); hit.tide = true end
 			hit.damage, hit.tag = L.mitigate(r, raw, "ranged", player)
 			hit.crit = crit == true
 			if opening then hit.firstStrike = true end
@@ -1278,6 +1283,8 @@ local function createLogic(env)
 			manaCost = manaCost, record = r, from = pos, color = spell.color}
 		if spell.kind == "damage" then
 			local raw = Progression.spellDamage(info.stats, spell, weapon, loadout.levels and loadout.levels.Magic or 1)
+			local tide = if L.tideMult then L.tideMult(weapon and weapon.id, r) else 1 -- Raids: Drownlight (Data.Raids.tideMult)
+			if tide > 1 then raw = math.floor(raw * tide); result.tide = true end
 			result.damage, result.tag = L.mitigate(r, raw, "magic", player)
 			result.crit = false
 			L.landHit(player, r, result.damage, "magic", spell.id)
@@ -2929,6 +2936,17 @@ local function createLogic(env)
 			lairResults[r.fight] = {result = "win", credit = credit, seconds = now - r.started, party = r.party}
 			return credited
 		end
+		-- Lead decision (QC): the raid weapons' specials (Data.Raids.tideMult).
+		-- An add is a boss's add (r.parent: lair / raid adds, world boss waves;
+		-- never a slayer superior); a boss is a slayer / world / lair / raid boss
+		-- record; warded = a lair, raid or world boss with live adds or seals.
+		function L.tideMult(weaponId, r)
+			if not RD or not RD.tideMult or type(r) ~= "table" or type(weaponId) ~= "string" then return 1 end
+			local add = (r.add == true or r.lairAdd == true) and r.parent ~= nil
+			local boss = not add and (r.boss == true or r.worldBoss == true or r.lair == true)
+			local warded = boss and (r.worldBoss == true or r.lair == true) and type(r.adds) == "table" and next(r.adds) ~= nil
+			return RD.tideMult(weaponId, {add = add, boss = boss, raid = not add and r.raid == true, warded = warded})
+		end
 		local raidKill = L.kill
 		function L.kill(r)
 			if r.raid and r.lair and not r.lairAdd then return L.rdKill(r) end
@@ -3685,6 +3703,7 @@ function LairRT.finish(r)
 	for _, add in ipairs(r.removedAdds or {}) do destroyView(add, true) end
 	r.removedAdds = nil
 	LairRT.restoreTiles(r.fight)
+	if r.fight then LairRT.tiles[r.fight] = nil end -- Raids QC M1: the fight is over; its tile map goes too
 end
 function LairRT.step()
 	for _, event in ipairs(Logic.lrTick()) do

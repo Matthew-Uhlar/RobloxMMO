@@ -14736,10 +14736,10 @@ RD.AWAY_SECONDS = 10        -- outside the complex this long (alive): left the r
 RD.IDLE_SECONDS = 90        -- no movement or credited action this long: removed (no reward)
 RD.EMPTY_SECONDS = 90       -- nobody inside this long: the raid ends
 RD.RECENT_SECONDS = 90      -- credit: a credited action this recently before the Regent falls
-RD.MIN_SHARE = 0.25         -- credit floor: personal points >= 25% of an equal share of the team's
+RD.MIN_SHARE = 0.25         -- credit floor: contribution >= 25% of an equal share of the party's (QC M3: room-clear points excluded)
 RD.MOVE_STUDS = 3           -- moving this far between samples counts as activity (idle clock)
 RD.FLEE_HP, RD.FLEE_SECONDS = 0.25, 3 -- a disconnect below 25% health within 3 s of a hit is a death
-RD.PARTY_HP = 0.85          -- extra encounter health per extra member (at the encounter's rise)
+RD.PARTY_HP = 0.85          -- extra encounter health per extra member (QC H1: members not offline at the rise, the dead included)
 RD.PARTY_DAMAGE = 0.05      -- extra encounter damage per extra member
 RD.ARENA_RANGE = LR.ARENA_RANGE
 RD.GRID, RD.CELL = LR.GRID, LR.CELL
@@ -14749,6 +14749,8 @@ RD.KEEP_LOG = 12
 RD.MAX_KC = 1000000
 RD.WARD_MULT = 0.7          -- damage taken while a brewed ward is up (potion)
 RD.SUPPLY_COOLDOWN = 4      -- seconds between supplies per member
+RD.WARD_REFRESH = 5         -- QC L3: a draught is refused while more than this many seconds of ward remain
+RD.MISTAKE_NOTICE = 5       -- QC L3: one party-wide wrong-glyph notice per member per this many seconds
 RD.GATHER_COOLDOWN = 1.5    -- seconds between gathers per member
 RD.PUZZLE_SECONDS = 240     -- a puzzle not solved by then grinds open (no completion points)
 RD.RESOURCE_SECONDS = 210   -- the resource room closes after this long (whatever was made)
@@ -15088,7 +15090,11 @@ function RD.uniqueChance(team)
 	return math.clamp(whole(team) / (RD.POINTS_PER_PERCENT * 100), 0, RD.UNIQUE_CAP)
 end
 -- Credit for one member: c = {points, team, party (members being judged),
--- present, removed, lastAction, now}. Returns ok, reason.
+-- present, removed, lastAction, now, contribution?, teamContribution?}.
+-- QC M3: with `contribution` (damage, puzzle and resource points: no flat
+-- room-clear points) the floor compares it with an equal share of the
+-- judged members' `teamContribution`, so clears plus one hit never qualify.
+-- Returns ok, reason.
 function RD.credit(c)
 	if type(c) ~= "table" then return false, "member" end
 	if c.removed then return false, "removed" end
@@ -15096,7 +15102,9 @@ function RD.credit(c)
 	local points = whole(c.points)
 	if points <= 0 then return false, "points" end
 	local party = math.clamp(math.floor(tonumber(c.party) or 1), 1, RD.MAX_PARTY)
-	if party > 1 and points < RD.MIN_SHARE * whole(c.team) / party then return false, "share" end
+	local mine, all = points, whole(c.team)
+	if c.contribution ~= nil then mine, all = whole(c.contribution), whole(c.teamContribution) end
+	if party > 1 and mine < RD.MIN_SHARE * all / party then return false, "share" end
 	if not c.lastAction or not c.now or c.now - c.lastAction > RD.RECENT_SECONDS then return false, "idle" end
 	return true
 end
@@ -15128,13 +15136,35 @@ RD.Rivals = {
 RD.UNIQUE_MAX = LR.UNIQUE_MAX
 unique("RegentsTidecleaver",{name="Regent's Tidecleaver",kind="weapon",slot="weapon",tier=9,rarity="Legendary",color="3FB8AF",
 	stats={damage=300,strength=140,critChance=15,critDamage=92},requires={Combat=62},value=24000,
-	description="Melee. The Undertide Regent's own tide-blade, still dripping. Requires Combat 62. Raid unique."})
+	special={id="Riptide",name="Riptide",adds=0.35},
+	description="Melee. The Undertide Regent's own tide-blade, still dripping. Riptide: +35% damage to a boss's adds, seals and anchors (lair, raid and world boss add waves). Requires Combat 62. Raid unique."})
 unique("UndertowWarbow",{name="Undertow Warbow",kind="weapon",slot="weapon",style="ranged",tier=9,rarity="Legendary",color="4F8FBF",
 	stats={critDamage=42,rangedAccuracy=76,rangedStrength=17},ranged={power=250,speed=1.0,range=CS.maxRange,maxAmmoTier=7},requires={Ranged=62},value=24000,
-	description="Ranged weapon. Strung with drowned sinew from the vault's deepest hall. "..CS.maxRange.." stud reach. Arrows up to tier 7. Requires Ranged 62. Raid unique."})
+	special={id="Undertow",name="Undertow",raid=0.2},
+	description="Ranged weapon. Strung with drowned sinew from the vault's deepest hall. Undertow: +20% damage to the Undertide Vaults' guardians and the Regent. "..CS.maxRange.." stud reach. Arrows up to tier 7. Requires Ranged 62. Raid unique."})
 unique("DrownlightScepter",{name="Drownlight Scepter",kind="weapon",slot="weapon",style="magic",tier=8,rarity="Legendary",color="7FD6E8",
 	stats={intelligence=150,abilityDamage=5},magic={power=160,speed=1.2,elements={"Tide","Gale","Stone"}},requires={Magic=55},value=20000,
-	description="Magic weapon. A lamp the Regent kept lit beneath the sea. Supplies unlimited Tide, Gale, Stone glyphs. Requires Magic 55. Raid unique."})
+	special={id="Drownlight",name="Drownlight",warded=0.2},
+	description="Magic weapon. A lamp the Regent kept lit beneath the sea. Drownlight: +20% spell damage to a boss while a ward, brood, seal or add wave shields it. Supplies unlimited Tide, Gale, Stone glyphs. Requires Magic 55. Raid unique."})
+-- Lead decision (QC): each raid weapon carries an original special that gives
+-- it a niche without lifting it on general content (verify-raid models each
+-- against its rival, like Hollow Sunder in verify-bosses):
+--   Riptide (Tidecleaver, melee): x(1 + adds) against a boss's adds / seals /
+--     anchors (lair, raid, world boss add waves; never slayer superiors).
+--   Undertow (Warbow, ranged): x(1 + raid) against raid encounters (not adds).
+--   Drownlight (Scepter, magic): x(1 + warded) against a lair / raid / world
+--     boss while its adds or seals live.
+-- target = {add, boss, raid, warded} (combat.server.lua's L.tideMult builds it
+-- from the record). Ordinary monsters and every other weapon: 1.
+function RD.tideMult(weaponId, target)
+	local def = type(weaponId) == "string" and Data.Items[weaponId]
+	local sp = def and def.raidUnique and def.special
+	if type(sp) ~= "table" or type(target) ~= "table" then return 1 end
+	if target.add == true then return if type(sp.adds) == "number" then 1 + sp.adds else 1 end
+	if type(sp.raid) == "number" and target.raid == true then return 1 + sp.raid end
+	if type(sp.warded) == "number" and target.boss == true and target.warded == true then return 1 + sp.warded end
+	return 1
+end
 unique("TidewardenVisage",{name="Tidewarden Visage",kind="armor",slot="helmet",tier=8,rarity="Legendary",color="3FB8AF",
 	stats={defense=183,health=163,strength=7,critDamage=7},requires={Combat=55},value=16000,
 	description="Helm. A drowned warden's coral-crusted visage. Requires Combat 55. Raid unique."})

@@ -6289,7 +6289,8 @@ do
 		host="Only the party leader can do that.",party="A raid needs at least "..RD.MIN_PARTY.." raiders.",ready="Not everyone is ready.",
 		capacity="Every vault on this server is in use. Try again shortly.",invalid="The portal flickers. Try again shortly.",
 		raid="You are not inside a raid.",room="Nothing to do here yet.",busy2="One moment…",target="That does nothing.",depleted="That node is spent.",
-		stock="You need more gathered supplies for that.",empty="The party has none of those left.",kind="Choose food or a draught.",dead="You are down."}
+		stock="You need more gathered supplies for that.",empty="The party has none of those left.",kind="Choose food or a draught.",dead="You are down.",
+		full="You are already at full health.",warded="Your ward is still up."}
 	function Raids.migrate(p) p.raids=RD.migrate(p.raids) end
 	function Raids.of(p)
 		local s=p.raids
@@ -6393,7 +6394,8 @@ do
 		local id=payload.run
 		if type(id)~="string" or #id==0 or #id>64 then return {ok=false,reason="invalid"} end
 		if payload.action=="end" then
-			if payload.result~="nocredit" then s.fails=math.min(RD.MAX_KC,s.fails+1) end
+			-- QC L2: a server shutdown is not the party's failure.
+			if payload.result~="nocredit" and payload.result~="shutdown" then s.fails=math.min(RD.MAX_KC,s.fails+1) end
 			s.deaths=math.min(RD.MAX_KC,s.deaths+RD.whole(payload.deaths,100))
 			return {ok=true}
 		elseif payload.action~="complete" then
@@ -6406,19 +6408,23 @@ do
 		local points=RD.whole(payload.points,maxPoints)
 		local team=math.clamp(RD.whole(payload.team),points,maxPoints*party)
 		local seconds=math.clamp(RD.whole(payload.seconds),1,86400)
+		-- QC L1: build every grant first, record the run id, then apply, so a
+		-- resend after an error never pays twice.
 		local coins=RD.coins(points)
-		p.coins+=coins; HudFeed.coins(p,coins)
 		local drops=RD.regularLoot(points,roll)
-		for item,n in pairs(drops) do pickup(p,item,n) end
 		local unique=if RD.isUnique(payload.unique) and payload.unique~="GildedTideKit" then payload.unique else nil
 		local underPar=challenge and payload.underPar==true
+		local xp={}
+		for skill,n in pairs(type(payload.xp)=="table" and payload.xp or {}) do
+			if XP_SKILLS[skill] then xp[skill]=RD.whole(n,4000) end
+		end
+		local rec=RD.record(s,{id=id,seconds=seconds,party=party,points=points,team=team,challenge=challenge,underPar=underPar,unique=unique,kit=underPar,now=os.time()})
+		s.deaths=math.min(RD.MAX_KC,s.deaths+RD.whole(payload.deaths,100))
+		p.coins+=coins; HudFeed.coins(p,coins)
+		for item,n in pairs(drops) do pickup(p,item,n) end
 		if unique then pickup(p,unique,1) end
 		if underPar then pickup(p,"GildedTideKit",1) end
-		for skill,n in pairs(type(payload.xp)=="table" and payload.xp or {}) do
-			if XP_SKILLS[skill] then grantXp(p,skill,RD.whole(n,4000)) end
-		end
-		s.deaths=math.min(RD.MAX_KC,s.deaths+RD.whole(payload.deaths,100))
-		local rec=RD.record(s,{id=id,seconds=seconds,party=party,points=points,team=team,challenge=challenge,underPar=underPar,unique=unique,kit=underPar,now=os.time()})
+		for skill,n in pairs(xp) do grantXp(p,skill,n) end
 		if Features.announce then
 			if unique then Features.announce(p,{kind="raidUnique",item=unique}) end
 			for _,t in ipairs(rec.newTitles) do Features.announce(p,{kind="raidTitle",title=t}) end

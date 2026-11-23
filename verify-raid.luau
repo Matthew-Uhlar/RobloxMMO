@@ -208,6 +208,10 @@ do
 	eq(select(2, RD.credit(with("removed", true))), "removed", "removed members")
 	eq(select(2, RD.credit(with("points", 0))), "points", "no points")
 	eq(RD.credit({points = 10, team = 10, party = 1, present = true, lastAction = 1, now = 2}), true, "a lone survivor is not held to a share")
+	-- QC M3: the floor reads contribution (damage, puzzle, resource points; no flat room clears).
+	eq(select(2, RD.credit({points = 2680, contribution = 180, teamContribution = 40000, party = 3, present = true, lastAction = 100, now = 150})), "share",
+		"room clears plus one hit do not pass the floor")
+	eq(RD.credit({points = 9000, contribution = 6500, teamContribution = 40000, party = 3, present = true, lastAction = 100, now = 150}), true, "a real contributor does")
 end
 -- Purple recipient by personal points; the unique table.
 do
@@ -274,6 +278,68 @@ do
 	ok(type(Data.PetDepth.bodyPlan(species.id, species.rarity)) == "table", "raid pet body plan")
 	local kit = Data.Items.GildedTideKit
 	ok(kit.cosmetic == true and kit.stats == nil and kit.value <= 1 and kit.logUnique == "Raids", "Challenge kit is cosmetic (no stats, no coin value)")
+end
+-- Lead decision (QC): each raid weapon carries an original special (RD.tideMult) that gives it a
+-- niche without lifting it on general content. Modelled like Hollow Sunder (verify-bosses): expected
+-- damage per second (crits averaged; Celestial-tier arrows; a Magic-70 Cascade) for three gear
+-- profiles. General content: below its rival. Niche: above the open Combat-60 craft (Greatblade /
+-- Eclipse Longbow) or, for the Scepter whose rival is that craft, above the lair staff, and still
+-- below the rival.
+do
+	local tc, wb, sc = Data.Items.RegentsTidecleaver, Data.Items.UndertowWarbow, Data.Items.DrownlightScepter
+	ok(tc.special and tc.special.id == "Riptide" and tc.special.adds > 0 and has(tc.description, "Riptide"), "the Tidecleaver carries Riptide")
+	ok(wb.special and wb.special.id == "Undertow" and wb.special.raid > 0 and has(wb.description, "Undertow"), "the Warbow carries Undertow")
+	ok(sc.special and sc.special.id == "Drownlight" and sc.special.warded > 0 and has(sc.description, "Drownlight"), "the Scepter carries Drownlight")
+	eq(RD.tideMult("RegentsTidecleaver", {}), 1, "no Riptide on ordinary monsters")
+	eq(RD.tideMult("RegentsTidecleaver", {boss = true, raid = true, warded = true}), 1, "Riptide never on the boss itself")
+	eq(RD.tideMult("RegentsTidecleaver", {add = true}), 1 + tc.special.adds, "Riptide on a boss's adds")
+	eq(RD.tideMult("UndertowWarbow", {boss = true, raid = true}), 1 + wb.special.raid, "Undertow on raid encounters")
+	eq(RD.tideMult("UndertowWarbow", {boss = true, warded = true}), 1, "no Undertow outside the vaults")
+	eq(RD.tideMult("UndertowWarbow", {add = true}), 1, "no Undertow on adds")
+	eq(RD.tideMult("DrownlightScepter", {boss = true, warded = true}), 1 + sc.special.warded, "Drownlight on a shielded boss")
+	eq(RD.tideMult("DrownlightScepter", {boss = true, raid = true}), 1, "no Drownlight on an unshielded boss")
+	eq(RD.tideMult("DrownlightScepter", {warded = true}), 1, "no Drownlight on ordinary monsters")
+	for _, id in ipairs({"Crownbreaker", "Duskpiercer", "RiftcrownStaff", "HollowcrownEdge", "SovereignGreatblade"}) do
+		eq(RD.tideMult(id, {add = true, boss = true, raid = true, warded = true}), 1, id .. " has no raid special")
+	end
+	eq(LR.sunderMult("RegentsTidecleaver", {boss = true, warded = true}), 1, "the raid specials never trigger Hollow Sunder")
+	local arrow
+	for _, d in pairs(Data.Items) do if type(d.ammo) == "table" and d.ammo.tier == 7 then arrow = d end end
+	local cascade = Data.Spells.TideCascade
+	local function melee(id, g)
+		local st = Data.Items[id].stats
+		local cc = math.min(100, st.critChance + g.critChance)
+		return (5 + st.damage) * (1 + (st.strength + g.strength) / 100) * (1 + cc / 100 * (st.critDamage + g.critDamage) / 100)
+	end
+	local function ranged(id, g)
+		local b = Data.Items[id]
+		local raw = (5 + b.ranged.power + arrow.ammo.power) * (1 + ((b.stats.rangedStrength or 0) + g.rangedStrength) / 100) * (1 + 4 * 69 / 100)
+		return raw * (1 + math.min(100, g.critChance) / 100 * ((b.stats.critDamage or 0) + g.critDamage) / 100) / b.ranged.speed
+	end
+	local function magic(id, g)
+		local w = Data.Items[id]
+		return P.spellDamage({intelligence = w.stats.intelligence + g.intelligence, abilityDamage = w.stats.abilityDamage + g.abilityDamage}, cascade, w, 70) / w.magic.speed
+	end
+	for _, g in ipairs({
+		{name = "weapon only", strength = 0, critChance = 0, critDamage = 0, rangedStrength = 0, intelligence = 0, abilityDamage = 0},
+		{name = "Combat-65 kit", strength = 100, critChance = 20, critDamage = 100, rangedStrength = 40, intelligence = 150, abilityDamage = 10},
+		{name = "endgame kit", strength = 220, critChance = 45, critDamage = 220, rangedStrength = 80, intelligence = 350, abilityDamage = 25},
+	}) do
+		local t, cb, sg = melee("RegentsTidecleaver", g), melee("Crownbreaker", g), melee("SovereignGreatblade", g)
+		local adds = t * RD.tideMult("RegentsTidecleaver", {add = true})
+		local u, dp, ec = ranged("UndertowWarbow", g), ranged("Duskpiercer", g), ranged("EclipseLongbow", g)
+		local vault = u * RD.tideMult("UndertowWarbow", {boss = true, raid = true})
+		local d, rs, ps = magic("DrownlightScepter", g), magic("RiftcrownStaff", g), magic("PyreheartStaff", g)
+		local shielded = d * RD.tideMult("DrownlightScepter", {boss = true, warded = true})
+		print(string.format("  Raid specials (%s): Riptide %.0f (general %.0f; Greatblade %.0f, Crownbreaker %.0f) · Undertow %.0f (general %.0f; Eclipse %.0f, Duskpiercer %.0f) · Drownlight %.0f (general %.0f; Pyreheart %.0f, Riftcrown %.0f)",
+			g.name, adds, t, sg, cb, vault, u, ec, dp, shielded, d, ps, rs))
+		ok(t < sg and t < cb, "general content: the Tidecleaver stays below its rivals (" .. g.name .. ")")
+		ok(adds > sg and adds < cb, "adds: Riptide beats the Greatblade, stays below the Crownbreaker (" .. g.name .. ")")
+		ok(u < ec and u < dp, "general content: the Warbow stays below the Eclipse Longbow and Duskpiercer (" .. g.name .. ")")
+		ok(vault > ec and vault < dp, "the vaults: Undertow beats the Eclipse Longbow, stays below Duskpiercer (" .. g.name .. ")")
+		ok(d < ps and d < rs, "general content: the Scepter stays below the Pyreheart and Riftcrown staves (" .. g.name .. ")")
+		ok(shielded > ps and shielded < rs, "shielded bosses: Drownlight beats the Pyreheart, stays below the Riftcrown (" .. g.name .. ")")
+	end
 end
 -- Regular loot: deterministic rolls from points; never a unique.
 do
@@ -503,6 +569,45 @@ do
 	eq(sealedWhy, "sealed", "immune while sealed")
 	w.logic.lrDespawn("RUN:5")
 	w.logic.lrDespawn("RUN:1")
+end
+do
+	-- Lead decision (QC): the raid weapons' specials in the combat paths (L.tideMult).
+	local w = world()
+	local center = Vector3.new(0, 0, 0)
+	local cleaver = w.player(801, center + Vector3.new(0, 0, -8))
+	local plainHero = w.player(802, center + Vector3.new(0, 0, -8))
+	w.stats[cleaver].loadout.weapon = "RegentsTidecleaver"
+	local r = w.logic.rdRegister("TIDE:1", "Siltmother", {Name = "Silt"}, center + Vector3.new(0, 3, 11), {members = {801, 802}, party = 2, seed = 1, center = center, ground = 0})
+	local add = w.logic.lrRegisterAdd(r, "Siltling", {Name = "Siltling"}, center + Vector3.new(4, 2, 0), {})
+	ok(add ~= nil and w.logic.lrWarded(r), "a raid add shields the encounter")
+	local function swing(p, target)
+		w.positions[p] = target.position + Vector3.new(0, 0, 3)
+		w.clock += 2
+		target.hp = target.maxHp
+		return w.logic.attack(p, "attack", target.model)
+	end
+	local sp = Data.Items
+	local onAdd, plainAdd = swing(cleaver, add), swing(plainHero, add)
+	ok(onAdd and plainAdd and onAdd.tide == true and not plainAdd.tide, "Riptide flags the Tidecleaver's hit on an add")
+	ok(onAdd.damage > plainAdd.damage, "Riptide out-hits the same stats on an add (" .. onAdd.damage .. " > " .. plainAdd.damage .. ")")
+	local onBoss, plainBoss = swing(cleaver, r), swing(plainHero, r)
+	ok(onBoss and plainBoss and onBoss.damage == plainBoss.damage and not onBoss.tide, "no Riptide on the encounter itself")
+	eq(w.logic.tideMult("RegentsTidecleaver", add), 1 + sp.RegentsTidecleaver.special.adds, "raid adds count for Riptide")
+	eq(w.logic.tideMult("UndertowWarbow", r), 1 + sp.UndertowWarbow.special.raid, "Undertow on a raid encounter")
+	eq(w.logic.tideMult("UndertowWarbow", add), 1, "no Undertow on raid adds")
+	eq(w.logic.tideMult("DrownlightScepter", r), 1 + sp.DrownlightScepter.special.warded, "Drownlight while the brood shields her")
+	local lair = w.logic.lrRegister("TIDE:L", "Bramblemaw", {Name = "B"}, center + Vector3.new(900, 3, 0), {members = {801}, center = center + Vector3.new(900, 0, 0)})
+	eq(w.logic.tideMult("UndertowWarbow", lair), 1, "no Undertow on a lair boss")
+	eq(w.logic.tideMult("DrownlightScepter", lair), 1, "no Drownlight on an unshielded lair boss")
+	eq(w.logic.tideMult("DrownlightScepter", {worldBoss = true, adds = {[{}] = true}}), 1 + sp.DrownlightScepter.special.warded, "a world boss add wave shields")
+	eq(w.logic.tideMult("RegentsTidecleaver", {add = true, parent = {worldBoss = true}}), 1 + sp.RegentsTidecleaver.special.adds, "world boss adds count")
+	eq(w.logic.tideMult("RegentsTidecleaver", {add = true, superior = true}), 1, "a slayer superior is not a boss's add")
+	eq(w.logic.tideMult("RegentsTidecleaver", {id = "BramblebackBoar"}), 1, "ordinary monsters do not")
+	w.logic.lrDespawn("TIDE:1"); w.logic.lrDespawn("TIDE:L")
+	-- QC M1: a finished lair-shaped fight drops its tile map (runtime LairRT.finish).
+	local src = fs.readFile("combat.server.lua")
+	local finish = src:match("function LairRT%.finish%(r%)(.-)\nend")
+	ok(finish ~= nil and has(finish, "LairRT.tiles[r.fight] = nil"), "LairRT.finish clears the fight's tile map")
 end
 print("PASS: " .. (checks - partB) .. " raid combat assertions.")
 
@@ -781,6 +886,24 @@ ok(raidGoal and raidGoal.have == 4 and raidGoal.need == 10, "the goal board coun
 local old = seeded(9303, function(prof) prof.raids = "corrupt" end)
 eq(cmd(old, "state").raids.kc, 0, "old saves migrate")
 eq(bridge.OnInvoke("raid", {UserId = 1, Parent = true, GetAttribute = function() return nil end}, {action = "complete", run = "x"}).reason, "sync", "an unopened journal answers sync")
+do
+	-- QC L1: a clear that errors while its grants are built is resent and pays once.
+	local payer = raider(9304)
+	local coinsBefore = cmd(payer, "state").coins
+	local realLoot = RD.regularLoot
+	RD.regularLoot = function() RD.regularLoot = realLoot; error("loot table offline") end
+	pcall(op, payer, {action = "complete", run = "R:L1", seconds = 700, party = 4, points = 8000, team = 32000})
+	RD.regularLoot = realLoot
+	local again = op(payer, {action = "complete", run = "R:L1", seconds = 700, party = 4, points = 8000, team = 32000})
+	ok(again and again.ok, "the resend is paid")
+	local gained = cmd(payer, "state").coins - coinsBefore
+	ok(gained >= RD.coins(8000) and gained < 2 * RD.coins(8000), "a retried clear pays its coins once (" .. gained .. ", collection coins aside)")
+	eq(op(payer, {action = "complete", run = "R:L1", seconds = 700, party = 4, points = 8000, team = 32000}).reason, "paid", "then the run id is spent")
+	-- QC L2: a shutdown close is not a failure.
+	local fails = cmd(payer, "state").raids.fails
+	eq(op(payer, {action = "end", run = "R:L2", result = "shutdown", deaths = 0}).ok, true, "a shutdown closes the entry")
+	eq(cmd(payer, "state").raids.fails, fails, "a shutdown does not count as a failed run")
+end
 print("PASS: " .. (checks - partC) .. " raid server assertions.")
 
 ------------------------------------------------------------------------------
@@ -815,6 +938,12 @@ local combatLogic = Combat.createLogic({
 })
 local spawnFails = false
 local spawned = {}
+local tileMaps = {} -- QC M1: what the runtime would hold in LairRT.tiles
+local function lingering()
+	local n = 0
+	for fight in pairs(spawned) do if combatLogic.lrResult(fight) ~= nil or tileMaps[fight] ~= nil then n += 1 end end
+	return n
+end
 storage.IsleRaidCombat = {Invoke = function(_, opName, payload)
 	if opName == "spawn" then
 		if spawnFails then return {ok = false, reason = "build"} end
@@ -822,6 +951,7 @@ storage.IsleRaidCombat = {Invoke = function(_, opName, payload)
 			{members = payload.members, party = payload.party, seed = payload.seed, center = payload.center, ground = payload.center.Y, challenge = payload.challenge})
 		if not r then return {ok = false, reason = "register"} end
 		spawned[payload.fight] = {record = r, tiles = payload.tiles, party = payload.party, members = payload.members}
+		tileMaps[payload.fight] = payload.tiles
 		return {ok = true, hp = r.maxHp}
 	elseif opName == "status" then
 		local status = combatLogic.lrStatus(payload.fight)
@@ -829,6 +959,7 @@ storage.IsleRaidCombat = {Invoke = function(_, opName, payload)
 		return status
 	elseif opName == "despawn" then
 		combatLogic.lrDespawn(payload.fight)
+		tileMaps[payload.fight] = nil
 		return {ok = true}
 	end
 	return nil
@@ -1093,6 +1224,7 @@ for _, p in ipairs(A) do
 	ok(d.Magnitude < 6, "returned to the portal")
 end
 eq(#combatLogic.records(), 0, "no creatures left")
+eq(lingering(), 0, "QC M1: every won encounter is despawned (no result records or tile maps linger)")
 eq(wsp:GetAttribute("RaidInstances"), "0/" .. RD.MAX_RAIDS, "slot freed")
 
 -- 3. Second run: the purple roll and recipient, Challenge Mode, deaths, supplies, disconnect and rejoin.
@@ -1228,6 +1360,145 @@ tick(RD.ROOM_GAP + 1)
 spawnFails = false
 eq(Raid.runs[run7.id], nil, "an encounter that cannot rise ends the raid")
 eq(J[1].attrs.RaidRun, "", "its raiders are released")
+-- QC L2: a shutdown drain is not a failed run for anyone inside.
+do
+	local inside = {}
+	for _, liveRun in pairs(Raid.runs) do
+		for _, m in pairs(liveRun.members) do if m.player and m.player.Parent then table.insert(inside, {p = m.player, fails = cmd(m.player, "state").raids.fails}) end end
+	end
+	ok(#inside > 0, "raiders are inside when the server closes")
+	storage.IsleRaids:Invoke("drain")
+	eq(next(Raid.runs), nil, "the drain tears every raid down")
+	for _, e in ipairs(inside) do
+		eq(cmd(e.p, "state").raids.fails, e.fails, "a shutdown is not a failure (" .. e.p.UserId .. ")")
+		ok(has(e.p.attrs.RaidNotice, "shutting down"), "the shutdown is explained")
+	end
+end
+local function seedWhere(pred)
+	for s0 = 1, 999999 do if pred(RD.sequence(s0)) then return s0 end end
+	error("no seed")
+end
+local function seeded(seed) rolls = {seed / 1e6 + 1e-9} end
+-- QC H1: health scales with the members not offline (the dead count): seven deliberate deaths
+-- during the countdown never lower the encounter.
+do
+	local seedCombat = seedWhere(function(q) return q[1].kind == "combat" end)
+	local K = party({9501, 9502, 9503, 9504, 9505, 9506, 9507, 9508})
+	seeded(seedCombat)
+	local runK = lobby(K, false)
+	eq(runK.party, 8, "eight raiders set out")
+	for i = 2, 8 do K[i].humanoid.Health = 0 end
+	tick(RD.ROOM_GAP + 0.5)
+	local roomK = runK.rooms[1]
+	ok(roomK.state == "active" and spawned[roomK.fight] ~= nil, "the encounter rises")
+	eq(roomK.party, 8, "the room's party counts the dead")
+	eq(spawned[roomK.fight].record.maxHp, RD.partyHp(RD.Encounters[roomK.id], 8), "seven resets during the countdown leave eight-member health")
+	for _, p in ipairs(K) do p.humanoid.Health = 100; cmd(p, "raidLeave") end
+	eq(Raid.runs[runK.id], nil, "the eight leave")
+end
+-- QC H1 / M2 / M3: an alt leaves after the start (the pool shrinks to the live party); a leech
+-- with room clears and one hit is not credited; team points sum credited members; the PB bracket
+-- and the journal's clamps use the starting party.
+do
+	local seedA = seedWhere(function(q)
+		if q[1].kind ~= "combat" then return false end
+		for _, r in ipairs(q) do if r.kind == "puzzle" and r.id == "Seals" then return false end end
+		return true
+	end)
+	local X = party({9511, 9512, 9513, 9514})
+	seeded(seedA)
+	local runX = lobby(X, false)
+	eq(runX.party, 4, "four set out")
+	cmd(X[4], "raidLeave") -- an alt leaves after the start
+	local workers, leech = {X[1], X[2]}, X[3]
+	for index = 1, 5 do
+		local room = waitActive(X[1])
+		if index == 1 then
+			eq(room.party, 3, "the encounter scales to the live party")
+			eq(spawned[room.fight].record.maxHp, RD.partyHp(RD.Encounters[room.id], 3), "three-member health")
+			local before = runX.members[X[1].UserId].points
+			slay(workers, {0.5, 0.5})
+			eq(runX.members[X[1].UserId].points - before, RD.damagePoints("combat", 0.5, 3) + RD.Points.clear, "the damage pool shrinks to the live party")
+		elseif room.kind == "boss" then slay({X[1], X[2], leech}, {0.5, 0.49, 0.01})
+		elseif room.kind == "combat" then slay(workers)
+		elseif room.kind == "puzzle" then solve(workers, room)
+		elseif room.kind == "resource" then supply(workers, room) end
+		if index < 5 then settle(X); tick(RD.ADVANCE_SECONDS + 0.5) end
+	end
+	ok(runX.state == "won" and runX.result ~= nil, "the three clear the vault")
+	local resX = runX.result
+	ok(table.find(resX.credited, X[1].UserId) and table.find(resX.credited, X[2].UserId), "the workers are credited")
+	ok(not table.find(resX.credited, leech.UserId), "a leech with room clears and one hit is not credited")
+	eq(runX.members[leech.UserId].creditReason, "share", "the leech falls below the contribution floor")
+	local sum = 0
+	for _, uid in ipairs(resX.credited) do sum += runX.members[uid].points end
+	eq(resX.team, sum, "team points for the purple sum credited members only")
+	eq(resX.chance, RD.uniqueChance(sum), "the purple chance reads that sum")
+	tick(0.5)
+	local log = cmd(X[1], "state").raids
+	ok(log.pb["4"] ~= nil and log.pb["3"] == nil, "the PB bracket is the starting party")
+	tick(RD.EXIT_SECONDS + 1)
+	eq(Raid.runs[runX.id], nil, "closed")
+end
+-- QC M4: puzzles and the resource quota re-size to the live party.
+do
+	local seedS = seedWhere(function(q) return q[1].kind == "puzzle" and q[1].id == "Seals" end)
+	local S = party({9521, 9522, 9523, 9524})
+	seeded(seedS)
+	local runS = lobby(S, false)
+	local roomS = waitActive(S[1])
+	eq(roomS.puzzle.need, 4, "four lit seals for four raiders")
+	cmd(S[3], "raidLeave"); cmd(S[4], "raidLeave")
+	tick(0.5)
+	eq(roomS.puzzle.need, 2, "two leave: the round re-sizes")
+	eq(#roomS.puzzle.plates, 2, "two seals lit")
+	solve({S[1], S[2]}, roomS)
+	ok(roomS.state == "cleared", "the shrunken party solves the seals")
+	cmd(S[1], "raidLeave"); cmd(S[2], "raidLeave")
+	eq(Raid.runs[runS.id], nil, "closed")
+	local seedR = seedWhere(function(q) return q[1].kind == "resource" end)
+	local R = party({9525, 9526, 9527, 9528})
+	seeded(seedR)
+	local runR = lobby(R, false)
+	local roomR = waitActive(R[1])
+	eq(roomR.resource.quota, RD.quota(4), "the quota for four")
+	cmd(R[3], "raidLeave"); cmd(R[4], "raidLeave")
+	tick(0.5)
+	eq(roomR.resource.quota, RD.quota(2), "two leave: the quota shrinks")
+	cmd(R[1], "raidLeave"); cmd(R[2], "raidLeave")
+	eq(Raid.runs[runR.id], nil, "closed")
+end
+-- QC L3 / L4: throttled mistake notices, no wasted supplies, a missing character counts as away.
+do
+	local seedG = seedWhere(function(q) return q[1].kind == "puzzle" and q[1].id == "Glyphs" end)
+	local Q = party({9531, 9532, 9533})
+	seeded(seedG)
+	local runQ = lobby(Q, false)
+	local roomQ = waitActive(Q[1])
+	local wrong = roomQ.puzzle.seq[1] % #RD.GLYPHS + 1
+	local seen = Q[2].attrs.RaidNoticeCount or 0
+	press(Q[1], roomQ, "glyph" .. wrong)
+	press(Q[1], roomQ, "glyph" .. wrong)
+	eq(runQ.mistakes, 2, "both mistakes count")
+	eq((Q[2].attrs.RaidNoticeCount or 0) - seen, 1, "one member's repeated mistakes notify the party once")
+	runQ.supplies.food, runQ.supplies.potion = 2, 2
+	Q[1].humanoid.Health = Q[1].humanoid.MaxHealth
+	ok(has(cmd(Q[1], "raidUse", "food").message, "full health"), "food is refused at full health")
+	eq(runQ.supplies.food, 2, "and stays in the pool")
+	ok(has(cmd(Q[1], "raidUse", "potion").message, "draught"), "a draught raises the ward")
+	tick(RD.SUPPLY_COOLDOWN + 0.5)
+	ok(has(cmd(Q[1], "raidUse", "potion").message, "ward is still up"), "a second draught is refused while the ward holds")
+	eq(runQ.supplies.potion, 1, "the pool keeps it")
+	tick(RD.Supplies.potion.ward - RD.WARD_REFRESH)
+	ok(has(cmd(Q[1], "raidUse", "potion").message, "draught"), "the ward can be refreshed as it ends")
+	Q[3].Character = nil -- no character root
+	tick(RD.AWAY_SECONDS + 1)
+	eq(runQ.members[9533], nil, "a member with no character counts as away")
+	eq(Q[3].attrs.RaidRun, "", "and leaves the raid")
+	cmd(Q[1], "raidLeave"); cmd(Q[2], "raidLeave")
+	eq(Raid.runs[runQ.id], nil, "closed")
+end
+eq(lingering(), 0, "QC M1: no encounter results or tile maps grow over the runs")
 for _, f in ipairs(journalClosers) do f() end
 for _, f in ipairs(closers) do f() end
 eq(next(Raid.runs), nil, "shutdown tears every raid down")

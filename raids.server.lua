@@ -6,8 +6,8 @@
 -- (verify-raid.luau) loads this script with doubles for game and Players and
 -- receives the Raid table through the global __RaidsHarness (nil in Roblox).
 --
--- Entry: the Undertide portal on Tidewater Shoals (world.server.lua, Raids
--- section: prompt IsleAction "raidPortal", anchor Waypoint_RaidPortal). The
+-- Entry (lead decision: parties are open to anyone at the portal): the
+-- Undertide portal on Tidewater Shoals (world.server.lua, Raids section: prompt IsleAction "raidPortal", anchor Waypoint_RaidPortal). The
 -- Adventure script (server.server.lua, Raids block) validates every verb
 -- (Combat level, region, not busy) and asks ServerStorage.IsleRaids
 -- (BindableFunction made here, synchronous, never yields):
@@ -24,27 +24,34 @@
 --   "depart" (player) - the journal's close() calls this first (PlayerRemoving
 --       here too; idempotent): a disconnect while dead or fleeing is a death,
 --       otherwise the member is held RD.REJOIN_SECONDS with their points.
---   "drain" () - shutdown: every raid is torn down (no fees, nothing to refund).
+--   "drain" () - shutdown: every raid is torn down with result "shutdown"
+--       (not a failure in the Raid Log; no fees, nothing to refund).
 --   "status" (player) - {lobby, run, room}.
 -- Rooms (RD.sequence(seed)): two combat rooms, a puzzle, a resource room in a
 -- seeded order, then the Regent. Combat rooms ask ServerStorage.IsleRaidCombat
--- (combat.server.lua Raids section) to raise the encounter scaled to the
--- members inside; puzzles and resource rooms run here. Points per member:
--- damage share of each encounter's pool, room clears, puzzle steps, resource
--- work, minus RD.Points.death on each death. When the Regent falls, the purple
--- (unique) chance comes from the team's points and its recipient from the
--- personal points (RD.pickRecipient); credited members (RD.credit: points
--- floor, a credited action in RD.RECENT_SECONDS, still in the raid) are paid
+-- (combat.server.lua Raids section) to raise the encounter scaled to room.party
+-- = the run's members not offline at the rise (the dead count, so a death
+-- never lowers an encounter); puzzles and resource rooms run here, sized by
+-- the same count (re-checked each seal round / step). Points per member:
+-- damage share of each encounter's pool (RD.damagePoints with room.party),
+-- room clears, puzzle steps, resource work, minus RD.Points.death on each
+-- death. When the Regent falls, credited members (RD.credit: contribution
+-- floor without room-clear points, a credited action in RD.RECENT_SECONDS,
+-- still in the raid) are judged first; the purple (unique) chance comes from
+-- the credited members' points and its recipient from the personal points
+-- (RD.pickRecipient). Par and the PB bracket use the starting party. They are paid
 -- through bridge "raid" {action = "complete", ...} (resent by UserId while the
 -- journal syncs or the member is away, until RD.REWARD_WINDOW); everyone else
 -- gets {action = "end"}. Members return to the portal RD.EXIT_SECONDS later
 -- and the complex, its connections and its creatures are destroyed.
--- Deaths: a member who dies loses RD.Points.death of their points, respawns at
--- home (RaidRejoin makes world.server.lua's home landing stand aside) and is
--- returned to the current room. Removal: outside the room RD.AWAY_SECONDS
--- (alive), idle RD.IDLE_SECONDS (no movement, no credited action), offline past
--- RD.REJOIN_SECONDS. A raid with nobody inside for RD.EMPTY_SECONDS, or no
--- members left, ends; an encounter that times out fails the raid.
+-- Deaths (lead decision: raid points only, never purse coins): a member who
+-- dies loses RD.Points.death of their points, respawns at home (RaidRejoin
+-- makes world.server.lua's home landing stand aside) and is returned to the
+-- current room. Removal: outside the room RD.AWAY_SECONDS (alive; no
+-- character root counts as away), idle RD.IDLE_SECONDS (no movement, no
+-- credited action), offline past RD.REJOIN_SECONDS. A raid with nobody inside
+-- for RD.EMPTY_SECONDS, or no members left, ends; an encounter that times out
+-- fails the raid.
 -- Player attributes: RaidLobby ("k=v;..." lobby card), RaidRun (run id or ""),
 -- RaidHud ("k=v;..." raid HUD), RaidNotice / RaidNoticeCount (toasts),
 -- RaidRejoin (this script owns the respawn), RaidWardUntil (os.time of a
@@ -406,11 +413,25 @@ end
 local function broadcast(run, text)
 	for _, m in pairs(run.members) do notice(m.player, text) end
 end
-local function award(run, uid, points)
+-- clear = true for flat room-clear points: they count toward personal and
+-- team points but not toward the credit floor's contribution (QC M3).
+local function award(run, uid, points, clear)
 	local m = run.members[uid]
 	if not m or points == 0 then return end
 	m.points = math.max(0, m.points + math.floor(points))
+	if not clear then m.contrib = math.max(0, (m.contrib or 0) + math.floor(points)) end
 end
+-- QC H1 / M4: the members of the run who are not offline (the dead count, so
+-- a deliberate death never lowers an encounter); sizes encounters, point
+-- pools, puzzles and the resource quota.
+local function liveCount(run)
+	local n = 0
+	for _, m in pairs(run.members) do
+		if not m.offlineAt and m.player and m.player.Parent then n += 1 end
+	end
+	return math.max(1, n)
+end
+Raid.liveCount = liveCount
 local function act(m, now)
 	m.actionAt, m.activeAt = now, now
 end
@@ -488,6 +509,7 @@ function Raid.endText(result)
 	if result == "timeout" then return "The vault floods: the guardian outlasted your party. You are swept back to the portal." end
 	if result == "abandoned" then return "The Undertide Vaults fall silent: your party is gone." end
 	if result == "error" then return "The vault collapses before it can open. Try again shortly." end
+	if result == "shutdown" then return "The Undertide Vaults close: this server is shutting down. This run does not count against you." end
 	if result == "idle" then return "You stood idle too long; the vault casts you out." end
 	if result == "away" or result == "left" then return "You leave " .. RD.NAME .. "." end
 	return "You leave " .. RD.NAME .. "."
@@ -542,8 +564,9 @@ function Raid.start(player)
 	for _, id in ipairs(l.order) do
 		local lm = l.members[id]
 		run.joined += 1
-		run.members[id] = {player = lm.player, index = run.joined, points = 0, deaths = 0, actionAt = now, activeAt = now, xp = {}, resource = 0}
+		run.members[id] = {player = lm.player, index = run.joined, points = 0, contrib = 0, deaths = 0, actionAt = now, activeAt = now, xp = {}, resource = 0}
 		Raid.runOf[id] = run
+		if lm.player and lm.player.Parent then lm.player:SetAttribute("RaidRun", run.id) end -- QC L4: even if the move in fails
 	end
 	closeLobby(l)
 	Raid.enterRoom(run, 1, now)
@@ -579,7 +602,7 @@ local function clearRoom(run, room, now, bonus)
 	if bonus then
 		local pts = math.floor(RD.Points.clear * RD.pointMult(run.challenge))
 		for uid, m in pairs(run.members) do
-			if not m.offlineAt then award(run, uid, pts) end
+			if not m.offlineAt then award(run, uid, pts, true) end
 		end
 	end
 	if run.index < #run.rooms then
@@ -589,11 +612,11 @@ local function clearRoom(run, room, now, bonus)
 end
 function Raid.startRoom(run, room, now)
 	room.state, room.startedAt = "active", now
+	room.party = liveCount(run) -- QC H1 / M4: members not offline (the dead count), stored for the room's pools
 	if room.kind == "combat" or room.kind == "boss" then
-		local inside = present(run)
 		local roster = sortedKeys(run.members)
 		room.fight = run.id .. ":" .. room.index
-		local reply = combat("spawn", {fight = room.fight, encounter = room.id, center = room.center, members = roster, party = math.max(1, #inside),
+		local reply = combat("spawn", {fight = room.fight, encounter = room.id, center = room.center, members = roster, party = room.party,
 			seed = run.seed + room.index, challenge = run.challenge, tiles = room.tiles})
 		if not replyOk(reply) then
 			warn("[Raids] encounter could not rise: " .. tostring(type(reply) == "table" and reply.reason))
@@ -607,9 +630,9 @@ function Raid.startRoom(run, room, now)
 		local s = {mistakes = 0}
 		room.puzzle = s
 		if room.id == "Glyphs" then
-			s.seq, s.step, s.best = RD.glyphSequence(run.seed + room.index, RD.glyphLength(run.party, run.challenge)), 0, 0
+			s.seq, s.step, s.best = RD.glyphSequence(run.seed + room.index, RD.glyphLength(room.party, run.challenge)), 0, 0
 		elseif room.id == "Seals" then
-			s.round, s.need = 1, RD.sealNeed(run.party)
+			s.round, s.need = 1, Raid.sealNeedFor(room.party)
 			s.plates = RD.sealPattern(run.seed + room.index, 1, s.need)
 			Raid.paintSeals(room)
 		elseif room.id == "Valves" then
@@ -620,10 +643,10 @@ function Raid.startRoom(run, room, now)
 		broadcast(run, room.def.name .. ": " .. room.def.blurb)
 	elseif room.kind == "resource" then
 		local res = room.def
-		local s = {stock = {}, made = 0, quota = RD.quota(run.party), uses = {}}
+		local s = {stock = {}, made = 0, quota = RD.quota(room.party), uses = {}}
 		for k, node in ipairs(res.nodes) do
 			s.stock[node.id] = 0
-			for j = 1, RD.NODES_PER_KIND do s.uses[k .. ":" .. j] = RD.nodeUses(run.party) end
+			for j = 1, RD.NODES_PER_KIND do s.uses[k .. ":" .. j] = RD.nodeUses(room.party) end
 		end
 		room.resource = s
 		broadcast(run, res.name .. ": gather, then brew and cook " .. s.quota .. " supplies for the Regent's throne.")
@@ -656,8 +679,20 @@ local function solved(run, room, now)
 	broadcast(run, room.def.name .. " solved!")
 	clearRoom(run, room, now, true)
 end
+-- Seals lit at once for n live members (never more than are there to hold them).
+function Raid.sealNeedFor(n)
+	n = math.max(1, math.floor(tonumber(n) or 1))
+	return math.min(RD.sealNeed(n), n)
+end
 function Raid.sealStep(run, room, now)
 	local s = room.puzzle
+	-- QC M4: a party that shrank mid-round gets a pattern it can still hold.
+	local need = Raid.sealNeedFor(liveCount(run))
+	if need < s.need then
+		s.need, s.holdSince = need, nil
+		s.plates = RD.sealPattern(run.seed + room.index, s.round, need)
+		Raid.paintSeals(room)
+	end
 	local standing = {}
 	local held = 0
 	for _, plateIndex in ipairs(s.plates) do
@@ -687,6 +722,7 @@ function Raid.sealStep(run, room, now)
 		return
 	end
 	s.round += 1
+	s.need = Raid.sealNeedFor(liveCount(run)) -- QC M4: re-sized every round
 	s.plates = RD.sealPattern(run.seed + room.index, s.round, s.need)
 	Raid.paintSeals(room)
 	broadcast(run, "Seal round " .. (s.round - 1) .. " holds. New seals light up.")
@@ -725,7 +761,13 @@ function Raid.act(player, payload)
 		s.step, s.mistakes = 0, s.mistakes + 1
 		run.mistakes += 1
 		award(run, uid, -RD.Points.puzzleMistake)
-		broadcast(run, nameOf(player) .. " pressed the wrong glyph: the chant restarts.")
+		-- QC L3: one party-wide notice per member per RD.MISTAKE_NOTICE seconds.
+		if now >= (m.mistakeNoticeAt or 0) then
+			m.mistakeNoticeAt = now + RD.MISTAKE_NOTICE
+			broadcast(run, nameOf(player) .. " pressed the wrong glyph: the chant restarts.")
+		else
+			notice(player, "Wrong glyph: the chant restarts.")
+		end
 		return {ok = true, mistake = true}
 	elseif room.kind == "puzzle" and room.id == "Valves" and kind == "valve" then
 		local s = room.puzzle
@@ -795,6 +837,10 @@ function Raid.use(player, kind)
 	if (run.supplies[kind] or 0) <= 0 then return {ok = false, reason = "empty"} end
 	local humanoid = humanoidOf(player)
 	if not humanoid or humanoid.Health <= 0 then return {ok = false, reason = "dead"} end
+	-- QC L3: no wasted supplies from the shared pool.
+	if not supply.ward and humanoid.Health >= humanoid.MaxHealth then return {ok = false, reason = "full"} end
+	local wardUntil = player:GetAttribute("RaidWardUntil")
+	if supply.ward and type(wardUntil) == "number" and wardUntil - os.time() > RD.WARD_REFRESH then return {ok = false, reason = "warded"} end
 	local now = os.clock()
 	if now < (m.supplyAt or 0) then return {ok = false, reason = "busy"} end
 	m.supplyAt = now + RD.SUPPLY_COOLDOWN
@@ -812,18 +858,23 @@ function Raid.complete(run, now)
 	run.state, run.exitAt = "won", now + RD.EXIT_SECONDS
 	local seconds = math.max(1, math.floor(now - run.startedAt + 0.5))
 	local uids = sortedKeys(run.members)
-	local team = 0
-	for _, uid in ipairs(uids) do team += run.members[uid].points end
-	local party = #uids
+	local contribution = 0
+	for _, uid in ipairs(uids) do contribution += run.members[uid].contrib or 0 end
+	-- QC M2: par, the PB bracket and the journal's clamps use the run's
+	-- starting (largest) party, as the room pools never exceed it.
+	local party = run.party
 	local credited, entries = {}, {}
+	local team = 0
 	for _, uid in ipairs(uids) do
 		local m = run.members[uid]
 		local presentNow = (m.offlineAt ~= nil and now - m.offlineAt <= RD.REJOIN_SECONDS) or (m.player ~= nil and m.player.Parent ~= nil)
-		local okCredit, reason = RD.credit({points = m.points, team = team, party = party, present = presentNow, lastAction = m.actionAt, now = now})
+		local okCredit, reason = RD.credit({points = m.points, contribution = m.contrib or 0, teamContribution = contribution, party = #uids,
+			present = presentNow, lastAction = m.actionAt, now = now})
 		m.creditReason = reason
 		if okCredit then
 			table.insert(credited, uid)
 			table.insert(entries, {uid = uid, points = m.points})
+			team += m.points -- QC M3: the purple chance sums credited members only
 		end
 	end
 	local chance = RD.uniqueChance(team)
@@ -977,6 +1028,13 @@ function Raid.memberStep(run, now)
 					notice(player, Raid.endText("idle"))
 					Raid.removeMember(run, uid, "idle", true)
 				end
+			else
+				-- QC L4: no character root (removed, not loaded) counts as away.
+				m.awaySince = m.awaySince or now
+				if now - m.awaySince > RD.AWAY_SECONDS then
+					notice(player, Raid.endText("away"))
+					Raid.removeMember(run, uid, if run.state == "won" then "won" else "away", false)
+				end
 			end
 		end
 	end
@@ -1012,9 +1070,12 @@ function Raid.roomStep(run, now)
 				if status.result == "win" then
 					local outcome = status.outcome or {}
 					room.spawned = false
+					-- QC M1: despawn the won encounter (its result record and tile map go with it).
+					combat("despawn", {fight = room.fight})
 					for uid, c in pairs(type(outcome.credit) == "table" and outcome.credit or {}) do
 						if run.members[uid] then
-							award(run, uid, RD.damagePoints(room.kind, (c.damage or 0) / math.max(1, room.maxHp), run.party, run.challenge))
+							-- QC H1: the pool is sized by the same n the encounter scaled to.
+							award(run, uid, RD.damagePoints(room.kind, (c.damage or 0) / math.max(1, room.maxHp), room.party or run.party, run.challenge))
 							if c.lastHit and c.lastHit > run.members[uid].actionAt then run.members[uid].actionAt = c.lastHit end
 						end
 					end
@@ -1051,6 +1112,17 @@ function Raid.roomStep(run, now)
 				if room.id == "Seals" then Raid.paintSeals(room) end
 			end
 		elseif room.kind == "resource" then
+			-- QC M4: a party that shrank needs only its own quota.
+			local s = room.resource
+			local quota = RD.quota(liveCount(run))
+			if quota < s.quota then
+				s.quota = quota
+				if s.made >= s.quota then
+					broadcast(run, "The supplies are ready: " .. run.supplies.food .. " " .. room.def.supplies.food .. ", " .. run.supplies.potion .. " " .. room.def.supplies.potion .. ".")
+					clearRoom(run, room, now, true)
+					return status
+				end
+			end
 			if now - room.startedAt > RD.RESOURCE_SECONDS then
 				broadcast(run, room.def.name .. " closes: the supplies you made come with you.")
 				clearRoom(run, room, now, false)
@@ -1195,7 +1267,7 @@ Players.PlayerRemoving:Connect(function(player) Raid.depart(player) end)
 function Raid.drain()
 	for _, id in ipairs(sortedKeys(Raid.runs)) do
 		local run = Raid.runs[id]
-		if run and run.state ~= "won" then Raid.teardown(run, "error") end
+		if run and run.state ~= "won" then Raid.teardown(run, "shutdown") end -- QC L2: not a failure
 	end
 	return {}
 end
