@@ -158,3 +158,9 @@ Gemini video access (the `watch` skill) uses a free-tier key with 20 requests a 
 - Reply in plain language: what changed, what's verified, what needs a play-test.
 - Ask before merging or publishing the PR.
 - Never echo secrets. The owner pasted a Gemini key in chat earlier, and it is stored only in `~/.config/watch/.env` in the old container.
+
+## 8. Update (2026-11-23)
+
+Merged and pushed since the first pause (all 37 suites pass), each with an independent QC review and a fix round: §33 Systems Depth (quest helper, goal board, price history with its own auction history key, per-item daily shop stock, calculator), §34 HUD Depth (action label, status orbs, chat tabs, pickup feed, tooltip footer, hitsplats/bars), §35 Lighting (single client lighting director, region profiles, graphics tiers, saved settings), Polish (renames, Hollow Sunder, sell quantity, worker-unlock toasts, journal mode as the Path's first step, vent FX), §36 Isle Council (elections; MemoryStore ballots; Renown 5 to vote) and §37 Beaconry (firemaking-style skill, beacons, campfire cooking; keeper Old Hesketh Ashby).
+
+Live game: still the publish from PR #5. Everything above is on `claude/pensive-maxwell-145p0c` waiting for the owner's go-ahead to publish (new PR into `main`).
