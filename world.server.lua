@@ -5226,6 +5226,112 @@ end
 	else anchor(hub,"NPC_"..CD.CLERK,spot,face) end
 end)()
 -- End Isle Council Hall.
+-- >>> BEGIN Beaconry (Beaconry team; docs/DEPTH-CONTRACT.md §37; Data.Beaconry) >>>
+-- One beacon pyre per region on the region's Mote Shrine island
+-- (Data.Exploration.ShrineIsle): a stone plinth (Column mesh), an iron brazier
+-- (Cauldron mesh, carries the prompt IsleAction "beaconLight", IsleItem
+-- <beacon>, IsleRegion <region>), a stack of kindling (TimberBundle mesh) and
+-- a flame volume (invisible until lit) holding a night PointLight created OFF
+-- with LightWanted = false, a Fire and an ember ParticleEmitter (both off).
+-- beaconry.server.lua lights them from the BeaconryBeacons attribute the
+-- server publishes (flame visible + Neon, LightWanted = true, so the §35
+-- director lights it after dusk). Models carry BeaconContent = true and
+-- BeaconId; anchors Waypoint_Beacon_<id>. Parts: 4 per pyre + 1 invisible
+-- anchor = 5 x 9 = 45 static parts, 9 night lights (off), no Neon at build.
+-------------------------------------------------------------------------------
+do
+	local B,EX=Data.Beaconry,Data.Exploration
+	if B and EX and EX.ShrineIsle then
+		local FLOOR={Meadow=true,["Floating foundation"]=true,["Mineral stratum"]=true,["Lower basalt"]=true,["Fractured cliff"]=true,
+			["Keel rock"]=true,["Edge guard"]=true,["Aether vein"]=true,["Shore ledge"]=true,Path=true,Wildflowers=true}
+		local taken={}
+		local function blocked(host,pos,radius)
+			for _,q in ipairs(taken) do if V(pos.X-q.X,0,pos.Z-q.Z).Magnitude<radius+8 then return true end end
+			-- Clear of creature spawn markers and their roam (no fights in the warmth).
+			for _,marker in ipairs(spawnFolder:GetChildren()) do
+				if marker:IsA("BasePart") then
+					local c=marker.CFrame.Position
+					if V(pos.X-c.X,0,pos.Z-c.Z).Magnitude<radius+10+(tonumber(marker:GetAttribute("Radius")) or 0) then return true end
+				end
+			end
+			for _,obj in ipairs(host:GetDescendants()) do
+				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
+					local cf,sz=obj.CFrame,obj.Size
+					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
+					local c=cf.Position
+					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
+					local dz=math.max(0,math.abs(pos.Z-c.Z)-ext("Z"))
+					local ey=ext("Y")
+					if dx*dx+dz*dz<radius*radius and c.Y+ey>pos.Y+.3 and c.Y-ey<pos.Y+12 then return true end
+				end
+				-- Keep clear of every prompt on the isle (stations, nodes, shrines).
+				if obj:IsA("ProximityPrompt") and obj.Parent and obj.Parent:IsA("BasePart") then
+					local c=obj.Parent.CFrame.Position
+					if V(pos.X-c.X,0,pos.Z-c.Z).Magnitude<radius+8 then return true end
+				end
+			end
+			return false
+		end
+		local function spot(host,angle,radius)
+			local IC,R=host:GetAttribute("IslandCenter"),host:GetAttribute("IslandRadius")
+			local first
+			-- Watch-fires stand out toward the rim (and clear of the busy centre).
+			for _,f in ipairs({.7,.62,.76,.55,.48}) do
+				for k=0,23 do
+					local a=math.rad(angle+(if k%2==0 then 1 else -1)*math.ceil(k/2)*15)
+					local pos=IC+V(math.cos(a),0,math.sin(a))*R*f
+					first=first or pos
+					if not blocked(host,pos,radius) then table.insert(taken,pos) return pos end
+				end
+			end
+			table.insert(taken,first)
+			return first
+		end
+		local iron,stone=C("3D3732"),C("8D8A84")
+		for i,id in ipairs(B.BeaconOrder) do
+			local b=B.Beacons[id]
+			local host=islandsFolder:FindFirstChild(EX.ShrineIsle[b.region] or "")
+			if host then
+				local pos=spot(host,200+i*23,6)
+				local IC=host:GetAttribute("IslandCenter")
+				local cf=facing(pos,V(IC.X,pos.Y,IC.Z))
+				local glow=C(b.color)
+				local m=group("Beacon "..b.name,host)
+				m:SetAttribute("BeaconContent",true)
+				m:SetAttribute("BeaconId",id)
+				local plinth=part(m,"Beacon plinth",V(4.6,3.2,4.6),at(cf,0,1.6,0),stone,ST,true)
+				meshSlot(plinth,"Column",lighten(stone,.1))
+				local brazier=part(m,"Beacon brazier",V(5.2,1.8,5.2),at(cf,0,4.1,0),iron,MT,true)
+				meshSlot(brazier,"Cauldron",darken(glow,.55))
+				local kindling=part(m,"Beacon kindling",V(3.4,1.6,3.4),at(cf,0,5.4,0),timber,WO,false)
+				meshSlot(kindling,"TimberBundle",timber)
+				local flame=part(m,"Beacon flame",V(2.8,4,2.8),at(cf,0,7.6,0),glow,SM,false)
+				flame.Transparency,flame.CastShadow,flame.CanQuery=1,false,false
+				flame:SetAttribute("BeaconFlame",true)
+				local l=light(flame,glow,1.4,36,{night=true,lift=0})
+				l:SetAttribute("LightWanted",false) -- §35: wanted only while the beacon burns (beaconry.server.lua)
+				l.Name="Beacon light"
+				local fire=Instance.new("Fire")
+				fire.Name="Beacon fire"
+				fire.Color,fire.SecondaryColor=glow,C("FFF1C2")
+				fire.Size,fire.Heat,fire.Enabled=7,12,false
+				fire.Parent=flame
+				local embers=Instance.new("ParticleEmitter")
+				embers.Name="Beacon embers"
+				embers.Rate,embers.Enabled,embers.LightEmission=14,false,.9
+				embers.Lifetime,embers.Speed=NumberRange.new(1.2,2.4),NumberRange.new(4,8)
+				embers.SpreadAngle=Vector2.new(18,18)
+				embers.Size=NumberSequence.new(.35,0)
+				embers.Color=ColorSequence.new(glow,C("FFE3A3"))
+				embers.Parent=flame
+				local q=prompt(brazier,"Light",b.name.." · Beaconry","beaconLight",id)
+				q:SetAttribute("IsleRegion",b.region)
+				anchor(m,"Waypoint_Beacon_"..id,at(cf,0,0,-6).Position,pos)
+			end
+		end
+	end
+end
+-- <<< END Beaconry <<<
 
 -- Signs (§28 performance): drop Back faces nobody can read on the static world.
 Signs.cullBacks(world)

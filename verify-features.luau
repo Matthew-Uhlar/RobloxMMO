@@ -62,6 +62,9 @@ for _, l in ipairs(Data.SlayerOrder) do maxed.slayerXp[l] = 1e12 end
 for i in ipairs(Data.DungeonFloors) do maxed.dungeons.clears[tostring(i)] = 3; maxed.dungeonClasses.masterClears[tostring(i)] = 1 end
 for _, id in ipairs(Data.Lairs.Order) do maxed.lairs.kc[id] = 500 end
 for id in pairs(Data.Monsters) do maxed.bestiary[id] = 1e6 end
+-- Beaconry (§37): every beacon lit, a year of weekly watches.
+maxed.beaconry = {beacons = {}, weeks = 60}
+for _, id in ipairs(Data.Beaconry.BeaconOrder) do maxed.beaconry.beacons[id] = 3 end
 local species = {}
 for _, pet in ipairs(Data.Pets) do species[pet.id] = true end
 local top = RN.breakdown(maxed, P, {species = species, guideSteps = #G.Steps})

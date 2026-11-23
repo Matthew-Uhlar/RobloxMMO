@@ -2168,6 +2168,10 @@ local function skillUnlocks(skill,level)
 	if skill=="Thieving" and type(Data.Thieving)=="table" then
 		for _,t in ipairs(tbl(Data.Thieving.Targets)) do add(t.level,escape(tbl(Data.Thieving.Kinds[t.kind]).verb or "Rob").." the "..escape(t.name)..", +"..fmt(t.xp).." XP",nil) end
 	end
+	-- Beaconry (§37): logs, beacon pyres, strikers and the Everflame mantle.
+	if skill=="Beaconry" and type(Data.Beaconry)=="table" and type(Data.Beaconry.unlocks)=="function" then
+		for _,u in ipairs(Data.Beaconry.unlocks()) do add(u.level,escape(u.text),u.item) end
+	end
 	local bag=tbl(Data.AccessoryBag)
 	if skill==tbl(bag.slotsPerLevel).skill and num(tbl(bag.slotsPerLevel).every,0)>0 then
 		local every=bag.slotsPerLevel.every
@@ -3410,6 +3414,10 @@ local function itemDetail(id)
 			table.insert(actions,{caption=bagged and "Remove" or "Add",fn=function() send("accessory",id) end})
 		elseif def.kind=="pet" then
 			table.insert(actions,{caption="Adopt",primary=true,fn=function() send("petAdopt",id) end})
+		end
+		-- Beaconry (§37): kindle a log where you stand (the server checks the ground).
+		if Data and type(Data.Beaconry)=="table" and Data.Beaconry.LogById[id] then
+			table.insert(actions,{caption="Kindle",fn=function() send("kindle",id) end})
 		end
 		if enchantKind(def) then
 			table.insert(actions,{caption="Enchant",fn=function() enchantTarget=id;current="Hero";sectionOf.Hero="Enchant";scroll.CanvasPosition=Vector2.zero;render() end})
@@ -8286,6 +8294,155 @@ end
 Pages.drawCrafting=CRP.draw
 end
 ------------------------------------------------------------------------------
+-- Workshop › Beaconry (Beaconry team; docs/DEPTH-CONTRACT.md §37). Sections:
+-- Kindle (a summary card, your campfires, one card per log with Kindle),
+-- Campfire (cooking at the nearest lit campfire: running batch + recipe
+-- cards with ×1 / ×5 / ×all), Beacons (the nine pyres, their state and a
+-- waypoint, the weekly community watch and its claim). The server validates
+-- and paces everything (verbs kindle, fireCook, fireStop, beaconClaim; beacon
+-- pyres are lit at the pyre's prompt). Snapshot key `beaconry`. State: Pages.BC.
+------------------------------------------------------------------------------
+do
+local BCP={section="Kindle"}
+Pages.BC=BCP
+local function BD() return Data and type(Data.Beaconry)=="table" and Data.Beaconry or nil end
+function BCP.snap() return tbl(state.beaconry) end
+function BCP.levelOf(skill)
+	local info=skillsOf(state)[skill]
+	return info and info.level or 1
+end
+function BCP.cookAfford(rec)
+	local B=BD()
+	local n=B and B.MAX_BATCH or 28
+	for id,need in pairs(tbl(rec.costs)) do n=math.min(n,math.floor(count("items",id)/math.max(1,num(need,1)))) end
+	return math.max(0,n)
+end
+local function guide(specs,label)
+	local request=player:FindFirstChild("WayfinderRequest")
+	if request then request:Fire(specs,label) else notify("The Wayfinder is still charting the isles. Try again in a moment.") end
+end
+local function drawKindle(B,snap)
+	local lvl=BCP.levelOf("Beaconry")
+	local strikerId=type(snap.striker)=="string" and snap.striker or nil
+	local striker=strikerId and B.Strikers[strikerId] or nil
+	local mine=type(snap.fires)=="table" and snap.fires or {}
+	local fireLines={}
+	for _,f in ipairs(mine) do
+		if type(f)=="table" then table.insert(fireLines,paint(escape(itemName(f.log)),itemHex(f.log)).."  "..clock(num(f.left,0)).." left") end
+	end
+	local cooldown=num(snap.kindleIn,0)
+	card({name="BeaconryKindle",motif="Workshop",accent=rgb(skillHex("Beaconry")),title="Kindling",titleColor=gold,
+		subtitle=(striker and (check.." "..escape(itemName(strikerId))) or (cross.." No striker: forge a Flint Striker (Smithing 1)"))
+			..(snap.everflame and "  ·  "..paint("EVERFLAME","FFB347") or ""),
+		detail="Kindle a log on open ground (never on paths, bridges or another wayfarer's island). A campfire burns for a while, then leaves Pyre Ash. Cook on any lit campfire.",
+		lines={#fireLines>0 and ("Your campfires: "..table.concat(fireLines,"   ")) or "No campfire of yours is burning.",
+			"Kindled "..fmt(num(snap.burning,0)).." burning on this server  ·  "..fmt(num(snap.ash,0)).." ash gathered  ·  "..fmt(num(snap.failed,0)).." sparks that failed"},
+		bar=cooldown>0 and {fraction=math.clamp(1-cooldown/B.KINDLE_SECONDS,0,1),color=mint,caption="Striker ready in "..string.format("%.1f",cooldown).."s"} or nil,
+		actions={{caption="Kindle best log",primary=striker~=nil or nil,disabled=striker==nil,reason="Forge a Flint Striker first.",fn=function() send("kindle","") end}}})
+	heading("LOGS")
+	for _,log in ipairs(B.Logs) do
+		local have=count("items",log.id)
+		local chance=if snap.everflame then 1 else B.successChance(lvl,log,striker and striker.tier or 1)
+		local ok=lvl>=log.level and have>0 and striker~=nil
+		local why=(lvl<log.level and ("Requires Beaconry "..log.level..".")) or (striker==nil and "Forge a Flint Striker first.") or (have<=0 and ("You have no "..log.name..".")) or nil
+		card({name="Kindle"..log.id,item=log.id,title=escape(log.name),titleColor=rgb(itemHex(log.id)),
+			subtitle="Lv "..log.level.."  ·  +"..fmt(log.xp).." XP  ·  burns "..log.seconds.."s",badge=ok and "READY" or nil,badgeColor=mint,
+			lines={(lvl>=log.level and check or cross).." Beaconry "..log.level.."   "..paint(fmt(have).." in satchel",have>0 and "9EE7D2" or "E8806A"),
+				lvl>=log.level and ("Kindle chance "..paint(math.floor(chance*100+.5).."%",chance>=1 and "9EE7D2" or "F9CC77")) or ""},
+			actions={{caption="Kindle",primary=ok or nil,disabled=not ok,reason=why,fn=function() send("kindle",log.id) end}}})
+	end
+end
+local function drawCampfire(B,snap)
+	local near=type(snap.near)=="table" and snap.near or nil
+	local cookLevel=BCP.levelOf("Cooking")
+	card({name="BeaconryCampfire",motif="Workshop",accent=rgb(skillHex("Cooking")),title="Campfire cooking",titleColor=gold,
+		subtitle=near and paint("At a campfire ("..escape(itemName(near.log))..") · "..clock(num(near.left,0)).." left","9EE7D2")
+			or paint("Stand beside a lit campfire to cook on it.","E8806A"),
+		detail="Cooking's meals and feasts cook here too: +"..math.floor((B.FIRE_XP_MULT-1)*100+.5).."% Cooking XP, but open flames burn food until you outgrow the recipe. Two dishes only a campfire can make.",
+		lines={"Cooked "..fmt(num(snap.cooked,0)).."  ·  burnt "..fmt(num(snap.burnt,0))}})
+	local job=type(snap.job)=="table" and snap.job or nil
+	local jobRec=job and B.cookRecipe(job.recipe)
+	if jobRec then
+		local total=math.max(1,num(job.total,1))
+		card({name="BeaconryJob",item=jobRec.output,title="Cooking "..escape(itemName(jobRec.output)),titleColor=rgb(itemHex(jobRec.output)),
+			subtitle=fmt(num(job.done,0)).." / "..fmt(total).."  ·  "..B.COOK_SECONDS.."s each",
+			lines={"+"..fmt(num(job.cooked,0)).." cooked"..(num(job.burnt,0)>0 and ("  ·  "..fmt(job.burnt).." burnt") or "").."  ·  +"..fmt(num(job.xp,0)).." Cooking XP"},
+			bar={fraction=math.clamp(num(job.done,0)/total,0,1),color=mint,caption="Next in "..string.format("%.1f",num(job.nextIn,0)).."s · stay by the fire"},
+			actions={{caption="Stop",fn=function() send("fireStop") end}}})
+	end
+	heading("RECIPES")
+	for _,rec in ipairs(B.cookList()) do
+		local out=itemDef(rec.output)
+		local needs={}
+		for id,n in pairs(tbl(rec.costs)) do
+			local have=count("items",id)
+			table.insert(needs,paint(fmt(have).."/"..fmt(n),have>=n and "9EE7D2" or "E8806A").." "..paint(escape(itemName(id)),itemHex(id)))
+		end
+		table.sort(needs)
+		local burn=B.burnChance(cookLevel,rec)
+		local afford=BCP.cookAfford(rec)
+		local ok=cookLevel>=rec.level and afford>0
+		local blocked=not ok or near==nil
+		local why=(cookLevel<rec.level and ("Requires Cooking "..rec.level..".")) or (afford<=0 and "Missing ingredients.") or (near==nil and "Stand beside a lit campfire.") or nil
+		local actions={}
+		local sizes={1}
+		if afford>=5 then table.insert(sizes,5) end
+		if afford>1 and afford~=5 then table.insert(sizes,afford) end
+		for _,n in ipairs(sizes) do
+			table.insert(actions,{caption=n==1 and "Cook ×1" or "×"..n,primary=n==1 and not blocked or nil,disabled=blocked,reason=why,fn=function() send("fireCook",rec.id..":"..n) end})
+		end
+		card({name="Fire"..rec.id,item=rec.output,title=escape(out and out.name or rec.output)..(rec.fireOnly and "  ·  "..paint("CAMPFIRE ONLY","FFB347") or ""),titleColor=rgb(itemHex(rec.output)),
+			subtitle="Cooking "..rec.level.."  ·  +"..fmt(B.cookXp(rec)).." XP",badge=(ok and near) and "READY" or nil,badgeColor=mint,
+			lines={(cookLevel>=rec.level and check or cross).." Cooking "..rec.level..(burn>0 and ("   "..paint(string.format("%.0f%% burn",burn*100),"E8806A")) or ("   "..paint("never burns","9EE7D2"))),
+				"Needs "..table.concat(needs,"  ·  ")},actions=actions})
+	end
+end
+local function drawBeacons(B,snap)
+	local week=tbl(snap.week)
+	local total,goal=num(week.total,0),math.max(1,num(week.goal,B.WEEK_GOAL))
+	card({name="BeaconryWeek",motif="Workshop",accent=rgb("FFB347"),title="The weekly watch",titleColor=gold,
+		subtitle=fmt(total).." / "..fmt(goal).." beacons lit across the isles this week",
+		detail="Every beacon lit on any server counts. Light at least one this week; when the isles reach the goal, claim Beaconry XP.",
+		lines={"You lit "..fmt(num(week.lit,0)).." this week  ·  "..fmt(num(snap.weeks,0)).." watches kept  ·  resets in "..clock(num(week.resetIn,0))},
+		bar={fraction=math.clamp(total/goal,0,1),color=rgb("FFB347"),caption=total>=goal and "GOAL REACHED" or (fmt(goal-total).." to go")},
+		actions={{caption=week.claimed and "Claimed" or "Claim",primary=week.canClaim==true or nil,disabled=week.canClaim~=true,
+			reason=week.claimed and "Already claimed this week." or "Light a beacon and help reach the goal first.",fn=function() send("beaconClaim") end}}})
+	heading("BEACON NETWORK")
+	local lvl=BCP.levelOf("Beaconry")
+	local burning=tbl(snap.beacons)
+	for _,id in ipairs(B.BeaconOrder) do
+		local b=B.Beacons[id]
+		local left=num(burning[id],0)
+		local region=Data.RegionById and Data.RegionById[b.region]
+		local parts={}
+		for stat,v in pairs(b.buff) do table.insert(parts,"+"..v.." "..escape(tbl(tbl(Data.Stats)[stat]).name or stat)) end
+		table.sort(parts)
+		card({name="Beacon"..id,item=b.log,accent=rgb(b.color),title=escape(b.name),titleColor=rgb(b.color),
+			subtitle=escape(region and region.name or b.region).."  ·  Beaconry "..b.level,
+			badge=left>0 and ("BURNING "..clock(left)) or "DARK",badgeColor=left>0 and rgb("FFB347") or muted,
+			lines={(lvl>=b.level and check or cross).." Beaconry "..b.level.."   Feed "..B.BEACON_LOGS.." "..escape(itemName(b.log)).." or better  ·  +"..fmt(B.beaconXp(B.LogById[b.log])).." XP",
+				"Warmth ("..math.floor(B.WARMTH_SECONDS/60).." min): "..table.concat(parts,", ").."  ·  lit "..fmt(num(tbl(snap.lit)[id],0)).."×"},
+			actions={{caption="Waypoint",fn=function() guide({"anchor:Waypoint_Beacon_"..id,"region:"..b.region},b.name) end}}})
+	end
+end
+function BCP.draw()
+	local B=BD()
+	if not B then dataMissing() return end
+	local snap=BCP.snap()
+	local info=skillsOf(state).Beaconry
+	if info then
+		card({name="BeaconrySummary",motif="Workshop",accent=rgb(skillHex("Beaconry")),title="Beaconry",titleColor=gold,
+			subtitle="Level "..info.level.." / "..maxLevel(),
+			bar={fraction=info.fraction,color=rgb(skillHex("Beaconry")),caption=info.maxed and "MAX LEVEL" or (fmt(math.max(0,info.ceiling-info.xp)).." XP to Beaconry "..(info.level+1))}})
+	end
+	local sections={"Kindle","Campfire","Beacons"}
+	if not table.find(sections,BCP.section) then BCP.section="Kindle" end
+	sectionBar(sections,BCP.section,function(name) BCP.section=name;scroll.CanvasPosition=Vector2.zero;render() end,{small=true,prefix="Beaconry"})
+	if BCP.section=="Campfire" then drawCampfire(B,snap) elseif BCP.section=="Beacons" then drawBeacons(B,snap) else drawKindle(B,snap) end
+end
+Pages.drawBeaconry=BCP.draw
+end
+------------------------------------------------------------------------------
 -- Exploration & Factions (Exploration & Factions team). Journal › Motes
 -- (found counter, milestones, Wayglass bearing, per-region progress) and
 -- Journal › Factions (pledge, reputation ranks, daily tasks, shop, titles).
@@ -9249,7 +9406,7 @@ local sectionLists={
 	Journal={"Bearing","Quests","Helper","Goals","Diaries","Construction","Regions","Crew","Calendar","Council","Agility","Commissions","Collection Log","Museum","Motes","Factions"}, -- §33: Helper, Goals
 	Hero={"Skills","Mastery","Gear","Combat","Spellbook","Prayer","Enchant","Reforge","Accessories","Pets","Calculator"}, -- §33: Calculator
 	Satchel={"Items","Collections","Trails"},
-	Workshop={"Forge","Hearth","Cauldron","Workbench","Crafting","Workers","Home","Garden"},
+	Workshop={"Forge","Hearth","Cauldron","Workbench","Crafting","Beaconry","Workers","Home","Garden"}, -- §37: Beaconry
 	Hunt={"Slayer","Bestiary","Dungeon","Essence","Bosses","Hunter","Thieving","Minigames"},
 	Ledger={"Bank","Market","Orders","Auctions","Prices","Merchant","Vendors"}, -- §33: Prices
 }
@@ -9263,7 +9420,7 @@ local drawers={
 	Hero={Skills=Pages.drawSkills,Mastery=Pages.drawMastery,Gear=Pages.drawGear,Combat=Pages.drawCombat,Spellbook=Pages.drawSpellbook,Prayer=Pages.drawPrayer,Enchant=Pages.drawEnchant,Reforge=function() Pages.drawReforge() end,Accessories=Pages.drawAccessories,Pets=Pages.drawPets,Calculator=Pages.drawCalculator},
 	Satchel={Items=Pages.drawItems,Collections=Pages.drawCollections,Trails=Pages.drawTrails},
 	Workshop={Forge=function() Pages.drawStation("Forge") end,Hearth=function() Pages.drawStation("Hearth") end,Cauldron=function() Pages.drawStation("Cauldron") end,
-		Workbench=function() Pages.drawStation("Workbench") end,Crafting=Pages.drawCrafting,Workers=Pages.drawWorkers,Home=Pages.drawHome,Garden=Pages.drawGarden},
+		Workbench=function() Pages.drawStation("Workbench") end,Crafting=Pages.drawCrafting,Beaconry=Pages.drawBeaconry,Workers=Pages.drawWorkers,Home=Pages.drawHome,Garden=Pages.drawGarden},
 	Hunt={Slayer=Pages.drawSlayer,Bestiary=Pages.drawBestiary,Dungeon=Pages.drawDungeon,Essence=Pages.drawEssence,Hunter=Pages.drawHunter,Thieving=Pages.drawThieving,Minigames=Pages.drawMinigames,Bosses=Pages.drawBosses},
 	Ledger={Bank=Pages.drawBank,Market=Pages.drawMarket,Orders=Pages.drawOrders,Auctions=Pages.drawAuctions,Merchant=Pages.drawMerchant,Vendors=Pages.drawVendors,Prices=Pages.drawPrices},
 }

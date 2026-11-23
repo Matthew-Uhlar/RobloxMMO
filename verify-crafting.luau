@@ -33,7 +33,7 @@ local function near(a, b, eps) return math.abs(a - b) <= (eps or 1e-6) end
 local partA = checks
 ok(type(CR) == "table", "Data.Crafting exists")
 ok(table.find(Data.SkillOrder, "Crafting") ~= nil, "Crafting registered in SkillOrder")
-eq(Data.SkillOrder[#Data.SkillOrder], "Crafting", "Crafting appended last (old saves keep their order)")
+eq(Data.SkillOrder[22], "Crafting", "Crafting appended after the earlier skills (old saves keep their order; Beaconry follows)")
 do
 	local def = Data.Skills.Crafting
 	ok(def and def.category == "production" and #def.color == 6 and def.title and def.description, "Crafting skill metadata")
@@ -301,7 +301,7 @@ do
 		end
 	end
 	eq(n, 4, "four Crafting commissions")
-	ok(#CL.Tasks <= 45, "commission pool within its bound")
+	ok(#CL.Tasks <= 50, "commission pool within its bound") -- Beaconry (§37) added four "kindle" tasks
 end
 -- parseBatch: client text is only a recipe id and a count, clamped server-side.
 do

@@ -181,6 +181,8 @@ local Trails={verbs={trailBegin=true,trailAbandon=true,trailDig=true,trailSearch
 local Logs={verbs={commissionClaim=true,commissionClaimAll=true,forgeBuy=true,logClaim=true,logTitle=true,museumDonate=true,logsBoard=true,logsSync=true}}
 -- Crafting (gem cutting, jewellery, leather, glass); filled in by the Crafting block before perform().
 local Crafting={verbs={craftStation=true,craftBatch=true,craftStop=true},jobs={},visits={},seq={}}
+-- Beaconry (§37: kindling, campfires, beacons, campfire cooking); filled in by the Beaconry block before perform().
+local Beaconry={verbs={kindle=true,fireCook=true,fireStop=true,beaconLight=true,beaconClaim=true},jobs={},next={},gseq={},beacons={},seq=0}
 -- Lairs (instanced lair bosses: altars, fees, kill rewards); filled in by the Lairs block after Endgame.
 local Lairs={verbs={lairEnter=true,lairLeave=true}}
 -- World Art & Regions (regional quests, shops, warp scrolls); filled in by the Regions block before perform().
@@ -4624,6 +4626,7 @@ local function snapshot(player,message)
 		slayerTasks=SlayerTasks.state(player,p), -- Slayer tasks: Hunt > Slayer page state
 		minigames=Minigames.state(player,p), -- Minigames: Hunt > Minigames page state
 		crafting=Crafting.state and Crafting.state(player,p), -- Crafting: Workshop › Crafting page state
+		beaconry=Beaconry.state and Beaconry.state(player,p), -- Beaconry (§37): Workshop › Beaconry page state
 		lairs=Lairs.state and Lairs.state(player,p), -- Lairs: Hunt › Bosses (kill counts, personal bests, uniques)
 		exploration=Explore.state(player,p), -- Exploration & Factions: Journal > Motes / Factions (full when changed, else {rev, resetIn, switchIn, compact})
 		regionQuests=Regions.state(p), -- World Art & Regions: accepted/talked/visited/warps
@@ -4720,6 +4723,7 @@ local function migrate(profile)
 	Minigames.migrate(profile) -- Minigames: Commendations, cache rolls, titles, minigame log
 	Logs.migrate(profile) -- Commissions & Logs: board, Glimmerdust, Forgeheart, log (retroactive on first load), museum
 	if Crafting.migrate then Crafting.migrate(profile) end -- Crafting: p.crafting {made, shattered}
+	if Beaconry.migrate then Beaconry.migrate(profile) end -- Beaconry (§37): p.beaconry, quest flags
 	Explore.migrate(profile) -- Exploration & Factions: p.motes, p.factions, p.perkStats.motes
 	if Lairs.migrate then Lairs.migrate(profile) end -- Lairs: kill counts, personal bests, uniques
 	if Regions.migrate then Regions.migrate(profile) end -- World Art & Regions: p.regionQuests
@@ -4802,6 +4806,7 @@ local function forget(player)
 	Prayer.forget(player) -- Prayer rites/altar window, Thieving stuns and cooldowns
 	SlayerTasks.forget(player) -- Slayer tasks: superior tickets
 	if Crafting.forget then Crafting.forget(player) end -- Crafting: batch job and station visit (session-only)
+	if Beaconry.forget then Beaconry.forget(player) end -- Beaconry (§37): cooking job, kindle cooldown (fires keep burning)
 	local set=userSessions[player.UserId]
 	if set then
 		set[player]=nil
@@ -6436,6 +6441,519 @@ do
 	end)
 end
 ------------------------------------------------------------------------------
+-- >>> BEGIN Beaconry (Beaconry team; docs/DEPTH-CONTRACT.md §37). Rules and data:
+-- Data.Beaconry (shared/GameData.lua). Verbs (IsleAction, item <= 64 chars):
+--   kindle "<log>" | "" (best log you can light) — remote; one attempt per
+--     B.KINDLE_SECONDS. Needs a striker, the level, a log and open ground under
+--     the kindler (a raycast: static isles under Workspace.Islands or your own
+--     WayfarersRest; never a path, bridge, deck, another player's home, a lair
+--     or an arena; B.FIRE_SPACING from other fires, B.BEACON_CLEARANCE from
+--     beacon pyres). A failed attempt keeps the log. Success spends one log,
+--     lights a campfire (B.MAX_PER_PLAYER per kindler: the oldest is snuffed;
+--     B.MAX_FIRES per server), pays XP, credits "kindle" commissions.
+--   fireCook "<recipe>:<n>" — remote; a paced batch at the nearest lit campfire
+--     within B.COOK_RANGE (anyone's): one action per B.COOK_SECONDS, burn
+--     chance B.burnChance (Cooking level), Cooking XP x B.FIRE_XP_MULT.
+--   fireStop — ends the batch.
+--   beaconLight "<beacon>" — prompt only (world.server.lua pyres). Unlit: feed
+--     B.BEACON_LOGS logs, light it for B.BEACON_SECONDS, warmth for the lighter
+--     and every live journal within B.WARMTH_RADIUS, +1 to the weekly community
+--     goal. Lit: bask (warmth refresh, no XP).
+--   beaconClaim — the weekly community reward (B.canClaim).
+-- World state lives in server memory and is published for beaconry.server.lua
+-- (which draws it) as workspace attributes: BeaconryFires
+-- "id:x:y:z:tier:until;..." (until = os.time()), BeaconryBeacons
+-- "id:until;..." (lit beacons) and BeaconryWeek "week:total:goal". Campfires
+-- burn down on the server tick (B.TICK) and leave one Pyre Ash for their
+-- kindler's UserId if a live journal of it is on this server. The community total is one DataStore key per UTC week
+-- (B.WEEK_KEY..week), incremented every B.FLUSH s (UpdateAsync, pending kept
+-- on failure). Player attributes: BeaconryGesture "<gesture>:<seq>:<item>"
+-- (animate.client.lua plays kindle / flip once per seq), BeaconryJob
+-- "<recipe>:<done>:<total>" or "". Profile p.beaconry (B.migrate) and quest
+-- flags p.beaconKindled / p.beaconLit / p.beaconNetwork. Jobs, cooldowns and
+-- fires are session-only.
+------------------------------------------------------------------------------
+do
+	local B=Data.Beaconry
+	local fires,fireOrder={},{} -- fires[id]={id,userId,player,pos,log,tier,untilAt}; fireOrder = ids oldest first
+	Beaconry.fires=fires
+	local week={id=B.weekOf(os.time()),total=0,pending=0,loaded=false,flushAt=0,busy=false}
+	Beaconry.week=week
+	local function nameOf(id) return Data.Items[id] and Data.Items[id].name or id end
+	local function levelOf(p,skill) return level(p.xp[skill or "Beaconry"]) end
+	local function capeOn(p) return Progression.masteryCape and Progression.masteryCape(p)=="Beaconry" end
+	local function rootOf(player)
+		local character=player.Character
+		local root=character and character:FindFirstChild("HumanoidRootPart")
+		return root
+	end
+	local function alive(player)
+		local humanoid=player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+		return humanoid~=nil and humanoid.Health>0
+	end
+	local function safely(what,f,...)
+		local ok,err=pcall(f,...)
+		if not ok then (warn or print)("Beaconry "..what.." failed: "..tostring(err)) end
+		return ok
+	end
+	local function setWorld(key,value)
+		pcall(function() if workspace:GetAttribute(key)~=value then workspace:SetAttribute(key,value) end end)
+	end
+	local function push(player,message)
+		if player and player.Parent and profiles[player] then update:FireClient(player,snapshot(player,message)) end
+	end
+	function Beaconry.migrate(p)
+		p.beaconry=B.migrate(p.beaconry)
+		for _,flag in ipairs({"beaconKindled","beaconLit","beaconNetwork"}) do
+			if p[flag]~=nil and p[flag]~=true then p[flag]=nil end
+		end
+	end
+	local function journal(p)
+		if type(p.beaconry)~="table" or type(p.beaconry.week)~="table" then Beaconry.migrate(p) end
+		B.rollWeek(p.beaconry,B.weekOf(os.time()))
+		return p.beaconry
+	end
+	-- World publication -----------------------------------------------------------
+	local function fmt1(n) return string.format("%.1f",n) end
+	function Beaconry.publishFires()
+		local list={}
+		for _,id in ipairs(fireOrder) do
+			local f=fires[id]
+			if f then table.insert(list,id..":"..fmt1(f.pos.X)..":"..fmt1(f.pos.Y)..":"..fmt1(f.pos.Z)..":"..f.tier..":"..f.untilAt) end
+		end
+		setWorld("BeaconryFires",table.concat(list,";"))
+	end
+	function Beaconry.publishBeacons()
+		local list={}
+		local now=os.time()
+		for _,id in ipairs(B.BeaconOrder) do
+			local b=Beaconry.beacons[id]
+			if b and b.untilAt>now then table.insert(list,id..":"..b.untilAt) end
+		end
+		setWorld("BeaconryBeacons",table.concat(list,";"))
+	end
+	local function publishWeek() setWorld("BeaconryWeek",week.id..":"..week.total..":"..B.WEEK_GOAL) end
+	local function gesture(player,name,itemId)
+		Beaconry.gseq[player]=(Beaconry.gseq[player] or 0)+1
+		player:SetAttribute("BeaconryGesture",name..":"..Beaconry.gseq[player]..(if itemId then ":"..itemId else ""))
+	end
+	local function publishJob(player,job)
+		player:SetAttribute("BeaconryJob",if job then job.recipe..":"..job.done..":"..job.total else "")
+	end
+	-- Ground and spacing -----------------------------------------------------------
+	local function chainOf(inst)
+		local chain={}
+		local node=inst
+		for _=1,24 do
+			if node==nil or node==workspace or type(node)~="userdata" and type(node)~="table" then break end
+			local okB,bridge=pcall(function() return node:GetAttribute("BridgeStyle")~=nil end)
+			table.insert(chain,{name=tostring(node.Name),bridge=okB and bridge==true})
+			node=node.Parent
+		end
+		return chain
+	end
+	local function groundUnder(player,root)
+		local params
+		pcall(function()
+			params=RaycastParams.new()
+			params.FilterType=Enum.RaycastFilterType.Exclude
+			local skip={}
+			if player.Character then table.insert(skip,player.Character) end
+			local isles=workspace:FindFirstChild("AetherIsles")
+			local camp=isles and isles:FindFirstChild("Campfires")
+			if camp then table.insert(skip,camp) end
+			params.FilterDescendantsInstances=skip
+		end)
+		local ok,hit=pcall(function() return workspace:Raycast(root.Position+Vector3.new(0,1,0),Vector3.new(0,-14,0),params) end)
+		if ok and hit and hit.Instance then return hit end
+		return nil
+	end
+	local beaconSpots={list={},at=-math.huge}
+	function Beaconry.beaconPositions()
+		local now=os.clock()
+		if #beaconSpots.list>0 or now-beaconSpots.at<15 then return beaconSpots.list end
+		beaconSpots.at=now
+		pcall(function()
+			local root=workspace:FindFirstChild("Islands")
+			if not root then return end
+			for _,obj in ipairs(root:GetDescendants()) do
+				if obj:IsA("ProximityPrompt") and obj:GetAttribute("IsleAction")=="beaconLight" and obj.Parent and obj.Parent:IsA("BasePart") then
+					table.insert(beaconSpots.list,obj.Parent.CFrame.Position)
+				end
+			end
+		end)
+		return beaconSpots.list
+	end
+	local function fireList()
+		local out={}
+		for _,id in ipairs(fireOrder) do if fires[id] then table.insert(out,fires[id]) end end
+		return out
+	end
+	local function countFires() local n=0 for _ in pairs(fires) do n+=1 end return n end
+	-- Campfires belong to a UserId, so a rejoin on this server keeps them (and their ash).
+	local function ownFires(player)
+		local out={}
+		for _,id in ipairs(fireOrder) do local f=fires[id] if f and f.userId==player.UserId then table.insert(out,f) end end
+		return out
+	end
+	local function ownerOf(f)
+		for player in pairs(profiles) do
+			if player.UserId==f.userId and player.Parent and live(player) then return player end
+		end
+		return nil
+	end
+	-- Fires ----------------------------------------------------------------------
+	local function removeFire(id,why)
+		local f=fires[id]
+		if not f then return end
+		fires[id]=nil
+		local i=table.find(fireOrder,id)
+		if i then table.remove(fireOrder,i) end
+		-- The kindler (still online, journal live) gathers the ash.
+		local owner=ownerOf(f)
+		local p=owner and live(owner)
+		if p and owner.Parent then
+			safely("ash",pickup,p,B.ASH,1)
+			local c=journal(p)
+			c.ash=math.min(B.MAX_COUNT,c.ash+1)
+			f.ashed=true
+			if why then note(p,why.." • +1 "..nameOf(B.ASH)) end
+		end
+		-- Cooking batches on this fire end.
+		for player,job in pairs(Beaconry.jobs) do
+			if job.fire==id then
+				Beaconry.jobs[player]=nil
+				publishJob(player,nil)
+				if player~=owner then push(player,"The campfire burned down. Cooking stopped.") end
+			end
+		end
+		if p and owner.Parent then push(owner,nil) end
+	end
+	Beaconry.removeFire=removeFire
+	local function addFire(player,pos,log,cape)
+		local mine=ownFires(player)
+		while #mine>=B.MAX_PER_PLAYER do
+			removeFire(mine[1].id,"Your oldest campfire was snuffed")
+			table.remove(mine,1)
+		end
+		Beaconry.seq+=1
+		local id=Beaconry.seq
+		fires[id]={id=id,userId=player.UserId,pos=pos,log=log.id,tier=log.tier,untilAt=os.time()+B.fireSeconds(log,cape)}
+		table.insert(fireOrder,id)
+		Beaconry.publishFires()
+		return fires[id]
+	end
+	-- Nearest lit campfire within B.COOK_RANGE of the player (anyone's), or nil.
+	local function nearFire(player)
+		local root=rootOf(player)
+		if not root then return nil end
+		local best,bestD
+		for _,f in pairs(fires) do
+			local d=(root.Position-f.pos).Magnitude
+			if d<=B.COOK_RANGE and (not bestD or d<bestD) then best,bestD=f,d end
+		end
+		return best
+	end
+	-- Kindle -----------------------------------------------------------------------
+	function Beaconry.kindle(player,p,item)
+		local c=journal(p)
+		local now=os.clock()
+		if now<(Beaconry.next[player] or 0) then return "Your striker is still smoking…" end
+		local lvl=levelOf(p)
+		local striker=B.bestStriker(p.items,function(skill) return levelOf(p,skill) end)
+		if not striker then return "You need a Flint Striker to kindle logs (forge one at the Forge: Smithing 1)." end
+		local log
+		if item==nil or item=="" or item=="best" then
+			for i=#B.Logs,1,-1 do
+				local l=B.Logs[i]
+				if l.level<=lvl and (p.items[l.id] or 0)>0 then log=l break end
+			end
+			if not log then return "You have no logs you can kindle. Chop some Meadow Timber first." end
+		else
+			log=B.LogById[item]
+			if not log then return "Choose a log to kindle." end
+			if lvl<log.level then return log.name.." requires Beaconry "..log.level.."." end
+			if (p.items[log.id] or 0)<1 then return "You have no "..log.name.."." end
+		end
+		local root=rootOf(player)
+		if not root then return "Return to your island first." end
+		local hit=groundUnder(player,root)
+		local okGround,why=B.groundVerdict(hit and chainOf(hit.Instance) or {},player.UserId)
+		if not okGround then return why end
+		local pos=hit.Position or (root.Position-Vector3.new(0,3,0))
+		local okSpace,whySpace=B.spacingVerdict(pos,fireList(),Beaconry.beaconPositions())
+		if not okSpace then return whySpace end
+		if countFires()>=B.MAX_FIRES and #ownFires(player)==0 then return "Too many fires are burning on the isles right now. Try again shortly." end
+		Beaconry.next[player]=now+B.KINDLE_SECONDS
+		p.started=true
+		gesture(player,"kindle",striker.id)
+		safely("hold",Held.set,player,p,striker.id,true) -- §26: the striker is in hand for the strike
+		local cape=capeOn(p)
+		local chance=if cape then 1 else B.successChance(lvl,log,striker.tier)
+		if roll()>=chance then
+			c.failed=math.min(B.MAX_COUNT,c.failed+1)
+			return "The sparks fail to catch on the "..log.name..". Strike again ("..math.floor(chance*100+.5).."% chance)."
+		end
+		if not spend(p,{[log.id]=1}) then return "You have no "..log.name.."." end
+		local fire=addFire(player,pos,log,cape)
+		c.kindled[log.id]=math.min(B.MAX_COUNT,(c.kindled[log.id] or 0)+1)
+		p.beaconKindled=true
+		safely("commission",Logs.event,p,"kindle",log.id) -- Commissions: "kindle" tasks
+		safely("xp",grantXp,p,"Beaconry",log.xp)
+		return "The "..log.name.." catches! Campfire lit for "..(fire.untilAt-os.time()).."s   ·   +"..log.xp.." Beaconry XP"
+	end
+	-- Campfire cooking ---------------------------------------------------------------
+	local function cookSummary(job)
+		local rec=B.cookRecipe(job.recipe)
+		local text=nameOf(rec.output).." "..job.done.."/"..job.total.." • +"..job.cooked.." cooked"
+		if job.burnt>0 then text..=", "..job.burnt.." burnt" end
+		return text.." • +"..job.xp.." Cooking XP"
+	end
+	local function has(p,costs)
+		for id,n in pairs(costs) do if (p.items[id] or 0)<n then return false,"Needs "..n.." "..nameOf(id).."." end end
+		return true
+	end
+	function Beaconry.cook(player,p,item)
+		local id,n=B.parseBatch(item)
+		if not id then return "Choose a campfire recipe (and how many, up to "..B.MAX_BATCH..")." end
+		local rec=B.cookRecipe(id)
+		if levelOf(p,"Cooking")<rec.level then return nameOf(rec.output).." requires Cooking "..rec.level.."." end
+		local fire=nearFire(player)
+		if not fire then return "Stand beside a lit campfire to cook on it (kindle one in Workshop › Beaconry)." end
+		local okHave,why=has(p,rec.costs)
+		if not okHave then return why end
+		local replaced=Beaconry.jobs[player]~=nil
+		Beaconry.jobs[player]={recipe=id,total=n,done=0,cooked=0,burnt=0,xp=0,fire=fire.id,nextAt=os.clock()+B.COOK_SECONDS}
+		publishJob(player,Beaconry.jobs[player])
+		p.started=true
+		return (if replaced then "Switched to " else "Cooking ")..n.."× "..nameOf(rec.output).." on the campfire • "..B.COOK_SECONDS.."s each."
+	end
+	function Beaconry.stop(player)
+		local job=Beaconry.jobs[player]
+		if not job then return "You are not cooking on a campfire." end
+		Beaconry.jobs[player]=nil
+		publishJob(player,nil)
+		return "Campfire cooking stopped after "..job.done.."/"..job.total.."."
+	end
+	function Beaconry.step(player,job)
+		local p=live(player)
+		if not p or not player.Parent then
+			Beaconry.jobs[player]=nil
+			safely("publish",publishJob,player,nil)
+			return
+		end
+		local rec=B.cookRecipe(job.recipe)
+		local function finish(text)
+			Beaconry.jobs[player]=nil
+			publishJob(player,nil)
+			push(player,text)
+		end
+		if not alive(player) then return finish("Cooking stopped.") end
+		local fire=fires[job.fire]
+		local root=rootOf(player)
+		if not fire then return finish("The campfire burned down. "..cookSummary(job)) end
+		if not root or (root.Position-fire.pos).Magnitude>B.COOK_RANGE then return finish("You stepped away from the campfire. "..cookSummary(job)) end
+		if levelOf(p,"Cooking")<rec.level then return finish(cookSummary(job).." • requires Cooking "..rec.level..".") end
+		local okHave,why=has(p,rec.costs)
+		if not okHave then return finish(cookSummary(job).." • "..why) end
+		local burnt=roll()<B.burnChance(levelOf(p,"Cooking"),rec)
+		if not spend(p,rec.costs) then return finish(cookSummary(job).." • Ingredients missing.") end
+		local c=journal(p)
+		local text,xp
+		if burnt then
+			job.burnt+=1
+			c.burnt=math.min(B.MAX_COUNT,c.burnt+1)
+			xp=0
+			text="The "..nameOf(rec.output).." burnt in the flames"
+		else
+			local before=p.items[rec.output] or 0
+			if not safely("grant",collect,p,rec.output,rec.amount) and (p.items[rec.output] or 0)<before+rec.amount then
+				for cid,cn in pairs(rec.costs) do p.items[cid]=(p.items[cid] or 0)+cn end
+				return finish(cookSummary(job).." • Something went wrong; your ingredients were returned.")
+			end
+			safely("journal",Journal.count,p,"crafts",rec.output,rec.amount)
+			safely("commission",Logs.event,p,"craft",rec.output)
+			job.cooked+=rec.amount
+			c.cooked=math.min(B.MAX_COUNT,c.cooked+1)
+			xp=B.cookXp(rec)
+			safely("xp",grantXp,p,"Cooking",xp)
+			text="+"..rec.amount.." "..nameOf(rec.output)
+		end
+		job.xp+=xp
+		job.done+=1
+		gesture(player,"flip")
+		if job.done>=job.total then return finish(text.."   ·   Batch done • "..cookSummary(job)) end
+		job.nextAt=os.clock()+B.COOK_SECONDS
+		publishJob(player,job)
+		push(player,text..(if xp>0 then "   ·   +"..xp.." Cooking XP" else "").."   ·   "..job.done.."/"..job.total)
+	end
+	-- Beacons ------------------------------------------------------------------------
+	local function warm(p,b,now)
+		p.buffs[B.WARMTH_ID]={expires=now+B.warmthSeconds(capeOn(p)),stats=table.clone(b.buff)}
+	end
+	local function buffText(b)
+		local parts={}
+		for stat,v in pairs(b.buff) do table.insert(parts,"+"..v.." "..(Data.Stats[stat] and Data.Stats[stat].name or stat)) end
+		table.sort(parts)
+		return table.concat(parts,", ")
+	end
+	function Beaconry.beacon(player,p,item,prompt)
+		local b=type(item)=="string" and B.Beacons[item]
+		if not prompt then return "Light beacons at their pyres across the isles." end
+		if not b then return "This pyre is cold and silent." end
+		local base=prompt:FindFirstAncestorWhichIsA("BasePart")
+		local root=rootOf(player)
+		local at=base and base.CFrame.Position
+		if not base or not root or (root.Position-at).Magnitude>B.BEACON_RANGE then return "Stand at the "..b.name.."." end
+		local now=os.time()
+		local c=journal(p)
+		local state=Beaconry.beacons[item]
+		if state and state.untilAt>now then
+			warm(p,b,now)
+			return b.name.." burns for "..math.ceil((state.untilAt-now)/60).." more min • you bask in its warmth ("..buffText(b)..")."
+		end
+		if levelOf(p)<b.level then return b.name.." requires Beaconry "..b.level.."." end
+		local striker=B.bestStriker(p.items,function(skill) return levelOf(p,skill) end)
+		if not striker then return "You need a Flint Striker to light a beacon." end
+		local fuel=B.beaconFuel(b,p.items)
+		if not fuel then return "Feed the "..b.name.." "..B.BEACON_LOGS.." "..nameOf(b.log).." (or better logs)." end
+		if not spend(p,{[fuel.id]=B.BEACON_LOGS}) then return "Feed the "..b.name.." "..B.BEACON_LOGS.." logs." end
+		Beaconry.beacons[item]={untilAt=now+B.BEACON_SECONDS,by=player.UserId}
+		Beaconry.publishBeacons()
+		c.beacons[item]=math.min(B.MAX_COUNT,(c.beacons[item] or 0)+1)
+		p.beaconLit=true
+		if B.distinctBeacons(c)>=B.NETWORK_BEACONS then p.beaconNetwork=true end
+		local w=B.rollWeek(c,B.weekOf(now))
+		w.lit=math.min(B.MAX_COUNT,w.lit+1)
+		if week.id==w.id then
+			week.total+=1
+			week.pending+=1
+			publishWeek()
+		end
+		p.started=true
+		gesture(player,"kindle",striker.id)
+		safely("hold",Held.set,player,p,striker.id,true)
+		local xp=B.beaconXp(fuel)
+		safely("xp",grantXp,p,"Beaconry",xp)
+		-- Warmth for the lighter and every live journal near the pyre.
+		warm(p,b,now)
+		local warmed=0
+		for other,q in pairs(profiles) do
+			local r=other~=player and rootOf(other)
+			if r and live(other) and (r.Position-at).Magnitude<=B.WARMTH_RADIUS then
+				warm(q,b,now)
+				warmed+=1
+				push(other,b.name.." was lit by "..tostring(player.Name or "a wayfarer").."! Beacon Warmth: "..buffText(b)..".")
+			end
+		end
+		return b.name.." blazes up! ("..B.BEACON_LOGS.." "..fuel.name..")   ·   +"..xp.." Beaconry XP   ·   Warmth: "..buffText(b)
+			..(if warmed>0 then " (shared with "..warmed..")" else "").."   ·   Week: "..week.total.."/"..B.WEEK_GOAL
+	end
+	function Beaconry.claim(player,p)
+		local c=journal(p)
+		local w=B.weekOf(os.time())
+		local ok,why=B.canClaim(c,w,if week.id==w then week.total else 0)
+		if not ok then return why end
+		c.week.claimed=true
+		c.weeks=math.min(10000,c.weeks+1)
+		local xp=B.weekXp(levelOf(p))
+		safely("xp",grantXp,p,"Beaconry",xp)
+		return "The isles burned bright this week! +"..xp.." Beaconry XP."
+	end
+	-- Community total (cross-server, one key per UTC week) ------------------------------
+	function Beaconry.flush(force)
+		if week.busy or not store then return end
+		local now=os.clock()
+		if not force and now<week.flushAt then return end
+		if week.loaded and week.pending<=0 then week.flushAt=now+B.FLUSH return end
+		week.busy=true
+		week.flushAt=now+B.FLUSH
+		local id,sent=week.id,week.pending
+		local ok,result=pcall(function()
+			return store:UpdateAsync(B.WEEK_KEY..id,function(old)
+				return math.max(0,math.floor(tonumber(old) or 0))+sent
+			end)
+		end)
+		week.busy=false
+		if ok and week.id==id then
+			week.pending=math.max(0,week.pending-sent)
+			week.loaded=true
+			week.total=math.max(week.total,math.floor(tonumber(result) or 0)+week.pending)
+			publishWeek()
+		end
+	end
+	function Beaconry.tick()
+		local t=os.time()
+		-- Weeks roll forward only.
+		local w=B.weekOf(t)
+		if w>week.id then
+			week.id,week.total,week.pending,week.loaded,week.flushAt=w,0,0,false,0
+			publishWeek()
+		end
+		local burnt={}
+		for id,f in pairs(fires) do if f.untilAt<=t then table.insert(burnt,id) end end
+		table.sort(burnt)
+		for _,id in ipairs(burnt) do removeFire(id,"Your campfire burned down") end
+		if #burnt>0 then Beaconry.publishFires() end
+		local dark=false
+		for id,b in pairs(Beaconry.beacons) do if b.untilAt<=t then Beaconry.beacons[id]=nil; dark=true end end
+		if dark then Beaconry.publishBeacons() end
+		local due={}
+		local now=os.clock()
+		for player,job in pairs(Beaconry.jobs) do if now>=job.nextAt then table.insert(due,player) end end
+		for _,player in ipairs(due) do
+			local job=Beaconry.jobs[player]
+			if job then
+				local ok,err=pcall(Beaconry.step,player,job)
+				if not ok then Beaconry.jobs[player]=nil; (warn or print)("Beaconry step failed: "..tostring(err)) end
+			end
+		end
+		if not week.busy and now>=week.flushAt then task.spawn(Beaconry.flush) end
+	end
+	function Beaconry.action(player,p,verb,item,prompt)
+		if verb=="kindle" then return Beaconry.kindle(player,p,item)
+		elseif verb=="fireCook" then return Beaconry.cook(player,p,item)
+		elseif verb=="fireStop" then return Beaconry.stop(player)
+		elseif verb=="beaconLight" then return Beaconry.beacon(player,p,item,prompt)
+		elseif verb=="beaconClaim" then return Beaconry.claim(player,p) end
+		return "Unknown action."
+	end
+	function Beaconry.state(player,p)
+		local c=journal(p)
+		local t,now=os.time(),os.clock()
+		local mine={}
+		for _,f in ipairs(ownFires(player)) do table.insert(mine,{id=f.id,log=f.log,left=math.max(0,f.untilAt-t)}) end
+		local near=nearFire(player)
+		local job=Beaconry.jobs[player]
+		local beacons={}
+		for id,b in pairs(Beaconry.beacons) do if b.untilAt>t then beacons[id]=b.untilAt-t end end
+		local total=if week.id==c.week.id then week.total else 0
+		local can=B.canClaim(c,week.id,total)
+		local striker=B.bestStriker(p.items,function(skill) return levelOf(p,skill) end)
+		return {
+			fires=mine,near=near and {id=near.id,log=near.log,left=math.max(0,near.untilAt-t),mine=near.userId==player.UserId} or nil,
+			job=job and {recipe=job.recipe,done=job.done,total=job.total,cooked=job.cooked,burnt=job.burnt,xp=job.xp,nextIn=math.max(0,job.nextAt-now)} or nil,
+			beacons=beacons,week={id=week.id,total=total,goal=B.WEEK_GOAL,lit=c.week.lit,claimed=c.week.claimed,canClaim=can==true,resetIn=B.weekResetIn(t)},
+			kindled=c.kindled,lit=c.beacons,failed=c.failed,cooked=c.cooked,burnt=c.burnt,ash=c.ash,weeks=c.weeks,
+			kindleIn=math.max(0,(Beaconry.next[player] or 0)-now),striker=striker and striker.id or nil,everflame=capeOn(p),
+			burning=countFires(),
+		}
+	end
+	function Beaconry.forget(player)
+		-- Fires keep burning for everyone (owned by UserId: a rejoin keeps them; a
+		-- kindler who has left gets no ash).
+		Beaconry.jobs[player],Beaconry.next[player],Beaconry.gseq[player]=nil,nil,nil
+	end
+	setWorld("BeaconryFires","")
+	setWorld("BeaconryBeacons","")
+	publishWeek()
+	task.spawn(function()
+		while task.wait(B.TICK) do Beaconry.tick() end
+	end)
+end
+-- <<< END Beaconry <<<
+------------------------------------------------------------------------------
+------------------------------------------------------------------------------
 -- World Art & Regions (World Art & Regions team; self-contained section,
 -- docs/DEPTH-CONTRACT.md §30). Regional quest chains on the Journal framework,
 -- regional shops and warp scrolls. Profile: p.regionQuests = {accepted={[quest]=true},
@@ -7794,6 +8312,8 @@ local function perform(player,verb,item,prompt)
 		return Explore.action(player,p,verb,item,prompt) -- Exploration & Factions: motes, shrines, Wayglass, factions
 	elseif Crafting.verbs[verb] then
 		return Crafting.action(player,p,verb,item,prompt) -- Crafting: stations, batches
+	elseif Beaconry.verbs[verb] then
+		return Beaconry.action(player,p,verb,item,prompt) -- Beaconry (§37): kindle, campfire cooking, beacons, weekly claim
 	elseif Mastery.verbs[verb] then
 		return Mastery.action(player,p,verb,item) -- Skill Mastery
 	elseif Garden.verbs[verb] then

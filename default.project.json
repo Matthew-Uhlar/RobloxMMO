@@ -27,7 +27,8 @@
       "HeldItems": { "$path": "held.server.lua" },
       "Townsfolk": { "$path": "npc.server.lua" },
       "Minigames": { "$path": "minigames.server.lua" },
-      "Lairs": { "$path": "lairs.server.lua" }
+      "Lairs": { "$path": "lairs.server.lua" },
+      "Beaconry": { "$path": "beaconry.server.lua" }
     },
     "StarterPlayer": {
       "StarterPlayerScripts": {
