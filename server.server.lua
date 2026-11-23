@@ -189,6 +189,8 @@ local Regions={verbs={rqAccept=true,rqTalk=true,rqClaim=true,rqBuy=true,warpBuy=
 local Features={verbs={guideTalk=true,guideClaim=true,guideMode=true,resonanceVisit=true,resonanceSet=true}}
 -- Systems Depth (§33: quest helper pins, goal board, price checks, daily shop stock); filled in by the Systems block before perform().
 local Systems={verbs={helperPin=true,goalSet=true,goalRemove=true,goalClear=true,priceCheck=true}}
+-- Isle Council (§36: elected council, cross-server ballots, term perks); filled in by the Council block before perform().
+local Council={verbs={councilVote=true,councilView=true,councilVisit=true}}
 -- One-time coins for each newly reached skill level.
 local function levelCoins(p,skill,newLevel)
 	p.levelRewards=p.levelRewards or {}
@@ -208,6 +210,16 @@ end
 -- rolls); pets reward the player's own active play only.
 local function grantXp(p,skill,amount,source)
 	if not Data.Skills[skill] or type(amount)~="number" or amount<=0 then return end
+	-- §36 council perk: +XP in a skill category (capped). Stochastic rounding keeps
+	-- the bonus exact on average for small grants (XP is stored in whole points).
+	if Council.xpMult then
+		local mult=Council.xpMult(skill)
+		if mult>1 then
+			local boosted=amount*mult
+			amount=math.floor(boosted)
+			if roll()<boosted-amount then amount+=1 end
+		end
+	end
 	if source=="worker" then
 		local _,newLevel=Progression.addXp(p,skill,amount)
 		return levelCoins(p,skill,newLevel)
@@ -559,6 +571,7 @@ do
 			if W.activeFuel(w,now)==nil then w.fuel=nil end
 			return 0
 		end
+		if Council.workerWork then Council.workerWork(w,now,W.MAX_ACCRUAL) end -- §36 council perk: workers work faster this term (capped)
 		return W.settle(w,now,haste(p))
 	end
 	function Workers.ready(p)
@@ -3866,6 +3879,7 @@ do
 	local function pay(p,t)
 		local f=p.factions
 		local r=FA.reward(t,f.pledge)
+		if Council.factionRep then r.rep=Council.factionRep(r.rep) end -- §36 council perk: +faction reputation (capped)
 		f.rep[t.faction]=math.min(FA.REP_CAP,f.rep[t.faction]+r.rep)
 		f.sigils[t.faction]=math.min(FA.SIGIL_CAP,f.sigils[t.faction]+r.sigils)
 		f.done[t.faction]+=1
@@ -4579,6 +4593,7 @@ local function snapshot(player,message)
 	if p.factions then Explore.refresh(p) end
 	Held.tick(os.clock()) -- Held items: settle any due auto-return before HeldItem is published
 	local power=Progression.magicalPower(p) -- computed once per snapshot (§31 resonance + the stat sheet)
+	if Council.refresh then Council.refresh(player,p) end -- §36: re-queue an unacknowledged ballot, phase toasts, p.perkStats.council (before §31 flushes announcements)
 	if Systems.refresh then Systems.refresh(player,p) end -- §33: goal completions, pinned objective (before §31 flushes announcements)
 	if Features.refresh then Features.refresh(player,p,power) end -- §31: renown, onboarding, resonance (before notes and stats)
 	local levels={}
@@ -4618,6 +4633,7 @@ local function snapshot(player,message)
 		accountMode=if p.ironman then "ironman" elseif p.accountMode=="standard" then "standard" else nil, -- Polish: the Path's journal-mode step
 		resonance=Features.resonanceState and Features.resonanceState(player,p,power), -- §31 Resonance page
 		announce=Features.announceState and Features.announceState(player), -- §31 toasts: {seq, list} (recent ring)
+		council=Council.state and Council.state(player,p), -- §36 Journal › Council: election, cached tally, term, history
 		systems=Systems.state and Systems.state(player,p)} -- §33: pinned guide, goals (ETA), XP rates, price checks, daily stock
 end
 -- Prayer & Thieving: drain-loop notices (prayer points ran out).
@@ -4709,6 +4725,7 @@ local function migrate(profile)
 	if Regions.migrate then Regions.migrate(profile) end -- World Art & Regions: p.regionQuests
 	if Features.migrate then Features.migrate(profile) end -- §31: p.renown (retroactive once), p.guide, p.resonance
 	if Systems.migrate then Systems.migrate(profile) end -- §33: p.goals, p.goalSeq, p.helperPin, p.shopStock
+	if Council.migrate then Council.migrate(profile) end -- §36: p.council ballot record, p.perkStats.council
 end
 -- Clears every per-player table and ends this player's session slot.
 -- Sea creatures: a successful Fishing gather may hook one (Data.rollSeaCreature).
@@ -4768,6 +4785,7 @@ end
 local function forget(player)
 	if Features.forget then Features.forget(player,profiles[player]) end -- §31: announcement ring, queue, renown cache
 	if Systems.forget then Systems.forget(player) end -- §33: XP / goal samples, price checks, pinned-step cache
+	if Council.forget then Council.forget(player) end -- §36: per-session ballot re-queue flag
 	if profiles[player] then HudFeed.pending[profiles[player]]=nil end -- §34 pickup feed
 	HudFeed.seq[player]=nil
 	profiles[player],cooldown[player],lastRead[player],preview[player],leaseEnd[player]=nil,nil,nil,nil,nil
@@ -7338,6 +7356,405 @@ do
 		return "Unknown action."
 	end
 end
+------------------------------------------------------------------------------
+-- Isle Council (Isle Council team; docs/DEPTH-CONTRACT.md §36). Data in the
+-- "Isle Council" section of shared/GameData.lua (Data.Council = C).
+-- * Calendar: C.election(os.time()) — the ballot for term year Y+1 is open from
+--   day C.OPEN_DAY of year Y to its end; every server derives the same slate
+--   (C.slate) from the year. termYear (the year now ruled) only rolls FORWARD:
+--   a server whose clock steps back keeps the newer term, and a journal whose
+--   ballot is for a later election than this server's clock refuses to vote.
+-- * Ballots: verb councilVote <candidateId>. The journal (p.council = {e, c, s,
+--   ok, ann}) is the source of truth for the account's choice: s counts its
+--   ballots this election (≤ C.MAX_CHANGES), ok the highest sequence a shard
+--   acknowledged. Each ballot queues {u = UserId, c = slate slot, s} for shard
+--   C.shardOf(UserId); every C.FLUSH seconds one UpdateAsync per pending shard
+--   key applies the batch with C.applyBallots, which keeps one ballot per
+--   account and replaces it only with a higher sequence (atomic, idempotent:
+--   retries, lost acknowledgements, rejoins on another server and out-of-order
+--   flushes never count twice). An unacknowledged ballot is re-queued from the
+--   journal on the next snapshot of a later session. Shards are bounded
+--   (C.SHARD_CAP ballots); the vote verb is rate-limited per account.
+-- * Tally: each server reads the C.SHARDS keys at most every C.READ seconds
+--   (and refreshes a shard from its own committed writes), so vote shares are
+--   a cached, slightly stale view. councilView asks for an early read (≥ 30 s apart).
+-- * Sealing: C.GRACE seconds after the close, the first server to try writes
+--   C.resultKey(y) only if it is absent (C.decide over the summed shards);
+--   every server then adopts the stored result, so all agree even if a
+--   straggler ballot landed later. The shared history key keeps C.HISTORY terms.
+-- * Perks (C.effects of C.termPerks: winner's perks + the Minister's one), all
+--   capped by C.CAPS: grantXp (category XP), the kill bridge (Magic Find vs a
+--   region's creatures), worker settle (extra work since the later of the last
+--   claim and the term start), Observatory chest rolls, faction board rep, the
+--   Auction House listing fee, and p.perkStats.council (no Health / Defense).
+-- * §31 announcements (kind "council"): election open, ballot closed, new term;
+--   once per account per election via p.council.ann.
+-- * Alt accounts: one vote per Roblox account (UserId); alts can vote too.
+--   Accepted risk (as with SkyBlock); the perks are small, capped and shared by everyone.
+-- * Ironman journals vote like everyone else (perks never move items between players).
+------------------------------------------------------------------------------
+do
+	local C=Data.Council
+	local whole=C.whole
+	local memory={}            -- in-memory store (Studio without DataStore access)
+	local useMemory=store==nil
+	local queue={}             -- [shard] = {[u] = {u, c, s, e, tries}}
+	local tally={e=0,shards={},at=0}
+	local results={}           -- [term year] = sealed, cleaned result
+	local history={}           -- shared history list (newest first)
+	local historyAt=-math.huge
+	local termYear=0           -- the term now ruled; rolls forward only
+	local sealTry={}           -- [year] = os.clock() of the last sealing attempt
+	local lastVote={}          -- [UserId] = os.clock() of the last accepted ballot
+	local requeued={}          -- [player] = true once this session re-queued its ballot (cleared in forget)
+	local flushAt,readAt,forcedAt=0,-math.huge,-math.huge
+	local fxCache={y=-1}
+	local function budgetOk()
+		local ok,n=pcall(function() return DataStoreService:GetRequestBudgetForRequestType(Enum.DataStoreRequestType.UpdateAsync) end)
+		return not ok or type(n)~="number" or n>=10
+	end
+	-- ok, value. Studio without API access falls back to memory for the session.
+	local function dsGet(key)
+		if useMemory then return true,deepCopy(memory[key]) end
+		local ok,value=pcall(function() return store:GetAsync(key) end)
+		if not ok and RunService:IsStudio() then useMemory=true; return true,deepCopy(memory[key]) end
+		return ok,value
+	end
+	-- ok, committed value (nil when the transform cancelled the write).
+	local function dsUpdate(key,transform)
+		if useMemory then
+			local value=transform(deepCopy(memory[key]))
+			if value~=nil then memory[key]=deepCopy(value) end
+			return true,if value~=nil then deepCopy(value) else nil
+		end
+		local ok,value=pcall(function() return store:UpdateAsync(key,transform) end)
+		if not ok and RunService:IsStudio() then
+			useMemory=true
+			return dsUpdate(key,transform)
+		end
+		return ok,value
+	end
+	local function rollTerm(now)
+		local y=C.election(now).termYear
+		if y>termYear then termYear=y end
+		return termYear
+	end
+	-- The election as this server sees it, rolled forward: once a later term has
+	-- begun here, a clock that steps back never reopens the ballot that chose it.
+	local function election(now)
+		local y=rollTerm(now)
+		local el=C.election(now)
+		if el.termYear<y then
+			el=C.election(C.termWindow(y).starts)
+			el.open=false
+		end
+		return el
+	end
+	local function ballotOf(p)
+		local b=p.council
+		if type(b)~="table" then b={}; p.council=b end
+		b.e,b.s,b.ok=whole(b.e),math.min(whole(b.s),C.MAX_CHANGES),whole(b.ok)
+		if b.c~=nil and not (type(b.c)=="string" and b.e>0 and C.slotOf(b.e,b.c)) then b.c=nil end
+		if b.c==nil then b.s,b.ok=0,0 end
+		b.ok=math.min(b.ok,b.s)
+		if type(b.ann)~="table" then b.ann={} end
+		local ann={}
+		for _,k in ipairs({"open","closed","term"}) do ann[k]=whole(b.ann[k]) end
+		b.ann=ann
+		return b
+	end
+	Council.ballotOf=ballotOf
+	-- Effects of the term now ruling (nil while it is unsealed or unknown).
+	function Council.effects()
+		local y=rollTerm(os.time())
+		local r=results[y]
+		if not r then return nil end
+		if fxCache.y~=y then fxCache={y=y,perks=C.termPerks(r)}; fxCache.fx=C.effects(fxCache.perks) end
+		return fxCache.fx
+	end
+	function Council.xpMult(skill) return C.xpMult(Council.effects(),skill) end
+	function Council.magicFind(monster) return C.magicFind(Council.effects(),monster) end
+	function Council.auctionFee(price) return C.auctionFee(Council.effects(),price) end
+	function Council.dungeonRolls() return C.dungeonRolls(Council.effects()) end
+	function Council.factionRep(rep) return C.factionRep(Council.effects(),rep) end
+	-- Workers: extra work for the perk time since the later of the last claim,
+	-- the accrual window and the term's start (an earlier term's span gets nothing).
+	function Council.workerWork(w,now,maxAccrual)
+		local fx=Council.effects()
+		if not fx or fx.workers<=0 then return 0 end
+		local from=math.max(tonumber(w.lastClaim) or now,now-maxAccrual,C.termWindow(termYear).starts)
+		local extra=C.workerWork(fx,now-from)
+		if extra>0 then w.carry=(tonumber(w.carry) or 0)+extra end
+		return extra
+	end
+	-- Queue ---------------------------------------------------------------------
+	local function enqueue(u,e,slot,s)
+		local shard=C.shardOf(u)
+		local q=queue[shard] or {}
+		queue[shard]=q
+		local cur=q[u]
+		if cur and cur.e==e and cur.s>=s then return end
+		q[u]={u=u,c=slot,s=s,e=e,tries=0}
+	end
+	local function liveByUser()
+		local out={}
+		for player,p in pairs(profiles) do out[tostring(player.UserId)]={player=player,p=p} end
+		return out
+	end
+	local function flush(now)
+		local who=nil
+		for shard=1,C.SHARDS do
+			local q=queue[shard]
+			if q and next(q) then
+				local byElection={}
+				for u,op in pairs(q) do
+					local list=byElection[op.e] or {}
+					byElection[op.e]=list
+					table.insert(list,op)
+				end
+				for e,ops in pairs(byElection) do
+					local closes=C.termWindow(e).starts
+					local batch={}
+					for _,op in ipairs(ops) do table.insert(batch,{u=op.u,c=op.c,s=op.s}) end
+					local verdicts
+					local ok,committed=dsUpdate(C.key(e,shard),function(old)
+						local book,res,changed=C.applyBallots(old,batch,e,closes,os.time())
+						verdicts=res
+						return if changed then book else nil
+					end)
+					if ok and type(committed)=="table" and committed.e==e and tally.e==e then
+						tally.shards[shard]=table.clone(C.cleanBook(committed,e).n)
+					end
+					who=who or liveByUser()
+					for _,op in ipairs(ops) do
+						local verdict=ok and verdicts and verdicts[op.u]
+						local current=q[op.u]
+						local same=current and current.e==op.e and current.s==op.s
+						if verdict=="ok" or verdict=="stale" then
+							if same then q[op.u]=nil end
+							local live=who[op.u]
+							local b=live and live.p.council
+							if type(b)=="table" and b.e==e and whole(b.s)>=op.s then b.ok=math.max(whole(b.ok),op.s) end
+						elseif verdict then
+							if same then q[op.u]=nil end
+							local live=who[op.u]
+							if live then
+								note(live.p,if verdict=="closed" then "The ballot had closed: your last vote change was not counted."
+									elseif verdict=="full" then "The ballot box is full this election: your vote could not be counted." else "Your ballot was refused.")
+								local b=live.p.council
+								if type(b)=="table" and b.e==e then b.refused=true end
+							end
+						elseif same then
+							current.tries+=1
+							if current.tries>=C.ATTEMPTS or now>=closes+C.GRACE then q[op.u]=nil end
+						end
+					end
+				end
+				if not next(q) then queue[shard]=nil end
+			end
+		end
+	end
+	local function readTally(e)
+		local shards={}
+		for shard=1,C.SHARDS do
+			local ok,value=dsGet(C.key(e,shard))
+			if not ok then return false end
+			shards[shard]=table.clone(C.cleanBook(value,e).n)
+		end
+		return true,shards
+	end
+	local function announceAll()
+		local now=os.time()
+		for player,p in pairs(profiles) do
+			if Council.phases(player,p,now) and player.Parent then update:FireClient(player,snapshot(player,nil)) end
+		end
+	end
+	local function seal(y)
+		sealTry[y]=os.clock()
+		local key=C.resultKey(y)
+		local ok,stored=dsGet(key)
+		if not ok then return false end
+		local final=C.cleanResult(stored,y)
+		if not final then
+			local okRead,shards=readTally(y)
+			if not okRead then return false end
+			local decided=C.decide(y,C.sum(shards))
+			decided.at=os.time()
+			local okWrite,committed=dsUpdate(key,function(old)
+				if C.cleanResult(old,y) then return nil end
+				return decided
+			end)
+			if not okWrite then return false end
+			final=C.cleanResult(committed,y)
+			if not final then
+				local okAgain,again=dsGet(key)
+				final=okAgain and C.cleanResult(again,y) or nil
+			end
+			if not final then return false end
+		end
+		results[y]=final
+		local okHist,list=dsUpdate(C.HISTORY_KEY,function(old)
+			local merged,added=C.mergeHistory(old,final)
+			return if added then merged else nil
+		end)
+		if okHist and type(list)=="table" then history=C.mergeHistory(list,nil); historyAt=os.clock()
+		else history=C.mergeHistory(history,final) end
+		return true
+	end
+	-- Council heartbeat (C.TICK): flush ballots, refresh the tally, seal the
+	-- term's result, read the history, announce phase changes.
+	function Council.tick()
+		local now=os.time()
+		local el=election(now)
+		local y=rollTerm(now)
+		local anyone=next(profiles)~=nil
+		for userId,at in pairs(lastVote) do if os.clock()-at>C.VOTE_COOLDOWN then lastVote[userId]=nil end end -- bounded rate-limit table
+		if os.clock()>=flushAt and next(queue) and budgetOk() then
+			flushAt=os.clock()+C.FLUSH
+			flush(now)
+		end
+		if el.open and anyone and os.clock()>=readAt then
+			readAt=os.clock()+C.READ
+			local ok,shards=readTally(el.e)
+			if ok then tally={e=el.e,shards=shards,at=now} end
+		end
+		local sealAt=C.termWindow(y).sealAt
+		if not results[y] and now>=sealAt and os.clock()-(sealTry[y] or -math.huge)>=C.SEAL_RETRY then seal(y) end
+		if anyone and os.clock()-historyAt>=600 then
+			historyAt=os.clock()
+			local ok,list=dsGet(C.HISTORY_KEY)
+			if ok then
+				history=C.mergeHistory(list,nil)
+				for _,r in ipairs(history) do if not results[r.e] then results[r.e]=r end end
+			end
+		end
+		if anyone then announceAll() end
+	end
+	local function loop()
+		pcall(Council.tick)
+		task.delay(C.TICK,loop)
+	end
+	task.delay(C.TICK,loop)
+	-- Phase announcements for one journal (once per election / term). True when one was queued.
+	function Council.phases(player,p,now)
+		if not Features.announce then return false end
+		local b=ballotOf(p)
+		local el=election(now)
+		local queued=false
+		if el.open and b.ann.open<el.e then
+			b.ann.open=el.e
+			Features.announce(p,{kind="council",phase="open",e=el.e})
+			queued=true
+		end
+		local y=termYear
+		local r=results[y]
+		local win=C.termWindow(y)
+		if r and b.ann.term<y then
+			b.ann.term,b.ann.closed=y,math.max(b.ann.closed,y)
+			Features.announce(p,{kind="council",phase="term",e=y,winner=r.winner,minister=r.minister})
+			queued=true
+		elseif not r and now>=win.starts and now<win.sealAt+600 and b.ann.closed<y then
+			b.ann.closed=y
+			Features.announce(p,{kind="council",phase="closed",e=y})
+			queued=true
+		end
+		return queued
+	end
+	-- Every snapshot: re-queue an unacknowledged ballot once per session, queue
+	-- phase toasts, and keep p.perkStats.council in step with the ruling term.
+	function Council.refresh(player,p)
+		local now=os.time()
+		rollTerm(now)
+		local b=ballotOf(p)
+		local el=election(now)
+		if not requeued[player] then
+			requeued[player]=true
+			if el.open and b.e==el.e and b.c and b.ok<b.s then enqueue(tostring(player.UserId),b.e,C.slotOf(b.e,b.c),b.s) end
+		end
+		Council.phases(player,p,now)
+		local stats=C.stats(Council.effects())
+		if type(p.perkStats)~="table" then p.perkStats={} end
+		p.perkStats.council=if next(stats) then stats else nil
+	end
+	function Council.migrate(p)
+		ballotOf(p)
+		local stats=C.stats(Council.effects())
+		if type(p.perkStats)=="table" then p.perkStats.council=if next(stats) then stats else nil end
+	end
+	function Council.forget(player) requeued[player]=nil end
+	function Council.state(player,p)
+		local now=os.time()
+		local el=election(now)
+		local y=rollTerm(now)
+		local b=ballotOf(p)
+		local mine=b.e==el.e
+		local counts,total=nil,nil
+		if tally.e==el.e and next(tally.shards) then counts,total=C.sum(tally.shards) end
+		local r=results[y]
+		local hist={}
+		for i,h in ipairs(history) do
+			if i>C.HISTORY then break end
+			table.insert(hist,{e=h.e,winner=h.winner,minister=h.minister,ministerPerk=h.ministerPerk,total=h.total,
+				votes=h.counts[C.slotOf(h.e,h.winner) or 1] or 0})
+		end
+		return {e=el.e,opens=el.opens,closes=el.closes,open=el.open,now=now,
+			vote=if mine then b.c else nil,confirmed=mine and b.c~=nil and b.ok>=b.s,
+			changesLeft=C.MAX_CHANGES-(if mine then b.s else 0),readyIn=math.max(0,math.ceil((lastVote[player.UserId] or -math.huge)+C.VOTE_COOLDOWN-os.clock())),
+			counts=counts,total=total,tallyAt=if counts then tally.at else nil,
+			term={y=y,ends=C.termWindow(y).ends,sealed=r~=nil,winner=r and r.winner,minister=r and r.minister,ministerPerk=r and r.ministerPerk,
+				perks=r and C.termPerks(r) or {},counts=r and r.counts,total=r and r.total},
+			history=hist}
+	end
+	-- Live NPC check by role (Workspace.Townsfolk).
+	local function clerkNear(player)
+		local root=player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+		local folder=workspace:FindFirstChild("Townsfolk")
+		if not root or not folder then return false end
+		for _,model in ipairs(folder:GetChildren()) do
+			if model:GetAttribute("TownsfolkRole")==C.CLERK then
+				local npcRoot=model:FindFirstChild("HumanoidRootPart")
+				if npcRoot and (npcRoot.Position-root.Position).Magnitude<=(Data.RegionArt.TALK_RADIUS or 16) then return true end
+			end
+		end
+		return false
+	end
+	function Council.action(player,p,verb,item,prompt)
+		local now=os.time()
+		local el=election(now)
+		if verb=="councilVisit" then
+			if not clerkNear(player) then return "Find the Council Clerk at the Council Hall in Compass Quay." end
+			player:SetAttribute("IsleStation","Council")
+			player:SetAttribute("IsleStationVisit",(player:GetAttribute("IsleStationVisit") or 0)+1)
+			return "The Council Clerk unrolls the ballot • see Journal › Council."
+		elseif verb=="councilView" then
+			if os.clock()-forcedAt>=30 and el.open then forcedAt=os.clock(); readAt=0 end
+			if prompt then return C.NAME.." • "..(if el.open then "the Year "..el.e.." ballot closes in "..C.span(el.closes-now).."." else "the next ballot opens in "..C.span(el.opens-now)..".") end
+			return ""
+		elseif verb=="councilVote" then
+			local b=ballotOf(p)
+			if b.e>el.e then return "This isle's calendar is a moment behind yours. Try again shortly." end
+			if not el.open then
+				return if now<el.opens and now>=C.termWindow(el.e-1).starts+86400 then "The Year "..el.e.." ballot opens in "..C.span(el.opens-now).."."
+					else "The ballot is closed. The Year "..el.e.." ballot opens in "..C.span(math.max(0,el.opens-now)).."."
+			end
+			local slot=type(item)=="string" and C.slotOf(el.e,item)
+			if not slot then return "Choose one of this election's candidates." end
+			if b.e<el.e then b.e,b.c,b.s,b.ok,b.refused=el.e,nil,0,0,nil end
+			local name=C.candidateName(item)
+			if b.c==item then return "Your vote is already with "..name.."." end
+			local wait=(lastVote[player.UserId] or -math.huge)+C.VOTE_COOLDOWN-os.clock()
+			if wait>0 then return "The clerk is still inking your last ballot ("..math.ceil(wait).."s)." end
+			if b.s>=C.MAX_CHANGES then return "You have changed your vote "..(C.MAX_CHANGES-1).." times this election; it stays with "..C.candidateName(b.c).."." end
+			local changed=b.c~=nil
+			b.c,b.s,b.refused=item,b.s+1,nil
+			lastVote[player.UserId]=os.clock()
+			enqueue(tostring(player.UserId),el.e,slot,b.s)
+			p.started=true
+			return (if changed then "Vote changed to " else "Vote cast for ")..name.." • you can change it until the ballot closes in "..C.span(el.closes-now).."."
+		end
+		return "Unknown action."
+	end
+end
 local function perform(player,verb,item,prompt)
 	local p=profiles[player]
 	if not p or (not preview[player] and os.time()>=(leaseEnd[player] or 0)) then return "Waiting for journal sync." end
@@ -7357,6 +7774,8 @@ local function perform(player,verb,item,prompt)
 	if region and not regionAllowed(p,region) then return regionDenied(region) end
 	if Features.verbs[verb] then
 		return Features.action(player,p,verb,item,prompt) -- §31: Wayfarer's Path talk, Resonance
+	elseif Council.verbs[verb] then
+		return Council.action(player,p,verb,item,prompt) -- §36: Isle Council ballot, view, clerk
 	elseif Systems.verbs[verb] then
 		return Systems.action(player,p,verb,item) -- §33: quest helper pin, goal board, price check
 	elseif Regions.verbs[verb] then
@@ -8215,7 +8634,7 @@ local function grantExpedition(player,result)
 	end
 	local stats=Progression.computeStats(p,now)
 	local drops={}
-	for _=1,reward.rolls do
+	for _=1,reward.rolls+(if Council.dungeonRolls then Council.dungeonRolls() else 0) do -- §36 council perk: +1 chest roll
 		for item,n in pairs(Progression.rollDrops(reward.chest,stats.magicFind,roll,stats.petLuck)) do drops[item]=(drops[item] or 0)+n end
 	end
 	for item,n in pairs(drops) do pickup(p,item,n) end
@@ -8415,7 +8834,8 @@ bridge.OnInvoke=function(op,player,payload)
 		-- No flat Combat XP here: the damage XP accrued on the monster is paid
 		-- through "combatXp" when it dies (monster.xp in total for melee).
 		p.coins+=coins; HudFeed.coins(p,coins)
-		local drops=Progression.rollDrops(monster.drops,stats.magicFind+family,roll,stats.petLuck)
+		local council=if Council.magicFind then Council.magicFind(monster) else 0 -- §36 council perk: Magic Find vs one region's creatures
+		local drops=Progression.rollDrops(monster.drops,stats.magicFind+family+council,roll,stats.petLuck)
 		for item,n in pairs(drops) do pickup(p,item,n) end
 		-- Events hook: Hollow Night event-only drops (Data.eventKillDrops).
 		for item,n in pairs(Data.eventKillDrops(monsterId,Data.eventState(workspace,os.time()),roll)) do drops[item]=(drops[item] or 0)+n; pickup(p,item,n) end
@@ -9197,7 +9617,7 @@ local function prepare(p,verb,item)
 		if type(p.enchants[id])=="table" and next(p.enchants[id]) then return nil,"Enchanted gear cannot be auctioned: enchants stay bound to your journal." end
 		if Progression.isUpgraded(p,id) then return nil,"Upgraded gear cannot be auctioned: reforges, stars and tomes stay bound to your journal." end
 		if #listings>=Rules.listingCap then return nil,"You already have "..Rules.listingCap.." auction listings. Claim or cancel one first." end
-		local fee=Rules.auctionFee(price)
+		local fee=if Council.auctionFee then Council.auctionFee(price) else Rules.auctionFee(price) -- §36 council perk: cheaper listing fee
 		if p.coins<fee then return nil,"The listing fee is "..fee.." purse coins." end
 		return {kind="auction",verb=verb,cat=cat,key="auction_v1_"..cat,item=id,price=price,fee=fee,coins=fee,units=1}
 	end

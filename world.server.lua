@@ -5105,6 +5105,128 @@ do
 end
 -- End Skyward Vents.
 
+-------------------------------------------------------------------------------
+-- Isle Council Hall (Isle Council team; docs/DEPTH-CONTRACT.md §36). A
+-- columned hall on Compass Quay: a raised dais with six columns (Column mesh
+-- slots), a pediment, two council banners, the speaker's statue, five
+-- councillor seats, the ballot chest (VaultChest slot, prompt IsleAction
+-- "councilView") and two lanterns. Triggering the chest sets IsleStation =
+-- "Council" and bumps IsleStationVisit (the client opens Journal › Council).
+-- The Clerk's World Art anchor (Anchor_NPC_CouncilClerk) moves to the hall's
+-- steps, >= 7 studs from every other NPC anchor. Anchor: Waypoint_CouncilHall.
+-- The model carries CouncilContent = true. No extra lights.
+-- (A function body, not a do-block: the script's top level is near Luau's register limit.)
+-------------------------------------------------------------------------------
+;(function()
+	local hub=islandsFolder:FindFirstChild("Compass Quay")
+	local CD=Data.Council
+	if not hub or not CD then return end
+	local FLOOR={Meadow=true,["Floating foundation"]=true,["Island underside"]=true,["Edge guard"]=true,["Shore ledge"]=true,Wildflowers=true,
+		["Plaza ring"]=true,["Compass court"]=true,["Harbor plaza"]=true,["Harbor seal"]=true,["Pond bank"]=true}
+	local clerkName="Anchor_NPC_"..CD.CLERK
+	local npcAnchors,boxes={},{}
+	for _,obj in ipairs(hub:GetDescendants()) do
+		if obj:IsA("BasePart") then
+			local npc=string.find(obj.Name,"^Anchor_NPC_")~=nil
+			if npc and obj.Name~=clerkName then table.insert(npcAnchors,obj) end
+			if obj.Name~=clerkName and not FLOOR[obj.Name] and (not string.find(obj.Name,"^Anchor_") or npc)
+				and (npc or obj.Transparency<1 or obj.CanCollide or obj:FindFirstChildOfClass("ProximityPrompt")~=nil) then
+				local cf,sz=obj.CFrame,obj.Size
+				local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
+				table.insert(boxes,{c=cf.Position,x=ext("X"),y=ext("Y"),z=ext("Z"),flat=obj.Name=="Path"})
+			end
+		end
+	end
+	local function blocked(pos,radius)
+		for _,b in ipairs(boxes) do
+			local dx=math.max(0,math.abs(pos.X-b.c.X)-b.x)
+			local dz=math.max(0,math.abs(pos.Z-b.c.Z)-b.z)
+			if dx*dx+dz*dz<radius*radius and (b.flat or (b.c.Y+b.y>pos.Y+.3 and b.c.Y-b.y<pos.Y+12)) then return true end
+		end
+		return false
+	end
+	local IC,R=hub:GetAttribute("IslandCenter"),hub:GetAttribute("IslandRadius")
+	if not IC or not R then return end
+	local pos
+	-- The hall (16 x 12 studs plus steps, lanterns and sign) needs an 11-stud clear circle.
+	for _,f in ipairs({.75,.8,.85,.7,.65,.9,.6,.55}) do
+		for k=0,119 do
+			local a=math.rad(255+(if k%2==0 then 1 else -1)*math.ceil(k/2)*3)
+			local p=IC+V(math.cos(a),0,math.sin(a))*R*f
+			if not blocked(p,11) then pos=p break end
+		end
+		if pos then break end
+	end
+	if not pos then return end
+	-- cf looks AWAY from the plaza: the hall's open front (and its step) is -Z, toward the centre.
+	local away=pos+(pos-V(IC.X,pos.Y,IC.Z))
+	local cf=facing(pos,away)
+	local gold,plum,stone=C(CD.COLOR),C("6A4C93"),C("D8D2C4")
+	local m=group("Council Hall",hub)
+	m:SetAttribute("CouncilContent",true)
+	-- Dais, carpet and the front step.
+	part(m,"Council dais",V(16,.8,12),at(cf,0,.4,.5),stone,ST,true)
+	part(m,"Council step",V(12,.4,1.4),at(cf,0,.2,-6.2),lighten(stone,.2),ST,true)
+	part(m,"Council carpet",V(3.4,.06,10.4),at(cf,0,.83,0),plum,SM,false)
+	-- Columns: four across the front, two at the back corners.
+	for _,c in ipairs({{-7,-4.6},{-3.4,-4.6},{3.4,-4.6},{7,-4.6},{-7,5.8},{7,5.8}}) do
+		local col=part(m,"Council column",V(1.2,9,1.2),at(cf,c[1],5.3,c[2]),cream,ST,true)
+		meshSlot(col,"Column")
+	end
+	part(m,"Council lintel",V(16.4,1,12.4),at(cf,0,10.3,.5),lighten(stone,.1),ST,false)
+	part(m,"Council pediment",V(16.8,.5,12.8),at(cf,0,11.05,.5),gold,MT,false)
+	part(m,"Council frieze",V(13,.7,.2),at(cf,0,10.3,-5.75),plum,SM,false)
+	part(m,"Council back wall",V(13,8.6,.8),at(cf,0,5.1,6.2),lighten(stone,.05),ST,true)
+	-- Banners either side of the speaker's statue.
+	for _,x in ipairs({-4.2,4.2}) do
+		local b=part(m,"Council banner",V(2.2,5.6,.3),at(cf,x,5.6,5.65),plum,SM,false)
+		meshSlot(b,"Banner",gold)
+	end
+	local statue=hidden(m,"Speaker's statue",at(cf,0,3.6,4.4).Position)
+	statue.Size=V(2.2,5.4,2.2)
+	statue.CFrame=at(cf,0,3.5,4.4)
+	meshSlot(statue,"Statue",gold,nil,"Uniform")
+	-- Five councillor seats in an arc (one per slate place), cushions in council gold.
+	for i=1,CD.SLATE do
+		local a=math.rad(-60+(i-1)*30)
+		local seat=part(m,"Councillor seat",V(1.6,1.6,1.5),at(cf,math.sin(a)*5.6,1.6,2.4-math.cos(a)*1.8)*CFrame.Angles(0,-a,0),darken(timber,.2),WO,true)
+		part(m,"Seat cushion",V(1.4,.2,1.3),seat.CFrame*CFrame.new(0,.9,0),gold,SM,false)
+	end
+	-- The ballot chest and its glowing slot.
+	local chest=part(m,"Ballot chest",V(3,2.2,2),at(cf,0,1.9,-2),C("4A3B2A"),WO,true)
+	meshSlot(chest,"VaultChest",gold)
+	part(m,"Ballot slot",V(1.6,.12,.3),at(cf,0,3.06,-2),gold,NE,false)
+	local q=prompt(chest,"Read the ballot",CD.NAME,"councilView","Ballot")
+	q.Triggered:Connect(function(player)
+		player:SetAttribute("IsleStation","Council")
+		player:SetAttribute("IsleStationVisit",(player:GetAttribute("IsleStationVisit") or 0)+1)
+	end)
+	-- Lanterns at the step.
+	for _,x in ipairs({-7.6,7.6}) do
+		local lamp=part(m,"Council lantern",V(1.1,5.3,.9),at(cf,x,2.65,-6.6),darken(brass,.2),MT,true)
+		meshSlot(lamp,"TwinLantern",C("FFE08A"),nil,"Uniform")
+	end
+	signAt(m,at(cf,0,0,-9)*CFrame.Angles(0,math.pi,0),"Council Hall","COMPASS QUAY   /   ISLE COUNCIL · BALLOT",gold,10,{kind="banner"})
+	anchor(m,"Waypoint_CouncilHall",at(cf,0,0,-11),pos)
+	-- The Clerk stands in front of the step, clear of every other NPC anchor.
+	local clerk
+	for _,obj in ipairs(hub:GetDescendants()) do if obj.Name==clerkName then clerk=obj end end
+	local spot
+	for _,x in ipairs({-4,4,-6,6,-2.5,2.5}) do
+		local p=at(cf,x,0,-8).Position
+		local clear=true
+		for _,other in ipairs(npcAnchors) do
+			if V(p.X-other.CFrame.Position.X,0,p.Z-other.CFrame.Position.Z).Magnitude<7 then clear=false end
+		end
+		if clear then spot=p break end
+	end
+	spot=spot or at(cf,-4,0,-8).Position
+	local face=at(cf,0,0,-30).Position
+	if clerk then clerk.CFrame=facing(V(spot.X,clerk.CFrame.Position.Y,spot.Z),face)
+	else anchor(hub,"NPC_"..CD.CLERK,spot,face) end
+end)()
+-- End Isle Council Hall.
+
 -- Signs (§28 performance): drop Back faces nobody can read on the static world.
 Signs.cullBacks(world)
 Signs.cullBacks(islandsFolder)

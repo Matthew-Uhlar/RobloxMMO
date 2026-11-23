@@ -5216,6 +5216,11 @@ end
 function U.economy() return tbl(state.economy) end
 function U.fee(price)
 	local rules=Data and type(Data.Economy)=="table" and Data.Economy
+	-- §36: the ruling council's Open Ledger perk (term perks from snapshot.council) cuts the fee.
+	local council=Data and type(Data.Council)=="table" and Data.Council
+	if council and rules and type(rules.auctionFee)=="function" then
+		return council.auctionFee(council.effects(tbl(tbl(state.council).term).perks),price)
+	end
 	if rules and type(rules.auctionFee)=="function" then return rules.auctionFee(price) end
 	return math.max(1,math.ceil(price/100))
 end
@@ -5666,6 +5671,141 @@ task.spawn(function()
 			local now=CAL.now()
 			if now>=CAL.boundary then render() else
 				for _,t in ipairs(CAL.timers) do pcall(function() t.label.Text=t.fn(now) end) end
+			end
+		end
+	end
+end)
+end
+
+------------------------------------------------------------------------------
+-- Journal › Council (Isle Council team, §36): the ruling term (winner,
+-- minister, active perks, countdown), the open ballot (five candidates, their
+-- perks, the cached live vote share, Vote / change buttons) and past terms.
+-- Slates and perk text come from Data.Council (deterministic per election);
+-- votes, tallies and results from snapshot.council. Countdowns tick in place;
+-- the page redraws when the ballot opens or closes.
+------------------------------------------------------------------------------
+do
+local CO={timers={},boundary=math.huge}
+function CO.ready() return Data and type(Data.Council)=="table" and type(Data.Council.slate)=="function" end
+-- Synced server clock; unsynced clocks fall back to the snapshot's server time, then os.time().
+function CO.now()
+	local ok,t=pcall(function() return workspace:GetServerTimeNow() end)
+	if ok and type(t)=="number" and t==t and t>1577836800 then return math.floor(t) end
+	local snap=num(tbl(state.council).now,0)
+	return math.floor(if snap>1577836800 then snap else os.time())
+end
+function CO.timer(fn,color)
+	return function(body,nextOrder)
+		local copy=para(body,fn(CO.now()),nextOrder(),color or gold,compactAtlas and 13 or 14)
+		copy.Name="Countdown"
+		table.insert(CO.timers,{label=copy,fn=fn})
+	end
+end
+-- A portrait medallion in the candidate's colour.
+function CO.portrait(cand)
+	return function(band,size)
+		local disc=make("TextLabel",band,{Name="Portrait",Size=UDim2.fromOffset(size,size),BackgroundColor3=safeColor(cand.color,gold),BackgroundTransparency=.55,
+			Text=cand.portrait or "?",TextSize=math.floor(size*.55),Font=Enum.Font.GothamBold,TextColor3=ivory,BorderSizePixel=0})
+		make("UICorner",disc,{CornerRadius=UDim.new(1,0)})
+		make("UIStroke",disc,{Color=safeColor(cand.color,gold),Thickness=2})
+		return disc
+	end
+end
+function CO.perkLines(ids,minister)
+	local C=Data.Council
+	local out={}
+	for _,id in ipairs(tbl(ids)) do
+		local p=C.Perks[id]
+		if p then table.insert(out,paint("◆ "..escape(p.name),p.color).."  "..escape(p.text)..(if id==minister then "  "..paint("(Minister)","B9C7CC") else "")) end
+	end
+	return out
+end
+local function drawCouncil()
+	table.clear(CO.timers)
+	CO.boundary=math.huge
+	heading("ISLE COUNCIL    /    ELECTION & TERM")
+	if not CO.ready() then dataMissing() return end
+	local C=Data.Council
+	local s=tbl(state.council)
+	local now=CO.now()
+	local el=C.election(now)
+	CO.boundary=if el.open then el.closes else el.opens
+	local term=tbl(s.term)
+	-- The ruling term.
+	if term.sealed and type(term.winner)=="string" then
+		local w=C.CandidateById[term.winner] or {}
+		local lines=CO.perkLines(term.perks,term.ministerPerk)
+		if type(term.minister)=="string" then table.insert(lines,1,"Minister: "..paint(escape(C.candidateName(term.minister)),"FFF4D9")..(if term.ministerPerk then "" else "  (no extra perk)")) end
+		local total=num(term.total,0)
+		card({name="CouncilTerm",icon=CO.portrait(w),accent=safeColor(w.color,gold),title=paint("YEAR "..num(term.y,0).." COUNCIL  ·  "..escape(w.name or term.winner),C.COLOR),
+			subtitle=escape(w.title or "").."  ·  "..fmt(total).." vote"..(if total==1 then "" else "s").." cast",badge=paint("IN OFFICE","9EE7D2"),
+			detail="Active on every isle this year:",lines=lines,
+			after=CO.timer(function(t) return "Term ends in "..C.span(num(term.ends,t)-t) end,muted)})
+	else
+		card({name="CouncilTerm",motif="Journal",title=paint("YEAR "..num(term.y,el.termYear).." COUNCIL",C.COLOR),subtitle="Counting the ballot…",
+			detail="The isles are sealing last year's ballot. Council perks begin as soon as the result is in."})
+	end
+	-- The ballot.
+	local voted=type(s.vote)=="string" and s.vote or nil
+	local yourVote=if voted then "Your vote: "..paint(escape(C.candidateName(voted)),"FFF4D9").."  "..(if s.confirmed then paint("✓ counted","9EE7D2") else paint("counting…","B9C7CC")) else "You have not voted yet."
+	if el.open then
+		card({name="CouncilBallot",motif="Ledger",accent=gold,title=paint("YEAR "..el.e.." BALLOT  ·  OPEN",C.COLOR),
+			subtitle="One vote per account  ·  change it any time before the close",badge=paint("VOTING","9EE7D2"),
+			lines={yourVote,"Changes left: "..math.max(0,num(s.changesLeft,C.MAX_CHANGES)-(if voted then 0 else 1))},
+			after=CO.timer(function(t) return "Ballot closes in "..C.span(el.closes-t) end)})
+	else
+		card({name="CouncilBallot",motif="Ledger",title=paint("YEAR "..el.e.." BALLOT",C.COLOR),subtitle="Opens on Emberfall 1",
+			detail="Five councillors stand each isle year. Read their perks now; voting opens with the season.",
+			after=CO.timer(function(t) return "Ballot opens in "..C.span(el.opens-t) end,mint)})
+	end
+	heading("CANDIDATES    /    YEAR "..el.e)
+	local counts=type(s.counts)=="table" and s.counts or nil
+	local total=num(s.total,0)
+	local shares=counts and C.shares(counts,total) or nil
+	local wait=num(s.readyIn,0)
+	for i,entry in ipairs(C.slate(el.e)) do
+		local cand=C.CandidateById[entry.id]
+		local mine=voted==entry.id
+		local reason=(not el.open and "The ballot is not open yet.") or (mine and "Your vote is already with "..cand.name..".")
+			or (num(s.changesLeft,C.MAX_CHANGES)<=0 and "You have no vote changes left this election.") or (wait>0 and "One moment: the clerk is inking your last ballot.") or nil
+		local bar=nil
+		if shares then
+			local votes=math.floor(num(counts[i],0))
+			bar={fraction=shares[i],color=safeColor(cand.color,gold),caption=string.format("%.1f%%",shares[i]*100).."  ·  "..fmt(votes).." vote"..(if votes==1 then "" else "s")}
+		end
+		card({name="CouncilCandidate"..entry.id,icon=CO.portrait(cand),accent=mine and gold or nil,edge=mine and gold or nil,
+			title=paint(escape(cand.name),cand.color),subtitle=escape(cand.title),badge=mine and paint("YOUR VOTE","9EE7D2") or nil,
+			detail="“"..escape(cand.pitch).."”",lines=CO.perkLines(entry.perks),bar=bar,
+			actions={{caption=if mine then "Voted" elseif voted then "Change vote" else "Vote",primary=reason==nil,disabled=reason~=nil,reason=reason,
+				name="CouncilVote"..entry.id,fn=function() send("councilVote",entry.id) end}}})
+	end
+	if el.open then
+		local age=if s.tallyAt then math.max(0,now-num(s.tallyAt,now)) else nil
+		card({name="CouncilTally",motif="Ledger",title="Live vote share",titleColor=gold,
+			detail=if shares then fmt(total).." votes counted across every isle  ·  updated "..(if age and age>=60 then (age//60).."m" else "moments").." ago (refreshes about every "..math.floor(C.READ/60*10+.5)/10 .."m)"
+				else "The tally is being gathered from every isle…",
+			actions={{caption="Refresh",name="CouncilRefresh",fn=function() send("councilView") end}}})
+	end
+	heading("PAST COUNCILS")
+	local hist=tbl(s.history)
+	if #hist==0 then card({name="CouncilHistoryEmpty",motif="Journal",title="No sealed terms yet",titleColor=muted,detail="Past winners appear here once a ballot is sealed."}) end
+	for _,h in ipairs(hist) do
+		local w=C.CandidateById[h.winner] or {}
+		local share=if num(h.total,0)>0 then string.format("%.0f%%",num(h.votes,0)/h.total*100) else "unopposed"
+		card({name="CouncilHistory"..tostring(h.e),icon=CO.portrait(w),title=paint("Year "..num(h.e,0).."  ·  "..escape(w.name or tostring(h.winner)),w.color or C.COLOR),
+			subtitle=share.." of "..fmt(num(h.total,0)).." votes"..(if type(h.minister)=="string" then "  ·  Minister "..escape(C.candidateName(h.minister)) else ""),
+			lines=CO.perkLines(C.termPerks({e=h.e,winner=h.winner,ministerPerk=h.ministerPerk}),h.ministerPerk)})
+	end
+end
+Pages.drawCouncil=drawCouncil
+Pages.CO=CO
+task.spawn(function()
+	while task.wait(1) do
+		if #CO.timers>0 and atlas.Visible and current=="Journal" and sectionOf and sectionOf.Journal=="Council" then
+			local now=CO.now()
+			if now>=CO.boundary then render() else
+				for _,t in ipairs(CO.timers) do pcall(function() t.label.Text=t.fn(now) end) end
 			end
 		end
 	end
@@ -9106,7 +9246,7 @@ end
 local tabOrder={"Menu","Journal","Hero","Satchel","Workshop","Hunt","Ledger"}
 local sectionLists={
 	Menu={"Home","Renown","Resonance","Settings"}, -- §31: Renown, Resonance
-	Journal={"Bearing","Quests","Helper","Goals","Diaries","Construction","Regions","Crew","Calendar","Agility","Commissions","Collection Log","Museum","Motes","Factions"}, -- §33: Helper, Goals
+	Journal={"Bearing","Quests","Helper","Goals","Diaries","Construction","Regions","Crew","Calendar","Council","Agility","Commissions","Collection Log","Museum","Motes","Factions"}, -- §33: Helper, Goals
 	Hero={"Skills","Mastery","Gear","Combat","Spellbook","Prayer","Enchant","Reforge","Accessories","Pets","Calculator"}, -- §33: Calculator
 	Satchel={"Items","Collections","Trails"},
 	Workshop={"Forge","Hearth","Cauldron","Workbench","Crafting","Workers","Home","Garden"},
@@ -9116,7 +9256,7 @@ local sectionLists={
 sectionOf={Menu="Home",Journal="Bearing",Hero="Skills",Satchel="Items",Workshop="Forge",Hunt="Slayer",Ledger="Bank"}
 local drawers={
 	Menu={Home=function() Pages.drawMenu() end,Renown=function() Pages.drawRenown() end,Resonance=function() Pages.drawResonance() end,Settings=function() Pages.drawSettings() end},
-	Journal={Bearing=Pages.drawBearing,Quests=Pages.drawQuests,Diaries=Pages.drawDiaries,Construction=Pages.drawConstruction,Regions=Pages.drawRegions,Crew=Pages.drawCoop,Calendar=Pages.drawCalendar,Agility=Pages.drawAgility,
+	Journal={Bearing=Pages.drawBearing,Quests=Pages.drawQuests,Diaries=Pages.drawDiaries,Construction=Pages.drawConstruction,Regions=Pages.drawRegions,Crew=Pages.drawCoop,Calendar=Pages.drawCalendar,Council=function() Pages.drawCouncil() end,Agility=Pages.drawAgility,
 		Commissions=Pages.drawCommissions,["Collection Log"]=Pages.drawCollectionLog,Museum=Pages.drawMuseum, -- Commissions & Logs
 		Motes=Pages.drawMotes,Factions=Pages.drawFactions, -- Exploration & Factions
 		Helper=Pages.drawHelper,Goals=Pages.drawGoals}, -- §33 quest helper, goal board
@@ -9695,7 +9835,8 @@ local stationTabs={Forge="Workshop",Hearth="Workshop",Cauldron="Workshop",Workbe
 	SkymarkExchange="Ledger",TrackersLodge="Ledger",Garden="Workshop",Commissions="Journal",Museum="Journal",CollectionLog="Journal", -- Commissions & Logs: board / museum prompts
 	Jeweller="Workshop",Tannery="Workshop",Glassworks="Workshop", -- Crafting stations (Workshop › Crafting)
 	Motes="Journal",Factions="Journal", -- Exploration & Factions: Mote Shrines, faction standards
-	Resonance="Menu"} -- §31: the Resonance Keeper opens Menu › Resonance
+	Resonance="Menu", -- §31: the Resonance Keeper opens Menu › Resonance
+	Council="Journal"} -- §36: the Council Clerk and the ballot chest open Journal › Council
 local function openStation()
 	local value=player:GetAttribute("IsleStation")
 	if type(value)~="string" then return end
@@ -9706,7 +9847,7 @@ local function openStation()
 	if tab=="Ledger" then Pages.AH.vendor=station=="SkymarkExchange" and "Agility" or "Hunter";openTo("Ledger","Vendors") return end
 	if tab=="Menu" then openTo("Menu",station) return end -- §31: Resonance Keeper
 	if tab=="Workshop" and Pages.CR and Data and Data.Crafting and Data.Crafting.Stations[station] then Pages.CR.station=station;openTo("Workshop","Crafting") return end
-	if tab=="Workshop" then openTo("Workshop",station) elseif tab=="Journal" then openTo("Journal",if station=="Calendar" then "Calendar" elseif station=="Commissions" or station=="Museum" or station=="Motes" or station=="Factions" then station elseif station=="CollectionLog" then "Collection Log" else "Construction") else openTo("Hunt","Slayer") end
+	if tab=="Workshop" then openTo("Workshop",station) elseif tab=="Journal" then openTo("Journal",if station=="Calendar" then "Calendar" elseif station=="Council" then "Council" elseif station=="Commissions" or station=="Museum" or station=="Motes" or station=="Factions" then station elseif station=="CollectionLog" then "Collection Log" else "Construction") else openTo("Hunt","Slayer") end
 end
 -- World sets IsleStation and then bumps IsleStationVisit on every trigger; only the
 -- counter opens the atlas, so each visit opens it exactly once (repeats included).

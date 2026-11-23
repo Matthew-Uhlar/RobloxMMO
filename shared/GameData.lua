@@ -12694,4 +12694,444 @@ end
 Data.PlayerSettings = S
 end
 
+------------------------------------------------------------------------------
+-- >>> BEGIN Isle Council (Isle Council team; append-only section, §36) >>>
+-- An elected council in the spirit of SkyBlock's mayors, on the Skyward
+-- Calendar (Data.calendarAt): one TERM = one isle year (~5.08 real days).
+-- The ballot for the term of year Y+1 opens on day C.OPEN_DAY of year Y and
+-- closes at the end of year Y (~2.5 real days of voting); the result is sealed
+-- C.GRACE seconds later. Every election seats C.SLATE candidates drawn
+-- deterministically from C.Candidates (same slate on every server and client),
+-- each running on 2-3 perks drawn from their own four. The winner's perks rule
+-- the next term on every server; the runner-up becomes Minister and grants one
+-- perk (the first of theirs that does not overlap the winner's).
+-- Pure data + pure rules: server.server.lua ("Isle Council" block) owns the
+-- ballots (sharded DataStore keys, idempotent per-account sequence numbers),
+-- the sealed result and every perk hook. docs/DEPTH-CONTRACT.md §36.
+------------------------------------------------------------------------------
+do
+local C = {}
+local Cal = Data.Calendar
+local function tab(v) return if type(v) == "table" then v else {} end
+local function whole(v) return if type(v) == "number" and v == v and v >= 0 and v < math.huge then math.floor(v) else 0 end
+C.whole = whole
+C.NAME = "Isle Council"
+C.OPEN_DAY = 25          -- day of the isle year the ballot opens (Emberfall 1); closes at year's end
+C.SLATE = 5              -- candidates per election
+C.SHARDS = 8             -- ballot keys per election (UserId % SHARDS)
+C.SHARD_CAP = 50000      -- ballots per shard key (~1.3 MB JSON worst case; 400k voters per election)
+C.GRACE = 120            -- seconds after the close before a server seals the result (clock skew, in-flight writes)
+C.FLUSH = 10             -- seconds between a server's ballot flushes (one UpdateAsync per pending shard)
+C.READ = 90              -- seconds a server's cached tally stays fresh
+C.TICK = 3               -- council heartbeat (seconds)
+C.SEAL_RETRY = 30        -- seconds between sealing attempts after a failure
+C.VOTE_COOLDOWN = 4      -- seconds between one account's votes
+C.MAX_CHANGES = 12       -- ballots per account per election (the first vote and 11 changes)
+C.HISTORY = 8            -- past terms kept in the shared history key
+C.ATTEMPTS = 20          -- failed flushes before a queued ballot is dropped (the journal keeps it; a rejoin re-queues it)
+C.PREFIX = "council_v1_"
+C.HISTORY_KEY = C.PREFIX .. "history"
+C.CLERK = "CouncilClerk"
+C.COLOR = "E9C46A"
+
+-- Perks. kind: xp (category of Data.Skills, mult), auctionFee (cut of the listing
+-- fee), workers (pct: extra worker work per second, like fuel), magicFind (region,
+-- mf: Magic Find against that region's creatures; rare drops under 5% only),
+-- dungeonRolls (n extra Observatory chest rolls), factionRep (pct), stats
+-- (p.perkStats.council; never Health or Defense, so Data.PerkBudget is untouched).
+-- No perk creates coins: fees only fall, and every yield perk scales an
+-- existing, already-balanced source.
+C.Perks = {
+	BountifulToil={name="Bountiful Toil",kind="xp",category="gathering",mult=0.10,color="9BD77E",text="+10% XP in gathering skills."},
+	WarbandWrit={name="Warband Writ",kind="xp",category="combat",mult=0.10,color="C8553D",text="+10% XP in combat skills."},
+	GuildCharter={name="Guild Charter",kind="xp",category="production",mult=0.10,color="D9822B",text="+10% XP in production skills."},
+	HearthAndHound={name="Hearth & Hound",kind="xp",category="support",mult=0.15,color="E07A5F",text="+15% XP in support skills."},
+	OpenLedger={name="Open Ledger",kind="auctionFee",cut=0.5,color="F7C548",text="Auction House listing fees halved."},
+	TirelessHands={name="Tireless Hands",kind="workers",pct=10,color="B5651D",text="Workers work 10% faster."},
+	DeepseamSurvey={name="Deepseam Survey",kind="stats",stats={miningFortune=15},color="8C7A6B",text="+15 Mining Fortune."},
+	Tidecaller={name="Tidecaller's Hymn",kind="stats",stats={seaCreatureChance=3},color="3F7CAC",text="+3 Sea Creature Chance: more sea creatures surface."},
+	GloomGleaning={name="Gloom Gleaning",kind="magicFind",region="Gloomhollow",mf=20,color="7FD3C4",text="+20 Magic Find against Gloomhollow creatures."},
+	SkyreachSpoils={name="Skyreach Spoils",kind="magicFind",region="Skyreach",mf=20,color="7B8CDE",text="+20 Magic Find against Skyreach creatures."},
+	WildwoodBounty={name="Wildwood Bounty",kind="magicFind",region="Windpine",mf=20,color="5E8C4A",text="+20 Magic Find against Windpine creatures."},
+	TideTrove={name="Tide Trove",kind="magicFind",region="Tidewater",mf=20,color="4FB0C6",text="+20 Magic Find against Tidewater creatures."},
+	TempestTithe={name="Tempest Tithe",kind="magicFind",region="Tempest",mf=20,color="BFD7FF",text="+20 Magic Find against Tempest Spire creatures."},
+	StarlitCoffers={name="Starlit Coffers",kind="dungeonRolls",n=1,color="BFE3FF",text="+1 roll of every Observatory clear chest."},
+	BannerSworn={name="Banner-Sworn",kind="factionRep",pct=0.20,color="D4A84B",text="+20% faction reputation from board tasks."},
+}
+-- Hard caps on the summed effect of every active perk (winner + minister).
+C.CAPS = {xp=0.15, auctionFee=0.5, workers=15, magicFind=25, dungeonRolls=1, factionRep=0.25,
+	stats={miningFortune=20, seaCreatureChance=4}}
+for id, perk in pairs(C.Perks) do perk.id = id end
+
+-- The candidate pool (all original Aether Isles councillors). perks: four ids.
+C.Candidates = {
+	{id="Brannoc",name="Brannoc Ashvale",title="Warden of the Ramparts",color="C8553D",portrait="🛡",
+		pitch="Steel for the gates, spoils for the brave.",perks={"WarbandWrit","GloomGleaning","StarlitCoffers","BannerSworn"}},
+	{id="Ysmay",name="Ysmay Corrowind",title="Factor of the Exchange",color="F7C548",portrait="⚖",
+		pitch="A lighter ledger for every honest trader.",perks={"OpenLedger","TirelessHands","GuildCharter","DeepseamSurvey"}},
+	{id="Thessaly",name="Thessaly Brightfurrow",title="Voice of the Fields",color="9BD77E",portrait="🌾",
+		pitch="Every furrow and every hand rewarded.",perks={"BountifulToil","TirelessHands","HearthAndHound","WildwoodBounty"}},
+	{id="Orrin",name="Captain Orrin Saltmere",title="Harbour Tribune",color="3F7CAC",portrait="⚓",
+		pitch="Calm skies over the shoals, full nets below.",perks={"Tidecaller","TideTrove","BountifulToil","OpenLedger"}},
+	{id="Velka",name="Velka Starhollow",title="Keeper of the Observatory",color="BFE3FF",portrait="🔭",
+		pitch="The stars reward those who climb toward them.",perks={"StarlitCoffers","WarbandWrit","SkyreachSpoils","GuildCharter"}},
+	{id="Dunstan",name="Dunstan Coggery",title="Master of the Forges",color="B5651D",portrait="⚒",
+		pitch="Hot forges, deep seams, busy hands.",perks={"GuildCharter","DeepseamSurvey","TirelessHands","OpenLedger"}},
+	{id="Isolde",name="Isolde Venbrook",title="Envoy of the Banners",color="D4A84B",portrait="🏳",
+		pitch="Swear to a banner and the isles swear back.",perks={"BannerSworn","HearthAndHound","WildwoodBounty","Tidecaller"}},
+	{id="Fennick",name="Fennick Lowlantern",title="Lamplighter of Gloomhollow",color="7FD3C4",portrait="🏮",
+		pitch="Light in the caverns, treasure in the dark.",perks={"GloomGleaning","WarbandWrit","HearthAndHound","StarlitCoffers"}},
+	{id="Aurelie",name="Aurelie Windspire",title="Stormcaller of the Spire",color="BFD7FF",portrait="🌩",
+		pitch="Ride the storm and keep what it drops.",perks={"TempestTithe","SkyreachSpoils","WarbandWrit","Tidecaller"}},
+	{id="Pim",name="Pim Quickbarrow",title="Friend of the Hearth",color="E07A5F",portrait="🏡",
+		pitch="Pets fed, homes built, neighbours sworn.",perks={"HearthAndHound","BountifulToil","BannerSworn","OpenLedger"}},
+}
+C.CandidateById = {}
+for i, c in ipairs(C.Candidates) do c.index = i; C.CandidateById[c.id] = c end
+
+-- Election calendar ---------------------------------------------------------------
+-- The election in progress (or upcoming) at t: e = the term year it elects.
+-- {e, opens, closes, open, sealAt, termYear (the year now ruled), termStarts, termEnds}
+function C.election(t)
+	local cal = Data.calendarAt(t)
+	local opens = cal.yearStart + (C.OPEN_DAY - 1) * Cal.dayLength
+	return {e=cal.year + 1, opens=opens, closes=cal.yearEnds, open=t >= opens and t < cal.yearEnds, sealAt=cal.yearEnds + C.GRACE,
+		termYear=cal.year, termStarts=cal.yearStart, termEnds=cal.yearEnds}
+end
+-- Wall-clock window of term year `y` (and of its election, held during y-1).
+function C.termWindow(y)
+	local starts = Cal.epoch + (whole(y) - 1) * Cal.yearLength
+	return {starts=starts, ends=starts + Cal.yearLength, opens=starts - Cal.yearLength + (C.OPEN_DAY - 1) * Cal.dayLength, sealAt=starts + C.GRACE}
+end
+
+-- Deterministic slate ------------------------------------------------------------
+-- Park-Miller generator (exact in doubles), seeded by the election year.
+local function generator(seed)
+	local state = (whole(seed) * 7919 + 104729) % 2147483647
+	if state == 0 then state = 1 end
+	return function()
+		state = (state * 48271) % 2147483647
+		return state / 2147483647
+	end
+end
+local slates = {}
+-- {{id, perks = {perkId...}}} for election e (C.SLATE entries, pool order shuffled).
+function C.slate(e)
+	e = whole(e)
+	if slates[e] then return slates[e] end
+	local rng = generator(e)
+	local pool = {}
+	for i = 1, #C.Candidates do pool[i] = i end
+	local out = {}
+	for i = 1, math.min(C.SLATE, #pool) do
+		local j = i + math.floor(rng() * (#pool - i + 1))
+		pool[i], pool[j] = pool[j], pool[i]
+		local cand = C.Candidates[pool[i]]
+		local count = if rng() < 0.5 then 2 else 3
+		local idx = {1, 2, 3, 4}
+		for k = 1, count do
+			local m = k + math.floor(rng() * (#idx - k + 1))
+			idx[k], idx[m] = idx[m], idx[k]
+		end
+		local chosen = {}
+		for k = 1, count do chosen[k] = idx[k] end
+		table.sort(chosen)
+		local perks = {}
+		for _, k in ipairs(chosen) do table.insert(perks, cand.perks[k]) end
+		table.insert(out, {id=cand.id, perks=perks})
+	end
+	slates[e] = out
+	return out
+end
+-- Slate position of candidate `id` in election e (nil when not running).
+function C.slotOf(e, id)
+	for i, s in ipairs(C.slate(e)) do if s.id == id then return i end end
+	return nil
+end
+
+-- Ballot books (one DataStore key per shard) -------------------------------------
+function C.shardOf(userId) return (whole(tonumber(userId)) % C.SHARDS) + 1 end
+function C.key(e, shard) return C.PREFIX .. whole(e) .. "_s" .. whole(shard) end
+function C.resultKey(e) return C.PREFIX .. whole(e) .. "_result" end
+local function emptyCounts() local n = {} for i = 1, C.SLATE do n[i] = 0 end return n end
+function C.newBook(e) return {e=whole(e), v={}, n=emptyCounts(), size=0} end
+-- A sanitised copy-in-place of a stored book for election e (a fresh book when
+-- it is missing, malformed or for another election).
+function C.cleanBook(old, e)
+	if type(old) ~= "table" or old.e ~= e or type(old.v) ~= "table" then return C.newBook(e) end
+	if type(old.n) ~= "table" then old.n = emptyCounts() end
+	for i = 1, C.SLATE do old.n[i] = whole(old.n[i]) end
+	old.size = whole(old.size)
+	return old
+end
+-- Counts recomputed from the ballots themselves (tests; repair).
+function C.recount(book)
+	local n, size = emptyCounts(), 0
+	for _, b in pairs(tab(tab(book).v)) do
+		local c = type(b) == "table" and whole(b[1]) or 0
+		if c >= 1 and c <= C.SLATE then n[c] += 1 end
+		size += 1
+	end
+	return n, size
+end
+-- Applies queued ballots {u = "<UserId>", c = slot, s = seq} to a stored book
+-- (the UpdateAsync transform). One ballot per account: a ballot replaces the
+-- account's earlier one only when its sequence number is higher, so a retried
+-- or replayed flush, or an older ballot arriving after a newer one, changes
+-- nothing. Returns book, results {[u] = "ok"|"stale"|"full"|"closed"|"bad"}, changed.
+function C.applyBallots(old, ops, e, closes, now)
+	local book = C.cleanBook(old, e)
+	local results, changed = {}, false
+	for _, op in ipairs(tab(ops)) do
+		local u, c, s = type(op) == "table" and op.u, type(op) == "table" and whole(op.c) or 0, type(op) == "table" and whole(op.s) or 0
+		if type(u) ~= "string" or #u == 0 or #u > 20 or c < 1 or c > C.SLATE or s < 1 then
+			if type(u) == "string" then results[u] = "bad" end
+		elseif now >= closes then
+			results[u] = "closed"
+		else
+			local cur = book.v[u]
+			local curSeq = type(cur) == "table" and whole(cur[2]) or 0
+			if cur ~= nil and curSeq >= s then
+				results[u] = "stale"
+			elseif cur == nil and book.size >= C.SHARD_CAP then
+				results[u] = "full"
+			else
+				local prev = type(cur) == "table" and whole(cur[1]) or 0
+				if prev >= 1 and prev <= C.SLATE then book.n[prev] = math.max(0, book.n[prev] - 1) end
+				if cur == nil then book.size += 1 end
+				book.n[c] += 1
+				book.v[u] = {c, s}
+				results[u] = "ok"
+				changed = true
+			end
+		end
+	end
+	return book, results, changed
+end
+-- Summed counts across shard count lists {[shard] = {n...}}.
+function C.sum(shards)
+	local n, total = emptyCounts(), 0
+	for _, counts in pairs(tab(shards)) do
+		for i = 1, C.SLATE do
+			local v = whole(tab(counts)[i])
+			n[i] += v
+			total += v
+		end
+	end
+	return n, total
+end
+-- Vote shares (0..1) per slate slot.
+function C.shares(counts, total)
+	local out = {}
+	for i = 1, C.SLATE do out[i] = if total > 0 then whole(tab(counts)[i]) / total else 0 end
+	return out
+end
+
+-- Results, terms and perks --------------------------------------------------------
+-- Effect slot: two perks with the same slot never stack (the minister skips them).
+function C.perkSlot(perk)
+	if perk.kind == "xp" then return "xp:" .. perk.category end
+	if perk.kind == "magicFind" then return "mf:" .. perk.region end
+	if perk.kind == "stats" then
+		local keys = {}
+		for k in pairs(perk.stats) do table.insert(keys, k) end
+		table.sort(keys)
+		return "stats:" .. table.concat(keys, ",")
+	end
+	return perk.kind
+end
+-- The minister's perk: the first of the runner-up's perks whose slot the winner lacks.
+function C.ministerPerk(winnerPerks, runnerPerks)
+	local used = {}
+	for _, id in ipairs(tab(winnerPerks)) do local p = C.Perks[id]; if p then used[C.perkSlot(p)] = true end end
+	for _, id in ipairs(tab(runnerPerks)) do
+		local p = C.Perks[id]
+		if p and not used[C.perkSlot(p)] then return id end
+	end
+	return nil
+end
+-- Seals election e from its summed counts: most votes wins; ties go to the
+-- earlier slate position (the slate order is itself the seeded draw).
+-- {e, winner = id, minister = id, ministerPerk, counts, total}
+function C.decide(e, counts)
+	local slate = C.slate(e)
+	local order = {}
+	for i = 1, #slate do order[i] = i end
+	counts = tab(counts)
+	table.sort(order, function(a, b)
+		local ca, cb = whole(counts[a]), whole(counts[b])
+		if ca ~= cb then return ca > cb end
+		return a < b
+	end)
+	local n, total = {}, 0
+	for i = 1, C.SLATE do n[i] = whole(counts[i]); total += n[i] end
+	local w, r = slate[order[1]], slate[order[2]]
+	return {e=whole(e), winner=w.id, minister=r and r.id or nil, ministerPerk=r and C.ministerPerk(w.perks, r.perks) or nil, counts=n, total=total}
+end
+-- A stored result, validated against the deterministic slate (nil when invalid).
+function C.cleanResult(r, e)
+	if type(r) ~= "table" or whole(r.e) ~= e then return nil end
+	local slate = C.slate(e)
+	local w = C.slotOf(e, r.winner)
+	if not w then return nil end
+	local m = if r.minister ~= nil then C.slotOf(e, r.minister) else nil
+	local mp = if m and type(r.ministerPerk) == "string" and table.find(slate[m].perks, r.ministerPerk) then r.ministerPerk else nil
+	local n, total = {}, 0
+	for i = 1, C.SLATE do n[i] = whole(tab(r.counts)[i]); total += n[i] end
+	return {e=e, winner=r.winner, minister=if m then r.minister else nil, ministerPerk=mp, counts=n, total=total}
+end
+-- Active perk ids of a sealed result: the winner's perks, then the minister's one.
+function C.termPerks(result)
+	if type(result) ~= "table" then return {} end
+	local slot = C.slotOf(result.e, result.winner)
+	if not slot then return {} end
+	local out = table.clone(C.slate(result.e)[slot].perks)
+	if result.ministerPerk and C.Perks[result.ministerPerk] and not table.find(out, result.ministerPerk) then table.insert(out, result.ministerPerk) end
+	return out
+end
+-- Summed, capped effects of a perk list.
+function C.effects(perkIds)
+	local fx = {xp={}, auctionFee=0, workers=0, magicFind={}, dungeonRolls=0, factionRep=0, stats={}}
+	for _, id in ipairs(tab(perkIds)) do
+		local p = C.Perks[id]
+		if p then
+			if p.kind == "xp" then fx.xp[p.category] = math.min(C.CAPS.xp, (fx.xp[p.category] or 0) + p.mult)
+			elseif p.kind == "auctionFee" then fx.auctionFee = math.min(C.CAPS.auctionFee, fx.auctionFee + p.cut)
+			elseif p.kind == "workers" then fx.workers = math.min(C.CAPS.workers, fx.workers + p.pct)
+			elseif p.kind == "magicFind" then fx.magicFind[p.region] = math.min(C.CAPS.magicFind, (fx.magicFind[p.region] or 0) + p.mf)
+			elseif p.kind == "dungeonRolls" then fx.dungeonRolls = math.min(C.CAPS.dungeonRolls, fx.dungeonRolls + p.n)
+			elseif p.kind == "factionRep" then fx.factionRep = math.min(C.CAPS.factionRep, fx.factionRep + p.pct)
+			elseif p.kind == "stats" then
+				for stat, v in pairs(p.stats) do
+					local cap = C.CAPS.stats[stat]
+					if cap and stat ~= "health" and stat ~= "defense" then fx.stats[stat] = math.min(cap, (fx.stats[stat] or 0) + v) end
+				end
+			end
+		end
+	end
+	return fx
+end
+-- Hook helpers (fx = C.effects(...) or nil when no term is known: no effect).
+function C.xpMult(fx, skill)
+	local def = type(skill) == "string" and Data.Skills[skill]
+	if type(fx) ~= "table" or not def then return 1 end
+	return 1 + math.clamp(tonumber(tab(fx.xp)[def.category]) or 0, 0, C.CAPS.xp)
+end
+function C.auctionFee(fx, price)
+	local base = Data.Economy.auctionFee(price)
+	local cut = type(fx) == "table" and math.clamp(tonumber(fx.auctionFee) or 0, 0, C.CAPS.auctionFee) or 0
+	return math.max(1, math.ceil(base * (1 - cut)))
+end
+function C.magicFind(fx, monster)
+	if type(fx) ~= "table" or type(monster) ~= "table" or type(monster.region) ~= "string" then return 0 end
+	return math.clamp(tonumber(tab(fx.magicFind)[monster.region]) or 0, 0, C.CAPS.magicFind)
+end
+-- Extra worker work units (Data.Workers work: 100 per second) for `seconds` of perk time.
+function C.workerWork(fx, seconds)
+	if type(fx) ~= "table" then return 0 end
+	return math.floor(math.max(0, tonumber(seconds) or 0) * math.clamp(tonumber(fx.workers) or 0, 0, C.CAPS.workers))
+end
+function C.dungeonRolls(fx)
+	return if type(fx) == "table" then math.clamp(whole(fx.dungeonRolls), 0, C.CAPS.dungeonRolls) else 0
+end
+function C.factionRep(fx, rep)
+	rep = whole(rep)
+	if type(fx) ~= "table" then return rep end
+	return math.floor(rep * (1 + math.clamp(tonumber(fx.factionRep) or 0, 0, C.CAPS.factionRep)))
+end
+function C.stats(fx)
+	local out = {}
+	for stat, v in pairs(tab(type(fx) == "table" and fx.stats)) do
+		local cap = C.CAPS.stats[stat]
+		if cap and stat ~= "health" and stat ~= "defense" and tonumber(v) and v > 0 then out[stat] = math.min(cap, v) end
+	end
+	return out
+end
+-- Shared history list (newest first, <= C.HISTORY, one entry per term).
+function C.mergeHistory(old, result)
+	local list = {}
+	for _, r in ipairs(tab(old)) do
+		local clean = type(r) == "table" and C.cleanResult(r, whole(r.e))
+		if clean and #list < C.HISTORY * 2 then table.insert(list, clean) end
+	end
+	local added = false
+	if type(result) == "table" then
+		local found = false
+		for _, r in ipairs(list) do if r.e == result.e then found = true end end
+		if not found then table.insert(list, result); added = true end
+	end
+	table.sort(list, function(a, b) return a.e > b.e end)
+	while #list > C.HISTORY do table.remove(list) end
+	return list, added
+end
+
+-- Text ---------------------------------------------------------------------------
+function C.perkText(id)
+	local p = C.Perks[id]
+	return if p then p.name .. ": " .. p.text else tostring(id)
+end
+function C.candidateName(id)
+	local c = C.CandidateById[id]
+	return if c then c.name else tostring(id)
+end
+function C.span(seconds)
+	seconds = math.max(0, math.floor(tonumber(seconds) or 0))
+	if seconds >= 86400 then return (seconds // 86400) .. "d " .. ((seconds % 86400) // 3600) .. "h" end
+	if seconds >= 3600 then return (seconds // 3600) .. "h " .. ((seconds % 3600) // 60) .. "m" end
+	return math.max(1, math.ceil(seconds / 60)) .. "m"
+end
+Data.Council = C
+
+-- §31 announcements: election open, ballot closed, new term.
+local F = Data.Features
+if F and F.announceText then
+	local announceText = F.announceText
+	function F.announceText(e)
+		if type(e) == "table" and e.kind == "council" then
+			local y = whole(e.e)
+			if e.phase == "open" then
+				return {head="COUNCIL ELECTION OPEN", body="Year " .. y .. " ballot  ·  " .. C.SLATE .. " candidates  ·  vote in Journal › Council", color=C.COLOR}
+			elseif e.phase == "closed" then
+				return {head="BALLOT CLOSED", body="Year " .. y .. " votes are being counted", color=C.COLOR}
+			end
+			local m = if type(e.minister) == "string" then "  ·  Minister " .. C.candidateName(e.minister) else ""
+			return {head="NEW COUNCIL TERM", body=C.candidateName(e.winner) .. " leads Year " .. y .. m, color=C.COLOR}
+		end
+		return announceText(e)
+	end
+	F.ANNOUNCE_PRIORITY.council = true
+end
+
+-- The Council Clerk (Compass Quay): a regional folk entry, so World Art places
+-- Anchor_NPC_CouncilClerk on the hub; the Council Hall section of
+-- world.server.lua then moves that anchor to the hall's steps.
+local T = Data.Townsfolk
+local RA = Data.RegionArt
+if T and RA then
+	local clerk = {role=C.CLERK,region="Hub",name="Wendeline Quillmarsh",title="Clerk of the Isle Council",portrait="📜",kind="council",
+		look={skin="D9A273",shirt="3B2F5C",pants="2A2438",shoes="1E1A26",accent="E9C46A",hair="5A3A22",hat="tophat",held="ledger",cape="6A4C93",spectacles=true},
+		greet="Order, order! The Isle Council sits each isle year. Read the candidates, cast your ballot, and the isles will feel your choice."}
+	table.insert(RA.Folk, clerk)
+	RA.FolkByRole[clerk.role] = clerk
+	T.Verbs.councilVisit = {item=false}
+	T.NPCs[clerk.role] = {name=clerk.name,title=clerk.title,region="Hub",portrait=clerk.portrait,look=clerk.look,start="hello",anchorOnly=true,folk="council",
+		nodes={
+			hello={text=clerk.greet,options={
+				{label="Show me the ballot",verb="councilVisit"},
+				{label="How does the council work?",to="explain"},
+				{label="Farewell",close=true}}},
+			explain={text="Each isle year the council is chosen anew. The ballot opens on Emberfall 1 and closes at year's end. "
+				.. "Every account casts one vote and may change it until the close. The winner's perks rule the whole next year on every isle, "
+				.. "and the runner-up serves as Minister and lends one perk of their own.",options={
+				{label="Show me the ballot",verb="councilVisit"},
+				{label="Back",to="hello"},
+				{label="Farewell",close=true}}},
+		}}
+	table.insert(T.RegionFolkOrder, clerk.role)
+end
+end
+-- <<< END Isle Council <<<
+------------------------------------------------------------------------------
+
+
 return Data
