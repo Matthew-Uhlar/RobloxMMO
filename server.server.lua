@@ -185,6 +185,8 @@ local Crafting={verbs={craftStation=true,craftBatch=true,craftStop=true},jobs={}
 local Beaconry={verbs={kindle=true,fireCook=true,fireStop=true,beaconLight=true,beaconClaim=true},jobs={},next={},gseq={},beacons={},seq=0}
 -- Lairs (instanced lair bosses: altars, fees, kill rewards); filled in by the Lairs block after Endgame.
 local Lairs={verbs={lairEnter=true,lairLeave=true}}
+-- Raids (§38: the Undertide Vaults party raid); filled in by the Raids block after Lairs.
+local Raids={verbs={raidPortal=true,raidHost=true,raidJoin=true,raidLeave=true,raidReady=true,raidChallenge=true,raidStart=true,raidAct=true,raidUse=true,raidTitle=true}}
 -- World Art & Regions (regional quests, shops, warp scrolls); filled in by the Regions block before perform().
 local Regions={verbs={rqAccept=true,rqTalk=true,rqClaim=true,rqBuy=true,warpBuy=true,warpLearn=true,warpTo=true,landmark=true},warpAt={}}
 -- MMO Features (§31: Isle Renown, Wayfarer's Path, announcements, Resonance); filled in by the Features block before perform().
@@ -4634,6 +4636,7 @@ local function snapshot(player,message)
 		crafting=Crafting.state and Crafting.state(player,p), -- Crafting: Workshop › Crafting page state
 		beaconry=Beaconry.state and Beaconry.state(player,p), -- Beaconry (§37): Workshop › Beaconry page state
 		lairs=Lairs.state and Lairs.state(player,p), -- Lairs: Hunt › Bosses (kill counts, personal bests, uniques)
+		raids=Raids.state and Raids.state(player,p), -- Raids (§38): Raid Log (KC, PBs, uniques, points records, titles)
 		exploration=Explore.state(player,p), -- Exploration & Factions: Journal > Motes / Factions (full when changed, else {rev, resetIn, switchIn, compact})
 		regionQuests=Regions.state(p), -- World Art & Regions: accepted/talked/visited/warps
 		logs=Logs.state(player,p), -- Commissions & Logs: Journal > Commissions / Collection Log / Museum (full when changed, else {rev, resetIn, compact})
@@ -4732,6 +4735,7 @@ local function migrate(profile)
 	if Beaconry.migrate then Beaconry.migrate(profile) end -- Beaconry (§37): p.beaconry, quest flags
 	Explore.migrate(profile) -- Exploration & Factions: p.motes, p.factions, p.perkStats.motes
 	if Lairs.migrate then Lairs.migrate(profile) end -- Lairs: kill counts, personal bests, uniques
+	if Raids.migrate then Raids.migrate(profile) end -- Raids (§38): p.raids Raid Log
 	if Regions.migrate then Regions.migrate(profile) end -- World Art & Regions: p.regionQuests
 	if Features.migrate then Features.migrate(profile) end -- §31: p.renown (retroactive once), p.guide, p.resonance
 	if Systems.migrate then Systems.migrate(profile) end -- §33: p.goals, p.goalSeq, p.helperPin, p.shopStock
@@ -4872,6 +4876,7 @@ local function open(player)
 	profile.settings=Data.PlayerSettings.sanitize(profile.settings)
 	for attr,value in pairs(profile.settings) do player:SetAttribute(attr,value) end
 	if Classes.publish then Classes.publish(player,profile) end -- Dungeon classes: DungeonClass / DungeonMasterOn attributes
+	if Raids.publishTitle then Raids.publishTitle(player,profile) end -- Raids (§38): worn raid title (RaidTitle)
 	for name in pairs(decorations) do player:SetAttribute("Home"..name,profile.decorations[name]==true) end
 	leaseEnd[player]=if preview[player] then os.time()+180 else committed.expires
 	opening[player]=nil
@@ -4883,6 +4888,11 @@ local function open(player)
 		applyStats(player,profile,true)
 		humanoid.Died:Connect(function()
 			local p=profiles[player]
+			-- Raids (§38): a death inside the vaults costs raid points (raids.server.lua), not purse coins.
+			if p and Raids.deathExempt and Raids.deathExempt(player) then
+				update:FireClient(player,snapshot(player,"You fell in the Undertide Vaults: your raid points take the loss. Your purse is safe."))
+				return
+			end
 			if p then
 				local lost=math.floor(p.coins*0.10)
 				p.coins-=lost
@@ -6084,7 +6094,10 @@ do
 	local function busy(player)
 		local game=player:GetAttribute("MinigameGame")
 		local lair=player:GetAttribute("LairBoss")
+		local raid=player:GetAttribute("RaidRun") -- Raids (§38): a raid run or party lobby keeps a raider busy
+		local lobby=player:GetAttribute("RaidLobby")
 		return player:GetAttribute("DungeonInRun")==true or (type(game)=="string" and game~="") or (type(lair)=="string" and lair~="")
+			or (type(raid)=="string" and raid~="") or (type(lobby)=="string" and lobby~="")
 	end
 	function Lairs.action(player,p,verb,item,prompt)
 		if verb=="lairLeave" then
@@ -6230,6 +6243,192 @@ do
 			if player and Lairs.bridge(player,p,{action="refund",boss=e.boss,fight=e.fight}).ok then n+=1 end
 		end
 		return n
+	end
+end
+------------------------------------------------------------------------------
+-- Raids (Raid team, §38). Rules and data: Data.Raids (shared/GameData.lua);
+-- lobbies, the vault complex and points: raids.server.lua (ServerStorage.
+-- IsleRaids); encounters: combat.server.lua Raids section.
+--   raidPortal (portal prompt only, IsleRegion gate): opens the party board
+--     (player attribute RaidPortalUntil) and says what the raid needs.
+--   raidHost "normal"|"challenge", raidJoin "<lobby id>": Combat RD.COMBAT,
+--     region, not busy (dungeon run / minigame / lair / another raid), then
+--     IsleRaids "host"/"join" (which also needs the portal in reach).
+--   raidReady, raidChallenge "on|off" (host), raidStart (host), raidLeave
+--     (a lobby, or forfeits a run: no reward).
+--   raidAct (room prompts only): IsleRaids "act" {target, part}.
+--   raidUse "food"|"potion": a supply from the team pool.
+--   raidTitle "<title id>|none": wear a raid title (attribute RaidTitle).
+--   bridge "raid" {action = "complete", run, seconds, party, points, team,
+--     challenge, underPar, unique, deaths, xp}: once per run id per journal
+--     (RD.RUN_MEMORY): coins RD.coins(points), regular loot RD.regularLoot
+--     (points) and the unique / Challenge kit through collect() (Collection
+--     Log tab Raids), resource-room XP (Farming / Fishing / Cooking / Alchemy,
+--     capped), the Raid Log (RD.record: KC, PBs per party size, points
+--     records, uniques, titles). {action = "end", result, deaths} records a
+--     failed or uncredited run. Not live -> "sync" (raids.server.lua resends).
+-- No entry fee and no coin mint: coins are paid only by a credited clear.
+-- Deaths inside a raid cost raid points (raids.server.lua), not purse coins.
+-- Profile p.raids (RD.migrate); snapshot key raids.
+------------------------------------------------------------------------------
+do
+	local RD=Data.Raids
+	local XP_SKILLS={Farming=true,Fishing=true,Cooking=true,Alchemy=true}
+	local TEXT={level="The Undertide Vaults need Combat "..RD.COMBAT..".",region="You cannot reach the Undertide portal's isle yet.",
+		busy="Finish your dungeon run, minigame, lair or raid first.",active="You are already in a raid party.",portal="Stand at the Undertide portal first.",
+		lobbies="Every raid party slot is taken. Try again in a minute.",lobby="That raid party has set out or disbanded.",full="That raid party is full.",
+		host="Only the party leader can do that.",party="A raid needs at least "..RD.MIN_PARTY.." raiders.",ready="Not everyone is ready.",
+		capacity="Every vault on this server is in use. Try again shortly.",invalid="The portal flickers. Try again shortly.",
+		raid="You are not inside a raid.",room="Nothing to do here yet.",busy2="One moment…",target="That does nothing.",depleted="That node is spent.",
+		stock="You need more gathered supplies for that.",empty="The party has none of those left.",kind="Choose food or a draught.",dead="You are down."}
+	function Raids.migrate(p) p.raids=RD.migrate(p.raids) end
+	function Raids.of(p)
+		local s=p.raids
+		if type(s)~="table" or type(s.pb)~="table" or type(s.got)~="table" or type(s.log)~="table" or type(s.titles)~="table" or type(s.runs)~="table" then Raids.migrate(p) end
+		return p.raids
+	end
+	local function invoke(op,player,arg)
+		local fn=ServerStorage:FindFirstChild("IsleRaids")
+		if not fn then return nil end
+		local ok,reply=pcall(fn.Invoke,fn,op,player,arg)
+		if not ok or type(reply)~="table" then return nil end
+		return reply
+	end
+	local function busy(player)
+		local game=player:GetAttribute("MinigameGame")
+		local lair=player:GetAttribute("LairBoss")
+		return player:GetAttribute("DungeonInRun")==true or (type(game)=="string" and game~="") or (type(lair)=="string" and lair~="")
+	end
+	local function publishTitle(player,p)
+		local t=RD.TitleById[Raids.of(p).title]
+		local text=if t then t.text else ""
+		if player:GetAttribute("RaidTitle")~=text then player:SetAttribute("RaidTitle",text) end
+	end
+	Raids.publishTitle=publishTitle
+	-- Damage taken while a brewed ward is up (bridge "damage"); the attribute is server-set only.
+	function Raids.wardMult(player)
+		local run=player:GetAttribute("RaidRun")
+		local untilAt=player:GetAttribute("RaidWardUntil")
+		if type(run)=="string" and run~="" and type(untilAt)=="number" and untilAt>os.time() then return RD.WARD_MULT end
+		return 1
+	end
+	-- A death inside a raid costs raid points (raids.server.lua), not purse coins.
+	function Raids.deathExempt(player)
+		local run=player:GetAttribute("RaidRun")
+		return type(run)=="string" and run~=""
+	end
+	function Raids.action(player,p,verb,item,prompt)
+		if verb=="raidTitle" then
+			local s=Raids.of(p)
+			if item=="none" or item==nil or item=="" then s.title=""; publishTitle(player,p) return "Raid title hidden." end
+			if not RD.TitleById[item] then return "Choose a raid title." end
+			if not s.titles[item] then return "You have not earned "..RD.TitleById[item].text.." yet." end
+			s.title=item
+			publishTitle(player,p)
+			return "You now wear the title "..RD.TitleById[item].text.."."
+		elseif verb=="raidPortal" then
+			if not prompt then return "Visit the Undertide portal on "..RD.ISLE.."." end
+			player:SetAttribute("RaidPortalUntil",os.time()+RD.PORTAL_SECONDS)
+			if level(p.xp.Combat)<RD.COMBAT then return TEXT.level.." Gather a party of "..RD.MIN_PARTY.."–"..RD.MAX_PARTY.." at the portal." end
+			return RD.NAME..": host or join a party of "..RD.MIN_PARTY.."–"..RD.MAX_PARTY.." raiders on the portal board."
+		elseif verb=="raidHost" or verb=="raidJoin" then
+			local ok,reason=RD.canJoin({combat=level(p.xp.Combat),region=regionAllowed(p,RD.REGION),busy=busy(player)})
+			if not ok then return TEXT[reason] or TEXT.invalid end
+			local reply=if verb=="raidHost" then invoke("host",player,item=="challenge") else invoke("join",player,item)
+			if not reply then return TEXT.invalid end
+			if not reply.ok then return TEXT[reply.reason] or TEXT.invalid end
+			p.started=true
+			if verb=="raidHost" then return "You lead a new raid party"..(if item=="challenge" then " (Challenge Mode)" else "")..". Gather "..RD.MIN_PARTY.."–"..RD.MAX_PARTY.." raiders, then begin." end
+			return "You join the raid party ("..tostring(reply.members).." raiders)."
+		elseif verb=="raidLeave" then
+			local reply=invoke("leave",player)
+			if not reply or not reply.ok then return "You are not in a raid party." end
+			return if reply.mode=="run" then "You leave the Undertide Vaults. Your party fights on without you." else "You leave the raid party."
+		elseif verb=="raidReady" then
+			local reply=invoke("ready",player)
+			if not reply or not reply.ok then return "You are not in a raid party." end
+			return if reply.ready then "Ready for the vaults." else "Not ready."
+		elseif verb=="raidChallenge" then
+			local reply=invoke("challenge",player,item=="on")
+			if not reply then return TEXT.invalid end
+			if not reply.ok then return TEXT[reply.reason] or TEXT.invalid end
+			return if reply.challenge then "Challenge Mode on: tougher guardians, a par time, cosmetic rewards." else "Challenge Mode off."
+		elseif verb=="raidStart" then
+			local reply=invoke("start",player)
+			if not reply then return TEXT.invalid end
+			if not reply.ok then return TEXT[reply.reason] or TEXT.invalid end
+			return "The portal opens: "..RD.NAME.." ("..tostring(reply.members).." raiders)."
+		elseif verb=="raidAct" then
+			if not prompt then return "Use the vault's own fixtures." end
+			local reply=invoke("act",player,{target=item,part=prompt:FindFirstAncestorWhichIsA("BasePart")})
+			if not reply then return TEXT.invalid end
+			if not reply.ok then return TEXT[if reply.reason=="busy" then "busy2" else reply.reason] or TEXT.target end
+			if reply.solved then return "Solved!" end
+			if reply.mistake then return "Wrong glyph: the chant restarts." end
+			if reply.raw then return "+1 "..reply.raw.." (party stock "..reply.stock..")." end
+			if reply.supply then return "Prepared a supply ("..reply.made.." made)." end
+			if reply.step then return "Glyph "..reply.step.." holds." end
+			if reply.open then return reply.open.."/"..RD.VALVES.." valves open." end
+			return "Done."
+		elseif verb=="raidUse" then
+			local reply=invoke("use",player,item)
+			if not reply then return TEXT.invalid end
+			if not reply.ok then return TEXT[if reply.reason=="busy" then "busy2" else reply.reason] or TEXT.invalid end
+			return (if item=="potion" then "A draught: healed and warded." else "You eat: healed.").." ("..tostring(reply.left or 0).." left)"
+		end
+		return "Unknown raid action."
+	end
+	-- Bridge op "raid" (raids.server.lua only).
+	function Raids.bridge(player,p,payload)
+		local s=Raids.of(p)
+		local id=payload.run
+		if type(id)~="string" or #id==0 or #id>64 then return {ok=false,reason="invalid"} end
+		if payload.action=="end" then
+			if payload.result~="nocredit" then s.fails=math.min(RD.MAX_KC,s.fails+1) end
+			s.deaths=math.min(RD.MAX_KC,s.deaths+RD.whole(payload.deaths,100))
+			return {ok=true}
+		elseif payload.action~="complete" then
+			return {ok=false,reason="invalid"}
+		end
+		if RD.seen(s,id) then return {ok=false,reason="paid"} end
+		local challenge=payload.challenge==true
+		local party=math.clamp(RD.whole(payload.party),1,RD.MAX_PARTY)
+		local maxPoints=RD.maxPersonal(party,challenge)
+		local points=RD.whole(payload.points,maxPoints)
+		local team=math.clamp(RD.whole(payload.team),points,maxPoints*party)
+		local seconds=math.clamp(RD.whole(payload.seconds),1,86400)
+		local coins=RD.coins(points)
+		p.coins+=coins; HudFeed.coins(p,coins)
+		local drops=RD.regularLoot(points,roll)
+		for item,n in pairs(drops) do pickup(p,item,n) end
+		local unique=if RD.isUnique(payload.unique) and payload.unique~="GildedTideKit" then payload.unique else nil
+		local underPar=challenge and payload.underPar==true
+		if unique then pickup(p,unique,1) end
+		if underPar then pickup(p,"GildedTideKit",1) end
+		for skill,n in pairs(type(payload.xp)=="table" and payload.xp or {}) do
+			if XP_SKILLS[skill] then grantXp(p,skill,RD.whole(n,4000)) end
+		end
+		s.deaths=math.min(RD.MAX_KC,s.deaths+RD.whole(payload.deaths,100))
+		local rec=RD.record(s,{id=id,seconds=seconds,party=party,points=points,team=team,challenge=challenge,underPar=underPar,unique=unique,kit=underPar,now=os.time()})
+		if Features.announce then
+			if unique then Features.announce(p,{kind="raidUnique",item=unique}) end
+			for _,t in ipairs(rec.newTitles) do Features.announce(p,{kind="raidTitle",title=t}) end
+		end
+		p.started=true
+		return {ok=true,coins=coins,drops=drops,unique=unique,kc=rec.kc,pb=rec.pb,
+			message=RD.NAME.." cleared in "..RD.formatTime(seconds)..(if rec.pb then " (personal best!)" else "").." • KC "..rec.kc.." • "..points.." points • +"..coins.." coins"
+				..dropText(drops)..(if unique then "   ·   RAID UNIQUE! "..Data.Items[unique].name else "")..(if underPar then "   ·   Under par: Gilded Tide Kit" else "")}
+	end
+	function Raids.state(player,p)
+		local s=Raids.of(p)
+		local run=player:GetAttribute("RaidRun")
+		local untilAt=player:GetAttribute("RaidPortalUntil")
+		return {kc=s.kc,cm=s.cm,fails=s.fails,deaths=s.deaths,pb=s.pb,pbCm=s.pbCm,best=s.best,got=s.got,log=s.log,titles=s.titles,title=s.title,
+			active=if type(run)=="string" then run else "",portalIn=if type(untilAt)=="number" then math.max(0,untilAt-os.time()) else 0,combat=RD.COMBAT}
+	end
+	function Raids.drain()
+		local fn=ServerStorage:FindFirstChild("IsleRaids")
+		if fn then pcall(fn.Invoke,fn,"drain") end
 	end
 end
 ------------------------------------------------------------------------------
@@ -8684,6 +8883,8 @@ local function perform(player,verb,item,prompt)
 		return Trails.action(player,p,verb,item) -- Treasure Trails
 	elseif Lairs.verbs[verb] then
 		return Lairs.action(player,p,verb,item,prompt) -- Lairs: altars and the arena exit
+	elseif Raids.verbs[verb] then
+		return Raids.action(player,p,verb,item,prompt) -- Raids (§38): portal party board, vault rooms, supplies, titles
 	elseif Endgame.verbs[verb] and prompt then
 		return Endgame.action(player,p,verb,item) -- Endgame: Sovereign Altar
 	elseif Econ.verbs and Econ.verbs[verb] then
@@ -9172,6 +9373,8 @@ local function close(player)
 	while exchangeBusy[player] do task.wait(0.1) end
 	-- Lairs: a disconnect dodging a death is settled while the journal is live (lairs.server.lua "depart").
 	pcall(function() local lairs=ServerStorage:FindFirstChild("IsleLairs"); if lairs then lairs:Invoke("depart",player) end end)
+	-- Raids (§38): a disconnect dodging a death is a raid death; the member is held for a rejoin.
+	pcall(function() local raids=ServerStorage:FindFirstChild("IsleRaids"); if raids then raids:Invoke("depart",player) end end)
 	-- Minigames: settle in-match XP before the final save (see minigames.server.lua).
 	pcall(function() local mgLeave=ServerStorage:FindFirstChild("IsleMinigameLeave"); if mgLeave then mgLeave:Invoke(player) end end)
 	Held.forget(player) -- Held items: drop the auto-return timer before the final save
@@ -9213,6 +9416,7 @@ game:BindToClose(function()
 	if Econ.flushHistory then pcall(Econ.flushHistory) end -- §33: pending auction price history (best effort)
 	Endgame.drain() -- Endgame: refund unspent altar sigils before the journals save
 	if Lairs.drain then Lairs.drain() end -- Lairs: refund unfinished fights' fees before the journals save
+	if Raids.drain then Raids.drain() end -- Raids (§38): tear the vaults down (no fees to refund)
 	if Beaconry.flush then pcall(Beaconry.flush,true) end -- §37 QC L1: pending beacon lightings reach the weekly total
 	local pending=0
 	for player in pairs(profiles) do
@@ -9665,6 +9869,7 @@ bridge.OnInvoke=function(op,player,payload)
 		local defense=if p then Progression.computeStats(p,os.time()).defense else 0
 		if p and type(p.prayer)=="table" then raw,defense=Prayer.incoming(p,raw,defense,payload) end -- Prayer: protection + wards
 		local amount=Progression.damageTaken(math.min(raw,1e9),defense)
+		if Raids.wardMult then amount=math.floor(amount*Raids.wardMult(player)+0.5) end -- Raids (§38): a brewed ward
 		humanoid:TakeDamage(amount)
 		return amount
 	end
@@ -9672,7 +9877,7 @@ bridge.OnInvoke=function(op,player,payload)
 	if not p then
 		-- Combat re-arms the boss / resends the sea creature kill (ticket kept)
 		-- when its report could not be applied; Endgame: combat resends world boss rewards.
-		return if op=="slayerBoss" or op=="seaCreature" or op=="worldBoss" or op=="slayerSuperior" or op=="lair" then {ok=false,reason="sync"} else nil
+		return if op=="slayerBoss" or op=="seaCreature" or op=="worldBoss" or op=="slayerSuperior" or op=="lair" or op=="raid" then {ok=false,reason="sync"} else nil
 	end
 	if op=="stats" then
 		return {stats=Progression.computeStats(p,os.time()),combatLevel=level(p.xp.Combat),ironman=p.ironman==true,
@@ -9731,6 +9936,11 @@ bridge.OnInvoke=function(op,player,payload)
 		local superior=if payload.task==true then SlayerTasks.onKill(player,p,monsterId,monster) else nil
 		notify(player,monster.name.." slain • +"..coins.." coins"..dropText(drops))
 		return {drops=drops,bossReady=quest~=nil and quest.bossReady==true,superior=superior}
+	elseif op=="raid" then
+		-- Raids (§38): clear rewards and run closes from raids.server.lua.
+		local reply=Raids.bridge(player,p,payload)
+		if reply.message then notify(player,reply.message); reply.message=nil end
+		return reply
 	elseif op=="lair" then
 		-- Lairs: kill rewards, entry closes and fee refunds from lairs.server.lua.
 		local reply=Lairs.bridge(player,p,payload)

@@ -158,7 +158,7 @@ local function rootPosition()
 end
 local function contextNow()
 	return L.context({
-		LairBoss = player:GetAttribute("LairBoss"), DungeonInRun = player:GetAttribute("DungeonInRun"),
+		LairBoss = player:GetAttribute("LairBoss"), RaidRun = player:GetAttribute("RaidRun"), DungeonInRun = player:GetAttribute("DungeonInRun"),
 		MinigameGame = player:GetAttribute("MinigameGame"), IsleRegionHere = player:GetAttribute("IsleRegionHere"),
 	}, rootPosition())
 end
@@ -177,7 +177,7 @@ end
 ------------------------------------------------------------------------------
 -- Light budget.
 ------------------------------------------------------------------------------
-local ROOT_NAMES = {AetherIsles = true, Islands = true, Townsfolk = true, LairInstances = true, ["The Hollow Observatory"] = true}
+local ROOT_NAMES = {AetherIsles = true, Islands = true, Townsfolk = true, LairInstances = true, RaidInstances = true, ["The Hollow Observatory"] = true}
 pcall(function() ROOT_NAMES[Data.Minigames.ISLAND] = true end)
 -- QC L1: entries / recs / selectLights scratch are reused every update.
 local Lights = {list = {}, byLight = {}, sites = {}, bySite = {}, pool = {}, poolFolder = nil, connected = false,
