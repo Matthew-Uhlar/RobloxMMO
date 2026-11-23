@@ -4,7 +4,6 @@
 -- Region attributes + Anchor_<Purpose> parts, docs/DEPTH-CONTRACT.md section 10);
 -- props that should become custom meshes carry Shape / Tint / ShapeScale.
 local Players = game:GetService("Players")
-local Lighting = game:GetService("Lighting")
 local Tags = game:GetService("CollectionService")
 local world = Instance.new("Folder")
 world.Name = "AetherIsles"
@@ -23,81 +22,16 @@ local BALL=Enum.PartType.Ball
 local warm=C("FFD9A0")
 
 -------------------------------------------------------------------------------
--- Lighting. Technology = Future is set in default.project.json (not scriptable);
--- the same look is applied here so a place opened without the project matches.
--- Bugs fixed (wave 4): over-bright OutdoorAmbient/Ambient flattened every
--- island and lit caves; stacked post effects if the place already had some;
--- 0.19 density haze with a near-white colour washed distant islands out.
+-- Lighting (§35): this script writes NO Lighting property and adds no Lighting
+-- child. lighting.client.lua (StarterPlayerScripts.IsleLighting) is the one
+-- writer: day-night from the isle clock, region profiles, post effects, the
+-- graphics tier and the world light budget. Technology = Future and the day
+-- look are the place defaults in default.project.json. The old server cycle
+-- here (its own 20-minute clock that disagreed with the sidebar, ClockTime
+-- stepped every 2 s so shadows jittered, and Lighting children rebuilt on the
+-- server) was removed. Night lamps are created off and tagged NightLight; the
+-- director lights them after dusk near the player.
 -------------------------------------------------------------------------------
-local LOOK = {
-	Brightness=2.6, ClockTime=14.5, GeographicLatitude=38,
-	Ambient=C("3A4150"), OutdoorAmbient=C("7D8A9C"),
-	EnvironmentDiffuseScale=.5, EnvironmentSpecularScale=.3,
-	ExposureCompensation=0, ShadowSoftness=.3, GlobalShadows=true,
-}
-for key,value in pairs(LOOK) do Lighting[key]=value end
-for _,child in ipairs(Lighting:GetChildren()) do
-	if child:IsA("PostEffect") or child:IsA("Atmosphere") or child:IsA("Sky") then child:Destroy() end
-end
-local grade=Instance.new("ColorCorrectionEffect")
-grade.Name,grade.Brightness,grade.Contrast,grade.Saturation="Aether grade",0,.1,.08
-grade.TintColor=C("FFF6EA")
-grade.Parent=Lighting
-local bloom=Instance.new("BloomEffect")
-bloom.Name,bloom.Intensity,bloom.Size,bloom.Threshold="Aether bloom",.3,20,1.5
-bloom.Parent=Lighting
-local rays=Instance.new("SunRaysEffect")
-rays.Name,rays.Intensity,rays.Spread="Aether sun rays",.045,.45
-rays.Parent=Lighting
-local air = Instance.new("Atmosphere")
-air.Name="Aether air"
-air.Density,air.Offset,air.Color,air.Decay,air.Glare,air.Haze=.24,.1,C("C9D8E6"),C("7186A6"),.3,.7
-air.Parent = Lighting
-local sky=Instance.new("Sky")
-sky.Name,sky.StarCount,sky.SunAngularSize,sky.MoonAngularSize="Aether sky",2600,12,9
-sky.Parent=Lighting
-
--- Slow day/night: one server loop, one update every 2 s. Lamps (night lights)
--- switch on at dusk; hero lights stay on. Daylight 15 min, night 5 min.
-local DAY_SECONDS,NIGHT_SECONDS=900,300
-local NIGHT_OUTDOOR,NIGHT_AIR=C("3E4A66"),C("4A5878")
-local nightLights={}
-local nightOn=false
-local function isNight(clock) return clock<6.2 or clock>17.8 end
-local function applyClock(clock)
-	Lighting.ClockTime=clock
-	local sun=math.clamp(math.min(clock-5.5,18.5-clock)/1.5,0,1)
-	Lighting.OutdoorAmbient=NIGHT_OUTDOOR:Lerp(LOOK.OutdoorAmbient,sun)
-	air.Color=NIGHT_AIR:Lerp(C("C9D8E6"),sun)
-	local night=isNight(clock)
-	if night~=nightOn then
-		nightOn=night
-		-- Lamps of departed homes drop out here, so the list never leaks.
-		local kept={}
-		for _,l in ipairs(nightLights) do
-			if l.Parent then
-				l.Enabled=night
-				table.insert(kept,l)
-			end
-		end
-		nightLights=kept
-	end
-end
-local function advanceClock(clock,dt)
-	local rate=if clock>=6 and clock<18 then 12/DAY_SECONDS else 12/NIGHT_SECONDS
-	return (clock+dt*rate)%24
-end
-if task.wait then
-	task.spawn(function()
-		local clock=LOOK.ClockTime
-		while true do
-			local dt=task.wait(2)
-			clock=advanceClock(clock,tonumber(dt) or 2)
-			applyClock(clock)
-		end
-	end)
-end
-
 -------------------------------------------------------------------------------
 -- Primitive helpers.
 -------------------------------------------------------------------------------
@@ -213,8 +147,8 @@ local function light(parent,color,brightness,range,opts)
 	if opts.face then l.Face=opts.face end
 	if opts.angle then l.Angle=opts.angle end
 	if opts.night then
-		l.Enabled=nightOn
-		table.insert(nightLights,l)
+		l.Enabled=false -- the client director (§35) lights it after dusk
+		l:SetAttribute("NightLight",true)
 	end
 	l.Parent=host
 	return l

@@ -10,7 +10,8 @@
       "AetherProgression": { "$path": "shared/Progression.lua" },
       "AetherUiTheme": { "$path": "shared/UiTheme.lua" },
       "AetherMapArt": { "$path": "shared/MapArt.lua" },
-      "AetherHudDepth": { "$path": "shared/HudDepth.lua" }
+      "AetherHudDepth": { "$path": "shared/HudDepth.lua" },
+      "AetherLighting": { "$path": "shared/LightingProfiles.lua" }
     },
     "ServerStorage": {
       "AetherTrails": { "$path": "trails.lua" }
@@ -44,7 +45,8 @@
         "IsleHud": { "$path": "hud.client.lua" },
         "RegionBanner": { "$path": "regions.client.lua" },
         "IsleFeatures": { "$path": "features.client.lua" },
-        "IsleOverlay": { "$path": "overlay.client.lua" }
+        "IsleOverlay": { "$path": "overlay.client.lua" },
+        "IsleLighting": { "$path": "lighting.client.lua" }
       }
     },
     "Lighting": {

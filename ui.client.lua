@@ -9019,7 +9019,9 @@ function Pages.settingValue(o)
 	return value==true
 end
 -- Re-render the Settings page when a setting changes elsewhere while it shows.
-for _,o in ipairs(SETTINGS) do
+local watchedSettings=table.clone(SETTINGS)
+table.insert(watchedSettings,{attr="IsleSettingGraphics"}) -- §35 graphics tier
+for _,o in ipairs(watchedSettings) do
 	player:GetAttributeChangedSignal(o.attr):Connect(function()
 		if UI.atlasOpen and current=="Menu" and sectionOf and sectionOf.Menu=="Settings" and render then render() end
 	end)
@@ -9034,6 +9036,21 @@ function Pages.drawSettings()
 				render()
 			end}}})
 	end
+	-- Graphics (§35): lighting.client.lua reads IsleSettingGraphics (it publishes
+	-- the device default on first run: phones Balanced, low quality Performance).
+	local GA="IsleSettingGraphics"
+	local tiers={{id="High",text="Future lighting with sun and lamp shadows, bloom, sun rays and grading."},
+		{id="Balanced",text="Sun shadows and grading; fewer lamps, no lamp shadows. Phone default."},
+		{id="Performance",text="No shadows or post effects; only the nearest lamps lit."}}
+	local now=player:GetAttribute(GA)
+	local actions,detail={},{}
+	for _,t in ipairs(tiers) do
+		local on=now==t.id
+		table.insert(actions,{caption=(on and "✓ " or "")..t.id,primary=on,name="Graphics"..t.id,fn=function() player:SetAttribute(GA,t.id) render() end})
+		if on then detail=t.text end
+	end
+	card({name="SettingGraphics",motif="Settings",title="Graphics quality",subtitle=paint(type(now)=="string" and now or "Automatic","6FE3C8"),
+		detail=type(detail)=="string" and detail or "Chosen from your device.",actions=actions})
 	card({name="SettingKeys",motif="Journal",title="Keys",detail="J  menu & atlas   ·   E / Tab  satchel   ·   M  Sky Chart (warp map)   ·   right-click (long-press) an item for its options   ·   drag items to reorder"})
 end
 end
