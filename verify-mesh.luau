@@ -85,7 +85,8 @@ local required = {"WindpineTree", "EmberoakTree", "GlimmerbarkTree", "StarwoodTr
 for _, name in ipairs(required) do check(World.shapes[name] ~= nil, name .. " is authored") end
 -- Every client downloads the world catalog: packed geometry keeps it small.
 local catalogBytes = #fs.readFile("art/WorldCatalog.lua")
-check(catalogBytes <= 900 * 1024, "world catalog download stays under 900 KB (" .. catalogBytes .. " bytes)")
+-- §40: the building kit (12 whole-building and interior meshes) raised the cap from 900 KB.
+check(catalogBytes <= 1150 * 1024, "world catalog download stays under 1150 KB (" .. catalogBytes .. " bytes)")
 -- Packed geometry decodes to exactly the OBJ masters' vertices and faces.
 for _, name in ipairs({"Skyship", "ZipLine", "SnareTrap", "StormSpire", "WindpineTree"}) do
 	local data, vi, fi = World.shapes[name], 0, 0
@@ -130,7 +131,7 @@ local worldTriangles, worldCount = 0, 0
 for name, data in pairs(World.shapes) do
 	worldCount += 1
 	worldTriangles += #data.faces
-	local points = validate(name, data, 200, 1500)
+	local points = validate(name, data, 200, if data.kind == "building" then 2400 else 1500)
 	check(type(data.smooth) == "number" and data.smooth >= 0 and data.smooth < 90, name .. " smoothing crease")
 	check(type(data.kind) == "string", name .. " kind")
 	if data.tint then check(pcall(Color3.fromHex, data.tint), name .. " default tint") end
@@ -793,6 +794,24 @@ do
 		return run
 	end
 	local desk, phone = tour("desktop"), tour("phone")
+	-- §40 building kit: every building and interior host maps its mesh 1:1 onto
+	-- its declared ShapeBox (fit box = mesh bounds), standing on the host's
+	-- ground; houses forge nearer on phones and interiors only up close.
+	local buildingHosts = 0
+	for _, p in desk.root:GetDescendants() do
+		if p:IsA("BasePart") and type(p:GetAttribute("Shape")) == "string" and World.shapes[p:GetAttribute("Shape")] and World.shapes[p:GetAttribute("Shape")].kind == "building" then
+			buildingHosts += 1
+			local d = desk.forge.describe(p)
+			local box, offset = p:GetAttribute("ShapeBox") or p.Size, p:GetAttribute("ShapeBoxOffset") or Vector3.new()
+			check(d ~= nil and d.kind == "building" and nearV(d.size, box, 1e-3), p:GetFullName() .. " mesh fills its ShapeBox 1:1")
+			check(nearV(d.cframe.Position, (p.CFrame * CFrame.new(offset)).Position, 1e-3), p:GetFullName() .. " mesh centred on its declared box")
+			check(math.abs(d.cframe.UpVector.Y - 1) < 1e-4, p:GetFullName() .. " mesh upright")
+			local interior = World.shapes[p:GetAttribute("Shape")].interior == true
+			check(desk.forge.buildRadius(p) == (if interior then 120 else desk.forge.radii.build), p.Name .. " desktop building radius")
+			check(phone.forge.buildRadius(p) == (if interior then 14 else 120), p.Name .. " phone building radius")
+		end
+	end
+	check(buildingHosts >= 55, "building hosts on the tour (" .. buildingHosts .. "; meshed everywhere the per-stop checks above require)")
 	check(desk.forge.stats.evicted > 0 and phone.forge.stats.evicted > 0, "LRU eviction recycles idle templates during the tour")
 end
 
