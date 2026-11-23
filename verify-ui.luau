@@ -1052,8 +1052,12 @@ do
 	press(find(ui.scroll, "EnchantBrassHelm"))
 	press(find(ui.scroll, "EnchProtectionEnchant"))
 	visit(ui, "Satchel", "Items")
+	-- Polish QC M2: an equipped piece offers neither Sell nor Sell… (the server refuses both).
 	press(find(ui.scroll, "ItemBrassBoots"))
 	assert(find(ui.scroll, "ItemDetail"), "item detail opens")
+	assert(find(ui.scroll, "ItemDetailSell") == nil and find(ui.scroll, "ItemDetailSellQty") == nil, "equipped item detail offers no Sell / Sell…")
+	checks += 1
+	press(find(ui.scroll, "ItemSunsteelSword"))
 	press(find(ui.scroll, "ItemDetailSell"))
 	press(find(ui.scroll, "ItemDetailConfirm"))
 	-- Polish: the atlas Items page offers "Sell…" (the §31 picker in sell mode) for a stack.
@@ -1069,6 +1073,24 @@ do
 		assert(picked and picked.verb == "sell" and picked.sell == true and picked.base == "Ore" and picked.max >= 2, "atlas Sell… opens the sell picker")
 		checks += 2
 	end
+	-- Polish QC M2: a stack whose copy is equipped or bagged offers no Sell… either, and
+	-- the old "(including the equipped piece)" text is gone.
+	do
+		local snap = snapshot({ noQuest = true })
+		snap.items.BrassBoots = 3
+		snap.items.MeadowCharm = 2
+		local worn = run({ snapshot = snap })
+		press(find(worn.gui, "AtlasButton"))
+		visit(worn, "Satchel", "Items")
+		for _, id in ipairs({ "BrassBoots", "MeadowCharm" }) do
+			press(find(worn.scroll, "Item" .. id))
+			assert(find(worn.scroll, "ItemDetail"), id .. " detail opens")
+			assert(find(worn.scroll, "ItemDetailSellQty") == nil and find(worn.scroll, "ItemDetailSell") == nil, id .. ": worn stack offers no Sell / Sell…")
+			checks += 2
+		end
+		assert(not string.find(fs.readFile("ui.client.lua"), "including the equipped piece", 1, true), "no 'including the equipped piece' text")
+		checks += 1
+	end
 	visit(ui, "Hunt", "Slayer")
 	press(find(ui.scroll, "SlayerTierBrambleBegin"))
 	noFailures(ui, "flows")
@@ -1077,7 +1099,7 @@ do
 		table.insert(log, entry[1] .. "=" .. tostring(entry[2]))
 	end
 	local joined = table.concat(log, " ")
-	for _, expected in ipairs({ "equip=SunsteelSword", "unequip=weapon", "enchantItem=BrassHelm:Protection", "sell=BrassBoots", "slayerBegin=Bramble:1" }) do
+	for _, expected in ipairs({ "equip=SunsteelSword", "unequip=weapon", "enchantItem=BrassHelm:Protection", "sell=SunsteelSword", "slayerBegin=Bramble:1" }) do
 		assert(joined:find(expected, 1, true), "expected " .. expected .. " in " .. joined)
 		checks += 1
 	end
@@ -1994,7 +2016,7 @@ do
 		local bossRect = rect(panel)
 		-- Polish (lead decision): the old tutorial tracker is retired (the Wayfarer's Path lives in the sidebar).
 		assert(townsfolk:FindFirstChild("TutorialTracker") == nil, "retired tutorial tracker is gone at " .. tag.name)
-		-- Agility & Hunter HUD: a lap underway and two traps (one caught) under the tutorial tracker.
+		-- Agility & Hunter HUD: a lap underway and two traps (one caught) at the top of the left column.
 		H.agilityHud(player)
 		local lapTracker, trapCounter = atlas:FindFirstChild("CourseTracker"), atlas:FindFirstChild("TrapTracker")
 		assert(lapTracker.Visible and trapCounter.Visible, "lap tracker and trap counter show at " .. tag.name)

@@ -501,7 +501,7 @@ local function updateMarkers()
 			continue
 		end
 		if s then
-			if entry.role == "Guide" then show = T.Conditions.guideTalkActive(s) or T.Conditions.guideRewardReady(s) or T.Conditions.contractReady(s)
+			if entry.role == "Guide" then show = T.Conditions.guideModeActive(s) or T.Conditions.guideTalkActive(s) or T.Conditions.guideRewardReady(s) or T.Conditions.contractReady(s)
 			elseif entry.role == "Slayer" then show = T.Conditions.huntReady(s)
 			elseif entry.role == "Herald" then show = T.Conditions.eventActive(s, ctx)
 			end

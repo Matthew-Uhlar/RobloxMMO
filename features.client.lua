@@ -146,6 +146,7 @@ local cancel = T.button(pickerBody, "Cancel", {name = "Cancel", position = UDim2
 cancel.Visible = false -- the shade and Esc close the menu; Cancel shows when there is room
 local function closePicker()
 	S.picker = nil
+	S.sellArmed = nil
 	picker.Visible, shade.Visible = false, false
 end
 local function lots(spec: any, qty: any): number return math.clamp(math.floor(num(qty)), 1, math.max(1, math.floor(num(spec.max)))) end
@@ -160,6 +161,15 @@ local function buy(qty: any)
 	if not spec then return end
 	qty = math.floor(num(qty))
 	if qty < 1 or qty > math.max(1, math.floor(num(spec.max))) then return end
+	-- Polish QC M1: selling is never one tap. The first tap arms a confirmation
+	-- ("Sell 32 for +128 coins?"); only a second tap on the same quantity sends.
+	if spec.sell and S.sellArmed ~= qty then
+		S.sellArmed = qty
+		pickTotal.Text = "Sell " .. T.commas(qty) .. " for +" .. T.commas(qty * num(spec.unit)) .. " coins?  Tap again to confirm."
+		buyCustom.Text = "Confirm"
+		picker:SetAttribute("SellArmed", qty)
+		return
+	end
 	closePicker()
 	-- A sell always names its count (a bare sell "<id>" sells the whole stack).
 	actions:Fire(spec.verb, if qty == 1 and not spec.sell then spec.base else spec.base .. ":" .. qty)
@@ -174,6 +184,8 @@ shade.Activated:Connect(closePicker)
 customBox:GetPropertyChangedSignal("Text"):Connect(function()
 	local spec = S.picker
 	local n = tonumber(customBox.Text)
+	-- Editing the custom count disarms a pending sell confirmation.
+	if spec and spec.sell and S.sellArmed then S.sellArmed = nil; buyCustom.Text = "Sell"; picker:SetAttribute("SellArmed", nil) end
 	if spec and n then pickTotal.Text = costText(spec, lots(spec, n)) end
 end)
 local function openPicker(spec: any)
@@ -183,6 +195,8 @@ local function openPicker(spec: any)
 	if not spec.sell and spec.item ~= nil and F.Shop.singleLot(spec.item) then return end
 	if spec.sell and spec.verb ~= "sell" then return end
 	S.picker = spec
+	S.sellArmed = nil
+	picker:SetAttribute("SellArmed", nil)
 	local maxLots = math.clamp(math.floor(num(spec.max)), 1, if spec.sell then F.SELL_MAX else F.Shop.MAX_LOTS)
 	spec.max = maxLots
 	buyCustom.Text = if spec.sell then "Sell" else "Buy"
@@ -317,12 +331,16 @@ local function fly()
 	wind.Parent = root
 	S.ventWind = wind
 	local camera = workspace.CurrentCamera
-	local baseFov = camera and camera.FieldOfView or 70
+	-- Polish QC L2: the base FOV is module-level and captured only while no arc owns
+	-- the camera, so a vent ridden mid-arc never mistakes a kicked FOV for the base.
+	if camera and S.ventFovOwner == nil then S.ventBaseFov = camera.FieldOfView end
+	local baseFov = S.ventBaseFov or 70
 	local side = if (landing - from):Cross(Vector3.yAxis).X >= 0 then 1 else -1
 	local tiltName = "IsleVentTilt" .. token
 	local tilting = false
 	if camera and not reduced then
 		tilting = true
+		S.ventFovOwner = token
 		pcall(function()
 			RunService:BindToRenderStep(tiltName, Enum.RenderPriority.Camera.Value + 1, function()
 				local t = math.clamp((os.clock() - started) / V.FLIGHT, 0, 1)
@@ -335,7 +353,11 @@ local function fly()
 		if tilting then
 			tilting = false
 			pcall(function() RunService:UnbindFromRenderStep(tiltName) end)
-			if camera then camera.FieldOfView = baseFov end
+			-- Only the arc that owns the kick restores it (a newer kicked arc keeps going).
+			if S.ventFovOwner == token then
+				S.ventFovOwner = nil
+				if camera then camera.FieldOfView = baseFov end
+			end
 		end
 		streaks.Enabled = false
 		task.delay(0.5, function() wind:Destroy() end)

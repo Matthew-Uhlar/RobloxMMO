@@ -95,20 +95,43 @@ local base = P.accessorySlots({xp = {}})
 eq(P.accessorySlots({xp = {}, renown = {level = 25}}), base + 2, "renown 25 adds two bag slots")
 eq(P.accessorySlots({xp = {}, renown = {level = "x"}}), base, "malformed renown adds nothing")
 -- Wayfarer's Path data.
-eq(#G.Steps, 11, "eleven onboarding steps (Polish: the journal-mode step closes the Path)")
+eq(#G.Steps, 11, "eleven onboarding steps (Polish QC: the journal-mode step opens the Path)")
 local ids = {}
 for i, s in ipairs(G.Steps) do
 	ok(type(s.title) == "string" and #s.title > 4 and #s.detail > 10 and s.coins > 0 and s.coins <= 100, s.id .. " step text and a small reward")
 	ok((s.flag ~= nil) ~= (s.check ~= nil), s.id .. " is a flag or a check")
 	ids[i] = s.id
 end
-eq(table.concat(ids, ","), "chop,craft,visit,talk,ore,sell,equip,kill,quest,warp,mode", "step order")
+eq(table.concat(ids, ","), "mode,chop,craft,visit,talk,ore,sell,equip,kill,quest,warp", "step order: journal mode first (lead decision)")
 local fresh = {collection = {}, counters = {}, equipment = {}, bestiary = {}, kills = 0}
 for _, s in ipairs(G.Steps) do ok(not G.satisfied(fresh, s, {warps = {}}), s.id .. " not satisfied on a fresh journal") end
 ok(G.satisfied({collection = {Timber = 1}}, G.StepById.chop, {}), "a log satisfies chop")
 ok(G.satisfied({equipment = {weapon = "CopperBlade"}}, G.StepById.equip, {}), "a weapon satisfies equip")
 ok(G.satisfied({}, G.StepById.warp, {warps = {Quarry = true}}), "a known warp satisfies warp")
-eq(G.view({}).id, "chop", "first step shown")
+eq(G.view({}).id, "mode", "first step shown: journal mode")
+eq(G.view({done = {mode = true}}).id, "chop", "then Chop a log")
+-- Polish QC (lead decision): Pell's first contact offers Standard in one tap and Ironman behind explain + PERMANENT confirm.
+do
+	local pell = (Data.Townsfolk and Data.Townsfolk.NPCs or {}).Guide
+	ok(pell ~= nil, "Pell's dialogue graph is reachable")
+	if pell then
+		local std, explain
+		for _, o in ipairs(pell.nodes.hello.options) do
+			if o.verb == "guideMode" and o.item == G.MODE_STANDARD and o.when == "modeOpen" then std = o end
+			if o.to == "mode" and o.when == "modeOpen" then explain = o end
+			ok(not (o.verb == "guideMode" and o.item == G.MODE_IRONMAN), "first contact never seals Ironman in one tap")
+		end
+		ok(std ~= nil and explain ~= nil, "hello offers one-tap Standard and the journal-mode explanation")
+		local toConfirm
+		for _, o in ipairs(pell.nodes.mode.options) do if o.to == "ironman" then toConfirm = o end; ok(o.item ~= G.MODE_IRONMAN, "the explanation does not seal Ironman") end
+		ok(toConfirm ~= nil and has(pell.nodes.ironman.text, "PERMANENT"), "Ironman sits behind the PERMANENT confirmation")
+		local sealOpt
+		for _, o in ipairs(pell.nodes.ironman.options) do if o.item == G.MODE_IRONMAN then sealOpt = o end end
+		ok(sealOpt ~= nil and sealOpt.verb == "guideMode", "the confirmation node seals with the confirm token")
+		ok(Data.Townsfolk.Conditions.guideModeActive({guide = {id = "mode"}}) and not Data.Townsfolk.Conditions.guideModeActive({guide = {id = "chop"}}), "Pell's ! shows while the journal-mode step is open")
+		ok(has(fs.readFile("npc.client.lua"), "T.Conditions.guideModeActive(s)"), "Pell's marker reads the journal-mode step")
+	end
+end
 ok(G.view({done = (function() local d = {} for _, s in ipairs(G.Steps) do d[s.id] = true end return d end)()}).complete, "all done = complete")
 -- Announcement text.
 eq(F.announceText({kind = "collection", item = "Ore"}).head, "COLLECTION UNLOCKED", "collection unlocked head")
@@ -323,7 +346,7 @@ local newbie = player(9001)
 local s = cmd(newbie, "state")
 ok(type(s.renown) == "table" and s.renown.level == 0 and s.renown.xp == 0, "fresh renown 0")
 eq(#s.renown.sources, #RN.Sources, "renown page lists every source")
-ok(type(s.guide) == "table" and s.guide.id == "chop" and s.guide.step == 1 and s.guide.total == #G.Steps, "sidebar objective: Chop a log")
+ok(type(s.guide) == "table" and s.guide.id == "mode" and s.guide.step == 1 and s.guide.total == #G.Steps, "sidebar objective: Choose your journal mode")
 eq(newbie.attrs.RenownLevel, 0, "nameplate attribute RenownLevel")
 eq(newbie.attrs.RenownTitle, "Driftling", "nameplate attribute RenownTitle")
 ok(type(s.announce) == "table" and type(s.announce.list) == "table", "snapshot carries the announcement ring")
@@ -337,10 +360,10 @@ local kinds = {}
 for _, e in ipairs(r.announce.list) do kinds[e.kind .. ":" .. tostring(e.item or e.title or e.skill)] = e.seq end
 ok(kinds["collection:Ore"] ~= nil, "COLLECTION UNLOCKED Ore announced")
 ok(kinds["guide:Gather ore"] ~= nil, "path step announced")
-ok(kinds["objective:Chop a log"] ~= nil, "NEW OBJECTIVE names the first open step")
+ok(kinds["objective:Choose your journal mode"] ~= nil, "NEW OBJECTIVE names the first open step (journal mode)")
 eq(r.coins, coins0, "path rewards are not paid automatically")
 eq(r.guide.owed, G.StepById.ore.coins, "the step's coins are owed")
-eq(r.guide.id, "chop", "the sidebar still shows the first open step")
+eq(r.guide.id, "mode", "the sidebar still shows the first open step")
 -- A second gather does not re-announce the unlock (seq moves on; old entries stay in the ring until they age out).
 local lastSeq = r.announce.seq
 r = use(newbie, rock)
@@ -385,6 +408,37 @@ do
 	eq(st.accountMode, "standard", "snapshot carries the journal mode")
 	local saved = stored(newbie)
 	ok(saved.accountMode == "standard" and saved.guide.done.mode == true, "mode step done and saved (rejoin-safe)")
+	-- Polish QC: toasts follow the new order (mode done -> NEW OBJECTIVE is the next open step).
+	local modeKinds = {}
+	for _, e in ipairs(st.announce.list) do modeKinds[e.kind .. ":" .. tostring(e.title)] = true end
+	ok(modeKinds["guide:Choose your journal mode"] and modeKinds["objective:Chop a log"], "journal mode toast, then NEW OBJECTIVE: Chop a log")
+	eq(st.guide.id, "chop", "sidebar moves on to Chop a log")
+	eq(saved.guide.v, G.VERSION, "saved Path carries the schema version")
+	-- L1: a crew member cannot seal Ironman (guideMode or the legacy verb).
+	local crewed = player(9055)
+	crewed.attrs.CoopId = "77"
+	at(crewed, "Guide")
+	ok(has(cmd(crewed, "guideMode", G.MODE_IRONMAN).message, "crew"), "guideMode Ironman refused in a crew")
+	ok(has(cmd(crewed, "ironman").message, "crew"), "legacy ironman verb refused in a crew")
+	local crewSaved = stored(crewed)
+	ok(crewSaved.ironman ~= true and crewSaved.accountMode == nil, "the crew member's journal stays unsealed")
+	crewed = player(9055)
+	crewed.attrs.CoopId = "77"
+	at(crewed, "Guide")
+	ok(has(cmd(crewed, "guideMode", G.MODE_STANDARD).message, "Standard journal"), "Standard is still open in a crew")
+	-- Migration: an unfinished v1 save (steps keyed by id) keeps its progress; journal mode is the open first step.
+	local midway = seeded(9056, function(pr)
+		pr.started = true
+		pr.guide = {done = {chop = true, craft = true, visit = true, talk = true}, flags = {visit = true, talk = true}, owed = 0}
+	end)
+	local mid = cmd(midway, "state")
+	ok(mid.guide.id == "mode" and mid.guide.step == 1 and mid.guide.done == 4, "v1 progress kept; journal mode is step 1 of the new order")
+	eq(mid.guide.marks, "01111000000", "checklist marks follow the new step order")
+	at(midway, "Guide")
+	ok(has(cmd(midway, "guideMode", G.MODE_IRONMAN).message, "before any progression"), "a started v1 journal can still only pick Standard")
+	cmd(midway, "guideMode", G.MODE_STANDARD)
+	local after = cmd(midway, "state")
+	ok(after.guide.id == "ore" and after.guide.step == 6 and after.guide.owed == G.StepById.mode.coins, "after Standard the sidebar shows Gather ore 6/11 and pays the mode step")
 	-- A brand-new journal can seal Ironman from Pell before any progression; guideMode never sets p.started.
 	local iron = player(9051)
 	at(iron, "Guide")
@@ -399,7 +453,7 @@ do
 	eq(stored(legacyIron).accountMode, "ironman", "the ironman verb records the mode")
 	local done = seeded(9053, function(pr)
 		pr.guide = {done = {}, flags = {}, owed = 0, complete = true}
-		for _, step in ipairs(G.Steps) do if step.id ~= "mode" then pr.guide.done[step.id] = true end end
+		for _, step in ipairs(G.Steps) do if step.id ~= "mode" then pr.guide.done[step.id] = true end end -- v1 save: no mode step
 	end)
 	local doneState = cmd(done, "state")
 	ok(doneState.guide.complete == true and doneState.guide.owed == 0, "a finished Path is not reopened by the new step")
@@ -433,6 +487,22 @@ do
 	eq(twice, 0, "the unlock is announced once")
 	eq(#Data.Features.workerUnlocks(target.output, 1, 1), 0, "nothing re-unlocks within the same tier")
 	eq(#Data.Features.workerUnlocks("Ore", 0, 9), 0, "starter workers never announce")
+	ok(found.skill == nil and not has(text.body, "available at"), "a met level gate adds no 'available at'")
+	-- Polish QC L3: a worker whose skill gate is still ahead says "available at <skill> <level>".
+	local savedLevel = target.level
+	target.level = 98
+	local early = seeded(9057, function(pr)
+		pr.xp.Mining = X[60]
+		for id, def in pairs(Data.Items) do if def.kind == "tool" then pr.items[id] = 1 end end
+		pr.collection[target.output] = need - 1
+		pr.collectionRewards = {[target.output] = 0}
+	end)
+	local gatedRes = use(early, prompt("gather", target.output, Vector3.new(0, 5000, 0)))
+	target.level = savedLevel
+	local gatedEntry
+	for _, e in ipairs(gatedRes.announce.list) do if e.kind == "workerRecipe" and e.worker == target.id then gatedEntry = e end end
+	ok(gatedEntry ~= nil and gatedEntry.skill == "Mining" and gatedEntry.level == 98, "the announcement carries the unmet level gate")
+	ok(has(Data.Features.announceText(gatedEntry).body, "available at Mining 98"), "toast says available at Mining 98")
 end
 -- B2. Retroactive renown, once: a journal from before the update.
 local vet = seeded(9002, function(pr)
@@ -950,15 +1020,26 @@ do
 	ui.replicated:FindFirstChild("IsleQuantityLocal"):Fire({verb = "sell", base = "Ore", item = "Ore", name = "Ore", unit = 4, amount = 1, max = 200, sell = true})
 	ok(S.picker_frame.Visible and S.picker_frame:GetAttribute("Mode") == "sell", "the picker opens in sell mode")
 	ok(has(H.find(S.picker_frame, "Total").Text, "+4 coins") and H.find(S.picker_frame, "BuyCustom").Text == "Sell", "sell totals and button")
+	-- Polish QC M1: the first tap only arms a confirmation; the second tap sends.
+	H.press(H.find(S.picker_frame, "Qty32"))
+	eq(#relayed, relayedBefore, "a single tap in sell mode sells nothing")
+	ok(S.picker_frame.Visible and S.picker_frame:GetAttribute("SellArmed") == 32 and has(H.find(S.picker_frame, "Total").Text, "Sell 32 for +128 coins?")
+		and H.find(S.picker_frame, "BuyCustom").Text == "Confirm", "the first tap asks to confirm the sale")
+	H.press(H.find(S.picker_frame, "Qty1"))
+	eq(#relayed, relayedBefore, "tapping another quantity re-arms instead of selling")
 	H.press(H.find(S.picker_frame, "Qty1"))
 	ok(relayed[relayedBefore + 1] and relayed[relayedBefore + 1][1] == "sell" and relayed[relayedBefore + 1][2] == "Ore:1", "×1 sells exactly one (never the whole stack)")
 	ui.replicated:FindFirstChild("IsleQuantityLocal"):Fire({verb = "sell", base = "Ore", item = "Ore", name = "Ore", unit = 4, amount = 1, max = 200, sell = true})
+	ok(S.picker_frame:GetAttribute("SellArmed") == nil and H.find(S.picker_frame, "BuyCustom").Text == "Sell", "reopening the picker starts disarmed")
 	S.custom.Text = "150"
+	H.press(H.find(S.picker_frame, "BuyCustom"))
+	eq(#relayed, relayedBefore + 1, "custom sell waits for confirmation")
 	H.press(H.find(S.picker_frame, "BuyCustom"))
 	ok(relayed[relayedBefore + 2] and relayed[relayedBefore + 2][2] == "Ore:150", "custom sell quantity past 64 relays")
 	ui.replicated:FindFirstChild("IsleQuantityLocal"):Fire({verb = "sell", base = "SovereignSignet", item = "SovereignSignet", name = "Signet", unit = 100, amount = 1, max = 3, sell = true})
 	ok(S.picker_frame.Visible, "one-of-a-kind items still open the sell picker")
 	S.custom.Text = "4"
+	H.press(H.find(S.picker_frame, "BuyCustom"))
 	H.press(H.find(S.picker_frame, "BuyCustom"))
 	eq(#relayed, relayedBefore + 2, "more than the sellable count is refused locally")
 	H.press(S.shade)
@@ -989,12 +1070,20 @@ do
 	eq(#binds, 1, "camera tilt bound for the arc")
 	binds[1].fn()
 	ok(camera.FieldOfView >= 70, "FOV kick applied")
-	ui.player:SetAttribute("IsleSettingReducedMotion", true)
+	-- Polish QC L2: a second arc started mid-kick keeps the true base FOV.
+	local kicked = camera.FieldOfView
+	ok(kicked > 70, "first arc kicked the FOV")
 	ui.player:SetAttribute("VentFlight", "MosswakeUpdraft:2")
+	eq(S.ventBaseFov, 70, "the base FOV is not recaptured from a kicked camera")
 	heartbeat:Fire(0.016)
-	eq(#unbinds, 1, "the previous arc unbinds its tilt")
-	eq(camera.FieldOfView, 70, "FOV restored after the arc")
-	eq(#binds, 1, "reduced motion: no camera tilt or FOV kick")
+	ok(S.ventFovOwner ~= nil and #binds == 2, "the newer arc owns the kick")
+	binds[2].fn()
+	ui.player:SetAttribute("IsleSettingReducedMotion", true)
+	ui.player:SetAttribute("VentFlight", "MosswakeUpdraft:3")
+	heartbeat:Fire(0.016)
+	eq(#unbinds, 2, "each replaced arc unbinds its tilt")
+	eq(camera.FieldOfView, 70, "FOV restored to the true base after back-to-back arcs")
+	eq(#binds, 2, "reduced motion: no camera tilt or FOV kick")
 	ok(S.ventReduced == true and S.ventWind:FindFirstChild("VentWindStreaks").Rate == VF.WIND_RATE_REDUCED, "reduced motion keeps a lighter wind")
 	ui.player:SetAttribute("IsleSettingReducedMotion", nil)
 	-- Polish: the worker recipe announcement toast.
@@ -1020,6 +1109,12 @@ do
 	eq(live, 0, "every nameplate connection disconnected on leave")
 	eq(S.watches[other], nil, "the watch entry is dropped")
 	ok(string.sub(fs.readFile("features.client.lua"), 1, 9) == "--!strict", "features.client.lua is --!strict")
+	-- Polish QC L4: no live code or layout comment still refers to the retired tutorial tracker.
+	for _, file in ipairs({"ui.client.lua", "combat.client.lua"}) do
+		local text = string.lower(fs.readFile(file))
+		ok(not string.find(text, "under the tutorial tracker", 1, true) and not string.find(text, "tutorialtracker", 1, true), file .. " has no stale tutorial-tracker references")
+	end
+	ok(not has(fs.readFile("shared/GameData.lua"), "old \"tutorial\" node redirects there"), "GameData no longer claims the tutorial node redirects")
 	-- The atlas relays the quantity verbs (server validates).
 	local src = fs.readFile("ui.client.lua")
 	for _, verb in ipairs({"rqBuy", "skillBuy", "petShop", "resonanceSet", "guideClaim"}) do ok(has(src, verb .. "=true"), "atlas relays " .. verb) end

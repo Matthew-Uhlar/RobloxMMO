@@ -246,7 +246,7 @@ local guideHello = T.NPCs.Guide.nodes.hello
 local function labels(list) local out = {} for _, o in ipairs(list) do out[o.label] = true end return out end
 local newOpts = labels(T.visibleOptions(guideHello, fresh(), {}))
 ok(not newOpts["Walk me through the basics"] and not newOpts["Claim my guild contract"], "the retired tutorial option is gone, no claim")
-ok(newOpts["Choose my journal mode"], "a new journal can choose its mode at Pell")
+ok(newOpts["Keep a Standard journal"] and newOpts["Standard or Ironman? Explain journal modes"], "a new journal can choose its mode at Pell's first contact (Standard in one tap)")
 local readyOpts = labels(T.visibleOptions(guideHello, s, {}))
 ok(readyOpts["Claim my guild contract"] and not readyOpts["Walk me through the basics"], "graduate with a ready contract sees the claim")
 local slayerHello = T.NPCs.Slayer.nodes.hello

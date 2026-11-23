@@ -92,14 +92,14 @@ export PATH=$HOME/.cargo/bin:$PATH   # Lune 0.11.1, Rojo 7.7.1 (cargo install ..
 | Merged | What it is |
 |---|---|
 | UI overhaul QC fixes | All 24 findings: satchel drag and click bugs; M opens the Sky Chart; PlayerList core GUI off; the minimap setting hides the whole block; XP-drop lanes; tablet docking; short windows; `Gear.upgraded` guard on sell and drop; 12 lows. |
-| §31 MMO features | `features.client.lua`, `verify-features.luau`: Isle Renown account level (perkStats `renown`, accessory slots at renown 10/25/50/100/150), Wayfarer's Path onboarding (10 steps, claimed via `guideClaim`), announcement toasts, shop quantity `:qty` 1–64, six Skyward Vents, Resonance (Magical Power templates, NPC Oriel Thrumwright). |
+| §31 MMO features | `features.client.lua`, `verify-features.luau`: Isle Renown account level (perkStats `renown`, accessory slots at renown 10/25/50/100/150), Wayfarer's Path onboarding (11 steps since Polish, journal mode first; claimed via `guideClaim`), announcement toasts, shop quantity `:qty` 1–64, six Skyward Vents, Resonance (Magical Power templates, NPC Oriel Thrumwright). |
 | §32 map art | `shared/MapArt.lua`, `verify-map.luau`: 3D ViewportFrame Sky Chart built from the real islands, plus region-tinted minimap plates. |
 
 **Open decisions from §31:**
 - ~~Retire Pell's older 6-step tutorial~~ — done (Polish wave, lead decision): the Wayfarer's Path is the only onboarding; see §31 "Polish".
 - ~~Merchant selling is whole-stack only~~ — done: `sell "<id>:<n>"` with the picker in sell mode.
 - Resonance gathering templates (about +36 fortune / +108 mining speed at 300 MP) need a play-test.
-- **Journal mode timing (needs a lead decision):** the Path's final step keeps the ironman verb's rule (only before progression), but the first Path step (chop a log) already sets `p.started`. Pell therefore offers the mode choice from the first talk; anyone who reaches the last step without choosing can only pick Standard. Options: keep this, move the choice before the first step, or relax the rule to "never used trading, Bazaar, Auction House or a party" with a new tracked flag.
+- ~~Journal mode timing~~ — decided (Polish QC round): "Choose your journal mode" is now the FIRST Path step, offered by Pell at first contact (Standard in one tap, Ironman behind the explanation and the PERMANENT confirmation; refused once started or while in a crew). Saved Path progress is keyed by step id, so nothing is re-indexed; `p.guide.v = 2`. See §31 "Journal mode".
 
 **Follow-ups from §31:**
 - per-player shop stock limits
@@ -123,7 +123,8 @@ export PATH=$HOME/.cargo/bin:$PATH   # Lune 0.11.1, Rojo 7.7.1 (cargo install ..
 - ~~**Hollowcrown Edge** niche~~ — done: Hollow Sunder (+25% vs bosses, +50% vs warded bosses), modelled in verify-bosses. See §25. Play-test the feel against Nihlvar and world bosses.
 - **StreamingEnabled is off.** Enabling it needs an audit of client scripts that read far-away world children (nav, motes, regions, ui). See §27.
 - ~~Stale display names~~ — done: base data says Compass Quay / Sunwheel Downs / Brassfall Cay (ids unchanged).
-- **Vent launch feel** (Polish): FOV kick, banking tilt and wind streaks need a Studio check for comfort and with the Lighting team's director.
+- **Vent launch feel** (Polish): FOV kick, banking tilt and wind streaks need a Studio check for comfort and with the Lighting team's director. (QC L2 fixed back-to-back vents leaving the FOV kicked.)
+- **Polish QC fixes:** sell picker needs a confirming second tap (M1); atlas hides Sell / Sell… for equipped or bagged items (M2); Ironman refused while in a crew (L1); worker recipe toast says "available at <skill> <level>" when gated (L3); stale tutorial-tracker comments updated and the dead `TutorialTracker` lookup removed from the Agility HUD layout (L4). Pell's first-contact journal-mode options need a phone check (two extra dialogue rows).
 - **Gaps from the OSRS videos still unbuilt:**
   - a "verb + target" action label;
   - a per-skill unlock guide in the skills panel;

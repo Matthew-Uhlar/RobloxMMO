@@ -1683,7 +1683,8 @@ end
 
 ------------------------------------------------------------------------------
 -- Townsfolk (Guide team; append-only section). NPCs, dialogue graphs, the
--- new-player tutorial, contextual tips and waypoint rules. Consumed by
+-- (retired, see "Polish" in MMO Features: the Wayfarer's Path replaced it)
+-- new-player tutorial data, contextual tips and waypoint rules. Consumed by
 -- npc.server.lua (ServerScriptService.Townsfolk), npc.client.lua
 -- (StarterPlayerScripts.Dialogue) and nav.client.lua (StarterPlayerScripts.Wayfinder).
 --
@@ -1767,6 +1768,8 @@ T.skillLevel, T.contracts = skillLevel, contracts
 ------------------------------------------------------------------------------
 -- Tutorial: the first ten minutes (gather → craft → equip → fight → bank → contract).
 -- Every check reads only the server snapshot, so progress survives rejoins.
+-- RETIRED (Polish, T.TUTORIAL_RETIRED): kept as pure data only; nothing offers,
+-- tracks or draws it. Onboarding is the Wayfarer's Path (Data.Features.Guide).
 ------------------------------------------------------------------------------
 T.Tutorial = {
 	{id="gather",title="Gather supplies",
@@ -11405,6 +11408,14 @@ local function anyCollected(p, skill)
 end
 local function anyCount(t) for _, n in pairs(tab(t)) do if whole(n) > 0 then return true end end return false end
 G.Steps = {
+	-- Polish QC (lead decision): the account-mode choice OPENS the Path. Gathering
+	-- a log sets p.started, so a closing step could only ever pick Standard. Pell
+	-- offers it at first contact: Standard is one tap, Ironman sits behind his
+	-- explanation and a PERMANENT confirmation, and follows the ironman verb's rule
+	-- (refused once p.started, or while in a crew). Choosing at Pell also counts as
+	-- finding him (visit / talk flags). Steps are saved by id, never by index.
+	{id="mode",title="Choose your journal mode",detail="Talk to Pell in Compass Quay: keep a Standard journal in one tap, or seal an Ironman journal before you gather, craft or fight.",coins=50,
+		check=function(p) return p.accountMode == "standard" or p.accountMode == "ironman" or p.ironman == true end},
 	{id="chop",title="Chop a log",detail="Hold the prompt on a tree on your home isle or Mosswake Grove.",coins=25,
 		check=function(p) return anyCollected(p, "Woodcutting") end},
 	{id="craft",title="Craft at a workbench",detail="Craft anything at a Workbench, Forge, Hearth or Cauldron (Atlas › Workshop).",coins=40,
@@ -11422,21 +11433,18 @@ G.Steps = {
 		check=function(p) return next(tab(tab(p.regionQuests).accepted)) ~= nil or next(tab(p.questsDone)) ~= nil or whole(p.questCompleted) > 0 end},
 	{id="warp",title="Learn a warp",detail="Buy a warp scroll from Ilsabet the Warp Keeper and read it.",coins=100,
 		check=function(_, ctx) return next(tab(tab(ctx).warps)) ~= nil end},
-	-- Polish (lead decision): the account-mode choice closes the Path. Standard is
-	-- always open; Ironman follows the ironman verb's rule (only before any
-	-- progression), so it can be chosen from Pell at any point before that too.
-	{id="mode",title="Choose your journal mode",detail="Talk to Pell: keep a Standard journal, or seal an Ironman journal (only before any progression).",coins=50,
-		check=function(p) return p.accountMode == "standard" or p.accountMode == "ironman" or p.ironman == true end},
 }
 -- Wayfinder waypoints per step (T.parseTarget specs; Pell's "Show me the way").
 G.Waypoints = {
 	chop={"gather:Timber","region:Meadow"}, craft={"station:Workbench","station:Forge"}, visit={"region:Hub"}, talk={"npc:Guide"},
 	ore={"gather:Ore","region:Quarry"}, sell={"npc:Merchant"}, kill={"monster:BramblebackBoar","region:Meadow"},
-	warp={"npc:WarpKeeper"}, mode={"npc:Guide"},
+	warp={"npc:WarpKeeper"}, mode={"npc:Guide","region:Hub"},
 }
 -- Account modes (verb guideMode): Standard, or Ironman with the confirm token.
 G.MODE_STANDARD, G.MODE_IRONMAN = "standard", "ironman:confirm"
 G.COMPLETE_COINS = 250
+-- Saved p.guide schema: 2 = the journal-mode step opens the Path (Features.migrate).
+G.VERSION = 2
 G.StepById = {}
 G.MAX_OWED = G.COMPLETE_COINS
 for i, s in ipairs(G.Steps) do s.index = i; G.StepById[s.id] = s; G.MAX_OWED += s.coins end
@@ -11481,7 +11489,9 @@ function F.announceText(e)
 		return {head=string.upper(RN.NAME) .. " " .. whole(e.level), body=t.title .. (if type(e.reward) == "string" then "  ·  " .. e.reward else ""), color=t.color}
 	elseif e.kind == "workerRecipe" then
 		local t = Data.Workers and type(e.worker) == "string" and Data.Workers.TypeById[e.worker]
-		return {head="WORKER RECIPE UNLOCKED", body=(t and t.name or tostring(e.worker)) .. "  ·  " .. (item and item.name or tostring(e.item)) .. " collection " .. whole(e.tier), color="FFAA00"}
+		-- Polish QC L3: a skill gate still ahead reads "available at <skill> <level>".
+		local gate = if type(e.skill) == "string" and whole(e.level) > 0 then "  ·  available at " .. e.skill .. " " .. whole(e.level) else ""
+		return {head="WORKER RECIPE UNLOCKED", body=(t and t.name or tostring(e.worker)) .. "  ·  " .. (item and item.name or tostring(e.item)) .. " collection " .. whole(e.tier) .. gate, color="FFAA00"}
 	elseif e.kind == "guide" then
 		return {head=string.upper(G.NAME), body=tostring(e.title) .. (if whole(e.coins) > 0 then "  ·  +" .. whole(e.coins) .. " coins" else ""), color="6FE3C8"}
 	end
@@ -11650,6 +11660,10 @@ T.Conditions.guideTalkActive = function(s)
 	local g = tab(tab(s).guide)
 	return g.id == "talk"
 end
+-- Polish QC: the Path's first step (journal mode) is open: Pell shows "!".
+T.Conditions.guideModeActive = function(s)
+	return tab(tab(s).guide).id == "mode"
+end
 T.Conditions.guideRewardReady = function(s)
 	return whole(tab(tab(s).guide).owed) > 0
 end
@@ -11676,9 +11690,9 @@ end
 -- Polish (lead decision): Pell's older 6-step client tutorial is retired in
 -- favour of the Wayfarer's Path. T.Tutorial / T.tutorialState stay as pure data
 -- (old snapshots and tests still evaluate), but nothing offers or tracks it:
--- tutorialActive is always false, Pell's "Walk me through the basics" opens the
--- Path node, the old "tutorial" node redirects there, and the "next" tip reads
--- the Path step. The Path's final step is the account-mode choice.
+-- tutorialActive is always false, Pell's "Walk me through the basics" becomes
+-- "Walk me through the Wayfarer's Path" (node path), the old "tutorial" node is
+-- removed, and the "next" tip reads the Path step. The Path's first step is the account-mode choice.
 T.TUTORIAL_RETIRED = true
 T.Conditions.tutorialActive = function() return false end
 T.Conditions.pathActive = function(s)
@@ -11706,13 +11720,17 @@ if pell and pell.nodes then
 	for _, o in ipairs(pell.nodes.hello.options) do
 		if o.to == "tutorial" then o.label, o.to, o.when = "Walk me through the Wayfarer's Path", "path", "pathActive" end
 	end
-	table.insert(pell.nodes.hello.options, 3, {label="Choose my journal mode",to="mode",when="modeOpen"})
-	pell.nodes.path = {path=true,text="The Wayfarer's Path takes you from your first log to your first warp. Here's your next step:",options={
+	-- Polish QC (lead decision): first contact offers the journal mode. Standard is
+	-- one tap; Ironman is behind the explanation (node mode) and the PERMANENT
+	-- confirmation (node ironman).
+	table.insert(pell.nodes.hello.options, 1, {label="Keep a Standard journal",verb="guideMode",item=G.MODE_STANDARD,when="modeOpen"})
+	table.insert(pell.nodes.hello.options, 2, {label="Standard or Ironman? Explain journal modes",to="mode",when="modeOpen"})
+	pell.nodes.path = {path=true,text="The Wayfarer's Path takes you from choosing your journal to your first warp. Here's your next step:",options={
 		{label="Show me the way",waypoint="path"},
 		{label="Choose my journal mode",to="mode",when="modeOpen"},
 		{label="Claim my Wayfarer's Path rewards",verb="guideClaim",when="guideRewardReady"},
 		{label="Back",to="hello"}}}
-	-- The retired tutorial node now shows the Path (old references keep working).
+	-- The retired tutorial node is removed; its only entry was rewired to node path above.
 	pell.nodes.tutorial = nil
 	pell.nodes.mode = {text="Every journal picks a mode. STANDARD: trade, use the Bazaar and Auction House, and hunt with anyone. "
 		.. "IRONMAN: a permanent charter. No player exchange, Bazaar or Auction House, Warden hunts are solo, and party credit needs a real share of the damage. "

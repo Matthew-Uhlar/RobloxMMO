@@ -246,8 +246,11 @@ local function collect(p,item,count)
 			Features.announce(p,{kind="collectionTier",item=item,tier=tier}) -- §31
 			-- Polish: a tier that unlocks a worker type announces it (SkyBlock's minion recipe unlock).
 			for _,t in ipairs(Data.Features.workerUnlocks(item,claimed,tier)) do
-				Features.announce(p,{kind="workerRecipe",item=item,worker=t.id,tier=t.collectionTier})
-				note(p,"Worker recipe unlocked: "..t.name.."! Assign it at your worker slots.")
+				-- Polish QC L3: when the worker's skill level gate is not met yet, say so.
+				local gated=type(t.skill)=="string" and (tonumber(t.level) or 0)>level(p.xp[t.skill])
+				Features.announce(p,{kind="workerRecipe",item=item,worker=t.id,tier=t.collectionTier,
+					skill=if gated then t.skill else nil,level=if gated then t.level else nil})
+				note(p,"Worker recipe unlocked: "..t.name..(if gated then "! Available at "..t.skill.." "..t.level.."." else "! Assign it at your worker slots."))
 			end
 		end
 		if Mastery.tokenNote then Mastery.tokenNote(p,claimed,tier) end
@@ -6774,6 +6777,12 @@ do
 		return b
 	end
 	local function guideCtx(p) return {warps=Regions.warps(p)} end
+	-- Polish QC L1: Ironman is never sealed while in a crew (crews are single-mode;
+	-- coop.server.lua publishes CoopId while the player is a member).
+	function Features.inCrew(player)
+		local ok,id=pcall(function() return player:GetAttribute("CoopId") end)
+		return ok and id~=nil
+	end
 	local function totalLevel(p)
 		local total=0
 		for _,skill in ipairs(Data.SkillOrder) do total+=level(p.xp[skill]) end
@@ -6791,6 +6800,12 @@ do
 		g.complete=g.complete==true or nil
 		g.skipped=g.skipped==true or nil
 		g.owed=math.min(whole(g.owed),G.MAX_OWED)
+		-- Polish QC (lead decision): schema 2 moved the journal-mode step to the front
+		-- of the Path. Progress is keyed by step id (done / flags), so no index is
+		-- rewritten: an unfinished v1 Path keeps every step it walked and now shows
+		-- the journal mode as its open first step (Standard only once started); a
+		-- finished one stays finished below, unpaid. Future reorders bump G.VERSION.
+		g.v=G.VERSION
 		-- Polish: journal mode is "standard" | "ironman" | nil (an Ironman flag wins).
 		if p.ironman==true then p.accountMode="ironman"
 		elseif p.accountMode~="standard" then p.accountMode=nil end
@@ -6974,13 +6989,18 @@ do
 			-- token and follows the ironman verb's rule (only before any progression).
 			if not npcNear(player,"Guide") then return "Find Pell Ashgrove in Compass Quay to choose your journal mode." end
 			if p.ironman then p.accountMode="ironman"; return "Your journal is already an Ironman journal. It cannot be undone." end
+			-- Choosing at Pell also counts as finding him (Path steps visit / talk).
+			local g=guideOf(p)
 			if item==G.MODE_STANDARD then
 				p.accountMode="standard"
+				g.flags.talk=true; g.flags.visit=true
 				return "Pell: \"A Standard journal it is: trade, bid and hunt with anyone.\""
 			elseif item==G.MODE_IRONMAN then
-				if p.started then return "Ironman can only be sealed before any progression. Your journal stays Standard; choose Standard to finish the Path." end
+				if p.started then return "Ironman can only be sealed before any progression. Your journal stays Standard; choose Standard to continue the Path." end
+				if Features.inCrew(player) then return "Ironman can't be sealed while you are in a crew. Leave your crew first, or keep a Standard journal." end
 				p.ironman=true
 				p.accountMode="ironman"
+				g.flags.talk=true; g.flags.visit=true
 				return "Ironman journal sealed. No player exchange, Bazaar or Auction House; your Warden hunts are solo."
 			end
 			return "Choose Standard, or confirm the Ironman charter."
@@ -7757,6 +7777,7 @@ local function perform(player,verb,item,prompt)
 		return if ok and type(message)=="string" then message else "The recall charm flickers. Try again shortly."
 	elseif verb=="ironman" then
 		if p.started then return "Choose Ironman before starting progression, construction, hunts or trading." end
+		if Features.inCrew and Features.inCrew(player) then return "Ironman can't be sealed while you are in a crew. Leave your crew first." end -- Polish QC L1
 		p.ironman=true
 		p.accountMode="ironman" -- Polish: also completes the Path's journal-mode step
 		return "Ironman journal sealed. Your Warden hunts are solo."
