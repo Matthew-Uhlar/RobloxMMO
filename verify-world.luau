@@ -294,8 +294,8 @@ for _,obj in world:GetDescendants() do
 	elseif obj:IsA("ProximityPrompt") then
 		prompts+=1
 		check(obj.Parent:IsA("BasePart"),"prompt has physical target")
-	elseif obj:IsA("SurfaceGui") then
-		signs+=1
+	elseif obj:IsA("SurfaceGui") or (obj:IsA("BillboardGui") and obj.Name=="SignBillboard") then
+		signs+=1 -- §28 v2: floating sign billboards (ledgers stay SurfaceGui boards)
 	end
 end
 check(parts>300 and prompts>=25 and signs>=20,"world landmarks and interactions exist")
@@ -1129,13 +1129,12 @@ do
 			shapeCount+=1
 		end
 	end
-	local signShapes={Signboard=true,SignPost=true,Banner=true,SignCarvedBoard=true,SignScrollBoard=true,SignArrowBoard=true,
-		SignPlaqueBoard=true,BannerCloth=true,SignNoticeBoard=true}
+	-- §28 v2: static signs are floating billboards on one invisible anchor (no sign meshes).
 	local signBoards=0
 	for _,gui in world:GetDescendants() do
-		if gui:IsA("SurfaceGui") and gui.Parent:IsA("BasePart") and gui:FindFirstAncestor("Islands") then
+		if gui:IsA("BillboardGui") and gui.Name=="SignBillboard" and gui:FindFirstAncestor("Islands") then
 			signBoards+=1
-			check(signShapes[gui.Parent:GetAttribute("Shape")]==true,gui.Parent.Name.." sign carries a sign mesh slot")
+			check(gui.Parent:GetAttribute("SignAnchor")==true and gui.Parent:GetAttribute("Shape")==nil,gui.Parent.Name.." sign floats on a mesh-free anchor")
 		end
 	end
 	check(signBoards>=40,"signs on the static islands ("..signBoards..")")
