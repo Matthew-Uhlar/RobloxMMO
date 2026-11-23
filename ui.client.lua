@@ -10231,7 +10231,8 @@ end
 UI.relay={equip=true,unequip=true,consume=true,sell=true,accessory=true,petAdopt=true,drop=true,satchelMove=true,satchelSort=true,recall=true,
 	rqBuy=true,skillBuy=true,petShop=true,resonanceSet=true,guideClaim=true, -- §31
 	helperPin=true,goalSet=true,goalRemove=true,goalClear=true,priceCheck=true, -- §33
-	prayerQuickToggle=true} -- §34 quick-prayer orb (one atomic verb, queued, never dropped). Earlier: quantity picker (features.client.lua), Resonance, Path rewards
+	prayerQuickToggle=true, -- §34
+	raidHost=true,raidJoin=true,raidLeave=true,raidReady=true,raidChallenge=true,raidStart=true,raidUse=true,raidTitle=true} -- §38 raid.client.lua (party board, raid HUD, Raid Log). §34 quick-prayer orb (one atomic verb, queued, never dropped). Earlier: quantity picker (features.client.lua), Resonance, Path rewards
 local remote = ReplicatedStorage:WaitForChild("IsleAction")
 local updates = ReplicatedStorage:WaitForChild("IsleUpdate")
 local function accept(data,quiet)

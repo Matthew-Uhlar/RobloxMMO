@@ -14688,4 +14688,730 @@ end
 -- <<< END Contests & Trophy Angling <<<
 ------------------------------------------------------------------------------
 
+------------------------------------------------------------------------------
+-- >>> BEGIN Raids (Raid team; append-only section, §38) >>>
+-- The Undertide Vaults: an original party raid for 2-8 players
+-- (docs/DEPTH-CONTRACT.md §38). Pure data and pure rules only:
+-- raids.server.lua runs the portal lobbies, the instanced vault complex, the
+-- room sequence (combat / puzzle / resource / boss), points and settlement;
+-- combat.server.lua's Raids section runs the encounters on the Lairs creature
+-- machinery (lair-shaped defs: stances, telegraphs, tiles, adds, sigils);
+-- server.server.lua's Raids block validates verbs, pays rewards and keeps the
+-- Raid Log; raid.client.lua draws the party lobby, the raid HUD and the log.
+------------------------------------------------------------------------------
+do
+local RD = {}
+Data.Raids = RD
+local LR = Data.Lairs
+local CS = Data.CombatStyles
+local Rar = Data.Rarity
+local function tab(v) return if type(v) == "table" then v else {} end
+local function whole(v, cap)
+	v = tonumber(v)
+	if not v or v ~= v or v < 0 then return 0 end
+	v = math.floor(v)
+	if cap and v > cap then return cap end
+	return v
+end
+RD.whole = whole
+
+RD.ID = "UndertideVaults"
+RD.NAME = "The Undertide Vaults"
+RD.COMBAT = 70              -- Combat level to host or join (between the Pyrewarden and Nihlvar)
+RD.REGION = "Tidewater"     -- the portal's region gate
+RD.ISLE = "Tidewater Shoals"
+RD.MIN_PARTY, RD.MAX_PARTY = 2, 8
+RD.MAX_RAIDS = 3            -- concurrent raid complexes per server
+RD.MAX_LOBBIES = 12
+RD.LOBBY_SECONDS = 600      -- an unstarted lobby closes after this long
+RD.PORTAL_RANGE = 30        -- studs from the portal to host, join or start
+RD.PORTAL_SECONDS = 300     -- a portal visit keeps the lobby board open this long
+RD.ROOM_GAP = 6             -- countdown before a room's encounter / puzzle starts
+RD.ADVANCE_SECONDS = 6      -- a cleared room moves the party on after this long
+RD.EXIT_SECONDS = 15        -- after the Regent falls, members return to the portal
+RD.REJOIN_SECONDS = 90      -- a dropped member may rejoin the live raid this long
+RD.REJOIN_GRACE = 15        -- a rejoined member's idle clock gets at least this long
+RD.REJOIN_VERIFY = 3        -- a rejoin re-applies the room position this long
+RD.AWAY_SECONDS = 10        -- outside the complex this long (alive): left the raid
+RD.IDLE_SECONDS = 90        -- no movement or credited action this long: removed (no reward)
+RD.EMPTY_SECONDS = 90       -- nobody inside this long: the raid ends
+RD.RECENT_SECONDS = 90      -- credit: a credited action this recently before the Regent falls
+RD.MIN_SHARE = 0.25         -- credit floor: personal points >= 25% of an equal share of the team's
+RD.MOVE_STUDS = 3           -- moving this far between samples counts as activity (idle clock)
+RD.FLEE_HP, RD.FLEE_SECONDS = 0.25, 3 -- a disconnect below 25% health within 3 s of a hit is a death
+RD.PARTY_HP = 0.85          -- extra encounter health per extra member (at the encounter's rise)
+RD.PARTY_DAMAGE = 0.05      -- extra encounter damage per extra member
+RD.ARENA_RANGE = LR.ARENA_RANGE
+RD.GRID, RD.CELL = LR.GRID, LR.CELL
+RD.REWARD_RETRY, RD.REWARD_WINDOW = 5, 120
+RD.RUN_MEMORY = 20          -- credited run ids remembered per journal (a repeat is refused)
+RD.KEEP_LOG = 12
+RD.MAX_KC = 1000000
+RD.WARD_MULT = 0.7          -- damage taken while a brewed ward is up (potion)
+RD.SUPPLY_COOLDOWN = 4      -- seconds between supplies per member
+RD.GATHER_COOLDOWN = 1.5    -- seconds between gathers per member
+RD.PUZZLE_SECONDS = 240     -- a puzzle not solved by then grinds open (no completion points)
+RD.RESOURCE_SECONDS = 210   -- the resource room closes after this long (whatever was made)
+RD.RAW_PER_SUPPLY = 2
+
+-- Points (OSRS-raid style, original numbers). Personal points come from
+-- damage (a combat room's pool is `combat` x party, split by damage share;
+-- the Regent's is `boss` x party), room clears (every member present),
+-- puzzle steps (the solver; each step pays once per run), resource work
+-- (gather / brew / cook, capped per member) and lose `death` of the total on
+-- each death. Challenge Mode multiplies every point by `challenge`.
+RD.Points = {combat=3000, boss=6000, clear=500, puzzleStep=250, puzzleMistake=150, gather=40, craft=160, resourceCap=1600,
+	death=0.25, challenge=1.2}
+RD.POINTS_PER_PERCENT = 4000 -- team points per 1% unique ("purple") chance
+RD.UNIQUE_CAP = 0.65
+RD.LOOT_POINTS = 2500       -- one regular loot roll per this many personal points
+RD.MAX_ROLLS = 12
+RD.COINS_PER_POINT = 0.35
+RD.Challenge = {hp=1.35, damage=1.3}
+
+-- Encounters ---------------------------------------------------------------
+-- Lair-shaped definitions (docs §25) so combat.server.lua's Lairs creature
+-- machinery runs them: stances (prayer switching), disc / ring / safe /
+-- tiles telegraphs (styleless), adds (a ward: the encounter takes LR.WARD
+-- damage while they live) and sigils (ordered, the encounter is immune).
+local function attack(kind, name, fields)
+	local a = {kind=kind,name=name}
+	for k, v in pairs(fields or {}) do a[k] = v end
+	return a
+end
+RD.CombatOrder = {"Gloomfang","Siltmother","Coralglass","Runebound","Undine","Shoalrunner"}
+RD.BOSS = "Thalvorn"
+RD.Encounters = {
+	Gloomfang={name="Gloomfang Sentinel",short="Gloomfang",roomName="Hall of Vigils",level=72,hp=110000,damage=300,defense=200,xp=4400,speed=14,
+		color="5FA8D3",body="sentinel",arenaColor="2E4A5C",floor="Slate",weakness="ranged",stances={"melee","magic"},stanceEvery=2,enrage=180,duration=300,
+		mechanic="Prayer switching",
+		blurb="A vault-sentry that trades fang and glyph every second swing. Keep your Ward in step with it.",
+		mechanics={"Stance switch every 2 attacks: Ward of Fangs / Ward of Glyphs","Unsealed (50%): all three styles","Fang Lunge and Watcher's Gaze telegraphs"},
+		phases={
+			{at=1,name="Watchful",rotation={"fang","gaze"},interval=7},
+			{at=0.5,name="Unsealed",stances={"melee","magic","ranged"},rotation={"fang","gaze","fang"},interval=5.5},
+		},
+		attacks={fang=attack("disc","Fang Lunge",{radius=7,windup=1.8,mult=2.0}),gaze=attack("ring","Watcher's Gaze",{radius=11,windup=2.2,mult=2.0})}},
+	Siltmother={name="The Siltmother",short="Siltmother",roomName="Silt Nursery",level=70,hp=100000,damage=280,defense=180,xp=4000,speed=12,
+		color="8C7A5B",body="crab",arenaColor="3E3A2E",floor="Sand",weakness="magic",stances={"melee"},stanceEvery=99,enrage=180,duration=300,
+		mechanic="Brood ward",
+		blurb="A crab-matriarch buried in silt. Her siltlings shield her: clear them, then strike.",
+		mechanics={"Brood ward: Siltlings shield her (65% less damage) until slain","Silt Spit and Silt Burst telegraphs"},
+		phases={
+			{at=1,name="Brooding",rotation={"brood","spit","burst"},interval=7},
+			{at=0.5,name="Spawning",rotation={"spit","brood","burst","spit"},interval=5.5},
+		},
+		attacks={brood=attack("adds","Silt Brood",{add="Siltling",count=4,radius=13}),spit=attack("disc","Silt Spit",{radius=7,windup=1.8,mult=2.0}),
+			burst=attack("ring","Silt Burst",{radius=11,windup=2.2,mult=2.2})}},
+	Coralglass={name="Coralglass Warden",short="Coralglass",roomName="Coralglass Atrium",level=74,hp=115000,damage=300,defense=210,xp=4600,speed=11,
+		color="E58FB0",body="colossus",arenaColor="4A3446",floor="Glass",weakness="melee",stances={"ranged"},stanceEvery=99,enrage=200,duration=300,tiles=true,
+		mechanic="Positional lattice",
+		blurb="A warden grown from living coral. The atrium floor charges under its song: read the lattice and step clear.",
+		mechanics={"Reef Lattice: charged tiles strike after 2.6 s","Coral Shard telegraph on a member","Ranged stance: Ward of Quills"},
+		phases={
+			{at=1,name="Tidepool",rotation={"lattice","shard"},interval=7.5},
+			{at=0.5,name="Riptide",rotation={"lattice","shard","lattice"},interval=6},
+		},
+		attacks={lattice=attack("tiles","Reef Lattice",{count=10,windup=2.6,mult=2.4}),shard=attack("disc","Coral Shard",{radius=6,windup=1.6,mult=1.8})}},
+	Runebound={name="Runebound Colossus",short="Runebound",roomName="Seal Vault",level=75,hp=120000,damage=320,defense=240,xp=4800,speed=10,
+		color="C9A54A",body="golem",arenaColor="4A3E22",floor="Basalt",weakness="melee",stances={"magic","ranged"},stanceEvery=3,enrage=200,duration=300,
+		mechanic="Ordered seals",
+		blurb="A colossus chained by three tide seals. It cannot be harmed until seals I, II and III break, in order.",
+		mechanics={"Tide Seals: immune until seals I, II, III fall in order","Stance switch every 3 attacks: Ward of Glyphs / Ward of Quills","Vault Quake and Rune Bolt telegraphs"},
+		phases={
+			{at=1,name="Bound",rotation={"seals","quake","bolt"},interval=7},
+			{at=0.5,name="Unbound",rotation={"quake","seals","bolt","quake"},interval=6},
+		},
+		attacks={seals=attack("sigils","Tide Seals",{add="TideSeal",count=3,radius=16}),quake=attack("ring","Vault Quake",{radius=12,windup=2.2,mult=2.2}),
+			bolt=attack("disc","Rune Bolt",{radius=7,windup=1.7,mult=2.0})}},
+	Undine={name="Wailing Undine",short="Undine",roomName="Lament Pool",level=72,hp=105000,damage=290,defense=190,xp=4200,speed=13,
+		color="7FD6C8",body="wraith",arenaColor="24403E",floor="Slate",weakness="ranged",stances={"magic"},stanceEvery=99,enrage=180,duration=300,
+		mechanic="Safe zone",
+		blurb="Her lament floods the pool. When she draws breath, only the calm water beside her is safe.",
+		mechanics={"Drowning Lament: only beside her is safe","Wail ring and Brine Spray telegraphs","Magic stance: Ward of Glyphs"},
+		phases={
+			{at=1,name="Lament",rotation={"lament","wail"},interval=8},
+			{at=0.5,name="Dirge",rotation={"lament","wail","lament","spray"},interval=6},
+		},
+		attacks={lament=attack("safe","Drowning Lament",{radius=9,windup=3.0,mult=2.6}),wail=attack("ring","Wail",{radius=12,windup=2.2,mult=2.2}),
+			spray=attack("disc","Brine Spray",{radius=6,windup=1.6,mult=1.8})}},
+	Shoalrunner={name="Shoalrunner",short="Shoalrunner",roomName="Shoal Run",level=70,hp=100000,damage=260,defense=170,xp=4000,speed=18,
+		color="4F8FBF",body="lurker",arenaColor="1E3448",floor="Slate",weakness="magic",stances={"melee","ranged"},stanceEvery=4,enrage=150,duration=300,
+		mechanic="Spread out",
+		blurb="A fast hunter that hurls torrents at whoever stands closest together. Spread out, keep moving.",
+		mechanics={"Torrent: rapid telegraphs on members (spread out)","Stance switch every 4 attacks","Early enrage (2:30)"},
+		phases={
+			{at=1,name="Hunting",rotation={"torrent","torrent","surge"},interval=5},
+			{at=0.5,name="Frenzy",rotation={"torrent","surge","torrent","torrent"},interval=4},
+		},
+		attacks={torrent=attack("disc","Torrent",{radius=6,windup=1.5,mult=1.8}),surge=attack("ring","Shoal Surge",{radius=10,windup=2.0,mult=2.0})}},
+	Thalvorn={name="Thalvorn, the Undertide Regent",short="Thalvorn",roomName="Drowned Throne",level=90,hp=320000,damage=400,defense=300,xp=12800,speed=13,
+		color="3FB8AF",body="serpent",arenaColor="12302E",floor="Slate",weakness="magic",stances={"melee","ranged","magic"},stanceEvery=3,enrage=420,duration=600,
+		tiles=true,boss=true,mechanic="Final boss",
+		blurb="The Regent of the drowned vaults. Match his stances with your Wards, break his anchors in order, and keep to the calm water when the crown drowns.",
+		mechanics={"Stance cycle melee → ranged → magic every 3 attacks (all three Wards)","Undertow (66%): Tide Anchors I–III (ordered, immune) and the Undertow Lattice",
+			"Drowning Crown (33%): Drowned Thralls ward him; Maelstrom: only beside him is safe","Weakness turns magic → ranged → melee by phase"},
+		phases={
+			{at=1,name="Regent's Court",weakness="magic",rotation={"crash","tide","crash"},interval=7},
+			{at=0.66,name="Undertow",weakness="ranged",rotation={"anchors","lattice","crash","lattice"},interval=6},
+			{at=0.33,name="Drowning Crown",weakness="melee",rotation={"thralls","maelstrom","lattice","crash"},interval=5},
+		},
+		attacks={crash=attack("disc","Crown Crash",{radius=7,windup=1.7,mult=2.0}),tide=attack("ring","Regal Tide",{radius=12,windup=2.2,mult=2.4}),
+			lattice=attack("tiles","Undertow Lattice",{count=12,windup=2.5,mult=2.5}),maelstrom=attack("safe","Maelstrom",{radius=9,windup=3.0,mult=2.8}),
+			anchors=attack("sigils","Tide Anchors",{add="TideAnchor",count=3,radius=16}),thralls=attack("adds","Drowned Thralls",{add="DrownedThrall",count=4,radius=13})}},
+}
+RD.Adds = {
+	Siltling={name="Siltling",level=60,hp=6000,damage=120,defense=60,xp=120,speed=15,color="B8A37A",style="melee",body="mite"},
+	TideSeal={name="Tide Seal",level=70,hp=20000,damage=0,defense=150,xp=300,speed=0,color="E8C76A",style="magic",body="wisp",stationary=true},
+	TideAnchor={name="Tide Anchor",level=88,hp=30000,damage=0,defense=200,xp=450,speed=0,color="6FE3D6",style="magic",body="wisp",stationary=true},
+	DrownedThrall={name="Drowned Thrall",level=80,hp=9000,damage=160,defense=80,xp=180,speed=14,color="4A7A78",style="melee",body="lurker"},
+}
+for id, def in pairs(RD.Encounters) do
+	def.id, def.lair, def.raid = id, true, RD.ID
+	def.attackStyle = def.stances[1]
+	def.weakness, def.defenceStyle = LR.triangle(def.weakness)
+	def.coins, def.drops = 0, {}
+	for k, a in pairs(def.attacks) do a.id = k end
+end
+for id, def in pairs(RD.Adds) do
+	def.id, def.lair, def.lairAdd, def.raid = id, true, true, RD.ID
+	def.attackStyle, def.weakness, def.defenceStyle = def.style, CS.beatenBy[def.style], CS.beats[def.style]
+	def.coins, def.drops = 0, {}
+end
+-- Lair adds resolve raid adds too (combat's lrRegisterAdd / spawnAdds read
+-- LR.Adds[id]); pairs(LR.Adds) still sees the lair adds only.
+setmetatable(LR.Adds, {__index = RD.Adds})
+-- Lookups by id reach raid encounters and adds (damage XP); pairs() never sees them.
+do
+	local mt = getmetatable(Data.Monsters)
+	local prior = mt and mt.__index
+	setmetatable(Data.Monsters, {__index = function(t, id)
+		local v
+		if type(prior) == "function" then v = prior(t, id) elseif type(prior) == "table" then v = prior[id] end
+		if v ~= nil then return v end
+		return rawget(RD.Encounters, id) or rawget(RD.Adds, id)
+	end})
+end
+function RD.encounter(id) return type(id) == "string" and rawget(RD.Encounters, id) or nil end
+-- Scaling by party size (members inside at the encounter's rise) and mode.
+function RD.partyHp(def, n, challenge)
+	n = math.clamp(math.floor(tonumber(n) or 1), 1, RD.MAX_PARTY)
+	return math.floor(def.hp * (1 + RD.PARTY_HP * (n - 1)) * (if challenge then RD.Challenge.hp else 1))
+end
+function RD.partyDamage(def, n, challenge)
+	n = math.clamp(math.floor(tonumber(n) or 1), 1, RD.MAX_PARTY)
+	return math.floor(def.damage * (1 + RD.PARTY_DAMAGE * (n - 1)) * (if challenge then RD.Challenge.damage else 1))
+end
+-- A per-fight copy of an encounter with its damage scaled (combat reads
+-- def.damage again at enrage, so the scaling must live on the def).
+function RD.scaledDef(id, n, challenge)
+	local def = RD.encounter(id)
+	if not def then return nil end
+	local copy = table.clone(def)
+	copy.damage = RD.partyDamage(def, n, challenge)
+	copy.base = def
+	return copy
+end
+
+-- Puzzle and resource rooms ----------------------------------------------------
+RD.PuzzleOrder = {"Glyphs","Seals","Valves"}
+RD.Puzzles = {
+	Glyphs={name="Glyph Concord",color="B48CFF",arenaColor="2A2240",
+		blurb="Six glyph plates and a lectern that hums a sequence. Press the plates in its order; a wrong glyph restarts the chant.",
+		mechanic="Sequence"},
+	Seals={name="Weighted Seals",color="E8C76A",arenaColor="3A3220",
+		blurb="Lit seals must all be held down at once for a few heartbeats, three times over. Stand together, apart.",
+		mechanic="Coordination"},
+	Valves={name="Tide Valves",color="6FE3D6",arenaColor="183A3A",
+		blurb="Five valves in a ring. Turning one also turns its two neighbours. Open them all to drain the chamber.",
+		mechanic="Logic"},
+}
+RD.GLYPHS = {"Tide","Pearl","Gale","Ember","Star","Moon"}
+RD.SEAL_PLATES, RD.SEAL_ROUNDS, RD.SEAL_HOLD, RD.SEAL_RADIUS = 6, 3, 3, 3.2
+RD.VALVES = 5
+RD.ResourceOrder = {"Grotto","Shallows"}
+RD.Resources = {
+	Grotto={name="Moonmoss Grotto",color="9FE6A0",arenaColor="1E3A2A",
+		blurb="A glowing grotto of moonmoss and gloomcaps. Gather, then brew draughts and cook stew for the Regent's throne room.",
+		nodes={
+			{id="Moonmoss",name="Moonmoss tuft",verb="Pick",skill="Farming",xp=45,shape="Moonbloom",color="9FE6A0",makes="potion"},
+			{id="Gloomcap",name="Gloomcap cluster",verb="Pick",skill="Farming",xp=45,shape="Glowshroom",color="B48CFF",makes="food"},
+		},
+		stations={
+			{id="Cauldron",name="Vault cauldron",verb="Brew",skill="Alchemy",xp=70,shape="Cauldron",makes="potion"},
+			{id="Hearth",name="Vault hearth",verb="Cook",skill="Cooking",xp=70,shape="Hearth",makes="food"},
+		},
+		supplies={potion="Moonmoss Draught",food="Gloomcap Stew"}},
+	Shallows={name="Glowfin Shallows",color="7FD6E8",arenaColor="183048",
+		blurb="Still, shining shallows. Net glowfin and pull reedroot, then cook broth and brew tonic before the throne room.",
+		nodes={
+			{id="Glowfin",name="Glowfin shoal",verb="Net",skill="Fishing",xp=50,shape="FishingBuoy",color="7FD6E8",makes="food"},
+			{id="Reedroot",name="Reedroot bed",verb="Pull",skill="Farming",xp=45,shape="CropSheaf",color="C9B458",makes="potion"},
+		},
+		stations={
+			{id="Hearth",name="Vault hearth",verb="Cook",skill="Cooking",xp=70,shape="Hearth",makes="food"},
+			{id="Cauldron",name="Vault cauldron",verb="Brew",skill="Alchemy",xp=70,shape="Cauldron",makes="potion"},
+		},
+		supplies={food="Glowfin Broth",potion="Reedroot Tonic"}},
+}
+RD.NODES_PER_KIND = 3
+-- Supplies are a shared team pool used from the raid HUD (verb raidUse):
+-- food heals, potions heal a little and raise a ward (damage x RD.WARD_MULT).
+RD.Supplies = {food={heal=0.45,label="Food"},potion={heal=0.2,ward=20,label="Draught"}}
+function RD.quota(n) return 3 + 2 * math.clamp(math.floor(tonumber(n) or 1), 1, RD.MAX_PARTY) end
+function RD.nodeUses(n) return 3 + math.clamp(math.floor(tonumber(n) or 1), 1, RD.MAX_PARTY) end
+function RD.glyphLength(n, challenge)
+	n = math.clamp(math.floor(tonumber(n) or 1), 1, RD.MAX_PARTY)
+	return 4 + (if n >= 5 then 1 else 0) + (if challenge then 1 else 0)
+end
+function RD.sealNeed(n) return math.clamp(math.floor(tonumber(n) or 1), 2, 4) end
+
+-- Deterministic generators (seeded per run) ----------------------------------
+local function lcg(x) return (x * 48271) % 2147483647 end
+local function stream(seed, salt)
+	local x = (math.floor(math.abs(tonumber(seed) or 1)) * 7919 + (salt or 0) * 104729) % 2147483646 + 1
+	return function(n)
+		x = lcg(x)
+		return x % n + 1
+	end
+end
+RD.stream = stream
+-- Room sequence: two distinct combat rooms, one puzzle, one resource room in a
+-- seeded order, then the Regent's throne room.
+function RD.sequence(seed)
+	local pick = stream(seed, 1)
+	local pool = table.clone(RD.CombatOrder)
+	local a = table.remove(pool, pick(#pool))
+	local b = table.remove(pool, pick(#pool))
+	local middle = {{kind="combat",id=a},{kind="combat",id=b},
+		{kind="puzzle",id=RD.PuzzleOrder[pick(#RD.PuzzleOrder)]},{kind="resource",id=RD.ResourceOrder[pick(#RD.ResourceOrder)]}}
+	for i = #middle, 2, -1 do
+		local j = pick(i)
+		middle[i], middle[j] = middle[j], middle[i]
+	end
+	table.insert(middle, {kind="boss",id=RD.BOSS})
+	return middle
+end
+function RD.roomName(room)
+	room = tab(room)
+	if room.kind == "combat" or room.kind == "boss" then local d = RD.encounter(room.id); return d and d.roomName or "?" end
+	if room.kind == "puzzle" then local d = RD.Puzzles[room.id]; return d and d.name or "?" end
+	if room.kind == "resource" then local d = RD.Resources[room.id]; return d and d.name or "?" end
+	return "?"
+end
+-- Glyph Concord: n glyph indices (1..#GLYPHS), never the same twice in a row.
+function RD.glyphSequence(seed, n)
+	local pick = stream(seed, 2)
+	local out = {}
+	for i = 1, math.clamp(math.floor(tonumber(n) or 4), 1, 12) do
+		local g = pick(#RD.GLYPHS)
+		if i > 1 and g == out[i - 1] then g = g % #RD.GLYPHS + 1 end
+		out[i] = g
+	end
+	return out
+end
+-- Weighted Seals: k distinct plates (1..SEAL_PLATES) for a round, sorted.
+function RD.sealPattern(seed, round, k)
+	local pick = stream(seed, 10 + (tonumber(round) or 1))
+	local plates = {}
+	for i = 1, RD.SEAL_PLATES do plates[i] = i end
+	for i = RD.SEAL_PLATES, 2, -1 do
+		local j = pick(i)
+		plates[i], plates[j] = plates[j], plates[i]
+	end
+	local out = {}
+	for i = 1, math.clamp(math.floor(tonumber(k) or 2), 1, RD.SEAL_PLATES) do out[i] = plates[i] end
+	table.sort(out)
+	return out
+end
+-- Tide Valves: a ring where turning valve i flips i and both neighbours
+-- (state[i] = true when open). The start applies 2-3 distinct turns to an
+-- all-open ring; with five valves the turn matrix is invertible over GF(2),
+-- so the start is never already solved and is always solvable.
+function RD.valveToggle(state, i)
+	local n = RD.VALVES
+	i = math.floor(tonumber(i) or 0)
+	if i < 1 or i > n then return state end
+	for _, k in ipairs({(i - 2) % n + 1, i, i % n + 1}) do state[k] = not state[k] end
+	return state
+end
+function RD.valveStart(seed)
+	local pick = stream(seed, 3)
+	local state = {}
+	for i = 1, RD.VALVES do state[i] = true end
+	local turns = 2 + pick(2) - 1
+	local used = {}
+	while turns > 0 do
+		local i = pick(RD.VALVES)
+		if not used[i] then used[i] = true; RD.valveToggle(state, i); turns -= 1 end
+	end
+	return state
+end
+function RD.valvesOpen(state)
+	local n = 0
+	for i = 1, RD.VALVES do if state[i] then n += 1 end end
+	return n
+end
+-- Fewest turns that open every valve (for hints and tests): brute force over 2^5.
+function RD.valveSolution(state)
+	local best
+	for mask = 0, 2 ^ RD.VALVES - 1 do
+		local s = table.clone(state)
+		local turns = {}
+		for i = 1, RD.VALVES do
+			if bit32.band(mask, bit32.lshift(1, i - 1)) ~= 0 then RD.valveToggle(s, i); table.insert(turns, i) end
+		end
+		if RD.valvesOpen(s) == RD.VALVES and (not best or #turns < #best) then best = turns end
+	end
+	return best
+end
+
+-- Points, credit, loot --------------------------------------------------------
+function RD.pointMult(challenge) return if challenge then RD.Points.challenge else 1 end
+-- A combat room's pool split by damage share (0..1).
+function RD.damagePoints(kind, share, n, challenge)
+	share = math.clamp(tonumber(share) or 0, 0, 1)
+	if share ~= share then share = 0 end
+	n = math.clamp(math.floor(tonumber(n) or 1), 1, RD.MAX_PARTY)
+	local per = if kind == "boss" then RD.Points.boss else RD.Points.combat
+	return math.floor(per * n * share * RD.pointMult(challenge))
+end
+function RD.deathLoss(points) return math.floor(whole(points) * RD.Points.death) end
+-- The most personal points one run can pay (bounds a forged or bugged payload).
+function RD.maxPersonal(n, challenge)
+	n = math.clamp(math.floor(tonumber(n) or 1), 1, RD.MAX_PARTY)
+	local P = RD.Points
+	local raw = (2 * P.combat + P.boss) * n + 5 * P.clear + 12 * P.puzzleStep + P.resourceCap
+	return math.floor(raw * RD.pointMult(challenge))
+end
+function RD.uniqueChance(team)
+	return math.clamp(whole(team) / (RD.POINTS_PER_PERCENT * 100), 0, RD.UNIQUE_CAP)
+end
+-- Credit for one member: c = {points, team, party (members being judged),
+-- present, removed, lastAction, now}. Returns ok, reason.
+function RD.credit(c)
+	if type(c) ~= "table" then return false, "member" end
+	if c.removed then return false, "removed" end
+	if c.present ~= true then return false, "away" end
+	local points = whole(c.points)
+	if points <= 0 then return false, "points" end
+	local party = math.clamp(math.floor(tonumber(c.party) or 1), 1, RD.MAX_PARTY)
+	if party > 1 and points < RD.MIN_SHARE * whole(c.team) / party then return false, "share" end
+	if not c.lastAction or not c.now or c.now - c.lastAction > RD.RECENT_SECONDS then return false, "idle" end
+	return true
+end
+-- Unique ("purple") recipient: weighted by personal points (r in [0, 1)).
+-- entries = {{uid, points}...} in a stable order.
+function RD.pickRecipient(entries, r)
+	local total = 0
+	for _, e in ipairs(entries) do total += whole(e.points) end
+	if total <= 0 then return nil end
+	local at = math.clamp(tonumber(r) or 0, 0, 0.999999) * total
+	for _, e in ipairs(entries) do
+		at -= whole(e.points)
+		if at < 0 then return e.uid end
+	end
+	return entries[#entries].uid
+end
+-- Uniques (each below its endgame rival per the lair rule, docs §25) -----------
+local function unique(id, def)
+	def.raidUnique, def.logUnique = RD.ID, "Raids"
+	return item(id, def)
+end
+RD.UniqueOrder = {"RegentsPearl","TidewardenVisage","TidewardenCuirass","RegentsTidecleaver","UndertowWarbow","DrownlightScepter","TidewhelpPet"}
+-- Weights out of 100 (a unique roll picks one).
+RD.UniqueWeights = {RegentsPearl=24,TidewardenVisage=19,TidewardenCuirass=15,RegentsTidecleaver=12,UndertowWarbow=12,DrownlightScepter=12,TidewhelpPet=6}
+RD.Rivals = {
+	RegentsTidecleaver="Crownbreaker",UndertowWarbow="Duskpiercer",DrownlightScepter="RiftcrownStaff",
+	TidewardenVisage="SovereignHelm",TidewardenCuirass="SovereignChestplate",RegentsPearl="NyxwingCharm",
+}
+RD.UNIQUE_MAX = LR.UNIQUE_MAX
+unique("RegentsTidecleaver",{name="Regent's Tidecleaver",kind="weapon",slot="weapon",tier=9,rarity="Legendary",color="3FB8AF",
+	stats={damage=300,strength=140,critChance=15,critDamage=92},requires={Combat=62},value=24000,
+	description="Melee. The Undertide Regent's own tide-blade, still dripping. Requires Combat 62. Raid unique."})
+unique("UndertowWarbow",{name="Undertow Warbow",kind="weapon",slot="weapon",style="ranged",tier=9,rarity="Legendary",color="4F8FBF",
+	stats={critDamage=42,rangedAccuracy=76,rangedStrength=17},ranged={power=250,speed=1.0,range=CS.maxRange,maxAmmoTier=7},requires={Ranged=62},value=24000,
+	description="Ranged weapon. Strung with drowned sinew from the vault's deepest hall. "..CS.maxRange.." stud reach. Arrows up to tier 7. Requires Ranged 62. Raid unique."})
+unique("DrownlightScepter",{name="Drownlight Scepter",kind="weapon",slot="weapon",style="magic",tier=8,rarity="Legendary",color="7FD6E8",
+	stats={intelligence=150,abilityDamage=5},magic={power=160,speed=1.2,elements={"Tide","Gale","Stone"}},requires={Magic=55},value=20000,
+	description="Magic weapon. A lamp the Regent kept lit beneath the sea. Supplies unlimited Tide, Gale, Stone glyphs. Requires Magic 55. Raid unique."})
+unique("TidewardenVisage",{name="Tidewarden Visage",kind="armor",slot="helmet",tier=8,rarity="Legendary",color="3FB8AF",
+	stats={defense=183,health=163,strength=7,critDamage=7},requires={Combat=55},value=16000,
+	description="Helm. A drowned warden's coral-crusted visage. Requires Combat 55. Raid unique."})
+unique("TidewardenCuirass",{name="Tidewarden Cuirass",kind="armor",slot="chest",tier=8,rarity="Legendary",color="3FB8AF",
+	stats={defense=306,health=272,strength=12,critDamage=12},requires={Combat=55},value=26000,
+	description="Chestplate. Scale and pearl, forged under the tide. Requires Combat 55. Raid unique."})
+unique("RegentsPearl",{name="Regent's Pearl",kind="accessory",rarity="Mythic",color=Rar.Mythic.color,stats={intelligence=48,rangedStrength=16,magicFind=5},
+	value=40*Rar.Mythic.rank^2,description="Accessory. Magical Power "..Rar.Mythic.power..". The Regent's crown pearl. Only the Undertide Vaults hold one."})
+-- Challenge Mode cosmetic kit (no stats; a trophy and Collection Log entry).
+unique("GildedTideKit",{name="Gilded Tide Kit",kind="material",rarity="Mythic",color="FFD86B",value=1,cosmetic=true,
+	description="Cosmetic kit. Gilded trim from a Challenge Mode clear of the Undertide Vaults under par. No stats; a trophy for the Raid Log."})
+-- Raid pet (Data.Pets species + Pet depth abilities and look).
+do
+	local PD = Data.PetDepth
+	local list = {{name="Tidal Hunger",kind="xp",skills={"Combat"},per=0.15,rarity="Common"},{name="Pearl Sense",kind="stat",stat="magicFind",per=0.05,rarity="Rare"},
+		{name="Undertow Shell",kind="stat",stat="defense",per=0.6,rarity="Legendary",level=40}}
+	local pet = {id="Tidewhelp",name="Tidewhelp",skill="Combat",rarity="Legendary",color="3FB8AF",perLevel={strength=0.5,health=1,magicFind=0.03}}
+	table.insert(Data.Pets, pet)
+	Data.PetById.Tidewhelp = pet
+	for i, a in ipairs(list) do a.index = i; a.id = a.name:gsub("[^%w]", "") end
+	if PD then
+		PD.Abilities.Tidewhelp = list
+		PD.Looks.Tidewhelp = {form="float",accent="C8FFF6"}
+		pet.ability = list[1].name..": up to "..PD.abilityText(list[1], PD.abilityValue(list[1], Data.PET_MAX_LEVEL, PD.MAX_RARITY))
+	else
+		pet.ability = list[1].name
+	end
+	pet.abilityNames = {list[1].name, list[2].name, list[3].name}
+	unique("TidewhelpPet",{name="Tidewhelp Pet",kind="pet",pet="Tidewhelp",rarity="Legendary",color="3FB8AF",value=200*Rar.Legendary.rank^2,
+		description="Summon from your pet menu. Abilities: "..table.concat(pet.abilityNames, ", ")..". The Undertide Vaults' raid pet."})
+end
+function RD.isUnique(id) local d = if type(id) == "string" then Data.Items[id] else nil; return type(d) == "table" and d.raidUnique ~= nil end
+function RD.pickUnique(r)
+	local at = math.clamp(tonumber(r) or 0, 0, 0.999999) * 100
+	for _, id in ipairs(RD.UniqueOrder) do
+		at -= RD.UniqueWeights[id]
+		if at < 0 then return id end
+	end
+	return RD.UniqueOrder[#RD.UniqueOrder]
+end
+-- Regular loot: one roll per RD.LOOT_POINTS personal points (at most
+-- RD.MAX_ROLLS); each roll picks a row by weight. rng() in [0, 1).
+RD.Loot = {
+	{item="VoidEssence",weight=30,min=3,max=6},{item="CrownShard",weight=30,min=4,max=8},{item="GolemCore",weight=20,min=2,max=4},
+	{item="Stormglass",weight=12,min=1,max=3},{item="StarFragment",weight=6,min=1,max=1},{item="SovereignEssence",weight=2,min=1,max=1},
+}
+function RD.rolls(points) return math.min(RD.MAX_ROLLS, whole(points) // RD.LOOT_POINTS) end
+function RD.regularLoot(points, rng)
+	local total = 0
+	for _, row in ipairs(RD.Loot) do total += row.weight end
+	local out = {}
+	for _ = 1, RD.rolls(points) do
+		local at = math.clamp(tonumber(rng()) or 0, 0, 0.999999) * total
+		for _, row in ipairs(RD.Loot) do
+			at -= row.weight
+			if at < 0 then
+				local n = row.min + math.floor(math.clamp(tonumber(rng()) or 0, 0, 0.999999) * (row.max - row.min + 1))
+				out[row.item] = (out[row.item] or 0) + n
+				break
+			end
+		end
+	end
+	return out
+end
+function RD.rollValue()
+	local total, v = 0, 0
+	for _, row in ipairs(RD.Loot) do total += row.weight end
+	for _, row in ipairs(RD.Loot) do v += row.weight / total * (row.min + row.max) / 2 * (Data.Items[row.item].value or 0) end
+	return v
+end
+function RD.coins(points) return math.floor(whole(points) * RD.COINS_PER_POINT) end
+
+-- Titles (Raid Log): earned once, worn with verb raidTitle.
+RD.Titles = {
+	{id="Vaultdiver",text="Vaultdiver",hint="Clear the Undertide Vaults.",color="6FE3D6"},
+	{id="UndertideChampion",text="Undertide Champion",hint="Clear the Undertide Vaults in Challenge Mode.",color="FFD86B"},
+	{id="RegentsBane",text="Regent's Bane",hint="Clear Challenge Mode under par.",color="FF7AD9"},
+}
+RD.TitleById = {}
+for _, t in ipairs(RD.Titles) do RD.TitleById[t.id] = t end
+
+-- Journal: p.raids = {kc, cm, fails, deaths, pb = {[party] = s}, pbCm = {[party] = s},
+-- best = {points, team}, got = {[item] = n}, log = {{t, s, n, cm, pts, team, u}}, titles = {[id] = true},
+-- title = id | "", runs = {run ids}}.
+function RD.migrate(t)
+	t = tab(t)
+	local out = {kc=whole(t.kc, RD.MAX_KC),cm=whole(t.cm, RD.MAX_KC),fails=whole(t.fails, RD.MAX_KC),deaths=whole(t.deaths, RD.MAX_KC),
+		pb={},pbCm={},best={points=whole(tab(t.best).points, 1e7),team=whole(tab(t.best).team, 1e8)},got={},log={},titles={},title="",runs={}}
+	for _, key in ipairs({"pb","pbCm"}) do
+		for n, s in pairs(tab(t[key])) do
+			local party = tonumber(n)
+			local secs = whole(s, 86400)
+			if party and party % 1 == 0 and party >= RD.MIN_PARTY and party <= RD.MAX_PARTY and secs >= 1 then out[key][tostring(party)] = secs end
+		end
+	end
+	for id, n in pairs(tab(t.got)) do
+		local v = RD.isUnique(id) and whole(n, RD.MAX_KC) or 0
+		if v > 0 then out.got[id] = v end
+	end
+	for _, e in ipairs(tab(t.log)) do
+		if type(e) == "table" and #out.log < RD.KEEP_LOG then
+			table.insert(out.log, {t=whole(e.t, 4e9),s=whole(e.s, 86400),n=math.clamp(whole(e.n), 1, RD.MAX_PARTY),cm=e.cm == true,
+				pts=whole(e.pts, 1e7),team=whole(e.team, 1e8),u=if RD.isUnique(e.u) then e.u else nil})
+		end
+	end
+	for id, v in pairs(tab(t.titles)) do if RD.TitleById[id] and v == true then out.titles[id] = true end end
+	if type(t.title) == "string" and out.titles[t.title] then out.title = t.title end
+	for _, id in ipairs(tab(t.runs)) do
+		if type(id) == "string" and #id <= 64 and #out.runs < RD.RUN_MEMORY then table.insert(out.runs, id) end
+	end
+	return out
+end
+-- One credited clear. run = {id, seconds, party, points, team, challenge, underPar, unique, now}.
+-- Returns {kc, pb, newTitles = {id...}}.
+function RD.record(state, run)
+	local seconds = math.max(1, whole(run.seconds, 86400))
+	local party = math.clamp(whole(run.party), 1, RD.MAX_PARTY)
+	local key = tostring(party)
+	state.kc = math.min(RD.MAX_KC, state.kc + 1)
+	local out = {kc=state.kc,pb=false,newTitles={}}
+	local book = if run.challenge then state.pbCm else state.pb
+	if run.challenge then state.cm = math.min(RD.MAX_KC, state.cm + 1) end
+	if party >= RD.MIN_PARTY and (not book[key] or seconds < book[key]) then book[key] = seconds; out.pb = true end
+	state.best.points = math.max(state.best.points, whole(run.points, 1e7))
+	state.best.team = math.max(state.best.team, whole(run.team, 1e8))
+	if RD.isUnique(run.unique) then state.got[run.unique] = math.min(RD.MAX_KC, (state.got[run.unique] or 0) + 1) end
+	if run.kit then state.got.GildedTideKit = math.min(RD.MAX_KC, (state.got.GildedTideKit or 0) + 1) end
+	table.insert(state.log, 1, {t=whole(run.now, 4e9),s=seconds,n=party,cm=run.challenge == true,pts=whole(run.points, 1e7),team=whole(run.team, 1e8),
+		u=if RD.isUnique(run.unique) then run.unique else nil})
+	while #state.log > RD.KEEP_LOG do table.remove(state.log) end
+	local function earn(id) if not state.titles[id] then state.titles[id] = true; table.insert(out.newTitles, id) end end
+	earn("Vaultdiver")
+	if run.challenge then earn("UndertideChampion") end
+	if run.challenge and run.underPar then earn("RegentsBane") end
+	table.insert(state.runs, 1, run.id)
+	while #state.runs > RD.RUN_MEMORY do table.remove(state.runs) end
+	return out
+end
+function RD.seen(state, id)
+	for _, v in ipairs(tab(tab(state).runs)) do if v == id then return true end end
+	return false
+end
+function RD.formatTime(seconds) return LR.formatTime(seconds) end
+-- Entry check (journal side). info = {combat, region (allowed bool), busy}.
+function RD.canJoin(info)
+	if type(info) ~= "table" then return false, "invalid" end
+	if (tonumber(info.combat) or 0) < RD.COMBAT then return false, "level" end
+	if info.region == false then return false, "region" end
+	if info.busy then return false, "busy" end
+	return true
+end
+
+-- Balance model (printed and bounded by verify-raid.luau) ----------------------
+-- Per member per hour for a party of n at Combat RD.COMBAT. DPS = the Lairs
+-- model (LR.dpsAt: the best open monster's effective health / 8 s) with the
+-- weakness used, at MODEL_UPTIME (mechanics, prayer swaps, adds). A combat
+-- room = its scaled effective health (plus one wave of adds per phase) /
+-- party DPS; the puzzle takes MODEL_PUZZLE s; the resource room the quota's
+-- gathers and crafts spread over the party plus MODEL_WALK s; each room adds
+-- ROOM_GAP + ADVANCE_SECONDS; a run adds MODEL_OVERHEAD (lobby, portal,
+-- return). Coins/h = the raid coin pay + the merchant value of the regular
+-- loot; the uniques' value is reported separately (lairs' lead decision).
+-- Points assume an equal share and a clean run (no deaths or mistakes).
+RD.MODEL_UPTIME, RD.MODEL_PUZZLE, RD.MODEL_WALK, RD.MODEL_OVERHEAD = 0.7, 80, 25, 90
+RD.MODEL_STEPS = 5 -- puzzle steps credited in a typical run
+function RD.encounterSeconds(id, n, challenge, level)
+	local def = RD.encounter(id)
+	local dps = LR.dpsAt(level or RD.COMBAT) * (1 + CS.weaknessBonus) * RD.MODEL_UPTIME * n
+	local addHp = 0
+	for _, a in pairs(def.attacks) do
+		if a.kind == "adds" or a.kind == "sigils" then
+			local add = RD.Adds[a.add]
+			addHp += #def.phases * a.count * add.hp * (1 + add.defense / 100) / 2
+		end
+	end
+	return (RD.partyHp(def, n, challenge) * (1 + def.defense / 100) + addHp) / dps
+end
+function RD.model(n, opts)
+	opts = opts or {}
+	n = math.clamp(math.floor(n or 4), 1, RD.MAX_PARTY)
+	local cm = opts.challenge == true
+	local level = opts.level or RD.COMBAT
+	-- Expected combat room time: the average over the pool.
+	local combat, xpCombat = 0, 0
+	for _, id in ipairs(RD.CombatOrder) do
+		combat += RD.encounterSeconds(id, n, cm, level) / #RD.CombatOrder
+		local def = RD.encounter(id)
+		xpCombat += def.xp * RD.partyHp(def, n, cm) / def.hp / n / #RD.CombatOrder
+	end
+	local bossDef = RD.encounter(RD.BOSS)
+	local boss = RD.encounterSeconds(RD.BOSS, n, cm, level)
+	local resource = RD.quota(n) * (RD.RAW_PER_SUPPLY * RD.GATHER_COOLDOWN + 1.5) / n + RD.MODEL_WALK
+	local fights = 2 * combat + boss
+	local run = fights + RD.MODEL_PUZZLE + resource + 5 * (RD.ROOM_GAP + RD.ADVANCE_SECONDS)
+	local seconds = run + RD.MODEL_OVERHEAD
+	local runs = 3600 / seconds
+	local P = RD.Points
+	local quotaShare = RD.quota(n) / n
+	local points = math.floor(((2 * P.combat + P.boss) + 5 * P.clear + RD.MODEL_STEPS * P.puzzleStep / n
+		+ math.min(P.resourceCap, quotaShare * (P.craft + RD.RAW_PER_SUPPLY * P.gather))) * RD.pointMult(cm))
+	local team = points * n
+	local coinsRun = RD.coins(points) + RD.rolls(points) * RD.rollValue()
+	local xpRun = 2 * xpCombat + bossDef.xp * RD.partyHp(bossDef, n, cm) / bossDef.hp / n
+	local uniqueRun = RD.uniqueChance(team) / n
+	local uniqueValue = 0
+	for _, id in ipairs(RD.UniqueOrder) do uniqueValue += RD.UniqueWeights[id] / 100 * (Data.Items[id].value or 0) end
+	local perItemHours = {}
+	for _, id in ipairs(RD.UniqueOrder) do perItemHours[id] = 1 / (uniqueRun * RD.UniqueWeights[id] / 100 * runs) end
+	return {party=n,challenge=cm,run=run,seconds=seconds,runs=runs,fights=fights,boss=boss,combat=combat,resource=resource,
+		points=points,team=team,coins=coinsRun * runs,coinsRun=coinsRun,xp=xpRun * runs,uniqueChance=RD.uniqueChance(team),uniquesPerHour=uniqueRun * runs,
+		uniqueValue=uniqueValue * uniqueRun * runs,petHours=perItemHours.TidewhelpPet,perItemHours=perItemHours}
+end
+-- Challenge Mode par: the modelled clear of the same party size (no lobby overhead).
+function RD.par(n) return math.floor(RD.model(n, {challenge=true}).run) end
+
+-- Collection Log: the Raids tab (after Lairs); uniques carry logUnique = "Raids".
+local CLog = Data.CommissionsLogs
+if CLog and CLog.LogTabs and not CLog.LogTabs.Raids then
+	CLog.LogTabs.Raids = {name="Undertide Vaults",title="Vaultbreaker",coins=50000,color="3FB8AF"}
+	local at = table.find(CLog.LogTabOrder, "Lairs") or table.find(CLog.LogTabOrder, "Bosses")
+	table.insert(CLog.LogTabOrder, if at then at + 1 else #CLog.LogTabOrder + 1, "Raids")
+	CLog.LogRoots.Raids = "Raids"
+end
+-- §31 announcements: a purple drop and a raid title.
+local F = Data.Features
+if F and F.announceText then
+	local announceText = F.announceText
+	function F.announceText(e)
+		if type(e) == "table" and e.kind == "raidUnique" then
+			local d = type(e.item) == "string" and Data.Items[e.item]
+			return {head="RAID UNIQUE", body=(d and d.name or tostring(e.item)) .. "  ·  " .. RD.NAME, color="FF7AD9"}
+		elseif type(e) == "table" and e.kind == "raidTitle" then
+			local t = RD.TitleById[e.title]
+			return {head="RAID TITLE", body=t and t.text or tostring(e.title), color=t and t.color or "6FE3D6"}
+		end
+		return announceText(e)
+	end
+end
+-- §33 goal board: "kills:UndertideVaults:<n>" counts raid clears (p.raids.kc).
+local SY = Data.Systems
+local GL = SY and SY.Goals
+if GL then
+	local parse, measure, bossName, bosses, label = GL.parse, GL.measure, GL.bossName, GL.bosses, GL.label
+	function GL.label(goal)
+		if type(goal) == "table" and goal.k == "kills" and goal.a == RD.ID then return whole(goal.n) .. " " .. RD.NAME .. " clears" end
+		return label(goal)
+	end
+	function GL.parse(spec)
+		if type(spec) == "string" and #spec <= 64 then
+			local k, a, raw = string.match(spec, "^(%a+):(%w+):(%d+)$")
+			if k == "kills" and a == RD.ID then
+				local n = tonumber(raw)
+				if #raw > 9 or string.match(raw, "^0") or not n or n < 1 then return nil, "Choose a whole target." end
+				if n > GL.Kinds.kills.max then return nil, GL.Kinds.kills.name .. " goals go up to " .. GL.Kinds.kills.max .. "." end
+				return {k = k, a = a, n = n}
+			end
+		end
+		return parse(spec)
+	end
+	function GL.measure(p, goal, P)
+		if type(goal) == "table" and goal.k == "kills" and goal.a == RD.ID then
+			return whole(tab(tab(p).raids).kc), whole(goal.n)
+		end
+		return measure(p, goal, P)
+	end
+	function GL.bossName(id)
+		if id == RD.ID then return RD.NAME end
+		return bossName(id)
+	end
+	function GL.bosses()
+		local out = bosses()
+		table.insert(out, 1, RD.ID)
+		return out
+	end
+end
+end
+-- <<< END Raids <<<
+------------------------------------------------------------------------------
+
 return Data

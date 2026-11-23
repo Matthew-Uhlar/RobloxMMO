@@ -1534,7 +1534,8 @@ local function settle(player)
 	local function land(character)
 		local root=character:WaitForChild("HumanoidRootPart",10)
 		-- Lairs: lairs.server.lua owns a rejoin respawn (LairRejoin) and returns the member to their arena.
-		if root and homes[player] and player.Character==character and not player:GetAttribute("LairRejoin") then character:PivotTo(CFrame.new(spawn.Position+V(0,3.4,0))) end
+		-- Raids (§38): raids.server.lua owns a raider's death / rejoin respawn (RaidRejoin) the same way.
+		if root and homes[player] and player.Character==character and not player:GetAttribute("LairRejoin") and not player:GetAttribute("RaidRejoin") then character:PivotTo(CFrame.new(spawn.Position+V(0,3.4,0))) end
 	end
 	player.CharacterAdded:Connect(land)
 	if player.Character then task.spawn(land,player.Character) end
@@ -4948,6 +4949,79 @@ do
 	end
 end
 -- End Lairs section.
+
+-------------------------------------------------------------------------------
+-- Raids (Raid team; self-contained section, docs/DEPTH-CONTRACT.md §38). The
+-- Undertide portal on Tidewater Shoals (Data.Raids.ISLE): a tiered dais, the
+-- portal arch (mesh slot "ObservatoryArch", tinted tide-teal) whose shimmer
+-- pane carries the prompt IsleAction "raidPortal", IsleRegion
+-- Data.Raids.REGION (gate), two braziers (mesh slot "Torch", one light), two
+-- coral fans and the anchor Waypoint_RaidPortal (the return point and the
+-- party board's range centre; quest helper / Wayfinder target
+-- "anchor:Waypoint_RaidPortal"). Parts: dais 2 + arch 1 + pane 1 + braziers 2
+-- + coral 2 + anchor 1 = 9. The vault complexes are built on demand by
+-- raids.server.lua (off-map, destroyed after each run). Model attribute
+-- RaidContent = true.
+-------------------------------------------------------------------------------
+do
+	local RD=Data.Raids
+	local host=RD and islandsFolder:FindFirstChild(RD.ISLE)
+	if host then
+		local IC,R=host:GetAttribute("IslandCenter"),host:GetAttribute("IslandRadius")
+		local FLOOR={Meadow=true,["Floating foundation"]=true,["Mineral stratum"]=true,["Lower basalt"]=true,["Fractured cliff"]=true,
+			["Keel rock"]=true,["Edge guard"]=true,["Aether vein"]=true,["Shore ledge"]=true,Path=true,Wildflowers=true}
+		local function blocked(pos,radius)
+			for _,obj in ipairs(host:GetDescendants()) do
+				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
+					local cf,sz=obj.CFrame,obj.Size
+					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
+					local c=cf.Position
+					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
+					local dz=math.max(0,math.abs(pos.Z-c.Z)-ext("Z"))
+					local ey=ext("Y")
+					if dx*dx+dz*dz<radius*radius and c.Y+ey>pos.Y+.3 and c.Y-ey<pos.Y+12 then return true end
+				end
+			end
+			return false
+		end
+		local pos
+		if typeof(IC)=="Vector3" and type(R)=="number" then
+			for _,f in ipairs({.5,.4,.6,.3,.68}) do
+				for k=0,23 do
+					local a=math.rad(310+(if k%2==0 then 1 else -1)*math.ceil(k/2)*15)
+					local p=IC+V(math.cos(a),0,math.sin(a))*R*f
+					pos=pos or p
+					if not blocked(p,7) then pos=p break end
+				end
+				if pos and not blocked(pos,7) then break end
+			end
+		end
+		if pos then
+			local tide,teal=C("1E5A63"),C("3FB8AF")
+			local m=group("Undertide portal",host)
+			m:SetAttribute("RaidContent",true)
+			local face=CFrame.lookAt(pos,V(IC.X,pos.Y,IC.Z))
+			block(m,"Raid portal dais",pos+V(0,.3,0),V(13,.6,13),darken(tide,.15),ST,true)
+			block(m,"Raid portal step",pos+V(0,.8,0),V(9,.4,9),lighten(tide,.12),ST,true)
+			local arch=part(m,"Raid portal arch",V(9,11,2),face+V(0,6.5,0),lighten(rock,.1),ST,false)
+			meshSlot(arch,"ObservatoryArch",teal,nil,"Uniform")
+			local pane=part(m,"Raid portal shimmer",V(5.6,8,.4),face+V(0,5.2,0),teal,Enum.Material.Neon,false)
+			pane.Transparency=.35
+			local q=prompt(pane,"Raid board","The Undertide Vaults · Combat "..RD.COMBAT.." · "..RD.MIN_PARTY.."–"..RD.MAX_PARTY.." raiders","raidPortal",RD.ID)
+			q:SetAttribute("IsleRegion",RD.REGION)
+			q.HoldDuration=.36
+			for side=-1,1,2 do
+				local brazier=part(m,"Raid portal brazier",V(1.4,3.4,1.4),face*CFrame.new(side*5.6,2.5,-1.5),timber,WO,false)
+				meshSlot(brazier,"Torch",teal)
+				if side==-1 then light(brazier,teal,1.1,22) end
+				local coral=part(m,"Raid portal coral",V(2.6,3,2.6),face*CFrame.new(side*4.8,2.1,2.5),C("E58FB0"),SM,false)
+				meshSlot(coral,"CoralFan",C("E58FB0"),nil,"Uniform")
+			end
+			anchor(m,"Waypoint_RaidPortal",(face*CFrame.new(0,0,-6)).Position,pos)
+		end
+	end
+end
+-- End Raids section.
 
 -------------------------------------------------------------------------------
 -- Skyward Vents (MMO Features, docs/DEPTH-CONTRACT.md §31; Data.Vents).

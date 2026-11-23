@@ -156,9 +156,16 @@ L.Profiles = {
 	Minigame = {label = "Skybreach Bastion", interior = true, fixedDay = 0.7, Brightness = 2.2, Ambient = "363C4A", OutdoorAmbient = "6E7A90",
 		ColorShift_Top = "E8DCC8", AtmDensity = 0.3, AtmColor = "A0AEC4", AtmDecay = "4A5872", AtmHaze = 1.2,
 		BloomIntensity = 0.35, BloomThreshold = 1.3, RaysIntensity = 0.03, GradeContrast = 0.14, GradeSaturation = 0, GradeTint = "F0F4FF"},
+	-- Raids (§38): the Undertide Vaults, drowned halls lit by teal braziers
+	-- through deep water haze; cool, saturated, never murky.
+	Raid = {label = "The Undertide Vaults", interior = true, fixedDay = 0.5, Brightness = 1.6, ExposureCompensation = 0.1,
+		Ambient = "24403E", OutdoorAmbient = "4A6E6A", ColorShift_Top = "A8F0E6", ColorShift_Bottom = "0E2A2E",
+		AtmDensity = 0.38, AtmColor = "3E7A78", AtmDecay = "0E2A2E", AtmGlare = 0, AtmHaze = 1.4,
+		BloomIntensity = 0.55, BloomSize = 26, BloomThreshold = 1.1, RaysIntensity = 0,
+		GradeContrast = 0.15, GradeSaturation = 0.06, GradeTint = "E4FFF8"},
 }
 L.REGION_KEYS = {"Hub", "Meadow", "Quarry", "Skyreach", "Windpine", "Gloomhollow", "Tidewater", "Tempest", "ShatteredCrown", "Home", "Skyways"}
-L.INTERIOR_KEYS = {"Dungeon", "Lair", "Minigame"}
+L.INTERIOR_KEYS = {"Dungeon", "Lair", "Minigame", "Raid"}
 L.DEFAULT_KEY = "Skyways"
 
 ------------------------------------------------------------------------------
@@ -210,7 +217,7 @@ function L.dayFactor(clock)
 end
 
 ------------------------------------------------------------------------------
--- Context. attrs: {LairBoss, DungeonInRun, MinigameGame, IsleRegionHere}
+-- Context. attrs: {LairBoss, RaidRun, DungeonInRun, MinigameGame, IsleRegionHere}
 -- (player attributes the servers / nav.client.lua already publish). pos is the
 -- player's position (optional): the instanced arenas sit far off the
 -- archipelago, so their lobbies light correctly before a run starts.
@@ -219,8 +226,10 @@ L.ZONES = {
 	{key = "Dungeon", x = 0, z = 1800, r = 260}, -- expedition.server.lua origin (0, 42, 1800)
 	{key = "Minigame", x = -2400, z = 0, r = 380}, -- minigames.server.lua ORIGIN (-2400, 90, 0)
 	{key = "Lair", minX = 3300}, -- lairs.server.lua ORIGIN (3600, 300, -3600) + slots along +X
+	{key = "Raid", maxX = -3000, maxZ = -3000}, -- raids.server.lua ORIGIN (-3600, 300, -3600), rooms along -X, slots along -Z
 }
 local function inZone(zone, pos)
+	if zone.maxX then return pos.X <= zone.maxX and pos.Z <= zone.maxZ end
 	if zone.minX then return pos.X >= zone.minX end
 	local dx, dz = pos.X - zone.x, pos.Z - zone.z
 	return dx * dx + dz * dz <= zone.r * zone.r
@@ -240,7 +249,9 @@ function L.context(attrs, pos)
 	-- position wins.
 	local claimed
 	local lair = attrs.LairBoss
+	local raid = attrs.RaidRun
 	if type(lair) == "string" and lair ~= "" then claimed = "Lair"
+	elseif type(raid) == "string" and raid ~= "" then claimed = "Raid"
 	elseif attrs.DungeonInRun == true then claimed = "Dungeon"
 	else
 		local match = attrs.MinigameGame
