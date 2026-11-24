@@ -136,8 +136,50 @@ local function write(field, value)
 	t[1][t[2]] = value
 	Director.written[field] = value
 end
+------------------------------------------------------------------------------
+-- Weather (§50): the server's IsleWeather attribute (one string, a
+-- deterministic schedule; shared/Ambience.lua writes it, L.parseWeather reads
+-- it) names a state per region. Its deltas (L.WEATHER) ease in over
+-- L.WEATHER_TAU on top of the region look: rain / storm dim the sun, thicken
+-- the haze and raise EnvironmentSpecularScale (wet sheen). A lightning strike
+-- in the player's region flashes ExposureCompensation (every frame while it
+-- lasts; never under reduced motion). Weather never touches gameplay.
+------------------------------------------------------------------------------
+local Weather = {text = nil, parsed = nil, state = "Clear", delta = {}, flash = 0, strikeRegion = nil, strikeAt = nil}
+Director.weather = Weather -- read by the headless suites
+local function reducedMotion()
+	if player:GetAttribute("IsleSettingReducedMotion") == true then return true end
+	local ok, on = pcall(function() return game:GetService("GuiService").ReducedMotionEnabled end)
+	return ok and on == true
+end
+function Weather.read()
+	local text = workspace:GetAttribute(L.WEATHER_ATTR)
+	if text ~= Weather.text then
+		Weather.text = text
+		Weather.parsed = L.parseWeather(text)
+		local p = Weather.parsed
+		Weather.strikeRegion, Weather.strikeAt = p and p.strikeRegion, p and p.strikeAt
+	end
+	Weather.state = L.weatherFor(Weather.parsed, Director.key or L.DEFAULT_KEY)
+end
 local function applyState(state)
-	for _, f in ipairs(L.FIELDS) do write(f.key, state[f.key]) end
+	for _, f in ipairs(L.FIELDS) do
+		local v = state[f.key]
+		if Weather.flash > 0 and f.key == "ExposureCompensation" then v = L.flashExposure(v, Weather.flash) end
+		write(f.key, v)
+	end
+end
+-- Per frame, only while a strike is fresh: the flash outruns the 15 Hz blend.
+function Weather.flashStep()
+	if not Weather.strikeAt or Director.state == nil then return end
+	local f = 0
+	if Weather.strikeRegion == Director.key and not reducedMotion() then f = L.flashAt(now() - Weather.strikeAt) end
+	if f <= 0 and Weather.flash <= 0 then
+		if now() - Weather.strikeAt > L.FLASH_LENGTH then Weather.strikeAt = nil end
+		return
+	end
+	Weather.flash = f
+	write("ExposureCompensation", L.flashExposure(Director.state.ExposureCompensation, f))
 end
 local function applyTier(tierName)
 	local tier = L.Tiers[tierName]
@@ -550,7 +592,9 @@ function Director.step(dt)
 		if tier ~= Director.tier then Director.tier = tier; applyTier(tier); lightAcc = LIGHT_STEP end
 		if Lights.dirty then lightAcc = LIGHT_STEP end -- a LightWanted / LightHero change applies at once
 		updateContext(clockT)
+		Weather.read()
 	end
+	Weather.flashStep()
 	if acc < STEP then return end
 	local frame = acc
 	acc = 0
@@ -562,6 +606,7 @@ function Director.step(dt)
 		Director.written.ClockTime = sky
 	end
 	local target = L.target(Director.key or L.DEFAULT_KEY, clock, Director.tier)
+	L.applyWeather(target, L.blendWeather(Weather.delta, Weather.state, L.alphaFor(frame, L.WEATHER_TAU)))
 	if Director.state == nil then
 		Director.state = target
 	else

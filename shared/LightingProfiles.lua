@@ -602,6 +602,97 @@ function L.selectWindows(list, origin, tierName, isNight, out, rangeCap)
 end
 
 ------------------------------------------------------------------------------
+-- Weather (§50 Ambience). The server publishes ONE workspace attribute,
+-- IsleWeather (shared/Ambience.lua A.encode: "1|slot|Hub=Clear,...|Region@t"),
+-- from a deterministic schedule, so every player sees the same sky. The
+-- director reads it, picks the state for its context key and blends a small
+-- set of weather deltas (L.WEATHER, tau L.WEATHER_TAU) on top of L.target:
+-- rain dims the sun, thickens the haze and raises the specular scale (the
+-- "wet sheen" on stone and timber), fog thickens the Atmosphere, snow
+-- brightens and desaturates. Lightning is a world event in the same attribute
+-- (the region and server time of the last strike); the director adds
+-- L.flashAt(seconds since the strike) to the written ExposureCompensation
+-- (never to the blended state) unless reduced motion is on.
+------------------------------------------------------------------------------
+L.WEATHER_ATTR = "IsleWeather"
+L.WEATHER_STATES = {"Clear", "Breezy", "Rain", "Storm", "Fog", "Snow"}
+-- Delta keys: bright (Brightness ×(1 + v)), exposure (+), density (+), haze
+-- (+), grey (AtmColor toward L.WEATHER_GREY), specular (+, wet sheen),
+-- saturation (+), contrast (+), soft (+ ShadowSoftness), rays (RaysIntensity ×(1 + v)).
+L.WEATHER_KEYS = {"bright", "exposure", "density", "haze", "grey", "specular", "saturation", "contrast", "soft", "rays"}
+L.WEATHER = {
+	Clear = {},
+	Breezy = {haze = -0.1, contrast = 0.01},
+	Rain = {bright = -0.22, exposure = -0.06, density = 0.08, haze = 0.7, grey = 0.35, specular = 0.4, saturation = -0.08, soft = 0.25, rays = -0.8},
+	Storm = {bright = -0.38, exposure = -0.12, density = 0.14, haze = 1.1, grey = 0.55, specular = 0.5, saturation = -0.14, contrast = 0.04, soft = 0.45, rays = -1},
+	Fog = {bright = -0.1, density = 0.18, haze = 1.2, grey = 0.3, saturation = -0.06, soft = 0.3, rays = -0.6},
+	Snow = {bright = 0.04, exposure = 0.04, density = 0.1, haze = 0.8, grey = 0.25, specular = 0.1, saturation = -0.1, soft = 0.3, rays = -0.5},
+}
+L.WEATHER_GREY = "A9B2BC"
+L.WEATHER_TAU = 5 -- seconds; weather eases in over ~15 s
+L.FLASH_EXPOSURE, L.FLASH_LENGTH, L.FLASH_CEILING = 0.6, 0.7, 1
+-- Parse the IsleWeather attribute (malformed -> nil). Only called when the
+-- attribute changes (never per frame).
+function L.parseWeather(text)
+	if type(text) ~= "string" then return nil end
+	local version, slot, list, strike = string.match(text, "^(%d+)|(%-?%d+)|([^|]*)|?(.*)$")
+	if version ~= "1" then return nil end
+	local out = {slot = tonumber(slot), regions = {}}
+	for key, state in string.gmatch(list, "(%w+)=(%w+)") do
+		if L.WEATHER[state] then out.regions[key] = state end
+	end
+	local region, at = string.match(strike or "", "^(%w+)@([%d%.]+)$")
+	if region then out.strikeRegion, out.strikeAt = region, tonumber(at) end
+	return out
+end
+-- The weather state a context key sees (interiors and unknown keys: Clear).
+function L.weatherFor(parsed, key)
+	if type(parsed) ~= "table" or not L.Profiles[key] or L.Profiles[key].interior then return "Clear" end
+	return parsed.regions and parsed.regions[key] or "Clear"
+end
+-- Blend a delta vector (numbers keyed by L.WEATHER_KEYS) toward a state's.
+function L.blendWeather(cur, state, alpha)
+	local goal = L.WEATHER[state] or L.WEATHER.Clear
+	for _, k in ipairs(L.WEATHER_KEYS) do
+		local a, b = cur[k] or 0, goal[k] or 0
+		local v = a + (b - a) * alpha
+		cur[k] = if math.abs(v - b) < 1e-3 then b else v
+	end
+	return cur
+end
+local function clampField(key, v)
+	local f = L.FieldByKey[key]
+	return math.clamp(v, f.min, f.max)
+end
+-- Apply a delta vector to a composed state (mutates and returns `out`; every
+-- field stays inside its L.FIELDS range).
+function L.applyWeather(out, w)
+	if type(w) ~= "table" then return out end
+	out.Brightness = clampField("Brightness", out.Brightness * (1 + (w.bright or 0)))
+	out.ExposureCompensation = clampField("ExposureCompensation", out.ExposureCompensation + (w.exposure or 0))
+	out.AtmDensity = clampField("AtmDensity", out.AtmDensity + (w.density or 0))
+	out.AtmHaze = clampField("AtmHaze", out.AtmHaze + (w.haze or 0))
+	if (w.grey or 0) > 0 then out.AtmColor = out.AtmColor:Lerp(rgb(L.WEATHER_GREY), math.clamp(w.grey, 0, 1)) end
+	out.EnvironmentSpecularScale = clampField("EnvironmentSpecularScale", out.EnvironmentSpecularScale + (w.specular or 0))
+	out.GradeSaturation = clampField("GradeSaturation", out.GradeSaturation + (w.saturation or 0))
+	out.GradeContrast = clampField("GradeContrast", out.GradeContrast + (w.contrast or 0))
+	out.ShadowSoftness = clampField("ShadowSoftness", out.ShadowSoftness + (w.soft or 0))
+	out.RaysIntensity = clampField("RaysIntensity", out.RaysIntensity * math.max(0, 1 + (w.rays or 0)))
+	return out
+end
+-- Lightning: a double flicker over L.FLASH_LENGTH seconds (0 outside it).
+function L.flashAt(dt)
+	if type(dt) ~= "number" or dt ~= dt or dt < 0 or dt > L.FLASH_LENGTH then return 0 end
+	if dt < 0.08 then return 1 end
+	if dt < 0.18 then return 0.25 end
+	if dt < 0.28 then return 0.85 end
+	return 0.85 * (1 - (dt - 0.28) / (L.FLASH_LENGTH - 0.28))
+end
+function L.flashExposure(base, flash)
+	return math.min(base + L.FLASH_EXPOSURE * math.clamp(flash, 0, 1), L.FLASH_CEILING)
+end
+
+------------------------------------------------------------------------------
 -- Validation (every composed / blended state; verify-lighting).
 ------------------------------------------------------------------------------
 function L.valid(state)
