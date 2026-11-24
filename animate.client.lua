@@ -36,6 +36,7 @@ Core.REMOTE_RANGE = 100 -- remote gestures farther than this from us are skipped
 Core.MAX_FX_PARTS = 80
 
 local rad = math.rad
+local IDENTITY -- CFrame.new(), set once CFrame is known (Core.IDENTITY)
 
 Core.ease = {
 	linear = function(a) return a end,
@@ -129,6 +130,25 @@ function Core.samplePose(keys, t, buf)
 	return copyPose(keys[#keys].pose, buf)
 end
 
+-- §47 crossfade: blend a sampled pose (buf.out) from a snapshot `from` by
+-- alpha in [0, 1], in place (joints only in `from` get a pooled array).
+Core.CROSSFADE = 0.12
+function Core.blendFrom(from, pose, alpha, buf)
+	for joint, fv in pairs(from) do
+		local v = pose[joint]
+		if not v then
+			v = poseSlot(buf, joint)
+			for k = 1, 6 do v[k] = 0 end
+			pose[joint] = v
+		end
+		for k = 1, 6 do
+			local x = fv[k] or 0
+			v[k] = x + (v[k] - x) * alpha
+		end
+	end
+	return pose
+end
+
 function Core.jointCFrame(v, scale)
 	scale = scale or 1
 	return CFrame.new((v[4] or 0) * scale, (v[5] or 0) * scale, (v[6] or 0) * scale)
@@ -141,9 +161,13 @@ end
 function Core.basisOf(c0)
 	return c0 - c0.Position
 end
-function Core.toJointSpace(r, basis)
-	return basis:Inverse() * r * basis
+function Core.toJointSpace(r, basis, basisInv)
+	return (basisInv or basis:Inverse()) * r * basis
 end
+IDENTITY = CFrame.new()
+Core.IDENTITY = IDENTITY
+-- Joints carried by the leg / root motors (QC L10).
+Core.LEG_JOINTS = {rightHip = true, leftHip = true, rightKnee = true, leftKnee = true, root = true}
 
 -- Poses -------------------------------------------------------------------
 local function merge(base, extra)
@@ -273,27 +297,235 @@ local KINDLE_READY = merge(CROUCH, {rightArm = {72, 8, 12}, rightElbow = {58}, l
 local KINDLE_UP = merge(CROUCH, {rightArm = {112, 18, 16}, rightElbow = {88}, leftArm = {58, -22, -12}, leftElbow = {34}, waist = {-28, 6, 0}})
 local KINDLE_STRIKE = merge(CROUCH, {rightArm = {46, -14, 6}, rightElbow = {18}, leftArm = {54, -18, -10}, leftElbow = {30}, waist = {-40, -4, 0}, neck = {20}})
 
+local P = {} -- §47 poses (a table: the chunk is near Luau's 200-local limit)
+-- §47 Animation depth: anticipation → strike → follow-through → recovery on
+-- every swing, stances per node size, weapon-class combos and the interaction
+-- library. Signs: +rx raises an arm forward / tips the torso back (waist -rx =
+-- bend forward), elbows flex positive, knees flex negative, neck +rx looks up.
+-- Gathering (the loop is the server's swing cadence, Core.STRIKE).
+P.MINE_COIL = {rightArm = {42, 0, 10}, rightElbow = {52}, leftArm = {40, -25, -10}, leftElbow = {55}, waist = {-10, 18, 0}, neck = {-4}}
+P.MINE_FOLLOW = {rightArm = {22, 0, 4}, rightElbow = {12}, leftArm = {24, -15, -4}, leftElbow = {16}, waist = {-28, 4, 0}, neck = {-12}}
+-- Low ore (a rock at the feet): the swing comes from a crouch and lands low.
+P.MINE_LOW_READY = merge(CROUCH, {rightArm = {40, 0, 10}, rightElbow = {30}, leftArm = {38, -22, -10}, leftElbow = {34}, waist = {-26, 12, 0}})
+P.MINE_LOW_COIL = merge(CROUCH, {rightArm = {30, 0, 10}, rightElbow = {44}, leftArm = {30, -22, -10}, leftElbow = {46}, waist = {-30, 16, 0}})
+P.MINE_LOW_UP = merge(CROUCH, {rightArm = {138, 0, 12}, rightElbow = {44}, leftArm = {128, -15, -8}, leftElbow = {40}, waist = {-12, 10, 0}, neck = {-6}})
+P.MINE_LOW_HIT = merge(CROUCH, {rightArm = {12, 0, 4}, rightElbow = {4}, rightWrist = {-30}, leftArm = {14, -15, -4}, leftElbow = {8},
+	waist = {-42, 4, 0}, neck = {-16}})
+P.MINE_LOW_FOLLOW = merge(CROUCH, {rightArm = {4, 0, 4}, rightElbow = {10}, rightWrist = {-36}, leftArm = {6, -15, -4}, leftElbow = {14},
+	waist = {-46, 2, 0}, neck = {-18}})
+-- High vein (above the shoulders): weight back, then the pick bites in at head height.
+P.MINE_HIGH_READY = {rightArm = {95, 0, 10}, rightElbow = {30}, leftArm = {88, -22, -10}, leftElbow = {36}, waist = {4, 12, 0}, neck = {14}}
+P.MINE_HIGH_COIL = {rightArm = {86, 0, 10}, rightElbow = {44}, leftArm = {80, -22, -10}, leftElbow = {48}, waist = {-2, 16, 0}, neck = {12}}
+P.MINE_HIGH_UP = {rightArm = {176, 0, 14}, rightElbow = {58}, leftArm = {168, -15, -8}, leftElbow = {52}, waist = {16, 10, 0}, neck = {18}}
+P.MINE_HIGH_HIT = {rightArm = {118, 0, 6}, rightElbow = {0}, rightWrist = {-22}, leftArm = {112, -15, -5}, leftElbow = {6}, waist = {-6, 4, 0}, neck = {16}}
+P.MINE_HIGH_FOLLOW = {rightArm = {106, 0, 6}, rightElbow = {8}, rightWrist = {-28}, leftArm = {100, -15, -5}, leftElbow = {12}, waist = {-10, 2, 0}, neck = {12}}
+P.CHOP_COIL = {rightArm = {72, -24, 0}, rightElbow = {30}, leftArm = {62, -45, 0}, leftElbow = {42}, waist = {-4, -10, 0}}
+P.CHOP_FOLLOW = {rightArm = {74, 52, 0}, rightElbow = {10}, leftArm = {64, 34, 0}, leftElbow = {20}, waist = {-8, 30, 0}, neck = {0, -8, 0}}
+-- Low trunk (saplings, stumps): knees bent, the axe swings flatter and lower.
+P.LOW_STANCE = {root = {0, 0, 0, 0, -0.45, 0}, rightHip = {32}, leftHip = {22}, rightKnee = {-44}, leftKnee = {-36}}
+P.CHOP_LOW_READY = merge(P.LOW_STANCE, {rightArm = {48, -10, 0}, rightElbow = {20}, leftArm = {40, -35, 0}, leftElbow = {35}, waist = {-18, 0, 0}})
+P.CHOP_LOW_COIL = merge(P.LOW_STANCE, {rightArm = {44, -28, 0}, rightElbow = {30}, leftArm = {38, -48, 0}, leftElbow = {42}, waist = {-20, -10, 0}})
+P.CHOP_LOW_BACK = merge(P.LOW_STANCE, {rightArm = {60, -78, 0}, rightElbow = {35}, leftArm = {52, -72, 0}, leftElbow = {50}, waist = {-14, -30, 0}})
+P.CHOP_LOW_HIT = merge(P.LOW_STANCE, {rightArm = {42, 32, 0}, rightElbow = {4}, leftArm = {38, 16, 0}, leftElbow = {14}, waist = {-24, 22, 0}, neck = {-8}})
+P.CHOP_LOW_FOLLOW = merge(P.LOW_STANCE, {rightArm = {38, 54, 0}, rightElbow = {10}, leftArm = {34, 34, 0}, leftElbow = {20}, waist = {-26, 30, 0}, neck = {-10}})
+-- Crops: a sickle sweep from the crouch; the free hand gathers the cut stalks.
+P.SICKLE_READY = merge(CROUCH, {rightArm = {48, -20, 8}, rightElbow = {22}, leftArm = {52, -10, -8}, leftElbow = {30}})
+P.SICKLE_COIL = merge(CROUCH, {rightArm = {44, -36, 10}, rightElbow = {30}, leftArm = {56, 0, -8}, leftElbow = {24}, waist = {-32, -8, 0}})
+P.SICKLE_WIND = merge(CROUCH, {rightArm = {52, -72, 12}, rightElbow = {26}, leftArm = {60, 12, -6}, leftElbow = {18}, waist = {-28, -24, 0}, neck = {0, -10, 0}})
+P.SICKLE_HIT = merge(CROUCH, {rightArm = {40, 34, 6}, rightElbow = {6}, rightWrist = {-20}, leftArm = {46, 20, -6}, leftElbow = {12},
+	waist = {-38, 18, 0}, neck = {-10, 8, 0}})
+P.SICKLE_FOLLOW = merge(CROUCH, {rightArm = {38, 52, 6}, rightElbow = {12}, rightWrist = {-24}, leftArm = {30, 30, -10}, leftElbow = {70},
+	waist = {-34, 24, 0}, neck = {-12, 10, 0}})
+-- Tall plants (a bush at waist height or above): the same sweep standing.
+P.SWEEP_HI_READY = {rightArm = {60, -20, 8}, rightElbow = {24}, leftArm = {52, -10, -8}, leftElbow = {34}, waist = {-6, 0, 0}}
+P.SWEEP_HI_COIL = {rightArm = {56, -36, 10}, rightElbow = {30}, leftArm = {56, 0, -8}, leftElbow = {28}, waist = {-8, -8, 0}}
+P.SWEEP_HI_WIND = {rightArm = {68, -76, 12}, rightElbow = {26}, leftArm = {58, 10, -6}, leftElbow = {20}, waist = {-4, -26, 0}}
+P.SWEEP_HI_HIT = {rightArm = {62, 36, 6}, rightElbow = {6}, leftArm = {54, 20, -6}, leftElbow = {14}, waist = {-10, 20, 0}}
+P.SWEEP_HI_FOLLOW = {rightArm = {58, 54, 6}, rightElbow = {12}, leftArm = {40, 30, -10}, leftElbow = {70}, waist = {-10, 26, 0}}
+-- Fishing: load the rod back, whip the cast, follow through low; hook-set and crank on the reel.
+P.FISH_FOLLOW = {rightArm = {60, 0, 4}, rightElbow = {2}, leftArm = {28, -15, -8}, leftElbow = {20}, waist = {-16, 0, 0}, neck = {-6}}
+P.FISH_SET = {rightArm = {118, 0, 8}, rightElbow = {40}, leftArm = {64, -28, -6}, leftElbow = {60}, waist = {10, 0, 0}, neck = {6}}
+P.FISH_CRANK = merge(FISH_REEL, {leftArm = {74, -24, -2}, leftElbow = {84}, rightWrist = {10}})
+P.FISH_TUG = merge(FISH_HOLD, {rightArm = {52, 0, 6}, rightElbow = {30}, waist = {-8, 0, 0}, neck = {-6}})
+
+-- Weapon combos. Sword: forehand cut, backhand cut, overhead finisher.
+P.SW1_COIL = {rightArm = {88, -72, 0}, rightElbow = {38}, leftArm = {30, 20, -10}, leftElbow = {40}, waist = {0, -26, 0}, neck = {0, 10, 0}}
+P.SW1_HIT = {rightArm = {86, 52, 0}, rightElbow = {6}, leftArm = {20, -10, -14}, leftElbow = {30}, waist = {-6, 24, 0}, neck = {0, -6, 0}}
+P.SW1_FOLLOW = {rightArm = {70, 80, 0}, rightElbow = {14}, leftArm = {18, -14, -16}, leftElbow = {28}, waist = {-8, 32, 0}, neck = {0, -10, 0}}
+P.SW2_COIL = {rightArm = {94, 62, 0}, rightElbow = {72}, leftArm = {24, -10, -12}, leftElbow = {36}, waist = {0, 24, 0}}
+P.SW2_HIT = {rightArm = {86, -58, 0}, rightElbow = {6}, leftArm = {28, 16, -10}, leftElbow = {34}, waist = {-6, -24, 0}}
+P.SW2_FOLLOW = {rightArm = {72, -82, 0}, rightElbow = {14}, leftArm = {30, 20, -10}, leftElbow = {36}, waist = {-8, -32, 0}}
+P.SW3_DIP = {rightArm = {50, 0, 8}, rightElbow = {60}, leftArm = {40, -10, -12}, leftElbow = {50}, waist = {-8, 0, 0}}
+P.SW3_COIL = {rightArm = {172, 0, 12}, rightElbow = {52}, leftArm = {120, -10, -14}, leftElbow = {40}, waist = {12, 0, 0}, neck = {8}}
+P.SW3_HIT = {rightArm = {42, 0, 4}, rightElbow = {4}, leftArm = {30, -10, -10}, leftElbow = {20}, waist = {-20, 0, 0}, neck = {-10}}
+P.SW3_FOLLOW = {rightArm = {18, 0, 4}, rightElbow = {10}, leftArm = {16, -10, -12}, leftElbow = {24}, waist = {-28, 0, 0}, neck = {-14}}
+-- Dagger: two quick jabs and a backhand slit.
+P.STAB_FOLLOW = {rightArm = {52, -10, 2}, rightElbow = {0}, leftArm = {-12, 0, -12}, leftElbow = {20}, waist = {-16, 22, 0}, neck = {-6}}
+P.STAB2_BACK = {rightArm = {-10, 10, 20}, rightElbow = {60}, leftArm = {24, -6, -10}, leftElbow = {30}, waist = {4, -10, 0}}
+P.STAB2_HIT = {rightArm = {64, 8, 0}, rightElbow = {4}, leftArm = {-6, 0, -12}, leftElbow = {20}, waist = {-12, 14, 0}, neck = {-4}}
+P.STAB2_FOLLOW = merge(P.STAB2_HIT, {rightArm = {70, 12, 0}, waist = {-14, 18, 0}})
+P.SLIT_FOLLOW = {rightArm = {68, 74, 0}, rightElbow = {10}, waist = {-8, 30, 0}}
+-- Greatblade / maul / axe: heavy. A dip before the wind-up, a long follow-through.
+P.CLEAVE_DIP = {rightArm = {20, 0, 10}, rightElbow = {70}, leftArm = {20, -20, -10}, leftElbow = {74}, waist = {-10, 0, 0}, neck = {-4}}
+P.CLEAVE_FOLLOW = merge(CLEAVE_HIT, {rightArm = {14, 0, 5}, leftArm = {18, -24, -5}, waist = {-34, 0, 0}, neck = {-14}})
+P.SWEEP_COIL = {rightArm = {60, -40, 0}, rightElbow = {40}, leftArm = {56, -50, 0}, leftElbow = {50}, waist = {-8, -16, 0}}
+P.SWEEP_FOLLOW = {rightArm = {70, 92, 0}, rightElbow = {12}, leftArm = {62, 70, 0}, leftElbow = {20}, waist = {-10, 48, 0}, neck = {0, -14, 0}}
+-- Glaive: a coiled lunge.
+P.LUNGE_COIL = {rightArm = {10, 0, 10}, rightElbow = {40}, leftArm = {30, -30, -10}, leftElbow = {60}, waist = {4, -6, 0}}
+P.LUNGE_FOLLOW = merge(LUNGE_HIT, {rightArm = {28, 0, 4}, waist = {-26, 0, 0}})
+-- Bow: hold at anchor a beat, the string hand flies back on the loose.
+P.BOW_ANCHOR = merge(BOW_DRAW, {rightArm = {93, 55, 0}, rightElbow = {132}, neck = {-5, 21, 0}})
+P.BOW_FOLLOW = {leftArm = {86, 12, 0}, leftElbow = {6}, rightArm = {80, 8, 46}, rightElbow = {24}, waist = {0, -20, 0}, neck = {-2, 16, 0}}
+-- Staff: gather the charge at the chest, raise, thrust, settle.
+P.STAFF_GATHER = {rightArm = {50, 0, 12}, rightElbow = {80}, leftArm = {46, -20, -10}, leftElbow = {86}, waist = {-6, 0, 0}, neck = {-6}}
+P.STAFF_FOLLOW = merge(STAFF_THRUST, {rightArm = {92, 0, 6}, waist = {-16, 0, 0}})
+P.WAND_COIL = {rightArm = {40, 10, 8}, rightElbow = {70}, rightWrist = {-20}}
+P.WAND_FOLLOW = {rightArm = {78, 16, 4}, rightElbow = {4}, rightWrist = {45}, waist = {-8, 0, 0}}
+-- Eat / drink.
+P.EAT_CHEW = merge(EAT_UP, {neck = {-2}})
+P.DRINK_DEEP = {rightArm = {92, 25, 0}, rightElbow = {126}, neck = {32}}
+P.DRINK_WIPE = {rightArm = {60, 40, 0}, rightElbow = {120}, neck = {-4}}
+
+-- Interactions.
+P.WAVE_UP = {rightArm = {100, 0, 50}, rightElbow = {70}, neck = {4}}
+P.WAVE_A = {rightArm = {104, 0, 60}, rightElbow = {58}, neck = {4, 6, 0}}
+P.WAVE_B = {rightArm = {100, 0, 42}, rightElbow = {82}, neck = {4, -4, 0}}
+P.TALK_OPEN = {rightArm = {40, 22, 0}, rightElbow = {82}, leftArm = {30, -18, 0}, leftElbow = {70}, neck = {-2}}
+P.NOD_DOWN = merge(P.TALK_OPEN, {neck = {-14}})
+P.NOD_UP = merge(P.TALK_OPEN, {neck = {4}})
+P.KNEEL = {root = {0, 0, 0, 0, -1.3, 0}, leftHip = {84}, leftKnee = {-90}, rightHip = {-4}, rightKnee = {-112}}
+P.BEND = {root = {0, 0, 0, 0, -0.5, 0}, rightHip = {40}, leftHip = {34}, rightKnee = {-52}, leftKnee = {-46}}
+P.OPEN_GRIP = merge(P.BEND, {rightArm = {50, -10, 6}, rightElbow = {30}, leftArm = {50, 10, -6}, leftElbow = {30}, waist = {-30, 0, 0}, neck = {-10}})
+P.OPEN_DIP = merge(P.OPEN_GRIP, {waist = {-36, 0, 0}, rightElbow = {36}, leftElbow = {36}})
+P.OPEN_LIFT = merge(P.BEND, {rightArm = {112, -10, 8}, rightElbow = {20}, leftArm = {112, 10, -8}, leftElbow = {20}, waist = {-8, 0, 0}, neck = {6}})
+P.OPEN_LOOK = merge(P.BEND, {rightArm = {40, -10, 8}, rightElbow = {40}, leftArm = {40, 10, -8}, leftElbow = {40}, waist = {-18, 0, 0}, neck = {-14}})
+P.POUR_LIFT = {rightArm = {74, 20, 0}, rightElbow = {72}, leftArm = {52, -24, -6}, leftElbow = {64}, waist = {-6, 0, 0}, neck = {-8}}
+P.POUR_TIP = merge(P.POUR_LIFT, {rightArm = {80, 14, 0}, rightElbow = {54}, rightWrist = {0, 0, 70}, neck = {-14}})
+P.WEAVE_A = {rightArm = {70, 30, 0}, rightElbow = {40}, leftArm = {62, -10, 0}, leftElbow = {60}, waist = {-8, 8, 0}, neck = {-10, 6, 0}}
+P.WEAVE_B = {rightArm = {62, 10, 0}, rightElbow = {60}, leftArm = {70, -30, 0}, leftElbow = {40}, waist = {-8, -8, 0}, neck = {-10, -6, 0}}
+P.WEAVE_BEAT = merge(P.WEAVE_A, {rightArm = {48, 0, 0}, rightElbow = {20}, leftArm = {48, 0, 0}, leftElbow = {20}, waist = {-14, 0, 0}})
+P.BLOW_HOLD = {rightArm = {80, 30, 0}, rightElbow = {110}, leftArm = {75, -20, 0}, leftElbow = {100}, neck = {-4}}
+P.BLOW_INHALE = merge(P.BLOW_HOLD, {waist = {6, 0, 0}, neck = {2}})
+P.BLOW_PUFF = merge(P.BLOW_HOLD, {waist = {-6, 0, 0}, neck = {-8}, rightWrist = {0, 0, 40}})
+P.SIFT_A = {rightArm = {48, 10, 10}, rightElbow = {50}, leftArm = {48, -10, -10}, leftElbow = {50}, waist = {-12, 0, -4}, neck = {-14}}
+P.SIFT_B = merge(P.SIFT_A, {rightArm = {48, 22, 10}, leftArm = {48, 2, -10}, waist = {-12, 0, 4}})
+P.POUCH = {rightArm = {-18, 0, 20}, rightElbow = {64}, waist = {-4, 0, 0}, neck = {-12}}
+P.HAND_OVER = {rightArm = {72, -6, 0}, rightElbow = {16}, waist = {-10, 0, 0}, neck = {-6}}
+P.HAND_SET = merge(P.HAND_OVER, {rightArm = {62, -6, 0}, rightElbow = {10}, waist = {-14, 0, 0}})
+P.DIG_A = merge(CROUCH, {rightArm = {42, 0, 8}, rightElbow = {20}, rightWrist = {-30}, leftArm = {30, -10, -8}, leftElbow = {40}})
+P.DIG_B = merge(CROUCH, {rightArm = {22, 0, 8}, rightElbow = {8}, rightWrist = {-50}, leftArm = {30, -10, -8}, leftElbow = {40}, waist = {-36, 0, 0}})
+P.SEED = merge(CROUCH, {rightArm = {36, 10, 0}, rightElbow = {30}, leftArm = {44, -10, 0}, leftElbow = {60}, neck = {-10}})
+P.PAT = merge(CROUCH, {rightArm = {24, 8, 4}, rightElbow = {4}, leftArm = {24, -8, -4}, leftElbow = {4}, waist = {-40, 0, 0}, neck = {-12}})
+P.WATER_HOLD = {rightArm = {58, 6, 4}, rightElbow = {24}, leftArm = {20, -10, -8}, leftElbow = {30}, waist = {-6, 0, 0}, neck = {-12}}
+P.WATER_TIP = merge(P.WATER_HOLD, {rightWrist = {-46}, rightArm = {62, 6, 4}, waist = {-10, 0, 0}})
+P.WATER_SWAY = merge(P.WATER_TIP, {rightArm = {62, 18, 4}, waist = {-10, 6, 0}})
+P.TEND_A = merge(CROUCH, {rightArm = {36, 6, 6}, rightElbow = {18}, leftArm = {44, -6, -6}, leftElbow = {30}})
+P.TEND_B = merge(CROUCH, {rightArm = {46, 6, 6}, rightElbow = {30}, leftArm = {32, -6, -6}, leftElbow = {16}, waist = {-36, 0, 0}})
+P.PRAY = merge(P.KNEEL, {rightArm = {42, 34, 0}, rightElbow = {100}, leftArm = {42, -34, 0}, leftElbow = {100}, waist = {-10, 0, 0}, neck = {-24}})
+P.PRAY_DEEP = merge(P.PRAY, {waist = {-18, 0, 0}, neck = {-30}})
+P.OFFER_UP = merge(P.KNEEL, {rightArm = {128, 14, 0}, rightElbow = {30}, leftArm = {128, -14, 0}, leftElbow = {30}, waist = {6, 0, 0}, neck = {16}})
+P.OFFER_DOWN = merge(P.KNEEL, {rightArm = {48, 14, 0}, rightElbow = {20}, leftArm = {48, -14, 0}, leftElbow = {20}, waist = {-20, 0, 0}, neck = {-14}})
+P.STOOP = merge(P.BEND, {rightArm = {36, 0, 6}, rightElbow = {6}, leftArm = {10, 0, -14}, leftElbow = {30}, waist = {-50, 0, 0}, neck = {-12}})
+P.STOOP_GRAB = merge(P.STOOP, {rightArm = {30, 0, 4}, rightElbow = {16}, waist = {-54, 0, 0}})
+P.STOW = {rightArm = {48, 30, 0}, rightElbow = {108}, leftArm = {10, 0, -10}, leftElbow = {20}, waist = {-4, 0, 0}, neck = {-8}}
+P.ATTUNE_REACH = {rightArm = {118, 8, 14}, rightElbow = {16}, rightWrist = {-30}, leftArm = {24, 0, -20}, leftElbow = {20}, waist = {4, 0, 0}, neck = {10}}
+P.ATTUNE_PUSH = merge(P.ATTUNE_REACH, {rightArm = {126, 8, 14}, rightElbow = {4}, waist = {6, 0, 0}, neck = {14}})
+P.READ = {rightArm = {44, 16, 0}, rightElbow = {96}, leftArm = {44, -16, 0}, leftElbow = {96}, waist = {-6, 0, 0}, neck = {-20}}
+P.READ_TURN = merge(P.READ, {rightArm = {52, 36, 0}, rightElbow = {70}, neck = {-18, 6, 0}})
+P.SHADE = {rightArm = {150, 40, 0}, rightElbow = {132}, waist = {2, 0, 0}, neck = {6, 30, 0}}
+P.SHADE_R = merge(P.SHADE, {neck = {6, -30, 0}, waist = {2, -10, 0}})
+P.PILFER_LEAN = {rightArm = {20, -10, 10}, rightElbow = {50}, waist = {-16, 6, 0}, neck = {-6, 10, 0}}
+P.PILFER_GRAB = {rightArm = {60, -20, 0}, rightElbow = {10}, waist = {-20, -6, 0}, neck = {-6, 6, 0}}
+-- Idle fidgets with a held item (observed: every client plays them from what it sees).
+P.TWIRL = {rightArm = {50, 20, 10}, rightElbow = {70}}
+P.HEAVY_REST = {rightArm = {34, 0, 12}, rightElbow = {112}, waist = {0, 0, 4}, neck = {0, 20, 0}}
+P.TAP_A = {rightArm = {50, 20, 0}, rightElbow = {80}, leftArm = {45, -30, 0}, leftElbow = {70}, neck = {-12}}
+P.TAP_B = merge(P.TAP_A, {rightArm = {44, 20, 0}, rightElbow = {92}})
+P.STRING_CHECK = {leftArm = {60, 20, 0}, leftElbow = {20}, rightArm = {65, 35, 0}, rightElbow = {100}, neck = {-6, 14, 0}}
+P.STAFF_TAP_UP = {rightArm = {26, 0, 6}, rightElbow = {60}}
+P.STAFF_TAP = {rightArm = {12, 0, 6}, rightElbow = {72}, neck = {-6}}
+P.LINE_CHECK = {rightArm = {40, 0, 6}, rightElbow = {70}, leftArm = {30, -20, -6}, leftElbow = {80}, neck = {-16}}
+-- Death: knees buckle, then a slump forward (held; the body is removed on respawn).
+-- QC M4: no root offset, so the physically falling corpse is never pushed into the floor (no owner-side jitter).
+P.DEATH_BUCKLE = {rightArm = {-10, 0, 20}, rightElbow = {20}, leftArm = {-10, 0, -20}, leftElbow = {20}, waist = {-20, 0, 0}, neck = {-20},
+	rightHip = {50}, leftHip = {44}, rightKnee = {-60}, leftKnee = {-56}}
+P.DEATH_FALL = {rightArm = {-15, 0, 25}, rightElbow = {10}, leftArm = {-15, 0, -25}, leftElbow = {12}, waist = {-35, 0, 6}, neck = {-30, 0, 10},
+	rightHip = {80}, leftHip = {76}, rightKnee = {-100}, leftKnee = {-104}}
+
+-- Gathering strike timing (Data.Strike): the loop is exactly the server's
+-- swing cadence, and intro + the loop's impact key is the client's strike
+-- delay, so every strike lands on the frame the strike is sent.
+Core.STRIKE_INTRO = 0.06
+Core.STRIKE_GRACE, Core.STRIKE_GRACE_REMOTE = 0.15, 0.3
+Core.STRIKE = {mine = {skill = "Mining", swing = 0.7, impact = 0.42}, chop = {skill = "Woodcutting", swing = 0.7, impact = 0.40},
+	harvest = {skill = "Farming", swing = 0.6, impact = 0.36}}
+-- Tier flourish after the last strike (Core.flourishLevel ≥ 1): a wrist twirl.
+local function flourishOutro(ready)
+	local up = merge(ready, {rightArm = {78, 10, 14}, rightElbow = {70}, rightWrist = {0, 0, 0}})
+	return {key(0, ready), key(0.14, up, "quadOut"), key(0.28, merge(up, {rightWrist = {0, 0, 80}}), "sineInOut"),
+		key(0.42, merge(up, {rightWrist = {0, 0, -12}}), "backOut", "flourish"), key(0.62, REST, "quadInOut")}
+end
+local function strikeGesture(base, fields, ready, coil, wind, hit, follow)
+	local T = Core.STRIKE[base]
+	local i = T.impact - Core.STRIKE_INTRO
+	fields.strike = base
+	fields.intro = {key(0, REST), key(Core.STRIKE_INTRO, ready, "quadOut")}
+	fields.loop = {key(0, ready), key(i * 0.25, coil, "quadOut"), key(i * 0.72, wind, "quadOut"), key(i, hit, "quadIn", "impact"),
+		key(i + 0.1, follow, "quadOut"), key(T.swing, ready, "sineInOut")}
+	fields.outro = {key(0, ready), key(0.22, REST, "quadInOut")}
+	fields.outroFlourish = flourishOutro(ready)
+	-- QC M3: after the last strike the ready pose holds briefly (longer for
+	-- observers: relay jitter) so a strike that is a little late re-phases the
+	-- loop instead of dropping into the recovery.
+	fields.ready = ready
+	fields.graceLocal = {key(0, ready), key(Core.STRIKE_GRACE, ready)}
+	fields.graceRemote = {key(0, ready), key(Core.STRIKE_GRACE_REMOTE, ready)}
+	return fields
+end
+-- A stance variant of a relayed gesture: chosen on every client from the
+-- target node's size and height (Core.stanceFor), never relayed itself.
+local function stance(base, fields)
+	fields.base, fields.derived = base, true
+	return fields
+end
+
 -- Gesture table. intro/loop/outro are keyframe lists; the loop repeats while
 -- the prompt is held (and at least minCycles times). marks fire impact FX.
 -- tool = held model kind; skill = which snapshot tool colours it.
+-- §47 fields: strike (gathering cadence), base/derived (stance variants),
+-- combo (weapon chains: window seconds, hitstops per step), stopOnMove (legs
+-- kneel / crouch: walking away fades it out), rod (rod bend), observed (every
+-- client derives it from what it sees: never relayed), dead (plays on a corpse).
 Core.GESTURES = {
-	mine = {tool = "Pickaxe", skill = "Mining", fx = "chips", shake = true,
-		intro = {key(0, REST), key(0.12, MINE_READY, "quadOut")},
-		loop = {key(0, MINE_READY), key(0.24, MINE_UP, "quadOut"), key(0.34, MINE_HIT, "quadIn", "impact"), key(0.56, MINE_READY, "sineInOut")},
-		outro = {key(0, MINE_READY), key(0.18, REST, "quadInOut")}},
-	chop = {tool = "Hatchet", skill = "Woodcutting", fx = "wood", shake = true,
-		intro = {key(0, REST), key(0.12, CHOP_READY, "quadOut")},
-		loop = {key(0, CHOP_READY), key(0.22, CHOP_BACK, "quadOut"), key(0.32, CHOP_HIT, "quadIn", "impact"), key(0.52, CHOP_READY, "sineInOut")},
-		outro = {key(0, CHOP_READY), key(0.18, REST, "quadInOut")}},
-	fish = {tool = "Rod", skill = "Fishing", fx = "splash", minCycles = 0,
-		intro = {key(0, REST), key(0.3, FISH_BACK, "quadOut"), key(0.45, FISH_CAST, "quadIn", "cast"), key(0.7, FISH_HOLD, "sineInOut")},
+	mine = strikeGesture("mine", {tool = "Pickaxe", skill = "Mining", fx = "chips", shake = true}, MINE_READY, P.MINE_COIL, MINE_UP, MINE_HIT, P.MINE_FOLLOW),
+	mine_low = strikeGesture("mine", stance("mine", {tool = "Pickaxe", skill = "Mining", fx = "chips", shake = true}),
+		P.MINE_LOW_READY, P.MINE_LOW_COIL, P.MINE_LOW_UP, P.MINE_LOW_HIT, P.MINE_LOW_FOLLOW),
+	mine_high = strikeGesture("mine", stance("mine", {tool = "Pickaxe", skill = "Mining", fx = "chips", shake = true}),
+		P.MINE_HIGH_READY, P.MINE_HIGH_COIL, P.MINE_HIGH_UP, P.MINE_HIGH_HIT, P.MINE_HIGH_FOLLOW),
+	chop = strikeGesture("chop", {tool = "Hatchet", skill = "Woodcutting", fx = "wood", shake = true}, CHOP_READY, P.CHOP_COIL, CHOP_BACK, CHOP_HIT, P.CHOP_FOLLOW),
+	chop_low = strikeGesture("chop", stance("chop", {tool = "Hatchet", skill = "Woodcutting", fx = "wood", shake = true}),
+		P.CHOP_LOW_READY, P.CHOP_LOW_COIL, P.CHOP_LOW_BACK, P.CHOP_LOW_HIT, P.CHOP_LOW_FOLLOW),
+	harvest = strikeGesture("harvest", {tool = "Hoe", skill = "Farming", fx = "dust"}, P.SICKLE_READY, P.SICKLE_COIL, P.SICKLE_WIND, P.SICKLE_HIT, P.SICKLE_FOLLOW),
+	harvest_high = strikeGesture("harvest", stance("harvest", {tool = "Hoe", skill = "Farming", fx = "dust"}),
+		P.SWEEP_HI_READY, P.SWEEP_HI_COIL, P.SWEEP_HI_WIND, P.SWEEP_HI_HIT, P.SWEEP_HI_FOLLOW),
+	fish = {tool = "Rod", skill = "Fishing", fx = "splash", minCycles = 0, rod = true, remoteHold = 30,
+		intro = {key(0, REST), key(0.14, FISH_HOLD, "quadOut"), key(0.34, FISH_BACK, "quadOut"), key(0.46, FISH_CAST, "quadIn", "cast"),
+			key(0.58, P.FISH_FOLLOW, "quadOut"), key(0.78, FISH_HOLD, "sineInOut")},
 		loop = {key(0, FISH_HOLD), key(0.45, FISH_DIP, "sineInOut", "bob"), key(0.9, FISH_HOLD, "sineInOut")},
-		outro = {key(0, FISH_HOLD), key(0.25, FISH_REEL, "backOut", "reel"), key(0.55, REST, "quadInOut")}},
-	harvest = {tool = "Hoe", skill = "Farming", fx = "dust",
-		intro = {key(0, REST), key(0.2, HARVEST_REACH, "quadOut")},
-		loop = {key(0, HARVEST_REACH), key(0.2, HOE_UP, "quadOut"), key(0.3, HOE_HIT, "quadIn", "impact"), key(0.46, HARVEST_GRAB, "sineInOut"),
-			key(0.64, HARVEST_PULL, "backOut"), key(0.8, HARVEST_REACH, "sineInOut")},
-		outro = {key(0, HARVEST_REACH), key(0.25, REST, "quadInOut")}},
+		outro = {key(0, FISH_HOLD), key(0.12, P.FISH_SET, "backOut", "reel"), key(0.3, FISH_REEL, "sineInOut"), key(0.44, P.FISH_CRANK, "sineInOut"),
+			key(0.58, FISH_REEL, "sineInOut"), key(0.8, REST, "quadInOut")}},
+	-- Reel / bite as one-shots (a relay that arrives with no cast on screen).
+	reel = {tool = "Rod", skill = "Fishing", fx = "splash", rod = true,
+		loop = {key(0, REST), key(0.12, FISH_HOLD, "quadOut"), key(0.24, P.FISH_SET, "backOut", "reel"), key(0.42, FISH_REEL, "sineInOut"),
+			key(0.56, P.FISH_CRANK, "sineInOut"), key(0.86, REST, "quadInOut")}},
+	bite = {tool = "Rod", skill = "Fishing", fx = "splash", rod = true,
+		loop = {key(0, REST), key(0.12, FISH_HOLD, "quadOut"), key(0.2, P.FISH_TUG, "quadIn", "bob"), key(0.42, FISH_HOLD, "backOut"), key(0.62, REST, "quadInOut")}},
+	-- QC L9: a fish that got away (or a line pulled in empty): the rod lifts on
+	-- a slack line and the shoulders drop. No hook-set, no splash.
+	lost = {tool = "Rod", skill = "Fishing", rod = true,
+		loop = {key(0, FISH_HOLD), key(0.16, merge(FISH_HOLD, {rightArm = {96, 0, 6}, rightElbow = {30}, neck = {6}}), "quadOut", "lost"),
+			key(0.5, merge(FISH_HOLD, {rightArm = {40, 0, 8}, rightElbow = {20}, waist = {-8, 0, 0}, neck = {-14}}), "sineInOut"),
+			key(0.8, REST, "quadInOut")}},
 	hammer = {tool = "Hammer", fx = "sparks", shake = true,
 		intro = {key(0, REST), key(0.12, HAMMER_READY, "quadOut")},
 		loop = {key(0, HAMMER_READY), key(0.2, HAMMER_UP, "quadOut"), key(0.28, HAMMER_HIT, "quadIn", "impact"), key(0.48, HAMMER_READY, "sineInOut")},
@@ -311,43 +543,109 @@ Core.GESTURES = {
 		intro = {key(0, REST), key(0.14, SAW_BACK, "quadOut")},
 		loop = {key(0, SAW_BACK), key(0.28, SAW_PUSH, "quadInOut", "impact"), key(0.56, SAW_BACK, "quadInOut")},
 		outro = {key(0, SAW_BACK), key(0.16, REST, "quadInOut")}},
+	-- Alchemy pour, loom weave, glassblowing, sieve.
+	pour = {tool = "Flask", fx = "bubbles",
+		intro = {key(0, REST), key(0.2, P.POUR_LIFT, "quadOut")},
+		loop = {key(0, P.POUR_LIFT), key(0.3, P.POUR_TIP, "sineInOut"), key(0.55, P.POUR_TIP, "linear", "impact"), key(0.85, P.POUR_LIFT, "sineInOut")},
+		outro = {key(0, P.POUR_LIFT), key(0.2, REST, "quadInOut")}},
+	weave = {fx = "sawdust",
+		intro = {key(0, REST), key(0.16, P.WEAVE_A, "quadOut")},
+		loop = {key(0, P.WEAVE_A), key(0.24, P.WEAVE_B, "sineInOut"), key(0.36, P.WEAVE_BEAT, "quadIn", "impact"), key(0.6, P.WEAVE_A, "sineInOut")},
+		outro = {key(0, P.WEAVE_A), key(0.2, REST, "quadInOut")}},
+	blow = {tool = "Pipe", fx = "steam",
+		intro = {key(0, REST), key(0.2, P.BLOW_HOLD, "quadOut")},
+		loop = {key(0, P.BLOW_HOLD), key(0.25, P.BLOW_INHALE, "sineInOut"), key(0.5, P.BLOW_PUFF, "quadIn", "impact"), key(0.9, P.BLOW_HOLD, "sineInOut")},
+		outro = {key(0, P.BLOW_HOLD), key(0.2, REST, "quadInOut")}},
+	sift = {tool = "Sieve", fx = "dust",
+		intro = {key(0, REST), key(0.16, P.SIFT_A, "quadOut")},
+		loop = {key(0, P.SIFT_A), key(0.12, P.SIFT_B, "sineInOut"), key(0.24, P.SIFT_A, "sineInOut", "impact"), key(0.36, P.SIFT_B, "sineInOut"),
+			key(0.48, P.SIFT_A, "sineInOut")},
+		outro = {key(0, P.SIFT_A), key(0.18, REST, "quadInOut")}},
 	interact = {fx = "ring",
 		loop = {key(0, REST), key(0.2, REACH, "quadOut"), key(0.3, PRESS, "quadIn", "impact"), key(0.55, REST, "quadInOut")}},
-	attack = {tool = "Sword", shake = true, hitstop = 0.045, sound = "slash", variants = {
-		{key(0, REST), key(0.1, {rightArm = {90, -62, 0}, rightElbow = {30}, waist = {0, -22, 0}}, "quadOut"),
-			key(0.2, {rightArm = {88, 52, 0}, rightElbow = {6}, waist = {-4, 22, 0}}, "quadIn", "impact"), key(0.38, REST, "quadInOut")},
-		{key(0, REST), key(0.1, {rightArm = {92, 58, 0}, rightElbow = {60}, waist = {0, 20, 0}}, "quadOut"),
-			key(0.2, {rightArm = {86, -60, 0}, rightElbow = {6}, waist = {-4, -22, 0}}, "quadIn", "impact"), key(0.38, REST, "quadInOut")},
-		{key(0, REST), key(0.12, {rightArm = {170, 0, 10}, rightElbow = {40}, waist = {8, 0, 0}}, "quadOut"),
-			key(0.22, {rightArm = {40, 0, 4}, rightElbow = {6}, waist = {-16, 0, 0}}, "quadIn", "impact"), key(0.4, REST, "quadInOut")},
+	-- NPC greeting: a wave, then an open-handed nod (the NPC nods back locally).
+	talk = {
+		loop = {key(0, REST), key(0.2, P.WAVE_UP, "quadOut"), key(0.36, P.WAVE_A, "sineInOut"), key(0.52, P.WAVE_B, "sineInOut"),
+			key(0.68, P.WAVE_A, "sineInOut", "impact"), key(0.92, P.TALK_OPEN, "quadInOut"), key(1.06, P.NOD_DOWN, "quadOut"), key(1.2, P.NOD_UP, "sineInOut"),
+			key(1.32, P.NOD_DOWN, "sineInOut"), key(1.6, REST, "quadInOut")}},
+	-- Chests, caches, ballot boxes and doors: grip, a dip, lift, look in.
+	open = {fx = "ring", stopOnMove = true,
+		loop = {key(0, REST), key(0.22, P.OPEN_GRIP, "quadOut"), key(0.32, P.OPEN_DIP, "quadIn"), key(0.6, P.OPEN_LIFT, "backOut", "impact"),
+			key(0.82, P.OPEN_LOOK, "quadOut"), key(1.1, REST, "quadInOut")}},
+	-- Banking / trading: reach to the purse, hand it over, set it down.
+	deposit = {tool = "Pouch", fx = "coins",
+		loop = {key(0, REST), key(0.18, P.POUCH, "quadOut"), key(0.42, P.HAND_OVER, "quadInOut"), key(0.54, P.HAND_SET, "quadIn", "impact"),
+			key(0.66, merge(P.HAND_SET, {neck = {-14}}), "quadOut"), key(0.95, REST, "quadInOut")}},
+	-- Garden plots: dig, seed, pat (plant); tip the can (water); work the soil (tend).
+	plant = {fx = "dust", stopOnMove = true,
+		loop = {key(0, REST), key(0.2, P.DIG_A, "quadOut"), key(0.32, P.DIG_B, "quadIn"), key(0.44, P.DIG_A, "quadOut"), key(0.56, P.DIG_B, "quadIn"),
+			key(0.8, P.SEED, "quadInOut"), key(1.0, P.PAT, "quadIn", "impact"), key(1.12, P.SEED, "quadOut"), key(1.22, P.PAT, "quadIn"), key(1.5, REST, "quadInOut")}},
+	water = {tool = "Can", fx = "water",
+		loop = {key(0, REST), key(0.2, P.WATER_HOLD, "quadOut"), key(0.38, P.WATER_TIP, "sineInOut", "impact"), key(0.7, P.WATER_SWAY, "sineInOut", "impact"),
+			key(1.0, P.WATER_TIP, "sineInOut"), key(1.15, P.WATER_HOLD, "quadOut"), key(1.4, REST, "quadInOut")}},
+	tend = {fx = "dust", stopOnMove = true,
+		loop = {key(0, REST), key(0.22, P.TEND_A, "quadOut"), key(0.4, P.TEND_B, "sineInOut", "impact"), key(0.58, P.TEND_A, "sineInOut"),
+			key(0.76, P.TEND_B, "sineInOut"), key(1.05, REST, "quadInOut")}},
+	-- Altars: kneel and pray; kneel and raise an offering.
+	pray = {fx = "mend", stopOnMove = true,
+		loop = {key(0, REST), key(0.4, P.PRAY, "quadOut"), key(0.9, P.PRAY_DEEP, "sineInOut", "impact"), key(1.5, P.PRAY, "sineInOut"), key(2.0, REST, "quadInOut")}},
+	offer = {fx = "mend", stopOnMove = true,
+		loop = {key(0, REST), key(0.38, P.OFFER_DOWN, "quadOut"), key(0.8, P.OFFER_UP, "backOut", "impact"), key(1.2, P.OFFER_UP, "sineInOut"),
+			key(1.45, P.OFFER_DOWN, "quadInOut"), key(1.8, REST, "quadInOut")}},
+	-- Motes and anything on the ground: stoop, grab, stow at the chest.
+	pickup = {fx = "ring", stopOnMove = true,
+		loop = {key(0, REST), key(0.24, P.STOOP, "quadOut"), key(0.34, P.STOOP_GRAB, "quadIn", "impact"), key(0.58, P.STOW, "quadOut"), key(0.86, REST, "quadInOut")}},
+	-- Travel beacons, warps, portals and lair altars: reach out to the crystal.
+	attune = {fx = "attune",
+		loop = {key(0, REST), key(0.24, P.ATTUNE_REACH, "quadOut"), key(0.5, P.ATTUNE_PUSH, "sineInOut", "impact"), key(0.8, P.ATTUNE_PUSH, "sineInOut"),
+			key(1.1, REST, "quadInOut")}},
+	read = {
+		loop = {key(0, REST), key(0.24, P.READ, "quadOut"), key(0.6, P.READ_TURN, "sineInOut", "impact"), key(0.84, P.READ, "sineInOut"), key(1.2, REST, "quadInOut")}},
+	survey = {
+		loop = {key(0, REST), key(0.26, P.SHADE, "quadOut"), key(0.8, P.SHADE_R, "sineInOut", "impact"), key(1.2, P.SHADE, "sineInOut"), key(1.5, REST, "quadInOut")}},
+	pilfer = {
+		loop = {key(0, REST), key(0.14, P.PILFER_LEAN, "quadOut"), key(0.24, P.PILFER_GRAB, "quadIn", "impact"), key(0.4, P.POUCH, "quadOut"), key(0.66, REST, "quadInOut")}},
+	attack = {tool = "Sword", shake = true, hitstop = 0.045, sound = "slash", combo = {window = 0.9, hitstops = {0.04, 0.045, 0.08}}, variants = {
+		{key(0, REST), key(0.1, P.SW1_COIL, "quadOut"), key(0.18, P.SW1_HIT, "quadIn", "impact"), key(0.27, P.SW1_FOLLOW, "quadOut"), key(0.48, REST, "sineInOut")},
+		{key(0, REST), key(0.09, P.SW2_COIL, "quadOut"), key(0.17, P.SW2_HIT, "quadIn", "impact"), key(0.26, P.SW2_FOLLOW, "quadOut"), key(0.46, REST, "sineInOut")},
+		{key(0, REST), key(0.06, P.SW3_DIP, "quadOut"), key(0.18, P.SW3_COIL, "quadOut"), key(0.28, P.SW3_HIT, "quadIn", "impact"), key(0.38, P.SW3_FOLLOW, "quadOut"),
+			key(0.62, REST, "sineInOut")},
 	}},
 	-- Weapon classes: daggers stab / backhand, greatblades and mauls cleave
 	-- overhead or sweep two-handed, glaives lunge or sweep (Data.Held.ATTACK).
-	thrust = {tool = "Sword", shake = true, hitstop = 0.035, sound = "lunge", variants = {
-		{key(0, REST), key(0.08, STAB_BACK, "quadOut"), key(0.15, STAB_HIT, "quadIn", "impact"), key(0.32, REST, "quadInOut")},
-		{key(0, REST), key(0.09, SLIT_BACK, "quadOut"), key(0.17, SLIT_HIT, "quadIn", "impact"), key(0.34, REST, "quadInOut")},
+	thrust = {tool = "Sword", shake = true, hitstop = 0.035, sound = "lunge", combo = {window = 0.7, hitstops = {0.025, 0.025, 0.05}}, variants = {
+		{key(0, REST), key(0.06, STAB_BACK, "quadOut"), key(0.12, STAB_HIT, "quadIn", "impact"), key(0.18, P.STAB_FOLLOW, "quadOut"), key(0.32, REST, "sineInOut")},
+		{key(0, REST), key(0.06, P.STAB2_BACK, "quadOut"), key(0.12, P.STAB2_HIT, "quadIn", "impact"), key(0.18, P.STAB2_FOLLOW, "quadOut"), key(0.32, REST, "sineInOut")},
+		{key(0, REST), key(0.08, SLIT_BACK, "quadOut"), key(0.15, SLIT_HIT, "quadIn", "impact"), key(0.24, P.SLIT_FOLLOW, "quadOut"), key(0.4, REST, "sineInOut")},
 	}},
-	cleave = {tool = "Sword", shake = true, hitstop = 0.07, sound = "slash", fx = "chips", variants = {
-		{key(0, REST), key(0.22, CLEAVE_UP, "quadOut"), key(0.34, CLEAVE_HIT, "quadIn", "impact"), key(0.62, REST, "quadInOut")},
-		{key(0, REST), key(0.2, SWEEP_BACK, "quadOut"), key(0.32, SWEEP_HIT, "quadIn", "impact"), key(0.58, REST, "quadInOut")},
+	cleave = {tool = "Sword", shake = true, hitstop = 0.07, sound = "slash", fx = "chips", combo = {window = 1.3, hitstops = {0.08, 0.065}}, variants = {
+		{key(0, REST), key(0.08, P.CLEAVE_DIP, "quadOut"), key(0.22, CLEAVE_UP, "quadOut"), key(0.32, CLEAVE_HIT, "quadIn", "impact"),
+			key(0.44, P.CLEAVE_FOLLOW, "quadOut"), key(0.72, REST, "sineInOut")},
+		{key(0, REST), key(0.08, P.SWEEP_COIL, "quadOut"), key(0.2, SWEEP_BACK, "quadOut"), key(0.31, SWEEP_HIT, "quadIn", "impact"),
+			key(0.42, P.SWEEP_FOLLOW, "quadOut"), key(0.68, REST, "sineInOut")},
 	}},
-	lunge = {tool = "Sword", shake = true, hitstop = 0.05, sound = "lunge", variants = {
-		{key(0, REST), key(0.16, LUNGE_BACK, "quadOut"), key(0.26, LUNGE_HIT, "quadIn", "impact"), key(0.52, REST, "quadInOut")},
-		{key(0, REST), key(0.18, SWEEP_BACK, "quadOut"), key(0.3, SWEEP_HIT, "quadIn", "impact"), key(0.56, REST, "quadInOut")},
+	lunge = {tool = "Sword", shake = true, hitstop = 0.05, sound = "lunge", combo = {window = 1.0, hitstops = {0.05, 0.05}}, variants = {
+		{key(0, REST), key(0.08, P.LUNGE_COIL, "quadOut"), key(0.16, LUNGE_BACK, "quadOut"), key(0.25, LUNGE_HIT, "quadIn", "impact"),
+			key(0.34, P.LUNGE_FOLLOW, "quadOut"), key(0.56, REST, "sineInOut")},
+		{key(0, REST), key(0.1, P.SWEEP_COIL, "quadOut"), key(0.22, SWEEP_BACK, "quadOut"), key(0.34, SWEEP_HIT, "quadIn", "impact"),
+			key(0.46, P.SWEEP_FOLLOW, "quadOut"), key(0.7, REST, "sineInOut")},
 	}},
 	eat = {tool = "Food", fx = "crumbs",
-		loop = {key(0, REST), key(0.25, EAT_UP, "quadOut"), key(0.38, EAT_BITE, "quadIn", "impact"), key(0.52, EAT_UP),
-			key(0.66, EAT_BITE, "quadIn", "impact"), key(1.0, REST, "quadInOut")}},
+		loop = {key(0, REST), key(0.22, EAT_UP, "quadOut"), key(0.34, EAT_BITE, "quadIn", "impact"), key(0.46, P.EAT_CHEW, "sineInOut"),
+			key(0.6, EAT_BITE, "quadIn", "impact"), key(0.74, P.EAT_CHEW, "sineInOut"), key(1.0, REST, "quadInOut")}},
 	drink = {tool = "Flask",
-		loop = {key(0, REST), key(0.3, DRINK_UP, "quadOut"), key(0.75, DRINK_TIP, "sineInOut", "impact"), key(1.0, REST, "quadInOut")}},
+		loop = {key(0, REST), key(0.25, DRINK_UP, "quadOut"), key(0.45, DRINK_TIP, "sineInOut"), key(0.75, P.DRINK_DEEP, "sineInOut", "impact"),
+			key(0.9, P.DRINK_WIPE, "quadOut"), key(1.15, REST, "quadInOut")}},
 	-- Combat styles (combat.client.lua): bow shot, staff cast, wand flick, Mend.
 	shoot = {tool = "Bow", hand = "left", sound = "bow",
-		loop = {key(0, REST), key(0.12, BOW_RAISE, "quadOut"), key(0.3, BOW_DRAW, "quadInOut"), key(0.36, BOW_LOOSE, "quadOut", "release"),
-			key(0.6, REST, "quadInOut")}},
+		loop = {key(0, REST), key(0.12, BOW_RAISE, "quadOut"), key(0.3, BOW_DRAW, "quadInOut"), key(0.36, P.BOW_ANCHOR, "sineInOut"),
+			key(0.4, BOW_LOOSE, "quadOut", "release"), key(0.5, P.BOW_FOLLOW, "quadOut"), key(0.72, REST, "quadInOut")}},
 	cast = {tool = "Staff", fx = "ring", sound = "cast",
-		loop = {key(0, REST), key(0.18, STAFF_RAISE, "quadOut"), key(0.32, STAFF_THRUST, "backOut", "impact"), key(0.62, REST, "quadInOut")}},
+		loop = {key(0, REST), key(0.08, P.STAFF_GATHER, "quadOut"), key(0.18, STAFF_RAISE, "quadOut"), key(0.32, STAFF_THRUST, "backOut", "impact"),
+			key(0.42, P.STAFF_FOLLOW, "quadOut"), key(0.66, REST, "quadInOut")}},
 	flick = {tool = "Wand", fx = "ring",
-		loop = {key(0, REST), key(0.1, WAND_UP, "quadOut"), key(0.18, WAND_FLICK, "quadIn", "impact"), key(0.4, REST, "quadInOut")}},
+		loop = {key(0, REST), key(0.06, P.WAND_COIL, "quadOut"), key(0.14, WAND_UP, "quadOut"), key(0.2, WAND_FLICK, "quadIn", "impact"),
+			key(0.28, P.WAND_FOLLOW, "quadOut"), key(0.44, REST, "quadInOut")}},
 	heal = {fx = "mend",
 		loop = {key(0, REST), key(0.25, HEAL_UP, "backOut", "impact"), key(0.7, HEAL_UP), key(0.95, REST, "quadInOut")}},
 	-- Agility moves (attribute-driven, see Core.agilityGesture): durations
@@ -400,9 +698,12 @@ Core.GESTURES = {
 		outro = {key(0, KINDLE_READY), key(0.24, REST, "quadInOut")}},
 	netswing = {tool = "Net", fx = "ring",
 		loop = {key(0, REST), key(0.16, NET_BACK, "quadOut"), key(0.32, NET_SWEEP, "quadIn", "impact"), key(0.62, REST, "quadInOut")}},
+	-- Death (observed: every client plays it from the replicated Humanoid.Died).
+	death = {observed = true, dead = true,
+		intro = {key(0, REST), key(0.22, P.DEATH_BUCKLE, "quadIn"), key(0.6, P.DEATH_FALL, "quadOut", "impact")},
+		loop = {key(0, P.DEATH_FALL), key(1, P.DEATH_FALL)},
+		outro = {key(0, P.DEATH_FALL), key(0.3, REST, "quadInOut")}},
 }
-Core.NAMES = {}
-for name in pairs(Core.GESTURES) do Core.NAMES[name] = true end
 
 -- AgilityMove "<anim>:<seq>" -> gesture name, seq ("" or unknown -> nil).
 Core.AGILITY = {climb = "climb", balance = "balance", swing = "swing", ledge = "ledge", leap = "leap", vault = "vault",
@@ -438,36 +739,161 @@ function Core.duration(keys) return keys[#keys].t end
 -- Prompt → gesture -----------------------------------------------------------
 Core.SKILL_GESTURE = {Mining = "mine", Woodcutting = "chop", Fishing = "fish", Farming = "harvest"}
 Core.COOP_GESTURE = {Timber = "chop", Ore = "mine", Herb = "harvest"}
-Core.STATION_GESTURE = {Forge = {"hammer"}, Cauldron = {"stir"}, Hearth = {"flip", "stir"}, Workbench = {"hammer", "saw"}, Slayer = {"interact"},
-	-- Crafting stations (prompt action "craftStation"): Jeweller's Bench, Tanning Rack, Glass Furnace.
-	Jeweller = {"hammer"}, Tannery = {"saw", "hammer"}, Glassworks = {"stir"}}
-Core.ACTION_GESTURE = {fight = "attack", worker = "hammer", workerBuild = "hammer", decorate = "hammer", trap = "settrap", net = "netswing",
-	lairEnter = "interact", lairLeave = "interact", -- Lairs: summoning altars and the arena exit
-	beaconLight = "interact"} -- Beaconry: the pyre hold reaches in; the strike plays once from BeaconryGesture (QC L3)
+-- §47: the anvil hammers, the cauldron pours and stirs, the loom weaves, the furnace blows glass.
+Core.STATION_GESTURE = {Forge = {"hammer"}, Cauldron = {"pour", "stir"}, Hearth = {"flip", "stir"}, Workbench = {"hammer", "saw"}, Slayer = {"talk"}}
+-- Crafting stations (prompt action "craftStation": Jeweller's Bench, Tanning Rack, Glass Furnace)
+-- use Data.Crafting.Stations[id].gesture (QC L8).
+-- Every prompt verb (IsleAction) the servers build maps to a gesture here;
+-- verify-animations.luau scans the server sources and fails on a verb that
+-- would fall through to the generic reach.
+Core.ACTION_GESTURE = {fight = "attack", worker = "hammer", workerBuild = "hammer", decorate = "hammer", homeExpand = "hammer",
+	trap = "settrap", net = "netswing",
+	lairEnter = "attune", lairLeave = "attune", raidLeave = "attune", -- summoning altars, arena and vault exits
+	raidAct = "interact", -- Undertide levers and plates: reach and press
+	beaconLight = "interact", -- Beaconry: the pyre hold reaches in; the strike plays once from BeaconryGesture (QC L3)
+	bank = "deposit", sell = "deposit", skillVendor = "deposit", eventVendor = "deposit",
+	claim = "open", workerClaim = "open", councilView = "open",
+	explore = "survey", landmark = "survey",
+	altarPray = "pray", moteShrine = "pray", altarOffer = "offer", bossSigil = "offer",
+	moteCollect = "pickup", thieve = "pilfer",
+	logsBoard = "read", lecternVisit = "read", raidPortal = "read", factionBoard = "talk",
+	gardenOpen = "read", gardenPlot = "tend"}
+-- Per-item refinements (the garden's composter lid, its visiting traders).
+Core.ITEM_GESTURE = {gardenOpen = {composter = "open", visitor = "talk", ledger = "read"}}
+-- Garden plots do whatever the plot needs (plant, water, harvest, treat): the
+-- gesture waits for the server's reply message (Core.replyGesture).
+Core.DEFERRED_ACTION = {gardenPlot = true}
+-- Prompts without an IsleAction (travel posts, NPC talk, expedition and
+-- minigame prompts) pick by their action text.
+Core.TEXT_GESTURE = {{"^Talk", "talk"}, {"^Hail", "talk"}, {"^Speak", "talk"}, {"^Trade", "deposit"}, {"^Vote", "deposit"},
+	{"^Travel", "attune"}, {"^Return", "attune"}, {"^Ride", "attune"}, {"^Step", "attune"}, {"^Board", "attune"}, {"^Visit", "attune"},
+	{"^Ascend", "attune"}, {"^Descend", "attune"}, {"^Enter", "attune"}, {"^Leave", "attune"}, {"^Tune", "attune"},
+	{"^Strike", "attack"}, {"^Ranged", "shoot"}, {"^Class ability", "cast"}, {"^Ultimate", "cast"}, {"^Harpoon", "thrust"},
+	{"^Catch", "reel"}, {"^Cook", "flip"}, {"^Open", "open"}, {"^Claim", "open"}, {"^Read", "read"}, {"^Study", "read"}, {"^Plan", "read"},
+	{"^Toggle", "interact"}, {"^Pray", "pray"}, {"^Collect", "pickup"}, {"^Pick", "pickup"}}
 -- Agility prompts animate from the AgilityMove attribute the server sets instead.
 Core.SILENT_ACTION = {agility = true, shortcut = true}
 
--- info = {action, item, coopResource}; counter alternates station variants.
+-- info = {action, item, coopResource, text (ActionText), role (TownsfolkRole)};
+-- counter alternates station variants. Returns name, source ("action",
+-- "text", "role" or "fallback": the generic reach).
 function Core.selectGesture(info, Data, counter)
 	local action, item = info.action, info.item
 	if Core.SILENT_ACTION[action] then return nil end
-	if info.coopResource and Core.COOP_GESTURE[info.coopResource] then return Core.COOP_GESTURE[info.coopResource] end
+	if info.coopResource and Core.COOP_GESTURE[info.coopResource] then return Core.COOP_GESTURE[info.coopResource], "action" end
 	if action == "gather" and type(item) == "string" then
 		local skill = Data.ResourceSkill[item]
-		return Core.SKILL_GESTURE[skill] or "interact"
+		return Core.SKILL_GESTURE[skill] or "interact", if Core.SKILL_GESTURE[skill] then "action" else "fallback"
 	end
-	if (action == "station" or action == "craftStation") and Core.STATION_GESTURE[item] then
-		local list = Core.STATION_GESTURE[item]
-		return list[((counter or 0) % #list) + 1]
+	-- QC L8: Crafting stations read their gesture list from Data.Crafting.Stations.
+	local crafted = action == "craftStation" and Data.Crafting and Data.Crafting.Stations and Data.Crafting.Stations[item]
+	local list = (crafted and type(crafted.gesture) == "table" and #crafted.gesture > 0 and crafted.gesture)
+		or ((action == "station" or action == "craftStation") and Core.STATION_GESTURE[item])
+	if list then
+		return list[((counter or 0) % #list) + 1], "action"
 	end
 	if action == "craft" then
 		local recipe = Data.Recipes and Data.Recipes[item]
 		local station = recipe and recipe.station
-		if item == "Tonic" or station == "Cauldron" then return "stir" end
-		if station == "Hearth" then return "flip" end
-		return "hammer"
+		if item == "Tonic" or station == "Cauldron" then return "stir", "action" end
+		if station == "Hearth" then return "flip", "action" end
+		return "hammer", "action"
 	end
-	return Core.ACTION_GESTURE[action] or "interact"
+	local byItem = Core.ITEM_GESTURE[action]
+	if byItem and byItem[item] then return byItem[item], "action" end
+	if Core.ACTION_GESTURE[action] then return Core.ACTION_GESTURE[action], "action" end
+	if action == nil and type(info.role) == "string" then return "talk", "role" end
+	if action == nil and type(info.text) == "string" then
+		for _, rule in ipairs(Core.TEXT_GESTURE) do
+			if info.text:find(rule[1]) then return rule[2], "text" end
+		end
+	end
+	return "interact", "fallback"
+end
+-- A deferred garden prompt's reply message → plant / water / harvest / tend.
+function Core.replyGesture(message)
+	if type(message) ~= "string" then return "tend" end
+	if message:find("^Planted") then return "plant" end
+	if message:find("^Watered") then return "water" end
+	if message:find("Farming XP") then return "harvest" end
+	return "tend"
+end
+
+-- Stances (§47): the node's height against the root picks the variant, so a
+-- rock at the feet is struck from a crouch and a high vein overhead. Every
+-- client derives it from the relayed target part, so only the base relays.
+Core.STANCES = {mine = {low = "mine_low", lowTop = -0.6, high = "mine_high", highCentre = 1.8},
+	chop = {low = "chop_low", lowTop = 0.2}, harvest = {high = "harvest_high", highTop = 1.0}}
+function Core.stanceFor(name, rootY, partY, sizeY)
+	local set = Core.STANCES[name]
+	if not set or type(rootY) ~= "number" or type(partY) ~= "number" then return name end
+	local top = partY + (tonumber(sizeY) or 0) / 2 - rootY
+	local centre = partY - rootY
+	if set.low and top < set.lowTop then return set.low end
+	if set.high and ((set.highCentre and centre > set.highCentre) or (set.highTop and top > set.highTop)) then return set.high end
+	return name
+end
+-- The relayed / held-item name a gesture answers to (stances → base, the
+-- reel / bite one-shots → fish).
+Core.FIT_AS = {reel = "fish", bite = "fish", lost = "fish"}
+function Core.fitName(name)
+	local def = Core.GESTURES[name]
+	return (def and def.base) or Core.FIT_AS[name] or name
+end
+
+-- Combos (§47): consecutive attacks inside the window chain the variants in
+-- order (sword: forehand, backhand, overhead finisher); a pause restarts at 1.
+function Core.newCombo() return {name = nil, step = 0, at = -math.huge} end
+function Core.comboNext(rec, name, now)
+	local def = Core.GESTURES[name]
+	if not def or not def.combo or not def.variants then return 1 end
+	if rec.name == name and now - rec.at <= def.combo.window then rec.step = rec.step % #def.variants + 1 else rec.step = 1 end
+	rec.name, rec.at = name, now
+	return rec.step
+end
+-- Tier flourish (§47): 0 below tier 4, 1 for tiers 4-6 (a wrist twirl after
+-- the last strike, more chips), 2 from tier 7 (plus a glint).
+function Core.flourishLevel(Data, itemId)
+	local def = type(itemId) == "string" and Data.Items[itemId]
+	if not def or not Data.Held or not Data.Held.look then return 0 end
+	local tier = tonumber(Data.Held.look(def).tier) or 0
+	return if tier >= 7 then 2 elseif tier >= 4 then 1 else 0
+end
+Core.FLOURISH_FX = {1, 1.5, 2}
+
+-- Rod bend (§47): degrees the blank flexes toward the water. The cast loads
+-- it back and whips it through, the wait bobs it, a bite snaps it down and the
+-- reel holds the fish's pull. Applied to the rod's welds (Core.bendC0).
+Core.ROD_PIVOT = -0.9 -- grip-frame Z where the blank leaves the grip
+Core.ROD_PARTS = {Rod = true, Guide = true, Tip = true, Line = true, Bobber = true}
+Core.BITE_TIME = 0.5
+function Core.rodBend(s, now)
+	local t = now - s.phaseStart
+	local bend = 0
+	if s.name == "lost" then
+		bend = -6 * math.max(0, 1 - t / 0.5) -- QC L9: a slack line
+	elseif s.name == "reel" then
+		bend = 30 * math.max(0, 1 - t / 0.86)
+	elseif s.name == "bite" then
+		bend = 22 * math.max(0, 1 - math.abs(t - 0.2) / 0.3)
+	elseif s.phase == "intro" then
+		if t < 0.34 then bend = -8 * t / 0.34
+		elseif t < 0.46 then bend = -8 + 26 * (t - 0.34) / 0.12
+		else bend = 18 * math.max(0, 1 - (t - 0.46) / 0.3) end
+	elseif s.phase == "loop" then
+		bend = 5 + 3 * math.sin(t / 0.9 * 2 * math.pi)
+	elseif s.phase == "outro" then
+		bend = 30 * math.max(0, 1 - t / 0.6)
+	end
+	if s.biteAt then
+		local b = now - s.biteAt
+		if b >= 0 and b < Core.BITE_TIME then bend += 22 * (1 - b / Core.BITE_TIME) end
+	end
+	return bend
+end
+-- A part's weld C0 bent about the pivot (in the grip frame) by `degrees` (tip down).
+function Core.bendC0(baseC0, pivot, degrees)
+	return pivot * CFrame.Angles(-rad(degrees), 0, 0) * pivot:Inverse() * baseC0
 end
 
 -- Beaconry (§37): BeaconryGesture "<gesture>:<seq>[:<itemId>]" -> name, itemId|nil.
@@ -519,6 +945,7 @@ end
 Core.STYLE_GESTURE = {shoot = "ranged", cast = "magic", flick = "magic"}
 Core.MELEE_GESTURE = {attack = true, thrust = true, cleave = true, lunge = true}
 function Core.itemFits(gesture, def)
+	gesture = Core.fitName(gesture)
 	if gesture == "kindle" then return def.heldClass == "striker" end -- Beaconry strikers (material items)
 	local kind = Core.TOOL_ITEM_KIND[gesture]
 	if kind then return def.kind == "tool" and def.toolKind == kind end
@@ -565,6 +992,13 @@ function Core.toolSpec(kind)
 		-- Beaconry striker: a wrapped grip, a steel bar and a flint nub.
 		Striker = {p("Grip", V(0.22, 0.22, 0.7), V(0, 0, -0.05), W, "Wood"), p("Steel", V(0.5, 0.16, 0.16), V(0, 0.05, -0.55), H),
 			p("Flint", V(0.34, 0.34, 0.34), V(0, 0.24, -0.72), "string", "Slate", "Ball")},
+		-- §47 station and interaction props: glassblowing pipe, sand sieve,
+		-- watering can, coin purse.
+		Pipe = {p("Pipe", V(0.14, 0.14, 3.2), V(0, 0, -1.2), H), p("Gather", V(0.55, 0.55, 0.55), V(0, 0, -2.9), "string", "Glass", "Ball")},
+		Sieve = {p("Rim", V(1.6, 0.2, 1.6), V(0, 0, -0.9), W, "Wood"), p("Mesh", V(1.4, 0.05, 1.4), V(0, 0.02, -0.9), "string", "Fabric")},
+		Can = {p("Body", V(0.7, 0.8, 0.9), V(0, 0.1, -0.5), H), p("Spout", V(0.12, 0.12, 0.9), V(0, 0.25, -1.3), H),
+			p("Rose", V(0.26, 0.26, 0.1), V(0, 0.3, -1.75), H)},
+		Pouch = {p("Pouch", V(0.55, 0.6, 0.5), V(0, -0.1, -0.3), W, "Fabric", "Ball"), p("Tie", V(0.3, 0.12, 0.3), V(0, 0.22, -0.3), "string", "Fabric")},
 	}
 	return specs[kind]
 end
@@ -662,6 +1096,173 @@ function Core.admitRemote(active, key, distance, cap, range)
 	return false
 end
 
+-- Body layer (§47) ------------------------------------------------------------
+-- Additive on top of the Animator and any gesture: a landing squash after a
+-- real fall, a forward lean at a sprint and a flinch when hurt. Everything is
+-- derived from what every client already sees (root velocity, Humanoid
+-- health), so nothing is relayed. One record per posed character; the pose is
+-- written into the record's own buffer (no per-frame tables).
+Core.LAND_MIN_SPEED, Core.LAND_FULL_SPEED, Core.LAND_TIME = 28, 80, 0.42
+Core.FLINCH_TIME = 0.32
+Core.LEAN_MAX, Core.SPRINT_FROM, Core.SPRINT_FULL = 10, 17.5, 28
+Core.BODY_CAP = Core.REMOTE_CAP -- remote bodies posed at once (nearest win; the local one always)
+-- Reduced motion keeps the cues but calms them: smaller squash / lean /
+-- flinch, no idle fidgets, no tier flourish, no hit-stop or camera shake.
+Core.REDUCED = {land = 0.4, lean = 0.5, flinch = 0.5, fidgets = false, flourish = false}
+Core.IDLE_AFTER, Core.FIDGET_GAP = 6, {9, 15}
+function Core.newBody()
+	return {minVy = 0, land = nil, landAmp = 0, flinch = nil, flinchAmp = 0, lean = 0, buf = Core.poseBuffer(), active = false}
+end
+-- Feed one frame of root velocity. Returns true on a landing.
+function Core.bodyFeed(b, vy, horizontal, now, dt, reduced)
+	local landed = false
+	if vy < -Core.LAND_MIN_SPEED then b.minVy = math.min(b.minVy, vy) end
+	if b.minVy < 0 and vy > -4 then
+		local amp = math.clamp((-b.minVy - Core.LAND_MIN_SPEED) / (Core.LAND_FULL_SPEED - Core.LAND_MIN_SPEED), 0.25, 1)
+		b.land, b.landAmp, b.minVy = now, amp * (if reduced then Core.REDUCED.land else 1), 0
+		landed = true
+	end
+	local target = math.clamp((horizontal - Core.SPRINT_FROM) / (Core.SPRINT_FULL - Core.SPRINT_FROM), 0, 1)
+	if math.abs(vy) > 8 then target = 0 end -- airborne: no lean
+	if reduced then target *= Core.REDUCED.lean end
+	b.lean += (target - b.lean) * math.min(1, dt * 6)
+	return landed
+end
+-- Health dropped by `fraction` of max: flinch (stronger for bigger hits).
+function Core.bodyHit(b, fraction, now, reduced)
+	b.flinch = now
+	b.flinchAmp = math.clamp(0.35 + (tonumber(fraction) or 0) * 4, 0.35, 1) * (if reduced then Core.REDUCED.flinch else 1)
+end
+-- 0 → 1 fast, then back to 0 by `total` (a squash / flinch envelope).
+function Core.envelope(t, attack, total)
+	if t < 0 or t >= total then return 0 end
+	if t < attack then return Core.ease.quadOut(t / attack) end
+	local u = (t - attack) / (total - attack)
+	return (1 - u) * (1 - u)
+end
+local function addJoint(buf, joint, rx, ry, rz, y)
+	local v = buf.out[joint]
+	if not v then
+		v = poseSlot(buf, joint)
+		for k = 1, 6 do v[k] = 0 end
+		buf.out[joint] = v
+	end
+	v[1] += rx; v[2] += ry; v[3] += rz; v[5] += y or 0
+end
+-- The additive pose for this frame (buf.out) and whether anything is active.
+function Core.bodyPose(b, now)
+	local buf = b.buf
+	table.clear(buf.out)
+	local any = false
+	local land = if b.land then Core.envelope(now - b.land, 0.07, Core.LAND_TIME) * b.landAmp else 0
+	if b.land and now - b.land >= Core.LAND_TIME then b.land = nil end
+	if land > 0.001 then
+		any = true
+		addJoint(buf, "rightHip", 34 * land, 0, 0); addJoint(buf, "leftHip", 30 * land, 0, 0)
+		addJoint(buf, "rightKnee", -56 * land, 0, 0); addJoint(buf, "leftKnee", -52 * land, 0, 0)
+		addJoint(buf, "root", 0, 0, 0, -0.5 * land); addJoint(buf, "waist", -12 * land, 0, 0); addJoint(buf, "neck", -6 * land, 0, 0)
+		addJoint(buf, "rightArm", 0, 0, 10 * land); addJoint(buf, "leftArm", 0, 0, -10 * land)
+	end
+	if b.lean > 0.01 then
+		any = true
+		local deg = Core.LEAN_MAX * b.lean
+		addJoint(buf, "waist", -deg, 0, 0); addJoint(buf, "neck", 0.6 * deg, 0, 0)
+	end
+	local flinch = if b.flinch then Core.envelope(now - b.flinch, 0.05, Core.FLINCH_TIME) * b.flinchAmp else 0
+	if b.flinch and now - b.flinch >= Core.FLINCH_TIME then b.flinch = nil end
+	if flinch > 0.001 then
+		any = true
+		addJoint(buf, "waist", 9 * flinch, 4 * flinch, 0); addJoint(buf, "neck", 12 * flinch, 0, 0)
+		addJoint(buf, "rightArm", 14 * flinch, 0, 8 * flinch); addJoint(buf, "leftArm", 14 * flinch, 0, -8 * flinch)
+		addJoint(buf, "root", 0, 0, 0, -0.1 * flinch)
+	end
+	return buf.out, any
+end
+-- Idle fidget timing: due after IDLE_AFTER s standing still with an item in
+-- hand, then every FIDGET_GAP (rand in [0, 1)).
+function Core.fidgetDue(b, now, still, rand)
+	if not still then
+		b.stillSince, b.nextFidget = nil, nil
+		return false
+	end
+	b.stillSince = b.stillSince or now
+	if now - b.stillSince < Core.IDLE_AFTER then return false end
+	if not b.nextFidget then b.nextFidget = now end
+	if now < b.nextFidget then return false end
+	b.nextFidget = now + Core.FIDGET_GAP[1] + (Core.FIDGET_GAP[2] - Core.FIDGET_GAP[1]) * rand
+	return true
+end
+-- QC M2: the additive layer. Every motor written last frame is put back to
+-- the base it had (RunService.PreAnimation, before the Animator), and offsets
+-- are applied on top of this frame's Transform in Stepped, so nothing
+-- accumulates on joints the Animator does not rewrite and no earlier offset
+-- bleeds into the gesture fade lerps. No equality tests on CFrames.
+function Core.bodyRestore(b)
+	for _, e in ipairs(b.entries) do
+		if e.written then
+			if e.motor.Parent then e.motor.Transform = e.base end
+			e.base, e.written = nil, nil
+		end
+	end
+end
+function Core.bodyApply(b, pose)
+	for _, e in ipairs(b.entries) do
+		local touched = false
+		for _, part in ipairs(e.parts) do
+			if pose[part[1]] then touched = true; break end
+		end
+		if touched then
+			local base = e.motor.Transform
+			e.base, e.written = base, true
+			e.motor.Transform = base * Core.motorTarget(e, pose)
+		end
+	end
+end
+-- QC L3: no body layer while dead, seated or platform-standing (vehicles, stuns).
+function Core.bodySkip(humanoid)
+	return humanoid == nil or humanoid.Health <= 0 or humanoid.Sit == true or humanoid.PlatformStand == true
+end
+-- QC L4: a drop caused only by MaxHealth shrinking (gear removed, a buff ending
+-- clamps Health) is not a hit.
+function Core.isHit(prev, health, prevMax, max)
+	if not (health < prev and health > 0) then return false end
+	if max < prevMax and health >= max - 1e-3 then return false end
+	return true
+end
+-- QC L11: a rig binding is stale once any motor lost its parent (respawned limb, package swap).
+function Core.needsRebind(entries)
+	if not entries or #entries == 0 then return true end
+	for _, e in ipairs(entries) do
+		if not e.motor.Parent then return true end
+	end
+	return false
+end
+-- QC M4: corpses within REMOTE_RANGE always play the collapse (whatever the
+-- body cap); farther ones break their joints locally (the default ragdoll).
+function Core.deathPlan(isLocal, distance)
+	if isLocal or (tonumber(distance) or math.huge) <= Core.REMOTE_RANGE then return "play" end
+	return "break"
+end
+
+-- NPC nod (talk): degrees on the NPC's Neck Transform over NOD_TIME.
+Core.NOD_TIME = 0.9
+function Core.nodCurve(t)
+	if t < 0 or t >= Core.NOD_TIME then return 0 end
+	return -14 * math.sin(t / Core.NOD_TIME * 2 * math.pi) * (1 - t / Core.NOD_TIME) - 4 * math.sin(t / Core.NOD_TIME * math.pi)
+end
+
+-- Human joint ranges (degrees per axis, studs for offsets) every keyframe
+-- stays inside; verify-animations.luau sweeps every pose against them.
+Core.JOINT_LIMITS = {
+	rightArm = {{-65, 180}, {-100, 100}, {-100, 100}}, leftArm = {{-65, 180}, {-100, 100}, {-100, 100}},
+	rightElbow = {{0, 150}, {0, 0}, {0, 0}}, leftElbow = {{0, 150}, {0, 0}, {0, 0}},
+	rightWrist = {{-90, 90}, {-90, 90}, {-90, 90}},
+	waist = {{-55, 35}, {-55, 55}, {-30, 30}}, neck = {{-45, 45}, {-60, 60}, {-30, 30}},
+	root = {{-30, 30}, {-30, 30}, {-30, 30}, offset = {-2.2, 0.6}},
+	rightHip = {{-45, 125}, {-45, 45}, {-45, 45}}, leftHip = {{-45, 125}, {-45, 45}, {-45, 45}},
+	rightKnee = {{-150, 0}, {0, 0}, {0, 0}}, leftKnee = {{-150, 0}, {0, 0}, {0, 0}},
+}
+
 -- Rig binding ------------------------------------------------------------------
 function Core.rigType(character)
 	if character:FindFirstChild("UpperTorso") then return "R15" end
@@ -675,7 +1276,13 @@ function Core.bindRig(character)
 	for _, spec in ipairs(Core.RIGS[kind]) do
 		local motor = character:FindFirstChild(spec[1], true)
 		if motor and motor:IsA("Motor6D") then
-			table.insert(entries, {motor = motor, parts = spec[2], basis = Core.basisOf(motor.C0)})
+			-- QC L6: the basis inverse is cached at bind; axis-aligned (R15) bases skip the conversion.
+			-- QC L10: `legs` marks motors that carry the legs / root (released while moving).
+			local basis = Core.basisOf(motor.C0)
+			local legs = false
+			for _, part in ipairs(spec[2]) do if Core.LEG_JOINTS[part[1]] then legs = true end end
+			table.insert(entries, {motor = motor, parts = spec[2], basis = basis, basisInv = basis:Inverse(),
+				identity = basis:FuzzyEq(IDENTITY, 1e-6), legs = legs})
 		end
 	end
 	return entries, kind
@@ -704,13 +1311,22 @@ function Core.drivenRig(rig, def)
 	end
 	return out
 end
+local function zeroPose(v)
+	return (v[1] or 0) == 0 and (v[2] or 0) == 0 and (v[3] or 0) == 0 and (v[4] or 0) == 0 and (v[5] or 0) == 0 and (v[6] or 0) == 0
+end
 function Core.motorTarget(entry, pose)
-	local r = CFrame.new()
+	-- QC L6: no identity seed, zero joints skipped, cached basis inverse.
+	local r = nil
 	for _, part in ipairs(entry.parts) do
 		local v = pose[part[1]]
-		if v then r = r * Core.jointCFrame(v, part[2]) end
+		if v and not zeroPose(v) then
+			local c = Core.jointCFrame(v, part[2])
+			r = if r then r * c else c
+		end
 	end
-	return Core.toJointSpace(r, entry.basis)
+	if not r then return IDENTITY end
+	if entry.identity then return r end
+	return Core.toJointSpace(r, entry.basis, entry.basisInv)
 end
 
 -- Held items (§26): a light carrying pose per held class while nothing else
@@ -725,6 +1341,27 @@ Core.HOLD_POSE = {sword = CARRY, dagger = CARRY, pickaxe = CARRY, hatchet = CARR
 	rod = {rightArm = {20, 0, 6}, rightElbow = {55}}, wand = {rightArm = {12, 0, 6}, rightElbow = {50}},
 	shortbow = BOW_CARRY, longbow = BOW_CARRY, shield = {leftArm = {20, 0, -10}, leftElbow = {70}},
 	striker = CARRY} -- Beaconry flint striker
+-- §47 idle fidgets with a held item: observed (each client plays them for the
+-- holders it poses, from what it sees), start and end on the class's carry pose.
+local ROD_CARRY = Core.HOLD_POSE.rod
+local function fidget(carry, keys) return {observed = true, fidget = true, carry = carry, loop = keys} end
+Core.GESTURES.fidget_blade = fidget(CARRY, {key(0, CARRY), key(0.25, P.TWIRL, "quadOut"), key(0.45, merge(P.TWIRL, {rightWrist = {0, 0, 75}}), "sineInOut"),
+	key(0.65, merge(P.TWIRL, {rightWrist = {0, 0, -60}}), "sineInOut"), key(0.85, P.TWIRL, "sineInOut"), key(1.15, CARRY, "quadInOut")})
+Core.GESTURES.fidget_heavy = fidget(SHOULDER, {key(0, SHOULDER), key(0.4, P.HEAVY_REST, "quadOut"),
+	key(0.8, merge(P.HEAVY_REST, {neck = {0, -20, 0}, waist = {0, 0, -4}}), "sineInOut"), key(1.2, SHOULDER, "quadInOut")})
+Core.GESTURES.fidget_tool = fidget(CARRY, {key(0, CARRY), key(0.3, P.TAP_A, "quadOut"), key(0.42, P.TAP_B, "quadIn"), key(0.54, P.TAP_A, "quadOut"),
+	key(0.66, P.TAP_B, "quadIn"), key(1.0, CARRY, "quadInOut")})
+Core.GESTURES.fidget_bow = fidget(BOW_CARRY, {key(0, BOW_CARRY), key(0.35, P.STRING_CHECK, "quadOut"),
+	key(0.5, merge(P.STRING_CHECK, {rightArm = {60, 30, 0}}), "quadIn"), key(0.7, P.STRING_CHECK, "quadOut"), key(1.1, BOW_CARRY, "quadInOut")})
+Core.GESTURES.fidget_staff = fidget(UPRIGHT, {key(0, UPRIGHT), key(0.3, P.STAFF_TAP_UP, "quadOut"), key(0.42, P.STAFF_TAP, "quadIn"),
+	key(0.7, P.STAFF_TAP_UP, "quadOut"), key(1.0, UPRIGHT, "quadInOut")})
+Core.GESTURES.fidget_rod = fidget(ROD_CARRY, {key(0, ROD_CARRY), key(0.35, P.LINE_CHECK, "quadOut"),
+	key(0.6, merge(P.LINE_CHECK, {leftElbow = {100}}), "sineInOut"), key(0.85, P.LINE_CHECK, "sineInOut"), key(1.2, ROD_CARRY, "quadInOut")})
+Core.FIDGET = {sword = "fidget_blade", dagger = "fidget_blade", wand = "fidget_blade", greatblade = "fidget_heavy", maul = "fidget_heavy",
+	shield = "fidget_heavy", pickaxe = "fidget_tool", hatchet = "fidget_tool", hoe = "fidget_tool", hammer = "fidget_tool", striker = "fidget_tool",
+	shortbow = "fidget_bow", longbow = "fidget_bow", staff = "fidget_staff", glaive = "fidget_staff", rod = "fidget_rod"}
+Core.NAMES = {}
+for name in pairs(Core.GESTURES) do Core.NAMES[name] = true end
 -- Motors the pose drives and their fixed targets (computed once per character/class).
 function Core.holdTargets(rig, pose)
 	local out = {}
@@ -762,6 +1399,7 @@ function Core.createEngine(deps)
 		s.conns = nil
 		if s.tool then s.tool:Destroy(); s.tool = nil end
 		if s.hidHeld then s.hidHeld = nil; deps.hideHeld(character, false) end
+		if deps.ended then deps.ended(s) end
 		if abrupt and s.weight > 0.01 then
 			for _, entry in ipairs(s.rig) do entry.motor.Transform = CFrame.new() end
 		end
@@ -769,26 +1407,79 @@ function Core.createEngine(deps)
 	end
 	function E.stop(character) remove(character, true) end
 	function E.get(character) return E.active[character] end
+	-- The gesture clock of a state (hit-stop lag and timed rate applied).
+	local function clockOf(s, real) return s.start + (real - s.lag - s.start) * s.rate end
+	-- A private copy of the state's last sampled pose (allocated per play, not per frame).
+	local function snapshot(s)
+		local out = s.poseBuf and s.poseBuf.out
+		if not out or next(out) == nil then return nil end
+		local copy = {}
+		for joint, v in pairs(out) do copy[joint] = table.clone(v) end
+		return copy
+	end
+	local function present(character, def)
+		if def and def.dead then return character.Parent ~= nil end
+		return deps.alive(character)
+	end
 	function E.play(character, name, opts)
 		opts = opts or {}
 		local def = Core.GESTURES[name]
-		if not def or not deps.alive(character) then return nil end
+		if not def or not present(character, def) then return nil end
 		local current = E.active[character]
 		if current and current.name == name and not current.fadeStart and opts.extend then
+			-- §47: a strike that arrives during the outro rejoins at the intro,
+			-- crossfading from where the arms are (no snap back to rest).
+			if current.phase == "outro" and def.strike then
+				local vnow = clockOf(current, deps.now())
+				current.from, current.fromStart = snapshot(current), vnow
+				current.phase = if def.intro then "intro" else "loop"
+				current.phaseStart, current.lastT, current.cycles = vnow, -1, 0
+				return current
+			end
+			-- QC M3: a strike inside the grace hold re-phases the loop so the
+			-- impact lands IMPACT after the click (the loop waits on the ready pose).
+			if current.phase == "grace" and def.strike then
+				local vnow = clockOf(current, deps.now())
+				current.phase, current.lastT = "loop", -1
+				current.phaseStart = vnow + Core.STRIKE_INTRO
+				return current
+			end
+			-- QC M1: a held gesture (an observer's cast) only refreshes its bound;
+			-- repeated relays must not queue a backlog of extra loops.
+			if current.holding then
+				if opts.maxHold then current.holdUntil = deps.now() + opts.maxHold end
+				return current
+			end
+			-- QC M3: the next strike loop starts INTRO after this click (never
+			-- earlier than the running loop's end), so impacts track the clicks.
+			if def.strike then current.nextLoopAt = clockOf(current, deps.now()) + Core.STRIKE_INTRO end
 			current.extra += 1
 			return current
 		end
+		-- §47: a replacement crossfades from the old gesture's pose (combo chains,
+		-- a cast after a swing) instead of snapping to the Animator's pose.
+		local from, fromWeight = nil, 0
+		if current and not current.fadeStart and current.weight > 0.05 then from, fromWeight = snapshot(current), current.weight end
 		if current then remove(character, false) end
 		local rig = deps.bindRig(character)
 		rig = rig and Core.drivenRig(rig, def)
 		if not rig or #rig == 0 then return nil end
 		local now = deps.now()
+		local variant = opts.variant or 1
+		local hitstop = nil
+		if opts.isLocal and not opts.reduced then
+			hitstop = (def.combo and def.combo.hitstops and def.combo.hitstops[(variant - 1) % #def.combo.hitstops + 1]) or def.hitstop
+		end
 		local s = {character = character, name = name, def = def, rig = rig, holding = opts.hold == true, extra = 0, cycles = 0,
-			target = opts.target, variant = opts.variant or 1, start = now, phaseStart = now, lastT = -1, weight = 0,
+			target = opts.target, variant = variant, start = now - Core.FADE_IN * fromWeight, phaseStart = now, lastT = -1, weight = 0,
 			phase = if def.intro then "intro" else "loop", isLocal = opts.isLocal == true, info = opts.info, rate = 1, lag = 0,
-			hitstop = if opts.isLocal and not opts.reduced then def.hitstop else nil}
+			hitstop = hitstop, flourish = opts.flourish, from = from, fromStart = now,
+			holdUntil = if opts.maxHold then now + opts.maxHold else nil}
 		-- Timed (agility moves): a fixed number of loops, scaled to end on time.
-		if opts.duration then s.loops, s.rate = Core.timing(def, opts.duration) end
+		if opts.duration then
+			s.loops, s.rate = Core.timing(def, opts.duration)
+			s.start = now
+		end
 		E.active[character] = s
 		E.count += 1
 		-- The held item swings itself when it fits (a pickaxe for mine, a bow for
@@ -801,7 +1492,7 @@ function Core.createEngine(deps)
 				if deps.hideHeld and deps.hideHeld(character, true) then s.hidHeld = true end
 			end
 		end
-		s.conns = deps.watch(character, function() E.stop(character) end) or {}
+		s.conns = if opts.noWatch then {} else (deps.watch(character, function() E.stop(character) end) or {})
 		-- A HeldItem model that arrives while the prop is out (the relay beat the
 		-- auto switch's replication) must never show next to the prop: swap the
 		-- prop for it when it fits the gesture, else hide it too.
@@ -829,6 +1520,26 @@ function Core.createEngine(deps)
 		local s = E.active[character]
 		if s then s.holding = false end
 	end
+	-- QC L10: the body layer reports movement each frame.
+	function E.setMoving(character, moving)
+		local s = E.active[character]
+		if s then s.legsOff = moving == true end
+	end
+	-- §47: fade the gesture out from wherever it is (walking away from a
+	-- kneel, a crouch or an altar).
+	function E.cancel(character)
+		local s = E.active[character]
+		if not s or s.fadeStart then return end
+		s.lastPose = if s.poseBuf and next(s.poseBuf.out) then s.poseBuf.out else s.lastPose
+		s.phase, s.fadeStart = "done", clockOf(s, deps.now())
+	end
+	-- The keyframes of a state's current phase (the tier flourish replaces a
+	-- strike's plain outro).
+	local function phaseKeys(s)
+		if s.phase == "grace" then return if s.isLocal then s.def.graceLocal else s.def.graceRemote end
+		if s.phase == "outro" and s.flourish and s.flourish > 0 and s.def.outroFlourish then return s.def.outroFlourish end
+		return Core.keysFor(s.def, s.phase, s.variant)
+	end
 	local function wantsLoop(s)
 		if s.loops then return s.cycles < s.loops end
 		local minCycles = s.def.minCycles or 1
@@ -844,10 +1555,18 @@ function Core.createEngine(deps)
 			if wantsLoop(s) then
 				if not s.holding and s.extra > 0 and s.cycles >= (s.def.minCycles or 1) then s.extra -= 1 end
 				if s.def.variants then s.variant += 1 end
-				if s.holding and deps.cycle then deps.cycle(s) end
+				-- QC M1: rod gestures never re-relay per bob (one cast = one relay).
+				if s.holding and deps.cycle and not s.def.rod then deps.cycle(s) end
+				-- QC M3: a late strike waits on the ready pose until its own phase.
+				if s.nextLoopAt then
+					if s.nextLoopAt > s.phaseStart then s.phaseStart = s.nextLoopAt end
+					s.nextLoopAt = nil
+				end
 			else
-				s.phase = if s.def.outro then "outro" else "done"
+				s.phase = if s.def.graceLocal then "grace" elseif s.def.outro then "outro" else "done"
 			end
+		elseif s.phase == "grace" then
+			s.phase = "outro"
 		elseif s.phase == "outro" then
 			s.phase = "done"
 		end
@@ -866,14 +1585,15 @@ function Core.createEngine(deps)
 			end
 			s.lastReal = real
 			local now = s.start + (real - s.lag - s.start) * s.rate
-			if not deps.alive(character) then
+			if not present(character, s.def) then
 				remove(character, true)
 				continue
 			end
+			if s.holdUntil and real >= s.holdUntil then s.holding, s.holdUntil = false, nil end
 			local keys, guard = nil, 0
 			while s.phase ~= "done" and guard < 4 do
 				guard += 1
-				keys = Core.keysFor(s.def, s.phase, s.variant)
+				keys = phaseKeys(s)
 				local dur = Core.duration(keys)
 				local t = now - s.phaseStart
 				local upto = math.min(t, dur)
@@ -899,12 +1619,22 @@ function Core.createEngine(deps)
 			else
 				pose = Core.samplePose(keys, now - s.phaseStart, s.poseBuf)
 				weight = math.min(1, (now - s.start) / Core.FADE_IN)
+				if s.from then
+					local a = (now - s.fromStart) / Core.CROSSFADE
+					if a >= 1 then s.from = nil else Core.blendFrom(s.from, pose, Core.ease.quadOut(math.max(0, a)), s.poseBuf) end
+				end
 			end
 			s.weight = weight
+			-- QC L10: while the character moves, leg / root motors of a swing are
+			-- left to the Animator's walk cycle (a crouch stance never skates).
+			local legsOff = s.legsOff and not s.def.agility and not s.def.dead
 			for _, entry in ipairs(s.rig) do
-				local target = Core.motorTarget(entry, pose)
-				entry.motor.Transform = entry.motor.Transform:Lerp(target, weight)
+				if not (legsOff and entry.legs) then
+					local target = Core.motorTarget(entry, pose)
+					entry.motor.Transform = entry.motor.Transform:Lerp(target, weight)
+				end
 			end
+			if deps.post then deps.post(s, now) end
 		end
 	end
 	function E.clear()
@@ -967,7 +1697,7 @@ local function heldIdOf(character)
 end
 local function heldFits(character, name)
 	local id = heldIdOf(character)
-	return id ~= nil and Held.fits(name, Held.classOf(Data.Items[id]))
+	return id ~= nil and Held.fits(Core.fitName(name), Held.classOf(Data.Items[id]))
 end
 -- Hides (locally) the held model while a station prop or food is in the hand.
 local function hideHeld(character, hidden)
@@ -1047,16 +1777,32 @@ local FX_STYLE = {
 	ring = {count = 0.6, speed = 4, size = 0.25, material = Enum.Material.Neon, colour = "F9CC77", float = true},
 	crumbs = {count = 0.6, speed = 5, size = 0.18, material = Enum.Material.SmoothPlastic},
 	mend = {count = 1, speed = 4, size = 0.3, material = Enum.Material.Neon, colour = "8EE07F", up = true, float = true},
+	-- §47: coins (banking), watering-can drops, travel attunement, tier glint.
+	coins = {count = 0.6, speed = 6, size = 0.2, material = Enum.Material.Neon, colour = "F6C453", up = true},
+	water = {count = 1, speed = 5, size = 0.2, material = Enum.Material.Glass, colour = "9FD8FF"},
+	attune = {count = 1, speed = 5, size = 0.26, material = Enum.Material.Neon, colour = "7FE6FF", up = true, float = true},
+	glint = {count = 0.5, speed = 3, size = 0.22, material = Enum.Material.Neon, colour = "FFF4C8", float = true},
 }
-local function burst(style, position, colour, reduced)
+Core.FX_STYLE = FX_STYLE
+-- QC L7: impact FX parts (and their records) are pooled: an expired chip is
+-- unparented and reused by the next burst instead of destroyed / re-created.
+local fxFree = {}
+Core.fxFree = fxFree
+local function burst(style, position, colour, reduced, scale)
 	local spec = FX_STYLE[style]
 	if not spec then return end
-	local n = math.max(1, math.floor(Core.fxBudget(reduced) * spec.count))
+	local n = math.max(1, math.floor(Core.fxBudget(reduced) * spec.count * (scale or 1)))
 	local camera = Workspace.CurrentCamera
 	for i = 1, n do
 		if #fxParts >= Core.MAX_FX_PARTS then return end
-		local part = Instance.new("Part")
-		part.Anchored, part.CanCollide, part.CanQuery, part.CanTouch, part.CastShadow = true, false, false, false, false
+		local fx = table.remove(fxFree)
+		if not fx then
+			local made = Instance.new("Part")
+			made.Anchored, made.CanCollide, made.CanQuery, made.CanTouch, made.CastShadow = true, false, false, false, false
+			fx = {part = made}
+		end
+		local part = fx.part
+		part.Transparency = 0
 		part.Size = Vector3.one * spec.size * (0.7 + math.random() * 0.6)
 		part.Material = spec.material
 		local c = if spec.colour then Core.hex(spec.colour) else (colour or Core.hex("B0A89A"))
@@ -1067,8 +1813,8 @@ local function burst(style, position, colour, reduced)
 		part.Parent = camera
 		local dir = Vector3.new(math.random() - 0.5, if spec.up then 0.8 + math.random() else math.random(), math.random() - 0.5).Unit
 		local speed = if reduced then 1.5 else spec.speed * (0.6 + math.random() * 0.6)
-		table.insert(fxParts, {part = part, vel = dir * speed, born = os.clock(), life = 0.45 + math.random() * 0.3,
-			float = spec.float, spin = math.random() * 8})
+		fx.vel, fx.born, fx.life, fx.float, fx.spin = dir * speed, os.clock(), 0.45 + math.random() * 0.3, spec.float, math.random() * 8
+		table.insert(fxParts, fx)
 	end
 end
 local function stepFx(dt)
@@ -1077,8 +1823,13 @@ local function stepFx(dt)
 		local fx = fxParts[i]
 		local age = (now - fx.born) / fx.life
 		if age >= 1 or not fx.part.Parent then
-			fx.part:Destroy()
 			table.remove(fxParts, i)
+			if fx.part.Parent and #fxFree < Core.MAX_FX_PARTS then
+				fx.part.Parent = nil
+				table.insert(fxFree, fx)
+			else
+				fx.part:Destroy()
+			end
 		else
 			if not fx.float then fx.vel += Vector3.new(0, -Workspace.Gravity * 0.25 * dt, 0) end
 			fx.part.CFrame = (fx.part.CFrame + fx.vel * dt) * CFrame.Angles(fx.spin * dt, 0, 0)
@@ -1108,6 +1859,8 @@ local function resourceColour(target)
 end
 
 local engine
+-- Marks that place their FX at the hand rather than on the target.
+local HAND_FX = {crumbs = true, mend = true, coins = true, water = true, attune = true, glint = true}
 local function mark(state, markName)
 	local character = state.character
 	local def = state.def
@@ -1117,17 +1870,23 @@ local function mark(state, markName)
 	local rigKind = Core.rigType(character)
 	local hand = rigKind and character:FindFirstChild(Core.HAND[rigKind])
 	local handPos = if hand then hand.Position else root.Position
+	-- §47 tier flourish: the twirl's peak glints from tier 7 (never with reduced motion).
+	if markName == "flourish" then
+		if (state.flourish or 0) >= 2 and not reduced then burst("glint", handPos, nil, reduced) end
+		return
+	end
 	local position
 	if def.fx == "splash" then
 		position = (root.CFrame * CFrame.new(0, -2.5, -8)).Position
-	elseif def.fx == "crumbs" or def.fx == "mend" or (def.fx == "ring" and state.target == nil) then
+	elseif HAND_FX[def.fx] or (def.fx == "ring" and state.target == nil) then
 		position = handPos
 	else
 		local part = partOf(state.target)
 		position = if part then Core.impactPoint(part.Position, part.Size, handPos) else (root.CFrame * CFrame.new(0, 0, -3)).Position
 	end
 	if def.fx and (markName ~= "bob" or not reduced) then
-		burst(def.fx, position, resourceColour(partOf(state.target)), reduced)
+		local scale = if markName == "impact" then Core.FLOURISH_FX[(state.flourish or 0) + 1] or 1 else 1
+		burst(def.fx, position, resourceColour(partOf(state.target)), reduced, scale)
 	end
 	if markName == "impact" or markName == "release" or markName == "cast" then
 		local id = def.sound and Core.SOUNDS[def.sound]
@@ -1170,6 +1929,47 @@ local function itemFor(name)
 	return nil
 end
 
+-- §47 rod bend: the rod's blank parts (held model or prop) are re-welded
+-- about the grip's top each frame while a fishing gesture runs, and put back
+-- when it ends. The weld list is built once per gesture.
+-- QC L11: a rod that is not built yet returns nil (not false), so the bend
+-- retries (at most every ROD_RETRY seconds) once the held model / prop lands.
+local ROD_RETRY = 0.25
+local function rodWelds(s)
+	local model = if s.usesHeld then s.character:FindFirstChild("HeldItem") else s.tool
+	if typeof(model) ~= "Instance" then return nil end
+	local grip, list = nil, {}
+	for _, part in ipairs(model:GetChildren()) do
+		local weld = part:IsA("BasePart") and (part:FindFirstChild("HeldWeld") or part:FindFirstChildOfClass("Weld"))
+		if weld then
+			if part.Name == "Grip" then grip = weld.C0 end
+			if Core.ROD_PARTS[part.Name] then table.insert(list, {weld = weld, base = weld.C0}) end
+		end
+	end
+	if not grip or #list == 0 then return nil end
+	return {model = model, pivot = grip * CFrame.new(0, 0, Core.ROD_PIVOT + 0.3), welds = list}
+end
+local function unbend(s)
+	local bend = s.bend
+	if not bend then return end
+	for _, w in ipairs(bend.welds) do
+		if w.weld.Parent then w.weld.C0 = w.base end
+	end
+	s.bend = nil
+end
+local function bendRod(s, now)
+	if s.bend and not s.bend.model.Parent then s.bend = nil end
+	if s.bend == nil then
+		local real = os.clock()
+		if s.bendRetryAt and real < s.bendRetryAt then return end
+		s.bend = rodWelds(s)
+		if not s.bend then s.bendRetryAt = real + ROD_RETRY; return end
+	end
+	local bend = s.bend
+	local degrees = Core.rodBend(s, now)
+	for _, w in ipairs(bend.welds) do w.weld.C0 = Core.bendC0(w.base, bend.pivot, degrees) end
+end
+
 engine = Core.createEngine({
 	now = os.clock, alive = alive, bindRig = Core.bindRig, attachTool = attachTool, watch = watch, mark = mark,
 	heldFits = heldFits, hideHeld = hideHeld,
@@ -1180,13 +1980,31 @@ engine = Core.createEngine({
 	end,
 	modelFits = function(model, name)
 		local class = model:GetAttribute("HeldClass")
-		return type(class) == "string" and Held.fits(name, class)
+		return type(class) == "string" and Held.fits(Core.fitName(name), class)
 	end,
 	cycle = function(state)
-		if state.isLocal then send(state.name, state.target, state.itemId) end
+		-- QC L1: only gestures playLocal relayed re-relay per loop (death, fidgets,
+		-- attribute-driven and agility moves never do).
+		if state.isLocal and state.relayName then send(state.relayName, state.target, state.itemId) end
+	end,
+	post = function(state, now)
+		if state.def.rod then bendRod(state, now) end
+	end,
+	ended = function(state)
+		if state.bend then unbend(state) end
 	end,
 })
 
+-- §47 stance: the node's size and height pick the variant (a low rock is
+-- struck from a crouch, a high vein overhead); the base name is what relays.
+local function stanceOf(character, name, target)
+	if not Core.STANCES[name] then return name end
+	local part = partOf(target)
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not part or not root then return name end
+	return Core.stanceFor(name, root.Position.Y, part.Position.Y, part.Size.Y)
+end
+local localCombo = Core.newCombo()
 local function playLocal(name, target, opts)
 	local character = player.Character
 	if not Core.NAMES[name] or not alive(character) then return end
@@ -1198,37 +2016,70 @@ local function playLocal(name, target, opts)
 	-- server returns once idle); the swing uses it at once instead of a prop.
 	local def = Core.GESTURES[name]
 	if itemId and (def.skill or Core.MELEE_GESTURE[name] or Core.STYLE_GESTURE[name]) and Held.holdable(itemId)
-		and Held.fits(name, Held.classOf(Data.Items[itemId])) and heldIdOf(character) ~= itemId then
+		and Held.fits(Core.fitName(name), Held.classOf(Data.Items[itemId])) and heldIdOf(character) ~= itemId then
 		pending.set(itemId, os.clock())
 		autoHold:Fire(itemId)
 	end
-	local state = engine.play(character, name, {
-		target = partOf(target), hold = opts.hold, isLocal = true, color = Core.toolColor(Data, name, itemId),
-		variant = math.random(1, 3), extend = opts.extend, reduced = reducedMotion(),
+	local reduced = reducedMotion()
+	local play = stanceOf(character, name, target)
+	-- §47: weapon combos chain in order; gathering strikes extend one swing
+	-- cycle per strike (the server's cadence) and flourish by tool tier.
+	local variant = if def.combo then Core.comboNext(localCombo, name, os.clock()) else math.random(1, 3)
+	local flourish = if (def.strike or def.rod) and not reduced then Core.flourishLevel(Data, itemId) else 0
+	local state = engine.play(character, play, {
+		target = partOf(target), hold = opts.hold, isLocal = true, color = Core.toolColor(Data, play, itemId),
+		variant = variant, extend = opts.extend or def.strike ~= nil, reduced = reduced, flourish = flourish,
 	})
 	if state then
 		state.itemId, state.prompt = itemId, opts.prompt
-		send(name, target, itemId)
+		if not opts.noRelay then state.relayName = name end
+		if not opts.noRelay then send(name, target, itemId) end
 	end
 	return state
+end
+
+-- NPC nod (§47): the townsfolk you talk to nod back (local; NPC rigs have a
+-- Neck motor and no Animator, so the Transform is ours).
+local nods = {} -- [neck Motor6D] = start
+local function nodNpc(model)
+	local neck = model and model:FindFirstChild("Neck", true)
+	if neck and neck:IsA("Motor6D") and not reducedMotion() then nods[neck] = os.clock() end
+end
+local function stepNods()
+	if next(nods) == nil then return end
+	local now = os.clock()
+	for neck, start in pairs(nods) do
+		local t = now - start
+		if t >= Core.NOD_TIME or not neck.Parent then
+			neck.Transform = CFrame.new()
+			nods[neck] = nil
+		else
+			neck.Transform = CFrame.Angles(rad(Core.nodCurve(t)), 0, 0)
+		end
+	end
 end
 
 -- Prompts --------------------------------------------------------------------
 local function promptInfo(prompt)
 	return {action = prompt:GetAttribute("IsleAction"), item = prompt:GetAttribute("IsleItem"),
-		coopResource = prompt:GetAttribute("IsleCoopResource")}
+		coopResource = prompt:GetAttribute("IsleCoopResource"), text = prompt.ActionText, role = prompt:GetAttribute("TownsfolkRole")}
 end
 local function promptTarget(prompt)
 	return partOf(prompt.Parent)
 end
 local function gestureFor(prompt)
 	local info = promptInfo(prompt)
-	if info.action == "station" then stationCounter += 1 end
+	-- QC L8: crafting stations alternate their gestures too (the Glass Furnace reaches sift).
+	if info.action == "station" or info.action == "craftStation" then stationCounter += 1 end
 	return Core.selectGesture(info, Data, stationCounter)
 end
+-- Deferred prompts (garden plots): the reply message picks the gesture.
+local deferred = nil -- {target, token}
+local deferToken = 0
 
 ProximityPromptService.PromptButtonHoldBegan:Connect(function(prompt, who)
 	if who ~= player or not prompt.Enabled then return end
+	if Core.DEFERRED_ACTION[prompt:GetAttribute("IsleAction")] then return end
 	playLocal(gestureFor(prompt), promptTarget(prompt), {hold = true, prompt = prompt})
 end)
 ProximityPromptService.PromptButtonHoldEnded:Connect(function(prompt, who)
@@ -1238,6 +2089,20 @@ ProximityPromptService.PromptButtonHoldEnded:Connect(function(prompt, who)
 end)
 ProximityPromptService.PromptTriggered:Connect(function(prompt, who)
 	if who ~= player then return end
+	if Core.DEFERRED_ACTION[prompt:GetAttribute("IsleAction")] then
+		deferToken += 1
+		local token = deferToken
+		deferred = {target = promptTarget(prompt), token = token}
+		task.delay(1.5, function()
+			if deferred and deferred.token == token then
+				local target = deferred.target
+				deferred = nil
+				playLocal("tend", target, {})
+			end
+		end)
+		return
+	end
+	if prompt:GetAttribute("TownsfolkRole") then nodNpc(prompt:FindFirstAncestorOfClass("Model")) end
 	local state = player.Character and engine.get(player.Character)
 	if state and state.prompt == prompt and not state.fadeStart then
 		engine.release(player.Character) -- the current strike lands, then it ends
@@ -1252,32 +2117,34 @@ localApi.Name = "IsleGestureLocal"
 localApi.Parent = ReplicatedStorage
 -- §42: struck gathering nodes fire (gesture, node) per swing; fishing casts with
 -- mode "hold" (the bob loops) and ends with ("release") on the reel / a lost fish.
+-- §47: ("bite") when the server pushes a bite snaps the rod down mid-wait.
 localApi.Event:Connect(function(name, target, itemId, mode)
 	if type(name) ~= "string" then return end
+	local state = player.Character and engine.get(player.Character)
 	if name == "release" then
-		local state = player.Character and engine.get(player.Character)
-		if state then engine.release(player.Character) end
+		-- QC L9: ("release", node, nil, "reel") is the reel click; a plain release
+		-- (the fish got away, another node was struck) plays and relays "lost".
+		if state and state.name == "fish" and not state.fadeStart and mode ~= "reel" then
+			playLocal("lost", state.target, {itemId = state.itemId})
+			return
+		end
+		if state then
+			engine.release(player.Character)
+			if state.def.rod and not state.fadeStart then send("reel", state.target, state.itemId) end
+		end
+		return
+	end
+	if name == "bite" then
+		if state and state.name == "fish" then
+			state.biteAt = os.clock()
+			send("bite", state.target, state.itemId)
+		end
 		return
 	end
 	playLocal(name, target, {itemId = if type(itemId) == "string" then itemId else nil, hold = mode == "hold"})
 end)
 
--- Beaconry (§37): the server sets BeaconryGesture "<gesture>:<seq>[:<itemId>]"
--- on every kindle attempt, beacon lighting (kindle, with the striker id) and
--- campfire cook action (flip); play it once per new seq.
-player:GetAttributeChangedSignal("BeaconryGesture"):Connect(function()
-	local name, item = Core.beaconryGesture(player:GetAttribute("BeaconryGesture"))
-	if name then playLocal(name, nil, {itemId = item}) end
-end)
--- Crafting batches: the server sets CraftingGesture "<gesture>:<seq>" after
--- every action of a batch; play that gesture once per action (a new seq).
-player:GetAttributeChangedSignal("CraftingGesture"):Connect(function()
-	local value = player:GetAttribute("CraftingGesture")
-	local name = type(value) == "string" and string.match(value, "^(%a+):%d+$")
-	if name and Core.NAMES[name] then playLocal(name, nil, {}) end
-end)
-
--- Snapshot: tool colours + eat/drink after a consume.
+-- Snapshot: tool colours + eat/drink after a consume; a deferred garden reply.
 local updates = ReplicatedStorage:WaitForChild("IsleUpdate")
 updates.OnClientEvent:Connect(function(snapshot)
 	if type(snapshot) ~= "table" then return end
@@ -1286,40 +2153,86 @@ updates.OnClientEvent:Connect(function(snapshot)
 		if type(depth.tools) == "table" then bestTools = depth.tools end
 		if type(depth.equipment) == "table" then weaponId = depth.equipment.weapon end
 	end
+	if deferred and type(snapshot.message) == "string" and snapshot.message ~= "" then
+		local target = deferred.target
+		deferred = nil
+		playLocal(Core.replyGesture(snapshot.message), target, {})
+		return
+	end
 	local gesture, itemId = Core.consumeGesture(snapshot.message, Data)
 	if gesture then playLocal(gesture, nil, {itemId = itemId}) end
 end)
 
 -- Remote characters ---------------------------------------------------------
 local remoteDistance = {} -- [character] = distance when admitted
-relay.OnClientEvent:Connect(function(source, name, target, itemId)
-	if typeof(source) ~= "Instance" or source == player or type(name) ~= "string" or not Core.NAMES[name] then return end
-	local character = source.Character
+local remoteCombos = {} -- [character] = combo record (§47: remote combos chain the same way)
+-- Admits a remote character under the cap (nearest win) and plays `name`.
+local function playRemote(character, name, opts)
 	local mine = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
 	local theirs = character and character:FindFirstChild("HumanoidRootPart")
-	if not mine or not theirs or not alive(character) then return end
+	local def = Core.GESTURES[name]
+	if not mine or not theirs or not def or not (def.dead or alive(character)) then return nil end
 	for c in pairs(remoteDistance) do
 		if not engine.get(c) then remoteDistance[c] = nil end
 	end
 	local distance = (mine.Position - theirs.Position).Magnitude
 	local admit, evict = Core.admitRemote(remoteDistance, character, distance)
-	if not admit then return end
+	if not admit then return nil end
 	if evict then
 		engine.stop(evict)
 		remoteDistance[evict] = nil
 	end
-	local state = engine.play(character, name, {target = partOf(target), extend = true,
-		color = Core.toolColor(Data, name, if type(itemId) == "string" then itemId else nil), variant = math.random(1, 3)})
+	local state = engine.play(character, name, opts)
 	if state then remoteDistance[character] = distance end
+	return state
+end
+relay.OnClientEvent:Connect(function(source, name, target, itemId)
+	if typeof(source) ~= "Instance" or source == player or type(name) ~= "string" or not Core.NAMES[name] then return end
+	local character = source.Character
+	if not character then return end
+	itemId = if type(itemId) == "string" then itemId else nil
+	-- Fishing beats steer a running cast instead of starting a new gesture.
+	local current = engine.get(character)
+	if (name == "reel" or name == "bite") and current and current.name == "fish" then
+		if name == "reel" then engine.release(character) else current.biteAt = os.clock() end
+		return
+	end
+	local def = Core.GESTURES[name]
+	local combo = nil
+	if def.combo then
+		combo = remoteCombos[character]
+		if not combo then combo = Core.newCombo(); remoteCombos[character] = combo end
+	end
+	local reduced = reducedMotion()
+	local play = stanceOf(character, name, target)
+	playRemote(character, play, {target = partOf(target), extend = true, color = Core.toolColor(Data, play, itemId),
+		variant = if combo then Core.comboNext(combo, name, os.clock()) else math.random(1, 3),
+		hold = def.remoteHold ~= nil, maxHold = def.remoteHold,
+		flourish = if (def.strike or def.rod) and not reduced then Core.flourishLevel(Data, itemId) else 0})
 end)
 Players.PlayerRemoving:Connect(function(who)
 	local character = who.Character
 	if character then
 		engine.stop(character)
 		remoteDistance[character] = nil
+		remoteCombos[character] = nil
 	end
 end)
 player.CharacterRemoving:Connect(function(character) engine.stop(character) end)
+
+-- Server-set gesture attributes (Beaconry §37 BeaconryGesture
+-- "<gesture>:<seq>[:<itemId>]", Crafting CraftingGesture "<gesture>:<seq>"):
+-- §47 every client watches every player's attributes, so other players see
+-- kindling, campfire cooking and crafting batches without a relay.
+local function playAttribute(who, name, item)
+	if not name or not Core.NAMES[name] then return end
+	if who == player then
+		playLocal(name, nil, {itemId = item, noRelay = true})
+		return
+	end
+	local character = who.Character
+	if character then playRemote(character, name, {color = Core.toolColor(Data, name, item), variant = math.random(1, 3)}) end
+end
 
 -- Agility moves: the server sets AgilityMove "<anim>:<seq>" (plus
 -- AgilityMoveDuration) on any runner and moves the anchored root itself, so
@@ -1358,6 +2271,14 @@ Core.playerConns = playerConns -- exposed for the headless runtime test
 local function watchRunner(who)
 	own(who, who:GetAttributeChangedSignal("AgilityMove"):Connect(function() playAgility(who) end))
 	if who:GetAttribute("AgilityMove") then task.defer(playAgility, who) end
+	-- §47: kindling / campfire cooking and crafting batches, for every player.
+	own(who, who:GetAttributeChangedSignal("BeaconryGesture"):Connect(function()
+		playAttribute(who, Core.beaconryGesture(who:GetAttribute("BeaconryGesture")))
+	end))
+	own(who, who:GetAttributeChangedSignal("CraftingGesture"):Connect(function()
+		local value = who:GetAttribute("CraftingGesture")
+		playAttribute(who, type(value) == "string" and string.match(value, "^(%a+):%d+$") or nil, nil)
+	end))
 end
 
 -- Carry pose for every character holding an item (built when its HeldItem
@@ -1378,19 +2299,76 @@ local function refreshHolder(who, character)
 	if not pose then return end
 	local rig = Core.bindRig(character)
 	if not rig then return end
-	holders[character] = {player = who, entries = Core.holdTargets(rig, pose), weight = 0,
+	holders[character] = {player = who, entries = Core.holdTargets(rig, pose), weight = 0, class = class,
 		root = character:FindFirstChild("HumanoidRootPart"), humanoid = humanoidOf(character), distance = math.huge, admitted = false}
 end
 local holderConns = {} -- [player] = {connections} on the current character
+
+-- §47 body layer: landing squash, sprint lean, hit flinch, idle fidgets and
+-- death for every character, posed for the local one and the BODY_CAP nearest
+-- remote ones within range (re-ranked with the holders; reused list; each
+-- record owns its pose buffer, so the frame loop allocates no tables).
+local bodies = {} -- [character] = {player, state, entries, root, humanoid, health, distance, admitted}
+local bodyList = {}
+Core.bodies = bodies -- exposed for the headless runtime test
+-- QC M4: every corpse within REMOTE_RANGE plays the collapse (outside the
+-- body cap: death states hold no cap slot); farther ones break their joints
+-- locally, the old default ragdoll. The pose never moves the root joint.
+local function playDeath(who, character)
+	if not character.Parent then return end
+	engine.stop(character)
+	if who == player then
+		engine.play(character, "death", {hold = true, isLocal = true, noWatch = true})
+		return
+	end
+	local mine = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	local theirs = character:FindFirstChild("HumanoidRootPart")
+	local distance = if mine and theirs then (mine.Position - theirs.Position).Magnitude else math.huge
+	if Core.deathPlan(false, distance) == "play" and engine.play(character, "death", {hold = true, noWatch = true}) then return end
+	pcall(function() character:BreakJoints() end)
+end
+local function watchHumanoid(who, character, humanoid, list)
+	local b = bodies[character]
+	if not b or b.humanoid == humanoid then return end
+	b.humanoid, b.health, b.maxHealth = humanoid, humanoid.Health, humanoid.MaxHealth
+	table.insert(list, humanoid.HealthChanged:Connect(function(health)
+		local prev, prevMax = b.health, b.maxHealth
+		b.health, b.maxHealth = health, humanoid.MaxHealth
+		-- QC L4: a MaxHealth clamp (gear off, a buff ending) is not a hit.
+		if b.admitted and Core.isHit(prev, health, prevMax, b.maxHealth) then
+			Core.bodyHit(b.state, (prev - health) / math.max(1, b.maxHealth), os.clock(), reducedMotion())
+		end
+	end))
+	-- Deferred so the old gesture's own Died handler has run first.
+	table.insert(list, humanoid.Died:Connect(function() task.defer(playDeath, who, character) end))
+end
 local function watchCharacter(who, character)
 	for _, c in ipairs(holderConns[who] or {}) do c:Disconnect() end
-	local function changed(child) if child.Name == "HeldItem" then task.defer(refreshHolder, who, character) end end
-	holderConns[who] = {character.ChildAdded:Connect(changed), character.ChildRemoved:Connect(changed)}
+	local list = {}
+	bodies[character] = {player = who, state = Core.newBody(), entries = Core.bindRig(character) or {},
+		root = character:FindFirstChild("HumanoidRootPart"), distance = math.huge, admitted = false}
+	local function changed(child)
+		if child.Name == "HeldItem" then task.defer(refreshHolder, who, character) end
+		if child.ClassName == "Humanoid" and child.Parent == character then watchHumanoid(who, character, child, list) end
+	end
+	table.insert(list, character.ChildAdded:Connect(changed))
+	table.insert(list, character.ChildRemoved:Connect(changed))
+	holderConns[who] = list
+	local humanoid = humanoidOf(character)
+	if humanoid then watchHumanoid(who, character, humanoid, list) end
 	refreshHolder(who, character)
 end
+-- A character going away drops every per-character record (QC L2: combos too).
+local function forgetCharacter(character)
+	holders[character] = nil
+	bodies[character] = nil
+	remoteCombos[character] = nil
+	remoteDistance[character] = nil
+end
+Core.forgetCharacter = forgetCharacter
 local function watchHolder(who)
 	own(who, who.CharacterAdded:Connect(function(character) watchCharacter(who, character) end))
-	own(who, who.CharacterRemoving:Connect(function(character) holders[character] = nil end))
+	own(who, who.CharacterRemoving:Connect(forgetCharacter))
 	if who.Character then watchCharacter(who, who.Character) end
 end
 local function watchPlayer(who)
@@ -1404,7 +2382,7 @@ Players.PlayerRemoving:Connect(function(who)
 	playerConns[who] = nil
 	for _, c in ipairs(holderConns[who] or {}) do c:Disconnect() end
 	holderConns[who] = nil
-	if who.Character then holders[who.Character] = nil end
+	if who.Character then forgetCharacter(who.Character) end
 end)
 player:GetAttributeChangedSignal("HeldItem"):Connect(function() pending.clear() end)
 local function rankHolders(mine)
@@ -1444,9 +2422,92 @@ local function stepHolders(dt)
 end
 Core.holders = holders -- exposed for the headless runtime test
 
+-- Body layer step (§47, QC M2). Additive: every motor written last frame is
+-- put back to its base in RunService.PreAnimation (before the Animator and
+-- before any gesture fade reads Transform), and this frame's offsets go on
+-- top of whatever the Animator, carry pose and gesture wrote, in Stepped.
+local function restoreBodies()
+	for _, b in pairs(bodies) do
+		if b.dirty then
+			Core.bodyRestore(b)
+			b.dirty = false
+		end
+	end
+end
+local nextBodyRank = 0
+local function rankBodies(mine)
+	table.clear(bodyList)
+	local hasLocal = false
+	for character, b in pairs(bodies) do
+		-- QC L11: any lost motor (respawned limb, package swap) rebinds.
+		if Core.needsRebind(b.entries) then b.entries = Core.bindRig(character) or {} end
+		if not b.root or not b.root.Parent then b.root = character:FindFirstChild("HumanoidRootPart") end
+		if b.player == player then
+			b.distance = -1
+			hasLocal = true
+		else
+			b.distance = if mine and b.root then (b.root.Position - mine.Position).Magnitude else math.huge
+		end
+		table.insert(bodyList, b)
+	end
+	Core.admitHolders(bodyList, Core.BODY_CAP + (if hasLocal then 1 else 0), Core.REMOTE_RANGE)
+end
+local function stepBodies(dt)
+	local now = os.clock()
+	if now >= nextBodyRank then
+		nextBodyRank = now + RANK_EVERY
+		rankBodies(player.Character and player.Character:FindFirstChild("HumanoidRootPart"))
+	end
+	local reduced = reducedMotion()
+	for character, b in pairs(bodies) do
+		if not character.Parent then
+			bodies[character] = nil
+			continue
+		end
+		local humanoid = b.humanoid
+		-- QC L3: nothing while dead, seated or platform-standing.
+		if not b.admitted or Core.bodySkip(humanoid) then continue end
+		local root = b.root
+		local v = root and root.AssemblyLinearVelocity
+		if v then
+			local horizontal = math.sqrt(v.X * v.X + v.Z * v.Z)
+			Core.bodyFeed(b.state, v.Y, horizontal, now, dt, reduced)
+			local s = engine.get(character)
+			local moving = horizontal > 4
+			-- Walking away from a kneel / crouch / chest fades it out; any other
+			-- swing leaves its legs to the walk cycle while moving (QC L10).
+			if s and s.def.stopOnMove and moving and not s.fadeStart then engine.cancel(character) end
+			engine.setMoving(character, moving)
+			-- Idle fidgets: standing still with an item in hand, nothing else playing.
+			local holder = holders[character]
+			local still = s == nil and holder ~= nil and horizontal < 0.5 and math.abs(v.Y) < 1
+			if Core.fidgetDue(b.state, now, still and not reduced, math.random()) then
+				local fidget = Core.FIDGET[holder.class]
+				if fidget then
+					if b.player == player then
+						engine.play(character, fidget, {isLocal = true})
+					else
+						playRemote(character, fidget, {}) -- QC L5: under the remote cap
+					end
+				end
+			end
+		end
+		local pose, active = Core.bodyPose(b.state, now)
+		if active then
+			Core.bodyApply(b, pose)
+			b.dirty = true
+		end
+	end
+end
+
+local preAnimation = RunService.PreAnimation
+if preAnimation then preAnimation:Connect(restoreBodies) end
 RunService.Stepped:Connect(function(_, dt)
+	if not preAnimation then restoreBodies() end
 	stepHolders(dt)
 	engine.step()
+	stepBodies(dt)
+	stepNods()
 	if #fxParts > 0 then stepFx(dt) end
 	stepShake()
 end)

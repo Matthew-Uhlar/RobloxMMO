@@ -60,7 +60,7 @@ for _, id in ipairs(CR.BranchOrder) do
 	local b = CR.Branches[id]
 	ok(b and CR.Stations[b.station] ~= nil, id .. " branch at a station")
 	ok(b.seconds >= 1.2 and b.seconds <= 3, id .. " branch cadence 1.2-3 s (no instant crafts)")
-	ok(b.gesture == "hammer" or b.gesture == "saw" or b.gesture == "stir", id .. " branch gesture exists")
+	ok(({hammer = true, saw = true, stir = true, weave = true, pour = true, blow = true, sift = true})[b.gesture], id .. " branch gesture exists (§47: loom, pour, glassblowing, sieve)")
 	if b.tool then ok(table.find(CR.ToolOrder, b.tool) ~= nil, id .. " tool is a Crafting tool") end
 end
 -- Tools: Forge recipes (Smithing), owned and never consumed.
@@ -755,7 +755,7 @@ run(CR.Branches.blow.seconds * 2)
 local gv = crafter.last
 eq(gv.items.GlassVial, 2, "two vials blown")
 eq(gv.items.MoltenGlass, 2, "molten glass spent")
-ok(has(crafter.attrs.CraftingGesture, "stir:"), "furnace gesture")
+ok(has(crafter.attrs.CraftingGesture, "blow:"), "furnace gesture (§47 glassblowing)")
 -- Tool gate: no needle at the Tanning Rack.
 local tanner = seeded(7002, function(prof)
 	prof.xp.Crafting = X[20]
