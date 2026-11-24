@@ -324,6 +324,64 @@ do
 	local acts = Data.Systems.Calc.actions("Skysailing")
 	ok(#acts >= #SS.Components + #SS.Charts, "the XP calculator lists builds, charts and salvage")
 end
+-- QC H2 / H3 / M1 / H5 pure rules.
+do
+	local spec = SS.spec(SS.modelShip(1))
+	local rate = SS.allowedSpeed(spec)
+	eq(SS.accrue(0, spec, 1), rate, "the bucket accrues allowedSpeed x dt")
+	eq(SS.accrue(0, spec, 99), rate * SS.ALLOW_CAP, "and caps at ALLOW_CAP seconds")
+	eq(SS.accrue(rate * 5, spec, 1), rate * SS.ALLOW_CAP, "a full bucket stays capped")
+	ok(SS.graceFor(spec, 0.2) > SS.graceFor(spec, 0) and SS.graceFor(spec, 9) == SS.graceFor(spec, SS.PING_MAX), "the grace scales with ping, bounded")
+	local a = {x = 0, y = 0, z = 0}
+	ok(SS.checkStep(a, {x = 20, y = 0, z = 0}, 1, spec, 20, 0), "a step inside the bucket")
+	ok(not SS.checkStep(a, {x = 30, y = 0, z = 0}, 1, spec, 20, 3), "a step past the bucket")
+	ok(not SS.checkStep(a, {x = 0, y = 50, z = 0}, 1, spec, 99, 3), "a climb past the limit")
+	ok(not SS.checkStep(nil, {x = 0, y = SS.ALT_MAX + 1, z = 0}, 1, spec, 99, 3), "altitude in the step check")
+	ok(SS.checkAttitude(1, 0) and not SS.checkAttitude(1, SS.SPIN_MAX + 0.5) and not SS.checkAttitude(math.cos(math.rad(SS.TILT_MAX + 5)), 0), "spin and tilt limits")
+	for n = 1, 6 do ok(SS.crewShare(1000, n) * n <= 1000 * SS.CREW_SHARE, "the crew pool never exceeds CREW_SHARE (" .. n .. " sailors)") end
+	eq(SS.crewShare(1000, 0), 0, "no crew, no share")
+	for _, port in ipairs(SS.Ports) do
+		eq(#port.berths, SS.BERTH_SLOTS, port.id .. " berth slots")
+		for i, b1 in ipairs(port.berths) do
+			for j, b2 in ipairs(port.berths) do
+				if i < j then ok(SS.distance(b1, b2) >= SS.BERTH_SPACING - 1e-6, port.id .. " slots apart") end
+			end
+			ok(SS.distance(b1, port.centre) > port.radius + 10, port.id .. " slot " .. i .. " rides past the rim")
+		end
+	end
+	local p, d, slot = SS.nearestPort(SS.PortById.Quay.berths[3])
+	ok(p.id == "Quay" and d < 1e-6 and slot == 3, "nearestPort sees every slot")
+	local only = SS.nearestPort({x = 0, z = 0}, function(x) return x.id == "Tidewater" end)
+	eq(only.id, "Tidewater", "nearestPort filters to the ports a player may enter")
+end
+-- QC M9: the ship HUD has a reserved slot in the shared bottom stack.
+do
+	local Theme = load("shared/UiTheme.lua", {Color3 = roblox.Color3, Enum = roblox.Enum, UDim = roblox.UDim, UDim2 = roblox.UDim2, Vector2 = roblox.Vector2,
+		Instance = roblox.Instance, Font = roblox.Font, NumberSequence = roblox.NumberSequence, ColorSequence = roblox.ColorSequence,
+		game = {GetService = function() return {} end}, script = nil})
+	local function overlap(a, b) return a and b and a.w > 0 and b.w > 0 and a.x < b.x + b.w and b.x < a.x + a.w and a.y < b.y + b.h and b.y < a.y + a.h end
+	for _, case in ipairs({{1366, 768}, {1920, 1080}, {1280, 650}, {1024, 600}, {844, 390, true, 0}, {844, 390, true, 120}, {1366, 710}, {667, 375, true, 60}}) do
+		local L = Theme.hudLayout(case[1], case[2], {touch = case[3], lift = case[4]})
+		local r = L.shipHud
+		local tag = case[1] .. "x" .. case[2] .. (if case[3] then " touch lift " .. case[4] else "")
+		ok(r and r.w >= 280 and r.h >= 56 and r.x >= 0 and r.y >= 0 and r.x + r.w <= case[1] and r.y + r.h <= case[2], "ship HUD on screen @" .. tag)
+		for _, k in ipairs({"hotbar", "band", "action", "heartChip", "pouchChip", "chat", "chatTabs", "mapBlock", "mapControls", "sidebar", "orbs"}) do
+			ok(not overlap(r, L[k]), "ship HUD clear of " .. k .. " @" .. tag)
+		end
+		eq(r.compact, case[3] == true, "compact on touch @" .. tag)
+	end
+end
+-- QC L8: saved placements inside the slip circle move out (Island.migrate relocates them).
+do
+	local I = Data.Island
+	local rec = "1:TimberFence:" .. math.floor(SS.SLIP_OFFSET.x / I.CELL) .. ":" .. math.floor(SS.SLIP_OFFSET.z / I.CELL) .. ":0"
+	ok(I.cellBlocked(math.floor(SS.SLIP_OFFSET.x / I.CELL), math.floor(SS.SLIP_OFFSET.z / I.CELL), 0), "the slip's cells are blocked")
+	local out, refunds, report = I.migrate({v = I.VERSION, placed = {rec}}, 0)
+	eq(report.moved, 1, "a placement on the slip is relocated")
+	local e = I.parseRecord(out.placed[1])
+	ok(e and not I.cellBlocked(e.x, e.z, 0), "to a free cell (" .. tostring(out.placed[1]) .. ")")
+	eq(next(refunds), nil, "nothing refunded")
+end
 -- The home slip's protected circle.
 do
 	local I = Data.Island
@@ -465,7 +523,12 @@ local n1, n2, n3
 prefix, n1 = prefix:gsub("local workspace = {GetAttribute=function%(self,key%) return self%[key%] end}", "local workspace = __ws")
 prefix, n2 = prefix:gsub("\tworkspace=workspace,\n", "\tworkspace=workspace,CFrame=__roblox.CFrame,Vector3=__roblox.Vector3,\n")
 prefix, n3 = prefix:gsub("ServerStorage={},", "ServerStorage={FindFirstChild=function(_, n) if n == \"IsleTravelGate\" then return __gate end if n == \"IsleVesselHost\" then return __host end if n == \"IsleCannon\" then return __cannon end return nil end},")
-assert(n1 == 1 and n2 == 1 and n3 == 1, "harness hooks")
+local n4, n5
+-- QC H2: the vessel check runs only in the fixed loop; record spawned loops so the suite can step it.
+prefix, n4 = prefix:gsub("spawn=function%(f,%.%.%.%) assert%(coroutine%.resume%(coroutine%.create%(f%),%.%.%.%)%) end,",
+	"spawn=function(f,...) local co=coroutine.create(f); local ok,y=coroutine.resume(co,...); assert(ok,y); table.insert(__loops,{co=co,y=y}) end,")
+prefix, n5 = prefix:gsub("wait=function%(%) coroutine%.yield%(%) end,", "wait=function(t) return coroutine.yield(t) end,")
+assert(n1 == 1 and n2 == 1 and n3 == 1 and n4 == 1 and n5 == 1, "harness hooks")
 local gate = {Invoke = function() return true end}
 -- The fake vessel host: records every op; poses are set by the test.
 local Host = {ships = {}, calls = {}, resets = 0, down = false}
@@ -474,14 +537,18 @@ local hostFn = {Invoke = function(_, op, payload)
 	table.insert(Host.calls, {op = op, payload = payload})
 	local v = payload and Host.ships[payload.id]
 	if op == "spawn" then
-		Host.ships[payload.id] = {owner = payload.owner, spec = payload.spec, cf = payload.cf, pos = payload.cf.Position, look = payload.cf.LookVector, seated = {}, fired = 0}
+		Host.ships[payload.id] = {owner = payload.owner, spec = payload.spec, cf = payload.cf, pos = payload.cf.Position, look = payload.cf.LookVector, seated = {}, fired = 0,
+			upY = 1, spin = 0, net = payload.owner}
 		return {ok = true}
-	elseif op == "despawn" then Host.ships[payload.id] = nil; return true
+	elseif op == "despawn" then
+		if (Host.failDespawn or 0) > 0 then Host.failDespawn -= 1; return nil end
+		Host.ships[payload.id] = nil; return true
+	elseif op == "own" then if v then v.net = v.owner; Host.owns = (Host.owns or 0) + 1 end return v ~= nil
 	elseif op == "pose" then
 		if not v then return nil end
 		local seated = {}
 		for k, r in pairs(v.seated) do seated[k] = r end
-		return {position = v.pos, look = v.look, seated = seated}
+		return {position = v.pos, look = v.look, seated = seated, upY = v.upY, spin = v.spin, owner = v.net, holding = false}
 	elseif op == "reset" then if v then v.pos = payload.cf.Position; Host.resets += 1 end return true
 	elseif op == "seat" then if v then v.seated[payload.player] = payload.role end return v ~= nil
 	elseif op == "unseat" then if v then v.seated[payload.player] = nil end return true
@@ -503,8 +570,9 @@ ws.FindFirstChild = function(_, name)
 	if name == "AetherIsles" then return {FindFirstChild = function() return nil end} end
 	return nil
 end
-local H = luau.load("local __ws, __roblox, __gate, __host, __cannon = ...\n" .. prefix .. "\nreturn {player=player,cmd=cmd,data=data,advance=advance,services=services,objects=objects,allObjects=allObjects,closers=closers,Data=Data,clock=function() return clock end,setRoll=function(v) defaultRoll=v end}",
-	{debugName = "sailing-harness", injectGlobals = true})(ws, roblox, gate, hostFn, cannonFn)
+local loops = {}
+local H = luau.load("local __ws, __roblox, __gate, __host, __cannon, __loops = ...\n" .. prefix .. "\nreturn {player=player,cmd=cmd,data=data,advance=advance,services=services,objects=objects,allObjects=allObjects,closers=closers,Data=Data,clock=function() return clock end,setRoll=function(v) defaultRoll=v end}",
+	{debugName = "sailing-harness", injectGlobals = true})(ws, roblox, gate, hostFn, cannonFn, loops)
 local SD = H.Data
 local SSS = SD.Skysailing
 local bridge
@@ -516,6 +584,25 @@ assert(leaseHook, "IsleCoopProfile (a durable save renews the journal lease)")
 -- Long voyages outlast the harness lease (180 s); a durable save renews it, as the autosave does live.
 local function renew(p) pcall(leaseHook.OnInvoke, p, true) end
 local function state(p) renew(p); return H.cmd(p, "state") end
+-- One fixed loop tick (QC H2), one second after the last.
+local SAIL_TICK = H.Data.Skysailing.TICK
+local function loop()
+	for _, l in ipairs(loops) do
+		if l.y == SAIL_TICK and coroutine.status(l.co) == "suspended" then
+			local okR, y = coroutine.resume(l.co, SAIL_TICK)
+			assert(okR, y)
+			return
+		end
+	end
+	error("the Skysailing loop was not found")
+end
+local known = {}
+local function tick(...)
+	H.advance(1)
+	for _, p in ipairs({...}) do renew(p) end
+	for p in pairs(known) do if p.Parent then renew(p) end end
+	loop()
+end
 local function sk(p) return state(p).skysailing end
 local function verb(p, v, item) return H.cmd(p, v, item).message end
 local function rootOf(p) return p.Character:FindFirstChild("HumanoidRootPart") end
@@ -539,13 +626,16 @@ local function join(id, mutate)
 	if mutate then mutate(H.data["p" .. id].profile) end
 	local q = H.player(id)
 	pivoted(q)
+	known[q] = true
 	return q
 end
 local function rejoin(p, mutate)
 	H.services.Players.PlayerRemoving:Fire(p)
 	if mutate then mutate(H.data["p" .. p.UserId].profile) end
+	known[p] = nil
 	local q = H.player(p.UserId)
 	pivoted(q)
+	known[q] = true
 	return q
 end
 local function xpOf(p, skill) return H.cmd(p, "state").xp[skill] or 0 end
@@ -562,10 +652,10 @@ local function sailTo(p, target, step)
 		local move = if flat.Magnitude > step then flat.Unit * step else flat
 		s.pos = s.pos + move
 		s.look = move.Unit
-		state(p)
+		tick(p)
 		if not Host.ships[id] then return false end
 	end
-	state(p) -- heave to: one still tick (speed 0)
+	tick(p) -- heave to: one still tick (speed 0)
 	return Host.ships[id] ~= nil
 end
 for _, port in ipairs(SSS.Ports) do place("Dock_" .. port.id, vp(port.landing)) end
@@ -644,20 +734,59 @@ end
 do
 	local id, s = shipOf(b)
 	s.pos = s.pos + Vector3.new(10, 0, 0)
-	state(b)
+	tick(b)
 	eq(Host.resets, 0, "a legal move is accepted")
+	-- QC H2: snapshots / verbs never validate travel nor bank allowance.
 	local good = s.pos
 	s.pos = s.pos + Vector3.new(400, 0, 0)
 	state(b)
-	eq(Host.resets, 1, "a teleport is snapped back")
+	eq(Host.resets, 0, "a snapshot never checks (only the fixed loop does)")
+	tick(b)
+	eq(Host.resets, 1, "a teleport is snapped back by the loop")
 	ok((s.pos - good).Magnitude < 1e-3, "back to the last good pose")
+	H.advance(10) -- the old strikes age out of the window
+	H.advance(SSS.STRIKE_WINDOW)
+	tick(b)
+	for _ = 1, 12 do state(b) end -- spammed snapshots (12 s of clock)
+	local spec = s.spec
+	local cap = SSS.allowedSpeed(spec) * SSS.ALLOW_CAP + SSS.graceFor(spec, 0)
+	s.pos = s.pos + Vector3.new(cap + 6, 0, 0)
+	local r0 = Host.resets
+	tick(b)
+	eq(Host.resets, r0 + 1, "spammed state() calls bank no extra allowance (the bucket caps at " .. SSS.ALLOW_CAP .. " s)")
+	-- A 0.3 s freeze: the pose holds, then catches up within the bucket.
+	H.advance(SSS.STRIKE_WINDOW + 1)
+	tick(b)
+	r0 = Host.resets
+	H.advance(0.3)
+	tick(b)
+	s.pos = s.pos + Vector3.new(SSS.allowedSpeed(spec) * 1.25, 0, 0)
+	tick(b)
+	eq(Host.resets, r0, "a 0.3 s freeze then a catch-up move does not strike")
+	-- QC H3: a flung or capsized hull strikes.
+	s.spin = 6
+	tick(b)
+	eq(Host.resets, r0 + 1, "a spinning hull (fling) strikes")
+	s.spin = 0
+	H.advance(SSS.STRIKE_WINDOW + 1)
+	s.upY = 0.5
+	tick(b)
+	eq(Host.resets, r0 + 2, "a capsized hull strikes")
+	s.upY = 1
+	-- QC M2: the captain is made the network owner again.
+	local owns0 = Host.owns or 0
+	s.net = "server" -- someone else owns the hull
+	tick(b)
+	ok((Host.owns or 0) > owns0, "the loop gives the hull back to its captain")
+	H.advance(SSS.STRIKE_WINDOW + 1)
+	s.pos = s.pos + Vector3.new(400, 0, 0)
+	tick(b)
 	s.pos = s.pos + Vector3.new(0, 400, 0)
-	state(b)
-	eq(Host.resets, 2, "an altitude hack is snapped back")
+	tick(b)
 	ok(Host.ships[id] ~= nil, "two strikes keep the ship")
 	s.pos = s.pos + Vector3.new(120, 0, 0)
 	moveTo(b, s.pos)
-	state(b)
+	tick(b)
 	eq(Host.ships[id], nil, "the third strike tows the ship in")
 	ok((rootOf(b).Position - (vp(QUAY.landing) + Vector3.new(0, 4, 0))).Magnitude < 1e-3, "the captain is landed on the Quay dock, not the void")
 	ok(b:GetAttribute("FastTravelAt") ~= nil, "a server landing marks FastTravelAt")
@@ -754,7 +883,7 @@ do
 	ok(table.find(sj.charted, "QuayShallows") ~= nil, "the reef is charted on arrival")
 	ok(xpOf(cap, "Skysailing") >= xp0 + reef.xp, "chart XP")
 	local before = #sk(cap).charted
-	state(cap)
+	tick(cap)
 	eq(#sk(cap).charted, before, "a chart pays once")
 	local fishMsg = verb(cap, "sailFish")
 	ok(has(fishMsg, "Fishing XP") and has(fishMsg, "Skysailing XP"), "reef fishing from the deck: " .. tostring(fishMsg))
@@ -777,7 +906,7 @@ do
 	-- Moving fast: no salvage.
 	local _, s = shipOf(cap)
 	H.advance(SSS.WRECK_REGROW)
-	state(cap)
+	tick(cap)
 	s.pos = s.pos + Vector3.new(15, 0, 0)
 	ok(has(verb(cap, "sailSalvage"), "Heave to"), "salvage needs the ship heaved to")
 	eq(sk(cap).stats.hauls >= 1, true, "haul stats")
@@ -792,15 +921,24 @@ do
 	local id, s = shipOf(cap)
 	s.pos = s.pos + Vector3.new(0, 0, 15)
 	ok(has((use(crew, "sailBoard", tostring(cap.UserId), nil, s.pos)), "heaved to"), "boarding needs the ship heaved to")
-	state(cap) -- still tick
+	tick(cap) -- a still tick
 	local bm = use(crew, "sailBoard", tostring(cap.UserId), nil, s.pos)
 	ok(has(bm, "board as crew"), "a sailor boards: " .. tostring(bm))
 	eq(s.seated[crew], "sails1", "seated on the sails")
 	ok(has(crew:GetAttribute("SailVessel"), ":sails1"), "crew SailVessel attribute")
 	ok(has(verb(crew, "sailDock"), "not captaining"), "crew cannot dock")
-	ok(has(verb(crew, "sailLeave"), "nothing but sky"), "crew cannot step off mid-sky")
+	ok(has(verb(crew, "sailLeave"), "no dock here"), "crew cannot step off mid-sky")
 	ok(has(verb(crew, "sailRole", "cannons"), "cannons"), "crew moves to a cannon")
 	eq(s.seated[crew], "cannon1", "cannon seat")
+	local unseatThenSeat = false
+	for i = #Host.calls, 2, -1 do
+		local c = Host.calls[i]
+		if c.op == "seat" and c.payload.player == crew and c.payload.role == "cannon1" then
+			unseatThenSeat = Host.calls[i - 1].op == "unseat" and Host.calls[i - 1].payload.player == crew
+			break
+		end
+	end
+	ok(unseatThenSeat, "QC L1: a role change unseats before seating")
 	-- The skiff has 1 sails + 1 cannon seat: a third sailor still fits on the sails.
 	third = join(9313)
 	ok(has((use(third, "sailBoard", tostring(cap.UserId), nil, s.pos)), "board as crew"), "a third sailor boards the sails")
@@ -810,7 +948,11 @@ do
 	ok(has(verb(crew, "sailTrim", "70"), "Only the helm"), "a gunner cannot trim")
 	ok(has(verb(third, "sailTrim", "70"), "70%"), "the sails crew trims")
 	ok(SSS.parseState(s.state).trim == 0.7, "trim published")
-	-- XP share: the gunner just acted (role change), the sails hand trimmed; a haul pays both half.
+	-- QC M1: a role change or a no-op trim is not activity; a shot and a real trim are.
+	verb(third, "sailTrim", "70")
+	-- XP share: the gunner fires, the sails hand trimmed; a haul's crew pool (half) is split between them.
+	H.advance(SSS.FIRE_COOLDOWN)
+	ok(has(verb(crew, "sailFire", "90"), "Broadside"), "the gunner fires (activity)")
 	moveTo(crew, s.pos); moveTo(third, s.pos)
 	local hulk = SSS.ChartById.SettlerHulk
 	sailTo(cap, Vector3.new(hulk.x, 0, hulk.z))
@@ -821,10 +963,12 @@ do
 	local k1 = xpOf(cap, "Skysailing")
 	local gain = SSS.SalvageXp[1]
 	ok(k1 - k0 >= gain, "the actor earns the full haul XP")
-	eq(xpOf(crew, "Skysailing") - c0, math.floor(gain * SSS.CREW_SHARE), "the active gunner shares half")
-	eq(xpOf(third, "Skysailing") - t0, math.floor(gain * SSS.CREW_SHARE), "the active sails hand shares half")
-	-- Inactivity: after ACTIVE_WINDOW without a role action, no share.
-	for _ = 1, 3 do H.advance(SSS.ACTIVE_WINDOW / 3); state(cap) end
+	local each = SSS.crewShare(gain, 2)
+	eq(xpOf(crew, "Skysailing") - c0, each, "the active gunner shares the pool")
+	eq(xpOf(third, "Skysailing") - t0, each, "the active sails hand shares the pool")
+	ok(2 * each <= math.floor(gain * SSS.CREW_SHARE), "QC M1: the whole crew's share is at most half (extra accounts never multiply XP)")
+	-- Inactivity: after ACTIVE_WINDOW without a contributing action, no share.
+	for _ = 1, 3 do H.advance(SSS.ACTIVE_WINDOW / 3); tick(cap) end
 	verb(third, "sailTrim", "55") -- the sails hand stays active
 	moveTo(crew, s.pos); moveTo(third, s.pos)
 	c0, t0 = xpOf(crew, "Skysailing"), xpOf(third, "Skysailing")
@@ -832,13 +976,13 @@ do
 	local sm = verb(cap, "sailSalvage")
 	ok(has(sm, "Grapple haul"), "a second haul: " .. tostring(sm))
 	eq(xpOf(crew, "Skysailing") - c0, 0, "an idle gunner shares nothing (no AFK leeching)")
-	ok(xpOf(third, "Skysailing") > t0, "the working sails hand still shares")
+	eq(xpOf(third, "Skysailing") - t0, SSS.crewShare(gain, 1), "the working sails hand takes the whole pool")
 	-- An absent sailor (fallen far away and not caught yet) shares nothing either: tested via the fall catch below.
 	-- Fall catch: the gunner slips the seat and drops below the deck -> back aboard.
 	s.seated[crew] = nil
 	pivoted(crew)
 	moveTo(crew, s.pos - Vector3.new(0, 60, 0))
-	state(cap)
+	tick(cap)
 	ok(rootOf(crew).Position.Y > s.pos.Y - SSS.FALL_DEPTH, "a falling crew member is caught back aboard")
 	eq(s.seated[crew], "cannon1", "and re-seated")
 	-- Closed gangway.
@@ -847,9 +991,12 @@ do
 	verb(cap, "sailCrew", "open")
 	-- Cannons: the gunner fires; the captain with a gunner aboard does not.
 	Cannon.reply = {hit = true, name = "Corsair Skiffling", damage = 140, killed = false}
+	H.advance(SSS.FIRE_COOLDOWN)
 	local fm = verb(crew, "sailFire", "90")
 	ok(has(fm, "Broadside") and has(fm, "140"), "the gunner fires: " .. tostring(fm))
 	local call = Cannon.calls[#Cannon.calls]
+	ok(call.payload.owners[cap.UserId] and call.payload.owners[crew.UserId] and call.payload.owners[third.UserId] and not call.payload.owners[idle.UserId],
+		"QC L5: cannons may only hit this ship's own corsairs")
 	ok(call.op == "fire" and call.player == crew and call.payload.damage == SSS.cannonDamage(s.spec, 20) and call.payload.range == SSS.CANNON_RANGE, "IsleCannon gets the gunner and the damage")
 	ok(math.abs(call.payload.dir.X - 1) < 1e-6, "aim from the yaw")
 	ok(has(verb(crew, "sailFire", "90"), "Reloading"), "reload cadence")
@@ -864,7 +1011,7 @@ do
 	sailTo(cap, Vector3.new(-200, 0, 280))
 	local spawn0 = cap:GetAttribute("SeaCreatureSpawn")
 	H.setRoll(0.0)
-	state(cap)
+	tick(cap)
 	H.setRoll(0.999)
 	local spawn1 = cap:GetAttribute("SeaCreatureSpawn")
 	ok(spawn1 ~= spawn0 and type(spawn1) == "string", "corsairs swoop in: " .. tostring(spawn1))
@@ -873,12 +1020,26 @@ do
 	ok(typeof(cap:GetAttribute("SeaCreatureAt")) == "Vector3" and (cap:GetAttribute("SeaCreatureAt") - s.pos).Magnitude < 40, "they arrive off the beam")
 	-- Live corsairs batter the hull.
 	local hp0 = SSS.parseState(s.state).hp
-	state(cap); state(cap)
-	ok(SSS.parseState(s.state).hp < hp0, "corsair fire wears the hull")
-	-- A kill (the combat bridge's seaCreature op) pays the captain and the active crew.
-	verb(crew, "sailTrim", "50") -- (refused for a gunner, but any verb aboard keeps no activity: use a role move)
-	verb(crew, "sailRole", "sails")
-	moveTo(crew, s.pos); moveTo(cap, s.pos)
+	tick(cap); tick(cap)
+	local hp1 = SSS.parseState(s.state).hp
+	ok(hp1 < hp0, "corsair fire wears the hull")
+	-- QC L4: hull damage is in the journal at once (a durable save carries it).
+	renew(cap)
+	ok(H.data["p9310"].profile.skysailing.hullHp <= hp1 + 1, "the damage is saved as it happens")
+	-- QC M6: corsairs out of reach (the ship outran them) do no damage.
+	s.pos = s.pos + Vector3.new(25, 0, 0); tick(cap)
+	s.pos = s.pos + Vector3.new(25, 0, 0); tick(cap)
+	s.pos = s.pos + Vector3.new(25, 0, 0); tick(cap)
+	s.pos = s.pos + Vector3.new(25, 0, 0); tick(cap)
+	s.pos = s.pos + Vector3.new(25, 0, 0); tick(cap)
+	local hp2 = SSS.parseState(s.state).hp
+	tick(cap)
+	eq(SSS.parseState(s.state).hp, hp2, "corsairs beyond PIRATE_REACH do no damage")
+	-- A kill (the combat bridge's seaCreature op) pays the captain and the active crew:
+	-- the gunner is active and present; the sails hand is out of range (no share).
+	H.advance(SSS.FIRE_COOLDOWN)
+	ok(has(verb(crew, "sailFire", "0"), "Broadside"), "the gunner fires")
+	moveTo(crew, s.pos); moveTo(cap, s.pos); moveTo(third, s.pos + Vector3.new(0, -SSS.CREW_RANGE - 20, 0))
 	local k0, c0 = xpOf(cap, "Skysailing"), xpOf(crew, "Skysailing")
 	local combat0 = xpOf(cap, "Combat")
 	local reply = bridge.OnInvoke("seaCreature", cap, {seq = tonumber(seq), monster = pid, result = "kill"})
@@ -886,7 +1047,7 @@ do
 	local def = SD.SeaCreatures[pid]
 	eq(xpOf(cap, "Skysailing") - k0, def.sailingXp, "Skysailing XP for the corsair")
 	ok(xpOf(cap, "Combat") > combat0, "Combat XP as any creature")
-	eq(xpOf(crew, "Skysailing") - c0, math.floor(def.sailingXp * SSS.CREW_SHARE), "the crew shares the corsair")
+	eq(xpOf(crew, "Skysailing") - c0, SSS.crewShare(def.sailingXp, 1), "the active crew shares the corsair")
 	eq(bridge.OnInvoke("seaCreature", cap, {seq = tonumber(seq), monster = pid, result = "kill"}).ok, false, "a ticket settles once")
 end
 -- Despawn safety: the captain leaves; every sailor lands on a dock (never the void).
@@ -894,15 +1055,30 @@ do
 	local id, s = shipOf(cap)
 	pivoted(crew); pivoted(third)
 	local bystander = join(9315)
+	pivoted(idle)
 	moveTo(bystander, s.pos + Vector3.new(0, 2, 2)) -- standing on the deck without a seat
+	-- QC H4: a player beside the hull (off its rail) is not swept up.
+	local look = Vector3.new(s.look.X, 0, s.look.Z).Unit
+	local beside = s.pos + Vector3.new(-look.Z, 0, look.X) * (s.spec.beam / 2 + 8)
+	moveTo(idle, beside)
+	local where = s.pos
+	-- QC M6: the corsairs leave with the ship (their tickets close).
+	H.setRoll(0.0)
+	H.advance(SSS.PIRATE_COOLDOWN)
+	tick(cap)
+	H.setRoll(0.999)
+	local pid2, seq2 = string.match(cap:GetAttribute("SeaCreatureSpawn"), "^(%a+):(%d+)$")
 	H.services.Players.PlayerRemoving:Fire(cap)
 	eq(Host.ships[id], nil, "the captain's ship despawns on leave")
 	for _, p in ipairs({crew, third, bystander}) do
 		local pos = rootOf(p).Position
-		local port = SSS.nearestPort({x = pos.X, z = pos.Z})
-		ok((pos - (vp(port.landing) + Vector3.new(0, 4, 0))).Magnitude < 1e-3, "landed on the nearest dock (" .. tostring(p.UserId) .. ")")
+		local open = sk(p).ports
+		local port = SSS.nearestPort({x = where.X, z = where.Z}, function(x) return open[x.id] end)
+		ok((pos - (vp(port.landing) + Vector3.new(0, 4, 0))).Magnitude < 1e-3, "QC H1: landed at the nearest dock this sailor may enter (" .. tostring(p.UserId) .. " at " .. port.id .. ")")
+		ok(open[port.id], "the landing port is open to them")
 		ok(p:GetAttribute("FastTravelAt") ~= nil, "landing marks FastTravelAt")
 	end
+	ok((rootOf(idle).Position - beside).Magnitude < 1e-3, "QC H4: a player off the rail stays where they are")
 	eq(crew:GetAttribute("SailVessel"), "", "crew released")
 	ok(has(sk(crew).sailing == nil and "free" or "", "free"), "crew snapshot shows no ship")
 	-- Persistence: the captain's journal kept the hull points, charts and ship.
@@ -913,6 +1089,7 @@ do
 	ok(saved.stats.corsairs == 1 and saved.stats.hauls >= 2, "stats persist")
 	cap = join(9310)
 	homed(cap)
+	eq(bridge.OnInvoke("seaCreature", cap, {seq = tonumber(seq2), monster = pid2, result = "kill"}).ok, false, "QC M6: a despawned ship's corsair tickets are closed")
 	local sj = sk(cap)
 	eq(sj.hullHp, saved.hullHp, "rejoin keeps the damage")
 	eq(sj.sailing, nil, "a rejoin finds no ship at sea (ships despawn on leave)")
@@ -924,11 +1101,10 @@ do
 	local id, s = shipOf(cap)
 	ws.IsleWeather = "1|99|Hub=Storm,Skyways=Storm"
 	local hp0 = SSS.parseState(s.state).hp
-	state(cap)
+	tick(cap)
 	ok(SSS.parseState(s.state).hp < hp0, "a storm batters the hull")
-	-- Drive the live hull to 1 point, then let the storm finish it.
 	for _ = 1, 400 do
-		state(cap)
+		tick(cap)
 		if not Host.ships[id] then break end
 	end
 	eq(Host.ships[id], nil, "the storm wrecks the ship")
@@ -950,6 +1126,70 @@ do
 	eq(st.skysailing.hullHp, st.skysailing.spec.hp, "full hull")
 	ok((st.items.SkyDriftwood or 0) < wood0 or st.coins < coins0, "repairs cost driftwood or coins (a sink)")
 	ok(has(verb(cap, "sailRepair"), "sound"), "nothing to repair")
+end
+-- QC H1 / M3 / M4: gated ports, gated waters, abandoning ship.
+do
+	H.advance(SSS.LAUNCH_COOLDOWN)
+	moveTo(cap, vp(BRASS.landing))
+	local cm = verb(cap, "sailContract", "Brassfall:Skyreach")
+	ok(not has(cm, "Contract:"), "QC H1: no contract to a port you may not enter: " .. tostring(cm))
+	eq(sk(cap).ports.Skyreach, false, "Skyreach is closed to this captain (quest gate)")
+	local m = use(cap, "sailLaunch", "Brassfall", "Quarry", vp(BRASS.landing))
+	ok(has(m, "helm"), "launch from Brassfall: " .. tostring(m))
+	local sky = SSS.PortById.Skyreach
+	ok(sailTo(cap, vp(sky.berth)), "sailed to the Skyreach berth")
+	ok(has(verb(cap, "sailDock"), "you may enter"), "QC H1: no docking at a port you may not enter")
+	local hulk = SSS.ChartById.SkyreachHulk
+	ok(sailTo(cap, Vector3.new(hulk.x, 0, hulk.z)), "sailed to the Frostbitten Hulk")
+	ok(table.find(sk(cap).charted, "SkyreachHulk") == nil, "QC M3: no charting over a gated region")
+	H.setRoll(0.0)
+	local r = verb(cap, "sailSalvage")
+	H.setRoll(0.999)
+	ok(not has(r, "Grapple haul"), "QC M3: no salvage over a gated region: " .. tostring(r))
+	-- A sailor boards, then abandons ship: the nearest port they may enter.
+	local _, s = shipOf(cap)
+	pivoted(crew)
+	moveTo(crew, s.pos)
+	ok(has((use(crew, "sailBoard", tostring(cap.UserId), nil, s.pos)), "board as crew"), "a sailor boards")
+	local where = s.pos
+	ok(has(verb(crew, "sailJump"), "abandon ship"), "QC M4: crew abandon ship")
+	local open = sk(crew).ports
+	local port = SSS.nearestPort({x = where.X, z = where.Z}, function(x) return open[x.id] end)
+	ok((rootOf(crew).Position - (vp(port.landing) + Vector3.new(0, 4, 0))).Magnitude < 1e-3, "landed at " .. port.id .. ", a port the sailor may enter")
+	ok(port.id ~= "Skyreach", "never at the gated Skyreach dock")
+	eq(crew:GetAttribute("SailVessel"), "", "off the ship")
+	ok(has(verb(cap, "sailJump"), "abandon ship"), "QC M4: the captain abandons ship")
+	eq(shipOf(cap), nil, "the ship is brought in")
+	local cpos = rootOf(cap).Position
+	ok((cpos - (vp(BRASS.landing) + Vector3.new(0, 4, 0))).Magnitude < 1e-3, "the captain lands at Brassfall (nearest open port)")
+end
+-- QC H5 / L3: berth slots; a failed despawn is retried.
+do
+	local fleet = {}
+	for i = 1, 4 do
+		local q = join(9320 + i, function(pr) pr.skysailing = {ship = {hull = "Skiff", sails = "CanvasSails", keel = "TimberKeel"}} end)
+		homed(q)
+		fleet[i] = q
+	end
+	local spots = {}
+	for i = 1, 3 do
+		local m = use(fleet[i], "sailLaunch", "Quay", "Hub", vp(QUAY.landing))
+		ok(has(m, "helm"), "captain " .. i .. " berths at the Quay")
+		local _, s = shipOf(fleet[i])
+		for _, other in ipairs(spots) do ok((other - s.pos).Magnitude >= SSS.BERTH_SPACING - 1e-3, "berth slots never overlap") end
+		table.insert(spots, s.pos)
+	end
+	ok(has((use(fleet[4], "sailLaunch", "Quay", "Hub", vp(QUAY.landing))), "Every berth"), "QC H5: a full skydock refuses")
+	-- L3: the first captain docks; the host fails the first despawn, the loop retries it.
+	local id1 = shipOf(fleet[1])
+	Host.failDespawn = 1
+	tick()
+	ok(has(verb(fleet[1], "sailDock"), "dock"), "the first captain docks")
+	ok(Host.ships[id1] ~= nil, "the host refused the despawn")
+	ok(has((use(fleet[4], "sailLaunch", "Quay", "Hub", vp(QUAY.landing))), "helm"), "the freed slot takes the fourth ship")
+	tick()
+	eq(Host.ships[id1], nil, "QC L3: the loop retried the despawn")
+	for i = 2, 4 do verb(fleet[i], "sailDock") end
 end
 -- Lease and death refusals; shutdown drain.
 do
@@ -1020,6 +1260,20 @@ do
 		ok(prompt and prompt:GetAttribute("IsleAction") == "sailBoard" and prompt:GetAttribute("IsleItem") == "77", h.id .. " gangway board prompt")
 		ok(parts <= 22, h.id .. " stays light (" .. parts .. " parts)")
 		eq(model:FindFirstChild("Hull"):GetAttribute("ShipShape"), h.shape, h.id .. " forged hull")
+		-- QC H1 / H3 / M2: collision group, finite drive limits, the hull as root.
+		for _, obj in ipairs(model:GetDescendants()) do
+			if obj:IsA("BasePart") then eq(obj.CollisionGroup, "SkyVessel", obj.Name .. " is in the SkyVessel group") end
+		end
+		local hullRoot = model:FindFirstChild("Hull")
+		eq(hullRoot.RootPriority, 127, h.id .. " hull is the assembly root")
+		local lvc, aoc = hullRoot:FindFirstChild("Drive"), hullRoot:FindFirstChild("Heading")
+		ok(lvc.MaxForce < math.huge and lvc.MaxForce > 0 and aoc.MaxTorque < math.huge and aoc.MaxTorque > 0, h.id .. " finite drive limits (no flinging)")
+		for _, c in ipairs(model:GetChildren()) do
+			if string.sub(c.Name, 1, 4) == "Mast" then
+				local fit = WorldCatalog.shapes.ShipMast.fit
+				ok(math.abs(c.Size.Y - (fit[2][2] - fit[1][2])) < 1e-6, h.id .. " mast host matches the ShipMast fit height")
+			end
+		end
 		ok(model:FindFirstChild("Hull"):FindFirstChild("Drive") and model:FindFirstChild("Hull"):FindFirstChild("Heading"), h.id .. " drive constraints")
 		local masts = 0
 		for _, c in ipairs(model:GetChildren()) do if c:GetAttribute("SailSlot") then masts += 1 end end
@@ -1027,6 +1281,11 @@ do
 		local pose = invoke("pose", {id = i})
 		ok(pose and (pose.position - cf.Position).Magnitude < 1e-3, h.id .. " pose is the root")
 		ok(model:FindFirstChild("helm") and (model:FindFirstChild("helm").CFrame.Position - cf.Position).Magnitude < h.length, h.id .. " helm aboard")
+		local turned = cf * CFrame.new(0, 0, -30) * CFrame.Angles(0, math.rad(40), 0)
+		invoke("reset", {id = i, cf = turned})
+		local hd = rec.heading.CFrame
+		ok((hd.LookVector - turned.LookVector).Magnitude < 1e-4, "QC L2: the reset turns the heading target too")
+		eq(rec.drive.VectorVelocity, Vector3.zero, "and stops the drive")
 		invoke("reset", {id = i, cf = cf * CFrame.new(0, 0, -30)})
 		ok((invoke("pose", {id = i}).position - (cf * CFrame.new(0, 0, -30)).Position).Magnitude < 1e-3, h.id .. " reset moves the whole ship")
 		ok((model:FindFirstChild("helm").CFrame.Position - (cf * CFrame.new(0, 0, -30)).Position).Magnitude < h.length, h.id .. " seats move with it")
@@ -1042,6 +1301,13 @@ do
 	eq(invoke("pose", {id = 999}), nil, "a missing ship has no pose")
 end
 local server = fs.readFile("server.server.lua")
+ok(has(server, "if not spend(p,c.costs) then"), "QC L7: building spends through spend()")
+ok(has(server, "function Skysailing.loop(now)") and has(server, "pcall(Skysailing.loop,os.clock())") and not has(server, "function Skysailing.tick("), "QC H2: one fixed loop checks travel")
+ok(has(server, "if Data.RegionById[key]") or has(server, "Data.RegionById[key]==nil or regionAllowed(p,key)"), "QC M3: gated waters")
+local host = fs.readFile("sailing.server.lua")
+for _, needle in ipairs({"CollisionGroupSetCollidable(Host.GROUP, Host.GROUP, false)", "CollisionGroupSetCollidable(Host.GROUP, Host.SAILORS, false)",
+	"Host.unseat(record, player) -- QC L1", "Host.reown(record)", "RootPriority = 127"}) do ok(has(host, needle), "sailing.server.lua " .. needle) end
+ok(has(fs.readFile("combat.server.lua"), "owners[r.owner.UserId] == true") and has(fs.readFile("combat.server.lua"), "L.lineOfSight(origin, r)"), "QC L5: cannons hit only the ship's corsairs, in line of sight")
 ok(has(server, "if Skysailing.depart then pcall(Skysailing.depart,player) end"), "close() lands the crew before the final save")
 ok(has(server, "if Skysailing.drain then pcall(Skysailing.drain) end"), "BindToClose docks every ship")
 ok(has(server, "if monster.pirate and Skysailing.onCorsair then"), "corsair kills pay Skysailing XP")
@@ -1051,7 +1317,10 @@ local animate = fs.readFile("animate.client.lua")
 for _, v in ipairs({'shipwright = "hammer"', 'sailLaunch = "board"', 'sailBoard = "board"', 'harbourBoard = "read"', "board = {fx", "helm = {", "grapple = {fx", "haul = {"}) do ok(has(animate, v), "animate.client.lua " .. v) end
 ok(has(fs.readFile("gesture.server.lua"), "board = true, helm = true, grapple = true, haul = true"), "the sailing gestures relay")
 local client = fs.readFile("sailing.client.lua")
-for _, needle in ipairs({"SS.speedFactor", "SS.parseState", "SS.relWind", "A.windAtDir", "CreateEditableMesh", "MeshForgeLocal", "\"sailTrim\"", "\"sailFire\"", "\"shipBuild\"", "\"sailContract\"", "SailShipwright", "SailBoardPort", "reducedMotion", "VesselFire", "Trail"}) do
+for _, needle in ipairs({"SS.speedFactor", "SS.parseState", "SS.relWind", "A.windAtDir", "CreateEditableMesh", "MeshForgeLocal", "\"sailTrim\"", "\"sailFire\"", "\"shipBuild\"", "\"sailContract\"", "SailShipwright", "SailBoardPort", "reducedMotion", "VesselFire", "Trail",
+	-- QC M4 / M5 / M7 / M9 / L6
+	"\"sailJump\"", "SS.CLIENT_MARGIN", "S.warn", "FixedSize = true", "CollisionFidelity.Box", "CLOTH_SHIPS", "weld.Part0, weld.Part1 = slot, p", "Skip unchanged writes",
+	"L.shipHud", "T.hudLayout", "DRESS_IN, DRESS_OUT = 320, 360", "vesselAt = t + 0.5", "nearAt = t + 0.25"}) do
 	ok(has(client, needle), "sailing.client.lua uses " .. needle)
 end
 ok(has(fs.readFile("forge.client.lua"), 'part:GetAttribute("ShapeManual")'), "the forge leaves moving ship parts to sailing.client.lua")

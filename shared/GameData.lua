@@ -18076,6 +18076,17 @@ SS.CREW_SHARE = 0.5           -- active crew earn this share of the captain's ac
 SS.BUILD_XP = 2.5             -- Skysailing XP per coin of material value spent on components
 SS.SHIP_RANGE = 2200          -- home slips / berths are this far apart at most (sanity)
 SS.MENTOR_RANGE = 14          -- studs from the slip to build
+-- QC H2 / H3: the fixed-tick pose check is a token bucket. Each loop tick
+-- accrues allowedSpeed x dt of travel (capped at ALLOW_CAP seconds' worth);
+-- a move spends it. The grace grows with the pilot's ping (up to PING_MAX s).
+SS.ALLOW_CAP = 2
+SS.PING_MAX = 0.5
+SS.SPIN_MAX = 3               -- rad/s of hull spin before a strike (flings)
+SS.TILT_MAX = 35              -- degrees of roll / pitch before a strike
+SS.ABANDON_COOLDOWN = 10      -- QC M4: s between two "abandon ship" uses
+SS.CLIENT_MARGIN = 12         -- QC M5: the helm clamps this far inside the altitude / bounds limits
+SS.BERTH_SLOTS = 3            -- QC H5: ships a skydock can berth at once
+SS.BERTH_SPACING = 24         -- studs between two berth slots, along the rim
 
 ------------------------------------------------------------------------------
 -- New material: Sky Driftwood (salvaged from wrecks; early components use it).
@@ -18302,6 +18313,42 @@ end
 function SS.allowedSpeed(spec)
 	return SS.maxSpeed(spec) * SS.SPEED_SLACK + SS.SPEED_FLAT
 end
+-- QC H2: the loop's token bucket. allow' = min(cap, allow + allowedSpeed x dt).
+function SS.accrue(allow, spec, dt)
+	local rate = SS.allowedSpeed(spec)
+	return math.min(rate * SS.ALLOW_CAP, math.max(0, num(allow)) + rate * math.clamp(num(dt), 0, SS.ALLOW_CAP))
+end
+function SS.graceFor(spec, ping)
+	return SS.STEP_GRACE + SS.allowedSpeed(spec) * math.clamp(num(ping), 0, SS.PING_MAX)
+end
+-- One fixed-tick step: ok, reason, flat distance. `allow` is the bucket after accrual.
+function SS.checkStep(prev, now, dt, spec, allow, grace)
+	if type(now) ~= "table" then return false, "pose", 0 end
+	local x, y, z = num(now.x, 0 / 0), num(now.y, 0 / 0), num(now.z, 0 / 0)
+	if x ~= x or y ~= y or z ~= z then return false, "pose", 0 end
+	local B = SS.BOUNDS
+	if x < B.minX or x > B.maxX or z < B.minZ or z > B.maxZ then return false, "bounds", 0 end
+	if y < SS.ALT_MIN or y > SS.ALT_MAX then return false, "altitude", 0 end
+	if type(prev) ~= "table" then return true, nil, 0 end
+	local flat = math.sqrt((x - num(prev.x)) ^ 2 + (z - num(prev.z)) ^ 2)
+	if flat > num(allow) + num(grace) then return false, "speed", flat end
+	local dy = math.abs(y - num(prev.y))
+	if dy > SS.CLIMB_MAX * 1.5 * math.clamp(num(dt), 0, SS.ALLOW_CAP) + num(grace) then return false, "climb", flat end
+	return true, nil, flat
+end
+-- QC H3: a flung or capsized hull. upY = the hull's UpVector.Y, spin = |angular velocity|.
+function SS.checkAttitude(upY, spin)
+	if num(spin) > SS.SPIN_MAX then return false, "spin" end
+	if num(upY, 1) < math.cos(math.rad(SS.TILT_MAX)) then return false, "tilt" end
+	return true
+end
+-- QC M1: the crew's share of an action is one pool (CREW_SHARE of the XP) split
+-- across the active crew, so extra accounts never multiply the XP.
+function SS.crewShare(xp, n)
+	n = whole(n)
+	if n <= 0 then return 0 end
+	return math.floor(math.floor(math.max(0, num(xp)) * SS.CREW_SHARE) / n)
+end
 -- Server pose check. prev/now = {x, y, z}; dt seconds. ok, reason.
 function SS.checkMove(prev, now, dt, spec)
 	if type(now) ~= "table" then return false, "pose" end
@@ -18375,18 +18422,29 @@ for i, port in ipairs(SS.Ports) do
 	port.landing = {x = c.x + dx * (port.radius - 4), y = c.y, z = c.z + dz * (port.radius - 4)}
 	local out = port.radius + SS.PIER_OUT + SS.BERTH_OUT
 	port.berth = {x = c.x + dx * out, y = c.y, z = c.z + dz * out}
+	-- QC H5: berth slots side by side along the rim (slot 1 is the pier's own).
+	port.berths = {}
+	for k = 1, SS.BERTH_SLOTS do
+		local off = (if k == 1 then 0 elseif k == 2 then -1 else 1) * SS.BERTH_SPACING
+		table.insert(port.berths, {x = port.berth.x - dz * off, y = c.y, z = port.berth.z + dx * off, slot = k})
+	end
 end
 function SS.distance(a, b)
 	return math.sqrt((num(a.x) - num(b.x)) ^ 2 + (num(a.z) - num(b.z)) ^ 2)
 end
--- The nearest port berth to a point: port, distance.
-function SS.nearestPort(pos)
-	local best, bestD = nil, math.huge
+-- The nearest port berth (any slot) to a point: port, distance, slot.
+-- allowed(port) (optional) filters the ports a player may enter.
+function SS.nearestPort(pos, allowed)
+	local best, bestD, bestSlot = nil, math.huge, nil
 	for _, port in ipairs(SS.Ports) do
-		local d = SS.distance(port.berth, pos)
-		if d < bestD then best, bestD = port, d end
+		if not allowed or allowed(port) then
+			for _, b in ipairs(port.berths) do
+				local d = SS.distance(b, pos)
+				if d < bestD then best, bestD, bestSlot = port, d, b.slot end
+			end
+		end
 	end
-	return best, bestD
+	return best, bestD, bestSlot
 end
 -- Home islands (§27): the Shipwright's Slip stands at SLIP_OFFSET from the
 -- home centre; the home berth rides past the rim on the same bearing.

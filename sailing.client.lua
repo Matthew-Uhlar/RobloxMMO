@@ -72,7 +72,8 @@ local function windAt(pos)
 end
 
 ------------------------------------------------------------------------------
--- HUD
+-- HUD (QC M9: placed in the shared bottom stack, Theme.hudLayout L.shipHud;
+-- compact on phones). Buttons sit inside the panel's bottom row.
 ------------------------------------------------------------------------------
 local gui = make("ScreenGui", player:WaitForChild("PlayerGui"), {Name = "IsleSailing", ResetOnSpawn = false, DisplayOrder = 9,
 	ZIndexBehavior = Enum.ZIndexBehavior.Sibling})
@@ -85,11 +86,11 @@ local function panel(parent, props)
 	make("UIGradient", f, {Rotation = 90, Transparency = NumberSequence.new(0, 0.12)})
 	return f
 end
-local hud = panel(gui, {Name = "ShipHud", Visible = false, AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -118),
-	Size = UDim2.fromOffset(420, 132), BackgroundColor3 = T.color.panel, BackgroundTransparency = 0.06})
+local hud = panel(gui, {Name = "ShipHud", Visible = false, Position = UDim2.fromOffset(0, 0), Size = UDim2.fromOffset(420, 168),
+	BackgroundColor3 = T.color.panel, BackgroundTransparency = 0.06})
 local title = T.label(hud, {Name = "Title", Position = UDim2.fromOffset(12, 6), Size = UDim2.new(1, -24, 0, 18), Text = "SKYSKIFF", Font = T.font.display, TextSize = 14,
 	TextColor3 = T.color.gold})
--- Compass dial with a heading needle and the wind arrow (relative to the bow).
+-- Compass dial with a heading needle and the wind arrow.
 local dial = make("Frame", hud, {Name = "Dial", Position = UDim2.fromOffset(12, 28), Size = UDim2.fromOffset(92, 92), BackgroundColor3 = T.color.void, BorderSizePixel = 0})
 make("UICorner", dial, {CornerRadius = UDim.new(1, 0)})
 make("UIStroke", dial, {Color = T.color.frame, Thickness = 2})
@@ -106,18 +107,18 @@ make("UICorner", hullBack, {CornerRadius = UDim.new(0, 5)})
 local hullFill = make("Frame", hullBack, {Name = "Fill", Size = UDim2.fromScale(1, 1), BackgroundColor3 = T.color.defense, BorderSizePixel = 0})
 make("UICorner", hullFill, {CornerRadius = UDim.new(0, 5)})
 local hullText = T.label(hullBack, {Name = "Text", Size = UDim2.fromScale(1, 1), Text = "", TextSize = 10, TextXAlignment = Enum.TextXAlignment.Center})
-local trimText = T.label(hud, {Name = "Trim", Position = UDim2.fromOffset(114, 82), Size = UDim2.fromOffset(150, 16), Text = "", TextSize = 12})
-local contractText = T.label(hud, {Name = "Contract", Position = UDim2.fromOffset(114, 98), Size = UDim2.new(1, -126, 0, 14), Text = "", TextSize = 11, TextColor3 = T.color.goldSoft})
-local buttons = make("Frame", hud, {Name = "Buttons", AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 1, 6), Size = UDim2.new(1, 0, 0, 36), BackgroundTransparency = 1})
-make("UIListLayout", buttons, {FillDirection = Enum.FillDirection.Horizontal, HorizontalAlignment = Enum.HorizontalAlignment.Center, Padding = UDim.new(0, 6)})
+local trimText = T.label(hud, {Name = "Trim", Position = UDim2.fromOffset(114, 82), Size = UDim2.new(1, -126, 0, 16), Text = "", TextSize = 12})
+local contractText = T.label(hud, {Name = "Contract", Position = UDim2.fromOffset(114, 100), Size = UDim2.new(1, -126, 0, 14), Text = "", TextSize = 11, TextColor3 = T.color.goldSoft})
+-- QC M5: the helm's limit warning (ceiling, cloud floor, edge of the skyways).
+local warnText = T.label(hud, {Name = "Warning", Position = UDim2.fromOffset(114, 114), Size = UDim2.new(1, -126, 0, 14), Text = "", TextSize = 11, TextColor3 = T.color.ember})
+local buttons = make("Frame", hud, {Name = "Buttons", Position = UDim2.new(0, 6, 1, -40), Size = UDim2.new(1, -12, 0, 34), BackgroundTransparency = 1})
+make("UIListLayout", buttons, {FillDirection = Enum.FillDirection.Horizontal, HorizontalAlignment = Enum.HorizontalAlignment.Center, Padding = UDim.new(0, 4)})
 local function button(caption, onClick, tone)
-	local b = T.button(buttons, caption, {size = UDim2.fromOffset(78, 34), tone = tone})
+	local b = T.button(buttons, caption, {size = UDim2.fromOffset(60, 32), tone = tone, textSize = 12})
 	b.Visible = false
 	b.Activated:Connect(onClick)
 	return b
 end
-local trimDown = T.button(hud, "–", {size = UDim2.fromOffset(26, 18), position = UDim2.fromOffset(268, 81)})
-local trimUp = T.button(hud, "+", {size = UDim2.fromOffset(26, 18), position = UDim2.fromOffset(298, 81)})
 local function setTrim(delta)
 	local v = S.vessel
 	if not v then return end
@@ -125,8 +126,8 @@ local function setTrim(delta)
 	send("sailTrim", tostring(now))
 	if string.sub(S.role or "", 1, 5) == "sails" then gesture("haul") end
 end
-trimDown.Activated:Connect(function() setTrim(-0.1) end)
-trimUp.Activated:Connect(function() setTrim(0.1) end)
+local trimDown = button("Trim –", function() setTrim(-0.1) end)
+local trimUp = button("Trim +", function() setTrim(0.1) end)
 local fireB = button("Fire", function()
 	local cam = workspace.CurrentCamera
 	local look = cam and cam.CFrame.LookVector or Vector3.new(0, 0, -1)
@@ -136,6 +137,36 @@ local salvageB = button("Salvage", function() send("sailSalvage"); gesture("grap
 local fishB = button("Fish", function() send("sailFish") end)
 local dockB = button("Dock", function() send("sailDock") end, "primary")
 local leaveB = button("Leave", function() send("sailLeave") end)
+local jumpB = button("Abandon", function() send("sailJump") end) -- QC M4: abandon ship
+local layoutKey
+local function applyLayout()
+	local cam = workspace.CurrentCamera
+	if not cam then return end
+	local size = cam.ViewportSize
+	local lift = player:GetAttribute("IsleHudLift")
+	local key = math.floor(size.X) .. "x" .. math.floor(size.Y) .. ":" .. tostring(lift)
+	if key == layoutKey then return end
+	layoutKey = key
+	local L = T.hudLayout(size.X, size.Y, {touch = Input.TouchEnabled and not Input.KeyboardEnabled, lift = lift})
+	local r = L.shipHud
+	hud.Position, hud.Size = UDim2.fromOffset(r.x, r.y), UDim2.fromOffset(r.w, r.h)
+	local compact = r.compact
+	dial.Visible, title.Visible, windText.Visible, trimText.Visible, contractText.Visible = not compact, not compact, not compact, not compact, not compact
+	if compact then
+		readout.Position, readout.Size = UDim2.fromOffset(8, 4), UDim2.new(1, -16, 0, 16)
+		hullBack.Position, hullBack.Size = UDim2.fromOffset(8, 22), UDim2.new(1, -16, 0, 8)
+		warnText.Position = UDim2.fromOffset(8, 30)
+		warnText.Size = UDim2.new(1, -16, 0, 12)
+		buttons.Position, buttons.Size = UDim2.new(0, 4, 1, -32), UDim2.new(1, -8, 0, 28)
+	else
+		readout.Position, readout.Size = UDim2.fromOffset(114, 28), UDim2.new(1, -126, 0, 18)
+		hullBack.Position, hullBack.Size = UDim2.fromOffset(114, 66), UDim2.new(1, -126, 0, 12)
+		warnText.Position, warnText.Size = UDim2.fromOffset(114, 114), UDim2.new(1, -126, 0, 14)
+		buttons.Position, buttons.Size = UDim2.new(0, 6, 1, -40), UDim2.new(1, -12, 0, 34)
+	end
+end
+player:GetAttributeChangedSignal("IsleHudLift"):Connect(function() layoutKey = nil end)
+
 
 ------------------------------------------------------------------------------
 -- Pickers: the shipwright's plans and the harbour board.
@@ -244,63 +275,89 @@ local function forge(host)
 	host.LocalTransparencyModifier = 1
 	return {clone = clone, token = token, host = host}
 end
--- Cloth: a COLS x ROWS grid of vertices in the slot's plane, bellied along +Z (downwind).
+-- Cloth (QC M7): a COLS x ROWS grid in the slot's plane, bellied along +Z
+-- (downwind). The cloth part is unanchored, massless and welded to its slot
+-- once (it rides the hull: no per-frame CFrame writes); only the vertices
+-- move, and only when the belly / flutter changes. Box collision fidelity.
+-- Cloth is hung only on the nearest CLOTH_SHIPS ships.
 local COLS, ROWS = 9, 7
+local CLOTH_SHIPS = 3
+local function buildMesh(fixed)
+	local mesh = if fixed then AssetService:CreateEditableMesh({FixedSize = true}) else AssetService:CreateEditableMesh()
+	return mesh
+end
 local function cloth(slot)
 	local size = slot.Size
-	local c = {slot = slot, w = size.X, h = size.Y}
-	local ok = pcall(function()
-		local mesh = AssetService:CreateEditableMesh()
-		c.ids = {}
-		for r = 0, ROWS do
-			for k = 0, COLS do
-				-- Start with a gentle belly so the mesh has depth (its MeshSize is never zero).
-				local id = mesh:AddVertex(Vector3.new((k / COLS - 0.5) * c.w, (0.5 - r / ROWS) * c.h, 0.3 * math.sin(math.pi * k / COLS) * math.sin(math.pi * r / ROWS)))
-				c.ids[r * (COLS + 1) + k + 1] = id
+	local c = {slot = slot, w = size.X, h = size.Y, belly = -1}
+	-- CreateMeshPartAsync wants a FixedSize mesh where the engine requires it; fall back to a plain one.
+	for _, fixed in ipairs({true, false}) do
+		local ok = pcall(function()
+			local mesh = buildMesh(fixed)
+			local ids = {}
+			for r = 0, ROWS do
+				for k = 0, COLS do
+					-- Start with a gentle belly so the mesh has depth (its MeshSize is never zero).
+					ids[r * (COLS + 1) + k + 1] = mesh:AddVertex(Vector3.new((k / COLS - 0.5) * c.w, (0.5 - r / ROWS) * c.h,
+						0.3 * math.sin(math.pi * k / COLS) * math.sin(math.pi * r / ROWS)))
+				end
 			end
-		end
-		for r = 0, ROWS - 1 do
-			for k = 0, COLS - 1 do
-				local a, b = c.ids[r * (COLS + 1) + k + 1], c.ids[r * (COLS + 1) + k + 2]
-				local d, e = c.ids[(r + 1) * (COLS + 1) + k + 1], c.ids[(r + 1) * (COLS + 1) + k + 2]
-				mesh:AddTriangle(a, d, b); mesh:AddTriangle(b, d, e)
-				mesh:AddTriangle(a, b, d); mesh:AddTriangle(b, e, d) -- both faces (cloth is seen from both sides)
+			for r = 0, ROWS - 1 do
+				for k = 0, COLS - 1 do
+					local a, b = ids[r * (COLS + 1) + k + 1], ids[r * (COLS + 1) + k + 2]
+					local d, e = ids[(r + 1) * (COLS + 1) + k + 1], ids[(r + 1) * (COLS + 1) + k + 2]
+					mesh:AddTriangle(a, d, b); mesh:AddTriangle(b, d, e)
+					mesh:AddTriangle(a, b, d); mesh:AddTriangle(b, e, d) -- both faces (cloth is seen from both sides)
+				end
 			end
-		end
-		local part = AssetService:CreateMeshPartAsync(Content.fromObject(mesh))
-		c.mesh, c.part = mesh, part
-	end)
-	if not ok or not c.part then
-		-- Fallback: a curved pair of fabric panels.
+			local okOpt, part = pcall(AssetService.CreateMeshPartAsync, AssetService, Content.fromObject(mesh), {CollisionFidelity = Enum.CollisionFidelity.Box})
+			if not okOpt or not part then part = AssetService:CreateMeshPartAsync(Content.fromObject(mesh)) end
+			c.mesh, c.part, c.ids = mesh, part, ids
+		end)
+		if ok and c.part then break end
+	end
+	if not c.part then
 		local p = Instance.new("Part")
 		p.Size = Vector3.new(c.w, c.h, 0.15)
 		c.part, c.fallback = p, true
 	end
 	local p = c.part
-	p.Anchored, p.CanCollide, p.CanQuery, p.CanTouch, p.CastShadow = true, false, false, false, true
+	p.Anchored, p.CanCollide, p.CanQuery, p.CanTouch, p.CastShadow, p.Massless = false, false, false, false, true, true
 	p.Material, p.Color = Enum.Material.Fabric, Color3.fromHex("EFE6D3")
 	p.Name = "Cloth sail"
+	p.CFrame = slot.CFrame
+	local weld = Instance.new("WeldConstraint")
+	weld.Part0, weld.Part1 = slot, p
+	weld.Parent = p
 	p.Parent = localFolder
 	return c
 end
 local function updateCloth(c, wind, rel, trim, t, gust)
-	local belly = SS.billow(wind, rel, trim, reduced())
+	local calm = reduced()
+	local belly = SS.billow(wind, rel, trim, calm)
+	local flutter = if calm then 0 else 0.18 * gust
+	-- Skip unchanged writes (a calm sail, reduced motion, a steady wind).
+	if math.abs(belly - c.belly) < 0.02 and flutter < 0.01 and c.flutter == 0 then return end
+	c.belly, c.flutter = belly, (if flutter < 0.01 then 0 else flutter)
 	if c.mesh then
-		local flutter = if reduced() then 0 else 0.18 * gust
 		for r = 0, ROWS do
 			local v = r / ROWS
 			for k = 0, COLS do
 				local u = k / COLS
 				-- Belly: deepest mid-sail, tied at the yard (top) and the luff edges.
-				local z = belly * math.sin(math.pi * u) * math.sin(math.pi * (0.15 + 0.85 * v)) + flutter * math.sin(6 * t + u * 9 + v * 5) * v
+				local z = belly * math.sin(math.pi * u) * math.sin(math.pi * (0.15 + 0.85 * v)) + c.flutter * math.sin(6 * t + u * 9 + v * 5) * v
 				pcall(c.mesh.SetPosition, c.mesh, c.ids[r * (COLS + 1) + k + 1], Vector3.new((u - 0.5) * c.w, (0.5 - v) * c.h, z))
 			end
 		end
-		c.part.CFrame = c.slot.CFrame
 	else
-		c.part.CFrame = c.slot.CFrame * CFrame.new(0, 0, belly * 0.5) * CFrame.Angles(0, 0, 0)
 		c.part.Size = Vector3.new(c.w, c.h, 0.15 + belly * 0.2)
 	end
+end
+local function dropCloth(ship)
+	for _, c in ipairs(ship.cloth) do
+		pcall(c.part.Destroy, c.part)
+		if c.mesh then pcall(c.mesh.Destroy, c.mesh) end
+	end
+	ship.cloth = {}
 end
 local function release(ship)
 	ship.released = true
@@ -310,12 +367,9 @@ local function release(ship)
 		pcall(m.clone.Destroy, m.clone)
 		if m.host.Parent then m.host.LocalTransparencyModifier = 0 end
 	end
-	for _, c in ipairs(ship.cloth) do
-		pcall(c.part.Destroy, c.part)
-		if c.mesh then pcall(c.mesh.Destroy, c.mesh) end
-	end
+	dropCloth(ship)
 	for _, x in ipairs(ship.extras) do pcall(x.Destroy, x) end
-	ship.meshes, ship.cloth, ship.extras = {}, {}, {}
+	ship.meshes, ship.extras = {}, {}
 	if S.ships[ship.model] == ship then S.ships[ship.model] = nil end
 end
 -- Builds a ship's local dressing (forging can yield, so it runs in its own
@@ -324,12 +378,9 @@ local function dress(ship)
 	local model = ship.model
 	for _, part in ipairs(model:GetChildren()) do
 		if ship.released then break end
-		if part:IsA("BasePart") then
-			if part:GetAttribute("ShipShape") then
-				local m = forge(part)
-				if m then table.insert(ship.meshes, m) end
-			end
-			if part:GetAttribute("SailSlot") then table.insert(ship.cloth, cloth(part)) end
+		if part:IsA("BasePart") and part:GetAttribute("ShipShape") then
+			local m = forge(part)
+			if m then table.insert(ship.meshes, m) end
 		end
 	end
 	if ship.released then release(ship) return end
@@ -381,6 +432,12 @@ local function shipFor(model)
 	task.spawn(dress, ship)
 	return ship
 end
+local function hangCloth(ship)
+	if #ship.cloth > 0 or ship.released then return end
+	for _, part in ipairs(ship.model:GetChildren()) do
+		if part:IsA("BasePart") and part:GetAttribute("SailSlot") then table.insert(ship.cloth, cloth(part)) end
+	end
+end
 local function flash(ship)
 	local text = ship.model:GetAttribute("VesselFire")
 	if type(text) ~= "string" or text == ship.fireSeq then return end
@@ -407,20 +464,26 @@ local function flash(ship)
 end
 
 ------------------------------------------------------------------------------
--- Vessel lookup and the helm drive.
+-- Vessel lookup (QC L6: cached at 2 Hz) and the helm drive.
 ------------------------------------------------------------------------------
-local function vessels()
-	local f = workspace:FindFirstChild("IsleVessels")
-	return if f then f:GetChildren() else {}
+local vesselCache, vesselAt = {}, 0
+local function vessels(t)
+	if t >= vesselAt then
+		vesselAt = t + 0.5
+		local f = workspace:FindFirstChild("IsleVessels")
+		vesselCache = if f then f:GetChildren() else {}
+	end
+	return vesselCache
 end
-local function myVessel()
+local function myVessel(t)
 	local text = player:GetAttribute("SailVessel")
 	if type(text) ~= "string" or text == "" then return nil, nil end
 	local id, role = string.match(text, "^(%d+):%d+:(%w+)$")
 	id = tonumber(id)
-	for _, m in ipairs(vessels()) do
-		if m:GetAttribute("VesselId") == id then return {model = m, root = m:FindFirstChild("Hull")}, role end
+	for _, m in ipairs(vessels(t)) do
+		if m.Parent and m:GetAttribute("VesselId") == id then return {model = m, root = m:FindFirstChild("Hull")}, role end
 	end
+	vesselAt = 0 -- a new ship: refresh the cache next frame
 	return nil, role
 end
 local keys = {W = false, S = false, A = false, D = false, Q = false, E = false}
@@ -467,46 +530,81 @@ local function drive(v, dt, t)
 	local bank = -steer * 0.12 * math.min(1, speed / math.max(1, cap))
 	ao.CFrame = CFrame.Angles(0, S.yaw + jolt, 0) * CFrame.Angles(jolt * 0.6, 0, bank)
 	local heading = CFrame.Angles(0, S.yaw, 0).LookVector
-	lv.VectorVelocity = heading * speed + Vector3.new(0, S.climb + jolt * 8, 0)
+	local vel = heading * speed
+	local climb = S.climb + jolt * 8
+	-- QC M5: stay inside the limits the server checks, with a warning.
+	local p, M, B = root.Position, SS.CLIENT_MARGIN, SS.BOUNDS
+	S.warn = nil
+	if p.Y >= SS.ALT_MAX - M and climb > 0 then climb, S.warn = math.min(0, -(p.Y - (SS.ALT_MAX - M))), "Ceiling: the air is too thin to climb" end
+	if p.Y <= SS.ALT_MIN + M and climb < 0 then climb, S.warn = math.max(0, (SS.ALT_MIN + M) - p.Y), "Cloud floor: pull up" end
+	local vx, vz = vel.X, vel.Z
+	if (p.X <= B.minX + M and vx < 0) or (p.X >= B.maxX - M and vx > 0) then vx, S.warn = 0, "Edge of the skyways: turn back" end
+	if (p.Z <= B.minZ + M and vz < 0) or (p.Z >= B.maxZ - M and vz > 0) then vz, S.warn = 0, "Edge of the skyways: turn back" end
+	lv.VectorVelocity = Vector3.new(vx, climb, vz)
 end
 
 ------------------------------------------------------------------------------
 -- The frame: HUD, drive, cloth.
 ------------------------------------------------------------------------------
-local function near(kind, pos, range)
-	return SS.chartsNear({x = pos.X, y = pos.Y, z = pos.Z}, range, kind)[1]
+-- QC L6: chart proximity cached at 4 Hz; ships dressed inside DRESS_IN and
+-- released beyond DRESS_OUT (hysteresis).
+local DRESS_IN, DRESS_OUT = 320, 360
+local nearCache, nearAt = {}, 0
+local function near(kind, pos, range, t)
+	if t >= nearAt then
+		nearAt = t + 0.25
+		local here = {x = pos.X, y = pos.Y, z = pos.Z}
+		nearCache.wreck = SS.chartsNear(here, SS.SALVAGE_RANGE, "wreck")[1]
+		nearCache.reef = SS.chartsNear(here, SS.FISH_RANGE, "reef")[1]
+	end
+	return nearCache[kind]
 end
 local clothAt = 0
+local ranked = {}
 RunService.Heartbeat:Connect(function(dt)
 	local t = os.clock()
-	local v, role = myVessel()
+	applyLayout()
+	local v, role = myVessel(t)
 	if v and (not S.vessel or S.vessel.model ~= v.model) then S.yaw = nil; S.throttle = 0 end
 	if role ~= S.role and role == "helm" then gesture("helm") end
 	S.vessel, S.role = v, role
 	if v and role == "helm" then pcall(drive, v, dt, t) end
-	-- Visuals for every ship within range.
+	-- Visuals for every ship within range (hysteresis).
 	local here = rootPart()
-	local seen = {}
-	for _, m in ipairs(vessels()) do
-		local hullPart = m:FindFirstChild("Hull")
-		if hullPart and here and (hullPart.Position - here.Position).Magnitude <= S.RANGE then
-			seen[m] = true
-			local ship = shipFor(m)
-			flash(ship)
+	table.clear(ranked)
+	for _, m in ipairs(vessels(t)) do
+		local hullPart = m.Parent and m:FindFirstChild("Hull")
+		if hullPart and here then
+			local d = (hullPart.Position - here.Position).Magnitude
+			local ship = S.ships[m]
+			if d <= DRESS_IN or (ship and d <= DRESS_OUT) then
+				ship = ship or shipFor(m)
+				ship.d = d
+				table.insert(ranked, ship)
+				flash(ship)
+			end
 		end
 	end
-	for model, ship in pairs(S.ships) do if not seen[model] or not model.Parent then release(ship) end end
+	for model, ship in pairs(S.ships) do
+		if not model.Parent or not table.find(ranked, ship) then release(ship) end
+	end
+	table.sort(ranked, function(a, b) return a.d < b.d end)
 	if t >= clothAt then
 		clothAt = t + (if reduced() then 1 / 10 else 1 / 30)
-		for _, ship in pairs(S.ships) do
-			local hullPart = ship.model:FindFirstChild("Hull")
-			if hullPart then
-				local wind, wx, wz = windAt(hullPart.Position)
-				local look = hullPart.CFrame.LookVector
-				local rel = SS.relWind(look.X, look.Z, wx, wz)
-				local trim = ship.model:GetAttribute("SailTrim") or 0.5
-				local gust = if A then A.gust(serverNow() - (A.EPOCH or 0), hullPart.Position.X, hullPart.Position.Z) else 0.3
-				for _, c in ipairs(ship.cloth) do if c.slot.Parent then pcall(updateCloth, c, wind, rel, trim, t, gust) end end
+		for i, ship in ipairs(ranked) do
+			if i > CLOTH_SHIPS then
+				if #ship.cloth > 0 then dropCloth(ship) end
+			else
+				hangCloth(ship)
+				local hullPart = ship.model:FindFirstChild("Hull")
+				if hullPart then
+					local wind, wx, wz = windAt(hullPart.Position)
+					local look = hullPart.CFrame.LookVector
+					local rel = SS.relWind(look.X, look.Z, wx, wz)
+					local trim = ship.model:GetAttribute("SailTrim") or 0.5
+					local gust = if A then A.gust(serverNow() - (A.EPOCH or 0), hullPart.Position.X, hullPart.Position.Z) else 0.3
+					for _, c in ipairs(ship.cloth) do if c.slot.Parent then pcall(updateCloth, c, wind, rel, trim, t, gust) end end
+				end
 			end
 		end
 	end
@@ -523,15 +621,19 @@ RunService.Heartbeat:Connect(function(dt)
 	local rel = SS.relWind(look.X, look.Z, wx, wz)
 	title.Text = string.upper(tostring(v.model:GetAttribute("VesselHull") or "ship")) .. "  ·  " .. string.upper(role or "")
 	needle.Rotation = deg
-	-- The arrow points where the wind blows, relative to the screen-north dial.
 	windArrow.Rotation = (math.deg(math.atan2(wx, -wz)) + 360) % 360
-	readout.Text = string.format("%s %03d°   ·   %d kn   ·   %d%% of top", point, deg, SS.knots(speed), math.floor(100 * speed / math.max(1, st.cap)))
-	windText.Text = string.format("Wind %.1f %s · %s · best trim %d%%", wind, (if rel < SS.IRONS then "(in irons!)" else ""), weather, math.floor(SS.bestTrim(rel) * 100))
 	local frac = math.clamp(st.hp / st.max, 0, 1)
+	if dial.Visible then
+		readout.Text = string.format("%s %03d°   ·   %d kn   ·   %d%% of top", point, deg, SS.knots(speed), math.floor(100 * speed / math.max(1, st.cap)))
+	else
+		readout.Text = string.format("%s %03d° · %d kn · hull %d%% · trim %d%%", point, deg, SS.knots(speed), math.floor(frac * 100), math.floor(st.trim * 100))
+	end
+	windText.Text = string.format("Wind %.1f %s · %s · best trim %d%%", wind, (if rel < SS.IRONS then "(in irons!)" else ""), weather, math.floor(SS.bestTrim(rel) * 100))
 	hullFill.Size = UDim2.fromScale(frac, 1)
 	hullFill.BackgroundColor3 = if frac > 0.5 then T.color.defense elseif frac > 0.25 then T.color.gold else T.color.ember
-	hullText.Text = string.format("HULL %d / %d", st.hp, st.max)
+	hullText.Text = if dial.Visible then string.format("HULL %d / %d", st.hp, st.max) else ""
 	trimText.Text = string.format("Sails trimmed %d%%   [ ]", math.floor(st.trim * 100))
+	warnText.Text = if role == "helm" and S.warn then "⚠ " .. S.warn else ""
 	local canTrim = role == "helm" or string.sub(role or "", 1, 5) == "sails"
 	trimDown.Visible, trimUp.Visible = canTrim, canTrim
 	local s = tbl(S.state)
@@ -542,12 +644,14 @@ RunService.Heartbeat:Connect(function(dt)
 	local sailing = tbl(s.sailing)
 	fireB.Visible = gunner or (role == "helm" and sailing.cannon == true)
 	local slow = speed <= SS.SLOW
-	salvageB.Visible = slow and near("wreck", root.Position, SS.SALVAGE_RANGE) ~= nil
-	fishB.Visible = slow and near("reef", root.Position, SS.FISH_RANGE) ~= nil
-	local port, d = SS.nearestPort({x = root.Position.X, z = root.Position.Z})
-	local atBerth = port and d <= SS.DOCK_RANGE or root.Position.Z > 2000
+	salvageB.Visible = slow and near("wreck", root.Position, SS.SALVAGE_RANGE, t) ~= nil
+	fishB.Visible = slow and near("reef", root.Position, SS.FISH_RANGE, t) ~= nil
+	local open = tbl(s.ports)
+	local port, d = SS.nearestPort({x = root.Position.X, z = root.Position.Z}, function(x) return open[x.id] ~= false end)
+	local atBerth = (port ~= nil and d <= SS.DOCK_RANGE) or root.Position.Z > 2000
 	dockB.Visible = role == "helm" and atBerth
-	leaveB.Visible = role ~= "helm" and atBerth
+	leaveB.Visible = role ~= "helm" and port ~= nil and d <= SS.DOCK_RANGE
+	jumpB.Visible = not atBerth
 end)
 snapshots.Event:Connect(function(state)
 	if type(state) == "table" and type(state.skysailing) == "table" then S.state = state.skysailing end

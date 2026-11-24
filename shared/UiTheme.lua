@@ -872,6 +872,27 @@ function Theme.hudLayout(w, h, opts)
 			L.pouchChip = {x = L.action.x, y = L.action.y - 6 - ph, w = math.max(0, pw), h = ph}
 		end
 	end
+	-- §51 QC M9: the ship HUD (sailing.client.lua, only while aboard): centred
+	-- on top of the bottom stack (action bar, heart and pouch chips), its button
+	-- row inside the panel; compact on touch / short screens.
+	do
+		local top = math.min(L.action.y, L.heartChip.y, L.pouchChip.y) - 8
+		if touch then
+			-- Phones: a slim strip between the minimap block and the sidebar, above the chips.
+			local left = if L.mapBlock then L.mapBlock.x + L.mapBlock.w + 4 else 10
+			local right = if L.sidebar then L.sidebar.x - 4 else w - 10
+			local sw, sh = math.max(0, math.min(316, right - left)), 88
+			local x = math.clamp(math.floor((w - sw) / 2), left, math.max(left, right - sw))
+			-- Lifted chips (spell / prayer bars) squeeze it down to the status orbs.
+			local o = L.orbs
+			local floorY = if o and o.x < x + sw and x < o.x + o.w then o.y + o.h + 4 else 8
+			local y = math.max(floorY, top - sh)
+			L.shipHud = {x = x, y = y, w = sw, h = math.max(56, top - y), compact = true}
+		else
+			local sw = math.min(420, w - 2 * 10)
+			L.shipHud = {x = math.floor((w - sw) / 2), y = math.max(8, top - 168), w = sw, h = 168, compact = false}
+		end
+	end
 	return L
 end
 -- Reduced motion: Settings › Reduced motion (IsleSettingReducedMotion) or the

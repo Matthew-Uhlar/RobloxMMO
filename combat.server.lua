@@ -1657,8 +1657,9 @@ local function createLogic(env)
 		return {owner}
 	end
 	-- §51 Skysailing deck cannons: the live sky corsair nearest the aim within
-	-- range and the cone (any captain's corsairs: crews help each other).
-	function L.cannonTarget(origin, dir, range, cone)
+	-- range and the cone. QC L5: only corsairs owned by this ship's sailors
+	-- (`owners` = {[UserId] = true}) and in line of sight.
+	function L.cannonTarget(origin, dir, range, cone, owners)
 		if typeof(origin) ~= "Vector3" or typeof(dir) ~= "Vector3" or dir.Magnitude < 1e-3 then return nil end
 		local flat = Vector3.new(dir.X, 0, dir.Z)
 		if flat.Magnitude < 1e-3 then return nil end
@@ -1666,13 +1667,14 @@ local function createLogic(env)
 		local best, bestD = nil, math.huge
 		for _, owned in pairs(seaOwned) do
 			for r in pairs(owned) do
-				if r.alive and r.def and r.def.pirate then
+				local mine = type(owners) == "table" and r.owner and owners[r.owner.UserId] == true
+				if r.alive and r.def and r.def.pirate and mine then
 					local to = r.position - origin
 					local d = to.Magnitude
 					local toFlat = Vector3.new(to.X, 0, to.Z)
 					if d <= range + (r.radius or 0) and toFlat.Magnitude > 1e-3 then
 						local angle = math.acos(math.clamp(toFlat.Unit:Dot(flat), -1, 1))
-						if angle <= cone and d < bestD then best, bestD = r, d end
+						if angle <= cone and d < bestD and L.lineOfSight(origin, r) then best, bestD = r, d end
 					end
 				end
 			end
@@ -1685,7 +1687,7 @@ local function createLogic(env)
 		local range = math.clamp(tonumber(payload.range) or 0, 0, 120)
 		local cone = math.clamp(tonumber(payload.cone) or 0, 0, 1)
 		local damage = math.clamp(math.floor(tonumber(payload.damage) or 0), 0, 5000)
-		local r = L.cannonTarget(payload.origin, payload.dir, range, cone)
+		local r = L.cannonTarget(payload.origin, payload.dir, range, cone, payload.owners)
 		if not r or damage <= 0 then return {hit = false} end
 		local dealt = L.mitigate(r, damage, "ranged", player)
 		L.landHit(player, r, dealt, "ranged")

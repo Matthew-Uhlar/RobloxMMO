@@ -216,7 +216,7 @@ local Hearts={verbs={heartPerk=true,heartRespec=true,heartAbility=true},next={},
 -- Runebinding (§49: shards, altars, pouches, combination runes, the Glyph Rift); filled in by the Runebinding block before perform().
 local Runebinding={verbs={runeAltar=true,rbIntro=true,rbGate=true,rbWaygate=true,rbTravel=true,rbCombo=true,pouchRepair=true,riftJoin=true,riftLeave=true,riftShape=true,riftCharge=true,riftBuy=true},gseq={}}
 -- Skysailing (§51: ship building, vessels, charting, cargo contracts, salvage, reef fishing, corsairs, crew); filled in by the Skysailing block before perform().
-local Skysailing={verbs={shipwright=true,shipBuild=true,sailLaunch=true,sailDock=true,sailBoard=true,sailLeave=true,sailRole=true,sailTrim=true,sailFire=true,sailSalvage=true,sailFish=true,harbourBoard=true,sailContract=true,sailAbandon=true,sailRepair=true,sailCrew=true}}
+local Skysailing={verbs={shipwright=true,shipBuild=true,sailLaunch=true,sailDock=true,sailBoard=true,sailLeave=true,sailJump=true,sailRole=true,sailTrim=true,sailFire=true,sailSalvage=true,sailFish=true,harbourBoard=true,sailContract=true,sailAbandon=true,sailRepair=true,sailCrew=true}}
 -- One-time coins for each newly reached skill level.
 local function levelCoins(p,skill,newLevel)
 	p.levelRewards=p.levelRewards or {}
@@ -12287,16 +12287,17 @@ end
 -- >>> BEGIN Skysailing (Skysailing team; docs/DEPTH-CONTRACT.md §51) >>>
 -- Rules and data: Data.Skysailing (shared/GameData.lua). The vessels' physical
 -- models live in sailing.server.lua (ServerStorage.IsleVesselHost, a
--- BindableFunction: spawn / despawn / pose / reset / seat / unseat / state);
--- this block owns every rule, the journal and the in-memory vessel records.
--- Verbs (IsleAction):
+-- BindableFunction: spawn / despawn / pose / reset / seat / unseat / own /
+-- state / fire); this block owns every rule, the journal and the in-memory
+-- vessel records. Verbs (IsleAction):
 --   shipwright        (prompt, your home slip)  opens the build panel (SailShipwright attribute)
 --   shipBuild <id>    near your home slip       install the next component of a slot
---   sailLaunch <port|Home> (prompt)             spawn your ship at that berth and take the helm
---   sailDock                                    captain: dock at the berth in range (delivers cargo)
+--   sailLaunch <port|Home> (prompt)             spawn your ship at a free berth slot and take the helm
+--   sailDock                                    captain: dock at a berth in range you may enter (delivers cargo)
 --   sailBoard <captain UserId> (prompt on a hull) board a ship as crew (open policy, free seat)
 --   sailRole sails|cannons                      crew: take a free seat of that role
---   sailLeave                                   crew: step off onto the dock in range
+--   sailLeave                                   crew: step off onto the dock in range (one you may enter)
+--   sailJump                                    abandon ship: land at the nearest port you may enter (QC M4)
 --   sailTrim <0-100>                            captain / sails crew: sail trim
 --   sailFire <yaw degrees>                      gunner (or a captain with no gunner aboard): fire a broadside
 --   sailSalvage / sailFish                      anyone aboard, heaved to over a wreck / reef
@@ -12305,13 +12306,18 @@ end
 --   sailAbandon                                 drop the contract (bond forfeit)
 --   sailRepair                                  at a dock or your slip, not sailing: mend the hull
 --   sailCrew open|closed                        captain: who may board
--- Every SS.TICK (and lazily on every snapshot) Skysailing.tick checks each
--- vessel's pose against SS.checkMove (speed, climb, altitude, bounds); a
--- violation snaps it back to the last good pose and STRIKES_MAX of them tow it
--- in. The same tick charts points, applies storm turbulence and corsair
--- damage, rolls corsair encounters, expires contracts, re-seats crew who left
--- their seat mid-sky and catches falls. A despawn (dock, leave, wreck, tow,
--- idle, shutdown) always lands everyone aboard on a dock first.
+-- QC H2: the pose check runs ONLY in the fixed SS.TICK loop (Skysailing.loop):
+-- a token bucket (SS.accrue: allowedSpeed x dt, capped at ALLOW_CAP s) with a
+-- ping-scaled grace (SS.graceFor), plus the attitude check (QC H3: spin, tilt).
+-- A violation snaps the hull back to the last good pose; STRIKES_MAX tow it in.
+-- Snapshots and verbs only refresh the vessel's position and speed
+-- (Skysailing.refresh), never banking allowance or validating travel. The
+-- loop also charts points, applies storm turbulence and corsair damage
+-- (corsairs within PIRATE_REACH only), rolls encounters, expires contracts,
+-- re-seats crew who left their seat mid-sky, catches falls and keeps the
+-- captain as the network owner. A despawn lands each sailor at the dock in
+-- range if they may enter it, else at the nearest port they may enter (the
+-- captain's own home slip on the home grid), then removes the model.
 ------------------------------------------------------------------------------
 do
 	local SS=Data.Skysailing
@@ -12345,9 +12351,13 @@ do
 		local ok,reply=pcall(fn.Invoke,fn,op,payload)
 		return if ok then reply else nil
 	end
+	-- QC H1: a port this player may enter (its region gate and its level).
+	local function portOpen(p,port)
+		return p~=nil and port~=nil and regionAllowed(p,port.region) and lvl(p)>=port.level
+	end
 
 	-- Vessels ------------------------------------------------------------------------
-	local V={byCaptain={},byId={},aboard={},seq=0,launchAt={},fireAt={},fishAt={},salvageAt={},wrecks={},nowT=0}
+	local V={byCaptain={},byId={},aboard={},seq=0,launchAt={},fireAt={},fishAt={},salvageAt={},wrecks={},jumpAt={},slots={},pending={}}
 	Skysailing.vessels=V
 	local function vesselOf(player)
 		local ref=V.aboard[player]
@@ -12356,10 +12366,15 @@ do
 	local function attr(player,v,role)
 		pcall(function() player:SetAttribute("SailVessel",if v then v.id..":"..v.captain.UserId..":"..role else "") end)
 	end
+	local function crewCount(v) local n=0 for _ in pairs(v.crew) do n+=1 end return n end
 	local function publish(v)
-		local crew=0
-		for _ in pairs(v.crew) do crew+=1 end
-		call("state",{id=v.id,text=SS.encodeState(v.hp,v.spec.hp,v.trim,SS.maxSpeed(v.spec),crew,v.policy),trim=v.trim,captain=v.captain.UserId})
+		call("state",{id=v.id,text=SS.encodeState(v.hp,v.spec.hp,v.trim,SS.maxSpeed(v.spec),crewCount(v),v.policy),trim=v.trim,captain=v.captain.UserId})
+	end
+	-- QC L4: hull damage is written to the journal as it happens.
+	local function setHp(v,hp)
+		v.hp=math.max(0,hp)
+		local p=profiles[v.captain]
+		if p then journal(p).hullHp=math.max(0,math.floor(v.hp)) end
 	end
 	-- Roles: "helm", "sails1".."sails2", "cannon1".."cannon4".
 	local function freeSeat(v,kind)
@@ -12373,7 +12388,6 @@ do
 		end
 		return nil
 	end
-	-- Landing spots (Vector3 on the ground): a port's dock, or a home slip.
 	local function portLanding(port)
 		local a=Trails.anchor("Dock_"..port.id)
 		if a then
@@ -12385,34 +12399,36 @@ do
 	local function homeCentre(player)
 		local c=player:GetAttribute("IslandCenter")
 		if typeof and typeof(c)=="Vector3" then return {x=c.X,y=c.Y,z=c.Z} end
-		if type(c)=="table" and c.X then return {x=c.X,y=c.Y,z=c.Z} end
 		return nil
 	end
 	local function homeLevel(player) return tonumber(player:GetAttribute("HomesteadLevel")) or 1 end
-	-- Berths in range of a point: {kind="port"|"home", port, landing, berth}.
-	local function berthNear(pos,captain)
-		local port,d=SS.nearestPort({x=pos.X,y=pos.Y,z=pos.Z})
-		if port and d<=SS.DOCK_RANGE then return {kind="port",port=port,landing=portLanding(port),berth=v3(port.berth)} end
+	-- The berth in range of a point: {kind="port"|"home", port, landing}; port berths
+	-- count only when `p` may enter the port (QC H1).
+	local function berthNear(pos,captain,p)
+		local here={x=pos.X,y=pos.Y,z=pos.Z}
+		local port,d=SS.nearestPort(here,p and function(x) return portOpen(p,x) end or nil)
+		if port and d<=SS.DOCK_RANGE then return {kind="port",port=port,landing=portLanding(port)} end
 		local centre=captain and homeCentre(captain)
 		if centre then
 			local berth=SS.homeBerth(centre,homeLevel(captain))
-			if berth and SS.distance(berth,{x=pos.X,z=pos.Z})<=SS.DOCK_RANGE then
-				return {kind="home",landing=v3(SS.slipAt(centre)),berth=v3(berth)}
-			end
+			if berth and SS.distance(berth,here)<=SS.DOCK_RANGE then return {kind="home",landing=v3(SS.slipAt(centre))} end
 		end
 		return nil
 	end
-	-- The safest landing for a point: the berth in range, else the nearest port.
-	local function safeLanding(pos,captain)
-		local b=pos and berthNear(pos,captain)
-		if b then return b.landing end
-		if pos and pos.Z>2000 and captain then
-			local centre=homeCentre(captain)
+	-- QC H1: where a sailor goes ashore: the berth in range if they may enter it,
+	-- else the nearest port they may enter; the captain on the home grid goes to
+	-- their own slip; the Quay (level 1, Hub) is the last resort.
+	local function landingFor(player,pos,v)
+		local p=profiles[player]
+		local here=pos and {x=pos.X,y=pos.Y,z=pos.Z} or {x=0,y=0,z=0}
+		if v and player==v.captain and pos and pos.Z>2000 then
+			local centre=homeCentre(player)
 			if centre then return v3(SS.slipAt(centre)) end
 		end
-		local port=SS.nearestPort(if pos then {x=pos.X,y=pos.Y,z=pos.Z} else {x=0,y=0,z=0})
-		return portLanding(port or SS.Ports[1])
+		local port=SS.nearestPort(here,p and function(x) return portOpen(p,x) end or nil)
+		return portLanding(port or SS.PortById.Quay)
 	end
+	Skysailing.landingFor=landingFor
 	-- Puts a player on solid ground (never the void): unseat, pivot, mark fast travel.
 	local function land(player,at)
 		local character=player.Character
@@ -12434,26 +12450,51 @@ do
 		attr(player,nil)
 		if at then land(player,at) end
 	end
-	-- Despawn with every sailor landed first. reason text goes to everyone aboard.
-	local function despawn(v,reason,at)
+	-- QC H4: a point inside the hull's own box (local frame), for unseated deck standers.
+	local function onDeck(v,pos)
+		if not v.pos then return false end
+		local look=v.look or {x=0,z=-1}
+		local dx,dy,dz=pos.X-v.pos.x,pos.Y-v.pos.y,pos.Z-v.pos.z
+		local along=dx*look.x+dz*look.z
+		local across=dx*-look.z+dz*look.x
+		return math.abs(along)<=v.spec.length/2+2 and math.abs(across)<=v.spec.beam/2+2 and dy>=-2 and dy<=v.spec.deck+8
+	end
+	local function freeSlot(v)
+		if v.slot then
+			local list=V.slots[v.slot.port]
+			if list and list[v.slot.k]==v.id then list[v.slot.k]=nil end
+			v.slot=nil
+		end
+	end
+	-- Despawn with every sailor landed first. `at` (optional) is the berth's dock the
+	-- captain docked at; each sailor still lands only where they may enter (QC H1).
+	local function despawn(v,reason,berth)
 		if not V.byId[v.id] then return end
 		local pos=v.pos and v3(v.pos)
-		at=at or safeLanding(pos,v.captain)
 		local aboard={}
 		for player in pairs(v.crew) do table.insert(aboard,player) end
-		-- Anyone standing on the deck without a seat is landed too.
+		-- Unseated deck standers, never sailors of another ship (QC H4).
 		if pos then
 			for player in pairs(profiles) do
-				if not v.crew[player] then
+				if not v.crew[player] and not V.aboard[player] then
 					local root=rootOf(player)
-					if root and (root.Position-pos).Magnitude<=v.spec.length then table.insert(aboard,player) end
+					if root and onDeck(v,root.Position) then table.insert(aboard,player) end
 				end
 			end
 		end
-		for _,player in ipairs(aboard) do disembark(player,v,at) end
-		call("despawn",{id=v.id})
+		for _,player in ipairs(aboard) do
+			local at
+			if berth and berth.kind=="port" and portOpen(profiles[player],berth.port) then at=berth.landing
+			elseif berth and berth.kind=="home" and player==v.captain then at=berth.landing
+			else at=landingFor(player,pos,v) end
+			disembark(player,v,at)
+		end
+		-- Corsairs of this ship leave with it (QC M6).
+		local book=Sea.tickets[v.captain]
+		if book then for seq,t in pairs(book.live) do if t.vessel==v.id then book.live[seq]=nil end end end
 		V.byId[v.id]=nil
 		if V.byCaptain[v.captain]==v then V.byCaptain[v.captain]=nil end
+		freeSlot(v)
 		local p=profiles[v.captain]
 		if p then
 			local j=journal(p)
@@ -12461,11 +12502,14 @@ do
 			-- Cargo aboard goes back to the origin warehouse (relaunch from there to reload).
 			if j.contract and j.contract.loaded==v.id then j.contract.loaded=nil; j.contract.sailed=nil end
 		end
+		-- QC L3: a failed host despawn is kept and retried every loop tick.
+		if call("despawn",{id=v.id})~=true then V.pending[v.id]=true end
 		if reason then for _,player in ipairs(aboard) do push(player,reason) end end
 	end
 	Skysailing.despawn=despawn
 
-	-- XP sharing: the actor earns xp; every other present, active crew member earns SHARE.
+	-- XP sharing (QC M1): the actor earns xp; the other active crew within
+	-- CREW_RANGE split one pool of CREW_SHARE x xp.
 	local function present(v,player)
 		local root=rootOf(player)
 		if not root or not v.pos then return false end
@@ -12475,21 +12519,46 @@ do
 		local p=live(actor)
 		if p and xp>0 then grantXp(p,skill,xp) end
 		if not v then return end
-		local part=math.floor(xp*SS.CREW_SHARE)
-		if part<=0 then return end
 		local now=os.clock()
+		local mates={}
 		for player,c in pairs(v.crew) do
-			if player~=actor and now-(c.active or 0)<=SS.ACTIVE_WINDOW and present(v,player) then
-				local q=live(player)
-				if q then grantXp(q,skill,part); journal(q) end
-			end
+			if player~=actor and now-(c.active or -math.huge)<=SS.ACTIVE_WINDOW and present(v,player) and live(player) then table.insert(mates,player) end
 		end
+		local part=SS.crewShare(xp,#mates)
+		if part<=0 then return end
+		for _,player in ipairs(mates) do grantXp(profiles[player],skill,part) end
 	end
 	Skysailing.share=share
-	local function activity(player)
-		local v,ref=vesselOf(player)
+	-- QC M1: only a successful, contributing role action keeps a sailor active.
+	local function contributed(player)
+		local v=vesselOf(player)
 		if v and v.crew[player] then v.crew[player].active=os.clock() end
-		return v,ref
+	end
+
+	-- Positions: refresh (snapshots, verbs) and the fixed-tick check (loop) -------------
+	local function readPose(v)
+		local pose=call("pose",{id=v.id})
+		if type(pose)~="table" or pose.position==nil then return nil end
+		return pose
+	end
+	-- QC H2: refreshes the position / speed used by verbs; never validates travel,
+	-- never accrues allowance and ignores a pose outside the current budget.
+	function Skysailing.refresh(v,now)
+		local pose=readPose(v)
+		if not pose then return end
+		local pos=pose.position
+		local here={x=pos.X,y=pos.Y,z=pos.Z}
+		local okS=SS.checkStep(v.good,here,now-v.good.t,v.spec,SS.accrue(v.allow,v.spec,now-v.good.t),v.grace or SS.STEP_GRACE)
+		if not okS then return end
+		local s=v.sample
+		if s and now-s.t>=0.1 then v.speed=SS.distance(s,here)/(now-s.t) end
+		if not s or now-s.t>=0.1 then v.sample={x=here.x,y=here.y,z=here.z,t=now} end
+		if pose.look then v.look={x=pose.look.X,z=pose.look.Z} end
+		v.pos=here
+	end
+	local function refreshFor(player)
+		local v=vesselOf(player)
+		if v and V.byId[v.id] then pcall(Skysailing.refresh,v,os.clock()) end
 	end
 
 	-- Shipwright --------------------------------------------------------------------
@@ -12497,8 +12566,7 @@ do
 		local centre=homeCentre(player)
 		local root=rootOf(player)
 		if not centre or not root then return false end
-		local slip=SS.slipAt(centre)
-		return (root.Position-v3(slip)).Magnitude<=SS.MENTOR_RANGE
+		return (root.Position-v3(SS.slipAt(centre))).Magnitude<=SS.MENTOR_RANGE
 	end
 	local function build(player,p,id)
 		if V.aboard[player] then return "Dock your ship before the shipwrights can work on it." end
@@ -12507,12 +12575,11 @@ do
 		local okB,why=SS.canBuild(j.ship,id,lvl(p),p.items)
 		if not okB then return why end
 		local c=SS.ComponentById[id]
-		for mat,n in pairs(c.costs) do p.items[mat]-=n end
+		if not spend(p,c.costs) then return c.name.." needs its materials." end -- QC L7
 		local before=SS.spec(j.ship)
 		j.ship[c.slot]=c.id
 		j.ship=SS.cleanShip(j.ship)
 		local after=SS.spec(j.ship)
-		-- A new or bigger hull launches at its full integrity; a repaired top-up keeps the damage share.
 		if after then
 			if not before or j.hullHp==nil then j.hullHp=after.hp
 			else j.hullHp=math.clamp(math.floor((j.hullHp/math.max(1,before.hp))*after.hp+0.5),0,after.hp) end
@@ -12526,7 +12593,7 @@ do
 	-- Launch, dock, board ------------------------------------------------------------
 	local function launch(player,p,item,prompt)
 		if not prompt then return "Step onto a skydock to sail out." end
-		if V.aboard[player] then return "You are already aboard a ship." end
+		if V.aboard[player] or V.byCaptain[player] then return "You are already aboard a ship." end -- QC H4
 		local j=journal(p)
 		local okS,why=SS.seaworthy(j.ship)
 		if not okS then return why end
@@ -12534,22 +12601,27 @@ do
 		if (j.hullHp or spec.hp)<=0 then return "Your hull is wrecked. Repair it at a dock or your slip first (sailRepair)." end
 		local now=os.clock()
 		if now<(V.launchAt[player.UserId] or 0) then return "The dockhands are still casting off ("..math.ceil(V.launchAt[player.UserId]-now).."s)." end
-		local berth,dir,port
+		local berth,dir,port,slotK
 		if item=="Home" then
 			if prompt:GetAttribute("OwnerUserId")~=player.UserId then return "Only the owner launches from this slip." end
 			local centre=homeCentre(player)
 			if not centre then return "Your home island is not ready." end
-			local b,d=SS.homeBerth(centre,homeLevel(player))
-			berth,dir=b,d
+			berth,dir=SS.homeBerth(centre,homeLevel(player))
 		else
 			port=type(item)=="string" and SS.PortById[item]
 			if not port then return "That is not a skydock." end
 			if lvl(p)<port.level then return "The "..port.name.." takes captains of Skysailing "..port.level.."." end
 			if not regionAllowed(p,port.region) then return regionDenied(port.region) end
-			berth,dir=port.berth,port.dir
+			-- QC H5: a free berth slot along the rim.
+			local list=V.slots[port.id] or {}
+			V.slots[port.id]=list
+			for k,b in ipairs(port.berths) do
+				if not list[k] or not V.byId[list[k]] then berth,slotK=b,k break end
+			end
+			if not berth then return "Every berth at the "..port.name.." is taken. Wait for a ship to sail." end
+			dir=port.dir
 		end
-		local fn=host()
-		if not fn then return "The skydock is closed right now." end
+		if not host() then return "The skydock is closed right now." end
 		V.seq+=1
 		local id=V.seq
 		local at=v3(berth)
@@ -12557,8 +12629,9 @@ do
 		local reply=call("spawn",{id=id,owner=player,spec=spec,cf=cf})
 		if type(reply)~="table" or reply.ok~=true then return "The skydock is closed right now." end
 		local v={id=id,captain=player,spec=spec,hp=math.min(spec.hp,j.hullHp or spec.hp),trim=0.5,policy=j.crew,crew={},
-			pos={x=at.X,y=at.Y,z=at.Z},good={x=at.X,y=at.Y,z=at.Z,t=now},speed=0,strikes={},pirateAt=now,touched=now,
-			from=port and port.id or "Home"}
+			pos={x=at.X,y=at.Y,z=at.Z},good={x=at.X,y=at.Y,z=at.Z,t=now},allow=0,grace=SS.STEP_GRACE,speed=0,strikes={},pirateAt=now,touched=now,
+			look={x=dir.x,z=dir.z},from=port and port.id or "Home"}
+		if port then V.slots[port.id][slotK]=id; v.slot={port=port.id,k=slotK} end
 		V.byId[id],V.byCaptain[player]=v,v
 		v.crew[player]={role="helm",joined=now,active=now}
 		V.aboard[player]={id=id,role="helm"}
@@ -12599,28 +12672,29 @@ do
 		local v=V.byCaptain[player]
 		if not v then return "You are not captaining a ship." end
 		local pos=v.pos and v3(v.pos)
-		local b=pos and berthNear(pos,player)
-		if not b then return "Sail within "..SS.DOCK_RANGE.." studs of a skydock berth (or your home berth) to dock." end
+		local b=pos and berthNear(pos,player,p) -- QC H1: only ports this captain may enter
+		if not b then return "Sail within "..SS.DOCK_RANGE.." studs of a skydock you may enter (or your home berth) to dock." end
 		if v.speed>SS.SLOW*2 then return "Slow down to dock." end
 		local extra=deliver(player,p,v,b)
-		despawn(v,nil,b.landing)
+		despawn(v,nil,b)
 		return "You dock "..(if b.kind=="port" then "at the "..b.port.name else "at your Shipwright's Slip").." and step ashore."..extra
 	end
 	local function board(player,p,item,prompt)
 		if not prompt then return "Walk up to a ship's gangway to board." end
-		if V.aboard[player] then return "You are already aboard a ship." end
+		if V.aboard[player] or V.byCaptain[player] then return "You are already aboard a ship." end
 		local captainId=tonumber(item)
 		local v
 		for _,x in pairs(V.byId) do if x.captain.UserId==captainId then v=x end end
 		if not v then return "That ship has sailed." end
 		if v.policy=="closed" then return "The captain is not taking crew." end
+		pcall(Skysailing.refresh,v,os.clock()) -- the ship's own freshest speed
 		local root=rootOf(player)
 		if not root or not v.pos or (root.Position-v3(v.pos)).Magnitude>SS.BOARD_RANGE+v.spec.length/2 then return "Get closer to the gangway." end
 		if v.speed>SS.SLOW then return "The ship must be heaved to (slow) to take crew aboard." end
 		local role=freeSeat(v,"sails") or freeSeat(v,"cannons")
 		if not role then return "Every seat aboard is taken." end
 		local now=os.clock()
-		v.crew[player]={role=role,joined=now,active=now}
+		v.crew[player]={role=role,joined=now} -- QC M1: active only after a contributing action
 		V.aboard[player]={id=v.id,role=role}
 		call("seat",{id=v.id,player=player,role=role})
 		attr(player,v,role)
@@ -12629,16 +12703,31 @@ do
 		push(v.captain,(player.DisplayName or player.Name or "A sailor").." boards as crew ("..role..").")
 		return "You board as crew: "..(if string.sub(role,1,5)=="sails" then "on the sails (trim them with the wind)" else "at a deck cannon").."."
 	end
-	local function leave(player)
-		local v,ref=vesselOf(player)
+	local function leave(player,p)
+		local v=vesselOf(player)
 		if not v then return "You are not aboard a ship." end
 		if v.captain==player then return "Dock the ship to go ashore (you are the captain)." end
 		local pos=v.pos and v3(v.pos)
-		local b=pos and berthNear(pos,v.captain)
-		if not b then return "There's nothing but sky below. Wait until the ship is at a dock." end
+		local b=pos and berthNear(pos,v.captain,p) -- QC H1
+		if not b or b.kind=="home" then return "There's no dock here you may step onto. Wait for a port you may enter, or abandon ship." end
 		disembark(player,v,b.landing)
 		publish(v)
 		return "You step ashore."
+	end
+	-- QC M4: abandon ship: the nearest port this sailor may enter (a captain takes the crew too).
+	local function jump(player)
+		local v=vesselOf(player)
+		if not v then return "You are not aboard a ship." end
+		local now=os.clock()
+		if now<(V.jumpAt[player] or 0) then return "Catch your breath first." end
+		V.jumpAt[player]=now+SS.ABANDON_COOLDOWN
+		if v.captain==player then
+			despawn(v,"Your captain abandons ship; the skiffs set you ashore.")
+			return "You abandon ship; the harbour skiffs bring you ashore."
+		end
+		disembark(player,v,landingFor(player,v.pos and v3(v.pos),v))
+		publish(v)
+		return "You abandon ship; a harbour skiff brings you ashore."
 	end
 
 	-- Contracts -----------------------------------------------------------------------
@@ -12648,7 +12737,9 @@ do
 		if not port or not root then return false end
 		if (root.Position-portLanding(port)).Magnitude<=30 then return true end
 		local v=V.byCaptain[player]
-		return v~=nil and v.pos~=nil and SS.distance(port.berth,v.pos)<=SS.DOCK_RANGE
+		if not v or not v.pos then return false end
+		for _,b in ipairs(port.berths) do if SS.distance(b,v.pos)<=SS.DOCK_RANGE then return true end end
+		return false
 	end
 	local function settleExpiry(player,p,now)
 		local j=journal(p)
@@ -12667,6 +12758,8 @@ do
 		local expired=settleExpiry(player,p,os.time())
 		if j.contract then return "Finish or abandon your current contract first." end
 		if lvl(p)<route.level then return "That route needs Skysailing "..route.level.."." end
+		local dest=SS.PortById[route.to]
+		if not regionAllowed(p,dest.region) then return regionDenied(dest.region) end -- QC H1
 		if not nearDock(player,route.from) then return "Accept contracts at the "..SS.PortById[route.from].name.."." end
 		local spec=SS.spec(j.ship)
 		if not spec then return "Build a ship at your home slip first." end
@@ -12678,9 +12771,13 @@ do
 		local now=os.time()
 		j.contract={route=route.id,crates=crates,bond=bond,coins=coins,xp=SS.contractXp(route,crates,lvl(p)),deadline=now+SS.contractLimit(route),accepted=now}
 		local v=V.byCaptain[player]
-		if v and v.pos and SS.distance(SS.PortById[route.from].berth,v.pos)<=SS.DOCK_RANGE then j.contract.loaded,j.contract.sailed=v.id,0 end
+		if v and v.pos then
+			for _,b in ipairs(SS.PortById[route.from].berths) do
+				if SS.distance(b,v.pos)<=SS.DOCK_RANGE then j.contract.loaded,j.contract.sailed=v.id,0 break end
+			end
+		end
 		p.started=true
-		return (if expired then expired.."   ·   " else "").."Contract: "..crates.." crates to the "..SS.PortById[route.to].name.." within "..SS.contractLimit(route).."s (bond "..bond..")"
+		return (if expired then expired.."   ·   " else "").."Contract: "..crates.." crates to the "..dest.name.." within "..SS.contractLimit(route).."s (bond "..bond..")"
 			..(if j.contract.loaded then ". Loaded aboard." else ". Sail out from here to load them.")
 	end
 
@@ -12689,8 +12786,13 @@ do
 		if v.speed>SS.SLOW then return false,"Heave to (slow below "..SS.knots(SS.SLOW).." knots) first." end
 		return true
 	end
+	-- QC M3: charts, reefs and wrecks over a gated region need that region.
+	local function chartOpen(p,ch)
+		local key=SS.regionAt(ch.x,ch.z)
+		return Data.RegionById[key]==nil or regionAllowed(p,key),key
+	end
 	local function salvage(player,p)
-		local v=activity(player)
+		local v=vesselOf(player)
 		if not v then return "You need to be aboard a ship." end
 		local okH,why=heaveTo(v)
 		if not okH then return why end
@@ -12699,6 +12801,8 @@ do
 		local ch=near.chart
 		if v.spec.grapple<ch.wreck then return ch.name.." needs a tier "..ch.wreck.." grapple aboard." end
 		if lvl(p)<ch.level then return ch.name.." needs Skysailing "..ch.level.."." end
+		local okR,key=chartOpen(p,ch)
+		if not okR then return regionDenied(key) end
 		local now=os.clock()
 		if now<(V.salvageAt[player] or 0) then return "Still hauling the grapple in…" end
 		V.wrecks[player]=V.wrecks[player] or {}
@@ -12714,12 +12818,13 @@ do
 		local j=journal(p)
 		j.stats.hauls=(j.stats.hauls or 0)+1
 		local xp=SS.SalvageXp[ch.wreck]
+		contributed(player)
 		share(v,player,"Skysailing",xp)
 		p.started=true
 		return "Grapple haul from "..ch.name..": "..(if #parts>0 then table.concat(parts,", ") else "nothing but splinters").."   ·   +"..xp.." Skysailing XP"
 	end
 	local function fish(player,p)
-		local v=activity(player)
+		local v=vesselOf(player)
 		if not v then return "You need to be aboard a ship." end
 		local okH,why=heaveTo(v)
 		if not okH then return why end
@@ -12728,12 +12833,15 @@ do
 		local ch=near.chart
 		local tier=SS.ReefFishing[ch.reef]
 		if level(p.xp.Fishing)<tier.fishing then return ch.name.." needs Fishing "..tier.fishing.."." end
+		local okR,key=chartOpen(p,ch)
+		if not okR then return regionDenied(key) end
 		local now=os.clock()
 		if now<(V.fishAt[player] or 0) then return "Your line is still out…" end
 		V.fishAt[player]=now+SS.FISH_SECONDS
 		local c=SS.rollReef(ch.reef,roll)
 		pickup(p,c.item,1)
 		grantXp(p,"Fishing",c.fishingXp)
+		contributed(player)
 		share(v,player,"Skysailing",tier.sail)
 		local j=journal(p)
 		j.stats.fished=(j.stats.fished or 0)+1
@@ -12741,7 +12849,7 @@ do
 		return "+1 "..Data.Items[c.item].name.." from "..ch.name.."   ·   +"..c.fishingXp.." Fishing XP, +"..tier.sail.." Skysailing XP"
 	end
 	local function fire(player,p,item)
-		local v,ref=activity(player)
+		local v,ref=vesselOf(player)
 		if not v then return "You need to be aboard a ship." end
 		if v.spec.cannon<=0 then return "Your ship carries no deck cannons." end
 		local gunner=string.sub(ref.role,1,6)=="cannon"
@@ -12755,25 +12863,31 @@ do
 		local yaw=math.rad(math.clamp(tonumber(item) or 0,-360,360))
 		local dir=Vector3.new(math.sin(yaw),0,-math.cos(yaw))
 		local origin=v3(v.pos)+Vector3.new(0,v.spec.deck,0)
+		-- QC L5: only this ship's corsairs (the captain's and the crew's tickets).
+		local owners={}
+		for member in pairs(v.crew) do owners[member.UserId]=true end
 		local okF,cannon=pcall(function() return ServerStorage:FindFirstChild("IsleCannon") end)
 		local reply
 		if okF and cannon then
-			local okI,r=pcall(cannon.Invoke,cannon,"fire",player,{origin=origin,dir=dir,range=SS.CANNON_RANGE,cone=SS.CANNON_CONE,damage=SS.cannonDamage(v.spec,lvl(p))})
+			local okI,r=pcall(cannon.Invoke,cannon,"fire",player,{origin=origin,dir=dir,range=SS.CANNON_RANGE,cone=SS.CANNON_CONE,damage=SS.cannonDamage(v.spec,lvl(p)),owners=owners})
 			if okI then reply=r end
 		end
 		call("fire",{id=v.id,gunner=player,dir=dir})
+		contributed(player)
 		if type(reply)=="table" and reply.hit then
 			return "Broadside! "..tostring(reply.name).." takes "..tostring(reply.damage)..(if reply.killed then " and goes down." else ".")
 		end
 		return "Broadside! The shot whistles off into the clouds."
 	end
 	local function trim(player,item)
-		local v,ref=activity(player)
+		local v,ref=vesselOf(player)
 		if not v then return "You need to be aboard a ship." end
 		if ref.role~="helm" and string.sub(ref.role,1,5)~="sails" then return "Only the helm and the sails crew trim the sails." end
 		local t=tonumber(item)
 		if not t or t~=t then return "Trim 0-100." end
+		local before=v.trim
 		v.trim=math.clamp(math.floor(t+0.5),0,100)/100
+		if v.trim~=before then contributed(player) end -- QC M1: a real change only
 		publish(v)
 		return "Sails trimmed to "..math.floor(v.trim*100).."%."
 	end
@@ -12787,39 +12901,41 @@ do
 		if not atDock then return "Repairs are done at a skydock or your Shipwright's Slip." end
 		local missing=spec.hp-(j.hullHp or spec.hp)
 		if missing<=0 then return "Your hull is sound ("..spec.hp.."/"..spec.hp..")." end
-		-- Sky Driftwood first (25 hull points each), then coins (1 coin per 2 points: a sink).
 		local wood=math.min(math.ceil(missing/25),math.max(0,p.items.SkyDriftwood or 0))
 		local left=math.max(0,missing-wood*25)
 		local coins=math.ceil(left/2)
 		if (p.coins or 0)<coins then return "Mending "..missing.." hull points needs "..math.ceil(missing/25).." Sky Driftwood or "..math.ceil(missing/2).." coins." end
-		if wood>0 then p.items.SkyDriftwood-=wood end
+		if wood>0 and not spend(p,{SkyDriftwood=wood}) then return "Your driftwood went missing." end
 		p.coins-=coins
 		j.hullHp=spec.hp
 		return "Hull mended to "..spec.hp.."/"..spec.hp..(if wood>0 then "   ·   -"..wood.." Sky Driftwood" else "")..(if coins>0 then "   ·   -"..coins.." coins" else "").."."
 	end
 
 	-- Corsairs ----------------------------------------------------------------------------
-	-- A pirate ticket in the captain's sea-creature book (combat builds and fights it).
 	local function issuePirate(v,id)
 		local player=v.captain
 		local book=Sea.book(player)
 		if Sea.count(book)>=Data.SeaCreatureCap then return false end
-		book.seq+=1
-		book.live[book.seq]={id=id,expires=os.clock()+Data.SeaCreatureLifetime+Sea.GRACE,region="Skyways",pirate=true,vessel=v.id}
 		local side=if roll()<0.5 then -1 else 1
 		local look=v.look or {x=0,z=-1}
 		local at=v3(v.pos)+Vector3.new(-look.z*side*22,v.spec.deck+2,look.x*side*22)
+		book.seq+=1
+		book.live[book.seq]={id=id,expires=os.clock()+Data.SeaCreatureLifetime+Sea.GRACE,region="Skyways",pirate=true,vessel=v.id,at={x=at.X,y=at.Y,z=at.Z}}
 		pcall(function() player:SetAttribute("SeaCreatureAt",at) end)
 		pcall(function() player:SetAttribute("SeaCreatureSpawn",id..":"..book.seq) end)
 		return true
 	end
-	local function livePirates(player)
-		local book=Sea.tickets[player]
+	-- QC M6: only corsairs of this ship within PIRATE_REACH batter its hull.
+	local function livePirates(v)
+		local book=Sea.tickets[v.captain]
 		local n=0
-		if book then for _,t in pairs(book.live) do if t.pirate and os.clock()<=t.expires then n+=1 end end end
+		if book and v.pos then
+			for _,t in pairs(book.live) do
+				if t.pirate and t.vessel==v.id and os.clock()<=t.expires and t.at and SS.distance(t.at,v.pos)<=SS.PIRATE_REACH then n+=1 end
+			end
+		end
 		return n
 	end
-	-- Sea.report hook: a corsair kill pays Skysailing XP to its captain and the crew.
 	function Skysailing.onCorsair(player,p,monster)
 		local v=V.byCaptain[player]
 		local j=journal(p)
@@ -12833,23 +12949,23 @@ do
 		return true
 	end
 
-	-- The tick ----------------------------------------------------------------------------
+	-- The fixed loop ----------------------------------------------------------------------
 	local function wreck(v,why)
 		local captain=v.captain
+		setHp(v,0)
 		despawn(v,why)
 		local p=profiles[captain]
 		if p then journal(p).hullHp=0 end
 	end
-	local function towIn(v,reason)
-		despawn(v,"The harbour wardens tow your ship in ("..reason..").")
-	end
 	local function strike(v,now,reason)
 		table.insert(v.strikes,now)
 		while v.strikes[1] and now-v.strikes[1]>SS.STRIKE_WINDOW do table.remove(v.strikes,1) end
-		if #v.strikes>=SS.STRIKES_MAX then towIn(v,reason) return true end
+		if #v.strikes>=SS.STRIKES_MAX then despawn(v,"The harbour wardens tow your ship in ("..reason..").") return true end
 		local g=v.good
-		call("reset",{id=v.id,cf=CFrame.lookAt(v3(g),v3(g)+Vector3.new((v.look and v.look.x) or 0,0,(v.look and v.look.z) or -1))})
+		local look=v.look or {x=0,z=-1}
+		call("reset",{id=v.id,cf=CFrame.lookAt(v3(g),v3(g)+Vector3.new(look.x,0,look.z))})
 		v.pos={x=g.x,y=g.y,z=g.z}
+		v.allow=0
 		return false
 	end
 	local function chart(v,player,p,pos)
@@ -12858,7 +12974,7 @@ do
 		local out={}
 		for _,hit in ipairs(SS.chartsNear(pos,nil)) do
 			local ch=hit.chart
-			if not j.charted[ch.id] and L>=ch.level then
+			if not j.charted[ch.id] and L>=ch.level and chartOpen(p,ch) then
 				j.charted[ch.id]=true
 				grantXp(p,"Skysailing",ch.xp)
 				table.insert(out,"Charted "..ch.name.."   ·   +"..ch.xp.." Skysailing XP")
@@ -12866,30 +12982,39 @@ do
 		end
 		return out
 	end
-	local function stepVessel(v,now,dt)
+	local function pingOf(player)
+		local ok,ping=pcall(function() return player:GetNetworkPing() end)
+		return if ok and type(ping)=="number" then ping else 0
+	end
+	local function stepVessel(v,now)
 		local captain=v.captain
 		local p=profiles[captain]
 		if not p or not captain.Parent then despawn(v,"Your captain has gone. You are set ashore.") return end
-		local pose=call("pose",{id=v.id})
-		if type(pose)~="table" then despawn(v,"The ship is lost in the clouds. You are set ashore.") return end
+		local pose=readPose(v)
+		if not pose then despawn(v,"The ship is lost in the clouds. You are set ashore.") return end
+		local dt=math.clamp(now-v.good.t,0,SS.ALLOW_CAP)
+		if pose.look then v.look={x=pose.look.X,z=pose.look.Z} end
 		local pos=pose.position
-		if pos==nil then despawn(v,"The ship is lost in the clouds. You are set ashore.") return end
-		local look=pose.look
-		if look then v.look={x=look.X,z=look.Z} end
 		local here={x=pos.X,y=pos.Y,z=pos.Z}
-		local g=v.good
-		local okM,reason=SS.checkMove(g,here,now-g.t,v.spec)
-		if not okM then
-			if strike(v,now,reason) then return end
+		v.allow=SS.accrue(v.allow,v.spec,dt)
+		v.grace=SS.graceFor(v.spec,pingOf(captain))
+		local okM,reason,flat=SS.checkStep(v.good,here,dt,v.spec,v.allow,v.grace)
+		local okA,why=SS.checkAttitude(pose.upY,pose.spin)
+		if not okM or not okA then
+			if strike(v,now,reason or why) then return end
+			v.good.t=now
 		else
-			local flat=SS.distance(g,here)
-			v.speed=flat/math.max(0.05,now-g.t)
+			v.allow=math.max(0,v.allow-flat)
+			v.speed=flat/math.max(0.05,dt)
 			if flat>0.5 then v.touched=now end
 			local j=journal(p)
 			if j.contract and j.contract.loaded==v.id then j.contract.sailed=(j.contract.sailed or 0)+flat end
 			v.good={x=here.x,y=here.y,z=here.z,t=now}
 			v.pos=here
+			v.sample={x=here.x,y=here.y,z=here.z,t=now}
 		end
+		-- QC M2: the captain stays the network owner (outside a reset hold).
+		if pose.owner~=nil and pose.owner~=captain and not pose.holding then call("own",{id=v.id}) end
 		-- Crew: re-seat anyone who slipped their seat mid-sky; catch falls.
 		local seated=type(pose.seated)=="table" and pose.seated or {}
 		for player,c in pairs(v.crew) do
@@ -12904,7 +13029,6 @@ do
 				call("seat",{id=v.id,player=player,role=c.role})
 			end
 		end
-		-- Charting for everyone aboard.
 		for player in pairs(v.crew) do
 			local q=live(player)
 			if q then
@@ -12912,48 +13036,39 @@ do
 				if #lines>0 then push(player,table.concat(lines,"\n")) end
 			end
 		end
-		-- Weather turbulence and corsair fire.
 		local region=SS.regionAt(v.pos.x,v.pos.z)
 		local weather=SS.weatherFor(workspace:GetAttribute("IsleWeather"),region)
-		local dps=SS.weatherDps(weather,v.spec.armour)+SS.PIRATE_HULL_DPS*livePirates(captain)*(1-v.spec.armour)
+		local dps=SS.weatherDps(weather,v.spec.armour)+SS.PIRATE_HULL_DPS*livePirates(v)*(1-v.spec.armour)
 		if dps>0 then
-			v.hp=math.max(0,v.hp-dps*dt)
+			setHp(v,v.hp-dps*math.min(dt,SS.TICK*2))
 			publish(v)
 			if v.hp<=0 then wreck(v,"Your hull gives out! The crew is pulled to safety at the nearest dock.") return end
 		end
-		-- Corsair encounters in open sky.
 		if lvl(p)>=SS.PIRATE_LEVEL and openSky(v.pos) and now-v.pirateAt>=SS.PIRATE_COOLDOWN and live(captain) then
-			if roll()<SS.pirateChance(region,weather)*dt then
+			if roll()<SS.pirateChance(region,weather)*SS.TICK then
 				v.pirateAt=now
-				local count=math.max(1,v.spec.class)
 				local spawned=0
-				for _=1,count do if issuePirate(v,SS.pirateFor(lvl(p),roll)) then spawned+=1 end end
+				for _=1,math.max(1,v.spec.class) do if issuePirate(v,SS.pirateFor(lvl(p),roll)) then spawned+=1 end end
 				if spawned>0 then for player in pairs(v.crew) do push(player,"Sky corsairs! "..spawned.." boarding skiff"..(if spawned==1 then "" else "s").." swoop in off the beam.") end end
 			end
 		end
-		-- Contract expiry.
 		local msg=settleExpiry(captain,p,os.time())
 		if msg then push(captain,msg) end
-		-- Idle: nobody sailing for IDLE_DESPAWN seconds.
 		if now-v.touched>SS.IDLE_DESPAWN then despawn(v,"Your ship idled at anchor too long; the dockhands brought it in.") end
 	end
-	function Skysailing.tick(now)
-		if V.ticking then return end
-		V.ticking=true
-		local dt=math.clamp(now-(V.lastTick or now),0,2)
-		V.lastTick=now
+	-- One fixed tick (QC H2): the only place travel is validated.
+	function Skysailing.loop(now)
+		for id in pairs(V.pending) do if call("despawn",{id=id})==true then V.pending[id]=nil end end
 		local list={}
 		for _,v in pairs(V.byId) do table.insert(list,v) end
 		table.sort(list,function(a,b) return a.id<b.id end)
 		for _,v in ipairs(list) do
 			if V.byId[v.id] then
-				local ok,err=pcall(stepVessel,v,now,dt)
+				local ok,err=pcall(stepVessel,v,now)
 				if not ok then (warn or print)("Skysailing vessel "..v.id.." failed: "..tostring(err)) end
 			end
 		end
-		V.ticking=false
 	end
-	-- A departing player: captains' ships despawn (crew landed); crew are unseated.
 	function Skysailing.depart(player)
 		local v=V.byCaptain[player]
 		if v then despawn(v,"Your captain has left the isles. You are set ashore.") end
@@ -12967,17 +13082,16 @@ do
 	end
 	function Skysailing.forget(player)
 		Skysailing.depart(player)
-		V.fireAt[player],V.fishAt[player],V.salvageAt[player],V.wrecks[player]=nil,nil,nil,nil
+		V.fireAt[player],V.fishAt[player],V.salvageAt[player],V.wrecks[player],V.jumpAt[player]=nil,nil,nil,nil,nil
 		local now=os.clock()
 		for id,ready in pairs(V.launchAt) do if ready<=now then V.launchAt[id]=nil end end
 	end
-	-- Shutdown: land everyone, save hull points (BindToClose, before the journals save).
 	function Skysailing.drain()
 		for _,v in pairs(V.byId) do despawn(v,"The isles are closing; you are set ashore.") end
 	end
 
 	function Skysailing.action(player,p,verb,item,prompt)
-		Skysailing.tick(os.clock()) -- validate against the freshest pose (speed, berth, reef / wreck range)
+		refreshFor(player) -- QC H2: the freshest position (never validation)
 		if verb=="shipwright" then
 			if not prompt then return "Visit the Shipwright's Slip on your home island." end
 			if prompt:GetAttribute("OwnerUserId")~=player.UserId then return "Only the owner may commission work here." end
@@ -12989,7 +13103,8 @@ do
 		elseif verb=="sailLaunch" then return launch(player,p,item,prompt)
 		elseif verb=="sailDock" then return dock(player,p)
 		elseif verb=="sailBoard" then return board(player,p,item,prompt)
-		elseif verb=="sailLeave" then return leave(player)
+		elseif verb=="sailLeave" then return leave(player,p)
+		elseif verb=="sailJump" then return jump(player)
 		elseif verb=="sailRole" then
 			local v,ref=vesselOf(player)
 			if not v then return "You are not aboard a ship." end
@@ -12998,10 +13113,10 @@ do
 			if string.sub(ref.role,1,5)==(if item=="sails" then "sails" else "canno") then return "You already work the "..item.."." end
 			local role=freeSeat(v,item)
 			if not role then return "No free "..item.." seat." end
+			call("unseat",{id=v.id,player=player}) -- QC L1: out of the old seat first
 			v.crew[player].role,ref.role=role,role
 			call("seat",{id=v.id,player=player,role=role})
 			attr(player,v,role)
-			activity(player)
 			return "You move to the "..item.."."
 		elseif verb=="sailTrim" then return trim(player,item)
 		elseif verb=="sailFire" then return fire(player,p,item)
@@ -13035,7 +13150,7 @@ do
 		return "Unknown action."
 	end
 	function Skysailing.state(player,p)
-		Skysailing.tick(os.clock())
+		refreshFor(player)
 		local j=journal(p)
 		local expired=settleExpiry(player,p,os.time())
 		if expired then note(p,expired) end
@@ -13054,8 +13169,10 @@ do
 		for id in pairs(j.charted) do table.insert(charted,id) end
 		table.sort(charted)
 		local day=SS.dayOf(os.time())
+		local open={}
+		for _,port in ipairs(SS.Ports) do open[port.id]=portOpen(p,port) end
 		return {level=lvl(p),ship=table.clone(j.ship),spec=spec,hullHp=if v and v.captain==player then math.floor(v.hp) else j.hullHp,next=nextBy,
-			charted=charted,stats=table.clone(j.stats),crew=j.crew,
+			charted=charted,stats=table.clone(j.stats),crew=j.crew,ports=open,
 			purse={paid=if j.purse.day==day then j.purse.paid else 0,cap=SS.purseDaily(lvl(p))},
 			contract=c and {route=c.route,crates=c.crates,bond=c.bond,coins=c.coins,xp=c.xp,left=math.max(0,c.deadline-os.time()),loaded=c.loaded~=nil,
 				sailed=math.floor(c.sailed or 0)} or nil,
@@ -13064,7 +13181,7 @@ do
 	end
 	task.spawn(function()
 		while task.wait(SS.TICK) do
-			local ok,err=pcall(Skysailing.tick,os.clock())
+			local ok,err=pcall(Skysailing.loop,os.clock())
 			if not ok then (warn or print)("Skysailing loop failed: "..tostring(err)) end
 		end
 	end)
