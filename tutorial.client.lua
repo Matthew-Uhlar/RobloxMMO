@@ -12,17 +12,24 @@
 --     the server reports real progress, so the card sequence follows the Path.
 --     Lane: Theme.hudLayout coach / coachChip (tall screens: docked left of
 --     centre, under the level banner; phones: a centred card above the action
---     bar, collapsing to a 44 px chip at the top of the left column).
+--     bar, collapsing to a 44 px chip at the top of the left column). On
+--     phones (L.short) and during a fight a new card / tip opens as the
+--     pulsing chip and expands only on a tap (QC M4). The card sinks clicks
+--     (Active) and the chip is one TextButton (QC M5 / L8).
 --   * Pointer: a pulsing ring and an arrow on the UI element the card is about
 --     (sidebar Objective / Bag / Menu / Map buttons, hotbar slots, Menu tiles,
 --     Journal sections, the status orbs), most specific visible target first.
 --     World targets reuse the Wayfinder waypoint (LocalPlayer.WayfinderRequest):
---     set once when a new card first opens, and on "Show me".
+--     set when a new card first opens (only while no waypoint of the player's
+--     own is active, LocalPlayer.WayfinderActive; once the character exists;
+--     counted only after nav.client resolved it, QC M6), and on "Show me".
 --   * Tips: first encounters (first fight, level-up, full satchel page, night,
 --     shop, quest accepted; Data.Tutorial.detectTips over snapshots and server
 --     signals) shown once per account (verb tutorial "tip:<id>"; the snapshot's
---     tutorial.tips lists those already seen). Settings › Tutorial turns tips
---     off or replays the tutorial.
+--     tutorial.tips lists those already seen). A tip is taken from the queue,
+--     recorded and timed only on a render where the card is actually visible
+--     (QC M2). Settings › Tutorial turns tips off or replays the tutorial
+--     (Replay also resets this session's shown tips).
 --   * Finale: a celebration card with the rewards summary and a claim button
 --     for owed Wayfarer's Path coins (guideClaim through the atlas relay).
 -- Nothing here grants anything; every verb goes through IsleActionLocal (the
@@ -56,8 +63,11 @@ local function num(v: any): number return if type(v) == "number" and v == v then
 -- ring draws above everything it points at.
 local gui = make("ScreenGui", playerGui, {Name = "IsleTutorial", ResetOnSpawn = false, DisplayOrder = 7, ZIndexBehavior = Enum.ZIndexBehavior.Sibling})
 local pointerGui = make("ScreenGui", playerGui, {Name = "IsleTutorialPointer", ResetOnSpawn = false, DisplayOrder = 12, ZIndexBehavior = Enum.ZIndexBehavior.Sibling})
-local S: any = {snap = nil, prev = nil, tut = nil, card = nil, expanded = false, tip = nil, tipQueue = {}, tipsShown = {}, skipArmed = false,
-	waypointed = {}, signals = {}, target = nil, pointerKey = nil, mode = "hidden", clockAt = 0, serverTime = 0, sent = {}}
+local S: any = {snap = nil, prev = nil, tut = nil, card = nil, expanded = false, tip = nil, tipOpen = false, tipQueue = {}, tipsShown = {}, skipArmed = false,
+	waypointed = {}, wantWaypoint = nil, ownWaypoint = nil, unread = false, fightAt = -math.huge, signals = {}, target = nil, pointerKey = nil,
+	mode = "hidden", clockAt = 0, serverTime = 0, sent = {}}
+local FIGHT_HOLD = 8 -- seconds after a hit / hurt during which nothing auto-expands (QC M4)
+local function fighting(): boolean return os.clock() - S.fightAt < FIGHT_HOLD end
 local function screen()
 	local size = gui.AbsoluteSize
 	if size and size.X > 0 and size.Y > 0 then return size end
@@ -76,6 +86,7 @@ end
 ------------------------------------------------------------------------------
 local HEADER = 44
 local card = T.frame(gui, {name = "CoachCard", size = UDim2.fromOffset(360, 176), transparency = 0.04, visible = false, studSize = 5})
+card.Active = true -- QC M5: clicks / taps on the card never reach the world (gameProcessed)
 local glow = make("UIStroke", make("Frame", card, {Name = "GlowRing", BackgroundTransparency = 1, Position = UDim2.fromOffset(-3, -3), Size = UDim2.new(1, 6, 1, 6), Active = false}),
 	{Name = "Glow", Thickness = 2, Transparency = 0.45, Color = C.mint})
 T.corner(glow.Parent :: any, 9)
@@ -99,6 +110,10 @@ local skipButton = T.button(buttons, "Skip tutorial", {name = "SkipTutorial", si
 local secondary = T.button(buttons, "Show me", {name = "ShowMe", size = UDim2.fromOffset(92, 44), anchor = Vector2.new(1, 0), tone = "secondary"})
 local primary = T.button(buttons, "Got it", {name = "GotIt", size = UDim2.fromOffset(92, 44), anchor = Vector2.new(1, 0), tone = "primary"})
 primary.Position, secondary.Position = UDim2.new(1, 0, 0, 0), UDim2.new(1, -98, 0, 0)
+-- The chip (collapsed header) is one button over the whole 44 px row (QC M5 / L8:
+-- a single tap expands once; the "+" toggle hides while it shows).
+local chipButton = make("TextButton", card, {Name = "ChipButton", BackgroundTransparency = 1, Text = "", AutoButtonColor = false, Size = UDim2.fromScale(1, 1),
+	ZIndex = 20, Visible = false, Active = true})
 
 -- Pointer ring + arrow (pointerGui, above every HUD layer).
 local ring = make("Frame", pointerGui, {Name = "PointerRing", BackgroundTransparency = 1, Visible = false, Active = false})
@@ -119,6 +134,24 @@ local function setPulse(on: boolean)
 		pcall(function()
 			pulse = TweenService:Create(ringStroke, TweenInfo.new(0.7, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), {Transparency = 0.65, Thickness = 5})
 			pulse:Play()
+		end)
+	end
+end
+
+-- The unread chip pulses its glow ring (QC M4; still under reduced motion).
+local chipPulse: any = nil
+local function setChipPulse(on: boolean)
+	local want = on and not T.reducedMotion(player)
+	if want == (chipPulse ~= nil) then return end
+	if chipPulse then
+		pcall(function() chipPulse:Cancel() end)
+		chipPulse = nil
+		glow.Transparency, glow.Thickness = 0.45, 2
+	end
+	if want then
+		pcall(function()
+			chipPulse = TweenService:Create(glow, TweenInfo.new(0.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), {Transparency = 0.05, Thickness = 4})
+			chipPulse:Play()
 		end)
 	end
 end
@@ -183,13 +216,52 @@ local function specsNow(): any
 	if def.quest then return tbl(tbl(S.tut).next).specs end
 	return TU.specsFor(def.id)
 end
+-- "Show me": always (the player asked).
 local function waypoint()
 	local specs = specsNow()
 	local def = cardDef()
 	if type(specs) ~= "table" or #specs == 0 or not def then return end
 	local request = player:FindFirstChild("WayfinderRequest")
-	if request then pcall(function() (request :: any):Fire(specs, def.title) end) end
+	if request then
+		S.ownWaypoint = def.title
+		pcall(function() (request :: any):Fire(specs, def.title) end)
+	end
 end
+-- Automatic waypoint for a new card (QC M6): never replaces a waypoint the
+-- player chose (nav.client's WayfinderActive, unless it is the tutorial's own),
+-- waits for the character, asks quietly (no "can't find" toast) and counts
+-- the card as waypointed only once WayfinderActive reports this label, so an
+-- unresolved target is retried (every 10 s, at most 3 times).
+local function autoWaypoint()
+	local w = S.wantWaypoint
+	if not w then return end
+	if w.card ~= S.card or S.waypointed[w.card] then S.wantWaypoint = nil; return end
+	local active = player:GetAttribute("WayfinderActive")
+	if active ~= nil and active ~= S.ownWaypoint then
+		S.waypointed[w.card] = "kept" -- the player's own waypoint stays; "Show me" still works
+		S.wantWaypoint = nil
+		return
+	end
+	local character = player.Character
+	if not character or not character:FindFirstChild("HumanoidRootPart") then return end
+	if w.tries >= 3 or os.clock() - w.at < 10 then return end
+	local specs, def = specsNow(), cardDef()
+	local request = player:FindFirstChild("WayfinderRequest")
+	if type(specs) ~= "table" or #specs == 0 or not def or not request then S.wantWaypoint = nil; return end
+	w.tries += 1
+	w.at = os.clock()
+	w.label = def.title
+	pcall(function() (request :: any):Fire(specs, def.title, true) end)
+end
+player:GetAttributeChangedSignal("WayfinderActive"):Connect(function()
+	local w = S.wantWaypoint
+	local value = player:GetAttribute("WayfinderActive")
+	if w and w.label ~= nil and value == w.label then
+		S.waypointed[w.card] = true
+		S.ownWaypoint = value
+		S.wantWaypoint = nil
+	end
+end)
 
 ------------------------------------------------------------------------------
 -- Visibility: other windows that own the screen hide the card (the pointer
@@ -225,13 +297,30 @@ end
 ------------------------------------------------------------------------------
 -- Render
 ------------------------------------------------------------------------------
+-- A queued tip is taken (recorded with tip:<id>, its 14 s timer started) only
+-- on a render where it is actually seen: not covered, not behind the welcome
+-- card, and (opening as the chip on phones / in a fight) not yielding (QC M2).
+local function promoteTip(L: any)
+	if S.tip or #S.tipQueue == 0 or S.card == "welcome" or covered() then return end
+	local open = not L.short and not fighting()
+	if not open and (L.coachChip.w < 160 or (L.short and trackersShown())) then return end
+	local id = table.remove(S.tipQueue, 1)
+	S.tip, S.tipOpen = id, open
+	S.unread = not open
+	S.tipsShown[id] = true
+	send("tutorial", "tip:" .. id) -- recorded once per account when it is shown
+	local mine = id
+	task.delay(14, function() if S.tip == mine then S.tip = nil; S.render(); S.placePointer() end end)
+end
 local render: () -> ()
 render = function()
-	local c = content()
 	local L = layout()
+	promoteTip(L)
+	local c = content()
 	if not c or covered() then
 		card.Visible = false
 		S.mode = if c then "covered" else "hidden"
+		setChipPulse(false)
 		return
 	end
 	chapter.Text = c.chapter
@@ -245,7 +334,7 @@ render = function()
 		dots.Visible = false
 	end
 	glow.Color = if c.kind == "tip" then C.gold elseif c.id == "complete" then C.gold else C.mint
-	local expanded = S.expanded or c.kind == "tip"
+	local expanded = if c.kind == "tip" then S.tipOpen == true else S.expanded
 	local rect
 	if expanded then
 		rect = L.coach
@@ -257,6 +346,7 @@ render = function()
 		if rect.w < 160 or (L.short and trackersShown()) then
 			card.Visible = false
 			S.mode = "yield"
+			setChipPulse(false)
 			return
 		end
 		S.mode = "chip"
@@ -272,7 +362,10 @@ render = function()
 	-- The chip names the tutorial and the step count only (the title says the rest).
 	if not expanded and c.kind == "card" then chapter.Text = "TUTORIAL" .. (if num(d.total) > 1 then "  " .. num(d.index) .. "/" .. num(d.total) else "") end
 	toggle.Text = if expanded then "–" else "+"
-	toggle.Visible = c.kind ~= "tip"
+	toggle.Visible = expanded and c.kind ~= "tip"
+	chipButton.Visible = not expanded
+	if expanded then S.unread = false end
+	setChipPulse(not expanded and S.unread == true)
 	title.Size = UDim2.new(1, if c.kind == "tip" then -28 else -70, 0, 20)
 	rule.Visible, body.Visible, buttons.Visible = expanded, expanded, expanded
 	nextLine.Visible = expanded and c.next ~= nil
@@ -387,19 +480,12 @@ S.placePointer = placePointer
 ------------------------------------------------------------------------------
 -- Snapshots: the card follows server progress; tips fire on first encounters.
 ------------------------------------------------------------------------------
+-- QC L2: tips follow `off` only (a veteran starts with tips off; Settings › Tips on turns them on).
 local function tipsAllowed(t: any): boolean
-	return t.off ~= true and t.vet ~= true
+	return t.off ~= true
 end
-local function showTip()
-	-- Tips wait while the welcome card is up (a first join at night, a full satchel…).
-	if S.tip or #S.tipQueue == 0 or S.card == "welcome" then return end
-	local id = table.remove(S.tipQueue, 1)
-	S.tip = id
-	S.tipsShown[id] = true
-	send("tutorial", "tip:" .. id) -- recorded once per account when it is shown
-	local mine = id
-	task.delay(14, function() if S.tip == mine then S.tip = nil; showTip(); render(); placePointer() end end)
-end
+-- Tips wait while the welcome card is up (a first join at night, a full
+-- satchel…) and while the card is covered: render() promotes them (promoteTip).
 local function queueTips(list: any)
 	local t = tbl(S.tut)
 	if not tipsAllowed(t) then return end
@@ -418,57 +504,73 @@ local function observe(snap: any)
 	if type(snap) ~= "table" or type(snap.tutorial) ~= "table" then return end
 	local t = snap.tutorial
 	local before = S.card
+	local hadSnap = S.snap ~= nil
 	S.prev, S.snap, S.tut = S.snap, snap, t
+	-- Snapshot fallback for a fight: the bestiary / kill count rose (before a new card opens).
+	local killed = S.prev ~= nil and num(snap.kills) > num(S.prev.kills)
+	if killed then S.fightAt = os.clock() end
 	local events = tbl(snap.events)
 	if num(events.serverTime) > 0 then S.serverTime, S.clockAt = num(events.serverTime), os.clock() end
 	S.card = if type(t.card) == "string" and TU.CardById[t.card] then t.card else nil
 	if S.card ~= before then
-		-- A new card opens (unless already read: rejoin resumes it collapsed) and
-		-- lights its world target once this session.
-		S.expanded = S.card ~= nil and t.read ~= true
-		S.skipArmed = false
-		if S.card and S.expanded and not S.waypointed[S.card] then
-			S.waypointed[S.card] = true
-			waypoint()
+		-- Replay (Settings): the welcome card again; this session's tips and
+		-- waypoints start over too (QC L7).
+		if hadSnap and S.card == "welcome" then
+			S.tipsShown, S.tipQueue, S.waypointed, S.tip = {}, {}, {}, nil
 		end
+		-- A new card opens (unless already read: rejoin resumes it collapsed) and
+		-- lights its world target once this session. Phones and fights open it as
+		-- the pulsing chip instead (QC M4).
+		local fresh = S.card ~= nil and t.read ~= true
+		S.expanded = fresh and not layout().short and not fighting()
+		S.unread = fresh and not S.expanded
+		S.skipArmed = false
+		S.wantWaypoint = if fresh and S.card and not S.waypointed[S.card] then {card = S.card, tries = 0, at = -math.huge} else nil
 	end
+	autoWaypoint()
 	-- Signals since the last snapshot (fight, shop) plus night from the isle clock.
 	local signals = S.signals
 	S.signals = {}
 	signals.night = nightNow()
-	-- Snapshot fallback for a fight: the bestiary / kill count rose.
-	if S.prev and num(snap.kills) > num(S.prev.kills) then signals.fight = true end
+	if killed then signals.fight = true end
 	queueTips(TU.detectTips(S.prev, snap, signals))
-	showTip()
 	render()
 	placePointer()
 end
 S.observe = observe
+-- Every snapshot reaches this script once, through the atlas's IsleSnapshotLocal
+-- (it relays IsleUpdate and every reply; QC L5: no second IsleUpdate listener).
 if snapshots.Event then snapshots.Event:Connect(observe) end
-task.spawn(function()
-	local update = ReplicatedStorage:WaitForChild("IsleUpdate", 30)
-	if update then (update :: any).OnClientEvent:Connect(observe) end
-end)
+pcall(function() actions:Fire("snapshot") end) -- a late start asks the atlas for the latest one
 -- First fight: a hit this player landed on a creature (combat.server.lua "hit").
 task.spawn(function()
 	local fx = ReplicatedStorage:WaitForChild("IsleCombatFx", 30)
 	if not fx then return end
 	(fx :: any).OnClientEvent:Connect(function(kind: any, payload: any)
+		if kind == "hurt" then S.fightAt = os.clock(); return end -- hit by something: in a fight
 		if kind ~= "hit" or type(payload) ~= "table" or payload.attacker ~= player.UserId then return end
 		local model = payload.model
 		local ok, id = pcall(function() return model and model:GetAttribute("MonsterId") end)
 		if ok and id ~= nil then
+			S.fightAt = os.clock()
 			S.signals.fight = true
 			queueTips({"fight"})
-			showTip()
 			render()
 		end
 	end)
 end)
--- Other scripts may report encounters (e.g. IsleTutorialLocal:Fire("shop")).
+-- Other scripts may report encounters (npc.client fires "shop" when it draws a
+-- priced offer: rqBuy / warpBuy / skillBuy / petShop), and the atlas relays the
+-- compact reply of a tutorial verb as ("state", tutorial) (QC L4).
 if encounters.Event then
-	encounters.Event:Connect(function(kind: any)
-		if kind == "shop" then queueTips({"shop"}); showTip(); render(); placePointer() end
+	encounters.Event:Connect(function(kind: any, payload: any)
+		if kind == "shop" then queueTips({"shop"}); render(); placePointer()
+		elseif kind == "state" and type(payload) == "table" and type(S.snap) == "table" then
+			local snap = table.clone(S.snap)
+			snap.tutorial = payload
+			snap.replay = true
+			observe(snap)
+		end
 	end)
 end
 -- First shop: a townsfolk dialogue listing priced offers.
@@ -477,7 +579,8 @@ local function shopOpen(): boolean
 	local box = folk and folk:FindFirstChild("Dialogue")
 	if not shown(box) then return false end
 	for _, o in ipairs(box:GetDescendants()) do
-		if o:IsA("TextButton") and o.Visible ~= false and string.find(string.lower(o.Text), "coins", 1, true) then return true end
+		-- Offer labels end in a price: "Buy Tonic (12c)", "Scroll: Sunwheel Downs (150c)".
+		if o:IsA("TextButton") and o.Visible ~= false and (string.find(o.Text, "%(%d[%d,]*c%)") or string.find(string.lower(o.Text), "coins", 1, true)) then return true end
 	end
 	return false
 end
@@ -488,7 +591,6 @@ end
 primary.Activated:Connect(function()
 	if S.tip then
 		S.tip = nil
-		showTip()
 		render(); placePointer()
 		return
 	end
@@ -536,14 +638,11 @@ toggle.Activated:Connect(function()
 	S.expanded = not S.expanded
 	render(); placePointer()
 end)
--- The chip itself (collapsed header) opens the card on a click / tap.
-card.InputBegan:Connect(function(input: any)
-	if S.expanded or S.tip then return end
-	local kind = input.UserInputType
-	if kind == Enum.UserInputType.MouseButton1 or kind == Enum.UserInputType.Touch then
-		S.expanded = true
-		render(); placePointer()
-	end
+-- The chip (collapsed card or tip) opens on one click / tap.
+chipButton.Activated:Connect(function()
+	if S.tip then S.tipOpen = true else S.expanded = true end
+	S.unread = false
+	render(); placePointer()
 end)
 
 ------------------------------------------------------------------------------
@@ -557,7 +656,8 @@ RunService.Heartbeat:Connect(function(dt: number)
 	if acc < 0.1 then return end
 	acc = 0
 	if S.card or S.tip then
-		-- Re-render only when a covering window or the phone trackers change.
+		-- Re-render only when a covering window or the phone trackers change (a
+		-- tip held while covered is promoted on that render).
 		local cov, trk = covered(), trackersShown()
 		if cov ~= S.wasCovered or trk ~= S.wasTrackers then
 			S.wasCovered, S.wasTrackers = cov, trk
@@ -571,11 +671,13 @@ RunService.Heartbeat:Connect(function(dt: number)
 	end
 	if slow >= 1 then
 		slow = 0
+		autoWaypoint() -- waits for the character / retries an unresolved target
+		if #S.tipQueue > 0 and not S.tip then render(); placePointer() end -- a held tip once the card is visible
 		if S.tut and tipsAllowed(S.tut) then
 			local list = {}
 			if nightNow() then table.insert(list, "night") end
 			if shopOpen() then table.insert(list, "shop") end
-			if #list > 0 then queueTips(list); showTip(); render(); placePointer() end
+			if #list > 0 then queueTips(list); render(); placePointer() end
 		end
 	end
 end)

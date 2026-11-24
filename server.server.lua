@@ -7724,6 +7724,7 @@ do
 		g.complete=g.complete==true or nil
 		g.skipped=g.skipped==true or nil
 		g.owed=math.min(whole(g.owed),G.MAX_OWED)
+		g.paid=if g.paid~=nil then math.min(whole(g.paid),G.MAX_OWED) else nil -- §43 QC L1: Path coins paid to date (guideClaim)
 		-- Polish QC (lead decision): schema 2 moved the journal-mode step to the front
 		-- of the Path. Progress is keyed by step id (done / flags), so no index is
 		-- rewritten: an unfinished v1 Path keeps every step it walked and now shows
@@ -7926,6 +7927,7 @@ do
 			local owed=whole(g.owed)
 			if owed<=0 then return "No Wayfarer's Path rewards to claim yet." end
 			g.owed=0
+			g.paid=whole(g.paid)+owed -- §43 QC L1: paid to date (the tutorial finale's summary)
 			p.coins+=owed
 			return G.NAME.." rewards claimed • +"..owed.." coins."
 		elseif verb=="resonanceVisit" then
@@ -10210,11 +10212,14 @@ end
 --   intro / finale cards (ack) and only the current one; dismiss:<card> marks
 --   the current card read (collapsed); skip; replay (clears seen / tips / skip);
 --   tip:<id> records a first-encounter tip once; tips:on / tips:off. It never
---   grants anything, never sets p.started, and skips the 0.24 s action
---   cooldown (the 0.08 s read throttle bounds it) so dismissing a card never
---   delays a swing.
--- * Veterans whose first load skipped the Path (p.guide.skipped) never see
---   the tutorial or its tips (vet) unless they choose Replay in Settings.
+--   grants anything, never sets p.started, dispatches right after the lease
+--   check (no living character needed; before the 0.24 s action cooldown, the
+--   0.08 s read throttle bounds it) so dismissing a card never delays a swing,
+--   and replies compactly: {tutorial = state, message} (QC L3 / L4). skip
+--   also turns tips off.
+-- * Veterans: a first load whose Path is complete (skipped or walked), total
+--   level >= 60 or >= 2 contracts never sees the tutorial or its tips (vet)
+--   unless they choose Replay in Settings (QC M3).
 ------------------------------------------------------------------------------
 do
 	local TU=Data.Tutorial
@@ -10233,7 +10238,17 @@ do
 		local t=TU.sanitize(p.tutorial)
 		p.tutorial=t
 		-- A veteran's first load completes the Path unpaid (§31): no tutorial, no tips.
-		if first and type(p.guide)=="table" and p.guide.skipped==true then t.vet=true; t.off=true end
+		-- §43 QC M3: so does any journal that already finished the Path (live or
+		-- skipped), has total level >= G.VETERAN_TOTAL_LEVEL or >= G.VETERAN_CONTRACTS
+		-- contracts; one already past the starter quests is simply done.
+		if first then
+			local g=type(p.guide)=="table" and p.guide or {}
+			local total=0
+			for _,skill in ipairs(Data.SkillOrder) do total+=level(type(p.xp)=="table" and p.xp[skill] or 0) end
+			local GD=Data.Features.Guide
+			if TU.current(p,{seen={welcome=true},tips={}})=="complete" then t.done=true
+			elseif g.skipped==true or g.complete==true or total>=GD.VETERAN_TOTAL_LEVEL or whole(p.questCompleted)>=GD.VETERAN_CONTRACTS then t.vet=true; t.off=true end
+		end
 		t.card=TU.current(p,t)
 	end
 	-- The §33 helper guide for a starter quest card ("contract" or a quest id).
@@ -10272,8 +10287,10 @@ do
 				out.next={specs=TU.specsFor(id)}
 			end
 			if id=="complete" then
-				out.owed=whole(type(p.guide)=="table" and p.guide.owed)
-				out.rewards=TU.rewardSummary()
+				local g=type(p.guide)=="table" and p.guide or {}
+				out.owed=whole(g.owed)
+				-- §43 QC L1: Path coins earned = paid to date + still owed (nil before tracking: "up to 770").
+				out.rewards=TU.rewardSummary(if g.paid~=nil then whole(g.paid)+whole(g.owed) else nil)
 			end
 		end
 		return out
@@ -10285,8 +10302,9 @@ do
 		if kind=="skip" then
 			if t.skipped then return "" end
 			t.skipped=true
+			t.off=true -- §43 QC L7: skipping the tutorial turns its tips off too
 			t.card=nil
-			return "Tutorial skipped. Replay it any time from Menu › Settings."
+			return "Tutorial skipped (tips off too). Replay it any time from Menu › Settings."
 		elseif kind=="replay" then
 			t.seen,t.tips,t.skipped,t.vet,t.done,t.off={},{},nil,nil,nil,nil
 			t.card=TU.current(p,t)
@@ -10318,6 +10336,8 @@ end
 local function perform(player,verb,item,prompt)
 	local p=profiles[player]
 	if not p or (not preview[player] and os.time()>=(leaseEnd[player] or 0)) then return "Waiting for journal sync." end
+	-- §43 QC L3: coach card taps need no living character (a tap while respawning still lands).
+	if Tutorial.verbs[verb] and not prompt then return Tutorial.action(player,p,verb,item) end
 	local character=player.Character
 	local humanoid=character and character:FindFirstChildOfClass("Humanoid")
 	if not humanoid or humanoid.Health<=0 then return "Return to your island first." end
@@ -10326,13 +10346,12 @@ local function perform(player,verb,item,prompt)
 	-- read throttle bounds them, not the 0.24 s action cooldown (a drag queued
 	-- behind a sell must not be refused, nor push the next action back).
 	-- §33 QC M3: priceCheck is a read with its own budget, so it skips the cooldown too.
-	if prompt or (verb~="satchelMove" and verb~="satchelSort" and verb~="priceCheck" and verb~="tutorial") then -- §43: tutorial taps skip it too
+	if prompt or (verb~="satchelMove" and verb~="satchelSort" and verb~="priceCheck") then -- (§43 tutorial taps dispatch above, before it)
 		if os.clock()<(cooldown[player] or 0) then return "One moment…" end
 		cooldown[player]=os.clock()+(if prompt then 0.65 else 0.24)
 	end
 	local region=prompt and prompt:GetAttribute("IsleRegion")
 	if region and not regionAllowed(p,region) then return regionDenied(region) end
-	if Tutorial.verbs[verb] and not prompt then return Tutorial.action(player,p,verb,item) end -- §43 coach card taps (dismiss / skip / replay / tips)
 	if Features.verbs[verb] then
 		return Features.action(player,p,verb,item,prompt) -- §31: Wayfarer's Path talk, Resonance
 	elseif Council.verbs[verb] then
@@ -10852,6 +10871,13 @@ action.OnServerInvoke=function(player,verb,item)
 		return {held=true,ok=done==true,message=message,heldItem=player:GetAttribute("HeldItem") or ""}
 	end
 	if item~=nil and #item>64 then return snapshot(player,"That request is too long.") end
+	-- §43 QC L4: coach card taps get a compact reply (no full snapshot): the
+	-- tutorial state and the message (empty = no toast).
+	if Tutorial.verbs[verb] then
+		local message=perform(player,verb,item,nil)
+		local p=profiles[player]
+		return {tutorial=p and Tutorial.state(player,p) or nil,message=message}
+	end
 	local message=perform(player,verb,item,nil)
 	if verb=="priceCheck" then
 		-- §34: price-check replies are silent (tooltips and the Ledger read them;

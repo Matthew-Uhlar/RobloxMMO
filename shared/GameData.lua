@@ -2126,7 +2126,7 @@ T.NPCs = {
 				{label="Where is everything?",to="places"},
 				{label="How do I get around?",to="travel"},
 				farewell}},
-			tutorial={tutorial=true,text="Six steps and you'll be a proper islander. Here's where you stand:",options={
+			tutorial={tutorial=true,text="A few steps and you'll be a proper islander. Here's where you stand:",options={
 				{label="Show me the way",waypoint="tutorial"},
 				{label="Check my progress again",to="tutorial"},
 				{label="Claim my guild contract",verb="quest",when="contractReady"},
@@ -11419,20 +11419,20 @@ G.Steps = {
 	-- finding him (visit / talk flags). Steps are saved by id, never by index.
 	{id="mode",title="Choose your journal mode",detail="Talk to Pell in Compass Quay: keep a Standard journal in one tap, or seal an Ironman journal before you gather, craft or fight.",coins=50,
 		check=function(p) return p.accountMode == "standard" or p.accountMode == "ironman" or p.ironman == true end},
-	{id="chop",title="Chop a log",detail="Hold the prompt on a tree on your home isle or Mosswake Grove.",coins=25,
+	{id="chop",title="Chop a log",detail="Left-click a tree to chop it with your axe (tap on mobile): your home isle or Mosswake Grove.",coins=25,
 		check=function(p) return anyCollected(p, "Woodcutting") end},
 	{id="craft",title="Craft at a workbench",detail="Craft anything at a Workbench, Forge, Hearth or Cauldron (Atlas › Workshop).",coins=40,
 		check=function(p) return anyCount(tab(p.counters).crafts) or anyCount(tab(p.crafting).made) end},
 	{id="visit",title="Visit Compass Quay",detail="Take the home portal to Compass Quay, the shared hub.",coins=25,flag="visit"},
 	{id="talk",title="Talk to Pell",detail="Find Pell Ashgrove, the Wayfinder, in Compass Quay and ask about the Wayfarer's Path.",coins=25,flag="talk"},
-	{id="ore",title="Gather ore",detail="Mine an ore node in Brassfall Cay.",coins=40,
+	{id="ore",title="Gather ore",detail="Left-click an ore rock to mine it with your pickaxe (tap on mobile), e.g. in Brassfall Cay.",coins=40,
 		check=function(p) return anyCollected(p, "Mining") end},
 	{id="sell",title="Sell an item",detail="Sell something from your satchel (right-click an item › Sell).",coins=30,flag="sell"},
 	{id="equip",title="Equip a weapon",detail="Craft or buy a weapon and wield it (Satchel or Hero › Gear).",coins=50,
 		check=function(p) return type(tab(p.equipment).weapon) == "string" end},
 	{id="kill",title="Defeat a creature",detail="Brambleback Boars roam Sunwheel Downs. Click a creature to strike.",coins=60,
 		check=function(p) return whole(p.kills) > 0 or anyCount(p.bestiary) end},
-	{id="quest",title="Accept a quest",detail="Accept a quest from a regional questgiver (gold ! above their head).",coins=75,
+	{id="quest",title="Accept a quest",detail="Accept a quest from a regional questgiver (gold ! above their head) or complete your first guild contract.",coins=75,
 		check=function(p) return next(tab(tab(p.regionQuests).accepted)) ~= nil or next(tab(p.questsDone)) ~= nil or whole(p.questCompleted) > 0 end},
 	{id="warp",title="Learn a warp",detail="Buy a warp scroll from Ilsabet the Warp Keeper and read it.",coins=100,
 		check=function(_, ctx) return next(tab(tab(ctx).warps)) ~= nil end},
@@ -11441,7 +11441,7 @@ G.Steps = {
 G.Waypoints = {
 	chop={"gather:Timber","region:Meadow"}, craft={"station:Workbench","station:Forge"}, visit={"region:Hub"}, talk={"npc:Guide"},
 	ore={"gather:Ore","region:Quarry"}, sell={"npc:Merchant"}, kill={"monster:BramblebackBoar","region:Meadow"},
-	warp={"npc:WarpKeeper"}, mode={"npc:Guide","region:Hub"},
+	quest={"npc:WarpKeeper","npc:Guide","region:Hub"}, warp={"npc:WarpKeeper"}, mode={"npc:Guide","region:Hub"},
 }
 -- Account modes (verb guideMode): Standard, or Ironman with the confirm token.
 G.MODE_STANDARD, G.MODE_IRONMAN = "standard", "ironman:confirm"
@@ -11728,7 +11728,7 @@ if pell and pell.nodes then
 	-- confirmation (node ironman).
 	table.insert(pell.nodes.hello.options, 1, {label="Keep a Standard journal",verb="guideMode",item=G.MODE_STANDARD,when="modeOpen"})
 	table.insert(pell.nodes.hello.options, 2, {label="Standard or Ironman? Explain journal modes",to="mode",when="modeOpen"})
-	pell.nodes.path = {path=true,text="The Wayfarer's Path takes you from choosing your journal to your first warp. Here's your next step:",options={
+	pell.nodes.path = {path=true,text="The Wayfarer's Path is " .. #G.Steps .. " steps, from choosing your journal to your first warp. Here's your next step:",options={
 		{label="Show me the way",waypoint="path"},
 		{label="Choose my journal mode",to="mode",when="modeOpen"},
 		{label="Claim my Wayfarer's Path rewards",verb="guideClaim",when="guideRewardReady"},
@@ -15882,7 +15882,7 @@ TU.Cards = {
 		body="These coach cards walk you through your first steps: the Wayfarer's Path, then your first quests. Your sidebar Objective always shows what to do next.",
 		pointer={"objective"}},
 	{id="path:mode", step="mode", title="Choose your journal mode",
-		body="Walk to Pell Ashgrove (the gold ! over his head) and talk to him. Keep a Standard journal in one tap, or read about Ironman first: it can only be sealed before you gather.",
+		body="Travel to Compass Quay and talk to Pell Ashgrove (the gold ! over his head). Keep a Standard journal in one tap, or read about Ironman first: seal it before you gather.",
 		pointer={"objective"}},
 	{id="path:chop", step="chop", title="Chop a log",
 		body="Left-click a tree to chop it with your axe (tap it on mobile). Each swing chips its health bar; when it breaks, the logs land in your satchel.",
@@ -15909,7 +15909,7 @@ TU.Cards = {
 		body="Brambleback Boars roam Sunwheel Downs. Left-click a creature to attack it with your weapon (tap on mobile) and keep an eye on your Health orb.",
 		pointer={"hotbar:1"}},
 	{id="path:quest", step="quest", title="Accept a quest",
-		body="Open Menu › Quests and the Helper tab. Pin your guild contract: its next step shows in your sidebar. Questgivers wear a gold ! over their heads.",
+		body="Accept a regional quest from a questgiver with a gold ! over their head, or complete your first guild contract. Pin it in Menu › Quests › Helper to see its next step.",
 		pointer={"SectionHelper", "MenuQuests", "menu"}},
 	{id="path:warp", step="warp", title="Learn a warp",
 		body="Buy a warp scroll from Ilsabet the Warp Keeper and read it. Then open the Sky Chart (M) to warp straight to that isle.",
@@ -16024,8 +16024,11 @@ function TU.parse(item)
 end
 -- Rewards summary for the finale card (static data; coins owed come from the
 -- snapshot): one short line per source so it fits the card.
-function TU.rewardSummary()
-	local lines = {Path.NAME .. ": " .. Path.MAX_OWED .. " coins"}
+-- pathCoins: the Path coins this journal earned (paid to date + still owed, from
+-- p.guide.paid / owed); nil (no paid-to-date record) reads "up to <MAX_OWED>".
+function TU.rewardSummary(pathCoins)
+	local earned = if type(pathCoins) == "number" then whole(pathCoins) .. " coins" else "up to " .. Path.MAX_OWED .. " coins"
+	local lines = {Path.NAME .. ": " .. earned}
 	for _, c in ipairs(TU.Cards) do
 		if c.quest and c.quest ~= "contract" then
 			local q = Data.QuestById[c.quest]
