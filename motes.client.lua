@@ -96,7 +96,7 @@ local function build()
 	part.Transparency = 0.15
 	part.Anchored, part.CanCollide, part.CanTouch, part.CanQuery, part.CastShadow = true, false, false, false, false
 	local prompt = Instance.new("ProximityPrompt")
-	prompt.ActionText, prompt.ObjectText = "Gather", EX.MOTE.name
+	prompt.ActionText, prompt.ObjectText = "Claim", EX.MOTE.name -- an exploration find (a counter), not a raw material: §42 keeps it a prompt
 	prompt.HoldDuration, prompt.MaxActivationDistance, prompt.RequiresLineOfSight = 0.4, 8, false
 	prompt:SetAttribute("IsleAction", "moteCollect")
 	prompt.Parent = part

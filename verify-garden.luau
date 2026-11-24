@@ -495,7 +495,7 @@ local worldEnv = {
 	game = {GetService = function(_, name)
 		if name == "Players" then return worldPlayers end
 		if name == "Lighting" then return roblox.Instance.new("Lighting") end
-		if name == "CollectionService" then return {AddTag = function() end} end
+		if name == "CollectionService" then return {AddTag = function() end, RemoveTag = function() end} end
 		if name == "ReplicatedStorage" then return {WaitForChild = function(_, n) return if n == "AetherData" then dataModule else nil end} end
 		if name == "ServerStorage" then return {FindFirstChild = function() return nil end} end
 		return {}
@@ -641,10 +641,20 @@ eq(bed(1):FindFirstChild("Plot soil").Material, roblox.Enum.Material.Mud, "compo
 ok(crop(1).Size.Y > c1Height, "fallback primitive grows with the stage")
 owner:SetAttribute("GardenPlot1", "Herb:4:r")
 ok(crop(1):GetAttribute("ShapeScale") == 1 and crop(1):GetAttribute("GardenStatus") == "ripe", "ripe crop at full size")
-ok(bed(1):FindFirstChild("Ripe glint") ~= nil and plotPrompts[1].ActionText == "Harvest", "ripe glint and Harvest")
+ok(bed(1):FindFirstChild("Ripe glint") ~= nil, "ripe glint")
+-- §42 (owner decision): a ripe plot is struck with the hoe, never prompted.
+do
+	local soil = bed(1):FindFirstChild("Plot soil")
+	ok(plotPrompts[1].Enabled == false, "§42: a ripe plot's prompt is off (no hold to harvest)")
+	ok(soil:GetAttribute("GatherNode") == "Herb" and soil:GetAttribute("StrikeKind") == "garden" and soil:GetAttribute("GardenHarvest") == 1
+		and soil:GetAttribute("OwnerUserId") == owner.UserId, "§42: the ripe plot's soil is the owner's garden strike node")
+	ok(has(soil:GetAttribute("NodeName"), "Plot 1") and has(soil:GetAttribute("NodeName"), "Meadow Herb"), "§42: the node names its plot and crop")
+end
 owner:SetAttribute("GardenPlot1", "Herb:2:s")
 ok(crop(1):GetAttribute("GardenStatus") == "sick" and crop(1):GetAttribute("Tint") ~= Color3.fromHex(herb.tint), "blight browns the crop")
 ok(bed(1):FindFirstChild("Ripe glint") == nil and plotPrompts[1].ActionText == "Treat", "blighted plot offers Treat")
+ok(plotPrompts[1].Enabled and bed(1):FindFirstChild("Plot soil"):GetAttribute("GatherNode") == nil and bed(1):FindFirstChild("Plot soil"):GetAttribute("StrikeKind") == nil,
+	"§42: an unripe plot is a prompt again, not a node")
 owner:SetAttribute("GardenPlot1", "Herb:2:x")
 ok(crop(1):GetAttribute("GardenStatus") == "dead" and plotPrompts[1].ActionText == "Clear", "withered crop offers Clear")
 owner:SetAttribute("GardenPlot1", "Herb:2:p2")

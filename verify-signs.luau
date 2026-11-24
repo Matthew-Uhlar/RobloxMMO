@@ -777,7 +777,9 @@ do
 		"client: UIScale is the quantised band scale (" .. s .. ")")
 	local rects = {}
 	for _, b in on do
-		local x, y, depth = View.project(camera.CFrame, FOV, camera.ViewportSize, centre(b))
+		-- Rest height (the client declutters at rest; the bob offset moves with the clock).
+		local lift = tonumber(b.gui:GetAttribute("SignLift")) or b.gui.StudsOffsetWorldSpace.Y
+		local x, y, depth = View.project(camera.CFrame, FOV, camera.ViewportSize, b.anchor.CFrame.Position + Vector3.new(0, lift, 0))
 		local sc = scaleOf(b)
 		local box = b.gui:GetAttribute(if View.compact(sc) then "SignCompact" else "SignFull")
 		if depth > 0 then table.insert(rects, View.rect(x, y, box.X, box.Y, if View.compact(sc) then b.gui:GetAttribute("SignCompactY") else 0, sc)) end

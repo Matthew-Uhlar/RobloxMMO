@@ -1045,6 +1045,24 @@ local function promptFor(room, key)
 	return part and part:FindFirstChildOfClass("ProximityPrompt")
 end
 local function press(p, room, key)
+	-- §42 (owner decision): resource nodes are struck through the real Strike path.
+	local part = room.parts[key]
+	if part and part:GetAttribute("StrikeKind") == "raid" then
+		ok(part:FindFirstChildOfClass("ProximityPrompt") == nil and part:GetAttribute("GatherNode") ~= nil, "§42: raid node " .. key .. " is a strike node, never a prompt")
+		p.last = nil
+		local at = part.CFrame.Position
+		p.root.Position = Vector3.new(at.X, room.center.Y + 3, at.Z) + Vector3.new(0, 0, 2)
+		for _ = 1, 30 do
+			local r = remote.OnServerInvoke(p, "strike", part)
+			if r == nil then advance(0.25)
+			elseif r.broken then break
+			elseif r.cast then advance(2.05)
+			elseif r.ok == false and r.reason == "cadence" then advance(math.max(0.02, tonumber(r.wait) or 0.1))
+			elseif r.ok == false then break
+			else advance(0.7) end
+		end
+		return p.last
+	end
 	local q = promptFor(room, key)
 	assert(q, "no prompt " .. key)
 	advance(1)
@@ -1422,7 +1440,13 @@ do
 		elseif room.kind == "boss" then slay({X[1], X[2], leech}, {0.5, 0.49, 0.01})
 		elseif room.kind == "combat" then slay(workers)
 		elseif room.kind == "puzzle" then solve(workers, room)
-		elseif room.kind == "resource" then supply(workers, room) end
+		elseif room.kind == "resource" then
+			-- §42: struck nodes take a few swings each, so the supply room runs past the
+			-- idle limit; the leech shuffles about (movement, no points) to stay in.
+			leech.root.Position += Vector3.new(RD.MOVE_STUDS + 1, 0, 0)
+			tick(0.25)
+			supply(workers, room)
+		end
 		if index < 5 then settle(X); tick(RD.ADVANCE_SECONDS + 0.5) end
 	end
 	ok(runX.state == "won" and runX.result ~= nil, "the three clear the vault")

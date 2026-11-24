@@ -145,7 +145,9 @@ local function use(p,n)
 	local item=n:GetAttribute("IsleItem")
 	local resource=n:GetAttribute("IsleAction")=="gather" and type(item)=="string" and Progression.resource(item)
 	local last=resource and harvestedAt[n] and harvestedAt[n][p]
-	if last and clock-last<resource.respawn then advance(resource.respawn-(clock-last)) end
+	-- §42 QC M5: a quick break waits up to base + the old hold (1 s) for the regrowth.
+	local wait=resource and resource.respawn+1
+	if last and wait and clock-last<wait then advance(wait-(clock-last)) end
 	local state=rawUse(p,n)
 	if resource and state and type(state.message)=="string" and state.message:sub(1,1)=="+" then
 		harvestedAt[n]=harvestedAt[n] or setmetatable({},{__mode="k"})

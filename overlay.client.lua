@@ -363,7 +363,10 @@ function S.resolve(part, position)
 			local item = host:GetAttribute("GatherNode")
 			local def = HD.resourceDef(Data, item)
 			local ST = tbl(Data.Strike)
-			return {kind = "node", node = host, item = item, name = if def and ST.nodeName then ST.nodeName(def) else tostring(item), prompts = {}, position = position}
+			-- §42: special strike nodes (crew stores, garden plots, raid nodes) name themselves (NodeName).
+			local own = host:GetAttribute("NodeName")
+			local name = if type(own) == "string" and own ~= "" then own elseif def and ST.nodeName then ST.nodeName(def) else tostring(item)
+			return {kind = "node", node = host, item = item, name = name, prompts = {}, position = position}
 		end
 		if #prompts == 0 then promptsOf(node, prompts) end
 		if #prompts > 0 then
@@ -610,6 +613,36 @@ function S.walkTo(position)
 	attackEvents:Fire("cancel")
 	return S.walkPath(position)
 end
+-- §42 QC M2: combat.client.lua walks up to an out-of-reach gathering node
+-- through here (the same route, S.WALK_MAX cap and ground checks as a prompt
+-- walk-up; a toast when refused), then swings on arrival (IsleAttackLocal).
+-- `reach` is measured from the node's edge, as the server does.
+function S.walkToNode(node, reach)
+	if typeof(node) ~= "Instance" or not node:IsA("BasePart") or not node.Parent then return false end
+	local _, root = character()
+	if not root then return false end
+	reach = num(reach, 10)
+	local half = math.min(6, math.max(node.Size.X, node.Size.Z) / 2)
+	local function gap() return (root.Position - node.Position).Magnitude - half end
+	local at = node.Position
+	if (root.Position - at).Magnitude > S.WALK_MAX then toast("Too far: walk closer first.") return false end
+	local flat = Vector3.new(root.Position.X - at.X, 0, root.Position.Z - at.Z)
+	local dir = if flat.Magnitude > 0.1 then flat.Unit else Vector3.new(1, 0, 0)
+	local goal = at + dir * (half + math.max(1.5, reach - 2.5))
+	return S.walkPath(goal, function() return node.Parent ~= nil and gap() <= reach - 0.5 end, function()
+		if node.Parent then attackEvents:Fire(node) end
+	end)
+end
+do
+	local walkApi = Instance.new("BindableFunction")
+	walkApi.Name = "IsleWalkLocal"
+	walkApi.OnInvoke = function(cmd, node, reach)
+		if cmd == "cancel" then S.cancelWalk() return true end
+		if cmd == "node" then return S.walkToNode(node, reach) end
+		return false
+	end
+	walkApi.Parent = ReplicatedStorage
+end
 function S.run(option, target)
 	if not option or not target then return end
 	local kind = option["local"]
@@ -709,9 +742,11 @@ Input.InputBegan:Connect(function(input, processed)
 		if target and (target.kind == "prompt" or target.kind == "npc") then
 			local options = S.optionsFor(target)
 			if options[1] and options[1].prompt then S.run(options[1], target) end
-		elseif target and (target.kind == "monster" or target.kind == "node") then
-			S.cancelWalk() -- combat's click attacks / strikes (§42): no walk-up continues behind it
+		elseif target and target.kind == "monster" then
+			S.cancelWalk() -- combat's click attacks: no walk-up continues behind it
 		end
+		-- §42 QC M2: a node click is combat's alone: it cancels the walk-up when it
+		-- swings, or starts a new one through IsleWalkLocal when out of reach.
 	elseif kind == Enum.UserInputType.MouseButton2 then
 		S.rightDown = {at = Vector2.new(input.Position.X, input.Position.Y), time = os.clock(), moved = 0}
 	end

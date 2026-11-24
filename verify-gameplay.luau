@@ -108,8 +108,10 @@ local source=fs.readFile("server.server.lua"):gsub("^\239\187\191","")
 luau.load(source,{environment=env,injectGlobals=true})()
 -- §42: mock gather prompts harvest through real `strike` verbs (tools/strike-shim.luau).
 -- (Suites that load this file's harness prefix have no require; they never gather.)
+
 do
 	local found,shim=pcall(require,"./tools/strike-shim")
+	if found then services.strikeShim=shim end
 	if found then shim.install({signal=services.ProximityPromptService.PromptTriggered,
 		invoke=function(p,verb,item) return objects.RemoteFunction.OnServerInvoke(p,verb,item) end,advance=advance}) end
 end
@@ -151,11 +153,14 @@ local function use(p,n)
 	local item=n:GetAttribute("IsleItem")
 	local resource=n:GetAttribute("IsleAction")=="gather" and type(item)=="string" and Progression.resource(item)
 	local last=resource and harvestedAt[n] and harvestedAt[n][p]
-	if last and clock-last<resource.respawn then advance(resource.respawn-(clock-last)) end
+	-- §42 QC M5: the regrowth depends on how long the break took; wait out the
+	-- one the server named (the shim's last reply), as a player would.
+	if last and clock-last.at<last.wait then advance(last.wait-(clock-last.at)) end
 	local state=rawUse(p,n)
 	if resource and state and type(state.message)=="string" and state.message:sub(1,1)=="+" then
 		harvestedAt[n]=harvestedAt[n] or setmetatable({},{__mode="k"})
-		harvestedAt[n][p]=clock
+		local reply=services.strikeShim and services.strikeShim.lastReply
+		harvestedAt[n][p]={at=clock,wait=(reply and reply.broken and tonumber(reply.regrow)) or resource.respawn}
 	end
 	return state
 end
@@ -3521,7 +3526,10 @@ end)()
 	local again=grab(miner,seam)
 	ok(has(again.message,"regrowing"),"quick regrowth never makes a node ready at once")
 	defaultRoll=saved
-	advance(0.9)
+	-- §42 QC M5: the strike path hands back the old hold minus the break's time, so wait the remaining regrowth it names.
+	local left=services.strikeShim.lastReply.regrow
+	ok(type(left)=="number" and left<3,"the shortened timer is still running ("..tostring(left).." s)")
+	advance(math.max(0,left-1+0.01))
 	ok(has(grab(miner,seam).message,"Copperstone Ore"),"node ready after the shortened timer (2.9 s < 3 s)")
 	local slow=grab(miner,seam)
 	ok(has(slow.message,"regrowing"),"the node regrows between harvests")

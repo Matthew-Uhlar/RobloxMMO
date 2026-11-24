@@ -1851,9 +1851,10 @@ end)
 -- window reels. The local cadence mirrors the server's (Data.Strike.SWING).
 ------------------------------------------------------------------------------
 do
-	local GN = {next = 0, held = nil, target = nil, fish = nil, pending = nil, sent = 0}
+	local GN = {next = 0, held = nil, target = nil, fish = nil, sent = 0, buffered = nil, nodes = {}, nearAt = -math.huge, near = nil}
 	S.gather = GN
 	local ST = Data and Data.Strike
+	GN.BUFFER = 0.25 -- QC L16: a tap this close to the next swing is kept and swung on time
 	local function bindable(name)
 		local e = ReplicatedStorage:FindFirstChild(name)
 		if not e then e = make("BindableEvent", ReplicatedStorage, {Name = name}) end
@@ -1861,6 +1862,19 @@ do
 	end
 	GN.depleted = bindable("IsleNodeDepleted") -- (node, regrowSeconds): gather.client.lua depletes it locally
 	GN.skillEvent = bindable("IsleGatherSkill") -- (skill): the hotbar's context tool
+	-- QC L14: the tagged node list is cached (kept by the tag signals), not
+	-- fetched every frame.
+	do
+		local function add(node) if not table.find(GN.nodes, node) then table.insert(GN.nodes, node) end end
+		for _, node in ipairs(CollectionService:GetTagged("AetherNode")) do add(node) end
+		pcall(function()
+			CollectionService:GetInstanceAddedSignal("AetherNode"):Connect(add)
+			CollectionService:GetInstanceRemovedSignal("AetherNode"):Connect(function(node)
+				local i = table.find(GN.nodes, node)
+				if i then table.remove(GN.nodes, i) end
+			end)
+		end)
+	end
 	-- The node host (a BasePart carrying GatherNode) under a hit part, walking up
 	-- to its visual Model (≤ 6 levels).
 	function GN.hostOf(part)
@@ -1920,7 +1934,7 @@ do
 			if host then return if GN.usable(host) then host else nil end
 		end
 		local best, bestT = nil, hit and (hit.Position - ray.Origin).Magnitude + 2 or math.huge
-		for _, node in ipairs(CollectionService:GetTagged("AetherNode")) do
+		for _, node in ipairs(GN.nodes) do
 			if node:IsA("BasePart") and GN.usable(node) then
 				local rel = node.Position - ray.Origin
 				local t = rel:Dot(ray.Direction)
@@ -1932,15 +1946,21 @@ do
 		end
 		return best
 	end
-	-- Nearest usable, standing node in reach (Attack button / gamepad).
-	function GN.nearest()
+	-- Nearest usable, standing node in reach (Attack button / gamepad). QC L14:
+	-- the scan runs at most 10 times a second (`fresh` forces one: a new press).
+	function GN.nearest(fresh)
+		local now = os.clock()
+		local cached = GN.near
+		if not fresh and now - GN.nearAt < 0.1 and (cached == nil or GN.usable(cached)) then return cached end
+		GN.nearAt = now
 		local best, bestD = nil, math.huge
-		for _, node in ipairs(CollectionService:GetTagged("AetherNode")) do
+		for _, node in ipairs(GN.nodes) do
 			if node:IsA("BasePart") and GN.usable(node) then
 				local d = GN.distance(node)
 				if d <= GN.reach(node) and d < bestD and GN.respawnLeft(node) <= 0 then best, bestD = node, d end
 			end
 		end
+		GN.near = best
 		return best
 	end
 	function GN.caption(r) return r.skill .. " " .. r.level end
@@ -1949,10 +1969,59 @@ do
 		local g = ReplicatedStorage:FindFirstChild("IsleGestureLocal")
 		if g then g:Fire(name, node, nil, mode) end
 	end
+	-- QC L15: one reused Highlight for node hit flashes (never one per node).
+	function GN.flash(model)
+		if not model or not model.Parent then return end
+		local h = GN.highlight
+		if not h then
+			h = make("Highlight", nil, {Name = "NodeHitFlash", FillColor = Color3.new(1, 1, 1), FillTransparency = 1, OutlineTransparency = 1,
+				DepthMode = Enum.HighlightDepthMode.Occluded, Enabled = false})
+			GN.highlight = h
+		end
+		GN.flashToken = (GN.flashToken or 0) + 1
+		local token = GN.flashToken
+		h.Adornee = model
+		h.Parent = Workspace.CurrentCamera
+		h.Enabled = true
+		h.FillTransparency = 0.35
+		TweenService:Create(h, TweenInfo.new(0.18), {FillTransparency = 1}):Play()
+		task.delay(0.2, function()
+			if GN.flashToken ~= token then return end
+			h.Enabled = false
+			h.Adornee = nil
+		end)
+	end
 	function GN.endFish()
 		local fish = GN.fish
 		GN.fish = nil
 		if fish then gesture("release") end
+		return fish
+	end
+	-- QC L1: the server pushes the bite when it happens (IsleStrike "bite").
+	function GN.onBite(kind, node, window)
+		local fish = GN.fish
+		if kind ~= "bite" or not fish or fish.node ~= node or fish.biting then return end
+		fish.biting = true
+		window = tonumber(window) or (ST and ST.FISH.window) or 1.2
+		SP.show(GN.top(node), {kind = "text", text = "!", ink = gold, size = 30}, node)
+		OB.touchNode(node, 1, 1, "Bite!")
+		task.delay(window + 0.35, function()
+			if GN.fish ~= fish then return end
+			GN.endFish()
+			toast("It got away.")
+			OB.release(node)
+		end)
+	end
+	do
+		local function bindBite(remote)
+			if GN.biteBound or not remote or not remote:IsA("RemoteEvent") then return end
+			GN.biteBound = true
+			remote.OnClientEvent:Connect(GN.onBite)
+		end
+		bindBite(ReplicatedStorage:FindFirstChild("IsleStrike"))
+		if not GN.biteBound then
+			pcall(function() ReplicatedStorage.ChildAdded:Connect(function(c) if c.Name == "IsleStrike" then bindBite(c) end end) end)
+		end
 	end
 	function GN.onReply(node, reply)
 		if type(reply) ~= "table" or not reply.strike then return end
@@ -1962,23 +2031,21 @@ do
 			if reply.reason == "cadence" then GN.next = os.clock() + math.max(0.05, tonumber(reply.wait) or 0.1) return end
 			if reply.reason == "regrowing" and tonumber(reply.regrow) then GN.depleted:Fire(node, tonumber(reply.regrow)) end
 			if reply.reason == "early" then GN.endFish() end
+			if reply.reason == "harvest" and tonumber(reply.hp) and tonumber(reply.max) then OB.touchNode(node, tonumber(reply.hp), tonumber(reply.max), GN.caption(r)) end
 			-- The server pushed refusals with a message as a snapshot (chat + toast); others toast here.
 			if reply.message and not reply.pushed then toast(reply.message) end
-			if reply.reason ~= "busy" then GN.target, GN.pending = nil, nil end
+			if reply.reason ~= "busy" then GN.target, GN.buffered = nil, nil end
 			return
 		end
 		if reply.cast then
-			local fish = {node = node, at = os.clock(), bite = tonumber(reply.bite) or 1.5, window = tonumber(reply.window) or 1.2}
+			-- No bite time is sent (QC L1): wait for the server's push; give up
+			-- after the longest bite plus the window.
+			local F = ST.FISH
+			local fish = {node = node, at = os.clock()}
 			GN.fish = fish
 			OB.touchNode(node, 0, 1, "Waiting…")
-			task.delay(fish.bite, function()
-				if GN.fish ~= fish then return end
-				fish.biting = true
-				SP.show(GN.top(node), {kind = "text", text = "!", ink = gold, size = 30}, node)
-				OB.touchNode(node, 1, 1, "Bite!")
-			end)
-			task.delay(fish.bite + fish.window + 0.35, function()
-				if GN.fish ~= fish then return end
+			task.delay(F.biteMax + F.window + F.late + 0.5, function()
+				if GN.fish ~= fish or fish.biting then return end
 				GN.endFish()
 				toast("It got away.")
 				OB.release(node)
@@ -1987,14 +2054,15 @@ do
 		end
 		if tonumber(reply.dmg) then
 			SP.show(GN.top(node), HD.splatStyle({amount = reply.dmg}, Theme), node)
-			flash(node.Parent and node.Parent:IsA("Model") and node.Parent or node)
+			GN.flash(node.Parent and node.Parent:IsA("Model") and node.Parent or node)
 		end
 		if reply.broken then
 			GN.endFish()
 			OB.touchNode(node, 0, math.max(1, tonumber(reply.max) or 1), GN.caption(r))
 			OB.release(node)
 			GN.depleted:Fire(node, tonumber(reply.regrow) or r.respawn)
-			GN.target = nil
+			-- QC L13: a break ends the hold; nothing auto-retargets another node.
+			GN.target, GN.held, GN.buffered = nil, nil, nil
 		elseif tonumber(reply.hp) and tonumber(reply.max) then
 			OB.touchNode(node, tonumber(reply.hp), tonumber(reply.max), GN.caption(r))
 		end
@@ -2009,20 +2077,30 @@ do
 			if ok then GN.onReply(node, reply) end
 		end)
 	end
-	-- One swing at `node` (or a walk into reach first). Returns true when a swing started.
-	function GN.strike(node)
+	-- QC M2: out of reach, walk up along the overlay's pathfinding route
+	-- (S.walkPath: ≤ S.WALK_MAX studs, every waypoint over ground, else a "Too
+	-- far" / "can't reach" toast) and swing on arrival (IsleAttackLocal). Never a
+	-- straight MoveTo across the void.
+	function GN.walkUp(node)
+		local walk = ReplicatedStorage:FindFirstChild("IsleWalkLocal")
+		if not walk or not walk:IsA("BindableFunction") then toast("Too far: walk closer first.") return end
+		task.spawn(function() pcall(function() walk:Invoke("node", node, GN.reach(node)) end) end)
+	end
+	function GN.stopWalk()
+		local walk = ReplicatedStorage:FindFirstChild("IsleWalkLocal")
+		if walk and walk:IsA("BindableFunction") then pcall(function() walk:Invoke("cancel") end) end
+	end
+	-- One swing at `node` (or a walk into reach first). `auto`: the hold loop or
+	-- a buffered tap (never walks: QC L13). Returns true when a swing started.
+	function GN.strike(node, auto)
 		if not ST or not alive() or not GN.usable(node) or player:GetAttribute("IslandBuilding") == true then return false end
 		local r = GN.resource(node)
 		local now = os.clock()
 		if GN.distance(node) > GN.reach(node) then
-			local _, humanoid = rootOf()
-			if humanoid and not GN.pending then
-				humanoid:MoveTo(node.Position)
-				GN.pending = {node = node, untilAt = now + 6}
-			end
+			if not auto and not GN.held then GN.walkUp(node) end
 			return false
 		end
-		GN.pending = nil
+		if not auto then GN.stopWalk() end
 		if r.skill == "Fishing" then
 			local fish = GN.fish
 			if fish and fish.node == node then
@@ -2039,14 +2117,28 @@ do
 			GN.send(node)
 			return true
 		end
-		if now < GN.next then return false end
 		if GN.respawnLeft(node) > 0 then return false end
+		if now < GN.next then
+			-- QC L16: a tap just before the swing is ready is kept, not dropped.
+			if GN.next - now <= GN.BUFFER then GN.buffered = node end
+			return false
+		end
+		GN.buffered = nil
+		-- QC H1: one gathering clock; striking another node drops a cast.
+		local fish = GN.endFish()
+		if fish then OB.release(fish.node) end
 		GN.next = now + (ST.SWING[r.skill] or 0.7)
 		GN.target = node
 		gesture(ST.GESTURE[r.skill] or "mine", node)
 		GN.skillEvent:Fire(r.skill)
 		task.delay(ST.IMPACT[r.skill] or 0.4, function() GN.send(node) end)
 		return true
+	end
+	-- QC M4: with a line in the water, R2 / the Attack button reel that spot.
+	function GN.padTarget()
+		local fish = GN.fish
+		if fish and GN.usable(fish.node) then return fish.node end
+		return GN.nearest(true)
 	end
 	-- Input: creatures stay combat's (the handlers above); a node takes the click
 	-- when no creature is under the cursor / in reach.
@@ -2057,15 +2149,15 @@ do
 			local node = GN.pick(input.Position)
 			if node then
 				S.pendingAttack = nil
-				GN.held = "mouse"
 				GN.target = node
 				GN.strike(node)
+				GN.held = "mouse"
 			end
 		elseif input.KeyCode == Enum.KeyCode.ButtonR2 then
 			if nearestMonster(true) then return end
-			GN.held = "pad"
-			local node = GN.nearest()
+			local node = GN.padTarget()
 			if node then GN.strike(node) end
+			GN.held = "pad"
 		end
 	end)
 	UserInputService.InputEnded:Connect(function(input)
@@ -2074,6 +2166,8 @@ do
 			GN.held = nil
 		end
 	end)
+	-- QC L13: a release the window never sees (alt-tab) must not leave the hold on.
+	pcall(function() UserInputService.WindowFocusReleased:Connect(function() GN.held, GN.buffered = nil, nil end) end)
 	UserInputService.TouchTapInWorld:Connect(function(position, processed)
 		if processed or pick(position) then return end
 		local node = GN.pick(position)
@@ -2083,9 +2177,9 @@ do
 		attackButton.InputBegan:Connect(function(input)
 			if input.UserInputType ~= Enum.UserInputType.Touch and input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
 			if nearestMonster(true) then return end
-			GN.held = "button"
-			local node = GN.nearest()
+			local node = GN.padTarget()
 			if node then GN.strike(node) end
+			GN.held = "button"
 		end)
 		attackButton.InputEnded:Connect(function(input)
 			if (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1) and GN.held == "button" then GN.held = nil end
@@ -2095,27 +2189,26 @@ do
 	local attackLocal = ReplicatedStorage:FindFirstChild("IsleAttackLocal")
 	if attackLocal then
 		attackLocal.Event:Connect(function(model)
-			if model == "cancel" then GN.pending = nil return end
+			if model == "cancel" then return end
 			if typeof(model) == "Instance" and model:IsA("BasePart") and GN.resource(model) then
 				GN.target = model
 				GN.strike(model)
 			end
 		end)
 	end
-	-- Holding keeps swinging at the cadence (the mouse at its node; the pad and
-	-- the button at the nearest standing node); a pending walk swings on arrival.
+	-- Holding keeps swinging at the cadence at the node it started on (the pad
+	-- and the button find the nearest standing node only until a swing starts);
+	-- a buffered tap swings when the cadence allows.
 	RunService.RenderStepped:Connect(function()
-		local pending = GN.pending
-		if pending then
-			if os.clock() > pending.untilAt or not GN.usable(pending.node) then GN.pending = nil
-			elseif GN.distance(pending.node) <= GN.reach(pending.node) then
-				GN.pending = nil
-				GN.strike(pending.node)
-			end
+		local now = os.clock()
+		local buffered = GN.buffered
+		if buffered and now >= GN.next then
+			GN.buffered = nil
+			if GN.usable(buffered) then GN.strike(buffered, true) end
 		end
 		if not GN.held or GN.fish then return end
 		local node = if GN.held == "mouse" then GN.target else (GN.target or GN.nearest())
-		if node and GN.resource(node) and GN.resource(node).skill ~= "Fishing" and os.clock() >= GN.next then GN.strike(node) end
+		if node and GN.resource(node) and GN.resource(node).skill ~= "Fishing" and now >= GN.next then GN.strike(node, true) end
 	end)
 end
 
