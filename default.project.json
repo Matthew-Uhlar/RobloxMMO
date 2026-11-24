@@ -49,7 +49,8 @@
         "IsleFeatures": { "$path": "features.client.lua" },
         "IsleRaid": { "$path": "raid.client.lua" },
         "IsleOverlay": { "$path": "overlay.client.lua" },
-        "IsleLighting": { "$path": "lighting.client.lua" }
+        "IsleLighting": { "$path": "lighting.client.lua" },
+        "IsleTutorial": { "$path": "tutorial.client.lua" }
       }
     },
     "Lighting": {

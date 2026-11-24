@@ -800,6 +800,42 @@ function Theme.hudLayout(w, h, opts)
 			L.pickupFeed = {x = x, y = L.xpDrops.y, w = right - x, h = n * 20, lines = n, row = 20}
 		end
 	end
+	-- §43 Tutorial coach cards (tutorial.client.lua). Tall screens: a docked card
+	-- right of the left column, under the level-up banner, left of the XP lane and
+	-- pickup feed, above the chat lane and the announcement toast (never over the
+	-- hotbar or the action bar); collapsed, it keeps only its 44 px header row.
+	-- Short screens: the card opens as a centred modal (like the phone satchel)
+	-- that ends above the action bar; collapsed it is a 44 px chip at the top of
+	-- the left column (it steps aside while the lap / trap trackers show there).
+	if short then
+		-- Between the status orbs and the sidebar, so the minimap, orbs and sidebar
+		-- stay readable; above the hotbar band (action bar, spell bar, notices).
+		local floorY = L.band.y - 6
+		local x0, x1 = L.orbs.x + L.orbs.w + 6, L.sidebar.x - 6
+		local mw = math.min(400, x1 - x0)
+		local mh = math.min(188, floorY - 8)
+		L.coach = {x = x0 + math.floor((x1 - x0 - mw) / 2), y = math.max(8, math.floor((floorY - mh) / 2)), w = mw, h = mh, modal = true}
+		L.coachChip = {x = 10, y = L.leftTop, w = L.leftWidth, h = 44}
+	else
+		local x = leftLimit
+		local y = math.max(L.leftTop, L.levelBanner.y + L.levelBanner.h + 6)
+		local right = math.min(L.xpDrops.x, L.xpToast.x) - 8
+		if L.pickupFeed.lines > 0 then right = math.min(right, L.pickupFeed.x - 8) end
+		local cw = math.max(0, math.min(360, right - x))
+		local bottom = L.band.y - 64 - 54 - 6 -- the §31 announcement toast's top edge
+		if x < L.chat.x + L.chat.w then bottom = math.min(bottom, L.chatTabs.y - 6) end
+		L.coach = {x = x, y = y, w = cw, h = math.max(0, math.min(176, bottom - y)), modal = false}
+		L.coachChip = {x = x, y = y, w = cw, h = 44}
+		if cw < 260 or L.coach.h < 150 then
+			-- A docked satchel pulls the XP lane into that space (narrow windows):
+			-- the card opens centred above the action bar instead, chip as above.
+			local floorY = L.band.y - 6
+			local right = if opts.satchelOpen then L.satchel.x - 8 else w - 10
+			local mw, mh = math.min(400, right - x), math.min(188, floorY - 8)
+			L.coach = {x = x + math.floor((right - x - mw) / 2), y = math.max(8, floorY - mh), w = mw, h = mh, modal = true}
+			L.coachChip = {x = x, y = y, w = math.max(cw, 0), h = 44}
+		end
+	end
 	return L
 end
 -- Reduced motion: Settings › Reduced motion (IsleSettingReducedMotion) or the
