@@ -67,7 +67,9 @@ local function loadCatalog(name)
 	return nil
 end
 local catalogs = {}
-for _, name in ipairs({"AetherWorldArt", "AetherArt"}) do
+-- AetherCreatureArt (§48): creature, pet, limb and overlay meshes, forged only
+-- through the creature API below (creatures.client.lua), never from a Shape tag.
+for _, name in ipairs({"AetherWorldArt", "AetherArt", "AetherCreatureArt"}) do
 	local catalog = loadCatalog(name)
 	if catalog then table.insert(catalogs, catalog) end
 end
@@ -83,7 +85,8 @@ local function lookup(shapeName)
 	shapeName = ALIASES[shapeName] or shapeName
 	for _, catalog in ipairs(catalogs) do
 		local data = catalog.shapes[shapeName]
-		if type(data) == "table" and type(data.vertices) == "table" and type(data.faces) == "table" then return data, catalog end
+		-- §48 QC M3: creature shapes stay packed (lazy) until a template needs them.
+		if type(data) == "table" and (data.lazy == true or (type(data.vertices) == "table" and type(data.faces) == "table")) then return data, catalog end
 	end
 	return nil
 end
@@ -142,7 +145,7 @@ local function shapeOf(part)
 	return ALIASES[shapeName] or shapeName
 end
 
-local stats = {templates = 0, templateTriangles = 0, instances = 0, placedTriangles = 0, failures = 0, skipped = 0, evicted = 0, templateSkips = 0, reclaimed = 0,
+local stats = {templates = 0, templateTriangles = 0, creatureTemplates = 0, creatureTriangles = 0, instances = 0, placedTriangles = 0, failures = 0, skipped = 0, evicted = 0, templateSkips = 0, reclaimed = 0,
 	chartPins = 0, chartRevoked = 0, chartRefused = 0}
 -- Indexing a missing member errors on an Instance, so probe the API under pcall.
 local available = pcall(function()
@@ -163,6 +166,18 @@ local useTick = 0 -- LRU clock: bumped whenever a template gains or loses a clon
 -- sign shapes (kind "sign" outside the kit: pennants, cloth, ledgers) are exempt
 -- so their colours stay exact (they are few), as are exactTint shapes on desktop.
 local VARIANTS = if mobile then 1 else 2
+-- §48 creatures: their shapes keep the exact creature colour on desktop (like
+-- exactTint) under their own template sub-cap; phones share one variant.
+local CREATURE_KINDS = {creature = true, pet = true, limb = true, overlay = true}
+local CREATURE_TEMPLATE_CAP = if mobile then 8 else 22
+local CREATURE_TRIANGLE_CAP = if mobile then 14000 else 44000 -- triangles across creature templates
+-- QC H1: part of the creature pool only boss / world tiers may use, so a crowd
+-- of pets and critters can never lock a boss out of its meshes.
+local CREATURE_BOSS_RESERVE = if mobile then 3 else 6
+local CREATURE_BOSS_TRIANGLES = if mobile then 6000 else 14000
+-- QC M4: the creature pool keeps its own failure counter and blocked / stop
+-- flags; a broken creature mesh never stops the world forge (and vice versa).
+local creaturePool = {failures = 0, blocked = false, stop = stopReason} -- (no EditableMesh API: both pools stop)
 local variants = {} -- shapeName -> {key -> tint | false}
 local function tintDistance(a, b)
 	if not a or not b then return if a == b then 0 else 1 end
@@ -301,26 +316,47 @@ end
 
 -- LRU eviction: when a new template would pass the template or triangle cap,
 -- templates with no live clone are destroyed, least recently used first.
-local function evictFor(triangles)
+-- §48: creature templates live in their own budget (CREATURE_TEMPLATE_CAP /
+-- CREATURE_TRIANGLE_CAP) beside the world's LIMITS, so a busy town never
+-- starves the creatures and a crowd of creatures never starves the town; each
+-- pool evicts only its own idle templates.
+local function worldCounts() return stats.templates - stats.creatureTemplates, stats.templateTriangles - stats.creatureTriangles end
+local function fits(creature, triangles, boss)
+	if creature then
+		local count, tris = CREATURE_TEMPLATE_CAP, CREATURE_TRIANGLE_CAP
+		if not boss then count, tris = count - CREATURE_BOSS_RESERVE, tris - CREATURE_BOSS_TRIANGLES end
+		return stats.creatureTemplates < count and stats.creatureTriangles + triangles <= tris
+	end
+	local count, tris = worldCounts()
+	return count < LIMITS.templates and tris + triangles <= LIMITS.templateTriangles
+end
+local function dropTemplate(key, entry)
+	templates[key] = nil
+	if variants[entry.shape] then variants[entry.shape][key] = nil end
+	stats.templates -= 1
+	stats.templateTriangles -= entry.triangles
+	if entry.creature then
+		stats.creatureTemplates -= 1
+		stats.creatureTriangles -= entry.triangles
+	end
+	stats.evicted += 1
+	pcall(entry.part.Destroy, entry.part)
+	if entry.mesh then pcall(entry.mesh.Destroy, entry.mesh) end
+end
+local function evictFor(triangles, creature, boss)
+	creature = creature == true
 	local idle = {}
 	for key, entry in pairs(templates) do
-		if entry and not entry.pending and entry.users == 0 then table.insert(idle, {key, entry}) end
+		if entry and not entry.pending and entry.users == 0 and (entry.creature == true) == creature then table.insert(idle, {key, entry}) end
 	end
 	table.sort(idle, function(a, b) return a[2].used < b[2].used end)
 	for _, item in ipairs(idle) do
-		if stats.templates < LIMITS.templates and stats.templateTriangles + triangles <= LIMITS.templateTriangles then break end
-		local entry = item[2]
-		templates[item[1]] = nil
-		if variants[entry.shape] then variants[entry.shape][item[1]] = nil end
-		stats.templates -= 1
-		stats.templateTriangles -= entry.triangles
-		stats.evicted += 1
-		pcall(entry.part.Destroy, entry.part)
-		if entry.mesh then pcall(entry.mesh.Destroy, entry.mesh) end
+		if fits(creature, triangles, boss) then break end
+		dropTemplate(item[1], item[2])
 	end
-	return stats.templates < LIMITS.templates and stats.templateTriangles + triangles <= LIMITS.templateTriangles
+	return fits(creature, triangles, boss)
 end
-local function template(shapeName, data, catalog, tint)
+local function template(shapeName, data, catalog, tint, boss)
 	local key = shapeName .. "#" .. (if tint then tint:ToHex() else "")
 	local cached = templates[key]
 	if cached and cached.pending then
@@ -333,41 +369,59 @@ local function template(shapeName, data, catalog, tint)
 	-- exactTint shapes (travel beacons, §44: small, few per island, coloured by
 	-- region) keep their exact Tint on desktop; phones share variants as usual.
 	if variantCount(shapeName) >= VARIANTS and not (data.kind == "sign" and not SIGN_KIT_SHAPES[shapeName])
-		and not (data.exactTint == true and not mobile) then
+		and not (data.exactTint == true and not mobile) and not (CREATURE_KINDS[data.kind] and (not mobile or boss)) then
 		return nearestVariant(shapeName, tint)
 	end
-	local triangles = #data.faces
-	if stopReason or newTemplatesBlocked or ((stats.templates >= LIMITS.templates or stats.templateTriangles + triangles > LIMITS.templateTriangles)
-		and not evictFor(triangles)) then
+	local triangles = data.tris or #data.faces
+	local creature = CREATURE_KINDS[data.kind] == true
+	local stopped = if creature then (creaturePool.stop or creaturePool.blocked) else (stopReason or newTemplatesBlocked)
+	if stopped or (not fits(creature, triangles, boss) and not evictFor(triangles, creature, boss)) then
 		stats.templateSkips += 1
 		return nil, "budget"
 	end
 	-- Reserve the slot before the build yields, so concurrent callers see it.
-	local marker = {pending = true, waiters = {}, users = 0, used = 0, triangles = triangles, shape = shapeName}
+	local marker = {pending = true, waiters = {}, users = 0, used = 0, triangles = triangles, shape = shapeName, creature = creature}
 	templates[key] = marker
 	stats.templates += 1
 	stats.templateTriangles += triangles
+	if creature then
+		stats.creatureTemplates += 1
+		stats.creatureTriangles += triangles
+	end
 	local part, mesh, problem = buildTemplate(shapeName, data, catalog, tint)
 	local entry, reason = nil, nil
 	if not part then
 		templates[key] = false
 		stats.templates -= 1
 		stats.templateTriangles -= triangles
-		stats.failures += 1
+		if creature then
+			stats.creatureTemplates -= 1
+			stats.creatureTriangles -= triangles
+		end
 		local message = string.lower(problem or "")
-		if message:find("budget", 1, true) or message:find("memory", 1, true) or message:find("limit", 1, true) then newTemplatesBlocked = true end
-		if stats.failures >= LIMITS.failures then stopReason = "unavailable" end
+		local blocked = message:find("budget", 1, true) or message:find("memory", 1, true) or message:find("limit", 1, true)
+		if creature then
+			creaturePool.failures += 1
+			if blocked then creaturePool.blocked = true end
+			if creaturePool.failures >= LIMITS.failures then creaturePool.stop = "unavailable" end
+		else
+			stats.failures += 1
+			if blocked then newTemplatesBlocked = true end
+			if stats.failures >= LIMITS.failures then stopReason = "unavailable" end
+		end
 		warn("[MeshForge] " .. shapeName .. " could not be meshed: " .. tostring(problem))
 		reason = "failed"
 	else
 		local lo, hi = bounds(data)
 		useTick += 1
 		entry = {part = part, mesh = mesh, extent = (hi - lo):Max(Vector3.one * 0.01), center = (lo + hi) / 2, triangles = triangles,
-			users = 0, used = useTick, shape = shapeName, key = key, chartPins = 0}
+			users = 0, used = useTick, shape = shapeName, key = key, chartPins = 0, creature = creature}
 		variants[shapeName] = variants[shapeName] or {}
 		variants[shapeName][key] = tint or false
 		part.Size = entry.extent
 		templates[key] = entry
+		-- QC M3: the template holds the geometry now; forget the decoded arrays.
+		if type(catalog.drop) == "function" then pcall(catalog.drop, shapeName) end
 	end
 	for _, waiter in ipairs(marker.waiters) do task.spawn(waiter, entry, reason) end
 	return entry, reason
@@ -604,6 +658,8 @@ local function forge(part)
 	if part:GetAttribute("SculptureScale") ~= nil and part:GetAttribute("ShapeScale") == nil then skip(part, "legacy sculpture", true); return end
 	local data, catalog = lookup(shapeName)
 	if not data then skip(part, "unknown shape", true); return end
+	-- §48: creature meshes are posed by creatures.client.lua, never Shape-tagged.
+	if CREATURE_KINDS[data.kind] then skip(part, "creature shape", true); return end
 	if stopReason then skip(part, stopReason, true); return end
 	if stats.instances >= LIMITS.instances or stats.placedTriangles + #data.faces > LIMITS.placedTriangles then skip(part, "budget"); return end
 	local tint = templateTint(shapeName, data, part:GetAttribute("Tint"))
@@ -817,7 +873,7 @@ local function chartVisual(part)
 		entry = template(shapeName, data, catalog, tint) -- waits for the build in flight
 	elseif not entry then
 		entry = nearestVariant(shapeName, tint)
-		if not entry and stats.templates < LIMITS.templates - CHART_RESERVE then entry = template(shapeName, data, catalog, tint) end
+		if not entry and stats.templates - stats.creatureTemplates < LIMITS.templates - CHART_RESERVE then entry = template(shapeName, data, catalog, tint) end
 	end
 	if not entry or entry.pending then stats.chartRefused += 1; return nil end
 	if entry.chartPins == 0 and stats.chartPins >= CHART_PIN_CAP then stats.chartRefused += 1; return nil end
@@ -882,6 +938,59 @@ chartYield = function()
 	return true
 end
 
+-- Creatures (§48): creatures.client.lua asks for one forged clone per rig
+-- segment: creatureVisual(shape, tint) -> an unparented MeshPart at the mesh's
+-- native size, a token, the mesh extent and its centre (the authored origin
+-- sits at -centre in the clone's frame). The caller sizes, poses and parents it
+-- and hands it back with creatureRelease(token). Clones count against the
+-- instance and placed-triangle budgets; creature templates against
+-- CREATURE_TEMPLATE_CAP (desktop 22, phones 8; the last 6 / 3 only for boss /
+-- world tiers, QC H1) inside the forge's own caps, the
+-- least recently used idle creature template giving way first (their own
+-- pool, CREATURE_TRIANGLE_CAP too, beside the world's LIMITS). Desktop keeps
+-- one template per exact colour (a shape's legs match its body); phones share
+-- the nearest variant (VARIANTS = 1).
+local creatureTokens, creatureNext = {}, 0 -- token -> {entry, clone}
+local function creatureTemplateCount() return stats.creatureTemplates end
+local function creatureVisual(shapeName, tint, boss)
+	if type(shapeName) ~= "string" or creaturePool.stop then return nil, "unavailable" end
+	local data, catalog = lookup(shapeName)
+	if not data or not CREATURE_KINDS[data.kind] then return nil, "unknown" end
+	local tris = data.tris or #data.faces
+	if stats.instances >= LIMITS.instances or stats.placedTriangles + tris > LIMITS.placedTriangles then stats.skipped += 1; return nil, "budget" end
+	local color = if typeof(tint) == "Color3" then tint else defaultTint(data)
+	-- template() keeps exact colours on desktop (and for bosses on phones, QC
+	-- L7), shares a variant on phones, evicts idle creature templates (LRU),
+	-- keeps CREATURE_BOSS_RESERVE for bosses and waits for a build in flight.
+	local entry = template(shapeName, data, catalog, color, boss == true)
+	if not entry then entry = nearestVariant(shapeName, color) end
+	if not entry or entry.pending then return nil, "budget" end
+	local clone = entry.part:Clone()
+	clone.Name = shapeName
+	useTick += 1
+	entry.users += 1
+	entry.used = useTick
+	stats.instances += 1
+	stats.placedTriangles += entry.triangles
+	creatureNext += 1
+	creatureTokens[creatureNext] = {entry = entry, clone = clone}
+	return clone, creatureNext, entry.extent, entry.center
+end
+local function creatureRelease(token)
+	local t = creatureTokens[token]
+	if not t then return false end
+	creatureTokens[token] = nil
+	local entry = t.entry
+	entry.users -= 1
+	useTick += 1
+	entry.used = useTick
+	stats.instances -= 1
+	stats.placedTriangles -= entry.triangles
+	-- (QC L6: no budgetEpoch bump; the world's backed-off parts keep their back-off.)
+	pcall(t.clone.Destroy, t.clone)
+	return true
+end
+
 workspace.DescendantAdded:Connect(function(instance) task.defer(watch, instance) end)
 for _, instance in ipairs(workspace:GetDescendants()) do watch(instance) end
 step()
@@ -891,6 +1000,8 @@ if MeshForgeTest then
 		cornerNormals = cornerNormals, styleSign = styleSign, stopReason = function() return stopReason end,
 		radii = {build = BUILD_RADIUS, unload = UNLOAD_RADIUS, building = BUILDING_RADIUS}, buildRadius = buildRadius, releaseRadius = releaseRadius, mobile = mobile, backoff = backoff, registry = registry, final = final, placed = placed,
 		chart = {visual = chartVisual, accept = chartAccept, release = chartRelease, tokens = chartTokens, pinCap = CHART_PIN_CAP, reserve = CHART_RESERVE},
+		creature = {visual = creatureVisual, release = creatureRelease, tokens = creatureTokens, cap = CREATURE_TEMPLATE_CAP, triangleCap = CREATURE_TRIANGLE_CAP, count = creatureTemplateCount, kinds = CREATURE_KINDS,
+			bossReserve = CREATURE_BOSS_RESERVE, bossTriangles = CREATURE_BOSS_TRIANGLES, pool = creaturePool},
 		-- Final mesh box for a tagged part, without forging: size, CFrame, kind.
 		describe = function(part)
 			local shapeName = shapeOf(part)
@@ -911,6 +1022,8 @@ do
 		if method == "visual" and typeof(arg) == "Instance" and arg:IsA("BasePart") then return chartVisual(arg) end
 		if method == "accept" and type(arg) == "number" then return chartAccept(arg) end
 		if method == "release" and type(arg) == "number" then chartRelease(arg) return true end
+		if method == "creature" and type(arg) == "table" then return creatureVisual(arg.shape, arg.tint, arg.boss == true) end
+		if method == "creatureRelease" and type(arg) == "number" then return creatureRelease(arg) end
 		return nil
 	end
 	api.Parent = ReplicatedStorage
@@ -925,6 +1038,7 @@ task.spawn(function()
 end)
 script.Destroying:Once(function()
 	for part in pairs(placed) do release(part) end
+	for token in pairs(creatureTokens) do creatureRelease(token) end
 	for _, entry in pairs(templates) do
 		if entry and not entry.pending then
 			pcall(entry.part.Destroy, entry.part)

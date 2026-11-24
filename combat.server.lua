@@ -631,6 +631,7 @@ local function blueprint(kind, colorHex, boss)
 		hip, hitbox = 1.5, V(3, 3, 3)
 		add("Body", "Ball", V(3, 3, 3), CF(0, 0, 0), base)
 		eyes(0.5, 0.4, -1.4, 0.35)
+		kind = "blob" -- §48: the client draws unknown bodies as the fallback slime rig
 	end
 	local scale = 1
 	if boss then
@@ -650,7 +651,9 @@ local function blueprint(kind, colorHex, boss)
 		add("Aura", "Cylinder", V(0.3, hitbox.X * 1.3, hitbox.X * 1.3), CF(0, -hip + 0.2, 0) * upright, hexColor("FF3B3B"), "ForceField", "orbit", {transparency = 0.2})
 		light3 = hexColor("FF3B3B")
 	end
-	return {parts = parts, hip = hip, hitbox = hitbox, flying = flying, scale = scale, light = light3,
+	-- §48: `kind` names the forged rig (art/CreatureCatalog.lua rigs) the
+	-- client draws over these primitives (CreatureRig / CreatureScale attributes).
+	return {kind = kind, parts = parts, hip = hip, hitbox = hitbox, flying = flying, scale = scale, light = light3,
 		radius = math.min(C.MAX_RADIUS_BONUS, math.max(hitbox.X, hitbox.Z) / 2)}
 end
 
@@ -3095,7 +3098,21 @@ local function createLogic(env)
 	return L
 end
 
-local exports = {C = C, blueprint = blueprint, createLogic = createLogic, BODY_KIND = BODY_KIND, BOSS_BODY = BOSS_BODY, SEA_BODIES = SEA_BODIES}
+-- §48 (QC M1): a boss's pending telegraphs {at = resolve server time, windup}.
+-- The model shows the EARLIEST unresolved one, so a quick telegraph raised
+-- while a long slam winds up never hides the slam; once a telegraph resolves
+-- the next one is published. Returns the entry to show (nil when none).
+local function earliestTelegraph(list, now)
+	local best
+	for i = #list, 1, -1 do
+		local t = list[i]
+		if t.at <= now then table.remove(list, i)
+		elseif not best or t.at < best.at then best = t end
+	end
+	return best
+end
+local exports = {C = C, blueprint = blueprint, createLogic = createLogic, BODY_KIND = BODY_KIND, BOSS_BODY = BOSS_BODY, SEA_BODIES = SEA_BODIES,
+	earliestTelegraph = earliestTelegraph}
 if __CombatTestHarness then
 	__CombatTestHarness(exports)
 	return
@@ -3364,6 +3381,9 @@ local function buildModel(name, plan, opts)
 	model:SetAttribute("MaxHealth", opts.hp)
 	model:SetAttribute("Health", opts.hp)
 	model:SetAttribute("Color", opts.color)
+	-- §48 creature visuals: the rig and its uniform scale (creatures.client.lua).
+	model:SetAttribute("CreatureRig", plan.kind)
+	model:SetAttribute("CreatureScale", plan.scale)
 	if opts.boss then
 		model:SetAttribute("Boss", true)
 		model:SetAttribute("OwnerUserId", opts.owner.UserId)
@@ -3433,6 +3453,8 @@ local function destroyView(r, burst)
 		broadcast(r.position, "death", {position = r.position, color = v.model:GetAttribute("Color"), boss = r.boss == true, scale = v.plan.scale})
 	end
 	v.model:SetAttribute("Health", 0)
+	-- §48 (QC L2): a despawn (leash, timeout, depart) fades out without the death slump.
+	if not burst then v.model:SetAttribute("Despawn", true) end
 	v.model:SetAttribute("Dead", true)
 	local model = v.model
 	task.delay(if burst then 0.12 else 0, function() model:Destroy() end)
@@ -3543,6 +3565,28 @@ end)
 -- telegraph / bossStrike (warning discs and their impact), worldBossAnnounce
 -- (server-wide: warn | spawn | phase | enrage | win | depart), worldBossLoot
 -- (per contributor at the kill: rank, share, tier, drops or the reason for none).
+-- §48: a boss's telegraph window on its model, so creatures.client.lua winds
+-- the boss up over [TelegraphAt - TelegraphWindup, TelegraphAt) and slams when
+-- the server resolves the strike (both stamped on server ticks: +-1 tick).
+-- QC M1: overlapping telegraphs queue; the earliest unresolved one is shown.
+local function publishTelegraph(r)
+	local v = view[r]
+	if not v then return end
+	v.telegraphs = v.telegraphs or {}
+	local show = earliestTelegraph(v.telegraphs, Workspace:GetServerTimeNow() + 0.05) -- (a resolving tick may read a hair early)
+	if show and v.shownTelegraph ~= show then
+		v.shownTelegraph = show
+		v.model:SetAttribute("TelegraphWindup", show.windup)
+		v.model:SetAttribute("TelegraphAt", show.at)
+	end
+end
+local function markTelegraph(r, tg)
+	local v = view[r]
+	if not v or type(tg.windup) ~= "number" then return end
+	v.telegraphs = v.telegraphs or {}
+	table.insert(v.telegraphs, {at = Workspace:GetServerTimeNow() + tg.windup, windup = tg.windup})
+	publishTelegraph(r)
+end
 local Endgame = Data.Endgame
 local WB = {anchors = {}, hudClock = 0, scheduleClock = 0}
 function WB.nameOf(player)
@@ -3665,8 +3709,10 @@ function WB.step(dt)
 			local c = tg.center
 			local center = Vector3.new(c.X, groundY(c, c.Y), c.Z)
 			broadcast(r.home, "telegraph", {center = center, radius = tg.radius, kind = tg.kind, windup = tg.windup, name = tg.name, boss = r.id})
+			markTelegraph(r, tg)
 		elseif event.kind == "strike" then
 			local tg = event.telegraph
+			publishTelegraph(r)
 			broadcast(r.home, "bossStrike", {center = tg.center, radius = tg.radius, kind = tg.kind, hits = #event.hits})
 		elseif event.kind == "phase" then
 			if view[r] then view[r].model:SetAttribute("Phase", event.phase) end
@@ -3848,6 +3894,7 @@ function LairRT.step()
 		local r = event.record
 		if event.kind == "telegraph" then
 			local tg = event.telegraph
+			markTelegraph(r, tg)
 			if tg.kind == "tiles" then
 				LairRT.lightTiles(r, tg)
 			else
@@ -3855,6 +3902,7 @@ function LairRT.step()
 			end
 		elseif event.kind == "strike" then
 			local tg = event.telegraph
+			publishTelegraph(r)
 			if tg.kind == "tiles" then
 				LairRT.restoreTiles(r.fight)
 				broadcast(r.center, "bossStrike", {center = r.center, radius = Data.Lairs.CELL, kind = "ring", hits = #event.hits})
@@ -4137,6 +4185,11 @@ RunService.Heartbeat:Connect(function(dt)
 					if d.Magnitude > 0.1 then r.yaw = math.atan2(-d.X, -d.Z) end
 				end
 				if action.healed then updateBar(r) end
+				-- §48: a landed monster hit (the lunge) tells clients when to play the bite.
+				if r.lungeUntil ~= v.lunge then
+					v.lunge = r.lungeUntil
+					v.model:SetAttribute("AttackAt", Workspace:GetServerTimeNow())
+				end
 				local near = Logic.nearestPlayerDistance(r) <= C.ANIMATE_RANGE
 				place(r, near)
 				if near and animTick then animate(r, moved) end
