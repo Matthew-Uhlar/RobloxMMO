@@ -99,6 +99,19 @@ local function artwork(anchor,shape,scale)
 	CollectionService:AddTag(anchor,"AetherSculpture")
 end
 
+-- §48 creature visuals: the host part stays the collider, prompt target and
+-- (only if the client cannot forge) the visible fallback; creatures.client.lua
+-- draws the forged, animated rig over it (CreatureRig / CreatureScale / Color,
+-- feet on CreatureFloor when given).
+local function creatureHost(part, rig, scale, color, tier, floor)
+	part:SetAttribute("CreatureRig", rig)
+	part:SetAttribute("CreatureScale", scale)
+	part:SetAttribute("Color", color)
+	if tier then part:SetAttribute("CreatureTier", tier) end
+	if floor then part:SetAttribute("CreatureFloor", floor) end
+	CollectionService:AddTag(part, "IsleCreature")
+end
+
 local function prompt(part, title, action, callback, distance)
 	local p = Instance.new("ProximityPrompt")
 	p.ObjectText = title
@@ -380,7 +393,9 @@ local function credit(record, amount)
 end
 for index, x in ipairs({-13,13}) do
 	local guardian = block("Sentinel "..index, Vector3.new(x,5,-112), Vector3.new(5,8,5), gold, Enum.Material.Metal)
-	artwork(guardian,"ObservatorySentinel",1.4)
+	guardian:SetAttribute("VisualState","Active")
+	-- §48: a forged Starborn Sentinel rig (feet on the hall floor, origin.Y + 1.5).
+	creatureHost(guardian, "sentinel", 0.92, "D9B65C", "elite", origin.Y + 1.5)
 	table.insert(guardians, guardian)
 	prompt(guardian, "Sentinel • defeat to open the core passage", "Strike guardian", function(player, character)
 		local member = members[player]
@@ -388,6 +403,7 @@ for index, x in ipairs({-13,13}) do
 		member.last = os.clock()
 		local hit = math.min(run.guardianHealth[index], classHit(member, "guardian"))
 		run.guardianHealth[index] -= hit
+		guardian:SetAttribute("Health", run.guardianHealth[index]) -- §48: the client flinches on hits
 		credit(member, hit)
 		if run.guardianHealth[index] == 0 then
 			guardian.Color = dark;guardian:SetAttribute("VisualState","Defeated")
@@ -932,6 +948,7 @@ local function spawnWave()
 		local a = (n / wave.count + #adds * 0.17) * math.pi * 2
 		local part = block("Umbral wisp", Vector3.new(math.cos(a) * 16, 4, math.sin(a) * 16), Vector3.new(3, 3, 3), violet, Enum.Material.Neon)
 		part.Shape = Enum.PartType.Ball
+		creatureHost(part, "wisp", 0.88, "6A4C93") -- §48 forged void wisp
 		local add = {part = part, hp = run.stats.addHp}
 		part:SetAttribute("AddHealth", add.hp)
 		table.insert(adds, add)

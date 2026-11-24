@@ -446,6 +446,8 @@ local function dropShield(match)
 	end
 	match.nextDrop = os.clock() + S.DROP_INTERVAL
 end
+-- §48 Siege creature rigs: {rig, uniform scale fitting the 3-stud host}.
+local CREATURE_RIGS = {Riftling = {"mite", 0.7}, Shardback = {"golem", 0.45}, Hexwing = {"harrier", 0.5}, Voidleech = {"wisp", 0.85}}
 local function spawnCreature(match, portalId)
 	if count(match.creatures) >= S.CREATURE_CAP then return end
 	local id = S.pickCreature(roll())
@@ -455,6 +457,15 @@ local function spawnCreature(match, portalId)
 	local dir = laneDir[portalId]
 	local part = block(bastion, def.name, SIEGE_C + dir * (S.LANE - 6) + V(0, 2, 0), V(3, 3, 3), C(def.color), Enum.Material.SmoothPlastic, false)
 	part:SetAttribute("Creature", id)
+	-- §48: creatures.client.lua draws a forged, animated rig over the host
+	-- (the 3-stud block stays the prompt target and the fallback).
+	local rig = CREATURE_RIGS[id]
+	if rig then
+		part:SetAttribute("CreatureRig", rig[1])
+		part:SetAttribute("CreatureScale", rig[2])
+		part:SetAttribute("Color", def.color)
+		pcall(function() game:GetService("CollectionService"):AddTag(part, "IsleCreature") end)
+	end
 	local hp = S.creatureHp(id, match.tier)
 	local c = {id = id, def = def, hp = hp, max = hp, portal = portalId, dist = S.LANE - 6, part = part, attack = 0, seq = seq}
 	match.creatures[seq] = c
@@ -466,6 +477,7 @@ local function spawnCreature(match, portalId)
 		credit(match, record, S.Points.strike)
 		if c.hp <= 0 then
 			match.creatures[seq] = nil
+			part:SetAttribute("Dead", true) -- §48: clients play the death (not a despawn fade)
 			part:Destroy()
 			credit(match, record, S.Points.kill)
 		end

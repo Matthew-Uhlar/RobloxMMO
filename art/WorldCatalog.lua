@@ -5,7 +5,7 @@
 -- and tintLightIndex faces take that colour darkened / lightened. smooth is the
 -- normal-smoothing crease angle (degrees); fit is the authored box mapped onto the
 -- tagged part's size (default: the mesh bounds).
-local palette={"C98D4F","F4CD7C","265860","39898E","9DF3D7","203748","C15557","FFD389","525570","9583B9","D9DFE6","6E4A30","F4F8F8","6BAF5A","878C93","F0F3F6","4A3426","7A5636","A9A79C","7E817C","545A5E","5E8A4A","C9A24E","3A4048","FF8A3D","FFE08A","E9DFC7","A8423C","2E3B4E","5A4030","8A6240","D9B65C","E6E1D6","3F6E3A","B8C6CF","EFE6D3","9B5B43","4F6878","6B4A33"}
+local palette={"C98D4F","F4CD7C","265860","39898E","9DF3D7","203748","C15557","FFD389","525570","9583B9","D9DFE6","6E4A30","F4F8F8","6BAF5A","878C93","F0F3F6","4A3426","7A5636","A9A79C","7E817C","545A5E","5E8A4A","C9A24E","3A4048","FF8A3D","FFE08A","E9DFC7","A8423C","2E3B4E","5A4030","8A6240","D9B65C","E6E1D6","3F6E3A","B8C6CF","EFE6D3","9B5B43","4F6878","6B4A33","EDE2C4","3A302C","231E1E","17131C","2C2140","BDEBFF","F3EBDD","F08A6E","9FF5FF"}
 local DIGITS="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 local value={}
 for i=1,#DIGITS do value[string.byte(DIGITS,i)]=i-1 end
