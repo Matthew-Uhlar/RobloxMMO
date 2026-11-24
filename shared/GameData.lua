@@ -8483,9 +8483,9 @@ CR.StationOrder = {"Jeweller","Tannery","Glassworks"}
 CR.Stations = {
 	Jeweller={id="Jeweller",name="Jeweller's Bench",verb="Cut & set",color="E86FB8",gesture={"hammer"},
 		text="Cut rough gems, set rings, necklaces and amulets, and enchant the finest amulets."},
-	Tannery={id="Tannery",name="Tanning Rack",verb="Tan & stitch",color="A8763E",gesture={"saw","hammer"},
+	Tannery={id="Tannery",name="Tanning Rack",verb="Tan & stitch",color="A8763E",gesture={"saw","weave","hammer"},
 		text="Tan hides, spin thread, weave cloth and stitch Ranged leathers."},
-	Glassworks={id="Glassworks",name="Glass Furnace",verb="Melt & blow",color="5EC8D8",gesture={"stir"},
+	Glassworks={id="Glassworks",name="Glass Furnace",verb="Melt & blow",color="5EC8D8",gesture={"blow","pour","sift"},
 		text="Sift sand, melt molten glass and blow baubles, vials, orbs and lenses."},
 }
 -- Branches: station, cadence (seconds per action), tool (owned item) and gesture.
@@ -8493,14 +8493,14 @@ CR.BranchOrder = {"cut","jewel","enchant","tan","spin","weave","leather","sift",
 CR.Branches = {
 	cut={name="Gem Cutting",station="Jeweller",seconds=1.8,tool="FacetChisel",gesture="hammer"},
 	jewel={name="Jewellery",station="Jeweller",seconds=2.4,gesture="hammer"},
-	enchant={name="Amulet Enchanting",station="Jeweller",seconds=3,gesture="stir"},
+	enchant={name="Amulet Enchanting",station="Jeweller",seconds=3,gesture="pour"},
 	tan={name="Tanning",station="Tannery",seconds=1.2,gesture="saw"},
-	spin={name="Spinning",station="Tannery",seconds=1.2,tool="DropSpindle",gesture="saw"},
-	weave={name="Weaving",station="Tannery",seconds=1.8,tool="DropSpindle",gesture="saw"},
+	spin={name="Spinning",station="Tannery",seconds=1.2,tool="DropSpindle",gesture="weave"},
+	weave={name="Weaving",station="Tannery",seconds=1.8,tool="DropSpindle",gesture="weave"},
 	leather={name="Leatherwork",station="Tannery",seconds=2.4,tool="HideNeedle",gesture="hammer"},
-	sift={name="Sand Sifting",station="Glassworks",seconds=1.2,gesture="stir"},
-	melt={name="Glassmelting",station="Glassworks",seconds=1.8,gesture="stir"},
-	blow={name="Glassblowing",station="Glassworks",seconds=1.8,tool="BlowingPipe",gesture="stir"},
+	sift={name="Sand Sifting",station="Glassworks",seconds=1.2,gesture="sift"},
+	melt={name="Glassmelting",station="Glassworks",seconds=1.8,gesture="pour"},
+	blow={name="Glassblowing",station="Glassworks",seconds=1.8,tool="BlowingPipe",gesture="blow"},
 }
 for id, b in pairs(CR.Branches) do b.id = id end
 

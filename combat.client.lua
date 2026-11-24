@@ -2002,6 +2002,7 @@ do
 		local fish = GN.fish
 		if kind ~= "bite" or not fish or fish.node ~= node or fish.biting then return end
 		fish.biting = true
+		gesture("bite", node) -- §47: the rod snaps down (animate.client.lua; relayed to nearby players)
 		window = tonumber(window) or (ST and ST.FISH.window) or 1.2
 		SP.show(GN.top(node), {kind = "text", text = "!", ink = gold, size = 30}, node)
 		OB.touchNode(node, 1, 1, "Bite!")

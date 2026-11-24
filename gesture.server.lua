@@ -16,7 +16,14 @@ Relay.NAMES = {mine = true, chop = true, fish = true, harvest = true, hammer = t
 	-- every client animates runners from their AgilityMove attribute.)
 	settrap = true, netswing = true,
 	-- Beaconry (§37): strike a flint striker over kindling.
-	kindle = true}
+	kindle = true,
+	-- §47 Animation depth: fishing reel / bite beats, station work (alchemy pour,
+	-- loom, glassblowing, sieve) and the interaction library. Stance variants
+	-- (mine_low …), idle fidgets and death are never relayed: every client
+	-- derives them from the relayed base + target or from what it sees.
+	reel = true, bite = true, pour = true, weave = true, blow = true, sift = true,
+	talk = true, open = true, deposit = true, plant = true, water = true, tend = true, pray = true, offer = true,
+	pickup = true, attune = true, read = true, survey = true, pilfer = true}
 -- Combat gestures tint their held bow / staff / wand by the weapon of that style.
 Relay.STYLE_GESTURE = {shoot = "ranged", cast = "magic", flick = "magic"}
 Relay.MELEE_GESTURE = {attack = true, thrust = true, cleave = true, lunge = true}
@@ -24,7 +31,7 @@ Relay.TARGET_RANGE = 20
 Relay.BROADCAST_RANGE = 120
 Relay.RATE = 4 -- tokens per second
 Relay.BURST = 4
-Relay.TOOL_KIND = {mine = "Pickaxe", chop = "Hatchet", fish = "Rod", harvest = "Hoe"}
+Relay.TOOL_KIND = {mine = "Pickaxe", chop = "Hatchet", fish = "Rod", harvest = "Hoe", reel = "Rod", bite = "Rod"}
 
 -- itemId must describe the gesture's held item, or be nil.
 function Relay.itemOk(Data, name, itemId)
@@ -121,3 +128,16 @@ remote.OnServerEvent:Connect(function(player, name, target, itemId)
 	relay.handle(player, name, target, itemId)
 end)
 Players.PlayerRemoving:Connect(function(player) relay.forget(player) end)
+
+-- §47: keep the joints on death so every client can play the collapse
+-- (animate.client.lua "death"). Cosmetic only: respawn is unchanged.
+local function keepJoints(character)
+	local humanoid = character:WaitForChild("Humanoid", 10)
+	if humanoid and humanoid:IsA("Humanoid") then humanoid.BreakJointsOnDeath = false end
+end
+local function watchJoints(player)
+	player.CharacterAdded:Connect(keepJoints)
+	if player.Character then task.spawn(keepJoints, player.Character) end
+end
+Players.PlayerAdded:Connect(watchJoints)
+for _, player in ipairs(Players:GetPlayers()) do watchJoints(player) end
