@@ -28,52 +28,83 @@ local buttons = {}
 local function placeBoard(gate)
 	if board then return end
 	local ink, gold, ivory, mint = Color3.fromRGB(26, 51, 60), Color3.fromRGB(255, 220, 150), Color3.fromRGB(255, 244, 217), Color3.fromRGB(158, 231, 210)
+	-- §28 (QC M2): no post; an invisible anchor carries a floating, camera-
+	-- facing notice (readable from any side of the expedition arch). It is
+	-- sized in studs (like the old 9 x 5.5 board), so it scales like an object.
 	board = Instance.new("Part")
 	board.Name = "Island Assembly"
-	board.Size = Vector3.new(9, 5.5, 1)
+	board.Size = Vector3.new(1, 1, 1)
 	board.Anchored = true
-	board.Material = Enum.Material.Slate
-	board.Color = ink
+	board.CanCollide = false
+	board.CanTouch = false
+	board.CanQuery = false
+	board.CastShadow = false
+	board.Transparency = 1
 	board.CFrame = gate.CFrame + Vector3.new(16, 2.25, 8)
+	board:SetAttribute("NoticeAnchor", true)
 	board.Parent = workspace
-	local post = Instance.new("Part")
-	post.Name = "Notice Post"
-	post.Size = Vector3.new(0.6, 2, 0.6)
-	post.Anchored = true
-	post.Material = Enum.Material.Wood
-	post.Color = Color3.fromRGB(110, 78, 48)
-	post.CFrame = board.CFrame - Vector3.new(0, 3.6, 0)
-	post.Parent = workspace
-	-- A fixed physical face cannot follow the camera across the expedition arch.
-	local sign = Instance.new("SurfaceGui")
-	sign.Face = Enum.NormalId.Back
-	sign.CanvasSize = Vector2.new(720, 440)
+	local sign = Instance.new("BillboardGui")
+	sign.Name = "NoticeBillboard"
+	sign.Size = UDim2.fromScale(9, 5.5)
+	sign.StudsOffsetWorldSpace = Vector3.new(0, 1.2, 0)
+	sign.MaxDistance = 90
 	sign.AlwaysOnTop = false
-	sign.LightInfluence = 0
+	sign.LightInfluence = 0.15
+	sign.Brightness = 1.25
 	sign.Parent = board
+	local headerFont = Font.new("rbxasset://fonts/families/Merriweather.json", Enum.FontWeight.Bold)
+	local bodyFont = Font.new("rbxasset://fonts/families/BuilderSans.json", Enum.FontWeight.Bold)
+	-- Lines laid out in fractions of the board; TextScaled with a size cap so
+	-- the text follows the board's on-screen size.
 	local function line(name, y, height, size, color, font)
 		local text = Instance.new("TextLabel")
 		text.Name = name
 		text.BackgroundTransparency = 1
 		text.TextColor3 = color
-		text.Font = font or Enum.Font.GothamBold
-		text.TextSize = size
+		text.FontFace = font or bodyFont
+		text.TextScaled = true
 		text.TextWrapped = true
 		text.RichText = true
-		text.Position = UDim2.fromOffset(16, y)
-		text.Size = UDim2.new(1, -32, 0, height)
+		text.Position = UDim2.new(0.04, 0, y / 440, 0)
+		text.Size = UDim2.new(0.92, 0, height / 440, 0)
+		text.ZIndex = 3
+		local cap = Instance.new("UITextSizeConstraint")
+		cap.MaxTextSize = size
+		cap.Parent = text
+		local outline = Instance.new("UIStroke")
+		outline.Color = Color3.fromRGB(5, 7, 10)
+		outline.Thickness = 1
+		outline.Transparency = 0.4
+		outline.Parent = text
 		text.Parent = sign
 		return text
 	end
+	-- Notice styling (the sign family's metal frame, field and trim).
 	local backdrop = Instance.new("Frame")
 	backdrop.Name = "Backdrop"
-	backdrop.BackgroundColor3 = ink
+	backdrop.BackgroundColor3 = gold
 	backdrop.BorderSizePixel = 0
 	backdrop.Size = UDim2.fromScale(1, 1)
-	backdrop.ZIndex = 0
+	backdrop.ZIndex = 1
 	backdrop.Parent = sign
-	local header = line("Header", 8, 40, 30, gold)
-	date = line("Date", 50, 64, 22, ivory, Enum.Font.Gotham)
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0.04, 0)
+	corner.Parent = backdrop
+	local field = Instance.new("Frame")
+	field.Name = "Field"
+	field.BackgroundColor3 = ink
+	field.BorderSizePixel = 0
+	field.Position = UDim2.fromScale(0.015, 0.025)
+	field.Size = UDim2.fromScale(0.97, 0.95)
+	field.ZIndex = 2
+	field.Parent = sign
+	local trim = Instance.new("UIStroke")
+	trim.Color = mint
+	trim.Thickness = 1.5
+	trim.Transparency = 0.3
+	trim.Parent = field
+	local header = line("Header", 8, 40, 30, gold, headerFont)
+	date = line("Date", 50, 64, 22, ivory)
 	eventLine = line("Event", 118, 150, 26, mint)
 	title = line("Ballot", 276, 156, 26, gold)
 	header.Text = "ISLAND ASSEMBLY  •  SKYWARD CALENDAR"

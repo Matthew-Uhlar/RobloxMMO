@@ -1272,7 +1272,7 @@ do
 		{name="garden plot",x1=-14,z1=-2.5,x2=-8,z2=4.5},
 		{name="lookout bridge",x1=-4,z1=16,x2=4,z2=20},
 		{name="terrace bridge",x1=-20,z1=-4,x2=-16,z2=4},
-		{name="terrace sign",x1=-38.5,z1=-13.5,x2=-37.5,z2=-3.5}, -- §40 QC: beside the terrace walk at the plaza (world: centre + (-38, 0, -9); post at z -4)
+		{name="terrace sign",x1=-38.5,z1=-10,x2=-37.5,z2=-8}, -- §40 QC: beside the terrace walk at the plaza (world: centre + (-38, 0, -9)); a floating §28 sign, no post
 		-- Home islands (§27): the add-ons now stand on the big island.
 		{name="terrace path",x1=-41.5,z1=-3,x2=-19.5,z2=3},
 		{name="lookout path",x1=-3,z1=19.5,x2=3,z2=39.5},

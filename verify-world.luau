@@ -359,14 +359,17 @@ end
 check(proxyLimits.Tidewing~=nil,"companion Tidewing has a bounded proxy")
 local festival=luau.load(fs.readFile("festival.server.lua"),{environment={
 	game={GetService=function() return players end},workspace=world,Instance=roblox.Instance,
-	Vector3=roblox.Vector3,Vector2=roblox.Vector2,CFrame=roblox.CFrame,Color3=roblox.Color3,UDim2=roblox.UDim2,Font=roblox.Font,Enum=roblox.Enum,
+	Vector3=roblox.Vector3,Vector2=roblox.Vector2,CFrame=roblox.CFrame,Color3=roblox.Color3,UDim2=roblox.UDim2,UDim=roblox.UDim,Font=roblox.Font,Enum=roblox.Enum,
 	task={wait=function() coroutine.yield() end},
 },injectGlobals=true})
 check(coroutine.resume(coroutine.create(festival)),"festival starts with fixed sign")
 local assembly=world:FindFirstChild("Island Assembly")
-check(assembly:FindFirstChildOfClass("BillboardGui")==nil,"festival sign cannot float over expedition gate")
-local assemblySign=assembly:FindFirstChildOfClass("SurfaceGui")
-check(assemblySign~=nil and not assemblySign.AlwaysOnTop and assemblySign.Face==roblox.Enum.NormalId.Back,"assembly uses physical hub-facing sign")
+-- §28 QC M2: a floating, camera-facing notice (no post) beside the gate, never over it.
+local assemblySign=assembly:FindFirstChildOfClass("BillboardGui")
+check(assemblySign~=nil and not assemblySign.AlwaysOnTop and assemblySign.Size.X.Scale<=9 and assemblySign.Size.X.Offset==0,"assembly notice floats, sized in studs")
+local noticeEdge=(roblox.Vector3.new(assembly.CFrame.Position.X,0,assembly.CFrame.Position.Z)-roblox.Vector3.new(gate.CFrame.Position.X,0,gate.CFrame.Position.Z)).Magnitude-assemblySign.Size.X.Scale/2
+check(noticeEdge>10,"assembly notice stays clear of the gate arch ("..math.floor(noticeEdge).." studs)")
+check(world:FindFirstChild("Notice Post")==nil,"assembly notice has no post")
 check((assembly.CFrame.Position-gate.CFrame.Position).Magnitude>15,"assembly moved away from gate sightline")
 local meshNames={"Tidewing","Shellwarden"}
 for name in pairs(catalog.shapes) do table.insert(meshNames,name) end
@@ -1151,11 +1154,13 @@ do
 	for _,gui in world:GetDescendants() do
 		if gui:IsA("BillboardGui") and gui.Name=="SignBillboard" and gui:FindFirstAncestor("Islands") then
 			signBoards+=1
-			check(gui.Parent:GetAttribute("SignAnchor")==true and gui.Parent:GetAttribute("Shape")==nil,gui.Parent.Name.." sign floats on a mesh-free anchor")
+			-- Ledger boards (§28 QC M3) carry their floating title on the board itself.
+			local ledgerTitle=gui:GetAttribute("SignKind")=="ledger" and gui.Parent:GetAttribute("Shape")=="SignNoticeBoard"
+			check(ledgerTitle or (gui.Parent:GetAttribute("SignAnchor")==true and gui.Parent:GetAttribute("Shape")==nil),gui.Parent.Name.." sign floats on a mesh-free anchor")
 		end
 	end
 	check(signBoards>=40,"signs on the static islands ("..signBoards..")")
-	for _,need in {"Lamp","OreVein","CropBed","Rock","CliffRock","RockOutcrop","MeadowTree","PineTree","Forge","Hearth","Cauldron","Workbench","BridgePost","Statue","Signboard","Banner","MarketStall","FishingPier","TravelBeacon","TravelBeaconBasalt","SkywardVentPad"} do
+	for _,need in {"Lamp","OreVein","CropBed","Rock","CliffRock","RockOutcrop","MeadowTree","PineTree","Forge","Hearth","Cauldron","Workbench","BridgePost","Statue","Banner","MarketStall","FishingPier","TravelBeacon","TravelBeaconBasalt","SkywardVentPad"} do
 		check((shapes[need] or 0)>=1,need.." mesh slots exist")
 	end
 	-- Final mesh boxes: run MeshForge's own layout over every tagged part (no
