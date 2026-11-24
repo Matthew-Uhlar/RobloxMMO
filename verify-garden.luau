@@ -534,11 +534,11 @@ eq(garden:GetAttribute("Region"), "Home", "islet region attribute")
 local homeCenter = home:FindFirstChild("Meadow").CFrame.Position + Vector3.new(0, .25, 0)
 local gc = garden:GetAttribute("IslandCenter")
 local function flat(a, b) return Vector3.new(a.X - b.X, 0, a.Z - b.Z).Magnitude end
-ok(near(flat(gc, homeCenter), 40, 0.05), "islet sits 40 studs from home")
+ok(near(flat(gc, homeCenter), math.sqrt(2) * 40, 0.05), "garden sits in its north-west district, ~57 studs out (§40 spread)")
 ok(flat(gc, homeCenter) - 14 > 21 + 3, "islet clears the home meadow")
 local terraceCenter = homeCenter + Vector3.new(Data.TERRACE_OFFSET.x, 0, Data.TERRACE_OFFSET.z)
 ok(flat(gc, terraceCenter) > 14 + 11 + 2, "islet clears the Builder's Terrace")
-ok(flat(gc, homeCenter + Vector3.new(0, 0, 29)) > 14 + 7 + 2, "islet clears the lookout deck")
+ok(flat(gc, homeCenter + Vector3.new(0, 0, 46)) > 14 + 7 + 2, "islet clears the lookout deck")
 ok(flat(gc, homeCenter) + 14 < Data.Home.radius(1), "garden stands inside the stage-0 build radius (§27)")
 local plotPrompts, plotBeds = {}, {}
 for _, obj in garden:GetDescendants() do

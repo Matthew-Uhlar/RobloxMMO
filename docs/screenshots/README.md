@@ -162,3 +162,8 @@ one line in Studio. `--night` darkens the scene and keeps the faces ~80% lit
 (`tools/world-harness.luau`); the Sky Chart's ViewportFrame is drawn by a small z-buffered
 renderer in `tools/rasterize-ui.py` (primitives only, flat light: forged meshes, materials and
 soft lighting exist only in Studio). Regenerate with `lune run tools/render-ui.luau build/screenshots WarpMap`.
+
+## World Art pass 2 (§40)
+
+- `buildings-kit.png`, `buildings-interiors.png`: the building kit OBJ masters (`python3 art/render-icons.py --cell 420 --columns 4 --no-strip ...`).
+- `town-quay-day.png`, `town-quay-night.png`, `interior-quay-bank.png`: Compass Quay with the real building meshes placed as the forge places them (`lune run tools/dump-scene.luau "Compass Quay" quay.json`, then `python3 tools/render-town.py quay.json out.png --eye ... --at ... [--night]`). Flat Lambert preview: no materials, shadows or Future lighting; other props are their primitive fallbacks; the night render lights every pane (the game lights about 80 %).

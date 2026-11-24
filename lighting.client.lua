@@ -258,9 +258,86 @@ local function registerSite(part)
 	Lights.bySite[part] = site
 	table.insert(Lights.sites, site)
 end
+-- Lit windows (World Art pass 2, §40): building hosts with WindowGlow pane
+-- rects. After dusk the nearest buildings (L.selectWindows: tier range,
+-- building and pane caps) show warm Neon panes from a local pool (no lights,
+-- shadows or collision); by day, or out of range, the panes go back to the
+-- pool. Panes follow the host's CFrame at each update (anchored hosts never
+-- move). Allocation: one entry per building, panes pooled and reused.
+local Windows = {list = {}, byHost = {}, pool = {}, used = 0, folder = nil, chosen = {}, entries = {}, lastPanes = 0}
+Director.windows = Windows -- read by the headless suites
+local function registerWindows(part)
+	if Windows.byHost[part] then return end
+	local panes = L.parseWindows(part:GetAttribute("WindowGlow"))
+	if #panes == 0 then return end
+	local p = part.CFrame.Position
+	local entry = {part = part, panes = panes, count = 0, seed = math.floor(p.X * 7 + p.Z * 13)}
+	for i = 1, #panes do if L.windowLit(entry.seed, i) then entry.count += 1 end end
+	Windows.byHost[part] = entry
+	table.insert(Windows.list, entry)
+end
+local function windowPane(i)
+	local pane = Windows.pool[i]
+	if pane then return pane end
+	if not Windows.folder then
+		Windows.folder = Instance.new("Folder")
+		Windows.folder.Name = "IsleWindowGlow"
+		Windows.folder.Parent = workspace
+	end
+	pane = Instance.new("Part")
+	pane.Name, pane.Anchored, pane.CanCollide, pane.CanQuery, pane.CanTouch = "Window glow", true, false, false, false
+	pane.CastShadow, pane.Material, pane.Color = false, Enum.Material.Neon, Color3.fromHex(L.WINDOW_COLOR)
+	pane.Transparency = 1
+	pane.Parent = Windows.folder
+	Windows.pool[i] = pane
+	return pane
+end
+function Windows.update(tierName, nightness)
+	local origin = rootPosition()
+	local list, entries = Windows.list, Windows.entries
+	table.clear(entries)
+	local kept = 0
+	for i = 1, #list do
+		local e = list[i]
+		if e.part.Parent and e.part:IsDescendantOf(workspace) then
+			kept += 1
+			list[kept] = e
+			e.pos = e.part.CFrame.Position
+			entries[kept] = e
+		else
+			Windows.byHost[e.part] = nil
+		end
+	end
+	for i = kept + 1, #list do list[i] = nil end
+	local chosen, total = L.selectWindows(entries, origin, tierName, nightness >= 0.5, Windows.chosen)
+	local used = 0
+	for _, index in ipairs(chosen) do
+		local e = entries[index]
+		local cf = e.part.CFrame
+		for i, v in ipairs(e.panes) do
+			if L.windowLit(e.seed, i) then
+				used += 1
+				local pane = windowPane(used)
+				pane.Size = Vector3.new(v[4] * 0.94, v[5] * 0.94, 0.04)
+				pane.CFrame = cf * CFrame.new(v[1], v[2], v[3]) * CFrame.Angles(0, v[6], 0) * CFrame.new(0, 0, -0.03)
+				if pane.Transparency ~= L.WINDOW_TRANSPARENCY then pane.Transparency = L.WINDOW_TRANSPARENCY end
+			end
+		end
+	end
+	for i = used + 1, Windows.used do
+		local pane = Windows.pool[i]
+		if pane and pane.Transparency ~= 1 then pane.Transparency = 1 end
+	end
+	Windows.used = math.max(used, 0)
+	Windows.lastPanes = used
+	return used, total
+end
 local function consider(inst)
 	if inst:IsA("Light") then register(inst)
-	elseif inst:IsA("BasePart") and (inst:GetAttribute("Shape") ~= nil or inst:GetAttribute("GlowSite") ~= nil) then registerSite(inst) end
+	elseif inst:IsA("BasePart") and (inst:GetAttribute("Shape") ~= nil or inst:GetAttribute("GlowSite") ~= nil) then
+		registerSite(inst)
+		if inst:GetAttribute("WindowGlow") ~= nil then registerWindows(inst) end
+	end
 end
 local roots = {}
 local function addRoot(root)
@@ -465,6 +542,7 @@ function Director.step(dt)
 		local profile = L.Profiles[Director.key or L.DEFAULT_KEY]
 		local nightness = if profile.interior then 1 else 1 - L.dayFactor(clock)
 		Lights.update(Director.tier, nightness)
+		Windows.update(Director.tier, nightness)
 	end
 	if rescanAcc >= RESCAN_STEP then
 		rescanAcc = 0

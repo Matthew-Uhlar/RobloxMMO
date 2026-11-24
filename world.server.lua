@@ -32,6 +32,9 @@ local warm=C("FFD9A0")
 -- server) was removed. Night lamps are created off and tagged NightLight; the
 -- director lights them after dusk near the player.
 -------------------------------------------------------------------------------
+-- BEGIN GENERATED BUILDINGS (art/generate-props.cjs from art/building-shapes.cjs; do not edit)
+local BUILDING_KIT={TimberHouse={kind="facade",w=12,d=10,h=10,windows={{1.5,3.2,-5.17,1.7,1.9,0},{4.1,3.2,-5.17,1.7,1.9,0},{-3.95,8.15,-5.77,1.5,1.9,0},{0,8.15,-5.77,1.5,1.9,0},{3.95,8.15,-5.77,1.5,1.9,0},{6.17,3.2,-1.2,1.5,1.8,-1.571},{-6.17,3.2,1.2,1.5,1.8,1.571},{6.32,8,2.3,1.4,1.8,-1.571},{-6.32,8,-2.9,1.4,1.8,1.571},{-2.5,3.2,5.17,1.5,1.8,3.142},{3,8,5.17,1.4,1.8,3.142},{-3,8,5.17,1.4,1.8,3.142},{6.32,11.32,-0.3,1,1.3,-1.571},{-2.6,14,-3.12,1.2,1.26,0}},door={x=-2.6,z=-5,w=2.2,h=3.9,ry=0},fit={{-7.04,0,-6.556},{7.04,19.02,5.956}},tint="B5523B"},TimberTownhouse={kind="facade",w=8,d=10,h=14,windows={{1.8,3.1,-5.17,2.1,2,0},{0,7.6,-5.67,1.6,2.2,0},{-2,12,-6.17,1.4,1.9,0},{2,12,-6.17,1.4,1.9,0},{4.17,3.1,1.5,1.4,1.7,-1.571},{-4.17,3.1,-1.5,1.4,1.7,1.571},{4.27,7.4,-1.75,1.4,1.8,-1.571},{-4.27,7.4,1.25,1.4,1.8,1.571},{4.37,11.8,1.3,1.3,1.7,-1.571},{-4.37,11.8,-2.3,1.3,1.7,1.571},{0,7.4,5.17,1.5,1.8,3.142},{0,16.6,-6.17,1.3,1.6,0}},door={x=-2.1,z=-5,w=2,h=3.8,ry=0},fit={{-5.061,0,-7.09},{5.061,22.42,6.09}},tint="2F6F8F"},TimberShopfront={kind="facade",w=12,d=10,h=10,windows={{1.8,3.55,-5.17,6.6,2.4,0},{0,7.7,-6.47,2.4,2.2,0},{-4.2,7.9,-5.77,1.5,1.9,0},{4.2,7.9,-5.77,1.5,1.9,0},{6.17,3.2,0,1.5,1.8,-1.571},{-6.17,3.2,0,1.5,1.8,1.571},{6.27,7.9,0.9,1.4,1.8,-1.571},{-6.27,7.9,-1.5,1.4,1.8,1.571},{0,7.9,5.17,1.5,1.8,3.142},{-6.27,11.28,-0.3,1,1.3,1.571},{2.8,13.9,-3.12,1.2,1.26,0}},door={x=-4,z=-5,w=2,h=3.8,ry=0},fit={{-6.99,0,-6.947},{6.99,18.72,5.955}},tint="D9A441"},StoneCottage={kind="facade",w=11,d=9,h=7,windows={{2.3,3,-4.67,1.8,1.9,0},{5.67,3,0,1.5,1.7,-1.571},{-5.67,3,0,1.5,1.7,1.571},{2,3,4.67,1.5,1.7,3.142},{-5.67,8.16,0,0.9,1.2,1.571},{2.3,10.55,-2.42,1.1,1.2,0}},door={x=-2.4,z=-4.5,w=2.1,h=3.9,ry=0},fit={{-6.19,0,-5.4},{6.19,14.82,5.357}},tint="56677A"},ThatchCottage={kind="facade",w=11,d=9,h=6,windows={{-3.5,3.3,-4.67,1.6,1.7,0},{3.5,3.3,-4.67,1.6,1.7,0},{5.67,3.3,1.4,1.4,1.6,-1.571},{-5.67,3.3,-1.4,1.4,1.6,1.571},{0,3.3,4.67,1.5,1.6,3.142}},door={x=0,z=-4.5,w=2,h=3.8,ry=0},fit={{-6.4,0,-5.804},{6.4,13.62,5.804}},tint="3C8C7E"},LogLodge={kind="facade",w=12,d=10,h=7.6,windows={{-3.8,3.4,-5.17,1.7,1.8,0},{3.8,3.4,-5.17,1.7,1.8,0},{6.17,3.4,-1.5,1.5,1.7,-1.571},{-6.17,3.4,1.5,1.5,1.7,1.571},{-2,3.4,5.17,1.5,1.7,3.142},{-5.97,9.04,0,1.1,1.4,1.571},{5.97,9.04,0,1.1,1.4,-1.571}},door={x=0,z=-5,w=2.2,h=4,ry=0},fit={{-6.99,0,-7.737},{6.99,17.02,6.06}},tint="4E7A48"},ShopHall={kind="walkin",w=16,d=13,h=9.6,windows={{-5,4.3,-6.13,3.2,3.4,0},{5,4.3,-6.13,3.2,3.4,0},{4.3,4.5,6.13,2.6,3,3.142},{-4.3,4.5,6.13,2.6,3,3.142},{7.63,4.5,0,2.4,3,-1.571},{-7.63,4.5,0,2.4,3,1.571},{-8.17,10.96,0,1.4,1.6,1.571},{8.17,10.96,0,1.4,1.6,-1.571},{-4.2,13.65,-3.42,1.1,1.2,0},{4.2,13.65,-3.42,1.1,1.2,0}},door={x=0,z=-6.5,w=4.4,h=7.2,ry=0},t=0.8,floor=0.34,opening={u=0,w=4.4,h=7.2},fit={{-8.89,0,-7.45},{8.89,18.62,7.45}},tint="9C3F3A"},TavernHall={kind="walkin",w=18,d=13,h=10.4,windows={{-6,7.9,-6.67,1.8,2.2,0},{6,7.9,-6.67,1.8,2.2,0},{9.17,8,0,1.6,2,-1.571},{-9.17,8,0,1.6,2,1.571},{-6,3.8,-6.13,3.2,2.8,0},{6,3.8,-6.13,3.2,2.8,0},{4,4.2,6.13,2,2.4,3.142},{-4,4.2,6.13,2,2.4,3.142},{8.63,4.2,-2.6,2,2.4,-1.571},{-8.63,4.2,2.6,2,2.4,1.571},{9.17,11.88,0,1.6,1.8,-1.571}},door={x=0,z=-6.5,w=4,h=7,ry=0},t=0.8,floor=0.34,opening={u=0,w=4,h=7},fit={{-10.75,0,-8.85},{9.89,19.82,7.453}},tint="7A3E2E"},BankInterior={kind="interior",w=16,d=13,h=9.6,windows={},counter={c={0,1.74,0.5},s={6.5,2.8,2}},fit={{-7.1,0.34,-5.4},{7.1,10,5.68}},tint="C9A24E"},ShopInterior={kind="interior",w=16,d=13,h=9.6,windows={},counter={c={0,1.74,0.5},s={6.5,2.8,2}},fit={{-6.15,0.34,-5.5},{7.1,9.8,5.6}},tint="9DF3D7"},TavernInterior={kind="interior",w=18,d=13,h=10.4,windows={},counter={c={5.6,1.6400000000000001,1},s={2,2.6,8}},fit={{-8.2,0.14,-4.557},{8.05,10.6,5}},tint="C15557"},HallFurnishings={kind="interior",w=8,d=18,h=7,windows={},fit={{-3.55,0,-9},{4.95,7,9}},tint="3F6FB5"}}
+-- END GENERATED BUILDINGS
 -------------------------------------------------------------------------------
 -- Primitive helpers.
 -------------------------------------------------------------------------------
@@ -977,6 +980,116 @@ local function marketStall(parent,pos,toward,name,verb,action,item,accent,kicker
 end
 
 -------------------------------------------------------------------------------
+-- Building kit (World Art pass 2, docs/DEPTH-CONTRACT.md §40). Every house is
+-- one forged mesh from BUILDING_KIT (generated from art/building-shapes.cjs):
+--   facade   one solid collider block (w x h x d, plaster: the primitive
+--            fallback) named "Roofed house" (the minimap draws it as a roof);
+--   walkin   a hollow hall: "Roofed hall floor" (the mesh host, ShapeOwnsModel)
+--            plus "Hall wall" / "Hall lintel" colliders that leave the mesh's
+--            door opening free, a furnished interior (its counter collider
+--            hosts the interior mesh) and, where the light caps allow, one
+--            warm night light inside;
+--   interior a furnishing set hosted by its counter collider ("Counter").
+-- Host ShapeBox / ShapeBoxOffset = the mesh's fit box, so the forge maps the
+-- authored building 1:1 onto the colliders. Every building host carries
+-- BuildingType, GlowSite = "window" (§35 pooled spill light at night) and
+-- WindowGlow ("x,y,z,w,h,ry;..." pane rects in the host frame; the lighting
+-- director lights the panes after dusk, §40) and the tag AetherBuilding.
+-------------------------------------------------------------------------------
+local Buildings={PLASTER=C("E6DCC6"),FLOOR=C("8A6240"),LIGHT=C("FFC27A"),hosts={}}
+do
+	local B=Buildings
+	function B.fitOf(def)
+		local lo=V(def.fit[1][1],def.fit[1][2],def.fit[1][3])
+		local hi=V(def.fit[2][1],def.fit[2][2],def.fit[2][3])
+		return (lo+hi)/2,hi-lo,lo,hi
+	end
+	-- Mesh slot on a host whose centre sits at `hostAt` in the building frame.
+	local function slot(host,name,def,hostAt,tint)
+		local centre,size=B.fitOf(def)
+		host:SetAttribute("Shape",name)
+		host:SetAttribute("ShapeBox",size)
+		host:SetAttribute("ShapeBoxOffset",centre-hostAt)
+		if tint then host:SetAttribute("Tint",tint) end
+	end
+	local function glow(host,def,hostAt)
+		local panes={}
+		for _,w in ipairs(def.windows) do
+			table.insert(panes,string.format("%.3f,%.3f,%.3f,%.3f,%.3f,%.3f",w[1]-hostAt.X,w[2]-hostAt.Y,w[3]-hostAt.Z,w[4],w[5],w[6]))
+		end
+		host:SetAttribute("WindowGlow",table.concat(panes,";"))
+		host:SetAttribute("GlowSite","window")
+	end
+	-- cf: the ground point at the footprint centre; its LookVector is the
+	-- street (door) side. Returns the model and its host part.
+	function B.place(parent,name,cf,opts)
+		opts=opts or {}
+		local def=BUILDING_KIT[name]
+		assert(def and def.kind~="interior","unknown building "..tostring(name))
+		local m=group(opts.title or name,parent)
+		m:SetAttribute("Building",name)
+		local host
+		if def.kind=="facade" then
+			local at=V(0,def.h/2,0)
+			host=part(m,"Roofed house",V(def.w,def.h,def.d),cf*CFrame.new(at),opts.color or B.PLASTER,SM,true)
+			slot(host,name,def,at,opts.tint)
+			glow(host,def,at)
+		else
+			local t,H,o=def.t,def.h,def.opening
+			local at=V(0,def.floor-.25,0)
+			host=part(m,"Roofed hall floor",V(def.w-2*t,.5,def.d-2*t),cf*CFrame.new(at),B.FLOOR,WO,true)
+			slot(host,name,def,at,opts.tint)
+			host:SetAttribute("ShapeOwnsModel",true)
+			glow(host,def,at)
+			local wall=opts.color or B.PLASTER
+			local function w(nm,size,x,y,z) return part(m,nm,size,cf*CFrame.new(x,y,z),wall,SM,true) end
+			w("Hall wall",V(def.w,H,t),0,H/2,def.d/2-t/2)
+			for _,s in ipairs({-1,1}) do w("Hall wall",V(t,H,def.d-2*t),s*(def.w/2-t/2),H/2,0) end
+			local side=(def.w-o.w)/2
+			for _,s in ipairs({-1,1}) do w("Hall wall",V(side,H,t),s*(o.w/2+side/2),H/2,-def.d/2+t/2) end
+			w("Hall lintel",V(o.w,H-o.h,t),0,o.h+(H-o.h)/2,-def.d/2+t/2)
+		end
+		host:SetAttribute("BuildingType",name)
+		Tags:AddTag(host,"AetherBuilding")
+		table.insert(B.hosts,host)
+		return m,host
+	end
+	-- Interior furnishing set in a hall's ground frame `cf`; the counter
+	-- collider is its host (created here unless given).
+	function B.furnish(model,name,cf)
+		local def=BUILDING_KIT[name]
+		local c=V(def.counter.c[1],def.counter.c[2],def.counter.c[3])
+		local counter=part(model,"Counter",V(def.counter.s[1],def.counter.s[2],def.counter.s[3]),cf*CFrame.new(c),C("5A4030"),WO,true)
+		slot(counter,name,def,c)
+		counter:SetAttribute("Interior",name)
+		return counter
+	end
+	-- A walk-in hall around a service counter at `pos` facing `toward` (the
+	-- old market-stall frame, so every anchor keeps its offset): the counter
+	-- carries the prompt and the hall's door faces the street.
+	function B.hall(parent,pos,toward,o)
+		local cf=facing(pos,toward)
+		local c=BUILDING_KIT[o.interior].counter.c
+		local hallCF=cf*CFrame.new(-c[1],0,-c[3])
+		local m,floor=B.place(parent,o.shell,hallCF,{title=o.title,tint=o.tint})
+		local counter=B.furnish(m,o.interior,hallCF)
+		if o.verb then prompt(counter,o.verb,o.title,o.action,o.item) end
+		if o.sign then
+			-- A banner standard at the hall's front corner, beside the door.
+			local _,size,lo,hi=Buildings.fitOf(BUILDING_KIT[o.shell])
+			signAt(m,hallCF*CFrame.new(o.sign*(hi.X+1.6),0,lo.Z+1.4),o.title,o.kicker,o.accent,4,{kind="banner"})
+		end
+		return m,cf,hallCF,counter,floor
+	end
+	-- Warm interior night light (counts against verify-world's light caps).
+	function B.interiorLight(floor,def)
+		local l=light(floor,B.LIGHT,.9,20,{night=true,lift=def.h-2.8-def.floor})
+		l.Parent.Name="Hall light"
+		return l
+	end
+end
+
+-------------------------------------------------------------------------------
 -- Layout. Centres and radii (wave 4):
 --   Compass Quay (hub)  (0,0,0)        r115   Guild Terrace (0,0,232)      r75
 --   Mosswake Grove      (-230,0,0)     r72    Meadow Reach  (-230,0,185)   r70
@@ -1055,17 +1168,24 @@ anchor(hub,"Spawn",HUB_ARRIVAL-V(0,4,0),V(56,0,40))
 anchor(hub,"NPC_Herald",V(-8,0,-29),V(0,0,0))
 anchor(hub,"Waypoint_SkyHarbor",V(56,0,60),V(56,0,40))
 -- Market Row along the east avenue.
-local bank,bankCF=marketStall(hub,V(44,0,-17),V(44,0,0),"Quay Bank","Bank purse","bank",nil,mint,"MARKET ROW   /   BANK","Seal")
-local trade,tradeCF=marketStall(hub,V(68,0,-17),V(68,0,0),"Trade Counter","Sell goods","sell",nil,brass,"MARKET ROW   /   TRADE","Ingot")
+-- §40: the bank and the trade counter are walk-in halls (ShopHall shell, bank
+-- and shop interiors) built around their old counters, so the counter prompt,
+-- the banker / merchant behind it and the waypoint inside the door keep their
+-- offsets (raised onto the hall floor).
+local QUAY_FLOOR=BUILDING_KIT.ShopHall.floor
+local bank,bankCF,_,bankCounter,bankFloor=Buildings.hall(hub,V(44,0,-17),V(44,0,0),{title="Quay Bank",shell="ShopHall",interior="BankInterior",
+	verb="Bank purse",action="bank",tint=C("9C3F3A"),sign=-1,accent=mint,kicker="MARKET ROW   /   BANK"})
+local trade,tradeCF,_,tradeCounter,tradeFloor=Buildings.hall(hub,V(68,0,-17),V(68,0,0),{title="Trade Counter",shell="ShopHall",interior="ShopInterior",
+	verb="Sell goods",action="sell",tint=C("9C3F3A"),sign=-1,accent=brass,kicker="MARKET ROW   /   TRADE"})
+Buildings.interiorLight(bankFloor,BUILDING_KIT.ShopHall)
+Buildings.interiorLight(tradeFloor,BUILDING_KIT.ShopHall)
 marketStall(hub,V(50,0,17),V(50,0,0),"Fruit Stall",nil,nil,nil,rose,"MARKET ROW   /   PRODUCE","Feast")
 marketStall(hub,V(76,0,17),V(76,0,0),"Cloth Stall",nil,nil,nil,teal,"MARKET ROW   /   CLOTH","HideRoll")
-anchor(hub,"NPC_Banker",at(bankCF,0,0,2.4))
-anchor(hub,"NPC_Merchant",at(tradeCF,0,0,2.4))
+anchor(hub,"NPC_Banker",at(bankCF,0,QUAY_FLOOR,2.4))
+anchor(hub,"NPC_Merchant",at(tradeCF,0,QUAY_FLOOR,2.4))
 anchor(hub,"NPC_Auctioneer",V(86,0,-8),V(86,0,0))
-anchor(hub,"Waypoint_Bank",at(bankCF,0,0,-5)*CFrame.Angles(0,math.pi,0))
-anchor(hub,"Waypoint_Market",at(tradeCF,0,0,-5)*CFrame.Angles(0,math.pi,0))
-sculpture(hub,"Bank lockbox",at(bankCF,0,3.7,0).Position,"VaultChest",.65)
-sculpture(hub,"Trader's timber",at(tradeCF,0,3.9,0).Position,"TimberBundle",.65,20)
+anchor(hub,"Waypoint_Bank",at(bankCF,0,QUAY_FLOOR,-5)*CFrame.Angles(0,math.pi,0))
+anchor(hub,"Waypoint_Market",at(tradeCF,0,QUAY_FLOOR,-5)*CFrame.Angles(0,math.pi,0))
 for i,p in ipairs({V(58,0,-23),V(82,0,-21),V(38,0,22),V(90,0,21)}) do
 	local crate=block(hub,"Market crate",p+V(0,.9,0),V(2.2,1.8,2.2),i%2==0 and timber or darken(timber,.2),WO,true)
 	if i==1 then meshSlot(crate,"Crate") end
@@ -1556,23 +1676,28 @@ local function settle(player)
 	-- of the worker type's catalog shape tinted with its colour (rebuilt only when
 	-- the type/tier changes). Attributes: Worker<n>Tier, Worker<n>Resource,
 	-- WorkerSlots (unlocked slots; locked stations show their unlock note).
-	local yardCenter=center+V(26,0,-25)
+	-- §40: the yard stands out in the south-east district (Data.Island
+	-- ProtectedCircles "worker yard"), reached by a path and its ramp.
+	local YARD_OFFSET=V(40,0,-38)
+	local yardCenter=center+YARD_OFFSET
 	local YARD_R,YARD_H=12,1.5
 	do
-		local dir=V(-26,0,25).Unit
+		local dir=(-YARD_OFFSET).Unit
 		local yard=tier(m,"Worker Yard",yardCenter,YARD_R,YARD_H,{open={math.atan2(dir.Z,dir.X)},top=C("8FB27F")})
-		local out=V(26,0,-25).Unit
-		ramp(yard,center+out*(HOME_CORE-1.6),center+out*(HOME_CORE-1.6+YARD_H*2.4+2)+V(0,YARD_H,0),5)
+		local out=YARD_OFFSET.Unit
+		local foot=yardCenter-out*(YARD_R+5.4)
+		path(yard,center+out*(HOME_CORE-1),foot+out*.6,5)
+		ramp(yard,foot,yardCenter-out*(YARD_R-2.2)+V(0,YARD_H,0),5)
 		sculpture(yard,"Worker Yard lockbox",yardCenter+V(0,YARD_H+.9,0),"VaultChest",.9)
 		anchor(m,"Waypoint_WorkerYard",yardCenter+V(-6,YARD_H,6),yardCenter+V(0,YARD_H,0))
 	end
 	local fleetOffsets={V(9,0,4),V(13,0,-1),V(-10,0,-10)}
 	do
 		-- Nine yard slots on a ring (radius 8), skipping the ramp side.
-		local entry=math.atan2(25,-26)
+		local entry=math.atan2(-YARD_OFFSET.Z,-YARD_OFFSET.X)
 		for i=1,9 do
 			local a=entry+(i)*2*math.pi/10
-			table.insert(fleetOffsets,V(26+math.cos(a)*8,YARD_H,-25+math.sin(a)*8))
+			table.insert(fleetOffsets,V(YARD_OFFSET.X+math.cos(a)*8,YARD_H,YARD_OFFSET.Z+math.sin(a)*8))
 		end
 	end
 	local TIER_COLORS={C("9AA5B1"),C("6BBF59"),C("3F7CAC"),C("8E5CC4"),C("E0A040"),C("E86FB8"),C("FFF3B0")}
@@ -1678,14 +1803,15 @@ local function settle(player)
 			end
 		else
 			-- §27: the deck stands on the big island; a boardwalk replaces the bridge.
-			path(addition,center+V(0,0,16),center+V(0,0,22.5),5,timber,.1).Material=WO
-			disk(addition,"Lookout deck",center+V(0,-.22,29),7,.6,timber,WO,true)
+			-- §40: the lookout deck stands out north (z 46, Data.Island "lookout deck").
+			path(addition,center+V(0,0,16),center+V(0,0,39.5),5,timber,.1).Material=WO
+			disk(addition,"Lookout deck",center+V(0,-.22,46),7,.6,timber,WO,true)
 			for i=1,5 do
 				local a=i*math.pi/3
-				lamp(addition,center+V(math.cos(a)*6,0,29+math.sin(a)*6))
+				lamp(addition,center+V(math.cos(a)*6,0,46+math.sin(a)*6))
 			end
-			block(addition,"Lookout bench",center+V(0,.9,31),V(5,.4,1.7),navy,WO,true)
-			block(addition,"Bench back",center+V(0,1.6,31.9),V(5,1.8,.3),brass,WO,false)
+			block(addition,"Lookout bench",center+V(0,.9,48),V(5,.4,1.7),navy,WO,true)
+			block(addition,"Bench back",center+V(0,1.6,48.9),V(5,1.8,.3),brass,WO,false)
 		end
 	end
 	for _,choice in ipairs(additions) do
@@ -3055,7 +3181,8 @@ do
 		-- §27: a paved plaza on the big island (was a bridged islet); same offsets.
 		local terrace=HomeKit.plaza(m,"Builders Terrace",tc,11,C("A7B08A"))
 		home.terrace=terrace
-		path(terrace,center+V(-16,0,0),center+V(-22.5,0,0),5)
+		-- §40: the terrace stands out west (Data.TERRACE_OFFSET); the walk reaches its plaza.
+		path(terrace,center+V(-16,0,0),center+V(T.x+11,0,0),5)
 		disk(terrace,"Terrace court",tc+V(0,.05,0),4.2,.12,navy,ST,true)
 		disk(terrace,"Court seal",tc+V(0,.13,0),1.4,.1,brass,MT,false)
 		sign(terrace,center+V(-15,0,-6),"Builder's Terrace","CARPENTRY   /   PLAN IN YOUR JOURNAL",brass,90,8)
@@ -3803,7 +3930,7 @@ buildSkillContent()
 -------------------------------------------------------------------------------
 do
 	local G=Data.Garden
-	local GARDEN_OFFSET,GARDEN_R=V(-28.3,0,28.3),14
+	local GARDEN_OFFSET,GARDEN_R=V(-40,0,40),14 -- §40: out in the north-west district (Data.Island.ProtectedCircles)
 	local PLOT_X,PLOT_Z={-6.6,-2.2,2.2,6.6},{.5,-3.9,-8.3}
 	local VISITOR_SPOTS={{-10,4.5},{-7.5,7.5},{-4.5,10},{-11.5,1},{-12,-3}}
 	local leaf=C("5FBF77")
@@ -3817,6 +3944,8 @@ do
 		isle:SetAttribute("GardenOwner",player.UserId)
 		home.garden=isle
 		local dir=(center-gc).Unit
+		-- §40: a garden walk from the core to the lawn.
+		path(isle,center-dir*20,gc+dir*(GARDEN_R-.5),5)
 		local frame=CFrame.lookAt(gc,gc+dir)
 		local function F(x,zf,y) return frame*CFrame.new(x,y or 0,-zf) end
 		local function L(x,zf,y) return F(x,zf,y).Position end
@@ -4386,6 +4515,404 @@ end
 -- End Crafting section.
 
 -------------------------------------------------------------------------------
+-- Settlements (World Art pass 2, docs/DEPTH-CONTRACT.md §40). Every static
+-- island gets a street-front settlement from the building kit: houses line
+-- its paths on both sides, fronts (doors) to the path, a setback apron
+-- (SETBACK studs) between the facade and the path edge and at least ALLEY
+-- studs between neighbours, so every path, prompt and anchor stays reachable.
+-- Lots are tested against a clearance index (one per island, the §30 grid):
+-- blockers are every visible or colliding part except the meadow, every
+-- Path / Ramp, prompt hosts (+PROMPT_CLEAR), sculptures, every Anchor_*
+-- (+ANCHOR_CLEAR: NPCs, waypoints and the spawn stay outside and clear),
+-- monster spawn markers (+8), Aether Motes and the festival board site.
+-- A lot is a building's whole fit box (roof, awning, porch) plus the apron,
+-- inside the island rim (RIM studs) on its main meadow. Compass Quay is
+-- settled here, after every fixed-coordinate section (its Compass Spire site
+-- reserved); the other islands after World Art & Regions and the Skyward Vents
+-- (part 2, below). Later sections search their spots around the houses.
+-- Walk-in halls first (a
+-- tavern or shop per settlement, furnished), then
+-- facades in the island's style. Every host is a mesh slot: one part a house.
+-------------------------------------------------------------------------------
+-- Buildings.settle(only): settle the islands named in `only` (a set). Called
+-- twice: Compass Quay right after the Crafting section (its town core is laid
+-- out before the World Art props and folk search their spots), every other
+-- island after the Skyward Vents (below).
+function Buildings.settle(only)
+	local B=Buildings
+	local started=os.clock()
+	local SETBACK,ALLEY,RIM,PROMPT_CLEAR,ANCHOR_CLEAR=2.2,2.6,5,3.5,3.5
+	local LANES,LANE_W,LANE_LIFT,SPAWN_CLEAR=2,6,.09,8
+	B.SETBACK,B.ALLEY=SETBACK,ALLEY
+	local FACADE_COLOR={StoneCottage=C("8C8A84"),LogLodge=C("6B4A33")}
+	-- Island styles: house types (tried in a deterministic rotation), roof
+	-- tints per type (at most two: the forge's desktop variant cap), quota and
+	-- the settlement's walk-in halls.
+	local STYLE={
+		["Compass Quay"]={core=true,reserve={{V(-53,0,13),13}},types={"TimberTownhouse","TimberHouse","TimberShopfront","TimberTownhouse"},quota=34,lanes=4,
+			tints={TimberHouse={"B5523B"},TimberTownhouse={"2F6F8F"},TimberShopfront={"D9A441"}},
+			halls={{shell="TavernHall",interior="TavernInterior",title="The Gilded Compass Inn",kicker="COMPASS QUAY   /   INN · HEARTH · ALE",accent="D9A441",tint="7A3E2E"},
+				{shell="ShopHall",interior="ShopInterior",title="Quay Outfitters",kicker="COMPASS QUAY   /   GOODS · SUPPLIES",accent="3C9291",tint="9C3F3A"}}},
+		["Guild Terrace"]={types={"TimberTownhouse","StoneCottage"},quota=10,tints={TimberTownhouse={"7A3E2E"},StoneCottage={"56677A"}}},
+		["Mosswake Grove"]={types={"ThatchCottage","LogLodge"},quota=10,tints={ThatchCottage={"3C8C7E"},LogLodge={"4E7A48"}},
+			halls={{shell="ShopHall",interior="ShopInterior",title="Mosswake Herbalist",kicker="MOSSWAKE GROVE   /   HERBS · TONICS",accent="6BAF5A",tint="4E7A48"}}},
+		["Meadow Reach"]={types={"ThatchCottage","TimberHouse"},quota=8,tints={ThatchCottage={"C15557"},TimberHouse={"C9572F"}},
+			halls={{shell="TavernHall",interior="TavernInterior",title="The Sunwheel Tap",kicker="MEADOW REACH   /   ALE · BREAD · REST",accent="E9C46A",tint="9C5B2E"}}},
+		["Brassfall Quarry"]={types={"StoneCottage","TimberShopfront"},quota=10,tints={StoneCottage={"6E4A30"},TimberShopfront={"C98D4F"}},
+			halls={{shell="ShopHall",interior="ShopInterior",title="Brassfall Assay House",kicker="BRASSFALL CAY   /   ASSAY · TOOLS",accent="C9A24E",tint="6E4A30"}}},
+		["Cinder Shelf"]={types={"StoneCottage"},quota=5,tints={StoneCottage={"3A4048"}}},
+		["Warden Reach"]={types={"StoneCottage","TimberHouse"},quota=7,tints={StoneCottage={"56677A"},TimberHouse={"6E4A6A"}}},
+		["Skyreach"]={types={"StoneCottage","TimberTownhouse"},quota=8,tints={StoneCottage={"7A90B0"},TimberTownhouse={"5A7FA8"}},
+			halls={{shell="ShopHall",interior="ShopInterior",title="Skyreach Outfitters",kicker="SKYREACH   /   ROPES · LANTERNS",accent="9DF3D7",tint="5A7FA8"}}},
+		["Windpine Grove"]={types={"LogLodge"},quota=10,tints={LogLodge={"4E7A48","2F5F4A"}},
+			halls={{shell="TavernHall",interior="TavernInterior",title="The Pinewarden Lodge",kicker="WINDPINE GROVE   /   HEARTH · STEW",accent="6BAF5A",tint="3F5A3A"}}},
+		["Gloomhollow Caverns"]={types={"StoneCottage"},quota=4,tints={StoneCottage={"5B4A8C"}}},
+		["Tidewater Shoals"]={types={"ThatchCottage","TimberTownhouse"},quota=14,tints={ThatchCottage={"2F6F8F"},TimberTownhouse={"3C9291"}},
+			halls={{shell="TavernHall",interior="TavernInterior",title="The Lantern & Gull",kicker="TIDEWATER SHOALS   /   CHOWDER · CHARTS",accent="39898E",tint="2F5F7A"}}},
+		["Tempest Spire"]={types={"StoneCottage"},quota=6,tints={StoneCottage={"4A5468"}}},
+	}
+	B.STYLE=STYLE
+	-- Fixed keep-outs: monster spawn markers, Aether Motes, the festival board.
+	local keepOut={}
+	local spawns=workspace:FindFirstChild("MonsterSpawns")
+	for _,m in ipairs(spawns and spawns:GetChildren() or {}) do
+		if m:IsA("BasePart") then table.insert(keepOut,{m.CFrame.Position,(m:GetAttribute("Radius") or 0)+SPAWN_CLEAR}) end
+	end
+	local EX=Data.Exploration
+	for _,mote in ipairs(EX and EX.Motes or {}) do
+		local isle=islandsFolder:FindFirstChild(mote.isle)
+		local c=isle and isle:GetAttribute("IslandCenter")
+		if c and type(mote.at)=="table" then table.insert(keepOut,{c+V(mote.at[1],mote.at[2],mote.at[3]),4}) end
+	end
+	local gate=world:FindFirstChild("ExpeditionGate",true)
+	if gate then table.insert(keepOut,{gate.CFrame.Position+V(20,0,8),12}) end
+	-- Reserved sites (the Compass Spire landmark, its survey stone and the Town
+	-- Crier beside the west avenue, which World Art & Regions places later).
+	for _,st in pairs(STYLE) do for _,r in ipairs(st.reserve or {}) do table.insert(keepOut,{r[1],r[2]}) end end
+	B.keepOut=keepOut
+	local FLOOR={Meadow=true,["Floating foundation"]=true,["Island underside"]=true,["Edge guard"]=true,["Shore ledge"]=true,Wildflowers=true}
+	local CELL=16
+	local function classify(obj)
+		if not obj:IsA("BasePart") then return nil end
+		local name=obj.Name
+		if string.find(name,"^Anchor_") then return "anchor" end
+		if obj:GetAttribute("SculptureScale")~=nil then return "sculpture" end
+		if FLOOR[name] then return nil end
+		if obj:FindFirstChildOfClass("ProximityPrompt") then return "prompt" end
+		if obj.Transparency<1 or obj.CanCollide then return "solid" end
+		return nil
+	end
+	local function box(index,c,hx,hy,hz)
+		local e={c.X-hx,c.X+hx,c.Z-hz,c.Z+hz,c.Y-hy,c.Y+hy}
+		for ix=math.floor(e[1]/CELL),math.floor(e[2]/CELL) do
+			for iz=math.floor(e[3]/CELL),math.floor(e[4]/CELL) do
+				local key=ix..","..iz
+				index[key]=index[key] or {}
+				table.insert(index[key],e)
+			end
+		end
+	end
+	local function insert(index,obj)
+		local kind=classify(obj)
+		if not kind then return end
+		local c=obj.CFrame.Position
+		if kind=="anchor" then box(index,c+V(0,3,0),ANCHOR_CLEAR,3.5,ANCHOR_CLEAR) return end
+		if kind=="sculpture" then local r=math.max(1,2*(tonumber(obj:GetAttribute("SculptureScale")) or 1)) box(index,c,r,r,r) return end
+		local cf,sz=obj.CFrame,obj.Size
+		-- A declared mesh box (sign frames, buildings) blocks with its whole box.
+		local declared=obj:GetAttribute("ShapeBox")
+		if typeof(declared)=="Vector3" then
+			local offset=obj:GetAttribute("ShapeBoxOffset")
+			cf=cf*CFrame.new(if typeof(offset)=="Vector3" then offset else V(0,0,0))
+			sz,c=declared,cf.Position
+		end
+		local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
+		local pad=if kind=="prompt" then PROMPT_CLEAR else 0
+		box(index,c,ext("X")+pad,ext("Y")+(if kind=="prompt" then 2 else 0),ext("Z")+pad)
+	end
+	-- Oriented lot (centre c, unit axes r / l, half sizes hx / hz, ground y,
+	-- height h) against the index: separating axes r and l (the index boxes
+	-- are axis-aligned, so X and Z are covered by the bounding test).
+	local function blocked(index,c,r,l,hx,hz,y,h)
+		for _,k in ipairs(keepOut) do
+			local d=V(k[1].X-c.X,0,k[1].Z-c.Z)
+			if math.abs(d:Dot(r))<hx+k[2] and math.abs(d:Dot(l))<hz+k[2] then return true end
+		end
+		local ex=math.abs(r.X)*hx+math.abs(l.X)*hz
+		local ez=math.abs(r.Z)*hx+math.abs(l.Z)*hz
+		local seen={}
+		for ix=math.floor((c.X-ex)/CELL),math.floor((c.X+ex)/CELL) do
+			for iz=math.floor((c.Z-ez)/CELL),math.floor((c.Z+ez)/CELL) do
+				for _,e in ipairs(index[ix..","..iz] or {}) do
+					if not seen[e] then
+						seen[e]=true
+						if e[6]>y-.4 and e[5]<y+h and e[1]<c.X+ex and e[2]>c.X-ex and e[3]<c.Z+ez and e[4]>c.Z-ez then
+							local ec=V((e[1]+e[2])/2-c.X,0,(e[3]+e[4])/2-c.Z)
+							local eh=V((e[2]-e[1])/2,0,(e[4]-e[3])/2)
+							local function sep(axis,half) return math.abs(ec:Dot(axis))>=half+math.abs(axis.X)*eh.X+math.abs(axis.Z)*eh.Z end
+							if not sep(r,hx) and not sep(l,hz) then return true end
+						end
+					end
+				end
+			end
+		end
+		return false
+	end
+	-- The lot of a building at ground frame cf: its fit box widened by half an
+	-- alley each side (plus extraX for a banner), deepened by the apron.
+	local function lotFor(name,cf,extraX)
+		local _,size,lo,hi=B.fitOf(BUILDING_KIT[name])
+		local x0,x1=lo.X-ALLEY/2-(extraX or 0),hi.X+ALLEY/2
+		local z0,z1=lo.Z-SETBACK,hi.Z+ALLEY/2
+		local c=cf*V((x0+x1)/2,0,(z0+z1)/2)
+		local r,l=cf.RightVector,-cf.LookVector
+		return c,V(r.X,0,r.Z).Unit,V(l.X,0,l.Z).Unit,(x1-x0)/2,(z1-z0)/2,size.Y
+	end
+	B.lotFor=lotFor
+	-- A building on `side` of a path strip, centred `t` studs along it.
+	local function fits(isle,index,name,path,side,t,extraX)
+		local _,_,lo=B.fitOf(BUILDING_KIT[name])
+		local pcf=path.CFrame
+		local along,across=pcf.LookVector,pcf.RightVector
+		local IC,R=isle:GetAttribute("IslandCenter"),isle:GetAttribute("IslandRadius")
+		if math.abs(pcf.Position.Y-IC.Y)>.3 then return nil end
+		local base=pcf.Position+along*(t-path.Size.Z/2)
+		local origin=base+across*side*(path.Size.X/2+SETBACK-lo.Z)
+		origin=V(origin.X,IC.Y,origin.Z)
+		local cf=CFrame.lookAt(origin,origin-across*side)
+		local c,r,l,hx,hz,h=lotFor(name,cf,extraX)
+		for _,sx in ipairs({-1,1}) do for _,sz in ipairs({-1,1}) do
+			local corner=c+r*hx*sx+l*hz*sz
+			if V(corner.X-IC.X,0,corner.Z-IC.Z).Magnitude>R-RIM then return nil end
+		end end
+		if blocked(index,c,r,l,hx,hz,IC.Y,h) then return nil end
+		return cf,{c,r,l,hx,hz,h}
+	end
+	local function claim(index,lot,y)
+		local c,r,l,hx,hz,h=table.unpack(lot)
+		box(index,V(c.X,y+h/2,c.Z),math.abs(r.X)*hx+math.abs(l.X)*hz,h/2,math.abs(r.Z)*hx+math.abs(l.Z)*hz)
+	end
+	-- Room for one more interior light here (verify-world: <= 6 lights within
+	-- 30 studs of any light, <= 26 per island).
+	local function lightRoom(isle,pos)
+		local near,total=0,0
+		for _,l in ipairs(isle:GetDescendants()) do
+			if l:IsA("Light") then
+				total+=1
+				local host=l.Parent
+				local p=if host:IsA("Attachment") and host.Parent:IsA("BasePart") then (host.Parent.CFrame*host.CFrame).Position elseif host:IsA("BasePart") then host.CFrame.Position else nil
+				if p and (p-pos).Magnitude<=34 then near+=1 end
+			end
+		end
+		return near<=4 and total<=23
+	end
+	local placed={}
+	B.settled=placed
+	local order={}
+	for name in pairs(STYLE) do table.insert(order,name) end
+	table.sort(order)
+	for isleIndex,isleName in ipairs(order) do
+		if only[isleName] then
+		local isle=islandsFolder:FindFirstChild(isleName)
+		local style=STYLE[isleName]
+		if isle then
+			local index={}
+			for _,obj in ipairs(isle:GetDescendants()) do insert(index,obj) end
+			local IC=isle:GetAttribute("IslandCenter")
+			local paths={}
+			for _,obj in ipairs(isle:GetDescendants()) do
+				if obj:IsA("BasePart") and obj.Name=="Path" and obj.Size.Z>=14 then table.insert(paths,obj) end
+			end
+			-- Longest streets first, so the main avenues fill before side lanes.
+			table.sort(paths,function(a,b)
+				if math.abs(a.Size.Z-b.Size.Z)>.01 then return a.Size.Z>b.Size.Z end
+				local pa,pb=a.CFrame.Position,b.CFrame.Position
+				return if pa.X~=pb.X then pa.X<pb.X else pa.Z<pb.Z
+			end)
+			-- Walk-in halls: the lot nearest the island centre that fits.
+			for _,hall in ipairs(style.halls or {}) do
+				local best
+				for _,p in ipairs(paths) do
+					for _,side in ipairs({1,-1}) do
+						for t=6,p.Size.Z-6,2 do
+							local cf,lot=fits(isle,index,hall.shell,p,side,t,4)
+							if cf then
+								-- The town core for the hub; elsewhere the village edge (about half
+								-- the radius out: .62), so the island centre keeps room for its content.
+								local d=V(lot[1].X-IC.X,0,lot[1].Z-IC.Z).Magnitude
+								if not style.core then d=math.abs(d-.62*isle:GetAttribute("IslandRadius")) end
+								if not best or d<best.d-.01 then best={d=d,cf=cf,lot=lot} end
+							end
+						end
+					end
+				end
+				-- No street frontage: the first open-meadow lot on rings around the
+				-- centre, its door turned to the centre (the village green).
+				local IR=isle:GetAttribute("IslandRadius")
+				for _,f in ipairs(if style.core then {.25,.35,.45,.15,.55,.65} else {.62,.56,.68,.5,.45,.4}) do
+					if best then break end
+					for k=0,71 do
+						local a=math.rad(k*5+isleIndex*11)
+						local pos=IC+V(math.cos(a),0,math.sin(a))*IR*f
+						local cf=CFrame.lookAt(pos,V(IC.X,pos.Y,IC.Z))
+						local c,r,l,hx,hz,h=lotFor(hall.shell,cf,4)
+						local inRim=true
+						for _,sx in ipairs({-1,1}) do for _,sz in ipairs({-1,1}) do
+							local corner=c+r*hx*sx+l*hz*sz
+							if V(corner.X-IC.X,0,corner.Z-IC.Z).Magnitude>IR-RIM then inRim=false end
+						end end
+						if inRim and not blocked(index,c,r,l,hx,hz,IC.Y,h) then best={cf=cf,lot={c,r,l,hx,hz,h}} break end
+					end
+				end
+				if best then
+					local def=BUILDING_KIT[hall.shell]
+					local m,floor=B.place(isle,hall.shell,best.cf,{title=hall.title,tint=C(hall.tint)})
+					B.furnish(m,hall.interior,best.cf)
+					local _,_,lo,hi=B.fitOf(def)
+					-- A banner standard beside the door for the town halls (regional halls
+					-- carry the name on their own sign boards: phone template budget).
+					if hall.banner then signAt(m,best.cf*CFrame.new(-(hi.X+1.6),0,lo.Z+1.4),hall.title,hall.kicker,C(hall.accent),4,{kind="banner"}) end
+					if lightRoom(isle,floor.CFrame.Position) then B.interiorLight(floor,def) end
+					m:SetAttribute("Settlement",isleName)
+					claim(index,best.lot,IC.Y)
+					table.insert(placed,{model=m,host=floor,isle=isleName,name=hall.shell,lot=best.lot,hall=true})
+				end
+			end
+			-- Facades along a street, both sides, up to the quota (dry: count only).
+			local count,slotIndex=0,isleIndex
+			local function fillStreet(p,dry)
+				local n=0
+				for _,side in ipairs({-1,1}) do
+					local t=4
+					while t<p.Size.Z-4 and count+n<style.quota do
+						local done=false
+						for k=0,#style.types-1 do
+							local name=style.types[(slotIndex+n+k)%#style.types+1]
+							local _,size=B.fitOf(BUILDING_KIT[name])
+							local cf,lot=fits(isle,index,name,p,side,t+size.X/2)
+							if cf then
+								if not dry then
+									local tints=style.tints[name] or {}
+									local tint=tints[slotIndex%math.max(1,#tints)+1]
+									local m,host=B.place(isle,name,cf,{tint=tint and C(tint),color=FACADE_COLOR[name]})
+									m:SetAttribute("Settlement",isleName)
+									claim(index,lot,IC.Y)
+									table.insert(placed,{model=m,host=host,isle=isleName,name=name,lot=lot})
+									count+=1
+									slotIndex+=1
+								else
+									n+=1
+								end
+								t+=size.X+(if dry then ALLEY else math.floor(hash(slotIndex,isleIndex)*3))
+								done=true
+								break
+							end
+						end
+						if not done then t+=1 end
+					end
+				end
+				return n
+			end
+			for _,p in ipairs(paths) do fillStreet(p) end
+			-- Village lanes: where the island's own paths leave the quota short,
+			-- lay a cobbled lane (one Path strip) through open meadow and line it.
+			-- Candidates: chords at several radii and bearings; the clear lane
+			-- whose two sides take the most houses wins (ties: nearer the centre).
+			local R=isle:GetAttribute("IslandRadius")
+			for _=1,style.lanes or LANES do
+				if count>=style.quota then break end
+				local best
+				for _,f in ipairs({.12,.24,.36,.48,.6}) do
+					-- Lanes run on the compass axes (a street grid; sign and path
+					-- footings are checked on their axis-aligned boxes).
+					for k=0,11 do
+						local a=math.rad((k%4)*90)
+						local lateral=({0,-.25,.25})[k//4+1]*R
+						local dir=V(math.cos(a),0,math.sin(a))
+						for _,radial in ipairs({false,true}) do
+							local along=if radial then dir else V(-dir.Z,0,dir.X)
+							for _,L in ipairs({52,40,30,22}) do
+								local mid=IC+dir*R*f+V(-dir.Z,0,dir.X)*lateral
+								local lo,hi=mid-along*L/2,mid+along*L/2
+								local inRim=V(lo.X-IC.X,0,lo.Z-IC.Z).Magnitude<R-RIM-8 and V(hi.X-IC.X,0,hi.Z-IC.Z).Magnitude<R-RIM-8
+								if inRim and not blocked(index,mid,V(-along.Z,0,along.X),along,LANE_W/2+1,L/2+1,IC.Y,2) then
+									local probe=Instance.new("Part")
+									probe.Size,probe.CFrame=V(LANE_W,.16,L),CFrame.lookAt(mid,hi)
+									local score=fillStreet(probe,true)
+									probe:Destroy()
+									local key=score*1000-f*R
+									if score>=2 and (not best or key>best.key) then best={key=key,lo=lo,hi=hi} end
+									break
+								end
+							end
+						end
+					end
+				end
+				if not best then break end
+				local lane=path(isle,best.lo,best.hi,LANE_W,C("B7A98A"),LANE_LIFT)
+				lane:SetAttribute("SettlementLane",isleName)
+				insert(index,lane)
+				fillStreet(lane)
+			end
+			-- Hamlet fill: the rest of the quota on open meadow, each house
+			-- turned to face the nearest street (its door on that side), else
+			-- the island centre, with the same lot rules (apron, alleys, rim).
+			local streets={}
+			for _,obj in ipairs(isle:GetDescendants()) do
+				if obj:IsA("BasePart") and obj.Name=="Path" then table.insert(streets,obj) end
+			end
+			local function facingFor(pos)
+				local bestD,toward=math.huge,nil
+				for _,p in ipairs(streets) do
+					local q=p.CFrame:PointToObjectSpace(pos)
+					local along=math.clamp(q.Z,-p.Size.Z/2,p.Size.Z/2)
+					local foot=p.CFrame*V(0,0,along)
+					local d=V(foot.X-pos.X,0,foot.Z-pos.Z).Magnitude
+					if d<bestD and d<36 then bestD,toward=d,V(foot.X,pos.Y,foot.Z) end
+				end
+				if not toward or bestD<1 then toward=V(IC.X,pos.Y,IC.Z) end
+				if V(toward.X-pos.X,0,toward.Z-pos.Z).Magnitude<1 then toward=pos+V(0,0,-1) end
+				return toward
+			end
+			for _,f in ipairs({.3,.38,.46,.54,.62,.22,.7,.14}) do
+				for k=0,71 do
+					if count>=style.quota then break end
+					local a=math.rad(k*5+isleIndex*13+f*90)
+					local pos=IC+V(math.cos(a),0,math.sin(a))*R*f
+					local toward=facingFor(pos)
+					for j=0,#style.types-1 do
+						local name=style.types[(slotIndex+j)%#style.types+1]
+						local cf=CFrame.lookAt(pos,toward)
+						local c,r,l,hx,hz,h=lotFor(name,cf)
+						local inRim=true
+						for _,sx in ipairs({-1,1}) do for _,sz in ipairs({-1,1}) do
+							local corner=c+r*hx*sx+l*hz*sz
+							if V(corner.X-IC.X,0,corner.Z-IC.Z).Magnitude>R-RIM then inRim=false end
+						end end
+						if inRim and not blocked(index,c,r,l,hx,hz,IC.Y,h) then
+							local tints=style.tints[name] or {}
+							local tint=tints[slotIndex%math.max(1,#tints)+1]
+							local m,host=B.place(isle,name,cf,{tint=tint and C(tint),color=FACADE_COLOR[name]})
+							m:SetAttribute("Settlement",isleName)
+							local lot={c,r,l,hx,hz,h}
+							claim(index,lot,IC.Y)
+							table.insert(placed,{model=m,host=host,isle=isleName,name=name,lot=lot})
+							count+=1
+							slotIndex+=1
+							break
+						end
+					end
+				end
+			end
+		end
+		end
+	end
+	B.settleSeconds=(B.settleSeconds or 0)+os.clock()-started
+end
+Buildings.settle({["Compass Quay"]=true})
+-- End Settlements, part 1.
+
+-------------------------------------------------------------------------------
 -- World Art & Regions (World Art & Regions team; self-contained section).
 -- docs/DEPTH-CONTRACT.md §30. Data: Data.RegionArt.
 --   * Identity: every static island Model carries IsleTitle / IsleEpithet /
@@ -4690,7 +5217,6 @@ end
 				local l=RA.Regions[f.region].landmark
 				local target=built[l.id] and built[l.id].CFrame.Position
 				local pos
-				-- NPC_CLEAR each side: folk stand >= 6 studs from every other NPC.
 				if f.role=="WarpKeeper" then pos=near(host,V(56,0,60),NPC_CLEAR,22,60) end
 				if not pos and target and host:IsAncestorOf(built[l.id]) then pos=near(host,target,NPC_CLEAR,14,46) end
 				pos=pos or spot(host,i*47,NPC_CLEAR,{.35,.45,.25,.55,.6})
@@ -4786,245 +5312,9 @@ end)()
 -- End World Art & Regions section.
 
 -------------------------------------------------------------------------------
--- Exploration & Factions (Exploration & Factions team; self-contained section).
--- Mote Shrines: one Waystone per region (Data.Exploration.ShrineIsle); prompt
--- IsleAction "moteShrine", IsleItem <region>, IsleRegion <region> (the server
--- claims milestone steps and the region bonus); triggering also sets the
--- player's IsleStation "Motes" and bumps IsleStationVisit (Journal › Motes).
--- Faction standards: one Banner per faction on its home island; prompt
--- IsleAction "factionBoard", IsleItem <faction>, IsleRegion <its island's region>,
--- IsleStation "Factions". Both kinds set IsleStation only after the region
--- gate passes (player attribute <Region>Unlocked == true).
--- The 78 Aether Motes themselves are never built here: motes.client.lua draws
--- them locally from Data.Exploration (no server parts). Parts: 9 shrine
--- stones + 3 banner standards (§28: pole + cloth, 6) + 4 waypoint anchors (Waypoint_MoteShrine on Compass
--- Quay, Waypoint_Faction_<id>) = 19. Models carry ExploreContent = true.
--------------------------------------------------------------------------------
-do
-	local EX,FA=Data.Exploration,Data.Factions
-	if EX and FA then
-		local FLOOR={Meadow=true,["Floating foundation"]=true,["Mineral stratum"]=true,["Lower basalt"]=true,["Fractured cliff"]=true,
-			["Keel rock"]=true,["Edge guard"]=true,["Aether vein"]=true,["Shore ledge"]=true,Path=true,Wildflowers=true}
-		local taken={}
-		local function blocked(host,pos,radius)
-			for _,q in ipairs(taken) do if V(pos.X-q.X,0,pos.Z-q.Z).Magnitude<radius+6 then return true end end
-			for _,obj in ipairs(host:GetDescendants()) do
-				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
-					local cf,sz=obj.CFrame,obj.Size
-					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
-					local c=cf.Position
-					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
-					local dz=math.max(0,math.abs(pos.Z-c.Z)-ext("Z"))
-					local ey=ext("Y")
-					if dx*dx+dz*dz<radius*radius and c.Y+ey>pos.Y+.3 and c.Y-ey<pos.Y+9 then return true end
-				end
-			end
-			return false
-		end
-		local function spot(host,angle,radius)
-			local IC,R=host:GetAttribute("IslandCenter"),host:GetAttribute("IslandRadius")
-			local first
-			for _,f in ipairs({.5,.4,.6,.3,.68}) do
-				for k=0,23 do
-					local a=math.rad(angle+(if k%2==0 then 1 else -1)*math.ceil(k/2)*15)
-					local pos=IC+V(math.cos(a),0,math.sin(a))*R*f
-					first=first or pos
-					if not blocked(host,pos,radius) then table.insert(taken,pos) return pos end
-				end
-			end
-			table.insert(taken,first)
-			return first
-		end
-		-- The journal page opens only once the region gate passes (the server's
-		-- <Region>Unlocked attribute), matching the server's IsleRegion check.
-		local function opens(q,page,region)
-			q.Triggered:Connect(function(player)
-				if region and player:GetAttribute(region.."Unlocked")~=true then return end
-				player:SetAttribute("IsleStation",page)
-				player:SetAttribute("IsleStationVisit",(player:GetAttribute("IsleStationVisit") or 0)+1)
-			end)
-		end
-		local moteTint=C(EX.MOTE.color)
-		for i,region in ipairs(EX.RegionOrder) do
-			local host=islandsFolder:FindFirstChild(EX.ShrineIsle[region])
-			if host then
-				local pos=spot(host,35+i*40,4)
-				local m=group("Mote Shrine",host)
-				m:SetAttribute("ExploreContent",true)
-				m:SetAttribute("MoteShrine",region)
-				local stone=block(m,"Mote shrine stone",pos+V(0,2.5,0),V(2.4,5,2.4),lighten(rock,.2),ST,true)
-				meshSlot(stone,"Waystone",moteTint)
-				local q=prompt(stone,"Commune","Mote Shrine · "..(Data.RegionById[region] and Data.RegionById[region].name or region),"moteShrine",region)
-				q:SetAttribute("IsleRegion",region)
-				opens(q,"Motes",region)
-				if region=="Hub" then anchor(m,"Waypoint_MoteShrine",pos+V(0,0,-5),pos) end
-			end
-		end
-		for i,id in ipairs(FA.Order) do
-			local def=FA.Factions[id]
-			local host=islandsFolder:FindFirstChild(def.isle)
-			if host then
-				local pos=spot(host,300+i*25,4)
-				local m=group("Faction standard "..def.short,host)
-				m:SetAttribute("ExploreContent",true)
-				m:SetAttribute("Faction",id)
-				-- Banner standard (§28): the faction's cloth carries its name and the prompt.
-				local IC=host:GetAttribute("IslandCenter")
-				local standard=signAt(m,facing(pos,V(IC.X,pos.Y,IC.Z)),def.name,"FACTION   /   HAIL THE STANDARD",C(def.color),9,{kind="banner"})
-				local q=prompt(standard,"Hail",def.name,"factionBoard",id)
-				local home=EX.IsleRegion[def.isle]
-				q:SetAttribute("IsleRegion",home)
-				opens(q,"Factions",home)
-				anchor(m,"Waypoint_Faction_"..id,pos+V(0,0,-5),pos)
-			end
-		end
-	end
-end
--- End Exploration & Factions section.
-
--------------------------------------------------------------------------------
--- Lairs (Bossing team; self-contained section). One lair altar per boss
--- (Data.Lairs.Order) on its island: a dais, the altar stone (mesh slot
--- "Obelisk", tinted the boss colour) carrying the prompt IsleAction
--- "lairEnter", IsleItem <boss>, IsleRegion <the island's region> (gate),
--- two torches (mesh slot "Torch") and the anchor Waypoint_Lair_<boss> where
--- lairs.server.lua returns fighters. Parts: 4 x (dais + stone + 2 torches +
--- anchor) = 20, no lights. The arenas themselves are built on demand by
--- lairs.server.lua (off-map, destroyed after each fight). Models carry
--- LairContent = true and LairAltar = <boss>.
--------------------------------------------------------------------------------
-do
-	local LR=Data.Lairs
-	if LR then
-		local FLOOR={Meadow=true,["Floating foundation"]=true,["Mineral stratum"]=true,["Lower basalt"]=true,["Fractured cliff"]=true,
-			["Keel rock"]=true,["Edge guard"]=true,["Aether vein"]=true,["Shore ledge"]=true,Path=true,Wildflowers=true}
-		local function blocked(host,pos,radius)
-			for _,obj in ipairs(host:GetDescendants()) do
-				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
-					local cf,sz=obj.CFrame,obj.Size
-					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
-					local c=cf.Position
-					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
-					local dz=math.max(0,math.abs(pos.Z-c.Z)-ext("Z"))
-					local ey=ext("Y")
-					if dx*dx+dz*dz<radius*radius and c.Y+ey>pos.Y+.3 and c.Y-ey<pos.Y+9 then return true end
-				end
-			end
-			return false
-		end
-		local function spot(host,angle,radius)
-			local IC,R=host:GetAttribute("IslandCenter"),host:GetAttribute("IslandRadius")
-			local first
-			for _,f in ipairs({.55,.45,.65,.35,.7}) do
-				for k=0,23 do
-					local a=math.rad(angle+(if k%2==0 then 1 else -1)*math.ceil(k/2)*15)
-					local pos=IC+V(math.cos(a),0,math.sin(a))*R*f
-					first=first or pos
-					if not blocked(host,pos,radius) then return pos end
-				end
-			end
-			return first
-		end
-		for i,id in ipairs(LR.Order) do
-			local def=LR.Bosses[id]
-			local host=islandsFolder:FindFirstChild(def.isle)
-			if host then
-				local pos=spot(host,200+i*37,6)
-				local tint=C(def.color)
-				local m=group("Lair altar "..def.short,host)
-				m:SetAttribute("LairContent",true)
-				m:SetAttribute("LairAltar",id)
-				block(m,"Lair altar dais",pos+V(0,.4,0),V(6,.8,6),darken(C(def.arenaColor),.2),ST,true)
-				local stone=block(m,"Lair altar",pos+V(0,2.8,0),V(2.6,4,2.6),lighten(rock,.1),ST,true)
-				meshSlot(stone,"Obelisk",tint)
-				local q=prompt(stone,"Summon ("..def.fee.." coins)",def.lairName.." · "..def.short.." (Combat "..def.combat..")","lairEnter",id)
-				q:SetAttribute("IsleRegion",def.region)
-				for side=-1,1,2 do
-					local torch=block(m,"Lair torch",pos+V(2.3*side,2.3,-1.6),V(.6,3,.6),timber,WO,false)
-					meshSlot(torch,"Torch",tint)
-				end
-				anchor(m,"Waypoint_Lair_"..id,pos+V(0,0,-5),pos)
-			end
-		end
-	end
-end
--- End Lairs section.
-
--------------------------------------------------------------------------------
--- Raids (Raid team; self-contained section, docs/DEPTH-CONTRACT.md §38). The
--- Undertide portal on Tidewater Shoals (Data.Raids.ISLE): a tiered dais, the
--- portal arch (mesh slot "ObservatoryArch", tinted tide-teal) whose shimmer
--- pane carries the prompt IsleAction "raidPortal", IsleRegion
--- Data.Raids.REGION (gate), two braziers (mesh slot "Torch", one light), two
--- coral fans and the anchor Waypoint_RaidPortal (the return point and the
--- party board's range centre; quest helper / Wayfinder target
--- "anchor:Waypoint_RaidPortal"). Parts: dais 2 + arch 1 + pane 1 + braziers 2
--- + coral 2 + anchor 1 = 9. The vault complexes are built on demand by
--- raids.server.lua (off-map, destroyed after each run). Model attribute
--- RaidContent = true.
--------------------------------------------------------------------------------
-do
-	local RD=Data.Raids
-	local host=RD and islandsFolder:FindFirstChild(RD.ISLE)
-	if host then
-		local IC,R=host:GetAttribute("IslandCenter"),host:GetAttribute("IslandRadius")
-		local FLOOR={Meadow=true,["Floating foundation"]=true,["Mineral stratum"]=true,["Lower basalt"]=true,["Fractured cliff"]=true,
-			["Keel rock"]=true,["Edge guard"]=true,["Aether vein"]=true,["Shore ledge"]=true,Path=true,Wildflowers=true}
-		local function blocked(pos,radius)
-			for _,obj in ipairs(host:GetDescendants()) do
-				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
-					local cf,sz=obj.CFrame,obj.Size
-					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
-					local c=cf.Position
-					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
-					local dz=math.max(0,math.abs(pos.Z-c.Z)-ext("Z"))
-					local ey=ext("Y")
-					if dx*dx+dz*dz<radius*radius and c.Y+ey>pos.Y+.3 and c.Y-ey<pos.Y+12 then return true end
-				end
-			end
-			return false
-		end
-		local pos
-		if typeof(IC)=="Vector3" and type(R)=="number" then
-			for _,f in ipairs({.5,.4,.6,.3,.68}) do
-				for k=0,23 do
-					local a=math.rad(310+(if k%2==0 then 1 else -1)*math.ceil(k/2)*15)
-					local p=IC+V(math.cos(a),0,math.sin(a))*R*f
-					pos=pos or p
-					if not blocked(p,7) then pos=p break end
-				end
-				if pos and not blocked(pos,7) then break end
-			end
-		end
-		if pos then
-			local tide,teal=C("1E5A63"),C("3FB8AF")
-			local m=group("Undertide portal",host)
-			m:SetAttribute("RaidContent",true)
-			local face=CFrame.lookAt(pos,V(IC.X,pos.Y,IC.Z))
-			block(m,"Raid portal dais",pos+V(0,.3,0),V(13,.6,13),darken(tide,.15),ST,true)
-			block(m,"Raid portal step",pos+V(0,.8,0),V(9,.4,9),lighten(tide,.12),ST,true)
-			local arch=part(m,"Raid portal arch",V(9,11,2),face+V(0,6.5,0),lighten(rock,.1),ST,false)
-			meshSlot(arch,"ObservatoryArch",teal,nil,"Uniform")
-			local pane=part(m,"Raid portal shimmer",V(5.6,8,.4),face+V(0,5.2,0),teal,Enum.Material.Neon,false)
-			pane.Transparency=.35
-			local q=prompt(pane,"Raid board","The Undertide Vaults · Combat "..RD.COMBAT.." · "..RD.MIN_PARTY.."–"..RD.MAX_PARTY.." raiders","raidPortal",RD.ID)
-			q:SetAttribute("IsleRegion",RD.REGION)
-			q.HoldDuration=.36
-			for side=-1,1,2 do
-				local brazier=part(m,"Raid portal brazier",V(1.4,3.4,1.4),face*CFrame.new(side*5.6,2.5,-1.5),timber,WO,false)
-				meshSlot(brazier,"Torch",teal)
-				if side==-1 then light(brazier,teal,1.1,22) end
-				local coral=part(m,"Raid portal coral",V(2.6,3,2.6),face*CFrame.new(side*4.8,2.1,2.5),C("E58FB0"),SM,false)
-				meshSlot(coral,"CoralFan",C("E58FB0"),nil,"Uniform")
-			end
-			anchor(m,"Waypoint_RaidPortal",(face*CFrame.new(0,0,-6)).Position,pos)
-		end
-	end
-end
--- End Raids section.
-
--------------------------------------------------------------------------------
 -- Skyward Vents (MMO Features, docs/DEPTH-CONTRACT.md §31; Data.Vents).
+-- (§40: built right after World Art & Regions, before the Settlements, so the
+-- houses never take a vent site.)
 -- One collider pad per vent (6 static parts, `Caldera` mesh slot + an updraft
 -- emitter, tag SkywardVent, attributes VentId / VentLanding). Its prompt
 -- (IsleVent = id) asks IsleRegionAccess for the destination region and the
@@ -5179,6 +5469,251 @@ do
 end
 -- End Skyward Vents.
 
+-- Settlements, part 2 (§40): every island but Compass Quay (settled before
+-- World Art & Regions), after the Skyward Vents so no house takes a vent site.
+local others={}
+for name in pairs(Buildings.STYLE) do if name~="Compass Quay" then others[name]=true end end
+Buildings.settle(others)
+-- End Settlements section.
+
+-------------------------------------------------------------------------------
+-- Exploration & Factions (Exploration & Factions team; self-contained section).
+-- Mote Shrines: one Waystone per region (Data.Exploration.ShrineIsle); prompt
+-- IsleAction "moteShrine", IsleItem <region>, IsleRegion <region> (the server
+-- claims milestone steps and the region bonus); triggering also sets the
+-- player's IsleStation "Motes" and bumps IsleStationVisit (Journal › Motes).
+-- Faction standards: one Banner per faction on its home island; prompt
+-- IsleAction "factionBoard", IsleItem <faction>, IsleRegion <its island's region>,
+-- IsleStation "Factions". Both kinds set IsleStation only after the region
+-- gate passes (player attribute <Region>Unlocked == true).
+-- The 78 Aether Motes themselves are never built here: motes.client.lua draws
+-- them locally from Data.Exploration (no server parts). Parts: 9 shrine
+-- stones + 3 banner standards (§28: pole + cloth, 6) + 4 waypoint anchors (Waypoint_MoteShrine on Compass
+-- Quay, Waypoint_Faction_<id>) = 19. Models carry ExploreContent = true.
+-------------------------------------------------------------------------------
+do
+	local EX,FA=Data.Exploration,Data.Factions
+	if EX and FA then
+		local FLOOR={Meadow=true,["Floating foundation"]=true,["Mineral stratum"]=true,["Lower basalt"]=true,["Fractured cliff"]=true,
+			["Keel rock"]=true,["Edge guard"]=true,["Aether vein"]=true,["Shore ledge"]=true,Wildflowers=true} -- §40: paths (village lanes) block; see below
+		local taken={}
+		local function blocked(host,pos,radius)
+			for _,q in ipairs(taken) do if V(pos.X-q.X,0,pos.Z-q.Z).Magnitude<radius+6 then return true end end
+			for _,obj in ipairs(host:GetDescendants()) do
+				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
+					local cf,sz=obj.CFrame,obj.Size
+					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
+					local c=cf.Position
+					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
+					local dz=math.max(0,math.abs(pos.Z-c.Z)-ext("Z"))
+					local ey=ext("Y")
+					if dx*dx+dz*dz<radius*radius and c.Y+ey>(if obj.Name=="Path" then pos.Y-1 else pos.Y+.3) and c.Y-ey<pos.Y+9 then return true end
+				end
+			end
+			return false
+		end
+		local function spot(host,angle,radius)
+			local IC,R=host:GetAttribute("IslandCenter"),host:GetAttribute("IslandRadius")
+			local first
+			for _,f in ipairs({.5,.4,.6,.3,.68}) do
+				for k=0,23 do
+					local a=math.rad(angle+(if k%2==0 then 1 else -1)*math.ceil(k/2)*15)
+					local pos=IC+V(math.cos(a),0,math.sin(a))*R*f
+					first=first or pos
+					if not blocked(host,pos,radius) then table.insert(taken,pos) return pos end
+				end
+			end
+			table.insert(taken,first)
+			return first
+		end
+		-- The journal page opens only once the region gate passes (the server's
+		-- <Region>Unlocked attribute), matching the server's IsleRegion check.
+		local function opens(q,page,region)
+			q.Triggered:Connect(function(player)
+				if region and player:GetAttribute(region.."Unlocked")~=true then return end
+				player:SetAttribute("IsleStation",page)
+				player:SetAttribute("IsleStationVisit",(player:GetAttribute("IsleStationVisit") or 0)+1)
+			end)
+		end
+		local moteTint=C(EX.MOTE.color)
+		for i,region in ipairs(EX.RegionOrder) do
+			local host=islandsFolder:FindFirstChild(EX.ShrineIsle[region])
+			if host then
+				local pos=spot(host,35+i*40,4)
+				local m=group("Mote Shrine",host)
+				m:SetAttribute("ExploreContent",true)
+				m:SetAttribute("MoteShrine",region)
+				local stone=block(m,"Mote shrine stone",pos+V(0,2.5,0),V(2.4,5,2.4),lighten(rock,.2),ST,true)
+				meshSlot(stone,"Waystone",moteTint)
+				local q=prompt(stone,"Commune","Mote Shrine · "..(Data.RegionById[region] and Data.RegionById[region].name or region),"moteShrine",region)
+				q:SetAttribute("IsleRegion",region)
+				opens(q,"Motes",region)
+				if region=="Hub" then anchor(m,"Waypoint_MoteShrine",pos+V(0,0,-5),pos) end
+			end
+		end
+		for i,id in ipairs(FA.Order) do
+			local def=FA.Factions[id]
+			local host=islandsFolder:FindFirstChild(def.isle)
+			if host then
+				local pos=spot(host,300+i*25,4)
+				local m=group("Faction standard "..def.short,host)
+				m:SetAttribute("ExploreContent",true)
+				m:SetAttribute("Faction",id)
+				-- Banner standard (§28): the faction's cloth carries its name and the prompt.
+				local IC=host:GetAttribute("IslandCenter")
+				local standard=signAt(m,facing(pos,V(IC.X,pos.Y,IC.Z)),def.name,"FACTION   /   HAIL THE STANDARD",C(def.color),9,{kind="banner"})
+				local q=prompt(standard,"Hail",def.name,"factionBoard",id)
+				local home=EX.IsleRegion[def.isle]
+				q:SetAttribute("IsleRegion",home)
+				opens(q,"Factions",home)
+				anchor(m,"Waypoint_Faction_"..id,pos+V(0,0,-5),pos)
+			end
+		end
+	end
+end
+-- End Exploration & Factions section.
+
+-------------------------------------------------------------------------------
+-- Lairs (Bossing team; self-contained section). One lair altar per boss
+-- (Data.Lairs.Order) on its island: a dais, the altar stone (mesh slot
+-- "Obelisk", tinted the boss colour) carrying the prompt IsleAction
+-- "lairEnter", IsleItem <boss>, IsleRegion <the island's region> (gate),
+-- two torches (mesh slot "Torch") and the anchor Waypoint_Lair_<boss> where
+-- lairs.server.lua returns fighters. Parts: 4 x (dais + stone + 2 torches +
+-- anchor) = 20, no lights. The arenas themselves are built on demand by
+-- lairs.server.lua (off-map, destroyed after each fight). Models carry
+-- LairContent = true and LairAltar = <boss>.
+-------------------------------------------------------------------------------
+do
+	local LR=Data.Lairs
+	if LR then
+		local FLOOR={Meadow=true,["Floating foundation"]=true,["Mineral stratum"]=true,["Lower basalt"]=true,["Fractured cliff"]=true,
+			["Keel rock"]=true,["Edge guard"]=true,["Aether vein"]=true,["Shore ledge"]=true,Wildflowers=true} -- §40: paths (village lanes) block; see below
+		local function blocked(host,pos,radius)
+			for _,obj in ipairs(host:GetDescendants()) do
+				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
+					local cf,sz=obj.CFrame,obj.Size
+					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
+					local c=cf.Position
+					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
+					local dz=math.max(0,math.abs(pos.Z-c.Z)-ext("Z"))
+					local ey=ext("Y")
+					if dx*dx+dz*dz<radius*radius and c.Y+ey>(if obj.Name=="Path" then pos.Y-1 else pos.Y+.3) and c.Y-ey<pos.Y+9 then return true end
+				end
+			end
+			return false
+		end
+		local function spot(host,angle,radius)
+			local IC,R=host:GetAttribute("IslandCenter"),host:GetAttribute("IslandRadius")
+			local first
+			for _,f in ipairs({.55,.45,.65,.35,.7}) do
+				for k=0,23 do
+					local a=math.rad(angle+(if k%2==0 then 1 else -1)*math.ceil(k/2)*15)
+					local pos=IC+V(math.cos(a),0,math.sin(a))*R*f
+					first=first or pos
+					if not blocked(host,pos,radius) then return pos end
+				end
+			end
+			return first
+		end
+		for i,id in ipairs(LR.Order) do
+			local def=LR.Bosses[id]
+			local host=islandsFolder:FindFirstChild(def.isle)
+			if host then
+				local pos=spot(host,200+i*37,6)
+				local tint=C(def.color)
+				local m=group("Lair altar "..def.short,host)
+				m:SetAttribute("LairContent",true)
+				m:SetAttribute("LairAltar",id)
+				block(m,"Lair altar dais",pos+V(0,.4,0),V(6,.8,6),darken(C(def.arenaColor),.2),ST,true)
+				local stone=block(m,"Lair altar",pos+V(0,2.8,0),V(2.6,4,2.6),lighten(rock,.1),ST,true)
+				meshSlot(stone,"Obelisk",tint)
+				local q=prompt(stone,"Summon ("..def.fee.." coins)",def.lairName.." · "..def.short.." (Combat "..def.combat..")","lairEnter",id)
+				q:SetAttribute("IsleRegion",def.region)
+				for side=-1,1,2 do
+					local torch=block(m,"Lair torch",pos+V(2.3*side,2.3,-1.6),V(.6,3,.6),timber,WO,false)
+					meshSlot(torch,"Torch",tint)
+				end
+				anchor(m,"Waypoint_Lair_"..id,pos+V(0,0,-5),pos)
+			end
+		end
+	end
+end
+-- End Lairs section.
+
+-------------------------------------------------------------------------------
+-- Raids (Raid team; self-contained section, docs/DEPTH-CONTRACT.md §38). The
+-- Undertide portal on Tidewater Shoals (Data.Raids.ISLE): a tiered dais, the
+-- portal arch (mesh slot "ObservatoryArch", tinted tide-teal) whose shimmer
+-- pane carries the prompt IsleAction "raidPortal", IsleRegion
+-- Data.Raids.REGION (gate), two braziers (mesh slot "Torch", one light), two
+-- coral fans and the anchor Waypoint_RaidPortal (the return point and the
+-- party board's range centre; quest helper / Wayfinder target
+-- "anchor:Waypoint_RaidPortal"). Parts: dais 2 + arch 1 + pane 1 + braziers 2
+-- + coral 2 + anchor 1 = 9. The vault complexes are built on demand by
+-- raids.server.lua (off-map, destroyed after each run). Model attribute
+-- RaidContent = true.
+-------------------------------------------------------------------------------
+do
+	local RD=Data.Raids
+	local host=RD and islandsFolder:FindFirstChild(RD.ISLE)
+	if host then
+		local IC,R=host:GetAttribute("IslandCenter"),host:GetAttribute("IslandRadius")
+		local FLOOR={Meadow=true,["Floating foundation"]=true,["Mineral stratum"]=true,["Lower basalt"]=true,["Fractured cliff"]=true,
+			["Keel rock"]=true,["Edge guard"]=true,["Aether vein"]=true,["Shore ledge"]=true,Wildflowers=true} -- §40: paths (village lanes) block; see below
+		local function blocked(pos,radius)
+			for _,obj in ipairs(host:GetDescendants()) do
+				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
+					local cf,sz=obj.CFrame,obj.Size
+					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
+					local c=cf.Position
+					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
+					local dz=math.max(0,math.abs(pos.Z-c.Z)-ext("Z"))
+					local ey=ext("Y")
+					if dx*dx+dz*dz<radius*radius and c.Y+ey>(if obj.Name=="Path" then pos.Y-1 else pos.Y+.3) and c.Y-ey<pos.Y+12 then return true end
+				end
+			end
+			return false
+		end
+		local pos
+		if typeof(IC)=="Vector3" and type(R)=="number" then
+			for _,f in ipairs({.5,.4,.6,.3,.68}) do
+				for k=0,23 do
+					local a=math.rad(310+(if k%2==0 then 1 else -1)*math.ceil(k/2)*15)
+					local p=IC+V(math.cos(a),0,math.sin(a))*R*f
+					pos=pos or p
+					if not blocked(p,7) then pos=p break end
+				end
+				if pos and not blocked(pos,7) then break end
+			end
+		end
+		if pos then
+			local tide,teal=C("1E5A63"),C("3FB8AF")
+			local m=group("Undertide portal",host)
+			m:SetAttribute("RaidContent",true)
+			local face=CFrame.lookAt(pos,V(IC.X,pos.Y,IC.Z))
+			block(m,"Raid portal dais",pos+V(0,.3,0),V(13,.6,13),darken(tide,.15),ST,true)
+			block(m,"Raid portal step",pos+V(0,.8,0),V(9,.4,9),lighten(tide,.12),ST,true)
+			local arch=part(m,"Raid portal arch",V(9,11,2),face+V(0,6.5,0),lighten(rock,.1),ST,false)
+			meshSlot(arch,"ObservatoryArch",teal,nil,"Uniform")
+			local pane=part(m,"Raid portal shimmer",V(5.6,8,.4),face+V(0,5.2,0),teal,Enum.Material.Neon,false)
+			pane.Transparency=.35
+			local q=prompt(pane,"Raid board","The Undertide Vaults · Combat "..RD.COMBAT.." · "..RD.MIN_PARTY.."–"..RD.MAX_PARTY.." raiders","raidPortal",RD.ID)
+			q:SetAttribute("IsleRegion",RD.REGION)
+			q.HoldDuration=.36
+			for side=-1,1,2 do
+				local brazier=part(m,"Raid portal brazier",V(1.4,3.4,1.4),face*CFrame.new(side*5.6,2.5,-1.5),timber,WO,false)
+				meshSlot(brazier,"Torch",teal)
+				if side==-1 then light(brazier,teal,1.1,22) end
+				local coral=part(m,"Raid portal coral",V(2.6,3,2.6),face*CFrame.new(side*4.8,2.1,2.5),C("E58FB0"),SM,false)
+				meshSlot(coral,"CoralFan",C("E58FB0"),nil,"Uniform")
+			end
+			anchor(m,"Waypoint_RaidPortal",(face*CFrame.new(0,0,-6)).Position,pos)
+		end
+	end
+end
+-- End Raids section.
+
 -------------------------------------------------------------------------------
 -- Isle Council Hall (Isle Council team; docs/DEPTH-CONTRACT.md §36). A
 -- columned hall on Compass Quay: a raised dais with six columns (Column mesh
@@ -5317,7 +5852,7 @@ do
 	local B,EX=Data.Beaconry,Data.Exploration
 	if B and EX and EX.ShrineIsle then
 		local FLOOR={Meadow=true,["Floating foundation"]=true,["Mineral stratum"]=true,["Lower basalt"]=true,["Fractured cliff"]=true,
-			["Keel rock"]=true,["Edge guard"]=true,["Aether vein"]=true,["Shore ledge"]=true,Path=true,Wildflowers=true}
+			["Keel rock"]=true,["Edge guard"]=true,["Aether vein"]=true,["Shore ledge"]=true,Wildflowers=true} -- §40: paths (village lanes) block; see below
 		local taken={}
 		local function blocked(host,pos,radius)
 			for _,q in ipairs(taken) do if V(pos.X-q.X,0,pos.Z-q.Z).Magnitude<radius+8 then return true end end
@@ -5336,7 +5871,7 @@ do
 					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
 					local dz=math.max(0,math.abs(pos.Z-c.Z)-ext("Z"))
 					local ey=ext("Y")
-					if dx*dx+dz*dz<radius*radius and c.Y+ey>pos.Y+.3 and c.Y-ey<pos.Y+12 then return true end
+					if dx*dx+dz*dz<radius*radius and c.Y+ey>(if obj.Name=="Path" then pos.Y-1 else pos.Y+.3) and c.Y-ey<pos.Y+12 then return true end
 				end
 				-- Keep clear of every prompt on the isle (stations, nodes, shrines).
 				if obj:IsA("ProximityPrompt") and obj.Parent and obj.Parent:IsA("BasePart") then
@@ -5450,6 +5985,38 @@ do
 	end
 end
 -- <<< END QoL Depth <<<
+-- Hall furnishings (World Art pass 2, §40): the Guild Hall pavilion gains a
+-- rug runner, two trestle tables with benches and candles, a wall bench and an
+-- iron chandelier (one HallFurnishings mesh on an invisible host), placed last
+-- and only if its whole box is clear of every part, prompt and anchor there.
+do
+	local terrace=islandsFolder:FindFirstChild("Guild Terrace")
+	local hall=terrace and terrace:FindFirstChild("Guild Hall",true)
+	local floor=hall and hall:FindFirstChild("Hall floor")
+	if floor then
+		local centre,size=Buildings.fitOf(BUILDING_KIT.HallFurnishings)
+		local p=floor.CFrame.Position
+		local hostCF=CFrame.new(p.X+3.6,p.Y+floor.Size.Y/2,p.Z)*CFrame.new(centre)
+		local lo,hi=hostCF.Position-size/2,hostCF.Position+size/2
+		local clear=true
+		for _,obj in ipairs(terrace:GetDescendants()) do
+			if obj:IsA("BasePart") and obj~=floor and obj.Name~="Meadow" and (obj.Transparency<1 or obj.CanCollide
+				or obj:FindFirstChildOfClass("ProximityPrompt") or string.find(obj.Name,"^Anchor_")) then
+				local c,s,cf=obj.CFrame.Position,obj.Size/2,obj.CFrame
+				local e=V(math.abs(cf.RightVector.X)*s.X+math.abs(cf.UpVector.X)*s.Y+math.abs(cf.LookVector.X)*s.Z,
+					math.abs(cf.RightVector.Y)*s.X+math.abs(cf.UpVector.Y)*s.Y+math.abs(cf.LookVector.Y)*s.Z,
+					math.abs(cf.RightVector.Z)*s.X+math.abs(cf.UpVector.Z)*s.Y+math.abs(cf.LookVector.Z)*s.Z)
+				if c.X-e.X<hi.X and c.X+e.X>lo.X and c.Y-e.Y<hi.Y and c.Y+e.Y>lo.Y and c.Z-e.Z<hi.Z and c.Z+e.Z>lo.Z then clear=false break end
+			end
+		end
+		if clear then
+			local host=part(hall,"Hall furnishings",size,hostCF,cream,SM,false)
+			host.Transparency,host.CastShadow,host.CanQuery=1,false,false
+			meshSlot(host,"HallFurnishings",C("3F6FB5"))
+			host:SetAttribute("Interior","HallFurnishings")
+		end
+	end
+end
 
 -- Signs (§28 performance): drop Back faces nobody can read on the static world.
 Signs.cullBacks(world)
