@@ -1050,6 +1050,20 @@ end
 -- director lights the panes after dusk, §40) and the tag AetherBuilding.
 -------------------------------------------------------------------------------
 local Buildings={PLASTER=C("E6DCC6"),FLOOR=C("8A6240"),LIGHT=C("FFC27A"),hosts={}}
+-- Clearance box of a part: its declared mesh box (ShapeBox / ShapeBoxOffset:
+-- sign frames, buildings) when it has one, else the part itself. Every
+-- placement search after the settlements uses it (§40 QC L2), like the
+-- settlement index, so nothing lands inside a house's roof / porch overhang.
+function Buildings.box(obj)
+	local cf,sz=obj.CFrame,obj.Size
+	local declared=obj:GetAttribute("ShapeBox")
+	if typeof(declared)=="Vector3" then
+		local offset=obj:GetAttribute("ShapeBoxOffset")
+		cf=cf*CFrame.new(if typeof(offset)=="Vector3" then offset else V(0,0,0))
+		sz=declared
+	end
+	return cf,sz
+end
 do
 	local B=Buildings
 	function B.fitOf(def)
@@ -1073,6 +1087,28 @@ do
 		host:SetAttribute("WindowGlow",table.concat(panes,";"))
 		host:SetAttribute("GlowSite","window")
 	end
+	-- Door-step heights (the kit's plinth P: art/building-shapes.cjs; the
+	-- StoneCottage door has no step, the LogLodge has its porch deck).
+	B.STOOP={TimberHouse=.8,TimberTownhouse=.7,TimberShopfront=.6,ThatchCottage=.6}
+	-- Invisible collider for mesh furniture / porches (§40 QC L6).
+	function B.collider(parent,name,size,cf)
+		local p=part(parent,name,size,cf,B.FLOOR,WO,true)
+		p.Transparency,p.CastShadow=1,false
+		p:SetAttribute("FurnitureCollider",true)
+		return p
+	end
+	-- Furniture colliders per interior mesh, in the hall ground frame (kit
+	-- coordinates): {cx, cy, cz, sx, sy, sz}.
+	B.FURNITURE={
+		TavernInterior={{-3.5,1.59,-2.5,2.2,2.5,2.2},{-3.5,1.59,2.8,2.2,2.5,2.2},{1.2,1.59,.2,2.2,2.5,2.2}, -- table tops (stools stay walk-through)
+			{-7.6,2.94,0,1.2,5.2,4.2}}, -- hearth
+		HallFurnishings={{2.9,1.2,-4.5,4.1,2.4,6},{2.9,1.2,4.5,4.1,2.4,6},{-3.2,.34,0,.7,.68,12}}, -- trestles + benches, wall bench
+	}
+	function B.furniture(parent,name,cf)
+		for _,f in ipairs(B.FURNITURE[name] or {}) do
+			B.collider(parent,"Furniture collider",V(f[4],f[5],f[6]),cf*CFrame.new(f[1],f[2],f[3]))
+		end
+	end
 	-- cf: the ground point at the footprint centre; its LookVector is the
 	-- street (door) side. Returns the model and its host part.
 	function B.place(parent,name,cf,opts)
@@ -1087,6 +1123,15 @@ do
 			host=part(m,"Roofed house",V(def.w,def.h,def.d),cf*CFrame.new(at),opts.color or B.PLASTER,SM,true)
 			slot(host,name,def,at,opts.tint)
 			glow(host,def,at)
+			-- §40 QC L6: the mesh's porch deck (LogLodge) / door step stands
+			-- outside the plaster block: an invisible collider so nobody wades
+			-- through it.
+			if name=="LogLodge" then
+				B.collider(m,"Porch collider",V(def.w-1,.7,2.4),cf*CFrame.new(0,.35,-def.d/2-1.2))
+			elseif B.STOOP[name] and def.door then
+				local h=B.STOOP[name]
+				B.collider(m,"Stoop collider",V(def.door.w+.9,h,.9),cf*CFrame.new(def.door.x,h/2,def.door.z-.45))
+			end
 		else
 			local t,H,o=def.t,def.h,def.opening
 			local at=V(0,def.floor-.25,0)
@@ -1115,6 +1160,7 @@ do
 		local counter=part(model,"Counter",V(def.counter.s[1],def.counter.s[2],def.counter.s[3]),cf*CFrame.new(c),C("5A4030"),WO,true)
 		slot(counter,name,def,c)
 		counter:SetAttribute("Interior",name)
+		B.furniture(model,name,cf)
 		return counter
 	end
 	-- A walk-in hall around a service counter at `pos` facing `toward` (the
@@ -3283,7 +3329,8 @@ do
 		path(terrace,center+V(-16,0,0),center+V(T.x+11,0,0),5)
 		disk(terrace,"Terrace court",tc+V(0,.05,0),4.2,.12,navy,ST,true)
 		disk(terrace,"Court seal",tc+V(0,.13,0),1.4,.1,brass,MT,false)
-		sign(terrace,center+V(-15,0,-6),"Builder's Terrace","CARPENTRY   /   PLAN IN YOUR JOURNAL",brass,90,8)
+		-- §40 QC: the sign stands at the terrace, beside the walk (Data.Island "terrace sign").
+		sign(terrace,center+V(T.x+14,0,-9),"Builder's Terrace","CARPENTRY   /   PLAN IN YOUR JOURNAL",brass,90,8)
 		local built,plinths,portalPrompt={},{},nil
 		local function refreshPortal()
 			if not portalPrompt then return end
@@ -4530,7 +4577,7 @@ do
 			for _,q in ipairs(taken) do if V(pos.X-q.X,0,pos.Z-q.Z).Magnitude<radius+7 then return true end end
 			for _,obj in ipairs(host:GetDescendants()) do
 				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
-					local cf,sz=obj.CFrame,obj.Size
+					local cf,sz=Buildings.box(obj) -- §40 QC L2: declared mesh boxes block whole
 					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
 					local c=cf.Position
 					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
@@ -4650,18 +4697,18 @@ function Buildings.settle(only)
 		["Compass Quay"]={core=true,reserve={{V(-53,0,13),13}},types={"TimberTownhouse","TimberHouse","TimberShopfront","TimberTownhouse"},quota=34,lanes=4,
 			tints={TimberHouse={"B5523B"},TimberTownhouse={"2F6F8F"},TimberShopfront={"D9A441"}},
 			halls={{shell="TavernHall",interior="TavernInterior",title="The Gilded Compass Inn",kicker="COMPASS QUAY   /   INN · HEARTH · ALE",accent="D9A441",tint="7A3E2E"},
-				{shell="ShopHall",interior="ShopInterior",title="Quay Outfitters",kicker="COMPASS QUAY   /   GOODS · SUPPLIES",accent="3C9291",tint="9C3F3A"}}},
+				{shell="ShopHall",interior="ShopInterior",title="Quay Outfitters",kicker="COMPASS QUAY   /   GOODS · SUPPLIES",accent="3C9291",tint="9C3F3A",banner=true}}},
 		["Guild Terrace"]={types={"TimberTownhouse","StoneCottage"},quota=10,tints={TimberTownhouse={"7A3E2E"},StoneCottage={"56677A"}}},
 		["Mosswake Grove"]={types={"ThatchCottage","LogLodge"},quota=10,tints={ThatchCottage={"3C8C7E"},LogLodge={"4E7A48"}},
-			halls={{shell="ShopHall",interior="ShopInterior",title="Mosswake Herbalist",kicker="MOSSWAKE GROVE   /   HERBS · TONICS",accent="6BAF5A",tint="4E7A48"}}},
+			halls={{shell="ShopHall",interior="ShopInterior",title="Mosswake Herbalist",kicker="MOSSWAKE GROVE   /   HERBS · TONICS",accent="6BAF5A",tint="4E7A48",banner=true}}},
 		["Meadow Reach"]={types={"ThatchCottage","TimberHouse"},quota=8,tints={ThatchCottage={"C15557"},TimberHouse={"C9572F"}},
 			halls={{shell="TavernHall",interior="TavernInterior",title="The Sunwheel Tap",kicker="MEADOW REACH   /   ALE · BREAD · REST",accent="E9C46A",tint="9C5B2E"}}},
 		["Brassfall Quarry"]={types={"StoneCottage","TimberShopfront"},quota=10,tints={StoneCottage={"6E4A30"},TimberShopfront={"C98D4F"}},
-			halls={{shell="ShopHall",interior="ShopInterior",title="Brassfall Assay House",kicker="BRASSFALL CAY   /   ASSAY · TOOLS",accent="C9A24E",tint="6E4A30"}}},
+			halls={{shell="ShopHall",interior="ShopInterior",title="Brassfall Assay House",kicker="BRASSFALL CAY   /   ASSAY · TOOLS",accent="C9A24E",tint="6E4A30",banner=true}}},
 		["Cinder Shelf"]={types={"StoneCottage"},quota=5,tints={StoneCottage={"3A4048"}}},
 		["Warden Reach"]={types={"StoneCottage","TimberHouse"},quota=7,tints={StoneCottage={"56677A"},TimberHouse={"6E4A6A"}}},
 		["Skyreach"]={types={"StoneCottage","TimberTownhouse"},quota=8,tints={StoneCottage={"7A90B0"},TimberTownhouse={"5A7FA8"}},
-			halls={{shell="ShopHall",interior="ShopInterior",title="Skyreach Outfitters",kicker="SKYREACH   /   ROPES · LANTERNS",accent="9DF3D7",tint="5A7FA8"}}},
+			halls={{shell="ShopHall",interior="ShopInterior",title="Skyreach Outfitters",kicker="SKYREACH   /   ROPES · LANTERNS",accent="9DF3D7",tint="5A7FA8",banner=true}}},
 		["Windpine Grove"]={types={"LogLodge"},quota=10,tints={LogLodge={"4E7A48","2F5F4A"}},
 			halls={{shell="TavernHall",interior="TavernInterior",title="The Pinewarden Lodge",kicker="WINDPINE GROVE   /   HEARTH · STEW",accent="6BAF5A",tint="3F5A3A"}}},
 		["Gloomhollow Caverns"]={types={"StoneCottage"},quota=4,tints={StoneCottage={"5B4A8C"}}},
@@ -4716,14 +4763,9 @@ function Buildings.settle(only)
 		local c=obj.CFrame.Position
 		if kind=="anchor" then box(index,c+V(0,3,0),ANCHOR_CLEAR,3.5,ANCHOR_CLEAR) return end
 		if kind=="sculpture" then local r=math.max(1,2*(tonumber(obj:GetAttribute("SculptureScale")) or 1)) box(index,c,r,r,r) return end
-		local cf,sz=obj.CFrame,obj.Size
 		-- A declared mesh box (sign frames, buildings) blocks with its whole box.
-		local declared=obj:GetAttribute("ShapeBox")
-		if typeof(declared)=="Vector3" then
-			local offset=obj:GetAttribute("ShapeBoxOffset")
-			cf=cf*CFrame.new(if typeof(offset)=="Vector3" then offset else V(0,0,0))
-			sz,c=declared,cf.Position
-		end
+		local cf,sz=Buildings.box(obj)
+		c=cf.Position
 		local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
 		local pad=if kind=="prompt" then PROMPT_CLEAR else 0
 		box(index,c,ext("X")+pad,ext("Y")+(if kind=="prompt" then 2 else 0),ext("Z")+pad)
@@ -4866,10 +4908,15 @@ function Buildings.settle(only)
 					local def=BUILDING_KIT[hall.shell]
 					local m,floor=B.place(isle,hall.shell,best.cf,{title=hall.title,tint=C(hall.tint)})
 					B.furnish(m,hall.interior,best.cf)
-					local _,_,lo,hi=B.fitOf(def)
-					-- A banner standard beside the door for the town halls (regional halls
-					-- carry the name on their own sign boards: phone template budget).
-					if hall.banner then signAt(m,best.cf*CFrame.new(-(hi.X+1.6),0,lo.Z+1.4),hall.title,hall.kicker,C(hall.accent),4,{kind="banner"}) end
+					-- §40 QC L5: the walk-in shops (hall.banner) carry their name on a
+					-- shared Signs.build sign (Signs v2: a floating camera-facing
+					-- plaque; one invisible anchor part) on the lot's reserved -X side
+					-- (lotFor extraX), beside the front corner. The taverns (no
+					-- banner) keep their name in STYLE / the model.
+					if hall.banner then
+						local at=best.cf*CFrame.new(-(def.w/2+1.6),0,-def.d/2+1)
+						signAt(m,at,hall.title,hall.kicker,C(hall.accent),4,{kind="banner"})
+					end
 					if lightRoom(isle,floor.CFrame.Position) then B.interiorLight(floor,def) end
 					m:SetAttribute("Settlement",isleName)
 					claim(index,best.lot,IC.Y)
@@ -5082,7 +5129,8 @@ Buildings.settle({["Compass Quay"]=true})
 				local r=math.max(1,2*(tonumber(obj:GetAttribute("SculptureScale")) or 1))
 				hx,hy,hz=r,r,r
 			else
-				local cf,sz=obj.CFrame,obj.Size
+				local cf,sz=Buildings.box(obj) -- §40 QC L2: declared mesh boxes block whole
+				c=cf.Position
 				local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
 				hx,hy,hz=ext("X"),ext("Y"),ext("Z")
 			end
@@ -5437,7 +5485,7 @@ do
 			for _,m in ipairs(markers) do if V(pos.X-m.X,0,pos.Z-m.Z).Magnitude<clear then return true end end
 			for _,obj in ipairs(host:GetDescendants()) do
 				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
-					local cf,sz=obj.CFrame,obj.Size
+					local cf,sz=Buildings.box(obj) -- §40 QC L2: declared mesh boxes block whole
 					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
 					local c=cf.Position
 					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
@@ -5605,7 +5653,7 @@ do
 			for _,q in ipairs(taken) do if V(pos.X-q.X,0,pos.Z-q.Z).Magnitude<radius+6 then return true end end
 			for _,obj in ipairs(host:GetDescendants()) do
 				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
-					local cf,sz=obj.CFrame,obj.Size
+					local cf,sz=Buildings.box(obj) -- §40 QC L2: declared mesh boxes block whole
 					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
 					local c=cf.Position
 					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
@@ -5696,7 +5744,7 @@ do
 		local function blocked(host,pos,radius)
 			for _,obj in ipairs(host:GetDescendants()) do
 				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
-					local cf,sz=obj.CFrame,obj.Size
+					local cf,sz=Buildings.box(obj) -- §40 QC L2: declared mesh boxes block whole
 					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
 					local c=cf.Position
 					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
@@ -5768,7 +5816,7 @@ do
 		local function blocked(pos,radius)
 			for _,obj in ipairs(host:GetDescendants()) do
 				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
-					local cf,sz=obj.CFrame,obj.Size
+					local cf,sz=Buildings.box(obj) -- §40 QC L2: declared mesh boxes block whole
 					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
 					local c=cf.Position
 					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
@@ -5844,7 +5892,7 @@ end
 			if npc and obj.Name~=clerkName then table.insert(npcAnchors,obj) end
 			if obj.Name~=clerkName and not FLOOR[obj.Name] and (not string.find(obj.Name,"^Anchor_") or npc)
 				and (npc or obj.Transparency<1 or obj.CanCollide or obj:FindFirstChildOfClass("ProximityPrompt")~=nil) then
-				local cf,sz=obj.CFrame,obj.Size
+				local cf,sz=Buildings.box(obj) -- §40 QC L2
 				local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
 				table.insert(boxes,{c=cf.Position,x=ext("X"),y=ext("Y"),z=ext("Z"),flat=obj.Name=="Path"})
 			end
@@ -5969,7 +6017,7 @@ do
 			end
 			for _,obj in ipairs(host:GetDescendants()) do
 				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
-					local cf,sz=obj.CFrame,obj.Size
+					local cf,sz=Buildings.box(obj) -- §40 QC L2: declared mesh boxes block whole
 					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
 					local c=cf.Position
 					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
@@ -6099,9 +6147,13 @@ do
 	local floor=hall and hall:FindFirstChild("Hall floor")
 	if floor then
 		local centre,size=Buildings.fitOf(BUILDING_KIT.HallFurnishings)
-		local p=floor.CFrame.Position
-		local hostCF=CFrame.new(p.X+3.6,p.Y+floor.Size.Y/2,p.Z)*CFrame.new(centre)
-		local lo,hi=hostCF.Position-size/2,hostCF.Position+size/2
+		-- The floor's own frame (its yaw), 3.6 studs along its X, on its top.
+		local ground=floor.CFrame*CFrame.new(3.6,floor.Size.Y/2,0)
+		local hostCF=ground*CFrame.new(centre)
+		local r,u,l=hostCF.RightVector,hostCF.UpVector,hostCF.LookVector
+		local ext=V(math.abs(r.X)*size.X+math.abs(u.X)*size.Y+math.abs(l.X)*size.Z,math.abs(r.Y)*size.X+math.abs(u.Y)*size.Y+math.abs(l.Y)*size.Z,
+			math.abs(r.Z)*size.X+math.abs(u.Z)*size.Y+math.abs(l.Z)*size.Z)/2
+		local lo,hi=hostCF.Position-ext,hostCF.Position+ext
 		local clear=true
 		for _,obj in ipairs(terrace:GetDescendants()) do
 			if obj:IsA("BasePart") and obj~=floor and obj.Name~="Meadow" and (obj.Transparency<1 or obj.CanCollide
@@ -6118,6 +6170,7 @@ do
 			host.Transparency,host.CastShadow,host.CanQuery=1,false,false
 			meshSlot(host,"HallFurnishings",C("3F6FB5"))
 			host:SetAttribute("Interior","HallFurnishings")
+			Buildings.furniture(hall,"HallFurnishings",ground) -- §40 QC L6: tables and benches collide
 		end
 	end
 end

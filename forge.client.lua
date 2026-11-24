@@ -106,6 +106,20 @@ local function buildRadius(part)
 	rangeCache[part] = radius
 	return radius
 end
+-- Release radius: beyond it a placed clone goes back to its primitive. Props
+-- keep the UNLOAD_RADIUS hysteresis; buildings (§40 QC M2) release just past
+-- their own (short) build radius, so a phone's house shells (120) and
+-- interiors (14) hand their templates back instead of holding them to 310.
+-- Interiors get +10 studs (at least) so stepping back out of a door does not flicker.
+local function releaseRadius(part)
+	local radius = buildRadius(part)
+	local shapeName = part:GetAttribute("Shape")
+	local data = type(shapeName) == "string" and lookup(shapeName)
+	if data and data.kind == "building" then
+		return if data.interior then math.max(radius * 1.2, radius + 10) else radius * 1.2
+	end
+	return math.max(UNLOAD_RADIUS, radius * 1.2)
+end
 
 -- Final catalog shape name for a tagged part (resource slot, then alias).
 local function shapeOf(part)
@@ -710,7 +724,7 @@ local function step()
 			if not part.Parent then
 				registry[part] = nil
 				release(part)
-			elseif placed[part] and (part.CFrame.Position - origin).Magnitude > math.max(UNLOAD_RADIUS, buildRadius(part) * 1.2) then
+			elseif placed[part] and (part.CFrame.Position - origin).Magnitude > releaseRadius(part) then
 				release(part)
 			end
 		end
@@ -875,7 +889,7 @@ if MeshForgeTest then
 	MeshForgeTest.forge = {stats = stats, limits = LIMITS, templates = templates, rescan = rescan, consider = consider, step = step,
 		templateTint = templateTint, kitShapes = SIGN_KIT_SHAPES, kitMetals = KIT_METALS, variants = VARIANTS,
 		cornerNormals = cornerNormals, styleSign = styleSign, stopReason = function() return stopReason end,
-		radii = {build = BUILD_RADIUS, unload = UNLOAD_RADIUS, building = BUILDING_RADIUS}, buildRadius = buildRadius, mobile = mobile, backoff = backoff, registry = registry, final = final, placed = placed,
+		radii = {build = BUILD_RADIUS, unload = UNLOAD_RADIUS, building = BUILDING_RADIUS}, buildRadius = buildRadius, releaseRadius = releaseRadius, mobile = mobile, backoff = backoff, registry = registry, final = final, placed = placed,
 		chart = {visual = chartVisual, accept = chartAccept, release = chartRelease, tokens = chartTokens, pinCap = CHART_PIN_CAP, reserve = CHART_RESERVE},
 		-- Final mesh box for a tagged part, without forging: size, CFrame, kind.
 		describe = function(part)

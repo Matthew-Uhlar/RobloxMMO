@@ -353,8 +353,17 @@ for i = 1, 70 do
 	local panes = {}
 	for k = 1, 8 do table.insert(panes, string.format("%.2f,%.2f,%.2f,1.5,1.9,0", -4 + k, -1.5, -5.17)) end
 	host:SetAttribute("WindowGlow", table.concat(panes, ";"))
+	-- The forge has meshed every house but the second (still its plaster block).
+	if i ~= 2 then host:SetAttribute("ShapeDone", true) end
 	table.insert(buildings, host)
 end
+-- §40 QC L3: a walk-in hall's host is its floor plank; its declared mesh box
+-- (ShapeBox / ShapeBoxOffset) is the building the spill light belongs to.
+local hallHost = part("Roofed hall floor", Vector3.new(-40, 0.25, 30))
+hallHost.Size = Vector3.new(16, 0.5, 13)
+hallHost:SetAttribute("GlowSite", "window")
+hallHost:SetAttribute("ShapeBox", Vector3.new(17, 14, 14))
+hallHost:SetAttribute("ShapeBoxOffset", Vector3.new(0, 6.75, 0))
 -- An unmanaged world (monster glow, characters) is ignored.
 local outside = part("Monster", Vector3.new(1, 1, 1), ws)
 local monsterGlow = roblox.Instance.new("PointLight"); monsterGlow.Parent = outside
@@ -469,6 +478,38 @@ do
 		end
 	end
 	ok(seen >= 1 and seen <= 8, "the nearest house lights its own panes (" .. seen .. ")")
+	-- §40 QC M3: an unforged host (plaster block) shows no floating panes, and
+	-- on a phone (this harness is touch-only) panes stop at the forge shell radius.
+	local unforged, farthest = 0, 0
+	for _, pane in folder:GetChildren() do
+		if pane.Transparency < 1 then
+			local q = buildings[2].CFrame:PointToObjectSpace(pane.CFrame.Position)
+			if math.abs(q.X) < 6.5 and math.abs(q.Z) < 6 then unforged += 1 end
+			farthest = math.max(farthest, (pane.CFrame.Position - root.CFrame.Position).Magnitude)
+		end
+	end
+	eq(unforged, 0, "an unforged plaster block shows no window panes")
+	ok(W.mobile == true and farthest <= L.WINDOW_MOBILE_RANGE + 8, "phone panes stay within the forge shell radius (" .. math.floor(farthest) .. ")")
+	ok(#L.selectWindows({{pos = Vector3.new(150, 0, 0), count = 4}}, Vector3.zero, "High", true, nil, L.WINDOW_MOBILE_RANGE) == 0
+		and #L.selectWindows({{pos = Vector3.new(150, 0, 0), count = 4}}, Vector3.zero, "High", true) == 1, "rangeCap trims the tier range")
+	-- QC L4: an unchanged host list writes no pane Size / CFrame.
+	local sentinel
+	for _, pane in folder:GetChildren() do if pane.Transparency < 1 then sentinel = pane break end end
+	local mark = CFrame.new(0, -999, 0)
+	sentinel.CFrame = mark
+	local skippedBefore = W.skipped or 0
+	W.update(D.tier, 1)
+	ok((W.skipped or 0) > skippedBefore and sentinel.CFrame == mark, "same chosen hosts: pane writes skipped")
+	buildings[3]:SetAttribute("ShapeDone", nil)
+	W.update(D.tier, 1)
+	ok(sentinel.CFrame ~= mark, "a changed host list rewrites the panes")
+	buildings[3]:SetAttribute("ShapeDone", true)
+	W.update(D.tier, 1)
+	-- QC L3: the hall's spill light stands a third of the way up its mesh box, in front of it.
+	local hallSite = D.lights.bySite[hallHost]
+	ok(hallSite ~= nil and hallSite.pos ~= nil, "the hall floor is a window glow site")
+	local q = hallHost.CFrame:PointToObjectSpace(hallSite.pos)
+	ok(q.Y > 3 and q.Y < 11 and q.Z < -7, string.format("hall spill light uses the ShapeBox height, not floor level (y %.1f, z %.1f)", q.Y, q.Z))
 	-- Selection rules: nearest first, building and pane caps, nothing by day.
 	local list = {}
 	for i = 1, 100 do table.insert(list, {pos = Vector3.new(i, 0, 0), count = 8}) end

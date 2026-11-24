@@ -292,24 +292,50 @@ local function windowPane(i)
 	Windows.pool[i] = pane
 	return pane
 end
+-- §40 QC M3: on phones the forge meshes building shells only within 120 studs
+-- (forge.client.lua BUILDING_RADIUS.shell); beyond it a house is its plaster
+-- block, so panes are capped there too.
+Windows.mobile = false
+pcall(function()
+	local input = game:GetService("UserInputService")
+	Windows.mobile = input.TouchEnabled == true and input.KeyboardEnabled ~= true
+end)
+Windows.prev = {}
 function Windows.update(tierName, nightness)
 	local origin = rootPosition()
 	local list, entries = Windows.list, Windows.entries
 	table.clear(entries)
-	local kept = 0
+	local kept, n = 0, 0
 	for i = 1, #list do
 		local e = list[i]
 		if e.part.Parent and e.part:IsDescendantOf(workspace) then
 			kept += 1
 			list[kept] = e
-			e.pos = e.part.CFrame.Position
-			entries[kept] = e
+			-- Panes are the kit mesh's windows: an unforged host is a plain
+			-- plaster block, so its panes would float around it (QC M3).
+			if e.part:GetAttribute("ShapeDone") == true then
+				n += 1
+				e.pos = e.part.CFrame.Position
+				entries[n] = e
+			end
 		else
 			Windows.byHost[e.part] = nil
 		end
 	end
 	for i = kept + 1, #list do list[i] = nil end
-	local chosen, total = L.selectWindows(entries, origin, tierName, nightness >= 0.5, Windows.chosen)
+	local chosen, total = L.selectWindows(entries, origin, tierName, nightness >= 0.5, Windows.chosen,
+		if Windows.mobile then L.WINDOW_MOBILE_RANGE else nil)
+	-- QC L4: the same hosts as last update -> the panes already stand there.
+	local prev, same = Windows.prev, #chosen == #Windows.prev
+	if same then
+		for k, index in ipairs(chosen) do if prev[k] ~= entries[index] then same = false break end end
+	end
+	if same then
+		Windows.skipped = (Windows.skipped or 0) + 1
+		return Windows.lastPanes, total
+	end
+	table.clear(prev)
+	for k, index in ipairs(chosen) do prev[k] = entries[index] end
 	local used = 0
 	for _, index in ipairs(chosen) do
 		local e = entries[index]
@@ -379,6 +405,14 @@ local function sitePosition(site)
 	local part = site.part
 	local cf, size = part.CFrame, part.Size
 	if site.kind == "lantern" then return cf.Position + Vector3.new(0, size.Y / 2 + 0.4, 0) end
+	-- §40 QC L3: a building host's declared mesh box (ShapeBox / ShapeBoxOffset)
+	-- is the building; a walk-in hall's host is only its floor plank, so the
+	-- spill would otherwise sit at floor level.
+	local box, offset = part:GetAttribute("ShapeBox"), part:GetAttribute("ShapeBoxOffset")
+	if typeof(box) == "Vector3" then
+		cf = cf * CFrame.new(if typeof(offset) == "Vector3" then offset else Vector3.zero)
+		size = box
+	end
 	-- Windows / stalls: spill just in front of the face, a third of the way up.
 	return cf.Position + cf.LookVector * (size.Z / 2 + 1) + Vector3.new(0, -size.Y / 6, 0)
 end
