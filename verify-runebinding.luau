@@ -103,7 +103,25 @@ eq(RB.runesPerShard(55, RB.AltarById.Gale), 3, "Gale x3 at 55")
 eq(RB.runesPerShard(99, RB.AltarById.Crown), 1, "Crown never multiplies")
 eq(RB.shardsFor(RB.AltarById.Void)[1], "LucentShard", "high altars take only Lucent")
 eq(#RB.shardsFor(RB.AltarById.Void), 1, "only Lucent")
-eq(#RB.shardsFor(RB.AltarById.Gale), 2, "low altars take either shard")
+eq(#RB.shardsFor(RB.AltarById.Gale), 1, "QC M2: low altars bind Aether only (a Lucent Shard is worth more than any low bind)")
+eq(RB.shardsFor(RB.AltarById.Gale)[1], "AetherShard", "the low altars' shard")
+for _, a in ipairs(RB.Altars) do
+	local best = 0
+	for _, sid in ipairs(RB.shardsFor(a)) do best = math.max(best, Data.Items[sid].value) end
+	ok(RB.maxRunesPerShard(a) * Data.Items[a.rune].value <= best, a.id .. " binds only shards it cannot lose value on")
+end
+eq(#RB.comboShards(false), 1, "QC M2: combinations spend Aether only by default")
+eq(#RB.comboShards(true), 2, "and Lucent too when opted in")
+-- QC M3: pouches and Rift rewards are untradeable, near-zero value, off the Bazaar and the Auction House.
+for _, e in ipairs(RB.RiftShop) do
+	local def = Data.Items[e.id]
+	ok(def.untradeable == true and def.value <= 1, e.id .. " is untradeable with a near-zero sell value")
+	eq(Data.Economy.isCommodity(e.id), false, e.id .. " never a Bazaar commodity")
+	eq(Data.Economy.auctionCategory(e.id), nil, e.id .. " never auctioned")
+	ok(Data.Economy.untradeable(e.id), e.id .. " flagged")
+end
+ok(Data.Items.SmallPouch.untradeable and Data.Economy.auctionCategory("CelestialSword") ~= nil, "the small pouch too; other gear still auctions")
+eq(Data.Economy.auctionCategory("AetherShard"), nil, "shards never auctioned")
 -- Combinations: real inputs, value <= inputs, chance curve.
 for _, c in ipairs(RB.Combos) do
 	local def = Data.Items[c.id]
@@ -257,6 +275,10 @@ do
 	ok(m.points == 0 and m.rift.rounds == 0 and m.rift.wins == 2 and m.combo == nil and m.failed == RB.MAX_COUNT, "scalars clamped")
 	local fresh = RB.migrate(nil)
 	ok(type(fresh.bound) == "table" and fresh.points == 0, "a fresh journal")
+	eq(fresh.v, RB.VERSION, "QC L10: versioned (p.runebinding.v = 1)")
+	eq(RB.VERSION, 1, "version 1")
+	local b = RB.migrate({bought = {MediumPouch = 1, Nope = 2}, lost = {MediumPouch = -1}, filled = "yes", comboLucent = 1})
+	ok(b.bought.MediumPouch == 1 and b.bought.Nope == nil and b.lost.MediumPouch == nil and b.filled == nil and b.comboLucent == nil, "QC M2 / M3 fields sanitised")
 end
 -- Quests, helper, calculator, NPC, unlocks.
 do
@@ -289,6 +311,33 @@ do
 	local unlocks = RB.unlocks()
 	ok(#unlocks >= #RB.Altars + #RB.Combos + #RB.Pouches, "unlock guide lists altars, multiples, combinations and pouches")
 	for _, u in ipairs(unlocks) do ok(u.level >= 1 and u.level <= 99 and type(u.text) == "string", "unlock " .. u.text) end
+end
+-- QC L5: Rift rune caches never out-earn Mining in coins.
+for _, lvl in ipairs({10, 30, 50, 77, 99}) do
+	local rift, mine = RB.riftCoinRate(lvl), RB.miningCoinRate(lvl)
+	ok(rift > 0 and rift <= 0.5 * mine, string.format("level %d: Rift caches %.0f coins/h <= half of Mining's %.0f", lvl, rift, mine))
+end
+-- QC L8: the pouch chip's reserved slot (Theme.hudLayout L.pouchChip).
+do
+	local Theme = load("shared/UiTheme.lua", {Color3 = roblox.Color3, Enum = roblox.Enum, UDim = roblox.UDim, UDim2 = roblox.UDim2, Vector2 = roblox.Vector2,
+		Instance = roblox.Instance, Font = roblox.Font, NumberSequence = roblox.NumberSequence, ColorSequence = roblox.ColorSequence,
+		game = {GetService = function() return {} end}, script = nil})
+	local function overlap(a, b) return a.w > 0 and b.w > 0 and a.x < b.x + b.w and b.x < a.x + a.w and a.y < b.y + b.h and b.y < a.y + a.h end
+	for _, case in ipairs({{1366, 768}, {1920, 1080}, {1280, 650}, {1024, 600}, {844, 390, true, 0}, {844, 390, true, 120}, {1366, 710}, {667, 375, true, 60}}) do
+		local L = Theme.hudLayout(case[1], case[2], {touch = case[3], lift = case[4]})
+		local c = L.pouchChip
+		local tag = case[1] .. "x" .. case[2] .. (if case[3] then " touch lift " .. case[4] else "")
+		ok(type(c) == "table" and c.h > 0 and c.x >= 0 and c.y >= 0 and c.x + c.w <= case[1] and c.y + c.h <= case[2], "pouch chip on screen @" .. tag)
+		ok(c.w >= 120, "pouch chip wide enough for its text @" .. tag .. " (" .. c.w .. ")")
+		ok(not overlap(c, L.heartChip), "pouch chip clear of the heart chip @" .. tag)
+		ok(not overlap(c, L.hotbar) and not overlap(c, L.action), "pouch chip clear of the hotbar and action bar @" .. tag)
+		if L.chat then ok(not overlap(c, L.chat) and not overlap(c, L.chatTabs), "pouch chip clear of the chat lane @" .. tag) end
+		if not case[3] then
+			ok(c.x + c.w <= case[1] - 10 - 360 or c.y + c.h <= L.action.y, "pouch chip clear of the spell bar corner @" .. tag)
+		else
+			ok(c.y + c.h <= case[2] - 44 - (case[4] or 0), "touch: lifted over the spell / prayer bars @" .. tag)
+		end
+	end
 end
 -- Client display helpers.
 do
@@ -451,7 +500,12 @@ local prefix = src:sub(1, cut - 1)
 local n1, n2
 prefix, n1 = prefix:gsub("local workspace = {GetAttribute=function%(self,key%) return self%[key%] end}", "local workspace = __ws")
 prefix, n2 = prefix:gsub("\tworkspace=workspace,\n", "\tworkspace=workspace,CFrame=__roblox.CFrame,Vector3=__roblox.Vector3,\n")
-assert(n1 == 1 and n2 == 1, "harness workspace hooks")
+local n3
+-- QC L1: travel fails closed without IsleTravelGate; the suite provides one it controls.
+prefix, n3 = prefix:gsub("ServerStorage={},", "ServerStorage={FindFirstChild=function(_, n) if n == \"IsleTravelGate\" then return __gate end return nil end},")
+assert(n1 == 1 and n2 == 1 and n3 == 1, "harness workspace / gate hooks")
+local gateVerdict = true
+local gate = {Invoke = function() return gateVerdict end}
 -- A fake world: anchors the server finds by name (Trails.anchor under
 -- Islands, the Shardhollow under AetherIsles), at chosen positions.
 local anchors = {}
@@ -465,8 +519,8 @@ ws.FindFirstChild = function(_, name)
 	if name == "AetherIsles" then return {FindFirstChild = function(_, n) return if n == RB.FIELD then folder else nil end} end
 	return nil
 end
-local H = luau.load("local __ws, __roblox = ...\n" .. prefix .. "\nreturn {player=player,cmd=cmd,data=data,advance=advance,services=services,objects=objects,Data=Data,clock=function() return clock end,setRoll=function(v) defaultRoll=v end}",
-	{debugName = "runebinding-harness", injectGlobals = true})(ws, roblox)
+local H = luau.load("local __ws, __roblox, __gate = ...\n" .. prefix .. "\nreturn {player=player,cmd=cmd,data=data,advance=advance,services=services,objects=objects,allObjects=allObjects,closers=closers,Data=Data,clock=function() return clock end,setRoll=function(v) defaultRoll=v end}",
+	{debugName = "runebinding-harness", injectGlobals = true})(ws, roblox, gate)
 local SD = H.Data
 local SRB = SD.Runebinding
 local remote = H.objects.RemoteFunction
@@ -476,6 +530,8 @@ local function rb(p) return state(p).runebinding end
 local function verb(p, v, item) return H.cmd(p, v, item).message end
 local function rootOf(p) return p.Character:FindFirstChild("HumanoidRootPart") end
 local function moveTo(p, pos) rootOf(p).Position = pos end
+local MENTOR = Vector3.new(-40, 0, 44) -- beside the Runebinder's anchor
+local function atMentor(p) moveTo(p, MENTOR) end
 -- A prompt at `pos` (the player's root is moved onto it).
 local function use(p, action, item, region, pos)
 	pos = pos or Vector3.zero
@@ -586,6 +642,48 @@ do
 	moveTo(m, Vector3.new(1500, 200, 1460))
 	ok(has(H.cmd(m, "rbTravel", "Gale").message, "settling"), "travel cooldown")
 	ok(has(verb(m, "rbTravel", "Field"), "Step onto a waygate"), "Field / Quay only from a prompt")
+	-- QC L1: a closed travel gate (lair, raid, minigame...) refuses; nothing moves.
+	gateVerdict = "Finish your lair first."
+	H.advance(5)
+	local at = rootOf(m).Position
+	ok(has((use(m, "rbTravel", "Field", nil, at)), "Finish your lair first"), "the travel gate's refusal is shown")
+	ok((rootOf(m).Position - at).Magnitude < 1e-3, "and nothing moved")
+	gateVerdict = nil
+	ok(has((use(m, "rbTravel", "Field", nil, at)), "will not open"), "a gate that does not answer true refuses (fail closed)")
+	gateVerdict = true
+end
+-- QC test gap: a region-locked altar with the level met is refused at the Waygate.
+do
+	local g = rejoin(seeded(9120, function(pr) pr.xp.Runebinding = X[40]; pr.rbIntro = true end))
+	moveTo(g, Vector3.new(1500, 200, 1460))
+	local msg = H.cmd(g, "rbTravel", "Void").message
+	ok(not has(msg, "carries you") and not has(msg, "requires Runebinding"), "level met, region locked: refused by the region gate: " .. tostring(msg))
+	ok((rootOf(g).Position - Vector3.new(1500, 200, 1460)).Magnitude < 1e-3, "no jump into a locked region")
+	g = rejoin(g, function(pr) pr.xp.Mining = X[30]; pr.xp.Combat = X[15] end)
+	moveTo(g, Vector3.new(1500, 200, 1460))
+	ok(has(H.cmd(g, "rbTravel", "Void").message, "Void Altar"), "with the region open the jump lands")
+	-- QC L1: a missing anchor refuses (fail closed) and the miss is cached for a while.
+	local keep = anchors.Waypoint_Altar_Spark
+	anchors.Waypoint_Altar_Spark = nil
+	H.advance(5)
+	moveTo(g, Vector3.new(1500, 200, 1460))
+	ok(has(H.cmd(g, "rbTravel", "Spark").message, "will not open"), "no anchor: refused")
+	anchors.Waypoint_Altar_Spark = keep
+	moveTo(g, Vector3.new(1500, 200, 1460))
+	ok(has(H.cmd(g, "rbTravel", "Spark").message, "will not open"), "the miss is cached (no search per request)")
+	H.advance(12)
+	moveTo(g, Vector3.new(1500, 200, 1460))
+	ok(has(H.cmd(g, "rbTravel", "Spark").message, "Spark Altar"), "found again after the retry window")
+	-- QC L6: a fall below the Shardhollow's hull is caught back to its landing.
+	moveTo(g, Vector3.new(1510, 120, 1500))
+	rb(g)
+	ok((rootOf(g).Position - Vector3.new(1500, 204, 1450)).Magnitude < 1e-3, "caught back to the landing")
+	moveTo(g, Vector3.new(1510, 190, 1500))
+	rb(g)
+	ok((rootOf(g).Position - Vector3.new(1510, 190, 1500)).Magnitude < 1e-3, "standing on the isle is left alone")
+	moveTo(g, Vector3.new(0, -100, 0))
+	rb(g)
+	ok((rootOf(g).Position - Vector3.new(0, -100, 0)).Magnitude < 1e-3, "falls elsewhere are not caught")
 end
 -- Binding at the Gale Altar.
 do
@@ -614,11 +712,13 @@ do
 	ok(has(msg, "into 30 Gale Runes") and has(msg, "×3"), "Gale x3 at 60: " .. tostring(msg))
 	local hum = use(hi, "runeAltar", "Gale", "Hub")
 	ok(has(hum, "still humming"), "one bind per RB.BIND_SECONDS: " .. tostring(hum))
-	eq(state(hi).items.LucentShard, 4, "a low altar spends Aether first and keeps the Lucent")
+	eq(state(hi).items.LucentShard, 4, "QC M2: a low altar keeps the Lucent")
+	ok(has(msg, "4 Lucent kept"), "and says so")
 	H.advance(3)
 	msg = use(hi, "runeAltar", "Gale", "Hub")
-	ok(has(msg, "4 Lucent Shards"), "Lucent binds at a low altar when it is all you carry")
-	hi = rejoin(hi, function(pr) pr.items.AetherShard = 5 end)
+	ok(has(msg, "worth more") and not has(msg, "Bound"), "QC M2: Lucent is never bound into low runes: " .. tostring(msg))
+	eq(state(hi).items.LucentShard, 4, "still kept")
+	hi = rejoin(hi, function(pr) pr.items.AetherShard = 5; pr.items.LucentShard = 0 end)
 	ok(has((use(hi, "runeAltar", "Void", "Gloomhollow")), "only takes Lucent"), "Void refuses Aether")
 	hi = rejoin(hi, function(pr) pr.items.LucentShard = 2 end)
 	msg = use(hi, "runeAltar", "Void", "Gloomhollow")
@@ -654,17 +754,53 @@ do
 		pr.runebinding.wear.MediumPouch = 45; pr.coins = 50
 	end)
 	eq(rb(c).pouchCap, 6, "a worn medium pouch holds 3")
-	moveTo(c, Vector3.new(-40, 0, 44)) -- beside the Runebinder
+	atMentor(c)
 	ok(has(verb(c, "pouchRepair"), "costs 200 coins"), "repair without astral runes needs coins")
 	c = rejoin(c, function(pr) pr.items.AstralRune = 2 end)
-	moveTo(c, Vector3.new(-40, 0, 44))
+	atMentor(c)
 	ok(has(verb(c, "pouchRepair"), "-1 Astral Rune"), "an Astral Rune repairs a pouch")
 	eq(rb(c).pouchCap, 9, "repaired")
 	eq(state(c).items.AstralRune, 1, "one Astral Rune spent")
+	-- QC M1: nothing worn: report the trips left and reset nothing.
+	c = rejoin(c, function(pr) pr.runebinding.wear.MediumPouch = 10 end)
+	atMentor(c)
+	local sound = verb(c, "pouchRepair")
+	ok(has(sound, "Medium Shard Pouch 35 trips"), "trips left reported: " .. tostring(sound))
+	c = rejoin(c, function(pr) eq(pr.runebinding.wear.MediumPouch, 10, "QC M1: a sound pouch keeps its wear") end)
+	-- Only the worn (charged) pouches reset.
+	c = rejoin(c, function(pr) pr.items.LargePouch = 1; pr.xp.Runebinding = X[50]; pr.runebinding.wear = {MediumPouch = 45, LargePouch = 7}; pr.coins = 500; pr.items.AstralRune = 0 end)
+	atMentor(c)
+	ok(has(verb(c, "pouchRepair"), "repaired (1)"), "one worn pouch repaired")
+	c = rejoin(c, function(pr)
+		eq(pr.runebinding.wear.MediumPouch, nil, "the worn medium pouch reset")
+		eq(pr.runebinding.wear.LargePouch, 7, "QC M1: the large pouch (not charged) keeps its wear")
+		eq(pr.coins, 300, "charged for one pouch only")
+	end)
 	-- Away from the Runebinder (the anchor is known): refused.
 	moveTo(c, Vector3.new(900, 0, 900))
 	H.advance(1)
 	ok(has(H.cmd(c, "pouchRepair").message, "Speak to the Runebinder"), "repair happens at the Runebinder")
+end
+-- QC M2 (test gap): mixed carries wear once per trip, only when the pouches are emptied.
+do
+	local x = seeded(9121, function(pr)
+		pr.xp.Runebinding = X[40]; pr.xp.Mining = X[30]; pr.xp.Combat = X[15]; pr.rbIntro = true
+		pr.items = {AetherShard = 5, SmallPouch = 1, MediumPouch = 1}
+		pr.runebinding = {pouch = {LucentShard = 3}, filled = true}
+	end)
+	local msg = use(x, "runeAltar", "Gale", "Hub")
+	ok(has(msg, "Bound 5 Aether Shards") and has(msg, "3 Lucent kept"), "Aether bound, the pouched Lucent kept: " .. tostring(msg))
+	x = rejoin(x, function(pr) eq(pr.runebinding.wear.MediumPouch, nil, "no wear while the pouches still hold shards") end)
+	msg = use(x, "runeAltar", "Void", "Gloomhollow")
+	ok(has(msg, "Bound 3 Lucent Shards"), "the Lucent binds at the Void Altar: " .. tostring(msg))
+	x = rejoin(x, function(pr)
+		eq(pr.runebinding.wear.MediumPouch, 1, "the trip wears once when the pouches empty")
+		eq(pr.runebinding.filled, nil, "the filled flag clears")
+		pr.runebinding.pouch = {AetherShard = 2}; pr.items.AetherShard = 1
+	end)
+	H.advance(3)
+	use(x, "runeAltar", "Gale", "Hub")
+	x = rejoin(x, function(pr) eq(pr.runebinding.wear.MediumPouch, 1, "pouches not filled since the last wear do not wear again") end)
 end
 -- Combination runes.
 do
@@ -672,6 +808,9 @@ do
 		pr.xp.Runebinding = X[10]; pr.rbIntro = true
 		pr.items = {AetherShard = 10, GaleRune = 4}
 	end)
+	moveTo(cb, Vector3.new(500, 0, 500))
+	ok(has(verb(cb, "rbCombo", "MistRune"), "Speak to the Runebinder"), "QC L2: the combination is chosen at the Runebinder")
+	atMentor(cb)
 	ok(has(verb(cb, "rbCombo", "MagmaRune"), "Runebinding 23"), "combination level gate")
 	ok(has(verb(cb, "rbCombo", "MistRune"), "Mist Runes"), "choose Mist")
 	H.setRoll(0.4) -- below the 58% hold at level 10
@@ -686,6 +825,24 @@ do
 	local s2 = state(cb)
 	ok(s2.items.GaleRune == 3 and s2.items.AetherShard == 3, "a failed hold loses the shard, keeps the rune")
 	H.setRoll(0.999)
+	-- QC L4: the combination chosen but no input rune carried: a plain bind.
+	cb = rejoin(cb, function(pr) pr.items.GaleRune = 0 end)
+	H.advance(3)
+	msg = use(cb, "runeAltar", "Tide", "Meadow")
+	ok(has(msg, "into 3 Tide Runes"), "no Gale Runes: plain Tide Runes: " .. tostring(msg))
+	-- QC M2: combinations spend Aether only unless the player opts in.
+	cb = rejoin(cb, function(pr) pr.items.GaleRune = 2; pr.items.AetherShard = 0; pr.items.LucentShard = 2 end)
+	H.advance(3)
+	msg = use(cb, "runeAltar", "Tide", "Meadow")
+	ok(has(msg, "allow Lucent"), "Lucent untouched by combinations by default: " .. tostring(msg))
+	atMentor(cb)
+	ok(has(verb(cb, "rbCombo", "lucent"), "Lucent"), "opt in")
+	H.setRoll(0.1)
+	msg = use(cb, "runeAltar", "Tide", "Meadow")
+	ok(has(msg, "Bound 2 Mist Runes"), "opted in: Lucent binds Mist: " .. tostring(msg))
+	H.setRoll(0.999)
+	cb = rejoin(cb, function(pr) pr.items.AetherShard = 3; pr.items.GaleRune = 0 end)
+	atMentor(cb)
 	ok(has(verb(cb, "rbCombo", "none"), "plain runes"), "back to plain runes")
 	H.advance(3)
 	msg = use(cb, "runeAltar", "Tide", "Meadow")
@@ -787,6 +944,8 @@ end
 -- The Rift Points shop.
 do
 	local b = seeded(9109, function(pr) pr.xp.Runebinding = X[30]; pr.runebinding = {points = 500} end)
+	ok(has(verb(b, "riftBuy", "MediumPouch"), "Speak to the Runebinder"), "QC L2: the Rift shop is at the Runebinder")
+	atMentor(b)
 	ok(has(verb(b, "riftBuy", "LargePouch"), "Runebinding 50"), "pouch level gate")
 	ok(has(verb(b, "riftBuy", "Nope"), "not a Rift reward"), "unknown reward")
 	ok(has(verb(b, "riftBuy", "MediumPouch"), "Bought Medium Shard Pouch"), "buy a pouch with points")
@@ -806,6 +965,33 @@ do
 	ok(has(verb(b, "riftBuy", "ShardweaveHood"), "journal sync"), "an expired lease refuses")
 	b = rejoin(b)
 	eq(rb(b).points, 200, "points persisted (nothing bought without the lease)")
+	-- QC M3: one of each for life; a re-buy only when a defined loss path owes one.
+	b = rejoin(b, function(pr) pr.items.MediumPouch = 0 end)
+	atMentor(b)
+	ok(has(verb(b, "riftBuy", "MediumPouch"), "already claimed"), "a pouch that left the satchel cannot be re-bought")
+	b = rejoin(b, function(pr) pr.runebinding.lost = {MediumPouch = 1} end)
+	atMentor(b)
+	ok(has(verb(b, "riftBuy", "MediumPouch"), "Bought"), "a replacement owed by a loss path is allowed")
+	b = rejoin(b, function(pr)
+		eq(pr.runebinding.lost.MediumPouch, nil, "and consumes the owed replacement")
+		eq(pr.runebinding.bought.MediumPouch, 2, "lifetime purchases recorded")
+		eq(pr.runebinding.v, 1, "QC L10: saved with p.runebinding.v")
+		pr.items.AetherShard = 5
+	end)
+	atMentor(b)
+	ok(has(verb(b, "riftBuy", "MediumPouch"), "already own"), "owned: refused")
+	-- QC M3: untradeable everywhere through the real verbs (Bazaar, Auction House, merchant, drop).
+	for _, case in ipairs({{"offer", "AetherShard:1:10"}, {"offer", "MediumPouch:1:10"}, {"bid", "ShardweaveRobe:1:10"}, {"buyNow", "MediumPouch:1:10"}}) do
+		ok(has(verb(b, case[1], case[2]), "Bazaar commodity"), "the Bazaar refuses " .. case[1] .. " " .. case[2])
+	end
+	for _, id in ipairs({"ShardweaveRobe", "MediumPouch"}) do
+		ok(has(verb(b, "ahList", id .. ":100"), "to auction"), "the Auction House refuses " .. id)
+	end
+	ok(has(verb(b, "sell", "MediumPouch"), "bound to your journal"), "the merchant refuses a pouch")
+	ok(has(verb(b, "sell", "ShardweaveRobe"), "bound to your journal"), "and a Shardweave piece")
+	ok(has(verb(b, "drop", "MediumPouch"), "cannot be dropped"), "a pouch cannot be dropped")
+	local after = state(b)
+	ok(after.items.MediumPouch == 1 and after.items.ShardweaveRobe == 1 and after.items.AetherShard == 5, "nothing left the satchel")
 end
 -- The lantern: one more shard a break while it is in the accessory bag.
 do
@@ -845,6 +1031,93 @@ do
 	eq(state(q).items.SmallPouch, 1, "the Small Shard Pouch reward")
 	ok(has(verb(q, "quest", "HeartOfTheRift"), "requires"), "Heart of the Rift needs Runebinding 20")
 end
+-- QC test gap: the combat bridge pays runes (12-id limit, Ink Thrift saves runes).
+do
+	local bridge
+	for _, o in ipairs(H.allObjects) do if o.Name == "IsleBridge" then bridge = o end end
+	ok(bridge ~= nil, "IsleBridge found")
+	local mage = seeded(9140, function(pr)
+		pr.xp.Magic = X[99]
+		pr.items = {GaleRune = 5, SparkRune = 5, MistRune = 2, CrownRune = 1, AstralRune = 1}
+		for _, id in ipairs({"TideRune", "StoneRune", "EmberRune", "VitaRune", "BindRune", "VoidRune", "TorrentRune", "DustRune", "SiltRune", "SmokeRune"}) do pr.items[id] = 1 end
+	end)
+	local plan = RB.payPlan(P.glyphCost(Data.Spells.GaleDart, nil), {MistRune = 2, CrownRune = 1})
+	local reply = bridge.OnInvoke("consume", mage, {items = plan})
+	ok(reply and reply.ok and reply.remaining.MistRune == 1 and reply.remaining.CrownRune == 0, "a combination + wildcard plan is paid by the bridge")
+	local twelve, thirteen = {}, {}
+	for _, id in ipairs({"GaleRune", "SparkRune", "AstralRune", "TideRune", "StoneRune", "EmberRune", "VitaRune", "BindRune", "VoidRune", "TorrentRune", "DustRune", "SiltRune"}) do twelve[id] = 1; thirteen[id] = 1 end
+	thirteen.SmokeRune = 1
+	ok(bridge.OnInvoke("consume", mage, {items = thirteen}).ok == false, "13 ids refused")
+	reply = bridge.OnInvoke("consume", mage, {items = twelve})
+	ok(reply and reply.ok == true, "a 12-id rune payment is accepted")
+	-- Ink Thrift (Magic mastery glyphSave) keeps runes like glyphs.
+	mage = rejoin(mage, function(pr) pr.items.GaleRune = 3; pr.mastery = {trees = {Magic = {FocusedMind = 10, InkThrift = 5}}} end)
+	H.setRoll(0)
+	reply = bridge.OnInvoke("consume", mage, {items = {GaleRune = 1}})
+	H.setRoll(0.999)
+	ok(reply and reply.ok and reply.saved and reply.saved.GaleRune == 1 and reply.remaining.GaleRune == 3, "Ink Thrift saves a rune")
+end
+local Rift_b1
+-- QC M4 / L3 (test gaps): presence in lobby and rest, crew cap, rejoin mid-round,
+-- active-member power, leave notices, shutdown settlement.
+do
+	SRB.Rift.ROUND, SRB.Rift.LOBBY, SRB.Rift.REST, SRB.Rift.IDLE = 100, 10, 10, 30
+	local b1 = seeded(9130, function(pr) pr.xp.Runebinding = X[20]; pr.rbIntro = true end)
+	local b2 = seeded(9131, function(pr) pr.xp.Runebinding = X[20]; pr.rbIntro = true end)
+	local b3 = seeded(9132, function(pr) pr.xp.Runebinding = X[20]; pr.rbIntro = true end)
+	-- Drain any earlier round state: wait out the rest / lobby with nobody inside.
+	H.advance(40); rb(b1)
+	moveTo(b1, Vector3.new(400, 0, 0))
+	ok(has((use(b1, "riftJoin", nil, nil, Vector3.new(400, 0, 0))), "Stand inside"), "QC L1: joining outside the Rift refused")
+	ok(has((use(b1, "riftJoin", nil)), "opens in"), "b1 joins the lobby")
+	ok(has((use(b2, "riftJoin", nil)), "opens in"), "b2 joins the lobby")
+	-- Absent in the lobby: dropped at the next tick (QC M4).
+	moveTo(b2, Vector3.new(800, 0, 0))
+	eq(rb(b2).rift.member, false, "a member who walks off in the lobby is let go")
+	ok(b1.last and has(b1.last.message, "left the Glyph Rift"), "QC L3: the others are told")
+	-- Crew cap.
+	SRB.Rift.CREW_CAP = 1
+	b1:SetAttribute("CoopId", "crew-7"); b3:SetAttribute("CoopId", "crew-7")
+	ok(has((use(b3, "riftJoin", nil)), "Your crew already has 1"), "QC M4: the per-crew cap")
+	b3:SetAttribute("CoopId", nil)
+	SRB.Rift.CREW_CAP = 6
+	ok(has((use(b3, "riftJoin", nil)), "opens in"), "b3 (no crew) joins")
+	H.advance(SRB.Rift.LOBBY + 1)
+	eq(rb(b1).rift.phase, "active", "round opens")
+	-- Active-member power: two active members share the power per essence.
+	local heap = makeNode("Ore", {StrikeKind = "riftFragment"})
+	breakIt(b1, heap); use(b1, "riftShape", nil)
+	local ports = rb(b1).rift.portals
+	local p0 = rb(b1).rift.power
+	use(b1, "riftCharge", ports[1])
+	local gained = rb(b1).rift.power - p0
+	ok(math.abs(gained - math.floor(4 * RB.riftPowerPer(2))) <= 1, "QC M4: power per essence counts the two active members (" .. gained .. ")")
+	-- Rejoin mid-round: leaving drops the membership; joining again in the first half works.
+	b3 = rejoin(b3)
+	eq(rb(b3).rift.member, false, "a rejoin drops the old membership")
+	ok(has((use(b3, "riftJoin", nil)), "mid-round"), "and the round can be joined again mid-round")
+	-- Shutdown: the running round settles as a loss for present members (BindToClose).
+	for _ = 1, 3 do H.advance(1.5); breakIt(b1, heap) end
+	use(b1, "riftShape", nil)
+	use(b1, "riftCharge", rb(b1).rift.portals[1])
+	local contrib = rb(b1).rift.contrib
+	ok(contrib >= R.MIN_CONTRIB, "b1 contributed before the shutdown (" .. contrib .. ")")
+	SRB.Rift.ROUND, SRB.Rift.LOBBY, SRB.Rift.REST, SRB.Rift.IDLE = 240, 30, 20, 60
+	Rift_b1 = b1
+end
+-- QC L3: BindToClose settles the running round as a loss for present members.
+do
+	local b1 = Rift_b1
+	local pts = rb(b1).points
+	local rounds = rb(b1).rift.rounds
+	for _, closer in ipairs(H.closers) do
+		local co = coroutine.create(closer)
+		coroutine.resume(co)
+	end
+	local saved = H.data["p" .. b1.UserId].profile.runebinding
+	ok(saved.rift.rounds == rounds + 1 and saved.points > pts, "the shutdown paid the round as a loss (points " .. pts .. " -> " .. saved.points .. ")")
+	eq(saved.rift.wins, 0, "not a win")
+end
 print("Part C (server): " .. (checks - partC) .. " checks")
 
 ------------------------------------------------------------------------------
@@ -869,6 +1142,11 @@ ok(has(fs.readFile("verify.luau"), 'IsleRunes = "runes.client.lua"'), "client re
 ok(has(fs.readFile("scripts/build.sh"), "verify-runebinding.luau"), "suite in build.sh")
 ok(has(fs.readFile("build.ps1"), "'verify-runebinding.luau'"), "suite in build.ps1")
 ok(has(fs.readFile("ui.client.lua"), "Data.Runebinding.unlocks()"), "the skills panel lists the Runebinding unlock guide")
+ok(has(fs.readFile("ui.client.lua"), "RBd.payPlan(need,supplies)") and has(fs.readFile("ui.client.lua"), "Next cast pays: "), "QC L9: the spell card colours costs by the pay plan and lists its payers")
+for _, needle in ipairs({"S.seen[other.UserId] = seq", "S.portalList", "if not stone.Parent then S.keystones[stone] = nil end", "RB.FIELD_POS", "L.pouchChip"}) do
+	ok(has(client, needle), "QC L7 / L8: runes.client.lua " .. needle)
+end
+ok(has(server, "Runebinding.drain then pcall(Runebinding.drain)"), "QC L3: BindToClose drains the Rift")
 ok(has(fs.readFile("docs/DEPTH-CONTRACT.md"), "## 49. Runebinding"), "contract §49")
 print("Part D (sources): " .. (checks - partD) .. " checks")
 print("verify-runebinding: " .. checks .. " checks passed")

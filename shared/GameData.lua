@@ -17325,6 +17325,12 @@ RB.COMBO_BASE, RB.COMBO_STEP = 0.5, 0.02 -- combination success at its level, +2
 RB.OUTFIT_XP, RB.OUTFIT_SET_XP = 0.01, 0.02 -- Shardweave: +1% bind XP per piece, +2% more for the set (6%)
 RB.REPAIR_COINS = 200        -- per worn pouch without an Astral Rune
 RB.FIELD = "Shardhollow"
+RB.FIELD_POS = {x = 1500, y = 200, z = 1500} -- the Shardhollow's centre (world.server.lua builds it here)
+RB.FIELD_RADIUS = 64
+RB.FIELD_NEAR = 140          -- studs from the centre that count as "in the Shardhollow" (HUD, chip)
+RB.FALL_DEPTH = 40           -- QC L6: below the hull by this much (inside FIELD_NEAR) -> caught back to the landing
+RB.MENTOR_RANGE = 20         -- QC L2: studs from the Runebinder for repair, Rift shop and combination choice
+RB.VERSION = 1               -- QC L10: p.runebinding.v
 
 -- Shards (carried, never Bazaar goods: Data.Economy.isCommodity skips them).
 RB.Shards = {
@@ -17338,14 +17344,25 @@ for _, id in ipairs(RB.ShardOrder) do
 	local s = RB.Shards[id]
 	item(id,{name=s.name,kind="material",category="shard",carry=true,rarity=s.rarity,color=s.color,value=s.value,description=s.description})
 end
--- Shards stay out of the Bazaar (they would let a trader skip the carry loop).
+-- Shards stay out of the Bazaar (they would let a trader skip the carry loop);
+-- QC M3 (lead decision): pouches and Rift rewards are untradeable too (Bazaar,
+-- Auction House, merchant and drop all refuse `untradeable` items).
 do
 	local E = Data.Economy
-	local isCommodity = E.isCommodity
+	local isCommodity, auctionCategory = E.isCommodity, E.auctionCategory
 	function E.isCommodity(id)
 		local def = type(id) == "string" and Data.Items[id]
-		if def and def.carry then return false end
+		if def and (def.carry or def.untradeable) then return false end
 		return isCommodity(id)
+	end
+	function E.auctionCategory(id)
+		local def = type(id) == "string" and Data.Items[id]
+		if def and (def.carry or def.untradeable) then return nil end
+		return auctionCategory(id)
+	end
+	function E.untradeable(id)
+		local def = type(id) == "string" and Data.Items[id]
+		return def ~= nil and def ~= false and def.untradeable == true
 	end
 end
 
@@ -17422,10 +17439,16 @@ function RB.runesPerShard(level, altar)
 	return n
 end
 function RB.maxRunesPerShard(altar) return 1 + #(altar.multiples or {}) end
--- Shards an altar accepts, in the order a bind spends them.
+-- Shards an altar binds. QC M2 (best value use): a Lucent Shard (8) is never
+-- bound into low runes worth at most 3, so the Aether altars bind Aether only
+-- and keep any Lucent you carry for Void and above.
 function RB.shardsFor(altar)
 	if type(altar) ~= "table" then return {} end
-	return if altar.shard == "Lucent" then {"LucentShard"} else {"AetherShard","LucentShard"}
+	return if altar.shard == "Lucent" then {"LucentShard"} else {"AetherShard"}
+end
+-- Shards a combination bind may spend: Aether only, Lucent too when opted in (rbCombo "lucent").
+function RB.comboShards(lucentToo)
+	return if lucentToo then {"AetherShard","LucentShard"} else {"AetherShard"}
 end
 function RB.comboChance(level, combo)
 	if type(combo) ~= "table" then return 0 end
@@ -17524,7 +17547,7 @@ for i, pdef in ipairs(RB.Pouches) do
 	pdef.index = i
 	RB.PouchById[pdef.id] = pdef
 	table.insert(RB.PouchOrder, pdef.id)
-	item(pdef.id,{name=pdef.name,kind="material",category="pouch",rarity=pdef.rarity,color=pdef.color,value=pdef.value,
+	item(pdef.id,{name=pdef.name,kind="material",category="pouch",untradeable=true,rarity=pdef.rarity,color=pdef.color,value=1, -- QC M3: bound, near-zero sell value
 		description="Holds "..pdef.cap.." shards beyond the satchel (Runebinding "..pdef.level..")."
 			..(if pdef.wear then " Wears out after "..pdef.wear.." trips (half capacity) until repaired by the Runebinder." else " Never wears out.")
 			..(if pdef.replaces then " Replaces every smaller pouch." else "")})
@@ -17588,12 +17611,12 @@ RB.Outfit = {
 	{id="ShardweaveBoots",slot="boots",name="Shardweave Boots",stats={intelligence=6,defense=3,speed=2},points=150},
 }
 for _, o in ipairs(RB.Outfit) do
-	item(o.id,{name=o.name,kind="armor",slot=o.slot,set=RB.SET,tier=2,rarity="Rare",color="9F7BFF",stats=o.stats,requires={Runebinding=10},value=o.points,
+	item(o.id,{name=o.name,kind="armor",slot=o.slot,set=RB.SET,tier=2,rarity="Rare",color="9F7BFF",stats=o.stats,requires={Runebinding=10},value=1,untradeable=true,
 		description="Part of the Shardweave outfit (Glyph Rift rewards). +1% Runebinding XP from binds. Requires Runebinding 10."})
 	table.insert(Data.Sets[RB.SET].pieces, o.id)
 end
 RB.LANTERN = "RiftlightLantern"
-item(RB.LANTERN,{name="Riftlight Lantern",kind="accessory",rarity="Rare",color=Data.Rarity.Rare.color,stats={intelligence=10},value=40*Data.Rarity.Rare.rank^2,
+item(RB.LANTERN,{name="Riftlight Lantern",kind="accessory",rarity="Rare",color=Data.Rarity.Rare.color,stats={intelligence=10},value=1,untradeable=true,
 	description="Accessory. Magical Power "..Data.Rarity.Rare.power..". While in your accessory bag, every shard outcrop you break yields one more shard. Glyph Rift rewards."})
 -- XP bonus from the equipped outfit (equipment = p.equipment).
 function RB.outfitBonus(equipment)
@@ -17613,6 +17636,7 @@ end
 RB.Rift = {
 	LEVEL = 10, LOBBY = 30, ROUND = 240, REST = 20, GOAL = 100, IDLE = 60, RANGE = 110, SWAP = 40, MAX_MEMBERS = 24,
 	FRAG_PER_BREAK = 4, FRAG_CAP = 80, ESSENCE_CAP = 40, SHAPE_XP = 1, CHARGE_XP = 0.7,
+	CREW_CAP = 6, -- QC M4: at most this many members of one crew in a round (an account is always one member)
 	MIN_CONTRIB = 8, POINT_EVERY = 12, POINT_CAP = 20, WIN_POINTS = 4, CACHE_EVERY = 16, CACHE_CAP = 8,
 	CACHE_MIN = 6, CACHE_MAX = 14, LATE_JOIN = 0.5, -- a round may be joined in its first half
 }
@@ -17679,7 +17703,12 @@ function RB.migrate(raw)
 		rift = {rounds = math.clamp(whole(rift.rounds), 0, RB.MAX_COUNT), wins = math.clamp(whole(rift.wins), 0, RB.MAX_COUNT),
 			best = math.clamp(whole(rift.best), 0, RB.MAX_COUNT)},
 		combo = if type(c.combo) == "string" and RB.ComboById[c.combo] then c.combo else nil,
+		comboLucent = c.comboLucent == true or nil, -- QC M2: combinations spend Lucent only when opted in
 		failed = math.clamp(whole(c.failed), 0, RB.MAX_COUNT),
+		filled = c.filled == true or nil, -- QC M2: shards entered the pouches since the last wear
+		bought = counts(c.bought, RB.RiftShopById, 1000), -- QC M3: lifetime Rift-shop purchases
+		lost = counts(c.lost, RB.RiftShopById, 1000), -- QC M3: replacements owed by a defined loss path
+		v = RB.VERSION,
 	}
 end
 
@@ -17783,6 +17812,26 @@ function RB.carryText(st)
 		if type(e) == "table" and e.worn then text ..= "   ⚠ worn" break end
 	end
 	return text
+end
+
+-- QC L5: coins / hour a Rift member could turn into coins (rune caches sold at
+-- merchant value at the reward cap, the shortest round + lobby + rest) and
+-- Mining's coins / hour (the best ore sold), for the bound in the suite.
+function RB.riftCoinRate(level)
+	local R = RB.Rift
+	local open, value = 0, 0
+	for _, a in ipairs(RB.Altars) do if whole(level) >= a.level then open += 1; value += Data.Items[a.rune].value end end
+	if open == 0 then return 0 end
+	local perRound = R.CACHE_CAP * (R.CACHE_MIN + R.CACHE_MAX) / 2 * value / open
+	return perRound * 3600 / (R.ROUND / 2 + R.LOBBY + R.REST)
+end
+function RB.miningCoinRate(level)
+	local ST = Data.Strike
+	local best = 0
+	for _, r in ipairs(Data.ResourceTiers.Mining) do
+		if whole(level) >= r.level then best = math.max(best, r.value * 3600 / (ST.nominalBreak(r) + ST.SWING.Mining)) end
+	end
+	return best
 end
 
 ------------------------------------------------------------------------------
@@ -17902,12 +17951,14 @@ do
 			table.insert(riftOpts, {label=Data.Items[e.id].name .. " (" .. e.points .. " Rift Points" .. (if e.level > 10 then ", Runebinding " .. e.level else "") .. ")",verb="riftBuy",item=e.id})
 		end
 		table.insert(riftOpts, {label="Back", to="hello"})
-		local comboOpts, comboItems = {}, {none = true}
+		local comboOpts, comboItems = {}, {none = true, lucent = true, aether = true}
 		for _, c in ipairs(RB.Combos) do
 			comboItems[c.id] = true
 			table.insert(comboOpts, {label=c.name .. " (Runebinding " .. c.level .. ", " .. RB.AltarById[c.altar].name .. " + " .. Data.Items[c.input].name .. ")",verb="rbCombo",item=c.id})
 		end
 		table.insert(comboOpts, {label="Bind plain runes only",verb="rbCombo",item="none"})
+		table.insert(comboOpts, {label="Let combinations spend Lucent Shards too",verb="rbCombo",item="lucent"})
+		table.insert(comboOpts, {label="Combinations: Aether Shards only",verb="rbCombo",item="aether"})
 		table.insert(comboOpts, {label="Back", to="hello"})
 		T.Verbs.rbIntro = {item=false}
 		T.Verbs.pouchRepair = {item=false}

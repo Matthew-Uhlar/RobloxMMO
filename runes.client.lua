@@ -53,7 +53,8 @@ end
 local function inField()
 	local pos = rootPos()
 	if not pos then return false end
-	return (pos - Vector3.new(1500, 200, 1500)).Magnitude < 140
+	local F = RB.FIELD_POS -- QC L7: the data constant, not a copy
+	return (pos - Vector3.new(F.x, F.y, F.z)).Magnitude < RB.FIELD_NEAR
 end
 
 ------------------------------------------------------------------------------
@@ -107,12 +108,12 @@ function S.layout()
 	local w, h = size.X, size.Y
 	if w <= 0 or h <= 0 then local cam = workspace.CurrentCamera; local v = cam and cam.ViewportSize or Vector2.new(1366, 768); w, h = v.X, v.Y end
 	local L = T.hudLayout(w, h, {touch = Input.TouchEnabled, lift = player:GetAttribute("IsleHudLift")})
-	local cw = math.min(220, L.action.w)
-	-- Desktop: above the action bar's left end (the heart chip owns the right side);
-	-- touch: above its right end (the heart chip sits over the band's left edge).
-	local x = if L.touch then L.action.x + L.action.w - cw else L.action.x
-	chip.Size = UDim2.fromOffset(cw, 26)
-	chip.Position = UDim2.fromOffset(x, L.action.y - 6 - 26)
+	-- QC L8: the reserved slot (Theme.hudLayout L.pouchChip), clear of the heart chip,
+	-- the chat lane and the spell / prayer bars.
+	local slot = L.pouchChip
+	chip.Size = UDim2.fromOffset(slot.w, slot.h)
+	chip.Position = UDim2.fromOffset(slot.x, slot.y)
+	S.slot = slot
 	rift.Position = UDim2.new(0.5, 0, 0, if L.touch then 8 else 64)
 	picker.Size = UDim2.fromOffset(math.min(360, w - 32), math.min(420, h - 60))
 end
@@ -123,7 +124,7 @@ S.layout()
 function S.drawChip()
 	local st = S.state
 	local show = st ~= nil and (tonumber(st.carried) or 0) + (tonumber(st.pouchHeld) or 0) > 0 or (st ~= nil and inField())
-	chip.Visible = show == true
+	chip.Visible = show == true and (S.slot == nil or S.slot.w > 0)
 	if show then chipText.Text = RB.carryText(st) end
 end
 local PHASE = {lobby = "GATHERING", active = "ROUND", rest = "RESTING", idle = "QUIET"}
@@ -272,15 +273,16 @@ function S.burst(altarId, runes)
 		end)
 	end
 end
+-- QC L7: one remembered sequence number per UserId (a rejoin restarts at 1).
 local function watch(other)
 	if S.watched[other] then return end
+	S.seen[other.UserId] = nil
 	S.watched[other] = other:GetAttributeChangedSignal("RuneBind"):Connect(function()
 		local v = other:GetAttribute("RuneBind")
 		local seq, altar, runes = string.match(type(v) == "string" and v or "", "^(%d+):(%a+):(%d+)$")
-		if not seq then return end
-		local key = other.UserId .. ":" .. seq
-		if S.seen[key] then return end
-		S.seen[key] = true
+		seq = tonumber(seq)
+		if not seq or seq == S.seen[other.UserId] then return end
+		S.seen[other.UserId] = seq
 		S.burst(altar, tonumber(runes))
 	end)
 end
@@ -290,6 +292,7 @@ Players.PlayerRemoving:Connect(function(other)
 	local c = S.watched[other]
 	if c then c:Disconnect() end
 	S.watched[other] = nil
+	S.seen[other.UserId] = nil
 end)
 
 function S.drawPortals(r)
@@ -298,7 +301,12 @@ function S.drawPortals(r)
 		if r.low then open[r.low] = true end
 		if r.high then open[r.high] = true end
 	end
-	for _, portal in ipairs(Tags:GetTagged("RiftPortal")) do
+	-- QC L7: the portal list is cached (refreshed every few seconds); records of gone parts are dropped.
+	if not S.portalList or os.clock() - (S.portalListAt or 0) > 5 then
+		S.portalList, S.portalListAt = Tags:GetTagged("RiftPortal"), os.clock()
+		for portal in pairs(S.portals) do if not portal.Parent then S.portals[portal] = nil end end
+	end
+	for _, portal in ipairs(S.portalList) do
 		local id = portal:GetAttribute("RiftPortal")
 		local rec = S.portals[portal]
 		if not rec then
@@ -356,6 +364,7 @@ RunService.Heartbeat:Connect(function()
 	if now - nearAt > 1 then
 		nearAt = now
 		table.clear(near)
+		for stone in pairs(S.keystones) do if not stone.Parent then S.keystones[stone] = nil end end -- QC L7
 		if pos then
 			for _, base in ipairs(Tags:GetTagged("RuneAltar")) do
 				if (base.Position - pos).Magnitude <= S.KEYSTONE_RANGE then

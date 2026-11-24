@@ -6535,7 +6535,7 @@ do
 		end
 
 		-- The Shardhollow (a pocket isle off the chart) ----------------------------------------
-		local FIELD,FR=V(1500,200,1500),64
+		local FIELD,FR=V(RB.FIELD_POS.x,RB.FIELD_POS.y,RB.FIELD_POS.z),RB.FIELD_RADIUS
 		local field=island(RB.FIELD,FIELD,FR,{parent=world,rim=false,top=C("4A4266"),stone=basalt,stratum=slate,ground=ST,keelShape="IslandKeelCrystal"})
 		field:SetAttribute("RuneField",true)
 		local function onField(x,z) return FIELD+V(x,0,z) end
