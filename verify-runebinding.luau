@@ -48,7 +48,7 @@ local X = Data.XP_TABLE
 ------------------------------------------------------------------------------
 local partA = checks
 ok(type(RB) == "table", "Data.Runebinding exists")
-eq(Data.SkillOrder[#Data.SkillOrder], "Runebinding", "Runebinding appended last (old saves keep their order)")
+eq(Data.SkillOrder[table.find(Data.SkillOrder, "Runebinding") + 1], "Skysailing", "Runebinding appended after the older skills (old saves keep their order; §51 Skysailing follows it)")
 do
 	local def = Data.Skills.Runebinding
 	ok(def and def.category == "production" and #def.color == 6 and def.title == "Runebinder" and def.description, "skill metadata")

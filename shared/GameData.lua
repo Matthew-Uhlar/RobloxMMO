@@ -17994,4 +17994,819 @@ end
 -- <<< END Runebinding <<<
 ------------------------------------------------------------------------------
 
+-- >>> BEGIN Skysailing (Skysailing team; append-only section; docs/DEPTH-CONTRACT.md §51) >>>
+-- A 1-99 skill with OSRS Sailing depth, fitted to the sky (all names original):
+--   * Build a personal airship at the Shipwright's Slip on your home island:
+--     a Construction-style component tree (hull Skyskiff -> Windsloop ->
+--     Aether Galleon, then sails, keel, plating, cannons, cargo hold and a
+--     salvage grapple, each a tier ladder). Components cost materials from
+--     the other skills and pay Skysailing XP; they are never items, so they
+--     cannot be sold (no coin path at all).
+--   * Sail it: a server-authoritative vessel (network-owned by the captain at
+--     the helm; the server checks every pose for speed, altitude and bounds).
+--     The §50 wind field drives speed through the sail trim; storms shake the
+--     hull (turbulence damage the plating softens).
+--   * Activities: chart sky reefs, wrecks and landmarks between the regions;
+--     timed cargo contracts between five port islands (paid from the Harbour
+--     Purse: a capped, bonded budget below half the Mining coin rate); salvage
+--     wrecks with the grapple; fish the sky reefs from the deck; fight sky
+--     corsairs with the existing combat system and deck cannons.
+--   * Crew: other players board as crew (helm / sails / cannons) and share XP.
+--   * Docks at the port islands with sail-out / dock prompts; leaving the ship
+--     always lands you on a dock (never in the void).
+-- Pure data and rules; server.server.lua (Skysailing block) runs them,
+-- sailing.server.lua builds and hosts the vessels, world.server.lua builds the
+-- docks, charts, reefs and wrecks, sailing.client.lua flies and draws them.
+------------------------------------------------------------------------------
+do
+local SS = {}
+Data.Skysailing = SS
+local function whole(v)
+	v = tonumber(v)
+	if not v or v ~= v or v == math.huge or v == -math.huge then return 0 end
+	return math.floor(v)
+end
+local function num(v, default)
+	v = tonumber(v)
+	if not v or v ~= v or v == math.huge or v == -math.huge then return default or 0 end
+	return v
+end
+SS.whole, SS.num = whole, num
+local function item(id, def)
+	def.id = id
+	def.rarity = def.rarity or "Common"
+	def.value = def.value or 1
+	Data.Items[id] = def
+	return def
+end
+local function valueOf(costs)
+	local v = 0
+	for id, n in pairs(costs) do v += (Data.Items[id] and Data.Items[id].value or 0) * n end
+	return v
+end
+SS.valueOf = valueOf
+
+-- Skill registration (appended: old saves keep their order).
+table.insert(Data.SkillOrder, "Skysailing")
+Data.Skills.Skysailing = {category="support",color="4AA8E8",title="Skycaptain",perLevel={health=1,speed=0.1},
+	description="Build an airship, sail the wind between the isles, chart the skyways, run cargo, salvage wrecks and fight corsairs. Raises Health and Speed."}
+if Data.Mastery and Data.Mastery.CapePerk then Data.Mastery.CapePerk.Skysailing = {health=30,speed=5} end
+
+-- Pacing, physics bounds and safety.
+SS.VERSION = 1
+SS.TICK = 0.45                -- server vessel tick (distinct from B.TICK: suites find loops by their wait) (pose check, charting, weather, crew)
+SS.SPEED_SLACK = 1.2          -- allowed speed = top x SLACK + SPEED_FLAT (studs/s)
+SS.SPEED_FLAT = 4
+SS.STEP_GRACE = 3             -- studs of extra displacement allowed per check (latency)
+SS.CLIMB_MAX = 14             -- studs/s of vertical speed the helm can make
+SS.ALT_MIN, SS.ALT_MAX = -70, 230
+SS.BOUNDS = {minX = -1900, maxX = 1900, minZ = -1300, maxZ = 4300}
+SS.STRIKES_MAX = 3            -- sanity violations inside STRIKE_WINDOW before a forced docking
+SS.STRIKE_WINDOW = 30
+SS.DOCK_RANGE = 45            -- studs from a berth to dock / board / load cargo
+SS.BOARD_RANGE = 26           -- studs from the vessel for a player to board
+SS.CREW_RANGE = 70            -- crew this close (and seated) share XP
+SS.ACTIVE_WINDOW = 120        -- s: a crew member who did a role action this recently is active
+SS.FALL_DEPTH = 26            -- below the deck by this much (within FALL_NEAR) -> caught back aboard
+SS.FALL_NEAR = 220
+SS.IDLE_DESPAWN = 300         -- s with the helm empty -> the vessel is docked for you
+SS.LAUNCH_COOLDOWN = 8
+SS.SLOW = 7                   -- studs/s: heaved to (salvage, fishing, boarding)
+SS.CREW_SHARE = 0.5           -- active crew earn this share of the captain's activity XP (never deducted)
+SS.BUILD_XP = 2.5             -- Skysailing XP per coin of material value spent on components
+SS.SHIP_RANGE = 2200          -- home slips / berths are this far apart at most (sanity)
+SS.MENTOR_RANGE = 14          -- studs from the slip to build
+
+------------------------------------------------------------------------------
+-- New material: Sky Driftwood (salvaged from wrecks; early components use it).
+------------------------------------------------------------------------------
+item("SkyDriftwood",{name="Sky Driftwood",kind="material",rarity="Common",color="B89A72",value=6,
+	description="Wind-seasoned planking hauled from sky wrecks. Shipwrights love it."})
+
+------------------------------------------------------------------------------
+-- Hulls and the component tree. Each slot is a tier ladder: a tier needs the
+-- tier below it installed, its Skysailing level and a hull class at least
+-- `hull` (1 Skyskiff, 2 Windsloop, 3 Aether Galleon). Installing a tier spends
+-- its materials (no refund) and pays BUILD_XP x their value.
+------------------------------------------------------------------------------
+SS.Hulls = {
+	{id="Skiff",name="Skyskiff",class=1,level=1,speed=20,turn=58,hp=300,cargo=2,shape="SkiffHull",length=18,beam=7,deck=2.6,
+		seats={helm=1,sails=1,cannons=1}},
+	{id="Sloop",name="Windsloop",class=2,level=30,speed=25,turn=46,hp=900,cargo=4,shape="SloopHull",length=26,beam=9,deck=3.2,
+		seats={helm=1,sails=1,cannons=2}},
+	{id="Galleon",name="Aether Galleon",class=3,level=60,speed=30,turn=36,hp=2200,cargo=6,shape="GalleonHull",length=36,beam=12,deck=4,
+		seats={helm=1,sails=2,cannons=4}},
+}
+SS.HullById = {}
+for _, h in ipairs(SS.Hulls) do SS.HullById[h.id] = h end
+SS.SLOTS = {"hull","sails","keel","plating","cannon","cargo","grapple"}
+SS.SLOT_NAMES = {hull="Hull",sails="Sails",keel="Keel",plating="Hull plating",cannon="Deck cannons",cargo="Cargo hold",grapple="Salvage grapple"}
+-- stats: speed (+fraction of the hull's top speed), windEff (sail efficiency),
+-- turn (+fraction), hp (+hull points), armour (fraction of storm / corsair
+-- hull damage absorbed), cargo (+crates), cannon (damage a shot), grapple (tier).
+SS.Components = {
+	-- Hulls
+	{id="Skiff",slot="hull",tier=1,name="Skyskiff hull",level=1,hull=1,costs={Timber=40,Ore=10,SkyDriftwood=6}},
+	{id="Sloop",slot="hull",tier=2,name="Windsloop hull",level=30,hull=1,costs={WindpineLog=140,BrassIngot=10,SpiderSilk=24,SkyDriftwood=60}},
+	{id="Galleon",slot="hull",tier=3,name="Aether Galleon hull",level=60,hull=2,costs={EmberoakLog=180,StarwoodLog=40,SunsteelIngot=24,Stormglass=12,SkyDriftwood=160}},
+	-- Sails
+	{id="CanvasSails",slot="sails",tier=1,name="Canvas sails",level=1,hull=1,costs={SpunThread=30,Timber=10},stats={speed=0,windEff=0.85}},
+	{id="SilkwindSails",slot="sails",tier=2,name="Silkwind sails",level=18,hull=1,costs={SkyweaveBolt=24,SpiderSilk=16,WindpineLog=20},stats={speed=0.08,windEff=0.95}},
+	{id="StormweaveSails",slot="sails",tier=3,name="Stormweave sails",level=42,hull=2,costs={SkyweaveBolt=60,StormFeather=40,SilkString=12},stats={speed=0.16,windEff=1.05}},
+	{id="AuroraSails",slot="sails",tier=4,name="Aurora sails",level=74,hull=3,costs={StarwovenThread=2,GalePlume=30,StormScale=6,SilkString=30},stats={speed=0.26,windEff=1.15}},
+	-- Keel (handling and hull points)
+	{id="TimberKeel",slot="keel",tier=1,name="Timber keel",level=1,hull=1,costs={Timber=30,SkyDriftwood=4},stats={turn=0,hp=0}},
+	{id="BrassKeel",slot="keel",tier=2,name="Brass-shod keel",level=15,hull=1,costs={WindpineLog=40,BrassIngot=4,SkyDriftwood=20},stats={turn=0.1,hp=100}},
+	{id="AetherKeel",slot="keel",tier=3,name="Aether keel",level=40,hull=2,costs={EmberoakLog=60,AetherIngot=20,GolemCore=4},stats={turn=0.2,hp=300}},
+	{id="StarmetalKeel",slot="keel",tier=4,name="Starmetal keel",level=70,hull=3,costs={StarwoodLog=60,StarmetalIngot=8,ColossusCore=2},stats={turn=0.3,hp=700}},
+	-- Plating (armour)
+	{id="BrassPlating",slot="plating",tier=1,name="Brass plating",level=20,hull=1,costs={BrassIngot=8,AlloyIngot=20,SkyDriftwood=20},stats={armour=0.15,hp=150}},
+	{id="SunsteelPlating",slot="plating",tier=2,name="Sunsteel plating",level=50,hull=2,costs={SunsteelIngot=20,BrassIngot=16,SeaScale=30},stats={armour=0.3,hp=500}},
+	{id="StarmetalPlating",slot="plating",tier=3,name="Starmetal plating",level=80,hull=3,costs={StarmetalIngot=16,DrakeScale=8,StormScale=10},stats={armour=0.45,hp=1200}},
+	-- Deck cannons (the deck weapon)
+	{id="BrassSwivel",slot="cannon",tier=1,name="Brass swivel guns",level=10,hull=1,costs={BrassIngot=4,AlloyIngot=10,Timber=20},stats={cannon=120}},
+	{id="IronCarronade",slot="cannon",tier=2,name="Carronades",level=35,hull=2,costs={AlloyIngot=40,SunsteelIngot=8,EmberoakLog=30},stats={cannon=380}},
+	{id="AetherLongGun",slot="cannon",tier=3,name="Aether long guns",level=62,hull=3,costs={AetherIngot=40,VoidforgedIngot=10,Stormglass=10},stats={cannon=900}},
+	{id="StormlanceGun",slot="cannon",tier=4,name="Stormlance guns",level=86,hull=3,costs={StarmetalIngot=12,StormScale=12,PrismaticIngot=4},stats={cannon=1600}},
+	-- Cargo hold
+	{id="CrateRack",slot="cargo",tier=1,name="Crate rack",level=1,hull=1,costs={Timber=20,CuredLeather=4},stats={cargo=2}},
+	{id="StowedHold",slot="cargo",tier=2,name="Stowed hold",level=25,hull=2,costs={WindpineLog=60,QuiltedLeather=10,SkyDriftwood=30},stats={cargo=4}},
+	{id="DeepHold",slot="cargo",tier=3,name="Deep hold",level=55,hull=3,costs={EmberoakLog=80,EmberhideLeather=10,SkyDriftwood=80},stats={cargo=8}},
+	-- Salvage grapple
+	{id="RopeGrapple",slot="grapple",tier=1,name="Rope grapple",level=5,hull=1,costs={SpunThread=20,Ore=12}},
+	{id="BrassGrapple",slot="grapple",tier=2,name="Brass grapple",level=30,hull=1,costs={BrassIngot=6,SilkString=4,SkyDriftwood=24}},
+	{id="AetherGrapple",slot="grapple",tier=3,name="Aether grapple",level=55,hull=2,costs={AetherIngot=16,SilkString=10,SkyDriftwood=60}},
+	{id="StarmetalGrapple",slot="grapple",tier=4,name="Starmetal grapple",level=78,hull=3,costs={StarmetalIngot=6,GalestringCoil=1,SkyDriftwood=120}},
+}
+SS.ComponentById, SS.SlotTiers = {}, {}
+for _, c in ipairs(SS.Components) do
+	c.stats = c.stats or {}
+	c.xp = math.floor(SS.BUILD_XP * valueOf(c.costs))
+	SS.ComponentById[c.id] = c
+	SS.SlotTiers[c.slot] = SS.SlotTiers[c.slot] or {}
+	SS.SlotTiers[c.slot][c.tier] = c
+end
+-- Seaworthy: these slots must be filled to launch.
+SS.REQUIRED = {"hull","sails","keel"}
+
+-- A ship record (p.skysailing.ship): {[slot] = componentId}. Sanitised.
+function SS.cleanShip(raw)
+	local out = {}
+	if type(raw) ~= "table" then return out end
+	for _, slot in ipairs(SS.SLOTS) do
+		local id = raw[slot]
+		local c = type(id) == "string" and SS.ComponentById[id]
+		if c and c.slot == slot then out[slot] = id end
+	end
+	-- A ladder never skips a rung: drop anything whose hull class is not met.
+	local hull = out.hull and SS.ComponentById[out.hull]
+	local class = hull and hull.tier or 0
+	for _, slot in ipairs(SS.SLOTS) do
+		if slot ~= "hull" and out[slot] and SS.ComponentById[out[slot]].hull > class then out[slot] = nil end
+	end
+	return out
+end
+function SS.hullOf(ship)
+	local c = type(ship) == "table" and ship.hull and SS.ComponentById[ship.hull]
+	return c and SS.HullById[c.id] or nil
+end
+-- The next tier a slot can take, or nil, plus a reason for the UI.
+function SS.nextFor(ship, slot)
+	local tiers = SS.SlotTiers[slot]
+	if not tiers then return nil, "unknown" end
+	local have = ship and ship[slot] and SS.ComponentById[ship[slot]]
+	return tiers[(have and have.tier or 0) + 1]
+end
+-- Can `level` with `ship` and `items` build component `id`? ok, reason.
+function SS.canBuild(ship, id, level, items)
+	local c = type(id) == "string" and SS.ComponentById[id]
+	if not c then return false, "That is not a ship component." end
+	ship = ship or {}
+	local nextC = SS.nextFor(ship, c.slot)
+	local have = ship[c.slot] and SS.ComponentById[ship[c.slot]]
+	if have and have.tier >= c.tier then return false, "Your ship already has " .. have.name .. "." end
+	if nextC ~= c then return false, c.name .. " needs " .. (if nextC then nextC.name else "the tier below") .. " first." end
+	if whole(level) < c.level then return false, c.name .. " needs Skysailing " .. c.level .. "." end
+	local hull = SS.hullOf(ship)
+	local class = hull and hull.class or 0
+	if c.slot ~= "hull" and class < c.hull then
+		return false, c.name .. " needs a " .. SS.Hulls[c.hull].name .. " hull or better."
+	end
+	if c.slot == "hull" and c.tier > 1 and class < c.tier - 1 then return false, c.name .. " is built on the hull below it." end
+	for mat, n in pairs(c.costs) do
+		if (items and items[mat] or 0) < n then
+			return false, c.name .. " needs " .. n .. " " .. (Data.Items[mat] and Data.Items[mat].name or mat) .. " (you have " .. (items and items[mat] or 0) .. ")."
+		end
+	end
+	return true
+end
+function SS.seaworthy(ship)
+	for _, slot in ipairs(SS.REQUIRED) do
+		if not (ship and ship[slot]) then return false, "Your ship needs " .. string.lower(SS.SLOT_NAMES[slot]) .. " before it can sail." end
+	end
+	return true
+end
+-- The combined spec of a ship.
+function SS.spec(ship)
+	local hull = SS.hullOf(ship)
+	if not hull then return nil end
+	local s = {hull = hull.id, class = hull.class, name = hull.name, shape = hull.shape, length = hull.length, beam = hull.beam, deck = hull.deck,
+		speed = hull.speed, turn = hull.turn, hp = hull.hp, armour = 0, cargo = hull.cargo, cannon = 0, windEff = 0.7, grapple = 0,
+		seats = table.clone(hull.seats), crew = 0}
+	local speedBonus, turnBonus = 0, 0
+	for _, slot in ipairs(SS.SLOTS) do
+		local c = slot ~= "hull" and ship[slot] and SS.ComponentById[ship[slot]]
+		if c then
+			local st = c.stats
+			speedBonus += st.speed or 0
+			turnBonus += st.turn or 0
+			s.hp += st.hp or 0
+			s.armour = math.max(s.armour, st.armour or 0)
+			s.cargo += st.cargo or 0
+			s.cannon = math.max(s.cannon, st.cannon or 0)
+			if st.windEff then s.windEff = st.windEff end
+			if slot == "grapple" then s.grapple = c.tier end
+		end
+	end
+	s.speed = hull.speed * (1 + speedBonus)
+	s.turn = hull.turn * (1 + turnBonus)
+	if s.cannon <= 0 then s.seats.cannons = 0 end
+	s.crew = s.seats.helm + s.seats.sails + s.seats.cannons
+	return s
+end
+-- Components installed (tier sum) and total XP banked by building them.
+function SS.built(ship)
+	local tiers, xp = 0, 0
+	for _, slot in ipairs(SS.SLOTS) do
+		local c = ship and ship[slot] and SS.ComponentById[ship[slot]]
+		if c then
+			for t = 1, c.tier do tiers += 1; xp += SS.SlotTiers[slot][t].xp end
+		end
+	end
+	return tiers, xp
+end
+
+------------------------------------------------------------------------------
+-- Wind and sail trim. Wind comes from the §50 field (shared/Ambience.lua
+-- A.windDir / A.windAt on server time; the client computes it). Trim 0 is
+-- sheeted hard in (close-hauled), 1 eased right out (running). The best trim
+-- for a relative wind angle rel (0 = wind dead ahead, pi = dead astern) is
+-- rel / pi. Sailing into the wind (rel < 0.6) only gets the drift engine.
+------------------------------------------------------------------------------
+SS.DRIFT = 0.3                -- the aether drift engine: share of top speed with no wind at all
+SS.WIND_REF = 1.1             -- wind strength that fills the sails
+SS.WIND_CAP = 1.6             -- storms do not push past this (the crew reefs the sails)
+SS.IRONS = 0.6                -- rad: closer to the wind than this is "in irons"
+SS.WEATHER_TURBULENCE = {Storm = 1, Rain = 0.25, Snow = 0.2}
+SS.STORM_DPS = 4              -- hull points a second in a storm before armour
+-- Point-of-sail efficiency for a relative angle (beam reach best).
+function SS.pointOfSail(rel)
+	rel = math.abs(num(rel))
+	if rel > math.pi then rel = 2 * math.pi - rel end
+	if rel < SS.IRONS then return 0 end
+	-- close-hauled 0.55 -> beam reach 1.0 (rel pi/2) -> broad reach 0.95 -> running 0.8
+	if rel <= math.pi / 2 then return 0.55 + 0.45 * (rel - SS.IRONS) / (math.pi / 2 - SS.IRONS) end
+	local t = (rel - math.pi / 2) / (math.pi / 2)
+	return 1 - 0.05 * t - 0.15 * t * t
+end
+function SS.bestTrim(rel)
+	rel = math.abs(num(rel))
+	if rel > math.pi then rel = 2 * math.pi - rel end
+	return math.clamp(rel / math.pi, 0, 1)
+end
+-- How well the trim matches: 1 at the best trim, falling off quadratically.
+function SS.trimMatch(trim, rel)
+	local d = math.abs(math.clamp(num(trim, 0.5), 0, 1) - SS.bestTrim(rel))
+	return math.max(0, 1 - 2.2 * d * d - 0.6 * d)
+end
+-- Share of the ship's top speed (DRIFT .. 1). wind = A.windAt strength.
+function SS.speedFactor(wind, rel, trim, windEff)
+	local w = math.clamp(num(wind), 0, SS.WIND_CAP) / SS.WIND_REF
+	local thrust = math.clamp(w * SS.pointOfSail(rel) * SS.trimMatch(trim, rel) * num(windEff, 0.7), 0, 1)
+	return SS.DRIFT + (1 - SS.DRIFT) * thrust
+end
+-- Relative wind angle: heading (yaw, rad; 0 = +Z... we use the look vector)
+-- against the direction the wind blows TOWARD (dx, dz from A.windDir).
+-- Wind from astern (blowing the way you head) is rel = pi.
+function SS.relWind(lookX, lookZ, windX, windZ)
+	local a = math.atan2(num(lookZ), num(lookX))
+	local b = math.atan2(-num(windZ), -num(windX)) -- where the wind comes FROM
+	local d = math.abs(a - b) % (2 * math.pi)
+	if d > math.pi then d = 2 * math.pi - d end
+	return d
+end
+-- The fastest a ship can legally go (any wind, any trim).
+function SS.maxSpeed(spec)
+	return num(spec and spec.speed)
+end
+function SS.allowedSpeed(spec)
+	return SS.maxSpeed(spec) * SS.SPEED_SLACK + SS.SPEED_FLAT
+end
+-- Server pose check. prev/now = {x, y, z}; dt seconds. ok, reason.
+function SS.checkMove(prev, now, dt, spec)
+	if type(now) ~= "table" then return false, "pose" end
+	local x, y, z = num(now.x, 0 / 0), num(now.y, 0 / 0), num(now.z, 0 / 0)
+	if x ~= x or y ~= y or z ~= z then return false, "pose" end
+	local B = SS.BOUNDS
+	if x < B.minX or x > B.maxX or z < B.minZ or z > B.maxZ then return false, "bounds" end
+	if y < SS.ALT_MIN or y > SS.ALT_MAX then return false, "altitude" end
+	if type(prev) ~= "table" then return true end
+	dt = math.clamp(num(dt, 0), 0, 5)
+	local dx, dy, dz = x - num(prev.x), y - num(prev.y), z - num(prev.z)
+	local flat = math.sqrt(dx * dx + dz * dz)
+	if flat > SS.allowedSpeed(spec) * dt + SS.STEP_GRACE then return false, "speed" end
+	if math.abs(dy) > SS.CLIMB_MAX * 1.5 * dt + SS.STEP_GRACE then return false, "climb" end
+	return true
+end
+-- Hull damage a second from weather (after armour).
+function SS.weatherDps(state, armour)
+	return SS.STORM_DPS * (SS.WEATHER_TURBULENCE[state] or 0) * (1 - math.clamp(num(armour), 0, 0.9))
+end
+-- IsleWeather (§50: "1|<slot>|Hub=Clear,Meadow=Rain,...") -> state for a region key.
+function SS.weatherFor(attr, key)
+	if type(attr) ~= "string" or #attr > 600 or type(key) ~= "string" then return "Clear" end
+	local states = string.match(attr, "^1|%d+|([^|]+)")
+	if not states then return "Clear" end
+	for k, v in string.gmatch(states, "(%w+)=(%a+)") do
+		if k == key then return v end
+	end
+	return "Clear"
+end
+-- The §50 weather region over a point of open sky (nearest isle, else Skyways).
+SS.REGION_CENTRES = {
+	{key="Hub",x=0,z=0,r=200},{key="Meadow",x=-230,z=90,r=170},{key="Quarry",x=230,z=-90,r=170},{key="Skyreach",x=430,z=110,r=150},
+	{key="Windpine",x=-500,z=-160,r=180},{key="Gloomhollow",x=440,z=-440,r=180},{key="Tidewater",x=-520,z=440,r=190},
+	{key="Tempest",x=600,z=-220,r=160},{key="ShatteredCrown",x=820,z=-600,r=200},
+}
+function SS.regionAt(x, z)
+	x, z = num(x), num(z)
+	if z > 2000 then return "Home" end
+	local best, bestD = "Skyways", math.huge
+	for _, c in ipairs(SS.REGION_CENTRES) do
+		local d = math.sqrt((x - c.x) ^ 2 + (z - c.z) ^ 2)
+		if d <= c.r and d < bestD then best, bestD = c.key, d end
+	end
+	return best
+end
+
+------------------------------------------------------------------------------
+-- Ports: five existing islands get a sky dock (world.server.lua builds a
+-- forged SkyDock pier at the rim, a sail-out / dock prompt, a harbour board,
+-- and anchors Dock_<id> (the pier landing) and Berth_<id> (where a ship rides).
+-- angle: the rim direction (radians, atan2(z, x)) clear of bridges.
+------------------------------------------------------------------------------
+SS.Ports = {
+	{id="Quay",name="Compass Quay Skydock",isle="Compass Quay",region="Hub",level=1,centre={x=0,y=0,z=0},radius=115,angle=0.35},
+	{id="Brassfall",name="Brassfall Skydock",isle="Brassfall Quarry",region="Quarry",level=1,centre={x=230,y=0,z=0},radius=74,angle=0.6},
+	{id="Skyreach",name="Skyreach Skydock",isle="Skyreach",region="Skyreach",level=20,centre={x=430,y=40,z=110},radius=66,angle=math.pi / 2},
+	{id="Windpine",name="Windpine Skydock",isle="Windpine Grove",region="Windpine",level=10,centre={x=-500,y=24,z=-160},radius=85,angle=0.31},
+	{id="Tidewater",name="Tidewater Skydock",isle="Tidewater Shoals",region="Tidewater",level=35,centre={x=-520,y=2,z=440},radius=92,angle=-0.7},
+}
+SS.PortById = {}
+SS.PIER_IN, SS.PIER_OUT, SS.BERTH_OUT = 8, 9, 24 -- pier from radius - IN to radius + OUT; the berth BERTH_OUT beyond the pier end
+for i, port in ipairs(SS.Ports) do
+	port.index = i
+	SS.PortById[port.id] = port
+	local dx, dz = math.cos(port.angle), math.sin(port.angle)
+	port.dir = {x = dx, z = dz}
+	local c = port.centre
+	port.pierFrom = {x = c.x + dx * (port.radius - SS.PIER_IN), y = c.y, z = c.z + dz * (port.radius - SS.PIER_IN)}
+	port.pierTo = {x = c.x + dx * (port.radius + SS.PIER_OUT), y = c.y, z = c.z + dz * (port.radius + SS.PIER_OUT)}
+	port.landing = {x = c.x + dx * (port.radius - 4), y = c.y, z = c.z + dz * (port.radius - 4)}
+	local out = port.radius + SS.PIER_OUT + SS.BERTH_OUT
+	port.berth = {x = c.x + dx * out, y = c.y, z = c.z + dz * out}
+end
+function SS.distance(a, b)
+	return math.sqrt((num(a.x) - num(b.x)) ^ 2 + (num(a.z) - num(b.z)) ^ 2)
+end
+-- The nearest port berth to a point: port, distance.
+function SS.nearestPort(pos)
+	local best, bestD = nil, math.huge
+	for _, port in ipairs(SS.Ports) do
+		local d = SS.distance(port.berth, pos)
+		if d < bestD then best, bestD = port, d end
+	end
+	return best, bestD
+end
+-- Home islands (§27): the Shipwright's Slip stands at SLIP_OFFSET from the
+-- home centre; the home berth rides past the rim on the same bearing.
+SS.SLIP_OFFSET = {x = 36, z = 24}
+SS.SLIP_RADIUS = 7           -- Data.Island protected circle "shipwright slip" (the 9 x 9 slipway)
+function SS.homeBerth(centre, homeLevel)
+	if type(centre) ~= "table" then return nil end
+	local H = Data.Home
+	local r = (H and H.radius and H.radius(homeLevel or 1) or 90) + (H and H.MARGIN or 10)
+	local len = math.sqrt(SS.SLIP_OFFSET.x ^ 2 + SS.SLIP_OFFSET.z ^ 2)
+	local dx, dz = SS.SLIP_OFFSET.x / len, SS.SLIP_OFFSET.z / len
+	return {x = num(centre.x) + dx * (r + 24), y = num(centre.y), z = num(centre.z) + dz * (r + 24)}, {x = dx, z = dz}
+end
+function SS.slipAt(centre)
+	if type(centre) ~= "table" then return nil end
+	return {x = num(centre.x) + SS.SLIP_OFFSET.x, y = num(centre.y), z = num(centre.z) + SS.SLIP_OFFSET.z}
+end
+
+------------------------------------------------------------------------------
+-- Charts: sky reefs, wrecks and landmarks between the regions. Sailing within
+-- `radius` with Skysailing >= level charts the point once (XP to every sailor
+-- aboard who meets the level). Reefs (reef = tier) can be fished from deck;
+-- wrecks (wreck = tier) salvaged with a grapple of at least that tier.
+------------------------------------------------------------------------------
+SS.Charts = {
+	{id="BrassBuoy",name="The Brass Buoy",kind="landmark",level=1,x=150,y=10,z=-120,radius=40},
+	{id="QuayShallows",name="Quayside Shallows",kind="reef",reef=1,level=1,x=170,y=-6,z=150,radius=34},
+	{id="SettlerHulk",name="Settler's Hulk",kind="wreck",wreck=1,level=5,x=-150,y=-12,z=130,radius=34},
+	{id="MossReef",name="Mosswake Reef",kind="reef",reef=1,level=8,x=-330,y=-4,z=80,radius=34},
+	{id="SunwheelSpire",name="Sunwheel Spire",kind="landmark",level=10,x=-120,y=30,z=320,radius=40},
+	{id="CinderWreck",name="The Cinder Barge",kind="wreck",wreck=1,level=12,x=340,y=-10,z=-110,radius=34},
+	{id="PinewindGate",name="Pinewind Gate",kind="landmark",level=15,x=-360,y=40,z=-230,radius=40},
+	{id="BrassReef",name="Brasscoral Reef",kind="reef",reef=2,level=22,x=360,y=8,z=240,radius=34},
+	{id="SkyreachHulk",name="Frostbitten Hulk",kind="wreck",wreck=2,level=28,x=560,y=30,z=170,radius=34},
+	{id="LanternRock",name="Lantern Rock",kind="landmark",level=30,x=-300,y=12,z=-380,radius=40},
+	{id="TideReef",name="Tidecrown Reef",kind="reef",reef=3,level=38,x=-340,y=-2,z=470,radius=34},
+	{id="SmugglersHull",name="Smuggler's Hull",kind="wreck",wreck=2,level=40,x=-650,y=-8,z=210,radius=34},
+	{id="GloomArch",name="The Gloom Arch",kind="landmark",level=45,x=250,y=-20,z=-380,radius=40},
+	{id="VoidReef",name="Voidglass Reef",kind="reef",reef=3,level=52,x=600,y=-24,z=-420,radius=34},
+	{id="GalleonGrave",name="Galleon's Grave",kind="wreck",wreck=3,level=58,x=480,y=20,z=-310,radius=34},
+	{id="StormEye",name="Eye of the Squall",kind="landmark",level=65,x=740,y=70,z=-330,radius=40},
+	{id="CrownReef",name="Crownshard Reef",kind="reef",reef=4,level=72,x=900,y=90,z=-450,radius=34},
+	{id="DreadnoughtWreck",name="The Sunken Dreadnought",kind="wreck",wreck=4,level=80,x=700,y=60,z=-720,radius=34},
+}
+SS.ChartById = {}
+for i, ch in ipairs(SS.Charts) do
+	ch.index = i
+	ch.xp = 120 + ch.level * 36
+	SS.ChartById[ch.id] = ch
+end
+-- Charts within `range` of a point (sorted by distance).
+function SS.chartsNear(pos, range, kind)
+	local out = {}
+	for _, ch in ipairs(SS.Charts) do
+		if (not kind or ch.kind == kind) then
+			local d = math.sqrt((num(pos.x) - ch.x) ^ 2 + (num(pos.y) - ch.y) ^ 2 * 0.25 + (num(pos.z) - ch.z) ^ 2)
+			if d <= (range or ch.radius) then table.insert(out, {chart = ch, d = d}) end
+		end
+	end
+	table.sort(out, function(a, b) return a.d < b.d end)
+	return out
+end
+
+------------------------------------------------------------------------------
+-- Salvage (grapple a wreck while heaved to). One haul per SALVAGE_SECONDS;
+-- a wreck regrows per player. Loot tables by wreck tier: chance per haul,
+-- min..max. Every item already exists in the economy except Sky Driftwood.
+------------------------------------------------------------------------------
+SS.SALVAGE_SECONDS = 4
+SS.SALVAGE_RANGE = 34
+SS.WRECK_REGROW = 40          -- s before the same wreck yields to the same player again
+SS.WRECK_HAULS = 6            -- hauls a wreck gives before it must regrow
+SS.SalvageXp = {120, 300, 600, 1000}
+SS.Salvage = {
+	{{item="SkyDriftwood",chance=0.9,min=1,max=3},{item="Timber",chance=0.5,min=2,max=4},{item="Ore",chance=0.35,min=1,max=3},
+		{item="AlloyIngot",chance=0.12,min=1,max=1},{item="SpunThread",chance=0.3,min=2,max=4}},
+	{{item="SkyDriftwood",chance=0.9,min=2,max=4},{item="WindpineLog",chance=0.45,min=1,max=3},{item="BrassIngot",chance=0.1,min=1,max=1},
+		{item="SpiderSilk",chance=0.25,min=1,max=2},{item="StormFeather",chance=0.2,min=1,max=2},{item="SkyweaveBolt",chance=0.15,min=1,max=2}},
+	{{item="SkyDriftwood",chance=0.9,min=3,max=5},{item="EmberoakLog",chance=0.4,min=1,max=3},{item="SunsteelIngot",chance=0.08,min=1,max=1},
+		{item="Stormglass",chance=0.1,min=1,max=1},{item="GolemCore",chance=0.05,min=1,max=1},{item="AetherIngot",chance=0.12,min=1,max=1}},
+	{{item="SkyDriftwood",chance=0.9,min=4,max=7},{item="StarwoodLog",chance=0.35,min=1,max=2},{item="StarmetalIngot",chance=0.05,min=1,max=1},
+		{item="StormScale",chance=0.05,min=1,max=1},{item="StarFragment",chance=0.008,min=1,max=1},{item="SilkString",chance=0.2,min=1,max=2}},
+}
+-- One haul: {[item] = n}. roll() in [0, 1).
+function SS.rollSalvage(tier, roll)
+	local out = {}
+	local tbl = SS.Salvage[math.clamp(whole(tier), 1, #SS.Salvage)]
+	for _, d in ipairs(tbl) do
+		if roll() < d.chance then
+			local n = d.min + math.floor(roll() * (d.max - d.min + 1))
+			out[d.item] = (out[d.item] or 0) + math.clamp(n, d.min, d.max)
+		end
+	end
+	return out
+end
+-- Expected coin value of one haul (balance tests).
+function SS.salvageValue(tier)
+	local v = 0
+	for _, d in ipairs(SS.Salvage[tier]) do v += d.chance * (d.min + d.max) / 2 * Data.Items[d.item].value end
+	return v
+end
+
+------------------------------------------------------------------------------
+-- Sky-reef fishing from the deck (heaved to over a reef). One cast per
+-- FISH_SECONDS; catches are existing fish and reef goods, Fishing XP plus a
+-- little Skysailing XP. reef tier -> Fishing level and table.
+------------------------------------------------------------------------------
+SS.FISH_SECONDS = 4
+SS.FISH_RANGE = 34
+SS.ReefFishing = {
+	{fishing=1,xp=14,sail=6,catch={{item="Fish",weight=70,fishingXp=10},{item="Glassfin",weight=30,fishingXp=22}}},
+	{fishing=20,xp=30,sail=14,catch={{item="Glassfin",weight=40,fishingXp=22},{item="Stormeel",weight=40,fishingXp=40},{item="SeaScale",weight=20,fishingXp=30}}},
+	{fishing=40,xp=60,sail=28,catch={{item="SunscaleCarp",weight=45,fishingXp=60},{item="Lanternray",weight=35,fishingXp=90},{item="ShoalPearl",weight=20,fishingXp=70}}},
+	{fishing=60,xp=100,sail=45,catch={{item="AbyssKoi",weight=50,fishingXp=120},{item="LeviathanScale",weight=30,fishingXp=160},{item="TidewyrmFang",weight=2,fishingXp=400},{item="Riftfin",weight=18,fishingXp=200}}},
+}
+function SS.rollReef(tier, roll)
+	local tbl = SS.ReefFishing[math.clamp(whole(tier), 1, #SS.ReefFishing)]
+	local total = 0
+	for _, c in ipairs(tbl.catch) do total += c.weight end
+	local pick = roll() * total
+	for _, c in ipairs(tbl.catch) do
+		pick -= c.weight
+		if pick < 0 then return c end
+	end
+	return tbl.catch[#tbl.catch]
+end
+
+------------------------------------------------------------------------------
+-- Cargo contracts. Every ordered pair of ports is a route; a contract carries
+-- crates (up to the hold) inside a time limit. Accept at the origin dock
+-- (sailContract "<from>:<to>"); a bond (BOND x payout coins) is held. The
+-- crates load onto the vessel that launches from (or is berthed at) the
+-- origin; deliver by docking that same vessel at the destination with at
+-- least MIN_SAILED x the route distance sailed. Late or abandoned: the bond
+-- is forfeit (a coin sink). A despawned vessel's crates return to the origin.
+--
+-- No-mint payouts (lead decision for §51): coins come from the Harbour Purse,
+-- a per-player daily budget (PURSE_DAILY(level)) whose rate is held under
+-- half of Mining's coin rate at every level (RB.miningCoinRate, the same
+-- budget §49 caps the Glyph Rift with); a route's coins x contracts / hour
+-- stays below it (asserted). Past the daily purse a delivery pays XP and the
+-- bond back only.
+------------------------------------------------------------------------------
+SS.BOND = 0.2
+SS.MIN_SAILED = 0.6
+SS.CONTRACT_OVERHEAD = 50     -- s: accept, load, sail out, dock, unload (balance model)
+SS.REF_SPEED = 11             -- studs/s the time limit assumes
+SS.LIMIT_SLACK = 2.4
+SS.XP_PER_STUD = 0.42        -- XP per stud of (route distance + XP_OVERHEAD) at level 0 (x level and hold factors)
+SS.XP_OVERHEAD = 400          -- studs-equivalent paid for loading, sailing out and docking
+SS.CRATE_COINS = 0.01         -- coins per crate per stud
+SS.PURSE_BASE, SS.PURSE_STEP = 600, 140
+function SS.routeId(from, to) return tostring(from) .. ":" .. tostring(to) end
+SS.Routes, SS.RouteById = {}, {}
+for _, a in ipairs(SS.Ports) do
+	for _, b in ipairs(SS.Ports) do
+		if a ~= b then
+			local d = SS.distance(a.berth, b.berth)
+			local r = {id = SS.routeId(a.id, b.id), from = a.id, to = b.id, distance = d, level = math.max(a.level, b.level)}
+			table.insert(SS.Routes, r)
+			SS.RouteById[r.id] = r
+		end
+	end
+end
+table.sort(SS.Routes, function(x, y) if x.level ~= y.level then return x.level < y.level end return x.id < y.id end)
+function SS.levelFactor(level) return 1 + math.clamp(whole(level), 1, 99) / 20 end
+function SS.holdFactor(crates) return 0.8 + 0.05 * math.clamp(whole(crates), 1, 64) end
+function SS.contractXp(route, crates, level)
+	return math.floor((route.distance + SS.XP_OVERHEAD) * SS.XP_PER_STUD * SS.levelFactor(level) * SS.holdFactor(crates))
+end
+function SS.contractCoins(route, crates)
+	return math.floor(route.distance * SS.CRATE_COINS * math.max(1, whole(crates)))
+end
+function SS.contractLimit(route)
+	return math.floor(60 + route.distance / SS.REF_SPEED * SS.LIMIT_SLACK)
+end
+function SS.bondFor(coins) return math.ceil(math.max(0, num(coins)) * SS.BOND) end
+function SS.purseDaily(level) return SS.PURSE_BASE + SS.PURSE_STEP * math.clamp(whole(level), 1, 99) end
+function SS.dayOf(t) return math.floor(whole(t) / 86400) end
+-- Routes open from a port at a level.
+function SS.routesFrom(portId, level)
+	local out = {}
+	for _, r in ipairs(SS.Routes) do if r.from == portId and whole(level) >= r.level then table.insert(out, r) end end
+	return out
+end
+
+------------------------------------------------------------------------------
+-- Sky corsairs: pirate encounters in open sky. They are sea-creature tickets
+-- (Data.SeaCreatures, never in SeaCreatureOrder, so no cast hooks one) issued
+-- to the captain at a point off the beam; combat.server.lua builds and fights
+-- them with the existing combat system, deck cannons hit them through
+-- ServerStorage.IsleCannon, and the settle (bridge "seaCreature") pays Combat
+-- XP, coins and drops as any creature plus Skysailing XP to the crew.
+------------------------------------------------------------------------------
+SS.PIRATE_LEVEL = 10          -- no corsair finds a ship captained below this
+SS.PIRATE_CLEAR = 140         -- studs from every berth (and homes) where corsairs never come
+SS.PIRATE_CHANCE = 1 / 150    -- per second underway in open sky (x region danger, x storm)
+SS.PIRATE_COOLDOWN = 90       -- s between encounters for one vessel
+SS.PIRATE_HULL_DPS = 3        -- hull points a second per live corsair within PIRATE_REACH (before armour)
+SS.PIRATE_REACH = 60
+SS.DANGER = {Tempest = 2, Gloomhollow = 1.6, ShatteredCrown = 2, Skyways = 1.2}
+SS.PirateOrder = {"CorsairSkiffling","CorsairRaider","CorsairGunwing","CorsairDreadkite"}
+do
+	local pirates = {
+		CorsairSkiffling={name="Corsair Skiffling",level=14,hp=600,damage=40,defense=15,xp=40,coins=10,speed=16,body="ray",color="B8463E",style="melee",
+			drops={{item="SkyDriftwood",chance=0.8,min=2,max=4},{item="Timber",chance=0.4,min=2,max=5}}},
+		CorsairRaider={name="Corsair Raider",level=32,hp=2000,damage=120,defense=60,xp=110,coins=24,speed=17,body="ray",color="8E2F3A",style="ranged",
+			drops={{item="SkyDriftwood",chance=0.8,min=3,max=6},{item="BrassIngot",chance=0.12,min=1,max=1},{item="SpiderSilk",chance=0.3,min=1,max=3}}},
+		CorsairGunwing={name="Corsair Gunwing",level=55,hp=6000,damage=260,defense=130,xp=240,coins=45,speed=19,body="ray",color="5C2333",style="magic",
+			drops={{item="SkyDriftwood",chance=0.8,min=4,max=8},{item="SunsteelIngot",chance=0.1,min=1,max=1},{item="Stormglass",chance=0.12,min=1,max=1}}},
+		CorsairDreadkite={name="Dread Corsair Kite",level=80,hp=16000,damage=520,defense=260,xp=520,coins=90,speed=18,body="jelly",color="3A1C2C",style="ranged",
+			drops={{item="SkyDriftwood",chance=0.9,min=6,max=10},{item="StarmetalIngot",chance=0.06,min=1,max=1},{item="StormScale",chance=0.08,min=1,max=1},{item="StarFragment",chance=0.01,min=1,max=1}}},
+	}
+	local CS = Data.CombatStyles
+	local PR = Data.Prayer
+	for _, id in ipairs(SS.PirateOrder) do
+		local def = pirates[id]
+		def.id, def.seaCreature, def.pirate = id, true, true
+		def.fishing, def.fishingXp, def.weight, def.waters = 999, 0, 0, {"Skyways"}
+		def.sailingXp = def.level * 14
+		def.description = "A sky corsair. Found only by airships in open sky."
+		local style = def.style
+		def.style = nil
+		if CS and CS.beatenBy and CS.beats then
+			def.attackStyle, def.weakness, def.defenceStyle = style, CS.beatenBy[style], CS.beats[style]
+		end
+		if PR and PR.remainsFor then table.insert(def.drops, {item=PR.remainsFor(def.level, nil, true),chance=1,min=1,max=1}) end
+		local kept = {}
+		for _, d in ipairs(def.drops) do if Data.Items[d.item] then table.insert(kept, d) end end
+		def.drops = kept
+		Data.SeaCreatures[id] = def
+	end
+end
+-- Corsairs for a captain's level (the strongest few the level allows, 1-3 by hull class).
+function SS.pirateFor(level, roll)
+	local open = {}
+	for _, id in ipairs(SS.PirateOrder) do
+		local def = Data.SeaCreatures[id]
+		if whole(level) + 12 >= def.level then table.insert(open, id) end
+	end
+	if #open == 0 then return SS.PirateOrder[1] end
+	local top = math.max(1, #open - 1)
+	return open[top + math.floor(roll() * (#open - top + 1))] or open[#open]
+end
+function SS.pirateChance(region, weather)
+	return SS.PIRATE_CHANCE * (SS.DANGER[region] or 1) * (if weather == "Storm" then 1.5 else 1)
+end
+SS.CANNON_RANGE = 90
+SS.CANNON_CONE = 0.5          -- rad half-angle of a broadside's aim
+SS.FIRE_COOLDOWN = 2.5        -- s per gunner
+function SS.cannonDamage(spec, level)
+	return math.floor(num(spec and spec.cannon) * (1 + math.clamp(whole(level), 1, 99) / 99))
+end
+
+------------------------------------------------------------------------------
+-- Balance model (verify-sailing.luau Part A prints and bounds it):
+--   contracts: the best route at a level with the full hold, at the ship the
+--   level can build, CONTRACT_OVERHEAD s plus distance / (speed x 0.75).
+------------------------------------------------------------------------------
+SS.MODEL_WIND = 0.75
+function SS.modelShip(level)
+	local ship = {}
+	for _, slot in ipairs(SS.SLOTS) do
+		for t = #(SS.SlotTiers[slot] or {}), 1, -1 do
+			local c = SS.SlotTiers[slot][t]
+			local hullClass = ship.hull and SS.ComponentById[ship.hull].tier or 0
+			if whole(level) >= c.level and (slot == "hull" or c.hull <= hullClass) then ship[slot] = c.id break end
+		end
+	end
+	return ship
+end
+function SS.contractSeconds(route, spec)
+	return SS.CONTRACT_OVERHEAD + route.distance / (spec.speed * SS.MODEL_WIND)
+end
+function SS.contractRate(level)
+	local spec = SS.spec(SS.modelShip(level))
+	local best, bestRoute, coins = 0, nil, 0
+	for _, r in ipairs(SS.Routes) do
+		if whole(level) >= r.level then
+			local s = SS.contractSeconds(r, spec)
+			local rate = SS.contractXp(r, spec.cargo, level) * 3600 / s
+			if rate > best then best, bestRoute, coins = rate, r, SS.contractCoins(r, spec.cargo) * 3600 / s end
+		end
+	end
+	return best, bestRoute, coins
+end
+SS.SALVAGE_TRAVEL = 26        -- s between hauls on average (regrow / next wreck), model
+function SS.salvageRate(level)
+	local spec = SS.spec(SS.modelShip(level))
+	local tier = 0
+	for _, ch in ipairs(SS.Charts) do
+		if ch.wreck and whole(level) >= ch.level and spec.grapple >= ch.wreck and ch.wreck > tier then tier = ch.wreck end
+	end
+	if tier == 0 then return 0, 0 end
+	return SS.SalvageXp[tier] * 3600 / (SS.SALVAGE_SECONDS + SS.SALVAGE_TRAVEL), tier
+end
+function SS.bestRate(level)
+	local c = SS.contractRate(level)
+	local s = SS.salvageRate(level)
+	return math.max(c, s)
+end
+function SS.hoursTo99()
+	local hours = 0
+	for lvl = 1, Data.MAX_LEVEL - 1 do hours += (Data.XP_TABLE[lvl + 1] - Data.XP_TABLE[lvl]) / SS.bestRate(lvl) end
+	return hours
+end
+
+------------------------------------------------------------------------------
+-- Profile: p.skysailing = {v, ship = {[slot] = id}, hullHp, charted = {[id] = true},
+-- contract = nil | {route, crates, bond, coins, xp, deadline, accepted, loaded},
+-- stats = {contracts, failed, hauls, fished, corsairs, charted, built}, purse = {day, paid}, crew = "open"|"closed"}.
+------------------------------------------------------------------------------
+SS.STAT_KEYS = {"contracts","failed","hauls","fished","corsairs","built","launches"}
+function SS.migrate(raw, now)
+	local src = type(raw) == "table" and raw or {}
+	local out = {v = SS.VERSION, ship = SS.cleanShip(src.ship), charted = {}, stats = {}, purse = {day = 0, paid = 0},
+		crew = if src.crew == "closed" then "closed" else "open"}
+	if type(src.charted) == "table" then
+		for id, v in pairs(src.charted) do if v == true and SS.ChartById[id] then out.charted[id] = true end end
+	end
+	local st = type(src.stats) == "table" and src.stats or {}
+	for _, k in ipairs(SS.STAT_KEYS) do
+		local n = whole(st[k])
+		if n > 0 then out.stats[k] = math.min(n, 1000000000) end
+	end
+	local pu = type(src.purse) == "table" and src.purse or {}
+	out.purse.day, out.purse.paid = math.max(0, whole(pu.day)), math.max(0, whole(pu.paid))
+	local spec = SS.spec(out.ship)
+	if spec then
+		local hp = whole(src.hullHp)
+		out.hullHp = if src.hullHp == nil then spec.hp else math.clamp(hp, 0, spec.hp)
+	end
+	local c = type(src.contract) == "table" and src.contract or nil
+	if c and SS.RouteById[c.route] then
+		out.contract = {route = c.route, crates = math.clamp(whole(c.crates), 1, 64), bond = math.max(0, whole(c.bond)),
+			coins = math.max(0, whole(c.coins)), xp = math.max(0, whole(c.xp)), deadline = whole(c.deadline), accepted = whole(c.accepted)}
+		-- Cargo is never saved aboard: a rejoin finds it back in the origin warehouse.
+	end
+	return out
+end
+
+------------------------------------------------------------------------------
+-- Unlock list for the Skills page (Hero › Skills › Skysailing).
+------------------------------------------------------------------------------
+function SS.unlocks()
+	local out = {}
+	for _, c in ipairs(SS.Components) do
+		table.insert(out, {level=c.level,text="Build " .. c.name .. " (" .. SS.SLOT_NAMES[c.slot] .. (if c.hull > 1 then ", " .. SS.Hulls[c.hull].name .. "+" else "") .. ")"})
+	end
+	for _, port in ipairs(SS.Ports) do
+		if port.level > 1 then table.insert(out, {level=port.level,text="Cargo contracts to the " .. port.name}) end
+	end
+	for _, ch in ipairs(SS.Charts) do
+		local what = if ch.kind == "reef" then "Fish " elseif ch.kind == "wreck" then "Salvage " else "Chart "
+		table.insert(out, {level=ch.level,text=what .. ch.name})
+	end
+	table.insert(out, {level=SS.PIRATE_LEVEL,text="Sky corsairs hunt ships in open sky"})
+	table.sort(out, function(a, b) if a.level ~= b.level then return a.level < b.level end return a.text < b.text end)
+	return out
+end
+
+------------------------------------------------------------------------------
+-- Client display helpers (sailing.client.lua; pure, tested).
+------------------------------------------------------------------------------
+-- Compass text for a look vector (N = -Z).
+SS.COMPASS = {"N","NE","E","SE","S","SW","W","NW"}
+function SS.compass(lookX, lookZ)
+	local deg = (math.deg(math.atan2(num(lookX), -num(lookZ))) + 360) % 360
+	return SS.COMPASS[math.floor((deg + 22.5) / 45) % 8 + 1], math.floor(deg + 0.5) % 360
+end
+SS.KNOTS = 0.6                -- studs/s -> displayed knots
+function SS.knots(speed) return math.floor(num(speed) * SS.KNOTS + 0.5) end
+-- Vessel attribute "VesselState" = "hp:max:trim:speedCap:crew:policy" (server -> clients).
+function SS.parseState(text)
+	if type(text) ~= "string" or #text > 120 then return nil end
+	local hp, max, trim, cap, crew, policy = string.match(text, "^(%d+):(%d+):(%d+):([%d%.]+):(%d+):(%a+)$")
+	if not hp then return nil end
+	return {hp = tonumber(hp), max = math.max(1, tonumber(max)), trim = math.clamp(tonumber(trim), 0, 100) / 100, cap = tonumber(cap), crew = tonumber(crew), policy = policy}
+end
+function SS.encodeState(hp, max, trim, cap, crew, policy)
+	return string.format("%d:%d:%d:%.1f:%d:%s", math.max(0, whole(hp)), math.max(1, whole(max)), math.clamp(whole(num(trim) * 100 + 0.5), 0, 100),
+		num(cap), whole(crew), if policy == "closed" then "closed" else "open")
+end
+-- Cloth billow depth for a sail (client): studs of belly at full fill.
+SS.BILLOW = 1.4
+function SS.billow(wind, rel, trim, reduced)
+	if reduced then return SS.BILLOW * 0.5 end
+	local fill = math.clamp(num(wind) / SS.WIND_REF, 0, 1.4) * math.max(0.15, SS.trimMatch(trim, rel)) * math.max(0.2, SS.pointOfSail(rel))
+	return SS.BILLOW * math.clamp(fill, 0.1, 1.3)
+end
+
+------------------------------------------------------------------------------
+-- Quest-helper and calculator hooks, and the home protected circle.
+------------------------------------------------------------------------------
+do
+	local SY = Data.Systems
+	local CA = SY and SY.Calc
+	if CA and CA.actions then
+		local actions = CA.actions
+		function CA.actions(skill)
+			if skill ~= "Skysailing" then return actions(skill) end
+			local out = {}
+			for _, c in ipairs(SS.Components) do table.insert(out, {id = c.id, name = "Build " .. c.name, level = c.level, xp = c.xp, kind = "build"}) end
+			for _, ch in ipairs(SS.Charts) do table.insert(out, {id = ch.id, name = "Chart " .. ch.name, level = ch.level, xp = ch.xp, kind = "chart"}) end
+			for t, xp in ipairs(SS.SalvageXp) do table.insert(out, {id = "Salvage" .. t, name = "Salvage a tier " .. t .. " wreck (a haul)", level = 1, xp = xp, kind = "salvage"}) end
+			table.sort(out, function(a, b)
+				if a.level ~= b.level then return a.level < b.level end
+				if a.xp ~= b.xp then return a.xp < b.xp end
+				return a.id < b.id
+			end)
+			return out
+		end
+	end
+	local I = Data.Island
+	if I and I.ProtectedCircles then
+		table.insert(I.ProtectedCircles, {name="shipwright slip",x=SS.SLIP_OFFSET.x,z=SS.SLIP_OFFSET.z,r=SS.SLIP_RADIUS})
+	end
+end
+end
+-- <<< END Skysailing <<<
+------------------------------------------------------------------------------
+
 return Data

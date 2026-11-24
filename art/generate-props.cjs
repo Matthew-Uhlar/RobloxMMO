@@ -559,6 +559,7 @@ require('./world-shapes.cjs')({world,C,PI,hash,jitterOf});
 require('./region-shapes.cjs')({world,C,PI,hash,jitterOf});
 require('./beacon-shapes.cjs')({world,C,PI,hash,jitterOf});
 require('./rune-shapes.cjs')({world,C,PI,hash,jitterOf}); // §49 Runebinding: altar, guardian portal, Rift monolith
+require('./ship-shapes.cjs')({world,C,PI,hash,jitterOf}); // §51 Skysailing: hulls, mast, helm, cannon, docks, slip, reef, wreck, buoy
 // Creatures (§48): forged on each client by creatures.client.lua through the
 // MeshForge creature API; their own catalog (art/CreatureCatalog.lua).
 function creature(name,meta,build){
