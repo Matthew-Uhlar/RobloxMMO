@@ -902,8 +902,17 @@ end
 -- QC L2: no campfire within B.SPOT_CLEARANCE of a prompt (stations, nodes, townsfolk).
 do
 	local spot
+	-- A prompt clear of every beacon pyre (so the pyre rule cannot answer first).
+	local pyres = {}
 	for _, q in islands:GetDescendants() do
-		if q:IsA("ProximityPrompt") and q:GetAttribute("IsleAction") ~= "beaconLight" and q.Parent and q.Parent:IsA("BasePart") then spot = q.Parent.CFrame.Position break end
+		if q:IsA("ProximityPrompt") and q:GetAttribute("IsleAction") == "beaconLight" and q.Parent and q.Parent:IsA("BasePart") then table.insert(pyres, q.Parent.CFrame.Position) end
+	end
+	for _, q in islands:GetDescendants() do
+		if q:IsA("ProximityPrompt") and q:GetAttribute("IsleAction") ~= "beaconLight" and q.Parent and q.Parent:IsA("BasePart") then
+			local p, clear = q.Parent.CFrame.Position, true
+			for _, b in pyres do if Vector3.new(p.X - b.X, 0, p.Z - b.Z).Magnitude < B.BEACON_CLEARANCE + 8 then clear = false end end
+			if clear then spot = p break end
+		end
 	end
 	ok(spot ~= nil, "a world prompt to test against")
 	local camper = seeded(7302, function(prof) prof.items = {FlintStriker = 1, Timber = 3}; prof.xp.Beaconry = X[50] end)

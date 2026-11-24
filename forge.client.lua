@@ -75,11 +75,8 @@ end
 -- tagged prop gets a mesh. Names with no good match stay primitive by design.
 local ALIASES = {
 	Rock = "Boulder", CliffRock = "CliffPiece", OreVein = "OreVein2", Lamp = "StreetLamp", PineTree = "WindpineTree",
-	-- Sign system (§28): descriptive names for the sign kit pieces.
-	OrnateBracket = "SignHangingFrame", Signpost = "SignpostFrame", Standard = "BannerStandardFrame", Finial = "BannerStandardFrame",
-	Plinth = "SignPlinthFrame", Crest = "SignPlinthFrame", NoticeFrame = "SignLedgerFrame", CarvedBoard = "SignCarvedBoard",
-	ScrollBoard = "SignScrollBoard", ArrowBoard = "SignArrowBoard", Plaque = "SignPlaqueBoard", NoticeBoard = "SignNoticeBoard",
-	ChainLink = "SignHangingFrame",
+	-- Sign system (§28 v2: signs are billboards; only the ledger board is meshed).
+	NoticeBoard = "SignNoticeBoard",
 }
 local RESOURCE_SLOTS = {CropBed = true, OreVein = true}
 local function lookup(shapeName)
@@ -155,15 +152,12 @@ local newTemplatesBlocked = false
 -- yields): the slot is already counted, and concurrent callers wait for it.
 local templates = {}
 -- Sign kit shapes (§28; see templateTint below).
-local SIGN_KIT_SHAPES = {
-	SignHangingFrame = true, SignpostFrame = true, BannerStandardFrame = true, SignPlinthFrame = true, SignLedgerFrame = true,
-	SignCarvedBoard = true, SignScrollBoard = true, SignArrowBoard = true, SignPlaqueBoard = true, SignNoticeBoard = true, BannerCloth = true,
-}
+local SIGN_KIT_SHAPES = {SignNoticeBoard = true} -- §28 v2: the one sign mesh left (ledger notice boards)
 local useTick = 0 -- LRU clock: bumped whenever a template gains or loses a clone
 -- Tint variants per shape: a shape keeps at most VARIANTS templates (desktop 2,
 -- phones 1); a further tint reuses the shape's nearest existing variant. Legacy
 -- sign shapes (kind "sign" outside the kit: pennants, cloth, ledgers) are exempt
--- so their colours stay exact (they are few).
+-- so their colours stay exact (they are few), as are exactTint shapes on desktop.
 local VARIANTS = if mobile then 1 else 2
 local variants = {} -- shapeName -> {key -> tint | false}
 local function tintDistance(a, b)
@@ -332,7 +326,10 @@ local function template(shapeName, data, catalog, tint)
 		return coroutine.yield()
 	end
 	if cached ~= nil then return cached or nil end
-	if variantCount(shapeName) >= VARIANTS and not (data.kind == "sign" and not SIGN_KIT_SHAPES[shapeName]) then
+	-- exactTint shapes (travel beacons, §44: small, few per island, coloured by
+	-- region) keep their exact Tint on desktop; phones share variants as usual.
+	if variantCount(shapeName) >= VARIANTS and not (data.kind == "sign" and not SIGN_KIT_SHAPES[shapeName])
+		and not (data.exactTint == true and not mobile) then
 		return nearestVariant(shapeName, tint)
 	end
 	local triangles = #data.faces
@@ -375,20 +372,17 @@ end
 -- Signs: the original board keeps its SurfaceGui (the meshed frame wraps it);
 -- text gets one consistent, higher-contrast style.
 local SIGN_KINDS = {sign = true}
--- Sign kit (§28): the eleven kit shapes, by final shape name. Every other
--- kind "sign" shape (legacy Banner, Signboard, SignboardPosted, SignPost:
--- pennants, agility cloth, crew pennant, commission ledger) keeps its Tint on
--- every device. Kit tints are quantised so ten island themes cannot each spend
--- a template per shape: frames and boards snap to the nearest of KIT_METALS on
--- desktop and share the shape's default-tint template on phones; BannerCloth
--- (its Tint is the banner's accent) snaps to CLOTH_PALETTE on every device.
+-- Sign kit (§28 v2): only the ledger notice board is still a sign mesh; its
+-- Tint snaps to KIT_METALS on desktop and shares the default template on
+-- phones. Every other kind "sign" shape (legacy Banner, Signboard,
+-- SignboardPosted, SignPost: pennants, agility cloth, crew pennant) keeps its
+-- Tint on every device.
 local function hexColors(list)
 	local out = {}
 	for i, hex in ipairs(list) do out[i] = Color3.fromHex(hex) end
 	return out
 end
 local KIT_METALS = hexColors({"C9A24E", "B0B8C4", "6FA898"}) -- brass, silver, verdigris
-local CLOTH_PALETTE = hexColors({"C15557", "D9A441", "3C9291", "7B5CC4", "4E8A3E", "3F6FB5"})
 local function nearestColor(color, palette)
 	local best, bestDistance = palette[1], math.huge
 	for _, c in ipairs(palette) do
@@ -405,7 +399,6 @@ local function templateTint(shapeName, data, tint)
 	-- studs, always in use) share their default-tint template.
 	if mobile and (data.kind == "rock" or data.kind == "bridge" or type(data.range) == "number") then return defaultTint(data) end
 	if not SIGN_KIT_SHAPES[shapeName] then return tint end
-	if shapeName == "BannerCloth" then return nearestColor(tint, CLOTH_PALETTE) end
 	if mobile then return defaultTint(data) end
 	return nearestColor(tint, KIT_METALS)
 end
@@ -890,7 +883,7 @@ for _, instance in ipairs(workspace:GetDescendants()) do watch(instance) end
 step()
 if MeshForgeTest then
 	MeshForgeTest.forge = {stats = stats, limits = LIMITS, templates = templates, rescan = rescan, consider = consider, step = step,
-		templateTint = templateTint, kitShapes = SIGN_KIT_SHAPES, kitMetals = KIT_METALS, clothPalette = CLOTH_PALETTE, variants = VARIANTS,
+		templateTint = templateTint, kitShapes = SIGN_KIT_SHAPES, kitMetals = KIT_METALS, variants = VARIANTS,
 		cornerNormals = cornerNormals, styleSign = styleSign, stopReason = function() return stopReason end,
 		radii = {build = BUILD_RADIUS, unload = UNLOAD_RADIUS, building = BUILDING_RADIUS}, buildRadius = buildRadius, releaseRadius = releaseRadius, mobile = mobile, backoff = backoff, registry = registry, final = final, placed = placed,
 		chart = {visual = chartVisual, accept = chartAccept, release = chartRelease, tokens = chartTokens, pinCap = CHART_PIN_CAP, reserve = CHART_RESERVE},

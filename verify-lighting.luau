@@ -639,5 +639,23 @@ do
 	ok(D.lights.entries == entries, "the entry list is reused between updates")
 end
 
+-- §44 travel beacons: a locked beacon dims its light by Color only (beacons.client.lua);
+-- the director keeps Enabled / Brightness / Shadows and never touches Color.
+do
+	local l = authored[2]
+	run(1)
+	local enabled, bright = l.Enabled, l.Brightness
+	local base = l.Color
+	l.Color = base:Lerp(Color3.new(0, 0, 0), 0.78)
+	run(2)
+	ok(l.Color ~= base and l.Enabled == enabled and math.abs(l.Brightness - bright) < 1e-3, "a dimmed beacon light keeps the director's budget and brightness")
+	l.Color = base
+	run(1)
+	ok(l.Color == base and l.Enabled == enabled, "a beacon that lights up again only restores its colour")
+	for _, shape in {"TravelBeacon", "TravelBeaconBasalt", "TravelBeaconCrystal", "TravelBeaconRings", "SkywardVentPad"} do
+		eq(L.GLOW_SHAPES[shape], nil, shape .. " is not a pooled glow site (beacons carry their own light)")
+	end
+end
+
 print("Lighting: " .. checks .. " checks.")
 print("SUITE-END verify-lighting.luau")

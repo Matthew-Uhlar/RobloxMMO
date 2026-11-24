@@ -294,8 +294,8 @@ for _,obj in world:GetDescendants() do
 	elseif obj:IsA("ProximityPrompt") then
 		prompts+=1
 		check(obj.Parent:IsA("BasePart"),"prompt has physical target")
-	elseif obj:IsA("SurfaceGui") then
-		signs+=1
+	elseif obj:IsA("SurfaceGui") or (obj:IsA("BillboardGui") and obj.Name=="SignBillboard") then
+		signs+=1 -- §28 v2: floating sign billboards (ledgers stay SurfaceGui boards)
 	end
 end
 check(parts>300 and prompts>=25 and signs>=20,"world landmarks and interactions exist")
@@ -1129,17 +1129,16 @@ do
 			shapeCount+=1
 		end
 	end
-	local signShapes={Signboard=true,SignPost=true,Banner=true,SignCarvedBoard=true,SignScrollBoard=true,SignArrowBoard=true,
-		SignPlaqueBoard=true,BannerCloth=true,SignNoticeBoard=true}
+	-- §28 v2: static signs are floating billboards on one invisible anchor (no sign meshes).
 	local signBoards=0
 	for _,gui in world:GetDescendants() do
-		if gui:IsA("SurfaceGui") and gui.Parent:IsA("BasePart") and gui:FindFirstAncestor("Islands") then
+		if gui:IsA("BillboardGui") and gui.Name=="SignBillboard" and gui:FindFirstAncestor("Islands") then
 			signBoards+=1
-			check(signShapes[gui.Parent:GetAttribute("Shape")]==true,gui.Parent.Name.." sign carries a sign mesh slot")
+			check(gui.Parent:GetAttribute("SignAnchor")==true and gui.Parent:GetAttribute("Shape")==nil,gui.Parent.Name.." sign floats on a mesh-free anchor")
 		end
 	end
 	check(signBoards>=40,"signs on the static islands ("..signBoards..")")
-	for _,need in {"Lamp","OreVein","CropBed","Rock","CliffRock","RockOutcrop","MeadowTree","PineTree","Forge","Hearth","Cauldron","Workbench","BridgePost","Statue","Signboard","Banner","MarketStall","FishingPier","WarpBeacon"} do
+	for _,need in {"Lamp","OreVein","CropBed","Rock","CliffRock","RockOutcrop","MeadowTree","PineTree","Forge","Hearth","Cauldron","Workbench","BridgePost","Statue","Signboard","Banner","MarketStall","FishingPier","TravelBeacon","TravelBeaconBasalt","SkywardVentPad"} do
 		check((shapes[need] or 0)>=1,need.." mesh slots exist")
 	end
 	-- Final mesh boxes: run MeshForge's own layout over every tagged part (no
@@ -1446,6 +1445,124 @@ do
 	for _,obj in crown:GetDescendants() do if obj:IsA("BasePart") then crownParts+=1 end end
 	check(crownParts<=450,"Shattered Crown stays within 450 parts ("..crownParts..")")
 	print("Endgame world: "..(checks-before).." checks; Shattered Crown "..crownParts.." parts.")
+end
+-- Travel beacons (§44): every travel beacon is one forged dais over its old
+-- prompt post; prompts, anchors and colliders are unchanged; no extra parts.
+do
+	local before=checks
+	local function flatDist(a,b) return Vec(a.X-b.X,0,a.Z-b.Z).Magnitude end
+	local function lightPos(l)
+		local host=l.Parent
+		if host:IsA("Attachment") then return (host.Parent.CFrame*host.CFrame).Position end
+		return host.CFrame.Position
+	end
+	local BOX=Vec(5,5.6,5)
+	local DAIS={TravelBeacon=true,TravelBeaconBasalt=true}
+	local list={}
+	for _,post in tags.TravelBeacon or {} do
+		local ok,parent=pcall(function() return post.Parent end)
+		if ok and parent and post:IsDescendantOf(world) then table.insert(list,post) end
+	end
+	local kinds,byPart={},{}
+	for _,post in list do
+		byPart[post]=true
+		local kind=post:GetAttribute("TravelBeacon")
+		kinds[kind]=(kinds[kind] or 0)+1
+		check(post:IsA("BasePart") and post.Anchored,"travel beacon "..post.Name.." is an anchored part")
+		local hover=post:GetAttribute("TravelBeaconHover")
+		check(typeof(hover)=="Vector3","travel beacon "..post.Name.." names its hover point")
+		if kind=="vent" then
+			check(post:GetAttribute("Shape")=="SkywardVentPad" and post:GetAttribute("ShapeFit")=="Uniform","vent "..post:GetAttribute("VentId").." uses the vent pad dais")
+			check(post.CanCollide and type(post:GetAttribute("TravelBeaconRegion"))=="string","vent pad stays a collider and names its destination")
+			check(hover.Y>post.CFrame.Position.Y+2,"vent rings float above the pad")
+			continue
+		end
+		check(DAIS[post:GetAttribute("Shape")]==true,post.Name.." uses the travel beacon dais mesh")
+		check(typeof(post:GetAttribute("ShapeBox"))=="Vector3" and (post:GetAttribute("ShapeBox")-BOX).Magnitude<1e-3,post.Name.." declares the 5 x 5.6 x 5 dais box")
+		local offset=post:GetAttribute("ShapeBoxOffset")
+		check(typeof(offset)=="Vector3" and math.abs(offset.X)<1e-3 and math.abs(offset.Z)<1e-3,post.Name.." dais box is centred on its post")
+		local boxBottom=post.CFrame.Position.Y+offset.Y-BOX.Y/2
+		local postBottom=post.CFrame.Position.Y-post.Size.Y/2
+		check(boxBottom<=postBottom+.85 and boxBottom>=postBottom-1.2,post.Name.." dais stands on the ground under its post")
+		check(not post.CanCollide and math.max(post.Size.X,post.Size.Z)<=2,post.Name.." post stays a slim non-colliding prompt host")
+		check(math.abs(hover.Y-(boxBottom+3))<1e-3 and math.abs(hover.X-post.CFrame.Position.X)<1e-3,post.Name.." crystal floats inside the dais cage")
+		check(post:FindFirstChildOfClass("ProximityPrompt")~=nil,post.Name.." keeps its prompt")
+		check(typeof(post:GetAttribute("Tint"))=="Color3",post.Name.." tints its channels")
+		local plinth
+		for _,sib in post.Parent:GetChildren() do
+			if sib.Name=="Beacon plinth" and sib:IsA("BasePart") and flatDist(sib.CFrame.Position,post.CFrame.Position)<.01 then plinth=sib end
+		end
+		if plinth then
+			check(plinth.CanCollide and (plinth.Size-Vec(3.4,.8,3.4)).Magnitude<1e-3,post.Name.." plinth collider unchanged")
+			check(math.abs((plinth.CFrame.Position.Y-.4)-boxBottom)<1e-3,post.Name.." dais base wraps the plinth")
+		end
+		local q=post:FindFirstChildOfClass("ProximityPrompt")
+		if q and q:GetAttribute("IsleWarpRegion") then
+			check(post:GetAttribute("TravelBeaconRegion")==q:GetAttribute("IsleWarpRegion"),post.Name.." lights for its own destination")
+		end
+	end
+	-- Every prompt that carries a player somewhere sits on a travel beacon.
+	local TRAVEL={["Homeward beacon"]=true,["Crew beacon"]=true,["Quay beacon"]=true,["Quay return"]=true,["Charter beacon"]=true,["Quarry beacon"]=true,["Warp beacon"]=true}
+	local travelPrompts=0
+	for _,q in world:GetDescendants() do
+		if q:IsA("ProximityPrompt") and (q:GetAttribute("IsleWarpRegion") or q:GetAttribute("IsleWarpReturn") or q:GetAttribute("IsleMinigameFerry") or TRAVEL[q.Parent.Name]) then
+			travelPrompts+=1
+			check(byPart[q.Parent]==true,q.ActionText.." prompt stands on a travel beacon")
+		end
+	end
+	for _,obj in world:GetDescendants() do
+		if obj:IsA("BasePart") then
+			check(obj:GetAttribute("Shape")~="WarpBeacon","no travel beacon keeps the old block mesh ("..obj.Name..")")
+			check(obj.Name~="Beacon fin" and obj.Name~="Transit fins","old travel beacon fins are gone")
+		end
+	end
+	check(kinds.region==7 and kinds["return"]>=6 and kinds.home==1 and kinds.crew==1 and kinds.ferry==1,"every beacon kind is built")
+	check((kinds.vent or 0)==#Data.Vents.List,"every Skyward Vent is a travel beacon pad ("..tostring(kinds.vent)..")")
+	local crewPost
+	for _,post in list do if post.Name=="Crew beacon" then crewPost=post end end
+	check(crewPost and crewPost:GetAttribute("TravelBeaconNeeds")=="crew","the crew beacon lights only for crew members")
+	-- Part budget: a gated / return beacon is plinth + post (was 5 parts), a
+	-- single post stays one part (the home quay beacon lost its two fins).
+	local beaconParts=0
+	for _,post in list do
+		if post:GetAttribute("TravelBeacon")~="vent" then beaconParts+=1 end
+	end
+	for _,obj in world:GetDescendants() do if obj.Name=="Beacon plinth" then beaconParts+=1 end end
+	check(beaconParts<=2*kinds.region+2*kinds["return"]+kinds.home+kinds.crew+2*kinds.ferry,"travel beacons stay within 2 static parts each ("..beaconParts..")")
+	-- Lights: at most one per beacon, owned by the §35 director (LightWanted).
+	local beaconLights=0
+	for _,post in list do
+		local lights=0
+		for _,l in post:GetDescendants() do
+			if l:IsA("Light") then
+				lights+=1
+				beaconLights+=1
+				check(l:GetAttribute("LightWanted")==true and l.Shadows==false and l.Brightness<=.7,post.Name.." light is a director-managed, shadowless glow")
+				check(l.Parent:IsA("Attachment") and math.abs(lightPos(l).Y-post:GetAttribute("TravelBeaconHover").Y)<=1.5,post.Name.." light sits at crystal height")
+			end
+		end
+		check(lights<=1,post.Name.." carries at most one light")
+	end
+	check(beaconLights<=kinds.region+kinds["return"],"beacon lights stay within the old budget ("..beaconLights..")")
+	-- A trip flares the beacon and marks known fast travel.
+	for _,post in list do
+		local q=post:FindFirstChildOfClass("ProximityPrompt")
+		if q and q:GetAttribute("IsleWarpReturn") then
+			local t=traveller()
+			t.UserId=91
+			standAt(t,post)
+			local was=post:GetAttribute("TravelBeaconFlare") or 0
+			q.Triggered:Fire(t)
+			check(t.landed~=nil and post:GetAttribute("TravelBeaconFlare")==was+1 and post:GetAttribute("TravelBeaconFlareBy")==91,post.Name.." flares on a trip")
+			check(t.attributes.FastTravelAt~=nil,"a beacon trip is known fast travel")
+			local far=traveller()
+			standAt(far,{CFrame=post.CFrame+Vec(40,0,0)})
+			q.Triggered:Fire(far)
+			check(post:GetAttribute("TravelBeaconFlare")==was+1,"a refused trip does not flare")
+			break
+		end
+	end
+	print("Travel beacons: "..(checks-before).." checks; "..#list.." beacons ("..travelPrompts.." travel prompts), "..beaconParts.." static parts, "..beaconLights.." lights.")
 end
 print("Depth world: "..tierCount.." resource tiers / "..nodeCount.." gather nodes, "..markers.." spawn markers, "..warps.." gated warps, "..stationCount.." stations, "..staticParts.." static parts, "..staticLights.." lights.")
 print("World QA passed "..checks.." checks with "..parts.." parts, "..prompts.." prompts and "..signs.." sign surfaces.")

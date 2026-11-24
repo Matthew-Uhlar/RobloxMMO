@@ -539,6 +539,7 @@ function world(name,meta,build){
 }
 require('./world-shapes.cjs')({world,C,PI,hash,jitterOf});
 require('./region-shapes.cjs')({world,C,PI,hash,jitterOf});
+require('./beacon-shapes.cjs')({world,C,PI,hash,jitterOf});
 // Building kit (§40): returns the kit table the world script builds from.
 const buildingKit=require('./building-shapes.cjs')({world,C,PI,hash,jitterOf,worldShapes});
 
@@ -653,6 +654,7 @@ const worldEntries=Object.entries(worldShapes).map(([name,data])=>{
   if(m.fit)extra.fit=m.fit;
   if(m.along)extra.along=m.along;
   if(m.range)extra.range=m.range;
+  if(m.exactTint)extra.exactTint=true;
   if(m.interior)extra.interior=true;
   const verts=data.vertices.map(p=>p.map(x=>packNumber(Math.round(x*1000)+PACK_OFFSET,3)).join('')).join('');
   const faces=data.faces.map(([a,b,c,shade])=>packNumber(a,2)+packNumber(b,2)+packNumber(c,2)+packNumber(shade,1)).join('');
