@@ -175,7 +175,19 @@ for _, host in hosts do
 	if def.kind == "facade" then
 		ok(host.Name == "Roofed house" and host.CanCollide and host.Transparency == 0, name .. " collider block is the visible fallback")
 		ok(nearV(host.Size, Vector3.new(def.w, def.h, def.d), .001), name .. " collider = the kit footprint")
-		buildingParts += 1
+		for _, p in model:GetChildren() do if p:IsA("BasePart") then buildingParts += 1 end end
+		-- §40 QC L6: the porch deck / door step outside the block collides.
+		local ground = host.CFrame * CFrame.new(0, -def.h / 2, 0)
+		local probe
+		if name == "LogLodge" then probe = ground * CFrame.new(3, .35, -def.d / 2 - 1.2)
+		elseif name ~= "StoneCottage" then probe = ground * CFrame.new(def.door.x, .25, def.door.z - .45) end
+		if probe then
+			local hit = false
+			for _, p in model:GetChildren() do
+				if p:IsA("BasePart") and p:GetAttribute("FurnitureCollider") and p.CanCollide and p.Transparency == 1 and inside(p.CFrame, p.Size / 2, probe.Position) then hit = true end
+			end
+			ok(hit, model.Name .. " (" .. name .. ") porch / step has an invisible collider")
+		end
 	else
 		table.insert(walkins, {host = host, def = def, ground = ground, name = name})
 		ok(host.Name == "Roofed hall floor" and host:GetAttribute("ShapeOwnsModel") == true, name .. " floor hosts the hall mesh")
@@ -230,11 +242,19 @@ for _, w in walkins do
 	-- when the counter stands to one side (a tavern bar).
 	local cc, cs = idef.counter.c, idef.counter.s
 	local ahead = math.abs(cc[1]) - cs[1] / 2 < 1.1
-	local z1 = if ahead then cc[3] - cs[3] / 2 - .6 else 0
+	-- (§40 QC L6: the tavern's tables collide now, so the way to a side bar
+	-- goes in past the door, then across the front of the room to the bar.)
+	local z1 = if ahead then cc[3] - cs[3] / 2 - .6 else -2.2
 	local z0 = -def.d / 2 - 3
 	local sweep = ground * CFrame.new(0, def.floor + .2 + 2.75, (z0 + z1) / 2)
 	local hit = solidAt(sweep, Vector3.new(1.1, 2.6, (z1 - z0) / 2), {[w.host] = true})
 	ok(hit == nil, model.Name .. ": the way in from the street to the counter is clear" .. (if hit then " (blocked by " .. hit:GetFullName() .. ")" else ""))
+	if not ahead then
+		local x1 = math.sign(cc[1]) * (math.abs(cc[1]) - cs[1] / 2 - .6)
+		local across = ground * CFrame.new(x1 / 2, def.floor + .2 + 2.75, z1)
+		hit = solidAt(across, Vector3.new(math.abs(x1) / 2, 2.6, 1.1), {[w.host] = true})
+		ok(hit == nil, model.Name .. ": the way across to the bar is clear" .. (if hit then " (blocked by " .. hit:GetFullName() .. ")" else ""))
+	end
 	-- Enclosed: each wall's span is covered by a collider (no gap but the door).
 	for _, probe in {{0, def.d / 2 - def.t / 2}, {def.w / 2 - def.t / 2, 0}, {-def.w / 2 + def.t / 2, 0}, {def.w / 2 - 2, -def.d / 2 + def.t / 2}, {-def.w / 2 + 2, -def.d / 2 + def.t / 2}} do
 		local p = (ground * CFrame.new(probe[1], 3, probe[2])).Position
@@ -397,8 +417,26 @@ do
 	ok(furnish ~= nil and furnish:GetAttribute("Shape") == "HallFurnishings" and furnish.Transparency == 1 and not furnish.CanCollide, "Guild Hall furnishings placed")
 	local fit = KIT.HallFurnishings.fit
 	ok(nearV(furnish.Size, Vector3.new(fit[2][1] - fit[1][1], fit[2][2] - fit[1][2], fit[2][3] - fit[1][3]), .01), "furnishing host = its fit box")
+	-- §40: the furnishings follow the floor's yaw; QC L6: trestles and benches collide.
+	local floor = furnish.Parent:FindFirstChild("Hall floor")
+	local rel = floor.CFrame:ToObjectSpace(furnish.CFrame)
+	ok(math.abs(rel.LookVector.Z + 1) < 1e-4 and math.abs(rel.UpVector.Y - 1) < 1e-4, "Guild Hall furnishings share the floor's yaw")
+	local colliders = 0
+	for _, obj in furnish.Parent:GetChildren() do
+		if obj:IsA("BasePart") and obj:GetAttribute("FurnitureCollider") then
+			colliders += 1
+			ok(inside(furnish.CFrame, furnish.Size / 2, obj.CFrame.Position) and obj.CanCollide and obj.Transparency == 1, "furniture collider inside the furnishing box")
+			local r = furnish.CFrame:ToObjectSpace(obj.CFrame)
+			ok(math.abs(r.LookVector.Z + 1) < 1e-4, "furniture collider follows the floor's yaw")
+		end
+	end
+	ok(colliders == 3, "Guild Hall trestles, benches and wall bench collide (" .. colliders .. ")")
+	local inn = islands:FindFirstChild("Compass Quay"):FindFirstChild("The Gilded Compass Inn")
+	local innColliders = 0
+	for _, obj in inn:GetChildren() do if obj:IsA("BasePart") and obj:GetAttribute("FurnitureCollider") then innColliders += 1 end end
+	ok(innColliders == 4, "the inn's tables and hearth collide (" .. innColliders .. ")")
 	for _, obj in furnish.Parent:GetDescendants() do
-		if obj:IsA("BasePart") and obj ~= furnish and obj.Name ~= "Hall floor" and (obj.CanCollide or obj:FindFirstChildOfClass("ProximityPrompt")) then
+		if obj:IsA("BasePart") and obj ~= furnish and obj.Name ~= "Hall floor" and not obj:GetAttribute("FurnitureCollider") and (obj.CanCollide or obj:FindFirstChildOfClass("ProximityPrompt")) then
 			ok(not obbObb(furnish.CFrame, furnish.Size / 2, obj.CFrame, obj.Size / 2), "furnishings clear of " .. obj.Name)
 		end
 	end
@@ -484,6 +522,18 @@ do
 							ok(I.cellBlocked(x, z, 0) ~= nil, m.Name .. " walk at (" .. x .. ", " .. z .. ") is protected")
 						end
 					end
+				end
+			end
+			-- §40 QC: the Builder's Terrace sign stands at the terrace, inside its protected zone.
+			local signModel = m:FindFirstChild("Sign Builder's Terrace", true)
+			ok(signModel ~= nil, "Builder's Terrace sign built")
+			local zone
+			for _, r in I.Protected do if r.name == "terrace sign" then zone = r end end
+			for _, p in (signModel and signModel:GetDescendants() or {}) do
+				if p:IsA("BasePart") and (p.CanCollide or p.Transparency < 1) then
+					local q = p.CFrame.Position - IC
+					ok(q.X > zone.x1 - .5 and q.X < zone.x2 + .5 and q.Z > zone.z1 - .5 and q.Z < zone.z2 + .5, p.Name .. " of the terrace sign inside its protected zone (" .. math.floor(q.X * 10) / 10 .. ", " .. math.floor(q.Z * 10) / 10 .. ")")
+					ok(math.abs(q.X - Data.TERRACE_OFFSET.x) < 16, "the terrace sign stands near the terrace (" .. math.floor(q.X) .. ")")
 				end
 			end
 			ok(walks >= 3, m.Name .. " home walks measured (yard, terrace, garden; the lookout boardwalk is a level add-on) (" .. walks .. ")")

@@ -1046,6 +1046,28 @@ do
 		host:SetAttribute("WindowGlow",table.concat(panes,";"))
 		host:SetAttribute("GlowSite","window")
 	end
+	-- Door-step heights (the kit's plinth P: art/building-shapes.cjs; the
+	-- StoneCottage door has no step, the LogLodge has its porch deck).
+	B.STOOP={TimberHouse=.8,TimberTownhouse=.7,TimberShopfront=.6,ThatchCottage=.6}
+	-- Invisible collider for mesh furniture / porches (§40 QC L6).
+	function B.collider(parent,name,size,cf)
+		local p=part(parent,name,size,cf,B.FLOOR,WO,true)
+		p.Transparency,p.CastShadow=1,false
+		p:SetAttribute("FurnitureCollider",true)
+		return p
+	end
+	-- Furniture colliders per interior mesh, in the hall ground frame (kit
+	-- coordinates): {cx, cy, cz, sx, sy, sz}.
+	B.FURNITURE={
+		TavernInterior={{-3.5,1.59,-2.5,2.2,2.5,2.2},{-3.5,1.59,2.8,2.2,2.5,2.2},{1.2,1.59,.2,2.2,2.5,2.2}, -- table tops (stools stay walk-through)
+			{-7.6,2.94,0,1.2,5.2,4.2}}, -- hearth
+		HallFurnishings={{2.9,1.2,-4.5,4.1,2.4,6},{2.9,1.2,4.5,4.1,2.4,6},{-3.2,.34,0,.7,.68,12}}, -- trestles + benches, wall bench
+	}
+	function B.furniture(parent,name,cf)
+		for _,f in ipairs(B.FURNITURE[name] or {}) do
+			B.collider(parent,"Furniture collider",V(f[4],f[5],f[6]),cf*CFrame.new(f[1],f[2],f[3]))
+		end
+	end
 	-- cf: the ground point at the footprint centre; its LookVector is the
 	-- street (door) side. Returns the model and its host part.
 	function B.place(parent,name,cf,opts)
@@ -1060,6 +1082,15 @@ do
 			host=part(m,"Roofed house",V(def.w,def.h,def.d),cf*CFrame.new(at),opts.color or B.PLASTER,SM,true)
 			slot(host,name,def,at,opts.tint)
 			glow(host,def,at)
+			-- §40 QC L6: the mesh's porch deck (LogLodge) / door step stands
+			-- outside the plaster block: an invisible collider so nobody wades
+			-- through it.
+			if name=="LogLodge" then
+				B.collider(m,"Porch collider",V(def.w-1,.7,2.4),cf*CFrame.new(0,.35,-def.d/2-1.2))
+			elseif B.STOOP[name] and def.door then
+				local h=B.STOOP[name]
+				B.collider(m,"Stoop collider",V(def.door.w+.9,h,.9),cf*CFrame.new(def.door.x,h/2,def.door.z-.45))
+			end
 		else
 			local t,H,o=def.t,def.h,def.opening
 			local at=V(0,def.floor-.25,0)
@@ -1088,6 +1119,7 @@ do
 		local counter=part(model,"Counter",V(def.counter.s[1],def.counter.s[2],def.counter.s[3]),cf*CFrame.new(c),C("5A4030"),WO,true)
 		slot(counter,name,def,c)
 		counter:SetAttribute("Interior",name)
+		B.furniture(model,name,cf)
 		return counter
 	end
 	-- A walk-in hall around a service counter at `pos` facing `toward` (the
@@ -3211,7 +3243,8 @@ do
 		path(terrace,center+V(-16,0,0),center+V(T.x+11,0,0),5)
 		disk(terrace,"Terrace court",tc+V(0,.05,0),4.2,.12,navy,ST,true)
 		disk(terrace,"Court seal",tc+V(0,.13,0),1.4,.1,brass,MT,false)
-		sign(terrace,center+V(-15,0,-6),"Builder's Terrace","CARPENTRY   /   PLAN IN YOUR JOURNAL",brass,90,8)
+		-- §40 QC: the sign stands at the terrace, beside the walk (Data.Island "terrace sign").
+		sign(terrace,center+V(T.x+14,0,-9),"Builder's Terrace","CARPENTRY   /   PLAN IN YOUR JOURNAL",brass,90,8)
 		local built,plinths,portalPrompt={},{},nil
 		local function refreshPortal()
 			if not portalPrompt then return end
@@ -6023,9 +6056,13 @@ do
 	local floor=hall and hall:FindFirstChild("Hall floor")
 	if floor then
 		local centre,size=Buildings.fitOf(BUILDING_KIT.HallFurnishings)
-		local p=floor.CFrame.Position
-		local hostCF=CFrame.new(p.X+3.6,p.Y+floor.Size.Y/2,p.Z)*CFrame.new(centre)
-		local lo,hi=hostCF.Position-size/2,hostCF.Position+size/2
+		-- The floor's own frame (its yaw), 3.6 studs along its X, on its top.
+		local ground=floor.CFrame*CFrame.new(3.6,floor.Size.Y/2,0)
+		local hostCF=ground*CFrame.new(centre)
+		local r,u,l=hostCF.RightVector,hostCF.UpVector,hostCF.LookVector
+		local ext=V(math.abs(r.X)*size.X+math.abs(u.X)*size.Y+math.abs(l.X)*size.Z,math.abs(r.Y)*size.X+math.abs(u.Y)*size.Y+math.abs(l.Y)*size.Z,
+			math.abs(r.Z)*size.X+math.abs(u.Z)*size.Y+math.abs(l.Z)*size.Z)/2
+		local lo,hi=hostCF.Position-ext,hostCF.Position+ext
 		local clear=true
 		for _,obj in ipairs(terrace:GetDescendants()) do
 			if obj:IsA("BasePart") and obj~=floor and obj.Name~="Meadow" and (obj.Transparency<1 or obj.CanCollide
@@ -6042,6 +6079,7 @@ do
 			host.Transparency,host.CastShadow,host.CanQuery=1,false,false
 			meshSlot(host,"HallFurnishings",C("3F6FB5"))
 			host:SetAttribute("Interior","HallFurnishings")
+			Buildings.furniture(hall,"HallFurnishings",ground) -- §40 QC L6: tables and benches collide
 		end
 	end
 end
