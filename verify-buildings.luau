@@ -175,7 +175,19 @@ for _, host in hosts do
 	if def.kind == "facade" then
 		ok(host.Name == "Roofed house" and host.CanCollide and host.Transparency == 0, name .. " collider block is the visible fallback")
 		ok(nearV(host.Size, Vector3.new(def.w, def.h, def.d), .001), name .. " collider = the kit footprint")
-		buildingParts += 1
+		for _, p in model:GetChildren() do if p:IsA("BasePart") then buildingParts += 1 end end
+		-- §40 QC L6: the porch deck / door step outside the block collides.
+		local ground = host.CFrame * CFrame.new(0, -def.h / 2, 0)
+		local probe
+		if name == "LogLodge" then probe = ground * CFrame.new(3, .35, -def.d / 2 - 1.2)
+		elseif name ~= "StoneCottage" then probe = ground * CFrame.new(def.door.x, .25, def.door.z - .45) end
+		if probe then
+			local hit = false
+			for _, p in model:GetChildren() do
+				if p:IsA("BasePart") and p:GetAttribute("FurnitureCollider") and p.CanCollide and p.Transparency == 1 and inside(p.CFrame, p.Size / 2, probe.Position) then hit = true end
+			end
+			ok(hit, model.Name .. " (" .. name .. ") porch / step has an invisible collider")
+		end
 	else
 		table.insert(walkins, {host = host, def = def, ground = ground, name = name})
 		ok(host.Name == "Roofed hall floor" and host:GetAttribute("ShapeOwnsModel") == true, name .. " floor hosts the hall mesh")
@@ -230,11 +242,19 @@ for _, w in walkins do
 	-- when the counter stands to one side (a tavern bar).
 	local cc, cs = idef.counter.c, idef.counter.s
 	local ahead = math.abs(cc[1]) - cs[1] / 2 < 1.1
-	local z1 = if ahead then cc[3] - cs[3] / 2 - .6 else 0
+	-- (§40 QC L6: the tavern's tables collide now, so the way to a side bar
+	-- goes in past the door, then across the front of the room to the bar.)
+	local z1 = if ahead then cc[3] - cs[3] / 2 - .6 else -2.2
 	local z0 = -def.d / 2 - 3
 	local sweep = ground * CFrame.new(0, def.floor + .2 + 2.75, (z0 + z1) / 2)
 	local hit = solidAt(sweep, Vector3.new(1.1, 2.6, (z1 - z0) / 2), {[w.host] = true})
 	ok(hit == nil, model.Name .. ": the way in from the street to the counter is clear" .. (if hit then " (blocked by " .. hit:GetFullName() .. ")" else ""))
+	if not ahead then
+		local x1 = math.sign(cc[1]) * (math.abs(cc[1]) - cs[1] / 2 - .6)
+		local across = ground * CFrame.new(x1 / 2, def.floor + .2 + 2.75, z1)
+		hit = solidAt(across, Vector3.new(math.abs(x1) / 2, 2.6, 1.1), {[w.host] = true})
+		ok(hit == nil, model.Name .. ": the way across to the bar is clear" .. (if hit then " (blocked by " .. hit:GetFullName() .. ")" else ""))
+	end
 	-- Enclosed: each wall's span is covered by a collider (no gap but the door).
 	for _, probe in {{0, def.d / 2 - def.t / 2}, {def.w / 2 - def.t / 2, 0}, {-def.w / 2 + def.t / 2, 0}, {def.w / 2 - 2, -def.d / 2 + def.t / 2}, {-def.w / 2 + 2, -def.d / 2 + def.t / 2}} do
 		local p = (ground * CFrame.new(probe[1], 3, probe[2])).Position
@@ -338,6 +358,59 @@ for i = 1, #hosts do
 end
 ok(minGap >= 2.4, string.format("an alley of at least 2.4 studs between house walls (min %.2f)", minGap))
 
+-- §40 QC L2: the placement searches that run after the settlements (World
+-- Art & Regions props, the Skyward Vents, exploration, lairs, raids, the
+-- Council Hall, beacons) block with a building's whole declared mesh box, so
+-- no part of theirs stands inside a house's roof / porch / awning volume.
+do
+	local CONTENT = {"ExploreContent", "LairContent", "RaidContent", "VentId", "CouncilContent", "BeaconContent", "RegionArt"}
+	local function contentOf(obj)
+		local node = obj.Parent
+		while node and node ~= islands do
+			for _, a in CONTENT do if node:GetAttribute(a) ~= nil then return a end end
+			node = node.Parent
+		end
+		return nil
+	end
+	local probed = 0
+	for _, h in hosts do
+		local fcf, fh = fitFrame(h)
+		local isle = isleOf(h)
+		for _, obj in isle:GetDescendants() do
+			if obj:IsA("BasePart") and ownBuilding(obj) == nil and (obj.CanCollide or obj.Transparency < 1) then
+				local what = contentOf(obj)
+				if what then
+					probed += 1
+					ok(not obbObb(fcf, fh, obj.CFrame, obj.Size / 2, -.05), obj:GetFullName() .. " (" .. what .. ") is not placed inside " .. h.Parent.Name)
+				end
+			end
+		end
+	end
+	ok(probed > 0, "post-settlement content probed against building boxes (" .. probed .. ")")
+	-- Every clearance helper from the first settlement on reads Buildings.box
+	-- (ShapeBox / ShapeBoxOffset), never the bare part size.
+	local after = string.sub(source, (string.find(source, "function Buildings.settle", 1, true)))
+	local _, bare = string.gsub(after, "local cf,sz=obj%.CFrame,obj%.Size\n", "")
+	local _, boxed = string.gsub(after, "local cf,sz=Buildings%.box%(obj%)", "")
+	ok(bare == 0 and boxed >= 7, "post-settlement placement helpers honour ShapeBox (" .. boxed .. " boxed, " .. bare .. " bare)")
+end
+
+-- §40 QC L5: the regional walk-in shops carry a name sign (Signs.build) beside
+-- their front corner, outside the walls.
+for _, title in {"Quay Outfitters", "Mosswake Herbalist", "Brassfall Assay House", "Skyreach Outfitters"} do
+	local hall
+	for _, w in walkins do if w.host.Parent.Name == title then hall = w end end
+	ok(hall ~= nil, title .. " is built")
+	local holder = hall and hall.host.Parent:FindFirstChild("Sign " .. title)
+	ok(holder ~= nil and holder:GetAttribute("SignTitle") == title and holder:GetAttribute("SignArchetype") ~= nil, title .. " has a name sign")
+	for _, p in (holder and holder:GetDescendants() or {}) do
+		if p:IsA("BasePart") then
+			local q = hall.ground:PointToObjectSpace(p.CFrame.Position)
+			ok(math.abs(q.X) > hall.def.w / 2 + .5 and q.Z < 0, title .. " sign stands outside the hall, by its front")
+		end
+	end
+end
+
 -- The Guild Hall pavilion is furnished (rug, trestle tables, benches,
 -- chandelier) clear of its ledgers, the Huntmaster's pedestal and anchors.
 do
@@ -345,8 +418,26 @@ do
 	ok(furnish ~= nil and furnish:GetAttribute("Shape") == "HallFurnishings" and furnish.Transparency == 1 and not furnish.CanCollide, "Guild Hall furnishings placed")
 	local fit = KIT.HallFurnishings.fit
 	ok(nearV(furnish.Size, Vector3.new(fit[2][1] - fit[1][1], fit[2][2] - fit[1][2], fit[2][3] - fit[1][3]), .01), "furnishing host = its fit box")
+	-- §40: the furnishings follow the floor's yaw; QC L6: trestles and benches collide.
+	local floor = furnish.Parent:FindFirstChild("Hall floor")
+	local rel = floor.CFrame:ToObjectSpace(furnish.CFrame)
+	ok(math.abs(rel.LookVector.Z + 1) < 1e-4 and math.abs(rel.UpVector.Y - 1) < 1e-4, "Guild Hall furnishings share the floor's yaw")
+	local colliders = 0
+	for _, obj in furnish.Parent:GetChildren() do
+		if obj:IsA("BasePart") and obj:GetAttribute("FurnitureCollider") then
+			colliders += 1
+			ok(inside(furnish.CFrame, furnish.Size / 2, obj.CFrame.Position) and obj.CanCollide and obj.Transparency == 1, "furniture collider inside the furnishing box")
+			local r = furnish.CFrame:ToObjectSpace(obj.CFrame)
+			ok(math.abs(r.LookVector.Z + 1) < 1e-4, "furniture collider follows the floor's yaw")
+		end
+	end
+	ok(colliders == 3, "Guild Hall trestles, benches and wall bench collide (" .. colliders .. ")")
+	local inn = islands:FindFirstChild("Compass Quay"):FindFirstChild("The Gilded Compass Inn")
+	local innColliders = 0
+	for _, obj in inn:GetChildren() do if obj:IsA("BasePart") and obj:GetAttribute("FurnitureCollider") then innColliders += 1 end end
+	ok(innColliders == 4, "the inn's tables and hearth collide (" .. innColliders .. ")")
 	for _, obj in furnish.Parent:GetDescendants() do
-		if obj:IsA("BasePart") and obj ~= furnish and obj.Name ~= "Hall floor" and (obj.CanCollide or obj:FindFirstChildOfClass("ProximityPrompt")) then
+		if obj:IsA("BasePart") and obj ~= furnish and obj.Name ~= "Hall floor" and not obj:GetAttribute("FurnitureCollider") and (obj.CanCollide or obj:FindFirstChildOfClass("ProximityPrompt")) then
 			ok(not obbObb(furnish.CFrame, furnish.Size / 2, obj.CFrame, obj.Size / 2), "furnishings clear of " .. obj.Name)
 		end
 	end
@@ -394,9 +485,61 @@ do
 		id += 1
 		table.insert(recs, string.format("%d:TimberFence:%d:%d:0", id, math.floor(c.x / I.CELL + .5), math.floor(c.z / I.CELL + .5)))
 	end
+	-- §40 QC M1: the oriented garden walk and worker-yard path are protected
+	-- (segment capsules) and saved decorations on their midpoints move too.
+	ok(#I.ProtectedSegments >= 2, "the garden walk and the worker-yard path are protected walks")
+	local walkRecs = 0
+	for _, g in I.ProtectedSegments do
+		local mx, mz = math.floor((g.ax + g.bx) / 2 / I.CELL + .5), math.floor((g.az + g.bz) / 2 / I.CELL + .5)
+		ok(I.cellBlocked(mx, mz, 0) == g.name, g.name .. " midpoint cell is protected (" .. tostring(I.cellBlocked(mx, mz, 0)) .. ")")
+		-- A cell well off the walk's side stays buildable (the capsule is narrow).
+		local len = math.sqrt((g.bx - g.ax) ^ 2 + (g.bz - g.az) ^ 2)
+		local nx, nz = -(g.bz - g.az) / len, (g.bx - g.ax) / len
+		local sx, sz = math.floor(((g.ax + g.bx) / 2 + nx * 8) / I.CELL + .5), math.floor(((g.az + g.bz) / 2 + nz * 8) / I.CELL + .5)
+		ok(I.cellBlocked(sx, sz, 0) == nil, g.name .. " leaves the meadow beside it buildable")
+		id += 1
+		walkRecs += 1
+		table.insert(recs, string.format("%d:TimberFence:%d:%d:0", id, mx, mz))
+	end
 	local migrated, refunds, report = I.migrate({placed = recs, v = I.VERSION}, 0)
 	ok(report.refunded == 0 and next(refunds) == nil, "decorations on the moved add-ons' ground are never refunded")
-	ok(#migrated.placed == #recs and report.moved >= 1, "they are relocated beside them (" .. report.moved .. " moved)")
+	ok(#migrated.placed == #recs and report.moved >= 1 + walkRecs, "they are relocated beside them (" .. report.moved .. " moved)")
+	for _, rec in migrated.placed do
+		local e = I.parseRecord(rec)
+		ok(e ~= nil and I.cellBlocked(e.x, e.z, 0) == nil, "relocated record " .. tostring(rec) .. " lands on a buildable cell")
+	end
+	-- Every walk on a built home island (Path strips beyond the legacy core) is protected along its length.
+	for _, m in b.archipelago:GetChildren() do
+		if string.find(m.Name, "^WayfarersRest_") then
+			local IC = m:GetAttribute("IslandCenter")
+			local walks = 0
+			for _, p in m:GetDescendants() do
+				if p:IsA("BasePart") and p.Name == "Path" then
+					walks += 1
+					for t = -.45, .45, .15 do
+						local q = p.CFrame.Position + p.CFrame.LookVector * (p.Size.Z * t) - IC
+						if math.sqrt(q.X * q.X + q.Z * q.Z) > 22 then
+							local x, z = math.floor(q.X / I.CELL + .5), math.floor(q.Z / I.CELL + .5)
+							ok(I.cellBlocked(x, z, 0) ~= nil, m.Name .. " walk at (" .. x .. ", " .. z .. ") is protected")
+						end
+					end
+				end
+			end
+			-- §40 QC: the Builder's Terrace sign stands at the terrace, inside its protected zone.
+			local signModel = m:FindFirstChild("Sign Builder's Terrace", true)
+			ok(signModel ~= nil, "Builder's Terrace sign built")
+			local zone
+			for _, r in I.Protected do if r.name == "terrace sign" then zone = r end end
+			for _, p in (signModel and signModel:GetDescendants() or {}) do
+				if p:IsA("BasePart") and (p.CanCollide or p.Transparency < 1) then
+					local q = p.CFrame.Position - IC
+					ok(q.X > zone.x1 - .5 and q.X < zone.x2 + .5 and q.Z > zone.z1 - .5 and q.Z < zone.z2 + .5, p.Name .. " of the terrace sign inside its protected zone (" .. math.floor(q.X * 10) / 10 .. ", " .. math.floor(q.Z * 10) / 10 .. ")")
+					ok(math.abs(q.X - Data.TERRACE_OFFSET.x) < 16, "the terrace sign stands near the terrace (" .. math.floor(q.X) .. ")")
+				end
+			end
+			ok(walks >= 3, m.Name .. " home walks measured (yard, terrace, garden; the lookout boardwalk is a level add-on) (" .. walks .. ")")
+		end
+	end
 end
 
 -- Budgets: parts, templates, triangles, lights and glow panes.

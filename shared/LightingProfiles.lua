@@ -547,6 +547,9 @@ L.WindowTiers = {
 	Balanced = {buildings = 20, panes = 140, range = 180},
 	Performance = {buildings = 10, panes = 70, range = 120},
 }
+-- Phones forge building shells only within 120 studs (forge.client.lua
+-- BUILDING_RADIUS.shell): window panes never reach past it (§40 QC M3).
+L.WINDOW_MOBILE_RANGE = 120
 L.WINDOW_COLOR = "FFC774"
 L.WINDOW_TRANSPARENCY = 0.12
 L.WINDOW_LIT = 0.8
@@ -573,17 +576,18 @@ function L.windowLit(seed, i)
 	return h - math.floor(h) < L.WINDOW_LIT
 end
 -- Which buildings show their panes: entries {pos, count}; nearest first
--- within the tier's range, until the building or pane cap. Returns the
+-- within the tier's range (capped by rangeCap when given: phones), until the building or pane cap. Returns the
 -- indices chosen (into `out` when given) and the pane total.
-function L.selectWindows(list, origin, tierName, isNight, out)
+function L.selectWindows(list, origin, tierName, isNight, out, rangeCap)
 	local tier = L.WindowTiers[tierName] or L.WindowTiers[L.DEFAULT_TIER]
 	out = out or {}
 	table.clear(out)
 	if not isNight or not origin then return out, 0 end
+	local range = if type(rangeCap) == "number" then math.min(tier.range, rangeCap) else tier.range
 	local cand = {}
 	for i, e in ipairs(list) do
 		local d = e.pos and (e.pos - origin).Magnitude
-		if d and d == d and d <= tier.range then cand[#cand + 1] = {i = i, d = d} end
+		if d and d == d and d <= range then cand[#cand + 1] = {i = i, d = d} end
 	end
 	table.sort(cand, function(a, b) if a.d ~= b.d then return a.d < b.d end return a.i < b.i end)
 	local panes = 0

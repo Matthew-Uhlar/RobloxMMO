@@ -1272,7 +1272,7 @@ do
 		{name="garden plot",x1=-14,z1=-2.5,x2=-8,z2=4.5},
 		{name="lookout bridge",x1=-4,z1=16,x2=4,z2=20},
 		{name="terrace bridge",x1=-20,z1=-4,x2=-16,z2=4},
-		{name="terrace sign",x1=-15.5,z1=-10,x2=-14.5,z2=-2},
+		{name="terrace sign",x1=-38.5,z1=-13.5,x2=-37.5,z2=-3.5}, -- §40 QC: beside the terrace walk at the plaza (world: centre + (-38, 0, -9); post at z -4)
 		-- Home islands (§27): the add-ons now stand on the big island.
 		{name="terrace path",x1=-41.5,z1=-3,x2=-19.5,z2=3},
 		{name="lookout path",x1=-3,z1=19.5,x2=3,z2=39.5},
@@ -1286,6 +1286,24 @@ do
 		{name="lookout deck",x=0,z=46,r=7.5},
 		{name="survey stake",x=10,z=-21,r=2},
 	}
+	-- Walk capsules (§40 QC M1): the walks from the core out to the moved
+	-- add-ons are oriented strips, so they are protected as segment capsules
+	-- (ax, az) -> (bx, bz) with half-width hw (path width / 2) in studs. The
+	-- endpoints mirror world.server.lua: the garden walk runs from 20 studs out
+	-- towards the Verdant Garden to its lawn edge (GARDEN_R 14 - 0.5); the yard
+	-- path from HOME_CORE - 1 to the foot of the yard ramp (YARD_R 12 + 5.4 - 0.6).
+	-- The terrace and lookout walks are axis-aligned rectangles (Protected).
+	Island.ProtectedSegments = {}
+	do
+		local function walk(name, tx, tz, fromR, toBack, width)
+			local len = math.sqrt(tx * tx + tz * tz)
+			local ux, uz = tx / len, tz / len
+			table.insert(Island.ProtectedSegments, {name=name, ax=ux * fromR, az=uz * fromR,
+				bx=tx - ux * toBack, bz=tz - uz * toBack, hw=width / 2})
+		end
+		walk("garden walk", -40, 40, 20, 13.5, 5)
+		walk("worker yard path", 40, -38, 20, 16.8, 5)
+	end
 	Island.Props = {
 		-- Fences
 		TimberFence={name="Timber Fence",category="Fences",level=1,xp=12,costs={Timber=4},size={1,1},parts=4,max=40,value=1,color="966B4C",text="A rail of meadow timber."},
@@ -1375,6 +1393,39 @@ do
 	-- nil when buildable, else a short reason: "edge" or a protected zone name.
 	-- `stage` (default 0) is the owner's expansion stage; `radius` overrides it
 	-- (the legacy grid check passes Island.LEGACY_RADIUS).
+	-- Squared distance from segment g (ax,az)-(bx,bz) to the axis-aligned
+	-- square centred (cx, cz) with half-size e; 0 when they touch.
+	local function segmentBoxDist2(g, cx, cz, e)
+		local x0, z0, x1, z1 = cx - e, cz - e, cx + e, cz + e
+		-- Liang-Barsky: does the segment cross the square?
+		local dx, dz = g.bx - g.ax, g.bz - g.az
+		local t0, t1 = 0, 1
+		local crosses = true
+		for _, pq in ipairs({{-dx, g.ax - x0}, {dx, x1 - g.ax}, {-dz, g.az - z0}, {dz, z1 - g.az}}) do
+			local p, q = pq[1], pq[2]
+			if p == 0 then
+				if q < 0 then crosses = false break end
+			else
+				local t = q / p
+				if p < 0 then t0 = math.max(t0, t) else t1 = math.min(t1, t) end
+				if t0 > t1 then crosses = false break end
+			end
+		end
+		if crosses then return 0 end
+		-- Otherwise the closest pair involves a vertex of one of the two.
+		local function ptBox(px, pz)
+			local ex = math.max(math.abs(px - cx) - e, 0)
+			local ez = math.max(math.abs(pz - cz) - e, 0)
+			return ex * ex + ez * ez
+		end
+		local len2 = dx * dx + dz * dz
+		local function ptSeg(px, pz)
+			local t = if len2 > 0 then math.clamp(((px - g.ax) * dx + (pz - g.az) * dz) / len2, 0, 1) else 0
+			local ex, ez = g.ax + dx * t - px, g.az + dz * t - pz
+			return ex * ex + ez * ez
+		end
+		return math.min(ptBox(g.ax, g.az), ptBox(g.bx, g.bz), ptSeg(x0, z0), ptSeg(x1, z0), ptSeg(x0, z1), ptSeg(x1, z1))
+	end
 	function Island.cellBlocked(x, z, stage, radius)
 		if not int(x) or not int(z) or math.abs(x) > Island.RANGE or math.abs(z) > Island.RANGE then return "edge" end
 		local half = Island.CELL / 2
@@ -1390,6 +1441,12 @@ do
 			local dx = math.max(math.abs(c.x - cx) - e, 0)
 			local dz = math.max(math.abs(c.z - cz) - e, 0)
 			if dx * dx + dz * dz < c.r * c.r then return c.name end
+		end
+		-- Walk capsules never take a cell of the legacy disc (old saves keep
+		-- every legacy-valid cell; the walks start at its rim).
+		local legacy = fx * fx + fz * fz <= Island.LEGACY_RADIUS * Island.LEGACY_RADIUS
+		for _, g in ipairs(if legacy then {} else Island.ProtectedSegments) do
+			if segmentBoxDist2(g, cx, cz, e) < g.hw * g.hw then return g.name end
 		end
 		return nil
 	end
@@ -2126,7 +2183,7 @@ T.NPCs = {
 				{label="Where is everything?",to="places"},
 				{label="How do I get around?",to="travel"},
 				farewell}},
-			tutorial={tutorial=true,text="Six steps and you'll be a proper islander. Here's where you stand:",options={
+			tutorial={tutorial=true,text="A few steps and you'll be a proper islander. Here's where you stand:",options={
 				{label="Show me the way",waypoint="tutorial"},
 				{label="Check my progress again",to="tutorial"},
 				{label="Claim my guild contract",verb="quest",when="contractReady"},
@@ -11419,20 +11476,20 @@ G.Steps = {
 	-- finding him (visit / talk flags). Steps are saved by id, never by index.
 	{id="mode",title="Choose your journal mode",detail="Talk to Pell in Compass Quay: keep a Standard journal in one tap, or seal an Ironman journal before you gather, craft or fight.",coins=50,
 		check=function(p) return p.accountMode == "standard" or p.accountMode == "ironman" or p.ironman == true end},
-	{id="chop",title="Chop a log",detail="Hold the prompt on a tree on your home isle or Mosswake Grove.",coins=25,
+	{id="chop",title="Chop a log",detail="Left-click a tree to chop it with your axe (tap on mobile): your home isle or Mosswake Grove.",coins=25,
 		check=function(p) return anyCollected(p, "Woodcutting") end},
 	{id="craft",title="Craft at a workbench",detail="Craft anything at a Workbench, Forge, Hearth or Cauldron (Atlas › Workshop).",coins=40,
 		check=function(p) return anyCount(tab(p.counters).crafts) or anyCount(tab(p.crafting).made) end},
 	{id="visit",title="Visit Compass Quay",detail="Take the home portal to Compass Quay, the shared hub.",coins=25,flag="visit"},
 	{id="talk",title="Talk to Pell",detail="Find Pell Ashgrove, the Wayfinder, in Compass Quay and ask about the Wayfarer's Path.",coins=25,flag="talk"},
-	{id="ore",title="Gather ore",detail="Mine an ore node in Brassfall Cay.",coins=40,
+	{id="ore",title="Gather ore",detail="Left-click an ore rock to mine it with your pickaxe (tap on mobile), e.g. in Brassfall Cay.",coins=40,
 		check=function(p) return anyCollected(p, "Mining") end},
 	{id="sell",title="Sell an item",detail="Sell something from your satchel (right-click an item › Sell).",coins=30,flag="sell"},
 	{id="equip",title="Equip a weapon",detail="Craft or buy a weapon and wield it (Satchel or Hero › Gear).",coins=50,
 		check=function(p) return type(tab(p.equipment).weapon) == "string" end},
 	{id="kill",title="Defeat a creature",detail="Brambleback Boars roam Sunwheel Downs. Click a creature to strike.",coins=60,
 		check=function(p) return whole(p.kills) > 0 or anyCount(p.bestiary) end},
-	{id="quest",title="Accept a quest",detail="Accept a quest from a regional questgiver (gold ! above their head).",coins=75,
+	{id="quest",title="Accept a quest",detail="Accept a quest from a regional questgiver (gold ! above their head) or complete your first guild contract.",coins=75,
 		check=function(p) return next(tab(tab(p.regionQuests).accepted)) ~= nil or next(tab(p.questsDone)) ~= nil or whole(p.questCompleted) > 0 end},
 	{id="warp",title="Learn a warp",detail="Buy a warp scroll from Ilsabet the Warp Keeper and read it.",coins=100,
 		check=function(_, ctx) return next(tab(tab(ctx).warps)) ~= nil end},
@@ -11441,7 +11498,7 @@ G.Steps = {
 G.Waypoints = {
 	chop={"gather:Timber","region:Meadow"}, craft={"station:Workbench","station:Forge"}, visit={"region:Hub"}, talk={"npc:Guide"},
 	ore={"gather:Ore","region:Quarry"}, sell={"npc:Merchant"}, kill={"monster:BramblebackBoar","region:Meadow"},
-	warp={"npc:WarpKeeper"}, mode={"npc:Guide","region:Hub"},
+	quest={"npc:WarpKeeper","npc:Guide","region:Hub"}, warp={"npc:WarpKeeper"}, mode={"npc:Guide","region:Hub"},
 }
 -- Account modes (verb guideMode): Standard, or Ironman with the confirm token.
 G.MODE_STANDARD, G.MODE_IRONMAN = "standard", "ironman:confirm"
@@ -11728,7 +11785,7 @@ if pell and pell.nodes then
 	-- confirmation (node ironman).
 	table.insert(pell.nodes.hello.options, 1, {label="Keep a Standard journal",verb="guideMode",item=G.MODE_STANDARD,when="modeOpen"})
 	table.insert(pell.nodes.hello.options, 2, {label="Standard or Ironman? Explain journal modes",to="mode",when="modeOpen"})
-	pell.nodes.path = {path=true,text="The Wayfarer's Path takes you from choosing your journal to your first warp. Here's your next step:",options={
+	pell.nodes.path = {path=true,text="The Wayfarer's Path is " .. #G.Steps .. " steps, from choosing your journal to your first warp. Here's your next step:",options={
 		{label="Show me the way",waypoint="path"},
 		{label="Choose my journal mode",to="mode",when="modeOpen"},
 		{label="Claim my Wayfarer's Path rewards",verb="guideClaim",when="guideRewardReady"},
@@ -13041,7 +13098,11 @@ function B.warmthSeconds(cape) return B.WARMTH_SECONDS * (if cape then B.CAPE_WA
 local BRIDGE_WORDS = {"bridge","deck","plank","rope","ladder","stair","dock","pier","path"}
 -- QC L2: never inside a station, stall or other built structure on an isle.
 local STRUCTURE_WORDS = {"stall","station","counter","forge","hearth","cauldron","workbench","anvil","altar",
-	"council","dais","vault","booth","kiosk","bench","tanning","furnace","chest","board","statue","fountain"}
+	"council","dais","vault","booth","kiosk","bench","tanning","furnace","chest","board","statue","fountain",
+	-- §40 QC L1: the building kit's hosts ("Roofed house", "Roofed hall floor",
+	-- "Hall wall") and walk-in halls; models also carry the Building attribute
+	-- (chain node .building, set by the server's chainOf).
+	"roofed","hall","house"}
 B.STRUCTURE_WORDS = STRUCTURE_WORDS
 function B.groundVerdict(chain, userId)
 	if type(chain) ~= "table" or #chain == 0 then return false, "Stand on solid ground to kindle a fire." end
@@ -13063,6 +13124,7 @@ function B.groundVerdict(chain, userId)
 			-- Below the isle model (chain[i - 1]) every node is a part or a built model.
 			for j = 1, i - 2 do
 				local lower = string.lower(tostring(chain[j].name or ""))
+				if chain[j].building then return false, "Not inside a building. Step out onto open ground." end
 				for _, w in ipairs(STRUCTURE_WORDS) do
 					if string.find(lower, w, 1, true) then return false, "Not inside a station or stall. Step out onto open ground." end
 				end
@@ -15882,7 +15944,7 @@ TU.Cards = {
 		body="These coach cards walk you through your first steps: the Wayfarer's Path, then your first quests. Your sidebar Objective always shows what to do next.",
 		pointer={"objective"}},
 	{id="path:mode", step="mode", title="Choose your journal mode",
-		body="Walk to Pell Ashgrove (the gold ! over his head) and talk to him. Keep a Standard journal in one tap, or read about Ironman first: it can only be sealed before you gather.",
+		body="Travel to Compass Quay and talk to Pell Ashgrove (the gold ! over his head). Keep a Standard journal in one tap, or read about Ironman first: seal it before you gather.",
 		pointer={"objective"}},
 	{id="path:chop", step="chop", title="Chop a log",
 		body="Left-click a tree to chop it with your axe (tap it on mobile). Each swing chips its health bar; when it breaks, the logs land in your satchel.",
@@ -15909,7 +15971,7 @@ TU.Cards = {
 		body="Brambleback Boars roam Sunwheel Downs. Left-click a creature to attack it with your weapon (tap on mobile) and keep an eye on your Health orb.",
 		pointer={"hotbar:1"}},
 	{id="path:quest", step="quest", title="Accept a quest",
-		body="Open Menu › Quests and the Helper tab. Pin your guild contract: its next step shows in your sidebar. Questgivers wear a gold ! over their heads.",
+		body="Accept a regional quest from a questgiver with a gold ! over their head, or complete your first guild contract. Pin it in Menu › Quests › Helper to see its next step.",
 		pointer={"SectionHelper", "MenuQuests", "menu"}},
 	{id="path:warp", step="warp", title="Learn a warp",
 		body="Buy a warp scroll from Ilsabet the Warp Keeper and read it. Then open the Sky Chart (M) to warp straight to that isle.",
@@ -16024,8 +16086,11 @@ function TU.parse(item)
 end
 -- Rewards summary for the finale card (static data; coins owed come from the
 -- snapshot): one short line per source so it fits the card.
-function TU.rewardSummary()
-	local lines = {Path.NAME .. ": " .. Path.MAX_OWED .. " coins"}
+-- pathCoins: the Path coins this journal earned (paid to date + still owed, from
+-- p.guide.paid / owed); nil (no paid-to-date record) reads "up to <MAX_OWED>".
+function TU.rewardSummary(pathCoins)
+	local earned = if type(pathCoins) == "number" then whole(pathCoins) .. " coins" else "up to " .. Path.MAX_OWED .. " coins"
+	local lines = {Path.NAME .. ": " .. earned}
 	for _, c in ipairs(TU.Cards) do
 		if c.quest and c.quest ~= "contract" then
 			local q = Data.QuestById[c.quest]
