@@ -23,7 +23,9 @@ Relay.NAMES = {mine = true, chop = true, fish = true, harvest = true, hammer = t
 	-- derives them from the relayed base + target or from what it sees.
 	reel = true, bite = true, lost = true, pour = true, weave = true, blow = true, sift = true,
 	talk = true, open = true, deposit = true, plant = true, water = true, tend = true, pray = true, offer = true,
-	pickup = true, attune = true, read = true, survey = true, pilfer = true}
+	pickup = true, attune = true, read = true, survey = true, pilfer = true,
+	-- §49 Runebinding: bind runes at an altar.
+	bind = true}
 -- Combat gestures tint their held bow / staff / wand by the weapon of that style.
 Relay.STYLE_GESTURE = {shoot = "ranged", cast = "magic", flick = "magic"}
 Relay.MELEE_GESTURE = {attack = true, thrust = true, cleave = true, lunge = true}

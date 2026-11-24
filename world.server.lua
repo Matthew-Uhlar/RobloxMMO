@@ -6404,5 +6404,208 @@ do
 		end
 	end
 end
+-------------------------------------------------------------------------------
+-- >>> BEGIN Runebinding (Runebinding team; docs/DEPTH-CONTRACT.md §49; Data.Runebinding) >>>
+-- * The Shardgate (Compass Quay): a forged basalt dais (prompt IsleAction
+--   "rbGate") beside the Runebinder (Anchor_NPC_Runebinder is moved next to it)
+--   and Anchor_Waypoint_Shardgate (the return landing).
+-- * The Shardhollow: a pocket isle under Workspace.AetherIsles (off the chart,
+--   like the crew havens): 8 Aether and 4 Lucent shard outcrops (§42 special
+--   struck nodes, StrikeKind "shard", ShardKind <id>), the Waygate dais (prompt
+--   "rbWaygate": the altar picker), the Quay return dais ("rbTravel" Quay), and
+--   the Glyph Rift at its heart: the Rift Guardian monolith (RiftMonolith
+--   mesh), the entry plinth ("riftJoin"), the workbench ("riftShape"), two
+--   fragment heaps (StrikeKind "riftFragment") and eight guardian portals
+--   (GuardianPortal meshes, "riftCharge" <altar id>, attribute RiftPortal).
+-- * Eleven Binding Altars (BindingAltar mesh tinted the rune's colour, tag
+--   "RuneAltar", attribute AltarId) on their isles (Data.Runebinding.Altars),
+--   each with a glass keystone (runes.client.lua spins and lights it; the
+--   "Return" prompt to the Shardhollow) and Anchor_Waypoint_Altar_<id>.
+-- No server lights and no Neon here (the islands' neon / light budgets are
+-- untouched); every glow is client-side (runes.client.lua).
+-------------------------------------------------------------------------------
+do
+	local RB=Data.Runebinding
+	if RB then
+		local FLOOR={Meadow=true,["Floating foundation"]=true,["Mineral stratum"]=true,["Lower basalt"]=true,["Fractured cliff"]=true,
+			["Keel rock"]=true,["Edge guard"]=true,["Aether vein"]=true,["Shore ledge"]=true,Wildflowers=true}
+		local taken={}
+		local function blocked(host,pos,radius)
+			for _,q in ipairs(taken) do if V(pos.X-q.X,0,pos.Z-q.Z).Magnitude<radius+8 then return true end end
+			for _,marker in ipairs(spawnFolder:GetChildren()) do
+				if marker:IsA("BasePart") then
+					local c=marker.CFrame.Position
+					if V(pos.X-c.X,0,pos.Z-c.Z).Magnitude<radius+10+(tonumber(marker:GetAttribute("Radius")) or 0) then return true end
+				end
+			end
+			for _,obj in ipairs(host:GetDescendants()) do
+				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
+					local cf,sz=Buildings.box(obj)
+					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
+					local c=cf.Position
+					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
+					local dz=math.max(0,math.abs(pos.Z-c.Z)-ext("Z"))
+					local ey=ext("Y")
+					if dx*dx+dz*dz<radius*radius and c.Y+ey>(if obj.Name=="Path" then pos.Y-1 else pos.Y+.3) and c.Y-ey<pos.Y+12 then return true end
+				end
+				if obj:IsA("ProximityPrompt") and obj.Parent and obj.Parent:IsA("BasePart") then
+					local c=obj.Parent.CFrame.Position
+					if V(pos.X-c.X,0,pos.Z-c.Z).Magnitude<radius+8 then return true end
+				end
+				if obj:IsA("BasePart") and string.find(obj.Name,"^Anchor_NPC_") then
+					local c=obj.CFrame.Position
+					if V(pos.X-c.X,0,pos.Z-c.Z).Magnitude<radius+5 then return true end
+				end
+			end
+			return false
+		end
+		-- The prop and its landing anchor (`ahead` studs toward the isle's centre) must both stand clear.
+		local function spot(host,angle,radius,ahead)
+			local IC,R=host:GetAttribute("IslandCenter"),host:GetAttribute("IslandRadius")
+			local first
+			for _,f in ipairs({.58,.66,.5,.72,.44,.78,.36}) do
+				for k=0,23 do
+					local a=math.rad(angle+(if k%2==0 then 1 else -1)*math.ceil(k/2)*15)
+					local pos=IC+V(math.cos(a),0,math.sin(a))*R*f
+					first=first or pos
+					local toward=V(IC.X-pos.X,0,IC.Z-pos.Z)
+					local landing=pos+(if toward.Magnitude>0 then toward.Unit else V(0,0,1))*(ahead or 0)
+					if not blocked(host,pos,radius) and not blocked(host,landing,2.5) then table.insert(taken,pos) return pos end
+				end
+			end
+			table.insert(taken,first)
+			return first
+		end
+		local basalt,violet,slate=C("2E2A44"),C("C38BFF"),C("3D3658")
+
+		-- Binding Altars --------------------------------------------------------------
+		for i,id in ipairs(RB.AltarOrder) do
+			local a=RB.AltarById[id]
+			local host=islandsFolder:FindFirstChild(a.isle)
+			if host then
+				local pos=spot(host,35+i*41,5,6.5)
+				local IC=host:GetAttribute("IslandCenter")
+				local cf=facing(pos,V(IC.X,pos.Y,IC.Z))
+				local glow=C(a.color)
+				local m=group(a.name,host)
+				m:SetAttribute("RuneAltarContent",true)
+				local base=part(m,"Binding altar",V(5,4.2,5),at(cf,0,2.1,0),darken(glow,.55),ST,true)
+				meshSlot(base,"BindingAltar",glow)
+				base:SetAttribute("AltarId",id)
+				Tags:AddTag(base,"RuneAltar")
+				local q=prompt(base,"Bind",a.name.." · Runebinding "..a.level,"runeAltar",id)
+				q:SetAttribute("IsleRegion",a.region)
+				local stone=part(m,"Altar keystone",V(1.3,1.9,1.3),at(cf,0,5.9,0),glow,GL,false)
+				stone.Transparency,stone.CastShadow=.15,false
+				stone:SetAttribute("AltarKeystone",id)
+				local back=prompt(stone,"Return","Shardhollow","rbTravel","Field")
+				back.KeyboardKeyCode=Enum.KeyCode.R
+				back.UIOffset=Vector2.new(0,-42)
+				anchor(m,"Waypoint_Altar_"..id,at(cf,0,0,-6.5).Position,pos)
+			end
+		end
+
+		-- The Shardgate and the Runebinder (Compass Quay) -----------------------------------
+		local quay=islandsFolder:FindFirstChild("Compass Quay")
+		if quay then
+			local pos=spot(quay,312,5,7)
+			local IC=quay:GetAttribute("IslandCenter")
+			local cf=facing(pos,V(IC.X,pos.Y,IC.Z))
+			local m=group("The Shardgate",quay)
+			local dais=part(m,"Shardgate dais",V(5,5.6,5),at(cf,0,2.8,0),basalt,ST,true)
+			meshSlot(dais,"TravelBeaconBasalt",violet)
+			prompt(dais,"Travel","The Shardhollow · Runebinding","rbGate")
+			anchor(m,"Waypoint_Shardgate",at(cf,0,0,-7).Position,pos)
+			local keeperName="Anchor_NPC_"..RB.MENTOR
+			local keeper,others=nil,{}
+			for _,obj in ipairs(quay:GetDescendants()) do
+				if obj.Name==keeperName then keeper=obj
+				elseif obj:IsA("BasePart") and string.find(obj.Name,"^Anchor_NPC_") then table.insert(others,obj.CFrame.Position) end
+			end
+			local stand
+			for _,o in ipairs({{-8,-6},{8,-6},{-10,-1},{10,-1},{-6,-10},{6,-10}}) do
+				local p=at(cf,o[1],0,o[2]).Position
+				local clear=true
+				for _,q in ipairs(others) do if V(p.X-q.X,0,p.Z-q.Z).Magnitude<7 then clear=false end end
+				if clear then stand=p break end
+			end
+			stand=stand or at(cf,-8,0,-6).Position
+			if keeper then keeper.CFrame=facing(V(stand.X,keeper.CFrame.Position.Y,stand.Z),pos)
+			else anchor(quay,"NPC_"..RB.MENTOR,stand,pos) end
+		end
+
+		-- The Shardhollow (a pocket isle off the chart) ----------------------------------------
+		local FIELD,FR=V(RB.FIELD_POS.x,RB.FIELD_POS.y,RB.FIELD_POS.z),RB.FIELD_RADIUS
+		local field=island(RB.FIELD,FIELD,FR,{parent=world,rim=false,top=C("4A4266"),stone=basalt,stratum=slate,ground=ST,keelShape="IslandKeelCrystal"})
+		field:SetAttribute("RuneField",true)
+		local function onField(x,z) return FIELD+V(x,0,z) end
+		local arrive=onField(0,-50)
+		anchor(field,"Waypoint_Shardhollow",arrive,FIELD)
+		sign(field,onField(-9,-44),"The Shardhollow","Runebinding  /  Glyph Rift",violet,0,12)
+		-- Return to the Quay and the Waygate (the altar picker), either side of the landing.
+		local quayDais=part(field,"Quaygate dais",V(5,5.6,5),facing(onField(14,-44)+V(0,2.8,0),FIELD+V(0,2.8,0)),basalt,ST,true)
+		meshSlot(quayDais,"TravelBeaconBasalt",C("8EE6CB"))
+		prompt(quayDais,"Return","Compass Quay","rbTravel","Quay")
+		local waygate=part(field,"Waygate dais",V(5,5.6,5),facing(onField(0,-36)+V(0,2.8,0),FIELD+V(0,2.8,0)),basalt,ST,true)
+		meshSlot(waygate,"TravelBeaconBasalt",violet)
+		prompt(waygate,"Choose altar","Shardhollow Waygate","rbWaygate")
+		anchor(field,"Waypoint_Waygate",onField(0,-30),FIELD)
+		-- Shard outcrops: Aether around the rim, Lucent on the far side (Mining 30).
+		local function outcrop(pos,shardId,index)
+			local s=RB.Shards[shardId]
+			local tint=C(s.color)
+			local m=group(s.name.." outcrop",field)
+			local host=part(m,"Shard outcrop",V(4.4,2.3,3.8),CFrame.new(pos+V(0,1.05,0))*CFrame.Angles(0,index*1.3,.08),darken(tint,.55),ST,false)
+			meshSlot(host,"OreVein",tint,true,"Uniform")
+			for k=1,2 do
+				local a=index+k*2.4
+				gem(m,"Shard crystal",pos+V(math.cos(a)*1.1,2.2+k*.5,math.sin(a)*1.1),V(.9+k*.25,2.2+k*.9,.9+k*.25),if k==1 then lighten(tint,.3) else tint,a)
+			end
+			Node.special(host,s.entry,"shard",s.name.." Outcrop")
+			host:SetAttribute("ShardKind",shardId)
+			return m
+		end
+		local n=0
+		for k=0,7 do
+			local ang=math.rad(-50+k*(280/7)+90)
+			n+=1
+			outcrop(FIELD+V(math.cos(ang),0,math.sin(ang))*50,"AetherShard",n)
+		end
+		for k=0,3 do
+			local ang=math.rad(60+k*20)
+			n+=1
+			outcrop(FIELD+V(math.cos(ang),0,math.sin(ang))*38,"LucentShard",n)
+		end
+
+		-- The Glyph Rift --------------------------------------------------------------------
+		local rift=group("The Glyph Rift",field)
+		local monolith=part(rift,"Rift Guardian",V(6,14,6),CFrame.new(FIELD+V(0,7,4)),slate,ST,true)
+		meshSlot(monolith,"RiftMonolith",violet)
+		monolith:SetAttribute("RiftGuardian",true)
+		anchor(field,"Waypoint_Rift",FIELD+V(0,0,4),FIELD)
+		local plinth=part(rift,"Rift entry plinth",V(3,1.6,3),CFrame.new(FIELD+V(0,.8,-12)),basalt,ST,true)
+		meshSlot(plinth,"Column",slate)
+		prompt(plinth,"Enter","The Glyph Rift · Runebinding "..RB.Rift.LEVEL,"riftJoin")
+		local bench=part(rift,"Rift workbench",V(4.6,2.6,3),facing(FIELD+V(13,1.3,-6),FIELD+V(0,1.3,4)),slate,ST,true)
+		meshSlot(bench,"Anvil",violet)
+		prompt(bench,"Shape","Charged essence","riftShape")
+		for k,x in ipairs({-13,13}) do
+			local heap=part(rift,"Fragment heap",V(4.2,2,4.2),CFrame.new(FIELD+V(x,1,20))*CFrame.Angles(0,k,0),darken(violet,.45),ST,false)
+			meshSlot(heap,"OreVein",violet,false,"Uniform")
+			Node.special(heap,"Ore","riftFragment","Rift Fragment Heap")
+		end
+		for k,id in ipairs(RB.Rift.PORTALS) do
+			local a=RB.AltarById[id]
+			local ang=math.rad(-90+(k-.5)*(360/#RB.Rift.PORTALS))
+			local pos=FIELD+V(0,0,4)+V(math.cos(ang),0,math.sin(ang))*24
+			local portal=part(rift,a.id.." portal",V(4.22,6.96,1.6),facing(pos+V(0,3.48,0),FIELD+V(0,3.48,4)),C(a.color),ST,true)
+			meshSlot(portal,"GuardianPortal",C(a.color))
+			portal:SetAttribute("RiftPortal",id)
+			Tags:AddTag(portal,"RiftPortal")
+			prompt(portal,"Charge",a.id.." portal · Runebinding "..a.level,"riftCharge",id)
+		end
+	end
+end
+-- <<< END Runebinding <<<
 -- §28 QC M4: static signs step clear of walls once the world is built.
 Signs.settle(islandsFolder)

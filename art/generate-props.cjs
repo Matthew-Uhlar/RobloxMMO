@@ -558,6 +558,7 @@ function world(name,meta,build){
 require('./world-shapes.cjs')({world,C,PI,hash,jitterOf});
 require('./region-shapes.cjs')({world,C,PI,hash,jitterOf});
 require('./beacon-shapes.cjs')({world,C,PI,hash,jitterOf});
+require('./rune-shapes.cjs')({world,C,PI,hash,jitterOf}); // §49 Runebinding: altar, guardian portal, Rift monolith
 // Creatures (§48): forged on each client by creatures.client.lua through the
 // MeshForge creature API; their own catalog (art/CreatureCatalog.lua).
 function creature(name,meta,build){

@@ -61,7 +61,8 @@
         "SignView": { "$path": "signs.client.lua" },
         "IsleHearts": { "$path": "hearts.client.lua" },
         "IsleCreatures": { "$path": "creatures.client.lua" },
-        "IsleAmbience": { "$path": "ambience.client.lua" }
+        "IsleAmbience": { "$path": "ambience.client.lua" },
+        "IsleRunes": { "$path": "runes.client.lua" }
       }
     },
     "Lighting": {
