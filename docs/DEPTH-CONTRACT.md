@@ -696,8 +696,8 @@ Owner request: no interact key on gathering nodes. You hit ore, trees and crops 
 - `balance(r)` gives the old vs new cycle and XP / hour, used by the suites and the table below.
 
 **World (`world.server.lua`).**
-- `gatherNode(host, id, region, owner)` replaces every gather prompt. It sets `GatherNode = <resource id>` (plus `IsleRegion` / `OwnerUserId`) and `CanQuery`, and tags the host `AetherNode`.
-- `stampNode` adds `NodeMaxHp`, `NodeLabel` and `ResourceId` once AetherData loads. Nodes built before that wait in a list; home nodes built later are stamped at once.
+- `Node.gather(host, id, region, owner)` replaces every gather prompt. It sets `GatherNode = <resource id>` (plus `IsleRegion` / `OwnerUserId`) and `CanQuery`, and tags the host `AetherNode`.
+- `Node.stamp` adds `NodeMaxHp`, `NodeLabel` and `ResourceId` once AetherData loads. Nodes built before that wait in a list; home nodes built later are stamped at once.
 - `prompt()` asserts that it never builds a `"gather"` prompt.
 - The legacy ore, herb, Moonpool jetty, Aetherite seam, rich seam and home ore rocks now each sit in their own Model, the node's visual group. The two crystal-seam anchors are enlarged to 3 / 3.5 studs, still invisible, so they make usable click targets.
 - No static parts were added. The coop "Crew stores" supply prompts (§9 Homesteads) are building stores, not resource nodes, so they keep their prompts.

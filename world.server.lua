@@ -78,7 +78,7 @@ local function ghost(p)
 end
 local GATHER_HOLD,INTERACT_HOLD=1,.36
 local function prompt(p, verb, item, action, id, owner)
-	assert(action~="gather","§42: gathering nodes are struck (gatherNode), never prompted")
+	assert(action~="gather","§42: gathering nodes are struck, never prompted (Node.gather)")
 	local q = Instance.new("ProximityPrompt")
 	q.ActionText, q.ObjectText, q.HoldDuration = verb,item,INTERACT_HOLD
 	q.MaxActivationDistance, q.RequiresLineOfSight = 9,false
@@ -93,14 +93,14 @@ end
 -- OwnerUserId; NodeMaxHp and NodeLabel once AetherData loads) and the
 -- AetherNode tag; its Model is the node's visual group (the client depletes it
 -- per player). server.server.lua's `strike` verb validates every hit.
-local nodeStamp,unstamped=nil,{} -- nodes built before AetherData loaded wait here
-local function gatherNode(host,id,region,owner)
+local Node={pending={}} -- Node.stamp once AetherData loads; nodes built before that wait in Node.pending
+function Node.gather(host,id,region,owner)
 	host:SetAttribute("GatherNode",id)
 	if region then host:SetAttribute("IsleRegion",region) end
 	if owner then host:SetAttribute("OwnerUserId",owner) end
 	host.CanQuery=true
 	Tags:AddTag(host,"AetherNode")
-	if nodeStamp then nodeStamp(host) else table.insert(unstamped,host) end
+	if Node.stamp then Node.stamp(host) else table.insert(Node.pending,host) end
 	return host
 end
 local function hidden(parent,name,pos)
@@ -992,14 +992,14 @@ local function windpine(parent,pos,scale,owner)
 	local trunk=block(m,"Heartwood",pos+V(0,2.6*scale,0),V(1.2,5.2,1.2)*scale,timber,WO,true)
 	trunk.Transparency=1
 	sculpture(m,"Sculpted windpine",pos+V(0,2.6*scale,0),"WindpineCrown",scale)
-	gatherNode(trunk,"Timber",nil,owner)
+	Node.gather(trunk,"Timber",nil,owner)
 end
 local function ore(parent,pos)
 	local m=group("Copperstone vein",parent)
 	local base=disk(m,"Ore seam",pos+V(0,.4,0),2.5,.8,shale,ST,false)
 	slotBox(m,"Ore seam mesh",pos,V(5,2.4,4.4),"OreVein",C("C98D4F"))
 	sculpture(m,"Faceted copper cluster",pos+V(0,1.4,0),"AetherCrystal",1)
-	gatherNode(base,"Ore")
+	Node.gather(base,"Ore")
 end
 local function herb(parent,pos)
 	local m=group("Meadow Herb patch",parent)
@@ -1010,7 +1010,7 @@ local function herb(parent,pos)
 		local p=pos+V(math.cos(a)*1.5,.65,math.sin(a)*1.5)
 		sculpture(m,"Sculpted moonbloom",p,"Moonbloom",.65,i*50)
 	end
-	gatherNode(bed,"Herb")
+	Node.gather(bed,"Herb")
 end
 -- Stall facing `toward`: counter, awning (strips abut, never overlap) and a
 -- header sign over the customer side.
@@ -1340,7 +1340,7 @@ pond(grove,MOONPOOL,13,{name="Moonpool"})
 local jettyAt=MOONPOOL+V(9,0,7.2)
 local dock=part(group("Moonpool fishing spot",grove),"Fishing jetty",V(3,1,9),CFrame.lookAt(jettyAt+V(0,.5,0),MOONPOOL+V(0,.5,0)),timber,WO,true)
 meshSlot(dock,"FishingPier")
-gatherNode(dock,"Fish")
+Node.gather(dock,"Fish")
 anchor(grove,"Waypoint_MoonpoolJetty",jettyAt+(jettyAt-MOONPOOL).Unit*5.5,MOONPOOL)
 anchor(grove,"Waypoint_Moonpool",jettyAt+(jettyAt-MOONPOOL).Unit*8,MOONPOOL)
 sign(grove,MOONPOOL+V(20,0,-4),"Moonpool","MOSSWAKE   /   ANGLING",mint,90,8)
@@ -1366,7 +1366,7 @@ ore(bench,Q+V(14,benchTop,-44))
 local advanced=group("Aetherite outcrop",mine)
 local vein=sculpture(group("Aetherite seam",advanced),"Aetherite seam",Q+V(26,1.5,28),"AetherCrystal",1.45,30)
 vein.Size=V(3,3,3) -- §42: the anchor is the click target (still invisible; the sculpture scales by SculptureScale)
-gatherNode(vein,"Aetherite")
+Node.gather(vein,"Aetherite")
 sign(advanced,Q+V(36,0,26),"Aetherite","MINING 3 / REFINE AT THE STARFORGE",mint,0,8)
 for i=1,5 do
 	local post=block(mine,"Hoist support",Q+V(-32+8*i,2.5,40),V(.7,5,.7),timber,WO,false)
@@ -1515,7 +1515,7 @@ local survey = sculpture(summit,"Summit cartographer",V(SUMMIT.X+2,summitTop+2,S
 prompt(survey,"Survey the summit","Skyreach","explore","Skyreach"):SetAttribute("IsleRegion","Skyreach")
 local rich = sculpture(group("Rich Aetherite seam",skyreach),"Rich Aetherite seam",SR+V(-14,2,28),"AetherCrystal",1.8)
 rich.Size=V(3.5,3.5,3.5) -- §42: click target (invisible)
-gatherNode(rich,"Aetherite","Skyreach")
+Node.gather(rich,"Aetherite","Skyreach")
 sign(skyreach,SR+V(-38,0,-16),"Skyreach","SURVEY THE SUMMIT / MINE RICH SEAMS",mint,90,10)
 for i,o in ipairs({V(-30,0,30),V(-20,0,-40),V(30,0,48),V(50,0,-2),V(-4,0,52)}) do decorTree(skyreach,SR+o,1,"Pine",C("5D8070")) end
 for i,o in ipairs({V(-40,0,24),V(24,0,-44)}) do outcrop(skyreach,SR+o,1.2,i) end
@@ -1605,7 +1605,7 @@ do
 		local base=disk(m,"Ore seam",pos+V(0,.4,0),2.5,.8,shale,ST,false)
 		slotBox(m,"Ore seam mesh",pos,V(5,2.4,4.4),"OreVein",C("C98D4F"))
 		sculpture(m,"Faceted copper cluster",pos+V(0,1.4,0),"AetherCrystal",1)
-		gatherNode(base,"Ore",nil,owner)
+		Node.gather(base,"Ore",nil,owner)
 	end
 	-- Edge band: every feature sits between the build radius and the meadow rim
 	-- (Data.Home.Edge angles), rebuilt one ring further out per level.
@@ -2113,7 +2113,7 @@ end
 -- §42: every node carries its tier HP (Data.Strike.maxHp) and the OSRS label
 -- ("Mine Copperstone Vein (Mining 1)"); nodes built before AetherData loaded
 -- (and home nodes built later) get them here.
-local function stampNode(host)
+function Node.stampHost(host)
 	local id=host:GetAttribute("GatherNode")
 	local r=Resource[id]
 	if not r or not Data.Strike then return end
@@ -2121,13 +2121,13 @@ local function stampNode(host)
 	host:SetAttribute("NodeLabel",Data.Strike.label(r.def))
 	host:SetAttribute("ResourceId",id)
 end
-nodeStamp=stampNode
-for _,host in ipairs(unstamped) do stampNode(host) end
-table.clear(unstamped)
+Node.stamp=Node.stampHost
+for _,host in ipairs(Node.pending) do Node.stamp(host) end
+table.clear(Node.pending)
 local function gatherPrompt(target,id,region)
 	local r=Resource[id]
 	assert(r,"unknown resource "..tostring(id))
-	return gatherNode(target,id,region)
+	return Node.gather(target,id,region)
 end
 
 -- Ore: a slate boulder split by a metal vein, crowned by a crystal cluster.
