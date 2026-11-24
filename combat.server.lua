@@ -1322,7 +1322,9 @@ local function createLogic(env)
 			credited = {r.owner}
 			L.unregister(r)
 			L.payXp(r, credited)
-			L.reportBoss(r.owner, "win")
+			-- Combat Feats (§45): server-timed fight length and the owner's hits taken.
+			L.reportBoss(r.owner, "win", {seconds = math.max(1, math.floor(C.BOSS_DURATION - (r.expires - env.now()) + 0.5)), hits = r.featHits or 0,
+				styles = r.featStyles and table.clone(r.featStyles) or {}})
 		elseif r.worldBoss then
 			credited = L.wbKill(r)
 		elseif r.sea then
@@ -1512,8 +1514,10 @@ local function createLogic(env)
 	-- The bridge answers {ok = true} once the quest is resolved. Anything else
 	-- (lease lapsed, bridge missing or erroring) leaves the quest bossReady, so
 	-- re-read SlayerBossReady shortly and summon the boss again.
-	function L.reportBoss(player, result)
-		env.bridge("slayerBoss", player, {result = result}, function(reply)
+	function L.reportBoss(player, result, feat)
+		local payload = {result = result}
+		if type(feat) == "table" then payload.seconds, payload.hits, payload.styles = feat.seconds, feat.hits, feat.styles end -- Combat Feats (§45)
+		env.bridge("slayerBoss", player, payload, function(reply)
 			if type(reply) ~= "table" or reply.ok ~= true then L.rearmBoss(player) end
 		end)
 	end
@@ -2082,7 +2086,7 @@ local function createLogic(env)
 		for _, e in ipairs(ranked) do
 			if e.eligible then
 				local payload = {boss = r.id, tier = e.tier, rank = e.rank, share = e.share, damage = math.floor(e.damage),
-					sigils = r.summoners[uidOf(e.player)] or 0, fight = r.fight}
+					sigils = r.summoners[uidOf(e.player)] or 0, fight = r.fight, seconds = math.max(1, math.floor(now - r.spawnedAt + 0.5))} -- §45: server-timed
 				sendReward(e.player, r, e, payload, deadline)
 			end
 		end
@@ -2954,6 +2958,136 @@ local function createLogic(env)
 		end
 	end
 	-- End Raids section.
+
+	------------------------------------------------------------------------
+	-- Combat Feats section (Feats team). Data.Feats, docs/DEPTH-CONTRACT.md §45.
+	-- Server-side fight records for feat detection (never client-reported):
+	--   lair / raid encounters keep r.feat[uid] = {mech (telegraph hits taken),
+	--   cast (telegraphs resolved), hitBy[attackId], seen[attackId], swings
+	--   (stance swings taken), prayed (into the matching Ward), ward (any Ward
+	--   up), adds (distinct adds / sigils / anchors struck), styles, armor (most
+	--   armour pieces worn on a landed hit, from bridge "stats" armor)}; the
+	--   kill copies each member's record into its credit entry (credit[uid].feat)
+	--   for lairs.server.lua / raids.server.lua to relay. Slayer bosses count
+	--   the owner's hits taken (r.featHits) and report {seconds, hits}.
+	------------------------------------------------------------------------
+	do
+		local function featOf(boss, uid)
+			boss.feat = boss.feat or {}
+			local f = boss.feat[uid]
+			if not f then
+				f = {mech = 0, cast = 0, swings = 0, prayed = 0, ward = 0, adds = 0, styles = {}, hitBy = {}, seen = {}, addSeen = {}}
+				boss.feat[uid] = f
+			end
+			return f
+		end
+		L.featOf = featOf
+		local function member(boss, player)
+			local uid = uidOf(player)
+			if uid and boss and type(boss.members) == "table" and boss.members[uid] then return uid end
+			return nil
+		end
+		local featLrStrike = L.lrStrike
+		function L.lrStrike(r, player, style, amount)
+			local dealt, prayed = featLrStrike(r, player, style, amount)
+			local uid = member(r, player)
+			if uid then
+				local f = featOf(r, uid)
+				f.swings += 1
+				if prayed then f.prayed += 1 end
+				local info = L.peekStats(player)
+				local pr = type(info) == "table" and type(info.prayer) == "table" and info.prayer or nil
+				if pr and pr.protect ~= nil then f.ward += 1 end
+			end
+			return dealt, prayed
+		end
+		local featLrTick = L.lrTick
+		function L.lrTick()
+			local events = featLrTick()
+			for _, e in ipairs(events) do
+				if e.kind == "strike" and e.record and e.telegraph then
+					local r, id = e.record, tostring(e.telegraph.id)
+					-- QC H2: only members alive inside the arena as it resolves saw it; a member
+					-- held offline / outside / down is marked absent (no perfection that fight).
+					local inside = {}
+					for _, player in ipairs(L.lrPlayers(r)) do local uid = uidOf(player); if uid then inside[uid] = true end end
+					for _, h in ipairs(e.hits or {}) do local uid = member(r, h.player); if uid then inside[uid] = true end end
+					for uid in pairs(r.members or {}) do
+						local f = featOf(r, uid)
+						if inside[uid] then
+							f.cast += 1
+							f.seen[id] = (f.seen[id] or 0) + 1
+						else
+							f.absent = true
+						end
+					end
+					for _, h in ipairs(e.hits or {}) do
+						local uid = member(r, h.player)
+						if uid then
+							local f = featOf(r, uid)
+							f.mech += 1
+							f.hitBy[id] = (f.hitBy[id] or 0) + 1
+						end
+					end
+				end
+			end
+			return events
+		end
+		local featLand = L.landHit
+		function L.landHit(player, r, dealt, style, spellId)
+			local applied = featLand(player, r, dealt, style, spellId)
+			local boss = if r.lair then r elseif r.lairAdd then r.parent else nil
+			local uid = boss and member(boss, player)
+			if uid then
+				local f = featOf(boss, uid)
+				if type(style) == "string" then f.styles[style] = true end
+				local info = L.peekStats(player)
+				local armor = type(info) == "table" and tonumber(info.armor) or nil
+				if armor then f.armor = math.max(f.armor or 0, armor) end
+				if r.lairAdd and applied > 0 and not f.addSeen[r] then f.addSeen[r] = true; f.adds += 1 end
+			elseif r.boss and r.owner == player and type(style) == "string" then
+				r.featStyles = r.featStyles or {}
+				r.featStyles[style] = true
+			end
+			return applied
+		end
+		local featStrike = L.strike
+		function L.strike(r, player)
+			if r.boss and r.owner == player then r.featHits = (r.featHits or 0) + 1 end
+			return featStrike(r, player)
+		end
+		-- A member's record, as relayed to the journal (no instance keys).
+		function L.featSummary(r, uid)
+			local f = r.feat and r.feat[uid]
+			if not f then return {mech = 0, cast = 0, swings = 0, prayed = 0, ward = 0, adds = 0, styles = {}, hitBy = {}, seen = {}} end
+			return {mech = f.mech, cast = f.cast, swings = f.swings, prayed = f.prayed, ward = f.ward, adds = f.adds, armor = f.armor, absent = f.absent == true,
+				styles = table.clone(f.styles), hitBy = table.clone(f.hitBy), seen = table.clone(f.seen)}
+		end
+		local function attach(r)
+			local res = L.lrResult(r.fight)
+			-- QC H1: the fight's real participants (held-offline members included), not
+			-- the party that scaled its health.
+			local n = 0
+			for _ in pairs(r.members or {}) do n += 1 end
+			if res then res.members = n end
+			if res and type(res.credit) == "table" then
+				for uid, c in pairs(res.credit) do c.feat = L.featSummary(r, uid) end
+			end
+		end
+		local featLrKill = L.lrKill
+		function L.lrKill(r)
+			local credited = featLrKill(r)
+			attach(r)
+			return credited
+		end
+		local featRdKill = L.rdKill
+		function L.rdKill(r)
+			local credited = featRdKill(r)
+			attach(r)
+			return credited
+		end
+	end
+	-- End Combat Feats section.
 	return L
 end
 
