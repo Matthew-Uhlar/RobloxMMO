@@ -533,6 +533,71 @@ L.GLOW_KINDS = {
 }
 
 ------------------------------------------------------------------------------
+-- Lit windows (World Art pass 2, §40). Every building host carries
+-- WindowGlow = "x,y,z,w,h,ry;..." (pane rects in the host frame: centre of the
+-- glass's outer face, size, and the yaw that turns -Z outward). After dusk the
+-- director shows warm emissive panes (local Neon parts: no light, no shadow,
+-- no collision) on the nearest buildings, within the tier's caps; most panes
+-- of a house are lit (L.WINDOW_LIT, deterministic per pane), so a street reads
+-- as lived in. The building host is also a GlowSite "window" for the pooled
+-- spill lights above. Day: no panes.
+------------------------------------------------------------------------------
+L.WindowTiers = {
+	High = {buildings = 40, panes = 300, range = 260},
+	Balanced = {buildings = 20, panes = 140, range = 180},
+	Performance = {buildings = 10, panes = 70, range = 120},
+}
+L.WINDOW_COLOR = "FFC774"
+L.WINDOW_TRANSPARENCY = 0.12
+L.WINDOW_LIT = 0.8
+-- Pane list from a WindowGlow string (malformed entries are skipped; at most 32).
+function L.parseWindows(text)
+	local out = {}
+	if type(text) ~= "string" then return out end
+	for entry in string.gmatch(text, "[^;]+") do
+		local v = {}
+		for x in string.gmatch(entry, "[^,]+") do v[#v + 1] = tonumber(x) end
+		if #v == 6 and v[4] and v[4] > 0 and v[5] and v[5] > 0 then
+			local good = true
+			for k = 1, 6 do if v[k] ~= v[k] or math.abs(v[k]) > 200 then good = false end end
+			if good then out[#out + 1] = v end
+		end
+		if #out >= 32 then break end
+	end
+	return out
+end
+-- Is pane i of a building lit tonight? A fixed hash of the building's seed
+-- (its position) and the pane, so a window never flickers between updates.
+function L.windowLit(seed, i)
+	local h = math.sin((tonumber(seed) or 0) * 12.9898 + i * 78.233) * 43758.5453
+	return h - math.floor(h) < L.WINDOW_LIT
+end
+-- Which buildings show their panes: entries {pos, count}; nearest first
+-- within the tier's range, until the building or pane cap. Returns the
+-- indices chosen (into `out` when given) and the pane total.
+function L.selectWindows(list, origin, tierName, isNight, out)
+	local tier = L.WindowTiers[tierName] or L.WindowTiers[L.DEFAULT_TIER]
+	out = out or {}
+	table.clear(out)
+	if not isNight or not origin then return out, 0 end
+	local cand = {}
+	for i, e in ipairs(list) do
+		local d = e.pos and (e.pos - origin).Magnitude
+		if d and d == d and d <= tier.range then cand[#cand + 1] = {i = i, d = d} end
+	end
+	table.sort(cand, function(a, b) if a.d ~= b.d then return a.d < b.d end return a.i < b.i end)
+	local panes = 0
+	for _, c in ipairs(cand) do
+		if #out >= tier.buildings then break end
+		local n = list[c.i].count or 0
+		if panes + n > tier.panes then break end
+		out[#out + 1] = c.i
+		panes += n
+	end
+	return out, panes
+end
+
+------------------------------------------------------------------------------
 -- Validation (every composed / blended state; verify-lighting).
 ------------------------------------------------------------------------------
 function L.valid(state)

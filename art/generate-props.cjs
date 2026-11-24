@@ -12,13 +12,17 @@ const fs = require('fs');
 // 40% toward white; stored values are neutral). 17+ are the Wave-4 world shades.
 const palette = ['C98D4F','F4CD7C','265860','39898E','9DF3D7','203748','C15557','FFD389','525570','9583B9','D9DFE6','6E4A30','F4F8F8','6BAF5A',
   '878C93','F0F3F6',
-  '4A3426','7A5636','A9A79C','7E817C','545A5E','5E8A4A','C9A24E','3A4048','FF8A3D','FFE08A','E9DFC7','A8423C','2E3B4E','5A4030','8A6240','D9B65C','E6E1D6','3F6E3A','B8C6CF'];
+  '4A3426','7A5636','A9A79C','7E817C','545A5E','5E8A4A','C9A24E','3A4048','FF8A3D','FFE08A','E9DFC7','A8423C','2E3B4E','5A4030','8A6240','D9B65C','E6E1D6','3F6E3A','B8C6CF',
+  'EFE6D3','9B5B43','4F6878','6B4A33'];
 const TINT = 11, HANDLE = 12, GLINT = 13, LEAF = 14;
 const TINT_DARK = 15, TINT_LIGHT = 16;
 const C = {TINT, TINT_DARK, TINT_LIGHT, HANDLE, GLINT, LEAF, COPPER:1, GOLD:2, DEEP:3, TEAL:4, MINT:5, NAVY:6, ROSE:7, AMBER:8, SLATE:9, LAVENDER:10,
-  BARK_DARK:17, BARK:18, STONE_LIGHT:19, STONE:20, STONE_DARK:21, MOSS:22, BRASS:23, IRON:24, EMBER:25, FLAME:26, CLOTH:27, CRIMSON:28, INK:29, SOIL:30, PLANK:31, STRAW:32, MARBLE:33, LEAF_DARK:34, GLASS:35};
+  BARK_DARK:17, BARK:18, STONE_LIGHT:19, STONE:20, STONE_DARK:21, MOSS:22, BRASS:23, IRON:24, EMBER:25, FLAME:26, CLOTH:27, CRIMSON:28, INK:29, SOIL:30, PLANK:31, STRAW:32, MARBLE:33, LEAF_DARK:34, GLASS:35,
+  PLASTER:36, BRICK:37, GLASS_DARK:38, TIMBER:39};
 const ICON_TRIANGLE_BUDGET = 120;
 const WORLD_TRIANGLE_RANGE = [200, 1500];
+// World Art pass 2 (§40): whole buildings and furnished interiors are single meshes.
+const BUILDING_TRIANGLE_RANGE = [200, 2400];
 const shapes = {};
 const worldShapes = {};
 const worldMeta = {};
@@ -535,6 +539,8 @@ function world(name,meta,build){
 }
 require('./world-shapes.cjs')({world,C,PI,hash,jitterOf});
 require('./region-shapes.cjs')({world,C,PI,hash,jitterOf});
+// Building kit (§40): returns the kit table the world script builds from.
+const buildingKit=require('./building-shapes.cjs')({world,C,PI,hash,jitterOf,worldShapes});
 
 // ---------------------------------------------------------------------------
 // Validation and output.
@@ -564,8 +570,8 @@ function componentVolumes(data){
 }
 const rangeErrors=[];
 for(const [name,data] of Object.entries(worldShapes)){
-  const count=data.faces.length;
-  if(count<WORLD_TRIANGLE_RANGE[0]||count>WORLD_TRIANGLE_RANGE[1])rangeErrors.push(`${name} has ${count} triangles; world range is ${WORLD_TRIANGLE_RANGE.join('-')}`);
+  const count=data.faces.length,range=worldMeta[name].kind==='building'?BUILDING_TRIANGLE_RANGE:WORLD_TRIANGLE_RANGE;
+  if(count<range[0]||count>range[1])rangeErrors.push(`${name} has ${count} triangles; ${worldMeta[name].kind} range is ${range.join('-')}`);
   for(const vol of componentVolumes(data))if(vol<-1e-4)throw new Error(`${name} has an inward-wound component (volume ${vol})`);
 }
 if(rangeErrors.length){console.log(Object.entries(worldShapes).map(([n,d])=>n+' '+d.faces.length).join(', '));throw new Error(rangeErrors.join('\n'))}
@@ -647,6 +653,7 @@ const worldEntries=Object.entries(worldShapes).map(([name,data])=>{
   if(m.fit)extra.fit=m.fit;
   if(m.along)extra.along=m.along;
   if(m.range)extra.range=m.range;
+  if(m.interior)extra.interior=true;
   const verts=data.vertices.map(p=>p.map(x=>packNumber(Math.round(x*1000)+PACK_OFFSET,3)).join('')).join('');
   const faces=data.faces.map(([a,b,c,shade])=>packNumber(a,2)+packNumber(b,2)+packNumber(c,2)+packNumber(shade,1)).join('');
   return `shapes.${name}=unpack("${verts}","${faces}",${luaTable(extra)})`;
@@ -701,6 +708,14 @@ source=source.replace(/^local TINT_INDEX = \d+$/m,'local TINT_INDEX = '+TINT);
 source=source.replace(/-- BEGIN GENERATED PROPS[\s\S]*?-- END GENERATED PROPS\n*/,'');
 source=source.replace('local function wedgeFace','-- BEGIN GENERATED PROPS\n'+entries+'\n-- END GENERATED PROPS\n\nlocal function wedgeFace');
 fs.writeFileSync('mesh.client.lua',source);
+// Building kit (§40): the world script builds every house from this generated
+// table (footprints, fit boxes, doors, window panes), so the colliders, the
+// lit-window panes and the forged meshes can never drift apart.
+let worldSource=fs.readFileSync('world.server.lua','utf8');
+const kitLua='-- BEGIN GENERATED BUILDINGS (art/generate-props.cjs from art/building-shapes.cjs; do not edit)\nlocal BUILDING_KIT='+luaTable(buildingKit)+'\n-- END GENERATED BUILDINGS';
+if(!/-- BEGIN GENERATED BUILDINGS[\s\S]*?-- END GENERATED BUILDINGS/.test(worldSource))throw new Error('world.server.lua lacks the GENERATED BUILDINGS markers');
+worldSource=worldSource.replace(/-- BEGIN GENERATED BUILDINGS[\s\S]*?-- END GENERATED BUILDINGS/,()=>kitLua);
+fs.writeFileSync('world.server.lua',worldSource);
 console.log('Generated '+Object.keys(shapes).length+' original prop meshes and shared UI catalog.');
 console.log('Icon triangles: '+Object.entries(iconBudget).map(([n,c])=>n+' '+c).join(', '));
 console.log('World triangles: '+Object.entries(worldShapes).map(([n,d])=>n+' '+d.faces.length).join(', '));
