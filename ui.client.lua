@@ -10193,8 +10193,8 @@ function Pages.drawSettings()
 		local status=(tu.card and "In progress") or (tu.skipped and "Skipped") or (tu.vet and "Not offered (veteran journal)") or "Complete"
 		card({name="SettingTutorial",motif="Journal",title="Tutorial",subtitle=paint(status,"6FE3C8").."  ·  tips "..(tipsOn and paint("on","6FE3C8") or paint("off","A9B4C0")),
 			detail="Coach cards walk you through the Wayfarer's Path and your first quests; tips explain things the first time you meet them.",
-			actions={{caption=tipsOn and "Turn tips off" or "Turn tips on",primary=not tipsOn,name="TutorialTips",fn=function() send("tutorial",tipsOn and "tips:off" or "tips:on") end},
-				{caption="Replay tutorial",name="TutorialReplay",fn=function() send("tutorial","replay") end}}})
+			actions={{caption=tipsOn and "Turn tips off" or "Turn tips on",primary=not tipsOn,name="TutorialTips",fn=function() UI.tutorialSend(tipsOn and "tips:off" or "tips:on") end},
+				{caption="Replay tutorial",name="TutorialReplay",fn=function() UI.tutorialSend("replay") end}}})
 	end
 	card({name="SettingKeys",motif="Journal",title="Keys",detail="J  menu & atlas   ·   E / Tab  satchel   ·   M  Sky Chart (warp map)   ·   right-click (long-press) an item for its options   ·   drag items to reorder"})
 end
@@ -10619,7 +10619,7 @@ UI.relay={equip=true,unequip=true,consume=true,sell=true,accessory=true,petAdopt
 	rqBuy=true,skillBuy=true,petShop=true,resonanceSet=true,guideClaim=true, -- §31
 	helperPin=true,goalSet=true,goalRemove=true,goalClear=true,priceCheck=true, -- §33
 	prayerQuickToggle=true, -- §34
-	tutorial=true, -- §43 coach cards (tutorial.client.lua): dismiss / next / skip / replay / tips
+	tutorial=true, -- §43 coach cards (tutorial.client.lua): dismiss / next / skip / replay / tips (sent by UI.tutorialSend: no queue / gap)
 	raidHost=true,raidJoin=true,raidLeave=true,raidReady=true,raidChallenge=true,raidStart=true,raidUse=true,raidTitle=true} -- §38 raid.client.lua (party board, raid HUD, Raid Log). §34 quick-prayer orb (one atomic verb, queued, never dropped). Earlier: quantity picker (features.client.lua), Resonance, Path rewards
 local remote = ReplicatedStorage:WaitForChild("IsleAction")
 local updates = ReplicatedStorage:WaitForChild("IsleUpdate")
@@ -10720,6 +10720,29 @@ send = function(action, item, quiet)
 	UI.relayDrain()
 	return accepted
 end
+-- §43 QC L4: tutorial taps (coach cards, Settings › Tutorial) bypass the relay
+-- queue and its gap: the server dispatches them before the action cooldown and
+-- replies compactly {tutorial, message}. The atlas keeps state.tutorial current,
+-- tutorial.client.lua hears ("state", tutorial) on IsleTutorialLocal, and a
+-- non-empty message toasts. A reply dropped by the 0.08 s read throttle (nil)
+-- is retried twice; an older server's full snapshot is accepted as usual.
+function UI.tutorialSend(item)
+	for _=1,3 do
+		local ok,result=pcall(function() return remote:InvokeServer("tutorial",item) end)
+		if not ok then notify("Your ledger could not be reached. Try again.") return end
+		if type(result)=="table" then
+			if type(result.items)=="table" then accept(result) return end
+			if type(result.tutorial)=="table" then
+				if type(state)=="table" then state.tutorial=result.tutorial end
+				pcall(function() UI.tutorialChannel:Fire("state",result.tutorial) end)
+				pcall(render,true)
+			end
+			if type(result.message)=="string" and result.message~="" then notify(result.message) end
+			return
+		end
+		task.wait(0.1)
+	end
+end
 local function acceptCoop(result)
 	if type(result) ~= "table" or type(result.members) ~= "table" then return false end
 	coopState = result
@@ -10759,6 +10782,7 @@ do
 		return created
 	end
 	UI.snapshotChannel=channel("IsleSnapshotLocal")
+	UI.tutorialChannel=channel("IsleTutorialLocal") -- §43 QC L4: compact tutorial replies for tutorial.client.lua
 	UI.xpChannel,UI.hudChannel=channel("IsleXpLocal"),channel("IsleHudLocal")
 	local actions,toasts=channel("IsleActionLocal"),channel("IsleToastLocal")
 	-- hud.client.lua asks the atlas to open a page ("open", tab, section).
@@ -10770,6 +10794,7 @@ do
 			if verb=="autocast" and (item==nil or type(item)=="string") then task.spawn(send,"autocast",item)
 			-- Satchel / paperdoll / Sky Chart (hud.client.lua): existing validated verbs
 			-- plus satchelMove / satchelSort / drop (§29); the server checks everything.
+			elseif verb=="tutorial" and type(item)=="string" and #item<=64 then task.spawn(UI.tutorialSend,item) -- §43 QC L4: no queue / gap
 			elseif UI.relay[verb] and (item==nil or (type(item)=="string" and #item<=64)) then task.spawn(UI.relaySend,verb,item)
 			-- Prayer quick bar taps (combat HUD): the server validates the prayer.
 			elseif verb=="prayer" and type(item)=="string" and #item<=64 then task.spawn(send,"prayer",item)

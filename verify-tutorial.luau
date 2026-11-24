@@ -139,6 +139,28 @@ do
 	-- Finale rewards summary.
 	local lines = TU.rewardSummary()
 	ok(has(lines[1], tostring(G.MAX_OWED)), "the summary names the Path coins")
+	-- QC L1: the Path pays 770 coins in all; without a paid-to-date record the
+	-- finale says "up to"; with one it names what this journal earned.
+	eq(G.MAX_OWED, 770, "Path coins in all")
+	eq(lines[1], G.NAME .. ": up to 770 coins", "no paid-to-date record: up to 770")
+	eq(TU.rewardSummary(120)[1], G.NAME .. ": 120 coins", "paid to date + owed")
+	-- QC L6: the Path's own step text (sidebar / Pell) uses the left-click wording.
+	for _, st in ipairs(G.Steps) do ok(not has(st.detail, "Hold the prompt"), st.id .. " detail never says hold a prompt") end
+	ok(has(G.StepById.chop.detail, "Left-click a tree to chop it with your axe (tap on mobile)"), "chop detail: left-click wording")
+	ok(has(G.StepById.ore.detail, "Left-click an ore rock") and has(G.StepById.ore.detail, "(tap on mobile)"), "ore detail: left-click wording")
+	local pell = Data.Townsfolk.NPCs.Guide
+	ok(has(pell.nodes.path.text, #G.Steps .. " steps"), "Pell names the real step count")
+	ok(not has(fs.readFile("shared/GameData.lua"), "Six steps"), "no stale \"Six steps\" line")
+	-- QC L7: the journal-mode card sends a new player to Compass Quay first.
+	ok(has(TU.CardById["path:mode"].body, "Travel to Compass Quay and talk to Pell"), "path:mode: travel to Compass Quay")
+	-- QC M7: "Accept a quest" leads with a regional questgiver or the first guild
+	-- contract (what completes the step); pinning comes second; the waypoint is a questgiver.
+	local qb = TU.CardById["path:quest"].body
+	ok(string.find(qb, "^Accept a regional quest") ~= nil and has(qb, "gold !") and has(qb, "guild contract"), "path:quest leads with accepting a quest / a contract")
+	ok(string.find(qb, "Pin") > string.find(qb, "guild contract"), "pinning is secondary")
+	local qs = TU.specsFor("path:quest")
+	ok(type(qs) == "table" and qs[1] == "npc:WarpKeeper" and Data.Townsfolk.parseTarget(qs[1]) ~= nil, "path:quest waypoints a questgiver")
+	ok(Data.QuestById.SkywayCharter.giver == "WarpKeeper", "Ilsabet gives a quest")
 	ok(has(table.concat(lines, "|"), "Charting the Skyway: 300 coins"), "and the quest rewards")
 end
 print("PASS: " .. checks .. " data assertions.")
@@ -307,14 +329,24 @@ do
 	-- B4. Skip, persisted; replay brings it back from real progress.
 	s = cmd(newbie, "tutorial", "skip")
 	ok(s.tutorial.card == nil and s.tutorial.skipped == true and has(s.message, "Settings"), "skipped: no card, Settings named")
+	-- QC L7: a skip turns tips off too.
+	ok(s.tutorial.off == true, "skip turns tips off")
+	-- QC L4: a tutorial verb replies compactly (no full snapshot).
+	ok(s.items == nil and s.coins == nil and type(s.tutorial) == "table" and type(s.message) == "string", "compact {tutorial, message} reply")
 	saved = stored(newbie)
 	newbie = player(7001)
 	s = cmd(newbie, "state")
 	ok(s.tutorial.card == nil and s.tutorial.skipped == true, "a skip survives a rejoin")
 	s = cmd(newbie, "tutorial", "replay")
 	ok(s.tutorial.card == "welcome" and s.tutorial.skipped == nil and #s.tutorial.tips == 0, "replay: welcome again, tips reset")
+	ok(s.tutorial.off == nil, "replay turns tips back on")
 	s = cmd(newbie, "tutorial", "next:welcome")
 	ok(s.tutorial.card ~= "path:mode" and string.sub(s.tutorial.card, 1, 5) == "path:", "replay resumes at the real progress (journal mode already chosen)")
+	-- QC L3: a coach card tap needs no living character (dispatched right after the lease check).
+	newbie.humanoid.Health = 0
+	s = cmd(newbie, "tutorial", "dismiss:" .. s.tutorial.card)
+	ok(type(s.tutorial) == "table" and s.tutorial.read == true and not has(s.message or "", "Return to your island"), "a tap while dead still lands")
+	newbie.humanoid.Health = 100
 	-- Validation.
 	for _, bad in ipairs({ "dismiss:nope", "", "tip:zzz", "skip:now" }) do
 		ok(has(cmd(newbie, "tutorial", bad).message, "isn't valid"), "refused: " .. bad)
@@ -342,6 +374,31 @@ do
 	s = cmd(vet, "tutorial", "replay")
 	eq(s.tutorial.card, "welcome", "a veteran may replay")
 	leave(vet)
+	-- QC M3: a journal that walked the whole Path (complete, NOT skipped) before
+	-- the tutorial existed never gets the welcome card either.
+	local walked = seeded(7004, function(pr)
+		pr.tutorial = nil
+		pr.guide = { v = G.VERSION, done = {}, flags = {}, complete = true, owed = 0 }
+		for _, st in ipairs(G.Steps) do pr.guide.done[st.id] = true end
+		pr.questCompleted = 1
+	end)
+	s = cmd(walked, "state")
+	ok(s.guide.complete == true and stored(walked).guide.skipped == nil, "the Path was walked, not skipped")
+	walked = player(7004)
+	s = cmd(walked, "state")
+	ok(s.tutorial.card == nil and s.tutorial.vet == true and s.tutorial.off == true, "a finished Path: no welcome, no tips")
+	leave(walked)
+	-- ... and a journal already past the starter quests is simply done.
+	local past = seeded(7005, function(pr)
+		pr.tutorial = nil
+		pr.guide = { v = G.VERSION, done = {}, flags = {}, complete = true, owed = 0 }
+		for _, st in ipairs(G.Steps) do pr.guide.done[st.id] = true end
+		pr.questCompleted = 2
+		pr.questsDone = { SkywayCharter = true, LampsOfTheQuay = true }
+	end)
+	s = cmd(past, "state")
+	ok(s.tutorial.card == nil and s.tutorial.done == true and s.tutorial.vet == nil, "past the starter quests: done, no welcome")
+	leave(past)
 	-- B6. Starter quests after the Path: contracts, then Charting the Skyway via the quest helper.
 	local q = seeded(7003, function(pr)
 		pr.tutorial = { v = TU.VERSION, seen = { welcome = true }, tips = {} }
@@ -372,6 +429,11 @@ do
 	s = cmd(q, "state")
 	eq(s.tutorial.card, "complete", "both quests done: the celebration card")
 	ok(s.tutorial.owed == 120 and #s.tutorial.rewards >= 3, "rewards summary and owed Path coins")
+	ok(s.tutorial.rewards[1] == G.NAME .. ": up to " .. G.MAX_OWED .. " coins", "no paid-to-date record: up to 770 (" .. tostring(s.tutorial.rewards[1]) .. ")")
+	-- QC L1: guideClaim records paid-to-date; the finale names what was earned.
+	s = cmd(q, "guideClaim")
+	s = cmd(q, "state")
+	ok(s.tutorial.owed == 0 and s.tutorial.rewards[1] == G.NAME .. ": 120 coins", "paid to date: 120 coins (" .. tostring(s.tutorial.rewards[1]) .. ")")
 	s = cmd(q, "tutorial", "dismiss:complete")
 	eq(s.tutorial.card, "complete", "Got it on the finale keeps it")
 	s = cmd(q, "tutorial", "next:complete")
@@ -408,9 +470,27 @@ local function scene(size, touch, opts)
 	local ui = H.runAtlas(size, { touch = touch })
 	local layer = H.runHud(size, ui.player, ui.replicated, { touch = touch })
 	local waypoints = {}
-	local request = H.new("BindableEvent", { Name = "WayfinderRequest" })
-	request.Parent = ui.player
-	request.Event:Connect(function(specs, label) table.insert(waypoints, { specs = specs, label = label }) end)
+	-- The Wayfinder stand-in: records requests and, like nav.client, publishes the
+	-- active waypoint's label (WayfinderActive) when the target resolves
+	-- (opts.resolve = false: nothing resolves). opts.nav: the real nav.client.
+	local wayfinder = { resolve = opts.resolve ~= false }
+	if opts.nav then
+		H.runNav(size, ui.player, ui.replicated, {})
+		local real = ui.player:FindFirstChild("WayfinderRequest")
+		real.Event:Connect(function(specs, label, quiet) table.insert(waypoints, { specs = specs, label = label, quiet = quiet }) end)
+	else
+		local request = H.new("BindableEvent", { Name = "WayfinderRequest" })
+		request.Parent = ui.player
+		request.Event:Connect(function(specs, label, quiet)
+			table.insert(waypoints, { specs = specs, label = label, quiet = quiet })
+			if wayfinder.resolve then ui.player:SetAttribute("WayfinderActive", label) end
+		end)
+		if opts.character ~= false then
+			local character = H.new("Model", { Name = "Character" })
+			H.new("Part", { Name = "HumanoidRootPart" }).Parent = character
+			ui.player.Character = character
+		end
+	end
 	-- A stand-in hotbar (slots named as hotbar.client.lua names them).
 	local bar = H.new("ScreenGui", { Name = "IsleHotbar" })
 	bar.Parent = ui.playerGui
@@ -421,8 +501,9 @@ local function scene(size, touch, opts)
 		slot.Parent = bar
 	end
 	local delays = {}
-	local tut = H.runTutorial(size, ui.player, ui.replicated, { touch = touch, delays = delays })
-	return { ui = ui, layer = layer, tut = tut, S = tut.state, waypoints = waypoints, delays = delays, L = L }
+	local now = { t = 100 }
+	local tut = H.runTutorial(size, ui.player, ui.replicated, { touch = touch, delays = delays, clock = function() return now.t end })
+	return { ui = ui, layer = layer, tut = tut, S = tut.state, waypoints = waypoints, delays = delays, L = L, now = now, wayfinder = wayfinder }
 end
 local function sentVerbs(ui, verb)
 	local out = {}
@@ -441,7 +522,21 @@ for _, case in ipairs({ { 1366, 768, false }, { 844, 390, true }, { 730, 303, tr
 	local card = sc.tut.gui:FindFirstChild("CoachCard")
 	ok(card.Visible, "the coach card shows at " .. tag)
 	eq(S.card, "path:chop", "card from the snapshot at " .. tag)
+	-- QC M5: the card sinks clicks; the chip is a TextButton.
+	ok(card.Active == true, "the card is Active (clicks never reach the world) at " .. tag)
+	local chipButton = H.find(card, "ChipButton")
+	ok(chipButton ~= nil and chipButton.ClassName == "TextButton", "the chip is a TextButton at " .. tag)
+	if L.short then
+		-- QC M4: phones open a new card as the pulsing 44 px chip; a tap expands it.
+		ok(S.expanded == false and card.Size.Y.Offset == 44 and S.mode == "chip" and S.unread == true, "a new card opens as the chip on a phone at " .. tag)
+		local glowStroke = H.find(card, "Glow")
+		ok(glowStroke.Thickness == 4, "the unread chip pulses at " .. tag)
+		ok(chipButton.Visible and not H.find(card, "Collapse").Visible, "chip: one button (no + toggle) at " .. tag)
+		H.press(chipButton)
+		ok(S.expanded == true and S.unread == false and glowStroke.Thickness == 2, "a tap expands it (pulse stops) at " .. tag)
+	end
 	ok(S.expanded == true, "a new unread card opens expanded at " .. tag)
+	ok(not chipButton.Visible and H.find(card, "Collapse").Visible, "expanded: no chip button, collapse shows at " .. tag)
 	local r = rect(card)
 	eq(show(r), show(L.coach), "the card fills its Theme.hudLayout coach lane at " .. tag)
 	ok(r.x >= 0 and r.y >= 0 and r.x + r.w <= size.X and r.y + r.h <= size.Y, "card on screen at " .. tag)
@@ -477,6 +572,13 @@ for _, case in ipairs({ { 1366, 768, false }, { 844, 390, true }, { 730, 303, tr
 	-- Collapse: the chip.
 	H.press(H.find(card, "Collapse"))
 	ok(S.expanded == false, "collapse")
+	-- QC L8: one tap on the chip expands exactly once (a single button handles it).
+	if card.Visible then
+		H.press(H.find(card, "ChipButton"))
+		ok(S.expanded == true, "one chip tap expands at " .. tag)
+		H.press(H.find(card, "Collapse"))
+		ok(S.expanded == false, "collapse again")
+	end
 	local chip = rect(card)
 	if card.Visible then
 		eq(chip.h, 44, "the chip is 44 px tall at " .. tag)
@@ -530,10 +632,11 @@ do
 	H.press(H.find(card, "GotIt"))
 	local sent = sentVerbs(ui, "tutorial")
 	eq(sent[#sent], "next:welcome", "Next sends tutorial next:welcome through the relay")
-	-- A step card: a waypoint is set once when it opens.
+	-- A step card: a waypoint is set once when it opens (quietly).
 	ui.update.OnClientEvent:Fire(tutSnap("path:mode"))
 	eq(#sc.waypoints, 1, "a new card lights its world target once")
 	eq(table.concat(sc.waypoints[1].specs, ","), table.concat(G.Waypoints.mode, ","), "with the Path waypoint")
+	ok(sc.waypoints[1].quiet == true and S.waypointed["path:mode"] == true, "asked quietly; counted once WayfinderActive reports it")
 	ui.update.OnClientEvent:Fire(tutSnap("path:mode"))
 	eq(#sc.waypoints, 1, "the same card does not re-set the waypoint")
 	H.press(H.find(card, "ShowMe"))
@@ -651,6 +754,13 @@ do
 	vet.announce = snap.announce
 	sc7.ui.update.OnClientEvent:Fire(vet)
 	ok(sc7.S.tip == nil and not sc7.tut.gui:FindFirstChild("CoachCard").Visible, "a veteran sees neither cards nor tips")
+	-- QC L2: a veteran who turned tips on (Settings) gets tips: they follow `off` only.
+	local sc7b = scene(size, false)
+	local vetOn = H.snapshot()
+	vetOn.tutorial = { tips = {}, vet = true }
+	vetOn.announce = snap.announce
+	sc7b.ui.update.OnClientEvent:Fire(vetOn)
+	eq(sc7b.S.tip, "levelup", "a veteran with tips on sees tips")
 	-- Tips off from the tip itself.
 	local sc8 = scene(size, false)
 	sc8.ui.update.OnClientEvent:Fire(snap)
@@ -688,15 +798,132 @@ do
 	folk.Parent = sc.ui.playerGui
 	local box = H.new("Frame", { Name = "Dialogue", Visible = true })
 	box.Parent = folk
-	local offer = H.new("TextButton", { Name = "Offer", Text = "Tonic x1, 12 coins" })
+	-- QC M1: the fixture uses the real offer label (GameData shopOpts: "Buy <item> (<price>c)").
+	local offer = H.new("TextButton", { Name = "Offer", Text = "Buy Tonic (12c)" })
 	offer.Parent = box
+	local tipsBefore = #sentVerbs(sc.ui, "tutorial")
+	local delaysBefore = #sc.delays
 	sc.tut.run.Heartbeat:Fire(1.1)
-	eq(sc.S.tip, "shop", "a priced dialogue offer shows the shop tip")
+	-- QC M2: the tip waits while the dialogue covers the card: not taken, not
+	-- recorded on the server, no 14 s timer.
+	ok(sc.S.tip == nil and table.find(sc.S.tipQueue, "shop") ~= nil, "the shop tip is queued while the dialogue covers the card")
+	eq(#sentVerbs(sc.ui, "tutorial"), tipsBefore, "a covered tip is not recorded yet")
+	eq(#sc.delays, delaysBefore, "and its timer has not started")
 	ok(sc.S.mode == "covered" and not sc.tut.gui:FindFirstChild("CoachCard").Visible, "the dialogue hides the card while it is open")
+	sc.tut.run.Heartbeat:Fire(1.1)
+	ok(sc.S.tip == nil, "still held while covered")
 	box.Visible = false
 	sc.tut.run.Heartbeat:Fire(0.2)
 	ok(sc.tut.gui:FindFirstChild("CoachCard").Visible, "and it returns when the dialogue closes")
+	eq(sc.S.tip, "shop", "the shop tip shows once the card is visible")
+	local recorded = sentVerbs(sc.ui, "tutorial")
+	eq(recorded[#recorded], "tip:shop", "recorded when actually shown")
+	eq(#sc.delays, delaysBefore + 1, "its 14 s timer starts then")
 	ok(sc.ui.replicated:FindFirstChild("IsleTutorialLocal") ~= nil, "the IsleTutorialLocal channel exists for other scripts")
+end
+-- C3c. QC fixes: fights never auto-expand (M4), automatic waypoints (M6),
+-- replay resets tips (L7), one snapshot listener (L5), compact relay (L4).
+do
+	local size = Vector2.new(1366, 768)
+	-- M4: a fight (a hit landed / taken, or the kill count rising) opens a new card as the chip.
+	local sc = scene(size, false)
+	local prev = tutSnap("path:equip")
+	prev.kills = 0
+	sc.ui.update.OnClientEvent:Fire(prev)
+	ok(sc.S.expanded == true, "out of combat a new card opens expanded on desktop")
+	local nxt = tutSnap("path:kill", { tips = { "satchelFull" } })
+	nxt.kills = 1
+	sc.ui.update.OnClientEvent:Fire(nxt)
+	local card = sc.tut.gui:FindFirstChild("CoachCard")
+	ok(sc.S.card == "path:kill" and sc.S.expanded == false and card.Visible and card.Size.Y.Offset == 44 and sc.S.unread == true,
+		"a new card during a fight opens as the chip")
+	ok(sc.S.tip == "fight" and sc.S.tipOpen == false, "the fight tip opens as the chip too")
+	H.press(H.find(card, "ChipButton"))
+	ok(sc.S.tipOpen == true and card.Size.Y.Offset > 44, "a tap opens the tip")
+	H.press(H.find(card, "GotIt"))
+	sc.now.t += 9 -- the fight is over
+	sc.ui.update.OnClientEvent:Fire(tutSnap("path:quest", { tips = { "fight", "satchelFull" } }))
+	ok(sc.S.expanded == true, "after the fight a new card opens expanded again")
+	-- Phones: a tip opens as the chip.
+	local ph = scene(Vector2.new(844, 390), true)
+	local tipSnap = tutSnap("path:kill", { tips = { "satchelFull" }, read = true })
+	tipSnap.announce = { seq = 3, list = { { seq = 3, kind = "skill", skill = "Mining", level = 2, coins = 5 } } }
+	ph.ui.update.OnClientEvent:Fire(tipSnap)
+	ok(ph.S.tip == "levelup" and ph.S.tipOpen == false and ph.S.mode == "chip", "a phone tip opens as the chip")
+	H.press(H.find(ph.tut.gui:FindFirstChild("CoachCard"), "ChipButton"))
+	ok(ph.S.tipOpen == true and ph.S.mode == "modal", "a tap expands the tip")
+
+	-- M6: the player's own waypoint is never replaced; Show me still works.
+	local own = scene(size, false)
+	own.ui.player:SetAttribute("WayfinderActive", "The Forge")
+	own.ui.update.OnClientEvent:Fire(tutSnap("path:craft"))
+	ok(#own.waypoints == 0 and own.S.waypointed["path:craft"] == "kept", "an active player waypoint is kept")
+	H.press(H.find(own.tut.gui:FindFirstChild("CoachCard"), "ShowMe"))
+	ok(#own.waypoints == 1 and own.waypoints[1].quiet ~= true, "Show me still sets it (the player asked)")
+	-- ... but the tutorial's own earlier waypoint is replaced by the next card's.
+	own.ui.update.OnClientEvent:Fire(tutSnap("path:visit"))
+	ok(#own.waypoints == 2 and own.S.waypointed["path:visit"] == true, "the tutorial's own waypoint moves to the next card")
+	-- No character yet: the request waits, then goes out once it exists.
+	local early = scene(size, false, { character = false })
+	early.ui.update.OnClientEvent:Fire(tutSnap("path:craft"))
+	eq(#early.waypoints, 0, "no waypoint before the character exists")
+	local character = H.new("Model", { Name = "Character" })
+	H.new("Part", { Name = "HumanoidRootPart" }).Parent = character
+	early.ui.player.Character = character
+	early.tut.run.Heartbeat:Fire(1.1)
+	ok(#early.waypoints == 1 and early.S.waypointed["path:craft"] == true, "set once the character exists")
+	-- An unresolved target is not counted: retried after 10 s, at most 3 times.
+	local lost = scene(size, false, { resolve = false })
+	lost.ui.update.OnClientEvent:Fire(tutSnap("path:craft"))
+	ok(#lost.waypoints == 1 and lost.S.waypointed["path:craft"] == nil, "an unresolved waypoint is not marked")
+	lost.tut.run.Heartbeat:Fire(1.1)
+	eq(#lost.waypoints, 1, "no retry within 10 s")
+	for _ = 1, 4 do lost.now.t += 11; lost.tut.run.Heartbeat:Fire(1.1) end
+	eq(#lost.waypoints, 3, "retried, at most 3 tries")
+	lost.wayfinder.resolve = true
+	-- With the real nav.client: WayfinderActive follows set / clear; quiet failures do not toast.
+	local real = scene(size, false, { nav = true })
+	real.ui.update.OnClientEvent:Fire(tutSnap("path:talk"))
+	ok(real.ui.player:GetAttribute("WayfinderActive") == TU.CardById["path:talk"].title and real.S.waypointed["path:talk"] == true,
+		"nav.client resolves npc:Guide and publishes WayfinderActive")
+	local request = real.ui.player:FindFirstChild("WayfinderRequest")
+	request:Fire({ "npc:Nobody" }, "Nowhere", true)
+	eq(real.ui.player:GetAttribute("WayfinderActive"), TU.CardById["path:talk"].title, "an unresolved request leaves the active waypoint")
+	local toast = H.find(real.ui.playerGui:FindFirstChild("Wayfinder"), "WayfinderToast")
+	ok(not has(toast.Text, "can't find"), "a quiet request fails without a toast")
+
+	-- L7: Replay (welcome again) resets this session's shown tips.
+	local rp = scene(size, false)
+	local lv = tutSnap("path:kill", { tips = { "satchelFull" } })
+	lv.announce = { seq = 3, list = { { seq = 3, kind = "skill", skill = "Mining", level = 2, coins = 5 } } }
+	rp.ui.update.OnClientEvent:Fire(lv)
+	eq(rp.S.tip, "levelup", "a tip once")
+	H.press(H.find(rp.tut.gui:FindFirstChild("CoachCard"), "GotIt"))
+	rp.ui.update.OnClientEvent:Fire(tutSnap("welcome", { tips = { "satchelFull" } }))
+	ok(next(rp.S.tipsShown) == nil and #rp.S.tipQueue == 0 and rp.S.tip == nil, "replay clears the session's shown tips")
+	local again = tutSnap("path:kill", { tips = { "satchelFull" } })
+	again.announce = lv.announce
+	rp.ui.update.OnClientEvent:Fire(again)
+	eq(rp.S.tip, "levelup", "after a replay a tip shows again")
+
+	-- L5: one snapshot path (the atlas relay), no second IsleUpdate listener.
+	local client = fs.readFile("tutorial.client.lua")
+	ok(not has(client, 'WaitForChild("IsleUpdate"'), "the tutorial listens to IsleSnapshotLocal only")
+	-- L4: the atlas sends tutorial verbs straight away (no relay queue / gap) and
+	-- hands the compact reply to the tutorial.
+	local ui = fs.readFile("ui.client.lua")
+	local route, relay = string.find(ui, 'verb=="tutorial" and type(item)=="string" and #item<=64 then task.spawn(UI.tutorialSend,item)', 1, true), string.find(ui, "elseif UI.relay[verb] and", 1, true)
+	ok(route ~= nil and relay ~= nil and route < relay, "tutorial verbs bypass UI.relaySend")
+	local cr = scene(size, false)
+	cr.ui.update.OnClientEvent:Fire(tutSnap("path:ore"))
+	local compact = { tutorial = { card = "path:sell", dots = TU.dots("path:sell"), tips = {}, next = { specs = TU.specsFor("path:sell") } }, message = "" }
+	cr.ui.setSnapshot(compact)
+	H.press(H.find(cr.tut.gui:FindFirstChild("CoachCard"), "GotIt"))
+	ok(cr.S.card == "path:sell" and cr.S.snap.items ~= nil, "the compact reply updates the tutorial (the last full snapshot kept)")
+
+	-- M1: npc.client announces a drawn shop offer to the tutorial.
+	local npc = fs.readFile("npc.client.lua")
+	ok(has(npc, "SHOP_VERBS = {rqBuy = true, warpBuy = true") and has(npc, 'channel:Fire("shop")'), "npc.client fires IsleTutorialLocal shop for priced offers")
 end
 -- C4. Settings › Tutorial: tips toggle and replay through the relay.
 do
