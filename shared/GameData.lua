@@ -16270,6 +16270,570 @@ end
 -- <<< END Tutorial <<<
 ------------------------------------------------------------------------------
 
+
+------------------------------------------------------------------------------
+-- >>> BEGIN Combat Feats (Feats team; append-only section; docs/DEPTH-CONTRACT.md §45) >>>
+-- Tiered combat tasks for every boss in the isles (slayer bosses, world
+-- bosses, lair bosses, the Undertide Vaults raid and the seven Observatory
+-- floors). Depth reference only: OSRS Combat Achievements (tiers, points,
+-- point thresholds, task types); every name is original.
+-- * Pure data + pure rules. The server "Combat Feats" block in
+--   server.server.lua feeds FT.record with events it builds from its own
+--   validated reward paths (bridge "lair" / "raid" / "worldBoss" /
+--   "slayerBoss", the Observatory grant); nothing is ever client-reported.
+--   Speed is server-timed (combat / raids / expedition clocks), perfection and
+--   restriction read the per-UserId fight record combat.server.lua keeps
+--   (telegraph hits, stance swings, Ward prayers, styles, armour, adds).
+-- * Task types: kc (kill count), perfection (no damage from a mechanic),
+--   speed (server-timed), restriction (style / prayer / armour / party
+--   limits), mechanical (adds, wards, secrets, rank, par).
+-- * Points per tier 1-6; tier rewards unlock at point thresholds: a trophy
+--   hilt (cosmetic, value 1, claimed once), daily feat teleports, and small
+--   boss-loot / slayer perks (Magic Find on boss loot rolls only, Slayer
+--   boss XP). No coins are ever granted and no Health / Defense perk exists
+--   (Data.PerkBudget untouched).
+------------------------------------------------------------------------------
+do
+local FT = {}
+Data.Feats = FT
+local function tab(v) return if type(v) == "table" then v else {} end
+local function num(v) return if type(v) == "number" and v == v and v > -math.huge and v < math.huge then v else nil end
+local function whole(v, cap) v = num(v); if not v or v < 0 then return 0 end v = math.floor(v); return if cap then math.min(v, cap) else v end
+FT.whole = whole
+FT.VERSION = 1
+FT.NAME = "Combat Feats"
+FT.MAX_COUNT = 1000000
+FT.SEEN_MAX = 24            -- recent event ids remembered (no double credit)
+FT.TELEPORT_COOLDOWN = 30   -- seconds between feat teleports
+FT.RENOWN_PER_POINT = 2     -- §31 Isle Renown source "feats"
+FT.DAY_SECONDS = 86400
+
+FT.Tiers = {
+	{id="Easy", name="Easy", points=1, share=0.8, color="6BBF59", rarity="Common"},
+	{id="Medium", name="Medium", points=2, share=0.8, color="4FA3E0", rarity="Uncommon"},
+	{id="Hard", name="Hard", points=3, share=0.8, color="B48EF0", rarity="Rare"},
+	{id="Elite", name="Elite", points=4, share=0.85, color="E0A458", rarity="Epic"},
+	{id="Master", name="Master", points=5, share=0.9, color="FF6B6B", rarity="Legendary"},
+	{id="Grandmaster", name="Grandmaster", points=6, share=0.95, color="FFD86B", rarity="Mythic"},
+}
+FT.TierById, FT.TierIndex = {}, {}
+for i, t in ipairs(FT.Tiers) do t.index = i; FT.TierById[t.id] = t; FT.TierIndex[t.id] = i end
+FT.Types = {
+	{id="kc", name="Kill Count", glyph="✚"},
+	{id="perfection", name="Perfection", glyph="◆"},
+	{id="speed", name="Speed", glyph="➤"},
+	{id="restriction", name="Restriction", glyph="⊘"},
+	{id="mechanical", name="Mechanical", glyph="⚙"},
+}
+FT.TypeById = {}
+for _, t in ipairs(FT.Types) do FT.TypeById[t.id] = t end
+
+-- Boss groups (the panel's boss filter), in progression order.
+FT.Groups = {}
+FT.GroupById = {}
+local function group(id, source, key, name, short, category)
+	local g = {id=id, source=source, key=key, name=name, short=short, category=category}
+	table.insert(FT.Groups, g)
+	FT.GroupById[id] = g
+	return g
+end
+local E, LR, RD = Data.Endgame, Data.Lairs, Data.Raids
+local ROMAN = {"I","II","III","IV","V","VI","VII","VIII","IX"}
+for _, line in ipairs(Data.SlayerOrder) do
+	local s = Data.Slayers[line]
+	group("slayer:" .. line, "slayer", line, s.name, s.name:match("^(%S+)") or line, "Slayer bosses")
+end
+for i, f in ipairs(Data.DungeonFloors) do group("floor:" .. i, "dungeon", i, f.name, "Floor " .. (f.numeral or ROMAN[i]), "Observatory") end
+for _, id in ipairs(LR.Order) do local d = LR.boss(id); group("lair:" .. id, "lair", id, d.name, d.short, "Lair bosses") end
+group("raid:" .. RD.ID, "raid", RD.ID, RD.NAME, "Undertide", "Raids")
+for _, id in ipairs(E.BossOrder) do local d = E.boss(id); group("world:" .. id, "world", id, d.name, d.short, "World bosses") end
+
+-- Rule keys (all AND-ed; an unknown key never matches):
+--   kc = n            count of matching events (the counter is keyed by the other filters)
+--   minTier = t       slayer boss tier >= t
+--   master / challenge = true|false   Observatory Master Mode / raid Challenge Mode
+--   maxSeconds = s    server-timed fight / run length
+--   solo = true       party of one;  maxParty = n
+--   noDeaths = true   no deaths (Observatory: the party's; raid: your own)
+--   noMistakes = true no puzzle mistakes (Observatory)
+--   minGrade = "S"    Observatory grade at least
+--   allSecrets = true every Observatory secret found
+--   maxRank = n / minShare = x   world boss damage board
+--   noHits = true     slayer boss: never struck by the boss
+--   noMech = n        lair / raid: struck by no telegraph, with at least n telegraphs resolved
+--   avoid = "atk"     lair: never struck by that attack (it resolved at least once);
+--                     raid: "<encounter>:<attack>"
+--   perfectWards = n  at least n stance swings taken, every one into the matching Ward prayer
+--   noWard = n        at least n stance swings taken, never with a Ward prayer up
+--   onlyStyle = "x"   every hit you landed used that combat style
+--   noArmor = true    no armour piece worn on any hit you landed
+--   minAdds = n       you struck n of the boss's adds / sigils / anchors
+--   underPar = true   raid Challenge Mode under par
+FT.Tasks = {}
+FT.TaskById = {}
+local function task(groupId, key, tier, kind, name, text, rule)
+	local g = assert(FT.GroupById[groupId], groupId)
+	assert(FT.TierById[tier] and FT.TypeById[kind], key)
+	local t = {id=groupId .. "." .. key, group=groupId, tier=tier, type=kind, name=name, text=text, rule=rule}
+	assert(not FT.TaskById[t.id], t.id)
+	table.insert(FT.Tasks, t)
+	FT.TaskById[t.id] = t
+	return t
+end
+FT.task = task
+
+-- Slayer bosses (summoned at a slayer quest's end; 4-minute limit).
+do
+	local S = "slayer:"
+	task(S.."Bramble", "first", "Easy", "kc", "Thornhide Hunter", "Defeat the Brambleback Matriarch.", {kc=1})
+	task(S.."Bramble", "tier2", "Easy", "kc", "Briar Stalker", "Defeat the Brambleback Matriarch II or higher.", {minTier=2, kc=1})
+	task(S.."Bramble", "tier3", "Medium", "kc", "Matriarch's Bane", "Defeat the Brambleback Matriarch III or higher.", {minTier=3, kc=1})
+	task(S.."Bramble", "brisk", "Medium", "speed", "Briar Sprint", "Defeat the Brambleback Matriarch II or higher within 1:30.", {minTier=2, maxSeconds=90})
+	task(S.."Bramble", "untouched", "Hard", "perfection", "Untouched Hide", "Defeat the Brambleback Matriarch III or higher without being struck by her.", {minTier=3, noHits=true})
+	task(S.."Bramble", "veteran", "Hard", "kc", "Thornward Veteran", "Defeat the Brambleback Matriarch IV five times.", {minTier=4, kc=5})
+	task(S.."Bramble", "swift4", "Elite", "speed", "Matriarch Felled", "Defeat the Brambleback Matriarch IV within 1:30.", {minTier=4, maxSeconds=90})
+	task(S.."Gloom", "first", "Easy", "kc", "Webcutter", "Defeat the Gloomfang Broodmother.", {kc=1})
+	task(S.."Gloom", "tier2", "Medium", "kc", "Silk and Shadow", "Defeat the Gloomfang Broodmother II or higher.", {minTier=2, kc=1})
+	task(S.."Gloom", "brisk", "Hard", "speed", "Brood Breaker", "Defeat the Gloomfang Broodmother III or higher within 2:00.", {minTier=3, maxSeconds=120})
+	task(S.."Gloom", "untouched", "Hard", "perfection", "Unbitten", "Defeat the Gloomfang Broodmother II or higher without being struck by her.", {minTier=2, noHits=true})
+	task(S.."Gloom", "veteran", "Elite", "kc", "Broodmother's End", "Defeat the Gloomfang Broodmother IV ten times.", {minTier=4, kc=10})
+	task(S.."Gloom", "flawless4", "Elite", "perfection", "Silkless", "Defeat the Gloomfang Broodmother IV without being struck by her.", {minTier=4, noHits=true})
+	task(S.."Tempest", "first", "Medium", "kc", "Stormbinder", "Defeat the Tempest Revenant.", {kc=1})
+	task(S.."Tempest", "tier2", "Hard", "kc", "Revenant Hunter", "Defeat the Tempest Revenant II or higher.", {minTier=2, kc=1})
+	task(S.."Tempest", "brisk", "Elite", "speed", "Eye of the Gale", "Defeat the Tempest Revenant III or higher within 2:30.", {minTier=3, maxSeconds=150})
+	task(S.."Tempest", "untouched", "Elite", "perfection", "Untouched by Thunder", "Defeat the Tempest Revenant III or higher without being struck by it.", {minTier=3, noHits=true})
+	task(S.."Tempest", "veteran", "Master", "kc", "Revenant's Bane", "Defeat the Tempest Revenant IV ten times.", {minTier=4, kc=10})
+	task(S.."Tempest", "swift4", "Master", "speed", "Stormbreaker", "Defeat the Tempest Revenant IV within 2:30.", {minTier=4, maxSeconds=150})
+	task(S.."Tempest", "flawless4", "Grandmaster", "perfection", "Calm in the Storm", "Defeat the Tempest Revenant IV without being struck by it.", {minTier=4, noHits=true})
+end
+
+-- Observatory floors I-VII: one ladder per floor, shifted by the floor's depth.
+FT.FloorBase = {1, 1, 2, 2, 3, 3, 4}
+FT.FLOOR_SPEED = 0.6 -- of the floor's par (Master: of the Master par)
+do
+	local DC = Data.DungeonClasses
+	for i, f in ipairs(Data.DungeonFloors) do
+		local g = "floor:" .. i
+		local base = FT.FloorBase[i] or 4
+		local function tierAt(step) return FT.Tiers[math.min(#FT.Tiers, base + step)].id end
+		local n = f.numeral or ROMAN[i]
+		local masterPar = math.floor(f.par * (if DC and DC.masterScale then DC.masterScale(i).par else 1.6))
+		task(g, "clear", tierAt(0), "kc", "Floor " .. n .. " Delver", "Clear " .. f.name .. ".", {kc=1})
+		task(g, "gradeA", tierAt(0), "mechanical", "Steady Lens", "Clear " .. f.name .. " with grade A or better.", {minGrade="A"})
+		task(g, "deathless", tierAt(0), "perfection", "Sure Footing", "Clear " .. f.name .. " with nobody in the party dying.", {noDeaths=true})
+		task(g, "clears", tierAt(1), "kc", "Floor " .. n .. " Regular", "Clear " .. f.name .. " 25 times.", {kc=25})
+		task(g, "gradeS", tierAt(1), "mechanical", "Starlit Grade", "Clear " .. f.name .. " with grade S or better.", {minGrade="S"})
+		task(g, "flawless", tierAt(1), "perfection", "Flawless Ascent", "Clear " .. f.name .. " with no deaths and no puzzle mistakes.", {noDeaths=true, noMistakes=true})
+		task(g, "speed", tierAt(1), "speed", "Clockwork Delve", "Clear " .. f.name .. " within " .. string.format("%d:%02d", math.floor(f.par * FT.FLOOR_SPEED) // 60, math.floor(f.par * FT.FLOOR_SPEED) % 60) .. ".",
+			{maxSeconds=math.floor(f.par * FT.FLOOR_SPEED)})
+		task(g, "secrets", tierAt(1), "mechanical", "Stargazer", "Clear " .. f.name .. " having found every secret.", {allSecrets=true})
+		task(g, "solo", tierAt(2), "restriction", "Lone Lantern", "Clear " .. f.name .. " alone with grade A or better.", {solo=true, minGrade="A"})
+		task(g, "master", tierAt(2), "kc", "Eclipsed " .. n, "Clear Master Mode " .. f.name .. ".", {master=true, kc=1})
+		task(g, "masterFlawless", tierAt(3), "perfection", "Eclipse Unbroken", "Clear Master Mode " .. f.name .. " with no deaths and no puzzle mistakes.", {master=true, noDeaths=true, noMistakes=true})
+		task(g, "masterSpeed", tierAt(3), "speed", "Eclipse Sprint", "Clear Master Mode " .. f.name .. " within " .. string.format("%d:%02d", math.floor(masterPar * FT.FLOOR_SPEED) // 60, math.floor(masterPar * FT.FLOOR_SPEED) % 60) .. ".",
+			{master=true, maxSeconds=math.floor(masterPar * FT.FLOOR_SPEED)})
+	end
+end
+
+-- Lair bosses (instanced; time limits 5-8 minutes; modelled solo fights 83 / 121 / 190 / 174 s).
+do
+	local L = "lair:"
+	task(L.."Bramblemaw", "first", "Easy", "kc", "Thornroot Trespasser", "Defeat Bramblemaw.", {kc=1})
+	task(L.."Bramblemaw", "kc25", "Medium", "kc", "Matriarch Culler", "Defeat Bramblemaw 25 times.", {kc=25})
+	task(L.."Bramblemaw", "thornburst", "Medium", "perfection", "Thornless", "Defeat Bramblemaw without being struck by Thornburst.", {avoid="thornburst"})
+	task(L.."Bramblemaw", "brood", "Medium", "mechanical", "Brood Pruner", "Strike three of Bramblemaw's Thornspawn in one fight, then defeat her.", {minAdds=3})
+	task(L.."Bramblemaw", "speed", "Hard", "speed", "Swift Shears", "Defeat Bramblemaw within 1:15.", {maxSeconds=75})
+	task(L.."Bramblemaw", "magic", "Hard", "restriction", "Spellbound Thorns", "Defeat Bramblemaw using only magic.", {onlyStyle="magic"})
+	task(L.."Bramblemaw", "flawless", "Elite", "perfection", "Unscathed Hollow", "Defeat Bramblemaw alone, struck by no telegraphed attack (at least 3 resolve).", {solo=true, noMech=3})
+	task(L.."Aerisca", "first", "Medium", "kc", "Eyrie Climber", "Defeat Aerisca.", {kc=1})
+	task(L.."Aerisca", "kc25", "Hard", "kc", "Squallbreaker", "Defeat Aerisca 25 times.", {kc=25})
+	task(L.."Aerisca", "squall", "Hard", "perfection", "Lattice Dancer", "Defeat Aerisca without being struck by Squall Lattice.", {avoid="squall"})
+	task(L.."Aerisca", "wards", "Hard", "mechanical", "Ward Weaver", "Defeat Aerisca taking at least 8 of her stance swings, every one into the right Ward.", {perfectWards=8})
+	task(L.."Aerisca", "ranged", "Elite", "restriction", "Quill and Gale", "Defeat Aerisca using only ranged attacks.", {onlyStyle="ranged"})
+	task(L.."Aerisca", "speed", "Elite", "speed", "Gale Chaser", "Defeat Aerisca within 1:45.", {maxSeconds=105})
+	task(L.."Aerisca", "flawless", "Master", "perfection", "Eye of Calm", "Defeat Aerisca alone, struck by no telegraphed attack (at least 4 resolve).", {solo=true, noMech=4})
+	task(L.."Pyrewarden", "first", "Hard", "kc", "Forge Delver", "Defeat the Pyrewarden.", {kc=1})
+	task(L.."Pyrewarden", "kc50", "Elite", "kc", "Ashwalker", "Defeat the Pyrewarden 50 times.", {kc=50})
+	task(L.."Pyrewarden", "sigils", "Hard", "mechanical", "Sigil Breaker", "Strike all three Forge Sigils in one fight, then defeat the Pyrewarden.", {minAdds=3})
+	task(L.."Pyrewarden", "nova", "Elite", "perfection", "Heartcold", "Defeat the Pyrewarden without being struck by its Heart Nova.", {avoid="nova"})
+	task(L.."Pyrewarden", "melee", "Elite", "restriction", "Anvil and Fist", "Defeat the Pyrewarden using only melee.", {onlyStyle="melee"})
+	task(L.."Pyrewarden", "speed", "Master", "speed", "Quenched", "Defeat the Pyrewarden within 2:45.", {maxSeconds=165})
+	task(L.."Pyrewarden", "unarmored", "Grandmaster", "restriction", "Ember-Skinned", "Defeat the Pyrewarden alone wearing no armour.", {solo=true, noArmor=true})
+	task(L.."Nihlvar", "first", "Elite", "kc", "Sanctum Breaker", "Defeat Nihlvar.", {kc=1})
+	task(L.."Nihlvar", "lattice", "Elite", "perfection", "Null Walker", "Defeat Nihlvar without being struck by the Null Lattice.", {avoid="lattice"})
+	task(L.."Nihlvar", "anchors", "Master", "mechanical", "Anchorbreaker", "Strike all three Rift Anchors in one fight, then defeat Nihlvar.", {minAdds=3})
+	task(L.."Nihlvar", "wards", "Master", "mechanical", "Archon's Mirror", "Defeat Nihlvar taking at least 12 stance swings, every one into the right Ward.", {perfectWards=12})
+	task(L.."Nihlvar", "speed", "Master", "speed", "Hollowed Quickly", "Defeat Nihlvar within 2:30.", {maxSeconds=150})
+	task(L.."Nihlvar", "kc100", "Grandmaster", "kc", "Crownless Archon", "Defeat Nihlvar 100 times.", {kc=100})
+	task(L.."Nihlvar", "flawless", "Grandmaster", "perfection", "Eclipse Unseen", "Defeat Nihlvar alone, struck by no telegraphed attack (at least 6 resolve).", {solo=true, noMech=6})
+	task(L.."Nihlvar", "noWard", "Grandmaster", "restriction", "Faithless", "Defeat Nihlvar alone without a Ward prayer (at least 6 stance swings taken).", {solo=true, noWard=6})
+end
+
+-- The Undertide Vaults (2-8 raiders; normal runs about 10.5-12 minutes).
+do
+	local R = "raid:" .. RD.ID
+	task(R, "first", "Hard", "kc", "Vaultdiver's Oath", "Complete the Undertide Vaults.", {kc=1})
+	task(R, "deathless", "Hard", "perfection", "Keep Your Breath", "Complete the Undertide Vaults without dying.", {noDeaths=true})
+	task(R, "kc25", "Elite", "kc", "Tidebound", "Complete the Undertide Vaults 25 times.", {kc=25})
+	task(R, "cm", "Elite", "kc", "Undertide Champion", "Complete the Undertide Vaults in Challenge Mode.", {challenge=true, kc=1})
+	task(R, "maelstrom", "Elite", "perfection", "Eye of the Maelstrom", "Complete the Undertide Vaults without being struck by Thalvorn's Maelstrom.", {avoid="Thalvorn:maelstrom"})
+	task(R, "speed", "Master", "speed", "Riptide Run", "Complete the Undertide Vaults within 10:00.", {maxSeconds=600})
+	task(R, "anchors", "Master", "mechanical", "Anchor Sunderer", "Strike at least six adds, seals or anchors across one raid.", {minAdds=6})
+	task(R, "trio", "Master", "restriction", "Three Against the Tide", "Complete the Undertide Vaults with three raiders or fewer.", {maxParty=3})
+	task(R, "underPar", "Grandmaster", "speed", "Regent's Bane", "Complete Challenge Mode under par.", {challenge=true, underPar=true})
+	task(R, "cm25", "Grandmaster", "kc", "Undying Tide", "Complete the Undertide Vaults in Challenge Mode 25 times.", {challenge=true, kc=25})
+	task(R, "flawless", "Grandmaster", "perfection", "Drowned in Nothing", "Complete Challenge Mode without dying and struck by no telegraphed attack (at least 10 resolve).", {challenge=true, noDeaths=true, noMech=10})
+end
+
+-- World bosses (Shattered Crown).
+for _, id in ipairs(E.BossOrder) do
+	local d = E.boss(id)
+	local g = "world:" .. id
+	local dur = num(d.duration) or 600
+	task(g, "first", "Hard", "kc", d.short .. " Witness", "Help fell " .. d.short .. ".", {kc=1})
+	task(g, "kc10", "Elite", "kc", d.short .. " Veteran", "Help fell " .. d.short .. " 10 times.", {kc=10})
+	task(g, "share", "Elite", "mechanical", d.short .. " Vanguard", "Deal at least 10% of " .. d.short .. "'s health in one fight.", {minShare=0.1})
+	task(g, "top", "Master", "mechanical", d.short .. " Champion", "Top " .. d.short .. "'s damage board.", {maxRank=1})
+	task(g, "speed", "Master", "speed", d.short .. " Toppled", "Help fell " .. d.short .. " within " .. math.floor(dur * 0.5 / 60) .. " minutes of its rise.", {maxSeconds=math.floor(dur * 0.5)})
+	task(g, "kc50", "Grandmaster", "kc", d.short .. " Nemesis", "Help fell " .. d.short .. " 50 times.", {kc=50})
+end
+
+-- Points and tier thresholds ---------------------------------------------------
+FT.TierTotals, FT.Thresholds, FT.TierCounts = {}, {}, {}
+do
+	local cum = 0
+	for i, t in ipairs(FT.Tiers) do
+		local n, pts = 0, 0
+		for _, k in ipairs(FT.Tasks) do if k.tier == t.id then n += 1; pts += t.points end end
+		FT.TierCounts[t.id], FT.TierTotals[t.id] = n, pts
+		cum += pts
+		FT.Thresholds[i] = math.floor(cum * t.share)
+	end
+	FT.TOTAL_POINTS = cum
+end
+function FT.points(state)
+	local pts = 0
+	for id in pairs(tab(tab(state).done)) do
+		local t = FT.TaskById[id]
+		if t then pts += FT.TierById[t.tier].points end
+	end
+	return pts
+end
+-- Highest tier index whose threshold `points` reaches (0 = none).
+function FT.tierFor(points)
+	points = whole(points)
+	local reached = 0
+	for i, need in ipairs(FT.Thresholds) do if points >= need then reached = i end end
+	return reached
+end
+
+-- Rewards -------------------------------------------------------------------------------
+-- Perks are the reached tier's row (never stacked). No coins, no Health / Defense.
+FT.Rewards = {
+	Easy = {hilt="FeatHiltEasy", teleports=0, bossMagicFind=0, slayerXp=0},
+	Medium = {hilt="FeatHiltMedium", teleports=1, bossMagicFind=0, slayerXp=0},
+	Hard = {hilt="FeatHiltHard", teleports=2, bossMagicFind=1, slayerXp=0},
+	Elite = {hilt="FeatHiltElite", teleports=3, bossMagicFind=2, slayerXp=0.02},
+	Master = {hilt="FeatHiltMaster", teleports=4, bossMagicFind=3, slayerXp=0.03},
+	Grandmaster = {hilt="FeatHiltGrandmaster", teleports=6, bossMagicFind=4, slayerXp=0.05},
+}
+FT.MAX_BOSS_MAGIC_FIND = 4
+FT.MAX_SLAYER_XP = 0.05
+local HILT_NAMES = {Easy="Copperbound Feat Hilt", Medium="Silverbound Feat Hilt", Hard="Gildbound Feat Hilt", Elite="Starbound Feat Hilt",
+	Master="Sunforged Feat Hilt", Grandmaster="Aetherforged Feat Hilt"}
+for _, t in ipairs(FT.Tiers) do
+	local r = FT.Rewards[t.id]
+	Data.Items[r.hilt] = {id=r.hilt, name=HILT_NAMES[t.id], kind="material", rarity=t.rarity, color=t.color, value=1, cosmetic=true, featHilt=t.id,
+		description="Cosmetic trophy. Claimed once at the " .. t.name .. " tier of Combat Feats. No stats; worth 1 coin."}
+end
+function FT.perks(points)
+	local i = FT.tierFor(points)
+	if i == 0 then return {teleports=0, bossMagicFind=0, slayerXp=0, tier=0} end
+	local r = FT.Rewards[FT.Tiers[i].id]
+	return {teleports=r.teleports, bossMagicFind=math.min(r.bossMagicFind, FT.MAX_BOSS_MAGIC_FIND), slayerXp=math.min(r.slayerXp, FT.MAX_SLAYER_XP), tier=i}
+end
+function FT.rewardText(tierId)
+	local r = FT.Rewards[tierId]
+	if not r then return "" end
+	local parts = {HILT_NAMES[tierId]}
+	if r.teleports > 0 then table.insert(parts, r.teleports .. " feat teleport" .. (if r.teleports == 1 then "" else "s") .. " a day") end
+	if r.bossMagicFind > 0 then table.insert(parts, "+" .. r.bossMagicFind .. " Magic Find on boss loot") end
+	if r.slayerXp > 0 then table.insert(parts, "+" .. math.floor(r.slayerXp * 100 + 0.5) .. "% slayer boss XP") end
+	return table.concat(parts, "  ·  ")
+end
+
+-- Feat teleports (daily charges from the reached tier): boss doorsteps.
+FT.Teleports = {}
+FT.TeleportById = {}
+local function tele(id, name, anchor, region)
+	local t = {id=id, name=name, anchor=anchor, region=region}
+	table.insert(FT.Teleports, t)
+	FT.TeleportById[id] = t
+end
+for _, id in ipairs(LR.Order) do local d = LR.boss(id); tele("lair" .. id, d.lairName .. " altar", "Waypoint_Lair_" .. id, d.region) end
+tele("raid", "Undertide portal", "Waypoint_RaidPortal", RD.REGION)
+tele("altar", "Sovereign Altar", "Waypoint_SovereignAltar", E.REGION)
+tele("observatory", "Observatory gate", "Waypoint_ExpeditionGate", nil)
+-- Charges roll forward only (a server whose clock is behind never refills).
+function FT.dayOf(now) return math.floor(whole(now) / FT.DAY_SECONDS) end
+function FT.teleportState(state, points, now)
+	local t = tab(state).tele
+	local day = FT.dayOf(now)
+	local max = FT.perks(points).teleports
+	local used = whole(tab(t).used)
+	local saved = whole(tab(t).day)
+	if day > saved then used = 0; saved = day end
+	return {left=math.max(0, max - used), max=max, used=used, day=saved, resetIn=math.max(0, (saved + 1) * FT.DAY_SECONDS - whole(now))}
+end
+
+-- Events --------------------------------------------------------------------------------
+local GRADE_RANK = {}
+for i, g in ipairs(Data.DungeonGrades) do GRADE_RANK[g.grade] = i end
+local FEAT_KEYS = {"mech", "cast", "swings", "prayed", "ward", "adds"}
+local STYLES = {"melee", "ranged", "magic"}
+-- Sanitises a fight record from combat (per-UserId): unknown keys dropped, numbers clamped.
+function FT.cleanFeat(f)
+	if type(f) ~= "table" then return nil end
+	local out = {hitBy={}, styles={}}
+	for _, k in ipairs(FEAT_KEYS) do out[k] = whole(f[k], 100000) end
+	out.armor = if num(f.armor) then whole(f.armor, 8) else nil
+	out.absent = f.absent == true -- QC H2: offline / outside / down while a telegraph resolved
+	for _, s in ipairs(STYLES) do if tab(f.styles)[s] == true then out.styles[s] = true end end
+	local n = 0
+	for k, v in pairs(tab(f.hitBy)) do
+		if type(k) == "string" and #k <= 48 and n < 48 then out.hitBy[k] = whole(v, 100000); n += 1 end
+	end
+	out.seen = {}
+	n = 0
+	for k, v in pairs(tab(f.seen)) do
+		if type(k) == "string" and #k <= 48 and n < 48 then out.seen[k] = whole(v, 100000); n += 1 end
+	end
+	return out
+end
+local SOURCES = {slayer=true, dungeon=true, lair=true, raid=true, world=true}
+-- Server event -> sanitised event {source, boss, ...} or nil.
+function FT.normalize(ev)
+	ev = tab(ev)
+	if not SOURCES[ev.source] then return nil end
+	local out = {source=ev.source, boss=ev.boss}
+	if ev.source == "dungeon" then out.boss = whole(ev.boss) end
+	local g = FT.GroupById[(if ev.source == "dungeon" then "floor" else ev.source) .. ":" .. tostring(out.boss)]
+	if not g then return nil end
+	out.group = g.id
+	out.id = if type(ev.id) == "string" and #ev.id > 0 and #ev.id <= 80 then ev.id elseif type(ev.id) == "number" then tostring(ev.id) else nil
+	out.tier = whole(ev.tier, 9)
+	out.seconds = if num(ev.seconds) and ev.seconds > 0 then math.min(ev.seconds, 86400) else nil
+	-- QC L4: an unknown party size stays nil (solo / maxParty then fail).
+	out.party = if num(ev.party) and ev.party >= 1 then whole(ev.party, 99) else nil
+	out.deaths = if num(ev.deaths) then whole(ev.deaths, 1000) else nil
+	out.mistakes = if num(ev.mistakes) then whole(ev.mistakes, 1000) else nil
+	out.master, out.challenge, out.underPar = ev.master == true, ev.challenge == true, ev.underPar == true
+	out.grade = if type(ev.grade) == "string" and GRADE_RANK[ev.grade] then ev.grade else nil
+	out.secrets, out.secretsTotal = whole(ev.secrets, 99), whole(ev.secretsTotal, 99)
+	out.rank = if num(ev.rank) and ev.rank >= 1 then math.floor(ev.rank) else nil
+	out.share = if num(ev.share) then math.clamp(ev.share, 0, 1) else nil
+	out.hits = if num(ev.hits) then whole(ev.hits, 100000) else nil
+	out.feat = FT.cleanFeat(ev.feat)
+	return out
+end
+local function onlyStyle(f, style)
+	if not f.styles[style] then return false end
+	for _, s in ipairs(STYLES) do if s ~= style and f.styles[s] then return false end end
+	return true
+end
+-- Does a normalised event meet one rule's filters (everything but kc)?
+function FT.matches(rule, ev)
+	rule, ev = tab(rule), tab(ev)
+	local f = ev.feat
+	for k, v in pairs(rule) do
+		if k == "kc" then continue
+		elseif k == "minTier" then if ev.tier < v then return false end
+		elseif k == "master" then if ev.master ~= v then return false end
+		elseif k == "challenge" then if ev.challenge ~= v then return false end
+		elseif k == "maxSeconds" then if not ev.seconds or ev.seconds > v then return false end
+		elseif k == "solo" then if not ev.party or (ev.party == 1) ~= v then return false end
+		elseif k == "maxParty" then if not ev.party or ev.party > v then return false end
+		elseif k == "noDeaths" then if ev.deaths ~= 0 then return false end
+		elseif k == "noMistakes" then if ev.mistakes ~= 0 then return false end
+		elseif k == "minGrade" then if not ev.grade or GRADE_RANK[ev.grade] > (GRADE_RANK[v] or 0) then return false end
+		elseif k == "allSecrets" then if ev.secretsTotal <= 0 or ev.secrets < ev.secretsTotal then return false end
+		elseif k == "maxRank" then if not ev.rank or ev.rank > v then return false end
+		elseif k == "minShare" then if not ev.share or ev.share < v then return false end
+		elseif k == "noHits" then if ev.hits ~= 0 then return false end
+		elseif k == "underPar" then if ev.underPar ~= v then return false end
+		elseif k == "noMech" then if not f or f.absent or f.mech ~= 0 or f.cast < v then return false end
+		elseif k == "avoid" then if not f or f.absent or (f.hitBy[v] or 0) > 0 or (f.seen[v] or 0) < 1 then return false end
+		elseif k == "perfectWards" then if not f or f.absent or f.swings < v or f.prayed < f.swings then return false end
+		elseif k == "noWard" then if not f or f.swings < v or f.ward > 0 then return false end
+		elseif k == "onlyStyle" then if not f or not onlyStyle(f, v) then return false end
+		elseif k == "noArmor" then if not f or f.armor ~= 0 then return false end
+		elseif k == "minAdds" then if not f or f.adds < v then return false end
+		else return false end
+	end
+	return true
+end
+-- The kc counter a rule counts in: the group plus its filters (sorted).
+function FT.counterKey(t)
+	local parts = {}
+	for k, v in pairs(tab(t.rule)) do if k ~= "kc" then table.insert(parts, k .. "=" .. tostring(v)) end end
+	table.sort(parts)
+	return t.group .. "|" .. table.concat(parts, ",")
+end
+for _, t in ipairs(FT.Tasks) do if t.rule.kc then t.counter = FT.counterKey(t) end end
+
+-- Profile state ---------------------------------------------------------------------------
+-- p.feats = {v, done = {[taskId] = os.time()}, kc = {[counterKey] = n},
+--   claimed = {[tierId] = true}, tele = {day, used}, seen = {"source:id", ...}, retro}
+function FT.new() return {v=FT.VERSION, done={}, kc={}, claimed={}, tele={day=0, used=0}, seen={}} end
+-- Marks every kc task whose counter reached its count; returns the new task ids (sorted).
+local function sweep(s, now)
+	local out = {}
+	for _, t in ipairs(FT.Tasks) do
+		if t.rule.kc and not s.done[t.id] and whole(s.kc[t.counter]) >= t.rule.kc then
+			s.done[t.id] = now
+			table.insert(out, t.id)
+		end
+	end
+	return out
+end
+-- Sanitises a saved state; a journal without one is seeded from its existing
+-- kill records (silently) so veterans keep the kill counts they earned.
+function FT.migrate(raw, p, now)
+	now = whole(now)
+	local s = FT.new()
+	if type(raw) == "table" then
+		for id, at in pairs(tab(raw.done)) do if FT.TaskById[id] then s.done[id] = whole(at) end end
+		for key, n in pairs(tab(raw.kc)) do if type(key) == "string" and #key <= 96 then s.kc[key] = whole(n, FT.MAX_COUNT) end end
+		for id, v in pairs(tab(raw.claimed)) do if FT.TierById[id] and v == true then s.claimed[id] = true end end
+		s.tele = {day=whole(tab(raw.tele).day), used=whole(tab(raw.tele).used, 99)}
+		for _, key in ipairs(tab(raw.seen)) do if type(key) == "string" and #key <= 96 and #s.seen < FT.SEEN_MAX then table.insert(s.seen, key) end end
+		s.retro = raw.retro == true or nil
+		sweep(s, now)
+		return s, {}
+	end
+	p = tab(p)
+	local function seed(groupId, filters, n)
+		n = whole(n, FT.MAX_COUNT)
+		if n > 0 then
+			local key = groupId .. "|" .. filters
+			s.kc[key] = math.max(whole(s.kc[key]), n)
+		end
+	end
+	for _, id in ipairs(LR.Order) do seed("lair:" .. id, "", tab(tab(p.lairs).kc)[id]) end
+	local raids = tab(p.raids)
+	seed("raid:" .. RD.ID, "", raids.kc)
+	seed("raid:" .. RD.ID, "challenge=true", raids.cm)
+	local clears, master = tab(tab(p.dungeons).clears), tab(tab(p.dungeonClasses).masterClears)
+	for i in ipairs(Data.DungeonFloors) do
+		local k = tostring(i)
+		seed("floor:" .. i, "", whole(clears[k]) + whole(master[k]))
+		seed("floor:" .. i, "master=true", master[k])
+	end
+	for _, id in ipairs(E.BossOrder) do seed("world:" .. id, "", tab(p.bestiary)[id]) end
+	s.retro = true
+	return s, sweep(s, now)
+end
+-- Records one server event. Returns {done = {taskId...}, tiers = {tierId...}, refused = reason?}.
+function FT.record(s, raw, now)
+	now = whole(now)
+	local ev = FT.normalize(raw)
+	if not ev then return {done={}, tiers={}, refused="invalid"} end
+	if ev.id then
+		local key = ev.source .. ":" .. ev.id
+		if table.find(s.seen, key) then return {done={}, tiers={}, refused="seen"} end
+		table.insert(s.seen, key)
+		while #s.seen > FT.SEEN_MAX do table.remove(s.seen, 1) end
+	end
+	local before = FT.tierFor(FT.points(s))
+	-- Every kc counter this event matches counts once (tasks may share a counter).
+	local counted = {}
+	for _, t in ipairs(FT.Tasks) do
+		if t.group == ev.group and t.rule.kc and not counted[t.counter] and FT.matches(t.rule, ev) then
+			counted[t.counter] = true
+			s.kc[t.counter] = math.min(FT.MAX_COUNT, whole(s.kc[t.counter]) + 1)
+		end
+	end
+	local done = sweep(s, now)
+	for _, t in ipairs(FT.Tasks) do
+		if t.group == ev.group and not t.rule.kc and not s.done[t.id] and FT.matches(t.rule, ev) then
+			s.done[t.id] = now
+			table.insert(done, t.id)
+		end
+	end
+	local tiers = {}
+	local after = FT.tierFor(FT.points(s))
+	for i = before + 1, after do table.insert(tiers, FT.Tiers[i].id) end
+	return {done=done, tiers=tiers}
+end
+-- Progress of one task for the panel: {have, need} (kc) or {have = 0|1, need = 1}.
+function FT.progress(s, t)
+	s = tab(s)
+	if tab(s.done)[t.id] then return {have=t.rule.kc or 1, need=t.rule.kc or 1, done=true} end
+	if t.rule.kc then return {have=math.min(t.rule.kc, whole(tab(s.kc)[t.counter])), need=t.rule.kc} end
+	return {have=0, need=1}
+end
+-- Claimable tier rewards (reached and not yet claimed), in tier order.
+function FT.claimable(s, points)
+	local out = {}
+	local reached = FT.tierFor(points)
+	for i = 1, reached do
+		local id = FT.Tiers[i].id
+		if not tab(tab(s).claimed)[id] then table.insert(out, id) end
+	end
+	return out
+end
+function FT.formatTime(seconds)
+	seconds = whole(seconds)
+	return string.format("%d:%02d", seconds // 60, seconds % 60)
+end
+-- QC L3: waits over an hour read "5h 12m", shorter ones "m:ss".
+function FT.formatWait(seconds)
+	seconds = whole(seconds)
+	if seconds >= 3600 then return string.format("%dh %02dm", seconds // 3600, (seconds % 3600) // 60) end
+	return FT.formatTime(seconds)
+end
+
+-- §31 Isle Renown: 2 renown per feat point (bounded by FT.TOTAL_POINTS).
+local RN = Data.Renown
+if RN and RN.breakdown then
+	local src = {id="feats", name="Combat Feats", hint=FT.RENOWN_PER_POINT .. " XP per Combat Feats point (Easy 1 ... Grandmaster 6 points per task)."}
+	table.insert(RN.Sources, src)
+	src.index = #RN.Sources
+	RN.SourceById[src.id] = src
+	local breakdown = RN.breakdown
+	function RN.breakdown(p, P, extra)
+		local out = breakdown(p, P, extra)
+		local s = type(p) == "table" and type(p.feats) == "table" and p.feats or {}
+		local pts = math.min(FT.points(s), FT.TOTAL_POINTS)
+		local n = 0
+		for id in pairs(tab(s.done)) do if FT.TaskById[id] then n += 1 end end
+		out.sources.feats = out.sources.feats or {xp = 0, count = 0}
+		out.sources.feats.xp += pts * FT.RENOWN_PER_POINT
+		out.sources.feats.count += n
+		out.total += pts * FT.RENOWN_PER_POINT
+		return out
+	end
+end
+-- §31 announcements: a completed task and a reached tier (completion toasts).
+local F = Data.Features
+if F and F.announceText then
+	local announceText = F.announceText
+	function F.announceText(e)
+		if type(e) == "table" and e.kind == "feat" then
+			local t = type(e.task) == "string" and FT.TaskById[e.task]
+			local tier = t and FT.TierById[t.tier]
+			return {head="COMBAT FEAT  ·  " .. string.upper(tier and tier.name or "?"), body=(t and t.name or tostring(e.task)) .. (tier and ("  ·  +" .. tier.points .. " pt" .. (if tier.points == 1 then "" else "s")) or ""),
+				color=tier and tier.color or "FFFFFF"}
+		elseif type(e) == "table" and e.kind == "featTier" then
+			local tier = FT.TierById[e.tier]
+			return {head="FEAT TIER UNLOCKED", body=(tier and tier.name or tostring(e.tier)) .. "  ·  " .. FT.rewardText(e.tier), color=tier and tier.color or "FFD86B"}
+		end
+		return announceText(e)
+	end
+	F.ANNOUNCE_PRIORITY.featTier = true
+end
+end
+-- <<< END Combat Feats <<<
 ------------------------------------------------------------------------------
 -- >>> BEGIN Gathering Hearts (Hearts team; append-only section; docs/DEPTH-CONTRACT.md §46) >>>
 -- Three gathering skill trees, all original: Heart of the Deep (Mining,

@@ -208,6 +208,8 @@ local Council={verbs={councilVote=true,councilView=true,councilVisit=true}}
 local QoL={verbs={},hurtAt={},swapAt={}}
 -- Tutorial (§43: coach cards over the Wayfarer's Path and starter quests); filled in by the Tutorial block before perform().
 local Tutorial={verbs={tutorial=true}}
+-- Combat Feats (§45: tiered boss tasks, points, tier rewards, feat teleports); filled in by the Feats block before perform().
+local Feats={verbs={featClaim=true,featTeleport=true,featsSync=true},tpAt={}}
 local Contests={verbs={contestEnter=true,contestBuy=true,contestTitle=true,trophyBait=true,trophyClaim=true,trophyTitle=true}}
 -- Gathering Hearts (§46: Heart of the Deep, Rootheart, Loamheart); filled in by the Hearts block after the Gathering Feel section.
 local Hearts={verbs={heartPerk=true,heartRespec=true,heartAbility=true},next={},seq={}}
@@ -4664,6 +4666,7 @@ local function snapshot(player,message)
 		beaconry=Beaconry.state and Beaconry.state(player,p), -- Beaconry (§37): Workshop › Beaconry page state
 		lairs=Lairs.state and Lairs.state(player,p), -- Lairs: Hunt › Bosses (kill counts, personal bests, uniques)
 		raids=Raids.state and Raids.state(player,p), -- Raids (§38): Raid Log (KC, PBs, uniques, points records, titles)
+		feats=Feats.state and Feats.state(player,p), -- Combat Feats (§45): Menu › Feats (points, tier, done, counters, claims, teleports)
 		exploration=Explore.state(player,p), -- Exploration & Factions: Journal > Motes / Factions (full when changed, else {rev, resetIn, switchIn, compact})
 		regionQuests=Regions.state(p), -- World Art & Regions: accepted/talked/visited/warps
 		logs=Logs.state(player,p), -- Commissions & Logs: Journal > Commissions / Collection Log / Museum (full when changed, else {rev, resetIn, compact})
@@ -4768,6 +4771,7 @@ local function migrate(profile)
 	Explore.migrate(profile) -- Exploration & Factions: p.motes, p.factions, p.perkStats.motes
 	if Lairs.migrate then Lairs.migrate(profile) end -- Lairs: kill counts, personal bests, uniques
 	if Raids.migrate then Raids.migrate(profile) end -- Raids (§38): p.raids Raid Log
+	if Feats.migrate then Feats.migrate(profile) end -- Combat Feats (§45): p.feats (seeded once from lair / raid / Observatory / world boss kill records)
 	if Regions.migrate then Regions.migrate(profile) end -- World Art & Regions: p.regionQuests
 	if Features.migrate then Features.migrate(profile) end -- §31: p.renown (retroactive once), p.guide, p.resonance
 	if Systems.migrate then Systems.migrate(profile) end -- §33: p.goals, p.goalSeq, p.helperPin, p.shopStock
@@ -6000,11 +6004,12 @@ do
 		Endgame.paidCount+=1
 		local plan=E.bossRewards(payload.boss,tier.id,rank,math.clamp(math.floor(tonumber(payload.sigils) or 0),0,E.ALTAR_PER_PLAYER),payload.share)
 		local stats=Progression.computeStats(p,os.time())
-		local drops=Progression.rollDrops(plan.drops,stats.magicFind,roll,stats.petLuck)
+		local drops=Progression.rollDrops(plan.drops,stats.magicFind+(if Feats.bossMagicFind then Feats.bossMagicFind(p) else 0),roll,stats.petLuck) -- §45 boss-loot perk
 		for id,n in pairs(plan.items) do drops[id]=(drops[id] or 0)+n end
 		for id,n in pairs(drops) do pickup(p,id,n) end
 		p.coins+=plan.coins
 		p.bestiary[payload.boss]=(p.bestiary[payload.boss] or 0)+1
+		if Feats.record then Feats.record(player,p,{source="world",id=key,boss=payload.boss,rank=rank,share=plan.share,seconds=tonumber(payload.seconds)}) end -- §45
 		p.started=true
 		local share=math.floor(plan.share*1000+0.5)/10
 		return {ok=true,drops=drops,coins=plan.coins,tier=tier.id,
@@ -6226,12 +6231,14 @@ do
 		local seconds=math.clamp(math.floor(tonumber(payload.seconds) or def.duration),1,def.duration)
 		local party=math.clamp(math.floor(tonumber(payload.party) or 1),1,LR.MAX_PARTY)
 		local stats=Progression.computeStats(p,os.time())
-		local drops=Progression.rollDrops(LR.Loot[payload.boss],stats.magicFind,roll,stats.petLuck)
+		local drops=Progression.rollDrops(LR.Loot[payload.boss],stats.magicFind+(if Feats.bossMagicFind then Feats.bossMagicFind(p) else 0),roll,stats.petLuck) -- §45 boss-loot perk
 		local coins=LR.coinRoll(payload.boss,roll())
 		p.coins+=coins; HudFeed.coins(p,coins)
 		for id,n in pairs(drops) do pickup(p,id,n) end
 		local rec=LR.record(Lairs.of(p),payload.boss,seconds,party,drops,os.time())
 		Logs.event(p,"kill",payload.boss) -- Commissions & Logs (and faction boards) see the kill
+		-- §45 QC H1: solo / party tasks use the fight's participants (held-offline crewmates included), never the health-scaling party.
+		if Feats.record then Feats.record(player,p,{source="lair",id=payload.fight,boss=payload.boss,seconds=seconds,party=tonumber(payload.members),feat=payload.feat}) end
 		p.started=true
 		local extra=""
 		for _,id in ipairs(rec.uniques) do
@@ -6486,6 +6493,9 @@ do
 		if unique then pickup(p,unique,1) end
 		if underPar then pickup(p,"GildedTideKit",1) end
 		for skill,n in pairs(xp) do grantXp(p,skill,n) end
+		-- §45 (QC L1): feats are recorded after the payout (and Feats.record never throws).
+		if Feats.record then Feats.record(player,p,{source="raid",id=id,boss=RD.ID,seconds=seconds,party=party,challenge=challenge,underPar=underPar,
+			deaths=RD.whole(payload.deaths,100),feat=payload.feat}) end
 		if Features.announce then
 			if unique then Features.announce(p,{kind="raidUnique",item=unique}) end
 			for _,t in ipairs(rec.newTitles) do Features.announce(p,{kind="raidTitle",title=t}) end
@@ -10890,6 +10900,152 @@ do
 end
 -- <<< END Tutorial <<<
 
+-- >>> Combat Feats (§45) >>>
+-- Feats team; docs/DEPTH-CONTRACT.md §45. Rules in the "Combat Feats" section
+-- of shared/GameData.lua (Data.Feats, alias FT).
+-- * p.feats = {v, done = {[taskId] = os.time()}, kc = {[counterKey] = n},
+--   claimed = {[tierId] = true}, tele = {day, used}, seen = {"source:id"...},
+--   retro} (FT.migrate sanitises; a journal without one is seeded once from
+--   its lair / raid / Observatory / world boss kill records, silently).
+-- * Feats.record(player, p, event) is called ONLY from this server's own
+--   validated reward paths, after they paid: bridge "lair" kill, bridge "raid"
+--   complete, bridge "worldBoss", bridge "slayerBoss" win and the Observatory
+--   grant. Times are server clocks (combat / raids / expedition); perfection
+--   and restriction read combat's per-UserId fight record. Each event id
+--   (fight, run, run id, boss:fight) credits once (FT.SEEN_MAX ring) on top of
+--   the reward paths' own once-only rules, so a resend or rejoin never
+--   double-credits.
+-- * Verbs: featClaim "<tier>" (the tier's hilt, once; value 1, no coins);
+--   featTeleport "<dest>" (daily charges from the reached tier; region gate,
+--   IsleTravelGate, not in a lair / raid / minigame / dungeon run, 30 s
+--   cooldown; sets FastTravelAt).
+-- * Perks (Feats.perks): Magic Find on boss loot rolls only (lair kill, world
+--   boss, slayer boss) and Slayer boss XP; never perkStats, coins, Health or
+--   Defense. Snapshot key `feats`.
+do
+	local FT=Data.Feats
+	-- QC L5: the done / kc maps go out only when this revision has not been sent
+	-- to the player yet (verb featsSync forces a resend on a client cache miss).
+	-- The revision lives on the state (session counter; FT.migrate drops it at load).
+	Feats.sent={}
+	function Feats.bump(p) if type(p.feats)=="table" then p.feats.rev=(tonumber(p.feats.rev) or 0)+1 end end
+	function Feats.migrate(p)
+		local s,retro=FT.migrate(p.feats,p,os.time())
+		p.feats=s
+		Feats.bump(p)
+		if #retro>0 then note(p,"Combat Feats: "..#retro.." task"..(if #retro==1 then "" else "s").." credited from your existing kill counts.") end
+	end
+	function Feats.of(p)
+		local s=p.feats
+		if type(s)~="table" or s.v~=FT.VERSION or type(s.done)~="table" or type(s.kc)~="table" or type(s.claimed)~="table" or type(s.seen)~="table" then Feats.migrate(p) end
+		return p.feats
+	end
+	function Feats.perks(p) return FT.perks(FT.points(Feats.of(p))) end
+	function Feats.bossMagicFind(p) return Feats.perks(p).bossMagicFind end
+	function Feats.armorCount(p)
+		local n=0
+		for _,slot in ipairs({"helmet","chest","legs","boots"}) do
+			local id=type(p.equipment)=="table" and p.equipment[slot]
+			if type(id)=="string" and Data.Items[id] then n+=1 end
+		end
+		return n
+	end
+	-- One validated server event (see the header); announces each new task and tier.
+	-- QC M1: event ids are scoped by this server's JobId (fight counters restart per server).
+	function Feats.jobId()
+		local ok,id=pcall(function() return game.JobId end)
+		return if ok and type(id)=="string" then id:sub(1,12) else ""
+	end
+	function Feats.record(player,p,event)
+		local s=Feats.of(p)
+		if type(event)=="table" and event.id~=nil then event.id=Feats.jobId()..":"..tostring(event.id) end
+		local okRecord,res=pcall(FT.record,s,event,os.time()) -- QC L1: a feat bug never breaks a payout
+		if not okRecord or type(res)~="table" then warn("[Feats] record failed: "..tostring(res)) return {done={},tiers={}} end
+		if #res.done>0 or res.refused==nil then Feats.bump(p) end
+		if Features.announce then
+			for _,id in ipairs(res.done) do Features.announce(p,{kind="feat",task=id}) end
+			for _,tier in ipairs(res.tiers) do Features.announce(p,{kind="featTier",tier=tier}) end
+		end
+		for _,id in ipairs(res.done) do
+			local t=FT.TaskById[id]
+			note(p,"Combat Feat: "..t.name.." ("..FT.TierById[t.tier].name..", +"..FT.TierById[t.tier].points..")")
+		end
+		return res
+	end
+	local function busy(player)
+		for _,key in ipairs({"MinigameGame","LairBoss","RaidRun","RaidLobby"}) do
+			local v=player:GetAttribute(key)
+			if type(v)=="string" and v~="" then return true end
+		end
+		return player:GetAttribute("DungeonInRun")==true
+	end
+	function Feats.action(player,p,verb,item)
+		local s=Feats.of(p)
+		local points=FT.points(s)
+		if verb=="featsSync" then Feats.sent[player]=nil; return "" end
+		if verb=="featClaim" then
+			local tier=type(item)=="string" and FT.TierById[item]
+			if not tier then return "Choose a Combat Feats tier." end
+			if FT.tierFor(points)<tier.index then return "The "..tier.name.." tier needs "..FT.Thresholds[tier.index].." feat points (you have "..points..")." end
+			if s.claimed[tier.id] then return "You already claimed the "..tier.name.." tier reward." end
+			local hilt=FT.Rewards[tier.id].hilt
+			s.claimed[tier.id]=true
+			Feats.bump(p)
+			p.items[hilt]=(p.items[hilt] or 0)+1 -- a trophy, not a collection drop
+			p.started=true
+			return tier.name.." tier claimed • "..Data.Items[hilt].name.."."
+		elseif verb=="featTeleport" then
+			local dest=type(item)=="string" and FT.TeleportById[item]
+			if not dest then return "Choose a feat teleport." end
+			local now=os.time()
+			local tele=FT.teleportState(s,points,now)
+			if tele.max<=0 then return "Feat teleports unlock at the Medium tier of Combat Feats." end
+			if tele.left<=0 then return "No feat teleports left today (refills in "..FT.formatWait(tele.resetIn)..")." end
+			if dest.region and not regionAllowed(p,dest.region) then return regionDenied(dest.region) end
+			if busy(player) then return "Finish your lair, raid, minigame or dungeon run first." end
+			local clock=os.clock()
+			local ready=Feats.tpAt[player.UserId]
+			if ready and clock<ready then return "The feat teleport is still settling ("..math.ceil(ready-clock).."s)." end
+			local gate=ServerStorage:FindFirstChild("IsleTravelGate")
+			if not gate then return "The feat teleport will not open right now." end
+			local okGate,verdict=pcall(gate.Invoke,gate,player)
+			if not okGate or verdict~=true then return if okGate and type(verdict)=="string" then verdict else "The feat teleport will not open right now." end
+			local a=Trails.anchor(dest.anchor)
+			local character=player.Character
+			local root=character and character:FindFirstChild("HumanoidRootPart")
+			if not a or not root then return "The feat teleport will not open right now." end
+			s.tele={day=tele.day,used=tele.used+1}
+			Feats.tpAt[player.UserId]=clock+FT.TELEPORT_COOLDOWN
+			player:SetAttribute("FastTravelAt",os.clock()) -- known fast travel (Aether Mote pickup checks)
+			character:PivotTo(CFrame.new(a.CFrame.Position+Vector3.new(0,4,0)))
+			root.AssemblyLinearVelocity=Vector3.zero
+			return "Feat teleport • "..dest.name.." ("..(tele.left-1).." left today)."
+		end
+		return "Unknown action."
+	end
+	function Feats.state(player,p)
+		local s=Feats.of(p)
+		local points=FT.points(s)
+		local tele=FT.teleportState(s,points,os.time())
+		local ready=Feats.tpAt[player.UserId]
+		if not s.rev then Feats.bump(p) end
+		local rev=s.rev
+		local out={rev=rev,points=points,total=FT.TOTAL_POINTS,tier=FT.tierFor(points),claimed=s.claimed,claimable=FT.claimable(s,points),
+			perks=FT.perks(points),teleports={left=tele.left,max=tele.max,resetIn=tele.resetIn,readyIn=if ready then math.max(0,math.ceil(ready-os.clock())) else 0}}
+		if Feats.sent[player]==rev then out.compact=true return out end
+		Feats.sent[player]=rev
+		out.done,out.kc=s.done,s.kc
+		return out
+	end
+	-- Leaving prunes expired teleport cooldowns (an unexpired one stays, so a quick rejoin cannot skip it).
+	Players.PlayerRemoving:Connect(function(player)
+		Feats.sent[player]=nil
+		local clock=os.clock()
+		for id,ready in pairs(Feats.tpAt) do if ready<=clock then Feats.tpAt[id]=nil end end
+	end)
+end
+-- <<< END Combat Feats <<<
+
 local function perform(player,verb,item,prompt)
 	local p=profiles[player]
 	if not p or (not preview[player] and os.time()>=(leaseEnd[player] or 0)) then return "Waiting for journal sync." end
@@ -10956,6 +11112,8 @@ local function perform(player,verb,item,prompt)
 		return Lairs.action(player,p,verb,item,prompt) -- Lairs: altars and the arena exit
 	elseif Raids.verbs[verb] then
 		return Raids.action(player,p,verb,item,prompt) -- Raids (§38): portal party board, vault rooms, supplies, titles
+	elseif Feats.verbs[verb] and not prompt then
+		return Feats.action(player,p,verb,item) -- Combat Feats (§45): tier reward claims, feat teleports
 	elseif Endgame.verbs[verb] and prompt then
 		return Endgame.action(player,p,verb,item) -- Endgame: Sovereign Altar
 	elseif Econ.verbs and Econ.verbs[verb] then
@@ -11773,6 +11931,8 @@ local function grantExpedition(player,result)
 	end
 	for item,n in pairs(drops) do pickup(p,item,n) end
 	local endText=Delve.afterClear(player,p,{floor=floorIndex,master=master,grade=grade,score=score,deaths=result.deaths,seconds=result.seconds,stats=stats,now=now})
+	if Feats.record then Feats.record(player,p,{source="dungeon",id=runId,boss=floorIndex,master=master,grade=grade,seconds=result.seconds,deaths=result.deaths,
+		mistakes=result.mistakes,party=partySize,secrets=secrets,secretsTotal=DC.secretCount(floorIndex)}) end -- §45: the run's server-timed result
 	update:FireClient(player,snapshot(player,(if master then "Master " else "")..floor.name.." cleared • Grade "..grade.." • +"..reward.coins.." coins, +"..reward.combatXp.." Combat and +"
 		..reward.dungeoneeringXp.." Dungeoneering XP"..classText..", "..reward.items.Stormglass.." Stormglass"..(if secrets>0 then " • "..secrets.." secrets found" else "")..dropText(drops)..endText))
 	return {ok=true}
@@ -11939,7 +12099,8 @@ bridge.OnInvoke=function(op,player,payload)
 			loadout=Progression.combatLoadout(p), -- Combat styles: weapon style, quiver, supplies, autocast
 			mastery=Progression.masteryCombat(p,os.time()), -- Skill Mastery perks combat applies (see Mastery block)
 			prayer=Prayer.combat(p), -- Prayer: protection / offence / sap / mana (see Prayer & Thieving block)
-			slayer=SlayerTasks.combat(p)} -- Slayer tasks: Slayer level, task family, visor bonus
+			slayer=SlayerTasks.combat(p), -- Slayer tasks: Slayer level, task family, visor bonus
+			armor=Feats.armorCount and Feats.armorCount(p) or nil} -- Combat Feats (§45): armour pieces worn (restriction tasks)
 	elseif op=="consume" then
 		return CombatStyles.consume(p,payload)
 	elseif op=="refund" then
@@ -12032,12 +12193,15 @@ bridge.OnInvoke=function(op,player,payload)
 		end
 		local tier=line.tiers[quest.tier]
 		local stats=Progression.computeStats(p,os.time())
-		p.slayerXp[quest.line]=(p.slayerXp[quest.line] or 0)+tier.xp
-		local skillXp=Data.SlayerTasks.bossXp(quest.line,quest.tier) -- Slayer tasks: boss lines also train the Slayer skill
+		local perks=if Feats.perks then Feats.perks(p) else {bossMagicFind=0,slayerXp=0} -- §45: slayer boss XP and boss-loot perks
+		local lineXp=math.floor(tier.xp*(1+perks.slayerXp)+0.5)
+		p.slayerXp[quest.line]=(p.slayerXp[quest.line] or 0)+lineXp
+		local skillXp=math.floor(Data.SlayerTasks.bossXp(quest.line,quest.tier)*(1+perks.slayerXp)+0.5) -- Slayer tasks: boss lines also train the Slayer skill
 		grantXp(p,"Slayer",skillXp)
-		local drops=Progression.rollDrops(tier.drops,stats.magicFind,roll,stats.petLuck)
+		local drops=Progression.rollDrops(tier.drops,stats.magicFind+perks.bossMagicFind,roll,stats.petLuck)
 		for item,n in pairs(drops) do pickup(p,item,n) end
-		notify(player,line.name.." defeated • +"..tier.xp.." "..quest.line.." Slayer XP, +"..skillXp.." Slayer skill XP"..dropText(drops))
+		if Feats.record then Feats.record(player,p,{source="slayer",boss=quest.line,tier=quest.tier,seconds=tonumber(payload.seconds),hits=tonumber(payload.hits)}) end -- §45
+		notify(player,line.name.." defeated • +"..lineXp.." "..quest.line.." Slayer XP, +"..skillXp.." Slayer skill XP"..dropText(drops))
 		return {ok=true,drops=drops}
 	end
 	return nil

@@ -10190,6 +10190,7 @@ local MENU={
 	{id="Market",motif="Ledger",tab="Ledger",section="Orders"},{id="Satchel",motif="Satchel",hud="satchel"},
 	{id="Chart",title="Sky Chart",motif="Map",hud="warpmap"},{id="Settings",motif="Settings",tab="Menu",section="Settings"},
 	{id="Renown",title="Isle Renown",motif="Journal",tab="Menu",section="Renown"}, -- §31 MMO Features
+	{id="Feats",title="Combat Feats",motif="Hunt",tab="Menu",section="Feats"}, -- §45 Combat Feats
 	{id="Hearts",title="Gathering Hearts",motif="Hero",tab="Menu",section="Hearts"}, -- §46 Heart of the Deep, Rootheart, Loamheart
 }
 local function caption(id)
@@ -10206,6 +10207,7 @@ local function caption(id)
 	elseif id=="Satchel" then return "Inventory · E"
 	elseif id=="Chart" then return "Warp map · M"
 	elseif id=="Renown" then local r=tbl(state.renown) return "Level "..fmt(num(r.level,0)).."  ·  "..tostring(r.title or "Driftling")
+	elseif id=="Feats" then local f=tbl(state.feats) local FT=Data and Data.Feats local t=FT and FT.Tiers[num(f.tier,0)] return fmt(num(f.points,0)).." points  ·  "..(t and t.name or "No tier")
 	elseif id=="Hearts" then local best=0 for _,t in pairs(tbl(tbl(state.hearts).trees)) do best=math.max(best,num(tbl(t).tier,0)) end return best>0 and ("Highest heart tier "..best.."  ·  key G") or "Mining, woodcutting & farming trees" -- §46
 	end
 	return "Preferences"
@@ -10398,11 +10400,167 @@ end
 end
 
 ------------------------------------------------------------------------------
+-- Combat Feats (§45): Menu › Feats. Tier tabs, a boss filter, the points bar
+-- to the next tier, claimable tier rewards, feat teleports and one card per
+-- task (kill-count tasks show their counter as a progress bar). Static task
+-- data is read from Data.Feats; the snapshot's `feats` carries the journal's
+-- points, claims and teleport charges, plus the done / kc maps only when their
+-- revision changed (QC L5: a compact snapshot reuses the cached maps; a cache
+-- miss asks featsSync). The page opens on the lowest unfinished tier and shows
+-- FP.PER cards a page (QC M2); a pushed snapshot that changes nothing drawn on
+-- the page does not redraw it. Completion toasts are §31 announcements (kinds
+-- feat / featTier, features.client.lua).
+------------------------------------------------------------------------------
+do
+local FP={tier=nil,boss="All",page=1,PER=24,cache=nil,readyAt=0}
+Pages.feats=FP
+-- Every accepted snapshot: a full feats table refreshes the cached maps.
+function FP.observe(data)
+	local f=type(data)=="table" and data.feats
+	if type(f)~="table" then return end
+	if not f.compact and type(f.done)=="table" then FP.cache={rev=f.rev,done=f.done,kc=f.kc} end
+	local t=tbl(f.teleports)
+	FP.readyAt=os.clock()+num(t.readyIn,0) -- QC L2: a deadline, not a countdown
+end
+-- {feats, done, kc}: the snapshot's maps or the cached ones of the same revision.
+function FP.data()
+	local f=tbl(state.feats)
+	if not f.compact and type(f.done)=="table" then return f,f.done,tbl(f.kc) end
+	local c=FP.cache
+	if c and c.rev==f.rev then return f,tbl(c.done),tbl(c.kc) end
+	if send and f.rev~=nil and (FP.asked~=f.rev or os.clock()-(FP.askedAt or 0)>3) then
+		FP.asked,FP.askedAt=f.rev,os.clock()
+		task.defer(function() send("featsSync",nil,true) end)
+	end
+	return f,tbl(c and c.done),tbl(c and c.kc) -- an older copy while the fresh one is on its way
+end
+function FP.visible(FT,tier,boss)
+	local out={}
+	for _,t in ipairs(FT.Tasks) do
+		local g=FT.GroupById[t.group]
+		if (tier=="All" or t.tier==tier) and (boss=="All" or (g and g.short==boss)) then table.insert(out,t) end
+	end
+	return out
+end
+-- The lowest tier with an unfinished task (the default tab).
+function FP.defaultTier(FT,done)
+	for _,tier in ipairs(FT.Tiers) do
+		for _,t in ipairs(FT.Tasks) do if t.tier==tier.id and done[t.id]==nil then return tier.id end end
+	end
+	return "All"
+end
+-- What the page draws from the snapshot; a pushed snapshot with the same key skips the redraw.
+function FP.key()
+	local f=tbl(state.feats)
+	local t=tbl(f.teleports)
+	local claimed={}
+	for id in pairs(tbl(f.claimed)) do table.insert(claimed,tostring(id)) end
+	table.sort(claimed)
+	return table.concat({tostring(f.rev),tostring(f.points),tostring(f.tier),table.concat(claimed,","),tostring(t.left),tostring(t.max),
+		tostring(math.floor(num(t.resetIn,0)/60)),tostring(FP.readyAt>os.clock()),tostring(FP.tier),FP.boss,tostring(FP.page),tostring(FP.cache and FP.cache.rev)},"|")
+end
+function FP.skip(fromPush)
+	return fromPush==true and FP.drawnKey~=nil and FP.drawnKey==FP.key()
+end
+function Pages.drawFeats()
+	local FT=Data and Data.Feats
+	if not FT then card({name="FeatsMissing",title="Combat Feats are syncing…"}) return end
+	local f,doneMap,counters=FP.data()
+	if FP.tier==nil then FP.tier=FP.defaultTier(FT,doneMap) end
+	FP.drawnKey=FP.key()
+	local points=num(f.points,0)
+	local tierIndex=num(f.tier,0)
+	local reached=FT.Tiers[tierIndex]
+	local nextTier=FT.Tiers[tierIndex+1]
+	heading("COMBAT FEATS / "..fmt(points).." OF "..fmt(FT.TOTAL_POINTS).." POINTS")
+	local hex=reached and reached.color or "C9D6E3"
+	local perks=tbl(f.perks)
+	local perkLines={}
+	if num(perks.bossMagicFind,0)>0 then table.insert(perkLines,"+"..fmt(num(perks.bossMagicFind,0)).." Magic Find on boss loot") end
+	if num(perks.slayerXp,0)>0 then table.insert(perkLines,"+"..math.floor(num(perks.slayerXp,0)*100+.5).."% slayer boss XP") end
+	if num(perks.teleports,0)>0 then table.insert(perkLines,fmt(num(perks.teleports,0)).." feat teleports a day") end
+	local floor=reached and FT.Thresholds[tierIndex] or 0
+	local need=nextTier and FT.Thresholds[nextTier.index] or FT.TOTAL_POINTS
+	card({name="FeatsSummary",motif="Hunt",accent=rgb(hex),title=paint("⚔ "..(reached and string.upper(reached.name) or "NO TIER YET"),hex),
+		subtitle=fmt(points).." feat points  ·  "..fmt(#FT.Tasks).." tasks across every boss, lair, raid and Observatory floor",
+		detail="Feats are counted by the server from real fights: kill counts, perfection (dodge a mechanic), speed (server-timed), restrictions and mechanics. Points unlock tier rewards.",
+		lines={#perkLines>0 and ("Perks: "..table.concat(perkLines,"  ·  ")) or "Tier perks begin at Medium."},
+		bar={fraction=nextTier and math.clamp((points-floor)/math.max(1,need-floor),0,1) or 1,color=rgb(nextTier and nextTier.color or hex),
+			caption=nextTier and (fmt(points).." / "..fmt(need).." to "..nextTier.name) or "Every tier unlocked"}})
+	-- Tier rewards (claimable only).
+	local claimed=tbl(f.claimed)
+	for i,t in ipairs(FT.Tiers) do
+		if i<=tierIndex and claimed[t.id]~=true then
+			card({name="FeatsReward"..t.id,motif="Hunt",accent=rgb(t.color),title=paint(t.name.." tier reward",t.color),badge="READY",badgeColor=mint,
+				detail=escape(FT.rewardText(t.id)),actions={{caption="Claim",primary=true,name="FeatClaim"..t.id,fn=function() send("featClaim",t.id) end}}})
+		end
+	end
+	local tele=tbl(f.teleports)
+	if num(tele.max,0)>0 then
+		local wait=FP.readyAt-os.clock()
+		local settling=wait>0
+		if settling and not FP.timer then
+			-- QC L2: re-enable the buttons when the cooldown ends (one pending timer).
+			FP.timer=true
+			task.delay(wait+.05,function()
+				FP.timer=nil
+				if current=="Menu" and sectionOf.Menu=="Feats" then render() end
+			end)
+		end
+		local acts={}
+		for _,d in ipairs(FT.Teleports) do
+			table.insert(acts,{caption=d.name,name="FeatTeleport"..d.id,disabled=num(tele.left,0)<=0 or settling,
+				reason=num(tele.left,0)<=0 and "No charges left today." or "The teleport is settling.",fn=function() send("featTeleport",d.id) end})
+		end
+		card({name="FeatsTeleports",motif="Map",title="Feat teleports",badge=fmt(num(tele.left,0)).." / "..fmt(num(tele.max,0)),badgeColor=gold,
+			subtitle="Refills in "..FT.formatWait(num(tele.resetIn,0))..(settling and ("  ·  settling "..math.ceil(wait).."s") or ""),
+			detail="Step to a boss's doorstep. Charges refill each day.",actions=acts})
+	end
+	-- Tier tabs and the boss filter.
+	local tierNames={"All"}
+	for _,t in ipairs(FT.Tiers) do table.insert(tierNames,t.id) end
+	if not table.find(tierNames,FP.tier) then FP.tier="All" end
+	sectionBar(tierNames,FP.tier,function(name) FP.tier,FP.page=name,1 render() end,{small=true,prefix="FeatTier"})
+	local bossNames={"All"}
+	for _,g in ipairs(FT.Groups) do table.insert(bossNames,g.short) end
+	if not table.find(bossNames,FP.boss) then FP.boss="All" end
+	sectionBar(bossNames,FP.boss,function(name) FP.boss,FP.page=name,1 render() end,{small=true,prefix="FeatBoss",maxPer=6})
+	local list=FP.visible(FT,FP.tier,FP.boss)
+	local n=0
+	for _,t in ipairs(list) do if doneMap[t.id] then n+=1 end end
+	local pages=math.max(1,math.ceil(#list/FP.PER))
+	FP.page=math.clamp(FP.page,1,pages)
+	heading(string.upper(FP.tier=="All" and "All tiers" or FP.tier).." / "..n.." OF "..#list.." DONE")
+	local first=(FP.page-1)*FP.PER+1
+	for i=first,math.min(#list,first+FP.PER-1) do
+		local t=list[i]
+		local tier=FT.TierById[t.tier]
+		local kind=FT.TypeById[t.type]
+		local g=FT.GroupById[t.group]
+		local done=doneMap[t.id]~=nil
+		local bar=nil
+		if t.rule.kc and t.rule.kc>1 then
+			local have=done and t.rule.kc or math.min(t.rule.kc,num(counters[t.counter],0))
+			bar={fraction=have/t.rule.kc,color=rgb(tier.color),caption=fmt(have).." / "..fmt(t.rule.kc)}
+		end
+		card({name="Feat_"..t.id:gsub("[^%w]","_"),accent=rgb(tier.color),title=(done and paint("✔ ","6FE3C8") or "")..escape(t.name),titleColor=done and mint or ivory,
+			subtitle=paint(tier.name.." · "..tier.points.." pt"..(tier.points==1 and "" or "s"),tier.color).."  ·  "..kind.glyph.." "..kind.name.."  ·  "..escape(g and g.name or ""),
+			badge=done and "DONE" or nil,badgeColor=mint,detail=escape(t.text),bar=bar})
+	end
+	if pages>1 then
+		card({name="FeatsPager",title="Page "..FP.page.." of "..pages,subtitle=fmt(#list).." tasks",
+			actions={{caption="Previous",name="FeatsPrev",disabled=FP.page<=1,reason="This is the first page.",fn=function() FP.page-=1 render() end},
+				{caption="Next",name="FeatsNext",primary=true,disabled=FP.page>=pages,reason="This is the last page.",fn=function() FP.page+=1 render() end}}})
+	end
+end
+end
+
+------------------------------------------------------------------------------
 -- Navigation: the Menu plus six primary tabs, each with a section switcher.
 ------------------------------------------------------------------------------
 local tabOrder={"Menu","Journal","Hero","Satchel","Workshop","Hunt","Ledger"}
 local sectionLists={
-	Menu={"Home","Renown","Resonance","Hearts","Settings"}, -- §31: Renown, Resonance; §46: Hearts (gathering trees)
+	Menu={"Home","Renown","Feats","Resonance","Hearts","Settings"}, -- §31: Renown, Resonance; §45: Feats; §46: Hearts (gathering trees)
 	Journal={"Bearing","Quests","Helper","Goals","Diaries","Construction","Regions","Crew","Calendar","Council","Agility","Commissions","Collection Log","Museum","Motes","Factions"}, -- §33: Helper, Goals
 	Hero={"Skills","Mastery","Gear","Wardrobe","Combat","Spellbook","Prayer","Enchant","Lectern","Reforge","Accessories","Pets","Calculator"}, -- §33: Calculator; §41: Wardrobe, Lectern
 	Satchel={"Items","Collections","Trails"},
@@ -10412,7 +10570,7 @@ local sectionLists={
 }
 sectionOf={Menu="Home",Journal="Bearing",Hero="Skills",Satchel="Items",Workshop="Forge",Hunt="Slayer",Ledger="Bank"}
 local drawers={
-	Menu={Home=function() Pages.drawMenu() end,Renown=function() Pages.drawRenown() end,Resonance=function() Pages.drawResonance() end,Hearts=function() Pages.drawHearts() end,Settings=function() Pages.drawSettings() end},
+	Menu={Home=function() Pages.drawMenu() end,Renown=function() Pages.drawRenown() end,Feats=function() Pages.drawFeats() end,Resonance=function() Pages.drawResonance() end,Hearts=function() Pages.drawHearts() end,Settings=function() Pages.drawSettings() end},
 	Journal={Bearing=Pages.drawBearing,Quests=Pages.drawQuests,Diaries=Pages.drawDiaries,Construction=Pages.drawConstruction,Regions=Pages.drawRegions,Crew=Pages.drawCoop,Calendar=Pages.drawCalendar,Council=function() Pages.drawCouncil() end,Agility=Pages.drawAgility,
 		Commissions=Pages.drawCommissions,["Collection Log"]=Pages.drawCollectionLog,Museum=Pages.drawMuseum, -- Commissions & Logs
 		Motes=Pages.drawMotes,Factions=Pages.drawFactions, -- Exploration & Factions
@@ -10570,6 +10728,8 @@ render = function(fromPush)
 		end
 	end
 	THUMBS.deferred=false
+	-- §45 QC M2: a pushed snapshot that changes nothing on the Feats page keeps it.
+	if current=="Menu" and sectionOf.Menu=="Feats" and Pages.feats and Pages.feats.skip(fromPush) then return end
 	local selectedObject=GuiService.SelectedObject
 	local restoreFocus=selectedObject and selectedObject:IsDescendantOf(scroll)
 	local selectionName=restoreFocus and selectedObject.Name
@@ -10840,6 +11000,7 @@ local function accept(data,quiet)
 	local before=synced and skillsOf(state) or nil
 	state = data
 	synced = true
+	pcall(Pages.feats.observe,data) -- §45: before the redraw (QC L5 cache, QC L2 cooldown deadline)
 	render(true)
 	-- Share every accepted snapshot with the combat HUD (combat.client.lua).
 	pcall(function() UI.snapshotChannel:Fire(data) end)
