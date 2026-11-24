@@ -12716,6 +12716,7 @@ S.list = {
 	{attr = "IsleSettingXpDrops", kind = "bool"},
 	{attr = "IsleSettingMinimap", kind = "bool"},
 	{attr = "IsleSettingReducedMotion", kind = "bool"},
+	{attr = "IsleSettingFlashing", kind = "bool"}, -- §50 QC L6: lightning flashes and bolts (default on)
 	{attr = "IsleSettingGraphics", kind = "enum", values = {"High", "Balanced", "Performance"}}, -- = AetherLighting.TIER_ORDER (asserted)
 }
 S.byAttr = {}

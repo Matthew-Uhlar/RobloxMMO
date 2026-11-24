@@ -202,9 +202,52 @@ for i = 0, 60 do
 end
 checks += 1
 local start = A.EPOCH + stormSlot * A.SLOT
-local key, at = A.latestStrike(start + strikes[1] + 0.5, 3)
-ok(at ~= nil and math.abs(at - (start + strikes[1])) < 1e-6 and A.weatherAt(stormSlot, key) == "Storm", "latestStrike finds the fresh strike")
-ok(A.latestStrike(start + strikes[1] - 0.01, 3) == nil or select(2, A.latestStrike(start + strikes[1] - 0.01, 3)) < start + strikes[1], "never a strike from the future")
+-- QC H2: the local strike clock. strikeDue hands out each strike once, on
+-- the frame it is due, never early, and skips strikes older than the grace.
+do
+	local cursor = A.newStrikeCursor()
+	local fired = {}
+	local t = start
+	while t < start + A.SLOT - 0.01 do
+		local at = A.strikeDue(cursor, t, "Tempest", 0.5)
+		if at then
+			table.insert(fired, at)
+			assert(t >= at and t - at < 1 / 30 + 1e-9, "a strike fires on the frame it is due")
+		end
+		t += 1 / 30
+	end
+	eq(#fired, #strikes, "every scheduled strike fires exactly once")
+	for i, at in fired do assert(math.abs(at - (start + strikes[i])) < 1e-6, "strike " .. i .. " at its scheduled time") end
+	checks += 1
+	-- A client joining mid-storm never replays old strikes.
+	local late = A.newStrikeCursor()
+	ok(A.strikeDue(late, start + strikes[3] + 2, "Tempest", 0.5) == nil, "a late joiner does not replay a past strike")
+	ok(A.strikeDue(late, start + strikes[4] + 0.01, "Tempest", 0.5) ~= nil, "and still gets the next one")
+	-- lastStrike (the director's flash clock).
+	local last = A.newStrikeCursor()
+	eq(A.lastStrike(last, start + strikes[2] + 0.2, "Tempest"), start + strikes[2], "lastStrike: the latest strike at or before t")
+	eq(A.lastStrike(A.newStrikeCursor(), start + 1, "Tempest"), nil, "no strike yet in a fresh slot")
+	local calm
+	for _, k in A.WEATHER_KEYS do if A.weatherAt(stormSlot, k) ~= "Storm" then calm = k break end end
+	eq(A.lastStrike(A.newStrikeCursor(), start + strikes[5], calm), nil, "a region without a storm never strikes")
+end
+-- QC L2: strike sequences never repeat between neighbouring slots or regions.
+do
+	local seen, repeats, storms = {}, 0, 0
+	for i = 0, 3000 do
+		for _, key in A.WEATHER_KEYS do
+			local list = A.strikes(base + i, key)
+			if #list > 0 then
+				storms += 1
+				local sig = table.concat(list, ",")
+				if seen[sig] then repeats += 1 end
+				seen[sig] = true
+			end
+		end
+	end
+	ok(storms > 500, "plenty of storm slots sampled (" .. storms .. ")")
+	eq(repeats, 0, "no two storm slots share a strike sequence")
+end
 -- The weather script: one attribute, the same on every server, no gameplay.
 local function weatherServer(t)
 	local ws = roblox.Instance.new("Workspace")
@@ -216,17 +259,17 @@ local function weatherServer(t)
 	local W = luau.load(fs.readFile("weather.server.lua"), {debugName = "weather.server.lua", environment = env, injectGlobals = true})()
 	return W, ws
 end
-local tA = start + strikes[2] + 0.4
+local tA = start + strikes[2] + 0.1
 local W1, ws1 = weatherServer(tA)
 local _, ws2 = weatherServer(tA)
 ok(type(ws1:GetAttribute("IsleWeather")) == "string", "the server publishes IsleWeather")
 eq(ws1:GetAttribute("IsleWeather"), ws2:GetAttribute("IsleWeather"), "two servers at the same time publish the same weather")
 local live = L.parseWeather(ws1:GetAttribute("IsleWeather"))
 ok(live and live.slot == stormSlot and live.regions.Tempest == "Storm", "the published slot table parses")
-ok(live.strikeRegion ~= nil and math.abs(live.strikeAt - (start + strikes[2])) < 0.01, "the strike rides the attribute as a world event")
-local _, ws3 = weatherServer(tA + 3.5)
-local later = L.parseWeather(ws3:GetAttribute("IsleWeather"))
-ok(later.strikeRegion == nil or later.strikeAt ~= live.strikeAt, "an old strike is not replayed to late joiners")
+ok(live.strikeRegion == nil, "QC H2: the attribute carries only the weather state, never a strike")
+local _, ws3 = weatherServer(tA + 20)
+eq(ws3:GetAttribute("IsleWeather"), ws1:GetAttribute("IsleWeather"), "the attribute is constant within a slot (no strike churn)")
+ok(string.find(fs.readFile("weather.server.lua"), "local ok, err = pcall(Weather.step)\n\tif not ok then warn", 1, true) ~= nil, "QC L8: the first step is pcall'd")
 eq(W1.textAt(tA), ws1:GetAttribute("IsleWeather"), "textAt matches the attribute")
 local wsrc = (string.gsub(fs.readFile("weather.server.lua"), "%-%-[^\n]*", ""))
 local _, setAttrs = string.gsub(wsrc, "SetAttribute%(", "")
@@ -296,12 +339,15 @@ do
 		end},
 		workspace = ws, Instance = roblox.Instance, Vector3 = Vector3, CFrame = CFrame, Color3 = Color3, Enum = roblox.Enum,
 		typeof = roblox.typeof or typeof,
-		require = function(name) if name == "AetherLighting" then return L elseif name == "AetherData" then return Data end error("unexpected require " .. tostring(name)) end,
+			require = function(name)
+			if name == "AetherLighting" then return L elseif name == "AetherData" then return Data elseif name == "AetherAmbience" then return A end
+			error("unexpected require " .. tostring(name))
+		end,
 		os = {time = function() return serverT end, clock = os.clock},
 		task = {defer = function(f) f() end, spawn = function(f) f() end},
 	}
 	local D = luau.load(fs.readFile("lighting.client.lua"), {debugName = "lighting.client.lua", environment = env, injectGlobals = true})()
-	local function run(seconds) for _ = 1, math.ceil(seconds * 30) do heartbeat:Fire(1 / 30) end end
+	local function run(seconds) for _ = 1, math.ceil(seconds * 30) do serverT += 1 / 30; heartbeat:Fire(1 / 30) end end
 	run(6)
 	eq(D.weather.state, "Clear", "no attribute: clear")
 	local dry = Lighting.EnvironmentSpecularScale
@@ -317,31 +363,101 @@ do
 	attrs.IsleRegionHere = "Hub"
 	run(2)
 	eq(D.weather.state, "Clear", "another region keeps its own weather")
-	-- A strike in the player's region flashes; elsewhere or under reduced motion it does not.
-	attrs.IsleRegionHere = "Meadow"
-	run(2)
-	local before = Lighting.ExposureCompensation
-	ws:SetAttribute("IsleWeather", "1|5|Meadow=Storm|Meadow@" .. string.format("%.2f", serverT - 0.02))
-	run(0.1)
-	ok(Lighting.ExposureCompensation > before + 0.3, "lightning flashes the exposure (" .. before .. " -> " .. Lighting.ExposureCompensation .. ")")
+	-- QC H2: strikes come from the schedule on server time; the attribute
+	-- only names the storm. Find the next Tempest storm slot.
+	attrs.IsleRegionHere = "Tempest"
+	local s0 = A.slotAt(serverT)
+	local sl
+	for i = 1, 400 do if A.weatherAt(s0 + i, "Tempest") == "Storm" then sl = s0 + i break end end
+	local st = A.EPOCH + sl * A.SLOT
+	local list = A.strikes(sl, "Tempest")
+	serverT = st - 1
+	ws:SetAttribute("IsleWeather", A.encode(sl - 1))
+	run(1)
+	-- The new slot's attribute arrives 0.3 s late: irrelevant, the first
+	-- strike is >= 19 s into the slot.
+	run(0.3)
+	ws:SetAttribute("IsleWeather", A.encode(sl))
+	run(0.5)
+	eq(D.weather.state, "Storm", "the director sees the storm")
+	local at1 = st + list[1]
+	serverT = at1 - 0.5
+	run(0.4)
+	eq(D.weather.flash, 0, "no flash before the scheduled strike")
+	local peak = 0
+	for _ = 1, 6 do
+		serverT += 1 / 30; heartbeat:Fire(1 / 30)
+		if serverT >= at1 and serverT - at1 < 1 / 30 then eq(D.weather.flash, 1, "the flash lands on the strike's frame") end
+		peak = math.max(peak, D.weather.flash)
+	end
+	eq(peak, 1, "full flash at the strike")
 	ok(Lighting.ExposureCompensation <= L.FLASH_CEILING + 1e-6, "flash ceiling")
 	ok(D.state.ExposureCompensation <= 0.5 + 1e-6, "the flash never enters the blended state")
-	serverT += 5
 	run(1)
-	ok(math.abs(Lighting.ExposureCompensation - D.state.ExposureCompensation) < 2e-3, "the flash ends")
-	attrs.IsleSettingReducedMotion = true
-	local calm = Lighting.ExposureCompensation
-	ws:SetAttribute("IsleWeather", "1|5|Meadow=Storm|Meadow@" .. string.format("%.2f", serverT - 0.02))
-	run(0.1)
-	ok(math.abs(Lighting.ExposureCompensation - calm) < 0.05, "reduced motion: no flash")
-	attrs.IsleSettingReducedMotion = nil
-	serverT += 2
-	run(0.5)
-	calm = Lighting.ExposureCompensation
-	ws:SetAttribute("IsleWeather", "1|5|Meadow=Storm|Hub@" .. string.format("%.2f", serverT))
-	run(0.1)
-	ok(math.abs(Lighting.ExposureCompensation - calm) < 0.05, "a strike in another region does not flash here")
+	eq(D.weather.flash, 0, "the flash ends")
+	ok(math.abs(Lighting.ExposureCompensation - D.state.ExposureCompensation) < 2e-3, "exposure returns to the look")
+	-- Late weather delivery (0.3 / 0.6 s after a strike): the flash joins in
+	-- phase with the schedule, never restarted from the delivery.
+	for k, lateBy in {0.3, 0.6} do
+		local at = st + list[1 + k]
+		ws:SetAttribute("IsleWeather", "1|" .. sl .. "|Tempest=Clear") -- a stale (pre-storm) table
+		serverT = at - 1
+		run(0.5)
+		eq(D.weather.state, "Clear", "stale table: no storm yet")
+		serverT = at + lateBy - 0.5
+		run(0.5)
+		ws:SetAttribute("IsleWeather", A.encode(sl))
+		local seen = false
+		for _ = 1, 9 do
+			serverT += 1 / 30; heartbeat:Fire(1 / 30)
+			if D.weather.state == "Storm" then
+				local expect = L.flashAt(serverT - at)
+				assert(math.abs(D.weather.flash - expect) < 1e-9, "late delivery: the flash follows the schedule's phase")
+				seen = true
+			end
+		end
+		ok(seen, "late delivery " .. lateBy .. " s: storm applied")
+		ok(D.weather.flash < 1, "late delivery " .. lateBy .. " s: the flash is not restarted")
+	end
+	-- QC L6: night flashes are softer; "Flashing effects" off and reduced motion: none.
+	eq(L.flashExposure(0, 1, 1), L.FLASH_EXPOSURE, "day flash")
+	eq(L.flashExposure(0, 1, 0), L.FLASH_EXPOSURE_NIGHT, "night flash")
+	ok(L.FLASH_EXPOSURE_NIGHT < L.FLASH_EXPOSURE, "night flash is lower")
+	for _, setting in {{attr = "IsleSettingFlashing", value = false, why = "Flashing effects off"}, {attr = "IsleSettingReducedMotion", value = true, why = "reduced motion"}} do
+		attrs[setting.attr] = setting.value
+		local at = st + list[5]
+		serverT = at - 0.5
+		run(0.4)
+		local most = 0
+		for _ = 1, 12 do serverT += 1 / 30; heartbeat:Fire(1 / 30); most = math.max(most, D.weather.flash) end
+		eq(most, 0, setting.why .. ": no flash")
+		attrs[setting.attr] = nil
+		list = A.strikes(sl, "Tempest")
+		table.remove(list, 5) -- use the next strike for the next case
+	end
+	-- Another region in the same slot (not storming) never flashes.
+	local calmKey
+	for _, k in A.WEATHER_KEYS do if A.weatherAt(sl, k) ~= "Storm" and A.Regions[k] and k ~= "Home" and k ~= "Skyways" then calmKey = k break end end
+	attrs.IsleRegionHere = calmKey
+	run(1)
+	local most = 0
+	serverT = st + list[6] - 0.2
+	for _ = 1, 20 do serverT += 1 / 30; heartbeat:Fire(1 / 30); most = math.max(most, D.weather.flash) end
+	eq(most, 0, "a strike in another region does not flash here")
+	-- QC M5: entering an interior snaps the storm deltas away (no haze in a lair).
+	attrs.IsleRegionHere = "Tempest"
+	run(20)
+	ok((D.weather.delta.haze or 0) > 0.5, "storm haze settled")
+	attrs.LairBoss = "Test"
+	root.CFrame = CFrame.new(3600, 300, -3600)
+	run(0.3)
+	eq(D.weather.delta.haze, 0, "entering a lair snaps the weather away")
+	attrs.LairBoss = nil
+	root.CFrame = CFrame.new(0, 2, 0)
+	run(0.3)
+	eq(D.weather.delta.haze, L.WEATHER.Storm.haze, "leaving snaps the storm back")
 end
+ok(string.find(fs.readFile("lighting.client.lua"), "local HOLD = L.CONTEXT_HOLD", 1, true) ~= nil, "QC L4: one context hold for the director and the ambience layer")
 
 ------------------------------------------------------------------------------
 -- Part C: skill VFX rules.
@@ -400,7 +516,7 @@ local src = fs.readFile("ambience.client.lua")
 local code = (string.gsub(src, "%-%-[^\n]*", ""))
 local blocks = {}
 for name, body in string.gmatch(src, "%-%- FRAME%-BEGIN (%a+)\n(.-)%-%- FRAME%-END %1") do blocks[name] = (string.gsub(body, "%-%-[^\n]*", "")) end
-for _, name in {"sky", "sway", "foam", "flock", "fx"} do ok(blocks[name] ~= nil and #blocks[name] > 200, "per-frame block " .. name) end
+for _, name in {"anchors", "sky", "sway", "foam", "flock", "fx"} do ok(blocks[name] ~= nil and #blocks[name] > 200, "per-frame block " .. name) end
 local FORBIDDEN = {"{", "function(", "Instance.new", "..", "table.insert", "table.create", "ColorSequence", "NumberSequence", "NumberRange", ":Clone", "string.", "setmetatable", "pairs("}
 for name, body in blocks do
 	ok(select(2, string.gsub(body, "function ", "")) == 1, name .. " block is one function")
@@ -408,18 +524,39 @@ for name, body in blocks do
 		ok(not string.find(body, word, 1, true), name .. " frame block allocates nothing: " .. word)
 	end
 end
-for _, call in {"Sky.frame(dt)", "Sway.frame()", "Foam.frame()", "Flock.frame(dt)", "FX.frame()"} do ok(string.find(code, call, 1, true) ~= nil, call .. " runs from the step") end
+for _, call in {"Amb.anchorsFrame()", "Sky.frame(dt)", "Sway.frame()", "Foam.frame()", "Flock.frame(dt)", "FX.frame()"} do ok(string.find(code, call, 1, true) ~= nil, call .. " runs from the step") end
 local _, beats = string.gsub(code, '"Heartbeat"', "")
 eq(beats, 1, "one Heartbeat connection")
 ok(string.find(code, "if not Amb.reduced then Sway.frame() end", 1, true) ~= nil, "reduced motion: no sway")
-ok(string.find(code, "if Amb.reduced or Amb.b.bolts <= 0 then return end", 1, true) ~= nil, "reduced motion: no bolt")
+ok(string.find(code, "if not Amb.flashing or Amb.b.bolts <= 0 then return end", 1, true) ~= nil, "reduced motion / Flashing effects off: no bolt")
+ok(string.find(code, "Amb.flashing = L.flashingAllowed(player:GetAttribute(L.FLASHING_ATTR), Amb.reduced)", 1, true) ~= nil, "the bolt follows the Flashing effects setting")
+ok(not string.find(code, "% 86400", 1, true) and string.find(code, "Amb.tw = t - A.EPOCH", 1, true) ~= nil, "QC L3: the wind clock never wraps")
+ok(not string.find(code, "Vector3.new(0, 40, 0))", 1, true), "QC H1: no upward world raycast for shelter")
+ok(string.find(code, "GetAttributeChangedSignal(L.WEATHER_ATTR)", 1, true) ~= nil, "QC H2: the weather attribute is watched, not polled")
+ok(not string.find(code, "strikeAt", 1, true), "QC H2: no strike from the attribute")
+ok(string.find(code, "A.windAtDir(t, p.X, p.Z, base, weather, dx, dz)", 1, true) ~= nil, "QC M6: one wind direction per frame")
+ok(string.find(code, "if twist ~= 0 then rot *= CFrame.Angles(0, twist, 0) end", 1, true) ~= nil, "QC M6: no twist CFrame for props that never twist")
+local regionsSrc = (string.gsub(fs.readFile("regions.client.lua"), "%-%-[^\n]*", ""))
+ok(not string.find(regionsSrc, "ParticleEmitter", 1, true), "QC M4: regions.client.lua runs no second ambience emitter")
+for kind, preset in A.ISLAND_MOTES do ok(A.Presets[preset] ~= nil, "island ambience " .. kind .. " has a preset in the one palette") end
+for _, region in Data.RegionArt.Regions do
+	local kind = region.ambience and region.ambience.particles
+	if kind then ok(A.ISLAND_MOTES[kind] ~= nil, "Data.RegionArt ambience " .. kind .. " maps to a preset") end
+end
+eq(Data.PlayerSettings.byAttr[L.FLASHING_ATTR] and Data.PlayerSettings.byAttr[L.FLASHING_ATTR].kind, "bool", "QC L6: Flashing effects is a saved setting")
+ok(string.find(fs.readFile("ui.client.lua"), '{attr="IsleSettingFlashing",title="Flashing effects"', 1, true) ~= nil, "QC L6: the Settings page offers Flashing effects")
+eq(L.flashingAllowed(nil, false), true, "flashing defaults on")
+eq(L.flashingAllowed(true, true), false, "reduced motion turns flashing off")
+eq(L.flashingAllowed(false, false), false, "the setting turns flashing off")
 for _, word in {'GetService("Lighting")', "game.Lighting", "PlayerGui", "ScreenGui", "BillboardGui", "SurfaceGui", "IsleAction", "FireServer", "InvokeServer", "creatures"} do
 	ok(not string.find(code, word, 1, true), "the ambience layer never touches " .. word)
 end
 ok(string.find(code, "workspace:BulkMoveTo", 1, true) ~= nil, "sway moves with BulkMoveTo")
 local director = fs.readFile("lighting.client.lua")
 ok(string.find(director, "L.applyWeather(target, L.blendWeather(Weather.delta, Weather.state", 1, true) ~= nil, "the director blends the weather deltas")
-ok(string.find(director, "Weather.strikeRegion == Director.key and not reducedMotion()", 1, true) ~= nil, "the director's flash honours region and reduced motion")
+ok(string.find(director, 'if Weather.state == "Storm" and Weather.flashing then', 1, true) ~= nil, "the director's flash needs the region's storm and the flashing permission")
+ok(string.find(director, "Ambience.lastStrike(Weather.cursor, t, Director.key or L.DEFAULT_KEY)", 1, true) ~= nil, "QC H2: the director's flash runs on the shared strike schedule")
+ok(string.find(director, "workspace:GetAttributeChangedSignal(L.WEATHER_ATTR):Connect(Weather.readText)", 1, true) ~= nil, "QC H2: the director watches the attribute")
 local project = fs.readFile("default.project.json")
 for _, entry in {'"AetherAmbience": { "$path": "shared/Ambience.lua" }', '"Weather": { "$path": "weather.server.lua" }', '"IsleAmbience": { "$path": "ambience.client.lua" }'} do
 	ok(string.find(project, entry, 1, true) ~= nil, "project maps " .. entry)
@@ -449,24 +586,40 @@ local function boot(opts)
 	isle.Parent = islands
 	local far = roblox.Instance.new("Model"); far.Name = "Far Isle"
 	far:SetAttribute("IslandCenter", Vector3.new(4000, 0, 0)); far:SetAttribute("IslandRadius", 50); far.Parent = islands
+	-- The forge's output: an anchored server host with a ShapeMesh link to a
+	-- local MeshPart clone (ShapeOf) in the same parent (forge.client.lua).
+	local function forged(shape, pos, size, hostOpts)
+		local host = newPart("Part", shape .. " host", pos, size, isle)
+		host:SetAttribute("Shape", shape)
+		if hostOpts and hostOpts.spin then host:SetAttribute("SpinRate", 0.35) end
+		if hostOpts and hostOpts.loose then host.Anchored = false end
+		local clone = newPart("MeshPart", shape .. " Mesh", pos, size, isle)
+		clone:SetAttribute("ShapeOf", shape)
+		local link = roblox.Instance.new("ObjectValue"); link.Name = "ShapeMesh"; link.Value = clone; link.Parent = host
+		return clone, host
+	end
 	-- 240 forged trees on a grid out to ~170 studs, plus a few far ones.
 	local trees = {}
 	for i = 0, 239 do
 		local x, z = (i % 16 - 7.5) * 20, (math.floor(i / 16) - 7) * 22
-		local t = newPart("MeshPart", "Meadow tree Mesh", Vector3.new(x, 6, z), Vector3.new(8, 12, 8), isle)
-		t:SetAttribute("ShapeOf", "MeadowTree")
+		local t = forged("MeadowTree", Vector3.new(x, 6, z), Vector3.new(8, 12, 8))
 		table.insert(trees, {part = t, base = t.CFrame})
 	end
 	local farTrees = {}
 	for i = 1, 5 do
-		local t = newPart("MeshPart", "Far tree Mesh", Vector3.new(600 + i * 30, 6, 0), Vector3.new(8, 12, 8), isle)
-		t:SetAttribute("ShapeOf", "PalmTree")
+		local t = forged("PalmTree", Vector3.new(600 + i * 30, 6, 0), Vector3.new(8, 12, 8))
 		table.insert(farTrees, {part = t, base = t.CFrame})
 	end
-	local banner = newPart("MeshPart", "Banner Mesh", Vector3.new(6, 8, 0), Vector3.new(0.3, 6, 3), isle)
-	banner:SetAttribute("ShapeOf", "Banner")
-	local sails = newPart("MeshPart", "Sails Mesh", Vector3.new(0, 30, 10), Vector3.new(30, 30, 2), isle)
-	sails:SetAttribute("ShapeOf", "WindmillSails")
+	local banner = forged("Banner", Vector3.new(6, 8, 0), Vector3.new(0.3, 6, 3))
+	local sails = forged("WindmillSails", Vector3.new(0, 30, 10), Vector3.new(30, 30, 2), {spin = true})
+	local spunBanner = forged("Banner", Vector3.new(-6, 8, 0), Vector3.new(0.3, 6, 3), {spin = true})
+	local looseBanner = forged("Banner", Vector3.new(-6, 8, 4), Vector3.new(0.3, 6, 3), {loose = true})
+	local crop = forged("CropBed", Vector3.new(4, 1, -3), Vector3.new(4, 2, 4))
+	local hiddenTree = forged("MeadowTree", Vector3.new(2, 6, 6), Vector3.new(8, 12, 8))
+	hiddenTree.LocalTransparencyModifier = 1 -- a depleted node (gather.client.lua)
+	-- A bare server part with a sway shape but no forge link never moves (QC M1).
+	local bare = newPart("MeshPart", "Server mesh", Vector3.new(-3, 6, -3), Vector3.new(8, 12, 8), isle)
+	bare:SetAttribute("ShapeOf", "MeadowTree")
 	local tuft = newPart("Part", "Herb tuft", Vector3.new(3, 0.5, 3), Vector3.new(0.9, 0.9, 0.9), isle)
 	-- Water: a pond and a fishing spot.
 	local pondModel = roblox.Instance.new("Model"); pondModel.Name = "Pond"; pondModel.Parent = isle
@@ -520,10 +673,11 @@ local function boot(opts)
 			if name == "AetherAmbience" then return A elseif name == "AetherLighting" then return L elseif name == "AetherData" then return Data end
 			error("unexpected require " .. tostring(name))
 		end,
-		os = {time = function() return math.floor(serverT) end, clock = function() return clockT end},
+		os = {time = function() return serverT end, clock = function() return clockT end},
 	}
 	local Amb = luau.load(src, {debugName = "ambience.client.lua", environment = env, injectGlobals = true})()
 	local ctx = {Amb = Amb, ws = ws, attrs = attrs, root = root, trees = trees, farTrees = farTrees, banner = banner, sails = sails, tuft = tuft,
+		spunBanner = spunBanner, looseBanner = looseBanner, crop = crop, hiddenTree = hiddenTree, bare = bare,
 		forgeNear = forgeNear, forgeFar = forgeFar, shroom = shroom, beam = beam, mist = mist, cues = cues, bindables = bindables, isle = isle, ore = ore}
 	function ctx.run(seconds)
 		local n = math.ceil(seconds * 30)
@@ -533,7 +687,7 @@ local function boot(opts)
 			heartbeat:Fire(1 / 30)
 		end
 	end
-	function ctx.serverTime() return math.floor(serverT) + (clockT % 1) end
+	function ctx.serverTime() return serverT end
 	function ctx.setServer(t) serverT = t end
 	function ctx.folder() return ws:FindFirstChild("IsleAmbienceLocal") end
 	function ctx.parts()
@@ -586,11 +740,76 @@ ok(H.banner.CFrame ~= CFrame.new(6, 8, 0), "the banner flutters")
 local bannerTop = (H.banner.CFrame * CFrame.new(0, 3, 0)).Position
 ok((bannerTop - Vector3.new(6, 11, 0)).Magnitude < 1e-3, "the banner hangs from its top")
 eq(H.sails.CFrame, CFrame.new(0, 30, 10), "spinning sails are left to regions.client.lua")
-ok(H.tuft.CFrame ~= CFrame.new(3, 0.5, 3), "herb tufts sway")
+-- QC M1: only forge clones sway; server parts never move.
+eq(H.tuft.CFrame, CFrame.new(3, 0.5, 3), "QC M1: herb tufts (server parts) never move")
+eq(H.bare.CFrame, CFrame.new(-3, 6, -3), "QC M1: a server MeshPart without a forge link never moves")
+ok(H.crop.CFrame ~= CFrame.new(4, 1, -3), "QC M1: CropBed clones sway")
+-- QC M3: hosts that something else moves never sway.
+eq(H.spunBanner.CFrame, CFrame.new(-6, 8, 0), "QC M3: a SpinRate / RegionSpin host is left alone")
+eq(H.looseBanner.CFrame, CFrame.new(-6, 8, 4), "QC M3: an unanchored host is left alone")
+-- QC M2: a hidden (depleted) prop is not swayed.
+eq(H.hiddenTree.CFrame, CFrame.new(2, 6, 6), "QC M2: a hidden prop is skipped")
+for i = 1, H.Amb.sway.count do assert(H.Amb.sway.active[i].part ~= H.hiddenTree, "hidden prop not in the active set") end
+checks += 1
+-- QC M3: the forge re-places a clone (its host moved): the rest frame re-arms.
+do
+	local e = H.trees[1]
+	for _, x in H.trees do if x.base.Position.Magnitude < e.base.Position.Magnitude then e = x end end
+	local entry
+	for _, x in H.Amb.sway.list do if x.part == e.part then entry = x end end
+	ok(entry and entry.epoch ~= 0, "the first tree sways")
+	local newRest = e.base + Vector3.new(0, 0, 1.5)
+	-- What the forge does: the host moves, its listener moves the clone; our
+	-- next sway frame may overwrite the clone before the 2 Hz check runs.
+	local host = e.part.Parent:FindFirstChild("MeadowTree host")
+	for _, h in e.part.Parent:GetChildren() do
+		local link = h:FindFirstChild("ShapeMesh")
+		if link and link.Value == e.part then host = h end
+	end
+	host.CFrame = host.CFrame + Vector3.new(0, 0, 1.5)
+	e.part.CFrame = newRest
+	H.run(1 / 30)
+	H.run(0.6)
+	ok(entry.base and (entry.base.Position - newRest.Position).Magnitude < 1e-3, "QC M3: a moved clone re-arms its rest frame")
+	ok((bottom(e.part.CFrame, e.part.Size) - bottom(newRest, e.part.Size)).Magnitude < 1e-3, "QC M3: and sways about its new base")
+	e.base = newRest
+end
+-- QC M6: the per-frame sway cost at the High cap stays small.
+do
+	local t0 = os.clock()
+	for _ = 1, 100 do H.Amb.swayFrame() end
+	local ms = (os.clock() - t0) * 10
+	print(string.format("  sway frame: %d props, %.3f ms per update (Lune harness)", H.Amb.sway.count, ms))
+	ok(ms < 2, "QC M6: a High sway update (160 props) costs under 2 ms in the harness (" .. string.format("%.3f", ms) .. ")")
+end
 -- Pools.
 local pools = H.Amb.pools
 ok(pools.emitters.motes and pools.emitters.motes.Enabled, "region motes on outdoors")
 eq(pools.emitters.motes:GetAttribute("Preset"), "pollen", "Sunwheel Downs motes are pollen")
+-- QC M4: the island's Ambience attribute picks the motes (one palette).
+H.isle:SetAttribute("Ambience", "embers")
+H.run(0.5)
+eq(pools.emitters.motes:GetAttribute("Preset"), "embers", "QC M4: the island's Ambience attribute picks the motes")
+H.isle:SetAttribute("Ambience", nil)
+H.run(0.5)
+eq(pools.emitters.motes:GetAttribute("Preset"), "pollen", "no island ambience: the region's motes")
+-- QC L4: a new outdoor context holds L.CONTEXT_HOLD before it applies.
+H.attrs.IsleRegionHere = "Quarry"
+H.run(0.3)
+eq(H.Amb.key, "Meadow", "QC L4: a region change waits for the hold")
+H.run(0.8)
+eq(H.Amb.key, "Quarry", "QC L4: and applies after it")
+H.attrs.IsleRegionHere = "Meadow"
+H.run(1)
+-- QC L10: anchors follow the player every frame.
+do
+	local air = pools.anchors.air
+	H.root.CFrame = CFrame.new(12, 3, -7)
+	H.run(1 / 30)
+	ok((air.CFrame.Position - Vector3.new(12, 11, -7)).Magnitude < 1e-3, "QC L10: the motes box follows on the next frame")
+	H.root.CFrame = CFrame.new(0, 3, 0)
+	H.run(1)
+end
 local sourceOn = {}
 for _, s in pools.sources do if s.emitter.Enabled then sourceOn[s.part] = s.emitter:GetAttribute("Preset") end end
 eq(sourceOn[H.forgeNear], "embers", "embers over the near forge")
@@ -645,21 +864,110 @@ H.ws:SetAttribute("IsleWeather", "1|5|Skyreach=Fog")
 H.run(1)
 ok(not rain.Enabled, "rain stops when the weather clears")
 ok(pools.emitters.fog and pools.emitters.fog.Enabled, "fog banks roll in")
--- Lightning: a strike in this region shows a bolt and fires the thunder cue.
+-- QC H1: shelter is a building's declared box, never a raycast: a walk-in
+-- hall with a mesh-only roof shelters, a tree canopy does not.
 H.attrs.IsleRegionHere = "Meadow"
-H.run(0.5)
-H.ws:SetAttribute("IsleWeather", "1|5|Meadow=Storm|Meadow@" .. string.format("%.2f", H.serverTime()))
-local boltSeen = false
-for _ = 1, 12 do
-	H.run(1 / 30)
-	local parts = H.Amb.fx.bolt.parts
-	if parts and parts[1] and parts[1].Transparency < 1 then boltSeen = true end
+H.ws:SetAttribute("IsleWeather", "1|5|Meadow=Rain")
+H.run(1.5)
+ok(rain.Enabled, "rain in the open")
+do
+	local hall = roblox.Instance.new("Part")
+	hall.Name, hall.Anchored, hall.Size, hall.CFrame = "Roofed hall floor", true, Vector3.new(16, 0.5, 13), CFrame.new(40, 0.25, -40) * CFrame.Angles(0, 0.6, 0)
+	hall:SetAttribute("BuildingType", "ShopHall")
+	hall:SetAttribute("ShapeBox", Vector3.new(17, 14, 14))
+	hall:SetAttribute("ShapeBoxOffset", Vector3.new(0, 6.75, 0))
+	hall.Parent = H.isle
+	H.Amb.classify(hall) -- (DescendantAdded in the game)
+	ok(H.Amb.shelteredAt(Vector3.new(40, 3, -40)), "QC H1: inside a hall (mesh-only roof) is sheltered")
+	ok(not H.Amb.shelteredAt(Vector3.new(40, 3, -52)), "QC H1: beside the hall is not")
+	ok(not H.Amb.shelteredAt(Vector3.new(40, 30, -40)), "QC H1: above the roof is not")
+	H.root.CFrame = CFrame.new(40, 3, -40)
+	H.run(1)
+	ok(not rain.Enabled and not pools.emitters.splash.Enabled, "QC H1: no rain or splashes inside the hall")
+	-- A canopy right overhead (a forged tree) does not stop the rain.
+	H.root.CFrame = CFrame.new(10, 3, 11)
+	local canopy = roblox.Instance.new("MeshPart")
+	canopy.Name, canopy.Anchored, canopy.Size, canopy.CFrame = "Canopy", true, Vector3.new(14, 8, 14), CFrame.new(10, 12, 11)
+	canopy.Parent = H.isle
+	H.run(1)
+	ok(not H.Amb.shelteredAt(Vector3.new(10, 3, 11)), "QC H1: under a tree canopy is not sheltered")
+	ok(rain.Enabled, "QC H1: rain falls under trees")
+	H.root.CFrame = CFrame.new(0, 3, 0)
+	H.run(1)
 end
-ok(boltSeen, "a storm strike shows a bolt")
-eq(H.cueCount("thunder"), 1, "the strike fires one thunder cue")
+
+-- QC H2: lightning from the shared schedule on server time. The attribute
+-- names only the storm; every strike fires on the frame it is due.
+local function nextStorm(key, from)
+	local s0 = A.slotAt(from)
+	for i = 1, 4000 do if A.weatherAt(s0 + i, key) == "Storm" then return s0 + i end end
+	error("no storm for " .. key)
+end
+local function boltShowing(ctx)
+	local parts = ctx.Amb.fx.bolt.parts
+	return parts ~= nil and parts[1] ~= nil and parts[1].Transparency < 1
+end
+-- Run frames around strike `at`; returns the frame the cue fired (server time) or nil.
+local function watchStrike(ctx, at, frames)
+	local before = ctx.cueCount("thunder")
+	local firedAt, bolt
+	for _ = 1, frames do
+		ctx.run(1 / 30)
+		if not firedAt and ctx.cueCount("thunder") > before then firedAt = ctx.serverTime() end
+		if boltShowing(ctx) then bolt = true end
+	end
+	return firedAt, bolt, ctx.cueCount("thunder") - before
+end
+local slotH = nextStorm("Meadow", H.serverTime())
+local startH = A.EPOCH + slotH * A.SLOT
+local strikesH = A.strikes(slotH, "Meadow")
+H.setServer(startH - 0.5)
+H.ws:SetAttribute("IsleWeather", A.encode(slotH - 1))
+H.run(0.4)
+-- The new slot's table arrives 0.3 s late; the first strike is >= 19 s away.
+H.setServer(startH + 0.3)
+H.ws:SetAttribute("IsleWeather", A.encode(slotH))
+H.run(0.5)
+eq(H.Amb.weather, "Storm", "the storm is on")
+H.setServer(startH + strikesH[1] - 0.3)
+local firedAt, bolt, cues = watchStrike(H, startH + strikesH[1], 30)
+ok(firedAt ~= nil and firedAt >= startH + strikesH[1] and firedAt - (startH + strikesH[1]) <= 1 / 30 + 1e-6, "QC H2: the strike fires on its scheduled frame")
+ok(bolt, "a storm strike shows a bolt")
+eq(cues, 1, "the strike fires one thunder cue")
 eq(#H.Amb.fx.bolt.parts, A.BOLT_SEGMENTS, "the bolt has its segments")
 H.run(1)
-ok(H.Amb.fx.bolt.parts[1].Transparency == 1, "the bolt fades")
+ok(not boltShowing(H), "the bolt fades")
+-- Weather delivered late relative to a strike: 0.3 s late still strikes (in
+-- the schedule's phase); 0.6 s late is stale and skipped (no out-of-sync bolt).
+for k, lateBy in {0.3, 0.6} do
+	local at = startH + strikesH[1 + k]
+	H.ws:SetAttribute("IsleWeather", "1|" .. slotH .. "|Meadow=Clear")
+	H.setServer(at - 1)
+	H.run(0.5)
+	H.setServer(at + lateBy)
+	H.ws:SetAttribute("IsleWeather", A.encode(slotH))
+	H.Amb.readWeatherText() -- what GetAttributeChangedSignal does in the game
+	local fired, _, n = watchStrike(H, at, 12)
+	if lateBy < 0.5 then
+		eq(n, 1, "QC H2: 0.3 s late delivery still strikes once")
+		ok(fired ~= nil and fired - at <= lateBy + 1 / 30 + 1e-6, "QC H2: on the first frame after the delivery")
+	else
+		eq(n, 0, "QC H2: 0.6 s late delivery skips the stale strike")
+	end
+end
+-- QC L6: Flashing effects off: no bolt, the cue still fires.
+H.attrs.IsleSettingFlashing = false
+H.run(0.5)
+do
+	local at = startH + strikesH[4]
+	H.setServer(at - 0.3)
+	local _, sawBolt, n = watchStrike(H, at, 20)
+	ok(not sawBolt, "QC L6: Flashing effects off: no bolt")
+	eq(n, 1, "QC L6: the thunder cue still fires")
+end
+H.attrs.IsleSettingFlashing = nil
+H.ws:SetAttribute("IsleWeather", "1|" .. slotH .. "|Meadow=Clear")
+H.run(0.5)
 ok(H.parts() <= hb.parts, "High after weather + bolt: parts " .. H.parts())
 
 -- Skill VFX.
@@ -722,15 +1030,19 @@ eq(H.Amb.sway.count, 0, "reduced motion sways nothing")
 for _, e in H.trees do assert(e.part.CFrame == e.base, "reduced motion restores every tree") end
 checks += 1
 eq(H.banner.CFrame, CFrame.new(6, 8, 0), "reduced motion restores the banner")
-local thunder = H.cueCount("thunder")
-H.ws:SetAttribute("IsleWeather", "1|6|Meadow=Storm|Meadow@" .. string.format("%.2f", H.serverTime()))
-local boltShown = false
-for _ = 1, 12 do
-	H.run(1 / 30)
-	if H.Amb.fx.bolt.parts[1].Transparency < 1 then boltShown = true end
+do
+	H.ws:SetAttribute("IsleWeather", A.encode(slotH))
+	local at = startH + strikesH[5]
+	H.setServer(at - 0.4)
+	local _, boltShown, n = watchStrike(H, at, 20)
+	ok(not boltShown, "reduced motion: no bolt")
+	eq(n, 1, "reduced motion still hears the thunder cue")
+	-- QC L5: with reduced motion the foam is written once, then left alone.
+	local writes = H.Amb.foam.writes
+	H.run(1)
+	eq(H.Amb.foam.writes, writes, "QC L5: still foam is not rewritten every frame")
+	H.ws:SetAttribute("IsleWeather", "1|" .. slotH .. "|Meadow=Clear")
 end
-ok(not boltShown, "reduced motion: no bolt")
-eq(H.cueCount("thunder"), thunder + 1, "reduced motion still hears the thunder cue")
 H.bindables.IsleSnapshotLocal:Fire({seq = 99, levels = {Mining = 8}})
 ok(not H.Amb.fx.ring.on, "reduced motion: no level-up ring")
 H.attrs.IsleSettingReducedMotion = nil
@@ -756,11 +1068,50 @@ eq(H.Amb.key, "Lair", "inside a lair")
 ok(not pools.emitters.motes.Enabled and not pools.emitters.rain.Enabled, "no motes or rain indoors")
 for _, layer in pools.clouds do eq(layer.texture.Transparency, 1, "no cloud sea indoors") end
 
+-- QC L7: an attribute the server sets after the part arrived is picked up by
+-- the sliced rescan; a removed node is compacted away.
+do
+	H.root.CFrame = CFrame.new(0, 3, 0)
+	H.attrs.LairBoss = nil
+	H.run(1)
+	local late = roblox.Instance.new("Part")
+	late.Name, late.Anchored, late.CFrame = "Late node", true, CFrame.new(5, 1, 5)
+	late.Parent = H.isle
+	H.Amb.classify(late) -- arrives without GatherNode
+	late:SetAttribute("GatherNode", Data.ResourceTiers.Mining[2].id)
+	local found = false
+	for _ = 1, 40 do
+		H.run(0.5)
+		for _, n in H.Amb.world.nodes do if n == late then found = true end end
+		if found then break end
+	end
+	ok(found, "QC L7: a late GatherNode attribute is registered by the rescan")
+	late.Parent = nil
+	H.run(0.6)
+	local still = false
+	for _, n in H.Amb.world.nodes do if n == late then still = true end end
+	ok(not still, "QC L7: a removed node is compacted")
+end
+-- QC L9: a pillar is never half-built at the part cap.
+do
+	local made = H.Amb.partsMade
+	local beamsBefore = #H.Amb.fx.beams
+	H.Amb.partsMade = H.Amb.b.parts - 1
+	local partsBefore = H.parts()
+	H.Amb.b = table.clone(H.Amb.b); H.Amb.b.beams += 2
+	for _, e in H.Amb.fx.beams do e.on = true end -- every pillar busy: the next one must be new
+	H.bindables.IsleSnapshotLocal:Fire({seq = 500, pickups = {{id = byRarity.Legendary, n = 1}}})
+	eq(H.parts(), partsBefore, "QC L9: no lone pillar part past the cap")
+	eq(#H.Amb.fx.beams, beamsBefore, "QC L9: no half pillar recorded")
+	H.Amb.b = A.Budgets.High
+	H.Amb.partsMade = made
+end
+
 -- Tier switch: Performance rebuilds inside its smaller caps.
 H.attrs.LairBoss = nil
 H.root.CFrame = CFrame.new(0, 3, 0)
 H.attrs.IsleSettingGraphics = "Performance"
-H.ws:SetAttribute("IsleWeather", "1|7|Meadow=Storm")
+H.ws:SetAttribute("IsleWeather", A.encode(slotH))
 H.run(2)
 local pb = A.Budgets.Performance
 eq(H.Amb.budgetKey, "Performance", "the tier switch is live")
@@ -778,7 +1129,10 @@ checks += 1
 
 -- Phones: the lite set.
 local P = boot({tier = "High", phone = true})
-P.ws:SetAttribute("IsleWeather", "1|5|Meadow=Storm")
+local slotP = nextStorm("Meadow", P.serverTime())
+local startP, strikesP = A.EPOCH + slotP * A.SLOT, A.strikes(slotP, "Meadow")
+P.setServer(startP + 1)
+P.ws:SetAttribute("IsleWeather", A.encode(slotP))
 P.run(3)
 local lb = A.Budgets.Lite
 eq(P.Amb.budgetKey, "Lite", "a phone on High runs the lite set")
@@ -788,10 +1142,10 @@ ok(P.Amb.sway.count <= lb.sway, "Lite sway cap")
 ok(P.Amb.foam.count <= lb.foam, "Lite foam cap")
 ok(P.Amb.flock.count == 0, "storms ground the flocks")
 ok(P.Amb.pools.emitters.splash == nil, "phones draw no splashes")
-P.ws:SetAttribute("IsleWeather", "1|5|Meadow=Storm|Meadow@" .. string.format("%.2f", P.serverTime()))
-P.run(0.5)
-ok(P.Amb.fx.bolt.parts == nil, "phones draw no bolt")
-eq(P.cueCount("thunder"), 1, "phones still get the thunder cue")
+P.setServer(startP + strikesP[1] - 0.3)
+local _, phoneBolt, phoneCues = watchStrike(P, startP + strikesP[1], 20)
+ok(not phoneBolt and P.Amb.fx.bolt.parts == nil, "phones draw no bolt")
+eq(phoneCues, 1, "phones still get the thunder cue")
 for _, e in P.trees do
 	if e.part.CFrame ~= e.base then assert((e.base.Position - P.root.CFrame.Position).Magnitude <= lb.swayRadius, "Lite culls sway at its radius") end
 end

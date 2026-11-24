@@ -631,6 +631,14 @@ L.WEATHER = {
 L.WEATHER_GREY = "A9B2BC"
 L.WEATHER_TAU = 5 -- seconds; weather eases in over ~15 s
 L.FLASH_EXPOSURE, L.FLASH_LENGTH, L.FLASH_CEILING = 0.6, 0.7, 1
+-- QC L6: a night strike lifts exposure less (dark-adapted eyes); the flash
+-- (and the ambience bolt) also obey the "Flashing effects" setting.
+L.FLASH_EXPOSURE_NIGHT = 0.3
+L.FLASHING_ATTR = "IsleSettingFlashing" -- bool, default on; reduced motion turns it off
+function L.flashingAllowed(attrValue, reduced) return reduced ~= true and attrValue ~= false end
+-- Seconds a new outdoor context must persist before the look (and the
+-- ambience layer) follows it: one hold for the director and §50 (QC L4).
+L.CONTEXT_HOLD = 0.6
 -- Parse the IsleWeather attribute (malformed -> nil). Only called when the
 -- attribute changes (never per frame).
 function L.parseWeather(text)
@@ -688,8 +696,10 @@ function L.flashAt(dt)
 	if dt < 0.28 then return 0.85 end
 	return 0.85 * (1 - (dt - 0.28) / (L.FLASH_LENGTH - 0.28))
 end
-function L.flashExposure(base, flash)
-	return math.min(base + L.FLASH_EXPOSURE * math.clamp(flash, 0, 1), L.FLASH_CEILING)
+function L.flashExposure(base, flash, daylight)
+	local d = if type(daylight) == "number" then math.clamp(daylight, 0, 1) else 1
+	local amount = L.FLASH_EXPOSURE_NIGHT + (L.FLASH_EXPOSURE - L.FLASH_EXPOSURE_NIGHT) * d
+	return math.min(base + amount * math.clamp(flash, 0, 1), L.FLASH_CEILING)
 end
 
 ------------------------------------------------------------------------------

@@ -10346,6 +10346,7 @@ local SETTINGS={
 	{attr="IsleSettingXpDrops",title="XP drops",detail="Floating +XP counters and the skill progress toast when you gain experience.",default=true},
 	{attr="IsleSettingMinimap",title="Minimap",detail="The top-left minimap with region name and coordinates (its Map button folds the map away).",default=true},
 	{attr="IsleSettingReducedMotion",title="Reduced motion",detail="XP drops and level-up banners appear in place instead of sliding and scaling.",default=false},
+	{attr="IsleSettingFlashing",title="Flashing effects",detail="Lightning flashes and bolts during storms. Always off while Reduced motion is on.",default=true}, -- §50 QC L6
 }
 -- The live value of a setting (the HUD's Pin button and closing the satchel
 -- change IsleSettingPinSatchel too, so a toggle never acts on a stale card).

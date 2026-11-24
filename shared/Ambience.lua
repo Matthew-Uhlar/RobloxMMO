@@ -109,6 +109,9 @@ A.Presets = {
 	snow = {colors = {"FFFFFF", "E4F0FF"}, size = 0.22, life = {5, 7}, speed = {5, 7}, rate = 0.5, light = 0.3, drift = 1.4, texture = "sparkle", spin = 90},
 	splash = {colors = {"D8E8F8", "B0CCE8"}, size = 0.18, life = {0.15, 0.3}, speed = {2, 4}, rate = 60, light = 0, drift = 0, texture = "sparkle"},
 	fog = {colors = {"DDE4EC", "C4CED8"}, size = 26, life = {14, 20}, speed = {0.5, 1.2}, rate = 1, light = 0, drift = 0.6, texture = "smoke", transparency = 0.86},
+	motes = {colors = {"FFE9B0", "FFF6D8"}, size = 0.16, life = {5, 9}, speed = {0.2, 0.6}, rate = 10, light = 0.5, drift = 0.5, texture = "sparkle"},
+	wind = {colors = {"E6F4FF", "FFFFFF"}, size = 0.1, life = {1.2, 2}, speed = {4, 7}, rate = 8, light = 0.3, drift = 2.5, texture = "sparkle", streak = true},
+	glints = {colors = {"F2D27A", "FFF1B8"}, size = 0.16, life = {3, 6}, speed = {0.2, 0.8}, rate = 8, light = 1, drift = 0.4, texture = "sparkle", rise = 0.4},
 	mist = {colors = {"EAF8FF", "CFEFFF"}, size = 3, life = {1.5, 2.5}, speed = {2, 5}, rate = 6, light = 0.2, drift = 0.5, texture = "smoke", transparency = 0.7},
 }
 -- A preset's rate on a budget (0 when the tier cannot afford the emitter).
@@ -150,8 +153,8 @@ function A.windDir(t)
 	local a = 0.6 + 0.45 * math.sin(t / 97) + 0.2 * math.sin(t / 41)
 	return math.cos(a), math.sin(a)
 end
-function A.gust(t, x, z)
-	local dx, dz = A.windDir(t)
+-- dx, dz: A.windDir(t), computed once per frame by the caller (QC M6).
+function A.gustDir(t, x, z, dx, dz)
 	local along = x * dx + z * dz
 	local p1 = math.sin(2 * math.pi * (along - A.GUST_SPEED * t) / A.GUST_LENGTH)
 	local p2 = math.sin(2 * math.pi * (along * 0.61 - A.GUST_SPEED * 0.8 * t) / (A.GUST_LENGTH * 1.7) + 1.3)
@@ -159,9 +162,17 @@ function A.gust(t, x, z)
 	local g2 = if p2 > 0 then p2 ^ A.GUST_SHARPNESS else 0
 	return math.min(1, g1 + 0.6 * g2)
 end
+function A.gust(t, x, z)
+	local dx, dz = A.windDir(t)
+	return A.gustDir(t, x, z, dx, dz)
+end
 -- Wind strength at a point: region base x weather, plus up to +80% in a gust.
+function A.windAtDir(t, x, z, base, weather, dx, dz)
+	return (base or 1) * (A.WEATHER_WIND[weather] or 1) * (0.55 + 0.8 * A.gustDir(t, x, z, dx, dz))
+end
 function A.windAt(t, x, z, base, weather)
-	return (base or 1) * (A.WEATHER_WIND[weather] or 1) * (0.55 + 0.8 * A.gust(t, x, z))
+	local dx, dz = A.windDir(t)
+	return A.windAtDir(t, x, z, base, weather, dx, dz)
 end
 
 ------------------------------------------------------------------------------
@@ -182,11 +193,13 @@ A.SWAY = {
 	CoralFan = {mode = "bush", amp = 0.035, freq = 0.5},
 	CropWheat = {mode = "crop", amp = 0.09, freq = 1.1}, CropSheaf = {mode = "crop", amp = 0.07, freq = 1}, CropBush = {mode = "crop", amp = 0.05, freq = 0.9},
 	CropBloom = {mode = "crop", amp = 0.07, freq = 1}, CropGlowcap = {mode = "crop", amp = 0.03, freq = 0.6},
+	CropBed = {mode = "crop", amp = 0.05, freq = 0.9}, -- a crop slot whose resource has no shape of its own
 	Banner = {mode = "banner", amp = 0.11, freq = 1.6},
 	HangingLantern = {mode = "lantern", amp = 0.05, freq = 0.55},
 }
--- Primitive parts by name (no forged mesh): herb tufts sway like grass.
-A.SWAY_NAMES = {["Herb tuft"] = {mode = "grass", amp = 0.08, freq = 1.2}}
+-- Only the forge's local MeshPart clones sway (QC M1): server parts (herb
+-- tufts, colliders) are never moved. A host tagged NO_SWAY_TAG, carrying
+-- SpinRate, or unanchored (something else moves it) never sways (QC M3).
 A.NO_SWAY_TAG = "RegionSpin"
 -- Angles (radians) for one swayer: lean (about the axis across the wind) and
 -- twist (about the up axis, banners only). `phase` is per prop.
@@ -216,6 +229,10 @@ function A.hash(a, b)
 	local h = bit32.bxor(bit32.band(a * 374761393, 0xFFFFFFFF), bit32.band(b * 668265263, 0xFFFFFFFF))
 	h = bit32.band(bit32.bxor(h, bit32.rshift(h, 13)) * 1274126177, 0xFFFFFFFF)
 	return bit32.bxor(h, bit32.rshift(h, 16)) / 0xFFFFFFFF
+end
+-- Three-key hash (QC L2: no (slot, i) pair of one region repeats another's).
+function A.hash3(a, b, c)
+	return A.hash(a, math.floor(A.hash(b * 2654435761 % 4294967296, c + 1) * 2147483647))
 end
 function A.slotAt(t)
 	t = tonumber(t) or 0
@@ -252,13 +269,44 @@ function A.strikes(slot, key)
 	local at, i = 10, 0
 	while true do
 		i += 1
-		at += 9 + 15 * A.hash(slot * 31 + i, regionIndex(key) * 131)
+		at += 9 + 15 * A.hash3(slot, regionIndex(key), i)
 		if at >= A.SLOT then break end
 		table.insert(out, at)
 	end
 	return out
 end
--- The IsleWeather attribute (parsed by L.parseWeather).
+-- Strikes are computed on every client from this schedule (QC H2: no
+-- network latency): A.strikeCursor keeps a per-(slot, key) list and hands
+-- out each strike once, at its server time.
+A.STRIKE_GRACE = 0.5 -- a strike seen later than this (a late join, a late table) is skipped, never shown out of sync
+function A.newStrikeCursor() return {slot = nil, key = nil, list = nil, start = 0, i = 1} end
+-- Advance the cursor to time t in context key; returns the server time of a
+-- strike that is due now (at <= t < at + grace) or nil. Allocates only when
+-- the slot or key changes.
+function A.strikeDue(cursor, t, key, grace)
+	local slot = A.slotAt(t)
+	if slot ~= cursor.slot or key ~= cursor.key then
+		cursor.slot, cursor.key, cursor.list = slot, key, A.strikes(slot, key)
+		cursor.start, cursor.i = A.EPOCH + slot * A.SLOT, 1
+		while cursor.list[cursor.i] and cursor.start + cursor.list[cursor.i] < t - grace do cursor.i += 1 end
+	end
+	local off = cursor.list[cursor.i]
+	if not off then return nil end
+	local at = cursor.start + off
+	if t < at then return nil end
+	cursor.i += 1
+	if t - at <= grace then return at end
+	return nil
+end
+-- The latest strike at or before t in key's current slot (nil if none).
+function A.lastStrike(cursor, t, key)
+	while A.strikeDue(cursor, t, key, math.huge) do end
+	local i = cursor.i - 1
+	local off = cursor.list[i]
+	return if off then cursor.start + off else nil
+end
+-- The IsleWeather attribute (parsed by L.parseWeather). Since QC H2 the
+-- server publishes only the slot's states; strikes come from A.strikes.
 function A.encode(slot, strikeRegion, strikeAt)
 	local parts = {}
 	local sched = A.schedule(slot)
@@ -267,20 +315,22 @@ function A.encode(slot, strikeRegion, strikeAt)
 	if strikeRegion and strikeAt then text ..= "|" .. strikeRegion .. "@" .. string.format("%.2f", strikeAt) end
 	return text
 end
--- The strike the server should publish at time t: the latest strike in any
--- storming region within the last `window` seconds (nil when none).
-function A.latestStrike(t, window)
-	local slot = A.slotAt(t)
-	local start = A.EPOCH + slot * A.SLOT
-	local bestKey, bestAt
-	for _, key in ipairs(A.WEATHER_KEYS) do
-		for _, off in ipairs(A.strikes(slot, key)) do
-			local at = start + off
-			if at <= t and t - at <= window and (not bestAt or at > bestAt) then bestKey, bestAt = key, at end
-		end
-	end
-	return bestKey, bestAt
+------------------------------------------------------------------------------
+-- Shelter (QC H1): a point is under a roof when it is inside a building's
+-- declared box (ShapeBox / ShapeBoxOffset of the §40 hosts, attribute
+-- BuildingType), in that box's frame (lx, ly, lz) with size (sx, sy, sz).
+-- Feet may be up to A.SHELTER_FEET below the box (a hall host is its floor).
+-- Tree canopies, awnings and open sky never count.
+------------------------------------------------------------------------------
+A.SHELTER_FEET = 4
+function A.insideBox(lx, ly, lz, sx, sy, sz)
+	return math.abs(lx) <= sx / 2 and math.abs(lz) <= sz / 2 and ly >= -sy / 2 - A.SHELTER_FEET and ly <= sy / 2
 end
+-- Island particle kinds (Data.RegionArt ambience.particles, the island's
+-- Ambience attribute) -> presets (QC M4: one palette; regions.client.lua no
+-- longer runs its own emitter).
+A.ISLAND_MOTES = {motes = "motes", pollen = "pollen", embers = "embers", wind = "wind", leaves = "leaves", spores = "spores",
+	spray = "spray", sparks = "void", glints = "glints"}
 
 ------------------------------------------------------------------------------
 -- Skill VFX.

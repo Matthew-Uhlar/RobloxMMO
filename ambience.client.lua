@@ -6,17 +6,20 @@
 -- Lighting (the director is the one writer), GUI or gameplay.
 --   * Wind and sway: a server-time wind field (shared/Ambience.lua: a slowly
 --     veering direction and gust fronts that roll across the isles, so every
---     player sees the same gust) leans forged tree canopies, bushes, flowers,
---     crop rows and herb tufts about their base and flutters banners and
---     hanging lanterns about their top. Vertex-free: the forged clone's CFrame
+--     player sees the same gust) leans forged tree canopies, bushes, flowers
+--     and crop rows about their base and flutters banners and hanging
+--     lanterns about their top. Only the forge's local MeshPart clones move
+--     (found through their host's ShapeMesh link; never a server part, a
+--     spinning / unanchored host or a hidden prop). Vertex-free: the clone's CFrame
 --     rotates about a pivot (workspace:BulkMoveTo with reused arrays); the
 --     nearest A.budget().sway props within swayRadius, restored when culled.
 --   * Water: foam surf around island rims and pond / fishing-pool edges
 --     (pooled, bobbing), a highlight sheet + lip spray on the World Art
 --     waterfalls (and their mist culled by distance), shimmer over fishing
 --     spots, and a parallax cloud sea of 1-3 scrolling layers below the isles.
---   * Particles: region motes (pollen, dust, falling leaves, frost, spores,
---     sea spray, void sparks), fireflies after dusk, embers over forges,
+--   * Particles: island / region motes (the island's Ambience attribute, else
+--     the region's: pollen, dust, falling leaves, frost, spores, sea spray,
+--     void sparks; the only camera ambience emitter since QC M4), fireflies after dusk, embers over forges,
 --     hearths and lit Beaconry pyres, spores over glowshrooms, void sparks on
 --     crystals (a small pool of source emitters on the nearest sources), and
 --     cheap boid flocks around landmarks (birds by day; butterflies on meadow
@@ -24,9 +27,12 @@
 --   * Weather: the server's IsleWeather attribute (weather.server.lua; one
 --     string, a deterministic schedule) names each region's state. Rain and
 --     storm rain (with ground splashes, never under a roof), snow on cold
---     isles, fog banks, breezy leaves; storms add a visible bolt on the
---     server's strike and fire the "thunder" cue. The wet sheen and the flash
---     are the director's (L.applyWeather / L.flashAt).
+--     isles, fog banks, breezy leaves; no rain inside a building's declared
+--     box (never a world raycast). Storm strikes come from the shared
+--     schedule on server time (A.strikeDue): a visible bolt (unless reduced
+--     motion or "Flashing effects" is off) and the "thunder" cue, on the
+--     same frame as the director's flash. The wet sheen and the flash are the
+--     director's (L.applyWeather / L.flashAt).
 --   * Skill VFX: hit sparks / chips per node material on every strike impact
 --     (animate.client.lua's IsleImpactLocal), a level-up burst + ring + sound
 --     cue, a Hypixel-style rarity pillar on Rare+ pickups (Data.Rarity colours),
@@ -49,7 +55,7 @@ local player = Players.LocalPlayer
 local Amb = {b = nil, budgetKey = nil, tier = nil, mobile = false, reduced = false, key = L.DEFAULT_KEY, region = A.Regions[L.DEFAULT_KEY],
 	interior = false, weather = "Clear", weatherText = nil, parsed = nil, strikeSeen = nil, clock = 12, night = false,
 	focus = Vector3.new(0, 0, 0), tw = 0, partsMade = 0, emitting = {}, emittingCount = 0, folder = nil, sheltered = false,
-	groundY = 0, cues = {}}
+	groundY = 0, cues = {}, driftX = 0, driftZ = 0, flashing = true, motes = nil}
 
 ------------------------------------------------------------------------------
 -- Engine helpers (pcall'd where the headless harness has no engine method).
@@ -64,7 +70,7 @@ local function serverTimeRaw() return workspace:GetServerTimeNow() end
 local function now()
 	local ok, t = pcall(serverTimeRaw)
 	if ok and type(t) == "number" and t > 1e9 then return t end
-	return os.time() + (os.clock() % 1)
+	return os.time()
 end
 local function setProp(inst, key, value) inst[key] = value end
 local function trySet(inst, key, value) pcall(setProp, inst, key, value) end
@@ -196,67 +202,89 @@ end
 
 ------------------------------------------------------------------------------
 -- World registry: what the layer decorates (filled by classify()).
+-- One weak-keyed "seen" set per role (QC L7): a part can be a node and a
+-- landmark, an instance that leaves the world is forgotten, and the
+-- time-sliced rescan (below) picks up attributes the server sets late.
 ------------------------------------------------------------------------------
-local World = {islands = {}, ponds = {}, falls = {}, sources = {}, landmarks = {}, nodes = {}, seen = {}}
+local function weakSet() return setmetatable({}, {__mode = "k"}) end
+local World = {islands = {}, ponds = {}, falls = {}, sources = {}, landmarks = {}, nodes = {}, buildings = {},
+	seen = {sway = weakSet(), source = weakSet(), node = weakSet(), pond = weakSet(), landmark = weakSet(), fall = weakSet(),
+		island = weakSet(), building = weakSet()}}
 Amb.world = World
-local Sway = {list = {}, active = {}, prev = {}, parts = {}, cframes = {}, last = 0, epoch = 0}
+local Sway = {list = {}, active = {}, prev = {}, parts = {}, cframes = {}, last = 0, epoch = 0, count = 0}
 Amb.sway = Sway
 local EMBER_SHAPES = {Forge = true, Hearth = true, Caldera = true, Torch = true}
 local SPORE_SHAPES = {Glowshroom = true}
 local VOID_SHAPES = {AetherCrystal = true, CrystalSpire = true, StormPylon = true}
 local function phaseOf(pos) return (pos.X * 0.37 + pos.Z * 0.71) % (2 * math.pi) end
-local function addSway(part, def)
-	if World.seen[part] then return end
-	World.seen[part] = true
-	table.insert(Sway.list, {part = part, def = def, base = nil, off = nil, pivot = nil, phase = phaseOf(part.CFrame.Position), d2 = 0, epoch = 0, pos = part.CFrame.Position})
+local function hasTagRaw(inst, tag) return inst:HasTag(tag) end
+-- Does something else move this host (QC M3)? Spinning sails, unanchored hosts.
+local function hostMoves(host)
+	if not host or not host:IsA("BasePart") then return false end
+	if host.Anchored == false or host:GetAttribute("SpinRate") ~= nil then return true end
+	local ok, tagged = pcall(hasTagRaw, host, A.NO_SWAY_TAG)
+	return ok and tagged == true
+end
+-- QC M1: only the forge's local MeshPart clones sway; they are found through
+-- the host's ShapeMesh link (so the host can be checked) and never a server part.
+local function addSway(link)
+	local clone, host = link.Value, link.Parent
+	if not clone or World.seen.sway[clone] or not clone:IsA("MeshPart") then return end
+	local def = A.SWAY[clone:GetAttribute("ShapeOf") or ""]
+	if not def or hostMoves(host) then return end
+	World.seen.sway[clone] = true
+	local pos = clone.CFrame.Position
+	table.insert(Sway.list, {part = clone, host = host, def = def, base = nil, off = nil, pivot = nil, phase = phaseOf(pos), d2 = 0, epoch = 0, pos = pos})
 end
 local function addSource(part, kind)
-	if World.seen[part] then return end
-	World.seen[part] = true
+	if World.seen.source[part] then return end
+	World.seen.source[part] = true
 	table.insert(World.sources, {part = part, kind = kind, d2 = 0})
 end
+local function once(role, inst, list, entry)
+	if World.seen[role][inst] then return end
+	World.seen[role][inst] = true
+	table.insert(list, entry)
+end
 local function classify(inst)
-	if inst:IsA("BasePart") then
-		local of = inst:GetAttribute("ShapeOf")
-		if of and inst:IsA("MeshPart") and A.SWAY[of] then return addSway(inst, A.SWAY[of]) end
-		local byName = A.SWAY_NAMES[inst.Name]
-		if byName then return addSway(inst, byName) end
+	if inst:IsA("ObjectValue") then
+		if inst.Name == "ShapeMesh" then addSway(inst) end
+	elseif inst:IsA("BasePart") then
 		local shape = inst:GetAttribute("Shape")
-		if inst:GetAttribute("BeaconFlame") then return addSource(inst, "embers") end
-		if shape and EMBER_SHAPES[shape] then return addSource(inst, "embers") end
-		if shape and SPORE_SHAPES[shape] then return addSource(inst, "spores") end
-		if shape and VOID_SHAPES[shape] then return addSource(inst, "void") end
-		if inst:GetAttribute("GatherNode") then
-			if not World.seen[inst] then World.seen[inst] = true; table.insert(World.nodes, inst) end
-		end
+		if inst:GetAttribute("BeaconFlame") then addSource(inst, "embers")
+		elseif shape and EMBER_SHAPES[shape] then addSource(inst, "embers")
+		elseif shape and SPORE_SHAPES[shape] then addSource(inst, "spores")
+		elseif shape and VOID_SHAPES[shape] then addSource(inst, "void") end
+		if inst:GetAttribute("GatherNode") then once("node", inst, World.nodes, inst) end
+		if inst:GetAttribute("BuildingType") then once("building", inst, World.buildings, {part = inst}) end
 		if inst.Name == "Pond water" or inst.Name == "Fishing water" then
-			if not World.seen[inst] then
-				World.seen[inst] = true
-				table.insert(World.ponds, {part = inst, d2 = 0})
-			end
+			once("pond", inst, World.ponds, {part = inst, d2 = 0})
 			if inst.Name == "Fishing water" then addSource(inst.Parent and inst.Parent:FindFirstChild("Ripple") or inst, "shimmer") end
 		elseif inst.Name == "Ripple" and inst.Parent and string.find(inst.Parent.Name, "fishing spot", 1, true) then
 			addSource(inst, "shimmer")
 		end
-		if inst:GetAttribute("Landmark") and not World.seen[inst] then
-			World.seen[inst] = true
-			table.insert(World.landmarks, {part = inst, d2 = 0})
-		end
+		if inst:GetAttribute("Landmark") then once("landmark", inst, World.landmarks, {part = inst, d2 = 0}) end
 	elseif inst:IsA("Beam") and inst.Name == "Waterfall" then
-		if not World.seen[inst] then World.seen[inst] = true; table.insert(World.falls, {beam = inst, d2 = 0}) end
+		once("fall", inst, World.falls, {beam = inst, d2 = 0})
 	elseif inst:IsA("Model") then
-		if inst:GetAttribute("IslandCenter") and inst:GetAttribute("IslandRadius") and not World.seen[inst] then
-			World.seen[inst] = true
-			table.insert(World.islands, {model = inst, center = inst:GetAttribute("IslandCenter"), radius = inst:GetAttribute("IslandRadius"), d2 = 0})
+		if inst:GetAttribute("IslandCenter") and inst:GetAttribute("IslandRadius") then
+			once("island", inst, World.islands, {model = inst, center = inst:GetAttribute("IslandCenter"), radius = inst:GetAttribute("IslandRadius"), d2 = 0})
 		end
-		if inst:GetAttribute("Landmark") and not World.seen[inst] then
+		if inst:GetAttribute("Landmark") and not World.seen.landmark[inst] then
 			local host = inst.PrimaryPart or inst:FindFirstChildWhichIsA("BasePart")
-			if host then World.seen[inst] = true; table.insert(World.landmarks, {part = host, d2 = 0}) end
+			if host then World.seen.landmark[inst] = true; table.insert(World.landmarks, {part = host, d2 = 0}) end
 		end
 	end
 end
+Amb.classify = classify
+-- Roots are scanned once and then watched (DescendantAdded). QC L7: a slow
+-- rescan walks the roots in slices of RESCAN_SLICE instances per selection
+-- tick, so an attribute the server sets after the part arrived (GatherNode,
+-- Landmark, BuildingType, BeaconFlame) is picked up within a cycle.
 local ROOTS = {"Islands", "AetherIsles"}
-local roots, rootsConnected = {}, false
+local roots = {}
+local Rescan = {items = nil, i = 1, SLICE = 400}
+Amb.rescan = Rescan
 local function scanRoots()
 	for _, name in ipairs(ROOTS) do
 		local root = workspace:FindFirstChild(name)
@@ -264,23 +292,38 @@ local function scanRoots()
 			roots[root] = true
 			classify(root)
 			for _, inst in ipairs(root:GetDescendants()) do classify(inst) end
-			if connect(root, "DescendantAdded", classify) then rootsConnected = true end
-		elseif root and not rootsConnected then
-			for _, inst in ipairs(root:GetDescendants()) do classify(inst) end
+			connect(root, "DescendantAdded", classify)
 		end
 	end
 end
+function Rescan.step()
+	if not Rescan.items or Rescan.i > Rescan.n then
+		-- A new cycle: one snapshot of every root's descendants.
+		local items = {}
+		for root in pairs(roots) do
+			if root.Parent then for _, inst in ipairs(root:GetDescendants()) do items[#items + 1] = inst end end
+		end
+		Rescan.items, Rescan.i, Rescan.n = items, 1, #items
+		Rescan.cycles = (Rescan.cycles or 0) + 1
+	end
+	local items, stop = Rescan.items, math.min(Rescan.n, Rescan.i + Rescan.SLICE - 1)
+	for i = Rescan.i, stop do
+		local inst = items[i]
+		items[i] = nil -- drop the reference as we go
+		if inst.Parent then classify(inst) end
+	end
+	Rescan.i = stop + 1
+end
 -- Drop entries whose instance left the world (in place; no new tables).
+local function alive(inst) return inst ~= nil and inst.Parent ~= nil and inst:IsDescendantOf(workspace) end
 local function compact(list, field)
 	local kept = 0
 	for i = 1, #list do
 		local e = list[i]
-		local inst = e[field]
-		if inst and inst.Parent and inst:IsDescendantOf(workspace) then
+		local inst = if field then e[field] else e
+		if alive(inst) then
 			kept += 1
 			list[kept] = e
-		else
-			if inst then World.seen[inst] = nil end
 		end
 	end
 	for i = kept + 1, #list do list[i] = nil end
@@ -360,8 +403,8 @@ local Sky -- forward (cloud sea)
 local function restoreAllSway()
 	for i = 1, #Sway.active do
 		local e = Sway.active[i]
-		if e.base and e.part.Parent then e.part.CFrame = e.base end
-		e.epoch = 0
+		if e.base and e.part.Parent and e.written then e.part.CFrame = e.base end
+		e.epoch, e.written = 0, nil
 	end
 	table.clear(Sway.active)
 	Sway.count = 0
@@ -378,26 +421,62 @@ function Amb.readTier()
 	end
 	return false
 end
-function Amb.readWeather()
+-- The weather attribute is read when it changes (QC H2:
+-- GetAttributeChangedSignal; the 4 Hz context only polls where the signal is
+-- missing, e.g. the headless harness).
+function Amb.readWeatherText()
 	local text = workspace:GetAttribute(L.WEATHER_ATTR)
 	if text ~= Amb.weatherText then
 		Amb.weatherText = text
 		Amb.parsed = L.parseWeather(text)
 	end
+end
+Amb.weatherWatched = pcall(function()
+	workspace:GetAttributeChangedSignal(L.WEATHER_ATTR):Connect(Amb.readWeatherText)
+end)
+function Amb.readWeather()
+	if not Amb.weatherWatched then Amb.readWeatherText() end
 	Amb.weather = L.weatherFor(Amb.parsed, Amb.key)
+end
+-- The island under the player (its Ambience attribute picks the motes, QC M4).
+local function islandUnder(pos)
+	local best, bestD
+	for _, isle in ipairs(World.islands) do
+		local c, r = isle.center, isle.radius
+		local dx, dz = pos.X - c.X, pos.Z - c.Z
+		local d = dx * dx + dz * dz
+		if d <= (r + 2) * (r + 2) and pos.Y > c.Y - 8 and pos.Y < c.Y + 60 and (not bestD or d < bestD) then best, bestD = isle, d end
+	end
+	return best
 end
 function Amb.context()
 	Amb.readTier()
 	local wasReduced = Amb.reduced
 	Amb.reduced = reducedMotion()
 	if Amb.reduced and not wasReduced then restoreAllSway() end
+	Amb.flashing = L.flashingAllowed(player:GetAttribute(L.FLASHING_ATTR), Amb.reduced)
 	Amb.focus = focusNow()
-	Amb.key = L.context({
+	local key = L.context({
 		LairBoss = player:GetAttribute("LairBoss"), RaidRun = player:GetAttribute("RaidRun"), DungeonInRun = player:GetAttribute("DungeonInRun"),
 		MinigameGame = player:GetAttribute("MinigameGame"), IsleRegionHere = player:GetAttribute("IsleRegionHere"),
 	}, Amb.focus)
+	-- QC L4: the director's hold: a new outdoor context must persist
+	-- L.CONTEXT_HOLD seconds; arenas switch at once.
+	local t = os.clock()
+	if key == Amb.key then
+		Amb.pendingKey = nil
+	elseif (L.Profiles[key] and L.Profiles[key].interior) or (L.Profiles[Amb.key] and L.Profiles[Amb.key].interior) or Amb.keySet ~= true then
+		Amb.key, Amb.pendingKey, Amb.keySet = key, nil, true
+	elseif Amb.pendingKey ~= key then
+		Amb.pendingKey, Amb.pendingSince = key, t
+	elseif t - Amb.pendingSince >= L.CONTEXT_HOLD then
+		Amb.key, Amb.pendingKey = key, nil
+	end
 	Amb.interior = L.Profiles[Amb.key] ~= nil and L.Profiles[Amb.key].interior == true
 	Amb.region = A.Regions[Amb.key] or A.Regions[L.DEFAULT_KEY]
+	local isle = islandUnder(Amb.focus)
+	local kind = isle and isle.model:GetAttribute("Ambience")
+	Amb.motes = (type(kind) == "string" and A.ISLAND_MOTES[kind]) or Amb.region.motes
 	Amb.clock = L.clockAt(now(), Data.Calendar)
 	Amb.night = L.dayFactor(Amb.clock) < 0.5
 	Amb.readWeather()
@@ -421,10 +500,32 @@ local function cast(origin, dir)
 	end)
 	return if ok then hit else nil
 end
--- Shelter (a roof within 40 studs) and the ground height under the player (2 Hz).
+-- Shelter (QC H1): inside a building's declared box (the §40 hosts: walk-in
+-- halls are their floor plank plus ShapeBox / ShapeBoxOffset), never a world
+-- raycast (tree canopies, awnings and invisible slot boxes used to stop the
+-- rain, and mesh-only hall roofs did not). The ground height for splashes
+-- still comes from a short downward ray (2 Hz).
+local function sheltered(pos)
+	for _, e in ipairs(World.buildings) do
+		local host = e.part
+		if host.Parent then
+			local size = host:GetAttribute("ShapeBox")
+			if typeof(size) ~= "Vector3" then size = host.Size end
+			local offset = host:GetAttribute("ShapeBoxOffset")
+			local cf = if typeof(offset) == "Vector3" then host.CFrame * CFrame.new(offset) else host.CFrame
+			local reach = size.Magnitude / 2 + A.SHELTER_FEET
+			if (cf.Position - pos).Magnitude <= reach then
+				local l = cf:PointToObjectSpace(pos)
+				if A.insideBox(l.X, l.Y, l.Z, size.X, size.Y, size.Z) then return true end
+			end
+		end
+	end
+	return false
+end
+Amb.shelteredAt = sheltered
 function Amb.probe()
-	local up = cast(Amb.focus + Vector3.new(0, 2, 0), Vector3.new(0, 40, 0))
-	Amb.sheltered = up ~= nil
+	compact(World.buildings, "part")
+	Amb.sheltered = sheltered(Amb.focus)
 	local down = cast(Amb.focus + Vector3.new(0, 3, 0), Vector3.new(0, -60, 0))
 	Amb.groundY = if down then down.Position.Y else Amb.focus.Y - 3
 end
@@ -434,12 +535,15 @@ function Amb.particles()
 	local dx, dz = A.windDir(Amb.tw)
 	local wind = A.windAt(Amb.tw, f.X, f.Z, Amb.region.wind, Amb.weather)
 	local drift = Vector3.new(dx * wind, 0, dz * wind)
-	-- Region motes (or nothing indoors).
-	local motes = fixedEmitter("motes", "air", Vector3.new(90, 36, 90), Amb.region.motes)
+	-- Island / region motes (or nothing indoors). QC M4: this is the only
+	-- camera ambience emitter (regions.client.lua's was retired); the island's
+	-- Ambience attribute picks the preset, else the region's.
+	local kind = Amb.motes or Amb.region.motes
+	local motes = fixedEmitter("motes", "air", Vector3.new(90, 36, 90), kind)
 	if motes then
-		configure(motes, Amb.region.motes)
-		motes.Acceleration = drift * A.Presets[Amb.region.motes].drift + Vector3.new(0, A.Presets[Amb.region.motes].rise or 0, 0)
-		setEmitting(motes, outdoors, A.rateFor(Amb.region.motes, b))
+		configure(motes, kind)
+		motes.Acceleration = drift * A.Presets[kind].drift + Vector3.new(0, A.Presets[kind].rise or 0, 0)
+		setEmitting(motes, outdoors, A.rateFor(kind, b))
 	end
 	-- Fireflies at night where the region has them; falling leaves by day when breezy.
 	local glow = fixedEmitter("fireflies", "air", Vector3.new(90, 36, 90), "fireflies")
@@ -448,7 +552,7 @@ function Amb.particles()
 	local leaves = fixedEmitter("leaves", "air", Vector3.new(90, 36, 90), "leaves")
 	if leaves then
 		leaves.Acceleration = drift * 1.2 + Vector3.new(0, -1.5, 0)
-		local breezy = outdoors and not fireflies and (Amb.weather == "Breezy" or Amb.weather == "Storm") and Amb.region.motes ~= "leaves"
+		local breezy = outdoors and not fireflies and (Amb.weather == "Breezy" or Amb.weather == "Storm") and kind ~= "leaves"
 		setEmitting(leaves, breezy, A.rateFor("leaves", b) * (if Amb.weather == "Storm" then 2 else 1))
 	end
 	-- Rain / snow, splashes (not under a roof), fog banks.
@@ -477,13 +581,22 @@ function Amb.particles()
 			setEmitting(fog, foggy, b.fog * (if Amb.weather == "Fog" then 1 else 0.5))
 		end
 	end
-	-- Anchors follow the player (the emitters' particles stay in world space).
-	local air, sky, ground, fogA = Pools.anchors.air, Pools.anchors.sky, Pools.anchors.ground, Pools.anchors.fog
-	if air then air.CFrame = CFrame.new(f + Vector3.new(0, 8, 0)) end
-	if sky then sky.CFrame = CFrame.new(f + Vector3.new(drift.X * -3, 40, drift.Z * -3)) end
-	if ground then ground.CFrame = CFrame.new(f.X, Amb.groundY + 0.15, f.Z) end
-	if fogA then fogA.CFrame = CFrame.new(f + Vector3.new(0, 4, 0)) end
+	Amb.driftX, Amb.driftZ = drift.X, drift.Z
 end
+-- FRAME-BEGIN anchors
+-- QC L10: the emitter anchors follow the player every frame (4 CFrame writes),
+-- so a sprinting or gliding player never outruns the rain box.
+function Amb.anchorsFrame()
+	local root = rootPart()
+	local f = if root then root.CFrame.Position else Amb.focus
+	local anchors = Pools.anchors
+	local air, sky, ground, fogA = anchors.air, anchors.sky, anchors.ground, anchors.fog
+	if air then air.CFrame = CFrame.new(f.X, f.Y + 8, f.Z) end
+	if sky then sky.CFrame = CFrame.new(f.X - Amb.driftX * 3, f.Y + 40, f.Z - Amb.driftZ * 3) end
+	if ground then ground.CFrame = CFrame.new(f.X, Amb.groundY + 0.15, f.Z) end
+	if fogA then fogA.CFrame = CFrame.new(f.X, f.Y + 4, f.Z) end
+end
+-- FRAME-END anchors
 
 ------------------------------------------------------------------------------
 -- Cloud sea: 1-3 big textured layers below the isles, snapped to the tile
@@ -538,9 +651,18 @@ local function dist2(p, f)
 	local dx, dy, dz = p.X - f.X, p.Y - f.Y, p.Z - f.Z
 	return dx * dx + dy * dy + dz * dz
 end
+local function ltmRaw(part) return part.LocalTransparencyModifier end
+local function isHidden(part)
+	local ok, v = pcall(ltmRaw, part)
+	return ok and type(v) == "number" and v >= 1
+end
 -- Capture a swayer's rest frame and pivot when it (re)activates.
-local function arm(e)
-	local cf, size = e.part.CFrame, e.part.Size
+local function arm(e, rest)
+	local cf, size = rest or e.part.CFrame, e.part.Size
+	if e.host and e.host:IsA("BasePart") then
+		e.hostCF = e.host.CFrame
+		e.rel = e.hostCF:ToObjectSpace(cf)
+	end
 	local mode = e.def.mode
 	local top = mode == "banner" or mode == "lantern"
 	local pp = (cf * CFrame.new(0, if top then size.Y / 2 else -size.Y / 2, 0)).Position
@@ -551,8 +673,29 @@ function Sway.select()
 	local n = compact(Sway.list, "part")
 	for i = 1, n do
 		local e = Sway.list[i]
-		if e.epoch == 0 then e.pos = e.part.CFrame.Position end
-		e.d2 = dist2(e.pos, f)
+		local part = e.part
+		-- QC M3: the host moved (the forge re-places the clone with it): the
+		-- rest frame follows the host (read from the host, since our own sway
+		-- write may already have replaced the forge's). Any other writer is
+		-- caught by comparing the clone with our last write.
+		if e.epoch ~= 0 and e.hostCF and e.host.Parent and e.host.CFrame ~= e.hostCF then
+			arm(e, e.host.CFrame * e.rel)
+			if e.written then part.CFrame = e.base end
+			e.written = nil
+		elseif e.epoch ~= 0 and e.written then
+			local cf = part.CFrame
+			if (cf.Position - e.written.Position).Magnitude > 0.01 or cf.UpVector:Dot(e.written.UpVector) < 0.99999 then
+				e.epoch, e.written = 0, nil
+			end
+		end
+		if e.epoch == 0 then e.pos = part.CFrame.Position end
+		-- QC M2: a hidden prop (a depleted node, gather.client.lua) and a host
+		-- that came loose (QC M3) never sway.
+		if isHidden(part) or (e.host and e.host.Parent and e.host.Anchored == false) then
+			e.d2 = math.huge
+		else
+			e.d2 = dist2(e.pos, f)
+		end
 	end
 	-- The previous active set becomes `prev`; the new one is chosen into `active`.
 	Sway.prev, Sway.active = Sway.active, Sway.prev
@@ -567,8 +710,8 @@ function Sway.select()
 	for i = 1, #Sway.prev do
 		local e = Sway.prev[i]
 		if e.epoch ~= Sway.epoch then
-			if e.base and e.part.Parent then e.part.CFrame = e.base end
-			e.epoch = 0
+			if e.base and e.part.Parent and e.written then e.part.CFrame = e.base end
+			e.epoch, e.written = 0, nil
 		end
 	end
 	table.clear(Sway.prev)
@@ -702,6 +845,13 @@ local function foamPart(i, kind)
 	end
 	return e
 end
+-- QC L5: a still frame (reduced motion) is written once per placement.
+local function setFoam(e, center, radius, angle, y)
+	if e.center ~= center or e.radius ~= radius or e.angle ~= angle or e.y ~= y then
+		e.center, e.radius, e.angle, e.y = center, radius, angle, y
+		Foam.placed = false
+	end
+end
 function Amb.selectFoam()
 	local b, f = Amb.b, Amb.focus
 	local used = 0
@@ -719,7 +869,7 @@ function Amb.selectFoam()
 			for j = 1, k do
 				local e = foamPart(used + j, "pond")
 				if e then
-					e.center, e.radius, e.angle, e.y = pond.CFrame.Position, r + 0.05, (j - 1) * 2 * math.pi / k, pond.CFrame.Position.Y + pond.Size.X / 2 + 0.03
+					setFoam(e, pond.CFrame.Position, r + 0.05, (j - 1) * 2 * math.pi / k, pond.CFrame.Position.Y + pond.Size.X / 2 + 0.03)
 				end
 			end
 			used += k
@@ -743,7 +893,7 @@ function Amb.selectFoam()
 			for j = 1, k do
 				local e = foamPart(used + j, "isle")
 				if e then
-					e.center, e.radius, e.angle, e.y = isle.center, isle.radius + 1.6, (j - 1) * 2 * math.pi / k + i, isle.center.Y - 1.1
+					setFoam(e, isle.center, isle.radius + 1.6, (j - 1) * 2 * math.pi / k + i, isle.center.Y - 1.1)
 					if math.abs(e.part.Size.Y - width) > 0.05 then e.part.Size = Vector3.new(0.35, width, width) end
 				end
 			end
@@ -754,7 +904,9 @@ function Amb.selectFoam()
 		local e = Foam.list[i]
 		if e then e.part.CFrame = PARK end
 	end
-	Foam.count = math.min(used, #Foam.list)
+	local count = math.min(used, #Foam.list)
+	if count ~= Foam.count then Foam.placed = false end
+	Foam.count = count
 end
 
 -- Flocks: boids around the nearest landmarks (birds; butterflies on meadow
@@ -833,6 +985,7 @@ end
 function Sway.frame()
 	local n, active, parts, cframes = Sway.count or 0, Sway.active, Sway.parts, Sway.cframes
 	local t, base, weather = Amb.tw, Amb.region.wind, Amb.weather
+	-- QC M6: the wind direction once per frame, not once per prop.
 	local dx, dz = A.windDir(t)
 	local axis = Vector3.new(dz, 0, -dx)
 	local m = 0
@@ -840,11 +993,15 @@ function Sway.frame()
 		local e = active[i]
 		if e and e.off then
 			local p = e.pivot
-			local wind = A.windAt(t, p.X, p.Z, base, weather)
+			local wind = A.windAtDir(t, p.X, p.Z, base, weather, dx, dz)
 			local lean, twist = A.swayAngles(e.def, t, wind, e.phase, false)
+			local rot = CFrame.fromAxisAngle(axis, lean * e.sign)
+			if twist ~= 0 then rot *= CFrame.Angles(0, twist, 0) end -- only banners twist
+			local cf = (rot + p) * e.off
 			m += 1
 			parts[m] = e.part
-			cframes[m] = (CFrame.fromAxisAngle(axis, lean * e.sign) * CFrame.Angles(0, twist, 0) + p) * e.off
+			cframes[m] = cf
+			e.written = cf
 		end
 	end
 	moveAll(parts, cframes, m, Sway.last)
@@ -855,6 +1012,8 @@ end
 -- FRAME-BEGIN foam
 function Foam.frame()
 	local t, still = Amb.tw, Amb.reduced
+	if still and Foam.placed then return end
+	Foam.writes = (Foam.writes or 0) + 1
 	local parts, cframes = Foam.parts, Foam.cframes
 	local m = 0
 	for i = 1, Foam.count do
@@ -871,6 +1030,7 @@ function Foam.frame()
 	end
 	moveAll(parts, cframes, m, Foam.last)
 	Foam.last = m
+	Foam.placed = still
 end
 -- FRAME-END foam
 
@@ -1037,9 +1197,10 @@ function Amb.rareDrop(rarity)
 	for i = 1, Amb.b.beams do
 		local e = FX.beams[i]
 		if not e then
+			-- QC L9: a pillar is two parts; never create a lone core past the cap.
+			if Amb.partsMade + 2 > Amb.b.parts then break end
 			local core = newPart("Rarity pillar", Vector3.new(1, 1, 1), Color3.new(1, 1, 1), Enum.Material.Neon, 0.25, Enum.PartType.Cylinder)
 			local halo = newPart("Rarity halo", Vector3.new(1, 1, 1), Color3.new(1, 1, 1), Enum.Material.ForceField, 0.2, Enum.PartType.Cylinder)
-			if not core or not halo then break end
 			e = {core = core, halo = halo, on = false, t0 = 0}
 			FX.beams[i] = e
 		end
@@ -1106,7 +1267,7 @@ function Amb.strike(region, at)
 	if region ~= Amb.key or Amb.interior then return end
 	local delay = 0.8 + 1.6 * A.hash(math.floor(at * 10), 7)
 	Amb.cue("thunder", region, delay)
-	if Amb.reduced or Amb.b.bolts <= 0 then return end
+	if not Amb.flashing or Amb.b.bolts <= 0 then return end -- reduced motion / Flashing effects off (QC L6)
 	local bolt = FX.bolt
 	if not bolt.parts then
 		bolt.parts = {}
@@ -1182,7 +1343,7 @@ function FX.frame()
 	local bolt = FX.bolt
 	if bolt.on and bolt.parts then
 		local flash = L.flashAt(now() - bolt.at)
-		local show = flash > 0.3 and not Amb.reduced
+		local show = flash > 0.3 and Amb.flashing
 		for i = 1, #bolt.parts do bolt.parts[i].Transparency = if show then 0.05 else 1 end
 		if flash <= 0 then bolt.on = false end
 	end
@@ -1219,13 +1380,16 @@ connect(bindable("IsleSnapshotLocal"), "Event", function(snap) pcall(Amb.snapsho
 -- Main loop.
 ------------------------------------------------------------------------------
 local CONTEXT_STEP, SELECT_STEP, RESCAN_STEP = 0.25, 0.5, 10
+Amb.cursor = A.newStrikeCursor()
+Amb.swayFrame = function() Sway.frame() end -- the suite times one update (QC M6)
 local acc = {context = CONTEXT_STEP, select = SELECT_STEP, rescan = 0, sway = 0}
 Amb.acc = acc
 function Amb.step(dt)
 	dt = tonumber(dt) or 0
 	if dt ~= dt or dt < 0 then dt = 0 end
 	if dt > 0.25 then dt = 0.25 end
-	Amb.tw = (now() - A.EPOCH) % 86400
+	local t = now()
+	Amb.tw = t - A.EPOCH -- QC L3: no daily wrap (the gust field never jumps)
 	acc.context += dt; acc.select += dt; acc.rescan += dt; acc.sway += dt
 	if acc.context >= CONTEXT_STEP then
 		local frame = acc.context
@@ -1233,11 +1397,12 @@ function Amb.step(dt)
 		Amb.context()
 		Amb.particles()
 		Sky.update(frame)
-		local p = Amb.parsed
-		if p and p.strikeAt and p.strikeAt ~= Amb.strikeSeen then
-			Amb.strikeSeen = p.strikeAt
-			if now() - p.strikeAt < 1.5 then Amb.strike(p.strikeRegion, p.strikeAt) end
-		end
+	end
+	-- QC H2: lightning from the shared schedule on server time, on the frame it
+	-- is due (no attribute round trip); the attribute only names the storm.
+	if Amb.parsed and not Amb.interior and L.weatherFor(Amb.parsed, Amb.key) == "Storm" then
+		local at = A.strikeDue(Amb.cursor, t, Amb.key, A.STRIKE_GRACE)
+		if at then Amb.strike(Amb.key, at) end
 	end
 	if acc.select >= SELECT_STEP then
 		acc.select = 0
@@ -1247,17 +1412,21 @@ function Amb.step(dt)
 		Amb.selectFalls()
 		Amb.selectFoam()
 		Amb.selectFlocks()
+		Rescan.step()
+		compact(World.nodes, nil)
 	end
 	if acc.rescan >= RESCAN_STEP then
 		acc.rescan = 0
 		scanRoots()
 	end
+	-- QC M6: sway and foam both run at the tier's sway rate.
 	if acc.sway >= 1 / Amb.b.swayHz then
 		acc.sway = 0
 		if not Amb.reduced then Sway.frame() end
+		Foam.frame()
 	end
+	Amb.anchorsFrame()
 	Sky.frame(dt)
-	Foam.frame()
 	Flock.frame(dt)
 	FX.frame()
 end
