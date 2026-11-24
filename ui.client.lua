@@ -6731,6 +6731,240 @@ Pages.drawMastery=MS.draw
 end
 
 ------------------------------------------------------------------------------
+-- Menu › Hearts (§46): Heart of the Deep (Mining), Rootheart (Woodcutting) and
+-- Loamheart (Farming). A Skyforge lattice of hexagonal perks on seven tier rows
+-- (tier 1 at the foot, as a heart grows up from the roots), the tier progress
+-- bar, the currency, the selected perk's tooltip card (now / next effect,
+-- cost, gates, Level up), the ability slot (Activate, cooldown sweep; key G)
+-- and respec with a confirm. Every button sends a validated verb
+-- (heartPerk / heartRespec / heartAbility); numbers come from the snapshot
+-- (`hearts`) and Data.Hearts. State lives in one table (local limit).
+------------------------------------------------------------------------------
+do
+local HS={tree="Mining",perk=nil,confirm=nil,timers={},drawnAt=0}
+Pages.hearts=HS
+-- QC L1: live countdowns (GD.timers pattern): fn(elapsed since the draw) -> text, done.
+function HS.timer(lbl,fn)
+	table.insert(HS.timers,{label=lbl,fn=fn})
+	lbl.Text=(fn(os.clock()-HS.drawnAt))
+	return lbl
+end
+function HS.hex6(tree) return type(tree.color)=="string" and #tree.color==6 and tree.color or "F3C66E" end
+function HS.data() return Data and type(Data.Hearts)=="table" and Data.Hearts or nil end
+function HS.view(id) return tbl(tbl(tbl(state.hearts).trees)[id]) end
+local look={owned={"MAXED","7FE3CC"},available={"AVAILABLE","F3C66E"},open={"NEED CURRENCY","A9BDC1"},locked={"LOCKED","E8806A"}}
+function HS.glyph(ht,perk)
+	local e=tbl(ht.Effects)[perk.effect]
+	return type(e.glyph)=="string" and e.glyph or "◆"
+end
+-- One hexagon (three rotated bars) with a transparent button over it.
+function HS.hex(parent,cx,cy,size,fill,edge,edgeT,name)
+	local holder=make("Frame",parent,{Name=name.."Hex",BackgroundTransparency=1,AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromOffset(cx,cy),Size=UDim2.fromOffset(size,size),ZIndex=2})
+	local h=math.floor(size*.577+.5)
+	for i,rot in ipairs({0,60,120}) do
+		local bar=make("Frame",holder,{Name="Side"..i,AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),Size=UDim2.fromOffset(size,h),
+			Rotation=rot,BackgroundColor3=fill,BorderSizePixel=0,ZIndex=2})
+		make("UIStroke",bar,{Color=edge,Thickness=1,Transparency=edgeT})
+	end
+	local b=make("TextButton",parent,{Name=name,Text="",AutoButtonColor=false,Selectable=true,BackgroundTransparency=1,BorderSizePixel=0,
+		AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromOffset(cx,cy),Size=UDim2.fromOffset(size,size),ZIndex=4})
+	return b,holder
+end
+-- The lattice: tier bands (tier 7 on top), links, then perk hexes.
+function HS.canvas(ht,tree,tv)
+	local width=contentWidth()
+	local rowH=compactAtlas and 60 or 70
+	local size=compactAtlas and UI.TOUCH or 52
+	local tiers=num(ht.MAX_TIER,7)
+	local holder=container(tiers*rowH+16)
+	holder.Name="HeartCanvas"
+	holder.BackgroundColor3=track
+	holder.BackgroundTransparency=.3
+	make("UICorner",holder,{CornerRadius=UDim.new(0,7)})
+	make("UIStroke",holder,{Color=UI.line,Thickness=1})
+	local hex=HS.hex6(tree)
+	local tier=num(tv.tier,1)
+	local gutter=compactAtlas and 30 or 40
+	local colW=(width-16-gutter)/5
+	local function center(perk) return 8+gutter+(num(perk.x,3)-.5)*colW,8+(tiers-num(perk.tier,1)+.5)*rowH end
+	for t=1,tiers do
+		local y=8+(tiers-t)*rowH
+		local open=t<=tier
+		local band=make("Frame",holder,{Name="Tier"..t,Position=UDim2.fromOffset(4,y+2),Size=UDim2.new(1,-8,0,rowH-4),BorderSizePixel=0,
+			BackgroundColor3=open and hex or deep,BackgroundTransparency=open and .9 or .5})
+		make("UICorner",band,{CornerRadius=UDim.new(0,6)})
+		local tag=label(band,"T"..t,4,0,UDim.new(0,gutter-6),rowH-4,UI.heavy,compactAtlas and 11 or 13,open and ivory or muted)
+		tag.Name="TierTag"
+	end
+	local levels,states=tbl(tv.perks),tbl(tv.states)
+	for _,perk in ipairs(tree.perks) do
+		for _,reqId in ipairs(tbl(perk.requires)) do
+			local req=tree.PerkById[reqId]
+			if req then
+				local x1,y1=center(req)
+				local x2,y2=center(perk)
+				local dx,dy=x2-x1,y2-y1
+				local lit=num(levels[perk.id],0)>0 and num(levels[reqId],0)>0
+				local ready=num(levels[reqId],0)>0
+				make("Frame",holder,{Name="Link",AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromOffset((x1+x2)/2,(y1+y2)/2),
+					Size=UDim2.fromOffset(math.sqrt(dx*dx+dy*dy),lit and 3 or 2),Rotation=math.deg(math.atan2(dy,dx)),BorderSizePixel=0,ZIndex=1,
+					BackgroundColor3=lit and rgb(hex) or (ready and UI.brass or UI.line),BackgroundTransparency=lit and 0 or .3})
+			end
+		end
+	end
+	for _,perk in ipairs(tree.perks) do
+		local cx,cy=center(perk)
+		local have=math.floor(num(levels[perk.id],0))
+		local st=type(states[perk.id])=="string" and states[perk.id] or "locked"
+		local on=HS.perk==perk.id
+		local fill=if have>0 then rgb(hex) elseif st=="available" then slate elseif st=="open" then deep else track
+		local edge=if on then ivory elseif st=="available" or perk.effect=="ability" then gold else UI.line
+		local b=HS.hex(holder,cx,cy,size,fill,edge,st=="locked" and .5 or 0,"HeartPerk"..perk.id)
+		local glyph=label(b,HS.glyph(ht,perk),0,0,full,size-12,UI.heavy,compactAtlas and 15 or 18,st=="locked" and muted or UI.white)
+		glyph.Size=UDim2.new(1,0,1,-12)
+		glyph.TextXAlignment=Enum.TextXAlignment.Center
+		glyph.TextStrokeTransparency=.4
+		glyph.TextStrokeColor3=deep
+		glyph.ZIndex=5
+		local pip=label(b,have.."/"..num(perk.max,1),0,0,full,12,UI.heavy,10,st=="locked" and muted or ivory)
+		pip.Name="Level"
+		pip.Position=UDim2.new(0,0,1,-14)
+		pip.TextXAlignment=Enum.TextXAlignment.Center
+		pip.TextStrokeTransparency=.3
+		pip.TextStrokeColor3=deep
+		pip.ZIndex=5
+		pressable(b)
+		b.Activated:Connect(function()
+			HS.perk=if HS.perk==perk.id then nil else perk.id
+			render()
+		end)
+	end
+	return holder
+end
+-- Tooltip card for the selected perk: effect now / next, cost, gates.
+function HS.tooltip(ht,tree,tv,perk)
+	local levels,states=tbl(tv.perks),tbl(tv.states)
+	local have=math.floor(num(levels[perk.id],0))
+	local st=type(states[perk.id])=="string" and states[perk.id] or "locked"
+	local tag=look[st] or look.locked
+	local lines={}
+	if perk.effect=="ability" then
+		table.insert(lines,paint(escape(ht.abilityText(tree,{perks={}})),"F9CC77"))
+	else
+		if have>0 then table.insert(lines,"Now: "..paint(escape(ht.effectText(tree,perk.effect,perk.per*have)),"9EE7D2")) end
+		if have<num(perk.max,1) then table.insert(lines,(have>0 and "Next: " or "Level 1: ")..paint(escape(ht.effectText(tree,perk.effect,perk.per*(have+1))),"F9CC77")) end
+		table.insert(lines,"Max: "..escape(ht.effectText(tree,perk.effect,perk.per*num(perk.max,1))).."   ·   tree cap "..fmt(num(tbl(tree.caps)[perk.effect],0)))
+	end
+	local cost=have<num(perk.max,1) and ht.cost(perk,have+1) or 0
+	if cost>0 then table.insert(lines,(num(tv.dust,0)>=cost and check or cross).." Cost: "..fmt(cost).." "..escape(tree.currency)) end
+	table.insert(lines,(num(tv.tier,1)>=perk.tier and check or cross).." "..escape(tree.name).." tier "..perk.tier)
+	local reqs={}
+	for _,id in ipairs(tbl(perk.requires)) do
+		local req=tree.PerkById[id]
+		if req then table.insert(reqs,(num(levels[id],0)>0 and check or cross).." "..escape(req.name)) end
+	end
+	if #reqs>0 then table.insert(lines,"Linked to any: "..table.concat(reqs,"  ")) end
+	local reason=nil
+	if st=="owned" then reason=perk.name.." is maxed."
+	elseif st~="available" then reason=if num(tv.tier,1)<perk.tier then "Opens at tier "..perk.tier.."." elseif st=="locked" then "Unlock a linked perk first." else "Not enough "..tree.currency.."." end
+	card({name="HeartPerkTooltip",accent=rgb(HS.hex6(tree)),motif="Hero",title=escape(perk.name),titleColor=perk.effect=="ability" and gold or rgb(lighten(HS.hex6(tree),.25)),
+		subtitle=(perk.effect=="ability" and "Ability slot" or ("Level "..have.." / "..num(perk.max,1))).."   ·   "..escape(tree.name),
+		badge=paint(tag[1],tag[2]),badgeColor=rgb(tag[2]),lines=lines,
+		actions={{caption=have>0 and "Level up" or "Unlock",primary=reason==nil,disabled=reason~=nil,reason=reason,name="HeartPerkBuy",
+			fn=function() send("heartPerk",tree.id..":"..perk.id) end}}})
+end
+function HS.abilityCard(ht,tree,tv)
+	local av=tbl(tv.ability)
+	local unlocked=av.unlocked==true
+	local since=os.clock()-(HS.snapAt or os.clock())
+	local cooldown,active=math.max(0,num(av.cooldown,0)-since),math.max(0,num(av.active,0)-since)
+	local reason=if not unlocked then "Unlock "..tree.ability.name.." on tier 3 first." elseif cooldown>0 then tree.ability.name.." recharges in "..math.ceil(cooldown).."s." else nil
+	heading("ABILITY    /    "..string.upper(tree.ability.name).."  ·  KEY G")
+	card({name="HeartAbility",motif="Hero",accent=gold,title=escape(tree.ability.name),titleColor=gold,
+		subtitle=active>0 and paint("ACTIVE · "..math.ceil(active).."s left","7FE3CC") or (unlocked and (cooldown>0 and ("Recharging · "..math.ceil(cooldown).."s") or "Ready") or "Locked"),
+		badge=unlocked and (cooldown>0 and (math.ceil(cooldown).."s") or "READY") or "LOCKED",badgeColor=unlocked and (cooldown>0 and muted or mint) or ember,
+		detail=escape(ht.abilityText(tree,{perks=tbl(tv.perks)})).."  Recharge "..fmt(num(av.recharge,0)).."s.",
+		bar=unlocked and cooldown>0 and {fraction=1-math.clamp(cooldown/math.max(1,num(av.recharge,1)),0,1),color=gold,caption="Recharging"} or nil,
+		after=function(body,nextOrder)
+			local t=label(body,"",0,0,full,18,UI.heavy,13,ivory)
+			t.Name="HeartAbilityTimer"
+			t.LayoutOrder=nextOrder()
+			HS.timer(t,function(elapsed)
+				local act,cd=num(av.active,0)-elapsed,num(av.cooldown,0)-elapsed
+				if not unlocked then return "Locked",true end
+				if act>0 then return "ACTIVE · "..math.ceil(act).."s left",false end
+				if cd>0 then return "Recharging · "..math.ceil(cd).."s",false end
+				return "Ready · press G",num(av.cooldown,0)>0 and cooldown>0
+			end)
+		end,
+		actions={{caption="Activate",primary=reason==nil,disabled=reason~=nil,reason=reason,name="HeartAbilityUse",fn=function() send("heartAbility",tree.id) end}}})
+end
+function HS.draw()
+	table.clear(HS.timers)
+	-- Countdowns run from the snapshot's arrival (a redraw never restarts them).
+	if state.hearts~=HS.snap then HS.snap,HS.snapAt=state.hearts,os.clock() end
+	HS.drawnAt=HS.snapAt or os.clock()
+	local ht=HS.data()
+	if not ht or type(ht.Trees)~="table" then dataMissing() return end
+	if not ht.Trees[HS.tree] then HS.tree=ht.Order[1] end
+	local tree=ht.Trees[HS.tree]
+	local tv=HS.view(tree.id)
+	local synced=next(tv)~=nil
+	local hex=HS.hex6(tree)
+	sectionBar(ht.Order,HS.tree,function(name) HS.tree=name;HS.perk=nil;HS.confirm=nil;render() end,{small=true,prefix="HeartTree"})
+	local tier,xp=num(tv.tier,1),num(tv.xp,0)
+	local floorXp,nextAt=num(tv.floor,0),tv.nextAt
+	local b=tbl(tv.bonus)
+	local summary={}
+	for _,key in ipairs({"speed","fortune","regrowth","dust"}) do
+		if num(b[key],0)>0 then table.insert(summary,escape(ht.effectText(tree,key,num(b[key],0)))) end
+	end
+	card({name="HeartSummary",accent=rgb(hex),motif="Hero",icon=function(parent,size) return titleArt(parent,tree.skill,size,"Hero") end,
+		title=escape(tree.name),titleColor=rgb(lighten(hex,.25)),subtitle=escape(tree.skill).." heart   ·   tier "..tier.." / "..num(ht.MAX_TIER,7),
+		badge=fmt(num(tv.dust,0)).." "..escape(tree.currency),badgeColor=gold,detail=escape(tree.blurb or ""),
+		lines={#summary>0 and ("Active: "..table.concat(summary,"  ·  ")) or "No perks yet: break "..string.lower(tree.skill).." nodes to earn "..escape(tree.currency)..".",
+			fmt(num(tv.earned,0)).." "..escape(tree.currency).." earned   ·   "..fmt(num(tv.spent,0)).." spent"..(synced and "" or "   ·   syncing")},
+		bar={fraction=if nextAt then math.clamp((xp-floorXp)/math.max(1,num(nextAt,1)-floorXp),0,1) else 1,color=rgb(hex),
+			caption=if nextAt then ("Heart XP "..fmt(xp).." / "..fmt(num(nextAt,0)).."  ·  tier "..(tier+1).." next") else ("Heart XP "..fmt(xp).."  ·  every tier open")}})
+	heading(string.upper(tree.name).."    /    TAP A PERK")
+	HS.canvas(ht,tree,tv)
+	local perk=HS.perk and tree.PerkById[HS.perk]
+	if perk then HS.tooltip(ht,tree,tv,perk) end
+	HS.abilityCard(ht,tree,tv)
+	local fee,refund,spent=num(tv.respecFee,0),num(tv.respecRefund,0),num(tv.spent,0)
+	local actions={}
+	if HS.confirm==tree.id then
+		table.insert(actions,{caption="Keep",name="HeartRespecCancel",fn=function() HS.confirm=nil;render() end})
+		table.insert(actions,{caption="Reset for "..fmt(fee),name="HeartRespecConfirm",primary=true,disabled=num(state.coins,0)<fee,reason="Resetting costs "..fmt(fee).." coins.",
+			fn=function() HS.confirm=nil;send("heartRespec",tree.id) end})
+	else
+		table.insert(actions,{caption="Respec",name="HeartRespec",disabled=spent<=0,reason="Nothing to reset yet.",fn=function() HS.confirm=tree.id;render() end})
+	end
+	card({name="HeartRespecCard",motif="Hero",title="Respec",titleColor=ivory,
+		subtitle=fmt(fee).." coins   ·   refunds "..fmt(refund).." of "..fmt(spent).." "..escape(tree.currency),
+		lines={HS.confirm==tree.id and paint("Every perk is cleared; "..math.floor(num(tbl(ht.RESPEC).refund,0)*100).."% of the "..tree.currency.." comes back.","F9CC77") or ("Costs "..fmt(num(tbl(ht.RESPEC).coinsPerTier,0)).." coins per tier and keeps "..math.floor(num(tbl(ht.RESPEC).refund,0)*100).."% of the spent "..tree.currency..".")},
+		actions=actions})
+end
+Pages.drawHearts=HS.draw
+-- One 1 s loop for the page's countdowns; a cooldown reaching zero redraws
+-- once so Activate turns back on.
+function HS.tick()
+	if #HS.timers==0 or not atlas.Visible or current~="Menu" or not sectionOf or sectionOf.Menu~="Hearts" then return false end
+	local elapsed=os.clock()-HS.drawnAt
+	local redraw=false
+	for _,t in ipairs(HS.timers) do
+		local ok,text,ready=pcall(t.fn,elapsed)
+		if ok then t.label.Text=text; if ready then redraw=true end end
+	end
+	if redraw then render() end
+	return true
+end
+task.spawn(function()
+	while task.wait(1) do HS.tick() end
+end)
+end
+
+------------------------------------------------------------------------------
 -- Workshop › Garden (Farming Depth team): the Verdant Garden. A summary card
 -- (garden level, plots, Marks, Dust, bulk harvest/water) and five views:
 -- Plots (a 12-tile grid with stage, timer, water/compost/blight/pest chips; the
@@ -9996,6 +10230,7 @@ local MENU={
 	{id="Chart",title="Sky Chart",motif="Map",hud="warpmap"},{id="Settings",motif="Settings",tab="Menu",section="Settings"},
 	{id="Renown",title="Isle Renown",motif="Journal",tab="Menu",section="Renown"}, -- §31 MMO Features
 	{id="Feats",title="Combat Feats",motif="Hunt",tab="Menu",section="Feats"}, -- §45 Combat Feats
+	{id="Hearts",title="Gathering Hearts",motif="Hero",tab="Menu",section="Hearts"}, -- §46 Heart of the Deep, Rootheart, Loamheart
 }
 local function caption(id)
 	local d=depth() or EMPTY
@@ -10012,6 +10247,7 @@ local function caption(id)
 	elseif id=="Chart" then return "Warp map · M"
 	elseif id=="Renown" then local r=tbl(state.renown) return "Level "..fmt(num(r.level,0)).."  ·  "..tostring(r.title or "Driftling")
 	elseif id=="Feats" then local f=tbl(state.feats) local FT=Data and Data.Feats local t=FT and FT.Tiers[num(f.tier,0)] return fmt(num(f.points,0)).." points  ·  "..(t and t.name or "No tier")
+	elseif id=="Hearts" then local best=0 for _,t in pairs(tbl(tbl(state.hearts).trees)) do best=math.max(best,num(tbl(t).tier,0)) end return best>0 and ("Highest heart tier "..best.."  ·  key G") or "Mining, woodcutting & farming trees" -- §46
 	end
 	return "Preferences"
 end
@@ -10198,7 +10434,7 @@ function Pages.drawSettings()
 			actions={{caption=tipsOn and "Turn tips off" or "Turn tips on",primary=not tipsOn,name="TutorialTips",fn=function() UI.tutorialSend(tipsOn and "tips:off" or "tips:on") end},
 				{caption="Replay tutorial",name="TutorialReplay",fn=function() UI.tutorialSend("replay") end}}})
 	end
-	card({name="SettingKeys",motif="Journal",title="Keys",detail="J  menu & atlas   ·   E / Tab  satchel   ·   M  Sky Chart (warp map)   ·   right-click (long-press) an item for its options   ·   drag items to reorder"})
+	card({name="SettingKeys",motif="Journal",title="Keys",detail="J  menu & atlas   ·   E / Tab  satchel   ·   M  Sky Chart (warp map)   ·   G  heart ability (Menu › Hearts)   ·   right-click (long-press) an item for its options   ·   drag items to reorder"})
 end
 end
 
@@ -10363,7 +10599,7 @@ end
 ------------------------------------------------------------------------------
 local tabOrder={"Menu","Journal","Hero","Satchel","Workshop","Hunt","Ledger"}
 local sectionLists={
-	Menu={"Home","Renown","Feats","Resonance","Settings"}, -- §31: Renown, Resonance; §45: Feats
+	Menu={"Home","Renown","Feats","Resonance","Hearts","Settings"}, -- §31: Renown, Resonance; §45: Feats; §46: Hearts (gathering trees)
 	Journal={"Bearing","Quests","Helper","Goals","Diaries","Construction","Regions","Crew","Calendar","Council","Agility","Commissions","Collection Log","Museum","Motes","Factions"}, -- §33: Helper, Goals
 	Hero={"Skills","Mastery","Gear","Wardrobe","Combat","Spellbook","Prayer","Enchant","Lectern","Reforge","Accessories","Pets","Calculator"}, -- §33: Calculator; §41: Wardrobe, Lectern
 	Satchel={"Items","Collections","Trails"},
@@ -10373,7 +10609,7 @@ local sectionLists={
 }
 sectionOf={Menu="Home",Journal="Bearing",Hero="Skills",Satchel="Items",Workshop="Forge",Hunt="Slayer",Ledger="Bank"}
 local drawers={
-	Menu={Home=function() Pages.drawMenu() end,Renown=function() Pages.drawRenown() end,Feats=function() Pages.drawFeats() end,Resonance=function() Pages.drawResonance() end,Settings=function() Pages.drawSettings() end},
+	Menu={Home=function() Pages.drawMenu() end,Renown=function() Pages.drawRenown() end,Feats=function() Pages.drawFeats() end,Resonance=function() Pages.drawResonance() end,Hearts=function() Pages.drawHearts() end,Settings=function() Pages.drawSettings() end},
 	Journal={Bearing=Pages.drawBearing,Quests=Pages.drawQuests,Diaries=Pages.drawDiaries,Construction=Pages.drawConstruction,Regions=Pages.drawRegions,Crew=Pages.drawCoop,Calendar=Pages.drawCalendar,Council=function() Pages.drawCouncil() end,Agility=Pages.drawAgility,
 		Commissions=Pages.drawCommissions,["Collection Log"]=Pages.drawCollectionLog,Museum=Pages.drawMuseum, -- Commissions & Logs
 		Motes=Pages.drawMotes,Factions=Pages.drawFactions, -- Exploration & Factions
@@ -10779,6 +11015,7 @@ UI.relay={equip=true,unequip=true,consume=true,sell=true,accessory=true,petAdopt
 	rqBuy=true,skillBuy=true,petShop=true,resonanceSet=true,guideClaim=true, -- §31
 	helperPin=true,goalSet=true,goalRemove=true,goalClear=true,priceCheck=true, -- §33
 	prayerQuickToggle=true, -- §34
+	heartAbility=true, -- §46 hearts.client.lua: the ability key G / HUD chip (the server checks the cooldown)
 	tutorial=true, -- §43 coach cards (tutorial.client.lua): dismiss / next / skip / replay / tips (sent by UI.tutorialSend: no queue / gap)
 	raidHost=true,raidJoin=true,raidLeave=true,raidReady=true,raidChallenge=true,raidStart=true,raidUse=true,raidTitle=true} -- §38 raid.client.lua (party board, raid HUD, Raid Log). §34 quick-prayer orb (one atomic verb, queued, never dropped). Earlier: quantity picker (features.client.lua), Resonance, Path rewards
 local remote = ReplicatedStorage:WaitForChild("IsleAction")

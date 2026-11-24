@@ -85,12 +85,19 @@ for name, def in pairs(Core.GESTURES) do
 	if def.intro then
 		eq(next(def.intro[1].pose), nil, name .. " intro starts from rest")
 		eq(next(def.outro[#def.outro].pose), nil, name .. " outro returns to rest")
+	elseif def.fidget then
+		-- §47 idle fidgets start and end on the held class's carry pose.
+		ok(loop[1].pose == def.carry and loop[#loop].pose == def.carry, name .. " fidget returns to its carry pose")
 	else
 		eq(next(loop[#loop].pose), nil, name .. " one-shot returns to rest")
 	end
 	if def.tool then ok(Core.toolSpec(def.tool) ~= nil, name .. " tool spec " .. def.tool) end
-	if def.agility then
-		eq(Relay.NAMES[name], nil, name .. " is attribute-driven, never relayed")
+	if def.agility or def.observed then
+		eq(Relay.NAMES[name], nil, name .. " is attribute-driven / observed, never relayed")
+	elseif def.derived then
+		-- §47 stance variants: every client derives them from the relayed base + target.
+		eq(Relay.NAMES[name], nil, name .. " stance is derived, never relayed")
+		eq(Relay.NAMES[def.base], true, name .. " base " .. def.base .. " is relayed")
 	else
 		eq(Relay.NAMES[name], true, name .. " is whitelisted on the server")
 	end
@@ -180,12 +187,13 @@ eq(sel("station", "Hearth", nil, 0), "flip", "Hearth flips")
 eq(sel("station", "Hearth", nil, 1), "stir", "Hearth alternates to stir")
 eq(sel("station", "Workbench", nil, 0), "hammer", "Workbench hammers")
 eq(sel("station", "Workbench", nil, 1), "saw", "Workbench alternates to saw")
-eq(sel("station", "Slayer"), "interact", "Slayer master is a conversation")
+eq(sel("station", "Slayer"), "talk", "Slayer master is a conversation (§47 talk)")
 -- Crafting stations (prompt action "craftStation") and the per-action batch gestures they publish.
 eq(sel("craftStation", "Jeweller", nil, 0), "hammer", "Jeweller's Bench hammers")
 eq(sel("craftStation", "Tannery", nil, 0), "saw", "Tanning Rack saws")
-eq(sel("craftStation", "Tannery", nil, 1), "hammer", "Tanning Rack alternates to hammer")
-eq(sel("craftStation", "Glassworks", nil, 0), "stir", "Glass Furnace stirs")
+eq(sel("craftStation", "Tannery", nil, 1), "weave", "Tanning Rack alternates to the loom (§47)")
+eq(sel("craftStation", "Tannery", nil, 2), "hammer", "then hammers")
+eq(sel("craftStation", "Glassworks", nil, 0), "blow", "Glass Furnace blows glass (§47)")
 -- Beaconry (§37): beacon pyres and kindling strike with the striker; the
 -- server's BeaconryGesture "<gesture>:<seq>[:<item>]" parses to name + item.
 eq(sel("beaconLight", "Hub"), "interact", "beacon pyre hold reaches in (the strike plays only from BeaconryGesture)")
@@ -207,7 +215,10 @@ eq(sel("craft", "Tonic"), "stir", "Apothecary tonic stirs")
 eq(sel("fight", "Warden"), "attack", "Warden strike slashes")
 eq(sel("workerBuild", "2"), "hammer", "building a worker hammers")
 eq(sel("decorate", "Garden"), "hammer", "decorating hammers")
-for _, action in ipairs({"bank", "sell", "claim", "explore", "workerClaim"}) do eq(sel(action), "interact", action .. " reaches/presses") end
+-- §47: banking hands over the purse, caches open, surveys shade the eyes.
+for action, want in pairs({bank = "deposit", sell = "deposit", claim = "open", explore = "survey", workerClaim = "open"}) do
+	eq(sel(action), want, action .. " has its own interaction")
+end
 eq(sel(nil, nil), "interact", "warps/signs without attributes interact")
 
 local function rgbOf(c) return math.floor(c.R * 255 + 0.5) .. "," .. math.floor(c.G * 255 + 0.5) .. "," .. math.floor(c.B * 255 + 0.5) end
@@ -299,11 +310,11 @@ do
 	run(0.05)
 	local shoulder = c.children.RightShoulder
 	ok(shoulder.Transform ~= CFrame.new(), "shoulder driven during gesture")
-	run(1.4) -- intro 0.12 + ~2.3 strikes
-	eq(count(log.marks, "mine:impact"), 2, "two strikes while held for 1.45s")
+	run(1.45) -- §47: intro 0.06 + 0.7 s strikes (Data.Strike cadence): loops end at 0.76 and 1.46
+	eq(count(log.marks, "mine:impact"), 2, "two strikes while held for 1.5s")
 	eq(log.cycles, 2, "each looped strike is replicated")
 	engine.release(c)
-	run(1.2)
+	run(1.4) -- §47 QC M3: + the 0.15 s grace hold on the ready pose
 	eq(count(log.marks, "mine:impact"), 3, "current strike finishes after release")
 	eq(engine.count, 0, "gesture ends after outro + fade")
 	eq(log.destroyed, 1, "tool removed")

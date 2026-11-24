@@ -1855,6 +1855,11 @@ do
 	S.gather = GN
 	local ST = Data and Data.Strike
 	GN.BUFFER = 0.25 -- QC L16: a tap this close to the next swing is kept and swung on time
+	GN.CONTINUOUS = 0.1 -- §47 QC M3: a swing this soon after the last one was due continues its grid
+	function GN.nextSwing(now, due, swing)
+		local base = if due > 0 and now >= due and now - due <= GN.CONTINUOUS then due else now
+		return base + swing
+	end
 	local function bindable(name)
 		local e = ReplicatedStorage:FindFirstChild(name)
 		if not e then e = make("BindableEvent", ReplicatedStorage, {Name = name}) end
@@ -2002,6 +2007,7 @@ do
 		local fish = GN.fish
 		if kind ~= "bite" or not fish or fish.node ~= node or fish.biting then return end
 		fish.biting = true
+		gesture("bite", node) -- §47: the rod snaps down (animate.client.lua; relayed to nearby players)
 		window = tonumber(window) or (ST and ST.FISH.window) or 1.2
 		SP.show(GN.top(node), {kind = "text", text = "!", ink = gold, size = 30}, node)
 		OB.touchNode(node, 1, 1, "Bite!")
@@ -2106,7 +2112,7 @@ do
 			if fish and fish.node == node then
 				-- Reel: the click is the strike (no wind-up), early or not; the server judges.
 				GN.fish = nil
-				gesture("release")
+				gesture("release", node, "reel") -- §47 QC L9: the reel click (a plain release = a lost fish)
 				GN.send(node)
 				return true
 			end
@@ -2127,7 +2133,10 @@ do
 		-- QC H1: one gathering clock; striking another node drops a cast.
 		local fish = GN.endFish()
 		if fish then OB.release(fish.node) end
-		GN.next = now + (ST.SWING[r.skill] or 0.7)
+		-- §47 QC M3: a continuous hold keeps the swing grid (the next swing is
+		-- due SWING after the last one was due, not after the frame that noticed
+		-- it), so the cadence never drifts against the animation or the server.
+		GN.next = GN.nextSwing(now, GN.next, ST.SWING[r.skill] or 0.7)
 		GN.target = node
 		gesture(ST.GESTURE[r.skill] or "mine", node)
 		GN.skillEvent:Fire(r.skill)
