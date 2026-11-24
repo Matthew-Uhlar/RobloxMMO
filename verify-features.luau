@@ -826,7 +826,7 @@ do
 		local def = VD.ById[id]
 		byId[id] = pad
 		ok(def ~= nil, "pad names a vent")
-		eq(pad:GetAttribute("Shape"), "Caldera", id .. " uses a forge mesh slot")
+		eq(pad:GetAttribute("Shape"), "SkywardVentPad", id .. " uses the vent pad dais mesh slot")
 		ok(pad.CanCollide and pad.Anchored, id .. " pad is a solid collider")
 		ok(pad:IsDescendantOf(islands:FindFirstChild(def.isle)), id .. " stands on " .. def.isle)
 		local landing = pad:GetAttribute("VentLanding")

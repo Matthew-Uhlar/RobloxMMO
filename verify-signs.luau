@@ -120,323 +120,260 @@ local function contrast(a, b)
 	local la, lb = luminance(a), luminance(b)
 	return (math.max(la, lb) + .05) / (math.min(la, lb) + .05)
 end
+-- Colours a frame really shows: a UIGradient multiplies the background, so a
+-- graded frame is white and its keypoints are the true colours.
+local function shown(frame)
+	local g = frame:FindFirstChildOfClass("UIGradient")
+	if not g then return {frame.BackgroundColor3} end
+	local out = {}
+	for _, k in g.Color.Keypoints do
+		local c, b = k.Value, frame.BackgroundColor3
+		table.insert(out, Color3.new(c.R * b.R, c.G * b.G, c.B * b.B))
+	end
+	return out
+end
+local function worst(color, frame)
+	local r = math.huge
+	for _, c in shown(frame) do r = math.min(r, contrast(color, c)) end
+	return r
+end
+local function stripTags(text) return (text:gsub("<[^>]->", ""):gsub("&lt;", "<"):gsub("&gt;", ">"):gsub("&amp;", "&")) end
 
 ------------------------------------------------------------------------------
--- Every SurfaceGui belongs to a sign built by the shared system.
+-- Sign models (§28 v2): one invisible anchor, one floating billboard, no
+-- posts, frames, plinths or sign meshes. Ledgers stay physical notice boards.
 ------------------------------------------------------------------------------
 local KINDS = {hanging = true, shop = true, post = true, banner = true, plaque = true, ledger = true}
-local FRAMES = {hanging = "SignHangingFrame", shop = "SignHangingFrame", post = "SignpostFrame", banner = "BannerStandardFrame",
-	plaque = "SignPlinthFrame", ledger = "SignLedgerFrame"}
-local BOARDS = {hanging = "SignCarvedBoard", shop = "SignScrollBoard", banner = "BannerCloth", plaque = "SignPlaqueBoard", ledger = "SignNoticeBoard"}
 local FONTS = {["rbxasset://fonts/families/Merriweather.json"] = true, ["rbxasset://fonts/families/BuilderSans.json"] = true,
 	["rbxasset://fonts/families/Fondamento.json"] = true}
-local guis, labels = 0, 0
-for _, gui in world:GetDescendants() do
-	if gui:IsA("SurfaceGui") then
-		guis += 1
-		local holder = gui.Parent and gui.Parent.Parent
-		ok(holder and holder:GetAttribute("SignArchetype") ~= nil, gui:GetFullName() .. " belongs to a shared-system sign")
-		ok(gui.Parent:GetAttribute("SignBoard") == true, gui:GetFullName() .. " sits on a sign board")
-		ok(gui.SizingMode == roblox.Enum.SurfaceGuiSizingMode.PixelsPerStud and gui.PixelsPerStud >= 40 and gui.PixelsPerStud <= 80,
-			gui:GetFullName() .. " is distance-scaled by PixelsPerStud")
-		ok(gui.LightInfluence <= .35 and gui.Brightness >= 1, gui:GetFullName() .. " self-lights for night reading")
-		ok(gui.MaxDistance >= 80 and not gui.AlwaysOnTop, gui:GetFullName() .. " reads from afar but never through walls")
-		ok(gui:GetAttribute("SignStyled") == true, gui:GetFullName() .. " is styled on the server (the client keeps it)")
-		-- §28 performance: PPS 40 (ledgers 600 px across), MaxDistance 100 (landmark plaques 150, ledgers 90).
-		local archetype = holder:GetAttribute("SignArchetype")
-		if archetype == "ledger" then
-			ok(gui.MaxDistance == 90 and math.abs(gui.PixelsPerStud * gui.Parent.Size.X - 600) < 1, gui:GetFullName() .. " ledger face")
-		else
-			ok(gui.PixelsPerStud == 40, gui:GetFullName() .. " paints at 40 pixels per stud")
-			ok(gui.MaxDistance == (if archetype == "plaque" then 150 else 100), gui:GetFullName() .. " MaxDistance by archetype (" .. gui.MaxDistance .. ")")
-		end
-		-- One outline per label: a UIStroke or an engraved highlight label, never both.
-		for _, label in gui:GetChildren() do
-			if label:IsA("TextLabel") and not label.Name:find("Shadow", 1, true) and label.Name ~= "Emblem initial" then
-				local stroke = label:FindFirstChildOfClass("UIStroke") ~= nil
-				local shadow = gui:FindFirstChild(label.Name .. "Shadow") ~= nil
-				ok(stroke ~= shadow or (archetype == "ledger" and stroke), label:GetFullName() .. " has exactly one outline (stroke " .. tostring(stroke) .. ", shadow " .. tostring(shadow) .. ")")
-			end
-		end
-		local panel = gui:FindFirstChild("Panel")
-		ok(panel ~= nil, gui:GetFullName() .. " has a painted panel")
-		local face = gui.Parent.Size
-		local cw, ch = face.X * gui.PixelsPerStud, face.Y * gui.PixelsPerStud
-		for _, label in gui:GetDescendants() do
-			if label:IsA("TextLabel") and not label.Name:find("Shadow", 1, true) and label.Text ~= "" then
-				labels += 1
-				local w, h, size = label.Size.X.Offset, label.Size.Y.Offset, label.TextSize
-				ok(not label.TextScaled and label.TextWrapped, label:GetFullName() .. " uses a fitted text size")
-				ok(label:GetAttribute("SignOverflow") == nil, label:GetFullName() .. " text fits without overflow")
-				ok(FONTS[label.FontFace.Family] == true, label:GetFullName() .. " uses a sign font face (" .. label.FontFace.Family .. ")")
-				local maxLines = label:GetAttribute("SignFitLines") or 1
-				if label.Name ~= "Emblem initial" then
-					local n = lines(label.Text, size, w)
-					ok(n <= maxLines and n * size * 1.25 <= h + 1, label:GetFullName() .. " '" .. label.Text .. "' fits its box (" .. n .. " lines at " .. size .. "px)")
-					ok(label.Position.X.Offset >= 0 and label.Position.Y.Offset >= 0 and label.Position.X.Offset + w <= cw + 1 and label.Position.Y.Offset + h <= ch + 1,
-						label:GetFullName() .. " stays on its board")
-				end
-				if label.Name == "Label" and gui.Parent:GetAttribute("Shape") == "SignArrowBoard" then
-					-- L6: the label stays >= .45 studs (and past the stretched strap) clear of the tail.
-					local W = gui.Parent.Size.X
-					local need = math.max(.45, W * .37 / 4.6) * gui.PixelsPerStud
-					local tailGap = if gui.Face == roblox.Enum.NormalId.Front then cw - (label.Position.X.Offset + w) else label.Position.X.Offset
-					ok(tailGap >= need - 1, label:GetFullName() .. " clears the arrow strap (" .. tailGap .. " px >= " .. math.floor(need) .. ")")
-				end
-				local studs = size / gui.PixelsPerStud
-				if label.Name == "Title" or label.Name == "Label" then
-					ok(studs >= .22, label:GetFullName() .. " title is legible (" .. string.format("%.2f", studs) .. " studs)")
-					ok(contrast(label.TextColor3, panel.BackgroundColor3) >= 4.5, label:GetFullName() .. " title contrast on its panel")
-				elseif label.Name == "Kicker" or label.Name:match("^Row_") or label.Name:match("^Value_") then
-					ok(studs >= .12, label:GetFullName() .. " small text is legible")
-					ok(contrast(label.TextColor3, panel.BackgroundColor3) >= 3, label:GetFullName() .. " small text contrast")
-				end
-			end
-		end
-	end
-end
-ok(guis >= 150 and labels >= 400, "sign faces painted (" .. guis .. " faces, " .. labels .. " labels)")
--- Source: SurfaceGuis are only created by the sign system (surface() and ledger()).
-local _, guiNew = source:gsub('Instance%.new%("SurfaceGui"%)', "")
-ok(guiNew == 2, "world.server.lua creates SurfaceGuis only inside the sign system (" .. guiNew .. ")")
-ok(source:find("local function signAt", 1, true) and source:find("return (Signs.build(parent,cf,spec))", 1, true), "legacy signAt forwards to Signs.build")
-
-------------------------------------------------------------------------------
--- Sign models: archetype, frame host, boards, parts, icons, no lights.
-------------------------------------------------------------------------------
-local counts, kinds, signs = {}, {}, {}
-local PARTS = {hanging = 2, banner = 2, plaque = 2, ledger = 2, shop = 3}
-local function box(p)
-	local cf, s = p.CFrame, p.Size / 2
-	local r, u, l = cf.RightVector, cf.UpVector, cf.LookVector
-	local e = Vector3.new(math.abs(r.X) * s.X + math.abs(u.X) * s.Y + math.abs(l.X) * s.Z,
-		math.abs(r.Y) * s.X + math.abs(u.Y) * s.Y + math.abs(l.Y) * s.Z, math.abs(r.Z) * s.X + math.abs(u.Z) * s.Y + math.abs(l.Z) * s.Z)
-	return cf.Position - e, cf.Position + e
-end
+local TITLE_FONTS = {["rbxasset://fonts/families/Merriweather.json"] = true, ["rbxasset://fonts/families/Fondamento.json"] = true}
+local signs, kinds, boards = {}, {}, {}
+local guiInstances, labelCount, billboards = 0, 0, 0
 for _, model in world:GetDescendants() do
 	local kind = model:IsA("Model") and model:GetAttribute("SignArchetype")
 	if kind then
 		table.insert(signs, model)
 		ok(KINDS[kind], model:GetFullName() .. " archetype " .. tostring(kind))
 		ok(model.Name == "Sign " .. model:GetAttribute("SignTitle"), model:GetFullName() .. " keeps the Sign <title> name")
+		ok(model:GetAttribute("SignVersion") == 2, model:GetFullName() .. " is a v2 sign")
 		kinds[kind] = (kinds[kind] or 0) + 1
-		local frames, boards, icons, parts, arrows = {}, {}, 0, 0, 0
+		local parts = {}
 		for _, p in model:GetDescendants() do
 			ok(not p:IsA("Light"), model:GetFullName() .. " adds no lights")
-			if p:IsA("BasePart") then
-				parts += 1
-				ok(not p.CanCollide, p:GetFullName() .. " never blocks a path")
-				local shape = p:GetAttribute("Shape")
-				ok(type(shape) == "string", p:GetFullName() .. " is a mesh slot")
-				if p:GetAttribute("ShapeBox") then
-					table.insert(frames, p)
-				elseif p:GetAttribute("SignBoard") then
-					table.insert(boards, p)
-					if shape == "SignArrowBoard" then arrows += 1 end
-				else
-					icons += 1
-					ok(p:GetAttribute("ShapeFit") == "Uniform" and (Props.shapes[shape] or World.shapes[shape]) ~= nil, p:GetFullName() .. " icon " .. shape .. " is a catalog shape")
-				end
-			end
+			if p:IsA("BasePart") then table.insert(parts, p) end
 		end
-		ok(#frames == 1, model:GetFullName() .. " has one frame host")
-		local frame = frames[1]
-		ok(frame:GetAttribute("Shape") == FRAMES[kind], model:GetFullName() .. " frame shape " .. tostring(frame:GetAttribute("Shape")))
-		ok(frame.Transparency < 1, model:GetFullName() .. " frame host stays a visible fallback")
-		-- The declared box contains the host and keeps the authored proportions within reason.
-		local data = World.shapes[frame:GetAttribute("Shape")]
-		ok(data ~= nil and data.kind == "signframe" and data.fit ~= nil, frame:GetAttribute("Shape") .. " is an authored sign frame")
-		local declared, offset = frame:GetAttribute("ShapeBox"), frame:GetAttribute("ShapeBoxOffset") or Vector3.zero
-		local fitSize = Vector3.new(data.fit[2][1] - data.fit[1][1], data.fit[2][2] - data.fit[1][2], data.fit[2][3] - data.fit[1][3])
-		for _, axis in {"X", "Y", "Z"} do
-			local k = declared[axis] / fitSize[axis]
-			ok(k > .55 and k < 1.6, model:GetFullName() .. " frame stretch " .. axis .. " " .. string.format("%.2f", k))
-			ok(math.abs(offset[axis]) + frame.Size[axis] / 2 <= declared[axis] / 2 + .05, model:GetFullName() .. " frame box holds its host on " .. axis)
-		end
-		ok(frame.CFrame.UpVector.Y > .99, model:GetFullName() .. " frame stands upright")
-		ok(#boards >= 1, model:GetFullName() .. " has a text board")
-		for _, b in boards do
-			local shape = b:GetAttribute("Shape")
-			ok(World.shapes[shape] and World.shapes[shape].kind == "sign" and World.shapes[shape].fit ~= nil, b:GetFullName() .. " board mesh " .. shape)
-			ok(BOARDS[kind] == nil or shape == BOARDS[kind] or (kind == "post"), b:GetFullName() .. " uses the " .. kind .. " board")
-			ok(b:FindFirstChildOfClass("SurfaceGui") ~= nil, b:GetFullName() .. " is painted")
-			if shape == "SignArrowBoard" then
-				local to = b:GetAttribute("SignArrowTo")
-				local base = frame.CFrame.Position
-				local flat = Vector3.new(to.X - base.X, 0, to.Z - base.Z)
-				ok(flat.Magnitude < .1 or b.CFrame.RightVector:Dot(flat.Unit) > .99, b:GetFullName() .. " points at its destination")
-				local rel = b.CFrame.Position - base
-				ok(Vector3.new(rel.X, 0, rel.Z).Unit:Dot(flat.Unit) > .99, b:GetFullName() .. " reaches out toward its destination")
-				ok(b.CFrame.Position.Y - b.Size.Y / 2 > base.Y - frame.Size.Y / 2 + 1, b:GetFullName() .. " hangs above the ground")
-			end
-		end
-		if kind == "post" then
-			ok(arrows >= 1 and parts == 1 + #boards and parts <= 5, model:GetFullName() .. " signpost has 1-4 boards (" .. parts .. " parts)")
+		ok(#parts == 1, model:GetFullName() .. " is a single part (" .. #parts .. "): no posts, brackets, plinths or frames")
+		local p = parts[1]
+		ok(not p.CanCollide and not p.CanTouch, p:GetFullName() .. " never blocks a path")
+		ok(p:GetAttribute("ShapeBox") == nil, p:GetFullName() .. " has no declared frame box")
+		if kind == "ledger" then
+			ok(p:GetAttribute("Shape") == "SignNoticeBoard" and p:FindFirstChildOfClass("SurfaceGui") ~= nil, model:GetFullName() .. " ledger keeps its notice board face")
 		else
-			ok(parts == PARTS[kind], model:GetFullName() .. " " .. kind .. " part count " .. parts)
+			ok(p:GetAttribute("SignAnchor") == true and p.Transparency == 1 and not p.CanQuery and p:GetAttribute("Shape") == nil,
+				p:GetFullName() .. " is an invisible, mesh-free anchor")
+			ok(p.Name == model:GetAttribute("SignTitle"), p:GetFullName() .. " anchor is named after the title (returned main part)")
+			local guis = {}
+			for _, g in p:GetChildren() do if g:IsA("LayerCollector") then table.insert(guis, g) end end
+			ok(#guis == 1 and guis[1]:IsA("BillboardGui") and guis[1].Name == "SignBillboard", model:GetFullName() .. " carries one SignBillboard")
+			table.insert(boards, {model = model, kind = kind, anchor = p, gui = guis[1]})
 		end
-		ok((kind == "shop") == (icons == 1), model:GetFullName() .. " icon only on shop signs")
-		counts[kind] = (counts[kind] or 0) + parts
 	end
 end
 ok(#tags.AetherSign == #signs, "every sign is tagged AetherSign")
 for kind in KINDS do ok((kinds[kind] or 0) >= 1, kind .. " archetype is used in the world") end
 ok(#signs >= 80, "signs across the world (" .. #signs .. ")")
--- Named signs other systems rely on.
+
+------------------------------------------------------------------------------
+-- Billboard style: framed, themed, distinct from NPC nameplates, readable.
+------------------------------------------------------------------------------
+local npcSource = fs.readFile("npc.server.lua")
+ok(npcSource:find('"Nameplate"', 1, true) and npcSource:find("GothamBold", 1, true), "NPC nameplates: a dark Gotham strip named Nameplate")
+local function find(root, name) return root:FindFirstChild(name) end
+for _, b in boards do
+	local gui, kind, name = b.gui, b.kind, b.model:GetFullName()
+	billboards += 1
+	ok(gui.Name ~= "Nameplate", name .. " is not a nameplate")
+	ok(not gui.AlwaysOnTop, name .. " never shows through walls")
+	ok(gui.MaxDistance == (if kind == "plaque" then 160 else 120), name .. " MaxDistance by archetype (" .. gui.MaxDistance .. ")")
+	ok(gui.LightInfluence <= .25 and gui.Brightness >= 1, name .. " self-lights for night reading")
+	ok(gui.Size.X.Scale == 0 and gui.Size.Y.Scale == 0 and gui.Size.X.Offset <= 440 and gui.Size.Y.Offset <= 400, name .. " has a bounded design size")
+	ok(gui:GetAttribute("SignStyled") == true and gui:GetAttribute("SignKind") == kind, name .. " styled for its archetype")
+	local lift = gui:GetAttribute("SignLift")
+	ok(type(lift) == "number" and math.abs(gui.StudsOffsetWorldSpace.Y - lift) < 1e-4 and lift >= 2 and lift <= 10, name .. " floats above its anchor")
+	local root = gui:FindFirstChild("Sign")
+	ok(root and root.ClassName == "CanvasGroup" and root:FindFirstChildOfClass("UIScale") ~= nil, name .. " root fades (CanvasGroup) and scales (UIScale)")
+	local cw, ch = root.Size.X.Offset, root.Size.Y.Offset
+	-- Ornate plaque vocabulary (absent from NPC nameplates).
+	for _, piece in {"Frame", "Panel", "Inlay", "Shadow", "Crest", "Crest glyph", "Crystal", "Crystal glow"} do
+		ok(find(root, piece) ~= nil, name .. " has its " .. piece)
+	end
+	local glow = find(root, "Crystal glow")
+	ok(glow:GetAttribute("NightTransparency") < glow:GetAttribute("DayTransparency"), name .. " crystal glows brighter at night")
+	local panel = find(root, "Panel")
+	for _, c in shown(find(root, "Frame")) do ok(c ~= Color3.fromHex("091923") and c ~= Color3.new(1, 1, 1), name .. " frame is graded metal, not the nameplate ink") end
+	if kind ~= "banner" then
+		local caps = 0
+		for _, c in root:GetChildren() do if c.Name == "Corner cap" then caps += 1 end end
+		ok(caps == 4, name .. " has four corner caps")
+	end
+	local glyph = find(root, "Crest glyph")
+	ok(glyph.Text ~= "", name .. " crest glyph painted")
+	if kind == "shop" then ok(glyph.Text ~= "✦", name .. " shop crest shows its trade glyph") end
+	local titles, arrowsN, destinations = 0, 0, 0
+	for _, d in root:GetDescendants() do
+		guiInstances += 1
+		if d:IsA("GuiObject") and typeof(d:GetAttribute("SignArrowTo")) == "Vector3" then
+			arrowsN += 1
+			ok(d.Name == "Arrow" and d:FindFirstChild("Head") and d:FindFirstChild("Shaft"), d:GetFullName() .. " arrow glyph")
+			local to = d:GetAttribute("SignArrowTo")
+			local flat = Vector3.new(to.X - b.anchor.CFrame.Position.X, 0, to.Z - b.anchor.CFrame.Position.Z)
+			ok(flat.Magnitude > 3, d:GetFullName() .. " points somewhere else")
+		end
+		if d:IsA("TextLabel") and d.Name ~= "Crest glyph" and not d.Name:find("Shadow", 1, true) and d.Text ~= "" then
+			labelCount += 1
+			local w, h, size = d.Size.X.Offset, d.Size.Y.Offset, d.TextSize
+			local text = stripTags(d.Text)
+			ok(d:GetAttribute("SignPlain") == text, d:GetFullName() .. " plain text recorded ('" .. text .. "')")
+			ok(not d.TextScaled and d.TextWrapped, d:GetFullName() .. " uses a fitted text size")
+			ok(d:GetAttribute("SignOverflow") == nil, d:GetFullName() .. " '" .. text .. "' fits without overflow")
+			ok(FONTS[d.FontFace.Family] == true, d:GetFullName() .. " uses a sign font face")
+			local n = lines(text, size, w)
+			ok(n <= (d:GetAttribute("SignFitLines") or 1) and n * size * 1.25 <= h + 1, d:GetFullName() .. " '" .. text .. "' fits its box (" .. n .. " lines at " .. size .. "px)")
+			ok(d.Position.X.Offset >= 0 and d.Position.Y.Offset >= 0 and d.Position.X.Offset + w <= cw + 1 and d.Position.Y.Offset + h <= ch + 1, d:GetFullName() .. " stays on its plaque")
+			local stroke = d:FindFirstChildOfClass("UIStroke") ~= nil
+			local shadow = d.Parent:FindFirstChild(d.Name .. "Shadow") ~= nil
+			ok(stroke ~= shadow, d:GetFullName() .. " has exactly one outline")
+			if d.Name == "Title" or d.Name == "Destination" then
+				if d.Name == "Title" then titles += 1; ok(TITLE_FONTS[d.FontFace.Family], d:GetFullName() .. " display title font") end
+				if d.Name == "Destination" then destinations += 1 end
+				ok(size >= 12, d:GetFullName() .. " title legible (" .. size .. "px)")
+				ok(worst(d.TextColor3, panel) >= 4.5, d:GetFullName() .. " title contrast on its panel (night: self-lit)")
+			elseif d.Name == "Kicker" then
+				ok(size >= 9 and d.RichText, d:GetFullName() .. " small-caps kicker legible")
+				ok(worst(d.TextColor3, panel) >= 3, d:GetFullName() .. " kicker contrast")
+			end
+		end
+	end
+	if kind == "post" then
+		ok(arrowsN >= 1 and arrowsN == destinations, name .. " one arrow per destination (" .. arrowsN .. ")")
+	else
+		ok(titles == 1 and arrowsN == 0, name .. " has one title")
+	end
+end
+-- Ledger notice boards keep their live rows.
+for _, gui in world:GetDescendants() do
+	if gui:IsA("SurfaceGui") then
+		local holder = gui.Parent and gui.Parent.Parent
+		ok(holder and holder:GetAttribute("SignArchetype") == "ledger", gui:GetFullName() .. " SurfaceGuis are only ledger boards")
+		ok(gui.MaxDistance >= 80 and not gui.AlwaysOnTop and gui.LightInfluence <= .35, gui:GetFullName() .. " ledger face")
+	end
+end
 for _, name in {"Sign Artificers' Row", "Sign Compass Quay", "Sign Sky Harbor", "Sign Verdant Garden", "Sign Hall of Mastery", "Sign Bestiary"} do
 	ok(world:FindFirstChild(name, true) ~= nil, name .. " exists")
 end
 ok(world:FindFirstChild("Skill Leaderboard", true):FindFirstChild("Row_" .. Data.SkillOrder[1], true) ~= nil, "ledger rows keep their Row_ names")
--- Faction standards keep their prompt (IsleItem/IsleRegion) on the cloth.
+ok(world:FindFirstChild("Skill Leaderboard", true):FindFirstChild("Value_" .. Data.SkillOrder[1], true) ~= nil, "ledger rows keep their Value_ names")
+-- Faction standards keep their prompt (IsleItem/IsleRegion) on the banner anchor.
 local standards = 0
 for _, m in world:GetDescendants() do
 	if m:IsA("Model") and m:GetAttribute("Faction") then
 		local q = m:FindFirstChildWhichIsA("ProximityPrompt", true)
-		ok(q and q:GetAttribute("IsleAction") == "factionBoard" and q:GetAttribute("IsleRegion") ~= nil and q.Parent:GetAttribute("Shape") == "BannerCloth",
-			m.Name .. " standard is a banner sign with its prompt")
+		ok(q and q:GetAttribute("IsleAction") == "factionBoard" and q:GetAttribute("IsleRegion") ~= nil and q.Parent:GetAttribute("SignAnchor") == true
+			and q.Parent.Parent:GetAttribute("SignArchetype") == "banner", m.Name .. " standard is a banner sign with its prompt on the anchor")
 		standards += 1
 	end
 end
 ok(standards == #Data.Factions.Order, "every faction has a banner standard")
 
 ------------------------------------------------------------------------------
--- One-sided boards (§28 performance): only a board whose back looks into a
--- wall or over the rim loses its Back face; independent re-measure.
+-- Placement: anchors swallow no foreign prompt; floating plaques never sit on
+-- a prompt's screen spot or on each other.
 ------------------------------------------------------------------------------
-local function islandOf(node)
-	while node.Parent ~= islands and node.Parent ~= archipelago do node = node.Parent end
-	return node
-end
-local function containsPoint(p, pos)
-	local rel = p.CFrame:PointToObjectSpace(pos)
-	local h = p.Size / 2
-	if p:IsA("Part") and p.Shape == roblox.Enum.PartType.Cylinder then
-		return math.abs(rel.X) <= h.X and rel.Y ^ 2 + rel.Z ^ 2 <= math.min(h.Y, h.Z) ^ 2
-	elseif p:IsA("Part") and p.Shape == roblox.Enum.PartType.Ball then
-		return rel.Magnitude <= math.min(h.X, h.Y, h.Z)
-	end
-	return math.abs(rel.X) <= h.X and math.abs(rel.Y) <= h.Y and math.abs(rel.Z) <= h.Z
-end
-local function backReason(board)
-	local solids = {}
-	for _, p in islandOf(board):GetDescendants() do
-		if p:IsA("BasePart") and (p.CanCollide or p.Transparency < 1) and not p.Parent:GetAttribute("SignArchetype") then table.insert(solids, p) end
-	end
-	local back, c = -board.CFrame.LookVector, board.CFrame.Position
-	for _, d in {1, 2.5} do
-		for _, p in solids do if containsPoint(p, c + back * (board.Size.Z / 2 + d)) then return "wall" end end
-	end
-	for _, d in {3, 5.5, 8} do
-		local probe, ground = c + back * (board.Size.Z / 2 + d), false
-		for _, p in solids do
-			if p.CanCollide then
-				local lo, hi = box(p)
-				if hi.Y <= probe.Y + .5 and hi.Y >= probe.Y - 40 and containsPoint(p, Vector3.new(probe.X, (lo.Y + hi.Y) / 2, probe.Z)) then ground = true; break end
-			end
-		end
-		if not ground then return "rim" end
-	end
-	return nil
-end
-local oneSided, twoSided = 0, 0
-for _, board in world:GetDescendants() do
-	if board:IsA("BasePart") and board:GetAttribute("SignBoard") and board.Parent:GetAttribute("SignArchetype") ~= "ledger" then
-		local backFace = board:FindFirstChild("Sign face Back")
-		if board:GetAttribute("Shape") == "SignArrowBoard" then
-			ok(backFace ~= nil, board:GetFullName() .. " arrow keeps both faces")
-		elseif board:GetAttribute("SignOneSided") then
-			oneSided += 1
-			ok(backFace == nil and board:FindFirstChild("Sign face Front") ~= nil, board:GetFullName() .. " one-sided board keeps its Front face only")
-			ok(backReason(board) == board:GetAttribute("SignOneSided"), board:GetFullName() .. " back faces " .. tostring(board:GetAttribute("SignOneSided")))
-		else
-			twoSided += 1
-			ok(backFace ~= nil and backReason(board) == nil, board:GetFullName() .. " readable back keeps its Back face")
-		end
-	end
-end
-ok(oneSided + twoSided >= 80, "every non-ledger board classified (" .. oneSided .. " one-sided, " .. twoSided .. " two-sided)")
-print("One-sided boards: " .. oneSided .. " (back over a wall or the rim); two-sided: " .. twoSided .. ".")
-ok(not source:find("Enum.Font.Merriweather", 1, true) and not source:find("pcall(function() l.FontFace", 1, true), "no dead Font fallback (FontFace is always set)")
-
-------------------------------------------------------------------------------
--- Placement: no sign host on a path, no foreign prompt inside a sign.
-------------------------------------------------------------------------------
-local paths, prompts = {}, {}
+local prompts = {}
 for _, obj in world:GetDescendants() do
-	if obj:IsA("BasePart") and obj.Name == "Path" then table.insert(paths, obj) end
 	if obj:IsA("ProximityPrompt") and obj.Parent:IsA("BasePart") then table.insert(prompts, obj) end
 end
-ok(#paths > 10 and #prompts > 100, "paths and prompts to check against")
-local function overlapXZ(a, b, pad)
-	local alo, ahi = box(a)
-	local blo, bhi = box(b)
-	return alo.X < bhi.X - pad and blo.X < ahi.X - pad and alo.Z < bhi.Z - pad and blo.Z < ahi.Z - pad
-end
+ok(#prompts > 100, "prompts to check against")
 local function inside(model, obj)
 	local node = obj
 	while node do if node == model then return true end; node = node.Parent end
 	return false
 end
-for _, model in signs do
-	for _, p in model:GetDescendants() do
-		if p:IsA("BasePart") and p:GetAttribute("ShapeBox") then
-			for _, path in paths do
-				-- Only the footing of the host matters (boards hang overhead).
-				local lo = box(p)
-				local _, phi = box(path)
-				if math.abs(lo.Y - phi.Y) < 1.5 then ok(not overlapXZ(p, path, .3), p:GetFullName() .. " stands clear of " .. path:GetFullName()) end
-			end
-		end
-		if p:IsA("BasePart") then
-			local lo, hi = box(p)
-			for _, q in prompts do
-				if not inside(model, q) then
-					local host = q.Parent
-					local c = host.CFrame.Position
-					ok(not (c.X > lo.X and c.X < hi.X and c.Y > lo.Y and c.Y < hi.Y and c.Z > lo.Z and c.Z < hi.Z),
-						p:GetFullName() .. " does not swallow the prompt on " .. host:GetFullName())
-				end
-			end
+local function centre(b) return b.anchor.CFrame.Position + Vector3.new(0, b.gui.StudsOffsetWorldSpace.Y, 0) end
+local overlaps = {}
+for _, b in boards do
+	local c = centre(b)
+	for _, q in prompts do
+		if not inside(b.model, q) then
+			local hp = q.Parent.CFrame.Position
+			local flat = Vector3.new(hp.X - c.X, 0, hp.Z - c.Z).Magnitude
+			ok((hp - b.anchor.CFrame.Position).Magnitude >= .8, b.model:GetFullName() .. " anchor clear of the prompt on " .. q.Parent:GetFullName())
+			if not (flat > 2.5 or math.abs(hp.Y - c.Y) > 1.5) then table.insert(overlaps, b.model:GetFullName() .. " covers " .. q.Parent:GetFullName()) end
 		end
 	end
 end
-
-------------------------------------------------------------------------------
--- Mesh kit: shapes, aliases, forge declared-box support and mobile sharing.
-------------------------------------------------------------------------------
-local forge = fs.readFile("forge.client.lua")
-for _, name in {"SignHangingFrame", "SignpostFrame", "BannerStandardFrame", "SignPlinthFrame", "SignLedgerFrame", "SignCarvedBoard",
-	"SignScrollBoard", "SignArrowBoard", "SignPlaqueBoard", "BannerCloth", "SignNoticeBoard"} do
-	local data = World.shapes[name]
-	ok(data ~= nil and #data.faces >= 200 and #data.faces <= 1500, name .. " is authored within the world triangle range")
-	ok(data.fit ~= nil and (data.kind == "sign" or data.kind == "signframe"), name .. " declares its fit box and kind")
-end
-for _, alias in {"OrnateBracket", "ScrollBoard", "Crest", "Finial", "ChainLink", "ArrowBoard"} do
-	ok(forge:find(alias .. " = \"", 1, true) ~= nil, "forge alias " .. alias)
-end
-ok(forge:find('GetAttribute("ShapeBox")', 1, true) and forge:find('GetAttribute("ShapeBoxOffset")', 1, true), "forge honours declared sign frame boxes")
-ok(forge:find("if not SIGN_KIT_SHAPES[shapeName] then return tint end", 1, true) ~= nil and forge:find("if mobile then return defaultTint(data) end", 1, true) ~= nil,
-	"only the eleven kit shapes share templates on phones (legacy sign shapes keep their Tint; behaviour tested in verify-mesh)")
-
-local guiPixels, guiCount, guiInstances, labelsN = 0, 0, 0, 0
-for _, gui in world:GetDescendants() do
-	if gui:IsA("SurfaceGui") then
-		guiCount += 1
-		local face = gui.Parent.Size
-		local fx = if gui.Face == roblox.Enum.NormalId.Front or gui.Face == roblox.Enum.NormalId.Back then face.X else face.Z
-		guiPixels += math.floor(fx * gui.PixelsPerStud) * math.floor(face.Y * gui.PixelsPerStud)
-		for _, d in gui:GetDescendants() do guiInstances += 1; if d:IsA("TextLabel") then labelsN += 1 end end
+for i, a in boards do
+	for j = i + 1, #boards do
+		local b = boards[j]
+		local ca, cb = centre(a), centre(b)
+		if not (Vector3.new(ca.X - cb.X, 0, ca.Z - cb.Z).Magnitude > 3 or math.abs(ca.Y - cb.Y) > 3) then
+			table.insert(overlaps, a.model:GetFullName() .. " overlaps " .. b.model:GetFullName())
+		end
 	end
 end
-print(string.format("SIGN-FACES: %d SurfaceGuis, %.2f Mpx canvas, %d GUI instances (%d text labels)", guiCount, guiPixels / 1e6, guiInstances, labelsN))
--- §28 performance budget (before the pass: 234 faces, 11.55 Mpx, 4,570 GUI instances, 1,088 labels at PPS 56).
-ok(guiPixels <= 6.5e6, "sign canvas stays under 6.5 Mpx (" .. string.format("%.2f", guiPixels / 1e6) .. ")")
-ok(guiInstances <= 4400 and labelsN <= 900, "sign GUI instances bounded (" .. guiInstances .. " instances, " .. labelsN .. " labels)")
+ok(#overlaps == 0, "no plaque covers a prompt or another plaque: " .. table.concat(overlaps, "; "))
 
-local parts = {}
-for kind, n in counts do table.insert(parts, kind .. " " .. n) end
-table.sort(parts)
-print("Signs: " .. #signs .. " signs (" .. staticSigns .. " static), " .. signParts .. " static sign parts of " .. staticParts
-	.. "; parts by archetype (incl. home): " .. table.concat(parts, ", ") .. "; " .. guis .. " faces, " .. labels .. " labels.")
+------------------------------------------------------------------------------
+-- Client view rules (shared/SignView.lua) and the client script.
+------------------------------------------------------------------------------
+local View = luau.load(fs.readFile("shared/SignView.lua"), {environment = {Vector3 = Vector3}, injectGlobals = true})()
+ok(View.CAP.phone < View.CAP.desktop and View.CAP.phone <= 10 and View.CAP.desktop <= 24, "visible sign caps (desktop " .. View.CAP.desktop .. ", phone " .. View.CAP.phone .. ")")
+local last = math.huge
+for d = 0, 200, 5 do
+	local s = View.scaleFor(d, false)
+	ok(s <= last and s >= View.SCALE.desktop.min and s <= View.SCALE.desktop.max, "scale shrinks with distance and stays clamped at " .. d)
+	ok(View.scaleFor(d, true) <= View.SCALE.phone.max, "phones never draw past their max scale")
+	last = s
+end
+ok(View.scaleFor(5, false) == 1 and View.scaleFor(500, false) == View.SCALE.desktop.min, "full size near, legible floor far")
+ok(View.fadeFor(10, 120) == 0 and View.fadeFor(120, 120) == 1 and View.fadeFor(108, 120) > 0 and View.fadeFor(108, 120) < 1, "fades over the last 20% of MaxDistance")
+local entries = {}
+for i = 1, 40 do table.insert(entries, {d = i * 3, max = 120}) end
+table.insert(entries, {d = 130, max = 120})
+local chosen = View.select(entries, View.CAP.phone)
+ok(#chosen == View.CAP.phone and chosen[1].d == 3 and chosen[#chosen].d == View.CAP.phone * 3, "nearest N signs are shown")
+ok(#View.select({{d = 130, max = 120}}, 8) == 0, "signs beyond MaxDistance are never selected")
+ok(View.bob(1.3, 0, true) == 0 and math.abs(View.bob(1.3, 0, false)) <= View.BOB.amplitude, "bob is small and off with reduced motion")
+local cam = CFrame.lookAt(Vector3.new(0, 5, 0), Vector3.new(0, 5, -10))
+local function near(a, b) return math.abs(((a - b + 180) % 360) - 180) < 1 end
+ok(near(View.arrowRotation(Vector3.new(0, 0, -1), cam), -90), "ahead points up the screen")
+ok(near(View.arrowRotation(Vector3.new(1, 0, 0), cam), 0), "right points right")
+ok(near(View.arrowRotation(Vector3.new(-1, 0, 0), cam), 180), "left points left")
+ok(near(View.arrowRotation(Vector3.new(0, 0, 1), cam), 90), "behind points down")
+ok(View.glowTransparency(0, .7, .35) == .35 and View.glowTransparency(1, .7, .35) == .7, "crystal glow follows the day factor")
+local client = fs.readFile("signs.client.lua")
+local code = client:gsub("%-%-[^\n]*", "")
+ok(code:find("View.select(list, CAP", 1, true) and code:find(".Enabled = on", 1, true), "client caps visible billboards and reuses them")
+ok(code:find("Theme.reducedMotion(player)", 1, true) and code:find("View.arrowRotation", 1, true) and code:find("GroupTransparency", 1, true), "client bobs (reduced motion), fades and turns arrows")
+ok(not code:find('"Lighting"', 1, true) and not code:find("Instance.new", 1, true), "client never touches Lighting and creates no instances")
+
+------------------------------------------------------------------------------
+-- Source and catalog: the physical kit is gone.
+------------------------------------------------------------------------------
+local _, guiNew = source:gsub('Instance%.new%("SurfaceGui"%)', "")
+ok(guiNew == 1, "world.server.lua creates SurfaceGuis only for ledger boards (" .. guiNew .. ")")
+ok(source:find("return (Signs.build(parent,cf,spec))", 1, true), "legacy signAt forwards to Signs.build")
+for _, gone in {"SignHangingFrame", "SignpostFrame", "BannerStandardFrame", "SignPlinthFrame", "SignLedgerFrame", "SignCarvedBoard",
+	"SignScrollBoard", "SignArrowBoard", "SignPlaqueBoard", "BannerCloth"} do
+	ok(World.shapes[gone] == nil and not source:find('"' .. gone .. '"', 1, true), gone .. " scrapped")
+end
+ok(World.shapes.SignNoticeBoard ~= nil, "the ledger notice board mesh stays")
+
+print(string.format("SIGN-BILLBOARDS: %d billboards, %d GUI instances (%d text labels), caps desktop %d / phone %d", billboards, guiInstances, labelCount, View.CAP.desktop, View.CAP.phone))
+ok(guiInstances <= 6500 and labelCount <= 700, "sign GUI instances bounded")
+local list = {}
+for kind, n in kinds do table.insert(list, kind .. " " .. n) end
+table.sort(list)
+print("Signs v2: " .. #signs .. " signs (" .. staticSigns .. " static), " .. signParts .. " static sign parts of " .. staticParts .. "; by archetype (incl. home): " .. table.concat(list, ", ") .. ".")
 print("Sign QA passed " .. checks .. " checks.")
 print("SUITE-END verify-signs.luau")
