@@ -13,20 +13,29 @@ const fs = require('fs');
 const palette = ['C98D4F','F4CD7C','265860','39898E','9DF3D7','203748','C15557','FFD389','525570','9583B9','D9DFE6','6E4A30','F4F8F8','6BAF5A',
   '878C93','F0F3F6',
   '4A3426','7A5636','A9A79C','7E817C','545A5E','5E8A4A','C9A24E','3A4048','FF8A3D','FFE08A','E9DFC7','A8423C','2E3B4E','5A4030','8A6240','D9B65C','E6E1D6','3F6E3A','B8C6CF',
-  'EFE6D3','9B5B43','4F6878','6B4A33'];
+  'EFE6D3','9B5B43','4F6878','6B4A33',
+  // §48 creature shades: bone, horn, claw, eye socket, void, ice, fur, coral, rune.
+  'EDE2C4','3A302C','231E1E','17131C','2C2140','BDEBFF','F3EBDD','F08A6E','9FF5FF'];
 const TINT = 11, HANDLE = 12, GLINT = 13, LEAF = 14;
 const TINT_DARK = 15, TINT_LIGHT = 16;
 const C = {TINT, TINT_DARK, TINT_LIGHT, HANDLE, GLINT, LEAF, COPPER:1, GOLD:2, DEEP:3, TEAL:4, MINT:5, NAVY:6, ROSE:7, AMBER:8, SLATE:9, LAVENDER:10,
   BARK_DARK:17, BARK:18, STONE_LIGHT:19, STONE:20, STONE_DARK:21, MOSS:22, BRASS:23, IRON:24, EMBER:25, FLAME:26, CLOTH:27, CRIMSON:28, INK:29, SOIL:30, PLANK:31, STRAW:32, MARBLE:33, LEAF_DARK:34, GLASS:35,
-  PLASTER:36, BRICK:37, GLASS_DARK:38, TIMBER:39};
+  PLASTER:36, BRICK:37, GLASS_DARK:38, TIMBER:39,
+  BONE:40, HORN:41, CLAW:42, SOCKET:43, VOID:44, ICE:45, FUR:46, CORAL:47, RUNE:48};
 const ICON_TRIANGLE_BUDGET = 120;
 const WORLD_TRIANGLE_RANGE = [200, 1500];
 // World Art pass 2 (§40): whole buildings and furnished interiors are single meshes.
 // Travel beacon shapes (§44, meta exactTint) share the range: >= 24-segment lathes.
 const BUILDING_TRIANGLE_RANGE = [200, 2400];
+// §48 creatures: cores (creature / pet) and the shared limbs and tier overlays.
+const CREATURE_TRIANGLE_RANGE = {creature: [400, 2400], pet: [400, 1600], limb: [100, 1600], overlay: [200, 2600]};
+// Cores worn by slayer / lair / raid / world bosses use the budget (QC H4).
+const BOSS_CORE_FLOOR = 1800;
 const shapes = {};
 const worldShapes = {};
 const worldMeta = {};
+const creatureShapes = {};
+const creatureMeta = {};
 const iconBudget = {};
 const legacyNames = [];
 function rotation([rx,ry,rz]) {
@@ -147,22 +156,28 @@ function shape(name, build, store = shapes, precision = 10000) {
   // wobble(level, segment) -> [dx,dz] offsets a vertex sideways (droop, lean).
   function lathe(profile,{n=8,sx=1,sz=1,phase=0,color=TINT,capStart=false,capEnd=false,capColor,jitter,wobble,lift}={}) {
     const shade=typeof color==='function'?color:()=>color;
-    const rings=profile.map(([r,y],level)=>r===0?v([0,y,0]):Array.from({length:n},(_,i)=>{
+    // Local (pre-transform) points: colour callbacks get shade(level, segment, faceCentre).
+    const local=profile.map(([r,y],level)=>r===0?[0,y,0]:Array.from({length:n},(_,i)=>{
       const a=phase+i*2*Math.PI/n,k=jitter?jitter(level,i):1,[dx,dz]=wobble?wobble(level,i):[0,0],dy=lift?lift(level,i):0;
-      return v([Math.cos(a)*r*sx*k+dx,y+dy,Math.sin(a)*r*sz*k+dz]);
+      return [Math.cos(a)*r*sx*k+dx,y+dy,Math.sin(a)*r*sz*k+dz];
     }));
+    const rings=local.map(pts=>Array.isArray(pts[0])?pts.map(p=>v(p)):v(pts));
+    const mid=(...ps)=>[0,1,2].map(q=>ps.reduce((t,p)=>t+p[q],0)/ps.length);
     for(let level=0;level<rings.length-1;level++){
-      const lo=rings[level],hi=rings[level+1];
+      const lo=rings[level],hi=rings[level+1],plo=local[level],phi=local[level+1];
       for(let i=0;i<n;i++){
-        const j=(i+1)%n,c=shade(level,i);
+        const j=(i+1)%n;
+        const centre=Array.isArray(lo)&&Array.isArray(hi)?mid(plo[i],plo[j],phi[j],phi[i]):Array.isArray(hi)?mid(plo,phi[j],phi[i]):mid(plo[i],plo[j],phi);
+        const c=shade(level,i,centre);
         if(Array.isArray(lo)&&Array.isArray(hi))quad(lo[i],lo[j],hi[j],hi[i],c);
         else if(Array.isArray(hi))tri(lo,hi[j],hi[i],c);
         else if(Array.isArray(lo))tri(lo[i],lo[j],hi,c);
       }
     }
     const first=rings[0],last=rings[rings.length-1];
-    if(capStart&&Array.isArray(first))for(let i=1;i<n-1;i++)tri(first[0],first[i+1],first[i],capColor??shade(-1,i));
-    if(capEnd&&Array.isArray(last))for(let i=1;i<n-1;i++)tri(last[0],last[i],last[i+1],capColor??shade(profile.length,i));
+    const capMid=pts=>Array.isArray(pts[0])?mid(...pts):pts;
+    if(capStart&&Array.isArray(first))for(let i=1;i<n-1;i++)tri(first[0],first[i+1],first[i],capColor??shade(-1,i,capMid(local[0])));
+    if(capEnd&&Array.isArray(last))for(let i=1;i<n-1;i++)tri(last[0],last[i],last[i+1],capColor??shade(profile.length,i,capMid(local[local.length-1])));
   }
   // Extruded outline in the local XY plane (front face toward -Z). The outline
   // must be star-shaped about its centroid; caps are fanned from that centre.
@@ -211,12 +226,14 @@ function shape(name, build, store = shapes, precision = 10000) {
       const tt=tangents[i];
       nrm=norm(sub3(nrm,tt.map(c=>c*dot3(nrm,tt))));
       const bin=cross3(tt,nrm),r=typeof radii==='function'?radii(i):Array.isArray(radii)?radii[i]:radii;
-      return Array.from({length:n},(_,k)=>{const a=k*2*Math.PI/n,j=jitter?jitter(i,k):1;return v(p.map((c,q)=>c+(Math.cos(a)*nrm[q]+Math.sin(a)*bin[q])*r*j))});
-    });
-    for(let i=0;i<rings.length-1;i++)for(let k=0;k<n;k++){const j=(k+1)%n;quad(rings[i][k],rings[i][j],rings[i+1][j],rings[i+1][k],shade(i,k))}
-    const first=rings[0],last=rings[rings.length-1];
-    if(capStart)for(let k=1;k<n-1;k++)tri(first[0],first[k+1],first[k],capColor??shade(-1,k));
-    if(capEnd)for(let k=1;k<n-1;k++)tri(last[0],last[k],last[k+1],capColor??shade(rings.length,k));
+      return Array.from({length:n},(_,k)=>{const a=k*2*Math.PI/n,j=jitter?jitter(i,k):1;return p.map((c,q)=>c+(Math.cos(a)*nrm[q]+Math.sin(a)*bin[q])*r*j)});
+    }).map(ring=>ring.map(p=>({p,id:v(p)})));
+    const centre=(a,b,c,d)=>[0,1,2].map(q=>(a.p[q]+b.p[q]+c.p[q]+d.p[q])/4);
+    for(let i=0;i<rings.length-1;i++)for(let k=0;k<n;k++){const j=(k+1)%n;quad(rings[i][k].id,rings[i][j].id,rings[i+1][j].id,rings[i+1][k].id,shade(i,k,centre(rings[i][k],rings[i][j],rings[i+1][j],rings[i+1][k])))}
+    const first=rings[0].map(x=>x.id),last=rings[rings.length-1].map(x=>x.id);
+    const ringMid=ring=>[0,1,2].map(q=>ring.reduce((t,x)=>t+x.p[q],0)/ring.length);
+    if(capStart)for(let k=1;k<n-1;k++)tri(first[0],first[k+1],first[k],capColor??shade(-1,k,ringMid(rings[0])));
+    if(capEnd)for(let k=1;k<n-1;k++)tri(last[0],last[k],last[k+1],capColor??shade(rings.length,k,ringMid(rings[rings.length-1])));
   }
   // Lofted solid through closed cross-sections [{z, points:[[x,y],...]}] (equal
   // point counts, local XY at each z). color(section, edge) -> shade. The end
@@ -541,6 +558,14 @@ function world(name,meta,build){
 require('./world-shapes.cjs')({world,C,PI,hash,jitterOf});
 require('./region-shapes.cjs')({world,C,PI,hash,jitterOf});
 require('./beacon-shapes.cjs')({world,C,PI,hash,jitterOf});
+// Creatures (§48): forged on each client by creatures.client.lua through the
+// MeshForge creature API; their own catalog (art/CreatureCatalog.lua).
+function creature(name,meta,build){
+  if(shapes[name]||worldShapes[name]||creatureShapes[name])throw new Error(`Duplicate shape name ${name}`);
+  if(!CREATURE_TRIANGLE_RANGE[meta.kind])throw new Error(`${name}: unknown creature kind ${meta.kind}`);
+  shape(name,build,creatureShapes,1000);creatureMeta[name]=meta;
+}
+const creatureKit=require('./creature-shapes.cjs')({creature,C,PI,hash,jitterOf});
 // Building kit (§40): returns the kit table the world script builds from.
 const buildingKit=require('./building-shapes.cjs')({world,C,PI,hash,jitterOf,worldShapes});
 
@@ -576,8 +601,19 @@ for(const [name,data] of Object.entries(worldShapes)){
   if(count<range[0]||count>range[1])rangeErrors.push(`${name} has ${count} triangles; ${worldMeta[name].kind} range is ${range.join('-')}`);
   for(const vol of componentVolumes(data))if(vol<-1e-4)throw new Error(`${name} has an inward-wound component (volume ${vol})`);
 }
+for(const [name,data] of Object.entries(creatureShapes)){
+  const count=data.faces.length,range=CREATURE_TRIANGLE_RANGE[creatureMeta[name].kind];
+  if(count<range[0]||count>range[1])rangeErrors.push(`${name} has ${count} triangles; ${creatureMeta[name].kind} range is ${range.join('-')}`);
+  if(data.vertices.length>=4096)rangeErrors.push(`${name} has ${data.vertices.length} vertices (packing limit 4095)`);
+  if(creatureMeta[name].boss&&count<BOSS_CORE_FLOOR)rangeErrors.push(`${name} is a boss core with ${count} triangles (floor ${BOSS_CORE_FLOOR})`);
+  for(const vol of componentVolumes(data))if(vol<-1e-4)throw new Error(`${name} has an inward-wound component (volume ${vol})`);
+}
+// Every rig names authored shapes only.
+for(const [kind,r] of Object.entries(creatureKit.rigs)){
+  for(const seg of [{shape:r.core},...r.segs])if(!creatureShapes[seg.shape]||!['creature','pet','limb'].includes(creatureMeta[seg.shape].kind))throw new Error(`rig ${kind} names unknown shape ${seg.shape}`);
+}
 if(rangeErrors.length){console.log(Object.entries(worldShapes).map(([n,d])=>n+' '+d.faces.length).join(', '));throw new Error(rangeErrors.join('\n'))}
-for(const [name,data] of [...Object.entries(shapes),...Object.entries(worldShapes)])for(const [a,b,c,shade] of data.faces){
+for(const [name,data] of [...Object.entries(shapes),...Object.entries(worldShapes),...Object.entries(creatureShapes)])for(const [a,b,c,shade] of data.faces){
   const [p,q,r]=[a,b,c].map(i=>data.vertices[i-1]);
   const u=q.map((x,k)=>x-p[k]),w=r.map((x,k)=>x-p[k]);
   const n=[u[1]*w[2]-u[2]*w[1],u[2]*w[0]-u[0]*w[2],u[0]*w[1]-u[1]*w[0]];
@@ -637,8 +673,8 @@ return Catalog
 `;
 const luaTable = x => Array.isArray(x)?'{'+x.map(luaTable).join(',')+'}':typeof x==='object'?'{'+Object.entries(x).map(([k,v])=>k+'='+luaTable(v)).join(',')+'}':JSON.stringify(x);
 const entries=Object.entries(shapes).map(([name,data])=>`shapes.${name}=${luaTable(data)}`).join('\n');
-const objHeader=name=>{const m=worldMeta[name];return m?`# smooth ${m.smooth||0}\n`+(m.tint?`# tint ${m.tint}\n`:''):''};
-for(const [name,data] of [...Object.entries(shapes),...Object.entries(worldShapes)])fs.writeFileSync(`art/${name}.obj`, `# Original Aether Isles ${name}\n`+objHeader(name)+`mtllib AetherPalette.mtl\n`+data.vertices.map(p=>'v '+p.join(' ')).join('\n')+'\n'+data.faces.map(f=>`usemtl Shade${f[3]}\nf ${f.slice(0,3).join(' ')}`).join('\n')+'\n');
+const objHeader=name=>{const m=worldMeta[name]||creatureMeta[name];return m?`# smooth ${m.smooth||0}\n`+(m.tint?`# tint ${m.tint}\n`:''):''};
+for(const [name,data] of [...Object.entries(shapes),...Object.entries(worldShapes),...Object.entries(creatureShapes)])fs.writeFileSync(`art/${name}.obj`, `# Original Aether Isles ${name}\n`+objHeader(name)+`mtllib AetherPalette.mtl\n`+data.vertices.map(p=>'v '+p.join(' ')).join('\n')+'\n'+data.faces.map(f=>`usemtl Shade${f[3]}\nf ${f.slice(0,3).join(' ')}`).join('\n')+'\n');
 // The world catalog is downloaded by every client, so geometry is packed into
 // base-64 strings (decoded once by the module itself into the usual tables):
 // a vertex is three 3-digit millistud coordinates offset by PACK_OFFSET, a face
@@ -703,6 +739,68 @@ function Catalog.resourceShape(id)
 end
 return Catalog
 `);
+// §48: the creature catalog (packed like the world catalog) and the rig table
+// creatures.client.lua poses: segments, pivots, glow accents and anchors.
+const roundDeep=x=>Array.isArray(x)?x.map(roundDeep):x&&typeof x==='object'?Object.fromEntries(Object.entries(x).map(([k,v])=>[k,roundDeep(v)])):typeof x==='number'?Math.round(x*1000)/1000+0:x;
+const creatureEntries=Object.entries(creatureShapes).map(([name,data])=>{
+  const m=creatureMeta[name],extra={smooth:m.smooth||0,kind:m.kind};
+  if(m.tint)extra.tint=m.tint;
+  const verts=data.vertices.map(p=>p.map(x=>packNumber(Math.round(x*1000)+PACK_OFFSET,3)).join('')).join('');
+  const faces=data.faces.map(([a,b,c,shade])=>packNumber(a,2)+packNumber(b,2)+packNumber(c,2)+packNumber(shade,1)).join('');
+  extra.tris=data.faces.length;extra.verts=data.vertices.length;if(m.boss)extra.boss=true;
+  return `shapes.${name}=lazy("${verts}","${faces}",${luaTable(extra)})`;
+}).join('\n');
+fs.writeFileSync('art/CreatureCatalog.lua',`-- Generated by art/generate-props.cjs from art/creature-shapes.cjs (original geometry, §48).
+-- Creature, pet, limb and overlay meshes forged on each client by forge.client.lua
+-- (creature API) for creatures.client.lua; packed like art/WorldCatalog.lua.
+-- rigs[kind] = {hip, hitbox, gait, core, stride, breath, segs = {{shape, at, rot?, role,
+-- mirror?, k?, phase?}}, glow = {{kind, at, r, color, ...}}, anchors = {crown, shoulder,
+-- chest, ring}} in rig space (studs at scale 1, origin = the combat Root, face -Z).
+local palette=${luaTable(palette)}
+local DIGITS="${PACK_DIGITS}"
+local value={}
+for i=1,#DIGITS do value[string.byte(DIGITS,i)]=i-1 end
+local function digits(s,at,width)
+	local n=0
+	for k=at,at+width-1 do n=n*64+value[string.byte(s,k)] end
+	return n
+end
+local function unpack(verts,faces,meta)
+	local vertices,list={},{}
+	for at=1,#verts,9 do
+		table.insert(vertices,{(digits(verts,at,3)-${PACK_OFFSET})/1000,(digits(verts,at+3,3)-${PACK_OFFSET})/1000,(digits(verts,at+6,3)-${PACK_OFFSET})/1000})
+	end
+	for at=1,#faces,7 do
+		table.insert(list,{digits(faces,at,2),digits(faces,at+2,2),digits(faces,at+4,2),digits(faces,at+6,1)})
+	end
+	meta.vertices,meta.faces=vertices,list
+	return meta
+end
+-- QC M3: shapes stay packed until first used. Reading .vertices or .faces decodes
+-- that shape alone; Catalog.drop(name) forgets the decoded arrays again (the
+-- MeshForge calls it once a template is built). tris / verts are always known.
+local packed={}
+local LAZY={__index=function(meta,key)
+	if key~="vertices" and key~="faces" then return nil end
+	local source=packed[meta]
+	if not source then return nil end
+	unpack(source[1],source[2],meta)
+	return rawget(meta,key)
+end}
+local function lazy(verts,faces,meta)
+	meta.lazy=true
+	packed[meta]={verts,faces}
+	return setmetatable(meta,LAZY)
+end
+local shapes={}
+${creatureEntries}
+local function drop(name)
+	local meta=shapes[name]
+	if type(meta)=="table" and packed[meta] then rawset(meta,"vertices",nil); rawset(meta,"faces",nil) end
+end
+local rigs=${luaTable(roundDeep(creatureKit.rigs))}
+return {palette=palette,shapes=shapes,rigs=rigs,drop=drop,tintIndex=${TINT},tintDarkIndex=${TINT_DARK},tintLightIndex=${TINT_LIGHT},tintDark=0.62,tintLight=0.4}
+`);
 fs.writeFileSync('art/AetherPalette.mtl',palette.map((hex,i)=>`newmtl Shade${i+1}\nKd ${[0,2,4].map(n=>parseInt(hex.slice(n,n+2),16)/255).join(' ')}`).join('\n'));
 fs.writeFileSync('art/PropCatalog.lua','-- Generated by art/generate-props.cjs; shared original geometry.\nlocal palette='+luaTable(palette)+'\nlocal shapes={}\n'+entries+'\n'+iconShapeLua);
 let source=fs.readFileSync('mesh.client.lua','utf8');
@@ -722,4 +820,6 @@ fs.writeFileSync('world.server.lua',worldSource);
 console.log('Generated '+Object.keys(shapes).length+' original prop meshes and shared UI catalog.');
 console.log('Icon triangles: '+Object.entries(iconBudget).map(([n,c])=>n+' '+c).join(', '));
 console.log('World triangles: '+Object.entries(worldShapes).map(([n,d])=>n+' '+d.faces.length).join(', '));
+console.log('Creature triangles: '+Object.entries(creatureShapes).map(([n,d])=>n+' '+d.faces.length).join(', '));
+console.log('Creature total: '+Object.keys(creatureShapes).length+' shapes, '+Object.values(creatureShapes).reduce((t,d)=>t+d.faces.length,0)+' triangles, '+Object.keys(creatureKit.rigs).length+' rigs');
 console.log('World total: '+Object.keys(worldShapes).length+' shapes, '+Object.values(worldShapes).reduce((t,d)=>t+d.faces.length,0)+' triangles');
