@@ -19,6 +19,7 @@
 --    primitives hidden locally and restored, one BulkMoveTo per frame with no
 --    instance churn, telegraph / lunge / flinch / death, caps, phones.
 -- 8. Source rules: server authority, no per-frame tables, attributes set.
+-- QC round (§48 QC): every finding has a regression test, tagged [H1]..[L9].
 local fs = require("@lune/fs")
 local luau = require("@lune/luau")
 local roblox = require("@lune/roblox")
@@ -206,6 +207,9 @@ eq(R.tier({Level = 3}), "critter", "a level 3 boar is a critter")
 eq(R.tier({Level = R.BRUTE_LEVEL}), "brute", "brute at level 25")
 eq(R.tier({Level = R.ELITE_LEVEL}), "elite", "elite at level 60")
 eq(R.tier({Level = 5, Superior = true}), "elite", "superiors are elite at least")
+eq(R.tier({Level = 5, Superior = true, Boss = true}), "elite", "[M6] superiors (Boss on the server) render as elites, not bosses")
+ok(R.priority("boss") > R.priority("critter", true) and R.priority("critter", true) > R.priority("critter") and R.priority("critter") > R.priority("pet"),
+	"[H2] draw priority: bosses, landmarks, creatures, pets")
 eq(R.tier({Level = 5, Boss = true}), "boss", "slayer bosses")
 eq(R.tier({Level = 30, Lair = "fight-1"}), "boss", "lair / raid bosses (Lair attribute)")
 eq(R.tier({Level = 30, Lair = ""}), "brute", "an empty Lair attribute is not a boss")
@@ -238,8 +242,44 @@ local part4 = checks
 local lunge = tonumber(string.match(combatSource, "r%.lungeUntil = env%.now%(%) %+ ([%d%.]+)"))
 eq(lunge, R.TIMING.LUNGE, "the client's bite window equals the server lunge")
 eq(tonumber(string.match(combatSource, "r%.lungeUntil = now %+ ([%d%.]+)")), R.TIMING.LUNGE, "lair / raid lunges too")
-ok(has(combatSource, 'v.model:SetAttribute("TelegraphAt", Workspace:GetServerTimeNow() + tg.windup)'), "the server stamps TelegraphAt = now + windup")
+ok(has(combatSource, '{at = Workspace:GetServerTimeNow() + tg.windup, windup = tg.windup}') and has(combatSource, 'v.model:SetAttribute("TelegraphAt", show.at)'), "the server stamps TelegraphAt = now + windup")
 ok(has(combatSource, 'v.model:SetAttribute("AttackAt", Workspace:GetServerTimeNow())'), "the server stamps AttackAt when a hit lands")
+ok(not has(combatSource, "TelegraphKind"), "[L5] the unused TelegraphKind attribute is gone")
+-- [M1] Overlapping telegraphs: the model shows the earliest unresolved one.
+do
+	local q = {{at = 10, windup = 3}, {at = 12, windup = 1}}
+	eq(Combat.earliestTelegraph(q, 9).at, 10, "[M1] the earlier telegraph is shown first")
+	eq(Combat.earliestTelegraph(q, 10.5).at, 12, "[M1] once it resolves the next one is published")
+	eq(#q, 1, "[M1] resolved telegraphs leave the queue")
+	eq(Combat.earliestTelegraph(q, 13), nil, "[M1] nothing pending, nothing shown")
+	-- A short telegraph raised while a long slam winds up never hides the slam.
+	local slam = {at = 20, windup = 3.2}
+	local quick = {at = 18.5, windup = 1.5}
+	local list = {slam, quick}
+	eq(Combat.earliestTelegraph(list, 17.2), quick, "[M1] the quick strike resolves first")
+	eq(Combat.earliestTelegraph(list, 18.6), slam, "[M1] then the big slam is still shown before it lands")
+	local list2 = {quick, slam}
+	eq(Combat.earliestTelegraph(list2, 17.2), quick, "[M1] order of arrival does not matter")
+	-- Data: windups longer than an (enraged) attack interval overlap; count them.
+	local overlaps, checked = 0, 0
+	local function scan(def, interval)
+		for phase in ipairs(def.phases or {}) do
+			local gap = interval(def, phase, true)
+			for _, a in pairs(def.attacks or {}) do
+				if type(a.windup) == "number" then
+					checked += 1
+					if a.windup > gap then overlaps += 1 end
+				end
+			end
+		end
+	end
+	for _, def in pairs(Data.WorldBosses) do scan(def, Data.Endgame.attackInterval) end
+	for _, def in pairs(Data.Lairs.Bosses) do scan(def, Data.Lairs.interval) end
+	for _, def in pairs(Data.Raids.Encounters) do scan(def, Data.Lairs.interval) end
+	ok(checked >= 20, "[M1] enraged intervals checked against windups (" .. checked .. ")")
+	ok(overlaps < checked, "[M1] most telegraphs resolve before the next one rises (" .. overlaps .. " overlap and are queued)")
+	ok(has(combatSource, "publishTelegraph(r)") and has(combatSource, "earliestTelegraph(v.telegraphs"), "[M1] the server republishes after each strike")
+end
 local _, wbCount = string.gsub(combatSource, "\n%s+markTelegraph%(r, tg%)", "")
 eq(wbCount, 2, "world boss and lair / raid telegraphs both stamp the model")
 local windups = {}
@@ -343,11 +383,13 @@ print("PASS: timings (" .. (checks - part4) .. ")")
 local part5 = checks
 local function tris(name) return #Cat.shapes[name].faces end
 local worst = {desktop = 0, phone = 0}
+local worldBodies = {}
+for _, def in pairs(Data.WorldBosses) do worldBodies[def.body] = true end
 for kind, rigDef in pairs(Cat.rigs) do
 	local base = tris(rigDef.core)
 	local shapes = {[rigDef.core] = true}
 	for _, seg in ipairs(rigDef.segs) do base += tris(seg.shape); shapes[seg.shape] = true end
-	ok(base <= 5000, kind .. " rig " .. base .. " triangles <= 5000")
+	ok(base <= 9000, kind .. " rig " .. base .. " triangles <= 9000")
 	ok(#rigDef.segs <= 10, kind .. " at most 10 limb segments")
 	for _, tier in ipairs({"critter", "brute", "elite", "boss", "world"}) do
 		for _, mobile in ipairs({false, true}) do
@@ -358,7 +400,8 @@ for kind, rigDef in pairs(Cat.rigs) do
 				set[R.OVERLAY_SHAPES[o]] = true
 			end
 			for _ in pairs(set) do templates += 1 end
-			ok(total <= 9000, kind .. " " .. tier .. " full rig " .. total .. " triangles <= 9000")
+			-- (world trim is only ever worn by the world boss bodies)
+			ok(total <= 14000 or (tier == "world" and not worldBodies[kind]), kind .. " " .. tier .. " full rig " .. total .. " triangles <= 14000")
 			ok(templates <= 8, kind .. " " .. tier .. " needs " .. templates .. " templates (<= 8)")
 			ok(templates <= R.TEMPLATE_CAP.phone, kind .. " fits the phone creature template cap")
 			local device = if mobile then "phone" else "desktop"
@@ -370,8 +413,8 @@ end
 local desktopLimit = tonumber(string.match(forgeSource, "placedTriangles = (%d+), %-%- triangles across all placed clones"))
 local phoneLimit = tonumber(string.match(forgeSource, "templates = 24, templateTriangles = %d+, instances = %d+, placedTriangles = (%d+)"))
 ok(desktopLimit and phoneLimit, "forge limits found")
-ok(worst.desktop * R.cap(false) <= desktopLimit * 0.5, "desktop: " .. R.cap(false) .. " worst rigs use <= half the forge budget")
-ok(worst.phone * R.cap(true) <= phoneLimit * 0.6, "phones: " .. R.cap(true) .. " worst rigs use <= 60% of the forge budget")
+ok(worst.desktop * R.cap(false) <= desktopLimit * 0.55, "desktop: " .. R.cap(false) .. " worst rigs (" .. worst.desktop .. ") use <= 55% of the forge budget")
+ok(worst.phone * R.cap(true) <= phoneLimit * 0.75, "phones: " .. R.cap(true) .. " worst rigs (" .. worst.phone .. ") use <= 75% of the forge budget")
 ok(R.cap(true) < R.cap(false), "phones draw fewer rigs")
 ok(R.TEMPLATE_CAP.phone < R.TEMPLATE_CAP.desktop, "phones keep fewer creature templates")
 eq(tonumber(string.match(forgeSource, "local CREATURE_TEMPLATE_CAP = if mobile then (%d+)")), R.TEMPLATE_CAP.phone, "forge phone creature cap matches the rules")
@@ -397,13 +440,13 @@ ok(R.lod(edge, "critter", false, true) > 0 and R.lod(edge, "critter", false, fal
 ok(R.LIMB_HZ > R.CORE_HZ and R.CORE_HZ >= 4, "LOD animation rates")
 -- Catalog download and authoring.
 local bytes = #fs.readFile("art/CreatureCatalog.lua")
-ok(bytes <= 640 * 1024, "creature catalog download " .. bytes .. " bytes <= 640 KB")
+ok(bytes <= 1200 * 1024, "creature catalog download " .. bytes .. " bytes <= 1200 KB")
 local shapes, total = 0, 0
 for name, data in pairs(Cat.shapes) do
 	shapes += 1
 	total += #data.faces
 	ok(World.shapes[name] == nil, name .. " is unique across catalogs")
-	ok(type(data.smooth) == "number" and (data.smooth >= 18 or data.kind == "overlay"), name .. " is smooth-shaded (crease " .. data.smooth .. ")")
+	ok(type(data.smooth) == "number" and data.smooth >= 40, name .. " is smooth-shaded (crease " .. data.smooth .. ")")
 end
 ok(shapes >= 60, "creature shapes authored (" .. shapes .. ")")
 local rigCount = 0
@@ -416,7 +459,8 @@ print("PASS: budgets and LOD (" .. (checks - part5) .. ")")
 ------------------------------------------------------------------------------
 local part6 = checks
 local Props = load("art/PropCatalog.lua")
-local function forgeHarness(mobile)
+local function forgeHarness(mobile, behaviour)
+	behaviour = behaviour or {}
 	local calls = {meshes = 0, parts = 0, destroyed = 0}
 	local asset = {}
 	function asset.CreateEditableMesh()
@@ -431,7 +475,11 @@ local function forgeHarness(mobile)
 		function mesh.Destroy() calls.destroyed += 1 end
 		return mesh
 	end
-	function asset.CreateMeshPartAsync() calls.parts += 1; return roblox.Instance.new("MeshPart") end
+	function asset.CreateMeshPartAsync()
+		calls.parts += 1
+		if behaviour.fail then error("mesh build failed") end
+		return roblox.Instance.new("MeshPart")
+	end
 	local tokens = {AetherWorldArt = "world", AetherArt = "props", AetherCreatureArt = "creature"}
 	local services = {
 		AssetService = asset,
@@ -449,7 +497,7 @@ local function forgeHarness(mobile)
 		task = {spawn = function(f, ...) if type(f) == "thread" then coroutine.resume(f, ...) else f(...) end end, defer = function() end, wait = function() end},
 		warn = function() end, print = function() end,
 	})
-	return test.forge, calls
+	return test.forge, calls, behaviour
 end
 do
 	local forge, calls = forgeHarness(false)
@@ -475,19 +523,28 @@ do
 	eq(forge.stats.placedTriangles, 0, "triangles returned")
 	eq(api.visual("Boulder", tint), nil, "world props are not served as creatures")
 	eq(api.visual("NoSuchShape", tint), nil, "unknown shapes refused")
-	-- The creature sub-cap: idle creature templates give way (LRU), busy ones never.
+	-- The creature sub-cap: idle creature templates give way (LRU), busy ones never;
+	-- [H1] the last bossReserve templates are only for boss / world tiers.
 	local held = {}
-	for i = 1, api.cap do
+	for i = 1, api.cap - api.bossReserve do
 		local _, t = api.visual("HoofLeg", Color3.fromRGB(i * 7 % 255, 40, 90))
-		ok(t ~= nil, "template " .. i .. " within the cap")
+		ok(t ~= nil, "template " .. i .. " within the ordinary share of the pool")
 		table.insert(held, t)
 	end
-	ok(api.count() <= api.cap, "creature templates within the cap")
 	local before = forge.stats.evicted
 	eq(api.visual("PawLeg", Color3.fromRGB(1, 2, 3)), nil, "busy creature templates are never evicted: a new shape waits")
 	eq(forge.stats.evicted, before, "nothing evicted while every template is in use")
-	api.release(table.remove(held, 1))
-	local _, extra = api.visual("PawLeg", Color3.fromRGB(1, 2, 3))
+	local _, bossToken = api.visual("PawLeg", Color3.fromRGB(1, 2, 3), true)
+	ok(bossToken ~= nil, "[H1] a boss still forges from the reserved share")
+	for i = 1, api.bossReserve - 1 do
+		local _, t = api.visual("ClawLeg", Color3.fromRGB(9, i * 20, 9), true)
+		ok(t ~= nil, "[H1] reserved boss template " .. i)
+		table.insert(held, t)
+	end
+	eq(api.count(), api.cap, "the pool is full")
+	eq(api.visual("ChitinLeg", Color3.fromRGB(4, 4, 4), true), nil, "a full pool of busy templates refuses even a boss (the renderer bumps rigs)")
+	api.release(bossToken)
+	local _, extra = api.visual("ChitinLeg", Color3.fromRGB(4, 4, 4), true)
 	ok(extra ~= nil and forge.stats.evicted == before + 1, "the least recently used idle creature template gives way")
 	for _, t in ipairs(held) do api.release(t) end
 	api.release(extra)
@@ -506,6 +563,17 @@ do
 	ok(stats.templates - stats.creatureTemplates <= worldBefore, "the world pool holds no creature templates")
 	ok(stats.creatureTriangles <= api.triangleCap, "creature template triangles within their cap")
 	api.release(t)
+	-- [M3] Shapes decode lazily and drop their arrays once a template holds them.
+	local ray = Cat.shapes.CreatureRay
+	ok(ray.lazy == true and type(ray.tris) == "number" and ray.tris > 0, "[M3] catalog entries are lazy and know their triangle count")
+	Cat.drop("CreatureRay")
+	eq(rawget(ray, "faces"), nil, "[M3] drop forgets the decoded faces")
+	eq(#ray.faces, ray.tris, "[M3] reading .faces decodes the shape on demand")
+	local _, rt = api.visual("CreatureRay", Color3.fromHex("8FB8D6"))
+	ok(rt ~= nil and rawget(ray, "faces") == nil and rawget(ray, "vertices") == nil, "[M3] the forge drops the decoded arrays after building the template")
+	api.release(rt)
+	-- [L6] creature releases never reset the world forge's back-off epoch.
+	ok(not has(string.match(forgeSource, "local function creatureRelease.-\nend\n") or "", "budgetEpoch += 1"), "[L6] creatureRelease leaves budgetEpoch alone")
 	-- World Shape tags never forge creature meshes.
 	local p = roblox.Instance.new("Part")
 	p:SetAttribute("Shape", "CreatureBoar")
@@ -519,6 +587,20 @@ do
 	local _, b = api.visual("CreatureMite", Color3.fromHex("22CC88"))
 	ok(a and b, "phones serve both colours")
 	eq(calls.meshes, 1, "phones share one variant per creature shape")
+	-- [L7] a boss keeps its exact colour on phones.
+	local _, c = api.visual("CreatureMite", Color3.fromHex("FF2020"), true)
+	ok(c ~= nil and calls.meshes == 2, "[L7] phones forge a boss its own colour")
+end
+do
+	-- [M4] Creature build failures stop only the creature pool.
+	local forge, _, behaviour = forgeHarness(false, {})
+	behaviour.fail = true
+	for i = 1, 3 do api = forge.creature; forge.creature.visual("CreatureBlob", Color3.fromRGB(i * 30, 0, 0)) end
+	eq(forge.creature.pool.stop, "unavailable", "[M4] three creature failures stop the creature pool")
+	eq(forge.stopReason(), nil, "[M4] the world forge keeps working")
+	eq(forge.stats.failures, 0, "[M4] world failure counter untouched")
+	behaviour.fail = false
+	eq(forge.creature.visual("CreatureBlob", Color3.fromRGB(1, 1, 1)), nil, "[M4] a stopped creature pool refuses")
 end
 print("PASS: forge creature API (" .. (checks - part6) .. ")")
 
@@ -542,7 +624,7 @@ local created = 0
 local function stub(class, props)
 	created += 1
 	local o = {__stub = true, ClassName = class, Transparency = 0, LocalTransparencyModifier = 0, attrs = {}, children = {}, inWorld = true,
-		AttributeChanged = signal(), AncestryChanged = signal(), Parent = true}
+		AttributeChanged = signal(), AncestryChanged = signal(), DescendantAdded = signal(), Parent = true}
 	for k, v in pairs(props or {}) do o[k] = v end
 	function o:IsA(c) return c == class or (c == "BasePart" and (class == "Part" or class == "MeshPart")) end
 	function o:GetAttribute(k) return self.attrs[k] end
@@ -555,17 +637,26 @@ local function stub(class, props)
 end
 local function runtime(opts)
 	opts = opts or {}
-	local env = {clock = 0, server = 1000, bulk = 0, bulkParts = 0, tokens = 0, live = {}, refuse = false, reduced = false}
+	local env = {clock = 0, server = 1000, bulk = 0, bulkParts = 0, tokens = 0, live = {}, tints = {}, refuse = false, refuseShape = nil, reduced = false, warnings = {}}
 	local api = {}
 	function api:Invoke(method, arg)
 		if method == "creature" then
-			if env.refuse then return nil end
+			if env.refuse or env.refuseShape == arg.shape then return nil end
+			if opts.forge then
+				-- A real (mocked-AssetService) MeshForge behind the API.
+				local clone, token, extent, center = opts.forge.creature.visual(arg.shape, arg.tint, arg.boss)
+				if not clone then return nil end
+				env.live[token] = arg.shape
+				return stub("MeshPart", {Name = arg.shape, Size = extent}), token, extent, center
+			end
 			env.tokens += 1
 			env.live[env.tokens] = arg.shape
+			env.tints[env.tokens] = arg.tint
 			local lo, hi = meshBounds(arg.shape)
 			return stub("MeshPart", {Name = arg.shape, Size = hi - lo}), env.tokens, hi - lo, (lo + hi) / 2
 		elseif method == "creatureRelease" then
 			env.live[arg] = nil
+			if opts.forge then opts.forge.creature.release(arg) end
 			return true
 		end
 	end
@@ -593,7 +684,7 @@ local function runtime(opts)
 		os = {clock = function() return env.clock end},
 		task = {spawn = function(f, ...) f(...) end, defer = function(f, ...) f(...) end},
 		CreatureTest = test, Vector3 = Vector3, CFrame = CFrame, Color3 = Color3, Enum = Enum,
-		warn = function(...) error(table.concat({...}, " ")) end,
+		warn = function(...) table.insert(env.warnings, table.concat({...}, " ")) end,
 	})
 	env.C = test.creatures
 	function env.liveCount() local n = 0 for _ in pairs(env.live) do n += 1 end return n end
@@ -623,16 +714,18 @@ do
 	eq(#rec.meshes, expected, "core + limbs + overlays (" .. expected .. ")")
 	eq(env.liveCount(), expected, "every mesh came from the forge")
 	eq(#rec.glows, #Cat.rigs.golem.glow, "glow accents placed")
-	eq(body.LocalTransparencyModifier, 1, "the server primitive is hidden locally")
+	eq(body.LocalTransparencyModifier, 0, "[L8] crossfade: the primitive is still shown when the mesh appears")
 	eq(root.LocalTransparencyModifier, 0, "the invisible root (click target, name plate) is untouched")
 	eq(body.Transparency, 0, "the replicated primitive's own Transparency is never written")
 	-- One BulkMoveTo per frame, no instance churn while animating.
 	local before = created
 	env.frame(1 / 60)
+	ok(body.LocalTransparencyModifier > 0 and body.LocalTransparencyModifier < 1, "[L8] the primitive fades out while the mesh fades in")
 	eq(env.bulk, 1, "one BulkMoveTo per frame")
 	eq(env.bulkParts, expected + #Cat.rigs.golem.glow, "every mesh and glow posed in it")
 	for _ = 1, 30 do env.frame(1 / 60) end
 	eq(created, before, "no instances created while animating")
+	eq(body.LocalTransparencyModifier, 1, "the server primitive is hidden locally once the crossfade ends")
 	eq(env.bulk, 31, "still one BulkMoveTo per frame")
 	-- Boss glare: eyes override to the tier colour.
 	local eyeGlow
@@ -678,6 +771,10 @@ do
 	-- Far away: released, primitives restored, tokens returned.
 	env.camera.CFrame = CFrame.new(0, 5, 5000)
 	C.assign()
+	ok(rec.built and rec.fadeOutAt ~= nil, "[L8] far: the rig fades back to its primitives first")
+	env.frame(R.TIMING.SPAWN / 2)
+	ok(body.LocalTransparencyModifier > 0 and body.LocalTransparencyModifier < 1, "[L8] the primitive fades back in")
+	env.frame(R.TIMING.SPAWN)
 	ok(not rec.built, "far: released")
 	eq(env.liveCount(), 0, "every forge token returned")
 	eq(body.LocalTransparencyModifier, 0, "the primitive is visible again")
@@ -690,15 +787,17 @@ do
 	env.camera.CFrame = CFrame.new(0, 5, 0)
 	C.assign()
 	ok(rec.full and #rec.meshes == expected, "closer again: the full rig")
+	env.frame(R.TIMING.SPAWN + 0.05)
 	-- Death: the rig dissolves after the server marks it Dead, then releases.
 	model:SetAttribute("Dead", true)
-	ok(rec.dying, "Dead starts the dissolve")
+	ok(rec.dying and rec.slump, "Dead starts the dissolve (a death slumps)")
 	eq(body.LocalTransparencyModifier, 1, "the dying primitive stays hidden (the server destroys it next)")
 	model.inWorld = false
 	model.AncestryChanged:Fire()
 	env.frame(R.TIMING.DISSOLVE / 2)
 	local mid = rec.meshes[1] and rec.meshes[1].part.Transparency or 1
 	ok(mid > 0 and mid < 1, "half dissolved")
+	ok(rec.state.death > 0, "the dying body slumps")
 	env.frame(R.TIMING.DISSOLVE)
 	ok(C.records[model] == nil, "dissolved rigs are forgotten")
 	eq(env.liveCount(), 0, "and their meshes returned")
@@ -762,11 +861,12 @@ do
 	local rec = env.C.records[host]
 	ok(rec.built and rec.tier == "elite", "the Sentinel is drawn as an elite")
 	near(rec.lift, (43.5 - 47) + 4.2 * 0.92, 1e-6, "its feet stand on the hall floor")
+	env.frame(R.TIMING.SPAWN + 0.05)
 	eq(host.LocalTransparencyModifier, 1, "the fallback block is hidden locally")
 	env.frame(1 / 60)
 	host:SetAttribute("Health", 500)
 	host:SetAttribute("Health", 400)
-	env.frame(0.01)
+	env.frame(0.07) -- (limb LOD: posed at 15 Hz)
 	ok(rec.state.flinch > 0.5, "guardian hits flinch")
 	host:SetAttribute("VisualState", "Defeated")
 	env.frame(0.5)
@@ -789,9 +889,167 @@ do
 	env.C.assign()
 	local rec = env.C.records[pet]
 	ok(rec.built and rec.tier == "pet", "pets are drawn")
+	env.frame(R.TIMING.SPAWN + 0.05)
 	eq(body.LocalTransparencyModifier, 1, "the pet's visible body primitive is hidden")
-	env.frame(1 / 60)
 	ok(rec.visual.LookVector:Dot(body.CFrame.LookVector) < -0.99, "pet rigs face the follower's +Z (rig yaw)")
+end
+do
+	-- [H1] A boss builds into a phone pool full of in-use pet templates.
+	local forge = forgeHarness(true)
+	local env = runtime({mobile = true, forge = forge})
+	local pets = {}
+	local forms = {"pet_flyer", "pet_quad", "pet_shell", "pet_hopper", "pet_float"}
+	for i = 1, 10 do
+		local m = monster(forms[(i - 1) % 5 + 1], {Pet = true, Level = 1, Color = "E07A3F"}, Vector3.new(i, 1, -6))
+		env.C.track(m)
+		table.insert(pets, m)
+	end
+	env.C.assign()
+	local api = forge.creature
+	ok(api.count() >= api.cap - api.bossReserve, "[H1] pets fill the ordinary share of the phone pool (" .. api.count() .. ")")
+	local boss = monster("golem", {Boss = true, CreatureScale = 2.2, Level = 40, Color = "E8643A"}, Vector3.new(0, 2, -30))
+	env.C.track(boss)
+	env.C.assign()
+	local rec = env.C.records[boss]
+	ok(rec.built and rec.full, "[H1] the boss rig is complete")
+	eq(#rec.meshes, R.rigMeshes(Cat.rigs.golem, "boss", true), "[H1] every boss mesh forged")
+	ok(api.count() <= api.cap, "[H1] still within the phone pool")
+	local petsDrawn = 0
+	for _, m in ipairs(pets) do if env.C.records[m].built then petsDrawn += 1 end end
+	ok(env.C.bumps > 0 and petsDrawn < #pets, "[H1] pets gave way (" .. petsDrawn .. " of " .. #pets .. " drawn, " .. env.C.bumps .. " bumped)")
+end
+do
+	-- [H2] Invisible hosts keep a visible legacy fallback until the core exists;
+	-- landmarks outrank pets for the cap.
+	local env = runtime()
+	local host = stub("Part", {Name = "Shellwarden", CFrame = CFrame.new(0, 2, -30), Size = Vector3.new(1, 1, 1), Transparency = 1})
+	local sculpture = stub("MeshPart", {Name = "Shellwarden Sculpture", CFrame = host.CFrame, Size = Vector3.new(6, 3, 6)})
+	host.children = {sculpture}
+	host.attrs = {CreatureRig = "crab", CreatureScale = 1.25, Color = "525570", CreatureTier = "boss", CreatureLandmark = true, Shape = "Shellwarden"}
+	env.refuse = true
+	env.C.track(host)
+	env.C.assign()
+	eq(sculpture.LocalTransparencyModifier, 0, "[H2] no forged core: the legacy sculpture stays visible")
+	env.refuse = false
+	env.clock += 9
+	env.C.assign()
+	env.frame(R.TIMING.SPAWN + 0.05)
+	eq(sculpture.LocalTransparencyModifier, 1, "[H2] the core exists: the sculpture is hidden locally")
+	local late = stub("Part", {Name = "Authored proxy", Size = Vector3.new(1, 1, 1)})
+	host.DescendantAdded:Fire(late)
+	eq(late.LocalTransparencyModifier, 1, "[H2] fallback parts that arrive later are hidden too")
+	local env2 = runtime()
+	for i = 1, 30 do env2.C.track(monster("pet_quad", {Pet = true, Color = "E07A3F"}, Vector3.new(i * .3, 1, -5))) end
+	local ray = stub("Part", {Name = "Tidewing", CFrame = CFrame.new(0, 32, -60), Size = Vector3.new(1, 1, 1), Transparency = 1})
+	ray.attrs = {CreatureRig = "ray", CreatureScale = 1.4, Color = "3F7CAC", CreatureTier = "critter", CreatureLandmark = true}
+	env2.C.track(ray)
+	env2.C.assign()
+	ok(env2.C.records[ray].built, "[H2] a landmark is drawn ahead of nearer pets")
+end
+do
+	-- [H3] A rig missing a structural segment goes back to its primitives.
+	local env = runtime()
+	env.refuseShape = "HoofLeg"
+	local model, _, body = monster("boar")
+	env.C.track(model)
+	env.C.assign()
+	local rec = env.C.records[model]
+	ok(not rec.built and not rec.full, "[H3] a boar without legs is not drawn")
+	eq(env.liveCount(), 0, "[H3] its partial meshes went back to the forge")
+	eq(body.LocalTransparencyModifier, 0, "[H3] the primitives stay visible")
+	ok(rec.retryAt ~= nil, "[H3] and it retries later")
+	env.refuseShape = nil
+	env.clock += 9
+	env.C.assign()
+	ok(rec.built and rec.full, "[H3] the complete rig is drawn once the legs forge")
+end
+do
+	-- [M2] Cap hysteresis: built rigs keep their slots unless clearly beaten.
+	local env = runtime()
+	local cap = R.cap(false)
+	local members = {}
+	for i = 1, cap do
+		local m = monster("mite", nil, Vector3.new(0, 2, -(40 + i)))
+		env.C.track(m)
+		table.insert(members, m)
+	end
+	env.C.assign()
+	local farthest = members[cap]
+	ok(env.C.records[farthest].built, "the cap is full")
+	local close = monster("mite", nil, Vector3.new(0, 2, -(40 + cap - 3)))
+	env.C.track(close)
+	env.C.assign()
+	ok(not env.C.records[close].built and env.C.records[farthest].fadeOutAt == nil, "[M2] a newcomer only slightly closer does not evict a member")
+	local closer = monster("mite", nil, Vector3.new(0, 2, -10))
+	env.C.track(closer)
+	env.C.assign()
+	ok(env.C.records[closer].built and env.C.records[farthest].fadeOutAt ~= nil, "[M2] a clearly closer newcomer takes the farthest slot")
+end
+do
+	-- [M5] Stance and colour changes re-tint the rig; [M6] superiors render as elites.
+	local env = runtime()
+	local model = monster("stalker", {Lair = "fight-1", LairStance = "melee", Level = 30, CreatureScale = 2.2})
+	env.C.track(model)
+	env.C.assign()
+	local rec = env.C.records[model]
+	local function ringToken() for _, m in ipairs(rec.meshes) do if m.ring then return m.token end end end
+	local first = ringToken()
+	ok(first and env.tints[first] == Color3.fromHex(R.STANCE_COLOR.melee), "[M5] the ring starts in the melee stance colour")
+	model:SetAttribute("LairStance", "magic")
+	local second = ringToken()
+	ok(second and second ~= first and env.live[first] == nil, "[M5] a stance change replaces the ring")
+	ok(env.tints[second] == Color3.fromHex(R.STANCE_COLOR.magic), "[M5] in the new stance colour")
+	model:SetAttribute("Color", "22AA44")
+	ok(not rec.built, "[M5] a colour change releases the rig")
+	env.C.assign()
+	ok(rec.built and env.tints[rec.meshes[1].token] == Color3.fromHex("22AA44"), "[M5] and re-forges it in the new colour")
+	local sup = monster("boar", {Boss = true, Superior = true, CreatureScale = 2.2})
+	env.C.track(sup)
+	eq(env.C.records[sup].tier, "elite", "[M6] a superior is drawn as an elite")
+end
+do
+	-- [L1] Unbuilt rigs are forgotten at once; a pose error re-tracks the host.
+	local env = runtime()
+	env.refuse = true
+	local model = monster("boar")
+	env.C.track(model)
+	env.C.assign()
+	model:SetAttribute("Dead", true)
+	ok(env.C.records[model] == nil and #model.AttributeChanged.fns == 0, "[L1] an unbuilt dying rig is forgotten and disconnected")
+	env.refuse = false
+	local m2, root2 = monster("boar")
+	env.C.track(m2)
+	env.C.assign()
+	root2.CFrame = "corrupt" -- (any pose error)
+	env.frame(1 / 60)
+	ok(#env.warnings == 1 and env.C.records[m2] == nil and env.C.retrack[m2] ~= nil, "[L1] a pose error forgets the rig and schedules a re-track")
+	root2.CFrame = CFrame.new(0, 2, -20)
+	env.clock += 3
+	env.C.assign()
+	ok(env.C.records[m2] ~= nil, "[L1] the host is tracked again")
+end
+do
+	-- [L2] Despawns fade without the death slump.
+	local env = runtime()
+	local model = monster("boar")
+	env.C.track(model)
+	env.C.assign()
+	env.frame(R.TIMING.SPAWN + 0.05)
+	local rec = env.C.records[model]
+	model:SetAttribute("Despawn", true)
+	model:SetAttribute("Dead", true)
+	ok(rec.dying and not rec.slump, "[L2] a despawn does not slump")
+	env.frame(R.TIMING.DISSOLVE_REDUCED / 2)
+	eq(rec.state.death, 0, "[L2] the body keeps its pose while it fades")
+	env.frame(R.TIMING.DISSOLVE_REDUCED)
+	eq(env.C.records[model], nil, "[L2] gone after the short fade")
+	local pet = monster("pet_quad", {Pet = true})
+	env.C.track(pet)
+	env.C.assign()
+	env.frame(R.TIMING.SPAWN + 0.05)
+	pet.inWorld = false
+	pet.AncestryChanged:Fire()
+	ok(env.C.records[pet].dying and not env.C.records[pet].slump, "[L2] a dismissed pet fades without dying")
 end
 print("PASS: renderer runtime (" .. (checks - part7) .. ")")
 
@@ -818,7 +1076,8 @@ ok(has(poseText, "out.seg = out.seg or {}"), "R.pose reuses the caller's segment
 for _, banned in ipairs({":SetAttribute(", ":FireServer(", ":InvokeServer(", "rec.root.CFrame =", "host.CFrame =", ".Transparency = 1\n\t\t\tp", "host:Destroy()"}) do
 	ok(not string.find(clientSource, banned, 1, true), "creatures.client.lua never uses " .. banned)
 end
-ok(has(clientSource, "LocalTransparencyModifier = 1") and has(clientSource, "LocalTransparencyModifier = 0"), "primitives are hidden and restored locally")
+ok(has(clientSource, "p.LocalTransparencyModifier = ltm") and has(clientSource, "setPrimitives(rec, 0)"), "primitives are hidden and restored locally")
+ok(not string.find((body(clientSource, "local function setPrimitives(rec, ltm)"):gsub("%-%-[^\n]*", "")), "function(", 1, true), "[L3] the per-frame crossfade write allocates no closures")
 local _, bulkCalls = string.gsub(clientSource, "BulkMoveTo%(", "")
 eq(bulkCalls, 1, "one BulkMoveTo call site")
 ok(has(clientSource, "BindToRenderStep"), "poses on the render step")

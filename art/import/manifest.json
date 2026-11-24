@@ -2,9 +2,9 @@
   "format": 1,
   "metersPerStud": 0.28,
   "axes": "Right-handed +Y up; source X/Z and local origin preserved (no rotation/reflection).",
-  "glbSha256": "b966dc529ce652922b9632ef4000687b7c1749eb6db7f5eaebb3e367c5c72a7b",
+  "glbSha256": "dfb5735fa47f0906bebb4c05c2483fdc324e45b3cfaf3702cd9fb3b0277ed6bd",
   "materials": 57,
-  "triangles": 135171,
+  "triangles": 186453,
   "models": [
     {
       "name": "AetherCrystal",
@@ -722,29 +722,29 @@
     {
       "name": "ChitinLeg",
       "source": "ChitinLeg.obj",
-      "sourceSha256": "efb1a702499d4a29bcf9bc5dcd60da580739bf9c3d8d38a678e12cfdc76357d3",
+      "sourceSha256": "e060a287bf83ca97afe1e4585675f6775dfb9fe60e901784d973ac6c60f9dd35",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 145,
-      "triangles": 266,
+      "vertices": 376,
+      "triangles": 660,
       "boundsStuds": {
         "min": [
-          -0.048,
-          -0.862,
-          -0.11
+          -0.053,
+          -0.864,
+          -0.13
         ],
         "max": [
-          0.985,
-          0.42,
-          0.11
+          0.994,
+          0.419,
+          0.13
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 76,
-        "Shade15": 44,
-        "Shade16": 80,
-        "Shade41": 40,
-        "Shade42": 26
+        "Shade11": 140,
+        "Shade15": 250,
+        "Shade16": 82,
+        "Shade41": 112,
+        "Shade42": 76
       }
     },
     {
@@ -775,29 +775,29 @@
     {
       "name": "ClawLeg",
       "source": "ClawLeg.obj",
-      "sourceSha256": "8c3eaf8dd0503729cbe230421647bb23fed82effd0e2d01b9ffc51db437bbe99",
+      "sourceSha256": "69120e245ce466ad365e3eacaeea406156884f141585c6721132298ace62cd93",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 200,
-      "triangles": 356,
+      "vertices": 372,
+      "triangles": 672,
       "boundsStuds": {
         "min": [
-          -0.26,
-          -1,
-          -0.346
+          -0.27,
+          -1.022,
+          -0.376
         ],
         "max": [
-          0.26,
-          0.157,
-          0.316
+          0.27,
+          0.181,
+          0.304
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 72,
-        "Shade15": 104,
-        "Shade16": 76,
-        "Shade41": 26,
-        "Shade42": 78
+        "Shade11": 164,
+        "Shade15": 80,
+        "Shade16": 144,
+        "Shade41": 56,
+        "Shade42": 228
       }
     },
     {
@@ -943,28 +943,28 @@
     {
       "name": "CrabClaw",
       "source": "CrabClaw.obj",
-      "sourceSha256": "ee013fdd23b3991fc8cd9049e7285be172e373f81c134bf7eaf634ffc3f7880a",
+      "sourceSha256": "5826f743b17c5c63dfcd85347aec908645b1b8357bbacdf69f93104aa102ed3a",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 285,
-      "triangles": 522,
+      "vertices": 594,
+      "triangles": 1116,
       "boundsStuds": {
         "min": [
-          -0.055,
+          -0.048,
           -0.2,
-          -1.159
+          -1.184
         ],
         "max": [
           0.76,
-          0.22,
-          0.115
+          0.21,
+          0.126
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 314,
-        "Shade15": 44,
-        "Shade16": 116,
-        "Shade40": 48
+        "Shade11": 336,
+        "Shade15": 232,
+        "Shade16": 212,
+        "Shade40": 336
       }
     },
     {
@@ -1024,41 +1024,41 @@
     {
       "name": "CreatureBasilisk",
       "source": "CreatureBasilisk.obj",
-      "sourceSha256": "e713702b6c6ca2203e435cc57e8c1f7f2df386c9d70b078d36ef2a21efbd45ad",
+      "sourceSha256": "34b7f443c2518445b01ad3dfcd320cdab99403372968cdaf10f349771c902252",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 443,
-      "triangles": 776,
+      "vertices": 1138,
+      "triangles": 2150,
       "boundsStuds": {
         "min": [
           -0.95,
-          -0.926,
+          -0.936,
           -3.998
         ],
         "max": [
           0.95,
-          1.451,
+          1.416,
           2.6
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 76,
-        "Shade13": 128,
-        "Shade15": 88,
-        "Shade16": 118,
-        "Shade2": 16,
-        "Shade35": 190,
+        "Shade11": 184,
+        "Shade13": 144,
+        "Shade15": 218,
+        "Shade16": 516,
+        "Shade2": 76,
+        "Shade35": 852,
         "Shade43": 160
       }
     },
     {
       "name": "CreatureBlob",
       "source": "CreatureBlob.obj",
-      "sourceSha256": "3b88f9b6e8a1de4ea14d65b4c17cef8dd2ce7855c46a2324cea05068606e8d3f",
+      "sourceSha256": "d85f69a564296348a6ea47a80970b36d0f75f7cdb5685d4bb0a31ccb6d474673",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 330,
-      "triangles": 632,
+      "vertices": 972,
+      "triangles": 1916,
       "boundsStuds": {
         "min": [
           -1.5,
@@ -1072,51 +1072,52 @@
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 214,
-        "Shade13": 96,
-        "Shade15": 106,
-        "Shade43": 216
+        "Shade11": 964,
+        "Shade13": 396,
+        "Shade15": 316,
+        "Shade43": 240
       }
     },
     {
       "name": "CreatureBoar",
       "source": "CreatureBoar.obj",
-      "sourceSha256": "0478bf8f3b7172599d597c875f095a4af9f08ce27b1fe08409e27b0e3efc166c",
+      "sourceSha256": "bdcb8bd1256faf44c51da38d007b1787416064e8a17e0d28baefd3fd6c86bc94",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 787,
-      "triangles": 1408,
+      "vertices": 1267,
+      "triangles": 2382,
       "boundsStuds": {
         "min": [
-          -1.242,
-          -1.277,
-          -3.6
+          -1.254,
+          -1.298,
+          -3.612
         ],
         "max": [
-          1.242,
-          1.788,
-          2.808
+          1.268,
+          1.846,
+          2.642
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 92,
-        "Shade15": 320,
-        "Shade16": 208,
-        "Shade22": 30,
-        "Shade34": 110,
-        "Shade40": 312,
-        "Shade43": 320,
-        "Shade8": 16
+        "Shade11": 270,
+        "Shade14": 56,
+        "Shade15": 500,
+        "Shade16": 424,
+        "Shade22": 112,
+        "Shade34": 280,
+        "Shade40": 504,
+        "Shade43": 160,
+        "Shade8": 76
       }
     },
     {
       "name": "CreatureColossus",
       "source": "CreatureColossus.obj",
-      "sourceSha256": "d9a6767bc3daf9f6c97f38ad3ec9031bb6e5cd12219b4432c1610d1818514500",
+      "sourceSha256": "46b7c3e24f401380cea12283d407009417348d5cfd724a23309159f3809f76b9",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 464,
-      "triangles": 756,
+      "vertices": 1305,
+      "triangles": 2354,
       "boundsStuds": {
         "min": [
           -2.05,
@@ -1125,91 +1126,92 @@
         ],
         "max": [
           2.05,
-          5.55,
-          1.413
+          5.35,
+          1.435
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 128,
-        "Shade15": 62,
-        "Shade16": 60,
-        "Shade2": 32,
-        "Shade23": 212,
-        "Shade24": 144,
-        "Shade35": 60,
-        "Shade43": 58
+        "Shade11": 408,
+        "Shade15": 280,
+        "Shade16": 224,
+        "Shade2": 120,
+        "Shade23": 524,
+        "Shade24": 460,
+        "Shade35": 200,
+        "Shade43": 88,
+        "Shade45": 50
       }
     },
     {
       "name": "CreatureCrab",
       "source": "CreatureCrab.obj",
-      "sourceSha256": "52dc36f2dea1b1d8ddeb08c3623f5f99337121d7e72dfafe9a582031c25c4612",
+      "sourceSha256": "c1723da24f3e715e57824fa88cb39903572b53837b4f17130d1a9c37aaa1a13c",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 571,
-      "triangles": 1014,
+      "vertices": 1231,
+      "triangles": 2306,
       "boundsStuds": {
         "min": [
-          -2.079,
+          -2.155,
           -0.7,
           -1.75
         ],
         "max": [
-          2.079,
+          2.155,
           1.7,
-          1.679
+          1.576
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 48,
-        "Shade15": 104,
-        "Shade16": 150,
-        "Shade40": 136,
+        "Shade11": 280,
+        "Shade15": 296,
+        "Shade16": 278,
+        "Shade40": 672,
         "Shade43": 160,
-        "Shade47": 400,
-        "Shade8": 16
+        "Shade47": 480,
+        "Shade8": 140
       }
     },
     {
       "name": "CreatureCrawler",
       "source": "CreatureCrawler.obj",
-      "sourceSha256": "ebba6ba6079415ff491ed5e8c94294d634e05b9dffbb3cc6aea7322f17110ccd",
+      "sourceSha256": "caca6bf89f886134d86d64454f933cb3905bc0431c2b4d8f09e2400e6be24a17",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 618,
-      "triangles": 1064,
+      "vertices": 1258,
+      "triangles": 2328,
       "boundsStuds": {
         "min": [
-          -1.176,
-          -0.987,
-          -3.169
+          -1.186,
+          -1.023,
+          -3.166
         ],
         "max": [
-          1.176,
-          1.365,
+          1.187,
+          1.36,
           2.62
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 128,
-        "Shade15": 212,
-        "Shade16": 160,
-        "Shade19": 124,
-        "Shade20": 112,
-        "Shade25": 16,
-        "Shade40": 104,
+        "Shade11": 192,
+        "Shade15": 440,
+        "Shade16": 288,
+        "Shade19": 428,
+        "Shade20": 320,
+        "Shade25": 76,
+        "Shade40": 232,
         "Shade43": 160,
-        "Shade9": 48
+        "Shade9": 192
       }
     },
     {
       "name": "CreatureDrake",
       "source": "CreatureDrake.obj",
-      "sourceSha256": "8fb78fcfac7fdb1153ae2037e8114badaf82c4d722d36853457922646705f494",
+      "sourceSha256": "0977713a22a3569b304b720f4ed4ddf0452e61ce64ebc1c3a9e871b983d1ad10",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 560,
-      "triangles": 966,
+      "vertices": 1186,
+      "triangles": 2210,
       "boundsStuds": {
         "min": [
           -1.092,
@@ -1218,29 +1220,29 @@
         ],
         "max": [
           1.092,
-          2.77,
+          2.767,
           2.7
         ]
       },
       "trianglesByMaterial": {
-        "Shade10": 16,
-        "Shade11": 116,
-        "Shade15": 194,
-        "Shade16": 280,
-        "Shade2": 48,
-        "Shade40": 48,
-        "Shade41": 104,
+        "Shade10": 76,
+        "Shade11": 234,
+        "Shade15": 600,
+        "Shade16": 572,
+        "Shade2": 112,
+        "Shade40": 224,
+        "Shade41": 232,
         "Shade43": 160
       }
     },
     {
       "name": "CreatureDreadmaw",
       "source": "CreatureDreadmaw.obj",
-      "sourceSha256": "a89ee45b606c24fd33cca9bc3bcc53fbff0dfacb0f654dcd90cd316bd889970b",
+      "sourceSha256": "176d7608402a123bfe62a8414c0d38f075205c676a2e60dcac32a01e57aeb390",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 471,
-      "triangles": 788,
+      "vertices": 1229,
+      "triangles": 2288,
       "boundsStuds": {
         "min": [
           -1.232,
@@ -1249,236 +1251,236 @@
         ],
         "max": [
           1.232,
-          2.413,
+          2.37,
           2.8
         ]
       },
       "trianglesByMaterial": {
-        "Shade10": 16,
-        "Shade11": 80,
-        "Shade15": 172,
+        "Shade10": 76,
+        "Shade11": 420,
+        "Shade15": 406,
         "Shade16": 60,
-        "Shade40": 128,
+        "Shade40": 576,
         "Shade43": 160,
-        "Shade44": 172
+        "Shade44": 590
       }
     },
     {
       "name": "CreatureGargant",
       "source": "CreatureGargant.obj",
-      "sourceSha256": "a1620e7821dc7442f97492ccde0019cd28d5a58c043ad46d1aa975984e56836d",
+      "sourceSha256": "f5ec189ff91c64f9e0b3a0f28f8707f4b6687ce53482a52d6a6477e4cabda96f",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 1028,
-      "triangles": 1972,
+      "vertices": 1224,
+      "triangles": 2400,
       "boundsStuds": {
         "min": [
-          -2.514,
-          -2.065,
-          -1.65
+          -2.396,
+          -2.078,
+          -1.545
         ],
         "max": [
-          2.514,
-          5.947,
-          1.65
+          2.403,
+          5.932,
+          1.602
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 393,
-        "Shade15": 404,
-        "Shade16": 163,
-        "Shade19": 560,
-        "Shade21": 120,
-        "Shade43": 44,
-        "Shade48": 48,
-        "Shade9": 240
+        "Shade11": 666,
+        "Shade13": 80,
+        "Shade15": 546,
+        "Shade16": 468,
+        "Shade19": 240,
+        "Shade21": 112,
+        "Shade48": 288
       }
     },
     {
       "name": "CreatureGolem",
       "source": "CreatureGolem.obj",
-      "sourceSha256": "2e81e83283b69e48b35681265afc26d211768868e649e2c774b98552268c82e1",
+      "sourceSha256": "e4ae059c21b2056f8af908eee6ab4ea47fc27b10e0485ef2c5ba23014fa8b553",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 571,
-      "triangles": 890,
+      "vertices": 1304,
+      "triangles": 2326,
       "boundsStuds": {
         "min": [
-          -1.777,
+          -1.7,
           -1.35,
           -1.38
         ],
         "max": [
-          1.777,
-          3.87,
-          1.364
+          1.7,
+          3.77,
+          1.38
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 104,
-        "Shade15": 130,
-        "Shade23": 424,
-        "Shade24": 174,
-        "Shade43": 58
+        "Shade11": 432,
+        "Shade15": 338,
+        "Shade16": 176,
+        "Shade23": 712,
+        "Shade24": 586,
+        "Shade43": 82
       }
     },
     {
       "name": "CreatureHarrier",
       "source": "CreatureHarrier.obj",
-      "sourceSha256": "fcc6c6466435eb729e98063f7a318ab731fad3c9c27a6c7fff3c911c6e6f6ed2",
+      "sourceSha256": "91991f110201eed7c63a9cc5b7367f4bffe1002442c113253105ac065d18acf3",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 578,
-      "triangles": 1052,
+      "vertices": 1260,
+      "triangles": 2400,
       "boundsStuds": {
         "min": [
           -0.78,
-          -1.083,
+          -1.085,
           -2.619
         ],
         "max": [
           0.78,
-          1.316,
-          2.447
+          1.165,
+          2.446
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 188,
-        "Shade13": 16,
-        "Shade15": 215,
-        "Shade16": 171,
-        "Shade2": 142,
-        "Shade42": 120,
+        "Shade11": 466,
+        "Shade13": 76,
+        "Shade15": 709,
+        "Shade16": 255,
+        "Shade2": 438,
+        "Shade42": 224,
         "Shade43": 160,
-        "Shade45": 40
+        "Shade45": 72
       }
     },
     {
       "name": "CreatureJelly",
       "source": "CreatureJelly.obj",
-      "sourceSha256": "20bf89c73d0a300fe167c9efdd99c17d842d9b9277cae7c3df6f234250912c77",
+      "sourceSha256": "608727900f22e0588c6a59a6fa7765e01f2643ace51f53568d0a169831da9e53",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 458,
-      "triangles": 764,
+      "vertices": 928,
+      "triangles": 1672,
       "boundsStuds": {
         "min": [
-          -1.835,
-          -1.505,
-          -1.929
+          -1.858,
+          -1.41,
+          -1.858
         ],
         "max": [
-          1.835,
+          1.858,
           2.62,
-          1.929
+          1.858
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 135,
-        "Shade13": 96,
-        "Shade15": 40,
-        "Shade16": 253,
+        "Shade11": 376,
+        "Shade13": 276,
+        "Shade15": 56,
+        "Shade16": 636,
         "Shade43": 160,
-        "Shade44": 80
+        "Shade44": 168
       }
     },
     {
       "name": "CreatureLurker",
       "source": "CreatureLurker.obj",
-      "sourceSha256": "deb401e7bda8eb2c9f3c9d950c0e0ab865ea3c3e9f61678954a6459ae081f949",
+      "sourceSha256": "aa528f52ab5e9b53f38f5d539614c66c3658e8fe06fbfe7d657e9c7ac21a5f37",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 484,
-      "triangles": 826,
+      "vertices": 1242,
+      "triangles": 2322,
       "boundsStuds": {
         "min": [
-          -1.15,
-          -1.321,
+          -1.694,
+          -1.206,
           -3.378
         ],
         "max": [
-          1.579,
-          2.192,
+          1.921,
+          2.031,
           2.8
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 104,
-        "Shade15": 268,
-        "Shade16": 206,
-        "Shade40": 72,
+        "Shade11": 420,
+        "Shade15": 632,
+        "Shade16": 586,
+        "Shade40": 448,
         "Shade43": 160,
-        "Shade8": 16
+        "Shade8": 76
       }
     },
     {
       "name": "CreatureMite",
       "source": "CreatureMite.obj",
-      "sourceSha256": "5c9b8c70c2c7ae446b32c25083a6146f7ee30f4d0a8ccce8052d09631f62a9bc",
+      "sourceSha256": "351a10c7e69e7e19d55b27fe55c5d70d64df3b60dbeafe9749ea592216ae5320",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 716,
-      "triangles": 1352,
+      "vertices": 1192,
+      "triangles": 2308,
       "boundsStuds": {
         "min": [
-          -1.232,
-          -0.978,
-          -1.722
+          -1.238,
+          -0.985,
+          -1.708
         ],
         "max": [
-          1.27,
-          1.36,
-          2.756
+          1.264,
+          1.358,
+          2.754
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 311,
-        "Shade15": 467,
-        "Shade16": 98,
-        "Shade26": 88,
-        "Shade29": 84,
-        "Shade40": 64,
-        "Shade41": 80,
+        "Shade11": 328,
+        "Shade15": 440,
+        "Shade16": 100,
+        "Shade26": 756,
+        "Shade29": 92,
+        "Shade40": 152,
+        "Shade41": 280,
         "Shade43": 160
       }
     },
     {
       "name": "CreatureRay",
       "source": "CreatureRay.obj",
-      "sourceSha256": "35fb6e96833833bc0a42cc1883d142968877f57bed1b51c4703605cb413c57a8",
+      "sourceSha256": "392a4a1326d1acd80cef9276618cea0acfb053420a2b6e9bb74b38440922fda1",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 298,
-      "triangles": 540,
+      "vertices": 715,
+      "triangles": 1374,
       "boundsStuds": {
         "min": [
           -1.2,
-          -0.384,
-          -2.479
+          -0.504,
+          -2.481
         ],
         "max": [
           1.2,
-          0.57,
-          4.65
+          0.504,
+          4.601
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 48,
-        "Shade15": 192,
-        "Shade16": 12,
+        "Shade11": 264,
+        "Shade15": 456,
+        "Shade16": 100,
         "Shade43": 160,
-        "Shade45": 56,
-        "Shade46": 72
+        "Shade45": 306,
+        "Shade46": 88
       }
     },
     {
       "name": "CreatureRiftmaw",
       "source": "CreatureRiftmaw.obj",
-      "sourceSha256": "dcc1a400be14fcddd7377916362ad608645f7a83bd0d68ef6b80553b7081fa90",
+      "sourceSha256": "eca06b08d39101f35e3717ecadda793f084bc4c8b685597e9957c2b165969073",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 497,
-      "triangles": 816,
+      "vertices": 1251,
+      "triangles": 2304,
       "boundsStuds": {
         "min": [
           -1.35,
@@ -1492,382 +1494,385 @@
         ]
       },
       "trianglesByMaterial": {
-        "Shade10": 16,
-        "Shade11": 80,
-        "Shade15": 172,
-        "Shade16": 172,
-        "Shade35": 160,
-        "Shade40": 56,
-        "Shade43": 160
+        "Shade10": 76,
+        "Shade11": 228,
+        "Shade15": 434,
+        "Shade16": 364,
+        "Shade35": 600,
+        "Shade40": 392,
+        "Shade43": 160,
+        "Shade45": 50
       }
     },
     {
       "name": "CreatureSeer",
       "source": "CreatureSeer.obj",
-      "sourceSha256": "842a6a7d5f12126e82e40d27ae0f465d70bfd695ca3f2869911995c7ccf38fa3",
+      "sourceSha256": "4439756d38c7e7386cc443e67c18f5f457360ee421f2213cc6727ce20c2f2d56",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 417,
-      "triangles": 726,
+      "vertices": 1305,
+      "triangles": 2370,
       "boundsStuds": {
         "min": [
-          -1.35,
-          -3.147,
-          -1.16
+          -1.38,
+          -3.07,
+          -1.23
         ],
         "max": [
-          1.35,
+          1.38,
           3.452,
-          1.16
+          1.173
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 120,
-        "Shade13": 8,
-        "Shade15": 63,
-        "Shade16": 60,
-        "Shade2": 352,
-        "Shade44": 35,
-        "Shade45": 88
+        "Shade11": 256,
+        "Shade13": 24,
+        "Shade15": 498,
+        "Shade16": 448,
+        "Shade2": 848,
+        "Shade44": 80,
+        "Shade45": 216
       }
     },
     {
       "name": "CreatureSentinel",
       "source": "CreatureSentinel.obj",
-      "sourceSha256": "067b208f8d94a62c467bd9b8d87f3db21432fd3bdcb93c9ca3e30518cb10e12c",
+      "sourceSha256": "7d5f3dead74915e8fd0fcf1fac560604cb9b6a789b419b2c80f847d41d3d7e4c",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 610,
-      "triangles": 1076,
+      "vertices": 1294,
+      "triangles": 2392,
       "boundsStuds": {
         "min": [
           -1.62,
           -1.85,
-          -1.2
+          -1.249
         ],
         "max": [
           1.62,
-          4.85,
+          4.82,
           1.134
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 120,
-        "Shade13": 8,
-        "Shade15": 48,
-        "Shade16": 32,
-        "Shade2": 384,
-        "Shade23": 366,
+        "Shade11": 460,
+        "Shade13": 12,
+        "Shade15": 108,
+        "Shade16": 652,
+        "Shade2": 712,
+        "Shade23": 80,
+        "Shade24": 58,
         "Shade43": 14,
-        "Shade45": 32,
-        "Shade48": 72
+        "Shade45": 72,
+        "Shade48": 224
       }
     },
     {
       "name": "CreatureSerpent",
       "source": "CreatureSerpent.obj",
-      "sourceSha256": "636b2e3fc03ffab643528eb8fa292de0d5df5a34f03eaa178ca7030591646130",
+      "sourceSha256": "89a352923e53e59880e889ede9357c84f027bd06d02f6d70f5bde07bb83e423d",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 396,
-      "triangles": 710,
+      "vertices": 1280,
+      "triangles": 2316,
       "boundsStuds": {
         "min": [
-          -1.567,
+          -1.568,
           -1.587,
           -4.818
         ],
         "max": [
-          1.567,
-          2.769,
+          1.568,
+          2.767,
           0.3
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 76,
-        "Shade15": 149,
-        "Shade16": 173,
-        "Shade2": 16,
-        "Shade35": 32,
-        "Shade40": 104,
+        "Shade11": 352,
+        "Shade15": 278,
+        "Shade16": 738,
+        "Shade2": 76,
+        "Shade35": 96,
+        "Shade40": 616,
         "Shade43": 160
       }
     },
     {
       "name": "CreatureShrieker",
       "source": "CreatureShrieker.obj",
-      "sourceSha256": "afa6ace3907459c9e00a7f8838800f13abbf04752f83a0d2c8f0d7fda13bb28e",
+      "sourceSha256": "439ed1bbc4efde3787526d4feee22d8ff4416eee5ff3f6b88ff23c35bdf6d2d1",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 429,
-      "triangles": 708,
+      "vertices": 1299,
+      "triangles": 2368,
       "boundsStuds": {
         "min": [
-          -2.343,
+          -2.35,
           -1.9,
-          -2.449
+          -2.35
         ],
         "max": [
-          2.315,
+          2.35,
           2.9,
-          2.283
+          2.35
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 140,
-        "Shade15": 40,
-        "Shade27": 124,
-        "Shade40": 24,
+        "Shade11": 320,
+        "Shade15": 128,
+        "Shade16": 160,
+        "Shade27": 624,
+        "Shade40": 112,
         "Shade43": 240,
-        "Shade46": 124,
-        "Shade8": 16
+        "Shade46": 708,
+        "Shade8": 76
       }
     },
     {
       "name": "CreatureSovereign",
       "source": "CreatureSovereign.obj",
-      "sourceSha256": "85d15146995d54872c822e94a5b1b0b981f512fa58a8d4aaaa34168bd9cfa8aa",
+      "sourceSha256": "46608353dc1e9a55ffbf59fe7d75af8930f7c57b5a45779eb79d9e15610a3099",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 660,
-      "triangles": 1118,
+      "vertices": 1156,
+      "triangles": 2090,
       "boundsStuds": {
         "min": [
-          -2.35,
-          -4.486,
-          -1.74
+          -2.322,
+          -4.35,
+          -1.71
         ],
         "max": [
-          2.35,
+          2.322,
           5,
-          1.692
+          1.705
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 104,
-        "Shade15": 64,
-        "Shade16": 40,
-        "Shade2": 312,
-        "Shade28": 184,
+        "Shade11": 192,
+        "Shade15": 96,
+        "Shade16": 96,
+        "Shade2": 704,
+        "Shade23": 72,
+        "Shade28": 368,
         "Shade35": 320,
-        "Shade43": 14,
-        "Shade44": 80
+        "Shade43": 50,
+        "Shade46": 192
       }
     },
     {
       "name": "CreatureSpider",
       "source": "CreatureSpider.obj",
-      "sourceSha256": "37013ce6c184c2c14e1ba04233400f74c49e374d7e2047039ec2da0407ddb114",
+      "sourceSha256": "81cdfdec13304443ec6435561caa29f865f5cb4c2f30c56604a6db4537d0243b",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 1156,
-      "triangles": 2204,
+      "vertices": 1212,
+      "triangles": 2332,
       "boundsStuds": {
         "min": [
-          -1.392,
-          -0.869,
+          -1.38,
+          -0.876,
           -1.85
         ],
         "max": [
-          1.379,
-          1.86,
-          2.909
+          1.38,
+          1.888,
+          2.869
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 257,
-        "Shade15": 367,
-        "Shade16": 488,
-        "Shade29": 392,
-        "Shade40": 76,
-        "Shade41": 96,
+        "Shade11": 512,
+        "Shade15": 616,
+        "Shade16": 88,
+        "Shade40": 184,
+        "Shade41": 224,
         "Shade43": 480,
-        "Shade7": 48
+        "Shade7": 228
       }
     },
     {
       "name": "CreatureSprite",
       "source": "CreatureSprite.obj",
-      "sourceSha256": "10e2ce305b5f0e466e922e8617e7be6c12f8f0baae0e5956bb61c044d9d38cd9",
+      "sourceSha256": "d01dfc46623be32daa40c9666ddd0650ad5c9557943254486788ec34305ba724",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 673,
-      "triangles": 1276,
+      "vertices": 1267,
+      "triangles": 2306,
       "boundsStuds": {
         "min": [
-          -1.33,
+          -1.335,
           -1,
-          -1.239
+          -1.23
         ],
         "max": [
-          1.275,
-          1.226,
+          1.335,
+          1.218,
           2.395
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 312,
-        "Shade16": 704,
-        "Shade43": 204,
-        "Shade45": 40,
-        "Shade6": 16
+        "Shade11": 340,
+        "Shade16": 1562,
+        "Shade43": 228,
+        "Shade45": 100,
+        "Shade6": 76
       }
     },
     {
       "name": "CreatureStalker",
       "source": "CreatureStalker.obj",
-      "sourceSha256": "0362053698b5e5552338ad8d920a6a6ac49673664804e96b78e4f3515b6781be",
+      "sourceSha256": "67a51f3a9d7545b673367638b87428236bfd3170d6c243985b5db18974304ebf",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 503,
-      "triangles": 880,
+      "vertices": 1239,
+      "triangles": 2338,
       "boundsStuds": {
         "min": [
-          -1.172,
-          -0.752,
+          -1.251,
+          -0.798,
           -4.046
         ],
         "max": [
-          1.172,
-          3.613,
+          1.251,
+          3.611,
           2.3
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 105,
-        "Shade14": 24,
-        "Shade15": 148,
-        "Shade16": 72,
-        "Shade17": 31,
-        "Shade18": 188,
-        "Shade22": 104,
-        "Shade40": 32,
+        "Shade11": 306,
+        "Shade14": 48,
+        "Shade15": 446,
+        "Shade16": 198,
+        "Shade18": 544,
+        "Shade22": 256,
+        "Shade34": 80,
+        "Shade40": 224,
         "Shade43": 160,
-        "Shade5": 16
+        "Shade5": 76
       }
     },
     {
       "name": "CreatureThornling",
       "source": "CreatureThornling.obj",
-      "sourceSha256": "6e8da5651149789d73a9ea01fd05fb0e8ae6cad5afe824c5770c51ec163bb547",
+      "sourceSha256": "ec08f9a7e72b0c5a2eaa0b12e681efad5758c8a517966bf1bcad5f19f7e230c8",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 660,
-      "triangles": 1148,
+      "vertices": 1196,
+      "triangles": 2224,
       "boundsStuds": {
         "min": [
-          -1.164,
+          -1.159,
           -0.9,
-          -1.173
+          -1.153
         ],
         "max": [
-          1.136,
-          3.657,
-          1.101
+          1.14,
+          3.666,
+          1.107
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 292,
-        "Shade13": 16,
-        "Shade15": 32,
-        "Shade16": 92,
-        "Shade2": 64,
-        "Shade28": 84,
-        "Shade34": 48,
-        "Shade40": 128,
-        "Shade43": 228,
-        "Shade7": 84,
+        "Shade11": 348,
+        "Shade13": 76,
+        "Shade15": 64,
+        "Shade16": 132,
+        "Shade2": 336,
+        "Shade28": 240,
+        "Shade34": 128,
+        "Shade40": 392,
+        "Shade43": 284,
+        "Shade7": 144,
         "Shade8": 80
       }
     },
     {
       "name": "CreatureWisp",
       "source": "CreatureWisp.obj",
-      "sourceSha256": "37df055398f92223e905fa446a4fad99c537f2e8ed3ad0f6a08eddb327371fd0",
+      "sourceSha256": "5cc92727fe4aa6defb52fe9c361fe118dde269e32b63e9a0dc2c2b12a511d09b",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 670,
-      "triangles": 1284,
+      "vertices": 1010,
+      "triangles": 1860,
       "boundsStuds": {
         "min": [
-          -1.28,
+          -1.295,
           -2.09,
-          -1.213
+          -1.168
         ],
         "max": [
-          1.28,
+          1.295,
           1.9,
           1.44
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 324,
-        "Shade13": 16,
-        "Shade15": 42,
-        "Shade16": 70,
-        "Shade29": 672,
+        "Shade11": 384,
+        "Shade13": 76,
+        "Shade15": 54,
+        "Shade16": 162,
+        "Shade29": 1024,
         "Shade43": 160
       }
     },
     {
       "name": "CreatureWraith",
       "source": "CreatureWraith.obj",
-      "sourceSha256": "cbfbbf4587b8ce0f06f52c5cd243bc9e0ea89f2b3d546a2415315a2da155389a",
+      "sourceSha256": "9b7473bc91bb9f39aee90eef0ced7692af28c02e17f26c7d38e281133d6e5dd0",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 618,
-      "triangles": 1128,
+      "vertices": 1281,
+      "triangles": 2370,
       "boundsStuds": {
         "min": [
-          -1.823,
-          -2.753,
-          -1.204
+          -1.647,
+          -3.46,
+          -1.451
         ],
         "max": [
-          1.541,
-          2.75,
-          1.097
+          1.713,
+          2.78,
+          1.322
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 354,
-        "Shade15": 124,
-        "Shade16": 58,
-        "Shade23": 56,
+        "Shade11": 400,
+        "Shade15": 434,
+        "Shade16": 496,
+        "Shade23": 384,
         "Shade43": 160,
         "Shade44": 320,
-        "Shade45": 56
+        "Shade45": 176
       }
     },
     {
       "name": "CreatureWyrm",
       "source": "CreatureWyrm.obj",
-      "sourceSha256": "414ab85f607fbe49deac651f76b74bd3d11dede498d5cef4e47acaac0e98e056",
+      "sourceSha256": "beeec058ac151917b327600f13e065d860d0565569e5d5d82b65edd0f3cd369c",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 652,
-      "triangles": 1114,
+      "vertices": 1262,
+      "triangles": 2354,
       "boundsStuds": {
         "min": [
-          -1.266,
+          -1.265,
           -1.15,
           -4.497
         ],
         "max": [
-          1.266,
-          2.77,
+          1.265,
+          2.767,
           2.7
         ]
       },
       "trianglesByMaterial": {
-        "Shade10": 16,
-        "Shade11": 116,
-        "Shade15": 194,
-        "Shade16": 222,
-        "Shade2": 48,
-        "Shade35": 142,
-        "Shade40": 48,
-        "Shade41": 168,
+        "Shade10": 76,
+        "Shade11": 186,
+        "Shade15": 552,
+        "Shade16": 436,
+        "Shade2": 112,
+        "Shade35": 264,
+        "Shade40": 224,
+        "Shade41": 344,
         "Shade43": 160
       }
     },
@@ -2079,16 +2084,16 @@
     {
       "name": "CrystalShard",
       "source": "CrystalShard.obj",
-      "sourceSha256": "7507daa4f624e8e34dd5d232d98ead5a34d09bd55f7ce2d3e58837d37ecdf834",
+      "sourceSha256": "26fb7ab516d2d072733f2e80f88865dfcd1f98e05e5f84232c1304312de21919",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 56,
-      "triangles": 88,
+      "vertices": 122,
+      "triangles": 216,
       "boundsStuds": {
         "min": [
           -0.21,
           -0.5,
-          -0.22
+          -0.21
         ],
         "max": [
           0.21,
@@ -2097,11 +2102,10 @@
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 32,
-        "Shade13": 8,
-        "Shade15": 8,
-        "Shade16": 8,
-        "Shade23": 32
+        "Shade11": 48,
+        "Shade15": 36,
+        "Shade16": 60,
+        "Shade23": 72
       }
     },
     {
@@ -2189,28 +2193,28 @@
     {
       "name": "DrakeWing",
       "source": "DrakeWing.obj",
-      "sourceSha256": "21fd5d2b622abe6a288e8b74f71e39ccb5b6778d6d728fce85e460098c4170a0",
+      "sourceSha256": "509b62e36cb5672ac74096ca5f605276d669dc49619c3698a6688c8c9a4be44f",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 133,
-      "triangles": 230,
+      "vertices": 414,
+      "triangles": 800,
       "boundsStuds": {
         "min": [
-          -0.03,
-          -0.098,
-          -0.236
+          -0.038,
+          -0.097,
+          -0.252
         ],
         "max": [
           1.005,
-          0.215,
+          0.232,
           0.703
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 20,
-        "Shade15": 160,
-        "Shade16": 24,
-        "Shade42": 26
+        "Shade11": 180,
+        "Shade15": 494,
+        "Shade16": 50,
+        "Shade42": 76
       }
     },
     {
@@ -2380,27 +2384,27 @@
     {
       "name": "FeatherWing",
       "source": "FeatherWing.obj",
-      "sourceSha256": "93a32784ca5ab4266e6cc79acb3d2b588a92c1c29f12a5b96b03a39f9e74d409",
+      "sourceSha256": "04c51623ac92ecfeb7442a14290e5c9f176c1f9908a0d9896b4e293c12bc6ac3",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 118,
-      "triangles": 200,
+      "vertices": 548,
+      "triangles": 1060,
       "boundsStuds": {
         "min": [
-          -0.022,
+          -0.026,
           -0.07,
-          -0.28
+          -0.258
         ],
         "max": [
-          1.082,
+          0.931,
           0.07,
-          0.57
+          0.44
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 46,
-        "Shade15": 130,
-        "Shade16": 24
+        "Shade11": 730,
+        "Shade15": 210,
+        "Shade16": 120
       }
     },
     {
@@ -2487,27 +2491,27 @@
     {
       "name": "FishTail",
       "source": "FishTail.obj",
-      "sourceSha256": "1de770ebc239e61e6461150025e50e4a9f5c9f59197a578bdb6704fc6651fc1b",
+      "sourceSha256": "3e804b3f7f0afd33884afd160e2d44008c35df34e922f75e5939cb2db2dc01af",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 86,
-      "triangles": 150,
+      "vertices": 300,
+      "triangles": 570,
       "boundsStuds": {
         "min": [
-          -0.42,
-          -0.55,
-          -0.02
+          -0.47,
+          -0.483,
+          0
         ],
         "max": [
           0.42,
-          0.56,
-          0.76
+          0.549,
+          0.863
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 52,
-        "Shade15": 36,
-        "Shade16": 62
+        "Shade11": 178,
+        "Shade15": 96,
+        "Shade16": 296
       }
     },
     {
@@ -2689,52 +2693,52 @@
     {
       "name": "FurTail",
       "source": "FurTail.obj",
-      "sourceSha256": "1a85e997359bf8d3e722d6d092970c0b39ffddb7bdd549cd157a0687ef2612fc",
+      "sourceSha256": "f46e9ce6c208810df027b03dbd86f6c0ac0e38d8bd59d55e9d969f95d7586287",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 61,
-      "triangles": 108,
+      "vertices": 161,
+      "triangles": 304,
       "boundsStuds": {
         "min": [
-          -0.223,
-          -0.113,
+          -0.23,
+          -0.108,
           -0.021
         ],
         "max": [
-          0.217,
-          0.444,
+          0.228,
+          0.435,
           0.939
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 72,
-        "Shade15": 24,
-        "Shade46": 12
+        "Shade11": 192,
+        "Shade15": 32,
+        "Shade46": 80
       }
     },
     {
       "name": "GlassWing",
       "source": "GlassWing.obj",
-      "sourceSha256": "7dc01b2e1864504336a65025522cc9ba1fbfd1579b7078fb844d4ab200a7ef1a",
+      "sourceSha256": "eb2e8a9014daff9514e558f1cfedce5a0c104929366308292cb641a78e8b2da2",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 115,
-      "triangles": 206,
+      "vertices": 386,
+      "triangles": 748,
       "boundsStuds": {
         "min": [
           -0.03,
           -0.07,
-          -0.42
+          -0.43
         ],
         "max": [
-          0.98,
+          1,
           0.07,
-          0.45
+          0.42
         ]
       },
       "trianglesByMaterial": {
-        "Shade16": 182,
-        "Shade45": 24
+        "Shade16": 528,
+        "Shade45": 220
       }
     },
     {
@@ -2796,55 +2800,56 @@
     {
       "name": "GolemArm",
       "source": "GolemArm.obj",
-      "sourceSha256": "16fa076156354561aa5a43128384e48e68c01b5493fb9384745868e989f00097",
+      "sourceSha256": "436affefb29df79340c2b4d25d52e42718c8d47ab6c2493686bc811c124a49db",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 237,
-      "triangles": 418,
+      "vertices": 827,
+      "triangles": 1586,
       "boundsStuds": {
         "min": [
-          -0.39,
-          -1.09,
-          -0.36
+          -0.376,
+          -1.143,
+          -0.37
         ],
         "max": [
-          0.39,
-          0.32,
-          0.36
+          0.376,
+          0.33,
+          0.37
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 132,
-        "Shade15": 56,
-        "Shade23": 116,
-        "Shade24": 114
+        "Shade11": 376,
+        "Shade15": 604,
+        "Shade16": 16,
+        "Shade23": 362,
+        "Shade24": 228
       }
     },
     {
       "name": "GolemLeg",
       "source": "GolemLeg.obj",
-      "sourceSha256": "0ae130e25e72c99a12ffab02e18246402f0083bf74b6664dd440dd87b38ec11e",
+      "sourceSha256": "db38442ae0a5823695f280fcdbf7b42ca28c43a8843e2c75f1c85376bbbf971f",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 150,
-      "triangles": 272,
+      "vertices": 545,
+      "triangles": 1050,
       "boundsStuds": {
         "min": [
           -0.3,
-          -1,
-          -0.41
+          -1.005,
+          -0.43
         ],
         "max": [
           0.3,
-          0,
-          0.285
+          0.02,
+          0.292
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 58,
-        "Shade15": 56,
-        "Shade23": 76,
-        "Shade24": 82
+        "Shade11": 346,
+        "Shade15": 164,
+        "Shade23": 84,
+        "Shade24": 456
       }
     },
     {
@@ -3103,29 +3108,29 @@
     {
       "name": "HoofLeg",
       "source": "HoofLeg.obj",
-      "sourceSha256": "ba1c7939d4f2e0da5416dbde04d4778236421c508ae41e1f024aed4c6f44076c",
+      "sourceSha256": "99d52795a27fef81e09d0bf36d4eefc706726a8f063a02db84fbadbd14f9c1b0",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 140,
-      "triangles": 264,
+      "vertices": 234,
+      "triangles": 432,
       "boundsStuds": {
         "min": [
-          -0.25,
+          -0.26,
           -1,
-          -0.235
+          -0.256
         ],
         "max": [
-          0.25,
-          0.088,
-          0.249
+          0.26,
+          0.095,
+          0.278
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 68,
-        "Shade15": 28,
-        "Shade16": 80,
-        "Shade41": 60,
-        "Shade42": 28
+        "Shade11": 128,
+        "Shade15": 58,
+        "Shade16": 130,
+        "Shade41": 72,
+        "Shade42": 44
       }
     },
     {
@@ -3299,27 +3304,27 @@
     {
       "name": "JellyTendril",
       "source": "JellyTendril.obj",
-      "sourceSha256": "c4d033e279192080d0c23eb08eff265a2da66bd0b5257392da343ef29e0af819",
+      "sourceSha256": "354812bbe24dc8c4aa57deebac45cf91475166e6dee784bc319623927351d6f8",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 74,
-      "triangles": 132,
+      "vertices": 146,
+      "triangles": 276,
       "boundsStuds": {
         "min": [
-          -0.094,
-          -1.006,
-          -0.175
+          -0.097,
+          -1.007,
+          -0.217
         ],
         "max": [
-          0.113,
-          0.022,
-          0.067
+          0.13,
+          0.027,
+          0.077
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 61,
-        "Shade13": 24,
-        "Shade16": 47
+        "Shade11": 120,
+        "Shade13": 60,
+        "Shade16": 96
       }
     },
     {
@@ -3915,134 +3920,134 @@
     {
       "name": "OverlayCrown",
       "source": "OverlayCrown.obj",
-      "sourceSha256": "60298fdb4ee60db47c08605ee518cf240003e30b265311de41372ee0be447da5",
+      "sourceSha256": "c8d4078053847757a3420d18e147d90664506a5e7dce308e267c0d93d486e733",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 280,
-      "triangles": 432,
+      "vertices": 704,
+      "triangles": 1264,
       "boundsStuds": {
         "min": [
-          -0.54,
+          -0.602,
           0,
-          -0.54
+          -0.602
         ],
         "max": [
-          0.54,
-          0.68,
-          0.54
+          0.602,
+          0.66,
+          0.602
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 32,
-        "Shade2": 120,
-        "Shade23": 160,
-        "Shade24": 120
+        "Shade11": 80,
+        "Shade2": 816,
+        "Shade23": 224,
+        "Shade24": 144
       }
     },
     {
       "name": "OverlayHorns",
       "source": "OverlayHorns.obj",
-      "sourceSha256": "d1c9bb995d014298d2b5519467d7ddc3d184d123726568fd9c43f8087837bcec",
+      "sourceSha256": "fd812dc29249b35e578283196dfe8e8cc06d9a58ae7e8e8748dbfdebdcfb61ef",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 154,
-      "triangles": 232,
+      "vertices": 234,
+      "triangles": 456,
       "boundsStuds": {
         "min": [
-          -0.581,
-          -0.104,
-          -0.125
+          -0.591,
+          -0.12,
+          -0.127
         ],
         "max": [
-          0.581,
-          0.755,
-          0.477
+          0.591,
+          0.763,
+          0.484
         ]
       },
       "trianglesByMaterial": {
-        "Shade40": 152,
-        "Shade41": 80
+        "Shade40": 328,
+        "Shade41": 128
       }
     },
     {
       "name": "OverlayPauldron",
       "source": "OverlayPauldron.obj",
-      "sourceSha256": "ef42c88dee2725a8e8e882f177802b832c0b0f2e68c432fea6f1d8d7134aa2bc",
+      "sourceSha256": "b1d14e554e1b6e836e9865ff93c466d350133d5424daefb34a5496158ec090b9",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 219,
-      "triangles": 402,
+      "vertices": 534,
+      "triangles": 1032,
       "boundsStuds": {
         "min": [
-          -0.408,
-          -0.453,
-          -0.386
+          -0.433,
+          -0.475,
+          -0.399
         ],
         "max": [
-          0.436,
-          0.605,
-          0.386
+          0.431,
+          0.604,
+          0.399
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 82,
-        "Shade15": 164,
-        "Shade23": 124,
-        "Shade40": 32
+        "Shade11": 216,
+        "Shade15": 144,
+        "Shade16": 126,
+        "Shade23": 454,
+        "Shade40": 92
       }
     },
     {
       "name": "OverlayRuneRing",
       "source": "OverlayRuneRing.obj",
-      "sourceSha256": "fa6fa8d259f34079940d2907fd5e801a91ff96e0f73ead37b48d9bf341bfd403",
+      "sourceSha256": "9705a7013e395479ab6ea36e634c916ae5f86355c5dc45864a2e5c0b7ed6b620",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 424,
-      "triangles": 784,
+      "vertices": 828,
+      "triangles": 1456,
       "boundsStuds": {
         "min": [
-          -1.03,
-          0,
-          -1.03
+          -1.045,
+          -0.002,
+          -1.045
         ],
         "max": [
-          1.03,
-          0.031,
-          1.03
+          1.045,
+          0.042,
+          1.045
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 320,
-        "Shade15": 320,
-        "Shade16": 144
+        "Shade11": 640,
+        "Shade15": 576,
+        "Shade16": 240
       }
     },
     {
       "name": "OverlayWorldCrown",
       "source": "OverlayWorldCrown.obj",
-      "sourceSha256": "6f683badea8424d10a71ec86f6cdb653b79e30b5e053e564746d66d7a9c16a39",
+      "sourceSha256": "896e93136fedaaa90bd312047db3e96aa20e06bba3544fbc037bb633d794a643",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 660,
-      "triangles": 1120,
+      "vertices": 1384,
+      "triangles": 2488,
       "boundsStuds": {
         "min": [
           -0.705,
           0,
-          -0.71
+          -0.712
         ],
         "max": [
           0.705,
-          1.24,
-          0.71
+          1.25,
+          0.712
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 80,
-        "Shade16": 256,
-        "Shade2": 424,
-        "Shade23": 216,
-        "Shade29": 144
+        "Shade11": 200,
+        "Shade2": 1832,
+        "Shade23": 288,
+        "Shade29": 168
       }
     },
     {
@@ -4077,28 +4082,28 @@
     {
       "name": "PawLeg",
       "source": "PawLeg.obj",
-      "sourceSha256": "2432acaa52ba32e1ba689ed6fb8ae6f002c7441e82a810fb879a28acce43c4f0",
+      "sourceSha256": "aa6b45ae05a70f703b5daa5b71d461812baff9714d9a835e2895e85f743ee197",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 269,
-      "triangles": 494,
+      "vertices": 342,
+      "triangles": 652,
       "boundsStuds": {
         "min": [
-          -0.22,
-          -1.005,
-          -0.334
+          -0.23,
+          -1.006,
+          -0.324
         ],
         "max": [
-          0.22,
-          0.104,
-          0.202
+          0.23,
+          0.115,
+          0.221
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 148,
-        "Shade15": 28,
-        "Shade16": 240,
-        "Shade42": 78
+        "Shade11": 164,
+        "Shade15": 58,
+        "Shade16": 262,
+        "Shade42": 168
       }
     },
     {
@@ -4130,40 +4135,40 @@
     {
       "name": "PetFloat",
       "source": "PetFloat.obj",
-      "sourceSha256": "6dd3800fbc350166ec2651acdda99820d093bbf15eb582eb57043a689dbd2c63",
+      "sourceSha256": "f39e191e432c0379faeced581f730074890a9e326b631441f88f6a62ffb80654",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 394,
-      "triangles": 748,
+      "vertices": 722,
+      "triangles": 1340,
       "boundsStuds": {
         "min": [
-          -0.72,
+          -0.735,
           -1.03,
-          -0.694
+          -0.702
         ],
         "max": [
-          0.72,
+          0.735,
           0.82,
-          0.694
+          0.702
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 296,
-        "Shade13": 16,
-        "Shade15": 42,
-        "Shade16": 42,
-        "Shade2": 192,
+        "Shade11": 368,
+        "Shade13": 76,
+        "Shade15": 48,
+        "Shade16": 112,
+        "Shade2": 576,
         "Shade43": 160
       }
     },
     {
       "name": "PetFlyer",
       "source": "PetFlyer.obj",
-      "sourceSha256": "5a324882bdeece4b074f925775128d0a7d19f397e60f82962e4bb6dd9c295d15",
+      "sourceSha256": "98faa47a8e5e165a56c2ffd390de0e73ffb2e02f641c708e06b4bbe01aa6c51e",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 469,
-      "triangles": 894,
+      "vertices": 747,
+      "triangles": 1446,
       "boundsStuds": {
         "min": [
           -0.5,
@@ -4172,28 +4177,28 @@
         ],
         "max": [
           0.5,
-          1.093,
-          0.984
+          1.053,
+          0.982
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 294,
-        "Shade13": 16,
-        "Shade15": 172,
-        "Shade16": 30,
-        "Shade2": 30,
+        "Shade11": 466,
+        "Shade13": 76,
+        "Shade15": 184,
+        "Shade16": 290,
+        "Shade2": 70,
         "Shade43": 160,
-        "Shade46": 192
+        "Shade46": 200
       }
     },
     {
       "name": "PetHopper",
       "source": "PetHopper.obj",
-      "sourceSha256": "4240c6978a7e08b6f14a103c54614c722fb134da6c4e15923efd07ca14d1c9a6",
+      "sourceSha256": "351f40f37f6476abb8ca08eec54f798f67838fef80f280c40ab27eb9a4e466ed",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 518,
-      "triangles": 988,
+      "vertices": 740,
+      "triangles": 1432,
       "boundsStuds": {
         "min": [
           -0.56,
@@ -4207,27 +4212,27 @@
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 296,
-        "Shade13": 16,
+        "Shade11": 404,
+        "Shade13": 76,
         "Shade15": 160,
-        "Shade16": 16,
+        "Shade16": 72,
         "Shade43": 160,
-        "Shade46": 180,
+        "Shade46": 400,
         "Shade47": 160
       }
     },
     {
       "name": "PetQuad",
       "source": "PetQuad.obj",
-      "sourceSha256": "53f9be985760cc73efaf805ea348d9fe95f792962e3db727b76d319b2872d31a",
+      "sourceSha256": "2bdb1718628b8296dc5055a16afad999136c33cd382f6fbdc5070863b97dd0d6",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 418,
-      "triangles": 776,
+      "vertices": 606,
+      "triangles": 1148,
       "boundsStuds": {
         "min": [
           -0.42,
-          -0.389,
+          -0.399,
           -1.36
         ],
         "max": [
@@ -4237,21 +4242,22 @@
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 204,
-        "Shade13": 16,
-        "Shade15": 149,
+        "Shade11": 284,
+        "Shade13": 76,
+        "Shade15": 250,
+        "Shade16": 24,
         "Shade43": 240,
-        "Shade46": 167
+        "Shade46": 274
       }
     },
     {
       "name": "PetShell",
       "source": "PetShell.obj",
-      "sourceSha256": "73a32224e722ac35302f8899947d6d8033a3b9406bafff7837809018f49fc9c0",
+      "sourceSha256": "57b46ab2dcf7ca417fd09e0cdcfbdefb38b6638c5e42b80ae2cdac09b7de5f55",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 403,
-      "triangles": 722,
+      "vertices": 681,
+      "triangles": 1270,
       "boundsStuds": {
         "min": [
           -0.78,
@@ -4261,17 +4267,17 @@
         "max": [
           0.78,
           0.58,
-          0.73
+          0.733
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 280,
-        "Shade13": 16,
-        "Shade15": 30,
-        "Shade16": 48,
-        "Shade2": 36,
+        "Shade11": 308,
+        "Shade13": 76,
+        "Shade15": 132,
+        "Shade16": 298,
+        "Shade2": 88,
         "Shade43": 160,
-        "Shade46": 152
+        "Shade46": 208
       }
     },
     {
@@ -4332,27 +4338,27 @@
     {
       "name": "RayFin",
       "source": "RayFin.obj",
-      "sourceSha256": "2d84e6187b1c588131073714d8f2c0afcc5d959cd49c5f2eb29ce79ce104bf91",
+      "sourceSha256": "6ab2e1df6de61095907d14271e45bb364f356d4d244a59c3b3ab43899ab67df0",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 38,
-      "triangles": 72,
+      "vertices": 158,
+      "triangles": 312,
       "boundsStuds": {
         "min": [
           0,
-          -0.12,
+          -0.13,
           -0.62
         ],
         "max": [
           1,
-          0.12,
-          0.64
+          0.13,
+          0.62
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 38,
-        "Shade15": 10,
-        "Shade16": 24
+        "Shade11": 192,
+        "Shade15": 84,
+        "Shade16": 36
       }
     },
     {
@@ -4466,27 +4472,28 @@
     {
       "name": "RootLeg",
       "source": "RootLeg.obj",
-      "sourceSha256": "e622a4d4c33f865a6c6de025c78f8b93717a7351adf662ecb647b7a4308edd4a",
+      "sourceSha256": "9181cc00fee6f5e95e814fc648f80032438fe0b6f71e8bf1115ed57af3189ddb",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 95,
-      "triangles": 170,
+      "vertices": 280,
+      "triangles": 540,
       "boundsStuds": {
         "min": [
-          -0.133,
-          -1.018,
-          -0.149
+          -0.119,
+          -1.017,
+          -0.165
         ],
         "max": [
-          0.642,
-          0.108,
-          0.176
+          0.648,
+          0.109,
+          0.183
         ]
       },
       "trianglesByMaterial": {
-        "Shade14": 32,
-        "Shade17": 82,
-        "Shade18": 56
+        "Shade14": 60,
+        "Shade17": 244,
+        "Shade18": 96,
+        "Shade34": 140
       }
     },
     {
@@ -4579,28 +4586,28 @@
     {
       "name": "ScaleTail",
       "source": "ScaleTail.obj",
-      "sourceSha256": "7b9b7a96985586a7af73535b782b68affe020e4222b52b6efb7ac658082ff508",
+      "sourceSha256": "badaebc232faefb54b568e4f09c76f4f0f0534bdc6f4db1acaf2f8a3d539765f",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 132,
-      "triangles": 226,
+      "vertices": 486,
+      "triangles": 930,
       "boundsStuds": {
         "min": [
-          -0.2,
-          -0.18,
+          -0.205,
+          -0.184,
           0
         ],
         "max": [
-          0.2,
-          0.258,
+          0.205,
+          0.241,
           1.22
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 44,
-        "Shade15": 44,
-        "Shade16": 44,
-        "Shade41": 94
+        "Shade11": 84,
+        "Shade15": 126,
+        "Shade16": 126,
+        "Shade41": 594
       }
     },
     {
@@ -4632,55 +4639,55 @@
     {
       "name": "SerpentCoil",
       "source": "SerpentCoil.obj",
-      "sourceSha256": "ee44d797dea015337b945980e4f9dbf3c8242a7afc8ee21b5f8bd1557ba96590",
+      "sourceSha256": "a1b4f50495172f548c526b652372048c1585c84431690794edab3721f47a6566",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 106,
-      "triangles": 172,
+      "vertices": 284,
+      "triangles": 524,
       "boundsStuds": {
         "min": [
-          -0.74,
-          -0.758,
+          -0.842,
+          -0.777,
           0
         ],
         "max": [
-          0.74,
-          1.04,
+          0.842,
+          1.072,
           1
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 16,
-        "Shade15": 56,
-        "Shade16": 92,
-        "Shade35": 8
+        "Shade11": 56,
+        "Shade15": 84,
+        "Shade16": 354,
+        "Shade35": 30
       }
     },
     {
       "name": "SerpentTail",
       "source": "SerpentTail.obj",
-      "sourceSha256": "79d045873e89e9c1d895eb60b04ea6c3966b2aff5a7c8ba84289789040738918",
+      "sourceSha256": "706c216daa8e118089aef88aad656e9de9063db64fa265c72fa3ea794bc457dc",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 73,
-      "triangles": 124,
+      "vertices": 269,
+      "triangles": 508,
       "boundsStuds": {
         "min": [
           -0.5,
-          -0.6,
+          -0.5,
           -1.5
         ],
         "max": [
           0.5,
-          0.7,
-          1.42
+          0.664,
+          1.433
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 42,
-        "Shade15": 28,
-        "Shade16": 48,
-        "Shade35": 6
+        "Shade11": 192,
+        "Shade15": 78,
+        "Shade16": 138,
+        "Shade35": 100
       }
     },
     {
@@ -5072,61 +5079,61 @@
     {
       "name": "SovereignArm",
       "source": "SovereignArm.obj",
-      "sourceSha256": "ad57b30281ac0ee10c0cfb51b52563c25fef3722ed19cfbe856b5eb32774eb07",
+      "sourceSha256": "bb476bd077961feac33480a6ea23afe8b99d693e2018efa0845e9e3694bc3260",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 462,
-      "triangles": 858,
+      "vertices": 779,
+      "triangles": 1468,
       "boundsStuds": {
         "min": [
-          -0.35,
-          -1.252,
-          -0.318
+          -0.4,
+          -1.378,
+          -0.349
         ],
         "max": [
-          0.35,
-          1.164,
-          0.549
+          0.4,
+          1.175,
+          0.528
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 188,
-        "Shade13": 12,
-        "Shade15": 418,
-        "Shade16": 82,
-        "Shade2": 66,
-        "Shade23": 32,
-        "Shade35": 14,
-        "Shade41": 38,
-        "Shade48": 8
+        "Shade11": 317,
+        "Shade13": 56,
+        "Shade15": 328,
+        "Shade16": 91,
+        "Shade2": 316,
+        "Shade23": 116,
+        "Shade35": 144,
+        "Shade41": 68,
+        "Shade45": 12,
+        "Shade48": 20
       }
     },
     {
       "name": "SpiderLeg",
       "source": "SpiderLeg.obj",
-      "sourceSha256": "598133d5aeabcd21ef69271236d8aaabf91be5e4ca77ef44119b5533eab933eb",
+      "sourceSha256": "76b4a5102377d0da6a7315c93c6ad728935911aa494144df20f8ae05b0d64cae",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 153,
-      "triangles": 274,
+      "vertices": 370,
+      "triangles": 652,
       "boundsStuds": {
         "min": [
           -0.071,
-          -0.845,
+          -0.867,
           -0.1
         ],
         "max": [
-          1.012,
-          0.76,
+          1.01,
+          0.565,
           0.1
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 44,
-        "Shade15": 140,
-        "Shade16": 32,
-        "Shade41": 32,
-        "Shade42": 26
+        "Shade11": 92,
+        "Shade15": 186,
+        "Shade16": 298,
+        "Shade42": 76
       }
     },
     {
@@ -5277,29 +5284,30 @@
     {
       "name": "StoneArm",
       "source": "StoneArm.obj",
-      "sourceSha256": "835e4bd06a057bb9be3f6401b73de39e2d988bf68063c57b04c15656b58c6771",
+      "sourceSha256": "a5d81a13b095c8e3c226803dffc7f9fb7a4c155ed6c7ebce994bcf3c7b2dee5f",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 444,
-      "triangles": 824,
+      "vertices": 716,
+      "triangles": 1312,
       "boundsStuds": {
         "min": [
           -0.34,
-          -1.142,
-          -0.337
+          -1.138,
+          -0.334
         ],
         "max": [
-          0.344,
-          0.319,
-          0.324
+          0.343,
+          0.318,
+          0.321
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 285,
-        "Shade15": 344,
-        "Shade16": 119,
-        "Shade23": 60,
-        "Shade48": 16
+        "Shade11": 372,
+        "Shade15": 568,
+        "Shade16": 176,
+        "Shade2": 56,
+        "Shade23": 56,
+        "Shade48": 84
       }
     },
     {
@@ -5347,28 +5355,29 @@
     {
       "name": "StoneLeg",
       "source": "StoneLeg.obj",
-      "sourceSha256": "56a949b9e7947be99e56200f2b0d1de79431b940ce2a4a82eb95ba4ea1c8d3ab",
+      "sourceSha256": "11be815bd42f20e94d3d8f8bca9dce8281701545654f667d8822a6c8ce9bbda7",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 152,
-      "triangles": 264,
+      "vertices": 454,
+      "triangles": 828,
       "boundsStuds": {
         "min": [
-          -0.36,
+          -0.37,
           -1,
-          -0.394
+          -0.425
         ],
         "max": [
-          0.36,
+          0.37,
           0.02,
-          0.394
+          0.426
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 68,
-        "Shade15": 40,
-        "Shade16": 136,
-        "Shade21": 20
+        "Shade11": 330,
+        "Shade15": 84,
+        "Shade16": 284,
+        "Shade21": 46,
+        "Shade48": 84
       }
     },
     {
@@ -6165,28 +6174,28 @@
     {
       "name": "VineArm",
       "source": "VineArm.obj",
-      "sourceSha256": "70a0060b3a374f8ac77d3894cfa8101cb50abc13c28a0210f31832c007a6dd9a",
+      "sourceSha256": "eb1fdb79ac9c1113edf18faee538dbcc73b58501eed9a9129a9568444f4e5b59",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 107,
-      "triangles": 190,
+      "vertices": 308,
+      "triangles": 592,
       "boundsStuds": {
         "min": [
-          -0.091,
-          -1.26,
-          -0.189
+          -0.095,
+          -1.28,
+          -0.188
         ],
         "max": [
-          0.199,
-          0.033,
+          0.209,
+          0.038,
           0.097
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 90,
-        "Shade15": 8,
-        "Shade16": 12,
-        "Shade40": 80
+        "Shade11": 200,
+        "Shade15": 58,
+        "Shade16": 30,
+        "Shade40": 304
       }
     },
     {
@@ -6366,28 +6375,28 @@
     {
       "name": "WispShard",
       "source": "WispShard.obj",
-      "sourceSha256": "1fb0080ad0eb1744694a369a2c4f85bea411e224440ced0b644d2af036dd2598",
+      "sourceSha256": "e6631c9b231656bf18527105b43b351a12ac194a8c983fb9329c12c75fe10124",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 35,
-      "triangles": 62,
+      "vertices": 122,
+      "triangles": 216,
       "boundsStuds": {
         "min": [
-          -0.185,
+          -0.225,
           -0.5,
-          -0.213
+          -0.225
         ],
         "max": [
-          0.203,
+          0.225,
           0.55,
-          0.184
+          0.225
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 37,
-        "Shade13": 8,
-        "Shade15": 9,
-        "Shade16": 8
+        "Shade11": 48,
+        "Shade15": 36,
+        "Shade16": 60,
+        "Shade2": 72
       }
     },
     {
@@ -6422,28 +6431,29 @@
     {
       "name": "WraithArm",
       "source": "WraithArm.obj",
-      "sourceSha256": "3804f8f6146f406701608dcc28af5b4e227783447f05744f924416da3f7fe1dc",
+      "sourceSha256": "df52a808d7caab95082d212026a98360b1bcf2a5caefd30385568761f9a9c4d6",
       "materialSource": "AetherPalette.mtl",
       "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
-      "vertices": 137,
-      "triangles": 238,
+      "vertices": 446,
+      "triangles": 832,
       "boundsStuds": {
         "min": [
-          -0.347,
-          -0.928,
-          -0.315
+          -0.322,
+          -1.08,
+          -0.306
         ],
         "max": [
-          0.302,
+          0.32,
           0,
-          0.323
+          0.304
         ]
       },
       "trianglesByMaterial": {
-        "Shade11": 60,
-        "Shade16": 20,
+        "Shade11": 96,
+        "Shade15": 64,
+        "Shade16": 364,
         "Shade44": 80,
-        "Shade45": 78
+        "Shade45": 228
       }
     },
     {

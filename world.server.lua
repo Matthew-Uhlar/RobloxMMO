@@ -1526,7 +1526,11 @@ end
 local skyMarker=hidden(hub,"Tidewing",V(14,32,-12))
 skyMarker.CFrame *= CFrame.Angles(0,math.rad(33),0)
 -- §48: the sky-ray over Compass Quay is a forged, gliding creature rig
--- (creatures.client.lua), no longer the flat legacy sculpture.
+-- (creatures.client.lua). QC H2: the legacy sculpture stays as the visible
+-- fallback; the client hides it locally only once the forged core exists.
+skyMarker:SetAttribute("Shape","Tidewing")
+Tags:AddTag(skyMarker,"AetherSculpture")
+skyMarker:SetAttribute("CreatureLandmark",true)
 skyMarker:SetAttribute("CreatureRig","ray")
 skyMarker:SetAttribute("CreatureScale",1.4)
 skyMarker:SetAttribute("Color","3F7CAC")
@@ -1622,6 +1626,11 @@ end
 local boss=hidden(wild,"Shellwarden",W+V(0,2,0))
 -- §48: the Shellwarden is a forged crab rig in boss trim (crown, pauldrons,
 -- rune ring) standing on its dais; the invisible anchor keeps the prompt.
+-- QC H2: the legacy sculpture is the visible fallback (hidden locally once
+-- the forged core exists).
+boss:SetAttribute("Shape","Shellwarden")
+Tags:AddTag(boss,"AetherSculpture")
+boss:SetAttribute("CreatureLandmark",true)
 boss:SetAttribute("CreatureRig","crab")
 boss:SetAttribute("CreatureScale",1.25)
 boss:SetAttribute("Color","525570")

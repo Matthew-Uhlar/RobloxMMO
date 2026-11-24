@@ -1218,7 +1218,48 @@ check(not MeshForgeSource:find("%.Transparency%s*=%s*1"), "forge only hides part
 -- tiers, timings and the renderer are covered by verify-creatures.luau.
 ------------------------------------------------------------------------------
 local Creatures = luau.load(fs.readFile("art/CreatureCatalog.lua"), {injectGlobals = true})()
-local CREATURE_RANGE = {creature = {400, 2400}, pet = {300, 1200}, limb = {60, 900}, overlay = {80, 1200}}
+local CREATURE_RANGE = {creature = {400, 2400}, pet = {400, 1600}, limb = {100, 1600}, overlay = {200, 2600}}
+-- §48 QC H4: never faceted. Hard edges (dihedral over the crease) and colour
+-- boundaries are measured over shared edges: a lathe or tube with too few
+-- segments for its crease, or colours chosen by facet index (checkerboards,
+-- stripes around a form), push these ratios up.
+local HARD_EDGE_MAX = {creature = 0.16, pet = 0.16, limb = 0.2, overlay = 0.25}
+local COLOUR_EDGE_MAX = {creature = 0.12, pet = 0.12, limb = 0.16, overlay = 0.16}
+local BOSS_CORE_FLOOR = 1800
+local function edgeRatios(data, points)
+	local edges, normals = {}, {}
+	for f, face in ipairs(data.faces) do
+		local n = (points[face[2]] - points[face[1]]):Cross(points[face[3]] - points[face[1]])
+		normals[f] = if n.Magnitude > 0 then n.Unit else Vector3.new(0, 1, 0)
+		for k = 1, 3 do
+			local a, b = face[k], face[k % 3 + 1]
+			local key = if a < b then a * 65536 + b else b * 65536 + a
+			local list = edges[key]
+			if not list then list = {}; edges[key] = list end
+			table.insert(list, f)
+		end
+	end
+	local shared, hard, colour = 0, 0, 0
+	local limit = math.cos(math.rad(data.smooth))
+	for _, list in pairs(edges) do
+		if #list == 2 then
+			shared += 1
+			if normals[list[1]]:Dot(normals[list[2]]) < limit then hard += 1 end
+			if data.faces[list[1]][4] ~= data.faces[list[2]][4] then colour += 1 end
+		end
+	end
+	return hard / math.max(1, shared), colour / math.max(1, shared)
+end
+-- Source rules for the creature art (art/creature-shapes.cjs).
+do
+	local art = fs.readFile("art/creature-shapes.cjs")
+	for _, banned in ipairs({"kit.prism(", "kit.box(", "kit.bevelBox(", "kit.jewel(", "kit.slab(", "kit.spindle(", "kit.ring("}) do
+		check(not string.find(art, banned, 1, true), "creature art never uses the flat / faceted primitive " .. banned)
+	end
+	check(not string.find(art, "color: %(%w+, %w+%) =>"), "no colour callback reads the facet index (colour by band or height only)")
+	for n in string.gmatch(art, "[^%w]n: (%d+)") do check(tonumber(n) >= 10, "every ring / tube has >= 10 segments (n: " .. n .. ")") end
+	for m in string.gmatch(art, "[^%w]m: (%d+)") do check(tonumber(m) >= 8, "every loft section has >= 8 points (m: " .. m .. ")") end
+end
 check(#Creatures.palette == #World.palette, "creature catalog shares the palette")
 for i, hex in ipairs(World.palette) do check(Creatures.palette[i] == hex, "creature palette entry " .. i) end
 check(Creatures.tintIndex == World.tintIndex and Creatures.tintDarkIndex == World.tintDarkIndex and Creatures.tintLightIndex == World.tintLightIndex, "creature tint slots")
@@ -1232,7 +1273,11 @@ for name, data in pairs(Creatures.shapes) do
 	local points = validate(name, data, range[1], range[2])
 	check(#points < 4096, name .. " fits the 2-digit vertex packing")
 	check(type(data.smooth) == "number" and data.smooth >= 0 and data.smooth < 90, name .. " smoothing crease")
-	check(data.kind == "overlay" or data.smooth >= 18, name .. " is smooth-shaded (never flat)")
+	check(data.smooth >= 40, name .. " is smooth-shaded (crease " .. data.smooth .. ", never flat)")
+	local hardRatio, colourRatio = edgeRatios(data, points)
+	check(hardRatio <= HARD_EDGE_MAX[data.kind], string.format("%s hard-edge ratio %.3f <= %.2f (segments vs crease)", name, hardRatio, HARD_EDGE_MAX[data.kind]))
+	check(colourRatio <= COLOUR_EDGE_MAX[data.kind], string.format("%s colour-boundary ratio %.3f <= %.2f (no facet-index colouring)", name, colourRatio, COLOUR_EDGE_MAX[data.kind]))
+	if data.boss then check(#data.faces >= BOSS_CORE_FLOOR, name .. " boss / world core uses the budget (" .. #data.faces .. " >= " .. BOSS_CORE_FLOOR .. ")") end
 	check(data.tint == nil or pcall(Color3.fromHex, data.tint), name .. " default tint")
 	for _, vol in ipairs(componentVolumes(data, points)) do check(vol > -1e-4, name .. " components are wound outward") end
 	-- Bounds: cores fit a creature (pets about a stud), limbs their unit frame.
@@ -1248,7 +1293,10 @@ for name, data in pairs(Creatures.shapes) do
 	if data.kind == "creature" or data.kind == "pet" then check(math.abs(lo.X + hi.X) <= 0.25 * size.X + 0.05, name .. " is symmetric across X") end
 end
 check(creatureCount >= 60, "creature shapes authored (" .. creatureCount .. ")")
-check(#fs.readFile("art/CreatureCatalog.lua") <= 640 * 1024, "creature catalog download stays under 640 KB")
+check(#fs.readFile("art/CreatureCatalog.lua") <= 1200 * 1024, "creature catalog download stays under 1200 KB")
+local bossCores = 0
+for _, data in pairs(Creatures.shapes) do if data.boss then bossCores += 1 end end
+check(bossCores >= 14, "the cores worn by slayer / lair / raid / world bosses are flagged (" .. bossCores .. ")")
 for _, name in ipairs({"CreatureBoar", "CreatureSovereign", "DrakeWing", "OverlayCrown", "PetQuad"}) do
 	local data, vi, fi = Creatures.shapes[name], 0, 0
 	for line in string.gmatch(fs.readFile("art/" .. name .. ".obj"), "[^\n]+") do

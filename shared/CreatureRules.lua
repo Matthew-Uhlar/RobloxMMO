@@ -9,11 +9,11 @@
 -- owns position, health, attacks and telegraphs; the renderer only reads the
 -- attributes it already publishes:
 --   CreatureRig (body kind), CreatureScale, Color, Level, Boss, WorldBoss,
---   Lair, Raid, Superior, Health, Dead, AttackAt (server time of a monster's
---   hit), TelegraphAt / TelegraphWindup / TelegraphKind (boss telegraphs),
---   LairStance, VisualState, AddHealth.
--- Pose functions write into caller-owned tables and allocate no tables per
--- frame (CFrames are value types).
+--   Lair, Raid, Superior, Health, Dead, Despawn, AttackAt (server time of a
+--   monster's hit), TelegraphAt / TelegraphWindup (the earliest unresolved
+--   boss telegraph), LairStance, VisualState, AddHealth, CreatureLandmark.
+-- Pose functions write into caller-owned tables: no tables, closures or
+-- instances per frame (CFrame / Vector3 math values only).
 local R = {}
 
 -- Tiers -----------------------------------------------------------------------
@@ -30,9 +30,11 @@ function R.tier(attrs)
 	if type(attrs.CreatureTier) == "string" and R.RANK[attrs.CreatureTier] then return attrs.CreatureTier end
 	if attrs.Pet == true then return "pet" end
 	if attrs.WorldBoss == true then return "world" end
+	-- QC M6: superiors carry Boss = true on the server but render as elites.
+	if attrs.Superior == true then return "elite" end
 	if attrs.Boss == true or (type(attrs.Lair) == "string" and attrs.Lair ~= "") then return "boss" end
 	local level = tonumber(attrs.Level) or 0
-	if attrs.Superior == true or level >= R.ELITE_LEVEL then return "elite" end
+	if level >= R.ELITE_LEVEL then return "elite" end
 	if level >= R.BRUTE_LEVEL then return "brute" end
 	return "critter"
 end
@@ -88,10 +90,32 @@ function R.lod(distance, tier, mobile, built)
 	return 0
 end
 function R.cap(mobile) return if mobile then R.LOD.phone.cap else R.LOD.desktop.cap end
+-- Draw priority (QC H1 / H2): bosses and world bosses first, then landmark
+-- creatures (the Shellwarden, the sky-ray: host attribute CreatureLandmark),
+-- then ordinary creatures, pets last. The cap and the boss bump use it.
+function R.priority(tier, landmark)
+	if tier == "boss" or tier == "world" then return 3 end
+	if landmark then return 2 end
+	if tier == "pet" then return 0 end
+	return 1
+end
+-- Cap hysteresis (QC M2): a built rig keeps its slot unless a newcomer is
+-- closer by more than this margin (studs, or the fraction of its distance).
+R.CAP_MARGIN = 12
+R.CAP_MARGIN_FRACTION = 0.15
+function R.capDistance(distance, built)
+	if not built then return distance end
+	return distance - math.max(R.CAP_MARGIN, distance * R.CAP_MARGIN_FRACTION)
+end
+-- Boss bump (QC H1): rigs released, lowest first, when a boss / world mesh is refused.
+R.BUMP_MAX = 8
+-- Structural segments (QC H3): a rig missing one of these is not drawn.
+R.STRUCTURAL = {legA = true, legB = true, arm = true, armA = true, armB = true, wing = true, claw = true, coil = true, tuck = true}
 -- Forge budget for creature templates: the MeshForge keeps creature templates
 -- in their own pool (forge.client.lua CREATURE_TEMPLATE_CAP / _TRIANGLE_CAP),
 -- beside the world's LIMITS, evicting idle ones least recently used first.
 R.TEMPLATE_CAP = {desktop = 22, phone = 8}
+R.BOSS_RESERVE = {desktop = 6, phone = 3}
 -- A full rig's meshes: the core, its limb segments and overlays.
 function R.rigMeshes(rig, tier, mobile)
 	return 1 + #(rig.segs or {}) + #R.overlays(tier, mobile) + (if table.find(R.overlays(tier, mobile), "pauldron") then 1 else 0)
@@ -110,7 +134,7 @@ R.TIMING = {
 	DISSOLVE = 0.9,
 	DISSOLVE_REDUCED = 0.4,
 	MIN_WINDUP = 0.6,  -- shorter telegraphs still read (the windup is the window itself)
-	SPAWN = 0.45,      -- fade-in when a rig is built
+	SPAWN = 0.45,      -- crossfade (primitive -> mesh) when a rig is built, and back when released
 }
 -- Attack phase at server time `now` for a telegraph resolving at `at` after
 -- `windup` seconds: "windup" (progress 0..1), "strike" (0..1) or nil.

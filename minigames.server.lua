@@ -477,6 +477,7 @@ local function spawnCreature(match, portalId)
 		credit(match, record, S.Points.strike)
 		if c.hp <= 0 then
 			match.creatures[seq] = nil
+			part:SetAttribute("Dead", true) -- §48: clients play the death (not a despawn fade)
 			part:Destroy()
 			credit(match, record, S.Points.kill)
 		end

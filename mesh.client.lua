@@ -414,7 +414,10 @@ local function updateCompanion(player)
 		anchor.CanTouch = false
 		anchor.CanQuery = false
 		anchor.Transparency = 1
-		-- §48: drawn by creatures.client.lua as a small forged ray (IsleCreature).
+		-- §48: drawn by creatures.client.lua as a small forged ray (IsleCreature);
+		-- QC H2: the legacy sculpture stays as the fallback until the core exists.
+		anchor:SetAttribute("Shape", "Tidewing")
+		anchor:SetAttribute("SculptureScale", 0.16)
 		anchor:SetAttribute("CreatureRig", "ray")
 		anchor:SetAttribute("CreatureScale", 0.22)
 		anchor:SetAttribute("Color", "3F7CAC")
@@ -422,6 +425,7 @@ local function updateCompanion(player)
 		anchor.CFrame = root.CFrame * CFrame.new(3, 2, 2)
 		anchor.Parent = workspace
 		companions[player] = anchor
+		attach(anchor)
 		CollectionService:AddTag(anchor, "IsleCreature")
 	end
 	anchor.CFrame = root.CFrame * CFrame.new(3, 2, 2)

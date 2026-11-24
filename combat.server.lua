@@ -3094,7 +3094,21 @@ local function createLogic(env)
 	return L
 end
 
-local exports = {C = C, blueprint = blueprint, createLogic = createLogic, BODY_KIND = BODY_KIND, BOSS_BODY = BOSS_BODY, SEA_BODIES = SEA_BODIES}
+-- §48 (QC M1): a boss's pending telegraphs {at = resolve server time, windup}.
+-- The model shows the EARLIEST unresolved one, so a quick telegraph raised
+-- while a long slam winds up never hides the slam; once a telegraph resolves
+-- the next one is published. Returns the entry to show (nil when none).
+local function earliestTelegraph(list, now)
+	local best
+	for i = #list, 1, -1 do
+		local t = list[i]
+		if t.at <= now then table.remove(list, i)
+		elseif not best or t.at < best.at then best = t end
+	end
+	return best
+end
+local exports = {C = C, blueprint = blueprint, createLogic = createLogic, BODY_KIND = BODY_KIND, BOSS_BODY = BOSS_BODY, SEA_BODIES = SEA_BODIES,
+	earliestTelegraph = earliestTelegraph}
 if __CombatTestHarness then
 	__CombatTestHarness(exports)
 	return
@@ -3435,6 +3449,8 @@ local function destroyView(r, burst)
 		broadcast(r.position, "death", {position = r.position, color = v.model:GetAttribute("Color"), boss = r.boss == true, scale = v.plan.scale})
 	end
 	v.model:SetAttribute("Health", 0)
+	-- §48 (QC L2): a despawn (leash, timeout, depart) fades out without the death slump.
+	if not burst then v.model:SetAttribute("Despawn", true) end
 	v.model:SetAttribute("Dead", true)
 	local model = v.model
 	task.delay(if burst then 0.12 else 0, function() model:Destroy() end)
@@ -3546,14 +3562,26 @@ end)
 -- (server-wide: warn | spawn | phase | enrage | win | depart), worldBossLoot
 -- (per contributor at the kill: rank, share, tier, drops or the reason for none).
 -- §48: a boss's telegraph window on its model, so creatures.client.lua winds
--- the boss up over exactly [TelegraphAt - TelegraphWindup, TelegraphAt) and
--- slams when the server resolves the strike.
+-- the boss up over [TelegraphAt - TelegraphWindup, TelegraphAt) and slams when
+-- the server resolves the strike (both stamped on server ticks: +-1 tick).
+-- QC M1: overlapping telegraphs queue; the earliest unresolved one is shown.
+local function publishTelegraph(r)
+	local v = view[r]
+	if not v then return end
+	v.telegraphs = v.telegraphs or {}
+	local show = earliestTelegraph(v.telegraphs, Workspace:GetServerTimeNow() + 0.05) -- (a resolving tick may read a hair early)
+	if show and v.shownTelegraph ~= show then
+		v.shownTelegraph = show
+		v.model:SetAttribute("TelegraphWindup", show.windup)
+		v.model:SetAttribute("TelegraphAt", show.at)
+	end
+end
 local function markTelegraph(r, tg)
 	local v = view[r]
 	if not v or type(tg.windup) ~= "number" then return end
-	v.model:SetAttribute("TelegraphWindup", tg.windup)
-	v.model:SetAttribute("TelegraphKind", tg.kind)
-	v.model:SetAttribute("TelegraphAt", Workspace:GetServerTimeNow() + tg.windup)
+	v.telegraphs = v.telegraphs or {}
+	table.insert(v.telegraphs, {at = Workspace:GetServerTimeNow() + tg.windup, windup = tg.windup})
+	publishTelegraph(r)
 end
 local Endgame = Data.Endgame
 local WB = {anchors = {}, hudClock = 0, scheduleClock = 0}
@@ -3680,6 +3708,7 @@ function WB.step(dt)
 			markTelegraph(r, tg)
 		elseif event.kind == "strike" then
 			local tg = event.telegraph
+			publishTelegraph(r)
 			broadcast(r.home, "bossStrike", {center = tg.center, radius = tg.radius, kind = tg.kind, hits = #event.hits})
 		elseif event.kind == "phase" then
 			if view[r] then view[r].model:SetAttribute("Phase", event.phase) end
@@ -3869,6 +3898,7 @@ function LairRT.step()
 			end
 		elseif event.kind == "strike" then
 			local tg = event.telegraph
+			publishTelegraph(r)
 			if tg.kind == "tiles" then
 				LairRT.restoreTiles(r.fight)
 				broadcast(r.center, "bossStrike", {center = r.center, radius = Data.Lairs.CELL, kind = "ring", hits = #event.hits})

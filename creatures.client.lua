@@ -3,35 +3,43 @@
 -- Every creature is drawn here from authored meshes instead of the server's
 -- primitive parts: combat monsters, slayer / lair / raid / world bosses and
 -- their adds (tag IsleMonster, combat.server.lua), the Hollow Observatory's
--- Sentinels and umbral wisps, Skybreach Siege creatures (tag IsleCreature on
--- their host part) and summoned pets (pets.client.lua tags its local model).
+-- Sentinels and umbral wisps, Skybreach Siege creatures, the Shellwarden, the
+-- Compass Quay sky-ray and the bond companion (tag IsleCreature on their host
+-- part) and summoned pets (pets.client.lua tags its local model).
 --
 --   * Rigs come from art/CreatureCatalog.lua (ReplicatedStorage.AetherCreatureArt):
 --     a core mesh plus limb segments posed about their pivots, tier overlays
 --     (pauldrons, horns, crowns, a ground rune ring) and Neon glow accents.
---   * Meshes are forged by the MeshForge (forge.client.lua) creature API,
---     inside its template budget (desktop 22 / phones 8 creature templates,
---     LRU) and its instance / triangle budgets. When the forge refuses, the
---     server's primitive model simply stays visible.
+--   * Meshes are forged by the MeshForge (forge.client.lua) creature API, in
+--     its own creature template pool (desktop 22 / phones 8, the last 6 / 3
+--     reserved for bosses; LRU) and the instance / triangle budgets. When a
+--     boss or world boss mesh is refused, the lowest-priority rigs (pets, then
+--     ordinary creatures, farthest first) are released and the mesh retried
+--     at once (QC H1). A rig missing a leg, arm, wing or claw is never shown:
+--     it goes back to its primitives and retries later (QC H3). When the forge
+--     refuses, the server's primitive model (or a host's legacy sculpture)
+--     simply stays visible.
 --   * The server stays authoritative. This script reads only replicated
 --     attributes (CreatureRig, CreatureScale, Color, Level, Boss, WorldBoss,
---     Lair, Superior, Health, Dead, AttackAt, TelegraphAt / TelegraphWindup,
---     LairStance, VisualState, AddHealth) and the root's CFrame, hides the
---     primitives locally (LocalTransparencyModifier) and never writes to a
---     replicated instance's properties or attributes.
+--     Lair, Superior, CreatureTier, CreatureLandmark, Health, AddHealth, Dead,
+--     Despawn, AttackAt, TelegraphAt / TelegraphWindup, LairStance,
+--     VisualState) and the root's CFrame, hides the primitives locally
+--     (LocalTransparencyModifier, crossfaded) and never writes to a replicated
+--     instance's properties or attributes.
 --   * Animation (shared/CreatureRules.lua R.pose): idle breathing / bob, a
---     distance-driven walk cycle (legs swing about their hips, arthropods sweep
---     and lift), wing flaps, tail sway, orbiting shards, the telegraph windup
---     filling exactly [TelegraphAt - windup, TelegraphAt) and the slam after it,
---     the monster bite over the server's 0.25 s lunge, a hit flinch, a fade-in
---     and a death dissolve. Reduced motion (Theme.reducedMotion, sampled with
---     the LOD pass) keeps telegraphs and strikes but drops idle motion.
+--     distance-driven walk cycle, wing flaps, tail sway, orbiting shards, the
+--     telegraph windup over [TelegraphAt - windup, TelegraphAt) and the slam
+--     after it (server ticks: +-1 tick), the monster bite over the server's
+--     0.25 s lunge, a hit flinch, a crossfade in and out, a death dissolve
+--     (a despawn only fades). Reduced motion (Theme.reducedMotion, sampled
+--     with the LOD pass) keeps telegraphs and strikes but drops idle motion.
 --   * Level of detail (R.lod): full rig every frame near, the full rig at
 --     15 Hz further out, the core alone at 8 Hz beyond, nothing past the core
---     range (bosses reach 1.7×, world bosses 2.6×); at most R.cap() rigs
---     (24 desktop / 10 phones), bosses first. Phones carry fewer overlays.
---   * One BulkMoveTo per frame for every pose; tables are reused (no per-frame
---     allocation beyond CFrame values).
+--     range (bosses reach 1.7x, world bosses 2.6x); at most R.cap() rigs (24
+--     desktop / 10 phones) by R.priority (bosses, landmarks, creatures, pets)
+--     then distance, with hysteresis (R.capDistance). Phones carry fewer overlays.
+--   * One BulkMoveTo per frame; no per-frame tables, closures or instances
+--     (CFrame / Vector3 math values only).
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -64,10 +72,10 @@ folder.Name = "CreatureVisuals"
 folder.Parent = workspace
 
 local forgeApi -- ReplicatedStorage.MeshForgeLocal (forge.client.lua)
-local function forgeVisual(shape, tint)
+local function forgeVisual(shape, tint, boss)
 	forgeApi = forgeApi or ReplicatedStorage:FindFirstChild("MeshForgeLocal")
 	if not forgeApi then return nil end
-	local ok, clone, token, extent, center = pcall(forgeApi.Invoke, forgeApi, "creature", {shape = shape, tint = tint})
+	local ok, clone, token, extent, center = pcall(forgeApi.Invoke, forgeApi, "creature", {shape = shape, tint = tint, boss = boss})
 	if ok and typeof(clone) == "Instance" and type(token) == "number" then return clone, token, extent, center end
 	return nil
 end
@@ -82,11 +90,14 @@ local function hex(value, fallback)
 end
 
 local records = {} -- host -> rec
+local retrack = {} -- host -> clock: re-track after a pose error (QC L1)
 local reduced = false
+local Creatures = {records = records, folder = folder, mobile = mobile, bumps = 0}
 
 -- Host attributes -> rec fields (one AttributeChanged connection per host).
-local WATCHED = {Health = true, AddHealth = true, Dead = true, AttackAt = true, TelegraphAt = true, TelegraphWindup = true,
+local WATCHED = {Health = true, AddHealth = true, Dead = true, Despawn = true, AttackAt = true, TelegraphAt = true, TelegraphWindup = true,
 	LairStance = true, VisualState = true, Color = true}
+local TIER_ATTRS = {CreatureTier = true, Pet = true, WorldBoss = true, Boss = true, Lair = true, Superior = true, Level = true}
 local function readAttrs(rec)
 	local host = rec.host
 	rec.attackAt = host:GetAttribute("AttackAt")
@@ -94,7 +105,9 @@ local function readAttrs(rec)
 	rec.telegraphWindup = host:GetAttribute("TelegraphWindup")
 	rec.stance = host:GetAttribute("LairStance")
 	rec.defeated = host:GetAttribute("VisualState") == "Defeated"
+	rec.despawn = host:GetAttribute("Despawn") == true
 	rec.health = tonumber(host:GetAttribute("Health")) or tonumber(host:GetAttribute("AddHealth"))
+	if rec.health and rec.health <= 0 then rec.killed = true end
 end
 local function tierOf(host)
 	return Rules.tier({
@@ -110,35 +123,50 @@ local function rootOf(host)
 	end
 	return nil
 end
+local function isBoss(rec) return rec.tier == "boss" or rec.tier == "world" end
 
--- Mesh + glow bookkeeping -------------------------------------------------
+-- Primitives: hidden locally (crossfaded) while the mesh rig is drawn ---------
 local function vec(k)
 	if type(k) == "table" then return Vector3.new(k[1], k[2], k[3]) end
 	local n = tonumber(k) or 1
 	return Vector3.new(n, n, n)
 end
-local function hidePrimitives(rec)
-	local host = rec.host
-	local list = rec.hidden
-	if host:IsA("BasePart") then
-		table.insert(list, host)
-	else
-		for _, d in ipairs(host:GetDescendants()) do
-			if d:IsA("BasePart") and (d ~= rec.root or d.Transparency < 1) then table.insert(list, d) end
-		end
+local function setPrimitives(rec, ltm)
+	-- (Called per frame during a crossfade: plain writes, no closures.)
+	for _, p in ipairs(rec.hidden) do p.LocalTransparencyModifier = ltm end
+	rec.primitiveLtm = ltm
+end
+local function collectPrimitives(rec)
+	local host, list = rec.host, rec.hidden
+	table.clear(list)
+	if host:IsA("BasePart") then table.insert(list, host) end
+	-- A host part's legacy sculpture (QC H2 fallback) or a model's primitives.
+	for _, d in ipairs(host:GetDescendants()) do
+		if d:IsA("BasePart") and (d ~= rec.root or d.Transparency < 1) then table.insert(list, d) end
 	end
-	for _, p in ipairs(list) do pcall(function() p.LocalTransparencyModifier = 1 end) end
+	if not rec.addedConnection then
+		-- Visuals that arrive later (the legacy sculpture builds asynchronously).
+		rec.addedConnection = host.DescendantAdded:Connect(function(d)
+			if rec.built and d:IsA("BasePart") then
+				table.insert(rec.hidden, d)
+				pcall(function() d.LocalTransparencyModifier = rec.primitiveLtm or 0 end)
+			end
+		end)
+		table.insert(rec.connections, rec.addedConnection)
+	end
 end
 local function showPrimitives(rec)
-	for _, p in ipairs(rec.hidden) do pcall(function() p.LocalTransparencyModifier = 0 end) end
+	setPrimitives(rec, 0)
 	table.clear(rec.hidden)
 end
+
+-- Mesh + glow bookkeeping -------------------------------------------------
 local function newGlow(g, rec, scale)
 	local p = Instance.new("Part")
 	p.Name = "Glow"
 	p.Anchored, p.CanCollide, p.CanQuery, p.CanTouch, p.CastShadow = true, false, false, false, false
 	p.Material = Enum.Material.Neon
-	p.Transparency = 1 -- shown by the spawn fade once posed
+	p.Transparency = 1 -- shown by the crossfade once posed
 	local color = g.color
 	if g.kind == "eye" and Rules.EYE_OVERRIDE[rec.tier] then color = Rules.EYE_OVERRIDE[rec.tier] end
 	p.Color = hex(color)
@@ -152,9 +180,52 @@ local function newGlow(g, rec, scale)
 	p.Parent = folder
 	return p
 end
+local function releaseMeshes(rec, keep)
+	for i = #rec.meshes, 1, -1 do
+		local m = rec.meshes[i]
+		if not keep or not keep[m.kind] then
+			forgeRelease(m.token)
+			table.remove(rec.meshes, i)
+		end
+	end
+end
+local function releaseGlows(rec)
+	for _, g in ipairs(rec.glows) do g.part:Destroy() end
+	table.clear(rec.glows)
+end
+local function release(rec)
+	rec.built, rec.full, rec.pending, rec.fadeOutAt, rec.fadeAt = false, false, false, nil, nil
+	releaseMeshes(rec)
+	releaseGlows(rec)
+	showPrimitives(rec)
+end
+-- QC H1: free creature templates for a boss by releasing the lowest-priority
+-- built rigs (pets, then ordinary creatures; farthest first). Returns true
+-- when something was released.
+local function bumpFor(rec)
+	local victim, vp, vd
+	local mine = Rules.priority(rec.tier, rec.landmark)
+	for _, other in pairs(records) do
+		if other ~= rec and other.built and not other.pending and not other.dying then
+			local p = Rules.priority(other.tier, other.landmark)
+			local d = other.distance or 0
+			if p < mine and (not victim or p < vp or (p == vp and d > vd)) then victim, vp, vd = other, p, d end
+		end
+	end
+	if not victim then return false end
+	release(victim)
+	victim.retryAt = os.clock() + 8
+	Creatures.bumps += 1
+	return true
+end
 -- One forged mesh: {part, token, offset, kind = "core" | "seg" | "overlay", index}.
 local function addMesh(rec, shape, tint, k, kind, index, extra)
-	local clone, token, extent, center = forgeVisual(shape, tint)
+	local clone, token, extent, center = forgeVisual(shape, tint, isBoss(rec))
+	local tries = 0
+	while not clone and isBoss(rec) and tries < Rules.BUMP_MAX and bumpFor(rec) do
+		tries += 1
+		clone, token, extent, center = forgeVisual(shape, tint, true)
+	end
 	if not clone then return nil end
 	if not rec.alive then forgeRelease(token); return nil end
 	local kv = vec(k) * rec.scale
@@ -172,37 +243,27 @@ local function addMesh(rec, shape, tint, k, kind, index, extra)
 	table.insert(rec.meshes, m)
 	return m
 end
-local function releaseMeshes(rec, keep)
-	for i = #rec.meshes, 1, -1 do
-		local m = rec.meshes[i]
-		if not keep or not keep[m.kind] then
-			forgeRelease(m.token)
-			table.remove(rec.meshes, i)
-		end
-	end
-end
-local function releaseGlows(rec)
-	for _, g in ipairs(rec.glows) do g.part:Destroy() end
-	table.clear(rec.glows)
-end
-local function release(rec)
-	rec.built, rec.full, rec.pending = false, false, false
-	releaseMeshes(rec)
-	releaseGlows(rec)
-	showPrimitives(rec)
-end
 
 -- Build ---------------------------------------------------------------------
+local function ringColor(rec)
+	return hex((if rec.stance then Rules.STANCE_COLOR[rec.stance] else nil) or Rules.TIER_COLOR[rec.tier], "FF3B3B")
+end
+local function addRing(rec)
+	local rig = rec.rig
+	local r = (rig.anchors or {}).ring or 2
+	return addMesh(rec, Rules.OVERLAY_SHAPES.ring, ringColor(rec), {r, 1, r}, "overlay", 0, {at = CFrame.new(0, -(rig.hip or 2) + 0.03, 0), ground = true, ring = true})
+end
+-- Limbs and overlays. Returns false when a structural segment failed (QC H3).
 local function buildFull(rec)
-	local rig, scale, tint = rec.rig, rec.scale, rec.tint
+	local rig, tint = rec.rig, rec.tint
 	for i, seg in ipairs(rig.segs or {}) do
-		addMesh(rec, seg.shape, tint, seg.k or 1, "seg", i)
+		if not addMesh(rec, seg.shape, tint, seg.k or 1, "seg", i) and Rules.STRUCTURAL[seg.role] then return false end
 	end
 	for _, overlay in ipairs(Rules.overlays(rec.tier, mobile)) do
 		local shape = Rules.OVERLAY_SHAPES[overlay]
 		local anchors = rig.anchors or {}
 		local s = Rules.overlayScale(overlay, rig)
-		local color = hex(Rules.OVERLAY_TINT[overlay] or (if overlay == "ring" and rec.stance then Rules.STANCE_COLOR[rec.stance] else nil) or Rules.TIER_COLOR[rec.tier], "FF3B3B")
+		local color = hex(Rules.OVERLAY_TINT[overlay] or Rules.TIER_COLOR[rec.tier], "FF3B3B")
 		if overlay == "pauldron" and anchors.shoulder then
 			local a = anchors.shoulder
 			addMesh(rec, shape, color, s, "overlay", 0, {at = CFrame.new(a[1], a[2], a[3])})
@@ -211,49 +272,51 @@ local function buildFull(rec)
 			local a = anchors.crown
 			addMesh(rec, shape, color, s, "overlay", 0, {at = CFrame.new(a[1], a[2], a[3])})
 		elseif overlay == "ring" then
-			local r = anchors.ring or 2
-			addMesh(rec, shape, color, {r, 1, r}, "overlay", 0, {at = CFrame.new(0, -(rig.hip or 2) + 0.03, 0), ground = true, ring = true})
+			addRing(rec)
 		end
 	end
 	rec.full = true
+	return true
 end
 local function build(rec, full)
 	rec.pending = true
 	task.spawn(function()
-		local ok = pcall(function()
+		local ok, complete = pcall(function()
 			if not rec.built then
 				local core = addMesh(rec, rec.rig.core, rec.tint, 1, "core", 0)
-				if not core then
-					rec.retryAt = os.clock() + 8
-					return
-				end
+				if not core then return false end
 				for _, g in ipairs(rec.rig.glow or {}) do
 					table.insert(rec.glows, {part = newGlow(g, rec, rec.scale), def = g})
 				end
-				hidePrimitives(rec)
+				collectPrimitives(rec)
 				rec.built = true
-				rec.fadeAt = os.clock()
+				rec.fadeAt = os.clock() -- crossfade: the primitives fade out as the mesh fades in
 				rec.visual = nil
 			end
-			if full and not rec.full and rec.alive then buildFull(rec) end
+			if full and not rec.full and rec.alive then return buildFull(rec) end
+			return true
 		end)
 		rec.pending = false
-		if not ok then rec.retryAt = os.clock() + 8 end
+		if not ok or not complete then
+			-- No core, or a partial rig: back to the primitives, retry later.
+			if rec.built then release(rec) else releaseMeshes(rec) end
+			rec.retryAt = os.clock() + 8
+		end
 		if not rec.alive then release(rec) end
 	end)
 end
 
 -- Records -------------------------------------------------------------------
-local Creatures = {records = records, folder = folder, mobile = mobile}
+local forget
 local function startDying(rec)
 	if rec.dying then return end
-	if not rec.built then
-		records[rec.host] = nil
-		rec.alive = false
-		return
-	end
+	if not rec.built then forget(rec); return end -- QC L1: nothing drawn, nothing to dissolve
 	rec.dying = true
 	rec.deathAt = os.clock()
+	rec.fadeOutAt = nil
+	-- QC L2: a despawn (Despawn, or the host simply going without Dead / a
+	-- killing blow: dismissed pets, companions) only fades; a death slumps.
+	rec.slump = not rec.despawn and (rec.host:GetAttribute("Dead") == true or rec.killed == true)
 	-- The primitives stay hidden: the server destroys the model right after Dead.
 end
 local function track(host)
@@ -267,6 +330,7 @@ local function track(host)
 	local scale = tonumber(host:GetAttribute("CreatureScale")) or 1
 	if scale <= 0 or scale > 20 or scale ~= scale then scale = 1 end
 	local rec = {host = host, root = root, rig = rig, kind = kind, scale = scale, tier = tierOf(host), tint = hex(host:GetAttribute("Color")),
+		landmark = host:GetAttribute("CreatureLandmark") == true,
 		meshes = {}, glows = {}, hidden = {}, connections = {}, alive = true, built = false, full = false, pending = false,
 		gait = 0, speed = 0, acc = 0, flinchAt = -10, state = {}, out = {seg = {}}, lod = 0, phaseOffset = math.random() * 10}
 	readAttrs(rec)
@@ -279,28 +343,48 @@ local function track(host)
 	end
 	records[host] = rec
 	table.insert(rec.connections, host.AttributeChanged:Connect(function(name)
+		if TIER_ATTRS[name] then
+			local tier = tierOf(host)
+			if tier ~= rec.tier then
+				rec.tier = tier
+				if rec.built and not rec.dying then release(rec) end -- rebuilt with the new tier next pass
+			end
+			return
+		end
 		if not WATCHED[name] then return end
-		local before = rec.health
+		local before, stance = rec.health, rec.stance
 		readAttrs(rec)
 		if (name == "Health" or name == "AddHealth") and before and rec.health and rec.health < before then rec.flinchAt = os.clock() end
 		if name == "Dead" and host:GetAttribute("Dead") == true then startDying(rec) end
+		if name == "Color" then
+			-- QC M5: a recoloured creature is re-forged in its new colour.
+			rec.tint = hex(host:GetAttribute("Color"))
+			if rec.built and not rec.dying then release(rec) end
+		elseif name == "LairStance" and rec.stance ~= stance and rec.full and not rec.dying then
+			-- QC M5: the rune ring takes the new stance colour.
+			for i = #rec.meshes, 1, -1 do
+				local m = rec.meshes[i]
+				if m.ring then forgeRelease(m.token); table.remove(rec.meshes, i) end
+			end
+			task.spawn(function() pcall(addRing, rec) end)
+		end
 	end))
 	table.insert(rec.connections, host.AncestryChanged:Connect(function()
 		if not host:IsDescendantOf(workspace) then startDying(rec) end
 	end))
 end
-local function forget(rec)
+forget = function(rec)
 	for _, c in ipairs(rec.connections) do c:Disconnect() end
 	table.clear(rec.connections)
 	rec.alive = false
 	release(rec)
-	records[rec.host] = nil
+	if records[rec.host] == rec then records[rec.host] = nil end
 end
 local function untrack(host)
 	local rec = records[host]
 	if rec then startDying(rec) end
 end
-Creatures.track, Creatures.untrack = track, untrack
+Creatures.track, Creatures.untrack, Creatures.retrack = track, untrack, retrack
 
 -- LOD assignment (R.ASSIGN_SECONDS) -----------------------------------------
 local function focus()
@@ -308,9 +392,21 @@ local function focus()
 	return camera and camera.CFrame.Position or nil
 end
 local order = {}
+local function before(a, b)
+	local pa, pb = Rules.priority(a.tier, a.landmark), Rules.priority(b.tier, b.landmark)
+	if pa ~= pb then return pa > pb end
+	return a.sortDistance < b.sortDistance
+end
 local function assign()
 	local ok, value = pcall(function() return Theme ~= nil and Theme.reducedMotion(player) == true end)
 	reduced = ok and value == true
+	local now = os.clock()
+	for host, at in pairs(retrack) do
+		if now >= at then
+			retrack[host] = nil
+			if host.Parent and host:IsDescendantOf(workspace) then track(host) end
+		end
+	end
 	local eye = focus()
 	if not eye then return end
 	table.clear(order)
@@ -318,27 +414,27 @@ local function assign()
 		if rec.dying then continue end
 		if not host.Parent or not rec.root.Parent then startDying(rec); continue end
 		rec.distance = (rec.root.Position - eye).Magnitude
+		rec.sortDistance = Rules.capDistance(rec.distance, rec.built) -- QC M2 hysteresis
 		rec.want = Rules.lod(rec.distance, rec.tier, mobile, rec.built)
 		if rec.want > 0 then table.insert(order, rec) end
 	end
-	-- Bosses first, then nearest; only the first R.cap() keep a rig.
-	table.sort(order, function(a, b)
-		local ra, rb = Rules.RANK[a.tier] or 1, Rules.RANK[b.tier] or 1
-		if (ra >= 4) ~= (rb >= 4) then return ra >= 4 end
-		return a.distance < b.distance
-	end)
+	-- Bosses, then landmarks, creatures and pets; nearest first; R.cap() rigs.
+	table.sort(order, before)
 	local cap = Rules.cap(mobile)
 	for i, rec in ipairs(order) do if i > cap then rec.want = 0 end end
-	local now = os.clock()
 	for _, rec in pairs(records) do
-		if rec.dying or rec.pending then continue end
+		if rec.dying or rec.pending or not rec.alive then continue end
 		local want = rec.want or 0
 		if want == 0 then
-			if rec.built then release(rec) end
+			-- QC L8: fade back to the primitives before releasing.
+			if rec.built and not rec.fadeOutAt then rec.fadeOutAt = now end
+		elseif rec.fadeOutAt then
+			rec.fadeOutAt = nil -- wanted again: fade back in
+			rec.fadeAt = now
 		elseif not rec.built then
 			if not rec.retryAt or now >= rec.retryAt then build(rec, want >= 2) end
 		elseif want >= 2 and not rec.full then
-			build(rec, true)
+			if not rec.retryAt or now >= rec.retryAt then build(rec, true) end
 		elseif want == 1 and rec.full then
 			releaseMeshes(rec, {core = true})
 			rec.full = false
@@ -397,21 +493,23 @@ local function pose(rec, dt, clock, serverNow)
 	state.reduced, state.defeated = reduced, rec.defeated
 	local dissolve = 0
 	if rec.dying then
-		dissolve = math.clamp((clock - rec.deathAt) / (if reduced then Rules.TIMING.DISSOLVE_REDUCED else Rules.TIMING.DISSOLVE), 0, 1)
-		state.death = if reduced then 0 else dissolve
+		dissolve = math.clamp((clock - rec.deathAt) / (if reduced or not rec.slump then Rules.TIMING.DISSOLVE_REDUCED else Rules.TIMING.DISSOLVE), 0, 1)
+		state.death = if reduced or not rec.slump then 0 else dissolve
 	else
 		state.death = 0
 	end
 	local out = Rules.pose(rig, state, rec.out)
-	-- Fade in when built, dissolve when dying (Transparency only while it changes).
+	-- Crossfades (build / release) and the dissolve; Transparency only while it changes.
 	local fade = 0
 	if rec.fadeAt then
 		fade = 1 - math.clamp((clock - rec.fadeAt) / Rules.TIMING.SPAWN, 0, 1)
 		if fade <= 0 then rec.fadeAt = nil end
 	end
-	local alpha = math.max(fade, Rules.dissolve(dissolve, reduced))
-	local writeAlpha = rec.fadeAt ~= nil or rec.dying or rec.alphaWritten ~= alpha
+	if rec.fadeOutAt then fade = math.max(fade, math.clamp((clock - rec.fadeOutAt) / Rules.TIMING.SPAWN, 0, 1)) end
+	local alpha = math.max(fade, Rules.dissolve(dissolve, reduced or not rec.slump))
+	local writeAlpha = rec.fadeAt ~= nil or rec.fadeOutAt ~= nil or rec.dying or rec.alphaWritten ~= alpha
 	rec.alphaWritten = alpha
+	if not rec.dying and (rec.fadeAt or rec.fadeOutAt or rec.primitiveLtm ~= 1) then setPrimitives(rec, 1 - fade) end
 	local core = visual * scaled(out.core, scale)
 	for _, m in ipairs(rec.meshes) do
 		local cf
@@ -437,6 +535,7 @@ local function pose(rec, dt, clock, serverNow)
 		table.insert(frames, visual * scaled(at, scale))
 		if writeAlpha then g.part.Transparency = alpha end
 	end
+	if rec.fadeOutAt and fade >= 1 then return -1 end -- faded back to the primitives
 	return dissolve
 end
 
@@ -451,15 +550,18 @@ local function step(dt)
 			continue
 		end
 		rec.acc += dt
-		local interval = if rec.dying or rec.lod >= 3 or rec.fadeAt then 0 elseif rec.lod == 2 then 1 / Rules.LIMB_HZ else 1 / Rules.CORE_HZ
+		local interval = if rec.dying or rec.lod >= 3 or rec.fadeAt or rec.fadeOutAt then 0 elseif rec.lod == 2 then 1 / Rules.LIMB_HZ else 1 / Rules.CORE_HZ
 		if rec.acc >= interval then
 			local elapsed = rec.acc
 			rec.acc = 0
-			local ok, dissolve = pcall(pose, rec, math.min(elapsed, 0.25), clock, serverNow)
+			local ok, result = pcall(pose, rec, math.min(elapsed, 0.25), clock, serverNow)
 			if not ok then
-				warn("[IsleCreatures] " .. tostring(dissolve))
+				warn("[IsleCreatures] " .. tostring(result))
 				forget(rec)
-			elseif rec.dying and dissolve >= 1 then
+				retrack[host] = clock + 2 -- QC L1: try again shortly (the error may be transient)
+			elseif result == -1 then
+				release(rec)
+			elseif rec.dying and result >= 1 then
 				forget(rec)
 			end
 		end

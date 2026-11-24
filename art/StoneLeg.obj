@@ -1,684 +1,2114 @@
 # Original Aether Isles StoneLeg
-# smooth 38
+# smooth 50
 # tint 5FA8D3
 mtllib AetherPalette.mtl
-v 0.231 -0.5 0
-v 0.189 -0.5 0.137
-v 0.073 -0.5 0.224
-v -0.073 -0.5 0.224
-v -0.197 -0.5 0.143
-v -0.232 -0.5 0
-v -0.195 -0.5 -0.141
-v -0.076 -0.5 -0.235
-v 0.077 -0.5 -0.237
-v 0.198 -0.5 -0.144
-v 0.298 -0.3 0
-v 0.232 -0.3 0.168
-v 0.09 -0.3 0.277
-v -0.09 -0.3 0.276
-v -0.235 -0.3 0.171
-v -0.299 -0.3 0
-v -0.24 -0.3 -0.174
-v -0.089 -0.3 -0.274
-v 0.088 -0.3 -0.272
-v 0.235 -0.3 -0.171
-v 0.297 -0.1 0
-v 0.236 -0.1 0.171
-v 0.096 -0.1 0.295
-v -0.09 -0.1 0.278
-v -0.235 -0.1 0.171
-v -0.302 -0.1 0
-v -0.247 -0.1 -0.179
-v -0.09 -0.1 -0.278
-v 0.09 -0.1 -0.278
-v 0.247 -0.1 -0.18
-v 0.26 0.02 0
-v 0.209 0.02 0.152
-v 0.081 0.02 0.25
-v -0.08 0.02 0.248
-v -0.214 0.02 0.156
-v -0.251 0.02 0
-v -0.215 0.02 -0.156
-v -0.083 0.02 -0.254
-v 0.082 0.02 -0.252
-v 0.213 0.02 -0.155
-v -0.119 -0.362 -0.06
-v 0.118 -0.364 -0.06
-v -0.117 -0.674 -0.06
-v 0.121 -0.68 -0.06
-v 0 -0.617 0.132
-v 0 -0.428 0.122
-v 0 -0.613 -0.243
+v 0.24 -0.5 0
+v 0.224 -0.5 0.108
+v 0.152 -0.5 0.191
+v 0.052 -0.5 0.228
+v -0.052 -0.5 0.227
+v -0.151 -0.5 0.189
+v -0.224 -0.5 0.108
+v -0.243 -0.5 0
+v -0.21 -0.5 -0.101
+v -0.146 -0.5 -0.183
+v -0.054 -0.5 -0.237
+v 0.055 -0.5 -0.242
+v 0.15 -0.5 -0.188
+v 0.209 -0.5 -0.101
+v 0.276 -0.42 0
+v 0.251 -0.42 0.121
+v 0.167 -0.42 0.21
+v 0.058 -0.42 0.254
+v -0.059 -0.42 0.26
+v -0.173 -0.42 0.217
+v -0.25 -0.42 0.12
+v -0.267 -0.42 0
+v -0.235 -0.42 -0.113
+v -0.167 -0.42 -0.21
+v -0.062 -0.42 -0.272
+v 0.061 -0.42 -0.269
+v 0.165 -0.42 -0.207
+v 0.235 -0.42 -0.113
+v 0.3 -0.3 0
+v 0.265 -0.3 0.128
+v 0.176 -0.3 0.221
+v 0.063 -0.3 0.274
+v -0.065 -0.3 0.286
+v -0.187 -0.3 0.235
+v -0.263 -0.3 0.127
+v -0.281 -0.3 0
+v -0.255 -0.3 -0.123
+v -0.184 -0.3 -0.231
+v -0.067 -0.3 -0.292
+v 0.065 -0.3 -0.283
+v 0.175 -0.3 -0.219
+v 0.257 -0.3 -0.124
+v 0.309 -0.18 0
+v 0.268 -0.18 0.129
+v 0.181 -0.18 0.226
+v 0.066 -0.18 0.29
+v -0.069 -0.18 0.301
+v -0.192 -0.18 0.241
+v -0.266 -0.18 0.128
+v -0.29 -0.18 0
+v -0.27 -0.18 -0.13
+v -0.193 -0.18 -0.242
+v -0.068 -0.18 -0.298
+v 0.065 -0.18 -0.286
+v 0.181 -0.18 -0.227
+v 0.272 -0.18 -0.131
+v 0.293 -0.06 0
+v 0.254 -0.06 0.122
+v 0.176 -0.06 0.221
+v 0.065 -0.06 0.287
+v -0.067 -0.06 0.293
+v -0.182 -0.06 0.228
+v -0.253 -0.06 0.122
+v -0.284 -0.06 0
+v -0.267 -0.06 -0.128
+v -0.187 -0.06 -0.234
+v -0.064 -0.06 -0.282
+v 0.062 -0.06 -0.273
+v 0.178 -0.06 -0.223
+v 0.268 -0.06 -0.129
+v 0.257 0.02 0
+v 0.226 0.02 0.109
+v 0.161 0.02 0.202
+v 0.06 0.02 0.261
+v -0.059 0.02 0.259
+v -0.159 0.02 0.199
+v -0.226 0.02 0.109
+v -0.26 0.02 0
+v -0.242 0.02 -0.117
+v -0.165 0.02 -0.207
+v -0.056 0.02 -0.247
+v 0.056 0.02 -0.246
+v 0.164 0.02 -0.205
+v 0.242 0.02 -0.117
+v 0.296 -0.25 0
+v 0.267 -0.25 0.128
+v 0.185 -0.25 0.231
+v 0.066 -0.25 0.289
+v -0.066 -0.25 0.289
+v -0.185 -0.25 0.231
+v -0.267 -0.25 0.128
+v -0.296 -0.25 0
+v -0.267 -0.25 -0.128
+v -0.185 -0.25 -0.231
+v -0.066 -0.25 -0.289
+v 0.066 -0.25 -0.289
+v 0.185 -0.25 -0.231
+v 0.267 -0.25 -0.128
+v 0.3 -0.23 0
+v 0.27 -0.23 0.13
+v 0.187 -0.23 0.235
+v 0.067 -0.23 0.292
+v -0.067 -0.23 0.292
+v -0.187 -0.23 0.235
+v -0.27 -0.23 0.13
+v -0.3 -0.23 0
+v -0.27 -0.23 -0.13
+v -0.187 -0.23 -0.235
+v -0.067 -0.23 -0.292
+v 0.067 -0.23 -0.292
+v 0.187 -0.23 -0.235
+v 0.27 -0.23 -0.13
+v 0.3 -0.19 0
+v 0.27 -0.19 0.13
+v 0.187 -0.19 0.235
+v 0.067 -0.19 0.292
+v -0.067 -0.19 0.292
+v -0.187 -0.19 0.235
+v -0.27 -0.19 0.13
+v -0.3 -0.19 0
+v -0.27 -0.19 -0.13
+v -0.187 -0.19 -0.235
+v -0.067 -0.19 -0.292
+v 0.067 -0.19 -0.292
+v 0.187 -0.19 -0.235
+v 0.27 -0.19 -0.13
+v 0.296 -0.17 0
+v 0.267 -0.17 0.128
+v 0.185 -0.17 0.231
+v 0.066 -0.17 0.289
+v -0.066 -0.17 0.289
+v -0.185 -0.17 0.231
+v -0.267 -0.17 0.128
+v -0.296 -0.17 0
+v -0.267 -0.17 -0.128
+v -0.185 -0.17 -0.231
+v -0.066 -0.17 -0.289
+v 0.066 -0.17 -0.289
+v 0.185 -0.17 -0.231
+v 0.267 -0.17 -0.128
+v -0.116 -0.366 -0.06
+v 0.12 -0.361 -0.06
+v -0.115 -0.673 -0.06
+v 0.111 -0.667 -0.06
+v 0 -0.611 0.12
+v 0 -0.424 0.13
+v 0 -0.613 -0.245
 v 0 -0.429 -0.241
-v 0.183 -0.52 -0.173
-v 0.189 -0.52 0.057
-v -0.188 -0.52 -0.176
-v -0.193 -0.52 0.059
-v -0.174 -0.432 0.007
-v -0.109 -0.465 0.116
-v -0.07 -0.37 0.054
-v 0.068 -0.374 0.05
-v 0 -0.348 -0.06
-v 0.068 -0.375 -0.17
-v -0.071 -0.369 -0.174
-v -0.11 -0.464 -0.238
-v -0.177 -0.43 -0.128
-v -0.223 -0.52 -0.06
-v 0.109 -0.465 0.116
-v 0.169 -0.434 0.005
-v -0.107 -0.574 0.114
-v 0 -0.52 0.16
-v -0.183 -0.613 -0.13
-v -0.184 -0.613 0.01
-v 0 -0.52 -0.289
-v -0.113 -0.577 -0.244
-v 0.178 -0.43 -0.128
-v 0.107 -0.466 -0.233
-v 0.182 -0.612 0.01
-v 0.115 -0.578 0.127
-v 0.07 -0.671 0.054
-v -0.071 -0.673 0.055
-v 0 -0.699 -0.06
-v -0.065 -0.66 -0.166
-v 0.07 -0.671 -0.174
-v 0.109 -0.575 -0.236
-v 0.18 -0.611 -0.129
-v 0.228 -0.52 -0.06
+v 0.186 -0.52 -0.175
+v 0.182 -0.52 0.053
+v -0.191 -0.52 -0.178
+v -0.181 -0.52 0.052
+v -0.18 -0.429 0.009
+v -0.114 -0.463 0.124
+v -0.067 -0.377 0.048
+v 0.07 -0.369 0.054
+v 0 -0.338 -0.06
+v 0.067 -0.377 -0.168
+v -0.07 -0.37 -0.173
+v -0.112 -0.463 -0.241
+v -0.185 -0.427 -0.13
+v -0.224 -0.52 -0.06
+v 0.113 -0.463 0.123
+v 0.174 -0.432 0.006
+v -0.112 -0.577 0.121
+v 0 -0.52 0.155
+v -0.183 -0.612 -0.13
+v -0.18 -0.611 0.009
+v 0 -0.52 -0.285
+v -0.106 -0.574 -0.231
+v 0.174 -0.432 -0.126
+v 0.113 -0.463 -0.242
+v 0.179 -0.611 0.009
+v 0.107 -0.574 0.113
+v 0.067 -0.664 0.049
+v -0.066 -0.661 0.047
+v 0 -0.693 -0.06
+v -0.066 -0.662 -0.168
+v 0.07 -0.669 -0.173
+v 0.112 -0.577 -0.242
+v 0.177 -0.609 -0.127
+v 0.216 -0.52 -0.06
+v -0.153 -0.394 -0.025
+v -0.125 -0.401 0.03
+v -0.097 -0.363 -0.002
+v -0.15 -0.492 0.089
+v -0.152 -0.443 0.07
+v -0.183 -0.475 0.032
+v -0.035 -0.396 0.093
+v -0.095 -0.412 0.094
+v -0.058 -0.441 0.133
+v -0.035 -0.354 -0.004
+v -0.058 -0.354 -0.06
+v 0.035 -0.396 0.093
+v 0 -0.363 0.059
+v 0.062 -0.34 -0.06
+v 0.037 -0.343 0
+v 0.096 -0.364 -0.003
+v -0.035 -0.354 -0.116
+v -0.094 -0.367 -0.116
+v 0.098 -0.36 -0.119
+v 0.035 -0.352 -0.117
+v -0.036 -0.393 -0.217
+v 0 -0.37 -0.173
+v 0.037 -0.391 -0.22
+v -0.125 -0.4 -0.15
+v -0.151 -0.395 -0.095
+v -0.055 -0.445 -0.243
+v -0.091 -0.417 -0.208
+v -0.195 -0.472 -0.158
+v -0.15 -0.444 -0.188
+v -0.151 -0.492 -0.209
+v -0.189 -0.424 -0.06
+v -0.207 -0.52 -0.119
+v -0.204 -0.474 -0.095
+v -0.207 -0.473 -0.025
+v -0.212 -0.52 0
+v 0.127 -0.399 0.032
+v 0.157 -0.39 -0.024
+v 0.055 -0.445 0.122
+v 0.093 -0.415 0.09
+v 0.19 -0.473 0.035
+v 0.154 -0.442 0.072
+v 0.159 -0.49 0.097
+v -0.059 -0.49 0.152
+v 0 -0.471 0.152
+v -0.151 -0.548 0.089
+v -0.114 -0.52 0.125
+v 0 -0.568 0.148
+v -0.058 -0.549 0.15
+v -0.057 -0.598 0.131
+v -0.214 -0.568 -0.023
+v -0.192 -0.567 0.037
+v -0.184 -0.565 -0.153
+v -0.202 -0.566 -0.095
+v -0.158 -0.651 -0.023
+v -0.184 -0.613 -0.06
+v -0.152 -0.646 -0.095
+v -0.113 -0.52 -0.243
+v -0.153 -0.549 -0.211
+v 0 -0.472 -0.266
+v -0.059 -0.49 -0.275
+v -0.057 -0.597 -0.248
+v -0.056 -0.549 -0.264
+v 0 -0.568 -0.265
+v 0.09 -0.418 -0.206
+v 0.056 -0.444 -0.245
+v 0.155 -0.391 -0.096
+v 0.128 -0.397 -0.153
+v 0.151 -0.492 -0.209
+v 0.149 -0.445 -0.187
+v 0.186 -0.474 -0.154
+v 0.154 -0.647 -0.024
+v 0.128 -0.643 0.033
+v 0.092 -0.67 -0.005
+v 0.156 -0.549 0.094
+v 0.154 -0.598 0.072
+v 0.196 -0.568 0.038
+v 0.035 -0.644 0.094
+v 0.097 -0.629 0.097
+v 0.059 -0.6 0.135
+v 0.036 -0.694 -0.001
+v 0.059 -0.689 -0.06
+v -0.037 -0.649 0.1
+v 0 -0.669 0.053
+v -0.059 -0.691 -0.06
+v -0.034 -0.685 -0.004
+v -0.092 -0.669 -0.005
+v 0.036 -0.691 -0.118
+v 0.093 -0.671 -0.116
+v -0.097 -0.678 -0.118
+v -0.036 -0.694 -0.119
+v 0.036 -0.647 -0.217
+v 0 -0.676 -0.178
+v -0.035 -0.644 -0.214
+v 0.127 -0.642 -0.152
+v 0.156 -0.649 -0.096
+v 0.056 -0.597 -0.247
+v 0.095 -0.627 -0.213
+v 0.184 -0.565 -0.153
+v 0.151 -0.596 -0.189
+v 0.154 -0.549 -0.212
+v 0.183 -0.612 -0.06
+v 0.208 -0.52 -0.119
+v 0.209 -0.567 -0.096
+v 0.217 -0.569 -0.023
+v 0.207 -0.52 -0.001
+v 0.058 -0.549 0.148
+v 0.111 -0.52 0.12
+v 0.056 -0.492 0.141
+v -0.129 -0.644 0.033
+v -0.093 -0.625 0.09
+v -0.148 -0.595 0.066
+v -0.096 -0.629 -0.215
+v -0.126 -0.641 -0.151
+v -0.149 -0.595 -0.187
+v 0.12 -0.52 -0.254
+v 0.058 -0.55 -0.271
+v 0.057 -0.491 -0.267
+v 0.213 -0.472 -0.024
+v 0.211 -0.472 -0.096
+v 0.182 -0.428 -0.06
 v 0.27 -0.88 0
-v 0.218 -0.88 0.159
-v 0.083 -0.88 0.257
-v -0.083 -0.88 0.257
-v -0.218 -0.88 0.159
+v 0.243 -0.88 0.117
+v 0.168 -0.88 0.211
+v 0.06 -0.88 0.263
+v -0.06 -0.88 0.263
+v -0.168 -0.88 0.211
+v -0.243 -0.88 0.117
 v -0.27 -0.88 0
-v -0.218 -0.88 -0.159
-v -0.083 -0.88 -0.257
-v 0.083 -0.88 -0.257
-v 0.218 -0.88 -0.159
-v 0.25 -0.7 0
-v 0.202 -0.7 0.147
-v 0.077 -0.7 0.238
-v -0.077 -0.7 0.238
-v -0.202 -0.7 0.147
-v -0.25 -0.7 0
-v -0.202 -0.7 -0.147
-v -0.077 -0.7 -0.238
-v 0.077 -0.7 -0.238
-v 0.202 -0.7 -0.147
-v 0.21 -0.55 0
-v 0.17 -0.55 0.123
-v 0.065 -0.55 0.2
-v -0.065 -0.55 0.2
-v -0.17 -0.55 0.123
-v -0.21 -0.55 0
-v -0.17 -0.55 -0.123
-v -0.065 -0.55 -0.2
-v 0.065 -0.55 -0.2
-v 0.17 -0.55 -0.123
-v 0.34 -1 0
-v 0.275 -1 0.23
-v 0.105 -1 0.372
-v -0.105 -1 0.372
-v -0.275 -1 0.23
-v -0.34 -1 0
-v -0.275 -1 -0.23
-v -0.105 -1 -0.372
-v 0.105 -1 -0.372
-v 0.275 -1 -0.23
-v 0.36 -0.94 0
-v 0.291 -0.94 0.243
-v 0.111 -0.94 0.394
-v -0.111 -0.94 0.394
-v -0.291 -0.94 0.243
-v -0.36 -0.94 0
-v -0.291 -0.94 -0.243
-v -0.111 -0.94 -0.394
-v 0.111 -0.94 -0.394
-v 0.291 -0.94 -0.243
-v 0.3 -0.88 0
-v 0.243 -0.88 0.203
-v 0.093 -0.88 0.328
-v -0.093 -0.88 0.328
-v -0.243 -0.88 0.203
-v -0.3 -0.88 0
-v -0.243 -0.88 -0.203
-v -0.093 -0.88 -0.328
-v 0.093 -0.88 -0.328
-v 0.243 -0.88 -0.203
+v -0.243 -0.88 -0.117
+v -0.168 -0.88 -0.211
+v -0.06 -0.88 -0.263
+v 0.06 -0.88 -0.263
+v 0.168 -0.88 -0.211
+v 0.243 -0.88 -0.117
+v 0.26 -0.78 0
+v 0.234 -0.78 0.113
+v 0.162 -0.78 0.203
+v 0.058 -0.78 0.253
+v -0.058 -0.78 0.253
+v -0.162 -0.78 0.203
+v -0.234 -0.78 0.113
+v -0.26 -0.78 0
+v -0.234 -0.78 -0.113
+v -0.162 -0.78 -0.203
+v -0.058 -0.78 -0.253
+v 0.058 -0.78 -0.253
+v 0.162 -0.78 -0.203
+v 0.234 -0.78 -0.113
+v 0.24 -0.68 0
+v 0.216 -0.68 0.104
+v 0.15 -0.68 0.188
+v 0.053 -0.68 0.234
+v -0.053 -0.68 0.234
+v -0.15 -0.68 0.188
+v -0.216 -0.68 0.104
+v -0.24 -0.68 0
+v -0.216 -0.68 -0.104
+v -0.15 -0.68 -0.188
+v -0.053 -0.68 -0.234
+v 0.053 -0.68 -0.234
+v 0.15 -0.68 -0.188
+v 0.216 -0.68 -0.104
+v 0.21 -0.56 0
+v 0.189 -0.56 0.091
+v 0.131 -0.56 0.164
+v 0.047 -0.56 0.205
+v -0.047 -0.56 0.205
+v -0.131 -0.56 0.164
+v -0.189 -0.56 0.091
+v -0.21 -0.56 0
+v -0.189 -0.56 -0.091
+v -0.131 -0.56 -0.164
+v -0.047 -0.56 -0.205
+v 0.047 -0.56 -0.205
+v 0.131 -0.56 -0.164
+v 0.189 -0.56 -0.091
+v 0.32 -1 0
+v 0.296 -1 0.141
+v 0.226 -1 0.26
+v 0.122 -1 0.34
+v 0 -1 0.368
+v -0.122 -1 0.34
+v -0.226 -1 0.26
+v -0.296 -1 0.141
+v -0.32 -1 0
+v -0.296 -1 -0.141
+v -0.226 -1 -0.26
+v -0.122 -1 -0.34
+v 0 -1 -0.368
+v 0.122 -1 -0.34
+v 0.226 -1 -0.26
+v 0.296 -1 -0.141
+v 0.36 -0.98 0
+v 0.333 -0.98 0.158
+v 0.255 -0.98 0.293
+v 0.138 -0.98 0.382
+v 0 -0.98 0.414
+v -0.138 -0.98 0.382
+v -0.255 -0.98 0.293
+v -0.333 -0.98 0.158
+v -0.36 -0.98 0
+v -0.333 -0.98 -0.158
+v -0.255 -0.98 -0.293
+v -0.138 -0.98 -0.382
+v 0 -0.98 -0.414
+v 0.138 -0.98 -0.382
+v 0.255 -0.98 -0.293
+v 0.333 -0.98 -0.158
+v 0.37 -0.94 0
+v 0.342 -0.94 0.163
+v 0.262 -0.94 0.301
+v 0.142 -0.94 0.393
+v 0 -0.94 0.426
+v -0.142 -0.94 0.393
+v -0.262 -0.94 0.301
+v -0.342 -0.94 0.163
+v -0.37 -0.94 0
+v -0.342 -0.94 -0.163
+v -0.262 -0.94 -0.301
+v -0.142 -0.94 -0.393
+v 0 -0.94 -0.425
+v 0.142 -0.94 -0.393
+v 0.262 -0.94 -0.301
+v 0.342 -0.94 -0.163
+v 0.33 -0.9 0
+v 0.305 -0.9 0.145
+v 0.233 -0.9 0.268
+v 0.126 -0.9 0.351
+v 0 -0.9 0.38
+v -0.126 -0.9 0.351
+v -0.233 -0.9 0.268
+v -0.305 -0.9 0.145
+v -0.33 -0.9 0
+v -0.305 -0.9 -0.145
+v -0.233 -0.9 -0.268
+v -0.126 -0.9 -0.351
+v 0 -0.9 -0.379
+v 0.126 -0.9 -0.351
+v 0.233 -0.9 -0.268
+v 0.305 -0.9 -0.145
+v 0.29 -0.88 0
+v 0.268 -0.88 0.128
+v 0.205 -0.88 0.236
+v 0.111 -0.88 0.308
+v 0 -0.88 0.333
+v -0.111 -0.88 0.308
+v -0.205 -0.88 0.236
+v -0.268 -0.88 0.128
+v -0.29 -0.88 0
+v -0.268 -0.88 -0.128
+v -0.205 -0.88 -0.236
+v -0.111 -0.88 -0.308
+v 0 -0.88 -0.333
+v 0.111 -0.88 -0.308
+v 0.205 -0.88 -0.236
+v 0.268 -0.88 -0.128
 v 0.26 -0.86 0
-v 0.21 -0.86 0.176
-v 0.08 -0.86 0.284
-v -0.08 -0.86 0.284
-v -0.21 -0.86 0.176
+v 0.24 -0.86 0.114
+v 0.184 -0.86 0.211
+v 0.099 -0.86 0.276
+v 0 -0.86 0.299
+v -0.099 -0.86 0.276
+v -0.184 -0.86 0.211
+v -0.24 -0.86 0.114
 v -0.26 -0.86 0
-v -0.21 -0.86 -0.176
-v -0.08 -0.86 -0.284
-v 0.08 -0.86 -0.284
-v 0.21 -0.86 -0.176
+v -0.24 -0.86 -0.114
+v -0.184 -0.86 -0.211
+v -0.099 -0.86 -0.276
+v 0 -0.86 -0.299
+v 0.099 -0.86 -0.276
+v 0.184 -0.86 -0.211
+v 0.24 -0.86 -0.114
 usemtl Shade11
-f 1 12 2
+f 1 16 2
 usemtl Shade11
-f 1 11 12
+f 1 15 16
 usemtl Shade11
-f 2 13 3
+f 2 17 3
 usemtl Shade11
-f 2 12 13
+f 2 16 17
 usemtl Shade11
-f 3 14 4
+f 3 18 4
 usemtl Shade11
-f 3 13 14
+f 3 17 18
 usemtl Shade11
-f 4 15 5
+f 4 19 5
 usemtl Shade11
-f 4 14 15
+f 4 18 19
 usemtl Shade11
-f 5 16 6
+f 5 20 6
 usemtl Shade11
-f 5 15 16
+f 5 19 20
 usemtl Shade11
-f 6 17 7
+f 6 21 7
 usemtl Shade11
-f 6 16 17
+f 6 20 21
 usemtl Shade11
-f 7 18 8
+f 7 22 8
 usemtl Shade11
-f 7 17 18
+f 7 21 22
 usemtl Shade11
-f 8 19 9
+f 8 23 9
 usemtl Shade11
-f 8 18 19
+f 8 22 23
 usemtl Shade11
-f 9 20 10
+f 9 24 10
 usemtl Shade11
-f 9 19 20
+f 9 23 24
 usemtl Shade11
-f 10 11 1
+f 10 25 11
 usemtl Shade11
-f 10 20 11
+f 10 24 25
 usemtl Shade11
-f 11 22 12
+f 11 26 12
 usemtl Shade11
-f 11 21 22
+f 11 25 26
 usemtl Shade11
-f 12 23 13
+f 12 27 13
 usemtl Shade11
-f 12 22 23
+f 12 26 27
 usemtl Shade11
-f 13 24 14
+f 13 28 14
 usemtl Shade11
-f 13 23 24
+f 13 27 28
 usemtl Shade11
-f 14 25 15
+f 14 15 1
 usemtl Shade11
-f 14 24 25
+f 14 28 15
 usemtl Shade11
-f 15 26 16
+f 15 30 16
 usemtl Shade11
-f 15 25 26
+f 15 29 30
 usemtl Shade11
-f 16 27 17
+f 16 31 17
 usemtl Shade11
-f 16 26 27
+f 16 30 31
 usemtl Shade11
-f 17 28 18
+f 17 32 18
 usemtl Shade11
-f 17 27 28
+f 17 31 32
 usemtl Shade11
-f 18 29 19
+f 18 33 19
 usemtl Shade11
-f 18 28 29
+f 18 32 33
 usemtl Shade11
-f 19 30 20
+f 19 34 20
 usemtl Shade11
-f 19 29 30
+f 19 33 34
 usemtl Shade11
-f 20 21 11
+f 20 35 21
 usemtl Shade11
-f 20 30 21
+f 20 34 35
 usemtl Shade11
-f 21 32 22
+f 21 36 22
 usemtl Shade11
-f 21 31 32
+f 21 35 36
 usemtl Shade11
-f 22 33 23
+f 22 37 23
 usemtl Shade11
-f 22 32 33
+f 22 36 37
 usemtl Shade11
-f 23 34 24
+f 23 38 24
 usemtl Shade11
-f 23 33 34
+f 23 37 38
 usemtl Shade11
-f 24 35 25
+f 24 39 25
 usemtl Shade11
-f 24 34 35
+f 24 38 39
 usemtl Shade11
-f 25 36 26
+f 25 40 26
 usemtl Shade11
-f 25 35 36
+f 25 39 40
 usemtl Shade11
-f 26 37 27
+f 26 41 27
 usemtl Shade11
-f 26 36 37
+f 26 40 41
 usemtl Shade11
-f 27 38 28
+f 27 42 28
 usemtl Shade11
-f 27 37 38
+f 27 41 42
 usemtl Shade11
-f 28 39 29
+f 28 29 15
 usemtl Shade11
-f 28 38 39
+f 28 42 29
 usemtl Shade11
-f 29 40 30
+f 29 44 30
 usemtl Shade11
-f 29 39 40
+f 29 43 44
 usemtl Shade11
-f 30 31 21
+f 30 45 31
 usemtl Shade11
-f 30 40 31
+f 30 44 45
 usemtl Shade11
-f 31 33 32
+f 31 46 32
 usemtl Shade11
-f 31 34 33
+f 31 45 46
 usemtl Shade11
-f 31 35 34
+f 32 47 33
 usemtl Shade11
-f 31 36 35
+f 32 46 47
 usemtl Shade11
-f 31 37 36
+f 33 48 34
 usemtl Shade11
-f 31 38 37
+f 33 47 48
 usemtl Shade11
-f 31 39 38
+f 34 49 35
 usemtl Shade11
-f 31 40 39
+f 34 48 49
+usemtl Shade11
+f 35 50 36
+usemtl Shade11
+f 35 49 50
+usemtl Shade11
+f 36 51 37
+usemtl Shade11
+f 36 50 51
+usemtl Shade11
+f 37 52 38
+usemtl Shade11
+f 37 51 52
+usemtl Shade11
+f 38 53 39
+usemtl Shade11
+f 38 52 53
+usemtl Shade11
+f 39 54 40
+usemtl Shade11
+f 39 53 54
+usemtl Shade11
+f 40 55 41
+usemtl Shade11
+f 40 54 55
+usemtl Shade11
+f 41 56 42
+usemtl Shade11
+f 41 55 56
+usemtl Shade11
+f 42 43 29
+usemtl Shade11
+f 42 56 43
+usemtl Shade11
+f 43 58 44
+usemtl Shade11
+f 43 57 58
+usemtl Shade11
+f 44 59 45
+usemtl Shade11
+f 44 58 59
+usemtl Shade11
+f 45 60 46
+usemtl Shade11
+f 45 59 60
+usemtl Shade11
+f 46 61 47
+usemtl Shade11
+f 46 60 61
+usemtl Shade11
+f 47 62 48
+usemtl Shade11
+f 47 61 62
+usemtl Shade11
+f 48 63 49
+usemtl Shade11
+f 48 62 63
+usemtl Shade11
+f 49 64 50
+usemtl Shade11
+f 49 63 64
+usemtl Shade11
+f 50 65 51
+usemtl Shade11
+f 50 64 65
+usemtl Shade11
+f 51 66 52
+usemtl Shade11
+f 51 65 66
+usemtl Shade11
+f 52 67 53
+usemtl Shade11
+f 52 66 67
+usemtl Shade11
+f 53 68 54
+usemtl Shade11
+f 53 67 68
+usemtl Shade11
+f 54 69 55
+usemtl Shade11
+f 54 68 69
+usemtl Shade11
+f 55 70 56
+usemtl Shade11
+f 55 69 70
+usemtl Shade11
+f 56 57 43
+usemtl Shade11
+f 56 70 57
+usemtl Shade11
+f 57 72 58
+usemtl Shade11
+f 57 71 72
+usemtl Shade11
+f 58 73 59
+usemtl Shade11
+f 58 72 73
+usemtl Shade11
+f 59 74 60
+usemtl Shade11
+f 59 73 74
+usemtl Shade11
+f 60 75 61
+usemtl Shade11
+f 60 74 75
+usemtl Shade11
+f 61 76 62
+usemtl Shade11
+f 61 75 76
+usemtl Shade11
+f 62 77 63
+usemtl Shade11
+f 62 76 77
+usemtl Shade11
+f 63 78 64
+usemtl Shade11
+f 63 77 78
+usemtl Shade11
+f 64 79 65
+usemtl Shade11
+f 64 78 79
+usemtl Shade11
+f 65 80 66
+usemtl Shade11
+f 65 79 80
+usemtl Shade11
+f 66 81 67
+usemtl Shade11
+f 66 80 81
+usemtl Shade11
+f 67 82 68
+usemtl Shade11
+f 67 81 82
+usemtl Shade11
+f 68 83 69
+usemtl Shade11
+f 68 82 83
+usemtl Shade11
+f 69 84 70
+usemtl Shade11
+f 69 83 84
+usemtl Shade11
+f 70 71 57
+usemtl Shade11
+f 70 84 71
+usemtl Shade11
+f 71 73 72
+usemtl Shade11
+f 71 74 73
+usemtl Shade11
+f 71 75 74
+usemtl Shade11
+f 71 76 75
+usemtl Shade11
+f 71 77 76
+usemtl Shade11
+f 71 78 77
+usemtl Shade11
+f 71 79 78
+usemtl Shade11
+f 71 80 79
+usemtl Shade11
+f 71 81 80
+usemtl Shade11
+f 71 82 81
+usemtl Shade11
+f 71 83 82
+usemtl Shade11
+f 71 84 83
+usemtl Shade48
+f 85 100 86
+usemtl Shade48
+f 85 99 100
+usemtl Shade48
+f 86 101 87
+usemtl Shade48
+f 86 100 101
+usemtl Shade48
+f 87 102 88
+usemtl Shade48
+f 87 101 102
+usemtl Shade48
+f 88 103 89
+usemtl Shade48
+f 88 102 103
+usemtl Shade48
+f 89 104 90
+usemtl Shade48
+f 89 103 104
+usemtl Shade48
+f 90 105 91
+usemtl Shade48
+f 90 104 105
+usemtl Shade48
+f 91 106 92
+usemtl Shade48
+f 91 105 106
+usemtl Shade48
+f 92 107 93
+usemtl Shade48
+f 92 106 107
+usemtl Shade48
+f 93 108 94
+usemtl Shade48
+f 93 107 108
+usemtl Shade48
+f 94 109 95
+usemtl Shade48
+f 94 108 109
+usemtl Shade48
+f 95 110 96
+usemtl Shade48
+f 95 109 110
+usemtl Shade48
+f 96 111 97
+usemtl Shade48
+f 96 110 111
+usemtl Shade48
+f 97 112 98
+usemtl Shade48
+f 97 111 112
+usemtl Shade48
+f 98 99 85
+usemtl Shade48
+f 98 112 99
+usemtl Shade48
+f 99 114 100
+usemtl Shade48
+f 99 113 114
+usemtl Shade48
+f 100 115 101
+usemtl Shade48
+f 100 114 115
+usemtl Shade48
+f 101 116 102
+usemtl Shade48
+f 101 115 116
+usemtl Shade48
+f 102 117 103
+usemtl Shade48
+f 102 116 117
+usemtl Shade48
+f 103 118 104
+usemtl Shade48
+f 103 117 118
+usemtl Shade48
+f 104 119 105
+usemtl Shade48
+f 104 118 119
+usemtl Shade48
+f 105 120 106
+usemtl Shade48
+f 105 119 120
+usemtl Shade48
+f 106 121 107
+usemtl Shade48
+f 106 120 121
+usemtl Shade48
+f 107 122 108
+usemtl Shade48
+f 107 121 122
+usemtl Shade48
+f 108 123 109
+usemtl Shade48
+f 108 122 123
+usemtl Shade48
+f 109 124 110
+usemtl Shade48
+f 109 123 124
+usemtl Shade48
+f 110 125 111
+usemtl Shade48
+f 110 124 125
+usemtl Shade48
+f 111 126 112
+usemtl Shade48
+f 111 125 126
+usemtl Shade48
+f 112 113 99
+usemtl Shade48
+f 112 126 113
+usemtl Shade48
+f 113 128 114
+usemtl Shade48
+f 113 127 128
+usemtl Shade48
+f 114 129 115
+usemtl Shade48
+f 114 128 129
+usemtl Shade48
+f 115 130 116
+usemtl Shade48
+f 115 129 130
+usemtl Shade48
+f 116 131 117
+usemtl Shade48
+f 116 130 131
+usemtl Shade48
+f 117 132 118
+usemtl Shade48
+f 117 131 132
+usemtl Shade48
+f 118 133 119
+usemtl Shade48
+f 118 132 133
+usemtl Shade48
+f 119 134 120
+usemtl Shade48
+f 119 133 134
+usemtl Shade48
+f 120 135 121
+usemtl Shade48
+f 120 134 135
+usemtl Shade48
+f 121 136 122
+usemtl Shade48
+f 121 135 136
+usemtl Shade48
+f 122 137 123
+usemtl Shade48
+f 122 136 137
+usemtl Shade48
+f 123 138 124
+usemtl Shade48
+f 123 137 138
+usemtl Shade48
+f 124 139 125
+usemtl Shade48
+f 124 138 139
+usemtl Shade48
+f 125 140 126
+usemtl Shade48
+f 125 139 140
+usemtl Shade48
+f 126 127 113
+usemtl Shade48
+f 126 140 127
+usemtl Shade16
+f 141 183 185
+usemtl Shade16
+f 153 184 183
+usemtl Shade16
+f 155 185 184
+usemtl Shade16
+f 183 184 185
+usemtl Shade16
+f 152 186 188
+usemtl Shade16
+f 154 187 186
+usemtl Shade16
+f 153 188 187
+usemtl Shade16
+f 186 187 188
+usemtl Shade16
+f 146 189 191
+usemtl Shade16
+f 155 190 189
+usemtl Shade16
+f 154 191 190
+usemtl Shade16
+f 189 190 191
+usemtl Shade16
+f 153 187 184
+usemtl Shade16
+f 154 190 187
+usemtl Shade16
+f 155 184 190
+usemtl Shade16
+f 187 190 184
+usemtl Shade16
+f 141 185 193
+usemtl Shade16
+f 155 192 185
+usemtl Shade16
+f 157 193 192
+usemtl Shade16
+f 185 192 193
+usemtl Shade16
+f 146 194 189
+usemtl Shade16
+f 156 195 194
+usemtl Shade16
+f 155 189 195
+usemtl Shade16
+f 194 195 189
+usemtl Shade16
+f 142 196 198
+usemtl Shade16
+f 157 197 196
+usemtl Shade16
+f 156 198 197
+usemtl Shade16
+f 196 197 198
+usemtl Shade16
+f 155 195 192
+usemtl Shade16
+f 156 197 195
+usemtl Shade16
+f 157 192 197
+usemtl Shade16
+f 195 197 192
+usemtl Shade16
+f 141 193 200
+usemtl Shade16
+f 157 199 193
+usemtl Shade16
+f 159 200 199
+usemtl Shade16
+f 193 199 200
+usemtl Shade16
+f 142 201 196
+usemtl Shade16
+f 158 202 201
+usemtl Shade16
+f 157 196 202
+usemtl Shade16
+f 201 202 196
+usemtl Shade16
+f 148 203 205
+usemtl Shade16
+f 159 204 203
+usemtl Shade16
+f 158 205 204
+usemtl Shade16
+f 203 204 205
+usemtl Shade16
+f 157 202 199
+usemtl Shade16
+f 158 204 202
+usemtl Shade16
+f 159 199 204
+usemtl Shade16
+f 202 204 199
+usemtl Shade16
+f 141 200 207
+usemtl Shade16
+f 159 206 200
+usemtl Shade16
+f 161 207 206
+usemtl Shade16
+f 200 206 207
+usemtl Shade16
+f 148 208 203
+usemtl Shade16
+f 160 209 208
+usemtl Shade16
+f 159 203 209
+usemtl Shade16
+f 208 209 203
+usemtl Shade16
+f 151 210 212
+usemtl Shade16
+f 161 211 210
+usemtl Shade16
+f 160 212 211
+usemtl Shade16
+f 210 211 212
+usemtl Shade16
+f 159 209 206
+usemtl Shade16
+f 160 211 209
+usemtl Shade16
+f 161 206 211
+usemtl Shade16
+f 209 211 206
+usemtl Shade16
+f 141 207 183
+usemtl Shade16
+f 161 213 207
+usemtl Shade16
+f 153 183 213
+usemtl Shade16
+f 207 213 183
+usemtl Shade16
+f 151 214 210
+usemtl Shade16
+f 162 215 214
+usemtl Shade16
+f 161 210 215
+usemtl Shade16
+f 214 215 210
+usemtl Shade16
+f 152 188 217
+usemtl Shade16
+f 153 216 188
+usemtl Shade16
+f 162 217 216
+usemtl Shade16
+f 188 216 217
+usemtl Shade16
+f 161 215 213
+usemtl Shade16
+f 162 216 215
 usemtl Shade16
-f 41 53 55
+f 153 213 216
 usemtl Shade16
-f 52 54 53
+f 215 216 213
 usemtl Shade16
-f 46 55 54
+f 142 198 219
 usemtl Shade16
-f 53 54 55
+f 156 218 198
 usemtl Shade16
-f 41 55 57
+f 164 219 218
 usemtl Shade16
-f 46 56 55
+f 198 218 219
 usemtl Shade16
-f 42 57 56
+f 146 220 194
 usemtl Shade16
-f 55 56 57
+f 163 221 220
 usemtl Shade16
-f 41 57 59
+f 156 194 221
 usemtl Shade16
-f 42 58 57
+f 220 221 194
 usemtl Shade16
-f 48 59 58
+f 150 222 224
 usemtl Shade16
-f 57 58 59
+f 164 223 222
 usemtl Shade16
-f 41 59 61
+f 163 224 223
 usemtl Shade16
-f 48 60 59
+f 222 223 224
 usemtl Shade16
-f 51 61 60
+f 156 221 218
 usemtl Shade16
-f 59 60 61
+f 163 223 221
 usemtl Shade16
-f 41 61 53
+f 164 218 223
 usemtl Shade16
-f 51 62 61
+f 221 223 218
 usemtl Shade16
-f 52 53 62
+f 146 191 226
 usemtl Shade16
-f 61 62 53
+f 154 225 191
 usemtl Shade16
-f 42 56 64
+f 166 226 225
 usemtl Shade16
-f 46 63 56
+f 191 225 226
 usemtl Shade16
-f 50 64 63
+f 152 227 186
 usemtl Shade16
-f 56 63 64
+f 165 228 227
 usemtl Shade16
-f 46 54 66
+f 154 186 228
 usemtl Shade16
-f 52 65 54
+f 227 228 186
+usemtl Shade11
+f 145 229 231
+usemtl Shade16
+f 166 230 229
+usemtl Shade16
+f 165 231 230
+usemtl Shade16
+f 229 230 231
+usemtl Shade16
+f 154 228 225
+usemtl Shade16
+f 165 230 228
+usemtl Shade16
+f 166 225 230
+usemtl Shade16
+f 228 230 225
+usemtl Shade16
+f 152 217 233
+usemtl Shade16
+f 162 232 217
+usemtl Shade16
+f 168 233 232
+usemtl Shade16
+f 217 232 233
+usemtl Shade16
+f 151 234 214
+usemtl Shade16
+f 167 235 234
+usemtl Shade16
+f 162 214 235
+usemtl Shade16
+f 234 235 214
+usemtl Shade11
+f 143 236 238
+usemtl Shade11
+f 168 237 236
+usemtl Shade11
+f 167 238 237
+usemtl Shade11
+f 236 237 238
+usemtl Shade16
+f 162 235 232
+usemtl Shade11
+f 167 237 235
+usemtl Shade11
+f 168 232 237
+usemtl Shade16
+f 235 237 232
+usemtl Shade16
+f 151 212 240
+usemtl Shade16
+f 160 239 212
+usemtl Shade16
+f 170 240 239
+usemtl Shade16
+f 212 239 240
+usemtl Shade16
+f 148 241 208
+usemtl Shade16
+f 169 242 241
+usemtl Shade16
+f 160 208 242
+usemtl Shade16
+f 241 242 208
+usemtl Shade11
+f 147 243 245
+usemtl Shade16
+f 170 244 243
+usemtl Shade16
+f 169 245 244
+usemtl Shade16
+f 243 244 245
+usemtl Shade16
+f 160 242 239
+usemtl Shade16
+f 169 244 242
+usemtl Shade16
+f 170 239 244
+usemtl Shade16
+f 242 244 239
+usemtl Shade16
+f 148 205 247
+usemtl Shade16
+f 158 246 205
+usemtl Shade16
+f 172 247 246
+usemtl Shade16
+f 205 246 247
+usemtl Shade16
+f 142 248 201
+usemtl Shade16
+f 171 249 248
+usemtl Shade16
+f 158 201 249
+usemtl Shade16
+f 248 249 201
+usemtl Shade16
+f 149 250 252
+usemtl Shade16
+f 172 251 250
+usemtl Shade16
+f 171 252 251
+usemtl Shade16
+f 250 251 252
+usemtl Shade16
+f 158 249 246
+usemtl Shade16
+f 171 251 249
+usemtl Shade16
+f 172 246 251
+usemtl Shade16
+f 249 251 246
+usemtl Shade11
+f 144 253 255
+usemtl Shade11
+f 173 254 253
+usemtl Shade11
+f 175 255 254
+usemtl Shade11
+f 253 254 255
+usemtl Shade16
+f 150 256 258
+usemtl Shade16
+f 174 257 256
+usemtl Shade11
+f 173 258 257
+usemtl Shade16
+f 256 257 258
+usemtl Shade11
+f 145 259 261
+usemtl Shade11
+f 175 260 259
+usemtl Shade11
+f 174 261 260
+usemtl Shade11
+f 259 260 261
+usemtl Shade11
+f 173 257 254
+usemtl Shade11
+f 174 260 257
+usemtl Shade11
+f 175 254 260
+usemtl Shade11
+f 257 260 254
+usemtl Shade11
+f 144 255 263
+usemtl Shade11
+f 175 262 255
+usemtl Shade11
+f 177 263 262
+usemtl Shade11
+f 255 262 263
+usemtl Shade11
+f 145 264 259
+usemtl Shade11
+f 176 265 264
+usemtl Shade11
+f 175 259 265
+usemtl Shade11
+f 264 265 259
+usemtl Shade11
+f 143 266 268
+usemtl Shade11
+f 177 267 266
+usemtl Shade11
+f 176 268 267
+usemtl Shade11
+f 266 267 268
+usemtl Shade11
+f 175 265 262
+usemtl Shade11
+f 176 267 265
+usemtl Shade11
+f 177 262 267
+usemtl Shade11
+f 265 267 262
+usemtl Shade11
+f 144 263 270
+usemtl Shade11
+f 177 269 263
+usemtl Shade11
+f 179 270 269
+usemtl Shade11
+f 263 269 270
+usemtl Shade11
+f 143 271 266
+usemtl Shade11
+f 178 272 271
+usemtl Shade11
+f 177 266 272
+usemtl Shade11
+f 271 272 266
+usemtl Shade11
+f 147 273 275
+usemtl Shade11
+f 179 274 273
+usemtl Shade11
+f 178 275 274
+usemtl Shade11
+f 273 274 275
+usemtl Shade11
+f 177 272 269
+usemtl Shade11
+f 178 274 272
+usemtl Shade11
+f 179 269 274
+usemtl Shade11
+f 272 274 269
+usemtl Shade11
+f 144 270 277
+usemtl Shade11
+f 179 276 270
+usemtl Shade11
+f 181 277 276
+usemtl Shade11
+f 270 276 277
+usemtl Shade11
+f 147 278 273
+usemtl Shade11
+f 180 279 278
+usemtl Shade11
+f 179 273 279
+usemtl Shade11
+f 278 279 273
+usemtl Shade16
+f 149 280 282
+usemtl Shade11
+f 181 281 280
+usemtl Shade16
+f 180 282 281
+usemtl Shade16
+f 280 281 282
+usemtl Shade11
+f 179 279 276
+usemtl Shade11
+f 180 281 279
+usemtl Shade11
+f 181 276 281
+usemtl Shade11
+f 279 281 276
+usemtl Shade11
+f 144 277 253
+usemtl Shade11
+f 181 283 277
+usemtl Shade11
+f 173 253 283
+usemtl Shade11
+f 277 283 253
+usemtl Shade16
+f 149 284 280
+usemtl Shade16
+f 182 285 284
+usemtl Shade16
+f 181 280 285
+usemtl Shade16
+f 284 285 280
+usemtl Shade16
+f 150 258 287
+usemtl Shade16
+f 173 286 258
+usemtl Shade16
+f 182 287 286
 usemtl Shade16
-f 45 66 65
+f 258 286 287
+usemtl Shade11
+f 181 285 283
+usemtl Shade16
+f 182 286 285
+usemtl Shade11
+f 173 283 286
 usemtl Shade16
-f 54 65 66
+f 285 286 283
+usemtl Shade11
+f 145 261 229
 usemtl Shade16
-f 52 62 68
+f 174 288 261
 usemtl Shade16
-f 51 67 62
+f 166 229 288
 usemtl Shade16
-f 43 68 67
+f 261 288 229
 usemtl Shade16
-f 62 67 68
+f 150 224 256
 usemtl Shade16
-f 51 60 70
+f 163 289 224
 usemtl Shade16
-f 48 69 60
+f 174 256 289
 usemtl Shade16
-f 47 70 69
+f 224 289 256
 usemtl Shade16
-f 60 69 70
+f 146 226 220
 usemtl Shade16
-f 48 58 72
+f 166 290 226
 usemtl Shade16
-f 42 71 58
+f 163 220 290
 usemtl Shade16
-f 49 72 71
+f 226 290 220
 usemtl Shade16
-f 58 71 72
+f 174 289 288
 usemtl Shade16
-f 44 73 75
+f 163 290 289
 usemtl Shade16
-f 50 74 73
+f 166 288 290
 usemtl Shade16
-f 45 75 74
+f 289 290 288
+usemtl Shade11
+f 143 268 236
+usemtl Shade11
+f 176 291 268
+usemtl Shade11
+f 168 236 291
+usemtl Shade11
+f 268 291 236
+usemtl Shade11
+f 145 231 264
+usemtl Shade11
+f 165 292 231
+usemtl Shade11
+f 176 264 292
+usemtl Shade11
+f 231 292 264
 usemtl Shade16
-f 73 74 75
+f 152 233 227
+usemtl Shade11
+f 168 293 233
 usemtl Shade16
-f 44 75 77
+f 165 227 293
 usemtl Shade16
-f 45 76 75
+f 233 293 227
+usemtl Shade11
+f 176 292 291
+usemtl Shade11
+f 165 293 292
+usemtl Shade11
+f 168 291 293
+usemtl Shade11
+f 292 293 291
+usemtl Shade11
+f 147 275 243
+usemtl Shade11
+f 178 294 275
+usemtl Shade11
+f 170 243 294
+usemtl Shade11
+f 275 294 243
+usemtl Shade11
+f 143 238 271
+usemtl Shade11
+f 167 295 238
+usemtl Shade11
+f 178 271 295
+usemtl Shade11
+f 238 295 271
 usemtl Shade16
-f 43 77 76
+f 151 240 234
 usemtl Shade16
-f 75 76 77
+f 170 296 240
+usemtl Shade11
+f 167 234 296
 usemtl Shade16
-f 44 77 79
+f 240 296 234
+usemtl Shade11
+f 178 295 294
+usemtl Shade11
+f 167 296 295
+usemtl Shade11
+f 170 294 296
+usemtl Shade11
+f 295 296 294
 usemtl Shade16
-f 43 78 77
+f 149 282 250
 usemtl Shade16
-f 47 79 78
+f 180 297 282
 usemtl Shade16
-f 77 78 79
+f 172 250 297
 usemtl Shade16
-f 44 79 81
+f 282 297 250
+usemtl Shade11
+f 147 245 278
 usemtl Shade16
-f 47 80 79
+f 169 298 245
 usemtl Shade16
-f 49 81 80
+f 180 278 298
 usemtl Shade16
-f 79 80 81
+f 245 298 278
 usemtl Shade16
-f 44 81 73
+f 148 247 241
 usemtl Shade16
-f 49 82 81
+f 172 299 247
 usemtl Shade16
-f 50 73 82
+f 169 241 299
 usemtl Shade16
-f 81 82 73
+f 247 299 241
 usemtl Shade16
-f 45 74 66
+f 180 298 297
 usemtl Shade16
-f 50 63 74
+f 169 299 298
 usemtl Shade16
-f 46 66 63
+f 172 297 299
 usemtl Shade16
-f 74 63 66
+f 298 299 297
 usemtl Shade16
-f 43 76 68
+f 150 287 222
 usemtl Shade16
-f 45 65 76
+f 182 300 287
 usemtl Shade16
-f 52 68 65
+f 164 222 300
 usemtl Shade16
-f 76 65 68
+f 287 300 222
 usemtl Shade16
-f 47 78 70
+f 149 252 284
 usemtl Shade16
-f 43 67 78
+f 171 301 252
 usemtl Shade16
-f 51 70 67
+f 182 284 301
 usemtl Shade16
-f 78 67 70
+f 252 301 284
 usemtl Shade16
-f 49 80 72
+f 142 219 248
 usemtl Shade16
-f 47 69 80
+f 164 302 219
 usemtl Shade16
-f 48 72 69
+f 171 248 302
 usemtl Shade16
-f 80 69 72
+f 219 302 248
 usemtl Shade16
-f 50 82 64
+f 182 301 300
 usemtl Shade16
-f 49 71 82
+f 171 302 301
 usemtl Shade16
-f 42 64 71
+f 164 300 302
 usemtl Shade16
-f 82 71 64
+f 301 302 300
 usemtl Shade15
-f 83 94 84
+f 303 318 304
 usemtl Shade15
-f 83 93 94
+f 303 317 318
 usemtl Shade15
-f 84 95 85
+f 304 319 305
 usemtl Shade15
-f 84 94 95
+f 304 318 319
 usemtl Shade15
-f 85 96 86
+f 305 320 306
 usemtl Shade15
-f 85 95 96
+f 305 319 320
 usemtl Shade15
-f 86 97 87
+f 306 321 307
 usemtl Shade15
-f 86 96 97
+f 306 320 321
 usemtl Shade15
-f 87 98 88
+f 307 322 308
 usemtl Shade15
-f 87 97 98
+f 307 321 322
 usemtl Shade15
-f 88 99 89
+f 308 323 309
 usemtl Shade15
-f 88 98 99
+f 308 322 323
 usemtl Shade15
-f 89 100 90
+f 309 324 310
 usemtl Shade15
-f 89 99 100
+f 309 323 324
 usemtl Shade15
-f 90 101 91
+f 310 325 311
 usemtl Shade15
-f 90 100 101
+f 310 324 325
 usemtl Shade15
-f 91 102 92
+f 311 326 312
 usemtl Shade15
-f 91 101 102
+f 311 325 326
 usemtl Shade15
-f 92 93 83
+f 312 327 313
 usemtl Shade15
-f 92 102 93
+f 312 326 327
 usemtl Shade15
-f 93 104 94
+f 313 328 314
 usemtl Shade15
-f 93 103 104
+f 313 327 328
 usemtl Shade15
-f 94 105 95
+f 314 329 315
 usemtl Shade15
-f 94 104 105
+f 314 328 329
 usemtl Shade15
-f 95 106 96
+f 315 330 316
 usemtl Shade15
-f 95 105 106
+f 315 329 330
 usemtl Shade15
-f 96 107 97
+f 316 317 303
 usemtl Shade15
-f 96 106 107
+f 316 330 317
 usemtl Shade15
-f 97 108 98
+f 317 332 318
 usemtl Shade15
-f 97 107 108
+f 317 331 332
 usemtl Shade15
-f 98 109 99
+f 318 333 319
 usemtl Shade15
-f 98 108 109
+f 318 332 333
 usemtl Shade15
-f 99 110 100
+f 319 334 320
 usemtl Shade15
-f 99 109 110
+f 319 333 334
 usemtl Shade15
-f 100 111 101
+f 320 335 321
 usemtl Shade15
-f 100 110 111
+f 320 334 335
 usemtl Shade15
-f 101 112 102
+f 321 336 322
 usemtl Shade15
-f 101 111 112
+f 321 335 336
 usemtl Shade15
-f 102 103 93
+f 322 337 323
 usemtl Shade15
-f 102 112 103
+f 322 336 337
+usemtl Shade15
+f 323 338 324
+usemtl Shade15
+f 323 337 338
+usemtl Shade15
+f 324 339 325
+usemtl Shade15
+f 324 338 339
+usemtl Shade15
+f 325 340 326
+usemtl Shade15
+f 325 339 340
+usemtl Shade15
+f 326 341 327
+usemtl Shade15
+f 326 340 341
+usemtl Shade15
+f 327 342 328
+usemtl Shade15
+f 327 341 342
+usemtl Shade15
+f 328 343 329
+usemtl Shade15
+f 328 342 343
+usemtl Shade15
+f 329 344 330
+usemtl Shade15
+f 329 343 344
+usemtl Shade15
+f 330 331 317
+usemtl Shade15
+f 330 344 331
+usemtl Shade15
+f 331 346 332
+usemtl Shade15
+f 331 345 346
+usemtl Shade15
+f 332 347 333
+usemtl Shade15
+f 332 346 347
+usemtl Shade15
+f 333 348 334
+usemtl Shade15
+f 333 347 348
+usemtl Shade15
+f 334 349 335
+usemtl Shade15
+f 334 348 349
+usemtl Shade15
+f 335 350 336
+usemtl Shade15
+f 335 349 350
+usemtl Shade15
+f 336 351 337
+usemtl Shade15
+f 336 350 351
+usemtl Shade15
+f 337 352 338
+usemtl Shade15
+f 337 351 352
+usemtl Shade15
+f 338 353 339
+usemtl Shade15
+f 338 352 353
+usemtl Shade15
+f 339 354 340
+usemtl Shade15
+f 339 353 354
+usemtl Shade15
+f 340 355 341
+usemtl Shade15
+f 340 354 355
+usemtl Shade15
+f 341 356 342
+usemtl Shade15
+f 341 355 356
+usemtl Shade15
+f 342 357 343
+usemtl Shade15
+f 342 356 357
+usemtl Shade15
+f 343 358 344
+usemtl Shade15
+f 343 357 358
+usemtl Shade15
+f 344 345 331
+usemtl Shade15
+f 344 358 345
 usemtl Shade21
-f 113 124 114
+f 359 376 360
 usemtl Shade21
-f 113 123 124
+f 359 375 376
 usemtl Shade21
-f 114 125 115
+f 360 377 361
 usemtl Shade21
-f 114 124 125
+f 360 376 377
 usemtl Shade21
-f 115 126 116
+f 361 378 362
 usemtl Shade21
-f 115 125 126
+f 361 377 378
 usemtl Shade21
-f 116 127 117
+f 362 379 363
 usemtl Shade21
-f 116 126 127
+f 362 378 379
 usemtl Shade21
-f 117 128 118
+f 363 380 364
 usemtl Shade21
-f 117 127 128
+f 363 379 380
 usemtl Shade21
-f 118 129 119
+f 364 381 365
 usemtl Shade21
-f 118 128 129
+f 364 380 381
 usemtl Shade21
-f 119 130 120
+f 365 382 366
 usemtl Shade21
-f 119 129 130
+f 365 381 382
 usemtl Shade21
-f 120 131 121
+f 366 383 367
 usemtl Shade21
-f 120 130 131
+f 366 382 383
 usemtl Shade21
-f 121 132 122
+f 367 384 368
 usemtl Shade21
-f 121 131 132
+f 367 383 384
 usemtl Shade21
-f 122 123 113
+f 368 385 369
 usemtl Shade21
-f 122 132 123
+f 368 384 385
+usemtl Shade21
+f 369 386 370
+usemtl Shade21
+f 369 385 386
+usemtl Shade21
+f 370 387 371
+usemtl Shade21
+f 370 386 387
+usemtl Shade21
+f 371 388 372
+usemtl Shade21
+f 371 387 388
+usemtl Shade21
+f 372 389 373
+usemtl Shade21
+f 372 388 389
+usemtl Shade21
+f 373 390 374
+usemtl Shade21
+f 373 389 390
+usemtl Shade21
+f 374 375 359
+usemtl Shade21
+f 374 390 375
 usemtl Shade16
-f 123 134 124
+f 375 392 376
 usemtl Shade16
-f 123 133 134
+f 375 391 392
 usemtl Shade16
-f 124 135 125
+f 376 393 377
 usemtl Shade16
-f 124 134 135
+f 376 392 393
 usemtl Shade16
-f 125 136 126
+f 377 394 378
 usemtl Shade16
-f 125 135 136
+f 377 393 394
 usemtl Shade16
-f 126 137 127
+f 378 395 379
 usemtl Shade16
-f 126 136 137
+f 378 394 395
 usemtl Shade16
-f 127 138 128
+f 379 396 380
 usemtl Shade16
-f 127 137 138
+f 379 395 396
 usemtl Shade16
-f 128 139 129
+f 380 397 381
 usemtl Shade16
-f 128 138 139
+f 380 396 397
 usemtl Shade16
-f 129 140 130
+f 381 398 382
 usemtl Shade16
-f 129 139 140
+f 381 397 398
 usemtl Shade16
-f 130 141 131
+f 382 399 383
 usemtl Shade16
-f 130 140 141
+f 382 398 399
 usemtl Shade16
-f 131 142 132
+f 383 400 384
 usemtl Shade16
-f 131 141 142
+f 383 399 400
 usemtl Shade16
-f 132 133 123
+f 384 401 385
 usemtl Shade16
-f 132 142 133
+f 384 400 401
 usemtl Shade16
-f 133 144 134
+f 385 402 386
 usemtl Shade16
-f 133 143 144
+f 385 401 402
 usemtl Shade16
-f 134 145 135
+f 386 403 387
 usemtl Shade16
-f 134 144 145
+f 386 402 403
 usemtl Shade16
-f 135 146 136
+f 387 404 388
 usemtl Shade16
-f 135 145 146
+f 387 403 404
 usemtl Shade16
-f 136 147 137
+f 388 405 389
 usemtl Shade16
-f 136 146 147
+f 388 404 405
 usemtl Shade16
-f 137 148 138
+f 389 406 390
 usemtl Shade16
-f 137 147 148
+f 389 405 406
 usemtl Shade16
-f 138 149 139
+f 390 391 375
 usemtl Shade16
-f 138 148 149
+f 390 406 391
 usemtl Shade16
-f 139 150 140
+f 391 408 392
 usemtl Shade16
-f 139 149 150
+f 391 407 408
 usemtl Shade16
-f 140 151 141
+f 392 409 393
 usemtl Shade16
-f 140 150 151
+f 392 408 409
 usemtl Shade16
-f 141 152 142
+f 393 410 394
 usemtl Shade16
-f 141 151 152
+f 393 409 410
 usemtl Shade16
-f 142 143 133
+f 394 411 395
 usemtl Shade16
-f 142 152 143
+f 394 410 411
 usemtl Shade16
-f 113 114 115
+f 395 412 396
 usemtl Shade16
-f 113 115 116
+f 395 411 412
 usemtl Shade16
-f 113 116 117
+f 396 413 397
 usemtl Shade16
-f 113 117 118
+f 396 412 413
 usemtl Shade16
-f 113 118 119
+f 397 414 398
 usemtl Shade16
-f 113 119 120
+f 397 413 414
 usemtl Shade16
-f 113 120 121
+f 398 415 399
 usemtl Shade16
-f 113 121 122
+f 398 414 415
 usemtl Shade16
-f 143 145 144
+f 399 416 400
 usemtl Shade16
-f 143 146 145
+f 399 415 416
 usemtl Shade16
-f 143 147 146
+f 400 417 401
 usemtl Shade16
-f 143 148 147
+f 400 416 417
 usemtl Shade16
-f 143 149 148
+f 401 418 402
 usemtl Shade16
-f 143 150 149
+f 401 417 418
 usemtl Shade16
-f 143 151 150
+f 402 419 403
 usemtl Shade16
-f 143 152 151
+f 402 418 419
+usemtl Shade16
+f 403 420 404
+usemtl Shade16
+f 403 419 420
+usemtl Shade16
+f 404 421 405
+usemtl Shade16
+f 404 420 421
+usemtl Shade16
+f 405 422 406
+usemtl Shade16
+f 405 421 422
+usemtl Shade16
+f 406 407 391
+usemtl Shade16
+f 406 422 407
+usemtl Shade11
+f 407 424 408
+usemtl Shade11
+f 407 423 424
+usemtl Shade11
+f 408 425 409
+usemtl Shade11
+f 408 424 425
+usemtl Shade11
+f 409 426 410
+usemtl Shade11
+f 409 425 426
+usemtl Shade11
+f 410 427 411
+usemtl Shade11
+f 410 426 427
+usemtl Shade11
+f 411 428 412
+usemtl Shade11
+f 411 427 428
+usemtl Shade11
+f 412 429 413
+usemtl Shade11
+f 412 428 429
+usemtl Shade11
+f 413 430 414
+usemtl Shade11
+f 413 429 430
+usemtl Shade11
+f 414 431 415
+usemtl Shade11
+f 414 430 431
+usemtl Shade11
+f 415 432 416
+usemtl Shade11
+f 415 431 432
+usemtl Shade11
+f 416 433 417
+usemtl Shade11
+f 416 432 433
+usemtl Shade11
+f 417 434 418
+usemtl Shade11
+f 417 433 434
+usemtl Shade11
+f 418 435 419
+usemtl Shade11
+f 418 434 435
+usemtl Shade11
+f 419 436 420
+usemtl Shade11
+f 419 435 436
+usemtl Shade11
+f 420 437 421
+usemtl Shade11
+f 420 436 437
+usemtl Shade11
+f 421 438 422
+usemtl Shade11
+f 421 437 438
+usemtl Shade11
+f 422 423 407
+usemtl Shade11
+f 422 438 423
+usemtl Shade11
+f 423 440 424
+usemtl Shade11
+f 423 439 440
+usemtl Shade11
+f 424 441 425
+usemtl Shade11
+f 424 440 441
+usemtl Shade11
+f 425 442 426
+usemtl Shade11
+f 425 441 442
+usemtl Shade11
+f 426 443 427
+usemtl Shade11
+f 426 442 443
+usemtl Shade11
+f 427 444 428
+usemtl Shade11
+f 427 443 444
+usemtl Shade11
+f 428 445 429
+usemtl Shade11
+f 428 444 445
+usemtl Shade11
+f 429 446 430
+usemtl Shade11
+f 429 445 446
+usemtl Shade11
+f 430 447 431
+usemtl Shade11
+f 430 446 447
+usemtl Shade11
+f 431 448 432
+usemtl Shade11
+f 431 447 448
+usemtl Shade11
+f 432 449 433
+usemtl Shade11
+f 432 448 449
+usemtl Shade11
+f 433 450 434
+usemtl Shade11
+f 433 449 450
+usemtl Shade11
+f 434 451 435
+usemtl Shade11
+f 434 450 451
+usemtl Shade11
+f 435 452 436
+usemtl Shade11
+f 435 451 452
+usemtl Shade11
+f 436 453 437
+usemtl Shade11
+f 436 452 453
+usemtl Shade11
+f 437 454 438
+usemtl Shade11
+f 437 453 454
+usemtl Shade11
+f 438 439 423
+usemtl Shade11
+f 438 454 439
+usemtl Shade21
+f 359 360 361
+usemtl Shade21
+f 359 361 362
+usemtl Shade21
+f 359 362 363
+usemtl Shade21
+f 359 363 364
+usemtl Shade21
+f 359 364 365
+usemtl Shade21
+f 359 365 366
+usemtl Shade21
+f 359 366 367
+usemtl Shade21
+f 359 367 368
+usemtl Shade21
+f 359 368 369
+usemtl Shade21
+f 359 369 370
+usemtl Shade21
+f 359 370 371
+usemtl Shade21
+f 359 371 372
+usemtl Shade21
+f 359 372 373
+usemtl Shade21
+f 359 373 374
+usemtl Shade11
+f 439 441 440
+usemtl Shade11
+f 439 442 441
+usemtl Shade11
+f 439 443 442
+usemtl Shade11
+f 439 444 443
+usemtl Shade11
+f 439 445 444
+usemtl Shade11
+f 439 446 445
+usemtl Shade11
+f 439 447 446
+usemtl Shade11
+f 439 448 447
+usemtl Shade11
+f 439 449 448
+usemtl Shade11
+f 439 450 449
+usemtl Shade11
+f 439 451 450
+usemtl Shade11
+f 439 452 451
+usemtl Shade11
+f 439 453 452
+usemtl Shade11
+f 439 454 453

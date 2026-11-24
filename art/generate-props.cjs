@@ -28,7 +28,9 @@ const WORLD_TRIANGLE_RANGE = [200, 1500];
 // Travel beacon shapes (§44, meta exactTint) share the range: >= 24-segment lathes.
 const BUILDING_TRIANGLE_RANGE = [200, 2400];
 // §48 creatures: cores (creature / pet) and the shared limbs and tier overlays.
-const CREATURE_TRIANGLE_RANGE = {creature: [400, 2400], pet: [300, 1200], limb: [60, 900], overlay: [80, 1200]};
+const CREATURE_TRIANGLE_RANGE = {creature: [400, 2400], pet: [400, 1600], limb: [100, 1600], overlay: [200, 2600]};
+// Cores worn by slayer / lair / raid / world bosses use the budget (QC H4).
+const BOSS_CORE_FLOOR = 1800;
 const shapes = {};
 const worldShapes = {};
 const worldMeta = {};
@@ -154,22 +156,28 @@ function shape(name, build, store = shapes, precision = 10000) {
   // wobble(level, segment) -> [dx,dz] offsets a vertex sideways (droop, lean).
   function lathe(profile,{n=8,sx=1,sz=1,phase=0,color=TINT,capStart=false,capEnd=false,capColor,jitter,wobble,lift}={}) {
     const shade=typeof color==='function'?color:()=>color;
-    const rings=profile.map(([r,y],level)=>r===0?v([0,y,0]):Array.from({length:n},(_,i)=>{
+    // Local (pre-transform) points: colour callbacks get shade(level, segment, faceCentre).
+    const local=profile.map(([r,y],level)=>r===0?[0,y,0]:Array.from({length:n},(_,i)=>{
       const a=phase+i*2*Math.PI/n,k=jitter?jitter(level,i):1,[dx,dz]=wobble?wobble(level,i):[0,0],dy=lift?lift(level,i):0;
-      return v([Math.cos(a)*r*sx*k+dx,y+dy,Math.sin(a)*r*sz*k+dz]);
+      return [Math.cos(a)*r*sx*k+dx,y+dy,Math.sin(a)*r*sz*k+dz];
     }));
+    const rings=local.map(pts=>Array.isArray(pts[0])?pts.map(p=>v(p)):v(pts));
+    const mid=(...ps)=>[0,1,2].map(q=>ps.reduce((t,p)=>t+p[q],0)/ps.length);
     for(let level=0;level<rings.length-1;level++){
-      const lo=rings[level],hi=rings[level+1];
+      const lo=rings[level],hi=rings[level+1],plo=local[level],phi=local[level+1];
       for(let i=0;i<n;i++){
-        const j=(i+1)%n,c=shade(level,i);
+        const j=(i+1)%n;
+        const centre=Array.isArray(lo)&&Array.isArray(hi)?mid(plo[i],plo[j],phi[j],phi[i]):Array.isArray(hi)?mid(plo,phi[j],phi[i]):mid(plo[i],plo[j],phi);
+        const c=shade(level,i,centre);
         if(Array.isArray(lo)&&Array.isArray(hi))quad(lo[i],lo[j],hi[j],hi[i],c);
         else if(Array.isArray(hi))tri(lo,hi[j],hi[i],c);
         else if(Array.isArray(lo))tri(lo[i],lo[j],hi,c);
       }
     }
     const first=rings[0],last=rings[rings.length-1];
-    if(capStart&&Array.isArray(first))for(let i=1;i<n-1;i++)tri(first[0],first[i+1],first[i],capColor??shade(-1,i));
-    if(capEnd&&Array.isArray(last))for(let i=1;i<n-1;i++)tri(last[0],last[i],last[i+1],capColor??shade(profile.length,i));
+    const capMid=pts=>Array.isArray(pts[0])?mid(...pts):pts;
+    if(capStart&&Array.isArray(first))for(let i=1;i<n-1;i++)tri(first[0],first[i+1],first[i],capColor??shade(-1,i,capMid(local[0])));
+    if(capEnd&&Array.isArray(last))for(let i=1;i<n-1;i++)tri(last[0],last[i],last[i+1],capColor??shade(profile.length,i,capMid(local[local.length-1])));
   }
   // Extruded outline in the local XY plane (front face toward -Z). The outline
   // must be star-shaped about its centroid; caps are fanned from that centre.
@@ -218,12 +226,14 @@ function shape(name, build, store = shapes, precision = 10000) {
       const tt=tangents[i];
       nrm=norm(sub3(nrm,tt.map(c=>c*dot3(nrm,tt))));
       const bin=cross3(tt,nrm),r=typeof radii==='function'?radii(i):Array.isArray(radii)?radii[i]:radii;
-      return Array.from({length:n},(_,k)=>{const a=k*2*Math.PI/n,j=jitter?jitter(i,k):1;return v(p.map((c,q)=>c+(Math.cos(a)*nrm[q]+Math.sin(a)*bin[q])*r*j))});
-    });
-    for(let i=0;i<rings.length-1;i++)for(let k=0;k<n;k++){const j=(k+1)%n;quad(rings[i][k],rings[i][j],rings[i+1][j],rings[i+1][k],shade(i,k))}
-    const first=rings[0],last=rings[rings.length-1];
-    if(capStart)for(let k=1;k<n-1;k++)tri(first[0],first[k+1],first[k],capColor??shade(-1,k));
-    if(capEnd)for(let k=1;k<n-1;k++)tri(last[0],last[k],last[k+1],capColor??shade(rings.length,k));
+      return Array.from({length:n},(_,k)=>{const a=k*2*Math.PI/n,j=jitter?jitter(i,k):1;return p.map((c,q)=>c+(Math.cos(a)*nrm[q]+Math.sin(a)*bin[q])*r*j)});
+    }).map(ring=>ring.map(p=>({p,id:v(p)})));
+    const centre=(a,b,c,d)=>[0,1,2].map(q=>(a.p[q]+b.p[q]+c.p[q]+d.p[q])/4);
+    for(let i=0;i<rings.length-1;i++)for(let k=0;k<n;k++){const j=(k+1)%n;quad(rings[i][k].id,rings[i][j].id,rings[i+1][j].id,rings[i+1][k].id,shade(i,k,centre(rings[i][k],rings[i][j],rings[i+1][j],rings[i+1][k])))}
+    const first=rings[0].map(x=>x.id),last=rings[rings.length-1].map(x=>x.id);
+    const ringMid=ring=>[0,1,2].map(q=>ring.reduce((t,x)=>t+x.p[q],0)/ring.length);
+    if(capStart)for(let k=1;k<n-1;k++)tri(first[0],first[k+1],first[k],capColor??shade(-1,k,ringMid(rings[0])));
+    if(capEnd)for(let k=1;k<n-1;k++)tri(last[0],last[k],last[k+1],capColor??shade(rings.length,k,ringMid(rings[rings.length-1])));
   }
   // Lofted solid through closed cross-sections [{z, points:[[x,y],...]}] (equal
   // point counts, local XY at each z). color(section, edge) -> shade. The end
@@ -595,6 +605,7 @@ for(const [name,data] of Object.entries(creatureShapes)){
   const count=data.faces.length,range=CREATURE_TRIANGLE_RANGE[creatureMeta[name].kind];
   if(count<range[0]||count>range[1])rangeErrors.push(`${name} has ${count} triangles; ${creatureMeta[name].kind} range is ${range.join('-')}`);
   if(data.vertices.length>=4096)rangeErrors.push(`${name} has ${data.vertices.length} vertices (packing limit 4095)`);
+  if(creatureMeta[name].boss&&count<BOSS_CORE_FLOOR)rangeErrors.push(`${name} is a boss core with ${count} triangles (floor ${BOSS_CORE_FLOOR})`);
   for(const vol of componentVolumes(data))if(vol<-1e-4)throw new Error(`${name} has an inward-wound component (volume ${vol})`);
 }
 // Every rig names authored shapes only.
@@ -736,7 +747,8 @@ const creatureEntries=Object.entries(creatureShapes).map(([name,data])=>{
   if(m.tint)extra.tint=m.tint;
   const verts=data.vertices.map(p=>p.map(x=>packNumber(Math.round(x*1000)+PACK_OFFSET,3)).join('')).join('');
   const faces=data.faces.map(([a,b,c,shade])=>packNumber(a,2)+packNumber(b,2)+packNumber(c,2)+packNumber(shade,1)).join('');
-  return `shapes.${name}=unpack("${verts}","${faces}",${luaTable(extra)})`;
+  extra.tris=data.faces.length;extra.verts=data.vertices.length;if(m.boss)extra.boss=true;
+  return `shapes.${name}=lazy("${verts}","${faces}",${luaTable(extra)})`;
 }).join('\n');
 fs.writeFileSync('art/CreatureCatalog.lua',`-- Generated by art/generate-props.cjs from art/creature-shapes.cjs (original geometry, §48).
 -- Creature, pet, limb and overlay meshes forged on each client by forge.client.lua
@@ -764,10 +776,30 @@ local function unpack(verts,faces,meta)
 	meta.vertices,meta.faces=vertices,list
 	return meta
 end
+-- QC M3: shapes stay packed until first used. Reading .vertices or .faces decodes
+-- that shape alone; Catalog.drop(name) forgets the decoded arrays again (the
+-- MeshForge calls it once a template is built). tris / verts are always known.
+local packed={}
+local LAZY={__index=function(meta,key)
+	if key~="vertices" and key~="faces" then return nil end
+	local source=packed[meta]
+	if not source then return nil end
+	unpack(source[1],source[2],meta)
+	return rawget(meta,key)
+end}
+local function lazy(verts,faces,meta)
+	meta.lazy=true
+	packed[meta]={verts,faces}
+	return setmetatable(meta,LAZY)
+end
 local shapes={}
 ${creatureEntries}
+local function drop(name)
+	local meta=shapes[name]
+	if type(meta)=="table" and packed[meta] then rawset(meta,"vertices",nil); rawset(meta,"faces",nil) end
+end
 local rigs=${luaTable(roundDeep(creatureKit.rigs))}
-return {palette=palette,shapes=shapes,rigs=rigs,tintIndex=${TINT},tintDarkIndex=${TINT_DARK},tintLightIndex=${TINT_LIGHT},tintDark=0.62,tintLight=0.4}
+return {palette=palette,shapes=shapes,rigs=rigs,drop=drop,tintIndex=${TINT},tintDarkIndex=${TINT_DARK},tintLightIndex=${TINT_LIGHT},tintDark=0.62,tintLight=0.4}
 `);
 fs.writeFileSync('art/AetherPalette.mtl',palette.map((hex,i)=>`newmtl Shade${i+1}\nKd ${[0,2,4].map(n=>parseInt(hex.slice(n,n+2),16)/255).join(' ')}`).join('\n'));
 fs.writeFileSync('art/PropCatalog.lua','-- Generated by art/generate-props.cjs; shared original geometry.\nlocal palette='+luaTable(palette)+'\nlocal shapes={}\n'+entries+'\n'+iconShapeLua);
