@@ -2,7 +2,7 @@
 local AssetService = game:GetService("AssetService")
 local CollectionService = game:GetService("CollectionService")
 local RunService = game:GetService("RunService")
-local palette = {Color3.fromHex("C98D4F"),Color3.fromHex("F4CD7C"),Color3.fromHex("265860"),Color3.fromHex("39898E"),Color3.fromHex("9DF3D7"),Color3.fromHex("203748"),Color3.fromHex("C15557"),Color3.fromHex("FFD389"),Color3.fromHex("525570"),Color3.fromHex("9583B9"),Color3.fromHex("D9DFE6"),Color3.fromHex("6E4A30"),Color3.fromHex("F4F8F8"),Color3.fromHex("6BAF5A"),Color3.fromHex("878C93"),Color3.fromHex("F0F3F6"),Color3.fromHex("4A3426"),Color3.fromHex("7A5636"),Color3.fromHex("A9A79C"),Color3.fromHex("7E817C"),Color3.fromHex("545A5E"),Color3.fromHex("5E8A4A"),Color3.fromHex("C9A24E"),Color3.fromHex("3A4048"),Color3.fromHex("FF8A3D"),Color3.fromHex("FFE08A"),Color3.fromHex("E9DFC7"),Color3.fromHex("A8423C"),Color3.fromHex("2E3B4E"),Color3.fromHex("5A4030"),Color3.fromHex("8A6240"),Color3.fromHex("D9B65C"),Color3.fromHex("E6E1D6"),Color3.fromHex("3F6E3A"),Color3.fromHex("B8C6CF"),Color3.fromHex("EFE6D3"),Color3.fromHex("9B5B43"),Color3.fromHex("4F6878"),Color3.fromHex("6B4A33")}
+local palette = {Color3.fromHex("C98D4F"),Color3.fromHex("F4CD7C"),Color3.fromHex("265860"),Color3.fromHex("39898E"),Color3.fromHex("9DF3D7"),Color3.fromHex("203748"),Color3.fromHex("C15557"),Color3.fromHex("FFD389"),Color3.fromHex("525570"),Color3.fromHex("9583B9"),Color3.fromHex("D9DFE6"),Color3.fromHex("6E4A30"),Color3.fromHex("F4F8F8"),Color3.fromHex("6BAF5A"),Color3.fromHex("878C93"),Color3.fromHex("F0F3F6"),Color3.fromHex("4A3426"),Color3.fromHex("7A5636"),Color3.fromHex("A9A79C"),Color3.fromHex("7E817C"),Color3.fromHex("545A5E"),Color3.fromHex("5E8A4A"),Color3.fromHex("C9A24E"),Color3.fromHex("3A4048"),Color3.fromHex("FF8A3D"),Color3.fromHex("FFE08A"),Color3.fromHex("E9DFC7"),Color3.fromHex("A8423C"),Color3.fromHex("2E3B4E"),Color3.fromHex("5A4030"),Color3.fromHex("8A6240"),Color3.fromHex("D9B65C"),Color3.fromHex("E6E1D6"),Color3.fromHex("3F6E3A"),Color3.fromHex("B8C6CF"),Color3.fromHex("EFE6D3"),Color3.fromHex("9B5B43"),Color3.fromHex("4F6878"),Color3.fromHex("6B4A33"),Color3.fromHex("EDE2C4"),Color3.fromHex("3A302C"),Color3.fromHex("231E1E"),Color3.fromHex("17131C"),Color3.fromHex("2C2140"),Color3.fromHex("BDEBFF"),Color3.fromHex("F3EBDD"),Color3.fromHex("F08A6E"),Color3.fromHex("9FF5FF")}
 -- Faces on this palette slot take a per-instance tint (anchor attribute Tint, or a
 -- resource colour from AetherData). Kept in sync with art/PropCatalog.lua tintIndex.
 local TINT_INDEX = 11
@@ -414,12 +414,15 @@ local function updateCompanion(player)
 		anchor.CanTouch = false
 		anchor.CanQuery = false
 		anchor.Transparency = 1
-		anchor:SetAttribute("Shape", "Tidewing")
-		anchor:SetAttribute("SculptureScale", 0.16)
+		-- §48: drawn by creatures.client.lua as a small forged ray (IsleCreature).
+		anchor:SetAttribute("CreatureRig", "ray")
+		anchor:SetAttribute("CreatureScale", 0.22)
+		anchor:SetAttribute("Color", "3F7CAC")
+		anchor:SetAttribute("CreatureTier", "pet")
 		anchor.CFrame = root.CFrame * CFrame.new(3, 2, 2)
 		anchor.Parent = workspace
 		companions[player] = anchor
-		attach(anchor)
+		CollectionService:AddTag(anchor, "IsleCreature")
 	end
 	anchor.CFrame = root.CFrame * CFrame.new(3, 2, 2)
 end

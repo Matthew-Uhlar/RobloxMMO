@@ -631,6 +631,7 @@ local function blueprint(kind, colorHex, boss)
 		hip, hitbox = 1.5, V(3, 3, 3)
 		add("Body", "Ball", V(3, 3, 3), CF(0, 0, 0), base)
 		eyes(0.5, 0.4, -1.4, 0.35)
+		kind = "blob" -- §48: the client draws unknown bodies as the fallback slime rig
 	end
 	local scale = 1
 	if boss then
@@ -650,7 +651,9 @@ local function blueprint(kind, colorHex, boss)
 		add("Aura", "Cylinder", V(0.3, hitbox.X * 1.3, hitbox.X * 1.3), CF(0, -hip + 0.2, 0) * upright, hexColor("FF3B3B"), "ForceField", "orbit", {transparency = 0.2})
 		light3 = hexColor("FF3B3B")
 	end
-	return {parts = parts, hip = hip, hitbox = hitbox, flying = flying, scale = scale, light = light3,
+	-- §48: `kind` names the forged rig (art/CreatureCatalog.lua rigs) the
+	-- client draws over these primitives (CreatureRig / CreatureScale attributes).
+	return {kind = kind, parts = parts, hip = hip, hitbox = hitbox, flying = flying, scale = scale, light = light3,
 		radius = math.min(C.MAX_RADIUS_BONUS, math.max(hitbox.X, hitbox.Z) / 2)}
 end
 
@@ -3226,6 +3229,9 @@ local function buildModel(name, plan, opts)
 	model:SetAttribute("MaxHealth", opts.hp)
 	model:SetAttribute("Health", opts.hp)
 	model:SetAttribute("Color", opts.color)
+	-- §48 creature visuals: the rig and its uniform scale (creatures.client.lua).
+	model:SetAttribute("CreatureRig", plan.kind)
+	model:SetAttribute("CreatureScale", plan.scale)
 	if opts.boss then
 		model:SetAttribute("Boss", true)
 		model:SetAttribute("OwnerUserId", opts.owner.UserId)
@@ -3405,6 +3411,16 @@ end)
 -- telegraph / bossStrike (warning discs and their impact), worldBossAnnounce
 -- (server-wide: warn | spawn | phase | enrage | win | depart), worldBossLoot
 -- (per contributor at the kill: rank, share, tier, drops or the reason for none).
+-- §48: a boss's telegraph window on its model, so creatures.client.lua winds
+-- the boss up over exactly [TelegraphAt - TelegraphWindup, TelegraphAt) and
+-- slams when the server resolves the strike.
+local function markTelegraph(r, tg)
+	local v = view[r]
+	if not v or type(tg.windup) ~= "number" then return end
+	v.model:SetAttribute("TelegraphWindup", tg.windup)
+	v.model:SetAttribute("TelegraphKind", tg.kind)
+	v.model:SetAttribute("TelegraphAt", Workspace:GetServerTimeNow() + tg.windup)
+end
 local Endgame = Data.Endgame
 local WB = {anchors = {}, hudClock = 0, scheduleClock = 0}
 function WB.nameOf(player)
@@ -3527,6 +3543,7 @@ function WB.step(dt)
 			local c = tg.center
 			local center = Vector3.new(c.X, groundY(c, c.Y), c.Z)
 			broadcast(r.home, "telegraph", {center = center, radius = tg.radius, kind = tg.kind, windup = tg.windup, name = tg.name, boss = r.id})
+			markTelegraph(r, tg)
 		elseif event.kind == "strike" then
 			local tg = event.telegraph
 			broadcast(r.home, "bossStrike", {center = tg.center, radius = tg.radius, kind = tg.kind, hits = #event.hits})
@@ -3710,6 +3727,7 @@ function LairRT.step()
 		local r = event.record
 		if event.kind == "telegraph" then
 			local tg = event.telegraph
+			markTelegraph(r, tg)
 			if tg.kind == "tiles" then
 				LairRT.lightTiles(r, tg)
 			else
@@ -3999,6 +4017,11 @@ RunService.Heartbeat:Connect(function(dt)
 					if d.Magnitude > 0.1 then r.yaw = math.atan2(-d.X, -d.Z) end
 				end
 				if action.healed then updateBar(r) end
+				-- §48: a landed monster hit (the lunge) tells clients when to play the bite.
+				if r.lungeUntil ~= v.lunge then
+					v.lunge = r.lungeUntil
+					v.model:SetAttribute("AttackAt", Workspace:GetServerTimeNow())
+				end
 				local near = Logic.nearestPlayerDistance(r) <= C.ANIMATE_RANGE
 				place(r, near)
 				if near and animTick then animate(r, moved) end

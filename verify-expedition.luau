@@ -107,8 +107,11 @@ check(artCore.CanCollide and artCore.Transparency==1,"heart hides placeholder bu
 check(artCore:GetAttribute("VisualState")=="Shielded","heart art communicates puzzle gate")
 for index=1,2 do
 	local sentinel=world:FindFirstChild("Sentinel "..index,true)
-	check(sentinel:GetAttribute("Shape")=="ObservatorySentinel","sentinel uses custom enemy mesh")
-	check(sentinel.CanCollide and sentinel.Transparency==1,"sentinel retains authoritative collider")
+	-- §48: the forged, animated Starborn Sentinel rig (creatures.client.lua) replaces the
+	-- legacy sculpture; the host stays the collider and the fallback if the forge refuses.
+	check(sentinel:GetAttribute("CreatureRig")=="sentinel" and sentinel:GetAttribute("Shape")==nil,"sentinel uses the forged creature rig")
+	check(sentinel:GetAttribute("CreatureFloor")==world:FindFirstChild("Sentinel hall floor",true).Position.Y+1.5,"sentinel stands on the hall floor")
+	check(sentinel.CanCollide and sentinel.Transparency==0,"sentinel retains authoritative collider (visible only as the fallback)")
 end
 local a,ar,ah=player()
 local b,br,bh=player()

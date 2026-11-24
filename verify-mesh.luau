@@ -1212,7 +1212,59 @@ check(client:find('GetAttribute("ShapeScale")', 1, true) ~= nil and client:find(
 check(not fs.isFile("mesh.server.lua"), "no server-side forge: the server never hides parts")
 check(not MeshForgeSource:find("%.Transparency%s*=%s*1"), "forge only hides parts locally")
 
-print(string.format("Mesh QA passed %d checks: %d world shapes / %d triangles; forge success, failure, budget, late-tag and sign paths.", checks, worldCount, worldTriangles))
+------------------------------------------------------------------------------
+-- §48 creature catalog (art/CreatureCatalog.lua): triangle ranges per kind,
+-- palette, winding, smoothing, bounds, packed geometry = OBJ masters. Rigs,
+-- tiers, timings and the renderer are covered by verify-creatures.luau.
+------------------------------------------------------------------------------
+local Creatures = luau.load(fs.readFile("art/CreatureCatalog.lua"), {injectGlobals = true})()
+local CREATURE_RANGE = {creature = {400, 2400}, pet = {300, 1200}, limb = {60, 900}, overlay = {80, 1200}}
+check(#Creatures.palette == #World.palette, "creature catalog shares the palette")
+for i, hex in ipairs(World.palette) do check(Creatures.palette[i] == hex, "creature palette entry " .. i) end
+check(Creatures.tintIndex == World.tintIndex and Creatures.tintDarkIndex == World.tintDarkIndex and Creatures.tintLightIndex == World.tintLightIndex, "creature tint slots")
+local creatureCount, creatureTriangles = 0, 0
+for name, data in pairs(Creatures.shapes) do
+	creatureCount += 1
+	creatureTriangles += #data.faces
+	local range = CREATURE_RANGE[data.kind]
+	check(range ~= nil, name .. " has a creature kind")
+	check(World.shapes[name] == nil and Props.shapes[name] == nil, name .. " is unique across catalogs")
+	local points = validate(name, data, range[1], range[2])
+	check(#points < 4096, name .. " fits the 2-digit vertex packing")
+	check(type(data.smooth) == "number" and data.smooth >= 0 and data.smooth < 90, name .. " smoothing crease")
+	check(data.kind == "overlay" or data.smooth >= 18, name .. " is smooth-shaded (never flat)")
+	check(data.tint == nil or pcall(Color3.fromHex, data.tint), name .. " default tint")
+	for _, vol in ipairs(componentVolumes(data, points)) do check(vol > -1e-4, name .. " components are wound outward") end
+	-- Bounds: cores fit a creature (pets about a stud), limbs their unit frame.
+	local lo, hi = Vector3.new(math.huge, math.huge, math.huge), Vector3.new(-math.huge, -math.huge, -math.huge)
+	for _, p in ipairs(points) do lo, hi = lo:Min(p), hi:Max(p) end
+	local size = hi - lo
+	local biggest = math.max(size.X, size.Y, size.Z)
+	if data.kind == "creature" then check(biggest >= 2 and biggest <= 12, name .. " core size " .. biggest)
+	elseif data.kind == "pet" then check(biggest >= 0.8 and biggest <= 2.6, name .. " pet size " .. biggest)
+	elseif data.kind == "limb" then check(biggest >= 0.4 and biggest <= 3.2, name .. " limb size " .. biggest)
+	else check(biggest >= 0.5 and biggest <= 2.4, name .. " overlay size " .. biggest) end
+	-- Cores are symmetric across X (the rig mirrors limbs about it).
+	if data.kind == "creature" or data.kind == "pet" then check(math.abs(lo.X + hi.X) <= 0.25 * size.X + 0.05, name .. " is symmetric across X") end
+end
+check(creatureCount >= 60, "creature shapes authored (" .. creatureCount .. ")")
+check(#fs.readFile("art/CreatureCatalog.lua") <= 640 * 1024, "creature catalog download stays under 640 KB")
+for _, name in ipairs({"CreatureBoar", "CreatureSovereign", "DrakeWing", "OverlayCrown", "PetQuad"}) do
+	local data, vi, fi = Creatures.shapes[name], 0, 0
+	for line in string.gmatch(fs.readFile("art/" .. name .. ".obj"), "[^\n]+") do
+		local x, y, z = string.match(line, "^v (%S+) (%S+) (%S+)")
+		if x then
+			vi += 1
+			local v = data.vertices[vi]
+			check(v ~= nil and near(v[1], tonumber(x), 1e-6) and near(v[2], tonumber(y), 1e-6) and near(v[3], tonumber(z), 1e-6), name .. " vertex " .. vi .. " matches its OBJ")
+		end
+		local shade = string.match(line, "^usemtl Shade(%d+)")
+		if shade then fi += 1; check(data.faces[fi] and data.faces[fi][4] == tonumber(shade), name .. " face shade matches its OBJ") end
+	end
+	check(vi == #data.vertices and fi == #data.faces, name .. " packed counts match its OBJ")
+end
+
+print(string.format("Mesh QA passed %d checks: %d world shapes / %d triangles; %d creature shapes / %d triangles; forge success, failure, budget, late-tag and sign paths.", checks, worldCount, worldTriangles, creatureCount, creatureTriangles))
 
 -- Completion sentinel: scripts/build.sh fails if a suite stops early without erroring.
 print("SUITE-END verify-mesh.luau")

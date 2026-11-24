@@ -2,7 +2,9 @@
 -- The server publishes player attribute ActivePet = "speciesId:rarity:level"
 -- ("" when dismissed); each client builds the follower locally from
 -- Data.PetDepth.bodyPlan (primitives only, <= 15 anchored, non-colliding,
--- non-queryable parts), so nothing replicates per frame. Flyers and floaters
+-- non-queryable parts), so nothing replicates per frame. §48: the model is
+-- tagged IsleCreature (CreatureRig pet_<form>), and creatures.client.lua
+-- replaces those primitives with the forged pet mesh while it can. Flyers and floaters
 -- hover and bob, ground pets hop while their owner moves; wings flap.
 -- Followers are built within RANGE studs of the camera and released beyond
 -- RELEASE_RANGE; between the two an existing follower is kept and a missing
@@ -69,6 +71,17 @@ function Companions.build(speciesId, rarity, ownerName)
 		table.insert(offsets, offset)
 		flaps[#parts] = spec.flap
 	end
+	-- §48: creatures.client.lua draws the forged pet rig (pet_<form>) over these
+	-- primitives and hides them locally; they stay as the fallback when the
+	-- forge has no room. The body (first part) is the rig's root.
+	pcall(function()
+		model.PrimaryPart = parts[1]
+		model:SetAttribute("CreatureRig", "pet_" .. tostring(plan.form))
+		model:SetAttribute("CreatureScale", scale)
+		model:SetAttribute("Color", (Data.PetById[speciesId] or {}).color or "CCCCCC")
+		model:SetAttribute("Pet", true)
+		game:GetService("CollectionService"):AddTag(model, "IsleCreature")
+	end)
 	model.Parent = folder
 	return {model = model, parts = parts, offsets = offsets, flaps = flaps, plan = plan, t = math.random() * 6}
 end
