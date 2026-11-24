@@ -533,9 +533,9 @@ do
 	check(streamed.forge.stats.instances == 0, "removed parts release their mesh")
 end
 
--- Sign kit tints (§28 M2/M3): only the eleven kit shapes are quantised; legacy
--- sign shapes (pennants, agility cloth, crew pennant, ledger) keep their Tint
--- on phones too; BannerCloth snaps to a small palette everywhere.
+-- Sign kit tints (§28 v2): signs are billboards; the ledger notice board is the
+-- one sign mesh left and is quantised; legacy sign shapes (pennants, agility
+-- cloth, crew pennant) keep their Tint on phones too.
 do
 	local function phoneForge()
 		return loadForge(nil, nil, function(env)
@@ -548,52 +548,31 @@ do
 	end
 	local phone, desk = phoneForge(), ok
 	local red, teal = Color3.fromRGB(200, 40, 40), Color3.fromHex("6FA38A")
-	local kit = {"SignHangingFrame", "SignpostFrame", "BannerStandardFrame", "SignPlinthFrame", "SignLedgerFrame", "SignCarvedBoard",
-		"SignScrollBoard", "SignArrowBoard", "SignPlaqueBoard", "SignNoticeBoard", "BannerCloth"}
-	local kitSet = {}
-	for _, name in kit do kitSet[name] = true end
 	local n = 0
-	for name in pairs(phone.forge.kitShapes) do n += 1; check(kitSet[name] == true, name .. " is a kit shape") end
-	check(n == 11, "exactly the eleven kit shapes are shared (" .. n .. ")")
+	for name in pairs(phone.forge.kitShapes) do n += 1; check(name == "SignNoticeBoard", name .. " is the kit shape") end
+	check(n == 1, "only the ledger notice board is a shared sign kit shape (" .. n .. ")")
+	for _, gone in {"SignHangingFrame", "SignpostFrame", "BannerStandardFrame", "SignPlinthFrame", "SignLedgerFrame", "SignCarvedBoard",
+		"SignScrollBoard", "SignArrowBoard", "SignPlaqueBoard", "BannerCloth"} do
+		check(World.shapes[gone] == nil, gone .. " was scrapped with the physical signs (§28 v2)")
+	end
 	for _, legacy in {"Banner", "Signboard", "SignboardPosted", "SignPost"} do
 		check(World.shapes[legacy].kind == "sign", legacy .. " is a sign-kind shape")
 		check(phone.forge.templateTint(legacy, World.shapes[legacy], red) == red, legacy .. " keeps its Tint on phones")
 		check(desk.forge.templateTint(legacy, World.shapes[legacy], red) == red, legacy .. " keeps its Tint on desktop")
 	end
-	local themeMetals = {"C9A24E", "6FA38A", "B8733F", "AFA8A0", "B8C6CF", "8E7BC0", "7FC9C9", "A8B6CC", "E0B44E"}
-	for _, name in kit do
-		local data = World.shapes[name]
-		local seen, distinct = {}, 0
-		for _, hex in themeMetals do
-			local phoneTint = phone.forge.templateTint(name, data, Color3.fromHex(hex))
-			local deskTint = desk.forge.templateTint(name, data, Color3.fromHex(hex))
-			if name == "BannerCloth" then
-				check(table.find(phone.forge.clothPalette, phoneTint) ~= nil and phoneTint == deskTint, "BannerCloth tint snaps to the cloth palette on every device")
-			else
-				check(phoneTint:ToHex() == data.tint or phoneTint:ToHex():upper() == data.tint, name .. " shares its default tint on phones")
-				check(table.find(desk.forge.kitMetals, deskTint) ~= nil, name .. " tint snaps to a kit metal on desktop")
-				if not seen[deskTint:ToHex()] then seen[deskTint:ToHex()] = true; distinct += 1 end
-			end
-		end
-		if name ~= "BannerCloth" then check(distinct <= 3, name .. ": ten themes use <= 3 metal templates (" .. distinct .. ")") end
+	local data = World.shapes.SignNoticeBoard
+	for _, hex in {"C9A24E", "6FA38A", "B8733F", "AFA8A0", "B8C6CF"} do
+		local phoneTint = phone.forge.templateTint("SignNoticeBoard", data, Color3.fromHex(hex))
+		local deskTint = desk.forge.templateTint("SignNoticeBoard", data, Color3.fromHex(hex))
+		check(phoneTint:ToHex() == data.tint or phoneTint:ToHex():upper() == data.tint, "notice board shares its default tint on phones")
+		check(table.find(desk.forge.kitMetals, deskTint) ~= nil, "notice board tint snaps to a kit metal on desktop")
 	end
-	check(#phone.forge.clothPalette <= 8, "cloth palette is small")
 	-- A legacy pennant (Banner) keeps its colour on a phone: its template carries the tint.
 	local pennant = part(nil, "Pennant", Vector3.new(1, 2, .1), CFrame.new(), {Shape = "Banner", Tint = red}); phone.add(pennant)
 	check(phone.forge.templates["Banner#" .. red:ToHex()] ~= nil, "phone pennant template keeps its tint")
-	local plate = part(nil, "Plate", Vector3.new(4, 1.5, .3), CFrame.new(5, 0, 0), {Shape = "SignCarvedBoard", Tint = teal}); phone.add(plate)
-	check(phone.forge.templates["SignCarvedBoard#" .. World.shapes.SignCarvedBoard.tint] ~= nil
-		or phone.forge.templates["SignCarvedBoard#" .. string.lower(World.shapes.SignCarvedBoard.tint)] ~= nil, "phone kit board uses the shared template")
-end
-
--- L5: BannerCloth lining stays behind the host's faces inside the text area
--- (|x| < 1.8, |y| < 2.2 of the 3.8 x 5 x .14 reference; the gold hem band is below): no vertex crosses z = +-.07.
-do
-	local data, worst = World.shapes.BannerCloth, 0
-	for _, v in ipairs(data.vertices) do
-		if math.abs(v[1]) < 1.8 and math.abs(v[2]) < 2.2 then worst = math.max(worst, math.abs(v[3])) end
-	end
-	check(worst <= .07 + 1e-4, "BannerCloth text area stays behind its faces (max |z| " .. worst .. ")")
+	local board = part(nil, "Board", Vector3.new(9, 8.5, .35), CFrame.new(5, 0, 0), {Shape = "SignNoticeBoard", Tint = teal}); phone.add(board)
+	check(phone.forge.templates["SignNoticeBoard#" .. data.tint] ~= nil
+		or phone.forge.templates["SignNoticeBoard#" .. string.lower(data.tint)] ~= nil, "phone notice board uses the shared template")
 end
 
 -- LRU eviction: a new template evicts the least recently used idle template.

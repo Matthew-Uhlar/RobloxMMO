@@ -2,9 +2,9 @@
   "format": 1,
   "metersPerStud": 0.28,
   "axes": "Right-handed +Y up; source X/Z and local origin preserved (no rotation/reflection).",
-  "glbSha256": "290fb75aad6eddf13f02f94a55519208ae24ccba9e441e8c9e9e196990860111",
+  "glbSha256": "845c3e1b001b767670a4bbd74801483ab98862fe91ebb4db3f1754c8cdc34981",
   "materials": 48,
-  "triangles": 95633,
+  "triangles": 87771,
   "models": [
     {
       "name": "AetherCrystal",
@@ -301,32 +301,6 @@
       }
     },
     {
-      "name": "BannerCloth",
-      "source": "BannerCloth.obj",
-      "sourceSha256": "71f19c50ea07c77bbc97e7743903c141f48a152c1ea4b3203ad7c33b2d116959",
-      "materialSource": "AetherPalette.mtl",
-      "materialSha256": "f9a13bccaaa93db0cb4d3c183db6d723943f7f51a265e6b7d33892df7a269e12",
-      "vertices": 156,
-      "triangles": 236,
-      "boundsStuds": {
-        "min": [
-          -1.99,
-          -3.706,
-          -0.12
-        ],
-        "max": [
-          1.99,
-          2.78,
-          0.12
-        ]
-      },
-      "trianglesByMaterial": {
-        "Shade11": 96,
-        "Shade15": 28,
-        "Shade2": 112
-      }
-    },
-    {
       "name": "BannerPole",
       "source": "BannerPole.obj",
       "sourceSha256": "72dc8f803f74a339ec831f6d20cdadd9dc4b2cc398ca4704b08d8f8d8459d14b",
@@ -353,36 +327,6 @@
         "Shade2": 52,
         "Shade20": 38,
         "Shade23": 68
-      }
-    },
-    {
-      "name": "BannerStandardFrame",
-      "source": "BannerStandardFrame.obj",
-      "sourceSha256": "46c654f7b28f17ec88ccded1e51f89220696597eb91c58d5d9719e041cc262b6",
-      "materialSource": "AetherPalette.mtl",
-      "materialSha256": "f9a13bccaaa93db0cb4d3c183db6d723943f7f51a265e6b7d33892df7a269e12",
-      "vertices": 465,
-      "triangles": 800,
-      "boundsStuds": {
-        "min": [
-          -2.53,
-          0,
-          -0.3
-        ],
-        "max": [
-          2.53,
-          10.2,
-          0.9
-        ]
-      },
-      "trianglesByMaterial": {
-        "Shade11": 530,
-        "Shade16": 102,
-        "Shade19": 34,
-        "Shade20": 56,
-        "Shade21": 2,
-        "Shade31": 36,
-        "Shade32": 40
       }
     },
     {
@@ -3192,131 +3136,6 @@
       }
     },
     {
-      "name": "SignArrowBoard",
-      "source": "SignArrowBoard.obj",
-      "sourceSha256": "221ab9cef97842ce89752868f87ed3298e301c5b192333424c44cefb62bd0116",
-      "materialSource": "AetherPalette.mtl",
-      "materialSha256": "f9a13bccaaa93db0cb4d3c183db6d723943f7f51a265e6b7d33892df7a269e12",
-      "vertices": 172,
-      "triangles": 276,
-      "boundsStuds": {
-        "min": [
-          -2.52,
-          -0.61,
-          -0.191
-        ],
-        "max": [
-          2.82,
-          0.61,
-          0.192
-        ]
-      },
-      "trianglesByMaterial": {
-        "Shade11": 40,
-        "Shade15": 22,
-        "Shade16": 6,
-        "Shade18": 64,
-        "Shade23": 64,
-        "Shade31": 80
-      }
-    },
-    {
-      "name": "SignCarvedBoard",
-      "source": "SignCarvedBoard.obj",
-      "sourceSha256": "fea36b4e2616230b645a24e87a17305efbac3f9074773a9b57527809ae2b2eda",
-      "materialSource": "AetherPalette.mtl",
-      "materialSha256": "f9a13bccaaa93db0cb4d3c183db6d723943f7f51a265e6b7d33892df7a269e12",
-      "vertices": 532,
-      "triangles": 860,
-      "boundsStuds": {
-        "min": [
-          -4.87,
-          -1.965,
-          -0.346
-        ],
-        "max": [
-          4.87,
-          2.12,
-          0.346
-        ]
-      },
-      "trianglesByMaterial": {
-        "Shade11": 328,
-        "Shade13": 64,
-        "Shade16": 16,
-        "Shade17": 96,
-        "Shade18": 40,
-        "Shade23": 128,
-        "Shade29": 12,
-        "Shade31": 176
-      }
-    },
-    {
-      "name": "SignHangingFrame",
-      "source": "SignHangingFrame.obj",
-      "sourceSha256": "cba9383229dece41500f84a6e8ab5dd5ab440f2c6c67cc2668f437799907a591",
-      "materialSource": "AetherPalette.mtl",
-      "materialSha256": "f9a13bccaaa93db0cb4d3c183db6d723943f7f51a265e6b7d33892df7a269e12",
-      "vertices": 818,
-      "triangles": 1414,
-      "boundsStuds": {
-        "min": [
-          -6.281,
-          -0.024,
-          -0.807
-        ],
-        "max": [
-          5.971,
-          7.78,
-          0.7
-        ]
-      },
-      "trianglesByMaterial": {
-        "Shade11": 936,
-        "Shade16": 8,
-        "Shade18": 88,
-        "Shade19": 44,
-        "Shade20": 25,
-        "Shade21": 35,
-        "Shade23": 96,
-        "Shade26": 8,
-        "Shade31": 154,
-        "Shade35": 20
-      }
-    },
-    {
-      "name": "SignLedgerFrame",
-      "source": "SignLedgerFrame.obj",
-      "sourceSha256": "f96ea5e4388ef412f17c6c06bdd03178e1ead3ed01e2d62d2f2ab3025efeee92",
-      "materialSource": "AetherPalette.mtl",
-      "materialSha256": "f9a13bccaaa93db0cb4d3c183db6d723943f7f51a265e6b7d33892df7a269e12",
-      "vertices": 591,
-      "triangles": 950,
-      "boundsStuds": {
-        "min": [
-          -5.23,
-          0,
-          -1.068
-        ],
-        "max": [
-          5.23,
-          11.05,
-          1.068
-        ]
-      },
-      "trianglesByMaterial": {
-        "Shade11": 242,
-        "Shade16": 16,
-        "Shade17": 24,
-        "Shade18": 208,
-        "Shade19": 68,
-        "Shade20": 16,
-        "Shade21": 4,
-        "Shade23": 64,
-        "Shade31": 308
-      }
-    },
-    {
       "name": "SignNoticeBoard",
       "source": "SignNoticeBoard.obj",
       "sourceSha256": "c39d1630c8d3d67b885d6a293d3df7bdae58742ca1b3ef13f16d85aedb5dac85",
@@ -3347,64 +3166,6 @@
       }
     },
     {
-      "name": "SignPlaqueBoard",
-      "source": "SignPlaqueBoard.obj",
-      "sourceSha256": "b878bc40c21ac3c0e54d00b759b24a5f6355b31ea08340aa541ab6685849d3f5",
-      "materialSource": "AetherPalette.mtl",
-      "materialSha256": "f9a13bccaaa93db0cb4d3c183db6d723943f7f51a265e6b7d33892df7a269e12",
-      "vertices": 384,
-      "triangles": 688,
-      "boundsStuds": {
-        "min": [
-          -4.05,
-          -1.6,
-          -0.38
-        ],
-        "max": [
-          4.05,
-          2.02,
-          0.38
-        ]
-      },
-      "trianglesByMaterial": {
-        "Shade11": 404,
-        "Shade16": 16,
-        "Shade19": 80,
-        "Shade20": 12,
-        "Shade21": 2,
-        "Shade33": 174
-      }
-    },
-    {
-      "name": "SignPlinthFrame",
-      "source": "SignPlinthFrame.obj",
-      "sourceSha256": "5b74f9501461d227bce7b5da09e47d2c7ce72602786c4ccd8b5082df121cf47b",
-      "materialSource": "AetherPalette.mtl",
-      "materialSha256": "f9a13bccaaa93db0cb4d3c183db6d723943f7f51a265e6b7d33892df7a269e12",
-      "vertices": 538,
-      "triangles": 956,
-      "boundsStuds": {
-        "min": [
-          -4.58,
-          0,
-          -1
-        ],
-        "max": [
-          4.58,
-          5.55,
-          1
-        ]
-      },
-      "trianglesByMaterial": {
-        "Shade11": 332,
-        "Shade16": 176,
-        "Shade19": 60,
-        "Shade20": 98,
-        "Shade21": 10,
-        "Shade33": 280
-      }
-    },
-    {
       "name": "SignPost",
       "source": "SignPost.obj",
       "sourceSha256": "8fe9ae8cef598a5cf72efed3b5bb363af12e613815bd3f8429bad6b72498fb42",
@@ -3432,38 +3193,6 @@
         "Shade21": 46,
         "Shade23": 40,
         "Shade31": 64
-      }
-    },
-    {
-      "name": "SignScrollBoard",
-      "source": "SignScrollBoard.obj",
-      "sourceSha256": "d34bde587d356342d4d75f84a0d29264d38df074afa52bc06faeb1a9b6c881d4",
-      "materialSource": "AetherPalette.mtl",
-      "materialSha256": "f9a13bccaaa93db0cb4d3c183db6d723943f7f51a265e6b7d33892df7a269e12",
-      "vertices": 628,
-      "triangles": 1096,
-      "boundsStuds": {
-        "min": [
-          -4.54,
-          -1.76,
-          -0.285
-        ],
-        "max": [
-          4.54,
-          2.3,
-          0.285
-        ]
-      },
-      "trianglesByMaterial": {
-        "Shade11": 294,
-        "Shade15": 14,
-        "Shade16": 16,
-        "Shade17": 48,
-        "Shade18": 20,
-        "Shade23": 128,
-        "Shade27": 468,
-        "Shade31": 68,
-        "Shade32": 40
       }
     },
     {
@@ -3522,39 +3251,6 @@
         "Shade23": 344,
         "Shade29": 12,
         "Shade31": 172
-      }
-    },
-    {
-      "name": "SignpostFrame",
-      "source": "SignpostFrame.obj",
-      "sourceSha256": "bfcb8432a49283fdcfb5c6f2da2a746d003526e3a34a6094f73c8bcab05fce21",
-      "materialSource": "AetherPalette.mtl",
-      "materialSha256": "f9a13bccaaa93db0cb4d3c183db6d723943f7f51a265e6b7d33892df7a269e12",
-      "vertices": 336,
-      "triangles": 586,
-      "boundsStuds": {
-        "min": [
-          -0.741,
-          -0.04,
-          -0.701
-        ],
-        "max": [
-          0.747,
-          7.33,
-          0.795
-        ]
-      },
-      "trianglesByMaterial": {
-        "Shade11": 196,
-        "Shade13": 8,
-        "Shade16": 8,
-        "Shade17": 32,
-        "Shade18": 86,
-        "Shade19": 57,
-        "Shade20": 30,
-        "Shade21": 57,
-        "Shade23": 32,
-        "Shade31": 80
       }
     },
     {
