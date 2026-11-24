@@ -424,14 +424,17 @@ local players = {PlayerAdded = signal(), PlayerRemoving = signal(), GetPlayers =
 local dataMarker = {Name = "AetherData"}
 local styleMarker = {Name = "AetherNpcStyle"}
 local NpcStyle = loadModule("shared/NpcStyle.lua")
+local themeMarker = {Name = "AetherUiTheme"}
+local ThemeServer -- loaded below with the instance doubles
 local npcEnv = {
 	game = {GetService = function(_, name)
-		return ({Players = players, ReplicatedStorage = {WaitForChild = function(_, child) return if child == "AetherNpcStyle" then styleMarker else dataMarker end}, ServerStorage = serverStorage})[name]
+		return ({Players = players, ReplicatedStorage = {WaitForChild = function(_, child) return if child == "AetherNpcStyle" then styleMarker elseif child == "AetherUiTheme" then themeMarker else dataMarker end}, ServerStorage = serverStorage})[name]
 	end},
 	workspace = workspaceDouble,
 	-- §52: the server also requires ReplicatedStorage.AetherNpcStyle (outfits, nameplate).
 	require = function(target)
 		if target == styleMarker then return NpcStyle end
+		if target == themeMarker then return ThemeServer end
 		assert(target == dataMarker, "unexpected require"); return Data
 	end,
 	ColorSequence = roblox.ColorSequence,
@@ -442,6 +445,7 @@ local npcEnv = {
 		wait = function() end},
 	os = {clock = function() return clock end, time = os.time},
 }
+ThemeServer = loadModule("shared/UiTheme.lua", {Instance = {new = function(class) return new(class) end}, Color3 = roblox.Color3, Enum = roblox.Enum, UDim2 = roblox.UDim2, UDim = roblox.UDim, Vector2 = roblox.Vector2, ColorSequence = roblox.ColorSequence, NumberSequence = roblox.NumberSequence, NumberSequenceKeypoint = roblox.NumberSequenceKeypoint})
 loadModule("npc.server.lua", npcEnv)
 local folder = workspaceDouble:FindFirstChild("Townsfolk")
 ok(folder ~= nil, "Townsfolk folder in workspace")

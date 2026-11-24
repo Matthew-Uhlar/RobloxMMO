@@ -15,7 +15,7 @@ local Data = require(ReplicatedStorage:WaitForChild("AetherData"))
 local T = Data.Townsfolk
 -- Colours, fonts and HUD lanes from the shared theme (§29).
 local Theme = require(ReplicatedStorage:WaitForChild("AetherUiTheme"))
-Theme.useItems(Data.Items) -- §52: shop offers draw the cached vector item icons
+Theme.useItems(Data.Items, Data.PetDepth and Data.PetDepth.Looks) -- §52: shop offers draw the cached vector item icons
 
 local function rgb(h) return Color3.fromHex(h) end
 local ink, deep, slate = Theme.color.panel, Theme.color.inset, Theme.color.raised
@@ -488,42 +488,72 @@ end)
 -- only while the matching mesh exists. Player characters are never touched
 -- (animate.client.lua owns them); NPC motors are written through C0 here and the
 -- talk nod (animate.client.lua) through the Neck's Transform, so they compose.
+-- QC H1: granted pieces are kept and only missing ones are asked for again; a
+-- "budget" refusal waits until some outfit token is released (no timer), and a
+-- nearer NPC may take the pool from the farthest dressed one.
 local Style = require(ReplicatedStorage:WaitForChild("AetherNpcStyle"))
 local npcs = {} -- [model] = {role, root, head, motors={joint={motor, base}}, marker, phase, yaw, pitch, outfit, pose, ...}
 local function isPhone()
 	local camera = workspace.CurrentCamera
 	return camera ~= nil and camera.ViewportSize.Y < 500
 end
-local function register(model)
+local phoneCached, reducedCached = false, false -- sampled every 0.5 s (QC L: no per-frame closures)
+local watchedModels = setmetatable({}, {__mode = "k"})
+local register, undressEntry, applyPlateVariant
+local function forget(model)
+	local entry = npcs[model]
+	if not entry then return end
+	npcs[model] = nil
+	if entry.marker then entry.marker:Destroy() end
+	entry.forgotten = true
+	return entry
+end
+register = function(model)
 	local role = model:GetAttribute("TownsfolkRole")
 	if type(role) ~= "string" or npcs[model] then return end
+	if not watchedModels[model] then
+		-- QC L: a late or replaced Head / root re-registers the NPC (a fresh bone
+		-- lookup), which also lifts a "bone missing" stop.
+		watchedModels[model] = true
+		model.ChildAdded:Connect(function(child)
+			if child.Name == "Head" or child.Name == "HumanoidRootPart" or child.Name == "RightHand" or child.Name == "UpperTorso" then
+				local old = npcs[model]
+				if old then
+					old.dressing = false
+					undressEntry(old)
+					forget(model)
+				end
+				task.defer(register, model)
+			end
+		end)
+	end
 	local root = model:WaitForChild("HumanoidRootPart", 10)
 	local head = model:WaitForChild("Head", 10)
-	if not root or not head or not model.Parent then return end
+	if not root or not head or not model.Parent or npcs[model] then return end
 	local def = T.NPCs[role]
 	local outfit = Style.outfit(role, def)
-	local entry = {role = role, root = root, head = head, motors = {}, phase = (#model.Name % 7) * 0.9, yaw = 0, pitch = 0, attention = 0,
-		outfit = outfit, idle = model:GetAttribute("NpcIdle") or outfit.idle, pose = {}, lastBeat = -1,
-		dressed = false, dressing = false, retryAt = 0, tokens = {}, hidden = {}, fx = nil, distance = math.huge}
+	local entry = {role = role, model = model, root = root, head = head, motors = {}, phase = (#model.Name % 7) * 0.9, yaw = 0, pitch = 0, attention = 0,
+		outfit = outfit, idle = model:GetAttribute("NpcIdle") or outfit.idle, pose = {}, lastBeat = -1, animating = false, rank = math.huge,
+		dressing = false, blockedAt = nil, noBone = false, tokens = {}, failed = {}, hidden = {}, fx = nil, distance = math.huge}
 	for joint, name in pairs(Style.MOTORS) do
 		local m = model:FindFirstChild(name, true)
 		if m and m:IsA("Motor6D") then entry.motors[joint] = {motor = m, base = m.C0} end
 	end
-	local marker = make("BillboardGui", head, {Name = "TownsfolkMarker", Size = UDim2.fromOffset(34, 34), StudsOffset = Vector3.new(0, 4.4, 0),
-		AlwaysOnTop = false, MaxDistance = 120, LightInfluence = 0, Enabled = false})
+	-- QC M1: the quest marker floats a fixed pixel gap above the plate (its own
+	-- billboard at the plate's anchor, shifted by SizeOffset in units of its size).
+	local plate = head:FindFirstChild("Nameplate")
+	local lift = if plate and plate:IsA("BillboardGui") then plate.StudsOffset.Y else 2.4
+	local shift = Style.markerShift()
+	local size = Style.PLATE.markerSize
+	local marker = make("BillboardGui", head, {Name = "TownsfolkMarker", Size = UDim2.fromOffset(size, size), StudsOffset = Vector3.new(0, lift, 0),
+		SizeOffset = Vector2.new(0, shift), AlwaysOnTop = false, MaxDistance = 120, LightInfluence = 0, Enabled = false})
 	local bubble = make("TextLabel", marker, {Size = UDim2.fromScale(1, 1), BackgroundColor3 = gold, Text = "!", Font = bold, TextSize = 22, TextColor3 = deep})
 	round(bubble, 17, deep)
 	entry.marker, entry.bubble = marker, bubble
-	-- A "CLICK" cue under the server nameplate (SkyBlock-style vendor hologram,
-	-- §29 theme), shown only up close; it follows the plate's lift over tall hats.
-	local plate = head:FindFirstChild("Nameplate")
-	local lift = if plate and plate:IsA("BillboardGui") then plate.StudsOffset.Y else 2.4
-	local tag = make("BillboardGui", head, {Name = "TownsfolkClick", Size = UDim2.fromOffset(90, 16), StudsOffset = Vector3.new(0, lift - 1.3, 0),
-		AlwaysOnTop = false, MaxDistance = 36, LightInfluence = 0})
-	make("TextLabel", tag, {Name = "Click", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = "CLICK", Font = Theme.font.display, TextSize = 10,
-		TextColor3 = Theme.rgb("FFE066"), TextStrokeTransparency = 0.3, TextStrokeColor3 = Theme.color.void})
-	entry.tag = tag
+	entry.board = plate
+	entry.click = plate and plate:FindFirstChild("Click", true)
 	npcs[model] = entry
+	applyPlateVariant(entry)
 end
 
 -- Outfits ---------------------------------------------------------------------
@@ -532,6 +562,7 @@ local function forge()
 	forgeApi = forgeApi or ReplicatedStorage:FindFirstChild("MeshForgeLocal")
 	return forgeApi
 end
+local poolEpoch = 0 -- bumped whenever an outfit token goes back to the pool
 local function hideSlot(model, entry, slot)
 	for _, d in ipairs(model:GetDescendants()) do
 		if d:IsA("BasePart") and d:GetAttribute("OutfitSlot") == slot and not entry.hidden[d] then
@@ -540,27 +571,50 @@ local function hideSlot(model, entry, slot)
 		end
 	end
 end
-local function undress(entry)
+undressEntry = function(entry)
 	local api = forge()
-	for _, token in ipairs(entry.tokens) do if api then pcall(api.Invoke, api, "outfitRelease", token) end end
-	table.clear(entry.tokens)
+	local released = false
+	for i, token in pairs(entry.tokens) do
+		if api then pcall(api.Invoke, api, "outfitRelease", token) end
+		entry.tokens[i] = nil
+		released = true
+	end
 	for part in pairs(entry.hidden) do if part.Parent then part.LocalTransparencyModifier = 0 end end
 	table.clear(entry.hidden)
 	entry.fx = nil
-	entry.dressed = false
+	entry.blockedAt = nil
+	if released then poolEpoch += 1 end
 end
+local function dressedCount(entry)
+	local n = 0
+	for _ in pairs(entry.tokens) do n += 1 end
+	return n
+end
+local function complete(entry)
+	for i in ipairs(entry.outfit.pieces) do
+		if not entry.tokens[i] and not entry.failed[i] then return false end
+	end
+	return true
+end
+-- Asks only for the missing pieces. Returns "budget" when the pool refused.
 local function dress(model, entry)
 	local api = forge()
-	if not api or entry.dressing then return end
+	if not api or entry.dressing or entry.noBone then return nil end
 	entry.dressing = true
-	local missing = false
-	for _, piece in ipairs(entry.outfit.pieces) do
+	local refused = nil
+	for i, piece in ipairs(entry.outfit.pieces) do
+		if entry.tokens[i] or entry.failed[i] then continue end
 		local bone = model:FindFirstChild(piece.bone)
-		if not bone or not entry.dressing then missing = true; continue end
+		if not bone then entry.noBone = true; break end -- QC L: stop until the NPC re-registers
 		local ok, clone, token, extent, centre = pcall(api.Invoke, api, "outfit", {shape = piece.shape, tint = if piece.dye then Color3.fromHex(piece.dye) else nil})
-		if not ok or not clone then missing = true; continue end
-		if not entry.dressing or not model.Parent then pcall(api.Invoke, api, "outfitRelease", token); missing = true; continue end
-		table.insert(entry.tokens, token)
+		if not ok then entry.failed[i] = true; continue end
+		if not clone then
+			if token == "budget" then refused = "budget"; break end
+			entry.failed[i] = true -- "unknown" / "unavailable" / "failed": never asked again
+			continue
+		end
+		if not entry.dressing or entry.forgotten or not model.Parent then pcall(api.Invoke, api, "outfitRelease", token); poolEpoch += 1; break end
+		entry.tokens[i] = token
 		local k = piece.k or 1
 		clone.Size = extent * k
 		clone.Anchored, clone.Massless, clone.CanCollide, clone.CanQuery, clone.CanTouch, clone.CastShadow = false, true, false, false, false, true
@@ -575,42 +629,80 @@ local function dress(model, entry)
 		if piece.slot == "held" then entry.fx = clone end
 	end
 	entry.dressing = false
-	entry.dressed = true
-	if missing then entry.retryAt = os.clock() + 8 end
+	entry.blockedAt = if refused then poolEpoch else nil
+	return refused
 end
--- Every 0.5 s: the nearest NPCs within range are dressed (cap per device).
-local dressOrder, keep = {}, {}
+-- Every 0.5 s: rank NPCs by distance; the nearest within range are dressed (cap
+-- per device), farther ones undressed; a blocked nearer NPC may take the pool
+-- from the farthest dressed one; the nearest ANIM_CAP animate.
+local order, keep = {}, {}
 task.spawn(function()
 	while true do
 		task.wait(0.5)
+		phoneCached = isPhone()
+		reducedCached = Theme.reducedMotion(player)
 		local character = player.Character
 		local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-		local phone = isPhone()
-		local range = if phone then Style.DRESS_RANGE.phone else Style.DRESS_RANGE.desktop
-		local cap = if phone then Style.DRESS_CAP.phone else Style.DRESS_CAP.desktop
-		table.clear(dressOrder)
+		local range = if phoneCached then Style.DRESS_RANGE.phone else Style.DRESS_RANGE.desktop
+		local cap = if phoneCached then Style.DRESS_CAP.phone else Style.DRESS_CAP.desktop
+		local animCap = if phoneCached then Style.ANIM_CAP.phone else Style.ANIM_CAP.desktop
+		table.clear(order)
 		table.clear(keep)
 		for model, entry in pairs(npcs) do
 			if not model.Parent then continue end
 			entry.distance = if rootPart then (rootPart.Position - entry.root.Position).Magnitude else math.huge
-			-- Hysteresis: a dressed NPC keeps its outfit until 15% past the range.
-			if entry.distance <= range * (if entry.dressed then 1.15 else 1) then table.insert(dressOrder, entry) end
+			table.insert(order, entry)
 		end
-		table.sort(dressOrder, function(a, b) return a.distance < b.distance end)
-		for i, entry in ipairs(dressOrder) do if i <= cap then keep[entry] = true end end
-		for model, entry in pairs(npcs) do
-			if keep[entry] then
-				if not entry.dressed and not entry.dressing then task.spawn(dress, model, entry)
-				elseif entry.dressed and entry.retryAt > 0 and os.clock() >= entry.retryAt then
-					-- A piece was refused (pool full): try the whole outfit again.
-					entry.retryAt = 0
-					undress(entry)
-					task.spawn(dress, model, entry)
+		table.sort(order, function(a, b) return a.distance < b.distance end)
+		local dressedN = 0
+		for i, entry in ipairs(order) do
+			entry.rank = if i <= animCap then i else math.huge
+			-- Hysteresis: a dressed NPC keeps its outfit until 15% past the range.
+			local inRange = entry.distance <= range * (if dressedCount(entry) > 0 then 1.15 else 1)
+			if inRange and dressedN < cap then keep[entry] = true; dressedN += 1 end
+			local near = entry.distance <= 36
+			if entry.click and entry.click.Visible ~= near then entry.click.Visible = near end
+			local reach = if phoneCached then Style.PLATE.phone.maxDistance else Style.PLATE.maxDistance
+			if entry.board and entry.board.MaxDistance ~= reach then entry.board.MaxDistance = reach end
+		end
+		for _, entry in ipairs(order) do
+			if not keep[entry] and dressedCount(entry) > 0 then entry.dressing = false; undressEntry(entry) end
+		end
+		for _, entry in ipairs(order) do
+			if not keep[entry] or entry.dressing or entry.noBone or complete(entry) then continue end
+			if entry.blockedAt == poolEpoch then
+				-- Still refused and nothing was released: take the pool from the
+				-- farthest dressed NPC that is farther than this one, if any.
+				local victim = nil
+				for j = #order, 1, -1 do
+					local other = order[j]
+					if other == entry or other.distance <= entry.distance then break end
+					if dressedCount(other) > 0 then victim = other; break end
 				end
-			elseif entry.dressed then
-				entry.dressing = false
-				undress(entry)
+				if not victim then continue end
+				victim.dressing = false
+				undressEntry(victim)
 			end
+			task.spawn(dress, entry.model, entry)
+		end
+	end
+end)
+-- Phone plate variant (QC M1): a smaller pixel clamp, applied locally.
+applyPlateVariant = function(entry)
+	local plate = entry.board and entry.board:FindFirstChild("Plate")
+	local clamp = plate and plate:FindFirstChild("PixelClamp")
+	if not clamp then return end
+	local P = Style.PLATE
+	local maxS, minS = if phoneCached then P.phone.maxSize else {P.width, P.height}, if phoneCached then P.phone.minSize else P.minSize
+	clamp.MaxSize, clamp.MinSize = Vector2.new(maxS[1], maxS[2]), Vector2.new(minS[1], minS[2])
+end
+task.spawn(function()
+	local last = nil
+	while true do
+		task.wait(1)
+		if last ~= phoneCached then
+			last = phoneCached
+			for _, entry in pairs(npcs) do applyPlateVariant(entry) end
 		end
 	end
 end)
@@ -627,7 +719,7 @@ local function beat(entry, reduced)
 			Speed = NumberRange.new(5, 9), SpreadAngle = Vector2.new(60, 60), LightEmission = 1, Size = NumberSequence.new(0.12, 0),
 			Color = ColorSequence.new(color), Acceleration = Vector3.new(0, -24, 0)})
 	end
-	emitter:Emit(if isPhone() then 3 else 7)
+	emitter:Emit(if phoneCached then 3 else 7)
 end
 
 local function updateMarkers()
@@ -660,14 +752,24 @@ task.spawn(function()
 	local folder = workspace:WaitForChild("Townsfolk")
 	folder.ChildAdded:Connect(function(m) task.spawn(register, m); task.delay(0.5, updateMarkers) end)
 	folder.ChildRemoved:Connect(function(m)
-		local entry = npcs[m]
-		if entry then entry.dressing = false; undress(entry) end
-		npcs[m] = nil
+		local entry = forget(m)
+		if entry then entry.dressing = false; undressEntry(entry) end
 		if talking and talking.model == m then closeDialogue() end
 	end)
 	for _, m in ipairs(folder:GetChildren()) do task.spawn(register, m) end
 	task.delay(1, updateMarkers)
 end)
+
+-- Writes the loop's first key (its rest pose) once when an NPC stops animating
+-- (QC L), so a far NPC never freezes mid-swing.
+local function restPose(entry)
+	local first = Style.IDLES[entry.idle] and Style.IDLES[entry.idle].keys[1].pose or {}
+	for joint, slot in pairs(entry.motors) do
+		local v = first[joint]
+		slot.motor.C0 = if v then slot.base * CFrame.Angles(math.rad(v[1]), math.rad(v[2]), math.rad(v[3])) else slot.base
+	end
+	entry.animating = false
+end
 
 local LOOK_RANGE, ANIM_STEP = 20, 1 / 30
 local accumulator, frame = 0, 0
@@ -682,15 +784,20 @@ RunService.Heartbeat:Connect(function(dt)
 	local myHead = character and character:FindFirstChild("Head")
 	local myPos = myHead and myHead.Position
 	local now = os.clock()
-	local phone = isPhone()
-	local reduced = Theme.reducedMotion(player)
+	local phone = phoneCached
+	local reduced = reducedCached
 	for model, entry in pairs(npcs) do
 		if not model.Parent then npcs[model] = nil; continue end
 		local rootPos = entry.root.Position
 		local distance = if myPos then (myPos - rootPos).Magnitude else math.huge
 		local focused = talking ~= nil and talking.model == model
 		local lod = if focused then 2 else Style.lod(distance, phone)
-		if lod == 0 or distance > T.IDLE_RANGE then continue end
+		-- Off: far away, past the idle range, or not among the nearest ANIM_CAP.
+		if lod == 0 or distance > T.IDLE_RANGE or (entry.rank == math.huge and not focused) then
+			if entry.animating then restPose(entry) end
+			continue
+		end
+		entry.animating = true
 		-- Half rate at mid range: even frames only.
 		if lod == 1 and frame % 2 == 1 then continue end
 		local t = now + entry.phase
@@ -714,7 +821,7 @@ RunService.Heartbeat:Connect(function(dt)
 			local phase = t % loop.period
 			local crossed = entry.lastBeat >= 0 and entry.lastBeat < loop.beat and phase >= loop.beat
 			entry.lastBeat = phase
-			if crossed and entry.dressed and distance < 40 and not focused then beat(entry, reduced) end
+			if crossed and entry.fx and distance < 40 and not focused then beat(entry, reduced) end
 		end
 		local calm = 1 - 0.55 * entry.attention * (if focused then 1 else 0.6)
 		local talk = if focused and not reduced then math.sin(t * 6) * 4 else 0

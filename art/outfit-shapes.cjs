@@ -96,11 +96,22 @@ module.exports = ({ outfit, C, PI }) => {
   });
   // Tinker's goggles: a strap band and two domed glass lenses in brass rims.
   outfit('HatGoggles', { smooth: HARD, tint: '2B2B2B', kind: 'outfit', slot: 'head' }, kit => {
-    torus(kit, { pos: [0, .32, 0], R: .64, r: .07, n: 32, m: 10, sx: 1, sz: 1, color: LEATHER });
+    // QC M3: a padded strap that follows the square head (a superellipse loop, not
+    // a ring that the head's corners poke through), a stitched brow band, two
+    // deep brass cups with a bevelled rim and domed lenses, a nose bridge, side
+    // rivets and a buckle at the back. (The strap colour is the dye: TD stitching.)
+    const loop = (half, y, ex, n) => Array.from({ length: n + 1 }, (_, i) => {
+      const a = i * 2 * PI / n, c = Math.cos(a), sn = Math.sin(a);
+      return [Math.sign(c) * Math.abs(c) ** (2 / ex) * half, y, Math.sign(sn) * Math.abs(sn) ** (2 / ex) * half];
+    });
+    kit.tube(loop(.66, .33, 7, 24), .075, { n: 12, color: LEATHER });
     for (const x of [-.27, .27]) {
-      torus(kit, { pos: [x, .32, -.66], rot: [PI / 2, 0, 0], R: .17, r: .05, n: 20, m: 10, color: BRASS });
-      forward(kit, [x, .32, -.66], [[.16, 0], [.13, .07], [0, .1]], { n: 20, color: T, capStart: true });
+      forward(kit, [x, .33, -.66], [[.2, -.02], [.215, .04], [.21, .1], [.19, .15], [.17, .16], [.15, .13]], { n: 18, color: byLevel({ 3: C.GOLD, default: BRASS }), capStart: true });
+      forward(kit, [x, .33, -.79], [[.15, 0], [.13, .04], [.08, .07], [0, .08]], { n: 18, color: bands(T, T, TL), capStart: true });
+      dome(kit, x + (x < 0 ? -.2 : .2), .33, -.62, .035, BRASS, 1);
     }
+    kit.tube([[-.08, .35, -.74], [-.03, .38, -.76], [.03, .38, -.76], [.08, .35, -.74]], .03, { n: 10, color: BRASS });
+    roundBox(kit, { pos: [0, .33, .68], rot: [0, 0, 0], len: .06, w: .22, h: .16, steps: 4, m: 16, ex: 3.5, cols: [BRASS] });
   });
   // Knight's helm: a domed bowl, cheek guards, a nasal and a plume ridge.
   outfit('HatHelm', { smooth: HARD, tint: 'B23A48', kind: 'outfit', slot: 'head' }, kit => {
@@ -177,11 +188,15 @@ module.exports = ({ outfit, C, PI }) => {
     for (const x of [-.48, .48]) dome(kit, x, .54, -.6, .05, BRASS, 1);
   });
   // Cloak: a long folded cape from a mantle collar to the ankles.
-  outfit('Cloak', { smooth: CLOTH, tint: '9EE7D2', kind: 'outfit', slot: 'torso' }, kit => {
-    sheet(kit, { top: .74, len: 3.75, steps: 12, m: 20, w: t => 2.1 + t * .9, th: () => .05,
-      depth: (t, x) => .58 + .16 * t + .12 * x * x + .05 * Math.sin(x * 5.2) * t, cols: [TD, T, T, T, T, T, T, T, T, T, T, TD] });
-    torus(kit, { pos: [0, .72, 0], R: .82, r: .1, n: 28, sx: 1.25, sz: .72, color: TD });
-    dome(kit, -.62, .66, -.5, .08, C.GOLD, 1); dome(kit, .62, .66, -.5, .08, C.GOLD, 1);
+  outfit('Cloak', { smooth: CLOTH, tint: '00838F', kind: 'outfit', slot: 'torso' }, kit => {
+    // QC M3: the cape hangs from the shoulders (wide enough to cover the shoulder
+    // line and the upper arms' backs) close to the back, with a heavy lined hem.
+    sheet(kit, { top: .8, len: 3.8, steps: 12, m: 20, w: t => 2.5 + t * .8, th: t => .07 + .03 * t,
+      depth: (t, x) => .53 + .14 * t + .1 * x * x + .05 * Math.sin(x * 5.2) * t, cols: [TD, T, T, T, T, T, T, T, T, T, T, TD] });
+    // Shoulder drape: a short lathe collar over the shoulders, opaque all round.
+    kit.lathe([[.62, .92], [1.0, .84], [1.32, .66], [1.42, .48], [1.36, .44], [1.2, .58], [.9, .74], [.58, .8]],
+      { n: 30, sx: 1, sz: .56, color: byLevel({ 2: TD, 3: TD, default: T }), capStart: true, capEnd: true });
+    dome(kit, -.62, .72, -.46, .08, C.GOLD, 1); dome(kit, .62, .72, -.46, .08, C.GOLD, 1);
   });
   // Mantle: a short shoulder cape (scholars, officials, keepers).
   outfit('Mantle', { smooth: CLOTH, tint: '1F2F4F', kind: 'outfit', slot: 'torso' }, kit => {

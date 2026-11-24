@@ -19,7 +19,7 @@ local env = {Instance = {new = function(class) return H.new(class) end}, Color3 
 	Vector2 = roblox.Vector2, ColorSequence = roblox.ColorSequence, NumberSequence = roblox.NumberSequence, NumberSequenceKeypoint = roblox.NumberSequenceKeypoint}
 local T = H.loadTheme(env)
 local Items = H.Data.Items
-T.useItems(Items)
+T.useItems(Items, H.Data.PetDepth and H.Data.PetDepth.Looks)
 
 local function screen(w, h)
 	local gui = H.new("ScreenGui", {Name = "Icons", DisplayOrder = 1})
@@ -103,18 +103,18 @@ label(plateBack, "Townsfolk nameplates — region accent bar, trade medallion, c
 do
 	local Style = luau.load(fs.readFile("shared/NpcStyle.lua"), {debugName = "NpcStyle", injectGlobals = true})()
 	local storage = H.new("Folder", {Name = "ServerStorage"})
-	local styleMarker, dataMarker = {}, {}
+	local styleMarker, dataMarker, themeMarker = {}, {}, {}
 	local function signal() return {Connect = function() return {Disconnect = function() end} end} end
 	local world = H.new("Folder", {Name = "Workspace"})
 	world.ChildAdded, world.ChildRemoved = signal(), signal()
 	luau.load(fs.readFile("npc.server.lua"), {debugName = "npc.server.lua", injectGlobals = true, environment = {
 		game = {GetService = function(_, name)
 			return ({Players = {PlayerAdded = signal(), PlayerRemoving = signal(), GetPlayers = function() return {} end},
-				ReplicatedStorage = {WaitForChild = function(_, child) return if child == "AetherNpcStyle" then styleMarker else dataMarker end},
+				ReplicatedStorage = {WaitForChild = function(_, child) return if child == "AetherNpcStyle" then styleMarker elseif child == "AetherUiTheme" then themeMarker else dataMarker end},
 				ServerStorage = storage})[name]
 		end},
 		workspace = world,
-		require = function(target) return if target == styleMarker then Style else H.Data end,
+		require = function(target) return if target == styleMarker then Style elseif target == themeMarker then T else H.Data end,
 		Instance = {new = function(class) return H.new(class) end}, RaycastParams = {new = function() return {} end},
 		Vector3 = roblox.Vector3, CFrame = roblox.CFrame, Color3 = roblox.Color3, Enum = roblox.Enum, UDim2 = roblox.UDim2, UDim = roblox.UDim,
 		Vector2 = roblox.Vector2, ColorSequence = roblox.ColorSequence,
@@ -130,7 +130,8 @@ do
 				local plate = model:FindFirstChild("Head", true):FindFirstChild("Nameplate"):FindFirstChild("Plate")
 				plate.Parent = plateBack
 				plate.AnchorPoint = roblox.Vector2.new(0, 0)
-				plate.Position = roblox.UDim2.fromOffset(16 + (i % 4) * 300, 40 + math.floor(i / 4) * 72)
+				plate.Size = roblox.UDim2.fromOffset(Style.PLATE.width, Style.PLATE.height) -- the near (max) size of its pixel clamp
+				plate.Position = roblox.UDim2.fromOffset(16 + (i % 4) * 300, 40 + math.floor(i / 4) * 82)
 				i += 1
 			end
 		end
@@ -142,7 +143,7 @@ local function job(name, gui, h)
 	fs.writeFile(file, serde.encode("json", {screen = {W, h}, label = "icons", shots = {{id = name, guis = {H.dump(gui)}}}}))
 	return file
 end
-local jobs = {job("families", familyGui, familyH), job("satchel", satchelGui, satchelH), job("nameplates", plateGui, 340)}
+local jobs = {job("families", familyGui, familyH), job("satchel", satchelGui, satchelH), job("nameplates", plateGui, 380)}
 local art = {palette = H.Catalog.palette, tintIndex = H.Catalog.tintIndex, shapes = {}}
 fs.writeFile(outDir .. "/art.json", serde.encode("json", art))
 local args = {"-I", "tools/rasterize-ui.py", "--art", outDir .. "/art.json", "--out", outDir}

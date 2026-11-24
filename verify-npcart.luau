@@ -179,7 +179,7 @@ ok(at("hammer", 0.55).rightArm[1] > 100 and at("hammer", S.IDLES.hammer.beat).ri
 ok(at("cast", 2.8).rightWrist[1] < 0 and at("cast", S.IDLES.cast.beat).rightWrist[1] > 0, "angler: wrist cocks then flicks the rod tip")
 ok(at("read", 0).neck[1] <= -18, "scholar: eyes down on the page")
 ok(at("read", 4.3).leftArm[3] > at("read", 0).leftArm[3], "scholar: the left hand turns a page")
-ok(at("poke", S.IDLES.poke.beat).waist[1] <= -20, "beaconkeeper: stoops to the embers")
+ok(at("poke", S.IDLES.poke.beat).waist[1] <= -12, "beaconkeeper: stoops to the embers")
 ok(at("wave", 1.8).leftArm[1] >= 140, "wayfinder: a raised waving hand")
 ok(at("rune", S.IDLES.rune.beat).leftArm[1] >= 90, "runebinder: traces the glyph high")
 ok(at("herald", S.IDLES.herald.beat).rightArm[1] >= 100, "herald: the horn to the lips")
@@ -305,8 +305,8 @@ for _, role in ipairs(ROSTER) do
 	ok(tris <= 5200, role .. " outfit " .. tris .. " triangles <= 5200")
 	worst = math.max(worst, tris)
 end
-ok(worst * S.DRESS_CAP.desktop <= 72000, "desktop dressed cap within 72k placed triangles (" .. worst * S.DRESS_CAP.desktop .. ")")
-ok(worst * S.DRESS_CAP.phone <= 26000, "phone dressed cap within 26k placed triangles (" .. worst * S.DRESS_CAP.phone .. ")")
+ok(worst * S.DRESS_CAP.desktop <= 75000, "desktop dressed cap within 75k placed triangles (" .. worst * S.DRESS_CAP.desktop .. ")")
+ok(worst * S.DRESS_CAP.phone <= 22000, "phone dressed cap within 22k placed triangles (" .. worst * S.DRESS_CAP.phone .. ")")
 print(string.format("PASS: outfit meshes (%d) — %d shapes, %d triangles", checks - part3, count, total))
 
 ------------------------------------------------------------------------------
@@ -364,15 +364,22 @@ do
 	eq(api.visual("CreatureBoar", dye), nil, "the outfit API refuses creature shapes")
 	eq(api.visual("Boulder", dye), nil, "the outfit API refuses world props")
 	ok(api.release(token) and api.release(token2) and api.release(token3), "release")
-	eq(forge.stats.instances, 0, "instances returned")
+	eq(forge.stats.outfitInstances, 0, "outfit instances returned")
+	-- [QC L] outfit clones never count against the world's instance / triangle limits.
+	local _, probe = api.visual("HatHood", dye)
+	eq(forge.stats.instances, 0, "[L] an outfit clone is not a world instance")
+	eq(forge.stats.placedTriangles, 0, "[L] nor world placed triangles")
+	eq(forge.stats.outfitInstances, 1, "[L] it counts in the outfit pool")
+	api.release(probe)
 	-- Fill the pool with busy templates: a new one waits; idle ones give way (LRU).
 	local held = {}
 	for i = 1, api.cap do
-		local _, t = api.visual("PropRod", Color3.fromRGB(i * 5 % 255, 30, 60))
+		local _, t = api.visual("PropRod", Color3.fromRGB(i * 4 % 256, 30 + i, 60))
 		ok(t ~= nil, "outfit template " .. i)
 		table.insert(held, t)
 	end
-	eq(api.visual("PropHoe", Color3.fromRGB(1, 2, 3)), nil, "busy outfit templates are never evicted")
+	local none, reason = api.visual("PropHoe", Color3.fromRGB(1, 2, 3))
+	ok(none == nil and reason == "budget", "[H1] busy outfit templates are never evicted; the refusal says budget (" .. tostring(none) .. " " .. tostring(reason) .. ")")
 	local _, creatureToken = forge.creature.visual("CreatureBoar", Color3.fromHex("A0683D"))
 	ok(creatureToken ~= nil, "a full outfit pool never starves the creatures")
 	api.release(held[1])
@@ -384,6 +391,89 @@ do
 	local _, b = phone.outfit.visual("HatCap", Color3.fromHex("0277BD"))
 	ok(a and b and phone.stats.outfitTemplates == 1, "phones share one variant per outfit shape")
 	ok(phone.outfit.cap < api.cap, "phones keep a smaller outfit pool")
+	-- [H1] the pools are the ones the dressed sets are sized against.
+	eq(api.cap, S.POOL.desktop.templates, "[H1] desktop outfit template cap = NpcStyle.POOL")
+	eq(api.triangleCap, S.POOL.desktop.triangles, "[H1] desktop outfit triangle cap = NpcStyle.POOL")
+	eq(phone.outfit.cap, S.POOL.phone.templates, "[H1] phone outfit template cap = NpcStyle.POOL")
+	eq(phone.outfit.triangleCap, S.POOL.phone.triangles, "[H1] phone outfit triangle cap = NpcStyle.POOL")
+	local _, gone = api.visual("NoSuchHat", dye)
+	eq(gone, "unknown", "[H1] an unknown shape is refused for good (the client never asks again)")
+end
+-- [QC L] a memory / budget error while building an outfit blocks only the outfit pool.
+do
+	local asset = {CreateEditableMesh = function()
+		local mesh = {n = 0}
+		function mesh.AddVertex(self) self.n += 1; return self.n end
+		function mesh.AddColor() return 1 end
+		function mesh.AddTriangle() return 1 end
+		function mesh.SetFaceColors() end
+		function mesh.AddNormal() return 1 end
+		function mesh.SetFaceNormals() end
+		function mesh.Destroy() end
+		return mesh
+	end, CreateMeshPartAsync = function() error("not enough memory for the mesh budget") end}
+	local tokens = {AetherWorldArt = "world", AetherArt = "props", AetherCreatureArt = "creature", AetherOutfitArt = "outfit"}
+	local services = {AssetService = asset, ReplicatedStorage = {WaitForChild = function(_, name) return tokens[name] end},
+		Players = {LocalPlayer = {Character = {FindFirstChild = function() return {CFrame = CFrame.new()} end}}},
+		UserInputService = {TouchEnabled = false, KeyboardEnabled = true}}
+	local test = {}
+	load("forge.client.lua", {
+		game = {GetService = function(_, name) return services[name] end},
+		workspace = {GetDescendants = function() return {} end, DescendantAdded = {Connect = function() end}},
+		require = function(token) return ({world = World, props = Props, creature = Creatures, outfit = Outfits})[token] or error("module") end,
+		Content = {fromObject = function(object) return {object = object} end},
+		MeshForgeTest = test, Vector3 = Vector3, CFrame = CFrame, Color3 = Color3, Instance = roblox.Instance, Enum = Enum, Font = roblox.Font,
+		task = {spawn = function(f, ...) if type(f) == "thread" then coroutine.resume(f, ...) else f(...) end end, defer = function() end, wait = function() end},
+		warn = function() end, print = function() end,
+	})
+	local forge = test.forge
+	local clone, reason = forge.outfit.visual("HatCap", Color3.fromHex("6D4C41"))
+	ok(clone == nil and reason == "unavailable", "[L] a memory failure refuses the outfit (" .. tostring(reason) .. ")")
+	ok(forge.outfit.pool.blocked == true, "[L] the outfit pool is blocked")
+	ok(forge.stopReason() == nil and forge.creature.pool.blocked ~= true, "[L] the world and creature pools are not")
+end
+-- [H1] Worst-case dressed sets fit the pool: every subset of DRESS_CAP NPCs of a
+-- region (the nearest-N any player can stand among), distinct (shape, dye)
+-- templates and their triangles on desktop; distinct shapes (one shared variant)
+-- on phones.
+do
+	local byRegion = {}
+	for _, role in ipairs(ROSTER) do
+		local region = T.NPCs[role].region
+		byRegion[region] = byRegion[region] or {}
+		table.insert(byRegion[region], outfitOf(role))
+	end
+	local function worst(list, n, phone)
+		local bestT, bestTris = 0, 0
+		local pick = {}
+		local function measure()
+			local keys, count, tris = {}, 0, 0
+			for _, o in ipairs(pick) do
+				for _, p in ipairs(o.pieces) do
+					local key = if phone then p.shape else p.shape .. "#" .. (p.dye or "")
+					if not keys[key] then keys[key] = true; count += 1; tris += Outfits.shapes[p.shape].tris end
+				end
+			end
+			bestT, bestTris = math.max(bestT, count), math.max(bestTris, tris)
+		end
+		local function choose(start, left)
+			if left == 0 or start > #list then measure(); return end
+			for i = start, #list do
+				table.insert(pick, list[i]); choose(i + 1, left - 1); table.remove(pick)
+				if #list - i < left - 1 then break end
+			end
+		end
+		choose(1, math.min(n, #list))
+		return bestT, bestTris
+	end
+	for region, list in pairs(byRegion) do
+		local dt, dtris = worst(list, S.DRESS_CAP.desktop, false)
+		ok(dt <= S.POOL.desktop.templates and dtris <= S.POOL.desktop.triangles,
+			string.format("[H1] %s: the worst %d dressed NPCs need %d templates / %d tris (desktop pool %d / %d)", region, S.DRESS_CAP.desktop, dt, dtris, S.POOL.desktop.templates, S.POOL.desktop.triangles))
+		local pt, ptris = worst(list, S.DRESS_CAP.phone, true)
+		ok(pt <= S.POOL.phone.templates and ptris <= S.POOL.phone.triangles,
+			string.format("[H1] %s: the worst %d dressed NPCs need %d shapes / %d tris (phone pool %d / %d)", region, S.DRESS_CAP.phone, pt, ptris, S.POOL.phone.templates, S.POOL.phone.triangles))
+	end
 end
 print("PASS: MeshForge outfit pool (" .. (checks - part4) .. ")")
 
@@ -433,15 +523,16 @@ function Methods:PivotTo() end
 local function signal() return {Connect = function() return {Disconnect = function() end} end} end
 for _, name in ipairs({"ChildAdded", "ChildRemoved", "DescendantAdded", "DescendantRemoving", "AttributeChanged", "PlayerAdded", "PlayerRemoving", "CharacterAdded"}) do Methods[name] = signal() end
 function Methods:GetPropertyChangedSignal() return signal() end
-local serverStorage, styleMarker, dataMarker = new("ServerStorage"), {}, {}
+local serverStorage, styleMarker, dataMarker, themeMarker = new("ServerStorage"), {}, {}, {}
+local ThemeServer = load("shared/UiTheme.lua", {Instance = {new = new}, Color3 = roblox.Color3, Enum = roblox.Enum, UDim2 = roblox.UDim2, UDim = roblox.UDim, Vector2 = roblox.Vector2, ColorSequence = roblox.ColorSequence, NumberSequence = roblox.NumberSequence, NumberSequenceKeypoint = roblox.NumberSequenceKeypoint})
 load("npc.server.lua", {
 	game = {GetService = function(_, name)
 		return ({Players = {PlayerAdded = signal(), PlayerRemoving = signal(), GetPlayers = function() return {} end},
-			ReplicatedStorage = {WaitForChild = function(_, child) return if child == "AetherNpcStyle" then styleMarker else dataMarker end},
+			ReplicatedStorage = {WaitForChild = function(_, child) return if child == "AetherNpcStyle" then styleMarker elseif child == "AetherUiTheme" then themeMarker else dataMarker end},
 			ServerStorage = serverStorage})[name]
 	end},
 	workspace = new("Workspace"),
-	require = function(target) return if target == styleMarker then S else Data end,
+	require = function(target) return if target == styleMarker then S elseif target == themeMarker then ThemeServer else Data end,
 	Instance = {new = new}, RaycastParams = {new = function() return {} end},
 	Vector3 = Vector3, CFrame = CFrame, Color3 = Color3, Enum = Enum, UDim2 = roblox.UDim2, UDim = roblox.UDim, Vector2 = roblox.Vector2, ColorSequence = roblox.ColorSequence,
 	task = {delay = function() end, spawn = function() end, wait = function() end, defer = function() end},
@@ -482,21 +573,57 @@ for _, role in ipairs(ROSTER) do
 		for _, v in ipairs(data.vertices) do top = math.max(top, v[2]) end
 		ok(board.StudsOffset.Y >= top + 0.6, string.format("%s plate clears the %s crown (%.2f >= %.2f)", role, hatShape, board.StudsOffset.Y, top + 0.6))
 	end
-	for _, name in ipairs({"NpcName", "NpcTitle", "TradeGlyph"}) do
+	for _, name in ipairs({"NpcName", "NpcTitle"}) do
 		local label = plate:FindFirstChild(name)
 		ok(label and label.ClassName == "TextLabel", role .. " " .. name)
 		ok(not string.find(label.Font.Name, "Gotham"), role .. " " .. name .. " is not Gotham (" .. label.Font.Name .. ")")
-		ok(label.TextSize >= S.PLATE.minPx, role .. " " .. name .. " >= 10 px")
+		local fit = label:FindFirstChild("UITextSizeConstraint")
+		ok(label.TextScaled and fit and fit.MinTextSize >= S.PLATE.minPx and fit.MaxTextSize <= 17, role .. " " .. name .. " scales between 10 px and its size (QC M1)")
+		ok(label.Size.X.Offset == 0 and label.Size.Y.Offset == 0 and label.Position.X.Offset == 0, role .. " " .. name .. " is laid out by scale")
 		local strokes = 0
 		for _, c in ipairs(label:GetChildren()) do if c.ClassName == "UIStroke" then strokes += 1 end end
 		eq(strokes, 1, role .. " " .. name .. " one outline")
-		local field = if name == "TradeGlyph" then label.BackgroundColor3 else plate.BackgroundColor3
-		ok(contrast(label.TextColor3, field) >= S.PLATE.minContrast, string.format("%s %s contrast %.2f on its field", role, name, contrast(label.TextColor3, field)))
+		ok(contrast(label.TextColor3, plate.BackgroundColor3) >= S.PLATE.minContrast, string.format("%s %s contrast %.2f on its field", role, name, contrast(label.TextColor3, plate.BackgroundColor3)))
 		labelsSeen += 1
+	end
+	-- [QC M1] sized in studs with a pixel clamp; CLICK is a pixel row under the plate.
+	ok(board.Size.X.Scale > 0 and board.Size.Y.Scale > 0 and board.Size.X.Offset >= S.PLATE.minSize[1], role .. " [M1] billboard sized in studs plus a pixel floor")
+	local clamp = plate:FindFirstChild("PixelClamp")
+	ok(clamp and clamp.MaxSize.X == S.PLATE.width and clamp.MaxSize.Y == S.PLATE.height and clamp.MinSize.X == S.PLATE.minSize[1], role .. " [M1] plate pixel clamp")
+	ok(board.MaxDistance <= 60, role .. " [M1] MaxDistance <= 60 (phones 40)")
+	local click = plate:FindFirstChild("Click")
+	ok(click and click.Position.Y.Scale == 1 and click.Position.Y.Offset >= S.PLATE.clickGap and click.AnchorPoint.Y == 0 and not click.Visible, role .. " [M1] CLICK row under the plate (shown up close)")
+	-- [QC M2] a frame-drawn medallion: the trade motif, no font glyph.
+	local medal = plate:FindFirstChild("TradeMedallion")
+	ok(medal and medal.ClassName == "Frame", role .. " [M2] trade medallion is a frame")
+	local icon = medal and medal:FindFirstChild("Icon")
+	ok(icon and icon:GetAttribute("Shape") == spec.motif and ThemeServer.ICON_MOTIFS[spec.motif] ~= nil, role .. " [M2] medallion draws the " .. tostring(spec.motif) .. " motif")
+	for _, d in ipairs(board:GetDescendants()) do
+		if d.ClassName == "TextLabel" and d.Name ~= "NpcName" and d.Name ~= "NpcTitle" then
+			ok(not string.find(d.Text, "[\128-\255]"), role .. " [M2] no non-ASCII glyph in " .. d.Name)
+		end
 	end
 	eq(plate.NpcName.Text, T.NPCs[role].name, role .. " name")
 	eq(plate.NpcTitle.Text, T.NPCs[role].title, role .. " title")
 	ok(plate.RegionBar and string.upper(plate.RegionBar.BackgroundColor3:ToHex()) == spec.accent, role .. " region accent bar")
+end
+-- [QC M1] overlap: plate, CLICK row and quest marker never overlap, at every
+-- distance from 6 studs to MaxDistance on a 1080 p desktop and a 390 p phone
+-- (70 degree vertical FOV), and the plate never drops below its pixel floor.
+for _, screen in ipairs({{1080, false, S.PLATE.maxDistance}, {390, true, S.PLATE.phone.maxDistance}}) do
+	for d = 6, screen[3], 2 do
+		local k = screen[1] / (2 * d * math.tan(math.rad(35)))
+		local L = S.plateLayout(k, screen[2])
+		local function gap(a, b) return math.abs(a[1] - b[1]) - a[2] - b[2] end
+		ok(gap(L.plate, L.click) >= 0 and gap(L.plate, L.marker) >= 0 and gap(L.click, L.marker) >= 0,
+			string.format("[M1] no overlap at %d studs on a %d p screen", d, screen[1]))
+		ok(L.plateH >= (if screen[2] then S.PLATE.phone.minSize[2] else S.PLATE.minSize[2]), "[M1] plate floor")
+	end
+end
+ok(S.PLATE.phone.maxDistance <= 40 and S.PLATE.phone.maxSize[1] < S.PLATE.width, "[M1] a smaller phone variant seen from nearer")
+-- [QC M2] no trade relies on a font glyph.
+for trade, def in pairs(S.TRADES) do
+	ok(def.glyph == nil and type(def.motif) == "string", "[M2] " .. trade .. " medallion is a motif")
 end
 -- Every region accent yields a legible title.
 for region, r in pairs(S.REGIONS) do ok(S.contrast(S.titleColor(r.accent), S.PLATE.field) >= 4.5, region .. " title colour reads on the plate") end
@@ -531,6 +658,65 @@ ok(fs.isFile("docs/screenshots/npcs-townsfolk.png") and fs.isFile("docs/screensh
 for _, script in ipairs({"scripts/build.sh", "build.ps1"}) do ok(has(fs.readFile(script), "verify-npcart.luau"), script .. " runs verify-npcart") end
 ok(has(fs.readFile("docs/DEPTH-CONTRACT.md"), "## 52."), "contract §52")
 print("PASS: client rules and wiring (" .. (checks - part6) .. ")")
+
+------------------------------------------------------------------------------
+-- 7. QC round regressions ([M3] art and poses, [L] client lows)
+------------------------------------------------------------------------------
+local part7 = checks
+-- [M3] Old Hesketh Ashby's flat cap sits down on the crown and his stoop keeps the head up.
+do
+	local cap = wears(hesketh, "HatCap")
+	ok(cap ~= nil, "[M3] Hesketh wears the cap")
+	local lo, hi = math.huge, -math.huge
+	for _, v in ipairs(Outfits.shapes.HatCap.vertices) do lo = math.min(lo, v[2]); hi = math.max(hi, v[2]) end
+	ok(lo + cap.at[2] <= 0.34 and hi + cap.at[2] >= 0.8, string.format("[M3] the cap seats on the head (%.2f .. %.2f)", lo + cap.at[2], hi + cap.at[2]))
+	for _, key in ipairs(S.IDLES.poke.keys) do
+		ok((key.pose.neck or {0})[1] >= -15 and (key.pose.waist or {0})[1] >= -16, "[M3] the poke stoop keeps the cap on top (neck / waist)")
+	end
+end
+-- [M3] the goggles are sculpted: a strap that follows the square head, cups with a bevel, lenses.
+do
+	local data = Outfits.shapes.HatGoggles
+	local corner, cups = 0, 0
+	for _, v in ipairs(data.vertices) do
+		if math.abs(v[2] - 0.33) < 0.12 and v[3] > -0.55 then corner = math.max(corner, math.sqrt(v[1] * v[1] + v[3] * v[3])) end
+		if v[3] < -0.78 then cups += 1 end
+	end
+	ok(corner >= 0.84, string.format("[M3] the strap follows the head's corners (%.2f)", corner))
+	ok(cups >= 20 and data.tris >= 1200, "[M3] domed lenses in bevelled cups (" .. data.tris .. " tris)")
+end
+-- [M3] Pell's cloak: an opaque deep dye on a cape wide enough for the shoulders.
+do
+	local cloak = wears(pell, "Cloak")
+	ok(cloak and S.contrast(cloak.dye, "FFFFFF") >= 3, "[M3] Pell's cloak is a deep, opaque dye (" .. tostring(cloak and cloak.dye) .. ")")
+	local width = 0
+	for _, v in ipairs(Outfits.shapes.Cloak.vertices) do if v[2] > 0.5 then width = math.max(width, math.abs(v[1])) end end
+	ok(width >= 1.2, string.format("[M3] the cloak's top covers the shoulders (half width %.2f)", width))
+end
+-- [M3] Maelis' trace and glyph-high frames are clearly different.
+do
+	local trace, high = at("rune", 0.7), at("rune", S.IDLES.rune.beat)
+	ok(high.leftArm[1] - trace.leftArm[1] >= 60 and math.abs(trace.neck[1] - high.neck[1]) >= 20, "[M3] trace (low, eyes on the hand) vs glyph high (overhead, leaning back)")
+end
+-- [L] client lows (source rules).
+do
+	local c = fs.readFile("npc.client.lua")
+	ok(has(c, "local function restPose(entry)") and has(c, "if entry.animating then restPose(entry) end"), "[L] the rest pose is written when an NPC stops animating")
+	ok(has(c, "Style.ANIM_CAP") and has(c, "entry.rank == math.huge"), "[L] only the nearest ANIM_CAP NPCs animate")
+	ok(has(c, "reducedCached = Theme.reducedMotion(player)") and has(c, "local reduced = reducedCached"), "[L] reduced motion is sampled every 0.5 s, not per frame")
+	local heartbeat = string.sub(c, (string.find(c, "RunService.Heartbeat:Connect", 1, true)))
+	ok(not has(heartbeat, "Theme.reducedMotion") and not has(heartbeat, "isPhone()"), "[L] the frame loop makes no closures / service calls for settings")
+	ok(has(c, "entry.noBone = true; break") and has(c, "or entry.noBone"), "[L] a missing bone stops retries until the NPC re-registers")
+	ok(has(c, 'child.Name == "Head"') and has(c, "task.defer(register, model)"), "[L] a late / replaced Head re-registers the NPC")
+	ok(not has(c, "retryAt"), "[H1] no timer retry")
+	ok(has(c, "if entry.tokens[i] or entry.failed[i] then continue end"), "[H1] granted pieces are kept; only missing ones are asked for")
+	ok(has(c, 'if token == "budget" then refused = "budget"; break end') and has(c, "entry.blockedAt = if refused then poolEpoch else nil"), "[H1] a budget refusal waits for the pool to change")
+	ok(has(c, "if entry.blockedAt == poolEpoch then") and has(c, "other.distance <= entry.distance then break end"), "[H1] a nearer NPC takes the pool from the farthest dressed one only")
+	ok(has(c, "if released then poolEpoch += 1 end"), "[H1] releasing tokens reopens the pool")
+	ok(has(c, "SizeOffset = Vector2.new(0, shift)"), "[M1] the quest marker sits a pixel gap above the plate")
+	ok(has(c, "applyPlateVariant(entry)") and has(c, "P.phone.maxSize"), "[M1] phones get the smaller plate")
+end
+print("PASS: QC regressions (" .. (checks - part7) .. ")")
 
 print(string.format("NPC art QA passed %d checks: %d townsfolk, %d idle loops, %d outfit meshes.", checks, #ROSTER, (function() local n = 0 for _ in pairs(S.IDLES) do n += 1 end return n end)(), count))
 print("SUITE-END verify-npcart.luau")

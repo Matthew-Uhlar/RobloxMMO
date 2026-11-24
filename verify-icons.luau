@@ -19,7 +19,7 @@ local Items = Data.Items
 local env = {Instance = {new = function(class) return H.new(class) end}, Color3 = roblox.Color3, Enum = roblox.Enum, UDim2 = roblox.UDim2, UDim = roblox.UDim,
 	Vector2 = roblox.Vector2, ColorSequence = roblox.ColorSequence, NumberSequence = roblox.NumberSequence, NumberSequenceKeypoint = roblox.NumberSequenceKeypoint}
 local T = H.loadTheme(env)
-T.useItems(Items)
+T.useItems(Items, Data.PetDepth and Data.PetDepth.Looks)
 
 ------------------------------------------------------------------------------
 -- 1. Coverage: every item → a non-fallback family with a motif
@@ -65,7 +65,7 @@ end
 local expect = {Ore = "ore", SunsteelOre = "ore", Aetherite = "crystal", BrassIngot = "bar", StarmetalIngot = "bar", Timber = "log", StarwoodLog = "log",
 	Sunwheat = "crop", SunwheatSeeds = "seed", Fish = "fish", CookedFish = "cooked", GrousePie = "pie", Tonic = "potion", EmberRune = "rune",
 	SparkGlyph = "glyph", Skyjade = "gem", RoughSkyjade = "roughgem", DewquartzRing = "ring", SkyjadeAmulet = "amulet", EverwakeLantern = "lantern",
-	StarlightCrown = "crown", EmberfoxPet = "pet", TrailCasketElite = "casket", WarpScrollHub = "scroll", SmallPouch = "pouch", BrassArrow = "arrow",
+	StarlightCrown = "crown", EmberfoxPet = "pet_quad", TrailCasketElite = "casket", WarpScrollHub = "scroll", SmallPouch = "pouch", BrassArrow = "arrow",
 	BrassHeads = "arrowhead", CuredLeather = "leather", SpiderSilk = "thread", StormFeather = "feather", ArcaneDust = "dust", VoidEssence = "essence",
 	GolemCore = "core", FlintStriker = "striker", BoxTrap = "trap", WorkerCoffer = "coffer"}
 for id, family in pairs(expect) do
@@ -246,17 +246,112 @@ ok(not has(iconSection, "ImageLabel") and not has(iconSection, "rbxasset"), "no 
 local ui = fs.readFile("ui.client.lua")
 ok(has(ui, "UI.T.iconViewportAllowed(size,thumbnailCount,THUMBS.compact)"), "the atlas asks the viewport budget before a 3D thumbnail")
 ok(has(ui, "UI.T.icon(holder,def or {id=tostring(id),name=tostring(id)},math.floor(size*.86))"), "the atlas falls back to the vector icon, not initials")
-ok(has(ui, "UI.T.useItems(result.Items)") and has(ui, "UI.T.iconCacheCompact(compactAtlas)"), "the atlas shares Data.Items and the phone cache size")
+ok(has(ui, "UI.T.useItems(result.Items,result.PetDepth and result.PetDepth.Looks)"), "the atlas shares Data.Items and the pet forms")
+ok(has(ui, "UI.T.releaseIcons(scroll)"), "[M4] the atlas hands a page's icons back for the next render")
 local hud = fs.readFile("hud.client.lua")
-ok(has(hud, "T.useItems(Data.Items)") and has(hud, "T.iconCacheCompact(L.short)"), "the satchel (hud.client.lua) shares Data.Items and the phone cache size")
+ok(has(hud, "T.useItems(Data.Items, Data.PetDepth and Data.PetDepth.Looks)") and has(hud, "T.iconCacheCompact(L.short)"), "the satchel (hud.client.lua) shares Data.Items and the phone cache size")
+-- [M4] one owner of the compact flag: only the satchel layout sets it.
+local owners = 0
+for _, path in ipairs({"ui.client.lua", "hud.client.lua", "hotbar.client.lua", "npc.client.lua", "overlay.client.lua", "features.client.lua", "combat.client.lua", "runes.client.lua", "hearts.client.lua"}) do
+	if fs.isFile(path) then
+		local _, n = string.gsub(fs.readFile(path), "iconCacheCompact%(", "")
+		owners += n
+	end
+end
+eq(owners, 1, "[M4] exactly one script owns the compact cache flag")
 local hotbar = fs.readFile("hotbar.client.lua")
-ok(has(hotbar, "pcall(IconTheme.icon, b, def,") and has(hotbar, 'b:GetAttribute("IconItem") ~= (id or "")'), "the hotbar draws vector icons, rebuilt only when the item changes")
+ok(has(hotbar, "pcall(IconTheme.icon, b, def, px)") and has(hotbar, 'local iconKey = (id or "") .. "@" .. px'), "[L] the hotbar's icons are keyed by item and slot size")
+ok(has(hotbar, "if resized then paint() end"), "[L] a slot resize repaints the hotbar icons")
 ok(has(hotbar, "glyph.Visible = not (IconTheme and def and b:FindFirstChild(\"Icon\"))"), "the hotbar's text glyph is only the fallback")
 local overlay = fs.readFile("overlay.client.lua")
 ok(has(overlay, "T.setSlot("), "the pickup feed uses Theme slots (vector icons)")
 for _, script in ipairs({"scripts/build.sh", "build.ps1"}) do ok(has(fs.readFile(script), "verify-icons.luau"), script .. " runs verify-icons") end
 ok(fs.isFile("tools/render-icons.luau") and fs.isFile("docs/screenshots/icons-families.png") and fs.isFile("docs/screenshots/icons-satchel.png"), "icon previews")
 print("PASS: wiring (" .. (checks - part5) .. ")")
+
+------------------------------------------------------------------------------
+-- 6. QC round: [M4] size buckets, small-size layers, reuse, trim, grid budget;
+-- [L] pets by form, slimmer count badge; §51 Skysailing items
+------------------------------------------------------------------------------
+local part6 = checks
+do
+	local T4 = H.loadTheme(env)
+	T4.useItems(Items, Data.PetDepth and Data.PetDepth.Looks)
+	eq(T4.iconBucket(20), 24, "[M4] bucket 24"); eq(T4.iconBucket(30), 32, "[M4] bucket 32"); eq(T4.iconBucket(40), 40, "[M4] bucket 40")
+	eq(T4.iconBucket(44), 48, "[M4] bucket 48"); eq(T4.iconBucket(90), 64, "[M4] big previews cap at 64")
+	local a = T4.icon(nil, Items.SunsteelSword, 30)
+	local b = T4.icon(nil, Items.SunsteelSword, 31)
+	eq(a:GetAttribute("IconKey"), b:GetAttribute("IconKey"), "[M4] 30 and 31 px share the 32 px template")
+	eq(T4.IconCache.builds, 1, "[M4] one build for both sizes")
+	ok(a.Size.X.Offset == 30 and b.Size.X.Offset == 31, "[M4] clones are scaled to the requested size")
+	-- Fewer layers below 36 px (no gleams or tiny details).
+	local function layers(icon) local n = 0 for _, d in ipairs(icon:GetDescendants()) do if d.Name == "Layer" then n += 1 end end return n end
+	local small, large = T4.buildIcon(Items.SunsteelSword, 24), T4.buildIcon(Items.SunsteelSword, 48)
+	ok(layers(small) < layers(large), "[M4] a 24 px icon draws fewer layers (" .. layers(small) .. " < " .. layers(large) .. ")")
+	-- Reuse across renders: released icons are taken back before anything is cloned.
+	local page = H.new("Frame")
+	for _, id in ipairs({"Ore", "Timber", "Fish", "Tonic"}) do T4.icon(page, Items[id], 40) end
+	local clonesBefore = T4.IconCache.clones + T4.IconCache.builds
+	eq(T4.releaseIcons(page), 4, "[M4] a cleared page hands its icons back")
+	local page2 = H.new("Frame")
+	for _, id in ipairs({"Ore", "Timber", "Fish", "Tonic"}) do T4.icon(page2, Items[id], 40) end
+	eq(T4.IconCache.clones + T4.IconCache.builds, clonesBefore, "[M4] the next render reuses them: no clone, no build")
+	eq(T4.IconCache.reused, 4, "[M4] four reused")
+	-- Trim on shrink: going compact trims the cache at once.
+	for i = 1, 120 do T4.icon(nil, Items[ids[i]], 40) end
+	ok(T4.IconCache.count > T4.IconCache.compactMax, "the desktop cache filled past the phone cap")
+	T4.iconCacheCompact(true)
+	ok(T4.IconCache.count <= T4.IconCache.compactMax, "[M4] shrinking to phones trims at once (" .. T4.IconCache.count .. ")")
+	ok(T4.IconCache.pooled <= T4.IconCache.compactPoolMax, "[M4] and the free list")
+end
+-- [M4] perf: a 60-item grid of 40 px slots stays within its GUI instance budget.
+do
+	local T5 = H.loadTheme(env)
+	T5.useItems(Items, Data.PetDepth and Data.PetDepth.Looks)
+	local grid = H.new("Frame")
+	for i = 1, 60 do
+		local slot = T5.slot(grid, {size = 40})
+		T5.setSlot(slot, {id = ids[i * 11 % #ids + 1], def = Items[ids[i * 11 % #ids + 1]], count = 3})
+	end
+	local count = #grid:GetDescendants()
+	ok(count <= 60 * 55, "[M4] a 60-item grid is at most 3,300 GUI instances (" .. count .. ")")
+	print("  60-item grid: " .. count .. " instances, " .. T5.IconCache.builds .. " templates")
+end
+-- [L] pets: one family per pet form, so a satchel of pets is not one egg.
+do
+	local forms = {}
+	for _, id in ipairs(ids) do
+		local def = Items[id]
+		if def.kind == "pet" then
+			local spec = T.iconSpec(def, Items)
+			local look = Data.PetDepth.Looks[def.pet]
+			if look then eq(spec.family, T.ICON_PET_FORMS[look.form], id .. " [L] draws its " .. look.form .. " form") end
+			forms[spec.family] = true
+		end
+	end
+	local n = 0
+	for _ in pairs(forms) do n += 1 end
+	ok(n >= 5, "[L] pets spread over " .. n .. " families")
+	local slot = T.slot(H.new("Frame"), {size = 44})
+	ok(slot:FindFirstChild("Count").TextSize <= 9 and slot:FindFirstChild("Count").TextStrokeTransparency > 0, "[L] a slimmer count badge")
+end
+-- §51 Skysailing (merged): its items get real, specific icons.
+do
+	local source = fs.readFile("shared/GameData.lua")
+	local a = string.find(source, ">>> BEGIN Skysailing", 1, true)
+	local b = string.find(source, "<<< END Skysailing", 1, true)
+	ok(a and b, "the Skysailing section is merged")
+	local section = string.sub(source, a, b)
+	local seen = 0
+	for id in string.gmatch(section, 'item%("([%w_]+)"') do
+		seen += 1
+		local spec = T.iconSpec(Items[id], Items)
+		ok(spec.rule ~= "fallback" and spec.rule ~= "kind", id .. " (Skysailing) gets a specific icon: " .. spec.family .. " via " .. spec.rule)
+	end
+	ok(seen >= 1, "Skysailing items checked (" .. seen .. ")")
+	eq(T.iconSpec(Items.SkyDriftwood, Items).family, "log", "Sky Driftwood draws as timber")
+end
+print("PASS: QC regressions (" .. (checks - part6) .. ")")
 
 local ruleList = {}
 for rule, n in pairs(rules) do table.insert(ruleList, rule .. " " .. n) end

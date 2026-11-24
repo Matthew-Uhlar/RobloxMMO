@@ -11,6 +11,8 @@ local Data = require(ReplicatedStorage:WaitForChild("AetherData"))
 local T = Data.Townsfolk
 -- §52 NPC art: outfit / trade / nameplate rules (the client forges the outfits).
 local Style = require(ReplicatedStorage:WaitForChild("AetherNpcStyle"))
+-- The shared theme draws the nameplate's trade medallion from its icon motifs.
+local Theme = require(ReplicatedStorage:WaitForChild("AetherUiTheme"))
 local V, CF = Vector3.new, CFrame.new
 
 local folder = Instance.new("Folder")
@@ -238,22 +240,32 @@ local function buildRig(role)
 	before = snapshot(model)
 	held(model:FindFirstChild("RightHand"), heldStyle, look)
 	tagNew(model, before, "held")
-	-- Nameplate (§52 polish): a dark rounded strip (distinct from the Signs v2
-	-- plaques) with the region accent bar, a trade medallion, the name in warm
-	-- gold and the title in the region colour; every label one ink outline,
-	-- Builder Sans, contrast >= 4.5:1 on the strip (NpcStyle.plate).
+	-- Nameplate (§52 polish, QC M1 / M2): a dark rounded strip (distinct from the
+	-- Signs v2 plaques) with the region accent bar, a frame-drawn trade medallion
+	-- (a Theme motif, no font glyph), the name in warm gold and the title in the
+	-- region colour; every label one ink outline, Builder Sans, contrast >= 4.5:1
+	-- on the strip (NpcStyle.plate). The billboard is sized in studs plus a pixel
+	-- floor and the plate clamped to [minSize, width x height] px, so it shrinks
+	-- with distance to a legible floor; the CLICK cue is a pixel row under it.
 	local spec = Style.plate(role, def)
 	local P = Style.PLATE
+	local W, Hh, CLICK = P.width, P.height, 18
 	local board = Instance.new("BillboardGui")
-	board.Name, board.Size, board.StudsOffset = "Nameplate", UDim2.fromOffset(P.width + 12, P.height + 8), V(0, spec.lift, 0)
+	board.Name, board.StudsOffset = "Nameplate", V(0, spec.lift, 0)
+	board.Size = UDim2.new(P.studs[1], P.minSize[1], P.studs[2], P.minSize[2] + 2 * CLICK)
 	board.MaxDistance, board.LightInfluence, board.AlwaysOnTop = P.maxDistance, 0, false
+	board.ClipsDescendants = false
 	board:SetAttribute("NpcTitleColor", spec.titleColor)
+	board:SetAttribute("NpcMotif", spec.motif)
 	board.Parent = head
 	local plate = Instance.new("Frame")
 	plate.Name = "Plate"
-	plate.AnchorPoint, plate.Position, plate.Size = Vector2.new(0.5, 0.5), UDim2.fromScale(0.5, 0.5), UDim2.fromOffset(P.width, P.height)
+	plate.AnchorPoint, plate.Position, plate.Size = Vector2.new(0.5, 0.5), UDim2.fromScale(0.5, 0.5), UDim2.new(1, 0, 1, -2 * CLICK)
 	plate.BackgroundColor3, plate.BackgroundTransparency, plate.BorderSizePixel = hex(P.field), 0.12, 0
 	plate.Parent = board
+	local clamp = Instance.new("UISizeConstraint")
+	clamp.Name, clamp.MinSize, clamp.MaxSize = "PixelClamp", Vector2.new(P.minSize[1], P.minSize[2]), Vector2.new(W, Hh)
+	clamp.Parent = plate
 	local corner = Instance.new("UICorner")
 	corner.CornerRadius = UDim.new(0, 9)
 	corner.Parent = plate
@@ -265,32 +277,52 @@ local function buildRig(role)
 	sheen.Parent = plate
 	local bar = Instance.new("Frame")
 	bar.Name, bar.BorderSizePixel = "RegionBar", 0
-	bar.Position, bar.Size, bar.BackgroundColor3 = UDim2.fromOffset(0, P.height - 4), UDim2.new(1, 0, 0, 4), hex(spec.accent)
+	bar.Position, bar.Size, bar.BackgroundColor3 = UDim2.fromScale(0, (Hh - 4) / Hh), UDim2.fromScale(1, 4 / Hh), hex(spec.accent)
 	bar.Parent = plate
-	local medal = Instance.new("TextLabel")
-	medal.Name, medal.BackgroundColor3, medal.BackgroundTransparency = "TradeGlyph", hex("05080C"), 0.2
-	medal.AnchorPoint, medal.Position, medal.Size = Vector2.new(0, 0.5), UDim2.new(0, 8, 0.5, -2), UDim2.fromOffset(34, 34)
-	medal.Text, medal.TextSize, medal.Font, medal.TextColor3 = spec.glyph, P.glyphSize, Enum.Font.BuilderSansBold, hex(spec.accent)
+	local medal = Instance.new("Frame")
+	medal.Name, medal.BackgroundColor3, medal.BackgroundTransparency, medal.BorderSizePixel = "TradeMedallion", hex("05080C"), 0.2, 0
+	medal.AnchorPoint, medal.Position, medal.Size = Vector2.new(0, 0.5), UDim2.fromScale(8 / W, 0.47), UDim2.fromScale(34 / W, 34 / Hh)
 	medal.Parent = plate
+	local square = Instance.new("UIAspectRatioConstraint")
+	square.AspectRatio = 1
+	square.Parent = medal
 	local medalCorner = Instance.new("UICorner")
 	medalCorner.CornerRadius = UDim.new(0.5, 0)
 	medalCorner.Parent = medal
 	local medalRim = Instance.new("UIStroke")
 	medalRim.ApplyStrokeMode, medalRim.Color, medalRim.Thickness = Enum.ApplyStrokeMode.Border, hex(spec.accent), 1
 	medalRim.Parent = medal
+	if Theme then
+		local motif = Theme.motifIcon(medal, spec.motif, spec.accent, 30)
+		motif.Size = UDim2.fromScale(0.82, 0.82)
+	end
 	for i, line in ipairs({{spec.name, P.nameSize, Enum.Font.BuilderSansExtraBold, spec.nameColor}, {spec.title, P.titleSize, Enum.Font.BuilderSansBold, spec.titleColor}}) do
 		local text = Instance.new("TextLabel")
 		text.Name = if i == 1 then "NpcName" else "NpcTitle"
-		text.BackgroundTransparency, text.Size, text.Position = 1, UDim2.new(1, -56, 0, 22), UDim2.fromOffset(48, if i == 1 then 5 else 27)
+		text.BackgroundTransparency = 1
+		text.Size, text.Position = UDim2.fromScale((W - 56) / W, 22 / Hh), UDim2.fromScale(48 / W, (if i == 1 then 5 else 27) / Hh)
 		text.Text, text.TextSize, text.Font, text.TextColor3 = line[1], line[2], line[3], hex(line[4])
 		text.TextXAlignment = Enum.TextXAlignment.Left
-		text.TextScaled = false
-		text.TextTruncate = Enum.TextTruncate.AtEnd
+		text.TextScaled = true
+		local fit = Instance.new("UITextSizeConstraint")
+		fit.MinTextSize, fit.MaxTextSize = P.minPx, line[2]
+		fit.Parent = text
 		local ink = Instance.new("UIStroke")
 		ink.Color, ink.Thickness, ink.Transparency = hex(P.stroke), 1, 0.35
 		ink.Parent = text
 		text.Parent = plate
 	end
+	-- CLICK cue (SkyBlock-style vendor hologram): a pixel row just under the plate
+	-- (inside the billboard's CLICK margin),
+	-- shown only up close by npc.client.lua.
+	local click = Instance.new("TextLabel")
+	click.Name, click.BackgroundTransparency, click.Visible = "Click", 1, false
+	click.AnchorPoint, click.Position, click.Size = Vector2.new(0.5, 0), UDim2.new(0.5, 0, 1, P.clickGap), UDim2.fromOffset(90, CLICK - P.clickGap)
+	click.Text, click.TextSize, click.Font, click.TextColor3 = "CLICK", 10, Enum.Font.Arcade, hex("FFE066")
+	local clickInk = Instance.new("UIStroke")
+	clickInk.Color, clickInk.Thickness, clickInk.Transparency = hex(P.stroke), 1, 0.3
+	clickInk.Parent = click
+	click.Parent = plate
 	-- "Talk" prompt. It carries no IsleAction, so the Adventure server ignores it;
 	-- the Dialogue client opens the conversation locally.
 	local prompt = Instance.new("ProximityPrompt")

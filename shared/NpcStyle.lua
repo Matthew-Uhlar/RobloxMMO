@@ -7,7 +7,7 @@
 --   S.sample(name, t, out) -> joint -> {rx, ry, rz} (degrees; animate.client.lua's pose
 --                          convention: +rx raises an arm forward / leans back, +rz swings a
 --                          right arm outward), sampled from the trade's looping keys
---   S.plate(role, def)   -> nameplate spec (fonts, colours, region accent, trade glyph)
+--   S.plate(role, def)   -> nameplate spec (fonts, colours, region accent, trade motif medallion, stud size + pixel clamp)
 --   S.contrast(a, b)     -> WCAG contrast ratio of two hex colours
 --   S.lod(distance, phone, reducedMotion) -> 0 (off) | 1 (15 Hz) | 2 (30 Hz)
 local S = {}
@@ -70,6 +70,8 @@ S.HATS = {wayfarer = "HatWayfarer", tophat = "HatTop", cap = "HatCap", goggles =
 	souwester = "HatSouwester", tricorn = "HatTricorn", feather = "HatFeather", hood = "HatHood", mage = "HatMage", straw = "HatStraw"}
 -- New hat styles fall back to the nearest primitive style on the server rig.
 S.FALLBACK_HAT = {mage = "hood", straw = "wayfarer"}
+-- Per-hat seat on the head (studs; QC M3: the flat cap sits down on the crown).
+S.HAT_FRAME = {HatCap = {at = {0, -0.06, 0.03}}}
 S.PROPS = {lantern = "PropLantern", ledger = "PropLedger", crate = "PropCrate", hammer = "PropHammer", sword = "PropSword", rod = "PropRod",
 	scroll = "PropScroll", horn = "PropHorn", saw = "PropSaw", staff = "PropStaff", pickaxe = "PropPickaxe", tome = "PropTome",
 	spear = "PropSpear", poker = "PropPoker", crook = "PropCrook", hoe = "PropHoe"}
@@ -91,33 +93,34 @@ S.TORSO = {cape = "Cloak", apron = "Apron", mantle = "Mantle", satchel = "Satche
 S.SLOT_HIDES = {hat = "hat", held = "held", cape = "cape", apron = "apron"}
 
 ------------------------------------------------------------------------------
--- Trades: default extras (torso pieces), idle loop, nameplate glyph (plain symbols, not emoji).
+-- Trades: default extras (torso pieces), idle loop and the nameplate medallion: a
+-- frame-drawn trade motif (a Theme.ICON_MOTIFS family; no font glyphs, QC M2).
 S.TRADES = {
-	guide = {idle = "wave", extras = {"satchel"}, glyph = "✦"},
-	banker = {idle = "tally", extras = {"mantle"}, glyph = "❖"},
-	merchant = {idle = "offer", extras = {"satchel"}, glyph = "⚖"},
-	smith = {idle = "hammer", extras = {"belt"}, glyph = "⚒"},
-	guard = {idle = "guard", extras = {"tabard"}, glyph = "⚔"},
-	angler = {idle = "cast", extras = {"satchel"}, glyph = "⚓"},
-	auctioneer = {idle = "proclaim", extras = {"mantle"}, glyph = "⚑"},
-	herald = {idle = "herald", extras = {"scarf"}, glyph = "♪"},
-	clerk = {idle = "tally", extras = {"mantle"}, glyph = "✒"},
-	carpenter = {idle = "saw", extras = {"belt"}, glyph = "▦"},
-	druid = {idle = "channel", extras = {}, glyph = "❦"},
-	miner = {idle = "mine", extras = {"belt"}, glyph = "⛏"},
-	keeper = {idle = "lantern", extras = {"scarf"}, glyph = "☼"},
-	mage = {idle = "channel", extras = {"mantle"}, glyph = "✧"},
-	farmer = {idle = "offer", extras = {"satchel"}, glyph = "❀"},
-	shepherd = {idle = "lean", extras = {}, glyph = "☘"},
-	tinker = {idle = "tinker", extras = {"belt"}, glyph = "⚙"},
-	scholar = {idle = "read", extras = {"mantle"}, glyph = "✎"},
-	firekeeper = {idle = "poke", extras = {"scarf"}, glyph = "♨"},
-	runebinder = {idle = "rune", extras = {"mantle"}, glyph = "ᚱ"},
+	guide = {idle = "wave", extras = {"satchel"}, motif = "lantern"},
+	banker = {idle = "tally", extras = {"mantle"}, motif = "coin"},
+	merchant = {idle = "offer", extras = {"satchel"}, motif = "pouch"},
+	smith = {idle = "hammer", extras = {"belt"}, motif = "hammer"},
+	guard = {idle = "guard", extras = {"tabard"}, motif = "sword"},
+	angler = {idle = "cast", extras = {"satchel"}, motif = "rod"},
+	auctioneer = {idle = "proclaim", extras = {"mantle"}, motif = "scroll"},
+	herald = {idle = "herald", extras = {"scarf"}, motif = "banner"},
+	clerk = {idle = "tally", extras = {"mantle"}, motif = "ink"},
+	carpenter = {idle = "saw", extras = {"belt"}, motif = "crafttool"},
+	druid = {idle = "channel", extras = {}, motif = "sprig"},
+	miner = {idle = "mine", extras = {"belt"}, motif = "pickaxe"},
+	keeper = {idle = "lantern", extras = {"scarf"}, motif = "lantern"},
+	mage = {idle = "channel", extras = {"mantle"}, motif = "staff"},
+	farmer = {idle = "offer", extras = {"satchel"}, motif = "crop"},
+	shepherd = {idle = "lean", extras = {}, motif = "bell"},
+	tinker = {idle = "tinker", extras = {"belt"}, motif = "cog"},
+	scholar = {idle = "read", extras = {"mantle"}, motif = "tome"},
+	firekeeper = {idle = "poke", extras = {"scarf"}, motif = "ember"},
+	runebinder = {idle = "rune", extras = {"mantle"}, motif = "rune"},
 }
 -- Every named NPC (Data.Townsfolk.Order + RegionFolkOrder). hat / held override
 -- the data look for the forged outfit (the server's fallback maps new styles).
 S.ROLES = {
-	Guide = {trade = "guide"}, -- Pell Ashgrove: wayfarer's hat, lantern, cloak, satchel; waves you over
+	Guide = {trade = "guide", capeDye = "00838F"}, -- Pell Ashgrove: wayfarer's hat, lantern, deep-teal cloak, satchel; waves you over
 	Banker = {trade = "banker"}, Merchant = {trade = "merchant"}, Forgemaster = {trade = "smith"},
 	Slayer = {trade = "guard"}, Fisher = {trade = "angler"}, Auctioneer = {trade = "auctioneer"}, Herald = {trade = "herald"},
 	Registrar = {trade = "clerk", hat = "feather"}, Joiner = {trade = "carpenter"}, Grovekeeper = {trade = "druid", held = "crook"},
@@ -165,14 +168,15 @@ function S.outfit(role, def)
 	if hat and S.HATS[hat] then
 		local key = HAT_DYE[hat] or "shirt"
 		local dye = look[key] or (key == "cape" and look.shirt) or look.shirt
-		add(S.HATS[hat], "Head", "hat", dye)
+		local frame = S.HAT_FRAME[S.HATS[hat]] or {}
+		add(S.HATS[hat], "Head", "hat", dye, frame.at, frame.rot)
 	end
 	if held and S.PROPS[held] then
 		local shape = S.PROPS[held]
 		local frame = S.PROP_FRAME[shape] or {}
 		add(shape, "RightHand", "held", if S.ACCENT_PROPS[shape] then look.accent else nil, frame.at, frame.rot)
 	end
-	if look.cape then add(S.TORSO.cape, "UpperTorso", "cape", look.cape) end
+	if look.cape then add(S.TORSO.cape, "UpperTorso", "cape", spec.capeDye or look.cape) end
 	if look.apron then add(S.TORSO.apron, "UpperTorso", "apron", look.apron) end
 	local extras = spec.extras or trade.extras or {}
 	for _, extra in ipairs(extras) do
@@ -303,14 +307,15 @@ S.IDLES = {
 		{t = 3, pose = pose({rightArm = {6, 0, 10}, rightElbow = {12}, leftArm = {78, 0, -14}, leftElbow = {26}, neck = {8, 0, 0}, waist = {2, 0, 0}})},
 		{t = 4.5, pose = pose({rightArm = {6, 0, 10}, rightElbow = {12}, leftArm = {56, 0, -4}, leftElbow = {44}, neck = {4, -8, 0}, waist = {0, -6, 0}})},
 		{t = 6, pose = pose({rightArm = {6, 0, 10}, rightElbow = {12}, leftArm = {40, 0, -20}, leftElbow = {50}, neck = {0, 0, 0}})}}},
-	-- Runebinder: trace a glyph in the air (a quick angular figure), then study it.
+	-- Runebinder: trace a glyph low across the body (eyes on the hand), then raise it
+	-- high overhead, leaning back (two clearly different frames, QC M3), then study it.
 	rune = {period = 5, beat = 1.9, keys = {
-		{t = 0, pose = pose({rightArm = {6, 0, 10}, rightElbow = {12}, leftArm = {48, 0, -10}, leftElbow = {60}, neck = {-4, 0, 0}})},
-		{t = 0.7, pose = pose({rightArm = {6, 0, 10}, rightElbow = {12}, leftArm = {88, 0, -26}, leftElbow = {22}, neck = {6, 6, 0}})},
-		{t = 1.2, pose = pose({rightArm = {6, 0, 10}, rightElbow = {12}, leftArm = {64, 0, -2}, leftElbow = {20}, neck = {2, -4, 0}})},
-		{t = 1.9, pose = pose({rightArm = {6, 0, 10}, rightElbow = {12}, leftArm = {96, 0, -8}, leftElbow = {18}, neck = {8, 0, 0}, waist = {3, 0, 0}})},
+		{t = 0, pose = pose({rightArm = {6, 0, 10}, rightElbow = {12}, leftArm = {40, 0, -10}, leftElbow = {60}, neck = {-4, 0, 0}})},
+		{t = 0.7, pose = pose({rightArm = {6, 0, 10}, rightElbow = {12}, leftArm = {58, -30, 30}, leftElbow = {34}, waist = {0, 14, 0}, neck = {-14, 18, 0}})},
+		{t = 1.2, pose = pose({rightArm = {6, 0, 10}, rightElbow = {12}, leftArm = {62, 20, -36}, leftElbow = {28}, waist = {0, -10, 0}, neck = {-10, -14, 0}})},
+		{t = 1.9, pose = pose({rightArm = {6, 0, 10}, rightElbow = {12}, leftArm = {168, 0, -10}, leftElbow = {6}, neck = {20, 0, 0}, waist = {8, 0, 0}})},
 		{t = 3, pose = pose({rightArm = {6, 0, 10}, rightElbow = {12}, leftArm = {50, 0, -12}, leftElbow = {58}, neck = {-10, 0, 0}})},
-		{t = 5, pose = pose({rightArm = {6, 0, 10}, rightElbow = {12}, leftArm = {48, 0, -10}, leftElbow = {60}, neck = {-4, 0, 0}})}}},
+		{t = 5, pose = pose({rightArm = {6, 0, 10}, rightElbow = {12}, leftArm = {40, 0, -10}, leftElbow = {60}, neck = {-4, 0, 0}})}}},
 	-- Miner: pick on the shoulder, a stretch of the back, a tap on the ground.
 	mine = {period = 7, beat = 4.6, keys = {
 		{t = 0, pose = pose({rightArm = {34, 0, 10}, rightElbow = {104}})},
@@ -338,13 +343,13 @@ S.IDLES = {
 		{t = 9, pose = pose({rightArm = {22, 0, 10}, rightElbow = {18}, leftArm = {30, 0, 10}, leftElbow = {70}, waist = {-6, 0, 0}, root = {0, 0, 3}})}}},
 	-- Beaconkeeper (Old Hesketh Ashby): stoop and poke the embers, stir, straighten.
 	poke = {period = 5, beat = 1.5, keys = {
-		{t = 0, pose = pose({rightArm = {28, 0, 6}, rightElbow = {30}, leftArm = {14, 0, -6}, leftElbow = {40}, waist = {-6, 0, 0}, neck = {-12, 0, 0}})},
-		{t = 1.1, pose = pose({rightArm = {48, 0, 4}, rightElbow = {18}, leftArm = {30, 0, -4}, leftElbow = {80}, waist = {-20, 0, 0}, neck = {-24, 0, 0}})},
-		{t = 1.5, pose = pose({rightArm = {38, 0, 4}, rightElbow = {10}, rightWrist = {16, 0, 0}, leftArm = {30, 0, -4}, leftElbow = {80}, waist = {-24, 0, 0}, neck = {-26, 0, 0}})},
-		{t = 2.2, pose = pose({rightArm = {44, -8, 10}, rightElbow = {16}, leftArm = {30, 0, -4}, leftElbow = {80}, waist = {-22, 6, 0}, neck = {-24, 0, 0}})},
-		{t = 2.9, pose = pose({rightArm = {44, 8, 2}, rightElbow = {16}, leftArm = {30, 0, -4}, leftElbow = {80}, waist = {-22, -6, 0}, neck = {-24, 0, 0}})},
+		{t = 0, pose = pose({rightArm = {28, 0, 6}, rightElbow = {30}, leftArm = {14, 0, -6}, leftElbow = {40}, waist = {-4, 0, 0}, neck = {-6, 0, 0}})},
+		{t = 1.1, pose = pose({rightArm = {46, 0, 4}, rightElbow = {16}, leftArm = {30, 0, -4}, leftElbow = {80}, waist = {-12, 0, 0}, neck = {-10, 0, 0}})},
+		{t = 1.5, pose = pose({rightArm = {38, 0, 4}, rightElbow = {8}, rightWrist = {16, 0, 0}, leftArm = {30, 0, -4}, leftElbow = {80}, waist = {-15, 0, 0}, neck = {-12, 0, 0}})},
+		{t = 2.2, pose = pose({rightArm = {42, -8, 10}, rightElbow = {14}, leftArm = {30, 0, -4}, leftElbow = {80}, waist = {-14, 6, 0}, neck = {-12, 0, 0}})},
+		{t = 2.9, pose = pose({rightArm = {42, 8, 2}, rightElbow = {14}, leftArm = {30, 0, -4}, leftElbow = {80}, waist = {-14, -6, 0}, neck = {-12, 0, 0}})},
 		{t = 3.8, pose = pose({rightArm = {26, 0, 6}, rightElbow = {28}, leftArm = {40, 0, -8}, leftElbow = {100}, waist = {4, 0, 0}, neck = {6, 0, 0}})},
-		{t = 5, pose = pose({rightArm = {28, 0, 6}, rightElbow = {30}, leftArm = {14, 0, -6}, leftElbow = {40}, waist = {-6, 0, 0}, neck = {-12, 0, 0}})}}},
+		{t = 5, pose = pose({rightArm = {28, 0, 6}, rightElbow = {30}, leftArm = {14, 0, -6}, leftElbow = {40}, waist = {-4, 0, 0}, neck = {-6, 0, 0}})}}},
 	-- Wayfinder (Pell): lantern at the side, a friendly wave every loop.
 	wave = {period = 7, beat = 2.2, keys = {
 		{t = 0, pose = pose({rightArm = {22, 0, 10}, rightElbow = {40}})},
@@ -396,7 +401,12 @@ end
 -- Animation level of detail by distance: 2 = 30 Hz, 1 = 15 Hz, 0 = off.
 S.ANIM_RANGE = {desktop = {full = 45, half = 90}, phone = {full = 25, half = 55}}
 S.DRESS_RANGE = {desktop = 90, phone = 50} -- forged outfits within this many studs
-S.DRESS_CAP = {desktop = 14, phone = 5} -- most NPCs dressed in meshes at once (nearest win)
+S.DRESS_CAP = {desktop = 14, phone = 4} -- most NPCs dressed in meshes at once (nearest win)
+-- Outfit pool the dressed sets must fit (forge.client.lua OUTFIT_*; verify-npcart sums the
+-- distinct templates of the worst-case dressed set per region against both).
+S.POOL = {desktop = {templates = 52, triangles = 52000}, phone = {templates = 18, triangles = 20000}}
+-- Most NPCs animated at once (nearest win; QC L), re-ranked every 0.5 s.
+S.ANIM_CAP = {desktop = 18, phone = 8}
 function S.lod(distance, phone)
 	local r = if phone then S.ANIM_RANGE.phone else S.ANIM_RANGE.desktop
 	if distance <= r.full then return 2 elseif distance <= r.half then return 1 end
@@ -409,8 +419,34 @@ end
 -- Contrast >= 4.5:1 for every label on its named field (Signs v2 rule), one
 -- outline per label, Builder Sans (never Gotham), >= 10 px.
 ------------------------------------------------------------------------------
-S.PLATE = {width = 252, height = 58, nameSize = 17, titleSize = 13, glyphSize = 16, maxDistance = 70, field = "111822",
-	nameColor = "FFE6A6", stroke = "05080C", fontName = "BuilderSansExtraBold", fontTitle = "BuilderSansBold", minPx = 10, minContrast = 4.5}
+S.PLATE = {width = 252, height = 58, nameSize = 17, titleSize = 13, maxDistance = 60, field = "111822",
+	nameColor = "FFE6A6", stroke = "05080C", fontName = "BuilderSansExtraBold", fontTitle = "BuilderSansBold", minPx = 10, minContrast = 4.5,
+	-- QC M1: the billboard is sized in studs and the plate clamped in pixels, so it
+	-- shrinks with distance down to a legible floor (never a fixed pixel slab).
+	studs = {4.6, 1.06}, minSize = {196, 45},
+	-- Phones: a smaller plate seen from nearer (npc.client.lua applies it locally).
+	phone = {maxDistance = 40, maxSize = {210, 48}, minSize = {176, 40}},
+	-- Cues in pixels around the plate: the CLICK row under it, the quest marker above.
+	clickGap = 3, markerGap = 6, markerSize = 34}
+-- Pixel layout around the billboard's anchor (the plate is centred on it): the
+-- plate's half height never exceeds height / 2, the CLICK row sits under it, and
+-- the quest marker (its own billboard, SizeOffset in units of its size) above.
+S.CLICK_ROW = 18
+function S.markerShift()
+	local px = S.PLATE.height / 2 + S.PLATE.markerGap + S.PLATE.markerSize / 2
+	return px / S.PLATE.markerSize, px
+end
+-- Rects (centre y, half height; pixels, +y up from the anchor) at k px per stud.
+function S.plateLayout(k, phone)
+	local P = S.PLATE
+	local maxH = if phone then P.phone.maxSize[2] else P.height
+	local minH = if phone then P.phone.minSize[2] else P.minSize[2]
+	local boardH = P.studs[2] * k + P.minSize[2] + 2 * S.CLICK_ROW
+	local plateH = math.clamp(boardH - 2 * S.CLICK_ROW, minH, maxH)
+	local _, shift = S.markerShift()
+	return {plate = {0, plateH / 2}, click = {-(plateH / 2 + P.clickGap + (S.CLICK_ROW - P.clickGap) / 2), (S.CLICK_ROW - P.clickGap) / 2},
+		marker = {shift, P.markerSize / 2}, plateH = plateH}
+end
 -- Extra lift (studs) over tall hats so the plate clears the crown.
 S.PLATE_LIFT = {HatTop = 0.55, HatMage = 0.7, HatHelm = 0.3, HatWayfarer = 0.25, HatStraw = 0.2, HatFeather = 0.2}
 local function mix(hex, other, k)
@@ -433,7 +469,7 @@ function S.plate(role, def)
 	local trade = S.TRADES[outfit.trade] or S.TRADES.guide
 	local hatShape = outfit.hat and S.HATS[outfit.hat]
 	return {name = def and def.name or role, title = def and def.title or "", accent = region.accent, titleColor = S.titleColor(region.accent),
-		nameColor = S.PLATE.nameColor, field = S.PLATE.field, glyph = trade.glyph, regionName = region.name,
+		nameColor = S.PLATE.nameColor, field = S.PLATE.field, motif = trade.motif, regionName = region.name,
 		lift = 2.4 + (hatShape and S.PLATE_LIFT[hatShape] or 0)}
 end
 return S

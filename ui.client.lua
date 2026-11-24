@@ -283,7 +283,7 @@ do
 	local dataModule=ReplicatedStorage:WaitForChild("AetherData",10)
 	if dataModule then
 		local ok,result=pcall(require,dataModule)
-		if ok and type(result)=="table" then Data=result; if type(result.Items)=="table" then UI.T.useItems(result.Items) end end
+		if ok and type(result)=="table" then Data=result; if type(result.Items)=="table" then UI.T.useItems(result.Items,result.PetDepth and result.PetDepth.Looks) end end
 	end
 end
 
@@ -10750,7 +10750,6 @@ render = function(fromPush)
 	compactAtlas=size.X<480 or size.Y<500
 	if THUMBS.compact~=compactAtlas then
 		THUMBS.compact=compactAtlas
-		UI.T.iconCacheCompact(compactAtlas)
 		THUMBS.trim()
 	end
 	railMode=compactAtlas and size.X>=560 and size.X>size.Y*1.3
@@ -10817,6 +10816,7 @@ render = function(fromPush)
 	local selectionName=restoreFocus and selectedObject.Name
 	local selectionClass=restoreFocus and selectedObject.ClassName
 	releaseViews(scroll)
+	UI.T.releaseIcons(scroll) -- §52 QC M4: this page's icons are reused by the next render
 	for _, child in ipairs(scroll:GetChildren()) do
 		if child:IsA("GuiObject") then
 			child:Destroy()

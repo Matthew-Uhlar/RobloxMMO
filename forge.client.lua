@@ -147,7 +147,7 @@ local function shapeOf(part)
 	return ALIASES[shapeName] or shapeName
 end
 
-local stats = {templates = 0, templateTriangles = 0, creatureTemplates = 0, creatureTriangles = 0, outfitTemplates = 0, outfitTriangles = 0, instances = 0, placedTriangles = 0, failures = 0, skipped = 0, evicted = 0, templateSkips = 0, reclaimed = 0,
+local stats = {templates = 0, templateTriangles = 0, creatureTemplates = 0, creatureTriangles = 0, outfitTemplates = 0, outfitTriangles = 0, outfitInstances = 0, outfitPlaced = 0, instances = 0, placedTriangles = 0, failures = 0, skipped = 0, evicted = 0, templateSkips = 0, reclaimed = 0,
 	chartPins = 0, chartRevoked = 0, chartRefused = 0}
 -- Indexing a missing member errors on an Instance, so probe the API under pcall.
 local available = pcall(function()
@@ -185,8 +185,11 @@ local creaturePool = {failures = 0, blocked = false, stop = stopReason} -- (no E
 -- exact dye (npc.client.lua quantises to Data's NpcStyle dyes); phones share one
 -- variant per shape. Only idle outfit templates are evicted for outfits (LRU).
 local OUTFIT_KINDS = {outfit = true}
-local OUTFIT_TEMPLATE_CAP = if mobile then 10 else 36
-local OUTFIT_TRIANGLE_CAP = if mobile then 9000 else 36000
+local OUTFIT_TEMPLATE_CAP = if mobile then 18 else 52
+local OUTFIT_TRIANGLE_CAP = if mobile then 20000 else 52000
+-- QC H1 / L: outfit clones are counted on their own (never against the world's
+-- LIMITS.instances / placedTriangles), bounded by the dressed-NPC cap.
+local OUTFIT_INSTANCE_CAP = if mobile then 40 else 120
 local outfitPool = {failures = 0, blocked = false, stop = stopReason}
 local variants = {} -- shapeName -> {key -> tint | false}
 local function tintDistance(a, b)
@@ -1009,28 +1012,44 @@ local function creatureVisual(shapeName, tint, boss)
 	return clone, creatureNext, entry.extent, entry.center
 end
 -- §52 NPC outfits: outfitVisual(shape, tint) -> the same contract as
--- creatureVisual (an unparented clone, token, extent, centre), from the outfit
--- pool; handed back with outfitRelease(token) (shared token table).
+-- creatureVisual (an unparented clone, token, extent, centre) or nil and a
+-- reason ("budget" while the pool is full of busy templates, "unavailable" /
+-- "unknown" for good), from the outfit pool; handed back with
+-- outfitRelease(token). Outfit clones never count against the world's limits.
+local outfitTokens, outfitNext = {}, 0 -- token -> {entry, clone}
 local function outfitVisual(shapeName, tint)
-	if type(shapeName) ~= "string" or outfitPool.stop then return nil, "unavailable" end
+	if type(shapeName) ~= "string" then return nil, "unknown" end
+	if outfitPool.stop or outfitPool.blocked then return nil, "unavailable" end
 	local data, catalog = lookup(shapeName)
 	if not data or not OUTFIT_KINDS[data.kind] then return nil, "unknown" end
-	local tris = data.tris or #data.faces
-	if stats.instances >= LIMITS.instances or stats.placedTriangles + tris > LIMITS.placedTriangles then stats.skipped += 1; return nil, "budget" end
+	if stats.outfitInstances >= OUTFIT_INSTANCE_CAP then return nil, "budget" end
 	local color = if typeof(tint) == "Color3" then tint else defaultTint(data)
-	local entry = template(shapeName, data, catalog, color, false)
+	local entry, reason = template(shapeName, data, catalog, color, false)
+	if not entry and reason == "failed" then return nil, if outfitPool.stop or outfitPool.blocked then "unavailable" else "failed" end
 	if not entry then entry = nearestVariant(shapeName, color) end
-	if not entry or entry.pending then return nil, "budget" end
+	if not entry or entry.pending then return nil, if outfitPool.stop or outfitPool.blocked then "unavailable" else "budget" end
 	local clone = entry.part:Clone()
 	clone.Name = shapeName
 	useTick += 1
 	entry.users += 1
 	entry.used = useTick
-	stats.instances += 1
-	stats.placedTriangles += entry.triangles
-	creatureNext += 1
-	creatureTokens[creatureNext] = {entry = entry, clone = clone}
-	return clone, creatureNext, entry.extent, entry.center
+	stats.outfitInstances += 1
+	stats.outfitPlaced += entry.triangles
+	outfitNext += 1
+	outfitTokens[outfitNext] = {entry = entry, clone = clone}
+	return clone, outfitNext, entry.extent, entry.center
+end
+local function outfitRelease(token)
+	local t = outfitTokens[token]
+	if not t then return false end
+	outfitTokens[token] = nil
+	t.entry.users -= 1
+	useTick += 1
+	t.entry.used = useTick
+	stats.outfitInstances -= 1
+	stats.outfitPlaced -= t.entry.triangles
+	pcall(t.clone.Destroy, t.clone)
+	return true
 end
 local function creatureRelease(token)
 	local t = creatureTokens[token]
@@ -1058,7 +1077,8 @@ if MeshForgeTest then
 		chart = {visual = chartVisual, accept = chartAccept, release = chartRelease, tokens = chartTokens, pinCap = CHART_PIN_CAP, reserve = CHART_RESERVE},
 		creature = {visual = creatureVisual, release = creatureRelease, tokens = creatureTokens, cap = CREATURE_TEMPLATE_CAP, triangleCap = CREATURE_TRIANGLE_CAP, count = creatureTemplateCount, kinds = CREATURE_KINDS,
 			bossReserve = CREATURE_BOSS_RESERVE, bossTriangles = CREATURE_BOSS_TRIANGLES, pool = creaturePool},
-		outfit = {visual = outfitVisual, release = creatureRelease, cap = OUTFIT_TEMPLATE_CAP, triangleCap = OUTFIT_TRIANGLE_CAP, kinds = OUTFIT_KINDS, pool = outfitPool},
+		outfit = {visual = outfitVisual, release = outfitRelease, tokens = outfitTokens, cap = OUTFIT_TEMPLATE_CAP, triangleCap = OUTFIT_TRIANGLE_CAP,
+			instanceCap = OUTFIT_INSTANCE_CAP, kinds = OUTFIT_KINDS, pool = outfitPool},
 		-- Final mesh box for a tagged part, without forging: size, CFrame, kind.
 		describe = function(part)
 			local shapeName = shapeOf(part)
@@ -1082,7 +1102,7 @@ do
 		if method == "creature" and type(arg) == "table" then return creatureVisual(arg.shape, arg.tint, arg.boss == true) end
 		if method == "creatureRelease" and type(arg) == "number" then return creatureRelease(arg) end
 		if method == "outfit" and type(arg) == "table" then return outfitVisual(arg.shape, arg.tint) end
-		if method == "outfitRelease" and type(arg) == "number" then return creatureRelease(arg) end
+		if method == "outfitRelease" and type(arg) == "number" then return outfitRelease(arg) end
 		return nil
 	end
 	api.Parent = ReplicatedStorage
@@ -1098,6 +1118,7 @@ end)
 script.Destroying:Once(function()
 	for part in pairs(placed) do release(part) end
 	for token in pairs(creatureTokens) do creatureRelease(token) end
+	for token in pairs(outfitTokens) do outfitRelease(token) end
 	for _, entry in pairs(templates) do
 		if entry and not entry.pending then
 			pcall(entry.part.Destroy, entry.part)

@@ -302,6 +302,16 @@ Theme.ICON_MOTIFS = {
 	-- Pets and pet items
 	pet = {oval(0.48, 0.52, 0.56, 0.7, "base"), disc(0.38, 0.4, 0.12, "lite", NO), disc(0.58, 0.64, 0.1, "lite", NO), disc(0.72, 0.76, 0.26, "paper"),
 		disc(0.72, 0.8, 0.1, "deep", NO), disc(0.65, 0.71, 0.05, "deep", NO), disc(0.72, 0.68, 0.05, "deep", NO), disc(0.79, 0.71, 0.05, "deep", NO), gleam(0.38, 0.34, 0.08, 0.12, -20, 0.4)},
+	pet_flyer = {oval(0.5, 0.56, 0.5, 0.56, "base"), oval(0.24, 0.42, 0.34, 0.18, "lite", -30), oval(0.76, 0.42, 0.34, 0.18, "lite", 30),
+		disc(0.5, 0.32, 0.26, "base"), box(0.5, 0.38, 0.08, 0.08, "gold", 0.1, 45), disc(0.44, 0.3, 0.05, "ink", NO), disc(0.56, 0.3, 0.05, "ink", NO), gleam(0.42, 0.5, 0.06, 0.14, 0, 0.4)},
+	pet_quad = {oval(0.5, 0.6, 0.6, 0.4, "base"), disc(0.34, 0.4, 0.32, "base"), box(0.24, 0.26, 0.1, 0.14, "base", 0.3, -20), box(0.42, 0.24, 0.1, 0.14, "base", 0.3, 20),
+		disc(0.3, 0.42, 0.05, "ink", NO), disc(0.22, 0.48, 0.06, "deep", NO), oval(0.82, 0.48, 0.24, 0.1, "lite", -40), gleam(0.5, 0.52, 0.2, 0.05, 0, 0.4)},
+	pet_shell = {oval(0.5, 0.72, 0.74, 0.2, "lite"), disc(0.52, 0.5, 0.5, "base"), ring(0.52, 0.5, 0.3, 0.3, "deep", 0.04), disc(0.52, 0.5, 0.1, "deep", NO),
+		disc(0.22, 0.66, 0.16, "lite"), disc(0.2, 0.64, 0.04, "ink", NO), gleam(0.42, 0.38, 0.12, 0.06, -20, 0.4)},
+	pet_hopper = {oval(0.5, 0.62, 0.62, 0.42, "base"), disc(0.34, 0.4, 0.18, "base"), disc(0.66, 0.4, 0.18, "base"), disc(0.34, 0.38, 0.08, "ink", NO),
+		disc(0.66, 0.38, 0.08, "ink", NO), oval(0.5, 0.68, 0.36, 0.16, "lite", 0, NO), oval(0.22, 0.82, 0.2, 0.08, "deep"), oval(0.78, 0.82, 0.2, 0.08, "deep")},
+	pet_float = {halo(0.5, 0.5, 0.86, "glow", 0.6), oval(0.5, 0.48, 0.5, 0.56, "base"), oval(0.5, 0.78, 0.3, 0.16, "lite", 0, NO), disc(0.42, 0.44, 0.07, "ink", NO),
+		disc(0.58, 0.44, 0.07, "ink", NO), gleam(0.4, 0.34, 0.1, 0.08, -20, 0.4)},
 	collar = {ring(0.5, 0.46, 0.66, 0.44, "base", 0.08), box(0.5, 0.7, 0.12, 0.08, "metal", 0.3), disc(0.5, 0.78, 0.18, "gold"), gleam(0.47, 0.75, 0.05, 0.04, 0, 0.4)},
 	candy = {box(0.24, 0.5, 0.16, 0.22, "lite", 0.1, 45), box(0.76, 0.5, 0.16, 0.22, "lite", 0.1, 45), oval(0.5, 0.5, 0.42, 0.32, "base"),
 		stick(0.42, 0.38, 0.5, 0.62, 0.04, "white", 0.5, {g = true, a = 0.3}), stick(0.54, 0.36, 0.62, 0.6, 0.04, "white", 0.5, {g = true, a = 0.3})},
@@ -374,7 +384,7 @@ Theme.ICON_CATEGORY = {ammo = "arrow", bait = "bait", beaconTool = "striker", cr
 	emote = "scroll", scroll = "scroll", spade = "spade", teleport = "scroll", potion = "potion", buff = "flask", food = "meal", seed = "seed"}
 -- Id keywords per kind (first match wins), checked after the category.
 Theme.ICON_KEYWORDS = {
-	material = {{"Ingot", "bar"}, {"Heads", "arrowhead"}, {"Shaft", "shaft"}, {"Bowstring", "thread"}, {"String", "thread"}, {"Thread", "thread"},
+	material = {{"Ingot", "bar"}, {"wood", "log"}, {"Plank", "log"}, {"Timber", "log"}, {"Heads", "arrowhead"}, {"Shaft", "shaft"}, {"Bowstring", "thread"}, {"String", "thread"}, {"Thread", "thread"},
 		{"Silk", "thread"}, {"Coil", "thread"}, {"Bolt", "cloth"}, {"Leather", "leather"}, {"Hide", "hide"}, {"Pelt", "hide"}, {"Plate", "scale"},
 		{"Scale", "scale"}, {"Chitin", "scale"}, {"Shell", "shell"}, {"Pearl", "pearl"}, {"Knot", "pearl"}, {"Fang", "fang"}, {"Barb", "fang"},
 		{"Horn", "fang"}, {"Plume", "feather"}, {"Feather", "feather"}, {"Quill", "feather"}, {"Keystone", "key"}, {"Key", "key"}, {"Dust", "dust"},
@@ -403,7 +413,13 @@ Theme.ICON_KEYWORD_FIRST = {consumable = true}
 Theme.ICON_MODIFIERS = {{"Condensed", "condensed"}, {"Radiant", "radiant"}}
 Theme.ICON_GEAR = {weapon = true, armor = true, tool = true, accessory = true}
 Theme.items = nil -- Data.Items, set by Theme.useItems (resolves a compressed item's base)
-function Theme.useItems(items) if type(items) == "table" then Theme.items = items end end
+Theme.petLooks = nil -- Data.PetDepth.Looks (species -> {form}); pets draw their form's motif
+function Theme.useItems(items, petLooks)
+	if type(items) == "table" then Theme.items = items end
+	if type(petLooks) == "table" then Theme.petLooks = petLooks end
+end
+-- Pet form → motif ("pet_flyer" …); unknown forms keep the generic pet egg.
+Theme.ICON_PET_FORMS = {flyer = "pet_flyer", quad = "pet_quad", shell = "pet_shell", hopper = "pet_hopper", float = "pet_float"}
 
 local function keyword(list, id)
 	for _, entry in ipairs(list or {}) do if string.find(id, entry[1], 1, true) then return entry[2] end end
@@ -443,6 +459,11 @@ function Theme.iconSpec(def, items)
 		if kind == "weapon" then family, rule = weaponFamily(def)
 		elseif kind == "armor" then family, rule = Theme.ICON_SLOT[def.slot], "slot"
 		elseif kind == "tool" then family, rule = Theme.ICON_TOOL[def.toolKind] or Theme.ICON_HELD[def.heldClass or ""], "tool"
+		elseif kind == "pet" then
+			local looks = Theme.petLooks
+			local look = type(looks) == "table" and looks[def.pet or ""]
+			local form = (type(look) == "table" and look.form) or def.petForm
+			if form and Theme.ICON_PET_FORMS[form] then family, rule = Theme.ICON_PET_FORMS[form], "petForm" end
 		end
 		if not family and Theme.ICON_KEYWORD_FIRST[kind or ""] then
 			local hit = keyword(Theme.ICON_KEYWORDS[kind], id)
@@ -472,8 +493,44 @@ end
 function Theme.shapeOf(def) return Theme.iconSpec(def).family end
 
 -- Template cache (unparented icon trees, cloned per use). Phones keep fewer.
-Theme.IconCache = {templates = {}, max = 160, compactMax = 72, compact = false, builds = 0, clones = 0, evictions = 0, tick = 0, count = 0}
-function Theme.iconCacheCompact(compact) Theme.IconCache.compact = compact == true end
+-- Templates are built at a size bucket (ICON_BUCKETS) and clones are scaled to
+-- the requested size (every layer is scale-positioned), so a page of mixed
+-- sizes shares a handful of templates. Released icons (Theme.releaseIcons) go
+-- to a bounded free list per key and are reused by the next render.
+Theme.IconCache = {templates = {}, max = 160, compactMax = 72, compact = false, builds = 0, clones = 0, evictions = 0, tick = 0, count = 0,
+	pool = {}, pooled = 0, poolMax = 96, compactPoolMax = 40, reused = 0}
+Theme.ICON_BUCKETS = {24, 32, 40, 48, 64}
+Theme.ICON_SMALL = 36 -- below this, gleams and tiny details are dropped
+function Theme.iconBucket(px)
+	px = tonumber(px) or 32
+	for _, b in ipairs(Theme.ICON_BUCKETS) do if px <= b then return b end end
+	return Theme.ICON_BUCKETS[#Theme.ICON_BUCKETS]
+end
+local function trimIconCache()
+	local cache = Theme.IconCache
+	local max = if cache.compact then cache.compactMax else cache.max
+	while cache.count > max do
+		local oldestKey, oldest = nil, math.huge
+		for k, e in pairs(cache.templates) do if e.used < oldest then oldestKey, oldest = k, e.used end end
+		if not oldestKey then break end
+		cache.templates[oldestKey].template:Destroy()
+		cache.templates[oldestKey] = nil
+		cache.count -= 1
+		cache.evictions += 1
+	end
+	local poolMax = if cache.compact then cache.compactPoolMax else cache.poolMax
+	for key, list in pairs(cache.pool) do
+		while cache.pooled > poolMax and #list > 0 do table.remove(list):Destroy(); cache.pooled -= 1 end
+		if #list == 0 then cache.pool[key] = nil end
+	end
+end
+-- The satchel layout (hud.client.lua) is the one owner of this flag; shrinking
+-- trims the cache and the free list at once.
+function Theme.iconCacheCompact(compact)
+	local was = Theme.IconCache.compact
+	Theme.IconCache.compact = compact == true
+	if Theme.IconCache.compact and not was then trimIconCache() end
+end
 -- Live ViewportFrame previews (the atlas's 3D thumbnails) are bounded: only
 -- icons at least ICON_VIEWPORT_MIN px wide may use one, at most ICON_VIEWPORTS
 -- per page (phones fewer); everything else is the cached vector icon.
@@ -485,6 +542,13 @@ function Theme.iconViewportAllowed(size, used, compact)
 end
 Theme.ICON_LAYER_MAX = 12
 
+-- Layers kept at a small size: no gleams and no tiny details (< 1.2% of the box).
+function Theme.iconLayerKept(L, px)
+	if px >= Theme.ICON_SMALL then return true end
+	local flags = L[8] or NO
+	if flags.g then return false end
+	return L[3] * L[4] >= 0.012 or flags.soft == true
+end
 local function drawLayer(holder, L, tones, px, z)
 	local tone = tones[L[6]] or tones.base
 	local flags = L[8] or NO
@@ -538,10 +602,13 @@ function Theme.buildIcon(def, size, spec)
 	end
 	local art = make("Frame", holder, {Name = "Art", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
 		Size = UDim2.fromScale(if spec.modifier then 0.8 else 1, if spec.modifier then 0.8 else 1), BackgroundTransparency = 1, Active = false})
-	for _, L in ipairs(Theme.ICON_MOTIFS[spec.family]) do drawLayer(art, L, tones, px * (if spec.modifier then 0.8 else 1), z) end
+	local artPx = px * (if spec.modifier then 0.8 else 1)
+	for _, L in ipairs(Theme.ICON_MOTIFS[spec.family]) do
+		if Theme.iconLayerKept(L, artPx) then drawLayer(art, L, tones, artPx, z) end
+	end
 	if spec.modifier then
 		drawLayer(holder, box(0.84, 0.16, 0.2, 0.2, if spec.modifier == "radiant" then "gold" else "lite", 0.1, 45), tones, px, z).Name = "CompressedBadge"
-		if spec.modifier == "radiant" then drawLayer(holder, disc(0.84, 0.16, 0.08, "white", NO), tones, px, z).Name = "Spark" end
+		if spec.modifier == "radiant" and px >= Theme.ICON_SMALL then drawLayer(holder, disc(0.84, 0.16, 0.08, "white", NO), tones, px, z).Name = "Spark" end
 	end
 	if spec.gear and spec.rank >= 2 then
 		-- Gear: a rarity gem in the top-right corner (the rarity frame's jewel).
@@ -553,39 +620,71 @@ function Theme.buildIcon(def, size, spec)
 	holder:SetAttribute("Shape", spec.family)
 	return holder
 end
--- Draws the icon for `def` into `parent` (size: UDim2 or px): a clone of the
--- cached template for that spec and size (built once).
+-- Draws the icon for `def` into `parent` (size: UDim2 or px): a pooled icon,
+-- or a clone of the cached template for that spec and size bucket (built once),
+-- sized to the request.
 function Theme.icon(parent, def, size)
 	local spec = Theme.iconSpec(def)
-	local px = if typeof(size) == "UDim2" then size.X.Offset .. "x" .. size.Y.Offset else tostring(size or 32)
+	local w = if typeof(size) == "UDim2" then size.X.Offset else (tonumber(size) or 32)
+	local bucket = Theme.iconBucket(w)
 	local cache = Theme.IconCache
-	local key = spec.key .. "@" .. px
-	local entry = cache.templates[key]
+	local key = spec.key .. "@" .. bucket
 	cache.tick += 1
-	if not entry then
-		entry = {template = Theme.buildIcon(def, size, spec), used = cache.tick}
-		cache.templates[key] = entry
-		cache.builds += 1
-		cache.count += 1
-		local max = if cache.compact then cache.compactMax else cache.max
-		while cache.count > max do
-			local oldestKey, oldest = nil, math.huge
-			for k, e in pairs(cache.templates) do if e ~= entry and e.used < oldest then oldestKey, oldest = k, e.used end end
-			if not oldestKey then break end
-			cache.templates[oldestKey].template:Destroy()
-			cache.templates[oldestKey] = nil
-			cache.count -= 1
-			cache.evictions += 1
-		end
+	local icon
+	local free = cache.pool[key]
+	if free and #free > 0 then
+		icon = table.remove(free)
+		cache.pooled -= 1
+		cache.reused += 1
 	else
-		cache.clones += 1
+		local entry = cache.templates[key]
+		if not entry then
+			entry = {template = Theme.buildIcon(def, bucket, spec), used = cache.tick}
+			cache.templates[key] = entry
+			cache.builds += 1
+			cache.count += 1
+			trimIconCache()
+		else
+			cache.clones += 1
+		end
+		entry.used = cache.tick
+		icon = entry.template:Clone()
 	end
-	entry.used = cache.tick
-	local icon = entry.template:Clone()
+	icon.Size = if typeof(size) == "UDim2" then size else UDim2.fromOffset(w, w)
 	icon:SetAttribute("Shape", spec.family)
 	icon:SetAttribute("IconKey", key)
 	icon.Parent = parent
 	return icon
+end
+-- A trade / page medallion: one motif family drawn in a single colour (the
+-- townsfolk nameplates' trade medallion, §52 QC M2). Not cached (built once per rig).
+function Theme.motifIcon(parent, family, hex, px)
+	family = if Theme.ICON_MOTIFS[family] then family else "gem"
+	local spec = {family = family, rule = "motif", rarity = "Common", rank = 1, gear = false, halo = false, color = hex, key = family .. "|" .. tostring(hex)}
+	local icon = Theme.buildIcon({color = hex}, px or 30, spec)
+	icon.Parent = parent
+	return icon
+end
+-- Hands every icon under `container` back to the free list (call before a page
+-- is cleared); returns how many were kept for reuse.
+function Theme.releaseIcons(container)
+	local cache = Theme.IconCache
+	local poolMax = if cache.compact then cache.compactPoolMax else cache.poolMax
+	local kept = 0
+	if not container then return 0 end
+	for _, d in ipairs(container:GetDescendants()) do
+		local key = d.Name == "Icon" and d:GetAttribute("IconKey")
+		if type(key) == "string" and cache.pooled < poolMax then
+			d.Parent = nil
+			local veil = d:FindFirstChild("Veil")
+			if veil then veil.Visible = false end
+			cache.pool[key] = cache.pool[key] or {}
+			table.insert(cache.pool[key], d)
+			cache.pooled += 1
+			kept += 1
+		end
+	end
+	return kept
 end
 
 ------------------------------------------------------------------------------
@@ -608,8 +707,8 @@ function Theme.slot(parent, opts)
 		BackgroundColor3 = C.void, BackgroundTransparency = 0.35, BorderSizePixel = 0, Active = false, ZIndex = 4, Visible = false})
 	Theme.corner(sweep, 4)
 	Theme.label(b, {Name = "Count", AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -3, 1, -2), Size = UDim2.fromOffset(size - 4, 12),
-		Font = Theme.font.number, TextSize = if size < 44 then 8 else 10, TextColor3 = C.text, TextXAlignment = Enum.TextXAlignment.Right,
-		TextStrokeTransparency = 0, TextStrokeColor3 = C.void, Text = "", ZIndex = 5, TextTruncate = Enum.TextTruncate.None})
+		Font = Theme.font.number, TextSize = if size < 44 then 8 else 9, TextColor3 = C.text, TextXAlignment = Enum.TextXAlignment.Right,
+		TextStrokeTransparency = 0.15, TextStrokeColor3 = C.void, Text = "", ZIndex = 5, TextTruncate = Enum.TextTruncate.None})
 	local tag = Theme.label(b, {Name = "Tag", Position = UDim2.fromOffset(2, 2), Size = UDim2.fromOffset(13, 13), BackgroundTransparency = 0, BackgroundColor3 = C.gold,
 		Font = Theme.font.heading, TextSize = 10, TextColor3 = C.onGold, TextXAlignment = Enum.TextXAlignment.Center, Text = "E", Visible = false, ZIndex = 5})
 	Theme.corner(tag, 3)

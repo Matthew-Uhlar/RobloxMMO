@@ -75,15 +75,16 @@ function Methods:GetPropertyChangedSignal() return signal() end
 
 local workspaceDouble = new("Workspace")
 local serverStorage = new("ServerStorage")
-local styleMarker, dataMarker = {}, {}
+local styleMarker, dataMarker, themeMarker = {}, {}, {}
+local Theme = luau.load(fs.readFile("shared/UiTheme.lua"), {debugName = "UiTheme", injectGlobals = true, environment = {Instance = {new = function(class) return new(class) end}, Color3 = roblox.Color3, Enum = roblox.Enum, UDim2 = roblox.UDim2, UDim = roblox.UDim, Vector2 = roblox.Vector2, ColorSequence = roblox.ColorSequence, NumberSequence = roblox.NumberSequence, NumberSequenceKeypoint = roblox.NumberSequenceKeypoint}})()
 local env = {
 	game = {GetService = function(_, name)
 		return ({Players = {PlayerAdded = signal(), PlayerRemoving = signal(), GetPlayers = function() return {} end},
-			ReplicatedStorage = {WaitForChild = function(_, child) return if child == "AetherNpcStyle" then styleMarker else dataMarker end},
+			ReplicatedStorage = {WaitForChild = function(_, child) return if child == "AetherNpcStyle" then styleMarker elseif child == "AetherUiTheme" then themeMarker else dataMarker end},
 			ServerStorage = serverStorage})[name]
 	end},
 	workspace = workspaceDouble,
-	require = function(target) return if target == styleMarker then Style else Data end,
+	require = function(target) return if target == styleMarker then Style elseif target == themeMarker then Theme else Data end,
 	Instance = {new = function(class) return new(class) end},
 	RaycastParams = {new = function() return {} end},
 	Vector3 = Vector3, CFrame = CFrame, Color3 = Color3, Enum = roblox.Enum, UDim2 = roblox.UDim2, UDim = roblox.UDim, Vector2 = roblox.Vector2,
