@@ -2181,6 +2181,9 @@ local function skillUnlocks(skill,level)
 	if skill=="Runebinding" and type(Data.Runebinding)=="table" and type(Data.Runebinding.unlocks)=="function" then
 		for _,u in ipairs(Data.Runebinding.unlocks()) do add(u.level,escape(u.text),u.item) end
 	end
+	if skill=="Skysailing" and type(Data.Skysailing)=="table" and type(Data.Skysailing.unlocks)=="function" then
+		for _,u in ipairs(Data.Skysailing.unlocks()) do add(u.level,escape(u.text),u.item) end
+	end
 	local bag=tbl(Data.AccessoryBag)
 	if skill==tbl(bag.slotsPerLevel).skill and num(tbl(bag.slotsPerLevel).every,0)>0 then
 		local every=bag.slotsPerLevel.every
@@ -11057,6 +11060,8 @@ UI.relay={equip=true,unequip=true,consume=true,sell=true,accessory=true,petAdopt
 	prayerQuickToggle=true, -- §34
 	heartAbility=true, -- §46 hearts.client.lua: the ability key G / HUD chip (the server checks the cooldown)
 	rbTravel=true,riftLeave=true, -- §49 runes.client.lua: the Waygate picker and the Rift HUD's Leave (the server checks the waygate, level and region)
+	shipBuild=true,sailDock=true,sailLeave=true,sailJump=true,sailRole=true,sailTrim=true,sailFire=true,sailSalvage=true,sailFish=true, -- §51 sailing.client.lua: build panel, ship HUD
+	sailContract=true,sailAbandon=true,sailRepair=true,sailCrew=true, -- §51 harbour board picker, contract strip, repairs, crew policy (the server checks everything)
 	tutorial=true, -- §43 coach cards (tutorial.client.lua): dismiss / next / skip / replay / tips (sent by UI.tutorialSend: no queue / gap)
 	raidHost=true,raidJoin=true,raidLeave=true,raidReady=true,raidChallenge=true,raidStart=true,raidUse=true,raidTitle=true} -- §38 raid.client.lua (party board, raid HUD, Raid Log). §34 quick-prayer orb (one atomic verb, queued, never dropped). Earlier: quantity picker (features.client.lua), Resonance, Path rewards
 local remote = ReplicatedStorage:WaitForChild("IsleAction")

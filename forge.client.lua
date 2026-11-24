@@ -839,6 +839,8 @@ local function step()
 end
 local function consider(part)
 	if registry[part] or typeof(part) ~= "Instance" or not part:IsA("BasePart") or type(part:GetAttribute("Shape")) ~= "string" then return end
+	-- §51: moving ship parts (ShapeManual) are forged on request (MeshForgeLocal "visual") and welded by sailing.client.lua.
+	if part:GetAttribute("ShapeManual") then return end
 	registry[part] = true
 	local data = lookup(shapeOf(part))
 	if data and SIGN_KINDS[data.kind] then pcall(styleSign, part) end
