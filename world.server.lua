@@ -203,7 +203,8 @@ end
 --   kind = hanging | shop | post | banner | plaque | ledger (default from
 --   Signs.STYLE[title], else hanging), icon (shop: catalog shape of the trade),
 --   arrows = {{label, to = Vector3}, ...} (post: boards pointing at real places),
---   plate = false (post: arrows only), theme (default: the island's theme).
+--   plate = false (post: arrows only), theme (default: the island's theme),
+--   compact = true (faces keep only panel + title: §40 hall name banners).
 -- Each sign is its own Model "Sign <title>" (attributes SignArchetype,
 -- SignTitle, SignTheme; tag AetherSign) holding a frame host (post, pole,
 -- plinth or notice post: the visible primitive fallback, mesh slot with a
@@ -677,6 +678,17 @@ function Signs.build(parent,cf,spec)
 	holder:SetAttribute("SignTheme",themeName)
 	Tags:AddTag(holder,"AetherSign")
 	local board=(BUILDERS[spec.kind] or buildHanging)(holder,cf,spec,theme)
+	if spec.compact then
+		-- §40 QC L5: a name board within the §28 face budget: panel + title only.
+		holder:SetAttribute("SignCompact",true)
+		for _,gui in ipairs(board:GetChildren()) do
+			if gui:IsA("SurfaceGui") then
+				for _,child in ipairs(gui:GetChildren()) do
+					if child.Name~="Panel" and child.Name~="Title" then child:Destroy() end
+				end
+			end
+		end
+	end
 	return board,holder
 end
 end
@@ -4569,15 +4581,15 @@ function Buildings.settle(only)
 				{shell="ShopHall",interior="ShopInterior",title="Quay Outfitters",kicker="COMPASS QUAY   /   GOODS · SUPPLIES",accent="3C9291",tint="9C3F3A",banner=true}}},
 		["Guild Terrace"]={types={"TimberTownhouse","StoneCottage"},quota=10,tints={TimberTownhouse={"7A3E2E"},StoneCottage={"56677A"}}},
 		["Mosswake Grove"]={types={"ThatchCottage","LogLodge"},quota=10,tints={ThatchCottage={"3C8C7E"},LogLodge={"4E7A48"}},
-			halls={{shell="ShopHall",interior="ShopInterior",title="Mosswake Herbalist",kicker="MOSSWAKE GROVE   /   HERBS · TONICS",accent="6BAF5A",tint="4E7A48"}}},
+			halls={{shell="ShopHall",interior="ShopInterior",title="Mosswake Herbalist",kicker="MOSSWAKE GROVE   /   HERBS · TONICS",accent="6BAF5A",tint="4E7A48",banner=true}}},
 		["Meadow Reach"]={types={"ThatchCottage","TimberHouse"},quota=8,tints={ThatchCottage={"C15557"},TimberHouse={"C9572F"}},
 			halls={{shell="TavernHall",interior="TavernInterior",title="The Sunwheel Tap",kicker="MEADOW REACH   /   ALE · BREAD · REST",accent="E9C46A",tint="9C5B2E"}}},
 		["Brassfall Quarry"]={types={"StoneCottage","TimberShopfront"},quota=10,tints={StoneCottage={"6E4A30"},TimberShopfront={"C98D4F"}},
-			halls={{shell="ShopHall",interior="ShopInterior",title="Brassfall Assay House",kicker="BRASSFALL CAY   /   ASSAY · TOOLS",accent="C9A24E",tint="6E4A30"}}},
+			halls={{shell="ShopHall",interior="ShopInterior",title="Brassfall Assay House",kicker="BRASSFALL CAY   /   ASSAY · TOOLS",accent="C9A24E",tint="6E4A30",banner=true}}},
 		["Cinder Shelf"]={types={"StoneCottage"},quota=5,tints={StoneCottage={"3A4048"}}},
 		["Warden Reach"]={types={"StoneCottage","TimberHouse"},quota=7,tints={StoneCottage={"56677A"},TimberHouse={"6E4A6A"}}},
 		["Skyreach"]={types={"StoneCottage","TimberTownhouse"},quota=8,tints={StoneCottage={"7A90B0"},TimberTownhouse={"5A7FA8"}},
-			halls={{shell="ShopHall",interior="ShopInterior",title="Skyreach Outfitters",kicker="SKYREACH   /   ROPES · LANTERNS",accent="9DF3D7",tint="5A7FA8"}}},
+			halls={{shell="ShopHall",interior="ShopInterior",title="Skyreach Outfitters",kicker="SKYREACH   /   ROPES · LANTERNS",accent="9DF3D7",tint="5A7FA8",banner=true}}},
 		["Windpine Grove"]={types={"LogLodge"},quota=10,tints={LogLodge={"4E7A48","2F5F4A"}},
 			halls={{shell="TavernHall",interior="TavernInterior",title="The Pinewarden Lodge",kicker="WINDPINE GROVE   /   HEARTH · STEW",accent="6BAF5A",tint="3F5A3A"}}},
 		["Gloomhollow Caverns"]={types={"StoneCottage"},quota=4,tints={StoneCottage={"5B4A8C"}}},
@@ -4777,10 +4789,16 @@ function Buildings.settle(only)
 					local def=BUILDING_KIT[hall.shell]
 					local m,floor=B.place(isle,hall.shell,best.cf,{title=hall.title,tint=C(hall.tint)})
 					B.furnish(m,hall.interior,best.cf)
-					local _,_,lo,hi=B.fitOf(def)
-					-- A banner standard beside the door for the town halls (regional halls
-					-- carry the name on their own sign boards: phone template budget).
-					if hall.banner then signAt(m,best.cf*CFrame.new(-(hi.X+1.6),0,lo.Z+1.4),hall.title,hall.kicker,C(hall.accent),4,{kind="banner"}) end
+					-- §40 QC L5: a name banner for the walk-in shops (hall.banner), on
+					-- the lot's reserved -X side (lotFor extraX), its back against the
+					-- side wall near the front corner, so Signs.cullBacks keeps one face;
+					-- compact (panel + title) to stay within the §28 GUI budget. The
+					-- taverns (no banner) carry their name only in STYLE / the model.
+					if hall.banner then
+						local W=3.2 -- buildBanner's cloth width at width 4
+						local at=best.cf*CFrame.new(-(def.w/2+.9),0,-def.d/2+.8+W/2)*CFrame.Angles(0,math.rad(90),0)
+						signAt(m,at,hall.title,hall.kicker,C(hall.accent),4,{kind="banner",compact=true})
+					end
 					if lightRoom(isle,floor.CFrame.Position) then B.interiorLight(floor,def) end
 					m:SetAttribute("Settlement",isleName)
 					claim(index,best.lot,IC.Y)

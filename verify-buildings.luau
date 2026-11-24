@@ -375,6 +375,21 @@ do
 	ok(bare == 0 and boxed >= 7, "post-settlement placement helpers honour ShapeBox (" .. boxed .. " boxed, " .. bare .. " bare)")
 end
 
+-- §40 QC L5: the regional walk-in shops carry a compact, one-sided name banner
+-- (Signs.build) against their side wall, within the §28 GUI budget.
+for _, title in {"Quay Outfitters", "Mosswake Herbalist", "Brassfall Assay House", "Skyreach Outfitters"} do
+	local hall
+	for _, w in walkins do if w.host.Parent.Name == title then hall = w.host.Parent end end
+	ok(hall ~= nil, title .. " is built")
+	local holder = hall and hall:FindFirstChild("Sign " .. title)
+	ok(holder ~= nil and holder:GetAttribute("SignArchetype") == "banner" and holder:GetAttribute("SignCompact") == true, title .. " has a name banner")
+	local board
+	for _, p in (holder and holder:GetDescendants() or {}) do if p:IsA("BasePart") and p:GetAttribute("SignBoard") then board = p end end
+	ok(board ~= nil and board:GetAttribute("SignOneSided") == "wall" and board:FindFirstChild("Sign face Back") == nil, title .. " banner backs onto its wall (one face)")
+	local face = board and board:FindFirstChild("Sign face Front")
+	ok(face ~= nil and #face:GetDescendants() <= 4 and face:FindFirstChild("Title") ~= nil and face.Title.Text == title, title .. " banner reads its name (compact face)")
+end
+
 -- The Guild Hall pavilion is furnished (rug, trestle tables, benches,
 -- chandelier) clear of its ledgers, the Huntmaster's pedestal and anchors.
 do
