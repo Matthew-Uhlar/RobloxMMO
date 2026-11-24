@@ -38,7 +38,7 @@ local server = fs.readFile("gesture.server.lua")
 -- IsleAction verbs: scanned from every script that builds prompts (attribute
 -- sets, prompt() calls, hall / stall definitions and the contract comments).
 local verbs = {}
-local SOURCES = {"world.server.lua", "server.server.lua", "raids.server.lua", "lairs.server.lua", "festival.server.lua", "beaconry.server.lua",
+local SOURCES = {"world.server.lua", "server.server.lua", "raids.server.lua", "lairs.server.lua", "festival.server.lua", "beaconry.server.lua", "sailing.server.lua",
 	"combat.server.lua", "minigames.server.lua", "expedition.server.lua", "coop.server.lua", "motes.client.lua"}
 for _, path in ipairs(SOURCES) do
 	local text = fs.readFile(path)

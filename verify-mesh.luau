@@ -86,7 +86,8 @@ for _, name in ipairs(required) do check(World.shapes[name] ~= nil, name .. " is
 -- Every client downloads the world catalog: packed geometry keeps it small.
 local catalogBytes = #fs.readFile("art/WorldCatalog.lua")
 -- §40: the building kit (12 whole-building and interior meshes) raised the cap from 900 KB.
-check(catalogBytes <= 1150 * 1024, "world catalog download stays under 1150 KB (" .. catalogBytes .. " bytes)")
+-- §51: the Skysailing kit (3 hulls, mast, helm, cannon, dock, board, bollard, slip, reef, wreck, buoy: ~13.7k triangles, ~137 KB) raised it to 1300 KB.
+check(catalogBytes <= 1300 * 1024, "world catalog download stays under 1300 KB (" .. catalogBytes .. " bytes)")
 -- Packed geometry decodes to exactly the OBJ masters' vertices and faces.
 for _, name in ipairs({"Skyship", "ZipLine", "SnareTrap", "StormSpire", "WindpineTree"}) do
 	local data, vi, fi = World.shapes[name], 0, 0

@@ -1813,6 +1813,7 @@ do
 	local okData,D=pcall(function() return require(game:GetService("ReplicatedStorage"):WaitForChild("AetherData",30)) end)
 	local H=if okData and type(D)=="table" and type(D.Home)=="table" then D.Home else nil
 	HomeKit.Home=H
+	HomeKit.Sail=if okData and type(D)=="table" and type(D.Skysailing)=="table" then D.Skysailing else nil -- §51 Shipwright's Slip
 	function HomeKit.level(value) return if H then H.level(value) else 1 end
 	function HomeKit.radius(level) return if H then H.radius(level) else 90 end
 	function HomeKit.meadow(level) return HomeKit.radius(level)+(if H then H.MARGIN else 10) end
@@ -2005,6 +2006,20 @@ local function settle(player)
 		survey.Enabled=HomeKit.Home==nil or home.level<HomeKit.Home.MAX_LEVEL
 	end
 	refreshSurvey()
+	-- §51 Skysailing: the Shipwright's Slip (Data.Skysailing.SLIP_OFFSET, inside
+	-- its Data.Island protected circle). One part: the forged slipway (crane,
+	-- keel cradle, ribs) with the build prompt; launching rides out past the rim
+	-- on the same bearing (Data.Skysailing.homeBerth).
+	if HomeKit.Sail then
+		local o=HomeKit.Sail.SLIP_OFFSET
+		local slipAt=center+V(o.x,0,o.z)
+		local slip=part(m,"Shipwright's Slip",V(9,6,9),facing(slipAt+V(0,3,0),slipAt+V(o.x,3,o.z)),timber,WO,false)
+		meshSlot(slip,"ShipwrightSlip",nil,false,"Uniform")
+		prompt(slip,"Shipwright","Your airship · Skysailing","shipwright",nil,player.UserId)
+		local launchQ=prompt(slip,"Sail out","From your home berth","sailLaunch","Home",player.UserId)
+		launchQ.KeyboardKeyCode=Enum.KeyCode.R
+		launchQ.UIOffset=Vector2.new(0,-42)
+	end
 	table.insert(home.decorationConnections,player:GetAttributeChangedSignal("HomesteadLevel"):Connect(function()
 		local now=HomeKit.level(player:GetAttribute("HomesteadLevel"))
 		if now==home.level or not m.Parent then return end
@@ -6607,5 +6622,68 @@ do
 	end
 end
 -- <<< END Runebinding <<<
+
+-------------------------------------------------------------------------------
+-- >>> BEGIN Skysailing (Skysailing team; docs/DEPTH-CONTRACT.md §51; Data.Skysailing) >>>
+-- * Five skydocks (Data.Skysailing.Ports) at the island rims, on bearings
+--   clear of the bridges: a forged SkyDock pier (pierFrom -> pierTo), a
+--   harbour board (prompt "harbourBoard" <port>: the contract picker), a
+--   mooring bollard at the pier end (prompt "sailLaunch" <port>), and anchors
+--   Dock_<id> (the landing every despawn puts sailors on) and Berth_<id>
+--   (where ships ride, in open air past the pier).
+-- * Charts between the regions under Workspace.AetherIsles.Skyways (off the
+--   Sky Chart): forged sky reefs, wrecks and landmark buoys (attributes
+--   ChartId / ChartKind; no collision, so ships never snag).
+-- No server lights and no Neon (client-side glow only).
+-------------------------------------------------------------------------------
+do
+	local SS=Data.Skysailing
+	if SS then
+		local brass,deep=C("C9A24E"),C("2E3B4E")
+		for _,port in ipairs(SS.Ports) do
+			local host=islandsFolder:FindFirstChild(port.isle)
+			if host then
+				local m=group(port.name,host)
+				m:SetAttribute("SkyDock",port.id)
+				local a,b=V(port.pierFrom.x,port.pierFrom.y,port.pierFrom.z),V(port.pierTo.x,port.pierTo.y,port.pierTo.z)
+				local len=(b-a).Magnitude
+				local pier=part(m,"Skydock pier",V(6,.6,len),CFrame.lookAt((a+b)/2+V(0,-.1,0),b+V(0,-.1,0)),timber,WO,true)
+				meshSlot(pier,"SkyDock")
+				-- The forged pier (piles below, lantern posts and the crane above) fills a declared
+				-- box around the walkable deck; the deck part stays the collider and fallback.
+				pier:SetAttribute("ShapeBox",V(6.2,6.7,len))
+				pier:SetAttribute("ShapeBoxOffset",V(0,1.82,0))
+				pier:SetAttribute("SkyDock",port.id)
+				local dir=(b-a).Unit
+				local side=V(-dir.Z,0,dir.X)
+				local boardAt=a+dir*1.5+side*4.6
+				local board=part(m,"Harbour board",V(3.2,4.4,.8),facing(boardAt+V(0,2.2,0),boardAt+V(0,2.2,0)+side*-1),timber,WO,true)
+				meshSlot(board,"HarbourBoard",brass)
+				prompt(board,"Read",port.name.." · Cargo contracts","harbourBoard",port.id)
+				local bollardAt=b-dir*1.4
+				local bollard=part(m,"Mooring bollard",V(1.6,2.4,1.6),CFrame.new(bollardAt+V(0,1.2,0)),deep,ST,true)
+				meshSlot(bollard,"MooringBollard",brass)
+				local q=prompt(bollard,"Sail out",port.name.." · Skysailing "..port.level,"sailLaunch",port.id)
+				q:SetAttribute("IsleRegion",port.region)
+				anchor(m,"Dock_"..port.id,V(port.landing.x,port.landing.y,port.landing.z),b)
+				anchor(m,"Berth_"..port.id,V(port.berth.x,port.berth.y,port.berth.z),b)
+			end
+		end
+		local skyways=group("Skyways",world)
+		skyways:SetAttribute("Skyways",true)
+		local SHAPES={reef="SkyReef",wreck="SkyWreck",landmark="ChartBuoy"}
+		local SIZES={reef=V(16,9,14),wreck=V(10,7,24),landmark=V(4,10,4)}
+		local TINTS={reef=C("4FC3B0"),wreck=C("6E4A30"),landmark=brass}
+		for i,ch in ipairs(SS.Charts) do
+			local size=SIZES[ch.kind]
+			local p=part(skyways,ch.name,size,CFrame.new(ch.x,ch.y,ch.z)*CFrame.Angles(0,i*.7,0),TINTS[ch.kind],WO,false)
+			p.CanQuery=false
+			meshSlot(p,SHAPES[ch.kind],TINTS[ch.kind],false,"Uniform")
+			p:SetAttribute("ChartId",ch.id)
+			p:SetAttribute("ChartKind",ch.kind)
+		end
+	end
+end
+-- <<< END Skysailing <<<
 -- §28 QC M4: static signs step clear of walls once the world is built.
 Signs.settle(islandsFolder)

@@ -25,7 +25,9 @@ Relay.NAMES = {mine = true, chop = true, fish = true, harvest = true, hammer = t
 	talk = true, open = true, deposit = true, plant = true, water = true, tend = true, pray = true, offer = true,
 	pickup = true, attune = true, read = true, survey = true, pilfer = true,
 	-- §49 Runebinding: bind runes at an altar.
-	bind = true}
+	bind = true,
+	-- §51 Skysailing: board a ship, take the helm, throw the grapple, haul a sheet.
+	board = true, helm = true, grapple = true, haul = true}
 -- Combat gestures tint their held bow / staff / wand by the weapon of that style.
 Relay.STYLE_GESTURE = {shoot = "ranged", cast = "magic", flick = "magic"}
 Relay.MELEE_GESTURE = {attack = true, thrust = true, cleave = true, lunge = true}

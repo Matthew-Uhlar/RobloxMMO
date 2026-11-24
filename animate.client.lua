@@ -434,6 +434,19 @@ P.ATTUNE_PUSH = merge(P.ATTUNE_REACH, {rightArm = {126, 8, 14}, rightElbow = {4}
 P.BIND_GATHER = {rightArm = {44, 18, 0}, rightElbow = {72}, leftArm = {44, -18, 0}, leftElbow = {72}, waist = {-10, 0, 0}, neck = {-8}}
 P.BIND_RISE = {rightArm = {70, 14, 0}, rightElbow = {50}, leftArm = {70, -14, 0}, leftElbow = {50}, waist = {-4, 0, 0}, neck = {2}}
 P.BIND_RELEASE = {rightArm = {112, 10, 0}, rightElbow = {8}, leftArm = {112, -10, 0}, leftElbow = {8}, waist = {6, 0, 0}, neck = {12}}
+-- §51 Skysailing: grab the rail and step up (board); both hands on the wheel,
+-- a turn each way (helm); wind up and throw the grapple, then haul hand over
+-- hand (grapple); heave a sheet line in to trim the sails (haul).
+P.BOARD_REACH = {rightArm = {120, 10, 0}, rightElbow = {30}, leftArm = {96, -10, 0}, leftElbow = {44}, waist = {-8, 0, 0}, neck = {14}, rightHip = {40}, rightKnee = {-50}}
+P.BOARD_STEP = {rightArm = {100, 8, 0}, rightElbow = {70}, leftArm = {80, -8, 0}, leftElbow = {80}, waist = {-14, 0, 0}, neck = {6}, rightHip = {62}, rightKnee = {-70}, leftHip = {-6}}
+P.BOARD_UP = {rightArm = {60, 6, 0}, rightElbow = {40}, leftArm = {40, -6, 0}, leftElbow = {50}, waist = {-4, 0, 0}, neck = {4}, rightHip = {18}, rightKnee = {-20}}
+P.HELM_GRIP = {rightArm = {70, 18, 0}, rightElbow = {58}, leftArm = {70, -18, 0}, leftElbow = {58}, waist = {-4, 0, 0}, neck = {-4}}
+P.HELM_LEFT = merge(P.HELM_GRIP, {rightArm = {86, 10, 0}, rightElbow = {44}, leftArm = {56, -24, 0}, leftElbow = {72}, waist = {-4, 12, 0}, neck = {-4, 10, 0}})
+P.HELM_RIGHT = merge(P.HELM_GRIP, {rightArm = {56, 24, 0}, rightElbow = {72}, leftArm = {86, -10, 0}, leftElbow = {44}, waist = {-4, -12, 0}, neck = {-4, -10, 0}})
+P.GRAPPLE_WIND = {rightArm = {150, 30, 20}, rightElbow = {60}, rightWrist = {-30}, leftArm = {40, -20, 0}, leftElbow = {30}, waist = {6, 24, 0}, neck = {10, -10, 0}}
+P.GRAPPLE_THROW = {rightArm = {96, -10, 0}, rightElbow = {6}, rightWrist = {20}, leftArm = {30, -20, 0}, leftElbow = {40}, waist = {-10, -16, 0}, neck = {0, 8, 0}}
+P.HAUL_HIGH = {rightArm = {110, 8, 0}, rightElbow = {40}, leftArm = {80, -8, 0}, leftElbow = {50}, waist = {-6, 0, 0}, neck = {8}}
+P.HAUL_LOW = {rightArm = {40, 8, 0}, rightElbow = {90}, leftArm = {70, -8, 0}, leftElbow = {60}, waist = {-18, 0, 0}, neck = {-6}}
 P.READ = {rightArm = {44, 16, 0}, rightElbow = {96}, leftArm = {44, -16, 0}, leftElbow = {96}, waist = {-6, 0, 0}, neck = {-20}}
 P.READ_TURN = merge(P.READ, {rightArm = {52, 36, 0}, rightElbow = {70}, neck = {-18, 6, 0}})
 P.SHADE = {rightArm = {150, 40, 0}, rightElbow = {132}, waist = {2, 0, 0}, neck = {6, 30, 0}}
@@ -607,6 +620,19 @@ Core.GESTURES = {
 	bind = {fx = "bind",
 		loop = {key(0, REST), key(0.3, P.BIND_GATHER, "quadOut"), key(0.62, P.BIND_RISE, "sineInOut"), key(0.8, P.BIND_RELEASE, "backOut", "impact"),
 			key(1.1, P.BIND_RELEASE, "sineInOut"), key(1.45, REST, "quadInOut")}},
+	-- §51 Skysailing: board a ship, take the helm, throw the salvage grapple, haul a sheet.
+	board = {fx = "attune", stopOnMove = true,
+		loop = {key(0, REST), key(0.2, P.BOARD_REACH, "quadOut"), key(0.42, P.BOARD_STEP, "quadIn", "impact"), key(0.66, P.BOARD_UP, "quadOut"),
+			key(0.95, REST, "quadInOut")}},
+	helm = {
+		loop = {key(0, REST), key(0.22, P.HELM_GRIP, "quadOut"), key(0.5, P.HELM_LEFT, "sineInOut"), key(0.8, P.HELM_RIGHT, "sineInOut", "impact"),
+			key(1.05, P.HELM_GRIP, "sineInOut"), key(1.3, REST, "quadInOut")}},
+	grapple = {fx = "dust",
+		loop = {key(0, REST), key(0.28, P.GRAPPLE_WIND, "quadOut"), key(0.44, P.GRAPPLE_THROW, "backOut", "impact"), key(0.7, P.HAUL_HIGH, "quadOut"),
+			key(0.95, P.HAUL_LOW, "quadIn"), key(1.2, P.HAUL_HIGH, "quadOut"), key(1.45, P.HAUL_LOW, "quadIn"), key(1.75, REST, "quadInOut")}},
+	haul = {
+		loop = {key(0, REST), key(0.2, P.HAUL_HIGH, "quadOut"), key(0.42, P.HAUL_LOW, "quadIn", "impact"), key(0.62, P.HAUL_HIGH, "quadOut"),
+			key(0.82, P.HAUL_LOW, "quadIn"), key(1.1, REST, "quadInOut")}},
 	read = {
 		loop = {key(0, REST), key(0.24, P.READ, "quadOut"), key(0.6, P.READ_TURN, "sineInOut", "impact"), key(0.84, P.READ, "sineInOut"), key(1.2, REST, "quadInOut")}},
 	survey = {
@@ -769,7 +795,9 @@ Core.ACTION_GESTURE = {fight = "attack", worker = "hammer", workerBuild = "hamme
 	-- §49 Runebinding: altars bind, waygates / the Shardgate / the Rift entry attune,
 	-- the Rift workbench hammers, the guardian portals take an offering.
 	runeAltar = "bind", rbGate = "attune", rbWaygate = "attune", rbTravel = "attune", riftJoin = "attune",
-	riftShape = "hammer", riftCharge = "offer"}
+	riftShape = "hammer", riftCharge = "offer",
+	-- §51 Skysailing: the slip hammers, docks and gangways board, harbour boards read.
+	shipwright = "hammer", sailLaunch = "board", sailBoard = "board", harbourBoard = "read"}
 -- Per-item refinements (the garden's composter lid, its visiting traders).
 Core.ITEM_GESTURE = {gardenOpen = {composter = "open", visitor = "talk", ledger = "read"}}
 -- Garden plots do whatever the plot needs (plant, water, harvest, treat): the

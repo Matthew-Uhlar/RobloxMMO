@@ -1639,7 +1639,13 @@ local function createLogic(env)
 	function L.seaFailed(spec) L.reportSea(spec.owner, spec.id, spec.seq, "despawn") end
 	function L.seaCredit(r)
 		local owner = r.owner
-		if L.contribution(r, owner) <= 0 or not env.alive(owner) then return {} end
+		-- §51 Skysailing: a sky corsair counts its captain's crew hits (deck cannons
+		-- fired by gunners), so the captain at the helm is credited when anyone landed one.
+		local hit = L.contribution(r, owner) > 0
+		if not hit and r.def and r.def.pirate then
+			for _, c in pairs(r.contributors) do if c.damage > 0 then hit = true break end end
+		end
+		if not hit or not env.alive(owner) then return {} end
 		local pos = env.position(owner)
 		if not pos or (pos - r.position).Magnitude > C.CREDIT_RANGE then return {} end
 		local info = L.peekStats(owner)
@@ -1649,6 +1655,44 @@ local function createLogic(env)
 			end
 		end
 		return {owner}
+	end
+	-- §51 Skysailing deck cannons: the live sky corsair nearest the aim within
+	-- range and the cone. QC L5: only corsairs owned by this ship's sailors
+	-- (`owners` = {[UserId] = true}) and in line of sight.
+	function L.cannonTarget(origin, dir, range, cone, owners)
+		if typeof(origin) ~= "Vector3" or typeof(dir) ~= "Vector3" or dir.Magnitude < 1e-3 then return nil end
+		local flat = Vector3.new(dir.X, 0, dir.Z)
+		if flat.Magnitude < 1e-3 then return nil end
+		flat = flat.Unit
+		local best, bestD = nil, math.huge
+		for _, owned in pairs(seaOwned) do
+			for r in pairs(owned) do
+				local mine = type(owners) == "table" and r.owner and owners[r.owner.UserId] == true
+				if r.alive and r.def and r.def.pirate and mine then
+					local to = r.position - origin
+					local d = to.Magnitude
+					local toFlat = Vector3.new(to.X, 0, to.Z)
+					if d <= range + (r.radius or 0) and toFlat.Magnitude > 1e-3 then
+						local angle = math.acos(math.clamp(toFlat.Unit:Dot(flat), -1, 1))
+						if angle <= cone and d < bestD and L.lineOfSight(origin, r) then best, bestD = r, d end
+					end
+				end
+			end
+		end
+		return best
+	end
+	-- One broadside: ranged damage from the gunner (credited like any hit).
+	function L.cannon(player, payload)
+		if type(payload) ~= "table" then return nil, "payload" end
+		local range = math.clamp(tonumber(payload.range) or 0, 0, 120)
+		local cone = math.clamp(tonumber(payload.cone) or 0, 0, 1)
+		local damage = math.clamp(math.floor(tonumber(payload.damage) or 0), 0, 5000)
+		local r = L.cannonTarget(payload.origin, payload.dir, range, cone, payload.owners)
+		if not r or damage <= 0 then return {hit = false} end
+		local dealt = L.mitigate(r, damage, "ranged", player)
+		L.landHit(player, r, dealt, "ranged")
+		local result = {hit = true, record = r, damage = dealt, name = r.name, style = "ranged"}
+		return finish(result, r)
 	end
 	-- Submerges sea creatures past their lifetime; returns the records removed.
 	function L.seaTick()
@@ -4003,6 +4047,29 @@ do
 	fn.Parent = ServerStorage
 end
 -- End Raids section (runtime).
+
+-- Skysailing (§51) deck cannons: server.server.lua's sailFire calls
+-- ServerStorage.IsleCannon:Invoke("fire", gunner, {origin, dir, range, cone,
+-- damage}) -> {hit, name, damage, killed}. Synchronous, never yields; the hit
+-- is the gunner's (L.landHit), so corsair credit and XP flow as usual.
+do
+	local existing = ServerStorage:FindFirstChild("IsleCannon")
+	local fn = if existing and existing:IsA("BindableFunction") then existing else Instance.new("BindableFunction")
+	fn.Name = "IsleCannon"
+	fn.OnInvoke = function(op, player, payload)
+		if op ~= "fire" or typeof(player) ~= "Instance" or not player:IsA("Player") then return nil end
+		local result = Logic.cannon(player, payload)
+		if not result or not result.hit then return {hit = false} end
+		local r = result.record
+		local top = r.position + Vector3.new(0, (view[r] and view[r].plan.hitbox.Y or 3) / 2, 0)
+		broadcast(r.position, "projectile", {from = payload.origin, to = top, style = "ranged", color = "FFB347", attacker = player.UserId})
+		updateBar(r)
+		broadcast(r.position, "hit", {model = r.model, position = top, amount = result.damage, attacker = player.UserId, style = "ranged"})
+		if result.killed then destroyView(r, true) end
+		return {hit = true, name = r.name, damage = result.damage, killed = result.killed == true}
+	end
+	fn.Parent = ServerStorage
+end
 
 -- Player attacks -------------------------------------------------------------
 local denyAt = {} -- [player] = os.clock() before which no further "denied" notice is sent
