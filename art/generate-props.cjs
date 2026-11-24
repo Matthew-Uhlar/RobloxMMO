@@ -22,6 +22,7 @@ const C = {TINT, TINT_DARK, TINT_LIGHT, HANDLE, GLINT, LEAF, COPPER:1, GOLD:2, D
 const ICON_TRIANGLE_BUDGET = 120;
 const WORLD_TRIANGLE_RANGE = [200, 1500];
 // World Art pass 2 (§40): whole buildings and furnished interiors are single meshes.
+// Travel beacon shapes (§44, meta exactTint) share the range: >= 24-segment lathes.
 const BUILDING_TRIANGLE_RANGE = [200, 2400];
 const shapes = {};
 const worldShapes = {};
@@ -571,7 +572,7 @@ function componentVolumes(data){
 }
 const rangeErrors=[];
 for(const [name,data] of Object.entries(worldShapes)){
-  const count=data.faces.length,range=worldMeta[name].kind==='building'?BUILDING_TRIANGLE_RANGE:WORLD_TRIANGLE_RANGE;
+  const count=data.faces.length,range=worldMeta[name].kind==='building'||worldMeta[name].exactTint?BUILDING_TRIANGLE_RANGE:WORLD_TRIANGLE_RANGE;
   if(count<range[0]||count>range[1])rangeErrors.push(`${name} has ${count} triangles; ${worldMeta[name].kind} range is ${range.join('-')}`);
   for(const vol of componentVolumes(data))if(vol<-1e-4)throw new Error(`${name} has an inward-wound component (volume ${vol})`);
 }
