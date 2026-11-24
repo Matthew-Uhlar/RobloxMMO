@@ -796,6 +796,118 @@ do
 	check(desk.forge.stats.evicted > 0 and phone.forge.stats.evicted > 0, "LRU eviction recycles idle templates during the tour")
 end
 
+-- Travel beacons (§44): dais / crystal / rings / vent pad shapes, exact region
+-- tints on desktop, the declared dais box, and the client's beacon rules.
+do
+	local before = checks
+	for _, name in ipairs({"TravelBeacon", "TravelBeaconBasalt", "TravelBeaconCrystal", "TravelBeaconRings", "SkywardVentPad"}) do
+		local data = World.shapes[name]
+		check(data ~= nil and data.exactTint == true and data.kind == "warp" and type(data.fit) == "table", name .. " is authored with exact tints and a fit box")
+		local tinted = 0
+		for _, f in ipairs(data.faces) do if f[4] == World.tintIndex or f[4] == World.tintLightIndex or f[4] == World.tintDarkIndex then tinted += 1 end end
+		check(tinted >= 20, name .. " has glowing tint channels (" .. tinted .. " faces)")
+	end
+	for _, name in ipairs({"TravelBeacon", "TravelBeaconBasalt"}) do
+		local fit = World.shapes[name].fit
+		check(fit[1][2] == 0 and fit[2][2] == 5.6 and fit[2][1] - fit[1][1] == 5 and fit[2][3] - fit[1][3] == 5, name .. " fits the 5 x 5.6 x 5 dais box")
+		local lo, hi = Vector3.new(math.huge, math.huge, math.huge), Vector3.new(-math.huge, -math.huge, -math.huge)
+		for _, v in ipairs(World.shapes[name].vertices) do local p = Vector3.new(v[1], v[2], v[3]); lo, hi = lo:Min(p), hi:Max(p) end
+		check(lo.Y >= -1e-3 and hi.Y <= 5.6 + 1e-3 and lo.X >= -2.5 - 1e-3 and hi.X <= 2.5 + 1e-3, name .. " stays inside its box")
+	end
+	-- Region tints stay exact on desktop (four Skyway beacons, four templates);
+	-- other shapes keep the two-variant cap; phones share one variant.
+	local tints = {Color3.fromHex("9BD18B"), Color3.fromHex("A58CE0"), Color3.fromHex("5EC8D8"), Color3.fromHex("C6DCFF")}
+	local function dais(i, tint)
+		return part(nil, "Warp beacon " .. i, Vector3.new(1.6, 4, 1.6), CFrame.new(i * 16, 2.8, 0),
+			{Shape = "TravelBeacon", Tint = tint, ShapeBox = Vector3.new(5, 5.6, 5), ShapeBoxOffset = Vector3.new(0, 0, 0)})
+	end
+	local desk = loadForge()
+	local posts = {}
+	for i, tint in ipairs(tints) do posts[i] = dais(i, tint); desk.add(posts[i]) end
+	local keys = 0
+	for key in pairs(desk.forge.templates) do if string.find(key, "^TravelBeacon#") then keys += 1 end end
+	check(keys == 4, "desktop keeps one dais template per region tint (" .. keys .. ")")
+	for i, post in ipairs(posts) do
+		check(post:GetAttribute("ShapeDone") == true and ltm(post) == 1, "dais " .. i .. " is forged and its post hidden locally")
+	end
+	local d = desk.forge.describe(posts[1])
+	check(nearV(d.size, Vector3.new(5, 5.6, 5), .05) and nearV(d.cframe.Position, Vector3.new(16, 2.8, 0), 1e-3), "the dais fills its declared box 1:1")
+	for i = 1, 3 do desk.add(part(nil, "Barrel " .. i, Vector3.new(3, 3, 3), CFrame.new(0, 0, 40 + i * 4), {Shape = "Barrel", Tint = tints[i]})) end
+	local barrels = 0
+	for key in pairs(desk.forge.templates) do if string.find(key, "^Barrel#") then barrels += 1 end end
+	check(barrels == desk.forge.variants, "ordinary shapes keep the variant cap (" .. barrels .. ")")
+	local phone = loadForge(nil, nil, function(env)
+		local game = env.game
+		env.game = {GetService = function(_, name)
+			if name == "UserInputService" then return {TouchEnabled = true, KeyboardEnabled = false} end
+			return game:GetService(name)
+		end}
+	end)
+	check(phone.forge.mobile == true, "phone forge")
+	for i, tint in ipairs(tints) do phone.add(dais(i, tint)) end
+	local phoneKeys = 0
+	for key in pairs(phone.forge.templates) do if string.find(key, "^TravelBeacon#") then phoneKeys += 1 end end
+	check(phoneKeys == 1, "phones share one dais variant (" .. phoneKeys .. ")")
+
+	-- Client rules (beacons.client.lua): state from warp knowledge and region access.
+	local source = fs.readFile("beacons.client.lua")
+	local probe = {}
+	luau.load(source, {environment = baseEnv({BeaconTest = probe, Color3 = Color3, NumberRange = roblox.NumberRange, NumberSequence = roblox.NumberSequence}), injectGlobals = true})()
+	local B = probe.beacons
+	check(B ~= nil, "beacon rules load without the runtime")
+	local ctx = {}
+	check(B.state({kind = "region", region = "Windpine"}, ctx) == "open", "before the first snapshot nothing flashes dark")
+	B.context({regions = {{id = "Hub", unlocked = true}, {id = "Windpine", unlocked = false}, {id = "Tidewater", unlocked = true}},
+		regionQuests = {warps = {Gloomhollow = true, Tidewater = true}}}, ctx)
+	check(B.state({kind = "region", region = "Windpine"}, ctx) == "locked", "a region the player cannot enter is locked (dark)")
+	check(B.state({kind = "region", region = "Gloomhollow"}, ctx) == "learned", "a learned warp glows even before its region opens")
+	check(B.state({kind = "region", region = "Tidewater"}, ctx) == "learned", "a learned warp glows brightest")
+	check(B.state({kind = "vent", region = "Hub"}, ctx) == "open", "an open region is lit")
+	check(B.state({kind = "return"}, ctx) == "open" and B.state({kind = "home"}, ctx) == "open", "return and home beacons are always lit")
+	check(B.state({kind = "crew", needs = "crew"}, ctx) == "locked", "the crew beacon is dark without a crew")
+	ctx.crew = true
+	check(B.state({kind = "crew", needs = "crew"}, ctx) == "open", "the crew beacon lights for crew members")
+	B.context({announce = {}}, ctx)
+	check(B.state({kind = "region", region = "Windpine"}, ctx) == "locked", "a partial snapshot keeps the known state")
+	B.context({regions = {{id = "Windpine", unlocked = true}}}, ctx)
+	check(B.state({kind = "region", region = "Windpine"}, ctx) == "open", "unlocking a region lights its beacons")
+	B.context({regionQuests = {warps = {Windpine = true}}}, ctx)
+	check(B.state({kind = "region", region = "Windpine"}, ctx) == "learned", "learning the warp lifts it to learned")
+	-- Pool: nearest first, capped, within the radius.
+	local list = {}
+	for i = 1, 20 do table.insert(list, {hover = Vector3.new(i * 15, 0, 0)}) end
+	local near = B.nearest(list, Vector3.new(0, 0, 0), B.POOL, B.RADIUS)
+	check(#near == math.min(B.POOL, 14) and near[1][1] == list[1] and near[#near][2] <= B.RADIUS, "the pool serves the nearest beacons within its radius")
+	check(B.POOL <= 8 and B.RADIUS <= 220, "the pool stays small")
+	-- Motion: still under reduced motion, sunk and still when locked.
+	local y1, yaw1, r1 = B.pose(1, "open", true, 0.5)
+	local y2, yaw2, r2 = B.pose(7, "open", true, 0.5)
+	check(y1 == y2 and yaw1 == yaw2 and r1 == r2 and y1 == 0, "reduced motion holds a still pose")
+	local a1, b1 = B.pose(1, "learned", false, 0)
+	local a2, b2 = B.pose(1.4, "learned", false, 0)
+	check(a1 ~= a2 and b1 ~= b2, "lit beacons bob and spin")
+	local l1, s1 = B.pose(1, "locked", false, 0)
+	local l2, s2 = B.pose(5, "locked", false, 0)
+	check(l1 == l2 and s1 == s2 and l1 < -0.5, "a locked crystal rests still in its socket")
+	check(B.flare(0, false) ~= nil and B.flare(B.FLARE_SECONDS, false) == nil and select(2, B.flare(0.6, false)) > 0.8, "the flare is brief and fades out")
+	check(B.flare(0.3, true) == B.flare(0.6, true), "reduced motion: the flare does not expand")
+	local base = Color3.fromHex("9BD18B")
+	check(B.lightColor(base, "open") == base and B.lightColor(base, "locked").G < base.G * 0.3, "a locked beacon's light dims, a lit one keeps its colour")
+	-- The §35 director owns lights: this script only ever writes Color.
+	local code = string.gsub(source, "%-%-[^\n]*", "")
+	for _, pattern in ipairs({"%.Enabled%s*=%s*[^=]", "%.Brightness%s*=", "%.Shadows%s*=", "%.Range%s*=", "LightWanted", "LightHero", "Instance%.new%(\"PointLight\"%)", "Instance%.new%(\"SpotLight\"%)"}) do
+		local found = false
+		for line in string.gmatch(code, "[^\n]+") do
+			if string.find(line, pattern) and not string.find(line, "motes%.Enabled") and not string.find(line, "burst%.Enabled") then found = true end
+		end
+		check(not found, "beacons.client.lua never writes " .. pattern)
+	end
+	check(string.find(code, "l.Color = color", 1, true) ~= nil, "a locked beacon dims its light by colour only")
+	check(string.find(code, "folder.Name = \"TravelBeaconFx\"", 1, true) ~= nil and not string.find(code, "Islands", 1, true), "client pieces live in their own folder, never in the islands")
+	check(string.find(code, "reducedMotion", 1, true) ~= nil, "reduced motion is respected")
+	print("Travel beacons: " .. (checks - before) .. " checks.")
+end
+
 -- Client roles: IslandArt keeps legacy sculptures and creatures; nothing runs on the server.
 local client = fs.readFile("mesh.client.lua")
 check(client:find('GetAttribute("ShapeScale")', 1, true) ~= nil and client:find("CREATURES", 1, true) ~= nil, "IslandArt leaves contract-sized Shape parts to MeshForge")
