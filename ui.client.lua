@@ -6741,8 +6741,14 @@ end
 -- (`hearts`) and Data.Hearts. State lives in one table (local limit).
 ------------------------------------------------------------------------------
 do
-local HS={tree="Mining",perk=nil,confirm=nil}
+local HS={tree="Mining",perk=nil,confirm=nil,timers={},drawnAt=0}
 Pages.hearts=HS
+-- QC L1: live countdowns (GD.timers pattern): fn(elapsed since the draw) -> text, done.
+function HS.timer(lbl,fn)
+	table.insert(HS.timers,{label=lbl,fn=fn})
+	lbl.Text=(fn(os.clock()-HS.drawnAt))
+	return lbl
+end
 function HS.hex6(tree) return type(tree.color)=="string" and #tree.color==6 and tree.color or "F3C66E" end
 function HS.data() return Data and type(Data.Hearts)=="table" and Data.Hearts or nil end
 function HS.view(id) return tbl(tbl(tbl(state.hearts).trees)[id]) end
@@ -6870,7 +6876,8 @@ end
 function HS.abilityCard(ht,tree,tv)
 	local av=tbl(tv.ability)
 	local unlocked=av.unlocked==true
-	local cooldown,active=num(av.cooldown,0),num(av.active,0)
+	local since=os.clock()-(HS.snapAt or os.clock())
+	local cooldown,active=math.max(0,num(av.cooldown,0)-since),math.max(0,num(av.active,0)-since)
 	local reason=if not unlocked then "Unlock "..tree.ability.name.." on tier 3 first." elseif cooldown>0 then tree.ability.name.." recharges in "..math.ceil(cooldown).."s." else nil
 	heading("ABILITY    /    "..string.upper(tree.ability.name).."  ·  KEY G")
 	card({name="HeartAbility",motif="Hero",accent=gold,title=escape(tree.ability.name),titleColor=gold,
@@ -6878,9 +6885,25 @@ function HS.abilityCard(ht,tree,tv)
 		badge=unlocked and (cooldown>0 and (math.ceil(cooldown).."s") or "READY") or "LOCKED",badgeColor=unlocked and (cooldown>0 and muted or mint) or ember,
 		detail=escape(ht.abilityText(tree,{perks=tbl(tv.perks)})).."  Recharge "..fmt(num(av.recharge,0)).."s.",
 		bar=unlocked and cooldown>0 and {fraction=1-math.clamp(cooldown/math.max(1,num(av.recharge,1)),0,1),color=gold,caption="Recharging"} or nil,
+		after=function(body,nextOrder)
+			local t=label(body,"",0,0,full,18,UI.heavy,13,ivory)
+			t.Name="HeartAbilityTimer"
+			t.LayoutOrder=nextOrder()
+			HS.timer(t,function(elapsed)
+				local act,cd=num(av.active,0)-elapsed,num(av.cooldown,0)-elapsed
+				if not unlocked then return "Locked",true end
+				if act>0 then return "ACTIVE · "..math.ceil(act).."s left",false end
+				if cd>0 then return "Recharging · "..math.ceil(cd).."s",false end
+				return "Ready · press G",num(av.cooldown,0)>0 and cooldown>0
+			end)
+		end,
 		actions={{caption="Activate",primary=reason==nil,disabled=reason~=nil,reason=reason,name="HeartAbilityUse",fn=function() send("heartAbility",tree.id) end}}})
 end
 function HS.draw()
+	table.clear(HS.timers)
+	-- Countdowns run from the snapshot's arrival (a redraw never restarts them).
+	if state.hearts~=HS.snap then HS.snap,HS.snapAt=state.hearts,os.clock() end
+	HS.drawnAt=HS.snapAt or os.clock()
 	local ht=HS.data()
 	if not ht or type(ht.Trees)~="table" then dataMissing() return end
 	if not ht.Trees[HS.tree] then HS.tree=ht.Order[1] end
@@ -6923,6 +6946,22 @@ function HS.draw()
 		actions=actions})
 end
 Pages.drawHearts=HS.draw
+-- One 1 s loop for the page's countdowns; a cooldown reaching zero redraws
+-- once so Activate turns back on.
+function HS.tick()
+	if #HS.timers==0 or not atlas.Visible or current~="Menu" or not sectionOf or sectionOf.Menu~="Hearts" then return false end
+	local elapsed=os.clock()-HS.drawnAt
+	local redraw=false
+	for _,t in ipairs(HS.timers) do
+		local ok,text,ready=pcall(t.fn,elapsed)
+		if ok then t.label.Text=text; if ready then redraw=true end end
+	end
+	if redraw then render() end
+	return true
+end
+task.spawn(function()
+	while task.wait(1) do HS.tick() end
+end)
 end
 
 ------------------------------------------------------------------------------

@@ -10296,7 +10296,7 @@ do
 		Logs.regrow(p,result,resource) -- Commissions & Logs: Steadfast Pick joins the Mastery regrowth text
 		if not regrowth then regrowth={}; nodeRegrowth[node]=regrowth; watchPrompt(node) end
 		local baseRegrow=tonumber(result.regrowth) or tonumber(resource.respawn) or 3
-		if Hearts.regrowth then baseRegrow=Hearts.regrowth(p,skill,baseRegrow) end -- §46: tree regrowth perks (≤ 10%, floored)
+		if Hearts.regrowth then baseRegrow=Hearts.regrowth(p,skill,resource,baseRegrow) end -- §46: tree regrowth perks inside the shared passive cap (QC M2)
 		local regrow=Data.Strike.regrowth(resource,baseRegrow,elapsed)
 		regrowth[player]=os.clock()+regrow
 		for id,n in pairs(event.extra) do pickup(p,id,n); note(p,"Festival catch • +"..n.." "..Data.Items[id].name) end
@@ -10504,7 +10504,12 @@ do
 	-- player could strike now (owner, region, regrowth, level, tool). Each takes
 	-- pct % of its max HP but never the last blow (floored at 1 HP), so every
 	-- harvest still comes from a real strike; the progress is held from decay
-	-- for `hold` s. At most `cap` trees. Returns the number of trees hit.
+	-- for `hold` s. At most `cap` trees. Returns the number of trees whose HP
+	-- actually dropped (QC L3: a tree already at 1 HP does not count).
+	-- QC M1: a hit node moves to the end of the tracking order (untrack +
+	-- track) and a new node is only tracked while there is room, so the quake
+	-- never evicts another node's progress (MAX_TRACKED is cap + 4).
+	-- QC L4: the skill level and best tool are read once; cheap checks first.
 	-- Candidates: AetherNode-tagged hosts (Strike.tagged overrides it in suites).
 	function Strike.quake(player,p,radius,pct,cap,hold)
 		local character=player.Character
@@ -10516,28 +10521,38 @@ do
 		end
 		local s=stateOf(player)
 		local now=os.clock()
+		local lvl=level(p.xp.Woodcutting)
+		local _,tool=Progression.bestTool(p,"Woodcutting")
+		local tier=tool and tool.toolTier or 0
+		local regrowths=nodeRegrowth
 		local hit=0
 		for _,node in ipairs(hosts) do
 			if hit>=cap then break end
-			local item=isNode(node) and node:GetAttribute("GatherNode")
-			local r=item and ST.resource(item)
-			if r and r.skill=="Woodcutting" and not special(node) then
-				local owner=node:GetAttribute("OwnerUserId")
-				local region=node:GetAttribute("IsleRegion")
-				local readyAt=nodeRegrowth[node] and nodeRegrowth[node][player]
-				local _,tool=Progression.bestTool(p,r.skill)
-				if (owner==nil or owner==player.UserId) and (type(region)~="string" or regionAllowed(p,region)) and gap(root,node)<=radius
-					and not (readyAt and now<readyAt) and level(p.xp[r.skill])>=r.level and (tool and tool.toolTier or 0)>=r.tool then
-					local maxHp=ST.maxHp(r)
-					local ns=s.nodes[node]
-					if ns then
-						ns.hp=ST.decayed(ns.hp,maxHp,now-ns.at)
-						if ns.hp>=maxHp then untrack(s,node); ns=nil end
+			if isNode(node) and gap(root,node)<=radius then
+				local r=ST.resource(node:GetAttribute("GatherNode"))
+				if r and r.skill=="Woodcutting" and lvl>=r.level and tier>=r.tool and not special(node) then
+					local owner=node:GetAttribute("OwnerUserId")
+					local region=node:GetAttribute("IsleRegion")
+					local readyAt=regrowths[node] and regrowths[node][player]
+					if (owner==nil or owner==player.UserId) and not (readyAt and now<readyAt) and (type(region)~="string" or regionAllowed(p,region)) then
+						local maxHp=ST.maxHp(r)
+						local ns=s.nodes[node]
+						if ns then
+							ns.hp=ST.decayed(ns.hp,maxHp,now-ns.at)
+							if ns.hp>=maxHp then untrack(s,node); ns=nil end
+						end
+						local fresh=ns==nil
+						if fresh and #s.order>=ST.MAX_TRACKED then continue end -- no room: never evict
+						local before=if ns then ns.hp else maxHp
+						local after=math.max(1,before-math.floor(maxHp*pct/100))
+						if after<before then
+							if fresh then ns={hp=maxHp,at=now,first=now} else untrack(s,node) end
+							track(s,node,ns)
+							ns.hp=after
+							ns.at=now+hold -- decay waits until the hold is over
+							hit+=1
+						end
 					end
-					if not ns then ns={hp=maxHp,at=now,first=now}; track(s,node,ns) end
-					ns.hp=math.max(1,ns.hp-math.floor(maxHp*pct/100))
-					ns.at=now+hold -- decay waits until the hold is over
-					hit+=1
 				end
 			end
 		end
@@ -10670,16 +10685,19 @@ end
 -- Rules: Data.Hearts (shared/GameData.lua). Profile p.hearts (Hearts.migrate,
 -- Data.Hearts.sanitize). Hooks into §42 (Strike.speed, Strike.harvest):
 --   Hearts.speed(p, skill)            strike speed (perks + Deepcall Surge)
---   Hearts.fortune(p, skill, stats)   adds the tree fortune to the harvest's stat sheet
---   Hearts.regrowth(p, skill, base)   base regrowth shortened (Progression.regrowthTime floor)
+--   Hearts.fortune(p, skill, stats)   adds the tree fortune to the harvest's stat sheet, only
+--                                     into the progression fortune budget's headroom (QC M3)
+--   Hearts.regrowth(p, skill, r, base) the regrowth from resource.respawn with Mastery +
+--                                     Steadfast + heart inside the shared passive cap (QC M2)
 --   Hearts.gather(player, p, r)       tree XP + currency per break (after the XP grant)
 -- Verbs (dispatched before the action cooldown, own 0.25 s throttle, alive +
 -- lease checked by perform):
 --   heartPerk "Tree:PerkId"   one level (tier, link and currency checked)
 --   heartRespec "Tree"        refunds 75 % of the spent currency for coins
 --   heartAbility "Tree"       the tree's ability (server cooldown, persisted)
--- Player attribute HeartAbility = "Tree:seq:duration:hits" after each
--- activation (hearts.client.lua plays the gesture + VFX once per seq).
+-- Player attribute HeartAbility = "Tree:seq:duration:hits:radius" after each
+-- activation (hearts.client.lua plays the gesture + VFX once per seq; QC L5
+-- radius = the Rootquake reach for every viewer's ring).
 ------------------------------------------------------------------------------
 do
 	local HT=Data.Hearts
@@ -10690,25 +10708,42 @@ do
 		return p.hearts
 	end
 	function Hearts.speed(p,skill) return HT.speedFor(hearts(p),skill,os.time()) end
+	-- The progression fortune already on the sheet for this skill: Skill
+	-- Mastery's (nodes, capstone, mantle) and, for Mining, Forgeheart's (already
+	-- trimmed to the budget by Logs.prime).
+	function Hearts.fortuneUsed(p,skill)
+		local stat=Data.FortuneStat[skill]
+		local used=0
+		if type(p.mastery)=="table" then used+=tonumber(Progression.masteryStats(p,os.time())[stat]) or 0 end
+		local forge=type(p.perkStats)=="table" and p.perkStats.forgeheart
+		if type(forge)=="table" then used+=tonumber(forge[stat]) or 0 end
+		return used
+	end
 	function Hearts.fortune(p,skill,stats)
 		local stat=Data.FortuneStat[skill]
-		local add=HT.fortuneFor(hearts(p),skill,os.time())
-		if stat and add>0 and type(stats)=="table" then stats[stat]=(tonumber(stats[stat]) or 0)+add end
+		if not stat or type(stats)~="table" then return end
+		local add=HT.fortuneFor(hearts(p),skill,os.time(),Hearts.fortuneUsed(p,skill))
+		if add>0 then stats[stat]=(tonumber(stats[stat]) or 0)+add end
 	end
-	function Hearts.regrowth(p,skill,base)
+	function Hearts.regrowth(p,skill,resource,base)
 		local pct=HT.regrowthFor(hearts(p),skill)
-		return if pct>0 then Progression.regrowthTime(base,pct) else base
+		if pct<=0 then return base end
+		local treeId=Data.Mastery.TreeOfSkill[skill]
+		local mastery=treeId and type(p.mastery)=="table" and tonumber(Progression.masteryPerks(p,treeId,os.time()).respawnSkip) or 0
+		local forge=if skill=="Mining" and type(p.commissions)=="table" then Data.CommissionsLogs.forgeSkip(p.commissions.forge) else 0
+		local skip=HT.regrowthSkip(mastery,forge,pct,Data.Mastery.PASSIVE_CAPS.respawnSkip)
+		return Progression.regrowthTime(tonumber(resource.respawn) or base,skip)
 	end
 	function Hearts.gather(player,p,r)
 		local tree,ts=HT.treeState(hearts(p),r.skill)
 		if not tree then return end
 		local before=HT.tierFor(ts.xp)
-		HT.earn(tree,ts,r)
+		HT.earn(tree,ts,r,os.time())
 		local after=HT.tierFor(ts.xp)
 		if after>before then note(p,tree.name.." tier "..after.." reached: new perks open.") end
 	end
 	function Hearts.state(p) return HT.view(hearts(p),os.time()) end
-	function Hearts.forget(player) Hearts.next[player]=nil end
+	function Hearts.forget(player) Hearts.next[player],Hearts.seq[player]=nil,nil end
 	local function treeOf(item)
 		local tree=validId(item) and HT.Trees[item]
 		return tree
@@ -10754,7 +10789,7 @@ do
 			local ok=HT.activate(tree,ts,stamp)
 			if not ok then return "That ability is not ready." end
 			Hearts.seq[player]=(Hearts.seq[player] or 0)+1
-			player:SetAttribute("HeartAbility",tree.id..":"..Hearts.seq[player]..":"..a.duration..":"..hits)
+			player:SetAttribute("HeartAbility",tree.id..":"..Hearts.seq[player]..":"..a.duration..":"..hits..":"..(if a.kind=="quake" then a.radius else 0))
 			p.started=true
 			if a.kind=="quake" then
 				return a.name.."! "..hits.." tree"..(if hits==1 then "" else "s").." split for "..a.amount.."% of their health. Recharges in "..a.cooldown.."s."

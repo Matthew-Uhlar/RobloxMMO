@@ -15931,7 +15931,7 @@ do
 	ST.REGROW_FLOOR = 1
 	ST.LEVEL_BONUS_CAP = 50 -- +1% damage per level over the node's requirement, up to +50%
 	ST.SPEED_DIVISOR = 200 -- Mining Speed (and tool Efficiency) scales damage: x(1 + speed / 200)
-	ST.MAX_TRACKED = 6 -- nodes with partial progress kept per player
+	ST.MAX_TRACKED = 10 -- nodes with partial progress kept per player (§46 QC M1: Rootquake cap 6 + 4)
 	-- Fishing: a click casts; the fish bites after `bite` s; a click inside the
 	-- window reels it in. Too early loses the cast; a missed bite slips away.
 	ST.FISH = {gap = 0.8, biteMin = 1.0, biteMax = 2.0, window = 1.2, early = 0.15, late = 0.35, reaction = 0.3}
@@ -16848,9 +16848,15 @@ end
 -- * Effects (summed per tree, then clamped to the tree's `caps`):
 --     speed    -> §42 strike damage (Mining Speed for Mining, the tool's
 --                 Efficiency term for the others): x (1 + speed / 200)
---     fortune  -> the skill's fortune stat for the harvest roll
---     regrowth -> % off the node's base regrowth (Progression.regrowthTime,
---                 floored at max(2 s, 25 %)), before the §42 hand-back
+--     fortune  -> the skill's fortune stat for the harvest roll, inside the
+--                 progression fortune budget (CL.FORTUNE_BUDGET 99, shared
+--                 with Skill Mastery and Forgeheart: the <= 2.5x single-click
+--                 yield rule holds); Bountiful Reaping fills the same headroom
+--     regrowth -> % off the node's base regrowth, added to Mastery's
+--                 respawnSkip and Steadfast Pick inside their shared passive
+--                 cap (Mastery.PASSIVE_CAPS.respawnSkip, 50 %) from
+--                 resource.respawn (Progression.regrowthTime floor max(2 s,
+--                 25 %)), before the §42 hand-back
 --     dust     -> % more currency per break
 --     cooldown -> % off the ability's cooldown
 --     duration -> s added to a timed ability; quake -> % max HP added to the
@@ -16878,6 +16884,9 @@ HT.GROWTH = 1.5
 HT.SEED_SHARE, HT.SEED_CAP = 0.05, 40000
 HT.RESPEC = {coinsPerTier = 5000, refund = 0.75}
 HT.SPEED_DIVISOR = 200 -- matches Data.Strike.SPEED_DIVISOR (asserted by verify-hearts)
+-- QC M3: heart fortune (passive + Bountiful Reaping) only fills what the
+-- progression fortune budget leaves after Mastery and Forgeheart.
+HT.FORTUNE_BUDGET = Data.CommissionsLogs and Data.CommissionsLogs.FORTUNE_BUDGET or 99
 HT.Effects = {
 	speed = {glyph = "❖"}, fortune = {glyph = "☘"}, regrowth = {glyph = "↻", text = "%s%% faster regrowth"},
 	dust = {glyph = "✦"}, cooldown = {glyph = "⏱", text = "%s%% shorter ability cooldown"},
@@ -16938,8 +16947,8 @@ HT.Trees = {
 		speedName = "Reaping Power",
 		blurb = "Each harvest leaves a little Loamglow in the soil. Tend the Loamheart for richer rows and a bountiful reaping.",
 		caps = {speed = 60, fortune = 45, regrowth = 10, dust = 50, cooldown = 20, duration = 10},
-		ability = {id = "BountifulReaping", name = "Bountiful Reaping", kind = "fortune", amount = 100, duration = 10, cooldown = 120, gesture = "harvest",
-			text = "+100 Farming Fortune for %ss."},
+		ability = {id = "BountifulReaping", name = "Bountiful Reaping", kind = "fortune", amount = 60, dustMult = 2, duration = 10, cooldown = 120, gesture = "harvest",
+			text = "For %ss: +60 Farming Fortune (up to the fortune budget) and double Loamglow."},
 		perks = {
 			P("Tillhand", "Tillhand", 1, 3, 15, 8, "speed", 2),
 			P("Seedsense", "Seedsense", 2, 2, 15, 14, "fortune", 1, {"Tillhand"}),
@@ -16993,11 +17002,22 @@ function HT.treeCost(tree)
 	for _, perk in ipairs(tree.perks) do sum += HT.totalCost(perk, perk.max) end
 	return sum
 end
-function HT.blankTree() return {xp = 0, dust = 0, frac = 0, earned = 0, spent = 0, perks = {}, readyAt = 0, activeUntil = 0, respecs = 0} end
+function HT.blankTree() return {xp = 0, dust = 0, frac = 0, earned = 0, spent = 0, perks = {}, paid = {}, readyAt = 0, activeUntil = 0, respecs = 0} end
+-- The most one perk can ever have cost in a tree (refund ceiling for a perk
+-- that no longer exists in the data).
+function HT.perkCeiling(tree)
+	local most = 0
+	for _, perk in ipairs(tree.perks) do most = math.max(most, HT.totalCost(perk, perk.max)) end
+	return most
+end
 -- Sanitise / migrate a saved p.hearts (any value). `xp` is p.xp (veteran seed
--- on the first load only). Unknown perks are dropped and their currency
--- refunded (the recomputed cost of the kept levels is the truth); timers are
--- clamped to now + their longest value.
+-- on the first load only). The `paid` ledger records the currency actually
+-- spent per perk (QC L7). Kept levels are clamped to the perk's max; a perk
+-- that lost levels (or no longer exists) refunds min(what the ledger says was
+-- paid, the recomputed cost of what was removed): a damaged save never
+-- refunds more than was really paid, nor more than the levels cost.
+-- `spent` is recomputed from the kept levels. Timers are clamped to now +
+-- their longest value.
 function HT.sanitize(h, xp, now)
 	now = num(now)
 	local fresh = type(h) ~= "table"
@@ -17010,17 +17030,26 @@ function HT.sanitize(h, xp, now)
 		ts.xp, ts.dust, ts.earned, ts.respecs = whole(src.xp), whole(src.dust), whole(src.earned), whole(src.respecs)
 		local frac = num(src.frac)
 		ts.frac = if frac >= 0 and frac < 1 then frac else 0
-		local spent = 0
+		local spent, refund = 0, 0
+		local ledger = type(src.paid) == "table" and src.paid or {}
+		local ceiling = HT.perkCeiling(tree)
 		for perkId, lvl in pairs(type(src.perks) == "table" and src.perks or {}) do
 			local perk = type(perkId) == "string" and tree.PerkById[perkId]
-			local level = math.min(whole(lvl), perk and perk.max or 0)
+			local saved = whole(lvl)
+			local level = math.min(saved, perk and perk.max or 0)
+			local paid = whole(ledger[perkId])
 			if perk and level > 0 then
 				ts.perks[perkId] = level
-				spent += HT.totalCost(perk, level)
+				local cost = HT.totalCost(perk, level)
+				spent += cost
+				ts.paid[perkId] = math.min(paid, cost)
+				-- Lost levels: what the ledger shows beyond the kept levels, at most what they cost.
+				refund += math.max(0, math.min(paid, HT.totalCost(perk, math.min(saved, perk.max * 4))) - cost)
+			elseif not perk and saved > 0 then
+				refund += math.min(paid, ceiling) -- the perk left the data
 			end
 		end
-		local recorded = whole(src.spent)
-		if recorded > spent then ts.dust += recorded - spent end -- data change: refund what no longer exists
+		ts.dust += refund
 		ts.spent = spent
 		local ab = tree.ability
 		ts.readyAt = math.clamp(whole(src.readyAt), 0, math.max(0, now) + ab.cooldown)
@@ -17084,6 +17113,8 @@ function HT.levelUp(tree, ts, perkId)
 	if not fine then return false, why end
 	ts.dust -= cost
 	ts.spent += cost
+	ts.paid = type(ts.paid) == "table" and ts.paid or {}
+	ts.paid[perkId] = whole(ts.paid[perkId]) + cost
 	ts.perks[perkId] = whole(ts.perks[perkId]) + 1
 	return true, cost
 end
@@ -17098,6 +17129,7 @@ function HT.respec(tree, ts, coins, now)
 	local fee, refund = HT.respecQuote(tree, ts)
 	if num(coins) < fee then return false, "Resetting the " .. tree.name .. " costs " .. fee .. " coins." end
 	ts.perks = {}
+	ts.paid = {}
 	ts.spent = 0
 	ts.dust += refund
 	ts.respecs += 1
@@ -17116,8 +17148,10 @@ end
 -- Currency for one break of resource r at a dust bonus (before carry).
 function HT.dustFor(r, dustPct) return (1 + whole(r.index)) * (1 + num(dustPct) / 100) end
 -- One break of resource r (mutates ts): tree XP and currency. Returns gained, xp.
-function HT.earn(tree, ts, r)
-	local raw = HT.dustFor(r, HT.bonuses(tree, ts).dust) + ts.frac
+-- An active ability with dustMult (Bountiful Reaping) multiplies the currency.
+function HT.earn(tree, ts, r, now)
+	local mult = if tree.ability.dustMult and num(now) < num(ts.activeUntil) then tree.ability.dustMult else 1
+	local raw = HT.dustFor(r, HT.bonuses(tree, ts).dust) * mult + ts.frac
 	local gained = math.floor(raw + 1e-9)
 	ts.frac = math.clamp(raw - gained, 0, 0.999999)
 	ts.dust += gained
@@ -17149,16 +17183,26 @@ function HT.speedFor(h, skill, now)
 	if tree.ability.kind == "speed" and num(now) < num(ts.activeUntil) then speed += tree.ability.amount end
 	return speed
 end
-function HT.fortuneFor(h, skill, now)
+-- Heart fortune for a harvest. `used` = the progression fortune already on the
+-- sheet for this skill (Mastery + Forgeheart); the heart fills at most the
+-- budget's remaining headroom (QC M3).
+function HT.fortuneFor(h, skill, now, used)
 	local tree, ts = treeState(h, skill)
 	if not tree then return 0 end
 	local fortune = HT.bonuses(tree, ts).fortune
 	if tree.ability.kind == "fortune" and num(now) < num(ts.activeUntil) then fortune += tree.ability.amount end
-	return fortune
+	return math.min(fortune, math.max(0, HT.FORTUNE_BUDGET - math.max(0, num(used))))
 end
 function HT.regrowthFor(h, skill)
 	local tree, ts = treeState(h, skill)
 	return if tree then HT.bonuses(tree, ts).regrowth else 0
+end
+-- QC M2: the total regrowth skip with the heart share. Mastery's own skip (a
+-- running capstone may already pass the cap) is never cut; the passive sum
+-- (Mastery + Steadfast Pick + heart) stays inside the shared passive cap.
+function HT.regrowthSkip(masterySkip, forgeSkip, heartPct, cap)
+	masterySkip = math.max(0, num(masterySkip))
+	return math.max(masterySkip, math.min(num(cap), masterySkip + math.max(0, num(forgeSkip)) + math.max(0, num(heartPct))))
 end
 -- Effect copy: "+4 Mining Speed", "+3 Mining Fortune", "1.5% faster regrowth".
 function HT.effectText(tree, effect, amount)

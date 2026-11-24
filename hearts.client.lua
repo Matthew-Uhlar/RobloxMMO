@@ -107,18 +107,16 @@ local function screen()
 	local camera = workspace.CurrentCamera
 	return if camera then camera.ViewportSize else Vector2.new(1366, 768)
 end
--- Desktop: left of the hotbar. Touch / short screens: above the band's left
--- edge (the thumbstick owns the bottom-left corner).
+-- The chip's slot is reserved in Theme.hudLayout (L.heartChip, QC L6):
+-- desktop right of the hotbar (clear of the chat lane and the spell bar
+-- corner), touch above the band's left edge and over the spell / prayer bars
+-- (IsleHudLift, re-read whenever combat.client.lua changes it).
 function S.layout()
-	local L = T.hudLayout(screen().X, screen().Y, {touch = Input.TouchEnabled})
-	local size = if L.touch then 44 else 40
-	chip.Size = UDim2.fromOffset(size, size)
-	if L.touch then
-		chip.Position = UDim2.fromOffset(L.band.x, L.band.y - size - 6)
-	else
-		chip.Position = UDim2.fromOffset(L.hotbar.x - size - 10, L.hotbar.y + math.floor((L.hotbar.h - size) / 2))
-	end
-	pop.Position = UDim2.fromOffset(chip.Position.X.Offset - 48, chip.Position.Y.Offset - 20)
+	local L = T.hudLayout(screen().X, screen().Y, {touch = Input.TouchEnabled, lift = player:GetAttribute("IsleHudLift")})
+	local slot = L.heartChip
+	chip.Size = UDim2.fromOffset(slot.w, slot.h)
+	chip.Position = UDim2.fromOffset(slot.x, slot.y)
+	pop.Position = UDim2.fromOffset(math.max(4, slot.x + math.floor(slot.w / 2) - 70), slot.y - 20)
 	return L
 end
 -- Redraws the chip for the tree the key would fire.
@@ -141,6 +139,7 @@ function S.refresh()
 end
 S.layout()
 gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(S.layout)
+player:GetAttributeChangedSignal("IsleHudLift"):Connect(S.layout)
 local acc = 0
 RunService.Heartbeat:Connect(function(dt)
 	acc += dt
@@ -197,12 +196,14 @@ end)
 ------------------------------------------------------------------------------
 -- Animation + VFX (server-confirmed activations)
 ------------------------------------------------------------------------------
--- "Tree:seq:duration:hits" -> tree, seq, duration, hits (nil when malformed).
+-- "Tree:seq:duration:hits[:radius]" -> tree, seq, duration, hits, radius
+-- (nil when malformed). QC L5: the server sends the Rootquake reach, so every
+-- viewer draws the caster's ring at the caster's radius.
 function S.parse(value)
 	if type(value) ~= "string" then return nil end
-	local id, seq, duration, hits = string.match(value, "^(%a+):(%d+):(%d+):(%d+)$")
+	local id, seq, duration, hits, radius = string.match(value, "^(%a+):(%d+):(%d+):(%d+):?(%d*)$")
 	if not id or not HT.Trees[id] then return nil end
-	return id, tonumber(seq), tonumber(duration), tonumber(hits)
+	return id, tonumber(seq), tonumber(duration), tonumber(hits), tonumber(radius)
 end
 local function fxFolder()
 	local folder = workspace:FindFirstChild("IsleHeartsFx")
@@ -243,7 +244,7 @@ local function emitter(root, color, rate, seconds, reduced, burst)
 	return attach
 end
 -- Plays the effect for `who` (any player); returns true when it played.
-function S.fx(who, id, duration, hits)
+function S.fx(who, id, duration, hits, radius)
 	local tree = HT.Trees[id]
 	local character = who.Character
 	local root = character and character:FindFirstChild("HumanoidRootPart")
@@ -258,9 +259,8 @@ function S.fx(who, id, duration, hits)
 	local folder = fxFolder()
 	local seconds = math.max(0.8, duration)
 	if tree.ability.kind == "quake" then
-		local reach = HT.abilityStats(tree, {perks = {}}).radius
-		local tv = tbl(tbl(tbl(S.hearts).trees)[id])
-		reach = math.max(reach, num(tbl(tv.ability).radius))
+		local reach = if num(radius) > 0 then num(radius) else HT.abilityStats(tree, {perks = {}}).radius
+		S.lastReach = reach
 		ring(folder, feet, color, 2, reach * 2, 0.55, reduced)
 		emitter(root, Color3.fromHex(tree.accent), 0, 0.6, reduced, 36)
 		seconds = 0.8
@@ -275,7 +275,7 @@ function S.fx(who, id, duration, hits)
 	return true
 end
 function S.onAbility(who)
-	local id, seq, duration, hits = S.parse(who:GetAttribute("HeartAbility"))
+	local id, seq, duration, hits, radius = S.parse(who:GetAttribute("HeartAbility"))
 	if not id or (S.seen[who] and seq <= S.seen[who]) then return end
 	S.seen[who] = seq
 	if who == player then
@@ -285,7 +285,7 @@ function S.onAbility(who)
 		S.activeUntil[id] = os.clock() + duration
 		S.refresh()
 	end
-	S.fx(who, id, duration, hits)
+	S.fx(who, id, duration, hits, radius)
 end
 function S.watch(who)
 	if S.watched[who] then return end

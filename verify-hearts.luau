@@ -179,8 +179,36 @@ do
 	f.perks = {Tillhand = 1, Seedsense = 1, BountifulReaping = 1}
 	local farm = HT.Trees.Farming
 	ok(HT.activate(farm, f, 5000), "Bountiful Reaping fires")
-	eq(HT.fortuneFor(h, "Farming", 5005), 101, "+100 Farming Fortune while active (+1 Seedsense)")
+	eq(HT.fortuneFor(h, "Farming", 5005), 61, "+60 Farming Fortune while active (+1 Seedsense)")
 	eq(HT.fortuneFor(h, "Farming", 5010), 1, "then back to the perks")
+	-- QC M3: the heart only fills the progression fortune budget's headroom.
+	eq(HT.FORTUNE_BUDGET, Data.CommissionsLogs.FORTUNE_BUDGET, "the heart shares CL.FORTUNE_BUDGET (99)")
+	eq(HT.fortuneFor(h, "Farming", 5005, 80), 19, "Bountiful fills only the 19 left after 80 of Mastery fortune")
+	eq(HT.fortuneFor(h, "Farming", 5005, 99), 0, "a full budget leaves no room")
+	eq(HT.fortuneFor(h, "Farming", 5005, 500), 0, "never negative")
+	do
+		-- Worst-case stack (pure): maxed Mastery Mining fortune (74) + Forgeheart trimmed (25) + maxed heart (45) + a surge.
+		local MA = Data.Mastery.TreeById.Mining
+		local masteryMax = 0
+		for _, n in ipairs(MA.nodes) do masteryMax += (n.stats and n.stats.miningFortune or 0) * n.max end
+		local forge = Data.CommissionsLogs.forgeStats({HearthglowFortune = 10}, masteryMax).miningFortune or 0
+		local hm = HT.sanitize(nil, {}, 0)
+		hm.trees.Mining.perks = {VeinSense = 15, ResonantPick = 15, CoreFortune = 15}
+		local heart = HT.fortuneFor(hm, "Mining", 0, masteryMax + forge)
+		ok(masteryMax + forge + heart <= HT.FORTUNE_BUDGET, "worst-case progression fortune " .. (masteryMax + forge + heart) .. " stays <= 99 (2.5x rule)")
+		eq(heart, math.max(0, 99 - masteryMax - forge), "the heart takes only the leftover headroom")
+		local fh = HT.sanitize(nil, {}, 0)
+		fh.trees.Farming.perks = {Seedsense = 15, Goldengrain = 15, Harvestmoon = 15, BountifulReaping = 1}
+		HT.activate(HT.Trees.Farming, fh.trees.Farming, 100)
+		eq(HT.fortuneFor(fh, "Farming", 101, 0), 99, "maxed passive 45 + Bountiful 60 caps at the budget (99), never a guaranteed second step")
+		-- Bountiful's non-fortune half: double Loamglow while active.
+		local herb = ST.resource("Herb")
+		local ts = fh.trees.Farming
+		local got = HT.earn(HT.Trees.Farming, ts, herb, 101)
+		eq(got, 4, "Bountiful doubles Loamglow (2 -> 4 on a T1 crop)")
+		eq(HT.earn(HT.Trees.Farming, ts, herb, 200), 2, "and only while active")
+		eq(HT.Trees.Mining.ability.dustMult, nil, "only Bountiful doubles currency")
+	end
 	-- Rootquake numbers.
 	local w = h.trees.Woodcutting
 	w.perks = {Rootquake = 1}
@@ -228,9 +256,44 @@ do
 	ok(m.xp == 0 and m.frac == 0 and m.respecs == 0, "junk numbers cleaned")
 	ok(m.perks.Bogus == nil and m.perks.DeepGrip == 20 and m.perks.VeinSense == nil and m.perks.Overcharge == 2, "unknown perks dropped, levels clamped to max and whole")
 	eq(m.spent, HT.totalCost(HT.Trees.Mining.PerkById.DeepGrip, 20) + HT.totalCost(HT.Trees.Mining.PerkById.Overcharge, 2), "spent recomputed from the kept levels")
-	eq(m.dust, 99999 - m.spent, "what no longer exists is refunded")
+	eq(m.dust, 0, "QC L7: a recorded `spent` without a paid ledger refunds nothing (no currency from a damaged save)")
 	ok(m.readyAt <= 1000 + 120 and m.activeUntil <= 1000 + 20, "timers clamped to now + their longest value")
 	ok(type(junk.trees.Farming) == "table" and type(junk.trees.Woodcutting) == "table", "missing trees rebuilt")
+end
+-- QC L7: the paid ledger.
+do
+	local tree = HT.Trees.Mining
+	local ts = HT.blankTree()
+	ts.xp, ts.dust = 600000, 100000
+	for _ = 1, 3 do HT.levelUp(tree, ts, "DeepGrip") end
+	eq(ts.paid.DeepGrip, HT.totalCost(tree.PerkById.DeepGrip, 3), "levelUp records what was paid")
+	local h = HT.sanitize({trees = {Mining = ts}}, {}, 0)
+	eq(h.trees.Mining.paid.DeepGrip, ts.paid.DeepGrip, "the ledger survives a sanitise")
+	eq(h.trees.Mining.dust, ts.dust, "a clean save refunds nothing")
+	-- A save with more levels than max: refund min(paid, the removed levels' cost).
+	local over = HT.sanitize({trees = {Mining = {dust = 0, perks = {DeepGrip = 22}, paid = {DeepGrip = 1e9}}}}, {}, 0)
+	local perk = tree.PerkById.DeepGrip
+	eq(over.trees.Mining.dust, HT.totalCost(perk, 22) - HT.totalCost(perk, 20), "removed levels refund their own cost, not the inflated ledger")
+	eq(over.trees.Mining.paid.DeepGrip, HT.totalCost(perk, 20), "the ledger is trimmed to the kept levels")
+	local honest = HT.sanitize({trees = {Mining = {dust = 0, perks = {DeepGrip = 22}, paid = {DeepGrip = 50}}}}, {}, 0)
+	eq(honest.trees.Mining.dust, 0, "a ledger that paid less than the kept levels refunds nothing")
+	local ghost = HT.sanitize({trees = {Mining = {dust = 0, perks = {Ghost = 3}, paid = {Ghost = 1e12}}}}, {}, 0)
+	eq(ghost.trees.Mining.dust, HT.perkCeiling(tree), "a perk that left the data refunds at most one maxed perk's cost")
+	local ghost2 = HT.sanitize({trees = {Mining = {dust = 0, perks = {Ghost = 3}, paid = {Ghost = 120}}}}, {}, 0)
+	eq(ghost2.trees.Mining.dust, 120, "or what it really cost")
+	HT.respec(tree, ts, 1e9, 0)
+	ok(next(ts.paid) == nil, "a respec clears the ledger")
+end
+-- QC M2: the heart regrowth shares the passive cap with Mastery and Steadfast Pick.
+do
+	local cap = Data.Mastery.PASSIVE_CAPS.respawnSkip
+	eq(HT.regrowthSkip(20, 20, 10, cap), 50, "Mastery 20 + Steadfast 20 + heart 10 = the 50 cap")
+	eq(HT.regrowthSkip(30, 20, 10, cap), 50, "never past the cap")
+	eq(HT.regrowthSkip(75, 0, 10, cap), 75, "a running capstone's own skip is never cut")
+	eq(HT.regrowthSkip(0, 0, 10, cap), 10, "alone: the heart's 10%")
+	local vs = ST.resource("Voidstone")
+	near(Progression.regrowthTime(vs.respawn, HT.regrowthSkip(20, 20, 10, cap)), 5, "Voidstone 10 s at the 50% cap = 5 s")
+	ok(Progression.regrowthTime(Progression.regrowthTime(vs.respawn, 40), 10) > 5, "(the old stacked order would give 5.4 s)")
 end
 -- XP / hour: the regrowth cap moves per-node XP / hour by at most ~11%.
 do
@@ -282,7 +345,7 @@ local hooked
 prefix, hooked = prefix:gsub("RunService = {IsStudio=function%(%) return false end},",
 	"RunService = {IsStudio=function() return false end},CollectionService = {GetTagged=function(_, tag) return if tag == \"AetherNode\" then __tagged else {} end},")
 assert(hooked == 1, "harness CollectionService hook")
-local H = luau.load("local __tagged={}\n" .. prefix .. "\nreturn {player=player,cmd=cmd,data=data,advance=advance,services=services,objects=objects,Data=Data,clock=function() return clock end,tagged=__tagged}",
+local H = luau.load("local __tagged={}\n" .. prefix .. "\nreturn {player=player,cmd=cmd,data=data,advance=advance,services=services,objects=objects,Data=Data,clock=function() return clock end,tagged=__tagged,setRoll=function(v) defaultRoll=v end}",
 	{debugName = "hearts-harness", injectGlobals = true})()
 local SD = H.Data -- the server's own Data (the same tables the server reads)
 local remote = H.objects.RemoteFunction
@@ -430,7 +493,7 @@ do
 	local broke = breakIt(quick, node)
 	near(broke.regrow, SD.Strike.regrowth(ore, Progression.regrowthTime(3, 10), 1.42), "regrowth: 10% off the 3 s base before the hand-back")
 	ok(broke.regrow < SD.Strike.regrowth(ore, 3, 1.42) - 0.29, "shorter than without the perks")
-	-- Fortune: Bountiful Reaping's +100 guarantees one extra crop (rolls fixed high).
+	-- Fortune: Bountiful Reaping's +60 (inside the budget) and double Loamglow (rolls fixed at 0.5).
 	local farmer = seeded(7107, function(pr)
 		pr.hearts.trees.Farming.perks = {Tillhand = 1, Seedsense = 1, BountifulReaping = 1}
 		pr.hearts.trees.Farming.xp = 12000
@@ -444,13 +507,21 @@ do
 	local msg = verb(farmer, "heartAbility", "Farming")
 	ok(has(msg, "Bountiful Reaping!"), "Bountiful Reaping fires: " .. tostring(msg))
 	before = state(farmer).items.Herb or 0
+	local glow0 = tv(farmer, "Farming").earned
+	H.setRoll(0.5)
 	H.advance(0.1)
 	breakIt(farmer, makeNode("Herb"))
-	eq((state(farmer).items.Herb or 0) - before, 2, "+100 Farming Fortune doubles the harvest while active")
+	H.setRoll(0.999)
+	eq((state(farmer).items.Herb or 0) - before, 2, "fortune 61 (Seedsense 1 + Bountiful 60) lands the 61% roll at 0.5")
+	eq(tv(farmer, "Farming").earned - glow0, 4, "double Loamglow while active (2 -> 4)")
 	H.advance(15)
 	before = state(farmer).items.Herb or 0
+	glow0 = tv(farmer, "Farming").earned
+	H.setRoll(0.5)
 	breakIt(farmer, makeNode("Herb"))
-	eq((state(farmer).items.Herb or 0) - before, 1, "and stops when the window ends")
+	H.setRoll(0.999)
+	eq((state(farmer).items.Herb or 0) - before, 1, "and stops when the window ends (fortune 1 misses at 0.5)")
+	eq(tv(farmer, "Farming").earned - glow0, 2, "Loamglow back to normal")
 end
 -- Deepcall Surge: server cooldown, the attribute, damage while active, rejoin-safe.
 do
@@ -459,7 +530,7 @@ do
 	p = rejoin(p, function(pr) pr.hearts.trees.Mining.perks = {DeepGrip = 1, VeinSense = 1, DeepcallSurge = 1} end)
 	local msg = verb(p, "heartAbility", "Mining")
 	ok(has(msg, "Deepcall Surge!") and has(msg, "Recharges in 120s"), "Deepcall Surge fires: " .. tostring(msg))
-	ok(type(p.HeartAbility) == "string" and string.match(p.HeartAbility, "^Mining:%d+:10:0$") ~= nil, "HeartAbility attribute for the client VFX: " .. tostring(p.HeartAbility))
+	ok(type(p.HeartAbility) == "string" and string.match(p.HeartAbility, "^Mining:%d+:10:0:0$") ~= nil, "HeartAbility attribute for the client VFX: " .. tostring(p.HeartAbility))
 	local seq1 = p.HeartAbility
 	local ore = SD.Strike.resource("Ore")
 	H.advance(0.5)
@@ -506,7 +577,7 @@ do
 	H.advance(1)
 	local msg = verb(p, "heartAbility", "Woodcutting")
 	ok(has(msg, "Rootquake! 2 trees split for 50%"), "Rootquake hits the two own trees in reach (not the far one, not another island's, not ore): " .. tostring(msg))
-	ok(string.match(p.HeartAbility or "", "^Woodcutting:%d+:0:2$") ~= nil, "attribute carries the hits: " .. tostring(p.HeartAbility))
+	ok(string.match(p.HeartAbility or "", "^Woodcutting:%d+:0:2:16$") ~= nil, "attribute carries the hits: " .. tostring(p.HeartAbility))
 	-- The shockwave went into this player's own progress; the next strike continues it.
 	H.advance(0.1)
 	local r2 = strike(p, near2)
@@ -571,6 +642,127 @@ do
 	eq(heartsOf(7111, "Mining").respecs, 1, "respec count persisted")
 	eq(heartsOf(7111, "Mining").perks.DeepGrip, 1, "perks persisted")
 end
+-- QC regressions (server).
+do
+	-- M1: Rootquake never evicts another node's progress: a half-mined ore and
+	-- 6 more tracked nodes (7 of MAX_TRACKED 10), then a quake over 7 fresh trees.
+	local p = seeded(7120, function(pr)
+		pr.hearts.trees.Woodcutting.perks = {Barkbite = 1, Grainreader = 1, Rootquake = 1}
+		pr.hearts.trees.Woodcutting.xp = 12000
+		pr.xp.Mining = X[20]
+	end)
+	eq(SD.Strike.MAX_TRACKED, 10, "MAX_TRACKED = Rootquake cap 6 + 4")
+	local fillers = {}
+	for i = 1, 6 do
+		local f = makeNode("Timber", Vector3.new(-2, 0, i - 3))
+		table.insert(fillers, f)
+		H.advance(0.71)
+		strike(p, f)
+	end
+	local ore = makeNode("Ore", Vector3.new(0, 0, 2))
+	local oreR = SD.Strike.resource("Ore")
+	local oreDmg = SD.Strike.damage(oreR, 0, 0, 20)
+	H.advance(0.71)
+	local o1 = strike(p, ore)
+	eq(o1.hp, SD.Strike.maxHp(oreR) - oreDmg, "the ore is half-mined")
+	table.clear(H.tagged)
+	for i = 1, 7 do table.insert(H.tagged, makeNode("Timber", Vector3.new(math.cos(i) * 6, 0, math.sin(i) * 6))) end
+	H.advance(0.2)
+	local msg = verb(p, "heartAbility", "Woodcutting")
+	ok(has(msg, "Rootquake! 3 trees"), "only as many new trees as there is room for (10 - 7 = 3): " .. tostring(msg))
+	H.advance(0.1)
+	local o2 = strike(p, ore)
+	eq(o2.hp, SD.Strike.maxHp(oreR) - 2 * oreDmg, "the half-mined ore kept its progress through the quake")
+	-- L3: a tree already at 1 HP does not count; nothing dropped -> refused, no cooldown spent.
+	local WA = SD.Hearts.Trees.Woodcutting.ability
+	local hold0, cd0 = WA.hold, WA.cooldown
+	WA.hold, WA.cooldown = 1000, 3
+	local q = seeded(7121, function(pr)
+		pr.hearts.trees.Woodcutting.perks = {Barkbite = 1, Grainreader = 1, Rootquake = 1, Deepquake = 5}
+		pr.hearts.trees.Woodcutting.xp = 40000
+	end)
+	local lone = makeNode("Timber", Vector3.new(2, 0, 0))
+	table.clear(H.tagged)
+	table.insert(H.tagged, lone)
+	H.advance(1); strike(q, lone)
+	H.advance(1); strike(q, lone)
+	ok(has(verb(q, "heartAbility", "Woodcutting"), "1 tree split"), "the quake takes it to 1 HP")
+	H.advance(4)
+	local again = verb(q, "heartAbility", "Woodcutting")
+	ok(has(again, "No trees you can fell"), "a tree already at 1 HP is not counted (L3): " .. tostring(again))
+	local cdLeft = tv(q, "Woodcutting").ability.cooldown
+	eq(cdLeft, 0, "and the refused quake spent no cooldown")
+	WA.hold, WA.cooldown = hold0, cd0
+	H.advance(0.2)
+	ok(strike(q, lone).broken, "the 1 HP tree still falls to the next real strike")
+	-- Region-locked and special trees are never quaked.
+	local r4 = seeded(7123, function(pr)
+		pr.hearts.trees.Woodcutting.perks = {Barkbite = 1, Grainreader = 1, Rootquake = 1}
+		pr.hearts.trees.Woodcutting.xp = 12000
+	end)
+	table.clear(H.tagged)
+	table.insert(H.tagged, makeNode("Timber", Vector3.new(3, 0, 0), {IsleRegion = "Windpine"}))
+	table.insert(H.tagged, makeNode("Timber", Vector3.new(0, 0, 3), {StrikeKind = "crew"}))
+	table.insert(H.tagged, makeNode("WindpineLog", Vector3.new(-3, 0, 0)))
+	H.advance(0.5)
+	local refused = verb(r4, "heartAbility", "Woodcutting")
+	ok(has(refused, "No trees you can fell"), "region-locked, crew-store and over-level trees are never quaked: " .. tostring(refused))
+	eq(tv(r4, "Woodcutting").ability.cooldown, 0, "and the refusal spent no cooldown")
+	-- A heart verb interleaved with strikes: the swing cadence and the verb throttle are separate.
+	local mix = seeded(7124, function(pr) pr.hearts.trees.Mining.dust = 1000 end)
+	local vein = makeNode("Ore")
+	H.advance(1)
+	local s1 = strike(mix, vein)
+	ok(s1.ok, "a strike")
+	local bought = remote.OnServerInvoke(mix, "heartPerk", "Mining:DeepGrip")
+	ok(bought and has(bought.message, "Deep Grip 1 / 20"), "a perk bought mid-swing (not 'One moment…'): " .. tostring(bought and bought.message))
+	H.advance(SD.Strike.SWING.Mining)
+	local s2 = strike(mix, vein)
+	ok(s2.ok and s2.dmg == SD.Strike.damage(SD.Strike.resource("Ore"), 0, 2, 1), "the next swing lands on time and already uses the new perk (+2 speed)")
+	local tooSoon = strike(mix, vein)
+	eq(tooSoon.reason, "cadence", "the verb never resets the strike cadence")
+	-- L2: the activation seq is session state, cleared on leave.
+	ok(has(fs.readFile("server.server.lua"), "Hearts.next[player],Hearts.seq[player]=nil,nil"), "forget clears the seq (L2)")
+	-- M2: Mastery + Steadfast maxed, then the heart: one shared cap.
+	local cap = seeded(7125, function(pr)
+		pr.xp.Mining = X[99]
+		pr.items.SunsteelPickaxe = 1
+		pr.mastery = {trees = {Mining = {SteadyPick = 1, QuarrySense = 1, Stoneskin = 1, EmberVein = 1, EchoingSeam = 5}}, respecs = {}, cooldowns = {}, active = {}}
+		pr.commissions = {forge = {SteadfastPick = 10}}
+		pr.hearts.trees.Mining.perks = {StoneMemory = 10, SeamMemory = 10}
+	end)
+	local vs = SD.Strike.resource("Voidstone")
+	local seam = makeNode("Voidstone")
+	H.advance(1)
+	local t0, last = H.clock(), nil
+	for _ = 1, 20 do
+		last = strike(cap, seam)
+		if last and last.broken then break end
+		H.advance(if last and last.reason == "cadence" then last.wait + 0.01 else 0.71)
+	end
+	ok(last and last.broken, "Voidstone broken")
+	local elapsed = H.clock() - t0
+	near(last.regrow, SD.Strike.regrowth(vs, 5, elapsed), "Mastery 20 + Steadfast 20 + heart 10 share the 50% cap: 5 s base (not 5.4)")
+	-- M3: the worst-case fortune stack on the server (Mastery max + Forgeheart + hearts max).
+	local rich = seeded(7126, function(pr)
+		pr.xp.Mining = X[99]
+		pr.mastery = {trees = {Mining = {SteadyPick = 10, QuarrySense = 1, SeamReader = 1, Stoneskin = 1, EmberVein = 1, RichStrata = 10, EchoingSeam = 1, DelversLungs = 1, BedrockInstinct = 3}},
+			respecs = {}, cooldowns = {}, active = {}}
+		pr.commissions = {forge = {HearthglowFortune = 10}}
+		pr.hearts.trees.Mining.perks = {VeinSense = 15, ResonantPick = 15, CoreFortune = 15}
+	end)
+	local fortune = state(rich).depth.stats.miningFortune
+	ok(fortune >= 99, "setup: the stat sheet already carries the full 99 progression fortune (" .. tostring(fortune) .. ")")
+	-- The roll sits just above the sheet's remainder: any heart fortune at all would flip it.
+	local ore0 = state(rich).items.Ore or 0
+	H.setRoll(math.min(0.9999, ((fortune % 100) + 0.5) / 100))
+	H.advance(1)
+	breakIt(rich, makeNode("Ore"))
+	H.setRoll(0.999)
+	local got = (state(rich).items.Ore or 0) - ore0
+	eq(got, 2 * (1 + math.floor(fortune / 100)), "worst-case stack: the maxed heart adds no fortune past the 99 budget (sheet " .. fortune .. ")")
+	table.clear(H.tagged)
+end
 -- Persistence and migration through the real open().
 do
 	local vet = seeded(7112, function(pr)
@@ -585,11 +777,13 @@ do
 	vet = rejoin(vet, function(pr) pr.xp.Mining = X[99] end)
 	eq(state(vet).hearts.trees.Mining.xp, math.min(40000, math.floor(X[60] * 0.05)), "the seed happens once")
 	local junk = seeded(7113, function(pr)
-		pr.hearts = {v = 1, trees = {Mining = {perks = {DeepGrip = 50, Ghost = 4}, spent = 999999, dust = 10}}}
+		pr.hearts = {v = 1, trees = {Mining = {perks = {DeepGrip = 50, Ghost = 4}, spent = 999999, dust = 10, paid = {DeepGrip = 999999, Ghost = 100}}}}
 	end)
 	local m = state(junk).hearts.trees.Mining
 	ok(m.perks.DeepGrip == 20 and m.perks.Ghost == nil, "a damaged save is cleaned on open")
-	eq(m.dust, 10 + 999999 - HT.totalCost(HT.Trees.Mining.PerkById.DeepGrip, 20), "lost levels refunded")
+	local dg = HT.Trees.Mining.PerkById.DeepGrip
+	eq(m.dust, 10 + math.min(999999, HT.totalCost(dg, 50)) - HT.totalCost(dg, 20) + 100, "lost levels refund min(paid, their cost); the ghost perk its 100")
+	eq(m.spent, HT.totalCost(dg, 20), "spent from the kept levels")
 	junk = rejoin(junk)
 	eq(H.data["p7113"].profile.hearts.v, HT.VERSION, "saved versioned")
 end
@@ -670,6 +864,11 @@ do
 	ok(ui.sent[before + 1] and ui.sent[before + 1][1] == "heartPerk" and ui.sent[before + 1][2] == "Mining:DeepGrip", "Level up sends heartPerk Tree:Perk")
 	-- Ability slot.
 	ok(UH.find(ui.scroll, "HeartAbility") ~= nil, "ability slot card")
+	local timerLabel = UH.find(ui.scroll, "HeartAbilityTimer")
+	ok(timerLabel and has(timerLabel.Text, "Recharging · 40s"), "QC L1: a live countdown label on the ability slot: " .. tostring(timerLabel and timerLabel.Text))
+	local uiSrc = fs.readFile("ui.client.lua")
+	ok(has(uiSrc, "while task.wait(1) do HS.tick() end") and has(uiSrc, "table.clear(HS.timers)"), "QC L1: one 1 s loop refreshes the countdowns (GD.timers pattern), cleared per draw")
+	ok(has(uiSrc, "if redraw then render() end"), "QC L1: a finished cooldown redraws once so Activate turns back on")
 	before = #ui.sent
 	UH.press(UH.find(ui.scroll, "HeartAbilityUse"))
 	-- (the snapshot says 40 s of cooldown: the button is disabled, so nothing or a refused send)
@@ -776,12 +975,13 @@ do
 	-- No gesture / VFX until the server confirms.
 	eq(#gestures, 0, "nothing plays before the server accepts")
 	-- Server confirms on the local player.
-	localPlayer:SetAttribute("HeartAbility", "Woodcutting:1:0:2")
+	localPlayer:SetAttribute("HeartAbility", "Woodcutting:1:0:2:19")
+	ok(S.lastReach == 19, "QC L5: the ring uses the radius the server sent (" .. tostring(S.lastReach) .. ")")
 	ok(#gestures == 1 and gestures[1][1] == "chop", "one gesture call into the existing helper (chop)")
 	local fx = workspace:FindFirstChild("IsleHeartsFx")
 	ok(fx ~= nil and UH.find(fx, "HeartRing") ~= nil, "Rootquake shockwave ring spawned locally")
 	ok(UH.find(root, "HeartFx") ~= nil, "leaf burst attached to the player")
-	localPlayer:SetAttribute("HeartAbility", "Woodcutting:1:0:2")
+	localPlayer:SetAttribute("HeartAbility", "Woodcutting:1:0:2:19")
 	eq(#gestures, 1, "the same seq never re-plays")
 	-- Another player's activation: VFX only, no gesture from us.
 	eq(UH.find(otherRoot, "HeartFx"), nil, "history from before joining is never replayed")
@@ -810,15 +1010,32 @@ do
 	replicated:FindFirstChild("IsleSnapshotLocal"):Fire({hearts = HT.view(hv, 0)})
 	S.refresh()
 	ok(S.timer.Text == "30" and S.sweep.Size.Y.Scale > 0.4, "the chip shows the cooldown: " .. tostring(S.timer.Text))
-	-- Layout: left of the hotbar on desktop, clear of it.
-	UH.setScreen(roblox.Vector2.new(1366, 768))
-	local L = S.layout()
-	ok(not L.touch and S.chip.Position.X.Offset + S.chip.Size.X.Offset <= L.hotbar.x - 8, "desktop: the chip sits left of the hotbar")
-	ok(S.chip.Position.Y.Offset >= L.hotbar.y - 4 and S.chip.Position.Y.Offset + S.chip.Size.Y.Offset <= L.hotbar.y + L.hotbar.h + 4, "desktop: level with the hotbar")
+	-- QC L6: the chip's slot is reserved in Theme.hudLayout (L.heartChip).
+	local function rect(t) return {x = t.x, y = t.y, w = t.w, h = t.h} end
+	local function overlaps(a, b) return a.w > 0 and b.w > 0 and a.h > 0 and b.h > 0 and a.x < b.x + b.w and b.x < a.x + a.w and a.y < b.y + b.h and b.y < a.y + a.h end
+	local function chipRect() return {x = S.chip.Position.X.Offset, y = S.chip.Position.Y.Offset, w = S.chip.Size.X.Offset, h = S.chip.Size.Y.Offset} end
+	for _, size in ipairs({{1366, 768}, {1280, 650}, {1366, 710}, {1920, 1080}}) do
+		UH.setScreen(roblox.Vector2.new(size[1], size[2]))
+		local L = S.layout()
+		local c = chipRect()
+		local tag = size[1] .. "x" .. size[2]
+		ok(c.x == L.heartChip.x and c.y == L.heartChip.y, tag .. ": the chip takes its reserved slot")
+		ok(not overlaps(c, rect(L.chat)) and not overlaps(c, rect(L.chatTabs)), tag .. ": clear of the chat lane")
+		ok(not overlaps(c, rect(L.hotbar)) and not overlaps(c, rect(L.action)), tag .. ": clear of the hotbar and action bar")
+		ok(not overlaps(c, {x = L.w - 10 - 360, y = L.h - 44 - 48, w = 360, h = 48}), tag .. ": clear of the desktop spell bar corner")
+		ok(not overlaps(c, rect(L.pickupFeed)) and not overlaps(c, rect(L.xpToast)), tag .. ": clear of the XP lane and pickup feed")
+		ok(c.x >= 0 and c.y >= 0 and c.x + c.w <= L.w and c.y + c.h <= L.h, tag .. ": on screen")
+	end
 	UH.setScreen(roblox.Vector2.new(844, 390))
-	L = S.layout()
+	local L = S.layout()
 	ok(L.touch and S.chip.Size.X.Offset >= 44, "phones: a 44 px touch target")
 	ok(S.chip.Position.Y.Offset + S.chip.Size.Y.Offset <= L.band.y and S.chip.Position.X.Offset >= L.band.x, "phones: above the band, clear of the thumbstick corner")
+	-- The spell / prayer bars lift: the chip rises over them (IsleHudLift).
+	localPlayer:SetAttribute("IsleHudLift", 120)
+	L = theme.hudLayout(844, 390, {touch = true, lift = 120})
+	ok(S.chip.Position.Y.Offset == L.heartChip.y and S.chip.Position.Y.Offset + S.chip.Size.Y.Offset <= 390 - 44 - 120, "phones: an IsleHudLift change re-lays the chip over the lifted bars")
+	localPlayer:SetAttribute("IsleHudLift", 0)
+	UH.setScreen(roblox.Vector2.new(1366, 768))
 end
 -- Sources and registration.
 do
@@ -834,7 +1051,7 @@ do
 	ok(has(fs.readFile("build.ps1"), "'verify-hearts.luau'"), "in build.ps1")
 	local server = fs.readFile("server.server.lua")
 	ok(has(server, "if Hearts.speed then speed+=Hearts.speed(p,r.skill) end"), "Strike.speed reads the hearts")
-	ok(has(server, "Hearts.fortune(p,skill,stats)") and has(server, "Hearts.regrowth(p,skill,baseRegrow)") and has(server, "Hearts.gather(player,p,resource)"), "Strike.harvest hooks")
+	ok(has(server, "Hearts.fortune(p,skill,stats)") and has(server, "Hearts.regrowth(p,skill,resource,baseRegrow)") and has(server, "Hearts.gather(player,p,resource)"), "Strike.harvest hooks")
 	ok(has(server, "hearts=Hearts.state and Hearts.state(p)"), "snapshot field")
 	ok(has(server, "Hearts.migrate(profile)"), "migration hook")
 	ok(not string.find(server:match("%-%- >>> Gathering Hearts.-%-%- <<< END Gathering Hearts") or "", "p.coins%+="), "the hearts block never adds coins")
