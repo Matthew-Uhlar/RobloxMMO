@@ -209,6 +209,8 @@ local QoL={verbs={},hurtAt={},swapAt={}}
 -- Tutorial (§43: coach cards over the Wayfarer's Path and starter quests); filled in by the Tutorial block before perform().
 local Tutorial={verbs={tutorial=true}}
 local Contests={verbs={contestEnter=true,contestBuy=true,contestTitle=true,trophyBait=true,trophyClaim=true,trophyTitle=true}}
+-- Gathering Hearts (§46: Heart of the Deep, Rootheart, Loamheart); filled in by the Hearts block after the Gathering Feel section.
+local Hearts={verbs={heartPerk=true,heartRespec=true,heartAbility=true},next={},seq={}}
 -- One-time coins for each newly reached skill level.
 local function levelCoins(p,skill,newLevel)
 	p.levelRewards=p.levelRewards or {}
@@ -4674,6 +4676,7 @@ local function snapshot(player,message)
 		contests=Contests.state and Contests.state(player,p), -- §39 Workshop › Contests: schedule, entry, live estimate, leaderboard, medals
 		trophies=Contests.trophyState and Contests.trophyState(player,p), -- §39 Hunt › Trophies: ledger, pity, bait, conditions
 		qol=QoL.state and QoL.state(player,p), -- §41: lectern, wardrobe, vault charter, tethers
+		hearts=Hearts.state and Hearts.state(p), -- §46: Heart of the Deep / Rootheart / Loamheart trees, currency, abilities
 		tutorial=Tutorial.state and Tutorial.state(player,p), -- §43 coach cards: {card, read, dots, next, tips, skipped, off, vet, done, owed, rewards}
 		systems=Systems.state and Systems.state(player,p)} -- §33: pinned guide, goals (ETA), XP rates, price checks, daily stock
 end
@@ -4771,6 +4774,7 @@ local function migrate(profile)
 	if Council.migrate then Council.migrate(profile) end -- §36: p.council ballot record, p.perkStats.council
 	if Contests.migrate then Contests.migrate(profile) end
 	if Tutorial.migrate then Tutorial.migrate(profile) end -- §43: p.tutorial (after §31 marks a veteran's skipped Path)
+	if Hearts.migrate then Hearts.migrate(profile) end -- §46: p.hearts (veteran tree XP seed once, perks / timers sanitised)
 	if QoL.migrate then QoL.migrate(profile) end -- §41: p.lectern, p.wardrobe, p.vault, pet.kin -- §39: p.contests, p.trophy, p.perkStats.contests
 end
 -- Clears every per-player table and ends this player's session slot.
@@ -4853,6 +4857,7 @@ local function forget(player)
 		if not next(regrowth) then nodeRegrowth[prompt]=nil end
 	end
 	Strike.forget(player) -- §42: partial node progress, cadence and casts (session-only)
+	if Hearts.forget then Hearts.forget(player) end -- §46: verb throttle (timers persist in p.hearts)
 	Skills.forget(player) -- Agility runs, Hunter traps (session-only)
 	Prayer.forget(player) -- Prayer rites/altar window, Thieving stuns and cooldowns
 	SlayerTasks.forget(player) -- Slayer tasks: superior tickets
@@ -10264,6 +10269,7 @@ do
 		bonus+=event.bonus
 		Logs.prime(p) -- Commissions & Logs: Forgeheart fortune within the budget Mastery leaves
 		local stats=Progression.computeStats(p,os.time())
+		if Hearts.fortune then Hearts.fortune(p,skill,stats) end -- §46: tree fortune perks + Bountiful Reaping (capped)
 		local ok,result=Progression.harvest(p,item,stats,roll,bonus,os.time())
 		if not ok then
 			if item=="Aetherite" then return result.." Train on Ore in Brassfall Cay." end
@@ -10279,7 +10285,9 @@ do
 		-- (Data.Strike.regrowth, QC M5).
 		Logs.regrow(p,result,resource) -- Commissions & Logs: Steadfast Pick joins the Mastery regrowth text
 		if not regrowth then regrowth={}; nodeRegrowth[node]=regrowth; watchPrompt(node) end
-		local regrow=Data.Strike.regrowth(resource,tonumber(result.regrowth) or tonumber(resource.respawn) or 3,elapsed)
+		local baseRegrow=tonumber(result.regrowth) or tonumber(resource.respawn) or 3
+		if Hearts.regrowth then baseRegrow=Hearts.regrowth(p,skill,baseRegrow) end -- §46: tree regrowth perks (≤ 10%, floored)
+		local regrow=Data.Strike.regrowth(resource,baseRegrow,elapsed)
 		regrowth[player]=os.clock()+regrow
 		for id,n in pairs(event.extra) do pickup(p,id,n); note(p,"Festival catch • +"..n.." "..Data.Items[id].name) end
 		-- Pets depth: the doubled-harvest ability is one more yield candidate inside
@@ -10288,6 +10296,7 @@ do
 		pickup(p,item,result.amount)
 		if skill=="Farming" and Contests.harvest then Contests.harvest(p,item,result.amount) end -- §39: Harvest Contest entry score
 		grantXp(p,skill,result.xp)
+		if Hearts.gather then Hearts.gather(player,p,resource) end -- §46: tree XP + Deepdust / Rootsap / Loamglow (never a coin or item)
 		Held.gather(player,p,skill) -- Held items: the node's tool is in hand (auto switch, returns when idle)
 		if skill=="Farming" and Garden.fieldSeed then Garden.fieldSeed(p,item) end -- Verdant Garden seed pouch
 		Trails.event(p,"gather",item) -- Treasure Trails: scroll drops + trail tasks (Fishing counts as "fish")
@@ -10356,6 +10365,7 @@ do
 			if not s.stats or now-(s.statsAt or 0)>3 then s.stats,s.statsAt=Progression.computeStats(p,os.time()),now end
 			speed+=tonumber(s.stats.miningSpeed) or 0
 		end
+		if Hearts.speed then speed+=Hearts.speed(p,r.skill) end -- §46: tree speed perks (capped) + Deepcall Surge
 		return speed
 	end
 	local function track(s,node,ns)
@@ -10479,6 +10489,56 @@ do
 	biteRemote.Name="IsleStrike"
 	biteRemote.Parent=ReplicatedStorage
 	Strike.biteRemote=biteRemote
+	-- §46 Rootquake: one validated shockwave into this player's own progress on
+	-- every tree (Woodcutting node, not special) within `radius` studs that the
+	-- player could strike now (owner, region, regrowth, level, tool). Each takes
+	-- pct % of its max HP but never the last blow (floored at 1 HP), so every
+	-- harvest still comes from a real strike; the progress is held from decay
+	-- for `hold` s. At most `cap` trees. Returns the number of trees hit.
+	-- Candidates: AetherNode-tagged hosts (Strike.tagged overrides it in suites).
+	function Strike.quake(player,p,radius,pct,cap,hold)
+		local character=player.Character
+		local root=character and character:FindFirstChild("HumanoidRootPart")
+		if not root then return 0 end
+		local hosts=Strike.tagged and Strike.tagged() or {}
+		if not Strike.tagged then
+			pcall(function() hosts=game:GetService("CollectionService"):GetTagged("AetherNode") end)
+		end
+		local s=stateOf(player)
+		local now=os.clock()
+		local hit=0
+		for _,node in ipairs(hosts) do
+			if hit>=cap then break end
+			local item=isNode(node) and node:GetAttribute("GatherNode")
+			local r=item and ST.resource(item)
+			if r and r.skill=="Woodcutting" and not special(node) then
+				local owner=node:GetAttribute("OwnerUserId")
+				local region=node:GetAttribute("IsleRegion")
+				local readyAt=nodeRegrowth[node] and nodeRegrowth[node][player]
+				local _,tool=Progression.bestTool(p,r.skill)
+				if (owner==nil or owner==player.UserId) and (type(region)~="string" or regionAllowed(p,region)) and gap(root,node)<=radius
+					and not (readyAt and now<readyAt) and level(p.xp[r.skill])>=r.level and (tool and tool.toolTier or 0)>=r.tool then
+					local maxHp=ST.maxHp(r)
+					local ns=s.nodes[node]
+					if ns then
+						ns.hp=ST.decayed(ns.hp,maxHp,now-ns.at)
+						if ns.hp>=maxHp then untrack(s,node); ns=nil end
+					end
+					if not ns then ns={hp=maxHp,at=now,first=now}; track(s,node,ns) end
+					ns.hp=math.max(1,ns.hp-math.floor(maxHp*pct/100))
+					ns.at=now+hold -- decay waits until the hold is over
+					hit+=1
+				end
+			end
+		end
+		return hit
+	end
+	-- §46: a node's own progress for this player (suites, hp only).
+	function Strike.progress(player,node)
+		local s=Strike.state[player]
+		local ns=s and s.nodes[node]
+		return ns and ns.hp
+	end
 	function Strike.action(player,node)
 		-- QC L7: no journal, no state (a strike racing the leave never recreates it).
 		if not profiles[player] then return reply({ok=false,reason="sync"}) end
@@ -10595,6 +10655,106 @@ do
 	end
 end
 -- <<< END Gathering Feel <<<
+------------------------------------------------------------------------------
+-- >>> Gathering Hearts (§46): Heart of the Deep, Rootheart, Loamheart >>>
+-- Rules: Data.Hearts (shared/GameData.lua). Profile p.hearts (Hearts.migrate,
+-- Data.Hearts.sanitize). Hooks into §42 (Strike.speed, Strike.harvest):
+--   Hearts.speed(p, skill)            strike speed (perks + Deepcall Surge)
+--   Hearts.fortune(p, skill, stats)   adds the tree fortune to the harvest's stat sheet
+--   Hearts.regrowth(p, skill, base)   base regrowth shortened (Progression.regrowthTime floor)
+--   Hearts.gather(player, p, r)       tree XP + currency per break (after the XP grant)
+-- Verbs (dispatched before the action cooldown, own 0.25 s throttle, alive +
+-- lease checked by perform):
+--   heartPerk "Tree:PerkId"   one level (tier, link and currency checked)
+--   heartRespec "Tree"        refunds 75 % of the spent currency for coins
+--   heartAbility "Tree"       the tree's ability (server cooldown, persisted)
+-- Player attribute HeartAbility = "Tree:seq:duration:hits" after each
+-- activation (hearts.client.lua plays the gesture + VFX once per seq).
+------------------------------------------------------------------------------
+do
+	local HT=Data.Hearts
+	local THROTTLE=0.25
+	function Hearts.migrate(p) p.hearts=HT.sanitize(p.hearts,p.xp,os.time()) end
+	local function hearts(p)
+		if type(p.hearts)~="table" or p.hearts.v~=HT.VERSION then Hearts.migrate(p) end
+		return p.hearts
+	end
+	function Hearts.speed(p,skill) return HT.speedFor(hearts(p),skill,os.time()) end
+	function Hearts.fortune(p,skill,stats)
+		local stat=Data.FortuneStat[skill]
+		local add=HT.fortuneFor(hearts(p),skill,os.time())
+		if stat and add>0 and type(stats)=="table" then stats[stat]=(tonumber(stats[stat]) or 0)+add end
+	end
+	function Hearts.regrowth(p,skill,base)
+		local pct=HT.regrowthFor(hearts(p),skill)
+		return if pct>0 then Progression.regrowthTime(base,pct) else base
+	end
+	function Hearts.gather(player,p,r)
+		local tree,ts=HT.treeState(hearts(p),r.skill)
+		if not tree then return end
+		local before=HT.tierFor(ts.xp)
+		HT.earn(tree,ts,r)
+		local after=HT.tierFor(ts.xp)
+		if after>before then note(p,tree.name.." tier "..after.." reached: new perks open.") end
+	end
+	function Hearts.state(p) return HT.view(hearts(p),os.time()) end
+	function Hearts.forget(player) Hearts.next[player]=nil end
+	local function treeOf(item)
+		local tree=validId(item) and HT.Trees[item]
+		return tree
+	end
+	function Hearts.action(player,p,verb,item)
+		local now=os.clock()
+		if now<(Hearts.next[player] or 0) then return "One moment…" end
+		Hearts.next[player]=now+THROTTLE
+		local h=hearts(p)
+		if verb=="heartPerk" then
+			local treeId,perkId
+			if validId(item) then treeId,perkId=string.match(item,"^(%a+):(%w+)$") end
+			local tree=treeOf(treeId)
+			if not tree then return "Choose a heart perk." end
+			local ts=h.trees[tree.id]
+			local ok,result=HT.levelUp(tree,ts,perkId)
+			if not ok then return result end
+			local perk=tree.PerkById[perkId]
+			p.started=true
+			local lvl=ts.perks[perkId]
+			return perk.name.." "..(if perk.max>1 then lvl.." / "..perk.max else "unlocked").."   ·   -"..result.." "..tree.currency.."   ·   "..ts.dust.." left"
+		elseif verb=="heartRespec" then
+			local tree=treeOf(item)
+			if not tree then return "Choose a heart to reset." end
+			local ok,refund,fee=HT.respecProfile(p,tree.id,os.time()) -- the fee leaves p.coins inside Data.Hearts (like Progression.masteryRespec)
+			if not ok then return refund end
+			p.bankRevision=(p.bankRevision or 0)+1
+			return tree.name.." reset for "..fee.." coins   ·   +"..refund.." "..tree.currency.." refunded ("..math.floor(HT.RESPEC.refund*100).."%)"
+		elseif verb=="heartAbility" then
+			local tree=treeOf(item)
+			if not tree then return "Choose a heart ability." end
+			local ts=h.trees[tree.id]
+			local stamp=os.time()
+			local a=HT.abilityStats(tree,ts)
+			if not a.unlocked then return "Unlock "..tree.ability.name.." in the "..tree.name.." first." end
+			if stamp<ts.readyAt then return tree.ability.name.." recharges in "..(ts.readyAt-stamp).."s." end
+			local hits=0
+			if a.kind=="quake" then
+				-- Nothing in reach: refused before the cooldown is spent.
+				hits=Strike.quake(player,p,a.radius,a.amount,a.maxNodes,a.hold)
+				if hits<=0 then return "No trees you can fell within "..a.radius.." studs." end
+			end
+			local ok=HT.activate(tree,ts,stamp)
+			if not ok then return "That ability is not ready." end
+			Hearts.seq[player]=(Hearts.seq[player] or 0)+1
+			player:SetAttribute("HeartAbility",tree.id..":"..Hearts.seq[player]..":"..a.duration..":"..hits)
+			p.started=true
+			if a.kind=="quake" then
+				return a.name.."! "..hits.." tree"..(if hits==1 then "" else "s").." split for "..a.amount.."% of their health. Recharges in "..a.cooldown.."s."
+			end
+			return a.name.."! "..HT.abilityText(tree,ts).." Recharges in "..a.cooldown.."s."
+		end
+		return "Unknown action."
+	end
+end
+-- <<< END Gathering Hearts <<<
 ------------------------------------------------------------------------------
 -- >>> Tutorial (§43) >>>
 -- Tutorial team; docs/DEPTH-CONTRACT.md §43. Rules in the "Tutorial" section of
@@ -10739,6 +10899,7 @@ local function perform(player,verb,item,prompt)
 	local humanoid=character and character:FindFirstChildOfClass("Humanoid")
 	if not humanoid or humanoid.Health<=0 then return "Return to your island first." end
 	if Held.verbs[verb] and not prompt then return Held.action(player,p,verb,item) end -- Held items: own bucket, no cooldown
+	if Hearts.verbs[verb] and not prompt then return Hearts.action(player,p,verb,item) end -- §46: own 0.25 s throttle (an ability mid-swing is never "One moment…")
 	-- §29: satchelMove / satchelSort only reorder the display list, so the 0.08 s
 	-- read throttle bounds them, not the 0.24 s action cooldown (a drag queued
 	-- behind a sell must not be refused, nor push the next action back).

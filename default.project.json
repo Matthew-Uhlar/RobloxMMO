@@ -54,7 +54,8 @@
         "IsleGather": { "$path": "gather.client.lua" },
         "IsleTutorial": { "$path": "tutorial.client.lua" },
         "IsleBeacons": { "$path": "beacons.client.lua" },
-        "SignView": { "$path": "signs.client.lua" }
+        "SignView": { "$path": "signs.client.lua" },
+        "IsleHearts": { "$path": "hearts.client.lua" }
       }
     },
     "Lighting": {
