@@ -1217,4 +1217,31 @@ module.exports = ({ world, C, PI, hash, jitterOf }) => {
     for (const [p, q] of [[[1.25, 6.3, .3], [1.75, 6.5, -.2]], [[-.75, 6.8, -.25], [-1.2, 7.0, .2]], [[-1.0, 4.4, .1], [-1.35, 4.3, -.3]]]) kit.tube([p, q], [.08, .03], { n: 4, color: C.BARK_DARK });
     for (const [y, a] of [[1.6, .3], [2.4, 2.4], [3.1, 4.0]]) kit.group({ pos: [Math.cos(a) * .5, y, Math.sin(a) * .5], rot: [0, -a, 0] }, () => kit.lathe([[0, 0], [.32, .04], [.3, .1], [0, .12]], { n: 7, sz: .6, color: l => l === 0 ? TINT_DARK : TINT }));
   });
+  // -------------------------------------------------------------------------
+  // §42 Gathering Feel: depleted node variants (client-local mesh slots, no
+  // server parts). Uniform fit: the slot box is the node's footprint.
+  // -------------------------------------------------------------------------
+  // Tree stump: a sawn trunk with growth rings on the cut, flared roots and a
+  // few wood chips. Tint = the bark.
+  world('TreeStump', { smooth: 40, tint: '7A5638', kind: 'node' }, kit => {
+    kit.lathe([[.78, 0], [.7, .4], [.62, 1.0], [.6, 1.18], [0, 1.2]], {
+      n: 10, capStart: true, jitter: jitterOf(1201, .07),
+      color: (level, i) => level >= 3 ? (i % 2 ? C.PLANK : C.STRAW) : level === 0 ? TINT_DARK : (hash(i, 1202, level) < .3 ? TINT_DARK : TINT),
+    });
+    kit.group({ pos: [0, 1.2, 0] }, () => { kit.ring(.42, .03, .02, TINT_DARK, 10); kit.ring(.24, .03, .02, TINT_DARK, 8) });
+    roots(kit, 5, .62, .55, 1203, TINT, .26);
+    for (let k = 0; k < 4; k++) { const a = k * 1.7 + .4; kit.blob(Math.cos(a) * 1.25, .06, Math.sin(a) * 1.25, .16, .06, .1, { sub: 0, seed: 1204 + k, color: C.PLANK }) }
+  });
+  // Depleted rock: the vein's boulder with its crystals and colour gone, plain
+  // grey stone with a few loose chips. Tint = the stone.
+  world('DepletedRock', { smooth: 0, tint: '767A80', kind: 'node' }, kit => {
+    kit.blob(0, .55, 0, 1.6, .8, 1.35, { sub: 2, amount: .16, seed: 1211, squash: .45, color: (n, m, i) => n[1] > .6 ? (hash(i, 1212, 1) < .4 ? TINT_LIGHT : TINT) : n[1] < -.2 ? TINT_DARK : TINT });
+    for (let k = 0; k < 5; k++) { const a = k * 1.3 + .2, r = 1.7 + hash(k, 1213, 1) * .4; kit.blob(Math.cos(a) * r, .1, Math.sin(a) * r, .2, .14, .18, { sub: 0, amount: .25, seed: 1214 + k, color: TINT_DARK }) }
+  });
+  // Tilled soil: a bare bed of furrows and clods (the crop harvested). Tint = the soil.
+  world('TilledSoil', { smooth: 30, tint: '5C422C', kind: 'node' }, kit => {
+    kit.lathe([[1.95, 0], [1.9, .22], [1.5, .3], [0, .32]], { n: 12, capStart: true, color: (l, i) => l >= 2 ? TINT : TINT_DARK });
+    for (let row = -2; row <= 2; row++) kit.tube([[-1.45, .3, row * .62], [0, .38, row * .62], [1.45, .3, row * .62]], [.13, .15, .13], { n: 5, color: row % 2 ? TINT_LIGHT : TINT });
+    for (let k = 0; k < 6; k++) { const a = k * 1.1 + .3, r = .6 + hash(k, 1221, 1) * 1.0; kit.blob(Math.cos(a) * r, .38, Math.sin(a) * r, .12, .08, .1, { sub: 0, seed: 1222 + k, color: TINT_DARK }) }
+  });
 };

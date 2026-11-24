@@ -843,8 +843,8 @@ do
 	input.InputBegan:Fire({KeyCode = roblox.Enum.KeyCode.Four, UserInputType = roblox.Enum.UserInputType.Keyboard}, true)
 	flush()
 	eq(#calls, before + 1, "processed input (chat) ignored")
-	-- Context tool follows the gather prompt in view.
-	shown:Fire({GetAttribute = function(_, k) return ({IsleAction = "gather", IsleItem = "Timber"})[k] end})
+	-- Context tool follows the last node struck (§42: combat fires IsleGatherSkill per swing).
+	replicated:FindFirstChild("IsleGatherSkill"):Fire("Woodcutting")
 	eq(api.OnInvoke("getSlots").slots[2], "CopperHatchet", "trees put the hatchet in slot 2")
 	-- Auto switch from the animation layer.
 	replicated:FindFirstChild("IsleHeldAuto"):Fire("Pickaxe")

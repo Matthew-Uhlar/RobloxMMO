@@ -350,6 +350,21 @@ function S.resolve(part, position)
 					title = other:GetAttribute("RenownTitle"), prompts = {}, position = position}
 			end
 		end
+		-- §42: a gathering node host (or its visual Model) is a strike target.
+		local host = if node:IsA("BasePart") and type(node:GetAttribute("GatherNode")) == "string" then node else nil
+		if not host and node:IsA("Model") then
+			for _, child in ipairs(node:GetChildren()) do
+				if child:IsA("BasePart") and type(child:GetAttribute("GatherNode")) == "string" then host = child break end
+			end
+		end
+		if host then
+			local owner = host:GetAttribute("OwnerUserId")
+			if owner ~= nil and owner ~= player.UserId then return nil end
+			local item = host:GetAttribute("GatherNode")
+			local def = HD.resourceDef(Data, item)
+			local ST = tbl(Data.Strike)
+			return {kind = "node", node = host, item = item, name = if def and ST.nodeName then ST.nodeName(def) else tostring(item), prompts = {}, position = position}
+		end
 		if #prompts == 0 then promptsOf(node, prompts) end
 		if #prompts > 0 then
 			local first = prompts[1]
@@ -365,6 +380,13 @@ local function ctx()
 	return {Data = Data, levels = tbl(tbl(snap).levels), combatLevel = num(tbl(skills.Combat).level, num(tbl(tbl(snap).levels).Combat, 1))}
 end
 function S.optionsFor(target)
+	-- §42: a node depleted for you shows its respawn countdown (gather.client.lua).
+	if target and target.kind == "node" then
+		local api = ReplicatedStorage:FindFirstChild("IsleNodeState")
+		local ok, left = false, 0
+		if api and api:IsA("BindableFunction") then ok, left = pcall(function() return api:Invoke(target.node) end) end
+		target.respawn = if ok and type(left) == "number" then left else 0
+	end
 	return HD.targetOptions(target, ctx(), T)
 end
 local rayParams = RaycastParams.new()
@@ -597,6 +619,10 @@ function S.run(option, target)
 	elseif kind == "attack" then
 		S.cancelWalk()
 		attackEvents:Fire(target.model)
+	elseif kind == "strike" then
+		-- §42: combat.client.lua swings at the node (walking into reach first).
+		S.cancelWalk()
+		attackEvents:Fire(target.node)
 	elseif kind == "examine" then
 		S.gameLine("examine", HD.examineText(target, Data), tok.chatAnnounce, true, true)
 		flushChat(true)
@@ -683,8 +709,8 @@ Input.InputBegan:Connect(function(input, processed)
 		if target and (target.kind == "prompt" or target.kind == "npc") then
 			local options = S.optionsFor(target)
 			if options[1] and options[1].prompt then S.run(options[1], target) end
-		elseif target and target.kind == "monster" then
-			S.cancelWalk() -- combat's click attacks: no walk-up continues behind it
+		elseif target and (target.kind == "monster" or target.kind == "node") then
+			S.cancelWalk() -- combat's click attacks / strikes (§42): no walk-up continues behind it
 		end
 	elseif kind == Enum.UserInputType.MouseButton2 then
 		S.rightDown = {at = Vector2.new(input.Position.X, input.Position.Y), time = os.clock(), moved = 0}

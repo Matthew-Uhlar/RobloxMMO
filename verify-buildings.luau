@@ -354,7 +354,7 @@ end
 
 -- Spread (owner: "spread everything out on the starter islands"): on Compass
 -- Quay, Sunwheel Downs (Meadow Reach) and the home island, the stations,
--- prompts, NPC anchors and buildings stand on average >= 45% of the island
+-- prompts, gathering nodes, NPC anchors and buildings stand on average >= 45% of the island
 -- radius from the centre, and every quadrant holds some of them.
 local spreadReport = {}
 do
@@ -367,7 +367,7 @@ do
 		for _, obj in isle:GetDescendants() do
 			local pos
 			if obj:IsA("ProximityPrompt") and obj.Parent:IsA("BasePart") then pos = obj.Parent.CFrame.Position
-			elseif obj:IsA("BasePart") and (string.find(obj.Name, "^Anchor_NPC_") or obj:GetAttribute("BuildingType")) then pos = obj.CFrame.Position end
+			elseif obj:IsA("BasePart") and (string.find(obj.Name, "^Anchor_NPC_") or obj:GetAttribute("BuildingType") or obj:GetAttribute("GatherNode")) then pos = obj.CFrame.Position end -- §42: struck node hosts replace gather prompts
 			if pos then
 				local d = Vector3.new(pos.X - IC.X, 0, pos.Z - IC.Z)
 				n += 1

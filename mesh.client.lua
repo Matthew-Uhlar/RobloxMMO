@@ -320,7 +320,7 @@ CollectionService:GetInstanceAddedSignal("AetherSculpture"):Connect(attach)
 for _, anchor in ipairs(CollectionService:GetTagged("AetherSculpture")) do attach(anchor) end
 
 -- BEGIN RESOURCE POLISH
--- Mining gather nodes (prompt IsleAction="gather", IsleItem=<AetherData resource>) gain a
+-- Mining gather nodes (host part GatherNode=<AetherData resource>, §42) gain a
 -- small crystal cluster tinted with the ore's colour. Bounded: at most POLISH_LIMIT nodes,
 -- one shared prototype per ore (scaled per clone), skipped where a sculpture already exists
 -- (including forged Shape parts such as OreVein meshes).
@@ -348,13 +348,12 @@ local function nearSculpture(node)
 	end
 	return false
 end
+-- §42: `prompt` is the node host part (GatherNode); nodes carry no prompt now.
 local function polish(prompt)
 	if polished[prompt] or polishCount >= POLISH_LIMIT or not prompt.Parent then return end
-	if prompt:GetAttribute("IsleAction") ~= "gather" then return end
-	local def = resourceItems[prompt:GetAttribute("IsleItem")]
+	local def = resourceItems[prompt:GetAttribute("GatherNode")]
 	if type(def) ~= "table" or def.kind ~= "resource" or def.skill ~= "Mining" then return end
-	local node = prompt.Parent
-	if node:IsA("Attachment") then node = node.Parent end
+	local node = prompt
 	if not node or not node:IsA("BasePart") or nearSculpture(node) then return end
 	local halfX, halfY, halfZ = worldHalfExtents(node)
 	local footprint = 2*math.min(halfX, halfZ)
@@ -380,10 +379,8 @@ local function polish(prompt)
 	visual.Parent = node
 end
 local function considerPrompt(instance)
-	if not instance:IsA("ProximityPrompt") then return end
-	if instance:GetAttribute("IsleAction") == nil then
-		instance:GetAttributeChangedSignal("IsleItem"):Once(function() task.defer(polish, instance) end)
-	end
+	if not instance:IsA("BasePart") then return end
+	if instance:GetAttribute("GatherNode") == nil then return end
 	task.defer(polish, instance)
 end
 task.spawn(function()

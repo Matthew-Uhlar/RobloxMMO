@@ -48,7 +48,7 @@ All existing verbs keep working. New/extended verbs (item is always a string ≤
 | `slayerBegin` | `"Line:tier"` e.g. `"Bramble:1"` | requires Combat level & coins (`tiers[t].cost`), creates `p.slayerQuest` |
 | `slayerAbandon` | nil | clears quest, no refund |
 
-Gather prompts (world): `IsleAction="gather"`, `IsleItem=<resource id from Data.ResourceTiers>`, optional `IsleRegion=<region id>`. Server uses `Progression.harvest` (level + tool-tier gate, fortune) and keeps legacy bonuses (Skyreach rich seam +1, festival +1, legacy pickaxe yields).
+Gathering nodes (world, §42): no prompt. The host part carries `GatherNode=<resource id from Data.ResourceTiers>`, optional `IsleRegion=<region id>`, and the `AetherNode` tag. The client strikes it with `strike <node Instance>`; the break runs the harvest: `Progression.harvest` (level + tool-tier gate, fortune) with the legacy bonuses kept (Skyreach rich seam +1, festival +1, legacy pickaxe yields). A `gather` prompt is refused.
 
 ## 3. Server → client snapshot (`IsleUpdate` / RemoteFunction return)
 
@@ -281,7 +281,7 @@ Owner feedback: weapons, picks and other tools must be visibly held, with a phys
 - **Verbs** (IsleAction; both skip the action cooldown and spend their own bucket, `RATE` 2/s, `BURST` 5; reply is compact `{held=true, ok, message, heldItem}` with `ok` the status (callers never parse `message`), never a snapshot):
   - `hold "<itemId>"` (must own it, be holdable and meet its requirements), `hold "none"` / `""`, `hold "~<itemId>"` = temporary auto switch.
   - `hotbarSet "<slot>:<itemId>"` (slots 3-9, any owned item; empty id clears).
-- **Auto switch.** A successful gather auto-holds the best owned tool for the skill (pickaxe for ore, hatchet for trees, rod for fishing, hoe for crops); `~` holds from the client do the same for gathers and attacks as they start. Both return to the explicit choice after `AUTO_RETURN` (8 s) without another gather / temporary hold; an explicit hold (also of the very item that is auto-held) cancels the return; leaving simply drops the timer (the profile never held the temporary id).
+- **Auto switch.** (§42: every strike / cast auto-holds as well.) A successful gather auto-holds the best owned tool for the skill (pickaxe for ore, hatchet for trees, rod for fishing, hoe for crops); `~` holds from the client do the same for gathers and attacks as they start. Both return to the explicit choice after `AUTO_RETURN` (8 s) without another gather / temporary hold; an explicit hold (also of the very item that is auto-held) cancels the return; leaving simply drops the timer (the profile never held the temporary id).
 - **Attributes.** `HeldItem` (id or `""`), `HeldAuto` (true while `HeldItem` is a temporary auto switch; set by `Held.set`, cleared by an explicit hold, the return in `Held.tick` and `Held.forget`) and `Hotbar` (`"id3,...,id9"`) on the player (server). Local only: `IsleHotbarHeight` (bar + the 70 px band kept free for the shared action bar; 0 when hidden) and `IsleHotbarWidth`; the combat spell bar rises above that band when it would overlap.
 - **Model (`held.server.lua`).** Model `HeldItem` (attributes `ItemId`, `HeldClass`, `Hand`) under the character, parts welded (`HeldWeld`) to `RightHand`/`Right Arm` at `RightGripAttachment` (bows and shields: left). Massless, no collision / query / touch. Rebuilt on `HeldItem` change (coalesced: at most one rebuild per `Data.Held.REBUILD_GAP` = 0.5 s per player, a deferred rebuild reading the latest value, so equip / unequip churn cannot bypass the hold rate limit), CharacterAdded, CharacterAppearanceLoaded and when the hand is replaced; destroyed on Humanoid.Died (never rebuilt on the corpse, so nothing drops through the floor), CharacterRemoving and PlayerRemoving (connections released).
 - **Swings (`animate.client.lua`).** Gestures now: mine (overhead strike), chop (side chop), fish (cast, bob, reel), harvest (hoe chop + pull from a crouch), hammer / stir / flip / saw (stations), attack (3 slashes), thrust (dagger stab / backhand), cleave (two-handed overhead slam / sweep with a crouch), lunge (glaive lunge / sweep), shoot (bow draw + release), cast (staff), flick (wand), heal, eat, drink, settrap, netswing, agility moves. When the held item fits the gesture it swings itself; otherwise the old temporary prop is shown and the held model is hidden locally (LocalTransparencyModifier) until the gesture ends. While a prop is out the character's ChildAdded `HeldItem` is watched: a model that fits (an observer's relay beat the auto switch's replication) replaces the prop, any other is hidden too, so nobody sees two tools. The local swing's own in-flight auto switch (`Core.newPending`, 1.5 s) is dropped as soon as the hotbar reports (`ReplicatedStorage.IsleHeldAutoReply(requestedId, heldItem)`) that another item is in hand. Melee `attack` requests map to the weapon class swing. Local impacts get hit-stop (`hitstop` seconds on the gesture clock) and the small camera shake (`Core.newShake`: added to the existing `Humanoid.CameraOffset` and restored after; an offset another script sets mid-shake is kept); reduced motion disables both. `samplePose` writes into a per-gesture `Core.poseBuffer()` (no per-frame tables). Impact marks play built-in swing sounds (`Core.SOUNDS`) at the character and fire the client hook `ReplicatedStorage.IsleImpactLocal(gesture, fx, position, isLocal)` for richer sound / VFX later. A carry pose per class (`Core.HOLD_POSE`) is lerped onto the arm motors of the local holder and the `REMOTE_CAP` (12) nearest remote holders within range (`Core.admitHolders`, re-ranked every 0.25 s into a reused list) before gestures run, so swings blend from and back into it. Per-player connections (AgilityMove, CharacterAdded / Removing, the character's HeldItem watch) are kept per player and released on PlayerRemoving. Replication is unchanged: `IsleGesture` relay (whitelist now includes `thrust`, `cleave`, `lunge`; 4/s token bucket; 120-stud broadcast), remote cap 12 nearest within 100 studs.
@@ -665,3 +665,159 @@ Owner feedback: "graphics look below average; meshes need to be more detailed fo
 - **Tests (`verify-buildings.luau`).** Kit ↔ catalog (fit = mesh bounds, triangle budget, doors on the street face, windows on outer faces, interiors inside their hall, counters clear of the door); every built host (ShapeBox 1:1, upright, on its meadow inside the rim, collider = footprint, glow site + every pane = kit); halls (six wall colliders enclosing all but the door, floor top at the kit height, a player-sized sweep from 3 studs outside to the counter / mid-hall clear, interior mesh on the counter, bounded night light); nothing blocked (no anchor within 1.5 studs of a wall except the bank / market service anchors inside their halls, no prompt host walled in, no path / ramp / bridge deck or guard under any building's fit box); no two fit boxes overlap, alleys ≥ 2.4 between house walls; Guild Hall furnishing clear; ≤ 4,000 static parts, ≤ 260 building parts; window tiers bounded. `verify-mesh`: building shapes ≤ 2,400 triangles, every building / interior host maps 1:1 onto its box, building radii per device. `verify-lighting`: 70 buildings — panes registered, shown only at night within the High cap, Neon, no lights / shadows / collision, nearest house lit, dark when far; `selectWindows` caps and nearest-first; malformed panes skipped.
 - **Tools / renders.** `tools/dump-town.luau` (ASCII lot map of an island), `tools/dump-paths.luau`, `tools/dump-inside.luau`, `tools/dump-scene.luau` + `tools/render-town.py` (z-buffered preview of an island with the real building meshes; `--night` adds the lit panes with bloom). `docs/screenshots/buildings-kit.png`, `buildings-interiors.png`, `town-quay-day.png`, `town-quay-night.png`, `interior-quay-bank.png` (flat Lambert, no materials or shadows).
 - **Needs Studio judgement:** building scale against characters (doors 2–4.4 wide, storeys ~4.6), roof colours per region under the §35 profiles, shingle course read at distance, the Future-lit interiors (one light per hall) and window-pane brightness / Neon bloom at night, phone frame rate in Compass Quay at night (up to 140 panes + 4 pooled lights on Balanced), the plaster-block fallback beyond 120 studs on phones, NPC rigs behind the bank / trade counters (anchors raised 0.34), walking through the hall doors (step 0.34) and around the tavern tables (non-colliding mesh furniture), kindling (Beaconry) inside a hall is not refused by `B.groundVerdict` (its words list is GameData's — a QoL/lead follow-up).
+
+## 42. Gathering Feel (struck nodes, node health bars, depleted visuals)
+
+Owner request: no interact key on gathering nodes. You hit ore, trees and crops with the held pickaxe, hatchet or hoe, the way you swing at a creature, and see the node's health bar drop. Fishing follows the same rule: you click to cast and click again to reel. Depleted nodes visibly change until they respawn (OSRS-style).
+
+**Rules (`Data.Strike` in `shared/GameData.lua`, the Gathering Feel section).** These are pure functions, shared by the server, the clients and the suites.
+- `maxHp(r)` = `SWINGS[tier index]` (3, 3, 4, 4, 5, 5, 6, 6; 6 beyond) × the damage of the tier's entry tool at the level requirement. Fishing spots have 0 HP.
+- `damage(r, toolTier, speed, level)` = `power(toolTier)` (10 + 10 × tier; bare hands 10) × (1 + speed / 200) × (1 + levels over the requirement / 100). The level bonus is capped at +50 %.
+- What counts as speed: for Mining, the stat sheet's Mining Speed plus the pickaxe's own `miningSpeed` plus the tool's Efficiency enchant. For every other skill, only the tool's Efficiency.
+- `SWING` is the server cadence: Mining 0.7 s, Woodcutting 0.7 s, Farming 0.6 s. `IMPACT` is when the client sends the strike after the click: 0.42 s, 0.40 s and 0.36 s, the gesture's impact frame.
+- `TOLERANCE` is 0.12 s of jitter. It never accumulates.
+- Reach: `REACH` 10 studs, `FISH_REACH` 14 studs, measured from the root to the node's edge (centre minus half the footprint, at most 6).
+- Decay: after `DECAY_AFTER` (4 s) without a strike, abandoned progress heals at `DECAY_RATE` (25 % of max HP a second).
+- `regrowth(r, base)` = base − (nominal break − the old hold), floored at 1 s. The base is the mastery- or Steadfast-adjusted regrowth.
+- Fishing (`FISH`): the cast gap is 0.8 s. The bite comes 1.0–2.0 s after the cast; `biteDelay(userId, n)` is a hash, so no shared RNG draw is consumed. The reel window is 1.2 s, with 0.15 s early and 0.35 s late slack.
+- Labels: `VERB` / `NOUN` / `nodeName` / `label` give "Mine Copperstone Vein (Mining 1)", "Chop Meadow Tree (Woodcutting 1)" and "Harvest Meadow Herb Patch (Farming 1)".
+- `balance(r)` gives the old vs new cycle and XP / hour, used by the suites and the table below.
+
+**World (`world.server.lua`).**
+- `gatherNode(host, id, region, owner)` replaces every gather prompt. It sets `GatherNode = <resource id>` (plus `IsleRegion` / `OwnerUserId`) and `CanQuery`, and tags the host `AetherNode`.
+- `stampNode` adds `NodeMaxHp`, `NodeLabel` and `ResourceId` once AetherData loads. Nodes built before that wait in a list; home nodes built later are stamped at once.
+- `prompt()` asserts that it never builds a `"gather"` prompt.
+- The legacy ore, herb, Moonpool jetty, Aetherite seam, rich seam and home ore rocks now each sit in their own Model, the node's visual group. The two crystal-seam anchors are enlarged to 3 / 3.5 studs, still invisible, so they make usable click targets.
+- No static parts were added. The coop "Crew stores" supply prompts (§9 Homesteads) are building stores, not resource nodes, so they keep their prompts.
+
+**Server (`server.server.lua`, the Gathering Feel section above `perform`).**
+- `IsleAction("strike", <node host Instance>)` is routed before the string-only gateway to `Strike.action`.
+- Each request first spends a per-player token (8/s, burst 12). A flood gets nil.
+- Validation, in order:
+  1. Journal lease.
+  2. Alive with a root.
+  3. A real node: `typeof` Instance, a BasePart with a Parent and the server-set `GatherNode`. Client attribute writes never replicate, and tables are refused.
+  4. Owner.
+  5. Region (`regionAllowed`).
+  6. Reach.
+  7. Regrowth (per player).
+  8. Level, then tool tier, so a node you cannot harvest takes no damage.
+  9. Cadence: the schedule `next = max(now, next) + SWING`, so an auto-clicker gains nothing.
+- Damage is the server's own (`Strike.speed`; the stat sheet is cached for 3 s). Progress is per player per node, `Strike.state[player].nodes`, at most 6 tracked. Another player's hits never touch yours, so there is no kill-stealing.
+- At 0 HP, `Strike.finish` runs `Strike.harvest`, the old `gather` branch moved verbatim, exactly once. A `busy` guard stops a re-entrant strike. The harvest covers:
+  - yield, fortune and festival bonuses;
+  - mastery, Logs and Crafting gems;
+  - Contests field credit and the pickup feed;
+  - XP, Trails, journal counts and the Garden seed pouch;
+  - sea creatures and trophy fish.
+- `Strike.finish` then sets the per-player regrowth with the hand-back above and pushes a snapshot.
+- Replies are compact: `{strike = true, ok, reason?, hp, max, dmg, broken, regrow, cast, bite, window, reeled, message, pushed}`.
+- A refusal that has a message is also pushed as a snapshot, at most once a second, so the chat router shows it the way the prompt's refusals were shown.
+- Fishing: a strike casts and replies with the bite. A strike before `bite − early` loses the fish (`early`), and the cast gap still applies, so spam never lands one. A strike inside the window reels, which is the break.
+- `perform`'s `gather` prompt branch now only refuses ("Gathering nodes are struck now…"). The old `gather` verb without a prompt was always "Unknown action.".
+- State is session-only: `Strike.forget` on leave, like the regrowth table, so a rejoin starts fresh.
+- `Sea.cast` now accepts the node part itself. `Strike.where(part)` reads the CFrame position.
+
+**Client strike loop (`combat.client.lua`, `S.gather`).**
+- Inputs: left click or hold, a tap in the world, the Attack button, ButtonR2, and the §34 menu's Mine option (`IsleAttackLocal:Fire(node)`).
+- Target order: a creature under the cursor or in reach stays combat's. Otherwise the node under the cursor is chosen: the first ray hit walked up to its host or Model, or the node closest to the ray, so small hosts stay clickable. The pad and the button pick the nearest standing node in reach.
+- An out-of-reach click walks up (`Humanoid:MoveTo`, 6 s) and swings on arrival. Holding keeps swinging at the cadence.
+- Each swing fires `IsleGestureLocal(gesture, node)`. The gesture is the §26 pickaxe overhead strike, hatchet side chop or hoe chop, and animate auto-holds the best owned tool. Impacts already carry hit-stop, camera shake, chips / wood / dust and swing sounds, and all of them respect reduced motion.
+- `IsleGatherSkill(skill)` sets the hotbar context tool.
+- At `IMPACT` the client invokes the strike. The reply drives:
+  - a pooled hitsplat (`HD.splatStyle`) at the node's top;
+  - a hit flash;
+  - the pooled overhead bar via `OB.touchNode(node, hp, max, "Mining 30")`. Bars take explicit values, because nodes have no shared Health.
+- On a break the bar releases and `IsleNodeDepleted:Fire(node, regrow)` fires.
+- Fishing: the cast plays the rod gesture with `hold` (the bob loops). At the bite, a gold "!" splat appears and the bar reads "Bite!". The next click reels: `IsleGestureLocal("release")` plays the reel outro. A missed window says "It got away.".
+
+**Depleted visuals (`gather.client.lua`, StarterPlayerScripts.IsleGather).**
+- Visuals are per player, because they are driven by this client's strike replies: a break, or a "regrowing" refusal that re-syncs the timer.
+- The node's Model is hidden locally with `LocalTransparencyModifier`. Forge clones and sculptures added meanwhile are hidden too.
+- A pooled local forge slot (`Shape`, Uniform fit, in `workspace.IsleNodeLocal`, never a server part) stands in for the node:
+  - trees get a `TreeStump`, after a topple: a pooled trunk and crown proxy falls away from you, then leaves burst;
+  - ore becomes a `DepletedRock`, a plain grey boulder, with a debris burst;
+  - crops become `TilledSoil`, with a dust burst;
+  - fishing spots go calm: the ripples and bobber are hidden.
+- At the respawn time the reverse effect plays: a sapling grows back into the tree, ore glints, the soil sprouts. Reduced motion swaps instantly.
+- Effects come from a pool of 6 particle attachments. A node that is destroyed releases its state.
+- `ReplicatedStorage.IsleNodeState:Invoke(node)` returns the seconds left. The overlay uses it for "Respawns in 12s"; the Attack button and pad skip nodes with time left.
+- Art: three new world shapes in `art/world-shapes.cjs` (TreeStump 432, DepletedRock 420, TilledSoil 320 triangles), regenerated with `generate-props` / `generate-import`.
+
+**HUD (§34).**
+- `HD.targetOptions` gains `kind = "node"`, which builds "Mine Copperstone Vein (Mining 1)". The level is mint when met and ember when not. While depleted it gets the grey "Respawns in Ns".
+- The option is `local = "strike"`, so the left-click default is a swing, never a prompt. Examine reads "Needs Mining 1; 12 XP a harvest".
+- The overlay resolves node hosts and Models. A left click on a node leaves it to combat and cancels any walk-up.
+- The hotbar's slot 2 now follows `IsleGatherSkill`, since the old `PromptShown` gather hook is gone.
+- The forge's resource slots read `GatherNode`, falling back to a prompt's `IsleItem`. `mesh.client.lua`'s ore polish reads node hosts.
+
+**Balance (before → after, at each tier's entry tool, level at the requirement).** The old cycle on one node was hold (1 s; fishing 1.5 s) + regrowth. The new cycle is the nominal break ((strikes − 1) × swing; fishing: mean bite 1.5 s + 0.3 s reaction) + the handed-back regrowth. XP / hour per node is identical at the nominal tool. Better tools, Mining Speed, Efficiency and levels shorten the break, so upgrades show directly in XP / hour. For example, a Copper Pickaxe on Copperstone takes 2 strikes, a 3.3 s cycle instead of 4.0 s (+21 %).
+
+| Skill | Node (tier) | HP | Strikes | Break s | Regrowth s (old → new) | Cycle s (old → new) | XP/h per node (old → new) |
+|---|---|---|---|---|---|---|---|
+| Mining | Copperstone (T1) | 30 | 3 | 1.4 | 3 → 2.6 | 4.0 → 4.0 | 10800 → 10800 |
+| Mining | Aetherite (T2) | 30 | 3 | 1.4 | 5 → 4.6 | 6.0 → 6.0 | 10800 → 10800 |
+| Mining | Brassite (T3) | 96 | 4 | 2.1 | 6 → 4.9 | 7.0 → 7.0 | 18000 → 18000 |
+| Mining | Sunsteel (T4) | 168 | 4 | 2.1 | 8 → 6.9 | 9.0 → 9.0 | 26000 → 26000 |
+| Mining | Voidstone (T5) | 320 | 5 | 2.8 | 10 → 8.2 | 11.0 → 11.0 | 31090 → 31090 |
+| Mining | Starmetal (T6) | 450 | 5 | 2.8 | 12 → 10.2 | 13.0 → 13.0 | 38769 → 38769 |
+| Mining | Prismite (T7) | 720 | 6 | 3.5 | 15 → 12.5 | 16.0 → 16.0 | 45000 → 45000 |
+| Mining | Celestium (T8) | 924 | 6 | 3.5 | 20 → 17.5 | 21.0 → 21.0 | 51428 → 51428 |
+| Mining | Crownstone (T9) | 1152 | 6 | 3.5 | 25 → 22.5 | 26.0 → 26.0 | 58153 → 58153 |
+| Woodcutting | Meadow (T1) | 30 | 3 | 1.4 | 3 → 2.6 | 4.0 → 4.0 | 10800 → 10800 |
+| Woodcutting | Windpine (T2) | 60 | 3 | 1.4 | 6 → 5.6 | 7.0 → 7.0 | 18000 → 18000 |
+| Woodcutting | Emberoak (T3) | 120 | 4 | 2.1 | 8 → 6.9 | 9.0 → 9.0 | 26000 → 26000 |
+| Woodcutting | Glimmerbark (T4) | 160 | 4 | 2.1 | 10 → 8.9 | 11.0 → 11.0 | 31090 → 31090 |
+| Woodcutting | Starwood (T5) | 250 | 5 | 2.8 | 12 → 10.2 | 13.0 → 13.0 | 38769 → 38769 |
+| Woodcutting | Aetherheart (T6) | 300 | 5 | 2.8 | 15 → 13.2 | 16.0 → 16.0 | 45000 → 45000 |
+| Woodcutting | Shatterbark (T7) | 480 | 6 | 3.5 | 20 → 17.5 | 21.0 → 21.0 | 54857 → 54857 |
+| Farming | Meadow Herb (T1) | 30 | 3 | 1.2 | 3 → 2.8 | 4.0 → 4.0 | 10800 → 10800 |
+| Farming | Sunwheat (T2) | 60 | 3 | 1.2 | 6 → 5.8 | 7.0 → 7.0 | 18000 → 18000 |
+| Farming | Glowcap (T3) | 120 | 4 | 1.8 | 8 → 7.2 | 9.0 → 9.0 | 26000 → 26000 |
+| Farming | Moonbloom (T4) | 160 | 4 | 1.8 | 10 → 9.2 | 11.0 → 11.0 | 31090 → 31090 |
+| Farming | Starfruit (T5) | 250 | 5 | 2.4 | 12 → 10.6 | 13.0 → 13.0 | 38769 → 38769 |
+| Farming | Aether Lotus (T6) | 300 | 5 | 2.4 | 15 → 13.6 | 16.0 → 16.0 | 45000 → 45000 |
+| Fishing | every spot (T1–T7) | — | cast + reel | 1.8 | respawn − 0.3 | 1.5 + respawn (unchanged) | unchanged |
+
+When you rotate between several nodes (one per old hold), the active time per harvest rises from 1 s to the break time. A tier-entry player therefore earns less on a crowded seam than with the old prompt-spam, while a well-equipped player earns more. **Lead call for play-test:** keep this, or shorten `SWINGS` for T1–T2.
+
+**Tests.**
+- `verify-strike.luau` (542 checks; in both build scripts):
+  - A, the rules: HP per tier, nominal strikes, tool / speed / level damage and the cap, XP / hour parity for all 29 tiers, regrowth floor, decay, bite range, labels.
+  - B, the real server through the verify-gameplay harness:
+    - every validation refusal (table, string, untagged, removed, non-resource, range, owner, region, level, tool);
+    - damage, cadence, exactly one harvest and one XP grant, regrowth;
+    - per-player progress (B's hits never count for A, and each keeps their own);
+    - decay;
+    - auto-clicker cadence and the token bucket;
+    - mining speed and tools;
+    - a simulated hour on one vein within 5 % of the old prompt (900 harvests);
+    - fishing: early, gap, bite, reel, expiry;
+    - the retired gather prompt refused;
+    - a rejoin starting fresh;
+    - edge reach.
+  - C, the world and sources: no gather prompt, tags and HP, the gateway, no server-side depleted parts, the catalog shapes, the build lists.
+  - D, the clients:
+    - the combat strike, the gesture at impact, the pooled bar and splat, all inputs, cast hold / release, the hotbar hook;
+    - the §34 label "Mine Copperstone Vein (Mining 1)", the strike default, the respawn countdown, examine, the menu option;
+    - `gather.client.lua` run headless: the depleted variant for trees, ore, crops and calm water; another client unaffected; regrowth restoring every part; props pooled in the local folder; the animated path.
+- `tools/strike-shim.luau`: older suites still fire mock gather prompts on `PromptTriggered`. The shim turns each one into a real node part (or strikes a real world node host) and invokes real `strike` verbs until the break, advancing the suite clock a swing at a time. The server path is entirely real. The shim is installed in gameplay, crafting, exploration, features, garden, logs, systems, trails, festival, held, contests and council.
+- Updated assertions:
+  - `verify-world`: no gather prompt anywhere; node hosts tagged, queryable, in their own Model, with `NodeMaxHp` / `NodeLabel`; the crop-patch mesh resolves from `GatherNode`; the Crown nodes.
+  - `verify-home`: owner-only edge nodes.
+  - `verify-buildings`: node hosts count toward the starter-island spread.
+  - `verify-gameplay`: non-resource and table strikes refused.
+  - `verify-features`: rush nodes inside reach.
+  - `verify-held`: the context tool follows `IsleGatherSkill`.
+
+**For Studio review:**
+- Swing feel and cadence (0.6–0.7 s) against the gesture lengths.
+- Whether the impact-timed strike and the hitsplat read in sync at real latency.
+- Bar placement over tall trunk hosts.
+- Click targeting on crystal-seam anchors and tree canopies.
+- The topple direction and proxy proportions against the real tree meshes.
+- The stump, rock and soil meshes in place (scale against each node's footprint).
+- Fishing bite timing and the "!" readability.
+- Mobile tap-to-strike next to the camera drag.
+- ButtonR2 with a creature and a node both near.
+- Whether the forge picks up the local props quickly enough (they are primitive until it does).

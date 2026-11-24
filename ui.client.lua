@@ -3472,7 +3472,7 @@ local function drawItems()
 	for key,value in pairs(tbl(state.items)) do if num(value,0)>0 then table.insert(keys,key) end end
 	heading("SATCHEL    /    "..#keys.." STACKS")
 	if #keys==0 then
-		row("Your satchel is empty", "Use a gathering prompt to collect your first resource.")
+		row("Your satchel is empty", "Strike a gathering node (left-click it) to collect your first resource.")
 		return
 	end
 	sectionBar({"All","Gear","Tools","Food","Materials","Trinkets"},satchelFilter,function(name)

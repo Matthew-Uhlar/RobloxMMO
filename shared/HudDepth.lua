@@ -100,6 +100,25 @@ function HD.targetOptions(target, ctx, Theme)
 		table.insert(out, {id = "Attack", verb = "Attack", target = tostring(target.name or "Creature"), targetColor = colorFor(), kind = kind,
 			levelText = if lvl > 0 then "(lvl " .. lvl .. ")" else nil, levelColor = HD.levelColor(num(ctx.combatLevel, 1), lvl), ["local"] = "attack"})
 	end
+	-- §42: a gathering node is struck with the held tool (left click = strike):
+	-- "Mine Copperstone Vein (Mining 1)"; a node depleted for you adds its
+	-- respawn countdown ("Respawns in 12s").
+	if kind == "node" then
+		local def, skill = HD.resourceDef(ctx.Data, target.item)
+		if def then
+			local ST = tbl(tbl(ctx.Data).Strike)
+			local verb = tbl(ST.VERB)[skill] or "Strike"
+			local name = if type(ST.nodeName) == "function" then ST.nodeName(def) else tostring(def.name)
+			local have = num(levels[skill], 1)
+			local level = num(def.level, 1)
+			local levelText = "(" .. skill .. " " .. level .. ")"
+			local respawn = math.ceil(num(target.respawn, 0))
+			if respawn > 0 then levelText ..= "  Respawns in " .. respawn .. "s" end
+			table.insert(out, {id = "Strike", verb = verb, target = name, targetColor = colorFor(), kind = kind, levelText = levelText,
+				levelColor = if respawn > 0 then (tok.more or "A9B4C0") elseif have >= level then (tok.met or "6FE3C8") else (tok.unmet or "FF6B5A"),
+				respawn = if respawn > 0 then respawn else nil, ["local"] = "strike"})
+		end
+	end
 	for i, p in ipairs(tbl(target.prompts)) do
 		if type(p) == "table" and p.enabled ~= false and tostring(p.action or "") ~= "" then
 			local name, level, rest = HD.parseObject(p.object or target.name)
@@ -167,6 +186,12 @@ function HD.examineText(target, Data)
 		local text = tostring(target.name or "A voyager")
 		if target.renown then text ..= " · Isle Renown " .. num(target.renown) .. (if target.title then " (" .. tostring(target.title) .. ")" else "") end
 		return text .. "."
+	end
+	if target.kind == "node" then
+		local def, skill = HD.resourceDef(Data, target.item)
+		if def then
+			return def.name .. ": a " .. string.lower(skill) .. " node. Needs " .. skill .. " " .. num(def.level, 1) .. "; " .. num(def.xp) .. " XP a harvest."
+		end
 	end
 	for _, p in ipairs(tbl(target.prompts)) do
 		local def, skill = HD.resourceDef(Data, p.item)

@@ -1250,9 +1250,16 @@ end)
 local localApi = ReplicatedStorage:FindFirstChild("IsleGestureLocal") or Instance.new("BindableEvent")
 localApi.Name = "IsleGestureLocal"
 localApi.Parent = ReplicatedStorage
-localApi.Event:Connect(function(name, target, itemId)
+-- §42: struck gathering nodes fire (gesture, node) per swing; fishing casts with
+-- mode "hold" (the bob loops) and ends with ("release") on the reel / a lost fish.
+localApi.Event:Connect(function(name, target, itemId, mode)
 	if type(name) ~= "string" then return end
-	playLocal(name, target, {itemId = if type(itemId) == "string" then itemId else nil})
+	if name == "release" then
+		local state = player.Character and engine.get(player.Character)
+		if state then engine.release(player.Character) end
+		return
+	end
+	playLocal(name, target, {itemId = if type(itemId) == "string" then itemId else nil, hold = mode == "hold"})
 end)
 
 -- Beaconry (§37): the server sets BeaconryGesture "<gesture>:<seq>[:<itemId>]"

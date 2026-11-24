@@ -411,16 +411,18 @@ bar:GetPropertyChangedSignal("Visible"):Connect(function() if not bar.Visible th
 ------------------------------------------------------------------------------
 -- Inputs from other scripts and the world
 ------------------------------------------------------------------------------
--- Gather prompts in view set the context tool (slot 2).
-ProximityPromptService.PromptShown:Connect(function(prompt)
-	if prompt:GetAttribute("IsleAction") ~= "gather" then return end
-	local item = prompt:GetAttribute("IsleItem")
-	local skill = type(item) == "string" and Data.ResourceSkill[item]
-	if skill and Held.SKILL_CLASS[skill] and skill ~= S.contextSkill then
+-- §42: the context tool (slot 2) follows the last gathering node struck
+-- (combat.client.lua fires IsleGatherSkill(skill) on each swing; nodes have no prompt).
+local function contextSkill(skill)
+	if type(skill) == "string" and Held.SKILL_CLASS[skill] and skill ~= S.contextSkill then
 		S.contextSkill = skill
 		paint()
 	end
-end)
+end
+do
+	local gatherSkill = ReplicatedStorage:FindFirstChild("IsleGatherSkill") or make("BindableEvent", ReplicatedStorage, {Name = "IsleGatherSkill"})
+	gatherSkill.Event:Connect(contextSkill)
+end
 
 -- Auto switch requests (animate.client.lua): temporary, the server returns it.
 local autoHold = ReplicatedStorage:FindFirstChild("IsleHeldAuto") or make("BindableEvent", ReplicatedStorage, {Name = "IsleHeldAuto"})

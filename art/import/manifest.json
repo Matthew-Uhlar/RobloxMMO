@@ -2,9 +2,9 @@
   "format": 1,
   "metersPerStud": 0.28,
   "axes": "Right-handed +Y up; source X/Z and local origin preserved (no rotation/reflection).",
-  "glbSha256": "578952eacd67d4ef90862f9e79d27da3a9a775d0b734f279fd51fc1d17599de5",
+  "glbSha256": "c045a5b20e6d68338b81935a7df7a6fb3352a581aad773c2356d7e7e86779057",
   "materials": 48,
-  "triangles": 90909,
+  "triangles": 92081,
   "models": [
     {
       "name": "AetherCrystal",
@@ -1253,6 +1253,32 @@
         "Shade15": 21,
         "Shade17": 207,
         "Shade18": 99
+      }
+    },
+    {
+      "name": "DepletedRock",
+      "source": "DepletedRock.obj",
+      "sourceSha256": "b64478fc43dc507f5478725aaa7a5f2a1d00b705195f8249f9514a5b031fb12d",
+      "materialSource": "AetherPalette.mtl",
+      "materialSha256": "f9a13bccaaa93db0cb4d3c183db6d723943f7f51a265e6b7d33892df7a269e12",
+      "vertices": 222,
+      "triangles": 420,
+      "boundsStuds": {
+        "min": [
+          -1.995,
+          -0.048,
+          -1.875
+        ],
+        "max": [
+          2.142,
+          1.468,
+          1.972
+        ]
+      },
+      "trianglesByMaterial": {
+        "Shade11": 125,
+        "Shade15": 249,
+        "Shade16": 46
       }
     },
     {
@@ -4187,6 +4213,32 @@
       }
     },
     {
+      "name": "TilledSoil",
+      "source": "TilledSoil.obj",
+      "sourceSha256": "d971328792596cf7179dcbef3cf54894c6f6560b342addf4470bc6c65b43f6d5",
+      "materialSource": "AetherPalette.mtl",
+      "materialSha256": "f9a13bccaaa93db0cb4d3c183db6d723943f7f51a265e6b7d33892df7a269e12",
+      "vertices": 184,
+      "triangles": 320,
+      "boundsStuds": {
+        "min": [
+          -1.95,
+          0,
+          -1.95
+        ],
+        "max": [
+          1.95,
+          0.53,
+          1.95
+        ]
+      },
+      "trianglesByMaterial": {
+        "Shade11": 90,
+        "Shade15": 178,
+        "Shade16": 52
+      }
+    },
+    {
       "name": "TimberBundle",
       "source": "TimberBundle.obj",
       "sourceSha256": "558bf36d8a23d9011d5ab9325cd0d95e4e29bca7873e4db62faed5aa8e6de95e",
@@ -4406,6 +4458,33 @@
         "Shade23": 20,
         "Shade24": 164,
         "Shade27": 72
+      }
+    },
+    {
+      "name": "TreeStump",
+      "source": "TreeStump.obj",
+      "sourceSha256": "92e8dd5af00c7b5d8a3f8993d69807f92a0e641cae7561ae9ebb62bc5fd0ba18",
+      "materialSource": "AetherPalette.mtl",
+      "materialSha256": "f9a13bccaaa93db0cb4d3c183db6d723943f7f51a265e6b7d33892df7a269e12",
+      "vertices": 244,
+      "triangles": 432,
+      "boundsStuds": {
+        "min": [
+          -1.302,
+          -0.105,
+          -0.967
+        ],
+        "max": [
+          1.287,
+          1.614,
+          1.164
+        ]
+      },
+      "trianglesByMaterial": {
+        "Shade11": 163,
+        "Shade15": 179,
+        "Shade31": 85,
+        "Shade32": 5
       }
     },
     {
