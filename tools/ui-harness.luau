@@ -157,10 +157,19 @@ end
 meta.__tostring = function(self)
 	return tostring(rawget(self, STATE).props.Name)
 end
-function methods:FindFirstChild(name)
+function methods:FindFirstChild(name, recursive)
 	for _, child in ipairs(rawget(self, STATE).children) do
 		if child.Name == name then
 			return child
+		end
+	end
+	-- FindFirstChild(name, true): depth-first like Roblox (§43 tutorial pointer).
+	if recursive then
+		for _, child in ipairs(rawget(self, STATE).children) do
+			local found = child:FindFirstChild(name, true)
+			if found then
+				return found
+			end
 		end
 	end
 	return nil
@@ -916,6 +925,47 @@ function H.runOverlay(size, player, shared, options)
 		run = run, chat = chat, textChat = textChat, theme = theme, camera = camera, routes = routes,
 		setPath = function(fn) options.path = fn end,
 		setGround = function(fn) local old = options.ground; options.ground = fn or function() return true end; return old end }
+end
+
+-- Loads tutorial.client.lua (§43 coach cards, pointer ring, tips) into an
+-- existing player's PlayerGui; pass the atlas handle's `replicated` so the local
+-- channels (snapshots in, verbs out through IsleActionLocal) are shared.
+-- options: touch, delays (records task.delay), clock (os.clock stand-in).
+function H.runTutorial(size, player, shared, options)
+	options = options or {}
+	screen = size
+	local replicated = shared or new("ReplicatedStorage")
+	local run = new("RunService")
+	local services = {
+		Players = new("Players", { LocalPlayer = player }), ReplicatedStorage = replicated, RunService = run,
+		UserInputService = new("UserInputService", { TouchEnabled = options.touch == true }), TweenService = new("TweenService"),
+	}
+	local game = new("DataModel")
+	function game.GetService(_, name) return assert(services[name], name) end
+	local camera = new("Camera", { ViewportSize = size })
+	local base = baseTask(options.delays)
+	local env = {
+		game = game, workspace = { CurrentCamera = camera }, Enum = roblox.Enum, UDim = roblox.UDim, UDim2 = roblox.UDim2, Vector2 = roblox.Vector2,
+		Vector3 = roblox.Vector3, CFrame = roblox.CFrame, Color3 = roblox.Color3, ColorSequence = roblox.ColorSequence,
+		ColorSequenceKeypoint = roblox.ColorSequenceKeypoint, NumberSequence = roblox.NumberSequence, NumberSequenceKeypoint = roblox.NumberSequenceKeypoint,
+		TweenInfo = { new = function() return {} end }, Instance = { new = function(class) return new(class) end },
+		typeof = function(value) return if data[value] then "Instance" else typeof(value) end,
+		task = { spawn = base.spawn, delay = base.delay, defer = base.defer, wait = function() return coroutine.yield() end },
+		os = { clock = options.clock or os.clock, time = os.time },
+	}
+	local theme = H.loadTheme(env)
+	env.require = function(target)
+		if target.Name == "AetherUiTheme" then return theme end
+		return Data
+	end
+	for _, name in ipairs({ "AetherUiTheme", "AetherData" }) do
+		if not replicated:FindFirstChild(name) then new("ModuleScript", { Name = name }).Parent = replicated end
+	end
+	luau.load(fs.readFile("tutorial.client.lua"), { debugName = "tutorial.client.lua", environment = env, injectGlobals = true })()
+	local api = player:FindFirstChild("IsleTutorialApi")
+	local playerGui = player:FindFirstChild("PlayerGui")
+	return { gui = playerGui:FindFirstChild("IsleTutorial"), pointer = playerGui:FindFirstChild("IsleTutorialPointer"), state = api.OnInvoke("state"),
+		api = api, run = run, input = services.UserInputService, theme = theme }
 end
 
 -- Calls recorded by a RemoteEvent's FireServer.

@@ -327,6 +327,68 @@ for _, profile in ipairs(profiles) do
 				table.insert(shots, { id = extra, guis = screenTree(hudUi.playerGui) })
 			end
 		end
+		-- §43 Tutorial coach cards (tutorial.client.lua): the welcome card, a Path
+		-- step pointing at the hotbar, a starter quest with the helper's NEXT
+		-- line, a first-encounter tip, the celebration card and the phone chip.
+		for _, extra in ipairs({ "HUD-Tutorial-Welcome", "HUD-Tutorial-Chop", "HUD-Tutorial-Quest", "HUD-Tutorial-Tip", "HUD-Tutorial-Complete", "HUD-Tutorial-Chip" }) do
+			if wanted(extra) then
+				local touch = size.Y < 500
+				local hudUi = hudScene(size, profile)
+				local L = hudUi.hud.theme.hudLayout(size.X, size.Y, { touch = touch })
+				-- The pointer resolves hotbar.client.lua's slot names: invisible stand-ins over the preview slots.
+				local bar = H.new("ScreenGui", { Name = "IsleHotbar", DisplayOrder = 5 })
+				bar.Parent = hudUi.playerGui
+				for i = 1, 9 do
+					local slot = H.new("Frame", { Name = "Slot" .. i, BackgroundTransparency = 1, Position = roblox.UDim2.fromOffset(L.hotbar.x + (i - 1) * (L.hotbar.slot + 4), L.hotbar.y),
+						Size = roblox.UDim2.fromOffset(L.hotbar.slot, L.hotbar.slot) })
+					slot.Parent = bar
+				end
+				local tut = H.runTutorial(size, hudUi.player, hudUi.replicated, { touch = touch })
+				local TU = H.Data.Tutorial
+				local all = {}
+				for _, t in ipairs(TU.Tips) do table.insert(all, t.id) end
+				local snap = snapshotFor(profile)
+				local id = ({ ["HUD-Tutorial-Welcome"] = "welcome", ["HUD-Tutorial-Chop"] = "path:chop", ["HUD-Tutorial-Quest"] = "quest:SkywayCharter",
+					["HUD-Tutorial-Tip"] = "path:kill", ["HUD-Tutorial-Complete"] = "complete", ["HUD-Tutorial-Chip"] = "path:ore" })[extra]
+				snap.tutorial = { card = id, dots = TU.dots(id), tips = all, next = { specs = TU.specsFor(id) } }
+				if extra == "HUD-Tutorial-Quest" then
+					snap.tutorial.next = { text = "Accept the quest from Ilsabet Vanewright", specs = { "npc:WarpKeeper" }, status = "accept", step = 2, total = 5, pinned = true }
+				elseif extra == "HUD-Tutorial-Complete" then
+					snap.tutorial.owed, snap.tutorial.rewards = 250, TU.rewardSummary()
+				elseif extra == "HUD-Tutorial-Tip" then
+					snap.tutorial.tips = { "satchelFull" }
+					snap.announce = { seq = 1, list = { { seq = 1, kind = "skill", skill = "Combat", level = 2, coins = 5 } } }
+				elseif extra == "HUD-Tutorial-Chip" then
+					snap.tutorial.read = true
+				end
+				hudUi.update.OnClientEvent:Fire(snap)
+				-- The harness reports AbsolutePosition 0,0: give the pointer's target its real place.
+				local S = tut.state
+				local function absOf(o)
+					local x, y = 0, 0
+					local node = o
+					while node and node.ClassName ~= "ScreenGui" do
+						local parent = node.Parent
+						local ps = (parent and parent.ClassName ~= "ScreenGui" and parent.AbsoluteSize) or size
+						local pos, anchor, own = node.Position or roblox.UDim2.new(), node.AnchorPoint or roblox.Vector2.zero, node.AbsoluteSize
+						x += pos.X.Scale * ps.X + pos.X.Offset - anchor.X * own.X
+						y += pos.Y.Scale * ps.Y + pos.Y.Offset - anchor.Y * own.Y
+						node = parent
+					end
+					return roblox.Vector2.new(x, y)
+				end
+				for _, key in ipairs({ "objective", "menu", "satchel", "chart", "hotbar:1", "hotbar:2" }) do
+					local name = ({ objective = "Goal", menu = "AtlasButton", satchel = "SatchelButton", chart = "ChartButton" })[key]
+					local o = if name then H.find(hudUi.gui, name) else H.find(bar, "Slot" .. string.sub(key, 8))
+					if o then o.AbsolutePosition = absOf(o) end
+				end
+				S.placePointer()
+				-- Tweens settle instantly in the harness: show the ring at its first frame.
+				local stroke = tut.pointer:FindFirstChild("PointerRing"):FindFirstChild("Pulse")
+				stroke.Transparency, stroke.Thickness = 0.1, 3
+				table.insert(shots, { id = extra, guis = screenTree(hudUi.playerGui) })
+			end
+		end
 		-- Agility & Hunter HUD: a lap underway (lap tracker) and a caught trap (trap counter).
 		if wanted("hud-agility") then
 			local hudUi = hudScene(size, profile, "Mooring spar • +6 Agility XP")

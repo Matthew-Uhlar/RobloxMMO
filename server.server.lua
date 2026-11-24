@@ -198,6 +198,8 @@ local Council={verbs={councilVote=true,councilView=true,councilVisit=true}}
 -- Contests & Trophy Angling (§39: Harvest Contests, Medal Exchange, trophy fishing); filled in by the Contests block before perform().
 -- QoL Depth (§41: Lumen Lectern, Wardrobe, Vault Charters, Roost tethers); filled in by the QoL block before perform().
 local QoL={verbs={},hurtAt={},swapAt={}}
+-- Tutorial (§43: coach cards over the Wayfarer's Path and starter quests); filled in by the Tutorial block before perform().
+local Tutorial={verbs={tutorial=true}}
 local Contests={verbs={contestEnter=true,contestBuy=true,contestTitle=true,trophyBait=true,trophyClaim=true,trophyTitle=true}}
 -- One-time coins for each newly reached skill level.
 local function levelCoins(p,skill,newLevel)
@@ -4620,6 +4622,7 @@ local function snapshot(player,message)
 	if Council.refresh then Council.refresh(player,p) end -- §36: re-queue an unacknowledged ballot, phase toasts, p.perkStats.council (before §31 flushes announcements)
 	if Systems.refresh then Systems.refresh(player,p) end -- §33: goal completions, pinned objective (before §31 flushes announcements)
 	if Features.refresh then Features.refresh(player,p,power) end -- §31: renown, onboarding, resonance (before notes and stats)
+	if Tutorial.refresh then Tutorial.refresh(player,p) end -- §43: the current coach card from this snapshot's Path / quest progress
 	local levels={}
 	local provisions={}
 	for item,config in pairs(consumables) do
@@ -4663,6 +4666,7 @@ local function snapshot(player,message)
 		contests=Contests.state and Contests.state(player,p), -- §39 Workshop › Contests: schedule, entry, live estimate, leaderboard, medals
 		trophies=Contests.trophyState and Contests.trophyState(player,p), -- §39 Hunt › Trophies: ledger, pity, bait, conditions
 		qol=QoL.state and QoL.state(player,p), -- §41: lectern, wardrobe, vault charter, tethers
+		tutorial=Tutorial.state and Tutorial.state(player,p), -- §43 coach cards: {card, read, dots, next, tips, skipped, off, vet, done, owed, rewards}
 		systems=Systems.state and Systems.state(player,p)} -- §33: pinned guide, goals (ETA), XP rates, price checks, daily stock
 end
 -- Prayer & Thieving: drain-loop notices (prayer points ran out).
@@ -4758,6 +4762,7 @@ local function migrate(profile)
 	if Systems.migrate then Systems.migrate(profile) end -- §33: p.goals, p.goalSeq, p.helperPin, p.shopStock
 	if Council.migrate then Council.migrate(profile) end -- §36: p.council ballot record, p.perkStats.council
 	if Contests.migrate then Contests.migrate(profile) end
+	if Tutorial.migrate then Tutorial.migrate(profile) end -- §43: p.tutorial (after §31 marks a veteran's skipped Path)
 	if QoL.migrate then QoL.migrate(profile) end -- §41: p.lectern, p.wardrobe, p.vault, pet.kin -- §39: p.contests, p.trophy, p.perkStats.contests
 end
 -- Clears every per-player table and ends this player's session slot.
@@ -10192,6 +10197,124 @@ do
 end
 -- <<< END QoL Depth <<<
 ------------------------------------------------------------------------------
+-- >>> Tutorial (§43) >>>
+-- Tutorial team; docs/DEPTH-CONTRACT.md §43. Rules in the "Tutorial" section of
+-- shared/GameData.lua (Data.Tutorial). Coach cards over the Wayfarer's Path
+-- (§31) and the first starter quests (§33 quest helper), drawn by
+-- tutorial.client.lua.
+-- * p.tutorial = {v, seen = {[card] = true}, tips = {[tip] = true}, card,
+--   skipped, off, vet, done} (sanitised on load). The current card is derived
+--   from real progress every snapshot (TU.current: Path step flags, contracts
+--   claimed, quests done) and saved as `card`, so a rejoin resumes it.
+-- * Verb `tutorial "<arg>"` (TU.parse whitelist): next:<card> finishes only the
+--   intro / finale cards (ack) and only the current one; dismiss:<card> marks
+--   the current card read (collapsed); skip; replay (clears seen / tips / skip);
+--   tip:<id> records a first-encounter tip once; tips:on / tips:off. It never
+--   grants anything, never sets p.started, and skips the 0.24 s action
+--   cooldown (the 0.08 s read throttle bounds it) so dismissing a card never
+--   delays a swing.
+-- * Veterans whose first load skipped the Path (p.guide.skipped) never see
+--   the tutorial or its tips (vet) unless they choose Replay in Settings.
+------------------------------------------------------------------------------
+do
+	local TU=Data.Tutorial
+	local HP=Data.Systems.Helper
+	local whole=TU.whole
+	local function tut(p)
+		local t=p.tutorial
+		if type(t)~="table" or t.v~=TU.VERSION or type(t.seen)~="table" or type(t.tips)~="table" then
+			t=TU.sanitize(t)
+			p.tutorial=t
+		end
+		return t
+	end
+	function Tutorial.migrate(p)
+		local first=type(p.tutorial)~="table"
+		local t=TU.sanitize(p.tutorial)
+		p.tutorial=t
+		-- A veteran's first load completes the Path unpaid (§31): no tutorial, no tips.
+		if first and type(p.guide)=="table" and p.guide.skipped==true then t.vet=true; t.off=true end
+		t.card=TU.current(p,t)
+	end
+	-- The §33 helper guide for a starter quest card ("contract" or a quest id).
+	local function guideFor(p,quest)
+		if quest=="contract" then return HP.contractGuide(questState(p)) end
+		local q=Data.QuestById[quest]
+		if not q then return nil end
+		local accepted=type(p.regionQuests)=="table" and type(p.regionQuests.accepted)=="table" and p.regionQuests.accepted[q.id]==true
+		local done=type(p.questsDone)=="table" and p.questsDone[q.id]==true
+		return HP.questGuide(q,{done=done,requires=Journal.progress(p,q.requires),objectives=Journal.progress(p,q.objectives)},
+			{accepted=accepted,access=Systems.accessOf and Systems.accessOf(p) or nil})
+	end
+	Tutorial.guideFor=guideFor
+	-- Every snapshot (after §31 has marked this snapshot's Path steps).
+	function Tutorial.refresh(player,p)
+		local t=tut(p)
+		t.card=TU.current(p,t)
+	end
+	function Tutorial.state(player,p)
+		local t=tut(p)
+		local id=t.card
+		local tips={}
+		for _,tip in ipairs(TU.Tips) do if t.tips[tip.id] then table.insert(tips,tip.id) end end
+		local out={card=id,read=id~=nil and t.seen[id]==true or nil,skipped=t.skipped,off=t.off,vet=t.vet,done=t.done,tips=tips}
+		if id then
+			local card=TU.CardById[id]
+			out.dots=TU.dots(id)
+			if card.quest then
+				local g=guideFor(p,card.quest)
+				if g then
+					local s=g.steps[g.current] or {}
+					out.next={text=HP.objective(g),specs=s.specs,blocked=s.blocked,status=g.status,step=g.current,total=g.total,pin=g.id,
+						pinned=p.helperPin==(if card.quest=="contract" then "contract" else g.id)}
+				end
+			elseif card.step then
+				out.next={specs=TU.specsFor(id)}
+			end
+			if id=="complete" then
+				out.owed=whole(type(p.guide)=="table" and p.guide.owed)
+				out.rewards=TU.rewardSummary()
+			end
+		end
+		return out
+	end
+	function Tutorial.action(player,p,verb,item)
+		local t=tut(p)
+		local kind,arg=TU.parse(item)
+		if not kind then return "That tutorial request isn't valid." end
+		if kind=="skip" then
+			if t.skipped then return "" end
+			t.skipped=true
+			t.card=nil
+			return "Tutorial skipped. Replay it any time from Menu › Settings."
+		elseif kind=="replay" then
+			t.seen,t.tips,t.skipped,t.vet,t.done,t.off={},{},nil,nil,nil,nil
+			t.card=TU.current(p,t)
+			return "Tutorial restarted. Its cards follow your real progress."
+		elseif kind=="tips" then
+			t.off=(not arg) or nil
+			return if arg then "Tutorial tips on." else "Tutorial tips off."
+		elseif kind=="tip" then
+			if not t.off then t.tips[arg]=true end
+			return ""
+		end
+		-- next / dismiss: only the current card (a stale tap after progress is ignored).
+		local current=TU.current(p,t)
+		if arg~=current then return "" end
+		if kind=="next" then
+			-- Step cards advance only with real progress; only intro / finale cards finish on a tap.
+			if not TU.CardById[arg].ack then return "" end
+			t.seen[arg]=true
+			if arg=="complete" then t.done=true end
+		else
+			t.seen[arg]=true
+		end
+		t.card=TU.current(p,t)
+		return ""
+	end
+end
+-- <<< END Tutorial <<<
+
 local function perform(player,verb,item,prompt)
 	local p=profiles[player]
 	if not p or (not preview[player] and os.time()>=(leaseEnd[player] or 0)) then return "Waiting for journal sync." end
@@ -10203,12 +10326,13 @@ local function perform(player,verb,item,prompt)
 	-- read throttle bounds them, not the 0.24 s action cooldown (a drag queued
 	-- behind a sell must not be refused, nor push the next action back).
 	-- §33 QC M3: priceCheck is a read with its own budget, so it skips the cooldown too.
-	if prompt or (verb~="satchelMove" and verb~="satchelSort" and verb~="priceCheck") then
+	if prompt or (verb~="satchelMove" and verb~="satchelSort" and verb~="priceCheck" and verb~="tutorial") then -- §43: tutorial taps skip it too
 		if os.clock()<(cooldown[player] or 0) then return "One moment…" end
 		cooldown[player]=os.clock()+(if prompt then 0.65 else 0.24)
 	end
 	local region=prompt and prompt:GetAttribute("IsleRegion")
 	if region and not regionAllowed(p,region) then return regionDenied(region) end
+	if Tutorial.verbs[verb] and not prompt then return Tutorial.action(player,p,verb,item) end -- §43 coach card taps (dismiss / skip / replay / tips)
 	if Features.verbs[verb] then
 		return Features.action(player,p,verb,item,prompt) -- §31: Wayfarer's Path talk, Resonance
 	elseif Council.verbs[verb] then

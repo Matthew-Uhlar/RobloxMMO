@@ -111,6 +111,22 @@ The hotbar in these renders is a **stand-in** drawn with Theme slots where
 | `desktop-Workshop-Forge.png`, `desktop-Hunt-Slayer.png`, `desktop-Hunt-Bestiary.png`, `desktop-Hunt-Hunter.png`, `desktop-Ledger-Bank.png` | 1366x768 | Workshop, Hunt and Ledger pages |
 | `phone-Hero-Skills.png`, `phone-Ledger-Vendors.png`, `phone-Builder.png` | 844x390 | Phone rail layout, vendors, island builder (the action bar steps aside) |
 
+Tutorial coach cards (§43, `tools/render-ui.luau … HUD-Tutorial`; `tutorial.client.lua`):
+
+| File | Size | What |
+| --- | --- | --- |
+| `tutorial-desktop-Welcome.png` | 1366x768 | Welcome card in the docked coach lane (right of the left column, under the level-banner slot); the pointer ring and arrow on the sidebar Objective |
+| `tutorial-desktop-Chop.png` | 1366x768 | Path step 2/11 "Chop a log" (left-click copy, chapter dots, Skip / Show me / Got it); the pointer on hotbar slot 2 (the context tool) |
+| `tutorial-desktop-Tip.png` | 1366x768 | A first-encounter tip (first level-up) borrowing the card: Tips off / Got it, pointer on Menu |
+| `tutorial-desktop-Complete.png` | 1366x768 | The celebration card: rewards summary and "Claim 250 coins" (owed Path coins) |
+| `tutorial-phone-Welcome.png`, `tutorial-phone-Quest.png` | 844x390 | The phone card, centred between the orbs and the sidebar, above the hotbar band; a starter quest with the §33 helper's NEXT line |
+| `tutorial-phone-Chip.png` | 844x390 | A read card collapsed to the 44 px chip at the top of the left column |
+| `tutorial-compact-Quest.png`, `tutorial-compact-Complete.png` | 730x303 | The smallest phones: the card shrinks to fit above the spell bar |
+
+The ring's position in these renders is computed from the target's laid-out
+place (the harness reports AbsolutePosition 0,0); tweens settle at once, so the
+ring is drawn at its first pulse frame.
+
 Before / after (the previous "Aether Brass" design → Skyforge):
 
 | Before | After |
