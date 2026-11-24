@@ -5,7 +5,9 @@
 -- and the world's own prompts, a Navigate list, recall charms, and waypoints: a
 -- glowing beam + beacon to the target that clears itself on arrival.
 -- Other scripts request a waypoint by firing the local BindableEvent
--- LocalPlayer.WayfinderRequest(specs, label) with Data.Townsfolk target specs.
+-- LocalPlayer.WayfinderRequest(specs, label[, quiet]) with Data.Townsfolk target
+-- specs; LocalPlayer.WayfinderActive (attribute, read-only for them) holds the
+-- active waypoint's label.
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -340,8 +342,16 @@ local function buildVisuals(label)
 	visuals = {beacon = beacon, ring = ring, beam = beam, title = title, distance = distance}
 	attachPlayer()
 end
+-- §43 QC M6: the active waypoint's label is published as the read-only local
+-- attribute LocalPlayer.WayfinderActive (nil when none), so other scripts (the
+-- tutorial's coach cards) never replace a waypoint the player chose.
+local function publishActive()
+	local value = if waypoint then waypoint.label else nil
+	if player:GetAttribute("WayfinderActive") ~= value then player:SetAttribute("WayfinderActive", value) end
+end
 local function clearWaypoint(message)
 	waypoint = nil
+	publishActive()
 	destroyVisuals()
 	if message then notify(message) end
 end
@@ -350,19 +360,21 @@ local function placeVisuals(target)
 	visuals.beacon.CFrame = CFrame.new(target + Vector3.new(0, 27, 0))
 	visuals.ring.CFrame = CFrame.new(target + Vector3.new(0, 0.2, 0)) * CFrame.Angles(0, 0, math.pi / 2)
 end
-local function setWaypoint(specs, label)
+-- quiet (3rd argument): an automatic request (the tutorial) fails without a toast.
+local function setWaypoint(specs, label, quiet)
 	if type(specs) == "string" then specs = {specs} end
 	if type(specs) ~= "table" or #specs == 0 then return end
 	local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
 	local from = root and root.Position
 	local target, spec = T.resolveFirst(specs, buildIndex(), from)
 	if not target then
-		notify("I can't find that on the charts yet. Try again once the isle has loaded.")
+		if quiet ~= true then notify("I can't find that on the charts yet. Try again once the isle has loaded.") end
 		return
 	end
 	label = if type(label) == "string" and label ~= "" then label else T.targetLabel(spec)
 	waypoint = T.newWaypoint(specs, label, os.clock())
 	waypoint.target = target
+	publishActive()
 	buildVisuals(label)
 	placeVisuals(target)
 	notify("Waypoint set: " .. label)
