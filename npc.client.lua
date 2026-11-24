@@ -374,6 +374,8 @@ local function runOption(option)
 		end
 	end
 end
+-- Dialogue options that sell something (regional shops, warp scrolls, skill vendors, pets).
+local SHOP_VERBS = {rqBuy = true, warpBuy = true, skillBuy = true, petShop = true, shop = true}
 showNode = function(nodeId)
 	if not talking then return end
 	local node = talking.def.nodes[nodeId]
@@ -390,7 +392,9 @@ showNode = function(nodeId)
 	typeText(text)
 	clearOptions()
 	local options = T.visibleOptions(node, snapshot, context())
+	local shop = false
 	for i, option in ipairs(options) do
+		if SHOP_VERBS[option.verb] then shop = true end
 		local b = optionButton(option.label, i, function()
 			local held = quantitySuppress[option]
 			quantitySuppress[option] = nil
@@ -404,6 +408,11 @@ showNode = function(nodeId)
 		end
 	end
 	layout(#options)
+	-- §43 QC M1: a priced offer on screen is the tutorial's first-shop encounter.
+	if shop then
+		local channel = ReplicatedStorage:FindFirstChild("IsleTutorialLocal")
+		if channel then pcall(function() channel:Fire("shop") end) end
+	end
 end
 local trackerSync -- (retired with the tutorial tracker; kept nil)
 closeDialogue = function()
