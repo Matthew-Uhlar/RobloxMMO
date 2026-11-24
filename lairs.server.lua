@@ -373,7 +373,8 @@ function Lair.enter(player: Player, boss: string)
 	if not slot then return {ok = false, reason = "capacity"} end
 	Lair.seq += 1
 	local seed = math.floor(rng:NextNumber() * 1e6)
-	local f: Fight = {id = string.format("L%d:%d:%d", Lair.seq, slot, seed), def = def, slot = slot, seed = seed, state = "warmup",
+	local job = tostring(game.JobId or ""):sub(1, 8) -- §45 QC M1: fight ids are unique across servers
+	local f: Fight = {id = string.format("L%s:%d:%d:%d", job, Lair.seq, slot, seed), def = def, slot = slot, seed = seed, state = "warmup",
 		center = ORIGIN + V((slot - 1) * SPACING, 0, 0), members = {}, joined = 1, crew = crew,
 		openedAt = os.clock(), riseAt = os.clock() + LR.WARMUP, connections = {}, hud = {}, seen = {}}
 	local ok, err = pcall(Lair.build, f)
@@ -511,7 +512,7 @@ function Lair.won(f: Fight, status: any, now: number)
 			m.credited = true
 			deliver({uid = uid, member = m, at = 0, deadline = deadline, payload = {action = "kill", boss = f.def.id, fight = f.id,
 				seconds = math.max(1, math.floor((f.seconds or 0) + 0.5)), party = outcome.party or memberCount(f), share = c.share,
-				feat = c.feat}}) -- Combat Feats (§45): this member's fight record from combat
+				feat = c.feat, members = outcome.members}}) -- Combat Feats (§45): this member's fight record; members = the fight's participants (QC H1)
 			notice(m.player, f.def.short .. " is slain in " .. LR.formatTime(f.seconds) .. "! Returning to the altar in " .. LR.EXIT_SECONDS .. "s.")
 		elseif m.player then
 			notice(m.player, f.def.short .. " is slain, but " .. (REASON_TEXT[c and c.reason or "member"] or "you earned no share") .. ".")

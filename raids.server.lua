@@ -864,6 +864,7 @@ function Raid.featAdd(m, encounter, f)
 		if type(f[k]) == "number" then acc[k] += f[k] end
 	end
 	if type(f.armor) == "number" then acc.armor = math.max(acc.armor or 0, f.armor) end
+	if f.absent == true then acc.absent = true end -- QC H2
 	for style, v in pairs(type(f.styles) == "table" and f.styles or {}) do if v == true then acc.styles[style] = true end end
 	for _, key in ipairs({"hitBy", "seen"}) do
 		for atk, n in pairs(type(f[key]) == "table" and f[key] or {}) do

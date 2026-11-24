@@ -16577,6 +16577,7 @@ function FT.cleanFeat(f)
 	local out = {hitBy={}, styles={}}
 	for _, k in ipairs(FEAT_KEYS) do out[k] = whole(f[k], 100000) end
 	out.armor = if num(f.armor) then whole(f.armor, 8) else nil
+	out.absent = f.absent == true -- QC H2: offline / outside / down while a telegraph resolved
 	for _, s in ipairs(STYLES) do if tab(f.styles)[s] == true then out.styles[s] = true end end
 	local n = 0
 	for k, v in pairs(tab(f.hitBy)) do
@@ -16602,7 +16603,8 @@ function FT.normalize(ev)
 	out.id = if type(ev.id) == "string" and #ev.id > 0 and #ev.id <= 80 then ev.id elseif type(ev.id) == "number" then tostring(ev.id) else nil
 	out.tier = whole(ev.tier, 9)
 	out.seconds = if num(ev.seconds) and ev.seconds > 0 then math.min(ev.seconds, 86400) else nil
-	out.party = math.max(1, whole(ev.party, 99))
+	-- QC L4: an unknown party size stays nil (solo / maxParty then fail).
+	out.party = if num(ev.party) and ev.party >= 1 then whole(ev.party, 99) else nil
 	out.deaths = if num(ev.deaths) then whole(ev.deaths, 1000) else nil
 	out.mistakes = if num(ev.mistakes) then whole(ev.mistakes, 1000) else nil
 	out.master, out.challenge, out.underPar = ev.master == true, ev.challenge == true, ev.underPar == true
@@ -16629,8 +16631,8 @@ function FT.matches(rule, ev)
 		elseif k == "master" then if ev.master ~= v then return false end
 		elseif k == "challenge" then if ev.challenge ~= v then return false end
 		elseif k == "maxSeconds" then if not ev.seconds or ev.seconds > v then return false end
-		elseif k == "solo" then if (ev.party == 1) ~= v then return false end
-		elseif k == "maxParty" then if ev.party > v then return false end
+		elseif k == "solo" then if not ev.party or (ev.party == 1) ~= v then return false end
+		elseif k == "maxParty" then if not ev.party or ev.party > v then return false end
 		elseif k == "noDeaths" then if ev.deaths ~= 0 then return false end
 		elseif k == "noMistakes" then if ev.mistakes ~= 0 then return false end
 		elseif k == "minGrade" then if not ev.grade or GRADE_RANK[ev.grade] > (GRADE_RANK[v] or 0) then return false end
@@ -16639,9 +16641,9 @@ function FT.matches(rule, ev)
 		elseif k == "minShare" then if not ev.share or ev.share < v then return false end
 		elseif k == "noHits" then if ev.hits ~= 0 then return false end
 		elseif k == "underPar" then if ev.underPar ~= v then return false end
-		elseif k == "noMech" then if not f or f.mech ~= 0 or f.cast < v then return false end
-		elseif k == "avoid" then if not f or (f.hitBy[v] or 0) > 0 or (f.seen[v] or 0) < 1 then return false end
-		elseif k == "perfectWards" then if not f or f.swings < v or f.prayed < f.swings then return false end
+		elseif k == "noMech" then if not f or f.absent or f.mech ~= 0 or f.cast < v then return false end
+		elseif k == "avoid" then if not f or f.absent or (f.hitBy[v] or 0) > 0 or (f.seen[v] or 0) < 1 then return false end
+		elseif k == "perfectWards" then if not f or f.absent or f.swings < v or f.prayed < f.swings then return false end
 		elseif k == "noWard" then if not f or f.swings < v or f.ward > 0 then return false end
 		elseif k == "onlyStyle" then if not f or not onlyStyle(f, v) then return false end
 		elseif k == "noArmor" then if not f or f.armor ~= 0 then return false end
@@ -16763,6 +16765,12 @@ end
 function FT.formatTime(seconds)
 	seconds = whole(seconds)
 	return string.format("%d:%02d", seconds // 60, seconds % 60)
+end
+-- QC L3: waits over an hour read "5h 12m", shorter ones "m:ss".
+function FT.formatWait(seconds)
+	seconds = whole(seconds)
+	if seconds >= 3600 then return string.format("%dh %02dm", seconds // 3600, (seconds % 3600) // 60) end
+	return FT.formatTime(seconds)
 end
 
 -- §31 Isle Renown: 2 renown per feat point (bounded by FT.TOTAL_POINTS).

@@ -221,6 +221,22 @@ do
 	ok(doneSet(FT.record(fresh(), {source = "lair", boss = "Nihlvar", id = "x", party = 1, feat = faithless}, NOW))["lair:Nihlvar.noWard"], "six swings without a Ward: Faithless")
 	faithless.ward = 1
 	ok(not doneSet(FT.record(fresh(), {source = "lair", boss = "Nihlvar", id = "x2", party = 1, feat = faithless}, NOW))["lair:Nihlvar.noWard"], "a Ward up once breaks Faithless")
+	-- QC H2: a member absent (offline / outside / down) while a telegraph resolved earns no perfection or ward tasks.
+	local away = {mech = 0, cast = 6, swings = 12, prayed = 12, ward = 12, adds = 3, styles = {melee = true}, hitBy = {}, seen = {lattice = 2}, absent = true}
+	local dAway = doneSet(FT.record(fresh(), {source = "lair", boss = "Nihlvar", id = "abs", seconds = 100, party = 1, feat = away}, NOW))
+	ok(not dAway["lair:Nihlvar.flawless"] and not dAway["lair:Nihlvar.lattice"] and not dAway["lair:Nihlvar.wards"], "QC H2: absent fails noMech / avoid / perfectWards")
+	ok(dAway["lair:Nihlvar.first"] and dAway["lair:Nihlvar.anchors"], "QC H2: absence never blocks the kill or adds tasks")
+	away.absent = false
+	dAway = doneSet(FT.record(fresh(), {source = "lair", boss = "Nihlvar", id = "abs2", seconds = 100, party = 1, feat = away}, NOW))
+	ok(dAway["lair:Nihlvar.flawless"] and dAway["lair:Nihlvar.lattice"] and dAway["lair:Nihlvar.wards"], "present all fight: they pass")
+	-- QC L4: an unknown party size never satisfies solo / maxParty.
+	local noParty = {mech = 0, cast = 5, swings = 0, prayed = 0, ward = 0, adds = 0, styles = {}, hitBy = {}, seen = {}}
+	ok(not doneSet(FT.record(fresh(), {source = "lair", boss = "Bramblemaw", id = "np", feat = noParty}, NOW))["lair:Bramblemaw.flawless"], "QC L4: party missing, no solo task")
+	eq(FT.normalize({source = "lair", boss = "Bramblemaw"}).party, nil, "QC L4: party stays nil")
+	ok(not FT.matches({maxParty = 3}, FT.normalize({source = "raid", boss = RD.ID})), "QC L4: maxParty fails on nil")
+	-- QC L3: long waits read in hours.
+	eq(FT.formatWait(5 * 3600 + 12 * 60 + 9), "5h 12m", "QC L3: hours and minutes over an hour")
+	eq(FT.formatWait(125), "2:05", "QC L3: m:ss under an hour")
 	-- Lair / raid perfection without a fight record never passes.
 	ok(not doneSet(FT.record(fresh(), {source = "lair", boss = "Bramblemaw", id = "y", seconds = 50, party = 1}, NOW))["lair:Bramblemaw.thornburst"], "no fight record, no perfection")
 end
@@ -447,6 +463,36 @@ do
 	ok(clean.mech == 0 and clean.seen.squall == 1, "sanitised record keeps the data")
 end
 do
+	-- QC H2: a member outside the arena (or offline) as a telegraph resolves is absent, not a dodger.
+	-- QC H1: the result counts every participant (a member held offline at the rise included).
+	local w = world()
+	local L = w.logic
+	local a = w.player(41, Vector3.new(0, 0, 4))
+	local b = w.player(42, Vector3.new(0, 0, -4))
+	local r = L.lrRegister("FH", "Bramblemaw", {Name = "boss"}, Vector3.new(0, 3, 0), {members = {41, 42, 43}, party = 2, seed = 3, center = center})
+	eq(r.maxHp, LR.partyHp(LR.boss("Bramblemaw"), 2), "health scaled for the two inside")
+	w.positions[b] = Vector3.new(200, 0, 200) -- b leaves the arena before the windup ends
+	local tg
+	for _ = 1, 6 do
+		r.nextSpecial = w.clock
+		r.nextHit = w.clock + 100
+		for _, e in ipairs(tickLogic(w, 0.25)) do if e.kind == "telegraph" then tg = e.telegraph end end
+		if tg then break end
+	end
+	ok(tg ~= nil, "a telegraph is winding up")
+	tickLogic(w, tg.windup + 0.25)
+	local fa, fb, fc = r.feat[41], r.feat[42], r.feat[43]
+	ok(fa.cast >= 1 and fa.absent ~= true, "the member inside saw it resolve")
+	ok(fb.cast == 0 and fb.absent == true, "QC H2: the member outside gets no cast and is marked absent")
+	ok(fc.cast == 0 and fc.absent == true, "QC H2: the member held offline is marked absent")
+	L.kill(r)
+	local res = L.lrResult("FH")
+	eq(res.members, 3, "QC H1: three participants reported")
+	eq(res.members, 3, "(not the two the health scaled for)")
+	ok(res.credit[42].feat.absent == true and res.credit[41].feat.absent == false, "QC H2: absent relayed in the kill record")
+	ok(FT.cleanFeat(res.credit[42].feat).absent == true, "QC H2: the sanitiser keeps absent")
+end
+do
 	-- Bramblemaw brood: adds struck count once each.
 	local w = world()
 	local L = w.logic
@@ -498,7 +544,7 @@ do
 	-- World boss reward payloads carry the server-timed fight length.
 	local src = fs.readFile("combat.server.lua")
 	ok(has(src, "seconds = math.max(1, math.floor(now - r.spawnedAt + 0.5))} -- §45"), "world boss payload timed from the rise")
-	ok(has(fs.readFile("lairs.server.lua"), "feat = c.feat}})"), "lairs relay the member's record")
+	ok(has(fs.readFile("lairs.server.lua"), "feat = c.feat, members = outcome.members}})"), "lairs relay the member's record and the participant count")
 	ok(has(fs.readFile("raids.server.lua"), "feat = m.feat}})"), "raids relay the run's summed record")
 end
 do
@@ -623,6 +669,7 @@ for _, o in ipairs(serverObjects) do
 end
 ok(remote ~= nil and bridge ~= nil and grant ~= nil, "IsleAction, IsleBridge and IsleExpeditionGrant found")
 local function cmd(p, verb, item) advance(1); return remote.OnServerInvoke(p, verb, item) end
+local function full(p) return cmd(p, "featsSync") end -- QC L5: a snapshot with the full feats maps
 local function invoke(op, p, payload) return bridge.OnInvoke(op, p, payload) end
 local function prompt(action, item, pos, region)
 	local base = {CFrame = CFrame.new(pos)}
@@ -648,7 +695,7 @@ end
 
 -- C1. A new journal: empty feats, the snapshot key, no retro note.
 local hero = player(7001)
-local s = cmd(hero, "state")
+local s = full(hero)
 ok(type(s.feats) == "table" and s.feats.points == 0 and s.feats.tier == 0 and s.feats.total == FT.TOTAL_POINTS, "snapshot carries feats")
 eq(count(s.feats.done), 0, "nothing done")
 eq(s.feats.teleports.max, 0, "no teleports yet")
@@ -659,12 +706,12 @@ hero = seeded(7001, function(prof)
 	prof.feats = nil
 	prof.lairs = {kc = {Bramblemaw = 26}, pb = {}, got = {}, log = {}, deaths = {}}
 end)
-s = cmd(hero, "state")
+s = full(hero)
 ok(s.feats.done["lair:Bramblemaw.first"] ~= nil and s.feats.done["lair:Bramblemaw.kc25"] ~= nil, "existing lair kill counts credited on load")
 local retroPoints = s.feats.points
 ok(retroPoints == FT.TierById.Easy.points + FT.TierById.Medium.points, "retro points: Easy + Medium kc tasks")
 eq(s.feats.kc["lair:Bramblemaw|"], 26, "the counter starts at the saved kill count")
-s = cmd(hero, "state")
+s = full(hero)
 eq(s.feats.points, retroPoints, "seeding happens once")
 local coins0 = s.coins
 
@@ -677,7 +724,7 @@ local fight = "LF" .. fightSeq
 local fee = LR.boss("Bramblemaw").fee
 local feat = {mech = 0, cast = 5, swings = 3, prayed = 3, ward = 3, adds = 3, styles = {magic = true}, hitBy = {}, seen = {thornburst = 2, lash = 2}, armor = 4}
 hero.last = nil
-local reply = invoke("lair", hero, {action = "kill", boss = "Bramblemaw", fight = fight, seconds = 60, party = 1, share = 1, feat = feat})
+local reply = invoke("lair", hero, {action = "kill", boss = "Bramblemaw", fight = fight, seconds = 60, party = 1, members = 1, share = 1, feat = feat})
 ok(reply and reply.ok, "lair kill paid")
 local snap = hero.last
 local got = kinds(snap)
@@ -690,17 +737,101 @@ eq(afterLair, retroPoints + 2 + 2 + 3 + 3 + 4, "points: thornburst 2, brood 2, s
 -- Resend of the same kill (lairs.server.lua retry): refused, no double credit.
 local again = invoke("lair", hero, {action = "kill", boss = "Bramblemaw", fight = fight, seconds = 60, party = 1, share = 1, feat = feat})
 ok(again and again.ok == false and again.reason == "paid", "a resend is refused as paid")
-eq(cmd(hero, "state").feats.kc["lair:Bramblemaw|"], 27, "no double kill count")
+eq(full(hero).feats.kc["lair:Bramblemaw|"], 27, "no double kill count")
 -- A forged fight id (no entry) credits nothing.
 local forged = invoke("lair", hero, {action = "kill", boss = "Nihlvar", fight = "LF999", seconds = 30, party = 1, share = 1, feat = feat})
 ok(forged and forged.ok == false and forged.reason == "entry", "a kill without an altar entry is refused")
-eq(cmd(hero, "state").feats.done["lair:Nihlvar.first"], nil, "and no feat")
+eq(full(hero).feats.done["lair:Nihlvar.first"], nil, "and no feat")
+
+-- C3b (QC H1). The real Lair.won (lairs.server.lua, headless) with a crewmate held
+-- offline at the rise: the boss scaled to one (party = 1) but the fight had two
+-- participants, so no solo task may be credited to the carried member.
+do
+	local lairPlayers = {
+		PlayerAdded = signal(), PlayerRemoving = signal(),
+		GetPlayers = function() local out = {} for _, p in pairs(liveById) do table.insert(out, p) end return out end,
+	}
+	local journalBridge = {Invoke = function(_, op, who, payload) return bridge.OnInvoke(op, who, payload) end}
+	local lrServices = {Players = lairPlayers, ServerStorage = {FindFirstChild = function(_, name) return if name == "IsleBridge" then journalBridge else nil end},
+		RunService = {Heartbeat = signal()}, ReplicatedStorage = {WaitForChild = function() return markers.AetherData end}}
+	local wsAttrs = {}
+	local Lair
+	load("lairs.server.lua", {
+		game = {GetService = function(_, name) return assert(lrServices[name], name) end, BindToClose = function() end, JobId = "job-lairs"},
+		workspace = {SetAttribute = function(_, k, v) wsAttrs[k] = v end, GetAttribute = function(_, k) return wsAttrs[k] end, FindFirstChild = function() return nil end},
+		require = function() return Data end,
+		Instance = {new = function(class) return {ClassName = class, SetAttribute = function() end} end},
+		Vector3 = Vector3, CFrame = CFrame, Color3 = roblox.Color3, Enum = roblox.Enum,
+		os = {clock = function() return clock end, time = function() return math.floor(utc) end},
+		Random = {new = function() return {NextNumber = function() return 0.25 end} end},
+		warn = function() end,
+		__LairsHarness = function(api) Lair = api end,
+	})
+	ok(Lair ~= nil and type(Lair.won) == "function", "lairs.server.lua loaded headless")
+	local hero = seeded(7003, function(prof) veteran(prof) end)
+	ok(has(fs.readFile("lairs.server.lua"), 'string.format("L%s:%d:%d:%d", job,'), "QC M1: lair fight ids carry the JobId")
+	hero.root.Position = Vector3.new(0, 5000, 0)
+	use(hero, prompt("lairEnter", "Bramblemaw", hero.root.Position, LR.boss("Bramblemaw").region))
+	local carried = "LF" .. fightSeq
+	local soloFeat = {mech = 0, cast = 5, swings = 0, prayed = 0, ward = 0, adds = 3, styles = {magic = true}, hitBy = {}, seen = {thornburst = 2}, armor = 0}
+	local f = {id = carried, def = LR.boss("Bramblemaw"), state = "fight", members = {
+		[hero.UserId] = {player = hero, index = 1, joinedAt = 0, broughtIn = true},
+		[hero.UserId + 1] = {player = nil, index = 2, joinedAt = 0, broughtIn = true, offlineAt = clock}}}
+	-- Combat's result: health scaled for one (party), two participants (members).
+	local w = world()
+	local mateRecord = w.logic.lrRegister("HX", "Bramblemaw", {Name = "boss"}, Vector3.new(0, 3, 0), {members = {hero.UserId, hero.UserId + 1}, party = 1, center = center})
+	w.logic.kill(mateRecord)
+	local outcome = w.logic.lrResult("HX")
+	eq(mateRecord.maxHp, LR.partyHp(LR.boss("Bramblemaw"), 1), "the boss scaled to the one member inside")
+	eq(outcome.members, 2, "combat reports both participants")
+	outcome.seconds = 70
+	outcome.credit = {[hero.UserId] = {ok = true, share = 1, feat = soloFeat}}
+	local before = full(hero).feats
+	local kcBefore, flawlessBefore = before.kc["lair:Bramblemaw|"] or 0, before.done["lair:Bramblemaw.flawless"] ~= nil -- (the harness shares live tables)
+	hero.last = nil
+	Lair.won(f, {outcome = outcome}, clock)
+	local after = hero.last and hero.last.feats
+	ok(after ~= nil and (after.kc["lair:Bramblemaw|"] or 0) == kcBefore + 1, "QC H1: Lair.won paid the kill through the journal")
+	eq(after.done["lair:Bramblemaw.flawless"] ~= nil, flawlessBefore, "QC H1: a carried member earns no new solo flawless")
+	-- Control: the same Lair.won with a genuinely solo fight credits a solo task.
+	local pyre = {mech = 0, cast = 3, swings = 0, prayed = 0, ward = 0, adds = 0, styles = {melee = true}, hitBy = {}, seen = {}, armor = 0}
+	use(hero, prompt("lairEnter", "Bramblemaw", hero.root.Position, LR.boss("Bramblemaw").region))
+	local carried2 = "LF" .. fightSeq
+	local f2 = {id = carried2, def = LR.boss("Pyrewarden"), state = "fight", members = {[hero.UserId] = {player = hero, index = 1, joinedAt = 0, broughtIn = true}}}
+	-- (the journal matches the entry's boss, so a mismatched boss is refused: a lair cannot be relabelled)
+	Lair.won(f2, {outcome = {seconds = 100, party = 1, members = 1, credit = {[hero.UserId] = {ok = true, share = 1, feat = pyre}}}}, clock)
+	eq(full(hero).feats.done["lair:Pyrewarden.unarmored"], nil, "a kill reported for another boss than the entry is refused")
+	local f3 = {id = carried2, def = LR.boss("Bramblemaw"), state = "fight", members = {[hero.UserId] = {player = hero, index = 1, joinedAt = 0, broughtIn = true}}}
+	soloFeat.seen.lash = 1
+	Lair.won(f3, {outcome = {seconds = 70, party = 1, members = 1, credit = {[hero.UserId] = {ok = true, share = 1, feat = soloFeat}}}}, clock)
+	ok(full(hero).feats.done["lair:Bramblemaw.flawless"] ~= nil, "QC H1 control: a real solo fight credits the solo task")
+end
+
+-- C3c (QC M1). World boss fight counters restart per server: a boss:fight key another
+-- server already used must not be refused here (the feat ring is scoped by JobId).
+do
+	hero = seeded(7001, function(prof)
+		table.insert(prof.feats.seen, "world:server-A:Nyxwyrm:1:7001")
+		table.insert(prof.feats.seen, "world:Nyxwyrm:1:7001") -- the pre-fix format
+	end)
+	env.game.JobId = "server-B"
+	local s0 = full(hero).feats.kc["world:Nyxwyrm|"] or 0
+	local rb = invoke("worldBoss", hero, {boss = "Nyxwyrm", tier = "Champion", rank = 2, share = 0.05, damage = 1000, sigils = 0, fight = 1, seconds = 200})
+	ok(rb and rb.ok, "Nyxwyrm fight 1 on server B paid")
+	eq(full(hero).feats.kc["world:Nyxwyrm|"], s0 + 1, "QC M1: server B's fight 1 is credited despite server A's fight 1")
+	local seen = {}
+	for _, key in ipairs(stored(hero).feats.seen) do seen[key] = true end
+	ok(seen["world:server-B:Nyxwyrm:1:7001"] ~= nil, "QC M1: feat event ids carry the JobId")
+	env.game.JobId = nil
+	hero = player(7001)
+end
 
 -- C4. Persistence and rejoin.
+afterLair = full(hero).feats.points -- (C3c added Nyxwyrm feats)
 local saved = stored(hero)
 ok(type(saved.feats) == "table" and saved.feats.done["lair:Bramblemaw.flawless"] ~= nil and saved.feats.kc["lair:Bramblemaw|"] == 27, "feats saved with the journal")
 hero = player(7001)
-s = cmd(hero, "state")
+s = full(hero)
 eq(s.feats.points, afterLair, "points survive a rejoin")
 local fresh2 = kinds(s)
 ok(not fresh2["feat:lair:Bramblemaw.flawless"], "no toast replays after a rejoin")
@@ -716,15 +847,45 @@ for _, k in ipairs({"first", "deathless", "cm", "maelstrom", "speed", "anchors",
 local afterRaid = snap.feats.points
 reply = invoke("raid", hero, {action = "complete", run = "RUN1", seconds = 300, party = 1, points = 3000, team = 3000, challenge = true, underPar = true, deaths = 0, xp = {}, feat = raidFeat})
 ok(reply and reply.ok == false, "a raid resend is refused")
-eq(cmd(hero, "state").feats.kc["raid:" .. RD.ID .. "|"], 1, "raid counted once")
+eq(full(hero).feats.kc["raid:" .. RD.ID .. "|"], 1, "raid counted once")
+-- QC L1: a feat bug never blocks the raid payout (recorded after it, under pcall).
+do
+	local realRecord = FT.record
+	FT.record = function() error("feat bug") end
+	local coinsBeforeRaid = full(hero).coins
+	local paid = invoke("raid", hero, {action = "complete", run = "RUN-L1", seconds = 700, party = 4, points = 2000, team = 8000, challenge = false, underPar = false, deaths = 0, xp = {}})
+	FT.record = realRecord
+	ok(paid and paid.ok and paid.coins > 0, "QC L1: the raid still pays when feat recording fails")
+	eq(full(hero).coins, coinsBeforeRaid + paid.coins, "QC L1: coins landed")
+	local src = fs.readFile("server.server.lua")
+	local payAt = src:find("for skill,n in pairs(xp) do grantXp(p,skill,n) end", 1, true)
+	local featAt = src:find('Feats.record(player,p,{source="raid"', 1, true)
+	ok(payAt and featAt and featAt > payAt, "QC L1: raid feats recorded after the payout")
+end
+-- QC L5: the done / kc maps travel only when their revision changes (featsSync resends).
+do
+	local first = cmd(hero, "state")
+	local second = cmd(hero, "state")
+	ok(second.feats.compact == true and second.feats.done == nil and second.feats.kc == nil, "QC L5: an unchanged revision sends a compact feats table")
+	eq(second.feats.rev, first.feats.rev, "same revision")
+	ok(second.feats.points == first.feats.points and second.feats.teleports ~= nil, "compact still carries points and teleports")
+	local synced = cmd(hero, "featsSync")
+	ok(type(synced.feats.done) == "table" and not synced.feats.compact, "QC L5: featsSync resends the maps")
+	hero.last = nil
+	invoke("raid", hero, {action = "complete", run = "RUN-L5", seconds = 700, party = 4, points = 2000, team = 8000, challenge = false, underPar = false, deaths = 0, xp = {}})
+	local bumped = hero.last -- the reward notice's snapshot
+	ok(bumped.feats.rev > first.feats.rev and type(bumped.feats.done) == "table", "QC L5: a recorded event bumps the revision and resends")
+	hero = player(7001)
+	ok(hero.last ~= nil and type(hero.last.feats) == "table" and type(hero.last.feats.done) == "table", "QC L5: a rejoin's first snapshot carries the full maps")
+end
 -- A failed run ("end") credits nothing.
 invoke("raid", hero, {action = "end", run = "RUN2", result = "timeout", deaths = 2})
-eq(cmd(hero, "state").feats.points, afterRaid, "a failed raid earns no feats")
+eq(full(hero).feats.points, afterRaid, "a failed raid earns no feats")
 
 -- C6. Observatory grant (server-timed run result).
 local r1 = grant.OnInvoke(hero, {floor = 1, grade = "S+", score = 295, seconds = 100, deaths = 0, mistakes = 0, partySize = 1, damageShare = 1, secrets = 2, secretsTotal = 2, runId = "OBS1"})
 ok(r1 and r1.ok, "Floor I clear granted")
-s = cmd(hero, "state")
+s = full(hero)
 for _, k in ipairs({"clear", "gradeA", "deathless", "gradeS", "flawless", "speed", "secrets", "solo"}) do ok(s.feats.done["floor:1." .. k] ~= nil, "Floor I feat " .. k) end
 advance(95)
 hero = player(7001) -- refresh the lease after the clear cooldown
@@ -732,39 +893,39 @@ local r2 = grant.OnInvoke(hero, {floor = 1, grade = "S+", score = 295, seconds =
 ok(r2 and r2.ok == false, "the same run id is refused")
 local r3 = grant.OnInvoke(hero, {floor = 1, grade = "S", score = 270, seconds = 150, deaths = 0, mistakes = 0, partySize = 1, damageShare = 1, secrets = 2, secretsTotal = 2, master = true, runId = "OBS2"})
 ok(r3 and r3.ok, "Master Floor I granted (unlocked by the S+ clear)")
-s = cmd(hero, "state")
+s = full(hero)
 ok(s.feats.done["floor:1.master"] ~= nil and s.feats.done["floor:1.masterFlawless"] ~= nil and s.feats.done["floor:1.masterSpeed"] ~= nil, "Master feats credited")
 eq(s.feats.kc["floor:1|"], 2, "two credited clears")
 -- A refused grant (cooldown) credits nothing.
 local r4 = grant.OnInvoke(hero, {floor = 2, grade = "S+", score = 295, seconds = 60, deaths = 0, mistakes = 0, partySize = 1, damageShare = 1, secrets = 2, secretsTotal = 2, runId = "OBS3"})
 ok(r4 and r4.ok == false, "cooldown refuses the next clear")
-eq(cmd(hero, "state").feats.done["floor:2.clear"], nil, "a refused grant earns no feat")
+eq(full(hero).feats.done["floor:2.clear"], nil, "a refused grant earns no feat")
 
 -- C7. World boss reward.
 hero.last = nil
 reply = invoke("worldBoss", hero, {boss = "Aurelith", tier = "Champion", rank = 1, share = 0.2, damage = 600000, sigils = 0, fight = 4, seconds = 120})
 ok(reply and reply.ok, "world boss paid")
-s = cmd(hero, "state")
+s = full(hero)
 ok(s.feats.done["world:Aurelith.first"] and s.feats.done["world:Aurelith.top"] and s.feats.done["world:Aurelith.share"] and s.feats.done["world:Aurelith.speed"], "world boss feats")
 reply = invoke("worldBoss", hero, {boss = "Aurelith", tier = "Champion", rank = 1, share = 0.2, damage = 600000, sigils = 0, fight = 4, seconds = 120})
 ok(reply and reply.ok == false and reply.reason == "paid", "world boss resend refused")
-eq(cmd(hero, "state").feats.kc["world:Aurelith|"], 1, "world boss counted once")
+eq(full(hero).feats.kc["world:Aurelith|"], 1, "world boss counted once")
 
 -- C8. Slayer boss (quest boss win with the server-timed fight and hits).
 hero = seeded(7001, function(prof)
 	prof.slayerQuest = {line = "Bramble", tier = 3, progress = 100, needed = 100, bossReady = true}
 end)
-local slayerBefore = cmd(hero, "state").feats.points
+local slayerBefore = full(hero).feats.points
 reply = invoke("slayerBoss", hero, {result = "win", seconds = 80, hits = 0})
 ok(reply and reply.ok, "slayer boss win settled")
-s = cmd(hero, "state")
+s = full(hero)
 for _, k in ipairs({"first", "tier2", "tier3", "brisk", "untouched"}) do ok(s.feats.done["slayer:Bramble." .. k] ~= nil, "slayer feat " .. k) end
 ok(s.feats.points > slayerBefore, "slayer feats add points")
 reply = invoke("slayerBoss", hero, {result = "win", seconds = 10, hits = 0})
 ok(reply and reply.ok == false, "no quest, no second slayer win")
 
 -- C9. Tier rewards: claim once, no coins, hilt only.
-s = cmd(hero, "state")
+s = full(hero)
 local tierNow = s.feats.tier
 ok(tierNow >= 2, "enough points for Medium (" .. s.feats.points .. " points, tier " .. tierNow .. ")")
 local coinsBefore = s.coins
@@ -776,7 +937,7 @@ for i = 1, tierNow do
 	eq(c.items[FT.Rewards[id].hilt], (itemsBefore[FT.Rewards[id].hilt] or 0) + 1, id .. " hilt granted once")
 	ok(has(cmd(hero, "featClaim", id).message, "already claimed"), id .. " cannot be claimed twice")
 end
-s = cmd(hero, "state")
+s = full(hero)
 eq(s.coins, coinsBefore, "tier claims grant no coins")
 if tierNow < #FT.Tiers then
 	ok(has(cmd(hero, "featClaim", FT.Tiers[tierNow + 1].id).message, "needs"), "an unreached tier is refused")
@@ -789,12 +950,12 @@ hero = player(7001)
 ok(has(cmd(hero, "featClaim", "Easy").message, "already claimed"), "claims survive a rejoin")
 -- Selling a hilt pays its 1-coin value at most once per claim (no mint loop).
 local sold = cmd(hero, "sell", FT.Rewards.Easy.hilt)
-s = cmd(hero, "state")
+s = full(hero)
 ok(s.coins - coinsBefore <= 1, "a hilt is worth at most a coin")
 ok(has(cmd(hero, "featClaim", "Easy").message, "already claimed"), "a sold hilt is not re-claimable")
 
 -- C10. Feat teleports: daily charges, busy gate, region gate, FastTravelAt.
-s = cmd(hero, "state")
+s = full(hero)
 local max = s.feats.teleports.max
 ok(max >= 1, "teleports unlocked at Medium (" .. max .. ")")
 hero.attrs.LairBoss = "Bramblemaw"
@@ -814,7 +975,7 @@ ok(has(cmd(hero, "featTeleport", "nowhere").message, "Choose"), "unknown destina
 -- A new day refills (rolls forward only).
 advance(FT.DAY_SECONDS)
 hero = player(7001)
-eq(cmd(hero, "state").feats.teleports.left, max, "refilled the next day")
+eq(full(hero).feats.teleports.left, max, "refilled the next day")
 -- Region gate: a journal without the Shattered Crown quest cannot port to the altar.
 local rookie = seeded(7002, function(prof)
 	prof.feats = {v = 1, done = {}, kc = {}, claimed = {}, tele = {day = 0, used = 0}, seen = {}}
@@ -839,7 +1000,7 @@ do
 	local H = require("./tools/ui-harness")
 	local snap = H.snapshot()
 	local done = {["lair:Bramblemaw.first"] = 1, ["floor:1.clear"] = 1}
-	snap.feats = {points = FT.Thresholds[1], total = FT.TOTAL_POINTS, tier = 1, done = done, kc = {["lair:Bramblemaw|"] = 7}, claimed = {}, claimable = {"Easy"},
+	snap.feats = {rev = 1, points = FT.Thresholds[1], total = FT.TOTAL_POINTS, tier = 1, done = done, kc = {["lair:Bramblemaw|"] = 7}, claimed = {}, claimable = {"Easy"},
 		perks = FT.perks(FT.Thresholds[1]), teleports = {left = 0, max = 0, resetIn = 100, readyIn = 0}}
 	snap.announce = {seq = 0, list = {}}
 	local ui = H.runAtlas(roblox.Vector2.new(1366, 768), {snapshot = snap})
@@ -856,7 +1017,22 @@ do
 	local sentClaim = false
 	for i = n0 + 1, #ui.sent do if ui.sent[i][1] == "featClaim" and ui.sent[i][2] == "Easy" then sentClaim = true end end
 	ok(sentClaim, "Claim sends featClaim Easy")
-	ok(H.find(ui.scroll, "Feat_lair_Bramblemaw_first") ~= nil and H.find(ui.scroll, "Feat_floor_7_masterSpeed") ~= nil, "all tiers list every task")
+	-- QC M2: the page opens on the lowest unfinished tier (Easy), not all 156 cards.
+	local function taskCards()
+		local n = 0
+		for _, c in ipairs(ui.scroll:GetChildren()) do if c.Name:sub(1, 5) == "Feat_" then n += 1 end end
+		return n
+	end
+	ok(H.find(ui.scroll, "Feat_lair_Bramblemaw_first") ~= nil and H.find(ui.scroll, "Feat_floor_7_masterSpeed") == nil, "QC M2: default tab is the lowest unfinished tier")
+	eq(taskCards(), FT.TierCounts.Easy, "QC M2: only the Easy tasks drawn")
+	-- All tiers: paged at FP.PER.
+	H.press(H.find(ui.scroll, "FeatTierAll"))
+	eq(taskCards(), 24, "QC M2: all tiers draw one page of 24")
+	ok(H.find(ui.scroll, "FeatsPager") ~= nil, "a pager below the cards")
+	local pages = math.ceil(#FT.Tasks / 24)
+	for _ = 2, pages do H.press(H.find(ui.scroll, "FeatsNext")) end
+	ok(H.find(ui.scroll, "Feat_world_Nyxwyrm_kc50") ~= nil, "the last page holds the last task")
+	eq(taskCards(), #FT.Tasks - (pages - 1) * 24, "the last page holds the rest")
 	-- Tier tab: Grandmaster only.
 	local tabButton = H.find(ui.scroll, "FeatTierGrandmaster")
 	ok(tabButton ~= nil, "tier tabs")
@@ -871,6 +1047,42 @@ do
 	local kcCard = H.find(ui.scroll, "Feat_lair_Bramblemaw_kc25")
 	ok(H.find(kcCard, "Progress") ~= nil, "kill-count tasks show a progress bar")
 	ok(H.find(H.find(ui.scroll, "Feat_lair_Bramblemaw_first"), "Badge") ~= nil, "done tasks carry a DONE badge")
+	-- QC M2: a pushed snapshot that changes nothing on the page keeps the drawn cards.
+	local summary = H.find(ui.scroll, "FeatsSummary")
+	local same = table.clone(snap)
+	same.message = ""
+	ui.update.OnClientEvent:Fire(same)
+	ok(H.find(ui.scroll, "FeatsSummary") == summary, "QC M2: an unchanged push does not redraw")
+	-- QC L5: a compact feats table (same revision) reuses the cached maps.
+	local compact = table.clone(snap)
+	compact.feats = {rev = 1, compact = true, points = snap.feats.points + 0, total = FT.TOTAL_POINTS, tier = 1, claimed = {Easy = true}, claimable = {},
+		perks = snap.feats.perks, teleports = snap.feats.teleports}
+	ui.update.OnClientEvent:Fire(compact)
+	ok(H.find(ui.scroll, "FeatsSummary") ~= summary, "a changed claim redraws")
+	ok(H.find(H.find(ui.scroll, "Feat_lair_Bramblemaw_first"), "Badge") ~= nil, "QC L5: compact snapshot keeps the cached done map")
+	-- A compact table of an unknown revision asks for featsSync.
+	local n1 = #ui.sent
+	local stale = table.clone(compact)
+	stale.feats = table.clone(compact.feats)
+	stale.feats.rev = 9
+	ui.update.OnClientEvent:Fire(stale)
+	local asked = false
+	for i = n1 + 1, #ui.sent do if ui.sent[i][1] == "featsSync" then asked = true end end
+	ok(asked, "QC L5: a cache miss asks featsSync")
+	-- QC L2 / L3: teleports settling re-enable after a client deadline; long refills read in hours.
+	local tp = table.clone(snap)
+	tp.feats = table.clone(snap.feats)
+	tp.feats.rev = 2
+	tp.feats.teleports = {left = 2, max = 3, resetIn = 5 * 3600 + 600, readyIn = 20}
+	ui.setSnapshot(tp)
+	ui.update.OnClientEvent:Fire(tp)
+	local tele = H.find(ui.scroll, "FeatsTeleports")
+	local hours = false
+	for _, d in ipairs(tele and tele:GetDescendants() or {}) do if (d.ClassName == "TextLabel" or d.ClassName == "TextButton") and has(d.Text, "5h 10m") then hours = true end end
+	ok(hours, "QC L3: refill shown in hours and minutes")
+	local delayed = 0
+	for _, d in ipairs(ui.delays) do if d.seconds and d.seconds >= 19 and d.seconds <= 21 then delayed += 1 end end
+	eq(delayed, 1, "QC L2: one re-render scheduled at the cooldown deadline")
 	-- Phone layout renders too.
 	local phone = H.runAtlas(roblox.Vector2.new(844, 390), {snapshot = snap})
 	H.press(H.find(H.find(phone.gui, "Sidebar"), "AtlasButton"))

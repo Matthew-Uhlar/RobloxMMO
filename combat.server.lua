@@ -3007,10 +3007,19 @@ local function createLogic(env)
 			for _, e in ipairs(events) do
 				if e.kind == "strike" and e.record and e.telegraph then
 					local r, id = e.record, tostring(e.telegraph.id)
+					-- QC H2: only members alive inside the arena as it resolves saw it; a member
+					-- held offline / outside / down is marked absent (no perfection that fight).
+					local inside = {}
+					for _, player in ipairs(L.lrPlayers(r)) do local uid = uidOf(player); if uid then inside[uid] = true end end
+					for _, h in ipairs(e.hits or {}) do local uid = member(r, h.player); if uid then inside[uid] = true end end
 					for uid in pairs(r.members or {}) do
 						local f = featOf(r, uid)
-						f.cast += 1
-						f.seen[id] = (f.seen[id] or 0) + 1
+						if inside[uid] then
+							f.cast += 1
+							f.seen[id] = (f.seen[id] or 0) + 1
+						else
+							f.absent = true
+						end
 					end
 					for _, h in ipairs(e.hits or {}) do
 						local uid = member(r, h.player)
@@ -3051,11 +3060,16 @@ local function createLogic(env)
 		function L.featSummary(r, uid)
 			local f = r.feat and r.feat[uid]
 			if not f then return {mech = 0, cast = 0, swings = 0, prayed = 0, ward = 0, adds = 0, styles = {}, hitBy = {}, seen = {}} end
-			return {mech = f.mech, cast = f.cast, swings = f.swings, prayed = f.prayed, ward = f.ward, adds = f.adds, armor = f.armor,
+			return {mech = f.mech, cast = f.cast, swings = f.swings, prayed = f.prayed, ward = f.ward, adds = f.adds, armor = f.armor, absent = f.absent == true,
 				styles = table.clone(f.styles), hitBy = table.clone(f.hitBy), seen = table.clone(f.seen)}
 		end
 		local function attach(r)
 			local res = L.lrResult(r.fight)
+			-- QC H1: the fight's real participants (held-offline members included), not
+			-- the party that scaled its health.
+			local n = 0
+			for _ in pairs(r.members or {}) do n += 1 end
+			if res then res.members = n end
 			if res and type(res.credit) == "table" then
 				for uid, c in pairs(res.credit) do c.feat = L.featSummary(r, uid) end
 			end

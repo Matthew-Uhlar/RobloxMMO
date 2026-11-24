@@ -209,7 +209,7 @@ local QoL={verbs={},hurtAt={},swapAt={}}
 -- Tutorial (§43: coach cards over the Wayfarer's Path and starter quests); filled in by the Tutorial block before perform().
 local Tutorial={verbs={tutorial=true}}
 -- Combat Feats (§45: tiered boss tasks, points, tier rewards, feat teleports); filled in by the Feats block before perform().
-local Feats={verbs={featClaim=true,featTeleport=true},tpAt={}}
+local Feats={verbs={featClaim=true,featTeleport=true,featsSync=true},tpAt={}}
 local Contests={verbs={contestEnter=true,contestBuy=true,contestTitle=true,trophyBait=true,trophyClaim=true,trophyTitle=true}}
 -- One-time coins for each newly reached skill level.
 local function levelCoins(p,skill,newLevel)
@@ -6232,7 +6232,8 @@ do
 		for id,n in pairs(drops) do pickup(p,id,n) end
 		local rec=LR.record(Lairs.of(p),payload.boss,seconds,party,drops,os.time())
 		Logs.event(p,"kill",payload.boss) -- Commissions & Logs (and faction boards) see the kill
-		if Feats.record then Feats.record(player,p,{source="lair",id=payload.fight,boss=payload.boss,seconds=seconds,party=party,feat=payload.feat}) end -- §45
+		-- §45 QC H1: solo / party tasks use the fight's participants (held-offline crewmates included), never the health-scaling party.
+		if Feats.record then Feats.record(player,p,{source="lair",id=payload.fight,boss=payload.boss,seconds=seconds,party=tonumber(payload.members),feat=payload.feat}) end
 		p.started=true
 		local extra=""
 		for _,id in ipairs(rec.uniques) do
@@ -6472,13 +6473,14 @@ do
 		end
 		local rec=RD.record(s,{id=id,seconds=seconds,party=party,points=points,team=team,challenge=challenge,underPar=underPar,unique=unique,kit=underPar,now=os.time()})
 		s.deaths=math.min(RD.MAX_KC,s.deaths+RD.whole(payload.deaths,100))
-		if Feats.record then Feats.record(player,p,{source="raid",id=id,boss=RD.ID,seconds=seconds,party=party,challenge=challenge,underPar=underPar,
-			deaths=RD.whole(payload.deaths,100),feat=payload.feat}) end -- §45
 		p.coins+=coins; HudFeed.coins(p,coins)
 		for item,n in pairs(drops) do pickup(p,item,n) end
 		if unique then pickup(p,unique,1) end
 		if underPar then pickup(p,"GildedTideKit",1) end
 		for skill,n in pairs(xp) do grantXp(p,skill,n) end
+		-- §45 (QC L1): feats are recorded after the payout (and Feats.record never throws).
+		if Feats.record then Feats.record(player,p,{source="raid",id=id,boss=RD.ID,seconds=seconds,party=party,challenge=challenge,underPar=underPar,
+			deaths=RD.whole(payload.deaths,100),feat=payload.feat}) end
 		if Features.announce then
 			if unique then Features.announce(p,{kind="raidUnique",item=unique}) end
 			for _,t in ipairs(rec.newTitles) do Features.announce(p,{kind="raidTitle",title=t}) end
@@ -10615,9 +10617,15 @@ end
 --   Defense. Snapshot key `feats`.
 do
 	local FT=Data.Feats
+	-- QC L5: the done / kc maps go out only when this revision has not been sent
+	-- to the player yet (verb featsSync forces a resend on a client cache miss).
+	Feats.rev=setmetatable({},{__mode="k"})
+	Feats.sent={}
+	function Feats.bump(p) Feats.rev[p]=(Feats.rev[p] or 0)+1 end
 	function Feats.migrate(p)
 		local s,retro=FT.migrate(p.feats,p,os.time())
 		p.feats=s
+		Feats.bump(p)
 		if #retro>0 then note(p,"Combat Feats: "..#retro.." task"..(if #retro==1 then "" else "s").." credited from your existing kill counts.") end
 	end
 	function Feats.of(p)
@@ -10636,9 +10644,17 @@ do
 		return n
 	end
 	-- One validated server event (see the header); announces each new task and tier.
+	-- QC M1: event ids are scoped by this server's JobId (fight counters restart per server).
+	function Feats.jobId()
+		local ok,id=pcall(function() return game.JobId end)
+		return if ok and type(id)=="string" then id:sub(1,12) else ""
+	end
 	function Feats.record(player,p,event)
 		local s=Feats.of(p)
-		local res=FT.record(s,event,os.time())
+		if type(event)=="table" and event.id~=nil then event.id=Feats.jobId()..":"..tostring(event.id) end
+		local okRecord,res=pcall(FT.record,s,event,os.time()) -- QC L1: a feat bug never breaks a payout
+		if not okRecord or type(res)~="table" then warn("[Feats] record failed: "..tostring(res)) return {done={},tiers={}} end
+		if #res.done>0 or res.refused==nil then Feats.bump(p) end
 		if Features.announce then
 			for _,id in ipairs(res.done) do Features.announce(p,{kind="feat",task=id}) end
 			for _,tier in ipairs(res.tiers) do Features.announce(p,{kind="featTier",tier=tier}) end
@@ -10659,6 +10675,7 @@ do
 	function Feats.action(player,p,verb,item)
 		local s=Feats.of(p)
 		local points=FT.points(s)
+		if verb=="featsSync" then Feats.sent[player]=nil; return "" end
 		if verb=="featClaim" then
 			local tier=type(item)=="string" and FT.TierById[item]
 			if not tier then return "Choose a Combat Feats tier." end
@@ -10666,6 +10683,7 @@ do
 			if s.claimed[tier.id] then return "You already claimed the "..tier.name.." tier reward." end
 			local hilt=FT.Rewards[tier.id].hilt
 			s.claimed[tier.id]=true
+			Feats.bump(p)
 			p.items[hilt]=(p.items[hilt] or 0)+1 -- a trophy, not a collection drop
 			p.started=true
 			return tier.name.." tier claimed • "..Data.Items[hilt].name.."."
@@ -10675,7 +10693,7 @@ do
 			local now=os.time()
 			local tele=FT.teleportState(s,points,now)
 			if tele.max<=0 then return "Feat teleports unlock at the Medium tier of Combat Feats." end
-			if tele.left<=0 then return "No feat teleports left today (refills in "..FT.formatTime(math.min(tele.resetIn,5999))..")." end
+			if tele.left<=0 then return "No feat teleports left today (refills in "..FT.formatWait(tele.resetIn)..")." end
 			if dest.region and not regionAllowed(p,dest.region) then return regionDenied(dest.region) end
 			if busy(player) then return "Finish your lair, raid, minigame or dungeon run first." end
 			local clock=os.clock()
@@ -10703,11 +10721,18 @@ do
 		local points=FT.points(s)
 		local tele=FT.teleportState(s,points,os.time())
 		local ready=Feats.tpAt[player.UserId]
-		return {points=points,total=FT.TOTAL_POINTS,tier=FT.tierFor(points),done=s.done,kc=s.kc,claimed=s.claimed,claimable=FT.claimable(s,points),
+		if not Feats.rev[p] then Feats.bump(p) end
+		local rev=Feats.rev[p]
+		local out={rev=rev,points=points,total=FT.TOTAL_POINTS,tier=FT.tierFor(points),claimed=s.claimed,claimable=FT.claimable(s,points),
 			perks=FT.perks(points),teleports={left=tele.left,max=tele.max,resetIn=tele.resetIn,readyIn=if ready then math.max(0,math.ceil(ready-os.clock())) else 0}}
+		if Feats.sent[player]==rev then out.compact=true return out end
+		Feats.sent[player]=rev
+		out.done,out.kc=s.done,s.kc
+		return out
 	end
 	-- Leaving prunes expired teleport cooldowns (an unexpired one stays, so a quick rejoin cannot skip it).
-	Players.PlayerRemoving:Connect(function()
+	Players.PlayerRemoving:Connect(function(player)
+		Feats.sent[player]=nil
 		local clock=os.clock()
 		for id,ready in pairs(Feats.tpAt) do if ready<=clock then Feats.tpAt[id]=nil end end
 	end)
