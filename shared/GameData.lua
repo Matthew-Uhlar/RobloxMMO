@@ -15931,7 +15931,7 @@ do
 	ST.REGROW_FLOOR = 1
 	ST.LEVEL_BONUS_CAP = 50 -- +1% damage per level over the node's requirement, up to +50%
 	ST.SPEED_DIVISOR = 200 -- Mining Speed (and tool Efficiency) scales damage: x(1 + speed / 200)
-	ST.MAX_TRACKED = 6 -- nodes with partial progress kept per player
+	ST.MAX_TRACKED = 10 -- nodes with partial progress kept per player (§46 QC M1: Rootquake cap 6 + 4)
 	-- Fishing: a click casts; the fish bites after `bite` s; a click inside the
 	-- window reels it in. Too early loses the cast; a missed bite slips away.
 	ST.FISH = {gap = 0.8, biteMin = 1.0, biteMax = 2.0, window = 1.2, early = 0.15, late = 0.35, reaction = 0.3}
@@ -16834,6 +16834,428 @@ if F and F.announceText then
 end
 end
 -- <<< END Combat Feats <<<
+------------------------------------------------------------------------------
+-- >>> BEGIN Gathering Hearts (Hearts team; append-only section; docs/DEPTH-CONTRACT.md §46) >>>
+-- Three gathering skill trees, all original: Heart of the Deep (Mining,
+-- currency Deepdust), Rootheart (Woodcutting, Rootsap) and Loamheart
+-- (Farming, Loamglow).
+-- * Every struck-node break (§42 Strike.harvest; never crew / garden / raid
+--   nodes, never Fishing) earns tree XP (the resource's base XP) and currency
+--   (1 + the node's tier index, x (1 + dust% / 100), fractions carried).
+-- * Tree XP unlocks tree tiers 1-7 (HT.TIER_XP); a perk needs its tier and one
+--   levelled neighbour from `requires` (none on tier 1).
+-- * Levelled perks cost currency per level: floor(cost x L ^ GROWTH + 0.5).
+-- * Effects (summed per tree, then clamped to the tree's `caps`):
+--     speed    -> §42 strike damage (Mining Speed for Mining, the tool's
+--                 Efficiency term for the others): x (1 + speed / 200)
+--     fortune  -> the skill's fortune stat for the harvest roll, inside the
+--                 progression fortune budget (CL.FORTUNE_BUDGET 99, shared
+--                 with Skill Mastery and Forgeheart: the <= 2.5x single-click
+--                 yield rule holds); Bountiful Reaping fills the same headroom
+--     regrowth -> % off the node's base regrowth, added to Mastery's
+--                 respawnSkip and Steadfast Pick inside their shared passive
+--                 cap (Mastery.PASSIVE_CAPS.respawnSkip, 50 %) from
+--                 resource.respawn (Progression.regrowthTime floor max(2 s,
+--                 25 %)), before the §42 hand-back
+--     dust     -> % more currency per break
+--     cooldown -> % off the ability's cooldown
+--     duration -> s added to a timed ability; quake -> % max HP added to the
+--                 Rootquake; radius -> studs added to the Rootquake
+-- * One active ability per tree, unlocked by its tier-3 perk; server cooldown
+--   persisted as os.time() (rejoin-safe).
+-- * Respec: refunds RESPEC.refund (75 %) of the spent currency for
+--   RESPEC.coinsPerTier x tree tier coins (a coin sink; never a mint).
+-- Pure rules only (no instances): shared by the server, the atlas, the
+-- hearts client and the suites.
+------------------------------------------------------------------------------
+do
+local HT = {}
+Data.Hearts = HT
+local function num(v) return if type(v) == "number" and v == v and v > -math.huge and v < math.huge then v else 0 end
+local function whole(v) v = num(v); return if v > 0 then math.floor(v) else 0 end
+HT.whole = whole
+HT.VERSION = 1
+HT.Order = {"Mining", "Woodcutting", "Farming"}
+HT.TIER_XP = {0, 2500, 12000, 40000, 110000, 260000, 600000}
+HT.MAX_TIER = #HT.TIER_XP
+HT.GROWTH = 1.5
+-- Veterans: a save without p.hearts starts with SEED_SHARE of the skill's XP
+-- as tree XP (at most SEED_CAP: tier 4), never any currency.
+HT.SEED_SHARE, HT.SEED_CAP = 0.05, 40000
+HT.RESPEC = {coinsPerTier = 5000, refund = 0.75}
+HT.SPEED_DIVISOR = 200 -- matches Data.Strike.SPEED_DIVISOR (asserted by verify-hearts)
+-- QC M3: heart fortune (passive + Bountiful Reaping) only fills what the
+-- progression fortune budget leaves after Mastery and Forgeheart.
+HT.FORTUNE_BUDGET = Data.CommissionsLogs and Data.CommissionsLogs.FORTUNE_BUDGET or 99
+HT.Effects = {
+	speed = {glyph = "❖"}, fortune = {glyph = "☘"}, regrowth = {glyph = "↻", text = "%s%% faster regrowth"},
+	dust = {glyph = "✦"}, cooldown = {glyph = "⏱", text = "%s%% shorter ability cooldown"},
+	duration = {glyph = "⌛", text = "+%ss ability duration"}, quake = {glyph = "≋", text = "+%s%% Rootquake damage"},
+	radius = {glyph = "◎", text = "+%s studs Rootquake reach"}, ability = {glyph = "★"},
+}
+local function P(id, name, tier, x, max, cost, effect, per, requires)
+	return {id = id, name = name, tier = tier, x = x, max = max, cost = cost, effect = effect, per = per, requires = requires or {}}
+end
+HT.Trees = {
+	Mining = {id = "Mining", skill = "Mining", name = "Heart of the Deep", currency = "Deepdust", color = "5FB7FF", accent = "B9E3FF",
+		speedName = "Mining Speed",
+		blurb = "Every vein you break sheds Deepdust. Spend it on the lattice; deeper tiers open as your Heart XP grows.",
+		caps = {speed = 90, fortune = 45, regrowth = 10, dust = 50, cooldown = 20, duration = 10},
+		ability = {id = "DeepcallSurge", name = "Deepcall Surge", kind = "speed", amount = 200, duration = 10, cooldown = 120, gesture = "mine",
+			text = "+200 Mining Speed for %ss."},
+		perks = {
+			P("DeepGrip", "Deep Grip", 1, 3, 20, 6, "speed", 2),
+			P("VeinSense", "Vein Sense", 2, 2, 15, 14, "fortune", 1, {"DeepGrip"}),
+			P("DustSifter", "Dust Sifter", 2, 4, 10, 14, "dust", 2, {"DeepGrip"}),
+			P("QuarryRhythm", "Quarry Rhythm", 3, 1, 10, 30, "speed", 2, {"VeinSense"}),
+			P("DeepcallSurge", "Deepcall Surge", 3, 3, 1, 600, "ability", 1, {"VeinSense", "DustSifter"}),
+			P("StoneMemory", "Stone Memory", 3, 5, 10, 30, "regrowth", 0.5, {"DustSifter"}),
+			P("ResonantPick", "Resonant Pick", 4, 2, 15, 48, "fortune", 1, {"QuarryRhythm", "DeepcallSurge"}),
+			P("Overcharge", "Overcharge", 4, 3, 5, 160, "duration", 1, {"DeepcallSurge"}),
+			P("Dustveins", "Dustveins", 4, 4, 10, 48, "dust", 2, {"DeepcallSurge", "StoneMemory"}),
+			P("Tremorstep", "Tremorstep", 5, 1, 10, 80, "speed", 3, {"ResonantPick"}),
+			P("QuickRecall", "Quick Recall", 5, 3, 5, 260, "cooldown", 4, {"Overcharge"}),
+			P("SeamMemory", "Seam Memory", 5, 5, 10, 80, "regrowth", 0.5, {"Dustveins"}),
+			P("CoreFortune", "Core Fortune", 6, 2, 15, 110, "fortune", 1, {"Tremorstep", "QuickRecall"}),
+			P("DeepPulse", "Deep Pulse", 6, 4, 5, 380, "duration", 1, {"QuickRecall", "SeamMemory"}),
+			P("Heartstone", "Heartstone", 7, 3, 1, 6000, "dust", 10, {"CoreFortune", "DeepPulse"}),
+		}},
+	Woodcutting = {id = "Woodcutting", skill = "Woodcutting", name = "Rootheart", currency = "Rootsap", color = "7FD46A", accent = "D3F5B8",
+		speedName = "Chopping Power",
+		blurb = "Felled trees weep Rootsap. Feed it to the Rootheart to swing harder, find more logs and shake whole groves.",
+		caps = {speed = 60, fortune = 45, regrowth = 10, dust = 50, cooldown = 20, quake = 20, radius = 4},
+		ability = {id = "Rootquake", name = "Rootquake", kind = "quake", amount = 50, radius = 16, maxNodes = 6, hold = 8, cooldown = 60, gesture = "chop",
+			text = "A shockwave splits every tree within %s studs you can fell for %s%% of its health (never the last blow)."},
+		perks = {
+			P("Barkbite", "Barkbite", 1, 3, 15, 8, "speed", 2),
+			P("Grainreader", "Grainreader", 2, 2, 15, 14, "fortune", 1, {"Barkbite"}),
+			P("Sapwell", "Sapwell", 2, 4, 10, 14, "dust", 2, {"Barkbite"}),
+			P("Splitswing", "Splitswing", 3, 1, 10, 30, "speed", 2, {"Grainreader"}),
+			P("Rootquake", "Rootquake", 3, 3, 1, 600, "ability", 1, {"Grainreader", "Sapwell"}),
+			P("Greenmemory", "Greenmemory", 3, 5, 10, 30, "regrowth", 0.5, {"Sapwell"}),
+			P("Heartgrain", "Heartgrain", 4, 2, 15, 48, "fortune", 1, {"Splitswing", "Rootquake"}),
+			P("Deepquake", "Deepquake", 4, 3, 5, 160, "quake", 4, {"Rootquake"}),
+			P("Resinveins", "Resinveins", 4, 4, 10, 48, "dust", 2, {"Rootquake", "Greenmemory"}),
+			P("Longhaft", "Longhaft", 5, 1, 10, 80, "speed", 1, {"Heartgrain"}),
+			P("Rootcall", "Rootcall", 5, 3, 5, 260, "cooldown", 4, {"Deepquake"}),
+			P("Saplingsong", "Saplingsong", 5, 5, 10, 80, "regrowth", 0.5, {"Resinveins"}),
+			P("Crowngrain", "Crowngrain", 6, 2, 15, 110, "fortune", 1, {"Longhaft", "Rootcall"}),
+			P("Widequake", "Widequake", 6, 4, 4, 420, "radius", 1, {"Rootcall", "Saplingsong"}),
+			P("Heartroot", "Heartroot", 7, 3, 1, 6000, "dust", 10, {"Crowngrain", "Widequake"}),
+		}},
+	Farming = {id = "Farming", skill = "Farming", name = "Loamheart", currency = "Loamglow", color = "E8BE4F", accent = "FFE9A8",
+		speedName = "Reaping Power",
+		blurb = "Each harvest leaves a little Loamglow in the soil. Tend the Loamheart for richer rows and a bountiful reaping.",
+		caps = {speed = 60, fortune = 45, regrowth = 10, dust = 50, cooldown = 20, duration = 10},
+		ability = {id = "BountifulReaping", name = "Bountiful Reaping", kind = "fortune", amount = 60, dustMult = 2, duration = 10, cooldown = 120, gesture = "harvest",
+			text = "For %ss: +60 Farming Fortune (up to the fortune budget) and double Loamglow."},
+		perks = {
+			P("Tillhand", "Tillhand", 1, 3, 15, 8, "speed", 2),
+			P("Seedsense", "Seedsense", 2, 2, 15, 14, "fortune", 1, {"Tillhand"}),
+			P("Loamsifter", "Loamsifter", 2, 4, 10, 14, "dust", 2, {"Tillhand"}),
+			P("Rowrhythm", "Rowrhythm", 3, 1, 10, 30, "speed", 2, {"Seedsense"}),
+			P("BountifulReaping", "Bountiful Reaping", 3, 3, 1, 600, "ability", 1, {"Seedsense", "Loamsifter"}),
+			P("Quickroot", "Quickroot", 3, 5, 10, 30, "regrowth", 0.5, {"Loamsifter"}),
+			P("Goldengrain", "Goldengrain", 4, 2, 15, 48, "fortune", 1, {"Rowrhythm", "BountifulReaping"}),
+			P("Longharvest", "Longharvest", 4, 3, 5, 160, "duration", 1, {"BountifulReaping"}),
+			P("Loamveins", "Loamveins", 4, 4, 10, 48, "dust", 2, {"BountifulReaping", "Quickroot"}),
+			P("Scythestep", "Scythestep", 5, 1, 10, 80, "speed", 1, {"Goldengrain"}),
+			P("Seasonwheel", "Seasonwheel", 5, 3, 5, 260, "cooldown", 4, {"Longharvest"}),
+			P("Dewmemory", "Dewmemory", 5, 5, 10, 80, "regrowth", 0.5, {"Loamveins"}),
+			P("Harvestmoon", "Harvestmoon", 6, 2, 15, 110, "fortune", 1, {"Scythestep", "Seasonwheel"}),
+			P("Sunlong", "Sunlong", 6, 4, 5, 380, "duration", 1, {"Seasonwheel", "Dewmemory"}),
+			P("Loamheart", "Loamheart", 7, 3, 1, 6000, "dust", 10, {"Harvestmoon", "Sunlong"}),
+		}},
+}
+HT.TreeOfSkill = {}
+for _, id in ipairs(HT.Order) do
+	local tree = HT.Trees[id]
+	tree.PerkById = {}
+	for i, perk in ipairs(tree.perks) do
+		perk.index = i
+		tree.PerkById[perk.id] = perk
+		if perk.effect == "ability" then tree.abilityPerk = perk.id end
+	end
+	HT.TreeOfSkill[tree.skill] = id
+end
+
+-- Tier from tree XP: tier, XP at the next tier (nil at the top).
+function HT.tierFor(xp)
+	xp = num(xp)
+	local tier = 1
+	for t, need in ipairs(HT.TIER_XP) do if xp >= need then tier = t end end
+	return tier, HT.TIER_XP[tier + 1]
+end
+-- Currency to buy level `level` of a perk; and the sum of levels 1..level.
+function HT.cost(perk, level)
+	level = whole(level)
+	if level < 1 then return 0 end
+	return math.floor(perk.cost * level ^ HT.GROWTH + 0.5)
+end
+function HT.totalCost(perk, level)
+	local sum = 0
+	for l = 1, whole(level) do sum += HT.cost(perk, l) end
+	return sum
+end
+function HT.treeCost(tree)
+	local sum = 0
+	for _, perk in ipairs(tree.perks) do sum += HT.totalCost(perk, perk.max) end
+	return sum
+end
+function HT.blankTree() return {xp = 0, dust = 0, frac = 0, earned = 0, spent = 0, perks = {}, paid = {}, readyAt = 0, activeUntil = 0, respecs = 0} end
+-- The most one perk can ever have cost in a tree (refund ceiling for a perk
+-- that no longer exists in the data).
+function HT.perkCeiling(tree)
+	local most = 0
+	for _, perk in ipairs(tree.perks) do most = math.max(most, HT.totalCost(perk, perk.max)) end
+	return most
+end
+-- Sanitise / migrate a saved p.hearts (any value). `xp` is p.xp (veteran seed
+-- on the first load only). The `paid` ledger records the currency actually
+-- spent per perk (QC L7). Kept levels are clamped to the perk's max; a perk
+-- that lost levels (or no longer exists) refunds min(what the ledger says was
+-- paid, the recomputed cost of what was removed): a damaged save never
+-- refunds more than was really paid, nor more than the levels cost.
+-- `spent` is recomputed from the kept levels. Timers are clamped to now +
+-- their longest value.
+function HT.sanitize(h, xp, now)
+	now = num(now)
+	local fresh = type(h) ~= "table"
+	local out = {v = HT.VERSION, trees = {}}
+	local trees = (not fresh and type(h.trees) == "table") and h.trees or {}
+	for _, id in ipairs(HT.Order) do
+		local tree = HT.Trees[id]
+		local src = type(trees[id]) == "table" and trees[id] or {}
+		local ts = HT.blankTree()
+		ts.xp, ts.dust, ts.earned, ts.respecs = whole(src.xp), whole(src.dust), whole(src.earned), whole(src.respecs)
+		local frac = num(src.frac)
+		ts.frac = if frac >= 0 and frac < 1 then frac else 0
+		local spent, refund = 0, 0
+		local ledger = type(src.paid) == "table" and src.paid or {}
+		local ceiling = HT.perkCeiling(tree)
+		for perkId, lvl in pairs(type(src.perks) == "table" and src.perks or {}) do
+			local perk = type(perkId) == "string" and tree.PerkById[perkId]
+			local saved = whole(lvl)
+			local level = math.min(saved, perk and perk.max or 0)
+			local paid = whole(ledger[perkId])
+			if perk and level > 0 then
+				ts.perks[perkId] = level
+				local cost = HT.totalCost(perk, level)
+				spent += cost
+				ts.paid[perkId] = math.min(paid, cost)
+				-- Lost levels: what the ledger shows beyond the kept levels, at most what they cost.
+				refund += math.max(0, math.min(paid, HT.totalCost(perk, math.min(saved, perk.max * 4))) - cost)
+			elseif not perk and saved > 0 then
+				refund += math.min(paid, ceiling) -- the perk left the data
+			end
+		end
+		ts.dust += refund
+		ts.spent = spent
+		local ab = tree.ability
+		ts.readyAt = math.clamp(whole(src.readyAt), 0, math.max(0, now) + ab.cooldown)
+		ts.activeUntil = math.clamp(whole(src.activeUntil), 0, math.max(0, now) + (ab.duration or 0) + (tree.caps.duration or 0))
+		if fresh then
+			local skillXp = type(xp) == "table" and num(xp[tree.skill]) or 0
+			ts.xp = math.min(HT.SEED_CAP, math.floor(math.max(0, skillXp) * HT.SEED_SHARE))
+		end
+		out.trees[id] = ts
+	end
+	return out
+end
+-- Summed perk effects of one tree state, clamped to the tree's caps.
+function HT.bonuses(tree, ts)
+	local out = {speed = 0, fortune = 0, regrowth = 0, dust = 0, cooldown = 0, duration = 0, quake = 0, radius = 0, ability = false}
+	local perks = type(ts) == "table" and type(ts.perks) == "table" and ts.perks or {}
+	for _, perk in ipairs(tree.perks) do
+		local lvl = math.min(whole(perks[perk.id]), perk.max)
+		if lvl > 0 then
+			if perk.effect == "ability" then out.ability = true
+			else out[perk.effect] += perk.per * lvl end
+		end
+	end
+	for key, cap in pairs(tree.caps) do out[key] = math.min(out[key], cap) end
+	return out
+end
+-- The tree's ability at its current perks.
+function HT.abilityStats(tree, ts)
+	local b = HT.bonuses(tree, ts)
+	local ab = tree.ability
+	return {id = ab.id, name = ab.name, kind = ab.kind, gesture = ab.gesture, unlocked = b.ability,
+		duration = (ab.duration or 0) + (if ab.kind ~= "quake" then b.duration else 0),
+		cooldown = math.floor(ab.cooldown * (1 - b.cooldown / 100) + 0.5),
+		amount = ab.amount + (if ab.kind == "quake" then b.quake else 0),
+		radius = (ab.radius or 0) + b.radius, maxNodes = ab.maxNodes, hold = ab.hold}
+end
+function HT.abilityText(tree, ts)
+	local a = HT.abilityStats(tree, ts)
+	if a.kind == "quake" then return string.format(tree.ability.text, tostring(a.radius), tostring(a.amount)) end
+	return string.format(tree.ability.text, tostring(a.duration))
+end
+-- Can the perk be levelled? ok, reason, cost.
+function HT.canLevel(tree, ts, perkId)
+	local perk = type(perkId) == "string" and tree.PerkById[perkId]
+	if not perk then return false, "Choose a perk." end
+	local have = whole(ts.perks[perkId])
+	if have >= perk.max then return false, perk.name .. " is already at its maximum level." end
+	local cost = HT.cost(perk, have + 1)
+	if HT.tierFor(ts.xp) < perk.tier then return false, perk.name .. " opens at " .. tree.name .. " tier " .. perk.tier .. ".", cost end
+	if #perk.requires > 0 then
+		local linked = false
+		for _, req in ipairs(perk.requires) do if whole(ts.perks[req]) > 0 then linked = true end end
+		if not linked then return false, "Unlock a linked perk first.", cost end
+	end
+	if ts.dust < cost then return false, perk.name .. " needs " .. cost .. " " .. tree.currency .. ".", cost end
+	return true, nil, cost
+end
+-- Buy one level (mutates ts). ok, cost | reason.
+function HT.levelUp(tree, ts, perkId)
+	local fine, why, cost = HT.canLevel(tree, ts, perkId)
+	if not fine then return false, why end
+	ts.dust -= cost
+	ts.spent += cost
+	ts.paid = type(ts.paid) == "table" and ts.paid or {}
+	ts.paid[perkId] = whole(ts.paid[perkId]) + cost
+	ts.perks[perkId] = whole(ts.perks[perkId]) + 1
+	return true, cost
+end
+-- Respec price (coins) and refund (currency) for a tree state.
+function HT.respecQuote(tree, ts)
+	return HT.RESPEC.coinsPerTier * HT.tierFor(ts.xp), math.floor(ts.spent * HT.RESPEC.refund)
+end
+-- Respec (mutates ts; the caller takes the coins). ok, refund, fee | reason.
+function HT.respec(tree, ts, coins, now)
+	if ts.spent <= 0 then return false, "Nothing to reset in the " .. tree.name .. " yet." end
+	if num(now) < ts.activeUntil then return false, "Wait for " .. tree.ability.name .. " to end first." end
+	local fee, refund = HT.respecQuote(tree, ts)
+	if num(coins) < fee then return false, "Resetting the " .. tree.name .. " costs " .. fee .. " coins." end
+	ts.perks = {}
+	ts.paid = {}
+	ts.spent = 0
+	ts.dust += refund
+	ts.respecs += 1
+	return true, refund, fee
+end
+-- Respec on a profile (p.hearts, p.coins): takes the fee from p.coins. ok, refund, fee | reason.
+function HT.respecProfile(p, treeId, now)
+	local tree = HT.Trees[treeId]
+	local ts = tree and type(p.hearts) == "table" and type(p.hearts.trees) == "table" and p.hearts.trees[treeId]
+	if type(ts) ~= "table" then return false, "Choose a heart to reset." end
+	local ok, refund, fee = HT.respec(tree, ts, p.coins, now)
+	if not ok then return false, refund end
+	p.coins = num(p.coins) - fee
+	return true, refund, fee
+end
+-- Currency for one break of resource r at a dust bonus (before carry).
+function HT.dustFor(r, dustPct) return (1 + whole(r.index)) * (1 + num(dustPct) / 100) end
+-- One break of resource r (mutates ts): tree XP and currency. Returns gained, xp.
+-- An active ability with dustMult (Bountiful Reaping) multiplies the currency.
+function HT.earn(tree, ts, r, now)
+	local mult = if tree.ability.dustMult and num(now) < num(ts.activeUntil) then tree.ability.dustMult else 1
+	local raw = HT.dustFor(r, HT.bonuses(tree, ts).dust) * mult + ts.frac
+	local gained = math.floor(raw + 1e-9)
+	ts.frac = math.clamp(raw - gained, 0, 0.999999)
+	ts.dust += gained
+	ts.earned += gained
+	ts.xp += whole(r.xp)
+	return gained, whole(r.xp)
+end
+-- Activate the ability (mutates ts). ok, stats | reason.
+function HT.activate(tree, ts, now)
+	now = whole(now)
+	local a = HT.abilityStats(tree, ts)
+	if not a.unlocked then return false, "Unlock " .. tree.ability.name .. " in the " .. tree.name .. " first." end
+	if now < ts.readyAt then return false, tree.ability.name .. " recharges in " .. (ts.readyAt - now) .. "s." end
+	ts.readyAt = now + a.cooldown
+	ts.activeUntil = now + a.duration
+	return true, a
+end
+-- Profile-level helpers (h = p.hearts). Ability effects only while active.
+local function treeState(h, skill)
+	local id = HT.TreeOfSkill[skill]
+	local ts = id and type(h) == "table" and type(h.trees) == "table" and h.trees[id]
+	return (if type(ts) == "table" then HT.Trees[id] else nil), ts
+end
+HT.treeState = treeState
+function HT.speedFor(h, skill, now)
+	local tree, ts = treeState(h, skill)
+	if not tree then return 0 end
+	local speed = HT.bonuses(tree, ts).speed
+	if tree.ability.kind == "speed" and num(now) < num(ts.activeUntil) then speed += tree.ability.amount end
+	return speed
+end
+-- Heart fortune for a harvest. `used` = the progression fortune already on the
+-- sheet for this skill (Mastery + Forgeheart); the heart fills at most the
+-- budget's remaining headroom (QC M3).
+function HT.fortuneFor(h, skill, now, used)
+	local tree, ts = treeState(h, skill)
+	if not tree then return 0 end
+	local fortune = HT.bonuses(tree, ts).fortune
+	if tree.ability.kind == "fortune" and num(now) < num(ts.activeUntil) then fortune += tree.ability.amount end
+	return math.min(fortune, math.max(0, HT.FORTUNE_BUDGET - math.max(0, num(used))))
+end
+function HT.regrowthFor(h, skill)
+	local tree, ts = treeState(h, skill)
+	return if tree then HT.bonuses(tree, ts).regrowth else 0
+end
+-- QC M2: the total regrowth skip with the heart share. Mastery's own skip (a
+-- running capstone may already pass the cap) is never cut; the passive sum
+-- (Mastery + Steadfast Pick + heart) stays inside the shared passive cap.
+function HT.regrowthSkip(masterySkip, forgeSkip, heartPct, cap)
+	masterySkip = math.max(0, num(masterySkip))
+	return math.max(masterySkip, math.min(num(cap), masterySkip + math.max(0, num(forgeSkip)) + math.max(0, num(heartPct))))
+end
+-- Effect copy: "+4 Mining Speed", "+3 Mining Fortune", "1.5% faster regrowth".
+function HT.effectText(tree, effect, amount)
+	amount = num(amount)
+	local shown = if amount == math.floor(amount) then tostring(math.floor(amount)) else string.format("%.1f", amount)
+	if effect == "speed" then return "+" .. shown .. " " .. tree.speedName end
+	if effect == "fortune" then
+		local stat = Data.Stats[Data.FortuneStat[tree.skill]]
+		return "+" .. shown .. " " .. (stat and stat.name or "Fortune")
+	end
+	if effect == "dust" then return "+" .. shown .. "% " .. tree.currency end
+	if effect == "ability" then return "Unlocks " .. tree.ability.name end
+	local e = HT.Effects[effect]
+	return string.format(e and e.text or "%s", shown)
+end
+-- Snapshot view of p.hearts: {trees = {[id] = {...}}}.
+function HT.view(h, now)
+	now = whole(now)
+	local out = {trees = {}}
+	for _, id in ipairs(HT.Order) do
+		local tree = HT.Trees[id]
+		local ts = type(h) == "table" and type(h.trees) == "table" and h.trees[id]
+		if type(ts) == "table" then
+			local tier, nextAt = HT.tierFor(ts.xp)
+			local fee, refund = HT.respecQuote(tree, ts)
+			local states = {}
+			for _, perk in ipairs(tree.perks) do
+				local have = whole(ts.perks[perk.id])
+				local fine, why = HT.canLevel(tree, ts, perk.id)
+				states[perk.id] = if have >= perk.max then "owned" elseif fine then "available"
+					elseif tier < perk.tier or why == "Unlock a linked perk first." then "locked" else "open"
+			end
+			local a = HT.abilityStats(tree, ts)
+			out.trees[id] = {xp = ts.xp, tier = tier, nextAt = nextAt, floor = HT.TIER_XP[tier], dust = ts.dust, earned = ts.earned, spent = ts.spent,
+				perks = table.clone(ts.perks), states = states, bonus = HT.bonuses(tree, ts), respecFee = fee, respecRefund = refund, respecs = ts.respecs,
+				ability = {unlocked = a.unlocked, cooldown = math.max(0, ts.readyAt - now), active = math.max(0, ts.activeUntil - now),
+					duration = a.duration, recharge = a.cooldown, amount = a.amount, radius = a.radius}}
+		end
+	end
+	return out
+end
+-- XP / hour on one node with the base regrowth shortened by `pct` (docs §46):
+-- the §42 cycle at the nominal break. regrowthTime = Progression.regrowthTime.
+function HT.balance(r, pct, regrowthTime)
+	local ST = Data.Strike
+	local base = r.respawn
+	local shortened = regrowthTime(base, pct)
+	local old = ST.nominalBreak(r) + ST.regrowth(r, base)
+	local cycle = ST.nominalBreak(r) + ST.regrowth(r, shortened)
+	return {oldCycle = old, newCycle = cycle, oldXpHour = math.floor(r.xp * 3600 / old), newXpHour = math.floor(r.xp * 3600 / cycle)}
+end
+end
+-- <<< END Gathering Hearts <<<
 ------------------------------------------------------------------------------
 
 return Data

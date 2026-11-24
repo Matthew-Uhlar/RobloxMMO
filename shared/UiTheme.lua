@@ -836,6 +836,27 @@ function Theme.hudLayout(w, h, opts)
 			L.coachChip = {x = x, y = y, w = math.max(cw, 0), h = 44}
 		end
 	end
+	-- §46 heart ability chip (hearts.client.lua). Desktop: right of the hotbar,
+	-- clear of the chat lane (bottom-left) and of the spell bar's corner
+	-- (up to 360 px at the bottom right); when that corner would reach it, the
+	-- chip sits above the action bar's right end instead. Touch: a 44 px chip
+	-- above the band's left edge, lifted over the spell / prayer bars that
+	-- combat.client.lua publishes as IsleHudLift (opts.lift).
+	do
+		local size = if touch then 44 else 40
+		if touch then
+			local lift = math.clamp(tonumber(opts.lift) or 0, 0, 200)
+			local y = math.min(L.band.y - size - 6, h - 44 - lift - size - 6)
+			L.heartChip = {x = L.band.x, y = math.max(8, y), w = size, h = size}
+		else
+			local x = L.hotbar.x + L.hotbar.w + 10
+			if x + size <= w - 10 - 360 - 8 then
+				L.heartChip = {x = x, y = L.hotbar.y + math.floor((L.hotbar.h - size) / 2), w = size, h = size}
+			else
+				L.heartChip = {x = L.action.x + L.action.w - size, y = L.action.y - 6 - size, w = size, h = size}
+			end
+		end
+	end
 	return L
 end
 -- Reduced motion: Settings › Reduced motion (IsleSettingReducedMotion) or the

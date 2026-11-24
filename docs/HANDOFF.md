@@ -168,3 +168,7 @@ Live game: still the publish from PR #5. Everything above is on `claude/pensive-
 ## 9. Animation depth (§47, 2026-11-24)
 
 The owner wants interact and swing animations on every gather and interaction, and animations that keep improving. §47 in the contract has the details; `verify-animations.luau` guards them (every prompt verb in the server sources must map to its own gesture, joint ranges, strike cadence against `Data.Strike`, combos, reduced motion, replication budget). Ideas for the next pass: per-weapon trails on combo finishers, a parry / block pose once shields exist, footstep dust on the landing squash, and sound per interaction (the `IsleImpactLocal` hook fires for every impact).
+
+## 10. Update: §46 Gathering Hearts
+
+Heart of the Deep (Mining, Deepdust), Rootheart (Woodcutting, Rootsap) and Loamheart (Farming, Loamglow): 15-perk tiered lattices, tree XP tiers 1–7, currency per struck-node break, one ability each (Deepcall Surge, Rootquake, Bountiful Reaping; key G or the HUD chip), respec for coins with a 75 % refund. Menu › Hearts (new Menu tile, 15 with §45 Combat Feats); QC round fixed (fortune inside the 99 budget, Bountiful +60 + double Loamglow, shared regrowth cap, Rootquake never evicts), `hearts.client.lua`, `verify-hearts.luau`. Caps, numbers and the XP / hour effect (≤ +10.6 % per node from the regrowth perks) are in contract §46. Needs a Studio check: lattice readability, chip placement, VFX brightness, and the 20–30 h per tree pacing.
