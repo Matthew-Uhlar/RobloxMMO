@@ -4566,7 +4566,7 @@ function Buildings.settle(only)
 		["Compass Quay"]={core=true,reserve={{V(-53,0,13),13}},types={"TimberTownhouse","TimberHouse","TimberShopfront","TimberTownhouse"},quota=34,lanes=4,
 			tints={TimberHouse={"B5523B"},TimberTownhouse={"2F6F8F"},TimberShopfront={"D9A441"}},
 			halls={{shell="TavernHall",interior="TavernInterior",title="The Gilded Compass Inn",kicker="COMPASS QUAY   /   INN · HEARTH · ALE",accent="D9A441",tint="7A3E2E"},
-				{shell="ShopHall",interior="ShopInterior",title="Quay Outfitters",kicker="COMPASS QUAY   /   GOODS · SUPPLIES",accent="3C9291",tint="9C3F3A"}}},
+				{shell="ShopHall",interior="ShopInterior",title="Quay Outfitters",kicker="COMPASS QUAY   /   GOODS · SUPPLIES",accent="3C9291",tint="9C3F3A",banner=true}}},
 		["Guild Terrace"]={types={"TimberTownhouse","StoneCottage"},quota=10,tints={TimberTownhouse={"7A3E2E"},StoneCottage={"56677A"}}},
 		["Mosswake Grove"]={types={"ThatchCottage","LogLodge"},quota=10,tints={ThatchCottage={"3C8C7E"},LogLodge={"4E7A48"}},
 			halls={{shell="ShopHall",interior="ShopInterior",title="Mosswake Herbalist",kicker="MOSSWAKE GROVE   /   HERBS · TONICS",accent="6BAF5A",tint="4E7A48"}}},
