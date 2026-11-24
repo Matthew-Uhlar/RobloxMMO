@@ -607,13 +607,16 @@ end
 local remote
 for _, o in ipairs(serverObjects) do if o.OnServerInvoke then remote = o end end
 ok(remote ~= nil, "IsleAction RemoteFunction found")
+-- §42: mock gather prompts harvest through real `strike` verbs (tools/strike-shim.luau).
+require("./tools/strike-shim").install({signal = services.ProximityPromptService.PromptTriggered,
+	invoke = function(p, verb, item) return remote.OnServerInvoke(p, verb, item) end, advance = advance})
 local function cmd(p, verb, item)
 	advance(1)
 	return remote.OnServerInvoke(p, verb, item)
 end
 local function use(p, q)
 	advance(1)
-	p.root.Position = q.Parent.CFrame.Position + Vector3.new(0, 0, 2)
+	p.root.Position = (if q:GetAttribute("GatherNode") then q else q.Parent).CFrame.Position + Vector3.new(0, 0, 2) -- §42: a node host is its own part
 	p.last = nil
 	services.ProximityPromptService.PromptTriggered:Fire(q, p)
 	return p.last
@@ -841,7 +844,7 @@ do
 	local miner = seeded(7005, function(prof) prof.xp.Mining = X[5] end)
 	local ore
 	for _, q in islands:GetDescendants() do
-		if q:IsA("ProximityPrompt") and q:GetAttribute("IsleAction") == "gather" and q:GetAttribute("IsleItem") == "Ore" and not q:GetAttribute("OwnerUserId") and not q:GetAttribute("IsleRegion") then ore = q break end
+		if q:IsA("BasePart") and q:GetAttribute("GatherNode") == "Ore" and not q:GetAttribute("OwnerUserId") and not q:GetAttribute("IsleRegion") then ore = q break end -- §42: a struck node host
 	end
 	ok(ore ~= nil, "a Copperstone node")
 	local before = cmd(miner, "state")

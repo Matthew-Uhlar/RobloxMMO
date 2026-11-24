@@ -342,6 +342,9 @@ do
 		services.Players.PlayerAdded:Fire(p)
 		return p
 	end
+	-- §42: mock gather prompts harvest through real `strike` verbs (tools/strike-shim.luau).
+	require("./tools/strike-shim").install({signal = services.ProximityPromptService.PromptTriggered,
+		invoke = function(p, verb, item) return objects.RemoteFunction.OnServerInvoke(p, verb, item) end, advance = advance})
 	local function cmd(p, verb, item)
 		advance(1)
 		return objects.RemoteFunction.OnServerInvoke(p, verb, item)

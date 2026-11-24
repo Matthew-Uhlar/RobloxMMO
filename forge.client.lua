@@ -22,7 +22,7 @@
 --                           instead of the host's own; the host (a post, pole or plinth) stays
 --                           the visible fallback and is hidden locally once the mesh exists
 --   ShapeBoxOffset (Vector3) centre of the declared box in the host's local frame (default 0)
--- Resource slots (CropBed, OreVein) whose host carries a gather prompt (IsleItem) use
+-- Resource slots (CropBed, OreVein) whose host is a gather node (GatherNode, §42) use
 -- the catalog's shape for that resource (Catalog.resourceShape), so each crop patch
 -- and ore node shows its own crop or ore. Shapes with an `along` axis (ropes, lines)
 -- turn that axis onto the slot box's longest axis, so one rope mesh serves both a
@@ -109,8 +109,12 @@ local function shapeOf(part)
 	local shapeName = part:GetAttribute("Shape")
 	if type(shapeName) ~= "string" then return nil end
 	if RESOURCE_SLOTS[shapeName] then
-		local prompt = part:FindFirstChildOfClass("ProximityPrompt")
-		local item = prompt and prompt:GetAttribute("IsleItem")
+		-- §42: a struck node host names its resource (GatherNode); older hosts a prompt's IsleItem.
+		local item = part:GetAttribute("GatherNode")
+		if type(item) ~= "string" then
+			local prompt = part:FindFirstChildOfClass("ProximityPrompt")
+			item = prompt and prompt:GetAttribute("IsleItem")
+		end
 		if type(item) == "string" then
 			for _, catalog in ipairs(catalogs) do
 				local resolved = type(catalog.resourceShape) == "function" and catalog.resourceShape(item)

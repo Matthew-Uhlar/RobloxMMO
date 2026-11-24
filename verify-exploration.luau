@@ -498,6 +498,9 @@ for _, o in ipairs(serverObjects) do
 	if o.Name == "IsleBridge" then bridge = o end
 end
 ok(remote ~= nil and bridge ~= nil, "IsleAction and IsleBridge found")
+-- §42: mock gather prompts harvest through real `strike` verbs (tools/strike-shim.luau).
+require("./tools/strike-shim").install({signal = services.ProximityPromptService.PromptTriggered,
+	invoke = function(p, verb, item) return remote.OnServerInvoke(p, verb, item) end, advance = advance})
 local function cmd(p, verb, item) advance(1); return remote.OnServerInvoke(p, verb, item) end
 local function standAt(p, pos) p.root.Position = pos end
 local function prompt(action, item, at)

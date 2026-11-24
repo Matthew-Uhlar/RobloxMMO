@@ -558,6 +558,10 @@ local function newServer(store, clock, skew)
 		if o.Name == "IsleBridge" then S.bridge = o end
 	end
 	assert(S.remote and S.bridge, "server remotes")
+	-- §42: mock gather prompts harvest through real `strike` verbs (tools/strike-shim.luau);
+	-- the strikes advance the server's os.clock only (contest windows read os.time).
+	require("./tools/strike-shim").install({signal = S.services.ProximityPromptService.PromptTriggered,
+		invoke = function(p, verb, item) return S.remote.OnServerInvoke(p, verb, item) end, advance = function(s) clock.cpu += s end})
 	-- Runs the council heartbeat (every queued C.TICK delay, once).
 	function S.tick()
 		local ran = 0

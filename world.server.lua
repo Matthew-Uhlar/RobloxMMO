@@ -73,18 +73,32 @@ local function ghost(p)
 	if not p.CanCollide then p.CanQuery=false end
 	return p
 end
-local GATHER_HOLD,FISH_HOLD,INTERACT_HOLD=1,1.5,.36
+local GATHER_HOLD,INTERACT_HOLD=1,.36
 local function prompt(p, verb, item, action, id, owner)
+	assert(action~="gather","§42: gathering nodes are struck (gatherNode), never prompted")
 	local q = Instance.new("ProximityPrompt")
-	-- Gather holds long enough for the swing gesture to read (Animation team);
-	-- fishing (cast, bob, reel) is set to FISH_HOLD by its spot; interacts stay snappy.
-	q.ActionText, q.ObjectText, q.HoldDuration = verb,item,if action=="gather" then GATHER_HOLD else INTERACT_HOLD
+	q.ActionText, q.ObjectText, q.HoldDuration = verb,item,INTERACT_HOLD
 	q.MaxActivationDistance, q.RequiresLineOfSight = 9,false
 	if action then q:SetAttribute("IsleAction",action) end
 	if id then q:SetAttribute("IsleItem",id) end
 	if owner then q:SetAttribute("OwnerUserId",owner) end
 	q.Parent = p
 	return q
+end
+-- §42 Gathering Feel: nodes are struck with the held tool, never prompted. The
+-- host part (the click target) carries GatherNode=<resource id> (+ IsleRegion,
+-- OwnerUserId; NodeMaxHp and NodeLabel once AetherData loads) and the
+-- AetherNode tag; its Model is the node's visual group (the client depletes it
+-- per player). server.server.lua's `strike` verb validates every hit.
+local nodeStamp,unstamped=nil,{} -- nodes built before AetherData loaded wait here
+local function gatherNode(host,id,region,owner)
+	host:SetAttribute("GatherNode",id)
+	if region then host:SetAttribute("IsleRegion",region) end
+	if owner then host:SetAttribute("OwnerUserId",owner) end
+	host.CanQuery=true
+	Tags:AddTag(host,"AetherNode")
+	if nodeStamp then nodeStamp(host) else table.insert(unstamped,host) end
+	return host
 end
 local function hidden(parent,name,pos)
 	local p = block(parent,name,pos,V(1,1,1),cream,SM,false)
@@ -938,23 +952,25 @@ local function windpine(parent,pos,scale,owner)
 	local trunk=block(m,"Heartwood",pos+V(0,2.6*scale,0),V(1.2,5.2,1.2)*scale,timber,WO,true)
 	trunk.Transparency=1
 	sculpture(m,"Sculpted windpine",pos+V(0,2.6*scale,0),"WindpineCrown",scale)
-	prompt(trunk,"Cut timber","Windpine","gather","Timber",owner)
+	gatherNode(trunk,"Timber",nil,owner)
 end
 local function ore(parent,pos)
-	local base=disk(parent,"Ore seam",pos+V(0,.4,0),2.5,.8,shale,ST,false)
-	slotBox(parent,"Ore seam mesh",pos,V(5,2.4,4.4),"OreVein",C("C98D4F"))
-	sculpture(parent,"Faceted copper cluster",pos+V(0,1.4,0),"AetherCrystal",1)
-	prompt(base,"Mine ore","Copper lode","gather","Ore")
+	local m=group("Copperstone vein",parent)
+	local base=disk(m,"Ore seam",pos+V(0,.4,0),2.5,.8,shale,ST,false)
+	slotBox(m,"Ore seam mesh",pos,V(5,2.4,4.4),"OreVein",C("C98D4F"))
+	sculpture(m,"Faceted copper cluster",pos+V(0,1.4,0),"AetherCrystal",1)
+	gatherNode(base,"Ore")
 end
 local function herb(parent,pos)
-	local bed=disk(parent,"Herb bed",pos+V(0,.15,0),2.3,.3,navy,ST,false)
-	slotBox(parent,"Herb bed mesh",pos,V(4.6,1.6,4.6),"CropBed",mint)
+	local m=group("Meadow Herb patch",parent)
+	local bed=disk(m,"Herb bed",pos+V(0,.15,0),2.3,.3,navy,ST,false)
+	slotBox(m,"Herb bed mesh",pos,V(4.6,1.6,4.6),"CropBed",mint)
 	for i=1,6 do
 		local a=i*1.8
 		local p=pos+V(math.cos(a)*1.5,.65,math.sin(a)*1.5)
-		sculpture(parent,"Sculpted moonbloom",p,"Moonbloom",.65,i*50)
+		sculpture(m,"Sculpted moonbloom",p,"Moonbloom",.65,i*50)
 	end
-	prompt(bed,"Gather herbs","Moonleaf patch","gather","Herb")
+	gatherNode(bed,"Herb")
 end
 -- Stall facing `toward`: counter, awning (strips abut, never overlap) and a
 -- header sign over the customer side.
@@ -1165,9 +1181,9 @@ herb(moss,MOSS+V(2,mossTop,2))
 local MOONPOOL=G+V(-24,0,-26)
 pond(grove,MOONPOOL,13,{name="Moonpool"})
 local jettyAt=MOONPOOL+V(9,0,7.2)
-local dock=part(grove,"Fishing jetty",V(3,1,9),CFrame.lookAt(jettyAt+V(0,.5,0),MOONPOOL+V(0,.5,0)),timber,WO,true)
+local dock=part(group("Moonpool fishing spot",grove),"Fishing jetty",V(3,1,9),CFrame.lookAt(jettyAt+V(0,.5,0),MOONPOOL+V(0,.5,0)),timber,WO,true)
 meshSlot(dock,"FishingPier")
-prompt(dock,"Cast line","Moonpool","gather","Fish").HoldDuration=FISH_HOLD
+gatherNode(dock,"Fish")
 anchor(grove,"Waypoint_MoonpoolJetty",jettyAt+(jettyAt-MOONPOOL).Unit*5.5,MOONPOOL)
 anchor(grove,"Waypoint_Moonpool",jettyAt+(jettyAt-MOONPOOL).Unit*8,MOONPOOL)
 sign(grove,MOONPOOL+V(20,0,-4),"Moonpool","MOSSWAKE   /   ANGLING",mint,90,8)
@@ -1191,8 +1207,9 @@ ramp(bench,Q+V(8,0,-18),Q+V(16,benchTop,-27),7)
 for _,o in ipairs({V(-38,0,14),V(-18,0,-22),V(8,0,20)}) do ore(mine,Q+o) end
 ore(bench,Q+V(14,benchTop,-44))
 local advanced=group("Aetherite outcrop",mine)
-local vein=sculpture(advanced,"Aetherite seam",Q+V(26,1.5,28),"AetherCrystal",1.45,30)
-prompt(vein,"Mine Aetherite","Mining 3 required","gather","Aetherite")
+local vein=sculpture(group("Aetherite seam",advanced),"Aetherite seam",Q+V(26,1.5,28),"AetherCrystal",1.45,30)
+vein.Size=V(3,3,3) -- §42: the anchor is the click target (still invisible; the sculpture scales by SculptureScale)
+gatherNode(vein,"Aetherite")
 sign(advanced,Q+V(36,0,26),"Aetherite","MINING 3 / REFINE AT THE STARFORGE",mint,0,8)
 for i=1,5 do
 	local post=block(mine,"Hoist support",Q+V(-32+8*i,2.5,40),V(.7,5,.7),timber,WO,false)
@@ -1291,8 +1308,9 @@ local summit,summitTop=tier(skyreach,"Summit",SUMMIT,18,6,{open={2.747},cliff=C(
 ramp(summit,SR+V(-8,0,6),V(SR.X+2,summitTop,SR.Z+2),7)
 local survey = sculpture(summit,"Summit cartographer",V(SUMMIT.X+2,summitTop+2,SUMMIT.Z-4),"Surveyor",1.1,180)
 prompt(survey,"Survey the summit","Skyreach","explore","Skyreach"):SetAttribute("IsleRegion","Skyreach")
-local rich = sculpture(skyreach,"Rich Aetherite seam",SR+V(-14,2,28),"AetherCrystal",1.8)
-prompt(rich,"Mine rich seam","Skyreach Aetherite","gather","Aetherite"):SetAttribute("IsleRegion","Skyreach")
+local rich = sculpture(group("Rich Aetherite seam",skyreach),"Rich Aetherite seam",SR+V(-14,2,28),"AetherCrystal",1.8)
+rich.Size=V(3.5,3.5,3.5) -- §42: click target (invisible)
+gatherNode(rich,"Aetherite","Skyreach")
 sign(skyreach,SR+V(-38,0,-16),"Skyreach","SURVEY THE SUMMIT / MINE RICH SEAMS",mint,90,10)
 for i,o in ipairs({V(-30,0,30),V(-20,0,-40),V(30,0,48),V(50,0,-2),V(-4,0,52)}) do decorTree(skyreach,SR+o,1,"Pine",C("5D8070")) end
 for i,o in ipairs({V(-40,0,24),V(24,0,-44)}) do outcrop(skyreach,SR+o,1.2,i) end
@@ -1379,10 +1397,11 @@ do
 	end
 	-- Owner-only gather nodes on the edge band.
 	local function homeOre(parent,pos,owner)
-		local base=disk(parent,"Ore seam",pos+V(0,.4,0),2.5,.8,shale,ST,false)
-		slotBox(parent,"Ore seam mesh",pos,V(5,2.4,4.4),"OreVein",C("C98D4F"))
-		sculpture(parent,"Faceted copper cluster",pos+V(0,1.4,0),"AetherCrystal",1)
-		prompt(base,"Mine ore","Home ore rock","gather","Ore",owner)
+		local m=group("Home ore rock",parent)
+		local base=disk(m,"Ore seam",pos+V(0,.4,0),2.5,.8,shale,ST,false)
+		slotBox(m,"Ore seam mesh",pos,V(5,2.4,4.4),"OreVein",C("C98D4F"))
+		sculpture(m,"Faceted copper cluster",pos+V(0,1.4,0),"AetherCrystal",1)
+		gatherNode(base,"Ore",nil,owner)
 	end
 	-- Edge band: every feature sits between the build radius and the meadow rim
 	-- (Data.Home.Edge angles), rebuilt one ring further out per level.
@@ -1886,24 +1905,24 @@ local function regionIsle(id,name,pos,r,opts)
 	opts.region=id
 	return island(name,pos,r,opts)
 end
-local function nodeLabel(id) return Resource[id].def.name.." (Lv "..Resource[id].def.level..")" end
--- The original public nodes adopt the tiered "<Name> (Lv N)" labels.
-for _,q in ipairs(islandsFolder:GetDescendants()) do
-	local id=q:IsA("ProximityPrompt") and q:GetAttribute("IsleAction")=="gather" and q:GetAttribute("IsleItem")
-	if id and Resource[id] and not q:GetAttribute("OwnerUserId") then
-		q.ActionText=VERB[Resource[id].skill]
-		q.ObjectText=nodeLabel(id)..(if q:GetAttribute("IsleRegion") then " · rich seam" else "")
-	end
+-- §42: every node carries its tier HP (Data.Strike.maxHp) and the OSRS label
+-- ("Mine Copperstone Vein (Mining 1)"); nodes built before AetherData loaded
+-- (and home nodes built later) get them here.
+local function stampNode(host)
+	local id=host:GetAttribute("GatherNode")
+	local r=Resource[id]
+	if not r or not Data.Strike then return end
+	host:SetAttribute("NodeMaxHp",Data.Strike.maxHp(r.def))
+	host:SetAttribute("NodeLabel",Data.Strike.label(r.def))
+	host:SetAttribute("ResourceId",id)
 end
+nodeStamp=stampNode
+for _,host in ipairs(unstamped) do stampNode(host) end
+table.clear(unstamped)
 local function gatherPrompt(target,id,region)
 	local r=Resource[id]
 	assert(r,"unknown resource "..tostring(id))
-	local q=prompt(target,VERB[r.skill],nodeLabel(id),"gather",id)
-	q.MaxActivationDistance=if r.skill=="Fishing" then 12 else 10
-	if r.skill=="Fishing" then q.HoldDuration=FISH_HOLD end
-	if region then q:SetAttribute("IsleRegion",region) end
-	target:SetAttribute("ResourceId",id)
-	return q
+	return gatherNode(target,id,region)
 end
 
 -- Ore: a slate boulder split by a metal vein, crowned by a crystal cluster.

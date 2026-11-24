@@ -15841,4 +15841,113 @@ end
 -- <<< END QoL Depth <<<
 ------------------------------------------------------------------------------
 
+-- >>> Gathering Feel (§42): struck nodes >>>
+-- Gathering nodes are hit, not held: a left click swings the held tool and the
+-- server applies one validated strike (`strike` verb, server.server.lua). Pure
+-- rules only (no instances): HP per tier, damage per strike, the swing cadence,
+-- the regrowth hand-back that keeps XP / hour level with the old hold prompt,
+-- and the fishing cast / bite / reel timings. Shared by the server, the client
+-- (overhead bars, hitsplats, label) and the suites.
+do
+	local ST = {}
+	Data.Strike = ST
+	-- Seconds between strikes the server accepts (one swing of the §26 gesture).
+	ST.SWING = {Mining = 0.7, Woodcutting = 0.7, Farming = 0.6}
+	-- Client: the strike is sent at the gesture's impact frame (seconds after the click).
+	ST.IMPACT = {Mining = 0.42, Woodcutting = 0.4, Farming = 0.36}
+	-- The retired hold prompts (GATHER_HOLD 1 s, FISH_HOLD 1.5 s): the per-harvest
+	-- active time the regrowth hand-back is measured against.
+	ST.OLD_HOLD = {Mining = 1, Woodcutting = 1, Farming = 1, Fishing = 1.5}
+	-- Nominal strikes to break a node with the tier's entry tool, by tier index.
+	ST.SWINGS = {3, 3, 4, 4, 5, 5, 6, 6}
+	ST.TOLERANCE = 0.12 -- s of network jitter forgiven per strike (never accumulates)
+	ST.REACH, ST.FISH_REACH = 10, 14 -- studs from the node's edge (root to node centre minus half its footprint)
+	ST.DECAY_AFTER, ST.DECAY_RATE = 4, 0.25 -- abandoned progress heals 25% of max HP a second after 4 s
+	ST.REGROW_FLOOR = 1
+	ST.LEVEL_BONUS_CAP = 50 -- +1% damage per level over the node's requirement, up to +50%
+	ST.SPEED_DIVISOR = 200 -- Mining Speed (and tool Efficiency) scales damage: x(1 + speed / 200)
+	ST.MAX_TRACKED = 6 -- nodes with partial progress kept per player
+	-- Fishing: a click casts; the fish bites after `bite` s; a click inside the
+	-- window reels it in. Too early loses the cast; a missed bite slips away.
+	ST.FISH = {gap = 0.8, biteMin = 1.0, biteMax = 2.0, window = 1.2, early = 0.15, late = 0.35, reaction = 0.3}
+	ST.VERB = {Mining = "Mine", Woodcutting = "Chop", Fishing = "Fish", Farming = "Harvest"}
+	ST.NOUN = {Mining = "Vein", Woodcutting = "Tree", Fishing = "Spot", Farming = "Patch"}
+	ST.GESTURE = {Mining = "mine", Woodcutting = "chop", Fishing = "fish", Farming = "harvest"}
+	function ST.resource(id)
+		local skill = type(id) == "string" and Data.ResourceSkill[id]
+		if not skill then return nil end
+		for _, r in ipairs(Data.ResourceTiers[skill]) do if r.id == id then return r end end
+		return nil
+	end
+	function ST.power(toolTier) return 10 + 10 * math.max(0, math.floor(tonumber(toolTier) or 0)) end
+	-- The Mining Speed an entry tool of tier t brings (generated pickaxes carry 40 x tier).
+	function ST.entrySpeed(r)
+		return if r.skill == "Mining" and (r.tool or 0) > 0 then 40 * r.tool else 0
+	end
+	-- Damage of one strike. speed: Mining Speed for Mining (stats + tool + Efficiency),
+	-- tool Efficiency for the others; level: the player's skill level.
+	function ST.damage(r, toolTier, speed, level)
+		local over = math.clamp((tonumber(level) or 1) - (r.level or 1), 0, ST.LEVEL_BONUS_CAP)
+		local base = ST.power(toolTier) * (1 + math.max(0, tonumber(speed) or 0) / ST.SPEED_DIVISOR)
+		return math.max(1, math.floor(base * (1 + over / 100)))
+	end
+	-- Node HP: the nominal strikes x the entry tool's damage at the requirement.
+	function ST.maxHp(r)
+		if not r or r.skill == "Fishing" then return 0 end
+		return (ST.SWINGS[r.index] or 6) * ST.damage(r, r.tool or 0, ST.entrySpeed(r), r.level)
+	end
+	function ST.strikesFor(r, damage)
+		local hp = ST.maxHp(r)
+		return if hp > 0 then math.ceil(hp / math.max(1, damage)) else 2
+	end
+	-- Seconds from the first strike to the break at the nominal damage (the
+	-- first strike lands at once; the rest one swing apart). Fishing: the mean
+	-- bite plus a reaction.
+	function ST.nominalBreak(r)
+		if r.skill == "Fishing" then return (ST.FISH.biteMin + ST.FISH.biteMax) / 2 + ST.FISH.reaction end
+		return ((ST.SWINGS[r.index] or 6) - 1) * ST.SWING[r.skill]
+	end
+	-- Regrowth after a break: the extra active time a nominal break costs over the
+	-- old hold is handed back, so a node's cycle (break + regrowth) stays the old
+	-- hold + regrowth and XP / hour is unchanged at the nominal tool; faster tools
+	-- shorten the cycle. Floored at REGROW_FLOOR.
+	function ST.regrowth(r, base)
+		base = tonumber(base) or tonumber(r.respawn) or 3
+		local extra = math.max(0, ST.nominalBreak(r) - (ST.OLD_HOLD[r.skill] or 1))
+		return math.max(ST.REGROW_FLOOR, base - extra)
+	end
+	-- Progress left after idling: healed DECAY_RATE x max a second after DECAY_AFTER s.
+	function ST.decayed(hp, maxHp, idle)
+		idle = (tonumber(idle) or 0) - ST.DECAY_AFTER
+		if idle <= 0 then return hp end
+		return math.min(maxHp, hp + idle * ST.DECAY_RATE * maxHp)
+	end
+	-- A deterministic bite delay (no shared RNG draw): a hash of the user and the cast count.
+	function ST.biteDelay(userId, n)
+		local h = ((math.floor(tonumber(userId) or 0) % 100003) * 7919 + (math.floor(tonumber(n) or 0) % 100003) * 104729) % 1000
+		return ST.FISH.biteMin + (ST.FISH.biteMax - ST.FISH.biteMin) * h / 999
+	end
+	-- "Copperstone Ore" -> "Copperstone Vein"; "Windpine Log" -> "Windpine Tree".
+	function ST.nodeName(r)
+		local name = tostring(r.name or r.id)
+		local noun = ST.NOUN[r.skill] or "Node"
+		local stem = name:gsub(" Ore$", ""):gsub(" Log$", ""):gsub(" Timber$", "")
+		return stem .. " " .. noun
+	end
+	-- "Mine Copperstone Vein (Mining 1)"
+	function ST.label(r)
+		return ST.VERB[r.skill] .. " " .. ST.nodeName(r) .. " (" .. r.skill .. " " .. r.level .. ")"
+	end
+	-- Old vs new node cycle (s) and XP / hour at the nominal tool, for the docs and tests.
+	function ST.balance(r)
+		local oldCycle = (ST.OLD_HOLD[r.skill] or 1) + r.respawn
+		local newCycle = ST.nominalBreak(r) + ST.regrowth(r, r.respawn)
+		return {hp = ST.maxHp(r), strikes = if r.skill == "Fishing" then 2 else (ST.SWINGS[r.index] or 6), breakTime = ST.nominalBreak(r),
+			regrowth = ST.regrowth(r, r.respawn), oldCycle = oldCycle, newCycle = newCycle,
+			oldXpHour = math.floor(r.xp * 3600 / oldCycle), newXpHour = math.floor(r.xp * 3600 / newCycle)}
+	end
+end
+-- <<< END Gathering Feel <<<
+------------------------------------------------------------------------------
+
 return Data

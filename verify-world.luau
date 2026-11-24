@@ -305,7 +305,11 @@ check(observatoryGate:GetAttribute("Shape")=="ObservatoryArch","expedition entra
 check(observatoryGate.Transparency==1 and not observatoryGate.CanCollide,"gate art preserves open transit collider")
 local advancedOre=world:FindFirstChild("Aetherite seam",true)
 check(advancedOre~=nil,"advanced mining node exists")
-check(advancedOre:FindFirstChildOfClass("ProximityPrompt"):GetAttribute("IsleItem")=="Aetherite","advanced mining routes to validated server action")
+check(advancedOre:FindFirstChildOfClass("ProximityPrompt")==nil,"§42: the advanced seam has no prompt")
+local seamHost=nil
+for _,d in advancedOre:GetDescendants() do if d:IsA("BasePart") and d:GetAttribute("GatherNode") then seamHost=d end end
+if not seamHost and advancedOre:IsA("BasePart") and advancedOre:GetAttribute("GatherNode") then seamHost=advancedOre end
+check(seamHost~=nil and seamHost:GetAttribute("GatherNode")=="Aetherite","advanced mining routes to the validated strike verb")
 local gate=world:FindFirstChild("ExpeditionGate",true)
 check(gate~=nil and gate.CFrame.Position.Y>=0,"expedition entrance accessible")
 local oldSpawn=a.RespawnLocation.Position
@@ -417,11 +421,17 @@ for _,region in Data.Regions do
 	for _,isle in islandsRoot:GetChildren() do if isle:GetAttribute("RegionId")==region.id then found=true end end
 	check(found,region.id.." has a built island")
 end
--- Every resource tier: at least one correctly attributed gather node.
+-- Every resource tier: at least one correctly attributed gather node (§42: a
+-- struck host part tagged AetherNode; no gathering node carries a prompt).
 local gatherNodes={}
 for _,obj in world:GetDescendants() do
-	if obj:IsA("ProximityPrompt") and obj:GetAttribute("IsleAction")=="gather" and not obj:GetAttribute("OwnerUserId") then
-		local id=obj:GetAttribute("IsleItem")
+	check(not (obj:IsA("ProximityPrompt") and obj:GetAttribute("IsleAction")=="gather"),"§42: no gather prompt anywhere ("..obj:GetFullName()..")")
+	if obj:IsA("BasePart") and obj:GetAttribute("GatherNode") and not obj:GetAttribute("OwnerUserId") then
+		local id=obj:GetAttribute("GatherNode")
+		check(obj:FindFirstChildOfClass("ProximityPrompt")==nil,"§42: node host "..obj.Name.." has no prompt")
+		check(table.find(tags.AetherNode or {},obj)~=nil,"§42: node host "..obj.Name.." is tagged AetherNode")
+		check(obj.CanQuery,"§42: node host "..obj.Name.." is clickable")
+		check(obj.Parent:IsA("Model"),"§42: node host "..obj.Name.." sits in its own visual Model")
 		gatherNodes[id]=gatherNodes[id] or {}
 		table.insert(gatherNodes[id],obj)
 	end
@@ -435,9 +445,10 @@ for skill,tiers in Data.ResourceTiers do
 		local formatted,ungated=false,false
 		for _,q in nodes do
 			nodeCount+=1
-			local target=q.Parent:GetAttribute("ResourceId")
+			local target=q:GetAttribute("ResourceId")
 			check(target==nil or target==def.id,def.id.." node target matches")
-			if q.ObjectText==def.name.." (Lv "..def.level..")" and q.ActionText==VERB[skill] then formatted=true end
+			check(q:GetAttribute("NodeMaxHp")==Data.Strike.maxHp(def),def.id.." node HP is its tier's (Data.Strike.maxHp)")
+			if q:GetAttribute("NodeLabel")==Data.Strike.label(def) and string.sub(Data.Strike.label(def),1,#VERB[skill])==VERB[skill] then formatted=true end
 			local isle=islandOf(q)
 			local host=isle and isle:GetAttribute("RegionId")
 			check(host~=nil,def.id.." node sits on a region island")
@@ -449,9 +460,9 @@ for skill,tiers in Data.ResourceTiers do
 				ungated=true
 			end
 			if next(Data.RegionById[host].requires) then check(region==host,def.id.." node on a gated island carries IsleRegion") end
-			check(onIsland(isle,q.Parent.CFrame.Position,1),def.id.." node stands on its island")
+			check(onIsland(isle,q.CFrame.Position,1),def.id.." node stands on its island")
 		end
-		check(formatted,def.id.." has a '"..VERB[skill].."' prompt labelled with name and level")
+		check(formatted,def.id.." has a '"..VERB[skill].."' node labelled with name and level")
 		if def.level<=3 then check(ungated,def.id.." is available near home without a gate") end
 		if def.level>=30 then check(not ungated,def.id.." lives in a gated region") end
 	end
@@ -1186,8 +1197,8 @@ do
 						local long=math.max(own.X,own.Y,own.Z)
 						check(math.abs(math.max(d.size.X,d.size.Y,d.size.Z)-long)<=long*.05+.05,obj:GetFullName().." line mesh follows its span")
 					end
-					if obj:GetAttribute("Shape")=="CropBed" and obj:FindFirstChildOfClass("ProximityPrompt") then
-						check(d.shape==WorldArt.resourceShape(obj:FindFirstChildOfClass("ProximityPrompt"):GetAttribute("IsleItem")),obj:GetFullName().." crop patch shows its own crop")
+					if obj:GetAttribute("Shape")=="CropBed" and obj:GetAttribute("GatherNode") then
+						check(d.shape==WorldArt.resourceShape(obj:GetAttribute("GatherNode")),obj:GetFullName().." crop patch shows its own crop")
 					end
 					local box,size=d.box,d.size
 					for _,axis in {"X","Y","Z"} do
@@ -1238,15 +1249,15 @@ do
 		end
 	end
 	for _,q in islandsRoot:GetDescendants() do
-		if q:IsA("ProximityPrompt") and q:GetAttribute("IsleAction")=="gather" then
-			local host=q.Parent
+		if q:IsA("BasePart") and q:GetAttribute("GatherNode") then
+			local host=q
 			local tagged=host:GetAttribute("Shape")~=nil
 			if not tagged then
 				for _,sib in host.Parent:GetDescendants() do
 					if sib:IsA("BasePart") and sib:GetAttribute("Shape") and (sib.CFrame.Position-host.CFrame.Position).Magnitude<30 then tagged=true break end
 				end
 			end
-			check(tagged,q.ObjectText.." node has a mesh slot")
+			check(tagged,q:GetFullName().." node has a mesh slot")
 		end
 	end
 
@@ -1296,20 +1307,17 @@ do
 	for _,l in lamps do check(l.Enabled==false,"night lamps start dark (the director owns them)") end
 	check(lum(roblox.Color3.fromHex("7D8A9C"))<.6,"reference ambient stays readable")
 
-	-- Prompt holds: gathers read as swings, fishing as cast-bob-reel, interacts stay snappy.
+	-- Prompt holds: interacts stay snappy. §42: gathering nodes have no hold at
+	-- all (struck with the held tool); they are counted from their host parts.
 	local fishing={}
 	for _,def in Data.ResourceTiers.Fishing do fishing[def.id]=true end
 	local holds={gather=0,fish=0,interact=0}
 	for _,isle in allIsles() do for _,q in isle:GetDescendants() do
-		if q:IsA("ProximityPrompt") then
+		if q:IsA("BasePart") and q:GetAttribute("GatherNode") then
+			if fishing[q:GetAttribute("GatherNode")] then holds.fish+=1 else holds.gather+=1 end
+		elseif q:IsA("ProximityPrompt") then
 			if q:GetAttribute("IsleAction")=="gather" then
-				if fishing[q:GetAttribute("IsleItem")] then
-					holds.fish+=1
-					check(math.abs(q.HoldDuration-1.5)<1e-6,q.ObjectText.." fishing hold is 1.5 s")
-				else
-					holds.gather+=1
-					check(math.abs(q.HoldDuration-1)<1e-6,q.ObjectText.." gather hold is 1.0 s")
-				end
+				check(false,"§42: no gather prompt ("..q:GetFullName()..")")
 			elseif q:GetAttribute("IsleCoopResource") then
 				check(math.abs(q.HoldDuration-1)<1e-6,"shared gather hold is 1.0 s")
 			else
@@ -1318,7 +1326,7 @@ do
 			end
 		end
 	end end
-	check(holds.gather>=30 and holds.fish>=8 and holds.interact>=20,"hold durations cover every prompt kind")
+	check(holds.gather>=30 and holds.fish>=8 and holds.interact>=20,"every node kind and interact hold covered")
 
 	-- Placement glow cap: a full island of lantern posts lights at most 10, spaced.
 	local I=Data.Island
@@ -1419,10 +1427,10 @@ do
 	for _,r in E.Resources do
 		local found=0
 		for _,q in crown:GetDescendants() do
-			if q:IsA("ProximityPrompt") and q:GetAttribute("IsleItem")==r.id then
+			if q:IsA("BasePart") and q:GetAttribute("GatherNode")==r.id then -- §42: struck node hosts
 				found+=1
 				check(q:GetAttribute("IsleRegion")=="ShatteredCrown",r.id.." node is region-gated")
-				check(onIsland(crown,q.Parent.CFrame.Position,1),r.id.." node stands on the Crown")
+				check(onIsland(crown,q.CFrame.Position,1),r.id.." node stands on the Crown")
 			end
 		end
 		check(found>=1,r.id.." has a node on the Crown")

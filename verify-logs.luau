@@ -623,6 +623,9 @@ function resolve(p, snap)
 	end
 	return snap
 end
+-- §42: mock gather prompts harvest through real `strike` verbs (tools/strike-shim.luau).
+require("./tools/strike-shim").install({signal = services.ProximityPromptService.PromptTriggered,
+	invoke = function(p, verb, item) return remote.OnServerInvoke(p, verb, item) end, advance = advance})
 local function cmd(p, verb, item) advance(1); return resolve(p, remote.OnServerInvoke(p, verb, item)) end
 local function raw(p, verb, item) advance(1); return remote.OnServerInvoke(p, verb, item) end
 -- A gather prompt double (server checks attributes, distance and Enabled).

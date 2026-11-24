@@ -331,6 +331,9 @@ end
 local remote
 for _, o in ipairs(serverObjects) do if o.OnServerInvoke then remote = o end end
 ok(remote ~= nil, "IsleAction remote found")
+-- §42: mock gather prompts harvest through real `strike` verbs (tools/strike-shim.luau).
+require("./tools/strike-shim").install({signal = services.ProximityPromptService.PromptTriggered,
+	invoke = function(p, verb, item) return remote.OnServerInvoke(p, verb, item) end, advance = advance})
 local function cmd(p, verb, item) advance(1); return remote.OnServerInvoke(p, verb, item) end
 local function at(p, role) p.root.Position = npcAt[role] + Vector3.new(2, 0, 0) end
 local function away(p) p.root.Position = Vector3.new(0, 5000, 0) end
@@ -726,7 +729,7 @@ for i, id in ipairs(Data.CollectionItems) do
 	if Data.ResourceSkill[id] and Data.ResourceSkill[id] ~= "Fishing" and unlocked < 14 then
 		advance(1)
 		rush.last = nil
-		services.ProximityPromptService.PromptTriggered:Fire(prompt("gather", id, Vector3.new(0, 5000, i)), rush)
+		services.ProximityPromptService.PromptTriggered:Fire(prompt("gather", id, Vector3.new(0, 5000, i * 0.25)), rush) -- §42: inside strike reach (~10 studs)
 		if rush.last and has(rush.last.message, "+") then unlocked += 1 end
 	end
 end

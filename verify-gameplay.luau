@@ -106,6 +106,13 @@ local env = {
 }
 local source=fs.readFile("server.server.lua"):gsub("^\239\187\191","")
 luau.load(source,{environment=env,injectGlobals=true})()
+-- §42: mock gather prompts harvest through real `strike` verbs (tools/strike-shim.luau).
+-- (Suites that load this file's harness prefix have no require; they never gather.)
+do
+	local found,shim=pcall(require,"./tools/strike-shim")
+	if found then shim.install({signal=services.ProximityPromptService.PromptTriggered,
+		invoke=function(p,verb,item) return objects.RemoteFunction.OnServerInvoke(p,verb,item) end,advance=advance}) end
+end
 local function player(id,deferred)
 	local humanoid={Health=100,MaxHealth=100,Died=signal(),TakeDamage=function(self,n) self.Health-=n end}
 	local root={Position=Vector3.zero}
@@ -1122,7 +1129,10 @@ ok(has(lumber.last.message,"tier 1 hatchet"),"hatchet message")
 lumber=rejoin(lumber,function(p) p.items.CopperHatchet=1 end)
 eq(use(lumber,windpineLog).items.WindpineLog,1,"Windpine log harvested in region")
 eq(use(lumber,node("gather","Shard")).items.Shard,nil,"non-resource gather rejected")
-eq(lumber.last.message,"Unknown action.","non-resource gather message")
+-- §42: a host that is not a resource node is refused before any work (no snapshot).
+eq(objects.RemoteFunction.OnServerInvoke(lumber,"strike",require("./tools/strike-shim").node(node("gather","Shard"))).reason,"node","non-resource strike refused")
+eq(objects.RemoteFunction.OnServerInvoke(lumber,"strike",{GetAttribute=function() return "Ore" end}).reason,"node","a client table is never a node")
+eq(objects.RemoteFunction.OnServerInvoke(lumber,"gather","Ore").message,"Unknown action.","the old gather verb harvests nothing")
 eq(use(lumber,node("gather","Ore",0,nil,"Atlantis")).items.Ore,nil,"unknown region prompt rejected")
 eq(lumber.last.message,"That region is not on the guild charts.","unknown region message")
 

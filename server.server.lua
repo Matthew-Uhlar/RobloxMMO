@@ -33,6 +33,14 @@ local userSessions = {}
 local enemies = {}
 -- Per-player resource node depletion: [prompt] = {[player] = os.clock() ready time}.
 local nodeRegrowth = {}
+-- §42 Gathering Feel: struck nodes (filled in the Gathering Feel section above perform).
+local Strike = {state = {}}
+-- A node host's position (its CFrame first: headless Lune parts keep Position apart).
+function Strike.where(part)
+	local ok,cf=pcall(function() return part.CFrame end)
+	if ok and typeof(cf)=="CFrame" then return cf.Position end
+	return part.Position
+end
 local promptGoneHooks, watchedPrompts = {}, {}
 local function promptGone(prompt)
 	local conns=watchedPrompts[prompt]
@@ -4791,8 +4799,9 @@ function Sea.cast(player,p,stats,toolId,region,prompt)
 	if capped then return "",true end
 	book.seq+=1
 	book.live[book.seq]={id=id,expires=os.clock()+Data.SeaCreatureLifetime+Sea.GRACE,region=region} -- region: §36 council Magic Find
-	local base=prompt and prompt:FindFirstAncestorWhichIsA("BasePart")
-	if base then player:SetAttribute("SeaCreatureAt",base.Position) end
+	-- §42: `prompt` is the struck node's host part (older callers: a prompt under one).
+	local base=prompt and (if prompt:IsA("BasePart") then prompt else prompt:FindFirstAncestorWhichIsA("BasePart"))
+	if base then player:SetAttribute("SeaCreatureAt",Strike.where(base)) end
 	player:SetAttribute("SeaCreatureSpawn",id..":"..book.seq)
 	return "   ·   A "..Data.SeaCreatures[id].name.." surfaces!"
 end
@@ -4838,6 +4847,7 @@ local function forget(player)
 		regrowth[player]=nil
 		if not next(regrowth) then nodeRegrowth[prompt]=nil end
 	end
+	Strike.forget(player) -- §42: partial node progress, cadence and casts (session-only)
 	Skills.forget(player) -- Agility runs, Hunter traps (session-only)
 	Prayer.forget(player) -- Prayer rites/altar window, Thieving stuns and cooldowns
 	SlayerTasks.forget(player) -- Slayer tasks: superior tickets
@@ -10192,6 +10202,244 @@ do
 end
 -- <<< END QoL Depth <<<
 ------------------------------------------------------------------------------
+------------------------------------------------------------------------------
+-- >>> Gathering Feel (§42): struck nodes >>>
+-- Gathering nodes (ore, trees, crops, fishing spots) have no prompt: the client
+-- swings the held tool and invokes IsleAction("strike", <node host part>). The
+-- server validates everything (a real tagged node in the workspace, owner,
+-- region, ~10 studs, level and tool tier, the player's own swing cadence) and
+-- applies its own damage (Data.Strike.damage: tool tier, Mining Speed / tool
+-- Efficiency, levels over the requirement). Progress is per player per node
+-- (no kill-stealing; another player's hits never touch yours); abandoned
+-- progress heals after Data.Strike.DECAY_AFTER s. The break runs the old
+-- gather harvest (Strike.harvest) exactly once, then the existing per-player
+-- regrowth. Fishing: a strike casts, the fish bites after a server-chosen
+-- delay (sent to the client), a strike inside the bite window reels it in.
+-- Replies are compact ({strike = true, ok, reason?, hp, max, dmg, broken,
+-- regrow, cast, bite, window, message}); a break also pushes a snapshot.
+-- State is session-only (Strike.forget on leave).
+do
+	local ST=Data.Strike
+	function Strike.ok(message) return message,true end
+	-- The harvest a break runs exactly once (formerly the `gather` prompt branch):
+	-- yield, fortune, festival, mastery, collections, contests, pickup feed, XP,
+	-- gem rolls, commissions, Trails, journal counts, per-player regrowth, sea
+	-- creatures and trophy fish. Returns message, ok.
+	function Strike.harvest(player,p,item,node,region)
+		local resource=Progression.resource(item)
+		local skill=resource.skill
+		local regrowth=nodeRegrowth[node]
+		local readyAt=regrowth and regrowth[player]
+		if readyAt and os.clock()<readyAt then return "This node is regrowing ("..math.ceil(readyAt-os.clock()).."s)." end
+		-- Legacy bonuses stack into the harvest base before fortune.
+		local bonus=0
+		if resource.index==1 and level(p.xp[skill])>=3 then bonus+=1 end
+		local reinforced=(p.items.ReinforcedPickaxe or 0)>0
+		if item=="Ore" then bonus+=if reinforced then 2 elseif (p.items.Pickaxe or 0)>0 then 1 else 0 end
+		if item=="Aetherite" and reinforced then bonus+=1 end
+		if region=="Skyreach" then bonus+=1 end
+		if workspace:GetAttribute("FestivalResource")==item then bonus+=1 end
+		-- Events hook: Skyward Calendar season/event effects (state published by festival.server.lua).
+		local event=Data.eventGather(item,Data.eventState(workspace,os.time()),roll)
+		bonus+=event.bonus
+		Logs.prime(p) -- Commissions & Logs: Forgeheart fortune within the budget Mastery leaves
+		local stats=Progression.computeStats(p,os.time())
+		local ok,result=Progression.harvest(p,item,stats,roll,bonus,os.time())
+		if not ok then
+			if item=="Aetherite" then return result.." Train on Ore in Brassfall Cay." end
+			return result
+		end
+		-- Events hook: festival yield/XP multipliers apply exactly once, after fortune; festival-only catches.
+		result.amount*=event.mult; result.xp=math.floor(result.xp*event.xpMult)
+		for id,n in pairs(event.extra) do pickup(p,id,n); note(p,"Festival catch • +"..n.." "..Data.Items[id].name) end
+		-- Pets depth: the doubled-harvest ability is one more yield candidate inside
+		-- Progression.gatherYieldMult (never stacks with mastery procs/surges).
+		local petDouble=result.petDouble==true
+		pickup(p,item,result.amount)
+		if skill=="Farming" and Contests.harvest then Contests.harvest(p,item,result.amount) end -- §39: Harvest Contest entry score
+		grantXp(p,skill,result.xp)
+		Held.gather(player,p,skill) -- Held items: the node's tool is in hand (auto switch, returns when idle)
+		if skill=="Farming" and Garden.fieldSeed then Garden.fieldSeed(p,item) end -- Verdant Garden seed pouch
+		Trails.event(p,"gather",item) -- Treasure Trails: scroll drops + trail tasks (Fishing counts as "fish")
+		Logs.regrow(p,result,resource) -- Commissions & Logs: Steadfast Pick joins the Mastery regrowth text
+		local mastered=Mastery.gather(p,result) -- Skill Mastery: bonus ingots, coins, regrowth skip
+		mastered..=Logs.gather(p,item,result,resource) -- Commissions & Logs: commission progress, Gemseeker
+		mastered..=Crafting.gather(p,resource) -- Crafting: rare rough gem roll on Mining harvests
+		if region then Journal.count(p,"gathers",region,1) end
+		p.started=true
+		if not regrowth then regrowth={}; nodeRegrowth[node]=regrowth; watchPrompt(node) end
+		-- Skill Mastery: Quick regrowth shortens the timer down to a floor (Progression.regrowthTime), never to zero.
+		-- §42: the regrowth hands back the time a nominal break costs over the old
+		-- hold (Data.Strike.regrowth), so XP / hour is unchanged at the nominal tool.
+		local regrow=Data.Strike.regrowth(resource,tonumber(result.regrowth) or tonumber(resource.respawn) or 3)
+		regrowth[player]=os.clock()+regrow
+		Strike.lastRegrow=regrow
+		local hooked,spent="",false
+		if skill=="Fishing" then hooked,spent=Sea.cast(player,p,stats,result.tool,region,node) end
+		-- §39: a cast that raised no sea creature (nor would have, at the cap: QC L6) may land a trophy fish (never both).
+		if skill=="Fishing" and hooked=="" and not spent and Contests.trophyCast then hooked=Contests.trophyCast(player,p,result.tool,region) end
+		return Strike.ok("+"..result.amount.." "..resource.name..(if petDouble then " (pet ×2)" else "").."   ·   +"..result.xp.." "..skill.." XP"..mastered..hooked)
+	end
+
+	local RATE,BURST=8,12 -- requests a second (any outcome), before any other work
+	local function stateOf(player)
+		local s=Strike.state[player]
+		if not s then
+			s={next=0,nodes={},order={},casts=0,castGap=0,tokens=BURST,tokenAt=os.clock()}
+			Strike.state[player]=s
+		end
+		return s
+	end
+	function Strike.forget(player) Strike.state[player]=nil end
+	local function reply(t) t.strike=true return t end
+	-- A refusal with a message also arrives as a snapshot (the chat router and
+	-- toasts show it, as the prompt's refusals did), at most once a second.
+	local function refuse(player,s,t)
+		local now=os.clock()
+		if t.message and profiles[player] and now>=(s.pushAt or 0) then
+			s.pushAt=now+1
+			update:FireClient(player,snapshot(player,t.message))
+			t.pushed=true
+		end
+		return reply(t)
+	end
+	-- A live node host: an Instance (never a client table), a BasePart still in
+	-- the world, carrying the server-set GatherNode attribute (client attribute
+	-- writes never replicate, so only real nodes pass).
+	local function isNode(node)
+		if typeof(node)~="Instance" then return false end
+		local ok,good=pcall(function() return node:IsA("BasePart") and node.Parent~=nil and type(node:GetAttribute("GatherNode"))=="string" end)
+		return ok and good==true
+	end
+	-- Range to the node's edge: root to centre minus half its footprint (≤ 6).
+	local function gap(root,node)
+		local size=node.Size
+		local half=if typeof(size)=="Vector3" then math.min(6,math.max(size.X,size.Z)/2) else 0
+		return (root.Position-Strike.where(node)).Magnitude-half
+	end
+	-- Mining Speed from the sheet (cached 3 s) + the pickaxe; every tool adds its Efficiency.
+	function Strike.speed(p,s,r,toolId,tool)
+		local speed=0
+		if tool then
+			local ench=Progression.enchantStats(p,toolId,"tool",r.skill)
+			speed+=tonumber(ench.miningSpeed) or 0
+			if r.skill=="Mining" then speed+=tonumber(tool.stats and tool.stats.miningSpeed) or 0 end
+		end
+		if r.skill=="Mining" then
+			local now=os.clock()
+			if not s.stats or now-(s.statsAt or 0)>3 then s.stats,s.statsAt=Progression.computeStats(p,os.time()),now end
+			speed+=tonumber(s.stats.miningSpeed) or 0
+		end
+		return speed
+	end
+	local function track(s,node,ns)
+		s.nodes[node]=ns
+		table.insert(s.order,node)
+		while #s.order>ST.MAX_TRACKED do
+			local old=table.remove(s.order,1)
+			if old~=node then s.nodes[old]=nil end
+		end
+	end
+	local function untrack(s,node)
+		s.nodes[node]=nil
+		local i=table.find(s.order,node)
+		if i then table.remove(s.order,i) end
+	end
+	-- The break: the harvest runs once (busy guards a re-entrant strike), then a snapshot.
+	function Strike.finish(player,p,s,item,node,region,out)
+		s.busy=true
+		Strike.lastRegrow=nil
+		local ok,message,done=pcall(Strike.harvest,player,p,item,node,region)
+		s.busy=false
+		if not ok then warn("Strike harvest failed: "..tostring(message)); message,done="That node crumbled oddly. Try again.",false end
+		out.message=message
+		if done then out.regrow=Strike.lastRegrow else out.ok,out.broken,out.reason=false,nil,"harvest" end
+		update:FireClient(player,snapshot(player,message))
+		return reply(out)
+	end
+	function Strike.action(player,node)
+		local s=stateOf(player)
+		local now=os.clock()
+		s.tokens=math.min(BURST,s.tokens+(now-s.tokenAt)*RATE)
+		s.tokenAt=now
+		if s.tokens<1 then return nil end
+		s.tokens-=1
+		if s.busy then return refuse(player,s,{ok=false,reason="busy"}) end
+		local p=profiles[player]
+		if not p or (not preview[player] and os.time()>=(leaseEnd[player] or 0)) then return refuse(player,s,{ok=false,reason="sync",message="Waiting for journal sync."}) end
+		local character=player.Character
+		local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+		local root=character and character:FindFirstChild("HumanoidRootPart")
+		if not humanoid or humanoid.Health<=0 or not root then return refuse(player,s,{ok=false,reason="dead",message="Return to your island first."}) end
+		if not isNode(node) then return refuse(player,s,{ok=false,reason="node"}) end
+		local item=node:GetAttribute("GatherNode")
+		local r=ST.resource(item)
+		if not r then return refuse(player,s,{ok=false,reason="node"}) end
+		local owner=node:GetAttribute("OwnerUserId")
+		if owner and owner~=player.UserId then return refuse(player,s,{ok=false,reason="owner",message="That node belongs to another island."}) end
+		local region=node:GetAttribute("IsleRegion")
+		if type(region)~="string" then region=nil end
+		if region and not regionAllowed(p,region) then return refuse(player,s,{ok=false,reason="region",message=regionDenied(region)}) end
+		if gap(root,node)>(if r.skill=="Fishing" then ST.FISH_REACH else ST.REACH) then
+			return refuse(player,s,{ok=false,reason="range",message="Move closer to strike it."})
+		end
+		local regrowth=nodeRegrowth[node]
+		local readyAt=regrowth and regrowth[player]
+		if readyAt and now<readyAt then
+			return refuse(player,s,{ok=false,reason="regrowing",regrow=readyAt-now,message="This node is regrowing ("..math.ceil(readyAt-now).."s)."})
+		end
+		-- Level and tool gates come first: no damage on a node you cannot harvest.
+		local lvl=level(p.xp[r.skill])
+		if lvl<r.level then
+			return refuse(player,s,{ok=false,reason="level",message=r.name.." requires "..r.skill.." "..r.level.."."..(if item=="Aetherite" then " Train on Ore in Brassfall Cay." else "")})
+		end
+		local toolId,tool=Progression.bestTool(p,r.skill)
+		local tier=tool and tool.toolTier or 0
+		if tier<r.tool then
+			return refuse(player,s,{ok=false,reason="tool",message=r.name.." requires a tier "..r.tool.." "..string.lower(Data.ToolKind[r.skill]).."."})
+		end
+		if r.skill=="Fishing" then
+			local F,c=ST.FISH,s.cast
+			if c and c.node==node and now<=c.at+c.bite+F.window+F.late then
+				s.cast=nil
+				if now<c.at+c.bite-F.early then
+					return refuse(player,s,{ok=false,reason="early",message="Too early: the fish slipped the hook."})
+				end
+				return Strike.finish(player,p,s,item,node,region,{ok=true,broken=true,reeled=true})
+			end
+			if now<s.castGap then return refuse(player,s,{ok=false,reason="cadence",wait=s.castGap-now}) end
+			s.casts+=1
+			local bite=ST.biteDelay(player.UserId,s.casts)
+			s.cast={node=node,at=now,bite=bite}
+			s.castGap=now+F.gap
+			Held.gather(player,p,r.skill)
+			return reply({ok=true,cast=true,bite=bite,window=F.window})
+		end
+		-- Cadence: one strike a swing; the schedule never runs ahead of real time,
+		-- so an auto-clicker gains nothing beyond TOLERANCE of jitter.
+		if now<s.next-ST.TOLERANCE then return refuse(player,s,{ok=false,reason="cadence",wait=s.next-now}) end
+		s.next=math.max(now,s.next)+(ST.SWING[r.skill] or 0.7)
+		Held.gather(player,p,r.skill) -- the node's tool is in hand (auto switch, returns when idle)
+		local maxHp=ST.maxHp(r)
+		local ns=s.nodes[node]
+		if ns then
+			ns.hp=ST.decayed(ns.hp,maxHp,now-ns.at)
+			if ns.hp>=maxHp then untrack(s,node); ns=nil end
+		end
+		if not ns then
+			ns={hp=maxHp,at=now}
+			track(s,node,ns)
+		end
+		local dmg=ST.damage(r,tier,Strike.speed(p,s,r,toolId,tool),lvl)
+		ns.hp=math.max(0,ns.hp-dmg)
+		ns.at=now
+		if ns.hp>0 then return reply({ok=true,hp=ns.hp,max=maxHp,dmg=dmg}) end
+		untrack(s,node)
+		return Strike.finish(player,p,s,item,node,region,{ok=true,broken=true,hp=0,max=maxHp,dmg=dmg})
+	end
+end
+-- <<< END Gathering Feel <<<
+------------------------------------------------------------------------------
 local function perform(player,verb,item,prompt)
 	local p=profiles[player]
 	if not p or (not preview[player] and os.time()>=(leaseEnd[player] or 0)) then return "Waiting for journal sync." end
@@ -10265,56 +10513,10 @@ local function perform(player,verb,item,prompt)
 		local stations={Forge="Forge open • smelt ingots and forge gear.",Hearth="Hearth lit • cook meals and feasts.",
 			Cauldron="Cauldron bubbling • brew potions.",Workbench="Workbench ready • craft accessories.",Slayer="The Slayer master awaits your contract."}
 		return stations[item] or "Station ready."
-	elseif verb=="gather" and prompt and type(item)=="string" and Data.ResourceSkill[item] then
-		local resource=Progression.resource(item)
-		local skill=resource.skill
-		local regrowth=nodeRegrowth[prompt]
-		local readyAt=regrowth and regrowth[player]
-		if readyAt and os.clock()<readyAt then return "This node is regrowing ("..math.ceil(readyAt-os.clock()).."s)." end
-		-- Legacy bonuses stack into the harvest base before fortune.
-		local bonus=0
-		if resource.index==1 and level(p.xp[skill])>=3 then bonus+=1 end
-		local reinforced=(p.items.ReinforcedPickaxe or 0)>0
-		if item=="Ore" then bonus+=if reinforced then 2 elseif (p.items.Pickaxe or 0)>0 then 1 else 0 end
-		if item=="Aetherite" and reinforced then bonus+=1 end
-		if region=="Skyreach" then bonus+=1 end
-		if workspace:GetAttribute("FestivalResource")==item then bonus+=1 end
-		-- Events hook: Skyward Calendar season/event effects (state published by festival.server.lua).
-		local event=Data.eventGather(item,Data.eventState(workspace,os.time()),roll)
-		bonus+=event.bonus
-		Logs.prime(p) -- Commissions & Logs: Forgeheart fortune within the budget Mastery leaves
-		local stats=Progression.computeStats(p,os.time())
-		local ok,result=Progression.harvest(p,item,stats,roll,bonus,os.time())
-		if not ok then
-			if item=="Aetherite" then return result.." Train on Ore in Brassfall Cay." end
-			return result
-		end
-		-- Events hook: festival yield/XP multipliers apply exactly once, after fortune; festival-only catches.
-		result.amount*=event.mult; result.xp=math.floor(result.xp*event.xpMult)
-		for id,n in pairs(event.extra) do pickup(p,id,n); note(p,"Festival catch • +"..n.." "..Data.Items[id].name) end
-		-- Pets depth: the doubled-harvest ability is one more yield candidate inside
-		-- Progression.gatherYieldMult (never stacks with mastery procs/surges).
-		local petDouble=result.petDouble==true
-		pickup(p,item,result.amount)
-		if skill=="Farming" and Contests.harvest then Contests.harvest(p,item,result.amount) end -- §39: Harvest Contest entry score
-		grantXp(p,skill,result.xp)
-		Held.gather(player,p,skill) -- Held items: the node's tool is in hand (auto switch, returns when idle)
-		if skill=="Farming" and Garden.fieldSeed then Garden.fieldSeed(p,item) end -- Verdant Garden seed pouch
-		Trails.event(p,"gather",item) -- Treasure Trails: scroll drops + trail tasks (Fishing counts as "fish")
-		Logs.regrow(p,result,resource) -- Commissions & Logs: Steadfast Pick joins the Mastery regrowth text
-		local mastered=Mastery.gather(p,result) -- Skill Mastery: bonus ingots, coins, regrowth skip
-		mastered..=Logs.gather(p,item,result,resource) -- Commissions & Logs: commission progress, Gemseeker
-		mastered..=Crafting.gather(p,resource) -- Crafting: rare rough gem roll on Mining harvests
-		if region then Journal.count(p,"gathers",region,1) end
-		p.started=true
-		if not regrowth then regrowth={}; nodeRegrowth[prompt]=regrowth; watchPrompt(prompt) end
-		-- Skill Mastery: Quick regrowth shortens the timer down to a floor (Progression.regrowthTime), never to zero.
-		regrowth[player]=os.clock()+(tonumber(result.regrowth) or tonumber(resource.respawn) or 3)
-		local hooked,spent="",false
-		if skill=="Fishing" then hooked,spent=Sea.cast(player,p,stats,result.tool,region,prompt) end
-		-- §39: a cast that raised no sea creature (nor would have, at the cap: QC L6) may land a trophy fish (never both).
-		if skill=="Fishing" and hooked=="" and not spent and Contests.trophyCast then hooked=Contests.trophyCast(player,p,result.tool,region) end
-		return "+"..result.amount.." "..resource.name..(if petDouble then " (pet ×2)" else "").."   ·   +"..result.xp.." "..skill.." XP"..mastered..hooked
+	elseif verb=="gather" and prompt then
+		-- §42: gathering nodes are struck with the held tool (`strike`); a lingering
+		-- hold prompt (none exist) never harvests.
+		return "Gathering nodes are struck now: left-click the node to swing your tool."
 	elseif verb=="explore" and prompt and item=="Skyreach" and region=="Skyreach" then
 		if p.skyreachVisited then return "Skyreach is already charted. Gather rich Aetherite or continue your guild contracts." end
 		p.skyreachVisited=true
@@ -10701,6 +10903,9 @@ local function perform(player,verb,item,prompt)
 	return "Unknown action."
 end
 action.OnServerInvoke=function(player,verb,item)
+	-- §42: a strike names the node Instance itself (validated server-side); it
+	-- has its own cadence and reply, never a snapshot (the break pushes one).
+	if verb=="strike" then return Strike.action(player,item) end
 	if type(verb)~="string" or #verb>32 or (item~=nil and type(item)~="string") then return nil end
 	if os.clock()<(lastRead[player] or 0) then return nil end
 	lastRead[player]=os.clock()+0.08

@@ -830,6 +830,9 @@ end
 local remote
 for _, o in ipairs(serverObjects) do if o.OnServerInvoke then remote = o end end
 ok(remote ~= nil, "IsleAction RemoteFunction found")
+-- §42: mock gather prompts harvest through real `strike` verbs (tools/strike-shim.luau).
+require("./tools/strike-shim").install({signal = services.ProximityPromptService.PromptTriggered,
+	invoke = function(p, verb, item) return remote.OnServerInvoke(p, verb, item) end, advance = advance})
 local function cmd(p, verb, item)
 	advance(1)
 	renew()
@@ -1152,7 +1155,7 @@ local prompt1 = plotPrompts[1]
 local function use(p, q)
 	advance(1)
 	renew()
-	p.root.Position = q.Parent.CFrame.Position
+	p.root.Position = (if q:GetAttribute("GatherNode") then q else q.Parent).CFrame.Position -- §42: a node host is its own part
 	p.last = nil
 	services.ProximityPromptService.PromptTriggered:Fire(q, p)
 	return p.last
@@ -1182,7 +1185,7 @@ ok(has(cmd(g11, "gardenPlot", "1").message, "No seeds"), "no seeds to plant")
 -- C11: the field seed pouch (every FIELD_SEED_EVERY-th field harvest).
 local herbPrompt
 for _, obj in world:GetDescendants() do
-	if obj:IsA("ProximityPrompt") and obj:GetAttribute("IsleAction") == "gather" and obj:GetAttribute("IsleItem") == "Herb" and obj:GetAttribute("IsleRegion") == nil then herbPrompt = obj break end
+	if obj:IsA("BasePart") and obj:GetAttribute("GatherNode") == "Herb" and obj:GetAttribute("IsleRegion") == nil then herbPrompt = obj break end -- §42: a struck node host
 end
 ok(herbPrompt ~= nil, "a field Meadow Herb node")
 local g12 = player(7012)

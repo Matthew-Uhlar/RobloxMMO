@@ -551,6 +551,9 @@ end
 local remote
 for _, o in ipairs(serverObjects) do if o.OnServerInvoke then remote = o end end
 ok(remote ~= nil, "IsleAction remote found")
+-- §42: mock gather prompts harvest through real `strike` verbs (tools/strike-shim.luau).
+require("./tools/strike-shim").install({signal = services.ProximityPromptService.PromptTriggered,
+	invoke = function(p, verb, item) return remote.OnServerInvoke(p, verb, item) end, advance = advance})
 local function cmd(p, verb, item) advance(1); return remote.OnServerInvoke(p, verb, item) end
 local function at(p, role) p.root.Position = npcAt[role] + Vector3.new(2, 0, 0) end
 local function prompt(action, item, pos)

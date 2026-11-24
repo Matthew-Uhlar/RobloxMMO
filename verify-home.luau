@@ -251,10 +251,10 @@ for _, f in ipairs(H.Edge) do kinds[f.kind] = (kinds[f.kind] or 0) + 1 end
 ok(kinds.beach == 1 and kinds.cliff >= 3 and kinds.pond == 1 and kinds.windpine >= 3 and kinds.ore >= 3, "beach, cliffs, pond, trees and ore rocks")
 local timberPrompts, orePrompts = 0, 0
 for _, obj in edge:GetDescendants() do
-	if obj:IsA("ProximityPrompt") then
-		eq(obj:GetAttribute("OwnerUserId"), 61, "edge prompt is owner-only")
-		eq(obj:GetAttribute("IsleAction"), "gather", "edge prompt gathers")
-		if obj:GetAttribute("IsleItem") == "Timber" then timberPrompts += 1 elseif obj:GetAttribute("IsleItem") == "Ore" then orePrompts += 1 end
+	ok(not (obj:IsA("ProximityPrompt") and obj:GetAttribute("IsleAction") == "gather"), "§42: no gather prompt on the edge")
+	if obj:GetAttribute("GatherNode") then -- §42: struck node hosts
+		eq(obj:GetAttribute("OwnerUserId"), 61, "edge node is owner-only")
+		if obj:GetAttribute("GatherNode") == "Timber" then timberPrompts += 1 elseif obj:GetAttribute("GatherNode") == "Ore" then orePrompts += 1 end
 	end
 end
 ok(timberPrompts == kinds.windpine and orePrompts == kinds.ore, "gatherable windpines and ore rocks")
