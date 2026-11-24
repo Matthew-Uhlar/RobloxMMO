@@ -36,6 +36,7 @@ Core.REMOTE_RANGE = 100 -- remote gestures farther than this from us are skipped
 Core.MAX_FX_PARTS = 80
 
 local rad = math.rad
+local IDENTITY -- CFrame.new(), set once CFrame is known (Core.IDENTITY)
 
 Core.ease = {
 	linear = function(a) return a end,
@@ -160,9 +161,13 @@ end
 function Core.basisOf(c0)
 	return c0 - c0.Position
 end
-function Core.toJointSpace(r, basis)
-	return basis:Inverse() * r * basis
+function Core.toJointSpace(r, basis, basisInv)
+	return (basisInv or basis:Inverse()) * r * basis
 end
+IDENTITY = CFrame.new()
+Core.IDENTITY = IDENTITY
+-- Joints carried by the leg / root motors (QC L10).
+Core.LEG_JOINTS = {rightHip = true, leftHip = true, rightKnee = true, leftKnee = true, root = true}
 
 -- Poses -------------------------------------------------------------------
 local function merge(base, extra)
@@ -441,15 +446,17 @@ P.STAFF_TAP_UP = {rightArm = {26, 0, 6}, rightElbow = {60}}
 P.STAFF_TAP = {rightArm = {12, 0, 6}, rightElbow = {72}, neck = {-6}}
 P.LINE_CHECK = {rightArm = {40, 0, 6}, rightElbow = {70}, leftArm = {30, -20, -6}, leftElbow = {80}, neck = {-16}}
 -- Death: knees buckle, then a slump forward (held; the body is removed on respawn).
+-- QC M4: no root offset, so the physically falling corpse is never pushed into the floor (no owner-side jitter).
 P.DEATH_BUCKLE = {rightArm = {-10, 0, 20}, rightElbow = {20}, leftArm = {-10, 0, -20}, leftElbow = {20}, waist = {-20, 0, 0}, neck = {-20},
-	root = {0, 0, 0, 0, -0.6, 0}, rightHip = {50}, leftHip = {44}, rightKnee = {-60}, leftKnee = {-56}}
+	rightHip = {50}, leftHip = {44}, rightKnee = {-60}, leftKnee = {-56}}
 P.DEATH_FALL = {rightArm = {-15, 0, 25}, rightElbow = {10}, leftArm = {-15, 0, -25}, leftElbow = {12}, waist = {-35, 0, 6}, neck = {-30, 0, 10},
-	root = {0, 0, 0, 0, -1.5, 0}, rightHip = {80}, leftHip = {76}, rightKnee = {-100}, leftKnee = {-104}}
+	rightHip = {80}, leftHip = {76}, rightKnee = {-100}, leftKnee = {-104}}
 
 -- Gathering strike timing (Data.Strike): the loop is exactly the server's
 -- swing cadence, and intro + the loop's impact key is the client's strike
 -- delay, so every strike lands on the frame the strike is sent.
 Core.STRIKE_INTRO = 0.06
+Core.STRIKE_GRACE, Core.STRIKE_GRACE_REMOTE = 0.15, 0.3
 Core.STRIKE = {mine = {skill = "Mining", swing = 0.7, impact = 0.42}, chop = {skill = "Woodcutting", swing = 0.7, impact = 0.40},
 	harvest = {skill = "Farming", swing = 0.6, impact = 0.36}}
 -- Tier flourish after the last strike (Core.flourishLevel ≥ 1): a wrist twirl.
@@ -467,6 +474,12 @@ local function strikeGesture(base, fields, ready, coil, wind, hit, follow)
 		key(i + 0.1, follow, "quadOut"), key(T.swing, ready, "sineInOut")}
 	fields.outro = {key(0, ready), key(0.22, REST, "quadInOut")}
 	fields.outroFlourish = flourishOutro(ready)
+	-- QC M3: after the last strike the ready pose holds briefly (longer for
+	-- observers: relay jitter) so a strike that is a little late re-phases the
+	-- loop instead of dropping into the recovery.
+	fields.ready = ready
+	fields.graceLocal = {key(0, ready), key(Core.STRIKE_GRACE, ready)}
+	fields.graceRemote = {key(0, ready), key(Core.STRIKE_GRACE_REMOTE, ready)}
 	return fields
 end
 -- A stance variant of a relayed gesture: chosen on every client from the
@@ -507,6 +520,12 @@ Core.GESTURES = {
 			key(0.56, P.FISH_CRANK, "sineInOut"), key(0.86, REST, "quadInOut")}},
 	bite = {tool = "Rod", skill = "Fishing", fx = "splash", rod = true,
 		loop = {key(0, REST), key(0.12, FISH_HOLD, "quadOut"), key(0.2, P.FISH_TUG, "quadIn", "bob"), key(0.42, FISH_HOLD, "backOut"), key(0.62, REST, "quadInOut")}},
+	-- QC L9: a fish that got away (or a line pulled in empty): the rod lifts on
+	-- a slack line and the shoulders drop. No hook-set, no splash.
+	lost = {tool = "Rod", skill = "Fishing", rod = true,
+		loop = {key(0, FISH_HOLD), key(0.16, merge(FISH_HOLD, {rightArm = {96, 0, 6}, rightElbow = {30}, neck = {6}}), "quadOut", "lost"),
+			key(0.5, merge(FISH_HOLD, {rightArm = {40, 0, 8}, rightElbow = {20}, waist = {-8, 0, 0}, neck = {-14}}), "sineInOut"),
+			key(0.8, REST, "quadInOut")}},
 	hammer = {tool = "Hammer", fx = "sparks", shake = true,
 		intro = {key(0, REST), key(0.12, HAMMER_READY, "quadOut")},
 		loop = {key(0, HAMMER_READY), key(0.2, HAMMER_UP, "quadOut"), key(0.28, HAMMER_HIT, "quadIn", "impact"), key(0.48, HAMMER_READY, "sineInOut")},
@@ -721,9 +740,9 @@ function Core.duration(keys) return keys[#keys].t end
 Core.SKILL_GESTURE = {Mining = "mine", Woodcutting = "chop", Fishing = "fish", Farming = "harvest"}
 Core.COOP_GESTURE = {Timber = "chop", Ore = "mine", Herb = "harvest"}
 -- §47: the anvil hammers, the cauldron pours and stirs, the loom weaves, the furnace blows glass.
-Core.STATION_GESTURE = {Forge = {"hammer"}, Cauldron = {"pour", "stir"}, Hearth = {"flip", "stir"}, Workbench = {"hammer", "saw"}, Slayer = {"talk"},
-	-- Crafting stations (prompt action "craftStation"): Jeweller's Bench, Tanning Rack, Glass Furnace.
-	Jeweller = {"hammer"}, Tannery = {"saw", "weave", "hammer"}, Glassworks = {"blow", "pour", "stir"}}
+Core.STATION_GESTURE = {Forge = {"hammer"}, Cauldron = {"pour", "stir"}, Hearth = {"flip", "stir"}, Workbench = {"hammer", "saw"}, Slayer = {"talk"}}
+-- Crafting stations (prompt action "craftStation": Jeweller's Bench, Tanning Rack, Glass Furnace)
+-- use Data.Crafting.Stations[id].gesture (QC L8).
 -- Every prompt verb (IsleAction) the servers build maps to a gesture here;
 -- verify-animations.luau scans the server sources and fails on a verb that
 -- would fall through to the generic reach.
@@ -766,8 +785,11 @@ function Core.selectGesture(info, Data, counter)
 		local skill = Data.ResourceSkill[item]
 		return Core.SKILL_GESTURE[skill] or "interact", if Core.SKILL_GESTURE[skill] then "action" else "fallback"
 	end
-	if (action == "station" or action == "craftStation") and Core.STATION_GESTURE[item] then
-		local list = Core.STATION_GESTURE[item]
+	-- QC L8: Crafting stations read their gesture list from Data.Crafting.Stations.
+	local crafted = action == "craftStation" and Data.Crafting and Data.Crafting.Stations and Data.Crafting.Stations[item]
+	local list = (crafted and type(crafted.gesture) == "table" and #crafted.gesture > 0 and crafted.gesture)
+		or ((action == "station" or action == "craftStation") and Core.STATION_GESTURE[item])
+	if list then
 		return list[((counter or 0) % #list) + 1], "action"
 	end
 	if action == "craft" then
@@ -813,7 +835,7 @@ function Core.stanceFor(name, rootY, partY, sizeY)
 end
 -- The relayed / held-item name a gesture answers to (stances → base, the
 -- reel / bite one-shots → fish).
-Core.FIT_AS = {reel = "fish", bite = "fish"}
+Core.FIT_AS = {reel = "fish", bite = "fish", lost = "fish"}
 function Core.fitName(name)
 	local def = Core.GESTURES[name]
 	return (def and def.base) or Core.FIT_AS[name] or name
@@ -848,7 +870,9 @@ Core.BITE_TIME = 0.5
 function Core.rodBend(s, now)
 	local t = now - s.phaseStart
 	local bend = 0
-	if s.name == "reel" then
+	if s.name == "lost" then
+		bend = -6 * math.max(0, 1 - t / 0.5) -- QC L9: a slack line
+	elseif s.name == "reel" then
 		bend = 30 * math.max(0, 1 - t / 0.86)
 	elseif s.name == "bite" then
 		bend = 22 * math.max(0, 1 - math.abs(t - 0.2) / 0.3)
@@ -1168,6 +1192,58 @@ function Core.fidgetDue(b, now, still, rand)
 	b.nextFidget = now + Core.FIDGET_GAP[1] + (Core.FIDGET_GAP[2] - Core.FIDGET_GAP[1]) * rand
 	return true
 end
+-- QC M2: the additive layer. Every motor written last frame is put back to
+-- the base it had (RunService.PreAnimation, before the Animator), and offsets
+-- are applied on top of this frame's Transform in Stepped, so nothing
+-- accumulates on joints the Animator does not rewrite and no earlier offset
+-- bleeds into the gesture fade lerps. No equality tests on CFrames.
+function Core.bodyRestore(b)
+	for _, e in ipairs(b.entries) do
+		if e.written then
+			if e.motor.Parent then e.motor.Transform = e.base end
+			e.base, e.written = nil, nil
+		end
+	end
+end
+function Core.bodyApply(b, pose)
+	for _, e in ipairs(b.entries) do
+		local touched = false
+		for _, part in ipairs(e.parts) do
+			if pose[part[1]] then touched = true; break end
+		end
+		if touched then
+			local base = e.motor.Transform
+			e.base, e.written = base, true
+			e.motor.Transform = base * Core.motorTarget(e, pose)
+		end
+	end
+end
+-- QC L3: no body layer while dead, seated or platform-standing (vehicles, stuns).
+function Core.bodySkip(humanoid)
+	return humanoid == nil or humanoid.Health <= 0 or humanoid.Sit == true or humanoid.PlatformStand == true
+end
+-- QC L4: a drop caused only by MaxHealth shrinking (gear removed, a buff ending
+-- clamps Health) is not a hit.
+function Core.isHit(prev, health, prevMax, max)
+	if not (health < prev and health > 0) then return false end
+	if max < prevMax and health >= max - 1e-3 then return false end
+	return true
+end
+-- QC L11: a rig binding is stale once any motor lost its parent (respawned limb, package swap).
+function Core.needsRebind(entries)
+	if not entries or #entries == 0 then return true end
+	for _, e in ipairs(entries) do
+		if not e.motor.Parent then return true end
+	end
+	return false
+end
+-- QC M4: corpses within REMOTE_RANGE always play the collapse (whatever the
+-- body cap); farther ones break their joints locally (the default ragdoll).
+function Core.deathPlan(isLocal, distance)
+	if isLocal or (tonumber(distance) or math.huge) <= Core.REMOTE_RANGE then return "play" end
+	return "break"
+end
+
 -- NPC nod (talk): degrees on the NPC's Neck Transform over NOD_TIME.
 Core.NOD_TIME = 0.9
 function Core.nodCurve(t)
@@ -1200,7 +1276,13 @@ function Core.bindRig(character)
 	for _, spec in ipairs(Core.RIGS[kind]) do
 		local motor = character:FindFirstChild(spec[1], true)
 		if motor and motor:IsA("Motor6D") then
-			table.insert(entries, {motor = motor, parts = spec[2], basis = Core.basisOf(motor.C0)})
+			-- QC L6: the basis inverse is cached at bind; axis-aligned (R15) bases skip the conversion.
+			-- QC L10: `legs` marks motors that carry the legs / root (released while moving).
+			local basis = Core.basisOf(motor.C0)
+			local legs = false
+			for _, part in ipairs(spec[2]) do if Core.LEG_JOINTS[part[1]] then legs = true end end
+			table.insert(entries, {motor = motor, parts = spec[2], basis = basis, basisInv = basis:Inverse(),
+				identity = basis:FuzzyEq(IDENTITY, 1e-6), legs = legs})
 		end
 	end
 	return entries, kind
@@ -1229,13 +1311,22 @@ function Core.drivenRig(rig, def)
 	end
 	return out
 end
+local function zeroPose(v)
+	return (v[1] or 0) == 0 and (v[2] or 0) == 0 and (v[3] or 0) == 0 and (v[4] or 0) == 0 and (v[5] or 0) == 0 and (v[6] or 0) == 0
+end
 function Core.motorTarget(entry, pose)
-	local r = CFrame.new()
+	-- QC L6: no identity seed, zero joints skipped, cached basis inverse.
+	local r = nil
 	for _, part in ipairs(entry.parts) do
 		local v = pose[part[1]]
-		if v then r = r * Core.jointCFrame(v, part[2]) end
+		if v and not zeroPose(v) then
+			local c = Core.jointCFrame(v, part[2])
+			r = if r then r * c else c
+		end
 	end
-	return Core.toJointSpace(r, entry.basis)
+	if not r then return IDENTITY end
+	if entry.identity then return r end
+	return Core.toJointSpace(r, entry.basis, entry.basisInv)
 end
 
 -- Held items (§26): a light carrying pose per held class while nothing else
@@ -1345,6 +1436,23 @@ function Core.createEngine(deps)
 				current.phaseStart, current.lastT, current.cycles = vnow, -1, 0
 				return current
 			end
+			-- QC M3: a strike inside the grace hold re-phases the loop so the
+			-- impact lands IMPACT after the click (the loop waits on the ready pose).
+			if current.phase == "grace" and def.strike then
+				local vnow = clockOf(current, deps.now())
+				current.phase, current.lastT = "loop", -1
+				current.phaseStart = vnow + Core.STRIKE_INTRO
+				return current
+			end
+			-- QC M1: a held gesture (an observer's cast) only refreshes its bound;
+			-- repeated relays must not queue a backlog of extra loops.
+			if current.holding then
+				if opts.maxHold then current.holdUntil = deps.now() + opts.maxHold end
+				return current
+			end
+			-- QC M3: the next strike loop starts INTRO after this click (never
+			-- earlier than the running loop's end), so impacts track the clicks.
+			if def.strike then current.nextLoopAt = clockOf(current, deps.now()) + Core.STRIKE_INTRO end
 			current.extra += 1
 			return current
 		end
@@ -1412,6 +1520,11 @@ function Core.createEngine(deps)
 		local s = E.active[character]
 		if s then s.holding = false end
 	end
+	-- QC L10: the body layer reports movement each frame.
+	function E.setMoving(character, moving)
+		local s = E.active[character]
+		if s then s.legsOff = moving == true end
+	end
 	-- §47: fade the gesture out from wherever it is (walking away from a
 	-- kneel, a crouch or an altar).
 	function E.cancel(character)
@@ -1423,6 +1536,7 @@ function Core.createEngine(deps)
 	-- The keyframes of a state's current phase (the tier flourish replaces a
 	-- strike's plain outro).
 	local function phaseKeys(s)
+		if s.phase == "grace" then return if s.isLocal then s.def.graceLocal else s.def.graceRemote end
 		if s.phase == "outro" and s.flourish and s.flourish > 0 and s.def.outroFlourish then return s.def.outroFlourish end
 		return Core.keysFor(s.def, s.phase, s.variant)
 	end
@@ -1441,10 +1555,18 @@ function Core.createEngine(deps)
 			if wantsLoop(s) then
 				if not s.holding and s.extra > 0 and s.cycles >= (s.def.minCycles or 1) then s.extra -= 1 end
 				if s.def.variants then s.variant += 1 end
-				if s.holding and deps.cycle then deps.cycle(s) end
+				-- QC M1: rod gestures never re-relay per bob (one cast = one relay).
+				if s.holding and deps.cycle and not s.def.rod then deps.cycle(s) end
+				-- QC M3: a late strike waits on the ready pose until its own phase.
+				if s.nextLoopAt then
+					if s.nextLoopAt > s.phaseStart then s.phaseStart = s.nextLoopAt end
+					s.nextLoopAt = nil
+				end
 			else
-				s.phase = if s.def.outro then "outro" else "done"
+				s.phase = if s.def.graceLocal then "grace" elseif s.def.outro then "outro" else "done"
 			end
+		elseif s.phase == "grace" then
+			s.phase = "outro"
 		elseif s.phase == "outro" then
 			s.phase = "done"
 		end
@@ -1503,9 +1625,14 @@ function Core.createEngine(deps)
 				end
 			end
 			s.weight = weight
+			-- QC L10: while the character moves, leg / root motors of a swing are
+			-- left to the Animator's walk cycle (a crouch stance never skates).
+			local legsOff = s.legsOff and not s.def.agility and not s.def.dead
 			for _, entry in ipairs(s.rig) do
-				local target = Core.motorTarget(entry, pose)
-				entry.motor.Transform = entry.motor.Transform:Lerp(target, weight)
+				if not (legsOff and entry.legs) then
+					local target = Core.motorTarget(entry, pose)
+					entry.motor.Transform = entry.motor.Transform:Lerp(target, weight)
+				end
 			end
 			if deps.post then deps.post(s, now) end
 		end
@@ -1657,6 +1784,10 @@ local FX_STYLE = {
 	glint = {count = 0.5, speed = 3, size = 0.22, material = Enum.Material.Neon, colour = "FFF4C8", float = true},
 }
 Core.FX_STYLE = FX_STYLE
+-- QC L7: impact FX parts (and their records) are pooled: an expired chip is
+-- unparented and reused by the next burst instead of destroyed / re-created.
+local fxFree = {}
+Core.fxFree = fxFree
 local function burst(style, position, colour, reduced, scale)
 	local spec = FX_STYLE[style]
 	if not spec then return end
@@ -1664,8 +1795,14 @@ local function burst(style, position, colour, reduced, scale)
 	local camera = Workspace.CurrentCamera
 	for i = 1, n do
 		if #fxParts >= Core.MAX_FX_PARTS then return end
-		local part = Instance.new("Part")
-		part.Anchored, part.CanCollide, part.CanQuery, part.CanTouch, part.CastShadow = true, false, false, false, false
+		local fx = table.remove(fxFree)
+		if not fx then
+			local made = Instance.new("Part")
+			made.Anchored, made.CanCollide, made.CanQuery, made.CanTouch, made.CastShadow = true, false, false, false, false
+			fx = {part = made}
+		end
+		local part = fx.part
+		part.Transparency = 0
 		part.Size = Vector3.one * spec.size * (0.7 + math.random() * 0.6)
 		part.Material = spec.material
 		local c = if spec.colour then Core.hex(spec.colour) else (colour or Core.hex("B0A89A"))
@@ -1676,8 +1813,8 @@ local function burst(style, position, colour, reduced, scale)
 		part.Parent = camera
 		local dir = Vector3.new(math.random() - 0.5, if spec.up then 0.8 + math.random() else math.random(), math.random() - 0.5).Unit
 		local speed = if reduced then 1.5 else spec.speed * (0.6 + math.random() * 0.6)
-		table.insert(fxParts, {part = part, vel = dir * speed, born = os.clock(), life = 0.45 + math.random() * 0.3,
-			float = spec.float, spin = math.random() * 8})
+		fx.vel, fx.born, fx.life, fx.float, fx.spin = dir * speed, os.clock(), 0.45 + math.random() * 0.3, spec.float, math.random() * 8
+		table.insert(fxParts, fx)
 	end
 end
 local function stepFx(dt)
@@ -1686,8 +1823,13 @@ local function stepFx(dt)
 		local fx = fxParts[i]
 		local age = (now - fx.born) / fx.life
 		if age >= 1 or not fx.part.Parent then
-			fx.part:Destroy()
 			table.remove(fxParts, i)
+			if fx.part.Parent and #fxFree < Core.MAX_FX_PARTS then
+				fx.part.Parent = nil
+				table.insert(fxFree, fx)
+			else
+				fx.part:Destroy()
+			end
 		else
 			if not fx.float then fx.vel += Vector3.new(0, -Workspace.Gravity * 0.25 * dt, 0) end
 			fx.part.CFrame = (fx.part.CFrame + fx.vel * dt) * CFrame.Angles(fx.spin * dt, 0, 0)
@@ -1790,9 +1932,12 @@ end
 -- §47 rod bend: the rod's blank parts (held model or prop) are re-welded
 -- about the grip's top each frame while a fishing gesture runs, and put back
 -- when it ends. The weld list is built once per gesture.
+-- QC L11: a rod that is not built yet returns nil (not false), so the bend
+-- retries (at most every ROD_RETRY seconds) once the held model / prop lands.
+local ROD_RETRY = 0.25
 local function rodWelds(s)
 	local model = if s.usesHeld then s.character:FindFirstChild("HeldItem") else s.tool
-	if typeof(model) ~= "Instance" then return false end
+	if typeof(model) ~= "Instance" then return nil end
 	local grip, list = nil, {}
 	for _, part in ipairs(model:GetChildren()) do
 		local weld = part:IsA("BasePart") and (part:FindFirstChild("HeldWeld") or part:FindFirstChildOfClass("Weld"))
@@ -1801,7 +1946,7 @@ local function rodWelds(s)
 			if Core.ROD_PARTS[part.Name] then table.insert(list, {weld = weld, base = weld.C0}) end
 		end
 	end
-	if not grip or #list == 0 then return false end
+	if not grip or #list == 0 then return nil end
 	return {model = model, pivot = grip * CFrame.new(0, 0, Core.ROD_PIVOT + 0.3), welds = list}
 end
 local function unbend(s)
@@ -1814,9 +1959,13 @@ local function unbend(s)
 end
 local function bendRod(s, now)
 	if s.bend and not s.bend.model.Parent then s.bend = nil end
-	if s.bend == nil then s.bend = rodWelds(s) end
+	if s.bend == nil then
+		local real = os.clock()
+		if s.bendRetryAt and real < s.bendRetryAt then return end
+		s.bend = rodWelds(s)
+		if not s.bend then s.bendRetryAt = real + ROD_RETRY; return end
+	end
 	local bend = s.bend
-	if not bend then return end
 	local degrees = Core.rodBend(s, now)
 	for _, w in ipairs(bend.welds) do w.weld.C0 = Core.bendC0(w.base, bend.pivot, degrees) end
 end
@@ -1834,7 +1983,9 @@ engine = Core.createEngine({
 		return type(class) == "string" and Held.fits(Core.fitName(name), class)
 	end,
 	cycle = function(state)
-		if state.isLocal then send(state.relayName or Core.fitName(state.name), state.target, state.itemId) end
+		-- QC L1: only gestures playLocal relayed re-relay per loop (death, fidgets,
+		-- attribute-driven and agility moves never do).
+		if state.isLocal and state.relayName then send(state.relayName, state.target, state.itemId) end
 	end,
 	post = function(state, now)
 		if state.def.rod then bendRod(state, now) end
@@ -1880,7 +2031,8 @@ local function playLocal(name, target, opts)
 		variant = variant, extend = opts.extend or def.strike ~= nil, reduced = reduced, flourish = flourish,
 	})
 	if state then
-		state.itemId, state.prompt, state.relayName = itemId, opts.prompt, name
+		state.itemId, state.prompt = itemId, opts.prompt
+		if not opts.noRelay then state.relayName = name end
 		if not opts.noRelay then send(name, target, itemId) end
 	end
 	return state
@@ -1917,7 +2069,8 @@ local function promptTarget(prompt)
 end
 local function gestureFor(prompt)
 	local info = promptInfo(prompt)
-	if info.action == "station" then stationCounter += 1 end
+	-- QC L8: crafting stations alternate their gestures too (the Glass Furnace reaches sift).
+	if info.action == "station" or info.action == "craftStation" then stationCounter += 1 end
 	return Core.selectGesture(info, Data, stationCounter)
 end
 -- Deferred prompts (garden plots): the reply message picks the gesture.
@@ -1969,6 +2122,12 @@ localApi.Event:Connect(function(name, target, itemId, mode)
 	if type(name) ~= "string" then return end
 	local state = player.Character and engine.get(player.Character)
 	if name == "release" then
+		-- QC L9: ("release", node, nil, "reel") is the reel click; a plain release
+		-- (the fish got away, another node was struck) plays and relays "lost".
+		if state and state.name == "fish" and not state.fadeStart and mode ~= "reel" then
+			playLocal("lost", state.target, {itemId = state.itemId})
+			return
+		end
 		if state then
 			engine.release(player.Character)
 			if state.def.rod and not state.fadeStart then send("reel", state.target, state.itemId) end
@@ -2152,25 +2311,32 @@ local holderConns = {} -- [player] = {connections} on the current character
 local bodies = {} -- [character] = {player, state, entries, root, humanoid, health, distance, admitted}
 local bodyList = {}
 Core.bodies = bodies -- exposed for the headless runtime test
+-- QC M4: every corpse within REMOTE_RANGE plays the collapse (outside the
+-- body cap: death states hold no cap slot); farther ones break their joints
+-- locally, the old default ragdoll. The pose never moves the root joint.
 local function playDeath(who, character)
-	local b = bodies[character]
-	if who ~= player and not (b and b.admitted) then return end
+	if not character.Parent then return end
 	engine.stop(character)
 	if who == player then
 		engine.play(character, "death", {hold = true, isLocal = true, noWatch = true})
-	else
-		playRemote(character, "death", {hold = true, noWatch = true})
+		return
 	end
+	local mine = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	local theirs = character:FindFirstChild("HumanoidRootPart")
+	local distance = if mine and theirs then (mine.Position - theirs.Position).Magnitude else math.huge
+	if Core.deathPlan(false, distance) == "play" and engine.play(character, "death", {hold = true, noWatch = true}) then return end
+	pcall(function() character:BreakJoints() end)
 end
 local function watchHumanoid(who, character, humanoid, list)
 	local b = bodies[character]
 	if not b or b.humanoid == humanoid then return end
-	b.humanoid, b.health = humanoid, humanoid.Health
+	b.humanoid, b.health, b.maxHealth = humanoid, humanoid.Health, humanoid.MaxHealth
 	table.insert(list, humanoid.HealthChanged:Connect(function(health)
-		local prev = b.health
-		b.health = health
-		if b.admitted and health < prev and health > 0 then
-			Core.bodyHit(b.state, (prev - health) / math.max(1, humanoid.MaxHealth), os.clock(), reducedMotion())
+		local prev, prevMax = b.health, b.maxHealth
+		b.health, b.maxHealth = health, humanoid.MaxHealth
+		-- QC L4: a MaxHealth clamp (gear off, a buff ending) is not a hit.
+		if b.admitted and Core.isHit(prev, health, prevMax, b.maxHealth) then
+			Core.bodyHit(b.state, (prev - health) / math.max(1, b.maxHealth), os.clock(), reducedMotion())
 		end
 	end))
 	-- Deferred so the old gesture's own Died handler has run first.
@@ -2192,9 +2358,17 @@ local function watchCharacter(who, character)
 	if humanoid then watchHumanoid(who, character, humanoid, list) end
 	refreshHolder(who, character)
 end
+-- A character going away drops every per-character record (QC L2: combos too).
+local function forgetCharacter(character)
+	holders[character] = nil
+	bodies[character] = nil
+	remoteCombos[character] = nil
+	remoteDistance[character] = nil
+end
+Core.forgetCharacter = forgetCharacter
 local function watchHolder(who)
 	own(who, who.CharacterAdded:Connect(function(character) watchCharacter(who, character) end))
-	own(who, who.CharacterRemoving:Connect(function(character) holders[character] = nil; bodies[character] = nil end))
+	own(who, who.CharacterRemoving:Connect(forgetCharacter))
 	if who.Character then watchCharacter(who, who.Character) end
 end
 local function watchPlayer(who)
@@ -2208,7 +2382,7 @@ Players.PlayerRemoving:Connect(function(who)
 	playerConns[who] = nil
 	for _, c in ipairs(holderConns[who] or {}) do c:Disconnect() end
 	holderConns[who] = nil
-	if who.Character then holders[who.Character] = nil; bodies[who.Character] = nil; remoteCombos[who.Character] = nil end
+	if who.Character then forgetCharacter(who.Character) end
 end)
 player:GetAttributeChangedSignal("HeldItem"):Connect(function() pending.clear() end)
 local function rankHolders(mine)
@@ -2248,33 +2422,15 @@ local function stepHolders(dt)
 end
 Core.holders = holders -- exposed for the headless runtime test
 
--- Body layer step (§47). Additive: written on top of whatever the Animator,
--- carry pose and gesture left in Transform. A joint nobody else rewrote since
--- our last frame (Transform still equals what we wrote) is offset from the
--- base we used then, so nothing accumulates.
-local function restoreBody(b)
-	for _, e in ipairs(b.entries) do
-		if e.written ~= nil then
-			if e.motor.Transform == e.written then e.motor.Transform = e.base end
-			e.base, e.written = nil, nil
-		end
-	end
-end
-local function applyBody(b, pose)
-	for _, e in ipairs(b.entries) do
-		local touched = false
-		for _, part in ipairs(e.parts) do
-			if pose[part[1]] then touched = true; break end
-		end
-		if touched then
-			local base = e.motor.Transform
-			if e.written ~= nil and base == e.written then base = e.base end
-			local out = base * Core.motorTarget(e, pose)
-			e.base, e.written = base, out
-			e.motor.Transform = out
-		elseif e.written ~= nil then
-			if e.motor.Transform == e.written then e.motor.Transform = e.base end
-			e.base, e.written = nil, nil
+-- Body layer step (§47, QC M2). Additive: every motor written last frame is
+-- put back to its base in RunService.PreAnimation (before the Animator and
+-- before any gesture fade reads Transform), and this frame's offsets go on
+-- top of whatever the Animator, carry pose and gesture wrote, in Stepped.
+local function restoreBodies()
+	for _, b in pairs(bodies) do
+		if b.dirty then
+			Core.bodyRestore(b)
+			b.dirty = false
 		end
 	end
 end
@@ -2283,7 +2439,8 @@ local function rankBodies(mine)
 	table.clear(bodyList)
 	local hasLocal = false
 	for character, b in pairs(bodies) do
-		if #b.entries == 0 or not b.entries[1].motor.Parent then b.entries = Core.bindRig(character) or {} end
+		-- QC L11: any lost motor (respawned limb, package swap) rebinds.
+		if Core.needsRebind(b.entries) then b.entries = Core.bindRig(character) or {} end
 		if not b.root or not b.root.Parent then b.root = character:FindFirstChild("HumanoidRootPart") end
 		if b.player == player then
 			b.distance = -1
@@ -2294,12 +2451,6 @@ local function rankBodies(mine)
 		table.insert(bodyList, b)
 	end
 	Core.admitHolders(bodyList, Core.BODY_CAP + (if hasLocal then 1 else 0), Core.REMOTE_RANGE)
-	for _, b in ipairs(bodyList) do
-		if not b.admitted and b.state.active then
-			restoreBody(b)
-			b.state.active = false
-		end
-	end
 end
 local function stepBodies(dt)
 	local now = os.clock()
@@ -2314,35 +2465,45 @@ local function stepBodies(dt)
 			continue
 		end
 		local humanoid = b.humanoid
-		if not b.admitted or not humanoid or humanoid.Health <= 0 then continue end
+		-- QC L3: nothing while dead, seated or platform-standing.
+		if not b.admitted or Core.bodySkip(humanoid) then continue end
 		local root = b.root
 		local v = root and root.AssemblyLinearVelocity
 		if v then
 			local horizontal = math.sqrt(v.X * v.X + v.Z * v.Z)
 			Core.bodyFeed(b.state, v.Y, horizontal, now, dt, reduced)
 			local s = engine.get(character)
-			-- Walking away from a kneel / crouch / chest fades it out.
-			if s and s.def.stopOnMove and horizontal > 4 and not s.fadeStart then engine.cancel(character) end
+			local moving = horizontal > 4
+			-- Walking away from a kneel / crouch / chest fades it out; any other
+			-- swing leaves its legs to the walk cycle while moving (QC L10).
+			if s and s.def.stopOnMove and moving and not s.fadeStart then engine.cancel(character) end
+			engine.setMoving(character, moving)
 			-- Idle fidgets: standing still with an item in hand, nothing else playing.
 			local holder = holders[character]
-			local still = s == nil and holder ~= nil and horizontal < 0.5 and math.abs(v.Y) < 1 and not humanoid.Sit
+			local still = s == nil and holder ~= nil and horizontal < 0.5 and math.abs(v.Y) < 1
 			if Core.fidgetDue(b.state, now, still and not reduced, math.random()) then
 				local fidget = Core.FIDGET[holder.class]
-				if fidget then engine.play(character, fidget, {isLocal = b.player == player}) end
+				if fidget then
+					if b.player == player then
+						engine.play(character, fidget, {isLocal = true})
+					else
+						playRemote(character, fidget, {}) -- QC L5: under the remote cap
+					end
+				end
 			end
 		end
 		local pose, active = Core.bodyPose(b.state, now)
 		if active then
-			applyBody(b, pose)
-			b.state.active = true
-		elseif b.state.active then
-			restoreBody(b)
-			b.state.active = false
+			Core.bodyApply(b, pose)
+			b.dirty = true
 		end
 	end
 end
 
+local preAnimation = RunService.PreAnimation
+if preAnimation then preAnimation:Connect(restoreBodies) end
 RunService.Stepped:Connect(function(_, dt)
+	if not preAnimation then restoreBodies() end
 	stepHolders(dt)
 	engine.step()
 	stepBodies(dt)

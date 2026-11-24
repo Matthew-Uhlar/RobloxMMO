@@ -21,7 +21,7 @@ Relay.NAMES = {mine = true, chop = true, fish = true, harvest = true, hammer = t
 	-- loom, glassblowing, sieve) and the interaction library. Stance variants
 	-- (mine_low …), idle fidgets and death are never relayed: every client
 	-- derives them from the relayed base + target or from what it sees.
-	reel = true, bite = true, pour = true, weave = true, blow = true, sift = true,
+	reel = true, bite = true, lost = true, pour = true, weave = true, blow = true, sift = true,
 	talk = true, open = true, deposit = true, plant = true, water = true, tend = true, pray = true, offer = true,
 	pickup = true, attune = true, read = true, survey = true, pilfer = true}
 -- Combat gestures tint their held bow / staff / wand by the weapon of that style.
@@ -31,7 +31,7 @@ Relay.TARGET_RANGE = 20
 Relay.BROADCAST_RANGE = 120
 Relay.RATE = 4 -- tokens per second
 Relay.BURST = 4
-Relay.TOOL_KIND = {mine = "Pickaxe", chop = "Hatchet", fish = "Rod", harvest = "Hoe", reel = "Rod", bite = "Rod"}
+Relay.TOOL_KIND = {mine = "Pickaxe", chop = "Hatchet", fish = "Rod", harvest = "Hoe", reel = "Rod", bite = "Rod", lost = "Rod"}
 
 -- itemId must describe the gesture's held item, or be nil.
 function Relay.itemOk(Data, name, itemId)

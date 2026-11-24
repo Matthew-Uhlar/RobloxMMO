@@ -314,7 +314,7 @@ do
 	eq(count(log.marks, "mine:impact"), 2, "two strikes while held for 1.5s")
 	eq(log.cycles, 2, "each looped strike is replicated")
 	engine.release(c)
-	run(1.2)
+	run(1.4) -- §47 QC M3: + the 0.15 s grace hold on the ready pose
 	eq(count(log.marks, "mine:impact"), 3, "current strike finishes after release")
 	eq(engine.count, 0, "gesture ends after outro + fade")
 	eq(log.destroyed, 1, "tool removed")

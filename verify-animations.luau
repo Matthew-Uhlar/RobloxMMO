@@ -87,8 +87,8 @@ end
 eq(Core.STATION_GESTURE.Forge[1], "hammer", "anvil hammering")
 ok(table.find(Core.STATION_GESTURE.Cauldron, "pour") and table.find(Core.STATION_GESTURE.Cauldron, "stir"), "alchemy pours and stirs")
 ok(table.find(Core.STATION_GESTURE.Hearth, "stir") and table.find(Core.STATION_GESTURE.Hearth, "flip"), "cooking stirs and flips")
-ok(table.find(Core.STATION_GESTURE.Tannery, "weave"), "the loom weaves")
-ok(table.find(Core.STATION_GESTURE.Glassworks, "blow"), "the furnace blows glass")
+ok(table.find(Data.Crafting.Stations.Tannery.gesture, "weave"), "the loom weaves")
+ok(table.find(Data.Crafting.Stations.Glassworks.gesture, "blow"), "the furnace blows glass")
 for id, b in pairs(Data.Crafting.Branches) do ok(G[b.gesture] ~= nil and Relay.NAMES[b.gesture], id .. " batch gesture " .. b.gesture .. " exists and relays") end
 -- Prompts without an IsleAction pick by their text (travel posts, NPC talk,
 -- expedition and minigame prompts).
@@ -389,19 +389,19 @@ for base, T in pairs(Core.STRIKE) do
 	eq(engine.count, 0, base .. " recovers to rest after the last strike")
 	ok(clock.t > 0, "clock ran")
 end
--- A late click (in the recovery) rejoins at the intro: still 0.42 s to impact.
+-- A late click (after the grace hold, in the recovery) rejoins at the intro: still 0.42 s to impact.
 do
 	local engine, clock, log, run = rig()
 	local c = fakeCharacter()
-	engine.play(c, "mine", {extend = true})
-	run(0.8) -- loop done at 0.76: recovering
+	engine.play(c, "mine", {extend = true, isLocal = true})
+	run(1.0) -- loop done at 0.76, grace hold to 0.91: recovering
 	eq(engine.get(c).phase, "outro", "recovering after the strike")
-	local s = engine.play(c, "mine", {extend = true})
+	local s = engine.play(c, "mine", {extend = true, isLocal = true})
 	ok(s == engine.get(c) and s.phase == "intro" and s.from ~= nil, "the late strike rejoins with a crossfade")
 	run(0.6)
 	local hits = impactsOf(log, "mine")
 	eq(#hits, 2, "both strikes land")
-	near(hits[2], 0.8 + Core.STRIKE.mine.impact, "the rejoined strike lands on its send frame", 1 / 200)
+	near(hits[2], 1.0 + Core.STRIKE.mine.impact, "the rejoined strike lands on its send frame", 1 / 200)
 end
 -- Combos: steps chain inside the window and restart after a pause.
 do
@@ -644,6 +644,217 @@ ok(client:find('own(who, who:GetAttributeChangedSignal("CraftingGesture")', 1, t
 ok(client:find("playLocal(name, nil, {itemId = item, noRelay = true})", 1, true) ~= nil, "attribute gestures are not relayed again")
 ok(server:find("BreakJointsOnDeath = false", 1, true) ~= nil, "joints survive death so the collapse can play")
 ok(client:find("Core.admitHolders(bodyList, Core.BODY_CAP", 1, true) ~= nil, "bodies are ranked under the cap")
+
+------------------------------------------------------------------------------
+-- 7b. QC regressions (§47 review: M1-M4, L1-L11), one block each
+------------------------------------------------------------------------------
+local combatSource = fs.readFile("combat.client.lua")
+local function rigCycles()
+	local clock = {t = 0}
+	local log = {marks = {}, cycles = 0}
+	local engine = Core.createEngine({
+		now = function() return clock.t end, alive = function(c) return c.Parent ~= nil end, bindRig = Core.bindRig,
+		attachTool = function() return {Destroy = function() end} end, watch = function() return {} end,
+		mark = function(state, m) table.insert(log.marks, {name = state.name, mark = m, t = clock.t}) end,
+		cycle = function() log.cycles += 1 end,
+	})
+	local function run(seconds, dt)
+		dt = dt or 1 / 240
+		local stop = clock.t + seconds
+		while clock.t < stop - 1e-9 do clock.t += dt; engine.step() end
+	end
+	return engine, clock, log, run
+end
+-- M1: repeated fish relays on a held remote cast refresh its bound, never queue loops; rods never cycle-relay.
+do
+	local engine, clock, log, run = rigCycles()
+	local c = fakeCharacter()
+	local s = engine.play(c, "fish", {hold = true, extend = true, maxHold = 30})
+	for _ = 1, 6 do
+		run(0.5)
+		engine.play(c, "fish", {hold = true, extend = true, maxHold = 30})
+	end
+	eq(s.extra, 0, "M1: no backlog of extra loops from repeated relays")
+	near(s.holdUntil, clock.t + 30, "M1: the hold bound is refreshed", 1e-6)
+	eq(log.cycles, 0, "M1: a held rod never re-relays per bob")
+	engine.release(c)
+	run(2)
+	local reels = 0
+	for _, m in ipairs(log.marks) do if m.mark == "reel" then reels += 1 end end
+	eq(reels, 1, "M1: one reel right after the release")
+	eq(engine.count, 0, "M1: the cast ends promptly")
+	-- non-rod held gestures still cycle-relay
+	local engine2, _, log2, run2 = rigCycles()
+	engine2.play(c, "hammer", {hold = true})
+	run2(1.2)
+	ok(log2.cycles >= 1, "M1: other held gestures still relay each cycle")
+end
+-- M2: the additive layer restores every written motor before the next frame (no CFrame equality),
+-- so a joint the Animator never rewrites does not accumulate and nothing bleeds into fades.
+do
+	local function m(name) return {Name = name, Parent = true, Transform = CFrame.new()} end
+	local entries = {{motor = m("Waist"), parts = {{"waist", 1}}, basis = CFrame.new(), basisInv = CFrame.new(), identity = true}}
+	local b = {entries = entries}
+	local pose = {waist = {-10, 0, 0, 0, 0, 0}}
+	for _ = 1, 100 do -- no Animator: nothing rewrites Transform between frames
+		Core.bodyRestore(b)
+		Core.bodyApply(b, pose)
+	end
+	local want = Core.jointCFrame({-10, 0, 0})
+	ok(entries[1].motor.Transform:FuzzyEq(want, 1e-5), "M2: 100 frames on an un-animated joint = one offset (no accumulation)")
+	Core.bodyRestore(b)
+	ok(entries[1].motor.Transform:FuzzyEq(CFrame.new(), 1e-6), "M2: restore puts the base back")
+	local walk = CFrame.Angles(math.rad(20), 0, 0)
+	for _ = 1, 10 do -- an Animator that rewrites the joint each frame
+		Core.bodyRestore(b)
+		entries[1].motor.Transform = walk
+		Core.bodyApply(b, pose)
+	end
+	ok(entries[1].motor.Transform:FuzzyEq(walk * want, 1e-5), "M2: the offset rides on the Animator's pose")
+	ok(client:find("RunService.PreAnimation", 1, true) and client:find("preAnimation:Connect(restoreBodies)", 1, true), "M2: restored in PreAnimation")
+	ok(not client:find("== e.written", 1, true) and not client:find("Transform == e.", 1, true), "M2: no CFrame equality rewrite detection")
+end
+-- M3: the swing grid, the grace hold and re-phasing.
+do
+	local text = combatSource:match("(function GN%.nextSwing%(now, due, swing%).-\n\tend)")
+	ok(text ~= nil, "M3: GN.nextSwing in combat.client.lua")
+	local GN = {CONTINUOUS = tonumber(combatSource:match("GN%.CONTINUOUS = ([%d%.]+)"))}
+	luau.load("local GN = ...\n" .. text:gsub("^\t", "") .. "\nreturn GN", {debugName = "nextSwing"})(GN)
+	near(GN.nextSwing(0.716, 0.7, 0.7), 1.4, "M3: a continuous hold keeps the 0.7 s grid")
+	near(GN.nextSwing(5, 0.7, 0.7), 5.7, "M3: after a pause the grid restarts at the click")
+	near(GN.nextSwing(0.3, 0, 0.7), 1.0, "M3: the first swing starts the grid")
+	ok(combatSource:find("GN.next = GN.nextSwing(now, GN.next, ST.SWING[r.skill] or 0.7)", 1, true) ~= nil, "M3: strikes use the grid")
+	-- grace: a slightly late local strike re-phases (impact = click + IMPACT), no recovery dip
+	local engine, clock, log, run = rigCycles()
+	local c = fakeCharacter()
+	engine.play(c, "mine", {extend = true, isLocal = true})
+	run(0.7 + Core.STRIKE_INTRO + 0.1) -- 0.1 s into the grace hold
+	eq(engine.get(c).phase, "grace", "M3: the ready pose holds after the last strike")
+	local at = clock.t
+	engine.play(c, "mine", {extend = true, isLocal = true})
+	eq(engine.get(c).phase, "loop", "M3: a strike in the grace hold re-phases the loop")
+	run(1)
+	local hits = impactsOf(log, "mine")
+	near(hits[2], at + Core.STRIKE.mine.impact, "M3: the re-phased strike lands IMPACT after its click", 1 / 200)
+	ok(Core.STRIKE_GRACE_REMOTE > Core.STRIKE_GRACE and Core.STRIKE_GRACE >= 0.15, "M3: observers hold the ready pose longer")
+	-- drifting clicks: each impact lands IMPACT after its own click
+	local engine2, clock2, log2, run2 = rigCycles()
+	local c2 = fakeCharacter()
+	local clicks = {0, 0.72, 1.45, 2.17}
+	for i, t in ipairs(clicks) do
+		run2(t - clock2.t)
+		engine2.play(c2, "chop", {extend = true, isLocal = true})
+		if i == #clicks then run2(1.5) end
+	end
+	local h2 = impactsOf(log2, "chop")
+	eq(#h2, #clicks, "M3: one strike per click")
+	for i, t in ipairs(clicks) do near(h2[i], t + Core.STRIKE.chop.impact, "M3: drifted click " .. i .. " lands on its own send frame", 1 / 200) end
+end
+-- M4: corpses in range always collapse; farther ones break joints; the pose never moves the root.
+do
+	eq(Core.deathPlan(true, math.huge), "play", "M4: our own death always plays")
+	eq(Core.deathPlan(false, Core.REMOTE_RANGE - 1), "play", "M4: a corpse in range plays (whatever the body cap)")
+	eq(Core.deathPlan(false, Core.REMOTE_RANGE + 1), "break", "M4: a far corpse breaks its joints")
+	eq(Core.drivenJoints(G.death).root, nil, "M4: the collapse never moves the root joint")
+	ok(not client:find("if who ~= player and not (b and b.admitted) then return end", 1, true), "M4: no body-cap gate on death")
+	ok(client:find("character:BreakJoints()", 1, true) ~= nil, "M4: far corpses ragdoll locally")
+end
+-- L1: per-loop relays only for gestures playLocal relayed.
+ok(client:find("if state.isLocal and state.relayName then send(state.relayName", 1, true) ~= nil, "L1: cycle relays need a relay name")
+ok(client:find("if not opts.noRelay then state.relayName = name end", 1, true) ~= nil, "L1: attribute gestures carry no relay name")
+-- L2: a removed character drops its combo record.
+ok(client:find("own(who, who.CharacterRemoving:Connect(forgetCharacter))", 1, true) and client:find("remoteCombos[character] = nil", 1, true),
+	"L2: combos forgotten on CharacterRemoving")
+-- L3: no body layer while seated / platform-standing / dead.
+do
+	ok(Core.bodySkip(nil), "L3: no humanoid")
+	ok(Core.bodySkip({Health = 0}), "L3: dead")
+	ok(Core.bodySkip({Health = 50, Sit = true}), "L3: seated")
+	ok(Core.bodySkip({Health = 50, PlatformStand = true}), "L3: platform-standing")
+	ok(not Core.bodySkip({Health = 50, Sit = false, PlatformStand = false}), "L3: standing")
+end
+-- L4: MaxHealth clamps are not hits.
+do
+	ok(Core.isHit(100, 80, 100, 100), "L4: damage flinches")
+	ok(not Core.isHit(150, 120, 150, 120), "L4: MaxHealth 150 → 120 clamping Health is not a hit")
+	ok(Core.isHit(150, 90, 150, 120), "L4: a real hit while MaxHealth drops still flinches")
+	ok(not Core.isHit(80, 90, 100, 100), "L4: healing does not flinch")
+	ok(not Core.isHit(10, 0, 100, 100), "L4: the killing blow is the death, not a flinch")
+end
+-- L5: remote fidgets go through the remote cap.
+ok(client:find("playRemote(character, fidget, {})", 1, true) ~= nil, "L5: remote fidgets admitted under the cap")
+-- L6: bind caches the basis inverse; identity / zero poses skip work.
+do
+	local r15 = fakeCharacter()
+	local entries = Core.bindRig(r15)
+	for _, e in ipairs(entries) do ok(e.basisInv ~= nil and e.identity == true, "L6: R15 " .. e.motor.Name .. " cached, axis-aligned") end
+	eq(Core.motorTarget(entries[1], {}), Core.IDENTITY, "L6: an empty pose returns the shared identity")
+	eq(Core.motorTarget(entries[1], {rightArm = {0, 0, 0}}), Core.IDENTITY, "L6: a zero pose returns the shared identity")
+	local rotated = CFrame.new(1, 0.5, 0) * CFrame.Angles(0, math.pi / 2, 0)
+	local basis = Core.basisOf(rotated)
+	local entry = {parts = {{"rightArm", 1}, {"rightElbow", 0.5}}, basis = basis, basisInv = basis:Inverse(), identity = false}
+	local pose = {rightArm = {60, 10, -5}, rightElbow = {40}}
+	local old = basis:Inverse() * Core.jointCFrame(pose.rightArm) * Core.jointCFrame(pose.rightElbow, 0.5) * basis
+	ok(Core.motorTarget(entry, pose):FuzzyEq(old, 1e-6), "L6: the cached conversion matches the old one (R6 basis)")
+end
+-- L7: impact FX parts are pooled.
+ok(client:find("local fx = table.remove(fxFree)", 1, true) and client:find("table.insert(fxFree, fx)", 1, true), "L7: FX parts reused from a pool")
+-- L8: crafting station lists come from Data.Crafting; every one is reachable.
+do
+	for id, st in pairs(Data.Crafting.Stations) do
+		for i, g in ipairs(st.gesture) do
+			eq((Core.selectGesture({action = "craftStation", item = id}, Data, i - 1)), g, "L8: " .. id .. " gesture " .. i .. " from Data.Crafting")
+		end
+	end
+	eq((Core.selectGesture({action = "craftStation", item = "Glassworks"}, Data, 2)), "sift", "L8: the Glass Furnace reaches sift")
+	ok(client:find('if info.action == "station" or info.action == "craftStation" then stationCounter += 1 end', 1, true), "L8: craftStation counts too")
+end
+-- L9: a lost fish plays and relays "lost", the reel click plays the reel.
+do
+	ok(G.lost and G.lost.rod and Relay.NAMES.lost and Relay.itemOk(Data, "lost", nil), "L9: lost is a relayed rod gesture")
+	ok(Core.rodBend({name = "lost", phase = "loop", phaseStart = 0}, 0.1) < 0, "L9: a slack line")
+	eq(Core.fitName("lost"), "fish", "L9: the held rod swings it")
+	local hasSplash = false
+	for _, k in ipairs(G.lost.loop) do if k.mark == "reel" then hasSplash = true end end
+	ok(not hasSplash and G.lost.fx == nil, "L9: no hook-set, no splash")
+	ok(combatSource:find('gesture("release", node, "reel")', 1, true) ~= nil, "L9: combat marks the reel click")
+	ok(client:find('playLocal("lost", state.target', 1, true) ~= nil, "L9: a plain release plays lost")
+end
+-- L10: leg motors are left to the walk cycle while moving.
+do
+	local engine, _, _, run = rigCycles()
+	local c = fakeCharacter()
+	local walk = CFrame.Angles(math.rad(25), 0, 0)
+	engine.play(c, "mine_low", {extend = true})
+	engine.setMoving(c, true)
+	for _ = 1, 20 do
+		c.children.RightHip.Transform = walk
+		run(1 / 60)
+		ok(c.children.RightHip.Transform:FuzzyEq(walk, 1e-6), "L10: the crouch leaves the hips to the walk while moving")
+	end
+	ok(not c.children.RightShoulder.Transform:FuzzyEq(CFrame.new(), 1e-3), "L10: the arms still swing")
+	engine.setMoving(c, false)
+	c.children.RightHip.Transform = walk
+	run(1 / 60)
+	ok(not c.children.RightHip.Transform:FuzzyEq(walk, 1e-3), "L10: standing still, the crouch returns")
+	local entries = Core.bindRig(c)
+	for _, e in ipairs(entries) do
+		local leg = if e.motor.Name:find("Hip") or e.motor.Name:find("Knee") or e.motor.Name == "Root" then true else false
+		eq(e.legs, leg, "L10: " .. e.motor.Name .. " leg flag")
+	end
+end
+-- L11: rebinding and rod retries.
+do
+	local entries = Core.bindRig(fakeCharacter())
+	ok(not Core.needsRebind(entries), "L11: a fresh binding is good")
+	entries[5].motor.Parent = nil
+	ok(Core.needsRebind(entries), "L11: any lost motor rebinds (not just the first)")
+	ok(Core.needsRebind({}) and Core.needsRebind(nil), "L11: empty bindings rebind")
+	ok(client:find("if Core.needsRebind(b.entries) then", 1, true) ~= nil, "L11: the ranking pass rebinds")
+	local rod = client:match("local function rodWelds%(s%)(.-)\nend")
+	ok(rod and not rod:find("return false", 1, true), "L11: a missing rod returns nil, so the bend retries")
+	ok(client:find("s.bendRetryAt = real + ROD_RETRY", 1, true) ~= nil, "L11: retries are throttled")
+end
 
 ------------------------------------------------------------------------------
 -- 8. Packaging
