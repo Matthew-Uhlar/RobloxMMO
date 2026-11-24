@@ -4495,6 +4495,30 @@ do
 				checks += 1
 			end
 		end
+		-- §43 Tutorial coach card lane (Theme.hudLayout coach): docked on tall
+		-- screens, clear of every item above and the chat lane; a centred card on
+		-- phones (or beside a docked satchel), clear of the persistent HUD. Never
+		-- over the hotbar or the action bar. Its chip (collapsed) too.
+		do
+			local LC = T.hudLayout(size.X, size.Y, { touch = touch, satchelOpen = S.docked })
+			local persistent = { sidebar = true, minimap = true, ["action bar"] = true, ["hotbar gap"] = true, ["docked satchel"] = true }
+			for _, lane in ipairs({ { "coach card", LC.coach }, { "coach chip", LC.coachChip } }) do
+				local r = lane[2]
+				if r.w > 0 then
+					assert(r.x >= 0 and r.y >= 0 and r.x + r.w <= size.X and r.y + r.h <= size.Y, lane[1] .. " on screen at " .. tag .. " " .. show(r))
+					-- The phone chip shares the left column with the lap / trap trackers and steps aside while they show.
+					local chipOnPhone = lane[1] == "coach chip" and LC.short
+					for _, item in ipairs(items) do
+						local strict = persistent[item[1]] or not LC.coach.modal or lane[1] == "coach chip"
+						if strict and not (chipOnPhone and (item[1] == "lap tracker" or item[1] == "trap counter")) then
+							assert(not overlaps(r, item[2]), lane[1] .. " " .. show(r) .. " overlaps " .. item[1] .. " " .. show(item[2]) .. " at " .. tag)
+							checks += 1
+						end
+					end
+					if not touch and not LC.coach.modal then assert(not overlaps(r, L.chat), lane[1] .. " clears the chat lane at " .. tag) end
+				end
+			end
+		end
 		-- Desktop: the bottom-left chat lane stays clear of the persistent HUD and
 		-- the left-column trackers (L1); touch keeps Roblox's chat position.
 		assert(S.chatDocked == not touch, "chat docks bottom-left on desktop only at " .. tag)

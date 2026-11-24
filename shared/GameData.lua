@@ -1776,7 +1776,7 @@ T.skillLevel, T.contracts = skillLevel, contracts
 ------------------------------------------------------------------------------
 T.Tutorial = {
 	{id="gather",title="Gather supplies",
-		text="Mine 6 Copperstone Ore in Brassfall Cay and cut 3 Meadow Timber. Walk up to a node and hold the prompt.",
+		text="Mine 6 Copperstone Ore in Brassfall Cay and cut 3 Meadow Timber. Walk up to a node and left-click it to swing your tool.",
 		progress=function(s) return math.min(6, collected(s, "Ore")) + math.min(3, collected(s, "Timber")), 9 end,
 		waypoint={"gather:Ore","region:Quarry"}},
 	{id="craft",title="Forge a Copper Blade",
@@ -11419,7 +11419,7 @@ G.Steps = {
 	-- finding him (visit / talk flags). Steps are saved by id, never by index.
 	{id="mode",title="Choose your journal mode",detail="Talk to Pell in Compass Quay: keep a Standard journal in one tap, or seal an Ironman journal before you gather, craft or fight.",coins=50,
 		check=function(p) return p.accountMode == "standard" or p.accountMode == "ironman" or p.ironman == true end},
-	{id="chop",title="Chop a log",detail="Hold the prompt on a tree on your home isle or Mosswake Grove.",coins=25,
+	{id="chop",title="Chop a log",detail="Left-click a tree on your home isle or Mosswake Grove to chop it.",coins=25,
 		check=function(p) return anyCollected(p, "Woodcutting") end},
 	{id="craft",title="Craft at a workbench",detail="Craft anything at a Workbench, Forge, Hearth or Cauldron (Atlas › Workshop).",coins=40,
 		check=function(p) return anyCount(tab(p.counters).crafts) or anyCount(tab(p.crafting).made) end},
@@ -15951,6 +15951,238 @@ do
 	end
 end
 -- <<< END Gathering Feel <<<
+------------------------------------------------------------------------------
+-- >>> BEGIN Tutorial (Tutorial team; append-only section; docs/DEPTH-CONTRACT.md §43) >>>
+-- Coach cards on top of the Wayfarer's Path (§31) and the first starter
+-- quests (guild contracts 1-2, Charting the Skyway, Lamps of the Quay, read
+-- through the §33 quest helper). Pure data + pure rules shared by the server
+-- "Tutorial" block in server.server.lua (state, the `tutorial` verb, the
+-- current card) and tutorial.client.lua (cards, pointer ring, tips).
+-- * The current card is DERIVED from server progress (Path step flags, quest
+--   acceptance / completion): the first unfinished chapter wins. Buttons never
+--   advance a step card; "Got it" only collapses it (seen).
+-- * Intro / finale cards (ack = true) are the only ones a button finishes.
+-- * Tips fire once per account on a first encounter (client-detected from
+--   server signals; the server records each id once, verb "tip:<id>").
+------------------------------------------------------------------------------
+do
+local TU = {}
+Data.Tutorial = TU
+local function tab(v) return if type(v) == "table" then v else {} end
+local function num(v) return if type(v) == "number" and v == v and v > -math.huge and v < math.huge then v else 0 end
+local function whole(v) v = num(v); return if v > 0 then math.floor(v) else 0 end
+TU.whole = whole
+TU.VERSION = 1
+TU.NAME = "Tutorial"
+TU.CONTRACTS = 2 -- the first two guild contracts form the first starter quest
+TU.SATCHEL_PAGE = 21 -- distinct stacks that fill the satchel's first page (7 x 3 grid)
+-- Pointer targets (tutorial.client.lua resolves them to on-screen GuiObjects,
+-- most specific first; the first one visible wins):
+--   objective  sidebar Objective line      satchel  sidebar Bag button
+--   menu       sidebar Menu button         chart    sidebar Map (Sky Chart) button
+--   hotbar:N   hotbar slot N (1 weapon, 2 context tool)
+--   orbs       status orbs (Health)        clock    sidebar clock line
+--   any other  a GuiObject of that name in the atlas (MenuQuests, SectionHelper…)
+local Path = Data.Features.Guide
+TU.Cards = {
+	{id="welcome", chapter="intro", ack=true, title="Welcome to the Aether Isles",
+		body="These coach cards walk you through your first steps: the Wayfarer's Path, then your first quests. Your sidebar Objective always shows what to do next.",
+		pointer={"objective"}},
+	{id="path:mode", step="mode", title="Choose your journal mode",
+		body="Walk to Pell Ashgrove (the gold ! over his head) and talk to him. Keep a Standard journal in one tap, or read about Ironman first: it can only be sealed before you gather.",
+		pointer={"objective"}},
+	{id="path:chop", step="chop", title="Chop a log",
+		body="Left-click a tree to chop it with your axe (tap it on mobile). Each swing chips its health bar; when it breaks, the logs land in your satchel.",
+		pointer={"hotbar:2"}},
+	{id="path:craft", step="craft", title="Craft at a workbench",
+		body="Open a Workbench, Forge, Hearth or Cauldron (or Menu › Recipes) and craft anything: planks, a pickaxe, a meal.",
+		pointer={"MenuRecipes", "menu"}},
+	{id="path:visit", step="visit", title="Visit Compass Quay",
+		body="Compass Quay is the shared hub. Open the Sky Chart (M, or the Map button) and travel there, or step through your home isle's portal.",
+		pointer={"chart"}},
+	{id="path:talk", step="talk", title="Talk to Pell",
+		body="Find Pell Ashgrove on Compass Quay and ask him about the Wayfarer's Path. Follow the glowing beacon.",
+		pointer={"objective"}},
+	{id="path:ore", step="ore", title="Gather ore",
+		body="Left-click an ore rock to mine it with your pickaxe (tap it on mobile). Keep swinging until its health bar breaks.",
+		pointer={"hotbar:2"}},
+	{id="path:sell", step="sell", title="Sell an item",
+		body="Open your satchel (E, or the Bag button), right-click an item (long-press on mobile) and choose Sell.",
+		pointer={"satchel"}},
+	{id="path:equip", step="equip", title="Equip a weapon",
+		body="Open your satchel, right-click a weapon and choose Wield. Hotbar slot 1 always holds your weapon.",
+		pointer={"satchel", "hotbar:1"}},
+	{id="path:kill", step="kill", title="Defeat a creature",
+		body="Brambleback Boars roam Sunwheel Downs. Left-click a creature to attack it with your weapon (tap on mobile) and keep an eye on your Health orb.",
+		pointer={"hotbar:1"}},
+	{id="path:quest", step="quest", title="Accept a quest",
+		body="Open Menu › Quests and the Helper tab. Pin your guild contract: its next step shows in your sidebar. Questgivers wear a gold ! over their heads.",
+		pointer={"SectionHelper", "MenuQuests", "menu"}},
+	{id="path:warp", step="warp", title="Learn a warp",
+		body="Buy a warp scroll from Ilsabet the Warp Keeper and read it. Then open the Sky Chart (M) to warp straight to that isle.",
+		pointer={"chart"}},
+	{id="quest:contract", chapter="quests", quest="contract", title="Your first guild contracts",
+		body="Guild contracts are your starter quest line. Pin it in Journal › Helper, follow its NEXT step, then claim it in Journal › Bearing.",
+		pointer={"SectionBearing", "SectionHelper", "MenuQuests", "menu"}},
+	{id="quest:SkywayCharter", chapter="quests", quest="SkywayCharter", title="Charting the Skyway",
+		body="Ilsabet the Warp Keeper has your first regional quest. Accept it from her, then follow the quest helper.",
+		pointer={"SectionHelper", "MenuQuests", "menu"}},
+	{id="quest:LampsOfTheQuay", chapter="quests", quest="LampsOfTheQuay", title="Lamps of the Quay",
+		body="Corwin the Lamplighter needs timber and ore before the Quay goes dark. Accept, gather, then hand it in to him.",
+		pointer={"SectionHelper", "MenuQuests", "menu"}},
+	{id="complete", chapter="finale", ack=true, title="You're ready, wayfarer!",
+		body="You walked the Wayfarer's Path and finished your first quests. Train any skill, raise your Isle Renown and explore the isles.",
+		pointer={"menu"}},
+}
+TU.CardById = {}
+for i, c in ipairs(TU.Cards) do
+	c.index = i
+	c.chapter = c.chapter or "path"
+	TU.CardById[c.id] = c
+end
+-- Chapters for the progress dot row (dots count the cards of the card's chapter).
+TU.Chapters = {intro = "WELCOME", path = string.upper(Path.NAME), quests = "FIRST QUESTS", finale = "TUTORIAL COMPLETE"}
+function TU.dots(id)
+	local card = TU.CardById[id]
+	if not card then return {index = 0, total = 0, chapter = ""} end
+	local index, total = 0, 0
+	for _, c in ipairs(TU.Cards) do
+		if c.chapter == card.chapter then
+			total += 1
+			if c.index <= card.index then index += 1 end
+		end
+	end
+	return {index = index, total = total, chapter = TU.Chapters[card.chapter] or ""}
+end
+-- Waypoint specs for a step card (Path waypoints); quest cards use the helper step's specs.
+function TU.specsFor(id)
+	local card = TU.CardById[id]
+	if card and card.step then return Path.Waypoints[card.step] end
+	return nil
+end
+
+-- Tips (first encounters; once per account) --------------------------------
+TU.Tips = {
+	{id="fight", title="Your first fight",
+		body="Keep left-clicking (or tapping) the creature to swing. Your Health orb sits beside the minimap; eat food from your hotbar if it runs low.",
+		pointer={"orbs"}},
+	{id="levelup", title="Level up!",
+		body="Every skill level pays coins and unlocks better tools, recipes and places. Menu › Skills shows what each level opens.",
+		pointer={"MenuSkills", "menu"}},
+	{id="satchelFull", title="Your satchel's first page is full",
+		body="Use the page arrows, Sort or Search in your satchel. Sell spare stacks to a merchant, or bank them with Odile in Compass Quay.",
+		pointer={"satchel"}},
+	{id="night", title="Night falls on the isles",
+		body="The sidebar clock shows the isle hour. Lamps light the hubs after dusk; nothing resets at night, so carry on.",
+		pointer={"clock"}},
+	{id="shop", title="Your first shop",
+		body="Prices show before you pay. Right-click (long-press) an offer to buy several at once; some wares restock daily.",
+		pointer={}},
+	{id="questAccept", title="Quest accepted",
+		body="Pin it in Journal › Helper: its next step shows in your sidebar Objective, and Waypoint lights the way.",
+		pointer={"objective"}},
+}
+TU.TipById = {}
+for i, t in ipairs(TU.Tips) do t.index = i; TU.TipById[t.id] = t end
+
+-- Saved state ---------------------------------------------------------------
+-- p.tutorial = {v, seen = {[card] = true}, tips = {[tip] = true}, card, skipped,
+-- off (tips off), vet (a veteran never offered the tutorial), done (finale seen)}
+function TU.sanitize(t)
+	t = tab(t)
+	local out = {v = TU.VERSION, seen = {}, tips = {}}
+	for id, v in pairs(tab(t.seen)) do if v == true and TU.CardById[id] then out.seen[id] = true end end
+	for id, v in pairs(tab(t.tips)) do if v == true and TU.TipById[id] then out.tips[id] = true end end
+	out.card = if type(t.card) == "string" and TU.CardById[t.card] then t.card else nil
+	out.skipped = t.skipped == true or nil
+	out.off = t.off == true or nil
+	out.vet = t.vet == true or nil
+	out.done = t.done == true or nil
+	return out
+end
+-- The card the player is on, from real progress (nil: skipped, veteran or finished).
+-- p: the profile (guide, questCompleted, questsDone); t: sanitised state.
+function TU.current(p, t)
+	p, t = tab(p), tab(t)
+	if t.skipped or t.vet or t.done then return nil end
+	if not tab(t.seen).welcome then return "welcome" end
+	local guide = tab(p.guide)
+	if guide.complete ~= true then
+		local view = Path.view(guide)
+		if view.id and TU.CardById["path:" .. view.id] then return "path:" .. view.id end
+	end
+	if whole(p.questCompleted) < TU.CONTRACTS then return "quest:contract" end
+	local done = tab(p.questsDone)
+	for _, c in ipairs(TU.Cards) do
+		if c.quest and c.quest ~= "contract" and done[c.quest] ~= true then return c.id end
+	end
+	return "complete"
+end
+-- Verb argument: "next:<card>" | "dismiss:<card>" | "skip" | "replay" | "tip:<id>" |
+-- "tips:on" | "tips:off". Returns (action, arg) or nil.
+function TU.parse(item)
+	if type(item) ~= "string" or #item > 40 then return nil end
+	if item == "skip" or item == "replay" then return item, nil end
+	if item == "tips:on" or item == "tips:off" then return "tips", item == "tips:on" end
+	local kind, arg = string.match(item, "^(%a+):([%w:]+)$")
+	if (kind == "next" or kind == "dismiss") and TU.CardById[arg] then return kind, arg end
+	if kind == "tip" and TU.TipById[arg] then return kind, arg end
+	return nil
+end
+-- Rewards summary for the finale card (static data; coins owed come from the
+-- snapshot): one short line per source so it fits the card.
+function TU.rewardSummary()
+	local lines = {Path.NAME .. ": " .. Path.MAX_OWED .. " coins"}
+	for _, c in ipairs(TU.Cards) do
+		if c.quest and c.quest ~= "contract" then
+			local q = Data.QuestById[c.quest]
+			local r = tab(q and q.rewards)
+			local parts = {}
+			if whole(r.coins) > 0 then table.insert(parts, whole(r.coins) .. " coins") end
+			local ids = {}
+			for id in pairs(tab(r.items)) do table.insert(ids, id) end
+			table.sort(ids)
+			for _, id in ipairs(ids) do
+				local def = Data.Items[id]
+				table.insert(parts, (if whole(r.items[id]) > 1 then whole(r.items[id]) .. "× " else "") .. (if def then def.name else tostring(id)))
+			end
+			if type(r.lamp) == "table" then table.insert(parts, "an XP lamp") end
+			table.insert(lines, (q and q.title or c.title) .. ": " .. table.concat(parts, ", "))
+		end
+	end
+	return lines
+end
+
+-- Tip triggers (pure; tutorial.client.lua runs them on every snapshot) -------
+-- prev / snap: consecutive snapshots (prev nil on the first); ctx = {night,
+-- fight, shop} booleans the client observed from server signals since the last
+-- check. Returns the tip ids whose first encounter happened.
+local function distinct(items)
+	local n = 0
+	for _, v in pairs(tab(items)) do if num(v) > 0 then n += 1 end end
+	return n
+end
+local function acceptedCount(s)
+	local n = 0
+	for _, v in pairs(tab(tab(tab(s).regionQuests).accepted)) do if v == true then n += 1 end end
+	return n
+end
+function TU.detectTips(prev, snap, ctx)
+	snap, ctx = tab(snap), tab(ctx)
+	local out = {}
+	if ctx.fight then table.insert(out, "fight") end
+	-- A skill level-up: the §31 SKILL LEVEL UP announcement in the recent ring.
+	for _, e in ipairs(tab(tab(snap.announce).list)) do
+		if tab(e).kind == "skill" then table.insert(out, "levelup"); break end
+	end
+	if distinct(snap.items) >= TU.SATCHEL_PAGE then table.insert(out, "satchelFull") end
+	if ctx.night then table.insert(out, "night") end
+	if ctx.shop then table.insert(out, "shop") end
+	if prev ~= nil and acceptedCount(snap) > acceptedCount(prev) then table.insert(out, "questAccept") end
+	return out
+end
+end
+-- <<< END Tutorial <<<
 ------------------------------------------------------------------------------
 
 return Data

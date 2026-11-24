@@ -50,7 +50,8 @@
         "IsleRaid": { "$path": "raid.client.lua" },
         "IsleOverlay": { "$path": "overlay.client.lua" },
         "IsleLighting": { "$path": "lighting.client.lua" },
-        "IsleGather": { "$path": "gather.client.lua" }
+        "IsleGather": { "$path": "gather.client.lua" },
+        "IsleTutorial": { "$path": "tutorial.client.lua" }
       }
     },
     "Lighting": {

@@ -10185,6 +10185,17 @@ function Pages.drawSettings()
 	end
 	card({name="SettingGraphics",motif="Settings",title="Graphics quality",subtitle=paint(type(now)=="string" and now or "Automatic","6FE3C8"),
 		detail=type(detail)=="string" and detail or "Chosen from your device.",actions=actions})
+	-- §43 Tutorial (tutorial.client.lua): tips on / off and replay; saved on the
+	-- journal by the server (verb tutorial "tips:on|tips:off|replay").
+	do
+		local tu=tbl(state.tutorial)
+		local tipsOn=tu.off~=true
+		local status=(tu.card and "In progress") or (tu.skipped and "Skipped") or (tu.vet and "Not offered (veteran journal)") or "Complete"
+		card({name="SettingTutorial",motif="Journal",title="Tutorial",subtitle=paint(status,"6FE3C8").."  ·  tips "..(tipsOn and paint("on","6FE3C8") or paint("off","A9B4C0")),
+			detail="Coach cards walk you through the Wayfarer's Path and your first quests; tips explain things the first time you meet them.",
+			actions={{caption=tipsOn and "Turn tips off" or "Turn tips on",primary=not tipsOn,name="TutorialTips",fn=function() send("tutorial",tipsOn and "tips:off" or "tips:on") end},
+				{caption="Replay tutorial",name="TutorialReplay",fn=function() send("tutorial","replay") end}}})
+	end
 	card({name="SettingKeys",motif="Journal",title="Keys",detail="J  menu & atlas   ·   E / Tab  satchel   ·   M  Sky Chart (warp map)   ·   right-click (long-press) an item for its options   ·   drag items to reorder"})
 end
 end
@@ -10608,6 +10619,7 @@ UI.relay={equip=true,unequip=true,consume=true,sell=true,accessory=true,petAdopt
 	rqBuy=true,skillBuy=true,petShop=true,resonanceSet=true,guideClaim=true, -- §31
 	helperPin=true,goalSet=true,goalRemove=true,goalClear=true,priceCheck=true, -- §33
 	prayerQuickToggle=true, -- §34
+	tutorial=true, -- §43 coach cards (tutorial.client.lua): dismiss / next / skip / replay / tips
 	raidHost=true,raidJoin=true,raidLeave=true,raidReady=true,raidChallenge=true,raidStart=true,raidUse=true,raidTitle=true} -- §38 raid.client.lua (party board, raid HUD, Raid Log). §34 quick-prayer orb (one atomic verb, queued, never dropped). Earlier: quantity picker (features.client.lua), Resonance, Path rewards
 local remote = ReplicatedStorage:WaitForChild("IsleAction")
 local updates = ReplicatedStorage:WaitForChild("IsleUpdate")
