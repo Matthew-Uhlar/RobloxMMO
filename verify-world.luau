@@ -93,6 +93,12 @@ local function check(condition,label)
 	assert(condition,label)
 	checks+=1
 end
+-- §44: a travel beacon's prompt hangs on its post's "Beacon prompt" Attachment.
+local function promptHost(q)
+	local parent=q.Parent
+	if parent and parent:IsA("Attachment") then return parent.Parent end
+	return parent
+end
 local archipelago=world:FindFirstChild("AetherIsles")
 check(archipelago~=nil,"world created")
 local islandsRoot=world:FindFirstChild("Islands")
@@ -293,7 +299,7 @@ for _,obj in world:GetDescendants() do
 		check(obj.Size.X>0 and obj.Size.Y>0 and obj.Size.Z>0,"positive geometry")
 	elseif obj:IsA("ProximityPrompt") then
 		prompts+=1
-		check(obj.Parent:IsA("BasePart"),"prompt has physical target")
+		check(promptHost(obj)~=nil and promptHost(obj):IsA("BasePart"),"prompt has physical target")
 	elseif obj:IsA("SurfaceGui") or (obj:IsA("BillboardGui") and obj.Name=="SignBillboard") then
 		signs+=1 -- §28 v2: floating sign billboards (ledgers stay SurfaceGui boards)
 	end
@@ -530,7 +536,7 @@ for _,q in world:GetDescendants() do
 		warps+=1
 		check(Data.RegionById[id]~=nil,"warp names a valid region id")
 		local t=traveller()
-		standAt(t,q.Parent)
+		standAt(t,promptHost(q))
 		allowRegion[id]=false
 		local before=#accessCalls
 		q.Triggered:Fire(t)
@@ -545,21 +551,21 @@ for _,q in world:GetDescendants() do
 		check(t.landed~=nil and onRegion(id,t.landed,2),id.." unlocked warp lands on its region island")
 		if t.landed then table.insert(landings,{id.." landing",t.landed}) end
 		local far=traveller()
-		standAt(far,{CFrame=q.Parent.CFrame+Vec(30,0,0)})
+		standAt(far,{CFrame=promptHost(q).CFrame+Vec(30,0,0)})
 		q.Triggered:Fire(far)
 		check(far.landed==nil,id.." warp requires standing at the beacon")
 		warpedTo[id]=true
 	elseif q:GetAttribute("IsleWarpReturn") then
 		returns+=1
 		local t=traveller()
-		standAt(t,q.Parent)
+		standAt(t,promptHost(q))
 		q.Triggered:Fire(t)
 		check(t.landed~=nil and onRegion("Hub",t.landed,2),"return beacon lands on the Guild Terrace")
 		if t.landed then table.insert(landings,{"Skyway return landing",t.landed}) end
 	elseif not q:GetAttribute("IsleAction") then
 		-- Any other prompt that moves the player (quarry descent, quay/crew beacons).
 		local t=traveller()
-		standAt(t,q.Parent)
+		standAt(t,promptHost(q))
 		pcall(function() q.Triggered:Fire(t) end)
 		if t.landed then table.insert(landings,{q.ObjectText.." landing",t.landed}) end
 	end
@@ -1081,8 +1087,8 @@ do
 	end
 	check(anchors.Anchor_NPC_Guide.Parent.Name=="Compass Quay","guide stands on the hub")
 	local cHome=archipelago:FindFirstChild("WayfarersRest_33")
-	local hubPrompt=cHome:FindFirstChild("Quay beacon"):FindFirstChildOfClass("ProximityPrompt")
-	standAt(c,hubPrompt.Parent)
+	local hubPrompt=cHome:FindFirstChild("Quay beacon"):FindFirstChildWhichIsA("ProximityPrompt",true)
+	standAt(c,promptHost(hubPrompt))
 	hubPrompt.Triggered:Fire(c)
 	check(c.landed~=nil and onRegion("Hub",c.landed,2),"home beacon lands on the hub")
 	local guideOffset=anchors.Anchor_NPC_Guide.CFrame.Position-c.landed
@@ -1106,7 +1112,7 @@ do
 		if q:IsA("ProximityPrompt") and (q:GetAttribute("IsleAction")=="station" or q:GetAttribute("IsleWarpRegion") or q:GetAttribute("IsleWarpReturn")
 			or q:GetAttribute("IsleAction")=="bank" or q:GetAttribute("IsleAction")=="sell" or q:GetAttribute("IsleAction")=="fight") then
 			waypointTargets+=1
-			check(nearWaypoint(q.Parent.CFrame.Position,16),q.ObjectText.." has a waypoint anchor")
+			check(nearWaypoint(promptHost(q).CFrame.Position,16),q.ObjectText.." has a waypoint anchor")
 		end
 	end
 	check(waypointTargets>=20,"stations, warps and services are waypointed ("..waypointTargets..")")
@@ -1464,6 +1470,7 @@ do
 		if ok and parent and post:IsDescendantOf(world) then table.insert(list,post) end
 	end
 	local kinds,byPart={},{}
+	local colliderParts=0
 	for _,post in list do
 		byPart[post]=true
 		local kind=post:GetAttribute("TravelBeacon")
@@ -1475,6 +1482,8 @@ do
 			check(post:GetAttribute("Shape")=="SkywardVentPad" and post:GetAttribute("ShapeFit")=="Uniform","vent "..post:GetAttribute("VentId").." uses the vent pad dais")
 			check(post.CanCollide and type(post:GetAttribute("TravelBeaconRegion"))=="string","vent pad stays a collider and names its destination")
 			check(hover.Y>post.CFrame.Position.Y+2,"vent rings float above the pad")
+			-- L2: riders launch through the armillary's space; it hangs >= 6 studs over the pad top.
+			check(hover.Y>=post.CFrame.Position.Y+post.Size.X/2+6,"vent "..post:GetAttribute("VentId").." armillary clears launching riders")
 			continue
 		end
 		check(DAIS[post:GetAttribute("Shape")]==true,post.Name.." uses the travel beacon dais mesh")
@@ -1486,17 +1495,45 @@ do
 		check(boxBottom<=postBottom+.85 and boxBottom>=postBottom-1.2,post.Name.." dais stands on the ground under its post")
 		check(not post.CanCollide and math.max(post.Size.X,post.Size.Z)<=2,post.Name.." post stays a slim non-colliding prompt host")
 		check(math.abs(hover.Y-(boxBottom+3))<1e-3 and math.abs(hover.X-post.CFrame.Position.X)<1e-3,post.Name.." crystal floats inside the dais cage")
-		check(post:FindFirstChildOfClass("ProximityPrompt")~=nil,post.Name.." keeps its prompt")
+		local q=post:FindFirstChildWhichIsA("ProximityPrompt",true)
+		check(q~=nil,post.Name.." keeps its prompt")
 		check(typeof(post:GetAttribute("Tint"))=="Color3",post.Name.." tints its channels")
-		local plinth
+		-- M5 walkability: every dais has the 4.9-wide, 0.95-tall cylinder base (a
+		-- step a character walks onto) and four thin pylon colliders inside it, all
+		-- invisible under the mesh; the post stays non-colliding.
+		local plinth,pylons=nil,{}
 		for _,sib in post.Parent:GetChildren() do
-			if sib.Name=="Beacon plinth" and sib:IsA("BasePart") and flatDist(sib.CFrame.Position,post.CFrame.Position)<.01 then plinth=sib end
+			if sib:IsA("BasePart") and sib.Name=="Beacon plinth" and flatDist(sib.CFrame.Position,post.CFrame.Position)<.01 then plinth=sib end
+			if sib:IsA("BasePart") and sib.Name=="Beacon pylon" and flatDist(sib.CFrame.Position,post.CFrame.Position)<2 then table.insert(pylons,sib) end
 		end
+		check(plinth~=nil and plinth.Shape==roblox.Enum.PartType.Cylinder and plinth.CanCollide and plinth.Transparency==1,post.Name.." stands on an invisible cylinder collider")
+		local baseR=0
 		if plinth then
-			check(plinth.CanCollide and (plinth.Size-Vec(3.4,.8,3.4)).Magnitude<1e-3,post.Name.." plinth collider unchanged")
-			check(math.abs((plinth.CFrame.Position.Y-.4)-boxBottom)<1e-3,post.Name.." dais base wraps the plinth")
+			baseR=plinth.Size.Y/2
+			check(math.abs(plinth.CFrame.RightVector.Y)>.999 and math.abs(plinth.Size.Y-4.9)<1e-3 and math.abs(plinth.Size.Z-4.9)<1e-3 and math.abs(plinth.Size.X-.95)<1e-3,post.Name.." base collider is 4.9 wide and 0.95 tall, axis up")
+			check(math.abs((plinth.CFrame.Position.Y-plinth.Size.X/2)-boxBottom)<1e-3,post.Name.." base collider sits on the dais floor")
+			check(plinth.CFrame.Position.Y+plinth.Size.X/2-boxBottom<=1,post.Name.." base is a walkable step (<= 1 stud)")
 		end
-		local q=post:FindFirstChildOfClass("ProximityPrompt")
+		check(#pylons==4,post.Name.." has four pylon colliders ("..#pylons..")")
+		colliderParts+=#pylons+(if plinth then 1 else 0)
+		for _,pylon in pylons do
+			local reach=flatDist(pylon.CFrame.Position,post.CFrame.Position)
+			check(pylon.CanCollide and pylon.Transparency==1 and math.max(pylon.Size.X,pylon.Size.Z)<=.7,post.Name.." pylon collider is thin and invisible")
+			check(reach+math.max(pylon.Size.X,pylon.Size.Z)*.71<=baseR+1e-3 and reach-.45>=1,post.Name.." pylon stands on the base, clear of the crystal")
+			check(plinth~=nil and math.abs(pylon.CFrame.Position.Y-pylon.Size.Y/2-(plinth.CFrame.Position.Y+plinth.Size.X/2))<1e-3,post.Name.." pylon rises from the base top")
+		end
+		-- L1: the prompt hangs on an attachment in front of the dais at ground + 1.5,
+		-- reachable from open ground outside every collider and within the trip range.
+		if q then
+			local seat=q.Parent
+			check(seat:IsA("Attachment") and seat.Name=="Beacon prompt" and seat.Parent==post,post.Name.." prompt hangs on its Beacon prompt attachment")
+			local at=(post.CFrame*seat.CFrame).Position
+			check(math.abs(at.Y-(boxBottom+1.5))<1e-3,post.Name.." prompt at waist height in front of the dais")
+			local out=flatDist(at,post.CFrame.Position)
+			check(out>=baseR+.5 and out<=4,post.Name.." prompt sits just outside the dais base ("..string.format("%.2f",out)..")")
+			local stand=Vec(at.X,boxBottom+3,at.Z)
+			check((stand-at).Magnitude<=q.MaxActivationDistance and (stand-post.CFrame.Position).Magnitude<=12,post.Name.." prompt is usable from the ground in front (and within the trip range)")
+		end
 		if q and q:GetAttribute("IsleWarpRegion") then
 			check(post:GetAttribute("TravelBeaconRegion")==q:GetAttribute("IsleWarpRegion"),post.Name.." lights for its own destination")
 		end
@@ -1505,9 +1542,9 @@ do
 	local TRAVEL={["Homeward beacon"]=true,["Crew beacon"]=true,["Quay beacon"]=true,["Quay return"]=true,["Charter beacon"]=true,["Quarry beacon"]=true,["Warp beacon"]=true}
 	local travelPrompts=0
 	for _,q in world:GetDescendants() do
-		if q:IsA("ProximityPrompt") and (q:GetAttribute("IsleWarpRegion") or q:GetAttribute("IsleWarpReturn") or q:GetAttribute("IsleMinigameFerry") or TRAVEL[q.Parent.Name]) then
+		if q:IsA("ProximityPrompt") and (q:GetAttribute("IsleWarpRegion") or q:GetAttribute("IsleWarpReturn") or q:GetAttribute("IsleMinigameFerry") or TRAVEL[promptHost(q).Name]) then
 			travelPrompts+=1
-			check(byPart[q.Parent]==true,q.ActionText.." prompt stands on a travel beacon")
+			check(byPart[promptHost(q)]==true,q.ActionText.." prompt stands on a travel beacon")
 		end
 	end
 	for _,obj in world:GetDescendants() do
@@ -1521,14 +1558,12 @@ do
 	local crewPost
 	for _,post in list do if post.Name=="Crew beacon" then crewPost=post end end
 	check(crewPost and crewPost:GetAttribute("TravelBeaconNeeds")=="crew","the crew beacon lights only for crew members")
-	-- Part budget: a gated / return beacon is plinth + post (was 5 parts), a
-	-- single post stays one part (the home quay beacon lost its two fins).
-	local beaconParts=0
+	-- Part budget (M5): every dais is post + cylinder base + four pylon colliders.
+	local beaconParts,daises=colliderParts,0
 	for _,post in list do
-		if post:GetAttribute("TravelBeacon")~="vent" then beaconParts+=1 end
+		if post:GetAttribute("TravelBeacon")~="vent" then beaconParts+=1; daises+=1 end
 	end
-	for _,obj in world:GetDescendants() do if obj.Name=="Beacon plinth" then beaconParts+=1 end end
-	check(beaconParts<=2*kinds.region+2*kinds["return"]+kinds.home+kinds.crew+2*kinds.ferry,"travel beacons stay within 2 static parts each ("..beaconParts..")")
+	check(beaconParts<=6*daises,"travel beacons stay within 6 static parts each ("..beaconParts..")")
 	-- Lights: at most one per beacon, owned by the §35 director (LightWanted).
 	local beaconLights=0
 	for _,post in list do
