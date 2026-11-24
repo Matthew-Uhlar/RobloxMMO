@@ -16,6 +16,7 @@ local roblox = require("@lune/roblox")
 local Shim = {}
 local holder = roblox.Instance.new("Folder")
 holder.Name = "StrikeShimNodes"
+holder.Parent = roblox.Instance.new("Workspace") -- the server only strikes nodes in a Workspace (§42 QC L8)
 
 -- One Part per mock prompt (per-player progress and regrowth key on it).
 local nodes = setmetatable({}, {__mode = "k"})
@@ -75,7 +76,9 @@ function Shim.breakNode(opts, player, node, limit)
 		elseif reply.broken then
 			return reply, sent
 		elseif reply.cast then
-			opts.advance((tonumber(reply.bite) or 1) + 0.05)
+			-- The bite is pushed when it happens (§42 QC L1), never in the reply:
+			-- wait out the longest bite (2 s), still inside its window.
+			opts.advance(2.05)
 		elseif reply.ok == false and reply.reason == "cadence" then
 			opts.advance(math.max(0.02, tonumber(reply.wait) or 0.1))
 		elseif reply.ok == false then

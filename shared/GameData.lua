@@ -15936,6 +15936,8 @@ do
 	-- window reels it in. Too early loses the cast; a missed bite slips away.
 	ST.FISH = {gap = 0.8, biteMin = 1.0, biteMax = 2.0, window = 1.2, early = 0.15, late = 0.35, reaction = 0.3}
 	ST.VERB = {Mining = "Mine", Woodcutting = "Chop", Fishing = "Fish", Farming = "Harvest"}
+	-- The entry resource a special strike node (raid rooms) swings as, per skill.
+	ST.ENTRY = {Mining = "Ore", Woodcutting = "Timber", Fishing = "Fish", Farming = "Herb"}
 	ST.NOUN = {Mining = "Vein", Woodcutting = "Tree", Fishing = "Spot", Farming = "Patch"}
 	ST.GESTURE = {Mining = "mine", Woodcutting = "chop", Fishing = "fish", Farming = "harvest"}
 	function ST.resource(id)
@@ -15972,14 +15974,17 @@ do
 		if r.skill == "Fishing" then return (ST.FISH.biteMin + ST.FISH.biteMax) / 2 + ST.FISH.reaction end
 		return ((ST.SWINGS[r.index] or 6) - 1) * ST.SWING[r.skill]
 	end
-	-- Regrowth after a break: the extra active time a nominal break costs over the
-	-- old hold is handed back, so a node's cycle (break + regrowth) stays the old
-	-- hold + regrowth and XP / hour is unchanged at the nominal tool; faster tools
-	-- shorten the cycle. Floored at REGROW_FLOOR.
-	function ST.regrowth(r, base)
+	-- Regrowth after a break (QC M5): the time the break actually took (first
+	-- strike / cast to the break, `elapsed`; the nominal break when omitted) is
+	-- handed back against the old hold, so a node's cycle (break + regrowth) is
+	-- the old hold + regrowth whatever the tool: a one-shot waits base + hold,
+	-- never less, and per-node XP / hour never beats the old prompt. Faster
+	-- tools pay off across several nodes (less active time per harvest).
+	-- Floored at REGROW_FLOOR.
+	function ST.regrowth(r, base, elapsed)
 		base = tonumber(base) or tonumber(r.respawn) or 3
-		local extra = math.max(0, ST.nominalBreak(r) - (ST.OLD_HOLD[r.skill] or 1))
-		return math.max(ST.REGROW_FLOOR, base - extra)
+		elapsed = math.max(0, tonumber(elapsed) or ST.nominalBreak(r))
+		return math.max(ST.REGROW_FLOOR, base + (ST.OLD_HOLD[r.skill] or 1) - elapsed)
 	end
 	-- Progress left after idling: healed DECAY_RATE x max a second after DECAY_AFTER s.
 	function ST.decayed(hp, maxHp, idle)
@@ -15991,6 +15996,21 @@ do
 	function ST.biteDelay(userId, n)
 		local h = ((math.floor(tonumber(userId) or 0) % 100003) * 7919 + (math.floor(tonumber(n) or 0) % 100003) * 104729) % 1000
 		return ST.FISH.biteMin + (ST.FISH.biteMax - ST.FISH.biteMin) * h / 999
+	end
+	-- Waypoint index of struck node hosts (QC M3; nav.client.lua "gather:<id>"):
+	-- {[resource id] = {positions}} from AetherNode-tagged hosts, skipping
+	-- nodes owned by another player. `into` (optional) is filled in place.
+	function ST.indexNodes(hosts, userId, into)
+		local out = into or {}
+		for _, host in ipairs(type(hosts) == "table" and hosts or {}) do
+			local ok, id, owner, at = pcall(function() return host:GetAttribute("GatherNode"), host:GetAttribute("OwnerUserId"), host.Position end)
+			local special = ok and host:GetAttribute("StrikeKind") ~= nil -- crew stores, garden plots, raid rooms
+			if ok and not special and type(id) == "string" and ST.resource(id) and (owner == nil or owner == userId) and typeof(at) == "Vector3" then
+				out[id] = out[id] or {}
+				table.insert(out[id], at)
+			end
+		end
+		return out
 	end
 	-- "Copperstone Ore" -> "Copperstone Vein"; "Windpine Log" -> "Windpine Tree".
 	function ST.nodeName(r)

@@ -6350,6 +6350,15 @@ do
 		if not ok or type(reply)~="table" then return nil end
 		return reply
 	end
+	-- §42: a raid resource node's break (Strike.kinds.raid): the retired prompt's
+	-- "act" on its RaidTarget. Returns message, done.
+	function Raids.strikeNode(player,node)
+		local reply=invoke("act",player,{target=node:GetAttribute("RaidTarget"),part=node})
+		if not reply then return TEXT.invalid,false end
+		if not reply.ok then return TEXT[if reply.reason=="busy" then "busy2" else reply.reason] or TEXT.target,false end
+		if reply.raw then return "+1 "..reply.raw.." (party stock "..reply.stock..").",true end
+		return "Done.",false
+	end
 	local function busy(player)
 		local game=player:GetAttribute("MinigameGame")
 		local lair=player:GetAttribute("LairBoss")
@@ -6416,6 +6425,7 @@ do
 			return "The portal opens: "..RD.NAME.." ("..tostring(reply.members).." raiders)."
 		elseif verb=="raidAct" then
 			if not prompt then return "Use the vault's own fixtures." end
+			if string.sub(tostring(item),1,5)=="node:" then return "Resource nodes are struck now: swing at them." end -- §42
 			local reply=invoke("act",player,{target=item,part=prompt:FindFirstAncestorWhichIsA("BasePart")})
 			if not reply then return TEXT.invalid end
 			if not reply.ok then return TEXT[if reply.reason=="busy" then "busy2" else reply.reason] or TEXT.target end
@@ -10229,12 +10239,13 @@ end
 -- State is session-only (Strike.forget on leave).
 do
 	local ST=Data.Strike
-	function Strike.ok(message) return message,true end
+	function Strike.ok(message,regrow) return message,true,regrow end
 	-- The harvest a break runs exactly once (formerly the `gather` prompt branch):
 	-- yield, fortune, festival, mastery, collections, contests, pickup feed, XP,
 	-- gem rolls, commissions, Trails, journal counts, per-player regrowth, sea
-	-- creatures and trophy fish. Returns message, ok.
-	function Strike.harvest(player,p,item,node,region)
+	-- creatures and trophy fish. `elapsed`: seconds from the first strike / cast
+	-- to the break (QC M5). Returns message, ok, regrowth seconds (QC L6).
+	function Strike.harvest(player,p,item,node,region,elapsed)
 		local resource=Progression.resource(item)
 		local skill=resource.skill
 		local regrowth=nodeRegrowth[node]
@@ -10260,6 +10271,16 @@ do
 		end
 		-- Events hook: festival yield/XP multipliers apply exactly once, after fortune; festival-only catches.
 		result.amount*=event.mult; result.xp=math.floor(result.xp*event.xpMult)
+		-- QC L4: the per-player regrowth is set before any reward is granted, so a
+		-- hook that throws mid-harvest can never leave the node harvestable again.
+		-- Skill Mastery / Steadfast Pick shorten the base timer (Progression.regrowthTime,
+		-- never to zero; Logs.regrow runs first so Mastery's text reports the combined
+		-- timer); §42 then hands back the old hold minus the time this break took
+		-- (Data.Strike.regrowth, QC M5).
+		Logs.regrow(p,result,resource) -- Commissions & Logs: Steadfast Pick joins the Mastery regrowth text
+		if not regrowth then regrowth={}; nodeRegrowth[node]=regrowth; watchPrompt(node) end
+		local regrow=Data.Strike.regrowth(resource,tonumber(result.regrowth) or tonumber(resource.respawn) or 3,elapsed)
+		regrowth[player]=os.clock()+regrow
 		for id,n in pairs(event.extra) do pickup(p,id,n); note(p,"Festival catch • +"..n.." "..Data.Items[id].name) end
 		-- Pets depth: the doubled-harvest ability is one more yield candidate inside
 		-- Progression.gatherYieldMult (never stacks with mastery procs/surges).
@@ -10270,24 +10291,16 @@ do
 		Held.gather(player,p,skill) -- Held items: the node's tool is in hand (auto switch, returns when idle)
 		if skill=="Farming" and Garden.fieldSeed then Garden.fieldSeed(p,item) end -- Verdant Garden seed pouch
 		Trails.event(p,"gather",item) -- Treasure Trails: scroll drops + trail tasks (Fishing counts as "fish")
-		Logs.regrow(p,result,resource) -- Commissions & Logs: Steadfast Pick joins the Mastery regrowth text
 		local mastered=Mastery.gather(p,result) -- Skill Mastery: bonus ingots, coins, regrowth skip
 		mastered..=Logs.gather(p,item,result,resource) -- Commissions & Logs: commission progress, Gemseeker
 		mastered..=Crafting.gather(p,resource) -- Crafting: rare rough gem roll on Mining harvests
 		if region then Journal.count(p,"gathers",region,1) end
 		p.started=true
-		if not regrowth then regrowth={}; nodeRegrowth[node]=regrowth; watchPrompt(node) end
-		-- Skill Mastery: Quick regrowth shortens the timer down to a floor (Progression.regrowthTime), never to zero.
-		-- §42: the regrowth hands back the time a nominal break costs over the old
-		-- hold (Data.Strike.regrowth), so XP / hour is unchanged at the nominal tool.
-		local regrow=Data.Strike.regrowth(resource,tonumber(result.regrowth) or tonumber(resource.respawn) or 3)
-		regrowth[player]=os.clock()+regrow
-		Strike.lastRegrow=regrow
 		local hooked,spent="",false
 		if skill=="Fishing" then hooked,spent=Sea.cast(player,p,stats,result.tool,region,node) end
 		-- §39: a cast that raised no sea creature (nor would have, at the cap: QC L6) may land a trophy fish (never both).
 		if skill=="Fishing" and hooked=="" and not spent and Contests.trophyCast then hooked=Contests.trophyCast(player,p,result.tool,region) end
-		return Strike.ok("+"..result.amount.." "..resource.name..(if petDouble then " (pet ×2)" else "").."   ·   +"..result.xp.." "..skill.." XP"..mastered..hooked)
+		return Strike.ok("+"..result.amount.." "..resource.name..(if petDouble then " (pet ×2)" else "").."   ·   +"..result.xp.." "..skill.." XP"..mastered..hooked,regrow)
 	end
 
 	local RATE,BURST=8,12 -- requests a second (any outcome), before any other work
@@ -10312,12 +10325,16 @@ do
 		end
 		return reply(t)
 	end
-	-- A live node host: an Instance (never a client table), a BasePart still in
-	-- the world, carrying the server-set GatherNode attribute (client attribute
-	-- writes never replicate, so only real nodes pass).
+	-- A live node host: an Instance (never a client table), a BasePart in the
+	-- Workspace (QC L8: a GatherNode part parked in ReplicatedStorage or other
+	-- storage is refused; there is one Workspace, so "under a Workspace" is
+	-- IsDescendantOf(workspace)), carrying the server-set GatherNode attribute
+	-- (client attribute writes never replicate, so only real nodes pass).
 	local function isNode(node)
 		if typeof(node)~="Instance" then return false end
-		local ok,good=pcall(function() return node:IsA("BasePart") and node.Parent~=nil and type(node:GetAttribute("GatherNode"))=="string" end)
+		local ok,good=pcall(function()
+			return node:IsA("BasePart") and node.Parent~=nil and node:FindFirstAncestorWhichIsA("Workspace")~=nil and type(node:GetAttribute("GatherNode"))=="string"
+		end)
 		return ok and good==true
 	end
 	-- Range to the node's edge: root to centre minus half its footprint (≤ 6).
@@ -10354,26 +10371,124 @@ do
 		local i=table.find(s.order,node)
 		if i then table.remove(s.order,i) end
 	end
-	-- The break: the harvest runs once (busy guards a re-entrant strike), then a snapshot.
-	function Strike.finish(player,p,s,item,node,region,out)
-		s.busy=true
-		Strike.lastRegrow=nil
-		local ok,message,done=pcall(Strike.harvest,player,p,item,node,region)
-		s.busy=false
+	-- §42 (owner decision): special strike nodes (world.server.lua Node.special).
+	-- The strike itself is the ordinary one (reach, cadence, token bucket, one
+	-- clock, HP); only the break differs. Each kind: check(player, p, node) ->
+	-- ok, message (no side effects) and run(player, p, node) -> message, ok,
+	-- regrowth seconds. Nothing here grants a personal resource.
+	local function special(node)
+		local kind=node:GetAttribute("StrikeKind")
+		return if type(kind)=="string" then Strike.kinds[kind] else nil
+	end
+	Strike.kinds={}
+	-- Crew Haven stores: coop.server.lua (IsleCoopStrike) credits the crew store
+	-- exactly as its retired supply prompt did (membership, hourly cap, storage, regrowth).
+	local function coopHook()
+		local ok,hook=pcall(function() return ServerStorage:FindFirstChild("IsleCoopStrike") end)
+		return if ok and hook then hook else nil
+	end
+	Strike.kinds.crew={
+		check=function(player,p,node)
+			local hook=coopHook()
+			if not hook then return false,"Crew stores are unavailable right now." end
+			local ok,message=hook:Invoke("check",player,node)
+			return ok==true,message
+		end,
+		run=function(player,p,node)
+			local hook=coopHook()
+			if not hook then return "Crew stores are unavailable right now.",false end
+			local ok,message,regrow=hook:Invoke("credit",player,node)
+			return message,ok==true,tonumber(regrow) or ST.REGROW_FLOOR
+		end,
+	}
+	-- Raid resource rooms (§38): the break runs the retired prompt's "act".
+	Strike.kinds.raid={
+		check=function(player,p,node)
+			if type(node:GetAttribute("RaidTarget"))~="string" then return false,"That does nothing." end
+			return true
+		end,
+		run=function(player,p,node)
+			local message,done=Raids.strikeNode(player,node)
+			return message,done,Data.Raids.GATHER_COOLDOWN
+		end,
+	}
+	-- Verdant Garden: a ripe plot (GardenHarvest = plot index, owner only)
+	-- harvests through the Garden verb, the same as the ledger's Harvest.
+	Strike.kinds.garden={
+		check=function(player,p,node)
+			local i=node:GetAttribute("GardenHarvest")
+			if type(i)~="number" then return false,"That plot is not ripe." end
+			return true
+		end,
+		run=function(player,p,node)
+			local message=Garden.action(player,p,"harvestPlot",tostring(node:GetAttribute("GardenHarvest")))
+			local done=type(message)=="string" and string.sub(message,1,1)=="+"
+			if done then p.started=true end
+			return message,done,ST.REGROW_FLOOR
+		end,
+	}
+	-- The break: the harvest runs once (busy, a timestamp that lapses after
+	-- BUSY_FOR s (QC L5), guards a re-entrant strike), then a snapshot. A refused
+	-- harvest leaves a struck node at 1 HP (QC L3), so the next strike retries the
+	-- break instead of starting the node over.
+	local BUSY_FOR=5
+	function Strike.finish(player,p,s,item,node,region,out,elapsed,ns)
+		s.busy=os.clock()+BUSY_FOR
+		local kind=special(node)
+		local ok,message,done,regrow
+		if kind then
+			ok,message,done,regrow=pcall(kind.run,player,p,node)
+			if ok and done then
+				local regrowth=nodeRegrowth[node]
+				if not regrowth then regrowth={}; nodeRegrowth[node]=regrowth; watchPrompt(node) end
+				regrowth[player]=os.clock()+regrow
+			end
+		else
+			ok,message,done,regrow=pcall(Strike.harvest,player,p,item,node,region,elapsed)
+		end
+		s.busy=nil
 		if not ok then warn("Strike harvest failed: "..tostring(message)); message,done="That node crumbled oddly. Try again.",false end
 		out.message=message
-		if done then out.regrow=Strike.lastRegrow else out.ok,out.broken,out.reason=false,nil,"harvest" end
+		if done then out.regrow=regrow
+		else
+			out.ok,out.broken,out.reason=false,nil,"harvest"
+			if ns and out.max then ns.hp=1; ns.at=os.clock(); track(s,node,ns); out.hp=1 end
+		end
 		update:FireClient(player,snapshot(player,message))
 		return reply(out)
 	end
+	-- QC L3: would the break's harvest be accepted? Checked before the breaking
+	-- damage lands, with no side effects (the harvest's own refusals: per-player
+	-- regrowth, level and tool gates). Returns ok, message.
+	function Strike.accepts(player,p,item,node)
+		local kind=special(node)
+		if kind then return kind.check(player,p,node) end
+		local readyAt=nodeRegrowth[node] and nodeRegrowth[node][player]
+		if readyAt and os.clock()<readyAt then return false,"This node is regrowing ("..math.ceil(readyAt-os.clock()).."s)." end
+		local r=Progression.resource(item)
+		if not r then return false,"That node crumbled oddly. Try again." end
+		if level(p.xp[r.skill])<r.level then return false,r.name.." requires "..r.skill.." "..r.level.."." end
+		local _,tool=Progression.bestTool(p,r.skill)
+		if (tool and tool.toolTier or 0)<r.tool then return false,r.name.." requires a tier "..r.tool.." "..string.lower(Data.ToolKind[r.skill]).."." end
+		return true -- (the satchel has no cap today; a future "satchel full" refusal belongs here)
+	end
+	-- QC L1: the bite is pushed when it happens (IsleStrike:FireClient(player,
+	-- "bite", node, window)), never sent with the cast, so a client cannot read
+	-- the bite time ahead and reel blind.
+	local biteRemote=Instance.new("RemoteEvent")
+	biteRemote.Name="IsleStrike"
+	biteRemote.Parent=ReplicatedStorage
+	Strike.biteRemote=biteRemote
 	function Strike.action(player,node)
+		-- QC L7: no journal, no state (a strike racing the leave never recreates it).
+		if not profiles[player] then return reply({ok=false,reason="sync"}) end
 		local s=stateOf(player)
 		local now=os.clock()
 		s.tokens=math.min(BURST,s.tokens+(now-s.tokenAt)*RATE)
 		s.tokenAt=now
 		if s.tokens<1 then return nil end
 		s.tokens-=1
-		if s.busy then return refuse(player,s,{ok=false,reason="busy"}) end
+		if s.busy and now<s.busy then return refuse(player,s,{ok=false,reason="busy"}) end
 		local p=profiles[player]
 		if not p or (not preview[player] and os.time()>=(leaseEnd[player] or 0)) then return refuse(player,s,{ok=false,reason="sync",message="Waiting for journal sync."}) end
 		local character=player.Character
@@ -10407,6 +10522,11 @@ do
 		if tier<r.tool then
 			return refuse(player,s,{ok=false,reason="tool",message=r.name.." requires a tier "..r.tool.." "..string.lower(Data.ToolKind[r.skill]).."."})
 		end
+		-- QC H1: one gathering clock. A cast and a strike share the schedule (a
+		-- cast pushes s.next, a strike pushes s.castGap and drops any cast), and
+		-- every accepted strike / cast also holds the action cooldown, so prompt
+		-- actions never stack on a swing.
+		local function occupy(untilAt) cooldown[player]=math.max(cooldown[player] or 0,untilAt) end
 		if r.skill=="Fishing" then
 			local F,c=ST.FISH,s.cast
 			if c and c.node==node and now<=c.at+c.bite+F.window+F.late then
@@ -10414,20 +10534,32 @@ do
 				if now<c.at+c.bite-F.early then
 					return refuse(player,s,{ok=false,reason="early",message="Too early: the fish slipped the hook."})
 				end
-				return Strike.finish(player,p,s,item,node,region,{ok=true,broken=true,reeled=true})
+				return Strike.finish(player,p,s,item,node,region,{ok=true,broken=true,reeled=true},now-c.at)
 			end
-			if now<s.castGap then return refuse(player,s,{ok=false,reason="cadence",wait=s.castGap-now}) end
+			local ready=math.max(s.castGap,s.next-ST.TOLERANCE)
+			if now<ready then return refuse(player,s,{ok=false,reason="cadence",wait=ready-now}) end
 			s.casts+=1
 			local bite=ST.biteDelay(player.UserId,s.casts)
-			s.cast={node=node,at=now,bite=bite}
+			local cast={node=node,at=now,bite=bite}
+			s.cast=cast
 			s.castGap=now+F.gap
+			s.next=math.max(s.next,s.castGap)
+			occupy(s.castGap)
 			Held.gather(player,p,r.skill)
-			return reply({ok=true,cast=true,bite=bite,window=F.window})
+			task.delay(bite,function()
+				if s.cast~=cast or Strike.state[player]~=s or not node.Parent then return end
+				pcall(function() biteRemote:FireClient(player,"bite",node,F.window) end)
+			end)
+			return reply({ok=true,cast=true,window=F.window})
 		end
-		-- Cadence: one strike a swing; the schedule never runs ahead of real time,
-		-- so an auto-clicker gains nothing beyond TOLERANCE of jitter.
+		-- Cadence: one strike a swing; the schedule never runs ahead of real time
+		-- (QC L2: at most TOLERANCE behind it), so an auto-clicker gains nothing
+		-- beyond TOLERANCE of jitter.
 		if now<s.next-ST.TOLERANCE then return refuse(player,s,{ok=false,reason="cadence",wait=s.next-now}) end
-		s.next=math.max(now,s.next)+(ST.SWING[r.skill] or 0.7)
+		s.next=math.max(now-ST.TOLERANCE,s.next)+(ST.SWING[r.skill] or 0.7)
+		s.cast=nil
+		s.castGap=math.max(s.castGap,s.next)
+		occupy(s.next-ST.TOLERANCE)
 		Held.gather(player,p,r.skill) -- the node's tool is in hand (auto switch, returns when idle)
 		local maxHp=ST.maxHp(r)
 		local ns=s.nodes[node]
@@ -10436,15 +10568,30 @@ do
 			if ns.hp>=maxHp then untrack(s,node); ns=nil end
 		end
 		if not ns then
-			ns={hp=maxHp,at=now}
+			-- A special node refuses before any damage (e.g. another crew's store).
+			local kind=special(node)
+			if kind then
+				local fine,why=kind.check(player,p,node)
+				if not fine then return refuse(player,s,{ok=false,reason="harvest",message=why}) end
+			end
+			ns={hp=maxHp,at=now,first=now} -- first: the break's start (QC M5 regrowth)
 			track(s,node,ns)
 		end
 		local dmg=ST.damage(r,tier,Strike.speed(p,s,r,toolId,tool),lvl)
-		ns.hp=math.max(0,ns.hp-dmg)
 		ns.at=now
-		if ns.hp>0 then return reply({ok=true,hp=ns.hp,max=maxHp,dmg=dmg}) end
+		if ns.hp-dmg>0 then
+			ns.hp-=dmg
+			return reply({ok=true,hp=ns.hp,max=maxHp,dmg=dmg})
+		end
+		-- QC L3: the breaking blow lands only if the harvest will be accepted.
+		local accepted,why=Strike.accepts(player,p,item,node)
+		if not accepted then
+			ns.hp=1
+			return refuse(player,s,{ok=false,reason="harvest",hp=1,max=maxHp,dmg=dmg,message=why})
+		end
+		ns.hp=0
 		untrack(s,node)
-		return Strike.finish(player,p,s,item,node,region,{ok=true,broken=true,hp=0,max=maxHp,dmg=dmg})
+		return Strike.finish(player,p,s,item,node,region,{ok=true,broken=true,hp=0,max=maxHp,dmg=dmg},now-ns.first,ns)
 	end
 end
 -- <<< END Gathering Feel <<<

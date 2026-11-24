@@ -40,6 +40,9 @@ local services={
 	CollectionService={AddTag=function(_,obj,tag)
 		tags[tag]=tags[tag] or {}
 		table.insert(tags[tag],obj)
+	end,RemoveTag=function(_,obj,tag)
+		local i=tags[tag] and table.find(tags[tag],obj)
+		if i then table.remove(tags[tag],i) end
 	end},
 	ReplicatedStorage={WaitForChild=function(_,name) return if name=="AetherData" then dataModule else nil end},
 	ServerStorage={FindFirstChild=function(_,name) return if name=="IsleRegionAccess" then regionAccess else nil end},
@@ -265,10 +268,13 @@ for _,model in archipelago:GetChildren() do if model.Name=="CrewHaven_11" then s
 check(sharedCount==1,"members share one island")
 local supplyCount=0
 for _,obj in shared:GetDescendants() do
-	if obj:IsA("ProximityPrompt") and obj:GetAttribute("IsleCoopResource") then
+	check(not (obj:IsA("ProximityPrompt") and obj:GetAttribute("IsleCoopResource")),"§42: no crew supply prompt (struck nodes)")
+	if obj:IsA("BasePart") and obj:GetAttribute("IsleCoopResource") then
 		supplyCount+=1
 		check(obj:GetAttribute("CoopId")=="11","shared supply group binding")
-		check(obj:GetAttribute("IsleAction")==nil,"shared supplies never award personal inventory")
+		check(obj:GetAttribute("StrikeKind")=="crew" and obj:GetAttribute("GatherNode")==obj:GetAttribute("IsleCoopResource"),"§42: a crew store is a crew strike node")
+		check(table.find(tags.AetherNode or {},obj)~=nil and obj.Parent:IsA("Model") and obj.Parent~=shared,"§42: crew store tagged, in its own visual Model")
+		check(obj:FindFirstChildOfClass("ProximityPrompt")==nil and obj:GetAttribute("IsleAction")==nil,"shared supplies never award personal inventory")
 	end
 end
 check(supplyCount==3,"crew has three construction supplies")
@@ -288,8 +294,8 @@ a:SetAttribute("CoopId","11")
 check(archipelago:FindFirstChild("CrewHaven_preview_11")~=nil,"preview crew gets separate geometry")
 check(archipelago:FindFirstChild("CrewHaven_11")~=nil,"durable crew survives preview join")
 for _,obj in archipelago:FindFirstChild("CrewHaven_preview_11"):GetDescendants() do
-	if obj:IsA("ProximityPrompt") and obj:GetAttribute("IsleCoopResource") then
-		check(obj:GetAttribute("CoopPreview")==true,"preview supply prompt is environment bound")
+	if obj:IsA("BasePart") and obj:GetAttribute("IsleCoopResource") then
+		check(obj:GetAttribute("CoopPreview")==true,"preview supply node is environment bound")
 	end
 end
 a:SetAttribute("CoopId",nil)
@@ -435,12 +441,18 @@ end
 local gatherNodes={}
 for _,obj in world:GetDescendants() do
 	check(not (obj:IsA("ProximityPrompt") and obj:GetAttribute("IsleAction")=="gather"),"§42: no gather prompt anywhere ("..obj:GetFullName()..")")
-	if obj:IsA("BasePart") and obj:GetAttribute("GatherNode") and not obj:GetAttribute("OwnerUserId") then
+	if obj:IsA("BasePart") and obj:GetAttribute("GatherNode") and not obj:GetAttribute("OwnerUserId") and not obj:GetAttribute("StrikeKind") then
 		local id=obj:GetAttribute("GatherNode")
 		check(obj:FindFirstChildOfClass("ProximityPrompt")==nil,"§42: node host "..obj.Name.." has no prompt")
 		check(table.find(tags.AetherNode or {},obj)~=nil,"§42: node host "..obj.Name.." is tagged AetherNode")
 		check(obj.CanQuery,"§42: node host "..obj.Name.." is clickable")
 		check(obj.Parent:IsA("Model"),"§42: node host "..obj.Name.." sits in its own visual Model")
+		if Data.ResourceSkill[id]=="Fishing" then
+			-- §42 QC L11: every fishing spot (the Moonpool jetty too) has ripples and a bobber to go calm.
+			local calm=0
+			for _,d in obj.Parent:GetDescendants() do if d:IsA("BasePart") and (d.Name=="Ripple" or d.Name=="Bobber") then calm+=1 end end
+			check(calm>=2,"§42: fishing spot "..obj.Parent.Name.." has ripples / a bobber to calm ("..calm..")")
+		end
 		gatherNodes[id]=gatherNodes[id] or {}
 		table.insert(gatherNodes[id],obj)
 	end
@@ -1328,8 +1340,6 @@ do
 		elseif q:IsA("ProximityPrompt") then
 			if q:GetAttribute("IsleAction")=="gather" then
 				check(false,"§42: no gather prompt ("..q:GetFullName()..")")
-			elseif q:GetAttribute("IsleCoopResource") then
-				check(math.abs(q.HoldDuration-1)<1e-6,"shared gather hold is 1.0 s")
 			else
 				holds.interact+=1
 				check(math.abs(q.HoldDuration-.36)<1e-6,q.ObjectText.." interact hold stays 0.36 s")
@@ -1337,6 +1347,22 @@ do
 		end
 	end end
 	check(holds.gather>=30 and holds.fish>=8 and holds.interact>=20,"every node kind and interact hold covered")
+	-- §42 (owner decision): no hold-to-gather anywhere in the built world (static
+	-- isles, homes, gardens, crew havens): no prompt gathers (gather-like action
+	-- text, a gather / crew-supply attribute) and no prompt holds longer than an
+	-- ordinary interact (0.36 s; the retired gather hold was 1 s).
+	local GATHER_WORDS={Gather=true,Chop=true,Mine=true,Harvest=true,Fish=true,Pick=true,Forage=true,Pull=true,Net=true,Dig=true}
+	local swept=0
+	for _,q in world:GetDescendants() do
+		if q:IsA("ProximityPrompt") then
+			swept+=1
+			local first=string.match(q.ActionText or "","^(%a+)")
+			check(not GATHER_WORDS[first or ""],"§42: no gather-like prompt ("..q.ActionText.." · "..q:GetFullName()..")")
+			check(q:GetAttribute("IsleAction")~="gather" and q:GetAttribute("IsleCoopResource")==nil,"§42: no gather prompt attribute ("..q:GetFullName()..")")
+			check(q.HoldDuration<=.36+1e-6,"§42: no gather-length hold ("..q:GetFullName()..", "..q.HoldDuration.." s)")
+		end
+	end
+	check(swept>=200,"§42: the no-hold-to-gather sweep saw the world's prompts ("..swept..")")
 
 	-- Placement glow cap: a full island of lantern posts lights at most 10, spaced.
 	local I=Data.Island

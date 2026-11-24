@@ -138,6 +138,11 @@ local function buildIndex()
 			end
 		end
 	end
+	-- §42 QC M3: gathering nodes have no prompt any more; "gather:<id>" resolves
+	-- to the AetherNode-tagged hosts (other islands' owner-only nodes skipped).
+	local tagged = {}
+	pcall(function() tagged = game:GetService("CollectionService"):GetTagged("AetherNode") end)
+	if Data.Strike and Data.Strike.indexNodes then Data.Strike.indexNodes(tagged, player.UserId, index.gather) end
 	local spawns = workspace:FindFirstChild("MonsterSpawns")
 	if spawns then
 		for _, marker in ipairs(spawns:GetChildren()) do

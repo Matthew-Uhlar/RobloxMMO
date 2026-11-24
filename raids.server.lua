@@ -297,6 +297,24 @@ local function prompt(part, action, object, target, hold)
 	q.Parent = part
 	return q
 end
+-- §42 (owner decision: no hold-to-gather): a resource-room node is a struck
+-- node. The host carries GatherNode (the skill's entry resource, for the swing,
+-- the HP bar and the cast / reel), StrikeKind "raid" and RaidTarget
+-- "node:<k>:<j>"; server.server.lua's Strike path validates the strike and, on
+-- the break, runs the same "act" as the retired prompt (Raids.strikeNode).
+local function strikeNode(part, node, target)
+	local ST = Data.Strike
+	local id = ST.ENTRY[node.skill] or "Herb"
+	part:SetAttribute("GatherNode", id)
+	part:SetAttribute("StrikeKind", "raid")
+	part:SetAttribute("RaidTarget", target)
+	part:SetAttribute("NodeName", node.name)
+	local r = ST.resource(id)
+	if r then part:SetAttribute("NodeMaxHp", ST.maxHp(r)) end
+	part.CanQuery = true
+	pcall(function() game:GetService("CollectionService"):AddTag(part, "AetherNode") end)
+	return part
+end
 local function ring(center, i, n, radius)
 	local a = (i - 1) * 2 * math.pi / n
 	return center + V(math.cos(a) * radius, 0, math.sin(a) * radius)
@@ -374,7 +392,7 @@ function Raid.buildRoom(run, room)
 			for j = 1, RD.NODES_PER_KIND do
 				local pos = ring(c, (k - 1) * RD.NODES_PER_KIND + j, #res.nodes * RD.NODES_PER_KIND, 17) + V(0, 1, 0)
 				local part = slot(block(model, node.name .. " " .. j, pos, V(3, 2, 3), C3(node.color), Enum.Material.Grass), node.shape, C3(node.color))
-				prompt(part, node.verb, node.name, "node:" .. k .. ":" .. j, 1.2)
+				strikeNode(part, node, "node:" .. k .. ":" .. j)
 				room.parts["node" .. k .. ":" .. j] = part
 			end
 		end

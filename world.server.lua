@@ -76,7 +76,7 @@ local function ghost(p)
 	if not p.CanCollide then p.CanQuery=false end
 	return p
 end
-local GATHER_HOLD,INTERACT_HOLD=1,.36
+local INTERACT_HOLD=.36 -- §42: nothing gathers by holding a prompt (the 1 s gather hold is retired)
 local function prompt(p, verb, item, action, id, owner)
 	assert(action~="gather","§42: gathering nodes are struck, never prompted (Node.gather)")
 	local q = Instance.new("ProximityPrompt")
@@ -105,6 +105,22 @@ function Node.gather(host,id,region,owner)
 	Tags:AddTag(host,"AetherNode")
 	if Node.stamp then Node.stamp(host) else table.insert(Node.pending,host) end
 	return host
+end
+-- §42 (owner decision): special strike nodes. `kind` routes the break on the
+-- server (StrikeKind "crew": the Crew Haven stores credit the crew through
+-- coop.server.lua; "garden": a ripe Verdant Garden plot harvests through the
+-- Garden verbs). `name` overrides the hover / bar name.
+function Node.special(host,id,kind,name,owner)
+	Node.gather(host,id,nil,owner)
+	host:SetAttribute("StrikeKind",kind)
+	host:SetAttribute("NodeName",name)
+	return host
+end
+-- A plot that stops being ripe is no longer a node.
+function Node.ungather(host)
+	if host:GetAttribute("GatherNode")==nil then return end
+	for _,key in ipairs({"GatherNode","StrikeKind","NodeName","NodeMaxHp","NodeLabel","ResourceId","OwnerUserId","GardenHarvest"}) do host:SetAttribute(key,nil) end
+	Tags:RemoveTag(host,"AetherNode")
 end
 local function hidden(parent,name,pos)
 	local p = block(parent,name,pos,V(1,1,1),cream,SM,false)
@@ -1537,8 +1553,14 @@ herb(moss,MOSS+V(2,mossTop,2))
 local MOONPOOL=G+V(-24,0,-26)
 pond(grove,MOONPOOL,13,{name="Moonpool"})
 local jettyAt=MOONPOOL+V(9,0,7.2)
-local dock=part(group("Moonpool fishing spot",grove),"Fishing jetty",V(3,1,9),CFrame.lookAt(jettyAt+V(0,.5,0),MOONPOOL+V(0,.5,0)),timber,WO,true)
+local spot=group("Moonpool fishing spot",grove)
+local dock=part(spot,"Fishing jetty",V(3,1,9),CFrame.lookAt(jettyAt+V(0,.5,0),MOONPOOL+V(0,.5,0)),timber,WO,true)
 meshSlot(dock,"FishingPier")
+-- §42 QC L11: ripples and a bobber off the jetty's end, so the spot visibly goes calm when fished out.
+local bob=jettyAt+(MOONPOOL-jettyAt).Unit*7
+for i=1,2 do disk(spot,"Ripple",bob+V(math.cos(i*2.1)*.9,.26+i*.04,math.sin(i*2.1)*.9),.4+i*.4,.03,lighten(C("5AA9B5"),.35+i*.12),SM,false) end
+ball(spot,"Bobber",bob+V(.4,.5,.2),.75,C("E2574C"),SM)
+ball(spot,"Bobber cap",bob+V(.4,.95,.2),.42,cream,SM)
 Node.gather(dock,"Fish")
 anchor(grove,"Waypoint_MoonpoolJetty",jettyAt+(jettyAt-MOONPOOL).Unit*5.5,MOONPOOL)
 anchor(grove,"Waypoint_Moonpool",jettyAt+(jettyAt-MOONPOOL).Unit*8,MOONPOOL)
@@ -2198,15 +2220,18 @@ local function makeShared(groupKey,groupId,isPreview)
 	prompt(exit,"Return to hub","Compass Quay").Triggered:Connect(function(player)
 		if sharedPlayers[player]==groupKey then warp(player,exit,HUB_ARRIVAL+V(-6,0,4)) end
 	end)
+	-- §42 (owner decision, overrides QC L9): the crew stores are struck like any
+	-- node (no hold prompt); the break credits the crew store through
+	-- coop.server.lua's IsleCoopStrike (same yields, caps and regrowth).
 	local function supply(name,pos,color)
-		local base=block(model,"Shared "..name,center+pos,V(3,2,3),color,WO,true)
+		local store=group("Shared "..name.." store",model)
+		local base=block(store,"Shared "..name,center+pos,V(3,2,3),color,WO,true)
 		base.Transparency=1
-		sculpture(model,name.." supply marker",center+pos+V(0,.4,0),({Timber="TimberBundle",Ore="AetherCrystal",Herb="Moonbloom"})[name],1)
-		local interaction=prompt(base,"Gather shared "..name,"Crew stores")
-		interaction.HoldDuration=GATHER_HOLD
-		interaction:SetAttribute("CoopId",groupId)
-		interaction:SetAttribute("CoopPreview",isPreview)
-		interaction:SetAttribute("IsleCoopResource",name)
+		sculpture(store,name.." supply marker",center+pos+V(0,.4,0),({Timber="TimberBundle",Ore="AetherCrystal",Herb="Moonbloom"})[name],1)
+		Node.special(base,name,"crew","Shared "..name)
+		base:SetAttribute("CoopId",groupId)
+		base:SetAttribute("CoopPreview",isPreview)
+		base:SetAttribute("IsleCoopResource",name)
 	end
 	supply("Timber",V(-12*K,1,-5*K),timber)
 	supply("Ore",V(0,1,-14*K),shale)
@@ -4319,9 +4344,17 @@ do
 			b.soil.Color=if has(flags,"w") then darken(soilColor,.35) else soilColor
 			b.soil.Material=if has(flags,"c") then Enum.Material.Mud else GR
 			b.soil.Transparency=if unlocked then 0 else .55
-			b.prompt.Enabled=unlocked
+			-- §42 (owner decision): a ripe, healthy plot is harvested by striking it
+			-- with the hoe (StrikeKind "garden"), never with the prompt.
+			local strike=unlocked and ripe and not dead and not sick and not (s and s.pest)
+			b.prompt.Enabled=unlocked and not strike
+			if strike then
+				local cropName=Data.Items[crop.id] and Data.Items[crop.id].name or crop.id
+				Node.special(b.soil,"Herb","garden","Plot "..i.." · "..cropName,player.UserId)
+				b.soil:SetAttribute("GardenHarvest",i)
+			else Node.ungather(b.soil) end
 			b.prompt.ActionText=if not unlocked then "Locked" elseif s and s.pest then "Swat pest" elseif dead then "Clear"
-				elseif sick then "Treat" elseif ripe then "Harvest" elseif crop then "Water" else "Plant"
+				elseif sick then "Treat" elseif ripe then "Ripe" elseif crop then "Water" else "Plant"
 			b.prompt.ObjectText="Plot "..i..(if crop then " · "..(Data.Items[crop.id] and Data.Items[crop.id].name or crop.id).." · "..(G.STAGE_NAMES[s.stage] or "") else "")
 			-- Crop mesh slot: rebuilt when the crop or stage changes, re-tinted in place.
 			local key=if crop and s.stage>0 then crop.id..":"..s.stage else nil
