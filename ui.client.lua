@@ -9995,6 +9995,7 @@ local MENU={
 	{id="Market",motif="Ledger",tab="Ledger",section="Orders"},{id="Satchel",motif="Satchel",hud="satchel"},
 	{id="Chart",title="Sky Chart",motif="Map",hud="warpmap"},{id="Settings",motif="Settings",tab="Menu",section="Settings"},
 	{id="Renown",title="Isle Renown",motif="Journal",tab="Menu",section="Renown"}, -- §31 MMO Features
+	{id="Feats",title="Combat Feats",motif="Hunt",tab="Menu",section="Feats"}, -- §45 Combat Feats
 }
 local function caption(id)
 	local d=depth() or EMPTY
@@ -10010,6 +10011,7 @@ local function caption(id)
 	elseif id=="Satchel" then return "Inventory · E"
 	elseif id=="Chart" then return "Warp map · M"
 	elseif id=="Renown" then local r=tbl(state.renown) return "Level "..fmt(num(r.level,0)).."  ·  "..tostring(r.title or "Driftling")
+	elseif id=="Feats" then local f=tbl(state.feats) local FT=Data and Data.Feats local t=FT and FT.Tiers[num(f.tier,0)] return fmt(num(f.points,0)).." points  ·  "..(t and t.name or "No tier")
 	end
 	return "Preferences"
 end
@@ -10201,11 +10203,106 @@ end
 end
 
 ------------------------------------------------------------------------------
+-- Combat Feats (§45): Menu › Feats. Tier tabs, a boss filter, the points bar
+-- to the next tier, claimable tier rewards, feat teleports and one card per
+-- task (kill-count tasks show their counter as a progress bar). Static task
+-- data is read from Data.Feats; the snapshot's `feats` carries the journal's
+-- points, done map, counters, claims and teleport charges. Completion toasts
+-- are §31 announcements (kinds feat / featTier, features.client.lua).
+------------------------------------------------------------------------------
+do
+local FP={tier="All",boss="All"}
+Pages.feats=FP
+local function featsState() return tbl(state.feats) end
+function FP.visible(FT,tier,boss)
+	local out={}
+	for _,t in ipairs(FT.Tasks) do
+		local g=FT.GroupById[t.group]
+		if (tier=="All" or t.tier==tier) and (boss=="All" or (g and g.short==boss)) then table.insert(out,t) end
+	end
+	return out
+end
+function Pages.drawFeats()
+	local FT=Data and Data.Feats
+	if not FT then card({name="FeatsMissing",title="Combat Feats are syncing…"}) return end
+	local f=featsState()
+	local points=num(f.points,0)
+	local tierIndex=num(f.tier,0)
+	local reached=FT.Tiers[tierIndex]
+	local nextTier=FT.Tiers[tierIndex+1]
+	heading("COMBAT FEATS / "..fmt(points).." OF "..fmt(FT.TOTAL_POINTS).." POINTS")
+	local hex=reached and reached.color or "C9D6E3"
+	local perks=tbl(f.perks)
+	local perkLines={}
+	if num(perks.bossMagicFind,0)>0 then table.insert(perkLines,"+"..fmt(num(perks.bossMagicFind,0)).." Magic Find on boss loot") end
+	if num(perks.slayerXp,0)>0 then table.insert(perkLines,"+"..math.floor(num(perks.slayerXp,0)*100+.5).."% slayer boss XP") end
+	if num(perks.teleports,0)>0 then table.insert(perkLines,fmt(num(perks.teleports,0)).." feat teleports a day") end
+	local floor=reached and FT.Thresholds[tierIndex] or 0
+	local need=nextTier and FT.Thresholds[nextTier.index] or FT.TOTAL_POINTS
+	card({name="FeatsSummary",motif="Hunt",accent=rgb(hex),title=paint("⚔ "..(reached and string.upper(reached.name) or "NO TIER YET"),hex),
+		subtitle=fmt(points).." feat points  ·  "..fmt(#FT.Tasks).." tasks across every boss, lair, raid and Observatory floor",
+		detail="Feats are counted by the server from real fights: kill counts, perfection (dodge a mechanic), speed (server-timed), restrictions and mechanics. Points unlock tier rewards.",
+		lines={#perkLines>0 and ("Perks: "..table.concat(perkLines,"  ·  ")) or "Tier perks begin at Medium."},
+		bar={fraction=nextTier and math.clamp((points-floor)/math.max(1,need-floor),0,1) or 1,color=rgb(nextTier and nextTier.color or hex),
+			caption=nextTier and (fmt(points).." / "..fmt(need).." to "..nextTier.name) or "Every tier unlocked"}})
+	-- Tier rewards (claimable first).
+	local claimed=tbl(f.claimed)
+	for i,t in ipairs(FT.Tiers) do
+		local isReached=i<=tierIndex
+		local isClaimed=claimed[t.id]==true
+		if isReached and not isClaimed then
+			card({name="FeatsReward"..t.id,motif="Hunt",accent=rgb(t.color),title=paint(t.name.." tier reward",t.color),badge="READY",badgeColor=mint,
+				detail=escape(FT.rewardText(t.id)),actions={{caption="Claim",primary=true,name="FeatClaim"..t.id,fn=function() send("featClaim",t.id) end}}})
+		end
+	end
+	local tele=tbl(f.teleports)
+	if num(tele.max,0)>0 then
+		local acts={}
+		for _,d in ipairs(FT.Teleports) do
+			table.insert(acts,{caption=d.name,name="FeatTeleport"..d.id,disabled=num(tele.left,0)<=0 or num(tele.readyIn,0)>0,
+				reason=num(tele.left,0)<=0 and "No charges left today." or "The teleport is settling.",fn=function() send("featTeleport",d.id) end})
+		end
+		card({name="FeatsTeleports",motif="Map",title="Feat teleports",badge=fmt(num(tele.left,0)).." / "..fmt(num(tele.max,0)),badgeColor=gold,
+			subtitle="Refills in "..FT.formatTime(math.min(num(tele.resetIn,0),5999)),detail="Step to a boss's doorstep. Charges refill each day.",actions=acts})
+	end
+	-- Tier tabs and the boss filter.
+	local tierNames={"All"}
+	for _,t in ipairs(FT.Tiers) do table.insert(tierNames,t.id) end
+	if not table.find(tierNames,FP.tier) then FP.tier="All" end
+	sectionBar(tierNames,FP.tier,function(name) FP.tier=name render() end,{small=true,prefix="FeatTier"})
+	local bossNames={"All"}
+	for _,g in ipairs(FT.Groups) do table.insert(bossNames,g.short) end
+	if not table.find(bossNames,FP.boss) then FP.boss="All" end
+	sectionBar(bossNames,FP.boss,function(name) FP.boss=name render() end,{small=true,prefix="FeatBoss",maxPer=6})
+	local list=FP.visible(FT,FP.tier,FP.boss)
+	local doneMap=tbl(f.done)
+	local counters=tbl(f.kc)
+	local n=0
+	for _,t in ipairs(list) do if doneMap[t.id] then n+=1 end end
+	heading(string.upper(FP.tier=="All" and "All tiers" or FP.tier).." / "..n.." OF "..#list.." DONE")
+	for _,t in ipairs(list) do
+		local tier=FT.TierById[t.tier]
+		local kind=FT.TypeById[t.type]
+		local g=FT.GroupById[t.group]
+		local done=doneMap[t.id]~=nil
+		local bar=nil
+		if t.rule.kc and t.rule.kc>1 then
+			local have=done and t.rule.kc or math.min(t.rule.kc,num(counters[t.counter],0))
+			bar={fraction=have/t.rule.kc,color=rgb(tier.color),caption=fmt(have).." / "..fmt(t.rule.kc)}
+		end
+		card({name="Feat_"..t.id:gsub("[^%w]","_"),accent=rgb(tier.color),title=(done and paint("✔ ","6FE3C8") or "")..escape(t.name),titleColor=done and mint or ivory,
+			subtitle=paint(tier.name.." · "..tier.points.." pt"..(tier.points==1 and "" or "s"),tier.color).."  ·  "..kind.glyph.." "..kind.name.."  ·  "..escape(g and g.name or ""),
+			badge=done and "DONE" or nil,badgeColor=mint,detail=escape(t.text),bar=bar})
+	end
+end
+end
+
+------------------------------------------------------------------------------
 -- Navigation: the Menu plus six primary tabs, each with a section switcher.
 ------------------------------------------------------------------------------
 local tabOrder={"Menu","Journal","Hero","Satchel","Workshop","Hunt","Ledger"}
 local sectionLists={
-	Menu={"Home","Renown","Resonance","Settings"}, -- §31: Renown, Resonance
+	Menu={"Home","Renown","Feats","Resonance","Settings"}, -- §31: Renown, Resonance; §45: Feats
 	Journal={"Bearing","Quests","Helper","Goals","Diaries","Construction","Regions","Crew","Calendar","Council","Agility","Commissions","Collection Log","Museum","Motes","Factions"}, -- §33: Helper, Goals
 	Hero={"Skills","Mastery","Gear","Wardrobe","Combat","Spellbook","Prayer","Enchant","Lectern","Reforge","Accessories","Pets","Calculator"}, -- §33: Calculator; §41: Wardrobe, Lectern
 	Satchel={"Items","Collections","Trails"},
@@ -10215,7 +10312,7 @@ local sectionLists={
 }
 sectionOf={Menu="Home",Journal="Bearing",Hero="Skills",Satchel="Items",Workshop="Forge",Hunt="Slayer",Ledger="Bank"}
 local drawers={
-	Menu={Home=function() Pages.drawMenu() end,Renown=function() Pages.drawRenown() end,Resonance=function() Pages.drawResonance() end,Settings=function() Pages.drawSettings() end},
+	Menu={Home=function() Pages.drawMenu() end,Renown=function() Pages.drawRenown() end,Feats=function() Pages.drawFeats() end,Resonance=function() Pages.drawResonance() end,Settings=function() Pages.drawSettings() end},
 	Journal={Bearing=Pages.drawBearing,Quests=Pages.drawQuests,Diaries=Pages.drawDiaries,Construction=Pages.drawConstruction,Regions=Pages.drawRegions,Crew=Pages.drawCoop,Calendar=Pages.drawCalendar,Council=function() Pages.drawCouncil() end,Agility=Pages.drawAgility,
 		Commissions=Pages.drawCommissions,["Collection Log"]=Pages.drawCollectionLog,Museum=Pages.drawMuseum, -- Commissions & Logs
 		Motes=Pages.drawMotes,Factions=Pages.drawFactions, -- Exploration & Factions

@@ -65,6 +65,9 @@ for id in pairs(Data.Monsters) do maxed.bestiary[id] = 1e6 end
 -- Beaconry (§37): every beacon lit, a year of weekly watches.
 maxed.beaconry = {beacons = {}, weeks = 60}
 for _, id in ipairs(Data.Beaconry.BeaconOrder) do maxed.beaconry.beacons[id] = 3 end
+-- Combat Feats (§45): every task done.
+maxed.feats = {done = {}}
+for _, t in ipairs(Data.Feats.Tasks) do maxed.feats.done[t.id] = 1 end
 local species = {}
 for _, pet in ipairs(Data.Pets) do species[pet.id] = true end
 local top = RN.breakdown(maxed, P, {species = species, guideSteps = #G.Steps})

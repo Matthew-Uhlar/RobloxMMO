@@ -510,7 +510,8 @@ function Lair.won(f: Fight, status: any, now: number)
 		if c and c.ok and m.player and m.player.Parent then
 			m.credited = true
 			deliver({uid = uid, member = m, at = 0, deadline = deadline, payload = {action = "kill", boss = f.def.id, fight = f.id,
-				seconds = math.max(1, math.floor((f.seconds or 0) + 0.5)), party = outcome.party or memberCount(f), share = c.share}})
+				seconds = math.max(1, math.floor((f.seconds or 0) + 0.5)), party = outcome.party or memberCount(f), share = c.share,
+				feat = c.feat}}) -- Combat Feats (§45): this member's fight record from combat
 			notice(m.player, f.def.short .. " is slain in " .. LR.formatTime(f.seconds) .. "! Returning to the altar in " .. LR.EXIT_SECONDS .. "s.")
 		elseif m.player then
 			notice(m.player, f.def.short .. " is slain, but " .. (REASON_TEXT[c and c.reason or "member"] or "you earned no share") .. ".")
