@@ -10766,9 +10766,9 @@ do
 	local FT=Data.Feats
 	-- QC L5: the done / kc maps go out only when this revision has not been sent
 	-- to the player yet (verb featsSync forces a resend on a client cache miss).
-	Feats.rev=setmetatable({},{__mode="k"})
+	-- The revision lives on the state (session counter; FT.migrate drops it at load).
 	Feats.sent={}
-	function Feats.bump(p) Feats.rev[p]=(Feats.rev[p] or 0)+1 end
+	function Feats.bump(p) if type(p.feats)=="table" then p.feats.rev=(tonumber(p.feats.rev) or 0)+1 end end
 	function Feats.migrate(p)
 		local s,retro=FT.migrate(p.feats,p,os.time())
 		p.feats=s
@@ -10868,8 +10868,8 @@ do
 		local points=FT.points(s)
 		local tele=FT.teleportState(s,points,os.time())
 		local ready=Feats.tpAt[player.UserId]
-		if not Feats.rev[p] then Feats.bump(p) end
-		local rev=Feats.rev[p]
+		if not s.rev then Feats.bump(p) end
+		local rev=s.rev
 		local out={rev=rev,points=points,total=FT.TOTAL_POINTS,tier=FT.tierFor(points),claimed=s.claimed,claimable=FT.claimable(s,points),
 			perks=FT.perks(points),teleports={left=tele.left,max=tele.max,resetIn=tele.resetIn,readyIn=if ready then math.max(0,math.ceil(ready-os.clock())) else 0}}
 		if Feats.sent[player]==rev then out.compact=true return out end
