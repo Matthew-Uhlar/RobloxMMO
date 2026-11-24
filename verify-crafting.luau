@@ -467,15 +467,15 @@ for _, m in terrace:GetChildren() do
 end
 ok(craftParts >= 12 and craftParts <= 40, "Crafting stations stay within a small part budget (" .. craftParts .. ")")
 -- QC L8: the documented figure (DEPTH-CONTRACT §22, world.server.lua header):
--- 18 station parts + a 3-part sign + 3 invisible waypoint anchors = 24.
+-- 18 station parts + a 1-part sign (§28 v2: one floating-sign anchor) + 3 invisible waypoint anchors = 22.
 eq(craftParts, 18, "documented station part count")
 do
 	local sign = terrace:FindFirstChild("Sign Artificers' Row")
 	local signParts, anchors = 0, 0
 	for _, obj in (sign and sign:GetDescendants() or {}) do if obj:IsA("BasePart") then signParts += 1 end end
 	for _, id in ipairs(CR.StationOrder) do if terrace:FindFirstChild("Anchor_Waypoint_" .. id, true) then anchors += 1 end end
-	eq(signParts, 3, "documented sign part count")
-	eq(craftParts + signParts + anchors, 24, "documented Artificers' Row total")
+	eq(signParts, 1, "documented sign part count (§28 v2 anchor)")
+	eq(craftParts + signParts + anchors, 22, "documented Artificers' Row total")
 end
 -- Stations use existing mesh slots and stand apart from each other and from the old stations.
 do

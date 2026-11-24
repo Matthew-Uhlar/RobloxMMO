@@ -4455,8 +4455,8 @@ end
 -- bumps IsleStationVisit so the client opens Workshop › Crafting). Models carry
 -- CraftingContent = true; anchors Waypoint_Jeweller / _Tannery / _Glassworks.
 -- Built from mesh slots that already exist (Workbench, OreCluster, Barrel,
--- Forge) plus a §28 shop sign: 18 station parts, a 3-part sign and 3 invisible waypoint
--- anchors (24 parts), no extra lights (terrace budget).
+-- Forge) plus a §28 shop sign: 18 station parts, a 1-part floating sign (§28 v2) and 3 invisible waypoint
+-- anchors (22 parts), no extra lights (terrace budget).
 -------------------------------------------------------------------------------
 do
 	local host=islandsFolder:FindFirstChild("Guild Terrace")
