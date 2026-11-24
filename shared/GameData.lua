@@ -1286,6 +1286,24 @@ do
 		{name="lookout deck",x=0,z=46,r=7.5},
 		{name="survey stake",x=10,z=-21,r=2},
 	}
+	-- Walk capsules (§40 QC M1): the walks from the core out to the moved
+	-- add-ons are oriented strips, so they are protected as segment capsules
+	-- (ax, az) -> (bx, bz) with half-width hw (path width / 2) in studs. The
+	-- endpoints mirror world.server.lua: the garden walk runs from 20 studs out
+	-- towards the Verdant Garden to its lawn edge (GARDEN_R 14 - 0.5); the yard
+	-- path from HOME_CORE - 1 to the foot of the yard ramp (YARD_R 12 + 5.4 - 0.6).
+	-- The terrace and lookout walks are axis-aligned rectangles (Protected).
+	Island.ProtectedSegments = {}
+	do
+		local function walk(name, tx, tz, fromR, toBack, width)
+			local len = math.sqrt(tx * tx + tz * tz)
+			local ux, uz = tx / len, tz / len
+			table.insert(Island.ProtectedSegments, {name=name, ax=ux * fromR, az=uz * fromR,
+				bx=tx - ux * toBack, bz=tz - uz * toBack, hw=width / 2})
+		end
+		walk("garden walk", -40, 40, 20, 13.5, 5)
+		walk("worker yard path", 40, -38, 20, 16.8, 5)
+	end
 	Island.Props = {
 		-- Fences
 		TimberFence={name="Timber Fence",category="Fences",level=1,xp=12,costs={Timber=4},size={1,1},parts=4,max=40,value=1,color="966B4C",text="A rail of meadow timber."},
@@ -1375,6 +1393,39 @@ do
 	-- nil when buildable, else a short reason: "edge" or a protected zone name.
 	-- `stage` (default 0) is the owner's expansion stage; `radius` overrides it
 	-- (the legacy grid check passes Island.LEGACY_RADIUS).
+	-- Squared distance from segment g (ax,az)-(bx,bz) to the axis-aligned
+	-- square centred (cx, cz) with half-size e; 0 when they touch.
+	local function segmentBoxDist2(g, cx, cz, e)
+		local x0, z0, x1, z1 = cx - e, cz - e, cx + e, cz + e
+		-- Liang-Barsky: does the segment cross the square?
+		local dx, dz = g.bx - g.ax, g.bz - g.az
+		local t0, t1 = 0, 1
+		local crosses = true
+		for _, pq in ipairs({{-dx, g.ax - x0}, {dx, x1 - g.ax}, {-dz, g.az - z0}, {dz, z1 - g.az}}) do
+			local p, q = pq[1], pq[2]
+			if p == 0 then
+				if q < 0 then crosses = false break end
+			else
+				local t = q / p
+				if p < 0 then t0 = math.max(t0, t) else t1 = math.min(t1, t) end
+				if t0 > t1 then crosses = false break end
+			end
+		end
+		if crosses then return 0 end
+		-- Otherwise the closest pair involves a vertex of one of the two.
+		local function ptBox(px, pz)
+			local ex = math.max(math.abs(px - cx) - e, 0)
+			local ez = math.max(math.abs(pz - cz) - e, 0)
+			return ex * ex + ez * ez
+		end
+		local len2 = dx * dx + dz * dz
+		local function ptSeg(px, pz)
+			local t = if len2 > 0 then math.clamp(((px - g.ax) * dx + (pz - g.az) * dz) / len2, 0, 1) else 0
+			local ex, ez = g.ax + dx * t - px, g.az + dz * t - pz
+			return ex * ex + ez * ez
+		end
+		return math.min(ptBox(g.ax, g.az), ptBox(g.bx, g.bz), ptSeg(x0, z0), ptSeg(x1, z0), ptSeg(x0, z1), ptSeg(x1, z1))
+	end
 	function Island.cellBlocked(x, z, stage, radius)
 		if not int(x) or not int(z) or math.abs(x) > Island.RANGE or math.abs(z) > Island.RANGE then return "edge" end
 		local half = Island.CELL / 2
@@ -1390,6 +1441,9 @@ do
 			local dx = math.max(math.abs(c.x - cx) - e, 0)
 			local dz = math.max(math.abs(c.z - cz) - e, 0)
 			if dx * dx + dz * dz < c.r * c.r then return c.name end
+		end
+		for _, g in ipairs(Island.ProtectedSegments) do
+			if segmentBoxDist2(g, cx, cz, e) < g.hw * g.hw then return g.name end
 		end
 		return nil
 	end
@@ -13041,7 +13095,11 @@ function B.warmthSeconds(cape) return B.WARMTH_SECONDS * (if cape then B.CAPE_WA
 local BRIDGE_WORDS = {"bridge","deck","plank","rope","ladder","stair","dock","pier","path"}
 -- QC L2: never inside a station, stall or other built structure on an isle.
 local STRUCTURE_WORDS = {"stall","station","counter","forge","hearth","cauldron","workbench","anvil","altar",
-	"council","dais","vault","booth","kiosk","bench","tanning","furnace","chest","board","statue","fountain"}
+	"council","dais","vault","booth","kiosk","bench","tanning","furnace","chest","board","statue","fountain",
+	-- §40 QC L1: the building kit's hosts ("Roofed house", "Roofed hall floor",
+	-- "Hall wall") and walk-in halls; models also carry the Building attribute
+	-- (chain node .building, set by the server's chainOf).
+	"roofed","hall","house"}
 B.STRUCTURE_WORDS = STRUCTURE_WORDS
 function B.groundVerdict(chain, userId)
 	if type(chain) ~= "table" or #chain == 0 then return false, "Stand on solid ground to kindle a fire." end
@@ -13063,6 +13121,7 @@ function B.groundVerdict(chain, userId)
 			-- Below the isle model (chain[i - 1]) every node is a part or a built model.
 			for j = 1, i - 2 do
 				local lower = string.lower(tostring(chain[j].name or ""))
+				if chain[j].building then return false, "Not inside a building. Step out onto open ground." end
 				for _, w in ipairs(STRUCTURE_WORDS) do
 					if string.find(lower, w, 1, true) then return false, "Not inside a station or stall. Step out onto open ground." end
 				end

@@ -811,6 +811,27 @@ do
 			check(phone.forge.buildRadius(p) == (if interior then 14 else 120), p.Name .. " phone building radius")
 		end
 	end
+	-- §40 QC M2: phone building templates are released just past their build
+	-- radius (shell 120 * 1.2, interior 14 + 10), not held to UNLOAD_RADIUS.
+	do
+		local interiorHost
+		for _, p in phone.root:GetDescendants() do
+			if p:IsA("BasePart") and type(p:GetAttribute("Shape")) == "string" and World.shapes[p:GetAttribute("Shape")]
+				and World.shapes[p:GetAttribute("Shape")].interior == true then interiorHost = p break end
+		end
+		check(interiorHost ~= nil, "an interior host to walk away from")
+		check(phone.forge.releaseRadius(interiorHost) == 24 and desk.forge.releaseRadius(interiorHost) == 144, "interior release radius (phone 24, desktop 144)")
+		local at = interiorHost.CFrame.Position
+		for _ = 1, 3 do phone.moveTo(at + Vector3.new(0, 2, 4)) end
+		check(phone.forge.placed[interiorHost] ~= nil, "the phone forges the interior up close (" .. tostring(interiorHost:GetAttribute("ShapeSkipped")) .. ")")
+		phone.moveTo(at + Vector3.new(30, 2, 0))
+		check(phone.forge.placed[interiorHost] == nil, "walking 30 studs away releases the phone interior")
+		local shell = interiorHost.Parent and interiorHost.Parent:FindFirstChild("Roofed hall floor", true)
+		if shell and phone.forge.placed[shell] then
+			phone.moveTo(at + Vector3.new(160, 2, 0))
+			check(phone.forge.placed[shell] == nil, "a phone hall shell is released past 144 studs")
+		end
+	end
 	check(buildingHosts >= 55, "building hosts on the tour (" .. buildingHosts .. "; meshed everywhere the per-stop checks above require)")
 	check(desk.forge.stats.evicted > 0 and phone.forge.stats.evicted > 0, "LRU eviction recycles idle templates during the tour")
 end

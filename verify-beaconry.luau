@@ -174,6 +174,11 @@ ok(not B.groundVerdict(chain("Counter", "Quay Bank stall", "Compass Quay", "Isla
 ok(not B.groundVerdict(chain("Council dais", "Council Hall", "Compass Quay", "Islands"), 7), "L2: not on the Council dais")
 ok(not B.groundVerdict(chain("Base", "Forge", "Compass Quay", "Islands"), 7), "L2: not inside a station model")
 ok(B.groundVerdict(chain("Meadow", "Brassfall Quarry", "Islands"), 7), "L2: an isle's own name never refuses")
+-- §40 QC L1: never inside a building (hall floor, house block, or any part of a Building-attributed model).
+ok(not B.groundVerdict(chain("Roofed hall floor", "Quay Outfitters", "Compass Quay", "Islands"), 7), "§40 L1: not on a walk-in hall floor")
+ok(not B.groundVerdict(chain("Roofed house", "Townhouse 3", "Compass Quay", "Islands"), 7), "§40 L1: not on a house block")
+ok(not B.groundVerdict({{name = "Plank"}, {name = "Mosswake Herbalist", building = true}, {name = "Mosswake Grove"}, {name = "Islands"}}, 7), "§40 L1: a Building-attributed ancestor refuses")
+ok(B.groundVerdict({{name = "Meadow", building = false}, {name = "Mosswake Grove"}, {name = "Islands"}}, 7), "§40 L1: open meadow still kindles")
 -- Profile migration and weeks.
 do
 	local m = B.migrate({kindled = {Timber = 5, Nope = 2, EmberoakLog = -3, WindpineLog = 0 / 0}, beacons = {Hub = 2, Fake = 1}, failed = "x", cooked = 1e99,

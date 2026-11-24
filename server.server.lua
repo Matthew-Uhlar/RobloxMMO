@@ -6818,7 +6818,9 @@ do
 		for _=1,24 do
 			if node==nil or node==workspace or type(node)~="userdata" and type(node)~="table" then break end
 			local okB,bridge=pcall(function() return node:GetAttribute("BridgeStyle")~=nil end)
-			table.insert(chain,{name=tostring(node.Name),bridge=okB and bridge==true})
+			-- §40 QC L1: buildings (models with Building, hosts with BuildingType) refuse kindling.
+			local okH,building=pcall(function() return node:GetAttribute("Building")~=nil or node:GetAttribute("BuildingType")~=nil end)
+			table.insert(chain,{name=tostring(node.Name),bridge=okB and bridge==true,building=okH and building==true})
 			node=node.Parent
 		end
 		return chain

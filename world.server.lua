@@ -997,6 +997,20 @@ end
 -- director lights the panes after dusk, §40) and the tag AetherBuilding.
 -------------------------------------------------------------------------------
 local Buildings={PLASTER=C("E6DCC6"),FLOOR=C("8A6240"),LIGHT=C("FFC27A"),hosts={}}
+-- Clearance box of a part: its declared mesh box (ShapeBox / ShapeBoxOffset:
+-- sign frames, buildings) when it has one, else the part itself. Every
+-- placement search after the settlements uses it (§40 QC L2), like the
+-- settlement index, so nothing lands inside a house's roof / porch overhang.
+function Buildings.box(obj)
+	local cf,sz=obj.CFrame,obj.Size
+	local declared=obj:GetAttribute("ShapeBox")
+	if typeof(declared)=="Vector3" then
+		local offset=obj:GetAttribute("ShapeBoxOffset")
+		cf=cf*CFrame.new(if typeof(offset)=="Vector3" then offset else V(0,0,0))
+		sz=declared
+	end
+	return cf,sz
+end
 do
 	local B=Buildings
 	function B.fitOf(def)
@@ -4432,7 +4446,7 @@ do
 			for _,q in ipairs(taken) do if V(pos.X-q.X,0,pos.Z-q.Z).Magnitude<radius+7 then return true end end
 			for _,obj in ipairs(host:GetDescendants()) do
 				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
-					local cf,sz=obj.CFrame,obj.Size
+					local cf,sz=Buildings.box(obj) -- §40 QC L2: declared mesh boxes block whole
 					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
 					local c=cf.Position
 					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
@@ -4618,14 +4632,9 @@ function Buildings.settle(only)
 		local c=obj.CFrame.Position
 		if kind=="anchor" then box(index,c+V(0,3,0),ANCHOR_CLEAR,3.5,ANCHOR_CLEAR) return end
 		if kind=="sculpture" then local r=math.max(1,2*(tonumber(obj:GetAttribute("SculptureScale")) or 1)) box(index,c,r,r,r) return end
-		local cf,sz=obj.CFrame,obj.Size
 		-- A declared mesh box (sign frames, buildings) blocks with its whole box.
-		local declared=obj:GetAttribute("ShapeBox")
-		if typeof(declared)=="Vector3" then
-			local offset=obj:GetAttribute("ShapeBoxOffset")
-			cf=cf*CFrame.new(if typeof(offset)=="Vector3" then offset else V(0,0,0))
-			sz,c=declared,cf.Position
-		end
+		local cf,sz=Buildings.box(obj)
+		c=cf.Position
 		local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
 		local pad=if kind=="prompt" then PROMPT_CLEAR else 0
 		box(index,c,ext("X")+pad,ext("Y")+(if kind=="prompt" then 2 else 0),ext("Z")+pad)
@@ -4984,7 +4993,8 @@ Buildings.settle({["Compass Quay"]=true})
 				local r=math.max(1,2*(tonumber(obj:GetAttribute("SculptureScale")) or 1))
 				hx,hy,hz=r,r,r
 			else
-				local cf,sz=obj.CFrame,obj.Size
+				local cf,sz=Buildings.box(obj) -- §40 QC L2: declared mesh boxes block whole
+				c=cf.Position
 				local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
 				hx,hy,hz=ext("X"),ext("Y"),ext("Z")
 			end
@@ -5339,7 +5349,7 @@ do
 			for _,m in ipairs(markers) do if V(pos.X-m.X,0,pos.Z-m.Z).Magnitude<clear then return true end end
 			for _,obj in ipairs(host:GetDescendants()) do
 				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
-					local cf,sz=obj.CFrame,obj.Size
+					local cf,sz=Buildings.box(obj) -- §40 QC L2: declared mesh boxes block whole
 					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
 					local c=cf.Position
 					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
@@ -5501,7 +5511,7 @@ do
 			for _,q in ipairs(taken) do if V(pos.X-q.X,0,pos.Z-q.Z).Magnitude<radius+6 then return true end end
 			for _,obj in ipairs(host:GetDescendants()) do
 				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
-					local cf,sz=obj.CFrame,obj.Size
+					local cf,sz=Buildings.box(obj) -- §40 QC L2: declared mesh boxes block whole
 					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
 					local c=cf.Position
 					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
@@ -5592,7 +5602,7 @@ do
 		local function blocked(host,pos,radius)
 			for _,obj in ipairs(host:GetDescendants()) do
 				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
-					local cf,sz=obj.CFrame,obj.Size
+					local cf,sz=Buildings.box(obj) -- §40 QC L2: declared mesh boxes block whole
 					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
 					local c=cf.Position
 					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
@@ -5664,7 +5674,7 @@ do
 		local function blocked(pos,radius)
 			for _,obj in ipairs(host:GetDescendants()) do
 				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
-					local cf,sz=obj.CFrame,obj.Size
+					local cf,sz=Buildings.box(obj) -- §40 QC L2: declared mesh boxes block whole
 					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
 					local c=cf.Position
 					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
@@ -5740,7 +5750,7 @@ end
 			if npc and obj.Name~=clerkName then table.insert(npcAnchors,obj) end
 			if obj.Name~=clerkName and not FLOOR[obj.Name] and (not string.find(obj.Name,"^Anchor_") or npc)
 				and (npc or obj.Transparency<1 or obj.CanCollide or obj:FindFirstChildOfClass("ProximityPrompt")~=nil) then
-				local cf,sz=obj.CFrame,obj.Size
+				local cf,sz=Buildings.box(obj) -- §40 QC L2
 				local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
 				table.insert(boxes,{c=cf.Position,x=ext("X"),y=ext("Y"),z=ext("Z"),flat=obj.Name=="Path"})
 			end
@@ -5865,7 +5875,7 @@ do
 			end
 			for _,obj in ipairs(host:GetDescendants()) do
 				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
-					local cf,sz=obj.CFrame,obj.Size
+					local cf,sz=Buildings.box(obj) -- §40 QC L2: declared mesh boxes block whole
 					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
 					local c=cf.Position
 					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
