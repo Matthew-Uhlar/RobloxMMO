@@ -1001,7 +1001,8 @@ do
 	noFailures(ui, "typing")
 	checks += 3
 end
--- 4d. Phone layout keeps the thumbnail budget small.
+-- 4d. Phone layout keeps the thumbnail budget small. §52: item icons are the
+-- cached vector icons (Theme.icon); live 3D thumbnails only for big previews.
 do
 	local ui = run()
 	press(find(ui.gui, "AtlasButton"))
@@ -1010,26 +1011,27 @@ do
 	for _, object in ipairs(ui.scroll:GetDescendants()) do
 		if object.ClassName == "ViewportFrame" then views += 1 end
 	end
-	assert(views > 0 and views <= 14 + 2, "compact layout draws at most 14 item + 2 decorative live thumbnails, drew " .. views)
-	-- Item icons have their own budget: decorative title art never pushes the
-	-- first item icons back to initials ("SM").
+	assert(views <= 2 + 2, "compact layout draws at most 2 item + 2 decorative live thumbnails, drew " .. views)
+	-- Every unlocked item icon carries art: a vector icon or a viewport, never initials.
 	local function itemArt(root)
 		local drawn, initials = 0, 0
 		for _, object in ipairs(root:GetDescendants()) do
 			if object.Name == "ItemIcon" then
-				local hasView = false
-				for _, child in ipairs(object:GetChildren()) do if child.ClassName == "ViewportFrame" then hasView = true end end
-				if hasView then drawn += 1 elseif drawn < 14 then initials += 1 end
+				local hasArt = false
+				for _, child in ipairs(object:GetChildren()) do
+					if child.ClassName == "ViewportFrame" or (child.Name == "Icon" and child:GetAttribute("Shape") ~= nil) then hasArt = true end
+				end
+				if hasArt then drawn += 1 else initials += 1 end
 			end
 		end
 		return drawn, initials
 	end
 	local drawn, early = itemArt(ui.scroll)
-	assert(drawn >= 14 and early == 0, "compact: the first 14 item icons all get art (drew " .. drawn .. ", initials before budget " .. early .. ")")
+	assert(drawn >= 14 and early == 0, "compact: every item icon gets art (drew " .. drawn .. ", initials " .. early .. ")")
 	visit(ui, "Journal", "Quests")
 	visit(ui, "Satchel", "Items")
 	drawn, early = itemArt(ui.scroll)
-	assert(drawn >= 14 and early == 0, "budget resets per render: item art after revisiting (" .. drawn .. ")")
+	assert(drawn >= 14 and early == 0, "item art after revisiting (" .. drawn .. ")")
 	local wide = run({ size = roblox.Vector2.new(760, 690) })
 	press(find(wide.gui, "AtlasButton"))
 	visit(wide, "Satchel", "Items")
@@ -1037,7 +1039,7 @@ do
 	for _, object in ipairs(wide.scroll:GetDescendants()) do
 		if object.ClassName == "ViewportFrame" then wideViews += 1 end
 	end
-	assert(wideViews > views and wideViews <= 24 + 6, "desktop keeps the larger budget, drew " .. wideViews)
+	assert(wideViews <= 6 + 6, "desktop keeps its bounded viewport budget, drew " .. wideViews)
 	checks += 4
 end
 -- 5. Targeted flows: equip, enchant, sell confirmation, slayer begin/abandon.

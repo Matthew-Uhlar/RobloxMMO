@@ -7,7 +7,7 @@
 --              scale), Theme.space, Theme.rarity(rarity) → {hex, color, rank}
 --   Components Theme.frame (ornate 9-slice panel), Theme.slot / Theme.setSlot
 --              (item slot: icon + rarity border + stack count + cooldown sweep),
---              Theme.icon (item pictogram built from frames), Theme.tooltip /
+--              Theme.icon (§52 procedural vector item icon, cached), Theme.tooltip /
 --              Theme.showTooltip (item lore card), Theme.button / Theme.tone,
 --              Theme.tabs / Theme.selectTab, Theme.bar / Theme.setBar
 --   Pure       Theme.lore(def, ctx) (tooltip lines), Theme.itemActions(def, ctx)
@@ -157,72 +157,435 @@ function Theme.frame(parent, opts)
 end
 
 ------------------------------------------------------------------------------
--- Item pictograms: original icons drawn from rotated frames in the item's own
--- colour with a dark outline. Shape by slot / kind / category.
+-- §52 item icons: procedural vector icons (Skyforge "Icon Atlas"). Every item
+-- resolves, by data alone (kind → category → skill / slot / tool / held class →
+-- id keywords → the kind's own default), to one of the FAMILY motifs below: a
+-- short list of layered shapes (sticks, boxes, discs) in named tones derived
+-- from the item's colour, each lit from the top-left by a three-stop
+-- UIGradient (the light stays put however the layer is turned), with a dark
+-- outline and a soft gleam. Gear wears a rarity corner gem; Rare and above sit
+-- on a rarity halo (Data.Rarity hues via Theme.Rarities); Condensed / Radiant
+-- materials stack on a compressed block (Radiant adds a glow and a spark).
+-- Built icons are cached as unparented templates (LRU, Theme.IconCache) and
+-- cloned, so a satchel refresh never rebuilds the same icon twice.
 ------------------------------------------------------------------------------
 local function lighten(color, amount) return color:Lerp(C.white, amount) end
 local function darken(color, amount) return color:Lerp(C.black, amount) end
 Theme.lighten, Theme.darken = lighten, darken
-local function bit(parent, x, y, w, h, color, rotation, round)
-	local f = make("Frame", parent, {Name = "Px", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(x, y), Size = UDim2.fromScale(w, h),
-		BackgroundColor3 = color, BorderSizePixel = 0, Rotation = rotation or 0, Active = false})
-	make("UIStroke", f, {Color = darken(color, 0.72), Thickness = 1, Transparency = 0.15})
-	if round then make("UICorner", f, {CornerRadius = UDim.new(round, 0)}) end
+Theme.ICON_LIGHT = 45 -- UIGradient rotation of the key light (top-left → bottom-right)
+
+-- Fixed tones (hex); "base", "lite", "deep", "metal", "glass" and "glow" come from
+-- the item's own colour (Theme.iconTones).
+Theme.ICON_TONES = {
+	steel = "D3DCE6", iron = "59616C", gold = "F2C14E", wood = "8A5A32", woodlite = "C99A62", leather = "7A4E2D",
+	paper = "F2E6C8", cloth = "C9B68E", leaf = "5FAE45", stone = "7C828C", stonelite = "A7ADB5", bone = "EDE2C4",
+	ink = "1A1F2A", flame = "FFB347", soil = "5A4030", plate = "E9E4DA", white = "FFFFFF", crust = "C98A4A",
+}
+function Theme.iconTones(def)
+	local base = rgb(type(def) == "table" and type(def.color) == "string" and #def.color == 6 and def.color or "9FB4C8")
+	local t = {base = base, lite = lighten(base, 0.4), deep = darken(base, 0.42), metal = base:Lerp(rgb("D3DCE6"), 0.55),
+		glass = base:Lerp(rgb("E6F4FF"), 0.6), glow = lighten(base, 0.55)}
+	for name, hex in pairs(Theme.ICON_TONES) do t[name] = rgb(hex) end
+	return t
+end
+
+-- Layer authoring: positions and sizes are fractions of the icon box.
+-- {x, y, w, h, rotation, tone, round, flags}; flags: o = outline, g = gleam (flat
+-- white, translucent), a = translucency 0..1, ring = hollow (stroke only).
+local function stick(x1, y1, x2, y2, width, tone, round, flags)
+	local dx, dy = x2 - x1, y2 - y1
+	return {(x1 + x2) / 2, (y1 + y2) / 2, width, math.sqrt(dx * dx + dy * dy), math.deg(math.atan2(dx, -dy)), tone, round or 0.35, flags or {o = true}}
+end
+local function box(x, y, w, h, tone, round, rotation, flags) return {x, y, w, h, rotation or 0, tone, round or 0.15, flags or {o = true}} end
+local function disc(x, y, d, tone, flags) return {x, y, d, d, 0, tone, 0.5, flags or {o = true}} end
+local function oval(x, y, w, h, tone, rotation, flags) return {x, y, w, h, rotation or 0, tone, 0.5, flags or {o = true}} end
+local function gleam(x, y, w, h, rotation, alpha) return {x, y, w, h, rotation or 0, "white", 0.5, {g = true, a = alpha or 0.55}} end
+local function halo(x, y, d, tone, alpha) return {x, y, d, d, 0, tone, 0.5, {a = alpha or 0.6, soft = true}} end
+local function ring(x, y, w, h, tone, thickness) return {x, y, w, h, 0, tone, 0.5, {ring = thickness or 0.07}} end
+local NO = {}
+
+-- Motifs by family. Gear families are authored blade-up-right like the hotbar's held items.
+Theme.ICON_MOTIFS = {
+	-- Weapons
+	sword = {stick(0.33, 0.67, 0.82, 0.18, 0.14, "steel", 0.3), stick(0.38, 0.62, 0.78, 0.22, 0.035, "white", 0.5, {g = true, a = 0.4}),
+		stick(0.2, 0.55, 0.45, 0.8, 0.085, "base", 0.45), stick(0.33, 0.67, 0.18, 0.82, 0.075, "leather", 0.45), disc(0.16, 0.84, 0.1, "base"), disc(0.33, 0.67, 0.07, "lite", NO)},
+	greatblade = {stick(0.34, 0.66, 0.86, 0.14, 0.21, "steel", 0.25), stick(0.4, 0.6, 0.8, 0.2, 0.05, "white", 0.5, {g = true, a = 0.45}),
+		stick(0.18, 0.52, 0.48, 0.82, 0.1, "base", 0.4), stick(0.34, 0.66, 0.16, 0.84, 0.08, "leather", 0.45), disc(0.14, 0.86, 0.11, "base"), disc(0.34, 0.66, 0.09, "lite", NO)},
+	dagger = {stick(0.42, 0.58, 0.78, 0.22, 0.13, "steel", 0.4), stick(0.46, 0.54, 0.74, 0.26, 0.03, "white", 0.5, {g = true, a = 0.4}),
+		stick(0.3, 0.48, 0.52, 0.7, 0.08, "base", 0.45), stick(0.42, 0.58, 0.24, 0.76, 0.085, "leather", 0.45), disc(0.22, 0.78, 0.11, "base")},
+	maul = {stick(0.2, 0.84, 0.6, 0.44, 0.08, "wood", 0.4), stick(0.44, 0.24, 0.8, 0.6, 0.26, "metal", 0.15), stick(0.5, 0.3, 0.74, 0.54, 0.05, "base", 0.2, NO),
+		box(0.62, 0.42, 0.12, 0.12, "base", 0.2, 45), gleam(0.56, 0.32, 0.18, 0.05, 45, 0.5)},
+	glaive = {stick(0.14, 0.88, 0.66, 0.36, 0.06, "wood", 0.4), oval(0.74, 0.27, 0.18, 0.36, "steel", 45), stick(0.66, 0.36, 0.78, 0.48, 0.07, "base", 0.4),
+		stick(0.6, 0.42, 0.72, 0.3, 0.08, "base", 0.4), gleam(0.72, 0.24, 0.05, 0.22, 45, 0.45), disc(0.15, 0.87, 0.08, "base")},
+	bow = {stick(0.58, 0.1, 0.36, 0.38, 0.075, "base", 0.5), stick(0.36, 0.38, 0.33, 0.62, 0.085, "leather", 0.4), stick(0.36, 0.62, 0.58, 0.9, 0.075, "base", 0.5),
+		stick(0.6, 0.1, 0.6, 0.9, 0.018, "paper", 0.5, NO), stick(0.3, 0.5, 0.86, 0.5, 0.03, "woodlite", 0.5, NO), box(0.86, 0.5, 0.08, 0.08, "steel", 0.1, 45)},
+	staff = {stick(0.24, 0.88, 0.6, 0.34, 0.07, "wood", 0.4), halo(0.68, 0.24, 0.46, "glow", 0.62), stick(0.57, 0.36, 0.56, 0.16, 0.035, "gold", 0.5),
+		stick(0.72, 0.38, 0.84, 0.22, 0.035, "gold", 0.5), disc(0.68, 0.25, 0.24, "base"), gleam(0.63, 0.2, 0.08, 0.06, 0, 0.35)},
+	wand = {stick(0.3, 0.82, 0.64, 0.4, 0.065, "base", 0.45), stick(0.27, 0.86, 0.38, 0.72, 0.075, "leather", 0.45), halo(0.7, 0.32, 0.38, "glow", 0.55),
+		box(0.7, 0.32, 0.16, 0.16, "lite", 0.05, 45), box(0.7, 0.32, 0.16, 0.16, "white", 0.05, 0, {a = 0.4}), disc(0.7, 0.32, 0.08, "white", NO)},
+	-- Armour
+	helmet = {oval(0.5, 0.48, 0.64, 0.6, "metal"), box(0.5, 0.66, 0.7, 0.13, "base", 0.4), box(0.5, 0.52, 0.38, 0.06, "ink", 0.5, 0, NO),
+		stick(0.5, 0.2, 0.5, 0.42, 0.09, "base", 0.5), gleam(0.37, 0.36, 0.12, 0.2, 20, 0.5)},
+	chest = {box(0.5, 0.57, 0.5, 0.56, "metal", 0.22), oval(0.26, 0.37, 0.26, 0.22, "base", -15), oval(0.74, 0.37, 0.26, 0.22, "base", 15),
+		box(0.5, 0.31, 0.26, 0.08, "base", 0.4), box(0.5, 0.78, 0.5, 0.08, "leather", 0.3), stick(0.5, 0.36, 0.5, 0.72, 0.04, "deep", 0.5, NO), gleam(0.38, 0.5, 0.07, 0.28, 0, 0.45)},
+	legs = {box(0.5, 0.24, 0.56, 0.12, "leather", 0.3), box(0.37, 0.57, 0.2, 0.56, "metal", 0.25), box(0.63, 0.57, 0.2, 0.56, "metal", 0.25),
+		disc(0.37, 0.55, 0.13, "base"), disc(0.63, 0.55, 0.13, "base"), gleam(0.33, 0.44, 0.05, 0.18, 0, 0.45)},
+	boots = {box(0.35, 0.44, 0.19, 0.38, "base", 0.25), box(0.42, 0.68, 0.32, 0.15, "deep", 0.45), box(0.65, 0.44, 0.19, 0.38, "base", 0.25),
+		box(0.72, 0.68, 0.32, 0.15, "deep", 0.45), box(0.35, 0.27, 0.23, 0.07, "metal", 0.3), box(0.65, 0.27, 0.23, 0.07, "metal", 0.3)},
+	-- Tools
+	pickaxe = {stick(0.22, 0.86, 0.6, 0.34, 0.075, "wood", 0.4), stick(0.3, 0.24, 0.62, 0.32, 0.1, "base", 0.5), stick(0.62, 0.32, 0.86, 0.6, 0.1, "base", 0.5),
+		disc(0.6, 0.33, 0.12, "metal"), gleam(0.44, 0.26, 0.14, 0.03, 10, 0.5)},
+	hatchet = {stick(0.26, 0.86, 0.56, 0.22, 0.075, "wood", 0.4), oval(0.66, 0.32, 0.28, 0.32, "base", 25), oval(0.76, 0.33, 0.08, 0.3, "steel", 25, NO),
+		box(0.55, 0.26, 0.1, 0.12, "metal", 0.2, 25), gleam(0.64, 0.26, 0.1, 0.05, 25, 0.5)},
+	rod = {stick(0.16, 0.88, 0.82, 0.14, 0.045, "wood", 0.5), disc(0.3, 0.72, 0.14, "metal"), stick(0.82, 0.14, 0.82, 0.62, 0.012, "paper", 0.5, NO),
+		disc(0.82, 0.66, 0.11, "base"), box(0.82, 0.62, 0.11, 0.04, "white", 0.4, 0, NO), stick(0.16, 0.88, 0.26, 0.77, 0.06, "leather", 0.4)},
+	hoe = {stick(0.24, 0.88, 0.62, 0.26, 0.07, "wood", 0.4), box(0.68, 0.3, 0.3, 0.12, "base", 0.25, -30), disc(0.62, 0.27, 0.08, "metal"), gleam(0.66, 0.27, 0.14, 0.03, -30, 0.5)},
+	hammer = {stick(0.28, 0.86, 0.58, 0.4, 0.08, "wood", 0.4), stick(0.42, 0.24, 0.74, 0.56, 0.22, "base", 0.15), box(0.58, 0.4, 0.07, 0.25, "metal", 0.2, 45), gleam(0.5, 0.3, 0.14, 0.04, 45, 0.45)},
+	crafttool = {stick(0.24, 0.84, 0.48, 0.6, 0.09, "wood", 0.4), stick(0.48, 0.6, 0.8, 0.28, 0.06, "metal", 0.3), box(0.48, 0.6, 0.12, 0.06, "base", 0.3, 45), oval(0.7, 0.72, 0.3, 0.16, "base", -20)},
+	striker = {box(0.38, 0.6, 0.3, 0.22, "stone", 0.25, -20), stick(0.5, 0.44, 0.82, 0.66, 0.1, "base", 0.3), disc(0.6, 0.3, 0.07, "flame", NO), disc(0.7, 0.4, 0.05, "flame", NO), halo(0.62, 0.36, 0.26, "flame", 0.7)},
+	-- Gathered goods
+	ore = {oval(0.5, 0.6, 0.76, 0.58, "stone", -8), oval(0.44, 0.5, 0.5, 0.32, "stonelite", -8, NO), box(0.35, 0.56, 0.16, 0.16, "base", 0.15, 45), box(0.63, 0.67, 0.13, 0.13, "base", 0.15, 45),
+		box(0.6, 0.45, 0.1, 0.1, "lite", 0.1, 45), gleam(0.33, 0.52, 0.05, 0.05, 45, 0.3)},
+	crystal = {oval(0.5, 0.84, 0.64, 0.16, "stone"), box(0.34, 0.6, 0.15, 0.38, "deep", 0.12, -22), box(0.66, 0.6, 0.15, 0.36, "deep", 0.12, 22),
+		box(0.5, 0.48, 0.2, 0.56, "base", 0.12), box(0.5, 0.22, 0.14, 0.14, "lite", 0.05, 45), gleam(0.45, 0.44, 0.04, 0.32, 0, 0.45)},
+	bar = {box(0.5, 0.66, 0.74, 0.24, "deep", 0.12), box(0.5, 0.52, 0.58, 0.16, "base", 0.12), box(0.5, 0.42, 0.42, 0.1, "lite", 0.2), gleam(0.4, 0.5, 0.24, 0.04, 0, 0.45)},
+	log = {oval(0.44, 0.54, 0.74, 0.36, "base", -25), stick(0.2, 0.62, 0.58, 0.44, 0.03, "deep", 0.5, NO), disc(0.76, 0.38, 0.3, "woodlite"), ring(0.76, 0.38, 0.19, 0.19, "wood", 0.04),
+		disc(0.76, 0.38, 0.06, "wood", NO), oval(0.3, 0.36, 0.16, 0.08, "leaf", -30)},
+	crop = {stick(0.5, 0.9, 0.5, 0.42, 0.05, "leaf", 0.5), oval(0.36, 0.6, 0.26, 0.1, "leaf", -35), oval(0.64, 0.64, 0.26, 0.1, "leaf", 35),
+		disc(0.5, 0.33, 0.36, "base"), oval(0.5, 0.16, 0.16, 0.08, "leaf", 10), gleam(0.42, 0.26, 0.1, 0.08, -20, 0.5)},
+	seed = {box(0.5, 0.6, 0.52, 0.5, "cloth", 0.4), box(0.5, 0.36, 0.3, 0.1, "leather", 0.4), oval(0.5, 0.3, 0.18, 0.1, "cloth", 0, NO),
+		disc(0.36, 0.84, 0.1, "base"), disc(0.5, 0.88, 0.1, "base"), disc(0.64, 0.84, 0.1, "base"), oval(0.5, 0.6, 0.2, 0.14, "leaf", 20)},
+	fish = {box(0.8, 0.52, 0.22, 0.22, "deep", 0.12, 45), oval(0.46, 0.52, 0.64, 0.38, "base"), oval(0.44, 0.62, 0.48, 0.14, "lite", 0, NO),
+		box(0.48, 0.36, 0.18, 0.1, "deep", 0.3, -15), disc(0.28, 0.48, 0.08, "ink", NO), disc(0.27, 0.47, 0.03, "white", NO), gleam(0.44, 0.44, 0.24, 0.05, -5, 0.45)},
+	-- Food and drink
+	cooked = {oval(0.5, 0.7, 0.84, 0.3, "plate"), oval(0.5, 0.66, 0.64, 0.18, "white", 0, {a = 0.6}), oval(0.48, 0.56, 0.58, 0.28, "base"),
+		stick(0.36, 0.48, 0.46, 0.64, 0.025, "deep", 0.5, NO), stick(0.5, 0.46, 0.6, 0.62, 0.025, "deep", 0.5, NO), oval(0.74, 0.5, 0.12, 0.07, "leaf", -30)},
+	meal = {box(0.5, 0.68, 0.66, 0.32, "cloth", 0.45), oval(0.5, 0.52, 0.62, 0.22, "base"), oval(0.46, 0.48, 0.24, 0.08, "lite", 0, NO),
+		stick(0.4, 0.34, 0.38, 0.14, 0.03, "white", 0.5, {g = true, a = 0.55}), stick(0.58, 0.34, 0.6, 0.12, 0.03, "white", 0.5, {g = true, a = 0.55})},
+	pie = {oval(0.5, 0.64, 0.76, 0.36, "crust"), oval(0.5, 0.54, 0.68, 0.26, "base"), stick(0.34, 0.46, 0.62, 0.62, 0.035, "crust", 0.5, NO),
+		stick(0.4, 0.62, 0.68, 0.46, 0.035, "crust", 0.5, NO), gleam(0.38, 0.5, 0.16, 0.05, 0, 0.4)},
+	roast = {stick(0.26, 0.76, 0.42, 0.6, 0.08, "bone", 0.5), disc(0.24, 0.79, 0.1, "bone"), oval(0.6, 0.42, 0.5, 0.4, "base", -35), oval(0.54, 0.36, 0.2, 0.12, "lite", -35, NO)},
+	potion = {disc(0.5, 0.64, 0.54, "glass", {o = true, a = 0.15}), oval(0.5, 0.7, 0.46, 0.3, "base", 0, NO), box(0.5, 0.31, 0.16, 0.18, "glass", 0.2, 0, {o = true, a = 0.15}),
+		box(0.5, 0.19, 0.2, 0.09, "wood", 0.25), gleam(0.38, 0.56, 0.09, 0.16, 20, 0.4), halo(0.5, 0.66, 0.7, "glow", 0.78)},
+	flask = {box(0.5, 0.6, 0.38, 0.54, "glass", 0.28, 0, {o = true, a = 0.15}), box(0.5, 0.68, 0.32, 0.36, "base", 0.25, 0, NO), box(0.5, 0.27, 0.14, 0.14, "glass", 0.2, 0, {o = true, a = 0.15}),
+		box(0.5, 0.17, 0.18, 0.08, "wood", 0.25), box(0.5, 0.6, 0.34, 0.12, "paper", 0.1), gleam(0.4, 0.52, 0.05, 0.26, 0, 0.45)},
+	-- Ammunition, runes and gems
+	arrow = {stick(0.18, 0.82, 0.76, 0.24, 0.04, "wood", 0.5), box(0.78, 0.22, 0.14, 0.14, "base", 0.1, 45), stick(0.16, 0.76, 0.26, 0.74, 0.06, "lite", 0.5),
+		stick(0.24, 0.84, 0.26, 0.74, 0.06, "lite", 0.5)},
+	arrowhead = {box(0.3, 0.64, 0.18, 0.18, "deep", 0.1, 45), box(0.7, 0.64, 0.18, 0.18, "deep", 0.1, 45), box(0.5, 0.42, 0.22, 0.22, "base", 0.1, 45), gleam(0.47, 0.38, 0.06, 0.06, 45, 0.45)},
+	shaft = {stick(0.2, 0.8, 0.72, 0.28, 0.04, "wood", 0.5), stick(0.28, 0.84, 0.8, 0.32, 0.04, "woodlite", 0.5), stick(0.14, 0.74, 0.66, 0.22, 0.04, "wood", 0.5), box(0.46, 0.56, 0.3, 0.06, "base", 0.4, -45)},
+	rune = {halo(0.5, 0.5, 0.86, "glow", 0.68), box(0.5, 0.5, 0.58, 0.68, "stone", 0.28), stick(0.42, 0.3, 0.58, 0.7, 0.05, "base", 0.5, NO),
+		stick(0.6, 0.32, 0.38, 0.56, 0.05, "base", 0.5, NO), disc(0.5, 0.5, 0.12, "lite", NO), gleam(0.34, 0.26, 0.12, 0.05, 0, 0.4)},
+	glyph = {halo(0.5, 0.5, 0.86, "glow", 0.7), disc(0.5, 0.5, 0.66, "deep"), ring(0.5, 0.5, 0.5, 0.5, "base", 0.05), stick(0.5, 0.3, 0.5, 0.7, 0.04, "lite", 0.5, NO),
+		stick(0.33, 0.6, 0.67, 0.4, 0.04, "lite", 0.5, NO), disc(0.5, 0.5, 0.1, "white", NO)},
+	gem = {halo(0.5, 0.5, 0.82, "glow", 0.72), box(0.5, 0.52, 0.46, 0.46, "base", 0.1, 45), box(0.5, 0.45, 0.22, 0.14, "lite", 0.15, 0, NO), gleam(0.42, 0.42, 0.06, 0.06, 45, 0.35)},
+	roughgem = {oval(0.5, 0.6, 0.72, 0.54, "stone", 10), box(0.44, 0.52, 0.22, 0.22, "base", 0.1, 45), box(0.62, 0.64, 0.14, 0.14, "lite", 0.1, 45), gleam(0.42, 0.48, 0.05, 0.05, 45, 0.35)},
+	-- Jewellery and trinkets
+	ring = {ring(0.5, 0.6, 0.56, 0.56, "gold", 0.08), box(0.5, 0.4, 0.18, 0.09, "gold", 0.3), box(0.5, 0.31, 0.22, 0.22, "base", 0.1, 45), box(0.5, 0.31, 0.1, 0.1, "white", 0.1, 45, {g = true, a = 0.45}), gleam(0.33, 0.58, 0.05, 0.16, 0, 0.5)},
+	amulet = {ring(0.5, 0.34, 0.56, 0.48, "gold", 0.04), disc(0.5, 0.66, 0.36, "gold"), disc(0.5, 0.66, 0.24, "base"), gleam(0.45, 0.61, 0.08, 0.06, 0, 0.35)},
+	charm = {stick(0.5, 0.18, 0.5, 0.36, 0.04, "gold", 0.5, NO), ring(0.5, 0.2, 0.14, 0.14, "gold", 0.03), box(0.5, 0.58, 0.4, 0.4, "base", 0.22, 45), disc(0.5, 0.58, 0.14, "lite"), gleam(0.42, 0.5, 0.08, 0.05, 45, 0.45)},
+	lantern = {ring(0.5, 0.16, 0.18, 0.14, "iron", 0.03), box(0.5, 0.27, 0.36, 0.1, "iron", 0.3), box(0.5, 0.56, 0.38, 0.46, "glass", 0.12, 0, {o = true, a = 0.25}),
+		halo(0.5, 0.58, 0.5, "flame", 0.5), oval(0.5, 0.6, 0.16, 0.24, "flame", 0, NO), stick(0.32, 0.34, 0.32, 0.78, 0.04, "iron", 0.3, NO), stick(0.68, 0.34, 0.68, 0.78, 0.04, "iron", 0.3, NO), box(0.5, 0.82, 0.44, 0.08, "iron", 0.3)},
+	crown = {box(0.5, 0.66, 0.68, 0.2, "gold", 0.15), box(0.26, 0.48, 0.12, 0.24, "gold", 0.2), box(0.5, 0.42, 0.13, 0.32, "gold", 0.2), box(0.74, 0.48, 0.12, 0.24, "gold", 0.2),
+		disc(0.26, 0.34, 0.08, "base"), disc(0.5, 0.24, 0.09, "base"), disc(0.74, 0.34, 0.08, "base"), disc(0.5, 0.66, 0.12, "base"), gleam(0.36, 0.62, 0.16, 0.04, 0, 0.45)},
+	seal = {stick(0.4, 0.7, 0.32, 0.92, 0.1, "deep", 0.2), stick(0.6, 0.7, 0.68, 0.92, 0.1, "deep", 0.2), disc(0.5, 0.5, 0.62, "base"), disc(0.5, 0.5, 0.42, "deep", NO),
+		box(0.5, 0.5, 0.18, 0.18, "lite", 0.15, 45), gleam(0.38, 0.38, 0.12, 0.06, -30, 0.4)},
+	orb = {halo(0.5, 0.46, 0.8, "glow", 0.6), disc(0.5, 0.46, 0.56, "base"), oval(0.4, 0.36, 0.16, 0.1, "white", -30, {g = true, a = 0.35}), box(0.5, 0.84, 0.4, 0.08, "gold", 0.3), stick(0.42, 0.72, 0.36, 0.84, 0.05, "gold", 0.3), stick(0.58, 0.72, 0.64, 0.84, 0.05, "gold", 0.3)},
+	tome = {box(0.54, 0.56, 0.52, 0.66, "paper", 0.08), box(0.48, 0.54, 0.54, 0.68, "base", 0.1), box(0.24, 0.54, 0.06, 0.68, "deep", 0.3, 0, NO),
+		disc(0.48, 0.48, 0.18, "gold"), box(0.48, 0.48, 0.08, 0.08, "base", 0.1, 45, NO), box(0.74, 0.56, 0.06, 0.16, "gold", 0.3)},
+	quiver = {stick(0.36, 0.86, 0.58, 0.34, 0.24, "leather", 0.3), stick(0.5, 0.36, 0.6, 0.12, 0.03, "wood", 0.5, NO), stick(0.58, 0.36, 0.72, 0.14, 0.03, "wood", 0.5, NO),
+		box(0.6, 0.12, 0.1, 0.1, "base", 0.1, 45), box(0.73, 0.14, 0.1, 0.1, "base", 0.1, 45), stick(0.38, 0.66, 0.6, 0.72, 0.05, "base", 0.3)},
+	cloak = {box(0.5, 0.58, 0.62, 0.64, "base", 0.3), box(0.5, 0.62, 0.3, 0.56, "deep", 0.35, 0, NO), oval(0.5, 0.3, 0.52, 0.16, "deep"), disc(0.5, 0.32, 0.12, "gold"), gleam(0.3, 0.5, 0.05, 0.3, 0, 0.45)},
+	gauntlet = {box(0.5, 0.62, 0.42, 0.44, "metal", 0.3), box(0.36, 0.34, 0.08, 0.2, "metal", 0.4), box(0.46, 0.3, 0.08, 0.22, "metal", 0.4), box(0.56, 0.3, 0.08, 0.22, "metal", 0.4),
+		box(0.66, 0.36, 0.08, 0.18, "metal", 0.4), box(0.5, 0.84, 0.48, 0.1, "base", 0.3), disc(0.5, 0.6, 0.12, "base")},
+	lens = {ring(0.44, 0.44, 0.54, 0.54, "gold", 0.06), disc(0.44, 0.44, 0.44, "glass", {a = 0.35}), stick(0.62, 0.62, 0.86, 0.86, 0.08, "wood", 0.4), gleam(0.36, 0.36, 0.1, 0.06, -45, 0.35)},
+	-- Pets and pet items
+	pet = {oval(0.48, 0.52, 0.56, 0.7, "base"), disc(0.38, 0.4, 0.12, "lite", NO), disc(0.58, 0.64, 0.1, "lite", NO), disc(0.72, 0.76, 0.26, "paper"),
+		disc(0.72, 0.8, 0.1, "deep", NO), disc(0.65, 0.71, 0.05, "deep", NO), disc(0.72, 0.68, 0.05, "deep", NO), disc(0.79, 0.71, 0.05, "deep", NO), gleam(0.38, 0.34, 0.08, 0.12, -20, 0.4)},
+	collar = {ring(0.5, 0.46, 0.66, 0.44, "base", 0.08), box(0.5, 0.7, 0.12, 0.08, "metal", 0.3), disc(0.5, 0.78, 0.18, "gold"), gleam(0.47, 0.75, 0.05, 0.04, 0, 0.4)},
+	candy = {box(0.24, 0.5, 0.16, 0.22, "lite", 0.1, 45), box(0.76, 0.5, 0.16, 0.22, "lite", 0.1, 45), oval(0.5, 0.5, 0.42, 0.32, "base"),
+		stick(0.42, 0.38, 0.5, 0.62, 0.04, "white", 0.5, {g = true, a = 0.3}), stick(0.54, 0.36, 0.62, 0.6, 0.04, "white", 0.5, {g = true, a = 0.3})},
+	bell = {box(0.5, 0.28, 0.2, 0.08, "base", 0.4), box(0.5, 0.52, 0.44, 0.42, "gold", 0.45), box(0.5, 0.74, 0.58, 0.09, "gold", 0.4), disc(0.5, 0.83, 0.1, "iron"), gleam(0.4, 0.46, 0.06, 0.18, 0, 0.45)},
+	sprig = {stick(0.34, 0.86, 0.6, 0.2, 0.04, "leaf", 0.5), oval(0.42, 0.56, 0.26, 0.12, "base", -40), oval(0.6, 0.42, 0.26, 0.12, "base", 30), oval(0.52, 0.26, 0.22, 0.11, "lite", -30), disc(0.62, 0.2, 0.08, "gold")},
+	-- Scrolls, banners and containers
+	scroll = {box(0.5, 0.5, 0.52, 0.52, "paper", 0.06), box(0.5, 0.24, 0.62, 0.1, "woodlite", 0.5), box(0.5, 0.76, 0.62, 0.1, "woodlite", 0.5),
+		box(0.46, 0.42, 0.32, 0.03, "ink", 0.5, 0, {a = 0.45}), box(0.44, 0.52, 0.28, 0.03, "ink", 0.5, 0, {a = 0.45}), disc(0.64, 0.6, 0.15, "base")},
+	banner = {stick(0.3, 0.92, 0.3, 0.1, 0.05, "wood", 0.5), box(0.54, 0.4, 0.44, 0.5, "base", 0.05), box(0.43, 0.68, 0.16, 0.16, "base", 0.05, 45), box(0.65, 0.68, 0.16, 0.16, "base", 0.05, 45),
+		disc(0.54, 0.38, 0.16, "gold"), box(0.54, 0.16, 0.5, 0.05, "gold", 0.4), disc(0.3, 0.1, 0.07, "gold")},
+	casket = {box(0.5, 0.64, 0.7, 0.4, "wood", 0.1), box(0.5, 0.38, 0.7, 0.2, "base", 0.4), box(0.3, 0.56, 0.06, 0.48, "gold", 0.2, 0, NO), box(0.7, 0.56, 0.06, 0.48, "gold", 0.2, 0, NO),
+		box(0.5, 0.52, 0.12, 0.14, "gold", 0.25), gleam(0.4, 0.34, 0.2, 0.04, 0, 0.45)},
+	coffer = {box(0.5, 0.62, 0.68, 0.42, "iron", 0.12), box(0.5, 0.38, 0.68, 0.16, "base", 0.35), box(0.5, 0.62, 0.68, 0.06, "base", 0.2, 0, NO), box(0.5, 0.54, 0.14, 0.16, "gold", 0.25), gleam(0.36, 0.36, 0.2, 0.04, 0, 0.45)},
+	spade = {stick(0.5, 0.12, 0.5, 0.6, 0.065, "wood", 0.4), box(0.5, 0.13, 0.22, 0.07, "wood", 0.4), box(0.5, 0.72, 0.34, 0.34, "base", 0.38), gleam(0.42, 0.68, 0.05, 0.16, 0, 0.45)},
+	pouch = {box(0.5, 0.62, 0.58, 0.52, "base", 0.42), box(0.5, 0.35, 0.36, 0.12, "deep", 0.3), box(0.5, 0.41, 0.42, 0.05, "gold", 0.4), disc(0.5, 0.64, 0.14, "lite"), gleam(0.36, 0.56, 0.06, 0.16, 0, 0.4)},
+	trap = {box(0.5, 0.6, 0.68, 0.46, "wood", 0.06), stick(0.32, 0.4, 0.32, 0.82, 0.03, "iron", 0.3, NO), stick(0.5, 0.4, 0.5, 0.82, 0.03, "iron", 0.3, NO),
+		stick(0.68, 0.4, 0.68, 0.82, 0.03, "iron", 0.3, NO), box(0.5, 0.36, 0.72, 0.08, "base", 0.3), ring(0.5, 0.22, 0.16, 0.14, "iron", 0.03)},
+	fuel = {box(0.5, 0.64, 0.58, 0.4, "base", 0.15), box(0.5, 0.52, 0.58, 0.08, "deep", 0.2, 0, NO), halo(0.5, 0.32, 0.4, "flame", 0.6), oval(0.5, 0.32, 0.18, 0.28, "flame")},
+	cog = {box(0.5, 0.5, 0.16, 0.8, "base", 0.15), box(0.5, 0.5, 0.16, 0.8, "base", 0.15, 45), box(0.5, 0.5, 0.16, 0.8, "base", 0.15, 90), box(0.5, 0.5, 0.16, 0.8, "base", 0.15, 135),
+		disc(0.5, 0.5, 0.6, "base"), disc(0.5, 0.5, 0.24, "deep"), gleam(0.4, 0.38, 0.12, 0.05, -30, 0.45)},
+	gloves = {box(0.5, 0.58, 0.42, 0.42, "base", 0.32), box(0.36, 0.32, 0.09, 0.22, "base", 0.45), box(0.47, 0.28, 0.09, 0.24, "base", 0.45), box(0.58, 0.3, 0.09, 0.22, "base", 0.45),
+		box(0.72, 0.52, 0.09, 0.2, "base", 0.45, 40), box(0.5, 0.84, 0.46, 0.1, "deep", 0.3)},
+	salve = {box(0.5, 0.62, 0.52, 0.42, "glass", 0.22, 0, {o = true, a = 0.2}), oval(0.5, 0.64, 0.42, 0.24, "base", 0, NO), box(0.5, 0.37, 0.56, 0.1, "wood", 0.3), gleam(0.36, 0.6, 0.05, 0.2, 0, 0.45)},
+	compost = {oval(0.5, 0.68, 0.74, 0.36, "soil"), oval(0.46, 0.6, 0.44, 0.2, "base", 0, NO), stick(0.5, 0.56, 0.5, 0.32, 0.03, "leaf", 0.5, NO), oval(0.42, 0.32, 0.14, 0.07, "leaf", -30), oval(0.58, 0.3, 0.14, 0.07, "leaf", 30)},
+	bait = {oval(0.5, 0.5, 0.5, 0.24, "base", -30), disc(0.38, 0.58, 0.06, "lite", NO), disc(0.5, 0.5, 0.06, "lite", NO), ring(0.7, 0.32, 0.12, 0.12, "iron", 0.03), stick(0.28, 0.66, 0.2, 0.84, 0.04, "steel", 0.5)},
+	remains = {stick(0.24, 0.8, 0.76, 0.66, 0.08, "bone", 0.5), stick(0.3, 0.6, 0.72, 0.84, 0.07, "bone", 0.5), disc(0.5, 0.42, 0.38, "bone"), disc(0.43, 0.42, 0.09, "ink", NO), disc(0.57, 0.42, 0.09, "ink", NO), box(0.5, 0.56, 0.18, 0.08, "bone", 0.3)},
+	-- Crafting materials
+	dust = {oval(0.5, 0.7, 0.74, 0.34, "base"), oval(0.5, 0.6, 0.46, 0.22, "lite", 0, NO), disc(0.32, 0.38, 0.05, "white", {g = true, a = 0.3}), disc(0.66, 0.32, 0.04, "white", {g = true, a = 0.3}), disc(0.52, 0.26, 0.03, "white", {g = true, a = 0.3})},
+	essence = {halo(0.5, 0.5, 0.86, "glow", 0.55), disc(0.5, 0.52, 0.46, "base"), oval(0.44, 0.44, 0.2, 0.1, "white", -30, {g = true, a = 0.35}), stick(0.36, 0.72, 0.66, 0.3, 0.04, "lite", 0.5, NO)},
+	core = {halo(0.5, 0.5, 0.86, "glow", 0.6), ring(0.5, 0.5, 0.72, 0.72, "metal", 0.07), disc(0.5, 0.5, 0.5, "deep"), disc(0.5, 0.5, 0.28, "lite"), gleam(0.44, 0.44, 0.08, 0.06, 0, 0.35)},
+	geode = {oval(0.5, 0.56, 0.7, 0.58, "stone"), oval(0.5, 0.56, 0.48, 0.38, "deep", 0, NO), box(0.42, 0.56, 0.12, 0.12, "base", 0.1, 45, NO), box(0.58, 0.58, 0.12, 0.12, "lite", 0.1, 45, NO), box(0.5, 0.48, 0.1, 0.1, "lite", 0.1, 45, NO)},
+	ember = {halo(0.5, 0.58, 0.8, "flame", 0.62), disc(0.5, 0.6, 0.52, "iron"), stick(0.36, 0.5, 0.56, 0.7, 0.03, "flame", 0.5, NO), stick(0.56, 0.44, 0.64, 0.66, 0.03, "flame", 0.5, NO), oval(0.5, 0.36, 0.14, 0.22, "base")},
+	glass = {box(0.5, 0.52, 0.56, 0.56, "glass", 0.2, 12, {o = true, a = 0.2}), box(0.5, 0.52, 0.38, 0.38, "lite", 0.2, 12, {a = 0.6}), gleam(0.38, 0.4, 0.05, 0.26, 12, 0.35)},
+	vial = {box(0.5, 0.56, 0.22, 0.62, "glass", 0.5, 0, {o = true, a = 0.15}), box(0.5, 0.66, 0.17, 0.38, "base", 0.5, 0, NO), box(0.5, 0.22, 0.2, 0.08, "wood", 0.3), gleam(0.46, 0.5, 0.03, 0.3, 0, 0.4)},
+	jelly = {oval(0.5, 0.6, 0.62, 0.5, "base", 0, {o = true, a = 0.2}), disc(0.4, 0.58, 0.1, "lite", NO), disc(0.58, 0.68, 0.07, "lite", NO), gleam(0.4, 0.46, 0.16, 0.07, -20, 0.35)},
+	hide = {box(0.5, 0.52, 0.6, 0.56, "base", 0.38, -8), box(0.24, 0.26, 0.14, 0.14, "base", 0.4, 30), box(0.76, 0.26, 0.14, 0.14, "base", 0.4, -30),
+		box(0.26, 0.78, 0.14, 0.14, "base", 0.4, -30), box(0.74, 0.78, 0.14, 0.14, "base", 0.4, 30), oval(0.5, 0.52, 0.32, 0.3, "lite", -8, NO)},
+	leather = {box(0.5, 0.62, 0.66, 0.36, "deep", 0.14), box(0.5, 0.48, 0.66, 0.36, "base", 0.14), box(0.5, 0.48, 0.56, 0.02, "paper", 0.5, 0, {a = 0.4}), gleam(0.36, 0.38, 0.22, 0.04, 0, 0.45)},
+	thread = {box(0.5, 0.52, 0.34, 0.44, "base", 0.2), box(0.5, 0.28, 0.5, 0.08, "wood", 0.4), box(0.5, 0.76, 0.5, 0.08, "wood", 0.4),
+		box(0.5, 0.46, 0.34, 0.03, "lite", 0.5, 0, NO), box(0.5, 0.58, 0.34, 0.03, "lite", 0.5, 0, NO), stick(0.66, 0.54, 0.86, 0.84, 0.025, "base", 0.5, NO)},
+	cloth = {oval(0.44, 0.58, 0.64, 0.4, "base", -20), disc(0.74, 0.46, 0.3, "lite"), ring(0.74, 0.46, 0.16, 0.16, "deep", 0.03), stick(0.22, 0.74, 0.5, 0.82, 0.03, "lite", 0.5, NO)},
+	scale = {oval(0.36, 0.38, 0.3, 0.26, "deep"), oval(0.64, 0.38, 0.3, 0.26, "deep"), oval(0.5, 0.58, 0.34, 0.3, "base"), oval(0.32, 0.66, 0.26, 0.22, "base"),
+		oval(0.68, 0.66, 0.26, 0.22, "base"), gleam(0.46, 0.52, 0.1, 0.05, -20, 0.4)},
+	shell = {box(0.5, 0.84, 0.18, 0.08, "deep", 0.3), oval(0.5, 0.56, 0.68, 0.52, "base"), stick(0.5, 0.82, 0.5, 0.32, 0.03, "lite", 0.5, NO), stick(0.5, 0.82, 0.3, 0.4, 0.03, "lite", 0.5, NO), stick(0.5, 0.82, 0.7, 0.4, 0.03, "lite", 0.5, NO)},
+	pearl = {oval(0.5, 0.72, 0.6, 0.2, "deep"), disc(0.5, 0.52, 0.42, "base"), disc(0.42, 0.44, 0.12, "white", {g = true, a = 0.3}), halo(0.5, 0.52, 0.66, "glow", 0.7)},
+	fang = {stick(0.36, 0.22, 0.58, 0.8, 0.16, "bone", 0.5), stick(0.58, 0.8, 0.62, 0.86, 0.06, "bone", 0.5), stick(0.32, 0.2, 0.44, 0.28, 0.14, "base", 0.4), gleam(0.42, 0.4, 0.04, 0.24, -20, 0.4)},
+	feather = {oval(0.54, 0.44, 0.26, 0.66, "base", 40), oval(0.58, 0.4, 0.12, 0.5, "lite", 40, NO), stick(0.24, 0.84, 0.74, 0.18, 0.025, "paper", 0.5, NO)},
+	key = {ring(0.3, 0.3, 0.3, 0.3, "gold", 0.07), stick(0.38, 0.38, 0.8, 0.8, 0.075, "gold", 0.4), box(0.7, 0.8, 0.08, 0.14, "gold", 0.2, 45), box(0.78, 0.7, 0.08, 0.12, "gold", 0.2, 45), disc(0.3, 0.3, 0.1, "base")},
+	coin = {oval(0.5, 0.76, 0.66, 0.22, "deep"), oval(0.5, 0.67, 0.66, 0.22, "base"), oval(0.5, 0.58, 0.66, 0.22, "base"), oval(0.5, 0.49, 0.66, 0.24, "lite"), box(0.5, 0.49, 0.12, 0.08, "deep", 0.1, 45, NO)},
+	kit = {box(0.5, 0.62, 0.7, 0.42, "base", 0.12), ring(0.5, 0.36, 0.3, 0.18, "iron", 0.04), box(0.5, 0.56, 0.7, 0.06, "deep", 0.2, 0, NO), box(0.5, 0.58, 0.12, 0.12, "gold", 0.25)},
+	hilt = {stick(0.28, 0.82, 0.5, 0.6, 0.08, "leather", 0.45), stick(0.36, 0.46, 0.64, 0.74, 0.1, "base", 0.4), stick(0.5, 0.6, 0.66, 0.44, 0.07, "steel", 0.3), disc(0.25, 0.85, 0.12, "base"), gleam(0.48, 0.56, 0.1, 0.03, 45, 0.45)},
+	meat = {stick(0.26, 0.76, 0.42, 0.6, 0.07, "bone", 0.5), oval(0.58, 0.46, 0.56, 0.42, "base", -25), oval(0.66, 0.4, 0.2, 0.14, "lite", -25, NO), disc(0.24, 0.78, 0.1, "bone")},
+	ink = {disc(0.46, 0.64, 0.46, "ink"), box(0.46, 0.38, 0.16, 0.1, "ink", 0.3), stick(0.5, 0.42, 0.8, 0.1, 0.03, "paper", 0.5, NO), oval(0.72, 0.2, 0.12, 0.28, "base", 40), gleam(0.38, 0.58, 0.06, 0.1, 0, 0.4)},
+}
+
+-- Rules (data-driven by kind; another team's new items fall in automatically).
+Theme.ICON_KIND = {weapon = "sword", armor = "chest", tool = "pickaxe", resource = "ore", consumable = "potion", accessory = "charm",
+	pet = "pet", petitem = "charm", trail = "scroll", material = "essence", shield = "seal"}
+Theme.ICON_SLOT = {helmet = "helmet", chest = "chest", legs = "legs", boots = "boots"}
+Theme.ICON_TOOL = {Pickaxe = "pickaxe", Hatchet = "hatchet", Rod = "rod", Hoe = "hoe", Hammer = "hammer"}
+Theme.ICON_SKILL = {Mining = "ore", Woodcutting = "log", Fishing = "fish", Farming = "crop"}
+Theme.ICON_HELD = {sword = "sword", greatblade = "greatblade", dagger = "dagger", maul = "maul", glaive = "glaive", shortbow = "bow", longbow = "bow",
+	staff = "staff", wand = "wand", shield = "seal", pickaxe = "pickaxe", hatchet = "hatchet", rod = "rod", hoe = "hoe", hammer = "hammer"}
+-- Weapon silhouettes by name (Data.Held's patterns): checked in order.
+Theme.ICON_WEAPON_NAMES = {{"Greatblade", "greatblade"}, {"Cleaver", "greatblade"}, {"Claymore", "greatblade"}, {"Dagger", "dagger"}, {"Fang", "dagger"},
+	{"Knife", "dagger"}, {"Maul", "maul"}, {"Hammer", "maul"}, {"Glaive", "glaive"}, {"Spear", "glaive"}, {"Halberd", "glaive"}}
+Theme.ICON_CATEGORY = {ammo = "arrow", bait = "bait", beaconTool = "striker", craftTool = "crafttool", fertiliser = "compost", gem = "gem", roughGem = "roughgem",
+	gloves = "gloves", glyph = "glyph", tablet = "glyph", pouch = "pouch", remains = "remains", rune = "rune", shard = "crystal", trap = "trap",
+	treatment = "salve", warp = "scroll", workerChest = "coffer", workerFuel = "fuel", workerUpgrade = "cog", banner = "banner", casket = "casket",
+	emote = "scroll", scroll = "scroll", spade = "spade", teleport = "scroll", potion = "potion", buff = "flask", food = "meal", seed = "seed"}
+-- Id keywords per kind (first match wins), checked after the category.
+Theme.ICON_KEYWORDS = {
+	material = {{"Ingot", "bar"}, {"Heads", "arrowhead"}, {"Shaft", "shaft"}, {"Bowstring", "thread"}, {"String", "thread"}, {"Thread", "thread"},
+		{"Silk", "thread"}, {"Coil", "thread"}, {"Bolt", "cloth"}, {"Leather", "leather"}, {"Hide", "hide"}, {"Pelt", "hide"}, {"Plate", "scale"},
+		{"Scale", "scale"}, {"Chitin", "scale"}, {"Shell", "shell"}, {"Pearl", "pearl"}, {"Knot", "pearl"}, {"Fang", "fang"}, {"Barb", "fang"},
+		{"Horn", "fang"}, {"Plume", "feather"}, {"Feather", "feather"}, {"Quill", "feather"}, {"Keystone", "key"}, {"Key", "key"}, {"Dust", "dust"},
+		{"Grit", "dust"}, {"Ash", "dust"}, {"Sand", "dust"}, {"sand", "dust"}, {"Spore", "dust"}, {"Starcore", "core"}, {"Core", "core"}, {"Geode", "geode"},
+		{"Cinder", "ember"}, {"Candy", "candy"}, {"Orb", "orb"}, {"Bauble", "orb"}, {"Globe", "orb"}, {"Lens", "lens"}, {"Vial", "vial"},
+		{"Oil", "vial"}, {"Ichor", "vial"}, {"MoltenGlass", "glass"}, {"Glass", "glass"}, {"Jelly", "jelly"}, {"Shard", "crystal"},
+		{"Crystal", "crystal"}, {"Stormglass", "crystal"}, {"Fragment", "crystal"}, {"Tome", "tome"}, {"Ink", "ink"}, {"Seal", "seal"},
+		{"Sigil", "seal"}, {"Crest", "seal"}, {"Mark", "seal"}, {"Token", "coin"}, {"Skymark", "coin"}, {"Satchel", "pouch"}, {"Kit", "kit"},
+		{"Hilt", "hilt"}, {"Haunch", "meat"}, {"Shank", "meat"}, {"Raw", "meat"}, {"Essence", "essence"}},
+	accessory = {{"Ring", "ring"}, {"Band", "ring"}, {"Signet", "ring"}, {"Necklace", "amulet"}, {"Amulet", "amulet"}, {"Locket", "amulet"},
+		{"Pendant", "amulet"}, {"Pearl", "amulet"}, {"Heartstone", "amulet"}, {"Medallion", "amulet"}, {"Lantern", "lantern"}, {"Censer", "lantern"},
+		{"Crown", "crown"}, {"Halo", "crown"}, {"Diadem", "crown"}, {"Sigil", "seal"}, {"Seal", "seal"}, {"Emblem", "seal"}, {"Crest", "seal"},
+		{"Orb", "orb"}, {"Orrery", "orb"}, {"Astrolabe", "orb"}, {"Compass", "orb"}, {"Tome", "tome"}, {"Quiver", "quiver"}, {"Mantle", "cloak"},
+		{"Gauntlet", "gauntlet"}, {"Bracer", "gauntlet"}, {"Cord", "ring"}, {"Monocle", "lens"}, {"Bead", "pearl"}},
+	petitem = {{"Collar", "collar"}, {"Tag", "collar"}, {"Candy", "candy"}, {"Bell", "bell"}, {"Lens", "lens"}, {"Prism", "crystal"}, {"Pendant", "amulet"},
+		{"Ribbon", "sprig"}, {"Clover", "sprig"}, {"Sprig", "sprig"}, {"Pouch", "pouch"}, {"Anklet", "ring"}, {"Thimble", "charm"}},
+	consumable = {{"Tonic", "potion"}, {"Cooked", "cooked"}, {"Pie", "pie"}, {"Tart", "pie"}, {"Roast", "roast"}, {"Skewer", "roast"}, {"Haunch", "roast"},
+		{"Stew", "meal"}, {"Broth", "meal"}, {"Banquet", "meal"}, {"Feast", "meal"}, {"Ration", "meal"}, {"Cocoa", "meal"}},
+	resource = {{"Seeds", "seed"}, {"Spores", "seed"}, {"Bulb", "seed"}, {"Pit", "seed"}, {"Bud", "seed"}, {"Aetherite", "crystal"}, {"Prismite", "crystal"}, {"Celestium", "crystal"}},
+	trail = {{"Spade", "spade"}, {"Casket", "casket"}, {"Banner", "banner"}},
+	weapon = {}, armor = {}, tool = {}, pet = {},
+}
+-- Kinds whose id keywords beat the category (a "food" that is a Cooked fish).
+Theme.ICON_KEYWORD_FIRST = {consumable = true}
+-- Compressed materials keep the family of the item they compress.
+Theme.ICON_MODIFIERS = {{"Condensed", "condensed"}, {"Radiant", "radiant"}}
+Theme.ICON_GEAR = {weapon = true, armor = true, tool = true, accessory = true}
+Theme.items = nil -- Data.Items, set by Theme.useItems (resolves a compressed item's base)
+function Theme.useItems(items) if type(items) == "table" then Theme.items = items end end
+
+local function keyword(list, id)
+	for _, entry in ipairs(list or {}) do if string.find(id, entry[1], 1, true) then return entry[2] end end
+	return nil
+end
+local function weaponFamily(def)
+	if type(def.heldClass) == "string" and Theme.ICON_HELD[def.heldClass] then return Theme.ICON_HELD[def.heldClass], "held" end
+	local name = tostring(def.name or def.id or "")
+	if def.style == "ranged" then return "bow", "style" end
+	if def.style == "magic" then
+		local wand = string.find(name, "Wand", 1, true) ~= nil or (type(def.magic) == "table" and type(def.magic.elements) == "table" and #def.magic.elements == 0)
+		return if wand then "wand" else "staff", "style"
+	end
+	local named = keyword(Theme.ICON_WEAPON_NAMES, name)
+	if named then return named, "name" end
+	return "sword", "kind"
+end
+-- Pure: def (+ optional items table) → icon spec {family, rule, modifier, rarity,
+-- rank, gear, halo, color, key}; rule says which data decided ("fallback" only
+-- for a missing def or an unknown kind).
+function Theme.iconSpec(def, items)
+	items = items or Theme.items
+	if type(def) ~= "table" then return {family = "gem", rule = "fallback", rarity = "Common", rank = 1, key = "fallback"} end
+	local id = tostring(def.id or def.name or "")
+	local kind, family, rule, modifier = def.kind, nil, nil, nil
+	for _, m in ipairs(Theme.ICON_MODIFIERS) do
+		if string.sub(id, 1, #m[1]) == m[1] and #id > #m[1] then
+			local baseId = string.sub(id, #m[1] + 1)
+			local base = type(items) == "table" and items[baseId]
+			if type(base) == "table" and base ~= def then
+				local inner = Theme.iconSpec(base, items)
+				family, rule, modifier = inner.family, "condensed:" .. inner.rule, m[2]
+			end
+		end
+	end
+	if not family then
+		if kind == "weapon" then family, rule = weaponFamily(def)
+		elseif kind == "armor" then family, rule = Theme.ICON_SLOT[def.slot], "slot"
+		elseif kind == "tool" then family, rule = Theme.ICON_TOOL[def.toolKind] or Theme.ICON_HELD[def.heldClass or ""], "tool"
+		end
+		if not family and Theme.ICON_KEYWORD_FIRST[kind or ""] then
+			local hit = keyword(Theme.ICON_KEYWORDS[kind], id)
+			if hit then family, rule = hit, "keyword" end
+		end
+		if not family and def.category and Theme.ICON_CATEGORY[def.category] then family, rule = Theme.ICON_CATEGORY[def.category], "category" end
+		if not family and kind == "accessory" and def.category == "jewellery" then
+			family, rule = keyword(Theme.ICON_KEYWORDS.accessory, id), "keyword"
+			if not family then family, rule = "orb", "category" end
+		end
+		if not family and Theme.ICON_KEYWORDS[kind or ""] then
+			local hit = keyword(Theme.ICON_KEYWORDS[kind], id)
+			if hit then family, rule = hit, "keyword" end
+		end
+		if not family and kind == "resource" and Theme.ICON_SKILL[def.skill or ""] then family, rule = Theme.ICON_SKILL[def.skill], "skill" end
+		if not family and kind == "material" and def.heldClass == "striker" then family, rule = "striker", "held" end
+		if not family and Theme.ICON_KIND[kind or ""] then family, rule = Theme.ICON_KIND[kind], "kind" end
+	end
+	if not family or not Theme.ICON_MOTIFS[family] then family, rule = "gem", "fallback" end
+	local rarity = Theme.rarity(def.rarity or "Common")
+	local spec = {family = family, rule = rule, modifier = modifier, rarity = def.rarity or "Common", rank = rarity.rank,
+		gear = Theme.ICON_GEAR[kind or ""] == true, color = type(def.color) == "string" and def.color or "9FB4C8"}
+	spec.halo = spec.rank >= 3
+	spec.key = table.concat({family, modifier or "", spec.color, spec.rarity, spec.gear and "g" or ""}, "|")
+	return spec
+end
+function Theme.shapeOf(def) return Theme.iconSpec(def).family end
+
+-- Template cache (unparented icon trees, cloned per use). Phones keep fewer.
+Theme.IconCache = {templates = {}, max = 160, compactMax = 72, compact = false, builds = 0, clones = 0, evictions = 0, tick = 0, count = 0}
+function Theme.iconCacheCompact(compact) Theme.IconCache.compact = compact == true end
+-- Live ViewportFrame previews (the atlas's 3D thumbnails) are bounded: only
+-- icons at least ICON_VIEWPORT_MIN px wide may use one, at most ICON_VIEWPORTS
+-- per page (phones fewer); everything else is the cached vector icon.
+Theme.ICON_VIEWPORT_MIN = 56
+Theme.ICON_VIEWPORTS = {desktop = 6, compact = 2}
+function Theme.iconViewportAllowed(size, used, compact)
+	local cap = if compact then Theme.ICON_VIEWPORTS.compact else Theme.ICON_VIEWPORTS.desktop
+	return (tonumber(size) or 0) >= Theme.ICON_VIEWPORT_MIN and (tonumber(used) or 0) < cap
+end
+Theme.ICON_LAYER_MAX = 12
+
+local function drawLayer(holder, L, tones, px, z)
+	local tone = tones[L[6]] or tones.base
+	local flags = L[8] or NO
+	local f = make("Frame", holder, {Name = "Layer", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(L[1], L[2]), Size = UDim2.fromScale(L[3], L[4]),
+		Rotation = L[5], BackgroundColor3 = C.white, BorderSizePixel = 0, Active = false, ZIndex = z})
+	if L[7] and L[7] > 0 then make("UICorner", f, {CornerRadius = UDim.new(math.min(0.5, L[7]), 0)}) end
+	if flags.ring then
+		f.BackgroundTransparency = 1
+		make("UIStroke", f, {Color = tone, Thickness = math.max(1, math.floor(px * flags.ring + 0.5))})
+		return f
+	end
+	if flags.g then
+		f.BackgroundColor3, f.BackgroundTransparency = C.white, flags.a or 0.5
+		return f
+	end
+	if flags.soft then
+		-- Glow halo: two concentric translucent discs (no images), brighter inside.
+		local a = flags.a or 0.6
+		f.BackgroundColor3, f.BackgroundTransparency = tone, a + (1 - a) * 0.55
+		local inner = make("Frame", f, {Name = "Core", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromScale(0.66, 0.66),
+			BackgroundColor3 = tone, BackgroundTransparency = a, BorderSizePixel = 0, Active = false, ZIndex = z})
+		make("UICorner", inner, {CornerRadius = UDim.new(0.5, 0)})
+		return f
+	end
+	f.BackgroundTransparency = flags.a or 0
+	make("UIGradient", f, {Name = "Light", Rotation = Theme.ICON_LIGHT - L[5], Color = ColorSequence.new(lighten(tone, 0.38), darken(tone, 0.36))})
+	if flags.o then make("UIStroke", f, {Color = darken(tone, 0.68), Thickness = if px >= 40 then 1.5 else 1, Transparency = 0.1}) end
 	return f
 end
-function Theme.shapeOf(def)
-	if type(def) ~= "table" then return "gem" end
-	local kind, slot, cat = def.kind, def.slot, def.category
-	if kind == "weapon" then
-		if def.style == "ranged" then return "bow" end
-		if def.style == "magic" then return "staff" end
-		return "sword"
+-- Builds a fresh icon tree (no cache).
+function Theme.buildIcon(def, size, spec)
+	spec = spec or Theme.iconSpec(def)
+	local px = if typeof(size) == "UDim2" then size.X.Offset else (size or 32)
+	local holder = make("Frame", nil, {Name = "Icon", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+		Size = if typeof(size) == "UDim2" then size else UDim2.fromOffset(px, px), BackgroundTransparency = 1, Active = false})
+	local tones = Theme.iconTones(def)
+	local r = Theme.rarity(spec.rarity)
+	tones.rarity = r.color
+	local z = 1
+	if spec.halo then
+		-- Rarity halo (Rare and above): a soft disc in the rarity colour behind the art.
+		local h = drawLayer(holder, halo(0.5, 0.52, 0.92, "rarity", if spec.rank >= 5 then 0.62 else 0.74), tones, px, z)
+		h.Name = "RarityHalo"
 	end
-	if kind == "armor" then return ({helmet = "helmet", chest = "chest", legs = "legs", boots = "boots"})[slot] or "chest" end
-	if kind == "tool" then return ({Pickaxe = "pickaxe", Hatchet = "hatchet", Rod = "rod", Hoe = "hoe"})[def.toolKind] or "pickaxe" end
-	if kind == "consumable" then return if cat == "potion" or cat == "buff" then "potion" else "food" end
-	if cat == "ammo" then return "arrow" end
-	if cat == "glyph" or cat == "tablet" then return "rune" end
-	if kind == "accessory" then return "ring" end
-	if kind == "pet" then return "paw" end
-	if kind == "resource" then
-		return ({Mining = "ore", Woodcutting = "log", Fishing = "fish", Farming = "crop"})[def.skill] or "ore"
+	if spec.modifier then
+		-- Compressed block behind the art; Radiant adds a glow and a spark.
+		local back = drawLayer(holder, box(0.5, 0.54, 0.84, 0.8, "deep", 0.18, 0, {o = true, a = 0.25}), tones, px, z)
+		back.Name = "Compressed"
+		drawLayer(holder, box(0.5, 0.54, 0.7, 0.66, "base", 0.16, 0, {a = 0.6}), tones, px, z).Name = "CompressedFace"
+		if spec.modifier == "radiant" then drawLayer(holder, halo(0.5, 0.5, 1, "glow", 0.45), tones, px, z).Name = "Radiance" end
 	end
-	return "gem"
-end
-local SHAPES = {
-	sword = function(p, c) bit(p, .56, .44, .16, .66, lighten(c, .35), 45); bit(p, .34, .66, .38, .1, darken(c, .25), 45); bit(p, .24, .76, .1, .22, darken(c, .45), 45) end,
-	bow = function(p, c) bit(p, .44, .5, .12, .78, c, 30, .5); bit(p, .6, .5, .03, .72, C.text, 30); bit(p, .62, .38, .36, .05, darken(c, .2), -50) end,
-	staff = function(p, c) bit(p, .46, .58, .09, .74, darken(c, .35), 30); bit(p, .64, .24, .3, .3, lighten(c, .3), 45, .5) end,
-	pickaxe = function(p, c) bit(p, .5, .58, .1, .72, rgb("8A5A32"), 35); bit(p, .6, .36, .7, .12, c, -40, .3) end,
-	hatchet = function(p, c) bit(p, .46, .58, .1, .72, rgb("8A5A32"), 30); bit(p, .64, .32, .32, .3, c, 30) end,
-	rod = function(p, c) bit(p, .48, .5, .07, .9, rgb("8A5A32"), 40); bit(p, .72, .68, .02, .5, C.text, 0); bit(p, .72, .9, .12, .12, c, 0, .5) end,
-	hoe = function(p, c) bit(p, .46, .56, .1, .74, rgb("8A5A32"), 35); bit(p, .66, .26, .3, .14, c, -55) end,
-	helmet = function(p, c) bit(p, .5, .46, .66, .5, c, 0, .45); bit(p, .5, .66, .66, .14, darken(c, .3), 0); bit(p, .5, .58, .1, .28, darken(c, .5), 0) end,
-	chest = function(p, c) bit(p, .5, .55, .52, .62, c, 0, .12); bit(p, .24, .38, .2, .3, darken(c, .2), 0, .3); bit(p, .76, .38, .2, .3, darken(c, .2), 0, .3); bit(p, .5, .46, .08, .4, lighten(c, .3), 0) end,
-	legs = function(p, c) bit(p, .5, .26, .58, .14, darken(c, .25), 0); bit(p, .36, .58, .22, .56, c, 0); bit(p, .64, .58, .22, .56, c, 0) end,
-	boots = function(p, c) bit(p, .34, .44, .2, .44, c, 0); bit(p, .4, .7, .38, .16, darken(c, .2), 0, .4); bit(p, .66, .44, .2, .44, c, 0); bit(p, .72, .7, .38, .16, darken(c, .2), 0, .4) end,
-	food = function(p, c) bit(p, .5, .5, .6, .44, c, -20, .5); bit(p, .26, .64, .22, .1, C.text, -20); bit(p, .6, .44, .2, .1, lighten(c, .4), -20, .5) end,
-	potion = function(p, c) bit(p, .5, .62, .5, .5, c, 0, .5); bit(p, .5, .3, .2, .2, lighten(c, .55), 0); bit(p, .5, .18, .26, .08, rgb("8A5A32"), 0) end,
-	arrow = function(p, c) bit(p, .5, .5, .06, .86, rgb("C9A879"), 45); bit(p, .76, .24, .18, .18, c, 45); bit(p, .26, .74, .16, .1, C.text, 45) end,
-	rune = function(p, c) bit(p, .5, .5, .58, .7, darken(c, .35), 0, .2); bit(p, .5, .44, .3, .06, lighten(c, .5), 45); bit(p, .5, .44, .3, .06, lighten(c, .5), -45); bit(p, .5, .7, .26, .06, lighten(c, .5), 0) end,
-	ring = function(p, c) local r = bit(p, .5, .58, .6, .6, darken(c, .2), 0, .5); r.BackgroundTransparency = 1; r:SetAttribute("Hollow", true); r:FindFirstChildOfClass("UIStroke").Thickness = 3; r:FindFirstChildOfClass("UIStroke").Color = c; bit(p, .5, .26, .26, .26, lighten(c, .4), 45) end,
-	paw = function(p, c) bit(p, .5, .62, .44, .36, c, 0, .5); for i, x in ipairs({.26, .42, .58, .74}) do bit(p, x, if i == 1 or i == 4 then .38 else .26, .16, .18, lighten(c, .2), 0, .5) end end,
-	ore = function(p, c) bit(p, .5, .58, .7, .5, rgb("5C5F66"), 12, .2); bit(p, .38, .52, .2, .2, lighten(c, .2), 45); bit(p, .62, .64, .16, .16, c, 45); bit(p, .6, .42, .12, .12, lighten(c, .5), 45) end,
-	log = function(p, c) bit(p, .5, .5, .76, .38, darken(c, .1), -25, .3); bit(p, .82, .36, .2, .36, lighten(c, .35), -25, .5) end,
-	fish = function(p, c) bit(p, .46, .5, .58, .34, c, 0, .5); bit(p, .82, .5, .2, .3, darken(c, .2), 45); bit(p, .3, .44, .06, .06, C.void, 0, .5) end,
-	crop = function(p, c) bit(p, .5, .62, .06, .6, rgb("4E8A3A"), 0); bit(p, .38, .36, .2, .3, c, -30, .5); bit(p, .62, .36, .2, .3, c, 30, .5); bit(p, .5, .22, .18, .26, lighten(c, .25), 0, .5) end,
-	gem = function(p, c) bit(p, .5, .52, .5, .5, c, 45); bit(p, .42, .44, .14, .14, lighten(c, .6), 45) end,
-}
--- Draws the pictogram for `def` into a new "Icon" frame (size: UDim2 or px).
-function Theme.icon(parent, def, size)
-	local holder = make("Frame", parent, {Name = "Icon", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
-		Size = if typeof(size) == "UDim2" then size else UDim2.fromOffset(size or 32, size or 32), BackgroundTransparency = 1, Active = false})
-	local color = rgb(type(def) == "table" and type(def.color) == "string" and def.color or "C9D6E3")
-	local shape = Theme.shapeOf(def)
-	holder:SetAttribute("Shape", shape)
-	SHAPES[shape](holder, color)
+	local art = make("Frame", holder, {Name = "Art", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromScale(if spec.modifier then 0.8 else 1, if spec.modifier then 0.8 else 1), BackgroundTransparency = 1, Active = false})
+	for _, L in ipairs(Theme.ICON_MOTIFS[spec.family]) do drawLayer(art, L, tones, px * (if spec.modifier then 0.8 else 1), z) end
+	if spec.modifier then
+		drawLayer(holder, box(0.84, 0.16, 0.2, 0.2, if spec.modifier == "radiant" then "gold" else "lite", 0.1, 45), tones, px, z).Name = "CompressedBadge"
+		if spec.modifier == "radiant" then drawLayer(holder, disc(0.84, 0.16, 0.08, "white", NO), tones, px, z).Name = "Spark" end
+	end
+	if spec.gear and spec.rank >= 2 then
+		-- Gear: a rarity gem in the top-right corner (the rarity frame's jewel).
+		drawLayer(holder, box(0.86, 0.14, 0.15, 0.15, "rarity", 0.1, 45), tones, px, z).Name = "RarityGem"
+	end
+	local veil = make("Frame", holder, {Name = "Veil", BackgroundColor3 = C.void, BackgroundTransparency = 0.45, Size = UDim2.fromScale(1, 1), BorderSizePixel = 0,
+		Visible = false, Active = false})
+	Theme.corner(veil, 4)
+	holder:SetAttribute("Shape", spec.family)
 	return holder
+end
+-- Draws the icon for `def` into `parent` (size: UDim2 or px): a clone of the
+-- cached template for that spec and size (built once).
+function Theme.icon(parent, def, size)
+	local spec = Theme.iconSpec(def)
+	local px = if typeof(size) == "UDim2" then size.X.Offset .. "x" .. size.Y.Offset else tostring(size or 32)
+	local cache = Theme.IconCache
+	local key = spec.key .. "@" .. px
+	local entry = cache.templates[key]
+	cache.tick += 1
+	if not entry then
+		entry = {template = Theme.buildIcon(def, size, spec), used = cache.tick}
+		cache.templates[key] = entry
+		cache.builds += 1
+		cache.count += 1
+		local max = if cache.compact then cache.compactMax else cache.max
+		while cache.count > max do
+			local oldestKey, oldest = nil, math.huge
+			for k, e in pairs(cache.templates) do if e ~= entry and e.used < oldest then oldestKey, oldest = k, e.used end end
+			if not oldestKey then break end
+			cache.templates[oldestKey].template:Destroy()
+			cache.templates[oldestKey] = nil
+			cache.count -= 1
+			cache.evictions += 1
+		end
+	else
+		cache.clones += 1
+	end
+	entry.used = cache.tick
+	local icon = entry.template:Clone()
+	icon:SetAttribute("Shape", spec.family)
+	icon:SetAttribute("IconKey", key)
+	icon.Parent = parent
+	return icon
 end
 
 ------------------------------------------------------------------------------
@@ -281,11 +644,8 @@ function Theme.setSlot(b, data)
 	b:FindFirstChild("Tag").Visible = data.equipped == true
 	b:FindFirstChild("Glow").BackgroundTransparency = if data.selected then 0.86 else 1
 	local icon = b:FindFirstChild("Icon")
-	if icon then
-		for _, px in ipairs(icon:GetChildren()) do
-			if px:IsA("Frame") then px.BackgroundTransparency = if data.locked then 0.6 else (px:GetAttribute("Hollow") and 1 or 0) end
-		end
-	end
+	local veil = icon and icon:FindFirstChild("Veil")
+	if veil then veil.Visible = data.locked == true end
 	local cd = math.clamp(tonumber(data.cooldown) or 0, 0, 1)
 	b:FindFirstChild("Sweep").Visible = cd > 0
 	b:FindFirstChild("Sweep").Size = UDim2.fromScale(1, cd)

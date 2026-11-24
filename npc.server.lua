@@ -9,6 +9,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
 local Data = require(ReplicatedStorage:WaitForChild("AetherData"))
 local T = Data.Townsfolk
+-- §52 NPC art: outfit / trade / nameplate rules (the client forges the outfits).
+local Style = require(ReplicatedStorage:WaitForChild("AetherNpcStyle"))
 local V, CF = Vector3.new, CFrame.new
 
 local folder = Instance.new("Folder")
@@ -147,14 +149,29 @@ local function held(hand, style, look)
 	end
 end
 
+-- §52: tag the primitive parts a forged outfit piece replaces (OutfitSlot), so
+-- npc.client.lua can hide exactly those, locally, once its mesh exists.
+local function tagNew(model, before, slot)
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("BasePart") and not before[d] then d:SetAttribute("OutfitSlot", slot) end
+	end
+end
+local function snapshot(model)
+	local set = {}
+	for _, d in ipairs(model:GetDescendants()) do set[d] = true end
+	return set
+end
 local function buildRig(role)
 	local def = T.NPCs[role]
 	local look = def.look
+	local outfit = Style.outfit(role, def)
 	local skin, shirt, pants, shoes, accent = hex(look.skin), hex(look.shirt), hex(look.pants), hex(look.shoes), hex(look.accent)
 	local model = Instance.new("Model")
 	model.Name = def.name
 	model:SetAttribute("TownsfolkRole", role)
 	model:SetAttribute("Region", def.region)
+	model:SetAttribute("NpcTrade", outfit.trade)
+	model:SetAttribute("NpcIdle", outfit.idle)
 	local root = piece(model, "HumanoidRootPart", V(2, 2, 1), CF(0, 2.55, 0), skin, SM)
 	root.Anchored, root.Transparency, root.CanCollide, root.CanQuery = true, 1, true, true
 	root.PivotOffset = CF(0, -2.55, 0)
@@ -194,43 +211,84 @@ local function buildRig(role)
 	end
 	weld(head, piece(model, "Mouth", V(0.36, 0.07, 0.05), CF(0, 4.66, -0.61), hex("7A3B2E"), SM))
 	weld(head, piece(model, "Nose", V(0.16, 0.2, 0.1), CF(0, 4.84, -0.64), skin:Lerp(Color3.new(0, 0, 0), 0.08), SM))
-	if look.hat ~= "hood" and look.hat ~= "helm" and look.hat ~= "minerhelm" then
-		weld(head, piece(model, "Hair", V(1.28, 0.35, 1.28), CF(0, 5.45, 0.04), hex(look.hair), FABRIC))
+	local hatStyle = Style.fallbackHat(role, def)
+	local heldStyle = Style.fallbackHeld(role, def)
+	if hatStyle ~= "hood" and hatStyle ~= "helm" and hatStyle ~= "minerhelm" then
+		local hair = piece(model, "Hair", V(1.28, 0.35, 1.28), CF(0, 5.45, 0.04), hex(look.hair), FABRIC)
+		weld(head, hair)
+		hair:SetAttribute("OutfitSlot", "hair") -- hidden under a forged hat
 		weld(head, piece(model, "HairBack", V(1.28, 0.9, 0.3), CF(0, 5.05, 0.55), hex(look.hair), FABRIC))
 	end
 	if look.beard then
 		weld(head, piece(model, "Beard", V(1.0, 0.55, 0.3), CF(0, 4.48, -0.5), hex(look.hair), FABRIC))
 	end
 	if look.cape then
-		weld(upperTorso, piece(model, "Cape", V(2.1, 3.3, 0.14), CF(0, 2.75, 0.62) * CFrame.Angles(0.06, 0, 0), hex(look.cape), FABRIC))
+		local cape = piece(model, "Cape", V(2.1, 3.3, 0.14), CF(0, 2.75, 0.62) * CFrame.Angles(0.06, 0, 0), hex(look.cape), FABRIC)
+		weld(upperTorso, cape)
+		cape:SetAttribute("OutfitSlot", "cape")
 	end
 	if look.apron then
-		weld(lowerTorso, piece(model, "Apron", V(1.6, 2.4, 0.1), CF(0, 2.35, -0.56), hex(look.apron), FABRIC))
+		local apron = piece(model, "Apron", V(1.6, 2.4, 0.1), CF(0, 2.35, -0.56), hex(look.apron), FABRIC)
+		weld(lowerTorso, apron)
+		apron:SetAttribute("OutfitSlot", "apron")
 	end
-	hat(head, look.hat, look)
-	held(model.RightHand, look.held, look)
-	-- Nameplate.
+	local before = snapshot(model)
+	hat(head, hatStyle, look)
+	tagNew(model, before, "hat")
+	before = snapshot(model)
+	held(model:FindFirstChild("RightHand"), heldStyle, look)
+	tagNew(model, before, "held")
+	-- Nameplate (§52 polish): a dark rounded strip (distinct from the Signs v2
+	-- plaques) with the region accent bar, a trade medallion, the name in warm
+	-- gold and the title in the region colour; every label one ink outline,
+	-- Builder Sans, contrast >= 4.5:1 on the strip (NpcStyle.plate).
+	local spec = Style.plate(role, def)
+	local P = Style.PLATE
 	local board = Instance.new("BillboardGui")
-	board.Name, board.Size, board.StudsOffset = "Nameplate", UDim2.fromOffset(220, 52), V(0, 2.4, 0)
-	board.MaxDistance, board.LightInfluence, board.AlwaysOnTop = 70, 0, false
+	board.Name, board.Size, board.StudsOffset = "Nameplate", UDim2.fromOffset(P.width + 12, P.height + 8), V(0, spec.lift, 0)
+	board.MaxDistance, board.LightInfluence, board.AlwaysOnTop = P.maxDistance, 0, false
+	board:SetAttribute("NpcTitleColor", spec.titleColor)
 	board.Parent = head
 	local plate = Instance.new("Frame")
-	plate.AnchorPoint, plate.Position, plate.Size = Vector2.new(0.5, 0.5), UDim2.fromScale(0.5, 0.5), UDim2.new(0, 200, 0, 46)
-	plate.BackgroundColor3, plate.BackgroundTransparency, plate.BorderSizePixel = hex("091923"), 0.25, 0
+	plate.Name = "Plate"
+	plate.AnchorPoint, plate.Position, plate.Size = Vector2.new(0.5, 0.5), UDim2.fromScale(0.5, 0.5), UDim2.fromOffset(P.width, P.height)
+	plate.BackgroundColor3, plate.BackgroundTransparency, plate.BorderSizePixel = hex(P.field), 0.12, 0
 	plate.Parent = board
 	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 8)
+	corner.CornerRadius = UDim.new(0, 9)
 	corner.Parent = plate
 	local stroke = Instance.new("UIStroke")
-	stroke.Color, stroke.Transparency, stroke.Thickness = hex("F9CC77"), 0.4, 1
+	stroke.Color, stroke.Transparency, stroke.Thickness = hex(spec.accent), 0.25, 1.5
 	stroke.Parent = plate
-	for i, line in ipairs({{def.name, 17, Enum.Font.GothamBold, hex("F9CC77")}, {def.title, 13, Enum.Font.Gotham, hex("9EE7D2")}}) do
+	local sheen = Instance.new("UIGradient")
+	sheen.Rotation, sheen.Color = 90, ColorSequence.new(Color3.new(1, 1, 1), Color3.fromRGB(150, 156, 166))
+	sheen.Parent = plate
+	local bar = Instance.new("Frame")
+	bar.Name, bar.BorderSizePixel = "RegionBar", 0
+	bar.Position, bar.Size, bar.BackgroundColor3 = UDim2.fromOffset(0, P.height - 4), UDim2.new(1, 0, 0, 4), hex(spec.accent)
+	bar.Parent = plate
+	local medal = Instance.new("TextLabel")
+	medal.Name, medal.BackgroundColor3, medal.BackgroundTransparency = "TradeGlyph", hex("05080C"), 0.2
+	medal.AnchorPoint, medal.Position, medal.Size = Vector2.new(0, 0.5), UDim2.new(0, 8, 0.5, -2), UDim2.fromOffset(34, 34)
+	medal.Text, medal.TextSize, medal.Font, medal.TextColor3 = spec.glyph, P.glyphSize, Enum.Font.BuilderSansBold, hex(spec.accent)
+	medal.Parent = plate
+	local medalCorner = Instance.new("UICorner")
+	medalCorner.CornerRadius = UDim.new(0.5, 0)
+	medalCorner.Parent = medal
+	local medalRim = Instance.new("UIStroke")
+	medalRim.ApplyStrokeMode, medalRim.Color, medalRim.Thickness = Enum.ApplyStrokeMode.Border, hex(spec.accent), 1
+	medalRim.Parent = medal
+	for i, line in ipairs({{spec.name, P.nameSize, Enum.Font.BuilderSansExtraBold, spec.nameColor}, {spec.title, P.titleSize, Enum.Font.BuilderSansBold, spec.titleColor}}) do
 		local text = Instance.new("TextLabel")
 		text.Name = if i == 1 then "NpcName" else "NpcTitle"
-		text.BackgroundTransparency, text.Size, text.Position = 1, UDim2.new(1, -12, 0, 21), UDim2.fromOffset(6, if i == 1 then 3 else 23)
-		text.Text, text.TextSize, text.Font, text.TextColor3 = line[1], line[2], line[3], line[4]
+		text.BackgroundTransparency, text.Size, text.Position = 1, UDim2.new(1, -56, 0, 22), UDim2.fromOffset(48, if i == 1 then 5 else 27)
+		text.Text, text.TextSize, text.Font, text.TextColor3 = line[1], line[2], line[3], hex(line[4])
+		text.TextXAlignment = Enum.TextXAlignment.Left
 		text.TextScaled = false
 		text.TextTruncate = Enum.TextTruncate.AtEnd
+		local ink = Instance.new("UIStroke")
+		ink.Color, ink.Thickness, ink.Transparency = hex(P.stroke), 1, 0.35
+		ink.Parent = text
 		text.Parent = plate
 	end
 	-- "Talk" prompt. It carries no IsleAction, so the Adventure server ignores it;

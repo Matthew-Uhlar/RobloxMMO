@@ -283,7 +283,7 @@ do
 	local dataModule=ReplicatedStorage:WaitForChild("AetherData",10)
 	if dataModule then
 		local ok,result=pcall(require,dataModule)
-		if ok and type(result)=="table" then Data=result end
+		if ok and type(result)=="table" then Data=result; if type(result.Items)=="table" then UI.T.useItems(result.Items) end end
 	end
 end
 
@@ -701,11 +701,16 @@ local function itemIcon(parent,id,size,locked)
 	end
 	local art
 	local tinted=tintIndex()~=nil and def~=nil and type(def.color)=="string"
-	if not locked and def then
+	-- §52: live 3D thumbnails only for big previews (UI.T.iconViewportAllowed: >= 56 px,
+	-- 6 per page / 2 on phones); every other item is the cached vector icon.
+	if not locked and def and UI.T.iconViewportAllowed(size,thumbnailCount,THUMBS.compact) then
 		local shape=shapeFor(id,def)
 		if shape then art=thumbnail(holder,shape,size,tinted and def.color or nil,true,true) end
 	end
-	if not art then
+	if not art and not locked then
+		local icon=UI.T.icon(holder,def or {id=tostring(id),name=tostring(id)},math.floor(size*.86))
+		icon.ZIndex=(holder.ZIndex or 1)+1
+	elseif not art then
 		itemGlyph(holder,def or {name=tostring(id)},size,locked)
 	else
 		art.BackgroundTransparency=1
@@ -10742,6 +10747,7 @@ render = function(fromPush)
 	compactAtlas=size.X<480 or size.Y<500
 	if THUMBS.compact~=compactAtlas then
 		THUMBS.compact=compactAtlas
+		UI.T.iconCacheCompact(compactAtlas)
 		THUMBS.trim()
 	end
 	railMode=compactAtlas and size.X>=560 and size.X>size.Y*1.3

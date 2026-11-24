@@ -28,6 +28,7 @@ local player = Players.LocalPlayer
 
 local Data = require(ReplicatedStorage:WaitForChild("AetherData"))
 local T = require(ReplicatedStorage:WaitForChild("AetherUiTheme"))
+T.useItems(Data.Items) -- §52: Condensed / Radiant icons resolve their base item
 local C, make = T.color, T.make
 
 local function channel(name)
@@ -332,6 +333,7 @@ local function placePanel()
 	local touch = Input.TouchEnabled or L.short
 	local wasDocked = S.docked
 	S.docked = not L.short
+	T.iconCacheCompact(L.short) -- §52: phones keep a smaller icon template cache
 	-- Crossing the 520 px threshold while open (a resized window, a rotated
 	-- tablet): the shade and IsleSatchelOpen follow the new mode.
 	if wasDocked ~= nil and wasDocked ~= S.docked and S.open then

@@ -31,6 +31,10 @@ const BUILDING_TRIANGLE_RANGE = [200, 2400];
 const CREATURE_TRIANGLE_RANGE = {creature: [400, 2400], pet: [400, 1600], limb: [100, 1600], overlay: [200, 2600]};
 // Cores worn by slayer / lair / raid / world bosses use the budget (QC H4).
 const BOSS_CORE_FLOOR = 1800;
+// §52 NPC outfits: hats, hoods, aprons, cloaks and trade props (their own catalog).
+const OUTFIT_TRIANGLE_RANGE = [150, 1600];
+const outfitShapes = {};
+const outfitMeta = {};
 const shapes = {};
 const worldShapes = {};
 const worldMeta = {};
@@ -567,6 +571,14 @@ function creature(name,meta,build){
   shape(name,build,creatureShapes,1000);creatureMeta[name]=meta;
 }
 const creatureKit=require('./creature-shapes.cjs')({creature,C,PI,hash,jitterOf});
+// NPC outfits (§52): forged on each client by npc.client.lua through the
+// MeshForge outfit API; their own catalog (art/OutfitCatalog.lua).
+function outfit(name,meta,build){
+  if(shapes[name]||worldShapes[name]||creatureShapes[name]||outfitShapes[name])throw new Error(`Duplicate shape name ${name}`);
+  if(meta.kind!=='outfit'||!['head','torso','hand'].includes(meta.slot))throw new Error(`${name}: outfit kind / slot`);
+  shape(name,build,outfitShapes,1000);outfitMeta[name]=meta;
+}
+require('./outfit-shapes.cjs')({outfit,C,PI,hash,jitterOf});
 // Building kit (§40): returns the kit table the world script builds from.
 const buildingKit=require('./building-shapes.cjs')({world,C,PI,hash,jitterOf,worldShapes});
 
@@ -609,12 +621,18 @@ for(const [name,data] of Object.entries(creatureShapes)){
   if(creatureMeta[name].boss&&count<BOSS_CORE_FLOOR)rangeErrors.push(`${name} is a boss core with ${count} triangles (floor ${BOSS_CORE_FLOOR})`);
   for(const vol of componentVolumes(data))if(vol<-1e-4)throw new Error(`${name} has an inward-wound component (volume ${vol})`);
 }
+for(const [name,data] of Object.entries(outfitShapes)){
+  const count=data.faces.length;
+  if(count<OUTFIT_TRIANGLE_RANGE[0]||count>OUTFIT_TRIANGLE_RANGE[1])rangeErrors.push(`${name} has ${count} triangles; outfit range is ${OUTFIT_TRIANGLE_RANGE.join('-')}`);
+  if(data.vertices.length>=4096)rangeErrors.push(`${name} has ${data.vertices.length} vertices (packing limit 4095)`);
+  for(const vol of componentVolumes(data))if(vol<-1e-4)throw new Error(`${name} has an inward-wound component (volume ${vol})`);
+}
 // Every rig names authored shapes only.
 for(const [kind,r] of Object.entries(creatureKit.rigs)){
   for(const seg of [{shape:r.core},...r.segs])if(!creatureShapes[seg.shape]||!['creature','pet','limb'].includes(creatureMeta[seg.shape].kind))throw new Error(`rig ${kind} names unknown shape ${seg.shape}`);
 }
 if(rangeErrors.length){console.log(Object.entries(worldShapes).map(([n,d])=>n+' '+d.faces.length).join(', '));throw new Error(rangeErrors.join('\n'))}
-for(const [name,data] of [...Object.entries(shapes),...Object.entries(worldShapes),...Object.entries(creatureShapes)])for(const [a,b,c,shade] of data.faces){
+for(const [name,data] of [...Object.entries(shapes),...Object.entries(worldShapes),...Object.entries(creatureShapes),...Object.entries(outfitShapes)])for(const [a,b,c,shade] of data.faces){
   const [p,q,r]=[a,b,c].map(i=>data.vertices[i-1]);
   const u=q.map((x,k)=>x-p[k]),w=r.map((x,k)=>x-p[k]);
   const n=[u[1]*w[2]-u[2]*w[1],u[2]*w[0]-u[0]*w[2],u[0]*w[1]-u[1]*w[0]];
@@ -674,8 +692,8 @@ return Catalog
 `;
 const luaTable = x => Array.isArray(x)?'{'+x.map(luaTable).join(',')+'}':typeof x==='object'?'{'+Object.entries(x).map(([k,v])=>k+'='+luaTable(v)).join(',')+'}':JSON.stringify(x);
 const entries=Object.entries(shapes).map(([name,data])=>`shapes.${name}=${luaTable(data)}`).join('\n');
-const objHeader=name=>{const m=worldMeta[name]||creatureMeta[name];return m?`# smooth ${m.smooth||0}\n`+(m.tint?`# tint ${m.tint}\n`:''):''};
-for(const [name,data] of [...Object.entries(shapes),...Object.entries(worldShapes),...Object.entries(creatureShapes)])fs.writeFileSync(`art/${name}.obj`, `# Original Aether Isles ${name}\n`+objHeader(name)+`mtllib AetherPalette.mtl\n`+data.vertices.map(p=>'v '+p.join(' ')).join('\n')+'\n'+data.faces.map(f=>`usemtl Shade${f[3]}\nf ${f.slice(0,3).join(' ')}`).join('\n')+'\n');
+const objHeader=name=>{const m=worldMeta[name]||creatureMeta[name]||outfitMeta[name];return m?`# smooth ${m.smooth||0}\n`+(m.tint?`# tint ${m.tint}\n`:''):''};
+for(const [name,data] of [...Object.entries(shapes),...Object.entries(worldShapes),...Object.entries(creatureShapes),...Object.entries(outfitShapes)])fs.writeFileSync(`art/${name}.obj`, `# Original Aether Isles ${name}\n`+objHeader(name)+`mtllib AetherPalette.mtl\n`+data.vertices.map(p=>'v '+p.join(' ')).join('\n')+'\n'+data.faces.map(f=>`usemtl Shade${f[3]}\nf ${f.slice(0,3).join(' ')}`).join('\n')+'\n');
 // The world catalog is downloaded by every client, so geometry is packed into
 // base-64 strings (decoded once by the module itself into the usual tables):
 // a vertex is three 3-digit millistud coordinates offset by PACK_OFFSET, a face
@@ -802,6 +820,60 @@ end
 local rigs=${luaTable(roundDeep(creatureKit.rigs))}
 return {palette=palette,shapes=shapes,rigs=rigs,drop=drop,tintIndex=${TINT},tintDarkIndex=${TINT_DARK},tintLightIndex=${TINT_LIGHT},tintDark=0.62,tintLight=0.4}
 `);
+// §52: the outfit catalog (packed and lazy like the creature catalog).
+const outfitEntries=Object.entries(outfitShapes).map(([name,data])=>{
+  const m=outfitMeta[name],extra={smooth:m.smooth||0,kind:m.kind,slot:m.slot,tris:data.faces.length,verts:data.vertices.length};
+  if(m.tint)extra.tint=m.tint;
+  const verts=data.vertices.map(p=>p.map(x=>packNumber(Math.round(x*1000)+PACK_OFFSET,3)).join('')).join('');
+  const faces=data.faces.map(([a,b,c,shade])=>packNumber(a,2)+packNumber(b,2)+packNumber(c,2)+packNumber(shade,1)).join('');
+  return `shapes.${name}=lazy("${verts}","${faces}",${luaTable(extra)})`;
+}).join('\n');
+fs.writeFileSync('art/OutfitCatalog.lua',`-- Generated by art/generate-props.cjs from art/outfit-shapes.cjs (original geometry, §52).
+-- NPC outfit pieces (hats, hoods, helms, aprons, cloaks, mantles, satchels, belts)
+-- and trade props, forged on each client by forge.client.lua (outfit API) for
+-- npc.client.lua; packed and lazily decoded like art/CreatureCatalog.lua.
+-- slot: head | torso | hand (the bone the piece is authored around).
+local palette=${luaTable(palette)}
+local DIGITS="${PACK_DIGITS}"
+local value={}
+for i=1,#DIGITS do value[string.byte(DIGITS,i)]=i-1 end
+local function digits(s,at,width)
+	local n=0
+	for k=at,at+width-1 do n=n*64+value[string.byte(s,k)] end
+	return n
+end
+local function unpack(verts,faces,meta)
+	local vertices,list={},{}
+	for at=1,#verts,9 do
+		table.insert(vertices,{(digits(verts,at,3)-${PACK_OFFSET})/1000,(digits(verts,at+3,3)-${PACK_OFFSET})/1000,(digits(verts,at+6,3)-${PACK_OFFSET})/1000})
+	end
+	for at=1,#faces,7 do
+		table.insert(list,{digits(faces,at,2),digits(faces,at+2,2),digits(faces,at+4,2),digits(faces,at+6,1)})
+	end
+	meta.vertices,meta.faces=vertices,list
+	return meta
+end
+local packed={}
+local LAZY={__index=function(meta,key)
+	if key~="vertices" and key~="faces" then return nil end
+	local source=packed[meta]
+	if not source then return nil end
+	unpack(source[1],source[2],meta)
+	return rawget(meta,key)
+end}
+local function lazy(verts,faces,meta)
+	meta.lazy=true
+	packed[meta]={verts,faces}
+	return setmetatable(meta,LAZY)
+end
+local shapes={}
+${outfitEntries}
+local function drop(name)
+	local meta=shapes[name]
+	if type(meta)=="table" and packed[meta] then rawset(meta,"vertices",nil); rawset(meta,"faces",nil) end
+end
+return {palette=palette,shapes=shapes,drop=drop,tintIndex=${TINT},tintDarkIndex=${TINT_DARK},tintLightIndex=${TINT_LIGHT},tintDark=0.62,tintLight=0.4}
+`);
 fs.writeFileSync('art/AetherPalette.mtl',palette.map((hex,i)=>`newmtl Shade${i+1}\nKd ${[0,2,4].map(n=>parseInt(hex.slice(n,n+2),16)/255).join(' ')}`).join('\n'));
 fs.writeFileSync('art/PropCatalog.lua','-- Generated by art/generate-props.cjs; shared original geometry.\nlocal palette='+luaTable(palette)+'\nlocal shapes={}\n'+entries+'\n'+iconShapeLua);
 let source=fs.readFileSync('mesh.client.lua','utf8');
@@ -823,4 +895,6 @@ console.log('Icon triangles: '+Object.entries(iconBudget).map(([n,c])=>n+' '+c).
 console.log('World triangles: '+Object.entries(worldShapes).map(([n,d])=>n+' '+d.faces.length).join(', '));
 console.log('Creature triangles: '+Object.entries(creatureShapes).map(([n,d])=>n+' '+d.faces.length).join(', '));
 console.log('Creature total: '+Object.keys(creatureShapes).length+' shapes, '+Object.values(creatureShapes).reduce((t,d)=>t+d.faces.length,0)+' triangles, '+Object.keys(creatureKit.rigs).length+' rigs');
+console.log('Outfit triangles: '+Object.entries(outfitShapes).map(([n,d])=>n+' '+d.faces.length).join(', '));
+console.log('Outfit total: '+Object.keys(outfitShapes).length+' shapes, '+Object.values(outfitShapes).reduce((t,d)=>t+d.faces.length,0)+' triangles');
 console.log('World total: '+Object.keys(worldShapes).length+' shapes, '+Object.values(worldShapes).reduce((t,d)=>t+d.faces.length,0)+' triangles');

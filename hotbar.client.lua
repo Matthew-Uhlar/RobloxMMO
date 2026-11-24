@@ -53,9 +53,14 @@ local STYLE = {
 -- Skyforge theme (UI overhaul, docs/DEPTH-CONTRACT.md §29): when the shared
 -- ReplicatedStorage.AetherUiTheme is present its hotbarStyle() replaces the
 -- colours and sizes above (same keys); glyph tables stay local.
+local IconTheme = nil -- §52: the shared theme's cached vector item icons (the glyphs stay as the fallback)
 do
 	local module = ReplicatedStorage:FindFirstChild("AetherUiTheme")
 	local ok, Theme = pcall(function() return module and require(module) end)
+	if ok and type(Theme) == "table" and type(Theme.icon) == "function" then
+		IconTheme = Theme
+		if type(Theme.useItems) == "function" then Theme.useItems(Data.Items) end
+	end
 	if ok and type(Theme) == "table" and type(Theme.hotbarStyle) == "function" then
 		for key, value in pairs(Theme.hotbarStyle()) do
 			if STYLE[key] ~= nil then STYLE[key] = value end
@@ -194,6 +199,17 @@ local function paint()
 		local glyph, count, swatch = b:FindFirstChild("Glyph"), b:FindFirstChild("Count"), b:FindFirstChild("Swatch")
 		glyph.Text = if def then glyphFor(def) else ""
 		glyph.TextColor3 = if def then rgb(def.color) else STYLE.ivory
+		-- §52: the vector icon replaces the glyph; rebuilt (a cached clone) only when the item changes.
+		if IconTheme and b:GetAttribute("IconItem") ~= (id or "") then
+			b:SetAttribute("IconItem", id or "")
+			local old = b:FindFirstChild("Icon")
+			if old then old:Destroy() end
+			if def then
+				local ok, icon = pcall(IconTheme.icon, b, def, math.floor(b.AbsoluteSize.X > 0 and b.AbsoluteSize.X * 0.74 or STYLE.slot * 0.74))
+				if ok and icon then icon.ZIndex = 2 end
+			end
+		end
+		glyph.Visible = not (IconTheme and def and b:FindFirstChild("Icon"))
 		local n = if def then tonumber(S.items[id]) or 0 else 0
 		count.Text = if n > 1 and not Held.holdable(id) then tostring(n) else ""
 		swatch.BackgroundColor3 = if def then rgb(def.color):Lerp(STYLE.deep, 0.55) else STYLE.raised

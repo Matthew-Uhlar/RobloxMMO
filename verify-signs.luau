@@ -221,7 +221,9 @@ ok(#signs >= 80, "signs across the world (" .. #signs .. ")")
 -- Billboard style: framed, themed, distinct from NPC nameplates, readable.
 ------------------------------------------------------------------------------
 local npcSource = fs.readFile("npc.server.lua")
-ok(npcSource:find('"Nameplate"', 1, true) and npcSource:find("GothamBold", 1, true), "NPC nameplates: a dark Gotham strip named Nameplate")
+-- §52: the NPC nameplate is a dark rounded Builder Sans strip ("Nameplate" / "Plate"), not a plaque.
+ok(npcSource:find('"Nameplate"', 1, true) and npcSource:find("BuilderSansExtraBold", 1, true) and not npcSource:find("Merriweather", 1, true),
+	"NPC nameplates: a dark Builder Sans strip named Nameplate (signs keep Merriweather plaques)")
 local function find(root, name) return root:FindFirstChild(name) end
 -- Which forms a label renders in: "full" (scale >= DETAIL), "compact" or both.
 local function formsOf(label, gui)
