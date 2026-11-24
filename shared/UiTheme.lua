@@ -857,6 +857,21 @@ function Theme.hudLayout(w, h, opts)
 			end
 		end
 	end
+	-- §49 QC L8: the Runebinding pouch chip (runes.client.lua). Desktop: above
+	-- the action bar's left end (the heart chip owns the right of the hotbar or
+	-- the action bar's right end); touch: the heart chip's row, from the band's
+	-- right end, lifted over the spell / prayer bars like the heart chip.
+	do
+		local ph = 26
+		if touch then
+			local hc = L.heartChip
+			local pw = math.max(0, math.min(200, L.band.x + L.band.w - (hc.x + hc.w + 6)))
+			L.pouchChip = {x = L.band.x + L.band.w - pw, y = hc.y + math.floor((hc.h - ph) / 2), w = pw, h = ph}
+		else
+			local pw = math.min(220, math.floor(L.action.w / 2) - 8)
+			L.pouchChip = {x = L.action.x, y = L.action.y - 6 - ph, w = math.max(0, pw), h = ph}
+		end
+	end
 	return L
 end
 -- Reduced motion: Settings › Reduced motion (IsleSettingReducedMotion) or the

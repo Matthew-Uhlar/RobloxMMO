@@ -430,6 +430,10 @@ P.STOOP_GRAB = merge(P.STOOP, {rightArm = {30, 0, 4}, rightElbow = {16}, waist =
 P.STOW = {rightArm = {48, 30, 0}, rightElbow = {108}, leftArm = {10, 0, -10}, leftElbow = {20}, waist = {-4, 0, 0}, neck = {-8}}
 P.ATTUNE_REACH = {rightArm = {118, 8, 14}, rightElbow = {16}, rightWrist = {-30}, leftArm = {24, 0, -20}, leftElbow = {20}, waist = {4, 0, 0}, neck = {10}}
 P.ATTUNE_PUSH = merge(P.ATTUNE_REACH, {rightArm = {126, 8, 14}, rightElbow = {4}, waist = {6, 0, 0}, neck = {14}})
+-- §49 Runebinding: cup the shards at the chest, then thrust both palms at the altar.
+P.BIND_GATHER = {rightArm = {44, 18, 0}, rightElbow = {72}, leftArm = {44, -18, 0}, leftElbow = {72}, waist = {-10, 0, 0}, neck = {-8}}
+P.BIND_RISE = {rightArm = {70, 14, 0}, rightElbow = {50}, leftArm = {70, -14, 0}, leftElbow = {50}, waist = {-4, 0, 0}, neck = {2}}
+P.BIND_RELEASE = {rightArm = {112, 10, 0}, rightElbow = {8}, leftArm = {112, -10, 0}, leftElbow = {8}, waist = {6, 0, 0}, neck = {12}}
 P.READ = {rightArm = {44, 16, 0}, rightElbow = {96}, leftArm = {44, -16, 0}, leftElbow = {96}, waist = {-6, 0, 0}, neck = {-20}}
 P.READ_TURN = merge(P.READ, {rightArm = {52, 36, 0}, rightElbow = {70}, neck = {-18, 6, 0}})
 P.SHADE = {rightArm = {150, 40, 0}, rightElbow = {132}, waist = {2, 0, 0}, neck = {6, 30, 0}}
@@ -599,6 +603,10 @@ Core.GESTURES = {
 	attune = {fx = "attune",
 		loop = {key(0, REST), key(0.24, P.ATTUNE_REACH, "quadOut"), key(0.5, P.ATTUNE_PUSH, "sineInOut", "impact"), key(0.8, P.ATTUNE_PUSH, "sineInOut"),
 			key(1.1, REST, "quadInOut")}},
+	-- §49 Binding Altars: gather the shards at the chest, rise, release into the altar (rune sparks).
+	bind = {fx = "bind",
+		loop = {key(0, REST), key(0.3, P.BIND_GATHER, "quadOut"), key(0.62, P.BIND_RISE, "sineInOut"), key(0.8, P.BIND_RELEASE, "backOut", "impact"),
+			key(1.1, P.BIND_RELEASE, "sineInOut"), key(1.45, REST, "quadInOut")}},
 	read = {
 		loop = {key(0, REST), key(0.24, P.READ, "quadOut"), key(0.6, P.READ_TURN, "sineInOut", "impact"), key(0.84, P.READ, "sineInOut"), key(1.2, REST, "quadInOut")}},
 	survey = {
@@ -757,7 +765,11 @@ Core.ACTION_GESTURE = {fight = "attack", worker = "hammer", workerBuild = "hamme
 	altarPray = "pray", moteShrine = "pray", altarOffer = "offer", bossSigil = "offer",
 	moteCollect = "pickup", thieve = "pilfer",
 	logsBoard = "read", lecternVisit = "read", raidPortal = "read", factionBoard = "talk",
-	gardenOpen = "read", gardenPlot = "tend"}
+	gardenOpen = "read", gardenPlot = "tend",
+	-- §49 Runebinding: altars bind, waygates / the Shardgate / the Rift entry attune,
+	-- the Rift workbench hammers, the guardian portals take an offering.
+	runeAltar = "bind", rbGate = "attune", rbWaygate = "attune", rbTravel = "attune", riftJoin = "attune",
+	riftShape = "hammer", riftCharge = "offer"}
 -- Per-item refinements (the garden's composter lid, its visiting traders).
 Core.ITEM_GESTURE = {gardenOpen = {composter = "open", visitor = "talk", ledger = "read"}}
 -- Garden plots do whatever the plot needs (plant, water, harvest, treat): the
@@ -1781,6 +1793,7 @@ local FX_STYLE = {
 	coins = {count = 0.6, speed = 6, size = 0.2, material = Enum.Material.Neon, colour = "F6C453", up = true},
 	water = {count = 1, speed = 5, size = 0.2, material = Enum.Material.Glass, colour = "9FD8FF"},
 	attune = {count = 1, speed = 5, size = 0.26, material = Enum.Material.Neon, colour = "7FE6FF", up = true, float = true},
+	bind = {count = 1.2, speed = 6, size = 0.24, material = Enum.Material.Neon, colour = "C38BFF", up = true, float = true}, -- §49 rune sparks
 	glint = {count = 0.5, speed = 3, size = 0.22, material = Enum.Material.Neon, colour = "FFF4C8", float = true},
 }
 Core.FX_STYLE = FX_STYLE

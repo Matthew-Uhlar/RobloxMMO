@@ -2172,6 +2172,10 @@ local function skillUnlocks(skill,level)
 	if skill=="Beaconry" and type(Data.Beaconry)=="table" and type(Data.Beaconry.unlocks)=="function" then
 		for _,u in ipairs(Data.Beaconry.unlocks()) do add(u.level,escape(u.text),u.item) end
 	end
+	-- Runebinding (§49): altars, multiples, combination runes, pouches and the Glyph Rift.
+	if skill=="Runebinding" and type(Data.Runebinding)=="table" and type(Data.Runebinding.unlocks)=="function" then
+		for _,u in ipairs(Data.Runebinding.unlocks()) do add(u.level,escape(u.text),u.item) end
+	end
 	local bag=tbl(Data.AccessoryBag)
 	if skill==tbl(bag.slotsPerLevel).skill and num(tbl(bag.slotsPerLevel).every,0)>0 then
 		local every=bag.slotsPerLevel.every
@@ -3081,12 +3085,41 @@ function Pages.drawSpellbook()
 		local kindText=spell.kind=="damage" and ((spell.element or "").." element  ·  "..(spell.tier or "").." tier") or ({snare="Snare",heal="Heal",teleport="Teleport"})[spell.kind] or spell.kind
 		local lines={}
 		local costs={}
+		-- §49 QC L9: each glyph is coloured by whether the rune pay plan (its rune,
+		-- the glyph, a combination rune, an Astral / Crown wildcard) covers it, and
+		-- the plan's actual payers are listed.
+		local RBd=type(Data.Runebinding)=="table" and Data.Runebinding or nil
+		local supplies={}
+		for id,n in pairs(tbl(lo.supplies)) do supplies[id]=n end
+		local need={}
+		for _,c in ipairs(CB.costs(spell,wielding and weapon or nil)) do if not c.free then need[c.id]=c.n end end
+		local plan=RBd and next(need) and RBd.payPlan(need,supplies) or nil
 		for _,c in ipairs(CB.costs(spell,wielding and weapon or nil)) do
 			local have=num(lo.supplies[c.id],count("items",c.id))
+			local covered=have>=c.n or (RBd~=nil and RBd.payPlan({[c.id]=c.n},supplies)~=nil)
+			if plan then covered=true end
 			table.insert(costs,c.free and paint(c.n.." "..escape(itemName(c.id)).." (free from staff)","9EE7D2")
-				or paint(c.n.." "..escape(itemName(c.id)),have>=c.n and itemHex(c.id) or "E8806A")..paint(" ("..fmt(have)..")","A9BDC1"))
+				or paint(c.n.." "..escape(itemName(c.id)),covered and itemHex(c.id) or "E8806A")..paint(" ("..fmt(have)..")","A9BDC1"))
 		end
 		table.insert(lines,paint("✦ "..num(spell.mana,0).." mana","9FC3FF").."  ·  "..(#costs>0 and table.concat(costs,"  +  ") or "no glyphs"))
+		if RBd and next(need) then
+			if plan then
+				local payers={}
+				for id,n in pairs(plan) do table.insert(payers,{id=id,n=n}) end
+				table.sort(payers,function(a,b) return itemName(a.id)<itemName(b.id) end)
+				local text={}
+				for _,e in ipairs(payers) do table.insert(text,paint(e.n.." "..escape(itemName(e.id)),itemHex(e.id))) end
+				table.insert(lines,paint("Next cast pays: ","C9A8FF")..table.concat(text,", "))
+			else
+				local runes={}
+				for id in pairs(need) do
+					local rune=tbl(RBd.GlyphRune)[id]
+					if rune then table.insert(runes,escape(itemName(rune))) end
+				end
+				table.sort(runes)
+				table.insert(lines,paint("Short of reagents. ","E8806A")..(#runes>0 and ("Runes that pay: "..table.concat(runes,", ")..", combination runes holding the element, ") or "")..paint("Astral (any element) / Crown (any catalyst)","A9BDC1"))
+			end
+		end
 		if spell.kind=="damage" then
 			local now=CB.spellDamage(spell,stats,wielding and weapon or nil,magic)
 			table.insert(lines,"Damage "..fmt(num(spell.damage,0)).." + weapon power, × (1 + Intelligence/100 × "..num(spell.scaling,0)..")"..(now and ("  ·  now ≈ "..paint(fmt(now),"FFD24A")) or ""))
@@ -5243,7 +5276,7 @@ end
 function U.commodities(group)
 	local list={}
 	for id,def in pairs(tbl(Data and Data.Items)) do
-		if type(def)=="table" and (def.kind=="resource" or def.kind=="material") then
+		if type(def)=="table" and (def.kind=="resource" or def.kind=="material") and not def.carry then -- §49: carried shards never trade
 			local own=def.kind=="resource" and type(Data.ResourceSkill)=="table" and Data.ResourceSkill[id] or "Materials"
 			if own==group then table.insert(list,id) end
 		end
@@ -10346,6 +10379,7 @@ local SETTINGS={
 	{attr="IsleSettingXpDrops",title="XP drops",detail="Floating +XP counters and the skill progress toast when you gain experience.",default=true},
 	{attr="IsleSettingMinimap",title="Minimap",detail="The top-left minimap with region name and coordinates (its Map button folds the map away).",default=true},
 	{attr="IsleSettingReducedMotion",title="Reduced motion",detail="XP drops and level-up banners appear in place instead of sliding and scaling.",default=false},
+	{attr="IsleSettingFlashing",title="Flashing effects",detail="Lightning flashes and bolts during storms. Always off while Reduced motion is on.",default=true}, -- §50 QC L6
 }
 -- The live value of a setting (the HUD's Pin button and closing the satchel
 -- change IsleSettingPinSatchel too, so a toggle never acts on a stale card).
@@ -11016,6 +11050,7 @@ UI.relay={equip=true,unequip=true,consume=true,sell=true,accessory=true,petAdopt
 	helperPin=true,goalSet=true,goalRemove=true,goalClear=true,priceCheck=true, -- §33
 	prayerQuickToggle=true, -- §34
 	heartAbility=true, -- §46 hearts.client.lua: the ability key G / HUD chip (the server checks the cooldown)
+	rbTravel=true,riftLeave=true, -- §49 runes.client.lua: the Waygate picker and the Rift HUD's Leave (the server checks the waygate, level and region)
 	tutorial=true, -- §43 coach cards (tutorial.client.lua): dismiss / next / skip / replay / tips (sent by UI.tutorialSend: no queue / gap)
 	raidHost=true,raidJoin=true,raidLeave=true,raidReady=true,raidChallenge=true,raidStart=true,raidUse=true,raidTitle=true} -- §38 raid.client.lua (party board, raid HUD, Raid Log). §34 quick-prayer orb (one atomic verb, queued, never dropped). Earlier: quantity picker (features.client.lua), Resonance, Path rewards
 local remote = ReplicatedStorage:WaitForChild("IsleAction")

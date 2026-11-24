@@ -3,9 +3,11 @@
 --   Workspace.Islands (IslandCenter / IslandRadius), a title card fades in
 --   with the island name (IsleTitle), its epithet and the region line
 --   (RegionTitle · RegionEpithet) in the region's accent colour.
--- * Ambience: one local emitter that follows the camera, styled by the
---   island's Ambience attribute (pollen, embers, spores...), plus an optional
---   looped Sound when AmbientSound names an asset (hook; empty by default).
+-- * Ambience: an optional looped Sound when the island's AmbientSound names
+--   an asset (hook; empty by default). The island's particles (its Ambience
+--   attribute: pollen, embers, spores...) are drawn by the §50 ambience layer
+--   (ambience.client.lua, one palette in shared/Ambience.lua, counted in its
+--   emitter cap); this script no longer runs a second camera emitter.
 -- * Spin: parts tagged RegionSpin (the Sunwheel sails) turn locally about
 --   their look axis at SpinRate rad/s within SPIN_RANGE studs (the forge's
 --   landmark distance: 1,200 desktop / 900 phone, so a forged sail never
@@ -16,18 +18,6 @@ local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local Tags = game:GetService("CollectionService")
 local player = Players.LocalPlayer
-
-local AMBIENCE = {
-	motes = {color = "FFE9B0", rate = 6, speed = 1, size = .18, drift = Vector3.new(0, .4, 0)},
-	pollen = {color = "FFF3A0", rate = 10, speed = 1.2, size = .14, drift = Vector3.new(.6, .2, 0)},
-	embers = {color = "FF8A3D", rate = 12, speed = 2.4, size = .16, drift = Vector3.new(0, 1.6, 0), glow = 1},
-	wind = {color = "E6F4FF", rate = 8, speed = 6, size = .1, drift = Vector3.new(5, 0, 1)},
-	leaves = {color = "9BD18B", rate = 7, speed = 1.6, size = .3, drift = Vector3.new(1, -.8, .4)},
-	spores = {color = "B59CFF", rate = 10, speed = .8, size = .2, drift = Vector3.new(0, .5, 0), glow = 1},
-	spray = {color = "DFF8FF", rate = 9, speed = 1.5, size = .22, drift = Vector3.new(.8, .3, 0)},
-	sparks = {color = "BFD7FF", rate = 9, speed = 4, size = .12, drift = Vector3.new(0, -.5, 3), glow = 1},
-	glints = {color = "F2D27A", rate = 7, speed = 1, size = .16, drift = Vector3.new(0, .6, 0), glow = 1},
-}
 
 ------------------------------------------------------------------------------
 -- Banner.
@@ -79,28 +69,17 @@ local function show(model)
 end
 
 ------------------------------------------------------------------------------
--- Ambience (one local emitter at the camera).
+-- Ambience sound (the particles are §50's, ambience.client.lua).
 ------------------------------------------------------------------------------
 local anchorPart = Instance.new("Part")
 anchorPart.Name, anchorPart.Anchored, anchorPart.CanCollide, anchorPart.CanQuery, anchorPart.CanTouch = "RegionAmbience", true, false, false, false
-anchorPart.Transparency, anchorPart.Size = 1, Vector3.new(60, 24, 60)
-local emitter = Instance.new("ParticleEmitter")
-emitter.Name, emitter.Enabled, emitter.Shape, emitter.ShapeStyle = "Ambience", false, Enum.ParticleEmitterShape.Box, Enum.ParticleEmitterShapeStyle.Volume
-emitter.Lifetime, emitter.Transparency = NumberRange.new(4, 7), NumberSequence.new(.2, 1)
-emitter.Parent = anchorPart
+anchorPart.Transparency, anchorPart.Size = 1, Vector3.new(1, 1, 1)
 local sound = Instance.new("Sound")
 sound.Name, sound.Looped, sound.Volume = "Ambience", true, .35
 sound.Parent = anchorPart
 anchorPart.Parent = workspace.CurrentCamera or workspace
 local function ambience(model)
-	local kind = model and model:GetAttribute("Ambience")
-	local style = type(kind) == "string" and AMBIENCE[kind]
-	if not style then emitter.Enabled = false; sound:Stop(); return end
-	emitter.Color = ColorSequence.new(Color3.fromHex(style.color))
-	emitter.Rate, emitter.Speed = style.rate, NumberRange.new(style.speed * .5, style.speed)
-	emitter.Size, emitter.LightEmission = NumberSequence.new(style.size), style.glow or .3
-	emitter.Acceleration, emitter.SpreadAngle = style.drift, Vector2.new(180, 180)
-	emitter.Enabled = true
+	if not model then sound:Stop(); return end
 	local id = model:GetAttribute("AmbientSound")
 	if type(id) == "string" and id ~= "" then
 		if sound.SoundId ~= id then sound.SoundId = id end

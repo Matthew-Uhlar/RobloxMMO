@@ -136,8 +136,76 @@ local function write(field, value)
 	t[1][t[2]] = value
 	Director.written[field] = value
 end
+------------------------------------------------------------------------------
+-- Weather (§50): the server's IsleWeather attribute (one string, a
+-- deterministic schedule; shared/Ambience.lua writes it, L.parseWeather reads
+-- it) names a state per region; it is read when it changes
+-- (GetAttributeChangedSignal; a poll only where that signal is missing). Its
+-- deltas (L.WEATHER) ease in over L.WEATHER_TAU on top of the region look:
+-- rain / storm dim the sun, thicken the haze and raise
+-- EnvironmentSpecularScale (wet sheen). Entering or leaving an interior snaps
+-- the deltas (QC M5: no storm haze bleeding into a lair). Lightning (QC H2):
+-- strikes come from the same deterministic schedule (AetherAmbience
+-- A.strikes) on server time, so every client flashes on the same frame with no
+-- network latency; the flash obeys the region, reduced motion and the
+-- "Flashing effects" setting, and is softer at night (QC L6).
+------------------------------------------------------------------------------
+local Ambience
+do
+	local ok, module = pcall(function() return require(ReplicatedStorage:WaitForChild("AetherAmbience")) end)
+	if ok and type(module) == "table" then Ambience = module end
+end
+local Weather = {text = nil, parsed = nil, state = "Clear", delta = {}, flash = 0, interior = nil, flashing = true,
+	cursor = Ambience and Ambience.newStrikeCursor() or nil, watched = false}
+Director.weather = Weather -- read by the headless suites
+local function reducedMotion()
+	if player:GetAttribute("IsleSettingReducedMotion") == true then return true end
+	local ok, on = pcall(function() return game:GetService("GuiService").ReducedMotionEnabled end)
+	return ok and on == true
+end
+function Weather.readText()
+	local text = workspace:GetAttribute(L.WEATHER_ATTR)
+	if text ~= Weather.text then
+		Weather.text = text
+		Weather.parsed = L.parseWeather(text)
+	end
+end
+Weather.watched = pcall(function()
+	workspace:GetAttributeChangedSignal(L.WEATHER_ATTR):Connect(Weather.readText)
+end)
+Weather.readText()
+-- 4 Hz: the state for the current context, the flashing permission, M5 snap.
+function Weather.resolve()
+	if not Weather.watched then Weather.readText() end
+	local key = Director.key or L.DEFAULT_KEY
+	Weather.state = L.weatherFor(Weather.parsed, key)
+	Weather.flashing = L.flashingAllowed(player:GetAttribute(L.FLASHING_ATTR), reducedMotion())
+	local interior = L.Profiles[key] ~= nil and L.Profiles[key].interior == true
+	if interior ~= Weather.interior then
+		if Weather.interior ~= nil then L.blendWeather(Weather.delta, Weather.state, 1) end
+		Weather.interior = interior
+	end
+end
+Weather.read = Weather.resolve
 local function applyState(state)
-	for _, f in ipairs(L.FIELDS) do write(f.key, state[f.key]) end
+	for _, f in ipairs(L.FIELDS) do
+		local v = state[f.key]
+		if Weather.flash > 0 and f.key == "ExposureCompensation" then v = L.flashExposure(v, Weather.flash, L.dayFactor(Director.clock)) end
+		write(f.key, v)
+	end
+end
+-- Per frame, only in a storm: the flash outruns the 15 Hz blend.
+function Weather.flashStep()
+	if Director.state == nil or not Weather.cursor then return end
+	local f = 0
+	if Weather.state == "Storm" and Weather.flashing then
+		local t = now()
+		local at = Ambience.lastStrike(Weather.cursor, t, Director.key or L.DEFAULT_KEY)
+		if at then f = L.flashAt(t - at) end
+	end
+	if f <= 0 and Weather.flash <= 0 then return end
+	Weather.flash = f
+	write("ExposureCompensation", L.flashExposure(Director.state.ExposureCompensation, f, L.dayFactor(Director.clock)))
 end
 local function applyTier(tierName)
 	local tier = L.Tiers[tierName]
@@ -148,7 +216,7 @@ end
 ------------------------------------------------------------------------------
 -- Context (which profile) with a hold against flicker on bridges.
 ------------------------------------------------------------------------------
-local HOLD = 0.6 -- seconds a new outdoor context must persist before it blends in
+local HOLD = L.CONTEXT_HOLD or 0.6 -- seconds a new outdoor context must persist before it blends in (shared with §50, QC L4)
 local function rootPosition()
 	local character = player.Character
 	local root = character and character:FindFirstChild("HumanoidRootPart")
@@ -550,7 +618,9 @@ function Director.step(dt)
 		if tier ~= Director.tier then Director.tier = tier; applyTier(tier); lightAcc = LIGHT_STEP end
 		if Lights.dirty then lightAcc = LIGHT_STEP end -- a LightWanted / LightHero change applies at once
 		updateContext(clockT)
+		Weather.read()
 	end
+	Weather.flashStep()
 	if acc < STEP then return end
 	local frame = acc
 	acc = 0
@@ -562,6 +632,7 @@ function Director.step(dt)
 		Director.written.ClockTime = sky
 	end
 	local target = L.target(Director.key or L.DEFAULT_KEY, clock, Director.tier)
+	L.applyWeather(target, L.blendWeather(Weather.delta, Weather.state, L.alphaFor(frame, L.WEATHER_TAU)))
 	if Director.state == nil then
 		Director.state = target
 	else

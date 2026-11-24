@@ -14,7 +14,8 @@
       "AetherLighting": { "$path": "shared/LightingProfiles.lua" },
       "AetherSignView": { "$path": "shared/SignView.lua" },
       "AetherCreatureArt": { "$path": "art/CreatureCatalog.lua" },
-      "AetherCreatureRules": { "$path": "shared/CreatureRules.lua" }
+      "AetherCreatureRules": { "$path": "shared/CreatureRules.lua" },
+      "AetherAmbience": { "$path": "shared/Ambience.lua" }
     },
     "ServerStorage": {
       "AetherTrails": { "$path": "trails.lua" }
@@ -32,7 +33,8 @@
       "Minigames": { "$path": "minigames.server.lua" },
       "Lairs": { "$path": "lairs.server.lua" },
       "Beaconry": { "$path": "beaconry.server.lua" },
-      "Raids": { "$path": "raids.server.lua" }
+      "Raids": { "$path": "raids.server.lua" },
+      "Weather": { "$path": "weather.server.lua" }
     },
     "StarterPlayer": {
       "StarterPlayerScripts": {
@@ -58,7 +60,9 @@
         "IsleBeacons": { "$path": "beacons.client.lua" },
         "SignView": { "$path": "signs.client.lua" },
         "IsleHearts": { "$path": "hearts.client.lua" },
-        "IsleCreatures": { "$path": "creatures.client.lua" }
+        "IsleCreatures": { "$path": "creatures.client.lua" },
+        "IsleAmbience": { "$path": "ambience.client.lua" },
+        "IsleRunes": { "$path": "runes.client.lua" }
       }
     },
     "Lighting": {

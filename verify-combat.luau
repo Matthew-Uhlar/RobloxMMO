@@ -1442,6 +1442,54 @@ do
 	ok(tr.contributors[brute].xp.melee > 0, "melee damage accrued on the monster")
 	print("PASS: " .. (checks - stylesBefore) .. " ranged combat assertions.")
 end
+-- §49 Runebinding (QC test gap): runes pay for casts through the combat bridge.
+do
+	local before = checks
+	local w = world()
+	local L = w.logic
+	local marker = L.addMarker("runeboar", "BramblebackBoar", 1, origin)
+	L.dueSpawns()
+	local target = model("runeboar")
+	local r = L.register(marker, target, Vector3.new(0, 1, 0), {radius = 2})
+	r.maxHp, r.hp = 1e9, 1e9
+	local mage = w.player("runemage", Vector3.new(30, 1, 0), {stats = styleStats({intelligence = 500})})
+	local lo = {style = "magic", weapon = "MeadowWand", levels = {Combat = 1, Ranged = 1, Magic = 99}, supplies = {}, ammoCount = 0}
+	w.stats[mage].loadout = lo
+	local function give(t) lo.supplies = table.clone(t); w.inv[mage] = table.clone(t) end
+	local function lastPaid()
+		local last
+		for _, c in ipairs(w.calls) do if c.op == "consume" and c.player == mage then last = c end end
+		return last and last.payload.items
+	end
+	local function same(a, b, case)
+		for k, v in pairs(a or {}) do eq(b and b[k], v, case .. " " .. k) end
+		for k, v in pairs(b or {}) do eq(a and a[k], v, case .. " " .. k) end
+	end
+	give({GaleRune = 1, SparkRune = 1})
+	ok(L.cast(mage, "cast", target, "GaleDart") ~= nil, "a Gale Dart paid in runes")
+	same(lastPaid(), {GaleRune = 1, SparkRune = 1}, "runes paid through the bridge")
+	eq(w.inv[mage].GaleRune, 0, "the Gale Rune left the satchel")
+	w.clock += 1
+	give({MistRune = 2, CrownRune = 1})
+	ok(L.cast(mage, "cast", target, "GaleDart") ~= nil, "a combination rune and a Crown wildcard pay a cast")
+	same(lastPaid(), {MistRune = 1, CrownRune = 1}, "Mist pays the Gale glyph, Crown the catalyst")
+	w.clock += 1
+	give({AstralRune = 1, SparkGlyph = 1})
+	ok(L.cast(mage, "cast", target, "GaleDart") ~= nil, "an Astral wildcard pays the element")
+	same(lastPaid(), {AstralRune = 1, SparkGlyph = 1}, "Astral + the glyph catalyst")
+	w.clock += 1
+	local calls = #w.calls
+	give({SparkRune = 1})
+	eq(select(2, L.cast(mage, "cast", target, "GaleDart")), "glyphs", "no Gale reagent: refused")
+	local consumed = 0
+	for i = calls + 1, #w.calls do if w.calls[i].op == "consume" then consumed += 1 end end
+	eq(consumed, 0, "a refused cast never reaches the bridge")
+	lo.weapon = "MeadowStaff"
+	give({SparkRune = 1})
+	ok(L.cast(mage, "cast", target, "GaleDart") ~= nil, "a Gale staff covers the element")
+	same(lastPaid(), {SparkRune = 1}, "only the catalyst rune is spent with the staff")
+	print("PASS: " .. (checks - before) .. " rune-paid cast assertions (§49).")
+end
 -- Spells, mana, cooldowns, utility spells.
 do
 	local before = checks

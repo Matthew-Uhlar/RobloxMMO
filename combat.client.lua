@@ -293,7 +293,11 @@ local function affordable(spell)
 	if not unlocked(spell) then return false, "level" end
 	if spell.requiresWeapon and currentStyle() ~= "magic" then return false, "weapon" end
 	if mana() < (tonumber(spell.mana) or 0) then return false, "mana" end
-	for id, n in pairs(glyphCost(spell)) do
+	local costs = glyphCost(spell)
+	-- §49 Runebinding: runes (and combination / wildcard runes) pay for glyphs.
+	local RB = Data and Data.Runebinding
+	if RB and RB.payPlan and next(costs) then costs = RB.payPlan(costs, S.loadout.supplies) or costs end
+	for id, n in pairs(costs) do
 		if (tonumber(S.loadout.supplies[id]) or 0) < n then return false, "glyphs" end
 	end
 	return true, nil

@@ -213,6 +213,8 @@ local Feats={verbs={featClaim=true,featTeleport=true,featsSync=true},tpAt={}}
 local Contests={verbs={contestEnter=true,contestBuy=true,contestTitle=true,trophyBait=true,trophyClaim=true,trophyTitle=true}}
 -- Gathering Hearts (§46: Heart of the Deep, Rootheart, Loamheart); filled in by the Hearts block after the Gathering Feel section.
 local Hearts={verbs={heartPerk=true,heartRespec=true,heartAbility=true},next={},seq={}}
+-- Runebinding (§49: shards, altars, pouches, combination runes, the Glyph Rift); filled in by the Runebinding block before perform().
+local Runebinding={verbs={runeAltar=true,rbIntro=true,rbGate=true,rbWaygate=true,rbTravel=true,rbCombo=true,pouchRepair=true,riftJoin=true,riftLeave=true,riftShape=true,riftCharge=true,riftBuy=true},gseq={}}
 -- One-time coins for each newly reached skill level.
 local function levelCoins(p,skill,newLevel)
 	p.levelRewards=p.levelRewards or {}
@@ -4664,6 +4666,7 @@ local function snapshot(player,message)
 		minigames=Minigames.state(player,p), -- Minigames: Hunt > Minigames page state
 		crafting=Crafting.state and Crafting.state(player,p), -- Crafting: Workshop › Crafting page state
 		beaconry=Beaconry.state and Beaconry.state(player,p), -- Beaconry (§37): Workshop › Beaconry page state
+		runebinding=Runebinding.state and Runebinding.state(player,p), -- Runebinding (§49): carry, pouches, Rift points, the Glyph Rift round
 		lairs=Lairs.state and Lairs.state(player,p), -- Lairs: Hunt › Bosses (kill counts, personal bests, uniques)
 		raids=Raids.state and Raids.state(player,p), -- Raids (§38): Raid Log (KC, PBs, uniques, points records, titles)
 		feats=Feats.state and Feats.state(player,p), -- Combat Feats (§45): Menu › Feats (points, tier, done, counters, claims, teleports)
@@ -4768,6 +4771,7 @@ local function migrate(profile)
 	Logs.migrate(profile) -- Commissions & Logs: board, Glimmerdust, Forgeheart, log (retroactive on first load), museum
 	if Crafting.migrate then Crafting.migrate(profile) end -- Crafting: p.crafting {made, shattered}
 	if Beaconry.migrate then Beaconry.migrate(profile) end -- Beaconry (§37): p.beaconry, quest flags
+	if Runebinding.migrate then Runebinding.migrate(profile) end -- Runebinding (§49): p.runebinding, quest flags
 	Explore.migrate(profile) -- Exploration & Factions: p.motes, p.factions, p.perkStats.motes
 	if Lairs.migrate then Lairs.migrate(profile) end -- Lairs: kill counts, personal bests, uniques
 	if Raids.migrate then Raids.migrate(profile) end -- Raids (§38): p.raids Raid Log
@@ -4867,6 +4871,7 @@ local function forget(player)
 	SlayerTasks.forget(player) -- Slayer tasks: superior tickets
 	if Crafting.forget then Crafting.forget(player) end -- Crafting: batch job and station visit (session-only)
 	if Beaconry.forget then Beaconry.forget(player) end -- Beaconry (§37): cooking job, kindle cooldown (fires keep burning)
+	if Runebinding.forget then Runebinding.forget(player) end -- Runebinding (§49): Rift membership, bind cadence (travel cooldowns outlive a rejoin)
 	local set=userSessions[player.UserId]
 	if set then
 		set[player]=nil
@@ -5036,7 +5041,7 @@ do
 		local perks=Progression.masteryCombat(p,os.time())
 		for id,n in pairs(table.clone(cost)) do
 			local def=Data.Items[id]
-			local chance=if def.category=="ammo" then perks.ranged.arrowSave elseif def.category=="glyph" then perks.magic.glyphSave else 0
+			local chance=if def.category=="ammo" then perks.ranged.arrowSave elseif def.category=="glyph" or def.category=="rune" then perks.magic.glyphSave else 0 -- §49: runes are glyphs for Ink Thrift
 			if chance>=100 or (chance>0 and roll()<chance/100) then
 				saved[id]=n
 				cost[id]=nil
@@ -11129,6 +11134,8 @@ local function perform(player,verb,item,prompt)
 		return Crafting.action(player,p,verb,item,prompt) -- Crafting: stations, batches
 	elseif Beaconry.verbs[verb] then
 		return Beaconry.action(player,p,verb,item,prompt) -- Beaconry (§37): kindle, campfire cooking, beacons, weekly claim
+	elseif Runebinding.verbs[verb] then
+		return Runebinding.action(player,p,verb,item,prompt) -- Runebinding (§49): altars, waygates, pouches, combinations, the Glyph Rift
 	elseif Mastery.verbs[verb] then
 		return Mastery.action(player,p,verb,item) -- Skill Mastery
 	elseif Garden.verbs[verb] then
@@ -11412,6 +11419,7 @@ local function perform(player,verb,item,prompt)
 		-- The bag check first: isEquipped also counts bagged accessories.
 		if table.find(p.accessoryBag,item) then return "Take "..def.name.." out of your accessory bag first." end
 		if isEquipped(p,item) then return "Unequip "..def.name.." before dropping it." end
+		if def.untradeable then return def.name.." is bound to your journal: it cannot be dropped." end -- §49 QC M3
 		-- The last copy of an upgraded item stays (Gear.upgraded); spares go.
 		local keep=if Gear.upgraded(p,item) then 1 else 0
 		if count<=keep then return def.name.." carries upgrades; it cannot be dropped (only spare copies can)." end
@@ -11448,6 +11456,7 @@ local function perform(player,verb,item,prompt)
 		if not def then return "The merchant does not buy that." end
 		local count=p.items[item] or 0
 		if count<1 then return "You have no "..def.name.." to sell." end
+		if def.untradeable then return def.name.." is bound to your journal: the merchant will not buy it." end -- §49 QC M3
 		-- The bag check first: isEquipped also counts bagged accessories.
 		if table.find(p.accessoryBag,item) then return "Take "..def.name.." out of your accessory bag first." end
 		if isEquipped(p,item) then return "Unequip "..def.name.." before selling it." end
@@ -11598,6 +11607,671 @@ action.OnServerInvoke=function(player,verb,item)
 	return snapshot(player,message)
 end
 action.Parent=ReplicatedStorage
+------------------------------------------------------------------------------
+-- >>> BEGIN Runebinding (Runebinding team; docs/DEPTH-CONTRACT.md §49) >>>
+-- Rules and data: Data.Runebinding (shared/GameData.lua). Verbs (IsleAction):
+--   rbIntro                 the Runebinder teaches you (p.rbIntro; opens the Shardhollow)
+--   rbGate        (prompt)  the Shardgate on Compass Quay -> the Shardhollow
+--   rbWaygate     (prompt)  the Shardhollow Waygate: opens the altar picker (attribute RuneWaygate)
+--   rbTravel <altar>        from the picker, within RB.WAYGATE_RANGE of the Waygate
+--   rbTravel Field|Quay (prompt) back to the Shardhollow (altars) / to Compass Quay (the field)
+--   runeAltar <altar> (prompt) bind the shards the altar binds (satchel + pouches), or the
+--                          chosen combination (rbCombo) at its altar while you carry its input rune
+--   rbCombo <combo>|none|lucent|aether  at the Runebinder: the combination to bind; whether it may spend Lucent
+--   pouchRepair             at the Runebinder: mend worn pouches (1 Astral Rune each, else RB.REPAIR_COINS)
+--   riftJoin / riftShape / riftCharge <portal> (prompts), riftLeave, riftBuy <item> (at the Runebinder)
+-- Shard outcrops are §42 struck nodes (StrikeKind "shard", ShardKind <shard id>);
+-- Rift fragment heaps are StrikeKind "riftFragment". Shards fill the satchel
+-- (RB.SATCHEL) then the pouches (p.runebinding.pouch); a full carry refuses
+-- the strike before any damage. Pouches wear once per trip: a bind that empties
+-- pouches which received shards since the last wear (p.runebinding.filled).
+-- The Glyph Rift runs on os.clock (Rift.tick: a 1 s loop, and lazily on every
+-- rift verb and snapshot); round state is session-only; rewards go to members
+-- present and active at the end with at least RB.Rift.MIN_CONTRIB. A shutdown
+-- (Runebinding.drain, BindToClose) settles a running round as a loss. Fails
+-- closed: a missing anchor or travel gate refuses the action.
+-- Published: workspace GlyphRift "phase:secondsLeft:power:goal:low,high:members:round",
+-- player attributes RiftState "frags:essence:contrib" (members), RuneBind
+-- "seq:altar:runes" (VFX for every client), RuneWaygate "<seq>" (picker).
+------------------------------------------------------------------------------
+do
+	local RB=Data.Runebinding
+	local R=RB.Rift
+	local ANCHOR_RETRY=10
+	local function lvl(p) return level(p.xp.Runebinding) end
+	local function setWorld(key,value)
+		pcall(function() if workspace:GetAttribute(key)~=value then workspace:SetAttribute(key,value) end end)
+	end
+	local function push(player,message)
+		if player and player.Parent and profiles[player] then update:FireClient(player,snapshot(player,message)) end
+	end
+	local function rootOf(player)
+		local character=player.Character
+		return character and character:FindFirstChild("HumanoidRootPart")
+	end
+	function Runebinding.migrate(p)
+		p.runebinding=RB.migrate(p.runebinding)
+		for _,flag in ipairs({"rbIntro","rbMined","rbBound","rbCombo","rbRiftWin"}) do
+			if p[flag]~=nil and p[flag]~=true then p[flag]=nil end
+		end
+	end
+	local function journal(p)
+		if type(p.runebinding)~="table" or p.runebinding.v~=RB.VERSION then Runebinding.migrate(p) end
+		return p.runebinding
+	end
+	-- Anchors: altars live under Workspace.Islands (Trails.anchor); the
+	-- Shardhollow is its own model under Workspace.AetherIsles. Hits are kept
+	-- while parented; misses are cached for ANCHOR_RETRY s (QC L1).
+	Runebinding.anchors={}
+	function Runebinding.anchor(name)
+		local hit=Trails.anchor(name)
+		if hit then return hit end
+		local now=os.clock()
+		local cached=Runebinding.anchors[name]
+		if cached then
+			if cached.part and cached.part.Parent then return cached.part end
+			if not cached.part and now<cached.retry then return nil end
+		end
+		local ok,found=pcall(function()
+			local root=workspace:FindFirstChild("AetherIsles")
+			local field=root and root:FindFirstChild(RB.FIELD)
+			return field and field:FindFirstChild("Anchor_"..name,true)
+		end)
+		found=if ok then found else nil
+		Runebinding.anchors[name]={part=found,retry=now+ANCHOR_RETRY}
+		return found
+	end
+	-- true inside `range` of the anchor; false when away OR the anchor is missing (QC L1: fail closed).
+	local function near(player,name,range)
+		local a=Runebinding.anchor(name)
+		local root=rootOf(player)
+		if not a or not root then return false end
+		local okPos,at=pcall(function() return a.CFrame.Position end)
+		if not okPos then return false end
+		return (root.Position-at).Magnitude<=range
+	end
+	local function atMentor(player) return near(player,"NPC_"..RB.MENTOR,RB.MENTOR_RANGE) end
+	local AWAY="Speak to the Runebinder on Compass Quay."
+	local function gesture(player,altar,runes)
+		Runebinding.gseq[player]=(Runebinding.gseq[player] or 0)+1
+		player:SetAttribute("RuneBind",Runebinding.gseq[player]..":"..altar..":"..runes)
+	end
+
+	-- Carrying shards --------------------------------------------------------------
+	function Runebinding.capacity(p)
+		local c=journal(p)
+		return RB.pouchCapacity(p.items,lvl(p),c.wear)
+	end
+	function Runebinding.room(p)
+		local c=journal(p)
+		return math.max(0,RB.SATCHEL-RB.shardsCarried(p.items))+math.max(0,Runebinding.capacity(p)-RB.pouchHeld(c.pouch))
+	end
+	-- Adds up to n shards: the satchel first, then the pouches. Returns satchel, pouched.
+	function Runebinding.addShards(p,id,n)
+		local c=journal(p)
+		local toSatchel=math.min(n,math.max(0,RB.SATCHEL-RB.shardsCarried(p.items)))
+		local toPouch=math.min(n-toSatchel,math.max(0,Runebinding.capacity(p)-RB.pouchHeld(c.pouch)))
+		if toSatchel>0 then pickup(p,id,toSatchel) end
+		if toPouch>0 then
+			c.pouch[id]=(c.pouch[id] or 0)+toPouch
+			c.filled=true
+			HudFeed.push(p,id,toPouch)
+		end
+		c.mined[id]=math.min(RB.MAX_COUNT,(c.mined[id] or 0)+toSatchel+toPouch)
+		return toSatchel,toPouch
+	end
+	-- Takes up to `max` shards of `id` (satchel first, then the pouches).
+	local function takeShards(p,id,max)
+		local c=journal(p)
+		local fromSatchel=math.min(max,math.max(0,p.items[id] or 0))
+		if fromSatchel>0 then p.items[id]-=fromSatchel end
+		local fromPouch=math.min(max-fromSatchel,math.max(0,c.pouch[id] or 0))
+		if fromPouch>0 then
+			c.pouch[id]-=fromPouch
+			if c.pouch[id]<=0 then c.pouch[id]=nil end
+		end
+		return fromSatchel+fromPouch
+	end
+	-- QC M2: one trip = pouches that received shards were emptied (held > 0 -> 0).
+	-- Each wearing pouch in use wears by one; mixed carries (Lucent kept in a
+	-- pouch at a low altar) wear nothing until the pouches are empty.
+	local function settleWear(p,heldBefore)
+		local c=journal(p)
+		if heldBefore<=0 or RB.pouchHeld(c.pouch)>0 or not c.filled then return "" end
+		c.filled=nil
+		local newlyWorn={}
+		for _,e in ipairs(RB.activePouches(p.items,lvl(p),c.wear)) do
+			if e.wear then
+				local before=c.wear[e.id] or 0
+				c.wear[e.id]=math.min(10000,before+1)
+				if before<e.wear and before+1>=e.wear then table.insert(newlyWorn,Data.Items[e.id].name) end
+			end
+		end
+		return if #newlyWorn>0 then "   ·   Worn out: "..table.concat(newlyWorn,", ").." (half capacity; the Runebinder repairs pouches)" else ""
+	end
+
+	-- Struck nodes ---------------------------------------------------------------------
+	Strike.kinds.shard={
+		check=function(player,p,node)
+			if p.rbIntro~=true then return false,"Speak to the Runebinder on Compass Quay before you mine shards." end
+			local s=RB.Shards[node:GetAttribute("ShardKind")]
+			if not s then return false,"That outcrop is dull." end
+			if level(p.xp.Mining)<s.level then return false,s.name.." requires Mining "..s.level.."." end
+			if Runebinding.room(p)<=0 then return false,"Your satchel and pouches are full of shards. Step on the Waygate and bind them at an altar." end
+			return true
+		end,
+		run=function(player,p,node)
+			local id=node:GetAttribute("ShardKind")
+			local s=RB.Shards[id]
+			if not s then return "That outcrop is dull.",false end
+			local yield=s.yield+(if RB.lanternOn(p.accessoryBag) then 1 else 0)
+			local satchel,pouched=Runebinding.addShards(p,id,yield)
+			local got=satchel+pouched
+			if got<=0 then return "Your satchel and pouches are full of shards.",false end
+			local xp=s.miningXp*got
+			grantXp(p,"Mining",xp)
+			p.rbMined=true
+			p.started=true
+			return "+"..got.." "..s.name..(if pouched>0 then " ("..pouched.." into pouches)" else "").."   ·   +"..xp.." Mining XP",true,RB.SHARD_REGROW
+		end,
+	}
+
+	-- The Glyph Rift ---------------------------------------------------------------------
+	local Rift={phase="idle",round=0,members={},count=0,endsAt=0,startedAt=0,power=0}
+	Runebinding.rift=Rift
+	local function present(player)
+		if not player.Parent or not profiles[player] then return false end
+		local humanoid=player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+		if not humanoid or humanoid.Health<=0 then return false end
+		return near(player,"Waypoint_Rift",R.RANGE) -- QC L1: no anchor, nobody present
+	end
+	local function memberAttr(player,m)
+		pcall(function() player:SetAttribute("RiftState",if m then m.frags..":"..m.essence..":"..m.contrib else "") end)
+	end
+	function Rift.portals(now)
+		if Rift.phase~="active" then return nil,nil end
+		return RB.riftPortals(Rift.round,(now or os.clock())-Rift.startedAt)
+	end
+	function Rift.publish(now)
+		local lo,hi=Rift.portals(now)
+		setWorld("GlyphRift",Rift.phase..":"..math.max(0,math.ceil(Rift.endsAt-now))..":"..math.floor(Rift.power)..":"..R.GOAL..":"
+			..(lo or "")..","..(hi or "")..":"..Rift.count..":"..Rift.round)
+	end
+	-- QC M4: Guardian power is shared among members active within R.IDLE.
+	function Rift.activeCount(now)
+		local at=math.min(now,Rift.endsAt)
+		local n=0
+		for _,m in pairs(Rift.members) do if at-m.lastAct<=R.IDLE then n+=1 end end
+		return math.max(1,n)
+	end
+	-- QC L3: the others hear when someone leaves.
+	local function drop(player,why,tellOthers)
+		local m=Rift.members[player]
+		if not m then return end
+		Rift.members[player]=nil
+		Rift.count-=1
+		memberAttr(player,nil)
+		if why then push(player,why) end
+		if tellOthers then
+			local name=tostring(player.Name or "A binder")
+			for other in pairs(Rift.members) do push(other,name.." left the Glyph Rift.") end
+		end
+	end
+	Rift.drop=drop
+	local function finish(now,won)
+		local lines={}
+		for player,m in pairs(Rift.members) do
+			local p=profiles[player]
+			local active=present(player) and math.min(now,Rift.endsAt)-m.lastAct<=R.IDLE -- idleness is judged at the round's end
+			local reward=p and active and RB.riftReward(m.contrib,won,lvl(p)) or nil
+			local message
+			if reward then
+				local c=journal(p)
+				c.points=math.min(RB.MAX_COUNT,c.points+reward.points)
+				c.earned=math.min(RB.MAX_COUNT,c.earned+reward.points)
+				c.rift.rounds+=1
+				if won then c.rift.wins+=1; p.rbRiftWin=true end
+				c.rift.best=math.max(c.rift.best,m.contrib)
+				local caches={}
+				local open={}
+				for _,a in ipairs(RB.Altars) do if lvl(p)>=a.level then table.insert(open,a) end end
+				for _=1,reward.caches do
+					local a=open[math.clamp(math.floor(roll()*#open)+1,1,#open)]
+					local n=math.clamp(R.CACHE_MIN+math.floor(roll()*(R.CACHE_MAX-R.CACHE_MIN+1)),R.CACHE_MIN,R.CACHE_MAX)
+					collect(p,a.rune,n)
+					caches[a.rune]=(caches[a.rune] or 0)+n
+				end
+				if reward.xp>0 then grantXp(p,"Runebinding",reward.xp) end
+				p.started=true
+				local parts={}
+				for id,n in pairs(caches) do table.insert(parts,n.." "..Data.Items[id].name) end
+				table.sort(parts)
+				message=(if won then "The Guardian is sated! " else "The Rift closes. ").."+"..reward.points.." Rift Points"
+					..(if #parts>0 then ", "..table.concat(parts,", ") else "")..(if reward.xp>0 then ", +"..reward.xp.." Runebinding XP" else "")
+			else
+				message=(if won then "The Guardian is sated, " else "The Rift closes, ").."but you gave too little (or wandered off) to share the reward."
+			end
+			m.frags,m.essence,m.contrib=0,0,0
+			memberAttr(player,m)
+			table.insert(lines,{player,message})
+		end
+		Rift.phase="rest"
+		Rift.endsAt=now+R.REST
+		for _,e in ipairs(lines) do push(e[1],e[2]) end
+	end
+	function Rift.tick(now)
+		-- A drop / finish pushes snapshots, whose state reads tick again: never re-enter.
+		if Rift.ticking then return end
+		Rift.ticking=true
+		local ok,err=pcall(Rift.step,now or os.clock())
+		Rift.ticking=false
+		if not ok then error(err,0) end
+	end
+	function Rift.step(now)
+		-- QC M4: absent members leave in every phase (lobby and rest too).
+		for player in pairs(Rift.members) do
+			if not present(player) then drop(player,"You left the Glyph Rift.",true) end
+		end
+		if Rift.phase=="lobby" and now>=Rift.endsAt then
+			if Rift.count==0 then Rift.phase="idle"
+			else
+				Rift.phase,Rift.round,Rift.startedAt,Rift.endsAt,Rift.power="active",Rift.round+1,now,now+R.ROUND,0
+				for player,m in pairs(Rift.members) do
+					m.frags,m.essence,m.contrib,m.lastAct=0,0,0,now
+					memberAttr(player,m)
+					push(player,"The Glyph Rift opens! Mine fragments, shape them at the workbench and charge the open portals.")
+				end
+			end
+		elseif Rift.phase=="active" then
+			-- A late tick (lazy, or a slow server) judges idleness at the round's end, never after it.
+			local at=math.min(now,Rift.endsAt)
+			for player,m in pairs(Rift.members) do
+				if at-m.lastAct>R.IDLE then drop(player,"The Rift let you go: you stood idle too long.",true) end
+			end
+			if Rift.power>=R.GOAL then finish(now,true)
+			elseif now>=Rift.endsAt then finish(now,false) end
+		elseif Rift.phase=="rest" and now>=Rift.endsAt then
+			if Rift.count>0 then Rift.phase,Rift.endsAt="lobby",now+R.LOBBY else Rift.phase="idle" end
+		end
+		Rift.publish(now)
+	end
+	-- QC L3: a shutdown settles a running round as a loss for present members (before the journals save).
+	function Runebinding.drain()
+		if Rift.phase=="active" then
+			local now=os.clock()
+			Rift.endsAt=math.min(Rift.endsAt,now)
+			finish(now,false)
+			Rift.publish(now)
+		end
+	end
+	local function member(player)
+		Rift.tick(os.clock())
+		return Rift.members[player]
+	end
+	Strike.kinds.riftFragment={
+		check=function(player,p,node)
+			local m=member(player)
+			if not m or Rift.phase~="active" then return false,"Fragment heaps only crack while you are in a Glyph Rift round." end
+			if m.frags>=R.FRAG_CAP then return false,"Your hands are full of fragments: shape them at the workbench." end
+			return true
+		end,
+		run=function(player,p,node)
+			local m=member(player)
+			if not m or Rift.phase~="active" then return "The Rift is closed.",false end
+			local got=math.min(R.FRAG_PER_BREAK,R.FRAG_CAP-m.frags)
+			if got<=0 then return "Your hands are full of fragments.",false end
+			m.frags+=got
+			m.lastAct=os.clock()
+			memberAttr(player,m)
+			grantXp(p,"Mining",got)
+			return "+"..got.." Rift fragments ("..m.frags..")   ·   +"..got.." Mining XP",true,1
+		end,
+	}
+	local function crewOf(player)
+		local ok,id=pcall(function() return player:GetAttribute("CoopId") end)
+		return if ok and (type(id)=="string" or type(id)=="number") and id~="" then id else nil
+	end
+	local function riftJoin(player,p)
+		if p.rbIntro~=true then return "Speak to the Runebinder on Compass Quay first." end
+		if lvl(p)<R.LEVEL then return "The Glyph Rift needs Runebinding "..R.LEVEL.."." end
+		local now=os.clock()
+		Rift.tick(now)
+		if Rift.members[player] then return "You are already in the Glyph Rift." end
+		-- QC M4: one member per account (a second session of the same UserId is refused) and per-crew cap.
+		local crew=crewOf(player)
+		local crewCount=0
+		for other in pairs(Rift.members) do
+			if other.UserId==player.UserId then return "You are already in the Glyph Rift." end
+			if crew and crewOf(other)==crew then crewCount+=1 end
+		end
+		if crew and crewCount>=R.CREW_CAP then return "Your crew already has "..R.CREW_CAP.." binders in this Rift." end
+		if Rift.count>=R.MAX_MEMBERS then return "The Rift is full. Wait for the next round." end
+		if Rift.phase=="active" and now-Rift.startedAt>R.ROUND*R.LATE_JOIN then return "This round is too far along; wait for the next one." end
+		if not present(player) then return "Stand inside the Glyph Rift to join." end
+		Rift.members[player]={frags=0,essence=0,contrib=0,lastAct=now,joined=now}
+		Rift.count+=1
+		memberAttr(player,Rift.members[player])
+		if Rift.phase=="idle" then Rift.phase,Rift.endsAt="lobby",now+R.LOBBY end
+		Rift.publish(now)
+		p.started=true
+		return if Rift.phase=="active" then "You join the Glyph Rift mid-round. Fragments first!"
+			elseif Rift.phase=="rest" then "You join the Glyph Rift. The next round gathers shortly."
+			else "You join the Glyph Rift. The round opens in "..math.max(0,math.ceil(Rift.endsAt-now)).."s."
+	end
+	local function riftShape(player,p)
+		local m=member(player)
+		if not m then return "Join the Glyph Rift first." end
+		if Rift.phase~="active" then return "The workbench only shapes essence during a round." end
+		if m.frags<=0 then return "Mine fragments from the heaps first." end
+		local moved=math.min(m.frags,R.ESSENCE_CAP-m.essence)
+		if moved<=0 then return "You carry all the essence you can ("..R.ESSENCE_CAP.."). Charge a portal." end
+		m.frags-=moved
+		m.essence+=moved
+		m.lastAct=os.clock()
+		memberAttr(player,m)
+		local xp=math.floor(moved*R.SHAPE_XP)
+		grantXp(p,"Runebinding",xp)
+		return "Shaped "..moved.." charged essence ("..m.essence.."/"..R.ESSENCE_CAP..")   ·   +"..xp.." Runebinding XP"
+	end
+	local function riftCharge(player,p,portal)
+		local m=member(player)
+		if not m then return "Join the Glyph Rift first." end
+		if Rift.phase~="active" then return "The portals are dark between rounds." end
+		local a=type(portal)=="string" and RB.AltarById[portal]
+		if not a or not table.find(R.PORTALS,portal) then return "That portal is not part of the Rift." end
+		local now=os.clock()
+		local lo,hi=Rift.portals(now)
+		if portal~=lo and portal~=hi then return "The "..a.name.." portal is closed. Open now: "..lo.." and "..hi.."." end
+		if lvl(p)<a.level then return "The "..a.name.." portal needs Runebinding "..a.level.."." end
+		if m.essence<=0 then return "Shape charged essence at the workbench first." end
+		local n=m.essence
+		m.essence=0
+		m.lastAct=now
+		local xp=RB.bindXp(n,a.xp*R.CHARGE_XP,RB.outfitBonus(p.equipment))
+		grantXp(p,"Runebinding",xp)
+		Rift.power=math.min(R.GOAL,Rift.power+n*RB.riftPowerPer(Rift.activeCount(now)))
+		m.contrib+=n*RB.riftWeight(portal)
+		memberAttr(player,m)
+		gesture(player,portal,n)
+		if Rift.power>=R.GOAL then finish(now,true) end
+		Rift.publish(now)
+		return "Charged the "..a.id.." portal with "..n.." essence (Guardian "..math.floor(Rift.power).."%)   ·   +"..xp.." Runebinding XP"
+	end
+
+	-- Binding ---------------------------------------------------------------------------
+	Runebinding.bindAt={}
+	local function carriedOf(p,ids)
+		local c=journal(p)
+		local n=0
+		for _,id in ipairs(ids) do n+=(p.items[id] or 0)+(c.pouch[id] or 0) end
+		return n
+	end
+	local function bindCombo(player,p,a,combo,L)
+		local c=journal(p)
+		local kinds=RB.comboShards(c.comboLucent==true)
+		local inputs=math.max(0,p.items[combo.input] or 0)
+		local carried=carriedOf(p,kinds)
+		if carried<=0 then
+			return if carriedOf(p,{"LucentShard"})>0 then "Combinations bind Aether Shards (ask the Runebinder to allow Lucent)." else "Bring shards from the Shardhollow to bind "..combo.name.."s."
+		end
+		local heldBefore=RB.pouchHeld(c.pouch)
+		local want=math.min(carried,inputs)
+		local n=0
+		for _,id in ipairs(kinds) do if n<want then n+=takeShards(p,id,want-n) end end
+		local chance=RB.comboChance(L,combo)
+		local made=0
+		for _=1,n do if roll()<chance then made+=1 end end
+		if made>0 then
+			p.items[combo.input]-=made
+			collect(p,combo.id,made)
+		end
+		local xp=RB.bindXp(made,combo.xp,RB.outfitBonus(p.equipment))
+		if xp>0 then grantXp(p,"Runebinding",xp) end
+		c.combos[combo.id]=math.min(RB.MAX_COUNT,(c.combos[combo.id] or 0)+made)
+		c.failed=math.min(RB.MAX_COUNT,c.failed+(n-made))
+		if made>0 then p.rbCombo=true end
+		p.rbBound=true
+		p.started=true
+		local worn=settleWear(p,heldBefore)
+		gesture(player,a.id,made)
+		return "Bound "..made.." "..combo.name..(if made==1 then "" else "s").." from "..n.." shards ("..math.floor(chance*100+.5).."% hold)"
+			.."   ·   +"..xp.." Runebinding XP"..worn
+	end
+	function Runebinding.bind(player,p,altarId,prompt)
+		if not prompt then return "Bind runes at a Binding Altar." end
+		local a=type(altarId)=="string" and RB.AltarById[altarId]
+		if not a then return "That altar is silent." end
+		local L=lvl(p)
+		if L<a.level then return "The "..a.name.." requires Runebinding "..a.level.."." end
+		local now=os.clock()
+		if now<(Runebinding.bindAt[player] or 0) then return "The altar is still humming…" end
+		local c=journal(p)
+		local combo=c.combo and RB.ComboById[c.combo]
+		-- QC L4: the chosen combination binds only while you carry its input rune; otherwise a plain bind.
+		if combo and combo.altar==a.id and L>=combo.level and (p.items[combo.input] or 0)>0 then
+			Runebinding.bindAt[player]=now+RB.BIND_SECONDS
+			return bindCombo(player,p,a,combo,L)
+		end
+		local kinds=RB.shardsFor(a)
+		if carriedOf(p,kinds)<=0 then
+			if a.shard=="Lucent" then return "The "..a.name.." only takes Lucent Shards (Mining 30, the Shardhollow)." end
+			if carriedOf(p,{"LucentShard"})>0 then return "Lucent Shards are worth more at the Void altar and above; the "..a.name.." takes Aether Shards." end
+			return "Bring Aether Shards from the Shardhollow to bind them here."
+		end
+		local heldBefore=RB.pouchHeld(c.pouch)
+		local id=kinds[1]
+		local n=takeShards(p,id,RB.SATCHEL+500)
+		local per=RB.runesPerShard(L,a)
+		local runes=n*per
+		collect(p,a.rune,runes)
+		local xp=RB.bindXp(n,a.xp,RB.outfitBonus(p.equipment))
+		grantXp(p,"Runebinding",xp)
+		c.bound[a.id]=math.min(RB.MAX_COUNT,(c.bound[a.id] or 0)+n)
+		p.rbBound=true
+		p.started=true
+		Runebinding.bindAt[player]=now+RB.BIND_SECONDS
+		local worn=settleWear(p,heldBefore)
+		gesture(player,a.id,runes)
+		local kept=carriedOf(p,{"LucentShard"})
+		return "Bound "..n.." "..Data.Items[id].name..(if n==1 then "" else "s").." into "..runes.." "..a.runeName..(if runes==1 then "" else "s")
+			..(if per>1 then " (×"..per..")" else "").."   ·   +"..xp.." Runebinding XP"..worn
+			..(if kept>0 and id~="LucentShard" then "   ·   "..kept.." Lucent kept for the high altars" else "")
+	end
+
+	-- Travel ---------------------------------------------------------------------------
+	Runebinding.travelAt={}
+	-- QC L1: every jump needs the travel gate and the anchor; a missing one refuses.
+	local function jump(player,anchorName,label)
+		local now=os.clock()
+		local ready=Runebinding.travelAt[player.UserId]
+		if ready and now<ready then return "The waygate is still settling ("..math.ceil(ready-now).."s)." end
+		local okFind,gate=pcall(function() return ServerStorage:FindFirstChild("IsleTravelGate") end)
+		if not okFind or not gate then return "The waygate will not open right now." end
+		local okGate,verdict=pcall(gate.Invoke,gate,player)
+		if not okGate or verdict~=true then return if okGate and type(verdict)=="string" then verdict else "The waygate will not open right now." end
+		local a=Runebinding.anchor(anchorName)
+		local character=player.Character
+		local root=rootOf(player)
+		if not a or not root then return "The waygate will not open right now." end
+		local moved=pcall(function() character:PivotTo(CFrame.new(a.CFrame.Position+Vector3.new(0,4,0))) end)
+		if not moved then return "The waygate will not open right now." end
+		Runebinding.travelAt[player.UserId]=now+RB.TRAVEL_COOLDOWN
+		player:SetAttribute("FastTravelAt",os.clock()) -- known fast travel (Aether Mote pickup checks)
+		pcall(function() root.AssemblyLinearVelocity=Vector3.zero end)
+		return "The waygate carries you to "..label.."."
+	end
+	local function travel(player,p,item,prompt)
+		if item=="Field" or item=="Quay" then
+			if not prompt then return "Step onto a waygate to travel." end
+			if item=="Field" then
+				if p.rbIntro~=true then return "Speak to the Runebinder on Compass Quay first." end
+				return jump(player,"Waypoint_Shardhollow","the Shardhollow")
+			end
+			return jump(player,"Waypoint_Shardgate","Compass Quay")
+		end
+		local a=type(item)=="string" and RB.AltarById[item]
+		if not a then return "Choose a Binding Altar." end
+		if not near(player,"Waypoint_Waygate",RB.WAYGATE_RANGE) then return "Stand on the Shardhollow Waygate to choose an altar." end
+		if lvl(p)<a.level then return "The "..a.name.." requires Runebinding "..a.level.."." end
+		if not regionAllowed(p,a.region) then return regionDenied(a.region) end
+		return jump(player,"Waypoint_Altar_"..a.id,"the "..a.name)
+	end
+	-- QC L6: a fall from the Shardhollow is caught back to its landing.
+	local function catchFall(player)
+		local root=rootOf(player)
+		local landing=Runebinding.anchor("Waypoint_Shardhollow")
+		if not root or not landing then return false end
+		local F=RB.FIELD_POS
+		local pos=root.Position
+		local dx,dz=pos.X-F.x,pos.Z-F.z
+		if dx*dx+dz*dz>RB.FIELD_NEAR*RB.FIELD_NEAR or pos.Y>F.y-RB.FALL_DEPTH or pos.Y<F.y-RB.FALL_DEPTH-400 then return false end
+		local ok=pcall(function() player.Character:PivotTo(CFrame.new(landing.CFrame.Position+Vector3.new(0,4,0))) end)
+		if ok then
+			player:SetAttribute("FastTravelAt",os.clock())
+			pcall(function() root.AssemblyLinearVelocity=Vector3.zero end)
+		end
+		return ok
+	end
+	Runebinding.catchFall=catchFall
+
+	-- Shops and services -------------------------------------------------------------------
+	local function owns(p,id)
+		if (p.items[id] or 0)>0 then return true end
+		for _,v in pairs(p.equipment or {}) do if v==id then return true end end
+		return table.find(p.accessoryBag or {},id)~=nil
+	end
+	-- QC M3: one of each Rift reward for life. A re-buy is allowed only when a
+	-- defined loss path owes one (p.runebinding.lost[id]; no gameplay path loses
+	-- them today: they are untradeable, unsellable and cannot be dropped).
+	local function riftBuy(player,p,item)
+		local e=type(item)=="string" and RB.RiftShopById[item]
+		if not e then return "That is not a Rift reward." end
+		if not atMentor(player) then return AWAY end
+		local def=Data.Items[e.id]
+		local c=journal(p)
+		if lvl(p)<e.level then return def.name.." needs Runebinding "..e.level.."." end
+		if owns(p,e.id) then return "You already own a "..def.name.."." end
+		local owed=(c.lost[e.id] or 0)>0
+		if (c.bought[e.id] or 0)>0 and not owed then return "You already claimed a "..def.name..". The Rift gives one of each." end
+		if c.points<e.points then return def.name.." costs "..e.points.." Rift Points (you have "..c.points..")." end
+		c.points-=e.points
+		c.bought[e.id]=math.min(1000,(c.bought[e.id] or 0)+1)
+		if owed then c.lost[e.id]-=1; if c.lost[e.id]<=0 then c.lost[e.id]=nil end end
+		p.items[e.id]=(p.items[e.id] or 0)+1 -- shop purchases go straight to the satchel (never collect())
+		p.started=true
+		return "Bought "..def.name.." for "..e.points.." Rift Points."
+	end
+	-- QC M1: nothing worn -> report the trips left and change nothing; only the
+	-- pouches actually charged for are reset.
+	local function repair(player,p)
+		if not atMentor(player) then return AWAY.." She repairs pouches." end
+		local c=journal(p)
+		local worn,left={},{}
+		for _,e in ipairs(RB.activePouches(p.items,lvl(p),c.wear)) do
+			if e.wear then
+				if e.worn then table.insert(worn,e.id) else table.insert(left,Data.Items[e.id].name.." "..(e.wear-e.uses).." trips") end
+			end
+		end
+		if #worn==0 then
+			return if #left>0 then "Your pouches are sound: "..table.concat(left,", ").." left." else "Your pouches never wear out."
+		end
+		local astral=math.min(#worn,math.max(0,p.items[RB.ASTRAL] or 0))
+		local coins=(#worn-astral)*RB.REPAIR_COINS
+		if (p.coins or 0)<coins then return "Repairing "..#worn.." pouch"..(if #worn==1 then "" else "es").." costs "..coins.." coins (or an Astral Rune each)." end
+		if astral>0 then p.items[RB.ASTRAL]-=astral end
+		p.coins-=coins
+		for _,id in ipairs(worn) do c.wear[id]=nil end
+		return "Pouches repaired ("..#worn..")"..(if astral>0 then "   ·   -"..astral.." Astral Rune"..(if astral==1 then "" else "s") else "")
+			..(if coins>0 then "   ·   -"..coins.." coins" else "").."."
+	end
+
+	function Runebinding.action(player,p,verb,item,prompt)
+		if verb=="runeAltar" then return Runebinding.bind(player,p,item,prompt)
+		elseif verb=="rbIntro" then
+			if p.rbIntro==true then return "You know the way already: the Shardgate stands beside me. Mine, carry, bind." end
+			p.rbIntro=true
+			p.started=true
+			return "Maelis teaches you to hear the shards. The Shardgate on Compass Quay is open to you: mine Aether Shards, then bind them at the Gale Altar."
+		elseif verb=="rbGate" then
+			if not prompt then return "Step onto the Shardgate to travel." end
+			if p.rbIntro~=true then return "The Shardgate stays shut. Speak to the Runebinder beside it first." end
+			return jump(player,"Waypoint_Shardhollow","the Shardhollow")
+		elseif verb=="rbWaygate" then
+			if not prompt then return "Step onto the Waygate." end
+			Runebinding.wseq=(Runebinding.wseq or 0)+1
+			player:SetAttribute("RuneWaygate",Runebinding.wseq)
+			return "The Waygate hums. Choose an altar."
+		elseif verb=="rbTravel" then return travel(player,p,item,prompt)
+		elseif verb=="rbCombo" then
+			if not atMentor(player) then return AWAY end -- QC L2
+			local c=journal(p)
+			if item=="lucent" then c.comboLucent=true return "Combinations may now spend Lucent Shards too." end
+			if item=="aether" then c.comboLucent=nil return "Combinations will spend Aether Shards only." end
+			if item=="none" or item==nil or item=="" then c.combo=nil return "You'll bind plain runes." end
+			local combo=type(item)=="string" and RB.ComboById[item]
+			if not combo then return "Choose a combination rune." end
+			if lvl(p)<combo.level then return combo.name.."s need Runebinding "..combo.level.."." end
+			c.combo=combo.id
+			return "At the "..RB.AltarById[combo.altar].name..", you'll bind "..combo.name.."s while you carry "..Data.Items[combo.input].name.."s."
+		elseif verb=="pouchRepair" then return repair(player,p)
+		elseif verb=="riftJoin" then
+			if not prompt then return "Enter the Glyph Rift at its barrier." end
+			return riftJoin(player,p)
+		elseif verb=="riftLeave" then
+			if not Rift.members[player] then return "You are not in the Glyph Rift." end
+			drop(player,nil,true)
+			Rift.publish(os.clock())
+			return "You leave the Glyph Rift."
+		elseif verb=="riftShape" then
+			if not prompt then return "Shape essence at the Rift workbench." end
+			return riftShape(player,p)
+		elseif verb=="riftCharge" then
+			if not prompt then return "Charge a portal in the Rift." end
+			return riftCharge(player,p,item)
+		elseif verb=="riftBuy" then return riftBuy(player,p,item)
+		end
+		return "Unknown action."
+	end
+	function Runebinding.state(player,p)
+		Rift.tick(os.clock())
+		pcall(catchFall,player) -- QC L6 (also every second in the loop)
+		local c=journal(p)
+		local L=lvl(p)
+		local pouches=RB.activePouches(p.items,L,c.wear)
+		local cap=0
+		for _,e in ipairs(pouches) do cap+=e.cap end
+		local m=Rift.members[player]
+		local lo,hi=Rift.portals(os.clock())
+		local bonus,pieces=RB.outfitBonus(p.equipment)
+		return {level=L,intro=p.rbIntro==true,carried=RB.shardsCarried(p.items),satchel=RB.SATCHEL,pouch=table.clone(c.pouch),pouchHeld=RB.pouchHeld(c.pouch),
+			pouchCap=cap,pouches=pouches,points=c.points,earned=c.earned,combo=c.combo,comboLucent=c.comboLucent==true,bound=table.clone(c.bound),combos=table.clone(c.combos),
+			mined=table.clone(c.mined),bought=table.clone(c.bought),outfit=pieces,outfitBonus=bonus,lantern=RB.lanternOn(p.accessoryBag),
+			rift={phase=Rift.phase,left=math.max(0,math.ceil(Rift.endsAt-os.clock())),power=math.floor(Rift.power),goal=R.GOAL,portals={lo,hi},members=Rift.count,
+				round=Rift.round,member=m~=nil,frags=m and m.frags or 0,essence=m and m.essence or 0,contrib=m and m.contrib or 0,
+				rounds=c.rift.rounds,wins=c.rift.wins,best=c.rift.best}}
+	end
+	function Runebinding.forget(player)
+		if Rift.members[player] then drop(player,nil,true) end
+		Runebinding.bindAt[player]=nil
+		Runebinding.gseq[player]=nil
+		local now=os.clock()
+		for id,ready in pairs(Runebinding.travelAt) do if ready<=now then Runebinding.travelAt[id]=nil end end
+	end
+	-- The 1 s loop: the Rift clock and the Shardhollow fall catch.
+	function Runebinding.loop()
+		Rift.tick(os.clock())
+		for player in pairs(profiles) do pcall(catchFall,player) end
+	end
+	Rift.publish(os.clock())
+	task.spawn(function()
+		while task.wait(1) do
+			local ok,err=pcall(Runebinding.loop)
+			if not ok then (warn or print)("Runebinding loop failed: "..tostring(err)) end
+		end
+	end)
+end
+-- <<< END Runebinding <<<
+------------------------------------------------------------------------------
 prompts.PromptTriggered:Connect(function(prompt,player)
 	local verb=prompt:GetAttribute("IsleAction")
 	if not verb or not prompt.Enabled then return end
@@ -11665,6 +12339,7 @@ game:BindToClose(function()
 	if Lairs.drain then Lairs.drain() end -- Lairs: refund unfinished fights' fees before the journals save
 	if Raids.drain then Raids.drain() end -- Raids (§38): tear the vaults down (no fees to refund)
 	if Beaconry.flush then pcall(Beaconry.flush,true) end -- §37 QC L1: pending beacon lightings reach the weekly total
+	if Runebinding.drain then pcall(Runebinding.drain) end -- §49 QC L3: a running Glyph Rift round settles as a loss for present members
 	local pending=0
 	for player in pairs(profiles) do
 		pending+=1
@@ -12011,7 +12686,7 @@ function CombatStyles.consume(p,payload)
 		if not def or not def.combatUse or type(n)~="number" or n%1~=0 or n<1 or n>50 then return {ok=false,reason="invalid"} end
 		cost[id]=n
 		count+=1
-		if count>8 then return {ok=false,reason="invalid"} end
+		if count>12 then return {ok=false,reason="invalid"} end -- §49: a rune pay plan may name up to 12 ids
 	end
 	if count==0 then return {ok=false,reason="invalid"} end
 	for id,n in pairs(cost) do if (p.items[id] or 0)<n then return {ok=false,reason="missing"} end end
@@ -12035,7 +12710,7 @@ function CombatStyles.refund(p,payload)
 		if not def or not def.combatUse or type(n)~="number" or n%1~=0 or n<1 or n>50 then return {ok=false,reason="invalid"} end
 		back[id]=n
 		count+=1
-		if count>8 then return {ok=false,reason="invalid"} end
+		if count>12 then return {ok=false,reason="invalid"} end -- §49: a rune pay plan may name up to 12 ids
 	end
 	if count==0 then return {ok=false,reason="invalid"} end
 	for id,n in pairs(back) do p.items[id]=(p.items[id] or 0)+n end

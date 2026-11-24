@@ -2,9 +2,9 @@
   "format": 1,
   "metersPerStud": 0.28,
   "axes": "Right-handed +Y up; source X/Z and local origin preserved (no rotation/reflection).",
-  "glbSha256": "dfb5735fa47f0906bebb4c05c2483fdc324e45b3cfaf3702cd9fb3b0277ed6bd",
+  "glbSha256": "d38462340bbe7115e41abeb1d08ccce68b4c20c77ee754247bbe5776624837b8",
   "materials": 57,
-  "triangles": 186453,
+  "triangles": 191229,
   "models": [
     {
       "name": "AetherCrystal",
@@ -353,6 +353,37 @@
         "Shade18": 40,
         "Shade24": 208,
         "Shade31": 96
+      }
+    },
+    {
+      "name": "BindingAltar",
+      "source": "BindingAltar.obj",
+      "sourceSha256": "49358b4f00cca62a9301a74c604b2594a353f8473226358eebc2626f34f67774",
+      "materialSource": "AetherPalette.mtl",
+      "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
+      "vertices": 1008,
+      "triangles": 1794,
+      "boundsStuds": {
+        "min": [
+          -2.5,
+          0,
+          -2.5
+        ],
+        "max": [
+          2.5,
+          4.2,
+          2.5
+        ]
+      },
+      "trianglesByMaterial": {
+        "Shade11": 648,
+        "Shade15": 96,
+        "Shade16": 214,
+        "Shade20": 48,
+        "Shade21": 150,
+        "Shade23": 396,
+        "Shade24": 96,
+        "Shade29": 146
       }
     },
     {
@@ -2879,6 +2910,36 @@
       }
     },
     {
+      "name": "GuardianPortal",
+      "source": "GuardianPortal.obj",
+      "sourceSha256": "6da15b1347e00bf39c5ac5099d48435979b8af9c97f6bad4d97db5967ba3379d",
+      "materialSource": "AetherPalette.mtl",
+      "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
+      "vertices": 592,
+      "triangles": 1020,
+      "boundsStuds": {
+        "min": [
+          -2.11,
+          0,
+          -0.8
+        ],
+        "max": [
+          2.11,
+          6.96,
+          0.8
+        ]
+      },
+      "trianglesByMaterial": {
+        "Shade11": 340,
+        "Shade15": 12,
+        "Shade16": 232,
+        "Shade20": 4,
+        "Shade21": 234,
+        "Shade23": 188,
+        "Shade29": 10
+      }
+    },
+    {
       "name": "HallFurnishings",
       "source": "HallFurnishings.obj",
       "sourceSha256": "e1f64724b06bbd9651e20bace9c21427fa42656c8ef52e970b8f4aaeac31f570",
@@ -4359,6 +4420,37 @@
         "Shade11": 192,
         "Shade15": 84,
         "Shade16": 36
+      }
+    },
+    {
+      "name": "RiftMonolith",
+      "source": "RiftMonolith.obj",
+      "sourceSha256": "d4ef6979b4093b35c19384e7598b7c9021850a0168d27883dd34c10a99f543b8",
+      "materialSource": "AetherPalette.mtl",
+      "materialSha256": "1902f553bc6f336919847833fb726413e078a7497bd7224aef071f0dc6d34a16",
+      "vertices": 1077,
+      "triangles": 1962,
+      "boundsStuds": {
+        "min": [
+          -3,
+          0,
+          -3
+        ],
+        "max": [
+          3,
+          14,
+          3
+        ]
+      },
+      "trianglesByMaterial": {
+        "Shade11": 688,
+        "Shade13": 24,
+        "Shade15": 38,
+        "Shade16": 304,
+        "Shade20": 48,
+        "Shade21": 96,
+        "Shade23": 624,
+        "Shade29": 140
       }
     },
     {
