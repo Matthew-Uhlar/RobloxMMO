@@ -821,12 +821,18 @@ local master = seeded(7010, function(prof)
 	prof.xp.Beaconry = X[99]
 	prof.items = {StarmetalStriker = 1, ShatterbarkLog = 2}
 end)
-master.root.Position = Vector3.new(-40, 10, 0)
 local wear = cmd(master, "masteryWear", "cape:Beaconry")
 ok(has(wear.message, "Mantle"), "mantle worn")
-queue(0.9999)
-local ev = cmd(master, "kindle", "")
-ok(has(ev.message, "Shatterbark") and has(ev.message, "catches"), "Everflame: a kindle never fails; '' picks the best log")
+-- The hub layout moves with world art passes: try open meadow spots until one
+-- is clear of stations, townsfolk and paths (placement rules are tested above).
+local ev
+for _, spot in ipairs({Vector3.new(-40, 10, 0), Vector3.new(40, 10, 40), Vector3.new(-60, 10, -60), Vector3.new(70, 10, -20), Vector3.new(-20, 10, 80), Vector3.new(0, 10, -90), Vector3.new(90, 10, 60), Vector3.new(-95, 10, 30)}) do
+	master.root.Position = spot
+	queue(0.9999)
+	ev = cmd(master, "kindle", "")
+	if not has(ev.message, "Too close") and not has(ev.message, "open ground") and not has(ev.message, "path") then break end
+end
+ok(has(ev.message, "Shatterbark") and has(ev.message, "catches"), "Everflame: a kindle never fails; '' picks the best log: " .. tostring(ev.message))
 local untilAt = tonumber(string.match(fires(), ":(%d+)$"))
 eq(untilAt - math.floor(utc), B.fireSeconds(B.LogById.ShatterbarkLog, true), "Everflame fires burn 50% longer")
 ok(cmd(master, "state").beaconry.everflame == true, "snapshot shows Everflame")

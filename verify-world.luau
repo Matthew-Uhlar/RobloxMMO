@@ -174,7 +174,7 @@ do
 		local pad=station:FindFirstChild("Worker pad").CFrame.Position
 		local o=pad-meadow
 		pads[slot]=o
-		check(math.sqrt(o.X^2+o.Z^2)+2.3<=48,"station "..slot.." inside the home footprint")
+		check(math.sqrt(o.X^2+o.Z^2)+2.3<=Data.Home.radius(1)-10,"station "..slot.." inside the home footprint (§40: the yard stands out south-east)")
 		local chassis=station:FindFirstChild("Surveyor chassis")
 		local interaction=chassis:FindFirstChildOfClass("ProximityPrompt")
 		check(interaction:GetAttribute("OwnerUserId")==11,"station "..slot.." owner")

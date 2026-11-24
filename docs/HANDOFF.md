@@ -46,7 +46,7 @@ export PATH=$HOME/.cargo/bin:$PATH   # Lune 0.11.1, Rojo 7.7.1 (cargo install ..
 - Every suite must print `SUITE-END <file>`. Lune exits 0 on a coroutine that yields forever, so the build fails if any suite is missing its sentinel.
 - `build.ps1` mirrors the suite list. **Add every new suite to both files.**
 - **Generated art:** after editing `art/*-shapes.cjs`, run `node art/generate-props.cjs && node art/generate-import.cjs`. On merge conflicts in `art/import/*.glb` or `manifest.json`, regenerate instead of hand-merging.
-- **Static world part budget:** 4000, about 3,543 used (Beaconry pyres §37: +45). Detailed shapes are forged on the client as EditableMeshes (`forge.client.lua`), so a `meshSlot` proxy costs one server part.
+- **Static world part budget:** 4000, about 3,675 used (§40 settlements: 58 buildings, 7 walk-in halls). Detailed shapes are forged on the client as EditableMeshes (`forge.client.lua`), so a `meshSlot` proxy costs one server part.
 
 ## 4. How the work is organised
 
