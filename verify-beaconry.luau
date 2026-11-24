@@ -36,7 +36,7 @@ local X = Data.XP_TABLE
 ------------------------------------------------------------------------------
 local partA = checks
 ok(type(B) == "table", "Data.Beaconry exists")
-eq(Data.SkillOrder[#Data.SkillOrder], "Beaconry", "Beaconry appended last (old saves keep their order)")
+eq(Data.SkillOrder[table.find(Data.SkillOrder, "Runebinding") - 1], "Beaconry", "Beaconry appended after the older skills (old saves keep their order; §49 Runebinding follows it)")
 do
 	local def = Data.Skills.Beaconry
 	ok(def and def.category == "production" and #def.color == 6 and def.title and def.description, "skill metadata")

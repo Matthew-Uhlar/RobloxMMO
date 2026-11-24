@@ -1075,7 +1075,7 @@ do
 	do
 		local materials = {}
 		for mid, def in pairs(Data.Items) do
-			if (def.kind == "resource" or def.kind == "material") and (if def.kind == "resource" then Data.ResourceSkill[mid] or "Materials" else "Materials") == "Materials" then table.insert(materials, mid) end
+			if (def.kind == "resource" or def.kind == "material") and not def.carry and (if def.kind == "resource" then Data.ResourceSkill[mid] or "Materials" else "Materials") == "Materials" then table.insert(materials, mid) end
 	end
 	ok(#materials > 48, "Materials has more items than one page (" .. #materials .. ")")
 	H.press(H.find(ui.scroll, "PriceGroupMaterials"))

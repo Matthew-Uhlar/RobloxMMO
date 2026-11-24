@@ -1239,6 +1239,10 @@ local function createLogic(env)
 		if m.current < manaCost then return nil, "mana" end
 		local costs = Progression.glyphCost(spell, weapon)
 		local supplies = type(loadout.supplies) == "table" and loadout.supplies or {}
+		-- §49 Runebinding: runes pay for glyphs 1:1 (own rune, then the glyph, then a
+		-- combination rune, then the Astral / Crown wildcard). No plan: refused below.
+		local RB = Data.Runebinding
+		if RB and RB.payPlan and next(costs) then costs = RB.payPlan(costs, supplies) or costs end
 		for id, n in pairs(costs) do
 			if (tonumber(supplies[id]) or 0) < n then return nil, "glyphs" end
 		end

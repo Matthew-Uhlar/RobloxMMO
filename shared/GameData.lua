@@ -17258,4 +17258,688 @@ end
 -- <<< END Gathering Hearts <<<
 ------------------------------------------------------------------------------
 
+------------------------------------------------------------------------------
+-- >>> BEGIN Runebinding (Runebinding team; append-only section; docs/DEPTH-CONTRACT.md §49) >>>
+-- A 1-99 production skill with OSRS Runecraft depth (all names original):
+--   * Mine Aether Shards (any Mining level) and Lucent Shards (Mining 30) from
+--     struck shard outcrops in the Shardhollow, a pocket isle reached through
+--     the Shardgate on Compass Quay once the Runebinder has taught you.
+--   * Carry them (RB.SATCHEL shards in the satchel plus shard pouches) through
+--     the Shardhollow Waygate to one of eleven Binding Altars across the
+--     regions and bind them into runes: XP per shard, more runes per shard
+--     at the multiple levels (RB.runesPerShard).
+--   * Combination runes (two elements in one rune) at an elemental altar with
+--     a rune of the other element; success rises with level.
+--   * Runes pay for spells: each glyph a spell costs may be paid with the
+--     matching rune (1:1), a combination rune that holds its element, or a
+--     wildcard (Astral: any elemental glyph, Crown: any catalyst). Elemental
+--     staves still supply their elements for free (Progression.glyphCost).
+--   * The Glyph Rift: a server-timed team round in the Shardhollow (gather
+--     fragments, shape them into charged essence, charge the two active
+--     guardian portals to raise the Rift Guardian's power to the goal);
+--     rewards Rift Points (pouches, the Shardweave outfit, the Riftlight
+--     Lantern), runes and XP to members present who contributed.
+-- Pure data and rules; server.server.lua (Runebinding block) runs it,
+-- world.server.lua builds the Shardhollow, the Rift and the altars,
+-- runes.client.lua draws the pouch indicator, the Rift HUD, the waygate
+-- picker and the altar VFX.
+------------------------------------------------------------------------------
+do
+local RB = {}
+Data.Runebinding = RB
+local function whole(v)
+	v = tonumber(v)
+	if not v or v ~= v or v == math.huge or v == -math.huge then return 0 end
+	return math.floor(v)
+end
+RB.whole = whole
+local function item(id, def)
+	def.id = id
+	def.rarity = def.rarity or "Common"
+	def.value = def.value or 1
+	Data.Items[id] = def
+	return def
+end
+local function valueOf(costs)
+	local v = 0
+	for id, n in pairs(costs) do v += (Data.Items[id] and Data.Items[id].value or 0) * n end
+	return v
+end
+RB.valueOf = valueOf
+
+-- Skill registration (appended: old saves keep their order).
+table.insert(Data.SkillOrder, "Runebinding")
+Data.Skills.Runebinding = {category="production",color="C38BFF",title="Runebinder",perLevel={intelligence=1,abilityDamage=0.1},
+	description="Mine aether shards and bind them into runes at the altars of the isles. Raises Intelligence and Ability Damage."}
+if Data.Mastery and Data.Mastery.CapePerk then Data.Mastery.CapePerk.Runebinding = {intelligence=30,abilityDamage=3} end
+
+-- Pacing and bounds.
+RB.SATCHEL = 28              -- shards the satchel carries (both kinds together); the rest go into pouches
+RB.SHARD_REGROW = 2          -- s before the same outcrop yields again (per player)
+RB.BIND_SECONDS = 1.8        -- one bind per altar visit gesture
+RB.TRAVEL_COOLDOWN = 4       -- s between two waygate / Shardgate jumps
+RB.WAYGATE_RANGE = 16        -- studs from the Shardhollow waygate to open the picker / jump
+RB.MAX_COUNT = 1000000000
+RB.TRIP_OVERHEAD = 24        -- balance model: waygate out, walk, bind, waygate back, walk (s)
+RB.COMBO_BASE, RB.COMBO_STEP = 0.5, 0.02 -- combination success at its level, +2% a level (certain 25 levels later)
+RB.OUTFIT_XP, RB.OUTFIT_SET_XP = 0.01, 0.02 -- Shardweave: +1% bind XP per piece, +2% more for the set (6%)
+RB.REPAIR_COINS = 200        -- per worn pouch without an Astral Rune
+RB.FIELD = "Shardhollow"
+
+-- Shards (carried, never Bazaar goods: Data.Economy.isCommodity skips them).
+RB.Shards = {
+	AetherShard = {id="AetherShard",name="Aether Shard",level=1,entry="Ore",yield=3,miningXp=4,value=3,color="CDB9FF",rarity="Common",
+		description="Raw aether, mined in the Shardhollow. Binds the first seven runes. Carried: 28 in the satchel plus your pouches."},
+	LucentShard = {id="LucentShard",name="Lucent Shard",level=30,entry="SunsteelOre",yield=3,miningXp=12,value=8,color="F4ECFF",rarity="Uncommon",
+		description="Pure, clear aether (Mining 30). Binds every rune; the higher altars accept nothing else."},
+}
+RB.ShardOrder = {"AetherShard","LucentShard"}
+for _, id in ipairs(RB.ShardOrder) do
+	local s = RB.Shards[id]
+	item(id,{name=s.name,kind="material",category="shard",carry=true,rarity=s.rarity,color=s.color,value=s.value,description=s.description})
+end
+-- Shards stay out of the Bazaar (they would let a trader skip the carry loop).
+do
+	local E = Data.Economy
+	local isCommodity = E.isCommodity
+	function E.isCommodity(id)
+		local def = type(id) == "string" and Data.Items[id]
+		if def and def.carry then return false end
+		return isCommodity(id)
+	end
+end
+
+-- Altars. xp = Runebinding XP per shard; multiples = levels where one shard
+-- binds one more rune; glyph = the spell glyph this rune pays for (1:1);
+-- shard "Aether" accepts Aether or Lucent shards, "Lucent" only Lucent;
+-- isle = the island (world.server.lua) and its region gate.
+RB.Altars = {
+	{id="Gale",name="Gale Altar",rune="GaleRune",runeName="Gale Rune",level=1,xp=6,multiples={11,55},shard="Aether",glyph="GaleGlyph",element="Gale",
+		isle="Compass Quay",region="Hub",color="BFEFFF",value=1},
+	{id="Spark",name="Spark Altar",rune="SparkRune",runeName="Spark Rune",level=2,xp=7,multiples={14,70},shard="Aether",glyph="SparkGlyph",catalyst=true,
+		isle="Guild Terrace",region="Hub",color="FFE680",value=1},
+	{id="Tide",name="Tide Altar",rune="TideRune",runeName="Tide Rune",level=5,xp=8.5,multiples={19,76},shard="Aether",glyph="TideGlyph",element="Tide",
+		isle="Mosswake Grove",region="Meadow",color="4F9BD8",value=1},
+	{id="Stone",name="Stone Altar",rune="StoneRune",runeName="Stone Rune",level=9,xp=10,multiples={26,82},shard="Aether",glyph="StoneGlyph",element="Stone",
+		isle="Brassfall Quarry",region="Quarry",color="A68B6D",value=1},
+	{id="Ember",name="Ember Altar",rune="EmberRune",runeName="Ember Rune",level=14,xp=12,multiples={35,88},shard="Aether",glyph="EmberGlyph",element="Ember",
+		isle="Cinder Shelf",region="Quarry",color="FF7A3D",value=1},
+	{id="Vita",name="Vita Altar",rune="VitaRune",runeName="Vita Rune",level=20,xp=15,multiples={46,92},shard="Aether",glyph="VitaGlyph",
+		isle="Meadow Reach",region="Meadow",color="7FD66B",value=1},
+	{id="Bind",name="Bind Altar",rune="BindRune",runeName="Bind Rune",level=27,xp=19,multiples={59},shard="Aether",glyph="BindGlyph",
+		isle="Windpine Grove",region="Windpine",color="5EA65A",value=1},
+	{id="Void",name="Void Altar",rune="VoidRune",runeName="Void Rune",level=35,xp=25,multiples={74},shard="Lucent",glyph="SurgeGlyph",catalyst=true,
+		isle="Gloomhollow Caverns",region="Gloomhollow",color="9B6BDB",value=4},
+	{id="Astral",name="Astral Altar",rune="AstralRune",runeName="Astral Rune",level=44,xp=30,multiples={82},shard="Lucent",wildcard="element",
+		isle="Skyreach",region="Skyreach",color="E6F0FF",value=4},
+	{id="Torrent",name="Torrent Altar",rune="TorrentRune",runeName="Torrent Rune",level=65,xp=42,multiples={91},shard="Lucent",glyph="TorrentGlyph",catalyst=true,
+		isle="Tempest Spire",region="Tempest",color="E86FB8",value=4},
+	{id="Crown",name="Crown Altar",rune="CrownRune",runeName="Crown Rune",level=77,xp=55,multiples={},shard="Lucent",wildcard="catalyst",
+		isle="The Shattered Crown",region="ShatteredCrown",color="FFD86B",value=8},
+}
+RB.AltarById, RB.AltarOrder, RB.AltarOfRune = {}, {}, {}
+for i, a in ipairs(RB.Altars) do
+	a.index = i
+	RB.AltarById[a.id] = a
+	table.insert(RB.AltarOrder, a.id)
+	RB.AltarOfRune[a.rune] = a
+	local rarity = if a.level >= 65 then "Epic" elseif a.level >= 35 then "Rare" elseif a.level >= 14 then "Uncommon" else "Common"
+	local use = if a.wildcard == "element" then "Pays for any one elemental glyph (Gale, Tide, Stone or Ember) and repairs shard pouches."
+		elseif a.wildcard == "catalyst" then "Pays for any one catalyst glyph (Spark, Surge or Torrent)."
+		else "Pays for one "..((Data.Items[a.glyph] or {}).name or a.glyph).." in any spell."
+	item(a.rune,{name=a.runeName,kind="material",category="rune",combatUse=true,rarity=rarity,color=a.color,value=a.value,
+		description="Bound at the "..a.name.." (Runebinding "..a.level.."). "..use})
+end
+-- Combination runes: bound at `altar` from one shard plus one `input` rune;
+-- they hold both elements (one rune pays one of each in a spell).
+RB.Combos = {
+	{id="MistRune",name="Mist Rune",level=6,altar="Tide",input="GaleRune",glyphs={"GaleGlyph","TideGlyph"},xp=9,color="D2E9F5"},
+	{id="DustRune",name="Dust Rune",level=10,altar="Stone",input="GaleRune",glyphs={"GaleGlyph","StoneGlyph"},xp=10.5,color="CBBBA4"},
+	{id="SiltRune",name="Silt Rune",level=13,altar="Stone",input="TideRune",glyphs={"TideGlyph","StoneGlyph"},xp=11,color="7E8C6A"},
+	{id="SmokeRune",name="Smoke Rune",level=15,altar="Ember",input="GaleRune",glyphs={"GaleGlyph","EmberGlyph"},xp=12.5,color="9C9CA8"},
+	{id="SteamRune",name="Steam Rune",level=19,altar="Ember",input="TideRune",glyphs={"TideGlyph","EmberGlyph"},xp=13,color="E8EEF2"},
+	{id="MagmaRune",name="Magma Rune",level=23,altar="Ember",input="StoneRune",glyphs={"StoneGlyph","EmberGlyph"},xp=14,color="E2552B"},
+}
+RB.ComboById, RB.ComboOrder = {}, {}
+for i, c in ipairs(RB.Combos) do
+	c.index = i
+	RB.ComboById[c.id] = c
+	table.insert(RB.ComboOrder, c.id)
+	c.value = 2
+	local names = {}
+	for _, g in ipairs(c.glyphs) do table.insert(names, (Data.Items[g] or {}).name or g) end
+	item(c.id,{name=c.name,kind="material",category="rune",combatUse=true,rarity="Uncommon",color=c.color,value=c.value,
+		description="Combination rune (Runebinding "..c.level..", "..RB.AltarById[c.altar].name.." + a "..Data.Items[c.input].name.."). Pays one "..table.concat(names, " and one ").."."})
+end
+
+-- Runes per shard at a level: 1 + one per multiple level reached.
+function RB.runesPerShard(level, altar)
+	if type(altar) ~= "table" then return 0 end
+	level = whole(level)
+	if level < altar.level then return 0 end
+	local n = 1
+	for _, at in ipairs(altar.multiples or {}) do if level >= at then n += 1 end end
+	return n
+end
+function RB.maxRunesPerShard(altar) return 1 + #(altar.multiples or {}) end
+-- Shards an altar accepts, in the order a bind spends them.
+function RB.shardsFor(altar)
+	if type(altar) ~= "table" then return {} end
+	return if altar.shard == "Lucent" then {"LucentShard"} else {"AetherShard","LucentShard"}
+end
+function RB.comboChance(level, combo)
+	if type(combo) ~= "table" then return 0 end
+	level = whole(level)
+	if level < combo.level then return 0 end
+	return math.clamp(RB.COMBO_BASE + RB.COMBO_STEP * (level - combo.level), 0, 1)
+end
+-- Bind XP for n shards at an altar (or a combination) with an outfit bonus.
+function RB.bindXp(n, perShard, bonus)
+	return math.max(0, math.floor(whole(n) * (tonumber(perShard) or 0) * (1 + (tonumber(bonus) or 0)) + 0.5))
+end
+
+------------------------------------------------------------------------------
+-- Spell reagents: the glyph each rune pays for, and the pay plan.
+------------------------------------------------------------------------------
+RB.GlyphRune = {}         -- [glyph] = the single rune that pays it
+RB.ELEMENT_GLYPHS = {GaleGlyph=true,TideGlyph=true,StoneGlyph=true,EmberGlyph=true}
+RB.CATALYST_GLYPHS = {SparkGlyph=true,SurgeGlyph=true,TorrentGlyph=true}
+for _, a in ipairs(RB.Altars) do if a.glyph then RB.GlyphRune[a.glyph] = a.rune end end
+RB.ASTRAL, RB.CROWN = "AstralRune", "CrownRune"
+local function sortedKeys(t)
+	local out = {}
+	for k in pairs(t) do table.insert(out, k) end
+	table.sort(out)
+	return out
+end
+-- costs = {[item] = n} after the staff's free elements (Progression.glyphCost);
+-- supplies = {[item] = owned}. Returns the concrete items to consume, or nil
+-- when the satchel cannot pay. Order per glyph: its own rune, then the glyph
+-- itself, then combination runes that hold it, then the wildcard (Astral for
+-- an element, Crown for a catalyst). Non-glyph costs (tablets) pay as listed.
+function RB.payPlan(costs, supplies)
+	if type(costs) ~= "table" then return nil end
+	supplies = type(supplies) == "table" and supplies or {}
+	local left = {}
+	local function have(id)
+		if left[id] == nil then left[id] = math.max(0, whole(supplies[id])) end
+		return left[id]
+	end
+	local plan, need = {}, {}
+	local function take(id, n)
+		if n <= 0 then return end
+		left[id] = have(id) - n
+		plan[id] = (plan[id] or 0) + n
+	end
+	for _, id in ipairs(sortedKeys(costs)) do
+		local n = math.max(0, whole(costs[id]))
+		if n > 0 then
+			local rune = RB.GlyphRune[id]
+			if rune then
+				local a = math.min(n, have(rune)); take(rune, a); n -= a
+				local g = math.min(n, have(id)); take(id, g); n -= g
+				if n > 0 then need[id] = n end
+			else
+				if have(id) < n then return nil end
+				take(id, n)
+			end
+		end
+	end
+	if next(need) then
+		for _, cid in ipairs(RB.ComboOrder) do
+			local c = RB.ComboById[cid]
+			while have(cid) > 0 do
+				local useful = false
+				for _, g in ipairs(c.glyphs) do if (need[g] or 0) > 0 then useful = true end end
+				if not useful then break end
+				take(cid, 1)
+				for _, g in ipairs(c.glyphs) do
+					if (need[g] or 0) > 0 then need[g] -= 1; if need[g] == 0 then need[g] = nil end end
+				end
+			end
+		end
+		for _, g in ipairs(sortedKeys(need)) do
+			local n = need[g]
+			local wild = if RB.ELEMENT_GLYPHS[g] then RB.ASTRAL elseif RB.CATALYST_GLYPHS[g] then RB.CROWN else nil
+			if wild then local w = math.min(n, have(wild)); take(wild, w); n -= w end
+			if n > 0 then return nil end
+			need[g] = nil
+		end
+	end
+	return plan
+end
+
+------------------------------------------------------------------------------
+-- Shard pouches: capacity by level, wear by trips, repair.
+------------------------------------------------------------------------------
+RB.Pouches = {
+	{id="SmallPouch",name="Small Shard Pouch",level=1,cap=3,wear=nil,value=20,rarity="Common",color="B9A27A"},
+	{id="MediumPouch",name="Medium Shard Pouch",level=25,cap=6,wear=45,value=60,rarity="Uncommon",color="A68BD8"},
+	{id="LargePouch",name="Large Shard Pouch",level=50,cap=9,wear=29,value=120,rarity="Rare",color="7E6BD8"},
+	{id="GiantPouch",name="Giant Shard Pouch",level=75,cap=12,wear=11,value=200,rarity="Epic",color="5B4BC8"},
+	{id="ColossalPouch",name="Colossal Shard Pouch",level=85,cap=40,wear=8,value=400,rarity="Legendary",color="F2C35B",replaces=true},
+}
+RB.PouchById, RB.PouchOrder = {}, {}
+for i, pdef in ipairs(RB.Pouches) do
+	pdef.index = i
+	RB.PouchById[pdef.id] = pdef
+	table.insert(RB.PouchOrder, pdef.id)
+	item(pdef.id,{name=pdef.name,kind="material",category="pouch",rarity=pdef.rarity,color=pdef.color,value=pdef.value,
+		description="Holds "..pdef.cap.." shards beyond the satchel (Runebinding "..pdef.level..")."
+			..(if pdef.wear then " Wears out after "..pdef.wear.." trips (half capacity) until repaired by the Runebinder." else " Never wears out.")
+			..(if pdef.replaces then " Replaces every smaller pouch." else "")})
+end
+-- Effective capacity of one pouch (a worn pouch holds half).
+function RB.pouchCap(pdef, uses)
+	if type(pdef) ~= "table" then return 0 end
+	local worn = pdef.wear ~= nil and whole(uses) >= pdef.wear
+	return if worn then pdef.cap // 2 else pdef.cap, worn
+end
+-- The pouches in use: owned, level reached. A usable Colossal pouch replaces the others.
+function RB.activePouches(items, level, wear)
+	items, wear = type(items) == "table" and items or {}, type(wear) == "table" and wear or {}
+	level = whole(level)
+	local list = {}
+	for _, id in ipairs(RB.PouchOrder) do
+		local pdef = RB.PouchById[id]
+		if whole(items[id]) > 0 and level >= pdef.level then
+			if pdef.replaces then
+				local cap, worn = RB.pouchCap(pdef, wear[id])
+				return {{id=id,cap=cap,worn=worn,uses=whole(wear[id]),wear=pdef.wear}}
+			end
+			local cap, worn = RB.pouchCap(pdef, wear[id])
+			table.insert(list, {id=id,cap=cap,worn=worn,uses=whole(wear[id]),wear=pdef.wear})
+		end
+	end
+	return list
+end
+function RB.pouchCapacity(items, level, wear)
+	local total = 0
+	for _, e in ipairs(RB.activePouches(items, level, wear)) do total += e.cap end
+	return total
+end
+-- Best-case capacity at a level (every pouch owned, none worn), for the model.
+function RB.modelCapacity(level)
+	local items = {}
+	for _, id in ipairs(RB.PouchOrder) do items[id] = 1 end
+	return RB.SATCHEL + RB.pouchCapacity(items, level, {})
+end
+function RB.shardsCarried(items)
+	local n = 0
+	for _, id in ipairs(RB.ShardOrder) do n += math.max(0, whole(type(items) == "table" and items[id])) end
+	return n
+end
+function RB.pouchHeld(pouch)
+	local n = 0
+	for _, id in ipairs(RB.ShardOrder) do n += math.max(0, whole(type(pouch) == "table" and pouch[id])) end
+	return n
+end
+
+------------------------------------------------------------------------------
+-- Shardweave outfit (Rift Points; +bind XP) and the Riftlight Lantern (an
+-- accessory: +1 shard from every outcrop break while it sits in your bag).
+------------------------------------------------------------------------------
+RB.SET = "Shardweave"
+Data.Sets[RB.SET] = {id=RB.SET,name="Shardweave",pieces={},bonus={intelligence=20},text="+20 Intelligence; +6% Runebinding XP from binds (1% a piece, +2% for the set)",color="9F7BFF"}
+RB.Outfit = {
+	{id="ShardweaveHood",slot="helmet",name="Shardweave Hood",stats={intelligence=8,defense=4},points=150},
+	{id="ShardweaveRobe",slot="chest",name="Shardweave Robe",stats={intelligence=12,defense=6},points=220},
+	{id="ShardweaveLegwraps",slot="legs",name="Shardweave Legwraps",stats={intelligence=10,defense=5},points=190},
+	{id="ShardweaveBoots",slot="boots",name="Shardweave Boots",stats={intelligence=6,defense=3,speed=2},points=150},
+}
+for _, o in ipairs(RB.Outfit) do
+	item(o.id,{name=o.name,kind="armor",slot=o.slot,set=RB.SET,tier=2,rarity="Rare",color="9F7BFF",stats=o.stats,requires={Runebinding=10},value=o.points,
+		description="Part of the Shardweave outfit (Glyph Rift rewards). +1% Runebinding XP from binds. Requires Runebinding 10."})
+	table.insert(Data.Sets[RB.SET].pieces, o.id)
+end
+RB.LANTERN = "RiftlightLantern"
+item(RB.LANTERN,{name="Riftlight Lantern",kind="accessory",rarity="Rare",color=Data.Rarity.Rare.color,stats={intelligence=10},value=40*Data.Rarity.Rare.rank^2,
+	description="Accessory. Magical Power "..Data.Rarity.Rare.power..". While in your accessory bag, every shard outcrop you break yields one more shard. Glyph Rift rewards."})
+-- XP bonus from the equipped outfit (equipment = p.equipment).
+function RB.outfitBonus(equipment)
+	local n = 0
+	for _, o in ipairs(RB.Outfit) do if type(equipment) == "table" and equipment[o.slot] == o.id then n += 1 end end
+	return n * RB.OUTFIT_XP + (if n == #RB.Outfit then RB.OUTFIT_SET_XP else 0), n
+end
+function RB.lanternOn(bag)
+	return type(bag) == "table" and table.find(bag, RB.LANTERN) ~= nil
+end
+
+------------------------------------------------------------------------------
+-- The Glyph Rift (server-timed rounds; session-only round state).
+-- Phases: idle -> lobby (LOBBY s once someone joins) -> active (ROUND s or
+-- until the Guardian reaches GOAL power) -> rest (REST s) -> lobby / idle.
+------------------------------------------------------------------------------
+RB.Rift = {
+	LEVEL = 10, LOBBY = 30, ROUND = 240, REST = 20, GOAL = 100, IDLE = 60, RANGE = 110, SWAP = 40, MAX_MEMBERS = 24,
+	FRAG_PER_BREAK = 4, FRAG_CAP = 80, ESSENCE_CAP = 40, SHAPE_XP = 1, CHARGE_XP = 0.7,
+	MIN_CONTRIB = 8, POINT_EVERY = 12, POINT_CAP = 20, WIN_POINTS = 4, CACHE_EVERY = 16, CACHE_CAP = 8,
+	CACHE_MIN = 6, CACHE_MAX = 14, LATE_JOIN = 0.5, -- a round may be joined in its first half
+}
+-- Portals: two open at a time (one low elemental, one high), rotating every SWAP s.
+RB.Rift.LOW = {"Gale","Tide","Stone","Ember"}
+RB.Rift.HIGH = {"Bind","Void","Astral","Torrent"}
+RB.Rift.PORTALS = {"Gale","Tide","Stone","Ember","Bind","Void","Astral","Torrent"}
+function RB.riftPortals(round, elapsed)
+	local R = RB.Rift
+	local k = whole(round) + math.max(0, math.floor((tonumber(elapsed) or 0) / R.SWAP))
+	return R.LOW[k % #R.LOW + 1], R.HIGH[(k * 3 + 1) % #R.HIGH + 1]
+end
+-- Guardian power per charged essence: shared across a bigger party.
+function RB.riftPowerPer(members)
+	return 0.6 / (1 + 0.35 * math.max(0, whole(members) - 1))
+end
+-- Contribution weight of a charge (the high portal counts double).
+function RB.riftWeight(altarId)
+	return if table.find(RB.Rift.HIGH, altarId) then 2 else 1
+end
+-- End-of-round reward for one member: {points, caches, xp} (nil below the minimum).
+function RB.riftReward(contrib, won, level)
+	local R = RB.Rift
+	contrib = whole(contrib)
+	if contrib < R.MIN_CONTRIB then return nil end
+	return {points = math.min(R.POINT_CAP, contrib // R.POINT_EVERY) + (if won then R.WIN_POINTS else 0),
+		caches = math.min(R.CACHE_CAP, contrib // R.CACHE_EVERY),
+		xp = if won then 10 * math.clamp(whole(level), 1, 99) else 0}
+end
+-- Rift Points shop.
+RB.RiftShop = {
+	{id="MediumPouch",points=80},{id="LargePouch",points=200},{id="GiantPouch",points=400},{id="ColossalPouch",points=900},
+	{id="ShardweaveHood",points=150},{id="ShardweaveRobe",points=220},{id="ShardweaveLegwraps",points=190},{id="ShardweaveBoots",points=150},
+	{id=RB.LANTERN,points=300},
+}
+RB.RiftShopById = {}
+for i, e in ipairs(RB.RiftShop) do
+	e.index = i
+	RB.RiftShopById[e.id] = e
+	local pdef = RB.PouchById[e.id]
+	e.level = if pdef then pdef.level else 10
+end
+
+------------------------------------------------------------------------------
+-- Profile p.runebinding (sanitised; unknown ids, negatives and NaN dropped).
+------------------------------------------------------------------------------
+function RB.migrate(raw)
+	local c = type(raw) == "table" and raw or {}
+	local function counts(t, valid, cap)
+		local out = {}
+		if type(t) == "table" then
+			for id, n in pairs(t) do
+				n = whole(n)
+				if type(id) == "string" and valid[id] and n > 0 then out[id] = math.min(n, cap or RB.MAX_COUNT) end
+			end
+		end
+		return out
+	end
+	local rift = type(c.rift) == "table" and c.rift or {}
+	return {
+		bound = counts(c.bound, RB.AltarById), combos = counts(c.combos, RB.ComboById), mined = counts(c.mined, RB.Shards),
+		pouch = counts(c.pouch, RB.Shards, 200), wear = counts(c.wear, RB.PouchById, 10000),
+		points = math.clamp(whole(c.points), 0, RB.MAX_COUNT), earned = math.clamp(whole(c.earned), 0, RB.MAX_COUNT),
+		rift = {rounds = math.clamp(whole(rift.rounds), 0, RB.MAX_COUNT), wins = math.clamp(whole(rift.wins), 0, RB.MAX_COUNT),
+			best = math.clamp(whole(rift.best), 0, RB.MAX_COUNT)},
+		combo = if type(c.combo) == "string" and RB.ComboById[c.combo] then c.combo else nil,
+		failed = math.clamp(whole(c.failed), 0, RB.MAX_COUNT),
+	}
+end
+
+------------------------------------------------------------------------------
+-- Balance model (verify-runebinding.luau; documented in §49). A trip mines
+-- the carry (satchel + every pouch the level allows) from outcrops at the
+-- nominal break, then pays RB.TRIP_OVERHEAD to reach the altar, bind and
+-- come back. Mining comparison: the best ore at the same level, rotating
+-- between nodes (a break every nominal break + one swing).
+------------------------------------------------------------------------------
+function RB.secondsPerShard(shardId)
+	local s = RB.Shards[shardId]
+	local ST = Data.Strike
+	local r = ST and ST.resource(s.entry)
+	if not r then return 1 end
+	return (ST.nominalBreak(r) + ST.SWING.Mining) / s.yield
+end
+function RB.tripRate(level, altar)
+	if type(altar) ~= "table" or whole(level) < altar.level then return 0 end
+	local shard = RB.shardsFor(altar)[1]
+	if whole(level) < 30 and altar.shard == "Aether" then shard = "AetherShard" end
+	local carry = RB.modelCapacity(level)
+	local seconds = carry * RB.secondsPerShard(shard) + RB.TRIP_OVERHEAD
+	return carry * altar.xp * 3600 / seconds
+end
+function RB.bestTrip(level)
+	local best, bestAltar = 0, nil
+	for _, a in ipairs(RB.Altars) do
+		local rate = RB.tripRate(level, a)
+		if rate > best then best, bestAltar = rate, a end
+	end
+	return best, bestAltar
+end
+function RB.miningRate(level)
+	local ST = Data.Strike
+	local best = 0
+	for _, r in ipairs(Data.ResourceTiers.Mining) do
+		if whole(level) >= r.level then
+			local rate = r.xp * 3600 / (ST.nominalBreak(r) + ST.SWING.Mining)
+			if rate > best then best = rate end
+		end
+	end
+	return best
+end
+-- Hours from 1 to 99 doing the best trip at every level.
+function RB.hoursTo99()
+	local hours = 0
+	for lvl = 1, Data.MAX_LEVEL - 1 do hours += (Data.XP_TABLE[lvl + 1] - Data.XP_TABLE[lvl]) / RB.bestTrip(lvl) end
+	return hours
+end
+-- Rift model: XP / hour for one member (fragments at the Copperstone break,
+-- shaping + charging every ESSENCE_CAP essence costs RIFT_OVERHEAD s) at the
+-- average XP of the portals open to the level.
+RB.RIFT_OVERHEAD = 14
+function RB.riftRate(level)
+	local R = RB.Rift
+	local ST = Data.Strike
+	local r = ST.resource("Ore")
+	local perFrag = (ST.nominalBreak(r) + ST.SWING.Mining) / R.FRAG_PER_BREAK
+	local seconds = R.ESSENCE_CAP * perFrag + RB.RIFT_OVERHEAD
+	local lowSum, lowN, highSum, highN = 0, 0, 0, 0
+	for _, id in ipairs(R.LOW) do local a = RB.AltarById[id]; if whole(level) >= a.level then lowSum += a.xp; lowN += 1 end end
+	for _, id in ipairs(R.HIGH) do local a = RB.AltarById[id]; if whole(level) >= a.level then highSum += a.xp; highN += 1 end end
+	-- Each swap the better open portal you can use: high when unlocked (its share of swaps), else low.
+	local lowAvg = if lowN > 0 then lowSum / lowN else 0
+	local highAvg = if highN > 0 then highSum / highN else 0
+	local perEssence = R.SHAPE_XP + R.CHARGE_XP * (if highN > 0 then (highAvg * highN + lowAvg * (#R.HIGH - highN)) / #R.HIGH else lowAvg * lowN / #R.LOW)
+	return R.ESSENCE_CAP * perEssence * 3600 / seconds
+end
+
+------------------------------------------------------------------------------
+-- Client display helpers (runes.client.lua; pure, tested in verify-runebinding).
+------------------------------------------------------------------------------
+-- workspace GlyphRift "phase:left:power:goal:lo,hi:members:round" -> table (nil when malformed).
+function RB.parseRift(attr)
+	if type(attr) ~= "string" then return nil end
+	local phase, left, power, goal, lo, hi, members, round = string.match(attr, "^(%a+):(%d+):(%d+):(%d+):(%a*),(%a*):(%d+):(%d+)$")
+	if not phase then return nil end
+	return {phase = phase, left = tonumber(left), power = tonumber(power), goal = math.max(1, tonumber(goal) or 1),
+		low = if lo ~= "" then lo else nil, high = if hi ~= "" then hi else nil, members = tonumber(members), round = tonumber(round)}
+end
+-- player RiftState "frags:essence:contrib" -> frags, essence, contrib (zeros when absent).
+function RB.parseRiftState(attr)
+	local f, e, c = string.match(type(attr) == "string" and attr or "", "^(%d+):(%d+):(%d+)$")
+	return tonumber(f) or 0, tonumber(e) or 0, tonumber(c) or 0
+end
+-- Waygate picker rows at a level: {id, name, isle, level, open}.
+function RB.pickerRows(level)
+	local out = {}
+	for _, a in ipairs(RB.Altars) do
+		table.insert(out, {id = a.id, name = a.name, isle = a.isle, level = a.level, open = whole(level) >= a.level, color = a.color, shard = a.shard})
+	end
+	return out
+end
+-- The pouch indicator line from the snapshot's runebinding table.
+function RB.carryText(st)
+	if type(st) ~= "table" then return "" end
+	local text = "◆ " .. whole(st.carried) .. "/" .. whole(st.satchel)
+	if whole(st.pouchCap) > 0 or whole(st.pouchHeld) > 0 then text ..= "   ◇ " .. whole(st.pouchHeld) .. "/" .. whole(st.pouchCap) end
+	for _, e in ipairs(type(st.pouches) == "table" and st.pouches or {}) do
+		if type(e) == "table" and e.worn then text ..= "   ⚠ worn" break end
+	end
+	return text
+end
+
+------------------------------------------------------------------------------
+-- Unlock list for the Skills page (Hero › Skills › Runebinding): {level, text, item}.
+------------------------------------------------------------------------------
+function RB.unlocks()
+	local out = {}
+	for _, a in ipairs(RB.Altars) do
+		local isle = a.isle
+		table.insert(out, {level=a.level,text="Bind "..a.runeName.."s at the "..a.name.." ("..isle..", +"..a.xp.." XP a shard"..(if a.shard == "Lucent" then ", Lucent Shards" else "")..")",item=a.rune})
+		for i, at in ipairs(a.multiples) do
+			table.insert(out, {level=at,text="Bind "..(i + 1).." "..a.runeName.."s per shard",item=a.rune})
+		end
+	end
+	for _, c in ipairs(RB.Combos) do
+		table.insert(out, {level=c.level,text="Combination: "..c.name.." at the "..RB.AltarById[c.altar].name.." with a "..Data.Items[c.input].name,item=c.id})
+	end
+	for _, pdef in ipairs(RB.Pouches) do
+		table.insert(out, {level=pdef.level,text="Carry the "..pdef.name.." (+"..pdef.cap.." shards)",item=pdef.id})
+	end
+	table.insert(out, {level=RB.Rift.LEVEL,text="Join the Glyph Rift in the Shardhollow"})
+	table.insert(out, {level=30,text="Mine Lucent Shards (Mining 30) for the high altars",item="LucentShard"})
+	return out
+end
+
+------------------------------------------------------------------------------
+-- Quests (two side quests), flag texts, quest-helper waypoints, calculator.
+------------------------------------------------------------------------------
+do
+	local FLAG_TEXT = {rbIntro = "Speak to the Runebinder on Compass Quay", rbMined = "Mine an Aether Shard in the Shardhollow",
+		rbBound = "Bind runes at a Binding Altar", rbCombo = "Bind a combination rune", rbRiftWin = "Win a round of the Glyph Rift"}
+	RB.FLAG_TEXT = FLAG_TEXT
+	local describe = Data.describeCheck
+	function Data.describeCheck(o, regional)
+		if type(o) == "table" and o.kind == "flag" and FLAG_TEXT[o.flag] then return FLAG_TEXT[o.flag] end
+		return describe(o, regional)
+	end
+	for _, q in ipairs({
+		{id="WhispersInTheShard",title="Whispers in the Shard",line="side",region="Hub",
+			story="Maelis Quillstone, the Runebinder, keeps the Shardgate on Compass Quay. She swears the shards beyond it hum with the isles' own glyphs, and that anyone patient enough can bind them.",
+			requires={{kind="contracts",count=1}},
+			objectives={{kind="flag",flag="rbIntro"},{kind="flag",flag="rbMined"},{kind="flag",flag="rbBound"},{kind="level",skill="Runebinding",level=5}},
+			rewards={coins=300,points=1,xp={Runebinding=500,Magic=200},items={SmallPouch=1}}},
+		{id="HeartOfTheRift",title="Heart of the Rift",line="side",region="Hub",
+			story="Something stirs at the heart of the Shardhollow: a Guardian that drinks charged essence. Help the binders feed it, and learn to bind two elements into one.",
+			requires={{kind="quest",quest="WhispersInTheShard"},{kind="level",skill="Runebinding",level=20}},
+			objectives={{kind="flag",flag="rbRiftWin"},{kind="flag",flag="rbCombo"},{kind="level",skill="Runebinding",level=27}},
+			rewards={coins=2000,points=2,xp={Runebinding=6000},perk={intelligence=5}}},
+	}) do
+		table.insert(Data.Quests, q)
+		q.index = #Data.Quests
+		Data.QuestById[q.id] = q
+	end
+	local SY = Data.Systems
+	local HP = SY and SY.Helper
+	if HP and HP.specsFor then
+		local specsFor = HP.specsFor
+		function HP.specsFor(o, ctx)
+			if type(o) == "table" then
+				if o.kind == "flag" and o.flag == "rbIntro" then return {"anchor:NPC_Runebinder", "region:Hub"} end
+				if o.kind == "flag" and (o.flag == "rbMined" or o.flag == "rbRiftWin") then return {"anchor:Waypoint_Shardgate", "region:Hub"} end
+				if o.kind == "flag" and (o.flag == "rbBound" or o.flag == "rbCombo") then return {"anchor:Waypoint_Altar_Gale", "region:Hub"} end
+				if o.kind == "level" and o.skill == "Runebinding" then return {"anchor:Waypoint_Shardgate", "region:Hub"} end
+			end
+			return specsFor(o, ctx)
+		end
+	end
+	local CA = SY and SY.Calc
+	if CA and CA.actions then
+		local actions = CA.actions
+		function CA.actions(skill)
+			if skill ~= "Runebinding" then return actions(skill) end
+			local out = {}
+			for _, a in ipairs(RB.Altars) do table.insert(out, {id = a.rune, name = "Bind "..a.runeName.." (per shard)", level = a.level, xp = a.xp, kind = "bind"}) end
+			for _, c in ipairs(RB.Combos) do table.insert(out, {id = c.id, name = "Bind "..c.name.." (per shard)", level = c.level, xp = c.xp, kind = "bind"}) end
+			table.sort(out, function(a, c)
+				if a.level ~= c.level then return a.level < c.level end
+				if a.xp ~= c.xp then return a.xp < c.xp end
+				return a.id < c.id
+			end)
+			return out
+		end
+	end
+end
+
+------------------------------------------------------------------------------
+-- The Runebinder (Compass Quay, beside the Shardgate): a regional folk entry
+-- with a rune shop, the Rift Points shop, combination settings and pouch repair.
+------------------------------------------------------------------------------
+do
+	local T, RA = Data.Townsfolk, Data.RegionArt
+	RB.MENTOR = "Runebinder"
+	-- No coin mint: every unit price is >= 1.3 x the rune's sell value.
+	RB.ShopOffers = {
+		{item="GaleRune",price=40,amount=10},{item="SparkRune",price=40,amount=10},{item="TideRune",price=40,amount=10},
+		{item="StoneRune",price=40,amount=10},{item="EmberRune",price=50,amount=10},{item="SmallPouch",price=150,amount=1},
+	}
+	if T and RA and RA.Folk and T.NPCs then
+		local mentor = {role=RB.MENTOR,region="Hub",name="Maelis Quillstone",title="Runebinder",portrait="✶",kind="runebinding",
+			look={skin="C68E62",shirt="3B2A5C",pants="231B33",shoes="17111F",accent="C38BFF",hair="E8E0F5",hat="hood",held="staff",cape="4A3478",spectacles=true},
+			greet="Every shard remembers the wind that cut it, wayfarer. Carry them to the right altar and they'll tell you their name: a rune.",
+			shop=RB.ShopOffers}
+		table.insert(RA.Folk, mentor)
+		RA.FolkByRole[mentor.role] = mentor
+		local function cond(id, f) T.Conditions[id] = f; return id end
+		local shopOpts = {}
+		local rqBuy = T.Verbs.rqBuy and T.Verbs.rqBuy.item
+		for i, offer in ipairs(RB.ShopOffers) do
+			local key = mentor.role .. ":" .. i
+			if type(rqBuy) == "table" then rqBuy[key] = true end
+			table.insert(shopOpts, {label="Buy " .. (if offer.amount > 1 then offer.amount .. "× " else "") .. Data.Items[offer.item].name .. " (" .. offer.price .. "c)",verb="rqBuy",item=key})
+		end
+		table.insert(shopOpts, {label="Back", to="hello"})
+		local riftOpts, riftItems = {}, {}
+		for _, e in ipairs(RB.RiftShop) do
+			riftItems[e.id] = true
+			table.insert(riftOpts, {label=Data.Items[e.id].name .. " (" .. e.points .. " Rift Points" .. (if e.level > 10 then ", Runebinding " .. e.level else "") .. ")",verb="riftBuy",item=e.id})
+		end
+		table.insert(riftOpts, {label="Back", to="hello"})
+		local comboOpts, comboItems = {}, {none = true}
+		for _, c in ipairs(RB.Combos) do
+			comboItems[c.id] = true
+			table.insert(comboOpts, {label=c.name .. " (Runebinding " .. c.level .. ", " .. RB.AltarById[c.altar].name .. " + " .. Data.Items[c.input].name .. ")",verb="rbCombo",item=c.id})
+		end
+		table.insert(comboOpts, {label="Bind plain runes only",verb="rbCombo",item="none"})
+		table.insert(comboOpts, {label="Back", to="hello"})
+		T.Verbs.rbIntro = {item=false}
+		T.Verbs.pouchRepair = {item=false}
+		T.Verbs.riftBuy = {item=riftItems}
+		T.Verbs.rbCombo = {item=comboItems}
+		T.NPCs[mentor.role] = {name=mentor.name,title=mentor.title,region="Hub",portrait=mentor.portrait,look=mentor.look,start="hello",anchorOnly=true,folk="runebinding",
+			nodes={
+				hello={text=mentor.greet,options={
+					{label="Teach me runebinding",verb="rbIntro"},
+					{label="Show me the Shardgate",waypoint={"anchor:Waypoint_Shardgate","region:Hub"}},
+					{label="How does binding work?",to="lore"},
+					{label="Combination binding",to="combo"},
+					{label="Spend Rift Points",to="rift"},
+					{label="Repair my shard pouches",verb="pouchRepair"},
+					{label="Show me your wares",to="shop"},
+					{label="Farewell",close=true}}},
+				lore={text="Mine shards in the Shardhollow; your satchel holds "..RB.SATCHEL..", pouches hold more. Step on the Waygate there and pick an altar: "
+					.."the Gale Altar here on the Quay first. Each altar wants its level, and the high altars only take Lucent Shards (Mining 30). "
+					.."Runes pay for spell glyphs one for one, and elemental staves still cover their own element.",options={
+					{label="Show me the Shardgate",waypoint={"anchor:Waypoint_Shardgate","region:Hub"}},
+					{label="Back",to="hello"},
+					{label="Farewell",close=true}}},
+				combo={text="Hold a rune of one element while you bind at another element's altar and the shard takes both. It doesn't always hold: "
+					.."half the time at first, surely twenty-five levels on. Pick the combination you want; I'll remember it.",options=comboOpts},
+				rift={text="The Glyph Rift opens in the Shardhollow's heart. Feed the Guardian well and the Rift pays in points. Spend them here.",options=riftOpts},
+				shop={text="Runes for the impatient, a pouch for the prepared. Coins up front.",options=shopOpts},
+			}}
+		table.insert(T.RegionFolkOrder, mentor.role)
+	end
+end
+end
+-- <<< END Runebinding <<<
+------------------------------------------------------------------------------
+
 return Data

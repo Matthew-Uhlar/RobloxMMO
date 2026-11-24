@@ -2172,6 +2172,10 @@ local function skillUnlocks(skill,level)
 	if skill=="Beaconry" and type(Data.Beaconry)=="table" and type(Data.Beaconry.unlocks)=="function" then
 		for _,u in ipairs(Data.Beaconry.unlocks()) do add(u.level,escape(u.text),u.item) end
 	end
+	-- Runebinding (§49): altars, multiples, combination runes, pouches and the Glyph Rift.
+	if skill=="Runebinding" and type(Data.Runebinding)=="table" and type(Data.Runebinding.unlocks)=="function" then
+		for _,u in ipairs(Data.Runebinding.unlocks()) do add(u.level,escape(u.text),u.item) end
+	end
 	local bag=tbl(Data.AccessoryBag)
 	if skill==tbl(bag.slotsPerLevel).skill and num(tbl(bag.slotsPerLevel).every,0)>0 then
 		local every=bag.slotsPerLevel.every
@@ -3087,6 +3091,15 @@ function Pages.drawSpellbook()
 				or paint(c.n.." "..escape(itemName(c.id)),have>=c.n and itemHex(c.id) or "E8806A")..paint(" ("..fmt(have)..")","A9BDC1"))
 		end
 		table.insert(lines,paint("✦ "..num(spell.mana,0).." mana","9FC3FF").."  ·  "..(#costs>0 and table.concat(costs,"  +  ") or "no glyphs"))
+		-- §49 Runebinding: the matching rune pays for a glyph 1:1 (combination and wildcard runes too).
+		if type(Data.Runebinding)=="table" and #costs>0 then
+			local runes={}
+			for _,c in ipairs(CB.costs(spell,wielding and weapon or nil)) do
+				local rune=not c.free and tbl(Data.Runebinding.GlyphRune)[c.id]
+				if rune then table.insert(runes,escape(itemName(rune))..paint(" ("..fmt(num(lo.supplies[rune],count("items",rune)))..")","A9BDC1")) end
+			end
+			if #runes>0 then table.insert(lines,paint("Runes pay instead: ","C9A8FF")..table.concat(runes,", ")..paint("  ·  combination and Astral / Crown runes count too","A9BDC1")) end
+		end
 		if spell.kind=="damage" then
 			local now=CB.spellDamage(spell,stats,wielding and weapon or nil,magic)
 			table.insert(lines,"Damage "..fmt(num(spell.damage,0)).." + weapon power, × (1 + Intelligence/100 × "..num(spell.scaling,0)..")"..(now and ("  ·  now ≈ "..paint(fmt(now),"FFD24A")) or ""))
@@ -5243,7 +5256,7 @@ end
 function U.commodities(group)
 	local list={}
 	for id,def in pairs(tbl(Data and Data.Items)) do
-		if type(def)=="table" and (def.kind=="resource" or def.kind=="material") then
+		if type(def)=="table" and (def.kind=="resource" or def.kind=="material") and not def.carry then -- §49: carried shards never trade
 			local own=def.kind=="resource" and type(Data.ResourceSkill)=="table" and Data.ResourceSkill[id] or "Materials"
 			if own==group then table.insert(list,id) end
 		end
@@ -11016,6 +11029,7 @@ UI.relay={equip=true,unequip=true,consume=true,sell=true,accessory=true,petAdopt
 	helperPin=true,goalSet=true,goalRemove=true,goalClear=true,priceCheck=true, -- §33
 	prayerQuickToggle=true, -- §34
 	heartAbility=true, -- §46 hearts.client.lua: the ability key G / HUD chip (the server checks the cooldown)
+	rbTravel=true,riftLeave=true, -- §49 runes.client.lua: the Waygate picker and the Rift HUD's Leave (the server checks the waygate, level and region)
 	tutorial=true, -- §43 coach cards (tutorial.client.lua): dismiss / next / skip / replay / tips (sent by UI.tutorialSend: no queue / gap)
 	raidHost=true,raidJoin=true,raidLeave=true,raidReady=true,raidChallenge=true,raidStart=true,raidUse=true,raidTitle=true} -- §38 raid.client.lua (party board, raid HUD, Raid Log). §34 quick-prayer orb (one atomic verb, queued, never dropped). Earlier: quantity picker (features.client.lua), Resonance, Path rewards
 local remote = ReplicatedStorage:WaitForChild("IsleAction")

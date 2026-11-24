@@ -541,6 +541,7 @@ function world(name,meta,build){
 require('./world-shapes.cjs')({world,C,PI,hash,jitterOf});
 require('./region-shapes.cjs')({world,C,PI,hash,jitterOf});
 require('./beacon-shapes.cjs')({world,C,PI,hash,jitterOf});
+require('./rune-shapes.cjs')({world,C,PI,hash,jitterOf}); // §49 Runebinding: altar, guardian portal, Rift monolith
 // Building kit (§40): returns the kit table the world script builds from.
 const buildingKit=require('./building-shapes.cjs')({world,C,PI,hash,jitterOf,worldShapes});
 
