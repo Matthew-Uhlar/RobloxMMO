@@ -869,6 +869,29 @@ function Raid.use(player, kind)
 	return {ok = true, left = run.supplies[kind]}
 end
 
+-- Combat Feats (§45): sums one encounter's fight record (combat credit[uid].feat)
+-- into the member's run record; attack keys become "<encounter>:<attack>".
+function Raid.featAdd(m, encounter, f)
+	if type(m) ~= "table" or type(f) ~= "table" then return end
+	local acc = m.feat
+	if type(acc) ~= "table" then
+		acc = {mech = 0, cast = 0, swings = 0, prayed = 0, ward = 0, adds = 0, styles = {}, hitBy = {}, seen = {}}
+		m.feat = acc
+	end
+	for _, k in ipairs({"mech", "cast", "swings", "prayed", "ward", "adds"}) do
+		if type(f[k]) == "number" then acc[k] += f[k] end
+	end
+	if type(f.armor) == "number" then acc.armor = math.max(acc.armor or 0, f.armor) end
+	if f.absent == true then acc.absent = true end -- QC H2
+	for style, v in pairs(type(f.styles) == "table" and f.styles or {}) do if v == true then acc.styles[style] = true end end
+	for _, key in ipairs({"hitBy", "seen"}) do
+		for atk, n in pairs(type(f[key]) == "table" and f[key] or {}) do
+			local id = tostring(encounter) .. ":" .. tostring(atk)
+			if type(n) == "number" then acc[key][id] = (acc[key][id] or 0) + n end
+		end
+	end
+end
+
 -- Completion ---------------------------------------------------------------------------------------
 local REASON_TEXT = {share = "your points fell below the party's floor", away = "you were not in the vault", idle = "you had not acted for a while",
 	points = "you earned no points", removed = "you had left the raid"}
@@ -912,7 +935,7 @@ function Raid.complete(run, now)
 			for skill, n in pairs(m.xp) do xp[skill] = math.min(n, 4000) end
 			deliver({uid = uid, at = 0, deadline = deadline, payload = {action = "complete", run = run.id, seconds = seconds, party = party,
 				points = m.points, team = team, challenge = run.challenge, underPar = underPar, unique = if recipient == uid then unique else nil,
-				deaths = m.deaths, xp = xp}})
+				deaths = m.deaths, xp = xp, feat = m.feat}}) -- §45: the run's summed fight records
 			local purple = if recipient == uid then "  PURPLE: " .. Data.Items[unique].name .. "!" elseif recipient then "  " .. nameOf(run.members[recipient].player) .. " found a unique." else ""
 			notice(m.player, "Thalvorn falls in " .. RD.formatTime(seconds) .. "! " .. m.points .. " points (team " .. team .. ")." .. purple)
 		else
@@ -1094,6 +1117,7 @@ function Raid.roomStep(run, now)
 						if run.members[uid] then
 							-- QC H1: the pool is sized by the same n the encounter scaled to.
 							award(run, uid, RD.damagePoints(room.kind, (c.damage or 0) / math.max(1, room.maxHp), room.party or run.party, run.challenge))
+							Raid.featAdd(run.members[uid], room.id, c.feat) -- Combat Feats (§45)
 							if c.lastHit and c.lastHit > run.members[uid].actionAt then run.members[uid].actionAt = c.lastHit end
 						end
 					end
