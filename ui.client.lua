@@ -885,6 +885,8 @@ gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(function() UI.layoutSidebar
 player:GetAttributeChangedSignal("IslandBuilding"):Connect(function() UI.layoutActionBar() end)
 -- The Wayfinder publishes the region under the player (sidebar region line).
 player:GetAttributeChangedSignal("IsleRegionHere"):Connect(function() if UI.refreshSidebar then UI.refreshSidebar() end end)
+-- §33: the pinned quest-helper step (server attribute) refreshes the Objective line at once.
+player:GetAttributeChangedSignal("IsleObjectivePin"):Connect(function() if UI.refreshSidebar then UI.refreshSidebar() end end)
 function UI.layoutActionBar()
 	local L=UI.lay()
 	actionBar.Position,actionBar.Size=UDim2.fromOffset(L.action.x,L.action.y),UDim2.fromOffset(L.action.w,L.action.h)
@@ -1137,6 +1139,13 @@ function UI.affordLots(cost)
 	return math.max(1, most)
 end
 function UI.objective()
+	-- §33: a pinned quest-helper step (server attribute IsleObjectivePin) comes first.
+	local pin = player:GetAttribute("IsleObjectivePin")
+	if type(pin) == "string" and pin ~= "" then
+		local sp = type(state.systems) == "table" and type(state.systems.pin) == "table" and state.systems.pin
+		-- §33 QC L8: the guide's position is labelled ("step 2/4") so it never reads as a second count.
+		return escape(pin) .. (sp and type(sp.step) == "number" and paint("  · step " .. sp.step .. "/" .. tostring(sp.total or sp.step), "A9B4C0") or "")
+	end
 	local g = type(state.guide) == "table" and state.guide
 	if g and not g.complete and type(g.title) == "string" then
 		return g.title .. paint("  " .. tostring(g.step or 1) .. "/" .. tostring(g.total or 10), "A9B4C0")
@@ -1715,6 +1724,7 @@ local function drawBearing()
 		row(tostring(state.quest.title or "Guild contract"), tostring(state.quest.detail or ""), state.quest.ready and "Claim" or nil, function()
 			send("quest")
 		end)
+		if Pages.SYS then Pages.SYS.helperCard("contract","Quest helper  ·  guild contract") end -- §33
 	end
 	heading("02    /    EXPEDITION RULES")
 	if state.ironman then
@@ -1866,6 +1876,7 @@ local function drawQuests()
 				end
 			end
 			local region=Data.RegionById and Data.RegionById[q.region]
+			local guideAfter=Pages.SYS and Pages.SYS.questExtras(q,entry,actions,lines) -- §33 quest helper: NEXT line, Guide / Pin / Waypoint
 			card({name="Quest"..q.id,motif="Journal",title=escape(q.title),titleColor=entry.done==true and muted or ivory,
 				subtitle=escape((region and region.name or q.region).."  ·  "..(q.line=="main" and "Main quest" or "Side quest")),
 				badge=badge,badgeColor=color,detail=entry.done~=true and escape(q.story or "") or nil,before=checklists,lines=lines,actions=actions,
@@ -1890,7 +1901,7 @@ local function drawQuests()
 						b.TextScaled=true
 						make("UITextSizeConstraint",b,{MinTextSize=11,MaxTextSize=13})
 					end
-				end or nil})
+				end or guideAfter})
 			shown+=1
 		end
 	end
@@ -1918,6 +1929,7 @@ local function drawDiaries()
 	card({name="DiarySummary",motif="Hunt",title=escape(diary.name),titleColor=gold,
 		subtitle=claimed.." / "..#Data.DiaryTiers.." tiers claimed  ·  "..total.." / "..(#Data.Diaries*#Data.DiaryTiers).." across the isles",
 		pips={total=#Data.DiaryTiers,filled=claimed,color=gold,labels={"Easy","Medium","Hard","Elite"}}})
+	if Pages.SYS then Pages.SYS.helperCard("diary:"..QJ.region,"Quest helper  ·  current tier") end -- §33
 	local tiers={}
 	for _,t in ipairs(tbl(entry.tiers)) do if type(t)=="table" and type(t.tier)=="string" then tiers[t.tier]=t end end
 	for index,tierName in ipairs(Data.DiaryTiers) do
@@ -2155,6 +2167,10 @@ local function skillUnlocks(skill,level)
 	end
 	if skill=="Thieving" and type(Data.Thieving)=="table" then
 		for _,t in ipairs(tbl(Data.Thieving.Targets)) do add(t.level,escape(tbl(Data.Thieving.Kinds[t.kind]).verb or "Rob").." the "..escape(t.name)..", +"..fmt(t.xp).." XP",nil) end
+	end
+	-- Beaconry (§37): logs, beacon pyres, strikers and the Everflame mantle.
+	if skill=="Beaconry" and type(Data.Beaconry)=="table" and type(Data.Beaconry.unlocks)=="function" then
+		for _,u in ipairs(Data.Beaconry.unlocks()) do add(u.level,escape(u.text),u.item) end
 	end
 	local bag=tbl(Data.AccessoryBag)
 	if skill==tbl(bag.slotsPerLevel).skill and num(tbl(bag.slotsPerLevel).every,0)>0 then
@@ -2838,6 +2854,7 @@ local function drawPets()
 			if e.index==PT.sel then chosen=e end
 		end
 		if chosen then PT.detail(chosen.index,chosen.pet) end
+		if chosen and UI.QL and UI.QL.tether then UI.QL.tether(chosen.index,chosen.pet) end -- §41 Roost tethers + preview
 	end
 	-- The Roost keeper's stall: compact tiles (tap to buy).
 	local width=contentWidth()
@@ -2854,12 +2871,15 @@ local function drawPets()
 				end)
 				-- §31: right-click opens the quantity picker (features.client.lua).
 				b.MouseButton2Click:Connect(function()
-					UI.pickQuantity({verb="petShop",base=entry.item,name=itemName(entry.item),unit=price,amount=1,max=UI.affordLots({coins=price})})
+					local left=Pages.SYS and Data.Systems and Pages.SYS.stockLeft(Data.Systems.Stock.key("roost",entry.item)) -- §33 daily stock caps the picker
+					UI.pickQuantity({verb="petShop",base=entry.item,name=itemName(entry.item),unit=price,amount=1,max=math.min(UI.affordLots({coins=price}),math.max(1,left or 64))})
 				end)
 				make("UIStroke",b,{Color=rgb(itemHex(entry.item)),Thickness=1,Transparency=.35})
 				local n=label(b,escape(itemName(entry.item)),10,4,UDim.new(1,-16),20,UI.heavy,compactAtlas and 12 or 13,rgb(itemHex(entry.item)))
 				n.TextTruncate=Enum.TextTruncate.AtEnd
-				label(b,fmt(price).." coins",10,24,UDim.new(1,-16),18,bold,11,num(state.coins,0)>=price and gold or muted)
+				local stock=Pages.SYS and Data.Systems and Pages.SYS.stockText(Data.Systems.Stock.key("roost",entry.item)) -- §33 daily stock
+				local priceLabel=label(b,fmt(price).." coins"..(stock and ("  ·  "..stock) or ""),10,24,UDim.new(1,-16),18,bold,11,num(state.coins,0)>=price and gold or muted)
+				priceLabel.RichText=true
 			end
 		end
 	end
@@ -3396,6 +3416,10 @@ local function itemDetail(id)
 		elseif def.kind=="pet" then
 			table.insert(actions,{caption="Adopt",primary=true,fn=function() send("petAdopt",id) end})
 		end
+		-- Beaconry (§37): kindle a log where you stand (the server checks the ground).
+		if Data and type(Data.Beaconry)=="table" and Data.Beaconry.LogById[id] then
+			table.insert(actions,{caption="Kindle",fn=function() send("kindle",id) end})
+		end
 		if enchantKind(def) then
 			table.insert(actions,{caption="Enchant",fn=function() enchantTarget=id;current="Hero";sectionOf.Hero="Enchant";scroll.CanvasPosition=Vector2.zero;render() end})
 		end
@@ -3404,12 +3428,30 @@ local function itemDetail(id)
 		table.insert(actions,{caption=tostring(legacy.action or "Use"),fn=function() send("heal",id) end})
 	end
 	if legacy and num(legacy.readyIn,0)>0 then table.insert(lines,paint("Recovering: ready in "..math.ceil(legacy.readyIn).."s","F9CC77")) end
-	if def then
+	-- §29 last-copy rule: the server keeps one copy of an upgraded item (Gear.upgraded).
+	local kept=def and (UI.Gear.upgraded(id) or next(tbl(tbl(tbl(depth()).enchants)[id]))~=nil) and 1 or 0
+	-- Polish QC M2: equipped or bagged items offer no Sell / Sell… (the server refuses
+	-- both, as Theme.itemActions already hides them in the satchel menu).
+	local worn=equippedSlotOf(id)~=nil or table.find(tbl(d and d.accessoryBag),id)~=nil
+	if def and worn then
+		if sellConfirm==id then sellConfirm=nil end
+		table.insert(lines,paint("Equipped: unequip it (or take it out of your accessory bag) to sell it.","A9BDC1"))
+	elseif def and n<=kept then
+		table.insert(lines,paint("Upgraded: your last copy cannot be sold (spare copies can).","A9BDC1"))
+	elseif def then
 		if sellConfirm==id then
-			table.insert(lines,paint("Tap Confirm to sell all "..fmt(n).." for "..fmt(num(def.value,0)*n).." coins"..(equippedSlotOf(id) and " (including the equipped piece)" or "")..".","F9CC77"))
+			table.insert(lines,paint("Tap Confirm to sell "..(kept>0 and (fmt(n-kept).." spare"..(n-kept>1 and "s" or "")) or ("all "..fmt(n))).." for "..fmt(num(def.value,0)*(n-kept)).." coins"
+				..(kept>0 and " (your upgraded copy is kept)" or "")..".","F9CC77"))
 			table.insert(actions,{caption="Confirm",fn=function() sellConfirm=nil;send("sell",id) end})
 		else
 			table.insert(actions,{caption="Sell",fn=function() sellConfirm=id;render() end})
+		end
+		-- Polish: sell part of a stack through the §31 quantity picker (sell "<id>:<n>").
+		if n-kept>1 then
+			table.insert(actions,{caption="Sell…",name="ItemDetailSellQty",fn=function()
+				sellConfirm=nil
+				UI.pickQuantity({verb="sell",base=id,item=id,name=def.name,unit=num(def.value,0),amount=1,max=n-kept,sell=true})
+			end})
 		end
 	end
 	local equipped=equippedSlotOf(id)
@@ -3430,7 +3472,7 @@ local function drawItems()
 	for key,value in pairs(tbl(state.items)) do if num(value,0)>0 then table.insert(keys,key) end end
 	heading("SATCHEL    /    "..#keys.." STACKS")
 	if #keys==0 then
-		row("Your satchel is empty", "Use a gathering prompt to collect your first resource.")
+		row("Your satchel is empty", "Strike a gathering node (left-click it) to collect your first resource.")
 		return
 	end
 	sectionBar({"All","Gear","Tools","Food","Materials","Trinkets"},satchelFilter,function(name)
@@ -4922,6 +4964,7 @@ local function drawBank()
 	end)
 	input.FocusLost:Connect(function() updatePreview() end)
 	updatePreview()
+	if UI.QL and UI.QL.charter then UI.QL.charter() end -- §41 Vault Charter
 end
 local buyLimits,listPrices={},{}
 local function quoteAge(quote)
@@ -5183,6 +5226,11 @@ end
 function U.economy() return tbl(state.economy) end
 function U.fee(price)
 	local rules=Data and type(Data.Economy)=="table" and Data.Economy
+	-- §36: the ruling council's Open Ledger perk (term perks from snapshot.council) cuts the fee.
+	local council=Data and type(Data.Council)=="table" and Data.Council
+	if council and rules and type(rules.auctionFee)=="function" then
+		return council.auctionFee(council.effects(tbl(tbl(state.council).term).perks),price)
+	end
 	if rules and type(rules.auctionFee)=="function" then return rules.auctionFee(price) end
 	return math.max(1,math.ceil(price/100))
 end
@@ -5319,12 +5367,14 @@ function U.drawOrders()
 	local view=tbl(econ.bazaar)
 	local fresh=view.item==item
 	local held=count("items",item)
+	U.history=fresh and type(view.history)=="table" and view.history or nil -- §33 drawn under the book card
 	card({name="Book",item=item,title=escape(itemName(item)),titleColor=rgb(itemHex(item)),
 		subtitle="Held ×"..fmt(held).."  ·  merchant "..fmt(num(def and def.value,0)).." each",
 		badge=fresh and view.bestBid and (fmt(view.bestBid).." bid") or nil,badgeColor=mint,
 		detail=fresh and ("Best ask "..(view.bestAsk and fmt(view.bestAsk) or "—").."  ·  best bid "..(view.bestBid and fmt(view.bestBid) or "—").."  ·  spread "..(view.spread and fmt(view.spread) or "—")..". Prices are per unit; your own orders are excluded from the best prices.") or "Refresh to read this order book.",
 		after=fresh and U.book(view) or nil,
 		actions={{caption="Refresh",fn=function() U.refresh("Orders") end}}})
+	if U.history and Pages.SYS then Pages.SYS.historyCard(item,U.history,"BookHistory") end -- §33 price history
 	heading("PLACE    /    QUANTITY AND UNIT PRICE")
 	U.field("QUANTITY (1–"..rules.maxQuantity..")","BazaarQuantity",U.qty,"Whole units",function(value) U.qty=value end)
 	U.field("UNIT PRICE (1–"..fmt(rules.maxPrice)..")","BazaarPrice",U.price,"Whole coins per unit",function(value) U.price=value end)
@@ -5605,7 +5655,7 @@ local function drawCalendar()
 	local open=num(events.vendorUntil,0)>now
 	heading("FESTIVAL VENDOR    /    "..(open and "OPEN" or "VISIT THE HUB STALL"))
 	if not open then
-		card({name="VendorClosed",motif="Ledger",title="Festival Vendor",titleColor=gold,subtitle="Hub stall beside the Island Assembly board",
+		card({name="VendorClosed",motif="Ledger",title="Festival Vendor",titleColor=gold,subtitle="Compass Quay stall beside the Island Assembly board",
 			detail="Trade Hollow Night candy, Starfall shards and Sunscale Carp for keepsakes. Visit the stall to open trading for "..math.floor(num(Data.EVENT_VENDOR_SECONDS,300)/60).." minutes."})
 	else
 		card({name="VendorOpen",motif="Ledger",title="Festival Vendor",titleColor=gold,subtitle="Trading open",
@@ -5638,10 +5688,170 @@ end)
 end
 
 ------------------------------------------------------------------------------
+-- Journal › Council (Isle Council team, §36): the ruling term (winner,
+-- minister, active perks, countdown), the open ballot (five candidates, their
+-- perks, the cached live vote share, Vote / change buttons) and past terms.
+-- Slates and perk text come from Data.Council (deterministic per election);
+-- votes, tallies and results from snapshot.council. Countdowns tick in place;
+-- the page redraws when the ballot opens or closes.
+------------------------------------------------------------------------------
+do
+local CO={timers={},boundary=math.huge,readySnap=nil,readyAt=0}
+function CO.ready() return Data and type(Data.Council)=="table" and type(Data.Council.slate)=="function" end
+-- Synced server clock; unsynced clocks fall back to the snapshot's server time, then os.time().
+function CO.now()
+	local ok,t=pcall(function() return workspace:GetServerTimeNow() end)
+	if ok and type(t)=="number" and t==t and t>1577836800 then return math.floor(t) end
+	local snap=num(tbl(state.council).now,0)
+	return math.floor(if snap>1577836800 then snap else os.time())
+end
+function CO.timer(fn,color)
+	return function(body,nextOrder)
+		local copy=para(body,fn(CO.now()),nextOrder(),color or gold,compactAtlas and 13 or 14)
+		copy.Name="Countdown"
+		table.insert(CO.timers,{label=copy,fn=fn})
+	end
+end
+-- A portrait medallion in the candidate's colour.
+function CO.portrait(cand)
+	return function(band,size)
+		local disc=make("TextLabel",band,{Name="Portrait",Size=UDim2.fromOffset(size,size),BackgroundColor3=safeColor(cand.color,gold),BackgroundTransparency=.55,
+			Text=cand.portrait or "?",TextSize=math.floor(size*.55),Font=Enum.Font.GothamBold,TextColor3=ivory,BorderSizePixel=0})
+		make("UICorner",disc,{CornerRadius=UDim.new(1,0)})
+		make("UIStroke",disc,{Color=safeColor(cand.color,gold),Thickness=2})
+		return disc
+	end
+end
+function CO.perkLines(ids,minister)
+	local C=Data.Council
+	local out={}
+	for _,id in ipairs(tbl(ids)) do
+		local p=C.Perks[id]
+		if p then table.insert(out,paint("◆ "..escape(p.name),p.color).."  "..escape(p.text)..(if id==minister then "  "..paint("(Minister)","B9C7CC") else "")) end
+	end
+	return out
+end
+local function drawCouncil()
+	table.clear(CO.timers)
+	CO.boundary=math.huge
+	heading("ISLE COUNCIL    /    ELECTION & TERM")
+	if not CO.ready() then dataMissing() return end
+	local C=Data.Council
+	local s=tbl(state.council)
+	local now=CO.now()
+	-- QC L4: the server's election (it rolls forward; a lagging client clock never
+	-- shows an older ballot) while its window still holds, else the client's clock.
+	local el=C.election(now)
+	local se=math.floor(num(s.e,0))
+	if se>0 then
+		local w=C.termWindow(se)
+		if now<w.starts then
+			el={e=se,opens=w.opens,closes=w.starts,open=s.open==true and now>=w.opens,termYear=se-1}
+		end
+	end
+	local boundary=if el.open then el.closes else el.opens
+	CO.boundary=if boundary>now then boundary else math.huge
+	-- QC L2: the vote cooldown is a deadline: the page redraws when it passes.
+	if s~=CO.readySnap then CO.readySnap=s; CO.readyAt=now+math.max(0,num(s.readyIn,0)) end
+	local wait=math.max(0,CO.readyAt-now)
+	if wait>0 then CO.boundary=math.min(CO.boundary,CO.readyAt) end
+	local term=tbl(s.term)
+	-- The ruling term.
+	if term.sealed and type(term.winner)=="string" then
+		local w=C.CandidateById[term.winner] or {}
+		local lines=CO.perkLines(term.perks,term.ministerPerk)
+		if type(term.minister)=="string" then table.insert(lines,1,"Minister: "..paint(escape(C.candidateName(term.minister)),"FFF4D9")..(if term.ministerPerk then "" else "  (no extra perk)")) end
+		local total=num(term.total,0)
+		card({name="CouncilTerm",icon=CO.portrait(w),accent=safeColor(w.color,gold),title=paint("YEAR "..num(term.y,0).." COUNCIL  ·  "..escape(w.name or term.winner),C.COLOR),
+			subtitle=escape(w.title or "").."  ·  "..fmt(total).." vote"..(if total==1 then "" else "s").." cast",badge=paint("IN OFFICE","9EE7D2"),
+			detail="Active on every isle this year:",lines=lines,
+			after=CO.timer(function(t) return "Term ends in "..C.span(num(term.ends,t)-t) end,muted)})
+	else
+		card({name="CouncilTerm",motif="Journal",title=paint("YEAR "..num(term.y,el.termYear).." COUNCIL",C.COLOR),subtitle="Counting the ballot…",
+			detail="The isles are sealing last year's ballot. Council perks begin as soon as the result is in."})
+	end
+	-- The ballot.
+	local voted=type(s.vote)=="string" and s.vote or nil
+	-- QC L1: a refused ballot and the candidate last confirmed by the count.
+	local REFUSED={closed="not counted: the ballot had closed",late="not counted: the ballot closed before it was written",
+		full="not counted: the ballot box is full",bad="not counted: refused"}
+	local status=if s.refused then paint("✗ "..(REFUSED[s.refused] or REFUSED.bad),"E07A5F") elseif s.confirmed then paint("✓ counted","9EE7D2") else paint("counting…","B9C7CC")
+	local yourVote=if voted then "Your vote: "..paint(escape(C.candidateName(voted)),"FFF4D9").."  "..status else "You have not voted yet."
+	local ballotLines={yourVote}
+	if voted and not s.confirmed and type(s.counted)=="string" and s.counted~=voted then
+		table.insert(ballotLines,"Last counted: "..paint(escape(C.candidateName(s.counted)),"FFF4D9"))
+	end
+	local minRenown=math.floor(num(s.minRenown,C.MIN_RENOWN or 0))
+	local ineligible=s.eligible==false
+	if ineligible then table.insert(ballotLines,paint("Voting needs Isle Renown "..minRenown.." (you are Renown "..math.floor(num(s.renown,0))..")","E9C46A")) end
+	if el.open then
+		card({name="CouncilBallot",motif="Ledger",accent=gold,title=paint("YEAR "..el.e.." BALLOT  ·  OPEN",C.COLOR),
+			subtitle="One vote per account  ·  change it any time before the close",badge=paint("VOTING","9EE7D2"),
+			lines=(function() table.insert(ballotLines,"Changes left: "..math.max(0,num(s.changesLeft,C.MAX_CHANGES)-(if voted then 0 else 1))) return ballotLines end)(),
+			after=CO.timer(function(t) return "Ballot closes in "..C.span(el.closes-t) end)})
+	else
+		card({name="CouncilBallot",motif="Ledger",title=paint("YEAR "..el.e.." BALLOT",C.COLOR),subtitle="Opens on Emberfall 1",
+			detail="Five councillors stand each isle year. Read their perks now; voting opens with the season.",
+			after=CO.timer(function(t) return "Ballot opens in "..C.span(el.opens-t) end,mint)})
+	end
+	heading("CANDIDATES    /    YEAR "..el.e)
+	local counts=type(s.counts)=="table" and s.counts or nil
+	local total=num(s.total,0)
+	local shares=counts and C.shares(counts,total) or nil
+	for i,entry in ipairs(C.slate(el.e)) do
+		local cand=C.CandidateById[entry.id]
+		local mine=voted==entry.id
+		local reason=(not el.open and "The ballot is not open yet.") or (ineligible and "Voting needs Isle Renown "..minRenown..".") or (mine and "Your vote is already with "..cand.name..".")
+			or (num(s.changesLeft,C.MAX_CHANGES)<=0 and "You have no vote changes left this election.") or (wait>0 and "One moment: the clerk is inking your last ballot.") or nil
+		local bar=nil
+		if shares then
+			local votes=math.floor(num(counts[i],0))
+			bar={fraction=shares[i],color=safeColor(cand.color,gold),caption=string.format("%.1f%%",shares[i]*100).."  ·  "..fmt(votes).." vote"..(if votes==1 then "" else "s")}
+		end
+		card({name="CouncilCandidate"..entry.id,icon=CO.portrait(cand),accent=mine and gold or nil,edge=mine and gold or nil,
+			title=paint(escape(cand.name),cand.color),subtitle=escape(cand.title),badge=mine and paint("YOUR VOTE","9EE7D2") or nil,
+			detail="“"..escape(cand.pitch).."”",lines=CO.perkLines(entry.perks),bar=bar,
+			actions={{caption=if mine then "Voted" elseif voted then "Change vote" else "Vote",primary=reason==nil,disabled=reason~=nil,reason=reason,
+				name="CouncilVote"..entry.id,fn=function() send("councilVote",entry.id) end}}})
+	end
+	if el.open then
+		local age=if s.tallyAt then math.max(0,now-num(s.tallyAt,now)) else nil
+		card({name="CouncilTally",motif="Ledger",title="Live vote share",titleColor=gold,
+			detail=if shares then fmt(total).." votes counted across every isle  ·  updated "..(if age and age>=60 then (age//60).."m" else "moments").." ago (refreshes about every "..math.floor(C.READ/60*10+.5)/10 .."m)"
+				else "The tally is being gathered from every isle…",
+			actions={{caption="Refresh",name="CouncilRefresh",fn=function() send("councilView") end}}})
+	end
+	heading("PAST COUNCILS")
+	local hist=tbl(s.history)
+	if #hist==0 then card({name="CouncilHistoryEmpty",motif="Journal",title="No sealed terms yet",titleColor=muted,detail="Past winners appear here once a ballot is sealed."}) end
+	for _,h in ipairs(hist) do
+		local w=C.CandidateById[h.winner] or {}
+		-- Lead decision (b): a term nobody voted in seats its first slate place, with full perks.
+		local share=if num(h.total,0)>0 then string.format("%.0f%%",num(h.votes,0)/h.total*100).." of "..fmt(num(h.total,0)).." votes" else "No votes cast: first on the slate"
+		card({name="CouncilHistory"..tostring(h.e),icon=CO.portrait(w),title=paint("Year "..num(h.e,0).."  ·  "..escape(w.name or tostring(h.winner)),w.color or C.COLOR),
+			subtitle=share..(if type(h.minister)=="string" then "  ·  Minister "..escape(C.candidateName(h.minister)) else ""),
+			lines=CO.perkLines(C.termPerks({e=h.e,winner=h.winner,ministerPerk=h.ministerPerk}),h.ministerPerk)})
+	end
+end
+Pages.drawCouncil=drawCouncil
+Pages.CO=CO
+task.spawn(function()
+	while task.wait(1) do
+		if #CO.timers>0 and atlas.Visible and current=="Journal" and sectionOf and sectionOf.Journal=="Council" then
+			local now=CO.now()
+			if now>=CO.boundary then render() else
+				for _,t in ipairs(CO.timers) do pcall(function() t.label.Text=t.fn(now) end) end
+			end
+		end
+	end
+end)
+end
+
+------------------------------------------------------------------------------
 -- Agility & Hunter (Agility/Hunter client team). HUD: a lap tracker (course,
 -- obstacle n/total, step countdown, lap clock and best lap, an arrow to the
--- next obstacle) and a trap counter (placed/max, caught, collapsed) in the
--- left column under the tutorial tracker. Pages: Journal › Agility (courses,
+-- next obstacle) and a trap counter (placed/max, caught, collapsed) at the
+-- top of the left column. Pages: Journal › Agility (courses,
 -- lap milestones, shortcuts), Hunt › Hunter (hunter log, traps, companions)
 -- and Ledger › Vendors (Skymark Exchange, Trackers' Lodge; verb skillBuy).
 -- Server state: snapshot.agilityHunter = {agility={laps,best,lapTiers,run},
@@ -5742,11 +5952,11 @@ do
 	traps.Activated:Connect(function() if Pages.openTo then Pages.openTo("Hunt","Hunter") end end)
 	AH.traps=traps
 end
--- Left column under the tutorial tracker (npc.client.lua, y 100-166), or from
--- y 100 once the tutorial is done; 184 px wide on short screens so it clears
--- the centred toast. When both panels would reach the action bar (phone
--- landscape with the tutorial up) the lap tracker drops its best-lap line and
--- the trap counter slims down.
+-- Top of the left column (lanes.leftTop; the old tutorial tracker that sat
+-- above it is retired, Polish); 184 px wide on short screens so it clears the
+-- centred toast. When both panels would reach the action bar (phone
+-- landscape) the lap tracker drops its best-lap line and the trap counter
+-- slims down.
 -- The island builder and townsfolk dialogue own the bottom and left: step aside.
 function AH.suppressed()
 	if player:GetAttribute("IslandBuilding") then return true end
@@ -5762,10 +5972,6 @@ function AH.layout()
 	local short=height<520
 	local lanes=UI.lay()
 	local top=lanes.leftTop
-	local playerGui=player:FindFirstChild("PlayerGui")
-	local folk=playerGui and playerGui:FindFirstChild("TownsfolkDialogue")
-	local tutorial=folk and folk:FindFirstChild("TutorialTracker")
-	if tutorial and tutorial.Visible then top=lanes.leftTop+tutorial.Size.Y.Offset+4 end
 	local width=lanes.leftWidth
 	local trackerHeight=short and 64 or 70
 	-- The left column ends above the hotbar (x 142+ on the smallest phones).
@@ -5937,7 +6143,7 @@ task.spawn(function()
 	end
 end)
 task.spawn(function()
-	-- Vendor countdowns on the open Vendors page; layout follows the tutorial tracker.
+	-- Vendor countdowns on the open Vendors page; layout re-checks the left column.
 	while task.wait(1) do
 		pcall(AH.refreshCourse)
 		pcall(AH.refreshTraps)
@@ -6221,6 +6427,11 @@ function AH.drawVendors()
 			elseif unique and have>0 then reason="You already own "..def.name.."."
 			elseif not afford then reason="You can't afford the "..def.name.." yet." end
 			local lines={"Cost: "..AH.costText(entry.cost)}
+			local stockKey=Data.Systems and Data.Systems.Stock.key("sv",skill,entry.item) -- §33 daily stock
+			local stock=Pages.SYS and stockKey and Pages.SYS.stockText(stockKey)
+			if stock then table.insert(lines,stock) end
+			local stockLeft=Pages.SYS and stockKey and Pages.SYS.stockLeft(stockKey)
+			if stockLeft==0 and not reason then reason="Sold out for today." end
 			if type(def.stats)=="table" then table.insert(lines,statText(def.stats)) end
 			if type(def.buff)=="table" then table.insert(lines,"Buff: "..statText(def.buff.stats).."  for "..clock(def.buff.duration)) end
 			if type(def.requires)=="table" then
@@ -6245,7 +6456,7 @@ function AH.drawVendors()
 					fn=function() send("skillBuy",skill..":"..entry.item) end},
 					-- §31: quantity picker (features.client.lua); stackable wares only.
 					not unique and {caption="Buy ×…",disabled=reason~=nil,reason=reason,name="BuyQty"..entry.item,
-					fn=function() UI.pickQuantity({verb="skillBuy",base=skill..":"..entry.item,name=def.name,unit=num(tbl(entry.cost).coins,0),amount=1,max=UI.affordLots(entry.cost)}) end} or nil}})
+					fn=function() UI.pickQuantity({verb="skillBuy",base=skill..":"..entry.item,name=def.name,unit=num(tbl(entry.cost).coins,0),amount=1,max=math.min(UI.affordLots(entry.cost),math.max(1,stockLeft or 64))}) end} or nil}})
 		end
 	end
 	-- Set bonus: Windrunner (Exchange stock) or Thicketstalker (Workbench, from pelts).
@@ -8110,6 +8321,920 @@ end
 Pages.drawCrafting=CRP.draw
 end
 ------------------------------------------------------------------------------
+-- Workshop › Beaconry (Beaconry team; docs/DEPTH-CONTRACT.md §37). Sections:
+-- Kindle (a summary card, your campfires, one card per log with Kindle),
+-- Campfire (cooking at the nearest lit campfire: running batch + recipe
+-- cards with ×1 / ×5 / ×all), Beacons (the nine pyres, their state and a
+-- waypoint, the weekly community watch and its claim). The server validates
+-- and paces everything (verbs kindle, fireCook, fireStop, beaconClaim; beacon
+-- pyres are lit at the pyre's prompt). Snapshot key `beaconry`. State: Pages.BC.
+------------------------------------------------------------------------------
+do
+local BCP={section="Kindle"}
+Pages.BC=BCP
+local function BD() return Data and type(Data.Beaconry)=="table" and Data.Beaconry or nil end
+function BCP.snap() return tbl(state.beaconry) end
+function BCP.levelOf(skill)
+	local info=skillsOf(state)[skill]
+	return info and info.level or 1
+end
+-- QC: the server-wide count and your lifetime kindles read as separate facts.
+function BCP.burningLine(snap)
+	local B=BD()
+	local kindled=0
+	for _,n in pairs(tbl(snap.kindled)) do kindled+=num(n,0) end
+	return fmt(num(snap.burning,0)).."/"..fmt(B and B.MAX_FIRES or 40).." campfires burning on this server  ·  "..fmt(kindled).." kindled  ·  "
+		..fmt(num(snap.ash,0)).." ash gathered  ·  "..fmt(num(snap.failed,0)).." sparks that failed"
+end
+function BCP.cookAfford(rec)
+	local B=BD()
+	local n=B and B.MAX_BATCH or 28
+	for id,need in pairs(tbl(rec.costs)) do n=math.min(n,math.floor(count("items",id)/math.max(1,num(need,1)))) end
+	return math.max(0,n)
+end
+local function guide(specs,label)
+	local request=player:FindFirstChild("WayfinderRequest")
+	if request then request:Fire(specs,label) else notify("The Wayfinder is still charting the isles. Try again in a moment.") end
+end
+local function drawKindle(B,snap)
+	local lvl=BCP.levelOf("Beaconry")
+	local strikerId=type(snap.striker)=="string" and snap.striker or nil
+	local striker=strikerId and B.Strikers[strikerId] or nil
+	local mine=type(snap.fires)=="table" and snap.fires or {}
+	local fireLines={}
+	for _,f in ipairs(mine) do
+		if type(f)=="table" then table.insert(fireLines,paint(escape(itemName(f.log)),itemHex(f.log)).."  "..clock(num(f.left,0)).." left") end
+	end
+	local cooldown=num(snap.kindleIn,0)
+	card({name="BeaconryKindle",motif="Workshop",accent=rgb(skillHex("Beaconry")),title="Kindling",titleColor=gold,
+		subtitle=(striker and (check.." "..escape(itemName(strikerId))) or (cross.." No striker: forge a Flint Striker (Smithing 1)"))
+			..(snap.everflame and "  ·  "..paint("EVERFLAME","FFB347") or ""),
+		detail="Kindle a log on open ground (never on paths, bridges or another wayfarer's island). A campfire burns for a while, then leaves Pyre Ash. Cook on any lit campfire.",
+		lines={#fireLines>0 and ("Your campfires: "..table.concat(fireLines,"   ")) or "No campfire of yours is burning.",
+			BCP.burningLine(snap)},
+		bar=cooldown>0 and {fraction=math.clamp(1-cooldown/B.KINDLE_SECONDS,0,1),color=mint,caption="Striker ready in "..string.format("%.1f",cooldown).."s"} or nil,
+		actions={{caption="Kindle best log",primary=striker~=nil or nil,disabled=striker==nil,reason="Forge a Flint Striker first.",fn=function() send("kindle","") end}}})
+	heading("LOGS")
+	for _,log in ipairs(B.Logs) do
+		local have=count("items",log.id)
+		local chance=if snap.everflame then 1 else B.successChance(lvl,log,striker and striker.tier or 1)
+		local ok=lvl>=log.level and have>0 and striker~=nil
+		local why=(lvl<log.level and ("Requires Beaconry "..log.level..".")) or (striker==nil and "Forge a Flint Striker first.") or (have<=0 and ("You have no "..log.name..".")) or nil
+		card({name="Kindle"..log.id,item=log.id,title=escape(log.name),titleColor=rgb(itemHex(log.id)),
+			subtitle="Lv "..log.level.."  ·  +"..fmt(log.xp).." XP  ·  burns "..log.seconds.."s",badge=ok and "READY" or nil,badgeColor=mint,
+			lines={(lvl>=log.level and check or cross).." Beaconry "..log.level.."   "..paint(fmt(have).." in satchel",have>0 and "9EE7D2" or "E8806A"),
+				lvl>=log.level and ("Kindle chance "..paint(math.floor(chance*100+.5).."%",chance>=1 and "9EE7D2" or "F9CC77")) or ""},
+			actions={{caption="Kindle",primary=ok or nil,disabled=not ok,reason=why,fn=function() send("kindle",log.id) end}}})
+	end
+end
+local function drawCampfire(B,snap)
+	local near=type(snap.near)=="table" and snap.near or nil
+	local cookLevel=BCP.levelOf("Cooking")
+	card({name="BeaconryCampfire",motif="Workshop",accent=rgb(skillHex("Cooking")),title="Campfire cooking",titleColor=gold,
+		subtitle=near and paint("At a campfire ("..escape(itemName(near.log))..") · "..clock(num(near.left,0)).." left","9EE7D2")
+			or paint("Stand beside a lit campfire to cook on it.","E8806A"),
+		detail="Cooking's meals and feasts cook here too: +"..math.floor((B.FIRE_XP_MULT-1)*100+.5).."% Cooking XP, but open flames burn food until you outgrow the recipe. Two dishes only a campfire can make.",
+		lines={"Cooked "..fmt(num(snap.cooked,0)).."  ·  burnt "..fmt(num(snap.burnt,0))}})
+	local job=type(snap.job)=="table" and snap.job or nil
+	local jobRec=job and B.cookRecipe(job.recipe)
+	if jobRec then
+		local total=math.max(1,num(job.total,1))
+		card({name="BeaconryJob",item=jobRec.output,title="Cooking "..escape(itemName(jobRec.output)),titleColor=rgb(itemHex(jobRec.output)),
+			subtitle=fmt(num(job.done,0)).." / "..fmt(total).."  ·  "..B.COOK_SECONDS.."s each",
+			lines={"+"..fmt(num(job.cooked,0)).." cooked"..(num(job.burnt,0)>0 and ("  ·  "..fmt(job.burnt).." burnt") or "").."  ·  +"..fmt(num(job.xp,0)).." Cooking XP"},
+			bar={fraction=math.clamp(num(job.done,0)/total,0,1),color=mint,caption="Next in "..string.format("%.1f",num(job.nextIn,0)).."s · stay by the fire"},
+			actions={{caption="Stop",fn=function() send("fireStop") end}}})
+	end
+	heading("RECIPES")
+	for _,rec in ipairs(B.cookList()) do
+		local out=itemDef(rec.output)
+		local needs={}
+		for id,n in pairs(tbl(rec.costs)) do
+			local have=count("items",id)
+			table.insert(needs,paint(fmt(have).."/"..fmt(n),have>=n and "9EE7D2" or "E8806A").." "..paint(escape(itemName(id)),itemHex(id)))
+		end
+		table.sort(needs)
+		local burn=B.burnChance(cookLevel,rec)
+		local afford=BCP.cookAfford(rec)
+		local ok=cookLevel>=rec.level and afford>0
+		local blocked=not ok or near==nil
+		local why=(cookLevel<rec.level and ("Requires Cooking "..rec.level..".")) or (afford<=0 and "Missing ingredients.") or (near==nil and "Stand beside a lit campfire.") or nil
+		local actions={}
+		local sizes={1}
+		if afford>=5 then table.insert(sizes,5) end
+		if afford>1 and afford~=5 then table.insert(sizes,afford) end
+		for _,n in ipairs(sizes) do
+			table.insert(actions,{caption=n==1 and "Cook ×1" or "×"..n,primary=n==1 and not blocked or nil,disabled=blocked,reason=why,fn=function() send("fireCook",rec.id..":"..n) end})
+		end
+		card({name="Fire"..rec.id,item=rec.output,title=escape(out and out.name or rec.output)..(rec.fireOnly and "  ·  "..paint("CAMPFIRE ONLY","FFB347") or ""),titleColor=rgb(itemHex(rec.output)),
+			subtitle="Cooking "..rec.level.."  ·  +"..fmt(B.cookXp(rec)).." XP",badge=(ok and near) and "READY" or nil,badgeColor=mint,
+			lines={(cookLevel>=rec.level and check or cross).." Cooking "..rec.level..(burn>0 and ("   "..paint(string.format("%.0f%% burn",burn*100),"E8806A")) or ("   "..paint("never burns","9EE7D2"))),
+				"Needs "..table.concat(needs,"  ·  ")},actions=actions})
+	end
+end
+local function drawBeacons(B,snap)
+	local week=tbl(snap.week)
+	local total,goal=num(week.total,0),math.max(1,num(week.goal,B.WEEK_GOAL))
+	card({name="BeaconryWeek",motif="Workshop",accent=rgb("FFB347"),title="The weekly watch",titleColor=gold,
+		subtitle=fmt(total).." / "..fmt(goal).." beacons lit across the isles this week",
+		detail="Every beacon lit on any server counts. Light at least one this week; when the isles reach the goal, claim Beaconry XP.",
+		lines={"You lit "..fmt(num(week.lit,0)).." this week  ·  "..fmt(num(snap.weeks,0)).." watches kept  ·  resets in "..clock(num(week.resetIn,0))},
+		bar={fraction=math.clamp(total/goal,0,1),color=rgb("FFB347"),caption=total>=goal and "GOAL REACHED" or (fmt(goal-total).." to go")},
+		actions={{caption=week.claimed and "Claimed" or "Claim",primary=week.canClaim==true or nil,disabled=week.canClaim~=true,
+			reason=week.claimed and "Already claimed this week." or "Light a beacon and help reach the goal first.",fn=function() send("beaconClaim") end}}})
+	heading("BEACON NETWORK")
+	local lvl=BCP.levelOf("Beaconry")
+	local burning=tbl(snap.beacons)
+	for _,id in ipairs(B.BeaconOrder) do
+		local b=B.Beacons[id]
+		local left=num(burning[id],0)
+		local region=Data.RegionById and Data.RegionById[b.region]
+		local parts={}
+		for stat,v in pairs(b.buff) do table.insert(parts,"+"..v.." "..escape(tbl(tbl(Data.Stats)[stat]).name or stat)) end
+		table.sort(parts)
+		card({name="Beacon"..id,item=b.log,accent=rgb(b.color),title=escape(b.name),titleColor=rgb(b.color),
+			subtitle=escape(region and region.name or b.region).."  ·  Beaconry "..b.level,
+			badge=left>0 and ("BURNING "..clock(left)) or "DARK",badgeColor=left>0 and rgb("FFB347") or muted,
+			lines={(lvl>=b.level and check or cross).." Beaconry "..b.level.."   Feed "..B.BEACON_LOGS.." "..escape(itemName(b.log)).." or better  ·  +"..fmt(B.beaconXp(B.LogById[b.log])).." XP",
+				"Warmth ("..math.floor(B.WARMTH_SECONDS/60).." min): "..table.concat(parts,", ").."  ·  lit "..fmt(num(tbl(snap.lit)[id],0)).."×"},
+			actions={{caption="Waypoint",fn=function() guide({"anchor:Waypoint_Beacon_"..id,"region:"..b.region},b.name) end}}})
+	end
+end
+function BCP.draw()
+	local B=BD()
+	if not B then dataMissing() return end
+	local snap=BCP.snap()
+	local info=skillsOf(state).Beaconry
+	if info then
+		card({name="BeaconrySummary",motif="Workshop",accent=rgb(skillHex("Beaconry")),title="Beaconry",titleColor=gold,
+			subtitle="Level "..info.level.." / "..maxLevel(),
+			bar={fraction=info.fraction,color=rgb(skillHex("Beaconry")),caption=info.maxed and "MAX LEVEL" or (fmt(math.max(0,info.ceiling-info.xp)).." XP to Beaconry "..(info.level+1))}})
+	end
+	local sections={"Kindle","Campfire","Beacons"}
+	if not table.find(sections,BCP.section) then BCP.section="Kindle" end
+	sectionBar(sections,BCP.section,function(name) BCP.section=name;scroll.CanvasPosition=Vector2.zero;render() end,{small=true,prefix="Beaconry"})
+	if BCP.section=="Campfire" then drawCampfire(B,snap) elseif BCP.section=="Beacons" then drawBeacons(B,snap) else drawKindle(B,snap) end
+end
+Pages.drawBeaconry=BCP.draw
+end
+------------------------------------------------------------------------------
+-- Workshop › Contests and Hunt › Trophies (Contests team; docs/DEPTH-CONTRACT.md
+-- §39), plus the contest tracker HUD (right column, during a contest).
+-- Workshop › Contests sections: Contest (the running contest: countdown,
+-- featured crops with Enter, your score, the live bracket estimate, the top
+-- entries per crop; the next contest), Exchange (Harvest Medals: gear, the
+-- Furrow Almanac, titles) and Records (personal bests, brackets won, recent
+-- results). Hunt › Trophies sections: Ledger (the fifteen trophy fish, their
+-- waters and conditions, the qualities caught), Rewards (the Trophy Keeper's
+-- ledger tiers, titles) and Bait. The schedule and every rule come from
+-- Data.Contests / Data.Trophies (deterministic); scores, estimates and
+-- records from snapshot.contests / snapshot.trophies. State: Pages.CT.
+------------------------------------------------------------------------------
+do
+local CTP={section="Contest",tsection="Ledger",timers={},boundary=math.huge}
+Pages.CT=CTP
+local function CD() return Data and type(Data.Contests)=="table" and Data.Contests or nil end
+local function TD() return Data and type(Data.Trophies)=="table" and Data.Trophies or nil end
+function CTP.now()
+	local ok,t=pcall(function() return workspace:GetServerTimeNow() end)
+	if ok and type(t)=="number" and t==t and t>1577836800 then return math.floor(t) end
+	local snap=num(tbl(state.contests).now,0)
+	return math.floor(if snap>1577836800 then snap else os.time())
+end
+function CTP.timer(fn,color)
+	return function(body,nextOrder)
+		local copy=para(body,fn(CTP.now()),nextOrder(),color or gold,compactAtlas and 13 or 14)
+		copy.Name="Countdown"
+		table.insert(CTP.timers,{label=copy,fn=fn})
+	end
+end
+-- A round medallion icon (fish and brackets are not satchel items).
+function CTP.medallion(hex,glyph)
+	return function(band,size)
+		local disc=make("TextLabel",band,{Name="Medallion",Size=UDim2.fromOffset(size,size),BackgroundColor3=safeColor(hex,gold),BackgroundTransparency=.55,
+			Text=glyph or "◆",TextSize=math.floor(size*.5),Font=Enum.Font.GothamBold,TextColor3=ivory,BorderSizePixel=0})
+		make("UICorner",disc,{CornerRadius=UDim.new(1,0)})
+		make("UIStroke",disc,{Color=safeColor(hex,gold),Thickness=2})
+		return disc
+	end
+end
+function CTP.bracketText(id)
+	local CT=CD()
+	local b=CT and CT.BracketById[id]
+	return if b then paint(string.upper(b.name),b.color) else paint("NO BRACKET YET","B9C7CC")
+end
+-- The running contest (the snapshot's while it holds, else the client's clock).
+function CTP.contest()
+	local CT=CD()
+	local now=CTP.now()
+	local at=CT.at(now)
+	local s=tbl(state.contests)
+	local entry=type(s.entry)=="table" and num(s.k,-1)==at.k and s.entry or nil
+	return at,s,entry,now
+end
+local function drawContest(CT,s)
+	local at,_,entry,now=CTP.contest()
+	CTP.boundary=if at.active then at.ends else at.nextWindow.starts
+	local cropNames={}
+	for _,id in ipairs(at.crops) do table.insert(cropNames,paint(escape(itemName(id)),itemHex(id))) end
+	if at.active then
+		local lines={"Featured: "..table.concat(cropNames,"  ·  ")}
+		if entry then
+			local def=CT.CropById[entry.c]
+			table.insert(lines,"Your entry: "..paint(escape(itemName(entry.c)),itemHex(entry.c)).."  ·  "..paint(fmt(num(entry.s,0)),"FFF4D9").." harvested"
+				..(def and num(entry.s,0)<def.min and paint("  ·  "..fmt(def.min).." to place","E9C46A") or ""))
+			local est=type(s.estimate)=="table" and s.estimate or nil
+			if est then
+				table.insert(lines,"Live estimate: "..CTP.bracketText(est.bracket).."  ·  about #"..fmt(num(est.rank,0)).." of "..fmt(num(est.n,0)).." placing entrants")
+			elseif num(entry.s,0)>0 then
+				table.insert(lines,paint("Gathering every isle's ledgers for a live estimate…","B9C7CC"))
+			end
+		else
+			table.insert(lines,"Harvest a featured crop to enter, or choose one below.")
+		end
+		card({name="ContestNow",icon=CTP.medallion(CT.COLOR,"🌾"),accent=rgb(CT.COLOR),title=paint("HARVEST CONTEST  ·  RUNNING",CT.COLOR),
+			subtitle="Contest #"..fmt(at.k).."  ·  one crop per entry  ·  every isle on one ledger",badge=entry and paint("ENTERED","9EE7D2") or paint("OPEN","F7C548"),
+			lines=lines,after=CTP.timer(function(t) return "The bell rings in "..CT.span(at.ends-t) end)})
+		heading("FEATURED CROPS    /    ENTER ONE")
+		for slot,id in ipairs(at.crops) do
+			local def=CT.CropById[id]
+			local mine=entry and entry.c==id
+			local locked=entry and num(entry.s,0)>0 and not mine
+			local reason=(mine and "You are competing with this crop.") or (locked and "Entries lock once you score.") or nil
+			local rows={}
+			local boardRows=tbl(tbl(s.board)[slot])
+			for i,row in ipairs(boardRows) do
+				if i>CT.LB_TOP then break end
+				if type(row)~="table" then continue end
+				local who=escape(type(row.n)=="string" and row.n or "Wayfarer")
+				table.insert(rows,paint("#"..i,"B9C7CC").."  "..(row.me and paint(who,"9EE7D2") or who).."  "..paint(fmt(num(row.s,0)),"FFF4D9"))
+			end
+			if #rows==0 then table.insert(rows,paint("No scores on the ledger yet.","B9C7CC")) end
+			table.insert(rows,1,"Places from "..fmt(def and def.min or 0).."  ·  your best "..fmt(num(tbl(s.best)[id],0)))
+			card({name="ContestCrop"..id,item=id,accent=mine and gold or nil,edge=mine and gold or nil,title=escape(itemName(id)),titleColor=rgb(itemHex(id)),
+				subtitle=(def and def.exclusive) and "Verdant Garden crop" or "Field and garden crop",badge=mine and paint("YOUR ENTRY","9EE7D2") or nil,
+				lines=rows,actions={{caption=mine and "Entered" or "Enter",primary=reason==nil or nil,disabled=reason~=nil,reason=reason,
+					name="ContestEnter"..id,fn=function() send("contestEnter",id) end}}})
+		end
+	else
+		card({name="ContestNow",icon=CTP.medallion(CT.COLOR,"🌾"),accent=rgb(CT.COLOR),title=paint("HARVEST CONTEST",CT.COLOR),
+			subtitle="Three contests every isle day  ·  20 minutes each",badge=paint("BETWEEN BELLS","B9C7CC"),
+			detail="Enter one featured crop: everything you harvest of it, in the fields or your Verdant Garden, counts against every isle's farmers.",
+			lines={"Next: "..(function() local n={} for _,id in ipairs(at.nextWindow.crops) do table.insert(n,paint(escape(itemName(id)),itemHex(id))) end return table.concat(n,"  ·  ") end)()},
+			after=CTP.timer(function(t) return "Next contest in "..CT.span(at.nextWindow.starts-t) end,mint)})
+	end
+	if at.active then
+		local nx={}
+		for _,id in ipairs(at.nextWindow.crops) do table.insert(nx,paint(escape(itemName(id)),itemHex(id))) end
+		card({name="ContestNext",motif="Workshop",title="Next contest",titleColor=gold,lines={table.concat(nx,"  ·  ")},
+			after=CTP.timer(function(t) return "Opens in "..CT.span(at.nextWindow.starts-t) end,muted)})
+	end
+	if num(s.pending,0)>0 then
+		card({name="ContestPending",motif="Ledger",title="Awaiting results",titleColor=gold,
+			detail=fmt(s.pending).." finished entr"..(num(s.pending,0)==1 and "y is" or "ies are").." being sealed across the isles. Medals arrive automatically."})
+	end
+	heading("BRACKETS    /    BY RANK AMONG PLACING ENTRANTS")
+	local lines={}
+	for _,b in ipairs(CT.Brackets) do
+		table.insert(lines,paint(b.name,b.color).."  top "..math.floor(b.top*100+.5).."%  ·  "..b.medals.." medal"..(b.medals==1 and "" or "s").."  ·  needs "..b.minPop.."+ entrants")
+	end
+	card({name="ContestBrackets",motif="Journal",title="How brackets are awarded",titleColor=gold,lines=lines})
+end
+local function drawExchange(CT,s)
+	local medals=num(s.medals,0)
+	local volumes=num(s.almanac,0)
+	card({name="ContestMedals",icon=CTP.medallion("F7C548","✪"),title=paint(fmt(medals).." Harvest Medals","F7C548"),
+		subtitle=fmt(num(s.earned,0)).." earned in all  ·  Furrow Almanac "..volumes.."/"..#CT.ALMANAC,
+		detail="Medals come only from contest brackets. Spend them here; the Exchange never takes coins."})
+	heading("MEDAL EXCHANGE")
+	local owned=tbl(s.titles)
+	for _,e in ipairs(CT.Shop) do
+		local cost=CT.offerCost(e,volumes)
+		local title,subtitle,lines,itemId,done
+		if e.kind=="almanac" then
+			itemId=nil
+			done=cost==nil
+			title="Furrow Almanac"..(done and "" or ("  ·  Vol. "..numeral(volumes+1)))
+			subtitle=done and "Complete" or ("+"..CT.ALMANAC[volumes+1].." Farming Fortune, permanent")
+			lines={"Volumes read: "..volumes.."/"..#CT.ALMANAC}
+		elseif e.kind=="title" then
+			local t=CT.TitleById[e.title]
+			done=owned[e.title]==true
+			title="Title: "..paint(escape(t.title),t.color)
+			subtitle="Cosmetic  ·  worn from Records"
+			lines={}
+		else
+			itemId=e.item
+			local def=itemDef(e.item)
+			done=e.unique and count("items",e.item)>0
+			-- QC M1: a base you already upgraded is never offered again.
+			if e.unique and not done and CT.upgradesOf then
+				for _,up in ipairs(CT.upgradesOf(e.item)) do if count("items",up)>0 then done=true end end
+			end
+			title=escape(itemName(e.item))..(e.amount>1 and ("  ×"..e.amount) or "")
+			subtitle=escape(def and def.description or "")
+			lines={e.upgrade and ("Upgrades your "..escape(itemName(e.upgrade))) or "",e.level and ("Requires Farming "..e.level) or "",
+				e.gardenLevel and ("Requires garden level "..e.gardenLevel) or ""}
+		end
+		local reason=(done and "Already yours.") or (cost and medals<cost and ("Needs "..fmt(cost).." Harvest Medals.")) or nil
+		card({name="ContestShop"..e.id,item=itemId,motif=itemId==nil and "Ledger" or nil,title=title,titleColor=itemId and rgb(itemHex(itemId)) or gold,subtitle=subtitle,
+			badge=done and "OWNED" or (cost and (fmt(cost).." ✪")) or nil,badgeColor=done and mint or gold,lines=lines,
+			actions=not done and {{caption="Buy",primary=reason==nil or nil,disabled=reason~=nil,reason=reason,name="ContestBuy"..e.id,fn=function() send("contestBuy",e.id) end}} or nil})
+	end
+end
+local function drawRecords(CT,s)
+	local bl={}
+	for _,b in ipairs(CT.Brackets) do table.insert(bl,paint(b.name,b.color).." "..fmt(num(tbl(s.brackets)[b.id],0))) end
+	card({name="ContestRecord",motif="Journal",title="Your contest record",titleColor=gold,
+		subtitle=fmt(num(s.entries,0)).." entries  ·  "..fmt(num(s.placed,0)).." placed",lines={table.concat(bl,"   ")}})
+	heading("PERSONAL BESTS")
+	for _,c in ipairs(CT.Crops) do
+		local best=num(tbl(s.best)[c.id],0)
+		card({name="ContestBest"..c.id,item=c.id,title=escape(itemName(c.id)),titleColor=rgb(itemHex(c.id)),
+			subtitle=best>0 and ("Best: "..fmt(best)) or "No entry yet",lines={"Places from "..fmt(c.min)}})
+	end
+	heading("TITLES")
+	local any=false
+	for _,t in ipairs(CT.Titles) do
+		if tbl(s.titles)[t.id] then
+			any=true
+			local worn=s.title==t.id
+			card({name="ContestTitle"..t.id,motif="Ledger",title=paint(escape(t.title),t.color),subtitle=worn and "Worn" or "Unlocked",
+				actions={worn and {caption="Hide",name="ContestTitleOff"..t.id,fn=function() send("contestTitle","none") end}
+					or {caption="Wear",primary=true,name="ContestTitleWear"..t.id,fn=function() send("contestTitle",t.id) end}}})
+		end
+	end
+	if not any then card({name="ContestTitlesNone",motif="Ledger",title="No titles yet",titleColor=muted,detail="Unlock titles at the Medal Exchange."}) end
+	heading("RECENT RESULTS")
+	local hist=tbl(s.history)
+	if #hist==0 then card({name="ContestHistoryNone",motif="Journal",title="No results yet",titleColor=muted,detail="Finished contests appear here once they are sealed."}) end
+	for i,h in ipairs(hist) do
+		if type(h)=="table" then
+			card({name="ContestHistory"..i,item=h.c,title=escape(itemName(h.c)).."  ·  "..fmt(num(h.s,0)),titleColor=rgb(itemHex(h.c)),
+				subtitle="Contest #"..fmt(num(h.k,0)),badge=CTP.bracketText(h.b),badgeColor=gold,
+				lines={num(h.m,0)>0 and ("+"..fmt(h.m).." Harvest Medals") or ""}})
+		end
+	end
+end
+function CTP.draw()
+	table.clear(CTP.timers)
+	CTP.boundary=math.huge
+	local CT=CD()
+	if not CT then dataMissing() return end
+	local s=tbl(state.contests)
+	local sections={"Contest","Exchange","Records"}
+	if not table.find(sections,CTP.section) then CTP.section="Contest" end
+	sectionBar(sections,CTP.section,function(name) CTP.section=name;scroll.CanvasPosition=Vector2.zero;render() end,{small=true,prefix="Contests"})
+	if CTP.section=="Exchange" then drawExchange(CT,s) elseif CTP.section=="Records" then drawRecords(CT,s) else drawContest(CT,s) end
+end
+Pages.drawContests=CTP.draw
+
+-- Hunt › Trophies ----------------------------------------------------------------------
+local REASON={water="other waters",fishing="Fishing level",rod="rod tier",season="season",event="festival",hours="hour",bait="bait"}
+function CTP.conditions(TF,f)
+	local parts={paint(escape(TF.WaterById[f.water] and TF.WaterById[f.water].name or f.water),TF.WaterById[f.water] and TF.WaterById[f.water].color or "8FB8D6")}
+	table.insert(parts,"Fishing "..f.fishing)
+	table.insert(parts,"rod tier "..f.rod.."+")
+	if f.hours then table.insert(parts,"isle hours "..f.hours[1].."–"..f.hours[2]) end
+	if f.season then table.insert(parts,escape(f.season)) end
+	if f.event then local ev=Data.Events and Data.Events[f.event] table.insert(parts,escape(ev and ev.name or f.event)) end
+	if f.bait then table.insert(parts,escape(itemName(f.bait))) end
+	return table.concat(parts,"  ·  ")
+end
+local function drawLedger(TF,t)
+	local best=tbl(t.best)
+	local hour=num(t.hour,12)
+	local tiers={}
+	for _,tier in ipairs(TF.Tiers) do table.insert(tiers,paint(tier.name,tier.color).." "..TF.countAt(best,tier.id).."/"..#TF.Fish) end
+	local bait=type(t.bait)=="string" and TF.Baits[t.bait] and t.bait or nil
+	card({name="TrophySummary",icon=CTP.medallion(TF.COLOR,"🏆"),accent=rgb(TF.COLOR),title=paint("TROPHY LEDGER",TF.COLOR),
+		subtitle=fmt(num(t.total,0)).." trophy fish  ·  "..fmt(num(t.diamonds,0)).." Diamond  ·  "..fmt(num(t.casts,0)).." casts in trophy waters",
+		detail="Any cast in trophy waters that raises no sea creature may land a trophy fish when its conditions are right.",
+		lines={table.concat(tiers,"   "),
+			"Now: isle hour "..math.floor(hour).."  ·  "..escape(tostring(t.season or "?"))..(type(t.event)=="string" and ("  ·  "..paint(escape(Data.Events and Data.Events[t.event] and Data.Events[t.event].name or t.event),"F7C548")) or "")
+				.."  ·  bait: "..(bait and (escape(itemName(bait)).." ("..fmt(num(t.baitHave,0))..")") or "none")}})
+	for _,w in ipairs(TF.Waters) do
+		heading(string.upper(w.name))
+		for _,f in ipairs(TF.Fish) do
+			if f.water==w.id then
+				local row=tbl(tbl(t.caught)[f.id])
+				local got={}
+				for _,tier in ipairs(TF.Tiers) do
+					local n=num(row[tier.id],0)
+					table.insert(got,paint(tier.name:sub(1,1),n>0 and tier.color or "4A5560").." "..fmt(n))
+				end
+				local b=TF.TierById[best[f.id]]
+				local pity=tbl(tbl(t.pity)[f.id])
+				local now=f.hours and (TF.inHours(f.hours,hour) and paint("biting hour","9EE7D2") or paint("not its hour","B9C7CC")) or ""
+				card({name="Trophy"..f.id,icon=CTP.medallion(f.color,b and "🐟" or "?"),accent=b and rgb(b.color) or nil,title=escape(f.name),titleColor=rgb(f.color),
+					subtitle=escape(f.rarity).."  ·  +"..fmt(TF.xp(f,"Bronze")).." Fishing XP (Bronze)",badge=b and string.upper(b.name) or "UNCAUGHT",badgeColor=b and rgb(b.color) or muted,
+					detail=escape(f.text),lines={CTP.conditions(TF,f),table.concat(got,"   ")..(now~="" and ("   "..now) or ""),
+						"Gold within "..fmt(math.max(0,TF.PITY_GOLD-num(pity.g,0))).."  ·  Diamond within "..fmt(math.max(0,TF.PITY_DIAMOND-num(pity.d,0))).." catches"}})
+			end
+		end
+	end
+end
+local function drawRewards(TF,t)
+	local claimed=tbl(t.claimed)
+	for _,l in ipairs(TF.Ledger) do
+		local have=TF.countAt(t.best,l.need.tier)
+		local need=TF.ledgerNeed(l)
+		local done=have>=need
+		local got=claimed[l.id]==true
+		local parts={}
+		if l.title then table.insert(parts,"title "..paint(escape(l.title),l.color)) end
+		if l.item then table.insert(parts,escape(itemName(l.item))) end
+		if l.xp then table.insert(parts,fmt(l.xp).." Fishing XP") end
+		local reason=(got and "Already claimed.") or (not done and ("Catch "..need.." trophy fish at "..l.need.tier.." or better.")) or nil
+		local acts={{caption=got and "Claimed" or "Claim",primary=reason==nil or nil,disabled=reason~=nil,reason=reason,name="TrophyClaim"..l.id,fn=function() send("trophyClaim",l.id) end}}
+		if got and l.title then
+			if t.title==l.id then table.insert(acts,{caption="Hide",name="TrophyTitleOff"..l.id,fn=function() send("trophyTitle","none") end})
+			else table.insert(acts,{caption="Wear",name="TrophyTitleWear"..l.id,fn=function() send("trophyTitle",l.id) end}) end
+		end
+		card({name="TrophyLedger"..l.id,item=l.item,icon=l.item==nil and CTP.medallion(l.color,"✦") or nil,accent=rgb(l.color),title=escape(l.name),titleColor=rgb(l.color),
+			subtitle=fmt(math.min(have,need)).."/"..fmt(need).." fish at "..l.need.tier.." or better",badge=got and "CLAIMED" or (done and "READY" or nil),badgeColor=got and muted or mint,
+			lines={"Reward: "..table.concat(parts,", ")},bar={fraction=math.clamp(have/math.max(1,need),0,1),color=rgb(l.color),caption=fmt(math.min(have,need)).." / "..fmt(need)},actions=acts})
+	end
+end
+local function drawBait(TF,t)
+	local loaded=type(t.bait)=="string" and t.bait or nil
+	local cook=skillsOf(state).Cooking
+	for _,id in ipairs(TF.BaitOrder) do
+		local b=TF.Baits[id]
+		local have=count("items",id)
+		local mine=loaded==id
+		local reason=(have<=0 and ("Cook "..b.name.." at a Hearth (Cooking "..b.level..").")) or nil
+		local needs={}
+		for cid,n in pairs(b.costs) do table.insert(needs,fmt(n).." "..escape(itemName(cid))) end
+		table.sort(needs)
+		card({name="TrophyBait"..id,item=id,title=escape(b.name),titleColor=rgb(itemHex(id)),subtitle="+"..UI.dec(b.bonus*100).."% trophy chance  ·  "..fmt(have).." in satchel",
+			badge=mine and "LOADED" or nil,badgeColor=mint,
+			lines={((cook and cook.level or 1)>=b.level and check or cross).." Cooking "..b.level.."  ·  "..b.amount.." from "..table.concat(needs,", ")},
+			actions={mine and {caption="Unload",name="TrophyBaitOff",fn=function() send("trophyBait","none") end}
+				or {caption="Load",primary=reason==nil or nil,disabled=reason~=nil,reason=reason,name="TrophyBaitLoad"..id,fn=function() send("trophyBait",id) end}}})
+	end
+end
+function CTP.drawTrophies()
+	local TF=TD()
+	if not TF then dataMissing() return end
+	local t=tbl(state.trophies)
+	local sections={"Ledger","Rewards","Bait"}
+	if not table.find(sections,CTP.tsection) then CTP.tsection="Ledger" end
+	sectionBar(sections,CTP.tsection,function(name) CTP.tsection=name;scroll.CanvasPosition=Vector2.zero;render() end,{small=true,prefix="Trophies"})
+	if CTP.tsection=="Rewards" then drawRewards(TF,t) elseif CTP.tsection=="Bait" then drawBait(TF,t) else drawLedger(TF,t) end
+end
+Pages.drawTrophies=CTP.drawTrophies
+
+-- >>> QoL Depth (§41) >>> -----------------------------------------------------
+-- Hero › Lectern (the Lumen Lectern's three memory trials), Hero › Wardrobe
+-- (saved armour + accessory loadouts), the Vault Charter card on Ledger › Bank
+-- and the Roost tether card on Hero › Pets. Server state: snapshot.qol =
+-- {lectern, wardrobe, vault, tether}. The server generates every puzzle and
+-- checks every answer; this page only shows what a snapshot carries (a round's
+-- glyphs / stars during its reveal window, turned cards) and the player's input.
+-- Helpers live on UI.QL (the chunk is near Luau's local limit).
+UI.QL={tier=nil,input="",key=nil,hideAt=0,slot=1,at=0,wakes={}}
+do
+local QL=UI.QL
+-- QC L7: server countdowns (visitIn, endsIn, wardrobe wait, revealIn) are
+-- seconds-left when the snapshot arrived (QL.at, set by accept); the page
+-- turns them into deadlines and redraws when one passes.
+function QL.left(secs) return math.max(0,num(secs,0)-(os.clock()-num(QL.at,0))) end
+function QL.wake(secs,section)
+	local left=QL.left(secs)
+	if left<=0 then return end
+	local due=math.floor((os.clock()+left)*10+.5)
+	local key=section..":"..due
+	if QL.wakes[key] then return end
+	QL.wakes[key]=true
+	task.delay(left+.05,function()
+		QL.wakes[key]=nil
+		if current=="Hero" and sectionOf and sectionOf.Hero==section then render() end
+	end)
+end
+local function QD() return Data and type(Data.QoL)=="table" and Data.QoL or nil end
+local function qol() return tbl(state.qol) end
+local function glyphOf(A,i) return tbl(tbl(A.GLYPHS)[num(i,0)]) end
+local function glyphText(A,i) local g=glyphOf(A,i) return paint(tostring(g.mark or "?"),tostring(g.color or "FFFFFF")) end
+-- A square tile showing big text (glyph, number, card face).
+local function face(parent,name,order,text,hex,sub,fill,action)
+	local b=tile(parent,name,order,action or function() end)
+	if fill then b.BackgroundColor3=fill end
+	UI.T.rim(b,1.5)
+	local mark=make("TextLabel",b,{Name="Mark",BackgroundTransparency=1,Size=UDim2.new(1,0,sub and .7 or 1,0),Text=text,RichText=true,Font=Enum.Font.GothamBold,
+		TextScaled=true,TextColor3=safeColor(hex,ivory)})
+	make("UITextSizeConstraint",mark,{MaxTextSize=compactAtlas and 26 or 34,MinTextSize=10})
+	if sub then
+		local s=label(b,sub,0,0,full,14,UI.heavy,11,muted)
+		s.Position=UDim2.new(0,0,.7,0)
+		s.Size=UDim2.new(1,0,.3,-2)
+		s.TextXAlignment=Enum.TextXAlignment.Center
+	end
+	return b
+end
+local function grid(cols,height)
+	local width=contentWidth()
+	local cell=math.min(compactAtlas and 56 or 76,math.floor((width-12-(cols-1)*6)/cols))
+	return gridHolder(UDim2.fromOffset(cell,height or cell),6),cell
+end
+-- Remembers when the current round's reveal must fade (client side).
+local function revealing(v)
+	local key=tostring(v.g)..":"..tostring(v.r)..":"..tostring(v.t)
+	if v.showing==true and type(v.show)=="table" then
+		if QL.key~=key then
+			-- QC L6: the window left when the snapshot arrived (a resume shows only that).
+			local left=QL.left(v.revealIn~=nil and v.revealIn or v.reveal)
+			QL.key=key
+			QL.input=""
+			QL.hideAt=os.clock()+left
+			task.delay(left+.05,function() if QL.key==key and current=="Hero" then render() end end)
+		end
+		return os.clock()<QL.hideAt
+	end
+	if QL.key~=key then QL.key=key;QL.input="" end
+	return false
+end
+local function sessionHeader(A,v,t)
+	local game=tbl(tbl(A.Games)[v.g])
+	local sub=v.g=="pairs" and (num(v.left,0).." reveals left") or ("Round "..num(v.r,1).." of "..num(v.rounds,1))
+	card({name="LecternSession",icon=CTP.medallion(t.color or "B9A7FF","❖"),accent=safeColor(t.color,gold),title=paint(string.upper(tostring(game.name or "Trial")),t.color or "FFD166"),
+		subtitle=escape(tostring(t.id or "")).." tier  ·  "..sub,badge=clock(math.ceil(QL.left(v.endsIn))).." left",badgeColor=gold,detail=escape(tostring(game.text or "")),
+		actions={{caption="Stop",name="LecternStop",fn=function() send("lecternEnd") end}}})
+end
+local function drawSequence(A,v,t)
+	local showing=revealing(v)
+	local r=num(v.r,1)
+	if showing then
+		heading("MEMORISE    /    "..r.." GLYPH"..(r==1 and "" or "S"))
+		local holder=grid(math.min(r,8))
+		holder.Name="LecternShow"
+		for i,g in ipairs(tbl(v.show)) do local gl=glyphOf(A,g) face(holder,"Show"..i,i,tostring(gl.mark or "?"),gl.color,tostring(i)) end
+		return
+	end
+	heading("REPEAT THE SEQUENCE    /    "..#QL.input.."/"..r)
+	local typed=grid(math.min(math.max(r,1),8))
+	typed.Name="LecternTyped"
+	for i=1,r do
+		local ch=string.sub(QL.input,i,i)
+		local gl=ch~="" and glyphOf(A,tonumber(ch)) or nil
+		face(typed,"Typed"..i,i,gl and tostring(gl.mark or "?") or "·",gl and gl.color or "4A5866",nil,track)
+	end
+	heading("GLYPHS")
+	local pad=grid(math.min(num(v.glyphs,4),5))
+	pad.Name="LecternPad"
+	for i=1,math.clamp(num(v.glyphs,4),1,9) do
+		local gl=glyphOf(A,i)
+		face(pad,"Glyph"..i,i,tostring(gl.mark or "?"),gl.color,tostring(gl.id or i),nil,function()
+			if #QL.input>=r then return end
+			QL.input=QL.input..tostring(i)
+			if #QL.input==r then local answer=QL.input;QL.input="";send("lecternAnswer",answer) else render() end
+		end)
+	end
+	card({name="LecternUndo",motif="Settings",title="Entered "..#QL.input.." of "..r,titleColor=muted,
+		actions={{caption="Undo",name="LecternUndoButton",disabled=#QL.input==0,reason="Nothing entered yet.",fn=function() QL.input=string.sub(QL.input,1,-2);render() end}}})
+end
+local function drawRecall(A,v,t)
+	local showing=revealing(v)
+	local cols,rows,n=math.clamp(num(v.cols,3),1,5),math.clamp(num(v.rows,3),1,5),num(v.n,0)
+	heading((showing and "MEMORISE" or "TOUCH IN ORDER").."    /    "..n.." STARS"..(showing and "" or ("  ·  "..#QL.input.."/"..n)))
+	local holder=grid(cols)
+	holder.Name="LecternGrid"
+	local shown={}
+	if showing then for k,c in ipairs(tbl(v.show)) do shown[num(c,0)]=k end end
+	local picked={}
+	for k=1,#QL.input do local c=A.charCell(string.sub(QL.input,k,k)) if c then picked[c]=k end end
+	for c=1,cols*rows do
+		local k=shown[c] or picked[c]
+		face(holder,"Cell"..c,c,k and tostring(k) or "",k and (showing and "FFD166" or "9EE7D2") or "FFFFFF",nil,k and rgb("1E2C46") or nil,function()
+			if showing or picked[c] or #QL.input>=n then return end
+			QL.input=QL.input..A.cellChar(c)
+			if #QL.input==n then local answer=QL.input;QL.input="";send("lecternAnswer",answer) else render() end
+		end)
+	end
+	if not showing then
+		card({name="LecternUndo",motif="Settings",title="Touched "..#QL.input.." of "..n,titleColor=muted,
+			actions={{caption="Undo",name="LecternUndoButton",disabled=#QL.input==0,reason="Nothing touched yet.",fn=function() QL.input=string.sub(QL.input,1,-2);render() end}}})
+	end
+end
+local function rewardText(rw)
+	rw=tbl(rw)
+	if rw.k=="xp" then return paint("+"..fmt(num(rw.n,0)).." XP","C77DFF")
+	elseif rw.k=="item" then return paint("+"..fmt(num(rw.n,0)).." "..escape(itemName(rw.id)),itemHex(rw.id))
+	elseif rw.k=="reveal" then return paint("+"..fmt(num(rw.n,0)).." reveals","9EE7D2") end
+	return ""
+end
+local function drawPairs(A,v,t)
+	local n=math.clamp(num(v.n,0),0,36)
+	local cols=math.clamp(num(v.cols,4),2,6)
+	heading("MIRROR PAIRS    /    "..num(v.left,0).." REVEALS LEFT")
+	local holder,cell=grid(cols)
+	holder.Name="LecternBoard"
+	local faces=tbl(v.face)
+	for i=1,n do
+		local f=faces[tostring(i)]
+		if type(f)=="table" then
+			local gl=glyphOf(A,f.g)
+			-- QC L7: a "no match" card may be turned again (the server allows any unmatched card but the open one).
+			face(holder,"Card"..i,i,tostring(gl.mark or "?"),gl.color,f.m and string.gsub(rewardText(f.rw),"<[^>]+>","") or (f.miss and "no match" or "turned"),
+				f.m and rgb("1E3A2E") or (f.miss and rgb("3A1E24") or rgb("1E2C46")),f.miss and function() send("lecternFlip",tostring(i)) end or nil)
+		else
+			face(holder,"Card"..i,i,"✧","5E6B7A",nil,nil,function() send("lecternFlip",tostring(i)) end)
+		end
+	end
+	local won={}
+	for _,rw in ipairs(tbl(v.won)) do table.insert(won,rewardText(rw)) end
+	card({name="LecternWon",motif="Ledger",title="Won this board",titleColor=gold,lines={#won>0 and table.concat(won,"  ·  ") or paint("Nothing matched yet.","8A9AA0")}})
+end
+function QL.drawLectern()
+	local Q=QD()
+	if not Q then dataMissing() return end
+	local A=Q.Lectern
+	local L=tbl(qol().lectern)
+	if next(L)==nil then syncing("lectern") return end
+	local s=L.session
+	if type(s)=="table" then
+		local t=tbl(A.Tiers[num(s.t,1)])
+		QL.wake(s.endsIn,"Lectern")
+		sessionHeader(A,s,t)
+		if s.g=="seq" then drawSequence(A,s,t) elseif s.g=="recall" then drawRecall(A,s,t) elseif s.g=="pairs" then drawPairs(A,s,t) end
+		return
+	end
+	QL.key=nil
+	local best=math.clamp(num(L.tier,1),1,#A.Tiers)
+	QL.tier=math.clamp(num(QL.tier,best),1,best)
+	local visit=math.ceil(QL.left(L.visitIn))
+	QL.wake(L.visitIn,"Lectern")
+	card({name="LecternHeader",icon=CTP.medallion("B9A7FF","❖"),accent=rgb("B9A7FF"),title=paint("LUMEN LECTERN","B9A7FF"),
+		subtitle="Enchanting "..num(L.level,1).."  ·  "..fmt(num(L.runs,0)).." trials studied  ·  renews in "..clock(num(L.resetIn,0)),
+		badge=visit>0 and ("OPEN "..clock(visit)) or "AT THE MUSEUM",badgeColor=visit>0 and mint or muted,
+		detail=visit>0 and "The lectern is listening. Choose a tier and a trial below." or "Touch the Lumen Lectern in the Aether Museum on Compass Quay to begin a trial (the lectern stays open for 10 minutes).",
+		lines={"Today's bonus reveals for Mirror Pairs: "..paint(tostring(num(L.bonus,0)),"9EE7D2").."  (play Glyph Sequence and Starfall Recall first)"}})
+	heading("TIER    /    ENCHANTING GATES")
+	local labels={}
+	for i,t in ipairs(A.Tiers) do labels[i]=i<=best and string.sub(t.id,1,3) or ("Lv"..t.level) end
+	local tiers=gridHolder(UDim2.new(1/#A.Tiers,-6,0,compactAtlas and 44 or 48),6)
+	tiers.Name="LecternTiers"
+	for i,t in ipairs(A.Tiers) do
+		local b=tile(tiers,"LecternTier"..i,i,function()
+			if i>best then notify(t.id.." trials require Enchanting "..t.level..".") return end
+			QL.tier=i;render()
+		end)
+		if i==QL.tier then b.BackgroundColor3=rgb("2A2246") end
+		UI.T.rim(b,i==QL.tier and 2 or 1)
+		local tx=label(b,(i<=best and t.id or ("🔒 "..t.level)),0,0,full,compactAtlas and 44 or 48,UI.heavy,compactAtlas and 11 or 13,i<=best and safeColor(t.color,ivory) or muted)
+		tx.Size=UDim2.fromScale(1,1)
+		tx.TextXAlignment=Enum.TextXAlignment.Center
+	end
+	local t=A.Tiers[QL.tier]
+	heading("TRIALS    /    "..string.upper(t.id).." TIER")
+	for _,g in ipairs(A.GameOrder) do
+		local game=A.Games[g]
+		local left=num(tbl(L.left)[g],0)
+		local reason=(visit<=0 and "Touch the Lumen Lectern in the Aether Museum first.") or (left<1 and "No attempts left today.") or nil
+		local lines
+		if g=="pairs" then
+			lines={(t.pairs*2).." cards  ·  "..A.baseReveals(t).." reveals + "..paint(tostring(math.min(num(L.bonus,0),t.pairs)).." bonus","9EE7D2"),
+				"Pairs hold "..fmt(t.xp*4).." XP, "..t.dust.." Arcane Dust, +2 reveals"..(t.tome and ("  ·  Tempering Tome "..math.floor(t.tome*100).."%") or "")..(t.masterwork and ("  ·  Masterwork Tome "..math.floor(t.masterwork*100).."%") or "")}
+		else
+			local rounds=A.rounds(t,g)
+			lines={rounds.." rounds  ·  "..fmt(A.roundXp(t,1)).." → "..fmt(A.roundXp(t,rounds)).." Enchanting XP a round",
+				g=="seq" and (t.glyphs.." glyphs") or (t.grid[1].."×"..t.grid[2].." grid, "..t.recallStart.."+ stars")}
+		end
+		table.insert(lines,"Best: "..fmt(num(tbl(L.best)[g],0)).."  ·  "..left.."/"..game.attempts.." attempts left today")
+		card({name="LecternGame"..g,icon=CTP.medallion(t.color,g=="seq" and "☼" or (g=="recall" and "✦" or "◆")),title=escape(game.name),titleColor=safeColor(t.color,gold),
+			subtitle=escape(game.text),lines=lines,badge=left.."/"..game.attempts,badgeColor=left>0 and mint or muted,
+			actions={{caption="Begin",primary=reason==nil or nil,disabled=reason~=nil,reason=reason,name="LecternBegin"..g,fn=function() send("lecternStart",g..":"..QL.tier) end}}})
+	end
+end
+-- Hero › Wardrobe ------------------------------------------------------------
+function QL.drawWardrobe()
+	local Q=QD()
+	if not Q then dataMissing() return end
+	local W=Q.Wardrobe
+	local w=tbl(qol().wardrobe)
+	if next(w)==nil then syncing("wardrobe") return end
+	local slots=math.clamp(num(w.slots,3),0,W.MAX)
+	local wait=math.ceil(QL.left(w.wait))
+	QL.wake(w.wait,"Wardrobe")
+	card({name="WardrobeHeader",motif="Hero",title="Wardrobe",titleColor=gold,subtitle=slots.."/"..W.MAX.." loadouts open  ·  "..num(w.accSlots,0).." accessory slots",
+		badge=wait>0 and ("READY IN "..wait.."s") or "READY",badgeColor=wait>0 and gold or mint,
+		detail="Save your armour and accessory bag as a loadout, then swap the whole set in one tap. Your weapon stays in hand. Swaps wait out a fight.",
+		lines={"More loadouts open at Combat "..table.concat(W.UNLOCKS,", ").."."}})
+	QL.slot=math.clamp(num(QL.slot,1),1,W.MAX)
+	local holder=gridHolder(UDim2.new(1/(compactAtlas and 5 or 9),-6,0,compactAtlas and 48 or 56),6)
+	holder.Name="WardrobeSlots"
+	local sets=tbl(w.sets)
+	for i=1,W.MAX do
+		local set=sets[i]
+		local open=i<=slots
+		local b=face(holder,"WardrobeSlot"..i,i,open and tostring(i) or "🔒",open and (type(set)=="table" and "FFD166" or "8A9AA0") or "5E6B7A",
+			num(w.worn,0)==i and "worn" or (type(set)=="table" and "saved" or (open and "empty" or "locked")),QL.slot==i and rgb("2A2246") or nil,function() QL.slot=i;render() end)
+		if num(w.worn,0)==i then UI.tag(b,"W") end
+	end
+	local i=QL.slot
+	local set=sets[i]
+	local open=i<=slots
+	local lines={}
+	if type(set)=="table" then
+		for _,s in ipairs(W.SLOTS) do
+			local id=set[s]
+			table.insert(lines,paint(string.upper(string.sub(s,1,1))..string.sub(s,2),"BECECA").."  "..(id and paint(escape(itemName(id)),itemHex(id))..(count("items",id)<1 and paint("  (missing)","E8806A") or "") or paint("empty","8A9AA0")))
+		end
+		local acc={}
+		for _,id in ipairs(tbl(set.acc)) do table.insert(acc,paint(escape(itemName(id)),itemHex(id))..(count("items",id)<1 and paint(" (missing)","E8806A") or "")) end
+		table.insert(lines,paint("Accessories","BECECA").."  "..(#acc>0 and table.concat(acc,", ") or paint("none","8A9AA0")))
+	end
+	local actions={}
+	if open then
+		table.insert(actions,{caption="Save current",name="WardrobeSave",fn=function() send("wardrobeSave",tostring(i)) end})
+		if type(set)=="table" then
+			table.insert(actions,1,{caption="Wear",primary=wait<=0 or nil,disabled=wait>0,reason="Your wardrobe is settling ("..wait.."s).",name="WardrobeWear",fn=function() send("wardrobeWear",tostring(i)) end})
+			table.insert(actions,{caption="Clear",name="WardrobeClear",fn=function() send("wardrobeClear",tostring(i)) end})
+		end
+	end
+	card({name="WardrobeDetail",motif="Hero",title="Loadout "..i,titleColor=gold,subtitle=open and (type(set)=="table" and (#tbl(set.acc).." accessories") or "Empty") or ("Opens at Combat "..tostring(W.UNLOCKS[math.ceil((i-3)/2)] or "?")),
+		badge=num(w.worn,0)==i and "WORN" or nil,badgeColor=mint,lines=lines,
+		detail=open and type(set)~="table" and "Equip the armour and accessories you want, then Save current." or nil,actions=actions})
+end
+-- Ledger › Bank: the Vault Charter card.
+function QL.charter()
+	local Q=QD()
+	local v=tbl(qol().vault)
+	if not Q or next(v)==nil then return end
+	local V=Q.Vault
+	local t=tbl(V.Tiers[num(v.tier,1)])
+	heading("02    /    VAULT CHARTER")
+	card({name="VaultCharter",motif="Ledger",accent=mint,title=escape(tostring(t.name or "Charter")),titleColor=mint,
+		subtitle=(math.floor(num(t.rate,0)*10000+.5)/100).."% a day on up to "..fmt(num(t.cap,0)).." vault coins",
+		badge="+"..fmt(num(v.next,0)).." tomorrow",badgeColor=gold,
+		lines={"Daily ceiling "..fmt(num(v.maxDaily,0)).." coins  ·  next payment in "..clock(num(v.nextIn,0)),
+			"Interest earned: "..fmt(num(v.paid,0)).." coins"..(num(v.last,0)>0 and ("  ·  last "..fmt(v.last)) or ""),
+			paint("Paid once per UTC day when you open your journal; nothing builds up while you are away.","8A9AA0")}})
+	local up=v.upgrade
+	if type(up)=="table" then
+		local n=tbl(V.Tiers[num(up.tier,0)])
+		local items,met={},num(state.coins,0)>=num(up.cost,0)
+		table.insert(items,{text=fmt(num(up.cost,0)).." coins from your purse",met=num(state.coins,0)>=num(up.cost,0),amount=fmt(num(state.coins,0))})
+		for _,need in ipairs(tbl(up.need)) do
+			need=tbl(need)
+			local ok=num(need.have,0)>=num(need.tier,1)
+			met=met and ok
+			table.insert(items,{text=escape(itemName(need.id)).." collection tier "..numeral(num(need.tier,1)),met=ok,amount=num(need.have,0).."/"..num(need.tier,1)})
+		end
+		card({name="VaultUpgrade",motif="Ledger",title="Next: "..escape(tostring(n.name or "Charter")),titleColor=gold,
+			subtitle=(math.floor(num(n.rate,0)*10000+.5)/100).."% on up to "..fmt(num(n.cap,0)).."  ·  ceiling "..fmt(math.floor(num(n.cap,0)*num(n.rate,0))).." a day",
+			after=function(body,nextOrder) UI.checklist(body,nextOrder,"REQUIREMENTS",items) end,
+			actions={{caption="Seal charter",primary=met or nil,disabled=not met,reason="Meet every requirement first.",name="VaultUpgradeButton",fn=function() send("vaultUpgrade") end}}})
+	end
+end
+-- Hero › Pets: tether toggle for the selected pet and the sharing preview.
+function QL.tether(index,pet)
+	local Q=QD()
+	local k=tbl(qol().tether)
+	if not Q or next(k)==nil or type(pet)~="table" then return end
+	local K=Q.Tether
+	local slots=num(k.slots,0)
+	local rows=tbl(k.pets)
+	local mine
+	local clean={}
+	for _,r in ipairs(rows) do if type(r)=="table" then table.insert(clean,r) end end
+	rows=clean
+	for _,r in ipairs(rows) do if num(r.index,0)==index then mine=r end end
+	local lines={}
+	for _,r in ipairs(rows) do
+		local def=tbl(tbl(Data.PetById)[r.id])
+		-- QC L4: the summoned pet takes no tether slot; a max-level pet has nothing to preview.
+		local status=(r.active==true and paint("summoned: learns directly, takes no tether slot","8A9AA0"))
+			or (r.sharing~=true and paint("over your tether limit","E8806A"))
+			or (r.max==true and paint("max level","8A9AA0"))
+			or ("next level after "..paint(fmt(num(r.activeXp,0)),"9EE7D2").." pet XP earned by your summoned pet")
+		table.insert(lines,paint(escape(tostring(def.name or r.id)),"F9CC77").."  Lv "..num(r.level,1).."  ·  "..status)
+	end
+	if #lines==0 then table.insert(lines,paint("No pets tethered.","8A9AA0")) end
+	local used=0
+	for _,r in ipairs(rows) do if r.active~=true then used+=1 end end
+	local reason=(slots<1 and ("Tethers open at Taming "..tostring(K.UNLOCKS[1]).."."))
+		or (not mine and used>=slots and "All tethers are in use.") or nil
+	card({name="PetTether",motif="Co-op",title="Roost tethers  "..used.."/"..slots,titleColor=gold,
+		subtitle="Each tethered pet earns "..math.floor(num(k.share,0.1)*100).."% of the pet XP your summoned pet earns (or would earn, at max level)",lines=lines,
+		actions={mine and {caption="Untether",name="PetTetherButton",fn=function() send("petTether",index..":"..tostring(pet.id)) end}
+			or {caption="Tether",primary=reason==nil or nil,disabled=reason~=nil,reason=reason,name="PetTetherButton",fn=function() send("petTether",index..":"..tostring(pet.id)) end}}})
+	-- Roost preview: what the next rarity changes.
+	local cost=type(pet.upgrade)=="table" and pet.upgrade or nil
+	local PD=tbl(Data.PetDepth)
+	if cost then
+		local from,to=UI.PT.rarity(pet.rarity),UI.PT.rarity(cost.to)
+		local sm,xm=tbl(PD.STAT_MULT),tbl(PD.XP_MULT)
+		card({name="RoostPreview",motif="Co-op",title="Roost preview  "..paint(from,rarityHex(from)).." → "..paint(to,rarityHex(to)),titleColor=gold,
+			lines={"Stats ×"..num(sm[from],1).." → ×"..num(sm[to],1).."  ·  level curve ×"..num(xm[from],1).." → ×"..num(xm[to],1).." (lifetime XP kept)",
+				"Away for "..clock(num(cost.seconds,0)).."  ·  "..UI.PT.costLine(cost)}})
+	end
+end
+end
+Pages.drawLectern=function() UI.QL.drawLectern() end
+Pages.drawWardrobe=function() UI.QL.drawWardrobe() end
+-- <<< END QoL Depth <<< ---------------------------------------------------------
+
+-- Countdowns tick in place; the page redraws at the bell.
+task.spawn(function()
+	while task.wait(1) do
+		if #CTP.timers>0 and atlas.Visible and current=="Workshop" and sectionOf and sectionOf.Workshop=="Contests" then
+			local now=CTP.now()
+			if now>=CTP.boundary then render() else
+				for _,t in ipairs(CTP.timers) do pcall(function() t.label.Text=t.fn(now) end) end
+			end
+		end
+	end
+end)
+
+-- Contest tracker (right column, during a contest): crop, count, estimate, timer.
+local hudFrame=make("TextButton",gui,{Name="ContestHud",Text="",AutoButtonColor=false,BackgroundColor3=deep,BackgroundTransparency=.06,BorderSizePixel=0,
+	AnchorPoint=Vector2.new(1,0),Position=UDim2.new(1,-10,0,240),Size=UDim2.fromOffset(214,64),Visible=false,Selectable=false})
+rounded(hudFrame,12,UI.brass)
+local hudTitle=label(hudFrame,"",12,4,UDim.new(1,-24),16,UI.heavy,11,gold)
+hudTitle.Name="Title"
+local hudBody=label(hudFrame,"",12,20,UDim.new(1,-24),18,bold,12,ivory)
+hudBody.Name="Lines"
+hudBody.RichText=true
+hudBody.TextWrapped=true
+hudBody.TextYAlignment=Enum.TextYAlignment.Top
+hudBody.TextTruncate=Enum.TextTruncate.None
+hudFrame.Activated:Connect(function() if Pages.openTo then Pages.openTo("Workshop","Contests") end end)
+CTP.hud=hudFrame
+function CTP.hudLines(short)
+	local CT=CD()
+	if not CT then return nil end
+	local at,s,entry,now=CTP.contest()
+	if not at.active then return nil end
+	local lines={}
+	local left=CT.span(at.ends-now)
+	if entry then
+		local est=type(s.estimate)=="table" and s.estimate or nil
+		if short then
+			table.insert(lines,paint(escape(itemName(entry.c)),itemHex(entry.c)).." "..fmt(num(entry.s,0)))
+			table.insert(lines,(est and CTP.bracketText(est.bracket) or paint("…","B9C7CC")).."  "..paint(left,"A9BDC1"))
+		else
+			table.insert(lines,paint(escape(itemName(entry.c)),itemHex(entry.c)).."  ·  "..paint(fmt(num(entry.s,0)),"FFF4D9").." harvested")
+			table.insert(lines,"Estimate: "..(est and CTP.bracketText(est.bracket) or paint("gathering…","B9C7CC")).."   "..paint(left.." left","A9BDC1"))
+		end
+	else
+		local names={}
+		for _,id in ipairs(at.crops) do table.insert(names,escape(itemName(id))) end
+		table.insert(lines,short and paint(left,"A9BDC1") or (table.concat(names,"  ·  ")))
+		if not short then table.insert(lines,paint(left.." left  ·  harvest one to enter","A9BDC1")) end
+	end
+	return lines
+end
+function CTP.refreshHud()
+	local busy=player:GetAttribute("MinigameGame") or player:GetAttribute("LairBoss")
+	local lines=(not busy or busy=="") and CTP.hudLines(false) or nil
+	hudFrame.Visible=lines~=nil
+	if not lines then return end
+	local view=gui.AbsoluteSize
+	local height=(view and view.Y>0) and view.Y or 720
+	local short=height<520
+	lines=CTP.hudLines(short) or lines
+	local width=short and 100 or 214
+	local lanes=UI.lay()
+	local pad=short and 6 or 12
+	local titleHeight=short and 14 or 16
+	local rowHeight=short and 14 or 18
+	local frameHeight=4+titleHeight+rowHeight*#lines+8
+	-- QC M3: the right column is shared. Stack under the world boss board
+	-- (combat.client.lua publishes its foot as the local attribute
+	-- WorldBossBoard) and the dungeon party HUD; hide when there is no room
+	-- above the action bar or the stack would meet the XP lane.
+	local top=lanes.rightTop
+	local boardFoot=num(player:GetAttribute("WorldBossBoard"),0)
+	if boardFoot>0 then top=math.max(top,boardFoot+6) end
+	local party=gui:FindFirstChild("DungeonPartyHud")
+	if party and party.Visible then top=math.max(top,party.Position.Y.Offset+party.Size.Y.Offset+6) end
+	local x0=lanes.rightEdge-width
+	local function clash(r)
+		return type(r)=="table" and num(r.w,0)>0 and num(r.h,0)>0 and r.x<lanes.rightEdge and x0<r.x+r.w and r.y<top+frameHeight and top<r.y+r.h
+	end
+	if top>lanes.rightTop and (top+frameHeight>lanes.action.y-6 or clash(lanes.xpDrops) or clash(lanes.xpToast)) then
+		hudFrame.Visible=false
+		return
+	end
+	hudTitle.Text=short and "CONTEST" or "HARVEST CONTEST"
+	hudTitle.Position,hudTitle.Size=UDim2.fromOffset(pad,4),UDim2.new(1,-2*pad,0,titleHeight)
+	hudBody.Text=table.concat(lines,"\n")
+	hudBody.TextSize=short and 11 or 12
+	hudBody.Position=UDim2.fromOffset(pad,4+titleHeight)
+	hudBody.Size=UDim2.new(1,-2*pad,0,rowHeight*#lines)
+	hudFrame.AnchorPoint=Vector2.new(1,0)
+	hudFrame.Position=UDim2.new(0,lanes.rightEdge,0,top)
+	hudFrame.Size=UDim2.fromOffset(width,frameHeight)
+end
+for _,name in ipairs({"MinigameGame","LairBoss","IsleSatchelOpen","WorldBossBoard","DungeonParty"}) do
+	player:GetAttributeChangedSignal(name):Connect(function() CTP.refreshHud() end)
+end
+task.spawn(function()
+	while task.wait(1) do pcall(CTP.refreshHud) end
+end)
+end
+------------------------------------------------------------------------------
 -- Exploration & Factions (Exploration & Factions team). Journal › Motes
 -- (found counter, milestones, Wayglass bearing, per-region progress) and
 -- Journal › Factions (pledge, reputation ranks, daily tasks, shop, titles).
@@ -8359,6 +9484,504 @@ Pages.drawMotes,Pages.drawFactions=EXP.drawMotes,EXP.drawFactions
 end
 
 ------------------------------------------------------------------------------
+-- §33 Systems Depth (docs/DEPTH-CONTRACT.md §33): the quest helper (Journal ›
+-- Helper, plus Guide / Pin / Waypoint on quest, diary and contract cards), the
+-- goal board (Journal › Goals), market price history (Ledger › Prices and the
+-- Bazaar book card), the XP calculator (Hero › Calculator) and daily stock
+-- text on vendor / Roost offers. Server state: snapshot.systems = {pin, goals,
+-- goalMax, rates, window, prices, stock = {resetIn, left = {[key] = {left, limit}}}};
+-- verbs helperPin, goalSet, goalRemove, goalClear, priceCheck. Guides are
+-- derived on the client from the same pure functions the server uses
+-- (Data.Systems.Helper), so the Journal and the pinned sidebar step agree.
+------------------------------------------------------------------------------
+do
+local SYS={open={},goalKind="Level",goalSkill="Mining",calcSkill="Mining",calcTarget=nil,priceGroup="Mining",priceItem="Ore",pricePage=1,
+	PRICE_PAGE=48,REFRESH_GAP=10,refreshAt={}}
+Pages.SYS=SYS
+function SYS.data() return Data and type(Data.Systems)=="table" and Data.Systems or nil end
+function SYS.state() return tbl(state.systems) end
+function SYS.pinned() return tbl(SYS.state().pin).id end
+function SYS.waypoint(specs,label)
+	if type(specs)~="table" or #specs==0 then notify("There is no waypoint for this step: follow the text.") return end
+	local request=player:FindFirstChild("WayfinderRequest")
+	if request then
+		request:Fire(specs,label)
+		if atlas.Visible then closeAtlas() end
+	else
+		notify("The Wayfinder is still charting the isles. Try again in a moment.")
+	end
+end
+-- Region access from the snapshot (depth.regions), for waypoints (§33 QC L4).
+function SYS.access()
+	local d=depth()
+	if not d or type(d.regions)~="table" then return nil end
+	local access={}
+	for _,r in ipairs(d.regions) do if type(r)=="table" and type(r.id)=="string" then access[r.id]=r.unlocked==true end end
+	return access
+end
+-- Client-side guide for a pin id (same derivation as the server's pinned step).
+function SYS.guide(id)
+	local SY=SYS.data()
+	local j=tbl(state.journal)
+	if not SY or type(id)~="string" then return nil end
+	local HP=SY.Helper
+	if id=="contract" then return HP.contractGuide(state.quest) end
+	local kind,arg=string.match(id,"^(%a+):(%w+)$")
+	if kind=="quest" then
+		local q=Data.QuestById[arg]
+		if not q then return nil end
+		local entry
+		for _,e in ipairs(tbl(j.quests)) do if type(e)=="table" and e.id==arg then entry=e end end
+		local accepted=tbl(tbl(state.regionQuests).accepted)[arg]==true
+		return HP.questGuide(q,entry,{accepted=accepted,access=SYS.access()})
+	elseif kind=="diary" then
+		local d=Data.DiaryByRegion[arg]
+		if not d then return nil end
+		local entry=EMPTY
+		for _,e in ipairs(tbl(j.diaries)) do if type(e)=="table" and e.region==arg then entry=e end end
+		local tierName=HP.diaryTier(num(entry.claimed,0))
+		local tier
+		for _,t in ipairs(tbl(entry.tiers)) do if type(t)=="table" and t.tier==tierName then tier=t end end
+		return HP.diaryGuide(d,tierName,tier,{access=SYS.access()})
+	end
+	return nil
+end
+-- " · Unlocks with <region>: …" after a step in a locked region (empty otherwise).
+function SYS.blockedText(s)
+	return type(tbl(s).blocked)=="string" and paint("  ·  "..escape(s.blocked),"E8806A") or ""
+end
+-- Checklist rows: done ✓, the current step marked ➤ (gold), have/need counts.
+function SYS.steps(body,nextOrder,g)
+	local items={}
+	for i,s in ipairs(tbl(g.steps)) do
+		local text=escape(tostring(s.text))
+		if i==g.current and not s.met then text=paint("➤ ","F3C66E")..paint(text,"F3C66E") end
+		local npc=s.npc and Data.RegionArt and Data.RegionArt.FolkByRole[s.npc]
+		if npc and i==g.current then text..=paint("  ·  "..escape(npc.title or "NPC"),"A9B4C0") end
+		if i==g.current and not s.met then text..=SYS.blockedText(s) end
+		table.insert(items,{text=text,met=s.met==true,amount=num(s.need,1)>1 and (fmt(num(s.have,0)).." / "..fmt(num(s.need,1))) or nil})
+	end
+	UI.checklist(body,nextOrder,"STEP BY STEP",items)
+end
+-- Guide / Pin / Waypoint actions for a guide card (appended to `actions`).
+function SYS.actions(id,g,actions,expandable)
+	local pinned=SYS.pinned()==id
+	local s=g and g.steps[g.current]
+	if expandable then
+		local open=SYS.open[id]==true
+		table.insert(actions,{caption=open and "Hide guide" or "Guide",name="Guide"..id:gsub("[^%w]",""),fn=function() SYS.open[id]=not open render() end})
+	end
+	if g and g.status~="done" then
+		table.insert(actions,{caption=pinned and "Unpin" or "Pin",primary=not pinned,name="Pin"..id:gsub("[^%w]",""),
+			fn=function() send("helperPin",pinned and "" or id) end})
+		if s and type(s.specs)=="table" and #s.specs>0 then
+			table.insert(actions,{caption="Waypoint",name="Waypoint"..id:gsub("[^%w]",""),fn=function() SYS.waypoint(s.specs,escape(tostring(s.text))) end})
+		elseif s and type(s.blocked)=="string" then
+			-- §33 QC L4: the step lies in a locked region: its requirement, not a waypoint.
+			table.insert(actions,{caption="Locked",disabled=true,reason=s.blocked,name="Waypoint"..id:gsub("[^%w]",""),fn=function() notify(s.blocked) end})
+		end
+	end
+	return actions
+end
+-- Quest cards (Journal › Quests): a NEXT line, Guide / Pin / Waypoint, and the
+-- step list when expanded. Returns the `after` drawer (or nil).
+function SYS.questExtras(q,entry,actions,lines)
+	if not SYS.data() or tbl(entry).done==true then return nil end
+	local id="quest:"..q.id
+	local g=SYS.guide(id)
+	if not g then return nil end
+	local s=g.steps[g.current]
+	if s then table.insert(lines,1,"<b>"..paint("NEXT  ","9EE7D2").."</b>"..escape(tostring(s.text))..(num(s.need,1)>1 and paint("  "..fmt(num(s.have,0)).."/"..fmt(num(s.need,1)),"A9B4C0") or "")..SYS.blockedText(s)) end
+	SYS.actions(id,g,actions,true)
+	if SYS.open[id] then return function(body,nextOrder) SYS.steps(body,nextOrder,g) end end
+	return nil
+end
+-- One compact helper card for a diary region or the guild contract.
+function SYS.helperCard(id,subtitle)
+	local g=SYS.guide(id)
+	if not g or g.status=="done" then return end
+	local s=g.steps[g.current] or EMPTY
+	local open=SYS.open[id]==true
+	card({name="Helper"..id:gsub("[^%w]",""),motif="Journal",title=paint("◆ ","9EE7D2")..escape(g.title),subtitle=subtitle,
+		badge=SYS.pinned()==id and paint("PINNED","F3C66E") or nil,badgeColor=gold,
+		lines={"<b>"..paint("NEXT  ","9EE7D2").."</b>"..escape(tostring(s.text or ""))..SYS.blockedText(s)},
+		pips={total=math.max(1,num(g.total,1)),filled=num(g.done,0),color=mint},
+		after=open and function(body,nextOrder) SYS.steps(body,nextOrder,g) end or nil,
+		actions=SYS.actions(id,g,{},true)})
+end
+-- Journal › Helper: the pinned guide in full, then everything that can be pinned.
+function SYS.drawHelper()
+	heading("QUEST HELPER    /    STEP BY STEP")
+	if not SYS.data() or type(Data.Quests)~="table" then dataMissing() return end
+	local j=state.journal
+	if type(j)~="table" then syncing("quest helper") return end
+	local pinId=SYS.pinned()
+	local pg=pinId and SYS.guide(pinId)
+	if pg then
+		local s=pg.steps[pg.current] or EMPTY
+		card({name="HelperPinned",motif="Journal",edge=gold,title=paint("PINNED  ","F3C66E")..escape(pg.title),
+			subtitle="Shown in your sidebar Objective  ·  step "..fmt(num(pg.current,1)).." of "..fmt(num(pg.total,1)),
+			detail=escape(tostring(s.text or "")),before=function(body,nextOrder) SYS.steps(body,nextOrder,pg) end,
+			actions=SYS.actions(pinId,pg,{},false)})
+	else
+		card({name="HelperIntro",motif="Journal",title="Pin a quest to your sidebar",
+			detail="Every quest, regional quest, diary and guild contract has a guide built from its own requirements: what to do next, what you have and need, and a Wayfinder waypoint to where it happens. Pin one and its current step replaces the Objective in your sidebar."})
+	end
+	heading("ACTIVE QUESTS")
+	local shown=0
+	local entries={}
+	for _,e in ipairs(tbl(j.quests)) do if type(e)=="table" and type(e.id)=="string" then entries[e.id]=e end end
+	local list={}
+	for _,q in ipairs(Data.Quests) do
+		local e=entries[q.id] or EMPTY
+		if e.done~=true and e.available==true then table.insert(list,q) end
+	end
+	table.sort(list,function(a,b)
+		local ra,rb=(entries[a.id] or EMPTY).ready==true,(entries[b.id] or EMPTY).ready==true
+		if ra~=rb then return ra end
+		return a.index<b.index
+	end)
+	for _,q in ipairs(list) do
+		if shown>=12 then break end
+		local id="quest:"..q.id
+		local g=SYS.guide(id)
+		if g and ("quest:"..q.id)~=pinId then
+			local s=g.steps[g.current] or EMPTY
+			local region=Data.RegionById and Data.RegionById[q.region]
+			card({name="HelperQuest"..q.id,motif="Journal",title=escape(q.title),
+				subtitle=escape((region and region.name or tostring(q.region)).."  ·  "..(q.line=="main" and "Main quest" or (q.regional and "Regional quest" or "Side quest"))),
+				badge=g.status=="ready" and "READY" or (g.status=="accept" and "ACCEPT" or nil),badgeColor=gold,
+				lines={"<b>"..paint("NEXT  ","9EE7D2").."</b>"..escape(tostring(s.text or ""))..(num(s.need,1)>1 and paint("  "..fmt(num(s.have,0)).."/"..fmt(num(s.need,1)),"A9B4C0") or "")..SYS.blockedText(s)},
+				pips={total=math.max(1,num(g.total,1)),filled=num(g.done,0),color=mint},
+				after=SYS.open[id] and function(body,nextOrder) SYS.steps(body,nextOrder,g) end or nil,
+				actions=SYS.actions(id,g,{},true)})
+			shown+=1
+		end
+	end
+	if shown==0 then row("Nothing open","Quests appear here once you meet their requirements. Locked quests list them in Journal › Quests.") end
+	heading("DIARIES & CONTRACTS")
+	if pinId~="contract" then SYS.helperCard("contract","Guild contract  ·  stage "..fmt(num(tbl(state.quest).stage,1)).." of "..fmt(num(tbl(state.quest).total,8))) end
+	for _,d in ipairs(Data.Diaries) do
+		local id="diary:"..d.region
+		if id~=pinId then SYS.helperCard(id,"Achievement diary") end
+	end
+end
+
+-- Goal board ------------------------------------------------------------------
+SYS.goalKinds={Level="level",XP="xp",Collection="tier",Items="item",Quest="quest",Boss="kills"}
+SYS.goalOrder={"Level","XP","Collection","Items","Quest","Boss"}
+function SYS.setGoal(kind,arg,n) send("goalSet",kind..":"..arg..":"..math.max(1,math.floor(n))) end
+function SYS.skills()
+	local out={}
+	for _,s in ipairs(tbl(Data and Data.SkillOrder)) do table.insert(out,s) end
+	return out
+end
+function SYS.drawGoals()
+	local sys=SYS.state()
+	local SY=SYS.data()
+	local goals=tbl(sys.goals)
+	local max=num(sys.goalMax,12)
+	heading("GOAL BOARD    /    "..#goals.." OF "..fmt(max))
+	if not SY then dataMissing() return end
+	if type(state.systems)~="table" then syncing("goal board") return end
+	local done=0
+	for _,g in ipairs(goals) do if type(g)=="table" and g.done then done+=1 end end
+	card({name="GoalSummary",motif="Journal",title="Personal goals",titleColor=gold,
+		subtitle=#goals.." set  ·  "..done.." finished  ·  ETAs from your last "..fmt(num(sys.window,1800)//60).." minutes",
+		detail="Set targets for skills, collections, items, quests and bosses. Progress is tracked by the server and a toast fires when a goal is reached.",
+		actions=done>0 and {{caption="Clear finished",name="GoalClear",fn=function() send("goalClear") end}} or nil})
+	for _,g in ipairs(goals) do
+		if type(g)=="table" then
+			local have,need=num(g.have,0),math.max(1,num(g.need,1))
+			local eta
+			if g.done then eta=paint("Complete","6FE3C8")
+			elseif g.k=="quest" then eta=paint("Follow it in Journal › Helper","A9B4C0")
+			else
+				local rate=num(g.rate,0)
+				eta="ETA "..SY.Goals.etaText(g.eta)..(rate>0 and ("  ·  "..fmt(rate).."/h") or "")
+			end
+			local caption=g.k=="level" and (fmt(have).." / "..fmt(need).." XP") or (fmt(math.min(have,need)).." / "..fmt(need))
+			local acts={{caption="Remove",name="GoalRemove"..tostring(g.id),fn=function() send("goalRemove",tostring(g.id)) end}}
+			if g.k=="quest" and not g.done then
+				table.insert(acts,1,{caption="Pin",name="GoalPin"..tostring(g.id),fn=function() send("helperPin","quest:"..tostring(g.a)) end})
+			end
+			card({name="Goal"..tostring(g.id),motif=g.k=="kills" and "Hunt" or (g.k=="tier" or g.k=="item") and "Satchel" or "Hero",
+				title=escape(tostring(g.label or "Goal")),titleColor=g.done and mint or ivory,subtitle=eta,
+				badge=g.done and paint("DONE","6FE3C8") or nil,badgeColor=mint,
+				bar={fraction=math.clamp(have/need,0,1),color=g.done and mint or gold,caption=caption},actions=acts})
+		end
+	end
+	if #goals>=max then row("Board full","Remove a goal to add another.") return end
+	heading("ADD A GOAL")
+	sectionBar(SYS.goalOrder,SYS.goalKind,function(name) SYS.goalKind=name render() end,{small=true,prefix="GoalKind",maxPer=6})
+	local kind=SYS.goalKinds[SYS.goalKind]
+	local skills=skillsOf(state)
+	if kind=="level" or kind=="xp" then
+		local list=SYS.skills()
+		if not table.find(list,SYS.goalSkill) then SYS.goalSkill=list[1] or "Mining" end
+		sectionBar(list,SYS.goalSkill,function(name) SYS.goalSkill=name render() end,{small=true,prefix="GoalSkill",maxPer=compactAtlas and 4 or 7})
+		local skill=SYS.goalSkill
+		local info=skills[skill] or EMPTY
+		local lvl,xp=num(info.level,1),num(info.xp,num(tbl(state.xp)[skill],0))
+		local acts={}
+		if kind=="level" then
+			for _,step in ipairs({1,5,10}) do
+				if lvl+step<=99 then table.insert(acts,{caption="Level "..(lvl+step),name="GoalAddLevel"..step,fn=function() SYS.setGoal("level",skill,lvl+step) end}) end
+			end
+			if lvl<99 then table.insert(acts,{caption="Level 99",primary=true,name="GoalAddLevel99",fn=function() SYS.setGoal("level",skill,99) end}) end
+		else
+			for _,step in ipairs({10000,100000,1000000}) do
+				local target=math.floor(xp/step+1)*step
+				table.insert(acts,{caption=fmt(target).." XP",name="GoalAddXp"..step,fn=function() SYS.setGoal("xp",skill,target) end})
+			end
+		end
+		card({name="GoalAddSkill",motif="Hero",title=escape(skill).."  ·  level "..fmt(lvl),subtitle=fmt(xp).." XP",actions=acts})
+	elseif kind=="tier" then
+		local list={}
+		for _,id in ipairs(tbl(Data.CollectionItems)) do if num(tbl(state.collection)[id],0)>0 then table.insert(list,id) end end
+		table.sort(list,function(a,b) return num(tbl(state.collection)[a],0)>num(tbl(state.collection)[b],0) end)
+		local function threshold(id,t) return math.max(1,math.floor(Data.CollectionTiers[t]*num(Data.CollectionScale[id],1))) end
+		for i=1,math.min(10,#list) do
+			local id=list[i]
+			local have=num(tbl(state.collection)[id],0)
+			local tier=0
+			for t=1,#Data.CollectionTiers do
+				if have>=threshold(id,t) then tier=t end
+			end
+			if tier<#Data.CollectionTiers then
+				card({name="GoalAddTier"..id,item=id,title=escape(itemName(id)),subtitle="Tier "..tier.."  ·  "..fmt(have).." collected",
+					actions={{caption="Tier "..(tier+1),name="GoalTierNext"..id,fn=function() SYS.setGoal("tier",id,tier+1) end},
+						{caption="Tier "..#Data.CollectionTiers,name="GoalTierMax"..id,fn=function() SYS.setGoal("tier",id,#Data.CollectionTiers) end}}})
+			end
+		end
+		if #list==0 then row("No collections yet","Gather, fish, farm or fight to start a collection.") end
+	elseif kind=="item" then
+		local list={}
+		for id,n in pairs(tbl(state.items)) do if num(n,0)>0 and itemDef(id) then table.insert(list,id) end end
+		table.sort(list,function(a,b) return num(tbl(state.items)[a],0)>num(tbl(state.items)[b],0) end)
+		for i=1,math.min(10,#list) do
+			local id=list[i]
+			local have=num(tbl(state.items)[id],0)
+			card({name="GoalAddItem"..id,item=id,title=escape(itemName(id)),subtitle="Holding ×"..fmt(have),
+				actions={{caption="+64",name="GoalItem64"..id,fn=function() SYS.setGoal("item",id,have+64) end},
+					{caption="+640",name="GoalItem640"..id,fn=function() SYS.setGoal("item",id,have+640) end},
+					{caption="×2",name="GoalItemDouble"..id,fn=function() SYS.setGoal("item",id,have*2) end}}})
+		end
+		if #list==0 then row("Empty satchel","Items you hold appear here.") end
+	elseif kind=="quest" then
+		local j=tbl(state.journal)
+		local shown=0
+		for _,e in ipairs(tbl(j.quests)) do
+			local q=type(e)=="table" and Data.QuestById[e.id]
+			if q and e.done~=true and shown<10 then
+				shown+=1
+				card({name="GoalAddQuest"..q.id,motif="Journal",title=escape(q.title),subtitle=e.available and "Available" or "Locked: requirements listed in Journal › Quests",
+					actions={{caption="Track",name="GoalQuest"..q.id,fn=function() SYS.setGoal("quest",q.id,1) end}}})
+			end
+		end
+		if shown==0 then row("Every quest done","There is no quest left to track.") end
+	elseif kind=="kills" then
+		local kc=tbl(tbl(state.lairs).kc)
+		local best=tbl(tbl(state.depth).bestiary)
+		for _,id in ipairs(SY.Goals.bosses()) do
+			local have=SY.Goals.killSource(id)=="lair" and num(kc[id],0) or num(best[id],0)
+			card({name="GoalAddBoss"..id,motif="Hunt",title=escape(SY.Goals.bossName(id)),subtitle=fmt(have).." kills",
+				actions={{caption="+1",name="GoalBoss1"..id,fn=function() SYS.setGoal("kills",id,have+1) end},
+					{caption="+10",name="GoalBoss10"..id,fn=function() SYS.setGoal("kills",id,have+10) end},
+					{caption="+100",name="GoalBoss100"..id,fn=function() SYS.setGoal("kills",id,have+100) end}}})
+		end
+	end
+end
+
+-- Price history -----------------------------------------------------------------
+-- Sparkline: PR.SPARK bars (6 hours each, oldest left), height by average price.
+function SYS.spark(body,nextOrder,s)
+	local spark=tbl(s.spark)
+	local hi=0
+	for _,v in ipairs(spark) do hi=math.max(hi,num(v,0)) end
+	local h=compactAtlas and 44 or 56
+	local well=make("Frame",body,{Name="Sparkline",BackgroundColor3=track,BackgroundTransparency=.35,Size=UDim2.new(1,0,0,h+8),LayoutOrder=nextOrder(),BorderSizePixel=0})
+	make("UICorner",well,{CornerRadius=UDim.new(0,8)})
+	make("UIStroke",well,{Color=UI.line,Thickness=1})
+	local n=math.max(1,#spark)
+	local lo=hi
+	for _,v in ipairs(spark) do if num(v,0)>0 then lo=math.min(lo,num(v,0)) end end
+	for i,v in ipairs(spark) do
+		v=num(v,0)
+		-- Scale between 35% (cheapest) and 100% (dearest) so small moves still show.
+		local f=if v<=0 or hi<=0 then .04 elseif hi==lo then .7 else .35+.65*(v-lo)/(hi-lo)
+		local bar=make("Frame",well,{Name="Bar"..i,AnchorPoint=Vector2.new(0,1),Position=UDim2.new((i-1)/n,2,1,-4),Size=UDim2.new(1/n,-3,0,math.max(2,math.floor((h-2)*f))),
+			BackgroundColor3=v>0 and (i==n and gold or mint) or UI.line,BackgroundTransparency=v>0 and .15 or .5,BorderSizePixel=0})
+		make("UICorner",bar,{CornerRadius=UDim.new(0,2)})
+	end
+	return well
+end
+function SYS.priceLines(s)
+	local lines={}
+	if s.avg7 then
+		table.insert(lines,"24h avg "..(s.avg24 and fmt(s.avg24) or "—").."  ·  24h volume "..fmt(num(s.vol24,0)).."  ·  last "..(s.last and fmt(s.last) or "—"))
+		table.insert(lines,"7d avg "..fmt(s.avg7).."  ·  7d range "..fmt(num(s.lo7,0)).."–"..fmt(num(s.hi7,0)).."  ·  7d volume "..fmt(num(s.vol7,0)))
+		-- §33 QC M1: few distinct traders: the figures may not reflect a real market.
+		if s.thin then table.insert(lines,paint("Thin market: fewer than "..fmt(num(SYS.data() and SYS.data().Prices.THIN,3)).." traders in any hour of this window","E8806A")) end
+	else
+		table.insert(lines,"No player trades in the last 7 days.")
+	end
+	return lines
+end
+-- Price history card (Bazaar book view or a price check).
+function SYS.historyCard(item,s,name)
+	if type(s)~="table" or not SYS.data() then return end
+	card({name=name or "PriceHistory",item=item,title="Price history  ·  "..escape(itemName(item)),
+		subtitle="Hourly median prices, last 7 days (each bar 6 hours, newest right)",
+		lines=SYS.priceLines(s),after=function(body,nextOrder) SYS.spark(body,nextOrder,s) end})
+end
+-- Latest known summary for an item (price checks first, then the open Bazaar view).
+function SYS.summaryFor(item)
+	for _,s in ipairs(tbl(SYS.state().prices)) do if type(s)=="table" and s.item==item then return s end end
+	local view=tbl(tbl(state.economy).bazaar)
+	if view.item==item and type(view.history)=="table" then return view.history end
+	return nil
+end
+function SYS.groups()
+	local out={}
+	for _,g in ipairs(tbl(Data.Economy and Data.Economy.bazaarGroups)) do table.insert(out,g) end
+	table.insert(out,"Gear")
+	return out
+end
+function SYS.gearItems()
+	local list={}
+	local E=Data.Economy
+	for id,def in pairs(tbl(Data.Items)) do
+		if type(def)=="table" and E and E.auctionCategory(id) and (num(tbl(state.items)[id],0)>0 or def.rarity=="Legendary" or def.rarity=="Mythic") then table.insert(list,id) end
+	end
+	table.sort(list,function(a,b) return itemName(a)<itemName(b) end)
+	return list
+end
+function SYS.drawPrices()
+	heading("PRICE HISTORY    /    7 DAYS, EVERY SERVER")
+	if not SYS.data() or not Pages.econ then dataMissing() return end
+	local latest=tbl(SYS.state().prices)[1]
+	if type(latest)=="table" then SYS.historyCard(latest.item,latest,"PriceLatest") end
+	sectionBar(SYS.groups(),SYS.priceGroup,function(name) SYS.priceGroup=name SYS.pricePage=1 render() end,{small=true,prefix="PriceGroup",maxPer=6})
+	local list=SYS.priceGroup=="Gear" and SYS.gearItems() or Pages.econ.commodities(SYS.priceGroup)
+	if #list==0 then row("Nothing to check","Items in this group appear once you hold one (gear) or once the item list loads.") return end
+	-- §33 QC L5: pages of SYS.PRICE_PAGE items, so every item in a big group is reachable.
+	local pages=math.max(1,math.ceil(#list/SYS.PRICE_PAGE))
+	SYS.pricePage=math.clamp(num(SYS.pricePage,1),1,pages)
+	local first=(SYS.pricePage-1)*SYS.PRICE_PAGE
+	if pages>1 then
+		local page=SYS.pricePage
+		card({name="PricePager",motif="Ledger",title=escape(SYS.priceGroup).."  ·  page "..page.." of "..pages,
+			subtitle=fmt(first+1).."–"..fmt(math.min(#list,first+SYS.PRICE_PAGE)).." of "..fmt(#list).." items",
+			actions={{caption="Previous",name="PricePrev",disabled=page<=1,reason=page<=1 and "First page." or nil,fn=function() SYS.pricePage=page-1 render() end},
+				{caption="Next",name="PriceNext",disabled=page>=pages,reason=page>=pages and "Last page." or nil,fn=function() SYS.pricePage=page+1 render() end}}})
+	end
+	local size=compactAtlas and 48 or 58
+	local grid=gridHolder(UDim2.fromOffset(size,size),6)
+	for i=first+1,math.min(#list,first+SYS.PRICE_PAGE) do
+		local id=list[i]
+		local cell=tile(grid,"Price"..id,i-first,function()
+			SYS.priceItem=id
+			send("priceCheck",id)
+		end)
+		make("UIStroke",cell,{Color=id==SYS.priceItem and gold or slate,Transparency=id==SYS.priceItem and 0 or .5,Thickness=id==SYS.priceItem and 2 or 1})
+		local art=itemIcon(cell,id,size-10)
+		art.Position=UDim2.fromOffset(5,5)
+	end
+	heading("RECENT CHECKS")
+	local any=false
+	for i,s in ipairs(tbl(SYS.state().prices)) do
+		if type(s)=="table" and i>1 then
+			any=true
+			card({name="PriceCheck"..tostring(s.item),item=s.item,title=escape(itemName(s.item)),lines=SYS.priceLines(s),
+				actions={{caption="Refresh",name="PriceRefresh"..tostring(s.item),fn=function() send("priceCheck",s.item) end}}})
+		end
+	end
+	if not any then row("Tap an item","Its 7-day trade history, 24h average and volume appear here. Every trade on the Bazaar and the Auction House counts, on every server.") end
+end
+-- Item tooltips / satchel detail (any client script): ReplicatedStorage.IslePriceCheckLocal:Invoke(itemId, refresh)
+-- returns {text, summary} from the last known history (nil when unknown); refresh=true also asks the server.
+do
+	local fn=ReplicatedStorage:FindFirstChild("IslePriceCheckLocal")
+	if not fn then
+		fn=Instance.new("BindableFunction")
+		fn.Name="IslePriceCheckLocal"
+		fn.Parent=ReplicatedStorage
+	end
+	fn.OnInvoke=function(item,refresh)
+		if type(item)~="string" or #item>64 then return nil end
+		-- §33 QC M3: a tooltip refresh asks the server at most once per item every SYS.REFRESH_GAP seconds.
+		if refresh==true and send and Data and Data.Systems and Data.Systems.Prices.keyFor(item) then
+			local now=os.clock()
+			if now>=(SYS.refreshAt[item] or 0) then
+				SYS.refreshAt[item]=now+SYS.REFRESH_GAP
+				send("priceCheck",item,true)
+			end
+		end
+		local s=SYS.summaryFor(item)
+		if not s or not SYS.data() then return nil end
+		return {text=SYS.data().Prices.text(s),summary=s}
+	end
+end
+
+-- XP calculator -----------------------------------------------------------------
+function SYS.drawCalculator()
+	heading("XP CALCULATOR")
+	local SY=SYS.data()
+	if not SY or type(Data.XP_TABLE)~="table" then dataMissing() return end
+	local CA=SY.Calc
+	local list=CA.skills()
+	if not table.find(list,SYS.calcSkill) then SYS.calcSkill=list[1] or "Mining" end
+	sectionBar(list,SYS.calcSkill,function(name) SYS.calcSkill=name SYS.calcTarget=nil render() end,{small=true,prefix="CalcSkill",maxPer=compactAtlas and 4 or 7})
+	local skill=SYS.calcSkill
+	local info=skillsOf(state)[skill] or EMPTY
+	local lvl=num(info.level,1)
+	local xp=num(info.xp,num(tbl(state.xp)[skill],0))
+	local target=math.clamp(num(SYS.calcTarget,math.min(99,lvl+1)),math.min(99,lvl+1),99)
+	SYS.calcTarget=target
+	local rate=num(tbl(SYS.state().rates)[skill],0)
+	local plan=CA.plan(xp,target,1)
+	local function step(d) return function() SYS.calcTarget=math.clamp(target+d,math.min(99,lvl+1),99) render() end end
+	card({name="CalcTarget",motif="Hero",title=escape(skill).."  "..fmt(lvl).."  →  "..fmt(target),
+		subtitle=fmt(xp).." XP now  ·  "..fmt(plan.goalXp).." XP at level "..fmt(target),
+		lines={"<b>"..fmt(plan.remaining).."</b> XP to go"..(rate>0 and ("  ·  at your "..fmt(rate).." XP/h: about "..SY.Goals.etaText(SY.Goals.eta(plan.remaining,rate))) or "  ·  train for a few minutes to see an ETA")},
+		bar={fraction=math.clamp(plan.goalXp>0 and xp/plan.goalXp or 0,0,1),color=gold,caption=fmt(xp).." / "..fmt(plan.goalXp)},
+		actions={{caption="−5",name="CalcMinus5",fn=step(-5)},{caption="−1",name="CalcMinus1",fn=step(-1)},{caption="+1",name="CalcPlus1",fn=step(1)},
+			{caption="+5",name="CalcPlus5",fn=step(5)},{caption="Set goal",primary=true,name="CalcGoal",fn=function() SYS.setGoal("level",skill,target) end}}})
+	heading("ACTIONS    /    BASE XP, NO BOOSTS")
+	local actions=CA.actions(skill)
+	-- Unlocked actions nearest the player's level first, then the next few locked ones.
+	local unlocked,locked={},{}
+	for _,a in ipairs(actions) do if a.level<=lvl then table.insert(unlocked,a) else table.insert(locked,a) end end
+	local shown={}
+	for i=#unlocked,math.max(1,#unlocked-9),-1 do table.insert(shown,unlocked[i]) end
+	for i=1,math.min(4,#locked) do table.insert(shown,locked[i]) end
+	for _,a in ipairs(shown) do
+		local p=CA.plan(xp,target,a.xp)
+		local open=a.level<=lvl
+		card({name="CalcAction"..a.id,item=itemDef(a.id) and a.id or nil,motif=not itemDef(a.id) and "Hunt" or nil,title=escape(a.name),titleColor=open and ivory or muted,
+			subtitle=(a.kind=="gather" and "Gather" or (a.kind=="catch" and "Catch" or "Craft")).."  ·  level "..a.level.."  ·  "..fmt(a.xp).." XP each",
+			badge=open and (fmt(num(p.actions,0)).." ×") or paint("LEVEL "..a.level,"E8806A"),badgeColor=open and gold or ember,
+			lines={open and (fmt(num(p.actions,0)).." actions to reach level "..fmt(target)) or ("Unlocks at "..escape(skill).." "..a.level)}})
+	end
+	if #shown==0 then row("No actions","This skill trains from other activities.") end
+end
+
+-- Daily stock ---------------------------------------------------------------------
+function SYS.stockLeft(key)
+	local entry=tbl(tbl(SYS.state().stock).left)[key]
+	if type(entry)~="table" then return nil,nil end
+	return num(entry[1],0),num(entry[2],0)
+end
+function SYS.stockText(key)
+	local left,lim=SYS.stockLeft(key)
+	if not lim then return nil end
+	return (left>0 and paint(fmt(left).."/"..fmt(lim).." left today","9EE7D2") or paint("Sold out today ("..fmt(lim)..")","E8806A"))
+end
+Pages.drawHelper,Pages.drawGoals,Pages.drawPrices,Pages.drawCalculator=SYS.drawHelper,SYS.drawGoals,SYS.drawPrices,SYS.drawCalculator
+end
+
+------------------------------------------------------------------------------
 -- Menu: the landing page (a SkyBlock-style grid of big icon tiles) and the
 -- Settings page (local HUD preferences published as player attributes that
 -- hud.client.lua / nav.client.lua read).
@@ -8368,7 +9991,7 @@ local MENU={
 	{id="Skills",motif="Hero",tab="Hero",section="Skills"},{id="Collections",motif="Satchel",tab="Satchel",section="Collections"},
 	{id="Recipes",motif="Workshop",tab="Workshop",section="Forge"},{id="Bestiary",motif="Hunt",tab="Hunt",section="Bestiary"},
 	{id="Quests",motif="Journal",tab="Journal",section="Quests"},{id="Pets",motif="Co-op",tab="Hero",section="Pets"},
-	{id="Wardrobe",title="Wardrobe & Gear",motif="Hero",tab="Hero",section="Gear"},{id="Bank",motif="Ledger",tab="Ledger",section="Bank"},
+	{id="Wardrobe",title="Wardrobe",motif="Hero",tab="Hero",section="Wardrobe"},{id="Bank",motif="Ledger",tab="Ledger",section="Bank"},
 	{id="Market",motif="Ledger",tab="Ledger",section="Orders"},{id="Satchel",motif="Satchel",hud="satchel"},
 	{id="Chart",title="Sky Chart",motif="Map",hud="warpmap"},{id="Settings",motif="Settings",tab="Menu",section="Settings"},
 	{id="Renown",title="Isle Renown",motif="Journal",tab="Menu",section="Renown"}, -- §31 MMO Features
@@ -8381,7 +10004,7 @@ local function caption(id)
 	elseif id=="Bestiary" then local n=0 for _,k in pairs(tbl(d.bestiary)) do n+=num(k,0) end return fmt(n).." creatures slain"
 	elseif id=="Quests" then local j=tbl(state.journal) local ready=0 for _,q in ipairs(tbl(j.quests)) do if type(q)=="table" and q.ready then ready+=1 end end return ready>0 and (ready.." ready to claim") or (fmt(num(j.questPoints,0)).." quest points")
 	elseif id=="Pets" then return #tbl(d.pets).." companions"
-	elseif id=="Wardrobe" then local n=0 for _ in pairs(tbl(d.equipment)) do n+=1 end return n.." slots equipped"
+	elseif id=="Wardrobe" then local n=0 for _,s in pairs(tbl(tbl(tbl(state.qol).wardrobe).sets)) do if type(s)=="table" then n+=1 end end return n.." loadouts saved" -- §41
 	elseif id=="Bank" then return "◆ "..fmt(num(state.bank,0)).." banked"
 	elseif id=="Market" then return "Bazaar & auctions"
 	elseif id=="Satchel" then return "Inventory · E"
@@ -8451,10 +10074,12 @@ function Pages.drawRenown()
 			actions=owed>0 and {{caption="Claim "..fmt(owed).." coins",primary=true,name="GuideClaim",fn=function() send("guideClaim") end}} or nil})
 	end
 	heading("RENOWN SOURCES")
+	local byId=Data and Data.Renown and Data.Renown.SourceById or {}
 	for _,s in ipairs(tbl(r.sources)) do
 		if type(s)=="table" then
-			card({name="RenownSource"..tostring(s.id),title=escape(tostring(s.name)),badge=fmt(num(s.xp,0)),badgeColor=gold,
-				subtitle=fmt(num(s.count,0)).." counted",detail=escape(tostring(s.hint or ""))})
+			local def=tbl(byId[s.id]) -- rows are {id, xp, count}; names and hints are static data
+			card({name="RenownSource"..tostring(s.id),title=escape(tostring(def.name or s.name or s.id)),badge=fmt(num(s.xp,0)),badgeColor=gold,
+				subtitle=fmt(num(s.count,0)).." counted",detail=escape(tostring(def.hint or s.hint or ""))})
 		end
 	end
 end
@@ -8484,16 +10109,92 @@ local SETTINGS={
 	{attr="IsleSettingMinimap",title="Minimap",detail="The top-left minimap with region name and coordinates (its Map button folds the map away).",default=true},
 	{attr="IsleSettingReducedMotion",title="Reduced motion",detail="XP drops and level-up banners appear in place instead of sliding and scaling.",default=false},
 }
+-- The live value of a setting (the HUD's Pin button and closing the satchel
+-- change IsleSettingPinSatchel too, so a toggle never acts on a stale card).
+function Pages.settingValue(o)
+	local value=player:GetAttribute(o.attr)
+	if value==nil then value=o.default end
+	return value==true
+end
+-- Re-render the Settings page when a setting changes elsewhere while it shows.
+local watchedSettings=table.clone(SETTINGS)
+table.insert(watchedSettings,{attr="IsleSettingGraphics"}) -- §35 graphics tier
+for _,o in ipairs(watchedSettings) do
+	player:GetAttributeChangedSignal(o.attr):Connect(function()
+		if UI.atlasOpen and current=="Menu" and sectionOf and sectionOf.Menu=="Settings" and render then render() end
+	end)
+end
+-- §35 QC L6: a Settings change is applied locally at once and saved on the
+-- profile through the `setting` verb ("Attr=value"; the server whitelists it
+-- and re-applies saved values on join). Saves are coalesced per attribute and
+-- sent one at a time outside the action queue (no toast, no snapshot).
+UI.settingSaves,UI.settingSaving={},false
+function UI.saveSetting(attr,value)
+	player:SetAttribute(attr,value)
+	UI.settingSaves[attr]=value
+	if UI.settingSaving then return end
+	UI.settingSaving=true
+	task.spawn(function()
+		while true do
+			local nextAttr,nextValue=next(UI.settingSaves)
+			if nextAttr==nil then break end
+			UI.settingSaves[nextAttr]=nil
+			local action=ReplicatedStorage:FindFirstChild("IsleAction") -- (the `remote` local is declared further down)
+			if action then pcall(function() action:InvokeServer("setting",nextAttr.."="..tostring(nextValue)) end) end
+		end
+		UI.settingSaving=false
+	end)
+end
+-- §35 QC L7: the graphics card reads its tier text from AetherLighting
+-- (L.Tiers[*].detail, the same table the director runs), resolved lazily.
+function UI.lightingRules()
+	if UI.lightingModule==nil then
+		local object=ReplicatedStorage:FindFirstChild("AetherLighting")
+		if object then
+			local ok,rules=pcall(require,object)
+			UI.lightingModule=ok and type(rules)=="table" and rules or false
+		end
+	end
+	return UI.lightingModule or nil
+end
 function Pages.drawSettings()
-	heading("SETTINGS / SAVED FOR THIS SESSION")
+	heading("SETTINGS / SAVED TO YOUR JOURNAL")
 	for _,o in ipairs(SETTINGS) do
-		local value=player:GetAttribute(o.attr)
-		if value==nil then value=o.default end
+		local value=Pages.settingValue(o)
 		card({name="Setting"..o.attr,motif="Settings",title=o.title,subtitle=value and paint("On","6FE3C8") or paint("Off","A9B4C0"),detail=o.detail,
 			actions={{caption=value and "Turn off" or "Turn on",primary=not value,name="Toggle"..o.attr,fn=function()
-				player:SetAttribute(o.attr,not value)
+				UI.saveSetting(o.attr,not Pages.settingValue(o))
 				render()
 			end}}})
+	end
+	-- Graphics (§35): lighting.client.lua reads IsleSettingGraphics (it publishes
+	-- the device default on first run: phones Balanced, low quality Performance).
+	local GA="IsleSettingGraphics"
+	local LR=UI.lightingRules()
+	local tiers={}
+	for _,id in ipairs(LR and LR.TIER_ORDER or {"High","Balanced","Performance"}) do
+		local def=LR and LR.Tiers and LR.Tiers[id]
+		table.insert(tiers,{id=id,text=def and type(def.detail)=="string" and def.detail or nil})
+	end
+	local now=player:GetAttribute(GA)
+	local actions,detail={},nil
+	for _,t in ipairs(tiers) do
+		local on=now==t.id
+		table.insert(actions,{caption=(on and "✓ " or "")..t.id,primary=on,name="Graphics"..t.id,fn=function() UI.saveSetting(GA,t.id) render() end})
+		if on then detail=t.text end
+	end
+	card({name="SettingGraphics",motif="Settings",title="Graphics quality",subtitle=paint(type(now)=="string" and now or "Automatic","6FE3C8"),
+		detail=type(detail)=="string" and detail or "Chosen from your device.",actions=actions})
+	-- §43 Tutorial (tutorial.client.lua): tips on / off and replay; saved on the
+	-- journal by the server (verb tutorial "tips:on|tips:off|replay").
+	do
+		local tu=tbl(state.tutorial)
+		local tipsOn=tu.off~=true
+		local status=(tu.card and "In progress") or (tu.skipped and "Skipped") or (tu.vet and "Not offered (veteran journal)") or "Complete"
+		card({name="SettingTutorial",motif="Journal",title="Tutorial",subtitle=paint(status,"6FE3C8").."  ·  tips "..(tipsOn and paint("on","6FE3C8") or paint("off","A9B4C0")),
+			detail="Coach cards walk you through the Wayfarer's Path and your first quests; tips explain things the first time you meet them.",
+			actions={{caption=tipsOn and "Turn tips off" or "Turn tips on",primary=not tipsOn,name="TutorialTips",fn=function() UI.tutorialSend(tipsOn and "tips:off" or "tips:on") end},
+				{caption="Replay tutorial",name="TutorialReplay",fn=function() UI.tutorialSend("replay") end}}})
 	end
 	card({name="SettingKeys",motif="Journal",title="Keys",detail="J  menu & atlas   ·   E / Tab  satchel   ·   M  Sky Chart (warp map)   ·   right-click (long-press) an item for its options   ·   drag items to reorder"})
 end
@@ -8505,25 +10206,29 @@ end
 local tabOrder={"Menu","Journal","Hero","Satchel","Workshop","Hunt","Ledger"}
 local sectionLists={
 	Menu={"Home","Renown","Resonance","Settings"}, -- §31: Renown, Resonance
-	Journal={"Bearing","Quests","Diaries","Construction","Regions","Crew","Calendar","Agility","Commissions","Collection Log","Museum","Motes","Factions"},
-	Hero={"Skills","Mastery","Gear","Combat","Spellbook","Prayer","Enchant","Reforge","Accessories","Pets"},
+	Journal={"Bearing","Quests","Helper","Goals","Diaries","Construction","Regions","Crew","Calendar","Council","Agility","Commissions","Collection Log","Museum","Motes","Factions"}, -- §33: Helper, Goals
+	Hero={"Skills","Mastery","Gear","Wardrobe","Combat","Spellbook","Prayer","Enchant","Lectern","Reforge","Accessories","Pets","Calculator"}, -- §33: Calculator; §41: Wardrobe, Lectern
 	Satchel={"Items","Collections","Trails"},
-	Workshop={"Forge","Hearth","Cauldron","Workbench","Crafting","Workers","Home","Garden"},
-	Hunt={"Slayer","Bestiary","Dungeon","Essence","Bosses","Hunter","Thieving","Minigames"},
-	Ledger={"Bank","Market","Orders","Auctions","Merchant","Vendors"},
+	Workshop={"Forge","Hearth","Cauldron","Workbench","Crafting","Beaconry","Workers","Home","Garden","Contests"}, -- §37: Beaconry; §39: Contests
+	Hunt={"Slayer","Bestiary","Dungeon","Essence","Bosses","Hunter","Thieving","Minigames","Trophies"}, -- §39: Trophies
+	Ledger={"Bank","Market","Orders","Auctions","Prices","Merchant","Vendors"}, -- §33: Prices
 }
 sectionOf={Menu="Home",Journal="Bearing",Hero="Skills",Satchel="Items",Workshop="Forge",Hunt="Slayer",Ledger="Bank"}
 local drawers={
 	Menu={Home=function() Pages.drawMenu() end,Renown=function() Pages.drawRenown() end,Resonance=function() Pages.drawResonance() end,Settings=function() Pages.drawSettings() end},
-	Journal={Bearing=Pages.drawBearing,Quests=Pages.drawQuests,Diaries=Pages.drawDiaries,Construction=Pages.drawConstruction,Regions=Pages.drawRegions,Crew=Pages.drawCoop,Calendar=Pages.drawCalendar,Agility=Pages.drawAgility,
+	Journal={Bearing=Pages.drawBearing,Quests=Pages.drawQuests,Diaries=Pages.drawDiaries,Construction=Pages.drawConstruction,Regions=Pages.drawRegions,Crew=Pages.drawCoop,Calendar=Pages.drawCalendar,Council=function() Pages.drawCouncil() end,Agility=Pages.drawAgility,
 		Commissions=Pages.drawCommissions,["Collection Log"]=Pages.drawCollectionLog,Museum=Pages.drawMuseum, -- Commissions & Logs
-		Motes=Pages.drawMotes,Factions=Pages.drawFactions}, -- Exploration & Factions
-	Hero={Skills=Pages.drawSkills,Mastery=Pages.drawMastery,Gear=Pages.drawGear,Combat=Pages.drawCombat,Spellbook=Pages.drawSpellbook,Prayer=Pages.drawPrayer,Enchant=Pages.drawEnchant,Reforge=function() Pages.drawReforge() end,Accessories=Pages.drawAccessories,Pets=Pages.drawPets},
+		Motes=Pages.drawMotes,Factions=Pages.drawFactions, -- Exploration & Factions
+		Helper=Pages.drawHelper,Goals=Pages.drawGoals}, -- §33 quest helper, goal board
+	Hero={Skills=Pages.drawSkills,Mastery=Pages.drawMastery,Gear=Pages.drawGear,Combat=Pages.drawCombat,Spellbook=Pages.drawSpellbook,Prayer=Pages.drawPrayer,Enchant=Pages.drawEnchant,Reforge=function() Pages.drawReforge() end,Accessories=Pages.drawAccessories,Pets=Pages.drawPets,Calculator=Pages.drawCalculator,
+		Wardrobe=function() Pages.drawWardrobe() end,Lectern=function() Pages.drawLectern() end}, -- §41
 	Satchel={Items=Pages.drawItems,Collections=Pages.drawCollections,Trails=Pages.drawTrails},
 	Workshop={Forge=function() Pages.drawStation("Forge") end,Hearth=function() Pages.drawStation("Hearth") end,Cauldron=function() Pages.drawStation("Cauldron") end,
-		Workbench=function() Pages.drawStation("Workbench") end,Crafting=Pages.drawCrafting,Workers=Pages.drawWorkers,Home=Pages.drawHome,Garden=Pages.drawGarden},
-	Hunt={Slayer=Pages.drawSlayer,Bestiary=Pages.drawBestiary,Dungeon=Pages.drawDungeon,Essence=Pages.drawEssence,Hunter=Pages.drawHunter,Thieving=Pages.drawThieving,Minigames=Pages.drawMinigames,Bosses=Pages.drawBosses},
-	Ledger={Bank=Pages.drawBank,Market=Pages.drawMarket,Orders=Pages.drawOrders,Auctions=Pages.drawAuctions,Merchant=Pages.drawMerchant,Vendors=Pages.drawVendors},
+		Workbench=function() Pages.drawStation("Workbench") end,Crafting=Pages.drawCrafting,Beaconry=Pages.drawBeaconry,Workers=Pages.drawWorkers,Home=Pages.drawHome,Garden=Pages.drawGarden,
+		Contests=function() Pages.drawContests() end}, -- §39
+	Hunt={Slayer=Pages.drawSlayer,Bestiary=Pages.drawBestiary,Dungeon=Pages.drawDungeon,Essence=Pages.drawEssence,Hunter=Pages.drawHunter,Thieving=Pages.drawThieving,Minigames=Pages.drawMinigames,Bosses=Pages.drawBosses,
+		Trophies=function() Pages.drawTrophies() end}, -- §39
+	Ledger={Bank=Pages.drawBank,Market=Pages.drawMarket,Orders=Pages.drawOrders,Auctions=Pages.drawAuctions,Merchant=Pages.drawMerchant,Vendors=Pages.drawVendors,Prices=Pages.drawPrices},
 }
 local function resetTransient()
 	if Pages.TT then Pages.TT.flush() end -- Treasure Trails: send buffered puzzle moves on page change
@@ -8828,21 +10533,27 @@ local function showXp(gains)
 	UI.lastGains=gains
 	if UI.xpChannel then pcall(function() UI.xpChannel:Fire(gains) end) end
 end
+-- The banner's lane (Theme.hudLayout levelBanner): centred under the top lane
+-- on wide screens; on short screens (phones) a slim banner in the top lane
+-- between the left column and the XP toast, so it never covers the XP lane.
+function UI.placeBanner()
+	local slot=UI.lay().levelBanner
+	local banner=UI.banner
+	banner:FindFirstChild("BannerLimit").MaxSize=Vector2.new(slot.w,slot.h)
+	banner.AnchorPoint=Vector2.new(0,0)
+	banner.Position,banner.Size=UDim2.fromOffset(slot.x,slot.y),UDim2.fromOffset(slot.w,slot.h)
+	UI.bannerSlim=slot.slim
+	return slot
+end
 local function showNextBanner()
 	local entry=table.remove(UI.bannerQueue,1)
 	local banner=UI.banner
 	if not entry then UI.bannerBusy=false;banner.Visible=false;return end
 	UI.bannerBusy=true
-	-- Narrow screens: keep the banner clear of the touch attack button (bottom right).
+	UI.placeBanner()
 	local view=gui.AbsoluteSize
 	local narrow=view and view.X<900
-	-- Short screens (phone landscape 303px): a slimmer banner that clears the toast.
-	local short=view and view.Y<340
-	local height=short and 60 or 82
-	banner:FindFirstChild("BannerLimit").MaxSize=Vector2.new(narrow and 340 or 440,height)
-	banner.Size=UDim2.new(.9,0,0,height)
-	-- Short phones: under the event banner, clear of the spell bar in the hotbar band.
-	banner.Position=UDim2.new(.5,0,0,short and 112 or 142)
+	local short=UI.bannerSlim==true
 	UI.bannerTitle.Position=UDim2.fromOffset(76,short and 8 or 17)
 	UI.bannerReward.Position=UDim2.fromOffset(76,short and 36 or 50)
 	UI.bannerEmblem.Size=UDim2.fromOffset(short and 40 or 48,short and 40 or 48)
@@ -8905,7 +10616,11 @@ end
 -- Server wiring
 ------------------------------------------------------------------------------
 UI.relay={equip=true,unequip=true,consume=true,sell=true,accessory=true,petAdopt=true,drop=true,satchelMove=true,satchelSort=true,recall=true,
-	rqBuy=true,skillBuy=true,petShop=true,resonanceSet=true,guideClaim=true} -- §31: quantity picker (features.client.lua), Resonance, Path rewards
+	rqBuy=true,skillBuy=true,petShop=true,resonanceSet=true,guideClaim=true, -- §31
+	helperPin=true,goalSet=true,goalRemove=true,goalClear=true,priceCheck=true, -- §33
+	prayerQuickToggle=true, -- §34
+	tutorial=true, -- §43 coach cards (tutorial.client.lua): dismiss / next / skip / replay / tips (sent by UI.tutorialSend: no queue / gap)
+	raidHost=true,raidJoin=true,raidLeave=true,raidReady=true,raidChallenge=true,raidStart=true,raidUse=true,raidTitle=true} -- §38 raid.client.lua (party board, raid HUD, Raid Log). §34 quick-prayer orb (one atomic verb, queued, never dropped). Earlier: quantity picker (features.client.lua), Resonance, Path rewards
 local remote = ReplicatedStorage:WaitForChild("IsleAction")
 local updates = ReplicatedStorage:WaitForChild("IsleUpdate")
 local function accept(data,quiet)
@@ -8915,6 +10630,7 @@ local function accept(data,quiet)
 		end
 		return false
 	end
+	if type(data.qol)=="table" and UI.QL then UI.QL.at=os.clock() end -- §41 QC L7: countdowns become deadlines
 	if type(data.market)=="table" and type(data.market.item)=="string" then
 		local quote=data.market
 		local previous=marketQuotes[quote.item]
@@ -8930,6 +10646,7 @@ local function accept(data,quiet)
 	-- Share every accepted snapshot with the combat HUD (combat.client.lua).
 	pcall(function() UI.snapshotChannel:Fire(data) end)
 	pcall(Pages.AH.onSnapshot) -- lap tracker best times, trap counter
+	pcall(function() Pages.CT.refreshHud() end) -- §39 contest tracker (QC M3: re-stacks with the snapshot)
 	pcall(Pages.CLP.observe,data) -- Commissions & Logs: cache full snapshot.logs (compact ones reuse it)
 	pcall(Pages.EXP.observe,data) -- Exploration & Factions: cache full snapshot.exploration (compact ones reuse it)
 	local message=data.message
@@ -8947,17 +10664,39 @@ local function accept(data,quiet)
 			message=table.concat(kept,"   ·   ")
 		end
 	end
-	if not quiet then notify(message) end
+	-- §34: price-check replies are silent (data.silent); an explicit (non-quiet)
+	-- request still toasts its own reply text, never a hover refresh.
+	if data.silent then
+		if not quiet and type(data.reply)=="string" and not data.reply:find("price check:",1,true) then notify(data.reply) end
+		if type(message)=="string" and message~="" and not quiet then notify(message) end
+	elseif not quiet then notify(message) end
 	return true
 end
 local pending = false
 -- Satchel / paperdoll / Sky Chart verbs relayed from hud.client.lua wait their
 -- turn while a request is in flight (up to 8, then a toast) instead of being
--- dropped; the queue drains in order after each reply.
-UI.relayQueue={}
+-- dropped. Order is kept: a verb queues whenever a request is pending OR the
+-- queue is not empty, and UI.relayDrain is the one place that sends queued
+-- verbs, spaced RELAY_GAP s after the previous send so they never land inside
+-- the server's 0.24 s action cooldown. A queued verb that meets a request in
+-- flight goes back to the front of the queue (the reply drains it).
+UI.relayQueue,UI.relayLast,UI.RELAY_GAP={},-math.huge,0.26
+function UI.relayDrain(due)
+	if UI.relayDraining or #UI.relayQueue==0 or pending then return end
+	local wait=math.max(0,UI.RELAY_GAP-(os.clock()-UI.relayLast))
+	if wait>0 and not due then
+		UI.relayDraining=true
+		task.delay(wait,function() UI.relayDraining=false; UI.relayDrain(true) end)
+		return
+	end
+	local nextAction=table.remove(UI.relayQueue,1)
+	if pending then table.insert(UI.relayQueue,1,nextAction) return end
+	send(nextAction[1],nextAction[2])
+end
 function UI.relaySend(verb,item)
-	if pending then
+	if pending or #UI.relayQueue>0 or UI.relayDraining then
 		if #UI.relayQueue<8 then table.insert(UI.relayQueue,{verb,item}) else notify("Still working on your last few actions. Try again in a moment.") end
+		UI.relayDrain()
 		return
 	end
 	send(verb,item)
@@ -8967,6 +10706,7 @@ send = function(action, item, quiet)
 		return
 	end
 	pending = true
+	UI.relayLast=os.clock()
 	local ok, result = pcall(function()
 		return remote:InvokeServer(action, item)
 	end)
@@ -8977,11 +10717,31 @@ send = function(action, item, quiet)
 	else
 		notify("Your ledger could not be reached. Try again.")
 	end
-	if #UI.relayQueue>0 then
-		local nextAction=table.remove(UI.relayQueue,1)
-		task.defer(send,nextAction[1],nextAction[2])
-	end
+	UI.relayDrain()
 	return accepted
+end
+-- §43 QC L4: tutorial taps (coach cards, Settings › Tutorial) bypass the relay
+-- queue and its gap: the server dispatches them before the action cooldown and
+-- replies compactly {tutorial, message}. The atlas keeps state.tutorial current,
+-- tutorial.client.lua hears ("state", tutorial) on IsleTutorialLocal, and a
+-- non-empty message toasts. A reply dropped by the 0.08 s read throttle (nil)
+-- is retried twice; an older server's full snapshot is accepted as usual.
+function UI.tutorialSend(item)
+	for _=1,3 do
+		local ok,result=pcall(function() return remote:InvokeServer("tutorial",item) end)
+		if not ok then notify("Your ledger could not be reached. Try again.") return end
+		if type(result)=="table" then
+			if type(result.items)=="table" then accept(result) return end
+			if type(result.tutorial)=="table" then
+				if type(state)=="table" then state.tutorial=result.tutorial end
+				pcall(function() UI.tutorialChannel:Fire("state",result.tutorial) end)
+				pcall(render,true)
+			end
+			if type(result.message)=="string" and result.message~="" then notify(result.message) end
+			return
+		end
+		task.wait(0.1)
+	end
 end
 local function acceptCoop(result)
 	if type(result) ~= "table" or type(result.members) ~= "table" then return false end
@@ -9022,6 +10782,7 @@ do
 		return created
 	end
 	UI.snapshotChannel=channel("IsleSnapshotLocal")
+	UI.tutorialChannel=channel("IsleTutorialLocal") -- §43 QC L4: compact tutorial replies for tutorial.client.lua
 	UI.xpChannel,UI.hudChannel=channel("IsleXpLocal"),channel("IsleHudLocal")
 	local actions,toasts=channel("IsleActionLocal"),channel("IsleToastLocal")
 	-- hud.client.lua asks the atlas to open a page ("open", tab, section).
@@ -9033,6 +10794,7 @@ do
 			if verb=="autocast" and (item==nil or type(item)=="string") then task.spawn(send,"autocast",item)
 			-- Satchel / paperdoll / Sky Chart (hud.client.lua): existing validated verbs
 			-- plus satchelMove / satchelSort / drop (§29); the server checks everything.
+			elseif verb=="tutorial" and type(item)=="string" and #item<=64 then task.spawn(UI.tutorialSend,item) -- §43 QC L4: no queue / gap
 			elseif UI.relay[verb] and (item==nil or (type(item)=="string" and #item<=64)) then task.spawn(UI.relaySend,verb,item)
 			-- Prayer quick bar taps (combat HUD): the server validates the prayer.
 			elseif verb=="prayer" and type(item)=="string" and #item<=64 then task.spawn(send,"prayer",item)
@@ -9047,10 +10809,11 @@ do
 					local snap=state
 					local ex=type(snap)=="table" and snap.exploration
 					local cached=Pages.EXP and Pages.EXP.cache
-					if type(ex)=="table" and ex.compact and cached and cached.rev==ex.rev then
-						snap=table.clone(snap)
-						snap.exploration=cached
-					end
+					snap=table.clone(snap)
+					if type(ex)=="table" and ex.compact and cached and cached.rev==ex.rev then snap.exploration=cached end
+					-- §34: a replay keeps the original seq and is marked, so the chat router
+					-- and pickup feed never print it a second time.
+					snap.replay=true
 					UI.snapshotChannel:Fire(snap)
 				end)
 			end
@@ -9060,11 +10823,14 @@ do
 end
 -- Crafting stations and the slayer board set IsleStation on the player; open
 -- the matching page. Values may carry a suffix ("Forge:3") so repeats fire.
-local stationTabs={Forge="Workshop",Hearth="Workshop",Cauldron="Workshop",Workbench="Workshop",Slayer="Hunt",Construction="Journal",Calendar="Journal",
+local stationTabs={Forge="Workshop",Hearth="Workshop",Cauldron="Workshop",Workbench="Workshop",Beaconry="Workshop",Slayer="Hunt",Construction="Journal",Calendar="Journal",
 	SkymarkExchange="Ledger",TrackersLodge="Ledger",Garden="Workshop",Commissions="Journal",Museum="Journal",CollectionLog="Journal", -- Commissions & Logs: board / museum prompts
 	Jeweller="Workshop",Tannery="Workshop",Glassworks="Workshop", -- Crafting stations (Workshop › Crafting)
 	Motes="Journal",Factions="Journal", -- Exploration & Factions: Mote Shrines, faction standards
-	Resonance="Menu"} -- §31: the Resonance Keeper opens Menu › Resonance
+	Resonance="Menu", -- §31: the Resonance Keeper opens Menu › Resonance
+	Contests="Workshop",Trophies="Hunt", -- §39: the Contest Steward and the Trophy Keeper
+	Roost="Hero",Lectern="Hero", -- §41: the Roost keeper opens Hero › Pets, the Lumen Lectern Hero › Lectern
+	Council="Journal"} -- §36: the Council Clerk and the ballot chest open Journal › Council
 local function openStation()
 	local value=player:GetAttribute("IsleStation")
 	if type(value)~="string" then return end
@@ -9074,8 +10840,10 @@ local function openStation()
 	-- Skill vendors (Agility & Hunter): Ledger › Vendors on that vendor's stock.
 	if tab=="Ledger" then Pages.AH.vendor=station=="SkymarkExchange" and "Agility" or "Hunter";openTo("Ledger","Vendors") return end
 	if tab=="Menu" then openTo("Menu",station) return end -- §31: Resonance Keeper
+	if tab=="Hero" then openTo("Hero",if station=="Roost" then "Pets" else "Lectern") return end -- §41
 	if tab=="Workshop" and Pages.CR and Data and Data.Crafting and Data.Crafting.Stations[station] then Pages.CR.station=station;openTo("Workshop","Crafting") return end
-	if tab=="Workshop" then openTo("Workshop",station) elseif tab=="Journal" then openTo("Journal",if station=="Calendar" then "Calendar" elseif station=="Commissions" or station=="Museum" or station=="Motes" or station=="Factions" then station elseif station=="CollectionLog" then "Collection Log" else "Construction") else openTo("Hunt","Slayer") end
+	if tab=="Hunt" and station=="Trophies" then openTo("Hunt","Trophies") return end -- §39
+	if tab=="Workshop" then openTo("Workshop",station) elseif tab=="Journal" then openTo("Journal",if station=="Calendar" then "Calendar" elseif station=="Council" then "Council" elseif station=="Commissions" or station=="Museum" or station=="Motes" or station=="Factions" then station elseif station=="CollectionLog" then "Collection Log" else "Construction") else openTo("Hunt","Slayer") end
 end
 -- World sets IsleStation and then bumps IsleStationVisit on every trigger; only the
 -- counter opens the atlas, so each visit opens it exactly once (repeats included).

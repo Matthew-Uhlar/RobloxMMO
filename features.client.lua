@@ -1,3 +1,4 @@
+--!strict
 -- MMO Features client (StarterPlayerScripts.IsleFeatures; docs/DEPTH-CONTRACT.md §31).
 --   * Announcement toasts: COLLECTION UNLOCKED, collection / skill / Isle Renown
 --     level-ups and Wayfarer's Path steps from snapshot.announce = {seq, list}
@@ -8,10 +9,15 @@
 --     unit (coins per lot), amount (items per lot), max (lots)}. Buying fires
 --     IsleActionLocal(verb, base .. ":" .. qty) through the atlas; the server
 --     validates the quantity, coins and stock.
+--     Sell mode (spec.sell = true, verb "sell"): max = the sellable count (held −
+--     the kept upgraded copy), the totals read "+coins" and the button "Sell";
+--     the satchel's "Sell…" and the atlas Items page open it (sell "<id>:<n>").
 --   * Renown nameplates: "✦ <level> <title>" above every player's head from the
 --     server-set attributes RenownLevel / RenownTitle / RenownColor.
 --   * Skyward Vents: when the server sets VentFlight on this player, the arc to
 --     the vent's VentLanding plays locally; the server lands the rider anyway.
+--     Polish: wind streaks on the rider, a camera FOV kick and banking tilt
+--     (Data.Vents.Fx); reduced motion keeps only a lighter wind.
 -- Nothing here grants anything.
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -24,7 +30,7 @@ local T = require(ReplicatedStorage:WaitForChild("AetherUiTheme"))
 local C, make = T.color, T.make
 local F = Data.Features
 
-local function channel(name)
+local function channel(name: string): any
 	local existing = ReplicatedStorage:FindFirstChild(name)
 	if existing then return existing end
 	local created = Instance.new("BindableEvent")
@@ -33,12 +39,12 @@ local function channel(name)
 	return created
 end
 local actions, snapshots, quantity = channel("IsleActionLocal"), channel("IsleSnapshotLocal"), channel("IsleQuantityLocal")
-local function tbl(v) return if type(v) == "table" then v else {} end
-local function num(v) return if type(v) == "number" and v == v then v else 0 end
+local function tbl(v: any): any return if type(v) == "table" then v else {} end
+local function num(v: any): number return if type(v) == "number" and v == v then v else 0 end
 
 local gui = make("ScreenGui", player:WaitForChild("PlayerGui"), {Name = "IsleFeatures", ResetOnSpawn = false, DisplayOrder = 10,
 	ZIndexBehavior = Enum.ZIndexBehavior.Sibling})
-local S = {lastSeq = nil, queue = {}, showing = false, shown = {}, chat = {}, picker = nil, plates = {}, flights = 0}
+local S: any = {lastSeq = nil, queue = {}, showing = false, shown = {}, chat = {}, picker = nil, plates = {}, watches = {}, flights = 0}
 local function screen()
 	local size = gui.AbsoluteSize
 	if size and size.X > 0 and size.Y > 0 then return size end
@@ -69,17 +75,16 @@ local function placeToast()
 	local bottom = L.band.y - (if L.short then 50 else 64)
 	toast.Position = UDim2.fromOffset(math.floor((L.w - w) / 2), math.max(8, bottom - h))
 end
-local function chatLine(text, color)
+-- Announcements are Game messages: the chat router (overlay.client.lua, §34)
+-- applies the Game tab's On / Filtered / Off state (announcements count as
+-- important), collapses repeats and prints the coloured system line.
+local chatRouter = channel("IsleChatLocal")
+local function chatLine(text: string, color: string)
 	table.insert(S.chat, text)
 	if #S.chat > 20 then table.remove(S.chat, 1) end
-	pcall(function()
-		local service = game:GetService("TextChatService")
-		local channels = service and service:FindFirstChild("TextChannels")
-		local general = channels and channels:FindFirstChild("RBXGeneral")
-		if general then general:DisplaySystemMessage("<font color=\"#" .. color .. "\"><b>" .. T.escape(text) .. "</b></font>") end
-	end)
+	pcall(function() chatRouter:Fire("announce", text, color, true) end)
 end
-local showNext
+local showNext: () -> ()
 showNext = function()
 	local entry = table.remove(S.queue, 1)
 	if not entry then S.showing = false; toast.Visible = false; return end
@@ -96,7 +101,7 @@ showNext = function()
 	task.delay(if #S.queue > 2 then 1.6 else 2.6, showNext)
 end
 -- Every snapshot carries the recent ring; show entries newer than the last seen.
-local function observe(snap)
+local function observe(snap: any)
 	local ring = type(snap) == "table" and snap.announce
 	if type(ring) ~= "table" or type(ring.list) ~= "table" then return end
 	local seq = num(ring.seq)
@@ -111,7 +116,7 @@ local function observe(snap)
 		end
 	end
 	S.lastSeq = math.max(from, seq)
-	while #S.queue > 8 do table.remove(S.queue, 1) end
+	F.trimAnnouncements(S.queue, 8) -- oldest ordinary toasts go first; renown / path toasts stay
 	if not S.showing and #S.queue > 0 then showNext() end
 end
 if snapshots.Event then snapshots.Event:Connect(observe) end
@@ -141,21 +146,33 @@ local cancel = T.button(pickerBody, "Cancel", {name = "Cancel", position = UDim2
 cancel.Visible = false -- the shade and Esc close the menu; Cancel shows when there is room
 local function closePicker()
 	S.picker = nil
+	S.sellArmed = nil
 	picker.Visible, shade.Visible = false, false
 end
-local function lots(spec, qty) return math.clamp(math.floor(num(qty)), 1, math.max(1, math.floor(num(spec.max)))) end
-local function costText(spec, qty)
+local function lots(spec: any, qty: any): number return math.clamp(math.floor(num(qty)), 1, math.max(1, math.floor(num(spec.max)))) end
+local function costText(spec: any, qty: number): string
 	local amount = math.max(1, math.floor(num(spec.amount)))
 	local items = qty * amount
-	return "×" .. T.commas(items) .. "  ·  " .. T.commas(qty * num(spec.unit)) .. " coins"
+	-- Polish: in sell mode the total is what the merchant pays.
+	return "×" .. T.commas(items) .. "  ·  " .. (if spec.sell then "+" else "") .. T.commas(qty * num(spec.unit)) .. " coins"
 end
-local function buy(qty)
+local function buy(qty: any)
 	local spec = S.picker
 	if not spec then return end
 	qty = math.floor(num(qty))
 	if qty < 1 or qty > math.max(1, math.floor(num(spec.max))) then return end
+	-- Polish QC M1: selling is never one tap. The first tap arms a confirmation
+	-- ("Sell 32 for +128 coins?"); only a second tap on the same quantity sends.
+	if spec.sell and S.sellArmed ~= qty then
+		S.sellArmed = qty
+		pickTotal.Text = "Sell " .. T.commas(qty) .. " for +" .. T.commas(qty * num(spec.unit)) .. " coins?  Tap again to confirm."
+		buyCustom.Text = "Confirm"
+		picker:SetAttribute("SellArmed", qty)
+		return
+	end
 	closePicker()
-	actions:Fire(spec.verb, if qty == 1 then spec.base else spec.base .. ":" .. qty)
+	-- A sell always names its count (a bare sell "<id>" sells the whole stack).
+	actions:Fire(spec.verb, if qty == 1 and not spec.sell then spec.base else spec.base .. ":" .. qty)
 end
 for i, n in ipairs(F.Shop.Presets) do
 	local b = T.button(grid, "×" .. n, {name = "Qty" .. n, order = i, textSize = 13})
@@ -167,13 +184,24 @@ shade.Activated:Connect(closePicker)
 customBox:GetPropertyChangedSignal("Text"):Connect(function()
 	local spec = S.picker
 	local n = tonumber(customBox.Text)
+	-- Editing the custom count disarms a pending sell confirmation.
+	if spec and spec.sell and S.sellArmed then S.sellArmed = nil; buyCustom.Text = "Sell"; picker:SetAttribute("SellArmed", nil) end
 	if spec and n then pickTotal.Text = costText(spec, lots(spec, n)) end
 end)
-local function openPicker(spec)
+local function openPicker(spec: any)
 	if type(spec) ~= "table" or type(spec.verb) ~= "string" or type(spec.base) ~= "string" then return end
+	-- Warp scrolls and one-of-a-kind wares are bought one at a time (the server refuses qty > 1).
+	-- Polish: sell mode (spec.sell; verb sell "<id>:<n>") is up to the sellable count, any item.
+	if not spec.sell and spec.item ~= nil and F.Shop.singleLot(spec.item) then return end
+	if spec.sell and spec.verb ~= "sell" then return end
 	S.picker = spec
-	local maxLots = math.clamp(math.floor(num(spec.max)), 1, F.Shop.MAX_LOTS)
+	S.sellArmed = nil
+	picker:SetAttribute("SellArmed", nil)
+	local maxLots = math.clamp(math.floor(num(spec.max)), 1, if spec.sell then F.SELL_MAX else F.Shop.MAX_LOTS)
 	spec.max = maxLots
+	buyCustom.Text = if spec.sell then "Sell" else "Buy"
+	customBox.PlaceholderText = "Custom (1-" .. T.commas(maxLots) .. ")"
+	picker:SetAttribute("Mode", if spec.sell then "sell" else "buy")
 	local L = layout()
 	local w, h = math.min(330, L.w - 20), math.min(252, L.h - 16)
 	picker.Size = UDim2.fromOffset(w, h)
@@ -182,7 +210,7 @@ local function openPicker(spec)
 	pickTotal.Text = costText(spec, 1) .. "  each"
 	for n, b in pairs(presetButtons) do
 		local ok = n <= maxLots
-		b.Text = "×" .. n .. "\n" .. T.shortCount(n * num(spec.unit)) .. "c"
+		b.Text = "×" .. n .. "\n" .. (if spec.sell then "+" else "") .. T.shortCount(n * num(spec.unit)) .. "c"
 		T.tone(b, if ok then "secondary" else "ghost")
 		b.Active = ok
 		b.AutoButtonColor = false
@@ -199,7 +227,7 @@ end)
 ------------------------------------------------------------------------------
 -- Renown nameplates (every player's head)
 ------------------------------------------------------------------------------
-local function plate(target)
+local function plate(target: Player)
 	local character = target.Character
 	local head = character and character:FindFirstChild("Head")
 	local level = target:GetAttribute("RenownLevel")
@@ -234,20 +262,26 @@ local function plate(target)
 	held.label.Text = "✦ " .. level .. (if type(title) == "string" and title ~= "" then "  " .. title else "")
 	held.label.TextColor3 = if type(color) == "string" and #color == 6 then T.rgb(color) else C.text
 end
-local function watch(target)
+-- Connections per watched player (S.watches), disconnected when they leave.
+local function watch(target: Player)
+	if S.watches[target] then return end
+	local conns = {}
+	S.watches[target] = conns
 	for _, key in ipairs({"RenownLevel", "RenownTitle", "RenownColor"}) do
-		target:GetAttributeChangedSignal(key):Connect(function() plate(target) end)
+		table.insert(conns, target:GetAttributeChangedSignal(key):Connect(function() plate(target) end))
 	end
-	target.CharacterAdded:Connect(function(character)
+	table.insert(conns, target.CharacterAdded:Connect(function(character)
 		task.spawn(function()
-			if character:WaitForChild("Head", 10) then plate(target) end
+			if character:WaitForChild("Head", 10) and S.watches[target] then plate(target) end
 		end)
-	end)
+	end))
 	plate(target)
 end
 for _, other in ipairs(Players:GetPlayers()) do watch(other) end
 Players.PlayerAdded:Connect(watch)
 Players.PlayerRemoving:Connect(function(other)
+	for _, c in ipairs(S.watches[other] or {}) do c:Disconnect() end
+	S.watches[other] = nil
 	local held = S.plates[other]
 	if held then held.gui:Destroy() end
 	S.plates[other] = nil
@@ -256,7 +290,7 @@ end)
 ------------------------------------------------------------------------------
 -- Skyward Vents: the local arc
 ------------------------------------------------------------------------------
-local function ventPad(id)
+local function ventPad(id: string): Instance?
 	local ok, list = pcall(function() return game:GetService("CollectionService"):GetTagged("SkywardVent") end)
 	if not ok then return nil end
 	for _, pad in ipairs(list) do if pad:GetAttribute("VentId") == id then return pad end end
@@ -267,17 +301,71 @@ local function fly()
 	local id = type(raw) == "string" and string.match(raw, "^(%w+):%d+$")
 	local pad = id and ventPad(id)
 	local landing = pad and pad:GetAttribute("VentLanding")
-	local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	local root = (player.Character and player.Character:FindFirstChild("HumanoidRootPart")) :: BasePart?
 	if typeof(landing) ~= "Vector3" or not root then return end
 	S.flights += 1
 	local token = S.flights
 	local from = root.Position
 	local started = os.clock()
 	local V = Data.Vents
-	local connection
+	local fx = V.Fx
+	-- Polish: wind streaks on the rider and (unless reduced motion) a camera FOV
+	-- kick and a banking tilt over the arc; everything is undone at the landing.
+	local reduced = T.reducedMotion(player)
+	S.ventReduced = reduced
+	local wind = Instance.new("Attachment")
+	wind.Name = "VentWind"
+	local streaks = Instance.new("ParticleEmitter")
+	streaks.Name = "VentWindStreaks"
+	streaks.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+	streaks.Rate = if reduced then fx.WIND_RATE_REDUCED else fx.WIND_RATE
+	streaks.Lifetime = NumberRange.new(0.25, 0.45)
+	streaks.Speed = NumberRange.new(28, 40)
+	streaks.SpreadAngle = Vector2.new(25, 25)
+	streaks.EmissionDirection = Enum.NormalId.Bottom
+	streaks.Size = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.35), NumberSequenceKeypoint.new(1, 0)})
+	streaks.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.35), NumberSequenceKeypoint.new(1, 1)})
+	streaks.LightEmission = 0.4
+	streaks.Color = ColorSequence.new(Color3.fromRGB(230, 246, 255))
+	streaks.Parent = wind
+	wind.Parent = root
+	S.ventWind = wind
+	local camera = workspace.CurrentCamera
+	-- Polish QC L2: the base FOV is module-level and captured only while no arc owns
+	-- the camera, so a vent ridden mid-arc never mistakes a kicked FOV for the base.
+	if camera and S.ventFovOwner == nil then S.ventBaseFov = camera.FieldOfView end
+	local baseFov = S.ventBaseFov or 70
+	local side = if (landing - from):Cross(Vector3.yAxis).X >= 0 then 1 else -1
+	local tiltName = "IsleVentTilt" .. token
+	local tilting = false
+	if camera and not reduced then
+		tilting = true
+		S.ventFovOwner = token
+		pcall(function()
+			RunService:BindToRenderStep(tiltName, Enum.RenderPriority.Camera.Value + 1, function()
+				local t = math.clamp((os.clock() - started) / V.FLIGHT, 0, 1)
+				camera.FieldOfView = baseFov + fx.fovKick(t)
+				camera.CFrame = camera.CFrame * CFrame.Angles(0, 0, side * fx.tilt(t))
+			end)
+		end)
+	end
+	local function finishFx()
+		if tilting then
+			tilting = false
+			pcall(function() RunService:UnbindFromRenderStep(tiltName) end)
+			-- Only the arc that owns the kick restores it (a newer kicked arc keeps going).
+			if S.ventFovOwner == token then
+				S.ventFovOwner = nil
+				if camera then camera.FieldOfView = baseFov end
+			end
+		end
+		streaks.Enabled = false
+		task.delay(0.5, function() wind:Destroy() end)
+	end
+	local connection: RBXScriptConnection? = nil
 	connection = RunService.Heartbeat:Connect(function()
 		local t = (os.clock() - started) / V.FLIGHT
-		if token ~= S.flights or t >= 0.98 or not root.Parent then connection:Disconnect(); return end
+		if token ~= S.flights or t >= 0.98 or not root.Parent then if connection then connection:Disconnect() end; finishFx(); return end
 		local flat = from:Lerp(landing, t)
 		local pos = Vector3.new(flat.X, V.arcY(from.Y, landing.Y, t), flat.Z)
 		local ahead = from:Lerp(landing, math.min(1, t + 0.05))

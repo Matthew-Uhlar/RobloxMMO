@@ -38,7 +38,7 @@ local function has(text, part) return type(text) == "string" and string.find(tex
 local partA = checks
 ok(type(CL) == "table", "Data.CommissionsLogs exists")
 eq(CL.SLOTS, 4, "four daily slots")
-ok(#CL.Tasks >= 38 and #CL.Tasks <= 45, "about forty commissions (" .. #CL.Tasks .. ")")
+ok(#CL.Tasks >= 38 and #CL.Tasks <= 50, "about forty commissions (" .. #CL.Tasks .. ")") -- Beaconry (§37) added four "kindle" tasks
 local kinds, groups = {}, {}
 for _, t in ipairs(CL.Tasks) do
 	eq(CL.TaskById[t.id], t, t.id .. " indexed")
@@ -57,6 +57,9 @@ for _, t in ipairs(CL.Tasks) do
 		local made = false
 		for _, r in pairs(Data.Crafting.Recipes) do if r.output == t.target and r.level <= (t.levels.Crafting or 0) then made = true end end
 		ok(made, t.id .. " targets a Crafting output open at its level")
+	elseif t.kind == "kindle" then -- Beaconry (§37): one credit per campfire kindled from the target log
+		local log = Data.Beaconry.LogById[t.target]
+		ok(log ~= nil and (t.levels.Beaconry or 0) >= log.level, t.id .. " kindles a log open at its level")
 	else ok(false, t.id .. " unknown kind") end
 	-- The task's level gate is at least the resource / creature requirement.
 	if t.kind == "gather" then
@@ -620,6 +623,9 @@ function resolve(p, snap)
 	end
 	return snap
 end
+-- §42: mock gather prompts harvest through real `strike` verbs (tools/strike-shim.luau).
+require("./tools/strike-shim").install({signal = services.ProximityPromptService.PromptTriggered,
+	invoke = function(p, verb, item) return remote.OnServerInvoke(p, verb, item) end, advance = advance})
 local function cmd(p, verb, item) advance(1); return resolve(p, remote.OnServerInvoke(p, verb, item)) end
 local function raw(p, verb, item) advance(1); return remote.OnServerInvoke(p, verb, item) end
 -- A gather prompt double (server checks attributes, distance and Enabled).

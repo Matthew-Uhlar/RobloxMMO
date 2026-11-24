@@ -267,6 +267,11 @@ local HOE_HIT = merge(CROUCH, {rightArm = {48, 0, 5}, rightElbow = {6}, leftArm 
 -- Hunter: set a trap (crouch, hands to the ground) and swing a net.
 local NET_BACK = {rightArm = {150, -40, 10}, rightElbow = {30}, leftArm = {40, -20, -10}, leftElbow = {40}, waist = {4, -26, 0}, neck = {0, 10, 0}}
 local NET_SWEEP = {rightArm = {96, 46, 0}, rightElbow = {8}, leftArm = {30, 10, -10}, leftElbow = {30}, waist = {-10, 24, 0}}
+-- Beaconry (§37): crouch over the kindling, the left hand steadies the tinder
+-- low, the right hand (striker) draws back and rakes down across it.
+local KINDLE_READY = merge(CROUCH, {rightArm = {72, 8, 12}, rightElbow = {58}, leftArm = {58, -22, -12}, leftElbow = {34}, waist = {-34, 0, 0}})
+local KINDLE_UP = merge(CROUCH, {rightArm = {112, 18, 16}, rightElbow = {88}, leftArm = {58, -22, -12}, leftElbow = {34}, waist = {-28, 6, 0}})
+local KINDLE_STRIKE = merge(CROUCH, {rightArm = {46, -14, 6}, rightElbow = {18}, leftArm = {54, -18, -10}, leftElbow = {30}, waist = {-40, -4, 0}, neck = {20}})
 
 -- Gesture table. intro/loop/outro are keyframe lists; the loop repeats while
 -- the prompt is held (and at least minCycles times). marks fire impact FX.
@@ -388,6 +393,11 @@ Core.GESTURES = {
 		intro = {key(0, REST), key(0.2, HARVEST_REACH, "quadOut")},
 		loop = {key(0, HARVEST_REACH), key(0.3, HARVEST_GRAB, "quadIn", "impact"), key(0.6, HARVEST_REACH, "sineInOut")},
 		outro = {key(0, HARVEST_REACH), key(0.25, REST, "quadInOut")}},
+	-- Beaconry: strike the striker down across the tinder (sparks at the impact).
+	kindle = {tool = "Striker", fx = "sparks", minCycles = 2,
+		intro = {key(0, REST), key(0.2, KINDLE_READY, "quadOut")},
+		loop = {key(0, KINDLE_READY), key(0.16, KINDLE_UP, "quadOut"), key(0.24, KINDLE_STRIKE, "quadIn", "impact"), key(0.42, KINDLE_READY, "sineInOut")},
+		outro = {key(0, KINDLE_READY), key(0.24, REST, "quadInOut")}},
 	netswing = {tool = "Net", fx = "ring",
 		loop = {key(0, REST), key(0.16, NET_BACK, "quadOut"), key(0.32, NET_SWEEP, "quadIn", "impact"), key(0.62, REST, "quadInOut")}},
 }
@@ -432,7 +442,8 @@ Core.STATION_GESTURE = {Forge = {"hammer"}, Cauldron = {"stir"}, Hearth = {"flip
 	-- Crafting stations (prompt action "craftStation"): Jeweller's Bench, Tanning Rack, Glass Furnace.
 	Jeweller = {"hammer"}, Tannery = {"saw", "hammer"}, Glassworks = {"stir"}}
 Core.ACTION_GESTURE = {fight = "attack", worker = "hammer", workerBuild = "hammer", decorate = "hammer", trap = "settrap", net = "netswing",
-	lairEnter = "interact", lairLeave = "interact"} -- Lairs: summoning altars and the arena exit
+	lairEnter = "interact", lairLeave = "interact", -- Lairs: summoning altars and the arena exit
+	beaconLight = "interact"} -- Beaconry: the pyre hold reaches in; the strike plays once from BeaconryGesture (QC L3)
 -- Agility prompts animate from the AgilityMove attribute the server sets instead.
 Core.SILENT_ACTION = {agility = true, shortcut = true}
 
@@ -459,6 +470,13 @@ function Core.selectGesture(info, Data, counter)
 	return Core.ACTION_GESTURE[action] or "interact"
 end
 
+-- Beaconry (§37): BeaconryGesture "<gesture>:<seq>[:<itemId>]" -> name, itemId|nil.
+function Core.beaconryGesture(value)
+	if type(value) ~= "string" then return nil end
+	local name, item = string.match(value, "^(%a+):%d+:?(%w*)$")
+	if not name or not Core.NAMES[name] then return nil end
+	return name, if item ~= "" then item else nil
+end
 -- Snapshot message after a successful consume → eat / drink + item id.
 function Core.consumeGesture(message, Data)
 	if type(message) ~= "string" or message == "" then return nil end
@@ -501,6 +519,7 @@ end
 Core.STYLE_GESTURE = {shoot = "ranged", cast = "magic", flick = "magic"}
 Core.MELEE_GESTURE = {attack = true, thrust = true, cleave = true, lunge = true}
 function Core.itemFits(gesture, def)
+	if gesture == "kindle" then return def.heldClass == "striker" end -- Beaconry strikers (material items)
 	local kind = Core.TOOL_ITEM_KIND[gesture]
 	if kind then return def.kind == "tool" and def.toolKind == kind end
 	if Core.MELEE_GESTURE[gesture] then return def.kind == "weapon" end
@@ -543,6 +562,9 @@ function Core.toolSpec(kind)
 		-- Hunter's net: a long pole, a hoop and a pale mesh.
 		Net = {p("Pole", V(0.18, 0.18, 3.2), V(0, 0, -1.3), W, "Wood"), p("Hoop", V(1.5, 0.12, 0.12), V(0, 0, -2.95), H),
 			p("Mesh", V(1.3, 1.1, 0.06), V(0, -0.55, -3.0), "string", "Fabric")},
+		-- Beaconry striker: a wrapped grip, a steel bar and a flint nub.
+		Striker = {p("Grip", V(0.22, 0.22, 0.7), V(0, 0, -0.05), W, "Wood"), p("Steel", V(0.5, 0.16, 0.16), V(0, 0.05, -0.55), H),
+			p("Flint", V(0.34, 0.34, 0.34), V(0, 0.24, -0.72), "string", "Slate", "Ball")},
 	}
 	return specs[kind]
 end
@@ -701,7 +723,8 @@ local BOW_CARRY = {leftArm = {10, 0, -6}, leftElbow = {78}}
 Core.HOLD_POSE = {sword = CARRY, dagger = CARRY, pickaxe = CARRY, hatchet = CARRY, hoe = CARRY, hammer = CARRY,
 	greatblade = SHOULDER, maul = SHOULDER, glaive = UPRIGHT, staff = UPRIGHT,
 	rod = {rightArm = {20, 0, 6}, rightElbow = {55}}, wand = {rightArm = {12, 0, 6}, rightElbow = {50}},
-	shortbow = BOW_CARRY, longbow = BOW_CARRY, shield = {leftArm = {20, 0, -10}, leftElbow = {70}}}
+	shortbow = BOW_CARRY, longbow = BOW_CARRY, shield = {leftArm = {20, 0, -10}, leftElbow = {70}},
+	striker = CARRY} -- Beaconry flint striker
 -- Motors the pose drives and their fixed targets (computed once per character/class).
 function Core.holdTargets(rig, pose)
 	local out = {}
@@ -1227,11 +1250,25 @@ end)
 local localApi = ReplicatedStorage:FindFirstChild("IsleGestureLocal") or Instance.new("BindableEvent")
 localApi.Name = "IsleGestureLocal"
 localApi.Parent = ReplicatedStorage
-localApi.Event:Connect(function(name, target, itemId)
+-- §42: struck gathering nodes fire (gesture, node) per swing; fishing casts with
+-- mode "hold" (the bob loops) and ends with ("release") on the reel / a lost fish.
+localApi.Event:Connect(function(name, target, itemId, mode)
 	if type(name) ~= "string" then return end
-	playLocal(name, target, {itemId = if type(itemId) == "string" then itemId else nil})
+	if name == "release" then
+		local state = player.Character and engine.get(player.Character)
+		if state then engine.release(player.Character) end
+		return
+	end
+	playLocal(name, target, {itemId = if type(itemId) == "string" then itemId else nil, hold = mode == "hold"})
 end)
 
+-- Beaconry (§37): the server sets BeaconryGesture "<gesture>:<seq>[:<itemId>]"
+-- on every kindle attempt, beacon lighting (kindle, with the striker id) and
+-- campfire cook action (flip); play it once per new seq.
+player:GetAttributeChangedSignal("BeaconryGesture"):Connect(function()
+	local name, item = Core.beaconryGesture(player:GetAttribute("BeaconryGesture"))
+	if name then playLocal(name, nil, {itemId = item}) end
+end)
 -- Crafting batches: the server sets CraftingGesture "<gesture>:<seq>" after
 -- every action of a batch; play that gesture once per action (a new seq).
 player:GetAttributeChangedSignal("CraftingGesture"):Connect(function()

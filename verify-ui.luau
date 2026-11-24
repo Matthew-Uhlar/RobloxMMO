@@ -478,7 +478,7 @@ local function snapshot(options)
 		buffs = { MightDraught = { remaining = 95, stats = { strength = 15 } } }, collections = collections, bestiary = p.bestiary,
 		slayer = { lines = lines, quest = if options.noQuest then nil else { line = "Bramble", tier = 1, progress = 40, needed = 150, bossReady = options.bossReady == true } },
 		enchants = p.enchants, combat = Progression.combatLoadout(p), gear = { reforges = p.reforges, stars = p.stars, books = p.books },
-		regions = { { id = "Hub", name = "Aether Hub", unlocked = true, requirement = "" }, { id = "Gloomhollow", name = "Gloomhollow Caverns", unlocked = false, requirement = "Mining 30, Combat 15" } },
+		regions = { { id = "Hub", name = "Compass Quay", unlocked = true, requirement = "" }, { id = "Gloomhollow", name = "Gloomhollow Caverns", unlocked = false, requirement = "Mining 30, Combat 15" } },
 		mastery = Progression.masteryView(p, options.masteryNow or 0),
 	}
 	-- Quest journal: every status (done, ready with and without a lamp, active, locked).
@@ -1052,10 +1052,45 @@ do
 	press(find(ui.scroll, "EnchantBrassHelm"))
 	press(find(ui.scroll, "EnchProtectionEnchant"))
 	visit(ui, "Satchel", "Items")
+	-- Polish QC M2: an equipped piece offers neither Sell nor Sell… (the server refuses both).
 	press(find(ui.scroll, "ItemBrassBoots"))
 	assert(find(ui.scroll, "ItemDetail"), "item detail opens")
+	assert(find(ui.scroll, "ItemDetailSell") == nil and find(ui.scroll, "ItemDetailSellQty") == nil, "equipped item detail offers no Sell / Sell…")
+	checks += 1
+	press(find(ui.scroll, "ItemSunsteelSword"))
 	press(find(ui.scroll, "ItemDetailSell"))
 	press(find(ui.scroll, "ItemDetailConfirm"))
+	-- Polish: the atlas Items page offers "Sell…" (the §31 picker in sell mode) for a stack.
+	do
+		local qtyEvent = ui.replicated:FindFirstChild("IsleQuantityLocal")
+		if not qtyEvent then qtyEvent = new("BindableEvent", { Name = "IsleQuantityLocal" }); qtyEvent.Parent = ui.replicated end
+		local picked
+		qtyEvent.Event:Connect(function(spec) picked = spec end)
+		press(find(ui.scroll, "ItemOre"))
+		local sellQty = find(ui.scroll, "ItemDetailSellQty")
+		assert(sellQty, "atlas item detail offers Sell…")
+		press(sellQty)
+		assert(picked and picked.verb == "sell" and picked.sell == true and picked.base == "Ore" and picked.max >= 2, "atlas Sell… opens the sell picker")
+		checks += 2
+	end
+	-- Polish QC M2: a stack whose copy is equipped or bagged offers no Sell… either, and
+	-- the old "(including the equipped piece)" text is gone.
+	do
+		local snap = snapshot({ noQuest = true })
+		snap.items.BrassBoots = 3
+		snap.items.MeadowCharm = 2
+		local worn = run({ snapshot = snap })
+		press(find(worn.gui, "AtlasButton"))
+		visit(worn, "Satchel", "Items")
+		for _, id in ipairs({ "BrassBoots", "MeadowCharm" }) do
+			press(find(worn.scroll, "Item" .. id))
+			assert(find(worn.scroll, "ItemDetail"), id .. " detail opens")
+			assert(find(worn.scroll, "ItemDetailSellQty") == nil and find(worn.scroll, "ItemDetailSell") == nil, id .. ": worn stack offers no Sell / Sell…")
+			checks += 2
+		end
+		assert(not string.find(fs.readFile("ui.client.lua"), "including the equipped piece", 1, true), "no 'including the equipped piece' text")
+		checks += 1
+	end
 	visit(ui, "Hunt", "Slayer")
 	press(find(ui.scroll, "SlayerTierBrambleBegin"))
 	noFailures(ui, "flows")
@@ -1064,7 +1099,7 @@ do
 		table.insert(log, entry[1] .. "=" .. tostring(entry[2]))
 	end
 	local joined = table.concat(log, " ")
-	for _, expected in ipairs({ "equip=SunsteelSword", "unequip=weapon", "enchantItem=BrassHelm:Protection", "sell=BrassBoots", "slayerBegin=Bramble:1" }) do
+	for _, expected in ipairs({ "equip=SunsteelSword", "unequip=weapon", "enchantItem=BrassHelm:Protection", "sell=SunsteelSword", "slayerBegin=Bramble:1" }) do
 		assert(joined:find(expected, 1, true), "expected " .. expected .. " in " .. joined)
 		checks += 1
 	end
@@ -1362,9 +1397,11 @@ local function combatHud(size)
 	local theme = loadTheme(env)
 	env.require = function(target)
 		if target.Name == "AetherUiTheme" then return theme end
+		if target.Name == "AetherHudDepth" then return loadModule("shared/HudDepth.lua") end
 		assert(target.Name == "AetherData", "unexpected require"); return Data
 	end
 	new("ModuleScript", { Name = "AetherData" }).Parent = replicated
+	new("ModuleScript", { Name = "AetherHudDepth" }).Parent = replicated
 	if not replicated:FindFirstChild("AetherUiTheme") then new("ModuleScript", { Name = "AetherUiTheme" }).Parent = replicated end
 	local chunk = luau.load(fs.readFile("combat.client.lua"), { debugName = "combat.client.lua", environment = env, injectGlobals = true })
 	chunk()
@@ -1977,9 +2014,9 @@ do
 		combat.run.RenderStepped:Fire()
 		assert(panel.Visible, "boss panel shows at " .. tag.name)
 		local bossRect = rect(panel)
-		local tracker = townsfolk:FindFirstChild("TutorialTracker")
-		tracker.Visible = true -- measured whether or not this snapshot's tutorial is finished
-		-- Agility & Hunter HUD: a lap underway and two traps (one caught) under the tutorial tracker.
+		-- Polish (lead decision): the old tutorial tracker is retired (the Wayfarer's Path lives in the sidebar).
+		assert(townsfolk:FindFirstChild("TutorialTracker") == nil, "retired tutorial tracker is gone at " .. tag.name)
+		-- Agility & Hunter HUD: a lap underway and two traps (one caught) at the top of the left column.
 		H.agilityHud(player)
 		local lapTracker, trapCounter = atlas:FindFirstChild("CourseTracker"), atlas:FindFirstChild("TrapTracker")
 		assert(lapTracker.Visible and trapCounter.Visible, "lap tracker and trap counter show at " .. tag.name)
@@ -2036,7 +2073,7 @@ do
 		local hotbarGap = { "hotbar gap", { x = lanes.hotbar.x, y = lanes.hotbar.y, w = lanes.hotbar.w, h = lanes.hotbar.h } }
 		local explore = table.clone(persistent)
 		table.insert(explore, hotbarGap)
-		for _, item in ipairs({ { "event banner", rect(banner) }, { "tutorial tracker", rect(tracker) },
+		for _, item in ipairs({ { "event banner", rect(banner) },
 			{ "wayfinder toast", rect(wayfinder:FindFirstChild("WayfinderToast")) }, { "attack button", rect(attack) }, { "spell bar", spellRect },
 			{ "lap tracker", rect(lapTracker) }, { "trap counter", rect(trapCounter) }, { "prayer bar", prayerRect }, { "party HUD", partyRect },
 			{ "XP drops", rect(xpLayer.state.drops) }, { "skill toast", rect(xpLayer.state.skillToast) } }) do
@@ -2096,7 +2133,6 @@ do
 		local buttons = 0
 		for _, child in ipairs(options:GetChildren()) do if child.ClassName == "TextButton" then buttons += 1 end end
 		assert(dialogue.Visible and buttons >= 3, "dialogue open with " .. buttons .. " options at " .. tag.name)
-		assert(not tracker.Visible, "tutorial tracker tucks away while talking at " .. tag.name)
 		-- The dialogue owns the bottom: the spell bar steps aside on the next HUD scan.
 		combat.run.RenderStepped:Fire()
 		assert(not spellBar.Visible and not prayerBar.Visible, "spell and prayer bars hide while talking at " .. tag.name)
@@ -3039,6 +3075,423 @@ do
 	noFailures(legacy, "crafting without server data")
 	print("Crafting client: " .. (checks - craftChecks) .. " checks.")
 end
+-- Beaconry client (§37): Workshop › Beaconry — Kindle (summary, logs with
+-- Kindle buttons), Campfire (running batch with Stop, recipe cards with batch
+-- buttons, blocked away from a fire), Beacons (the weekly watch claim and the
+-- nine pyres); phone layout and malformed data.
+verbs.kindle = function(item) return item == "" or Data.Beaconry.LogById[item] ~= nil end
+verbs.fireCook = function(item) return Data.Beaconry.parseBatch(item) ~= nil end
+verbs.fireStop = function(item) return item == nil end
+verbs.beaconClaim = function(item) return item == nil end
+do
+	local bcChecks = checks
+	local function check(cond, case) assert(cond, case); checks += 1 end
+	local snap = snapshot({ xp = { Beaconry = Data.XP_TABLE[20], Cooking = Data.XP_TABLE[25] } })
+	snap.items = table.clone(snap.items)
+	snap.items.FlintStriker, snap.items.Timber, snap.items.WindpineLog, snap.items.Fish, snap.items.Herb = 1, 12, 3, 7, 7
+	snap.beaconry = { striker = "FlintStriker", fires = { { id = 3, log = "Timber", left = 40 } }, near = { id = 3, log = "Timber", left = 40, mine = true },
+		job = { recipe = "CookedFish", done = 1, total = 4, cooked = 1, burnt = 0, xp = 22, nextIn = 0.6 },
+		beacons = { Hub = 320 }, week = { id = 2480, total = 151, goal = 150, lit = 1, claimed = false, canClaim = true, resetIn = 90000 },
+		kindled = { Timber = 9 }, lit = { Hub = 2 }, failed = 3, cooked = 5, burnt = 1, ash = 4, weeks = 0, kindleIn = 0, everflame = false, burning = 6 }
+	local ui = run({ snapshot = snap })
+	visit(ui, "Workshop", "Beaconry")
+	check(find(ui.scroll, "BeaconrySummary") ~= nil and find(ui.scroll, "BeaconryKindle") ~= nil, "Workshop › Beaconry opens on Kindle")
+	check(find(ui.scroll, "KindleTimber") ~= nil and find(ui.scroll, "KindleShatterbarkLog") ~= nil, "every log listed")
+	do -- QC: the server-wide campfire count and the lifetime kindles are separate facts.
+		local line
+		for _, o in ipairs(ui.scroll:GetDescendants()) do
+			if (o.ClassName == "TextLabel" or o.ClassName == "TextButton") and string.find(o.Text, "campfires burning on this server", 1, true) then line = o.Text end
+		end
+		check(line and string.find(line, "6/" .. Data.Beaconry.MAX_FIRES .. " campfires burning", 1, true) and string.find(line, "9 kindled", 1, true)
+			and not string.find(line, "Kindled 6", 1, true), "campfire count label reads N/MAX burning, kindled separately")
+	end
+	table.clear(ui.sent)
+	press(find(ui.scroll, "KindleTimberKindle"))
+	check(ui.sent[1] and ui.sent[1][1] == "kindle" and ui.sent[1][2] == "Timber", "Kindle sends the log")
+	press(find(ui.scroll, "BeaconryKindleKindlebestlog"))
+	check(ui.sent[2] and ui.sent[2][1] == "kindle" and ui.sent[2][2] == "", "Kindle best log sends an empty item")
+	press(find(ui.scroll, "KindleEmberoakLogKindle"))
+	check(#ui.sent == 2, "a log above your level does not send")
+	noFailures(ui, "beaconry kindle")
+	-- Campfire section.
+	press(find(ui.scroll, "SectionCampfire") or find(ui.scroll, "BeaconryCampfire"))
+	if not find(ui.scroll, "BeaconryCampfire") then
+		for _, o in ipairs(ui.scroll:GetDescendants()) do if o.ClassName == "TextButton" and string.find(o.Name, "Campfire$") then press(o) break end end
+	end
+	check(find(ui.scroll, "BeaconryCampfire") ~= nil and find(ui.scroll, "BeaconryJob") ~= nil, "campfire summary and running batch")
+	check(find(ui.scroll, "FireCookedFish") ~= nil and find(ui.scroll, "FireHearthfireSkewer") ~= nil, "Hearth meals and campfire dishes listed")
+	table.clear(ui.sent)
+	press(find(ui.scroll, "BeaconryJobStop"))
+	check(ui.sent[1] and ui.sent[1][1] == "fireStop", "Stop sends fireStop")
+	press(find(ui.scroll, "FireCookedFishCook1"))
+	check(ui.sent[2] and ui.sent[2][1] == "fireCook" and ui.sent[2][2] == "CookedFish:1", "Cook ×1 sends one action")
+	press(find(ui.scroll, "FireCookedFish5"))
+	check(ui.sent[3] and ui.sent[3][2] == "CookedFish:5", "×5 sends five")
+	press(find(ui.scroll, "FireCookedFish7"))
+	check(ui.sent[4] and ui.sent[4][2] == "CookedFish:7", "×all sends what the satchel funds")
+	press(find(ui.scroll, "FireBeaconwatchStewCook1"))
+	check(#ui.sent == 4, "a recipe above your Cooking level does not send")
+	noFailures(ui, "beaconry campfire")
+	checkSent(ui)
+	-- Beacons section and the weekly claim.
+	for _, o in ipairs(ui.scroll:GetDescendants()) do if o.ClassName == "TextButton" and string.find(o.Name, "Beacons$") then press(o) break end end
+	check(find(ui.scroll, "BeaconryWeek") ~= nil and find(ui.scroll, "BeaconHub") ~= nil and find(ui.scroll, "BeaconShatteredCrown") ~= nil, "weekly watch and the nine pyres")
+	table.clear(ui.sent)
+	press(find(ui.scroll, "BeaconryWeekClaim"))
+	check(ui.sent[1] and ui.sent[1][1] == "beaconClaim", "Claim sends beaconClaim")
+	noFailures(ui, "beaconry beacons")
+	checkSent(ui)
+	-- Away from a fire: cook buttons blocked.
+	local far = table.clone(snap)
+	far.beaconry = table.clone(snap.beaconry)
+	far.beaconry.near, far.beaconry.job = nil, nil
+	local uf = run({ snapshot = far })
+	visit(uf, "Workshop", "Beaconry")
+	for _, o in ipairs(uf.scroll:GetDescendants()) do if o.ClassName == "TextButton" and string.find(o.Name, "Campfire$") then press(o) break end end
+	table.clear(uf.sent)
+	press(find(uf.scroll, "FireCookedFishCook1"))
+	check(#uf.sent == 0, "away from a campfire nothing sends")
+	noFailures(uf, "beaconry away from a fire")
+	-- Phone layout, malformed and missing data.
+	local phone = run({ snapshot = snap, size = roblox.Vector2.new(420, 600) })
+	visit(phone, "Workshop", "Beaconry")
+	noFailures(phone, "phone beaconry")
+	check(find(phone.scroll, "BeaconryKindle") ~= nil, "phone beaconry page")
+	local bad = snapshot()
+	bad.beaconry = { striker = 9, fires = "x", near = { left = "soon" }, job = { recipe = "Nope" }, week = 4, beacons = { Hub = "lit" }, lit = 2 }
+	local broken = run({ snapshot = bad })
+	visit(broken, "Workshop", "Beaconry")
+	noFailures(broken, "malformed beaconry")
+	for _, o in ipairs(broken.scroll:GetDescendants()) do if o.ClassName == "TextButton" and (string.find(o.Name, "Campfire$") or string.find(o.Name, "Beacons$")) then press(o); noFailures(broken, "malformed " .. o.Name) end end
+	local none = snapshot()
+	none.beaconry = nil
+	local legacy = run({ snapshot = none })
+	visit(legacy, "Workshop", "Beaconry")
+	noFailures(legacy, "beaconry without server data")
+	-- The skill page lists Beaconry's unlocks.
+	print("Beaconry client: " .. (checks - bcChecks) .. " checks.")
+end
+-- Contests client (§39): Workshop › Contests (Contest / Exchange / Records),
+-- Hunt › Trophies (Ledger / Rewards / Bait), the contest tracker HUD; phone
+-- layout and malformed data.
+verbs.contestEnter = function(item) return Data.Contests.CropById[item] ~= nil end
+verbs.contestBuy = function(item) return Data.Contests.ShopById[(string.match(item or "", "^(%w+)"))] ~= nil end
+verbs.contestTitle = function(item) return item == "none" or Data.Contests.TitleById[item] ~= nil end
+verbs.trophyBait = function(item) return item == "none" or Data.Trophies.Baits[item] ~= nil end
+verbs.trophyClaim = function(item) return Data.Trophies.LedgerById[item] ~= nil end
+verbs.trophyTitle = function(item) return item == "none" or Data.Trophies.LedgerById[item] ~= nil end
+do
+	local ctChecks = checks
+	local function check(cond, case) assert(cond, case); checks += 1 end
+	local CT, TF = Data.Contests, Data.Trophies
+	local K = 71014
+	local W = CT.window(K)
+	local crops = W.crops
+	local snap = snapshot({ xp = { Farming = Data.XP_TABLE[60], Cooking = Data.XP_TABLE[20], Fishing = Data.XP_TABLE[40] } })
+	snap.items = table.clone(snap.items)
+	snap.items.GlowgrubBait = 3
+	snap.contests = { now = W.starts + 100, k = K, active = true, starts = W.starts, ends = W.ends, crops = crops, next = { k = K + 1, starts = W.starts + CT.PERIOD, crops = CT.cropsOf(K + 1) },
+		entry = { c = crops[1], s = 0, slot = 1, min = CT.CropById[crops[1]].min }, medals = 40, earned = 52, entries = 6, placed = 4, best = { [crops[1]] = 310 },
+		brackets = { Gold = 2, Bronze = 2 }, almanac = 1, titles = { Furrowhand = true }, title = nil, pending = 1,
+		history = { { k = K - 1, c = crops[2], s = 120, b = "Gold", m = 4 } },
+		board = { { { n = "Ana", s = 300 }, { n = "Tester", s = 90, me = true } }, {}, {} }, boardAt = W.starts + 90 }
+	snap.trophies = { total = 9, diamonds = 1, casts = 300, caught = { PebblefinDarter = { Bronze = 6, Diamond = 1 } }, best = { PebblefinDarter = "Diamond" },
+		pity = { PebblefinDarter = { g = 3, d = 0 } }, bait = nil, baitHave = 0, claimed = {}, hour = 12.5, season = "Sunreach", hood = false }
+	local ui = run({ snapshot = snap })
+	visit(ui, "Workshop", "Contests")
+	check(find(ui.scroll, "ContestNow") ~= nil and find(ui.scroll, "ContestCrop" .. crops[1]) ~= nil and find(ui.scroll, "ContestCrop" .. crops[3]) ~= nil, "Workshop › Contests: running contest and its crops")
+	check(find(ui.scroll, "ContestNext") ~= nil and find(ui.scroll, "ContestPending") ~= nil and find(ui.scroll, "ContestBrackets") ~= nil, "next contest, pending results, bracket table")
+	table.clear(ui.sent)
+	press(find(ui.scroll, "ContestEnter" .. crops[2]))
+	check(ui.sent[1] and ui.sent[1][1] == "contestEnter" and ui.sent[1][2] == crops[2], "an unscored entry can switch crops")
+	noFailures(ui, "contests running")
+	checkSent(ui)
+	-- Exchange.
+	press(find(ui.scroll, "ContestsExchange"))
+	check(find(ui.scroll, "ContestMedals") ~= nil and find(ui.scroll, "ContestShopHarvestTonic") ~= nil and find(ui.scroll, "ContestShopAlmanac") ~= nil, "Medal Exchange")
+	table.clear(ui.sent)
+	press(find(ui.scroll, "ContestBuyHarvestTonic"))
+	check(ui.sent[1] and ui.sent[1][1] == "contestBuy" and ui.sent[1][2] == "HarvestTonic", "Buy sends contestBuy")
+	press(find(ui.scroll, "ContestBuyMedalistHoe"))
+	check(#ui.sent == 1, "an offer you cannot afford does not send")
+	noFailures(ui, "contest exchange")
+	checkSent(ui)
+	-- Records.
+	press(find(ui.scroll, "ContestsRecords"))
+	check(find(ui.scroll, "ContestRecord") ~= nil and find(ui.scroll, "ContestBest" .. crops[1]) ~= nil and find(ui.scroll, "ContestHistory1") ~= nil, "records, bests, history")
+	table.clear(ui.sent)
+	press(find(ui.scroll, "ContestTitleWearFurrowhand"))
+	check(ui.sent[1] and ui.sent[1][1] == "contestTitle" and ui.sent[1][2] == "Furrowhand", "Wear sends contestTitle")
+	noFailures(ui, "contest records")
+	checkSent(ui)
+	-- A scored entry locks the other crops; the HUD tracker shows the entry.
+	local scored = table.clone(snap)
+	scored.contests = table.clone(snap.contests)
+	scored.contests.entry = { c = crops[1], s = 90, slot = 1, min = CT.CropById[crops[1]].min }
+	scored.contests.estimate = { bracket = "Gold", rank = 5, n = 60, at = W.starts + 90 }
+	local us = run({ snapshot = scored })
+	visit(us, "Workshop", "Contests")
+	table.clear(us.sent)
+	press(find(us.scroll, "ContestEnter" .. crops[2]))
+	check(#us.sent == 0, "a scored entry is locked")
+	local hud = find(us.gui, "ContestHud")
+	check(hud ~= nil, "contest tracker exists")
+	noFailures(us, "contest locked")
+	-- QC M3: the tracker stacks under the world boss board (combat.client.lua's
+	-- local attribute WorldBossBoard = the board's foot) and the dungeon party HUD,
+	-- and hides when the column has no room left.
+	do
+		local wide = run({ snapshot = scored, size = roblox.Vector2.new(1366, 768) })
+		local th = find(wide.gui, "ContestHud")
+		check(th.Visible, "tracker shows during a contest")
+		local top0 = th.Position.Y.Offset
+		wide.player:SetAttribute("WorldBossBoard", top0 + 126)
+		check(th.Visible and th.Position.Y.Offset >= top0 + 126 + 6, "QC M3: the tracker stacks below the world boss board")
+		wide.player:SetAttribute("WorldBossBoard", 0)
+		check(th.Position.Y.Offset == top0, "QC M3: back in place when the board hides")
+		wide.player:SetAttribute("DungeonParty", "Tester|Aegis|31;Bo|Mender|4")
+		local party = find(wide.gui, "DungeonPartyHud")
+		check(party.Visible and th.Visible and th.Position.Y.Offset >= party.Position.Y.Offset + party.Size.Y.Offset + 6, "QC M3: the tracker stacks below the dungeon party HUD")
+		wide.player:SetAttribute("DungeonParty", "")
+		wide.player:SetAttribute("WorldBossBoard", 700)
+		check(not th.Visible, "QC M3: no room under the board: the tracker hides")
+		wide.player:SetAttribute("WorldBossBoard", 0)
+		check(th.Visible, "QC M3: and returns")
+		noFailures(wide, "contest tracker stacking")
+	end
+	-- Between bells.
+	local idle = table.clone(snap)
+	idle.contests = table.clone(snap.contests)
+	idle.contests.now = W.ends + 60
+	idle.contests.active = false
+	local ui2 = run({ snapshot = idle })
+	visit(ui2, "Workshop", "Contests")
+	check(find(ui2.scroll, "ContestNow") ~= nil and find(ui2.scroll, "ContestCrop" .. crops[1]) == nil, "between bells: the next contest only")
+	noFailures(ui2, "contest idle")
+	-- Hunt › Trophies.
+	visit(ui, "Hunt", "Trophies")
+	check(find(ui.scroll, "TrophySummary") ~= nil, "Hunt › Trophies ledger summary")
+	for _, f in ipairs(TF.Fish) do check(find(ui.scroll, "Trophy" .. f.id) ~= nil, "fish card " .. f.id) end
+	noFailures(ui, "trophy ledger")
+	press(find(ui.scroll, "TrophiesRewards"))
+	check(find(ui.scroll, "TrophyLedgerNovice") ~= nil and find(ui.scroll, "TrophyLedgerDiamond") ~= nil, "ledger tiers")
+	table.clear(ui.sent)
+	press(find(ui.scroll, "TrophyClaimBronze"))
+	check(#ui.sent == 0, "an incomplete tier does not send")
+	noFailures(ui, "trophy rewards")
+	press(find(ui.scroll, "TrophiesBait"))
+	table.clear(ui.sent)
+	press(find(ui.scroll, "TrophyBaitLoadGlowgrubBait"))
+	check(ui.sent[1] and ui.sent[1][1] == "trophyBait" and ui.sent[1][2] == "GlowgrubBait", "Load sends trophyBait")
+	press(find(ui.scroll, "TrophyBaitLoadAbyssalLure"))
+	check(#ui.sent == 1, "bait you do not hold does not send")
+	noFailures(ui, "trophy bait")
+	checkSent(ui)
+	-- A complete tier claims; a claimed title can be worn.
+	local full = table.clone(snap)
+	full.trophies = table.clone(snap.trophies)
+	full.trophies.best = {}
+	for _, f in ipairs(TF.Fish) do full.trophies.best[f.id] = "Silver" end
+	full.trophies.claimed = { Novice = true }
+	local uf = run({ snapshot = full })
+	visit(uf, "Hunt", "Trophies")
+	press(find(uf.scroll, "TrophiesRewards"))
+	table.clear(uf.sent)
+	press(find(uf.scroll, "TrophyClaimBronze"))
+	check(uf.sent[1] and uf.sent[1][1] == "trophyClaim" and uf.sent[1][2] == "Bronze", "Claim sends trophyClaim")
+	press(find(uf.scroll, "TrophyTitleWearNovice"))
+	check(uf.sent[2] and uf.sent[2][1] == "trophyTitle" and uf.sent[2][2] == "Novice", "Wear sends trophyTitle")
+	noFailures(uf, "trophy claim")
+	checkSent(uf)
+	-- Phone, malformed and missing data.
+	local phone = run({ snapshot = scored, size = roblox.Vector2.new(420, 600) })
+	visit(phone, "Workshop", "Contests")
+	noFailures(phone, "phone contests")
+	visit(phone, "Hunt", "Trophies")
+	noFailures(phone, "phone trophies")
+	local bad = snapshot()
+	bad.contests = { now = "soon", k = "x", entry = { c = "Nope", s = "many" }, estimate = 4, board = { "x", { 5 } }, history = { 3, { c = "Nope" } }, titles = 2, best = "x" }
+	bad.trophies = { caught = { Nope = 3, PebblefinDarter = "x" }, best = { PebblefinDarter = "Mythic" }, pity = 4, claimed = "x", hour = "noon", bait = "Nope" }
+	local broken = run({ snapshot = bad })
+	visit(broken, "Workshop", "Contests")
+	noFailures(broken, "malformed contests")
+	for _, s in ipairs({ "ContestsExchange", "ContestsRecords" }) do press(find(broken.scroll, s)); noFailures(broken, "malformed " .. s) end
+	visit(broken, "Hunt", "Trophies")
+	noFailures(broken, "malformed trophies")
+	for _, s in ipairs({ "TrophiesRewards", "TrophiesBait" }) do press(find(broken.scroll, s)); noFailures(broken, "malformed " .. s) end
+	local none = snapshot()
+	none.contests, none.trophies = nil, nil
+	local legacy = run({ snapshot = none })
+	visit(legacy, "Workshop", "Contests")
+	noFailures(legacy, "contests without server data")
+	visit(legacy, "Hunt", "Trophies")
+	noFailures(legacy, "trophies without server data")
+	print("Contests client: " .. (checks - ctChecks) .. " checks.")
+end
+-- QoL Depth client (§41): Hero › Lectern (the three trials, reveal and input),
+-- Hero › Wardrobe, the Vault Charter card on Ledger › Bank and the Roost
+-- tether card on Hero › Pets; malformed and missing qol data.
+verbs.lecternStart = function(item) local g, t = tostring(item):match("^(%a+):(%d)$") return g ~= nil and Data.QoL.Lectern.Games[g] ~= nil and Data.QoL.Lectern.Tiers[tonumber(t)] ~= nil end
+verbs.lecternAnswer = function(item) return type(item) == "string" and #item >= 1 and #item <= 25 and item:match("^[1-9a-p]+$") ~= nil end
+verbs.lecternFlip = function(item) return type(item) == "string" and item:match("^[1-9]%d?$") ~= nil end
+verbs.lecternEnd = function(item) return item == nil end
+verbs.wardrobeSave = function(item) return type(item) == "string" and item:match("^[1-9]$") ~= nil end
+verbs.wardrobeWear = verbs.wardrobeSave
+verbs.wardrobeClear = verbs.wardrobeSave
+verbs.vaultUpgrade = function(item) return item == nil end
+verbs.petTether = function(item) local i, s = tostring(item):match("^(%d+):(%w+)$") return i ~= nil and Data.PetById[s] ~= nil end
+do
+	local qlChecks = checks
+	local function check(cond, case) assert(cond, case); checks += 1 end
+	local QA = Data.QoL.Lectern
+	local function base(extra)
+		local snap = snapshot({ xp = { Enchanting = Data.XP_TABLE[32], Taming = Data.XP_TABLE[12] } })
+		snap.items = table.clone(snap.items)
+		snap.items.GildedWayHood = 1
+		snap.qol = {
+			lectern = { tier = 3, level = 32, left = { seq = 2, recall = 1, pairs = 1 }, bonus = 2, best = { seq = 4 }, runs = 7, resetIn = 3600, visitIn = 500 },
+			wardrobe = { slots = 5, max = 9, worn = 1, wait = 0, accSlots = 4, sets = { { helmet = "GildedWayHood", acc = {} }, false, { chest = "NopeChest", acc = { "MeadowCharm" } }, false, false, false, false, false, false } },
+			vault = { tier = 1, rate = 0.001, cap = 100000, maxDaily = 100, next = 10, paid = 50, last = 10, nextIn = 4000,
+				upgrade = { tier = 2, cost = 25000, need = { { id = "Ore", tier = 3, have = 4 }, { id = "Timber", tier = 3, have = 1 } } } },
+			tether = { slots = 1, share = 0.1, unlocks = { 10, 25, 50 }, taming = 12, pets = { { index = 1, id = "Tidewing", level = 5, need = 400, activeXp = 4000, sharing = true } } },
+		}
+		for k, v in pairs(extra or {}) do snap.qol.lectern[k] = v end
+		return snap
+	end
+	-- Trial choice.
+	local ui = run({ snapshot = base() })
+	visit(ui, "Hero", "Lectern")
+	check(find(ui.scroll, "LecternHeader") ~= nil and find(ui.scroll, "LecternGameseq") ~= nil and find(ui.scroll, "LecternGamepairs") ~= nil, "Hero › Lectern lists the trials")
+	table.clear(ui.sent)
+	press(find(ui.scroll, "LecternBeginseq"))
+	check(ui.sent[1] and ui.sent[1][1] == "lecternStart" and ui.sent[1][2] == "seq:3", "Begin sends lecternStart at the best tier")
+	press(find(ui.scroll, "LecternTier2"))
+	table.clear(ui.sent)
+	press(find(ui.scroll, "LecternBeginrecall"))
+	check(ui.sent[1] and ui.sent[1][2] == "recall:2", "a lower tier can be chosen")
+	press(find(ui.scroll, "LecternTier5"))
+	table.clear(ui.sent)
+	press(find(ui.scroll, "LecternBeginpairs"))
+	check(ui.sent[1] and ui.sent[1][2] == "pairs:2", "a locked tier cannot be chosen")
+	noFailures(ui, "lectern choice")
+	checkSent(ui)
+	-- Closed window: Begin is disabled.
+	local closed = run({ snapshot = base({ visitIn = 0 }) })
+	visit(closed, "Hero", "Lectern")
+	table.clear(closed.sent)
+	press(find(closed.scroll, "LecternBeginseq"))
+	check(#closed.sent == 0, "no trial without touching the lectern")
+	-- Glyph Sequence: reveal, then the pad.
+	local showing = run({ snapshot = base({ session = { g = "seq", t = 3, r = 3, rounds = 10, reveal = 3, showing = true, show = { 2, 5, 1 }, glyphs = 6, endsIn = 80 } }) })
+	visit(showing, "Hero", "Lectern")
+	check(find(showing.scroll, "LecternSession") ~= nil and find(showing.scroll, "LecternShow") ~= nil and find(showing.scroll, "LecternPad") == nil, "the reveal shows glyphs, no pad")
+	noFailures(showing, "sequence reveal")
+	-- QC L6: a resume uses the remaining window (revealIn), not the whole reveal.
+	local resumed = run({ snapshot = base({ session = { g = "seq", t = 3, r = 3, rounds = 10, reveal = 3, revealIn = 0, showing = true, show = { 2, 5, 1 }, glyphs = 6, endsIn = 80 } }) })
+	visit(resumed, "Hero", "Lectern")
+	check(find(resumed.scroll, "LecternShow") == nil and find(resumed.scroll, "LecternPad") ~= nil, "QC L6: a spent reveal window resumes on the pad")
+	noFailures(resumed, "resumed reveal")
+	local seq = run({ snapshot = base({ session = { g = "seq", t = 3, r = 3, rounds = 10, reveal = 3, showing = false, glyphs = 6, endsIn = 80 } }) })
+	visit(seq, "Hero", "Lectern")
+	check(find(seq.scroll, "LecternPad") ~= nil and find(seq.scroll, "Glyph6") ~= nil and find(seq.scroll, "Glyph7") == nil, "six glyph keys")
+	table.clear(seq.sent)
+	press(find(seq.scroll, "Glyph2")); press(find(seq.scroll, "Glyph5"))
+	check(#seq.sent == 0, "no send before the sequence is complete")
+	press(find(seq.scroll, "LecternUndoButton"))
+	press(find(seq.scroll, "Glyph5")); press(find(seq.scroll, "Glyph1"))
+	check(seq.sent[1] and seq.sent[1][1] == "lecternAnswer" and seq.sent[1][2] == "251", "a full sequence sends lecternAnswer")
+	table.clear(seq.sent)
+	press(find(seq.scroll, "LecternStop"))
+	check(seq.sent[1] and seq.sent[1][1] == "lecternEnd", "Stop sends lecternEnd")
+	noFailures(seq, "sequence input")
+	checkSent(seq)
+	-- Starfall Recall: touch cells in order.
+	local recall = run({ snapshot = base({ session = { g = "recall", t = 3, r = 1, rounds = 7, reveal = 4, showing = false, cols = 4, rows = 4, n = 3, endsIn = 60 } }) })
+	visit(recall, "Hero", "Lectern")
+	check(find(recall.scroll, "LecternGrid") ~= nil and find(recall.scroll, "Cell16") ~= nil and find(recall.scroll, "Cell17") == nil, "a 4×4 grid")
+	table.clear(recall.sent)
+	press(find(recall.scroll, "Cell10")); press(find(recall.scroll, "Cell10")); press(find(recall.scroll, "Cell2")); press(find(recall.scroll, "Cell16"))
+	check(recall.sent[1] and recall.sent[1][2] == QA.cellChar(10) .. QA.cellChar(2) .. QA.cellChar(16), "cells sent in touch order, a repeat ignored")
+	noFailures(recall, "recall input")
+	checkSent(recall)
+	-- Mirror Pairs: hidden cards flip, turned cards do not.
+	local pairs_ = run({ snapshot = base({ session = { g = "pairs", t = 3, n = 12, cols = 4, left = 9, endsIn = 300,
+		face = { ["1"] = { g = 2, m = true, rw = { k = "item", id = "ArcaneDust", n = 16 } }, ["5"] = { g = 2, m = true, rw = { k = "item", id = "ArcaneDust", n = 16 } }, ["3"] = { g = 4 } },
+		won = { { k = "item", id = "ArcaneDust", n = 16 } } } }) })
+	visit(pairs_, "Hero", "Lectern")
+	check(find(pairs_.scroll, "LecternBoard") ~= nil and find(pairs_.scroll, "Card12") ~= nil and find(pairs_.scroll, "LecternWon") ~= nil, "the board and winnings")
+	table.clear(pairs_.sent)
+	press(find(pairs_.scroll, "Card1")); press(find(pairs_.scroll, "Card3"))
+	check(#pairs_.sent == 0, "turned cards do not flip again")
+	press(find(pairs_.scroll, "Card7"))
+	check(pairs_.sent[1] and pairs_.sent[1][1] == "lecternFlip" and pairs_.sent[1][2] == "7", "a hidden card flips")
+	noFailures(pairs_, "pairs board")
+	-- QC L7: a "no match" card can be turned again (the server allows it).
+	local missed = run({ snapshot = base({ session = { g = "pairs", t = 3, n = 12, cols = 4, left = 9, endsIn = 300,
+		face = { ["3"] = { g = 4, miss = true }, ["8"] = { g = 6, miss = true } }, won = {} } }) })
+	visit(missed, "Hero", "Lectern")
+	table.clear(missed.sent)
+	press(find(missed.scroll, "Card8"))
+	check(missed.sent[1] and missed.sent[1][1] == "lecternFlip" and missed.sent[1][2] == "8", "QC L7: a no-match card flips")
+	noFailures(missed, "missed pairs")
+	checkSent(missed)
+	checkSent(pairs_)
+	-- Wardrobe.
+	local wd = run({ snapshot = base() })
+	visit(wd, "Hero", "Wardrobe")
+	check(find(wd.scroll, "WardrobeHeader") ~= nil and find(wd.scroll, "WardrobeSlot9") ~= nil and find(wd.scroll, "WardrobeDetail") ~= nil, "Hero › Wardrobe")
+	table.clear(wd.sent)
+	press(find(wd.scroll, "WardrobeWear"))
+	check(wd.sent[1] and wd.sent[1][1] == "wardrobeWear" and wd.sent[1][2] == "1", "Wear sends wardrobeWear")
+	press(find(wd.scroll, "WardrobeSlot2"))
+	check(find(wd.scroll, "WardrobeWear") == nil and find(wd.scroll, "WardrobeSave") ~= nil, "an empty slot offers Save only")
+	table.clear(wd.sent)
+	press(find(wd.scroll, "WardrobeSave"))
+	check(wd.sent[1] and wd.sent[1][1] == "wardrobeSave" and wd.sent[1][2] == "2", "Save sends wardrobeSave")
+	press(find(wd.scroll, "WardrobeSlot8"))
+	table.clear(wd.sent)
+	check(find(wd.scroll, "WardrobeSave") == nil, "a locked slot offers nothing")
+	noFailures(wd, "wardrobe")
+	checkSent(wd)
+	-- Vault Charter card.
+	local bank = run({ snapshot = base() })
+	visit(bank, "Ledger", "Bank")
+	check(find(bank.scroll, "VaultCharter") ~= nil and find(bank.scroll, "VaultUpgrade") ~= nil, "the charter and its upgrade on Ledger › Bank")
+	table.clear(bank.sent)
+	press(find(bank.scroll, "VaultUpgradeButton"))
+	check(#bank.sent == 0, "an unmet charter does not send")
+	noFailures(bank, "vault charter")
+	-- Tether card on the selected pet.
+	local pets = run({ snapshot = base() })
+	visit(pets, "Hero", "Pets")
+	check(find(pets.scroll, "PetTether") ~= nil, "Hero › Pets shows the tether card")
+	-- QC L4: the summoned pet takes no slot; a max-level tether says so (no "next level after 0").
+	do
+		local snap = base()
+		snap.qol.tether.pets = { { index = 1, id = "Tidewing", level = 5, need = 400, activeXp = 4000, active = true, sharing = false },
+			{ index = 2, id = "Tidewing", level = 100, need = 0, activeXp = 0, sharing = true, max = true } }
+		local tp = run({ snapshot = snap })
+		visit(tp, "Hero", "Pets")
+		local text = ""
+		for _, o in ipairs(find(tp.scroll, "PetTether"):GetDescendants()) do if o:IsA("TextLabel") then text ..= o.Text .. "\n" end end
+		check(string.find(text, "Roost tethers  1/1", 1, true) ~= nil, "QC L4: the summoned pet is not counted against tether slots")
+		check(string.find(text, "max level", 1, true) ~= nil and string.find(text, "next level after", 1, true) == nil, "QC L4: a max-level tether shows no XP preview")
+		check(string.find(text, "takes no tether slot", 1, true) ~= nil, "QC L4: the summoned row explains it is free")
+		noFailures(tp, "tether preview")
+	end
+	noFailures(pets, "tethers")
+	checkSent(pets)
+	-- Malformed and missing qol data never break the pages.
+	for name, value in pairs({ missing = false, junk = "x", broken = { lectern = { session = { g = "seq", t = 99, show = "x", r = "y" } }, wardrobe = { sets = 4, slots = "x" }, vault = { tier = 77, upgrade = { need = 5 } }, tether = { pets = { 5 } } } }) do
+		local snap = base()
+		snap.qol = value or nil
+		local bad = run({ snapshot = snap })
+		for _, section in ipairs({ "Lectern", "Wardrobe", "Pets" }) do visit(bad, "Hero", section); noFailures(bad, name .. " qol " .. section) end
+		visit(bad, "Ledger", "Bank"); noFailures(bad, name .. " qol Bank")
+		checks += 4
+	end
+	print("QoL Depth client: " .. (checks - qlChecks) .. " checks.")
+end
 -- Visual QA (menu overhaul): every atlas page at both phone sizes for the early,
 -- mid and endgame snapshots the real server builds (tools/ui-profiles.luau):
 --  * touch targets: every visible control is at least UI.TOUCH (44 px) both ways;
@@ -3272,7 +3725,10 @@ do
 	for _, l in ipairs(lore) do kinds[l.kind or "blank"] = true; if l.stat then statsSeen[l.stat] = true end; if l.kind == "requires" then req = l end end
 	assert(statsSeen.damage and statsSeen.strength and statsSeen.critDamage, "lore stat lines")
 	assert(req and req.unmet and req.color == T.hex.ember, "unmet requirement in ember")
-	assert(lore[#lore].kind == "rarity" and lore[#lore].text:find("RARE SWORD", 1, true), "rarity footer")
+	-- §34 footer: RARITY TYPE, then the sell price, then the yellow click prompt.
+	local function footerAt(l, kind) for i, line in ipairs(l) do if line.kind == kind then return i, line end end return nil end
+	local ri, rline = footerAt(lore, "rarity")
+	assert(rline and rline.text:find("RARE SWORD", 1, true) and lore[#lore].kind == "click" and footerAt(lore, "value") == ri + 1, "rarity footer, sell price, click prompt")
 	assert(kinds.value, "sell value line")
 	local met = T.lore(Items.SunsteelSword, { Data = Data, levels = { Combat = 50 } })
 	for _, l in ipairs(met) do if l.kind == "requires" then assert(not l.unmet, "met requirement not flagged") end end
@@ -3280,7 +3736,7 @@ do
 	assert(food[1].text:find("x4", 1, true), "stack count on the name")
 	local healLine = false
 	for _, l in ipairs(food) do if l.kind == "stat" and l.text:find("65", 1, true) then healLine = true end end
-	assert(healLine and food[#food].text:find("FOOD", 1, true), "food heal line and FOOD footer")
+	assert(healLine and select(2, footerAt(food, "rarity")).text:find("FOOD", 1, true) and food[#food].text:find("Click to eat!", 1, true), "food heal line, FOOD footer and click prompt")
 	assert(T.examine(Items.Ore):find(Items.Ore.name, 1, true), "examine text names the item")
 	checks += 9
 
@@ -3319,9 +3775,19 @@ do
 	assert(not equippedMenu.Sell and not equippedMenu.Drop and equippedMenu.Hotbar and equippedMenu.Examine, "equipped gear: no Sell / Drop")
 	assert(options("Ore", { count = 40 }).Drop.confirm and options("Ore", { count = 40 }).Drop.danger, "Drop always confirms")
 	-- M12: Sell always confirms (as the atlas does); upgraded items say so.
-	assert(options("Ore", { count = 1 }).Sell.confirm and options("BrassSword", { count = 1, upgraded = true }).Sell.upgraded and options("BrassSword", { count = 1, upgraded = true }).Drop.upgraded, "Sell confirms; upgrades flagged")
-	checks += 1
+	assert(options("Ore", { count = 1 }).Sell.confirm and options("BrassSword", { count = 2, upgraded = true }).Sell.upgraded and options("BrassSword", { count = 2, upgraded = true }).Drop.upgraded, "Sell confirms; upgrades flagged")
+	-- QC L5: the last upgraded copy has no Sell / Drop, only the explanation.
+	local lastCopy = options("BrassSword", { count = 1, upgraded = true })
+	assert(not lastCopy.Sell and not lastCopy.Drop and lastCopy.Kept and lastCopy.Kept["local"] == "kept", "last upgraded copy: no Sell / Drop")
+	assert(options("BrassSword", { count = 3, upgraded = true }).Sell.label == "Sell 2 spares", "upgraded stacks sell their spares")
+	checks += 3
 	assert(options("Ore", { count = 40 }).Use and options("Ore", { count = 40 }).Use["local"] == "use", "materials: Use opens their collection")
+	-- Polish: "Sell…" opens the quantity picker when two or more can be sold (held − the kept upgraded copy).
+	assert(options("Ore", { count = 40 }).SellQty and options("Ore", { count = 40 }).SellQty["local"] == "sellQty" and options("Ore", { count = 40 }).SellQty.max == 40, "Sell… for a stack")
+	assert(not options("Ore", { count = 1 }).SellQty, "no picker for a single item")
+	assert(options("BrassSword", { count = 3, upgraded = true }).SellQty.max == 2, "the picker excludes the kept upgraded copy")
+	assert(not options("BrassSword", { count = 2, upgraded = true }).SellQty and not options("SunsteelSword", { equipped = true, count = 4 }).SellQty, "no picker for one spare or equipped gear")
+	checks += 4
 	checks += 3
 	-- The atlas relays exactly these verbs from hud.client.lua.
 	for _, verb in ipairs({ "equip", "unequip", "consume", "sell", "accessory", "petAdopt", "drop", "satchelMove", "satchelSort", "recall" }) do
@@ -3363,16 +3829,41 @@ do
 		assert(#ui.sent == 0 and S.menu.Visible, "first Drop press only asks")
 		H.press(H.find(S.menu, "OptionDrop"))
 		assert(ui.sent[1] and ui.sent[1][1] == "drop" and ui.sent[1][2] == "Ore" and not S.menu.Visible, "second press drops")
-		-- M12: an enchanted item (snapshot enchants) asks first and says the upgraded copy stays.
+		-- QC L5: the last copy of an enchanted item (snapshot enchants) offers no
+		-- Sell / Drop, only an explanation; spare copies sell as "spares".
 		local tips = {}
 		ui.replicated:FindFirstChild("IsleToastLocal").Event:Connect(function(text) table.insert(tips, text) end)
 		S.openMenu("BrassSword", roblox.Vector2.new(400, 300))
+		assert(not H.find(S.menu, "OptionSell") or not H.find(S.menu, "OptionSell").Visible, "the last upgraded copy offers no Sell")
 		table.clear(ui.sent)
-		H.press(H.find(S.menu, "OptionSell"))
+		H.press(H.find(S.menu, "OptionKept"))
+		assert(#ui.sent == 0 and tips[#tips]:find("cannot be sold or dropped", 1, true), "the kept copy explains itself")
+		local spares = H.snapshot()
+		spares.items = table.clone(spares.items)
+		spares.items.BrassSword = 3
+		ui.update.OnClientEvent:Fire(spares)
+		S.openMenu("BrassSword", roblox.Vector2.new(400, 300))
+		local sellSpares = H.find(S.menu, "OptionSell")
+		assert(sellSpares and sellSpares.Visible and sellSpares.Text == "Sell 2 spares", "spares are sold by name: " .. tostring(sellSpares and sellSpares.Text))
+		-- M12: it asks first and says the upgraded copy stays.
+		H.press(sellSpares)
 		assert(#ui.sent == 0 and tips[#tips]:find("carries upgrades", 1, true), "selling an enchanted item confirms and warns")
 		H.press(H.find(S.menu, "OptionSell"))
 		assert(ui.sent[1] and ui.sent[1][1] == "sell" and ui.sent[1][2] == "BrassSword", "second press sells")
+		ui.update.OnClientEvent:Fire(H.snapshot())
+		-- Polish: Sell… opens the §31 quantity picker in sell mode (sell "<id>:<n>").
+		local picked
+		local qtyEvent = ui.replicated:FindFirstChild("IsleQuantityLocal")
+		if not qtyEvent then qtyEvent = H.new("BindableEvent", { Name = "IsleQuantityLocal" }); qtyEvent.Parent = ui.replicated end
+		qtyEvent.Event:Connect(function(spec) picked = spec end)
+		S.openMenu("Ore", roblox.Vector2.new(400, 300))
+		local sellQty = H.find(S.menu, "OptionSellQty")
+		assert(sellQty and sellQty.Visible and sellQty.Text == "Sell…", "satchel menu offers Sell…")
+		table.clear(ui.sent)
+		H.press(sellQty)
+		assert(#ui.sent == 0 and picked and picked.verb == "sell" and picked.sell == true and picked.base == "Ore" and picked.max == H.snapshot().items.Ore, "Sell… opens the picker for the whole sellable count")
 		checks += 2
+		checks += 5
 		-- Examine and Move to hotbar stay local.
 		S.openMenu("Ore", roblox.Vector2.new(400, 300))
 		table.clear(ui.sent)
@@ -3627,10 +4118,37 @@ do
 			return reply
 		end
 		table.clear(ui.sent)
+		table.clear(ui.delays)
 		ui.replicated:FindFirstChild("IsleActionLocal"):Fire("satchelMove", "Ore:1")
 		action.OnInvoke = original
+		-- QC H1: the queued verb waits out the server's 0.24 s action cooldown
+		-- (spaced 0.26 s after the last send) instead of landing inside it.
+		assert(#ui.sent == 1 and #ui.delays == 1 and ui.delays[1].seconds > 0.2 and ui.delays[1].seconds <= 0.26, "queued verb spaced after the last send")
+		ui.runDelays()
 		assert(#ui.sent == 2 and ui.sent[1][1] == "satchelMove" and ui.sent[2][1] == "sell" and ui.sent[2][2] == "Ore", "queued verb sent after the reply")
-		checks += 1
+		-- QC M1: order holds: verbs fired while the queue is non-empty (even with
+		-- no request pending) queue behind it; one drain point sends them in order.
+		nested = false
+		action.OnInvoke = function(verb, item)
+			local reply = original(verb, item)
+			if not nested then
+				nested = true
+				ui.replicated:FindFirstChild("IsleActionLocal"):Fire("sell", "Ore")
+				ui.replicated:FindFirstChild("IsleActionLocal"):Fire("drop", "Herb")
+			end
+			return reply
+		end
+		table.clear(ui.sent)
+		table.clear(ui.delays)
+		ui.replicated:FindFirstChild("IsleActionLocal"):Fire("satchelSort", "rarity")
+		ui.replicated:FindFirstChild("IsleActionLocal"):Fire("consume", "CookedFish")
+		assert(#ui.sent == 1, "nothing jumps the queue while it drains")
+		for _ = 1, 8 do if ui.runDelays() == 0 then break end end
+		action.OnInvoke = original
+		local order = {}
+		for _, sent in ipairs(ui.sent) do table.insert(order, sent[1]) end
+		assert(table.concat(order, ",") == "satchelSort,sell,drop,consume", "queued verbs keep their order: " .. table.concat(order, ","))
+		checks += 4
 		-- L11: faint text ≥ 4.5:1 on the panel surfaces; reduced motion keeps XP
 		-- drops in place (no fade tween) and the level-up banner unscaled.
 		local function lum(hex)
@@ -3705,6 +4223,121 @@ do
 		H.press(S.slots[2])
 		assert(S.selected == S.pageIds[2], "the next tap selects")
 		checks += 6
+		-- QC M3: the long-press swallow is keyed to its InputObject, not a 0.3 s
+		-- timer: a hold released well after the menu opened still does nothing more.
+		S.selected = nil
+		S.menu.Visible = false
+		local id1 = S.pageIds[1]
+		local slow = { UserInputType = UIT.Touch, Position = roblox.Vector3.new(10, 10, 0) }
+		table.clear(delays)
+		S.slots[1].InputBegan:Fire(slow)
+		for _, d in ipairs(delays) do d.fn(table.unpack(d.args, 1, d.args.n)) end
+		assert(S.menu.Visible and S.menuFor == id1, "long-press menu")
+		local held = os.clock()
+		repeat until os.clock() - held > 0.35
+		layer.input.InputEnded:Fire(slow)
+		H.press(S.slots[1])
+		assert(S.selected ~= id1 and S.menu.Visible, "a long hold's release (0.35 s later) is still swallowed")
+		S.slots[2].InputBegan:Fire({ UserInputType = UIT.Touch, Position = roblox.Vector3.new(60, 10, 0) })
+		H.press(S.slots[2])
+		assert(S.selected == S.pageIds[2], "a new press after the long-press acts")
+		layer.input.InputEnded:Fire({ UserInputType = UIT.Touch, Position = roblox.Vector3.new(60, 10, 0) })
+		-- QC L9: a tap outside closes the context menu on touch.
+		S.openMenu(id1, roblox.Vector2.new(100, 100))
+		layer.input.InputBegan:Fire({ UserInputType = UIT.Touch, Position = roblox.Vector3.new(900, 700, 0) }, false)
+		assert(not S.menu.Visible, "a tap outside closes the context menu")
+		checks += 4
+	end
+	-- QC fixes, desktop: drag back onto the origin slot, reduced-motion XP drop
+	-- stacking, the 520 px threshold, closing unpins, live Settings, prompt pruning.
+	do
+		local size = roblox.Vector2.new(1366, 768)
+		local delays = {}
+		local ui = H.runAtlas(size, {})
+		local layer = H.runHud(size, ui.player, ui.replicated, { delays = delays })
+		local S = layer.state
+		local UIT, Key = roblox.Enum.UserInputType, roblox.Enum.KeyCode
+		local function v3(x, y) return roblox.Vector3.new(x, y, 0) end
+		S.setOpen(true)
+		-- M2: Activated before InputEnded on a drag that came back to its own slot
+		-- does not fire the slot's first option.
+		local index
+		for i, id in ipairs(S.pageIds) do if id == "SunsteelSword" then index = i end end
+		local cell, cols = S.cell + 4, S.cols
+		local home = v3(((index - 1) % cols) * cell + 4, ((index - 1) // cols) * cell + 4)
+		table.clear(ui.sent)
+		S.slots[index].InputBegan:Fire({ UserInputType = UIT.MouseButton1, Position = home })
+		layer.input.InputChanged:Fire({ UserInputType = UIT.MouseMovement, Position = v3(home.X + 120, home.Y + 60) })
+		layer.input.InputChanged:Fire({ UserInputType = UIT.MouseMovement, Position = home })
+		H.press(S.slots[index])
+		assert(#ui.sent == 0, "a drag back onto its slot (Activated first) does not wield")
+		layer.input.InputEnded:Fire({ UserInputType = UIT.MouseButton1, Position = home })
+		H.press(S.slots[index])
+		assert(#ui.sent == 0, "nor does the release click that follows")
+		H.press(S.slots[index])
+		assert(ui.sent[1] and ui.sent[1][1] == "equip", "the next click wields")
+		checks += 3
+		-- L1: reduced motion: drops stack instead of overprinting, and a reused
+		-- label is not hidden early by an older delay.
+		ui.player:SetAttribute("IsleSettingReducedMotion", true)
+		local xp = ui.replicated:FindFirstChild("IsleXpLocal")
+		table.clear(delays)
+		for _ = 1, 6 do xp:Fire({ { skill = "Mining", amount = 5, level = 3, fraction = 0.5, color = "8EE05A" } }) end
+		local ys, shown = {}, 0
+		for _, l in ipairs(S.drops:GetChildren()) do
+			if l.Visible and l.Text:find("+5", 1, true) then
+				shown += 1
+				assert(not ys[l.Position.Y.Offset], "reduced-motion drops do not overprint")
+				ys[l.Position.Y.Offset] = true
+			end
+		end
+		assert(shown == 5, "five stacked drops in the lane (" .. shown .. ")")
+		local drop1 = H.find(S.drops, "Drop1")
+		delays[1].fn(table.unpack(delays[1].args, 1, delays[1].args.n))
+		assert(drop1.Visible, "the first gain's delay does not hide the reused label")
+		ui.player:SetAttribute("IsleSettingReducedMotion", false)
+		checks += 3
+		-- L2: crossing the 520 px height threshold while open re-publishes the mode.
+		assert(S.docked and ui.player:GetAttribute("IsleSatchelOpen") == true, "docked at 1366x768")
+		H.setScreen(roblox.Vector2.new(1366, 480))
+		S.refresh()
+		assert(not S.docked and ui.player:GetAttribute("IsleSatchelOpen") == false and H.find(layer.gui, "SatchelShade").Visible, "a short window: modal, shade, not docked")
+		H.setScreen(size)
+		S.refresh()
+		assert(S.docked and ui.player:GetAttribute("IsleSatchelOpen") == true and not H.find(layer.gui, "SatchelShade").Visible, "tall again: docked")
+		checks += 2
+		-- L3: closing a pinned satchel with E / the BAG button unpins it.
+		S.setPinned(true)
+		layer.input.InputBegan:Fire({ KeyCode = Key.E, UserInputType = UIT.Keyboard }, false)
+		assert(not S.panel.Visible and not S.pinned and ui.player:GetAttribute("IsleSettingPinSatchel") == false, "E closes and unpins")
+		ui.player:SetAttribute("IsleSettingPinSatchel", true)
+		assert(S.panel.Visible and S.pinned, "the setting pins and opens")
+		H.press(H.find(ui.gui, "SatchelButton"))
+		assert(not S.panel.Visible and ui.player:GetAttribute("IsleSettingPinSatchel") == false, "BAG closes and unpins")
+		checks += 3
+		-- L4: Settings › Pin reads the live attribute (the HUD changed it meanwhile).
+		H.press(H.find(ui.gui, "AtlasButton"))
+		H.press(H.find(ui.scroll, "MenuSettings"))
+		local function pinCaption()
+			local card = H.find(ui.scroll, "SettingIsleSettingPinSatchel")
+			local button = card and H.find(card, "ToggleIsleSettingPinSatchel")
+			return button and button.Text
+		end
+		assert(pinCaption() == "Turn on", "pin setting off: " .. tostring(pinCaption()))
+		S.setPinned(true)
+		assert(pinCaption() == "Turn off", "the Settings card re-renders when the HUD pins")
+		H.press(H.find(ui.scroll, "ToggleIsleSettingPinSatchel"))
+		assert(ui.player:GetAttribute("IsleSettingPinSatchel") == false, "the toggle flips the live value")
+		checks += 3
+		-- L10: a prompt leaving the world is pruned on AncestryChanged.
+		local prompt = H.new("ProximityPrompt")
+		prompt.Parent = H.new("Part")
+		layer.prompts.PromptShown:Fire(prompt)
+		assert(S.prompts[prompt] ~= nil, "shown prompt tracked")
+		prompt.Parent = nil
+		prompt.AncestryChanged:Fire()
+		assert(S.prompts[prompt] == nil, "a removed prompt is pruned at once")
+		checks += 2
 	end
 
 	-- Sidebar, action bar, menu grid.
@@ -3750,6 +4383,40 @@ do
 		checks += 16
 	end
 
+	-- §35 QC L6 / L7: Settings › Graphics quality reads its tier text from
+	-- AetherLighting (L.Tiers[*].detail) and every Settings change is saved on
+	-- the profile with the whitelisted `setting` verb.
+	do
+		local L = luau.load(fs.readFile("shared/LightingProfiles.lua"), { debugName = "LightingProfiles", environment = { Color3 = roblox.Color3 }, injectGlobals = true })()
+		local ui = H.runAtlas(roblox.Vector2.new(1366, 768), { lighting = L })
+		ui.player:SetAttribute("IsleSettingGraphics", "Balanced")
+		H.press(H.find(ui.gui, "AtlasButton"))
+		H.press(H.find(ui.scroll, "MenuSettings"))
+		local function cardText(name)
+			local text = ""
+			for _, o in ipairs(H.find(ui.scroll, name):GetDescendants()) do if type(o.Text) == "string" then text ..= o.Text .. "\n" end end
+			return text
+		end
+		local function plain(text) return (string.gsub(text, "<[^>]->", "")) end
+		assert(plain(cardText("SettingGraphics")):find(L.Tiers.Balanced.detail, 1, true), "graphics card shows L.Tiers.Balanced.detail")
+		for _, id in ipairs(L.TIER_ORDER) do assert(H.find(ui.scroll, "Graphics" .. id), "a button per L.TIER_ORDER tier: " .. id) end
+		table.clear(ui.sent)
+		H.press(H.find(ui.scroll, "GraphicsPerformance"))
+		assert(ui.player:GetAttribute("IsleSettingGraphics") == "Performance", "choosing a tier applies it locally")
+		assert(plain(cardText("SettingGraphics")):find(L.Tiers.Performance.detail, 1, true), "graphics card follows the choice (L.Tiers.Performance.detail)")
+		local saved
+		for _, v in ipairs(ui.sent) do if v[1] == "setting" then saved = v[2] end end
+		assert(saved == "IsleSettingGraphics=Performance", "the tier is saved with the setting verb (" .. tostring(saved) .. ")")
+		assert(H.Data.PlayerSettings.parse(saved) == "IsleSettingGraphics", "the saved item passes the server whitelist")
+		table.clear(ui.sent)
+		H.press(H.find(ui.scroll, "ToggleIsleSettingMinimap"))
+		saved = nil
+		for _, v in ipairs(ui.sent) do if v[1] == "setting" then saved = v[2] end end
+		assert(saved == "IsleSettingMinimap=false", "a toggle is saved with the setting verb (" .. tostring(saved) .. ")")
+		for _, v in ipairs(ui.sent) do assert(v[1] == "setting", "a Settings change sends no other verb (" .. tostring(v[1]) .. ")") end
+		checks += 8
+	end
+
 	-- HUD lanes at three resolutions: the persistent HUD (sidebar, minimap,
 	-- action bar, hotbar gap, docked satchel on desktop) never overlaps and stays
 	-- on screen; satchel, menu and chart controls meet the touch floor on phones.
@@ -3775,6 +4442,23 @@ do
 		local boardBefore = rectOf(board, size)
 		S.setOpen(true)
 		S.placeDrops()
+		-- QC M4: a live level-up banner (Theme.hudLayout levelBanner) joins the lanes.
+		local up = H.snapshot()
+		up.depth.skills = table.clone(up.depth.skills)
+		up.depth.skills.Mining = table.clone(up.depth.skills.Mining)
+		up.depth.skills.Mining.xp += 500
+		up.depth.skills.Mining.level += 1
+		-- §39 QC M3: a running contest puts the tracker in the right column with the board.
+		do
+			local CT = Data.Contests
+			local W = CT.window(71014)
+			up.contests = { now = W.starts + 100, k = 71014, active = true, starts = W.starts, ends = W.ends, crops = W.crops,
+				entry = { c = W.crops[1], s = 90, slot = 1, min = CT.CropById[W.crops[1]].min }, estimate = { bracket = "Gold", rank = 5, n = 60 } }
+		end
+		ui.update.OnClientEvent:Fire(H.snapshot())
+		ui.update.OnClientEvent:Fire(up)
+		local levelBanner = ui.gui:FindFirstChild("LevelBanner")
+		assert(levelBanner.Visible, "level-up banner shows at " .. tag)
 		local items = {
 			{ "sidebar", rectOf(ui.gui:FindFirstChild("Sidebar"), size) },
 			{ "minimap", rectOf(nav.gui:FindFirstChild("Minimap"), size) },
@@ -3785,6 +4469,11 @@ do
 			{ "lap tracker", rectOf(ui.gui:FindFirstChild("CourseTracker"), size) },
 			{ "trap counter", rectOf(ui.gui:FindFirstChild("TrapTracker"), size) },
 		}
+		table.insert(items, { "level banner", rectOf(levelBanner, size) })
+		local contestHud = ui.gui:FindFirstChild("ContestHud")
+		if size.X == 1366 and size.Y == 768 then assert(contestHud.Visible and rectOf(contestHud, size).y >= rectOf(board, size).y + rectOf(board, size).h, "QC M3: the contest tracker stacks under the world boss board at " .. tag) end
+		if contestHud.Visible then table.insert(items, { "contest tracker", rectOf(contestHud, size) }) end
+		checks += 1
 		local panel = rectOf(S.panel, size)
 		assert(panel.x >= 0 and panel.y >= 0 and panel.x + panel.w <= size.X and panel.y + panel.h <= size.Y, "satchel on screen at " .. tag .. " " .. show(panel))
 		assert(S.docked == not L.short, "the satchel docks by screen size at " .. tag)
@@ -3804,6 +4493,30 @@ do
 			for j = i + 1, #items do
 				assert(not overlaps(a, items[j][2]), items[i][1] .. " " .. show(a) .. " overlaps " .. items[j][1] .. " " .. show(items[j][2]) .. " at " .. tag)
 				checks += 1
+			end
+		end
+		-- §43 Tutorial coach card lane (Theme.hudLayout coach): docked on tall
+		-- screens, clear of every item above and the chat lane; a centred card on
+		-- phones (or beside a docked satchel), clear of the persistent HUD. Never
+		-- over the hotbar or the action bar. Its chip (collapsed) too.
+		do
+			local LC = T.hudLayout(size.X, size.Y, { touch = touch, satchelOpen = S.docked })
+			local persistent = { sidebar = true, minimap = true, ["action bar"] = true, ["hotbar gap"] = true, ["docked satchel"] = true }
+			for _, lane in ipairs({ { "coach card", LC.coach }, { "coach chip", LC.coachChip } }) do
+				local r = lane[2]
+				if r.w > 0 then
+					assert(r.x >= 0 and r.y >= 0 and r.x + r.w <= size.X and r.y + r.h <= size.Y, lane[1] .. " on screen at " .. tag .. " " .. show(r))
+					-- The phone chip shares the left column with the lap / trap trackers and steps aside while they show.
+					local chipOnPhone = lane[1] == "coach chip" and LC.short
+					for _, item in ipairs(items) do
+						local strict = persistent[item[1]] or not LC.coach.modal or lane[1] == "coach chip"
+						if strict and not (chipOnPhone and (item[1] == "lap tracker" or item[1] == "trap counter")) then
+							assert(not overlaps(r, item[2]), lane[1] .. " " .. show(r) .. " overlaps " .. item[1] .. " " .. show(item[2]) .. " at " .. tag)
+							checks += 1
+						end
+					end
+					if not touch and not LC.coach.modal then assert(not overlaps(r, L.chat), lane[1] .. " clears the chat lane at " .. tag) end
+				end
 			end
 		end
 		-- Desktop: the bottom-left chat lane stays clear of the persistent HUD and

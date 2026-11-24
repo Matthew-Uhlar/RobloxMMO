@@ -624,6 +624,7 @@ end}
 local mgServices = {
 	Players = {PlayerAdded = signal(), PlayerRemoving = signal(), GetPlayers = function() return mgPlayers end},
 	RunService = {Heartbeat = signal()},
+	CollectionService = {tagged = {}, AddTag = function(self, instance, tag) self.tagged[tag] = self.tagged[tag] or {}; table.insert(self.tagged[tag], instance) end},
 	ServerStorage = {FindFirstChild = function(_, name) if name == "IsleBridge" then return bridgeProxy end return mgObjects[name] end},
 	ReplicatedStorage = {WaitForChild = function(_, name) return name end},
 }
@@ -652,7 +653,8 @@ for _, d in ipairs(bastion:GetDescendants()) do if d:IsA("BasePart") then partCo
 within(partCount, 30, 80, "static bastion part budget")
 local function find(name) return bastion:FindFirstChild(name, true) end
 local function promptOn(part, action)
-	for _, c in ipairs(part:GetChildren()) do if c:IsA("ProximityPrompt") and c.ActionText == action then return c end end
+	-- §44: a travel beacon's prompt hangs on its "Beacon prompt" attachment.
+	for _, c in ipairs(part:GetDescendants()) do if c:IsA("ProximityPrompt") and c.ActionText == action then return c end end
 	error("missing prompt " .. part.Name .. " / " .. action)
 end
 for _, name in ipairs({"SiegeNovice pad","SiegeVeteran pad","SiegeElite pad","Haul pad","Lumen Keeper","Cinder Rift","Gale Rift","Rime Rift","Gloam Rift",
@@ -1358,6 +1360,28 @@ do
 	ok(hoarder.attrs.MinigameGame ~= "Haul" and has(hoarder.attrs.MinigameNotice, "bank is nearly full"), "full bank refused at launch")
 	hoarder.root.Position = Vector3.new(0, 10, 0)
 	tick(1)
+end
+
+-- §44 QC L4 / M5 / L1: the return ferry is a tagged travel beacon (the client
+-- finds beacons by CollectionService tag) with the dais colliders and the
+-- prompt on an attachment in front of the dais.
+do
+	local beacon = find("Return ferry beacon")
+	local tagged = mgServices.CollectionService.tagged.TravelBeacon or {}
+	ok(#tagged == 1 and tagged[1] == beacon and beacon:GetAttribute("TravelBeacon") == "ferry", "the return ferry carries the TravelBeacon tag")
+	local plinth, pylons = nil, 0
+	for _, d in ipairs(bastion:GetDescendants()) do
+		if d:IsA("BasePart") and d.Name == "Beacon plinth" then plinth = d end
+		if d:IsA("BasePart") and d.Name == "Beacon pylon" and d.CanCollide and d.Transparency == 1 then pylons += 1 end
+	end
+	ok(plinth ~= nil and plinth.Shape == roblox.Enum.PartType.Cylinder and plinth.CanCollide and plinth.Transparency == 1
+		and math.abs(plinth.Size.Y - 4.9) < 1e-3 and math.abs(plinth.Size.X - 0.95) < 1e-3, "the ferry dais has its 4.9 x 0.95 cylinder base collider")
+	ok(plinth ~= nil and math.abs(plinth.Position.Y - plinth.Size.X / 2 - (beacon.Position.Y - 3 + 0.5)) < 1e-3, "the base collider stands on the plaza")
+	eq(pylons, 4, "the ferry dais has four pylon colliders")
+	local q = promptOn(beacon, "Return to the Guild Terrace")
+	ok(q.Parent:IsA("Attachment") and q.Parent.Name == "Beacon prompt", "the ferry prompt hangs on its attachment")
+	local at = (beacon.CFrame * q.Parent.CFrame).Position
+	ok(math.abs(at.Y - (beacon.Position.Y - 2.5 + 1.5)) < 1e-3 and Vector3.new(at.X - beacon.Position.X, 0, at.Z - beacon.Position.Z).Magnitude > 2.95, "the ferry prompt sits in front of the dais at waist height")
 end
 
 -- LOW 6: the return ferry passes the travel gate and zeroes velocity.

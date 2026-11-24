@@ -14,7 +14,7 @@ Status key: **Met (headless)** — implemented and covered by automated headless
 | 6 | Combat and slayers | 13 real-time creatures, three four-tier slayer lines with bosses, nine sea creatures from fishing | Met (headless); combat feel needs live check |
 | 7 | Dungeons / raids | Observatory Floors I–V, cumulative mechanics, telegraphed bosses, S+–D grading and scaled chests | Met (headless); encounter tuning needs live check |
 | 8 | Quests and achievement diaries | 8 guild contracts + 13 quests with Quest Points and XP lamps; diaries for seven regions | Met (headless) |
-| 9 | Economy (Grand Exchange / Bazaar / Auction House) | Priced commodity asks, standing buy orders, gear auctions, bank; crash-safe receipts, bounded keys, request budget | Met (headless); live cross-server economy needs live check |
+| 9 | Economy (Grand Exchange / Bazaar / Auction House) | Priced commodity asks, standing buy orders, gear auctions, bank; crash-safe receipts, bounded keys (≤ 480 KB worst case; auction price history in its own key), request budget | Met (headless); live cross-server economy needs live check |
 | 10 | Private islands, minions/workers, building | Home islands, 7-tier workers with offline accrual, Builder's Terrace hotspots, free-form placement of 27 props | Met (headless) |
 | 11 | Co-op / Group Ironman | Crews with lifecycle, Homestead levels, shared workers, Ironman isolation | Met (headless); multi-client play needs live check |
 | 12 | Seasonal events / calendar | Global Skyward Calendar with 13 timed events/year and vendor | Met (headless) |

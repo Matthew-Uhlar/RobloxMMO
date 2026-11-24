@@ -1,13 +1,14 @@
 -- Signs (docs/DEPTH-CONTRACT.md §28): every sign in the generated world goes
 -- through the shared Signs system in world.server.lua. Builds the real world
 -- (static islands plus a home island with its garden, crew haven and builder's
--- terrace) and checks: one archetype per sign model, its frame host and boards
--- carry the sign kit mesh slots (shapes exist, fit boxes valid, declared boxes
--- sane), part counts per archetype, the static part budget, no lights, text
--- that fits its board at every length used (independent re-measure), night
--- readability (LightInfluence, brightness, contrast, distance), fonts, arrow
--- boards that point at their destinations, and no sign standing on a path or
--- swallowing someone else's prompt.
+-- terrace) and checks: one invisible anchor (or ledger board) per sign, the
+-- billboard vocabulary and its full / compact forms, the static part budget,
+-- no lights, no posts or poles near a sign, text that fits its box (independent
+-- re-measure) and renders >= 10 px at every distance on phone and desktop,
+-- night readability, fonts, arrows, prompts; the on-screen footprint (no
+-- overlaps, clusters readable side by side) at 844x390 and 1920x1080; wall
+-- clipping from 8 headings; the SignView rules; and signs.client.lua itself
+-- run against engine mocks.
 local fs = require("@lune/fs")
 local luau = require("@lune/luau")
 local roblox = require("@lune/roblox")
@@ -34,6 +35,17 @@ end)
 roblox.implementProperty("ProximityPrompt", "Destroying", function(prompt)
 	return signal()
 end)
+-- Per-instance engine events the sign code listens to (Model streaming and
+-- Destroying), fired by hand below.
+local instanceSignals = {}
+local function instanceSignal(obj, name)
+	instanceSignals[obj] = instanceSignals[obj] or {}
+	if not instanceSignals[obj][name] then instanceSignals[obj][name] = signal() end
+	return instanceSignals[obj][name]
+end
+for _, event in {"Destroying", "DescendantAdded", "DescendantRemoving"} do
+	roblox.implementProperty("Model", event, function(m) return instanceSignal(m, event) end)
+end
 local Data = luau.load(fs.readFile("shared/GameData.lua"), {injectGlobals = true})()
 local World = luau.load(fs.readFile("art/WorldCatalog.lua"), {injectGlobals = true})()
 local Props = luau.load(fs.readFile("art/PropCatalog.lua"), {injectGlobals = true})()
@@ -120,323 +132,785 @@ local function contrast(a, b)
 	local la, lb = luminance(a), luminance(b)
 	return (math.max(la, lb) + .05) / (math.min(la, lb) + .05)
 end
+-- Colours a frame really shows: a UIGradient multiplies the background, so a
+-- graded frame is white and its keypoints are the true colours.
+local function shown(frame)
+	local g = frame:FindFirstChildOfClass("UIGradient")
+	if not g then return {frame.BackgroundColor3} end
+	local out = {}
+	for _, k in g.Color.Keypoints do
+		local c, b = k.Value, frame.BackgroundColor3
+		table.insert(out, Color3.new(c.R * b.R, c.G * b.G, c.B * b.B))
+	end
+	return out
+end
+local function worst(color, frame)
+	local r = math.huge
+	for _, c in shown(frame) do r = math.min(r, contrast(color, c)) end
+	return r
+end
+local function stripTags(text) return (text:gsub("<[^>]->", ""):gsub("&lt;", "<"):gsub("&gt;", ">"):gsub("&amp;", "&")) end
 
 ------------------------------------------------------------------------------
--- Every SurfaceGui belongs to a sign built by the shared system.
+-- Sign models (§28 v2): one invisible anchor, one floating billboard, no
+-- posts, frames, plinths or sign meshes. Ledgers are a notice board (both
+-- faces) with a floating title billboard.
 ------------------------------------------------------------------------------
+local View = luau.load(fs.readFile("shared/SignView.lua"), {environment = {Vector3 = Vector3}, injectGlobals = true})()
 local KINDS = {hanging = true, shop = true, post = true, banner = true, plaque = true, ledger = true}
-local FRAMES = {hanging = "SignHangingFrame", shop = "SignHangingFrame", post = "SignpostFrame", banner = "BannerStandardFrame",
-	plaque = "SignPlinthFrame", ledger = "SignLedgerFrame"}
-local BOARDS = {hanging = "SignCarvedBoard", shop = "SignScrollBoard", banner = "BannerCloth", plaque = "SignPlaqueBoard", ledger = "SignNoticeBoard"}
 local FONTS = {["rbxasset://fonts/families/Merriweather.json"] = true, ["rbxasset://fonts/families/BuilderSans.json"] = true,
 	["rbxasset://fonts/families/Fondamento.json"] = true}
-local guis, labels = 0, 0
-for _, gui in world:GetDescendants() do
-	if gui:IsA("SurfaceGui") then
-		guis += 1
-		local holder = gui.Parent and gui.Parent.Parent
-		ok(holder and holder:GetAttribute("SignArchetype") ~= nil, gui:GetFullName() .. " belongs to a shared-system sign")
-		ok(gui.Parent:GetAttribute("SignBoard") == true, gui:GetFullName() .. " sits on a sign board")
-		ok(gui.SizingMode == roblox.Enum.SurfaceGuiSizingMode.PixelsPerStud and gui.PixelsPerStud >= 40 and gui.PixelsPerStud <= 80,
-			gui:GetFullName() .. " is distance-scaled by PixelsPerStud")
-		ok(gui.LightInfluence <= .35 and gui.Brightness >= 1, gui:GetFullName() .. " self-lights for night reading")
-		ok(gui.MaxDistance >= 80 and not gui.AlwaysOnTop, gui:GetFullName() .. " reads from afar but never through walls")
-		ok(gui:GetAttribute("SignStyled") == true, gui:GetFullName() .. " is styled on the server (the client keeps it)")
-		-- §28 performance: PPS 40 (ledgers 600 px across), MaxDistance 100 (landmark plaques 150, ledgers 90).
-		local archetype = holder:GetAttribute("SignArchetype")
-		if archetype == "ledger" then
-			ok(gui.MaxDistance == 90 and math.abs(gui.PixelsPerStud * gui.Parent.Size.X - 600) < 1, gui:GetFullName() .. " ledger face")
-		else
-			ok(gui.PixelsPerStud == 40, gui:GetFullName() .. " paints at 40 pixels per stud")
-			ok(gui.MaxDistance == (if archetype == "plaque" then 150 else 100), gui:GetFullName() .. " MaxDistance by archetype (" .. gui.MaxDistance .. ")")
-		end
-		-- One outline per label: a UIStroke or an engraved highlight label, never both.
-		for _, label in gui:GetChildren() do
-			if label:IsA("TextLabel") and not label.Name:find("Shadow", 1, true) and label.Name ~= "Emblem initial" then
-				local stroke = label:FindFirstChildOfClass("UIStroke") ~= nil
-				local shadow = gui:FindFirstChild(label.Name .. "Shadow") ~= nil
-				ok(stroke ~= shadow or (archetype == "ledger" and stroke), label:GetFullName() .. " has exactly one outline (stroke " .. tostring(stroke) .. ", shadow " .. tostring(shadow) .. ")")
-			end
-		end
-		local panel = gui:FindFirstChild("Panel")
-		ok(panel ~= nil, gui:GetFullName() .. " has a painted panel")
-		local face = gui.Parent.Size
-		local cw, ch = face.X * gui.PixelsPerStud, face.Y * gui.PixelsPerStud
-		for _, label in gui:GetDescendants() do
-			if label:IsA("TextLabel") and not label.Name:find("Shadow", 1, true) and label.Text ~= "" then
-				labels += 1
-				local w, h, size = label.Size.X.Offset, label.Size.Y.Offset, label.TextSize
-				ok(not label.TextScaled and label.TextWrapped, label:GetFullName() .. " uses a fitted text size")
-				ok(label:GetAttribute("SignOverflow") == nil, label:GetFullName() .. " text fits without overflow")
-				ok(FONTS[label.FontFace.Family] == true, label:GetFullName() .. " uses a sign font face (" .. label.FontFace.Family .. ")")
-				local maxLines = label:GetAttribute("SignFitLines") or 1
-				if label.Name ~= "Emblem initial" then
-					local n = lines(label.Text, size, w)
-					ok(n <= maxLines and n * size * 1.25 <= h + 1, label:GetFullName() .. " '" .. label.Text .. "' fits its box (" .. n .. " lines at " .. size .. "px)")
-					ok(label.Position.X.Offset >= 0 and label.Position.Y.Offset >= 0 and label.Position.X.Offset + w <= cw + 1 and label.Position.Y.Offset + h <= ch + 1,
-						label:GetFullName() .. " stays on its board")
-				end
-				if label.Name == "Label" and gui.Parent:GetAttribute("Shape") == "SignArrowBoard" then
-					-- L6: the label stays >= .45 studs (and past the stretched strap) clear of the tail.
-					local W = gui.Parent.Size.X
-					local need = math.max(.45, W * .37 / 4.6) * gui.PixelsPerStud
-					local tailGap = if gui.Face == roblox.Enum.NormalId.Front then cw - (label.Position.X.Offset + w) else label.Position.X.Offset
-					ok(tailGap >= need - 1, label:GetFullName() .. " clears the arrow strap (" .. tailGap .. " px >= " .. math.floor(need) .. ")")
-				end
-				local studs = size / gui.PixelsPerStud
-				if label.Name == "Title" or label.Name == "Label" then
-					ok(studs >= .22, label:GetFullName() .. " title is legible (" .. string.format("%.2f", studs) .. " studs)")
-					ok(contrast(label.TextColor3, panel.BackgroundColor3) >= 4.5, label:GetFullName() .. " title contrast on its panel")
-				elseif label.Name == "Kicker" or label.Name:match("^Row_") or label.Name:match("^Value_") then
-					ok(studs >= .12, label:GetFullName() .. " small text is legible")
-					ok(contrast(label.TextColor3, panel.BackgroundColor3) >= 3, label:GetFullName() .. " small text contrast")
-				end
-			end
-		end
+local TITLE_FONTS = {["rbxasset://fonts/families/Merriweather.json"] = true, ["rbxasset://fonts/families/Fondamento.json"] = true}
+local signs, kinds, boards = {}, {}, {}
+local guiInstances, labelCount, billboards = 0, 0, 0
+local function collectSigns()
+	local out = {}
+	for _, model in world:GetDescendants() do
+		if model:IsA("Model") and model:GetAttribute("SignArchetype") then table.insert(out, model) end
 	end
+	return out
 end
-ok(guis >= 150 and labels >= 400, "sign faces painted (" .. guis .. " faces, " .. labels .. " labels)")
--- Source: SurfaceGuis are only created by the sign system (surface() and ledger()).
-local _, guiNew = source:gsub('Instance%.new%("SurfaceGui"%)', "")
-ok(guiNew == 2, "world.server.lua creates SurfaceGuis only inside the sign system (" .. guiNew .. ")")
-ok(source:find("local function signAt", 1, true) and source:find("return (Signs.build(parent,cf,spec))", 1, true), "legacy signAt forwards to Signs.build")
-
-------------------------------------------------------------------------------
--- Sign models: archetype, frame host, boards, parts, icons, no lights.
-------------------------------------------------------------------------------
-local counts, kinds, signs = {}, {}, {}
-local PARTS = {hanging = 2, banner = 2, plaque = 2, ledger = 2, shop = 3}
-local function box(p)
-	local cf, s = p.CFrame, p.Size / 2
-	local r, u, l = cf.RightVector, cf.UpVector, cf.LookVector
-	local e = Vector3.new(math.abs(r.X) * s.X + math.abs(u.X) * s.Y + math.abs(l.X) * s.Z,
-		math.abs(r.Y) * s.X + math.abs(u.Y) * s.Y + math.abs(l.Y) * s.Z, math.abs(r.Z) * s.X + math.abs(u.Z) * s.Y + math.abs(l.Z) * s.Z)
-	return cf.Position - e, cf.Position + e
-end
-for _, model in world:GetDescendants() do
-	local kind = model:IsA("Model") and model:GetAttribute("SignArchetype")
-	if kind then
-		table.insert(signs, model)
-		ok(KINDS[kind], model:GetFullName() .. " archetype " .. tostring(kind))
-		ok(model.Name == "Sign " .. model:GetAttribute("SignTitle"), model:GetFullName() .. " keeps the Sign <title> name")
-		kinds[kind] = (kinds[kind] or 0) + 1
-		local frames, boards, icons, parts, arrows = {}, {}, 0, 0, 0
-		for _, p in model:GetDescendants() do
-			ok(not p:IsA("Light"), model:GetFullName() .. " adds no lights")
-			if p:IsA("BasePart") then
-				parts += 1
-				ok(not p.CanCollide, p:GetFullName() .. " never blocks a path")
-				local shape = p:GetAttribute("Shape")
-				ok(type(shape) == "string", p:GetFullName() .. " is a mesh slot")
-				if p:GetAttribute("ShapeBox") then
-					table.insert(frames, p)
-				elseif p:GetAttribute("SignBoard") then
-					table.insert(boards, p)
-					if shape == "SignArrowBoard" then arrows += 1 end
-				else
-					icons += 1
-					ok(p:GetAttribute("ShapeFit") == "Uniform" and (Props.shapes[shape] or World.shapes[shape]) ~= nil, p:GetFullName() .. " icon " .. shape .. " is a catalog shape")
-				end
-			end
-		end
-		ok(#frames == 1, model:GetFullName() .. " has one frame host")
-		local frame = frames[1]
-		ok(frame:GetAttribute("Shape") == FRAMES[kind], model:GetFullName() .. " frame shape " .. tostring(frame:GetAttribute("Shape")))
-		ok(frame.Transparency < 1, model:GetFullName() .. " frame host stays a visible fallback")
-		-- The declared box contains the host and keeps the authored proportions within reason.
-		local data = World.shapes[frame:GetAttribute("Shape")]
-		ok(data ~= nil and data.kind == "signframe" and data.fit ~= nil, frame:GetAttribute("Shape") .. " is an authored sign frame")
-		local declared, offset = frame:GetAttribute("ShapeBox"), frame:GetAttribute("ShapeBoxOffset") or Vector3.zero
-		local fitSize = Vector3.new(data.fit[2][1] - data.fit[1][1], data.fit[2][2] - data.fit[1][2], data.fit[2][3] - data.fit[1][3])
-		for _, axis in {"X", "Y", "Z"} do
-			local k = declared[axis] / fitSize[axis]
-			ok(k > .55 and k < 1.6, model:GetFullName() .. " frame stretch " .. axis .. " " .. string.format("%.2f", k))
-			ok(math.abs(offset[axis]) + frame.Size[axis] / 2 <= declared[axis] / 2 + .05, model:GetFullName() .. " frame box holds its host on " .. axis)
-		end
-		ok(frame.CFrame.UpVector.Y > .99, model:GetFullName() .. " frame stands upright")
-		ok(#boards >= 1, model:GetFullName() .. " has a text board")
-		for _, b in boards do
-			local shape = b:GetAttribute("Shape")
-			ok(World.shapes[shape] and World.shapes[shape].kind == "sign" and World.shapes[shape].fit ~= nil, b:GetFullName() .. " board mesh " .. shape)
-			ok(BOARDS[kind] == nil or shape == BOARDS[kind] or (kind == "post"), b:GetFullName() .. " uses the " .. kind .. " board")
-			ok(b:FindFirstChildOfClass("SurfaceGui") ~= nil, b:GetFullName() .. " is painted")
-			if shape == "SignArrowBoard" then
-				local to = b:GetAttribute("SignArrowTo")
-				local base = frame.CFrame.Position
-				local flat = Vector3.new(to.X - base.X, 0, to.Z - base.Z)
-				ok(flat.Magnitude < .1 or b.CFrame.RightVector:Dot(flat.Unit) > .99, b:GetFullName() .. " points at its destination")
-				local rel = b.CFrame.Position - base
-				ok(Vector3.new(rel.X, 0, rel.Z).Unit:Dot(flat.Unit) > .99, b:GetFullName() .. " reaches out toward its destination")
-				ok(b.CFrame.Position.Y - b.Size.Y / 2 > base.Y - frame.Size.Y / 2 + 1, b:GetFullName() .. " hangs above the ground")
-			end
-		end
-		if kind == "post" then
-			ok(arrows >= 1 and parts == 1 + #boards and parts <= 5, model:GetFullName() .. " signpost has 1-4 boards (" .. parts .. " parts)")
-		else
-			ok(parts == PARTS[kind], model:GetFullName() .. " " .. kind .. " part count " .. parts)
-		end
-		ok((kind == "shop") == (icons == 1), model:GetFullName() .. " icon only on shop signs")
-		counts[kind] = (counts[kind] or 0) + parts
+for _, model in collectSigns() do
+	local kind = model:GetAttribute("SignArchetype")
+	table.insert(signs, model)
+	ok(KINDS[kind], model:GetFullName() .. " archetype " .. tostring(kind))
+	ok(model.Name == "Sign " .. model:GetAttribute("SignTitle"), model:GetFullName() .. " keeps the Sign <title> name")
+	ok(model:GetAttribute("SignVersion") == 2, model:GetFullName() .. " is a v2 sign")
+	-- QC L3: a sign streams in as one unit (anchor and billboard together).
+	local readable, mode = pcall(function() return model.ModelStreamingMode end)
+	if readable then ok(mode == roblox.Enum.ModelStreamingMode.Atomic, model:GetFullName() .. " streams atomically") end
+	kinds[kind] = (kinds[kind] or 0) + 1
+	local parts = {}
+	for _, p in model:GetDescendants() do
+		ok(not p:IsA("Light"), model:GetFullName() .. " adds no lights")
+		if p:IsA("BasePart") then table.insert(parts, p) end
 	end
+	ok(#parts == 1, model:GetFullName() .. " is a single part (" .. #parts .. "): no posts, brackets, plinths or frames")
+	local p = parts[1]
+	ok(not p.CanCollide and not p.CanTouch, p:GetFullName() .. " never blocks a path")
+	ok(p:GetAttribute("ShapeBox") == nil, p:GetFullName() .. " has no declared frame box")
+	local guis = {}
+	for _, g in p:GetChildren() do if g:IsA("BillboardGui") then table.insert(guis, g) end end
+	ok(#guis == 1 and guis[1].Name == "SignBillboard", model:GetFullName() .. " carries one SignBillboard")
+	if kind == "ledger" then
+		-- QC M3: both faces carry the rows; a camera-facing title floats above.
+		local front, back = p:FindFirstChild("Sign face Front"), p:FindFirstChild("Sign face Back")
+		ok(p:GetAttribute("Shape") == "SignNoticeBoard" and front and back and front:IsA("SurfaceGui") and back:IsA("SurfaceGui"),
+			model:GetFullName() .. " ledger board with a front and a back face")
+		ok(front.Face == roblox.Enum.NormalId.Front and back.Face == roblox.Enum.NormalId.Back, model:GetFullName() .. " faces on both sides")
+		for _, d in front:GetDescendants() do
+			if d:IsA("TextLabel") then
+				local twin = back:FindFirstChild(d.Name, true)
+				ok(twin and twin.Text == d.Text, d.Name .. " mirrored on the back face of " .. model.Name)
+			end
+		end
+		ok(guis[1].StudsOffsetWorldSpace.Y > p.Size.Y / 2 + 1, model:GetFullName() .. " title floats above the board")
+		ok(guis[1]:GetAttribute("SignKind") == "ledger", model:GetFullName() .. " title billboard kind")
+	else
+		ok(p:GetAttribute("SignAnchor") == true and p.Transparency == 1 and not p.CanQuery and p:GetAttribute("Shape") == nil,
+			p:GetFullName() .. " is an invisible, mesh-free anchor")
+		ok(p.Name == model:GetAttribute("SignTitle"), p:GetFullName() .. " anchor is named after the title (returned main part)")
+	end
+	table.insert(boards, {model = model, kind = kind, anchor = p, gui = guis[1]})
 end
 ok(#tags.AetherSign == #signs, "every sign is tagged AetherSign")
 for kind in KINDS do ok((kinds[kind] or 0) >= 1, kind .. " archetype is used in the world") end
 ok(#signs >= 80, "signs across the world (" .. #signs .. ")")
--- Named signs other systems rely on.
-for _, name in {"Sign Artificers' Row", "Sign Compass Quay", "Sign Sky Harbor", "Sign Verdant Garden", "Sign Hall of Mastery", "Sign Bestiary"} do
+
+------------------------------------------------------------------------------
+-- Billboard style: framed, themed, distinct from NPC nameplates, readable.
+------------------------------------------------------------------------------
+local npcSource = fs.readFile("npc.server.lua")
+ok(npcSource:find('"Nameplate"', 1, true) and npcSource:find("GothamBold", 1, true), "NPC nameplates: a dark Gotham strip named Nameplate")
+local function find(root, name) return root:FindFirstChild(name) end
+-- Which forms a label renders in: "full" (scale >= DETAIL), "compact" or both.
+local function formsOf(label, gui)
+	local node, inDetail, rootName = label, false, nil
+	while node and node ~= gui do
+		if node.Name == "Detail" then inDetail = true end
+		if node.Parent == gui then rootName = node.Name end
+		node = node.Parent
+	end
+	if rootName == "Compact" then return {compact = true} end
+	if inDetail or gui:FindFirstChild("Compact") then return {full = true} end
+	return {full = true, compact = true}
+end
+local minRendered = math.huge
+for _, b in boards do
+	local gui, kind, name = b.gui, b.kind, b.model:GetFullName()
+	billboards += 1
+	ok(gui.Name ~= "Nameplate", name .. " is not a nameplate")
+	ok(not gui.AlwaysOnTop, name .. " never shows through walls")
+	ok(gui.MaxDistance == (if kind == "plaque" then 160 else 120), name .. " MaxDistance by archetype (" .. gui.MaxDistance .. ")")
+	ok(gui.LightInfluence <= .25 and gui.Brightness >= 1, name .. " self-lights for night reading")
+	ok(gui.Size.X.Scale == 0 and gui.Size.Y.Scale == 0 and gui.Size.X.Offset <= 440 and gui.Size.Y.Offset <= 400, name .. " has a bounded design size")
+	ok(gui:GetAttribute("SignStyled") == true and gui:GetAttribute("SignKind") == kind, name .. " styled for its archetype")
+	local lift = gui:GetAttribute("SignLift")
+	ok(type(lift) == "number" and math.abs(gui.StudsOffsetWorldSpace.Y - lift) < 1e-4 and lift >= 2 and lift <= 10, name .. " floats above its anchor")
+	local full, compact = gui:GetAttribute("SignFull"), gui:GetAttribute("SignCompact")
+	ok(typeof(full) == "Vector2" and typeof(compact) == "Vector2" and compact.Y <= full.Y and compact.X <= full.X
+		and full.X <= gui.Size.X.Offset and full.Y <= gui.Size.Y.Offset, name .. " declares its full and compact boxes")
+	local root = gui:FindFirstChild("Sign")
+	ok(root and root.ClassName == "CanvasGroup" and root:FindFirstChildOfClass("UIScale") ~= nil, name .. " root fades (CanvasGroup) and scales (UIScale)")
+	-- Ornate plaque vocabulary (absent from NPC nameplates).
+	for _, piece in {"Frame", "Panel", "Inlay", "Shadow", "Crest", "Crest glyph", "Crystal", "Crystal glow"} do
+		ok(find(root, piece) ~= nil, name .. " has its " .. piece)
+	end
+	local glow = find(root, "Crystal glow")
+	ok(glow:GetAttribute("NightTransparency") < glow:GetAttribute("DayTransparency"), name .. " crystal glows brighter at night")
+	for _, c in shown(find(root, "Frame")) do ok(c ~= Color3.fromHex("091923") and c ~= Color3.new(1, 1, 1), name .. " frame is graded metal, not the nameplate ink") end
+	if kind ~= "banner" then
+		local caps = 0
+		for _, c in root:GetChildren() do if c.Name == "Corner cap" then caps += 1 end end
+		ok(caps == 4, name .. " has four corner caps")
+	else
+		-- QC H1: banners have a short title-only pennant for the compact form.
+		local short = gui:FindFirstChild("Compact")
+		ok(short and short.ClassName == "CanvasGroup" and short:FindFirstChildOfClass("UIScale") and short:FindFirstChild("Title") and not short:FindFirstChild("Kicker")
+			and not short.Visible, name .. " compact pennant (hidden until compact)")
+		ok(compact.Y <= full.Y * .7, name .. " compact pennant is much shorter (" .. compact.Y .. " vs " .. full.Y .. ")")
+	end
+	local detail = root:FindFirstChild("Detail")
+	if detail then
+		ok(detail:FindFirstChild("Kicker") and detail:FindFirstChild("Divider"), name .. " detail layer holds the kicker and the divider")
+		ok(detail.Position.X.Offset == 0 and detail.Position.Y.Offset == 0, name .. " detail layer shares the root's coordinates")
+	end
+	ok(not root:FindFirstChild("Kicker") and not root:FindFirstChild("Divider"), name .. " kicker and divider only in the detail layer")
+	local glyph = find(root, "Crest glyph")
+	ok(glyph.Text ~= "", name .. " crest glyph painted")
+	if kind == "shop" then ok(glyph.Text ~= "✦", name .. " shop crest shows its trade glyph") end
+	local titles, arrowsN, destinations = 0, 0, 0
+	local cw, ch = gui.Size.X.Offset, gui.Size.Y.Offset
+	for _, d in gui:GetDescendants() do
+		guiInstances += 1
+		if d:IsA("GuiObject") and typeof(d:GetAttribute("SignArrowTo")) == "Vector3" then
+			arrowsN += 1
+			ok(d.Name == "Arrow" and d:FindFirstChild("Head") and d:FindFirstChild("Shaft"), d:GetFullName() .. " arrow glyph")
+			local to = d:GetAttribute("SignArrowTo")
+			local flat = Vector3.new(to.X - b.anchor.CFrame.Position.X, 0, to.Z - b.anchor.CFrame.Position.Z)
+			ok(flat.Magnitude > 3, d:GetFullName() .. " points somewhere else")
+		end
+		if d:IsA("TextLabel") and d.Name ~= "Crest glyph" and not d.Name:find("Shadow", 1, true) and d.Text ~= "" then
+			labelCount += 1
+			local w, h, size = d.Size.X.Offset, d.Size.Y.Offset, d.TextSize
+			local text = stripTags(d.Text)
+			ok(d:GetAttribute("SignPlain") == text, d:GetFullName() .. " plain text recorded ('" .. text .. "')")
+			ok(not d.TextScaled and d.TextWrapped and not d.RichText, d:GetFullName() .. " uses a fitted plain text size")
+			ok(d:GetAttribute("SignOverflow") == nil, d:GetFullName() .. " '" .. text .. "' fits without overflow")
+			ok(FONTS[d.FontFace.Family] == true, d:GetFullName() .. " uses a sign font face")
+			local n = lines(text, size, w)
+			ok(n <= (d:GetAttribute("SignFitLines") or 1) and n * size * 1.25 <= h + 1, d:GetFullName() .. " '" .. text .. "' fits its box (" .. n .. " lines at " .. size .. "px)")
+			ok(d.Position.X.Offset >= 0 and d.Position.Y.Offset >= 0 and d.Position.X.Offset + w <= cw + 1 and d.Position.Y.Offset + h <= ch + 1, d:GetFullName() .. " stays on its plaque")
+			local stroke = d:FindFirstChildOfClass("UIStroke") ~= nil
+			local shadow = d.Parent:FindFirstChild(d.Name .. "Shadow") ~= nil
+			ok(stroke ~= shadow, d:GetFullName() .. " has exactly one outline")
+			local on = d.Parent:FindFirstChild(d:GetAttribute("SignOn") or "Panel", true) or d.Parent.Parent:FindFirstChild(d:GetAttribute("SignOn") or "Panel", true)
+			ok(on ~= nil, d:GetFullName() .. " names the field it is read on")
+			if d.Name == "Title" or d.Name == "Destination" then
+				if d.Name == "Title" then titles += 1; ok(TITLE_FONTS[d.FontFace.Family], d:GetFullName() .. " display title font") end
+				if d.Name == "Destination" then destinations += 1 end
+				ok(worst(d.TextColor3, on) >= 4.5, d:GetFullName() .. " title contrast on its field (night: self-lit)")
+			elseif d.Name == "Kicker" then
+				ok(worst(d.TextColor3, on) >= 3, d:GetFullName() .. " kicker contrast on " .. on.Name)
+			end
+			-- QC H2: every label drawn is >= MIN_TEXT rendered px at every
+			-- distance up to MaxDistance on both devices, in each form it draws in.
+			local forms = formsOf(d, gui)
+			for _, phone in {false, true} do
+				for dist = 1, gui.MaxDistance, 1 do
+					local s = View.scaleFor(dist, phone, kind)
+					local form = if View.compact(s) then "compact" else "full"
+					if forms[form] then
+						local px = size * s
+						minRendered = math.min(minRendered, px)
+						if px < View.MIN_TEXT then ok(false, d:GetFullName() .. " renders " .. px .. " px at " .. dist .. " studs (" .. (if phone then "phone" else "desktop") .. ")") end
+					end
+				end
+			end
+			checks += 1
+		end
+	end
+	if kind == "post" then
+		ok(arrowsN >= 1 and arrowsN == destinations, name .. " one arrow per destination (" .. arrowsN .. ")")
+	else
+		ok(titles == (if kind == "banner" then 2 else 1) and arrowsN == 0, name .. " has its title")
+	end
+end
+ok(minRendered >= View.MIN_TEXT, "smallest rendered sign text " .. minRendered .. " px")
+-- Ledger notice boards keep their live rows.
+for _, gui in world:GetDescendants() do
+	if gui:IsA("SurfaceGui") then
+		local holder = gui.Parent and gui.Parent.Parent
+		ok(holder and holder:GetAttribute("SignArchetype") == "ledger", gui:GetFullName() .. " SurfaceGuis are only ledger boards")
+		ok(gui.MaxDistance >= 80 and not gui.AlwaysOnTop and gui.LightInfluence <= .35, gui:GetFullName() .. " ledger face")
+	end
+end
+for _, name in {"Sign Artificers' Row", "Sign Compass Quay", "Sign Sky Harbor", "Sign Verdant Garden", "Sign Hall of Mastery", "Sign Bestiary", "Sign Commission Board"} do
 	ok(world:FindFirstChild(name, true) ~= nil, name .. " exists")
 end
 ok(world:FindFirstChild("Skill Leaderboard", true):FindFirstChild("Row_" .. Data.SkillOrder[1], true) ~= nil, "ledger rows keep their Row_ names")
--- Faction standards keep their prompt (IsleItem/IsleRegion) on the cloth.
+ok(world:FindFirstChild("Skill Leaderboard", true):FindFirstChild("Value_" .. Data.SkillOrder[1], true) ~= nil, "ledger rows keep their Value_ names")
+-- Faction standards keep their prompt (IsleItem/IsleRegion) on the banner anchor.
 local standards = 0
 for _, m in world:GetDescendants() do
 	if m:IsA("Model") and m:GetAttribute("Faction") then
 		local q = m:FindFirstChildWhichIsA("ProximityPrompt", true)
-		ok(q and q:GetAttribute("IsleAction") == "factionBoard" and q:GetAttribute("IsleRegion") ~= nil and q.Parent:GetAttribute("Shape") == "BannerCloth",
-			m.Name .. " standard is a banner sign with its prompt")
+		ok(q and q:GetAttribute("IsleAction") == "factionBoard" and q:GetAttribute("IsleRegion") ~= nil and q.Parent:GetAttribute("SignAnchor") == true
+			and q.Parent.Parent:GetAttribute("SignArchetype") == "banner", m.Name .. " standard is a banner sign with its prompt on the anchor")
 		standards += 1
 	end
 end
 ok(standards == #Data.Factions.Order, "every faction has a banner standard")
+-- QC M1: the Commission Board is one floating sign; its prompt rides the anchor.
+do
+	local board = world:FindFirstChild("Commission Board", true)
+	local holder = board:FindFirstChild("Sign Commission Board")
+	local q = holder and holder:FindFirstChildWhichIsA("ProximityPrompt", true)
+	ok(q and q:GetAttribute("IsleAction") == "logsBoard" and q:GetAttribute("IsleItem") == "Commissions" and q.Parent:GetAttribute("SignAnchor") == true,
+		"Commission Board prompt on the floating sign's anchor")
+	for _, p in board:GetDescendants() do
+		ok(not (p:IsA("BasePart") and (p.Name:find("post") or p.Name:find("ledger") or p.Name:find("notices") or p:GetAttribute("Shape") == "Signboard")),
+			p:GetFullName() .. " no posts or Signboard ledger at the Commission Board")
+	end
+end
+-- QC L5: the agility course banner pole and its cloth are gone.
+for _, p in world:GetDescendants() do
+	ok(p.Name ~= "Course banner pole" and p.Name ~= "Course banner", p:GetFullName() .. " no agility course banner pole")
+end
 
 ------------------------------------------------------------------------------
--- One-sided boards (§28 performance): only a board whose back looks into a
--- wall or over the rim loses its Back face; independent re-measure.
+-- No posts anywhere: no part named like a post or pole within 6 studs of a
+-- sign anchor (the owner's "get rid of the posts").
 ------------------------------------------------------------------------------
-local function islandOf(node)
-	while node.Parent ~= islands and node.Parent ~= archipelago do node = node.Parent end
-	return node
-end
-local function containsPoint(p, pos)
-	local rel = p.CFrame:PointToObjectSpace(pos)
-	local h = p.Size / 2
-	if p:IsA("Part") and p.Shape == roblox.Enum.PartType.Cylinder then
-		return math.abs(rel.X) <= h.X and rel.Y ^ 2 + rel.Z ^ 2 <= math.min(h.Y, h.Z) ^ 2
-	elseif p:IsA("Part") and p.Shape == roblox.Enum.PartType.Ball then
-		return rel.Magnitude <= math.min(h.X, h.Y, h.Z)
-	end
-	return math.abs(rel.X) <= h.X and math.abs(rel.Y) <= h.Y and math.abs(rel.Z) <= h.Z
-end
-local function backReason(board)
-	local solids = {}
-	for _, p in islandOf(board):GetDescendants() do
-		if p:IsA("BasePart") and (p.CanCollide or p.Transparency < 1) and not p.Parent:GetAttribute("SignArchetype") then table.insert(solids, p) end
-	end
-	local back, c = -board.CFrame.LookVector, board.CFrame.Position
-	for _, d in {1, 2.5} do
-		for _, p in solids do if containsPoint(p, c + back * (board.Size.Z / 2 + d)) then return "wall" end end
-	end
-	for _, d in {3, 5.5, 8} do
-		local probe, ground = c + back * (board.Size.Z / 2 + d), false
-		for _, p in solids do
-			if p.CanCollide then
-				local lo, hi = box(p)
-				if hi.Y <= probe.Y + .5 and hi.Y >= probe.Y - 40 and containsPoint(p, Vector3.new(probe.X, (lo.Y + hi.Y) / 2, probe.Z)) then ground = true; break end
+do
+	local anchors = {}
+	for _, b in boards do table.insert(anchors, b.anchor.CFrame.Position) end
+	local posts = 0
+	for _, p in world:GetDescendants() do
+		if p:IsA("BasePart") then
+			local n = p.Name:lower()
+			if n:find("%f[%a]posts?%f[%A]") or n:find("%f[%a]poles?%f[%A]") then
+				posts += 1
+				local at = p.CFrame.Position
+				for i, a in anchors do
+					local flat = Vector3.new(at.X - a.X, 0, at.Z - a.Z).Magnitude
+					ok(flat >= 6 or math.abs(at.Y - a.Y) > 12, p:GetFullName() .. " (" .. string.format("%.1f", flat) .. " studs) stands clear of " .. boards[i].model:GetFullName())
+				end
 			end
 		end
-		if not ground then return "rim" end
 	end
-	return nil
+	ok(posts > 0, "post-like parts exist to check (" .. posts .. ")")
 end
-local oneSided, twoSided = 0, 0
-for _, board in world:GetDescendants() do
-	if board:IsA("BasePart") and board:GetAttribute("SignBoard") and board.Parent:GetAttribute("SignArchetype") ~= "ledger" then
-		local backFace = board:FindFirstChild("Sign face Back")
-		if board:GetAttribute("Shape") == "SignArrowBoard" then
-			ok(backFace ~= nil, board:GetFullName() .. " arrow keeps both faces")
-		elseif board:GetAttribute("SignOneSided") then
-			oneSided += 1
-			ok(backFace == nil and board:FindFirstChild("Sign face Front") ~= nil, board:GetFullName() .. " one-sided board keeps its Front face only")
-			ok(backReason(board) == board:GetAttribute("SignOneSided"), board:GetFullName() .. " back faces " .. tostring(board:GetAttribute("SignOneSided")))
-		else
-			twoSided += 1
-			ok(backFace ~= nil and backReason(board) == nil, board:GetFullName() .. " readable back keeps its Back face")
-		end
-	end
-end
-ok(oneSided + twoSided >= 80, "every non-ledger board classified (" .. oneSided .. " one-sided, " .. twoSided .. " two-sided)")
-print("One-sided boards: " .. oneSided .. " (back over a wall or the rim); two-sided: " .. twoSided .. ".")
-ok(not source:find("Enum.Font.Merriweather", 1, true) and not source:find("pcall(function() l.FontFace", 1, true), "no dead Font fallback (FontFace is always set)")
 
 ------------------------------------------------------------------------------
--- Placement: no sign host on a path, no foreign prompt inside a sign.
+-- Placement: anchors swallow no foreign prompt; floating plaques never sit on
+-- a prompt's screen spot or on each other.
 ------------------------------------------------------------------------------
-local paths, prompts = {}, {}
+local prompts = {}
 for _, obj in world:GetDescendants() do
-	if obj:IsA("BasePart") and obj.Name == "Path" then table.insert(paths, obj) end
 	if obj:IsA("ProximityPrompt") and obj.Parent:IsA("BasePart") then table.insert(prompts, obj) end
 end
-ok(#paths > 10 and #prompts > 100, "paths and prompts to check against")
-local function overlapXZ(a, b, pad)
-	local alo, ahi = box(a)
-	local blo, bhi = box(b)
-	return alo.X < bhi.X - pad and blo.X < ahi.X - pad and alo.Z < bhi.Z - pad and blo.Z < ahi.Z - pad
-end
+ok(#prompts > 100, "prompts to check against")
 local function inside(model, obj)
 	local node = obj
 	while node do if node == model then return true end; node = node.Parent end
 	return false
 end
-for _, model in signs do
-	for _, p in model:GetDescendants() do
-		if p:IsA("BasePart") and p:GetAttribute("ShapeBox") then
-			for _, path in paths do
-				-- Only the footing of the host matters (boards hang overhead).
-				local lo = box(p)
-				local _, phi = box(path)
-				if math.abs(lo.Y - phi.Y) < 1.5 then ok(not overlapXZ(p, path, .3), p:GetFullName() .. " stands clear of " .. path:GetFullName()) end
+local function centre(b) return b.anchor.CFrame.Position + Vector3.new(0, b.gui.StudsOffsetWorldSpace.Y, 0) end
+local overlaps = {}
+for _, b in boards do
+	local c = centre(b)
+	for _, q in prompts do
+		if not inside(b.model, q) then
+			local hp = q.Parent.CFrame.Position
+			local flat = Vector3.new(hp.X - c.X, 0, hp.Z - c.Z).Magnitude
+			ok((hp - b.anchor.CFrame.Position).Magnitude >= .8, b.model:GetFullName() .. " anchor clear of the prompt on " .. q.Parent:GetFullName())
+			if not (flat > 2.5 or math.abs(hp.Y - c.Y) > 1.5) then table.insert(overlaps, b.model:GetFullName() .. " covers " .. q.Parent:GetFullName()) end
+		end
+	end
+end
+for i, a in boards do
+	for j = i + 1, #boards do
+		local b = boards[j]
+		local ca, cb = centre(a), centre(b)
+		if not (Vector3.new(ca.X - cb.X, 0, ca.Z - cb.Z).Magnitude > 3 or math.abs(ca.Y - cb.Y) > 3) then
+			table.insert(overlaps, a.model:GetFullName() .. " overlaps " .. b.model:GetFullName())
+		end
+	end
+end
+ok(#overlaps == 0, "no plaque covers a prompt or another plaque: " .. table.concat(overlaps, "; "))
+
+------------------------------------------------------------------------------
+-- QC H1: on-screen footprint. Each sign is projected (70° vertical FOV) at
+-- 844x390 (phone) and 1920x1080 (desktop) through the client pipeline (nearest
+-- N, scale band, compact form, declutter): drawn boxes never overlap, and
+-- every pair of signs in a cluster (≤ 18 studs apart) reads side by side when
+-- the player stands 12 studs in front of the pair.
+------------------------------------------------------------------------------
+local FOV = 70
+local SCREENS = {{name = "phone", size = roblox.Vector2.new(844, 390)}, {name = "desktop", size = roblox.Vector2.new(1920, 1080)}}
+local function groundOf(b) return b.anchor.CFrame.Position.Y - (if b.kind == "ledger" then b.anchor.Size.Y / 2 + 1.6 else 2.5) end
+-- The client's pipeline for a camera: returns the drawn entries.
+local function pipeline(cam, screen, pool)
+	local phone = View.isPhone(screen)
+	local entries = {}
+	for _, b in pool do
+		table.insert(entries, {b = b, d = (b.anchor.CFrame.Position - cam.Position).Magnitude, max = b.gui.MaxDistance})
+	end
+	local chosen = View.select(entries, if phone then View.CAP.phone else View.CAP.desktop)
+	for _, e in chosen do
+		local s = View.scaleFor(e.d, phone, e.b.kind)
+		local compactForm = View.compact(s)
+		local x, y, depth = View.project(cam, FOV, screen, centre(e.b))
+		if depth > .1 then
+			local box = e.b.gui:GetAttribute(if compactForm then "SignCompact" else "SignFull")
+			e.rect = View.rect(x, y, box.X, box.Y, if compactForm then e.b.gui:GetAttribute("SignCompactY") else 0, s)
+			e.scale, e.depth = s, depth
+		end
+	end
+	View.declutter(chosen)
+	local drawn = {}
+	for _, e in chosen do if e.clear then table.insert(drawn, e) end end
+	return drawn, chosen
+end
+local function near(b, r)
+	local out, c = {}, b.anchor.CFrame.Position
+	for _, o in boards do
+		local p = o.anchor.CFrame.Position
+		if (Vector3.new(p.X - c.X, 0, p.Z - c.Z)).Magnitude <= r and math.abs(p.Y - c.Y) < 40 then table.insert(out, o) end
+	end
+	return out
+end
+local footprintViews, clusterPairs, crowded = 0, 0, {}
+for _, b in boards do
+	local pool = near(b, 170)
+	local c = centre(b)
+	for _, dist in {8, 14, 24, 40, 70} do
+		for k = 0, 7 do
+			local a = k * math.pi / 4
+			local eye = Vector3.new(c.X + math.cos(a) * dist, groundOf(b) + 4.5, c.Z + math.sin(a) * dist)
+			local cam = CFrame.lookAt(eye, c)
+			for _, screen in SCREENS do
+				local drawn = pipeline(cam, screen.size, pool)
+				footprintViews += 1
+				for i = 1, #drawn do
+					for j = i + 1, #drawn do
+						if View.overlaps(drawn[i].rect, drawn[j].rect) then ok(false, "drawn signs overlap on screen") end
+					end
+				end
+				checks += 1
 			end
 		end
-		if p:IsA("BasePart") then
-			local lo, hi = box(p)
-			for _, q in prompts do
-				if not inside(model, q) then
-					local host = q.Parent
-					local c = host.CFrame.Position
-					ok(not (c.X > lo.X and c.X < hi.X and c.Y > lo.Y and c.Y < hi.Y and c.Z > lo.Z and c.Z < hi.Z),
-						p:GetFullName() .. " does not swallow the prompt on " .. host:GetFullName())
+	end
+	-- Cluster pairs: the player in front of the pair (both sides) at 12 studs.
+	for _, o in near(b, 18) do
+		if o ~= b and tostring(o.model:GetFullName()) > tostring(b.model:GetFullName()) then
+			clusterPairs += 1
+			local ca, cb = centre(b), centre(o)
+			local mid = (ca + cb) / 2
+			local along = Vector3.new(cb.X - ca.X, 0, cb.Z - ca.Z)
+			local normal = if along.Magnitude > .5 then Vector3.new(-along.Z, 0, along.X).Unit else Vector3.new(0, 0, 1)
+			for _, side in {1, -1} do
+				local eye = Vector3.new(mid.X, math.min(groundOf(b), groundOf(o)) + 4.5, mid.Z) + normal * side * 12
+				local cam = CFrame.lookAt(eye, mid)
+				for _, screen in SCREENS do
+					local _, chosen = pipeline(cam, screen.size, pool)
+					local seen = {}
+					for _, e in chosen do if e.clear then seen[e.b] = true end end
+					if not (seen[b] and seen[o]) then
+						table.insert(crowded, string.format("%s / %s (%s, %.1f studs apart)", b.model:GetFullName(), o.model:GetFullName(), screen.name, (cb - ca).Magnitude))
+					end
+					checks += 1
 				end
 			end
 		end
 	end
 end
+ok(footprintViews > 5000, "footprint views projected (" .. footprintViews .. ")")
+ok(clusterPairs >= 10, "cluster pairs checked (" .. clusterPairs .. ")")
+if #crowded > 0 then print(table.concat(crowded, "\n")) end
+ok(#crowded == 0, "clustered signs read side by side: " .. #crowded .. " pairs crowded")
+-- Named clusters from QC H1 are among the checked pairs.
+local function centreOf(title, parentName)
+	for _, b in boards do
+		if b.model:GetAttribute("SignTitle") == title and (not parentName or b.model.Parent.Name == parentName) then return centre(b) end
+	end
+	return nil
+end
+do
+	local skyway = {}
+	for _, t in {"Windpine Grove", "Gloomhollow Caverns", "Tidewater Shoals", "Tempest Spire"} do table.insert(skyway, centreOf(t, "Guild Terrace")) end
+	ok(#skyway == 4, "Skyway row signs found")
+	for i = 1, 3 do ok((skyway[i + 1] - skyway[i]).Magnitude <= 18, "Skyway row neighbours are a checked cluster") end
+	ok(centreOf("Quay Bank") and centreOf("Trade Counter") and centreOf("Market Row"), "hall banners and hall signs found")
+end
 
 ------------------------------------------------------------------------------
--- Mesh kit: shapes, aliases, forge declared-box support and mobile sharing.
+-- QC M4: wall clipping. A billboard is a camera-facing quad at its centre's
+-- depth: where that quad passes inside a wall, the wall cuts it. From 8
+-- headings at 10 and 18 studs (both screens), where the sign's centre is in
+-- clear view, no nearby wall / roof / awning box may intrude.
 ------------------------------------------------------------------------------
-local forge = fs.readFile("forge.client.lua")
-for _, name in {"SignHangingFrame", "SignpostFrame", "BannerStandardFrame", "SignPlinthFrame", "SignLedgerFrame", "SignCarvedBoard",
-	"SignScrollBoard", "SignArrowBoard", "SignPlaqueBoard", "BannerCloth", "SignNoticeBoard"} do
-	local data = World.shapes[name]
-	ok(data ~= nil and #data.faces >= 200 and #data.faces <= 1500, name .. " is authored within the world triangle range")
-	ok(data.fit ~= nil and (data.kind == "sign" or data.kind == "signframe"), name .. " declares its fit box and kind")
+local WALLISH = {"wall", "lintel", "roof", "awning", "canvas", "facade", "gable", "eave", "door", "window", "stall"}
+local function wallish(p)
+	if not p:IsA("BasePart") or p.Transparency >= .9 then return false end
+	local n = p.Name:lower()
+	for _, w in WALLISH do if n:find(w, 1, true) then return true end end
+	return false
 end
-for _, alias in {"OrnateBracket", "ScrollBoard", "Crest", "Finial", "ChainLink", "ArrowBoard"} do
-	ok(forge:find(alias .. " = \"", 1, true) ~= nil, "forge alias " .. alias)
+local walls = {}
+for _, p in world:GetDescendants() do if wallish(p) then table.insert(walls, p) end end
+ok(#walls > 50, "wall boxes to test against (" .. #walls .. ")")
+-- Ray (origin, dir) against an oriented box: entry distance or nil.
+local function hit(box, origin, dir)
+	local o = box.CFrame:PointToObjectSpace(origin)
+	local r = box.CFrame:VectorToObjectSpace(dir)
+	local half = box.Size / 2
+	local tmin, tmax = -math.huge, math.huge
+	for _, axis in {"X", "Y", "Z"} do
+		local oa, ra, h = o[axis], r[axis], half[axis]
+		if math.abs(ra) < 1e-9 then
+			if oa < -h or oa > h then return nil end
+		else
+			local t1, t2 = (-h - oa) / ra, (h - oa) / ra
+			if t1 > t2 then t1, t2 = t2, t1 end
+			tmin, tmax = math.max(tmin, t1), math.min(tmax, t2)
+			if tmin > tmax then return nil end
+		end
+	end
+	if tmax < 0 then return nil end
+	return math.max(tmin, 0)
 end
-ok(forge:find('GetAttribute("ShapeBox")', 1, true) and forge:find('GetAttribute("ShapeBoxOffset")', 1, true), "forge honours declared sign frame boxes")
-ok(forge:find("if not SIGN_KIT_SHAPES[shapeName] then return tint end", 1, true) ~= nil and forge:find("if mobile then return defaultTint(data) end", 1, true) ~= nil,
-	"only the eleven kit shapes share templates on phones (legacy sign shapes keep their Tint; behaviour tested in verify-mesh)")
-
-local guiPixels, guiCount, guiInstances, labelsN = 0, 0, 0, 0
-for _, gui in world:GetDescendants() do
-	if gui:IsA("SurfaceGui") then
-		guiCount += 1
-		local face = gui.Parent.Size
-		local fx = if gui.Face == roblox.Enum.NormalId.Front or gui.Face == roblox.Enum.NormalId.Back then face.X else face.Z
-		guiPixels += math.floor(fx * gui.PixelsPerStud) * math.floor(face.Y * gui.PixelsPerStud)
-		for _, d in gui:GetDescendants() do guiInstances += 1; if d:IsA("TextLabel") then labelsN += 1 end end
+local function insideBox(box, point)
+	local o = box.CFrame:PointToObjectSpace(point)
+	local h = box.Size / 2
+	return math.abs(o.X) <= h.X and math.abs(o.Y) <= h.Y and math.abs(o.Z) <= h.Z
+end
+local clipped, clipViews = {}, 0
+for _, b in boards do
+	local c = centre(b)
+	local nearWalls = {}
+	for _, w in walls do
+		local p = w.CFrame.Position
+		local reach = w.Size.Magnitude / 2 + 14
+		if (Vector3.new(p.X - c.X, 0, p.Z - c.Z)).Magnitude <= reach and math.abs(p.Y - c.Y) <= w.Size.Magnitude / 2 + 10 then table.insert(nearWalls, w) end
+	end
+	if #nearWalls > 0 then
+		for _, dist in {10, 18} do
+			for k = 0, 7 do
+				local a = k * math.pi / 4
+				local eye = Vector3.new(c.X + math.cos(a) * dist, groundOf(b) + 4.5, c.Z + math.sin(a) * dist)
+				local cam = CFrame.lookAt(eye, c)
+				local blocked = false
+				local toCentre = c - eye
+				for _, w in nearWalls do
+					if insideBox(w, eye) then blocked = true break end
+					local t = hit(w, eye, toCentre)
+					if t and t < 1 then blocked = true break end
+				end
+				if not blocked then
+					for _, screen in SCREENS do
+						clipViews += 1
+						local phone = View.isPhone(screen.size)
+						local s = View.scaleFor(toCentre.Magnitude, phone, b.kind)
+						local compactForm = View.compact(s)
+						local box = b.gui:GetAttribute(if compactForm then "SignCompact" else "SignFull")
+						local x, y, depth = View.project(cam, FOV, screen.size, c)
+						local rect = View.rect(x, y, box.X, box.Y, if compactForm then b.gui:GetAttribute("SignCompactY") else 0, s)
+						local f = (screen.size.Y / 2) / math.tan(math.rad(FOV) / 2)
+						local bad = nil
+						for gx = 0, 4 do
+							for gy = 0, 4 do
+								local px = rect.x0 + (rect.x1 - rect.x0) * (.1 + .2 * gx)
+								local py = rect.y0 + (rect.y1 - rect.y0) * (.1 + .2 * gy)
+								local local3 = Vector3.new((px - screen.size.X / 2) / f, -(py - screen.size.Y / 2) / f, -1)
+								local dir = cam:VectorToWorldSpace(local3)
+								-- The quad point at this pixel (the sign's depth) inside a wall: cut.
+								local onQuad = eye + dir * depth
+								for _, w in nearWalls do
+									if insideBox(w, onQuad) then bad = w break end
+								end
+								if bad then break end
+							end
+							if bad then break end
+						end
+						if bad then
+							table.insert(clipped, string.format("%s cut by %s (%s, %d studs, heading %d)", b.model:GetFullName(), bad:GetFullName(), screen.name, dist, k * 45))
+						end
+						checks += 1
+					end
+				end
+			end
+		end
 	end
 end
-print(string.format("SIGN-FACES: %d SurfaceGuis, %.2f Mpx canvas, %d GUI instances (%d text labels)", guiCount, guiPixels / 1e6, guiInstances, labelsN))
--- §28 performance budget (before the pass: 234 faces, 11.55 Mpx, 4,570 GUI instances, 1,088 labels at PPS 56).
-ok(guiPixels <= 6.5e6, "sign canvas stays under 6.5 Mpx (" .. string.format("%.2f", guiPixels / 1e6) .. ")")
-ok(guiInstances <= 4400 and labelsN <= 900, "sign GUI instances bounded (" .. guiInstances .. " instances, " .. labelsN .. " labels)")
+ok(clipViews > 500, "wall-clip views sampled (" .. clipViews .. ")")
+if #clipped > 0 then print(table.concat(clipped, "\n")) end
+ok(#clipped == 0, "no wall cuts a sign (" .. #clipped .. " views)")
 
-local parts = {}
-for kind, n in counts do table.insert(parts, kind .. " " .. n) end
-table.sort(parts)
-print("Signs: " .. #signs .. " signs (" .. staticSigns .. " static), " .. signParts .. " static sign parts of " .. staticParts
-	.. "; parts by archetype (incl. home): " .. table.concat(parts, ", ") .. "; " .. guis .. " faces, " .. labels .. " labels.")
+------------------------------------------------------------------------------
+-- Client view rules (shared/SignView.lua).
+------------------------------------------------------------------------------
+ok(View.CAP.phone < View.CAP.desktop and View.CAP.phone <= 10 and View.CAP.desktop <= 24, "visible sign caps (desktop " .. View.CAP.desktop .. ", phone " .. View.CAP.phone .. ")")
+for kind in KINDS do
+	for _, phone in {false, true} do
+		local band = View.band(kind, phone)
+		local last = math.huge
+		for d = 0, 200, 1 do
+			local s = View.scaleFor(d, phone, kind)
+			ok(s <= last + 1e-9 and s >= band.min - 1e-9 and s <= band.max + 1e-9, kind .. " scale shrinks with distance and stays in its band at " .. d)
+			ok(math.abs(s / View.STEP - math.floor(s / View.STEP + .5)) < 1e-6, kind .. " scale quantised to " .. View.STEP)
+			last = s
+		end
+		if phone then ok(band.min >= .45 - 1e-9 and band.max <= .55 + 1e-9, kind .. " phone band within 0.45-0.55") end
+	end
+end
+ok(View.scaleFor(30, false, "hanging") == View.quantise(22 / 30), "world-space feel: REF / distance between the clamps")
+ok(View.compact(View.scaleFor(5, true, "hanging")) and not View.compact(View.scaleFor(5, false, "hanging")), "phones are always compact; desktop is full up close")
+ok(View.compact(.65) and not View.compact(.7), "compact under DETAIL (0.7)")
+ok(View.quantise(.62) == .6 and View.quantise(.63) == .65, "quantise to 0.05 steps")
+ok(View.isPhone(roblox.Vector2.new(844, 390)) and not View.isPhone(roblox.Vector2.new(1366, 768)) and not View.isPhone(roblox.Vector2.new(1024, 768)) and not View.isPhone(nil),
+	"phone = viewport under 500 px tall")
+ok(View.fadeFor(10, 120) == 0 and View.fadeFor(120, 120) == 1 and View.fadeFor(108, 120) > 0 and View.fadeFor(108, 120) < 1, "fades over the last 20% of MaxDistance")
+ok(View.fadeFor(107, 120) == View.quantise(View.fadeFor(107, 120)), "fade quantised")
+local entries = {}
+for i = 1, 40 do table.insert(entries, {d = i * 3, max = 120}) end
+table.insert(entries, {d = 130, max = 120})
+local chosen = View.select(entries, View.CAP.phone)
+ok(#chosen == View.CAP.phone and chosen[1].d == 3 and chosen[#chosen].d == View.CAP.phone * 3, "nearest N signs are shown")
+ok(#View.select({{d = 130, max = 120}}, 8) == 0, "signs beyond MaxDistance are never selected")
+ok(#View.select({{d = 0 / 0, max = 120}, {d = 5, max = 120}}, 8) == 1, "a NaN distance is never selected")
+do
+	local list = {{rect = View.rect(100, 100, 200, 60, 0, 1)}, {rect = View.rect(150, 110, 200, 60, 0, 1)}, {rect = View.rect(400, 100, 100, 60, 0, 1)}, {rect = nil}}
+	View.declutter(list)
+	ok(list[1].clear and not list[2].clear and list[3].clear and not list[4].clear, "declutter: the nearer sign wins, off-screen signs never draw")
+	local r = View.rect(100, 100, 200, 60, 20, .5)
+	ok(r.x0 == 50 and r.x1 == 150 and r.y0 == 95 and r.y1 == 125, "screen box scales about the centre with its offset")
+	local x, y, depth = View.project(CFrame.lookAt(Vector3.new(0, 0, 0), Vector3.new(0, 0, -10)), 70, roblox.Vector2.new(800, 400), Vector3.new(0, 0, -10))
+	ok(x == 400 and y == 200 and math.abs(depth - 10) < 1e-6, "projection: straight ahead is the screen centre")
+end
+ok(View.bob(1.3, 0, true) == 0 and math.abs(View.bob(1.3, 0, false)) <= View.BOB.amplitude, "bob is small and off with reduced motion")
+local cam0 = CFrame.lookAt(Vector3.new(0, 5, 0), Vector3.new(0, 5, -10))
+local function nearAngle(a, b) return math.abs(((a - b + 180) % 360) - 180) < 1 end
+ok(nearAngle(View.arrowRotation(Vector3.new(0, 0, -1), cam0), -90), "ahead points up the screen")
+ok(nearAngle(View.arrowRotation(Vector3.new(1, 0, 0), cam0), 0), "right points right")
+ok(nearAngle(View.arrowRotation(Vector3.new(-1, 0, 0), cam0), 180), "left points left")
+ok(nearAngle(View.arrowRotation(Vector3.new(0, 0, 1), cam0), 90), "behind points down")
+ok(View.glowTransparency(0, .7, .35) == .35 and View.glowTransparency(1, .7, .35) == .7, "crystal glow follows the day factor")
+local client = fs.readFile("signs.client.lua")
+local code = client:gsub("%-%-[^\n]*", "")
+ok(client:sub(1, 9) == "--!strict" and fs.readFile("shared/SignView.lua"):sub(1, 9) == "--!strict", "QC L7: both sign files are --!strict")
+ok(not code:find('"Lighting"', 1, true) and not code:find("Instance.new", 1, true), "client never touches Lighting and creates no instances")
+ok(source:find("holder.ModelStreamingMode=Enum.ModelStreamingMode.Atomic", 1, true), "QC L3: sign holders stream atomically")
+ok(code:find("DescendantAdded", 1, true) and code:find("DescendantRemoving", 1, true), "QC L3: the client follows stream-in and stream-out")
+ok(code:find("rec.scaleValue ~= scale", 1, true) and code:find("rec.fade ~= fade", 1, true), "QC M5: scale and fade written only on change")
+
+------------------------------------------------------------------------------
+-- The client script, run against mocks of the engine (QC: tag add / remove,
+-- enable switch, cap swap on a viewport change, stream-in, bad record
+-- recovery, reduced motion).
+------------------------------------------------------------------------------
+do
+	local heartbeat, added, removed = signal(), signal(), signal()
+	local camChanged, viewportChanged = signal(), signal()
+	local reducedMotion = false
+	local poison = nil -- a world position whose projection throws
+	local camera = {CFrame = CFrame.new(), ViewportSize = roblox.Vector2.new(1920, 1080)}
+	function camera:WorldToViewportPoint(p)
+		if poison and (p - poison).Magnitude < 12 then error("projection failed") end
+		local x, y, depth = View.project(self.CFrame, FOV, self.ViewportSize, p)
+		return Vector3.new(x, y, depth), depth > 0
+	end
+	function camera:GetPropertyChangedSignal(name) assert(name == "ViewportSize"); return viewportChanged end
+	local ws = {CurrentCamera = camera}
+	function ws:GetPropertyChangedSignal(name) assert(name == "CurrentCamera"); return camChanged end
+	function ws:GetServerTimeNow() return 0 end
+	local tagged = {}
+	for _, b in boards do
+		table.insert(tagged, b.model)
+		b.anchor.Position = b.anchor.CFrame.Position -- Lune keeps Position apart from CFrame
+	end
+	local markers = {AetherSignView = {}, AetherLighting = {}, AetherData = {}, AetherUiTheme = {}}
+	local modules = {
+		[markers.AetherSignView] = View,
+		[markers.AetherLighting] = {dayFactor = function() return 1 end, clockAt = function() return 0 end},
+		[markers.AetherData] = {Calendar = {}},
+		[markers.AetherUiTheme] = {reducedMotion = function() return reducedMotion end},
+	}
+	local services = {
+		Players = {LocalPlayer = {}},
+		RunService = {Heartbeat = heartbeat},
+		CollectionService = {
+			GetTagged = function() return tagged end,
+			GetInstanceAddedSignal = function() return added end,
+			GetInstanceRemovedSignal = function() return removed end,
+		},
+		ReplicatedStorage = {WaitForChild = function(_, n) return markers[n] end},
+	}
+	luau.load(fs.readFile("signs.client.lua"), {debugName = "signs.client.lua", environment = {
+		game = {GetService = function(_, n) return services[n] end},
+		workspace = ws, require = function(m) return modules[m] end,
+		Vector3 = Vector3, Vector2 = roblox.Vector2, CFrame = CFrame,
+		task = {defer = function(f, ...) f(...) end},
+	}, injectGlobals = true})()
+	local function step() heartbeat:Fire(View.TICK + .001) end
+	local function scaleOf(b) return b.gui:FindFirstChild("Sign"):FindFirstChild("Scale").Scale end
+	local function enabled()
+		local out = {}
+		for _, b in boards do if b.gui.Enabled then table.insert(out, b) end end
+		return out
+	end
+	local function look(b, dist)
+		local c = centre(b)
+		camera.CFrame = CFrame.lookAt(Vector3.new(c.X, groundOf(b) + 4.5, c.Z + dist), c)
+	end
+	local quay = nil
+	for _, b in boards do if b.model:GetAttribute("SignTitle") == "Market Row" then quay = b end end
+	look(quay, 10)
+	ok(#enabled() == 0, "client: billboards start disabled")
+	step()
+	local on = enabled()
+	ok(#on >= 1 and #on <= View.CAP.desktop, "client: nearby signs enabled, capped (" .. #on .. ")")
+	ok(quay.gui.Enabled, "client: the sign in front of the camera is drawn")
+	local s = scaleOf(quay)
+	ok(math.abs(s / View.STEP - math.floor(s / View.STEP + .5)) < 1e-4 and math.abs(s - View.scaleFor((quay.anchor.Position - camera.CFrame.Position).Magnitude, false, quay.kind)) < 1e-4,
+		"client: UIScale is the quantised band scale (" .. s .. ")")
+	local rects = {}
+	for _, b in on do
+		-- Rest height (the client declutters at rest; the bob offset moves with the clock).
+		local lift = tonumber(b.gui:GetAttribute("SignLift")) or b.gui.StudsOffsetWorldSpace.Y
+		local x, y, depth = View.project(camera.CFrame, FOV, camera.ViewportSize, b.anchor.CFrame.Position + Vector3.new(0, lift, 0))
+		local sc = scaleOf(b)
+		local box = b.gui:GetAttribute(if View.compact(sc) then "SignCompact" else "SignFull")
+		if depth > 0 then table.insert(rects, View.rect(x, y, box.X, box.Y, if View.compact(sc) then b.gui:GetAttribute("SignCompactY") else 0, sc)) end
+	end
+	local clash = false
+	for i = 1, #rects do for j = i + 1, #rects do if View.overlaps(rects[i], rects[j]) then clash = true end end end
+	ok(not clash, "client: drawn signs never overlap on screen")
+	-- Compact form at distance: the detail layer hides.
+	look(quay, 60)
+	step()
+	if quay.gui.Enabled then
+		local detail = quay.gui:FindFirstChild("Sign"):FindFirstChild("Detail")
+		ok(not detail or detail.Visible == false, "client: compact form hides the kicker ribbon")
+	end
+	look(quay, 10)
+	step()
+	local detail = quay.gui:FindFirstChild("Sign"):FindFirstChild("Detail")
+	ok(not detail or detail.Visible == true, "client: full form shows the kicker ribbon up close")
+	-- Cap swap: a phone-sized viewport (rotation / resize) switches caps and bands.
+	camera.ViewportSize = roblox.Vector2.new(844, 390)
+	viewportChanged:Fire()
+	step()
+	ok(#enabled() <= View.CAP.phone, "client: phone cap after the viewport change (" .. #enabled() .. ")")
+	ok(scaleOf(quay) <= View.band(quay.kind, true).max + 1e-4, "client: phone band (UIScale stores float32) after the viewport change")
+	camera.ViewportSize = roblox.Vector2.new(1920, 1080)
+	viewportChanged:Fire()
+	step()
+	ok(scaleOf(quay) > View.band(quay.kind, true).max, "client: desktop band restored")
+	-- Enable switch: far from every sign, all are off.
+	camera.CFrame = CFrame.new(0, 5000, 0)
+	step()
+	ok(#enabled() == 0, "client: every sign switched off out of range")
+	-- Tag removed: the sign is never drawn again.
+	look(quay, 10)
+	removed:Fire(quay.model)
+	quay.gui.Enabled = false
+	step()
+	ok(not quay.gui.Enabled, "client: a sign whose tag is removed is dropped")
+	-- Tag added again (and stream-in: a billboard arriving after its tag).
+	added:Fire(quay.model)
+	step()
+	ok(quay.gui.Enabled, "client: a re-tagged sign is drawn again")
+	removed:Fire(quay.model)
+	local gui = quay.gui
+	gui.Parent = nil
+	added:Fire(quay.model)
+	step()
+	ok(not gui.Enabled, "client: a tagged model without its billboard draws nothing yet")
+	gui.Parent = quay.anchor
+	instanceSignal(quay.model, "DescendantAdded"):Fire(gui)
+	step()
+	ok(gui.Enabled, "client: the billboard streaming in later is picked up")
+	instanceSignal(quay.model, "DescendantRemoving"):Fire(gui)
+	gui.Enabled = false
+	step()
+	ok(not gui.Enabled, "client: a billboard streaming out is dropped")
+	instanceSignal(quay.model, "DescendantAdded"):Fire(gui)
+	step()
+	-- Bad record: one sign whose projection throws is dropped; the rest keep working.
+	poison = centre(quay)
+	local others = 0
+	step()
+	for _, b in enabled() do if b ~= quay then others += 1 end end
+	ok(others >= 1, "client: other signs keep drawing after a bad record")
+	poison = nil
+	quay.gui.Enabled = false
+	step()
+	ok(not quay.gui.Enabled, "client: the bad record was dropped")
+	-- Arrow guard (QC L4): a non-Vector3 SignArrowTo is ignored, not fatal.
+	local post = nil
+	for _, b in boards do if b.kind == "post" and b.model.Parent.Name == "Compass Quay" then post = b end end
+	local arrow = post.gui:FindFirstChild("Arrow", true)
+	look(post, 10)
+	step()
+	ok(post.gui.Enabled, "client: a post is drawn")
+	arrow:SetAttribute("SignArrowTo", "nowhere")
+	step()
+	ok(post.gui.Enabled, "client: a corrupt arrow target is skipped")
+	-- Reduced motion: no bob, signs rest at their lift.
+	reducedMotion = true
+	step()
+	heartbeat:Fire(.016)
+	ok(math.abs(post.gui.StudsOffsetWorldSpace.Y - post.gui:GetAttribute("SignLift")) < 1e-4, "client: reduced motion keeps signs still")
+	reducedMotion = false
+	step()
+	for _ = 1, 20 do heartbeat:Fire(.05) end
+	ok(math.abs(post.gui.StudsOffsetWorldSpace.Y - post.gui:GetAttribute("SignLift")) <= View.BOB.amplitude + 1e-4, "client: bob stays within its amplitude")
+end
+
+------------------------------------------------------------------------------
+-- QC L6: a torn-down home leaves no ghost behind in the stacking list: the
+-- rebuilt home's signs float at their own lift.
+------------------------------------------------------------------------------
+do
+	local function homeSigns()
+		local out = {}
+		for _, m in collectSigns() do
+			if m:FindFirstAncestor("WayfarersRest_77") then out[m:GetAttribute("SignTitle")] = m:FindFirstChildWhichIsA("BasePart"):FindFirstChild("SignBillboard"):GetAttribute("SignLift") end
+		end
+		return out
+	end
+	local before = homeSigns()
+	ok(next(before) ~= nil, "home signs exist")
+	for _, m in collectSigns() do
+		if m:FindFirstAncestor("WayfarersRest_77") then instanceSignal(m, "Destroying"):Fire() end
+	end
+	players.PlayerRemoving:Fire(guest)
+	local again = player(77, {HomeGarden = true, HomeDeck = true, Worker1Tier = 1})
+	pcall(function() again:SetAttribute("GardenUnlocked", true) end)
+	local after = homeSigns()
+	for title, lift in before do ok(after[title] == lift, title .. " rebuilt at its own lift (" .. tostring(after[title]) .. ")") end
+end
+
+------------------------------------------------------------------------------
+-- Source and catalog: the physical kit is gone.
+------------------------------------------------------------------------------
+local _, guiNew = source:gsub('Instance%.new%("SurfaceGui"%)', "")
+ok(guiNew == 1, "world.server.lua creates SurfaceGuis only for ledger boards (" .. guiNew .. ")")
+ok(source:find("return (Signs.build(parent,cf,spec))", 1, true), "legacy signAt forwards to Signs.build")
+for _, gone in {"SignHangingFrame", "SignpostFrame", "BannerStandardFrame", "SignPlinthFrame", "SignLedgerFrame", "SignCarvedBoard",
+	"SignScrollBoard", "SignArrowBoard", "SignPlaqueBoard", "BannerCloth"} do
+	ok(World.shapes[gone] == nil and not source:find('"' .. gone .. '"', 1, true), gone .. " scrapped")
+end
+ok(World.shapes.SignNoticeBoard ~= nil, "the ledger notice board mesh stays")
+
+print(string.format("SIGN-BILLBOARDS: %d billboards, %d GUI instances (%d text labels), caps desktop %d / phone %d", billboards, guiInstances, labelCount, View.CAP.desktop, View.CAP.phone))
+ok(guiInstances <= 6500 and labelCount <= 700, "sign GUI instances bounded")
+local list = {}
+for kind, n in kinds do table.insert(list, kind .. " " .. n) end
+table.sort(list)
+print("Signs v2: " .. #signs .. " signs (" .. staticSigns .. " static), " .. signParts .. " static sign parts of " .. staticParts .. "; by archetype (incl. home): " .. table.concat(list, ", ") .. ".")
+print(string.format("Footprint: %d projected views, %d cluster pairs; wall clip: %d views; smallest rendered text %.1f px.", footprintViews, clusterPairs, clipViews, minRendered))
 print("Sign QA passed " .. checks .. " checks.")
 print("SUITE-END verify-signs.luau")

@@ -255,7 +255,7 @@ local festival = coroutine.create(luau.load(fs.readFile("festival.server.lua"), 
 	end },
 	require = function(target) assert(target == dataMarker, "festival requires only AetherData") return Data end,
 	workspace = world, Instance = roblox.Instance, Vector3 = Vector3, Vector2 = roblox.Vector2, CFrame = roblox.CFrame, Color3 = roblox.Color3,
-	UDim2 = roblox.UDim2, Enum = roblox.Enum, os = { time = function() return utc end },
+	UDim2 = roblox.UDim2, UDim = roblox.UDim, Font = roblox.Font, Enum = roblox.Enum, os = { time = function() return utc end },
 	task = { wait = function() coroutine.yield() end },
 }, injectGlobals = true }))
 local function tick(n)
@@ -267,8 +267,15 @@ end
 tick()
 local board = world:FindFirstChild("Island Assembly")
 ok(board ~= nil, "notice board built")
-local surface = board:FindFirstChildOfClass("SurfaceGui")
-ok(surface ~= nil and not surface.AlwaysOnTop and surface.Face == roblox.Enum.NormalId.Back, "physical hub-facing notice")
+local surface = board:FindFirstChildOfClass("BillboardGui")
+-- §28 QC M2: a floating camera-facing notice on an invisible anchor, no post.
+ok(surface ~= nil and surface.Name == "NoticeBillboard" and not surface.AlwaysOnTop and surface.Size.X.Scale > 0 and surface.Size.Y.Scale > 0,
+	"floating camera-facing notice sized in studs")
+ok(board:FindFirstChildOfClass("SurfaceGui") == nil and board.Transparency == 1 and not board.CanCollide, "notice anchor is invisible and never blocks")
+ok(world:FindFirstChild("Notice Post") == nil, "the notice post is gone")
+for _, d in ipairs(surface:GetDescendants()) do
+	if d:IsA("TextLabel") then ok(d.TextScaled and d:FindFirstChildOfClass("UITextSizeConstraint") ~= nil, d.Name .. " scales with the notice") end
+end
 local function attr(key) return world:GetAttribute(key) end
 local cal = Data.calendarAt(utc)
 eq(attr("AetherSeason"), "Bloomtide", "season published")
@@ -327,7 +334,7 @@ do
 		end },
 		require = function() return Data end,
 		workspace = late, Instance = roblox.Instance, Vector3 = Vector3, Vector2 = roblox.Vector2, CFrame = roblox.CFrame, Color3 = roblox.Color3,
-		UDim2 = roblox.UDim2, Enum = roblox.Enum, os = { time = function() return utc end },
+		UDim2 = roblox.UDim2, UDim = roblox.UDim, Font = roblox.Font, Enum = roblox.Enum, os = { time = function() return utc end },
 		task = { wait = function() coroutine.yield() end },
 	}, injectGlobals = true }))
 	assert(coroutine.resume(lateFestival))
@@ -341,7 +348,7 @@ do
 	added[late]:Fire(lateGate)
 	ok(late:FindFirstChild("Island Assembly") ~= nil, "board placed once the gate appears")
 	assert(coroutine.resume(lateFestival))
-	ok(has(late:FindFirstChild("Island Assembly"):FindFirstChildOfClass("SurfaceGui"):FindFirstChild("Ballot").Text, "VOTE"), "ballot starts after the late board")
+	ok(has(late:FindFirstChild("Island Assembly"):FindFirstChildOfClass("BillboardGui"):FindFirstChild("Ballot").Text, "VOTE"), "ballot starts after the late board")
 end
 
 -- Production server on the same workspace.
@@ -399,6 +406,9 @@ local function newPlayer(id)
 	services.Players.PlayerAdded:Fire(pl)
 	return pl
 end
+-- §42: mock gather prompts harvest through real `strike` verbs (tools/strike-shim.luau).
+require("./tools/strike-shim").install({signal = services.ProximityPromptService.PromptTriggered,
+	invoke = function(p, verb, item) return objects.RemoteFunction.OnServerInvoke(p, verb, item) end, advance = function(s) clock += s end})
 local function cmd(pl, verb, item)
 	clock += 1
 	return objects.RemoteFunction.OnServerInvoke(pl, verb, item)

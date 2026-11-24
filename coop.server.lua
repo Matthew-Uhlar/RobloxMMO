@@ -36,7 +36,8 @@
 -- that crew, or the 30 s flush), so a withdrawal costs one crew write; the
 -- journal's delivered-token list keeps a replay in between idempotent.
 --
--- Shared supply prompts (the crew-haven Timber/Ore/Herb nodes) are building
+-- Shared supplies (the crew-haven Timber/Ore/Herb nodes; struck nodes since §42,
+-- credited through ServerStorage.IsleCoopStrike, see below) are building
 -- material, not loot:
 --   * each (node, member) regrows after PROMPT_REGROW seconds, like personal
 --     nodes, and each member may add at most PROMPT_HOURLY units per UTC hour
@@ -963,33 +964,43 @@ action.OnServerInvoke=function(player,verb,arg,extra)
 	return state
 end
 action.Parent=ReplicatedStorage
--- Shared supply prompts: validated here, batched in memory, no DataStore write.
-ProximityPromptService.PromptTriggered:Connect(function(prompt,player)
-	local resource=prompt:GetAttribute("IsleCoopResource")
-	if not resources[resource] or not prompt.Enabled or not prompt:IsDescendantOf(workspace) then return end
+-- Shared supplies (§42, owner decision: no hold prompt): the Crew Haven stores
+-- are struck nodes. server.server.lua's Strike path validates the strike itself
+-- (reach, cadence, token bucket, HP) and, on the break, invokes
+-- ServerStorage.IsleCoopStrike:
+--   Invoke("check", player, node)  -> ok, message (no side effects; before any damage)
+--   Invoke("credit", player, node) -> ok, message, regrowth seconds
+-- The credit is the retired supply prompt's, unchanged: +1 to the crew store,
+-- batched in memory (no DataStore write), PROMPT_REGROW per member and node,
+-- PROMPT_HOURLY per member per UTC hour, the storage cap, membership and the
+-- preview / Ironman environment. No personal resource is granted.
+local CREW_REACH=13 -- defence in depth: the old prompt's 10 studs + 3
+local function supplyCheck(player,node,commit)
+	local resource=node:GetAttribute("IsleCoopResource")
+	if not resources[resource] or not node:IsDescendantOf(workspace) then return false,"That is not a crew store." end
 	local now=os.clock()
-	if busy[player] or now<(lastPrompt[player] or 0) then return end
+	if busy[player] or (commit and now<(lastPrompt[player] or 0)) then return false,"One moment…" end
 	local character=player.Character
 	local humanoid=character and character:FindFirstChildOfClass("Humanoid")
 	local root=character and character:FindFirstChild("HumanoidRootPart")
-	local base=prompt:FindFirstAncestorWhichIsA("BasePart")
-	if not humanoid or humanoid.Health<=0 or not root or not base or (root.Position-base.Position).Magnitude>prompt.MaxActivationDistance+3 then return end
+	if not humanoid or humanoid.Health<=0 or not root or (root.Position-node.Position).Magnitude>CREW_REACH then return false,"Move closer to the crew store." end
 	local profile=eligibility(player,false)
-	if not profile then return end
-	if (prompt:GetAttribute("CoopPreview")==true)~=(profile.preview==true) then return end
-	lastPrompt[player]=now+1
+	if not profile then return false,"Waiting for your journal." end
+	if (node:GetAttribute("CoopPreview")==true)~=(profile.preview==true) then return false,"This is another group's homestead." end
+	if commit then lastPrompt[player]=now+1 end
 	busy[player]=true
-	local ok,state=pcall(function()
-		local groupId=id(prompt:GetAttribute("CoopId"))
+	local ok,granted,message,state=pcall(function()
+		local groupId=id(node:GetAttribute("CoopId"))
 		local userId=tostring(player.UserId)
 		local index=groupId and readCached("member_"..userId,profile.preview)
-		if not index or index.empty or index.groupId~=groupId or index.kind~="joined" then return snapshot(player,profile,"This is another group's homestead.") end
-		local node=groupId..":"..resource
+		local function no(text) return false,text,snapshot(player,profile,text) end
+		if not index or index.empty or index.groupId~=groupId or index.kind~="joined" then return no("This is another group's homestead.") end
+		local key=groupId..":"..resource
 		regrow[player]=regrow[player] or {}
-		local readyAt=regrow[player][node]
-		if readyAt and now<readyAt then return snapshot(player,profile,"This supply is regrowing ("..math.ceil(readyAt-now).."s).") end
+		local readyAt=regrow[player][key]
+		if readyAt and now<readyAt then return no("This supply is regrowing ("..math.ceil(readyAt-now).."s).") end
 		local group=readCached("group_"..groupId,profile.preview)
-		if not group or group.disbanded or not (group.members or {})[userId] or group.ironman~=(profile.ironman==true) then return snapshot(player,profile,"Homestead membership unavailable.") end
+		if not group or group.disbanded or not (group.members or {})[userId] or group.ironman~=(profile.ironman==true) then return no("Homestead membership unavailable.") end
 		normalize(group)
 		local hour=math.floor(os.time()/3600)
 		local mine=hourly[player]
@@ -999,26 +1010,42 @@ ProximityPromptService.PromptTriggered:Connect(function(prompt,player)
 			mine={hour=hour,n=l and l.promptHour==hour and l.promptCount or 0}
 			hourly[player]=mine
 		end
-		if mine.n>=PROMPT_HOURLY then return snapshot(player,profile,"You have gathered "..PROMPT_HOURLY.." shared supplies this hour. The nodes recover next hour.") end
+		if mine.n>=PROMPT_HOURLY then return no("You have gathered "..PROMPT_HOURLY.." shared supplies this hour. The nodes recover next hour.") end
 		local ck=cacheKey("group_"..groupId,profile.preview)
 		local batch=pending[ck]
 		local queued=0
 		if batch then for _,entry in pairs(batch.users) do queued+=entry.res[resource] or 0 end end
 		local _,def=levelOf(group)
-		if (group.supplies[resource] or 0)+queued>=def.storage then return snapshot(player,profile,"Shared "..resource.." storage is full. Level the homestead for more room.") end
+		if (group.supplies[resource] or 0)+queued>=def.storage then return no("Shared "..resource.." storage is full. Level the homestead for more room.") end
+		if not commit then return true,"" end
 		if not batch then batch={since=now,users={}}; pending[ck]=batch end
 		meta[ck]={groupId=groupId,preview=profile.preview}
 		local entry=batch.users[userId] or {ironman=profile.ironman==true,res={}}
 		batch.users[userId]=entry
 		entry.res[resource]=(entry.res[resource] or 0)+1
 		mine.n+=1
-		regrow[player][node]=now+PROMPT_REGROW
+		regrow[player][key]=now+PROMPT_REGROW
 		if now-batch.since>=FLUSH_EVERY then flush(ck) end
-		return snapshot(player,profile,"+1 shared "..resource.." • for building and Homestead XP")
+		local text="+1 shared "..resource.." • for building and Homestead XP"
+		return true,text,snapshot(player,profile,text)
 	end)
 	busy[player]=nil
-	if ok then changed:FireClient(player,state) else dropPerk(player) end
-end)
+	if not ok then dropPerk(player) return false,"Homestead save delayed. Try again." end
+	if commit and state then changed:FireClient(player,state) end
+	return granted,message
+end
+local strikeHook=Instance.new("BindableFunction")
+strikeHook.Name="IsleCoopStrike"
+strikeHook.OnInvoke=function(mode,player,node)
+	if typeof(node)~="Instance" and type(node)~="table" then return false,"That is not a crew store." end
+	if mode=="check" then return supplyCheck(player,node,false) end
+	if mode=="credit" then
+		local ok,message=supplyCheck(player,node,true)
+		return ok,message,PROMPT_REGROW
+	end
+	return false,"Unknown request."
+end
+strikeHook.Parent=ServerStorage
 Players.PlayerRemoving:Connect(function(player)
 	busy[player],lastRequest[player],invitations[player],cachedGroup[player],perkSig[player],clean[player]=nil,nil,nil,nil,nil,nil
 	lastMutate[player],lastPrompt[player],regrow[player],hourly[player],retryAt[player]=nil,nil,nil,nil,nil

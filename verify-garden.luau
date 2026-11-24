@@ -495,7 +495,7 @@ local worldEnv = {
 	game = {GetService = function(_, name)
 		if name == "Players" then return worldPlayers end
 		if name == "Lighting" then return roblox.Instance.new("Lighting") end
-		if name == "CollectionService" then return {AddTag = function() end} end
+		if name == "CollectionService" then return {AddTag = function() end, RemoveTag = function() end} end
 		if name == "ReplicatedStorage" then return {WaitForChild = function(_, n) return if n == "AetherData" then dataModule else nil end} end
 		if name == "ServerStorage" then return {FindFirstChild = function() return nil end} end
 		return {}
@@ -534,11 +534,11 @@ eq(garden:GetAttribute("Region"), "Home", "islet region attribute")
 local homeCenter = home:FindFirstChild("Meadow").CFrame.Position + Vector3.new(0, .25, 0)
 local gc = garden:GetAttribute("IslandCenter")
 local function flat(a, b) return Vector3.new(a.X - b.X, 0, a.Z - b.Z).Magnitude end
-ok(near(flat(gc, homeCenter), 40, 0.05), "islet sits 40 studs from home")
+ok(near(flat(gc, homeCenter), math.sqrt(2) * 40, 0.05), "garden sits in its north-west district, ~57 studs out (§40 spread)")
 ok(flat(gc, homeCenter) - 14 > 21 + 3, "islet clears the home meadow")
 local terraceCenter = homeCenter + Vector3.new(Data.TERRACE_OFFSET.x, 0, Data.TERRACE_OFFSET.z)
 ok(flat(gc, terraceCenter) > 14 + 11 + 2, "islet clears the Builder's Terrace")
-ok(flat(gc, homeCenter + Vector3.new(0, 0, 29)) > 14 + 7 + 2, "islet clears the lookout deck")
+ok(flat(gc, homeCenter + Vector3.new(0, 0, 46)) > 14 + 7 + 2, "islet clears the lookout deck")
 ok(flat(gc, homeCenter) + 14 < Data.Home.radius(1), "garden stands inside the stage-0 build radius (§27)")
 local plotPrompts, plotBeds = {}, {}
 for _, obj in garden:GetDescendants() do
@@ -641,10 +641,20 @@ eq(bed(1):FindFirstChild("Plot soil").Material, roblox.Enum.Material.Mud, "compo
 ok(crop(1).Size.Y > c1Height, "fallback primitive grows with the stage")
 owner:SetAttribute("GardenPlot1", "Herb:4:r")
 ok(crop(1):GetAttribute("ShapeScale") == 1 and crop(1):GetAttribute("GardenStatus") == "ripe", "ripe crop at full size")
-ok(bed(1):FindFirstChild("Ripe glint") ~= nil and plotPrompts[1].ActionText == "Harvest", "ripe glint and Harvest")
+ok(bed(1):FindFirstChild("Ripe glint") ~= nil, "ripe glint")
+-- §42 (owner decision): a ripe plot is struck with the hoe, never prompted.
+do
+	local soil = bed(1):FindFirstChild("Plot soil")
+	ok(plotPrompts[1].Enabled == false, "§42: a ripe plot's prompt is off (no hold to harvest)")
+	ok(soil:GetAttribute("GatherNode") == "Herb" and soil:GetAttribute("StrikeKind") == "garden" and soil:GetAttribute("GardenHarvest") == 1
+		and soil:GetAttribute("OwnerUserId") == owner.UserId, "§42: the ripe plot's soil is the owner's garden strike node")
+	ok(has(soil:GetAttribute("NodeName"), "Plot 1") and has(soil:GetAttribute("NodeName"), "Meadow Herb"), "§42: the node names its plot and crop")
+end
 owner:SetAttribute("GardenPlot1", "Herb:2:s")
 ok(crop(1):GetAttribute("GardenStatus") == "sick" and crop(1):GetAttribute("Tint") ~= Color3.fromHex(herb.tint), "blight browns the crop")
 ok(bed(1):FindFirstChild("Ripe glint") == nil and plotPrompts[1].ActionText == "Treat", "blighted plot offers Treat")
+ok(plotPrompts[1].Enabled and bed(1):FindFirstChild("Plot soil"):GetAttribute("GatherNode") == nil and bed(1):FindFirstChild("Plot soil"):GetAttribute("StrikeKind") == nil,
+	"§42: an unripe plot is a prompt again, not a node")
 owner:SetAttribute("GardenPlot1", "Herb:2:x")
 ok(crop(1):GetAttribute("GardenStatus") == "dead" and plotPrompts[1].ActionText == "Clear", "withered crop offers Clear")
 owner:SetAttribute("GardenPlot1", "Herb:2:p2")
@@ -830,6 +840,9 @@ end
 local remote
 for _, o in ipairs(serverObjects) do if o.OnServerInvoke then remote = o end end
 ok(remote ~= nil, "IsleAction RemoteFunction found")
+-- §42: mock gather prompts harvest through real `strike` verbs (tools/strike-shim.luau).
+require("./tools/strike-shim").install({signal = services.ProximityPromptService.PromptTriggered,
+	invoke = function(p, verb, item) return remote.OnServerInvoke(p, verb, item) end, advance = advance})
 local function cmd(p, verb, item)
 	advance(1)
 	renew()
@@ -1152,7 +1165,7 @@ local prompt1 = plotPrompts[1]
 local function use(p, q)
 	advance(1)
 	renew()
-	p.root.Position = q.Parent.CFrame.Position
+	p.root.Position = (if q:GetAttribute("GatherNode") then q else q.Parent).CFrame.Position -- §42: a node host is its own part
 	p.last = nil
 	services.ProximityPromptService.PromptTriggered:Fire(q, p)
 	return p.last
@@ -1182,7 +1195,7 @@ ok(has(cmd(g11, "gardenPlot", "1").message, "No seeds"), "no seeds to plant")
 -- C11: the field seed pouch (every FIELD_SEED_EVERY-th field harvest).
 local herbPrompt
 for _, obj in world:GetDescendants() do
-	if obj:IsA("ProximityPrompt") and obj:GetAttribute("IsleAction") == "gather" and obj:GetAttribute("IsleItem") == "Herb" and obj:GetAttribute("IsleRegion") == nil then herbPrompt = obj break end
+	if obj:IsA("BasePart") and obj:GetAttribute("GatherNode") == "Herb" and obj:GetAttribute("IsleRegion") == nil then herbPrompt = obj break end -- §42: a struck node host
 end
 ok(herbPrompt ~= nil, "a field Meadow Herb node")
 local g12 = player(7012)

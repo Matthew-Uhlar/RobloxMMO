@@ -111,6 +111,22 @@ The hotbar in these renders is a **stand-in** drawn with Theme slots where
 | `desktop-Workshop-Forge.png`, `desktop-Hunt-Slayer.png`, `desktop-Hunt-Bestiary.png`, `desktop-Hunt-Hunter.png`, `desktop-Ledger-Bank.png` | 1366x768 | Workshop, Hunt and Ledger pages |
 | `phone-Hero-Skills.png`, `phone-Ledger-Vendors.png`, `phone-Builder.png` | 844x390 | Phone rail layout, vendors, island builder (the action bar steps aside) |
 
+Tutorial coach cards (§43, `tools/render-ui.luau … HUD-Tutorial`; `tutorial.client.lua`):
+
+| File | Size | What |
+| --- | --- | --- |
+| `tutorial-desktop-Welcome.png` | 1366x768 | Welcome card in the docked coach lane (right of the left column, under the level-banner slot); the pointer ring and arrow on the sidebar Objective |
+| `tutorial-desktop-Chop.png` | 1366x768 | Path step 2/11 "Chop a log" (left-click copy, chapter dots, Skip / Show me / Got it); the pointer on hotbar slot 2 (the context tool) |
+| `tutorial-desktop-Tip.png` | 1366x768 | A first-encounter tip (first level-up) borrowing the card: Tips off / Got it, pointer on Menu |
+| `tutorial-desktop-Complete.png` | 1366x768 | The celebration card: rewards summary and "Claim 250 coins" (owed Path coins) |
+| `tutorial-phone-Welcome.png`, `tutorial-phone-Quest.png` | 844x390 | The phone card, centred between the orbs and the sidebar, above the hotbar band; a starter quest with the §33 helper's NEXT line |
+| `tutorial-phone-Chip.png` | 844x390 | A read card collapsed to the 44 px chip at the top of the left column |
+| `tutorial-compact-Quest.png`, `tutorial-compact-Complete.png` | 730x303 | The smallest phones: the card shrinks to fit above the spell bar |
+
+The ring's position in these renders is computed from the target's laid-out
+place (the harness reports AbsolutePosition 0,0); tweens settle at once, so the
+ring is drawn at its first pulse frame.
+
 Before / after (the previous "Aether Brass" design → Skyforge):
 
 | Before | After |
@@ -120,23 +136,27 @@ Before / after (the previous "Aether Brass" design → Skyforge):
 | `before-phone-Ledger-Orders.png` | `after-phone-Ledger-Orders.png` |
 | `before-desktop-Journal-Quests-full.png` | `after-desktop-Journal-Quests-full.png` |
 
-## Sign previews (`signs-*.png`)
+## Sign previews (`signs-v2-*.png`)
 
-Approximate offline renders of the §28 sign system (DEPTH-CONTRACT §28), not
-Roblox captures. `tools/dump-signs.luau` builds the real world headlessly and
-dumps chosen sign models (parts, mesh slots, declared boxes, SurfaceGui trees);
-`tools/render-signs.py` lays the OBJ masters out the way `forge.client.lua` does
-and perspective-warps the painted faces onto the boards:
+Approximate offline renders of the §28 v2 floating signs (DEPTH-CONTRACT §28),
+not Roblox captures. `tools/dump-signs.luau` builds the real world headlessly
+and dumps each sign's BillboardGui tree (post arrows turned as the client would
+for a camera south of the sign); `tools/render-signs.py` paints the tree the
+way Roblox draws it (UICorner, two-stop UIGradient multiplied into the
+background, UIStroke, rotated frames, RichText small caps, colour emoji crests)
+over an island backdrop with the ground anchor:
 
 ```sh
 lune run tools/dump-signs.luau build/signs.json "Artisans' Row" "Starforge" "Sky Harbor"
-python3 tools/render-signs.py build/signs.json docs/screenshots/signs-archetypes.png [--night]
+python3 tools/render-signs.py build/signs.json docs/screenshots/signs-v2-archetypes.png [--night] [--nameplate]
 ```
 
-Fonts are stand-ins (DejaVu Serif Bold for Merriweather/Fondamento, Inter Bold
-for BuilderSans) and wider than Roblox's, so a label may wrap here that fits in
-one line in Studio. `--night` darkens the scene and keeps the faces ~80% lit
-(LightInfluence 0.25). Confirm materials, fonts and night glow in Studio.
+`signs-v2-archetypes.png` (each archetype plus an NPC nameplate for contrast),
+`signs-v2-night.png` (same at night: self-lit plaques, brighter crystal glow)
+and `signs-v2-regions.png` (one sign per region theme). Fonts are stand-ins
+(DejaVu Serif Bold at 92% for Merriweather Bold, Caladea Bold Italic for
+Fondamento, Inter Bold for BuilderSans). Confirm fonts, emoji crests, scale and
+bob in Studio.
 
 ## Map art (§32)
 
@@ -146,3 +166,8 @@ one line in Studio. `--night` darkens the scene and keeps the faces ~80% lit
 (`tools/world-harness.luau`); the Sky Chart's ViewportFrame is drawn by a small z-buffered
 renderer in `tools/rasterize-ui.py` (primitives only, flat light: forged meshes, materials and
 soft lighting exist only in Studio). Regenerate with `lune run tools/render-ui.luau build/screenshots WarpMap`.
+
+## World Art pass 2 (§40)
+
+- `buildings-kit.png`, `buildings-interiors.png`: the building kit OBJ masters (`python3 art/render-icons.py --cell 420 --columns 4 --no-strip ...`).
+- `town-quay-day.png`, `town-quay-night.png`, `interior-quay-bank.png`: Compass Quay with the real building meshes placed as the forge places them (`lune run tools/dump-scene.luau "Compass Quay" quay.json`, then `python3 tools/render-town.py quay.json out.png --eye ... --at ... [--night]`). Flat Lambert preview: no materials, shadows or Future lighting; other props are their primitive fallbacks; the night render lights every pane (the game lights about 80 %).

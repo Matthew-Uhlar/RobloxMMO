@@ -14,7 +14,9 @@ Relay.NAMES = {mine = true, chop = true, fish = true, harvest = true, hammer = t
 	shoot = true, cast = true, flick = true, heal = true,
 	-- Hunter: set / collect a trap, sweep a net. (Agility moves are not relayed:
 	-- every client animates runners from their AgilityMove attribute.)
-	settrap = true, netswing = true}
+	settrap = true, netswing = true,
+	-- Beaconry (§37): strike a flint striker over kindling.
+	kindle = true}
 -- Combat gestures tint their held bow / staff / wand by the weapon of that style.
 Relay.STYLE_GESTURE = {shoot = "ranged", cast = "magic", flick = "magic"}
 Relay.MELEE_GESTURE = {attack = true, thrust = true, cleave = true, lunge = true}
@@ -30,6 +32,7 @@ function Relay.itemOk(Data, name, itemId)
 	if type(itemId) ~= "string" or #itemId > 64 then return false end
 	local def = Data.Items[itemId]
 	if not def then return false end
+	if name == "kindle" then return def.heldClass == "striker" end -- Beaconry strikers (material items)
 	local kind = Relay.TOOL_KIND[name]
 	if kind then return def.kind == "tool" and def.toolKind == kind end
 	if Relay.MELEE_GESTURE[name] then return def.kind == "weapon" end

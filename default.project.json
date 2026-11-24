@@ -9,7 +9,10 @@
       "AetherData": { "$path": "shared/GameData.lua" },
       "AetherProgression": { "$path": "shared/Progression.lua" },
       "AetherUiTheme": { "$path": "shared/UiTheme.lua" },
-      "AetherMapArt": { "$path": "shared/MapArt.lua" }
+      "AetherMapArt": { "$path": "shared/MapArt.lua" },
+      "AetherHudDepth": { "$path": "shared/HudDepth.lua" },
+      "AetherLighting": { "$path": "shared/LightingProfiles.lua" },
+      "AetherSignView": { "$path": "shared/SignView.lua" }
     },
     "ServerStorage": {
       "AetherTrails": { "$path": "trails.lua" }
@@ -25,7 +28,9 @@
       "HeldItems": { "$path": "held.server.lua" },
       "Townsfolk": { "$path": "npc.server.lua" },
       "Minigames": { "$path": "minigames.server.lua" },
-      "Lairs": { "$path": "lairs.server.lua" }
+      "Lairs": { "$path": "lairs.server.lua" },
+      "Beaconry": { "$path": "beaconry.server.lua" },
+      "Raids": { "$path": "raids.server.lua" }
     },
     "StarterPlayer": {
       "StarterPlayerScripts": {
@@ -42,7 +47,14 @@
         "AetherMotes": { "$path": "motes.client.lua" },
         "IsleHud": { "$path": "hud.client.lua" },
         "RegionBanner": { "$path": "regions.client.lua" },
-        "IsleFeatures": { "$path": "features.client.lua" }
+        "IsleFeatures": { "$path": "features.client.lua" },
+        "IsleRaid": { "$path": "raid.client.lua" },
+        "IsleOverlay": { "$path": "overlay.client.lua" },
+        "IsleLighting": { "$path": "lighting.client.lua" },
+        "IsleGather": { "$path": "gather.client.lua" },
+        "IsleTutorial": { "$path": "tutorial.client.lua" },
+        "IsleBeacons": { "$path": "beacons.client.lua" },
+        "SignView": { "$path": "signs.client.lua" }
       }
     },
     "Lighting": {

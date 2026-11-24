@@ -737,13 +737,16 @@ for _, o in ipairs(serverObjects) do
 	if o.Name == "IsleBridge" then bridge = o end
 end
 ok(remote ~= nil and bridge ~= nil, "IsleAction and IsleBridge found")
+-- §42: mock gather prompts harvest through real `strike` verbs (tools/strike-shim.luau).
+require("./tools/strike-shim").install({signal = services.ProximityPromptService.PromptTriggered,
+	invoke = function(p, verb, item) return remote.OnServerInvoke(p, verb, item) end, advance = advance})
 local function cmd(p, verb, item)
 	advance(1)
 	return remote.OnServerInvoke(p, verb, item)
 end
 local function use(p, q)
 	advance(1)
-	p.root.Position = q.Parent.CFrame.Position
+	p.root.Position = (if q:GetAttribute("GatherNode") then q else q.Parent).CFrame.Position -- §42: a node host is its own part
 	p.last = nil
 	services.ProximityPromptService.PromptTriggered:Fire(q, p)
 	return p.last
@@ -840,9 +843,10 @@ end
 -- Gathering, fishing and thieving drop scrolls too (through the world prompts).
 local gatherPrompts, thievePrompts = {}, {}
 for _, q in islands:GetDescendants() do
+	local node = q:GetAttribute("GatherNode") -- §42: gathering nodes are struck hosts, not prompts
+	if node and q:IsA("BasePart") and not gatherPrompts[node] then gatherPrompts[node] = q end
 	if q:IsA("ProximityPrompt") then
 		local act, id = q:GetAttribute("IsleAction"), q:GetAttribute("IsleItem")
-		if act == "gather" and not gatherPrompts[id] then gatherPrompts[id] = q end
 		if act == "thieve" then thievePrompts[id] = q end
 	end
 end
@@ -1268,7 +1272,7 @@ local function atlas(size, mutate)
 	snap.items.TrailCapWayfarer = 1
 	snap.trails = {
 		active = {
-			Beginner = {step = 1, kind = "riddle", style = "riddle", text = "Riddle: Coins sleep behind my iron door.", hint = "Search for the answer somewhere in Aether Hub.", guide = {"region:Hub"}},
+			Beginner = {step = 1, kind = "riddle", style = "riddle", text = "Riddle: Coins sleep behind my iron door.", hint = "Search for the answer somewhere in Compass Quay.", guide = {"region:Hub"}},
 			Medium = {step = 2, kind = "puzzle", style = "puzzle", text = "Puzzle box: Gearwright's Box.", hint = "Slide tiles.", guide = {}, board = "123456708", moves = 4},
 			Hard = {step = 3, kind = "emote", style = "emote", text = "Perform the Stir at the guild Hearth.", hint = "Stand close.", guide = {"anchor:Waypoint_Hearth", "region:Hub"}, gesture = "stir", wear = {"BrassHelm"}},
 			Elite = {step = 1, kind = "skill", style = "skill", text = "Task: Gather Starmetal Ore x2.", hint = "Progress counts.", guide = {}, need = 2, have = 1},
@@ -1310,7 +1314,7 @@ do
 	open(ui)
 	local text = texts(ui.scroll)
 	ok(has(text, "Coins sleep behind my iron door"), "riddle text shown")
-	ok(has(text, "Aether Hub"), "region hint shown")
+	ok(has(text, "Compass Quay"), "region hint shown")
 	ok(has(text, "1 OF") or has(text, "1 of"), "clue log counts uniques found")
 	ok(has(text, "1 / 2"), "task progress bar")
 	local function pressSends(name, verb, item)

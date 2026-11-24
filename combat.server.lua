@@ -1017,6 +1017,14 @@ local function createLogic(env)
 		return env.rng() * 100 < perks.firstStrike
 	end
 	-- Raw damage after execute (target health before this hit).
+	-- Hollow Sunder: is r a boss (never an add or an ordinary monster), and is it shielded?
+	function L.sunderMult(weaponId, r)
+		local LRD = Data.Lairs
+		if not LRD or not LRD.sunderMult or type(r) ~= "table" or r.add or r.lairAdd then return 1 end
+		if not (r.boss == true or r.worldBoss == true or r.lair == true) then return 1 end
+		local warded = (r.worldBoss == true or r.lair == true) and type(r.adds) == "table" and next(r.adds) ~= nil
+		return LRD.sunderMult(weaponId, {boss = true, warded = warded})
+	end
 	function L.executeBonus(r, raw, perks)
 		if (perks.execute or 0) <= 0 or r.hp * 100 >= C.EXECUTE_THRESHOLD * r.maxHp then return raw, false end
 		return raw * (1 + perks.execute / 100), true
@@ -1039,11 +1047,18 @@ local function createLogic(env)
 		local raw, crit = Progression.meleeDamage(if opening then critStats(stats) else stats, env.rng)
 		local executed
 		raw, executed = L.executeBonus(r, raw, perks)
+		-- Polish: Hollow Sunder (Data.Lairs.sunderMult) on boss records only.
+		local sunder = L.sunderMult(loadoutOf(info).weapon, r)
+		if sunder > 1 then raw = math.floor(raw * sunder) end
+		local tide = if L.tideMult then L.tideMult(loadoutOf(info).weapon, r) else 1 -- Raids: Riptide (Data.Raids.tideMult)
+		if tide > 1 then raw = math.floor(raw * tide) end
 		local dealt, tag = L.mitigate(r, raw, "melee", player)
 		L.landHit(player, r, dealt, "melee")
 		local lifesteal = tonumber(stats.lifesteal) or 0
 		if lifesteal > 0 then env.heal(player, lifesteal) end
 		local result = {record = r, damage = dealt, crit = crit == true, healed = lifesteal > 0, style = "melee", tag = tag}
+		if sunder > 1 then result.sunder = true end
+		if tide > 1 then result.tide = true end
 		if opening then result.firstStrike = true end
 		if executed then result.execute = true end
 		return finish(result, r)
@@ -1056,6 +1071,8 @@ local function createLogic(env)
 			local raw, crit = Progression.rangedDamage(if opening then critStats(stats) else stats, bow, arrow, level, env.rng)
 			local executed
 			raw, executed = L.executeBonus(r, raw, perks)
+			local tide = if L.tideMult then L.tideMult(bow and bow.id, r) else 1 -- Raids: Undertow (Data.Raids.tideMult)
+			if tide > 1 then raw = math.floor(raw * tide); hit.tide = true end
 			hit.damage, hit.tag = L.mitigate(r, raw, "ranged", player)
 			hit.crit = crit == true
 			if opening then hit.firstStrike = true end
@@ -1266,6 +1283,8 @@ local function createLogic(env)
 			manaCost = manaCost, record = r, from = pos, color = spell.color}
 		if spell.kind == "damage" then
 			local raw = Progression.spellDamage(info.stats, spell, weapon, loadout.levels and loadout.levels.Magic or 1)
+			local tide = if L.tideMult then L.tideMult(weapon and weapon.id, r) else 1 -- Raids: Drownlight (Data.Raids.tideMult)
+			if tide > 1 then raw = math.floor(raw * tide); result.tide = true end
 			result.damage, result.tag = L.mitigate(r, raw, "magic", player)
 			result.crit = false
 			L.landHit(player, r, result.damage, "magic", spell.id)
@@ -2436,7 +2455,7 @@ local function createLogic(env)
 		local def = LR and LR.boss(bossId)
 		if type(fight) ~= "string" or not def or lairFights[fight] then return nil end
 		local count = 0
-		for _ in pairs(lairFights) do count += 1 end
+		for _, other in pairs(lairFights) do if not other.raid then count += 1 end end -- Raids section: raid encounters have their own cap
 		if count >= LR.MAX_INSTANCES then return nil end
 		opts = opts or {}
 		local now = env.now()
@@ -2838,6 +2857,103 @@ local function createLogic(env)
 		return lairRemoving(player)
 	end
 	-- End Lairs section.
+
+	------------------------------------------------------------------------
+	-- Raids section (Raid team). Data.Raids (RD), docs/DEPTH-CONTRACT.md §38.
+	-- A raid encounter is a lair-shaped record (r.lair, r.raid, r.fight) in
+	-- the Lairs fight table, so the Lairs machinery runs it unchanged:
+	-- membership, stances and the prayer check, telegraphs, tiles, adds /
+	-- sigils (LR.Adds resolves raid adds), phases, enrage, timeout and per-
+	-- UserId damage. Only registration (party up to RD.MAX_PARTY, health and
+	-- damage scaled by party size and Challenge Mode, its own cap of
+	-- RD.MAX_RAIDS live encounters) and the kill differ: every member who
+	-- dealt damage is paid damage XP, and raids.server.lua turns the per-UserId
+	-- damage into points (no LR.credit fair-share gate: the raid's own credit
+	-- rules apply at the end of the run).
+	------------------------------------------------------------------------
+	do
+		local RD = Data.Raids
+		function L.rdRegister(fight, encId, model, position, opts)
+			local base = RD and RD.encounter(encId)
+			if type(fight) ~= "string" or not base or lairFights[fight] then return nil end
+			local live = 0
+			for _, r in pairs(lairFights) do if r.raid then live += 1 end end
+			if live >= RD.MAX_RAIDS then return nil end
+			opts = opts or {}
+			local now = env.now()
+			local members, party = {}, 0
+			for _, uid in ipairs(type(opts.members) == "table" and opts.members or {}) do
+				if type(uid) == "number" and not members[uid] and party < RD.MAX_PARTY then members[uid] = true; party += 1 end
+			end
+			if party == 0 then return nil end
+			local inside = math.clamp(math.floor(tonumber(opts.party) or party), 1, party)
+			local challenge = opts.challenge == true
+			local def = RD.scaledDef(encId, inside, challenge)
+			local hp = RD.partyHp(base, inside, challenge)
+			local weakness, defenceStyle = LR.weaknessAt(def, 1)
+			local center = typeof(opts.center) == "Vector3" and opts.center or position
+			local r = newRecord({
+				id = encId, def = def, lair = true, raid = true, challenge = challenge, fight = fight, name = def.name, level = def.level, maxHp = hp, hp = hp,
+				damage = def.damage, defense = def.defense, speed = def.speed, attackCooldown = LR.ATTACK_SECONDS, passive = false, provoked = true,
+				home = position, position = position, model = model, radius = math.clamp(opts.radius or 0, 0, C.MAX_RADIUS_BONUS),
+				weakness = weakness, defenceStyle = defenceStyle, attackStyle = LR.stanceAt(def, 1, 1), swings = 0,
+				phase = 1, step = 0, nextSpecial = now + 5, nextHit = now + 2.5, telegraphs = {}, adds = {}, members = members, party = inside,
+				dmg = {}, started = now, enrageAt = now + def.enrage, expires = now + def.duration, lastSeen = now,
+				seed = math.floor(tonumber(opts.seed) or 1), center = center, ground = if type(opts.ground) == "number" then opts.ground else center.Y,
+			})
+			lairFights[fight] = r
+			lairResults[fight] = nil
+			return r
+		end
+		-- Per-UserId damage and last hit (the boss's own and its adds' last hits),
+		-- read by raids.server.lua every step for points and recent actions.
+		function L.rdDamage(fight)
+			local r = lairFights[fight]
+			if not r or not r.raid then return nil end
+			local out = {}
+			for uid, d in pairs(r.dmg) do out[uid] = {damage = math.floor(d.damage), lastHit = d.lastHit} end
+			return out
+		end
+		function L.rdKill(r)
+			local now = env.now()
+			r.hp = 0
+			local credit, credited = {}, {}
+			for uid in pairs(r.members) do
+				local d = r.dmg[uid]
+				local player = onlineByUserId(uid)
+				local share = if d then d.damage / r.maxHp else 0
+				credit[uid] = {share = share, damage = if d then math.floor(d.damage) else 0, lastHit = d and d.lastHit, ok = share > 0}
+				if share > 0 and player and env.alive(player) == true then
+					table.insert(credited, player)
+					for _, style in ipairs(XP_STYLES) do
+						local dmg = d.xp[style]
+						if dmg and dmg > 0 then L.reportXp(player, r, style, dmg) end
+					end
+				end
+			end
+			r.removedAdds = lairRemove(r)
+			table.remove(r.removedAdds) -- the encounter itself (its view goes with the kill)
+			lairResults[r.fight] = {result = "win", credit = credit, seconds = now - r.started, party = r.party}
+			return credited
+		end
+		-- Lead decision (QC): the raid weapons' specials (Data.Raids.tideMult).
+		-- An add is a boss's add (r.parent: lair / raid adds, world boss waves;
+		-- never a slayer superior); a boss is a slayer / world / lair / raid boss
+		-- record; warded = a lair, raid or world boss with live adds or seals.
+		function L.tideMult(weaponId, r)
+			if not RD or not RD.tideMult or type(r) ~= "table" or type(weaponId) ~= "string" then return 1 end
+			local add = (r.add == true or r.lairAdd == true) and r.parent ~= nil
+			local boss = not add and (r.boss == true or r.worldBoss == true or r.lair == true)
+			local warded = boss and (r.worldBoss == true or r.lair == true) and type(r.adds) == "table" and next(r.adds) ~= nil
+			return RD.tideMult(weaponId, {add = add, boss = boss, raid = not add and r.raid == true, warded = warded})
+		end
+		local raidKill = L.kill
+		function L.kill(r)
+			if r.raid and r.lair and not r.lairAdd then return L.rdKill(r) end
+			return raidKill(r)
+		end
+	end
+	-- End Raids section.
 	return L
 end
 
@@ -3587,6 +3703,7 @@ function LairRT.finish(r)
 	for _, add in ipairs(r.removedAdds or {}) do destroyView(add, true) end
 	r.removedAdds = nil
 	LairRT.restoreTiles(r.fight)
+	if r.fight then LairRT.tiles[r.fight] = nil end -- Raids QC M1: the fight is over; its tile map goes too
 end
 function LairRT.step()
 	for _, event in ipairs(Logic.lrTick()) do
@@ -3638,6 +3755,68 @@ do
 	fn.Parent = ServerStorage
 end
 -- End Lairs section (runtime).
+
+-- Raids section (Raid team, runtime) ----------------------------------------
+-- raids.server.lua builds each vault room and asks ServerStorage.IsleRaidCombat
+-- (BindableFunction, synchronous, never yields):
+--   "spawn"   {fight, encounter, center, members = {userId...}, party, seed,
+--              challenge, tiles = {[cell] = BasePart}?} -> {ok, hp, reason}
+--   "status"  {fight} -> Logic.lrStatus + dmg = Logic.rdDamage (per-UserId damage, last hit)
+--   "despawn" {fight} -> removes the encounter and its adds (no reward), restores tiles.
+-- Stances, telegraphs, tiles and adds run through LairRT.step (raid records
+-- live in the Lairs fight table); LR.Adds resolves the raid adds.
+do
+	local existing = ServerStorage:FindFirstChild("IsleRaidCombat")
+	local fn = if existing and existing:IsA("BindableFunction") then existing else Instance.new("BindableFunction")
+	fn.Name = "IsleRaidCombat"
+	local function spawnRaid(payload)
+		local RD = Data.Raids
+		local def = RD and RD.encounter(payload.encounter)
+		local center = payload.center
+		if not def or type(payload.fight) ~= "string" or typeof(center) ~= "Vector3" then return {ok = false, reason = "invalid"} end
+		if Logic.lrRecord(payload.fight) then return {ok = false, reason = "active"} end
+		local plan = blueprint(def.body, def.color, true)
+		local position = Vector3.new(center.X, center.Y + plan.hip, center.Z + RD.CELL)
+		local party = tonumber(payload.party) or #(payload.members or {})
+		local ok, model, root, parts = pcall(buildModel, def.name, plan, {id = def.id, level = def.level, hp = RD.partyHp(def, party, payload.challenge == true), color = def.color})
+		if not ok then
+			warn("[Combat] could not build raid encounter " .. def.id .. ": " .. tostring(model))
+			return {ok = false, reason = "build"}
+		end
+		local r = Logic.rdRegister(payload.fight, def.id, model, position, {radius = plan.radius, members = payload.members, party = payload.party,
+			seed = payload.seed, center = center, ground = center.Y, challenge = payload.challenge == true})
+		if not r then model:Destroy() return {ok = false, reason = "register"} end
+		model:SetAttribute("Lair", payload.fight)
+		model:SetAttribute("Raid", payload.fight)
+		model:SetAttribute("MaxHealth", r.maxHp)
+		model:SetAttribute("Health", r.hp)
+		view[r] = {model = model, root = root, plan = plan, fill = parts.fill, label = parts.label, welds = parts.welds, phase = 0}
+		LairRT.tiles[payload.fight] = type(payload.tiles) == "table" and payload.tiles or nil
+		LairRT.paintStance(r)
+		place(r)
+		model.Parent = folder
+		broadcast(position, "death", {position = position, color = def.color, boss = true, scale = plan.scale})
+		return {ok = true, hp = r.maxHp}
+	end
+	fn.OnInvoke = function(op, payload)
+		if type(payload) ~= "table" then return nil end
+		if op == "spawn" then
+			return spawnRaid(payload)
+		elseif op == "status" then
+			local status = Logic.lrStatus(payload.fight)
+			if type(status) == "table" then status.dmg = Logic.rdDamage(payload.fight) end
+			return status
+		elseif op == "despawn" then
+			for _, r in ipairs(Logic.lrDespawn(payload.fight)) do destroyView(r, false) end
+			LairRT.restoreTiles(payload.fight)
+			LairRT.tiles[payload.fight] = nil
+			return {ok = true}
+		end
+		return nil
+	end
+	fn.Parent = ServerStorage
+end
+-- End Raids section (runtime).
 
 -- Player attacks -------------------------------------------------------------
 local denyAt = {} -- [player] = os.clock() before which no further "denied" notice is sent

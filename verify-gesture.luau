@@ -186,6 +186,20 @@ eq(sel("craftStation", "Jeweller", nil, 0), "hammer", "Jeweller's Bench hammers"
 eq(sel("craftStation", "Tannery", nil, 0), "saw", "Tanning Rack saws")
 eq(sel("craftStation", "Tannery", nil, 1), "hammer", "Tanning Rack alternates to hammer")
 eq(sel("craftStation", "Glassworks", nil, 0), "stir", "Glass Furnace stirs")
+-- Beaconry (§37): beacon pyres and kindling strike with the striker; the
+-- server's BeaconryGesture "<gesture>:<seq>[:<item>]" parses to name + item.
+eq(sel("beaconLight", "Hub"), "interact", "beacon pyre hold reaches in (the strike plays only from BeaconryGesture)")
+ok(Core.GESTURES.kindle and Core.GESTURES.kindle.tool == "Striker" and Core.toolSpec("Striker") ~= nil, "kindle gesture has a striker prop")
+do
+	local name, item = Core.beaconryGesture("kindle:3:FlintStriker")
+	ok(name == "kindle" and item == "FlintStriker", "BeaconryGesture with the striker id")
+	local flip, none = Core.beaconryGesture("flip:4")
+	ok(flip == "flip" and none == nil, "BeaconryGesture for a campfire cook")
+	eq(Core.beaconryGesture("bogus:1"), nil, "unknown gestures are ignored")
+	eq(Core.beaconryGesture(nil), nil, "empty attribute ignored")
+	ok(Core.itemFits("kindle", Data.Items.FlintStriker) and not Core.itemFits("kindle", Data.Items.Timber), "strikers tint the kindle prop")
+	ok(Relay.NAMES.kindle and Relay.itemOk(Data, "kindle", "StarmetalStriker") and not Relay.itemOk(Data, "kindle", "Timber"), "relay whitelists kindle with a striker")
+end
 for _, b in pairs(Data.Crafting.Branches) do eq(Core.NAMES[b.gesture], true, b.id .. " batch gesture is a known gesture") end
 eq(sel("craft", "Blade"), "hammer", "Starforge blade hammers")
 eq(sel("craft", "Pickaxe"), "hammer", "Starforge pickaxe hammers")
@@ -553,7 +567,7 @@ do
 			styled += 1
 		end
 	end
-	eq(styled, 32, "six wood tiers × (shortbow, longbow, staff, wand) + Endgame Eclipse Longbow, Duskpiercer, Riftcrown Staff + Dungeon class Starpiercer Longbow, Dawnmender Wand, Orrery Staff + Lairs Galesong Longbow, Pyreheart Staff")
+	eq(styled, 34, "six wood tiers × (shortbow, longbow, staff, wand) + Endgame Eclipse Longbow, Duskpiercer, Riftcrown Staff + Dungeon class Starpiercer Longbow, Dawnmender Wand, Orrery Staff + Lairs Galesong Longbow, Pyreheart Staff + Raids Undertow Warbow, Drownlight Scepter")
 	ok(not Relay.itemOk(Data, "shoot", "BrassSword") and not Relay.itemOk(Data, "cast", "BrassSword"), "swords tint no bow or staff")
 	ok(Relay.itemOk(Data, "heal", nil) and not Relay.itemOk(Data, "heal", "WindpineStaff"), "Mend carries no item")
 	for _, kind in ipairs({"Bow", "Staff", "Wand"}) do

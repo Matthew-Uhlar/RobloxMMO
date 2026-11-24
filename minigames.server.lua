@@ -155,11 +155,38 @@ anchor.CanQuery = false
 anchor:SetAttribute("AnchorPurpose", "Waypoint_SkybreachLanding")
 -- Return ferry: back to the Guild Terrace beacon (world anchor), or the quay.
 local ferry = block(bastion, "Return ferry beacon", PLAZA + V(0, 4, 36), V(2, 6, 2), teal, Enum.Material.Glass, false)
-ferry:SetAttribute("Shape", "WarpBeacon")
+-- Travel beacon dais (docs/DEPTH-CONTRACT.md §44): a declared 5 x 5.6 x 5 box
+-- from the plaza top (y + 1.5) holds the forged dais; beacons.client.lua floats
+-- the crystal and rings and plays the flare (TravelBeaconFlare).
+ferry:SetAttribute("Shape", "TravelBeacon")
 ferry:SetAttribute("Tint", teal)
+ferry:SetAttribute("ShapeBox", V(5, 5.6, 5))
+ferry:SetAttribute("ShapeBoxOffset", V(0, 1.5 + 2.8 - 4, 0))
+ferry:SetAttribute("TravelBeacon", "ferry")
+ferry:SetAttribute("TravelBeaconHover", PLAZA + V(0, 1.5 + 3, 36))
+pcall(function() game:GetService("CollectionService"):AddTag(ferry, "TravelBeacon") end) -- beacons.client.lua finds beacons by tag
+-- Dais colliders and prompt seat, as world.server.lua's travelBeacon(): an
+-- invisible 4.9 x 0.95 cylinder base, four thin pylons, the prompt in front.
+do
+	local ground = PLAZA.Y + 1.5
+	local base = block(bastion, "Beacon plinth", V(PLAZA.X, ground + 0.475, PLAZA.Z + 36), V(0.95, 4.9, 4.9), dark)
+	base.Shape = Enum.PartType.Cylinder
+	base.CFrame = CFrame.new(base.Position) * CFrame.Angles(0, 0, math.pi / 2)
+	base.Transparency, base.CastShadow = 1, false
+	for k = 0, 3 do
+		local a = math.pi / 4 + k * math.pi / 2
+		local pylon = block(bastion, "Beacon pylon", V(PLAZA.X + math.cos(a) * 1.55, ground + 0.95 + 1.45, PLAZA.Z + 36 + math.sin(a) * 1.55), V(0.6, 2.9, 0.6), dark)
+		pylon.CFrame = CFrame.new(pylon.Position) * CFrame.Angles(0, -a, 0)
+		pylon.Transparency, pylon.CastShadow = 1, false
+	end
+	local seat = Instance.new("Attachment")
+	seat.Name = "Beacon prompt"
+	seat.CFrame = ferry.CFrame:ToObjectSpace(CFrame.new(PLAZA.X, ground + 1.5, PLAZA.Z + 36 - 3.2))
+	seat.Parent = ferry
+end
 -- Same recall gates as a waystone leaf (ServerStorage.IsleTravelGate: alive,
 -- not mid-fight, not in an expedition); the character's velocity is zeroed.
-prompt(ferry, "Skybreach ferry", "Return to the Guild Terrace", function(player, root)
+local ferryPrompt = prompt(ferry, "Skybreach ferry", "Return to the Guild Terrace", function(player, root)
 	local gate = Storage:FindFirstChild("IsleTravelGate")
 	local okGate, verdict = false, nil
 	if gate then okGate, verdict = pcall(gate.Invoke, gate, player) end
@@ -170,9 +197,12 @@ prompt(ferry, "Skybreach ferry", "Return to the Guild Terrace", function(player,
 	local home = workspace:FindFirstChild("Anchor_Waypoint_SkybreachFerry", true)
 	local destination = if home and home:IsA("BasePart") then home.Position + V(0, 4, 0) else V(0, 8, 232)
 	player:SetAttribute("FastTravelAt", os.clock()) -- known fast travel (Aether Mote pickup checks)
+	ferry:SetAttribute("TravelBeaconFlareBy", player.UserId)
+	ferry:SetAttribute("TravelBeaconFlare", (tonumber(ferry:GetAttribute("TravelBeaconFlare")) or 0) + 1)
 	player.Character:PivotTo(CFrame.new(destination))
 	root.AssemblyLinearVelocity = V(0, 0, 0)
 end)
+ferryPrompt.Parent = ferry:FindFirstChild("Beacon prompt") or ferry
 
 -- Lobbies: three siege landings and the haul gangway.
 local lobbies = {}

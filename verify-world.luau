@@ -40,6 +40,9 @@ local services={
 	CollectionService={AddTag=function(_,obj,tag)
 		tags[tag]=tags[tag] or {}
 		table.insert(tags[tag],obj)
+	end,RemoveTag=function(_,obj,tag)
+		local i=tags[tag] and table.find(tags[tag],obj)
+		if i then table.remove(tags[tag],i) end
 	end},
 	ReplicatedStorage={WaitForChild=function(_,name) return if name=="AetherData" then dataModule else nil end},
 	ServerStorage={FindFirstChild=function(_,name) return if name=="IsleRegionAccess" then regionAccess else nil end},
@@ -92,6 +95,12 @@ local checks=0
 local function check(condition,label)
 	assert(condition,label)
 	checks+=1
+end
+-- §44: a travel beacon's prompt hangs on its post's "Beacon prompt" Attachment.
+local function promptHost(q)
+	local parent=q.Parent
+	if parent and parent:IsA("Attachment") then return parent.Parent end
+	return parent
 end
 local archipelago=world:FindFirstChild("AetherIsles")
 check(archipelago~=nil,"world created")
@@ -174,7 +183,7 @@ do
 		local pad=station:FindFirstChild("Worker pad").CFrame.Position
 		local o=pad-meadow
 		pads[slot]=o
-		check(math.sqrt(o.X^2+o.Z^2)+2.3<=48,"station "..slot.." inside the home footprint")
+		check(math.sqrt(o.X^2+o.Z^2)+2.3<=Data.Home.radius(1)-10,"station "..slot.." inside the home footprint (§40: the yard stands out south-east)")
 		local chassis=station:FindFirstChild("Surveyor chassis")
 		local interaction=chassis:FindFirstChildOfClass("ProximityPrompt")
 		check(interaction:GetAttribute("OwnerUserId")==11,"station "..slot.." owner")
@@ -259,10 +268,13 @@ for _,model in archipelago:GetChildren() do if model.Name=="CrewHaven_11" then s
 check(sharedCount==1,"members share one island")
 local supplyCount=0
 for _,obj in shared:GetDescendants() do
-	if obj:IsA("ProximityPrompt") and obj:GetAttribute("IsleCoopResource") then
+	check(not (obj:IsA("ProximityPrompt") and obj:GetAttribute("IsleCoopResource")),"§42: no crew supply prompt (struck nodes)")
+	if obj:IsA("BasePart") and obj:GetAttribute("IsleCoopResource") then
 		supplyCount+=1
 		check(obj:GetAttribute("CoopId")=="11","shared supply group binding")
-		check(obj:GetAttribute("IsleAction")==nil,"shared supplies never award personal inventory")
+		check(obj:GetAttribute("StrikeKind")=="crew" and obj:GetAttribute("GatherNode")==obj:GetAttribute("IsleCoopResource"),"§42: a crew store is a crew strike node")
+		check(table.find(tags.AetherNode or {},obj)~=nil and obj.Parent:IsA("Model") and obj.Parent~=shared,"§42: crew store tagged, in its own visual Model")
+		check(obj:FindFirstChildOfClass("ProximityPrompt")==nil and obj:GetAttribute("IsleAction")==nil,"shared supplies never award personal inventory")
 	end
 end
 check(supplyCount==3,"crew has three construction supplies")
@@ -282,8 +294,8 @@ a:SetAttribute("CoopId","11")
 check(archipelago:FindFirstChild("CrewHaven_preview_11")~=nil,"preview crew gets separate geometry")
 check(archipelago:FindFirstChild("CrewHaven_11")~=nil,"durable crew survives preview join")
 for _,obj in archipelago:FindFirstChild("CrewHaven_preview_11"):GetDescendants() do
-	if obj:IsA("ProximityPrompt") and obj:GetAttribute("IsleCoopResource") then
-		check(obj:GetAttribute("CoopPreview")==true,"preview supply prompt is environment bound")
+	if obj:IsA("BasePart") and obj:GetAttribute("IsleCoopResource") then
+		check(obj:GetAttribute("CoopPreview")==true,"preview supply node is environment bound")
 	end
 end
 a:SetAttribute("CoopId",nil)
@@ -293,9 +305,9 @@ for _,obj in world:GetDescendants() do
 		check(obj.Size.X>0 and obj.Size.Y>0 and obj.Size.Z>0,"positive geometry")
 	elseif obj:IsA("ProximityPrompt") then
 		prompts+=1
-		check(obj.Parent:IsA("BasePart"),"prompt has physical target")
-	elseif obj:IsA("SurfaceGui") then
-		signs+=1
+		check(promptHost(obj)~=nil and promptHost(obj):IsA("BasePart"),"prompt has physical target")
+	elseif obj:IsA("SurfaceGui") or (obj:IsA("BillboardGui") and obj.Name=="SignBillboard") then
+		signs+=1 -- §28 v2: floating sign billboards (ledgers stay SurfaceGui boards)
 	end
 end
 check(parts>300 and prompts>=25 and signs>=20,"world landmarks and interactions exist")
@@ -305,7 +317,11 @@ check(observatoryGate:GetAttribute("Shape")=="ObservatoryArch","expedition entra
 check(observatoryGate.Transparency==1 and not observatoryGate.CanCollide,"gate art preserves open transit collider")
 local advancedOre=world:FindFirstChild("Aetherite seam",true)
 check(advancedOre~=nil,"advanced mining node exists")
-check(advancedOre:FindFirstChildOfClass("ProximityPrompt"):GetAttribute("IsleItem")=="Aetherite","advanced mining routes to validated server action")
+check(advancedOre:FindFirstChildOfClass("ProximityPrompt")==nil,"§42: the advanced seam has no prompt")
+local seamHost=nil
+for _,d in advancedOre:GetDescendants() do if d:IsA("BasePart") and d:GetAttribute("GatherNode") then seamHost=d end end
+if not seamHost and advancedOre:IsA("BasePart") and advancedOre:GetAttribute("GatherNode") then seamHost=advancedOre end
+check(seamHost~=nil and seamHost:GetAttribute("GatherNode")=="Aetherite","advanced mining routes to the validated strike verb")
 local gate=world:FindFirstChild("ExpeditionGate",true)
 check(gate~=nil and gate.CFrame.Position.Y>=0,"expedition entrance accessible")
 local oldSpawn=a.RespawnLocation.Position
@@ -349,14 +365,17 @@ end
 check(proxyLimits.Tidewing~=nil,"companion Tidewing has a bounded proxy")
 local festival=luau.load(fs.readFile("festival.server.lua"),{environment={
 	game={GetService=function() return players end},workspace=world,Instance=roblox.Instance,
-	Vector3=roblox.Vector3,Vector2=roblox.Vector2,CFrame=roblox.CFrame,Color3=roblox.Color3,UDim2=roblox.UDim2,Font=roblox.Font,Enum=roblox.Enum,
+	Vector3=roblox.Vector3,Vector2=roblox.Vector2,CFrame=roblox.CFrame,Color3=roblox.Color3,UDim2=roblox.UDim2,UDim=roblox.UDim,Font=roblox.Font,Enum=roblox.Enum,
 	task={wait=function() coroutine.yield() end},
 },injectGlobals=true})
 check(coroutine.resume(coroutine.create(festival)),"festival starts with fixed sign")
 local assembly=world:FindFirstChild("Island Assembly")
-check(assembly:FindFirstChildOfClass("BillboardGui")==nil,"festival sign cannot float over expedition gate")
-local assemblySign=assembly:FindFirstChildOfClass("SurfaceGui")
-check(assemblySign~=nil and not assemblySign.AlwaysOnTop and assemblySign.Face==roblox.Enum.NormalId.Back,"assembly uses physical hub-facing sign")
+-- §28 QC M2: a floating, camera-facing notice (no post) beside the gate, never over it.
+local assemblySign=assembly:FindFirstChildOfClass("BillboardGui")
+check(assemblySign~=nil and not assemblySign.AlwaysOnTop and assemblySign.Size.X.Scale<=9 and assemblySign.Size.X.Offset==0,"assembly notice floats, sized in studs")
+local noticeEdge=(roblox.Vector3.new(assembly.CFrame.Position.X,0,assembly.CFrame.Position.Z)-roblox.Vector3.new(gate.CFrame.Position.X,0,gate.CFrame.Position.Z)).Magnitude-assemblySign.Size.X.Scale/2
+check(noticeEdge>10,"assembly notice stays clear of the gate arch ("..math.floor(noticeEdge).." studs)")
+check(world:FindFirstChild("Notice Post")==nil,"assembly notice has no post")
 check((assembly.CFrame.Position-gate.CFrame.Position).Magnitude>15,"assembly moved away from gate sightline")
 local meshNames={"Tidewing","Shellwarden"}
 for name in pairs(catalog.shapes) do table.insert(meshNames,name) end
@@ -417,11 +436,23 @@ for _,region in Data.Regions do
 	for _,isle in islandsRoot:GetChildren() do if isle:GetAttribute("RegionId")==region.id then found=true end end
 	check(found,region.id.." has a built island")
 end
--- Every resource tier: at least one correctly attributed gather node.
+-- Every resource tier: at least one correctly attributed gather node (§42: a
+-- struck host part tagged AetherNode; no gathering node carries a prompt).
 local gatherNodes={}
 for _,obj in world:GetDescendants() do
-	if obj:IsA("ProximityPrompt") and obj:GetAttribute("IsleAction")=="gather" and not obj:GetAttribute("OwnerUserId") then
-		local id=obj:GetAttribute("IsleItem")
+	check(not (obj:IsA("ProximityPrompt") and obj:GetAttribute("IsleAction")=="gather"),"§42: no gather prompt anywhere ("..obj:GetFullName()..")")
+	if obj:IsA("BasePart") and obj:GetAttribute("GatherNode") and not obj:GetAttribute("OwnerUserId") and not obj:GetAttribute("StrikeKind") then
+		local id=obj:GetAttribute("GatherNode")
+		check(obj:FindFirstChildOfClass("ProximityPrompt")==nil,"§42: node host "..obj.Name.." has no prompt")
+		check(table.find(tags.AetherNode or {},obj)~=nil,"§42: node host "..obj.Name.." is tagged AetherNode")
+		check(obj.CanQuery,"§42: node host "..obj.Name.." is clickable")
+		check(obj.Parent:IsA("Model"),"§42: node host "..obj.Name.." sits in its own visual Model")
+		if Data.ResourceSkill[id]=="Fishing" then
+			-- §42 QC L11: every fishing spot (the Moonpool jetty too) has ripples and a bobber to go calm.
+			local calm=0
+			for _,d in obj.Parent:GetDescendants() do if d:IsA("BasePart") and (d.Name=="Ripple" or d.Name=="Bobber") then calm+=1 end end
+			check(calm>=2,"§42: fishing spot "..obj.Parent.Name.." has ripples / a bobber to calm ("..calm..")")
+		end
 		gatherNodes[id]=gatherNodes[id] or {}
 		table.insert(gatherNodes[id],obj)
 	end
@@ -435,9 +466,10 @@ for skill,tiers in Data.ResourceTiers do
 		local formatted,ungated=false,false
 		for _,q in nodes do
 			nodeCount+=1
-			local target=q.Parent:GetAttribute("ResourceId")
+			local target=q:GetAttribute("ResourceId")
 			check(target==nil or target==def.id,def.id.." node target matches")
-			if q.ObjectText==def.name.." (Lv "..def.level..")" and q.ActionText==VERB[skill] then formatted=true end
+			check(q:GetAttribute("NodeMaxHp")==Data.Strike.maxHp(def),def.id.." node HP is its tier's (Data.Strike.maxHp)")
+			if q:GetAttribute("NodeLabel")==Data.Strike.label(def) and string.sub(Data.Strike.label(def),1,#VERB[skill])==VERB[skill] then formatted=true end
 			local isle=islandOf(q)
 			local host=isle and isle:GetAttribute("RegionId")
 			check(host~=nil,def.id.." node sits on a region island")
@@ -449,9 +481,9 @@ for skill,tiers in Data.ResourceTiers do
 				ungated=true
 			end
 			if next(Data.RegionById[host].requires) then check(region==host,def.id.." node on a gated island carries IsleRegion") end
-			check(onIsland(isle,q.Parent.CFrame.Position,1),def.id.." node stands on its island")
+			check(onIsland(isle,q.CFrame.Position,1),def.id.." node stands on its island")
 		end
-		check(formatted,def.id.." has a '"..VERB[skill].."' prompt labelled with name and level")
+		check(formatted,def.id.." has a '"..VERB[skill].."' node labelled with name and level")
 		if def.level<=3 then check(ungated,def.id.." is available near home without a gate") end
 		if def.level>=30 then check(not ungated,def.id.." lives in a gated region") end
 	end
@@ -530,7 +562,7 @@ for _,q in world:GetDescendants() do
 		warps+=1
 		check(Data.RegionById[id]~=nil,"warp names a valid region id")
 		local t=traveller()
-		standAt(t,q.Parent)
+		standAt(t,promptHost(q))
 		allowRegion[id]=false
 		local before=#accessCalls
 		q.Triggered:Fire(t)
@@ -545,21 +577,21 @@ for _,q in world:GetDescendants() do
 		check(t.landed~=nil and onRegion(id,t.landed,2),id.." unlocked warp lands on its region island")
 		if t.landed then table.insert(landings,{id.." landing",t.landed}) end
 		local far=traveller()
-		standAt(far,{CFrame=q.Parent.CFrame+Vec(30,0,0)})
+		standAt(far,{CFrame=promptHost(q).CFrame+Vec(30,0,0)})
 		q.Triggered:Fire(far)
 		check(far.landed==nil,id.." warp requires standing at the beacon")
 		warpedTo[id]=true
 	elseif q:GetAttribute("IsleWarpReturn") then
 		returns+=1
 		local t=traveller()
-		standAt(t,q.Parent)
+		standAt(t,promptHost(q))
 		q.Triggered:Fire(t)
 		check(t.landed~=nil and onRegion("Hub",t.landed,2),"return beacon lands on the Guild Terrace")
 		if t.landed then table.insert(landings,{"Skyway return landing",t.landed}) end
 	elseif not q:GetAttribute("IsleAction") then
 		-- Any other prompt that moves the player (quarry descent, quay/crew beacons).
 		local t=traveller()
-		standAt(t,q.Parent)
+		standAt(t,promptHost(q))
 		pcall(function() q.Triggered:Fire(t) end)
 		if t.landed then table.insert(landings,{q.ObjectText.." landing",t.landed}) end
 	end
@@ -921,31 +953,31 @@ do
 	local beforeChecks=checks
 	local serde=require("@lune/serde")
 	local L=services.Lighting
-	-- Lighting: project properties (Technology is not scriptable) match the script.
+	-- Lighting (§35): Technology = Future and the day look are place defaults;
+	-- the world script never writes Lighting (lighting.client.lua is the one
+	-- writer, verify-lighting.luau). The project look matches the Hub day profile.
 	local project=serde.decode("json",fs.readFile("default.project.json"))
 	local lp=project.tree.Lighting and project.tree.Lighting["$properties"]
 	check(lp~=nil and lp.Technology=="Future","Lighting.Technology = Future in default.project.json")
 	check(project.tree.Workspace["$properties"].StreamingEnabled==false,"StreamingEnabled stays false")
-	for _,key in {"Brightness","ClockTime","GeographicLatitude","EnvironmentDiffuseScale","EnvironmentSpecularScale","ExposureCompensation","ShadowSoftness"} do
-		check(math.abs(L[key]-lp[key])<1e-3,key.." in the project matches the runtime look")
+	local LP=luau.load(fs.readFile("shared/LightingProfiles.lua"),{environment={Color3=roblox.Color3},injectGlobals=true})()
+	local hub=LP.dayLook("Hub")
+	for _,key in {"Brightness","EnvironmentDiffuseScale","EnvironmentSpecularScale","ExposureCompensation","ShadowSoftness"} do
+		check(math.abs(hub[key]-lp[key])<1e-3,key.." in the project matches the Hub day profile")
 	end
 	for _,key in {"Ambient","OutdoorAmbient"} do
-		local c=L[key]
-		check(math.abs(c.R-lp[key][1])<.003 and math.abs(c.G-lp[key][2])<.003 and math.abs(c.B-lp[key][3])<.003,key.." in the project matches the runtime look")
+		local c=hub[key]
+		check(math.abs(c.R-lp[key][1])<.003 and math.abs(c.G-lp[key][2])<.003 and math.abs(c.B-lp[key][3])<.003,key.." in the project matches the Hub day profile")
 	end
-	check(lp.GlobalShadows==true and L.GlobalShadows,"global shadows on")
-	check(L.Brightness<=3 and L.ExposureCompensation<=.25,"sun and exposure are not blown out")
+	check(lp.GlobalShadows==true,"global shadows on by default")
+	local fresh=roblox.Instance.new("Lighting")
+	check(#L:GetChildren()==0,"the world script adds no Lighting children")
+	for _,key in {"Brightness","ClockTime","GlobalShadows","ExposureCompensation","Ambient","OutdoorAmbient"} do
+		local okA,a=pcall(function() return L[key] end)
+		local okB,b=pcall(function() return fresh[key] end)
+		check(okA==okB and (not okA or a==b),"the world script leaves Lighting."..key.." alone")
+	end
 	local function lum(c) return .2126*c.R+.7152*c.G+.0722*c.B end
-	check(lum(L.Ambient)<.35 and lum(L.OutdoorAmbient)<.6,"ambient light leaves shade and caves readable")
-	local kinds={}
-	for _,child in L:GetChildren() do kinds[child.ClassName]=(kinds[child.ClassName] or 0)+1 end
-	for _,class in {"Atmosphere","BloomEffect","ColorCorrectionEffect","SunRaysEffect","Sky"} do
-		check(kinds[class]==1,"exactly one "..class.." (no stacked post effects)")
-	end
-	local air,bloomFx,gradeFx,raysFx=L:FindFirstChildOfClass("Atmosphere"),L:FindFirstChildOfClass("BloomEffect"),L:FindFirstChildOfClass("ColorCorrectionEffect"),L:FindFirstChildOfClass("SunRaysEffect")
-	check(air.Density>=.15 and air.Density<=.32 and air.Haze<=1.5,"atmosphere lets distant islands read")
-	check(bloomFx.Intensity<=.5 and bloomFx.Threshold>=1.2,"bloom is subtle")
-	check(math.abs(gradeFx.Brightness)<=.05 and gradeFx.Contrast<=.2 and raysFx.Intensity<=.1,"grade and sun rays are subtle")
 
 	-- Workspace.Islands: one Model per static island with the contract attributes.
 	local oldRadius={["Compass Quay"]=43,["Mosswake Grove"]=30,["Brassfall Quarry"]=31,["Warden Reach"]=32,Skyreach=30,
@@ -1081,8 +1113,8 @@ do
 	end
 	check(anchors.Anchor_NPC_Guide.Parent.Name=="Compass Quay","guide stands on the hub")
 	local cHome=archipelago:FindFirstChild("WayfarersRest_33")
-	local hubPrompt=cHome:FindFirstChild("Quay beacon"):FindFirstChildOfClass("ProximityPrompt")
-	standAt(c,hubPrompt.Parent)
+	local hubPrompt=cHome:FindFirstChild("Quay beacon"):FindFirstChildWhichIsA("ProximityPrompt",true)
+	standAt(c,promptHost(hubPrompt))
 	hubPrompt.Triggered:Fire(c)
 	check(c.landed~=nil and onRegion("Hub",c.landed,2),"home beacon lands on the hub")
 	local guideOffset=anchors.Anchor_NPC_Guide.CFrame.Position-c.landed
@@ -1106,7 +1138,7 @@ do
 		if q:IsA("ProximityPrompt") and (q:GetAttribute("IsleAction")=="station" or q:GetAttribute("IsleWarpRegion") or q:GetAttribute("IsleWarpReturn")
 			or q:GetAttribute("IsleAction")=="bank" or q:GetAttribute("IsleAction")=="sell" or q:GetAttribute("IsleAction")=="fight") then
 			waypointTargets+=1
-			check(nearWaypoint(q.Parent.CFrame.Position,16),q.ObjectText.." has a waypoint anchor")
+			check(nearWaypoint(promptHost(q).CFrame.Position,16),q.ObjectText.." has a waypoint anchor")
 		end
 	end
 	check(waypointTargets>=20,"stations, warps and services are waypointed ("..waypointTargets..")")
@@ -1129,17 +1161,18 @@ do
 			shapeCount+=1
 		end
 	end
-	local signShapes={Signboard=true,SignPost=true,Banner=true,SignCarvedBoard=true,SignScrollBoard=true,SignArrowBoard=true,
-		SignPlaqueBoard=true,BannerCloth=true,SignNoticeBoard=true}
+	-- §28 v2: static signs are floating billboards on one invisible anchor (no sign meshes).
 	local signBoards=0
 	for _,gui in world:GetDescendants() do
-		if gui:IsA("SurfaceGui") and gui.Parent:IsA("BasePart") and gui:FindFirstAncestor("Islands") then
+		if gui:IsA("BillboardGui") and gui.Name=="SignBillboard" and gui:FindFirstAncestor("Islands") then
 			signBoards+=1
-			check(signShapes[gui.Parent:GetAttribute("Shape")]==true,gui.Parent.Name.." sign carries a sign mesh slot")
+			-- Ledger boards (§28 QC M3) carry their floating title on the board itself.
+			local ledgerTitle=gui:GetAttribute("SignKind")=="ledger" and gui.Parent:GetAttribute("Shape")=="SignNoticeBoard"
+			check(ledgerTitle or (gui.Parent:GetAttribute("SignAnchor")==true and gui.Parent:GetAttribute("Shape")==nil),gui.Parent.Name.." sign floats on a mesh-free anchor")
 		end
 	end
 	check(signBoards>=40,"signs on the static islands ("..signBoards..")")
-	for _,need in {"Lamp","OreVein","CropBed","Rock","CliffRock","RockOutcrop","MeadowTree","PineTree","Forge","Hearth","Cauldron","Workbench","BridgePost","Statue","Signboard","Banner","MarketStall","FishingPier","WarpBeacon"} do
+	for _,need in {"Lamp","OreVein","CropBed","Rock","CliffRock","RockOutcrop","MeadowTree","PineTree","Forge","Hearth","Cauldron","Workbench","BridgePost","Statue","Banner","MarketStall","FishingPier","TravelBeacon","TravelBeaconBasalt","SkywardVentPad"} do
 		check((shapes[need] or 0)>=1,need.." mesh slots exist")
 	end
 	-- Final mesh boxes: run MeshForge's own layout over every tagged part (no
@@ -1186,8 +1219,8 @@ do
 						local long=math.max(own.X,own.Y,own.Z)
 						check(math.abs(math.max(d.size.X,d.size.Y,d.size.Z)-long)<=long*.05+.05,obj:GetFullName().." line mesh follows its span")
 					end
-					if obj:GetAttribute("Shape")=="CropBed" and obj:FindFirstChildOfClass("ProximityPrompt") then
-						check(d.shape==WorldArt.resourceShape(obj:FindFirstChildOfClass("ProximityPrompt"):GetAttribute("IsleItem")),obj:GetFullName().." crop patch shows its own crop")
+					if obj:GetAttribute("Shape")=="CropBed" and obj:GetAttribute("GatherNode") then
+						check(d.shape==WorldArt.resourceShape(obj:GetAttribute("GatherNode")),obj:GetFullName().." crop patch shows its own crop")
 					end
 					local box,size=d.box,d.size
 					for _,axis in {"X","Y","Z"} do
@@ -1238,15 +1271,15 @@ do
 		end
 	end
 	for _,q in islandsRoot:GetDescendants() do
-		if q:IsA("ProximityPrompt") and q:GetAttribute("IsleAction")=="gather" then
-			local host=q.Parent
+		if q:IsA("BasePart") and q:GetAttribute("GatherNode") then
+			local host=q
 			local tagged=host:GetAttribute("Shape")~=nil
 			if not tagged then
 				for _,sib in host.Parent:GetDescendants() do
 					if sib:IsA("BasePart") and sib:GetAttribute("Shape") and (sib.CFrame.Position-host.CFrame.Position).Magnitude<30 then tagged=true break end
 				end
 			end
-			check(tagged,q.ObjectText.." node has a mesh slot")
+			check(tagged,q:GetFullName().." node has a mesh slot")
 		end
 	end
 
@@ -1288,47 +1321,48 @@ do
 		end
 	end
 	check(neon<=90,"neon is reserved for glowing accents ("..neon..")")
-	-- Day/night: one loop, parked on task.wait; lamps follow the clock.
-	local loop=spawned[1]
-	check(loop~=nil and coroutine.status(loop)=="suspended","day/night loop waits on task.wait")
+	-- Night lamps: downward spot lights, created off and tagged for the client
+	-- director (§35), which lights them after dusk near the player.
 	local lamps={}
-	for _,l in world:GetDescendants() do if l:IsA("SpotLight") then table.insert(lamps,l) end end
-	check(#lamps>=40,"lamps are downward spot lights ("..#lamps..")")
-	local function allLamps(on) for _,l in lamps do if l.Enabled~=on then return false end end return true end
-	check(allLamps(false),"lamps are dark by day")
-	local startClock=L.ClockTime
-	check(coroutine.resume(loop,300),"day/night step runs")
-	check(L.ClockTime>18 and L.ClockTime<19 and allLamps(true),"dusk lights the lamps ("..L.ClockTime..")")
-	check(lum(L.OutdoorAmbient)<lum(roblox.Color3.fromHex("7D8A9C")),"night dims outdoor ambient")
-	check(coroutine.resume(loop,200),"day/night step runs")
-	check(L.ClockTime<6 and allLamps(true),"lamps stay lit through the night")
-	check(coroutine.resume(loop,150),"day/night step runs")
-	check(L.ClockTime>6 and L.ClockTime<12 and allLamps(false),"dawn puts the lamps out")
-	check(startClock==14.5,"day starts mid-afternoon")
+	for _,l in world:GetDescendants() do if l:IsA("SpotLight") and l:GetAttribute("NightLight")==true then table.insert(lamps,l) end end
+	check(#lamps>=40,"lamps are downward spot lights tagged NightLight ("..#lamps..")")
+	for _,l in lamps do check(l.Enabled==false,"night lamps start dark (the director owns them)") end
+	check(lum(roblox.Color3.fromHex("7D8A9C"))<.6,"reference ambient stays readable")
 
-	-- Prompt holds: gathers read as swings, fishing as cast-bob-reel, interacts stay snappy.
+	-- Prompt holds: interacts stay snappy. §42: gathering nodes have no hold at
+	-- all (struck with the held tool); they are counted from their host parts.
 	local fishing={}
 	for _,def in Data.ResourceTiers.Fishing do fishing[def.id]=true end
 	local holds={gather=0,fish=0,interact=0}
 	for _,isle in allIsles() do for _,q in isle:GetDescendants() do
-		if q:IsA("ProximityPrompt") then
+		if q:IsA("BasePart") and q:GetAttribute("GatherNode") then
+			if fishing[q:GetAttribute("GatherNode")] then holds.fish+=1 else holds.gather+=1 end
+		elseif q:IsA("ProximityPrompt") then
 			if q:GetAttribute("IsleAction")=="gather" then
-				if fishing[q:GetAttribute("IsleItem")] then
-					holds.fish+=1
-					check(math.abs(q.HoldDuration-1.5)<1e-6,q.ObjectText.." fishing hold is 1.5 s")
-				else
-					holds.gather+=1
-					check(math.abs(q.HoldDuration-1)<1e-6,q.ObjectText.." gather hold is 1.0 s")
-				end
-			elseif q:GetAttribute("IsleCoopResource") then
-				check(math.abs(q.HoldDuration-1)<1e-6,"shared gather hold is 1.0 s")
+				check(false,"§42: no gather prompt ("..q:GetFullName()..")")
 			else
 				holds.interact+=1
 				check(math.abs(q.HoldDuration-.36)<1e-6,q.ObjectText.." interact hold stays 0.36 s")
 			end
 		end
 	end end
-	check(holds.gather>=30 and holds.fish>=8 and holds.interact>=20,"hold durations cover every prompt kind")
+	check(holds.gather>=30 and holds.fish>=8 and holds.interact>=20,"every node kind and interact hold covered")
+	-- §42 (owner decision): no hold-to-gather anywhere in the built world (static
+	-- isles, homes, gardens, crew havens): no prompt gathers (gather-like action
+	-- text, a gather / crew-supply attribute) and no prompt holds longer than an
+	-- ordinary interact (0.36 s; the retired gather hold was 1 s).
+	local GATHER_WORDS={Gather=true,Chop=true,Mine=true,Harvest=true,Fish=true,Pick=true,Forage=true,Pull=true,Net=true,Dig=true}
+	local swept=0
+	for _,q in world:GetDescendants() do
+		if q:IsA("ProximityPrompt") then
+			swept+=1
+			local first=string.match(q.ActionText or "","^(%a+)")
+			check(not GATHER_WORDS[first or ""],"§42: no gather-like prompt ("..q.ActionText.." · "..q:GetFullName()..")")
+			check(q:GetAttribute("IsleAction")~="gather" and q:GetAttribute("IsleCoopResource")==nil,"§42: no gather prompt attribute ("..q:GetFullName()..")")
+			check(q.HoldDuration<=.36+1e-6,"§42: no gather-length hold ("..q:GetFullName()..", "..q.HoldDuration.." s)")
+		end
+	end
+	check(swept>=200,"§42: the no-hold-to-gather sweep saw the world's prompts ("..swept..")")
 
 	-- Placement glow cap: a full island of lantern posts lights at most 10, spaced.
 	local I=Data.Island
@@ -1429,10 +1463,10 @@ do
 	for _,r in E.Resources do
 		local found=0
 		for _,q in crown:GetDescendants() do
-			if q:IsA("ProximityPrompt") and q:GetAttribute("IsleItem")==r.id then
+			if q:IsA("BasePart") and q:GetAttribute("GatherNode")==r.id then -- §42: struck node hosts
 				found+=1
 				check(q:GetAttribute("IsleRegion")=="ShatteredCrown",r.id.." node is region-gated")
-				check(onIsland(crown,q.Parent.CFrame.Position,1),r.id.." node stands on the Crown")
+				check(onIsland(crown,q.CFrame.Position,1),r.id.." node stands on the Crown")
 			end
 		end
 		check(found>=1,r.id.." has a node on the Crown")
@@ -1456,6 +1490,153 @@ do
 	for _,obj in crown:GetDescendants() do if obj:IsA("BasePart") then crownParts+=1 end end
 	check(crownParts<=450,"Shattered Crown stays within 450 parts ("..crownParts..")")
 	print("Endgame world: "..(checks-before).." checks; Shattered Crown "..crownParts.." parts.")
+end
+-- Travel beacons (§44): every travel beacon is one forged dais over its old
+-- prompt post; prompts, anchors and colliders are unchanged; no extra parts.
+do
+	local before=checks
+	local function flatDist(a,b) return Vec(a.X-b.X,0,a.Z-b.Z).Magnitude end
+	local function lightPos(l)
+		local host=l.Parent
+		if host:IsA("Attachment") then return (host.Parent.CFrame*host.CFrame).Position end
+		return host.CFrame.Position
+	end
+	local BOX=Vec(5,5.6,5)
+	local DAIS={TravelBeacon=true,TravelBeaconBasalt=true}
+	local list={}
+	for _,post in tags.TravelBeacon or {} do
+		local ok,parent=pcall(function() return post.Parent end)
+		if ok and parent and post:IsDescendantOf(world) then table.insert(list,post) end
+	end
+	local kinds,byPart={},{}
+	local colliderParts=0
+	for _,post in list do
+		byPart[post]=true
+		local kind=post:GetAttribute("TravelBeacon")
+		kinds[kind]=(kinds[kind] or 0)+1
+		check(post:IsA("BasePart") and post.Anchored,"travel beacon "..post.Name.." is an anchored part")
+		local hover=post:GetAttribute("TravelBeaconHover")
+		check(typeof(hover)=="Vector3","travel beacon "..post.Name.." names its hover point")
+		if kind=="vent" then
+			check(post:GetAttribute("Shape")=="SkywardVentPad" and post:GetAttribute("ShapeFit")=="Uniform","vent "..post:GetAttribute("VentId").." uses the vent pad dais")
+			check(post.CanCollide and type(post:GetAttribute("TravelBeaconRegion"))=="string","vent pad stays a collider and names its destination")
+			check(hover.Y>post.CFrame.Position.Y+2,"vent rings float above the pad")
+			-- L2: riders launch through the armillary's space; it hangs >= 6 studs over the pad top.
+			check(hover.Y>=post.CFrame.Position.Y+post.Size.X/2+6,"vent "..post:GetAttribute("VentId").." armillary clears launching riders")
+			continue
+		end
+		check(DAIS[post:GetAttribute("Shape")]==true,post.Name.." uses the travel beacon dais mesh")
+		check(typeof(post:GetAttribute("ShapeBox"))=="Vector3" and (post:GetAttribute("ShapeBox")-BOX).Magnitude<1e-3,post.Name.." declares the 5 x 5.6 x 5 dais box")
+		local offset=post:GetAttribute("ShapeBoxOffset")
+		check(typeof(offset)=="Vector3" and math.abs(offset.X)<1e-3 and math.abs(offset.Z)<1e-3,post.Name.." dais box is centred on its post")
+		local boxBottom=post.CFrame.Position.Y+offset.Y-BOX.Y/2
+		local postBottom=post.CFrame.Position.Y-post.Size.Y/2
+		check(boxBottom<=postBottom+.85 and boxBottom>=postBottom-1.2,post.Name.." dais stands on the ground under its post")
+		check(not post.CanCollide and math.max(post.Size.X,post.Size.Z)<=2,post.Name.." post stays a slim non-colliding prompt host")
+		check(math.abs(hover.Y-(boxBottom+3))<1e-3 and math.abs(hover.X-post.CFrame.Position.X)<1e-3,post.Name.." crystal floats inside the dais cage")
+		local q=post:FindFirstChildWhichIsA("ProximityPrompt",true)
+		check(q~=nil,post.Name.." keeps its prompt")
+		check(typeof(post:GetAttribute("Tint"))=="Color3",post.Name.." tints its channels")
+		-- M5 walkability: every dais has the 4.9-wide, 0.95-tall cylinder base (a
+		-- step a character walks onto) and four thin pylon colliders inside it, all
+		-- invisible under the mesh; the post stays non-colliding.
+		local plinth,pylons=nil,{}
+		for _,sib in post.Parent:GetChildren() do
+			if sib:IsA("BasePart") and sib.Name=="Beacon plinth" and flatDist(sib.CFrame.Position,post.CFrame.Position)<.01 then plinth=sib end
+			if sib:IsA("BasePart") and sib.Name=="Beacon pylon" and flatDist(sib.CFrame.Position,post.CFrame.Position)<2 then table.insert(pylons,sib) end
+		end
+		check(plinth~=nil and plinth.Shape==roblox.Enum.PartType.Cylinder and plinth.CanCollide and plinth.Transparency==1,post.Name.." stands on an invisible cylinder collider")
+		local baseR=0
+		if plinth then
+			baseR=plinth.Size.Y/2
+			check(math.abs(plinth.CFrame.RightVector.Y)>.999 and math.abs(plinth.Size.Y-4.9)<1e-3 and math.abs(plinth.Size.Z-4.9)<1e-3 and math.abs(plinth.Size.X-.95)<1e-3,post.Name.." base collider is 4.9 wide and 0.95 tall, axis up")
+			check(math.abs((plinth.CFrame.Position.Y-plinth.Size.X/2)-boxBottom)<1e-3,post.Name.." base collider sits on the dais floor")
+			check(plinth.CFrame.Position.Y+plinth.Size.X/2-boxBottom<=1,post.Name.." base is a walkable step (<= 1 stud)")
+		end
+		check(#pylons==4,post.Name.." has four pylon colliders ("..#pylons..")")
+		colliderParts+=#pylons+(if plinth then 1 else 0)
+		for _,pylon in pylons do
+			local reach=flatDist(pylon.CFrame.Position,post.CFrame.Position)
+			check(pylon.CanCollide and pylon.Transparency==1 and math.max(pylon.Size.X,pylon.Size.Z)<=.7,post.Name.." pylon collider is thin and invisible")
+			check(reach+math.max(pylon.Size.X,pylon.Size.Z)*.71<=baseR+1e-3 and reach-.45>=1,post.Name.." pylon stands on the base, clear of the crystal")
+			check(plinth~=nil and math.abs(pylon.CFrame.Position.Y-pylon.Size.Y/2-(plinth.CFrame.Position.Y+plinth.Size.X/2))<1e-3,post.Name.." pylon rises from the base top")
+		end
+		-- L1: the prompt hangs on an attachment in front of the dais at ground + 1.5,
+		-- reachable from open ground outside every collider and within the trip range.
+		if q then
+			local seat=q.Parent
+			check(seat:IsA("Attachment") and seat.Name=="Beacon prompt" and seat.Parent==post,post.Name.." prompt hangs on its Beacon prompt attachment")
+			local at=(post.CFrame*seat.CFrame).Position
+			check(math.abs(at.Y-(boxBottom+1.5))<1e-3,post.Name.." prompt at waist height in front of the dais")
+			local out=flatDist(at,post.CFrame.Position)
+			check(out>=baseR+.5 and out<=4,post.Name.." prompt sits just outside the dais base ("..string.format("%.2f",out)..")")
+			local stand=Vec(at.X,boxBottom+3,at.Z)
+			check((stand-at).Magnitude<=q.MaxActivationDistance and (stand-post.CFrame.Position).Magnitude<=12,post.Name.." prompt is usable from the ground in front (and within the trip range)")
+		end
+		if q and q:GetAttribute("IsleWarpRegion") then
+			check(post:GetAttribute("TravelBeaconRegion")==q:GetAttribute("IsleWarpRegion"),post.Name.." lights for its own destination")
+		end
+	end
+	-- Every prompt that carries a player somewhere sits on a travel beacon.
+	local TRAVEL={["Homeward beacon"]=true,["Crew beacon"]=true,["Quay beacon"]=true,["Quay return"]=true,["Charter beacon"]=true,["Quarry beacon"]=true,["Warp beacon"]=true}
+	local travelPrompts=0
+	for _,q in world:GetDescendants() do
+		if q:IsA("ProximityPrompt") and (q:GetAttribute("IsleWarpRegion") or q:GetAttribute("IsleWarpReturn") or q:GetAttribute("IsleMinigameFerry") or TRAVEL[promptHost(q).Name]) then
+			travelPrompts+=1
+			check(byPart[promptHost(q)]==true,q.ActionText.." prompt stands on a travel beacon")
+		end
+	end
+	for _,obj in world:GetDescendants() do
+		if obj:IsA("BasePart") then
+			check(obj:GetAttribute("Shape")~="WarpBeacon","no travel beacon keeps the old block mesh ("..obj.Name..")")
+			check(obj.Name~="Beacon fin" and obj.Name~="Transit fins","old travel beacon fins are gone")
+		end
+	end
+	check(kinds.region==7 and kinds["return"]>=6 and kinds.home==1 and kinds.crew==1 and kinds.ferry==1,"every beacon kind is built")
+	check((kinds.vent or 0)==#Data.Vents.List,"every Skyward Vent is a travel beacon pad ("..tostring(kinds.vent)..")")
+	local crewPost
+	for _,post in list do if post.Name=="Crew beacon" then crewPost=post end end
+	check(crewPost and crewPost:GetAttribute("TravelBeaconNeeds")=="crew","the crew beacon lights only for crew members")
+	-- Part budget (M5): every dais is post + cylinder base + four pylon colliders.
+	local beaconParts,daises=colliderParts,0
+	for _,post in list do
+		if post:GetAttribute("TravelBeacon")~="vent" then beaconParts+=1; daises+=1 end
+	end
+	check(beaconParts<=6*daises,"travel beacons stay within 6 static parts each ("..beaconParts..")")
+	-- Lights: at most one per beacon, owned by the §35 director (LightWanted).
+	local beaconLights=0
+	for _,post in list do
+		local lights=0
+		for _,l in post:GetDescendants() do
+			if l:IsA("Light") then
+				lights+=1
+				beaconLights+=1
+				check(l:GetAttribute("LightWanted")==true and l.Shadows==false and l.Brightness<=.7,post.Name.." light is a director-managed, shadowless glow")
+				check(l.Parent:IsA("Attachment") and math.abs(lightPos(l).Y-post:GetAttribute("TravelBeaconHover").Y)<=1.5,post.Name.." light sits at crystal height")
+			end
+		end
+		check(lights<=1,post.Name.." carries at most one light")
+	end
+	check(beaconLights<=kinds.region+kinds["return"],"beacon lights stay within the old budget ("..beaconLights..")")
+	-- A trip flares the beacon and marks known fast travel.
+	for _,post in list do
+		local q=post:FindFirstChildOfClass("ProximityPrompt")
+		if q and q:GetAttribute("IsleWarpReturn") then
+			local t=traveller()
+			t.UserId=91
+			standAt(t,post)
+			local was=post:GetAttribute("TravelBeaconFlare") or 0
+			q.Triggered:Fire(t)
+			check(t.landed~=nil and post:GetAttribute("TravelBeaconFlare")==was+1 and post:GetAttribute("TravelBeaconFlareBy")==91,post.Name.." flares on a trip")
+			check(t.attributes.FastTravelAt~=nil,"a beacon trip is known fast travel")
+			local far=traveller()
+			standAt(far,{CFrame=post.CFrame+Vec(40,0,0)})
+			q.Triggered:Fire(far)
+			check(post:GetAttribute("TravelBeaconFlare")==was+1,"a refused trip does not flare")
+			break
+		end
+	end
+	print("Travel beacons: "..(checks-before).." checks; "..#list.." beacons ("..travelPrompts.." travel prompts), "..beaconParts.." static parts, "..beaconLights.." lights.")
 end
 print("Depth world: "..tierCount.." resource tiers / "..nodeCount.." gather nodes, "..markers.." spawn markers, "..warps.." gated warps, "..stationCount.." stations, "..staticParts.." static parts, "..staticLights.." lights.")
 print("World QA passed "..checks.." checks with "..parts.." parts, "..prompts.." prompts and "..signs.." sign surfaces.")

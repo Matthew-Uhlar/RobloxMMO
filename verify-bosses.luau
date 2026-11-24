@@ -190,6 +190,38 @@ ok(Data.Items.ThornmawCleaver.stats.damage > Data.Items.StarmetalSword.stats.dam
 ok(Data.Items.GalesongLongbow.ranged.power > Data.Items.StarwoodLongbow.ranged.power, "Galesong above the Ranged-40 longbow")
 -- (At 85% of Crownbreaker, Hollowcrown sits below the Combat-60 Sovereign Greatblade; it still beats the Combat-40 Prismatic Sword.)
 ok(Data.Items.HollowcrownEdge.stats.damage > Data.Items.PrismaticSword.stats.damage, "Hollowcrown above the Combat-40 craft")
+-- Polish: Hollow Sunder gives the Hollowcrown Edge a niche (bosses) without lifting it on general content.
+-- Expected melee hit (SkyBlock formula, crits averaged) with the weapon's stats plus a gear profile.
+do
+	local function expected(id, gear)
+		local st = Data.Items[id].stats
+		local str = st.strength + gear.strength
+		local cc = math.min(100, st.critChance + gear.critChance)
+		local cd = st.critDamage + gear.critDamage
+		return (5 + st.damage) * (1 + str / 100) * (1 + cc / 100 * cd / 100)
+	end
+	local sp = Data.Items.HollowcrownEdge.special
+	ok(type(sp) == "table" and sp.id == "HollowSunder" and sp.boss > 0 and sp.warded >= sp.boss, "Hollowcrown carries Hollow Sunder")
+	ok(has(Data.Items.HollowcrownEdge.description, "Hollow Sunder"), "the tooltip names Hollow Sunder")
+	eq(LR.sunderMult("HollowcrownEdge", {boss = false}), 1, "no Sunder on ordinary monsters")
+	eq(LR.sunderMult("HollowcrownEdge", {boss = true}), 1 + sp.boss, "Sunder on bosses")
+	eq(LR.sunderMult("HollowcrownEdge", {boss = true, warded = true}), 1 + sp.warded, "stronger Sunder on shielded bosses")
+	eq(LR.sunderMult("SovereignGreatblade", {boss = true}), 1, "other weapons have no Sunder")
+	eq(LR.sunderMult("Crownbreaker", {boss = true, warded = true}), 1, "the rival has no Sunder")
+	for _, profile in ipairs({
+		{name = "weapon only", strength = 0, critChance = 0, critDamage = 0},
+		{name = "Combat-65 kit", strength = 100, critChance = 20, critDamage = 100},
+		{name = "endgame kit", strength = 220, critChance = 45, critDamage = 220},
+	}) do
+		local hc, sg, cb = expected("HollowcrownEdge", profile), expected("SovereignGreatblade", profile), expected("Crownbreaker", profile)
+		local boss, warded = hc * LR.sunderMult("HollowcrownEdge", {boss = true}), hc * LR.sunderMult("HollowcrownEdge", {boss = true, warded = true})
+		print(string.format("  Hollow Sunder (%s): general %.0f vs Greatblade %.0f / Crownbreaker %.0f; bosses %.0f (%.2fx Greatblade, %.2fx Crownbreaker); warded %.0f",
+			profile.name, hc, sg, cb, boss, boss / sg, boss / cb, warded))
+		ok(hc < sg and hc < cb, "general content: Hollowcrown stays below its rivals (" .. profile.name .. ")")
+		ok(boss > sg, "bosses: Hollowcrown beats the easier Sovereign Greatblade (" .. profile.name .. ")")
+		ok(boss < cb, "bosses: Hollowcrown stays below the Crownbreaker (" .. profile.name .. ")")
+	end
+end
 -- Loot: only the uniques are rare; pets ~40 h of kills.
 for _, id in ipairs(LR.Order) do
 	local loot, unique = LR.Loot[id], 0
@@ -618,6 +650,36 @@ do
 	for i = 1, LR.MAX_INSTANCES - 1 do ok(L.lrRegister("C" .. i, "Bramblemaw", {Name = "b" .. i}, Vector3.new(i * 400, 3, 0), {members = {1000 + i}}) ~= nil, "instance " .. i) end
 	eq(L.lrRegister("C9", "Bramblemaw", {Name = "over"}, center, {members = {77}}), nil, "instance cap holds")
 	ok(L.lrCount() <= LR.MAX_INSTANCES * (1 + LR.MAX_ADDS), "creature cap")
+end
+do
+	-- Polish: Hollow Sunder in combat: bosses only, stronger while warded, never on adds.
+	local w = world()
+	local L = w.logic
+	local edge = w.player(31, Vector3.new(0, 0, 4))
+	local plainHero = w.player(32, Vector3.new(0, 0, -4))
+	w.stats[edge].loadout.weapon = "HollowcrownEdge"
+	local r = L.lrRegister("S1", "Bramblemaw", {Name = "boss"}, Vector3.new(0, 3, 0), {members = {31, 32}, seed = 1, center = center})
+	local raw = P.meleeDamage(w.stats[edge].stats, function() return 0.5 end)
+	local sp = Data.Items.HollowcrownEdge.special
+	local hit = swing(w, edge, r)
+	eq(hit.damage, (L.mitigate(r, math.floor(raw * (1 + sp.boss)), "melee", edge)), "Sunder adds its boss bonus")
+	ok(hit.sunder == true, "the hit is flagged Sunder")
+	local base = swing(w, plainHero, r)
+	eq(base.damage, (L.mitigate(r, raw, "melee", plainHero)), "no Sunder without the Edge")
+	ok(hit.damage > base.damage and not base.sunder, "the Edge out-hits the same stats on a boss")
+	local add = L.lrRegisterAdd(r, "Thornspawn", {Name = "add1"}, Vector3.new(3, 2, 0), {})
+	ok(L.lrWarded(r), "brood ward up")
+	local warded = swing(w, edge, r)
+	eq(warded.damage, (L.mitigate(r, math.floor(raw * (1 + sp.warded)), "melee", edge)), "Sunder cuts harder through a ward")
+	add.hp = add.maxHp
+	local onAdd = swing(w, edge, add)
+	local addPlain = swing(w, plainHero, add)
+	eq(onAdd.damage, addPlain.damage, "no Sunder on adds")
+	ok(not onAdd.sunder, "an add hit is not flagged")
+	eq(L.sunderMult("HollowcrownEdge", {worldBoss = true, adds = {}}), 1 + sp.boss, "world bosses count")
+	eq(L.sunderMult("HollowcrownEdge", {worldBoss = true, adds = {[{}] = true}}), 1 + sp.warded, "a world boss add wave counts as a ward")
+	eq(L.sunderMult("HollowcrownEdge", {boss = true}), 1 + sp.boss, "slayer bosses count")
+	eq(L.sunderMult("HollowcrownEdge", {id = "BramblebackBoar"}), 1, "ordinary monsters do not")
 end
 print("PASS: " .. (checks - partB) .. " lair combat assertions.")
 

@@ -5,7 +5,9 @@
 -- and the world's own prompts, a Navigate list, recall charms, and waypoints: a
 -- glowing beam + beacon to the target that clears itself on arrival.
 -- Other scripts request a waypoint by firing the local BindableEvent
--- LocalPlayer.WayfinderRequest(specs, label) with Data.Townsfolk target specs.
+-- LocalPlayer.WayfinderRequest(specs, label[, quiet]) with Data.Townsfolk target
+-- specs; LocalPlayer.WayfinderActive (attribute, read-only for them) holds the
+-- active waypoint's label.
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -136,6 +138,11 @@ local function buildIndex()
 			end
 		end
 	end
+	-- §42 QC M3: gathering nodes have no prompt any more; "gather:<id>" resolves
+	-- to the AetherNode-tagged hosts (other islands' owner-only nodes skipped).
+	local tagged = {}
+	pcall(function() tagged = game:GetService("CollectionService"):GetTagged("AetherNode") end)
+	if Data.Strike and Data.Strike.indexNodes then Data.Strike.indexNodes(tagged, player.UserId, index.gather) end
 	local spawns = workspace:FindFirstChild("MonsterSpawns")
 	if spawns then
 		for _, marker in ipairs(spawns:GetChildren()) do
@@ -340,8 +347,16 @@ local function buildVisuals(label)
 	visuals = {beacon = beacon, ring = ring, beam = beam, title = title, distance = distance}
 	attachPlayer()
 end
+-- §43 QC M6: the active waypoint's label is published as the read-only local
+-- attribute LocalPlayer.WayfinderActive (nil when none), so other scripts (the
+-- tutorial's coach cards) never replace a waypoint the player chose.
+local function publishActive()
+	local value = if waypoint then waypoint.label else nil
+	if player:GetAttribute("WayfinderActive") ~= value then player:SetAttribute("WayfinderActive", value) end
+end
 local function clearWaypoint(message)
 	waypoint = nil
+	publishActive()
 	destroyVisuals()
 	if message then notify(message) end
 end
@@ -350,19 +365,21 @@ local function placeVisuals(target)
 	visuals.beacon.CFrame = CFrame.new(target + Vector3.new(0, 27, 0))
 	visuals.ring.CFrame = CFrame.new(target + Vector3.new(0, 0.2, 0)) * CFrame.Angles(0, 0, math.pi / 2)
 end
-local function setWaypoint(specs, label)
+-- quiet (3rd argument): an automatic request (the tutorial) fails without a toast.
+local function setWaypoint(specs, label, quiet)
 	if type(specs) == "string" then specs = {specs} end
 	if type(specs) ~= "table" or #specs == 0 then return end
 	local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
 	local from = root and root.Position
 	local target, spec = T.resolveFirst(specs, buildIndex(), from)
 	if not target then
-		notify("I can't find that on the charts yet. Try again once the isle has loaded.")
+		if quiet ~= true then notify("I can't find that on the charts yet. Try again once the isle has loaded.") end
 		return
 	end
 	label = if type(label) == "string" and label ~= "" then label else T.targetLabel(spec)
 	waypoint = T.newWaypoint(specs, label, os.clock())
 	waypoint.target = target
+	publishActive()
 	buildVisuals(label)
 	placeVisuals(target)
 	notify("Waypoint set: " .. label)
@@ -606,7 +623,7 @@ local function placeList()
 		list.Position = UDim2.fromOffset(10, below)
 		list.Size = UDim2.fromOffset(240, math.min(300, height - below - floor))
 	else
-		list.Position = UDim2.fromOffset(L.mapBlock.x + L.mapBlock.w + 10, 8)
+		list.Position = UDim2.fromOffset(L.lane.left, 8) -- right of the status orbs (§34)
 		list.Size = UDim2.fromOffset(240, math.max(120, math.min(300, height - 8 - floor)))
 	end
 end
@@ -650,7 +667,7 @@ navigatePanel = function()
 	if waypoint then entry("✕ Clear waypoint (" .. waypoint.label .. ")", nextOrder(), function() clearWaypoint("Waypoint cleared.") end) end
 	heading("RECALL CHARM", nextOrder())
 	entry("Return Home", nextOrder(), function() recall("Home") end)
-	entry("Return to Hub", nextOrder(), function() recall("Hub") end)
+	entry("Return to Compass Quay", nextOrder(), function() recall("Hub") end)
 	if #index.warpReturn > 0 then entry("Nearest homeward beacon", nextOrder(), function() setWaypoint({"warpReturn"}) end) end
 	heading("TOWNSFOLK", nextOrder())
 	for _, role in ipairs(T.Order) do
@@ -668,6 +685,13 @@ navigatePanel = function()
 		{"Jeweller", "Jeweller's Bench"}, {"Tannery", "Tanning Rack"}, {"Glassworks", "Glass Furnace"}}) do -- Crafting stations
 		local specs = {"anchor:Waypoint_" .. vendor[1]}
 		if T.resolveFirst(specs, index) then entry(vendor[2], nextOrder(), function() setWaypoint(specs, vendor[2]) end) end
+	end
+	-- Beaconry (§37): the regional beacon pyres (anchors Waypoint_Beacon_<id>).
+	local BC = Data.Beaconry
+	for _, id in ipairs(BC and BC.BeaconOrder or {}) do
+		local name = BC.Beacons[id].name
+		local specs = {"anchor:Waypoint_Beacon_" .. id}
+		if T.resolveFirst(specs, index) then entry(name, nextOrder(), function() setWaypoint(specs, name) end) end
 	end
 	-- Exploration & Factions: the hub Mote Shrine and the three faction standards
 	-- (world anchors Waypoint_MoteShrine / Waypoint_Faction_<id>); a locked

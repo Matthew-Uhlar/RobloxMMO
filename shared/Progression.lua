@@ -142,6 +142,8 @@ end
 -- Crest (`faction`) are one family too ("faction:<id>").
 function Progression.accessoryFamily(id)
 	local def = Data.Items[id]
+	-- An explicit family (§39 QC M1: the Furrow and Laureate's Medallions).
+	if def and def.kind == "accessory" and type(def.family) == "string" then return def.family end
 	if def and def.category == "jewellery" and type(def.gem) == "string" then return "jewellery:" .. def.gem end
 	-- A faction's Charm and Crest are one family: only the better one counts.
 	if def and def.kind == "accessory" and type(def.faction) == "string" then return "faction:" .. def.faction end
@@ -249,14 +251,16 @@ function Progression.addXpToPet(pet, amount)
 	return pet.level - start
 end
 -- Pets earn the full XP of their skill, a share of other skills (same category
--- 50%, others 25%), boosted by Taming and an XP held item. Returns leveled, gained.
+-- 50%, others 25%), boosted by Taming and an XP held item. Returns leveled,
+-- gained, notional: `notional` is what the pet would have earned even at max
+-- level (§41 QC L4: Roost tethers still learn from a max-level summoned pet).
 function Progression.addPetXp(p, skill, amount)
 	local pet, def = Progression.activePet(p)
-	if not pet then return false, 0 end
-	if pet.level >= Data.PET_MAX_LEVEL then pet.xp = 0 return false, 0 end
-	local gained = amount * Progression.petShare(def, skill) * Progression.petXpMult(p, pet, skill)
-	local leveled = Progression.addXpToPet(pet, gained) > 0
-	return leveled, gained
+	if not pet then return false, 0, 0 end
+	local notional = amount * Progression.petShare(def, skill) * Progression.petXpMult(p, pet, skill)
+	if pet.level >= Data.PET_MAX_LEVEL then pet.xp = 0 return false, 0, notional end
+	local leveled = Progression.addXpToPet(pet, notional) > 0
+	return leveled, notional, notional
 end
 -- Stats one pet gives while summoned: species perLevel scaled by rarity and
 -- Taming, unlocked stat abilities, held item stats.
@@ -336,7 +340,8 @@ function Progression.enchantStats(p, itemId, kind, skill)
 end
 
 -- Full stat sheet. now = os.time() for buff expiry.
-function Progression.computeStats(p, now)
+-- `power` (optional): Magical Power already computed by the caller this tick.
+function Progression.computeStats(p, now, power)
 	now = now or 0
 	local s = {}
 	for stat, def in pairs(Data.Stats) do s[stat] = def.base end
@@ -391,7 +396,7 @@ function Progression.computeStats(p, now)
 			addStats(s, gearStats(p, toolId))
 		end
 	end
-	s.magicalPower = Progression.magicalPower(p)
+	s.magicalPower = if type(power) == "number" then power else Progression.magicalPower(p)
 	-- Magical power grants scaling stats (SkyBlock accessory power).
 	s.health += s.magicalPower * 1
 	s.strength += math.floor(s.magicalPower / 4)

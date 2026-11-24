@@ -46,7 +46,7 @@ export PATH=$HOME/.cargo/bin:$PATH   # Lune 0.11.1, Rojo 7.7.1 (cargo install ..
 - Every suite must print `SUITE-END <file>`. Lune exits 0 on a coroutine that yields forever, so the build fails if any suite is missing its sentinel.
 - `build.ps1` mirrors the suite list. **Add every new suite to both files.**
 - **Generated art:** after editing `art/*-shapes.cjs`, run `node art/generate-props.cjs && node art/generate-import.cjs`. On merge conflicts in `art/import/*.glb` or `manifest.json`, regenerate instead of hand-merging.
-- **Static world part budget:** 4000, about 3,485 used. Detailed shapes are forged on the client as EditableMeshes (`forge.client.lua`), so a `meshSlot` proxy costs one server part.
+- **Static world part budget:** 4000, about 3,675 used (§40 settlements: 58 buildings, 7 walk-in halls). Detailed shapes are forged on the client as EditableMeshes (`forge.client.lua`), so a `meshSlot` proxy costs one server part.
 
 ## 4. How the work is organised
 
@@ -87,31 +87,33 @@ export PATH=$HOME/.cargo/bin:$PATH   # Lune 0.11.1, Rojo 7.7.1 (cargo install ..
 
 - Since §30 was written, a grass-clipping fix landed in `island()` in `world.server.lua`: the foundation and cliff now sit below the meadow slab, and verify-world asserts this.
 
-**Also merged at pause time** (32 suites pass). These three still need their independent QC review and a fix team; nothing else is in flight:
+**Also merged at pause time** (32 suites pass). All three have since had independent QC reviews and fix rounds (merged and pushed). The live game was published from PR #5 before those fixes; publishing again needs the owner's go-ahead:
 
 | Merged | What it is |
 |---|---|
 | UI overhaul QC fixes | All 24 findings: satchel drag and click bugs; M opens the Sky Chart; PlayerList core GUI off; the minimap setting hides the whole block; XP-drop lanes; tablet docking; short windows; `Gear.upgraded` guard on sell and drop; 12 lows. |
-| §31 MMO features | `features.client.lua`, `verify-features.luau`: Isle Renown account level (perkStats `renown`, accessory slots at renown 10/25/50/100/150), Wayfarer's Path onboarding (10 steps, claimed via `guideClaim`), announcement toasts, shop quantity `:qty` 1–64, six Skyward Vents, Resonance (Magical Power templates, NPC Oriel Thrumwright). |
+| §31 MMO features | `features.client.lua`, `verify-features.luau`: Isle Renown account level (perkStats `renown`, accessory slots at renown 10/25/50/100/150), Wayfarer's Path onboarding (11 steps since Polish, journal mode first; claimed via `guideClaim`), announcement toasts, shop quantity `:qty` 1–64, six Skyward Vents, Resonance (Magical Power templates, NPC Oriel Thrumwright). |
 | §32 map art | `shared/MapArt.lua`, `verify-map.luau`: 3D ViewportFrame Sky Chart built from the real islands, plus region-tinted minimap plates. |
+| §37 Beaconry | New 1-99 skill (23 skills): kindling with held strikers, bounded campfires (`beaconry.server.lua` draws them), nine regional beacon pyres with warmth buffs and a weekly cross-server goal, campfire cooking, Pyre Ash for Alchemy / Farming; `verify-beaconry.luau`. Open decisions in §37. |
 
 **Open decisions from §31:**
-- Should Pell's older 6-step client tutorial be retired, now that Wayfarer's Path exists?
-- Merchant selling is still whole-stack only; add a quantity picker for selling.
+- ~~Retire Pell's older 6-step tutorial~~ — done (Polish wave, lead decision): the Wayfarer's Path is the only onboarding; see §31 "Polish".
+- ~~Merchant selling is whole-stack only~~ — done: `sell "<id>:<n>"` with the picker in sell mode.
 - Resonance gathering templates (about +36 fortune / +108 mining speed at 300 MP) need a play-test.
+- ~~Journal mode timing~~ — decided (Polish QC round): "Choose your journal mode" is now the FIRST Path step, offered by Pell at first contact (Standard in one tap, Ironman behind the explanation and the PERMANENT confirmation; refused once started or while in a crew). Saved Path progress is keyed by step id, so nothing is re-indexed; `p.guide.v = 2`. See §31 "Journal mode".
 
 **Follow-ups from §31:**
 - per-player shop stock limits
 - full tooltip footer
 - top objective progress bar
-- tier-1 worker recipe unlock message
+- ~~tier-1 worker recipe unlock message~~ (done: WORKER RECIPE UNLOCKED announcement)
 - pickup feed
 - OSRS action label and status orbs
 - chat filter tabs
 - goal board
 - price history
 - server browser
-- account-mode choice at the end of onboarding
+- ~~account-mode choice at the end of onboarding~~ (done: Path step `mode`, verb `guideMode`)
 
 **From §32, to check in Studio:**
 - the first-open hitch when copying about 2.2k parts
@@ -119,9 +121,11 @@ export PATH=$HOME/.cargo/bin:$PATH   # Lune 0.11.1, Rojo 7.7.1 (cargo install ..
 - forge budget contention from the chart's 40 pinned meshes
 
 **Known open items and ideas:**
-- **Hollowcrown Edge** (lair unique) is now weaker than an easier crafted sword after the 85% rival cap. Give it a niche, such as a special ability. See §25.
+- ~~**Hollowcrown Edge** niche~~ — done: Hollow Sunder (+25% vs bosses, +50% vs warded bosses), modelled in verify-bosses. See §25. Play-test the feel against Nihlvar and world bosses.
 - **StreamingEnabled is off.** Enabling it needs an audit of client scripts that read far-away world children (nav, motes, regions, ui). See §27.
-- **Stale display names** remain in `shared/GameData.lua`: "Aether Hub" and "Quarry Cay" in the base regions, tutorial and recall text.
+- ~~Stale display names~~ — done: base data says Compass Quay / Sunwheel Downs / Brassfall Cay (ids unchanged).
+- **Vent launch feel** (Polish): FOV kick, banking tilt and wind streaks need a Studio check for comfort and with the Lighting team's director. (QC L2 fixed back-to-back vents leaving the FOV kicked.)
+- **Polish QC fixes:** sell picker needs a confirming second tap (M1); atlas hides Sell / Sell… for equipped or bagged items (M2); Ironman refused while in a crew (L1); worker recipe toast says "available at <skill> <level>" when gated (L3); stale tutorial-tracker comments updated and the dead `TutorialTracker` lookup removed from the Agility HUD layout (L4). Pell's first-contact journal-mode options need a phone check (two extra dialogue rows).
 - **Gaps from the OSRS videos still unbuilt:**
   - a "verb + target" action label;
   - a per-skill unlock guide in the skills panel;
@@ -154,3 +158,9 @@ Gemini video access (the `watch` skill) uses a free-tier key with 20 requests a 
 - Reply in plain language: what changed, what's verified, what needs a play-test.
 - Ask before merging or publishing the PR.
 - Never echo secrets. The owner pasted a Gemini key in chat earlier, and it is stored only in `~/.config/watch/.env` in the old container.
+
+## 8. Update (2026-11-23)
+
+Merged and pushed since the first pause (all 37 suites pass), each with an independent QC review and a fix round: §33 Systems Depth (quest helper, goal board, price history with its own auction history key, per-item daily shop stock, calculator), §34 HUD Depth (action label, status orbs, chat tabs, pickup feed, tooltip footer, hitsplats/bars), §35 Lighting (single client lighting director, region profiles, graphics tiers, saved settings), Polish (renames, Hollow Sunder, sell quantity, worker-unlock toasts, journal mode as the Path's first step, vent FX), §36 Isle Council (elections; MemoryStore ballots; Renown 5 to vote) and §37 Beaconry (firemaking-style skill, beacons, campfire cooking; keeper Old Hesketh Ashby).
+
+Live game: still the publish from PR #5. Everything above is on `claude/pensive-maxwell-145p0c` waiting for the owner's go-ahead to publish (new PR into `main`).

@@ -363,9 +363,9 @@ function Data.enchantSkillLevel(enchant, level) return math.min(99, enchant.leve
 -- Regions: travel destinations with requirements (OSRS gated areas).
 ------------------------------------------------------------------------------
 Data.Regions = {
-	{id="Hub",name="Aether Hub",requires={},description="The shared hub: bank, market and guild."},
-	{id="Meadow",name="Meadow Reach",requires={},description="Gentle hills. Brambleback boars and Thornlings roam.",monsters={"BramblebackBoar","Thornling"}},
-	{id="Quarry",name="Quarry Cay",requires={},description="Copperstone and Aetherite seams.",monsters={"ShaleCrawler","CinderMite"}},
+	{id="Hub",name="Compass Quay",requires={},description="The shared hub: bank, market and guild."},
+	{id="Meadow",name="Sunwheel Downs",requires={},description="Gentle hills. Brambleback boars and Thornlings roam.",monsters={"BramblebackBoar","Thornling"}},
+	{id="Quarry",name="Brassfall Cay",requires={},description="Copperstone and Aetherite seams.",monsters={"ShaleCrawler","CinderMite"}},
 	{id="Skyreach",name="Skyreach Heights",requires={quest=6},description="Rich Aetherite and Brass golems.",monsters={"BrassGolem","StormHarrier"}},
 	{id="Windpine",name="Windpine Grove",requires={skills={Woodcutting=10}},description="Ancient windpines and emberoaks. Bark Stalkers hunt here.",monsters={"BarkStalker","GaleSprite"}},
 	{id="Gloomhollow",name="Gloomhollow Caverns",requires={skills={Mining=30,Combat=15}},description="Voidstone deep below. Gloomfang spiders nest here.",monsters={"GloomfangSpider","VoidWisp"}},
@@ -753,13 +753,13 @@ local function g(region, count) return {kind="gather",region=region,count=count}
 local function s(line, lvl) return {kind="slayer",line=line,level=lvl} end
 local function q(quest) return {kind="quest",quest=quest} end
 Data.Diaries = {
-	{region="Meadow",name="Meadow Reach Diary",tiers={
+	{region="Meadow",name="Sunwheel Downs Diary",tiers={
 		Easy={tasks={k("BramblebackBoar",5),c("Herb",50),c("Timber",50),l("Farming",5)},perk={health=10}},
 		Medium={tasks={k("Thornling",25),c("Sunwheat",100),cr("MightDraught",5),l("Farming",20)},perk={farmingFortune=10}},
 		Hard={tasks={k("BramblebackBoar",250),c("Glowcap",250),s("Bramble",3),l("Farming",40)},perk={farmingFortune=15,health=15}},
 		Elite={tasks={c("AetherLotus",500),k("Thornling",500),s("Bramble",6),l("Farming",75)},perk={farmingFortune=25,health=25}},
 	}},
-	{region="Quarry",name="Quarry Cay Diary",tiers={
+	{region="Quarry",name="Brassfall Cay Diary",tiers={
 		Easy={tasks={c("Ore",100),k("ShaleCrawler",5),cr("AlloyIngot",5),l("Mining",5)},perk={defense=5}},
 		Medium={tasks={c("Brassite",100),k("CinderMite",25),cr("BrassIngot",10),l("Mining",20)},perk={miningFortune=10}},
 		Hard={tasks={c("SunsteelOre",250),k("CinderMite",250),cr("SunsteelIngot",25),l("Mining",45)},perk={miningFortune=15,defense=10}},
@@ -806,15 +806,18 @@ end
 -- effect: station={...} home crafting prompts, perk={stat=v},
 -- accessorySlots=n, workerHaste=fraction, portal={regionId...} (attunable).
 ------------------------------------------------------------------------------
-Data.TERRACE_OFFSET = {x=-33,z=0}
+-- §40 (spread): the add-ons stand in districts out on the big island
+-- (terrace west at r52, garden north-west, worker yard south-east, lookout
+-- north); Island.migrate relocates any decoration on their new ground.
+Data.TERRACE_OFFSET = {x=-52,z=0}
 Data.Hotspots = {
-	{id="Bench",name="Workshop Bench",x=-27,z=5.2},
-	{id="Hearth",name="Kitchen Hearth",x=-33,z=7.4},
-	{id="Storage",name="Storage Nook",x=-39,z=5.2},
-	{id="Trophy",name="Trophy Alcove",x=-39,z=-5.2},
-	{id="Garden",name="Garden Plot",x=-33,z=-7.4},
-	{id="Dock",name="Surveyor Dock",x=-27,z=-5.2},
-	{id="Portal",name="Portal Circle",x=-36,z=0},
+	{id="Bench",name="Workshop Bench",x=-46,z=5.2},
+	{id="Hearth",name="Kitchen Hearth",x=-52,z=7.4},
+	{id="Storage",name="Storage Nook",x=-58,z=5.2},
+	{id="Trophy",name="Trophy Alcove",x=-58,z=-5.2},
+	{id="Garden",name="Garden Plot",x=-52,z=-7.4},
+	{id="Dock",name="Surveyor Dock",x=-46,z=-5.2},
+	{id="Portal",name="Portal Circle",x=-55,z=0},
 }
 Data.HotspotById = {}
 for i, h in ipairs(Data.Hotspots) do h.index = i; Data.HotspotById[h.id] = h end
@@ -848,14 +851,16 @@ Data.MAX_PERK_SLOTS = 6
 Data.MAX_WORKER_HASTE = 0.3
 
 -- Human-readable text for one check (shared by server messages and the UI).
-function Data.describeCheck(o)
+-- regional = true: a regional quest objective (kills / collect / gather count
+-- since the quest was accepted, so "collect" is not a lifetime total there).
+function Data.describeCheck(o, regional)
 	local function nameOf(id) local def = Data.Items[id]; return def and def.name or tostring(id) end
 	local kind = type(o) == "table" and o.kind
 	if kind == "contracts" then return "Claim "..o.count.." guild contracts"
 	elseif kind == "quest" then local qd = Data.QuestById[o.quest]; return "Complete "..(qd and qd.title or tostring(o.quest))
 	elseif kind == "questPoints" then return o.count.." Quest Points"
 	elseif kind == "level" then return o.skill.." level "..o.level
-	elseif kind == "collect" then return "Collect "..o.count.." "..nameOf(o.item).." (lifetime)"
+	elseif kind == "collect" then return "Collect "..o.count.." "..nameOf(o.item)..(if regional then " (since accepting)" else " (lifetime)")
 	elseif kind == "collectionTier" then return nameOf(o.item).." collection tier "..o.tier
 	elseif kind == "have" then return (if o.consume then "Hand in " else "Hold ")..o.count.." "..nameOf(o.item)
 	elseif kind == "kills" then local m = Data.Monsters[o.monster]; return "Defeat "..o.count.." "..(m and m.name or tostring(o.monster))
@@ -1267,20 +1272,38 @@ do
 		{name="garden plot",x1=-14,z1=-2.5,x2=-8,z2=4.5},
 		{name="lookout bridge",x1=-4,z1=16,x2=4,z2=20},
 		{name="terrace bridge",x1=-20,z1=-4,x2=-16,z2=4},
-		{name="terrace sign",x1=-15.5,z1=-10,x2=-14.5,z2=-2},
+		{name="terrace sign",x1=-38.5,z1=-10,x2=-37.5,z2=-8}, -- §40 QC: beside the terrace walk at the plaza (world: centre + (-38, 0, -9)); a floating §28 sign, no post
 		-- Home islands (§27): the add-ons now stand on the big island.
-		{name="terrace path",x1=-22.5,z1=-3,x2=-19.5,z2=3},
-		{name="lookout path",x1=-3,z1=19.5,x2=3,z2=22.5},
+		{name="terrace path",x1=-41.5,z1=-3,x2=-19.5,z2=3},
+		{name="lookout path",x1=-3,z1=19.5,x2=3,z2=39.5},
 	}
 	-- Circular protected zones (x, z centre and r in studs): a cell is blocked
 	-- when its square (shrunk by BRUSH) reaches inside the circle.
 	Island.ProtectedCircles = {
-		{name="worker yard",x=26,z=-25,r=18},          -- yard r12 + its ramp
-		{name="Builder's Terrace",x=-33,z=0,r=11.5},
-		{name="Verdant Garden",x=-28.3,z=28.3,r=14.5},
-		{name="lookout deck",x=0,z=29,r=7.5},
+		{name="worker yard",x=40,z=-38,r=19},          -- yard r12 + its ramp (§40: moved out)
+		{name="Builder's Terrace",x=-52,z=0,r=11.5},
+		{name="Verdant Garden",x=-40,z=40,r=14.5},
+		{name="lookout deck",x=0,z=46,r=7.5},
 		{name="survey stake",x=10,z=-21,r=2},
 	}
+	-- Walk capsules (§40 QC M1): the walks from the core out to the moved
+	-- add-ons are oriented strips, so they are protected as segment capsules
+	-- (ax, az) -> (bx, bz) with half-width hw (path width / 2) in studs. The
+	-- endpoints mirror world.server.lua: the garden walk runs from 20 studs out
+	-- towards the Verdant Garden to its lawn edge (GARDEN_R 14 - 0.5); the yard
+	-- path from HOME_CORE - 1 to the foot of the yard ramp (YARD_R 12 + 5.4 - 0.6).
+	-- The terrace and lookout walks are axis-aligned rectangles (Protected).
+	Island.ProtectedSegments = {}
+	do
+		local function walk(name, tx, tz, fromR, toBack, width)
+			local len = math.sqrt(tx * tx + tz * tz)
+			local ux, uz = tx / len, tz / len
+			table.insert(Island.ProtectedSegments, {name=name, ax=ux * fromR, az=uz * fromR,
+				bx=tx - ux * toBack, bz=tz - uz * toBack, hw=width / 2})
+		end
+		walk("garden walk", -40, 40, 20, 13.5, 5)
+		walk("worker yard path", 40, -38, 20, 16.8, 5)
+	end
 	Island.Props = {
 		-- Fences
 		TimberFence={name="Timber Fence",category="Fences",level=1,xp=12,costs={Timber=4},size={1,1},parts=4,max=40,value=1,color="966B4C",text="A rail of meadow timber."},
@@ -1370,6 +1393,39 @@ do
 	-- nil when buildable, else a short reason: "edge" or a protected zone name.
 	-- `stage` (default 0) is the owner's expansion stage; `radius` overrides it
 	-- (the legacy grid check passes Island.LEGACY_RADIUS).
+	-- Squared distance from segment g (ax,az)-(bx,bz) to the axis-aligned
+	-- square centred (cx, cz) with half-size e; 0 when they touch.
+	local function segmentBoxDist2(g, cx, cz, e)
+		local x0, z0, x1, z1 = cx - e, cz - e, cx + e, cz + e
+		-- Liang-Barsky: does the segment cross the square?
+		local dx, dz = g.bx - g.ax, g.bz - g.az
+		local t0, t1 = 0, 1
+		local crosses = true
+		for _, pq in ipairs({{-dx, g.ax - x0}, {dx, x1 - g.ax}, {-dz, g.az - z0}, {dz, z1 - g.az}}) do
+			local p, q = pq[1], pq[2]
+			if p == 0 then
+				if q < 0 then crosses = false break end
+			else
+				local t = q / p
+				if p < 0 then t0 = math.max(t0, t) else t1 = math.min(t1, t) end
+				if t0 > t1 then crosses = false break end
+			end
+		end
+		if crosses then return 0 end
+		-- Otherwise the closest pair involves a vertex of one of the two.
+		local function ptBox(px, pz)
+			local ex = math.max(math.abs(px - cx) - e, 0)
+			local ez = math.max(math.abs(pz - cz) - e, 0)
+			return ex * ex + ez * ez
+		end
+		local len2 = dx * dx + dz * dz
+		local function ptSeg(px, pz)
+			local t = if len2 > 0 then math.clamp(((px - g.ax) * dx + (pz - g.az) * dz) / len2, 0, 1) else 0
+			local ex, ez = g.ax + dx * t - px, g.az + dz * t - pz
+			return ex * ex + ez * ez
+		end
+		return math.min(ptBox(g.ax, g.az), ptBox(g.bx, g.bz), ptSeg(x0, z0), ptSeg(x1, z0), ptSeg(x0, z1), ptSeg(x1, z1))
+	end
 	function Island.cellBlocked(x, z, stage, radius)
 		if not int(x) or not int(z) or math.abs(x) > Island.RANGE or math.abs(z) > Island.RANGE then return "edge" end
 		local half = Island.CELL / 2
@@ -1385,6 +1441,12 @@ do
 			local dx = math.max(math.abs(c.x - cx) - e, 0)
 			local dz = math.max(math.abs(c.z - cz) - e, 0)
 			if dx * dx + dz * dz < c.r * c.r then return c.name end
+		end
+		-- Walk capsules never take a cell of the legacy disc (old saves keep
+		-- every legacy-valid cell; the walks start at its rim).
+		local legacy = fx * fx + fz * fz <= Island.LEGACY_RADIUS * Island.LEGACY_RADIUS
+		for _, g in ipairs(if legacy then {} else Island.ProtectedSegments) do
+			if segmentBoxDist2(g, cx, cz, e) < g.hw * g.hw then return g.name end
 		end
 		return nil
 	end
@@ -1681,7 +1743,8 @@ end
 
 ------------------------------------------------------------------------------
 -- Townsfolk (Guide team; append-only section). NPCs, dialogue graphs, the
--- new-player tutorial, contextual tips and waypoint rules. Consumed by
+-- (retired, see "Polish" in MMO Features: the Wayfarer's Path replaced it)
+-- new-player tutorial data, contextual tips and waypoint rules. Consumed by
 -- npc.server.lua (ServerScriptService.Townsfolk), npc.client.lua
 -- (StarterPlayerScripts.Dialogue) and nav.client.lua (StarterPlayerScripts.Wayfinder).
 --
@@ -1723,7 +1786,7 @@ T.AtlasStations = {Forge="Workshop · Forge",Hearth="Workshop · Hearth",Cauldro
 -- Existing IsleAction verbs dialogue may call (item rules per verb).
 T.Verbs = {quest={item=false},claim={item=false},slayerStart={item=false},slayerClaim={item=false},sell={item=false},
 	recall={item={Hub=true,Home=true}}}
-T.RecallTargets = {Hub="the Aether Hub",Home="your Wayfarer's Rest"}
+T.RecallTargets = {Hub="Compass Quay",Home="your Wayfarer's Rest"}
 T.TargetKinds = {anchor=true,npc=true,region=true,station=true,gather=true,monster=true,warp=true,warpReturn=true,home=true}
 
 ------------------------------------------------------------------------------
@@ -1765,10 +1828,12 @@ T.skillLevel, T.contracts = skillLevel, contracts
 ------------------------------------------------------------------------------
 -- Tutorial: the first ten minutes (gather → craft → equip → fight → bank → contract).
 -- Every check reads only the server snapshot, so progress survives rejoins.
+-- RETIRED (Polish, T.TUTORIAL_RETIRED): kept as pure data only; nothing offers,
+-- tracks or draws it. Onboarding is the Wayfarer's Path (Data.Features.Guide).
 ------------------------------------------------------------------------------
 T.Tutorial = {
 	{id="gather",title="Gather supplies",
-		text="Mine 6 Copperstone Ore in Quarry Cay and cut 3 Meadow Timber. Walk up to a node and hold the prompt.",
+		text="Mine 6 Copperstone Ore in Brassfall Cay and cut 3 Meadow Timber. Walk up to a node and left-click it to swing your tool.",
 		progress=function(s) return math.min(6, collected(s, "Ore")) + math.min(3, collected(s, "Timber")), 9 end,
 		waypoint={"gather:Ore","region:Quarry"}},
 	{id="craft",title="Forge a Copper Blade",
@@ -2042,7 +2107,7 @@ end
 -- Recall (server hook "recall"): cooldown and recent-damage gate.
 ------------------------------------------------------------------------------
 function T.recallCheck(target, now, lastRecall, lastHurt)
-	if type(target) ~= "string" or not T.RecallTargets[target] then return false, "Choose Hub or Home to recall to." end
+	if type(target) ~= "string" or not T.RecallTargets[target] then return false, "Choose Compass Quay (Hub) or Home to recall to." end
 	if lastHurt and now - lastHurt < T.RECALL_HURT_GRACE then return false, "You can't recall mid-fight. Catch your breath first." end
 	if lastRecall and now - lastRecall < T.RECALL_COOLDOWN then
 		return false, "Your recall charm is recharging (" .. math.ceil(T.RECALL_COOLDOWN - (now - lastRecall)) .. "s)."
@@ -2118,7 +2183,7 @@ T.NPCs = {
 				{label="Where is everything?",to="places"},
 				{label="How do I get around?",to="travel"},
 				farewell}},
-			tutorial={tutorial=true,text="Six steps and you'll be a proper islander. Here's where you stand:",options={
+			tutorial={tutorial=true,text="A few steps and you'll be a proper islander. Here's where you stand:",options={
 				{label="Show me the way",waypoint="tutorial"},
 				{label="Check my progress again",to="tutorial"},
 				{label="Claim my guild contract",verb="quest",when="contractReady"},
@@ -2132,7 +2197,7 @@ T.NPCs = {
 				back()}},
 			travel={text="Beacons link the isles — step up and use one. Your map's Navigate list can point the way, and once every 90 seconds I can lend you a recall charm.",options={
 				{label="Recall me home",verb="recall",item="Home"},
-				{label="Recall me to the Hub",verb="recall",item="Hub"},
+				{label="Recall me to Compass Quay",verb="recall",item="Hub"},
 				{label="Guide me to a homeward beacon",waypoint={"warpReturn","anchor:Waypoint_Homeward","region:Hub"}},
 				back()}},
 		}},
@@ -2422,7 +2487,7 @@ for id, g in pairs(glyphs) do
 		color=g.color,value=math.max(2,g.level//2),description="Spell glyph. Inscribed with Glyphcraft "..g.level.."."})
 	recipe(id,{skill="Glyphcraft",level=g.level,xp=g.xp,costs=g.costs,amount=g.amount,repeatable=true,collectionTier=g.gate,station="Cauldron",category="Glyphs"})
 end
-item("HubwardTablet",{name="Hubward Tablet",kind="material",category="tablet",combatUse=true,rarity="Uncommon",color="F9CC77",value=20,description="Break to teleport to the Aether Hub (spell Hubward). Not while in combat."})
+item("HubwardTablet",{name="Hubward Tablet",kind="material",category="tablet",combatUse=true,rarity="Uncommon",color="F9CC77",value=20,description="Break to teleport to Compass Quay (spell Hubward). Not while in combat."})
 recipe("HubwardTablet",{skill="Glyphcraft",level=15,xp=25,costs={Aetherite=2,GaleGlyph=3},repeatable=true,station="Cauldron",category="Tablets"})
 -- Style accessories.
 item("FletcherQuiver",{name="Fletcher's Quiver",kind="accessory",rarity="Uncommon",color=Data.Rarity.Uncommon.color,stats={rangedStrength=5,rangedAccuracy=5},value=40*Data.Rarity.Uncommon.rank^2,description="Accessory. Magical Power "..Data.Rarity.Uncommon.power.."."})
@@ -2831,7 +2896,7 @@ end
 -- Quest checks: laps {course,count} and catches {creature,count}.
 ------------------------------------------------------------------------------
 local describe = Data.describeCheck
-function Data.describeCheck(o)
+function Data.describeCheck(o, ...) -- ... = regional flag (§33), passed through
 	local kind = type(o) == "table" and o.kind
 	if kind == "laps" then
 		local course = AG.CourseById[o.course]
@@ -2840,7 +2905,7 @@ function Data.describeCheck(o)
 		local creature = HU.CreatureById[o.creature]
 		return "Catch "..o.count.." "..(creature and creature.name or tostring(o.creature))
 	end
-	return describe(o)
+	return describe(o, ...)
 end
 local function laps(course, count) return {kind="laps",course=course,count=count} end
 local function catches(creature, count) return {kind="catches",creature=creature,count=count} end
@@ -6440,7 +6505,7 @@ end
 -- Quest checks: offerings {count, remains?} and thefts {target, count}.
 ------------------------------------------------------------------------------
 local describe = Data.describeCheck
-function Data.describeCheck(o)
+function Data.describeCheck(o, ...) -- ... = regional flag (§33), passed through
 	local kind = type(o) == "table" and o.kind
 	if kind == "offerings" then
 		local r = o.remains and PR.RemainsById[o.remains]
@@ -6450,7 +6515,7 @@ function Data.describeCheck(o)
 		local verb = t and TH.Kinds[t.kind].verb or "Rob"
 		return verb.." the "..(t and t.name or tostring(o.target)).." "..o.count.." "..(if o.count == 1 then "time" else "times")
 	end
-	return describe(o)
+	return describe(o, ...)
 end
 local function offerings(count, remains) return {kind="offerings",count=count,remains=remains} end
 local function thefts(target, count) return {kind="thefts",target=target,count=count} end
@@ -10089,7 +10154,21 @@ unique("PyreheartStaff","Pyrewarden",{name="Pyreheart Staff",kind="weapon",slot=
 	description="Magic weapon. The Pyrewarden's banked core. Supplies unlimited Ember, Stone glyphs. Requires Magic 55. Lair unique."})
 unique("HollowcrownEdge","Nihlvar",{name="Hollowcrown Edge",kind="weapon",slot="weapon",tier=9,rarity="Mythic",color="7A5BC4",
 	stats={damage=323,strength=148,critChance=15,critDamage=93},requires={Combat=65},value=30000,
-	description="Melee. A shard of Nihlvar's hollow crown. Requires Combat 65. Lair unique."})
+	special={id="HollowSunder",name="Hollow Sunder",boss=0.25,warded=0.5},
+	description="Melee. A shard of Nihlvar's hollow crown. Hollow Sunder: +25% damage to bosses (lair, world and slayer bosses), +50% while a ward, brood or add wave shields them. Requires Combat 65. Lair unique."})
+-- Hollow Sunder (Polish; the Hollowcrown Edge's niche after the 85% cap). A
+-- melee swing with a weapon carrying `special.boss` multiplies its raw damage by
+-- 1 + boss against a boss record (r.boss slayer boss, r.worldBoss, a lair boss;
+-- never adds or ordinary monsters), or by 1 + warded while that boss is shielded
+-- (lair brood ward / sigils, world boss add wave). verify-bosses models it:
+-- general content stays below the Sovereign Greatblade; on bosses it beats the
+-- Greatblade and stays below Crownbreaker while unwarded.
+function LR.sunderMult(weaponId, target)
+	local def = type(weaponId) == "string" and Data.Items[weaponId]
+	local sp = def and def.special
+	if type(sp) ~= "table" or type(sp.boss) ~= "number" or type(target) ~= "table" or target.boss ~= true then return 1 end
+	return 1 + (if target.warded == true then sp.warded or sp.boss else sp.boss)
+end
 unique("ThornheartLocket","Bramblemaw",{name="Thornheart Locket",kind="accessory",rarity="Rare",color=R.Rare.color,stats={strength=8,critDamage=6},
 	value=40*R.Rare.rank^2,description="Accessory. Magical Power "..R.Rare.power..". Only Bramblemaw's den holds one."})
 unique("SquallglassPendant","Aerisca",{name="Squallglass Pendant",kind="accessory",rarity="Epic",color=R.Epic.color,stats={rangedAccuracy=9,rangedStrength=6,speed=3},
@@ -11000,7 +11079,7 @@ for _, q in ipairs(RA.Quests) do
 end
 -- Human-readable text for the new objective kinds.
 local describe = Data.describeCheck
-function Data.describeCheck(o)
+function Data.describeCheck(o, ...) -- ... = regional flag (§33), passed through
 	if type(o) == "table" and o.kind == "talk" then
 		local f = RA.FolkByRole[o.npc]
 		return "Speak with " .. (if f then f.name else tostring(o.npc))
@@ -11008,7 +11087,7 @@ function Data.describeCheck(o)
 		local l = RA.LandmarkById[o.landmark]
 		return "Survey " .. (if l then l.name else tostring(o.landmark))
 	end
-	return describe(o)
+	return describe(o, ...)
 end
 -- Claim items a giver's dialogue may send (quest id, or "id:Skill" for lamps;
 -- open lamps offer three common picks here, every skill from the Journal).
@@ -11081,7 +11160,7 @@ function RA.progressText(s, q)
 	for j, o in ipairs(q.objectives) do
 		local pr = tab(tab(entry.objectives)[j])
 		local have, need = tonumber(pr[1]) or 0, tonumber(pr[2]) or 1
-		table.insert(lines, (if have >= need then "✓ " else "• ") .. Data.describeCheck(o) .. (if need > 1 then " (" .. math.min(have, need) .. "/" .. need .. ")" else ""))
+		table.insert(lines, (if have >= need then "✓ " else "• ") .. Data.describeCheck(o, true) .. (if need > 1 then " (" .. math.min(have, need) .. "/" .. need .. ")" else ""))
 	end
 	local head = if st == "active" then "\"" .. q.title .. "\" so far:" else "If you take on \"" .. q.title .. "\", you'll need to:"
 	return head .. "\n" .. table.concat(lines, "\n")
@@ -11389,25 +11468,43 @@ local function anyCollected(p, skill)
 end
 local function anyCount(t) for _, n in pairs(tab(t)) do if whole(n) > 0 then return true end end return false end
 G.Steps = {
-	{id="chop",title="Chop a log",detail="Hold the prompt on a tree on your home isle or Mosswake Grove.",coins=25,
+	-- Polish QC (lead decision): the account-mode choice OPENS the Path. Gathering
+	-- a log sets p.started, so a closing step could only ever pick Standard. Pell
+	-- offers it at first contact: Standard is one tap, Ironman sits behind his
+	-- explanation and a PERMANENT confirmation, and follows the ironman verb's rule
+	-- (refused once p.started, or while in a crew). Choosing at Pell also counts as
+	-- finding him (visit / talk flags). Steps are saved by id, never by index.
+	{id="mode",title="Choose your journal mode",detail="Talk to Pell in Compass Quay: keep a Standard journal in one tap, or seal an Ironman journal before you gather, craft or fight.",coins=50,
+		check=function(p) return p.accountMode == "standard" or p.accountMode == "ironman" or p.ironman == true end},
+	{id="chop",title="Chop a log",detail="Left-click a tree to chop it with your axe (tap on mobile): your home isle or Mosswake Grove.",coins=25,
 		check=function(p) return anyCollected(p, "Woodcutting") end},
 	{id="craft",title="Craft at a workbench",detail="Craft anything at a Workbench, Forge, Hearth or Cauldron (Atlas › Workshop).",coins=40,
 		check=function(p) return anyCount(tab(p.counters).crafts) or anyCount(tab(p.crafting).made) end},
 	{id="visit",title="Visit Compass Quay",detail="Take the home portal to Compass Quay, the shared hub.",coins=25,flag="visit"},
 	{id="talk",title="Talk to Pell",detail="Find Pell Ashgrove, the Wayfinder, in Compass Quay and ask about the Wayfarer's Path.",coins=25,flag="talk"},
-	{id="ore",title="Gather ore",detail="Mine an ore node in Brassfall Cay.",coins=40,
+	{id="ore",title="Gather ore",detail="Left-click an ore rock to mine it with your pickaxe (tap on mobile), e.g. in Brassfall Cay.",coins=40,
 		check=function(p) return anyCollected(p, "Mining") end},
 	{id="sell",title="Sell an item",detail="Sell something from your satchel (right-click an item › Sell).",coins=30,flag="sell"},
 	{id="equip",title="Equip a weapon",detail="Craft or buy a weapon and wield it (Satchel or Hero › Gear).",coins=50,
 		check=function(p) return type(tab(p.equipment).weapon) == "string" end},
 	{id="kill",title="Defeat a creature",detail="Brambleback Boars roam Sunwheel Downs. Click a creature to strike.",coins=60,
 		check=function(p) return whole(p.kills) > 0 or anyCount(p.bestiary) end},
-	{id="quest",title="Accept a quest",detail="Accept a quest from a regional questgiver (gold ! above their head).",coins=75,
+	{id="quest",title="Accept a quest",detail="Accept a quest from a regional questgiver (gold ! above their head) or complete your first guild contract.",coins=75,
 		check=function(p) return next(tab(tab(p.regionQuests).accepted)) ~= nil or next(tab(p.questsDone)) ~= nil or whole(p.questCompleted) > 0 end},
 	{id="warp",title="Learn a warp",detail="Buy a warp scroll from Ilsabet the Warp Keeper and read it.",coins=100,
 		check=function(_, ctx) return next(tab(tab(ctx).warps)) ~= nil end},
 }
+-- Wayfinder waypoints per step (T.parseTarget specs; Pell's "Show me the way").
+G.Waypoints = {
+	chop={"gather:Timber","region:Meadow"}, craft={"station:Workbench","station:Forge"}, visit={"region:Hub"}, talk={"npc:Guide"},
+	ore={"gather:Ore","region:Quarry"}, sell={"npc:Merchant"}, kill={"monster:BramblebackBoar","region:Meadow"},
+	quest={"npc:WarpKeeper","npc:Guide","region:Hub"}, warp={"npc:WarpKeeper"}, mode={"npc:Guide","region:Hub"},
+}
+-- Account modes (verb guideMode): Standard, or Ironman with the confirm token.
+G.MODE_STANDARD, G.MODE_IRONMAN = "standard", "ironman:confirm"
 G.COMPLETE_COINS = 250
+-- Saved p.guide schema: 2 = the journal-mode step opens the Path (Features.migrate).
+G.VERSION = 2
 G.StepById = {}
 G.MAX_OWED = G.COMPLETE_COINS
 for i, s in ipairs(G.Steps) do s.index = i; G.StepById[s.id] = s; G.MAX_OWED += s.coins end
@@ -11427,7 +11524,7 @@ function G.view(guide)
 	local n = 0
 	for _, s in ipairs(G.Steps) do if done[s.id] then n += 1 end end
 	for _, s in ipairs(G.Steps) do
-		if not done[s.id] then
+		if not done[s.id] and guide.complete ~= true then
 			return {step=s.index, total=#G.Steps, done=n, id=s.id, title=s.title, detail=s.detail, coins=s.coins, complete=false}
 		end
 	end
@@ -11450,18 +11547,46 @@ function F.announceText(e)
 	elseif e.kind == "renown" then
 		local t = RN.tier(whole(e.level))
 		return {head=string.upper(RN.NAME) .. " " .. whole(e.level), body=t.title .. (if type(e.reward) == "string" then "  ·  " .. e.reward else ""), color=t.color}
+	elseif e.kind == "workerRecipe" then
+		local t = Data.Workers and type(e.worker) == "string" and Data.Workers.TypeById[e.worker]
+		-- Polish QC L3: a skill gate still ahead reads "available at <skill> <level>".
+		local gate = if type(e.skill) == "string" and whole(e.level) > 0 then "  ·  available at " .. e.skill .. " " .. whole(e.level) else ""
+		return {head="WORKER RECIPE UNLOCKED", body=(t and t.name or tostring(e.worker)) .. "  ·  " .. (item and item.name or tostring(e.item)) .. " collection " .. whole(e.tier) .. gate, color="FFAA00"}
 	elseif e.kind == "guide" then
 		return {head=string.upper(G.NAME), body=tostring(e.title) .. (if whole(e.coins) > 0 then "  ·  +" .. whole(e.coins) .. " coins" else ""), color="6FE3C8"}
 	end
 	return {head="NOTICE", body=tostring(e.text or ""), color="FFFFFF"}
 end
 F.ANNOUNCE_MAX = 12 -- queued per profile between flushes
+-- Renown level-ups and path steps always survive a full queue / ring.
+F.ANNOUNCE_PRIORITY = {renown=true, guide=true}
+-- Trims `list` (oldest first) to `max` entries: drops the oldest ordinary entry
+-- first, and the oldest priority entry only when nothing else is left.
+function F.trimAnnouncements(list, max)
+	while #list > max do
+		local drop = 1
+		for i, e in ipairs(list) do
+			if not F.ANNOUNCE_PRIORITY[tab(e).kind] then drop = i; break end
+		end
+		table.remove(list, drop)
+	end
+	return list
+end
 
 -- Shop quantities --------------------------------------------------------------
 -- rqBuy "Role:i[:qty]", skillBuy "Skill:Item[:qty]", petShop "Item[:qty]".
 -- qty counts lots (an offer of 5× buys 5 per lot), 1..MAX_LOTS per call, at the
 -- same per-unit price (the ≥ 1.3 × value rule holds per unit).
 F.Shop = {MAX_LOTS=64, Presets={1,8,16,32,64}}
+-- Wares sold one at a time (the server refuses qty > 1; the picker never opens):
+-- warp scrolls and one-of-a-kind gear (armor, accessories, traps).
+function F.Shop.singleLot(itemId)
+	local def = type(itemId) == "string" and Data.Items[itemId]
+	if not def then return true end
+	if def.kind == "armor" or def.kind == "accessory" or def.category == "trap" then return true end
+	for _, w in ipairs(tab(Data.RegionArt and Data.RegionArt.Warps)) do if w.scroll == itemId then return true end end
+	return false
+end
 -- Splits a trailing ":qty" off a shop item string with `parts` base segments.
 -- Returns base, qty (1 when absent) or nil for a malformed quantity.
 function F.splitQty(item, parts)
@@ -11475,6 +11600,30 @@ function F.splitQty(item, parts)
 	if not qty or qty < 1 or qty > F.Shop.MAX_LOTS then return nil end
 	table.remove(segs)
 	return table.concat(segs, ":"), qty
+end
+
+-- Merchant sell quantity (Polish): sell "<id>:<n>" sells n of a stack (the server
+-- also checks n <= held - the kept upgraded copy). Returns base, n or nil.
+F.SELL_MAX = 1000000
+function F.splitSell(item)
+	if type(item) ~= "string" or #item == 0 or #item > 64 then return nil end
+	local base, raw = string.match(item, "^([%w_]+):([1-9]%d*)$")
+	if not base or #raw > 7 then return nil end
+	local n = tonumber(raw)
+	if not n or n < 1 or n > F.SELL_MAX then return nil end
+	return base, n
+end
+
+-- Worker unlocks by collection tier (Polish): the worker types whose output is
+-- `item` and whose collectionTier lies in (fromTier, toTier] (SkyBlock's minion
+-- recipe unlock at a collection tier). Starter types (tier 0) are never listed.
+function F.workerUnlocks(item, fromTier, toTier)
+	local out = {}
+	local W = Data.Workers
+	for _, t in ipairs(W and W.Types or {}) do
+		if t.output == item and t.collectionTier > whole(fromTier) and t.collectionTier <= whole(toTier) then table.insert(out, t) end
+	end
+	return out
 end
 
 -- Skyward Vents (launch pads) ----------------------------------------------------
@@ -11496,6 +11645,17 @@ V.List = {
 }
 V.ById = {}
 for _, v in ipairs(V.List) do V.ById[v.id] = v end
+-- Launch feel (Polish; client only, features.client.lua): an FOV kick that
+-- rises fast and eases back by the landing, a banking roll that peaks mid-arc,
+-- and wind streaks. Reduced motion: no FOV / tilt, a lighter wind.
+V.Fx = {FOV_KICK=14, TILT=math.rad(7), WIND_RATE=60, WIND_RATE_REDUCED=20}
+function V.Fx.fovKick(t)
+	t = math.clamp(t, 0, 1)
+	if t < 0.2 then return V.Fx.FOV_KICK * (t / 0.2) end
+	local u = (t - 0.2) / 0.8
+	return V.Fx.FOV_KICK * (1 - u * u)
+end
+function V.Fx.tilt(t) return V.Fx.TILT * math.sin(math.pi * math.clamp(t, 0, 1)) end
 -- Arc height at t ∈ [0,1] from ya to yb peaking `height` above the higher end
 -- (a quadratic through both ends and the peak at t = 0.5).
 function V.arcY(ya, yb, t, height)
@@ -11506,19 +11666,24 @@ end
 
 -- Resonance (Magical Power stat tuning) -------------------------------------------
 -- The Resonance Keeper in Compass Quay tunes your accessory bag's Magical Power
--- into one stat template. Stats = weight × MP^0.75 (applied through
--- p.perkStats.resonance; no Health / Defense, so Data.PerkBudget is unaffected).
+-- into one stat template. Stats = weight × min(MP, POWER_CAP)^0.75 (applied
+-- through p.perkStats.resonance; no Health / Defense, so Data.PerkBudget is
+-- unaffected). Balance: at the cap no template's Strength / Crit Damage /
+-- Intelligence exceeds 60 % of the comparable endgame source (Sovereign set
+-- bonus Strength 70 / Crit Damage 80, Riftcrown Staff Intelligence 180);
+-- Starlore's Intelligence sits at ~0.95 × Emberkeen's Strength share.
 local R = {}
 Data.Resonance = R
 R.NAME = "Resonance"
 R.EXPONENT = 0.75
+R.POWER_CAP = 400 -- Magical Power past this adds no resonance
 R.SWITCH_FEE = 250
 R.SWITCH_COOLDOWN = 120
 R.VISIT_SECONDS = 300
 R.Templates = {
-	{id="Emberkeen",name="Emberkeen",minPower=0,color="FF6B5A",text="Raw striking power.",weights={strength=0.45,critDamage=0.75}},
+	{id="Emberkeen",name="Emberkeen",minPower=0,color="FF6B5A",text="Raw striking power.",weights={strength=0.45,critDamage=0.5}},
 	{id="Galewise",name="Galewise",minPower=0,color="DDEEFF",text="Quick feet and a sure eye.",weights={speed=0.12,critChance=0.12,strength=0.2}},
-	{id="Starlore",name="Starlore",minPower=10,color="55FFFF",text="Mana for spellcasters.",weights={intelligence=1.6,critDamage=0.3}},
+	{id="Starlore",name="Starlore",minPower=10,color="55FFFF",text="Mana for spellcasters.",weights={intelligence=1.1,critDamage=0.3}},
 	{id="Tidefortune",name="Tidefortune",minPower=25,color="FF55FF",text="Luck on every drop.",weights={magicFind=0.05,petLuck=0.05,strength=0.2}},
 	{id="Lodestone",name="Lodestone",minPower=25,color="FFAA00",text="For miners.",weights={miningFortune=0.5,miningSpeed=1.5}},
 	{id="Verdance",name="Verdance",minPower=25,color="8EE05A",text="For foragers and farmers.",weights={foragingFortune=0.45,farmingFortune=0.45}},
@@ -11526,7 +11691,7 @@ R.Templates = {
 }
 R.ById = {}
 for _, t in ipairs(R.Templates) do R.ById[t.id] = t end
-function R.scale(power) return whole(power) ^ R.EXPONENT end
+function R.scale(power) return math.min(whole(power), R.POWER_CAP) ^ R.EXPONENT end
 function R.stats(id, power)
 	local t = type(id) == "string" and R.ById[id]
 	if not t or whole(power) < t.minPower then return {} end
@@ -11555,6 +11720,10 @@ T.Conditions.guideTalkActive = function(s)
 	local g = tab(tab(s).guide)
 	return g.id == "talk"
 end
+-- Polish QC: the Path's first step (journal mode) is open: Pell shows "!".
+T.Conditions.guideModeActive = function(s)
+	return tab(tab(s).guide).id == "mode"
+end
 T.Conditions.guideRewardReady = function(s)
 	return whole(tab(tab(s).guide).owed) > 0
 end
@@ -11577,8 +11746,4528 @@ if pell and pell.nodes and pell.nodes.hello then
 	table.insert(pell.nodes.hello.options, 1, {label="I'm walking the Wayfarer's Path",verb="guideTalk",when="guideTalkActive"})
 	table.insert(pell.nodes.hello.options, 2, {label="Claim my Wayfarer's Path rewards",verb="guideClaim",when="guideRewardReady"})
 end
+
+-- Polish (lead decision): Pell's older 6-step client tutorial is retired in
+-- favour of the Wayfarer's Path. T.Tutorial / T.tutorialState stay as pure data
+-- (old snapshots and tests still evaluate), but nothing offers or tracks it:
+-- tutorialActive is always false, Pell's "Walk me through the basics" becomes
+-- "Walk me through the Wayfarer's Path" (node path), the old "tutorial" node is
+-- removed, and the "next" tip reads the Path step. The Path's first step is the account-mode choice.
+T.TUTORIAL_RETIRED = true
+T.Conditions.tutorialActive = function() return false end
+T.Conditions.pathActive = function(s)
+	local g = tab(tab(s).guide)
+	return type(g.title) == "string" and g.complete ~= true
+end
+-- Journal mode not chosen yet (and the journal is not Ironman already).
+T.Conditions.modeOpen = function(s)
+	s = tab(s)
+	return s.accountMode == nil and s.ironman ~= true and type(s.items) == "table"
+end
+-- Ironman can still be sealed: no progression yet (the ironman verb's rule).
+T.Conditions.ironmanOpen = function(s)
+	s = tab(s)
+	return s.ironman ~= true and s.started ~= true and type(s.items) == "table"
+end
+T.Verbs.guideMode = {item={[G.MODE_STANDARD]=true, [G.MODE_IRONMAN]=true}}
+function T.pathStep(s)
+	local g = tab(tab(s).guide)
+	if type(g.title) ~= "string" or g.complete == true then return nil end
+	local step = G.StepById[tostring(g.id)]
+	return {index=whole(g.step), total=whole(g.total), id=g.id, title=g.title, detail=tostring(g.detail or ""), waypoint=step and G.Waypoints[step.id] or nil}
+end
+if pell and pell.nodes then
+	for _, o in ipairs(pell.nodes.hello.options) do
+		if o.to == "tutorial" then o.label, o.to, o.when = "Walk me through the Wayfarer's Path", "path", "pathActive" end
+	end
+	-- Polish QC (lead decision): first contact offers the journal mode. Standard is
+	-- one tap; Ironman is behind the explanation (node mode) and the PERMANENT
+	-- confirmation (node ironman).
+	table.insert(pell.nodes.hello.options, 1, {label="Keep a Standard journal",verb="guideMode",item=G.MODE_STANDARD,when="modeOpen"})
+	table.insert(pell.nodes.hello.options, 2, {label="Standard or Ironman? Explain journal modes",to="mode",when="modeOpen"})
+	pell.nodes.path = {path=true,text="The Wayfarer's Path is " .. #G.Steps .. " steps, from choosing your journal to your first warp. Here's your next step:",options={
+		{label="Show me the way",waypoint="path"},
+		{label="Choose my journal mode",to="mode",when="modeOpen"},
+		{label="Claim my Wayfarer's Path rewards",verb="guideClaim",when="guideRewardReady"},
+		{label="Back",to="hello"}}}
+	-- The retired tutorial node is removed; its only entry was rewired to node path above.
+	pell.nodes.tutorial = nil
+	pell.nodes.mode = {text="Every journal picks a mode. STANDARD: trade, use the Bazaar and Auction House, and hunt with anyone. "
+		.. "IRONMAN: a permanent charter. No player exchange, Bazaar or Auction House, Warden hunts are solo, and party credit needs a real share of the damage. "
+		.. "Ironman can only be sealed before any progression, and it can never be undone.",options={
+		{label="Keep a Standard journal",verb="guideMode",item=G.MODE_STANDARD},
+		{label="Review the Ironman charter",to="ironman",when="ironmanOpen"},
+		{label="Back",to="hello"}}}
+	pell.nodes.ironman = {text="Are you sure? Sealing an Ironman journal is PERMANENT: you will never trade with other players or use the Bazaar or Auction House on this journal. "
+		.. "If you have already started gathering, crafting or fighting, the seal will refuse and your journal stays Standard.",options={
+		{label="Seal my journal as Ironman (permanent)",verb="guideMode",item=G.MODE_IRONMAN},
+		{label="Keep a Standard journal",verb="guideMode",item=G.MODE_STANDARD},
+		{label="Back",to="mode"}}}
+end
+T.Tips.next = function(s, ctx)
+	local step = T.pathStep(s)
+	if step then return "Wayfarer's Path " .. step.index .. "/" .. step.total .. " — " .. step.title .. ": " .. step.detail end
+	if type(s) ~= "table" or s.loading or type(s.items) ~= "table" then return "Your journal is still opening. Ask me again in a moment." end
+	local q = tab(s.quest)
+	if T.Conditions.contractReady(s) or (not q.complete and q.title) then return T.Tips.contract(s) end
+	return T.Tips.quest(s)
+end
 end
 -- <<< END MMO Features <<<
+------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------
+-- >>> BEGIN Systems Depth (Systems Depth team; append-only section, §33) >>>
+-- Quest helper (step-by-step guides derived from quest / diary / contract
+-- data), the goal board, market price history, per-player daily shop stock
+-- and the XP calculator. Pure data + pure functions shared by the server
+-- block "Systems Depth" in server.server.lua (every grant and check) and the
+-- atlas pages in ui.client.lua. docs/DEPTH-CONTRACT.md §33.
+------------------------------------------------------------------------------
+do
+local SY = {}
+Data.Systems = SY
+local function tab(v) return if type(v) == "table" then v else {} end
+local function num(v) return if type(v) == "number" and v == v and v > -math.huge and v < math.huge then v else 0 end
+local function whole(v) v = num(v); return if v > 0 then math.floor(v) else 0 end
+local function nameOf(id) local def = type(id) == "string" and Data.Items[id]; return if def then def.name else tostring(id) end
+SY.whole = whole
+
+-- Quest helper -------------------------------------------------------------
+-- A guide is {id, kind, title, status, steps, current, total, done}. A step is
+-- {text, have, need, met, phase, specs = {waypoint spec...}|nil, npc = role|nil}.
+-- specs are Data.Townsfolk target specs ("monster:Thornling", "npc:Shepherd",
+-- "region:Meadow"...) for LocalPlayer.WayfinderRequest; the first that resolves wins.
+local HP = {}
+SY.Helper = HP
+HP.PIN_MAX = 48 -- longest pin id ("quest:<id>", "diary:<region>", "contract")
+-- Legacy guild contracts (server `quests` list, by stage): where each is done.
+HP.ContractSpecs = {
+	{"gather:Ore", "region:Quarry"},
+	{"station:Forge", "anchor:Waypoint_Forge"},
+	{"anchor:Waypoint_WorkerYard", "home"},
+	{"anchor:Waypoint_Shellwarden"},
+	{"anchor:Waypoint_ExpeditionGate"},
+	{"anchor:Waypoint_SkyreachCharter", "region:Quarry"},
+	{"region:Skyreach"},
+	{"station:Forge", "anchor:Waypoint_Forge"},
+}
+-- Region access for waypoints: ctx.access = {[regionId] = bool} (the server's
+-- regionAllowed / the snapshot's depth.regions). Unknown regions or no access
+-- map count as open (pure data callers, tests).
+local function regionOpen(ctx, region)
+	local access = tab(ctx).access
+	if type(region) ~= "string" or type(access) ~= "table" then return true end
+	return access[region] ~= false
+end
+-- "Unlocks with <region>: <requirements>" for a locked region.
+function HP.requirement(region)
+	local def = Data.RegionById[region]
+	local E = Data.Endgame
+	local parts = if def and E and E.requirementParts then E.requirementParts(def) else {}
+	return "Unlocks with " .. (if def then def.name else tostring(region)) .. (if #parts > 0 then ": " .. table.concat(parts, ", ") else "")
+end
+local function nodeRegion(id)
+	local W = Data.Workers
+	return W and W.ResourceRegion and W.ResourceRegion[id] or nil
+end
+-- Where an item comes from: candidates {specs, region, level, rank} sorted lowest
+-- level first (a gathering node, a recipe's station, every creature with a
+-- >= 10 % drop); built once, lazily.
+local sources
+local function addSource(id, src)
+	local list = sources[id] or {}
+	sources[id] = list
+	table.insert(list, src)
+end
+local function buildSources()
+	sources = {}
+	local station = {}
+	for _, tiers in pairs(Data.ResourceTiers) do
+		for _, r in ipairs(tab(tiers)) do
+			local region = nodeRegion(r.id)
+			local specs = {"gather:" .. r.id}
+			if region then table.insert(specs, "region:" .. region) end
+			addSource(r.id, {specs = specs, region = region, level = whole(r.level), rank = 1})
+		end
+	end
+	local rids = {}
+	for rid in pairs(Data.Recipes) do table.insert(rids, rid) end
+	table.sort(rids)
+	for _, rid in ipairs(rids) do
+		local d = Data.Recipes[rid]
+		if type(d) == "table" and type(d.output) == "string" and type(d.station) == "string" and not station[d.output] then
+			addSource(d.output, {specs = {"station:" .. d.station}, level = whole(d.level), rank = 2})
+			station[d.output] = true
+		end
+	end
+	local CR = Data.Crafting
+	for _, rid in ipairs(tab(CR and CR.RecipeOrder)) do
+		local d = CR.Recipes[rid]
+		if d and type(d.station) == "string" and type(d.output) == "string" and not station[d.output] then
+			addSource(d.output, {specs = {"station:" .. d.station}, level = whole(d.level), rank = 2})
+			station[d.output] = true
+		end
+	end
+	local ids = {}
+	for mid in pairs(Data.Monsters) do table.insert(ids, mid) end
+	table.sort(ids)
+	for _, mid in ipairs(ids) do
+		local m = Data.Monsters[mid]
+		local seen = {}
+		for _, drop in ipairs(tab(m.drops)) do
+			if type(drop) == "table" and type(drop.item) == "string" and not seen[drop.item] and num(drop.chance) >= 0.1 then
+				seen[drop.item] = true
+				local list = {"monster:" .. mid}
+				local region = if type(m.region) == "string" then m.region else nil
+				if region then table.insert(list, "region:" .. region) end
+				addSource(drop.item, {specs = list, region = region, level = whole(m.level), rank = 3, id = mid})
+			end
+		end
+	end
+	for _, list in pairs(sources) do
+		table.sort(list, function(a, b)
+			if a.level ~= b.level then return a.level < b.level end
+			if a.rank ~= b.rank then return a.rank < b.rank end
+			return tostring(a.id or a.specs[1]) < tostring(b.id or b.specs[1])
+		end)
+	end
+end
+-- specs of the lowest-level source the player can reach, or nil plus the
+-- requirement of the nearest locked one (nil, nil: no known source).
+local function itemSource(id, ctx)
+	if type(id) ~= "string" then return nil end
+	if not sources then buildSources() end
+	local locked
+	for _, src in ipairs(tab(sources[id])) do
+		if regionOpen(ctx, src.region) then return table.clone(src.specs) end
+		locked = locked or src.region
+	end
+	return nil, if locked then HP.requirement(locked) else nil
+end
+HP.itemSource = itemSource
+-- The best gathering node a skill level reaches in an open region (for "reach level N" steps).
+local function bestNode(skill, lvl, ctx)
+	local best
+	for _, r in ipairs(tab(Data.ResourceTiers[skill])) do
+		if r.level <= math.max(1, lvl) and regionOpen(ctx, nodeRegion(r.id)) then best = r end
+	end
+	return best and best.id
+end
+-- Waypoint specs for one check: specs, or nil plus a requirement text when the
+-- place lies in a locked region (nil, nil: nowhere in particular to go).
+-- ctx = {level = current level for "level" checks, access = {[region] = bool}}.
+function HP.specsFor(o, ctx)
+	o = tab(o)
+	local kind = o.kind
+	local function gate(region, list)
+		if regionOpen(ctx, region) then return list end
+		return nil, HP.requirement(region)
+	end
+	if kind == "kills" then
+		local m = type(o.monster) == "string" and Data.Monsters[o.monster]
+		if not m then return nil end
+		local list = {"monster:" .. o.monster}
+		if type(m.region) == "string" then table.insert(list, "region:" .. m.region) end
+		return gate(m.region, list)
+	elseif kind == "collect" or kind == "have" or kind == "collectionTier" or kind == "craft" then
+		return itemSource(o.item, ctx)
+	elseif kind == "gather" then return gate(o.region, {"region:" .. tostring(o.region)})
+	elseif kind == "talk" then return {"npc:" .. tostring(o.npc)}
+	elseif kind == "visit" then
+		local l = Data.RegionArt and Data.RegionArt.LandmarkById[o.landmark]
+		local list = {"anchor:Waypoint_Landmark_" .. tostring(o.landmark)}
+		if l then table.insert(list, "region:" .. l.region) end
+		return gate(l and l.region, list)
+	elseif kind == "level" then
+		if Data.ResourceTiers[o.skill] then
+			local node = bestNode(o.skill, whole(tab(ctx).level), ctx)
+			return if node then {"gather:" .. node} else nil
+		elseif o.skill == "Combat" then return {"monster:BramblebackBoar", "region:Meadow"} end
+		return nil
+	elseif kind == "build" then return {"home"}
+	elseif kind == "slayer" then return {"npc:Slayer", "anchor:Waypoint_SlayerMaster"}
+	elseif kind == "contracts" then return {"npc:Guide"}
+	elseif kind == "flag" and o.flag == "skyreachVisited" then return gate("Skyreach", {"region:Skyreach"})
+	elseif kind == "laps" then return {"anchor:Waypoint_Agility_" .. tostring(o.course)}
+	elseif kind == "catches" then return {"anchor:Waypoint_Hunting_" .. tostring(o.creature)}
+	end
+	return nil
+end
+local function describe(o, regional)
+	local ok, text = pcall(Data.describeCheck, o, regional)
+	return if ok and type(text) == "string" then text else "Task"
+end
+-- {have, need} from a Journal.state progress list (have capped at need).
+local function pairOf(list, i, o)
+	local pair = tab(tab(list)[i])
+	local need = num(pair[2])
+	if need <= 0 then need = math.max(1, num(tab(o).count) + num(tab(o).level) + num(tab(o).tier)) end
+	return math.min(num(pair[1]), need), need
+end
+-- ctx: {access, regional}; a step in a locked region carries `blocked` (the
+-- requirement text) instead of waypoint specs.
+local function checkStep(o, list, i, phase, ctx)
+	ctx = tab(ctx)
+	local have, need = pairOf(list, i, o)
+	local specs, blocked = HP.specsFor(o, {level = have, access = ctx.access})
+	return {text = describe(o, ctx.regional and phase == "task"), have = have, need = need, met = have >= need, phase = phase,
+		specs = specs, blocked = if specs then nil else blocked, npc = if tab(o).kind == "talk" then o.npc else nil}
+end
+local function finish(g)
+	g.total, g.done = #g.steps, 0
+	for i, s in ipairs(g.steps) do
+		if s.met then g.done += 1 elseif not g.current then g.current = i end
+	end
+	g.current = g.current or #g.steps
+	return g
+end
+-- entry: a Journal.state quest row {done, available, ready, requires = {{have, need}}, objectives = {...}};
+-- ctx.accepted: a regional quest taken from its giver; ctx.access: region access.
+function HP.questGuide(q, entry, ctx)
+	entry, ctx = tab(entry), tab(ctx)
+	local RA = Data.RegionArt
+	local giver = q.giver and RA and RA.FolkByRole[q.giver]
+	local g = {id = "quest:" .. q.id, kind = "quest", title = q.title, steps = {}}
+	if entry.done == true then
+		g.status = "done"
+		table.insert(g.steps, {text = "Quest complete", have = 1, need = 1, met = true, phase = "claim"})
+		return finish(g)
+	end
+	local sctx = {access = ctx.access, regional = q.giver ~= nil}
+	for i, o in ipairs(q.requires) do table.insert(g.steps, checkStep(o, entry.requires, i, "requires", sctx)) end
+	if giver then
+		table.insert(g.steps, {text = "Accept the quest from " .. giver.name, have = if ctx.accepted then 1 else 0, need = 1,
+			met = ctx.accepted == true, phase = "accept", specs = {"npc:" .. q.giver}, npc = q.giver})
+	end
+	for i, o in ipairs(q.objectives) do table.insert(g.steps, checkStep(o, entry.objectives, i, "task", sctx)) end
+	if giver then
+		table.insert(g.steps, {text = "Return to " .. giver.name .. " to hand it in", have = 0, need = 1, met = false, phase = "claim",
+			specs = {"npc:" .. q.giver}, npc = q.giver})
+	else
+		table.insert(g.steps, {text = "Claim it in your Journal (Quests)", have = 0, need = 1, met = false, phase = "claim"})
+	end
+	finish(g)
+	local cur = g.steps[g.current]
+	g.status = if cur.phase == "requires" then "locked" elseif cur.phase == "accept" then "accept" elseif cur.phase == "claim" then "ready" else "active"
+	return g
+end
+-- tier: a Journal.state diary tier {tier, tasks = {{have, need}}, claimable, claimed}.
+function HP.diaryGuide(diary, tierName, tier, ctx)
+	tier = tab(tier)
+	local sctx = {access = tab(ctx).access}
+	local def = diary.tiers[tierName]
+	local g = {id = "diary:" .. diary.region, kind = "diary", title = diary.name .. " (" .. tierName .. ")", steps = {}}
+	for i, o in ipairs(def.tasks) do table.insert(g.steps, checkStep(o, tier.tasks, i, "task", sctx)) end
+	table.insert(g.steps, {text = "Claim the " .. tierName .. " tier in Journal › Diaries", have = if tier.claimed then 1 else 0, need = 1,
+		met = tier.claimed == true, phase = "claim"})
+	finish(g)
+	g.status = if tier.claimed then "done" elseif tier.claimable then "ready" else "active"
+	return g
+end
+-- The tier a diary guide follows: the first unclaimed one (Elite once all are claimed).
+function HP.diaryTier(claimed)
+	return Data.DiaryTiers[math.min(#Data.DiaryTiers, whole(claimed) + 1)]
+end
+-- state: the snapshot `quest` row {title, detail, ready, stage, total, complete}.
+function HP.contractGuide(state)
+	state = tab(state)
+	local g = {id = "contract", kind = "contract", title = "Guild contract: " .. tostring(state.title or "—"), steps = {}}
+	if state.complete then
+		g.status = "done"
+		table.insert(g.steps, {text = "Every guild contract is complete", have = 1, need = 1, met = true, phase = "claim"})
+		return finish(g)
+	end
+	table.insert(g.steps, {text = tostring(state.detail or state.title or "Contract"), have = if state.ready then 1 else 0, need = 1,
+		met = state.ready == true, phase = "task", specs = HP.ContractSpecs[whole(state.stage)]})
+	table.insert(g.steps, {text = "Claim it in Journal › Bearing", have = 0, need = 1, met = false, phase = "claim"})
+	finish(g)
+	g.status = if state.ready then "ready" else "active"
+	return g
+end
+-- One line for the sidebar Objective slot.
+function HP.objective(g)
+	g = tab(g)
+	local s = tab(tab(g.steps)[g.current or 1])
+	local text = tostring(s.text or g.title or "")
+	if num(s.need) > 1 then text ..= " " .. whole(s.have) .. "/" .. whole(s.need) end
+	return text
+end
+-- Valid pin ids: "quest:<id>", "diary:<region>", "contract".
+function HP.validPin(id)
+	if id == "contract" then return true end
+	if type(id) ~= "string" or #id > HP.PIN_MAX then return false end
+	local kind, arg = string.match(id, "^(%a+):(%w+)$")
+	if kind == "quest" then return Data.QuestById[arg] ~= nil end
+	if kind == "diary" then return Data.DiaryByRegion[arg] ~= nil end
+	return false
+end
+
+-- Goal board ---------------------------------------------------------------
+-- p.goals = {{id, k, a, n, at, done}} (≤ GL.MAX). Spec "kind:arg:n".
+local GL = {}
+SY.Goals = GL
+GL.MAX = 12
+GL.WINDOW = 1800 -- seconds of samples behind an ETA (rolling, server-side, session-only)
+GL.SAMPLE = 60   -- seconds between samples
+GL.Kinds = {
+	level = {name = "Skill level", max = 99},
+	xp = {name = "Skill XP", max = 200000000},
+	tier = {name = "Collection tier"},
+	item = {name = "Item count", max = 10000000},
+	quest = {name = "Quest", max = 1},
+	kills = {name = "Boss kills", max = 100000},
+}
+GL.Order = {"level", "xp", "tier", "item", "quest", "kills"}
+-- Lair bosses (p.lairs.kc) or any bestiary creature, world bosses included (p.bestiary).
+local function killSource(id)
+	if type(id) ~= "string" then return nil end
+	local LR = Data.Lairs
+	if LR and LR.Bosses and LR.Bosses[id] then return "lair" end
+	if Data.Monsters[id] then return "bestiary" end
+	return nil
+end
+GL.killSource = killSource
+function GL.bossName(id)
+	local LR = Data.Lairs
+	local d = (LR and LR.Bosses and LR.Bosses[id]) or Data.Monsters[id]
+	return if d and d.name then d.name else tostring(id)
+end
+-- Kill-count goal targets for the board: lair bosses, then world bosses.
+function GL.bosses()
+	local out = {}
+	for _, id in ipairs(tab(Data.Lairs and Data.Lairs.Order)) do table.insert(out, id) end
+	local world = {}
+	for id in pairs(tab(Data.WorldBosses)) do table.insert(world, id) end
+	table.sort(world)
+	for _, id in ipairs(world) do table.insert(out, id) end
+	return out
+end
+-- Returns goal {k, a, n} or nil, reason.
+function GL.parse(spec)
+	if type(spec) ~= "string" or #spec > 64 then return nil, "Choose a goal." end
+	local k, a, raw = string.match(spec, "^(%a+):(%w+):(%d+)$")
+	local kind = k and GL.Kinds[k]
+	if not kind then return nil, "Choose a goal." end
+	if #raw > 9 or string.match(raw, "^0") then return nil, "Choose a whole target." end
+	local n = tonumber(raw)
+	if not n or n < 1 then return nil, "Choose a whole target." end
+	if k == "level" or k == "xp" then
+		if not Data.Skills[a] then return nil, "Choose a skill." end
+		if k == "level" and n < 2 then return nil, "Choose a level from 2 to 99." end
+	elseif k == "tier" then
+		if not table.find(Data.CollectionItems, a) then return nil, "Choose a collection." end
+		if n > #Data.CollectionTiers then return nil, "Collections have " .. #Data.CollectionTiers .. " tiers." end
+	elseif k == "item" then
+		if not Data.Items[a] then return nil, "Choose an item." end
+	elseif k == "quest" then
+		if not Data.QuestById[a] then return nil, "Choose a quest." end
+	elseif k == "kills" then
+		if not killSource(a) then return nil, "Choose a creature or boss." end
+	end
+	if kind.max and n > kind.max then return nil, kind.name .. " goals go up to " .. kind.max .. "." end
+	return {k = k, a = a, n = n}
+end
+-- have, need on the goal's own scale (XP for level goals).
+function GL.measure(p, goal, P)
+	p, goal = tab(p), tab(goal)
+	local k, a, n = goal.k, goal.a, whole(goal.n)
+	if k == "level" then return num(tab(p.xp)[a]), Data.XP_TABLE[math.clamp(n, 1, Data.MAX_LEVEL or 99)] or 0
+	elseif k == "xp" then return num(tab(p.xp)[a]), n
+	elseif k == "tier" then
+		local need = if P and P.collectionThreshold then P.collectionThreshold(a, n)
+			else math.max(1, math.floor((Data.CollectionTiers[n] or 0) * (Data.CollectionScale[a] or 1)))
+		return num(tab(p.collection)[a]), need or 0
+	elseif k == "item" then return num(tab(p.items)[a]), n
+	elseif k == "quest" then return if tab(p.questsDone)[a] then 1 else 0, 1
+	elseif k == "kills" then
+		if killSource(a) == "lair" then return num(tab(tab(p.lairs).kc)[a]), n end
+		return num(tab(p.bestiary)[a]), n
+	end
+	return 0, 1
+end
+function GL.label(goal)
+	goal = tab(goal)
+	local k, a, n = goal.k, goal.a, whole(goal.n)
+	if k == "level" then return tostring(a) .. " level " .. n
+	elseif k == "xp" then return tostring(a) .. " " .. n .. " XP"
+	elseif k == "tier" then return nameOf(a) .. " collection tier " .. n
+	elseif k == "item" then return n .. " " .. nameOf(a)
+	elseif k == "quest" then local q = Data.QuestById[a]; return "Complete " .. (if q then q.title else tostring(a))
+	elseif k == "kills" then return n .. " " .. GL.bossName(a) .. " kills"
+	end
+	return "Goal"
+end
+-- Seconds until `remaining` at `perHour` (nil when there is no recent progress).
+function GL.eta(remaining, perHour)
+	remaining, perHour = num(remaining), num(perHour)
+	if remaining <= 0 then return 0 end
+	if perHour <= 0 then return nil end
+	return math.ceil(remaining / perHour * 3600)
+end
+function GL.etaText(seconds)
+	if seconds == nil then return "no recent progress" end
+	seconds = whole(seconds)
+	if seconds <= 0 then return "done" end
+	if seconds >= 86400 * 99 then return "over 99 days" end
+	local d, h, m = seconds // 86400, seconds % 86400 // 3600, seconds % 3600 // 60
+	if d > 0 then return d .. "d " .. h .. "h" end
+	if h > 0 then return h .. "h " .. m .. "m" end
+	return math.max(1, m) .. "m"
+end
+-- Rate per hour from samples {{t, v}...} (oldest first) inside the window.
+function GL.rate(samples, now)
+	local list = tab(samples)
+	local last = list[#list]
+	if not last then return 0 end
+	local first
+	for _, s in ipairs(list) do if num(now) - num(s[1]) <= GL.WINDOW then first = s; break end end
+	if not first or first == last then return 0 end
+	local span = num(last[1]) - num(first[1])
+	if span < 60 then return 0 end
+	return math.max(0, (num(last[2]) - num(first[2])) / span * 3600)
+end
+
+-- Market price history -----------------------------------------------------
+-- Hourly buckets kept for PR.HOURS. Bazaar: inside the shared key
+-- (bazaar_v1_<item>.history), written in the same atomic transform as the
+-- trade. Auction House: in its own key per category (hist:auction:<cat> =
+-- {history = {[item] = buckets}, seen = {recent sale ids}, version}), merged by
+-- a separate best-effort UpdateAsync after the sale commits (per-server queue,
+-- one write per category per PR.FLUSH seconds); the write is at-least-once and
+-- PR.mergeAuction drops any sale id already in `seen` (<= PR.SEEN ids), so a
+-- retried flush never counts a sale twice. History is cross-server and a
+-- replayed order never counts twice.
+-- A bucket is {h = os.time() // 3600, n, v, lo, hi, m, c, t, x}:
+--   n / v / lo / hi  counted units, their coins, low and high (averages only);
+--   x                units left out of the averages (outliers, pair-cap excess);
+--   m                volume-weighted median of every pair-capped fill (the next
+--                    hour's outlier reference);
+--   c                volume-weighted median of the counted fills (omitted when = m);
+--   t                distinct traders (makers and takers) in the hour.
+-- Only the newest (open) bucket also carries q = {{price, units, counted}}
+-- (a price ladder, <= caps.levels rows), u = {trader ids} (<= caps.ids) and
+-- pr = {["a|b"] = units} (<= caps.pairs, then one shared "*" row); they are
+-- folded into m / c / t and dropped once the hour is over.
+-- Wash-trade resistance (§33 QC M1): a fill more than PR.OUTLIER x (or under
+-- 1 / PR.OUTLIER x) the previous bucket's median, and any units one maker /
+-- taker pair trades beyond caps.pair in one hour, are left out of the averages;
+-- prices shown are per-bucket medians; fewer than PR.THIN distinct traders in
+-- the window reads "thin market". No tax is involved.
+local PR = {}
+SY.Prices = PR
+PR.HOURS = 168            -- 7 days of hourly buckets
+PR.AUCTION_BUCKETS = 1200 -- total buckets per auction history key (oldest evicted first)
+PR.AUCTION_ITEMS = 96     -- distinct items tracked per auction history key
+PR.SPARK = 28             -- sparkline points: 7 days at 6 hours each
+PR.CHECKS = 8             -- price checks remembered per player (session)
+PR.OUTLIER = 3            -- fills > 3x / < 1/3x the previous bucket's median skip the averages
+PR.THIN = 3               -- fewer distinct traders than this in the window: "thin market"
+PR.BazaarCaps = {pair = 160, levels = 24, ids = 8, pairs = 32} -- units per maker/taker pair per hour
+PR.AuctionCaps = {pair = 2, levels = 6, ids = 4, pairs = 6}    -- sales per seller/buyer pair per hour
+PR.HIST_PREFIX = "hist:auction:" -- auction history key prefix (one key per category)
+PR.SEEN = 512             -- recent sale / migration ids kept per auction history key (dedupe)
+PR.FLUSH = 6              -- seconds between a server's history flushes (one write per key per 6 s)
+PR.QUEUE = 200            -- pending history entries per category per server (oldest dropped)
+PR.ATTEMPTS = 5           -- failed flushes before a pending entry is dropped (best effort)
+function PR.hour(t) return math.floor(num(t) / 3600) end
+-- Volume-weighted median of a price ladder (field 2 = every pair-capped unit, 3 = counted).
+local function median(q, field)
+	local rows, total = {}, 0
+	for _, e in ipairs(tab(q)) do
+		local price, w = whole(tab(e)[1]), whole(tab(e)[field])
+		if price > 0 and w > 0 then table.insert(rows, {price, w}); total += w end
+	end
+	if total <= 0 then return nil end
+	table.sort(rows, function(a, b) return a[1] < b[1] end)
+	local acc = 0
+	for _, r in ipairs(rows) do
+		acc += r[2]
+		if acc * 2 >= total then return r[1] end
+	end
+	return rows[#rows][1]
+end
+PR.median = median
+-- A bucket's reference median (every pair-capped fill), or nil.
+local function refOf(b)
+	if type(b.q) == "table" then local m = median(b.q, 2); if m then return m end end
+	if num(b.m) > 0 then return whole(b.m) end
+	if whole(b.n) > 0 then return math.floor(whole(b.v) / whole(b.n) + 0.5) end
+	return nil
+end
+-- A bucket's shown price: the median of its counted fills (nil when nothing counted).
+local function priceOf(b)
+	if whole(b.n) <= 0 then return nil end
+	if type(b.q) == "table" then local c = median(b.q, 3); if c then return c end end
+	if num(b.c) > 0 then return whole(b.c) end
+	if num(b.m) > 0 then return whole(b.m) end
+	return math.floor(whole(b.v) / whole(b.n) + 0.5) -- legacy bucket (no medians)
+end
+PR.priceOf = priceOf
+-- Distinct traders in a bucket (legacy buckets, which never counted, are not "thin").
+local function tradersOf(b)
+	if type(b.u) == "table" then return math.max(#b.u, whole(b.t)) end
+	if b.t == nil then return PR.THIN end
+	return whole(b.t)
+end
+-- Folds the open-hour ladders into m / c / t.
+local function close(b)
+	if type(b.q) ~= "table" and b.u == nil and b.pr == nil then return end
+	local m, c = refOf(b), priceOf(b)
+	b.t = tradersOf(b)
+	b.m = m
+	b.c = if c and c ~= m then c else nil
+	b.q, b.u, b.pr = nil, nil, nil
+end
+-- Drops malformed buckets and buckets older than 7 days; keeps a bucket up to
+-- one hour ahead (another server's clock may run slightly ahead), merges
+-- buckets sharing an hour, closes every bucket before `hour` and keeps hour order.
+function PR.prune(list, hour)
+	local byHour = {}
+	local i = 1
+	while i <= #list do
+		local b = list[i]
+		if type(b) ~= "table" or type(b.h) ~= "number" or b.h ~= b.h or b.h <= hour - PR.HOURS or b.h > hour + 1 then
+			table.remove(list, i)
+		else
+			b.h = math.floor(b.h)
+			local same = byHour[b.h]
+			if same then
+				close(same); close(b)
+				local n = whole(same.n) + whole(b.n)
+				if n > 0 then
+					same.c = math.floor(((priceOf(same) or 0) * whole(same.n) + (priceOf(b) or 0) * whole(b.n)) / n + 0.5)
+				end
+				same.m = same.m or b.m
+				same.n, same.v = n, whole(same.v) + whole(b.v)
+				same.x = if whole(same.x) + whole(b.x) > 0 then whole(same.x) + whole(b.x) else nil
+				if whole(b.n) > 0 then
+					same.lo = math.min(if same.lo then whole(same.lo) else math.huge, whole(b.lo))
+					same.hi = math.max(whole(same.hi), whole(b.hi))
+				end
+				same.t = math.max(tradersOf(same), tradersOf(b))
+				table.remove(list, i)
+			else
+				byHour[b.h] = b
+				i += 1
+			end
+		end
+	end
+	table.sort(list, function(a, b) return a.h < b.h end)
+	for _, b in ipairs(list) do if b.h < hour then close(b) end end
+	while #list > PR.HOURS do table.remove(list, 1) end
+	return list
+end
+-- Adds units to a price ladder (merged into the nearest price once full).
+local function addLevel(q, price, units, counted, levels)
+	local best, bestD
+	for _, e in ipairs(q) do
+		if e[1] == price then best, bestD = e, 0; break end
+		local d = math.abs(e[1] - price)
+		if not bestD or d < bestD then best, bestD = e, d end
+	end
+	if not best or (bestD > 0 and #q < levels) then
+		table.insert(q, {price, units, counted})
+	else
+		best[2] += units; best[3] += counted
+	end
+end
+-- Adds one fill (units at a unit price) between traders a (maker / seller) and
+-- b (taker / buyer) to a bucket list. caps defaults to PR.BazaarCaps.
+function PR.record(list, hour, price, units, a, b, caps)
+	price, units = whole(price), whole(units)
+	if price <= 0 or units <= 0 then return list end
+	caps = if type(caps) == "table" then caps else PR.BazaarCaps
+	PR.prune(list, hour)
+	local bucket, prev
+	for _, x in ipairs(list) do
+		if x.h == hour then bucket = x elseif x.h < hour then prev = x end
+	end
+	if not bucket then
+		bucket = {h = hour, n = 0, v = 0}
+		local at = #list + 1
+		for k, x in ipairs(list) do if x.h > hour then at = k; break end end
+		table.insert(list, at, bucket)
+	end
+	if type(bucket.q) ~= "table" then
+		-- Open (or re-open, after a clock-skewed close) the hour's ladders.
+		local q = {}
+		local m, c = refOf(bucket), priceOf(bucket)
+		if c then table.insert(q, {c, whole(bucket.n), whole(bucket.n)}) end
+		if m and m ~= c then table.insert(q, {m, 1, 0}) end
+		bucket.q, bucket.u, bucket.pr = q, {}, {}
+	end
+	-- Distinct traders (a bounded list of ids).
+	for _, id in ipairs({a or false, b or false}) do
+		id = if type(id) == "string" or type(id) == "number" then tostring(id) else nil
+		if id and #id <= 24 and #bucket.u < caps.ids and not table.find(bucket.u, id) then table.insert(bucket.u, id) end
+	end
+	-- Pair cap: units one maker / taker pair adds to this hour's averages.
+	local within = units
+	if a ~= nil and b ~= nil then
+		local x, y = tostring(a), tostring(b)
+		local key = if x < y then x .. "|" .. y else y .. "|" .. x
+		if #key > 49 then key = "*" end
+		if bucket.pr[key] == nil then
+			local rows = 0
+			for _ in pairs(bucket.pr) do rows += 1 end
+			if rows >= caps.pairs then key = "*" end
+		end
+		local used = whole(bucket.pr[key])
+		within = math.clamp(caps.pair - used, 0, units)
+		bucket.pr[key] = math.min(caps.pair, used + units)
+	end
+	-- Outliers against the previous bucket's median.
+	local ref = prev and refOf(prev)
+	local outlier = ref ~= nil and (price > ref * PR.OUTLIER or price * PR.OUTLIER < ref)
+	local counted = if outlier then 0 else within
+	if counted > 0 then
+		bucket.n = whole(bucket.n) + counted; bucket.v = whole(bucket.v) + price * counted
+		bucket.lo = math.min(if bucket.lo then whole(bucket.lo) else math.huge, price)
+		bucket.hi = math.max(whole(bucket.hi), price)
+	end
+	if units > counted then bucket.x = whole(bucket.x) + units - counted end
+	if within > 0 then addLevel(bucket.q, price, within, counted, caps.levels) end
+	return list
+end
+-- Auction history: one list per item under one bounded total. Prunes every
+-- list to `hour`, drops empty ones and evicts the oldest bucket until the caps
+-- hold. The item `keep` is never the one evicted while another item can give a
+-- bucket up (and never loses its last bucket).
+local function capAuction(hist, hour, keep)
+	local items, total = 0, 0
+	for id, l in pairs(hist) do
+		if type(l) == "table" then PR.prune(l, hour) end
+		if type(id) ~= "string" or type(l) ~= "table" or #l == 0 then hist[id] = nil else items += 1; total += #l end
+	end
+	while total > PR.AUCTION_BUCKETS or items > PR.AUCTION_ITEMS do
+		local oldestId, oldestH
+		for id, l in pairs(hist) do
+			if id ~= keep and (not oldestH or l[1].h < oldestH or (l[1].h == oldestH and id < oldestId)) then oldestId, oldestH = id, l[1].h end
+		end
+		if not oldestId then
+			-- Only the kept item is left: trim its own oldest bucket, never its last.
+			local own = keep and hist[keep]
+			if not own or #own <= 1 then break end
+			oldestId = keep
+		end
+		table.remove(hist[oldestId], 1)
+		total -= 1
+		if #hist[oldestId] == 0 then hist[oldestId] = nil; items -= 1 end
+	end
+	return hist
+end
+function PR.recordAuction(hist, item, hour, price, seller, buyer)
+	local list = type(hist[item]) == "table" and hist[item] or {}
+	hist[item] = list
+	PR.record(list, hour, price, 1, seller, buyer, PR.AuctionCaps)
+	return capAuction(hist, hour, item)
+end
+function PR.histKey(cat) return PR.HIST_PREFIX .. tostring(cat) end
+function PR.normalizeHist(book)
+	book = if type(book) == "table" then book else {}
+	if type(book.history) ~= "table" then book.history = {} end
+	if type(book.seen) ~= "table" then book.seen = {} end
+	book.version = 1
+	return book
+end
+-- Merges queued entries into an auction history key value (the UpdateAsync
+-- transform). An entry is a sale {id = "s<listing id>", item, h, price, seller,
+-- buyer} or a migration {id = "m<auction key revision>", moved = legacy
+-- auction_v1_<cat>.history}. Ids already in book.seen are skipped (at-least-once
+-- flushes count once). A sale recorded late keeps its hour, clamped to the
+-- previous hour at the earliest, so pruning never drops a newer server's bucket.
+-- Returns the book and the number of entries applied (0: cancel the write).
+function PR.mergeAuction(book, entries, hour)
+	book = PR.normalizeHist(book)
+	local hist, seen = book.history, book.seen
+	local known = {}
+	for _, id in ipairs(seen) do known[id] = true end
+	local added = 0
+	for _, e in ipairs(tab(entries)) do
+		local id = if type(e) == "table" and type(e.id) == "string" then e.id else nil
+		if id and not known[id] then
+			known[id] = true
+			table.insert(seen, id)
+			added += 1
+			if type(e.moved) == "table" then
+				for item, list in pairs(e.moved) do
+					if type(item) == "string" and type(list) == "table" then
+						local own = if type(hist[item]) == "table" then hist[item] else {}
+						for _, b in ipairs(list) do table.insert(own, b) end
+						hist[item] = own
+					end
+				end
+				capAuction(hist, hour, nil)
+			elseif type(e.item) == "string" then
+				PR.recordAuction(hist, e.item, math.clamp(whole(e.h), hour - 1, hour), e.price, e.seller, e.buyer)
+			end
+		end
+	end
+	while #seen > PR.SEEN do table.remove(seen, 1) end
+	return book, added
+end
+-- Snapshot summary {item, last, avg24, vol24, avg7, vol7, lo7, hi7, traders24,
+-- traders7, thin, spark = {PR.SPARK prices; 0 = no trades}, at}. Averages are
+-- volume-weighted means of the per-bucket medians over counted units; traders
+-- are the most distinct traders seen in one hour of the window.
+function PR.summary(list, now, item)
+	local hour = PR.hour(now)
+	local out = {item = item, vol24 = 0, vol7 = 0, traders24 = 0, traders7 = 0, spark = {}, at = whole(now)}
+	local v24, v7 = 0, 0
+	local sn, sv = {}, {}
+	local lastH
+	for _, b in ipairs(tab(list)) do
+		if type(b) == "table" and type(b.h) == "number" and b.h == b.h then
+			local age = math.max(0, hour - b.h) -- a bucket up to an hour ahead (clock skew) counts as now
+			if b.h <= hour + 1 and age < PR.HOURS and (whole(b.n) > 0 or whole(b.x) > 0) then
+				local t = tradersOf(b)
+				out.traders7 = math.max(out.traders7, t)
+				if age < 24 then out.traders24 = math.max(out.traders24, t) end
+				local price = priceOf(b)
+				if price then
+					local n = whole(b.n)
+					out.vol7 += n; v7 += price * n
+					out.lo7 = math.min(out.lo7 or math.huge, if b.lo then whole(b.lo) else price)
+					out.hi7 = math.max(out.hi7 or 0, if b.hi then whole(b.hi) else price)
+					if age < 24 then out.vol24 += n; v24 += price * n end
+					local slot = PR.SPARK - age // (PR.HOURS // PR.SPARK)
+					sn[slot] = (sn[slot] or 0) + n; sv[slot] = (sv[slot] or 0) + price * n
+					if not lastH or b.h >= lastH then lastH = b.h; out.last = price end
+				end
+			end
+		end
+	end
+	for i = 1, PR.SPARK do out.spark[i] = if (sn[i] or 0) > 0 then math.floor(sv[i] / sn[i] + 0.5) else 0 end
+	out.avg24 = if out.vol24 > 0 then math.floor(v24 / out.vol24 + 0.5) else nil
+	out.avg7 = if out.vol7 > 0 then math.floor(v7 / out.vol7 + 0.5) else nil
+	out.thin = out.traders7 < PR.THIN or (out.vol24 > 0 and out.traders24 < PR.THIN)
+	return out
+end
+-- "Price check" line for tooltips and market cards.
+function PR.text(s)
+	s = tab(s)
+	if not s.avg7 then return "No trades in the last 7 days" end
+	local parts = {}
+	if s.avg24 then table.insert(parts, "24h avg " .. s.avg24 .. " (" .. whole(s.vol24) .. " sold)") else table.insert(parts, "no trades in 24h") end
+	table.insert(parts, "7d avg " .. s.avg7)
+	if s.lo7 and s.hi7 then table.insert(parts, "range " .. s.lo7 .. "–" .. s.hi7) end
+	if s.thin then table.insert(parts, "thin market") end
+	return table.concat(parts, "  ·  ")
+end
+-- Which key holds an item's history: its Bazaar key (commodities) or its
+-- auction category's history key. Returns key, kind, category.
+function PR.keyFor(id)
+	local E = Data.Economy
+	if E.isCommodity(id) then return "bazaar_v1_" .. id, "bazaar" end
+	local cat = E.auctionCategory(id)
+	if cat then return PR.histKey(cat), "auction", cat end
+	return nil
+end
+
+-- Per-player daily shop stock --------------------------------------------------
+-- p.shopStock = {day = UTC day index, n = {[key] = units bought today}}. The day
+-- only rolls forward (a server whose clock runs behind keeps the newer day).
+-- Limits are per ITEM across every shop (§33 QC M2): a regional shop, a skill
+-- vendor and the Roost keeper selling the same ware share one daily count, so
+-- the key is "it:<item>" whichever shop is asked (ST.key keeps its old
+-- signature for callers). Limits count units, not lots.
+local ST = {}
+SY.Stock = ST
+ST.Limits = {Tonic=64, CookedFish=64, AlloyIngot=64, ArcaneDust=64, StormFeather=32, MightDraught=16, Shard=16, Stormglass=8,
+	GaleDraught=32, SkymarkSatchel=64, PetCandy=16}
+function ST.day(t) return math.floor(num(t) / 86400) end
+-- key("rq", role, item) / key("sv", skill, item) / key("roost", item) -> "it:<item>".
+function ST.key(shop, owner, item)
+	if shop == "roost" then item = owner end
+	return "it:" .. tostring(item)
+end
+-- Does any shop sell this item (so its limit applies)?
+local sold
+local function soldAnywhere(id)
+	if not sold then
+		sold = {}
+		for _, f in ipairs(tab(Data.RegionArt and Data.RegionArt.Folk)) do
+			for _, o in ipairs(tab(f.shop)) do if type(o.item) == "string" then sold[o.item] = true end end
+		end
+		for _, v in pairs(tab(Data.SkillVendors)) do
+			for _, e in ipairs(tab(v.shop)) do if type(e.item) == "string" then sold[e.item] = true end end
+		end
+		local PD = Data.PetDepth
+		for id in pairs(tab(PD and PD.ShopByItem)) do sold[id] = true end
+	end
+	return sold[id] == true
+end
+-- Daily unit limit for a key, or nil (unlimited).
+function ST.limit(key)
+	if type(key) ~= "string" or #key > 64 then return nil end
+	local id = string.match(key, "^it:(%w+)$")
+	if id and ST.Limits[id] and soldAnywhere(id) then return ST.Limits[id] end
+	return nil
+end
+-- The item a key counts: "it:<item>", or a legacy per-shop key
+-- ("rq:<role>:<item>", "sv:<Skill>:<item>", "roost:<item>") saved before M2.
+local function itemOfKey(key)
+	if type(key) ~= "string" or #key > 64 then return nil end
+	return string.match(key, "^it:(%w+)$") or string.match(key, "^%a+:%w+:(%w+)$") or string.match(key, "^roost:(%w+)$")
+end
+-- Rolls the record to today's UTC day (forward only); keeps only limited keys
+-- (legacy per-shop keys fold into their item's key).
+function ST.roll(rec, now)
+	rec = tab(rec)
+	local today = ST.day(now)
+	-- A stored day ahead of this clock keeps its counts (a server clock running
+	-- behind never restocks early); a day more than one ahead (tampered or broken
+	-- clock) is pulled back to tomorrow, so it can never lock a shop for long.
+	local day = whole(rec.day)
+	if day > today + 1 then day = today + 1 end
+	local counts = {}
+	if day >= today then
+		for key, v in pairs(tab(rec.n)) do
+			local id = itemOfKey(key)
+			local k = if id then "it:" .. id else nil
+			local lim = k and ST.limit(k)
+			if lim and whole(v) > 0 then counts[k] = math.min(whole(counts[k]) + whole(v), lim) end
+		end
+	end
+	return {day = math.max(day, today), n = counts}
+end
+-- Units left today and the limit (nil, nil when unlimited).
+function ST.left(rec, key)
+	local lim = ST.limit(key)
+	if not lim then return nil, nil end
+	return math.max(0, lim - whole(tab(tab(rec).n)[key])), lim
+end
+function ST.text(left, lim) return whole(left) .. "/" .. whole(lim) .. " left today" end
+
+-- XP calculator ----------------------------------------------------------------
+local CA = {}
+SY.Calc = CA
+-- Actions that train a skill: gathering nodes, Data.Recipes, Crafting patterns
+-- and Hunter creatures, {id, name, level, xp, kind}. Base XP (no boosts).
+function CA.actions(skill)
+	local out = {}
+	for _, r in ipairs(tab(Data.ResourceTiers[skill])) do
+		table.insert(out, {id = r.id, name = r.name, level = r.level, xp = r.xp, kind = "gather"})
+	end
+	for id, d in pairs(Data.Recipes) do
+		if type(d) == "table" and d.skill == skill and num(d.xp) > 0 then
+			table.insert(out, {id = id, name = nameOf(d.output or id), level = whole(d.level), xp = d.xp, kind = "craft"})
+		end
+	end
+	local CR = Data.Crafting
+	for _, id in ipairs(tab(CR and CR.RecipeOrder)) do
+		local d = CR.Recipes[id]
+		if d and d.skill == skill and num(d.xp) > 0 then
+			table.insert(out, {id = id, name = nameOf(d.output or id), level = whole(d.level), xp = d.xp, kind = "craft"})
+		end
+	end
+	if skill == "Hunter" and Data.Hunter then
+		for _, c in ipairs(tab(Data.Hunter.Creatures)) do
+			table.insert(out, {id = c.id, name = c.name, level = whole(c.level), xp = c.xp, kind = "catch"})
+		end
+	end
+	table.sort(out, function(a, b)
+		if a.level ~= b.level then return a.level < b.level end
+		if a.xp ~= b.xp then return a.xp < b.xp end
+		return a.id < b.id
+	end)
+	return out
+end
+function CA.skills()
+	local out = {}
+	for _, skill in ipairs(Data.SkillOrder) do if #CA.actions(skill) > 0 then table.insert(out, skill) end end
+	return out
+end
+-- {remaining, actions, goalXp} to reach `target` from `xp` at `each` XP per action.
+function CA.plan(xp, target, each)
+	local goal = Data.XP_TABLE[math.clamp(whole(target), 1, Data.MAX_LEVEL or 99)] or 0
+	local remaining = math.max(0, goal - num(xp))
+	local per = num(each)
+	return {remaining = remaining, actions = if per > 0 then math.ceil(remaining / per) else nil, goalXp = goal}
+end
+end
+
+-- Goal toasts ride the §31 announcement queue (Features.announce).
+do
+local F = Data.Features
+local announceText = F.announceText
+function F.announceText(e)
+	if type(e) == "table" and e.kind == "goal" then
+		return {head = "GOAL COMPLETE", body = tostring(e.title or "Goal"), color = "7CFFB2"}
+	end
+	return announceText(e)
+end
+end
+-- <<< END Systems Depth <<<
+------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------
+-- Player settings (docs/DEPTH-CONTRACT.md §35 QC L6). The IsleSetting*
+-- player attributes are client-set (and so never seen by the server); the
+-- Settings page also sends the `setting` verb ("Attr=value") so the choice is
+-- saved on the profile (p.settings) and re-applied as a server-set attribute
+-- on join. Only this whitelist is accepted; values are validated per kind.
+------------------------------------------------------------------------------
+do
+local S = {}
+S.list = {
+	{attr = "IsleSettingPinSatchel", kind = "bool"},
+	{attr = "IsleSettingXpDrops", kind = "bool"},
+	{attr = "IsleSettingMinimap", kind = "bool"},
+	{attr = "IsleSettingReducedMotion", kind = "bool"},
+	{attr = "IsleSettingGraphics", kind = "enum", values = {"High", "Balanced", "Performance"}}, -- = AetherLighting.TIER_ORDER (asserted)
+}
+S.byAttr = {}
+for _, o in ipairs(S.list) do S.byAttr[o.attr] = o end
+-- The validated value of a setting (bool / enum string), or nil.
+function S.clean(attr, value)
+	local o = type(attr) == "string" and S.byAttr[attr]
+	if not o then return nil end
+	if o.kind == "bool" then
+		if value == true or value == "true" then return true end
+		if value == false or value == "false" then return false end
+		return nil
+	end
+	if type(value) == "string" and table.find(o.values, value) then return value end
+	return nil
+end
+-- "Attr=value" (the verb's item) -> attr, value; nil when not whitelisted / invalid.
+function S.parse(item)
+	if type(item) ~= "string" or #item > 64 then return nil end
+	local attr, raw = string.match(item, "^([%w_]+)=([%w_]+)$")
+	local value = S.clean(attr, raw)
+	if value == nil then return nil end
+	return attr, value
+end
+function S.encode(attr, value) return tostring(attr) .. "=" .. tostring(value) end
+-- A saved map with only whitelisted, valid entries (unknown keys dropped).
+function S.sanitize(map)
+	local out = {}
+	if type(map) ~= "table" then return out end
+	for _, o in ipairs(S.list) do
+		local v = S.clean(o.attr, map[o.attr])
+		if v ~= nil then out[o.attr] = v end
+	end
+	return out
+end
+Data.PlayerSettings = S
+end
+------------------------------------------------------------------------------
+-- >>> BEGIN Beaconry (Beaconry team; append-only section; docs/DEPTH-CONTRACT.md §37) >>>
+-- A 1-99 production skill with OSRS Firemaking depth (all names original):
+--   * Kindle a log of any wood tier with a Flint Striker (held in the hand,
+--     strike gesture "kindle"): level-gated, a success chance that rises with
+--     level and striker tier, XP per log tier. A campfire burns for a while,
+--     then goes out and leaves Pyre Ash for its kindler.
+--   * Beacon network: one beacon pyre per region (B.Beacons). Feeding one
+--     B.BEACON_LOGS logs lights it for B.BEACON_SECONDS: Beacon Warmth (a short
+--     regional buff) for the lighter, everyone near it and anyone who basks in it
+--     while it burns; every lighting counts toward the weekly community goal.
+--   * Campfire cooking: Cooking's Hearth meals and feasts at any lit campfire
+--     (paced batches, a burn chance by Cooking level, +10% Cooking XP) and two
+--     dishes only a campfire can make.
+--   * Pyre Ash: Alchemy (Emberward Draught) and Farming (composter matter).
+-- Pure data and rules; server.server.lua (Beaconry block) runs it,
+-- world.server.lua builds the beacon pyres, beaconry.server.lua draws the
+-- campfires and beacon flames, ui.client.lua Workshop › Beaconry shows it.
+------------------------------------------------------------------------------
+do
+local B = {}
+Data.Beaconry = B
+local function whole(v)
+	v = tonumber(v)
+	if not v or v ~= v or v == math.huge or v == -math.huge then return 0 end
+	return math.floor(v)
+end
+B.whole = whole
+
+-- Skill registration (appended: old saves keep their order).
+table.insert(Data.SkillOrder, "Beaconry")
+Data.Skills.Beaconry = {category="production",color="F26B38",title="Flamewarden",perLevel={health=1,intelligence=0.5},
+	description="Kindle fires, cook at your own campfire and keep the isles' beacons burning. Raises Health and Intelligence."}
+-- 99 mantle: stats plus "Everflame" (B.CAPE_*): kindles never fail, campfires
+-- burn half as long again and beacon warmth lasts twice as long.
+if Data.Mastery and Data.Mastery.CapePerk then Data.Mastery.CapePerk.Beaconry = {health=30,intelligence=20} end
+B.CAPE_FIRE_MULT, B.CAPE_WARMTH_MULT = 1.5, 2
+
+-- Pacing and bounds.
+B.TICK = 0.5                 -- server loop (fires, cooking, week flush)
+B.KINDLE_SECONDS = 2.4       -- one kindle attempt per 2.4 s (OSRS: four game ticks)
+B.MAX_FIRES = 40             -- campfires burning on one server
+B.MAX_PER_PLAYER = 4         -- a fifth kindle snuffs your oldest campfire
+B.FIRE_SPACING = 3.5         -- studs between two campfires
+B.BEACON_CLEARANCE = 12      -- no campfire this close to a beacon pyre
+B.SUCCESS_BASE = 0.45        -- chance at the log's own level with a Flint Striker
+B.SUCCESS_FADE = 25          -- levels above the log until a kindle never fails
+B.COOK_RANGE = 9             -- studs from a lit campfire to cook on it
+B.COOK_SECONDS = 1.8         -- one campfire cook per 1.8 s
+B.MAX_BATCH = 28
+B.FIRE_XP_MULT = 1.1         -- Cooking XP at a campfire
+B.BURN_BASE, B.BURN_FADE = 0.35, 30 -- burn chance at the recipe level, gone 30 levels later
+B.BEACON_LOGS = 6
+B.BEACON_SECONDS = 600       -- a lit beacon burns ten minutes
+B.BEACON_XP_MULT = 1.5       -- XP per log fed to a beacon, vs a campfire
+B.BEACON_RANGE = 14          -- studs: bask / light only standing at the pyre
+B.WARMTH_SECONDS = 300
+B.WARMTH_RADIUS = 110        -- studs: players this close to a beacon when it is lit get warmth
+B.WARMTH_ID = "Beacon Warmth" -- p.buffs key (one warmth at a time; a new one replaces it)
+B.WEEK = 604800              -- UTC weeks since the epoch (Thursday 00:00 UTC)
+B.WEEK_GOAL = 150            -- beacon lightings across every server in one week
+B.FLUSH = 30                 -- seconds between community-total DataStore writes
+B.WEEK_REFRESH = 60          -- QC M2: re-read the shared total (GetAsync) this often when nothing is pending
+B.CLAIM_REFRESH = 10         -- QC M2: a claim refused below the goal re-reads the total at most this often
+B.WEEK_KEY = "beaconry_week_"
+-- QC M3: the weekly key holds per-server contributions {base=n, s={["<JobId>:<seg>"]={n=, t=}}}.
+-- A server writes max(stored, its monotonic local count) for its own hourly
+-- segment, so a write that timed out but committed is never counted twice.
+-- Entries untouched for B.WEEK_FOLD seconds fold into base (servers write only
+-- their current and previous segment, so a folded entry is never written again).
+B.WEEK_SEG = 3600
+B.WEEK_FOLD = 3 * 3600
+-- QC H1: beacon XP is paid for the first B.BEACON_XP_PER_DAY lightings per
+-- player per isle day (Data.Calendar.dayLength), saved on the profile, so
+-- hopping servers to relight beacons never outpaces banked kindling.
+B.BEACON_XP_PER_DAY = 9
+B.SPOT_CLEARANCE = 6         -- QC L2: studs from prompts, spawn markers and townsfolk anchors
+B.MAX_COUNT = 1000000000
+B.ASH = "PyreAsh"
+function B.weekOf(t) return math.floor(whole(t) / B.WEEK) end
+function B.weekResetIn(t) t = whole(t); return (B.weekOf(t) + 1) * B.WEEK - t end
+function B.dayOf(t)
+	local cal = Data.Calendar
+	return math.floor((whole(t) - (cal and cal.epoch or 0)) / (cal and cal.dayLength or 86400))
+end
+function B.weekSeg(t) return math.floor(whole(t) / B.WEEK_SEG) end
+-- Community total stored under one week key (a legacy plain number is the base).
+function B.weekSum(v)
+	if type(v) == "number" then return math.max(0, whole(v)) end
+	if type(v) ~= "table" then return 0 end
+	local total = math.max(0, whole(v.base))
+	for _, e in pairs(type(v.s) == "table" and v.s or {}) do
+		if type(e) == "table" then total += math.max(0, whole(e.n)) end
+	end
+	return total
+end
+-- UpdateAsync transform: this server's segment counts (segs = {[seg] = count},
+-- monotonic) merged idempotently; stale entries fold into base.
+function B.weekMerge(old, jobId, segs, now)
+	local v = {base = 0, s = {}}
+	if type(old) == "number" then v.base = math.max(0, whole(old))
+	elseif type(old) == "table" then
+		v.base = math.max(0, whole(old.base))
+		for k, e in pairs(type(old.s) == "table" and old.s or {}) do
+			if type(k) == "string" and type(e) == "table" then v.s[k] = {n = math.max(0, whole(e.n)), t = whole(e.t)} end
+		end
+	end
+	now = whole(now)
+	for seg, n in pairs(type(segs) == "table" and segs or {}) do
+		local key = tostring(jobId) .. ":" .. tostring(seg)
+		local cur = v.s[key]
+		v.s[key] = {n = math.max(cur and cur.n or 0, math.max(0, whole(n))), t = now}
+	end
+	for k, e in pairs(v.s) do
+		if now - e.t > B.WEEK_FOLD then
+			v.base += e.n
+			v.s[k] = nil
+		end
+	end
+	return v
+end
+-- Community reward for a journal that lit at least one beacon in a week whose
+-- goal was met: Beaconry XP scaling with level (claimed once per week).
+function B.weekXp(level) return 250 + 60 * math.clamp(whole(level), 1, 99) end
+
+------------------------------------------------------------------------------
+-- Logs: every Woodcutting tier (seven today). XP is 1.25x the log's
+-- Woodcutting XP + 5 (OSRS Firemaking pays ~1.2-1.6x Woodcutting per log).
+------------------------------------------------------------------------------
+B.Logs, B.LogById = {}, {}
+for i, r in ipairs(Data.ResourceTiers.Woodcutting) do
+	local def = {id=r.id,name=r.name,level=r.level,tier=i,xp=math.floor(r.xp * 1.25 + 5),color=r.color,
+		seconds=45 + 15 * i}  -- campfire burn time
+	table.insert(B.Logs, def)
+	B.LogById[r.id] = def
+end
+-- Success chance of one kindle: 45% at the log's level with a Flint Striker,
+-- certain 25 levels later; each striker tier above the first adds 5%.
+function B.successChance(level, log, strikerTier)
+	if type(log) ~= "table" then return 0 end
+	level = whole(level)
+	if level < log.level then return 0 end
+	local over = (level - log.level) / B.SUCCESS_FADE
+	local c = B.SUCCESS_BASE + (1 - B.SUCCESS_BASE) * over + 0.05 * math.max(0, whole(strikerTier) - 1)
+	return math.clamp(c, 0, 1)
+end
+function B.fireSeconds(log, cape)
+	return math.floor((type(log) == "table" and log.seconds or 60) * (if cape then B.CAPE_FIRE_MULT else 1))
+end
+
+------------------------------------------------------------------------------
+-- Items: strikers (Forge, Smithing; held class "striker", never used up),
+-- Pyre Ash, the Emberward Draught and the two campfire-only dishes.
+------------------------------------------------------------------------------
+local function item(id, def)
+	def.id = id
+	def.rarity = def.rarity or "Common"
+	def.value = def.value or 1
+	Data.Items[id] = def
+	return def
+end
+local function recipe(id, def)
+	def.id = id
+	def.output = def.output or id
+	def.amount = def.amount or 1
+	Data.Recipes[id] = def
+	return def
+end
+local function valueOf(costs)
+	local v = 0
+	for id, n in pairs(costs) do v += (Data.Items[id] and Data.Items[id].value or 0) * n end
+	return v
+end
+B.valueOf = valueOf
+B.StrikerOrder = {"FlintStriker","SunsteelStriker","StarmetalStriker"}
+B.Strikers = {}
+for i, s in ipairs({
+	{id="FlintStriker",name="Flint Striker",level=1,smithing=1,color="B9B2A6",costs={AlloyIngot=1,Ore=2},rarity="Common"},
+	{id="SunsteelStriker",name="Sunsteel Striker",level=30,smithing=30,color="F2C14E",costs={SunsteelIngot=2,EmberoakLog=1},rarity="Uncommon"},
+	{id="StarmetalStriker",name="Starmetal Striker",level=60,smithing=60,color="C9D6E3",costs={StarmetalIngot=2,StarwoodLog=1},rarity="Rare"},
+}) do
+	s.tier = i
+	B.Strikers[s.id] = s
+	-- Value stays under the inputs (no coin mint through the Forge).
+	item(s.id,{name=s.name,kind="material",category="beaconTool",heldClass="striker",tier=i,rarity=s.rarity,color=s.color,
+		value=math.max(1, math.floor(valueOf(s.costs) * 0.8)),requires={Beaconry=s.level},
+		description="Beaconry tool (tier "..i.."): strike sparks to kindle logs. "..(if i > 1 then "+"..(5 * (i - 1)).."% kindle chance. " else "").."Never used up."})
+	recipe(s.id,{skill="Smithing",level=s.smithing,xp=10 + s.smithing,costs=s.costs,station="Forge",category="Tools"})
+end
+-- Best striker a journal can use: the striker def or nil. levelOf(skill) -> level.
+function B.bestStriker(items, levelOf)
+	local best
+	for _, id in ipairs(B.StrikerOrder) do
+		local s = B.Strikers[id]
+		if whole((items or {})[id]) > 0 and (not levelOf or levelOf("Beaconry") >= s.level) then best = s end
+	end
+	return best
+end
+
+item(B.ASH,{name="Pyre Ash",kind="material",rarity="Common",color="8A8178",value=2,
+	description="Fine ash left when a campfire burns down. Alchemists bind it into draughts; gardeners feed it to the composter."})
+table.insert(Data.CollectionItems, B.ASH)
+Data.CollectionScale[B.ASH] = 0.5
+-- Farming: ash is rich composter matter (Verdant Garden).
+if Data.Garden and Data.Garden.ORGANIC_EXTRA then Data.Garden.ORGANIC_EXTRA[B.ASH] = 6 end
+-- Alchemy: one ash potion (takes a Skyglass Vial like every Alchemy 8+ potion, §22).
+item("EmberwardDraught",{name="Emberward Draught",kind="consumable",category="potion",rarity="Uncommon",color="E07A3F",
+	buff={stats={defense=30,health=40},duration=300},value=20,requires={Alchemy=22},description="Potion: 5 minute buff. Brewed from Pyre Ash."})
+recipe("EmberwardDraught",{skill="Alchemy",level=22,xp=70,costs={[B.ASH]=4,Herb=2},repeatable=true,station="Cauldron",category="Potions",
+	collectionTier={[B.ASH]=1}})
+do
+	local CR = Data.Crafting
+	if CR and CR.VIAL_POTIONS then
+		local r = Data.Recipes.EmberwardDraught
+		if CR.VIALS_IN_POTIONS then r.costs.GlassVial = (r.costs.GlassVial or 0) + 1 end
+		table.insert(CR.VIAL_POTIONS, "EmberwardDraught")
+		table.sort(CR.VIAL_POTIONS, function(a, b)
+			local la, lb = Data.Recipes[a].level, Data.Recipes[b].level
+			if la ~= lb then return la < lb end
+			return a < b
+		end)
+	end
+	Data.Items.EmberwardDraught.value = math.min(Data.Items.EmberwardDraught.value, valueOf(Data.Recipes.EmberwardDraught.costs))
+end
+
+-- Campfire-only dishes (B.FireRecipes, not Data.Recipes: the generic craft verb
+-- cannot make them). Value never above the inputs.
+B.FireRecipes, B.FireRecipeOrder = {}, {}
+for _, d in ipairs({
+	{id="HearthfireSkewer",name="Hearthfire Skewer",level=22,xp=70,costs={Glassfin=2,Sunwheat=2},rarity="Uncommon",color="E9A23B",
+		buff={health=40,defense=15},duration=600},
+	{id="BeaconwatchStew",name="Beaconwatch Stew",level=58,xp=200,costs={Lanternray=2,Moonbloom=2,Glowcap=1},rarity="Rare",color="C8553D",
+		buff={health=80,strength=20,foragingFortune=20},duration=600},
+}) do
+	local parts = {}
+	for stat, v in pairs(d.buff) do table.insert(parts, "+"..v.." "..((Data.Stats[stat] and Data.Stats[stat].name) or stat)) end
+	table.sort(parts)
+	item(d.id,{name=d.name,kind="consumable",category="buff",rarity=d.rarity,color=d.color,buff={stats=d.buff,duration=d.duration},
+		value=math.max(1, math.floor(valueOf(d.costs) * 0.9)),requires={Cooking=d.level},
+		description="Campfire dish: "..table.concat(parts, ", ").." for "..(d.duration // 60).." minutes."})
+	local rec = {id=d.id,output=d.id,amount=1,skill="Cooking",level=d.level,xp=d.xp,costs=d.costs,fireOnly=true,category="Campfire"}
+	B.FireRecipes[d.id] = rec
+	table.insert(B.FireRecipeOrder, d.id)
+end
+-- A recipe the campfire can cook: Cooking's Hearth meals and feasts, or a
+-- campfire dish. Returns the recipe table or nil.
+function B.cookRecipe(id)
+	if type(id) ~= "string" then return nil end
+	local fire = B.FireRecipes[id]
+	if fire then return fire end
+	local r = Data.Recipes[id]
+	if type(r) == "table" and r.skill == "Cooking" and r.station == "Hearth" then return r end
+	return nil
+end
+-- Every campfire recipe, sorted by level then id (UI and tests).
+function B.cookList()
+	local out = {}
+	for id in pairs(Data.Recipes) do if B.cookRecipe(id) then table.insert(out, B.cookRecipe(id)) end end
+	for _, id in ipairs(B.FireRecipeOrder) do table.insert(out, B.FireRecipes[id]) end
+	table.sort(out, function(a, b) if a.level ~= b.level then return a.level < b.level end return a.id < b.id end)
+	return out
+end
+-- Campfire burn chance (OSRS: open fires burn more than ranges): 35% at the
+-- recipe level, falling to 0 thirty Cooking levels later; dishes made for the
+-- campfire never burn.
+function B.burnChance(cookLevel, rec)
+	if type(rec) ~= "table" or rec.fireOnly then return 0 end
+	local over = whole(cookLevel) - whole(rec.level)
+	return math.clamp(B.BURN_BASE * (1 - over / B.BURN_FADE), 0, B.BURN_BASE)
+end
+function B.cookXp(rec) return math.floor(whole(rec and rec.xp) * B.FIRE_XP_MULT) end
+-- "recipe:count" -> id, count (1..MAX_BATCH) or nil.
+function B.parseBatch(text)
+	if type(text) ~= "string" or #text > 64 then return nil end
+	local id, n = string.match(text, "^(%w+):(%d+)$")
+	n = tonumber(n)
+	if not id or not B.cookRecipe(id) or not n or n < 1 then return nil end
+	return id, math.min(n, B.MAX_BATCH)
+end
+
+------------------------------------------------------------------------------
+-- Beacons: one pyre per region (world.server.lua builds them on the region's
+-- Mote Shrine island, Data.Exploration.ShrineIsle). log = the lowest log tier
+-- that can feed it (any higher tier also burns); buff = Beacon Warmth.
+------------------------------------------------------------------------------
+B.BeaconOrder = {"Hub","Meadow","Quarry","Windpine","Skyreach","Tidewater","Gloomhollow","Tempest","ShatteredCrown"}
+B.Beacons = {
+	Hub={name="Quayfire Beacon",region="Hub",level=1,log="Timber",buff={health=20},color="FFB347"},
+	Meadow={name="Sunwheel Beacon",region="Meadow",level=10,log="Timber",buff={farmingFortune=15},color="F4D35E"},
+	Quarry={name="Brassfall Beacon",region="Quarry",level=20,log="WindpineLog",buff={miningFortune=15},color="E9A23B"},
+	Windpine={name="Canopy Beacon",region="Windpine",level=30,log="EmberoakLog",buff={foragingFortune=20},color="FF8C42"},
+	Skyreach={name="Summit Beacon",region="Skyreach",level=40,log="EmberoakLog",buff={miningSpeed=30},color="FFC15E"},
+	Tidewater={name="Shoalward Beacon",region="Tidewater",level=50,log="GlimmerbarkLog",buff={fishingFortune=20},color="7FD6E8"},
+	Gloomhollow={name="Hollowlight Beacon",region="Gloomhollow",level=62,log="StarwoodLog",buff={defense=25},color="B59CFF"},
+	Tempest={name="Stormcrown Beacon",region="Tempest",level=78,log="AetherheartLog",buff={strength=20,critDamage=10},color="9AD8FF"},
+	ShatteredCrown={name="Crownfire Beacon",region="ShatteredCrown",level=90,log="ShatterbarkLog",buff={health=40,critDamage=15},color="D8B4FF"},
+}
+for i, id in ipairs(B.BeaconOrder) do
+	local b = B.Beacons[id]
+	b.id, b.index = id, i
+	-- A region whose log tier does not exist falls back to the best log there is.
+	if not B.LogById[b.log] then b.log = B.Logs[#B.Logs].id end
+end
+-- Logs that can feed a beacon: its own tier or better.
+function B.feedsBeacon(beacon, logId)
+	local need, log = B.LogById[beacon and beacon.log or ""], B.LogById[logId or ""]
+	return need ~= nil and log ~= nil and log.tier >= need.tier
+end
+-- The log stack a beacon lighting spends: the lowest qualifying tier with a
+-- full feed (B.BEACON_LOGS logs) that the lighter's Beaconry `level` can kindle
+-- (QC H1; level omitted = any). Returns the log def or nil.
+function B.beaconFuel(beacon, items, level)
+	for _, log in ipairs(B.Logs) do
+		if B.feedsBeacon(beacon, log.id) and (level == nil or whole(level) >= log.level)
+			and whole((items or {})[log.id]) >= B.BEACON_LOGS then return log end
+	end
+	return nil
+end
+function B.beaconXp(log) return math.floor(whole(log and log.xp) * B.BEACON_LOGS * B.BEACON_XP_MULT) end
+-- XP for lighting a beacon: always its own tier's feed (as the UI and the XP
+-- calculator show), never the logs actually spent (QC H1).
+function B.beaconXpFor(beacon) return B.beaconXp(B.LogById[beacon and beacon.log or ""]) end
+-- QC H1: does this lighting pay XP? Counts it on the journal (c.xpDay) when it does.
+function B.takeBeaconXp(c, day)
+	day = whole(day)
+	if type(c.xpDay) ~= "table" or c.xpDay.id ~= day then
+		if type(c.xpDay) == "table" and whole(c.xpDay.id) > day then return false end -- a clock behind never rewinds it
+		c.xpDay = {id = day, n = 0}
+	end
+	if c.xpDay.n >= B.BEACON_XP_PER_DAY then return false end
+	c.xpDay.n += 1
+	return true
+end
+function B.warmthSeconds(cape) return B.WARMTH_SECONDS * (if cape then B.CAPE_WARMTH_MULT else 1) end
+
+------------------------------------------------------------------------------
+-- Campfire sites. chain = the ground part the kindler stands on and its
+-- ancestors, {{name=, bridge=bool}, ...} from the hit part upward. Fires burn
+-- only on the open ground of a static isle (under Workspace.Islands) or on the
+-- kindler's own home island; never on a path, bridge, rope deck, another
+-- player's home, a lair, an arena or the Observatory.
+------------------------------------------------------------------------------
+local BRIDGE_WORDS = {"bridge","deck","plank","rope","ladder","stair","dock","pier","path"}
+-- QC L2: never inside a station, stall or other built structure on an isle.
+local STRUCTURE_WORDS = {"stall","station","counter","forge","hearth","cauldron","workbench","anvil","altar",
+	"council","dais","vault","booth","kiosk","bench","tanning","furnace","chest","board","statue","fountain",
+	-- §40 QC L1: the building kit's hosts ("Roofed house", "Roofed hall floor",
+	-- "Hall wall") and walk-in halls; models also carry the Building attribute
+	-- (chain node .building, set by the server's chainOf).
+	"roofed","hall","house"}
+B.STRUCTURE_WORDS = STRUCTURE_WORDS
+function B.groundVerdict(chain, userId)
+	if type(chain) ~= "table" or #chain == 0 then return false, "Stand on solid ground to kindle a fire." end
+	local first = chain[1]
+	local name = string.lower(tostring(first.name or ""))
+	if first.bridge then return false, "Not on a path or bridge. Step onto open ground." end
+	for _, w in ipairs(BRIDGE_WORDS) do
+		if string.find(name, w, 1, true) then return false, "Not on a path or bridge. Step onto open ground." end
+	end
+	local onIsles = false
+	for i, node in ipairs(chain) do
+		local owner = string.match(tostring(node.name or ""), "^WayfarersRest_(%d+)$")
+		if owner then
+			if tonumber(owner) ~= tonumber(userId) then return false, "That is another wayfarer's island. Kindle on your own ground." end
+			return true
+		end
+		if node.name == "Islands" then
+			onIsles = true
+			-- Below the isle model (chain[i - 1]) every node is a part or a built model.
+			for j = 1, i - 2 do
+				local lower = string.lower(tostring(chain[j].name or ""))
+				if chain[j].building then return false, "Not inside a building. Step out onto open ground." end
+				for _, w in ipairs(STRUCTURE_WORDS) do
+					if string.find(lower, w, 1, true) then return false, "Not inside a station or stall. Step out onto open ground." end
+				end
+			end
+			break
+		end
+	end
+	if not onIsles then return false, "Fires can only be kindled on the open ground of the isles." end
+	return true
+end
+-- Spacing: fires = list of {pos = Vector3-like}, beacons = list of positions,
+-- spots = positions of prompts, spawn markers and townsfolk anchors (QC L2).
+function B.spacingVerdict(pos, fires, beacons, spots)
+	local function flat(a, b) local dx, dz = a.X - b.X, a.Z - b.Z; return math.sqrt(dx * dx + dz * dz), math.abs(a.Y - b.Y) end
+	for _, f in ipairs(fires or {}) do
+		local d, dy = flat(pos, f.pos)
+		if d < B.FIRE_SPACING and dy < 6 then return false, "A fire is already burning here. Step aside." end
+	end
+	for _, b in ipairs(beacons or {}) do
+		local d, dy = flat(pos, b)
+		if d < B.BEACON_CLEARANCE and dy < 12 then return false, "Too close to the beacon pyre." end
+	end
+	for _, q in ipairs(spots or {}) do
+		local d, dy = flat(pos, q)
+		if d < B.SPOT_CLEARANCE and dy < 12 then return false, "Too close to a station, a townsfolk post or a creature den. Step into the open." end
+	end
+	return true
+end
+
+------------------------------------------------------------------------------
+-- Profile p.beaconry = {kindled={[log]=n}, failed=n, beacons={[beacon]=n},
+-- cooked=n, burnt=n, ash=n, week={id, lit, claimed}, weeks=n}. Quest flags
+-- p.beaconKindled / p.beaconLit / p.beaconNetwork (top-level booleans, flag checks).
+------------------------------------------------------------------------------
+B.NETWORK_BEACONS = 5 -- distinct beacons lit for the beaconNetwork flag
+function B.migrate(raw)
+	local c = type(raw) == "table" and raw or {}
+	local function counts(t, valid)
+		local out = {}
+		if type(t) == "table" then
+			for id, n in pairs(t) do
+				n = whole(n)
+				if type(id) == "string" and valid[id] and n > 0 then out[id] = math.min(n, B.MAX_COUNT) end
+			end
+		end
+		return out
+	end
+	local week = type(c.week) == "table" and c.week or {}
+	return {
+		kindled = counts(c.kindled, B.LogById), beacons = counts(c.beacons, B.Beacons),
+		failed = math.clamp(whole(c.failed), 0, B.MAX_COUNT), cooked = math.clamp(whole(c.cooked), 0, B.MAX_COUNT),
+		burnt = math.clamp(whole(c.burnt), 0, B.MAX_COUNT), ash = math.clamp(whole(c.ash), 0, B.MAX_COUNT),
+		week = {id = math.max(0, whole(week.id)), lit = math.clamp(whole(week.lit), 0, B.MAX_COUNT), claimed = week.claimed == true},
+		weeks = math.clamp(whole(c.weeks), 0, 10000),
+		xpDay = if type(c.xpDay) == "table" then {id = whole(c.xpDay.id), n = math.clamp(whole(c.xpDay.n), 0, B.BEACON_XP_PER_DAY)} else nil,
+	}
+end
+function B.distinctBeacons(c)
+	local n = 0
+	for id, v in pairs(type(c) == "table" and type(c.beacons) == "table" and c.beacons or {}) do
+		if B.Beacons[id] and whole(v) > 0 then n += 1 end
+	end
+	return n
+end
+-- The journal's week entry for week `w`, rolled forward only (a server whose
+-- clock is behind never rewinds it).
+function B.rollWeek(c, w)
+	if whole(w) > c.week.id then c.week = {id = whole(w), lit = 0, claimed = false} end
+	return c.week
+end
+-- Claim check: (ok, reason). total = the community total for week w.
+function B.canClaim(c, w, total)
+	if type(c) ~= "table" or type(c.week) ~= "table" or c.week.id ~= whole(w) or c.week.lit < 1 then
+		return false, "Light a beacon this week to join the watch."
+	end
+	if c.week.claimed then return false, "You already claimed this week's beacon reward." end
+	if whole(total) < B.WEEK_GOAL then return false, "The isles have lit "..whole(total).."/"..B.WEEK_GOAL.." beacons this week." end
+	return true
+end
+
+------------------------------------------------------------------------------
+-- Balance model (verify-beaconry.luau; documented in §37). Supply chain:
+-- chop the log (one node, max(respawn, 1.65) s like §22) then kindle it
+-- (B.KINDLE_SECONDS per attempt at the success chance).
+------------------------------------------------------------------------------
+function B.kindleSecondsPerLog(level, log, strikerTier)
+	local c = B.successChance(level, log, strikerTier)
+	return if c > 0 then B.KINDLE_SECONDS / c else math.huge
+end
+local function woodTier(log)
+	for _, t in ipairs(Data.ResourceTiers.Woodcutting) do if t.id == log.id then return t end end
+	return nil
+end
+-- XP/h kindling banked logs (cadence-bound).
+function B.bankedRate(level, log, strikerTier)
+	return log.xp * 3600 / B.kindleSecondsPerLog(level, log, strikerTier)
+end
+-- XP/h chopping then kindling every log yourself.
+function B.chainRate(level, log, strikerTier)
+	local t = woodTier(log)
+	local chop = math.max(t and t.respawn or 3, 1.65)
+	return log.xp * 3600 / (chop + B.kindleSecondsPerLog(level, log, strikerTier))
+end
+-- Woodcutting XP/h on the same log (one node), for comparison.
+function B.woodcuttingRate(log)
+	local t = woodTier(log)
+	return if t then t.xp * 3600 / math.max(t.respawn, 1.65) else 0
+end
+
+------------------------------------------------------------------------------
+-- Unlock list for the Skills page (Hero › Skills › Beaconry): {level, text, item}.
+------------------------------------------------------------------------------
+function B.unlocks()
+	local out = {}
+	for _, log in ipairs(B.Logs) do
+		table.insert(out, {level=log.level,text="Kindle "..log.name.." (+"..log.xp.." XP, burns "..log.seconds.."s)",item=log.id})
+	end
+	for _, id in ipairs(B.BeaconOrder) do
+		local b = B.Beacons[id]
+		table.insert(out, {level=b.level,text="Light the "..b.name.." ("..B.BEACON_LOGS.." "..((B.LogById[b.log] or {}).name or b.log).." or better)"})
+	end
+	for _, id in ipairs(B.StrikerOrder) do
+		local s = B.Strikers[id]
+		if s.level > 1 then table.insert(out, {level=s.level,text="Strike with a "..s.name.." (+"..(5 * (s.tier - 1)).."% kindle chance)",item=id}) end
+	end
+	table.insert(out, {level=99,text="Everflame mantle: kindles never fail, campfires burn 50% longer, warmth lasts twice as long"})
+	return out
+end
+
+------------------------------------------------------------------------------
+-- Held items (§26): the striker class (right hand) swings in the "kindle" gesture.
+------------------------------------------------------------------------------
+do
+	local H = Data.Held
+	if H then
+		H.CLASSES.striker = {hand = "right", kind = "tool"}
+		H.FITS.kindle = {striker = true}
+		H.SHAPES.striker = {
+			{n = "Grip", s = {0.22, 0.22, 0.7}, o = {0, 0, -0.05}, c = "leather", m = "Fabric"},
+			{n = "Steel", s = {0.5, 0.16, 0.16}, o = {0, 0.05, -0.55}, c = "head", m = "metal"},
+			{n = "Bow", s = {0.12, 0.42, 0.12}, o = {0.22, 0.2, -0.55}, c = "head", m = "metal"},
+			{n = "Flint", s = {0.34, 0.34, 0.34}, o = {0, 0.24, -0.72}, c = "trim", m = "Slate", shape = "Ball"},
+			{n = "Spark", s = {0.14, 0.14, 0.14}, o = {0, 0.34, -0.86}, c = "glow", m = "Neon", shape = "Ball"},
+		}
+	end
+end
+
+------------------------------------------------------------------------------
+-- Commissions (§20): kind "kindle" (target = log id, one credit per campfire).
+------------------------------------------------------------------------------
+do
+	local CL = Data.CommissionsLogs
+	if CL and CL.Tasks then
+		for _, t in ipairs({
+			{id="KindleTimber",name="Hearth Kindling",target="Timber",amount=25,dust=14},
+			{id="KindleWindpineLog",name="Windpine Blaze",target="WindpineLog",amount=20,dust=20},
+			{id="KindleEmberoakLog",name="Ember Watch",target="EmberoakLog",amount=16,dust=26},
+			{id="KindleGlimmerbarkLog",name="Glimmer Pyres",target="GlimmerbarkLog",amount=12,dust=32},
+		}) do
+			local log = B.LogById[t.target]
+			if log then
+				t.kind, t.skill, t.group = "kindle", "Beaconry", "Beaconry"
+				t.levels = {Beaconry = log.level}
+				t.xp = math.floor(log.xp * t.amount * 1.2)
+				t.coins = 15 + log.level * 3
+				table.insert(CL.Tasks, t)
+				CL.TaskById[t.id] = t
+			end
+		end
+	end
+end
+
+------------------------------------------------------------------------------
+-- Quests (two side quests) and their quest-helper waypoints / check texts.
+------------------------------------------------------------------------------
+do
+	local FLAG_TEXT = {beaconKindled = "Kindle your first campfire", beaconLit = "Light a regional beacon",
+		beaconNetwork = "Light "..B.NETWORK_BEACONS.." different beacons"}
+	B.FLAG_TEXT = FLAG_TEXT
+	local describe = Data.describeCheck
+	function Data.describeCheck(o, regional)
+		if type(o) == "table" and o.kind == "flag" and FLAG_TEXT[o.flag] then return FLAG_TEXT[o.flag] end
+		return describe(o, regional)
+	end
+	for _, q in ipairs({
+		{id="KindlingLessons",title="Kindling Lessons",line="side",region="Hub",
+			story="Old Hesketh Ashby, the Beaconkeeper, tends the Quayfire on Compass Quay. He will teach you to strike a spark, if you can keep a campfire going and bring him its ash.",
+			requires={{kind="contracts",count=1}},
+			objectives={{kind="flag",flag="beaconKindled"},{kind="level",skill="Beaconry",level=10},{kind="collect",item=B.ASH,count=10}},
+			rewards={coins=400,points=1,xp={Beaconry=1200,Cooking=400}}},
+		{id="TheLongWatch",title="The Long Watch",line="side",region="Hub",
+			story="When the beacons of the isles burn together, no ship is lost in the cloud-sea. Light the Quayfire, then carry the flame across the regions.",
+			requires={{kind="quest",quest="KindlingLessons"},{kind="level",skill="Beaconry",level=30}},
+			objectives={{kind="flag",flag="beaconLit"},{kind="flag",flag="beaconNetwork"},{kind="collect",item=B.ASH,count=100}},
+			rewards={coins=2500,points=2,xp={Beaconry=9000},perk={intelligence=5}}},
+	}) do
+		table.insert(Data.Quests, q)
+		q.index = #Data.Quests
+		Data.QuestById[q.id] = q
+	end
+	local SY = Data.Systems
+	local HP = SY and SY.Helper
+	if HP and HP.specsFor then
+		local specsFor = HP.specsFor
+		function HP.specsFor(o, ctx)
+			if type(o) == "table" then
+				if o.kind == "flag" and o.flag == "beaconKindled" then return {"gather:Timber"} end
+				if o.kind == "flag" and (o.flag == "beaconLit" or o.flag == "beaconNetwork") then return {"anchor:Waypoint_Beacon_Hub", "region:Hub"} end
+				if o.kind == "level" and o.skill == "Beaconry" then return {"anchor:Waypoint_Beacon_Hub", "gather:Timber"} end
+				if (o.kind == "collect" or o.kind == "have" or o.kind == "collectionTier") and o.item == B.ASH then return {"gather:Timber"} end
+			end
+			return specsFor(o, ctx)
+		end
+	end
+	-- XP calculator (§33): campfire logs and beacon feeds train Beaconry.
+	local CA = SY and SY.Calc
+	if CA and CA.actions then
+		local actions = CA.actions
+		function CA.actions(skill)
+			if skill ~= "Beaconry" then return actions(skill) end
+			local out = {}
+			for _, log in ipairs(B.Logs) do table.insert(out, {id = log.id, name = "Kindle "..log.name, level = log.level, xp = log.xp, kind = "kindle"}) end
+			for _, id in ipairs(B.BeaconOrder) do
+				local b = B.Beacons[id]
+				table.insert(out, {id = "Beacon"..id, name = b.name, level = b.level, xp = B.beaconXp(B.LogById[b.log]), kind = "beacon"})
+			end
+			table.sort(out, function(a, c)
+				if a.level ~= c.level then return a.level < c.level end
+				if a.xp ~= c.xp then return a.xp < c.xp end
+				return a.id < c.id
+			end)
+			return out
+		end
+	end
+end
+
+------------------------------------------------------------------------------
+-- The Beaconkeeper (Compass Quay), named in Kindling Lessons: a regional folk
+-- entry, so World Art places Anchor_NPC_Beaconkeeper on the hub; the Beaconry
+-- section of world.server.lua then moves it beside the Quayfire pyre.
+------------------------------------------------------------------------------
+do
+	local T, RA = Data.Townsfolk, Data.RegionArt
+	if T and RA and RA.Folk and T.NPCs then
+		B.KEEPER = "Beaconkeeper"
+		local keeper = {role=B.KEEPER,region="Hub",name="Old Hesketh Ashby",title="Beaconkeeper",portrait="🔥",kind="beaconry",
+			look={skin="C68642",shirt="6B3A22",pants="3A2E24",shoes="231A14",accent="F26B38",hair="D8D2C8",hat="cap",held="lantern",apron="4A3426",beard=true},
+			greet="Every beacon on the isles answers the Quayfire, and I've kept it burning longer than you've been walking. Strike a spark, wayfarer, and keep it fed."}
+		table.insert(RA.Folk, keeper)
+		RA.FolkByRole[keeper.role] = keeper
+		if T.AtlasStations then T.AtlasStations.Beaconry = "Workshop · Beaconry" end -- ui.client.lua stationTabs.Beaconry
+		local names = {}
+		for _, id in ipairs(B.BeaconOrder) do table.insert(names, B.Beacons[id].name) end
+		T.NPCs[keeper.role] = {name=keeper.name,title=keeper.title,region="Hub",portrait=keeper.portrait,look=keeper.look,start="hello",anchorOnly=true,folk="beaconry",
+			nodes={
+				hello={text=keeper.greet,options={
+					{label="Teach me to kindle",atlas="Beaconry"},
+					{label="Show me the Quayfire",waypoint={"anchor:Waypoint_Beacon_Hub","region:Hub"}},
+					{label="Tell me about the beacon network",to="network"},
+					{label="Farewell",close=true}}},
+				network={text="One beacon stands on every region's shrine isle: "..table.concat(names, ", ")
+					..". Feed one "..B.BEACON_LOGS.." logs of its wood or better and it blazes for "..(B.BEACON_SECONDS // 60).." minutes. Everyone near it shares its warmth, "
+					.."and every lighting counts toward the week's watch: when the isles reach "..B.WEEK_GOAL..", each keeper who lit one may claim a reward in Workshop › Beaconry.",options={
+					{label="Show me the Quayfire",waypoint={"anchor:Waypoint_Beacon_Hub","region:Hub"}},
+					{label="Open Workshop › Beaconry",atlas="Beaconry"},
+					{label="Back",to="hello"},
+					{label="Farewell",close=true}}},
+			}}
+		table.insert(T.RegionFolkOrder, keeper.role)
+	end
+end
+
+------------------------------------------------------------------------------
+-- Isle Renown (§31): beacons lit (15 per distinct beacon) and community weeks
+-- claimed (10 each, at most 52 counted). Bounded: 9 x 15 + 52 x 10 = 655.
+------------------------------------------------------------------------------
+do
+	local RN = Data.Renown
+	if RN and RN.breakdown then
+		B.RENOWN_BEACON, B.RENOWN_WEEK, B.RENOWN_WEEKS_CAP = 15, 10, 52
+		local src = {id="beacons",name="Beacon watch",hint="15 XP per regional beacon you have lit; 10 XP per weekly beacon goal you helped reach (52 at most)."}
+		table.insert(RN.Sources, src)
+		src.index = #RN.Sources
+		RN.SourceById[src.id] = src
+		local breakdown = RN.breakdown
+		function RN.breakdown(p, P, extra)
+			local out = breakdown(p, P, extra)
+			local c = type(p) == "table" and type(p.beaconry) == "table" and p.beaconry or {}
+			local beacons = B.distinctBeacons(c)
+			local weeks = math.min(math.max(0, whole(c.weeks)), B.RENOWN_WEEKS_CAP)
+			local xp = beacons * B.RENOWN_BEACON + weeks * B.RENOWN_WEEK
+			out.sources.beacons = out.sources.beacons or {xp = 0, count = 0}
+			out.sources.beacons.xp += xp
+			out.sources.beacons.count += beacons + weeks
+			out.total += xp
+			return out
+		end
+	end
+end
+end
+-- <<< END Beaconry <<<
+------------------------------------------------------------------------------
+
+
+------------------------------------------------------------------------------
+-- >>> BEGIN Isle Council (Isle Council team; append-only section, §36) >>>
+-- An elected council in the spirit of SkyBlock's mayors, on the Skyward
+-- Calendar (Data.calendarAt): one TERM = one isle year (~5.08 real days).
+-- The ballot for the term of year Y+1 opens on day C.OPEN_DAY of year Y and
+-- closes at the end of year Y (~2.5 real days of voting); the result is sealed
+-- C.GRACE seconds later. Every election seats C.SLATE candidates drawn
+-- deterministically from C.Candidates (same slate on every server and client),
+-- each running on 2-3 perks drawn from their own four. The winner's perks rule
+-- the next term on every server; the runner-up becomes Minister and grants one
+-- perk (the first of theirs that does not overlap the winner's).
+-- Pure data + pure rules: server.server.lua ("Isle Council" block) owns the
+-- ballots (sharded MemoryStore items, idempotent per-account sequence numbers),
+-- the sealed result and every perk hook. docs/DEPTH-CONTRACT.md §36.
+------------------------------------------------------------------------------
+do
+local C = {}
+local Cal = Data.Calendar
+local function tab(v) return if type(v) == "table" then v else {} end
+local function whole(v) return if type(v) == "number" and v == v and v >= 0 and v < math.huge then math.floor(v) else 0 end
+C.whole = whole
+C.NAME = "Isle Council"
+C.OPEN_DAY = 25          -- day of the isle year the ballot opens (Emberfall 1); closes at year's end
+C.SLATE = 5              -- candidates per election
+C.SHARDS = 512           -- MemoryStore shard items per election (UserId % SHARDS); see §36 capacity math
+C.SHARD_CAP = 1500       -- ballots per shard item (~29 KB JSON worst case, under MemoryStore's 32 KB item limit; 768k voters)
+C.GROUPS = 16            -- count-mirror items per election (tally reads fetch these only, never ballots)
+C.MAX_SEQ = 4095         -- highest ballot sequence number (packed with the slot: seq * 8 + slot)
+C.GRACE = 120            -- seconds after the close before a server seals; ballots cast before the close are written until GRACE / 2
+C.TTL_PAD = 7 * 86400    -- live ballot items expire this long after the seal time
+C.FLUSH = 10             -- seconds between a server's ballot flushes (one UpdateAsync per pending shard)
+C.MIRROR = 30            -- seconds between a server's count-mirror writes (one UpdateAsync per pending group)
+C.BACKOFF_BASE = 2       -- seconds: first retry delay of a failing key (doubles per failure, jittered 50-100%)
+C.BACKOFF_MAX = 120      -- seconds: longest retry delay of a failing key
+C.READ = 90              -- seconds a server's cached tally stays fresh
+C.VIEW_COOLDOWN = 60     -- seconds between one account's forced tally refreshes (councilView)
+C.VIEW_FLOOR = 30        -- seconds between any two forced tally refreshes on one server
+C.TICK = 3               -- council heartbeat (seconds)
+C.SEAL_RETRY = 30        -- seconds between sealing attempts after a failure
+C.SEAL_LEASE = 90        -- seconds a server's claim to seal an election lasts (one server reads the shards)
+C.VOTE_COOLDOWN = 4      -- seconds between one account's votes
+C.MAX_CHANGES = 12       -- ballots per account per election (the first vote and 11 changes)
+C.MIN_RENOWN = 5         -- Isle Renown level needed to vote (lead decision: deters throwaway alts)
+C.HISTORY = 8            -- past terms kept in the shared history key
+C.PREFIX = "council_v1_"   -- DataStore keys: result, history (and legacy v1 ballot shards, swept after the seal)
+C.MAP_PREFIX = "council_v2_" -- MemoryStore hash map per election
+C.HISTORY_KEY = C.PREFIX .. "history"
+C.CLERK = "CouncilClerk"
+C.COLOR = "E9C46A"
+
+-- Perks. kind: xp (category of Data.Skills, mult), auctionFee (cut of the listing
+-- fee), workers (pct: extra worker work per second, like fuel), magicFind (region,
+-- mf: Magic Find against that region's creatures; rare drops under 5% only),
+-- dungeonRolls (n extra Observatory chest rolls), factionRep (pct), stats
+-- (p.perkStats.council; never Health or Defense, so Data.PerkBudget is untouched).
+-- No perk creates coins: fees only fall, and every yield perk scales an
+-- existing, already-balanced source.
+C.Perks = {
+	BountifulToil={name="Bountiful Toil",kind="xp",category="gathering",mult=0.10,color="9BD77E",text="+10% XP in gathering skills."},
+	WarbandWrit={name="Warband Writ",kind="xp",category="combat",mult=0.10,color="C8553D",text="+10% XP in combat skills."},
+	GuildCharter={name="Guild Charter",kind="xp",category="production",mult=0.10,color="D9822B",text="+10% XP in production skills."},
+	HearthAndHound={name="Hearth & Hound",kind="xp",category="support",mult=0.15,color="E07A5F",text="+15% XP in support skills."},
+	OpenLedger={name="Open Ledger",kind="auctionFee",cut=0.5,color="F7C548",text="Auction House listing fees halved."},
+	TirelessHands={name="Tireless Hands",kind="workers",pct=10,color="B5651D",text="Workers work 10% faster."},
+	DeepseamSurvey={name="Deepseam Survey",kind="stats",stats={miningFortune=15},color="8C7A6B",text="+15 Mining Fortune."},
+	Tidecaller={name="Tidecaller's Hymn",kind="stats",stats={seaCreatureChance=3},color="3F7CAC",text="+3 Sea Creature Chance: more sea creatures surface."},
+	GloomGleaning={name="Gloom Gleaning",kind="magicFind",region="Gloomhollow",mf=20,color="7FD3C4",text="+20 Magic Find against Gloomhollow creatures."},
+	SkyreachSpoils={name="Skyreach Spoils",kind="magicFind",region="Skyreach",mf=20,color="7B8CDE",text="+20 Magic Find against Skyreach creatures."},
+	WildwoodBounty={name="Wildwood Bounty",kind="magicFind",region="Windpine",mf=20,color="5E8C4A",text="+20 Magic Find against Windpine creatures."},
+	TideTrove={name="Tide Trove",kind="magicFind",region="Tidewater",mf=20,color="4FB0C6",text="+20 Magic Find against Tidewater creatures."},
+	TempestTithe={name="Tempest Tithe",kind="magicFind",region="Tempest",mf=20,color="BFD7FF",text="+20 Magic Find against Tempest Spire creatures."},
+	StarlitCoffers={name="Starlit Coffers",kind="dungeonRolls",n=1,color="BFE3FF",text="+1 roll of every Observatory clear chest."},
+	BannerSworn={name="Banner-Sworn",kind="factionRep",pct=0.20,color="D4A84B",text="+20% faction reputation from board tasks."},
+}
+-- Hard caps on the summed effect of every active perk (winner + minister).
+C.CAPS = {xp=0.15, auctionFee=0.5, workers=15, magicFind=25, dungeonRolls=1, factionRep=0.25,
+	stats={miningFortune=20, seaCreatureChance=4}}
+for id, perk in pairs(C.Perks) do perk.id = id end
+
+-- The candidate pool (all original Aether Isles councillors). perks: four ids.
+C.Candidates = {
+	{id="Brannoc",name="Brannoc Ashvale",title="Warden of the Ramparts",color="C8553D",portrait="🛡",
+		pitch="Steel for the gates, spoils for the brave.",perks={"WarbandWrit","GloomGleaning","StarlitCoffers","BannerSworn"}},
+	{id="Ysmay",name="Ysmay Corrowind",title="Factor of the Exchange",color="F7C548",portrait="⚖",
+		pitch="A lighter ledger for every honest trader.",perks={"OpenLedger","TirelessHands","GuildCharter","DeepseamSurvey"}},
+	{id="Thessaly",name="Thessaly Brightfurrow",title="Voice of the Fields",color="9BD77E",portrait="🌾",
+		pitch="Every furrow and every hand rewarded.",perks={"BountifulToil","TirelessHands","HearthAndHound","WildwoodBounty"}},
+	{id="Orrin",name="Captain Orrin Saltmere",title="Harbour Tribune",color="3F7CAC",portrait="⚓",
+		pitch="Calm skies over the shoals, full nets below.",perks={"Tidecaller","TideTrove","BountifulToil","OpenLedger"}},
+	{id="Velka",name="Velka Starhollow",title="Keeper of the Observatory",color="BFE3FF",portrait="🔭",
+		pitch="The stars reward those who climb toward them.",perks={"StarlitCoffers","WarbandWrit","SkyreachSpoils","GuildCharter"}},
+	{id="Dunstan",name="Dunstan Coggery",title="Master of the Forges",color="B5651D",portrait="⚒",
+		pitch="Hot forges, deep seams, busy hands.",perks={"GuildCharter","DeepseamSurvey","TirelessHands","OpenLedger"}},
+	{id="Isolde",name="Isolde Venbrook",title="Envoy of the Banners",color="D4A84B",portrait="🏳",
+		pitch="Swear to a banner and the isles swear back.",perks={"BannerSworn","HearthAndHound","WildwoodBounty","Tidecaller"}},
+	{id="Fennick",name="Fennick Lowlantern",title="Lamplighter of Gloomhollow",color="7FD3C4",portrait="🏮",
+		pitch="Light in the caverns, treasure in the dark.",perks={"GloomGleaning","WarbandWrit","HearthAndHound","StarlitCoffers"}},
+	{id="Aurelie",name="Aurelie Windspire",title="Stormcaller of the Spire",color="BFD7FF",portrait="🌩",
+		pitch="Ride the storm and keep what it drops.",perks={"TempestTithe","SkyreachSpoils","WarbandWrit","Tidecaller"}},
+	{id="Pim",name="Pim Quickbarrow",title="Friend of the Hearth",color="E07A5F",portrait="🏡",
+		pitch="Pets fed, homes built, neighbours sworn.",perks={"HearthAndHound","BountifulToil","BannerSworn","OpenLedger"}},
+}
+C.CandidateById = {}
+for i, c in ipairs(C.Candidates) do c.index = i; C.CandidateById[c.id] = c end
+
+-- Election calendar ---------------------------------------------------------------
+-- The election in progress (or upcoming) at t: e = the term year it elects.
+-- {e, opens, closes, open, sealAt, termYear (the year now ruled), termStarts, termEnds}
+function C.election(t)
+	local cal = Data.calendarAt(t)
+	local opens = cal.yearStart + (C.OPEN_DAY - 1) * Cal.dayLength
+	return {e=cal.year + 1, opens=opens, closes=cal.yearEnds, open=t >= opens and t < cal.yearEnds, sealAt=cal.yearEnds + C.GRACE,
+		termYear=cal.year, termStarts=cal.yearStart, termEnds=cal.yearEnds}
+end
+-- Wall-clock window of term year `y` (and of its election, held during y-1).
+function C.termWindow(y)
+	local starts = Cal.epoch + (whole(y) - 1) * Cal.yearLength
+	return {starts=starts, ends=starts + Cal.yearLength, opens=starts - Cal.yearLength + (C.OPEN_DAY - 1) * Cal.dayLength, sealAt=starts + C.GRACE}
+end
+
+-- Deterministic slate ------------------------------------------------------------
+-- Park-Miller generator (exact in doubles), seeded by the election year.
+local function generator(seed)
+	local state = (whole(seed) * 7919 + 104729) % 2147483647
+	if state == 0 then state = 1 end
+	return function()
+		state = (state * 48271) % 2147483647
+		return state / 2147483647
+	end
+end
+local slates = {}
+-- {{id, perks = {perkId...}}} for election e (C.SLATE entries, pool order shuffled).
+function C.slate(e)
+	e = whole(e)
+	if slates[e] then return slates[e] end
+	local rng = generator(e)
+	local pool = {}
+	for i = 1, #C.Candidates do pool[i] = i end
+	local out = {}
+	for i = 1, math.min(C.SLATE, #pool) do
+		local j = i + math.floor(rng() * (#pool - i + 1))
+		pool[i], pool[j] = pool[j], pool[i]
+		local cand = C.Candidates[pool[i]]
+		local count = if rng() < 0.5 then 2 else 3
+		local idx = {1, 2, 3, 4}
+		for k = 1, count do
+			local m = k + math.floor(rng() * (#idx - k + 1))
+			idx[k], idx[m] = idx[m], idx[k]
+		end
+		local chosen = {}
+		for k = 1, count do chosen[k] = idx[k] end
+		table.sort(chosen)
+		local perks = {}
+		for _, k in ipairs(chosen) do table.insert(perks, cand.perks[k]) end
+		table.insert(out, {id=cand.id, perks=perks})
+	end
+	slates[e] = out
+	return out
+end
+-- Slate position of candidate `id` in election e (nil when not running).
+function C.slotOf(e, id)
+	for i, s in ipairs(C.slate(e)) do if s.id == id then return i end end
+	return nil
+end
+
+-- Ballot storage (QC H1) ----------------------------------------------------------
+-- Live ballots sit in a MemoryStore hash map per election (C.mapName(e)), split
+-- over C.SHARDS shard items (UserId % C.SHARDS). One shard item holds the
+-- counts and a compact, bounded ballot map {[UserId] = seq * 8 + slot}, so one
+-- atomic UpdateAsync both records a ballot and moves the counts (idempotent by
+-- sequence number). Tally reads never download ballots: after each committed
+-- shard write the writing server mirrors that shard's counts, tagged with the
+-- shard's write version, into one of C.GROUPS small count items (C.mirror keeps
+-- the highest version per shard, so late or repeated mirror writes are
+-- harmless). Sealing reads the shard items once (authoritative) and persists the
+-- result to DataStore. Items expire C.TTL_PAD after the seal time (C.ttl).
+function C.shardOf(userId) return (whole(tonumber(userId)) % C.SHARDS) + 1 end
+function C.mapName(e) return C.MAP_PREFIX .. whole(e) end
+function C.shardKey(shard) return "s" .. whole(shard) end
+function C.groupOf(shard) return ((whole(shard) - 1) % C.GROUPS) + 1 end
+function C.groupKey(group) return "n" .. whole(group) end
+C.SEAL_KEY = "seal"
+C.LEGACY_SHARDS = 8      -- v1 stored ballots in 8 DataStore keys per election
+-- Legacy (v1) DataStore shard keys, swept once a term's result is in history (QC L5).
+function C.legacyKey(e, shard) return C.PREFIX .. whole(e) .. "_s" .. whole(shard) end
+function C.resultKey(e) return C.PREFIX .. whole(e) .. "_result" end
+-- Expiration (seconds from `now`) for election e's items: past the seal plus a pad, within MemoryStore's 45-day limit.
+function C.ttl(e, now)
+	return math.clamp(C.termWindow(e).sealAt + C.TTL_PAD - whole(now), 60, 3888000)
+end
+-- The last moment a ballot cast before the close may still be written (QC M1).
+function C.writeDeadline(e) return C.termWindow(e).starts + C.GRACE / 2 end
+function C.pack(slot, seq) return whole(seq) * 8 + whole(slot) end
+function C.unpack(v)
+	v = whole(v)
+	return v % 8, v // 8
+end
+local function emptyCounts() local n = {} for i = 1, C.SLATE do n[i] = 0 end return n end
+C.emptyCounts = emptyCounts
+function C.newBook(e) return {e=whole(e), v={}, n=emptyCounts(), size=0, ver=0} end
+-- A sanitised copy-in-place of a stored shard (a fresh one when it is missing,
+-- malformed or for another election).
+function C.cleanBook(old, e)
+	if type(old) ~= "table" or old.e ~= e or type(old.v) ~= "table" then return C.newBook(e) end
+	if type(old.n) ~= "table" then old.n = emptyCounts() end
+	for i = 1, C.SLATE do old.n[i] = whole(old.n[i]) end
+	old.size, old.ver = whole(old.size), whole(old.ver)
+	return old
+end
+-- Counts recomputed from the ballots themselves (tests; repair).
+function C.recount(book)
+	local n, size = emptyCounts(), 0
+	for _, b in pairs(tab(tab(book).v)) do
+		local c = C.unpack(b)
+		if c >= 1 and c <= C.SLATE then n[c] += 1 end
+		size += 1
+	end
+	return n, size
+end
+-- Applies queued ballots {u = "<UserId>", c = slot, s = seq, t = castAt} to a
+-- stored shard (the UpdateAsync transform). One ballot per account: a ballot
+-- replaces the account's earlier one only when its sequence number is higher,
+-- so retries, replays and out-of-order flushes change nothing. A ballot counts
+-- only if it was cast (server-stamped t) before the close and is written before
+-- C.writeDeadline (QC M1). Returns book, results {[u] = "ok"|"stale"|"full"|
+-- "closed"|"bad"}, changed, stored {[u] = {c, s}} (the ballot already stored
+-- for every "stale" verdict, QC M3).
+function C.applyBallots(old, ops, e, closes, now)
+	local book = C.cleanBook(old, e)
+	local results, stored, changed = {}, {}, false
+	for _, op in ipairs(tab(ops)) do
+		local u = type(op) == "table" and op.u
+		local c, s = type(op) == "table" and whole(op.c) or 0, type(op) == "table" and whole(op.s) or 0
+		local castAt = type(op) == "table" and tonumber(op.t) or nil
+		if type(u) ~= "string" or #u == 0 or #u > 20 or not string.match(u, "^%d+$") or c < 1 or c > C.SLATE or s < 1 or s > C.MAX_SEQ then
+			if type(u) == "string" then results[u] = "bad" end
+		elseif castAt == nil or castAt >= closes or now >= closes + C.GRACE / 2 then
+			results[u] = "closed"
+		else
+			local cur = book.v[u]
+			local curC, curSeq = C.unpack(cur)
+			if cur ~= nil and curSeq >= s then
+				results[u] = "stale"
+				stored[u] = {c=curC, s=curSeq}
+			elseif cur == nil and book.size >= C.SHARD_CAP then
+				results[u] = "full"
+			else
+				if cur ~= nil and curC >= 1 and curC <= C.SLATE then book.n[curC] = math.max(0, book.n[curC] - 1) end
+				if cur == nil then book.size += 1 end
+				book.n[c] += 1
+				book.v[u] = C.pack(c, s)
+				results[u] = "ok"
+				changed = true
+			end
+		end
+	end
+	if changed then book.ver += 1 end
+	return book, results, changed, stored
+end
+-- Count mirror: a group item {[tostring(shard)] = {ver, n1..nSLATE}}. Merges
+-- shard counts carrying their write version; returns the item and whether it
+-- changed (an older or equal version never overwrites a newer one).
+function C.mirror(old, entries)
+	local item = if type(old) == "table" then old else {}
+	local changed = false
+	for shard, entry in pairs(tab(entries)) do
+		local k = tostring(shard)
+		local cur = item[k]
+		local curVer = type(cur) == "table" and whole(cur[1]) or -1
+		if whole(entry.ver) > curVer then
+			local row = {whole(entry.ver)}
+			for i = 1, C.SLATE do row[i + 1] = whole(tab(entry.n)[i]) end
+			item[k] = row
+			changed = true
+		end
+	end
+	return item, changed
+end
+-- Per-shard counts {[shard] = {n...}} from mirror items {[group] = item}.
+function C.fromMirror(groups)
+	local shards = {}
+	for _, item in pairs(tab(groups)) do
+		for k, row in pairs(tab(item)) do
+			local shard = whole(tonumber(k))
+			if shard >= 1 and shard <= C.SHARDS and type(row) == "table" then
+				local n = {}
+				for i = 1, C.SLATE do n[i] = whole(row[i + 1]) end
+				shards[shard] = {ver=whole(row[1]), n=n}
+			end
+		end
+	end
+	return shards
+end
+-- Jittered exponential backoff (seconds) after `fails` consecutive failures on one key; r in [0, 1).
+function C.backoff(fails, r)
+	local span = math.min(C.BACKOFF_MAX, C.BACKOFF_BASE * 2 ^ math.max(0, whole(fails) - 1))
+	return span * (0.5 + 0.5 * math.clamp(tonumber(r) or 0, 0, 1))
+end
+-- Summed counts across shard count lists {[shard] = {n...}}.
+function C.sum(shards)
+	local n, total = emptyCounts(), 0
+	for _, counts in pairs(tab(shards)) do
+		for i = 1, C.SLATE do
+			local v = whole(tab(counts)[i])
+			n[i] += v
+			total += v
+		end
+	end
+	return n, total
+end
+-- Vote shares (0..1) per slate slot.
+function C.shares(counts, total)
+	local out = {}
+	for i = 1, C.SLATE do out[i] = if total > 0 then whole(tab(counts)[i]) / total else 0 end
+	return out
+end
+
+-- Results, terms and perks --------------------------------------------------------
+-- Effect slot: two perks with the same slot never stack (the minister skips them).
+function C.perkSlot(perk)
+	if perk.kind == "xp" then return "xp:" .. perk.category end
+	if perk.kind == "magicFind" then return "mf:" .. perk.region end
+	if perk.kind == "stats" then
+		local keys = {}
+		for k in pairs(perk.stats) do table.insert(keys, k) end
+		table.sort(keys)
+		return "stats:" .. table.concat(keys, ",")
+	end
+	return perk.kind
+end
+-- The minister's perk: the first of the runner-up's perks whose slot the winner lacks.
+function C.ministerPerk(winnerPerks, runnerPerks)
+	local used = {}
+	for _, id in ipairs(tab(winnerPerks)) do local p = C.Perks[id]; if p then used[C.perkSlot(p)] = true end end
+	for _, id in ipairs(tab(runnerPerks)) do
+		local p = C.Perks[id]
+		if p and not used[C.perkSlot(p)] then return id end
+	end
+	return nil
+end
+-- Seals election e from its summed counts: most votes wins; ties go to the
+-- earlier slate position (the slate order is itself the seeded draw).
+-- {e, winner = id, minister = id, ministerPerk, counts, total}
+function C.decide(e, counts)
+	local slate = C.slate(e)
+	local order = {}
+	for i = 1, #slate do order[i] = i end
+	counts = tab(counts)
+	table.sort(order, function(a, b)
+		local ca, cb = whole(counts[a]), whole(counts[b])
+		if ca ~= cb then return ca > cb end
+		return a < b
+	end)
+	local n, total = {}, 0
+	for i = 1, C.SLATE do n[i] = whole(counts[i]); total += n[i] end
+	local w, r = slate[order[1]], slate[order[2]]
+	return {e=whole(e), winner=w.id, minister=r and r.id or nil, ministerPerk=r and C.ministerPerk(w.perks, r.perks) or nil, counts=n, total=total}
+end
+-- A stored result, validated against the deterministic slate (nil when invalid).
+function C.cleanResult(r, e)
+	if type(r) ~= "table" or whole(r.e) ~= e then return nil end
+	local slate = C.slate(e)
+	local w = C.slotOf(e, r.winner)
+	if not w then return nil end
+	local m = if r.minister ~= nil then C.slotOf(e, r.minister) else nil
+	local mp = if m and type(r.ministerPerk) == "string" and table.find(slate[m].perks, r.ministerPerk) then r.ministerPerk else nil
+	local n, total = {}, 0
+	for i = 1, C.SLATE do n[i] = whole(tab(r.counts)[i]); total += n[i] end
+	return {e=e, winner=r.winner, minister=if m then r.minister else nil, ministerPerk=mp, counts=n, total=total}
+end
+-- Active perk ids of a sealed result: the winner's perks, then the minister's one.
+function C.termPerks(result)
+	if type(result) ~= "table" then return {} end
+	local slot = C.slotOf(result.e, result.winner)
+	if not slot then return {} end
+	local out = table.clone(C.slate(result.e)[slot].perks)
+	if result.ministerPerk and C.Perks[result.ministerPerk] and not table.find(out, result.ministerPerk) then table.insert(out, result.ministerPerk) end
+	return out
+end
+-- Summed, capped effects of a perk list.
+function C.effects(perkIds)
+	local fx = {xp={}, auctionFee=0, workers=0, magicFind={}, dungeonRolls=0, factionRep=0, stats={}}
+	for _, id in ipairs(tab(perkIds)) do
+		local p = C.Perks[id]
+		if p then
+			if p.kind == "xp" then fx.xp[p.category] = math.min(C.CAPS.xp, (fx.xp[p.category] or 0) + p.mult)
+			elseif p.kind == "auctionFee" then fx.auctionFee = math.min(C.CAPS.auctionFee, fx.auctionFee + p.cut)
+			elseif p.kind == "workers" then fx.workers = math.min(C.CAPS.workers, fx.workers + p.pct)
+			elseif p.kind == "magicFind" then fx.magicFind[p.region] = math.min(C.CAPS.magicFind, (fx.magicFind[p.region] or 0) + p.mf)
+			elseif p.kind == "dungeonRolls" then fx.dungeonRolls = math.min(C.CAPS.dungeonRolls, fx.dungeonRolls + p.n)
+			elseif p.kind == "factionRep" then fx.factionRep = math.min(C.CAPS.factionRep, fx.factionRep + p.pct)
+			elseif p.kind == "stats" then
+				for stat, v in pairs(p.stats) do
+					local cap = C.CAPS.stats[stat]
+					if cap and stat ~= "health" and stat ~= "defense" then fx.stats[stat] = math.min(cap, (fx.stats[stat] or 0) + v) end
+				end
+			end
+		end
+	end
+	return fx
+end
+-- Hook helpers (fx = C.effects(...) or nil when no term is known: no effect).
+function C.xpMult(fx, skill)
+	local def = type(skill) == "string" and Data.Skills[skill]
+	if type(fx) ~= "table" or not def then return 1 end
+	return 1 + math.clamp(tonumber(tab(fx.xp)[def.category]) or 0, 0, C.CAPS.xp)
+end
+function C.auctionFee(fx, price)
+	local base = Data.Economy.auctionFee(price)
+	local cut = type(fx) == "table" and math.clamp(tonumber(fx.auctionFee) or 0, 0, C.CAPS.auctionFee) or 0
+	return math.max(1, math.ceil(base * (1 - cut)))
+end
+function C.magicFind(fx, monster)
+	if type(fx) ~= "table" or type(monster) ~= "table" or type(monster.region) ~= "string" then return 0 end
+	return math.clamp(tonumber(tab(fx.magicFind)[monster.region]) or 0, 0, C.CAPS.magicFind)
+end
+-- Extra worker work units (Data.Workers work: 100 per second) for `seconds` of perk time.
+function C.workerWork(fx, seconds)
+	if type(fx) ~= "table" then return 0 end
+	return math.floor(math.max(0, tonumber(seconds) or 0) * math.clamp(tonumber(fx.workers) or 0, 0, C.CAPS.workers))
+end
+function C.dungeonRolls(fx)
+	return if type(fx) == "table" then math.clamp(whole(fx.dungeonRolls), 0, C.CAPS.dungeonRolls) else 0
+end
+function C.factionRep(fx, rep)
+	rep = whole(rep)
+	if type(fx) ~= "table" then return rep end
+	return math.floor(rep * (1 + math.clamp(tonumber(fx.factionRep) or 0, 0, C.CAPS.factionRep)))
+end
+function C.stats(fx)
+	local out = {}
+	for stat, v in pairs(tab(type(fx) == "table" and fx.stats)) do
+		local cap = C.CAPS.stats[stat]
+		if cap and stat ~= "health" and stat ~= "defense" and tonumber(v) and v > 0 then out[stat] = math.min(cap, v) end
+	end
+	return out
+end
+-- Shared history list (newest first, <= C.HISTORY, one entry per term).
+function C.mergeHistory(old, result)
+	local list = {}
+	for _, r in ipairs(tab(old)) do
+		local clean = type(r) == "table" and C.cleanResult(r, whole(r.e))
+		if clean and #list < C.HISTORY * 2 then table.insert(list, clean) end
+	end
+	local added = false
+	if type(result) == "table" then
+		local found = false
+		for _, r in ipairs(list) do if r.e == result.e then found = true end end
+		if not found then table.insert(list, result); added = true end
+	end
+	table.sort(list, function(a, b) return a.e > b.e end)
+	while #list > C.HISTORY do table.remove(list) end
+	return list, added
+end
+
+-- Text ---------------------------------------------------------------------------
+function C.perkText(id)
+	local p = C.Perks[id]
+	return if p then p.name .. ": " .. p.text else tostring(id)
+end
+function C.candidateName(id)
+	local c = C.CandidateById[id]
+	return if c then c.name else tostring(id)
+end
+function C.span(seconds)
+	seconds = math.max(0, math.floor(tonumber(seconds) or 0))
+	if seconds >= 86400 then return (seconds // 86400) .. "d " .. ((seconds % 86400) // 3600) .. "h" end
+	if seconds >= 3600 then return (seconds // 3600) .. "h " .. ((seconds % 3600) // 60) .. "m" end
+	return math.max(1, math.ceil(seconds / 60)) .. "m"
+end
+Data.Council = C
+
+-- §31 announcements: election open, ballot closed, new term.
+local F = Data.Features
+if F and F.announceText then
+	local announceText = F.announceText
+	function F.announceText(e)
+		if type(e) == "table" and e.kind == "council" then
+			local y = whole(e.e)
+			if e.phase == "open" then
+				return {head="COUNCIL ELECTION OPEN", body="Year " .. y .. " ballot  ·  " .. C.SLATE .. " candidates  ·  vote in Journal › Council", color=C.COLOR}
+			elseif e.phase == "closed" then
+				return {head="BALLOT CLOSED", body="Year " .. y .. " votes are being counted", color=C.COLOR}
+			end
+			local m = if type(e.minister) == "string" then "  ·  Minister " .. C.candidateName(e.minister) else ""
+			return {head="NEW COUNCIL TERM", body=C.candidateName(e.winner) .. " leads Year " .. y .. m, color=C.COLOR}
+		end
+		return announceText(e)
+	end
+	F.ANNOUNCE_PRIORITY.council = true
+end
+
+-- The Council Clerk (Compass Quay): a regional folk entry, so World Art places
+-- Anchor_NPC_CouncilClerk on the hub; the Council Hall section of
+-- world.server.lua then moves that anchor to the hall's steps.
+local T = Data.Townsfolk
+local RA = Data.RegionArt
+if T and RA then
+	local clerk = {role=C.CLERK,region="Hub",name="Wendeline Quillmarsh",title="Clerk of the Isle Council",portrait="📜",kind="council",
+		look={skin="D9A273",shirt="3B2F5C",pants="2A2438",shoes="1E1A26",accent="E9C46A",hair="5A3A22",hat="tophat",held="ledger",cape="6A4C93",spectacles=true},
+		greet="Order, order! The Isle Council sits each isle year. Read the candidates, cast your ballot, and the isles will feel your choice."}
+	table.insert(RA.Folk, clerk)
+	RA.FolkByRole[clerk.role] = clerk
+	T.Verbs.councilVisit = {item=false}
+	T.NPCs[clerk.role] = {name=clerk.name,title=clerk.title,region="Hub",portrait=clerk.portrait,look=clerk.look,start="hello",anchorOnly=true,folk="council",
+		nodes={
+			hello={text=clerk.greet,options={
+				{label="Show me the ballot",verb="councilVisit"},
+				{label="How does the council work?",to="explain"},
+				{label="Farewell",close=true}}},
+			explain={text="Each isle year the council is chosen anew. The ballot opens on Emberfall 1 and closes at year's end. "
+				.. "Every account casts one vote and may change it until the close. The winner's perks rule the whole next year on every isle, "
+				.. "and the runner-up serves as Minister and lends one perk of their own.",options={
+				{label="Show me the ballot",verb="councilVisit"},
+				{label="Back",to="hello"},
+				{label="Farewell",close=true}}},
+		}}
+	table.insert(T.RegionFolkOrder, clerk.role)
+end
+end
+-- <<< END Isle Council <<<
+------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------
+-- >>> BEGIN Contests & Trophy Angling (Contests team; append-only section; docs/DEPTH-CONTRACT.md §39) >>>
+-- Two competitive skilling layers (SkyBlock's farming contests and trophy
+-- fishing in spirit; every name, fish and rule here is original):
+--   * Harvest Contests (Data.Contests = CT): every CT.PERIOD seconds (one third
+--     of an isle day, ~51 min) a CT.DURATION (20 min) contest opens on the
+--     Skyward Calendar featuring three garden crops (deterministic per contest
+--     index, so every server and client agrees). A journal enters ONE featured
+--     crop (chosen, or the first featured crop it harvests) and every unit of
+--     that crop it harvests (field nodes and Verdant Garden plots) during the
+--     window counts. Scores meet across servers in MemoryStore SortedMaps:
+--     sharded score items (atomic, idempotent max-merge) feed a versioned
+--     histogram mirror (live bracket estimates) and a per-contest leaderboard
+--     map (top scores per crop); after the close one server seals exact
+--     bracket cut-offs into a bounded DataStore ring. Brackets by percentile
+--     (Bronze 60 % / Silver 30 % / Gold 10 % / Platinum 5 % / Diamond 2 %, each
+--     needing a minimum score and a minimum field of entrants) pay Harvest
+--     Medals, a journal currency spent at the Medal Exchange (farming gear,
+--     the Furrow Almanac upgrade, titles). Medals never come from coins and
+--     nothing in the exchange sells for more than CT.MEDAL_VALUE coins a medal.
+--   * Trophy Angling (Data.Trophies = TF): fifteen trophy fish in four
+--     waters, each with conditions (isle hour, season / festival, rod tier,
+--     bait, Fishing level). A fishing cast that did not hook a sea creature
+--     may land one (never both: no double counting); four qualities with pity
+--     counters; the Trophy Ledger; the Trophy Keeper's completion rewards
+--     (titles, the Gillward Hood, the Glintgill pet); a §31 announcement for
+--     every Diamond catch.
+-- Pure data and rules; server.server.lua ("Contests & Trophy Angling" block),
+-- ui.client.lua (Workshop › Contests, Hunt › Trophies, the contest tracker).
+------------------------------------------------------------------------------
+do
+local Cal = Data.Calendar
+local G = Data.Garden
+local function tab(v) return if type(v) == "table" then v else {} end
+local function whole(v) return if type(v) == "number" and v == v and v >= 0 and v < math.huge then math.floor(v) else 0 end
+local function item(id, def)
+	def.id = id
+	def.rarity = def.rarity or "Common"
+	def.value = def.value or 1
+	Data.Items[id] = def
+	return def
+end
+local function recipe(id, def)
+	def.id = id
+	def.output = def.output or id
+	def.amount = def.amount or 1
+	Data.Recipes[id] = def
+	return def
+end
+local function valueOf(costs)
+	local v = 0
+	for id, n in pairs(costs) do v += (Data.Items[id] and Data.Items[id].value or 0) * n end
+	return v
+end
+-- Park-Miller stream (deterministic per seed).
+local function stream(seed)
+	local s = (whole(seed) % 2147483646) + 1
+	return function()
+		s = (s * 16807) % 2147483647
+		return (s - 1) / 2147483646
+	end
+end
+
+------------------------------------------------------------------------------
+-- Harvest Contests
+------------------------------------------------------------------------------
+local CT = {}
+Data.Contests = CT
+CT.whole = whole
+CT.NAME = "Harvest Contest"
+CT.COLOR = "E9C46A"
+CT.PERIOD = Cal.dayLength // 3      -- 3,050 s: three contests per isle day (dawn, midday, dusk bells)
+CT.DURATION = 1200                  -- the scoring window (20 real minutes)
+CT.FEATURED = 3                     -- crops per contest
+CT.GRACE = 90                       -- seconds after the close before a server seals; scores harvested in time are written until GRACE / 2
+CT.SHARDS = 64                      -- score items per contest (UserId % SHARDS)
+CT.SHARD_CAP = 1000                 -- entrants per score item (~25 KB JSON worst case, under the 32 KB item limit; 64k per contest)
+CT.GROUPS = 16                      -- histogram mirror items per contest (live estimates read these only; QC L5: 4 shards a group, worst case < 32 KB)
+CT.SCORE_CAP = 10000000             -- one entry's score never exceeds this
+CT.FLUSH = 10                       -- seconds between a server's score flushes (one UpdateAsync per pending shard)
+CT.MIRROR = 20                      -- seconds between histogram mirror writes
+CT.READ = 45                        -- seconds a server's live estimate / leaderboard stays fresh
+CT.LB_BATCH = 40                    -- leaderboard writes per flush (the rest wait for the next one)
+CT.LB_TOP = 10                      -- leaderboard rows read per crop
+CT.TICK = 5                         -- contest heartbeat (seconds)
+CT.BACKOFF_BASE = 2                 -- first retry delay of a failing key (doubles, jittered 50-100 %)
+CT.BACKOFF_MAX = 120
+CT.SEAL_LEASE = 60                  -- one server's claim to seal a contest
+CT.SEAL_RETRY = 30                  -- seconds between sealing attempts / result reads
+CT.TTL_PAD = 21600                  -- MemoryStore items expire this long after the close (per-contest TTL; QC M2: 6 h, so a late rejoiner can still get a seal)
+CT.RESULT_SLOTS = 64                -- DataStore ring of sealed results (~54 hours of contests)
+CT.OPEN_MAX = 8                     -- entries awaiting a sealed result per journal
+CT.HISTORY = 12                     -- finished entries kept per journal
+CT.ENTER_COOLDOWN = 2               -- seconds between contestEnter changes
+CT.MEDAL = "HarvestMedal"           -- journal currency (p.contests.medals), not an item
+CT.MEDAL_VALUE = 25                 -- most coins any exchange item sells for, per medal paid (no coin mint)
+CT.MAP_PREFIX = "contest_v2_"       -- MemoryStore SortedMaps: <k>_t (score shards, histogram groups, seal), <k>_lb (leaderboard); v2 = the QC L9 packing
+CT.RESULT_PREFIX = "contest_v1_result_" -- DataStore ring key <k % RESULT_SLOTS>
+CT.STEWARD = "ContestSteward"
+CT.QUALIFY_FARMING = 10             -- QC L9 (lead decision): entrants below Farming 10 never count toward a crop's field n
+CT.QUALIFY_MEDIAN = 0.25            -- QC L9: nor do scores under 25 % of the crop's median placing score
+CT.START_TOAST_FARMING = 5          -- QC L11: the HARVEST CONTEST bell toast goes to Farming 5+ journals ...
+CT.START_TOAST_DAYS = 3             -- ... or to journals that scored in a contest within the last 3 days
+
+-- Crops: the Verdant Garden crops (field crops count from nodes and plots,
+-- garden-only crops from plots). min = the least score that places.
+CT.Crops = {}
+CT.CropById = {}
+for i, c in ipairs(G.Crops) do
+	local entry = {id=c.id, index=i, min=math.max(12, 60 - 7 * (i - 1)), tint=c.tint, exclusive=c.exclusive}
+	table.insert(CT.Crops, entry)
+	CT.CropById[c.id] = entry
+end
+
+-- Brackets, best first: top = share of placing entrants (by rank), minPop =
+-- entrants a crop needs before the bracket is awarded at all.
+CT.Brackets = {
+	{id="Diamond",name="Diamond",top=0.02,minPop=50,medals=9,mult=3.0,color="9AE6FF"},
+	{id="Platinum",name="Platinum",top=0.05,minPop=20,medals=6,mult=2.5,color="D8E3EA"},
+	{id="Gold",name="Gold",top=0.10,minPop=8,medals=4,mult=2.0,color="F7C548"},
+	{id="Silver",name="Silver",top=0.30,minPop=3,medals=2,mult=1.5,color="C9D1D9"},
+	{id="Bronze",name="Bronze",top=0.60,minPop=1,medals=1,mult=1.25,color="CD8A4E"},
+}
+CT.BracketById = {}
+for i, b in ipairs(CT.Brackets) do b.rank = #CT.Brackets - i + 1; CT.BracketById[b.id] = b end
+
+-- Schedule ------------------------------------------------------------------------
+function CT.indexAt(t) return (math.floor(tonumber(t) or 0) - Cal.epoch) // CT.PERIOD end
+function CT.cropsOf(k)
+	local draw = stream(whole(k) * 7919 + 104729)
+	local pool = {}
+	for _, c in ipairs(CT.Crops) do table.insert(pool, c.id) end
+	local out = {}
+	for _ = 1, CT.FEATURED do
+		local i = math.floor(draw() * #pool) + 1
+		table.insert(out, table.remove(pool, i))
+	end
+	return out
+end
+local windows = {}
+-- Contest k: {k, starts, ends, sealAt, writeDeadline, crops}.
+function CT.window(k)
+	k = math.floor(tonumber(k) or 0)
+	local w = windows[k]
+	if w then return w end
+	local starts = Cal.epoch + k * CT.PERIOD
+	w = {k=k, starts=starts, ends=starts + CT.DURATION, sealAt=starts + CT.DURATION + CT.GRACE,
+		writeDeadline=starts + CT.DURATION + CT.GRACE // 2, crops=CT.cropsOf(k)}
+	local n = 0
+	for _ in pairs(windows) do n += 1 end
+	if n > 64 then table.clear(windows) end
+	windows[k] = w
+	return w
+end
+-- The contest at t: {k, active, starts, ends, crops, next = the next contest's window}.
+function CT.at(t)
+	t = math.floor(tonumber(t) or 0)
+	local k = CT.indexAt(t)
+	local w = CT.window(k)
+	local active = t >= w.starts and t < w.ends
+	return {k=k, active=active, starts=w.starts, ends=w.ends, crops=w.crops, window=w, nextWindow=CT.window(k + 1)}
+end
+function CT.featured(k, crop)
+	for i, id in ipairs(CT.window(k).crops) do if id == crop then return i end end
+	return nil
+end
+function CT.span(seconds)
+	seconds = math.max(0, math.floor(tonumber(seconds) or 0))
+	if seconds >= 3600 then return (seconds // 3600) .. "h " .. ((seconds % 3600) // 60) .. "m" end
+	if seconds >= 60 then return (seconds // 60) .. "m " .. string.format("%02d", seconds % 60) .. "s" end
+	return seconds .. "s"
+end
+
+-- Scores ---------------------------------------------------------------------------
+-- A stored entry packs the featured slot (1..3), the QC L9 low flag (the
+-- journal was below CT.QUALIFY_FARMING when it scored) and the score:
+-- score * 8 + low * 4 + slot. unpack -> slot, score, low.
+function CT.pack(slot, score, low) return math.min(whole(score), CT.SCORE_CAP) * 8 + (if low then 4 else 0) + math.clamp(whole(slot), 1, 3) end
+function CT.unpack(v)
+	v = whole(v)
+	local slot = v % 4
+	if slot < 1 then return nil, 0, false end
+	return slot, v // 8, (v // 4) % 2 == 1
+end
+function CT.shardOf(userId) return whole(userId) % CT.SHARDS + 1 end
+function CT.groupOf(shard) return (whole(shard) - 1) % CT.GROUPS + 1 end
+function CT.shardKey(shard) return "s" .. whole(shard) end
+function CT.groupKey(g) return "g" .. whole(g) end
+function CT.mapName(k) return CT.MAP_PREFIX .. whole(k) .. "_t" end
+function CT.boardName(k) return CT.MAP_PREFIX .. whole(k) .. "_lb" end
+function CT.resultKey(k) return CT.RESULT_PREFIX .. (whole(k) % CT.RESULT_SLOTS) end
+-- Seconds a contest's MemoryStore items live (expiration argument), within 45 days.
+function CT.ttl(k, now)
+	local w = CT.window(k)
+	return math.clamp(w.ends + CT.TTL_PAD - math.floor(tonumber(now) or 0), 60, 3888000)
+end
+function CT.backoff(fails, r)
+	local span = math.min(CT.BACKOFF_MAX, CT.BACKOFF_BASE * 2 ^ math.max(0, whole(fails) - 1))
+	return span * (0.5 + 0.5 * math.clamp(tonumber(r) or 0, 0, 1))
+end
+-- Log-scale score buckets for the live histogram (~10 % wide).
+CT.BUCKET_BASE = 1.1
+function CT.bucket(score)
+	score = whole(score)
+	if score < 1 then return 0 end
+	return math.floor(math.log(score) / math.log(CT.BUCKET_BASE)) + 1
+end
+-- Per-slot histograms of an entry map {[uid] = packed}: {[slot] = {[bucket] = n}}, counting only placing scores.
+function CT.histogram(v, k)
+	local crops = CT.window(k).crops
+	local h = {{}, {}, {}}
+	for _, packed in pairs(tab(v)) do
+		local slot, score, low = CT.unpack(packed)
+		local crop = slot and CT.CropById[crops[slot]]
+		if crop and score >= crop.min and not low then -- QC L9: low-level entrants never join the field
+			local b = tostring(CT.bucket(score))
+			h[slot][b] = (h[slot][b] or 0) + 1
+		end
+	end
+	return h
+end
+-- A shard item, sanitised: {k, v = {[uid string] = packed}, h, n, ver}.
+function CT.cleanShard(old, k)
+	old = tab(old)
+	local out = {k=whole(k), v={}, n=0, ver=whole(old.ver)}
+	if whole(old.k) ~= out.k then out.ver = 0; return out end
+	for uid, packed in pairs(tab(old.v)) do
+		if type(uid) == "string" and #uid <= 20 and CT.unpack(packed) then out.v[uid] = whole(packed); out.n += 1 end
+	end
+	return out
+end
+-- Atomic shard transform: ops = {[uid string] = {c = slot, s = score, l = low}}
+-- (the journal's current entry; l = below CT.QUALIFY_FARMING). Scores only rise (idempotent under retries, lost
+-- acknowledgements, rejoins on other servers and out-of-order flushes); a
+-- write after the contest's write deadline, or a new entrant into a full
+-- shard, is refused. Returns the new item (nil = nothing changed) and
+-- verdicts {[uid] = "ok" | "stale" | "late" | "full" | "bad"} with the stored score.
+function CT.applyScores(old, ops, k, now)
+	local item = CT.cleanShard(old, k)
+	local verdicts, changed = {}, false
+	local w = CT.window(k)
+	local late = math.floor(tonumber(now) or 0) >= w.writeDeadline
+	for uid, op in pairs(tab(ops)) do
+		local slot, score = whole(tab(op).c), math.min(whole(tab(op).s), CT.SCORE_CAP)
+		if type(uid) ~= "string" or #uid > 20 or slot < 1 or slot > CT.FEATURED or score < 1 then
+			verdicts[uid] = {v="bad"}
+		else
+			local oldSlot, oldScore, oldLow = CT.unpack(item.v[uid])
+			-- QC L9: the low flag only ever clears (a journal that scores at Farming 10+ stays qualified).
+			local low = tab(op).l == true
+			local newLow = if oldSlot then oldLow and low else low
+			if oldSlot and oldScore >= score and newLow == oldLow then
+				verdicts[uid] = {v="stale", s=oldScore}
+			elseif late then
+				verdicts[uid] = {v="late", s=oldScore}
+			elseif not oldSlot and item.n >= CT.SHARD_CAP then
+				verdicts[uid] = {v="full", s=0}
+			else
+				if not oldSlot then item.n += 1 end
+				score = math.max(score, oldScore)
+				item.v[uid] = CT.pack(oldSlot or slot, score, newLow)
+				verdicts[uid] = {v="ok", s=score}
+				changed = true
+			end
+		end
+	end
+	if not changed then return nil, verdicts end
+	item.ver += 1
+	item.h = CT.histogram(item.v, k)
+	return item, verdicts
+end
+-- Histogram mirror group: {k, s = {[shard string] = {ver, h}}}; keeps the highest version per shard.
+function CT.mirror(old, k, entries)
+	old = tab(old)
+	local out = {k=whole(k), s={}}
+	if whole(old.k) == out.k then for key, e in pairs(tab(old.s)) do out.s[key] = e end end
+	local changed = false
+	for shard, e in pairs(tab(entries)) do
+		local key = tostring(shard)
+		local have = tab(out.s[key])
+		if whole(e.ver) > whole(have.ver) then out.s[key] = {ver=whole(e.ver), h=e.h}; changed = true end
+	end
+	return if changed then out else nil
+end
+-- Summed histograms {[slot] = {buckets = {[b] = n}, n}} from group items.
+function CT.sumGroups(groups)
+	local out = {{buckets={}, n=0}, {buckets={}, n=0}, {buckets={}, n=0}}
+	for _, g in pairs(tab(groups)) do
+		for _, e in pairs(tab(tab(g).s)) do
+			for slot = 1, CT.FEATURED do
+				for b, n in pairs(tab(tab(tab(e).h)[slot])) do
+					n = whole(n)
+					out[slot].buckets[tostring(b)] = (out[slot].buckets[tostring(b)] or 0) + n
+					out[slot].n += n
+				end
+			end
+		end
+	end
+	return out
+end
+-- The best bracket a rank earns among n placing entrants (rank 1 = best).
+function CT.bracketForRank(rank, n)
+	rank, n = whole(rank), whole(n)
+	if rank < 1 or n < 1 then return nil end
+	for _, b in ipairs(CT.Brackets) do
+		if n >= b.minPop and rank <= math.max(1, math.floor(b.top * n)) then return b.id end
+	end
+	return nil
+end
+-- Live estimate from a summed histogram: entrants in strictly higher buckets
+-- rank ahead of you, and of your own bucket the share above your position in
+-- it (scores spread evenly in log space). Returns bracket id | nil, rank, n.
+function CT.estimate(hist, score, crop)
+	hist = tab(hist)
+	local def = CT.CropById[crop]
+	score = whole(score)
+	if not def or score < def.min then return nil, 0, whole(hist.n) end
+	local mine = CT.bucket(score)
+	local above, same, n = 0, 0, 0
+	for b, count in pairs(tab(hist.buckets)) do
+		b, count = tonumber(b) or 0, whole(count)
+		n += count
+		if b > mine then above += count elseif b == mine then same += count end
+	end
+	if same == 0 then same, n = 1, n + 1 end -- not mirrored yet: count yourself in
+	local position = math.clamp(math.log(score) / math.log(CT.BUCKET_BASE) + 1 - mine, 0, 1)
+	local rank = above + math.floor((same - 1) * (1 - position) + 0.5) + 1
+	return CT.bracketForRank(rank, n), rank, n
+end
+-- Median score of a list of {s} sorted best first (0 when empty).
+function CT.median(list)
+	local m = #tab(list)
+	if m == 0 then return 0 end
+	return (list[(m + 1) // 2].s + list[m // 2 + 1].s) / 2
+end
+-- Exact sealing: cut-off scores per slot from every stored entry.
+-- QC L9 (lead decision): the field n (bracket shares and minimum fields) and
+-- the cut-offs come only from qualified entrants: Farming >= CT.QUALIFY_FARMING
+-- when they scored (the packed low flag) and a score >= CT.QUALIFY_MEDIAN x the
+-- crop's median placing score. Every placing entrant is still judged by the
+-- cut-offs and can hold a top-three row.
+-- result = {k, crops, slots = {[slot] = {n, cut = {[bracket] = score}, top = {{u, s}}}}}.
+function CT.seal(k, shards)
+	local w = CT.window(k)
+	local lists = {{}, {}, {}}
+	local seen = {}
+	for _, sh in pairs(tab(shards)) do
+		for uid, packed in pairs(tab(tab(sh).v)) do
+			local slot, score, low = CT.unpack(packed)
+			local crop = slot and CT.CropById[w.crops[slot]]
+			if crop and score >= crop.min and not seen[uid] then
+				seen[uid] = true
+				table.insert(lists[slot], {u=uid, s=score, low=low})
+			end
+		end
+	end
+	local result = {k=w.k, crops=w.crops, slots={}}
+	for slot = 1, CT.FEATURED do
+		local list = lists[slot]
+		table.sort(list, function(a, b) if a.s ~= b.s then return a.s > b.s end return a.u < b.u end)
+		local least = CT.QUALIFY_MEDIAN * CT.median(list)
+		local field = {}
+		for _, e in ipairs(list) do if not e.low and e.s >= least then table.insert(field, e) end end
+		local n = #field
+		local cut = {}
+		for _, b in ipairs(CT.Brackets) do
+			if n >= b.minPop then cut[b.id] = field[math.max(1, math.floor(b.top * n))].s end
+		end
+		local top = {}
+		for i = 1, math.min(3, #list) do table.insert(top, {u=list[i].u, s=list[i].s}) end
+		result.slots[slot] = {n=n, cut=cut, top=top}
+	end
+	return result
+end
+-- QC L5 / L10: the contest k of a server-memory key "<map name>/<key>" (nil
+-- when it is not a contest map key).
+function CT.keyContest(name)
+	local prefix = string.gsub(CT.MAP_PREFIX, "%p", "%%%0")
+	return tonumber(string.match(tostring(name), "^" .. prefix .. "(%d+)_"))
+end
+-- Drops server memory no write can use any more: mirror queues and per-key
+-- backoff state of contests past their write deadline (and keys of no contest).
+function CT.prune(mirrorQ, keyState, now)
+	now = math.floor(tonumber(now) or 0)
+	for k in pairs(tab(mirrorQ)) do
+		if type(k) ~= "number" or now >= CT.window(k).writeDeadline then mirrorQ[k] = nil end
+	end
+	for name in pairs(tab(keyState)) do
+		local k = CT.keyContest(name)
+		if not k or now >= CT.window(k).writeDeadline then keyState[name] = nil end
+	end
+end
+-- QC L11: does contest k's bell toast go to this journal? Farming >=
+-- CT.START_TOAST_FARMING, or an entry scored within CT.START_TOAST_DAYS.
+function CT.wantsStartToast(farmingLevel, c, k)
+	if whole(farmingLevel) >= CT.START_TOAST_FARMING then return true end
+	c = tab(c)
+	local recent = whole(k) - math.ceil(CT.START_TOAST_DAYS * 86400 / CT.PERIOD)
+	local cur = tab(c.cur)
+	if whole(cur.s) > 0 and whole(cur.k) >= recent then return true end
+	for _, list in ipairs({tab(c.open), tab(c.history)}) do
+		for _, e in ipairs(list) do if type(e) == "table" and whole(e.k) >= recent then return true end end
+	end
+	return false
+end
+-- A stored result, sanitised (nil when it is not contest k's).
+function CT.cleanResult(r, k)
+	r = tab(r)
+	if whole(r.k) ~= whole(k) or type(r.slots) ~= "table" then return nil end
+	local out = {k=whole(k), slots={}}
+	for slot = 1, CT.FEATURED do
+		local s = tab(r.slots[slot] or r.slots[tostring(slot)])
+		local cut = {}
+		for _, b in ipairs(CT.Brackets) do
+			local v = tab(s.cut)[b.id]
+			if type(v) == "number" and v >= 1 then cut[b.id] = whole(v) end
+		end
+		local top = {}
+		for _, e in ipairs(tab(s.top)) do
+			if type(e) == "table" and type(e.u) == "string" and #top < 3 then table.insert(top, {u=e.u, s=whole(e.s), n=type(e.n) == "string" and string.sub(e.n, 1, 20) or nil}) end
+		end
+		out.slots[slot] = {n=whole(s.n), cut=cut, top=top}
+	end
+	return out
+end
+-- The bracket a final score earns against a sealed result's cut-offs (nil = no bracket).
+function CT.bracketOf(result, slot, score, crop)
+	local s = tab(tab(tab(result).slots)[slot])
+	local def = CT.CropById[crop]
+	score = whole(score)
+	if not def or score < def.min then return nil end
+	for _, b in ipairs(CT.Brackets) do
+		local cut = tab(s.cut)[b.id]
+		if type(cut) == "number" and score >= cut then return b.id end
+	end
+	return nil
+end
+-- Rewards for a finished entry: medals and Farming XP (placing entrants only).
+function CT.reward(crop, bracket, placed)
+	local def = CT.CropById[crop]
+	if not def or not placed then return 0, 0 end
+	local b = CT.BracketById[bracket]
+	local xp = math.floor(150 * def.index * (b and b.mult or 1))
+	return b and b.medals or 0, xp
+end
+
+-- Medal Exchange ------------------------------------------------------------------
+-- QC M1: the two medallions are one accessory family (Progression.accessoryFamily
+-- reads def.family): only the better one ever counts.
+item("FurrowMedallion",{name="Furrow Medallion",kind="accessory",family="contests:medallion",rarity="Uncommon",color=Data.Rarity.Uncommon.color,stats={farmingFortune=8},value=40*Data.Rarity.Uncommon.rank^2,
+	description="Accessory. Magical Power "..Data.Rarity.Uncommon.power..". Medal Exchange (Harvest Contests)."})
+item("LaureateMedallion",{name="Laureate's Medallion",kind="accessory",family="contests:medallion",rarity="Epic",color=Data.Rarity.Epic.color,stats={farmingFortune=20,health=10},value=40*Data.Rarity.Epic.rank^2,
+	description="Accessory. Magical Power "..Data.Rarity.Epic.power..". Medal Exchange; upgrades the Furrow Medallion."})
+item("MedalistHoe",{name="Medalist's Hoe",kind="tool",toolKind="Hoe",slot="hoe",toolTier=5,tier=5,rarity="Epic",color="E9C46A",stats={farmingFortune=135},requires={Farming=55},value=1800,
+	description="Tier 5 hoe from the Medal Exchange. Requires Farming 55."})
+item("HarvestTonic",{name="Harvest Tonic",kind="consumable",category="potion",rarity="Uncommon",color="E9C46A",buff={stats={farmingFortune=50},duration=600},value=30,
+	description="Potion: +50 Farming Fortune for 10 minutes. Medal Exchange."})
+-- kind: item (amount; unique = one owned at most; upgrade = item consumed;
+-- level = Farming; gardenLevel = Verdant Garden level), almanac (the next
+-- Furrow Almanac volume), title (cosmetic).
+-- QC M5: an item the Verdant Garden shop also sells never costs fewer medals
+-- than its garden price per unit (coins + materials at their value) /
+-- CT.MEDAL_VALUE, behind the same garden-level gate.
+function CT.gardenUnitValue(itemId)
+	local e = G.ShopById[itemId]
+	if not e or e.kind ~= "item" then return nil end
+	local v = 0
+	for id, n in pairs(e.cost) do v += (if id == "coins" then 1 else (Data.Items[id] and Data.Items[id].value or 0)) * n end
+	return v / math.max(1, e.amount)
+end
+CT.ALMANAC = {5, 5, 5, 5}           -- +Farming Fortune per volume (p.perkStats.contests; never Health / Defense)
+CT.ALMANAC_COST = {20, 45, 80, 130}
+CT.Titles = {
+	{id="Furrowhand",title="Furrowhand",medals=15,color="CD8A4E"},
+	{id="GoldenSheaf",title="Golden Sheaf",medals=60,color="F7C548"},
+	{id="FieldLaureate",title="Field Laureate",medals=150,color="9AE6FF"},
+}
+CT.TitleById = {}
+for _, t in ipairs(CT.Titles) do CT.TitleById[t.id] = t end
+CT.Shop = {
+	{id="HarvestTonic",kind="item",item="HarvestTonic",amount=2,medals=3},
+	{id="LotusBud",kind="item",item="LotusBud",amount=1,medals=math.ceil(CT.gardenUnitValue("LotusBud") / CT.MEDAL_VALUE),gardenLevel=G.ShopById.LotusBud.level},
+	{id="FurrowMedallion",kind="item",item="FurrowMedallion",amount=1,medals=25,unique=true},
+	{id="LaureateMedallion",kind="item",item="LaureateMedallion",amount=1,medals=90,unique=true,upgrade="FurrowMedallion"},
+	{id="MedalistHoe",kind="item",item="MedalistHoe",amount=1,medals=110,unique=true,level=55},
+	{id="Almanac",kind="almanac"},
+}
+for _, t in ipairs(CT.Titles) do table.insert(CT.Shop, {id="Title"..t.id, kind="title", title=t.id, medals=t.medals}) end
+CT.ShopById = {}
+for i, e in ipairs(CT.Shop) do e.index = i; CT.ShopById[e.id] = e end
+-- QC M1: items that upgrade from `itemId` through the exchange (transitively).
+function CT.upgradesOf(itemId)
+	local out, frontier = {}, {itemId}
+	while #frontier > 0 do
+		local from = table.remove(frontier)
+		for _, e in ipairs(CT.Shop) do
+			if e.upgrade == from and e.item and not table.find(out, e.item) then table.insert(out, e.item); table.insert(frontier, e.item) end
+		end
+	end
+	return out
+end
+function CT.almanacStats(volumes)
+	local ff = 0
+	for i = 1, math.min(whole(volumes), #CT.ALMANAC) do ff += CT.ALMANAC[i] end
+	return if ff > 0 then {farmingFortune=ff} else nil
+end
+function CT.offerCost(e, volumes)
+	if e.kind == "almanac" then return CT.ALMANAC_COST[whole(volumes) + 1] end
+	return e.medals
+end
+
+-- Journal record p.contests = {cur = {k, c, s, at} | nil, open = {{k, c, s}},
+-- best = {[crop] = score}, medals, earned, entries, placed, brackets = {[id] = n},
+-- history = {{k, c, s, b, m}}, almanac, titles = {[id] = true}, title, ann}.
+function CT.migrate(raw)
+	raw = tab(raw)
+	local c = {open={}, best={}, history={}, brackets={}, titles={}, ann=whole(raw.ann)}
+	for _, key in ipairs({"medals","earned","entries","placed","almanac","spent"}) do c[key] = whole(raw[key]) end
+	c.almanac = math.min(c.almanac, #CT.ALMANAC)
+	local cur = tab(raw.cur)
+	if whole(cur.k) > 0 and CT.CropById[cur.c] and CT.featured(cur.k, cur.c) then
+		c.cur = {k=whole(cur.k), c=cur.c, s=math.min(whole(cur.s), CT.SCORE_CAP), at=whole(cur.at)}
+	end
+	for _, e in ipairs(tab(raw.open)) do
+		if type(e) == "table" and whole(e.k) > 0 and CT.CropById[e.c] and CT.featured(e.k, e.c) and #c.open < CT.OPEN_MAX then
+			table.insert(c.open, {k=whole(e.k), c=e.c, s=math.min(whole(e.s), CT.SCORE_CAP)})
+		end
+	end
+	for crop, s in pairs(tab(raw.best)) do if CT.CropById[crop] then c.best[crop] = math.min(whole(s), CT.SCORE_CAP) end end
+	for _, e in ipairs(tab(raw.history)) do
+		if type(e) == "table" and CT.CropById[e.c] and #c.history < CT.HISTORY then
+			table.insert(c.history, {k=whole(e.k), c=e.c, s=whole(e.s), b=CT.BracketById[e.b] and e.b or nil, m=whole(e.m)})
+		end
+	end
+	for _, b in ipairs(CT.Brackets) do local n = whole(tab(raw.brackets)[b.id]); if n > 0 then c.brackets[b.id] = n end end
+	for id in pairs(tab(raw.titles)) do if CT.TitleById[id] then c.titles[id] = true end end
+	if type(raw.title) == "string" and c.titles[raw.title] then c.title = raw.title end
+	return c
+end
+
+------------------------------------------------------------------------------
+-- Trophy Angling
+------------------------------------------------------------------------------
+local TF = {}
+Data.Trophies = TF
+TF.whole = whole
+TF.NAME = "Trophy Angling"
+TF.COLOR = "5EC8D8"
+TF.KEEPER = "TrophyKeeper"
+-- Qualities, worst first. weight = base share of trophy catches.
+TF.Tiers = {
+	{id="Bronze",name="Bronze",weight=0.70,mult=1,color="CD8A4E"},
+	{id="Silver",name="Silver",weight=0.22,mult=1.5,color="C9D1D9"},
+	{id="Gold",name="Gold",weight=0.07,mult=2.5,color="F7C548"},
+	{id="Diamond",name="Diamond",weight=0.01,mult=5,color="9AE6FF"},
+}
+TF.TierById = {}
+for i, t in ipairs(TF.Tiers) do t.index = i; TF.TierById[t.id] = t end
+TF.PITY_GOLD = 60                   -- catches of one fish without Gold or better: the next is at least Gold
+TF.PITY_DIAMOND = 300               -- catches of one fish without a Diamond: the next is Diamond
+TF.ROD_GOLD, TF.ROD_DIAMOND = 0.01, 0.002 -- per rod tier above the fish's requirement
+TF.BASE_CHANCE = 0.03               -- a trophy bite per eligible cast
+TF.CHANCE_CAP = 0.10
+TF.HOOD_CHANCE = 0.01               -- Gillward Hood worn
+TF.PET = "Glintgill"
+TF.PET_CHANCE = 0.00015             -- per Glintgill level (+1.5 % at level 100)
+TF.RarityXp = {Common=40, Uncommon=80, Rare=160, Epic=320, Legendary=640}
+-- Waters: region id of the fishing prompt -> water (nil / Meadow / Hub = the Shallows).
+TF.Waters = {
+	{id="Shallows",name="Sunwheel Shallows",regions={"Meadow","Hub"},color="8FB8D6"},
+	{id="Gloomhollow",name="Gloomhollow Mere",regions={"Gloomhollow"},color="6A4C93"},
+	{id="Tidewater",name="Tidewater Deeps",regions={"Tidewater"},color="2F8FA8"},
+	{id="ShatteredCrown",name="Crownrift Pools",regions={"ShatteredCrown"},color="F2D27A"},
+}
+TF.WaterById = {}
+for _, w in ipairs(TF.Waters) do TF.WaterById[w.id] = w end
+function TF.waterOf(region)
+	if region == nil or region == "" then return "Shallows" end
+	for _, w in ipairs(TF.Waters) do if table.find(w.regions, region) then return w.id end end
+	return nil
+end
+-- Isle clock hour 0..24 (the sidebar's clock; night = hour < 6 or >= 19).
+function TF.hourAt(t)
+	local into = (math.floor(tonumber(t) or 0) - Cal.epoch) % Cal.dayLength
+	return into / Cal.dayLength * 24
+end
+function TF.inHours(hours, h)
+	if type(hours) ~= "table" then return true end
+	local from, to = hours[1], hours[2]
+	if from <= to then return h >= from and h < to end
+	return h >= from or h < to
+end
+-- Baits (Cooking at the Hearth; one is spent per cast in trophy waters while loaded).
+TF.BaitOrder = {"GlowgrubBait","BrineglowLure","AbyssalLure"}
+TF.Baits = {
+	GlowgrubBait={name="Glowgrub Bait",level=10,bonus=0.01,costs={Fish=2,Herb=2},amount=4,color="C6E377",rarity="Common"},
+	BrineglowLure={name="Brineglow Lure",level=35,bonus=0.015,costs={BrineShell=2,GlowJelly=1},amount=4,color="C3A6FF",rarity="Uncommon"},
+	AbyssalLure={name="Abyssal Lure",level=60,bonus=0.02,costs={AbyssInk=1,SeaScale=2},amount=4,color="2B2D42",rarity="Rare"},
+}
+for _, id in ipairs(TF.BaitOrder) do
+	local b = TF.Baits[id]
+	b.id = id
+	recipe(id, {skill="Cooking",level=b.level,xp=12 + b.level,costs=b.costs,amount=b.amount,repeatable=true,station="Hearth",category="Bait"})
+	item(id, {name=b.name,kind="material",category="bait",rarity=b.rarity,color=b.color,value=math.floor(valueOf(b.costs) / b.amount * 0.8),
+		description="Trophy bait: load it in Hunt › Trophies. +"..(b.bonus * 100).."% trophy chance; some trophy fish bite only on it."})
+end
+-- The fifteen trophy fish. water, hours = isle clock window, season / event
+-- (Data.Calendar), rod = least rod tier, bait = bait item, fishing = level.
+TF.Fish = {
+	{id="PebblefinDarter",name="Pebblefin Darter",water="Shallows",rod=0,fishing=1,weight=100,rarity="Common",color="A8C5D6",text="Darts between the dock stones of the Shallows at any hour."},
+	{id="DawnscaleMinnow",name="Dawnscale Minnow",water="Shallows",hours={5,9},rod=1,fishing=5,weight=60,rarity="Uncommon",color="FFD6A5",text="Rises to the first light: isle hours 5 to 9."},
+	{id="BloomtideCarplet",name="Bloomtide Carplet",water="Shallows",season="Bloomtide",rod=1,fishing=10,weight=50,rarity="Uncommon",color="9BD77E",text="Spawns only in the season of Bloomtide."},
+	{id="MooncressLoach",name="Mooncress Loach",water="Shallows",hours={19,6},bait="GlowgrubBait",rod=1,fishing=15,weight=35,rarity="Rare",color="B8C0FF",text="Feeds at night, and only on Glowgrub Bait."},
+	{id="BrinebarbSnapper",name="Brinebarb Snapper",water="Tidewater",rod=2,fishing=30,weight=90,rarity="Common",color="E07A5F",text="The common brawler of the Tidewater Deeps."},
+	{id="SunglintBream",name="Sunglint Bream",water="Tidewater",season="Sunreach",hours={9,17},rod=2,fishing=32,weight=45,rarity="Uncommon",color="FFD166",text="Basks in Sunreach daylight: isle hours 9 to 17."},
+	{id="GloamtideRay",name="Gloamtide Ray",water="Tidewater",hours={17,21},bait="BrineglowLure",rod=3,fishing=45,weight=35,rarity="Rare",color="7A6FC2",text="Glides up at dusk (isle hours 17 to 21) for a Brineglow Lure."},
+	{id="FestivalSquallfin",name="Glimmer Squallfin",water="Tidewater",event="GlimmertideFestival",rod=3,fishing=40,weight=30,rarity="Epic",color="F4B860",text="Leaps only while the Glimmertide Festival is on."},
+	{id="CoralcrownAngler",name="Coralcrown Angler",water="Tidewater",bait="AbyssalLure",rod=5,fishing=70,weight=20,rarity="Epic",color="EF6F6C",text="Lurks in the deepest reef; it takes only an Abyssal Lure on a tier 5 rod."},
+	{id="TidewyrmFry",name="Tidewyrm Fry",water="Tidewater",hours={19,6},rod=5,fishing=78,weight=6,rarity="Legendary",color="06D6A0",text="A Matriarch's hatchling, abroad only at night."},
+	{id="LanternjawGudgeon",name="Lanternjaw Gudgeon",water="Gloomhollow",rod=4,fishing=60,weight=80,rarity="Uncommon",color="FFE08A",text="Its glowing jaw lights the Gloomhollow Mere."},
+	{id="VoidgillCavefish",name="Voidgill Cavefish",water="Gloomhollow",hours={19,6},rod=4,fishing=62,weight=40,rarity="Rare",color="5B3F8C",text="Blind and patient; it surfaces at night."},
+	{id="HollowmereEel",name="Hollowmere Eel",water="Gloomhollow",event="HollowNight",rod=4,fishing=64,weight=25,rarity="Epic",color="C77DFF",text="Stirs only on Hollow Night."},
+	{id="RiftscaleKoi",name="Riftscale Koi",water="ShatteredCrown",rod=5,fishing=80,weight=50,rarity="Rare",color="F2D27A",text="Swims the Crownrift Pools, scales split by starlight."},
+	{id="CrownveilSunfish",name="Crownveil Sunfish",water="ShatteredCrown",season="Frostveil",rod=6,fishing=88,weight=8,rarity="Legendary",color="FFF3B0",text="A Frostveil wonder; only a tier 6 rod holds it."},
+}
+TF.FishById = {}
+for i, f in ipairs(TF.Fish) do f.index = i; TF.FishById[f.id] = f end
+-- Does fish f bite for this cast? ctx = {water, hour, season, event, rod, fishing, bait}.
+function TF.bites(f, ctx)
+	ctx = tab(ctx)
+	if f.water ~= ctx.water then return false, "water" end
+	if whole(ctx.fishing) < f.fishing then return false, "fishing" end
+	if whole(ctx.rod) < f.rod then return false, "rod" end
+	if f.season and ctx.season ~= f.season then return false, "season" end
+	if f.event and ctx.event ~= f.event then return false, "event" end
+	if f.hours and not TF.inHours(f.hours, tonumber(ctx.hour) or 12) then return false, "hours" end
+	if f.bait and ctx.bait ~= f.bait then return false, "bait" end
+	return true
+end
+function TF.pool(ctx)
+	local out = {}
+	for _, f in ipairs(TF.Fish) do if TF.bites(f, ctx) then table.insert(out, f) end end
+	return out
+end
+function TF.waterHasFish(water)
+	for _, f in ipairs(TF.Fish) do if f.water == water then return true end end
+	return false
+end
+-- Trophy chance for a cast: base + bait + hood + Glintgill pet level, capped.
+function TF.chance(ctx)
+	ctx = tab(ctx)
+	local c = TF.BASE_CHANCE
+	local bait = ctx.bait and TF.Baits[ctx.bait]
+	if bait then c += bait.bonus end
+	if ctx.hood then c += TF.HOOD_CHANCE end
+	c += math.clamp(whole(ctx.petLevel), 0, Data.PET_MAX_LEVEL) * TF.PET_CHANCE
+	return math.min(TF.CHANCE_CAP, c)
+end
+-- Quality for one catch of fish f: rod tiers above the requirement shift
+-- weight to Gold / Diamond; pity guarantees Gold after PITY_GOLD catches
+-- without Gold+ and Diamond after PITY_DIAMOND without one.
+function TF.quality(f, rod, pity, r)
+	pity = tab(pity)
+	if whole(pity.d) + 1 >= TF.PITY_DIAMOND then return "Diamond", true end
+	local above = math.max(0, whole(rod) - f.rod)
+	local w = {TF.Tiers[1].weight, TF.Tiers[2].weight, TF.Tiers[3].weight + above * TF.ROD_GOLD, TF.Tiers[4].weight + above * TF.ROD_DIAMOND}
+	w[1] = math.max(0.3, 1 - w[2] - w[3] - w[4])
+	local total = w[1] + w[2] + w[3] + w[4]
+	local pick = (tonumber(r) or 0) * total
+	local tier = "Diamond"
+	for i = 1, 4 do
+		if pick < w[i] then tier = TF.Tiers[i].id; break end
+		pick -= w[i]
+	end
+	if whole(pity.g) + 1 >= TF.PITY_GOLD and TF.TierById[tier].index < 3 then return "Gold", true end
+	return tier, false
+end
+-- One eligible cast: rolls r1 (bite), r2 (which fish), r3 (quality). Returns fish, tier, pityUsed | nil.
+function TF.roll(ctx, pityOf, r1, r2, r3)
+	local pool = TF.pool(ctx)
+	if #pool == 0 or (tonumber(r1) or 1) >= TF.chance(ctx) then return nil end
+	local total = 0
+	for _, f in ipairs(pool) do total += f.weight end
+	local pick, fish = (tonumber(r2) or 0) * total, pool[#pool]
+	for _, f in ipairs(pool) do
+		pick -= f.weight
+		if pick < 0 then fish = f; break end
+	end
+	local tier, pity = TF.quality(fish, ctx.rod, pityOf and pityOf(fish.id), r3)
+	return fish, tier, pity
+end
+function TF.xp(f, tier)
+	local t = TF.TierById[tier]
+	return math.floor((TF.RarityXp[f.rarity] or 40) * (t and t.mult or 1))
+end
+-- Gillward Hood (Trophy Keeper): a fishing helmet under the Stormcaller line.
+item("GillwardHood",{name="Gillward Hood",kind="armor",slot="helmet",tier=3,rarity="Rare",color="5EC8D8",stats={fishingFortune=6,health=10,seaCreatureChance=1},requires={Fishing=25},value=600,
+	trophyChance=TF.HOOD_CHANCE,description="The Trophy Keeper's gift. +1% trophy fish chance while worn. Requires Fishing 25."})
+-- Glintgill: the trophy-fishing pet (Trophy Keeper).
+do
+	local pet = {id=TF.PET,name="Glintgill",skill="Fishing",rarity="Epic",color="7FE0D0",perLevel={fishingFortune=0.4,seaCreatureChance=0.03,health=0.3}}
+	table.insert(Data.Pets, pet)
+	Data.PetById[pet.id] = pet
+	local PD = Data.PetDepth
+	if PD and PD.Abilities then
+		local list = {
+			{name="Gleam Lure",kind="xp",skills={"Fishing"},per=0.08,rarity="Common"},
+			{name="Shoal Sight",kind="stat",stat="fishingFortune",per=0.25,rarity="Rare"},
+			{name="Deep Glint",kind="stat",stat="seaCreatureChance",per=0.03,rarity="Legendary",level=40},
+		}
+		for i, a in ipairs(list) do a.index = i; a.id = a.name:gsub("[^%w]", "") end
+		PD.Abilities[pet.id] = list
+		if PD.Looks then PD.Looks[pet.id] = {form="hopper",accent="E8FFF9"} end
+		pet.ability = list[1].name..": up to "..PD.abilityText(list[1], PD.abilityValue(list[1], Data.PET_MAX_LEVEL, PD.MAX_RARITY))
+		pet.abilityNames = {list[1].name, list[2].name, list[3].name}
+	else
+		pet.ability = "Gleam Lure"
+	end
+	item(pet.id.."Pet",{name=pet.name.." Pet",kind="pet",pet=pet.id,rarity=pet.rarity,color=pet.color,value=200*Data.Rarity.Epic.rank^2,
+		description="Summon from your pet menu. Abilities: "..table.concat(pet.abilityNames or {pet.ability}, ", ")..". Trophy Sense: +"..(TF.PET_CHANCE * 100 * Data.PET_MAX_LEVEL).."% trophy fish chance at level "..Data.PET_MAX_LEVEL..". The Trophy Keeper's reward."})
+end
+-- The Trophy Ledger: completion tiers claimed from the Trophy Keeper.
+-- need = {tier = least quality, count = fish (nil = every fish)}.
+TF.Ledger = {
+	{id="Novice",name="First Catches",need={tier="Bronze",count=5},title="Trophy Angler",xp=2000,color="CD8A4E"},
+	{id="Bronze",name="Bronze Ledger",need={tier="Bronze"},item="GillwardHood",xp=6000,color="CD8A4E"},
+	{id="Silver",name="Silver Ledger",need={tier="Silver"},title="Silverline Angler",item=TF.PET.."Pet",xp=20000,color="C9D1D9"},
+	{id="Gold",name="Gold Ledger",need={tier="Gold"},title="Gilded Angler",xp=60000,color="F7C548"},
+	{id="Diamond",name="Diamond Ledger",need={tier="Diamond"},title="Diamond Tidekeeper",xp=150000,color="9AE6FF"},
+}
+TF.LedgerById = {}
+for i, l in ipairs(TF.Ledger) do l.index = i; TF.LedgerById[l.id] = l end
+-- Fish whose best quality is at least `tier`.
+function TF.countAt(best, tier)
+	local need = TF.TierById[tier] and TF.TierById[tier].index or 1
+	local n = 0
+	for _, f in ipairs(TF.Fish) do
+		local b = TF.TierById[tab(best)[f.id]]
+		if b and b.index >= need then n += 1 end
+	end
+	return n
+end
+function TF.ledgerNeed(l) return l.need.count or #TF.Fish end
+function TF.ledgerDone(best, l) return TF.countAt(best, l.need.tier) >= TF.ledgerNeed(l) end
+function TF.titles(claimed)
+	local out = {}
+	for _, l in ipairs(TF.Ledger) do if l.title and tab(claimed)[l.id] then table.insert(out, l) end end
+	return out
+end
+-- Journal record p.trophy = {caught = {[fish] = {Bronze, Silver, Gold, Diamond counts}},
+-- best = {[fish] = tier}, pity = {[fish] = {g, d}}, total, diamonds, bait, claimed = {[ledger] = true}, title, casts, ledgerAnn = {[ledger] = true}}.
+function TF.migrate(raw)
+	raw = tab(raw)
+	local t = {caught={}, best={}, pity={}, claimed={}, total=0, diamonds=0, casts=whole(raw.casts)}
+	for _, f in ipairs(TF.Fish) do
+		local c = tab(tab(raw.caught)[f.id])
+		local row, any = {}, false
+		for _, tier in ipairs(TF.Tiers) do
+			local n = whole(c[tier.id])
+			if n > 0 then row[tier.id] = n; any = true; t.total += n; if tier.id == "Diamond" then t.diamonds += n end; t.best[f.id] = tier.id end
+		end
+		if any then t.caught[f.id] = row end
+		local p = tab(tab(raw.pity)[f.id])
+		if whole(p.g) > 0 or whole(p.d) > 0 then t.pity[f.id] = {g=math.min(whole(p.g), TF.PITY_GOLD), d=math.min(whole(p.d), TF.PITY_DIAMOND)} end
+	end
+	if type(raw.bait) == "string" and TF.Baits[raw.bait] then t.bait = raw.bait end
+	for id in pairs(tab(raw.claimed)) do if TF.LedgerById[id] then t.claimed[id] = true end end
+	-- QC L2: ledger tiers already announced (known ids only).
+	t.ledgerAnn = {}
+	for id in pairs(tab(raw.ledgerAnn)) do if TF.LedgerById[id] then t.ledgerAnn[id] = true end end
+	if type(raw.title) == "string" then
+		for _, l in ipairs(TF.titles(t.claimed)) do if l.id == raw.title then t.title = raw.title end end
+	end
+	return t
+end
+-- Record one catch (mutates the record); returns isNewBest.
+function TF.record(t, fishId, tier)
+	t.caught[fishId] = t.caught[fishId] or {}
+	t.caught[fishId][tier] = whole(t.caught[fishId][tier]) + 1
+	t.total = whole(t.total) + 1
+	if tier == "Diamond" then t.diamonds = whole(t.diamonds) + 1 end
+	local p = t.pity[fishId] or {g=0, d=0}
+	local idx = TF.TierById[tier].index
+	p.g = if idx >= 3 then 0 else math.min(whole(p.g) + 1, TF.PITY_GOLD)
+	p.d = if idx >= 4 then 0 else math.min(whole(p.d) + 1, TF.PITY_DIAMOND)
+	t.pity[fishId] = p
+	local old = TF.TierById[t.best[fishId]]
+	if not old or idx > old.index then t.best[fishId] = tier; return true end
+	return false
+end
+
+------------------------------------------------------------------------------
+-- §31 announcements: contest start / result / personal best, trophy catches.
+------------------------------------------------------------------------------
+local F = Data.Features
+if F and F.announceText then
+	local announceText = F.announceText
+	function F.announceText(e)
+		if type(e) == "table" and e.kind == "contest" then
+			local crops = {}
+			for _, id in ipairs(tab(e.crops)) do table.insert(crops, Data.Items[id] and Data.Items[id].name or tostring(id)) end
+			local crop = type(e.crop) == "string" and Data.Items[e.crop] and Data.Items[e.crop].name or tostring(e.crop)
+			if e.phase == "start" then
+				return {head="HARVEST CONTEST", body=table.concat(crops, "  ·  ") .. "  ·  20 minutes", color=CT.COLOR}
+			elseif e.phase == "best" then
+				return {head="NEW PERSONAL BEST", body=crop .. "  ·  " .. whole(e.score), color="9EE7D2"}
+			end
+			local b = CT.BracketById[e.bracket]
+			return {head=b and (string.upper(b.name) .. " BRACKET") or "CONTEST RESULT",
+				body=crop .. "  ·  " .. whole(e.score) .. (if whole(e.medals) > 0 then "  ·  +" .. whole(e.medals) .. " Harvest Medals" else "  ·  no bracket"),
+				color=b and b.color or CT.COLOR}
+		elseif type(e) == "table" and (e.kind == "trophy" or e.kind == "trophyWorld") then
+			local f = TF.FishById[e.fish]
+			local t = TF.TierById[e.tier] or TF.Tiers[1]
+			local name = f and f.name or tostring(e.fish)
+			if e.kind == "trophyWorld" then
+				return {head="DIAMOND TROPHY", body=string.sub(tostring(e.who or "A wayfarer"), 1, 20) .. " landed a Diamond " .. name, color=t.color}
+			end
+			return {head=string.upper(t.name) .. " TROPHY", body=name .. (if e.new then "  ·  new best" else ""), color=t.color}
+		elseif type(e) == "table" and e.kind == "trophyLedger" then
+			local l = TF.LedgerById[e.ledger]
+			return {head="TROPHY LEDGER", body=(l and l.name or "Ledger") .. " complete  ·  see the Trophy Keeper", color=l and l.color or TF.COLOR}
+		end
+		return announceText(e)
+	end
+	F.ANNOUNCE_PRIORITY.contest = true
+end
+
+------------------------------------------------------------------------------
+-- Townsfolk: the Contest Steward (Sunwheel Downs) and the Trophy Keeper
+-- (Tidewater Shoals). Regional folk entries: World Art places their anchors.
+------------------------------------------------------------------------------
+local T, RA = Data.Townsfolk, Data.RegionArt
+if T and RA and RA.Folk and T.NPCs then
+	if T.AtlasStations then
+		T.AtlasStations.Contests = "Workshop · Contests"
+		T.AtlasStations.Trophies = "Hunt · Trophies"
+	end
+	local steward = {role=CT.STEWARD,region="Meadow",name="Odile Furrowgate",title="Contest Steward",portrait="🌾",kind="contests",
+		look={skin="E0AC69",shirt="7A8F3A",pants="4A3B2A",shoes="2E2418",accent="E9C46A",hair="8A5A2B",hat="wayfarer",held="ledger",apron="C9A66B"},
+		greet="Three crops to a contest, twenty minutes on the bell, and every isle's farmers on one ledger. Pick your crop and swing that hoe!"}
+	table.insert(RA.Folk, steward)
+	RA.FolkByRole[steward.role] = steward
+	T.NPCs[steward.role] = {name=steward.name,title=steward.title,region="Meadow",portrait=steward.portrait,look=steward.look,start="hello",anchorOnly=true,folk="contests",
+		nodes={
+			hello={text=steward.greet,options={
+				{label="Show me the contests",atlas="Contests"},
+				{label="How do contests work?",to="explain"},
+				{label="Farewell",close=true}}},
+			explain={text="A contest opens three times every isle day and runs for twenty minutes. Each one features three crops. "
+				.. "Enter one of them, or simply harvest a featured crop and I'll enter you with it. Everything you harvest of that crop counts, from fields or your garden. "
+				.. "When the bell rings, the top sixty in a hundred earn a bracket: Bronze, Silver, Gold, Platinum, and Diamond for the very best. "
+				.. "Brackets pay Harvest Medals, which my Medal Exchange takes for tools, tonics and titles.",options={
+				{label="Show me the contests",atlas="Contests"},
+				{label="Back",to="hello"},
+				{label="Farewell",close=true}}},
+		}}
+	table.insert(T.RegionFolkOrder, steward.role)
+	local keeper = {role=TF.KEEPER,region="Tidewater",name="Marlow Gillcrest",title="Trophy Keeper",portrait="🐟",kind="trophies",
+		look={skin="C68642",shirt="2F5D6B",pants="2A3A44",shoes="1E2226",accent="5EC8D8",hair="B8B2A7",hat="souwester",held="rod",beard=true},
+		greet="Every fish in that ledger I've landed myself, once. Bring me the rarest the isles hide, and the finest of each, and I'll make it worth your while."}
+	table.insert(RA.Folk, keeper)
+	RA.FolkByRole[keeper.role] = keeper
+	T.NPCs[keeper.role] = {name=keeper.name,title=keeper.title,region="Tidewater",portrait=keeper.portrait,look=keeper.look,start="hello",anchorOnly=true,folk="trophies",
+		nodes={
+			hello={text=keeper.greet,options={
+				{label="Open the Trophy Ledger",atlas="Trophies"},
+				{label="How does trophy fishing work?",to="explain"},
+				{label="Farewell",close=true}}},
+			explain={text="Fifteen trophy fish swim four waters: the Sunwheel Shallows, the Tidewater Deeps, Gloomhollow Mere and the Crownrift Pools. "
+				.. "Each bites only when its conditions are right: the hour, the season or a festival, your rod, sometimes a bait. "
+				.. "Any cast that doesn't raise a sea creature might land one, in Bronze, Silver, Gold or, rarely, Diamond. "
+				.. "Fill the ledger and I'll reward you: titles, my old Gillward Hood, even a Glintgill of your own.",options={
+				{label="Open the Trophy Ledger",atlas="Trophies"},
+				{label="Back",to="hello"},
+				{label="Farewell",close=true}}},
+		}}
+	table.insert(T.RegionFolkOrder, keeper.role)
+end
+end
+-- <<< END Contests & Trophy Angling <<<
+------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------
+-- >>> BEGIN Raids (Raid team; append-only section, §38) >>>
+-- The Undertide Vaults: an original party raid for 2-8 players
+-- (docs/DEPTH-CONTRACT.md §38). Pure data and pure rules only:
+-- raids.server.lua runs the portal lobbies, the instanced vault complex, the
+-- room sequence (combat / puzzle / resource / boss), points and settlement;
+-- combat.server.lua's Raids section runs the encounters on the Lairs creature
+-- machinery (lair-shaped defs: stances, telegraphs, tiles, adds, sigils);
+-- server.server.lua's Raids block validates verbs, pays rewards and keeps the
+-- Raid Log; raid.client.lua draws the party lobby, the raid HUD and the log.
+------------------------------------------------------------------------------
+do
+local RD = {}
+Data.Raids = RD
+local LR = Data.Lairs
+local CS = Data.CombatStyles
+local Rar = Data.Rarity
+local function tab(v) return if type(v) == "table" then v else {} end
+local function whole(v, cap)
+	v = tonumber(v)
+	if not v or v ~= v or v < 0 then return 0 end
+	v = math.floor(v)
+	if cap and v > cap then return cap end
+	return v
+end
+RD.whole = whole
+
+RD.ID = "UndertideVaults"
+RD.NAME = "The Undertide Vaults"
+RD.COMBAT = 70              -- Combat level to host or join (between the Pyrewarden and Nihlvar)
+RD.REGION = "Tidewater"     -- the portal's region gate
+RD.ISLE = "Tidewater Shoals"
+RD.MIN_PARTY, RD.MAX_PARTY = 2, 8
+RD.MAX_RAIDS = 3            -- concurrent raid complexes per server
+RD.MAX_LOBBIES = 12
+RD.LOBBY_SECONDS = 600      -- an unstarted lobby closes after this long
+RD.PORTAL_RANGE = 30        -- studs from the portal to host, join or start
+RD.PORTAL_SECONDS = 300     -- a portal visit keeps the lobby board open this long
+RD.ROOM_GAP = 6             -- countdown before a room's encounter / puzzle starts
+RD.ADVANCE_SECONDS = 6      -- a cleared room moves the party on after this long
+RD.EXIT_SECONDS = 15        -- after the Regent falls, members return to the portal
+RD.REJOIN_SECONDS = 90      -- a dropped member may rejoin the live raid this long
+RD.REJOIN_GRACE = 15        -- a rejoined member's idle clock gets at least this long
+RD.REJOIN_VERIFY = 3        -- a rejoin re-applies the room position this long
+RD.AWAY_SECONDS = 10        -- outside the complex this long (alive): left the raid
+RD.IDLE_SECONDS = 90        -- no movement or credited action this long: removed (no reward)
+RD.EMPTY_SECONDS = 90       -- nobody inside this long: the raid ends
+RD.RECENT_SECONDS = 90      -- credit: a credited action this recently before the Regent falls
+RD.MIN_SHARE = 0.25         -- credit floor: contribution >= 25% of an equal share of the party's (QC M3: room-clear points excluded)
+RD.MOVE_STUDS = 3           -- moving this far between samples counts as activity (idle clock)
+RD.FLEE_HP, RD.FLEE_SECONDS = 0.25, 3 -- a disconnect below 25% health within 3 s of a hit is a death
+RD.PARTY_HP = 0.85          -- extra encounter health per extra member (QC H1: members not offline at the rise, the dead included)
+RD.PARTY_DAMAGE = 0.05      -- extra encounter damage per extra member
+RD.ARENA_RANGE = LR.ARENA_RANGE
+RD.GRID, RD.CELL = LR.GRID, LR.CELL
+RD.REWARD_RETRY, RD.REWARD_WINDOW = 5, 120
+RD.RUN_MEMORY = 20          -- credited run ids remembered per journal (a repeat is refused)
+RD.KEEP_LOG = 12
+RD.MAX_KC = 1000000
+RD.WARD_MULT = 0.7          -- damage taken while a brewed ward is up (potion)
+RD.SUPPLY_COOLDOWN = 4      -- seconds between supplies per member
+RD.WARD_REFRESH = 5         -- QC L3: a draught is refused while more than this many seconds of ward remain
+RD.MISTAKE_NOTICE = 5       -- QC L3: one party-wide wrong-glyph notice per member per this many seconds
+RD.GATHER_COOLDOWN = 1.5    -- seconds between gathers per member
+RD.PUZZLE_SECONDS = 240     -- a puzzle not solved by then grinds open (no completion points)
+RD.RESOURCE_SECONDS = 210   -- the resource room closes after this long (whatever was made)
+RD.RAW_PER_SUPPLY = 2
+
+-- Points (OSRS-raid style, original numbers). Personal points come from
+-- damage (a combat room's pool is `combat` x party, split by damage share;
+-- the Regent's is `boss` x party), room clears (every member present),
+-- puzzle steps (the solver; each step pays once per run), resource work
+-- (gather / brew / cook, capped per member) and lose `death` of the total on
+-- each death. Challenge Mode multiplies every point by `challenge`.
+RD.Points = {combat=3000, boss=6000, clear=500, puzzleStep=250, puzzleMistake=150, gather=40, craft=160, resourceCap=1600,
+	death=0.25, challenge=1.2}
+RD.POINTS_PER_PERCENT = 4000 -- team points per 1% unique ("purple") chance
+RD.UNIQUE_CAP = 0.65
+RD.LOOT_POINTS = 2500       -- one regular loot roll per this many personal points
+RD.MAX_ROLLS = 12
+RD.COINS_PER_POINT = 0.35
+RD.Challenge = {hp=1.35, damage=1.3}
+
+-- Encounters ---------------------------------------------------------------
+-- Lair-shaped definitions (docs §25) so combat.server.lua's Lairs creature
+-- machinery runs them: stances (prayer switching), disc / ring / safe /
+-- tiles telegraphs (styleless), adds (a ward: the encounter takes LR.WARD
+-- damage while they live) and sigils (ordered, the encounter is immune).
+local function attack(kind, name, fields)
+	local a = {kind=kind,name=name}
+	for k, v in pairs(fields or {}) do a[k] = v end
+	return a
+end
+RD.CombatOrder = {"Gloomfang","Siltmother","Coralglass","Runebound","Undine","Shoalrunner"}
+RD.BOSS = "Thalvorn"
+RD.Encounters = {
+	Gloomfang={name="Gloomfang Sentinel",short="Gloomfang",roomName="Hall of Vigils",level=72,hp=110000,damage=300,defense=200,xp=4400,speed=14,
+		color="5FA8D3",body="sentinel",arenaColor="2E4A5C",floor="Slate",weakness="ranged",stances={"melee","magic"},stanceEvery=2,enrage=180,duration=300,
+		mechanic="Prayer switching",
+		blurb="A vault-sentry that trades fang and glyph every second swing. Keep your Ward in step with it.",
+		mechanics={"Stance switch every 2 attacks: Ward of Fangs / Ward of Glyphs","Unsealed (50%): all three styles","Fang Lunge and Watcher's Gaze telegraphs"},
+		phases={
+			{at=1,name="Watchful",rotation={"fang","gaze"},interval=7},
+			{at=0.5,name="Unsealed",stances={"melee","magic","ranged"},rotation={"fang","gaze","fang"},interval=5.5},
+		},
+		attacks={fang=attack("disc","Fang Lunge",{radius=7,windup=1.8,mult=2.0}),gaze=attack("ring","Watcher's Gaze",{radius=11,windup=2.2,mult=2.0})}},
+	Siltmother={name="The Siltmother",short="Siltmother",roomName="Silt Nursery",level=70,hp=100000,damage=280,defense=180,xp=4000,speed=12,
+		color="8C7A5B",body="crab",arenaColor="3E3A2E",floor="Sand",weakness="magic",stances={"melee"},stanceEvery=99,enrage=180,duration=300,
+		mechanic="Brood ward",
+		blurb="A crab-matriarch buried in silt. Her siltlings shield her: clear them, then strike.",
+		mechanics={"Brood ward: Siltlings shield her (65% less damage) until slain","Silt Spit and Silt Burst telegraphs"},
+		phases={
+			{at=1,name="Brooding",rotation={"brood","spit","burst"},interval=7},
+			{at=0.5,name="Spawning",rotation={"spit","brood","burst","spit"},interval=5.5},
+		},
+		attacks={brood=attack("adds","Silt Brood",{add="Siltling",count=4,radius=13}),spit=attack("disc","Silt Spit",{radius=7,windup=1.8,mult=2.0}),
+			burst=attack("ring","Silt Burst",{radius=11,windup=2.2,mult=2.2})}},
+	Coralglass={name="Coralglass Warden",short="Coralglass",roomName="Coralglass Atrium",level=74,hp=115000,damage=300,defense=210,xp=4600,speed=11,
+		color="E58FB0",body="colossus",arenaColor="4A3446",floor="Glass",weakness="melee",stances={"ranged"},stanceEvery=99,enrage=200,duration=300,tiles=true,
+		mechanic="Positional lattice",
+		blurb="A warden grown from living coral. The atrium floor charges under its song: read the lattice and step clear.",
+		mechanics={"Reef Lattice: charged tiles strike after 2.6 s","Coral Shard telegraph on a member","Ranged stance: Ward of Quills"},
+		phases={
+			{at=1,name="Tidepool",rotation={"lattice","shard"},interval=7.5},
+			{at=0.5,name="Riptide",rotation={"lattice","shard","lattice"},interval=6},
+		},
+		attacks={lattice=attack("tiles","Reef Lattice",{count=10,windup=2.6,mult=2.4}),shard=attack("disc","Coral Shard",{radius=6,windup=1.6,mult=1.8})}},
+	Runebound={name="Runebound Colossus",short="Runebound",roomName="Seal Vault",level=75,hp=120000,damage=320,defense=240,xp=4800,speed=10,
+		color="C9A54A",body="golem",arenaColor="4A3E22",floor="Basalt",weakness="melee",stances={"magic","ranged"},stanceEvery=3,enrage=200,duration=300,
+		mechanic="Ordered seals",
+		blurb="A colossus chained by three tide seals. It cannot be harmed until seals I, II and III break, in order.",
+		mechanics={"Tide Seals: immune until seals I, II, III fall in order","Stance switch every 3 attacks: Ward of Glyphs / Ward of Quills","Vault Quake and Rune Bolt telegraphs"},
+		phases={
+			{at=1,name="Bound",rotation={"seals","quake","bolt"},interval=7},
+			{at=0.5,name="Unbound",rotation={"quake","seals","bolt","quake"},interval=6},
+		},
+		attacks={seals=attack("sigils","Tide Seals",{add="TideSeal",count=3,radius=16}),quake=attack("ring","Vault Quake",{radius=12,windup=2.2,mult=2.2}),
+			bolt=attack("disc","Rune Bolt",{radius=7,windup=1.7,mult=2.0})}},
+	Undine={name="Wailing Undine",short="Undine",roomName="Lament Pool",level=72,hp=105000,damage=290,defense=190,xp=4200,speed=13,
+		color="7FD6C8",body="wraith",arenaColor="24403E",floor="Slate",weakness="ranged",stances={"magic"},stanceEvery=99,enrage=180,duration=300,
+		mechanic="Safe zone",
+		blurb="Her lament floods the pool. When she draws breath, only the calm water beside her is safe.",
+		mechanics={"Drowning Lament: only beside her is safe","Wail ring and Brine Spray telegraphs","Magic stance: Ward of Glyphs"},
+		phases={
+			{at=1,name="Lament",rotation={"lament","wail"},interval=8},
+			{at=0.5,name="Dirge",rotation={"lament","wail","lament","spray"},interval=6},
+		},
+		attacks={lament=attack("safe","Drowning Lament",{radius=9,windup=3.0,mult=2.6}),wail=attack("ring","Wail",{radius=12,windup=2.2,mult=2.2}),
+			spray=attack("disc","Brine Spray",{radius=6,windup=1.6,mult=1.8})}},
+	Shoalrunner={name="Shoalrunner",short="Shoalrunner",roomName="Shoal Run",level=70,hp=100000,damage=260,defense=170,xp=4000,speed=18,
+		color="4F8FBF",body="lurker",arenaColor="1E3448",floor="Slate",weakness="magic",stances={"melee","ranged"},stanceEvery=4,enrage=150,duration=300,
+		mechanic="Spread out",
+		blurb="A fast hunter that hurls torrents at whoever stands closest together. Spread out, keep moving.",
+		mechanics={"Torrent: rapid telegraphs on members (spread out)","Stance switch every 4 attacks","Early enrage (2:30)"},
+		phases={
+			{at=1,name="Hunting",rotation={"torrent","torrent","surge"},interval=5},
+			{at=0.5,name="Frenzy",rotation={"torrent","surge","torrent","torrent"},interval=4},
+		},
+		attacks={torrent=attack("disc","Torrent",{radius=6,windup=1.5,mult=1.8}),surge=attack("ring","Shoal Surge",{radius=10,windup=2.0,mult=2.0})}},
+	Thalvorn={name="Thalvorn, the Undertide Regent",short="Thalvorn",roomName="Drowned Throne",level=90,hp=320000,damage=400,defense=300,xp=12800,speed=13,
+		color="3FB8AF",body="serpent",arenaColor="12302E",floor="Slate",weakness="magic",stances={"melee","ranged","magic"},stanceEvery=3,enrage=420,duration=600,
+		tiles=true,boss=true,mechanic="Final boss",
+		blurb="The Regent of the drowned vaults. Match his stances with your Wards, break his anchors in order, and keep to the calm water when the crown drowns.",
+		mechanics={"Stance cycle melee → ranged → magic every 3 attacks (all three Wards)","Undertow (66%): Tide Anchors I–III (ordered, immune) and the Undertow Lattice",
+			"Drowning Crown (33%): Drowned Thralls ward him; Maelstrom: only beside him is safe","Weakness turns magic → ranged → melee by phase"},
+		phases={
+			{at=1,name="Regent's Court",weakness="magic",rotation={"crash","tide","crash"},interval=7},
+			{at=0.66,name="Undertow",weakness="ranged",rotation={"anchors","lattice","crash","lattice"},interval=6},
+			{at=0.33,name="Drowning Crown",weakness="melee",rotation={"thralls","maelstrom","lattice","crash"},interval=5},
+		},
+		attacks={crash=attack("disc","Crown Crash",{radius=7,windup=1.7,mult=2.0}),tide=attack("ring","Regal Tide",{radius=12,windup=2.2,mult=2.4}),
+			lattice=attack("tiles","Undertow Lattice",{count=12,windup=2.5,mult=2.5}),maelstrom=attack("safe","Maelstrom",{radius=9,windup=3.0,mult=2.8}),
+			anchors=attack("sigils","Tide Anchors",{add="TideAnchor",count=3,radius=16}),thralls=attack("adds","Drowned Thralls",{add="DrownedThrall",count=4,radius=13})}},
+}
+RD.Adds = {
+	Siltling={name="Siltling",level=60,hp=6000,damage=120,defense=60,xp=120,speed=15,color="B8A37A",style="melee",body="mite"},
+	TideSeal={name="Tide Seal",level=70,hp=20000,damage=0,defense=150,xp=300,speed=0,color="E8C76A",style="magic",body="wisp",stationary=true},
+	TideAnchor={name="Tide Anchor",level=88,hp=30000,damage=0,defense=200,xp=450,speed=0,color="6FE3D6",style="magic",body="wisp",stationary=true},
+	DrownedThrall={name="Drowned Thrall",level=80,hp=9000,damage=160,defense=80,xp=180,speed=14,color="4A7A78",style="melee",body="lurker"},
+}
+for id, def in pairs(RD.Encounters) do
+	def.id, def.lair, def.raid = id, true, RD.ID
+	def.attackStyle = def.stances[1]
+	def.weakness, def.defenceStyle = LR.triangle(def.weakness)
+	def.coins, def.drops = 0, {}
+	for k, a in pairs(def.attacks) do a.id = k end
+end
+for id, def in pairs(RD.Adds) do
+	def.id, def.lair, def.lairAdd, def.raid = id, true, true, RD.ID
+	def.attackStyle, def.weakness, def.defenceStyle = def.style, CS.beatenBy[def.style], CS.beats[def.style]
+	def.coins, def.drops = 0, {}
+end
+-- Lair adds resolve raid adds too (combat's lrRegisterAdd / spawnAdds read
+-- LR.Adds[id]); pairs(LR.Adds) still sees the lair adds only.
+setmetatable(LR.Adds, {__index = RD.Adds})
+-- Lookups by id reach raid encounters and adds (damage XP); pairs() never sees them.
+do
+	local mt = getmetatable(Data.Monsters)
+	local prior = mt and mt.__index
+	setmetatable(Data.Monsters, {__index = function(t, id)
+		local v
+		if type(prior) == "function" then v = prior(t, id) elseif type(prior) == "table" then v = prior[id] end
+		if v ~= nil then return v end
+		return rawget(RD.Encounters, id) or rawget(RD.Adds, id)
+	end})
+end
+function RD.encounter(id) return type(id) == "string" and rawget(RD.Encounters, id) or nil end
+-- Scaling by party size (members inside at the encounter's rise) and mode.
+function RD.partyHp(def, n, challenge)
+	n = math.clamp(math.floor(tonumber(n) or 1), 1, RD.MAX_PARTY)
+	return math.floor(def.hp * (1 + RD.PARTY_HP * (n - 1)) * (if challenge then RD.Challenge.hp else 1))
+end
+function RD.partyDamage(def, n, challenge)
+	n = math.clamp(math.floor(tonumber(n) or 1), 1, RD.MAX_PARTY)
+	return math.floor(def.damage * (1 + RD.PARTY_DAMAGE * (n - 1)) * (if challenge then RD.Challenge.damage else 1))
+end
+-- A per-fight copy of an encounter with its damage scaled (combat reads
+-- def.damage again at enrage, so the scaling must live on the def).
+function RD.scaledDef(id, n, challenge)
+	local def = RD.encounter(id)
+	if not def then return nil end
+	local copy = table.clone(def)
+	copy.damage = RD.partyDamage(def, n, challenge)
+	copy.base = def
+	return copy
+end
+
+-- Puzzle and resource rooms ----------------------------------------------------
+RD.PuzzleOrder = {"Glyphs","Seals","Valves"}
+RD.Puzzles = {
+	Glyphs={name="Glyph Concord",color="B48CFF",arenaColor="2A2240",
+		blurb="Six glyph plates and a lectern that hums a sequence. Press the plates in its order; a wrong glyph restarts the chant.",
+		mechanic="Sequence"},
+	Seals={name="Weighted Seals",color="E8C76A",arenaColor="3A3220",
+		blurb="Lit seals must all be held down at once for a few heartbeats, three times over. Stand together, apart.",
+		mechanic="Coordination"},
+	Valves={name="Tide Valves",color="6FE3D6",arenaColor="183A3A",
+		blurb="Five valves in a ring. Turning one also turns its two neighbours. Open them all to drain the chamber.",
+		mechanic="Logic"},
+}
+RD.GLYPHS = {"Tide","Pearl","Gale","Ember","Star","Moon"}
+RD.SEAL_PLATES, RD.SEAL_ROUNDS, RD.SEAL_HOLD, RD.SEAL_RADIUS = 6, 3, 3, 3.2
+RD.VALVES = 5
+RD.ResourceOrder = {"Grotto","Shallows"}
+RD.Resources = {
+	Grotto={name="Moonmoss Grotto",color="9FE6A0",arenaColor="1E3A2A",
+		blurb="A glowing grotto of moonmoss and gloomcaps. Gather, then brew draughts and cook stew for the Regent's throne room.",
+		nodes={
+			{id="Moonmoss",name="Moonmoss tuft",verb="Pick",skill="Farming",xp=45,shape="Moonbloom",color="9FE6A0",makes="potion"},
+			{id="Gloomcap",name="Gloomcap cluster",verb="Pick",skill="Farming",xp=45,shape="Glowshroom",color="B48CFF",makes="food"},
+		},
+		stations={
+			{id="Cauldron",name="Vault cauldron",verb="Brew",skill="Alchemy",xp=70,shape="Cauldron",makes="potion"},
+			{id="Hearth",name="Vault hearth",verb="Cook",skill="Cooking",xp=70,shape="Hearth",makes="food"},
+		},
+		supplies={potion="Moonmoss Draught",food="Gloomcap Stew"}},
+	Shallows={name="Glowfin Shallows",color="7FD6E8",arenaColor="183048",
+		blurb="Still, shining shallows. Net glowfin and pull reedroot, then cook broth and brew tonic before the throne room.",
+		nodes={
+			{id="Glowfin",name="Glowfin shoal",verb="Net",skill="Fishing",xp=50,shape="FishingBuoy",color="7FD6E8",makes="food"},
+			{id="Reedroot",name="Reedroot bed",verb="Pull",skill="Farming",xp=45,shape="CropSheaf",color="C9B458",makes="potion"},
+		},
+		stations={
+			{id="Hearth",name="Vault hearth",verb="Cook",skill="Cooking",xp=70,shape="Hearth",makes="food"},
+			{id="Cauldron",name="Vault cauldron",verb="Brew",skill="Alchemy",xp=70,shape="Cauldron",makes="potion"},
+		},
+		supplies={food="Glowfin Broth",potion="Reedroot Tonic"}},
+}
+RD.NODES_PER_KIND = 3
+-- Supplies are a shared team pool used from the raid HUD (verb raidUse):
+-- food heals, potions heal a little and raise a ward (damage x RD.WARD_MULT).
+RD.Supplies = {food={heal=0.45,label="Food"},potion={heal=0.2,ward=20,label="Draught"}}
+function RD.quota(n) return 3 + 2 * math.clamp(math.floor(tonumber(n) or 1), 1, RD.MAX_PARTY) end
+function RD.nodeUses(n) return 3 + math.clamp(math.floor(tonumber(n) or 1), 1, RD.MAX_PARTY) end
+function RD.glyphLength(n, challenge)
+	n = math.clamp(math.floor(tonumber(n) or 1), 1, RD.MAX_PARTY)
+	return 4 + (if n >= 5 then 1 else 0) + (if challenge then 1 else 0)
+end
+function RD.sealNeed(n) return math.clamp(math.floor(tonumber(n) or 1), 2, 4) end
+
+-- Deterministic generators (seeded per run) ----------------------------------
+local function lcg(x) return (x * 48271) % 2147483647 end
+local function stream(seed, salt)
+	local x = (math.floor(math.abs(tonumber(seed) or 1)) * 7919 + (salt or 0) * 104729) % 2147483646 + 1
+	return function(n)
+		x = lcg(x)
+		return x % n + 1
+	end
+end
+RD.stream = stream
+-- Room sequence: two distinct combat rooms, one puzzle, one resource room in a
+-- seeded order, then the Regent's throne room.
+function RD.sequence(seed)
+	local pick = stream(seed, 1)
+	local pool = table.clone(RD.CombatOrder)
+	local a = table.remove(pool, pick(#pool))
+	local b = table.remove(pool, pick(#pool))
+	local middle = {{kind="combat",id=a},{kind="combat",id=b},
+		{kind="puzzle",id=RD.PuzzleOrder[pick(#RD.PuzzleOrder)]},{kind="resource",id=RD.ResourceOrder[pick(#RD.ResourceOrder)]}}
+	for i = #middle, 2, -1 do
+		local j = pick(i)
+		middle[i], middle[j] = middle[j], middle[i]
+	end
+	table.insert(middle, {kind="boss",id=RD.BOSS})
+	return middle
+end
+function RD.roomName(room)
+	room = tab(room)
+	if room.kind == "combat" or room.kind == "boss" then local d = RD.encounter(room.id); return d and d.roomName or "?" end
+	if room.kind == "puzzle" then local d = RD.Puzzles[room.id]; return d and d.name or "?" end
+	if room.kind == "resource" then local d = RD.Resources[room.id]; return d and d.name or "?" end
+	return "?"
+end
+-- Glyph Concord: n glyph indices (1..#GLYPHS), never the same twice in a row.
+function RD.glyphSequence(seed, n)
+	local pick = stream(seed, 2)
+	local out = {}
+	for i = 1, math.clamp(math.floor(tonumber(n) or 4), 1, 12) do
+		local g = pick(#RD.GLYPHS)
+		if i > 1 and g == out[i - 1] then g = g % #RD.GLYPHS + 1 end
+		out[i] = g
+	end
+	return out
+end
+-- Weighted Seals: k distinct plates (1..SEAL_PLATES) for a round, sorted.
+function RD.sealPattern(seed, round, k)
+	local pick = stream(seed, 10 + (tonumber(round) or 1))
+	local plates = {}
+	for i = 1, RD.SEAL_PLATES do plates[i] = i end
+	for i = RD.SEAL_PLATES, 2, -1 do
+		local j = pick(i)
+		plates[i], plates[j] = plates[j], plates[i]
+	end
+	local out = {}
+	for i = 1, math.clamp(math.floor(tonumber(k) or 2), 1, RD.SEAL_PLATES) do out[i] = plates[i] end
+	table.sort(out)
+	return out
+end
+-- Tide Valves: a ring where turning valve i flips i and both neighbours
+-- (state[i] = true when open). The start applies 2-3 distinct turns to an
+-- all-open ring; with five valves the turn matrix is invertible over GF(2),
+-- so the start is never already solved and is always solvable.
+function RD.valveToggle(state, i)
+	local n = RD.VALVES
+	i = math.floor(tonumber(i) or 0)
+	if i < 1 or i > n then return state end
+	for _, k in ipairs({(i - 2) % n + 1, i, i % n + 1}) do state[k] = not state[k] end
+	return state
+end
+function RD.valveStart(seed)
+	local pick = stream(seed, 3)
+	local state = {}
+	for i = 1, RD.VALVES do state[i] = true end
+	local turns = 2 + pick(2) - 1
+	local used = {}
+	while turns > 0 do
+		local i = pick(RD.VALVES)
+		if not used[i] then used[i] = true; RD.valveToggle(state, i); turns -= 1 end
+	end
+	return state
+end
+function RD.valvesOpen(state)
+	local n = 0
+	for i = 1, RD.VALVES do if state[i] then n += 1 end end
+	return n
+end
+-- Fewest turns that open every valve (for hints and tests): brute force over 2^5.
+function RD.valveSolution(state)
+	local best
+	for mask = 0, 2 ^ RD.VALVES - 1 do
+		local s = table.clone(state)
+		local turns = {}
+		for i = 1, RD.VALVES do
+			if bit32.band(mask, bit32.lshift(1, i - 1)) ~= 0 then RD.valveToggle(s, i); table.insert(turns, i) end
+		end
+		if RD.valvesOpen(s) == RD.VALVES and (not best or #turns < #best) then best = turns end
+	end
+	return best
+end
+
+-- Points, credit, loot --------------------------------------------------------
+function RD.pointMult(challenge) return if challenge then RD.Points.challenge else 1 end
+-- A combat room's pool split by damage share (0..1).
+function RD.damagePoints(kind, share, n, challenge)
+	share = math.clamp(tonumber(share) or 0, 0, 1)
+	if share ~= share then share = 0 end
+	n = math.clamp(math.floor(tonumber(n) or 1), 1, RD.MAX_PARTY)
+	local per = if kind == "boss" then RD.Points.boss else RD.Points.combat
+	return math.floor(per * n * share * RD.pointMult(challenge))
+end
+function RD.deathLoss(points) return math.floor(whole(points) * RD.Points.death) end
+-- The most personal points one run can pay (bounds a forged or bugged payload).
+function RD.maxPersonal(n, challenge)
+	n = math.clamp(math.floor(tonumber(n) or 1), 1, RD.MAX_PARTY)
+	local P = RD.Points
+	local raw = (2 * P.combat + P.boss) * n + 5 * P.clear + 12 * P.puzzleStep + P.resourceCap
+	return math.floor(raw * RD.pointMult(challenge))
+end
+function RD.uniqueChance(team)
+	return math.clamp(whole(team) / (RD.POINTS_PER_PERCENT * 100), 0, RD.UNIQUE_CAP)
+end
+-- Credit for one member: c = {points, team, party (members being judged),
+-- present, removed, lastAction, now, contribution?, teamContribution?}.
+-- QC M3: with `contribution` (damage, puzzle and resource points: no flat
+-- room-clear points) the floor compares it with an equal share of the
+-- judged members' `teamContribution`, so clears plus one hit never qualify.
+-- Returns ok, reason.
+function RD.credit(c)
+	if type(c) ~= "table" then return false, "member" end
+	if c.removed then return false, "removed" end
+	if c.present ~= true then return false, "away" end
+	local points = whole(c.points)
+	if points <= 0 then return false, "points" end
+	local party = math.clamp(math.floor(tonumber(c.party) or 1), 1, RD.MAX_PARTY)
+	local mine, all = points, whole(c.team)
+	if c.contribution ~= nil then mine, all = whole(c.contribution), whole(c.teamContribution) end
+	if party > 1 and mine < RD.MIN_SHARE * all / party then return false, "share" end
+	if not c.lastAction or not c.now or c.now - c.lastAction > RD.RECENT_SECONDS then return false, "idle" end
+	return true
+end
+-- Unique ("purple") recipient: weighted by personal points (r in [0, 1)).
+-- entries = {{uid, points}...} in a stable order.
+function RD.pickRecipient(entries, r)
+	local total = 0
+	for _, e in ipairs(entries) do total += whole(e.points) end
+	if total <= 0 then return nil end
+	local at = math.clamp(tonumber(r) or 0, 0, 0.999999) * total
+	for _, e in ipairs(entries) do
+		at -= whole(e.points)
+		if at < 0 then return e.uid end
+	end
+	return entries[#entries].uid
+end
+-- Uniques (each below its endgame rival per the lair rule, docs §25) -----------
+local function unique(id, def)
+	def.raidUnique, def.logUnique = RD.ID, "Raids"
+	return item(id, def)
+end
+RD.UniqueOrder = {"RegentsPearl","TidewardenVisage","TidewardenCuirass","RegentsTidecleaver","UndertowWarbow","DrownlightScepter","TidewhelpPet"}
+-- Weights out of 100 (a unique roll picks one).
+RD.UniqueWeights = {RegentsPearl=24,TidewardenVisage=19,TidewardenCuirass=15,RegentsTidecleaver=12,UndertowWarbow=12,DrownlightScepter=12,TidewhelpPet=6}
+RD.Rivals = {
+	RegentsTidecleaver="Crownbreaker",UndertowWarbow="Duskpiercer",DrownlightScepter="RiftcrownStaff",
+	TidewardenVisage="SovereignHelm",TidewardenCuirass="SovereignChestplate",RegentsPearl="NyxwingCharm",
+}
+RD.UNIQUE_MAX = LR.UNIQUE_MAX
+unique("RegentsTidecleaver",{name="Regent's Tidecleaver",kind="weapon",slot="weapon",tier=9,rarity="Legendary",color="3FB8AF",
+	stats={damage=300,strength=140,critChance=15,critDamage=92},requires={Combat=62},value=24000,
+	special={id="Riptide",name="Riptide",adds=0.35},
+	description="Melee. The Undertide Regent's own tide-blade, still dripping. Riptide: +35% damage to a boss's adds, seals and anchors (lair, raid and world boss add waves). Requires Combat 62. Raid unique."})
+unique("UndertowWarbow",{name="Undertow Warbow",kind="weapon",slot="weapon",style="ranged",tier=9,rarity="Legendary",color="4F8FBF",
+	stats={critDamage=42,rangedAccuracy=76,rangedStrength=17},ranged={power=250,speed=1.0,range=CS.maxRange,maxAmmoTier=7},requires={Ranged=62},value=24000,
+	special={id="Undertow",name="Undertow",raid=0.2},
+	description="Ranged weapon. Strung with drowned sinew from the vault's deepest hall. Undertow: +20% damage to the Undertide Vaults' guardians and the Regent. "..CS.maxRange.." stud reach. Arrows up to tier 7. Requires Ranged 62. Raid unique."})
+unique("DrownlightScepter",{name="Drownlight Scepter",kind="weapon",slot="weapon",style="magic",tier=8,rarity="Legendary",color="7FD6E8",
+	stats={intelligence=150,abilityDamage=5},magic={power=160,speed=1.2,elements={"Tide","Gale","Stone"}},requires={Magic=55},value=20000,
+	special={id="Drownlight",name="Drownlight",warded=0.2},
+	description="Magic weapon. A lamp the Regent kept lit beneath the sea. Drownlight: +20% spell damage to a boss while a ward, brood, seal or add wave shields it. Supplies unlimited Tide, Gale, Stone glyphs. Requires Magic 55. Raid unique."})
+-- Lead decision (QC): each raid weapon carries an original special that gives
+-- it a niche without lifting it on general content (verify-raid models each
+-- against its rival, like Hollow Sunder in verify-bosses):
+--   Riptide (Tidecleaver, melee): x(1 + adds) against a boss's adds / seals /
+--     anchors (lair, raid, world boss add waves; never slayer superiors).
+--   Undertow (Warbow, ranged): x(1 + raid) against raid encounters (not adds).
+--   Drownlight (Scepter, magic): x(1 + warded) against a lair / raid / world
+--     boss while its adds or seals live.
+-- target = {add, boss, raid, warded} (combat.server.lua's L.tideMult builds it
+-- from the record). Ordinary monsters and every other weapon: 1.
+function RD.tideMult(weaponId, target)
+	local def = type(weaponId) == "string" and Data.Items[weaponId]
+	local sp = def and def.raidUnique and def.special
+	if type(sp) ~= "table" or type(target) ~= "table" then return 1 end
+	if target.add == true then return if type(sp.adds) == "number" then 1 + sp.adds else 1 end
+	if type(sp.raid) == "number" and target.raid == true then return 1 + sp.raid end
+	if type(sp.warded) == "number" and target.boss == true and target.warded == true then return 1 + sp.warded end
+	return 1
+end
+unique("TidewardenVisage",{name="Tidewarden Visage",kind="armor",slot="helmet",tier=8,rarity="Legendary",color="3FB8AF",
+	stats={defense=183,health=163,strength=7,critDamage=7},requires={Combat=55},value=16000,
+	description="Helm. A drowned warden's coral-crusted visage. Requires Combat 55. Raid unique."})
+unique("TidewardenCuirass",{name="Tidewarden Cuirass",kind="armor",slot="chest",tier=8,rarity="Legendary",color="3FB8AF",
+	stats={defense=306,health=272,strength=12,critDamage=12},requires={Combat=55},value=26000,
+	description="Chestplate. Scale and pearl, forged under the tide. Requires Combat 55. Raid unique."})
+unique("RegentsPearl",{name="Regent's Pearl",kind="accessory",rarity="Mythic",color=Rar.Mythic.color,stats={intelligence=48,rangedStrength=16,magicFind=5},
+	value=40*Rar.Mythic.rank^2,description="Accessory. Magical Power "..Rar.Mythic.power..". The Regent's crown pearl. Only the Undertide Vaults hold one."})
+-- Challenge Mode cosmetic kit (no stats; a trophy and Collection Log entry).
+unique("GildedTideKit",{name="Gilded Tide Kit",kind="material",rarity="Mythic",color="FFD86B",value=1,cosmetic=true,
+	description="Cosmetic kit. Gilded trim from a Challenge Mode clear of the Undertide Vaults under par. No stats; a trophy for the Raid Log."})
+-- Raid pet (Data.Pets species + Pet depth abilities and look).
+do
+	local PD = Data.PetDepth
+	local list = {{name="Tidal Hunger",kind="xp",skills={"Combat"},per=0.15,rarity="Common"},{name="Pearl Sense",kind="stat",stat="magicFind",per=0.05,rarity="Rare"},
+		{name="Undertow Shell",kind="stat",stat="defense",per=0.6,rarity="Legendary",level=40}}
+	local pet = {id="Tidewhelp",name="Tidewhelp",skill="Combat",rarity="Legendary",color="3FB8AF",perLevel={strength=0.5,health=1,magicFind=0.03}}
+	table.insert(Data.Pets, pet)
+	Data.PetById.Tidewhelp = pet
+	for i, a in ipairs(list) do a.index = i; a.id = a.name:gsub("[^%w]", "") end
+	if PD then
+		PD.Abilities.Tidewhelp = list
+		PD.Looks.Tidewhelp = {form="float",accent="C8FFF6"}
+		pet.ability = list[1].name..": up to "..PD.abilityText(list[1], PD.abilityValue(list[1], Data.PET_MAX_LEVEL, PD.MAX_RARITY))
+	else
+		pet.ability = list[1].name
+	end
+	pet.abilityNames = {list[1].name, list[2].name, list[3].name}
+	unique("TidewhelpPet",{name="Tidewhelp Pet",kind="pet",pet="Tidewhelp",rarity="Legendary",color="3FB8AF",value=200*Rar.Legendary.rank^2,
+		description="Summon from your pet menu. Abilities: "..table.concat(pet.abilityNames, ", ")..". The Undertide Vaults' raid pet."})
+end
+function RD.isUnique(id) local d = if type(id) == "string" then Data.Items[id] else nil; return type(d) == "table" and d.raidUnique ~= nil end
+function RD.pickUnique(r)
+	local at = math.clamp(tonumber(r) or 0, 0, 0.999999) * 100
+	for _, id in ipairs(RD.UniqueOrder) do
+		at -= RD.UniqueWeights[id]
+		if at < 0 then return id end
+	end
+	return RD.UniqueOrder[#RD.UniqueOrder]
+end
+-- Regular loot: one roll per RD.LOOT_POINTS personal points (at most
+-- RD.MAX_ROLLS); each roll picks a row by weight. rng() in [0, 1).
+RD.Loot = {
+	{item="VoidEssence",weight=30,min=3,max=6},{item="CrownShard",weight=30,min=4,max=8},{item="GolemCore",weight=20,min=2,max=4},
+	{item="Stormglass",weight=12,min=1,max=3},{item="StarFragment",weight=6,min=1,max=1},{item="SovereignEssence",weight=2,min=1,max=1},
+}
+function RD.rolls(points) return math.min(RD.MAX_ROLLS, whole(points) // RD.LOOT_POINTS) end
+function RD.regularLoot(points, rng)
+	local total = 0
+	for _, row in ipairs(RD.Loot) do total += row.weight end
+	local out = {}
+	for _ = 1, RD.rolls(points) do
+		local at = math.clamp(tonumber(rng()) or 0, 0, 0.999999) * total
+		for _, row in ipairs(RD.Loot) do
+			at -= row.weight
+			if at < 0 then
+				local n = row.min + math.floor(math.clamp(tonumber(rng()) or 0, 0, 0.999999) * (row.max - row.min + 1))
+				out[row.item] = (out[row.item] or 0) + n
+				break
+			end
+		end
+	end
+	return out
+end
+function RD.rollValue()
+	local total, v = 0, 0
+	for _, row in ipairs(RD.Loot) do total += row.weight end
+	for _, row in ipairs(RD.Loot) do v += row.weight / total * (row.min + row.max) / 2 * (Data.Items[row.item].value or 0) end
+	return v
+end
+function RD.coins(points) return math.floor(whole(points) * RD.COINS_PER_POINT) end
+
+-- Titles (Raid Log): earned once, worn with verb raidTitle.
+RD.Titles = {
+	{id="Vaultdiver",text="Vaultdiver",hint="Clear the Undertide Vaults.",color="6FE3D6"},
+	{id="UndertideChampion",text="Undertide Champion",hint="Clear the Undertide Vaults in Challenge Mode.",color="FFD86B"},
+	{id="RegentsBane",text="Regent's Bane",hint="Clear Challenge Mode under par.",color="FF7AD9"},
+}
+RD.TitleById = {}
+for _, t in ipairs(RD.Titles) do RD.TitleById[t.id] = t end
+
+-- Journal: p.raids = {kc, cm, fails, deaths, pb = {[party] = s}, pbCm = {[party] = s},
+-- best = {points, team}, got = {[item] = n}, log = {{t, s, n, cm, pts, team, u}}, titles = {[id] = true},
+-- title = id | "", runs = {run ids}}.
+function RD.migrate(t)
+	t = tab(t)
+	local out = {kc=whole(t.kc, RD.MAX_KC),cm=whole(t.cm, RD.MAX_KC),fails=whole(t.fails, RD.MAX_KC),deaths=whole(t.deaths, RD.MAX_KC),
+		pb={},pbCm={},best={points=whole(tab(t.best).points, 1e7),team=whole(tab(t.best).team, 1e8)},got={},log={},titles={},title="",runs={}}
+	for _, key in ipairs({"pb","pbCm"}) do
+		for n, s in pairs(tab(t[key])) do
+			local party = tonumber(n)
+			local secs = whole(s, 86400)
+			if party and party % 1 == 0 and party >= RD.MIN_PARTY and party <= RD.MAX_PARTY and secs >= 1 then out[key][tostring(party)] = secs end
+		end
+	end
+	for id, n in pairs(tab(t.got)) do
+		local v = RD.isUnique(id) and whole(n, RD.MAX_KC) or 0
+		if v > 0 then out.got[id] = v end
+	end
+	for _, e in ipairs(tab(t.log)) do
+		if type(e) == "table" and #out.log < RD.KEEP_LOG then
+			table.insert(out.log, {t=whole(e.t, 4e9),s=whole(e.s, 86400),n=math.clamp(whole(e.n), 1, RD.MAX_PARTY),cm=e.cm == true,
+				pts=whole(e.pts, 1e7),team=whole(e.team, 1e8),u=if RD.isUnique(e.u) then e.u else nil})
+		end
+	end
+	for id, v in pairs(tab(t.titles)) do if RD.TitleById[id] and v == true then out.titles[id] = true end end
+	if type(t.title) == "string" and out.titles[t.title] then out.title = t.title end
+	for _, id in ipairs(tab(t.runs)) do
+		if type(id) == "string" and #id <= 64 and #out.runs < RD.RUN_MEMORY then table.insert(out.runs, id) end
+	end
+	return out
+end
+-- One credited clear. run = {id, seconds, party, points, team, challenge, underPar, unique, now}.
+-- Returns {kc, pb, newTitles = {id...}}.
+function RD.record(state, run)
+	local seconds = math.max(1, whole(run.seconds, 86400))
+	local party = math.clamp(whole(run.party), 1, RD.MAX_PARTY)
+	local key = tostring(party)
+	state.kc = math.min(RD.MAX_KC, state.kc + 1)
+	local out = {kc=state.kc,pb=false,newTitles={}}
+	local book = if run.challenge then state.pbCm else state.pb
+	if run.challenge then state.cm = math.min(RD.MAX_KC, state.cm + 1) end
+	if party >= RD.MIN_PARTY and (not book[key] or seconds < book[key]) then book[key] = seconds; out.pb = true end
+	state.best.points = math.max(state.best.points, whole(run.points, 1e7))
+	state.best.team = math.max(state.best.team, whole(run.team, 1e8))
+	if RD.isUnique(run.unique) then state.got[run.unique] = math.min(RD.MAX_KC, (state.got[run.unique] or 0) + 1) end
+	if run.kit then state.got.GildedTideKit = math.min(RD.MAX_KC, (state.got.GildedTideKit or 0) + 1) end
+	table.insert(state.log, 1, {t=whole(run.now, 4e9),s=seconds,n=party,cm=run.challenge == true,pts=whole(run.points, 1e7),team=whole(run.team, 1e8),
+		u=if RD.isUnique(run.unique) then run.unique else nil})
+	while #state.log > RD.KEEP_LOG do table.remove(state.log) end
+	local function earn(id) if not state.titles[id] then state.titles[id] = true; table.insert(out.newTitles, id) end end
+	earn("Vaultdiver")
+	if run.challenge then earn("UndertideChampion") end
+	if run.challenge and run.underPar then earn("RegentsBane") end
+	table.insert(state.runs, 1, run.id)
+	while #state.runs > RD.RUN_MEMORY do table.remove(state.runs) end
+	return out
+end
+function RD.seen(state, id)
+	for _, v in ipairs(tab(tab(state).runs)) do if v == id then return true end end
+	return false
+end
+function RD.formatTime(seconds) return LR.formatTime(seconds) end
+-- Entry check (journal side). info = {combat, region (allowed bool), busy}.
+function RD.canJoin(info)
+	if type(info) ~= "table" then return false, "invalid" end
+	if (tonumber(info.combat) or 0) < RD.COMBAT then return false, "level" end
+	if info.region == false then return false, "region" end
+	if info.busy then return false, "busy" end
+	return true
+end
+
+-- Balance model (printed and bounded by verify-raid.luau) ----------------------
+-- Per member per hour for a party of n at Combat RD.COMBAT. DPS = the Lairs
+-- model (LR.dpsAt: the best open monster's effective health / 8 s) with the
+-- weakness used, at MODEL_UPTIME (mechanics, prayer swaps, adds). A combat
+-- room = its scaled effective health (plus one wave of adds per phase) /
+-- party DPS; the puzzle takes MODEL_PUZZLE s; the resource room the quota's
+-- gathers and crafts spread over the party plus MODEL_WALK s; each room adds
+-- ROOM_GAP + ADVANCE_SECONDS; a run adds MODEL_OVERHEAD (lobby, portal,
+-- return). Coins/h = the raid coin pay + the merchant value of the regular
+-- loot; the uniques' value is reported separately (lairs' lead decision).
+-- Points assume an equal share and a clean run (no deaths or mistakes).
+RD.MODEL_UPTIME, RD.MODEL_PUZZLE, RD.MODEL_WALK, RD.MODEL_OVERHEAD = 0.7, 80, 25, 90
+RD.MODEL_STEPS = 5 -- puzzle steps credited in a typical run
+function RD.encounterSeconds(id, n, challenge, level)
+	local def = RD.encounter(id)
+	local dps = LR.dpsAt(level or RD.COMBAT) * (1 + CS.weaknessBonus) * RD.MODEL_UPTIME * n
+	local addHp = 0
+	for _, a in pairs(def.attacks) do
+		if a.kind == "adds" or a.kind == "sigils" then
+			local add = RD.Adds[a.add]
+			addHp += #def.phases * a.count * add.hp * (1 + add.defense / 100) / 2
+		end
+	end
+	return (RD.partyHp(def, n, challenge) * (1 + def.defense / 100) + addHp) / dps
+end
+function RD.model(n, opts)
+	opts = opts or {}
+	n = math.clamp(math.floor(n or 4), 1, RD.MAX_PARTY)
+	local cm = opts.challenge == true
+	local level = opts.level or RD.COMBAT
+	-- Expected combat room time: the average over the pool.
+	local combat, xpCombat = 0, 0
+	for _, id in ipairs(RD.CombatOrder) do
+		combat += RD.encounterSeconds(id, n, cm, level) / #RD.CombatOrder
+		local def = RD.encounter(id)
+		xpCombat += def.xp * RD.partyHp(def, n, cm) / def.hp / n / #RD.CombatOrder
+	end
+	local bossDef = RD.encounter(RD.BOSS)
+	local boss = RD.encounterSeconds(RD.BOSS, n, cm, level)
+	local resource = RD.quota(n) * (RD.RAW_PER_SUPPLY * RD.GATHER_COOLDOWN + 1.5) / n + RD.MODEL_WALK
+	local fights = 2 * combat + boss
+	local run = fights + RD.MODEL_PUZZLE + resource + 5 * (RD.ROOM_GAP + RD.ADVANCE_SECONDS)
+	local seconds = run + RD.MODEL_OVERHEAD
+	local runs = 3600 / seconds
+	local P = RD.Points
+	local quotaShare = RD.quota(n) / n
+	local points = math.floor(((2 * P.combat + P.boss) + 5 * P.clear + RD.MODEL_STEPS * P.puzzleStep / n
+		+ math.min(P.resourceCap, quotaShare * (P.craft + RD.RAW_PER_SUPPLY * P.gather))) * RD.pointMult(cm))
+	local team = points * n
+	local coinsRun = RD.coins(points) + RD.rolls(points) * RD.rollValue()
+	local xpRun = 2 * xpCombat + bossDef.xp * RD.partyHp(bossDef, n, cm) / bossDef.hp / n
+	local uniqueRun = RD.uniqueChance(team) / n
+	local uniqueValue = 0
+	for _, id in ipairs(RD.UniqueOrder) do uniqueValue += RD.UniqueWeights[id] / 100 * (Data.Items[id].value or 0) end
+	local perItemHours = {}
+	for _, id in ipairs(RD.UniqueOrder) do perItemHours[id] = 1 / (uniqueRun * RD.UniqueWeights[id] / 100 * runs) end
+	return {party=n,challenge=cm,run=run,seconds=seconds,runs=runs,fights=fights,boss=boss,combat=combat,resource=resource,
+		points=points,team=team,coins=coinsRun * runs,coinsRun=coinsRun,xp=xpRun * runs,uniqueChance=RD.uniqueChance(team),uniquesPerHour=uniqueRun * runs,
+		uniqueValue=uniqueValue * uniqueRun * runs,petHours=perItemHours.TidewhelpPet,perItemHours=perItemHours}
+end
+-- Challenge Mode par: the modelled clear of the same party size (no lobby overhead).
+function RD.par(n) return math.floor(RD.model(n, {challenge=true}).run) end
+
+-- Collection Log: the Raids tab (after Lairs); uniques carry logUnique = "Raids".
+local CLog = Data.CommissionsLogs
+if CLog and CLog.LogTabs and not CLog.LogTabs.Raids then
+	CLog.LogTabs.Raids = {name="Undertide Vaults",title="Vaultbreaker",coins=50000,color="3FB8AF"}
+	local at = table.find(CLog.LogTabOrder, "Lairs") or table.find(CLog.LogTabOrder, "Bosses")
+	table.insert(CLog.LogTabOrder, if at then at + 1 else #CLog.LogTabOrder + 1, "Raids")
+	CLog.LogRoots.Raids = "Raids"
+end
+-- §31 announcements: a purple drop and a raid title.
+local F = Data.Features
+if F and F.announceText then
+	local announceText = F.announceText
+	function F.announceText(e)
+		if type(e) == "table" and e.kind == "raidUnique" then
+			local d = type(e.item) == "string" and Data.Items[e.item]
+			return {head="RAID UNIQUE", body=(d and d.name or tostring(e.item)) .. "  ·  " .. RD.NAME, color="FF7AD9"}
+		elseif type(e) == "table" and e.kind == "raidTitle" then
+			local t = RD.TitleById[e.title]
+			return {head="RAID TITLE", body=t and t.text or tostring(e.title), color=t and t.color or "6FE3D6"}
+		end
+		return announceText(e)
+	end
+end
+-- §33 goal board: "kills:UndertideVaults:<n>" counts raid clears (p.raids.kc).
+local SY = Data.Systems
+local GL = SY and SY.Goals
+if GL then
+	local parse, measure, bossName, bosses, label = GL.parse, GL.measure, GL.bossName, GL.bosses, GL.label
+	function GL.label(goal)
+		if type(goal) == "table" and goal.k == "kills" and goal.a == RD.ID then return whole(goal.n) .. " " .. RD.NAME .. " clears" end
+		return label(goal)
+	end
+	function GL.parse(spec)
+		if type(spec) == "string" and #spec <= 64 then
+			local k, a, raw = string.match(spec, "^(%a+):(%w+):(%d+)$")
+			if k == "kills" and a == RD.ID then
+				local n = tonumber(raw)
+				if #raw > 9 or string.match(raw, "^0") or not n or n < 1 then return nil, "Choose a whole target." end
+				if n > GL.Kinds.kills.max then return nil, GL.Kinds.kills.name .. " goals go up to " .. GL.Kinds.kills.max .. "." end
+				return {k = k, a = a, n = n}
+			end
+		end
+		return parse(spec)
+	end
+	function GL.measure(p, goal, P)
+		if type(goal) == "table" and goal.k == "kills" and goal.a == RD.ID then
+			return whole(tab(tab(p).raids).kc), whole(goal.n)
+		end
+		return measure(p, goal, P)
+	end
+	function GL.bossName(id)
+		if id == RD.ID then return RD.NAME end
+		return bossName(id)
+	end
+	function GL.bosses()
+		local out = bosses()
+		table.insert(out, 1, RD.ID)
+		return out
+	end
+end
+end
+-- <<< END Raids <<<
+------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------
+-- >>> QoL Depth (§41) >>>
+-- QoL Depth team: the Lumen Lectern (daily Enchanting memory trials), the
+-- Wardrobe (saved armour + accessory loadouts), Roost tethers (pet XP sharing
+-- with a preview), the Roost keeper as Hub folk, and Vault Charters (bank
+-- tiers with a capped daily interest). Data.QoL = Q. Pure rules only; the
+-- "QoL Depth" block in server.server.lua owns state. All names original.
+------------------------------------------------------------------------------
+do
+local Q = {}
+Data.QoL = Q
+Q.DAY = 86400
+-- UTC day index; daily records only roll forward (a server whose clock is
+-- behind never re-opens a day it already counted).
+function Q.dayOf(t) return math.floor((tonumber(t) or 0) / Q.DAY) end
+local function whole(v, lo, hi)
+	v = tonumber(v)
+	if not v or v ~= v or v == math.huge or v == -math.huge then return nil end
+	v = math.floor(v)
+	if lo and v < lo then return nil end
+	if hi and v > hi then return nil end
+	return v
+end
+Q.whole = whole
+
+------------------------------------------------------------------------------
+-- Lumen Lectern: three memory trials, six tiers gated by Enchanting level.
+-- The server generates every puzzle and checks every answer; a snapshot only
+-- carries what the lectern is showing right now.
+------------------------------------------------------------------------------
+local A = {}
+Q.Lectern = A
+A.NAME = "Lumen Lectern"
+A.SKILL = "Enchanting"
+A.VISIT_SECONDS = 600 -- a trial starts within 10 minutes of touching the lectern
+A.ANSWER_SECONDS = 90 -- per round, after the reveal ends
+A.PAIRS_SECONDS = 600 -- a Mirror Pairs board stays open this long
+A.BONUS_CAP = 6 -- bonus reveals banked per day
+A.GLYPHS = {
+	{id="Sun",mark="☼",color="FFD166"},{id="Moon",mark="☾",color="BFD7FF"},{id="Star",mark="✦",color="FFF3B0"},
+	{id="Rune",mark="❖",color="C77DFF"},{id="Leaf",mark="✿",color="8CE99A"},{id="Wave",mark="≈",color="66D9E8"},
+	{id="Flame",mark="✸",color="FF8A3D"},{id="Gem",mark="◆",color="F783AC"},{id="Eye",mark="◉",color="E9ECEF"},
+}
+A.Games = {
+	seq={id="seq",name="Glyph Sequence",attempts=2,text="The lectern lights glyphs in order, one more each round. Repeat the whole sequence."},
+	recall={id="recall",name="Starfall Recall",attempts=2,text="Numbered stars fall onto the grid and fade. Touch their cells in order, 1 first."},
+	pairs={id="pairs",name="Mirror Pairs",attempts=1,text="Hidden glyph pairs hold rewards. Each reveal costs one light; a matched pair pays out."},
+}
+A.GameOrder = {"seq","recall","pairs"}
+-- xp: Enchanting XP for round 1 (later rounds pay more); dust: Arcane Dust per dust card;
+-- tome / masterwork: chance a Mirror Pairs board hides a Tempering / Masterwork Tome.
+A.Tiers = {
+	{id="Apprentice",level=1,color="A9B4C0",glyphs=4,seqRounds=6,grid={3,3},recallStart=3,recallRounds=5,pairs=4,xp=12,dust=4},
+	{id="Adept",level=15,color="8CE99A",glyphs=5,seqRounds=8,grid={4,3},recallStart=3,recallRounds=6,pairs=5,xp=35,dust=8},
+	{id="Scholar",level=30,color="66D9E8",glyphs=6,seqRounds=10,grid={4,4},recallStart=4,recallRounds=7,pairs=6,xp=100,dust=16},
+	{id="Savant",level=50,color="C77DFF",glyphs=7,seqRounds=12,grid={5,4},recallStart=4,recallRounds=8,pairs=7,xp=400,dust=28,tome=0.6},
+	{id="Magister",level=70,color="F783AC",glyphs=8,seqRounds=14,grid={5,5},recallStart=5,recallRounds=9,pairs=8,xp=900,dust=40,tome=1},
+	{id="Luminary",level=85,color="FFD166",glyphs=9,seqRounds=15,grid={5,5},recallStart=5,recallRounds=10,pairs=9,xp=1600,dust=56,tome=1,masterwork=0.25},
+}
+for i, t in ipairs(A.Tiers) do t.index = i; t.cells = t.grid[1] * t.grid[2] end
+function A.tier(i) i = whole(i, 1, #A.Tiers) return if i then A.Tiers[i] else nil end
+function A.bestTier(level)
+	local best = 1
+	for i, t in ipairs(A.Tiers) do if (tonumber(level) or 1) >= t.level then best = i end end
+	return best
+end
+-- Enchanting XP for clearing round r of a tier (+20 % per round after the first).
+function A.roundXp(t, r) return math.floor(t.xp * (1 + 0.2 * (math.max(1, r) - 1)) + 0.5) end
+function A.rounds(t, game) return if game == "seq" then t.seqRounds elseif game == "recall" then t.recallRounds else 0 end
+-- Bonus reveals for today's Mirror Pairs: seq 1 per 3 rounds, recall 1 per 2, +1 for a perfect run.
+function A.bonusFor(game, cleared, t)
+	cleared = math.max(0, math.floor(tonumber(cleared) or 0))
+	local b = if game == "seq" then cleared // 3 elseif game == "recall" then cleared // 2 else 0
+	if t and cleared > 0 and cleared >= A.rounds(t, game) then b += 1 end
+	return b
+end
+function A.recallCount(t, r) return math.min(t.cells, t.recallStart + r - 1) end
+-- How long (s) the client shows a round before it fades.
+function A.revealSeconds(game, n) return if game == "seq" then 1 + 0.7 * n else 2 + 0.45 * n end
+-- Generators: rng() returns [0, 1).
+local function pick(rng, n) return math.clamp(math.floor(rng() * n) + 1, 1, n) end
+function A.makeSequence(t, rng)
+	local s = {}
+	for i = 1, t.seqRounds do s[i] = pick(rng, t.glyphs) end
+	return s
+end
+-- n distinct cells (1..t.cells); position k holds star number k.
+function A.makeRecall(t, r, rng)
+	local pool = {}
+	for c = 1, t.cells do pool[c] = c end
+	local out = {}
+	for _ = 1, A.recallCount(t, r) do table.insert(out, table.remove(pool, pick(rng, #pool))) end
+	return out
+end
+A.CELL_CHARS = "123456789abcdefghijklmnop" -- cell index <-> one character (<= 25 cells)
+function A.cellChar(c) return string.sub(A.CELL_CHARS, c, c) end
+function A.charCell(ch) return (string.find(A.CELL_CHARS, ch, 1, true)) end
+-- Answers: seq "1324" (glyph indices), recall "3a7" (cell characters in order).
+function A.checkSequence(seq, r, answer)
+	if type(answer) ~= "string" or #answer ~= r or not string.match(answer, "^[1-9]+$") then return false end
+	for i = 1, r do if tonumber(string.sub(answer, i, i)) ~= seq[i] then return false end end
+	return true
+end
+function A.checkRecall(cells, answer)
+	if type(answer) ~= "string" or #answer ~= #cells then return false end
+	for i = 1, #cells do if A.charCell(string.sub(answer, i, i)) ~= cells[i] then return false end end
+	return true
+end
+-- Mirror Pairs: 2 x pairs cards {g = glyph, p = pair}; rewards[pair] =
+-- {k = "xp"|"item"|"reveal", id, n}. One reveal card per board; tomes by chance.
+function A.makeBoard(t, rng)
+	local rewards = {}
+	if t.masterwork and rng() < t.masterwork then table.insert(rewards, {k="item",id="MasterworkTome",n=1}) end
+	if t.tome and rng() < t.tome then table.insert(rewards, {k="item",id="TemperingTome",n=1}) end
+	table.insert(rewards, {k="reveal",n=2})
+	local i = 0
+	while #rewards < t.pairs do
+		i += 1
+		if i % 2 == 1 then table.insert(rewards, {k="xp",n=t.xp * 4}) else table.insert(rewards, {k="item",id="ArcaneDust",n=t.dust}) end
+	end
+	-- QC M1: the glyph -> reward link is drawn per board (server RNG): rewards
+	-- are shuffled over the pairs and each pair gets a random distinct glyph, so
+	-- no glyph always hides the reveal card, a tome or a reward kind.
+	for k = #rewards, 2, -1 do local j = pick(rng, k); rewards[k], rewards[j] = rewards[j], rewards[k] end
+	local glyphs = {}
+	for g = 1, #A.GLYPHS do glyphs[g] = g end
+	for k = #glyphs, 2, -1 do local j = pick(rng, k); glyphs[k], glyphs[j] = glyphs[j], glyphs[k] end
+	local cards = {}
+	for p = 1, t.pairs do
+		local glyph = glyphs[p]
+		table.insert(cards, {g=glyph,p=p})
+		table.insert(cards, {g=glyph,p=p})
+	end
+	for k = #cards, 2, -1 do local j = pick(rng, k); cards[k], cards[j] = cards[j], cards[k] end
+	return cards, rewards
+end
+function A.baseReveals(t) return 2 * t.pairs + 2 end
+function A.reveals(t, bonus) return A.baseReveals(t) + math.clamp(math.floor(tonumber(bonus) or 0), 0, math.min(A.BONUS_CAP, t.pairs)) end
+-- Daily ceiling of Enchanting XP (every round cleared, every XP card matched).
+function A.dailyMaxXp(t)
+	local total = 0
+	for _, g in ipairs({"seq","recall"}) do
+		local per = 0
+		for r = 1, A.rounds(t, g) do per += A.roundXp(t, r) end
+		total += per * A.Games[g].attempts
+	end
+	return total + t.xp * 4 * t.pairs * A.Games.pairs.attempts
+end
+-- p.lectern = {day, used = {[game] = n}, bonus, best = {[game] = rounds}, runs, s = session | nil}
+function A.roll(rec, day)
+	if (tonumber(rec.day) or -1) < day then
+		rec.day, rec.used, rec.bonus = day, {}, 0
+		return true
+	end
+	return false
+end
+function A.left(rec, game) return math.max(0, A.Games[game].attempts - (tonumber(rec.used and rec.used[game]) or 0)) end
+
+------------------------------------------------------------------------------
+-- Wardrobe: saved armour + accessory loadouts (never the weapon). A set holds
+-- item ids only; the items stay in the satchel, so nothing is duplicated.
+------------------------------------------------------------------------------
+local W = {}
+Q.Wardrobe = W
+W.MAX = 9
+W.SLOTS = {"helmet","chest","legs","boots"}
+W.UNLOCKS = {15,30,45} -- Combat levels that add two slots each (3 -> 9)
+W.COOLDOWN = 3 -- seconds between swaps
+W.HURT_GRACE = 8 -- no swap within this many seconds of taking damage
+W.MAX_ACC = 64
+function W.slotsFor(combatLevel)
+	local n = 3
+	for _, lv in ipairs(W.UNLOCKS) do if (tonumber(combatLevel) or 1) >= lv then n += 2 end end
+	return math.min(W.MAX, n)
+end
+function W.capture(equipment, bag)
+	local set = {acc={}}
+	for _, s in ipairs(W.SLOTS) do set[s] = type(equipment) == "table" and equipment[s] or nil end
+	for _, id in ipairs(type(bag) == "table" and bag or {}) do if #set.acc < W.MAX_ACC then table.insert(set.acc, id) end end
+	return set
+end
+function W.empty(set)
+	if type(set) ~= "table" then return true end
+	for _, s in ipairs(W.SLOTS) do if set[s] then return false end end
+	return type(set.acc) ~= "table" or #set.acc == 0
+end
+-- Sanitise a saved set (unknown items dropped, accessories unique, bounded); nil when empty.
+function W.clean(set)
+	if type(set) ~= "table" then return nil end
+	local out = {acc={}}
+	for _, s in ipairs(W.SLOTS) do
+		local id = set[s]
+		local def = type(id) == "string" and Data.Items[id]
+		if def and def.slot == s then out[s] = id end
+	end
+	local seen = {}
+	for _, id in ipairs(type(set.acc) == "table" and set.acc or {}) do
+		local def = type(id) == "string" and Data.Items[id]
+		if def and def.kind == "accessory" and not seen[id] and #out.acc < W.MAX_ACC then seen[id] = true; table.insert(out.acc, id) end
+	end
+	if W.empty(out) then return nil end
+	return out
+end
+-- Pure check that `set` can be worn: owned, right slot, requirements, bag room.
+-- meets(requires) -> ok, missing. Returns ok, reason.
+function W.check(set, items, accessorySlots, meets)
+	if type(set) ~= "table" then return false, "That wardrobe slot is empty." end
+	for _, s in ipairs(W.SLOTS) do
+		local id = set[s]
+		if id then
+			local def = Data.Items[id]
+			if not def or def.slot ~= s then return false, "That loadout holds a piece that no longer fits." end
+			if (items[id] or 0) < 1 then return false, "You no longer own " .. def.name .. "." end
+			local ok, missing = meets(def.requires)
+			if not ok then return false, def.name .. " requires " .. tostring(missing) .. "." end
+		end
+	end
+	local seen = {}
+	for _, id in ipairs(set.acc or {}) do
+		local def = Data.Items[id]
+		if not def or def.kind ~= "accessory" then return false, "That loadout holds an unknown accessory." end
+		if seen[id] then return false, "That loadout lists " .. def.name .. " twice." end
+		seen[id] = true
+		if (items[id] or 0) < 1 then return false, "You no longer own " .. def.name .. "." end
+	end
+	if #(set.acc or {}) > accessorySlots then return false, "That loadout needs " .. #set.acc .. " accessory slots (you have " .. accessorySlots .. ")." end
+	return true
+end
+
+------------------------------------------------------------------------------
+-- Vault Charters: bank tiers. Interest is paid once per UTC day, on the vault
+-- balance up to the charter's insured capacity; nothing builds up while you
+-- are away, so a charter never pays more than its daily ceiling.
+------------------------------------------------------------------------------
+local V = {}
+Q.Vault = V
+V.Tiers = {
+	{id="Strongbox",name="Strongbox Charter",rate=0.001,cap=100000},
+	{id="Coffer",name="Coffer Charter",rate=0.0015,cap=500000,cost=25000,needs={Ore=3,Timber=3}},
+	{id="Ledger",name="Ledger Charter",rate=0.002,cap=2000000,cost=250000,needs={Ore=5,Timber=5,Fish=4,Herb=4}},
+	{id="Gilded",name="Gilded Charter",rate=0.0025,cap=8000000,cost=2000000,needs={SunsteelOre=5,EmberoakLog=5,Stormeel=4,ArcaneDust=5}},
+	{id="Treasury",name="Sky Treasury Charter",rate=0.003,cap=25000000,cost=10000000,needs={StarmetalOre=6,StarwoodLog=6,AbyssKoi=5,VoidEssence=6}},
+}
+for i, t in ipairs(V.Tiers) do t.index = i end
+function V.tier(i) return V.Tiers[math.clamp(whole(i) or 1, 1, #V.Tiers)] end
+function V.maxDaily(t) return math.floor(t.cap * t.rate) end
+function V.interest(t, bank)
+	bank = tonumber(bank) or 0
+	if bank ~= bank then bank = 0 end
+	return math.floor(math.clamp(bank, 0, t.cap) * t.rate)
+end
+-- p.vault = {tier, day, paid, last, low}. Returns the coins due today (0 unless
+-- the day is new). `bank` is the lowest vault balance since the last payment
+-- (QC L5: p.vault.low), so a deposit made just before the UTC day earns nothing.
+function V.roll(rec, day, bank)
+	local seen = tonumber(rec.day)
+	if seen and seen >= day then return 0 end
+	rec.day = day
+	if not seen then return 0 end -- a new charter starts counting tomorrow
+	return V.interest(V.tier(rec.tier), bank)
+end
+
+------------------------------------------------------------------------------
+-- Roost tethers: roster pets that share the summoned pet's pet XP.
+------------------------------------------------------------------------------
+local K = {}
+Q.Tether = K
+K.SHARE = 0.1 -- each tethered pet earns 10 % of the pet XP the summoned pet earns
+K.UNLOCKS = {10,25,50} -- Taming levels for tether slots 1, 2, 3
+function K.slotsFor(tamingLevel)
+	local n = 0
+	for _, lv in ipairs(K.UNLOCKS) do if (tonumber(tamingLevel) or 1) >= lv then n += 1 end end
+	return n
+end
+-- Preview: pet XP your summoned pet must earn for a tethered pet to gain `need`.
+function K.activeXpFor(need) return math.ceil(math.max(0, tonumber(need) or 0) / K.SHARE) end
+
+------------------------------------------------------------------------------
+-- The Roost keeper (Wren Halloway, already named by Data.PetDepth.KEEPER) as
+-- Hub folk, and the atlas stations Roost (Hero › Pets) and Lectern.
+------------------------------------------------------------------------------
+do
+	local T, RA = Data.Townsfolk, Data.RegionArt
+	Q.ROOST_KEEPER = "RoostKeeper"
+	if T and RA and RA.Folk and T.NPCs and not RA.FolkByRole[Q.ROOST_KEEPER] then
+		local keeper = {role=Q.ROOST_KEEPER,region="Hub",name="Wren Halloway",title="Roost Keeper",portrait="🪺",kind="roost",
+			look={skin="E0AC69",shirt="7FA35B",pants="4A3B2A",shoes="2E241A",accent="FFD6A5",hair="8B5A2B",hat="cap",held="lantern",apron="5C7A3A"},
+			greet="Every pet on the isles passes my perches sooner or later. Leave one with me for a while and it comes home grander."}
+		table.insert(RA.Folk, keeper)
+		RA.FolkByRole[keeper.role] = keeper
+		if T.AtlasStations then
+			T.AtlasStations.Roost = "Hero · Pets"
+			T.AtlasStations.Lectern = "Hero · Lectern"
+		end
+		T.NPCs[keeper.role] = {name=keeper.name,title=keeper.title,region="Hub",portrait=keeper.portrait,look=keeper.look,start="hello",anchorOnly=true,folk="roost",
+			nodes={
+				hello={text=keeper.greet,options={
+					{label="Show me the Roost",atlas="Roost"},
+					{label="How do upgrades work?",to="upgrade"},
+					{label="Tell me about tethers",to="tether"},
+					{label="Farewell",close=true}}},
+				upgrade={text="Bring coins and your pet's own trade goods. I raise one pet a rarity at a time: an hour for Uncommon, three days for Legendary. "
+					.."Come and go as you please; the perch keeps time while you are away. Claim it in Hero › Pets.",options={
+					{label="Show me the Roost",atlas="Roost"},{label="Back",to="hello"},{label="Farewell",close=true}}},
+				tether={text="A tethered pet learns from the one at your side: it earns a tenth of every bit of pet XP your summoned pet earns. "
+					.."Taming 10 opens your first tether, 25 the second and 50 the third.",options={
+					{label="Show me the Roost",atlas="Roost"},{label="Back",to="hello"},{label="Farewell",close=true}}},
+			}}
+		table.insert(T.RegionFolkOrder, keeper.role)
+	end
+end
+end
+-- <<< END QoL Depth <<<
+------------------------------------------------------------------------------
+
+-- >>> Gathering Feel (§42): struck nodes >>>
+-- Gathering nodes are hit, not held: a left click swings the held tool and the
+-- server applies one validated strike (`strike` verb, server.server.lua). Pure
+-- rules only (no instances): HP per tier, damage per strike, the swing cadence,
+-- the regrowth hand-back that keeps XP / hour level with the old hold prompt,
+-- and the fishing cast / bite / reel timings. Shared by the server, the client
+-- (overhead bars, hitsplats, label) and the suites.
+do
+	local ST = {}
+	Data.Strike = ST
+	-- Seconds between strikes the server accepts (one swing of the §26 gesture).
+	ST.SWING = {Mining = 0.7, Woodcutting = 0.7, Farming = 0.6}
+	-- Client: the strike is sent at the gesture's impact frame (seconds after the click).
+	ST.IMPACT = {Mining = 0.42, Woodcutting = 0.4, Farming = 0.36}
+	-- The retired hold prompts (GATHER_HOLD 1 s, FISH_HOLD 1.5 s): the per-harvest
+	-- active time the regrowth hand-back is measured against.
+	ST.OLD_HOLD = {Mining = 1, Woodcutting = 1, Farming = 1, Fishing = 1.5}
+	-- Nominal strikes to break a node with the tier's entry tool, by tier index.
+	ST.SWINGS = {3, 3, 4, 4, 5, 5, 6, 6}
+	ST.TOLERANCE = 0.12 -- s of network jitter forgiven per strike (never accumulates)
+	ST.REACH, ST.FISH_REACH = 10, 14 -- studs from the node's edge (root to node centre minus half its footprint)
+	ST.DECAY_AFTER, ST.DECAY_RATE = 4, 0.25 -- abandoned progress heals 25% of max HP a second after 4 s
+	ST.REGROW_FLOOR = 1
+	ST.LEVEL_BONUS_CAP = 50 -- +1% damage per level over the node's requirement, up to +50%
+	ST.SPEED_DIVISOR = 200 -- Mining Speed (and tool Efficiency) scales damage: x(1 + speed / 200)
+	ST.MAX_TRACKED = 6 -- nodes with partial progress kept per player
+	-- Fishing: a click casts; the fish bites after `bite` s; a click inside the
+	-- window reels it in. Too early loses the cast; a missed bite slips away.
+	ST.FISH = {gap = 0.8, biteMin = 1.0, biteMax = 2.0, window = 1.2, early = 0.15, late = 0.35, reaction = 0.3}
+	ST.VERB = {Mining = "Mine", Woodcutting = "Chop", Fishing = "Fish", Farming = "Harvest"}
+	-- The entry resource a special strike node (raid rooms) swings as, per skill.
+	ST.ENTRY = {Mining = "Ore", Woodcutting = "Timber", Fishing = "Fish", Farming = "Herb"}
+	ST.NOUN = {Mining = "Vein", Woodcutting = "Tree", Fishing = "Spot", Farming = "Patch"}
+	ST.GESTURE = {Mining = "mine", Woodcutting = "chop", Fishing = "fish", Farming = "harvest"}
+	function ST.resource(id)
+		local skill = type(id) == "string" and Data.ResourceSkill[id]
+		if not skill then return nil end
+		for _, r in ipairs(Data.ResourceTiers[skill]) do if r.id == id then return r end end
+		return nil
+	end
+	function ST.power(toolTier) return 10 + 10 * math.max(0, math.floor(tonumber(toolTier) or 0)) end
+	-- The Mining Speed an entry tool of tier t brings (generated pickaxes carry 40 x tier).
+	function ST.entrySpeed(r)
+		return if r.skill == "Mining" and (r.tool or 0) > 0 then 40 * r.tool else 0
+	end
+	-- Damage of one strike. speed: Mining Speed for Mining (stats + tool + Efficiency),
+	-- tool Efficiency for the others; level: the player's skill level.
+	function ST.damage(r, toolTier, speed, level)
+		local over = math.clamp((tonumber(level) or 1) - (r.level or 1), 0, ST.LEVEL_BONUS_CAP)
+		local base = ST.power(toolTier) * (1 + math.max(0, tonumber(speed) or 0) / ST.SPEED_DIVISOR)
+		return math.max(1, math.floor(base * (1 + over / 100)))
+	end
+	-- Node HP: the nominal strikes x the entry tool's damage at the requirement.
+	function ST.maxHp(r)
+		if not r or r.skill == "Fishing" then return 0 end
+		return (ST.SWINGS[r.index] or 6) * ST.damage(r, r.tool or 0, ST.entrySpeed(r), r.level)
+	end
+	function ST.strikesFor(r, damage)
+		local hp = ST.maxHp(r)
+		return if hp > 0 then math.ceil(hp / math.max(1, damage)) else 2
+	end
+	-- Seconds from the first strike to the break at the nominal damage (the
+	-- first strike lands at once; the rest one swing apart). Fishing: the mean
+	-- bite plus a reaction.
+	function ST.nominalBreak(r)
+		if r.skill == "Fishing" then return (ST.FISH.biteMin + ST.FISH.biteMax) / 2 + ST.FISH.reaction end
+		return ((ST.SWINGS[r.index] or 6) - 1) * ST.SWING[r.skill]
+	end
+	-- Regrowth after a break (QC M5): the time the break actually took (first
+	-- strike / cast to the break, `elapsed`; the nominal break when omitted) is
+	-- handed back against the old hold, so a node's cycle (break + regrowth) is
+	-- the old hold + regrowth whatever the tool: a one-shot waits base + hold,
+	-- never less, and per-node XP / hour never beats the old prompt. Faster
+	-- tools pay off across several nodes (less active time per harvest).
+	-- Floored at REGROW_FLOOR.
+	function ST.regrowth(r, base, elapsed)
+		base = tonumber(base) or tonumber(r.respawn) or 3
+		elapsed = math.max(0, tonumber(elapsed) or ST.nominalBreak(r))
+		return math.max(ST.REGROW_FLOOR, base + (ST.OLD_HOLD[r.skill] or 1) - elapsed)
+	end
+	-- Progress left after idling: healed DECAY_RATE x max a second after DECAY_AFTER s.
+	function ST.decayed(hp, maxHp, idle)
+		idle = (tonumber(idle) or 0) - ST.DECAY_AFTER
+		if idle <= 0 then return hp end
+		return math.min(maxHp, hp + idle * ST.DECAY_RATE * maxHp)
+	end
+	-- A deterministic bite delay (no shared RNG draw): a hash of the user and the cast count.
+	function ST.biteDelay(userId, n)
+		local h = ((math.floor(tonumber(userId) or 0) % 100003) * 7919 + (math.floor(tonumber(n) or 0) % 100003) * 104729) % 1000
+		return ST.FISH.biteMin + (ST.FISH.biteMax - ST.FISH.biteMin) * h / 999
+	end
+	-- Waypoint index of struck node hosts (QC M3; nav.client.lua "gather:<id>"):
+	-- {[resource id] = {positions}} from AetherNode-tagged hosts, skipping
+	-- nodes owned by another player. `into` (optional) is filled in place.
+	function ST.indexNodes(hosts, userId, into)
+		local out = into or {}
+		for _, host in ipairs(type(hosts) == "table" and hosts or {}) do
+			local ok, id, owner, at = pcall(function() return host:GetAttribute("GatherNode"), host:GetAttribute("OwnerUserId"), host.Position end)
+			local special = ok and host:GetAttribute("StrikeKind") ~= nil -- crew stores, garden plots, raid rooms
+			if ok and not special and type(id) == "string" and ST.resource(id) and (owner == nil or owner == userId) and typeof(at) == "Vector3" then
+				out[id] = out[id] or {}
+				table.insert(out[id], at)
+			end
+		end
+		return out
+	end
+	-- "Copperstone Ore" -> "Copperstone Vein"; "Windpine Log" -> "Windpine Tree".
+	function ST.nodeName(r)
+		local name = tostring(r.name or r.id)
+		local noun = ST.NOUN[r.skill] or "Node"
+		local stem = name:gsub(" Ore$", ""):gsub(" Log$", ""):gsub(" Timber$", "")
+		return stem .. " " .. noun
+	end
+	-- "Mine Copperstone Vein (Mining 1)"
+	function ST.label(r)
+		return ST.VERB[r.skill] .. " " .. ST.nodeName(r) .. " (" .. r.skill .. " " .. r.level .. ")"
+	end
+	-- Old vs new node cycle (s) and XP / hour at the nominal tool, for the docs and tests.
+	function ST.balance(r)
+		local oldCycle = (ST.OLD_HOLD[r.skill] or 1) + r.respawn
+		local newCycle = ST.nominalBreak(r) + ST.regrowth(r, r.respawn)
+		return {hp = ST.maxHp(r), strikes = if r.skill == "Fishing" then 2 else (ST.SWINGS[r.index] or 6), breakTime = ST.nominalBreak(r),
+			regrowth = ST.regrowth(r, r.respawn), oldCycle = oldCycle, newCycle = newCycle,
+			oldXpHour = math.floor(r.xp * 3600 / oldCycle), newXpHour = math.floor(r.xp * 3600 / newCycle)}
+	end
+end
+-- <<< END Gathering Feel <<<
+------------------------------------------------------------------------------
+-- >>> BEGIN Tutorial (Tutorial team; append-only section; docs/DEPTH-CONTRACT.md §43) >>>
+-- Coach cards on top of the Wayfarer's Path (§31) and the first starter
+-- quests (guild contracts 1-2, Charting the Skyway, Lamps of the Quay, read
+-- through the §33 quest helper). Pure data + pure rules shared by the server
+-- "Tutorial" block in server.server.lua (state, the `tutorial` verb, the
+-- current card) and tutorial.client.lua (cards, pointer ring, tips).
+-- * The current card is DERIVED from server progress (Path step flags, quest
+--   acceptance / completion): the first unfinished chapter wins. Buttons never
+--   advance a step card; "Got it" only collapses it (seen).
+-- * Intro / finale cards (ack = true) are the only ones a button finishes.
+-- * Tips fire once per account on a first encounter (client-detected from
+--   server signals; the server records each id once, verb "tip:<id>").
+------------------------------------------------------------------------------
+do
+local TU = {}
+Data.Tutorial = TU
+local function tab(v) return if type(v) == "table" then v else {} end
+local function num(v) return if type(v) == "number" and v == v and v > -math.huge and v < math.huge then v else 0 end
+local function whole(v) v = num(v); return if v > 0 then math.floor(v) else 0 end
+TU.whole = whole
+TU.VERSION = 1
+TU.NAME = "Tutorial"
+TU.CONTRACTS = 2 -- the first two guild contracts form the first starter quest
+TU.SATCHEL_PAGE = 21 -- distinct stacks that fill the satchel's first page (7 x 3 grid)
+-- Pointer targets (tutorial.client.lua resolves them to on-screen GuiObjects,
+-- most specific first; the first one visible wins):
+--   objective  sidebar Objective line      satchel  sidebar Bag button
+--   menu       sidebar Menu button         chart    sidebar Map (Sky Chart) button
+--   hotbar:N   hotbar slot N (1 weapon, 2 context tool)
+--   orbs       status orbs (Health)        clock    sidebar clock line
+--   any other  a GuiObject of that name in the atlas (MenuQuests, SectionHelper…)
+local Path = Data.Features.Guide
+TU.Cards = {
+	{id="welcome", chapter="intro", ack=true, title="Welcome to the Aether Isles",
+		body="These coach cards walk you through your first steps: the Wayfarer's Path, then your first quests. Your sidebar Objective always shows what to do next.",
+		pointer={"objective"}},
+	{id="path:mode", step="mode", title="Choose your journal mode",
+		body="Travel to Compass Quay and talk to Pell Ashgrove (the gold ! over his head). Keep a Standard journal in one tap, or read about Ironman first: seal it before you gather.",
+		pointer={"objective"}},
+	{id="path:chop", step="chop", title="Chop a log",
+		body="Left-click a tree to chop it with your axe (tap it on mobile). Each swing chips its health bar; when it breaks, the logs land in your satchel.",
+		pointer={"hotbar:2"}},
+	{id="path:craft", step="craft", title="Craft at a workbench",
+		body="Open a Workbench, Forge, Hearth or Cauldron (or Menu › Recipes) and craft anything: planks, a pickaxe, a meal.",
+		pointer={"MenuRecipes", "menu"}},
+	{id="path:visit", step="visit", title="Visit Compass Quay",
+		body="Compass Quay is the shared hub. Open the Sky Chart (M, or the Map button) and travel there, or step through your home isle's portal.",
+		pointer={"chart"}},
+	{id="path:talk", step="talk", title="Talk to Pell",
+		body="Find Pell Ashgrove on Compass Quay and ask him about the Wayfarer's Path. Follow the glowing beacon.",
+		pointer={"objective"}},
+	{id="path:ore", step="ore", title="Gather ore",
+		body="Left-click an ore rock to mine it with your pickaxe (tap it on mobile). Keep swinging until its health bar breaks.",
+		pointer={"hotbar:2"}},
+	{id="path:sell", step="sell", title="Sell an item",
+		body="Open your satchel (E, or the Bag button), right-click an item (long-press on mobile) and choose Sell.",
+		pointer={"satchel"}},
+	{id="path:equip", step="equip", title="Equip a weapon",
+		body="Open your satchel, right-click a weapon and choose Wield. Hotbar slot 1 always holds your weapon.",
+		pointer={"satchel", "hotbar:1"}},
+	{id="path:kill", step="kill", title="Defeat a creature",
+		body="Brambleback Boars roam Sunwheel Downs. Left-click a creature to attack it with your weapon (tap on mobile) and keep an eye on your Health orb.",
+		pointer={"hotbar:1"}},
+	{id="path:quest", step="quest", title="Accept a quest",
+		body="Accept a regional quest from a questgiver with a gold ! over their head, or complete your first guild contract. Pin it in Menu › Quests › Helper to see its next step.",
+		pointer={"SectionHelper", "MenuQuests", "menu"}},
+	{id="path:warp", step="warp", title="Learn a warp",
+		body="Buy a warp scroll from Ilsabet the Warp Keeper and read it. Then open the Sky Chart (M) to warp straight to that isle.",
+		pointer={"chart"}},
+	{id="quest:contract", chapter="quests", quest="contract", title="Your first guild contracts",
+		body="Guild contracts are your starter quest line. Pin it in Journal › Helper, follow its NEXT step, then claim it in Journal › Bearing.",
+		pointer={"SectionBearing", "SectionHelper", "MenuQuests", "menu"}},
+	{id="quest:SkywayCharter", chapter="quests", quest="SkywayCharter", title="Charting the Skyway",
+		body="Ilsabet the Warp Keeper has your first regional quest. Accept it from her, then follow the quest helper.",
+		pointer={"SectionHelper", "MenuQuests", "menu"}},
+	{id="quest:LampsOfTheQuay", chapter="quests", quest="LampsOfTheQuay", title="Lamps of the Quay",
+		body="Corwin the Lamplighter needs timber and ore before the Quay goes dark. Accept, gather, then hand it in to him.",
+		pointer={"SectionHelper", "MenuQuests", "menu"}},
+	{id="complete", chapter="finale", ack=true, title="You're ready, wayfarer!",
+		body="You walked the Wayfarer's Path and finished your first quests. Train any skill, raise your Isle Renown and explore the isles.",
+		pointer={"menu"}},
+}
+TU.CardById = {}
+for i, c in ipairs(TU.Cards) do
+	c.index = i
+	c.chapter = c.chapter or "path"
+	TU.CardById[c.id] = c
+end
+-- Chapters for the progress dot row (dots count the cards of the card's chapter).
+TU.Chapters = {intro = "WELCOME", path = string.upper(Path.NAME), quests = "FIRST QUESTS", finale = "TUTORIAL COMPLETE"}
+function TU.dots(id)
+	local card = TU.CardById[id]
+	if not card then return {index = 0, total = 0, chapter = ""} end
+	local index, total = 0, 0
+	for _, c in ipairs(TU.Cards) do
+		if c.chapter == card.chapter then
+			total += 1
+			if c.index <= card.index then index += 1 end
+		end
+	end
+	return {index = index, total = total, chapter = TU.Chapters[card.chapter] or ""}
+end
+-- Waypoint specs for a step card (Path waypoints); quest cards use the helper step's specs.
+function TU.specsFor(id)
+	local card = TU.CardById[id]
+	if card and card.step then return Path.Waypoints[card.step] end
+	return nil
+end
+
+-- Tips (first encounters; once per account) --------------------------------
+TU.Tips = {
+	{id="fight", title="Your first fight",
+		body="Keep left-clicking (or tapping) the creature to swing. Your Health orb sits beside the minimap; eat food from your hotbar if it runs low.",
+		pointer={"orbs"}},
+	{id="levelup", title="Level up!",
+		body="Every skill level pays coins and unlocks better tools, recipes and places. Menu › Skills shows what each level opens.",
+		pointer={"MenuSkills", "menu"}},
+	{id="satchelFull", title="Your satchel's first page is full",
+		body="Use the page arrows, Sort or Search in your satchel. Sell spare stacks to a merchant, or bank them with Odile in Compass Quay.",
+		pointer={"satchel"}},
+	{id="night", title="Night falls on the isles",
+		body="The sidebar clock shows the isle hour. Lamps light the hubs after dusk; nothing resets at night, so carry on.",
+		pointer={"clock"}},
+	{id="shop", title="Your first shop",
+		body="Prices show before you pay. Right-click (long-press) an offer to buy several at once; some wares restock daily.",
+		pointer={}},
+	{id="questAccept", title="Quest accepted",
+		body="Pin it in Journal › Helper: its next step shows in your sidebar Objective, and Waypoint lights the way.",
+		pointer={"objective"}},
+}
+TU.TipById = {}
+for i, t in ipairs(TU.Tips) do t.index = i; TU.TipById[t.id] = t end
+
+-- Saved state ---------------------------------------------------------------
+-- p.tutorial = {v, seen = {[card] = true}, tips = {[tip] = true}, card, skipped,
+-- off (tips off), vet (a veteran never offered the tutorial), done (finale seen)}
+function TU.sanitize(t)
+	t = tab(t)
+	local out = {v = TU.VERSION, seen = {}, tips = {}}
+	for id, v in pairs(tab(t.seen)) do if v == true and TU.CardById[id] then out.seen[id] = true end end
+	for id, v in pairs(tab(t.tips)) do if v == true and TU.TipById[id] then out.tips[id] = true end end
+	out.card = if type(t.card) == "string" and TU.CardById[t.card] then t.card else nil
+	out.skipped = t.skipped == true or nil
+	out.off = t.off == true or nil
+	out.vet = t.vet == true or nil
+	out.done = t.done == true or nil
+	return out
+end
+-- The card the player is on, from real progress (nil: skipped, veteran or finished).
+-- p: the profile (guide, questCompleted, questsDone); t: sanitised state.
+function TU.current(p, t)
+	p, t = tab(p), tab(t)
+	if t.skipped or t.vet or t.done then return nil end
+	if not tab(t.seen).welcome then return "welcome" end
+	local guide = tab(p.guide)
+	if guide.complete ~= true then
+		local view = Path.view(guide)
+		if view.id and TU.CardById["path:" .. view.id] then return "path:" .. view.id end
+	end
+	if whole(p.questCompleted) < TU.CONTRACTS then return "quest:contract" end
+	local done = tab(p.questsDone)
+	for _, c in ipairs(TU.Cards) do
+		if c.quest and c.quest ~= "contract" and done[c.quest] ~= true then return c.id end
+	end
+	return "complete"
+end
+-- Verb argument: "next:<card>" | "dismiss:<card>" | "skip" | "replay" | "tip:<id>" |
+-- "tips:on" | "tips:off". Returns (action, arg) or nil.
+function TU.parse(item)
+	if type(item) ~= "string" or #item > 40 then return nil end
+	if item == "skip" or item == "replay" then return item, nil end
+	if item == "tips:on" or item == "tips:off" then return "tips", item == "tips:on" end
+	local kind, arg = string.match(item, "^(%a+):([%w:]+)$")
+	if (kind == "next" or kind == "dismiss") and TU.CardById[arg] then return kind, arg end
+	if kind == "tip" and TU.TipById[arg] then return kind, arg end
+	return nil
+end
+-- Rewards summary for the finale card (static data; coins owed come from the
+-- snapshot): one short line per source so it fits the card.
+-- pathCoins: the Path coins this journal earned (paid to date + still owed, from
+-- p.guide.paid / owed); nil (no paid-to-date record) reads "up to <MAX_OWED>".
+function TU.rewardSummary(pathCoins)
+	local earned = if type(pathCoins) == "number" then whole(pathCoins) .. " coins" else "up to " .. Path.MAX_OWED .. " coins"
+	local lines = {Path.NAME .. ": " .. earned}
+	for _, c in ipairs(TU.Cards) do
+		if c.quest and c.quest ~= "contract" then
+			local q = Data.QuestById[c.quest]
+			local r = tab(q and q.rewards)
+			local parts = {}
+			if whole(r.coins) > 0 then table.insert(parts, whole(r.coins) .. " coins") end
+			local ids = {}
+			for id in pairs(tab(r.items)) do table.insert(ids, id) end
+			table.sort(ids)
+			for _, id in ipairs(ids) do
+				local def = Data.Items[id]
+				table.insert(parts, (if whole(r.items[id]) > 1 then whole(r.items[id]) .. "× " else "") .. (if def then def.name else tostring(id)))
+			end
+			if type(r.lamp) == "table" then table.insert(parts, "an XP lamp") end
+			table.insert(lines, (q and q.title or c.title) .. ": " .. table.concat(parts, ", "))
+		end
+	end
+	return lines
+end
+
+-- Tip triggers (pure; tutorial.client.lua runs them on every snapshot) -------
+-- prev / snap: consecutive snapshots (prev nil on the first); ctx = {night,
+-- fight, shop} booleans the client observed from server signals since the last
+-- check. Returns the tip ids whose first encounter happened.
+local function distinct(items)
+	local n = 0
+	for _, v in pairs(tab(items)) do if num(v) > 0 then n += 1 end end
+	return n
+end
+local function acceptedCount(s)
+	local n = 0
+	for _, v in pairs(tab(tab(tab(s).regionQuests).accepted)) do if v == true then n += 1 end end
+	return n
+end
+function TU.detectTips(prev, snap, ctx)
+	snap, ctx = tab(snap), tab(ctx)
+	local out = {}
+	if ctx.fight then table.insert(out, "fight") end
+	-- A skill level-up: the §31 SKILL LEVEL UP announcement in the recent ring.
+	for _, e in ipairs(tab(tab(snap.announce).list)) do
+		if tab(e).kind == "skill" then table.insert(out, "levelup"); break end
+	end
+	if distinct(snap.items) >= TU.SATCHEL_PAGE then table.insert(out, "satchelFull") end
+	if ctx.night then table.insert(out, "night") end
+	if ctx.shop then table.insert(out, "shop") end
+	if prev ~= nil and acceptedCount(snap) > acceptedCount(prev) then table.insert(out, "questAccept") end
+	return out
+end
+end
+-- <<< END Tutorial <<<
 ------------------------------------------------------------------------------
 
 return Data

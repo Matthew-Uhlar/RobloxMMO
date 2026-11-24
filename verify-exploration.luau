@@ -498,6 +498,9 @@ for _, o in ipairs(serverObjects) do
 	if o.Name == "IsleBridge" then bridge = o end
 end
 ok(remote ~= nil and bridge ~= nil, "IsleAction and IsleBridge found")
+-- §42: mock gather prompts harvest through real `strike` verbs (tools/strike-shim.luau).
+require("./tools/strike-shim").install({signal = services.ProximityPromptService.PromptTriggered,
+	invoke = function(p, verb, item) return remote.OnServerInvoke(p, verb, item) end, advance = advance})
 local function cmd(p, verb, item) advance(1); return remote.OnServerInvoke(p, verb, item) end
 local function standAt(p, pos) p.root.Position = pos end
 local function prompt(action, item, at)
@@ -1494,6 +1497,12 @@ do
 		resonance.defense = math.max(resonance.defense, st.defense or 0)
 	end
 	sources.resonance = resonance
+	-- Isle Council (§36): every perk at once, capped (never Health / Defense).
+	local councilPerks = {}
+	for id in pairs(Data.Council.Perks) do table.insert(councilPerks, id) end
+	sources.council = Data.Council.stats(Data.Council.effects(councilPerks))
+	-- Contests (§39): every Furrow Almanac volume (Farming Fortune only, never Health / Defense).
+	sources.contests = Data.Contests.almanacStats(#Data.Contests.ALMANAC)
 	-- Faction rewards are accessories (one per faction family), not perkStats.
 	for _, t in ipairs(FA.Shop) do ok(t.perk == nil and t.stats == nil, t.id .. " grants no perkStats") end
 	local total = {health = 0, defense = 0}
@@ -1512,7 +1521,7 @@ do
 	ok(total.defense <= Data.PerkBudget.defense, "summed perk Defense within the budget (" .. total.defense .. ")")
 	-- Every perkStats key the server writes is one of the sources above.
 	local known = {motes = true, museum = true, ["commissions:milestones"] = true, forgeheart = true, ["agility:laps"] = true, ["hunter:log"] = true,
-		["garden:milestones"] = true, coop = true, renown = true, resonance = true}
+		["garden:milestones"] = true, coop = true, renown = true, resonance = true, council = true, contests = true}
 	for _, file in ipairs({"server.server.lua", "coop.server.lua"}) do
 		local src = fs.readFile(file)
 		for key in string.gmatch(src, "perkStats%[\"([^\"]+)\"%]") do ok(known[key] ~= nil, file .. " perk source " .. key .. " is budgeted") end

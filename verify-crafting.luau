@@ -33,7 +33,7 @@ local function near(a, b, eps) return math.abs(a - b) <= (eps or 1e-6) end
 local partA = checks
 ok(type(CR) == "table", "Data.Crafting exists")
 ok(table.find(Data.SkillOrder, "Crafting") ~= nil, "Crafting registered in SkillOrder")
-eq(Data.SkillOrder[#Data.SkillOrder], "Crafting", "Crafting appended last (old saves keep their order)")
+eq(Data.SkillOrder[22], "Crafting", "Crafting appended after the earlier skills (old saves keep their order; Beaconry follows)")
 do
 	local def = Data.Skills.Crafting
 	ok(def and def.category == "production" and #def.color == 6 and def.title and def.description, "Crafting skill metadata")
@@ -301,7 +301,7 @@ do
 		end
 	end
 	eq(n, 4, "four Crafting commissions")
-	ok(#CL.Tasks <= 45, "commission pool within its bound")
+	ok(#CL.Tasks <= 50, "commission pool within its bound") -- Beaconry (§37) added four "kindle" tasks
 end
 -- parseBatch: client text is only a recipe id and a count, clamped server-side.
 do
@@ -467,15 +467,15 @@ for _, m in terrace:GetChildren() do
 end
 ok(craftParts >= 12 and craftParts <= 40, "Crafting stations stay within a small part budget (" .. craftParts .. ")")
 -- QC L8: the documented figure (DEPTH-CONTRACT §22, world.server.lua header):
--- 18 station parts + a 3-part sign + 3 invisible waypoint anchors = 24.
+-- 18 station parts + a 1-part sign (§28 v2: one floating-sign anchor) + 3 invisible waypoint anchors = 22.
 eq(craftParts, 18, "documented station part count")
 do
 	local sign = terrace:FindFirstChild("Sign Artificers' Row")
 	local signParts, anchors = 0, 0
 	for _, obj in (sign and sign:GetDescendants() or {}) do if obj:IsA("BasePart") then signParts += 1 end end
 	for _, id in ipairs(CR.StationOrder) do if terrace:FindFirstChild("Anchor_Waypoint_" .. id, true) then anchors += 1 end end
-	eq(signParts, 3, "documented sign part count")
-	eq(craftParts + signParts + anchors, 24, "documented Artificers' Row total")
+	eq(signParts, 1, "documented sign part count (§28 v2 anchor)")
+	eq(craftParts + signParts + anchors, 22, "documented Artificers' Row total")
 end
 -- Stations use existing mesh slots and stand apart from each other and from the old stations.
 do
@@ -607,13 +607,16 @@ end
 local remote
 for _, o in ipairs(serverObjects) do if o.OnServerInvoke then remote = o end end
 ok(remote ~= nil, "IsleAction RemoteFunction found")
+-- §42: mock gather prompts harvest through real `strike` verbs (tools/strike-shim.luau).
+require("./tools/strike-shim").install({signal = services.ProximityPromptService.PromptTriggered,
+	invoke = function(p, verb, item) return remote.OnServerInvoke(p, verb, item) end, advance = advance})
 local function cmd(p, verb, item)
 	advance(1)
 	return remote.OnServerInvoke(p, verb, item)
 end
 local function use(p, q)
 	advance(1)
-	p.root.Position = q.Parent.CFrame.Position + Vector3.new(0, 0, 2)
+	p.root.Position = (if q:GetAttribute("GatherNode") then q else q.Parent).CFrame.Position + Vector3.new(0, 0, 2) -- §42: a node host is its own part
 	p.last = nil
 	services.ProximityPromptService.PromptTriggered:Fire(q, p)
 	return p.last
@@ -841,7 +844,7 @@ do
 	local miner = seeded(7005, function(prof) prof.xp.Mining = X[5] end)
 	local ore
 	for _, q in islands:GetDescendants() do
-		if q:IsA("ProximityPrompt") and q:GetAttribute("IsleAction") == "gather" and q:GetAttribute("IsleItem") == "Ore" and not q:GetAttribute("OwnerUserId") and not q:GetAttribute("IsleRegion") then ore = q break end
+		if q:IsA("BasePart") and q:GetAttribute("GatherNode") == "Ore" and not q:GetAttribute("OwnerUserId") and not q:GetAttribute("IsleRegion") then ore = q break end -- §42: a struck node host
 	end
 	ok(ore ~= nil, "a Copperstone node")
 	local before = cmd(miner, "state")

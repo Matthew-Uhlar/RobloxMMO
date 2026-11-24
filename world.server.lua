@@ -4,7 +4,6 @@
 -- Region attributes + Anchor_<Purpose> parts, docs/DEPTH-CONTRACT.md section 10);
 -- props that should become custom meshes carry Shape / Tint / ShapeScale.
 local Players = game:GetService("Players")
-local Lighting = game:GetService("Lighting")
 local Tags = game:GetService("CollectionService")
 local world = Instance.new("Folder")
 world.Name = "AetherIsles"
@@ -23,81 +22,19 @@ local BALL=Enum.PartType.Ball
 local warm=C("FFD9A0")
 
 -------------------------------------------------------------------------------
--- Lighting. Technology = Future is set in default.project.json (not scriptable);
--- the same look is applied here so a place opened without the project matches.
--- Bugs fixed (wave 4): over-bright OutdoorAmbient/Ambient flattened every
--- island and lit caves; stacked post effects if the place already had some;
--- 0.19 density haze with a near-white colour washed distant islands out.
+-- Lighting (§35): this script writes NO Lighting property and adds no Lighting
+-- child. lighting.client.lua (StarterPlayerScripts.IsleLighting) is the one
+-- writer: day-night from the isle clock, region profiles, post effects, the
+-- graphics tier and the world light budget. Technology = Future and the day
+-- look are the place defaults in default.project.json. The old server cycle
+-- here (its own 20-minute clock that disagreed with the sidebar, ClockTime
+-- stepped every 2 s so shadows jittered, and Lighting children rebuilt on the
+-- server) was removed. Night lamps are created off and tagged NightLight; the
+-- director lights them after dusk near the player.
 -------------------------------------------------------------------------------
-local LOOK = {
-	Brightness=2.6, ClockTime=14.5, GeographicLatitude=38,
-	Ambient=C("3A4150"), OutdoorAmbient=C("7D8A9C"),
-	EnvironmentDiffuseScale=.5, EnvironmentSpecularScale=.3,
-	ExposureCompensation=0, ShadowSoftness=.3, GlobalShadows=true,
-}
-for key,value in pairs(LOOK) do Lighting[key]=value end
-for _,child in ipairs(Lighting:GetChildren()) do
-	if child:IsA("PostEffect") or child:IsA("Atmosphere") or child:IsA("Sky") then child:Destroy() end
-end
-local grade=Instance.new("ColorCorrectionEffect")
-grade.Name,grade.Brightness,grade.Contrast,grade.Saturation="Aether grade",0,.1,.08
-grade.TintColor=C("FFF6EA")
-grade.Parent=Lighting
-local bloom=Instance.new("BloomEffect")
-bloom.Name,bloom.Intensity,bloom.Size,bloom.Threshold="Aether bloom",.3,20,1.5
-bloom.Parent=Lighting
-local rays=Instance.new("SunRaysEffect")
-rays.Name,rays.Intensity,rays.Spread="Aether sun rays",.045,.45
-rays.Parent=Lighting
-local air = Instance.new("Atmosphere")
-air.Name="Aether air"
-air.Density,air.Offset,air.Color,air.Decay,air.Glare,air.Haze=.24,.1,C("C9D8E6"),C("7186A6"),.3,.7
-air.Parent = Lighting
-local sky=Instance.new("Sky")
-sky.Name,sky.StarCount,sky.SunAngularSize,sky.MoonAngularSize="Aether sky",2600,12,9
-sky.Parent=Lighting
-
--- Slow day/night: one server loop, one update every 2 s. Lamps (night lights)
--- switch on at dusk; hero lights stay on. Daylight 15 min, night 5 min.
-local DAY_SECONDS,NIGHT_SECONDS=900,300
-local NIGHT_OUTDOOR,NIGHT_AIR=C("3E4A66"),C("4A5878")
-local nightLights={}
-local nightOn=false
-local function isNight(clock) return clock<6.2 or clock>17.8 end
-local function applyClock(clock)
-	Lighting.ClockTime=clock
-	local sun=math.clamp(math.min(clock-5.5,18.5-clock)/1.5,0,1)
-	Lighting.OutdoorAmbient=NIGHT_OUTDOOR:Lerp(LOOK.OutdoorAmbient,sun)
-	air.Color=NIGHT_AIR:Lerp(C("C9D8E6"),sun)
-	local night=isNight(clock)
-	if night~=nightOn then
-		nightOn=night
-		-- Lamps of departed homes drop out here, so the list never leaks.
-		local kept={}
-		for _,l in ipairs(nightLights) do
-			if l.Parent then
-				l.Enabled=night
-				table.insert(kept,l)
-			end
-		end
-		nightLights=kept
-	end
-end
-local function advanceClock(clock,dt)
-	local rate=if clock>=6 and clock<18 then 12/DAY_SECONDS else 12/NIGHT_SECONDS
-	return (clock+dt*rate)%24
-end
-if task.wait then
-	task.spawn(function()
-		local clock=LOOK.ClockTime
-		while true do
-			local dt=task.wait(2)
-			clock=advanceClock(clock,tonumber(dt) or 2)
-			applyClock(clock)
-		end
-	end)
-end
-
+-- BEGIN GENERATED BUILDINGS (art/generate-props.cjs from art/building-shapes.cjs; do not edit)
+local BUILDING_KIT={TimberHouse={kind="facade",w=12,d=10,h=10,windows={{1.5,3.2,-5.17,1.7,1.9,0},{4.1,3.2,-5.17,1.7,1.9,0},{-3.95,8.15,-5.77,1.5,1.9,0},{0,8.15,-5.77,1.5,1.9,0},{3.95,8.15,-5.77,1.5,1.9,0},{6.17,3.2,-1.2,1.5,1.8,-1.571},{-6.17,3.2,1.2,1.5,1.8,1.571},{6.32,8,2.3,1.4,1.8,-1.571},{-6.32,8,-2.9,1.4,1.8,1.571},{-2.5,3.2,5.17,1.5,1.8,3.142},{3,8,5.17,1.4,1.8,3.142},{-3,8,5.17,1.4,1.8,3.142},{6.32,11.32,-0.3,1,1.3,-1.571},{-2.6,14,-3.12,1.2,1.26,0}},door={x=-2.6,z=-5,w=2.2,h=3.9,ry=0},fit={{-7.04,0,-6.556},{7.04,19.02,5.956}},tint="B5523B"},TimberTownhouse={kind="facade",w=8,d=10,h=14,windows={{1.8,3.1,-5.17,2.1,2,0},{0,7.6,-5.67,1.6,2.2,0},{-2,12,-6.17,1.4,1.9,0},{2,12,-6.17,1.4,1.9,0},{4.17,3.1,1.5,1.4,1.7,-1.571},{-4.17,3.1,-1.5,1.4,1.7,1.571},{4.27,7.4,-1.75,1.4,1.8,-1.571},{-4.27,7.4,1.25,1.4,1.8,1.571},{4.37,11.8,1.3,1.3,1.7,-1.571},{-4.37,11.8,-2.3,1.3,1.7,1.571},{0,7.4,5.17,1.5,1.8,3.142},{0,16.6,-6.17,1.3,1.6,0}},door={x=-2.1,z=-5,w=2,h=3.8,ry=0},fit={{-5.061,0,-7.09},{5.061,22.42,6.09}},tint="2F6F8F"},TimberShopfront={kind="facade",w=12,d=10,h=10,windows={{1.8,3.55,-5.17,6.6,2.4,0},{0,7.7,-6.47,2.4,2.2,0},{-4.2,7.9,-5.77,1.5,1.9,0},{4.2,7.9,-5.77,1.5,1.9,0},{6.17,3.2,0,1.5,1.8,-1.571},{-6.17,3.2,0,1.5,1.8,1.571},{6.27,7.9,0.9,1.4,1.8,-1.571},{-6.27,7.9,-1.5,1.4,1.8,1.571},{0,7.9,5.17,1.5,1.8,3.142},{-6.27,11.28,-0.3,1,1.3,1.571},{2.8,13.9,-3.12,1.2,1.26,0}},door={x=-4,z=-5,w=2,h=3.8,ry=0},fit={{-6.99,0,-6.947},{6.99,18.72,5.955}},tint="D9A441"},StoneCottage={kind="facade",w=11,d=9,h=7,windows={{2.3,3,-4.67,1.8,1.9,0},{5.67,3,0,1.5,1.7,-1.571},{-5.67,3,0,1.5,1.7,1.571},{2,3,4.67,1.5,1.7,3.142},{-5.67,8.16,0,0.9,1.2,1.571},{2.3,10.55,-2.42,1.1,1.2,0}},door={x=-2.4,z=-4.5,w=2.1,h=3.9,ry=0},fit={{-6.19,0,-5.4},{6.19,14.82,5.357}},tint="56677A"},ThatchCottage={kind="facade",w=11,d=9,h=6,windows={{-3.5,3.3,-4.67,1.6,1.7,0},{3.5,3.3,-4.67,1.6,1.7,0},{5.67,3.3,1.4,1.4,1.6,-1.571},{-5.67,3.3,-1.4,1.4,1.6,1.571},{0,3.3,4.67,1.5,1.6,3.142}},door={x=0,z=-4.5,w=2,h=3.8,ry=0},fit={{-6.4,0,-5.804},{6.4,13.62,5.804}},tint="3C8C7E"},LogLodge={kind="facade",w=12,d=10,h=7.6,windows={{-3.8,3.4,-5.17,1.7,1.8,0},{3.8,3.4,-5.17,1.7,1.8,0},{6.17,3.4,-1.5,1.5,1.7,-1.571},{-6.17,3.4,1.5,1.5,1.7,1.571},{-2,3.4,5.17,1.5,1.7,3.142},{-5.97,9.04,0,1.1,1.4,1.571},{5.97,9.04,0,1.1,1.4,-1.571}},door={x=0,z=-5,w=2.2,h=4,ry=0},fit={{-6.99,0,-7.737},{6.99,17.02,6.06}},tint="4E7A48"},ShopHall={kind="walkin",w=16,d=13,h=9.6,windows={{-5,4.3,-6.13,3.2,3.4,0},{5,4.3,-6.13,3.2,3.4,0},{4.3,4.5,6.13,2.6,3,3.142},{-4.3,4.5,6.13,2.6,3,3.142},{7.63,4.5,0,2.4,3,-1.571},{-7.63,4.5,0,2.4,3,1.571},{-8.17,10.96,0,1.4,1.6,1.571},{8.17,10.96,0,1.4,1.6,-1.571},{-4.2,13.65,-3.42,1.1,1.2,0},{4.2,13.65,-3.42,1.1,1.2,0}},door={x=0,z=-6.5,w=4.4,h=7.2,ry=0},t=0.8,floor=0.34,opening={u=0,w=4.4,h=7.2},fit={{-8.89,0,-7.45},{8.89,18.62,7.45}},tint="9C3F3A"},TavernHall={kind="walkin",w=18,d=13,h=10.4,windows={{-6,7.9,-6.67,1.8,2.2,0},{6,7.9,-6.67,1.8,2.2,0},{9.17,8,0,1.6,2,-1.571},{-9.17,8,0,1.6,2,1.571},{-6,3.8,-6.13,3.2,2.8,0},{6,3.8,-6.13,3.2,2.8,0},{4,4.2,6.13,2,2.4,3.142},{-4,4.2,6.13,2,2.4,3.142},{8.63,4.2,-2.6,2,2.4,-1.571},{-8.63,4.2,2.6,2,2.4,1.571},{9.17,11.88,0,1.6,1.8,-1.571}},door={x=0,z=-6.5,w=4,h=7,ry=0},t=0.8,floor=0.34,opening={u=0,w=4,h=7},fit={{-10.75,0,-8.85},{9.89,19.82,7.453}},tint="7A3E2E"},BankInterior={kind="interior",w=16,d=13,h=9.6,windows={},counter={c={0,1.74,0.5},s={6.5,2.8,2}},fit={{-7.1,0.34,-5.4},{7.1,10,5.68}},tint="C9A24E"},ShopInterior={kind="interior",w=16,d=13,h=9.6,windows={},counter={c={0,1.74,0.5},s={6.5,2.8,2}},fit={{-6.15,0.34,-5.5},{7.1,9.8,5.6}},tint="9DF3D7"},TavernInterior={kind="interior",w=18,d=13,h=10.4,windows={},counter={c={5.6,1.6400000000000001,1},s={2,2.6,8}},fit={{-8.2,0.14,-4.557},{8.05,10.6,5}},tint="C15557"},HallFurnishings={kind="interior",w=8,d=18,h=7,windows={},fit={{-3.55,0,-9},{4.95,7,9}},tint="3F6FB5"}}
+-- END GENERATED BUILDINGS
 -------------------------------------------------------------------------------
 -- Primitive helpers.
 -------------------------------------------------------------------------------
@@ -139,18 +76,51 @@ local function ghost(p)
 	if not p.CanCollide then p.CanQuery=false end
 	return p
 end
-local GATHER_HOLD,FISH_HOLD,INTERACT_HOLD=1,1.5,.36
+local INTERACT_HOLD=.36 -- §42: nothing gathers by holding a prompt (the 1 s gather hold is retired)
 local function prompt(p, verb, item, action, id, owner)
+	assert(action~="gather","§42: gathering nodes are struck, never prompted (Node.gather)")
 	local q = Instance.new("ProximityPrompt")
-	-- Gather holds long enough for the swing gesture to read (Animation team);
-	-- fishing (cast, bob, reel) is set to FISH_HOLD by its spot; interacts stay snappy.
-	q.ActionText, q.ObjectText, q.HoldDuration = verb,item,if action=="gather" then GATHER_HOLD else INTERACT_HOLD
+	q.ActionText, q.ObjectText, q.HoldDuration = verb,item,INTERACT_HOLD
 	q.MaxActivationDistance, q.RequiresLineOfSight = 9,false
 	if action then q:SetAttribute("IsleAction",action) end
 	if id then q:SetAttribute("IsleItem",id) end
 	if owner then q:SetAttribute("OwnerUserId",owner) end
-	q.Parent = p
+	-- §44: a travel beacon's prompt hangs on its "Beacon prompt" attachment
+	-- (in front of the dais, waist height), not inside the crystal cage.
+	local seat=p:FindFirstChild("Beacon prompt")
+	q.Parent = if seat and seat:IsA("Attachment") then seat else p
 	return q
+end
+-- §42 Gathering Feel: nodes are struck with the held tool, never prompted. The
+-- host part (the click target) carries GatherNode=<resource id> (+ IsleRegion,
+-- OwnerUserId; NodeMaxHp and NodeLabel once AetherData loads) and the
+-- AetherNode tag; its Model is the node's visual group (the client depletes it
+-- per player). server.server.lua's `strike` verb validates every hit.
+local Node={pending={}} -- Node.stamp once AetherData loads; nodes built before that wait in Node.pending
+function Node.gather(host,id,region,owner)
+	host:SetAttribute("GatherNode",id)
+	if region then host:SetAttribute("IsleRegion",region) end
+	if owner then host:SetAttribute("OwnerUserId",owner) end
+	host.CanQuery=true
+	Tags:AddTag(host,"AetherNode")
+	if Node.stamp then Node.stamp(host) else table.insert(Node.pending,host) end
+	return host
+end
+-- §42 (owner decision): special strike nodes. `kind` routes the break on the
+-- server (StrikeKind "crew": the Crew Haven stores credit the crew through
+-- coop.server.lua; "garden": a ripe Verdant Garden plot harvests through the
+-- Garden verbs). `name` overrides the hover / bar name.
+function Node.special(host,id,kind,name,owner)
+	Node.gather(host,id,nil,owner)
+	host:SetAttribute("StrikeKind",kind)
+	host:SetAttribute("NodeName",name)
+	return host
+end
+-- A plot that stops being ripe is no longer a node.
+function Node.ungather(host)
+	if host:GetAttribute("GatherNode")==nil then return end
+	for _,key in ipairs({"GatherNode","StrikeKind","NodeName","NodeMaxHp","NodeLabel","ResourceId","OwnerUserId","GardenHarvest"}) do host:SetAttribute(key,nil) end
+	Tags:RemoveTag(host,"AetherNode")
 end
 local function hidden(parent,name,pos)
 	local p = block(parent,name,pos,V(1,1,1),cream,SM,false)
@@ -213,9 +183,14 @@ local function light(parent,color,brightness,range,opts)
 	if opts.face then l.Face=opts.face end
 	if opts.angle then l.Angle=opts.angle end
 	if opts.night then
-		l.Enabled=nightOn
-		table.insert(nightLights,l)
+		l.Enabled=false -- the client director (§35) lights it after dusk
+		l:SetAttribute("NightLight",true)
 	end
+	-- §35 QC M1: server intent rides in attributes the client director never
+	-- writes (it culls Enabled / Shadows). Any later server toggle of this
+	-- light sets LightWanted too (see homePlacement.relight).
+	l:SetAttribute("LightWanted",true)
+	l:SetAttribute("LightHero",l.Shadows)
 	l.Parent=host
 	return l
 end
@@ -254,47 +229,56 @@ local function anchor(parent,purpose,where,toward)
 end
 
 -------------------------------------------------------------------------------
--- Signs (docs/DEPTH-CONTRACT.md §28): one data-driven builder for every sign.
--- Signs.build(parent, cf, spec) -> mainBoard, model. cf is the sign's ground
--- point; its LookVector is the side the main face reads from. spec:
+-- Signs v2 (docs/DEPTH-CONTRACT.md §28): every sign is a floating, camera-
+-- facing plaque. Signs.build(parent, cf, spec) -> anchor, model. cf is the
+-- sign's ground point (its yaw no longer matters: the plaque always faces the
+-- viewer). spec:
 --   title, kicker, accent (Color3), width (studs, the old board width),
---   kind = hanging | shop | post | banner | plaque | ledger (default from
---   Signs.STYLE[title], else hanging), icon (shop: catalog shape of the trade),
---   arrows = {{label, to = Vector3}, ...} (post: boards pointing at real places),
---   plate = false (post: arrows only), theme (default: the island's theme).
--- Each sign is its own Model "Sign <title>" (attributes SignArchetype,
--- SignTitle, SignTheme; tag AetherSign) holding a frame host (post, pole,
--- plinth or notice post: the visible primitive fallback, mesh slot with a
--- declared ShapeBox the frame mesh fills), its text boards (mesh slots of kind
--- "sign" that wrap the board, SurfaceGuis painted here) and, for shops, one
--- icon prop. Parts: hanging/banner/plaque/ledger 2, shop 3, post 1 + plate +
--- arrows. No lights: faces self-light (LightInfluence Signs.LIGHT) at night.
--- Reference sizes match the authored meshes in art/world-shapes.cjs.
+--   kind = hanging | shop | post | banner | plaque (default from
+--   Signs.STYLE[title], else hanging), icon (shop: catalog shape of the trade,
+--   drawn as a 2D glyph), arrows = {{label, to = Vector3}, ...} (post: rows
+--   whose arrows point at real places in screen space), plate = false (post:
+--   arrows only), theme (default: the island's theme).
+-- Each sign is a Model "Sign <title>" (attributes SignArchetype, SignTitle,
+-- SignTheme, SignVersion = 2; tag AetherSign) holding ONE invisible,
+-- non-colliding anchor part (named after the title, SignAnchor = true, chest
+-- height so prompts parented to it sit where players reach) and a BillboardGui
+-- "SignBillboard" on it. No posts, brackets, plinths or meshes.
+-- The billboard is laid out in fixed design pixels (text fitted exactly with
+-- Signs.fit) in two forms: full (kicker ribbon in a "Detail" layer) and
+-- compact (title plaque; banners a short "Compact" pennant). The client
+-- (signs.client.lua + shared/SignView.lua) scales it as REF / distance
+-- clamped per archetype and device, picks the form, declutters overlapping
+-- plaques, fades it near MaxDistance, bobs it (not with reduced motion),
+-- caps how many are visible (nearest N), turns post arrows toward their
+-- destinations and brightens the aether crystal at night. Signs.settle steps
+-- island signs clear of walls once the world is built.
+-- Distinct from NPC nameplates (a dark rounded Gotham strip, "Nameplate"): a
+-- metal-framed region-themed panel with a crest, a caps kicker ribbon and a
+-- Merriweather / Fondamento title, a crystal and a drop shadow.
 -------------------------------------------------------------------------------
--- Face cost (§28 performance): PPS 40 (was 56), MaxDistance 100 (landmark
--- plaques 150), one outline per label (UIStroke, or the engraved highlight
--- label on stone/scroll boards; never both), and Signs.cullBacks drops the
--- Back face of a board whose back looks into a wall or over the rim.
-local Signs={PPS=40,LIGHT=.25,BRIGHTNESS=1.3,MAX_DISTANCE=100,LANDMARK_DISTANCE=150,LINE=1.3}
+local Signs={LIGHT=.15,BRIGHTNESS=1.25,MAX_DISTANCE=120,LANDMARK_DISTANCE=160,LINE=1.3,VERSION=2,ANCHOR_Y=2.5,PAD=16}
 Signs.FONT={title="rbxasset://fonts/families/Merriweather.json",body="rbxasset://fonts/families/BuilderSans.json",
 	banner="rbxasset://fonts/families/Fondamento.json"}
--- Island themes: panel (painted board), text, trim (rules, borders), metal
--- (frame and board Tint: brackets, chains, caps, rivets), wood / stone (the
--- fallback primitives), cloth (banners without an accent of their own).
+-- Region identities: panel (painted field), text, trim (inlay rule, divider),
+-- metal (frame, corner caps, crest ring), stone (landmark plaques), crystal
+-- (the aether crystal and its night glow), crest (painted region crest glyph).
 Signs.THEMES={
-	Quay={panel=C("1E3442"),text=cream,trim=C("D9B65C"),metal=C("C9A24E"),wood=C("7A5636"),stone=C("CFCFC6"),cloth=C("2E4E7A")},
-	Grove={panel=C("1F3A2C"),text=C("F3EBD2"),trim=C("A9D98F"),metal=C("6FA38A"),wood=C("5A4030"),stone=C("B9C0AA"),cloth=C("3F6E3A")},
-	Quarry={panel=C("2E2A2A"),text=C("F6E3C6"),trim=C("E09A5A"),metal=C("B8733F"),wood=C("6B4A30"),stone=C("BDB4A8"),cloth=C("8A4B2C")},
-	Warden={panel=C("2A2F45"),text=C("F4E6E0"),trim=C("E08C78"),metal=C("AFA8A0"),wood=C("5E4A3E"),stone=C("C4C0C8"),cloth=C("7E3B3A")},
-	Skyreach={panel=C("1C3A40"),text=C("EAF8F6"),trim=C("8EE6CB"),metal=C("B8C6CF"),wood=C("6A5A4E"),stone=C("D2DEE0"),cloth=C("2F6A72")},
-	Gloom={panel=C("251C36"),text=C("EFE6FF"),trim=C("B9A2EE"),metal=C("8E7BC0"),wood=C("3E3242"),stone=C("ABA5B6"),cloth=C("4A3470")},
-	Tide={panel=C("123A44"),text=C("E8FBFF"),trim=C("6FD6E4"),metal=C("7FC9C9"),wood=C("6E5A44"),stone=C("CAD8D2"),cloth=C("1F5E6E")},
-	Tempest={panel=C("1E2640"),text=C("EEF3FF"),trim=C("C6DCFF"),metal=C("A8B6CC"),wood=C("4C4A58"),stone=C("BCC2CE"),cloth=C("34426E")},
-	Crown={panel=C("241A2E"),text=C("FFF2D6"),trim=C("F2C14E"),metal=C("E0B44E"),wood=C("4A3428"),stone=C("DDD3BF"),cloth=C("5A2A4A")},
-	Home={panel=C("2E2620"),text=C("FBF0DA"),trim=C("E6C07A"),metal=C("C9A24E"),wood=C("7A5636"),stone=C("D2CBBB"),cloth=C("3C7E72")},
+	Quay={panel=C("1B2A44"),text=C("F6EBD0"),trim=C("D9B65C"),metal=C("C9A24E"),stone=C("D6D2C4"),crystal=C("8FE8FF"),crest="🧭"}, -- brass & navy
+	Sunwheel={panel=C("5A3B22"),text=C("FFF1D0"),trim=C("E9C46A"),metal=C("D9A84A"),stone=C("E3D6B4"),crystal=C("FFE7A0"),crest="🌾"}, -- warm oak & wheat gold
+	Brassfall={panel=C("2A2422"),text=C("F6E3C6"),trim=C("E0925A"),metal=C("B8733F"),stone=C("C9BDAE"),crystal=C("FFB27A"),crest="⚙️"}, -- copper & soot
+	Mosswake={panel=C("2C3A24"),text=C("F1EED8"),trim=C("A9D98F"),metal=C("7FA86A"),stone=C("BFC6AE"),crystal=C("B8FF9E"),crest="🌿"}, -- living wood & moss
+	Gloom={panel=C("241A38"),text=C("F0E6FF"),trim=C("B9A2EE"),metal=C("8E7BC0"),stone=C("B4ACC4"),crystal=C("D2B8FF"),crest="🔮"}, -- violet crystal
+	Tide={panel=C("4F4B42"),text=C("F4F0E6"),trim=C("D8C9A3"),metal=C("7FC9C9"),stone=C("D4D8CF"),crystal=C("9FF0FF"),crest="🐚"}, -- driftwood & rope
+	Tempest={panel=C("2B3240"),text=C("EEF3FF"),trim=C("8FB4FF"),metal=C("A8B6CC"),stone=C("BCC2CE"),crystal=C("BFD8FF"),crest="⚡"}, -- slate & storm-blue
+	Cinder={panel=C("221E1E"),text=C("FFE8D6"),trim=C("FF8A3D"),metal=C("C0603A"),stone=C("3B3634"),crystal=C("FFB070"),crest="🔥"}, -- basalt & ember
+	Crown={panel=C("ECE6DA"),text=C("2B2433"),trim=C("C9A042"),metal=C("E0B44E"),stone=C("EFEBE2"),crystal=C("FFE9A8"),crest="👑"}, -- marble & gold
+	Warden={panel=C("2E2228"),text=C("F4E6E0"),trim=C("E08C78"),metal=C("AFA8A0"),stone=C("C4C0C8"),crystal=C("FFC2B0"),crest="🛡️"}, -- iron & crimson
+	Skyreach={panel=C("1C3A44"),text=C("EAF8F6"),trim=C("8EE6CB"),metal=C("B8C6CF"),stone=C("D2DEE0"),crystal=C("B0FFF0"),crest="🦅"}, -- silver & sky
+	Home={panel=C("3A2C22"),text=C("FBF0DA"),trim=C("E6C07A"),metal=C("C9A24E"),stone=C("D2CBBB"),crystal=C("9FF3D7"),crest="🏡"}, -- hearth oak
 }
-Signs.ISLAND_THEME={["Compass Quay"]="Quay",["Guild Terrace"]="Quay",["Mosswake Grove"]="Grove",["Meadow Reach"]="Grove",
-	["Windpine Grove"]="Grove",["Brassfall Quarry"]="Quarry",["Cinder Shelf"]="Quarry",["Warden Reach"]="Warden",Skyreach="Skyreach",
+Signs.ISLAND_THEME={["Compass Quay"]="Quay",["Guild Terrace"]="Quay",["Mosswake Grove"]="Mosswake",["Meadow Reach"]="Sunwheel",
+	["Windpine Grove"]="Mosswake",["Brassfall Quarry"]="Brassfall",["Cinder Shelf"]="Cinder",["Warden Reach"]="Warden",Skyreach="Skyreach",
 	["Gloomhollow Caverns"]="Gloom",["Tidewater Shoals"]="Tide",["Tempest Spire"]="Tempest",["The Shattered Crown"]="Crown"}
 -- Archetype per fixed sign title (call sites may override with spec fields).
 Signs.STYLE={
@@ -312,7 +296,20 @@ Signs.STYLE={
 	Homeward={kind="hanging"},["Wayfarer's Rest"]={kind="plaque"},["Artisans' Row"]={kind="hanging"},
 	["Builder's Terrace"]={kind="hanging"},["Commission Board"]={kind="hanging"},
 }
+-- Studs between a wall and a banner beside it (the quad turns with the camera).
+Signs.WALL_GAP=4.2
 Signs.KINDS={hanging=true,shop=true,post=true,banner=true,plaque=true,ledger=true}
+-- Trade glyphs for shop plaques (the old 3D icon shapes, now painted).
+Signs.ICON={Seal="🪙",Anvil="⚒️",Fish="🐟",AetherCrystal="💎",CropSheaf="🌾",Hatchet="🪓",Feather="🏹",Feast="🍲",Ingot="🧱",
+	HideRoll="🧶",Boots="🥾",Charm="🔮"}
+-- Design sizes in pixels at UIScale 1 (the client scales them with distance).
+Signs.SIZE={wideMin=230,wideMax=400,bodyH=72,bannerW=204,postW=340,postRow=40}
+-- Text sizes (px at scale 1). Titles, post titles, destinations and compact
+-- banner titles draw at every scale: >= 23 px, so >= 10 px at the phone
+-- floor (0.45). Kickers and full-banner titles draw only at scale >= 0.7.
+Signs.TEXT={title={max=32,min=23},post={max=28,min=23},dest={max=25,min=23},kicker={max=16,min=15},
+	bannerTitle={max=28,min=18},compactTitle={max=26,min=23}}
+Signs.LIFT={hanging=3.4,shop=3.4,plaque=2.4,banner=4.6,post=3.0,shopAwning=4.9} -- studs above the anchor (billboard centre)
 function Signs.theme(parent)
 	local node=parent
 	while node and node~=world and node~=islandsFolder and node~=workspace do
@@ -345,7 +342,7 @@ function Signs.wrap(text,size,width)
 	local lines,line,widest=1,"",0
 	for word,gap in string.gmatch(text,"(%S+)(%s*)") do
 		local trimmed=string.gsub(line,"%s+$","")
-		if trimmed~="" and Signs.textWidth(trimmed.." "..word,size)>width then
+		if trimmed~="" and Signs.textWidth(trimmed.." "..word,size)>width*.94 then
 			widest=math.max(widest,Signs.textWidth(trimmed,size))
 			lines+=1
 			line=word..gap
@@ -360,383 +357,546 @@ end
 function Signs.fit(text,w,h,maxLines,maxSize,minSize)
 	for size=math.floor(maxSize),math.ceil(minSize),-1 do
 		local lines,widest=Signs.wrap(text,size,w)
-		if lines<=maxLines and widest<=w and lines*size*Signs.LINE<=h then return size,lines,false end
+		-- 6% slack: Merriweather Bold runs close to the conservative em table.
+		if lines<=maxLines and widest<=w*.94 and lines*size*Signs.LINE<=h then return size,lines,false end
 	end
 	return math.ceil(minSize),(Signs.wrap(text,math.ceil(minSize),w)),true
 end
+-- Separator "   /   " in kickers becomes a centred bullet; kickers are caps.
+function Signs.kickerText(kicker) return string.upper((string.gsub(kicker or "","%s*/%s*","  •  "))) end
 
 -- Painting ---------------------------------------------------------------
+-- Every billboard has two forms the client switches between (shared/SignView):
+--   full    (scale >= View.DETAIL): the plaque plus its "Detail" layer, a
+--           kicker ribbon with a divider rule;
+--   compact (scale < View.DETAIL, always on phones): the title plaque alone;
+--           banners swap to a short pennant root "Compact".
+-- Text sizes (Signs.TEXT) keep every label >= View.MIN_TEXT (10) rendered px
+-- at the smallest scale of the form it is drawn in (verify-signs).
+-- Gui attributes for the client's declutter: SignFull / SignCompact (visible
+-- box at scale 1, Vector2) and SignCompactY (its centre offset, px).
 do
-local function guiFrame(parent,name,x,y,w,h,color,transparency,z)
+local BLACK=C("05070A")
+local function luminance(c) return .2126*c.R+.7152*c.G+.0722*c.B end
+local function frame(parent,name,x,y,w,h,color,transparency,z,radius)
 	local f=Instance.new("Frame")
 	f.Name,f.BorderSizePixel,f.BackgroundColor3=name,0,color
 	f.BackgroundTransparency=transparency or 0
 	f.Position,f.Size=UDim2.fromOffset(math.floor(x+.5),math.floor(y+.5)),UDim2.fromOffset(math.floor(w+.5),math.floor(h+.5))
 	f.ZIndex=z or 1
+	if radius then
+		local c=Instance.new("UICorner")
+		c.CornerRadius=if radius<0 then UDim2.new(1,0,0,0).X else UDim2.new(0,radius,0,0).X -- (UDim via UDim2: no extra globals)
+		c.Parent=f
+	end
 	f.Parent=parent
 	return f
 end
-local function guiStroke(obj,color,thickness,transparency)
+local function stroke(obj,color,thickness,transparency)
 	local s=Instance.new("UIStroke")
 	s.Color,s.Thickness,s.Transparency=color,thickness,transparency or 0
+	s.ApplyStrokeMode=Enum.ApplyStrokeMode.Border
 	s.Parent=obj
 	return s
 end
-local function diamond(parent,name,cx,cy,size,color,z)
-	local d=guiFrame(parent,name,cx-size/2,cy-size/2,size,size,color,0,z)
+-- UIGradient multiplies the background colour, so a graded frame is white and
+-- its gradient carries the true colours (top -> bottom).
+local function gradient(obj,top,bottom)
+	obj.BackgroundColor3=Color3.new(1,1,1)
+	local g=Instance.new("UIGradient")
+	g.Color=ColorSequence.new(top,bottom)
+	g.Rotation=90
+	g.Parent=obj
+	return g
+end
+local function diamond(parent,name,cx,cy,size,color,z,edge)
+	local d=frame(parent,name,cx-size/2,cy-size/2,size,size,color,0,z)
 	d.Rotation=45
+	if edge then stroke(d,edge,1,.2) end
 	return d
 end
-local function setFont(label,family) label.FontFace=Font.new(family,Enum.FontWeight.Bold) end
--- A fitted text line with an ink outline (UIStroke), or, on engraved stone and
--- scroll boards (opts.stroke == false), an offset highlight label instead.
-local function guiText(gui,name,text,x,y,w,h,opts)
+-- Metal: a brushed gradient (light lip, mid, dark foot).
+local function metal(obj,m) gradient(obj,m:Lerp(cream,.4),m:Lerp(BLACK,.35)) end
+-- Text styles per archetype (exactly one outline per label: a UIStroke, or
+-- the offset highlight label "<name>Shadow" on engraved / inked faces).
+--   painted     theme text, ink UIStroke (outlined display)
+--   inked       dark ink on parchment, cream highlight below
+--   engraved    dark cut letters on stone, light highlight below
+--   embroidered gold thread on cloth, dark UIStroke
+-- o.on names the frame the label is read against (verify-signs contrast).
+local function label(root,name,text,x,y,w,h,o)
 	w,h=math.floor(w),math.floor(h) -- fit the box the label really gets
-	local size,lines,overflow=Signs.fit(text,w,h,opts.lines or 1,opts.max,opts.min)
+	local size,lines,overflow=Signs.fit(text,w,h,o.lines or 1,o.max,o.min)
 	local function make(labelName,dx,dy,color,transparency,z)
 		local t=Instance.new("TextLabel")
 		t.Name,t.BackgroundTransparency,t.Text=labelName,1,text
 		t.TextColor3,t.TextTransparency,t.TextSize=color,transparency,size
-		t.TextScaled,t.TextWrapped=false,true
-		t.TextXAlignment=opts.align or Enum.TextXAlignment.Center
+		t.TextScaled,t.TextWrapped,t.RichText=false,true,false
+		t.TextXAlignment=o.align or Enum.TextXAlignment.Center
 		t.TextYAlignment=Enum.TextYAlignment.Center
-		t.Position,t.Size=UDim2.fromOffset(math.floor(x+dx+.5),math.floor(y+dy+.5)),UDim2.fromOffset(math.floor(w),math.floor(h))
+		t.Position,t.Size=UDim2.fromOffset(math.floor(x+dx+.5),math.floor(y+dy+.5)),UDim2.fromOffset(w,h)
 		t.ZIndex=z
-		setFont(t,opts.font)
-		t.Parent=gui
+		t.FontFace=Font.new(o.font,Enum.FontWeight.Bold)
+		t.Parent=root
 		return t
 	end
-	if opts.stroke==false then
-		local offset=math.max(1,math.floor(size*.06+.5))
-		make(name.."Shadow",offset,offset,opts.shadow or ink,opts.shadowTransparency or .35,4)
-	end
-	local main=make(name,0,0,opts.color,0,5)
-	if opts.stroke~=false then guiStroke(main,opts.strokeColor or ink,math.max(1,size*.05),.25) end
+	if o.shadow then make(name.."Shadow",0,math.max(1,math.floor(size*.07+.5)),o.shadow,o.shadowTransparency or .3,8) end
+	local main=make(name,0,0,o.color,0,9)
+	if not o.shadow then stroke(main,o.strokeColor or BLACK,o.thick or math.max(1,math.floor(size*.07+.5)),o.strokeTransparency or .15).ApplyStrokeMode=Enum.ApplyStrokeMode.Contextual end
 	main:SetAttribute("SignFitLines",lines)
+	main:SetAttribute("SignPlain",text)
+	main:SetAttribute("SignOn",o.on or "Panel")
 	if overflow then main:SetAttribute("SignOverflow",true) end
-	return main,size
+	return main,size,lines
 end
-local function surface(board,face,distance)
-	local gui=Instance.new("SurfaceGui")
-	gui.Name="Sign face "..face.Name
-	gui.Face=face
-	gui.SizingMode=Enum.SurfaceGuiSizingMode.PixelsPerStud
-	gui.PixelsPerStud=Signs.PPS
-	gui.LightInfluence,gui.Brightness,gui.MaxDistance=Signs.LIGHT,Signs.BRIGHTNESS,distance or Signs.MAX_DISTANCE
-	gui.AlwaysOnTop=false
+-- Fitted size and line count for a text that prefers one line (up to maxLines
+-- at the floor size): returns size, lines and the box height it needs.
+local function fitText(text,w,t,maxLines)
+	local size,lines,overflow=Signs.fit(text,w,1e4,1,t.max,t.min)
+	if overflow then size,lines=Signs.fit(text,w,1e4,maxLines or 2,t.min+2,t.min) end
+	return size,lines,math.ceil(lines*size*Signs.LINE)+2
+end
+-- WCAG contrast; legible() walks a colour toward ink or cream until it reads
+-- on its panel (titles 4.5:1, kickers 3:1; verify-signs re-measures).
+local function relLum(c)
+	local function ch(v) return if v<=.03928 then v/12.92 else ((v+.055)/1.055)^2.4 end
+	return .2126*ch(c.R)+.7152*ch(c.G)+.0722*ch(c.B)
+end
+local function ratio(a,b)
+	local la,lb=relLum(a),relLum(b)
+	return (math.max(la,lb)+.05)/(math.min(la,lb)+.05)
+end
+-- A graded field spans field+12% cream (top) to field+35% ink (bottom): a
+-- colour must read on both ends.
+local function legible(color,panel,need)
+	local top,bottom=panel:Lerp(cream,.12),panel:Lerp(BLACK,.35)
+	local target=if relLum(panel)>.18 then BLACK else cream
+	for k=0,1,.05 do
+		local c=color:Lerp(target,k)
+		if math.min(ratio(c,top),ratio(c,bottom))>=need+.15 then return c end
+	end
+	return target
+end
+local function textStyle(style,theme,accent,panel)
+	local light=luminance(panel)>.45
+	local ts
+	if (style=="inked" or style=="engraved") and light then
+		local ink2=if style=="engraved" then panel:Lerp(BLACK,.78) else C("2A2018")
+		ts={color=ink2,shadow=panel:Lerp(cream,.7),shadowTransparency=.15}
+	elseif light then
+		ts={color=theme.text,shadow=panel:Lerp(cream,.7),shadowTransparency=.15}
+	elseif style=="embroidered" then
+		ts={color=C("F7DC8A"),strokeColor=BLACK,kick=accent:Lerp(cream,.62)}
+	else
+		-- Painted (or engraved on dark stone such as basalt): light letters, ink outline.
+		ts={color=theme.text,strokeColor=BLACK}
+	end
+	ts.color=legible(ts.color,panel,4.5)
+	if ts.kick then ts.kick=legible(ts.kick,panel,4.5) end
+	return ts
+end
+-- Billboard shell: GW x GH visible content inside PAD padding (shadow, glow).
+local function shell(anchorPart,GW,GH,lift,distance,kind)
+	local P=Signs.PAD
+	local gui=Instance.new("BillboardGui")
+	gui.Name="SignBillboard"
+	gui.Size=UDim2.fromOffset(GW+2*P,GH+2*P)
+	gui.StudsOffsetWorldSpace=V(0,lift,0)
+	gui.MaxDistance,gui.LightInfluence,gui.Brightness=distance,Signs.LIGHT,Signs.BRIGHTNESS
+	gui.AlwaysOnTop,gui.ClipsDescendants=false,false
+	gui.ZIndexBehavior=Enum.ZIndexBehavior.Sibling
 	gui:SetAttribute("SignStyled",true)
-	gui.Parent=board
+	gui:SetAttribute("SignLift",lift)
+	gui:SetAttribute("SignKind",kind)
+	gui:SetAttribute("SignFull",Vector2.new(GW,GH))
+	gui:SetAttribute("SignCompact",Vector2.new(GW,GH))
+	gui:SetAttribute("SignCompactY",0)
+	gui.Parent=anchorPart
+	local function group(name)
+		local root=Instance.new("CanvasGroup")
+		root.Name,root.BackgroundTransparency,root.BorderSizePixel=name,1,0
+		root.AnchorPoint,root.Position,root.Size=Vector2.new(.5,.5),UDim2.fromScale(.5,.5),UDim2.fromOffset(GW+2*P,GH+2*P)
+		root.Parent=gui
+		local scale=Instance.new("UIScale")
+		scale.Name="Scale"
+		scale.Parent=root
+		return root
+	end
+	return gui,group("Sign"),P,group
+end
+-- The layer hidden in compact form (kicker ribbon, divider): full size, so
+-- its children share the root's coordinates; drawn above the plaque.
+local function detailLayer(root)
+	local d=Instance.new("Frame")
+	d.Name,d.BackgroundTransparency,d.BorderSizePixel="Detail",1,0
+	d.Size,d.ZIndex=root.Size,10
+	d.Parent=root
+	return d
+end
+local function crystal(root,cx,cy,theme)
+	-- Aether crystal set into the frame, with its glow (the client brightens it at night).
+	local glow=frame(root,"Crystal glow",cx-14,cy-14,28,28,theme.crystal,.7,7,-1)
+	glow:SetAttribute("DayTransparency",.7)
+	glow:SetAttribute("NightTransparency",.35)
+	diamond(root,"Crystal setting",cx,cy,15,theme.metal:Lerp(BLACK,.2),8)
+	diamond(root,"Crystal",cx,cy,10,theme.crystal,9,cream)
+end
+-- Plaque body at (x, y), W x H: drop shadow, graded metal frame, field,
+-- bevel, inlay, style dressing, corner caps and the crystal pendant.
+local function dressing(root,x,y,W,H,theme,panel,style)
+	frame(root,"Shadow soft",x-2,y+5,W+4,H+6,BLACK,.82,1,14)
+	frame(root,"Shadow",x+3,y+6,W-2,H,BLACK,.62,1,10)
+	local f=frame(root,"Frame",x,y,W,H,theme.metal,0,3,8)
+	metal(f,theme.metal)
+	stroke(f,theme.metal:Lerp(BLACK,.65),1.5,.1)
+	local field=frame(root,"Panel",x+5,y+5,W-10,H-10,panel,0,4,5)
+	gradient(field,panel:Lerp(cream,.12),panel:Lerp(BLACK,.3))
+	if style=="painted" then
+		-- Hardwood grain: faint darker streaks across the field.
+		for i,k in ipairs({.3,.58,.81}) do frame(root,"Grain",x+9,y+5+(H-10)*k,W-18,i==2 and 2 or 1,panel:Lerp(BLACK,.5),.72,5) end
+	elseif style=="inked" then
+		-- Parchment: darker, burnt edges toward the rolls.
+		for _,bx in ipairs({x+5,x+W-19}) do frame(root,"Burn",bx,y+5,14,H-10,C("8A6240"),.6,5) end
+	elseif style=="engraved" then
+		-- Stone: a carved recess (shadowed top edge, lit bottom lip).
+		frame(root,"Recess shade",x+10,y+10,W-20,2,panel:Lerp(BLACK,.45),.3,5)
+		frame(root,"Recess lip",x+10,y+H-12,W-20,2,panel:Lerp(cream,.6),.2,5)
+	end
+	-- Bevel: a lit top lip and a shaded foot inside the frame (carved depth).
+	frame(root,"Bevel light",x+7,y+5,W-14,2,cream,.55,5)
+	frame(root,"Bevel shade",x+7,y+H-7,W-14,2,BLACK,.45,5)
+	local inlay=frame(root,"Inlay",x+9,y+9,W-18,H-18,panel,1,6,3)
+	stroke(inlay,theme.trim,1.5,.2)
+	for _,c in ipairs({{x+3,y+3},{x+W-3,y+3},{x+3,y+H-3},{x+W-3,y+H-3}}) do
+		diamond(root,"Corner cap",c[1],c[2],11,theme.metal:Lerp(cream,.3),7,theme.metal:Lerp(BLACK,.6))
+	end
+	crystal(root,x+W/2,y+H-1,theme)
+end
+-- Painted crest medallion: metal ring, accent field, the region crest (or the
+-- shop's trade glyph).
+local function crest(root,cx,cy,d,theme,accent,glyph)
+	local ring=frame(root,"Crest",cx-d/2,cy-d/2,d,d,theme.metal,0,7,-1)
+	metal(ring,theme.metal)
+	stroke(ring,theme.metal:Lerp(BLACK,.6),1.5,.1)
+	local f=frame(root,"Crest field",cx-d*.39,cy-d*.39,d*.78,d*.78,accent:Lerp(BLACK,.45),0,8,-1)
+	gradient(f,accent:Lerp(BLACK,.2),accent:Lerp(BLACK,.65))
+	local t=Instance.new("TextLabel")
+	t.Name,t.BackgroundTransparency,t.Text="Crest glyph",1,glyph
+	t.TextSize,t.TextScaled,t.TextWrapped=math.floor(d*.46),false,false
+	t.TextColor3=cream
+	t.Position,t.Size=UDim2.fromOffset(math.floor(cx-d/2),math.floor(cy-d/2)),UDim2.fromOffset(math.floor(d),math.floor(d))
+	t.ZIndex=9
+	t.FontFace=Font.new(Signs.FONT.body,Enum.FontWeight.Bold)
+	t.Parent=root
+end
+local function divider(parent,x,y,w,accent)
+	frame(parent,"Divider",x,y,w,2,accent,0,7)
+	diamond(parent,"Divider stud",x,y+1,6,accent,8)
+	diamond(parent,"Divider stud",x+w,y+1,6,accent,8)
+end
+-- Kicker ribbon (Detail layer): a dark metal tab over the plaque's top edge,
+-- caps kicker, a divider rule with studs along its foot.
+local function ribbon(detail,x,y,w,h,kicker,lines,theme,accent)
+	local back=theme.panel:Lerp(BLACK,.55)
+	local r=frame(detail,"Ribbon",x,y,w,h,back,0,2,5)
+	gradient(r,back:Lerp(cream,.08),back:Lerp(BLACK,.3))
+	stroke(r,theme.trim,1.5,.25)
+	divider(detail,x+10,y+h-4,w-20,accent)
+	local T=Signs.TEXT.kicker
+	label(detail,"Kicker",kicker,x+12,y+3,w-24,h-8,{lines=lines,max=T.max,min=T.min,font=Signs.FONT.body,
+		color=legible(accent:Lerp(cream,.55),back,4.5),thick=1,strokeTransparency=.35,on="Ribbon"})
+end
+-- Kicker ribbon height for a text area width (one or two lines).
+local function ribbonFit(kicker,w)
+	local T=Signs.TEXT.kicker
+	local lines=if select(3,Signs.fit(kicker,w,1e4,1,T.max,T.min)) then 2 else 1
+	return math.ceil(lines*T.max*Signs.LINE)+12,lines
+end
+
+-- Wide plaque (hanging, shop, landmark, ledger title): crest left, title; the
+-- kicker ribbon above.
+local function paintWide(anchorPart,spec,theme,lift,distance,kindName)
+	local kind=spec.kind
+	local S,T=Signs.SIZE,Signs.TEXT
+	local W=math.floor(math.clamp((spec.width or 9)*(if kind=="plaque" then 36 else 32),S.wideMin,S.wideMax))
+	local d=50
+	local function textW(width) return width-42-d end
+	local kick=Signs.kickerText(spec.kicker)
+	local hasKicker=kick~=""
+	-- Grow (up to wideMax) until the title reads on one line and the kicker on one.
+	while W<S.wideMax and (select(3,Signs.fit(spec.title,textW(W),1e4,1,T.title.max,T.title.min))
+		or (hasKicker and select(3,Signs.fit(kick,W-52,1e4,1,T.kicker.max,T.kicker.min)))) do
+		W=math.min(S.wideMax,W+10)
+	end
+	local _,_,th=fitText(spec.title,textW(W),T.title,2)
+	local BH=math.max(S.bodyH,th+26)
+	local RH,kl=ribbonFit(kick,W-52)
+	local top=if hasKicker then RH-6 else 0 -- the ribbon overlaps the plaque's top edge
+	local GH=top+BH
+	local style=if kind=="shop" then "inked" elseif kind=="plaque" then "engraved" else "painted"
+	local panel=if kind=="shop" then C("EADDBA") elseif kind=="plaque" then theme.stone else theme.panel
+	local gui,root,P=shell(anchorPart,W,GH,lift or spec.lift or Signs.LIFT[kind],distance or (if kind=="plaque" then Signs.LANDMARK_DISTANCE else Signs.MAX_DISTANCE),kindName or kind)
+	gui:SetAttribute("SignCompact",Vector2.new(W,BH))
+	gui:SetAttribute("SignCompactY",top/2)
+	local x,y=P,P+top
+	dressing(root,x,y,W,BH,theme,panel,style)
+	if kind=="shop" then
+		-- Scroll rolls over both ends of the frame.
+		for _,rx in ipairs({x-5,x+W-9}) do
+			local roll=frame(root,"Roll",rx,y-4,14,BH+8,C("D9C79C"),0,7,7)
+			gradient(roll,C("F4E8C8"),C("A88B5E"))
+			stroke(roll,C("6E4A30"),1,.3)
+		end
+	end
+	local ts=textStyle(style,theme,spec.accent,panel)
+	local glyph=if kind=="shop" then (Signs.ICON[spec.icon or ""] or "✦") else theme.crest
+	crest(root,x+14+d/2,y+BH/2,d,theme,spec.accent,glyph)
+	local x0=x+14+d+12
+	local w=x+W-16-x0
+	local size,lines=fitText(spec.title,w,T.title,2)
+	label(root,"Title",spec.title,x0,y+(BH-th)/2,w,th,{lines=lines,max=size,min=size,font=Signs.FONT.title,align=Enum.TextXAlignment.Left,
+		color=ts.color,shadow=ts.shadow,shadowTransparency=ts.shadowTransparency,strokeColor=ts.strokeColor})
+	if hasKicker then ribbon(detailLayer(root),x+14,P,W-28,RH,kick,kl,theme,spec.accent) end
 	return gui
 end
--- Panel backdrop: gradient fill, plank seams (wood), a double rule in the
--- trim colour and accent corner studs.
-local function backdrop(gui,cw,ch,panel,trim,accent,style)
-	local bg=guiFrame(gui,"Panel",0,0,cw,ch,panel,0,1)
-	local grad=Instance.new("UIGradient")
-	grad.Color=ColorSequence.new(panel:Lerp(cream,.1),panel:Lerp(C("05080C"),.3))
-	grad.Rotation=90
-	grad.Parent=bg
-	local unit=math.min(cw,ch)
-	if style=="wood" then
-		for _,k in ipairs({.36,.68}) do guiFrame(gui,"Plank seam",0,ch*k,cw,math.max(1,unit*.012),panel:Lerp(C("05080C"),.45),.35,2) end
+-- Banner (guild, boss, dungeon, minigame, crew, faction): a portrait cloth on
+-- a crossbar with an embroidered border, swallowtail, tassels and a crest;
+-- its compact form is a short title pennant (root "Compact").
+local function tails(root,P,W,y,cloth,theme)
+	local tw=W/2/1.414
+	for _,x in ipairs({P+W/4,P+3*W/4}) do
+		diamond(root,"Tail braid",x,y,tw+6,theme.metal,2)
+		diamond(root,"Tail",x,y,tw,cloth,4)
+		local tassel=frame(root,"Tassel",x-5,y+tw*.71-2,10,14,theme.metal:Lerp(cream,.25),0,5,-1)
+		metal(tassel,theme.metal)
 	end
-	local m=math.max(3,unit*.07)
-	local outer=guiFrame(gui,"Rule",m,m,cw-2*m,ch-2*m,panel,1,3)
-	guiStroke(outer,trim,math.max(2,unit*.024))
-	local i=m+math.max(3,unit*.045)
-	local inner=guiFrame(gui,"Inner rule",i,i,cw-2*i,ch-2*i,panel,1,3)
-	guiStroke(inner,trim,math.max(1,unit*.01),.45)
-	local stud=math.max(4,unit*.085)
-	for _,c in ipairs({{m,m},{cw-m,m},{m,ch-m},{cw-m,ch-m}}) do diamond(gui,"Corner stud",c[1],c[2],stud,accent,4) end
-	return m
 end
--- Crest emblem: an accent diamond with the title's initial.
-local function emblem(gui,cx,cy,size,accent,panel,trim,letter,ink)
-	local outer=diamond(gui,"Emblem",cx,cy,size,accent,3)
-	guiStroke(outer,trim,math.max(1.5,size*.05))
-	diamond(gui,"Emblem field",cx,cy,size*.7,panel,4)
-	local t=Instance.new("TextLabel")
-	t.Name,t.BackgroundTransparency,t.Text="Emblem initial",1,letter
-	t.TextColor3,t.TextSize,t.TextScaled,t.TextWrapped=ink or accent:Lerp(cream,.55),math.floor(size*.62),false,true
-	t.Position,t.Size=UDim2.fromOffset(math.floor(cx-size/2),math.floor(cy-size/2)),UDim2.fromOffset(math.floor(size),math.floor(size))
-	t.ZIndex=6
-	setFont(t,Signs.FONT.title)
-	t.Parent=gui
+local function crossbar(root,P,W,theme)
+	local bar=frame(root,"Crossbar",P-10,P+4,W+20,9,theme.metal,0,7,4)
+	metal(bar,theme.metal)
+	for _,x in ipairs({P-12,P+W+12}) do diamond(root,"Finial",x,P+8,12,theme.metal:Lerp(cream,.35),8,theme.metal:Lerp(BLACK,.6)) end
+	crystal(root,P+W/2,P+8,theme)
 end
-local function initial(title) return string.upper(string.match(title,"%a") or "*") end
--- Separator "   /   " in kickers becomes a centred bullet.
-local function kickerText(kicker) return (string.gsub(kicker or "","%s*/%s*","  •  ")) end
+local function cloth(root,P,W,top,h,clothColor,theme)
+	frame(root,"Shadow",P+4,top+6,W-4,h,BLACK,.62,1,8)
+	local f=frame(root,"Frame",P,top,W,h,theme.metal,0,3,4)
+	metal(f,theme.metal)
+	local field=frame(root,"Panel",P+5,top+4,W-10,h-6,clothColor,0,5,3)
+	gradient(field,clothColor:Lerp(cream,.1),clothColor:Lerp(BLACK,.35))
+	local stitch=frame(root,"Inlay",P+10,top+9,W-20,h-16,clothColor,1,6,2)
+	stroke(stitch,theme.trim,2,.1)
+	local inner=frame(root,"Stitch",P+15,top+14,W-30,h-26,clothColor,1,6,2)
+	stroke(inner,C("F7DC8A"),1,.55)
+end
+local function paintBanner(anchorPart,spec,theme)
+	local S,T=Signs.SIZE,Signs.TEXT
+	local W=S.bannerW
+	local clothColor=spec.accent:Lerp(C("0C0A12"),.7)
+	local ts=textStyle("embroidered",theme,spec.accent,clothColor)
+	local w=W-40
+	-- Full form: crest, title (<= 3 lines), divider, kicker (<= 5 lines).
+	local tsize,tlines,th=fitText(spec.title,w,T.bannerTitle,3)
+	local kick=Signs.kickerText(spec.kicker)
+	local ksize,klines=Signs.fit(kick,w,1e4,5,T.kicker.max,T.kicker.min)
+	local kh=math.ceil(klines*ksize*Signs.LINE)+2
+	local d=52
+	local clothH=22+d+8+th+14+kh+16
+	local GH=12+clothH+26
+	-- Compact form: title only (<= 3 lines at the phone floor).
+	local csize,clines,ch=fitText(spec.title,w,T.compactTitle,3)
+	local cClothH=ch+30
+	local cGH=12+cClothH+18
+	local gui,root,P,group=shell(anchorPart,W,GH,Signs.LIFT.banner,Signs.MAX_DISTANCE,"banner")
+	gui:SetAttribute("SignCompact",Vector2.new(W,cGH))
+	gui:SetAttribute("SignCompactY",(cGH-GH)/2)
+	local top=P+12 -- cloth starts under the crossbar
+	tails(root,P,W,top+clothH,clothColor,theme)
+	cloth(root,P,W,top,clothH,clothColor,theme)
+	crossbar(root,P,W,theme)
+	crest(root,P+W/2,top+22+d/2,d,theme,spec.accent,theme.crest)
+	local x0=P+20
+	local ty=top+22+d+8
+	label(root,"Title",spec.title,x0,ty,w,th,{lines=tlines,max=tsize,min=tsize,font=Signs.FONT.banner,color=ts.color,strokeColor=ts.strokeColor})
+	local detail=detailLayer(root)
+	divider(detail,x0+w*.2,ty+th+6,w*.6,spec.accent)
+	label(detail,"Kicker",kick,x0,ty+th+14,w,kh,{lines=klines,max=ksize,min=ksize,font=Signs.FONT.body,
+		color=ts.kick,thick=1,strokeTransparency=.4})
+	-- The short pennant.
+	local compact=group("Compact")
+	compact.Visible=false
+	tails(compact,P,W,top+cClothH-4,clothColor,theme)
+	cloth(compact,P,W,top,cClothH,clothColor,theme)
+	crossbar(compact,P,W,theme)
+	label(compact,"Title",spec.title,x0,top+14,w,ch,{lines=clines,max=csize,min=csize,font=Signs.FONT.banner,color=ts.color,strokeColor=ts.strokeColor})
+	return gui
+end
+-- Direction post (no post): a floating panel with a title head and one row
+-- per destination; each row's "Arrow" (attribute SignArrowTo) is turned by
+-- the client toward its destination relative to the camera. The kicker rides
+-- a ribbon above (Detail).
+local function paintPost(anchorPart,spec,theme)
+	local S,T=Signs.SIZE,Signs.TEXT
+	local arrows=spec.arrows or {}
+	local W=S.postW
+	local plate=spec.plate~=false
+	local d=44
+	local hw=W-16-(14+d+10)
+	local tsize,tlines,th=fitText(spec.title,hw,T.post,2)
+	local head=if plate then math.max(d+20,th+20) else 10
+	local rows={}
+	local H=head
+	for i,arrow in ipairs(arrows) do
+		local size,lines,rh=fitText(arrow.label,W-80,T.dest,2)
+		rows[i]={y=H,h=math.max(S.postRow,rh+10),size=size,lines=lines,th=rh}
+		H+=rows[i].h
+	end
+	H+=10
+	local kick=Signs.kickerText(spec.kicker)
+	local hasKicker=plate and kick~=""
+	local RH,kl=ribbonFit(kick,W-52)
+	local top=if hasKicker then RH-6 else 0
+	local GH=top+H
+	local gui,root,P=shell(anchorPart,W,GH,Signs.LIFT.post+(#arrows-1)*.35,Signs.MAX_DISTANCE,"post")
+	gui:SetAttribute("SignCompact",Vector2.new(W,H))
+	gui:SetAttribute("SignCompactY",top/2)
+	local x,y=P,P+top
+	dressing(root,x,y,W,H,theme,theme.panel,"painted")
+	local ts=textStyle("painted",theme,spec.accent,theme.panel)
+	if plate then
+		crest(root,x+14+d/2,y+head/2,d,theme,spec.accent,theme.crest)
+		local x0=x+14+d+10
+		label(root,"Title",spec.title,x0,y+(head-th)/2,hw,th,{lines=tlines,max=tsize,min=tsize,font=Signs.FONT.title,color=ts.color,
+			strokeColor=ts.strokeColor,align=Enum.TextXAlignment.Left})
+	end
+	for i,arrow in ipairs(arrows) do
+		local r=rows[i]
+		local ry=y+r.y
+		local row=frame(root,"Row plate",x+12,ry+3,W-24,r.h-6,theme.panel:Lerp(cream,.08),0,6,4)
+		stroke(row,theme.trim,1,.55)
+		-- Arrow glyph: a rotating holder (0 = pointing right) with a shaft and head.
+		local holder=frame(root,"Arrow",x+18,ry+r.h/2-14,28,28,theme.panel,1,8)
+		holder:SetAttribute("SignArrowTo",arrow.to)
+		frame(holder,"Shaft",2,12,21,4,spec.accent,0,9)
+		frame(holder,"Head",13.5,7.5,12,4,spec.accent,0,9).Rotation=45
+		frame(holder,"Head lower",13.5,16.5,12,4,spec.accent,0,9).Rotation=-45
+		label(root,"Destination",arrow.label,x+54,ry+(r.h-r.th)/2,W-80,r.th,{lines=r.lines,max=r.size,min=r.size,font=Signs.FONT.title,
+			color=ts.color,strokeColor=ts.strokeColor,align=Enum.TextXAlignment.Left})
+	end
+	if hasKicker then ribbon(detailLayer(root),x+14,P,W-28,RH,kick,kl,theme,spec.accent) end
+	return gui
+end
 
--- Wide board (hanging, shop, plaque, title plate): emblem left when there is
--- room, kicker over a divider over the title.
-function Signs.paintWide(board,spec,theme,style)
-	local W,H=board.Size.X,board.Size.Y
-	local cw,ch=W*Signs.PPS,H*Signs.PPS
-	local stone=style=="stone"
-	local panel=if stone then theme.stone elseif style=="scroll" then C("E9DCB8") else theme.panel
-	local trim=if stone then darken(theme.stone,.45) elseif style=="scroll" then C("8A6240") else theme.trim
-	local title=if stone or style=="scroll" then ink else theme.text
-	local kickColor=if stone or style=="scroll" then darken(spec.accent,.72) else spec.accent:Lerp(cream,.35)
-	for _,face in ipairs({Enum.NormalId.Front,Enum.NormalId.Back}) do
-		local gui=surface(board,face,if spec.kind=="plaque" then Signs.LANDMARK_DISTANCE else nil)
-		local m=backdrop(gui,cw,ch,panel,trim,spec.accent,if stone then "stone" else "wood")
-		local x0,align=m+ch*.12,Enum.TextXAlignment.Center
-		if cw/ch>=2.4 then
-			local e=ch*.46
-			emblem(gui,m+ch*.12+e*.71,ch/2,e,spec.accent,panel,trim,initial(spec.title),if stone or style=="scroll" then title else nil)
-			x0,align=m+ch*.12+e*1.5,Enum.TextXAlignment.Left
-		end
-		local w=cw-x0-m-ch*.12
-		local engrave={color=title,shadow=if stone or style=="scroll" then cream else ink,
-			shadowTransparency=if stone then .1 else .35,stroke=not (stone or style=="scroll")}
-		-- Long kickers (region requirements) take two lines and the title shrinks.
-		local ky,kh,kl=m+ch*.08,ch*.2,1
-		if select(3,Signs.fit(kickerText(spec.kicker),w,kh,1,ch*.15,ch*.085)) then kh,kl=ch*.3,2 end
-		guiText(gui,"Kicker",kickerText(spec.kicker),x0,ky,w,kh,{lines=kl,max=ch*.15,min=ch*.085,font=Signs.FONT.body,color=kickColor,align=align,
-			shadow=engrave.shadow,shadowTransparency=engrave.shadowTransparency,stroke=engrave.stroke})
-		local dy=ky+kh+ch*.02
-		local dw=w*.55
-		local dx=if align==Enum.TextXAlignment.Left then x0 else x0+(w-dw)/2
-		guiFrame(gui,"Divider",dx,dy,dw,math.max(2,ch*.012),spec.accent,0,3)
-		diamond(gui,"Divider stud",dx+dw,dy+1,math.max(5,ch*.045),spec.accent,4)
-		local ty=dy+ch*.04
-		guiText(gui,"Title",spec.title,x0,ty,w,ch-m-ch*.05-ty,{lines=2,max=ch*.34,min=ch*.13,font=Signs.FONT.title,align=align,
-			color=engrave.color,shadow=engrave.shadow,shadowTransparency=engrave.shadowTransparency,stroke=engrave.stroke})
-	end
+local placedBillboards={}
+local PAINT={hanging=paintWide,shop=paintWide,plaque=paintWide,banner=paintBanner,post=paintPost}
+-- A title billboard on a ledger board (normal wide shell, SignKind "ledger").
+function Signs.ledgerTitle(board,spec,theme,lift)
+	spec.kind="hanging"
+	return paintWide(board,spec,theme,lift,Signs.MAX_DISTANCE,"ledger")
 end
--- Portrait cloth (banner): emblem on top, title, divider, kicker.
-function Signs.paintBanner(board,spec,theme)
-	local W,H=board.Size.X,board.Size.Y
-	local cw,ch=W*Signs.PPS,H*Signs.PPS
-	local panel=darken(spec.accent,.66)
-	for _,face in ipairs({Enum.NormalId.Front,Enum.NormalId.Back}) do
-		local gui=surface(board,face)
-		local m=backdrop(gui,cw,ch,panel,theme.trim,spec.accent,"cloth")
-		local e=cw*.22
-		emblem(gui,cw/2,m+cw*.06+e*.71,e,spec.accent,panel,theme.trim,initial(spec.title))
-		local x0,w=m+cw*.07,cw-2*(m+cw*.07)
-		local ty=m+cw*.1+e*1.42
-		local _,size=guiText(gui,"Title",spec.title,x0,ty,w,ch*.3,{lines=3,max=cw*.2,min=cw*.085,font=Signs.FONT.banner,color=theme.text})
-		local dy=ty+ch*.3+ch*.015
-		guiFrame(gui,"Divider",cw*.3,dy,cw*.4,math.max(2,ch*.008),spec.accent,0,3)
-		diamond(gui,"Divider stud",cw/2,dy+1,math.max(5,cw*.04),spec.accent,4)
-		local ky=dy+ch*.03
-		guiText(gui,"Kicker",kickerText(spec.kicker),x0,ky,w,ch-m-ch*.03-ky,{lines=4,max=math.min(cw*.09,size*.6),min=cw*.05,
-			font=Signs.FONT.body,color=spec.accent:Lerp(cream,.45)})
-	end
-end
--- Arrow board: label away from the tip, a chevron stud at the tip end. On the
--- Front face GUI +x runs along the part's -RightVector, so the tip is on the left.
-function Signs.paintArrow(board,label,accent,theme)
-	local W,H=board.Size.X,board.Size.Y
-	local cw,ch=W*Signs.PPS,H*Signs.PPS
-	for _,face in ipairs({Enum.NormalId.Front,Enum.NormalId.Back}) do
-		local gui=surface(board,face)
-		local panel=theme.panel
-		local bg=guiFrame(gui,"Panel",0,0,cw,ch,panel,0,1)
-		local grad=Instance.new("UIGradient")
-		grad.Color=ColorSequence.new(panel:Lerp(cream,.12),panel:Lerp(C("05080C"),.3))
-		grad.Rotation=90
-		grad.Parent=bg
-		local rule=guiFrame(gui,"Rule",3,3,cw-6,ch-6,panel,1,3)
-		guiStroke(rule,theme.trim,2)
-		local tipLeft=face==Enum.NormalId.Front
-		local tipX=if tipLeft then ch*.45 else cw-ch*.45
-		diamond(gui,"Chevron",tipX,ch/2,ch*.42,accent,4)
-		-- The mesh's mounting strap sits .23-.37 studs from the tail at the
-		-- reference width 4.6 (stretched with W): keep the label >= .45 studs clear.
-		local tail=math.max(.45,W*.37/4.6+.06)*Signs.PPS
-		local x0=if tipLeft then ch*.9 else tail
-		guiText(gui,"Label",label,x0,ch*.08,cw-ch*.9-tail,ch*.84,{max=ch*.6,min=ch*.34,font=Signs.FONT.title,color=theme.text,
-			align=if tipLeft then Enum.TextXAlignment.Right else Enum.TextXAlignment.Left})
-	end
-end
-
--- Geometry ---------------------------------------------------------------
-local function signFrame(holder,name,size,cf,color,mat,shape,tint,boxSize,boxCenter)
-	local p=part(holder,name,size,cf,color,mat,false)
-	meshSlot(p,shape,tint)
-	p:SetAttribute("ShapeBox",boxSize)
-	p:SetAttribute("ShapeBoxOffset",cf:PointToObjectSpace(boxCenter))
-	return p
-end
-local function signBoard(holder,name,size,cf,color,mat,shape,tint)
-	local b=part(holder,name,size,cf,color,mat,false)
-	meshSlot(b,shape,tint)
-	b:SetAttribute("SignBoard",true)
-	return b
-end
--- Hanging / shop: carved post at the left, iron bracket arm, chains, lantern
--- (reference board 9 x 2.6: post x -5.45, arm y 6.35, board top y 5.3).
-local function buildHanging(holder,cf,spec,theme)
-	local shop=spec.kind=="shop"
-	local W=math.clamp(spec.width or 9,7,12)
-	local H=if W>=10.5 then 2.9 else 2.6
-	local hp=H+4.3
-	local arm=hp-.55
-	local postX=-(W/2+.95)
-	signFrame(holder,"Sign post",V(.5,hp,.5),cf*CFrame.new(postX,hp/2,0),theme.wood,WO,"SignHangingFrame",theme.metal,
-		V(W+3.2,hp+.7,1.6),(cf*CFrame.new(-.1,(hp+.7)/2,0)).Position)
-	local board=signBoard(holder,spec.title,V(W,H,.3),cf*CFrame.new(0,arm-1.05-H/2,0),theme.panel,WO,
-		if shop then "SignScrollBoard" else "SignCarvedBoard",theme.metal)
-	if shop then
-		Signs.paintWide(board,spec,theme,"scroll")
-		local icon=part(holder,"Sign icon",V(1.5,1.5,1.5),cf*CFrame.new(0,arm+.15+.75,0),spec.accent,SM,false)
-		meshSlot(icon,spec.icon or "EssenceOrb",spec.accent,nil,"Uniform")
-	else
-		Signs.paintWide(board,spec,theme,"wood")
-	end
-	return board
-end
--- Signpost: carved post, optional title plate on its face, arrow boards that
--- turn toward their destinations (local +X of each arrow points at `to`).
-local POST_H=6.4
-local function buildPost(holder,cf,spec,theme)
-	local base=cf.Position
-	signFrame(holder,"Sign post",V(.55,POST_H,.55),cf*CFrame.new(0,POST_H/2,0),theme.wood,WO,"SignpostFrame",theme.metal,
-		V(1.6,POST_H+1,1.6),(cf*CFrame.new(0,(POST_H+1)/2,0)).Position)
-	local main
-	local y=POST_H-1.4
-	if spec.plate~=false then
-		local W=math.clamp((spec.width or 9)*.62,4.6,7)
-		main=signBoard(holder,spec.title,V(W,1.5,.26),cf*CFrame.new(0,POST_H-1.45,-.46),theme.panel,WO,"SignCarvedBoard",theme.metal)
-		Signs.paintWide(main,spec,theme,"wood")
-		y=POST_H-2.65
-	end
-	for i,arrow in ipairs(spec.arrows or {}) do
-		local flat=V(arrow.to.X-base.X,0,arrow.to.Z-base.Z)
-		local d=if flat.Magnitude>.01 then flat.Unit else cf.RightVector
-		local Wa=math.clamp(Signs.textWidth(arrow.label,.5)+1.6,3.6,6.4)
-		local center=base+d*(Wa/2+.32)+V(0,y-(i-1)*.95,0)
-		local board=signBoard(holder,"Arrow "..arrow.label,V(Wa,.9,.22),CFrame.lookAt(center,center+V(0,1,0):Cross(d)),
-			theme.panel,WO,"SignArrowBoard",theme.metal)
-		board:SetAttribute("SignArrowTo",arrow.to)
-		Signs.paintArrow(board,arrow.label,spec.accent,theme)
-		main=main or board
-	end
-	return main
-end
--- Banner standard: stone socket and pole behind a cloth hung from a crossbar
--- (reference cloth 3.8 x 5: pole height 9.2, crossbar y 8.8, pole z +0.3).
-local function buildBanner(holder,cf,spec,theme)
-	local W=math.clamp((spec.width or 9)*.4,3.2,4.4)
-	local H=5.6
-	local hb=H+4.2
-	local cross=hb-.4
-	signFrame(holder,"Standard pole",V(.3,hb,.3),cf*CFrame.new(0,hb/2,.3),theme.wood,WO,"BannerStandardFrame",theme.metal,
-		V(W+1.2,hb+1.1,1.8),(cf*CFrame.new(0,(hb+1.1)/2,.3)).Position)
-	local cloth=signBoard(holder,spec.title,V(W,H,.14),cf*CFrame.new(0,cross-.2-H/2,0),darken(spec.accent,.66),Enum.Material.Fabric,"BannerCloth",spec.accent)
-	Signs.paintBanner(cloth,spec,theme)
-	return cloth
-end
--- Stone plinth with an engraved tablet (reference tablet 7.2 x 2.4 on y 2.4).
-local function buildPlaque(holder,cf,spec,theme)
-	local W=math.clamp((spec.width or 9)*.8,5.6,9.6)
-	local H=if W>=8.8 then 2.6 else 2.4
-	signFrame(holder,"Sign plinth",V(W+.6,2.35,1.3),cf*CFrame.new(0,1.175,0),theme.stone,ST,"SignPlinthFrame",theme.metal,
-		V(W+2,2.4+H+.9,2),(cf*CFrame.new(0,(2.4+H+.9)/2,0)).Position)
-	local tablet=signBoard(holder,spec.title,V(W,H,.4),cf*CFrame.new(0,2.8+H/2,0),theme.stone,ST,"SignPlaqueBoard",theme.metal)
-	Signs.paintWide(tablet,spec,theme,"stone")
-	return tablet
-end
--- Notice frame for ledger boards (rows are painted by ledger()).
-function Signs.ledgerFrame(holder,cf,W,H,theme)
-	signFrame(holder,"Notice post",V(.42,H+2,.42),cf*CFrame.new(-(W/2+.28),(H+2)/2,0),theme.wood,WO,"SignLedgerFrame",theme.metal,
-		V(W+1.4,H+3.1,2.2),(cf*CFrame.new(0,(H+3.1)/2,0)).Position)
-end
--- Back faces nobody can read: a board (not an arrow) whose back looks into a
--- wall (a visible or solid part 1 or 2.5 studs behind its centre) or over the
--- rim (no solid ground under a point 3, 5.5 or 8 studs behind it, i.e. a
--- reader would have to stand on a ledge under 8 studs wide) keeps only its
--- Front SurfaceGui. Run once after the static world is built and on each new
--- home. Geometry only (no physics), so the headless suites see the same result.
-local function islandSolids(isle,cache)
-	local cached=cache[isle]
-	if cached then return cached end
-	cached={}
-	for _,p in ipairs(isle:GetDescendants()) do
-		if p:IsA("BasePart") and (p.CanCollide or p.Transparency<1) and not (p.Parent and p.Parent:GetAttribute("SignArchetype")) then
-			local cf,h=p.CFrame,p.Size/2
-			local r,u,l=cf.RightVector,cf.UpVector,cf.LookVector
-			local e=V(math.abs(r.X)*h.X+math.abs(u.X)*h.Y+math.abs(l.X)*h.Z,math.abs(r.Y)*h.X+math.abs(u.Y)*h.Y+math.abs(l.Y)*h.Z,
-				math.abs(r.Z)*h.X+math.abs(u.Z)*h.Y+math.abs(l.Z)*h.Z)
-			table.insert(cached,{p=p,lo=cf.Position-e,hi=cf.Position+e})
-		end
-	end
-	cache[isle]=cached
-	return cached
-end
--- Point inside a part's real shape (block, cylinder along local X, ball).
-local function contains(p,pos)
-	local rel=p.CFrame:PointToObjectSpace(pos)
-	local h=p.Size/2
-	if p:IsA("Part") and p.Shape==Enum.PartType.Cylinder then
-		local r=math.min(h.Y,h.Z)
-		return math.abs(rel.X)<=h.X and rel.Y*rel.Y+rel.Z*rel.Z<=r*r
-	elseif p:IsA("Part") and p.Shape==Enum.PartType.Ball then
-		return rel.Magnitude<=math.min(h.X,h.Y,h.Z)
-	end
-	return math.abs(rel.X)<=h.X and math.abs(rel.Y)<=h.Y and math.abs(rel.Z)<=h.Z
-end
-function Signs.backBlocked(board,isle,cache)
-	local solids=islandSolids(isle,cache or {})
-	local back=-board.CFrame.LookVector
-	local c=board.CFrame.Position
-	for _,d in ipairs({1,2.5}) do
-		local probe=c+back*(board.Size.Z/2+d)
-		for _,s in ipairs(solids) do
-			if probe.X>=s.lo.X and probe.X<=s.hi.X and probe.Y>=s.lo.Y and probe.Y<=s.hi.Y and probe.Z>=s.lo.Z and probe.Z<=s.hi.Z
-				and contains(s.p,probe) then return "wall" end
-		end
-	end
-	for _,d in ipairs({3,5.5,8}) do
-		local probe=c+back*(board.Size.Z/2+d)
-		local ground=false
-		for _,s in ipairs(solids) do
-			if s.p.CanCollide and probe.X>=s.lo.X and probe.X<=s.hi.X and probe.Z>=s.lo.Z and probe.Z<=s.hi.Z
-				and s.hi.Y<=probe.Y+.5 and s.hi.Y>=probe.Y-40 and contains(s.p,V(probe.X,(s.lo.Y+s.hi.Y)/2,probe.Z)) then
-				ground=true
-				break
-			end
-		end
-		if not ground then return "rim" end
-	end
-	return nil
-end
-function Signs.cullBacks(root)
-	local culled,cache=0,{}
-	for _,board in ipairs(root:GetDescendants()) do
-		if board:IsA("BasePart") and board:GetAttribute("SignBoard") and board:GetAttribute("Shape")~="SignArrowBoard" then
-			local backGui=board:FindFirstChild("Sign face Back")
-			if backGui then
-				local why=Signs.backBlocked(board,islandModel(board),cache)
-				if why then
-					backGui:Destroy()
-					board:SetAttribute("SignOneSided",why)
-					culled+=1
-				end
-			end
-		end
-	end
-	return culled
-end
-local BUILDERS={hanging=buildHanging,shop=buildHanging,post=buildPost,banner=buildBanner,plaque=buildPlaque}
 function Signs.build(parent,cf,spec)
 	local style=Signs.STYLE[spec.title] or {}
 	spec.kind=spec.kind or style.kind or "hanging"
+	if not PAINT[spec.kind] then spec.kind="hanging" end
 	spec.icon=spec.icon or style.icon
 	spec.accent=spec.accent or brass
 	spec.kicker=spec.kicker or ""
-	local themeName=spec.theme or Signs.theme(parent)
-	local theme=Signs.THEMES[themeName] or Signs.THEMES.Quay
+	-- A sign named after a region wears that region's colours wherever it
+	-- stands (Guild Terrace gate plaques, avenue posts); others take their island's.
+	local themeName=spec.theme or Signs.ISLAND_THEME[spec.title] or Signs.theme(parent)
+	if not Signs.THEMES[themeName] then themeName="Quay" end
+	local theme=Signs.THEMES[themeName]
 	local holder=group("Sign "..spec.title,parent)
 	holder:SetAttribute("SignArchetype",spec.kind)
 	holder:SetAttribute("SignTitle",spec.title)
 	holder:SetAttribute("SignTheme",themeName)
+	holder:SetAttribute("SignVersion",Signs.VERSION)
+	-- Streams in as one unit, so the client never sees a billboard without its anchor.
+	pcall(function() holder.ModelStreamingMode=Enum.ModelStreamingMode.Atomic end)
 	Tags:AddTag(holder,"AetherSign")
-	local board=(BUILDERS[spec.kind] or buildHanging)(holder,cf,spec,theme)
-	return board,holder
+	-- The only part: an invisible, non-colliding anchor at chest height.
+	local anchorPart=part(holder,spec.title,V(1,1,1),CFrame.new(cf.Position+V(0,Signs.ANCHOR_Y,0)),theme.metal,SM,false)
+	anchorPart.Transparency,anchorPart.CastShadow,anchorPart.CanQuery=1,false,false
+	anchorPart:SetAttribute("SignAnchor",true)
+	local gui=PAINT[spec.kind](anchorPart,spec,theme)
+	-- Two plaques that would float into each other: the later one stacks
+	-- clear above the earlier one (its full height plus a margin).
+	local here=anchorPart.CFrame.Position
+	for i=#placedBillboards,1,-1 do
+		local other=placedBillboards[i]
+		if not other.Parent or not other.Parent.Parent then table.remove(placedBillboards,i) continue end
+		local o=other.Parent.CFrame.Position+other.StudsOffsetWorldSpace
+		local c=here+gui.StudsOffsetWorldSpace
+		if V(o.X-c.X,0,o.Z-c.Z).Magnitude<=3.5 and math.abs(o.Y-c.Y)<=3 then
+			local lift=o.Y-here.Y+3.4
+			gui.StudsOffsetWorldSpace=V(0,lift,0)
+			gui:SetAttribute("SignLift",lift)
+		end
+	end
+	table.insert(placedBillboards,gui)
+	-- QC L6: a destroyed sign (home or crew island torn down) leaves the list.
+	pcall(function()
+		holder.Destroying:Connect(function()
+			local i=table.find(placedBillboards,gui)
+			if i then table.remove(placedBillboards,i) end
+		end)
+	end)
+	Signs.placed=placedBillboards
+	return anchorPart,holder
 end
+end
+-- QC M4: after the static world is built, nudge every island sign whose
+-- billboard floats too close (horizontally) to a wall,
+-- roof, awning or stall box out into the open: the camera-facing quad turns
+-- with the view and would otherwise swing into it. Prompts on the anchor ride along.
+Signs.WALLISH={"wall","lintel","roof","awning","canvas","facade","gable","eave","door","window","stall"}
+-- The gap grows with the plaque: half its compact width as a phone draws it
+-- 18 studs away (0.55 scale, 70° FOV, 390 px tall), the widest it gets in world terms nearby.
+function Signs.settle(root)
+	for _,gui in ipairs(Signs.placed or {}) do
+		local box=gui:GetAttribute("SignCompact")
+		local need=math.max(Signs.WALL_GAP+.8,(if typeof(box)=="Vector2" then box.X else 300)*.55*18*1.4/390/2+.3)
+		local halfH=(if typeof(box)=="Vector2" then box.Y else 100)*.55*18*1.4/390/2+.2
+		local start=gui.Parent and gui.Parent:IsA("BasePart") and gui.Parent.CFrame.Position
+		local anchorPart=gui.Parent
+		local island=anchorPart and anchorPart.Parent and anchorPart:IsDescendantOf(root) and anchorPart
+		while island and island.Parent~=root do island=island.Parent end
+		if island then
+			local boxes={}
+			for _,p in ipairs(island:GetDescendants()) do
+				if p:IsA("BasePart") and p.Transparency<.9 and not p:IsDescendantOf(anchorPart.Parent) then
+					local n=string.lower(p.Name)
+					for _,w in ipairs(Signs.WALLISH) do
+						if string.find(n,w,1,true) then table.insert(boxes,p) break end
+					end
+				end
+			end
+			for _=1,4 do
+				local moved=false
+				for _,b in ipairs(boxes) do
+					local c=anchorPart.CFrame.Position+gui.StudsOffsetWorldSpace
+					local o=b.CFrame:PointToObjectSpace(c)
+					local h=b.Size/2
+					-- Boxes the plaque floats clear above (stall awnings) or below are left alone.
+					if o.Y-h.Y<halfH and h.Y+o.Y>-halfH then
+						local q=b.CFrame:PointToWorldSpace(V(math.clamp(o.X,-h.X,h.X),math.clamp(o.Y,-h.Y,h.Y),math.clamp(o.Z,-h.Z,h.Z)))
+						local away=V(c.X-q.X,0,c.Z-q.Z)
+						local dist=away.Magnitude
+						if dist<need then
+							if dist<1e-3 then away=V(c.X-b.CFrame.Position.X,0,c.Z-b.CFrame.Position.Z) end
+							if away.Magnitude<1e-3 then away=V(1,0,0) end
+							local to=anchorPart.CFrame.Position+away.Unit*(need-dist+.05)
+							-- Never wander more than 6 studs from where the sign was placed.
+							if start and (to-start).Magnitude<=6 then
+								anchorPart.CFrame=anchorPart.CFrame+away.Unit*(need-dist+.05)
+								moved=true
+							end
+						end
+					end
+				end
+				if not moved then break end
+			end
+		end
+	end
 end
 -- Legacy entry points (every call site goes through Signs.build).
 local function signAt(parent,cf,title,kicker,accent,width,opts)
@@ -999,23 +1159,25 @@ local function windpine(parent,pos,scale,owner)
 	local trunk=block(m,"Heartwood",pos+V(0,2.6*scale,0),V(1.2,5.2,1.2)*scale,timber,WO,true)
 	trunk.Transparency=1
 	sculpture(m,"Sculpted windpine",pos+V(0,2.6*scale,0),"WindpineCrown",scale)
-	prompt(trunk,"Cut timber","Windpine","gather","Timber",owner)
+	Node.gather(trunk,"Timber",nil,owner)
 end
 local function ore(parent,pos)
-	local base=disk(parent,"Ore seam",pos+V(0,.4,0),2.5,.8,shale,ST,false)
-	slotBox(parent,"Ore seam mesh",pos,V(5,2.4,4.4),"OreVein",C("C98D4F"))
-	sculpture(parent,"Faceted copper cluster",pos+V(0,1.4,0),"AetherCrystal",1)
-	prompt(base,"Mine ore","Copper lode","gather","Ore")
+	local m=group("Copperstone vein",parent)
+	local base=disk(m,"Ore seam",pos+V(0,.4,0),2.5,.8,shale,ST,false)
+	slotBox(m,"Ore seam mesh",pos,V(5,2.4,4.4),"OreVein",C("C98D4F"))
+	sculpture(m,"Faceted copper cluster",pos+V(0,1.4,0),"AetherCrystal",1)
+	Node.gather(base,"Ore")
 end
 local function herb(parent,pos)
-	local bed=disk(parent,"Herb bed",pos+V(0,.15,0),2.3,.3,navy,ST,false)
-	slotBox(parent,"Herb bed mesh",pos,V(4.6,1.6,4.6),"CropBed",mint)
+	local m=group("Meadow Herb patch",parent)
+	local bed=disk(m,"Herb bed",pos+V(0,.15,0),2.3,.3,navy,ST,false)
+	slotBox(m,"Herb bed mesh",pos,V(4.6,1.6,4.6),"CropBed",mint)
 	for i=1,6 do
 		local a=i*1.8
 		local p=pos+V(math.cos(a)*1.5,.65,math.sin(a)*1.5)
-		sculpture(parent,"Sculpted moonbloom",p,"Moonbloom",.65,i*50)
+		sculpture(m,"Sculpted moonbloom",p,"Moonbloom",.65,i*50)
 	end
-	prompt(bed,"Gather herbs","Moonleaf patch","gather","Herb")
+	Node.gather(bed,"Herb")
 end
 -- Stall facing `toward`: counter, awning (strips abut, never overlap) and a
 -- header sign over the customer side.
@@ -1031,10 +1193,168 @@ local function marketStall(parent,pos,toward,name,verb,action,item,accent,kicker
 	local counter=part(m,"Counter",V(6.5,2.8,2),at(cf,0,1.4,0),navy,WO,true)
 	part(m,"Counter top",V(7,.25,2.5),at(cf,0,2.92,0),brass,WO,false)
 	meshSlot(counter,"MarketStall",accent,true)
-	-- Shop sign (§28) just outside the awning's front edge, the trade's icon on its bracket.
-	signAt(m,at(cf,0,.6,-3.3),name,kicker or "COMPASS QUAY   /   SERVICES",accent,8,{kind="shop",icon=icon or "Seal"})
+	-- Shop sign (§28) floating over the awning's front edge, clear above the
+	-- canvas (QC M4: the camera-facing quad never dips into the awning).
+	signAt(m,at(cf,0,.6,-3.3),name,kicker or "COMPASS QUAY   /   SERVICES",accent,8,{kind="shop",icon=icon or "Seal",lift=Signs.LIFT.shopAwning})
 	if verb then prompt(counter,verb,name,action,item) end
 	return m,cf
+end
+
+-------------------------------------------------------------------------------
+-- Building kit (World Art pass 2, docs/DEPTH-CONTRACT.md §40). Every house is
+-- one forged mesh from BUILDING_KIT (generated from art/building-shapes.cjs):
+--   facade   one solid collider block (w x h x d, plaster: the primitive
+--            fallback) named "Roofed house" (the minimap draws it as a roof);
+--   walkin   a hollow hall: "Roofed hall floor" (the mesh host, ShapeOwnsModel)
+--            plus "Hall wall" / "Hall lintel" colliders that leave the mesh's
+--            door opening free, a furnished interior (its counter collider
+--            hosts the interior mesh) and, where the light caps allow, one
+--            warm night light inside;
+--   interior a furnishing set hosted by its counter collider ("Counter").
+-- Host ShapeBox / ShapeBoxOffset = the mesh's fit box, so the forge maps the
+-- authored building 1:1 onto the colliders. Every building host carries
+-- BuildingType, GlowSite = "window" (§35 pooled spill light at night) and
+-- WindowGlow ("x,y,z,w,h,ry;..." pane rects in the host frame; the lighting
+-- director lights the panes after dusk, §40) and the tag AetherBuilding.
+-------------------------------------------------------------------------------
+local Buildings={PLASTER=C("E6DCC6"),FLOOR=C("8A6240"),LIGHT=C("FFC27A"),hosts={}}
+-- Clearance box of a part: its declared mesh box (ShapeBox / ShapeBoxOffset:
+-- sign frames, buildings) when it has one, else the part itself. Every
+-- placement search after the settlements uses it (§40 QC L2), like the
+-- settlement index, so nothing lands inside a house's roof / porch overhang.
+function Buildings.box(obj)
+	local cf,sz=obj.CFrame,obj.Size
+	local declared=obj:GetAttribute("ShapeBox")
+	if typeof(declared)=="Vector3" then
+		local offset=obj:GetAttribute("ShapeBoxOffset")
+		cf=cf*CFrame.new(if typeof(offset)=="Vector3" then offset else V(0,0,0))
+		sz=declared
+	end
+	return cf,sz
+end
+do
+	local B=Buildings
+	function B.fitOf(def)
+		local lo=V(def.fit[1][1],def.fit[1][2],def.fit[1][3])
+		local hi=V(def.fit[2][1],def.fit[2][2],def.fit[2][3])
+		return (lo+hi)/2,hi-lo,lo,hi
+	end
+	-- Mesh slot on a host whose centre sits at `hostAt` in the building frame.
+	local function slot(host,name,def,hostAt,tint)
+		local centre,size=B.fitOf(def)
+		host:SetAttribute("Shape",name)
+		host:SetAttribute("ShapeBox",size)
+		host:SetAttribute("ShapeBoxOffset",centre-hostAt)
+		if tint then host:SetAttribute("Tint",tint) end
+	end
+	local function glow(host,def,hostAt)
+		local panes={}
+		for _,w in ipairs(def.windows) do
+			table.insert(panes,string.format("%.3f,%.3f,%.3f,%.3f,%.3f,%.3f",w[1]-hostAt.X,w[2]-hostAt.Y,w[3]-hostAt.Z,w[4],w[5],w[6]))
+		end
+		host:SetAttribute("WindowGlow",table.concat(panes,";"))
+		host:SetAttribute("GlowSite","window")
+	end
+	-- Door-step heights (the kit's plinth P: art/building-shapes.cjs; the
+	-- StoneCottage door has no step, the LogLodge has its porch deck).
+	B.STOOP={TimberHouse=.8,TimberTownhouse=.7,TimberShopfront=.6,ThatchCottage=.6}
+	-- Invisible collider for mesh furniture / porches (§40 QC L6).
+	function B.collider(parent,name,size,cf)
+		local p=part(parent,name,size,cf,B.FLOOR,WO,true)
+		p.Transparency,p.CastShadow=1,false
+		p:SetAttribute("FurnitureCollider",true)
+		return p
+	end
+	-- Furniture colliders per interior mesh, in the hall ground frame (kit
+	-- coordinates): {cx, cy, cz, sx, sy, sz}.
+	B.FURNITURE={
+		TavernInterior={{-3.5,1.59,-2.5,2.2,2.5,2.2},{-3.5,1.59,2.8,2.2,2.5,2.2},{1.2,1.59,.2,2.2,2.5,2.2}, -- table tops (stools stay walk-through)
+			{-7.6,2.94,0,1.2,5.2,4.2}}, -- hearth
+		HallFurnishings={{2.9,1.2,-4.5,4.1,2.4,6},{2.9,1.2,4.5,4.1,2.4,6},{-3.2,.34,0,.7,.68,12}}, -- trestles + benches, wall bench
+	}
+	function B.furniture(parent,name,cf)
+		for _,f in ipairs(B.FURNITURE[name] or {}) do
+			B.collider(parent,"Furniture collider",V(f[4],f[5],f[6]),cf*CFrame.new(f[1],f[2],f[3]))
+		end
+	end
+	-- cf: the ground point at the footprint centre; its LookVector is the
+	-- street (door) side. Returns the model and its host part.
+	function B.place(parent,name,cf,opts)
+		opts=opts or {}
+		local def=BUILDING_KIT[name]
+		assert(def and def.kind~="interior","unknown building "..tostring(name))
+		local m=group(opts.title or name,parent)
+		m:SetAttribute("Building",name)
+		local host
+		if def.kind=="facade" then
+			local at=V(0,def.h/2,0)
+			host=part(m,"Roofed house",V(def.w,def.h,def.d),cf*CFrame.new(at),opts.color or B.PLASTER,SM,true)
+			slot(host,name,def,at,opts.tint)
+			glow(host,def,at)
+			-- §40 QC L6: the mesh's porch deck (LogLodge) / door step stands
+			-- outside the plaster block: an invisible collider so nobody wades
+			-- through it.
+			if name=="LogLodge" then
+				B.collider(m,"Porch collider",V(def.w-1,.7,2.4),cf*CFrame.new(0,.35,-def.d/2-1.2))
+			elseif B.STOOP[name] and def.door then
+				local h=B.STOOP[name]
+				B.collider(m,"Stoop collider",V(def.door.w+.9,h,.9),cf*CFrame.new(def.door.x,h/2,def.door.z-.45))
+			end
+		else
+			local t,H,o=def.t,def.h,def.opening
+			local at=V(0,def.floor-.25,0)
+			host=part(m,"Roofed hall floor",V(def.w-2*t,.5,def.d-2*t),cf*CFrame.new(at),B.FLOOR,WO,true)
+			slot(host,name,def,at,opts.tint)
+			host:SetAttribute("ShapeOwnsModel",true)
+			glow(host,def,at)
+			local wall=opts.color or B.PLASTER
+			local function w(nm,size,x,y,z) return part(m,nm,size,cf*CFrame.new(x,y,z),wall,SM,true) end
+			w("Hall wall",V(def.w,H,t),0,H/2,def.d/2-t/2)
+			for _,s in ipairs({-1,1}) do w("Hall wall",V(t,H,def.d-2*t),s*(def.w/2-t/2),H/2,0) end
+			local side=(def.w-o.w)/2
+			for _,s in ipairs({-1,1}) do w("Hall wall",V(side,H,t),s*(o.w/2+side/2),H/2,-def.d/2+t/2) end
+			w("Hall lintel",V(o.w,H-o.h,t),0,o.h+(H-o.h)/2,-def.d/2+t/2)
+		end
+		host:SetAttribute("BuildingType",name)
+		Tags:AddTag(host,"AetherBuilding")
+		table.insert(B.hosts,host)
+		return m,host
+	end
+	-- Interior furnishing set in a hall's ground frame `cf`; the counter
+	-- collider is its host (created here unless given).
+	function B.furnish(model,name,cf)
+		local def=BUILDING_KIT[name]
+		local c=V(def.counter.c[1],def.counter.c[2],def.counter.c[3])
+		local counter=part(model,"Counter",V(def.counter.s[1],def.counter.s[2],def.counter.s[3]),cf*CFrame.new(c),C("5A4030"),WO,true)
+		slot(counter,name,def,c)
+		counter:SetAttribute("Interior",name)
+		B.furniture(model,name,cf)
+		return counter
+	end
+	-- A walk-in hall around a service counter at `pos` facing `toward` (the
+	-- old market-stall frame, so every anchor keeps its offset): the counter
+	-- carries the prompt and the hall's door faces the street.
+	function B.hall(parent,pos,toward,o)
+		local cf=facing(pos,toward)
+		local c=BUILDING_KIT[o.interior].counter.c
+		local hallCF=cf*CFrame.new(-c[1],0,-c[3])
+		local m,floor=B.place(parent,o.shell,hallCF,{title=o.title,tint=o.tint})
+		local counter=B.furnish(m,o.interior,hallCF)
+		if o.verb then prompt(counter,o.verb,o.title,o.action,o.item) end
+		if o.sign then
+			-- A banner standard at the hall's front corner, beside the door.
+			local _,size,lo,hi=Buildings.fitOf(BUILDING_KIT[o.shell])
+			-- QC M4: 4.2 studs out from the side wall, so the camera-facing quad never swings into it.
+			signAt(m,hallCF*CFrame.new(o.sign*(hi.X+Signs.WALL_GAP),0,lo.Z+1.4),o.title,o.kicker,o.accent,4,{kind="banner"})
+		end
+		return m,cf,hallCF,counter,floor
+	end
+	-- Warm interior night light (counts against verify-world's light caps).
+	function B.interiorLight(floor,def)
+		local l=light(floor,B.LIGHT,.9,20,{night=true,lift=def.h-2.8-def.floor})
+		l.Parent.Name="Hall light"
+		return l
+	end
 end
 
 -------------------------------------------------------------------------------
@@ -1116,17 +1436,24 @@ anchor(hub,"Spawn",HUB_ARRIVAL-V(0,4,0),V(56,0,40))
 anchor(hub,"NPC_Herald",V(-8,0,-29),V(0,0,0))
 anchor(hub,"Waypoint_SkyHarbor",V(56,0,60),V(56,0,40))
 -- Market Row along the east avenue.
-local bank,bankCF=marketStall(hub,V(44,0,-17),V(44,0,0),"Quay Bank","Bank purse","bank",nil,mint,"MARKET ROW   /   BANK","Seal")
-local trade,tradeCF=marketStall(hub,V(68,0,-17),V(68,0,0),"Trade Counter","Sell goods","sell",nil,brass,"MARKET ROW   /   TRADE","Ingot")
+-- §40: the bank and the trade counter are walk-in halls (ShopHall shell, bank
+-- and shop interiors) built around their old counters, so the counter prompt,
+-- the banker / merchant behind it and the waypoint inside the door keep their
+-- offsets (raised onto the hall floor).
+local QUAY_FLOOR=BUILDING_KIT.ShopHall.floor
+local bank,bankCF,_,bankCounter,bankFloor=Buildings.hall(hub,V(44,0,-17),V(44,0,0),{title="Quay Bank",shell="ShopHall",interior="BankInterior",
+	verb="Bank purse",action="bank",tint=C("9C3F3A"),sign=-1,accent=mint,kicker="MARKET ROW   /   BANK"})
+local trade,tradeCF,_,tradeCounter,tradeFloor=Buildings.hall(hub,V(68,0,-17),V(68,0,0),{title="Trade Counter",shell="ShopHall",interior="ShopInterior",
+	verb="Sell goods",action="sell",tint=C("9C3F3A"),sign=-1,accent=brass,kicker="MARKET ROW   /   TRADE"})
+Buildings.interiorLight(bankFloor,BUILDING_KIT.ShopHall)
+Buildings.interiorLight(tradeFloor,BUILDING_KIT.ShopHall)
 marketStall(hub,V(50,0,17),V(50,0,0),"Fruit Stall",nil,nil,nil,rose,"MARKET ROW   /   PRODUCE","Feast")
 marketStall(hub,V(76,0,17),V(76,0,0),"Cloth Stall",nil,nil,nil,teal,"MARKET ROW   /   CLOTH","HideRoll")
-anchor(hub,"NPC_Banker",at(bankCF,0,0,2.4))
-anchor(hub,"NPC_Merchant",at(tradeCF,0,0,2.4))
+anchor(hub,"NPC_Banker",at(bankCF,0,QUAY_FLOOR,2.4))
+anchor(hub,"NPC_Merchant",at(tradeCF,0,QUAY_FLOOR,2.4))
 anchor(hub,"NPC_Auctioneer",V(86,0,-8),V(86,0,0))
-anchor(hub,"Waypoint_Bank",at(bankCF,0,0,-5)*CFrame.Angles(0,math.pi,0))
-anchor(hub,"Waypoint_Market",at(tradeCF,0,0,-5)*CFrame.Angles(0,math.pi,0))
-sculpture(hub,"Bank lockbox",at(bankCF,0,3.7,0).Position,"VaultChest",.65)
-sculpture(hub,"Trader's timber",at(tradeCF,0,3.9,0).Position,"TimberBundle",.65,20)
+anchor(hub,"Waypoint_Bank",at(bankCF,0,QUAY_FLOOR,-5)*CFrame.Angles(0,math.pi,0))
+anchor(hub,"Waypoint_Market",at(tradeCF,0,QUAY_FLOOR,-5)*CFrame.Angles(0,math.pi,0))
 for i,p in ipairs({V(58,0,-23),V(82,0,-21),V(38,0,22),V(90,0,21)}) do
 	local crate=block(hub,"Market crate",p+V(0,.9,0),V(2.2,1.8,2.2),i%2==0 and timber or darken(timber,.2),WO,true)
 	if i==1 then meshSlot(crate,"Crate") end
@@ -1226,9 +1553,15 @@ herb(moss,MOSS+V(2,mossTop,2))
 local MOONPOOL=G+V(-24,0,-26)
 pond(grove,MOONPOOL,13,{name="Moonpool"})
 local jettyAt=MOONPOOL+V(9,0,7.2)
-local dock=part(grove,"Fishing jetty",V(3,1,9),CFrame.lookAt(jettyAt+V(0,.5,0),MOONPOOL+V(0,.5,0)),timber,WO,true)
+local spot=group("Moonpool fishing spot",grove)
+local dock=part(spot,"Fishing jetty",V(3,1,9),CFrame.lookAt(jettyAt+V(0,.5,0),MOONPOOL+V(0,.5,0)),timber,WO,true)
 meshSlot(dock,"FishingPier")
-prompt(dock,"Cast line","Moonpool","gather","Fish").HoldDuration=FISH_HOLD
+-- §42 QC L11: ripples and a bobber off the jetty's end, so the spot visibly goes calm when fished out.
+local bob=jettyAt+(MOONPOOL-jettyAt).Unit*7
+for i=1,2 do disk(spot,"Ripple",bob+V(math.cos(i*2.1)*.9,.26+i*.04,math.sin(i*2.1)*.9),.4+i*.4,.03,lighten(C("5AA9B5"),.35+i*.12),SM,false) end
+ball(spot,"Bobber",bob+V(.4,.5,.2),.75,C("E2574C"),SM)
+ball(spot,"Bobber cap",bob+V(.4,.95,.2),.42,cream,SM)
+Node.gather(dock,"Fish")
 anchor(grove,"Waypoint_MoonpoolJetty",jettyAt+(jettyAt-MOONPOOL).Unit*5.5,MOONPOOL)
 anchor(grove,"Waypoint_Moonpool",jettyAt+(jettyAt-MOONPOOL).Unit*8,MOONPOOL)
 sign(grove,MOONPOOL+V(20,0,-4),"Moonpool","MOSSWAKE   /   ANGLING",mint,90,8)
@@ -1252,8 +1585,9 @@ ramp(bench,Q+V(8,0,-18),Q+V(16,benchTop,-27),7)
 for _,o in ipairs({V(-38,0,14),V(-18,0,-22),V(8,0,20)}) do ore(mine,Q+o) end
 ore(bench,Q+V(14,benchTop,-44))
 local advanced=group("Aetherite outcrop",mine)
-local vein=sculpture(advanced,"Aetherite seam",Q+V(26,1.5,28),"AetherCrystal",1.45,30)
-prompt(vein,"Mine Aetherite","Mining 3 required","gather","Aetherite")
+local vein=sculpture(group("Aetherite seam",advanced),"Aetherite seam",Q+V(26,1.5,28),"AetherCrystal",1.45,30)
+vein.Size=V(3,3,3) -- §42: the anchor is the click target (still invisible; the sculpture scales by SculptureScale)
+Node.gather(vein,"Aetherite")
 sign(advanced,Q+V(36,0,26),"Aetherite","MINING 3 / REFINE AT THE STARFORGE",mint,0,8)
 for i=1,5 do
 	local post=block(mine,"Hoist support",Q+V(-32+8*i,2.5,40),V(.7,5,.7),timber,WO,false)
@@ -1286,7 +1620,7 @@ Tags:AddTag(boss,"AetherSculpture")
 prompt(boss,"Strike","Shellwarden","fight","Warden")
 disk(wild,"Warden dais",W+V(0,.1,0),12,.22,shale,ST,true)
 anchor(wild,"Waypoint_Shellwarden",W+V(0,0,16),W)
-sign(wild,W+V(12,0,40),"Shellwarden","WARDEN REACH   /   HUNT",rose,0,10)
+sign(wild,W+V(12,0,30),"Shellwarden","WARDEN REACH   /   HUNT",rose,0,10)
 local GATE=W+V(0,0,-50)
 local gate=block(wild,"ExpeditionGate",GATE+V(0,2,0),V(2,4,2),teal,GL,false)
 gate.Transparency=1
@@ -1318,11 +1652,80 @@ local slots,homes={},{}
 local homeTerrace={}
 -- Free-form island placements (attached at the end of this script, see homePlacement.attach).
 local homePlacement={}
+-------------------------------------------------------------------------------
+-- Travel beacons (docs/DEPTH-CONTRACT.md §44). Every beacon a player uses to
+-- travel keeps its prompt post (name, size, place, prompt and anchors as
+-- before) and becomes a forged dais: travelBeacon() gives the post the
+-- TravelBeacon / TravelBeaconBasalt mesh in a declared ShapeBox (5 x 5.6 x 5
+-- from the ground up) that covers the post and its plinth; the forge hides the
+-- post locally once the mesh exists. The floating aether crystal, armillary
+-- rings, rising motes, locked / lit state and the activation flare are drawn
+-- by beacons.client.lua from these attributes (no extra static parts):
+--   TravelBeacon (string)        kind: region | return | home | crew | ferry | vent
+--   TravelBeaconHover (Vector3)  world point the crystal / rings float at
+--   TravelBeaconRegion (string)  destination region: dark until the player can
+--                                go there (region open or warp learned)
+--   TravelBeaconNeeds (string)   "crew": dark until the player is in a crew
+--   TravelBeaconFlare (number)   bumped on every successful use (with
+--                                TravelBeaconFlareBy = UserId): the flare + whoosh
+-- Basalt daises stand on the dark isles; the dais channels take the Tint.
+-- Colliders (invisible, under the mesh): the stepped base is a 4.9-wide,
+-- 0.95-tall cylinder "Beacon plinth" (a step a character walks onto) and the
+-- four pylons are thin "Beacon pylon" posts; the prompt hangs on the post's
+-- "Beacon prompt" attachment in front of the dais (opts.face, default -Z) at
+-- ground + 1.5.
+-------------------------------------------------------------------------------
+local BEACON_BOX=V(5,5.6,5)
+local BEACON_PLINTH_R,BEACON_PLINTH_H=2.45,.95
+local BEACON_PYLON=V(.6,2.9,.6) -- from the plinth top to the arms, 1.55 out on the diagonals
+local BEACON_PROMPT_REACH,BEACON_PROMPT_HEIGHT=3.2,1.5
+local BASALT_ISLES={["Brassfall Quarry"]=true,["Cinder Shelf"]=true,["Gloomhollow Caverns"]=true,["Tempest Spire"]=true,["The Shattered Crown"]=true}
+local function travelBeacon(post,ground,accent,kind,opts)
+	opts=opts or {}
+	local basalt=BASALT_ISLES[islandModel(post).Name]==true
+	meshSlot(post,if basalt then "TravelBeaconBasalt" else "TravelBeacon",accent)
+	local at=post.CFrame.Position
+	local base=disk(post.Parent,"Beacon plinth",V(at.X,ground+BEACON_PLINTH_H/2,at.Z),BEACON_PLINTH_R,BEACON_PLINTH_H,ink,ST,true)
+	base.Transparency,base.CastShadow=1,false
+	for k=0,3 do
+		local a=math.pi/4+k*math.pi/2
+		local pylon=part(post.Parent,"Beacon pylon",BEACON_PYLON,CFrame.new(at.X+math.cos(a)*1.55,ground+BEACON_PLINTH_H+BEACON_PYLON.Y/2,at.Z+math.sin(a)*1.55)*CFrame.Angles(0,-a,0),ink,ST,true)
+		pylon.Transparency,pylon.CastShadow=1,false
+	end
+	local face=if typeof(opts.face)=="Vector3" then V(opts.face.X,0,opts.face.Z) else V(0,0,-1)
+	face=if face.Magnitude>1e-3 then face.Unit else V(0,0,-1)
+	local seat=Instance.new("Attachment")
+	seat.Name="Beacon prompt"
+	seat.CFrame=post.CFrame:ToObjectSpace(CFrame.new(V(at.X,ground+BEACON_PROMPT_HEIGHT,at.Z)+face*BEACON_PROMPT_REACH))
+	seat.Parent=post
+	post:SetAttribute("ShapeBox",BEACON_BOX)
+	post:SetAttribute("ShapeBoxOffset",post.CFrame:ToObjectSpace(CFrame.new(at.X,ground+BEACON_BOX.Y/2,at.Z)).Position)
+	post:SetAttribute("TravelBeacon",kind)
+	post:SetAttribute("TravelBeaconHover",V(at.X,ground+3,at.Z))
+	if opts.region then post:SetAttribute("TravelBeaconRegion",opts.region) end
+	if opts.needs then post:SetAttribute("TravelBeaconNeeds",opts.needs) end
+	Tags:AddTag(post,"TravelBeacon")
+	return post
+end
+-- A beacon's prompt post standing on `ground` (its old part, kept as the fallback).
+local function beaconPost(parent,name,ground,center,size,accent,kind,opts)
+	local post=block(parent,name,center,size,accent,GL,false)
+	return travelBeacon(post,ground,accent,kind,opts)
+end
+-- A successful beacon trip is known fast travel (Aether Mote pickup checks)
+-- and flares the beacon for every client nearby.
+local function flare(trigger,player)
+	if trigger:GetAttribute("TravelBeacon")==nil then return end
+	trigger:SetAttribute("TravelBeaconFlareBy",player.UserId)
+	trigger:SetAttribute("TravelBeaconFlare",(tonumber(trigger:GetAttribute("TravelBeaconFlare")) or 0)+1)
+end
 local function warp(player,trigger,destination)
 	local character=player.Character
 	local root=character and character:FindFirstChild("HumanoidRootPart")
 	local hum=character and character:FindFirstChildOfClass("Humanoid")
 	if root and hum and hum.Health>0 and (trigger.CFrame.Position-root.Position).Magnitude<=12 then
+		player:SetAttribute("FastTravelAt",os.clock()) -- known fast travel (Aether Mote pickup checks)
+		flare(trigger,player)
 		character:PivotTo(CFrame.new(destination))
 		root.AssemblyLinearVelocity=Vector3.zero
 	end
@@ -1334,7 +1737,7 @@ local SKYREACH_LANDING = SR+V(-52,4,0)
 anchor(skyreach,"Waypoint_Entrance_Skyreach",SKYREACH_LANDING-V(0,4,0),SR)
 -- Assigned with the regional beacons below: pcall + table check + denial notice.
 local regionTravel
-local launch = sculpture(mine,"Charter beacon",Q+V(58,2,6),"Lantern",1.2)
+local launch = beaconPost(mine,"Charter beacon",Q.Y,Q+V(58,2.8,6),V(1.6,4,1.6),brass,"region",{region="Skyreach",face=V(-6,0,2)})
 sign(mine,Q+V(54,0,-4),"Skyreach passage","GUILD CHARTER REQUIRED",brass,90,9,{arrows={{label="Skyreach",to=SR},{label="Brassfall Quarry",to=Q}}})
 anchor(mine,"Waypoint_SkyreachCharter",Q+V(52,0,8),Q+V(58,0,6))
 local launchPrompt=prompt(launch,"Ascend to Skyreach","Guild charter required")
@@ -1342,7 +1745,7 @@ launchPrompt:SetAttribute("IsleWarpRegion","Skyreach")
 launchPrompt.Triggered:Connect(function(player)
 	regionTravel(player,launch,"Skyreach",SKYREACH_LANDING)
 end)
-local descent = sculpture(skyreach,"Quarry beacon",SR+V(-46,2,-10),"Lantern",1.1)
+local descent = beaconPost(skyreach,"Quarry beacon",SR.Y,SR+V(-46,2.8,-10),V(1.6,4,1.6),mint,"return",{face=V(46,0,10)})
 prompt(descent,"Return to quarry","Brassfall").Triggered:Connect(function(player)
 	warp(player,descent,Q+V(50,4,14))
 end)
@@ -1352,15 +1755,15 @@ local summit,summitTop=tier(skyreach,"Summit",SUMMIT,18,6,{open={2.747},cliff=C(
 ramp(summit,SR+V(-8,0,6),V(SR.X+2,summitTop,SR.Z+2),7)
 local survey = sculpture(summit,"Summit cartographer",V(SUMMIT.X+2,summitTop+2,SUMMIT.Z-4),"Surveyor",1.1,180)
 prompt(survey,"Survey the summit","Skyreach","explore","Skyreach"):SetAttribute("IsleRegion","Skyreach")
-local rich = sculpture(skyreach,"Rich Aetherite seam",SR+V(-14,2,28),"AetherCrystal",1.8)
-prompt(rich,"Mine rich seam","Skyreach Aetherite","gather","Aetherite"):SetAttribute("IsleRegion","Skyreach")
+local rich = sculpture(group("Rich Aetherite seam",skyreach),"Rich Aetherite seam",SR+V(-14,2,28),"AetherCrystal",1.8)
+rich.Size=V(3.5,3.5,3.5) -- §42: click target (invisible)
+Node.gather(rich,"Aetherite","Skyreach")
 sign(skyreach,SR+V(-38,0,-16),"Skyreach","SURVEY THE SUMMIT / MINE RICH SEAMS",mint,90,10)
 for i,o in ipairs({V(-30,0,30),V(-20,0,-40),V(30,0,48),V(50,0,-2),V(-4,0,52)}) do decorTree(skyreach,SR+o,1,"Pine",C("5D8070")) end
 for i,o in ipairs({V(-40,0,24),V(24,0,-44)}) do outcrop(skyreach,SR+o,1.2,i) end
 for _,o in ipairs({V(-40,0,6),V(-10,0,20)}) do lamp(skyreach,SR+o) end
 end
-local returnPost=block(harbor,"Homeward beacon",V(66,2,64),V(2,4,2),mint,GL,false)
-meshSlot(returnPost,"WarpBeacon",mint)
+local returnPost=beaconPost(harbor,"Homeward beacon",0,V(66,2,64),V(2,4,2),mint,"home",{face=V(-4,0,-4)})
 sign(harbor,V(71,0,58),"Homeward","WAYFARER TRANSIT   /   RETURN",mint,90,9)
 anchor(hub,"Waypoint_Homeward",V(62,0,60),V(66,0,64))
 prompt(returnPost,"Travel home","Homeward beacon").Triggered:Connect(function(player)
@@ -1440,10 +1843,11 @@ do
 	end
 	-- Owner-only gather nodes on the edge band.
 	local function homeOre(parent,pos,owner)
-		local base=disk(parent,"Ore seam",pos+V(0,.4,0),2.5,.8,shale,ST,false)
-		slotBox(parent,"Ore seam mesh",pos,V(5,2.4,4.4),"OreVein",C("C98D4F"))
-		sculpture(parent,"Faceted copper cluster",pos+V(0,1.4,0),"AetherCrystal",1)
-		prompt(base,"Mine ore","Home ore rock","gather","Ore",owner)
+		local m=group("Home ore rock",parent)
+		local base=disk(m,"Ore seam",pos+V(0,.4,0),2.5,.8,shale,ST,false)
+		slotBox(m,"Ore seam mesh",pos,V(5,2.4,4.4),"OreVein",C("C98D4F"))
+		sculpture(m,"Faceted copper cluster",pos+V(0,1.4,0),"AetherCrystal",1)
+		Node.gather(base,"Ore",nil,owner)
 	end
 	-- Edge band: every feature sits between the build radius and the meadow rim
 	-- (Data.Home.Edge angles), rebuilt one ring further out per level.
@@ -1595,15 +1999,14 @@ local function settle(player)
 	local function land(character)
 		local root=character:WaitForChild("HumanoidRootPart",10)
 		-- Lairs: lairs.server.lua owns a rejoin respawn (LairRejoin) and returns the member to their arena.
-		if root and homes[player] and player.Character==character and not player:GetAttribute("LairRejoin") then character:PivotTo(CFrame.new(spawn.Position+V(0,3.4,0))) end
+		-- Raids (§38): raids.server.lua owns a raider's death / rejoin respawn (RaidRejoin) the same way.
+		if root and homes[player] and player.Character==character and not player:GetAttribute("LairRejoin") and not player:GetAttribute("RaidRejoin") then character:PivotTo(CFrame.new(spawn.Position+V(0,3.4,0))) end
 	end
 	player.CharacterAdded:Connect(land)
 	if player.Character then task.spawn(land,player.Character) end
 	windpine(m,center+V(-6,0,0),1,player.UserId)
 	sign(m,center+V(6,0,-5),"Wayfarer's Rest","HOME   /   CUT WINDPINE TO BEGIN",mint,0,9)
-	local gatePost=block(m,"Quay beacon",center+V(0,2,-11),V(2,4,2),mint,GL,false)
-	meshSlot(gatePost,"WarpBeacon",mint)
-	for _,x in ipairs({-2.3,2.3}) do gem(m,"Transit fins",center+V(x,2,-11),V(.65,4,.65),brass,0) end
+	local gatePost=beaconPost(m,"Quay beacon",center.Y,center+V(0,2,-11),V(2,4,2),mint,"return",{face=V(0,0,1)})
 	prompt(gatePost,"Travel to hub","Compass Quay").Triggered:Connect(function(user)
 		if user==player then warp(user,gatePost,HUB_ARRIVAL) end
 	end)
@@ -1616,23 +2019,28 @@ local function settle(player)
 	-- of the worker type's catalog shape tinted with its colour (rebuilt only when
 	-- the type/tier changes). Attributes: Worker<n>Tier, Worker<n>Resource,
 	-- WorkerSlots (unlocked slots; locked stations show their unlock note).
-	local yardCenter=center+V(26,0,-25)
+	-- §40: the yard stands out in the south-east district (Data.Island
+	-- ProtectedCircles "worker yard"), reached by a path and its ramp.
+	local YARD_OFFSET=V(40,0,-38)
+	local yardCenter=center+YARD_OFFSET
 	local YARD_R,YARD_H=12,1.5
 	do
-		local dir=V(-26,0,25).Unit
+		local dir=(-YARD_OFFSET).Unit
 		local yard=tier(m,"Worker Yard",yardCenter,YARD_R,YARD_H,{open={math.atan2(dir.Z,dir.X)},top=C("8FB27F")})
-		local out=V(26,0,-25).Unit
-		ramp(yard,center+out*(HOME_CORE-1.6),center+out*(HOME_CORE-1.6+YARD_H*2.4+2)+V(0,YARD_H,0),5)
+		local out=YARD_OFFSET.Unit
+		local foot=yardCenter-out*(YARD_R+5.4)
+		path(yard,center+out*(HOME_CORE-1),foot+out*.6,5)
+		ramp(yard,foot,yardCenter-out*(YARD_R-2.2)+V(0,YARD_H,0),5)
 		sculpture(yard,"Worker Yard lockbox",yardCenter+V(0,YARD_H+.9,0),"VaultChest",.9)
 		anchor(m,"Waypoint_WorkerYard",yardCenter+V(-6,YARD_H,6),yardCenter+V(0,YARD_H,0))
 	end
 	local fleetOffsets={V(9,0,4),V(13,0,-1),V(-10,0,-10)}
 	do
 		-- Nine yard slots on a ring (radius 8), skipping the ramp side.
-		local entry=math.atan2(25,-26)
+		local entry=math.atan2(-YARD_OFFSET.Z,-YARD_OFFSET.X)
 		for i=1,9 do
 			local a=entry+(i)*2*math.pi/10
-			table.insert(fleetOffsets,V(26+math.cos(a)*8,YARD_H,-25+math.sin(a)*8))
+			table.insert(fleetOffsets,V(YARD_OFFSET.X+math.cos(a)*8,YARD_H,YARD_OFFSET.Z+math.sin(a)*8))
 		end
 	end
 	local TIER_COLORS={C("9AA5B1"),C("6BBF59"),C("3F7CAC"),C("8E5CC4"),C("E0A040"),C("E86FB8"),C("FFF3B0")}
@@ -1738,14 +2146,15 @@ local function settle(player)
 			end
 		else
 			-- §27: the deck stands on the big island; a boardwalk replaces the bridge.
-			path(addition,center+V(0,0,16),center+V(0,0,22.5),5,timber,.1).Material=WO
-			disk(addition,"Lookout deck",center+V(0,-.22,29),7,.6,timber,WO,true)
+			-- §40: the lookout deck stands out north (z 46, Data.Island "lookout deck").
+			path(addition,center+V(0,0,16),center+V(0,0,39.5),5,timber,.1).Material=WO
+			disk(addition,"Lookout deck",center+V(0,-.22,46),7,.6,timber,WO,true)
 			for i=1,5 do
 				local a=i*math.pi/3
-				lamp(addition,center+V(math.cos(a)*6,0,29+math.sin(a)*6))
+				lamp(addition,center+V(math.cos(a)*6,0,46+math.sin(a)*6))
 			end
-			block(addition,"Lookout bench",center+V(0,.9,31),V(5,.4,1.7),navy,WO,true)
-			block(addition,"Bench back",center+V(0,1.6,31.9),V(5,1.8,.3),brass,WO,false)
+			block(addition,"Lookout bench",center+V(0,.9,48),V(5,.4,1.7),navy,WO,true)
+			block(addition,"Bench back",center+V(0,1.6,48.9),V(5,1.8,.3),brass,WO,false)
 		end
 	end
 	for _,choice in ipairs(additions) do
@@ -1759,7 +2168,6 @@ local function settle(player)
 	if homeTerrace.attach then homeTerrace.attach(player,homes[player]) end
 	if homePlacement.attach then homePlacement.attach(player,homes[player]) end
 	if homeTerrace.garden then homeTerrace.garden(player,homes[player]) end -- Verdant Garden islet (Garden section)
-	Signs.cullBacks(m) -- §28: one-sided boards where the back faces a wall or the rim
 end
 Players.PlayerAdded:Connect(settle)
 Players.PlayerRemoving:Connect(function(player)
@@ -1787,8 +2195,7 @@ end
 local CREW_R=46
 local K=1.6 -- crew haven layout scale (wave 4)
 local sharedHomes,sharedPlayers,sharedSlots,sharedConnections={},{},{},{}
-local sharedBeacon=block(harbor,"Crew beacon",V(44,2,68),V(2,4,2),teal,GL,false)
-meshSlot(sharedBeacon,"WarpBeacon",teal)
+local sharedBeacon=beaconPost(harbor,"Crew beacon",0,V(44,2,68),V(2,4,2),teal,"crew",{needs="crew",face=V(4,0,-4)})
 sign(harbor,V(39,0,62),"Crew Haven","CO-OP / FORM A CREW IN THE ATLAS",mint,90,9)
 anchor(hub,"Waypoint_CrewHaven",V(48,0,64),V(44,0,68))
 anchor(hub,"NPC_Registrar",V(40,0,72),V(48,0,64))
@@ -1809,20 +2216,22 @@ local function makeShared(groupKey,groupId,isPreview)
 	tier(model,"Crew knoll",center+V(-22,0,-24),9,2.5,{top=C("86AD7A")})
 	for i,o in ipairs({V(30,0,-20),V(-34,0,10),V(26,0,30),V(-10,0,36)}) do decorTree(model,center+o,1,if i%2==0 then "Pine" else "Meadow") end
 	sign(model,center+V(8,0,8)*K,"Crew Haven","SHARED SUPPLIES / BUILD IN THE ATLAS",mint,0,12)
-	local exit=block(model,"Quay return",center+V(0,2,16*K),V(2,4,2),mint,GL,false)
-	meshSlot(exit,"WarpBeacon",mint)
+	local exit=beaconPost(model,"Quay return",center.Y,center+V(0,2,16*K),V(2,4,2),mint,"return",{face=V(0,0,-1)})
 	prompt(exit,"Return to hub","Compass Quay").Triggered:Connect(function(player)
 		if sharedPlayers[player]==groupKey then warp(player,exit,HUB_ARRIVAL+V(-6,0,4)) end
 	end)
+	-- §42 (owner decision, overrides QC L9): the crew stores are struck like any
+	-- node (no hold prompt); the break credits the crew store through
+	-- coop.server.lua's IsleCoopStrike (same yields, caps and regrowth).
 	local function supply(name,pos,color)
-		local base=block(model,"Shared "..name,center+pos,V(3,2,3),color,WO,true)
+		local store=group("Shared "..name.." store",model)
+		local base=block(store,"Shared "..name,center+pos,V(3,2,3),color,WO,true)
 		base.Transparency=1
-		sculpture(model,name.." supply marker",center+pos+V(0,.4,0),({Timber="TimberBundle",Ore="AetherCrystal",Herb="Moonbloom"})[name],1)
-		local interaction=prompt(base,"Gather shared "..name,"Crew stores")
-		interaction.HoldDuration=GATHER_HOLD
-		interaction:SetAttribute("CoopId",groupId)
-		interaction:SetAttribute("CoopPreview",isPreview)
-		interaction:SetAttribute("IsleCoopResource",name)
+		sculpture(store,name.." supply marker",center+pos+V(0,.4,0),({Timber="TimberBundle",Ore="AetherCrystal",Herb="Moonbloom"})[name],1)
+		Node.special(base,name,"crew","Shared "..name)
+		base:SetAttribute("CoopId",groupId)
+		base:SetAttribute("CoopPreview",isPreview)
+		base:SetAttribute("IsleCoopResource",name)
 	end
 	supply("Timber",V(-12*K,1,-5*K),timber)
 	supply("Ore",V(0,1,-14*K),shale)
@@ -1946,24 +2355,24 @@ local function regionIsle(id,name,pos,r,opts)
 	opts.region=id
 	return island(name,pos,r,opts)
 end
-local function nodeLabel(id) return Resource[id].def.name.." (Lv "..Resource[id].def.level..")" end
--- The original public nodes adopt the tiered "<Name> (Lv N)" labels.
-for _,q in ipairs(islandsFolder:GetDescendants()) do
-	local id=q:IsA("ProximityPrompt") and q:GetAttribute("IsleAction")=="gather" and q:GetAttribute("IsleItem")
-	if id and Resource[id] and not q:GetAttribute("OwnerUserId") then
-		q.ActionText=VERB[Resource[id].skill]
-		q.ObjectText=nodeLabel(id)..(if q:GetAttribute("IsleRegion") then " · rich seam" else "")
-	end
+-- §42: every node carries its tier HP (Data.Strike.maxHp) and the OSRS label
+-- ("Mine Copperstone Vein (Mining 1)"); nodes built before AetherData loaded
+-- (and home nodes built later) get them here.
+function Node.stampHost(host)
+	local id=host:GetAttribute("GatherNode")
+	local r=Resource[id]
+	if not r or not Data.Strike then return end
+	host:SetAttribute("NodeMaxHp",Data.Strike.maxHp(r.def))
+	host:SetAttribute("NodeLabel",Data.Strike.label(r.def))
+	host:SetAttribute("ResourceId",id)
 end
+Node.stamp=Node.stampHost
+for _,host in ipairs(Node.pending) do Node.stamp(host) end
+table.clear(Node.pending)
 local function gatherPrompt(target,id,region)
 	local r=Resource[id]
 	assert(r,"unknown resource "..tostring(id))
-	local q=prompt(target,VERB[r.skill],nodeLabel(id),"gather",id)
-	q.MaxActivationDistance=if r.skill=="Fishing" then 12 else 10
-	if r.skill=="Fishing" then q.HoldDuration=FISH_HOLD end
-	if region then q:SetAttribute("IsleRegion",region) end
-	target:SetAttribute("ResourceId",id)
-	return q
+	return Node.gather(target,id,region)
 end
 
 -- Ore: a slate boulder split by a metal vein, crowned by a crystal cluster.
@@ -2236,13 +2645,11 @@ local function requirementText(region)
 	for _,text in ipairs(quests) do table.insert(out,text) end
 	return if #out>0 then "REQUIRES "..table.concat(out," · ") else "OPEN TO ALL WAYFARERS"
 end
-local function beaconProp(parent,pos,accent,withLight)
-	block(parent,"Beacon plinth",pos+V(0,.4,0),V(3.4,.8,3.4),ink,ST,true)
-	local post=block(parent,"Warp beacon",pos+V(0,2.8,0),V(1.6,4,1.6),accent,GL,false)
-	meshSlot(post,"WarpBeacon",accent)
-	for _,x in ipairs({-1.3,1.3}) do gem(parent,"Beacon fin",pos+V(x,2.6,0),V(.5,3.6,.5),brass,0) end
-	local cap=part(parent,"Beacon flame",V(.9,.9,.9),CFrame.new(pos+V(0,5.3,0))*CFrame.Angles(math.pi/4,0,math.pi/4),accent,NE,false)
-	if withLight~=false then light(cap,accent,.7,12) end
+-- Gated and return beacons (§44): travelBeacon() adds the dais colliders, the
+-- post stays the prompt host; one light at crystal height where the area allows it.
+local function beaconProp(parent,pos,accent,withLight,kind,opts)
+	local post=beaconPost(parent,"Warp beacon",pos.Y,pos+V(0,2.8,0),V(1.6,4,1.6),accent,kind,opts)
+	if withLight~=false then light(post,accent,.7,12,{lift=.8}) end
 	return post
 end
 local GT,GT_R=V(0,0,232),75
@@ -2266,7 +2673,7 @@ end
 local function regionWarp(parent,pos,regionId,destination,waypoint,withLight)
 	local region=Data.RegionById[regionId]
 	assert(region,"unknown region "..tostring(regionId))
-	local post=beaconProp(parent,pos,REGION_ACCENT[regionId] or mint,withLight)
+	local post=beaconProp(parent,pos,REGION_ACCENT[regionId] or mint,withLight,"region",{region=regionId})
 	local q=prompt(post,"Travel to "..region.name,requirementText(region))
 	q:SetAttribute("IsleWarpRegion",regionId)
 	q.Triggered:Connect(function(player) regionTravel(player,post,regionId,destination) end)
@@ -2274,7 +2681,7 @@ local function regionWarp(parent,pos,regionId,destination,waypoint,withLight)
 	return post
 end
 local function returnWarp(parent,pos,label,regionId)
-	local post=beaconProp(parent,pos,mint)
+	local post=beaconProp(parent,pos,mint,nil,"return")
 	local q=prompt(post,"Return to the Skyway",label)
 	q:SetAttribute("IsleWarpReturn","Hub")
 	q.Triggered:Connect(function(player) warp(player,post,SKYWAY_LANDING) end)
@@ -2282,8 +2689,8 @@ local function returnWarp(parent,pos,label,regionId)
 	return post
 end
 
--- Static ledger boards (§28 "ledger" archetype): a notice frame with a shingled
--- canopy and a notice board; rows are named so live data can be written later.
+-- Static ledger boards (§28 "ledger" archetype): a physical notice board (no
+-- posts in v2); rows are named so live data can be written later.
 local function ledger(parent,name,pos,toward,title,kicker,rows,accent,width,height)
 	local ground=facing(pos,toward)
 	local holder=group("Sign "..title,parent)
@@ -2292,8 +2699,10 @@ local function ledger(parent,name,pos,toward,title,kicker,rows,accent,width,heig
 	local themeName=Signs.theme(parent)
 	local theme=Signs.THEMES[themeName]
 	holder:SetAttribute("SignTheme",themeName)
+	holder:SetAttribute("SignVersion",Signs.VERSION)
+	pcall(function() holder.ModelStreamingMode=Enum.ModelStreamingMode.Atomic end)
 	Tags:AddTag(holder,"AetherSign")
-	Signs.ledgerFrame(holder,ground,width,height,theme)
+	-- v2: no notice posts; the board hangs on its own (live rows need a fixed face).
 	local board=part(holder,name,V(width,height,.35),ground*CFrame.new(0,height/2+1.6,0),ink,WO,false)
 	meshSlot(board,"SignNoticeBoard",theme.metal)
 	board:SetAttribute("SignBoard",true)
@@ -2344,6 +2753,12 @@ local function ledger(parent,name,pos,toward,title,kicker,rows,accent,width,heig
 		text(row[1],40,y,300,rowH-4,Signs.FONT.body,theme.text,nil,"Row_"..row.key,20)
 		text(row[2],330,y,240,rowH-4,Signs.FONT.body,accent:Lerp(cream,.3),Enum.TextXAlignment.Right,"Value_"..row.key,20)
 	end
+	-- QC M3: the same face on the back (readable from both sides of the hall)
+	-- and a camera-facing title plaque floating above the board.
+	local back=gui:Clone()
+	back.Name,back.Face="Sign face Back",Enum.NormalId.Back
+	back.Parent=board
+	Signs.ledgerTitle(board,{title=title,kicker=kicker,accent=accent,width=width},theme,height/2+2.6)
 	return board
 end
 
@@ -3115,10 +3530,12 @@ do
 		-- §27: a paved plaza on the big island (was a bridged islet); same offsets.
 		local terrace=HomeKit.plaza(m,"Builders Terrace",tc,11,C("A7B08A"))
 		home.terrace=terrace
-		path(terrace,center+V(-16,0,0),center+V(-22.5,0,0),5)
+		-- §40: the terrace stands out west (Data.TERRACE_OFFSET); the walk reaches its plaza.
+		path(terrace,center+V(-16,0,0),center+V(T.x+11,0,0),5)
 		disk(terrace,"Terrace court",tc+V(0,.05,0),4.2,.12,navy,ST,true)
 		disk(terrace,"Court seal",tc+V(0,.13,0),1.4,.1,brass,MT,false)
-		sign(terrace,center+V(-15,0,-6),"Builder's Terrace","CARPENTRY   /   PLAN IN YOUR JOURNAL",brass,90,8)
+		-- §40 QC: the sign stands at the terrace, beside the walk (Data.Island "terrace sign").
+		sign(terrace,center+V(T.x+14,0,-9),"Builder's Terrace","CARPENTRY   /   PLAN IN YOUR JOURNAL",brass,90,8)
 		local built,plinths,portalPrompt={},{},nil
 		local function refreshPortal()
 			if not portalPrompt then return end
@@ -3462,6 +3879,7 @@ do
 			local ok=#lit<MAX_GLOWS
 			for _,o in ipairs(lit) do if ok and (o.pos-g.pos).Magnitude<GLOW_SPACING then ok=false end end
 			g.light.Enabled=ok
+			g.light:SetAttribute("LightWanted",ok) -- §35 QC M1: the director reads intent, not Enabled
 			if ok then table.insert(lit,g) end
 		end
 	end
@@ -3685,9 +4103,7 @@ local function buildSkillContent()
 		local ground=tops[1]-V(0,.55,0)
 		local signPos=freeSpot(host,{ground-dir*7+tangent*8,ground-dir*7-tangent*8,ground-dir*13+tangent*5,ground-dir*13-tangent*5,ground-dir*16},5)
 		signAt(m,CFrame.lookAt(signPos,signPos-dir),course.name,"AGILITY "..course.level.."   /   "..n.." OBSTACLES",C(course.color),9)
-		local pole=block(m,"Course banner pole",tops[1]+tangent*4.2+V(0,3,0),V(.3,6,.3),brass,MT,false)
-		local cloth=part(m,"Course banner",V(1.6,2.2,.12),CFrame.new(pole.CFrame.Position+V(.9,1.6,0)),C(course.color),Enum.Material.Fabric,false)
-		meshSlot(cloth,"Banner",C(course.color))
+		-- QC L5: no course banner pole (posts are gone); the floating sign names the course.
 		anchor(m,"Waypoint_Agility_"..course.id,tops[1]-dir*7-V(0,.55,0),tops[1])
 		courseCount+=1
 	end
@@ -3832,7 +4248,7 @@ local function buildSkillContent()
 		local a=math.rad(SITES.QuayRigging.angle)
 		local dir=V(math.cos(a),0,math.sin(a))
 		local tangent=V(-dir.Z,0,dir.X)
-		local spot=dir*(R-12)+tangent*14
+		local spot=dir*(R-12)+tangent*21 -- §28 QC H1: its shop sign reads beside the course sign, not over it
 		vendor("Compass Quay",spot,spot-dir*10,"Agility","Skymaster","SkymarkExchange")
 	end
 	vendor("Meadow Reach",V(23,0,40),V(23,0,30),"Hunter","Trapper","TrackersLodge")
@@ -3862,7 +4278,7 @@ buildSkillContent()
 -------------------------------------------------------------------------------
 do
 	local G=Data.Garden
-	local GARDEN_OFFSET,GARDEN_R=V(-28.3,0,28.3),14
+	local GARDEN_OFFSET,GARDEN_R=V(-40,0,40),14 -- §40: out in the north-west district (Data.Island.ProtectedCircles)
 	local PLOT_X,PLOT_Z={-6.6,-2.2,2.2,6.6},{.5,-3.9,-8.3}
 	local VISITOR_SPOTS={{-10,4.5},{-7.5,7.5},{-4.5,10},{-11.5,1},{-12,-3}}
 	local leaf=C("5FBF77")
@@ -3876,6 +4292,8 @@ do
 		isle:SetAttribute("GardenOwner",player.UserId)
 		home.garden=isle
 		local dir=(center-gc).Unit
+		-- §40: a garden walk from the core to the lawn.
+		path(isle,center-dir*20,gc+dir*(GARDEN_R-.5),5)
 		local frame=CFrame.lookAt(gc,gc+dir)
 		local function F(x,zf,y) return frame*CFrame.new(x,y or 0,-zf) end
 		local function L(x,zf,y) return F(x,zf,y).Position end
@@ -3926,9 +4344,17 @@ do
 			b.soil.Color=if has(flags,"w") then darken(soilColor,.35) else soilColor
 			b.soil.Material=if has(flags,"c") then Enum.Material.Mud else GR
 			b.soil.Transparency=if unlocked then 0 else .55
-			b.prompt.Enabled=unlocked
+			-- §42 (owner decision): a ripe, healthy plot is harvested by striking it
+			-- with the hoe (StrikeKind "garden"), never with the prompt.
+			local strike=unlocked and ripe and not dead and not sick and not (s and s.pest)
+			b.prompt.Enabled=unlocked and not strike
+			if strike then
+				local cropName=Data.Items[crop.id] and Data.Items[crop.id].name or crop.id
+				Node.special(b.soil,"Herb","garden","Plot "..i.." · "..cropName,player.UserId)
+				b.soil:SetAttribute("GardenHarvest",i)
+			else Node.ungather(b.soil) end
 			b.prompt.ActionText=if not unlocked then "Locked" elseif s and s.pest then "Swat pest" elseif dead then "Clear"
-				elseif sick then "Treat" elseif ripe then "Harvest" elseif crop then "Water" else "Plant"
+				elseif sick then "Treat" elseif ripe then "Ripe" elseif crop then "Water" else "Plant"
 			b.prompt.ObjectText="Plot "..i..(if crop then " · "..(Data.Items[crop.id] and Data.Items[crop.id].name or crop.id).." · "..(G.STAGE_NAMES[s.stage] or "") else "")
 			-- Crop mesh slot: rebuilt when the crop or stage changes, re-tinted in place.
 			local key=if crop and s.stage>0 then crop.id..":"..s.stage else nil
@@ -4211,7 +4637,7 @@ end
 do
 	local FERRY=GT+V(-28,0,-42)
 	local accent=C("7FE3CC")
-	local post=beaconProp(terrace,FERRY,accent,false)
+	local post=beaconProp(terrace,FERRY,accent,false,"ferry",{face=V(4,0,5)})
 	sign(terrace,FERRY+V(-7,0,6),"Skybreach Ferry","SIEGE · HAUL   /   COMBAT 20 OR FISHING 20",accent,-30,9)
 	anchor(terrace,"Waypoint_SkybreachFerry",FERRY+V(4,0,5),FERRY)
 	local q=prompt(post,"Board the Skybreach ferry","Skybreach Bastion")
@@ -4291,16 +4717,15 @@ do
 		return q
 	end
 	local dust=C("B9A7FF")
-	-- Commission Board: a posted ledger board, the Forgeheart anvil and an ore cluster.
+	-- Commission Board: a floating §28 sign (its anchor carries the board's
+	-- prompt; QC M1: no posts or Signboard ledger), the Forgeheart anvil and
+	-- an ore cluster.
 	local quarry=islandsFolder:FindFirstChild("Brassfall Quarry")
 	if quarry then
 		local cf,pos=frame(quarry,200,7)
 		local m=group("Commission Board",quarry)
 		m:SetAttribute("LogsContent",true)
-		for _,x in ipairs({-2.6,2.6}) do part(m,"Board post",V(.5,5.6,.5),at(cf,x,2.8,0),darken(timber,.3),WO,true) end
-		local ledger=part(m,"Commission ledger",V(6,3.4,.4),at(cf,0,3.6,0),timber,WO,false)
-		meshSlot(ledger,"Signboard",dust)
-		part(m,"Ledger notices",V(5,2.4,.12),at(cf,0,3.6,-.26),cream,SM,false)
+		local ledger=signAt(m,cf,"Commission Board","QUARRY GUILD   /   DAILY COMMISSIONS",dust,9)
 		board(ledger,"Read commissions","Commission Board","Commissions")
 		local anvil=part(m,"Forgeheart anvil",V(2.6,1.8,1.4),at(cf,5,.9,-1.5),C("4A4F5A"),MT,true)
 		meshSlot(anvil,"Anvil",dust)
@@ -4308,7 +4733,6 @@ do
 		board(anvil,"Forgeheart","Glimmerdust perks","Commissions")
 		local cluster=hidden(m,"Glimmer cluster",at(cf,-5,1.2,-1.2).Position)
 		meshSlot(cluster,"OreCluster",dust)
-		signAt(m,at(cf,0,0,4.5),"Commission Board","QUARRY GUILD   /   DAILY COMMISSIONS",dust,9)
 		anchor(m,"Waypoint_CommissionBoard",at(cf,0,0,-4),pos)
 	end
 	-- Aether Museum: a columned dais with a central statue, a display case and the log lectern.
@@ -4348,8 +4772,8 @@ end
 -- bumps IsleStationVisit so the client opens Workshop › Crafting). Models carry
 -- CraftingContent = true; anchors Waypoint_Jeweller / _Tannery / _Glassworks.
 -- Built from mesh slots that already exist (Workbench, OreCluster, Barrel,
--- Forge) plus a §28 shop sign: 18 station parts, a 3-part sign and 3 invisible waypoint
--- anchors (24 parts), no extra lights (terrace budget).
+-- Forge) plus a §28 shop sign: 18 station parts, a 1-part floating sign (§28 v2) and 3 invisible waypoint
+-- anchors (22 parts), no extra lights (terrace budget).
 -------------------------------------------------------------------------------
 do
 	local host=islandsFolder:FindFirstChild("Guild Terrace")
@@ -4362,7 +4786,7 @@ do
 			for _,q in ipairs(taken) do if V(pos.X-q.X,0,pos.Z-q.Z).Magnitude<radius+7 then return true end end
 			for _,obj in ipairs(host:GetDescendants()) do
 				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
-					local cf,sz=obj.CFrame,obj.Size
+					local cf,sz=Buildings.box(obj) -- §40 QC L2: declared mesh boxes block whole
 					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
 					local c=cf.Position
 					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
@@ -4445,6 +4869,404 @@ end
 -- End Crafting section.
 
 -------------------------------------------------------------------------------
+-- Settlements (World Art pass 2, docs/DEPTH-CONTRACT.md §40). Every static
+-- island gets a street-front settlement from the building kit: houses line
+-- its paths on both sides, fronts (doors) to the path, a setback apron
+-- (SETBACK studs) between the facade and the path edge and at least ALLEY
+-- studs between neighbours, so every path, prompt and anchor stays reachable.
+-- Lots are tested against a clearance index (one per island, the §30 grid):
+-- blockers are every visible or colliding part except the meadow, every
+-- Path / Ramp, prompt hosts (+PROMPT_CLEAR), sculptures, every Anchor_*
+-- (+ANCHOR_CLEAR: NPCs, waypoints and the spawn stay outside and clear),
+-- monster spawn markers (+8), Aether Motes and the festival board site.
+-- A lot is a building's whole fit box (roof, awning, porch) plus the apron,
+-- inside the island rim (RIM studs) on its main meadow. Compass Quay is
+-- settled here, after every fixed-coordinate section (its Compass Spire site
+-- reserved); the other islands after World Art & Regions and the Skyward Vents
+-- (part 2, below). Later sections search their spots around the houses.
+-- Walk-in halls first (a
+-- tavern or shop per settlement, furnished), then
+-- facades in the island's style. Every host is a mesh slot: one part a house.
+-------------------------------------------------------------------------------
+-- Buildings.settle(only): settle the islands named in `only` (a set). Called
+-- twice: Compass Quay right after the Crafting section (its town core is laid
+-- out before the World Art props and folk search their spots), every other
+-- island after the Skyward Vents (below).
+function Buildings.settle(only)
+	local B=Buildings
+	local started=os.clock()
+	local SETBACK,ALLEY,RIM,PROMPT_CLEAR,ANCHOR_CLEAR=2.2,2.6,5,3.5,3.5
+	local LANES,LANE_W,LANE_LIFT,SPAWN_CLEAR=2,6,.09,8
+	B.SETBACK,B.ALLEY=SETBACK,ALLEY
+	local FACADE_COLOR={StoneCottage=C("8C8A84"),LogLodge=C("6B4A33")}
+	-- Island styles: house types (tried in a deterministic rotation), roof
+	-- tints per type (at most two: the forge's desktop variant cap), quota and
+	-- the settlement's walk-in halls.
+	local STYLE={
+		["Compass Quay"]={core=true,reserve={{V(-53,0,13),13}},types={"TimberTownhouse","TimberHouse","TimberShopfront","TimberTownhouse"},quota=34,lanes=4,
+			tints={TimberHouse={"B5523B"},TimberTownhouse={"2F6F8F"},TimberShopfront={"D9A441"}},
+			halls={{shell="TavernHall",interior="TavernInterior",title="The Gilded Compass Inn",kicker="COMPASS QUAY   /   INN · HEARTH · ALE",accent="D9A441",tint="7A3E2E"},
+				{shell="ShopHall",interior="ShopInterior",title="Quay Outfitters",kicker="COMPASS QUAY   /   GOODS · SUPPLIES",accent="3C9291",tint="9C3F3A",banner=true}}},
+		["Guild Terrace"]={types={"TimberTownhouse","StoneCottage"},quota=10,tints={TimberTownhouse={"7A3E2E"},StoneCottage={"56677A"}}},
+		["Mosswake Grove"]={types={"ThatchCottage","LogLodge"},quota=10,tints={ThatchCottage={"3C8C7E"},LogLodge={"4E7A48"}},
+			halls={{shell="ShopHall",interior="ShopInterior",title="Mosswake Herbalist",kicker="MOSSWAKE GROVE   /   HERBS · TONICS",accent="6BAF5A",tint="4E7A48",banner=true}}},
+		["Meadow Reach"]={types={"ThatchCottage","TimberHouse"},quota=8,tints={ThatchCottage={"C15557"},TimberHouse={"C9572F"}},
+			halls={{shell="TavernHall",interior="TavernInterior",title="The Sunwheel Tap",kicker="MEADOW REACH   /   ALE · BREAD · REST",accent="E9C46A",tint="9C5B2E"}}},
+		["Brassfall Quarry"]={types={"StoneCottage","TimberShopfront"},quota=10,tints={StoneCottage={"6E4A30"},TimberShopfront={"C98D4F"}},
+			halls={{shell="ShopHall",interior="ShopInterior",title="Brassfall Assay House",kicker="BRASSFALL CAY   /   ASSAY · TOOLS",accent="C9A24E",tint="6E4A30",banner=true}}},
+		["Cinder Shelf"]={types={"StoneCottage"},quota=5,tints={StoneCottage={"3A4048"}}},
+		["Warden Reach"]={types={"StoneCottage","TimberHouse"},quota=7,tints={StoneCottage={"56677A"},TimberHouse={"6E4A6A"}}},
+		["Skyreach"]={types={"StoneCottage","TimberTownhouse"},quota=8,tints={StoneCottage={"7A90B0"},TimberTownhouse={"5A7FA8"}},
+			halls={{shell="ShopHall",interior="ShopInterior",title="Skyreach Outfitters",kicker="SKYREACH   /   ROPES · LANTERNS",accent="9DF3D7",tint="5A7FA8",banner=true}}},
+		["Windpine Grove"]={types={"LogLodge"},quota=10,tints={LogLodge={"4E7A48","2F5F4A"}},
+			halls={{shell="TavernHall",interior="TavernInterior",title="The Pinewarden Lodge",kicker="WINDPINE GROVE   /   HEARTH · STEW",accent="6BAF5A",tint="3F5A3A"}}},
+		["Gloomhollow Caverns"]={types={"StoneCottage"},quota=4,tints={StoneCottage={"5B4A8C"}}},
+		["Tidewater Shoals"]={types={"ThatchCottage","TimberTownhouse"},quota=14,tints={ThatchCottage={"2F6F8F"},TimberTownhouse={"3C9291"}},
+			halls={{shell="TavernHall",interior="TavernInterior",title="The Lantern & Gull",kicker="TIDEWATER SHOALS   /   CHOWDER · CHARTS",accent="39898E",tint="2F5F7A"}}},
+		["Tempest Spire"]={types={"StoneCottage"},quota=6,tints={StoneCottage={"4A5468"}}},
+	}
+	B.STYLE=STYLE
+	-- Fixed keep-outs: monster spawn markers, Aether Motes, the festival board.
+	local keepOut={}
+	local spawns=workspace:FindFirstChild("MonsterSpawns")
+	for _,m in ipairs(spawns and spawns:GetChildren() or {}) do
+		if m:IsA("BasePart") then table.insert(keepOut,{m.CFrame.Position,(m:GetAttribute("Radius") or 0)+SPAWN_CLEAR}) end
+	end
+	local EX=Data.Exploration
+	for _,mote in ipairs(EX and EX.Motes or {}) do
+		local isle=islandsFolder:FindFirstChild(mote.isle)
+		local c=isle and isle:GetAttribute("IslandCenter")
+		if c and type(mote.at)=="table" then table.insert(keepOut,{c+V(mote.at[1],mote.at[2],mote.at[3]),4}) end
+	end
+	local gate=world:FindFirstChild("ExpeditionGate",true)
+	if gate then table.insert(keepOut,{gate.CFrame.Position+V(20,0,8),12}) end
+	-- Reserved sites (the Compass Spire landmark, its survey stone and the Town
+	-- Crier beside the west avenue, which World Art & Regions places later).
+	for _,st in pairs(STYLE) do for _,r in ipairs(st.reserve or {}) do table.insert(keepOut,{r[1],r[2]}) end end
+	B.keepOut=keepOut
+	local FLOOR={Meadow=true,["Floating foundation"]=true,["Island underside"]=true,["Edge guard"]=true,["Shore ledge"]=true,Wildflowers=true}
+	local CELL=16
+	local function classify(obj)
+		if not obj:IsA("BasePart") then return nil end
+		local name=obj.Name
+		if string.find(name,"^Anchor_") then return "anchor" end
+		if obj:GetAttribute("SculptureScale")~=nil then return "sculpture" end
+		if FLOOR[name] then return nil end
+		if obj:FindFirstChildOfClass("ProximityPrompt") then return "prompt" end
+		if obj.Transparency<1 or obj.CanCollide then return "solid" end
+		return nil
+	end
+	local function box(index,c,hx,hy,hz)
+		local e={c.X-hx,c.X+hx,c.Z-hz,c.Z+hz,c.Y-hy,c.Y+hy}
+		for ix=math.floor(e[1]/CELL),math.floor(e[2]/CELL) do
+			for iz=math.floor(e[3]/CELL),math.floor(e[4]/CELL) do
+				local key=ix..","..iz
+				index[key]=index[key] or {}
+				table.insert(index[key],e)
+			end
+		end
+	end
+	local function insert(index,obj)
+		local kind=classify(obj)
+		if not kind then return end
+		local c=obj.CFrame.Position
+		if kind=="anchor" then box(index,c+V(0,3,0),ANCHOR_CLEAR,3.5,ANCHOR_CLEAR) return end
+		if kind=="sculpture" then local r=math.max(1,2*(tonumber(obj:GetAttribute("SculptureScale")) or 1)) box(index,c,r,r,r) return end
+		-- A declared mesh box (sign frames, buildings) blocks with its whole box.
+		local cf,sz=Buildings.box(obj)
+		c=cf.Position
+		local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
+		local pad=if kind=="prompt" then PROMPT_CLEAR else 0
+		box(index,c,ext("X")+pad,ext("Y")+(if kind=="prompt" then 2 else 0),ext("Z")+pad)
+	end
+	-- Oriented lot (centre c, unit axes r / l, half sizes hx / hz, ground y,
+	-- height h) against the index: separating axes r and l (the index boxes
+	-- are axis-aligned, so X and Z are covered by the bounding test).
+	local function blocked(index,c,r,l,hx,hz,y,h)
+		for _,k in ipairs(keepOut) do
+			local d=V(k[1].X-c.X,0,k[1].Z-c.Z)
+			if math.abs(d:Dot(r))<hx+k[2] and math.abs(d:Dot(l))<hz+k[2] then return true end
+		end
+		local ex=math.abs(r.X)*hx+math.abs(l.X)*hz
+		local ez=math.abs(r.Z)*hx+math.abs(l.Z)*hz
+		local seen={}
+		for ix=math.floor((c.X-ex)/CELL),math.floor((c.X+ex)/CELL) do
+			for iz=math.floor((c.Z-ez)/CELL),math.floor((c.Z+ez)/CELL) do
+				for _,e in ipairs(index[ix..","..iz] or {}) do
+					if not seen[e] then
+						seen[e]=true
+						if e[6]>y-.4 and e[5]<y+h and e[1]<c.X+ex and e[2]>c.X-ex and e[3]<c.Z+ez and e[4]>c.Z-ez then
+							local ec=V((e[1]+e[2])/2-c.X,0,(e[3]+e[4])/2-c.Z)
+							local eh=V((e[2]-e[1])/2,0,(e[4]-e[3])/2)
+							local function sep(axis,half) return math.abs(ec:Dot(axis))>=half+math.abs(axis.X)*eh.X+math.abs(axis.Z)*eh.Z end
+							if not sep(r,hx) and not sep(l,hz) then return true end
+						end
+					end
+				end
+			end
+		end
+		return false
+	end
+	-- The lot of a building at ground frame cf: its fit box widened by half an
+	-- alley each side (plus extraX for a banner), deepened by the apron.
+	local function lotFor(name,cf,extraX)
+		local _,size,lo,hi=B.fitOf(BUILDING_KIT[name])
+		local x0,x1=lo.X-ALLEY/2-(extraX or 0),hi.X+ALLEY/2
+		local z0,z1=lo.Z-SETBACK,hi.Z+ALLEY/2
+		local c=cf*V((x0+x1)/2,0,(z0+z1)/2)
+		local r,l=cf.RightVector,-cf.LookVector
+		return c,V(r.X,0,r.Z).Unit,V(l.X,0,l.Z).Unit,(x1-x0)/2,(z1-z0)/2,size.Y
+	end
+	B.lotFor=lotFor
+	-- A building on `side` of a path strip, centred `t` studs along it.
+	local function fits(isle,index,name,path,side,t,extraX)
+		local _,_,lo=B.fitOf(BUILDING_KIT[name])
+		local pcf=path.CFrame
+		local along,across=pcf.LookVector,pcf.RightVector
+		local IC,R=isle:GetAttribute("IslandCenter"),isle:GetAttribute("IslandRadius")
+		if math.abs(pcf.Position.Y-IC.Y)>.3 then return nil end
+		local base=pcf.Position+along*(t-path.Size.Z/2)
+		local origin=base+across*side*(path.Size.X/2+SETBACK-lo.Z)
+		origin=V(origin.X,IC.Y,origin.Z)
+		local cf=CFrame.lookAt(origin,origin-across*side)
+		local c,r,l,hx,hz,h=lotFor(name,cf,extraX)
+		for _,sx in ipairs({-1,1}) do for _,sz in ipairs({-1,1}) do
+			local corner=c+r*hx*sx+l*hz*sz
+			if V(corner.X-IC.X,0,corner.Z-IC.Z).Magnitude>R-RIM then return nil end
+		end end
+		if blocked(index,c,r,l,hx,hz,IC.Y,h) then return nil end
+		return cf,{c,r,l,hx,hz,h}
+	end
+	local function claim(index,lot,y)
+		local c,r,l,hx,hz,h=table.unpack(lot)
+		box(index,V(c.X,y+h/2,c.Z),math.abs(r.X)*hx+math.abs(l.X)*hz,h/2,math.abs(r.Z)*hx+math.abs(l.Z)*hz)
+	end
+	-- Room for one more interior light here (verify-world: <= 6 lights within
+	-- 30 studs of any light, <= 26 per island).
+	local function lightRoom(isle,pos)
+		local near,total=0,0
+		for _,l in ipairs(isle:GetDescendants()) do
+			if l:IsA("Light") then
+				total+=1
+				local host=l.Parent
+				local p=if host:IsA("Attachment") and host.Parent:IsA("BasePart") then (host.Parent.CFrame*host.CFrame).Position elseif host:IsA("BasePart") then host.CFrame.Position else nil
+				if p and (p-pos).Magnitude<=34 then near+=1 end
+			end
+		end
+		return near<=4 and total<=23
+	end
+	local placed={}
+	B.settled=placed
+	local order={}
+	for name in pairs(STYLE) do table.insert(order,name) end
+	table.sort(order)
+	for isleIndex,isleName in ipairs(order) do
+		if only[isleName] then
+		local isle=islandsFolder:FindFirstChild(isleName)
+		local style=STYLE[isleName]
+		if isle then
+			local index={}
+			for _,obj in ipairs(isle:GetDescendants()) do insert(index,obj) end
+			local IC=isle:GetAttribute("IslandCenter")
+			local paths={}
+			for _,obj in ipairs(isle:GetDescendants()) do
+				if obj:IsA("BasePart") and obj.Name=="Path" and obj.Size.Z>=14 then table.insert(paths,obj) end
+			end
+			-- Longest streets first, so the main avenues fill before side lanes.
+			table.sort(paths,function(a,b)
+				if math.abs(a.Size.Z-b.Size.Z)>.01 then return a.Size.Z>b.Size.Z end
+				local pa,pb=a.CFrame.Position,b.CFrame.Position
+				return if pa.X~=pb.X then pa.X<pb.X else pa.Z<pb.Z
+			end)
+			-- Walk-in halls: the lot nearest the island centre that fits.
+			for _,hall in ipairs(style.halls or {}) do
+				local best
+				for _,p in ipairs(paths) do
+					for _,side in ipairs({1,-1}) do
+						for t=6,p.Size.Z-6,2 do
+							local cf,lot=fits(isle,index,hall.shell,p,side,t,4)
+							if cf then
+								-- The town core for the hub; elsewhere the village edge (about half
+								-- the radius out: .62), so the island centre keeps room for its content.
+								local d=V(lot[1].X-IC.X,0,lot[1].Z-IC.Z).Magnitude
+								if not style.core then d=math.abs(d-.62*isle:GetAttribute("IslandRadius")) end
+								if not best or d<best.d-.01 then best={d=d,cf=cf,lot=lot} end
+							end
+						end
+					end
+				end
+				-- No street frontage: the first open-meadow lot on rings around the
+				-- centre, its door turned to the centre (the village green).
+				local IR=isle:GetAttribute("IslandRadius")
+				for _,f in ipairs(if style.core then {.25,.35,.45,.15,.55,.65} else {.62,.56,.68,.5,.45,.4}) do
+					if best then break end
+					for k=0,71 do
+						local a=math.rad(k*5+isleIndex*11)
+						local pos=IC+V(math.cos(a),0,math.sin(a))*IR*f
+						local cf=CFrame.lookAt(pos,V(IC.X,pos.Y,IC.Z))
+						local c,r,l,hx,hz,h=lotFor(hall.shell,cf,4)
+						local inRim=true
+						for _,sx in ipairs({-1,1}) do for _,sz in ipairs({-1,1}) do
+							local corner=c+r*hx*sx+l*hz*sz
+							if V(corner.X-IC.X,0,corner.Z-IC.Z).Magnitude>IR-RIM then inRim=false end
+						end end
+						if inRim and not blocked(index,c,r,l,hx,hz,IC.Y,h) then best={cf=cf,lot={c,r,l,hx,hz,h}} break end
+					end
+				end
+				if best then
+					local def=BUILDING_KIT[hall.shell]
+					local m,floor=B.place(isle,hall.shell,best.cf,{title=hall.title,tint=C(hall.tint)})
+					B.furnish(m,hall.interior,best.cf)
+					-- §40 QC L5: the walk-in shops (hall.banner) carry their name on a
+					-- shared Signs.build sign (Signs v2: a floating camera-facing
+					-- plaque; one invisible anchor part) on the lot's reserved -X side
+					-- (lotFor extraX), beside the front corner. The taverns (no
+					-- banner) keep their name in STYLE / the model.
+					if hall.banner then
+						local at=best.cf*CFrame.new(-(def.w/2+Signs.WALL_GAP),0,-def.d/2+1) -- QC M4: clear of the side wall
+						signAt(m,at,hall.title,hall.kicker,C(hall.accent),4,{kind="banner"})
+					end
+					if lightRoom(isle,floor.CFrame.Position) then B.interiorLight(floor,def) end
+					m:SetAttribute("Settlement",isleName)
+					claim(index,best.lot,IC.Y)
+					table.insert(placed,{model=m,host=floor,isle=isleName,name=hall.shell,lot=best.lot,hall=true})
+				end
+			end
+			-- Facades along a street, both sides, up to the quota (dry: count only).
+			local count,slotIndex=0,isleIndex
+			local function fillStreet(p,dry)
+				local n=0
+				for _,side in ipairs({-1,1}) do
+					local t=4
+					while t<p.Size.Z-4 and count+n<style.quota do
+						local done=false
+						for k=0,#style.types-1 do
+							local name=style.types[(slotIndex+n+k)%#style.types+1]
+							local _,size=B.fitOf(BUILDING_KIT[name])
+							local cf,lot=fits(isle,index,name,p,side,t+size.X/2)
+							if cf then
+								if not dry then
+									local tints=style.tints[name] or {}
+									local tint=tints[slotIndex%math.max(1,#tints)+1]
+									local m,host=B.place(isle,name,cf,{tint=tint and C(tint),color=FACADE_COLOR[name]})
+									m:SetAttribute("Settlement",isleName)
+									claim(index,lot,IC.Y)
+									table.insert(placed,{model=m,host=host,isle=isleName,name=name,lot=lot})
+									count+=1
+									slotIndex+=1
+								else
+									n+=1
+								end
+								t+=size.X+(if dry then ALLEY else math.floor(hash(slotIndex,isleIndex)*3))
+								done=true
+								break
+							end
+						end
+						if not done then t+=1 end
+					end
+				end
+				return n
+			end
+			for _,p in ipairs(paths) do fillStreet(p) end
+			-- Village lanes: where the island's own paths leave the quota short,
+			-- lay a cobbled lane (one Path strip) through open meadow and line it.
+			-- Candidates: chords at several radii and bearings; the clear lane
+			-- whose two sides take the most houses wins (ties: nearer the centre).
+			local R=isle:GetAttribute("IslandRadius")
+			for _=1,style.lanes or LANES do
+				if count>=style.quota then break end
+				local best
+				for _,f in ipairs({.12,.24,.36,.48,.6}) do
+					-- Lanes run on the compass axes (a street grid; sign and path
+					-- footings are checked on their axis-aligned boxes).
+					for k=0,11 do
+						local a=math.rad((k%4)*90)
+						local lateral=({0,-.25,.25})[k//4+1]*R
+						local dir=V(math.cos(a),0,math.sin(a))
+						for _,radial in ipairs({false,true}) do
+							local along=if radial then dir else V(-dir.Z,0,dir.X)
+							for _,L in ipairs({52,40,30,22}) do
+								local mid=IC+dir*R*f+V(-dir.Z,0,dir.X)*lateral
+								local lo,hi=mid-along*L/2,mid+along*L/2
+								local inRim=V(lo.X-IC.X,0,lo.Z-IC.Z).Magnitude<R-RIM-8 and V(hi.X-IC.X,0,hi.Z-IC.Z).Magnitude<R-RIM-8
+								if inRim and not blocked(index,mid,V(-along.Z,0,along.X),along,LANE_W/2+1,L/2+1,IC.Y,2) then
+									local probe=Instance.new("Part")
+									probe.Size,probe.CFrame=V(LANE_W,.16,L),CFrame.lookAt(mid,hi)
+									local score=fillStreet(probe,true)
+									probe:Destroy()
+									local key=score*1000-f*R
+									if score>=2 and (not best or key>best.key) then best={key=key,lo=lo,hi=hi} end
+									break
+								end
+							end
+						end
+					end
+				end
+				if not best then break end
+				local lane=path(isle,best.lo,best.hi,LANE_W,C("B7A98A"),LANE_LIFT)
+				lane:SetAttribute("SettlementLane",isleName)
+				insert(index,lane)
+				fillStreet(lane)
+			end
+			-- Hamlet fill: the rest of the quota on open meadow, each house
+			-- turned to face the nearest street (its door on that side), else
+			-- the island centre, with the same lot rules (apron, alleys, rim).
+			local streets={}
+			for _,obj in ipairs(isle:GetDescendants()) do
+				if obj:IsA("BasePart") and obj.Name=="Path" then table.insert(streets,obj) end
+			end
+			local function facingFor(pos)
+				local bestD,toward=math.huge,nil
+				for _,p in ipairs(streets) do
+					local q=p.CFrame:PointToObjectSpace(pos)
+					local along=math.clamp(q.Z,-p.Size.Z/2,p.Size.Z/2)
+					local foot=p.CFrame*V(0,0,along)
+					local d=V(foot.X-pos.X,0,foot.Z-pos.Z).Magnitude
+					if d<bestD and d<36 then bestD,toward=d,V(foot.X,pos.Y,foot.Z) end
+				end
+				if not toward or bestD<1 then toward=V(IC.X,pos.Y,IC.Z) end
+				if V(toward.X-pos.X,0,toward.Z-pos.Z).Magnitude<1 then toward=pos+V(0,0,-1) end
+				return toward
+			end
+			for _,f in ipairs({.3,.38,.46,.54,.62,.22,.7,.14}) do
+				for k=0,71 do
+					if count>=style.quota then break end
+					local a=math.rad(k*5+isleIndex*13+f*90)
+					local pos=IC+V(math.cos(a),0,math.sin(a))*R*f
+					local toward=facingFor(pos)
+					for j=0,#style.types-1 do
+						local name=style.types[(slotIndex+j)%#style.types+1]
+						local cf=CFrame.lookAt(pos,toward)
+						local c,r,l,hx,hz,h=lotFor(name,cf)
+						local inRim=true
+						for _,sx in ipairs({-1,1}) do for _,sz in ipairs({-1,1}) do
+							local corner=c+r*hx*sx+l*hz*sz
+							if V(corner.X-IC.X,0,corner.Z-IC.Z).Magnitude>R-RIM then inRim=false end
+						end end
+						if inRim and not blocked(index,c,r,l,hx,hz,IC.Y,h) then
+							local tints=style.tints[name] or {}
+							local tint=tints[slotIndex%math.max(1,#tints)+1]
+							local m,host=B.place(isle,name,cf,{tint=tint and C(tint),color=FACADE_COLOR[name]})
+							m:SetAttribute("Settlement",isleName)
+							local lot={c,r,l,hx,hz,h}
+							claim(index,lot,IC.Y)
+							table.insert(placed,{model=m,host=host,isle=isleName,name=name,lot=lot})
+							count+=1
+							slotIndex+=1
+							break
+						end
+					end
+				end
+			end
+		end
+		end
+	end
+	B.settleSeconds=(B.settleSeconds or 0)+os.clock()-started
+end
+Buildings.settle({["Compass Quay"]=true})
+-- End Settlements, part 1.
+
+-------------------------------------------------------------------------------
 -- World Art & Regions (World Art & Regions team; self-contained section).
 -- docs/DEPTH-CONTRACT.md §30. Data: Data.RegionArt.
 --   * Identity: every static island Model carries IsleTitle / IsleEpithet /
@@ -4516,7 +5338,8 @@ end
 				local r=math.max(1,2*(tonumber(obj:GetAttribute("SculptureScale")) or 1))
 				hx,hy,hz=r,r,r
 			else
-				local cf,sz=obj.CFrame,obj.Size
+				local cf,sz=Buildings.box(obj) -- §40 QC L2: declared mesh boxes block whole
+				c=cf.Position
 				local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
 				hx,hy,hz=ext("X"),ext("Y"),ext("Z")
 			end
@@ -4749,7 +5572,6 @@ end
 				local l=RA.Regions[f.region].landmark
 				local target=built[l.id] and built[l.id].CFrame.Position
 				local pos
-				-- NPC_CLEAR each side: folk stand >= 6 studs from every other NPC.
 				if f.role=="WarpKeeper" then pos=near(host,V(56,0,60),NPC_CLEAR,22,60) end
 				if not pos and target and host:IsAncestorOf(built[l.id]) then pos=near(host,target,NPC_CLEAR,14,46) end
 				pos=pos or spot(host,i*47,NPC_CLEAR,{.35,.45,.25,.55,.6})
@@ -4845,6 +5667,178 @@ end)()
 -- End World Art & Regions section.
 
 -------------------------------------------------------------------------------
+-- Skyward Vents (MMO Features, docs/DEPTH-CONTRACT.md §31; Data.Vents).
+-- (§40: built right after World Art & Regions, before the Settlements, so the
+-- houses never take a vent site.)
+-- One collider pad per vent (6 static parts, `Caldera` mesh slot + an updraft
+-- emitter, tag SkywardVent, attributes VentId / VentLanding). Its prompt
+-- (IsleVent = id) asks IsleRegionAccess for the destination region and the
+-- IsleTravelGate when present (an erroring gate refuses), applies a per-rider
+-- cooldown, sets FastTravelAt, publishes VentFlight = "<id>:<seq>" (the rider's
+-- client plays the arc), then lands the rider server-side after
+-- Data.Vents.FLIGHT seconds (FastTravelAt again) only if the rider is still this
+-- flight's rider, the same living character, and the travel gate still passes
+-- (hurt grace, expeditions); else the landing is abandoned and the rider stays
+-- where they are. Landings sit beside the paired vent on the far isle, on clear
+-- ground and >= 42 studs from every monster spawn marker.
+-------------------------------------------------------------------------------
+do
+	local VD=Data.Vents
+	if VD then
+		local FLOOR={Meadow=true,["Floating foundation"]=true,["Mineral stratum"]=true,["Lower basalt"]=true,["Fractured cliff"]=true,
+			["Keel rock"]=true,["Edge guard"]=true,["Aether vein"]=true,["Shore ledge"]=true,Path=true,Wildflowers=true}
+		local markers={}
+		local spawns=workspace:FindFirstChild("MonsterSpawns")
+		if spawns then for _,m in ipairs(spawns:GetChildren()) do if m:IsA("BasePart") then table.insert(markers,m.CFrame.Position) end end end
+		local function blocked(host,pos,radius,clear)
+			for _,m in ipairs(markers) do if V(pos.X-m.X,0,pos.Z-m.Z).Magnitude<clear then return true end end
+			for _,obj in ipairs(host:GetDescendants()) do
+				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
+					local cf,sz=Buildings.box(obj) -- §40 QC L2: declared mesh boxes block whole
+					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
+					local c=cf.Position
+					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
+					local dz=math.max(0,math.abs(pos.Z-c.Z)-ext("Z"))
+					local ey=ext("Y")
+					if dx*dx+dz*dz<radius*radius and c.Y+ey>pos.Y+.3 and c.Y-ey<pos.Y+9 then return true end
+				end
+			end
+			return false
+		end
+		local function spot(host,angle,radius,clear)
+			local IC,R=host:GetAttribute("IslandCenter"),host:GetAttribute("IslandRadius")
+			for _,f in ipairs({.6,.5,.7,.4,.75,.3}) do
+				for k=0,23 do
+					local a=math.rad(angle+(if k%2==0 then 1 else -1)*math.ceil(k/2)*15)
+					local pos=IC+V(math.cos(a),0,math.sin(a))*R*f
+					if not blocked(host,pos,radius,clear) then return pos end
+				end
+			end
+			return nil
+		end
+		local vents,byIsle={},{}
+		for i,def in ipairs(VD.List) do
+			local host=islandsFolder:FindFirstChild(def.isle)
+			local target=Data.RegionById[def.to]
+			local pos=host and target and (spot(host,20+i*61,9,42) or spot(host,20+i*61,9,26))
+			if pos then
+				local tint=C(def.color)
+				local pad=disk(host,"Skyward vent",pos+V(0,.5,0),4,1,darken(tint,.35),ST,true)
+				-- §44: the vent pad dais; beacons.client.lua floats the rings above it,
+				-- 6.5 studs over the pad (riders launch clear underneath).
+				meshSlot(pad,"SkywardVentPad",tint,nil,"Uniform")
+				pad:SetAttribute("TravelBeacon","vent")
+				pad:SetAttribute("TravelBeaconHover",pos+V(0,7,0))
+				pad:SetAttribute("TravelBeaconRegion",def.to)
+				Tags:AddTag(pad,"TravelBeacon")
+				pad:SetAttribute("VentId",def.id)
+				Tags:AddTag(pad,"SkywardVent")
+				local draft=Instance.new("ParticleEmitter")
+				draft.Name="Updraft"
+				draft.EmissionDirection=Enum.NormalId.Right -- the disk's axis points up
+				draft.Rate,draft.LightEmission=14,.6
+				draft.Speed,draft.Lifetime=NumberRange.new(14,20),NumberRange.new(.9,1.3)
+				draft.Size=NumberSequence.new(1.2,0)
+				draft.Transparency=NumberSequence.new(.35,1)
+				draft.Color=ColorSequence.new(lighten(tint,.5),tint)
+				draft.Parent=pad
+				local q=prompt(pad,"Ride the "..def.name,"To "..target.name)
+				q:SetAttribute("IsleVent",def.id)
+				vents[def.id]={def=def,pad=pad,pos=pos,host=host,prompt=q}
+				byIsle[def.isle]=def.id
+			end
+		end
+		-- Landings: beside the vent on the far isle that leads back (open ground,
+		-- >= 42 studs from monster markers), else that isle's own clear spot.
+		for _,v in pairs(vents) do
+			local host=islandsFolder:FindFirstChild(v.def.land)
+			local back=byIsle[v.def.land] and vents[byIsle[v.def.land]]
+			local land
+			if back then
+				local IC=host:GetAttribute("IslandCenter")
+				local inward=V(IC.X-back.pos.X,0,IC.Z-back.pos.Z)
+				inward=if inward.Magnitude>1e-3 then inward.Unit else V(1,0,0)
+				land=back.pos+inward*8
+				-- Beside a vent that had to stand nearer a spawn: land on the isle's clearest ground instead.
+				if blocked(host,land,0,42) then land=spot(host,200,6,42) end
+			elseif host then
+				land=spot(host,200,6,42)
+			end
+			if land then
+				v.landing=land+V(0,4,0)
+				v.pad:SetAttribute("VentLanding",v.landing)
+				anchor(host,"Waypoint_Vent_"..v.def.id,land,v.pos)
+			end
+		end
+		local riding,ready,seq={},{},0
+		local function notice(player,message)
+			player:SetAttribute("IsleRegionNotice",message)
+			player:SetAttribute("IsleRegionNoticeCount",(tonumber(player:GetAttribute("IsleRegionNoticeCount")) or 0)+1)
+		end
+		-- IsleTravelGate: true, or the refusal message. Fails closed when the gate errors.
+		local function gatePasses(player)
+			local gate=ServerStorage:FindFirstChild("IsleTravelGate")
+			if not gate then return true end
+			local okGate,verdict=pcall(gate.Invoke,gate,player)
+			if okGate and verdict==true then return true end
+			return if okGate and type(verdict)=="string" then verdict else "The vent will not lift you right now."
+		end
+		local function launch(player,v)
+			local character=player.Character
+			local root=character and character:FindFirstChild("HumanoidRootPart")
+			local hum=character and character:FindFirstChildOfClass("Humanoid")
+			if not v.landing or not root or not hum or hum.Health<=0 then return end
+			if (v.pad.CFrame.Position-root.Position).Magnitude>VD.RANGE+3 then return end
+			local now=os.clock()
+			if riding[player] then return end
+			if (ready[player] or 0)>now then notice(player,v.def.name.." is gathering its breath ("..math.ceil(ready[player]-now).."s).") return end
+			local region=Data.RegionById[v.def.to]
+			local access=ServerStorage:FindFirstChild("IsleRegionAccess")
+			if not access then return end
+			local ok,result=pcall(access.Invoke,access,player,v.def.to)
+			if not (ok and type(result)=="table" and result.allowed) then
+				notice(player,if ok and type(result)=="table" and type(result.message)=="string" then result.message else region.name..": "..requirementText(region))
+				return
+			end
+			local gated=gatePasses(player)
+			if gated~=true then notice(player,gated) return end
+			seq+=1
+			local mine=seq
+			riding[player]=mine
+			ready[player]=now+VD.COOLDOWN
+			player:SetAttribute("FastTravelAt",os.clock()) -- known fast travel (Aether Mote pickup checks)
+			flare(v.pad,player)
+			player:SetAttribute("VentFlight",v.def.id..":"..mine)
+			task.spawn(function()
+				task.wait(VD.FLIGHT)
+				if riding[player]~=mine then return end
+				riding[player]=nil
+				local now2=player.Character
+				local r=now2 and now2:FindFirstChild("HumanoidRootPart")
+				local h=now2 and now2:FindFirstChildOfClass("Humanoid")
+				if not (now2==character and r and h and h.Health>0) then return end
+				-- Re-check the gate just before landing (hurt mid-flight, pulled into an expedition, gate error).
+				local gated2=gatePasses(player)
+				if gated2~=true then notice(player,gated2) return end
+				player:SetAttribute("FastTravelAt",os.clock())
+				now2:PivotTo(CFrame.new(v.landing))
+				r.AssemblyLinearVelocity=Vector3.zero
+			end)
+		end
+		for _,v in pairs(vents) do v.prompt.Triggered:Connect(function(player) launch(player,v) end) end
+		Players.PlayerRemoving:Connect(function(player) riding[player]=nil; ready[player]=nil end)
+	end
+end
+-- End Skyward Vents.
+
+-- Settlements, part 2 (§40): every island but Compass Quay (settled before
+-- World Art & Regions), after the Skyward Vents so no house takes a vent site.
+local others={}
+for name in pairs(Buildings.STYLE) do if name~="Compass Quay" then others[name]=true end end
+Buildings.settle(others)
+-- End Settlements section.
+
+-------------------------------------------------------------------------------
 -- Exploration & Factions (Exploration & Factions team; self-contained section).
 -- Mote Shrines: one Waystone per region (Data.Exploration.ShrineIsle); prompt
 -- IsleAction "moteShrine", IsleItem <region>, IsleRegion <region> (the server
@@ -4863,19 +5857,19 @@ do
 	local EX,FA=Data.Exploration,Data.Factions
 	if EX and FA then
 		local FLOOR={Meadow=true,["Floating foundation"]=true,["Mineral stratum"]=true,["Lower basalt"]=true,["Fractured cliff"]=true,
-			["Keel rock"]=true,["Edge guard"]=true,["Aether vein"]=true,["Shore ledge"]=true,Path=true,Wildflowers=true}
+			["Keel rock"]=true,["Edge guard"]=true,["Aether vein"]=true,["Shore ledge"]=true,Wildflowers=true} -- §40: paths (village lanes) block; see below
 		local taken={}
 		local function blocked(host,pos,radius)
 			for _,q in ipairs(taken) do if V(pos.X-q.X,0,pos.Z-q.Z).Magnitude<radius+6 then return true end end
 			for _,obj in ipairs(host:GetDescendants()) do
 				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
-					local cf,sz=obj.CFrame,obj.Size
+					local cf,sz=Buildings.box(obj) -- §40 QC L2: declared mesh boxes block whole
 					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
 					local c=cf.Position
 					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
 					local dz=math.max(0,math.abs(pos.Z-c.Z)-ext("Z"))
 					local ey=ext("Y")
-					if dx*dx+dz*dz<radius*radius and c.Y+ey>pos.Y+.3 and c.Y-ey<pos.Y+9 then return true end
+					if dx*dx+dz*dz<radius*radius and c.Y+ey>(if obj.Name=="Path" then pos.Y-1 else pos.Y+.3) and c.Y-ey<pos.Y+9 then return true end
 				end
 			end
 			return false
@@ -4956,17 +5950,17 @@ do
 	local LR=Data.Lairs
 	if LR then
 		local FLOOR={Meadow=true,["Floating foundation"]=true,["Mineral stratum"]=true,["Lower basalt"]=true,["Fractured cliff"]=true,
-			["Keel rock"]=true,["Edge guard"]=true,["Aether vein"]=true,["Shore ledge"]=true,Path=true,Wildflowers=true}
+			["Keel rock"]=true,["Edge guard"]=true,["Aether vein"]=true,["Shore ledge"]=true,Wildflowers=true} -- §40: paths (village lanes) block; see below
 		local function blocked(host,pos,radius)
 			for _,obj in ipairs(host:GetDescendants()) do
 				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
-					local cf,sz=obj.CFrame,obj.Size
+					local cf,sz=Buildings.box(obj) -- §40 QC L2: declared mesh boxes block whole
 					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
 					local c=cf.Position
 					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
 					local dz=math.max(0,math.abs(pos.Z-c.Z)-ext("Z"))
 					local ey=ext("Y")
-					if dx*dx+dz*dz<radius*radius and c.Y+ey>pos.Y+.3 and c.Y-ey<pos.Y+9 then return true end
+					if dx*dx+dz*dz<radius*radius and c.Y+ey>(if obj.Name=="Path" then pos.Y-1 else pos.Y+.3) and c.Y-ey<pos.Y+9 then return true end
 				end
 			end
 			return false
@@ -5010,151 +6004,385 @@ end
 -- End Lairs section.
 
 -------------------------------------------------------------------------------
--- Skyward Vents (MMO Features, docs/DEPTH-CONTRACT.md §31; Data.Vents).
--- One collider pad per vent (6 static parts, `Caldera` mesh slot + an updraft
--- emitter, tag SkywardVent, attributes VentId / VentLanding). Its prompt
--- (IsleVent = id) asks IsleRegionAccess for the destination region and the
--- IsleTravelGate when present, applies a per-rider cooldown, sets FastTravelAt,
--- publishes VentFlight = "<id>:<seq>" (the rider's client plays the arc), then
--- lands the rider server-side after Data.Vents.FLIGHT seconds (FastTravelAt
--- again). Landings sit beside the paired vent on the far isle, on clear ground
--- and >= 42 studs from every monster spawn marker.
+-- Raids (Raid team; self-contained section, docs/DEPTH-CONTRACT.md §38). The
+-- Undertide portal on Tidewater Shoals (Data.Raids.ISLE): a tiered dais, the
+-- portal arch (mesh slot "ObservatoryArch", tinted tide-teal) whose shimmer
+-- pane carries the prompt IsleAction "raidPortal", IsleRegion
+-- Data.Raids.REGION (gate), two braziers (mesh slot "Torch", one light), two
+-- coral fans and the anchor Waypoint_RaidPortal (the return point and the
+-- party board's range centre; quest helper / Wayfinder target
+-- "anchor:Waypoint_RaidPortal"). Parts: dais 2 + arch 1 + pane 1 + braziers 2
+-- + coral 2 + anchor 1 = 9. The vault complexes are built on demand by
+-- raids.server.lua (off-map, destroyed after each run). Model attribute
+-- RaidContent = true.
 -------------------------------------------------------------------------------
 do
-	local VD=Data.Vents
-	if VD then
+	local RD=Data.Raids
+	local host=RD and islandsFolder:FindFirstChild(RD.ISLE)
+	if host then
+		local IC,R=host:GetAttribute("IslandCenter"),host:GetAttribute("IslandRadius")
 		local FLOOR={Meadow=true,["Floating foundation"]=true,["Mineral stratum"]=true,["Lower basalt"]=true,["Fractured cliff"]=true,
-			["Keel rock"]=true,["Edge guard"]=true,["Aether vein"]=true,["Shore ledge"]=true,Path=true,Wildflowers=true}
-		local markers={}
-		local spawns=workspace:FindFirstChild("MonsterSpawns")
-		if spawns then for _,m in ipairs(spawns:GetChildren()) do if m:IsA("BasePart") then table.insert(markers,m.CFrame.Position) end end end
-		local function blocked(host,pos,radius,clear)
-			for _,m in ipairs(markers) do if V(pos.X-m.X,0,pos.Z-m.Z).Magnitude<clear then return true end end
+			["Keel rock"]=true,["Edge guard"]=true,["Aether vein"]=true,["Shore ledge"]=true,Wildflowers=true} -- §40: paths (village lanes) block; see below
+		local function blocked(pos,radius)
 			for _,obj in ipairs(host:GetDescendants()) do
 				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
-					local cf,sz=obj.CFrame,obj.Size
+					local cf,sz=Buildings.box(obj) -- §40 QC L2: declared mesh boxes block whole
 					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
 					local c=cf.Position
 					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
 					local dz=math.max(0,math.abs(pos.Z-c.Z)-ext("Z"))
 					local ey=ext("Y")
-					if dx*dx+dz*dz<radius*radius and c.Y+ey>pos.Y+.3 and c.Y-ey<pos.Y+9 then return true end
+					if dx*dx+dz*dz<radius*radius and c.Y+ey>(if obj.Name=="Path" then pos.Y-1 else pos.Y+.3) and c.Y-ey<pos.Y+12 then return true end
 				end
 			end
 			return false
 		end
-		local function spot(host,angle,radius,clear)
+		local pos
+		if typeof(IC)=="Vector3" and type(R)=="number" then
+			for _,f in ipairs({.5,.4,.6,.3,.68}) do
+				for k=0,23 do
+					local a=math.rad(310+(if k%2==0 then 1 else -1)*math.ceil(k/2)*15)
+					local p=IC+V(math.cos(a),0,math.sin(a))*R*f
+					pos=pos or p
+					if not blocked(p,7) then pos=p break end
+				end
+				if pos and not blocked(pos,7) then break end
+			end
+		end
+		if pos then
+			local tide,teal=C("1E5A63"),C("3FB8AF")
+			local m=group("Undertide portal",host)
+			m:SetAttribute("RaidContent",true)
+			local face=CFrame.lookAt(pos,V(IC.X,pos.Y,IC.Z))
+			block(m,"Raid portal dais",pos+V(0,.3,0),V(13,.6,13),darken(tide,.15),ST,true)
+			block(m,"Raid portal step",pos+V(0,.8,0),V(9,.4,9),lighten(tide,.12),ST,true)
+			local arch=part(m,"Raid portal arch",V(9,11,2),face+V(0,6.5,0),lighten(rock,.1),ST,false)
+			meshSlot(arch,"ObservatoryArch",teal,nil,"Uniform")
+			local pane=part(m,"Raid portal shimmer",V(5.6,8,.4),face+V(0,5.2,0),teal,Enum.Material.Neon,false)
+			pane.Transparency=.35
+			local q=prompt(pane,"Raid board","The Undertide Vaults · Combat "..RD.COMBAT.." · "..RD.MIN_PARTY.."–"..RD.MAX_PARTY.." raiders","raidPortal",RD.ID)
+			q:SetAttribute("IsleRegion",RD.REGION)
+			q.HoldDuration=.36
+			for side=-1,1,2 do
+				local brazier=part(m,"Raid portal brazier",V(1.4,3.4,1.4),face*CFrame.new(side*5.6,2.5,-1.5),timber,WO,false)
+				meshSlot(brazier,"Torch",teal)
+				if side==-1 then light(brazier,teal,1.1,22) end
+				local coral=part(m,"Raid portal coral",V(2.6,3,2.6),face*CFrame.new(side*4.8,2.1,2.5),C("E58FB0"),SM,false)
+				meshSlot(coral,"CoralFan",C("E58FB0"),nil,"Uniform")
+			end
+			anchor(m,"Waypoint_RaidPortal",(face*CFrame.new(0,0,-6)).Position,pos)
+		end
+	end
+end
+-- End Raids section.
+
+-------------------------------------------------------------------------------
+-- Isle Council Hall (Isle Council team; docs/DEPTH-CONTRACT.md §36). A
+-- columned hall on Compass Quay: a raised dais with six columns (Column mesh
+-- slots), a pediment, two council banners, the speaker's statue, five
+-- councillor seats, the ballot chest (VaultChest slot, prompt IsleAction
+-- "councilView") and two lanterns. Triggering the chest sets IsleStation =
+-- "Council" and bumps IsleStationVisit (the client opens Journal › Council).
+-- The Clerk's World Art anchor (Anchor_NPC_CouncilClerk) moves to the hall's
+-- steps, >= 7 studs from every other NPC anchor. Anchor: Waypoint_CouncilHall.
+-- The model carries CouncilContent = true. No extra lights.
+-- (A function body, not a do-block: the script's top level is near Luau's register limit.)
+-------------------------------------------------------------------------------
+;(function()
+	local hub=islandsFolder:FindFirstChild("Compass Quay")
+	local CD=Data.Council
+	if not hub or not CD then return end
+	local FLOOR={Meadow=true,["Floating foundation"]=true,["Island underside"]=true,["Edge guard"]=true,["Shore ledge"]=true,Wildflowers=true,
+		["Plaza ring"]=true,["Compass court"]=true,["Harbor plaza"]=true,["Harbor seal"]=true,["Pond bank"]=true}
+	local clerkName="Anchor_NPC_"..CD.CLERK
+	local npcAnchors,boxes={},{}
+	for _,obj in ipairs(hub:GetDescendants()) do
+		if obj:IsA("BasePart") then
+			local npc=string.find(obj.Name,"^Anchor_NPC_")~=nil
+			if npc and obj.Name~=clerkName then table.insert(npcAnchors,obj) end
+			if obj.Name~=clerkName and not FLOOR[obj.Name] and (not string.find(obj.Name,"^Anchor_") or npc)
+				and (npc or obj.Transparency<1 or obj.CanCollide or obj:FindFirstChildOfClass("ProximityPrompt")~=nil) then
+				local cf,sz=Buildings.box(obj) -- §40 QC L2
+				local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
+				table.insert(boxes,{c=cf.Position,x=ext("X"),y=ext("Y"),z=ext("Z"),flat=obj.Name=="Path"})
+			end
+		end
+	end
+	local function blocked(pos,radius)
+		for _,b in ipairs(boxes) do
+			local dx=math.max(0,math.abs(pos.X-b.c.X)-b.x)
+			local dz=math.max(0,math.abs(pos.Z-b.c.Z)-b.z)
+			if dx*dx+dz*dz<radius*radius and (b.flat or (b.c.Y+b.y>pos.Y+.3 and b.c.Y-b.y<pos.Y+12)) then return true end
+		end
+		return false
+	end
+	local IC,R=hub:GetAttribute("IslandCenter"),hub:GetAttribute("IslandRadius")
+	if not IC or not R then return end
+	local pos
+	-- The hall (16 x 12 studs plus steps, lanterns and sign) needs an 11-stud clear circle.
+	for _,f in ipairs({.75,.8,.85,.7,.65,.9,.6,.55}) do
+		for k=0,119 do
+			local a=math.rad(255+(if k%2==0 then 1 else -1)*math.ceil(k/2)*3)
+			local p=IC+V(math.cos(a),0,math.sin(a))*R*f
+			if not blocked(p,11) then pos=p break end
+		end
+		if pos then break end
+	end
+	if not pos then return end
+	-- cf looks AWAY from the plaza: the hall's open front (and its step) is -Z, toward the centre.
+	local away=pos+(pos-V(IC.X,pos.Y,IC.Z))
+	local cf=facing(pos,away)
+	local gold,plum,stone=C(CD.COLOR),C("6A4C93"),C("D8D2C4")
+	local m=group("Council Hall",hub)
+	m:SetAttribute("CouncilContent",true)
+	-- Dais, carpet and the front step.
+	part(m,"Council dais",V(16,.8,12),at(cf,0,.4,.5),stone,ST,true)
+	part(m,"Council step",V(12,.4,1.4),at(cf,0,.2,-6.2),lighten(stone,.2),ST,true)
+	part(m,"Council carpet",V(3.4,.06,10.4),at(cf,0,.83,0),plum,SM,false)
+	-- Columns: four across the front, two at the back corners.
+	for _,c in ipairs({{-7,-4.6},{-3.4,-4.6},{3.4,-4.6},{7,-4.6},{-7,5.8},{7,5.8}}) do
+		local col=part(m,"Council column",V(1.2,9,1.2),at(cf,c[1],5.3,c[2]),cream,ST,true)
+		meshSlot(col,"Column")
+	end
+	part(m,"Council lintel",V(16.4,1,12.4),at(cf,0,10.3,.5),lighten(stone,.1),ST,false)
+	part(m,"Council pediment",V(16.8,.5,12.8),at(cf,0,11.05,.5),gold,MT,false)
+	part(m,"Council frieze",V(13,.7,.2),at(cf,0,10.3,-5.75),plum,SM,false)
+	part(m,"Council back wall",V(13,8.6,.8),at(cf,0,5.1,6.2),lighten(stone,.05),ST,true)
+	-- Banners either side of the speaker's statue.
+	for _,x in ipairs({-4.2,4.2}) do
+		local b=part(m,"Council banner",V(2.2,5.6,.3),at(cf,x,5.6,5.65),plum,SM,false)
+		meshSlot(b,"Banner",gold)
+	end
+	local statue=hidden(m,"Speaker's statue",at(cf,0,3.6,4.4).Position)
+	statue.Size=V(2.2,5.4,2.2)
+	statue.CFrame=at(cf,0,3.5,4.4)
+	meshSlot(statue,"Statue",gold,nil,"Uniform")
+	-- Five councillor seats in an arc (one per slate place), cushions in council gold.
+	for i=1,CD.SLATE do
+		local a=math.rad(-60+(i-1)*30)
+		local seat=part(m,"Councillor seat",V(1.6,1.6,1.5),at(cf,math.sin(a)*5.6,1.6,2.4-math.cos(a)*1.8)*CFrame.Angles(0,-a,0),darken(timber,.2),WO,true)
+		part(m,"Seat cushion",V(1.4,.2,1.3),seat.CFrame*CFrame.new(0,.9,0),gold,SM,false)
+	end
+	-- The ballot chest and its glowing slot.
+	local chest=part(m,"Ballot chest",V(3,2.2,2),at(cf,0,1.9,-2),C("4A3B2A"),WO,true)
+	meshSlot(chest,"VaultChest",gold)
+	part(m,"Ballot slot",V(1.6,.12,.3),at(cf,0,3.06,-2),gold,NE,false)
+	local q=prompt(chest,"Read the ballot",CD.NAME,"councilView","Ballot")
+	q.Triggered:Connect(function(player)
+		player:SetAttribute("IsleStation","Council")
+		player:SetAttribute("IsleStationVisit",(player:GetAttribute("IsleStationVisit") or 0)+1)
+	end)
+	-- Lanterns at the step.
+	for _,x in ipairs({-7.6,7.6}) do
+		local lamp=part(m,"Council lantern",V(1.1,5.3,.9),at(cf,x,2.65,-6.6),darken(brass,.2),MT,true)
+		meshSlot(lamp,"TwinLantern",C("FFE08A"),nil,"Uniform")
+	end
+	signAt(m,at(cf,0,0,-9)*CFrame.Angles(0,math.pi,0),"Council Hall","COMPASS QUAY   /   ISLE COUNCIL · BALLOT",gold,10,{kind="banner"})
+	anchor(m,"Waypoint_CouncilHall",at(cf,0,0,-11),pos)
+	-- The Clerk stands in front of the step, clear of every other NPC anchor.
+	local clerk
+	for _,obj in ipairs(hub:GetDescendants()) do if obj.Name==clerkName then clerk=obj end end
+	local spot
+	for _,x in ipairs({-4,4,-6,6,-2.5,2.5}) do
+		local p=at(cf,x,0,-8).Position
+		local clear=true
+		for _,other in ipairs(npcAnchors) do
+			if V(p.X-other.CFrame.Position.X,0,p.Z-other.CFrame.Position.Z).Magnitude<7 then clear=false end
+		end
+		if clear then spot=p break end
+	end
+	spot=spot or at(cf,-4,0,-8).Position
+	local face=at(cf,0,0,-30).Position
+	if clerk then clerk.CFrame=facing(V(spot.X,clerk.CFrame.Position.Y,spot.Z),face)
+	else anchor(hub,"NPC_"..CD.CLERK,spot,face) end
+end)()
+-- End Isle Council Hall.
+-- >>> BEGIN Beaconry (Beaconry team; docs/DEPTH-CONTRACT.md §37; Data.Beaconry) >>>
+-- One beacon pyre per region on the region's Mote Shrine island
+-- (Data.Exploration.ShrineIsle): a stone plinth (Column mesh), an iron brazier
+-- (Cauldron mesh, carries the prompt IsleAction "beaconLight", IsleItem
+-- <beacon>, IsleRegion <region>), a stack of kindling (TimberBundle mesh) and
+-- a flame volume (invisible until lit) holding a night PointLight created OFF
+-- with LightWanted = false, a Fire and an ember ParticleEmitter (both off).
+-- beaconry.server.lua lights them from the BeaconryBeacons attribute the
+-- server publishes (flame visible + Neon, LightWanted = true, so the §35
+-- director lights it after dusk). Models carry BeaconContent = true and
+-- BeaconId; anchors Waypoint_Beacon_<id>. Parts: 4 per pyre + 1 invisible
+-- anchor = 5 x 9 = 45 static parts, 9 night lights (off), no Neon at build.
+-------------------------------------------------------------------------------
+do
+	local B,EX=Data.Beaconry,Data.Exploration
+	if B and EX and EX.ShrineIsle then
+		local FLOOR={Meadow=true,["Floating foundation"]=true,["Mineral stratum"]=true,["Lower basalt"]=true,["Fractured cliff"]=true,
+			["Keel rock"]=true,["Edge guard"]=true,["Aether vein"]=true,["Shore ledge"]=true,Wildflowers=true} -- §40: paths (village lanes) block; see below
+		local taken={}
+		local function blocked(host,pos,radius)
+			for _,q in ipairs(taken) do if V(pos.X-q.X,0,pos.Z-q.Z).Magnitude<radius+8 then return true end end
+			-- Clear of creature spawn markers and their roam (no fights in the warmth).
+			for _,marker in ipairs(spawnFolder:GetChildren()) do
+				if marker:IsA("BasePart") then
+					local c=marker.CFrame.Position
+					if V(pos.X-c.X,0,pos.Z-c.Z).Magnitude<radius+10+(tonumber(marker:GetAttribute("Radius")) or 0) then return true end
+				end
+			end
+			for _,obj in ipairs(host:GetDescendants()) do
+				if obj:IsA("BasePart") and not FLOOR[obj.Name] and not string.find(obj.Name,"^Anchor_") and (obj.Transparency<1 or obj.CanCollide) then
+					local cf,sz=Buildings.box(obj) -- §40 QC L2: declared mesh boxes block whole
+					local function ext(axis) return math.abs(cf.RightVector[axis])*sz.X/2+math.abs(cf.UpVector[axis])*sz.Y/2+math.abs(cf.LookVector[axis])*sz.Z/2 end
+					local c=cf.Position
+					local dx=math.max(0,math.abs(pos.X-c.X)-ext("X"))
+					local dz=math.max(0,math.abs(pos.Z-c.Z)-ext("Z"))
+					local ey=ext("Y")
+					if dx*dx+dz*dz<radius*radius and c.Y+ey>(if obj.Name=="Path" then pos.Y-1 else pos.Y+.3) and c.Y-ey<pos.Y+12 then return true end
+				end
+				-- Keep clear of every prompt on the isle (stations, nodes, shrines).
+				if obj:IsA("ProximityPrompt") and obj.Parent and obj.Parent:IsA("BasePart") then
+					local c=obj.Parent.CFrame.Position
+					if V(pos.X-c.X,0,pos.Z-c.Z).Magnitude<radius+8 then return true end
+				end
+			end
+			return false
+		end
+		local function spot(host,angle,radius)
 			local IC,R=host:GetAttribute("IslandCenter"),host:GetAttribute("IslandRadius")
-			for _,f in ipairs({.6,.5,.7,.4,.75,.3}) do
+			local first
+			-- Watch-fires stand out toward the rim (and clear of the busy centre).
+			for _,f in ipairs({.7,.62,.76,.55,.48}) do
 				for k=0,23 do
 					local a=math.rad(angle+(if k%2==0 then 1 else -1)*math.ceil(k/2)*15)
 					local pos=IC+V(math.cos(a),0,math.sin(a))*R*f
-					if not blocked(host,pos,radius,clear) then return pos end
+					first=first or pos
+					if not blocked(host,pos,radius) then table.insert(taken,pos) return pos end
 				end
 			end
-			return nil
+			table.insert(taken,first)
+			return first
 		end
-		local vents,byIsle={},{}
-		for i,def in ipairs(VD.List) do
-			local host=islandsFolder:FindFirstChild(def.isle)
-			local target=Data.RegionById[def.to]
-			local pos=host and target and (spot(host,20+i*61,9,42) or spot(host,20+i*61,9,26))
-			if pos then
-				local tint=C(def.color)
-				local pad=disk(host,"Skyward vent",pos+V(0,.5,0),4,1,darken(tint,.35),ST,true)
-				meshSlot(pad,"Caldera",tint,nil,"Uniform")
-				pad:SetAttribute("VentId",def.id)
-				Tags:AddTag(pad,"SkywardVent")
-				local draft=Instance.new("ParticleEmitter")
-				draft.Name="Updraft"
-				draft.EmissionDirection=Enum.NormalId.Right -- the disk's axis points up
-				draft.Rate,draft.LightEmission=14,.6
-				draft.Speed,draft.Lifetime=NumberRange.new(14,20),NumberRange.new(.9,1.3)
-				draft.Size=NumberSequence.new(1.2,0)
-				draft.Transparency=NumberSequence.new(.35,1)
-				draft.Color=ColorSequence.new(lighten(tint,.5),tint)
-				draft.Parent=pad
-				local q=prompt(pad,"Ride the "..def.name,"To "..target.name)
-				q:SetAttribute("IsleVent",def.id)
-				vents[def.id]={def=def,pad=pad,pos=pos,host=host,prompt=q}
-				byIsle[def.isle]=def.id
-			end
-		end
-		-- Landings: beside the vent on the far isle that leads back (open ground,
-		-- >= 42 studs from monster markers), else that isle's own clear spot.
-		for _,v in pairs(vents) do
-			local host=islandsFolder:FindFirstChild(v.def.land)
-			local back=byIsle[v.def.land] and vents[byIsle[v.def.land]]
-			local land
-			if back then
+		local iron,stone=C("3D3732"),C("8D8A84")
+		for i,id in ipairs(B.BeaconOrder) do
+			local b=B.Beacons[id]
+			local host=islandsFolder:FindFirstChild(EX.ShrineIsle[b.region] or "")
+			if host then
+				local pos=spot(host,200+i*23,6)
 				local IC=host:GetAttribute("IslandCenter")
-				local inward=V(IC.X-back.pos.X,0,IC.Z-back.pos.Z)
-				inward=if inward.Magnitude>1e-3 then inward.Unit else V(1,0,0)
-				land=back.pos+inward*8
-				-- Beside a vent that had to stand nearer a spawn: land on the isle's clearest ground instead.
-				if blocked(host,land,0,42) then land=spot(host,200,6,42) end
-			elseif host then
-				land=spot(host,200,6,42)
-			end
-			if land then
-				v.landing=land+V(0,4,0)
-				v.pad:SetAttribute("VentLanding",v.landing)
-				anchor(host,"Waypoint_Vent_"..v.def.id,land,v.pos)
-			end
-		end
-		local riding,ready,seq={},{},0
-		local function notice(player,message)
-			player:SetAttribute("IsleRegionNotice",message)
-			player:SetAttribute("IsleRegionNoticeCount",(tonumber(player:GetAttribute("IsleRegionNoticeCount")) or 0)+1)
-		end
-		local function launch(player,v)
-			local character=player.Character
-			local root=character and character:FindFirstChild("HumanoidRootPart")
-			local hum=character and character:FindFirstChildOfClass("Humanoid")
-			if not v.landing or not root or not hum or hum.Health<=0 then return end
-			if (v.pad.CFrame.Position-root.Position).Magnitude>VD.RANGE+3 then return end
-			local now=os.clock()
-			if riding[player] then return end
-			if (ready[player] or 0)>now then notice(player,v.def.name.." is gathering its breath ("..math.ceil(ready[player]-now).."s).") return end
-			local region=Data.RegionById[v.def.to]
-			local access=ServerStorage:FindFirstChild("IsleRegionAccess")
-			if not access then return end
-			local ok,result=pcall(access.Invoke,access,player,v.def.to)
-			if not (ok and type(result)=="table" and result.allowed) then
-				notice(player,if ok and type(result)=="table" and type(result.message)=="string" then result.message else region.name..": "..requirementText(region))
-				return
-			end
-			local gate=ServerStorage:FindFirstChild("IsleTravelGate")
-			if gate then
-				local okGate,verdict=pcall(gate.Invoke,gate,player)
-				if okGate and verdict~=true then notice(player,if type(verdict)=="string" then verdict else "The vent will not lift you right now.") return end
-			end
-			seq+=1
-			local mine=seq
-			riding[player]=mine
-			ready[player]=now+VD.COOLDOWN
-			player:SetAttribute("FastTravelAt",os.clock()) -- known fast travel (Aether Mote pickup checks)
-			player:SetAttribute("VentFlight",v.def.id..":"..mine)
-			task.spawn(function()
-				task.wait(VD.FLIGHT)
-				if riding[player]~=mine then return end
-				riding[player]=nil
-				local now2=player.Character
-				local r=now2 and now2:FindFirstChild("HumanoidRootPart")
-				local h=now2 and now2:FindFirstChildOfClass("Humanoid")
-				if now2==character and r and h and h.Health>0 then
-					player:SetAttribute("FastTravelAt",os.clock())
-					now2:PivotTo(CFrame.new(v.landing))
-					r.AssemblyLinearVelocity=Vector3.zero
+				local cf=facing(pos,V(IC.X,pos.Y,IC.Z))
+				local glow=C(b.color)
+				local m=group("Beacon "..b.name,host)
+				m:SetAttribute("BeaconContent",true)
+				m:SetAttribute("BeaconId",id)
+				local plinth=part(m,"Beacon plinth",V(4.6,3.2,4.6),at(cf,0,1.6,0),stone,ST,true)
+				meshSlot(plinth,"Column",lighten(stone,.1))
+				local brazier=part(m,"Beacon brazier",V(5.2,1.8,5.2),at(cf,0,4.1,0),iron,MT,true)
+				meshSlot(brazier,"Cauldron",darken(glow,.55))
+				local kindling=part(m,"Beacon kindling",V(3.4,1.6,3.4),at(cf,0,5.4,0),timber,WO,false)
+				meshSlot(kindling,"TimberBundle",timber)
+				local flame=part(m,"Beacon flame",V(2.8,4,2.8),at(cf,0,7.6,0),glow,SM,false)
+				flame.Transparency,flame.CastShadow,flame.CanQuery=1,false,false
+				flame:SetAttribute("BeaconFlame",true)
+				local l=light(flame,glow,1.4,36,{night=true,lift=0})
+				l:SetAttribute("LightWanted",false) -- §35: wanted only while the beacon burns (beaconry.server.lua)
+				l.Name="Beacon light"
+				local fire=Instance.new("Fire")
+				fire.Name="Beacon fire"
+				fire.Color,fire.SecondaryColor=glow,C("FFF1C2")
+				fire.Size,fire.Heat,fire.Enabled=7,12,false
+				fire.Parent=flame
+				local embers=Instance.new("ParticleEmitter")
+				embers.Name="Beacon embers"
+				embers.Rate,embers.Enabled,embers.LightEmission=14,false,.9
+				embers.Lifetime,embers.Speed=NumberRange.new(1.2,2.4),NumberRange.new(4,8)
+				embers.SpreadAngle=Vector2.new(18,18)
+				embers.Size=NumberSequence.new(.35,0)
+				embers.Color=ColorSequence.new(glow,C("FFE3A3"))
+				embers.Parent=flame
+				local q=prompt(brazier,"Light",b.name.." · Beaconry","beaconLight",id)
+				q:SetAttribute("IsleRegion",b.region)
+				anchor(m,"Waypoint_Beacon_"..id,at(cf,0,0,-6).Position,pos)
+				-- QC: the Beaconkeeper (Kindling Lessons) stands beside the Quayfire,
+				-- 7+ studs from every other townsfolk anchor and outside the pyre prompt's reach.
+				if B.KEEPER and id=="Hub" then
+					local keeperName="Anchor_NPC_"..B.KEEPER
+					local keeper,others=nil,{}
+					for _,obj in ipairs(host:GetDescendants()) do
+						if obj.Name==keeperName then keeper=obj
+						elseif obj:IsA("BasePart") and string.find(obj.Name,"^Anchor_NPC_") then table.insert(others,obj.CFrame.Position) end
+					end
+					local stand
+					for _,o in ipairs({{-8,-7},{8,-7},{-10,-2},{10,-2},{-6,-11},{6,-11}}) do
+						local p=at(cf,o[1],0,o[2]).Position
+						local clear=true
+						for _,q in ipairs(others) do if V(p.X-q.X,0,p.Z-q.Z).Magnitude<7 then clear=false end end
+						if clear then stand=p break end
+					end
+					stand=stand or at(cf,-8,0,-7).Position
+					if keeper then keeper.CFrame=facing(V(stand.X,keeper.CFrame.Position.Y,stand.Z),pos)
+					else anchor(host,"NPC_"..B.KEEPER,stand,pos) end
 				end
-			end)
+			end
 		end
-		for _,v in pairs(vents) do v.prompt.Triggered:Connect(function(player) launch(player,v) end) end
-		Players.PlayerRemoving:Connect(function(player) riding[player]=nil; ready[player]=nil end)
 	end
 end
--- End Skyward Vents.
+-- <<< END Beaconry <<<
 
--- Signs (§28 performance): drop Back faces nobody can read on the static world.
-Signs.cullBacks(world)
-Signs.cullBacks(islandsFolder)
+-------------------------------------------------------------------------------
+-- >>> QoL Depth (§41) >>> The Lumen Lectern: one station prop on the front of
+-- the Aether Museum dais (Compass Quay), between the display case and the log
+-- lectern, in its own Model "Lumen Lectern" (LecternContent = true). Prompt IsleAction "lecternVisit" (server: QoL block opens the
+-- 10-minute trial window and Hero › Lectern). 1 mesh-slot part + the invisible
+-- Anchor_Waypoint_Lectern = 2 static parts; no lights, no Neon.
+-------------------------------------------------------------------------------
+do
+	local hub=islandsFolder:FindFirstChild("Compass Quay")
+	local museum=hub and hub:FindFirstChild("Aether Museum",true)
+	local dais=museum and museum:FindFirstChild("Museum dais")
+	if dais then
+		local cf=dais.CFrame*CFrame.new(0,-.285,0)
+		-- Its own model beside the museum's (the museum's prompts all route to logsBoard).
+		local m=group("Lumen Lectern",hub)
+		m:SetAttribute("LecternContent",true)
+		local stand=part(m,"Lumen Lectern",V(2.4,2.2,1.4),at(cf,0,1.67,-4.4),C("3A2E5C"),WO,true)
+		meshSlot(stand,"Workbench",C("B9A7FF"))
+		prompt(stand,"Study","Lumen Lectern · Enchanting trials","lecternVisit")
+		anchor(m,"Waypoint_Lectern",at(cf,0,0,-6.4),cf.Position)
+	end
+end
+-- <<< END QoL Depth <<<
+-- Hall furnishings (World Art pass 2, §40): the Guild Hall pavilion gains a
+-- rug runner, two trestle tables with benches and candles, a wall bench and an
+-- iron chandelier (one HallFurnishings mesh on an invisible host), placed last
+-- and only if its whole box is clear of every part, prompt and anchor there.
+do
+	local terrace=islandsFolder:FindFirstChild("Guild Terrace")
+	local hall=terrace and terrace:FindFirstChild("Guild Hall",true)
+	local floor=hall and hall:FindFirstChild("Hall floor")
+	if floor then
+		local centre,size=Buildings.fitOf(BUILDING_KIT.HallFurnishings)
+		-- The floor's own frame (its yaw), 3.6 studs along its X, on its top.
+		local ground=floor.CFrame*CFrame.new(3.6,floor.Size.Y/2,0)
+		local hostCF=ground*CFrame.new(centre)
+		local r,u,l=hostCF.RightVector,hostCF.UpVector,hostCF.LookVector
+		local ext=V(math.abs(r.X)*size.X+math.abs(u.X)*size.Y+math.abs(l.X)*size.Z,math.abs(r.Y)*size.X+math.abs(u.Y)*size.Y+math.abs(l.Y)*size.Z,
+			math.abs(r.Z)*size.X+math.abs(u.Z)*size.Y+math.abs(l.Z)*size.Z)/2
+		local lo,hi=hostCF.Position-ext,hostCF.Position+ext
+		local clear=true
+		for _,obj in ipairs(terrace:GetDescendants()) do
+			if obj:IsA("BasePart") and obj~=floor and obj.Name~="Meadow" and (obj.Transparency<1 or obj.CanCollide
+				or obj:FindFirstChildOfClass("ProximityPrompt") or string.find(obj.Name,"^Anchor_")) then
+				local c,s,cf=obj.CFrame.Position,obj.Size/2,obj.CFrame
+				local e=V(math.abs(cf.RightVector.X)*s.X+math.abs(cf.UpVector.X)*s.Y+math.abs(cf.LookVector.X)*s.Z,
+					math.abs(cf.RightVector.Y)*s.X+math.abs(cf.UpVector.Y)*s.Y+math.abs(cf.LookVector.Y)*s.Z,
+					math.abs(cf.RightVector.Z)*s.X+math.abs(cf.UpVector.Z)*s.Y+math.abs(cf.LookVector.Z)*s.Z)
+				if c.X-e.X<hi.X and c.X+e.X>lo.X and c.Y-e.Y<hi.Y and c.Y+e.Y>lo.Y and c.Z-e.Z<hi.Z and c.Z+e.Z>lo.Z then clear=false break end
+			end
+		end
+		if clear then
+			local host=part(hall,"Hall furnishings",size,hostCF,cream,SM,false)
+			host.Transparency,host.CastShadow,host.CanQuery=1,false,false
+			meshSlot(host,"HallFurnishings",C("3F6FB5"))
+			host:SetAttribute("Interior","HallFurnishings")
+			Buildings.furniture(hall,"HallFurnishings",ground) -- §40 QC L6: tables and benches collide
+		end
+	end
+end
+-- §28 QC M4: static signs step clear of walls once the world is built.
+Signs.settle(islandsFolder)

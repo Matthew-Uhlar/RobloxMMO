@@ -49,6 +49,8 @@ end
 -- Palette and type match the atlas "Aether Brass" design system (ui.client.lua).
 -- Colours, fonts and HUD lanes from the shared theme (§29).
 local Theme = require(ReplicatedStorage:WaitForChild("AetherUiTheme"))
+-- Hitsplat styles and overhead bar colours (§34, shared/HudDepth.lua).
+local HD = require(ReplicatedStorage:WaitForChild("AetherHudDepth"))
 local deep, ivory, gold, mint = Theme.color.inset, Theme.color.text, Theme.color.gold, Theme.color.mint
 local brass, brassDark, track, ember, raised = Theme.color.frame, Theme.color.frameLo, Theme.color.void, Theme.color.ember, Theme.color.raised
 local heavy, display = Enum.Font.BuilderSansExtraBold, Theme.font.display
@@ -145,7 +147,7 @@ for _, x in ipairs({0, 1}) do
 end
 -- Layout (shared HUD map, kept in step with nav.client.lua and npc.client.lua):
 --   atlas guild badge (ui.client.lua)  top-left      x 10-315, y 8-92
---   tutorial tracker (npc.client.lua)  left column   x 10-260, y 100-166
+--   left column (x 10-260, from y 100): free; the old tutorial tracker is retired (Polish)
 --   Wayfinder minimap (nav.client.lua) top-right     SIZE 118 (viewport < 520 tall) or 156,
 --                                                    x W-10-SIZE..W-10, y 8..SIZE+42
 --   top lane between them (x 325..W-SIZE-20): target/boss panel y 10-68,
@@ -190,7 +192,7 @@ local function layoutHud(isBoss)
 	layoutKey = key
 	local panelWidth = if isBoss then 380 else 300
 	if not placeInLane(panel, panelWidth, EDGE, PANEL_HEIGHT, width) or not placeInLane(banner, 460, 76, 34, width) then
-		-- Very narrow: stack in the left column under the tutorial tracker.
+		-- Very narrow: stack at the top of the left column.
 		local _, right = laneFor(width)
 		local w = math.max(160, math.min(panelWidth, right - EDGE))
 		panel.AnchorPoint, panel.Position, panel.Size = Vector2.new(0, 0), UDim2.fromOffset(EDGE, BELOW_HUD), UDim2.fromOffset(w, PANEL_HEIGHT)
@@ -545,7 +547,13 @@ local function reach()
 end
 local function setTarget(model)
 	if model == target then return end
+	local old = target
 	target = model
+	-- §34: the target keeps its overhead bar; the old one lingers, then fades.
+	if S.overhead then
+		if old then S.overhead.touch(old) end
+		if model then S.overhead.touch(model) end
+	end
 	-- Highlights live under the camera (adorned), so a server-side Destroy of the
 	-- monster never takes the reusable highlight with it.
 	targetHighlight.Adornee = model
@@ -827,6 +835,27 @@ UserInputService.TouchTapInWorld:Connect(function(position, processed)
 	local model = pick(position)
 	if model then tryAttack(model) end
 end)
+-- §34: "Attack" from the world context menu (overlay.client.lua) on
+-- ReplicatedStorage.IsleAttackLocal:Fire(model). In reach it swings now;
+-- otherwise the character walks over (Humanoid:MoveTo) and swings on arrival
+-- (checked each frame for at most 6 s; any new attack input replaces it).
+do
+	local attackLocal = ReplicatedStorage:FindFirstChild("IsleAttackLocal") or make("BindableEvent", ReplicatedStorage, {Name = "IsleAttackLocal"})
+	attackLocal.Event:Connect(function(model)
+		-- "cancel": the overlay is driving a prompt / walking elsewhere (§34 M2).
+		if model == "cancel" then S.pendingAttack = nil return end
+		if typeof(model) ~= "Instance" or not canTarget(model) then return end
+		setTarget(model)
+		S.pendingAttack = nil
+		if distanceTo(model) <= reach() then tryAttack(model) return end
+		local _, humanoid = rootOf()
+		local body = model.PrimaryPart
+		if humanoid and body then
+			humanoid:MoveTo(body.Position)
+			S.pendingAttack = {model = model, untilAt = os.clock() + 6}
+		end
+	end)
+end
 if attackButton then
 	attackButton.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
@@ -896,24 +925,269 @@ local function commas(n)
 		if count == 0 then return s end
 	end
 end
-floatText = function(position, text, color, size)
-	local anchor = make("Attachment", Workspace.Terrain, {
-		WorldPosition = position + Vector3.new((math.random() - 0.5) * 2, math.random() * 0.8, (math.random() - 0.5) * 2),
-	})
-	local board = make("BillboardGui", anchor, {
-		Size = UDim2.fromOffset(160, 44), AlwaysOnTop = true, LightInfluence = 0, MaxDistance = 120,
-	})
-	local label = make("TextLabel", board, {
-		BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Font = bold, TextSize = size, RichText = true,
-		TextColor3 = color, TextStrokeTransparency = 0.2, TextStrokeColor3 = deep, Text = text,
-	})
-	local info = TweenInfo.new(0.9, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-	TweenService:Create(board, info, {StudsOffsetWorldSpace = Vector3.new(0, 3, 0)}):Play()
-	TweenService:Create(label, TweenInfo.new(0.5, Enum.EasingStyle.Linear, Enum.EasingDirection.In, 0, false, 0.45), {
-		TextTransparency = 1, TextStrokeTransparency = 1,
-	}):Play()
-	task.delay(1, function() anchor:Destroy() end)
+------------------------------------------------------------------------------
+-- Hitsplats (§34): pooled billboards on pooled Terrain attachments. Each splat
+-- is a top-lit badge (a rounded diamond; crits add an amber starburst) with the
+-- number in the pixel face and an optional tag (WEAK! / resist). Styles come
+-- from HudDepth.splatStyle: damage red, crit amber + larger, miss blue "miss",
+-- heal green, resist grey. At most SP.POOL exist; when all are live the oldest
+-- is restyled. Hits on one model within 0.6 s fan out so numbers never stack.
+------------------------------------------------------------------------------
+local SP = {POOL = 24, LIFE = 0.95, free = {}, live = {}, count = 0, fan = setmetatable({}, {__mode = "k"})}
+SP.FAN = {Vector3.new(0, 0, 0), Vector3.new(-1.2, 0.5, 0), Vector3.new(1.2, 0.5, 0), Vector3.new(0, 1.2, 0), Vector3.new(-0.8, -0.6, 0), Vector3.new(0.8, -0.6, 0)}
+function SP.new()
+	local anchor = make("Attachment", Workspace.Terrain, {Name = "Hitsplat"})
+	local board = make("BillboardGui", anchor, {Name = "Splat", Size = UDim2.fromOffset(120, 64), AlwaysOnTop = true, LightInfluence = 0, MaxDistance = 140,
+		Enabled = false, ResetOnSpawn = false})
+	local burst = make("Frame", board, {Name = "Burst", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.4), Size = UDim2.fromOffset(40, 40),
+		BorderSizePixel = 0, Visible = false})
+	make("UICorner", burst, {CornerRadius = UDim.new(0, 4)})
+	local badge = make("Frame", board, {Name = "Badge", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.4), Size = UDim2.fromOffset(32, 32),
+		Rotation = 45, BorderSizePixel = 0, ZIndex = 2})
+	make("UICorner", badge, {CornerRadius = UDim.new(0, 7)})
+	local edge = make("UIStroke", badge, {Name = "Edge", Thickness = 2, ApplyStrokeMode = Enum.ApplyStrokeMode.Border})
+	-- Lit from the top: the badge is turned 45°, so the gradient turns back.
+	make("UIGradient", badge, {Rotation = 45, Color = ColorSequence.new(white, Color3.new(0.58, 0.58, 0.58))})
+	local value = make("TextLabel", board, {Name = "Value", BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.4),
+		Size = UDim2.new(1, 0, 0, 24), Font = display, TextSize = 16, TextColor3 = white, TextStrokeTransparency = 0, TextStrokeColor3 = deep, Text = "", ZIndex = 3,
+		RichText = true})
+	local tag = make("TextLabel", board, {Name = "Tag", BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromScale(0.5, 0.68),
+		Size = UDim2.new(1, 0, 0, 14), Font = heavy, TextSize = 12, TextColor3 = gold, TextStrokeTransparency = 0.1, TextStrokeColor3 = deep, Text = "", ZIndex = 3})
+	return {anchor = anchor, board = board, burst = burst, badge = badge, edge = edge, value = value, tag = tag, token = 0, tweens = {}}
 end
+-- Stops a pooled object's running tweens (a reused splat or bar must not keep
+-- fading from its previous life).
+local function stopTweens(o)
+	for _, tween in ipairs(o.tweens) do pcall(function() tween:Cancel() end) end
+	table.clear(o.tweens)
+end
+local function play(o, object, info, goals)
+	local tween = TweenService:Create(object, info, goals)
+	table.insert(o.tweens, tween)
+	tween:Play()
+	return tween
+end
+function SP.take()
+	local s = table.remove(SP.free)
+	if not s then
+		if SP.count < SP.POOL then
+			SP.count += 1
+			s = SP.new()
+		else
+			s = table.remove(SP.live, 1) -- every splat is live: restyle the oldest
+		end
+	else
+		local i = table.find(SP.live, s)
+		if i then table.remove(SP.live, i) end
+	end
+	table.insert(SP.live, s)
+	return s
+end
+-- style = HudDepth.splatStyle(...) or {kind = "text", text, ink (Color3), size}.
+function SP.show(position, style, model)
+	local s = SP.take()
+	s.token += 1
+	stopTweens(s)
+	local token = s.token
+	local offset = Vector3.zero
+	if model then
+		local fan = SP.fan[model]
+		local now = os.clock()
+		if not fan or now - fan.at > 0.6 then fan = {n = 0, at = now}; SP.fan[model] = fan end
+		fan.n, fan.at = fan.n % #SP.FAN + 1, now
+		offset = SP.FAN[fan.n]
+	end
+	s.anchor.WorldPosition = position + offset
+	s.board.StudsOffsetWorldSpace = Vector3.zero
+	local text = style.kind == "text"
+	local scale = style.scale or 1
+	s.badge.Visible = not text
+	s.burst.Visible = style.kind == "crit"
+	if not text then
+		local fill = rgb(style.fill)
+		s.badge.BackgroundColor3 = fill
+		local shape, bw, bh = HD.splatShape(style.text, style.size)
+		s.badge.Rotation = if shape == "diamond" then 45 else 0
+		s.badge.Size = UDim2.fromOffset(math.floor(bw * scale), math.floor(bh * scale))
+		s.badge:FindFirstChildOfClass("UIGradient").Rotation = if shape == "diamond" then 45 else 90
+		s.edge.Color = rgb(style.edge)
+		s.burst.BackgroundColor3 = fill:Lerp(white, 0.35)
+		s.burst.Size = UDim2.fromOffset(math.floor(40 * scale), math.floor(40 * scale))
+	end
+	s.value.Text = style.text
+	s.value.Font = if text then heavy else display
+	s.value.TextSize = style.size or 16
+	s.value.TextColor3 = if typeof(style.ink) == "Color3" then style.ink else rgb(style.ink or "FFFFFF")
+	s.tag.Text = style.tag or ""
+	s.tag.TextColor3 = if style.tagColor then rgb(style.tagColor) else gold
+	s.tag.Visible = style.tag ~= nil
+	for _, o in ipairs({s.value, s.tag}) do o.TextTransparency, o.TextStrokeTransparency = 0, 0.05 end
+	s.badge.BackgroundTransparency, s.burst.BackgroundTransparency, s.edge.Transparency = 0.04, 0.15, 0
+	s.board.Enabled = true
+	if not Theme.reducedMotion(player) then
+		-- Rise and fade; crits pop from 1.5x.
+		play(s, s.board, TweenInfo.new(0.9, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {StudsOffsetWorldSpace = Vector3.new(0, 1.8, 0)})
+		if style.kind == "crit" then
+			s.board.Size = UDim2.fromOffset(180, 96)
+			play(s, s.board, TweenInfo.new(0.18, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = UDim2.fromOffset(120, 64)})
+		else
+			s.board.Size = UDim2.fromOffset(120, 64)
+		end
+		local fade = TweenInfo.new(0.35, Enum.EasingStyle.Linear, Enum.EasingDirection.In, 0, false, 0.55)
+		play(s, s.value, fade, {TextTransparency = 1, TextStrokeTransparency = 1})
+		play(s, s.tag, fade, {TextTransparency = 1, TextStrokeTransparency = 1})
+		play(s, s.badge, fade, {BackgroundTransparency = 1})
+		play(s, s.edge, fade, {Transparency = 1})
+		play(s, s.burst, fade, {BackgroundTransparency = 1})
+	end
+	task.delay(SP.LIFE, function()
+		if s.token ~= token then return end
+		s.board.Enabled = false
+		local i = table.find(SP.live, s)
+		if i then table.remove(SP.live, i) end
+		table.insert(SP.free, s)
+	end)
+	return s
+end
+S.splats = SP
+floatText = function(position, text, color, size)
+	SP.show(position, {kind = "text", text = text, ink = color, size = size})
+end
+
+------------------------------------------------------------------------------
+-- Overhead health bars (§34): a slim bar over each creature you fight (hit by
+-- you, or your current target; other players' hits never claim one), with a pale "recent damage" trail that drains after it. Bars
+-- are pooled (OB.POOL), listen to the creature's Health attribute (no per-frame
+-- work) and fade out OB.LINGER s after the last hit; a dead or removed creature
+-- releases its bar at once.
+------------------------------------------------------------------------------
+local OB = {POOL = 12, LINGER = 5, free = {}, byModel = {}, count = 0, clock = 0}
+function OB.new()
+	local board = make("BillboardGui", nil, {Name = "OverheadBar", Size = UDim2.fromOffset(78, 23), AlwaysOnTop = true, LightInfluence = 0, MaxDistance = 90,
+		Enabled = false, ResetOnSpawn = false})
+	local well = make("Frame", board, {Name = "Track", AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -2), Size = UDim2.new(1, -4, 0, 9),
+		BackgroundColor3 = track, BackgroundTransparency = 0.1, BorderSizePixel = 0})
+	make("UICorner", well, {CornerRadius = UDim.new(0, 3)})
+	make("UIStroke", well, {Name = "Rim", Color = brassDark, Thickness = 1.5, ApplyStrokeMode = Enum.ApplyStrokeMode.Border})
+	local trail = make("Frame", well, {Name = "Trail", Size = UDim2.fromScale(1, 1), BackgroundColor3 = rgb("FFE6C8"), BorderSizePixel = 0})
+	make("UICorner", trail, {CornerRadius = UDim.new(0, 3)})
+	local fill = make("Frame", well, {Name = "Fill", Size = UDim2.fromScale(1, 1), BackgroundColor3 = mint, BorderSizePixel = 0, ZIndex = 2})
+	make("UICorner", fill, {CornerRadius = UDim.new(0, 3)})
+	make("UIGradient", fill, {Rotation = 90, Color = ColorSequence.new(white, Color3.new(0.62, 0.62, 0.62))})
+	local level = make("TextLabel", board, {Name = "Level", BackgroundTransparency = 1, AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 0, 1, -12),
+		Size = UDim2.new(1, 0, 0, 11), Font = display, TextSize = 11, TextColor3 = ivory, TextStrokeTransparency = 0.2, TextStrokeColor3 = deep,
+		TextXAlignment = Enum.TextXAlignment.Left, Text = ""})
+	return {board = board, well = well, trail = trail, fill = fill, level = level, token = 0, tweens = {}, touched = 0}
+end
+function OB.release(model)
+	local b = OB.byModel[model]
+	if not b then return end
+	OB.byModel[model] = nil
+	for _, c in ipairs(b.connections or {}) do c:Disconnect() end
+	b.connections = nil
+	b.board.Enabled = false
+	b.board.Adornee = nil
+	b.values = nil
+	b.token += 1
+	stopTweens(b)
+	OB.opacity(b, 0)
+	table.insert(OB.free, b)
+end
+function OB.paint(model, b, animate)
+	local hp, maxHp = tonumber(model:GetAttribute("Health")) or 0, math.max(1, tonumber(model:GetAttribute("MaxHealth")) or 1)
+	-- §42: a gathering node's bar shows YOUR progress on it (per player, from the strike reply).
+	if b.values then hp, maxHp = b.values.hp, math.max(1, b.values.max) end
+	local f = math.clamp(hp / maxHp, 0, 1)
+	b.fill.Size = UDim2.fromScale(f, 1)
+	b.fill.Visible = f > 0
+	b.fill.BackgroundColor3 = rgb(HD.barColor(f))
+	if animate and not Theme.reducedMotion(player) then
+		play(b, b.trail, TweenInfo.new(0.45, Enum.EasingStyle.Quad, Enum.EasingDirection.In, 0, false, 0.25), {Size = UDim2.fromScale(f, 1)})
+	else
+		b.trail.Size = UDim2.fromScale(f, 1)
+	end
+	if (model:GetAttribute("Dead") or hp <= 0) and not b.values then OB.release(model) end
+end
+-- Shows (or refreshes) the bar over `model`, fading LINGER s after the last call.
+function OB.touch(model)
+	if typeof(model) ~= "Instance" or not model.Parent then return nil end
+	local b = OB.byModel[model]
+	if not b then
+		b = table.remove(OB.free)
+		if not b and OB.count >= OB.POOL then
+			-- Pool full: hand back the bar idle longest that is not over your target.
+			local oldest, at = nil, math.huge
+			for m, other in pairs(OB.byModel) do
+				if m ~= target and other.touched < at then oldest, at = m, other.touched end
+			end
+			if not oldest then return nil end
+			OB.release(oldest)
+			b = table.remove(OB.free)
+		end
+		if not b then
+			OB.count += 1
+			b = OB.new()
+		end
+		OB.byModel[model] = b
+		local body = if model:IsA("BasePart") then model else (model.PrimaryPart or model:FindFirstChild("HumanoidRootPart")) -- §42: a node host is its own body
+		if not body then
+			for _, child in ipairs(model:GetChildren()) do if child:IsA("BasePart") then body = child break end end
+		end
+		b.board.Adornee = body
+		b.board.StudsOffsetWorldSpace = Vector3.new(0, (if body then body.Size.Y / 2 else 2) + 1.6, 0)
+		b.board.Parent = player:FindFirstChild("PlayerGui")
+		local lvl = model:GetAttribute("Level")
+		b.level.Text = if lvl then "Lv " .. tostring(lvl) else ""
+		b.connections = {
+			model:GetAttributeChangedSignal("Health"):Connect(function() OB.paint(model, b, true) end),
+			model.AncestryChanged:Connect(function() if not model:IsDescendantOf(Workspace) then OB.release(model) end end),
+		}
+		b.trail.Size = UDim2.fromScale(1, 1)
+		b.values = OB.pendingValues
+		OB.paint(model, b, false)
+		if OB.byModel[model] ~= b then return nil end
+	end
+	b.board.Enabled = true
+	stopTweens(b)
+	OB.opacity(b, 0)
+	OB.clock += 1
+	b.touched = OB.clock -- touch order (eviction picks the smallest)
+	b.token += 1
+	local token = b.token
+	task.delay(OB.LINGER, function()
+		if b.token ~= token or OB.byModel[model] ~= b or model == target then return end
+		-- Out of combat: fade, then hand the bar back to the pool.
+		if not Theme.reducedMotion(player) then
+			local info = TweenInfo.new(0.4)
+			for _, o in ipairs({b.well, b.trail, b.fill}) do play(b, o, info, {BackgroundTransparency = 1}) end
+			play(b, b.level, info, {TextTransparency = 1, TextStrokeTransparency = 1})
+		end
+		task.delay(0.45, function() if b.token == token and OB.byModel[model] == b then OB.release(model) end end)
+	end)
+	return b
+end
+-- §42: the bar over a gathering node shows the local player's own progress
+-- (hp / maxHp from the strike reply; nodes have no shared Health), captioned
+-- with the skill and level ("Mining 30") or the fishing state ("Bite!").
+function OB.touchNode(node, hp, maxHp, caption)
+	local b = OB.byModel[node]
+	if b then
+		b.values = {hp = hp, max = maxHp}
+		OB.paint(node, b, true)
+	end
+	OB.pendingValues = {hp = hp, max = maxHp}
+	b = OB.touch(node)
+	OB.pendingValues = nil
+	if b and caption then b.level.Text = caption end
+	return b
+end
+-- Resets the fade (0 = fully shown).
+function OB.opacity(b, t)
+	b.well.BackgroundTransparency = math.max(t, 0.1)
+	b.trail.BackgroundTransparency, b.fill.BackgroundTransparency = t, t
+	b.level.TextTransparency, b.level.TextStrokeTransparency = t, math.max(t, 0.2)
+end
+S.overhead = OB
 -- One reusable flash Highlight per monster (Roblox renders at most 31 at once);
 -- it is disabled between hits and destroyed when the monster leaves the world.
 local flashes = {} -- [model] = {highlight = Highlight, token = number}
@@ -1087,21 +1361,14 @@ end
 fx.OnClientEvent:Connect(function(kind, payload)
 	if type(payload) ~= "table" then return end
 	if kind == "hit" and typeof(payload.position) == "Vector3" then
-		local amount = tonumber(payload.amount) or 0
-		if payload.miss then
-			floatText(payload.position, "miss", rgb("A9BDC1"), 17)
-		else
-			local text, color, size = commas(amount), Color3.new(1, 1, 1), 20
-			if payload.crit then text, color, size = "✧ " .. text .. " ✧", gold, 26 end
-			-- Triangle tags: WEAK! in gold, resist in grey.
-			if payload.tag == "weak" then
-				text, size = text .. ' <font color="#FFD24A" size="' .. (size - 4) .. '">WEAK!</font>', size + 2
-			elseif payload.tag == "resist" then
-				text = text .. ' <font color="#A9BDC1" size="' .. (size - 6) .. '">resist</font>'
-				if not payload.crit then color = rgb("D5DDDF") end
-			end
-			floatText(payload.position, text, color, size)
-			if typeof(payload.model) == "Instance" then flash(payload.model) end
+		-- §34 hitsplats: miss (blue), damage (red), crit (amber burst), with the
+		-- triangle tags WEAK! (gold) and resist (grey); a creature you hit (or your
+		-- current target) gets an overhead bar; other players' hits do not.
+		local model = if typeof(payload.model) == "Instance" then payload.model else nil
+		SP.show(payload.position, HD.splatStyle(payload, Theme), model)
+		if model then
+			if payload.attacker == player.UserId or model == target then OB.touch(model) end
+			if not payload.miss then flash(model) end
 		end
 	elseif kind == "projectile" then
 		projectile(payload)
@@ -1122,7 +1389,7 @@ fx.OnClientEvent:Connect(function(kind, payload)
 		toast(deniedText(payload.action, payload.reason))
 	elseif kind == "hurt" then
 		local root = rootOf()
-		if root then floatText(root.Position + Vector3.new(0, 2.5, 0), "-" .. commas(tonumber(payload.amount) or 0), rgb("FF6B5B"), 18) end
+		if root then SP.show(root.Position + Vector3.new(0, 2.5, 0), HD.splatStyle({hurt = true, amount = payload.amount}, Theme), player) end
 	elseif kind == "death" and typeof(payload.position) == "Vector3" then
 		burst(payload.position, payload.color, if payload.boss then 2.2 else 1)
 	elseif kind == "bossSpawn" and payload.owner == player.UserId then
@@ -1221,8 +1488,14 @@ function WBH.clock(seconds)
 	seconds = math.max(0, math.floor(tonumber(seconds) or 0))
 	return string.format("%d:%02d", seconds // 60, seconds % 60)
 end
--- Places the bar in the top lane (or under the tutorial tracker on narrow
+-- Places the bar in the top lane (or at the top of the left column on narrow
 -- screens) and the board under the minimap when the screen is tall enough.
+-- §39 QC M3: the board's foot (px from the top; 0 = hidden) as the local
+-- attribute WorldBossBoard, so the atlas's contest tracker stacks below it.
+function WBH.publish()
+	local foot = if WBH.board.Visible then WBH.board.Position.Y.Offset + WBH.board.Size.Y.Offset else 0
+	if player:GetAttribute("WorldBossBoard") ~= foot then player:SetAttribute("WorldBossBoard", foot) end
+end
 function WBH.layout()
 	local view = gui.AbsoluteSize
 	local width = if view and view.X > 0 then view.X else 1280
@@ -1237,6 +1510,7 @@ function WBH.layout()
 	WBH.board.AnchorPoint = Vector2.new(1, 0)
 	WBH.board.Position = UDim2.fromOffset(L.rightEdge, L.rightTop)
 	WBH.board.Size = UDim2.fromOffset(math.min(L.sidebar.w, 214), 126)
+	WBH.publish()
 end
 function WBH.render()
 	local p = WBH.payload
@@ -1272,6 +1546,7 @@ function WBH.render()
 	end
 	WBH.rankLine.Text = line
 	WBH.board.Visible = WBH.tall == true and #top > 0
+	WBH.publish()
 	for i, row in ipairs(WBH.rows) do
 		local e = top[i]
 		if i == 6 and you and you.rank and you.rank > 5 then
@@ -1299,6 +1574,7 @@ function WBH.hide()
 	WBH.payload = nil
 	WBH.bar.Visible = false
 	WBH.board.Visible = false
+	WBH.publish()
 end
 -- Warning discs: a translucent cylinder that fills over the windup; "safe"
 -- marks the shelter (green) inside a red arena ring.
@@ -1505,8 +1781,17 @@ local lastBossScan, boss = 0, nil
 RunService.RenderStepped:Connect(function()
 	if target and (not liveMonster(target) or distanceTo(target) > TARGET_DROP_RANGE) then setTarget(nil) end
 	if held then
+		S.pendingAttack = nil
 		local model = if held == "mouse" then target else nearestMonster()
 		if model then tryAttack(model) end
+	end
+	local pending = S.pendingAttack
+	if pending then
+		if os.clock() > pending.untilAt or not canTarget(pending.model) then S.pendingAttack = nil
+		elseif distanceTo(pending.model) <= reach() then
+			S.pendingAttack = nil
+			tryAttack(pending.model)
+		end
 	end
 	local now = os.clock()
 	if now - lastBossScan > 0.5 then
@@ -1550,3 +1835,390 @@ RunService.RenderStepped:Connect(function()
 		panelTimer.Visible = false
 	end
 end)
+
+------------------------------------------------------------------------------
+-- §42 Gathering Feel: gathering nodes are struck, not prompted. Left click /
+-- tap (or hold) a node, or the Attack button / ButtonR2 with no creature in
+-- reach: the held tool swings (IsleGestureLocal: pickaxe overhead strike,
+-- hatchet side chop, hoe chop; animate.client.lua auto-holds the best owned
+-- tool), and at the swing's impact frame (Data.Strike.IMPACT) one
+-- IsleAction("strike", <node host>) goes to the server, which validates and
+-- applies its own damage. The reply paints a pooled hitsplat and the node's
+-- overhead bar (YOUR progress: nodes are per player), the break hands the node
+-- to gather.client.lua to deplete locally (IsleNodeDepleted:Fire(node, s)).
+-- Fishing: a click casts (the rod's cast gesture holds); the fish bites after
+-- the server's delay (a "!" splat, the bar flashes "Bite!"); a click inside the
+-- window reels. The local cadence mirrors the server's (Data.Strike.SWING).
+------------------------------------------------------------------------------
+do
+	local GN = {next = 0, held = nil, target = nil, fish = nil, sent = 0, buffered = nil, nodes = {}, nearAt = -math.huge, near = nil}
+	S.gather = GN
+	local ST = Data and Data.Strike
+	GN.BUFFER = 0.25 -- QC L16: a tap this close to the next swing is kept and swung on time
+	local function bindable(name)
+		local e = ReplicatedStorage:FindFirstChild(name)
+		if not e then e = make("BindableEvent", ReplicatedStorage, {Name = name}) end
+		return e
+	end
+	GN.depleted = bindable("IsleNodeDepleted") -- (node, regrowSeconds): gather.client.lua depletes it locally
+	GN.skillEvent = bindable("IsleGatherSkill") -- (skill): the hotbar's context tool
+	-- QC L14: the tagged node list is cached (kept by the tag signals), not
+	-- fetched every frame.
+	do
+		local function add(node) if not table.find(GN.nodes, node) then table.insert(GN.nodes, node) end end
+		for _, node in ipairs(CollectionService:GetTagged("AetherNode")) do add(node) end
+		pcall(function()
+			CollectionService:GetInstanceAddedSignal("AetherNode"):Connect(add)
+			CollectionService:GetInstanceRemovedSignal("AetherNode"):Connect(function(node)
+				local i = table.find(GN.nodes, node)
+				if i then table.remove(GN.nodes, i) end
+			end)
+		end)
+	end
+	-- The node host (a BasePart carrying GatherNode) under a hit part, walking up
+	-- to its visual Model (≤ 6 levels).
+	function GN.hostOf(part)
+		local node = part
+		for _ = 1, 6 do
+			if not node or node == Workspace then return nil end
+			if node:IsA("BasePart") and type(node:GetAttribute("GatherNode")) == "string" then return node end
+			if node:IsA("Model") then
+				for _, child in ipairs(node:GetChildren()) do
+					if child:IsA("BasePart") and type(child:GetAttribute("GatherNode")) == "string" then return child end
+				end
+			end
+			node = node.Parent
+		end
+		return nil
+	end
+	function GN.resource(node)
+		return ST and node and ST.resource(node:GetAttribute("GatherNode")) or nil
+	end
+	-- Locally depleted (gather.client.lua's per-player state): seconds left, or 0.
+	function GN.respawnLeft(node)
+		local api = ReplicatedStorage:FindFirstChild("IsleNodeState")
+		if not api or not api:IsA("BindableFunction") then return 0 end
+		local ok, left = pcall(function() return api:Invoke(node) end)
+		return if ok and type(left) == "number" then left else 0
+	end
+	function GN.usable(node)
+		if not node or not node.Parent or not GN.resource(node) then return false end
+		local owner = node:GetAttribute("OwnerUserId")
+		return owner == nil or owner == player.UserId
+	end
+	function GN.reach(node)
+		local r = GN.resource(node)
+		return if r and r.skill == "Fishing" then ST.FISH_REACH else (ST and ST.REACH or 10)
+	end
+	-- Distance to the node's edge, as the server measures it.
+	function GN.distance(node)
+		local root = rootOf()
+		if not root or not node then return math.huge end
+		local half = math.min(6, math.max(node.Size.X, node.Size.Z) / 2)
+		return (root.Position - node.Position).Magnitude - half
+	end
+	-- The node under a screen point: the first thing the ray hits (a creature in
+	-- front wins: combat attacks it), else the node whose host lies closest to the
+	-- ray (small hosts such as crystal anchors stay easy to click).
+	local nodeRay = RaycastParams.new()
+	nodeRay.FilterType = Enum.RaycastFilterType.Exclude
+	function GN.pick(screenPosition)
+		local camera = Workspace.CurrentCamera
+		if not camera then return nil end
+		local ray = camera:ScreenPointToRay(screenPosition.X, screenPosition.Y)
+		nodeRay.FilterDescendantsInstances = {player.Character}
+		local hit = Workspace:Raycast(ray.Origin, ray.Direction * 300, nodeRay)
+		if hit then
+			if monsterFromPart(hit.Instance) then return nil end
+			local host = GN.hostOf(hit.Instance)
+			if host then return if GN.usable(host) then host else nil end
+		end
+		local best, bestT = nil, hit and (hit.Position - ray.Origin).Magnitude + 2 or math.huge
+		for _, node in ipairs(GN.nodes) do
+			if node:IsA("BasePart") and GN.usable(node) then
+				local rel = node.Position - ray.Origin
+				local t = rel:Dot(ray.Direction)
+				if t > 0 and t < bestT and t < 200 then
+					local off = (rel - ray.Direction * t).Magnitude
+					if off <= math.max(2, math.max(node.Size.X, node.Size.Y, node.Size.Z) / 2 + 0.5) then best, bestT = node, t end
+				end
+			end
+		end
+		return best
+	end
+	-- Nearest usable, standing node in reach (Attack button / gamepad). QC L14:
+	-- the scan runs at most 10 times a second (`fresh` forces one: a new press).
+	function GN.nearest(fresh)
+		local now = os.clock()
+		local cached = GN.near
+		if not fresh and now - GN.nearAt < 0.1 and (cached == nil or GN.usable(cached)) then return cached end
+		GN.nearAt = now
+		local best, bestD = nil, math.huge
+		for _, node in ipairs(GN.nodes) do
+			if node:IsA("BasePart") and GN.usable(node) then
+				local d = GN.distance(node)
+				if d <= GN.reach(node) and d < bestD and GN.respawnLeft(node) <= 0 then best, bestD = node, d end
+			end
+		end
+		GN.near = best
+		return best
+	end
+	function GN.caption(r) return r.skill .. " " .. r.level end
+	function GN.top(node) return node.Position + Vector3.new(0, math.min(4, node.Size.Y / 2) + 1, 0) end
+	local function gesture(name, node, mode)
+		local g = ReplicatedStorage:FindFirstChild("IsleGestureLocal")
+		if g then g:Fire(name, node, nil, mode) end
+	end
+	-- QC L15: one reused Highlight for node hit flashes (never one per node).
+	function GN.flash(model)
+		if not model or not model.Parent then return end
+		local h = GN.highlight
+		if not h then
+			h = make("Highlight", nil, {Name = "NodeHitFlash", FillColor = Color3.new(1, 1, 1), FillTransparency = 1, OutlineTransparency = 1,
+				DepthMode = Enum.HighlightDepthMode.Occluded, Enabled = false})
+			GN.highlight = h
+		end
+		GN.flashToken = (GN.flashToken or 0) + 1
+		local token = GN.flashToken
+		h.Adornee = model
+		h.Parent = Workspace.CurrentCamera
+		h.Enabled = true
+		h.FillTransparency = 0.35
+		TweenService:Create(h, TweenInfo.new(0.18), {FillTransparency = 1}):Play()
+		task.delay(0.2, function()
+			if GN.flashToken ~= token then return end
+			h.Enabled = false
+			h.Adornee = nil
+		end)
+	end
+	function GN.endFish()
+		local fish = GN.fish
+		GN.fish = nil
+		if fish then gesture("release") end
+		return fish
+	end
+	-- QC L1: the server pushes the bite when it happens (IsleStrike "bite").
+	function GN.onBite(kind, node, window)
+		local fish = GN.fish
+		if kind ~= "bite" or not fish or fish.node ~= node or fish.biting then return end
+		fish.biting = true
+		window = tonumber(window) or (ST and ST.FISH.window) or 1.2
+		SP.show(GN.top(node), {kind = "text", text = "!", ink = gold, size = 30}, node)
+		OB.touchNode(node, 1, 1, "Bite!")
+		task.delay(window + 0.35, function()
+			if GN.fish ~= fish then return end
+			GN.endFish()
+			toast("It got away.")
+			OB.release(node)
+		end)
+	end
+	do
+		local function bindBite(remote)
+			if GN.biteBound or not remote or not remote:IsA("RemoteEvent") then return end
+			GN.biteBound = true
+			remote.OnClientEvent:Connect(GN.onBite)
+		end
+		bindBite(ReplicatedStorage:FindFirstChild("IsleStrike"))
+		if not GN.biteBound then
+			pcall(function() ReplicatedStorage.ChildAdded:Connect(function(c) if c.Name == "IsleStrike" then bindBite(c) end end) end)
+		end
+	end
+	function GN.onReply(node, reply)
+		if type(reply) ~= "table" or not reply.strike then return end
+		local r = GN.resource(node)
+		if not r then return end
+		if reply.ok == false then
+			if reply.reason == "cadence" then GN.next = os.clock() + math.max(0.05, tonumber(reply.wait) or 0.1) return end
+			if reply.reason == "regrowing" and tonumber(reply.regrow) then GN.depleted:Fire(node, tonumber(reply.regrow)) end
+			if reply.reason == "early" then GN.endFish() end
+			if reply.reason == "harvest" and tonumber(reply.hp) and tonumber(reply.max) then OB.touchNode(node, tonumber(reply.hp), tonumber(reply.max), GN.caption(r)) end
+			-- The server pushed refusals with a message as a snapshot (chat + toast); others toast here.
+			if reply.message and not reply.pushed then toast(reply.message) end
+			if reply.reason ~= "busy" then GN.target, GN.buffered = nil, nil end
+			return
+		end
+		if reply.cast then
+			-- No bite time is sent (QC L1): wait for the server's push; give up
+			-- after the longest bite plus the window.
+			local F = ST.FISH
+			local fish = {node = node, at = os.clock()}
+			GN.fish = fish
+			OB.touchNode(node, 0, 1, "Waiting…")
+			task.delay(F.biteMax + F.window + F.late + 0.5, function()
+				if GN.fish ~= fish or fish.biting then return end
+				GN.endFish()
+				toast("It got away.")
+				OB.release(node)
+			end)
+			return
+		end
+		if tonumber(reply.dmg) then
+			SP.show(GN.top(node), HD.splatStyle({amount = reply.dmg}, Theme), node)
+			GN.flash(node.Parent and node.Parent:IsA("Model") and node.Parent or node)
+		end
+		if reply.broken then
+			GN.endFish()
+			OB.touchNode(node, 0, math.max(1, tonumber(reply.max) or 1), GN.caption(r))
+			OB.release(node)
+			GN.depleted:Fire(node, tonumber(reply.regrow) or r.respawn)
+			-- QC L13: a break ends the hold; nothing auto-retargets another node.
+			GN.target, GN.held, GN.buffered = nil, nil, nil
+		elseif tonumber(reply.hp) and tonumber(reply.max) then
+			OB.touchNode(node, tonumber(reply.hp), tonumber(reply.max), GN.caption(r))
+		end
+	end
+	-- Sends one strike (yields on the remote in its own thread).
+	function GN.send(node)
+		local remote = ReplicatedStorage:FindFirstChild("IsleAction")
+		if not remote or not node.Parent then return end
+		GN.sent += 1
+		task.spawn(function()
+			local ok, reply = pcall(function() return remote:InvokeServer("strike", node) end)
+			if ok then GN.onReply(node, reply) end
+		end)
+	end
+	-- QC M2: out of reach, walk up along the overlay's pathfinding route
+	-- (S.walkPath: ≤ S.WALK_MAX studs, every waypoint over ground, else a "Too
+	-- far" / "can't reach" toast) and swing on arrival (IsleAttackLocal). Never a
+	-- straight MoveTo across the void.
+	function GN.walkUp(node)
+		local walk = ReplicatedStorage:FindFirstChild("IsleWalkLocal")
+		if not walk or not walk:IsA("BindableFunction") then toast("Too far: walk closer first.") return end
+		task.spawn(function() pcall(function() walk:Invoke("node", node, GN.reach(node)) end) end)
+	end
+	function GN.stopWalk()
+		local walk = ReplicatedStorage:FindFirstChild("IsleWalkLocal")
+		if walk and walk:IsA("BindableFunction") then pcall(function() walk:Invoke("cancel") end) end
+	end
+	-- One swing at `node` (or a walk into reach first). `auto`: the hold loop or
+	-- a buffered tap (never walks: QC L13). Returns true when a swing started.
+	function GN.strike(node, auto)
+		if not ST or not alive() or not GN.usable(node) or player:GetAttribute("IslandBuilding") == true then return false end
+		local r = GN.resource(node)
+		local now = os.clock()
+		if GN.distance(node) > GN.reach(node) then
+			if not auto and not GN.held then GN.walkUp(node) end
+			return false
+		end
+		if not auto then GN.stopWalk() end
+		if r.skill == "Fishing" then
+			local fish = GN.fish
+			if fish and fish.node == node then
+				-- Reel: the click is the strike (no wind-up), early or not; the server judges.
+				GN.fish = nil
+				gesture("release")
+				GN.send(node)
+				return true
+			end
+			if now < GN.next then return false end
+			GN.next = now + ST.FISH.gap
+			gesture("fish", node, "hold")
+			GN.skillEvent:Fire(r.skill)
+			GN.send(node)
+			return true
+		end
+		if GN.respawnLeft(node) > 0 then return false end
+		if now < GN.next then
+			-- QC L16: a tap just before the swing is ready is kept, not dropped.
+			if GN.next - now <= GN.BUFFER then GN.buffered = node end
+			return false
+		end
+		GN.buffered = nil
+		-- QC H1: one gathering clock; striking another node drops a cast.
+		local fish = GN.endFish()
+		if fish then OB.release(fish.node) end
+		GN.next = now + (ST.SWING[r.skill] or 0.7)
+		GN.target = node
+		gesture(ST.GESTURE[r.skill] or "mine", node)
+		GN.skillEvent:Fire(r.skill)
+		task.delay(ST.IMPACT[r.skill] or 0.4, function() GN.send(node) end)
+		return true
+	end
+	-- QC M4: with a line in the water, R2 / the Attack button reel that spot.
+	function GN.padTarget()
+		local fish = GN.fish
+		if fish and GN.usable(fish.node) then return fish.node end
+		return GN.nearest(true)
+	end
+	-- Input: creatures stay combat's (the handlers above); a node takes the click
+	-- when no creature is under the cursor / in reach.
+	UserInputService.InputBegan:Connect(function(input, processed)
+		if processed then return end
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			if pick(input.Position) then return end
+			local node = GN.pick(input.Position)
+			if node then
+				S.pendingAttack = nil
+				GN.target = node
+				GN.strike(node)
+				GN.held = "mouse"
+			end
+		elseif input.KeyCode == Enum.KeyCode.ButtonR2 then
+			if nearestMonster(true) then return end
+			local node = GN.padTarget()
+			if node then GN.strike(node) end
+			GN.held = "pad"
+		end
+	end)
+	UserInputService.InputEnded:Connect(function(input)
+		if (input.UserInputType == Enum.UserInputType.MouseButton1 and GN.held == "mouse")
+			or (input.KeyCode == Enum.KeyCode.ButtonR2 and GN.held == "pad") then
+			GN.held = nil
+		end
+	end)
+	-- QC L13: a release the window never sees (alt-tab) must not leave the hold on.
+	pcall(function() UserInputService.WindowFocusReleased:Connect(function() GN.held, GN.buffered = nil, nil end) end)
+	UserInputService.TouchTapInWorld:Connect(function(position, processed)
+		if processed or pick(position) then return end
+		local node = GN.pick(position)
+		if node then GN.strike(node) end
+	end)
+	if attackButton then
+		attackButton.InputBegan:Connect(function(input)
+			if input.UserInputType ~= Enum.UserInputType.Touch and input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+			if nearestMonster(true) then return end
+			local node = GN.padTarget()
+			if node then GN.strike(node) end
+			GN.held = "button"
+		end)
+		attackButton.InputEnded:Connect(function(input)
+			if (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1) and GN.held == "button" then GN.held = nil end
+		end)
+	end
+	-- §34 menu / overlay: IsleAttackLocal:Fire(node host) strikes it (walking up first).
+	local attackLocal = ReplicatedStorage:FindFirstChild("IsleAttackLocal")
+	if attackLocal then
+		attackLocal.Event:Connect(function(model)
+			if model == "cancel" then return end
+			if typeof(model) == "Instance" and model:IsA("BasePart") and GN.resource(model) then
+				GN.target = model
+				GN.strike(model)
+			end
+		end)
+	end
+	-- Holding keeps swinging at the cadence at the node it started on (the pad
+	-- and the button find the nearest standing node only until a swing starts);
+	-- a buffered tap swings when the cadence allows.
+	RunService.RenderStepped:Connect(function()
+		local now = os.clock()
+		local buffered = GN.buffered
+		if buffered and now >= GN.next then
+			GN.buffered = nil
+			if GN.usable(buffered) then GN.strike(buffered, true) end
+		end
+		if not GN.held or GN.fish then return end
+		local node = if GN.held == "mouse" then GN.target else (GN.target or GN.nearest())
+		if node and GN.resource(node) and GN.resource(node).skill ~= "Fishing" and now >= GN.next then GN.strike(node, true) end
+	end)
+end
+
+-- Test / tooling handle (no gameplay effect): the splat and bar pools.
+do
+	local api = Instance.new("BindableFunction")
+	api.Name = "IsleCombatApi"
+	api.OnInvoke = function(method)
+		if method == "state" then return S end
+		return nil
+	end
+	api.Parent = player
+end

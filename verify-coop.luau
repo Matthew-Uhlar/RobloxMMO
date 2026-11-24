@@ -142,14 +142,16 @@ local function cmd(p,verb,arg,extra)
 	clock+=6; utc+=2
 	return p.server.objects.RemoteFunction.OnServerInvoke(p,verb,arg,extra)
 end
-local function prompt(groupId,resource,distance)
-	return {Enabled=true,MaxActivationDistance=10,IsDescendantOf=function(_,parent) return parent==workspace end,
-		GetAttribute=function(_,key) return ({CoopId=groupId,IsleCoopResource=resource})[key] end,
-		FindFirstAncestorWhichIsA=function() return {Position=Vector3.new(distance or 0,0,0)} end}
+-- §42 (owner decision): the crew stores are struck nodes; the Strike path's
+-- break invokes ServerStorage.IsleCoopStrike("credit", player, node).
+local function supplyNode(groupId,resource,distance)
+	return {IsDescendantOf=function(_,parent) return parent==workspace end,Position=Vector3.new(distance or 0,0,0),
+		GetAttribute=function(_,key) return ({CoopId=groupId,IsleCoopResource=resource,GatherNode=resource,StrikeKind="crew"})[key] end}
 end
 local function gather(p,groupId,resource,distance)
 	clock+=6; utc+=2
-	p.server.services.ProximityPromptService.PromptTriggered:Fire(prompt(groupId,resource,distance),p)
+	local hook=p.server.objects.BindableFunction
+	p.lastCredit=table.pack(hook.OnInvoke("credit",p,supplyNode(groupId,resource,distance)))
 	return p.last
 end
 local count=0
@@ -625,7 +627,7 @@ end
 local function fire(p,groupId,resource,dt)
 	clock+=dt; utc+=dt
 	p.last=nil
-	p.server.services.ProximityPromptService.PromptTriggered:Fire(prompt(groupId,resource),p)
+	p.server.objects.BindableFunction.OnInvoke("credit",p,supplyNode(groupId,resource))
 	return p.last
 end
 local G1,G2=player(300),player(301)
@@ -635,6 +637,20 @@ main.refresh(); main.refresh()
 eq(fire(G1,"300","Timber",6).message,"+1 shared Timber • for building and Homestead XP","shared node gather")
 check(fire(G1,"300","Timber",1.5).message:find("regrowing",1,true)~=nil,"shared node regrows per member")
 -- Prompt spam: 100 triggers in 20 s, no DataStore write until the flush.
+-- §42 (owner decision): the strike path's "check" (before any damage) credits nothing.
+do
+	clock+=6; utc+=6
+	local hook=G1.server.objects.BindableFunction
+	local okCheck=hook.OnInvoke("check",G1,supplyNode("300","Herb"))
+	eq(okCheck,true,"crew store check accepts a member")
+	local blocked,why=hook.OnInvoke("check",G2,supplyNode("999","Herb"))
+	check(blocked==false and type(why)=="string","another crew's store is refused before any damage")
+	eq(hook.OnInvoke("check",G1,supplyNode("300","Herb")),true,"a check spends neither the regrowth nor the 1 s gate")
+	eq(data.group_300.supplies.Herb or 0,0,"and credits nothing")
+	local coopSrc=fs.readFile("coop.server.lua")
+	check(not coopSrc:find("PromptTriggered:Connect",1,true),"coop.server.lua takes no supply prompt any more")
+	check(coopSrc:find("return ok,message,PROMPT_REGROW",1,true)~=nil,"the credit names its regrowth (PROMPT_REGROW)")
+end
 main.refresh(); main.refresh()
 reads,writes=0,0
 local got=0
