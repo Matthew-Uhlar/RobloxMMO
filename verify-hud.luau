@@ -223,6 +223,19 @@ end
 -- Part B: lanes
 ------------------------------------------------------------------------------
 local SIZES = { { 1366, 768, false }, { 1366, 710, false }, { 1280, 650, false }, { 1024, 768, true }, { 844, 390, true }, { 730, 303, true } }
+-- Held-item name (hotbar.client.lua HeldName) sits above the action bar, never on it.
+do
+	local hb = T.HOTBAR
+	for _, case in ipairs(SIZES) do
+		local w, h, touch = case[1], case[2], case[3]
+		local L = T.hudLayout(w, h, { touch = touch })
+		local nameBottom = h - (hb.bottom + L.hotbar.h + hb.reserve + 4)
+		assert(nameBottom <= L.action.y, "held-item name sits above the action bar at " .. w .. "x" .. h)
+		checks += 1
+	end
+	assert(fs.readFile("hotbar.client.lua"):find("STYLE.bottom + barHeight + STYLE.reserve + 4", 1, true), "hotbar name lift clears the reserve band")
+	checks += 1
+end
 local function overlaps(a, b) return a.x < b.x + b.w and b.x < a.x + a.w and a.y < b.y + b.h and b.y < a.y + a.h end
 local function onScreen(a, w, h) return a.x >= 0 and a.y >= 0 and a.x + a.w <= w + 0.5 and a.y + a.h <= h + 0.5 end
 local function show(r) return string.format("(%d,%d %dx%d)", r.x, r.y, r.w, r.h) end

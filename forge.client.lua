@@ -45,8 +45,8 @@ pcall(function() mobile = UserInputService.TouchEnabled == true and UserInputSer
 local LIMITS = if mobile then {
 	templates = 24, templateTriangles = 30000, instances = 400, placedTriangles = 150000, failures = 3,
 } else {
-	templates = 64, -- distinct (shape, tint) EditableMeshes kept alive (§30: island hulls, bridges, landmarks); idle ones are LRU-evicted
-	templateTriangles = 72000, -- triangles across all cached EditableMeshes
+	templates = 72, -- distinct (shape, tint) EditableMeshes kept alive (§30: island hulls, bridges, landmarks; §40: +8 for the town buildings); idle ones are LRU-evicted
+	templateTriangles = 90000, -- triangles across all cached EditableMeshes (§40: whole-building meshes are ~2k each)
 	instances = 900, -- placed MeshPart clones near the player
 	placedTriangles = 600000, -- triangles across all placed clones
 	failures = 3, -- template build failures before the forge stops trying
@@ -91,6 +91,11 @@ local function lookup(shapeName)
 	return nil
 end
 
+-- Buildings (§40, catalog kind "building"): whole houses forge nearer on
+-- phones, and furnished interiors (meta `interior`) only near the player (they
+-- are seen through a door or a window), so a town never starves the template
+-- budget of the props, bridges and hulls around it.
+local BUILDING_RADIUS = if mobile then {shell = 120, interior = 14} else {shell = BUILD_RADIUS, interior = 120}
 -- Build radius for a tagged part (catalog `range` for far-seen shapes).
 local rangeCache = setmetatable({}, {__mode = "k"})
 local function buildRadius(part)
@@ -100,6 +105,7 @@ local function buildRadius(part)
 	local shapeName = part:GetAttribute("Shape")
 	local data = type(shapeName) == "string" and lookup(shapeName)
 	if data and type(data.range) == "number" and data.range > BUILD_RADIUS then radius = math.min(data.range, RANGE_CAP) end
+	if data and data.kind == "building" then radius = math.min(radius, if data.interior then BUILDING_RADIUS.interior else BUILDING_RADIUS.shell) end
 	rangeCache[part] = radius
 	return radius
 end
@@ -670,7 +676,9 @@ end
 -- RECLAIM_MARGIN studs farther than the waiting part: 100, phones 40) gives its clones back to
 -- their primitives, goes idle and is LRU-evicted for the nearer shape. Far
 -- hulls and landmarks therefore yield to what the player is walking past.
-local RECLAIM_MARGIN = if mobile then 40 else 100
+-- §40: phones 24 (was 40): a town near an island centre holds a few more
+-- templates, so a far sign or bridge must give way sooner.
+local RECLAIM_MARGIN = if mobile then 24 else 100
 reclaim = function(starved, origin)
 	local users = {}
 	for part, record in pairs(placed) do
@@ -874,7 +882,7 @@ if MeshForgeTest then
 	MeshForgeTest.forge = {stats = stats, limits = LIMITS, templates = templates, rescan = rescan, consider = consider, step = step,
 		templateTint = templateTint, kitShapes = SIGN_KIT_SHAPES, kitMetals = KIT_METALS, clothPalette = CLOTH_PALETTE, variants = VARIANTS,
 		cornerNormals = cornerNormals, styleSign = styleSign, stopReason = function() return stopReason end,
-		radii = {build = BUILD_RADIUS, unload = UNLOAD_RADIUS}, mobile = mobile, backoff = backoff, registry = registry, final = final, placed = placed,
+		radii = {build = BUILD_RADIUS, unload = UNLOAD_RADIUS, building = BUILDING_RADIUS}, buildRadius = buildRadius, mobile = mobile, backoff = backoff, registry = registry, final = final, placed = placed,
 		chart = {visual = chartVisual, accept = chartAccept, release = chartRelease, tokens = chartTokens, pinCap = CHART_PIN_CAP, reserve = CHART_RESERVE},
 		-- Final mesh box for a tagged part, without forging: size, CFrame, kind.
 		describe = function(part)

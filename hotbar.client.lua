@@ -256,7 +256,10 @@ local function layout()
 		b.Size = UDim2.fromOffset(size, size)
 		b.Position = UDim2.fromOffset(col * (size + STYLE.gap), row * (size + STYLE.gap))
 	end
-	nameTag.Position = if centre then UDim2.new(0, centre, 1, -(STYLE.bottom + barHeight + 6)) else UDim2.new(0.5, 0, 1, -(STYLE.bottom + barHeight + 6))
+	-- The held-item name sits above the action bar (Health / Defense / Mana),
+	-- which occupies the STYLE.reserve band directly over the hotbar.
+	local nameLift = STYLE.bottom + barHeight + STYLE.reserve + 4
+	nameTag.Position = if centre then UDim2.new(0, centre, 1, -nameLift) else UDim2.new(0.5, 0, 1, -nameLift)
 	picker.Position = UDim2.new(0.5, 0, 1, -(STYLE.bottom + barHeight + STYLE.reserve + 4))
 	local shown = S.loaded and player:GetAttribute("IslandBuilding") ~= true and not talking()
 	bar.Visible = shown

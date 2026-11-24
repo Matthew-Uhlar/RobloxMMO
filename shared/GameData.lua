@@ -806,15 +806,18 @@ end
 -- effect: station={...} home crafting prompts, perk={stat=v},
 -- accessorySlots=n, workerHaste=fraction, portal={regionId...} (attunable).
 ------------------------------------------------------------------------------
-Data.TERRACE_OFFSET = {x=-33,z=0}
+-- §40 (spread): the add-ons stand in districts out on the big island
+-- (terrace west at r52, garden north-west, worker yard south-east, lookout
+-- north); Island.migrate relocates any decoration on their new ground.
+Data.TERRACE_OFFSET = {x=-52,z=0}
 Data.Hotspots = {
-	{id="Bench",name="Workshop Bench",x=-27,z=5.2},
-	{id="Hearth",name="Kitchen Hearth",x=-33,z=7.4},
-	{id="Storage",name="Storage Nook",x=-39,z=5.2},
-	{id="Trophy",name="Trophy Alcove",x=-39,z=-5.2},
-	{id="Garden",name="Garden Plot",x=-33,z=-7.4},
-	{id="Dock",name="Surveyor Dock",x=-27,z=-5.2},
-	{id="Portal",name="Portal Circle",x=-36,z=0},
+	{id="Bench",name="Workshop Bench",x=-46,z=5.2},
+	{id="Hearth",name="Kitchen Hearth",x=-52,z=7.4},
+	{id="Storage",name="Storage Nook",x=-58,z=5.2},
+	{id="Trophy",name="Trophy Alcove",x=-58,z=-5.2},
+	{id="Garden",name="Garden Plot",x=-52,z=-7.4},
+	{id="Dock",name="Surveyor Dock",x=-46,z=-5.2},
+	{id="Portal",name="Portal Circle",x=-55,z=0},
 }
 Data.HotspotById = {}
 for i, h in ipairs(Data.Hotspots) do h.index = i; Data.HotspotById[h.id] = h end
@@ -1271,16 +1274,16 @@ do
 		{name="terrace bridge",x1=-20,z1=-4,x2=-16,z2=4},
 		{name="terrace sign",x1=-15.5,z1=-10,x2=-14.5,z2=-2},
 		-- Home islands (§27): the add-ons now stand on the big island.
-		{name="terrace path",x1=-22.5,z1=-3,x2=-19.5,z2=3},
-		{name="lookout path",x1=-3,z1=19.5,x2=3,z2=22.5},
+		{name="terrace path",x1=-41.5,z1=-3,x2=-19.5,z2=3},
+		{name="lookout path",x1=-3,z1=19.5,x2=3,z2=39.5},
 	}
 	-- Circular protected zones (x, z centre and r in studs): a cell is blocked
 	-- when its square (shrunk by BRUSH) reaches inside the circle.
 	Island.ProtectedCircles = {
-		{name="worker yard",x=26,z=-25,r=18},          -- yard r12 + its ramp
-		{name="Builder's Terrace",x=-33,z=0,r=11.5},
-		{name="Verdant Garden",x=-28.3,z=28.3,r=14.5},
-		{name="lookout deck",x=0,z=29,r=7.5},
+		{name="worker yard",x=40,z=-38,r=19},          -- yard r12 + its ramp (§40: moved out)
+		{name="Builder's Terrace",x=-52,z=0,r=11.5},
+		{name="Verdant Garden",x=-40,z=40,r=14.5},
+		{name="lookout deck",x=0,z=46,r=7.5},
 		{name="survey stake",x=10,z=-21,r=2},
 	}
 	Island.Props = {

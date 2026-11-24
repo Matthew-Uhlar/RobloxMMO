@@ -343,6 +343,18 @@ for i = 1, 12 do
 	p:SetAttribute("Shape", "Lantern")
 	table.insert(sites, p)
 end
+-- §40: 70 buildings (8 window panes each) in a row along +X; their hosts are
+-- also GlowSite "window" sites for the pooled spill lights.
+local buildings = {}
+for i = 1, 70 do
+	local host = part("Roofed house " .. i, Vector3.new(i * 14, 5, -20))
+	host.Size = Vector3.new(12, 10, 10)
+	host:SetAttribute("GlowSite", "window")
+	local panes = {}
+	for k = 1, 8 do table.insert(panes, string.format("%.2f,%.2f,%.2f,1.5,1.9,0", -4 + k, -1.5, -5.17)) end
+	host:SetAttribute("WindowGlow", table.concat(panes, ";"))
+	table.insert(buildings, host)
+end
 -- An unmanaged world (monster glow, characters) is ignored.
 local outside = part("Monster", Vector3.new(1, 1, 1), ws)
 local monsterGlow = roblox.Instance.new("PointLight"); monsterGlow.Parent = outside
@@ -429,11 +441,53 @@ ok(pool ~= nil, "glow pool created")
 local glowing = 0
 for _, host in pool:GetChildren() do local l = host:FindFirstChildOfClass("PointLight"); if l.Enabled then glowing += 1 end; eq(l.Shadows, false, "pool lights cast no shadows") end
 ok(glowing >= 1 and glowing <= L.Tiers.High.pool, "lantern meshes glow, capped (" .. glowing .. ")")
+-- §40 lit windows: after dusk the nearest buildings show warm panes, capped.
+do
+	local W = D.windows
+	eq(#W.list, #buildings, "every building with WindowGlow is registered")
+	local folder = ws:FindFirstChild("IsleWindowGlow")
+	ok(folder ~= nil, "window pane pool created")
+	local shown, perBuilding = 0, {}
+	for _, pane in folder:GetChildren() do
+		if pane.Transparency < 1 then
+			shown += 1
+			eq(pane.Material, roblox.Enum.Material.Neon, "panes glow (Neon)")
+			ok(not pane.CanCollide and not pane.CastShadow and not pane.CanQuery, "panes never collide, cast shadows or take queries")
+			ok(pane:FindFirstChildWhichIsA("Light") == nil, "panes carry no light (the light budget is untouched)")
+		end
+	end
+	local cap = L.WindowTiers.High
+	ok(shown > 0 and shown <= cap.panes, "High: lit panes within the cap (" .. shown .. ")")
+	eq(shown, W.lastPanes, "every chosen pane is shown")
+	-- The nearest building's lit panes sit on its front face.
+	local first = buildings[1]
+	local seen = 0
+	for _, pane in folder:GetChildren() do
+		if pane.Transparency < 1 then
+			local q = first.CFrame:PointToObjectSpace(pane.CFrame.Position)
+			if math.abs(q.X) < 6 and math.abs(q.Z + 5.2) < .1 and math.abs(q.Y + 1.5) < .01 then seen += 1 end
+		end
+	end
+	ok(seen >= 1 and seen <= 8, "the nearest house lights its own panes (" .. seen .. ")")
+	-- Selection rules: nearest first, building and pane caps, nothing by day.
+	local list = {}
+	for i = 1, 100 do table.insert(list, {pos = Vector3.new(i, 0, 0), count = 8}) end
+	local chosen, panes = L.selectWindows(list, Vector3.zero, "Balanced", true)
+	ok(#chosen <= L.WindowTiers.Balanced.buildings and panes <= L.WindowTiers.Balanced.panes and chosen[1] == 1, "Balanced window caps, nearest first")
+	eq(#(L.selectWindows(list, Vector3.zero, "High", false)), 0, "no lit windows by day")
+	eq(#L.parseWindows("1,2,3,1,1,0;bad;4,5,6,0,1,0;7,8,9,1,1,nan"), 1, "malformed panes are skipped")
+	for tier, c in L.WindowTiers do ok(c.panes > 0 and c.buildings > 0 and c.range > 0, tier .. " window tier") end
+end
 -- Far away, everything culls.
 root.CFrame = CFrame.new(Vector3.new(-5000, 2, 5000))
 attrs.IsleRegionHere = "Skyways"
 run(1)
 eq(litCount(), 0, "distant lights are culled")
+do
+	local shown = 0
+	for _, pane in ws:FindFirstChild("IsleWindowGlow"):GetChildren() do if pane.Transparency < 1 then shown += 1 end end
+	eq(shown, 0, "distant windows go dark (panes back to the pool)")
+end
 -- Region change blends smoothly toward Gloomhollow.
 root.CFrame = CFrame.new(Vector3.new(0, 2, 0))
 attrs.IsleRegionHere = "Gloomhollow"
