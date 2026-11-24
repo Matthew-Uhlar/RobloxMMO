@@ -1377,11 +1377,59 @@ local slots,homes={},{}
 local homeTerrace={}
 -- Free-form island placements (attached at the end of this script, see homePlacement.attach).
 local homePlacement={}
+-------------------------------------------------------------------------------
+-- Travel beacons (docs/DEPTH-CONTRACT.md §44). Every beacon a player uses to
+-- travel keeps its prompt post (name, size, place, prompt and anchors as
+-- before) and becomes a forged dais: travelBeacon() gives the post the
+-- TravelBeacon / TravelBeaconBasalt mesh in a declared ShapeBox (5 x 5.6 x 5
+-- from the ground up) that covers the post and its plinth; the forge hides the
+-- post locally once the mesh exists. The floating aether crystal, armillary
+-- rings, rising motes, locked / lit state and the activation flare are drawn
+-- by beacons.client.lua from these attributes (no extra static parts):
+--   TravelBeacon (string)        kind: region | return | home | crew | ferry | vent
+--   TravelBeaconHover (Vector3)  world point the crystal / rings float at
+--   TravelBeaconRegion (string)  destination region: dark until the player can
+--                                go there (region open or warp learned)
+--   TravelBeaconNeeds (string)   "crew": dark until the player is in a crew
+--   TravelBeaconFlare (number)   bumped on every successful use (with
+--                                TravelBeaconFlareBy = UserId): the flare + whoosh
+-- Basalt daises stand on the dark isles; the dais channels take the Tint.
+-------------------------------------------------------------------------------
+local BEACON_BOX=V(5,5.6,5)
+local BASALT_ISLES={["Brassfall Quarry"]=true,["Cinder Shelf"]=true,["Gloomhollow Caverns"]=true,["Tempest Spire"]=true,["The Shattered Crown"]=true}
+local function travelBeacon(post,ground,accent,kind,opts)
+	opts=opts or {}
+	local basalt=BASALT_ISLES[islandModel(post).Name]==true
+	meshSlot(post,if basalt then "TravelBeaconBasalt" else "TravelBeacon",accent)
+	local at=post.CFrame.Position
+	post:SetAttribute("ShapeBox",BEACON_BOX)
+	post:SetAttribute("ShapeBoxOffset",post.CFrame:ToObjectSpace(CFrame.new(at.X,ground+BEACON_BOX.Y/2,at.Z)).Position)
+	post:SetAttribute("TravelBeacon",kind)
+	post:SetAttribute("TravelBeaconHover",V(at.X,ground+3,at.Z))
+	if opts.region then post:SetAttribute("TravelBeaconRegion",opts.region) end
+	if opts.needs then post:SetAttribute("TravelBeaconNeeds",opts.needs) end
+	Tags:AddTag(post,"TravelBeacon")
+	return post
+end
+-- A beacon's prompt post standing on `ground` (its old part, kept as the fallback).
+local function beaconPost(parent,name,ground,center,size,accent,kind,opts)
+	local post=block(parent,name,center,size,accent,GL,false)
+	return travelBeacon(post,ground,accent,kind,opts)
+end
+-- A successful beacon trip is known fast travel (Aether Mote pickup checks)
+-- and flares the beacon for every client nearby.
+local function flare(trigger,player)
+	if trigger:GetAttribute("TravelBeacon")==nil then return end
+	trigger:SetAttribute("TravelBeaconFlareBy",player.UserId)
+	trigger:SetAttribute("TravelBeaconFlare",(tonumber(trigger:GetAttribute("TravelBeaconFlare")) or 0)+1)
+end
 local function warp(player,trigger,destination)
 	local character=player.Character
 	local root=character and character:FindFirstChild("HumanoidRootPart")
 	local hum=character and character:FindFirstChildOfClass("Humanoid")
 	if root and hum and hum.Health>0 and (trigger.CFrame.Position-root.Position).Magnitude<=12 then
+		player:SetAttribute("FastTravelAt",os.clock()) -- known fast travel (Aether Mote pickup checks)
+		flare(trigger,player)
 		character:PivotTo(CFrame.new(destination))
 		root.AssemblyLinearVelocity=Vector3.zero
 	end
@@ -1393,7 +1441,7 @@ local SKYREACH_LANDING = SR+V(-52,4,0)
 anchor(skyreach,"Waypoint_Entrance_Skyreach",SKYREACH_LANDING-V(0,4,0),SR)
 -- Assigned with the regional beacons below: pcall + table check + denial notice.
 local regionTravel
-local launch = sculpture(mine,"Charter beacon",Q+V(58,2,6),"Lantern",1.2)
+local launch = beaconPost(mine,"Charter beacon",Q.Y,Q+V(58,2.8,6),V(1.6,4,1.6),brass,"region",{region="Skyreach"})
 sign(mine,Q+V(54,0,-4),"Skyreach passage","GUILD CHARTER REQUIRED",brass,90,9,{arrows={{label="Skyreach",to=SR},{label="Brassfall Quarry",to=Q}}})
 anchor(mine,"Waypoint_SkyreachCharter",Q+V(52,0,8),Q+V(58,0,6))
 local launchPrompt=prompt(launch,"Ascend to Skyreach","Guild charter required")
@@ -1401,7 +1449,7 @@ launchPrompt:SetAttribute("IsleWarpRegion","Skyreach")
 launchPrompt.Triggered:Connect(function(player)
 	regionTravel(player,launch,"Skyreach",SKYREACH_LANDING)
 end)
-local descent = sculpture(skyreach,"Quarry beacon",SR+V(-46,2,-10),"Lantern",1.1)
+local descent = beaconPost(skyreach,"Quarry beacon",SR.Y,SR+V(-46,2.8,-10),V(1.6,4,1.6),mint,"return")
 prompt(descent,"Return to quarry","Brassfall").Triggered:Connect(function(player)
 	warp(player,descent,Q+V(50,4,14))
 end)
@@ -1418,8 +1466,7 @@ for i,o in ipairs({V(-30,0,30),V(-20,0,-40),V(30,0,48),V(50,0,-2),V(-4,0,52)}) d
 for i,o in ipairs({V(-40,0,24),V(24,0,-44)}) do outcrop(skyreach,SR+o,1.2,i) end
 for _,o in ipairs({V(-40,0,6),V(-10,0,20)}) do lamp(skyreach,SR+o) end
 end
-local returnPost=block(harbor,"Homeward beacon",V(66,2,64),V(2,4,2),mint,GL,false)
-meshSlot(returnPost,"WarpBeacon",mint)
+local returnPost=beaconPost(harbor,"Homeward beacon",0,V(66,2,64),V(2,4,2),mint,"home")
 sign(harbor,V(71,0,58),"Homeward","WAYFARER TRANSIT   /   RETURN",mint,90,9)
 anchor(hub,"Waypoint_Homeward",V(62,0,60),V(66,0,64))
 prompt(returnPost,"Travel home","Homeward beacon").Triggered:Connect(function(player)
@@ -1661,9 +1708,7 @@ local function settle(player)
 	if player.Character then task.spawn(land,player.Character) end
 	windpine(m,center+V(-6,0,0),1,player.UserId)
 	sign(m,center+V(6,0,-5),"Wayfarer's Rest","HOME   /   CUT WINDPINE TO BEGIN",mint,0,9)
-	local gatePost=block(m,"Quay beacon",center+V(0,2,-11),V(2,4,2),mint,GL,false)
-	meshSlot(gatePost,"WarpBeacon",mint)
-	for _,x in ipairs({-2.3,2.3}) do gem(m,"Transit fins",center+V(x,2,-11),V(.65,4,.65),brass,0) end
+	local gatePost=beaconPost(m,"Quay beacon",center.Y,center+V(0,2,-11),V(2,4,2),mint,"return")
 	prompt(gatePost,"Travel to hub","Compass Quay").Triggered:Connect(function(user)
 		if user==player then warp(user,gatePost,HUB_ARRIVAL) end
 	end)
@@ -1853,8 +1898,7 @@ end
 local CREW_R=46
 local K=1.6 -- crew haven layout scale (wave 4)
 local sharedHomes,sharedPlayers,sharedSlots,sharedConnections={},{},{},{}
-local sharedBeacon=block(harbor,"Crew beacon",V(44,2,68),V(2,4,2),teal,GL,false)
-meshSlot(sharedBeacon,"WarpBeacon",teal)
+local sharedBeacon=beaconPost(harbor,"Crew beacon",0,V(44,2,68),V(2,4,2),teal,"crew",{needs="crew"})
 sign(harbor,V(39,0,62),"Crew Haven","CO-OP / FORM A CREW IN THE ATLAS",mint,90,9)
 anchor(hub,"Waypoint_CrewHaven",V(48,0,64),V(44,0,68))
 anchor(hub,"NPC_Registrar",V(40,0,72),V(48,0,64))
@@ -1875,8 +1919,7 @@ local function makeShared(groupKey,groupId,isPreview)
 	tier(model,"Crew knoll",center+V(-22,0,-24),9,2.5,{top=C("86AD7A")})
 	for i,o in ipairs({V(30,0,-20),V(-34,0,10),V(26,0,30),V(-10,0,36)}) do decorTree(model,center+o,1,if i%2==0 then "Pine" else "Meadow") end
 	sign(model,center+V(8,0,8)*K,"Crew Haven","SHARED SUPPLIES / BUILD IN THE ATLAS",mint,0,12)
-	local exit=block(model,"Quay return",center+V(0,2,16*K),V(2,4,2),mint,GL,false)
-	meshSlot(exit,"WarpBeacon",mint)
+	local exit=beaconPost(model,"Quay return",center.Y,center+V(0,2,16*K),V(2,4,2),mint,"return")
 	prompt(exit,"Return to hub","Compass Quay").Triggered:Connect(function(player)
 		if sharedPlayers[player]==groupKey then warp(player,exit,HUB_ARRIVAL+V(-6,0,4)) end
 	end)
@@ -2302,13 +2345,12 @@ local function requirementText(region)
 	for _,text in ipairs(quests) do table.insert(out,text) end
 	return if #out>0 then "REQUIRES "..table.concat(out," · ") else "OPEN TO ALL WAYFARERS"
 end
-local function beaconProp(parent,pos,accent,withLight)
+-- Gated and return beacons (§44): the solid plinth stays the collider, the
+-- post the prompt host; one light at crystal height where the area allows it.
+local function beaconProp(parent,pos,accent,withLight,kind,opts)
 	block(parent,"Beacon plinth",pos+V(0,.4,0),V(3.4,.8,3.4),ink,ST,true)
-	local post=block(parent,"Warp beacon",pos+V(0,2.8,0),V(1.6,4,1.6),accent,GL,false)
-	meshSlot(post,"WarpBeacon",accent)
-	for _,x in ipairs({-1.3,1.3}) do gem(parent,"Beacon fin",pos+V(x,2.6,0),V(.5,3.6,.5),brass,0) end
-	local cap=part(parent,"Beacon flame",V(.9,.9,.9),CFrame.new(pos+V(0,5.3,0))*CFrame.Angles(math.pi/4,0,math.pi/4),accent,NE,false)
-	if withLight~=false then light(cap,accent,.7,12) end
+	local post=beaconPost(parent,"Warp beacon",pos.Y,pos+V(0,2.8,0),V(1.6,4,1.6),accent,kind,opts)
+	if withLight~=false then light(post,accent,.7,12,{lift=.8}) end
 	return post
 end
 local GT,GT_R=V(0,0,232),75
@@ -2332,7 +2374,7 @@ end
 local function regionWarp(parent,pos,regionId,destination,waypoint,withLight)
 	local region=Data.RegionById[regionId]
 	assert(region,"unknown region "..tostring(regionId))
-	local post=beaconProp(parent,pos,REGION_ACCENT[regionId] or mint,withLight)
+	local post=beaconProp(parent,pos,REGION_ACCENT[regionId] or mint,withLight,"region",{region=regionId})
 	local q=prompt(post,"Travel to "..region.name,requirementText(region))
 	q:SetAttribute("IsleWarpRegion",regionId)
 	q.Triggered:Connect(function(player) regionTravel(player,post,regionId,destination) end)
@@ -2340,7 +2382,7 @@ local function regionWarp(parent,pos,regionId,destination,waypoint,withLight)
 	return post
 end
 local function returnWarp(parent,pos,label,regionId)
-	local post=beaconProp(parent,pos,mint)
+	local post=beaconProp(parent,pos,mint,nil,"return")
 	local q=prompt(post,"Return to the Skyway",label)
 	q:SetAttribute("IsleWarpReturn","Hub")
 	q.Triggered:Connect(function(player) warp(player,post,SKYWAY_LANDING) end)
@@ -4281,7 +4323,7 @@ end
 do
 	local FERRY=GT+V(-28,0,-42)
 	local accent=C("7FE3CC")
-	local post=beaconProp(terrace,FERRY,accent,false)
+	local post=beaconProp(terrace,FERRY,accent,false,"ferry")
 	sign(terrace,FERRY+V(-7,0,6),"Skybreach Ferry","SIEGE · HAUL   /   COMBAT 20 OR FISHING 20",accent,-30,9)
 	anchor(terrace,"Waypoint_SkybreachFerry",FERRY+V(4,0,5),FERRY)
 	local q=prompt(post,"Board the Skybreach ferry","Skybreach Bastion")
@@ -5369,7 +5411,12 @@ do
 			if pos then
 				local tint=C(def.color)
 				local pad=disk(host,"Skyward vent",pos+V(0,.5,0),4,1,darken(tint,.35),ST,true)
-				meshSlot(pad,"Caldera",tint,nil,"Uniform")
+				-- §44: the vent pad dais; beacons.client.lua floats the rings above it.
+				meshSlot(pad,"SkywardVentPad",tint,nil,"Uniform")
+				pad:SetAttribute("TravelBeacon","vent")
+				pad:SetAttribute("TravelBeaconHover",pos+V(0,3.4,0))
+				pad:SetAttribute("TravelBeaconRegion",def.to)
+				Tags:AddTag(pad,"TravelBeacon")
 				pad:SetAttribute("VentId",def.id)
 				Tags:AddTag(pad,"SkywardVent")
 				local draft=Instance.new("ParticleEmitter")
@@ -5446,6 +5493,7 @@ do
 			riding[player]=mine
 			ready[player]=now+VD.COOLDOWN
 			player:SetAttribute("FastTravelAt",os.clock()) -- known fast travel (Aether Mote pickup checks)
+			flare(v.pad,player)
 			player:SetAttribute("VentFlight",v.def.id..":"..mine)
 			task.spawn(function()
 				task.wait(VD.FLIGHT)

@@ -149,7 +149,7 @@ local useTick = 0 -- LRU clock: bumped whenever a template gains or loses a clon
 -- Tint variants per shape: a shape keeps at most VARIANTS templates (desktop 2,
 -- phones 1); a further tint reuses the shape's nearest existing variant. Legacy
 -- sign shapes (kind "sign" outside the kit: pennants, cloth, ledgers) are exempt
--- so their colours stay exact (they are few).
+-- so their colours stay exact (they are few), as are exactTint shapes on desktop.
 local VARIANTS = if mobile then 1 else 2
 local variants = {} -- shapeName -> {key -> tint | false}
 local function tintDistance(a, b)
@@ -318,7 +318,10 @@ local function template(shapeName, data, catalog, tint)
 		return coroutine.yield()
 	end
 	if cached ~= nil then return cached or nil end
-	if variantCount(shapeName) >= VARIANTS and not (data.kind == "sign" and not SIGN_KIT_SHAPES[shapeName]) then
+	-- exactTint shapes (travel beacons, §44: small, few per island, coloured by
+	-- region) keep their exact Tint on desktop; phones share variants as usual.
+	if variantCount(shapeName) >= VARIANTS and not (data.kind == "sign" and not SIGN_KIT_SHAPES[shapeName])
+		and not (data.exactTint == true and not mobile) then
 		return nearestVariant(shapeName, tint)
 	end
 	local triangles = #data.faces
