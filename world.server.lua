@@ -979,11 +979,15 @@ local function island(name,pos,r,opts)
 	-- bare cliff's rubble crown: -0.9) and its radius puts the lip's inner edge
 	-- (0.99 x radius) just outside the meadow's side wall.
 	local drop=if grassy then .6 else .9
-	local foundation=disk(m,"Floating foundation",pos-V(0,drop+3,0),(r+.15)/.99,6,stone,ST,true)
+	-- §54 QC (lead decision): the cliff wall reads thick: clamp(R*0.18, 10, 30)
+	-- studs (was 6); the forged cliff stretches over it and the keel hangs below.
+	local wall=math.clamp(r*.18,10,30)
+	local foundation=disk(m,"Floating foundation",pos-V(0,drop+wall/2,0),(r+.15)/.99,wall,stone,ST,true)
+	foundation:SetAttribute("WallHeight",wall)
 	meshSlot(foundation,opts.cliff or (if grassy then "IslandCliff" else "IslandCliffBare"),stone)
 	-- Keel depth grows with the island (deep spires under the big isles).
 	local depth=math.clamp(r*.55+6,10,62)
-	local keel=disk(m,"Island underside",pos-V(0,6.2+depth/2,0),(r-.4)*.92,depth,darken(stone,.1),ST,false)
+	local keel=disk(m,"Island underside",pos-V(0,drop+wall-.4+depth/2,0),(r-.4)*.92,depth,darken(stone,.1),ST,false)
 	meshSlot(keel,opts.keelShape or HULL_KEEL[name] or "IslandKeel",stone)
 	-- Shoreline: weathered ledges beyond the rim (below the meadow top) and a
 	-- few boulders just inside it. Openings (bridges, docks) stay clear.

@@ -22,6 +22,15 @@ const C = {TINT, TINT_DARK, TINT_LIGHT, HANDLE, GLINT, LEAF, COPPER:1, GOLD:2, D
   BARK_DARK:17, BARK:18, STONE_LIGHT:19, STONE:20, STONE_DARK:21, MOSS:22, BRASS:23, IRON:24, EMBER:25, FLAME:26, CLOTH:27, CRIMSON:28, INK:29, SOIL:30, PLANK:31, STRAW:32, MARBLE:33, LEAF_DARK:34, GLASS:35,
   PLASTER:36, BRICK:37, GLASS_DARK:38, TIMBER:39,
   BONE:40, HORN:41, CLAW:42, SOCKET:43, VOID:44, ICE:45, FUR:46, CORAL:47, RUNE:48};
+// §54 QC A1: per-vertex colour. The forge diffuses each face's palette colour
+// onto its vertices within a material family, so shades of one material blend
+// into continuous gradients while different materials keep a hard seam (bark
+// against leaf, metal against cloth). FAMILY[i] is the family of palette index i
+// (1-based); each index not listed is its own family. A shape's meta.blend lists
+// extra indices that join its TINT family (moss on a tinted stone).
+const FAMILY_GROUPS = [[TINT, TINT_DARK, TINT_LIGHT], [HANDLE, 17, 18, 31, 39], [LEAF, 22, 34], [19, 20, 21], [25, 26], [40, 41], [2, 23], [3, 6, 29]];
+const FAMILY = palette.map((_, i) => { const g = FAMILY_GROUPS.findIndex(list => list.includes(i + 1)); return g >= 0 ? 100 + g : i + 1; });
+const FAMILY_LUA = "{" + FAMILY.join(",") + "}";
 const ICON_TRIANGLE_BUDGET = 120;
 const WORLD_TRIANGLE_RANGE = [200, 1500];
 // World Art pass 2 (§40): whole buildings and furnished interiors are single meshes.
@@ -56,7 +65,7 @@ function rotation([rx,ry,rz]) {
 // Every primitive is closed and wound outward (right-hand rule: (b-a)x(c-a)
 // points out of the solid). Convex primitives fix each face against their own
 // centre; the rest flip as a whole when their signed volume is negative.
-function shape(name, build, store = shapes, precision = 10000) {
+function shape(name, build, store = shapes, precision = 10000, organic = false) {
   const vertices=[], faces=[];
   const stack=[];
   const v = p => {
@@ -158,11 +167,15 @@ function shape(name, build, store = shapes, precision = 10000) {
   // radius 0 makes a pole. color may be a function (band, segment) -> shade.
   // jitter(level, segment) scales radii for hand-cut, irregular silhouettes.
   // wobble(level, segment) -> [dx,dz] offsets a vertex sideways (droop, lean).
-  function lathe(profile,{n=8,sx=1,sz=1,phase=0,color=TINT,capStart=false,capEnd=false,capColor,jitter,wobble,lift}={}) {
+  function lathe(profile,{n=8,sx=1,sz=1,phase=0,color=TINT,capStart=false,capEnd=false,capColor,jitter,wobble,lift,even=false}={}) {
+    // §54 QC A2-A4: organic catalogs get >= 16 segments, spread by normal angle.
+    if(organic){n=Math.max(n,16);even=true}
     const shade=typeof color==='function'?color:()=>color;
     // Local (pre-transform) points: colour callbacks get shade(level, segment, faceCentre).
     const local=profile.map(([r,y],level)=>r===0?[0,y,0]:Array.from({length:n},(_,i)=>{
-      const a=phase+i*2*Math.PI/n,k=jitter?jitter(level,i):1,[dx,dz]=wobble?wobble(level,i):[0,0],dy=lift?lift(level,i):0;
+      // even: spread the ring by normal angle (an elliptic section then turns its normal by 2pi/n per segment, so flat
+      // blades and fronds never fold at their thin edges).
+      const f=phase+i*2*Math.PI/n,a=even&&sx!==sz?Math.atan2(sz*Math.sin(f),sx*Math.cos(f)):f,k=jitter?jitter(level,i):1,[dx,dz]=wobble?wobble(level,i):[0,0],dy=lift?lift(level,i):0;
       return [Math.cos(a)*r*sx*k+dx,y+dy,Math.sin(a)*r*sz*k+dz];
     }));
     const rings=local.map(pts=>Array.isArray(pts[0])?pts.map(p=>v(p)):v(pts));
@@ -201,7 +214,10 @@ function shape(name, build, store = shapes, precision = 10000) {
     for(const [face,c] of [[[0,3,2,1],color],[[4,5,6,7],color],[[0,1,5,4],color],[[3,7,6,2],topColor],[[0,4,7,3],color],[[1,2,6,5],color]])quad(...face.map(i=>ids[i]),c);
   }
   // Jittered icosphere (20 * 4^sub triangles). color(normal, centre, faceIndex) -> shade.
-  function blob(x,y,z,rx,ry,rz,{sub=1,color=TINT,seed=0,amount=0,squash}={}) {
+  // displace(unitDir) -> radius multiplier: a continuous field (smooth noise),
+  // unlike `amount`, which jitters each vertex on its own.
+  function blob(x,y,z,rx,ry,rz,{sub=1,color=TINT,seed=0,amount=0,squash,displace,soft=false}={}) {
+    if(organic)sub=Math.max(sub,2);
     const t=(1+Math.sqrt(5))/2;
     const pts=[[-1,t,0],[1,t,0],[-1,-t,0],[1,-t,0],[0,-1,t],[0,1,t],[0,-1,-t],[0,1,-t],[t,0,-1],[t,0,1],[-t,0,-1],[-t,0,1]].map(p=>{const l=Math.hypot(...p);return p.map(c=>c/l)});
     let tris=[[0,11,5],[0,5,1],[0,1,7],[0,7,10],[0,10,11],[1,5,9],[5,11,4],[11,10,2],[10,7,6],[7,1,8],[3,9,4],[3,4,2],[3,2,6],[3,6,8],[3,8,9],[4,9,5],[2,4,11],[6,2,10],[8,6,7],[9,8,1]];
@@ -211,7 +227,7 @@ function shape(name, build, store = shapes, precision = 10000) {
       for(const [a,b,c] of tris){const ab=mid(a,b),bc=mid(b,c),ca=mid(c,a);next.push([a,ab,ca],[b,bc,ab],[c,ca,bc],[ab,bc,ca])}
       tris=next;
     }
-    const local=pts.map((p,i)=>{const k=amount?1+(hash(i,sub,seed)-.5)*2*amount:1;let py=p[1]*ry*k;if(squash&&py<0)py*=squash;return [p[0]*rx*k,py,p[2]*rz*k]});
+    const local=pts.map((p,i)=>{const k=(amount?1+(hash(i,sub,seed)-.5)*2*amount:1)*(displace?displace(p):1);let py=p[1]*ry*k;if(squash&&py<0)py*=soft?1-(1-squash)*(t=>t*t*(3-2*t))(Math.min(1,-p[1])):squash;return [p[0]*rx*k,py,p[2]*rz*k]});
     const ids=local.map(p=>v([x+p[0],y+p[1],z+p[2]]));
     const shade=typeof color==='function'?color:()=>color;
     tris.forEach(([a,b,c],index)=>{
@@ -222,6 +238,7 @@ function shape(name, build, store = shapes, precision = 10000) {
   }
   // Swept tube along a polyline with parallel-transport frames.
   function tube(points,radii,{n=6,color=TINT,capStart=true,capEnd=true,capColor,jitter}={}) {
+    if(organic)n=Math.max(n,16);
     const shade=typeof color==='function'?color:()=>color;
     const norm=a=>{const l=Math.hypot(...a)||1;return a.map(c=>c/l)};
     const tangents=points.map((p,i)=>norm(sub3(points[Math.min(i+1,points.length-1)],points[Math.max(i-1,0)])));
@@ -251,9 +268,22 @@ function shape(name, build, store = shapes, precision = 10000) {
     if(capStart){const c=centre(0);for(let i=0;i<m;i++)tri(c,rings[0][(i+1)%m],rings[0][i],capColor??shade(-1,i))}
     if(capEnd){const last=rings.length-1,c=centre(last);for(let i=0;i<m;i++)tri(c,rings[last][i],rings[last][(i+1)%m],capColor??shade(rings.length,i))}
   }
-  build({loft:solid(loft),box:convex(box),bevelBox:convex(bevelBox),spindle:convex(spindle),jewel:convex(jewel),ring:solid(ring),lathe:solid(lathe),prism:solid(prism),
-    slab:convex(slab),blob:solid(blob),tube:solid(tube),group});
-  store[name]={vertices,faces};
+  // Call log (§54 QC A4): every primitive call with its segment count / subdivision
+  // and the radius of what it added (shape space), so tests can check the
+  // subdivision against the placed size.
+  const calls=[];
+  const logged=(prim,fn)=>(...args)=>{
+    const before=vertices.length,f0=faces.length;const r=fn(...args);
+    const opts=args.find(a=>a&&typeof a==='object'&&!Array.isArray(a))||{};
+    const lo=[Infinity,Infinity,Infinity],hi=[-Infinity,-Infinity,-Infinity];
+    for(let i=before;i<vertices.length;i++)for(let k=0;k<3;k++){lo[k]=Math.min(lo[k],vertices[i][k]);hi[k]=Math.max(hi[k],vertices[i][k])}
+    const radius=vertices.length>before?Math.max(hi[0]-lo[0],hi[2]-lo[2],prim==='blob'?hi[1]-lo[1]:0)/2:0;
+    calls.push({f0,f1:faces.length,prim,n:prim==='lathe'?(opts.n??8):prim==='tube'?(opts.n??6):undefined,sub:prim==='blob'?(opts.sub??1):undefined,radius:Math.round(radius*1000)/1000});
+    return r;
+  };
+  build({loft:logged('loft',solid(loft)),box:logged('box',convex(box)),bevelBox:logged('bevelBox',convex(bevelBox)),spindle:logged('spindle',convex(spindle)),jewel:logged('jewel',convex(jewel)),ring:logged('ring',solid(ring)),lathe:logged('lathe',solid(lathe)),prism:logged('prism',solid(prism)),
+    slab:logged('slab',convex(slab)),blob:logged('blob',solid(blob)),tube:logged('tube',solid(tube)),group});
+  store[name]={vertices,faces,calls};
 }
 // Deterministic pseudo-random jitter (no Math.random: output must be stable).
 const hash=(a,b,seed)=>{
@@ -580,6 +610,63 @@ function outfit(name,meta,build){
   shape(name,build,outfitShapes,1000);outfitMeta[name]=meta;
 }
 require('./outfit-shapes.cjs')({outfit,C,PI,hash,jitterOf});
+// Environment art (§54): island dressing — clutter, shrubs, tree species,
+// cliff dressing and satellite rocks; their own lazily decoded catalog
+// (art/TerrainCatalog.lua), placed by terrain.client.lua through the forge's
+// "dress" pool. Smooth-shaded and facet-checked below.
+if(global.__aetherKit)global.__aetherKit({shape,organicMetrics:(...a)=>organicMetrics(...a),C,hash});
+const TERRAIN_TRIANGLE_RANGE = {clutter: [100, 2000], shrub: [150, 2000], rock: [300, 2400], foliage: [400, 7000], cliff: [150, 2900], satellite: [300, 3000]};
+// §54 QC A2-A4 (organic): 98 % of corner shading normals within 15 deg of their
+// face, <= 2 % of shared edges sharper than 35 deg (whatever the crease), and
+// every ring / tube / blob subdivided for its placed size (segment <= SEG_NEAR
+// studs at meta.maxScale; far LODs, cliff pieces and satellites SEG_FAR).
+const ORGANIC_DEV = 15, ORGANIC_SHARP = 0.02, SEG_NEAR = 2.0, SEG_FAR = 3.5;
+function organicMetrics(data, smooth) {
+  const P = data.vertices, fn = [], fa = [], around = P.map(() => []);
+  data.faces.forEach((f, i) => {
+    const [a, b, c] = f.slice(0, 3).map(k => P[k - 1]);
+    const u = b.map((x, k) => x - a[k]), w = c.map((x, k) => x - a[k]);
+    const n = [u[1]*w[2]-u[2]*w[1], u[2]*w[0]-u[0]*w[2], u[0]*w[1]-u[1]*w[0]], l = Math.hypot(...n) || 1;
+    fa[i] = l; fn[i] = n.map(x => x / l);
+    for (let k = 0; k < 3; k++) around[f[k] - 1].push(i);
+  });
+  const dot = (p, q) => p[0]*q[0] + p[1]*q[1] + p[2]*q[2];
+  const lim = Math.cos(smooth * Math.PI / 180), devs = [];
+  // Area-weighted: each corner counts a third of its face's area (a sliver at a
+  // tip shows almost nothing; a broad facet shows everything).
+  let total = 0;
+  data.faces.forEach((f, i) => { for (let k = 0; k < 3; k++) { const s = [0, 0, 0]; for (const o of around[f[k] - 1]) if (dot(fn[o], fn[i]) >= lim) for (let q = 0; q < 3; q++) s[q] += fn[o][q] * fa[o]; const l = Math.hypot(...s) || 1; devs.push([Math.acos(Math.min(1, dot(s, fn[i]) / l)) * 180 / Math.PI, fa[i]]); total += fa[i]; } });
+  devs.sort((a, b) => a[0] - b[0]);
+  let acc = 0, dev98 = 0;
+  for (const [d, w] of devs) { acc += w; dev98 = d; if (acc >= total * .98) break; }
+  const edges = new Map();
+  data.faces.forEach((f, i) => { for (let k = 0; k < 3; k++) { const a = f[k], b = f[(k + 1) % 3], key = a < b ? a * 65536 + b : b * 65536 + a; if (!edges.has(key)) edges.set(key, []); edges.get(key).push(i); } });
+  let shared = 0, sharp = 0;
+  for (const l of edges.values()) if (l.length === 2) { shared++; if (dot(fn[l[0]], fn[l[1]]) < Math.cos(35 * Math.PI / 180)) sharp++; }
+  return {dev98, sharp: sharp / Math.max(1, shared)};
+}
+function subdivisionErrors(name, data, meta) {
+  const seg = meta.lod === 'far' || meta.kind === 'satellite' || meta.kind === 'cliff' ? SEG_FAR : SEG_NEAR, scale = meta.maxScale || 1, out = [];
+  for (const c of data.calls) {
+    if (c.prim === 'lathe' || c.prim === 'tube') {
+      const need = Math.max(16, Math.ceil(2 * Math.PI * c.radius * scale / seg));
+      if (c.n < need) out.push(`${name}: ${c.prim} n ${c.n} < ${need} for radius ${c.radius} x ${scale}`);
+    } else if (c.prim === 'blob') {
+      const need = Math.max(2, Math.ceil(Math.log2(1.05 * c.radius * scale / seg)));
+      if (c.sub < need) out.push(`${name}: blob sub ${c.sub} < ${need} for radius ${c.radius} x ${scale}`);
+    } else out.push(`${name}: faceted primitive ${c.prim}`);
+  }
+  return out;
+}
+const terrainShapes = {};
+const terrainMeta = {};
+function terrain(name,meta,build){
+  if(shapes[name]||worldShapes[name]||creatureShapes[name]||outfitShapes[name]||terrainShapes[name])throw new Error(`Duplicate shape name ${name}`);
+  if(!TERRAIN_TRIANGLE_RANGE[meta.kind])throw new Error(`${name}: unknown terrain kind ${meta.kind}`);
+  if(!(meta.smooth>=40))throw new Error(`${name}: terrain shapes are smooth-shaded (smooth >= 40)`);
+  shape(name,build,terrainShapes,1000);terrainMeta[name]=meta;
+}
+require('./terrain-shapes.cjs')({terrain,C,PI,hash,jitterOf});
 // Building kit (§40): returns the kit table the world script builds from.
 const buildingKit=require('./building-shapes.cjs')({world,C,PI,hash,jitterOf,worldShapes});
 
@@ -609,11 +696,37 @@ function componentVolumes(data){
     return vol;
   });
 }
+// §54 QC A2/A3: island hulls (meta.hull) are checked at real scale on the
+// smallest and the largest island: the cliff's fit box (-10..10, -6..0) maps onto
+// the foundation (radius (r + .15) / .99, wall clamp(r * .18, 10, 30)); a keel's
+// bounds onto the underside (radius .92 (r - .4), depth clamp(r * .55 + 6, 10, 62)).
+const HULL_TRIANGLE_RANGE = [200, 8000], HULL_DEV = 20, HULL_CHORD = .15, HULL_RADII = [46, 160];
+function hullScale(name, r) {
+  if (worldMeta[name].fit) return [(r + .15) / .99 / 10, Math.min(30, Math.max(10, r * .18)) / 6];
+  return [.92 * (r - .4) / 10, Math.min(62, Math.max(10, r * .55 + 6)) / 10];
+}
+function hullErrors(name, data) {
+  const out = [];
+  for (const r of HULL_RADII) {
+    const [kxz, ky] = hullScale(name, r);
+    const scaled = {faces: data.faces, vertices: data.vertices.map(([x, y, z]) => [x * kxz, y * ky, z * kxz])};
+    const m = organicMetrics(scaled, worldMeta[name].smooth);
+    if (m.dev98 > HULL_DEV) out.push(`${name} at r ${r}: normal deviation ${m.dev98.toFixed(1)} > ${HULL_DEV}`);
+    for (const c of data.calls) if (c.prim === 'lathe' && c.radius * kxz > 20) {
+      const chord = c.radius * kxz * (1 - Math.cos(Math.PI / c.n));
+      if (chord > HULL_CHORD) out.push(`${name} at r ${r}: chord error ${chord.toFixed(3)} > ${HULL_CHORD} studs (n ${c.n})`);
+    }
+    hullReport.push(`${name}@${r} dev98 ${m.dev98.toFixed(1)} sharp ${(m.sharp * 100).toFixed(1)}%`);
+  }
+  return out;
+}
+const hullReport = [];
 const rangeErrors=[];
 for(const [name,data] of Object.entries(worldShapes)){
-  const count=data.faces.length,range=worldMeta[name].kind==='building'||worldMeta[name].exactTint?BUILDING_TRIANGLE_RANGE:WORLD_TRIANGLE_RANGE;
+  const count=data.faces.length,range=worldMeta[name].hull?HULL_TRIANGLE_RANGE:worldMeta[name].kind==='building'||worldMeta[name].exactTint?BUILDING_TRIANGLE_RANGE:WORLD_TRIANGLE_RANGE;
   if(count<range[0]||count>range[1])rangeErrors.push(`${name} has ${count} triangles; ${worldMeta[name].kind} range is ${range.join('-')}`);
   for(const vol of componentVolumes(data))if(vol<-1e-4)throw new Error(`${name} has an inward-wound component (volume ${vol})`);
+  if(worldMeta[name].hull)rangeErrors.push(...hullErrors(name,data));
 }
 for(const [name,data] of Object.entries(creatureShapes)){
   const count=data.faces.length,range=CREATURE_TRIANGLE_RANGE[creatureMeta[name].kind];
@@ -628,22 +741,54 @@ for(const [name,data] of Object.entries(outfitShapes)){
   if(data.vertices.length>=4096)rangeErrors.push(`${name} has ${data.vertices.length} vertices (packing limit 4095)`);
   for(const vol of componentVolumes(data))if(vol<-1e-4)throw new Error(`${name} has an inward-wound component (volume ${vol})`);
 }
+// §54 facet checks: hard edges (dihedral over the crease) and colour
+// boundaries over shared edges stay rare (same measure as verify-mesh).
+function edgeRatios(data,smooth){
+  const edges=new Map(),normals=[];
+  data.faces.forEach((f,i)=>{
+    const [p,q,r]=f.slice(0,3).map(k=>data.vertices[k-1]);
+    const u=q.map((x,k)=>x-p[k]),w=r.map((x,k)=>x-p[k]);
+    const n=[u[1]*w[2]-u[2]*w[1],u[2]*w[0]-u[0]*w[2],u[0]*w[1]-u[1]*w[0]],l=Math.hypot(...n)||1;
+    normals.push(n.map(x=>x/l));
+    for(let k=0;k<3;k++){const a=f[k],b=f[(k+1)%3],key=a<b?a*65536+b:b*65536+a;if(!edges.has(key))edges.set(key,[]);edges.get(key).push(i)}
+  });
+  let shared=0,hard=0,colour=0;const limit=Math.cos(smooth*Math.PI/180);
+  for(const list of edges.values())if(list.length===2){shared++;const [a,b]=list;
+    if(normals[a][0]*normals[b][0]+normals[a][1]*normals[b][1]+normals[a][2]*normals[b][2]<limit)hard++;
+    if(data.faces[a][3]!==data.faces[b][3])colour++}
+  return [hard/Math.max(1,shared),colour/Math.max(1,shared)];
+}
+const terrainReport=[];
+for(const [name,data] of Object.entries(terrainShapes)){
+  const count=data.faces.length,range=TERRAIN_TRIANGLE_RANGE[terrainMeta[name].kind];
+  if(count<range[0]||count>range[1])rangeErrors.push(`${name} has ${count} triangles; ${terrainMeta[name].kind} range is ${range.join('-')}`);
+  if(data.vertices.length>=4096)rangeErrors.push(`${name} has ${data.vertices.length} vertices (packing limit 4095)`);
+  for(const vol of componentVolumes(data))if(vol<-1e-4)throw new Error(`${name} has an inward-wound component (volume ${vol})`);
+  const om=organicMetrics(data,terrainMeta[name].smooth);
+  terrainReport.push(`${name} ${count} dev98 ${om.dev98.toFixed(1)} sharp ${(om.sharp*100).toFixed(1)}%`);
+  if(om.dev98>ORGANIC_DEV)rangeErrors.push(`${name} normal deviation (98th pct) ${om.dev98.toFixed(1)} > ${ORGANIC_DEV}`);
+  if(om.sharp>ORGANIC_SHARP)rangeErrors.push(`${name} sharp edges ${(om.sharp*100).toFixed(1)}% > ${ORGANIC_SHARP*100}%`);
+  rangeErrors.push(...subdivisionErrors(name,data,terrainMeta[name]));
+}
 // Every rig names authored shapes only.
 for(const [kind,r] of Object.entries(creatureKit.rigs)){
   for(const seg of [{shape:r.core},...r.segs])if(!creatureShapes[seg.shape]||!['creature','pet','limb'].includes(creatureMeta[seg.shape].kind))throw new Error(`rig ${kind} names unknown shape ${seg.shape}`);
 }
-if(rangeErrors.length){console.log(Object.entries(worldShapes).map(([n,d])=>n+' '+d.faces.length).join(', '));throw new Error(rangeErrors.join('\n'))}
-for(const [name,data] of [...Object.entries(shapes),...Object.entries(worldShapes),...Object.entries(creatureShapes),...Object.entries(outfitShapes)])for(const [a,b,c,shade] of data.faces){
+if(rangeErrors.length&&!process.env.SKIP_RANGES){console.log(Object.entries(worldShapes).map(([n,d])=>n+' '+d.faces.length).join(', '));throw new Error(rangeErrors.join('\n'))}
+for(const [name,data] of [...Object.entries(shapes),...Object.entries(worldShapes),...Object.entries(creatureShapes),...Object.entries(outfitShapes),...Object.entries(terrainShapes)])for(const [a,b,c,shade] of data.faces){
   const [p,q,r]=[a,b,c].map(i=>data.vertices[i-1]);
   const u=q.map((x,k)=>x-p[k]),w=r.map((x,k)=>x-p[k]);
   const n=[u[1]*w[2]-u[2]*w[1],u[2]*w[0]-u[0]*w[2],u[0]*w[1]-u[1]*w[0]];
-  if(Math.hypot(...n)<=1e-5)throw new Error(`${name} has a degenerate triangle`);
+  if(Math.hypot(...n)<=1e-5&&!process.env.SKIP_RANGES)throw new Error(`${name} has a degenerate triangle`);
   if(!palette[shade-1])throw new Error(`${name} uses unknown shade ${shade}`);
 }
+// Tooling hook (survey / diagnostic scripts; unused by the build).
+if(global.__aetherShapes)global.__aetherShapes({shapes,worldShapes,worldMeta,creatureShapes,creatureMeta,outfitShapes,outfitMeta,terrainShapes,terrainMeta,palette});
+if(global.__aetherShapesOnly)return;
 const iconShapeLua = `
 -- Item icon art: Catalog.iconShape(itemDef) -> shape name for an AetherData item.
 -- Faces using Catalog.tintIndex are recoloured with the item's colour.
-local Catalog={palette=palette,shapes=shapes,tintIndex=${TINT}}
+local Catalog={palette=palette,families=${FAMILY_LUA},shapes=shapes,tintIndex=${TINT}}
 local bespoke={
 	Pickaxe="Pickaxe",ReinforcedPickaxe="Pickaxe",Blade="Blade",Stormblade="Blade",Skyplate="Skyplate",
 	Tonic="Tonic",AlloyIngot="AlloyIngot",AetherIngot="AetherIngot",Fish="Fish",Moonbloom="Moonbloom",
@@ -693,8 +838,8 @@ return Catalog
 `;
 const luaTable = x => Array.isArray(x)?'{'+x.map(luaTable).join(',')+'}':typeof x==='object'?'{'+Object.entries(x).map(([k,v])=>k+'='+luaTable(v)).join(',')+'}':JSON.stringify(x);
 const entries=Object.entries(shapes).map(([name,data])=>`shapes.${name}=${luaTable(data)}`).join('\n');
-const objHeader=name=>{const m=worldMeta[name]||creatureMeta[name]||outfitMeta[name];return m?`# smooth ${m.smooth||0}\n`+(m.tint?`# tint ${m.tint}\n`:''):''};
-for(const [name,data] of [...Object.entries(shapes),...Object.entries(worldShapes),...Object.entries(creatureShapes),...Object.entries(outfitShapes)])fs.writeFileSync(`art/${name}.obj`, `# Original Aether Isles ${name}\n`+objHeader(name)+`mtllib AetherPalette.mtl\n`+data.vertices.map(p=>'v '+p.join(' ')).join('\n')+'\n'+data.faces.map(f=>`usemtl Shade${f[3]}\nf ${f.slice(0,3).join(' ')}`).join('\n')+'\n');
+const objHeader=name=>{const m=worldMeta[name]||creatureMeta[name]||outfitMeta[name]||terrainMeta[name];return m?`# smooth ${m.smooth||0}\n`+(m.tint?`# tint ${m.tint}\n`:'')+(m.blend?`# blend ${m.blend.join(',')}\n`:'')+(m.sphere?`# sphere ${m.sphere.map(s=>s.join(',')).join(';')}\n`:''):''};
+for(const [name,data] of [...Object.entries(shapes),...Object.entries(worldShapes),...Object.entries(creatureShapes),...Object.entries(outfitShapes),...Object.entries(terrainShapes)])fs.writeFileSync(`art/${name}.obj`, `# Original Aether Isles ${name}\n`+objHeader(name)+`mtllib AetherPalette.mtl\n`+data.vertices.map(p=>'v '+p.join(' ')).join('\n')+'\n'+data.faces.map(f=>`usemtl Shade${f[3]}\nf ${f.slice(0,3).join(' ')}`).join('\n')+'\n');
 // The world catalog is downloaded by every client, so geometry is packed into
 // base-64 strings (decoded once by the module itself into the usual tables):
 // a vertex is three 3-digit millistud coordinates offset by PACK_OFFSET, a face
@@ -713,6 +858,7 @@ const worldEntries=Object.entries(worldShapes).map(([name,data])=>{
   if(m.range)extra.range=m.range;
   if(m.exactTint)extra.exactTint=true;
   if(m.interior)extra.interior=true;
+  if(m.blend)extra.blend=m.blend;
   const verts=data.vertices.map(p=>p.map(x=>packNumber(Math.round(x*1000)+PACK_OFFSET,3)).join('')).join('');
   const faces=data.faces.map(([a,b,c,shade])=>packNumber(a,2)+packNumber(b,2)+packNumber(c,2)+packNumber(shade,1)).join('');
   return `shapes.${name}=unpack("${verts}","${faces}",${luaTable(extra)})`;
@@ -751,7 +897,7 @@ local function unpack(verts,faces,meta)
 end
 local shapes={}
 ${worldEntries}
-local Catalog={palette=palette,shapes=shapes,tintIndex=${TINT},tintDarkIndex=${TINT_DARK},tintLightIndex=${TINT_LIGHT},tintDark=0.62,tintLight=0.4}
+local Catalog={palette=palette,families=${FAMILY_LUA},shapes=shapes,tintIndex=${TINT},tintDarkIndex=${TINT_DARK},tintLightIndex=${TINT_LIGHT},tintDark=0.62,tintLight=0.4}
 -- Suggested shape per AetherData resource id (gather nodes).
 Catalog.resourceShapes=${luaTable(resourceShapes)}
 function Catalog.resourceShape(id)
@@ -819,7 +965,7 @@ local function drop(name)
 	if type(meta)=="table" and packed[meta] then rawset(meta,"vertices",nil); rawset(meta,"faces",nil) end
 end
 local rigs=${luaTable(roundDeep(creatureKit.rigs))}
-return {palette=palette,shapes=shapes,rigs=rigs,drop=drop,tintIndex=${TINT},tintDarkIndex=${TINT_DARK},tintLightIndex=${TINT_LIGHT},tintDark=0.62,tintLight=0.4}
+return {palette=palette,families=${FAMILY_LUA},shapes=shapes,rigs=rigs,drop=drop,tintIndex=${TINT},tintDarkIndex=${TINT_DARK},tintLightIndex=${TINT_LIGHT},tintDark=0.62,tintLight=0.4}
 `);
 // §52: the outfit catalog (packed and lazy like the creature catalog).
 const outfitEntries=Object.entries(outfitShapes).map(([name,data])=>{
@@ -873,8 +1019,74 @@ local function drop(name)
 	local meta=shapes[name]
 	if type(meta)=="table" and packed[meta] then rawset(meta,"vertices",nil); rawset(meta,"faces",nil) end
 end
-return {palette=palette,shapes=shapes,drop=drop,tintIndex=${TINT},tintDarkIndex=${TINT_DARK},tintLightIndex=${TINT_LIGHT},tintDark=0.62,tintLight=0.4}
+return {palette=palette,families=${FAMILY_LUA},shapes=shapes,drop=drop,tintIndex=${TINT},tintDarkIndex=${TINT_DARK},tintLightIndex=${TINT_LIGHT},tintDark=0.62,tintLight=0.4}
 `);
+// §54: the terrain catalog (packed and lazy like the outfit catalog).
+const terrainEntries=Object.entries(terrainShapes).map(([name,data])=>{
+  const m=terrainMeta[name],extra={smooth:m.smooth,kind:m.kind,tris:data.faces.length,verts:data.vertices.length};
+  if(m.tint)extra.tint=m.tint;
+  if(m.range)extra.range=m.range;
+  if(m.blend)extra.blend=m.blend;
+  if(m.sphere)extra.sphere=m.sphere;
+  if(m.lod)extra.lod=m.lod;
+  if(m.far)extra.far=m.far;
+  if(m.maxScale)extra.maxScale=m.maxScale;
+  const verts=data.vertices.map(p=>p.map(x=>packNumber(Math.round(x*1000)+PACK_OFFSET,3)).join('')).join('');
+  const faces=data.faces.map(([a,b,c,shade])=>packNumber(a,2)+packNumber(b,2)+packNumber(c,2)+packNumber(shade,1)).join('');
+  return `shapes.${name}=lazy("${verts}","${faces}",${luaTable(extra)})`;
+}).join('\n');
+fs.writeFileSync('art/TerrainCatalog.lua',`-- Generated by art/generate-props.cjs from art/terrain-shapes.cjs (original geometry, §54).
+-- Island dressing: ground clutter, shrubs, tree species, cliff dressing and satellite
+-- rocks, placed on each client by terrain.client.lua through the MeshForge "dress"
+-- pool; packed and lazily decoded like art/OutfitCatalog.lua.
+-- kind: clutter | shrub | foliage | cliff | satellite.
+local palette=${luaTable(palette)}
+local DIGITS="${PACK_DIGITS}"
+local value={}
+for i=1,#DIGITS do value[string.byte(DIGITS,i)]=i-1 end
+local function digits(s,at,width)
+	local n=0
+	for k=at,at+width-1 do n=n*64+value[string.byte(s,k)] end
+	return n
+end
+local function unpack(verts,faces,meta)
+	local vertices,list={},{}
+	for at=1,#verts,9 do
+		table.insert(vertices,{(digits(verts,at,3)-${PACK_OFFSET})/1000,(digits(verts,at+3,3)-${PACK_OFFSET})/1000,(digits(verts,at+6,3)-${PACK_OFFSET})/1000})
+	end
+	for at=1,#faces,7 do
+		table.insert(list,{digits(faces,at,2),digits(faces,at+2,2),digits(faces,at+4,2),digits(faces,at+6,1)})
+	end
+	meta.vertices,meta.faces=vertices,list
+	return meta
+end
+local packed={}
+local LAZY={__index=function(meta,key)
+	if key~="vertices" and key~="faces" then return nil end
+	local source=packed[meta]
+	if not source then return nil end
+	unpack(source[1],source[2],meta)
+	return rawget(meta,key)
+end}
+local function lazy(verts,faces,meta)
+	meta.lazy=true
+	packed[meta]={verts,faces}
+	return setmetatable(meta,LAZY)
+end
+local shapes={}
+${terrainEntries}
+local function drop(name)
+	local meta=shapes[name]
+	if type(meta)=="table" and packed[meta] then rawset(meta,"vertices",nil); rawset(meta,"faces",nil) end
+end
+return {palette=palette,families=${FAMILY_LUA},shapes=shapes,drop=drop,tintIndex=${TINT},tintDarkIndex=${TINT_DARK},tintLightIndex=${TINT_LIGHT},tintDark=0.62,tintLight=0.4}
+`);
+// §54 QC A4: the generator call log (every primitive with its segments /
+// subdivision and size) and the colour families, for the mesh suites and renderers.
+const callLog={};
+for(const [cat,store,meta] of [['world',worldShapes,worldMeta],['creature',creatureShapes,creatureMeta],['outfit',outfitShapes,outfitMeta],['terrain',terrainShapes,terrainMeta]])
+  for(const [name,data] of Object.entries(store))callLog[name]={catalog:cat,kind:meta[name].kind,maxScale:meta[name].maxScale||1,calls:data.calls};
+fs.writeFileSync('art/ShapeCalls.json',JSON.stringify({families:FAMILY,shapes:callLog}));
 fs.writeFileSync('art/AetherPalette.mtl',palette.map((hex,i)=>`newmtl Shade${i+1}\nKd ${[0,2,4].map(n=>parseInt(hex.slice(n,n+2),16)/255).join(' ')}`).join('\n'));
 fs.writeFileSync('art/PropCatalog.lua','-- Generated by art/generate-props.cjs; shared original geometry.\nlocal palette='+luaTable(palette)+'\nlocal shapes={}\n'+entries+'\n'+iconShapeLua);
 let source=fs.readFileSync('mesh.client.lua','utf8');
@@ -899,3 +1111,5 @@ console.log('Creature total: '+Object.keys(creatureShapes).length+' shapes, '+Ob
 console.log('Outfit triangles: '+Object.entries(outfitShapes).map(([n,d])=>n+' '+d.faces.length).join(', '));
 console.log('Outfit total: '+Object.keys(outfitShapes).length+' shapes, '+Object.values(outfitShapes).reduce((t,d)=>t+d.faces.length,0)+' triangles');
 console.log('World total: '+Object.keys(worldShapes).length+' shapes, '+Object.values(worldShapes).reduce((t,d)=>t+d.faces.length,0)+' triangles');
+console.log('Terrain shapes: '+terrainReport.join('; '));
+console.log('Hull metrics: '+hullReport.join('; '));
