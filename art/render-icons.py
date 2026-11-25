@@ -49,6 +49,10 @@ def read_obj(name):
                 continue
             if parts[0] == "#" and len(parts) == 3 and parts[1] in ("smooth", "tint"):
                 meta[parts[1]] = float(parts[2]) if parts[1] == "smooth" else parts[2]
+            elif parts[0] == "#" and len(parts) == 3 and parts[1] == "blend":
+                meta["blend"] = [int(v) for v in parts[2].split(",")]
+            elif parts[0] == "#" and len(parts) == 3 and parts[1] == "sphere":
+                meta["sphere"] = [[float(v) for v in item.split(",")] for item in parts[2].split(";")]
             elif parts[0] == "v":
                 vertices.append(tuple(float(value) for value in parts[1:4]))
             elif parts[0] == "usemtl":
@@ -104,6 +108,128 @@ def unit(a):
     return (a[0] / length, a[1] / length, a[2] / length)
 
 
+_FAMILIES = None
+
+
+def families():
+    """Palette index (1-based) -> material family (art/ShapeCalls.json, §54 QC A1)."""
+    global _FAMILIES
+    if _FAMILIES is None:
+        import json
+        with open(os.path.join(ART, "ShapeCalls.json")) as handle:
+            _FAMILIES = json.load(handle)["families"]
+    return _FAMILIES
+
+
+def _vhash(x, y, z):
+    h = ((x * 73856093) & 0xFFFFFFFF) ^ ((y * 19349663) & 0xFFFFFFFF) ^ ((z * 83492791) & 0xFFFFFFFF)
+    h = ((h ^ (h >> 13)) * 1274126177 % 4294967296) & 0xFFFFFFFF
+    return (h ^ (h >> 16)) / 4294967295
+
+
+def _vnoise(x, y, z):
+    ix, iy, iz = math.floor(x), math.floor(y), math.floor(z)
+    fx, fy, fz = x - ix, y - iy, z - iz
+    fx, fy, fz = fx * fx * (3 - 2 * fx), fy * fy * (3 - 2 * fy), fz * fz * (3 - 2 * fz)
+    c = lambda a, b, d: _vhash(ix + a, iy + b, iz + d)
+    x00 = c(0, 0, 0) + (c(1, 0, 0) - c(0, 0, 0)) * fx
+    x10 = c(0, 1, 0) + (c(1, 1, 0) - c(0, 1, 0)) * fx
+    x01 = c(0, 0, 1) + (c(1, 0, 1) - c(0, 0, 1)) * fx
+    x11 = c(0, 1, 1) + (c(1, 1, 1) - c(0, 1, 1)) * fx
+    a, b = x00 + (x10 - x00) * fy, x01 + (x11 - x01) * fy
+    return (a + (b - a) * fz) * 2 - 1
+
+
+def vertex_colours(vertices, faces, meta, base_of):
+    """Mirror of forge.client.lua vertexColors: per-face colour with an AO height
+    ramp and low-frequency noise, spread per material family onto vertices, then
+    diffused until no in-family edge changes luminance by more than 0.05.
+    Returns per face the three corner colours."""
+    fam_table = families()
+    blend = set(meta.get("blend") or [])
+    tint_family = fam_table[10]
+    def family(material):
+        index = int(material[5:])
+        return tint_family if index in blend else fam_table[index - 1]
+    ys = [v[1] for v in vertices]
+    lo, hi = min(ys), max(ys)
+    span = max(1e-3, hi - lo)
+    edge = sum(math.dist(vertices[ids[0]], vertices[ids[1]]) for ids, _ in faces) / max(1, len(faces))
+    wave = max(0.05, 6 * edge)
+    acc, keys_of = {}, []
+    for ids, material in faces:
+        a, b, c = (vertices[i] for i in ids)
+        cx, cy, cz = ((a[k] + b[k] + c[k]) / 3 for k in range(3))
+        t = (cy - lo) / span
+        k = (0.86 + 0.14 * t * t * (3 - 2 * t)) * (1 + 0.05 * _vnoise(cx / wave, cy / wave, cz / wave))
+        area = math.sqrt(sum(x * x for x in cross(sub(b, a), sub(c, a)))) + 1e-9
+        fam = family(material)
+        base = base_of(material)
+        keys = []
+        for i in ids:
+            key = (i, fam)
+            entry = acc.setdefault(key, [0.0, 0.0, 0.0, 0.0])
+            for q in range(3):
+                entry[q] += base[q] * k * area
+            entry[3] += area
+            keys.append(key)
+        keys_of.append(keys)
+    order = sorted(acc)
+    index = {key: n for n, key in enumerate(order)}
+    col = numpy.array([[acc[key][q] / acc[key][3] for q in range(3)] for key in order])
+    pairs = set()
+    for keys in keys_of:
+        for k in range(3):
+            a, b = index[keys[k]], index[keys[(k + 1) % 3]]
+            if a != b:
+                pairs.add((min(a, b), max(a, b)))
+    pairs = numpy.array(sorted(pairs)) if pairs else numpy.zeros((0, 2), dtype=int)
+    weights = numpy.array([0.2126, 0.7152, 0.0722])
+    for _ in range(32):
+        if len(pairs) == 0:
+            break
+        lum = col @ weights
+        if numpy.abs(lum[pairs[:, 0]] - lum[pairs[:, 1]]).max() <= 0.05:
+            break
+        total = numpy.zeros_like(col)
+        count = numpy.zeros(len(col))
+        numpy.add.at(total, pairs[:, 0], col[pairs[:, 1]])
+        numpy.add.at(total, pairs[:, 1], col[pairs[:, 0]])
+        numpy.add.at(count, pairs[:, 0], 1)
+        numpy.add.at(count, pairs[:, 1], 1)
+        has = count > 0
+        col[has] = 0.5 * col[has] + 0.5 * total[has] / count[has][:, None]
+    col = numpy.clip(col, 0, 1)
+    return [[tuple(col[index[key]]) for key in keys] for keys in keys_of]
+
+
+def sphere_normals(vertices, faces, meta, normals):
+    """Mirror of forge.client.lua sphereNormals: tint-family shading normals bend
+    toward each `sphere` centre {x, y, z, r, blend}."""
+    spheres = meta.get("sphere")
+    if not spheres:
+        return normals
+    fam_table = families()
+    out = []
+    for (ids, material), corners in zip(faces, normals):
+        index = int(material[5:])
+        if fam_table[index - 1] != fam_table[10]:
+            out.append(corners)
+            continue
+        new = []
+        for i, n in zip(ids, corners):
+            p = vertices[i]
+            for cx, cy, cz, r, w in spheres:
+                d = (p[0] - cx, p[1] - cy, p[2] - cz)
+                length = math.sqrt(sum(x * x for x in d))
+                if 1e-4 < length <= r:
+                    n = unit(tuple(n[q] + (d[q] / length - n[q]) * w for q in range(3)))
+                    break
+            new.append(n)
+        out.append(new)
+    return out
+
+
 def tint_shades(tint):
     dark = tuple(channel * 0.62 for channel in tint)
     light = tuple(channel + (1 - channel) * 0.4 for channel in tint)
@@ -116,7 +242,8 @@ def render(name, tint, size):
     if tint is None and meta["tint"]:
         tint = tuple(int(meta["tint"][i:i + 2], 16) / 255 for i in (0, 2, 4))
     shades = tint_shades(tint) if tint else {}
-    normals = corner_normals(vertices, faces, meta["smooth"])
+    normals = sphere_normals(vertices, faces, meta, corner_normals(vertices, faces, meta["smooth"]))
+    corner_colours = vertex_colours(vertices, faces, meta, lambda material: shades.get(material) or palette[material])
     low = [min(v[i] for v in vertices) for i in range(3)]
     high = [max(v[i] for v in vertices) for i in range(3)]
     centre = tuple((low[i] + high[i]) / 2 for i in range(3))
@@ -134,14 +261,13 @@ def render(name, tint, size):
     pixels = numpy.empty((scale, scale, 3), dtype=numpy.uint8)
     pixels[:] = PANEL
     zbuffer = numpy.full((scale, scale), numpy.inf)
-    for (ids, material), corners in zip(faces, normals):
+    for (ids, material), corners, bases in zip(faces, normals, corner_colours):
         points = [vertices[i] for i in ids]
         normal = unit(cross(sub(points[1], points[0]), sub(points[2], points[0])))
         middle = tuple(sum(p[i] for p in points) / 3 for i in range(3))
         flip = dot(normal, sub(eye, middle)) < 0  # double-sided preview
-        base = shades.get(material) or palette[material]
         colour = []
-        for corner in corners:
+        for corner, base in zip(corners, bases):
             if flip:
                 corner = (-corner[0], -corner[1], -corner[2])
             shade = 0.55 + 0.5 * max(0.0, dot(corner, light))
