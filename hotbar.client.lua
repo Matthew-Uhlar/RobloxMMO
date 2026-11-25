@@ -53,9 +53,14 @@ local STYLE = {
 -- Skyforge theme (UI overhaul, docs/DEPTH-CONTRACT.md §29): when the shared
 -- ReplicatedStorage.AetherUiTheme is present its hotbarStyle() replaces the
 -- colours and sizes above (same keys); glyph tables stay local.
+local IconTheme = nil -- §52: the shared theme's cached vector item icons (the glyphs stay as the fallback)
 do
 	local module = ReplicatedStorage:FindFirstChild("AetherUiTheme")
 	local ok, Theme = pcall(function() return module and require(module) end)
+	if ok and type(Theme) == "table" and type(Theme.icon) == "function" then
+		IconTheme = Theme
+		if type(Theme.useItems) == "function" then Theme.useItems(Data.Items, Data.PetDepth and Data.PetDepth.Looks) end
+	end
 	if ok and type(Theme) == "table" and type(Theme.hotbarStyle) == "function" then
 		for key, value in pairs(Theme.hotbarStyle()) do
 			if STYLE[key] ~= nil then STYLE[key] = value end
@@ -194,6 +199,20 @@ local function paint()
 		local glyph, count, swatch = b:FindFirstChild("Glyph"), b:FindFirstChild("Count"), b:FindFirstChild("Swatch")
 		glyph.Text = if def then glyphFor(def) else ""
 		glyph.TextColor3 = if def then rgb(def.color) else STYLE.ivory
+		-- §52: the vector icon replaces the glyph; rebuilt (a cached clone) only when the item changes.
+		-- QC L: keyed by item and slot size, so a resize (phone / desktop) rebuilds at the new size.
+		local px = math.floor((if b.Size and b.Size.X.Offset > 0 then b.Size.X.Offset else STYLE.slot) * 0.74)
+		local iconKey = (id or "") .. "@" .. px
+		if IconTheme and b:GetAttribute("IconItem") ~= iconKey then
+			b:SetAttribute("IconItem", iconKey)
+			local old = b:FindFirstChild("Icon")
+			if old then old:Destroy() end
+			if def then
+				local ok, icon = pcall(IconTheme.icon, b, def, px)
+				if ok and icon then icon.ZIndex = 2 end
+			end
+		end
+		glyph.Visible = not (IconTheme and def and b:FindFirstChild("Icon"))
 		local n = if def then tonumber(S.items[id]) or 0 else 0
 		count.Text = if n > 1 and not Held.holdable(id) then tostring(n) else ""
 		swatch.BackgroundColor3 = if def then rgb(def.color):Lerp(STYLE.deep, 0.55) else STYLE.raised
@@ -249,6 +268,8 @@ S.boxFor = boxFor
 local function layout()
 	local camera = Workspace.CurrentCamera
 	local size, cols, rows, width, barHeight, centre = boxFor(camera and camera.ViewportSize)
+	local first = S.buttons[1]
+	local resized = first ~= nil and first.Size ~= nil and first.Size.X.Offset ~= size
 	bar.Size = UDim2.fromOffset(width, barHeight)
 	bar.Position = if centre then UDim2.new(0, centre, 1, -STYLE.bottom) else UDim2.new(0.5, 0, 1, -STYLE.bottom)
 	for i, b in ipairs(S.buttons) do
@@ -267,6 +288,7 @@ local function layout()
 	local height = if shown then STYLE.bottom + barHeight + STYLE.reserve else 0
 	if player:GetAttribute("IsleHotbarHeight") ~= height then player:SetAttribute("IsleHotbarHeight", height) end
 	if player:GetAttribute("IsleHotbarWidth") ~= width then player:SetAttribute("IsleHotbarWidth", width) end
+	if resized then paint() end -- §52 QC L: icons rebuild at the new slot size
 end
 
 local nameToken = 0

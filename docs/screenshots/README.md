@@ -171,3 +171,8 @@ soft lighting exist only in Studio). Regenerate with `lune run tools/render-ui.l
 
 - `buildings-kit.png`, `buildings-interiors.png`: the building kit OBJ masters (`python3 art/render-icons.py --cell 420 --columns 4 --no-strip ...`).
 - `town-quay-day.png`, `town-quay-night.png`, `interior-quay-bank.png`: Compass Quay with the real building meshes placed as the forge places them (`lune run tools/dump-scene.luau "Compass Quay" quay.json`, then `python3 tools/render-town.py quay.json out.png --eye ... --at ... [--night]`). Flat Lambert preview: no materials, shadows or Future lighting; other props are their primitive fallbacks; the night render lights every pane (the game lights about 80 %).
+
+## NPC art and item icons (§52)
+
+- `npcs-townsfolk.png`, `npcs-featured.png`, `npcs-idle-loops.png`: the production rigs posed at a moment of their trade idle loop with the forged outfit pieces (`lune run tools/dump-npcs.luau out.json -1 [roles]` — phase -1 = the loop's beat — then `python3 -I tools/render-npcs.py out.json out.png --cell 180 --columns 7`). Flat Lambert: primitives for the body, OBJ masters for the outfits, no materials or shadows.
+- `npcs-nameplates.png`, `icons-families.png`, `icons-satchel.png`: `lune run tools/render-icons.luau build/icons` (Theme slots and the server's nameplates through `tools/rasterize-ui.py`; fonts are approximated).

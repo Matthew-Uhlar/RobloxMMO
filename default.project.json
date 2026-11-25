@@ -15,7 +15,9 @@
       "AetherSignView": { "$path": "shared/SignView.lua" },
       "AetherCreatureArt": { "$path": "art/CreatureCatalog.lua" },
       "AetherCreatureRules": { "$path": "shared/CreatureRules.lua" },
-      "AetherAmbience": { "$path": "shared/Ambience.lua" }
+      "AetherAmbience": { "$path": "shared/Ambience.lua" },
+      "AetherNpcStyle": { "$path": "shared/NpcStyle.lua" },
+      "AetherOutfitArt": { "$path": "art/OutfitCatalog.lua" }
     },
     "ServerStorage": {
       "AetherTrails": { "$path": "trails.lua" }
