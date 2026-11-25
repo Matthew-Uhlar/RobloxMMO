@@ -213,7 +213,7 @@ local creaturePool = {failures = 0, blocked = false, stop = stopReason} -- (no E
 -- variant per shape. Only idle outfit templates are evicted for outfits (LRU).
 local OUTFIT_KINDS = {outfit = true}
 local OUTFIT_TEMPLATE_CAP = if mobile then 18 else 52
-local OUTFIT_TRIANGLE_CAP = if mobile then 20000 else 90000 -- §55 QC M3: per-NPC outfit budgets (NpcStyle.NPC_TRIS, NpcStyle.POOL)
+local OUTFIT_TRIANGLE_CAP = if mobile then 20000 else 160000 -- §55 QC M3: per-NPC outfit budgets (NpcStyle.NPC_TRIS, NpcStyle.POOL)
 -- QC H1 / L: outfit clones are counted on their own (never against the world's
 -- LIMITS.instances / placedTriangles), bounded by the dressed-NPC cap.
 local OUTFIT_INSTANCE_CAP = if mobile then 40 else 120

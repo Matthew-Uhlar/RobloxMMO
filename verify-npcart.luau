@@ -298,11 +298,11 @@ for _, name in ipairs({"HatWayfarer", "HatMage", "Cloak", "PropStaff", "PropPoke
 	end
 	ok(vi == #data.vertices and fi == #data.faces, name .. " packed counts = OBJ")
 end
--- Per-NPC triangle budget (§55 QC M3: S.trim to S.NPC_TRIS, 6k phones / 8k
+-- Per-NPC triangle budget (§55 QC M3: S.trim to S.NPC_TRIS, 6k phones / 13k
 -- desktop) and the town-square worst case.
 local function trisOf(shape) return Outfits.shapes[shape].tris end
 eq(S.NPC_TRIS.phone, 6000, "[M3] phone outfit budget per NPC")
-eq(S.NPC_TRIS.desktop, 8000, "[M3] desktop outfit budget per NPC")
+eq(S.NPC_TRIS.desktop, 13000, "[M3] desktop outfit budget per NPC (lead: full outfits on desktop)")
 local worst, worstPhone, trimmed = 0, 0, 0
 for _, role in ipairs(ROSTER) do
 	local full, desk, phone = outfitOf(role), S.trim(outfitOf(role), trisOf, false), S.trim(outfitOf(role), trisOf, true)
@@ -315,7 +315,7 @@ for _, role in ipairs(ROSTER) do
 	if #desk.pieces < #full.pieces then trimmed += 1 end
 	worst, worstPhone = math.max(worst, tris), math.max(worstPhone, ptris)
 end
-ok(worst * S.DRESS_CAP.desktop <= 112000, "desktop dressed cap within 112k placed triangles (" .. worst * S.DRESS_CAP.desktop .. ")")
+ok(worst * S.DRESS_CAP.desktop <= 190000, "desktop dressed cap within 190k placed triangles (" .. worst * S.DRESS_CAP.desktop .. ")")
 ok(worstPhone * S.DRESS_CAP.phone <= 18000, "phone dressed cap within 18k placed triangles (" .. worstPhone * S.DRESS_CAP.phone .. ")")
 print(string.format("Outfit budget: worst NPC %d tris desktop / %d phone; %d of %d roles trimmed on desktop", worst, worstPhone, trimmed, #ROSTER))
 print(string.format("PASS: outfit meshes (%d) — %d shapes, %d triangles", checks - part3, count, total))

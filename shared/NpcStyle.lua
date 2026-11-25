@@ -427,10 +427,10 @@ S.DRESS_RANGE = {desktop = 90, phone = 50} -- forged outfits within this many st
 S.DRESS_CAP = {desktop = 14, phone = 3} -- most NPCs dressed in meshes at once (nearest win)
 -- §55 QC M3: outfit triangles one dressed NPC may wear (S.trim drops the pieces
 -- that would overflow; their primitive fallback stays). Device class: shared/Device.lua.
-S.NPC_TRIS = {desktop = 8000, phone = 6000}
+S.NPC_TRIS = {desktop = 13000, phone = 6000}
 -- Outfit pool the dressed sets must fit (forge.client.lua OUTFIT_*; verify-npcart sums the
 -- distinct templates of the worst-case trimmed dressed set per region against both).
-S.POOL = {desktop = {templates = 52, triangles = 90000}, phone = {templates = 18, triangles = 20000}} -- §55 QC M3: sized for the trimmed (S.NPC_TRIS) worst case
+S.POOL = {desktop = {templates = 52, triangles = 160000}, phone = {templates = 18, triangles = 20000}} -- §55 QC M3: sized for the trimmed (S.NPC_TRIS) worst case
 -- Most NPCs animated at once (nearest win; QC L), re-ranked every 0.5 s.
 S.ANIM_CAP = {desktop = 18, phone = 8}
 function S.lod(distance, phone)
