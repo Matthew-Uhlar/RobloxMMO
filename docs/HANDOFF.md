@@ -212,7 +212,12 @@ The meshes are 22 smooth shapes in `art/TerrainCatalog.lua`. The rules live in `
 Published live (all via PRs into main, each QC-reviewed with a fix round): §45 Combat Feats, §46 Gathering Hearts, §47 animation depth, §48 creature art, §49 Runebinding, §50 ambience/weather, §51 Skysailing, §52 NPC outfits + item icons, §53 The Sundered Sky, §54 island environment + per-vertex colour. The final publish adds §55 (62 organic shapes re-authored to the strict smoothness bar) — this one was NOT independently QC-reviewed (owner asked to publish before their usage ran out).
 
 Open work for the next lead:
-- QC review of §55, then a phone performance check (world/outfit forge triangle budgets were raised substantially; see contract §55).
+- **§55 is NOT published (PR #15 left open, unmerged).** Its QC review (2026-11-25) found a phone regression, so the lead held it back:
+  - H1: the 27 smooth world shapes cost 3–17× more triangles (Compass Quay organic props ~169k vs ~24k before) but the phone `placedTriangles` cap is still 150k, and creatures share that cap, so on phones creatures and nearby props fall back to primitives. A creature reserve alone is not enough: with any reserve (tried 25k and 14k) `verify-mesh` fails "phone Warden Reach: every shape within 40 studs meshed" because the phone budget is already full.
+  - H2 (the real fix): lighten the heaviest shapes — CliffPiece (7.3k → ≤2.5k, use SEG_FAR like terrain cliff), TilledSoil (5.3k, kW 48→12, ≤1k), FlowerPatch/CropBloom/CropGlowcap (≤3k), PalmTree/AetherheartTree (≤4k) — and emit a `far` LOD (≤1.2k) per organic world shape chosen beyond ~40 studs on phone / ~150 on desktop. Then add a creature placed reserve (phone ~25k, desktop ~80k) in forge.client.lua and tour asserts for placed headroom.
+  - H3: emit WorldCatalog lazily like the other catalogs (+15–20 MB heap today); cap phone world templates at ~3k tris each.
+  - M1: `tools/organic-baseline.cjs` should take min(old,new) and keep only existing names; tighten `ratchet <= 69`. M3: one shared phone/tablet classifier (forge vs npc.client disagree); cap outfit tris per NPC ~6k phone / 8k desktop. Lows: organic `meta.fit` lo.Y=0 (trees float ~0.4·k), fairing bounds check, explicit ≥4096-vertex error, stale reef/wreck comments.
+  - After those fixes, rebuild, re-run QC, then publish §55.
 - Re-author the 64 creature shapes and 5 legacy world shapes still in `art/organic-baseline.json` (keep within rig budgets; packer vertex limit 4,095).
 - Cliff-wall detail (strata bands, ledges, crystal cracks) from §54's open list.
 - CI: Windows build job limit is 35 min and publish 45 min; the suite count keeps growing, watch run times.
