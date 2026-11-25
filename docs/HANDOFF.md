@@ -206,3 +206,14 @@ The meshes are 22 smooth shapes in `art/TerrainCatalog.lua`. The rules live in `
 - **Islands have thick cliff walls,** `clamp(R*0.18, 10, 30)` studs (lead decision). Near islands get a forged wall at absolute size: a turf lip, a soil band, then strata.
 - **Near and far tree LODs.**
 - **All the client findings are fixed:** backoffs, quiet-model re-planning, 2 ms slices, oriented footprints, skirt and SwayRest. Details are in contract §54, "QC round".
+
+## Pause point (2026-11-25)
+
+Published live (all via PRs into main, each QC-reviewed with a fix round): §45 Combat Feats, §46 Gathering Hearts, §47 animation depth, §48 creature art, §49 Runebinding, §50 ambience/weather, §51 Skysailing, §52 NPC outfits + item icons, §53 The Sundered Sky, §54 island environment + per-vertex colour. The final publish adds §55 (62 organic shapes re-authored to the strict smoothness bar) — this one was NOT independently QC-reviewed (owner asked to publish before their usage ran out).
+
+Open work for the next lead:
+- QC review of §55, then a phone performance check (world/outfit forge triangle budgets were raised substantially; see contract §55).
+- Re-author the 64 creature shapes and 5 legacy world shapes still in `art/organic-baseline.json` (keep within rig budgets; packer vertex limit 4,095).
+- Cliff-wall detail (strata bands, ledges, crystal cracks) from §54's open list.
+- CI: Windows build job limit is 35 min and publish 45 min; the suite count keeps growing, watch run times.
+- Everything visual still needs a Studio play-test (each §'s "Needs Studio check" list).
