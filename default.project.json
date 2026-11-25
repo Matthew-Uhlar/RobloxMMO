@@ -17,7 +17,9 @@
       "AetherCreatureRules": { "$path": "shared/CreatureRules.lua" },
       "AetherAmbience": { "$path": "shared/Ambience.lua" },
       "AetherNpcStyle": { "$path": "shared/NpcStyle.lua" },
-      "AetherOutfitArt": { "$path": "art/OutfitCatalog.lua" }
+      "AetherOutfitArt": { "$path": "art/OutfitCatalog.lua" },
+      "AetherTerrainArt": { "$path": "art/TerrainCatalog.lua" },
+      "AetherTerrain": { "$path": "shared/TerrainArt.lua" }
     },
     "ServerStorage": {
       "AetherTrails": { "$path": "trails.lua" }
@@ -66,7 +68,8 @@
         "IsleCreatures": { "$path": "creatures.client.lua" },
         "IsleAmbience": { "$path": "ambience.client.lua" },
         "IsleRunes": { "$path": "runes.client.lua" },
-        "IsleSailing": { "$path": "sailing.client.lua" }
+        "IsleSailing": { "$path": "sailing.client.lua" },
+        "IsleTerrain": { "$path": "terrain.client.lua" }
       }
     },
     "Lighting": {

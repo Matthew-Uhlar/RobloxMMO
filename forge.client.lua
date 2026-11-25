@@ -71,7 +71,9 @@ local catalogs = {}
 -- through the creature API below (creatures.client.lua), never from a Shape tag.
 -- AetherOutfitArt (§52): NPC outfit pieces and trade props, forged only through
 -- the outfit API below (npc.client.lua), in their own pool.
-for _, name in ipairs({"AetherWorldArt", "AetherArt", "AetherCreatureArt", "AetherOutfitArt"}) do
+-- AetherTerrainArt (§54): island dressing (clutter, shrubs, trees, cliff dressing,
+-- satellite rocks), forged only through the dress API below (terrain.client.lua).
+for _, name in ipairs({"AetherWorldArt", "AetherArt", "AetherCreatureArt", "AetherOutfitArt", "AetherTerrainArt"}) do
 	local catalog = loadCatalog(name)
 	if catalog then table.insert(catalogs, catalog) end
 end
@@ -147,7 +149,7 @@ local function shapeOf(part)
 	return ALIASES[shapeName] or shapeName
 end
 
-local stats = {templates = 0, templateTriangles = 0, creatureTemplates = 0, creatureTriangles = 0, outfitTemplates = 0, outfitTriangles = 0, outfitInstances = 0, outfitPlaced = 0, instances = 0, placedTriangles = 0, failures = 0, skipped = 0, evicted = 0, templateSkips = 0, reclaimed = 0,
+local stats = {templates = 0, templateTriangles = 0, creatureTemplates = 0, creatureTriangles = 0, outfitTemplates = 0, outfitTriangles = 0, outfitInstances = 0, outfitPlaced = 0, dressTemplates = 0, dressTriangles = 0, dressInstances = 0, dressPlaced = 0, grounds = 0, groundTriangles = 0, instances = 0, placedTriangles = 0, failures = 0, skipped = 0, evicted = 0, templateSkips = 0, reclaimed = 0,
 	chartPins = 0, chartRevoked = 0, chartRefused = 0}
 -- Indexing a missing member errors on an Instance, so probe the API under pcall.
 local available = pcall(function()
@@ -191,6 +193,20 @@ local OUTFIT_TRIANGLE_CAP = if mobile then 20000 else 52000
 -- LIMITS.instances / placedTriangles), bounded by the dressed-NPC cap.
 local OUTFIT_INSTANCE_CAP = if mobile then 40 else 120
 local outfitPool = {failures = 0, blocked = false, stop = stopReason}
+-- §54 island dressing: its own pool (templates, triangles, clones) beside the
+-- world's, the creatures' and the outfits', so a meadow full of grass never
+-- starves hulls, buildings or creatures. terrain.client.lua applies the
+-- per-tier caps (shared/TerrainArt.lua) under these hard ceilings. Desktop keeps
+-- each region tint; phones share one variant per shape.
+local DRESS_KINDS = {clutter = true, shrub = true, foliage = true, cliff = true, satellite = true}
+local DRESS_TEMPLATE_CAP = if mobile then 16 else 44
+local DRESS_TRIANGLE_CAP = if mobile then 22000 else 64000
+local DRESS_INSTANCE_CAP = if mobile then 200 else 720
+local DRESS_PLACED_CAP = if mobile then 190000 else 720000
+local dressPool = {failures = 0, blocked = false, stop = stopReason}
+-- Forged ground tops (one unique EditableMesh per island, no template).
+local GROUND_CAP = if mobile then 2 else 4
+local GROUND_TRIANGLE_CAP = if mobile then 10000 else 36000
 local variants = {} -- shapeName -> {key -> tint | false}
 local function tintDistance(a, b)
 	if not a or not b then return if a == b then 0 else 1 end
@@ -333,8 +349,9 @@ end
 -- CREATURE_TRIANGLE_CAP) beside the world's LIMITS, so a busy town never
 -- starves the creatures and a crowd of creatures never starves the town; each
 -- pool evicts only its own idle templates.
-local function worldCounts() return stats.templates - stats.creatureTemplates - stats.outfitTemplates, stats.templateTriangles - stats.creatureTriangles - stats.outfitTriangles end
-local function fits(creature, triangles, boss, outfit)
+local function worldCounts() return stats.templates - stats.creatureTemplates - stats.outfitTemplates - stats.dressTemplates, stats.templateTriangles - stats.creatureTriangles - stats.outfitTriangles - stats.dressTriangles end
+local function fits(creature, triangles, boss, outfit, dress)
+	if dress then return stats.dressTemplates < DRESS_TEMPLATE_CAP and stats.dressTriangles + triangles <= DRESS_TRIANGLE_CAP end
 	if outfit then return stats.outfitTemplates < OUTFIT_TEMPLATE_CAP and stats.outfitTriangles + triangles <= OUTFIT_TRIANGLE_CAP end
 	if creature then
 		local count, tris = CREATURE_TEMPLATE_CAP, CREATURE_TRIANGLE_CAP
@@ -357,22 +374,26 @@ local function dropTemplate(key, entry)
 		stats.outfitTemplates -= 1
 		stats.outfitTriangles -= entry.triangles
 	end
+	if entry.dress then
+		stats.dressTemplates -= 1
+		stats.dressTriangles -= entry.triangles
+	end
 	stats.evicted += 1
 	pcall(entry.part.Destroy, entry.part)
 	if entry.mesh then pcall(entry.mesh.Destroy, entry.mesh) end
 end
-local function evictFor(triangles, creature, boss, outfit)
-	creature, outfit = creature == true, outfit == true
+local function evictFor(triangles, creature, boss, outfit, dress)
+	creature, outfit, dress = creature == true, outfit == true, dress == true
 	local idle = {}
 	for key, entry in pairs(templates) do
-		if entry and not entry.pending and entry.users == 0 and (entry.creature == true) == creature and (entry.outfit == true) == outfit then table.insert(idle, {key, entry}) end
+		if entry and not entry.pending and entry.users == 0 and (entry.creature == true) == creature and (entry.outfit == true) == outfit and (entry.dress == true) == dress then table.insert(idle, {key, entry}) end
 	end
 	table.sort(idle, function(a, b) return a[2].used < b[2].used end)
 	for _, item in ipairs(idle) do
-		if fits(creature, triangles, boss, outfit) then break end
+		if fits(creature, triangles, boss, outfit, dress) then break end
 		dropTemplate(item[1], item[2])
 	end
-	return fits(creature, triangles, boss, outfit)
+	return fits(creature, triangles, boss, outfit, dress)
 end
 local function template(shapeName, data, catalog, tint, boss)
 	local key = shapeName .. "#" .. (if tint then tint:ToHex() else "")
@@ -388,19 +409,20 @@ local function template(shapeName, data, catalog, tint, boss)
 	-- region) keep their exact Tint on desktop; phones share variants as usual.
 	if variantCount(shapeName) >= VARIANTS and not (data.kind == "sign" and not SIGN_KIT_SHAPES[shapeName])
 		and not (data.exactTint == true and not mobile) and not (CREATURE_KINDS[data.kind] and (not mobile or boss))
-		and not (OUTFIT_KINDS[data.kind] and not mobile) then
+		and not (OUTFIT_KINDS[data.kind] and not mobile) and not (DRESS_KINDS[data.kind] and not mobile) then
 		return nearestVariant(shapeName, tint)
 	end
 	local triangles = data.tris or #data.faces
 	local creature = CREATURE_KINDS[data.kind] == true
 	local outfit = OUTFIT_KINDS[data.kind] == true
-	local stopped = if outfit then (outfitPool.stop or outfitPool.blocked) elseif creature then (creaturePool.stop or creaturePool.blocked) else (stopReason or newTemplatesBlocked)
-	if stopped or (not fits(creature, triangles, boss, outfit) and not evictFor(triangles, creature, boss, outfit)) then
+	local dress = DRESS_KINDS[data.kind] == true
+	local stopped = if dress then (dressPool.stop or dressPool.blocked) elseif outfit then (outfitPool.stop or outfitPool.blocked) elseif creature then (creaturePool.stop or creaturePool.blocked) else (stopReason or newTemplatesBlocked)
+	if stopped or (not fits(creature, triangles, boss, outfit, dress) and not evictFor(triangles, creature, boss, outfit, dress)) then
 		stats.templateSkips += 1
 		return nil, "budget"
 	end
 	-- Reserve the slot before the build yields, so concurrent callers see it.
-	local marker = {pending = true, waiters = {}, users = 0, used = 0, triangles = triangles, shape = shapeName, creature = creature, outfit = outfit}
+	local marker = {pending = true, waiters = {}, users = 0, used = 0, triangles = triangles, shape = shapeName, creature = creature, outfit = outfit, dress = dress}
 	templates[key] = marker
 	stats.templates += 1
 	stats.templateTriangles += triangles
@@ -411,6 +433,10 @@ local function template(shapeName, data, catalog, tint, boss)
 	if outfit then
 		stats.outfitTemplates += 1
 		stats.outfitTriangles += triangles
+	end
+	if dress then
+		stats.dressTemplates += 1
+		stats.dressTriangles += triangles
 	end
 	local part, mesh, problem = buildTemplate(shapeName, data, catalog, tint)
 	local entry, reason = nil, nil
@@ -426,9 +452,17 @@ local function template(shapeName, data, catalog, tint, boss)
 			stats.outfitTemplates -= 1
 			stats.outfitTriangles -= triangles
 		end
+		if dress then
+			stats.dressTemplates -= 1
+			stats.dressTriangles -= triangles
+		end
 		local message = string.lower(problem or "")
 		local blocked = message:find("budget", 1, true) or message:find("memory", 1, true) or message:find("limit", 1, true)
-		if outfit then
+		if dress then
+			dressPool.failures += 1
+			if blocked then dressPool.blocked = true end
+			if dressPool.failures >= LIMITS.failures then dressPool.stop = "unavailable" end
+		elseif outfit then
 			outfitPool.failures += 1
 			if blocked then outfitPool.blocked = true end
 			if outfitPool.failures >= LIMITS.failures then outfitPool.stop = "unavailable" end
@@ -447,7 +481,7 @@ local function template(shapeName, data, catalog, tint, boss)
 		local lo, hi = bounds(data)
 		useTick += 1
 		entry = {part = part, mesh = mesh, extent = (hi - lo):Max(Vector3.one * 0.01), center = (lo + hi) / 2, triangles = triangles,
-			users = 0, used = useTick, shape = shapeName, key = key, chartPins = 0, creature = creature, outfit = outfit}
+			users = 0, used = useTick, shape = shapeName, key = key, chartPins = 0, creature = creature, outfit = outfit, dress = dress}
 		variants[shapeName] = variants[shapeName] or {}
 		variants[shapeName][key] = tint or false
 		part.Size = entry.extent
@@ -693,6 +727,7 @@ local function forge(part)
 	-- §48: creature meshes are posed by creatures.client.lua, never Shape-tagged.
 	if CREATURE_KINDS[data.kind] then skip(part, "creature shape", true); return end
 	if OUTFIT_KINDS[data.kind] then skip(part, "outfit shape", true); return end
+	if DRESS_KINDS[data.kind] then skip(part, "dress shape", true); return end
 	if stopReason then skip(part, stopReason, true); return end
 	if stats.instances >= LIMITS.instances or stats.placedTriangles + #data.faces > LIMITS.placedTriangles then skip(part, "budget"); return end
 	local tint = templateTint(shapeName, data, part:GetAttribute("Tint"))
@@ -1066,6 +1101,118 @@ local function creatureRelease(token)
 	return true
 end
 
+-- §54 island dressing: dressVisual(shape, tint) -> an unparented clone at the
+-- mesh's native size, a token, extent and centre (the outfit contract) from the
+-- dress pool, or nil and a reason; dressRelease(token) hands it back.
+local dressTokens, dressNext = {}, 0 -- token -> {entry, clone}
+local function dressVisual(shapeName, tint)
+	if type(shapeName) ~= "string" then return nil, "unknown" end
+	if dressPool.stop or dressPool.blocked then return nil, "unavailable" end
+	local data, catalog = lookup(shapeName)
+	if not data or not DRESS_KINDS[data.kind] then return nil, "unknown" end
+	local tris = data.tris or #data.faces
+	if stats.dressInstances >= DRESS_INSTANCE_CAP or stats.dressPlaced + tris > DRESS_PLACED_CAP then return nil, "budget" end
+	local color = if typeof(tint) == "Color3" then tint else defaultTint(data)
+	local entry, reason = template(shapeName, data, catalog, color, false)
+	if not entry and reason == "failed" then return nil, if dressPool.stop or dressPool.blocked then "unavailable" else "failed" end
+	if not entry then entry = nearestVariant(shapeName, color) end
+	if not entry or entry.pending then return nil, if dressPool.stop or dressPool.blocked then "unavailable" else "budget" end
+	local clone = entry.part:Clone()
+	clone.Name = shapeName
+	clone:SetAttribute("ShapeOf", shapeName)
+	clone.CanCollide, clone.CanTouch, clone.CanQuery = false, false, false
+	useTick += 1
+	entry.users += 1
+	entry.used = useTick
+	stats.dressInstances += 1
+	stats.dressPlaced += entry.triangles
+	dressNext += 1
+	dressTokens[dressNext] = {entry = entry, clone = clone}
+	return clone, dressNext, entry.extent, entry.center
+end
+local function dressRelease(token)
+	local t = dressTokens[token]
+	if not t then return false end
+	dressTokens[token] = nil
+	t.entry.users -= 1
+	useTick += 1
+	t.entry.used = useTick
+	stats.dressInstances -= 1
+	stats.dressPlaced -= t.entry.triangles
+	pcall(t.clone.Destroy, t.clone)
+	return true
+end
+-- Forged ground tops (§54): groundVisual(spec) with spec = shared/TerrainArt.lua
+-- T.ground output ({vertices, colors, normals, faces}, island space) -> a
+-- MeshPart (unparented, non-colliding; geometry recentred on its bounds), a
+-- token and the bounds centre in island space; per-vertex colours and smooth
+-- normals. groundRelease(token) destroys it. Capped at GROUND_CAP meshes and
+-- GROUND_TRIANGLE_CAP triangles; failures count against the dress pool.
+local groundTokens, groundNext = {}, 0 -- token -> {part, mesh, triangles}
+local function groundVisual(spec)
+	if type(spec) ~= "table" or type(spec.vertices) ~= "table" or type(spec.faces) ~= "table" then return nil, "unknown" end
+	if dressPool.stop or dressPool.blocked then return nil, "unavailable" end
+	local triangles = #spec.faces
+	if stats.grounds >= GROUND_CAP or stats.groundTriangles + triangles > GROUND_TRIANGLE_CAP then return nil, "budget" end
+	stats.grounds += 1
+	stats.groundTriangles += triangles
+	local lo, hi = Vector3.new(math.huge, math.huge, math.huge), Vector3.new(-math.huge, -math.huge, -math.huge)
+	for _, v in ipairs(spec.vertices) do
+		local p = Vector3.new(v[1], v[2], v[3])
+		lo, hi = lo:Min(p), hi:Max(p)
+	end
+	local centre = (lo + hi) / 2
+	local mesh
+	local ok, part = pcall(function()
+		mesh = AssetService:CreateEditableMesh()
+		assert(mesh, "CreateEditableMesh returned nil")
+		local ids, colorIds, normalIds = {}, {}, {}
+		for i, v in ipairs(spec.vertices) do
+			ids[i] = mesh:AddVertex(Vector3.new(v[1], v[2], v[3]))
+			local c, n = spec.colors[i], spec.normals[i]
+			colorIds[i] = mesh:AddColor(Color3.new(c[1], c[2], c[3]), 1)
+			normalIds[i] = mesh:AddNormal(Vector3.new(n[1], n[2], n[3]))
+		end
+		for _, f in ipairs(spec.faces) do
+			local triangle = mesh:AddTriangle(ids[f[1]], ids[f[2]], ids[f[3]])
+			mesh:SetFaceColors(triangle, {colorIds[f[1]], colorIds[f[2]], colorIds[f[3]]})
+			mesh:SetFaceNormals(triangle, {normalIds[f[1]], normalIds[f[2]], normalIds[f[3]]})
+		end
+		local content = Content.fromObject(mesh)
+		local okOptions, result = pcall(AssetService.CreateMeshPartAsync, AssetService, content, {CollisionFidelity = Enum.CollisionFidelity.Box})
+		if not okOptions or not result then result = AssetService:CreateMeshPartAsync(content) end
+		assert(result and result:IsA("MeshPart"), "CreateMeshPartAsync returned no MeshPart")
+		result.Name = "Forged ground"
+		result.Anchored, result.CanCollide, result.CanTouch, result.CanQuery = true, false, false, false
+		result.Material = Enum.Material.SmoothPlastic
+		result.Color = Color3.new(1, 1, 1)
+		result.Size = (hi - lo):Max(Vector3.one * 0.05)
+		return result
+	end)
+	if not ok or not part then
+		stats.grounds -= 1
+		stats.groundTriangles -= triangles
+		if mesh then pcall(mesh.Destroy, mesh) end
+		dressPool.failures += 1
+		if dressPool.failures >= LIMITS.failures then dressPool.stop = "unavailable" end
+		warn("[MeshForge] ground could not be meshed: " .. tostring(part))
+		return nil, "failed"
+	end
+	groundNext += 1
+	groundTokens[groundNext] = {part = part, mesh = mesh, triangles = triangles}
+	return part, groundNext, centre
+end
+local function groundRelease(token)
+	local t = groundTokens[token]
+	if not t then return false end
+	groundTokens[token] = nil
+	stats.grounds -= 1
+	stats.groundTriangles -= t.triangles
+	pcall(t.part.Destroy, t.part)
+	if t.mesh then pcall(t.mesh.Destroy, t.mesh) end
+	return true
+end
+
 workspace.DescendantAdded:Connect(function(instance) task.defer(watch, instance) end)
 for _, instance in ipairs(workspace:GetDescendants()) do watch(instance) end
 step()
@@ -1079,6 +1226,9 @@ if MeshForgeTest then
 			bossReserve = CREATURE_BOSS_RESERVE, bossTriangles = CREATURE_BOSS_TRIANGLES, pool = creaturePool},
 		outfit = {visual = outfitVisual, release = outfitRelease, tokens = outfitTokens, cap = OUTFIT_TEMPLATE_CAP, triangleCap = OUTFIT_TRIANGLE_CAP,
 			instanceCap = OUTFIT_INSTANCE_CAP, kinds = OUTFIT_KINDS, pool = outfitPool},
+		dress = {visual = dressVisual, release = dressRelease, tokens = dressTokens, cap = DRESS_TEMPLATE_CAP, triangleCap = DRESS_TRIANGLE_CAP,
+			instanceCap = DRESS_INSTANCE_CAP, placedCap = DRESS_PLACED_CAP, kinds = DRESS_KINDS, pool = dressPool,
+			ground = groundVisual, groundRelease = groundRelease, groundTokens = groundTokens, groundCap = GROUND_CAP, groundTriangleCap = GROUND_TRIANGLE_CAP},
 		-- Final mesh box for a tagged part, without forging: size, CFrame, kind.
 		describe = function(part)
 			local shapeName = shapeOf(part)
@@ -1103,6 +1253,10 @@ do
 		if method == "creatureRelease" and type(arg) == "number" then return creatureRelease(arg) end
 		if method == "outfit" and type(arg) == "table" then return outfitVisual(arg.shape, arg.tint) end
 		if method == "outfitRelease" and type(arg) == "number" then return outfitRelease(arg) end
+		if method == "dress" and type(arg) == "table" then return dressVisual(arg.shape, arg.tint) end
+		if method == "dressRelease" and type(arg) == "number" then return dressRelease(arg) end
+		if method == "ground" and type(arg) == "table" then return groundVisual(arg) end
+		if method == "groundRelease" and type(arg) == "number" then return groundRelease(arg) end
 		return nil
 	end
 	api.Parent = ReplicatedStorage
@@ -1119,6 +1273,8 @@ script.Destroying:Once(function()
 	for part in pairs(placed) do release(part) end
 	for token in pairs(creatureTokens) do creatureRelease(token) end
 	for token in pairs(outfitTokens) do outfitRelease(token) end
+	for token in pairs(dressTokens) do dressRelease(token) end
+	for token in pairs(groundTokens) do groundRelease(token) end
 	for _, entry in pairs(templates) do
 		if entry and not entry.pending then
 			pcall(entry.part.Destroy, entry.part)

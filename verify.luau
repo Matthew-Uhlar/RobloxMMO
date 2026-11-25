@@ -8,7 +8,7 @@ local bindings = {
 	Observatory = "expedition.server.lua", Assembly = "festival.server.lua",
 	Homesteads = "coop.server.lua", Combat = "combat.server.lua", MeshForge = "forge.client.lua",
 	FieldGuide = "ui.client.lua", IslandArt = "mesh.client.lua", CombatInput = "combat.client.lua", IslandBuilder = "build.client.lua",
-	Townsfolk = "npc.server.lua", Minigames = "minigames.server.lua", Lairs = "lairs.server.lua", Beaconry = "beaconry.server.lua", Raids = "raids.server.lua", IsleRaid = "raid.client.lua", Dialogue = "npc.client.lua", Wayfinder = "nav.client.lua", Companions = "pets.client.lua", AetherMotes = "motes.client.lua", RegionBanner = "regions.client.lua", IsleFeatures = "features.client.lua", IsleOverlay = "overlay.client.lua", IsleLighting = "lighting.client.lua", IsleTutorial = "tutorial.client.lua", IsleBeacons = "beacons.client.lua", SignView = "signs.client.lua", IsleHearts = "hearts.client.lua", IsleCreatures = "creatures.client.lua", IsleAmbience = "ambience.client.lua", Weather = "weather.server.lua", IsleRunes = "runes.client.lua", Skysailing = "sailing.server.lua", IsleSailing = "sailing.client.lua",
+	Townsfolk = "npc.server.lua", Minigames = "minigames.server.lua", Lairs = "lairs.server.lua", Beaconry = "beaconry.server.lua", Raids = "raids.server.lua", IsleRaid = "raid.client.lua", Dialogue = "npc.client.lua", Wayfinder = "nav.client.lua", Companions = "pets.client.lua", AetherMotes = "motes.client.lua", RegionBanner = "regions.client.lua", IsleFeatures = "features.client.lua", IsleOverlay = "overlay.client.lua", IsleLighting = "lighting.client.lua", IsleTutorial = "tutorial.client.lua", IsleBeacons = "beacons.client.lua", SignView = "signs.client.lua", IsleHearts = "hearts.client.lua", IsleCreatures = "creatures.client.lua", IsleAmbience = "ambience.client.lua", Weather = "weather.server.lua", IsleRunes = "runes.client.lua", Skysailing = "sailing.server.lua", IsleSailing = "sailing.client.lua", IsleTerrain = "terrain.client.lua",
 	Gestures = "animate.client.lua", GestureRelay = "gesture.server.lua",
 	HeldItems = "held.server.lua", Hotbar = "hotbar.client.lua",
 	AetherArt = "art/PropCatalog.lua",
@@ -16,6 +16,7 @@ local bindings = {
 	AetherData = "shared/GameData.lua", AetherProgression = "shared/Progression.lua",
 	AetherUiTheme = "shared/UiTheme.lua", AetherMapArt = "shared/MapArt.lua", AetherHudDepth = "shared/HudDepth.lua", AetherLighting = "shared/LightingProfiles.lua", AetherSignView = "shared/SignView.lua",
 	AetherCreatureArt = "art/CreatureCatalog.lua", AetherCreatureRules = "shared/CreatureRules.lua", AetherAmbience = "shared/Ambience.lua",
+	AetherTerrainArt = "art/TerrainCatalog.lua", AetherTerrain = "shared/TerrainArt.lua",
 	AetherTrails = "trails.lua",
 }
 local count = 0
@@ -24,7 +25,7 @@ for _, obj in place:GetDescendants() do
 	if not file then continue end
 	assert(obj.Source:gsub("\r\n","\n") == fs.readFile(file):gsub("\r\n","\n"), file .. " is stale")
 	local client = file:find(".client.", 1, true)
-	local shared = obj.Name=="AetherArt" or obj.Name=="AetherWorldArt" or obj.Name=="MaterialArt" or obj.Name=="AetherData" or obj.Name=="AetherProgression" or obj.Name=="AetherUiTheme" or obj.Name=="AetherMapArt" or obj.Name=="AetherHudDepth" or obj.Name=="AetherLighting" or obj.Name=="AetherSignView" or obj.Name=="AetherCreatureArt" or obj.Name=="AetherCreatureRules" or obj.Name=="AetherAmbience"
+	local shared = obj.Name=="AetherArt" or obj.Name=="AetherWorldArt" or obj.Name=="MaterialArt" or obj.Name=="AetherData" or obj.Name=="AetherProgression" or obj.Name=="AetherUiTheme" or obj.Name=="AetherMapArt" or obj.Name=="AetherHudDepth" or obj.Name=="AetherLighting" or obj.Name=="AetherSignView" or obj.Name=="AetherCreatureArt" or obj.Name=="AetherCreatureRules" or obj.Name=="AetherAmbience" or obj.Name=="AetherTerrainArt" or obj.Name=="AetherTerrain"
 	-- Server-only modules (never replicated): the Treasure Trails step pool.
 	local serverModule = obj.Name=="AetherTrails"
 	assert(obj.ClassName == (if shared or serverModule then "ModuleScript" elseif client then "LocalScript" else "Script"), file .. " class")

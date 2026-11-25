@@ -1313,6 +1313,39 @@ for _, name in ipairs({"CreatureBoar", "CreatureSovereign", "DrakeWing", "Overla
 	check(vi == #data.vertices and fi == #data.faces, name .. " packed counts match its OBJ")
 end
 
+------------------------------------------------------------------------------
+-- §54 terrain catalog (art/TerrainCatalog.lua) and the reworked island hulls:
+-- the §48 facet / segment rules apply to every new shape (smooth >= 40, round
+-- primitives with >= 10 segments, hard-edge and colour-boundary ratios <= 0.2).
+-- verify-environment.luau covers placement, budgets and the client layer.
+------------------------------------------------------------------------------
+local Terrain = luau.load(fs.readFile("art/TerrainCatalog.lua"), {injectGlobals = true})()
+local terrainCount = 0
+for name, data in pairs(Terrain.shapes) do
+	terrainCount += 1
+	check(World.shapes[name] == nil and Creatures.shapes[name] == nil and Props.shapes[name] == nil, name .. " is unique across catalogs")
+	local points = validate(name, data, 100, 1500)
+	check(data.smooth >= 40, name .. " is smooth-shaded (crease " .. data.smooth .. ")")
+	local hardRatio, colourRatio = edgeRatios(data, points)
+	check(hardRatio <= 0.2, string.format("%s hard-edge ratio %.3f <= 0.2", name, hardRatio))
+	check(colourRatio <= 0.2, string.format("%s colour-boundary ratio %.3f <= 0.2", name, colourRatio))
+	for _, vol in ipairs(componentVolumes(data, points)) do check(vol > -1e-4, name .. " components are wound outward") end
+end
+check(terrainCount >= 20, "terrain shapes authored (" .. terrainCount .. ")")
+do
+	local art = fs.readFile("art/terrain-shapes.cjs")
+	for _, banned in ipairs({"kit.prism(", "kit.box(", "kit.bevelBox(", "kit.jewel(", "kit.slab(", "kit.spindle(", "kit.ring("}) do
+		check(not string.find(art, banned, 1, true), "terrain art never uses the faceted primitive " .. banned)
+	end
+	for n in string.gmatch(art, "[^%w]n: (%d+)") do check(tonumber(n) >= 10, "every terrain ring / tube has >= 10 segments (n: " .. n .. ")") end
+end
+for _, name in ipairs({"IslandCliff", "IslandCliffBare", "IslandKeel", "IslandKeelCrystal", "IslandKeelEmber"}) do
+	local data = World.shapes[name]
+	check(data.smooth >= 40, name .. " hull is smooth-shaded")
+	local hardRatio = edgeRatios(data, pointsOf(data))
+	check(hardRatio <= 0.25, string.format("%s hull hard-edge ratio %.3f <= 0.25", name, hardRatio))
+end
+
 print(string.format("Mesh QA passed %d checks: %d world shapes / %d triangles; %d creature shapes / %d triangles; forge success, failure, budget, late-tag and sign paths.", checks, worldCount, worldTriangles, creatureCount, creatureTriangles))
 
 -- Completion sentinel: scripts/build.sh fails if a suite stops early without erroring.

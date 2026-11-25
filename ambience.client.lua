@@ -230,6 +230,8 @@ end
 local function addSway(link)
 	local clone, host = link.Value, link.Parent
 	if not clone or World.seen.sway[clone] or not clone:IsA("MeshPart") then return end
+	-- §54: island dressing links live in IsleDressing.Sway (no host part).
+	if host and not host:IsA("BasePart") then host = nil end
 	local def = A.SWAY[clone:GetAttribute("ShapeOf") or ""]
 	if not def or hostMoves(host) then return end
 	World.seen.sway[clone] = true
@@ -281,7 +283,7 @@ Amb.classify = classify
 -- rescan walks the roots in slices of RESCAN_SLICE instances per selection
 -- tick, so an attribute the server sets after the part arrived (GatherNode,
 -- Landmark, BuildingType, BeaconFlame) is picked up within a cycle.
-local ROOTS = {"Islands", "AetherIsles"}
+local ROOTS = {"Islands", "AetherIsles", "IsleDressing"} -- §54: the local island dressing (terrain.client.lua)
 local roots = {}
 local Rescan = {items = nil, i = 1, SLICE = 400}
 Amb.rescan = Rescan

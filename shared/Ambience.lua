@@ -196,6 +196,13 @@ A.SWAY = {
 	CropBed = {mode = "crop", amp = 0.05, freq = 0.9}, -- a crop slot whose resource has no shape of its own
 	Banner = {mode = "banner", amp = 0.11, freq = 1.6},
 	HangingLantern = {mode = "lantern", amp = 0.05, freq = 0.55},
+	-- §54 island dressing (terrain.client.lua clones, art/TerrainCatalog.lua).
+	GrassTuft = {mode = "grass", amp = 0.08, freq = 1.2}, MeadowGrass = {mode = "grass", amp = 0.09, freq = 1.1},
+	ReedClump = {mode = "grass", amp = 0.08, freq = 1.0}, FlowerSprigs = {mode = "bush", amp = 0.06, freq = 0.9},
+	Fern = {mode = "bush", amp = 0.05, freq = 0.7}, LeafyBush = {mode = "bush", amp = 0.04, freq = 0.7},
+	BroadleafTree = {mode = "tree", amp = 0.02, freq = 0.32}, BlossomTree = {mode = "tree", amp = 0.022, freq = 0.34},
+	WillowTree = {mode = "tree", amp = 0.03, freq = 0.3}, SpirePine = {mode = "tree", amp = 0.018, freq = 0.3},
+	VineCurtain = {mode = "lantern", amp = 0.04, freq = 0.5}, HangingRoots = {mode = "lantern", amp = 0.03, freq = 0.45},
 }
 -- Only the forge's local MeshPart clones sway (QC M1): server parts (herb
 -- tufts, colliders) are never moved. A host tagged NO_SWAY_TAG, carrying

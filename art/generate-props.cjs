@@ -580,6 +580,21 @@ function outfit(name,meta,build){
   shape(name,build,outfitShapes,1000);outfitMeta[name]=meta;
 }
 require('./outfit-shapes.cjs')({outfit,C,PI,hash,jitterOf});
+// Environment art (§54): island dressing — clutter, shrubs, tree species,
+// cliff dressing and satellite rocks; their own lazily decoded catalog
+// (art/TerrainCatalog.lua), placed by terrain.client.lua through the forge's
+// "dress" pool. Smooth-shaded and facet-checked below.
+const TERRAIN_TRIANGLE_RANGE = {clutter: [100, 800], shrub: [150, 1200], foliage: [400, 2400], cliff: [150, 1600], satellite: [300, 1600]};
+const TERRAIN_HARD_EDGE_MAX = 0.2, TERRAIN_COLOUR_EDGE_MAX = 0.2;
+const terrainShapes = {};
+const terrainMeta = {};
+function terrain(name,meta,build){
+  if(shapes[name]||worldShapes[name]||creatureShapes[name]||outfitShapes[name]||terrainShapes[name])throw new Error(`Duplicate shape name ${name}`);
+  if(!TERRAIN_TRIANGLE_RANGE[meta.kind])throw new Error(`${name}: unknown terrain kind ${meta.kind}`);
+  if(!(meta.smooth>=40))throw new Error(`${name}: terrain shapes are smooth-shaded (smooth >= 40)`);
+  shape(name,build,terrainShapes,1000);terrainMeta[name]=meta;
+}
+require('./terrain-shapes.cjs')({terrain,C,PI,hash,jitterOf});
 // Building kit (§40): returns the kit table the world script builds from.
 const buildingKit=require('./building-shapes.cjs')({world,C,PI,hash,jitterOf,worldShapes});
 
@@ -628,12 +643,40 @@ for(const [name,data] of Object.entries(outfitShapes)){
   if(data.vertices.length>=4096)rangeErrors.push(`${name} has ${data.vertices.length} vertices (packing limit 4095)`);
   for(const vol of componentVolumes(data))if(vol<-1e-4)throw new Error(`${name} has an inward-wound component (volume ${vol})`);
 }
+// §54 facet checks: hard edges (dihedral over the crease) and colour
+// boundaries over shared edges stay rare (same measure as verify-mesh).
+function edgeRatios(data,smooth){
+  const edges=new Map(),normals=[];
+  data.faces.forEach((f,i)=>{
+    const [p,q,r]=f.slice(0,3).map(k=>data.vertices[k-1]);
+    const u=q.map((x,k)=>x-p[k]),w=r.map((x,k)=>x-p[k]);
+    const n=[u[1]*w[2]-u[2]*w[1],u[2]*w[0]-u[0]*w[2],u[0]*w[1]-u[1]*w[0]],l=Math.hypot(...n)||1;
+    normals.push(n.map(x=>x/l));
+    for(let k=0;k<3;k++){const a=f[k],b=f[(k+1)%3],key=a<b?a*65536+b:b*65536+a;if(!edges.has(key))edges.set(key,[]);edges.get(key).push(i)}
+  });
+  let shared=0,hard=0,colour=0;const limit=Math.cos(smooth*Math.PI/180);
+  for(const list of edges.values())if(list.length===2){shared++;const [a,b]=list;
+    if(normals[a][0]*normals[b][0]+normals[a][1]*normals[b][1]+normals[a][2]*normals[b][2]<limit)hard++;
+    if(data.faces[a][3]!==data.faces[b][3])colour++}
+  return [hard/Math.max(1,shared),colour/Math.max(1,shared)];
+}
+const terrainReport=[];
+for(const [name,data] of Object.entries(terrainShapes)){
+  const count=data.faces.length,range=TERRAIN_TRIANGLE_RANGE[terrainMeta[name].kind];
+  if(count<range[0]||count>range[1])rangeErrors.push(`${name} has ${count} triangles; ${terrainMeta[name].kind} range is ${range.join('-')}`);
+  if(data.vertices.length>=4096)rangeErrors.push(`${name} has ${data.vertices.length} vertices (packing limit 4095)`);
+  for(const vol of componentVolumes(data))if(vol<-1e-4)throw new Error(`${name} has an inward-wound component (volume ${vol})`);
+  const [hard,colour]=edgeRatios(data,terrainMeta[name].smooth);
+  terrainReport.push(`${name} ${count} hard ${hard.toFixed(3)} colour ${colour.toFixed(3)}`);
+  if(hard>TERRAIN_HARD_EDGE_MAX)rangeErrors.push(`${name} hard-edge ratio ${hard.toFixed(3)} > ${TERRAIN_HARD_EDGE_MAX}`);
+  if(colour>TERRAIN_COLOUR_EDGE_MAX)rangeErrors.push(`${name} colour-boundary ratio ${colour.toFixed(3)} > ${TERRAIN_COLOUR_EDGE_MAX}`);
+}
 // Every rig names authored shapes only.
 for(const [kind,r] of Object.entries(creatureKit.rigs)){
   for(const seg of [{shape:r.core},...r.segs])if(!creatureShapes[seg.shape]||!['creature','pet','limb'].includes(creatureMeta[seg.shape].kind))throw new Error(`rig ${kind} names unknown shape ${seg.shape}`);
 }
 if(rangeErrors.length){console.log(Object.entries(worldShapes).map(([n,d])=>n+' '+d.faces.length).join(', '));throw new Error(rangeErrors.join('\n'))}
-for(const [name,data] of [...Object.entries(shapes),...Object.entries(worldShapes),...Object.entries(creatureShapes),...Object.entries(outfitShapes)])for(const [a,b,c,shade] of data.faces){
+for(const [name,data] of [...Object.entries(shapes),...Object.entries(worldShapes),...Object.entries(creatureShapes),...Object.entries(outfitShapes),...Object.entries(terrainShapes)])for(const [a,b,c,shade] of data.faces){
   const [p,q,r]=[a,b,c].map(i=>data.vertices[i-1]);
   const u=q.map((x,k)=>x-p[k]),w=r.map((x,k)=>x-p[k]);
   const n=[u[1]*w[2]-u[2]*w[1],u[2]*w[0]-u[0]*w[2],u[0]*w[1]-u[1]*w[0]];
@@ -693,8 +736,8 @@ return Catalog
 `;
 const luaTable = x => Array.isArray(x)?'{'+x.map(luaTable).join(',')+'}':typeof x==='object'?'{'+Object.entries(x).map(([k,v])=>k+'='+luaTable(v)).join(',')+'}':JSON.stringify(x);
 const entries=Object.entries(shapes).map(([name,data])=>`shapes.${name}=${luaTable(data)}`).join('\n');
-const objHeader=name=>{const m=worldMeta[name]||creatureMeta[name]||outfitMeta[name];return m?`# smooth ${m.smooth||0}\n`+(m.tint?`# tint ${m.tint}\n`:''):''};
-for(const [name,data] of [...Object.entries(shapes),...Object.entries(worldShapes),...Object.entries(creatureShapes),...Object.entries(outfitShapes)])fs.writeFileSync(`art/${name}.obj`, `# Original Aether Isles ${name}\n`+objHeader(name)+`mtllib AetherPalette.mtl\n`+data.vertices.map(p=>'v '+p.join(' ')).join('\n')+'\n'+data.faces.map(f=>`usemtl Shade${f[3]}\nf ${f.slice(0,3).join(' ')}`).join('\n')+'\n');
+const objHeader=name=>{const m=worldMeta[name]||creatureMeta[name]||outfitMeta[name]||terrainMeta[name];return m?`# smooth ${m.smooth||0}\n`+(m.tint?`# tint ${m.tint}\n`:''):''};
+for(const [name,data] of [...Object.entries(shapes),...Object.entries(worldShapes),...Object.entries(creatureShapes),...Object.entries(outfitShapes),...Object.entries(terrainShapes)])fs.writeFileSync(`art/${name}.obj`, `# Original Aether Isles ${name}\n`+objHeader(name)+`mtllib AetherPalette.mtl\n`+data.vertices.map(p=>'v '+p.join(' ')).join('\n')+'\n'+data.faces.map(f=>`usemtl Shade${f[3]}\nf ${f.slice(0,3).join(' ')}`).join('\n')+'\n');
 // The world catalog is downloaded by every client, so geometry is packed into
 // base-64 strings (decoded once by the module itself into the usual tables):
 // a vertex is three 3-digit millistud coordinates offset by PACK_OFFSET, a face
@@ -875,6 +918,61 @@ local function drop(name)
 end
 return {palette=palette,shapes=shapes,drop=drop,tintIndex=${TINT},tintDarkIndex=${TINT_DARK},tintLightIndex=${TINT_LIGHT},tintDark=0.62,tintLight=0.4}
 `);
+// §54: the terrain catalog (packed and lazy like the outfit catalog).
+const terrainEntries=Object.entries(terrainShapes).map(([name,data])=>{
+  const m=terrainMeta[name],extra={smooth:m.smooth,kind:m.kind,tris:data.faces.length,verts:data.vertices.length};
+  if(m.tint)extra.tint=m.tint;
+  if(m.range)extra.range=m.range;
+  const verts=data.vertices.map(p=>p.map(x=>packNumber(Math.round(x*1000)+PACK_OFFSET,3)).join('')).join('');
+  const faces=data.faces.map(([a,b,c,shade])=>packNumber(a,2)+packNumber(b,2)+packNumber(c,2)+packNumber(shade,1)).join('');
+  return `shapes.${name}=lazy("${verts}","${faces}",${luaTable(extra)})`;
+}).join('\n');
+fs.writeFileSync('art/TerrainCatalog.lua',`-- Generated by art/generate-props.cjs from art/terrain-shapes.cjs (original geometry, §54).
+-- Island dressing: ground clutter, shrubs, tree species, cliff dressing and satellite
+-- rocks, placed on each client by terrain.client.lua through the MeshForge "dress"
+-- pool; packed and lazily decoded like art/OutfitCatalog.lua.
+-- kind: clutter | shrub | foliage | cliff | satellite.
+local palette=${luaTable(palette)}
+local DIGITS="${PACK_DIGITS}"
+local value={}
+for i=1,#DIGITS do value[string.byte(DIGITS,i)]=i-1 end
+local function digits(s,at,width)
+	local n=0
+	for k=at,at+width-1 do n=n*64+value[string.byte(s,k)] end
+	return n
+end
+local function unpack(verts,faces,meta)
+	local vertices,list={},{}
+	for at=1,#verts,9 do
+		table.insert(vertices,{(digits(verts,at,3)-${PACK_OFFSET})/1000,(digits(verts,at+3,3)-${PACK_OFFSET})/1000,(digits(verts,at+6,3)-${PACK_OFFSET})/1000})
+	end
+	for at=1,#faces,7 do
+		table.insert(list,{digits(faces,at,2),digits(faces,at+2,2),digits(faces,at+4,2),digits(faces,at+6,1)})
+	end
+	meta.vertices,meta.faces=vertices,list
+	return meta
+end
+local packed={}
+local LAZY={__index=function(meta,key)
+	if key~="vertices" and key~="faces" then return nil end
+	local source=packed[meta]
+	if not source then return nil end
+	unpack(source[1],source[2],meta)
+	return rawget(meta,key)
+end}
+local function lazy(verts,faces,meta)
+	meta.lazy=true
+	packed[meta]={verts,faces}
+	return setmetatable(meta,LAZY)
+end
+local shapes={}
+${terrainEntries}
+local function drop(name)
+	local meta=shapes[name]
+	if type(meta)=="table" and packed[meta] then rawset(meta,"vertices",nil); rawset(meta,"faces",nil) end
+end
+return {palette=palette,shapes=shapes,drop=drop,tintIndex=${TINT},tintDarkIndex=${TINT_DARK},tintLightIndex=${TINT_LIGHT},tintDark=0.62,tintLight=0.4}
+`);
 fs.writeFileSync('art/AetherPalette.mtl',palette.map((hex,i)=>`newmtl Shade${i+1}\nKd ${[0,2,4].map(n=>parseInt(hex.slice(n,n+2),16)/255).join(' ')}`).join('\n'));
 fs.writeFileSync('art/PropCatalog.lua','-- Generated by art/generate-props.cjs; shared original geometry.\nlocal palette='+luaTable(palette)+'\nlocal shapes={}\n'+entries+'\n'+iconShapeLua);
 let source=fs.readFileSync('mesh.client.lua','utf8');
@@ -899,3 +997,4 @@ console.log('Creature total: '+Object.keys(creatureShapes).length+' shapes, '+Ob
 console.log('Outfit triangles: '+Object.entries(outfitShapes).map(([n,d])=>n+' '+d.faces.length).join(', '));
 console.log('Outfit total: '+Object.keys(outfitShapes).length+' shapes, '+Object.values(outfitShapes).reduce((t,d)=>t+d.faces.length,0)+' triangles');
 console.log('World total: '+Object.keys(worldShapes).length+' shapes, '+Object.values(worldShapes).reduce((t,d)=>t+d.faces.length,0)+' triangles');
+console.log('Terrain shapes: '+terrainReport.join('; '));

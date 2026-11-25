@@ -186,3 +186,13 @@ A 25th skill on OSRS Sailing concepts, fitted to the sky. Build an airship at th
 ## 13. Update: §52 NPC art and item icons
 
 Every one of the 49 townsfolk now wears forged smooth outfit pieces (35 meshes in `art/OutfitCatalog.lua`: hats / hoods / helms, cloaks, aprons, mantles, satchels, tabards, belts, scarves and trade props) chosen by `shared/NpcStyle.lua` (trade, dyes, region palette), plays a trade idle loop (smith hammering, angler casting, scholar reading, Maelis Quillstone tracing glyphs, Old Hesketh Ashby poking embers, Pell waving …) through the NPC motors' C0 in `npc.client.lua`, and has a polished nameplate (region accent, trade medallion, contrast-checked). Item icons everywhere are the procedural vector icons in `shared/UiTheme.lua` (92 data-driven families, rarity halo / gem, Condensed / Radiant blocks, an LRU template cache; live 3D thumbnails only for ≥ 56 px previews). Tests: `verify-npcart.luau`, `verify-icons.luau`. Studio checklist in contract §52.
+
+## 14. Update: §54 Island environment art
+
+The islands themselves got an environment pass, all client-side and decorative (no server parts, `world.server.lua` untouched, gather nodes untouched).
+
+- **Forged ground tops:** each meadow becomes a gently undulating mesh, flat around paths, buildings, prompts and nodes. It has per-vertex grass patches, worn dirt fraying from every path, darker turf at the rim, and an edge that rolls over onto the cliff curb.
+- **Dressing:** instanced forged grass, flowers, pebbles, stones and outcrops; bushes, ferns and reeds by water; six tree species (broadleaf, blossom, willow, spire pine, mushroom, crystal) with 3+ per biome; a hero silhouette tree per region.
+- **Cliffs and undersides:** hanging roots, vine curtains, crystal veins, and 2–6 satellite rocks per island. The hulls are now smooth strata with overhangs.
+
+The meshes are 22 smooth shapes in `art/TerrainCatalog.lua`. The rules live in `shared/TerrainArt.lua`, and the client in `terrain.client.lua`, which uses the forge's new dress and ground pools. Tier budgets: High / Balanced / Lite (phones) / Performance, with far LOD by radius. Grass and trees sway through §50. Tests: `verify-environment.luau`. Previews: `docs/screenshots/environment-*.png`. The Studio checklist is in contract §54.

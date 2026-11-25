@@ -176,3 +176,8 @@ soft lighting exist only in Studio). Regenerate with `lune run tools/render-ui.l
 
 - `npcs-townsfolk.png`, `npcs-featured.png`, `npcs-idle-loops.png`: the production rigs posed at a moment of their trade idle loop with the forged outfit pieces (`lune run tools/dump-npcs.luau out.json -1 [roles]` — phase -1 = the loop's beat — then `python3 -I tools/render-npcs.py out.json out.png --cell 180 --columns 7`). Flat Lambert: primitives for the body, OBJ masters for the outfits, no materials or shadows.
 - `npcs-nameplates.png`, `icons-families.png`, `icons-satchel.png`: `lune run tools/render-icons.luau build/icons` (Theme slots and the server's nameplates through `tools/rasterize-ui.py`; fonts are approximated).
+
+## Island environment art (§54)
+
+- `environment-kit.png`, `environment-hulls.png`: the terrain catalog and the reworked hull OBJ masters (`python3 art/render-icons.py --cell 256 --columns 6 ...`).
+- `environment-windpine.png`, `environment-gloomhollow.png`, `environment-meadow-reach.png`, `environment-tidewater.png`, `environment-shattered-crown.png` (islands from the sky), `environment-mosswake-ground.png` (eye level, High) and `environment-mosswake-lite.png` (the same view on the phone tier). Commands: `lune run tools/dump-environment.luau "<island>" out.json [fx,fy,fz] [tier]`, then `python3 tools/render-environment.py out.json out.png --eye ... --at ... --fov 50`. The renders show the forged ground top, the dressing the tier shows from that focus, hulls and every Shape host through the forge's own layout. Gouraud Lambert with haze; no materials, shadows or Future lighting.
