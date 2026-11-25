@@ -76,7 +76,7 @@ for _, key in A.TIER_ORDER do
 	ok(b.sourceRadius <= b.swayRadius and b.swayRadius <= b.waterRadius, key .. " radii: sources <= sway <= water")
 end
 -- Sway shapes exist (catalog shapes or forge aliases).
-local catalogs = fs.readFile("art/WorldCatalog.lua") .. fs.readFile("art/PropCatalog.lua")
+local catalogs = fs.readFile("art/WorldCatalog.lua") .. fs.readFile("art/PropCatalog.lua") .. fs.readFile("art/TerrainCatalog.lua")
 for name, def in A.SWAY do
 	ok(string.find(catalogs, "shapes." .. name .. "=", 1, true) ~= nil or string.find(forge, name .. " = \"", 1, true) ~= nil, name .. " is a catalog shape or alias")
 	ok(({tree = 1, bush = 1, crop = 1, banner = 1, lantern = 1, grass = 1})[def.mode] ~= nil, name .. " sway mode")

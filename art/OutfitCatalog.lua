@@ -76,4 +76,4 @@ local function drop(name)
 	local meta=shapes[name]
 	if type(meta)=="table" and packed[meta] then rawset(meta,"vertices",nil); rawset(meta,"faces",nil) end
 end
-return {palette=palette,shapes=shapes,drop=drop,tintIndex=11,tintDarkIndex=15,tintLightIndex=16,tintDark=0.62,tintLight=0.4}
+return {palette=palette,families={1,106,107,4,5,107,7,8,9,10,100,101,13,102,100,100,101,101,103,103,103,102,106,24,104,104,27,28,107,30,101,32,33,102,35,36,37,38,101,105,105,42,43,44,45,46,47,48},shapes=shapes,drop=drop,tintIndex=11,tintDarkIndex=15,tintLightIndex=16,tintDark=0.62,tintLight=0.4}

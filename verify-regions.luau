@@ -230,7 +230,9 @@ local newTris = 0
 for name, range in pairs(NEW) do
 	local data = World.shapes[name]
 	ok(data ~= nil, name .. " is authored")
-	ok(#data.faces >= 200 and #data.faces <= 1500, name .. " triangle budget (" .. #data.faces .. ")")
+	-- §54 QC: the island hulls are 80-segment smooth strata (checked at real scale by the generator and verify-mesh).
+	local cap = if string.sub(name, 1, 6) == "Island" then 8000 else 1500
+	ok(#data.faces >= 200 and #data.faces <= cap, name .. " triangle budget (" .. #data.faces .. ")")
 	ok(#data.vertices <= 4095, name .. " vertex count packs")
 	newTris += #data.faces
 	local lo, hi = Vector3.new(math.huge, math.huge, math.huge), Vector3.new(-math.huge, -math.huge, -math.huge)

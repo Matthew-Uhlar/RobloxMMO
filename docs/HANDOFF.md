@@ -189,3 +189,20 @@ Every one of the 49 townsfolk now wears forged smooth outfit pieces (35 meshes i
 ## 14. Update: §53 The Sundered Sky
 
 An original eight-chapter main story in the OSRS quest style across every region (`Data.Story`, the Story block in `server.server.lua`, `story.server.lua`, `story.client.lua`, Journal › Story, the Story section of `combat.server.lua`). Chapters gate on skills (Runebinding, Skysailing, Beaconry …), Quest Points and quests; steps are talks, strikes / kills / crafts counted since the step, a beacon lighting, a real airship voyage, three server-held puzzles (rune lock, constellation rings, signal mirrors) and three instanced bosses with unique mechanics (Gloamwick's moving lantern light, Vaelith's Stormcross, Caedmon's Unravel beam and Sunder). Rewards: 18 Quest Points (in the Journal total), level-scaled XP lamps, six untradeable uniques and the Loomheart fast-travel node. Eleven skippable cutscenes; nine voiced NPCs, 39 dialogue nodes. `verify-story.luau` guards it; the Studio checklist is in contract §53.
+
+## 14. Update: §54 Island environment art
+
+The islands themselves got an environment pass, all client-side and decorative (no server parts, `world.server.lua` untouched, gather nodes untouched).
+
+- **Forged ground tops:** each meadow becomes a gently undulating mesh, flat around paths, buildings, prompts and nodes. It has per-vertex grass patches, worn dirt fraying from every path, darker turf at the rim, and an edge that rolls over onto the cliff curb.
+- **Dressing:** instanced forged grass, flowers, pebbles, stones and outcrops; bushes, ferns and reeds by water; six tree species (broadleaf, blossom, willow, spire pine, mushroom, crystal) with 3+ per biome; a hero silhouette tree per region.
+- **Cliffs and undersides:** hanging roots, vine curtains, crystal veins, and 2–6 satellite rocks per island. The hulls are now smooth strata with overhangs.
+
+The meshes are 22 smooth shapes in `art/TerrainCatalog.lua`. The rules live in `shared/TerrainArt.lua`, and the client in `terrain.client.lua`, which uses the forge's new dress and ground pools. Tier budgets: High / Balanced / Lite (phones) / Performance, with far LOD by radius. Grass and trees sway through §50. Tests: `verify-environment.luau`. Previews: `docs/screenshots/environment-*.png`. The Studio checklist is in contract §54.
+
+**§54 QC round.**
+- **Per-vertex colour for every catalog.** The forge now diffuses each face's palette colour, with an AO height ramp and soft mottling, over the vertices of its material family. Colours turn into smooth gradients everywhere; material seams such as bark against leaf stay sharp.
+- **Stricter smoothness metrics** live in verify-mesh. All 30 terrain shapes and the island hulls pass them. The other teams' organic shapes (131 of them) do not yet, and need re-authoring; until then they are held to a ratchet baseline (`art/organic-baseline.json`).
+- **Islands have thick cliff walls,** `clamp(R*0.18, 10, 30)` studs (lead decision). Near islands get a forged wall at absolute size: a turf lip, a soil band, then strata.
+- **Near and far tree LODs.**
+- **All the client findings are fixed:** backoffs, quiet-model re-planning, 2 ms slices, oriented footprints, skirt and SwayRest. Details are in contract §54, "QC round".

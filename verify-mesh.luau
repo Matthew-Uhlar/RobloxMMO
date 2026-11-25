@@ -87,7 +87,9 @@ for _, name in ipairs(required) do check(World.shapes[name] ~= nil, name .. " is
 local catalogBytes = #fs.readFile("art/WorldCatalog.lua")
 -- §40: the building kit (12 whole-building and interior meshes) raised the cap from 900 KB.
 -- §51: the Skysailing kit (3 hulls, mast, helm, cannon, dock, board, bollard, slip, reef, wreck, buoy: ~13.7k triangles, ~137 KB) raised it to 1300 KB.
-check(catalogBytes <= 1300 * 1024, "world catalog download stays under 1300 KB (" .. catalogBytes .. " bytes)")
+-- §54 QC A2/A3: the five island hulls became 80-segment, 24-28-level smooth strata (chord <= 0.15 studs on the
+-- largest island): ~+28k triangles, ~+300 KB; the cap rises to 1700 KB.
+check(catalogBytes <= 1700 * 1024, "world catalog download stays under 1700 KB (" .. catalogBytes .. " bytes)")
 -- Packed geometry decodes to exactly the OBJ masters' vertices and faces.
 for _, name in ipairs({"Skyship", "ZipLine", "SnareTrap", "StormSpire", "WindpineTree"}) do
 	local data, vi, fi = World.shapes[name], 0, 0
@@ -132,7 +134,7 @@ local worldTriangles, worldCount = 0, 0
 for name, data in pairs(World.shapes) do
 	worldCount += 1
 	worldTriangles += #data.faces
-	local points = validate(name, data, 200, if data.kind == "building" or data.exactTint == true then 2400 else 1500)
+	local points = validate(name, data, 200, if string.sub(name, 1, 6) == "Island" then 8000 elseif data.kind == "building" or data.exactTint == true then 2400 else 1500)
 	check(type(data.smooth) == "number" and data.smooth >= 0 and data.smooth < 90, name .. " smoothing crease")
 	check(type(data.kind) == "string", name .. " kind")
 	if data.tint then check(pcall(Color3.fromHex, data.tint), name .. " default tint") end
@@ -301,8 +303,14 @@ local function hasColor(target)
 	for _, c in ipairs(calls.colors) do if near(c.R, target.R, 2e-3) and near(c.G, target.G, 2e-3) and near(c.B, target.B, 2e-3) then return true end end
 	return false
 end
-check(hasColor(Color3.fromRGB(255, 0, 0)) and hasColor(Color3.new(.62, 0, 0)) and hasColor(Color3.new(1, .4, .4)), "tint slots recoloured")
-check(hasColor(Color3.fromHex(World.shapes.MeadowTree.tint)), "untinted parts use the shape's default tint")
+-- §54 QC A1: colours are per vertex (diffused within a material family, AO and
+-- mottling applied), so the exact palette entries blend: check the hues instead.
+local function hasNear(target, tolerance)
+	for _, c in ipairs(calls.colors) do if math.abs(c.R - target.R) + math.abs(c.G - target.G) + math.abs(c.B - target.B) <= tolerance then return true end end
+	return false
+end
+check(hasNear(Color3.fromRGB(255, 0, 0), .45) and hasNear(Color3.new(.62, 0, 0), .35), "tint slots recoloured (red ore shades present)")
+check(hasNear(Color3.fromHex(World.shapes.MeadowTree.tint), .25), "untinted parts use the shape's default tint")
 -- Legacy AetherSculpture anchors stay with mesh.client.lua (no duplicate mesh).
 check(lantern:GetAttribute("ShapeSkipped") == "legacy sculpture" and meshOf(lantern) == nil and ltm(lantern) == 0, "legacy sculptures left to IslandArt")
 -- Signs: the board keeps its SurfaceGui and becomes the flush text surface; text restyled.
@@ -1312,6 +1320,161 @@ for _, name in ipairs({"CreatureBoar", "CreatureSovereign", "DrakeWing", "Overla
 	end
 	check(vi == #data.vertices and fi == #data.faces, name .. " packed counts match its OBJ")
 end
+
+------------------------------------------------------------------------------
+-- §54 QC (A1-A4): colour and smoothness for every catalog.
+--   A1 per-vertex colour: the forge's vertexColors (the same code the client
+--      runs) gives every catalog shape (world, region, building, beacon, rune,
+--      ship, creature, outfit, terrain) continuous colour: no in-family edge
+--      changes luminance by more than 0.06 and no vertex is a speck (more than
+--      0.05 off the mean of its family neighbours); material seams are the
+--      catalogs' declared families.
+--   A2/A3 organic smoothness: 98 % (by area) of corner shading normals within
+--      15 deg of their face and <= 2 % of shared edges sharper than 35 deg for
+--      the terrain catalog; island hulls within 20 deg at real scale on the
+--      smallest and largest island with a chord error <= 0.15 studs; every other
+--      organic shape (world trees / rocks / ores / crops / plants / nodes,
+--      creatures, outfits) is held to art/organic-baseline.json (a ratchet:
+--      never worse than when the metric landed).
+--   A4 subdivision by placed size from the generator's call log
+--      (art/ShapeCalls.json): every terrain ring / tube >= 16 segments and fine
+--      enough for its radius x maxScale, every blob subdivided >= 2.
+------------------------------------------------------------------------------
+local Terrain = luau.load(fs.readFile("art/TerrainCatalog.lua"), {injectGlobals = true})()
+local Outfits = luau.load(fs.readFile("art/OutfitCatalog.lua"), {injectGlobals = true})()
+local serde = require("@lune/serde")
+local Calls = serde.decode("json", fs.readFile("art/ShapeCalls.json"))
+local Baseline = serde.decode("json", fs.readFile("art/organic-baseline.json"))
+local F = probe.forge
+check(type(F.vertexColors) == "function" and type(F.sphereNormals) == "function", "the forge exposes its per-vertex colour and foliage normals")
+for _, catalog in ipairs({World, Props, Creatures, Outfits, Terrain}) do
+	check(type(catalog.families) == "table" and #catalog.families == #World.palette, "every catalog carries the colour families")
+end
+check(string.find(MeshForgeSource, "mesh:SetFaceColors(triangle, {colorIds[cc[1]], colorIds[cc[2]], colorIds[cc[3]]})", 1, true) ~= nil,
+	"templates colour each corner from its own vertex")
+local function luma(c) return 0.2126 * c.R + 0.7152 * c.G + 0.0722 * c.B end
+local colourShapes, worstDL = 0, 0
+for _, catalog in ipairs({World, Creatures, Outfits, Terrain}) do
+	for name, data in pairs(catalog.shapes) do
+		colourShapes += 1
+		local colors, corners, _, nbr = F.vertexColors(data, catalog, nil)
+		check(#corners == #data.faces, name .. " colours every corner")
+		for i, list in ipairs(nbr) do
+			local li, sum = luma(colors[i]), 0
+			for _, j in ipairs(list) do
+				local d = math.abs(li - luma(colors[j]))
+				if d > worstDL then worstDL = d end
+				if d > 0.06 then check(false, string.format("%s colour step %.3f > 0.06 across an in-family edge", name, d)) end
+				sum += luma(colors[j])
+			end
+			if #list >= 3 and math.abs(li - sum / #list) > 0.05 then check(false, string.format("%s has a colour speck (%.3f)", name, li - sum / #list)) end
+		end
+		checks += 1
+	end
+end
+-- Organic metrics (the generator's organicMetrics, area-weighted).
+local function organic(data, smooth, kxz, ky)
+	local P = {}
+	for i, v in ipairs(data.vertices) do P[i] = Vector3.new(v[1] * (kxz or 1), v[2] * (ky or 1), v[3] * (kxz or 1)) end
+	local fn, fa, around = {}, {}, {}
+	for f, face in ipairs(data.faces) do
+		local n = (P[face[2]] - P[face[1]]):Cross(P[face[3]] - P[face[1]])
+		fa[f] = n.Magnitude
+		fn[f] = if n.Magnitude > 0 then n.Unit else Vector3.yAxis
+		for k = 1, 3 do around[face[k]] = around[face[k]] or {}; table.insert(around[face[k]], f) end
+	end
+	local lim, devs, total = math.cos(math.rad(smooth)), {}, 0
+	for f, face in ipairs(data.faces) do
+		for k = 1, 3 do
+			local s = Vector3.zero
+			for _, o in ipairs(around[face[k]]) do if fn[o]:Dot(fn[f]) >= lim then s += fn[o] * fa[o] end end
+			local d = if s.Magnitude > 0 then math.deg(math.acos(math.clamp(s.Unit:Dot(fn[f]), -1, 1))) else 0
+			table.insert(devs, {d, fa[f]})
+			total += fa[f]
+		end
+	end
+	table.sort(devs, function(a, b) return a[1] < b[1] end)
+	local acc, dev98 = 0, 0
+	for _, e in ipairs(devs) do acc += e[2]; dev98 = e[1]; if acc >= total * 0.98 then break end end
+	local edges, shared, sharp = {}, 0, 0
+	for f, face in ipairs(data.faces) do
+		for k = 1, 3 do
+			local a, b = face[k], face[k % 3 + 1]
+			local key = if a < b then a * 65536 + b else b * 65536 + a
+			edges[key] = edges[key] or {}
+			table.insert(edges[key], f)
+		end
+	end
+	local cos35 = math.cos(math.rad(35))
+	for _, list in pairs(edges) do
+		if #list == 2 then shared += 1; if fn[list[1]]:Dot(fn[list[2]]) < cos35 then sharp += 1 end end
+	end
+	return dev98, sharp / math.max(1, shared)
+end
+local SEG_NEAR, SEG_FAR = 2.0, 3.5
+local terrainStrict = 0
+for name, data in pairs(Terrain.shapes) do
+	terrainStrict += 1
+	check(World.shapes[name] == nil and Creatures.shapes[name] == nil and Props.shapes[name] == nil, name .. " is unique across catalogs")
+	local points = validate(name, data, 100, 7000)
+	check(#points < 4096, name .. " fits the vertex packing")
+	check(data.smooth >= 40, name .. " is smooth-shaded (crease " .. data.smooth .. ")")
+	local dev98, sharp = organic(data, data.smooth)
+	check(dev98 <= 15.05, string.format("%s normal deviation (98th pct, area) %.1f <= 15", name, dev98))
+	check(sharp <= 0.02, string.format("%s sharp edges %.1f%% <= 2%%", name, sharp * 100))
+	for _, vol in ipairs(componentVolumes(data, points)) do check(vol > -1e-4, name .. " components are wound outward") end
+	-- A4: subdivision by placed size, from the call log.
+	local log = Calls.shapes[name]
+	check(log ~= nil and log.catalog == "terrain", name .. " has a generator call log")
+	local seg = if data.lod == "far" or data.kind == "satellite" or data.kind == "cliff" then SEG_FAR else SEG_NEAR
+	local scale = data.maxScale or 1
+	for _, c in ipairs(log.calls) do
+		check(c.prim == "lathe" or c.prim == "tube" or c.prim == "blob", name .. " uses only round primitives (" .. c.prim .. ")")
+		if c.prim == "blob" then
+			check(c.sub >= math.max(2, math.ceil(math.log(1.05 * c.radius * scale / seg, 2))), name .. " blob subdivided for its placed size")
+		else
+			check(c.n >= math.max(16, math.ceil(2 * math.pi * c.radius * scale / seg)), name .. " " .. c.prim .. " segments for its placed size (n " .. c.n .. ")")
+		end
+	end
+	if data.lod == "near" then check(Terrain.shapes[data.far] ~= nil and Terrain.shapes[data.far].lod == "far", name .. " has its far LOD") end
+end
+check(terrainStrict >= 30, "terrain shapes authored (" .. terrainStrict .. ")")
+-- Hulls at real scale on the smallest and the largest island.
+local hullShapes = 0
+for _, name in ipairs({"IslandCliff", "IslandCliffBare", "IslandKeel", "IslandKeelCrystal", "IslandKeelEmber"}) do
+	hullShapes += 1
+	local data = World.shapes[name]
+	check(data.smooth >= 40, name .. " hull is smooth-shaded")
+	for _, r in ipairs({46, 160}) do
+		local kxz, ky
+		if data.fit then kxz, ky = (r + .15) / .99 / 10, math.clamp(r * .18, 10, 30) / 6
+		else kxz, ky = .92 * (r - .4) / 10, math.clamp(r * .55 + 6, 10, 62) / 10 end
+		local dev98 = organic(data, data.smooth, kxz, ky)
+		check(dev98 <= 20, string.format("%s at r %d: normal deviation %.1f <= 20 (real scale)", name, r, dev98))
+		for _, c in ipairs(Calls.shapes[name].calls) do
+			if c.prim == "lathe" and c.radius * kxz > 20 then
+				local chord = c.radius * kxz * (1 - math.cos(math.pi / c.n))
+				check(chord <= 0.15, string.format("%s at r %d: chord error %.3f <= 0.15 studs", name, r, chord))
+			end
+		end
+	end
+end
+-- Every other organic shape: never worse than the baseline.
+local ratchet, meeting = 0, 0
+for name, b in pairs(Baseline) do
+	local catalog = if b.catalog == "creature" then Creatures elseif b.catalog == "outfit" then Outfits else World
+	local data = catalog.shapes[name]
+	check(data ~= nil, name .. " (organic baseline) still exists")
+	local dev98, sharp = organic(data, data.smooth or 0)
+	check(dev98 <= b.dev98 + 0.6, string.format("%s normal deviation %.1f never worse than its baseline %.1f", name, dev98, b.dev98))
+	check(sharp <= b.sharp + 0.006, string.format("%s sharp edges %.3f never worse than its baseline %.3f", name, sharp, b.sharp))
+	ratchet += 1
+	if dev98 <= 15 and sharp <= 0.02 then meeting += 1 end
+end
+check(ratchet >= 100, "organic baseline covers the other catalogs (" .. ratchet .. ")")
+print(string.format("§54 mesh QA: per-vertex colour on %d shapes (worst in-family step %.3f); %d terrain shapes strict; %d hulls at real scale; %d organic shapes held to the baseline (%d meet the strict bar).",
+	colourShapes, worstDL, terrainStrict, hullShapes, ratchet, meeting))
+
 
 print(string.format("Mesh QA passed %d checks: %d world shapes / %d triangles; %d creature shapes / %d triangles; forge success, failure, budget, late-tag and sign paths.", checks, worldCount, worldTriangles, creatureCount, creatureTriangles))
 

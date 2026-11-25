@@ -17,85 +17,84 @@ module.exports = ({ world, C, PI, hash }) => {
   // with the island, so strata depth grows with the island's size.
   // -------------------------------------------------------------------------
   const CLIFF_FIT = [[-10, -6, -10], [10, 0, 10]];
+  // §54 QC (A2-A5): the catalog hulls are the far LOD (and the Sky Chart's) of
+  // terrain.client.lua's per-island hull. The foundation is now a thick wall
+  // (clamp(R*0.18, 10, 30) studs, world.server.lua), so the fit box stretches
+  // about 3.4x more radially than vertically on every island; the profiles are
+  // authored for that and checked by the generator at the smallest and largest
+  // island (normal deviation <= 20 deg, chord error <= 0.15 studs: 80 segments).
+  // Colours follow continuous strata bands of height.
+  const HULL_N = 80;
+  const strataField = (lip) => (level, i, c) => {
+    if (c[1] > -.25) return lip ? C.SOIL : TINT_LIGHT;
+    const band = Math.sin(-c[1] * 2.2 + Math.atan2(c[2], c[0]) * .5);
+    return c[1] < -5.4 ? TINT_DARK : band > .45 ? TINT_LIGHT : band < -.45 ? TINT_DARK : TINT;
+  };
+  // Wall radius at depth t (0 top .. 1 bottom): an overhanging rim, four soft
+  // strata ledges, a gentle tuck toward the keel.
+  const wallRadius = t => 10.12 + .07 * Math.exp(-(((t - .04) / .05) ** 2)) + .035 * Math.sin(2 * PI * 4 * t) * (1 - t * .6) - .55 * Math.max(0, t - .8) ** 2 / .04;
   const cliffWall = (kit, seed, lip) => {
-    const n = 40;
-    // Strata: alternating ledges, each band jittered per column for a jagged rim.
-    const profile = [[10.15, 0], [10.25, -.7], [9.95, -1.4], [10.2, -2.2], [9.8, -3.1], [10.0, -3.9], [9.45, -4.8], [9.6, -5.6], [8.6, -6.6], [7.2, -7.6], [0, -8.1]];
-    kit.lathe(profile, {
-      n, phase: hash(seed, 1, 2), jitter: (level, i) => level === 10 ? 1 : 1 + (hash(level, i, seed) - .5) * (level < 2 ? .05 : .09),
-      lift: (level, i) => level > 0 && level < 9 ? (hash(i, level, seed + 3) - .5) * .5 : 0,
-      color: (level, i) => level === 0 ? (lip ? C.SOIL : TINT_LIGHT) : level >= 8 ? TINT_DARK : (level % 3 === 0 ? TINT_LIGHT : level % 3 === 1 ? TINT : (hash(i, level, seed) < .5 ? TINT_DARK : TINT)),
+    const levels = [];
+    for (let k = 0; k <= 28; k++) { const t = k / 28; levels.push([wallRadius(t), -6 * t]); }
+    kit.lathe(levels, {
+      n: HULL_N, phase: hash(seed, 1, 2),
+      jitter: (level, i) => 1 + .006 * Math.sin(5 * i * 2 * PI / HULL_N + seed + level * .2),
+      color: strataField(lip),
     });
   };
-  world('IslandCliff', { smooth: 0, tint: '6B7380', fit: CLIFF_FIT, kind: 'rock', range: 1400 }, kit => {
+  world('IslandCliff', { smooth: 45, tint: '6B7380', fit: CLIFF_FIT, kind: 'rock', range: 1400, hull: true, blend: [C.SOIL] }, kit => {
     cliffWall(kit, 401, true);
-    // Grass lip: a low turf curb on the meadow's outer edge (meadow top = fit
-    // top + 0.3) that overhangs the rim and droops into tufts.
-    kit.lathe([[9.98, .46], [10.2, .52], [10.45, .38], [10.55, .02], [10.35, -.35], [10.05, -.55], [9.9, -.2]], {
-      n: 40, phase: .05, capStart: false, jitter: (level, i) => level >= 3 ? 1 + (hash(level, i, 402) - .5) * .06 : 1,
-      lift: (level, i) => level === 4 || level === 5 ? -(hash(i, 5, 403) * .5) : 0,
-      color: (level, i) => level <= 1 ? (hash(i, 7, 404) < .4 ? C.MOSS : C.LEAF) : level <= 3 ? C.MOSS : C.LEAF_DARK,
+    // Grass lip: a rounded turf curb rolling over the rim (meadow top = fit top + 0.3 x the wall scale).
+    const lipPts = [];
+    for (let k = 0; k <= 8; k++) { const a = PI / 2 - k * PI / 8; lipPts.push([10.12 + .1 * Math.cos(a), .04 + .06 * Math.sin(a)]); }
+    kit.lathe(lipPts, {
+      n: HULL_N, phase: .05, jitter: (level, i) => 1 + .004 * Math.sin(7 * i * 2 * PI / HULL_N + level),
+      color: (l, i, c) => c[1] > .07 ? C.LEAF : c[1] > .02 ? C.MOSS : C.LEAF_DARK,
     });
-    // Hanging vines and roots over the strata.
-    for (let k = 0; k < 14; k++) {
-      const a = k * 2 * PI / 14 + hash(k, 1, 405) * .3, r = 10.4, drop = 1.8 + hash(k, 2, 405) * 3.2;
-      const x = Math.cos(a) * r, z = Math.sin(a) * r;
-      kit.tube([[x, -.3, z], [x * 1.01, -drop * .5, z * 1.01], [x * .995, -drop, z * .995]], [.12, .09, .04], { n: 3, color: k % 3 === 0 ? C.BARK : C.LEAF_DARK });
-    }
   });
-  world('IslandCliffBare', { smooth: 0, tint: '5E6470', fit: CLIFF_FIT, kind: 'rock', range: 1400 }, kit => {
+  world('IslandCliffBare', { smooth: 45, tint: '5E6470', fit: CLIFF_FIT, kind: 'rock', range: 1400, hull: true }, kit => {
     cliffWall(kit, 411, false);
-    // Broken crown: rubble shards leaning out of the rim.
-    for (let k = 0; k < 22; k++) {
-      const a = k * 2 * PI / 22 + hash(k, 3, 412) * .2, r = 10.0 + hash(k, 4, 412) * .3;
-      kit.group({ pos: [Math.cos(a) * r, -.15, Math.sin(a) * r], rot: [.25, -a + PI / 2, .2] }, () =>
-        kit.jewel(0, 0, 0, .35 + hash(k, 5, 412) * .3, .3 + hash(k, 6, 412) * .25, .3, k % 3 ? TINT : TINT_LIGHT));
-    }
+    // Weathered crown: a low rounded rubble ring on the rim.
+    const crown = [];
+    for (let k = 0; k <= 8; k++) { const a = PI / 2 - k * PI / 8; crown.push([10.1 + .1 * Math.cos(a), .03 + .06 * Math.sin(a)]); }
+    kit.lathe(crown, { n: HULL_N, jitter: (level, i) => 1 + .006 * Math.sin(9 * i * 2 * PI / HULL_N), color: (l, i, c) => c[1] > .05 ? TINT_LIGHT : TINT });
   });
-  // Keels: layered strata tapering into stalactite bottoms (unit: radius 10,
-  // top at 0, deepest tip at -10).
-  const keelBody = (kit, seed, band) => {
-    const profile = [[10, 0], [9.6, -.7], [8.9, -1.5], [8.6, -2.1], [7.4, -3.2], [6.9, -3.9], [5.4, -5.1], [4.6, -6.0], [3.0, -7.3], [1.6, -8.6], [0, -10]];
-    kit.lathe(profile, {
-      n: 18, phase: hash(seed, 2, 1), capStart: true, capColor: TINT_DARK, jitter: (level, i) => level === 0 ? 1 : 1 + (hash(level, i, seed) - .5) * .34,
-      wobble: (level, i) => level > 6 ? [Math.cos(seed) * (level - 6) * .25, Math.sin(seed) * (level - 6) * .2] : [0, 0],
-      color: (level, i) => band(level, i),
+  // Keels: strata tapering into a hanging spire (unit: radius 10, top at 0, tip at -10).
+  const keelBody = (kit, seed, band, lobes = 5) => {
+    const levels = [];
+    for (let k = 0; k <= 24; k++) { const t = k / 24; levels.push([k === 24 ? 0 : 10 * Math.cos(t * PI / 2) ** 1.25 * (1 - .04 * Math.sin(t * 9)), -10 * t]); }
+    kit.lathe(levels, {
+      n: HULL_N, phase: hash(seed, 2, 1),
+      jitter: (level, i) => 1 + .035 * Math.sin(3 * i * 2 * PI / HULL_N + seed) * Math.min(1, level / 6),
+      wobble: (level) => level > 14 ? [Math.cos(seed) * (level - 14) * .08, Math.sin(seed) * (level - 14) * .06] : [0, 0],
+      color: band,
     });
-    // Secondary lobes: smaller hanging spires around the main body.
-    for (let k = 0; k < 7; k++) {
-      const a = k * 2 * PI / 7 + hash(k, 1, seed) * .5, d = 4.8 + hash(k, 2, seed) * 3.2, top = -1.2 - hash(k, 3, seed) * 1.4;
-      const len = 2.6 + hash(k, 4, seed) * 3.4, w = 1.0 + hash(k, 5, seed) * .9;
-      kit.group({ pos: [Math.cos(a) * d, top, Math.sin(a) * d], rot: [(hash(k, 6, seed) - .5) * .3, 0, (hash(k, 7, seed) - .5) * .3] }, () =>
-        kit.lathe([[w, .4], [w * .85, -len * .35], [w * .45, -len * .75], [0, -len]], { n: 6, phase: k, capStart: true, capColor: TINT_DARK,
-          color: (level, i) => band(level * 3 + 2, i) }));
+    for (let k = 0; k < lobes; k++) {
+      const a = k * 2 * PI / lobes + hash(k, 1, seed) * .5, d = 5.2 + hash(k, 2, seed) * 2.2, top = -1.8 - hash(k, 3, seed) * 1.2;
+      const len = 2.6 + hash(k, 4, seed) * 3.0, w = 1.0 + hash(k, 5, seed) * .7, lv = [];
+      for (let j = 0; j <= 8; j++) { const t = j / 8; lv.push([j === 8 ? 0 : w * Math.cos(t * PI / 2) ** 1.2, .4 - (len + .4) * t]); }
+      kit.group({ pos: [Math.cos(a) * d, top, Math.sin(a) * d] }, () => kit.lathe(lv, { n: 32, phase: k, color: band }));
     }
   };
-  const strata = seed => (level, i) => level === 0 ? C.SOIL : level === 1 ? (hash(i, 1, seed) < .5 ? C.SOIL : TINT_DARK)
-    : level % 3 === 0 ? TINT_LIGHT : level % 3 === 1 ? TINT : TINT_DARK;
-  world('IslandKeel', { smooth: 0, tint: '5C6573', kind: 'rock', range: 1400 }, kit => {
-    keelBody(kit, 421, strata(421));
-    // Hanging roots spilling from the soil band.
-    for (let k = 0; k < 12; k++) {
-      const a = k * 2 * PI / 12 + hash(k, 1, 422) * .4, r = 9.2 - hash(k, 2, 422) * 1.2, len = 2.5 + hash(k, 3, 422) * 4;
-      const x = Math.cos(a) * r, z = Math.sin(a) * r;
-      kit.tube([[x, -.6, z], [x * .97 + .2, -len * .45, z * .97], [x * .93 - .2, -len * .8, z * .95], [x * .92, -len, z * .92]], [.22, .16, .1, .03], { n: 4, color: C.BARK });
-    }
-    for (let k = 0; k < 6; k++) { const a = k * 1.1 + .3; kit.blob(Math.cos(a) * 8.4, -1.0, Math.sin(a) * 8.4, .9, .5, .9, { sub: 0, seed: 423 + k, color: C.MOSS }) }
-  });
-  world('IslandKeelCrystal', { smooth: 0, tint: '424659', kind: 'rock', range: 1400 }, kit => {
-    keelBody(kit, 431, strata(431));
-    for (let k = 0; k < 11; k++) {
-      const a = k * 2 * PI / 11 + hash(k, 1, 432), d = 2 + hash(k, 2, 432) * 6.5, y = -1.5 - (1 - d / 9) * 6 - hash(k, 3, 432) * 1.5;
-      kit.group({ pos: [Math.cos(a) * d, y, Math.sin(a) * d], rot: [PI + (hash(k, 4, 432) - .5) * .9, a, (hash(k, 5, 432) - .5) * .9] }, () =>
-        kit.lathe([[.45, -.2], [.55, 1.1], [0, 2.2 + hash(k, 6, 432) * 1.6]], { n: 5, phase: k, capStart: true, color: (level, i) => i % 2 ? C.LAVENDER : C.MINT }));
+  const strata = () => (level, i, c) => c[1] > -.6 ? C.SOIL
+    : (Math.sin(-c[1] * 1.6) > .4 ? TINT_LIGHT : Math.sin(-c[1] * 1.6) < -.4 ? TINT_DARK : TINT);
+  world('IslandKeel', { smooth: 45, tint: '5C6573', kind: 'rock', range: 1400, hull: true, blend: [C.SOIL] }, kit => keelBody(kit, 421, strata()));
+  world('IslandKeelCrystal', { smooth: 45, tint: '424659', kind: 'rock', range: 1400, hull: true, blend: [C.SOIL] }, kit => {
+    keelBody(kit, 431, strata(), 3);
+    for (let k = 0; k < 7; k++) {
+      const a = k * 2 * PI / 7 + hash(k, 1, 432), d = 2.5 + hash(k, 2, 432) * 5, y = -1.5 - (1 - d / 9) * 6 - hash(k, 3, 432) * 1.5;
+      const len = 2.4 + hash(k, 6, 432) * 1.6;
+      kit.group({ pos: [Math.cos(a) * d, y, Math.sin(a) * d], rot: [PI + (hash(k, 4, 432) - .5) * .6, a, (hash(k, 5, 432) - .5) * .6] }, () =>
+        kit.lathe([[.4, -.3], [.52, .6], [.5, 1.3], [.36, 1.9], [.18, len - .2], [0, len]], { n: 24, phase: k, color: (l, i, c) => c[1] > 1.4 ? C.MINT : C.LAVENDER }));
     }
   });
-  world('IslandKeelEmber', { smooth: 0, tint: '3B3236', kind: 'rock', range: 1400 }, kit => {
-    keelBody(kit, 441, (level, i) => level % 4 === 2 && hash(i, level, 441) < .45 ? C.EMBER : level % 3 === 0 ? TINT_LIGHT : level % 3 === 1 ? TINT : TINT_DARK);
-    // Glowing magma seams and spiked basalt.
-    for (let k = 0; k < 10; k++) {
-      const a = k * 2 * PI / 10 + hash(k, 1, 442) * .4, d = 6 + hash(k, 2, 442) * 2.5;
-      kit.jewel(Math.cos(a) * d, -2 - hash(k, 3, 442) * 3, Math.sin(a) * d, .25, 1.3, .25, k % 2 ? C.FLAME : C.EMBER);
+  world('IslandKeelEmber', { smooth: 45, tint: '3B3236', kind: 'rock', range: 1400, hull: true, blend: [C.SOIL] }, kit => {
+    keelBody(kit, 441, (level, i, c) => Math.sin(-c[1] * 1.6 + 1) > .75 ? C.EMBER : strata()(level, i, c));
+    // Glowing magma seams: drips of ember running down the strata.
+    for (let k = 0; k < 6; k++) {
+      const a = k * 2 * PI / 6 + hash(k, 1, 442) * .4, d = 6.6 + hash(k, 2, 442) * 1.8, y = -1.6 - hash(k, 3, 442) * 2.4;
+      kit.group({ pos: [Math.cos(a) * d, y, Math.sin(a) * d] }, () =>
+        kit.lathe([[.3, .9], [.33, .1], [.28, -.6], [.18, -1.2], [.08, -1.55], [0, -1.7]], { n: 24, phase: k, color: (level) => level >= 3 ? C.FLAME : C.EMBER }));
     }
   });
 
