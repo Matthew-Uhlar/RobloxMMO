@@ -42,9 +42,9 @@ const WORLD_TRIANGLE_RANGE = [200, 1500];
 // Travel beacon shapes (§44, meta exactTint) share the range: >= 24-segment lathes.
 const BUILDING_TRIANGLE_RANGE = [200, 2400];
 // §55: organic world shapes (trees, rocks, ores, crops, plants, nodes) meet the
-// strict organic bar; their smooth lathed / lofted forms cost up to ~11k (the
-// big sky reef and wreck), most 2-9k.
-const ORGANIC_WORLD_RANGE = [200, 12000];
+// strict organic bar within 4k triangles (QC H2: phones); each has a far LOD
+// (meta.lod 'far', <Name>Far) of at most 1.2k held to the far bar below.
+const ORGANIC_WORLD_RANGE = [200, 4000], ORGANIC_FAR_RANGE = [200, 1200];
 // §48 creatures: cores (creature / pet) and the shared limbs and tier overlays.
 const CREATURE_TRIANGLE_RANGE = {creature: [400, 2400], pet: [400, 1600], limb: [100, 1600], overlay: [200, 2600]};
 // Cores worn by slayer / lair / raid / world bosses use the budget (QC H4).
@@ -701,14 +701,26 @@ shape('OreCluster',({lathe,group})=>{
 // ---------------------------------------------------------------------------
 function world(name,meta,build){
   if(shapes[name]||worldShapes[name])throw new Error(`Duplicate shape name ${name}`);
-  shape(name,build,worldShapes,1000,ORGANIC_WORLD_KINDS.has(meta.kind)&&!meta.hull&&!meta.legacy);worldMeta[name]=meta;
+  const organic=ORGANIC_WORLD_KINDS.has(meta.kind)&&!meta.hull&&!meta.legacy;
+  shape(name,build,worldShapes,1000,organic);worldMeta[name]=meta;
+  // §55 QC L: an organic shape's fit box starts at the ground (y = 0), so its
+  // buried foot (trunks open 0.4 below) never lifts it off the slot floor; a
+  // far LOD maps the near shape's box, so swapping LODs never moves or rescales it.
+  if(organic&&!meta.fit){
+    if(meta.lod==='far'){const near=worldMeta[name.slice(0,-3)];if(!near||near.far!==name)throw new Error(`${name}: far LOD without its near shape`);meta.fit=near.fit}
+    else{
+      const lo=[Infinity,Infinity,Infinity],hi=[-Infinity,-Infinity,-Infinity];
+      for(const p of worldShapes[name].vertices)for(let k=0;k<3;k++){lo[k]=Math.min(lo[k],p[k]);hi[k]=Math.max(hi[k],p[k])}
+      meta.fit=[[lo[0],Math.max(0,lo[1]),lo[2]],hi];
+    }
+  }
 }
 require('./world-shapes.cjs')({world,C,PI,hash,jitterOf});
 require('./region-shapes.cjs')({world,C,PI,hash,jitterOf});
 require('./beacon-shapes.cjs')({world,C,PI,hash,jitterOf});
 require('./rune-shapes.cjs')({world,C,PI,hash,jitterOf}); // §49 Runebinding: altar, guardian portal, Rift monolith
 require('./ship-shapes.cjs')({world,C,PI,hash,jitterOf}); // §51 Skysailing: hulls, mast, helm, cannon, docks, slip, reef, wreck, buoy
-require('./world-organic-shapes.cjs')({world,C,PI,hash}); // §55 organic re-authoring: trees, rocks, ores, crops, plants, nodes, reef, wreck
+require('./world-organic-shapes.cjs')({world,C,PI,hash}); // §55 organic re-authoring: trees, rocks, ores, crops, plants, nodes (+ far LODs)
 // Creatures (§48): forged on each client by creatures.client.lua through the
 // MeshForge creature API; their own catalog (art/CreatureCatalog.lua).
 function creature(name,meta,build){
@@ -761,7 +773,7 @@ function organicMetrics(data, smooth) {
   return {dev98, sharp: sharp / Math.max(1, shared)};
 }
 function subdivisionErrors(name, data, meta) {
-  const seg = meta.lod === 'far' || meta.kind === 'satellite' || meta.kind === 'cliff' ? SEG_FAR : SEG_NEAR, scale = meta.maxScale || 1, out = [];
+  const seg = meta.lod === 'far' || meta.segFar || meta.kind === 'satellite' || meta.kind === 'cliff' ? SEG_FAR : SEG_NEAR, scale = meta.maxScale || 1, out = [];
   for (const c of data.calls) {
     if (c.prim === 'lathe' || c.prim === 'tube' || c.prim === 'loft') {
       const need = Math.max(16, Math.ceil(2 * Math.PI * c.radius * scale / seg));
@@ -838,8 +850,10 @@ function hullErrors(name, data) {
 const hullReport = [];
 const rangeErrors=[];
 for(const [name,data] of Object.entries(worldShapes)){
-  const count=data.faces.length,range=worldMeta[name].hull?HULL_TRIANGLE_RANGE:ORGANIC_WORLD_KINDS.has(worldMeta[name].kind)&&!worldMeta[name].legacy?ORGANIC_WORLD_RANGE:worldMeta[name].kind==='building'||worldMeta[name].exactTint?BUILDING_TRIANGLE_RANGE:WORLD_TRIANGLE_RANGE;
+  const count=data.faces.length,range=worldMeta[name].hull?HULL_TRIANGLE_RANGE:ORGANIC_WORLD_KINDS.has(worldMeta[name].kind)&&!worldMeta[name].legacy?(worldMeta[name].lod==='far'?ORGANIC_FAR_RANGE:ORGANIC_WORLD_RANGE):worldMeta[name].kind==='building'||worldMeta[name].exactTint?BUILDING_TRIANGLE_RANGE:WORLD_TRIANGLE_RANGE;
   if(count<range[0]||count>range[1])rangeErrors.push(`${name} has ${count} triangles; ${worldMeta[name].kind} range is ${range.join('-')}`);
+  // §55 QC L: the packer writes vertex indices in two base-64 digits (<= 4095).
+  if(data.vertices.length>=4096)rangeErrors.push(`${name} has ${data.vertices.length} vertices (packing limit 4095)`);
   for(const vol of componentVolumes(data))if(vol<-1e-4)throw new Error(`${name} has an inward-wound component (volume ${vol})`);
   if(worldMeta[name].hull)rangeErrors.push(...hullErrors(name,data));
 }
@@ -976,9 +990,17 @@ const worldEntries=Object.entries(worldShapes).map(([name,data])=>{
   if(m.blend)extra.blend=m.blend;
   if(m.sphere)extra.sphere=m.sphere;
   if(m.maxScale)extra.maxScale=m.maxScale;
+  if(m.lod)extra.lod=m.lod;
+  if(m.far)extra.far=m.far;
+  if(m.segFar)extra.segFar=true;
+  // §55 QC H3: lazy like the other catalogs; tris / verts / box (the mesh
+  // bounds) are known without decoding the geometry.
+  const lo=[Infinity,Infinity,Infinity],hi=[-Infinity,-Infinity,-Infinity];
+  for(const p of data.vertices)for(let k=0;k<3;k++){lo[k]=Math.min(lo[k],p[k]);hi[k]=Math.max(hi[k],p[k])}
+  extra.tris=data.faces.length;extra.verts=data.vertices.length;extra.box=[lo,hi];
   const verts=data.vertices.map(p=>p.map(x=>packNumber(Math.round(x*1000)+PACK_OFFSET,3)).join('')).join('');
   const faces=data.faces.map(([a,b,c,shade])=>packNumber(a,2)+packNumber(b,2)+packNumber(c,2)+packNumber(shade,1)).join('');
-  return `shapes.${name}=unpack("${verts}","${faces}",${luaTable(extra)})`;
+  return `shapes.${name}=lazy("${verts}","${faces}",${luaTable(extra)})`;
 }).join('\n');
 const resourceShapes={Ore:'OreVein1',Aetherite:'OreVein1',Brassite:'OreVein2',SunsteelOre:'OreVein2',Voidstone:'OreVein3',StarmetalOre:'OreVein3',Prismite:'OreVein4',Celestium:'OreVein4',
   Timber:'MeadowTree',WindpineLog:'WindpineTree',EmberoakLog:'EmberoakTree',GlimmerbarkLog:'GlimmerbarkTree',StarwoodLog:'StarwoodTree',AetherheartLog:'AetherheartTree',
@@ -1012,9 +1034,30 @@ local function unpack(verts,faces,meta)
 	meta.vertices,meta.faces=vertices,list
 	return meta
 end
+-- §55 QC H3: shapes stay packed until first used (like art/CreatureCatalog.lua).
+-- Reading .vertices or .faces decodes that shape alone; Catalog.drop(name)
+-- forgets the decoded arrays again (the MeshForge calls it once a template is
+-- built). tris / verts / box ({lo, hi} mesh bounds) are always known.
+local packed={}
+local LAZY={__index=function(meta,key)
+	if key~="vertices" and key~="faces" then return nil end
+	local source=packed[meta]
+	if not source then return nil end
+	unpack(source[1],source[2],meta)
+	return rawget(meta,key)
+end}
+local function lazy(verts,faces,meta)
+	meta.lazy=true
+	packed[meta]={verts,faces}
+	return setmetatable(meta,LAZY)
+end
 local shapes={}
 ${worldEntries}
-local Catalog={palette=palette,families=${FAMILY_LUA},shapes=shapes,tintIndex=${TINT},tintDarkIndex=${TINT_DARK},tintLightIndex=${TINT_LIGHT},tintDark=0.62,tintLight=0.4}
+local function drop(name)
+	local meta=shapes[name]
+	if type(meta)=="table" and packed[meta] then rawset(meta,"vertices",nil); rawset(meta,"faces",nil) end
+end
+local Catalog={palette=palette,families=${FAMILY_LUA},shapes=shapes,drop=drop,tintIndex=${TINT},tintDarkIndex=${TINT_DARK},tintLightIndex=${TINT_LIGHT},tintDark=0.62,tintLight=0.4}
 -- Suggested shape per AetherData resource id (gather nodes).
 Catalog.resourceShapes=${luaTable(resourceShapes)}
 function Catalog.resourceShape(id)

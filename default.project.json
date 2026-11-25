@@ -17,6 +17,7 @@
       "AetherCreatureRules": { "$path": "shared/CreatureRules.lua" },
       "AetherAmbience": { "$path": "shared/Ambience.lua" },
       "AetherNpcStyle": { "$path": "shared/NpcStyle.lua" },
+      "AetherDevice": { "$path": "shared/Device.lua" },
       "AetherOutfitArt": { "$path": "art/OutfitCatalog.lua" },
       "AetherTerrainArt": { "$path": "art/TerrainCatalog.lua" },
       "AetherTerrain": { "$path": "shared/TerrainArt.lua" }

@@ -39,18 +39,43 @@ local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 
 -- Phones and tablets get a smaller forge: fewer templates, fewer placed
--- triangles and a shorter build radius (touch-only devices).
+-- triangles and a shorter build radius. §55 QC M3: the device class is the
+-- shared rule in shared/Device.lua (AetherDevice), the same one npc.client.lua
+-- sizes its outfit budgets by; without the module (headless harnesses) the
+-- forge applies that rule itself (touch-only = phone class).
 local mobile = false
-pcall(function() mobile = UserInputService.TouchEnabled == true and UserInputService.KeyboardEnabled ~= true end)
+do
+	local Device = nil
+	pcall(function()
+		local module = ReplicatedStorage:WaitForChild("AetherDevice", 5)
+		if module then Device = require(module) end
+	end)
+	if type(Device) == "table" and type(Device.isPhone) == "function" then
+		pcall(function() mobile = Device.isPhone(UserInputService) == true end)
+	else
+		pcall(function() mobile = UserInputService.TouchEnabled == true and UserInputService.KeyboardEnabled ~= true end)
+	end
+end
+-- creatureReserve (§55 QC H1): placed triangles world props may never take, so
+-- creatures (creatureVisual, which shares placedTriangles) always find room.
 local LIMITS = if mobile then {
-	templates = 24, templateTriangles = 50000, instances = 400, placedTriangles = 150000, failures = 3, -- §55: smooth organic shapes (2-9k) need the larger template pool
+	templates = 24, templateTriangles = 50000, instances = 400, placedTriangles = 150000, failures = 3, -- §55: smooth organic shapes (2-4k near, <= 1.2k far)
+	creatureReserve = 25000,
 } else {
 	templates = 72, -- distinct (shape, tint) EditableMeshes kept alive (§30: island hulls, bridges, landmarks; §40: +8 for the town buildings); idle ones are LRU-evicted
 	templateTriangles = 240000, -- triangles across all cached EditableMeshes (§40: whole-building meshes are ~2k each; §55: organic trees / rocks 2-9k)
 	instances = 900, -- placed MeshPart clones near the player
 	placedTriangles = 900000, -- triangles across all placed clones (§55: smooth organic world shapes)
 	failures = 3, -- template build failures before the forge stops trying
+	creatureReserve = 80000, -- §55 QC H1: placed triangles kept for creatures
 }
+-- §55 QC H2/H3: organic world shapes carry a far LOD (catalog `far`, <= 1.2k
+-- triangles, the same fit box). It is placed beyond FAR_LOD_RADIUS (phones 40,
+-- desktop 150 studs; back to the near shape inside it, to far again past
+-- 1.25x), and always on phones for a near shape over PHONE_TEMPLATE_TRIS.
+local FAR_LOD_RADIUS = if mobile then 40 else 150
+local FAR_LOD_HYSTERESIS = 1.25
+local PHONE_TEMPLATE_TRIS = 3000
 local BUILD_RADIUS, UNLOAD_RADIUS = if mobile then 250 else 400, if mobile then 310 else 480
 -- Shapes seen from afar (island hulls, bridges, landmarks; catalog meta `range`)
 -- forge within their own range, capped on phones; release at 1.2x that range.
@@ -188,7 +213,7 @@ local creaturePool = {failures = 0, blocked = false, stop = stopReason} -- (no E
 -- variant per shape. Only idle outfit templates are evicted for outfits (LRU).
 local OUTFIT_KINDS = {outfit = true}
 local OUTFIT_TEMPLATE_CAP = if mobile then 18 else 52
-local OUTFIT_TRIANGLE_CAP = if mobile then 40000 else 160000 -- §55 smooth outfits (NpcStyle.POOL)
+local OUTFIT_TRIANGLE_CAP = if mobile then 20000 else 90000 -- §55 QC M3: per-NPC outfit budgets (NpcStyle.NPC_TRIS, NpcStyle.POOL)
 -- QC H1 / L: outfit clones are counted on their own (never against the world's
 -- LIMITS.instances / placedTriangles), bounded by the dressed-NPC cap.
 local OUTFIT_INSTANCE_CAP = if mobile then 40 else 120
@@ -263,6 +288,11 @@ end
 
 -- Geometry -----------------------------------------------------------------
 local function bounds(data)
+	-- §55 QC H3: lazy world shapes carry their bounds (box), so placing one never decodes it.
+	local box = rawget(data, "box")
+	if type(box) == "table" and type(box[1]) == "table" and type(box[2]) == "table" then
+		return Vector3.new(box[1][1], box[1][2], box[1][3]), Vector3.new(box[2][1], box[2][2], box[2][3])
+	end
 	local lo = Vector3.new(math.huge, math.huge, math.huge)
 	local hi = -lo
 	for _, xyz in ipairs(data.vertices) do
@@ -877,6 +907,16 @@ end
 local reclaim -- defined with step() below
 local chartYield -- defined with the chart API below
 local starvedTemplate = false -- set by forge() when no template slot was free
+local lastOrigin = nil -- the focus of the latest step (far LOD choice)
+-- LOD for a host: the near shape, or its far LOD (name, data, catalog, forced).
+local function lodOf(part, shapeName, data, catalog)
+	if type(data.far) ~= "string" then return shapeName, data, catalog, false end
+	local farData, farCatalog = lookup(data.far)
+	if not farData then return shapeName, data, catalog, false end
+	if mobile and (data.tris or #data.faces) > PHONE_TEMPLATE_TRIS then return data.far, farData, farCatalog, true end
+	if lastOrigin and (part.CFrame.Position - lastOrigin).Magnitude > FAR_LOD_RADIUS then return data.far, farData, farCatalog, false end
+	return shapeName, data, catalog, false
+end
 local function forge(part)
 	if placed[part] or final[part] or not part.Parent then return end
 	local shapeName = shapeOf(part)
@@ -884,12 +924,15 @@ local function forge(part)
 	if part:GetAttribute("SculptureScale") ~= nil and part:GetAttribute("ShapeScale") == nil then skip(part, "legacy sculpture", true); return end
 	local data, catalog = lookup(shapeName)
 	if not data then skip(part, "unknown shape", true); return end
+	local lodForced = false
+	shapeName, data, catalog, lodForced = lodOf(part, shapeName, data, catalog)
 	-- §48: creature meshes are posed by creatures.client.lua, never Shape-tagged.
 	if CREATURE_KINDS[data.kind] then skip(part, "creature shape", true); return end
 	if OUTFIT_KINDS[data.kind] then skip(part, "outfit shape", true); return end
 	if DRESS_KINDS[data.kind] then skip(part, "dress shape", true); return end
 	if stopReason then skip(part, stopReason, true); return end
-	if stats.instances >= LIMITS.instances or stats.placedTriangles + #data.faces > LIMITS.placedTriangles then skip(part, "budget"); return end
+	-- §55 QC H1: world props leave LIMITS.creatureReserve of the placed budget to creatures.
+	if stats.instances >= LIMITS.instances or stats.placedTriangles + (data.tris or #data.faces) > LIMITS.placedTriangles - LIMITS.creatureReserve then skip(part, "budget"); return end
 	local tint = templateTint(shapeName, data, part:GetAttribute("Tint"))
 	local entry, problem = template(shapeName, data, catalog, tint)
 	if not entry and problem == "budget" then
@@ -916,7 +959,8 @@ local function forge(part)
 		return clone
 	end)
 	if not ok or not visual then skip(part, "clone failed", true); return end
-	local record = {visual = visual, triangles = entry.triangles, connections = {}, decals = {}, hidden = {}, entry = entry}
+	local record = {visual = visual, triangles = entry.triangles, connections = {}, decals = {}, hidden = {}, entry = entry,
+		lod = if data.lod == "far" then "far" elseif type(data.far) == "string" then "near" else nil, lodForced = lodForced}
 	placed[part] = record
 	useTick += 1
 	entry.users += 1
@@ -1002,21 +1046,32 @@ local function step()
 	if stepping then return end
 	stepping = true
 	local origin = focus()
+	lastOrigin = origin
 	if origin then
 		-- Releases first, so budget they free is available to this step's builds.
+		local swapped = {} -- LOD swaps: rebuilt below even between the build and release radii
 		for part in pairs(registry) do
+			local record = placed[part]
 			if not part.Parent then
 				registry[part] = nil
 				release(part)
-			elseif placed[part] and (part.CFrame.Position - origin).Magnitude > releaseRadius(part) then
-				release(part)
+			elseif record then
+				local distance = (part.CFrame.Position - origin).Magnitude
+				if distance > releaseRadius(part) then
+					release(part)
+				-- §55 QC H2: swap LODs (rebuilt below, nearest first) across FAR_LOD_RADIUS.
+				elseif (record.lod == "near" and distance > FAR_LOD_RADIUS * FAR_LOD_HYSTERESIS)
+					or (record.lod == "far" and not record.lodForced and distance < FAR_LOD_RADIUS) then
+					release(part)
+					swapped[part] = true
+				end
 			end
 		end
 		local near = {}
 		for part in pairs(registry) do
 			if not placed[part] and not final[part] and not waiting(part) then
 				local distance = (part.CFrame.Position - origin).Magnitude
-				if distance <= buildRadius(part) then table.insert(near, {part, distance}) end
+				if distance <= buildRadius(part) or swapped[part] then table.insert(near, {part, distance}) end
 			end
 		end
 		-- Nearest first, so budgets are spent on what the player sees.
@@ -1388,7 +1443,7 @@ if MeshForgeTest then
 	MeshForgeTest.forge = {stats = stats, limits = LIMITS, templates = templates, rescan = rescan, consider = consider, step = step,
 		templateTint = templateTint, kitShapes = SIGN_KIT_SHAPES, kitMetals = KIT_METALS, variants = VARIANTS,
 		cornerNormals = cornerNormals, vertexColors = vertexColors, sphereNormals = sphereNormals, styleSign = styleSign, stopReason = function() return stopReason end,
-		radii = {build = BUILD_RADIUS, unload = UNLOAD_RADIUS, building = BUILDING_RADIUS}, buildRadius = buildRadius, releaseRadius = releaseRadius, mobile = mobile, backoff = backoff, registry = registry, final = final, placed = placed,
+		radii = {build = BUILD_RADIUS, unload = UNLOAD_RADIUS, building = BUILDING_RADIUS, farLod = FAR_LOD_RADIUS, phoneTemplateTris = PHONE_TEMPLATE_TRIS}, buildRadius = buildRadius, releaseRadius = releaseRadius, mobile = mobile, backoff = backoff, registry = registry, final = final, placed = placed,
 		chart = {visual = chartVisual, accept = chartAccept, release = chartRelease, tokens = chartTokens, pinCap = CHART_PIN_CAP, reserve = CHART_RESERVE},
 		creature = {visual = creatureVisual, release = creatureRelease, tokens = creatureTokens, cap = CREATURE_TEMPLATE_CAP, triangleCap = CREATURE_TRIANGLE_CAP, count = creatureTemplateCount, kinds = CREATURE_KINDS,
 			bossReserve = CREATURE_BOSS_RESERVE, bossTriangles = CREATURE_BOSS_TRIANGLES, pool = creaturePool},

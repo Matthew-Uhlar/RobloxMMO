@@ -89,8 +89,29 @@ local catalogBytes = #fs.readFile("art/WorldCatalog.lua")
 -- §51: the Skysailing kit (3 hulls, mast, helm, cannon, dock, board, bollard, slip, reef, wreck, buoy: ~13.7k triangles, ~137 KB) raised it to 1300 KB.
 -- §54 QC A2/A3: the five island hulls became 80-segment, 24-28-level smooth strata (chord <= 0.15 studs on the
 -- largest island): ~+28k triangles, ~+300 KB; the cap rises to 1700 KB.
--- §55: the re-authored organic world shapes (27 trees, rocks, ores, crops, plants, nodes; ~+150k triangles) raise it to 2800 KB.
-check(catalogBytes <= 2800 * 1024, "world catalog download stays under 2800 KB (" .. catalogBytes .. " bytes)")
+-- §55: the re-authored organic world shapes (27 trees, rocks, ores, crops, plants, nodes) and, after QC H2,
+-- their far LODs (27 more, <= 1.2k each; the near shapes lightened to <= 4k) keep it under 2600 KB.
+check(catalogBytes <= 2600 * 1024, "world catalog download stays under 2600 KB (" .. catalogBytes .. " bytes)")
+-- §55 QC H3: the world catalog decodes lazily (like the creature / outfit / terrain catalogs).
+do
+	local fresh = luau.load(fs.readFile("art/WorldCatalog.lua"), {injectGlobals = true})()
+	local packedCount, boxed = 0, 0
+	for name, data in pairs(fresh.shapes) do
+		packedCount += 1
+		check(data.lazy == true and rawget(data, "vertices") == nil and rawget(data, "faces") == nil, name .. " stays packed until used")
+		check(type(data.tris) == "number" and type(data.verts) == "number" and type(data.box) == "table", name .. " knows tris / verts / box without decoding")
+		if packedCount <= 12 then
+			local lo, hi = {math.huge, math.huge, math.huge}, {-math.huge, -math.huge, -math.huge}
+			for _, v in ipairs(data.vertices) do for k = 1, 3 do lo[k] = math.min(lo[k], v[k]); hi[k] = math.max(hi[k], v[k]) end end
+			check(#data.faces == data.tris and #data.vertices == data.verts, name .. " tris / verts match its geometry")
+			for k = 1, 3 do check(lo[k] == data.box[1][k] and hi[k] == data.box[2][k], name .. " box is its mesh bounds") end
+			fresh.drop(name)
+			check(rawget(data, "vertices") == nil and rawget(data, "faces") == nil and data.tris > 0, name .. " drop forgets the decoded arrays")
+			boxed += 1
+		end
+	end
+	check(type(fresh.drop) == "function" and boxed == 12, "the world catalog exposes drop")
+end
 -- Packed geometry decodes to exactly the OBJ masters' vertices and faces.
 for _, name in ipairs({"Skyship", "ZipLine", "SnareTrap", "StormSpire", "WindpineTree"}) do
 	local data, vi, fi = World.shapes[name], 0, 0
@@ -135,7 +156,8 @@ local worldTriangles, worldCount = 0, 0
 for name, data in pairs(World.shapes) do
 	worldCount += 1
 	worldTriangles += #data.faces
-	local points = validate(name, data, 200, if string.sub(name, 1, 6) == "Island" then 8000 elseif data.kind == "building" or data.exactTint == true then 2400 elseif data.maxScale then 12000 else 1500) -- §55: re-authored organic shapes (meta.maxScale) to 12k
+	local points = validate(name, data, 200, if string.sub(name, 1, 6) == "Island" then 8000 elseif data.kind == "building" or data.exactTint == true then 2400 elseif data.lod == "far" then 1200 elseif data.maxScale then 4000 else 1500) -- §55 QC H2: organic shapes <= 4k, far LODs <= 1.2k
+	check(#data.vertices < 4096, name .. " fits the vertex packing (" .. #data.vertices .. ")")
 	check(type(data.smooth) == "number" and data.smooth >= 0 and data.smooth < 90, name .. " smoothing crease")
 	check(type(data.kind) == "string", name .. " kind")
 	if data.tint then check(pcall(Color3.fromHex, data.tint), name .. " default tint") end
@@ -296,8 +318,18 @@ for _, p in ipairs({tree1, tree2, ore, sign}) do
 	check(mesh.Anchored and not mesh.CanCollide and not mesh.CanQuery and not mesh.CanTouch, p.Name .. " mesh is display-only")
 	check(ltm(p) == 1 and p.Transparency == 0 and p.CanCollide, p.Name .. " original hidden locally only and still collides")
 end
-check(nearV(meshOf(tree1).Size, tree1.Size) and nearV(meshOf(tree1).CFrame.Position, tree1.CFrame.Position), "mesh fills the tagged part's bounds")
-check(nearV(meshOf(tree2).Size, tree2.Size * 1.5), "ShapeScale multiplies the bounding size")
+-- §55 QC L: an organic shape's fit box (its bounds above the ground) fills the
+-- part; the buried trunk foot reaches below it.
+local function fitted(p, scale)
+	local data = World.shapes.MeadowTree
+	local flo, fhi = Vector3.new(table.unpack(data.fit[1])), Vector3.new(table.unpack(data.fit[2]))
+	local blo, bhi = Vector3.new(table.unpack(data.box[1])), Vector3.new(table.unpack(data.box[2]))
+	local k = p.Size * scale / (fhi - flo)
+	return (bhi - blo) * k, ((blo + bhi) / 2 - (flo + fhi) / 2) * k
+end
+local size1, offset1 = fitted(tree1, 1)
+check(nearV(meshOf(tree1).Size, size1) and nearV(meshOf(tree1).CFrame.Position, tree1.CFrame.Position + offset1), "mesh fills the tagged part's bounds (fit box)")
+check(nearV(meshOf(tree2).Size, (fitted(tree2, 1.5))), "ShapeScale multiplies the bounding size")
 check(meshOf(tree2).CFrame.LookVector:FuzzyEq(tree2.CFrame.LookVector, 1e-4), "mesh keeps the part's rotation")
 -- Tinted ore: the tint, its dark and light shades are in the colour set.
 local function hasColor(target)
@@ -419,7 +451,73 @@ do
 	local uniform = loadForge()
 	local p = part(nil, "Wide tree", Vector3.new(20, 10, 20), CFrame.new(), {Shape = "WindpineTree", ShapeFit = "Uniform"}); uniform.add(p)
 	local size = meshOf(p).Size
-	check(size.X <= 20 + 1e-3 and size.Y <= 10 + 1e-3 and size.Z <= 20 + 1e-3 and (near(size.Y, 10) or near(size.X, 20) or near(size.Z, 20)), "uniform fit stays inside the part")
+	-- §55 QC L: the fit box starts at the ground, so the buried trunk foot reaches below the part.
+	local data = World.shapes.WindpineTree
+	local fitY, extentY = data.fit[2][2] - data.fit[1][2], data.box[2][2] - data.box[1][2]
+	check(size.X <= 20 + 1e-3 and size.Y <= 10 * extentY / fitY + 1e-3 and size.Z <= 20 + 1e-3 and (near(size.Y, 10 * extentY / fitY) or near(size.X, 20) or near(size.Z, 20)), "uniform fit stays inside the part")
+end
+-- §55 QC L: organic trees stand on their slot floor (fit lo.Y = 0; the buried foot goes below it).
+do
+	local grounded = loadForge()
+	for i, name in ipairs({"MeadowTree", "WindpineTree", "Boulder", "PalmTree"}) do
+		local data = World.shapes[name]
+		check(data.fit ~= nil and data.fit[1][2] == math.max(0, data.box[1][2]), name .. " fit box starts at the ground")
+		local p = part(nil, name, Vector3.new(8, 12, 8), CFrame.new(i * 40, 6, 0), {Shape = name})
+		local d = grounded.forge.describe(p)
+		local k = d.size.Y / (data.box[2][2] - data.box[1][2])
+		local meshBottom = d.cframe.Position.Y - d.size.Y / 2
+		check(near(meshBottom, data.box[1][2] * k, 1e-3) and meshBottom <= 1e-3, name .. " never floats above its slot floor (" .. meshBottom .. ")")
+	end
+end
+-- §55 QC H2/H3: far LODs beyond FAR_LOD_RADIUS (desktop 150, phones 40), back
+-- to near inside it (1.25x hysteresis); phones always place the far LOD of a
+-- near shape over 3k triangles; the LOD keeps the near shape's box.
+do
+	local lods = loadForge()
+	check(lods.forge.radii.farLod == 150 and lods.forge.limits.creatureReserve == 80000, "desktop far LOD radius 150, creature reserve 80k")
+	local tree = part(nil, "LOD tree", Vector3.new(8, 12, 8), CFrame.new(200, 6, 0), {Shape = "MeadowTree"}); lods.add(tree)
+	lods.moveTo(Vector3.new(0, 0, 0))
+	check(meshOf(tree) ~= nil and meshOf(tree):GetAttribute("ShapeOf") == "MeadowTreeFar", "a tree 200 studs away uses its far LOD")
+	local farSize, farFrame = meshOf(tree).Size, meshOf(tree).CFrame
+	lods.moveTo(Vector3.new(80, 0, 0))
+	check(meshOf(tree):GetAttribute("ShapeOf") == "MeadowTree", "walking within 150 studs swaps in the near shape")
+	local nearMesh = meshOf(tree)
+	check(math.abs(nearMesh.CFrame.Position.Y - nearMesh.Size.Y / 2 - (farFrame.Position.Y - farSize.Y / 2)) < .6, "far and near LODs stand on the same slot floor")
+	lods.moveTo(Vector3.new(30, 0, 0))
+	check(meshOf(tree):GetAttribute("ShapeOf") == "MeadowTree", "within the hysteresis band the near shape stays")
+	lods.moveTo(Vector3.new(0, 0, 0))
+	check(meshOf(tree):GetAttribute("ShapeOf") == "MeadowTreeFar", "past 1.25x the radius the far LOD returns")
+	local phone = loadForge(nil, nil, function(env)
+		local services = env.game
+		env.game = {GetService = function(self, name)
+			if name == "UserInputService" then return {TouchEnabled = true, KeyboardEnabled = false} end
+			return services.GetService(self, name)
+		end}
+	end)
+	check(phone.forge.radii.farLod == 40 and phone.forge.limits.creatureReserve == 25000 and phone.forge.radii.phoneTemplateTris == 3000, "phone far LOD radius 40, creature reserve 25k, 3k template cap")
+	local heavy = part(nil, "Heavy tree", Vector3.new(8, 12, 8), CFrame.new(10, 6, 0), {Shape = "WindpineTree"})
+	local light = part(nil, "Light tree", Vector3.new(8, 12, 8), CFrame.new(-10, 6, 0), {Shape = "MeadowTree"})
+	phone.add(heavy); phone.add(light); phone.moveTo(Vector3.new(0, 0, 0))
+	check(World.shapes.WindpineTree.tris > 3000 and meshOf(heavy) ~= nil and meshOf(heavy):GetAttribute("ShapeOf") == "WindpineTreeFar", "phones always place the far LOD of a near shape over 3k")
+	check(World.shapes.MeadowTree.tris <= 3000 and meshOf(light) ~= nil and meshOf(light):GetAttribute("ShapeOf") == "MeadowTree", "a light near shape is placed up close on phones")
+	phone.moveTo(Vector3.new(-55, 0, 0))
+	check(meshOf(light):GetAttribute("ShapeOf") == "MeadowTree", "phone hysteresis band (40-50 studs) keeps the near shape")
+	phone.moveTo(Vector3.new(-70, 0, 0))
+	check(meshOf(light):GetAttribute("ShapeOf") == "MeadowTreeFar", "beyond 50 studs a phone swaps to the far LOD")
+	for key in pairs(phone.forge.templates) do
+		local shape = string.match(key, "^([^#]+)")
+		local data = World.shapes[shape]
+		if data and data.maxScale then check(data.tris <= 3000, shape .. " phone template within 3k triangles") end
+	end
+	-- QC H1: world props never take the creature reserve.
+	local reserve = loadForge()
+	reserve.forge.limits.placedTriangles = reserve.forge.limits.creatureReserve + World.shapes.Boulder.tris + 10
+	local a = part(nil, "First", Vector3.new(3, 3, 3), CFrame.new(), {Shape = "Boulder"}); reserve.add(a)
+	local b = part(nil, "Second", Vector3.new(3, 3, 3), CFrame.new(4, 0, 0), {Shape = "Boulder"}); reserve.add(b)
+	check(a:GetAttribute("ShapeDone") == true and b:GetAttribute("ShapeSkipped") == "budget", "[H1] world props stop at placedTriangles - creatureReserve")
+	check(reserve.forge.limits.placedTriangles - reserve.forge.stats.placedTriangles >= reserve.forge.limits.creatureReserve, "[H1] the creature reserve stays free")
+	-- QC H3: a built world template forgets its decoded geometry (packed until needed again).
+	check(rawget(World.shapes.Boulder, "vertices") == nil and rawget(World.shapes.Boulder, "faces") == nil, "[H3] a built world template drops its decoded arrays")
 end
 
 -- Line shapes turn onto the host's longest axis; resource slots follow their prompt.
@@ -462,11 +560,14 @@ do
 	check(mesh ~= nil and mesh.CFrame.UpVector:FuzzyEq(Vector3.new(0, 1, 0), 1e-4), "cylinder host: tree mesh stands upright")
 	-- Slot box = trunk + canopy (0..10.6 tall, 6.8 wide); uniform keeps the tree's proportions on the floor.
 	local bottom = mesh.CFrame.Position.Y - mesh.Size.Y / 2
-	check(mesh.Size.Y > 8 and mesh.Size.Y <= 10.6 + 1e-3 and mesh.Size.X <= 6.8 + 1e-3, "owned slot covers trunk and canopy: " .. tostring(mesh.Size))
 	local data = World.shapes.MeadowTree
 	local lo = math.huge
 	for _, v in ipairs(data.vertices) do lo = math.min(lo, v[2]) end
-	check(near(bottom, 0, .05), "uniform fit stands on the slot floor (" .. bottom .. ")")
+	-- §55 QC L: the fit box (above the ground) fills the slot; the buried foot (lo < 0) goes below the floor.
+	local k = mesh.Size.Y / (data.box[2][2] - data.box[1][2])
+	local fitted = (data.fit[2][2] - data.fit[1][2]) * k
+	check(fitted > 8 and fitted <= 10.6 + 1e-3 and mesh.Size.X <= 6.8 + 1e-3, "owned slot covers trunk and canopy: " .. tostring(mesh.Size))
+	check(near(bottom, lo * k, .05), "uniform fit stands on the slot floor (" .. bottom .. ")")
 	check(ltm(canopy) == 1 and ltm(decal) == 1, "owned sibling (and its decal) hidden locally")
 	check(ltm(flame) == 0, "neon accents stay visible over the mesh")
 	check(ltm(lantern) == 0 and lantern:GetAttribute("ShapeSkipped") == "legacy sculpture", "siblings with their own Shape are left alone")
@@ -525,7 +626,7 @@ end
 -- Distance streaming: build near the player, release (and restore the primitive) far away.
 do
 	local streamed = loadForge()
-	local far = part(nil, "Far boulder", Vector3.new(3, 2, 3), CFrame.new(1000, 1, 0), {Shape = "Boulder"})
+	local far = part(nil, "Far barrel", Vector3.new(3, 2, 3), CFrame.new(1000, 1, 0), {Shape = "Barrel"}) -- no far LOD (§55 LODs swap templates)
 	streamed.add(far)
 	check(meshOf(far) == nil and ltm(far) == 0 and streamed.forge.stats.instances == 0, "parts beyond the build radius stay primitive")
 	streamed.moveTo(Vector3.new(900, 0, 0))
@@ -754,7 +855,7 @@ do
 		-- Instance userdata would otherwise be collected between steps (in Roblox the
 		-- DataModel keeps them alive).
 		local keep = run.root:GetDescendants()
-		local report, peak = {}, 0
+		local report, peak, placedPeak = {}, 0, 0
 		for _, stop in STOPS do
 			local skipsBefore = run.forge.stats.templateSkips
 			-- Arrive, then let every backed-off part retry (several steps, minutes apart).
@@ -776,10 +877,15 @@ do
 				device .. " " .. stop[1] .. ": template caps hold (" .. run.forge.stats.templates .. ")")
 			check(permanent == 0, device .. " " .. stop[1] .. ": no permanent primitive fallback")
 			check(nearPrimitive == 0, device .. " " .. stop[1] .. ": every shape within " .. near .. " studs meshed (" .. nearPrimitive .. " left primitive)")
-			table.insert(report, string.format("%s %d tpl/%dk tris, %d evicted so far, %d tpl-budget skips", stop[1],
-				run.forge.stats.templates, run.forge.stats.templateTriangles // 1000, run.forge.stats.evicted, run.forge.stats.templateSkips - skipsBefore))
+			-- §55 QC H1: creatures always have their reserve of the placed budget left.
+			local headroom = run.forge.limits.placedTriangles - run.forge.stats.placedTriangles
+			check(headroom >= run.forge.limits.creatureReserve, string.format("%s %s: placed headroom %d >= creature reserve %d", device, stop[1], headroom, run.forge.limits.creatureReserve))
+			local placedPct = run.forge.stats.placedTriangles * 100 // run.forge.limits.placedTriangles
+			placedPeak = math.max(placedPeak, placedPct)
+			table.insert(report, string.format("%s %d tpl/%dk tris, %dk placed (%d%%), %d evicted so far, %d tpl-budget skips", stop[1],
+				run.forge.stats.templates, run.forge.stats.templateTriangles // 1000, run.forge.stats.placedTriangles // 1000, placedPct, run.forge.stats.evicted, run.forge.stats.templateSkips - skipsBefore))
 		end
-		print("Template tour (" .. device .. "): " .. table.concat(report, "; ") .. "; peak " .. peak .. ", " .. run.forge.stats.reclaimed .. " reclaimed, " .. #keep .. " instances.")
+		print("Template tour (" .. device .. "): " .. table.concat(report, "; ") .. "; peak " .. peak .. ", placed peak " .. placedPeak .. "%, " .. run.forge.stats.reclaimed .. " reclaimed, " .. #keep .. " instances.")
 		return run
 	end
 	local desk, phone = tour("desktop"), tour("phone")
@@ -1472,38 +1578,67 @@ for name, b in pairs(Baseline) do
 	ratchet += 1
 	if dev98 <= 15 and sharp <= 0.02 then meeting += 1 end
 end
-check(ratchet >= 60 and ratchet <= 131, "organic baseline holds only the shapes not yet re-authored (" .. ratchet .. ")")
+-- §55 QC M1: the baseline only shrinks (tools/organic-baseline.cjs keeps existing names at min(old, new)).
+check(ratchet >= 60 and ratchet <= 69, "organic baseline holds only the shapes not yet re-authored (" .. ratchet .. ")")
 -- §55: every organic world / outfit shape outside the baseline meets the strict
 -- bar (the terrain checks above): dev98 <= 15, sharp <= 2 %, rings >= 16 and
 -- fine enough for meta.maxScale, blobs subdivided; a re-authored shape never
 -- returns to the baseline (tools/organic-baseline.cjs skips shapes that pass).
+-- §55 QC H2: far LODs (lod "far", seen beyond 40 / 150 studs, <= 1.2k triangles)
+-- are held to the far bar: dev98 <= 22, sharp <= 4 %, SEG_FAR subdivision;
+-- CliffPiece (segFar, cliff dressing) subdivides at SEG_FAR like the terrain cliffs.
 local ORGANIC_KINDS = {tree = true, rock = true, ore = true, crop = true, plant = true, node = true}
-local strictOrganic = 0
+local FAR_DEV, FAR_SHARP = 22, 0.04
+local strictOrganic, farLods = 0, 0
 for _, pair in ipairs({{"world", World}, {"outfit", Outfits}, {"creature", Creatures}}) do
 	local cat, catalog = pair[1], pair[2]
 	for name, data in pairs(catalog.shapes) do
-		local organicKind = cat ~= "world" or (ORGANIC_KINDS[data.kind] and not data.fit and string.sub(name, 1, 6) ~= "Island")
+		local organicKind = cat ~= "world" or (ORGANIC_KINDS[data.kind] and (data.maxScale ~= nil or not data.fit) and string.sub(name, 1, 6) ~= "Island")
 		if organicKind and Baseline[name] == nil then
-			strictOrganic += 1
-			meeting += 1
+			local far = data.lod == "far"
+			if far then farLods += 1 else strictOrganic += 1; meeting += 1 end
 			local dev98, sharp = organic(data, data.smooth or 0)
-			check(dev98 <= 15.05, string.format("%s normal deviation (98th pct, area) %.1f <= 15 (§55 strict)", name, dev98))
-			check(sharp <= 0.02, string.format("%s sharp edges %.2f%% <= 2%% (§55 strict)", name, sharp * 100))
+			if far then
+				check(dev98 <= FAR_DEV, string.format("%s normal deviation (98th pct, area) %.1f <= %d (§55 far LOD)", name, dev98, FAR_DEV))
+				check(sharp <= FAR_SHARP, string.format("%s sharp edges %.2f%% <= 4%% (§55 far LOD)", name, sharp * 100))
+			else
+				check(dev98 <= 15.05, string.format("%s normal deviation (98th pct, area) %.1f <= 15 (§55 strict)", name, dev98))
+				check(sharp <= 0.02, string.format("%s sharp edges %.2f%% <= 2%% (§55 strict)", name, sharp * 100))
+			end
+			if cat == "world" then
+				-- QC H2: every organic world shape has its far LOD (same fit box, <= 1.2k).
+				if far then
+					local nearName = string.sub(name, 1, -4)
+					check(catalog.shapes[nearName] ~= nil and catalog.shapes[nearName].far == name, name .. " is the far LOD of " .. nearName)
+					check(data.tris <= 1200, name .. " far LOD " .. data.tris .. " <= 1200 triangles")
+					local nf = catalog.shapes[nearName].fit
+					for side = 1, 2 do for k = 1, 3 do check(data.fit[side][k] == nf[side][k], name .. " shares its near shape's fit box") end end
+				else
+					check(type(data.far) == "string" and catalog.shapes[data.far] ~= nil and catalog.shapes[data.far].lod == "far", name .. " has a far LOD")
+					check(data.tris <= 4000, name .. " " .. data.tris .. " <= 4000 triangles (§55 QC H2)")
+					check(data.fit ~= nil and data.fit[1][2] == math.max(0, data.box[1][2]), name .. " fit box starts at the ground")
+				end
+			end
+			local seg = if far or data.segFar then SEG_FAR else SEG_NEAR
 			local log = Calls.shapes[name]
 			check(log ~= nil and log.catalog == cat, name .. " has a generator call log")
 			local scale = log.maxScale or 1
 			for _, c in ipairs(log.calls) do
 				check(c.prim == "lathe" or c.prim == "tube" or c.prim == "blob" or c.prim == "loft", name .. " uses only smooth primitives (" .. c.prim .. ")")
 				if c.prim == "blob" then
-					check(c.sub >= math.max(2, math.ceil(math.log(1.05 * c.radius * scale / SEG_NEAR, 2))), name .. " blob subdivided for its placed size")
+					check(c.sub >= math.max(2, math.ceil(math.log(1.05 * c.radius * scale / seg, 2))), name .. " blob subdivided for its placed size")
 				else
-					check(c.n >= math.max(16, math.ceil(2 * math.pi * c.radius * scale / SEG_NEAR)), name .. " " .. c.prim .. " segments for its placed size (n " .. c.n .. ")")
+					check(c.n >= math.max(16, math.ceil(2 * math.pi * c.radius * scale / seg)), name .. " " .. c.prim .. " segments for its placed size (n " .. c.n .. ")")
 				end
 			end
 		end
 	end
 end
 check(strictOrganic >= 62, "re-authored organic shapes held to the strict bar (" .. strictOrganic .. ")")
+check(farLods >= 27, "organic world far LODs held to the far bar (" .. farLods .. ")")
+check(World.shapes.CliffPiece.tris <= 2500 and World.shapes.TilledSoil.tris <= 1000 and World.shapes.FlowerPatch.tris <= 3000
+	and World.shapes.CropBloom.tris <= 3000 and World.shapes.CropGlowcap.tris <= 3000 and World.shapes.PalmTree.tris <= 4000 and World.shapes.AetherheartTree.tris <= 4000,
+	"§55 QC H2: the heaviest organic shapes are lightened")
 print(string.format("§54 mesh QA: per-vertex colour on %d shapes (worst in-family step %.3f); %d terrain shapes strict; %d hulls at real scale; %d organic shapes held to the baseline (%d meet the strict bar).",
 	colourShapes, worstDL, terrainStrict, hullShapes, ratchet, meeting))
 

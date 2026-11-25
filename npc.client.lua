@@ -492,11 +492,26 @@ end)
 -- "budget" refusal waits until some outfit token is released (no timer), and a
 -- nearer NPC may take the pool from the farthest dressed one.
 local Style = require(ReplicatedStorage:WaitForChild("AetherNpcStyle"))
+-- §55 QC M3: the device class is the shared rule (shared/Device.lua) the
+-- MeshForge sizes its outfit pool by, so both always agree on phone vs desktop.
+local Device = require(ReplicatedStorage:WaitForChild("AetherDevice"))
 local npcs = {} -- [model] = {role, root, head, motors={joint={motor, base}}, marker, phase, yaw, pitch, outfit, pose, ...}
 local function isPhone()
-	local camera = workspace.CurrentCamera
-	return camera ~= nil and camera.ViewportSize.Y < 500
+	return Device.isPhone(Input)
 end
+-- Outfit triangle counts (the lazy catalog's tris; nothing is decoded), for the
+-- per-NPC outfit budget (Style.NPC_TRIS, §55 QC M3).
+local outfitTris = nil
+pcall(function()
+	local module = ReplicatedStorage:WaitForChild("AetherOutfitArt", 10)
+	local catalog = module and require(module)
+	if type(catalog) == "table" and type(catalog.shapes) == "table" then
+		outfitTris = function(shape)
+			local data = catalog.shapes[shape]
+			return if type(data) == "table" then (data.tris or 0) else 0
+		end
+	end
+end)
 local phoneCached, reducedCached = false, false -- sampled every 0.5 s (QC L: no per-frame closures)
 local watchedModels = setmetatable({}, {__mode = "k"})
 local register, undressEntry, applyPlateVariant
@@ -532,6 +547,7 @@ register = function(model)
 	if not root or not head or not model.Parent or npcs[model] then return end
 	local def = T.NPCs[role]
 	local outfit = Style.outfit(role, def)
+	if outfitTris then outfit = Style.trim(outfit, outfitTris, isPhone()) end
 	local entry = {role = role, model = model, root = root, head = head, motors = {}, phase = (#model.Name % 7) * 0.9, yaw = 0, pitch = 0, attention = 0,
 		outfit = outfit, idle = model:GetAttribute("NpcIdle") or outfit.idle, pose = {}, lastBeat = -1, animating = false, rank = math.huge,
 		dressing = false, blockedAt = nil, noBone = false, tokens = {}, failed = {}, hidden = {}, fx = nil, distance = math.huge}

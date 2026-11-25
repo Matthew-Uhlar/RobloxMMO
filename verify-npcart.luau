@@ -298,16 +298,26 @@ for _, name in ipairs({"HatWayfarer", "HatMage", "Cloak", "PropStaff", "PropPoke
 	end
 	ok(vi == #data.vertices and fi == #data.faces, name .. " packed counts = OBJ")
 end
--- Per-NPC triangle budget and the town-square worst case.
-local worst = 0
+-- Per-NPC triangle budget (§55 QC M3: S.trim to S.NPC_TRIS, 6k phones / 8k
+-- desktop) and the town-square worst case.
+local function trisOf(shape) return Outfits.shapes[shape].tris end
+eq(S.NPC_TRIS.phone, 6000, "[M3] phone outfit budget per NPC")
+eq(S.NPC_TRIS.desktop, 8000, "[M3] desktop outfit budget per NPC")
+local worst, worstPhone, trimmed = 0, 0, 0
 for _, role in ipairs(ROSTER) do
-	local tris = 0
-	for _, p in ipairs(outfitOf(role).pieces) do tris += Outfits.shapes[p.shape].tris end
-	ok(tris <= 13000, role .. " outfit " .. tris .. " triangles <= 13000 (§55 smooth outfits)")
-	worst = math.max(worst, tris)
+	local full, desk, phone = outfitOf(role), S.trim(outfitOf(role), trisOf, false), S.trim(outfitOf(role), trisOf, true)
+	local tris, ptris = 0, 0
+	for _, p in ipairs(desk.pieces) do tris += trisOf(p.shape) end
+	for _, p in ipairs(phone.pieces) do ptris += trisOf(p.shape) end
+	ok(tris == desk.tris and tris <= S.NPC_TRIS.desktop, role .. " desktop outfit " .. tris .. " triangles <= " .. S.NPC_TRIS.desktop)
+	ok(ptris == phone.tris and ptris <= S.NPC_TRIS.phone, role .. " phone outfit " .. ptris .. " triangles <= " .. S.NPC_TRIS.phone)
+	ok(#desk.pieces >= 1 and desk.pieces[1].shape == full.pieces[1].shape, role .. " keeps its first piece (hat or prop) on desktop")
+	if #desk.pieces < #full.pieces then trimmed += 1 end
+	worst, worstPhone = math.max(worst, tris), math.max(worstPhone, ptris)
 end
-ok(worst * S.DRESS_CAP.desktop <= 182000, "desktop dressed cap within 182k placed triangles (" .. worst * S.DRESS_CAP.desktop .. ")")
-ok(worst * S.DRESS_CAP.phone <= 39000, "phone dressed cap within 39k placed triangles (" .. worst * S.DRESS_CAP.phone .. ")")
+ok(worst * S.DRESS_CAP.desktop <= 112000, "desktop dressed cap within 112k placed triangles (" .. worst * S.DRESS_CAP.desktop .. ")")
+ok(worstPhone * S.DRESS_CAP.phone <= 18000, "phone dressed cap within 18k placed triangles (" .. worstPhone * S.DRESS_CAP.phone .. ")")
+print(string.format("Outfit budget: worst NPC %d tris desktop / %d phone; %d of %d roles trimmed on desktop", worst, worstPhone, trimmed, #ROSTER))
 print(string.format("PASS: outfit meshes (%d) — %d shapes, %d triangles", checks - part3, count, total))
 
 ------------------------------------------------------------------------------
@@ -373,13 +383,15 @@ do
 	eq(forge.stats.outfitInstances, 1, "[L] it counts in the outfit pool")
 	api.release(probe)
 	-- Fill the pool with busy templates: a new one waits; idle ones give way (LRU).
+	-- (A light prop, so the template count, not the triangle cap, is what fills.)
 	local held = {}
 	for i = 1, api.cap do
-		local _, t = api.visual("PropRod", Color3.fromRGB(i * 4 % 256, 30 + i, 60))
+		local _, t = api.visual("PropCrook", Color3.fromRGB(i * 4 % 256, 30 + i, 60))
 		ok(t ~= nil, "outfit template " .. i)
 		table.insert(held, t)
 	end
 	local none, reason = api.visual("PropHoe", Color3.fromRGB(1, 2, 3))
+	ok(api.cap * Outfits.shapes.PropCrook.tris + Outfits.shapes.PropHoe.tris <= api.triangleCap, "the probe fits the outfit triangle cap")
 	ok(none == nil and reason == "budget", "[H1] busy outfit templates are never evicted; the refusal says budget (" .. tostring(none) .. " " .. tostring(reason) .. ")")
 	local _, creatureToken = forge.creature.visual("CreatureBoar", Color3.fromHex("A0683D"))
 	ok(creatureToken ~= nil, "a full outfit pool never starves the creatures")
@@ -442,11 +454,12 @@ do
 	for _, role in ipairs(ROSTER) do
 		local region = T.NPCs[role].region
 		byRegion[region] = byRegion[region] or {}
-		table.insert(byRegion[region], outfitOf(role))
+		table.insert(byRegion[region], role)
 	end
-	local function worst(list, n, phone)
+	local function worst(roles, n, phone)
 		local bestT, bestTris = 0, 0
-		local pick = {}
+		local pick, list = {}, {}
+		for i, role in ipairs(roles) do list[i] = S.trim(outfitOf(role), function(shape) return Outfits.shapes[shape].tris end, phone) end
 		local function measure()
 			local keys, count, tris = {}, 0, 0
 			for _, o in ipairs(pick) do
@@ -467,14 +480,18 @@ do
 		choose(1, math.min(n, #list))
 		return bestT, bestTris
 	end
+	local peak = {0, 0, 0, 0}
 	for region, list in pairs(byRegion) do
 		local dt, dtris = worst(list, S.DRESS_CAP.desktop, false)
 		ok(dt <= S.POOL.desktop.templates and dtris <= S.POOL.desktop.triangles,
 			string.format("[H1] %s: the worst %d dressed NPCs need %d templates / %d tris (desktop pool %d / %d)", region, S.DRESS_CAP.desktop, dt, dtris, S.POOL.desktop.templates, S.POOL.desktop.triangles))
 		local pt, ptris = worst(list, S.DRESS_CAP.phone, true)
+		peak = {math.max(peak[1], dt), math.max(peak[2], dtris), math.max(peak[3], pt), math.max(peak[4], ptris)}
 		ok(pt <= S.POOL.phone.templates and ptris <= S.POOL.phone.triangles,
 			string.format("[H1] %s: the worst %d dressed NPCs need %d shapes / %d tris (phone pool %d / %d)", region, S.DRESS_CAP.phone, pt, ptris, S.POOL.phone.templates, S.POOL.phone.triangles))
 	end
+	print(string.format("Outfit pool worst case: desktop %d templates / %d tris (pool %d / %d); phone %d / %d (pool %d / %d)",
+		peak[1], peak[2], S.POOL.desktop.templates, S.POOL.desktop.triangles, peak[3], peak[4], S.POOL.phone.templates, S.POOL.phone.triangles))
 end
 print("PASS: MeshForge outfit pool (" .. (checks - part4) .. ")")
 
@@ -644,6 +661,17 @@ local section = string.sub(client, (string.find(client, "-- NPC registry, quest 
 ok(#section > 2000 and not has(section, ":SetAttribute("), "the NPC renderer never writes attributes on the townsfolk")
 ok(not has(client, ".Transform ="), "NPC motors are posed through C0 (the talk nod owns Transform)")
 ok(has(client, "Style.DRESS_CAP") and has(client, "Style.DRESS_RANGE") and has(client, "isPhone()"), "dressing is capped by device")
+-- §55 QC M3: one device class (shared/Device.lua) for the forge's pools and the dressed set.
+do
+	local Device = load("shared/Device.lua")
+	ok(Device.isPhone({TouchEnabled = true, KeyboardEnabled = false}) == true, "[M3] a touch-only phone is the phone class")
+	ok(Device.isPhone({TouchEnabled = true, KeyboardEnabled = false, ViewportSize = Vector3.new(2048, 1536, 0)}) == true, "[M3] a touch-only tablet is the phone class too")
+	ok(Device.isPhone({TouchEnabled = true, KeyboardEnabled = true}) == false and Device.isPhone({TouchEnabled = false, KeyboardEnabled = true}) == false, "[M3] keyboard devices are desktops")
+	ok(has(client, 'require(ReplicatedStorage:WaitForChild("AetherDevice"))') and has(client, "Device.isPhone(Input)") and not has(client, "ViewportSize.Y < 500"), "[M3] npc.client.lua uses the shared device class")
+	ok(has(fs.readFile("forge.client.lua"), 'ReplicatedStorage:WaitForChild("AetherDevice", 5)') and has(fs.readFile("forge.client.lua"), "Device.isPhone(UserInputService)"), "[M3] forge.client.lua uses the shared device class")
+	ok(has(fs.readFile("default.project.json"), '"AetherDevice": { "$path": "shared/Device.lua" }'), "[M3] the device module ships in ReplicatedStorage")
+	ok(has(client, "Style.trim(outfit, outfitTris, isPhone())"), "[M3] npc.client.lua trims each outfit to the per-NPC budget")
+end
 ok(has(client, "Theme.reducedMotion(player)") and has(client, "Style.sample(entry.idle, t, entry.pose, reduced)"), "reduced motion calms the loops (and skips beat FX)")
 ok(has(client, "if not color or reduced"), "no beat sparks under reduced motion")
 ok(has(client, "Style.lod(distance, phone)"), "idle animation LOD by distance and device")
